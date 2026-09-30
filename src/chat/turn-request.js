@@ -1,6 +1,7 @@
 'use strict';
 
 const { assertProviderBinding } = require('../providers/binding');
+const { transportOf } = require('../cli/cli-capability');
 
 const REQUEST_KIND = 'chat-turn-request.v1';
 const MAX_ID_LENGTH = 128;
@@ -59,22 +60,11 @@ function normalizeGoalLimits(value) {
 
 function normalizeTaskContext(input) {
   const taskId = cleanId(input.taskId, 'taskId');
-  const taskRunId = cleanId(input.taskRunId, 'taskRunId');
-  const leaseEpoch = input.leaseEpoch == null ? null : Number(input.leaseEpoch);
   const start = input.taskStart === true;
   const rawSource = cleanId(input.taskSource, 'taskSource');
   const source = LEGACY_TASK_SOURCE_ALIASES.get(rawSource) || rawSource;
   if (start && !taskId) {
     throw new TurnRequestError('invalid_task', 'taskStart requires taskId');
-  }
-  if (taskRunId && !taskId) {
-    throw new TurnRequestError('invalid_task', 'taskRunId requires taskId');
-  }
-  if (leaseEpoch != null && (!Number.isSafeInteger(leaseEpoch) || leaseEpoch < 1)) {
-    throw new TurnRequestError('invalid_task', 'leaseEpoch must be a positive integer');
-  }
-  if (leaseEpoch != null && !taskRunId) {
-    throw new TurnRequestError('invalid_task', 'leaseEpoch requires taskRunId');
   }
   if (start && !TASK_SOURCES.has(source)) {
     throw new TurnRequestError('invalid_task', 'taskStart requires a trusted task source');
@@ -88,7 +78,6 @@ function normalizeTaskContext(input) {
   }
   return Object.freeze({
     id: taskId,
-    ...(taskRunId ? { runId: taskRunId, leaseEpoch } : {}),
     start,
     source: source || null,
     text: start ? rawText : '',
@@ -109,7 +98,7 @@ function normalizeTurnRequest(input) {
   const text = String(input.text == null ? '' : input.text).trim();
   if (!text) throw new TurnRequestError('empty_text', 'turn text is required');
   const cli = cleanId(input.cli || 'claude', 'cli', true).toLowerCase();
-  const transport = cli === 'claude' ? 'claude-stream' : 'cli-process';
+  const transport = transportOf(cli);
   const turnCount = input.turnCount == null ? 0 : Number(input.turnCount);
   if (!Number.isInteger(turnCount) || turnCount < 0) {
     throw new TurnRequestError('invalid_request', 'turnCount must be a non-negative integer');

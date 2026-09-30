@@ -146,6 +146,11 @@ small, .caption { color: var(--muted); font-size: 11px; }
   border-right: 1px solid rgba(202, 218, 235, .85);
   background: linear-gradient(145deg, rgba(248, 251, 255, .96), rgba(232, 241, 251, .92));
   box-shadow: inset -1px 0 rgba(255, 255, 255, .7);
+  /* 兜底滚动：展开「更多与系统」后底栏约 500px，加上顶部固定内容，100% 缩放的
+     笔记本（视口 ~780px 高）装不下，body 又是 overflow:hidden —— 重启、退出登录
+     那一栏直接被裁在屏幕外，连滚都滚不到。平时装得下时这条不产生滚动条。 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .brand { display: flex; align-items: center; gap: 10px; margin: 0 4px 16px; color: var(--text); font-size: 18px; font-weight: 680; letter-spacing: -.3px; }
@@ -203,6 +208,9 @@ small, .caption { color: var(--muted); font-size: 11px; }
   width: min(340px, calc(100vw - 24px));
   max-height: min(70vh, 520px);
   overflow: auto;
+  /* 清单比浮层高时用户要能读到后面几个 CLI：滚到头的余量不能再链给侧栏
+     （侧栏一滚，浮层就按「离开锚点」收起了，看起来还是「滚不动」）。 */
+  overscroll-behavior: contain;
   padding: 12px 14px 10px;
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -221,6 +229,7 @@ small, .caption { color: var(--muted); font-size: 11px; }
 .cli-update-name { min-width: 0; flex: 1 1 auto; }
 .cli-update-name strong { display: block; font-size: 12.5px; }
 .cli-update-versions { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
+.cli-update-bundled { display: block; color: var(--muted); font-size: 10.5px; margin-top: 1px; }
 .cli-update-row button { flex: 0 0 auto; }
 .cli-update-log {
   margin: 6px 0 0;
@@ -301,7 +310,7 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
    viewport, and the list band used to paint over the footer instead of giving
    way. `overflow-y: auto` is what makes shrinking legitimate — the band scrolls
    rather than spilling, so the footer keeps the foot of the column. */
-#task-sidebar { min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; margin-top: 4px; }
+#task-sidebar { min-height: min(170px, 24vh); flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; margin-top: 4px; }
 /* 抬头和「＋ 新任务」留在滚动区外面：滚一份清单不该把自己的标题滚出屏幕。 */
 .task-heading, .sidebar-create { flex-shrink: 0; }
 .task-heading { margin: 0 5px 8px; }
@@ -349,7 +358,20 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
    和「它现在怎么样」是同一个问题的一半。 */
 .task-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
 .task-meta .mc-status { font-size: 11px; }
+.worktree-change-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: #98630c;
+  border: 1px solid #e8c982;
+  border-radius: 6px;
+  background: #fff7df;
+  font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .task-note { color: #8b9cad; font-size: 10px; }
+/* 全文检索的命中片段：mark 只染命中的那几个字，片段本身仍是上面那行灰色小字。 */
+.task-snippet mark { color: #0f63c6; border-radius: 3px; background: #dcecfd; }
 .sidebar-link { display: flex; justify-content: space-between; padding: 8px 10px; color: #5d7187; font-size: 11px; }
 
 .side-bottom { flex-shrink: 0; display: grid; gap: 5px; padding: 10px 8px 0; border-top: 1px solid rgba(198, 215, 233, .75); }
@@ -357,15 +379,11 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
 .global-links button { min-height: 28px; padding: 3px 5px; color: #526b83; border-color: transparent; background: transparent; text-align: left; font-size: 11px; }
 .global-links button:hover, .global-links button.active { color: #0f63c6; background: rgba(255, 255, 255, .78); }
 .side-bottom small { margin-top: 4px; line-height: 1.5; }
-/* 频次收敛：偶尔点的那批折进「更多与系统」，每天点的那批留在外面。 */
-.side-more { min-width: 0; }
-.side-more > summary { padding: 7px 9px; color: #566d85; border: 1px solid transparent; border-radius: 11px; font-size: 11px; cursor: pointer; }
-.side-more > summary:hover { color: #0f63c6; background: rgba(255, 255, 255, .78); }
-.side-more[open] > summary { color: #0f63c6; border-color: #d7e7f8; background: rgba(255, 255, 255, .9); }
-/* 语言切换：贴在版本行下面那条底栏里，样式照着 .side-more > summary 抄 —— 它
-   和「更多与系统」是同一层的入口，长得不该像第五个设置按钮。文案不写死在这里：
-   i18n.js 的 .lang-toggle 规则会把它刷成 t('language')（中/EN ↔ EN/中）。 */
-.side-lang { padding: 7px 9px; color: #566d85; border: 1px solid transparent; border-radius: 11px; font-size: 11px; text-align: left; cursor: pointer; }
+/* 版本检查 + 语言共用一行。版本读数吃剩余宽度，语言只占自己那颗短按钮；文案仍
+   由 i18n.js 的 .lang-toggle 刷成「中/EN ↔ EN/中」。 */
+.side-version-line { min-width: 0; display: flex; align-items: stretch; gap: 5px; margin-top: 4px; }
+.side-version-line .ops-version { min-width: 0; flex: 1; margin-top: 0; }
+.side-lang { flex: 0 0 auto; align-self: stretch; min-width: 50px; padding: 6px 7px; color: #566d85; border: 1px solid transparent; border-radius: 10px; font-size: 11px; text-align: center; cursor: pointer; }
 .side-lang:hover { color: #0f63c6; background: rgba(255, 255, 255, .78); }
 .side-more-body { display: grid; gap: 6px; padding: 6px 0 2px; }
 #air-ops-status:empty { display: none; }
@@ -448,6 +466,23 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
   line-height: 1.6;
   white-space: pre-wrap;
 }
+.ops-progress { margin-top: 14px; }
+.ops-progress-summary { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.ops-progress-bar { height: 5px; margin: 7px 0 10px; overflow: hidden; border-radius: 999px; background: var(--well); }
+.ops-progress-bar > span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--accent); transition: width .4s ease; }
+.ops-progress.is-failed .ops-progress-bar > span { background: var(--danger); }
+.ops-steps { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.ops-step { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.ops-step-icon { flex: 0 0 14px; text-align: center; }
+.ops-step-name { flex: 1; min-width: 0; }
+.ops-step-meta { font-size: 11px; font-variant-numeric: tabular-nums; }
+.ops-step.is-done .ops-step-icon { color: var(--green); }
+.ops-step.is-running { color: var(--text); font-weight: 600; }
+.ops-step.is-running .ops-step-icon { color: var(--accent); animation: ops-step-spin 1.2s linear infinite; }
+.ops-step.is-failed, .ops-step.is-failed .ops-step-icon { color: var(--danger); }
+.ops-step.is-skipped .ops-step-name, .ops-step.is-pending .ops-step-name { opacity: .6; }
+@keyframes ops-step-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ops-step.is-running .ops-step-icon { animation: none; } }
 .ops-downloads { display: grid; gap: 9px; margin-top: 14px; }
 .ops-download { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--well); }
 .ops-download > div { min-width: 0; flex: 1; display: grid; }
@@ -601,7 +636,12 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #notice:empty { display: none; }
 #task-layout { min-height: 0; flex: 1; display: flex; }
 #task-content { min-width: 0; flex: 1; display: flex; flex-direction: column; position: relative; overflow: hidden; background: linear-gradient(145deg, #fff, #f7faff); }
-#empty { min-height: 0; flex: 1; overflow: auto; padding: 28px 34px 34px; color: var(--muted); }
+/* 目录首页是一列卡片，整列自己滚（代码卡在任务面板下面，滚下去看）。唯一要吃高度的
+   是任务面板：它不吃「剩余高度」，而是由 air-task-pager.js 按「滚动口可见高 − 面板上
+   面那一段 − 输入框占掉的那条带子」算出一个像素值写进 --directory-task-panel-h
+   （上面那一段里有统计卡、配置卡，它们是出现/隐藏的，写成 CSS 里的 dvh 减常数一改就
+   错位）。 */
+#empty { min-height: 0; flex: 1; overflow: auto; padding: 28px 34px 24px; color: var(--muted); }
 /* ── 目录视图切换：Chat（默认）／ Terminal ─────────────────────────────────────
    终端属于每个目录，摆在目录页最前面。两类东西**互相让位**，不是排成一列：
    终端模式下 Chat 那一整块（统计卡 / 最近任务 / Git / 新任务输入框）整块收起，
@@ -609,9 +649,15 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-mode { display: flex; gap: 3px; width: fit-content; margin: 0 0 16px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); }
 .directory-mode button { min-height: 30px; padding: 0 16px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .directory-mode button[aria-selected="true"] { background: var(--panel); color: var(--accent-strong); box-shadow: 0 1px 4px #35577d14; }
-.directory-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
+.directory-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
 .directory-toolbar .directory-mode { margin: 0; }
-#directory-memo { flex-shrink: 0; }
+/* 「备忘」「本目录产物」「本目录定时任务」是一组 —— 都是这个目录自己的附加入口
+   （/memo.html、/artifacts.html 和 air-dir-schedules.js 那层弹层），该挨在一起贴住
+   右边界。以前这里靠 space-between：三个孩子正好被摊成左中右三点，备忘孤零零悬在
+   工具条正中。margin-left:auto 把这一组推到一起，谁左谁右由 DOM 顺序定（备忘在前，
+   产物其次，定时任务最右 —— 两个模块各自 after() 挂上去）。
+   窄屏装不下这四个（切换器 + 三颗）：见本文件里 ≤560px 那条让它们换行的规则。 */
+#directory-memo { flex-shrink: 0; margin-left: auto; }
 #directory-terminals { display: none; }
 #empty.is-terminal-mode #directory-terminals { display: block; }
 #empty.is-terminal-mode > #setup-card,
@@ -622,33 +668,132 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-terminal-new { min-height: 36px; margin: 0 0 16px; padding: 0 14px; border: 1px solid #bcd8f2; border-radius: 10px; background: var(--blue-soft); color: var(--accent-strong); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .directory-terminal-new:disabled { opacity: .55; cursor: default; }
 #directory-terminal-list { display: grid; gap: 8px; }
-.directory-terminal-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, .86); color: var(--text); text-decoration: none; }
+/* 一行终端 = 打开它的链接 + 一颗删除（`.task-delete`，同目录任务行那颗）。外层是
+   容器而不是 <a>：删除按钮不能嵌在链接里，否则点删除会先跟着跳走。 */
+.directory-terminal-row { display: flex; align-items: stretch; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, .86); }
 .directory-terminal-row:hover { border-color: #9cc4ea; }
+.directory-terminal-open { min-width: 0; flex: 1; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px; color: var(--text); text-decoration: none; }
+.directory-terminal-open:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .directory-terminal-mark { color: var(--faint); font-family: ui-monospace, monospace; font-size: 12px; }
-.directory-terminal-row strong { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
-.directory-terminal-row small { color: var(--muted); font-size: 11px; }
+/* 一行两排：上排「状态点 + 名字」，下排「CLI · 状态 · 多久没动」，坏态再多一排说怎么办。
+   `strong` 不再是 <a> 的直接 flex 子级，省略号那套跟着搬进 `.directory-terminal-title`。 */
+.directory-terminal-text { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.directory-terminal-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.directory-terminal-title strong { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
+/* 状态点：绿 = 进程在，灰 = 进程退了，红 = 托管路由失效。颜色只在这里定，语义在
+   air-directory-mode.js 的 STATE_LABEL_KEY / STATE_HINT_KEY（服务端折好的那一列取值）。 */
+.directory-terminal-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.directory-terminal-dot[data-state="running"] { background: var(--green); }
+.directory-terminal-dot[data-state="route_dead"] { background: var(--danger); }
+.directory-terminal-meta { color: var(--muted); font-size: 11px; }
+.directory-terminal-hint { color: var(--warning); font-size: 11px; }
+.directory-terminal-hint[data-state="route_dead"] { color: var(--danger); }
+/* 重命名 / 复制 id / 重启三颗都借 `.task-delete` 的尺寸，但它们是中性动作（不是危险
+   动作）：灰色、悬停变深。选择器比 `.task-delete:hover` 多一层，免得被那条红配色盖掉。 */
+.directory-terminal-row .terminal-rename,
+.directory-terminal-row .terminal-copy,
+.directory-terminal-row .terminal-restart { color: var(--muted); font-size: 13px; }
+.directory-terminal-row .terminal-rename:hover,
+.directory-terminal-row .terminal-copy:hover,
+.directory-terminal-row .terminal-restart:hover,
+.directory-terminal-row .terminal-rename:focus-visible,
+.directory-terminal-row .terminal-copy:focus-visible,
+.directory-terminal-row .terminal-restart:focus-visible { color: var(--text); border-color: var(--line); background: var(--panel-soft); }
 .directory-terminal-empty { margin: 0; padding: 16px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 12.5px; text-align: center; }
-#directory-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
+/* 「＋ 新终端」不再自己长一层选择 UI：它开的是 chat 那个配置对话框
+   （`.air-config-dialog`，air-task-settings.js），样式也只有那一份。 */
+#directory-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
 /* 统计卡是这一页的抬头，不是正文：扫一眼知道这个目录有多少活在跑就够了，
    再往下就是任务列表。所以它们按「一行字」而不是「一张卡片」来做 —— 填充、
    色条和数字都收了一档，说明文字也从继承来的 14px 落到 10.5px（原来它比标题
    还大，是这张卡显胖的主要原因）。 */
 .directory-stat { min-width: 0; padding: 10px 12px; border: 1px solid #dbe6f1; border-radius: 12px; background: rgba(255, 255, 255, .86); box-shadow: 0 6px 20px #35577d08; }
+.directory-stat[type='button'] { font: inherit; text-align: left; cursor: pointer; }
+.directory-stat[type='button']:hover { border-color: #b7c9db; background: rgba(255, 255, 255, 1); }
+.directory-stat[type='button']:focus-visible { outline: 2px solid #4d9bea; outline-offset: 2px; }
+.directory-stat[type='button']:active { transform: translateY(1px); }
 .directory-stat::before { content: ""; display: block; width: 18px; height: 3px; margin-bottom: 6px; border-radius: 4px; background: #aebfd0; }
 .directory-stat.blue::before { background: #4d9bea; }
 .directory-stat.green::before { background: #43b88a; }
+.directory-stat.amber::before { background: #e3b341; }
+.directory-stat.red::before { background: #da3633; }
 .directory-stat span, .directory-stat small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .directory-stat span { color: #6d8094; font-size: 10px; }
 .directory-stat strong { display: block; margin: 2px 0; color: #2d4d68; font-size: 19px; line-height: 1.1; }
 .directory-stat small { color: #8a9aab; font-size: 10.5px; }
-.directory-task-panel { overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
-.directory-task-panel .section-heading { padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
+/* ── Worktree 生命周期（air-worktrees.js）：目录代码卡的第二行 ───────────────
+   光报「有几个 worktree」看不出这个数是怎么长的：本地真占着磁盘的、已经睡下只剩
+   一条分支引用的、计划了还没落地的，是三种完全不同的状态，而用户要判断的正是
+   「要不要现在腾地方」。所以这块把三个数分开摆，右边跟一个「现在回收」。
+   它跟上面那行（主检出的提交与工作区）说的是同一件事 —— 这个目录的代码现在
+   什么状态 —— 所以住在同一张卡里，由一条发丝线分上下，小一号的标题行 + 一行
+   说明 + `margin-left: auto` 顶到右端的回收按钮。三块（标题 / 说明 / 按钮）都会
+   自己换行，窄屏上不会互相挤。 */
+#directory-worktrees { border-top: 1px solid #e8eef5; }
+#directory-worktrees .section-heading { padding: 10px 15px 0; border-bottom: 0; }
+#directory-worktrees .section-heading strong { font-size: 11.5px; }
+#directory-worktrees .section-heading span { color: var(--muted); font-size: 11px; }
+#directory-worktree-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 5px 15px 13px; }
+#directory-worktrees p { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+#directory-worktrees .worktree-policy { color: var(--faint); }
+/* ── 目录首页「本目录产物」入口（public/air-artifacts.js）──────────────────
+   清单本身是**一张单独的页面**（public/artifacts.html，样式在 artifacts.css）：
+   这里只剩那颗 window.open 的按钮，跟旁边的「备忘」一样只是个入口，不再是页内
+   展开的面板（展开会把「最近任务 / Git / 新任务输入框」整段推走，而且没有自己的
+   地址）。可见性跟「备忘」走 —— 模块用 MutationObserver 盯 #directory-memo.hidden，
+   理由写在那个模块里。 */
+#directory-artifacts { flex-shrink: 0; }
+/* ── 目录首页「本目录定时任务」入口（public/air-dir-schedules.js）──────────────
+   侧栏那颗「定时任务」是**全局**中心（这台机器上排了哪些活），这颗只看当前这个
+   目录。点开是一层页内弹层，卡片复用上面 .schedule-* 那一族（跟中心里长一样），
+   这里只管弹层这件壳：抬头、一行摘要、列表的滚动区、底下两颗出口。
+   换行那条见下面 ≤560px：切换器 + 三颗入口在手机上排不下，切换器独占一行、
+   三颗平分第二行（这就是「移动端按移动的布局区分展示」那件事）。 */
+#directory-schedules { flex-shrink: 0; }
+.dir-schedule-dialog { width: calc(100% - 32px); max-width: 720px; padding: 0; background: #fbfdff; }
+.dir-schedule-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 21px 24px 15px; border-bottom: 1px solid #e1eaf3; background: rgba(251, 253, 255, .96); }
+.dir-schedule-head h2 { margin-top: 3px; color: #294760; font-size: 17px; line-height: 1.4; overflow-wrap: anywhere; }
+#dir-schedule-close { min-width: 38px; padding: 4px; color: #718398; border-color: transparent; background: transparent; font-size: 23px; }
+.dir-schedule-summary, .dir-schedule-status { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 12px 24px 0; font-size: 11px; }
+.dir-schedule-summary span { color: #58718b; }
+.dir-schedule-summary span.healthy { color: #247b5b; }
+.dir-schedule-summary span.warning { color: #a4512b; }
+.dir-schedule-status { color: #247b5b; }
+.dir-schedule-status.pending { color: #8b9bb0; }
+.dir-schedule-status.error { color: #b34128; }
+.dir-schedule-status:empty { display: none; }
+.dir-schedule-list { display: grid; gap: 12px; max-height: min(62dvh, 640px); padding: 14px 24px 4px; overflow: auto; overscroll-behavior: contain; }
+/* 弹层里的卡片不再自己投影：底下那层已经是阴影里的一块，卡再投影会像两张纸。 */
+.dir-schedule-list .schedule-card { box-shadow: none; }
+.dir-schedule-foot { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 24px 18px; border-top: 1px solid #e1eaf3; }
+.dir-schedule-foot button { min-height: 36px; }
+/* 切换器 + 三颗入口一行要 450px 出头（实测：切换器约 150，备忘约 72，
+   本目录产物约 110，定时任务约 96，间距 24），手机上必然溢出。切点 560 是给
+   页边距留出余量的位置：再宽一点它自己排得下，再窄一点就必须让位。 */
+@media (max-width: 560px) {
+  .directory-toolbar { flex-wrap: wrap; row-gap: 8px; }
+  .directory-toolbar .directory-mode { flex: 1 1 100%; }
+  .directory-toolbar > #directory-memo,
+  .directory-toolbar > #directory-artifacts,
+  .directory-toolbar > #directory-schedules { flex: 1 1 0; min-width: 0; margin-left: 0; padding: 0 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+}
+.worktree-reclaim { min-height: 30px; margin-left: auto; padding: 0 14px; border: 1px solid #bcd8f2; border-radius: 9px; background: var(--blue-soft); color: var(--accent-strong); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.worktree-reclaim:disabled { opacity: .5; cursor: default; }
+/* ── 当前目录的任务面板 ────────────────────────────────────────────────────
+   一张三段的卡：抬头、筛选条、分页条都固定，中间那份清单吃掉剩下的高度并在自己内部
+   滚（align-content: start：行保持自己的高度，多出来的空间不会按行等分）。整张卡的高度
+   由 air-task-pager.js 写进 --directory-task-panel-h；JS 没上线时退回 auto —— 那时候
+   面板按内容长、整页滚，功能不丢。手机上高度交回 760px 那条断点（清单不抢高度）。 */
+.directory-task-panel { display: flex; flex-direction: column; height: var(--directory-task-panel-h, auto); overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
+.directory-task-panel .section-heading { flex: 0 0 auto; padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
 .directory-task-heading-actions { display: flex; align-items: center; gap: 10px; }
 .task-sort-switch { display: inline-flex; padding: 2px; border: 1px solid #dce6ef; border-radius: 9px; background: #f3f7fb; }
 .task-sort-switch button { min-height: 0; padding: 3px 8px; border: 0; border-radius: 6px; background: transparent; color: #7a8c9e; font-size: 9.5px; line-height: 1.35; }
 .task-sort-switch button[aria-pressed="true"] { background: #fff; color: #2e73b8; box-shadow: 0 1px 4px #27496814; font-weight: 650; }
-#directory-task-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.directory-task-panel.expanded #directory-task-list { height: min(390px, 48dvh); overflow-y: auto; overscroll-behavior: contain; }
+/* 清单自己滚、自己撑满：`min-height: 0` 是让它在 flex 列里真的能被压小（默认的
+   min-height: auto 会顶回去），align-content 是防回归的保险 —— 将来谁给它一个固定
+   高度也不会把行拉开。 */
+#directory-task-list { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; overflow-y: auto; overscroll-behavior: contain; }
 .directory-task-row { min-width: 0; display: flex; align-items: stretch; padding: 0; border: 0; border-right: 1px solid #e8eef5; border-bottom: 1px solid #e8eef5; border-radius: 0; background: transparent; text-align: left; }
 .directory-task-row:nth-child(2n) { border-right: 0; }
 .directory-task-row:hover, .directory-task-row:focus-within { background: #f2f8fe; }
@@ -660,12 +805,20 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-task-mark { color: #3b8edc; font-size: 18px; }
 .directory-task-empty { grid-column: 1 / -1; padding: 26px; text-align: center; font-size: 11px; }
 .directory-task-controls { grid-template-columns: minmax(0, 1fr) auto; margin: 0; padding: 10px 14px; border-bottom: 1px solid #e8eef5; background: #f8fbfe; }
-/* 列表是截过的（air.js 的 recentRowLimit），所以底下必须留一条明路：这一页只
-   放得下最近那几条，完整的那份在控制台。数字跟着行数走，别让人以为只剩这些。 */
-#directory-task-more { display: block; width: 100%; padding: 11px 14px; border: 0; border-top: 1px solid #e8eef5; border-radius: 0 0 15px 15px; background: transparent; color: #3b8edc; font-size: 11px; text-align: center; }
-#directory-task-more:hover { background: #f2f8fe; }
-/* 目录的 Git 状态面板：与任务面板同一张卡的语法，但内容是「代码现在什么
-   状态」—— 未推送提交、主检出的脏文件、可展开的提交记录。 */
+/* 分页条：面板的第三段（抬头 / 筛选 / 分页三段固定，中间那份清单自己滚）。一页 20 条
+   （两列十行）由 air-task-pager.js 定，只有一页时整条收起 —— 所以它不是常驻的页脚，
+   而是「翻得动才出现」的一条。
+   `flex-direction: row` 必须显式写：全局那条 `nav { flex-direction: column }` 是按元素名
+   命中的，这里只写 display 的话，类选择器赢得过 nav 的 display、赢不过它没写的
+   flex-direction —— 三颗会竖着摞成一条一百多像素高的「页脚」，正好把清单挤没
+   （和 #task-pins 那条同一个坑）。 */
+.directory-task-pager { display: flex; flex: 0 0 auto; flex-direction: row; align-items: center; justify-content: center; gap: 10px; padding: 7px 14px; border-top: 1px solid #e8eef5; background: #f8fbfe; }
+.directory-task-pager button { min-height: 28px; padding: 4px 12px; font-size: 11px; }
+.directory-task-pager button:disabled { opacity: .45; cursor: default; }
+#directory-task-page { color: #6d8094; font-size: 11px; white-space: nowrap; }
+/* 目录的代码状态面板：与任务面板同一张卡的语法，但内容是「代码现在什么
+   状态」—— 未推送提交、主检出的脏文件，下面再跟着这个目录的 worktree 生命周期
+   （`#directory-worktrees`，见上面那条）。 */
 .directory-git-panel { overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
 .directory-git-panel .section-heading { padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
 #directory-git-brief { display: grid; gap: 8px; padding: 12px 15px; }
@@ -673,16 +826,16 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-git-chip { padding: 4px 10px; border-radius: 13px; background: #eef4fa; color: #47607a; font-size: 11px; }
 .directory-git-chip.warn { background: #fdf3e4; color: #9a6b1f; }
 .directory-git-chip.ok { background: #e9f7f0; color: #2c7d5c; }
-/* 「↑ N 个提交未推送」这颗是能按的（点开确认 → push）。样子跟旁边几颗一样是
-   胶囊，只是把「按得下去」画出来：手型、hover 深一档、focus 有圈，右边再挂一个
-   浅一点的「推送」。全局那条 button 的 min-height/padding/border 得清掉，否则
-   它会比旁边的胶囊高一截。 */
-.directory-git-chip.is-action { display: inline-flex; align-items: center; min-height: 0; padding: 4px 11px;
-  border: 1px solid #f0dcbc; font-size: 11px; line-height: 1.4; }
-.directory-git-chip.is-action:hover { border-color: #e4c184; background: #fbe9cf; color: #85591a; }
-.directory-git-chip.is-action:focus-visible { outline: 2px solid #8fc3f4; outline-offset: 2px; }
+/* 「↑ N 个提交未推送」这颗点开确认后 push，「● N 个未提交文件」这颗点开就地展开
+   文件清单 —— 两颗都能按，样子跟旁边几颗一样是胶囊，只是把「按得下去」画出来：
+   手型、hover 深一档、focus 有圈，右边再挂一个浅一点的提示词。全局那条 button 的
+   min-height/padding/border 得清掉，否则它会比旁边的胶囊高一截。 */
+.directory-git-chip.is-action, .directory-git-chip.is-clickable { display: inline-flex; align-items: center; min-height: 0; padding: 4px 11px;
+  border: 1px solid #f0dcbc; font-size: 11px; line-height: 1.4; cursor: pointer; }
+.directory-git-chip.is-action:hover, .directory-git-chip.is-clickable:hover { border-color: #e4c184; background: #fbe9cf; color: #85591a; }
+.directory-git-chip.is-action:focus-visible, .directory-git-chip.is-clickable:focus-visible { outline: 2px solid #8fc3f4; outline-offset: 2px; }
 .directory-git-chip-hint { margin-left: 6px; opacity: .75; }
-.directory-git-chip.is-action:hover .directory-git-chip-hint { opacity: .9; }
+.directory-git-chip.is-action:hover .directory-git-chip-hint, .directory-git-chip.is-clickable:hover .directory-git-chip-hint { opacity: .9; }
 .directory-git-actions { display: flex; gap: 8px; }
 .directory-git-actions button { min-height: 28px; padding: 4px 10px; font-size: 11px; }
 .directory-git-files { border: 1px solid #f0d9c8; border-radius: 11px; background: #fdf7f1; }
@@ -690,23 +843,16 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-git-files ul { margin: 0; padding: 2px 12px 10px 26px; color: #6d5a45; font-size: 10.5px; line-height: 1.7; word-break: break-all; }
 .directory-git-empty { padding: 18px; color: #8a9aab; font-size: 11px; text-align: center; }
 .directory-git-empty.error { color: #a6533c; }
-#directory-git-list { max-height: min(390px, 48dvh); overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid #e8eef5; }
-.directory-git-commit + .directory-git-commit { border-top: 1px solid #edf2f8; }
-.directory-git-commit-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 4px 10px; width: 100%; padding: 9px 15px; border: 0; background: transparent; text-align: left; }
-.directory-git-commit-head:hover { background: #f2f8fe; }
-.directory-git-commit-copy { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
-.directory-git-commit-copy code { color: #3b8edc; font-size: 10px; }
-.directory-git-commit-copy strong { overflow: hidden; color: #35536d; font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; }
-.directory-git-commit-head time { color: #8c9aaa; font-size: 9.5px; }
-.directory-git-commit-head small { grid-column: 1 / -1; color: #8c9aaa; font-size: 9.5px; }
-.directory-git-commit-detail { border-top: 1px dashed #e3ebf3; background: #f8fbfe; }
-.directory-git-stat { padding: 8px 15px 0; color: #6d8094; font-size: 10px; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.directory-git-diff { margin: 0; padding: 10px 15px 14px; color: #43596e; font-size: 10px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 /* The new-task composer is the composer module (composer.css) in its panel
    placement; only where it sits in the column is decided here — floating a
    little above the bottom edge so it reads as part of the conversation column
-   rather than a bar glued to the viewport. */
-#quick-task-form { position: sticky; bottom: 20px; margin-top: 18px; }
+   rather than a bar glued to the viewport. 它是 sticky 的：贴在滚动口下沿、内容从它底下
+   滚过去。滑到最底下时，它上面那条**上边距**就是最后一张卡与它之间的净空 —— 它自己
+   的排版位置贴着列的尾巴，视觉上却比那个位置高 20px（sticky 的 bottom 偏移），所以
+   `margin-top` 得比那 20px 明显大一些，最后那张卡的最后一行才不会压在它底下。
+   `flex: 0 0 auto` 是给「＋ 新任务」弹窗那一列用的（那里它是普通 flex 孩子），
+   #empty 这一列里它是普通块，那一条不生效。 */
+#quick-task-form { position: sticky; bottom: 20px; flex: 0 0 auto; margin-top: 30px; }
 /* 折叠态（air-quick-fold.js）。这一条细杠是卡片的第一个孩子，所以整个状态只要
    两句话：折起来时只留它，展开时只藏它 —— 不用逐块开关 aux 带、输入框和动作行。
    杠自己不是内容，是折叠的开关：aria-expanded 说的是里面那张卡片在不在。 */
@@ -732,7 +878,17 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .quick-task-goal-limits input { width: 84px; min-height: 26px; padding: 3px 6px; font-size: 11px; }
 /* Dropping files anywhere on the card reads as the card lighting up. */
 #quick-task-form.is-dropping { border-color: #8fbde8; box-shadow: 0 10px 30px #3155761f, 0 0 0 3px #dcecfb; }
-#quick-task-status { min-width: 0; flex: 1; overflow: hidden; color: #718499; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+#quick-task-status { min-width: 0; flex: 1; color: #718499; font-size: 10px; white-space: normal; }
+.quick-task-actions:has(#quick-task-status.capacity-error) { flex-wrap: wrap; }
+#quick-task-status.capacity-error { order: 9; flex-basis: 100%; padding: 8px; border-radius: 8px; background: #fff0eb; color: #9a4937; font-size: 11px; }
+.quick-task-retention { align-self: flex-end; margin: 4px 12px 8px; padding: 2px 6px; border: 0; background: transparent; color: #326b9b; font-size: 10px; cursor: pointer; }
+.task-retention-dialog { width: min(560px, calc(100vw - 24px)); max-height: min(80vh, 700px); padding: 20px; border: 1px solid #dbe6ef; border-radius: 18px; background: #fbfdff; color: #26394b; }
+.task-retention-dialog::backdrop { background: #172b4259; }
+.task-retention-dialog .section-heading { display: flex; justify-content: space-between; align-items: center; }
+.task-retention-dialog p { line-height: 1.5; font-size: 12px; }
+.task-retention-list { max-height: 42vh; overflow: auto; font-size: 12px; }
+.task-retention-list > div { padding: 7px 4px; border-bottom: 1px solid #e8eef4; }
+.task-retention-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 /* ── 对话浮层 ────────────────────────────────────────────────────────────────
    对话是「浮在目录详情之上的一层」，不是「换掉目录详情的那一页」。#empty 一直在
    下面（不 hidden、不卸载）。桌面默认是一张四周留缝的完整浮卡：边缘透出底页，
@@ -852,6 +1008,16 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .admin-stat span { color: #6a7d91; font-size: 9.5px; line-height: 1.2; }
 .admin-stat strong { margin: 2px 0 3px; color: #2d4b65; font-size: 19px; line-height: 1; }
 .admin-stat small { min-width: 0; overflow: hidden; color: #7c8da0; font-size: 10px; line-height: 1.35; white-space: nowrap; text-overflow: ellipsis; }
+/* 小字一行放不下时走跑马灯（air-admin.js 的 fitMarquee 量出溢出量写进
+   --marquee-shift）。卡片是 align-items:flex-start 的 flex 列，子项默认按内容撑宽，
+   所以这里要把它钉在卡宽以内，否则字直接溢出到隔壁卡上。 */
+.admin-stat small.admin-stat-detail { align-self: stretch; max-width: 100%; }
+.admin-stat .admin-stat-detail-text { display: inline-block; color: inherit; font: inherit; line-height: inherit; }
+.admin-stat small.marquee { text-overflow: clip; -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 6px), transparent 100%); mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 6px), transparent 100%); }
+.admin-stat small.marquee .admin-stat-detail-text { padding: 0 6px; animation: admin-stat-marquee var(--marquee-duration, 6s) ease-in-out infinite alternate; }
+.admin-stat:hover small.marquee .admin-stat-detail-text { animation-play-state: paused; }
+@keyframes admin-stat-marquee { 0%, 15% { transform: translateX(0); } 85%, 100% { transform: translateX(var(--marquee-shift, 0)); } }
+@media (prefers-reduced-motion: reduce) { .admin-stat small.marquee .admin-stat-detail-text { animation: none; } }
 .admin-stat::before { content: ""; width: 18px; height: 2px; margin-bottom: 5px; border-radius: 5px; background: #adc4da; }
 .admin-stat.blue::before { background: #4d9bea; }
 .admin-stat.green::before { background: #43b88a; }
@@ -954,6 +1120,23 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .air-doc-actions button, .air-doc-actions a { min-height: 29px; padding: 4px 7px; color: #56718b; border: 1px solid transparent; border-radius: 8px; background: transparent; font-size: 9px; }
 .air-doc-actions button:hover, .air-doc-actions a:hover { border-color: #d9e5f0; background: #f5f9fd; }
 .air-doc-actions .danger { color: #a6533c; }
+/* ── 服务与文档：排列方式与永久保留 ────────────────────────────────────────
+   两件事回答的是两个问题，界面上也分成两处：
+   `.air-doc-tag.permanent`（🔒 永不回收）是**状态**，和 `.air-doc-tag.pin`
+   （📌 只是排到最前）并列摆在标题行，颜色分开 —— 一颗是承诺，一颗是排序；
+   `.air-docs-scope` 是面板顶部的排列方式切换（按时间 / 按目录），形状照抄目录
+   首页那道 Chat / Terminal 切换，但它是这一页自己的控件，不共用那个类。 */
+.air-doc-tag.permanent { color: #7a5a1f; background: #fdf3dd; }
+.air-docs-scope { display: flex; gap: 3px; width: fit-content; margin: 12px 17px 0; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); }
+.air-docs-scope button { min-height: 30px; padding: 0 16px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.air-docs-scope button[aria-selected="true"] { background: var(--panel); color: var(--accent-strong); box-shadow: 0 1px 4px #35577d14; }
+/* 按目录视图：一行一条的是同一张卡片（.air-doc-card），只是被分进了区块。 */
+.air-doc-group { display: grid; border-bottom: 1px solid #e6edf4; }
+.air-doc-group:last-child { border-bottom: 0; }
+.air-doc-group-head { display: flex; align-items: baseline; gap: 8px; padding: 11px 17px 7px; border-bottom: 1px solid #e6edf4; background: #f7fafd; }
+.air-doc-group-head strong { color: #3f6e97; font-size: 11px; }
+.air-doc-group-head small { min-width: 0; overflow: hidden; color: var(--muted); font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+.air-doc-group .air-doc-card:last-child { border-bottom: 0; }
 
 /* ── 敏感信息（保险箱）：Air 原生面板 ────────────────────────────────── */
 /* 一行是一条「会按同名环境变量注入子进程」的配置，所以行里最重的是名字（等宽）；
@@ -1013,6 +1196,15 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .air-provider-card-actions span { margin-left: auto; color: #8997a6; font-size: 8px; }
 .air-provider-advanced { scroll-margin-top: 16px; }
 .provider-dialog { max-width: 700px; }
+.air-provider-refs-dialog .air-provider-ref-group { margin-top: 12px; padding: 10px 12px; border: 1px solid #e1eaf3; border-radius: 12px; background: #fff; }
+.air-provider-ref-group header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.air-provider-ref-group header strong { color: #2c4f6d; font-size: 12px; }
+.air-provider-ref-group header small { color: #7c8d9f; font-size: 10px; }
+.air-provider-ref-group ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 5px; max-height: 180px; overflow: auto; }
+.air-provider-ref-group li { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; color: #48657f; font-size: 11px; }
+.air-provider-ref-group li span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.air-provider-ref-group li code { flex: 0 1 auto; min-width: 0; overflow: hidden; color: #8494a4; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+.air-provider-ref-warn { margin-top: 12px; color: #a6533c; font-size: 11px; }
 #air-provider-close { min-width: 38px; padding: 4px; color: #718398; border-color: transparent; background: transparent; font-size: 23px; }
 .provider-alias-grid { display: grid; grid-template-columns: 62px minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 7px; margin-top: 7px; color: #8494a4; font-size: 9px; }
 .provider-alias-row strong { color: #5b7085; font-size: 10px; }
@@ -1204,6 +1396,28 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .schedule-state small { text-align: right; }
 .schedule-prompt { min-height: 38px; display: -webkit-box; overflow: hidden; color: #66798d; font-size: 11px; line-height: 1.65; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .schedule-actions { display: flex; align-items: center; gap: 6px; padding-top: 11px; border-top: 1px solid #e6edf5; }
+.schedule-runs { border: 1px solid #e3ecf6; border-radius: 8px; background: #f8fbff; }
+.schedule-runs > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; color: #526d88; font-size: 10px; cursor: pointer; }
+.schedule-runs-badge { min-width: 18px; padding: 1px 6px; border-radius: 9px; background: #e6f0fb; color: #146dcc; text-align: center; font-size: 10px; }
+.schedule-runs-empty { padding: 0 10px 8px; color: #8b9bb0; font-size: 10px; }
+.schedule-runs-list { margin: 0; padding: 0 10px 6px; list-style: none; }
+.schedule-run { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: #526d88; font-size: 10px; }
+.schedule-run time { flex: 0 0 auto; color: #8b9bb0; font-variant-numeric: tabular-nums; }
+.schedule-run-source { flex: 0 0 auto; padding: 0 5px; border-radius: 5px; background: #eef4fa; color: #6c8199; }
+.schedule-run-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schedule-run.error .schedule-run-status { color: #ad4d36; }
+.schedule-runs-hint { display: block; padding: 0 10px 8px; color: #a3b1c2; font-size: 10px; }
+/* 脚本任务那一格：没有固定 Air 任务可进去，摆的是命令本身和上次退出码（服务端
+   toView 里的 kind='script' 分支）。.schedule-task-mark 直接复用上面那颗方块。 */
+.schedule-script { min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 11px 12px; border: 1px solid #cfe2f5; border-radius: 14px; background: #f1f7fe; }
+.schedule-script-head { display: flex; align-items: center; gap: 11px; color: #6c8199; font-size: 10px; }
+.schedule-script-head .schedule-task-mark { width: 22px; height: 22px; flex: 0 0 22px; border-radius: 8px; font-size: 11px; }
+.schedule-script-command { display: block; min-width: 0; overflow: hidden; color: #2d5273; font-size: 11px; line-height: 1.6; text-overflow: ellipsis; white-space: nowrap; }
+.schedule-script-exit { color: #2c7a60; font-size: 10px; }
+.schedule-script-exit.error { color: #ad4d36; }
+/* 一次脚本运行印出来的东西：另起一行铺满，别挤在那条 flex 里。 */
+.schedule-run-output { flex: 1 0 100%; max-height: 96px; margin: 2px 0 4px; padding: 6px 7px; overflow: auto; color: #526d88; border-radius: 6px; background: #eef4fa; font-size: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.schedule-script-line { display: block; min-height: 0; -webkit-line-clamp: none; white-space: pre-wrap; overflow-wrap: anywhere; }
 .schedule-actions span { flex: 1; }
 .schedule-actions button { min-height: 31px; padding: 5px 8px; color: #526d88; border-color: transparent; background: transparent; font-size: 10px; }
 .schedule-actions button:hover { border-color: #d7e5f2; background: #f4f8fd; }
@@ -1236,7 +1450,16 @@ dialog fieldset button { margin-top: 9px; color: #a04936; }
 dialog summary { cursor: pointer; padding: 10px 0; color: #526d88; font-size: 12px; }
 .form-row { display: flex; gap: 13px; }
 .form-row label { min-width: 0; flex: 1; }
-dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; }
+/* 服务端的失败说明是多行的（例如缺 macOS 命令行工具时那段指引），默认的空白
+   折叠会把它挤成一坨。pre-line 只保留换行，不影响单行报错。 */
+dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; white-space: pre-line; }
+/* 「一键修复」按钮：错误文案下面单独一行，按钮 + 结果状态并排。 */
+.air-fix-action { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
+.air-fix-action button { flex: none; }
+.air-fix-status { color: var(--muted); font-size: 12px; line-height: 1.6; }
+/* A filesystem path the user must paste into System Settings: it has to wrap
+   rather than overflow, and stay selectable as one unit. */
+.air-fix-detail:not(:empty) { flex-basis: 100%; font-size: 12px; word-break: break-all; user-select: all; color: var(--muted); }
 
 /* 侧栏「＋ 新任务」的弹窗：它自己不带表单，只是把 #empty 里那个统一输入框模块
    搬进来（air.js 的 openNewTaskComposer）。所以这里只安排两件事 —— 外壳比默认
@@ -1276,10 +1499,8 @@ dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; }
 .air-sub-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
 .air-sub-hint { margin-top: 7px; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .air-auto-host { margin-top: 11px; }
-.air-auto-host.multicc-auto-editor { margin-bottom: 0; border-color: #d8e6f4; border-radius: 12px; background: #f8fbff; }
-dialog .air-auto-host label { margin-top: 0; }
-.air-auto-host .multicc-auto-editor-row { border-color: #e1eaf3; }
-.air-auto-host .multicc-auto-editor input[type="number"], .air-auto-host .multicc-auto-editor select { margin-top: 0; background: #fff; border-color: #d5e2ef; }
+/* The editor scopes and themes itself from Air's variables; only spacing is Air's call. */
+.air-auto-host.multicc-auto-editor { margin-bottom: 0; }
 .air-runtime-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(170px, .8fr); gap: 12px; }
 dialog .air-config-field { min-width: 0; margin: 0; color: #5f7286; font-size: 10px; }
 .air-config-field > span { display: block; margin-bottom: 5px; }
@@ -1292,46 +1513,36 @@ dialog .air-config-field input { margin-top: 7px; }
 .air-config-footer > div { display: flex; gap: 8px; }
 .air-config-footer button { min-width: 86px; }
 
-/* ── 控制台：从左侧展开的一层，不是新页面 ─────────────────────────────────
-   点「控制台」时地址不变、当前任务不卸载，面板盖着页面滑出来，关掉就回到原处。
-   里面装的还是概览那套 .admin-* 排版（面板宽度和原来的内容区几乎一样），所以
-   这里只补面板自己的外壳，概览的卡片不用改。 */
-#console-scrim { position: fixed; z-index: 40; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: rgba(32, 49, 70, .34); }
-#console-panel {
-  position: fixed;
-  z-index: 41;
-  inset: 0 auto 0 0;
-  width: min(1180px, 91vw);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border-right: 1px solid rgba(202, 218, 235, .9);
-  border-radius: 0 22px 22px 0;
-  background: linear-gradient(145deg, #fff, #f6faff);
-  box-shadow: 18px 0 70px #263f5d2e;
-  /* 关着的时候整块停在屏外，并且不可聚焦：面板里的按钮不该在收起状态下被 Tab 摸到。 */
-  transform: translateX(-100%);
-  visibility: hidden;
-  transition: transform 300ms cubic-bezier(.22, .68, .24, 1), visibility 300ms;
-}
-body.console-open #console-panel { transform: none; visibility: visible; }
-#console-head { flex-shrink: 0; display: flex; align-items: center; gap: 14px; padding: 20px 30px 15px; border-bottom: 1px solid rgba(220, 230, 241, .9); background: rgba(251, 253, 255, .94); }
-.console-title { min-width: 0; flex: 1; }
-.console-title h2 { margin-top: 3px; font-size: 21px; }
-#console-here { color: var(--muted); font-size: 13px; font-weight: 400; }
-#console-actions { display: flex; flex-wrap: wrap; gap: 7px; }
-#console-actions:empty { display: none; }
-#console-close, #console-secrets { flex: 0 0 auto; }
-/* 顶栏上这颗是常驻入口（不是某一页的工具），所以给它一圈底，跟「返回任务」区分开。 */
+/* ── 控制台：主区域里的一页（跟目录首页、定时任务同一层）──────────────────
+   它从前是从左侧滑出来的一层浮层：地址不变、当前任务不卸载、关掉回到原处，也就
+   连带要一张遮罩、一段滑入动画和一套「关掉时把地址与任务还原」的回退逻辑。现在
+   它就是右边那块主区域里的一页（点侧栏那行进来，地址写 view=overview），#console-center
+   是这一页的滚动容器 —— 和 #admin-center / #schedule-center 一样。里面装的还是概览
+   那套 .admin-* 排版，所以这里只补页面自己的外壳，概览的卡片不用改。 */
+#console-center { min-height: 0; flex: 1; overflow: auto; padding: 34px 38px 48px; }
+/* 敏感信息那一颗跟着这一页的页头工具栏走（#console-secrets 在 #task-tools 里）：
+   它管的不是某一组功能里的开关，而是子进程的 spawn 环境，是常驻入口而不是一件
+   普通工具，所以给它一圈底，跟旁边那排图标区分开。 */
 #console-secrets { display: flex; align-items: center; gap: 6px; color: #2c6ba8; border-color: #cfe1f3; background: #f2f8ff; }
-#console-body { min-height: 0; flex: 1; overflow: auto; padding: 26px 30px 46px; }
 
 /* 控制台那一行的常驻徽标：接管原先「跨目录活动」承担的「别处有事在等」信号，
-   不展开也知道。数字由 air-admin.js 的 urgentTasks 一份定义喂出来。 */
+   不进那一页也知道。数字由 air-admin.js 的 urgentTasks 一份定义喂出来。 */
 .console-badge { margin-left: auto; min-width: 19px; padding: 1px 6px; color: #fff; border-radius: 20px; background: var(--accent); font-size: 10px; font-weight: 700; text-align: center; }
 
-.console-attention { margin-bottom: 15px; }
 .admin-panel-note { color: var(--muted); font-size: 10px; }
+/* 四格过滤项：点一格在它下面展开清单，选中的那格描边提亮、底色压一点，一眼看出
+   下面那张清单是谁的。目录数 / 定时任务数降成统计带下面这一行小字。 */
+.console-filter-tabs { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.console-filter-tabs .admin-stat { cursor: pointer; }
+.admin-stat.red::before { background: #e0605a; }
+.console-filter-tabs .admin-stat.selected { border-color: var(--accent); background: #f3f8ff; box-shadow: 0 0 0 1px var(--accent) inset, var(--shadow-1); }
+.console-overview-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -4px 2px 14px; color: var(--muted); font-size: 10.5px; }
+.console-overview-meta .console-meta-link { padding: 0; border: 0; color: inherit; background: none; font: inherit; cursor: pointer; }
+.console-overview-meta .console-meta-link:hover { color: var(--accent); text-decoration: underline; }
+.console-filter-panel { margin-bottom: 15px; }
+.console-filter-panel[hidden] { display: none; }
+.console-filter-panel .admin-task-controls[hidden] { display: none; }
+.console-filter-close { padding: 2px 8px; color: var(--muted); border: 0; background: none; font-size: 10.5px; cursor: pointer; }
 #console-task-list { max-height: min(350px, 44dvh); overflow-y: auto; overscroll-behavior: contain; padding-right: 3px; }
 
 .admin-assistant-card { width: 100%; min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; margin: 0 0 15px; padding: 13px 16px; color: #315675; border-color: #cfe1f4; border-radius: 16px; background: linear-gradient(135deg, rgba(240, 247, 255, .98), rgba(250, 247, 255, .98)); text-align: left; box-shadow: 0 10px 28px #416b9b0d; }
@@ -1432,7 +1643,7 @@ main { background: transparent; }
 .pin-tab { border-radius: 15px; background: #fff; box-shadow: var(--shadow-1); }
 
 /* ── 目录首页 ────────────────────────────────────────────────────────── */
-#empty { padding: 30px 34px 38px; }
+#empty { padding: 30px 34px 24px; }
 #directory-stats { gap: 14px; margin-bottom: 18px; }
 .directory-stat { padding: 17px 19px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-1); }
 .directory-stat span { font-size: 12px; }
@@ -1445,6 +1656,11 @@ main { background: transparent; }
 .schedule-card, .air-config-section, .detail-group, .air-legacy-frame {
   border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-1);
 }
+/* 「靠留白分开」在任务面板和 GIT 卡之间必须真的留得出来：两张 22px 圆角的卡直接贴边
+   时，左边缘两条圆角会咬出一个背景色的缺口，看着像被谁掐了一把。这一列的空隙档位
+   就是 18px（#directory-stats 也是这一档），所以往下每一张卡都补上这个下边距。
+   #quick-task-form 自己的 margin-top 是 34px，外边距会折叠，输入框上方的留白不变。 */
+#empty .directory-task-panel, #empty .directory-git-panel { margin-bottom: 18px; }
 .directory-task-panel .section-heading { padding: 16px 20px 12px; border-bottom: 1px solid var(--hairline); }
 .directory-task-panel .section-heading strong { font-size: 15px; }
 .directory-task-heading-actions { gap: 12px; }
@@ -1455,11 +1671,16 @@ main { background: transparent; }
 .directory-task-row strong { font-size: 12.5px; color: #2f4d68; }
 .directory-task-row time { font-size: 9.5px; }
 .directory-git-panel .section-heading { padding: 16px 20px 12px; }
+/* 卡里第二行（worktree）的小标题跟卡片标题同一档留白，但小一号。 */
+#directory-worktrees .section-heading { padding: 12px 20px 0; }
+#directory-worktree-body { padding: 6px 20px 16px; }
 .directory-git-chip { padding: 5px 10px; border-radius: 11px; }
-#directory-task-more { padding: 14px; font-size: 12px; }
+.directory-task-pager { padding: 7px 20px; }
+.directory-task-pager button { min-height: 30px; padding: 5px 14px; font-size: 12px; }
+#directory-task-page { font-size: 12px; }
 
 /* ── 统一输入框（composer 面板位）─────────────────────────────────────── */
-#quick-task-form { margin-top: 22px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-2); }
+#quick-task-form { margin-top: 34px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-2); }
 .mc-composer__aux { padding: 14px 14px 0; }
 #quick-task-expand { padding: 15px 16px; }
 
@@ -1473,16 +1694,15 @@ main { background: transparent; }
    住在 30px 高的胶囊里、自己是 26×26 —— 抬了就会溢出容器 2px。那两个浮层按钮保持
    原尺寸，圆角沿用它们自己的 8px。 */
 
-/* ── 控制台面板 ──────────────────────────────────────────────────────── */
-#console-panel { border-right: 1px solid var(--hairline); background: #fff; box-shadow: 24px 0 80px rgba(43, 76, 109, .16); }
-#console-head { padding: 26px 34px 18px; border-bottom: 1px solid var(--hairline); }
-#console-body { padding: 24px 34px 40px; }
-/* 控制台顶上那四张卡是「读数带」，不是留白的地方：它的高度上限（桌面 84px、
-   手机 80px）写在 test-air-console-cdp.js 里 —— 这四个数字只是用来确认系统活着，
-   省下的高度全给下面的任务清单。所以这里只换皮（发丝边 + 白底 + 柔和阴影 +
-   18px 圆角），内边距和字号一律沿用原值，一个字都不放大。 */
+/* 控制台那一页的正文（#console-center）走的还是下面这套 .admin-* 皮肤；页面外壳
+   自己的尺寸在文件上半部分那一节里（和 #admin-center / #schedule-center 挨着），
+   这里只管页面里面那些卡片。 */
+/* 控制台顶上那四张卡是过滤项（进行中 / 等我回复 / 今日完成 / 全部）：数字要大到
+   一眼读出，但整条带的高度上限（桌面 84px、手机 80px）仍写在 test-air-console-cdp.js
+   里 —— 只放大数字，内边距不动，省下的高度留给点开后的清单。 */
 .admin-stats { gap: 14px; }
 .admin-stat { border: 1px solid var(--hairline); border-radius: 18px; background: #fff; box-shadow: var(--shadow-1); }
+.console-filter-tabs .admin-stat strong { font-size: 24px; }
 .admin-assistant-card { padding: 18px 20px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-1); }
 /* 面板自己已经是一张卡：里面的列表、网格不再画第二层边框，也不再自己撑一圈内边距，
    否则卡片套卡片只剩噪声。 */
@@ -1518,6 +1738,8 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #task-header { padding-inline: 20px; }
   #delivery-card { margin-inline: 18px; }
   .admin-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 五格过滤项两列排时，最后那格「全部」独占一行，不留半行空洞。 */
+  .console-filter-tabs .admin-stat:last-child { grid-column: 1 / -1; }
   .admin-overview-grid { grid-template-columns: 1fr; }
   .admin-directory-list { grid-template-columns: 1fr; }
   .admin-directory-row { border-right: 0; }
@@ -1528,8 +1750,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   .air-tunnel-route-grid { grid-template-columns: 1fr; }
   .air-tunnel-compat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #directory-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  #console-head { padding-inline: 22px; }
-  #console-body { padding: 22px 22px 42px; }
+  #console-center { padding: 22px 22px 42px; }
 }
 
 @media (max-width: 760px) {
@@ -1634,10 +1855,15 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #delivery-destination { width: 100%; }
   #task-details { width: 100%; border-left: 0; }
   #directory-library { padding: 22px 15px; }
-  #empty { padding: 19px 12px 30px; }
+  #empty { padding: 19px 12px 24px; }
   #directory-task-list { grid-template-columns: 1fr; }
   .directory-task-row { border-right: 0; }
-  .directory-task-panel.expanded #directory-task-list { height: min(360px, 46dvh); }
+  /* 手机上「清单吃掉剩余高度」这件事要退回去：一列的行本来就比桌面高一倍，把
+     面板按到剩余高度里，能看见的只剩两三行，而整页又还得往下滚 —— 两个滚动条
+     互相打架。手机上让面板按内容长、整页一起滚，只给它一个上限，免得几百条任务
+     把输入框推到很远的地方。高度那条变量（air-task-pager.js 在桌面上写的）在这里
+     被 height: auto 顶掉 —— 断点里不按窗口算高度。 */
+  #empty > .directory-task-panel { height: auto; max-height: min(420px, 52dvh); }
   /* 任务行的标题在手机上占两行：一行 11px 的标题在 390px 屏上只装得下十来个字，
      读不出这条任务是干什么的（目录首页由用户报的那张图就是这个）。标题是这一行
      里唯一必须读全的字段，字也给它放大到副行之上；徽标与阶段仍在它下面那行，徽标
@@ -1688,6 +1914,17 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   .air-config-error { margin-inline: 17px !important; }
   .air-config-footer { padding: 12px 17px 15px; }
   #schedule-list { grid-template-columns: 1fr; }
+  /* 目录首页那层「本目录定时任务」在手机上从底部升起来（桌面是居中的弹窗）：
+     手机上没有悬停、够不着屏幕中央，底部是拇指的地盘，也是这个产品里所有
+     「就地看一眼」的层的样子（air_new_task_sheet.dart 那张新建任务弹层）。
+     圆角只留上面两角、左右贴边，一眼认得出是盖上来的一层。 */
+  .dir-schedule-dialog { display: flex; flex-direction: column; overflow: hidden;
+    width: 100%; max-width: 100%; max-height: 88dvh; margin: auto auto 0; border-radius: 22px 22px 0 0; padding: 0; }
+  .dir-schedule-head, .dir-schedule-summary, .dir-schedule-status, .dir-schedule-foot { padding-left: 16px; padding-right: 16px; }
+  /* 手机上滚的还是那张清单，不是整个弹层：头（标题/统计）和脚（新建 / 全部）留着不动，
+     拇指不用先滚到底才够得着那两颗按钮。 */
+  .dir-schedule-list { flex: 1 1 auto; min-height: 0; max-height: none; padding: 12px 12px 4px; }
+  .dir-schedule-foot { padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
   .air-doc-card { align-items: flex-start; flex-wrap: wrap; }
   .air-doc-actions { width: 100%; padding-left: 46px; flex-wrap: wrap; }
   .air-secret-card { flex-wrap: wrap; }
@@ -1699,14 +1936,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #air-usage-global { overflow-x: auto; }
   .air-usage-role-grid { grid-template-columns: 1fr 1fr; }
   .air-legacy-frame { min-height: 620px; height: calc(100dvh - 260px); }
-  /* 面板几乎占满窄屏，但留一条边让底下的页面还认得出是「盖上来的一层」。 */
-  #console-panel { width: calc(100% - 22px); border-radius: 0 18px 18px 0; box-shadow: 8px 0 40px #263f5d24; }
-  #console-head { align-items: flex-start; flex-wrap: wrap; gap: 10px; padding: 16px 15px 13px; }
-  #console-actions { order: 3; width: 100%; }
-  /* 顶栏在手机上只剩图标：标题那一行本来就挤，名字留给 aria-label。 */
-  #console-secrets > span { display: none; }
-  #console-body { padding: 18px 15px 36px; }
-  .console-title h2 { font-size: 19px; }
+  #console-center { padding: 22px 15px 36px; }
   #palette { top: 68px; max-height: min(520px, calc(100dvh - 110px)); }
   #palette footer { gap: 10px; }
 
@@ -1742,6 +1972,11 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   .admin-stat { padding: 8px 10px; }
   .directory-stat { padding: 9px 10px; }
   .directory-stat strong { font-size: 17px; }
+  /* 一行终端现在挂着四颗动作钮（重命名 / 复制 id / 重启 / 删除）：按 `.task-delete`
+     的默认尺寸（34px + 4px 外边距）四颗就吃掉 168px，360px 的手机上名字先被挤没。
+     所以窄屏这里各收一档 —— 触达面积仍有 28px，没有小到点不准。 */
+  .directory-terminal-row .task-delete { min-width: 28px; min-height: 28px; margin: 2px; padding: 3px 4px; }
+  .directory-terminal-open { gap: 7px; padding: 9px 8px; }
   .quick-task-actions > label:last-of-type { order: 3; }
   .admin-tool-grid, .air-settings-grid { grid-template-columns: 1fr; }
   .air-docs-meta { align-items: flex-start; flex-direction: column; }
@@ -1846,8 +2081,6 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #task-title { font-size: 21px; }
   #empty { padding: 18px 16px 24px; }
   .directory-task-panel, .directory-git-panel, .admin-panel { border-radius: 20px; }
-  #console-head { padding: 20px 18px 14px; }
-  #console-body { padding: 18px 16px 32px; }
 }
 /* 统计卡在手机上的内边距单独收在 421px 以上：≤420px 那一档把它压到 9px 是为了在
    320px 上不折行，那是小屏的事，不该被这次视觉变更抬回去。 */
@@ -1889,33 +2122,82 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   background: var(--danger, #b64e43);
 }
 
-/* ── 浮动完成条（三处消费之二/三：③ 页面浮动提示 ──────────────────────── */
-.task-complete-float {
+/* ── 浮动提醒牌堆（③，air-notify-deck.js） ─────────────────────────────
+   一条 = 右下角一张卡；多条 = 叠成一摞 + 数量角标，点一下沿四分之一圆弧散开。
+   卡片全靠 --x/--y/--r/--s/--o 驱动 transform/opacity 过渡，停下来就不再出帧。 */
+.task-notify-deck {
   position: fixed;
   right: 16px;
-  bottom: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   z-index: 1200;
+  width: 0;
+  height: 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.task-notify-deck[hidden] { display: none; }
+.task-notify-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1199;
+  background: rgba(20, 36, 60, .14);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .25s ease;
+}
+.task-notify-scrim.is-on { opacity: 1; pointer-events: auto; }
+.task-notify-card {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  max-width: calc(100vw - 32px);
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  max-width: 340px;
-  padding: 12px 14px;
+  gap: 10px;
+  padding: 11px 12px 11px 14px;
   border-radius: 14px;
   background: var(--panel, #fff);
   color: var(--text, #233249);
   border: 1px solid #d7e2f3;
-  box-shadow: 0 10px 34px rgba(18, 52, 96, .18);
-  font-size: 13px;
-  line-height: 1.4;
+  box-shadow: 0 10px 30px rgba(18, 52, 96, .16);
+  transform: translate(var(--x, 0px), var(--y, 0px)) rotate(var(--r, 0deg)) scale(var(--s, 1));
+  transform-origin: 100% 100%;
+  opacity: var(--o, 1);
+  transition:
+    transform .52s cubic-bezier(.34, 1.4, .5, 1) var(--d, 0ms),
+    opacity .3s ease var(--d, 0ms),
+    box-shadow .2s ease;
 }
-.task-complete-float[hidden] { display: none; }
-.task-complete-float.is-error { border-color: var(--danger, #b64e43); }
-.task-complete-float.is-error .task-complete-float-title { color: var(--danger, #b64e43); }
-.task-complete-float-text { min-width: 0; }
-.task-complete-float-title { font-weight: 700; color: var(--text, #233249); margin-bottom: 2px; }
-.task-complete-float-body { color: var(--text, #233249); overflow-wrap: anywhere; }
-.task-complete-float-actions { display: flex; gap: 6px; flex: 0 0 auto; }
-.task-complete-float-actions button { border-radius: 9px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.task-notify-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--success, #2f8f5b);
+}
+.task-notify-card.k-error { border-color: #e7c3bf; }
+.task-notify-card.k-error::before { background: var(--danger, #b64e43); }
+.task-notify-card.k-waiting::before { background: #b7791f; }
+.task-notify-deck.is-multi .task-notify-card.is-top:not(.is-leaving) { cursor: pointer; }
+.task-notify-deck:not(.is-open) .task-notify-card:not(.is-top) .task-notify-text,
+.task-notify-deck:not(.is-open) .task-notify-card:not(.is-top) .task-notify-actions { visibility: hidden; }
+.task-notify-text { min-width: 0; flex: 1; }
+.task-notify-title { font-weight: 700; font-size: 12px; margin-bottom: 2px; color: var(--success, #2f8f5b); }
+.k-error .task-notify-title { color: var(--danger, #b64e43); }
+.k-waiting .task-notify-title { color: #b7791f; }
+.task-notify-body {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+.task-notify-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.task-notify-actions button { border-radius: 9px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 .task-complete-open {
   border: 1px solid var(--accent, #0d63c4);
   background: var(--accent, #0d63c4);
@@ -1929,3 +2211,101 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   color: var(--text, #233249);
 }
 .task-complete-close:hover { background: #eef3fa; }
+/* 散开：卡片缩成 224×58 的胶囊（与 air-notify-deck.js 的 CARD_W/CARD_H 一致） */
+.task-notify-deck.is-open .task-notify-card {
+  width: 224px;
+  height: 58px;
+  align-items: center;
+  padding: 8px 10px 8px 13px;
+}
+.task-notify-deck.is-open .task-notify-body { -webkit-line-clamp: 1; }
+.task-notify-deck.is-open .task-notify-actions button { padding: 3px 8px; }
+.task-notify-deck.is-open .task-notify-card:hover { box-shadow: 0 14px 36px rgba(18, 52, 96, .26); z-index: 50 !important; }
+.task-notify-card.is-leaving { --o: 0 !important; --s: .6 !important; pointer-events: none; }
+.task-notify-badge {
+  position: absolute;
+  right: -6px;
+  bottom: 52px;
+  z-index: 60;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: var(--danger, #b64e43);
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .18);
+  pointer-events: none;
+  transition: transform .3s cubic-bezier(.34, 1.6, .5, 1), opacity .2s;
+}
+.task-notify-deck:not(.is-multi) .task-notify-badge,
+.task-notify-deck.is-open .task-notify-badge { transform: scale(0); opacity: 0; }
+.task-notify-hint {
+  position: absolute;
+  right: 0;
+  bottom: -2px;
+  transform: translateY(100%);
+  font-size: 11px;
+  color: var(--muted, #6f8096);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.task-notify-more {
+  position: absolute;
+  right: 100px;
+  bottom: 8px;
+  z-index: 70;
+  font-size: 12px;
+  color: var(--muted, #6f8096);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.task-notify-hub {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 70;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 18px;
+  border: 1px solid #d0d7e2;
+  background: #fff;
+  color: var(--text, #233249);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(18, 52, 96, .18);
+  transform: scale(0);
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: 100% 100%;
+  transition: transform .35s cubic-bezier(.34, 1.6, .5, 1), opacity .2s;
+}
+.task-notify-deck.is-open .task-notify-hub { transform: scale(1); opacity: 1; pointer-events: auto; }
+.task-notify-deck.is-narrow.is-open .task-notify-more { right: 0; bottom: 44px; }
+@media (prefers-reduced-motion: reduce) {
+  .task-notify-card, .task-notify-hub, .task-notify-badge, .task-notify-scrim { transition-duration: .01ms !important; }
+}
+
+/* 目录拖拽排序 + 左上角目录卡的 hover 侧拉（air-directory-nav.js）。 */
+[data-dir-id][draggable="true"] { cursor: grab; }
+.is-sorting [data-dir-id] { cursor: grabbing; }
+[data-dir-id].is-dragging { opacity: .45; outline: 1px dashed #9db5cc; outline-offset: -2px; }
+.directory-flyout {
+  position: fixed; z-index: 70; width: 280px; overflow: auto; padding: 8px;
+  border: 1px solid var(--hairline); border-radius: 14px; background: #fff; box-shadow: 0 18px 40px #2b4c6d24;
+}
+.directory-flyout[hidden] { display: none; }
+.directory-flyout-title { display: block; padding: 4px 8px 6px; color: #7f90a2; font-size: 11px; font-weight: 600; }
+.directory-flyout-list { display: grid; gap: 2px; }
+.directory-flyout-row {
+  min-width: 0; display: grid; gap: 2px; padding: 7px 9px; border: 0; border-radius: 10px;
+  background: transparent; text-align: left;
+}
+.directory-flyout-row:hover { background: #f1f6fb; }
+.directory-flyout-row.is-current { background: #e8f1fb; }
+.directory-flyout-row strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.directory-flyout-row small { overflow: hidden; color: #7f90a2; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }

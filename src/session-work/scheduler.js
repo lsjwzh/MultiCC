@@ -5,43 +5,67 @@ const {
   admitOutboxItem,
   normalizeJson,
 } = require('../outbox');
-const { turnOutcomeForClassify } = require('../classify/vocab');
+const {
+  turnOutcomeForClassify, runStateForClassify, CLASSIFY_STATES,
+  isProcessingLetter, isWaitForUserLetter, isTerminalLetter, isAbnormalLetter,
+  isOutcomeLetter,
+} = require('../classify/vocab');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
 const RESOLUTION_ACTIONS = new Set(['skip', 'cancel', 'resolve']);
 const RETRY_ACTIONS = new Set(['retry', 'resume']);
-const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
+// CLASSIFY_STATES (the live-letter membership set) comes from classify/vocab —
+// the letters are declared once, there.
 
-// Explicit freezeReason → display runState map. Replaces the old
+// freezeReason → classify letter. The ONE table for what a freeze means: the
+// display run state below and classifyStateForReason both read it, and a
+// letter-backed reason therefore renders exactly like its letter (vocab
+// CLASSIFY_DISPLAY), so a frozen B slot can never draw differently from a
+// settled B verdict.
+//
+// This replaced a hand-copied reason → runState table which had to be kept in
+// sync with the classify letters by hand, and an older
 // `String(reason).includes('error') ? 'error' : 'waiting'` substring heuristic,
 // which collapsed EVERY non-"error" freeze into "Waiting for user" — falsely
 // telling the user to act when the session was actually mid-recovery, settling a
-// durable ack, or interrupted. runState vocabulary is the fixed renderable set
-// {queued, running, waiting, error, succeeded, idle}. A reason not listed here falls
-// back to the old heuristic so a future scheduler reason never crashes the UI.
-const FREEZE_REASON_RUN_STATE = Object.freeze({
-  // Genuinely handed back to the user / an external party.
-  awaiting_user_input: 'waiting',
-  awaiting_callback: 'waiting',
-  waiting: 'waiting',
+// durable ack, or (with B) idling on a background job.
+const FREEZE_REASON_CLASSIFY = Object.freeze({
+  awaiting_user_input: 'W',
+  waiting: 'W',
+  classify_waiting: 'W',
+  // External hand-off: a callback is outstanding, nothing is asked of the user.
+  awaiting_callback: 'B',
+  classify_background: 'B',
   // Faults / interruptions — surface as an attention state, NOT "waiting on you".
-  error: 'error',
-  classification_error: 'error',
-  unknown_interruption: 'error',
-  legacy_unresolved: 'error',
+  error: 'E',
+  classification_error: 'E',
+  unknown_interruption: 'E',
+  classify_error: 'E',
   // Live work the scheduler will drive forward — not user-blocked.
+  incomplete_requires_resume: 'P',
+  classify_running: 'P',
+});
+
+// Freezes with no classify letter. runState vocabulary is vocab TURN_RUN_STATES.
+const FREEZE_REASON_EXTRA_RUN_STATE = Object.freeze({
+  legacy_unresolved: 'error',
   delivery_recovery: 'running',
   continuation_ready: 'running',
-  incomplete_requires_resume: 'running',
   // Claim released; work is pending re-run.
   prelaunch_deferred: 'queued',
-  classify_waiting: 'waiting',
-  classify_background: 'waiting',
-  classify_error: 'error',
-  classify_running: 'running',
-  // Auth/config not set up -- user must act, not a transient error.
+  // Auth/config not set up -- user must act, not a transient error. Stays
+  // `waiting` here; the display layer refines it to `blocked` (go fix a
+  // prerequisite, not answer in the conversation).
   configuration_required: 'waiting',
+});
+
+// Explicit freezeReason → display runState map. A reason not listed here falls
+// back to a substring heuristic so a future scheduler reason never crashes the UI.
+const FREEZE_REASON_RUN_STATE = Object.freeze({
+  ...Object.fromEntries(Object.entries(FREEZE_REASON_CLASSIFY)
+    .map(([reason, letter]) => [reason, runStateForClassify(letter)])),
+  ...FREEZE_REASON_EXTRA_RUN_STATE,
 });
 
 function runStateForFreezeReason(reason) {
@@ -85,23 +109,17 @@ function workKind(item) {
   return payload.originContinue === true ? 'continuation' : 'task';
 }
 
+// A dispatch.result payload's taskId names the DISPATCHED task (the worker's),
+// not the turn it wakes in the result session. Read as lineage it pinned the
+// owner's active slot to the worker's task: every owner turn then projected
+// 「执行中」 onto the worker's card, and the owner's own turn-end verdict hit
+// active_task_mismatch and never released the slot.
+function ownPayload(item) {
+  return item?.payload?.type === 'dispatch.result' ? null : item?.payload;
+}
+
 function taskIdForItem(item) {
-  return item?.turnLineage?.taskId || item?.payload?.taskId || null;
-}
-
-function taskRunIdForItem(item) {
-  return item?.turnLineage?.taskRunId
-    || item?.payload?.taskRunId
-    || item?.payload?.options?.taskRunId
-    || null;
-}
-
-function leaseEpochForItem(item) {
-  const value = item?.turnLineage?.leaseEpoch
-    ?? item?.payload?.leaseEpoch
-    ?? item?.payload?.options?.leaseEpoch;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  return item?.turnLineage?.taskId || ownPayload(item)?.taskId || null;
 }
 
 function originDispatchIdForItem(item) {
@@ -170,30 +188,44 @@ function activeTaskId(schedule) {
 
 function classifyStateForSchedule(schedule) {
   if (CLASSIFY_STATES.has(schedule?.classifyState)) return schedule.classifyState;
-  if (schedule?.freezeReason === 'awaiting_user_input' || schedule?.freezeReason === 'waiting') return 'W';
-  if (schedule?.freezeReason === 'awaiting_callback') return 'B';
-  if (schedule?.freezeReason === 'error' || schedule?.freezeReason === 'classification_error'
-      || schedule?.freezeReason === 'unknown_interruption') return 'E';
+  const letter = classifyStateForReason(schedule?.freezeReason);
+  // A processing reason means "the scheduler is still driving this", which the
+  // active slot answers better than the reason does; D is the settled default.
+  if (letter && !isProcessingLetter(letter)) return letter;
   if (schedule?.active) return 'P';
   return 'D';
 }
 
+// The letter of a freeze → the freezeReason that records it. A lookup, not a
+// decision: the two directions of this map must stay exact inverses of
+// FREEZE_REASON_CLASSIFY (the W/B/E entries above), and a letter missing here
+// (D, and the retired C) means "still being driven" → classify_running.
+const FREEZE_REASON_BY_CLASSIFY = Object.freeze({
+  W: 'classify_waiting',
+  B: 'classify_background',
+  E: 'classify_error',
+});
+
 function freezeReasonForClassify(classifyState) {
-  if (classifyState === 'W') return 'classify_waiting';
-  if (classifyState === 'B') return 'classify_background';
-  if (classifyState === 'E') return 'classify_error';
-  return 'classify_running';
+  return FREEZE_REASON_BY_CLASSIFY[classifyState] || 'classify_running';
 }
 
 function classifyStateForReason(reason) {
   const key = String(reason || '');
-  if (key === 'awaiting_user_input' || key === 'waiting' || key === 'classify_waiting') return 'W';
-  if (key === 'awaiting_callback' || key === 'classify_background') return 'B';
-  if (key === 'error' || key === 'classification_error' || key === 'unknown_interruption'
-      || key === 'classify_error') return 'E';
-  if (key === 'incomplete_requires_resume' || key === 'classify_running') return 'P';
-  return null;
+  return Object.prototype.hasOwnProperty.call(FREEZE_REASON_CLASSIFY, key)
+    ? FREEZE_REASON_CLASSIFY[key]
+    : null;
 }
+
+// Which control kinds may start a fresh native turn in each at-rest letter. The
+// letters' meaning is vocab's; this table only says what kind of user move each
+// parked/ended turn still accepts. Everything not listed (P mid-turn, and the
+// retired C) accepts nothing here.
+const CONTROL_KINDS_BY_CLASSIFY = Object.freeze({
+  W: Object.freeze(['answer', 'approval', 'continuation']),
+  B: Object.freeze(['callback', 'continuation']),
+  E: Object.freeze(['retry', 'resume']),
+});
 
 function controlAllowedByClassify(item, classifyState) {
   const kind = workKind(item);
@@ -201,16 +233,13 @@ function controlAllowedByClassify(item, classifyState) {
   // Classify P is the only staging gate; W/B/E/D may start a fresh CLI turn
   // even when the previous -p process and its physical active slot are gone.
   // E is an outcome label for that prior turn, never a queue gate.
-  if (item?.payload?.type === 'session.work') return classifyState !== 'P';
+  if (item?.payload?.type === 'session.work') return !isProcessingLetter(classifyState);
   // An async dispatch result is a new conversation message, not a background
   // wait state. It must never interrupt an active P turn, but once that turn
   // ends it wakes the Master from D/W/E just like direct chat input. No B state
   // is required (or manufactured) for this path.
-  if (item?.payload?.type === 'dispatch.result') return classifyState !== 'P';
-  if (classifyState === 'W') return kind === 'answer' || kind === 'approval' || kind === 'continuation';
-  if (classifyState === 'B') return kind === 'callback' || kind === 'continuation';
-  if (classifyState === 'E') return kind === 'retry' || kind === 'resume';
-  return false;
+  if (item?.payload?.type === 'dispatch.result') return !isProcessingLetter(classifyState);
+  return (CONTROL_KINDS_BY_CLASSIFY[classifyState] || []).includes(kind);
 }
 
 function recoveredSuccessProven(schedule, recoveredState = {}) {
@@ -219,7 +248,7 @@ function recoveredSuccessProven(schedule, recoveredState = {}) {
   const recoveredEndedAt = Number(recoveredState.endedAt);
   const taskMatches = !schedule.active.taskId || !recoveredState.taskId
     || schedule.active.taskId === recoveredState.taskId;
-  return recoveredState.classifyState === 'D'
+  return isTerminalLetter(recoveredState.classifyState)
     && Number.isFinite(activeStartedAt) && activeStartedAt > 0
     && Number.isFinite(recoveredEndedAt) && recoveredEndedAt >= activeStartedAt
     && taskMatches;
@@ -267,8 +296,6 @@ function publicSchedule(schedule, queue = [], draft = null) {
     queued: shown.map((item, index) => ({
       entryId: item.id,
       taskId: taskIdForItem(item),
-      taskRunId: taskRunIdForItem(item),
-      leaseEpoch: leaseEpochForItem(item),
       source: item.payload?.source || item.source?.type || 'legacy',
       sequence: item.sequence,
       state: item.state,
@@ -378,6 +405,7 @@ function createSessionWorkScheduler({
       return {
         requestId: String(pending.requestId),
         taskId: pending.taskId ? String(pending.taskId) : null,
+        turnId: pending.turnId ? String(pending.turnId) : null,
         createdAt: Number(pending.createdAt) || null,
       };
     } catch (error) {
@@ -395,7 +423,7 @@ function createSessionWorkScheduler({
     if (payload.activeEntryId && payload.activeEntryId !== schedule.active.entryId) return false;
     // task.interrupted.taskId names the child Task/Agent, not the parent
     // session task. Its durable same-session origin is the correlation proof.
-    if (payload.type !== 'task.interrupted'
+    if (payload.type !== 'task.interrupted' && payload.type !== 'dispatch.result'
         && payload.taskId && activeTaskId(schedule)
         && payload.taskId !== activeTaskId(schedule)) return false;
     if (workKind(item) === 'answer' && schedule.awaitingRequestId
@@ -409,36 +437,12 @@ function createSessionWorkScheduler({
     return !!activeDeliveryId && item.id === activeDeliveryId;
   }
 
-  function projectControlLineage(schedule, item) {
-    if (!item || !isControlItem(item)) return item;
-    const incomingTaskId = taskIdForItem(item);
-    const incomingRunId = taskRunIdForItem(item);
-    const candidate = schedule?.active?.taskRunId
-      ? schedule.active
-      : ['W', 'B'].includes(classifyStateForSchedule(schedule))
-        ? schedule?.lastDecision
-        : null;
-    if (!candidate?.taskRunId
-        || (incomingTaskId && candidate.taskId && incomingTaskId !== candidate.taskId)
-        || (incomingRunId && incomingRunId !== candidate.taskRunId)) return item;
-    return {
-      ...item,
-      turnLineage: {
-      ...(item.turnLineage || {}),
-      taskId: incomingTaskId || candidate.taskId || null,
-      taskRunId: incomingRunId || candidate.taskRunId,
-      leaseEpoch: leaseEpochForItem(item) || candidate.leaseEpoch || null,
-      originDispatchId: originDispatchIdForItem(item)
-        || candidate.originDispatchId || null,
-      workKind: item.turnLineage?.workKind || workKind(item),
-      inheritedBy: item.turnLineage?.inheritedBy || 'retained_task_run_boundary',
-      },
-    };
-  }
-
-  function projectItemLineage(item, draft) {
-    const schedule = draft?.sessionSchedules?.[item?.sessionId];
-    return projectControlLineage(schedule, item);
+  // A control entry's lineage is already fixed at admission/claim time (see the
+  // turnLineage written by admit/claim/insertQueued). The delivery selector
+  // still asks for a projection, so this stays a pass-through rather than
+  // disappearing from the scheduler's contract.
+  function projectItemLineage(item) {
+    return item;
   }
 
   // Classify is the sole semantic gate. Only P stages typed chat input. A direct
@@ -468,18 +472,21 @@ function createSessionWorkScheduler({
       // P is the sole input staging state. Once classify leaves P, a typed or
       // control message may start a fresh native turn even if it was admitted
       // before the previous process exited. E describes the previous turn's
-      // outcome only; it never gates this request or later FIFO work.
-      if (cls !== 'P') {
+      // outcome only: it never gates this typed/control request, but ordinary
+      // FIFO work stays staged behind it until a D verdict or an explicit
+      // insert_queued/retry/resume releases it.
+      if (!isProcessingLetter(cls)) {
         const direct = ordered.find(it => it.directRun);
         if (direct) return direct;
         const control = ordered.find(item => isControlItem(item)
           && controlAllowedByClassify(item, cls));
         if (control) return control;
       }
-      // W/B are real waits. P still has an owned turn. D/E otherwise drain:
-      // E describes the request that just ended and cannot gate a later one.
-      if (cls === 'W' || cls === 'B') return null;
-      if (cls === 'P') return null;
+      // Only D drains the FIFO automatically: the queue advances on a turn that
+      // finished successfully. W/B are real waits, P still has an owned turn,
+      // and E is the previous request's fault — releasing the queue behind it
+      // would auto-start work the user staged behind a turn that never succeeded.
+      if (!isTerminalLetter(cls)) return null;
       return ordered[0];
     }
     const replay = ordered.find(item => isActiveReplay(schedule, item));
@@ -530,9 +537,6 @@ function createSessionWorkScheduler({
       options: normalizedOptions,
       source: source || options.taskSource || (options.originTrigger ? 'trigger' : 'direct'),
       taskId: options.taskId || null,
-      taskRunId: options.taskRunId || null,
-      leaseEpoch: Number.isSafeInteger(Number(options.leaseEpoch))
-        && Number(options.leaseEpoch) > 0 ? Number(options.leaseEpoch) : null,
       // Omit the empty compatibility field so a pre-upgrade admission replay
       // with the same idempotency key keeps the exact historical payload hash.
       originDispatchId: options.originDispatchId || undefined,
@@ -562,7 +566,12 @@ function createSessionWorkScheduler({
         const control = options.taskShellControl;
         if (control) {
           const question = canonicalPendingUserInput(cleanSessionId);
-          if (!control.turnId || getTurnId?.(cleanSessionId) !== control.turnId
+          // An answer belongs to the turn that asked. A background continuation
+          // keeps the open question but advances the signal turn, so the signal
+          // turn alone would reject every answer after one such continuation.
+          const turnMatches = !!control.turnId && (getTurnId?.(cleanSessionId) === control.turnId
+            || (control.intent === 'answer' && !!question?.turnId && question.turnId === control.turnId));
+          if (!turnMatches
             || (control.intent === 'answer' && (!question || question.requestId !== requestId || question.taskId !== options.taskId))) {
             return { ok: false, code: 'stale_control' };
           }
@@ -579,7 +588,7 @@ function createSessionWorkScheduler({
       // the old classify/awaitingRequestId fallback.
       const pendingAnswerMatches = typeof getPendingUserInput === 'function'
         ? pendingInput?.requestId === requestId
-        : classifyStateForSchedule(schedule) !== 'D'
+        : !isTerminalLetter(classifyStateForSchedule(schedule))
           && (!schedule.awaitingRequestId || schedule.awaitingRequestId === requestId);
       const correlatedAnswer = inferredKind === 'answer'
         && !!requestId
@@ -596,10 +605,6 @@ function createSessionWorkScheduler({
             ? null
             : schedule.active.entryId;
           if (!payload.taskId && schedule.active.taskId) payload.taskId = schedule.active.taskId;
-          if (!payload.taskRunId && schedule.active.taskRunId) {
-            payload.taskRunId = schedule.active.taskRunId;
-            payload.leaseEpoch = schedule.active.leaseEpoch || null;
-          }
           if (!payload.originDispatchId && schedule.active.originDispatchId) {
             payload.originDispatchId = schedule.active.originDispatchId;
           }
@@ -609,18 +614,6 @@ function createSessionWorkScheduler({
             // of business state; this input simply starts the next native turn.
             schedule.awaitingRequestId = requestId;
             if (!payload.taskId && pendingInput?.taskId) payload.taskId = pendingInput.taskId;
-          }
-          const previous = schedule.lastDecision || {};
-          const retainedRun = ['W', 'B'].includes(classifyStateForSchedule(schedule))
-            && previous.taskRunId
-            && (!payload.taskId || !previous.taskId || payload.taskId === previous.taskId);
-          if (retainedRun) {
-            if (!payload.taskId) payload.taskId = previous.taskId || null;
-            payload.taskRunId = previous.taskRunId;
-            payload.leaseEpoch = previous.leaseEpoch || null;
-            if (!payload.originDispatchId && previous.originDispatchId) {
-              payload.originDispatchId = previous.originDispatchId;
-            }
           }
         }
       }
@@ -673,8 +666,6 @@ function createSessionWorkScheduler({
         sessionId: cleanSessionId,
         entryId: result.entry.id,
         taskId: result.entry.payload?.taskId || null,
-        taskRunId: result.entry.payload?.taskRunId || null,
-        leaseEpoch: leaseEpochForItem(result.entry),
         source: result.entry.payload?.source || 'direct',
         workKind: inferredKind,
         duplicate: result.duplicate,
@@ -696,24 +687,11 @@ function createSessionWorkScheduler({
       const at = Number(now());
       const schedule = ensure(draft, item.sessionId, at);
       if (!schedule.active || schedule.state === 'idle') {
-        const previous = schedule.lastDecision || {};
-        const incomingTaskId = taskIdForItem(item);
-        const incomingRunId = taskRunIdForItem(item);
-        const retainedRun = isControlItem(item)
-          && ['W', 'B'].includes(classifyStateForSchedule(schedule))
-          && previous.taskRunId
-          && (!incomingTaskId || !previous.taskId || incomingTaskId === previous.taskId)
-          && (!incomingRunId || incomingRunId === previous.taskRunId)
-          ? previous
-          : null;
         schedule.active = {
           entryId: item.id,
           deliveryId: item.id,
-          taskId: incomingTaskId || retainedRun?.taskId || null,
-          taskRunId: incomingRunId || retainedRun?.taskRunId || null,
-          leaseEpoch: leaseEpochForItem(item) || retainedRun?.leaseEpoch || null,
-          originDispatchId: originDispatchIdForItem(item)
-            || retainedRun?.originDispatchId || null,
+          taskId: taskIdForItem(item),
+          originDispatchId: originDispatchIdForItem(item),
           source: item.payload?.source || item.source?.type || 'legacy',
           workKind: workKind(item),
           admittedAt: item.createdAt,
@@ -732,10 +710,6 @@ function createSessionWorkScheduler({
         if (!schedule.active.taskId && taskIdForItem(item)) {
           schedule.active.taskId = taskIdForItem(item);
         }
-        if (!schedule.active.taskRunId && taskRunIdForItem(item)) {
-          schedule.active.taskRunId = taskRunIdForItem(item);
-          schedule.active.leaseEpoch = leaseEpochForItem(item);
-        }
         if (!schedule.active.originDispatchId && originDispatchIdForItem(item)) {
           schedule.active.originDispatchId = originDispatchIdForItem(item);
         }
@@ -751,8 +725,6 @@ function createSessionWorkScheduler({
       sessionId: item.sessionId,
       entryId: item.id,
       taskId: result.schedule.active?.taskId || null,
-      taskRunId: result.schedule.active?.taskRunId || null,
-      leaseEpoch: result.schedule.active?.leaseEpoch || null,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
       schedule: result.schedule,
@@ -781,8 +753,6 @@ function createSessionWorkScheduler({
       entryId: result.schedule.active?.entryId,
       deliveryId: item.id,
       taskId: result.schedule.active?.taskId || null,
-      taskRunId: result.schedule.active?.taskRunId || null,
-      leaseEpoch: result.schedule.active?.leaseEpoch || null,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
       schedule: result.schedule,
@@ -819,10 +789,13 @@ function createSessionWorkScheduler({
     if (result.ok) emit('claim_released', {
       sessionId: item.sessionId,
       entryId: item.id,
-      taskId: result.schedule.active?.taskId || item.payload?.taskId || null,
-      taskRunId: result.schedule.active?.taskRunId || taskRunIdForItem(item),
-      leaseEpoch: result.schedule.active?.leaseEpoch || leaseEpochForItem(item),
+      taskId: result.schedule.active?.taskId || taskIdForItem(item),
       reason,
+      // The mid-flight branch freezes the slot instead of emptying it, and the
+      // two outcomes read as different states. Carried here for the same reason
+      // the `queued` event carries it: the consumer projects a run state from
+      // this event, and `emit` drops the schedule it would otherwise read.
+      freezeReason: result.schedule.freezeReason,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
       schedule: result.schedule,
@@ -848,8 +821,6 @@ function createSessionWorkScheduler({
       sessionId,
       entryId: result.schedule.active?.entryId || null,
       taskId: result.schedule.active?.taskId || null,
-      taskRunId: result.schedule.active?.taskRunId || null,
-      leaseEpoch: result.schedule.active?.leaseEpoch || null,
       schedulerState: 'assessing',
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
@@ -886,8 +857,6 @@ function createSessionWorkScheduler({
       sessionId,
       entryId: result.schedule.active?.entryId,
       taskId: result.schedule.active?.taskId || null,
-      taskRunId: result.schedule.active?.taskRunId || null,
-      leaseEpoch: result.schedule.active?.leaseEpoch || null,
       freezeReason: result.schedule.freezeReason,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
@@ -913,12 +882,14 @@ function createSessionWorkScheduler({
       schedule.active = null;
       schedule.state = 'idle';
       schedule.freezeReason = null;
-      schedule.awaitingRequestId = classifyState !== 'D' && awaitingRequestId
+      schedule.awaitingRequestId = !isTerminalLetter(classifyState) && awaitingRequestId
         ? String(awaitingRequestId)
         : null;
       if (schedule.priorityEntryId === completed.entryId) schedule.priorityEntryId = null;
-      // classifyState is the LETTER (D/W/B/E). W/B represent real waits; D/E
-      // both release FIFO because an error in one request cannot gate the next.
+      // classifyState is the LETTER (D/W/B/E). This releases the active slot for
+      // every letter, but only D drains the FIFO (selectSessionItem): W/B are
+      // real waits, and E leaves the queue staged — an error in one request must
+      // not auto-start the work the user staged behind it.
       schedule.classifyState = CLASSIFY_STATES.has(classifyState) ? classifyState : 'D';
       schedule.classifyStateAt = at;
       // A turn ending on an unanswered question must not let work staged while
@@ -928,7 +899,7 @@ function createSessionWorkScheduler({
       // Shell user messages are typed as continuations too; that transport
       // kind does not authorize them to bypass an unanswered question.
       const pending = canonicalPendingUserInput(sessionId);
-      if (schedule.classifyState === 'W' && pending) {
+      if (isWaitForUserLetter(schedule.classifyState) && pending) {
         for (const item of Object.values(draft.outbox || {})) {
           if (item && item.sessionId === sessionId && item.state === 'pending'
               && !(isUserInputAnswer(item) && item.payload.requestId === pending.requestId)
@@ -943,8 +914,6 @@ function createSessionWorkScheduler({
         reason: completed.supersededByEntryId ? 'superseded_by_immediate_insert' : reason,
         entryId: completed.entryId,
         taskId: completed.taskId || null,
-        taskRunId: completed.taskRunId || null,
-        leaseEpoch: completed.leaseEpoch || null,
         originDispatchId: completed.originDispatchId || null,
         supersededByEntryId: completed.supersededByEntryId || null,
         at,
@@ -965,8 +934,6 @@ function createSessionWorkScheduler({
       sessionId,
       entryId: result.completed.entryId,
       taskId: result.completed.taskId || null,
-      taskRunId: result.completed.taskRunId || null,
-      leaseEpoch: result.completed.leaseEpoch || null,
       classifyState: result.schedule.classifyState || null,
       turnOutcome: turnOutcomeForClassify(result.schedule.classifyState),
       reason,
@@ -986,18 +953,18 @@ function createSessionWorkScheduler({
     }
     if (recoveredSuccessProven(current, recoveredState)) {
       return complete(item.sessionId, {
-        expectedTaskId: item.payload?.taskId || null,
+        expectedTaskId: taskIdForItem(item),
         reason: 'recovered-success',
       });
     }
     const recoveredClassify = CLASSIFY_STATES.has(recoveredState.classifyState)
       ? recoveredState.classifyState : null;
     // Recovery follows the same rule as the live path (T1): every verdict
-    // releases the active slot via complete(). D/E drain FIFO; W/B leave it.
-    // No classify-driven freeze on restart either.
+    // releases the active slot via complete(). D drains the FIFO; W/B/E leave
+    // it. No classify-driven freeze on restart either.
     if (recoveredClassify) {
       return complete(item.sessionId, {
-        expectedTaskId: item.payload?.taskId || null,
+        expectedTaskId: taskIdForItem(item),
         reason: `recovered_${recoveredClassify}`,
         classifyState: recoveredClassify,
       });
@@ -1016,17 +983,10 @@ function createSessionWorkScheduler({
   } = {}) {
     if (RETRY_ACTIONS.has(action)) {
       const current = await status(sessionId);
-      if (current.classifyState !== 'E') {
+      if (!isAbnormalLetter(current.classifyState)) {
         return { ok: false, code: 'active_task_not_retryable' };
       }
       const lineage = current.active || current.lastDecision || {};
-      // E is terminal for a headless TaskRun: its usage/transcript may already
-      // be sealed and its slot scrubbed.  Retrying that physical session would
-      // resume a deleted native context.  Task Board retry must admit a new
-      // TaskRun (new lease/fresh context) instead.
-      if (lineage.taskRunId) {
-        return { ok: false, code: 'task_run_retry_requires_new_run' };
-      }
       return admit({
         sessionId,
         text: String(text || '').trim() || '请继续刚才未完成的任务。',
@@ -1371,6 +1331,69 @@ function createSessionWorkScheduler({
     return result;
   }
 
+  /// 改一条还没开始执行的暂存消息的正文。和 cancel/reorder 同一套守卫：已被
+  /// 领取的条目在跑了，正文不再是用户说了算。改的是 payload.message（所有
+  /// session.work 输入都落在这里），顺序、idempotency、clientMsgId 一律不动。
+  async function editQueued(sessionId, entryId, {
+    text = '',
+    actor = 'user',
+  } = {}) {
+    const cleanEntryId = String(entryId || '').trim();
+    if (!cleanEntryId) throw new TypeError('queued edit requires entryId');
+    const cleanText = String(text || '').trim();
+    if (!cleanText) return { ok: false, code: 'queued_entry_text_required' };
+    if (cleanText.length > MAX_PUBLIC_MESSAGE_LENGTH) {
+      return { ok: false, code: 'queued_entry_text_too_long' };
+    }
+    const result = await store.mutate(draft => {
+      const item = draft.outbox[cleanEntryId];
+      if (!item || item.sessionId !== sessionId) {
+        return { ok: false, code: 'queued_entry_not_found' };
+      }
+      const schedule = ensure(draft, sessionId, Number(now()));
+      const activeIds = new Set([
+        schedule.active?.entryId,
+        schedule.active?.deliveryId,
+      ].filter(Boolean));
+      if (activeIds.has(cleanEntryId) || item.state === 'leased') {
+        return { ok: false, code: 'queued_entry_already_claimed' };
+      }
+      if (item.state !== 'pending') {
+        return { ok: false, code: 'queued_entry_not_pending' };
+      }
+      const at = Number(now());
+      const previous = queuedText(item);
+      item.payload = { ...(item.payload || {}), message: cleanText };
+      item.updatedAt = at;
+      schedule.updatedAt = at;
+      const queue = queueForDraft(draft, sessionId);
+      return {
+        ok: true,
+        edited: {
+          entryId: cleanEntryId,
+          previous,
+          text: cleanText,
+          actor: String(actor || 'user').slice(0, 80),
+          at,
+        },
+        schedule: publicSchedule(schedule, queue, draft),
+      };
+    });
+    if (result.ok) {
+      emit('queued_edited', {
+        sessionId,
+        entryId: result.edited.entryId,
+        actor,
+        schedulerState: result.schedule.state,
+        queued: result.schedule.queued.length,
+        queuedItems: result.schedule.queued,
+        freezeReason: result.schedule.freezeReason,
+        schedule: result.schedule,
+      });
+    }
+    return result;
+  }
+
   async function noteQueued(entryId) {
     const info = await store.mutate(draft => {
       const item = draft.outbox[entryId];
@@ -1467,13 +1490,14 @@ function createSessionWorkScheduler({
           // a lone task.interrupted notification must remain deliverable.
           // Rebuild a legacy active pointer only from an explicit non-D
           // classify fact.
-          if (recoveredClassify && !['D', 'E'].includes(recoveredClassify)) {
+          // Rebuild a legacy active pointer only from an explicit non-outcome
+          // classify fact: a parked or mid-turn verdict still owns the slot, a
+          // finished one (D/E) does not.
+          if (recoveredClassify && !isOutcomeLetter(recoveredClassify)) {
             schedule.active = {
               entryId: `legacy-active:${sessionId}`,
               deliveryId: null,
               taskId: recoveredState.taskId || null,
-              taskRunId: recoveredState.taskRunId || null,
-              leaseEpoch: leaseEpochForItem({ payload: recoveredState }),
               originDispatchId: recoveredState.originDispatchId || null,
               source: 'legacy',
               workKind: 'task',
@@ -1511,7 +1535,7 @@ function createSessionWorkScheduler({
           : null;
         const deliveryNeedsAck = activeDelivery
           && (activeDelivery.state === 'pending' || activeDelivery.state === 'leased');
-        if (classifyState === 'E') {
+        if (isAbnormalLetter(classifyState)) {
           const completed = clone(schedule.active);
           schedule.active = null;
           schedule.state = 'idle';
@@ -1523,8 +1547,6 @@ function createSessionWorkScheduler({
               ? 'superseded_by_immediate_insert' : 'recovered-classify-E',
             entryId: completed.entryId,
             taskId: completed.taskId || null,
-            taskRunId: completed.taskRunId || null,
-            leaseEpoch: completed.leaseEpoch || null,
             originDispatchId: completed.originDispatchId || null,
             supersededByEntryId: completed.supersededByEntryId || null,
             at,
@@ -1535,8 +1557,6 @@ function createSessionWorkScheduler({
             sessionId,
             entryId: completed.entryId,
             taskId: completed.taskId || null,
-            taskRunId: completed.taskRunId || null,
-            leaseEpoch: completed.leaseEpoch || null,
             classifyState: 'E',
             turnOutcome: 'failed',
             queued: queueForDraft(draft, sessionId).length,
@@ -1544,7 +1564,7 @@ function createSessionWorkScheduler({
           });
           continue;
         }
-        if (classifyState === 'D') {
+        if (isTerminalLetter(classifyState)) {
           if (!recoveredSuccessProven(schedule, recoveredState)) {
             schedule.classifyState = 'P';
             schedule.state = 'assessing';
@@ -1586,8 +1606,6 @@ function createSessionWorkScheduler({
               ? 'superseded_by_immediate_insert' : 'recovered-classify-D',
             entryId: completed.entryId,
             taskId: completed.taskId || null,
-            taskRunId: completed.taskRunId || null,
-            leaseEpoch: completed.leaseEpoch || null,
             originDispatchId: completed.originDispatchId || null,
             supersededByEntryId: completed.supersededByEntryId || null,
             at,
@@ -1598,8 +1616,6 @@ function createSessionWorkScheduler({
             sessionId,
             entryId: completed.entryId,
             taskId: completed.taskId || null,
-            taskRunId: completed.taskRunId || null,
-            leaseEpoch: completed.leaseEpoch || null,
             classifyState: 'D',
             turnOutcome: 'succeeded',
             queued: queueForDraft(draft, sessionId).length,
@@ -1636,8 +1652,6 @@ function createSessionWorkScheduler({
       sessionId: event.sessionId,
       entryId: event.entryId || null,
       taskId: event.taskId || null,
-      taskRunId: event.taskRunId || null,
-      leaseEpoch: event.leaseEpoch || null,
       queued: event.queued == null ? null : event.queued,
       queuedItems: event.queuedItems || [],
       freezeReason: event.type === 'frozen' ? event.reason : null,
@@ -1662,6 +1676,7 @@ function createSessionWorkScheduler({
     cancelQueued,
     insertQueued,
     reorderQueued,
+    editQueued,
     status,
     queueSummaries,
     noteQueued,
@@ -1677,6 +1692,7 @@ function createSessionWorkScheduler({
 module.exports = {
   ACTIVE_STATES,
   CONTROL_KINDS,
+  FREEZE_REASON_CLASSIFY,
   FREEZE_REASON_RUN_STATE,
   createSessionWorkScheduler,
   isControlItem,

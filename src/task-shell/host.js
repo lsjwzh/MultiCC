@@ -12,6 +12,7 @@ const {
 const { mountTaskShellRoutes } = require('./routes');
 const { shellHistoryPage, watchShellHistory } = require('./chat-history');
 const { createAttributionSettingsFromEnv } = require('./attribution-settings');
+const { isTerminalLetter } = require('../classify/vocab');
 
 function createTaskShellHost(deps) {
   let runtime, store, candidates, transfer;
@@ -41,13 +42,13 @@ function createTaskShellHost(deps) {
   };
   const publicQueueItem = item => ({
     entryId: shortText(item?.entryId, 160), taskId: shortText(item?.taskId, 160) || null,
-    taskRunId: shortText(item?.taskRunId, 160) || null, source: shortText(item?.source, 80) || null,
+    source: shortText(item?.source, 80) || null,
     workKind: shortText(item?.workKind, 80) || null, state: shortText(item?.state, 40) || null,
     position: Number(item?.position) || null, priority: item?.priority === true,
     admittedAt: Number(item?.admittedAt) || null, text: shortText(item?.text, 32000),
   });
   const publicActive = active => active ? Object.fromEntries([
-    'entryId', 'taskId', 'taskRunId', 'source', 'workKind', 'admittedAt', 'claimedAt', 'startedAt', 'attempt',
+    'entryId', 'taskId', 'source', 'workKind', 'admittedAt', 'claimedAt', 'startedAt', 'attempt',
   ].filter(key => active[key] != null).map(key => [key,
     ['admittedAt', 'claimedAt', 'startedAt', 'attempt'].includes(key) ? Number(active[key]) : shortText(active[key], 160),
   ])) : null;
@@ -119,7 +120,7 @@ function createTaskShellHost(deps) {
         } catch (_) {}
         const busy = !!state.active || !!state.queued?.length || !!(pending && !pending.resolved)
           || !['idle', 'assessing'].includes(state.state) || host.isRunActive(id);
-        return { busy, status: host.getRunState(id), completed: !busy && state.classifyState === 'D',
+        return { busy, status: host.getRunState(id), completed: !busy && isTerminalLetter(state.classifyState),
           turnId: currentTurn(id), pending: pending && !pending.resolved ? pending : null,
           queue: { state: shortText(state.state, 40) || 'idle', freezeReason: shortText(state.freezeReason, 160) || null,
             classifyState: shortText(state.classifyState, 8) || null, active: publicActive(state.active),
@@ -173,19 +174,23 @@ function createTaskShellHost(deps) {
         if (!dir) throw failure('directory_missing');
         const owner = runtime.ownerOf(task);
         const result = await deps.createSessionRecord({ ...source, dir, id: task.sessionId,
-          kind: 'chat', label: task.title, taskBoundTaskId: task.id, autoCommit: false,
+          kind: 'chat', label: task.title, taskBoundTaskId: task.id,
           workspaceOwnerSessionId: owner && !owner.standalone && !task.taskFirst ? owner.sourceSessionId : null, workspaceBaseCommit: task.forkBaseline?.commit || null,
           persistence: 'required', persistenceSource: 'task-shell.create' });
         if (!result.ok) return result;
         const record = deps.records.get(task.sessionId);
-        if (record.taskBoundTaskId !== task.id || record.dirId !== task.dirId || record.autoCommit !== false) throw failure('execution_identity_conflict');
+        if (record.taskBoundTaskId !== task.id || record.dirId !== task.dirId) throw failure('execution_identity_conflict');
         if (record.workspaceState === 'planned') return { ok: true, baseline: null };
         const git = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: record.worktreePath, timeout: 15000 });
         return { ok: true, baseline: { commit: git.stdout.trim(), branch: record.branch, baseBranch: dir.baseBranch, worktreePath: record.worktreePath } };
       },
       indexTask: task => deps.getTaskBoard().registerShellTask(task),
+      evictTaskForCapacity: (dirId, listShellTasks, atCapacity, excludedIds) => deps.getTaskBoard().evictOldestSafeTask(dirId, listShellTasks, atCapacity, excludedIds),
       taskGraphContext: deps.taskGraphContext,
+      prepareAdmission: (sessionId, text, clientMsgId) =>
+        deps.prepareAutoProviderAdmission?.(sessionId, text, clientMsgId),
       send: (...args) => deps.deliver(...args),
+      dispatch: (...args) => deps.dispatch(...args),
       cancel: (id, turnId) => {
         if (currentTurn(id) !== turnId) throw failure('stale_control');
         return deps.getWorkHost().cancelActiveTurn(id, { source: 'task-shell', reason: 'user_cancelled' });
@@ -237,7 +242,7 @@ function createTaskShellHost(deps) {
       })
       : await rt.send(shell.id, payload);
     return { ...result, chatId: result.sessionId, targetSessionId: result.sessionId,
-      shellId: shell.id, url: `/task-shell.html?shell=${encodeURIComponent(shell.id)}&task=${encodeURIComponent(result.taskId)}` };
+      shellId: shell.id, url: `/air?task=${encodeURIComponent(result.taskId)}${shell.dirId ? `&dir=${encodeURIComponent(shell.dirId)}` : ''}` };
   }
   async function sendClientInput(id, message, shellId = null) {
     const rt = getRuntime();
@@ -445,10 +450,16 @@ function createTaskShellHost(deps) {
       return owner?.owns(id) ? owner.guardAdmission(id, text, options) : { ok: false, code: 'task_shell_state_unavailable' };
     },
     accepts, open, owns, sendFromSession, sendClientInput, sendTaskMessage, taskSummary,
+    dispatchFromSession: (id, ...args) => {
+      if (owns(id)?.unavailable) throw failure('task_shell_state_unavailable');
+      return getRuntime().dispatchFromSession(id, ...args);
+    },
     migrateTaskSessions: async () => {
       const rt = getRuntime(), result = await rt.migrateTaskSessions([...deps.records.values()]);
       const ready = new Set(result.migrated);
-      const bindings = rt.listTasks().filter(task => ready.has(task.id) && deps.records.has(task.sessionId)
+      // 迁移刚把 task 全表读过一遍并带回来了，别再扫第二遍（每轮 /api/air 一次）。
+      const tasks = Array.isArray(result.tasks) ? result.tasks : rt.listTasks();
+      const bindings = tasks.filter(task => ready.has(task.id) && deps.records.has(task.sessionId)
         && !deps.records.get(task.sessionId).taskBoundTaskId);
       if (bindings.length) deps.persistRecords('task-first.bind-executions', records => {
         for (const task of bindings) {

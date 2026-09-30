@@ -18,6 +18,17 @@ them under these exact paths:
 | `aux-console.png` | The AI Assistant (aux) console page. | Features |
 | `air-mobile.png` | MultiCC on a phone-width screen (the `/air` directory home in a 390px viewport). | Quick Start, mobile step |
 
+## English captures (`docs/images/en/`)
+
+`README.md` (English) references the English copies in `docs/images/en/`;
+`README.zh.md` keeps the Chinese captures above. The English set is generated
+deterministically against a mocked fixture — no live server, no secrets:
+
+```bash
+node scripts/capture-readme-shots.js            # all six
+node scripts/capture-readme-shots.js air-mobile # a single shot
+```
+
 ## Still wanted
 
 | File | What it should show | Suggested capture |

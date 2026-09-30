@@ -33,6 +33,23 @@ test('prompt carries recent message task names and forbids turn-state output', (
   assert.match(prompt, /\[任务 登录页样式调整 \| tsk-login\]/);
 });
 
+test('prompt tells the parser to read the task progress and status before naming it', () => {
+  // This is the prompt that actually runs (the scan + turn-end Aux job): it owns
+  // taskName and phase, and phase *is* the progress verdict. It has to be told
+  // where to read that from, and that `done` means the goal was reached — a
+  // narration-only tail used to read as done.
+  const system = buildTaskAttributionSystemPrompt({
+    recentTasks: recentTaskContext(history), currentTaskId: 'tsk-login',
+  });
+  assert.match(system, /先读进度与状态/);
+  assert.match(system, /已经落地 \/ 做了一半 \/ 只说了要做 \/ 完全没做/);
+  assert.match(system, /只有每条要求都有可验证的结果/);
+  assert.match(system, /都不算 done/);
+  // Naming rule: verifiable verb + object, and a continuation keeps its name.
+  assert.match(system, /不写过程或手段/);
+  assert.match(system, /不要换个说法/);
+});
+
 test('prompt distinguishes provisional admission from locked explicit continuation', () => {
   const provisional = buildTaskAttributionSystemPrompt({
     recentTasks: recentTaskContext(history),

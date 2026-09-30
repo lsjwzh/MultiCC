@@ -1,5 +1,22 @@
 'use strict';
 
+// Bridges one `codex app-server` child to the host. Two lanes use this file:
+//
+//   • one-shot  — the host spawns it per turn with the prompt after `--`; the
+//                 bridge starts a turn, and kills the app-server on
+//                 `turn/completed`. Everything (process, thread, context) dies
+//                 with the turn.
+//   • resident  — `--resident`, no prompt in argv. The bridge keeps the
+//                 app-server AND the thread alive and reads one JSON turn
+//                 request per line on stdin, so the next turn continues the
+//                 same thread in-process instead of resuming it. It exits only
+//                 when stdin ends (host closed the session) or the child dies.
+//
+// Both lanes emit the same thing on stdout: the app-server's own notifications,
+// one JSON object per line, which the host decodes with the codex-exp adapter.
+// Requests the app-server addresses TO the client (approvals) are answered
+// here, because codex-exp v1 has no interactive approval surface.
+
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 
@@ -7,7 +24,7 @@ const MIN_CODEX_VERSION = Object.freeze([0, 154, 0]);
 const REQUEST_TIMEOUT_MS = 30_000;
 
 function parseArgs(argv) {
-  const options = { config: [] };
+  const options = { config: [], resident: false };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === '--config') options.config.push(argv[++index]);
@@ -15,10 +32,13 @@ function parseArgs(argv) {
     else if (value === '--thread-id') options.threadId = argv[++index];
     else if (value === '--model') options.model = argv[++index];
     else if (value === '--effort') options.effort = argv[++index];
+    else if (value === '--resident') options.resident = true;
     else if (value === '--') options.prompt = argv.slice(index + 1).join(' ');
   }
   if (!options.codexBin) throw new Error('missing --codex-bin');
-  if (!options.prompt) throw new Error('missing prompt');
+  // A resident bridge takes its first prompt on stdin like every later one, so
+  // only the one-shot lane requires the argv prompt.
+  if (!options.resident && !options.prompt) throw new Error('missing prompt');
   return options;
 }
 
@@ -30,10 +50,28 @@ const child = spawn(options.codexBin, childArgs, {
   env: process.env,
   stdio: ['pipe', 'pipe', 'pipe'],
 });
-const lines = readline.createInterface({ input: child.stdout });
+const childLines = readline.createInterface({ input: child.stdout });
 const pending = new Map();
 let nextId = 1;
 let terminal = false;
+// Set by the resident loop; fires when the app-server reports the current turn
+// is over, i.e. the bridge is ready for the next stdin line.
+let onTurnComplete = null;
+let stopping = false;
+function stopChild(error) {
+  if (stopping) return;
+  stopping = true;
+  if (error) {
+    process.stderr.write(`[codex-exp] ${error.message}\n`);
+    process.exitCode = 1;
+  }
+  // Setting exitCode alone cannot finish a bridge with open pipes. Join the
+  // child, escalating if necessary, so the host observes an actual exit.
+  const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 1000);
+  timer.unref();
+  child.once('close', () => clearTimeout(timer));
+  try { child.kill('SIGTERM'); } catch (_) {}
+}
 
 function write(message) {
   child.stdin.write(`${JSON.stringify(message)}\n`);
@@ -74,7 +112,7 @@ function replyUnsupported(message) {
   else write({ id: message.id, error: { code: -32601, message: 'codex-exp bridge does not support interactive server requests yet' } });
 }
 
-lines.on('line', (line) => {
+childLines.on('line', (line) => {
   let message;
   try { message = JSON.parse(line); } catch (_) { return; }
   if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
@@ -93,8 +131,9 @@ lines.on('line', (line) => {
     return;
   }
   if (message.method === 'turn/completed') {
+    if (onTurnComplete) { onTurnComplete(); return; }
     terminal = true;
-    setImmediate(() => child.kill('SIGTERM'));
+    setImmediate(() => stopChild());
   }
 });
 
@@ -109,52 +148,141 @@ child.on('close', (code, signal) => {
     waiter.reject(new Error('app-server exited before responding'));
   }
   pending.clear();
+  // No app-server means no bridge. In the resident lane the stdin readline would
+  // otherwise hold this process open after a cancel/SIGTERM, leaving the host to
+  // reap it on its kill escalation instead of on the child's exit.
+  if (options.resident) { try { process.stdin.destroy(); } catch (_) {} }
   if (!terminal && process.exitCode == null) process.exitCode = code || (signal ? 1 : 0);
 });
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => {
-    try { child.kill(signal); } catch (_) {}
+    stopChild();
   });
 }
 
-async function main() {
+async function initialize() {
   const initialized = await request('initialize', {
-    clientInfo: { name: 'multicc-codex-exp', title: 'MultiCC Codex Experimental', version: '0.1.0' },
+    // `name` 是车道的身份（也用来给 threadSource 打标）保持 multicc-codex-exp
+    // 不变；title 是上游看到的产品名，这条车道已不再是试验品 —— 它就是产品的
+    // Codex（2026-09-24 改名，扶正的是车道，id 没动）。
+    clientInfo: { name: 'multicc-codex-exp', title: 'MultiCC Codex', version: '0.1.0' },
   });
   const version = versionFromUserAgent(initialized?.userAgent);
   if (!versionAtLeast(version, MIN_CODEX_VERSION)) {
     throw new Error(`unsupported app-server version: ${initialized?.userAgent || 'unknown'} (requires Codex >= ${MIN_CODEX_VERSION.join('.')})`);
   }
   write({ method: 'initialized', params: {} });
-  const common = {
+}
+
+function commonParams(model) {
+  return {
     cwd: process.cwd(),
     approvalPolicy: 'never',
     sandbox: 'danger-full-access',
-    ...(options.model ? { model: options.model } : {}),
+    ...(model ? { model } : {}),
   };
-  let threadId = options.threadId;
+}
+
+// Start a fresh thread, or re-attach to one an earlier process left behind.
+// Returns the thread id the app-server will accept turns against.
+async function openThread(threadId, model) {
   if (threadId) {
-    await request('thread/resume', { threadId, excludeTurns: true, ...common });
-  } else {
-    const started = await request('thread/start', {
-      ...common,
-      threadSource: 'multicc-codex-exp',
-      sessionStartSource: 'startup',
-    });
-    threadId = started.thread?.id || started.threadId || started.id;
+    await request('thread/resume', { threadId, excludeTurns: true, ...commonParams(model) });
+    return threadId;
   }
-  if (!threadId) throw new Error('app-server did not return a thread id');
-  await request('turn/start', {
+  const started = await request('thread/start', {
+    ...commonParams(model),
+    threadSource: 'multicc-codex-exp',
+    sessionStartSource: 'startup',
+  });
+  const created = started.thread?.id || started.threadId || started.id;
+  if (!created) throw new Error('app-server did not return a thread id');
+  return created;
+}
+
+function startTurn(threadId, { text, model, effort }) {
+  return request('turn/start', {
     threadId,
-    input: [{ type: 'text', text: options.prompt }],
-    ...(options.model ? { model: options.model } : {}),
-    ...(options.effort ? { effort: options.effort } : {}),
+    input: [{ type: 'text', text }],
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
   });
 }
 
-main().catch((error) => {
-  process.stderr.write(`[codex-exp] ${error.message}\n`);
-  process.exitCode = 1;
-  try { child.kill('SIGTERM'); } catch (_) {}
-});
+async function runOneShot() {
+  await initialize();
+  const threadId = await openThread(options.threadId, options.model);
+  await startTurn(threadId, {
+    text: options.prompt, model: options.model, effort: options.effort,
+  });
+}
+
+// Resident lane. Turns are serialized: an app-server turn is only started here
+// after the previous `turn/completed`, so a line that arrives mid-turn waits in
+// `queued` instead of interleaving two turns on one thread.
+async function runResident() {
+  await initialize();
+  let threadId = await openThread(options.threadId, options.model);
+  const queued = [];
+  let busy = false;
+
+  async function pump() {
+    if (busy || stopping) return;
+    const next = queued.shift();
+    if (!next) return;
+    busy = true;
+    try {
+      await startTurn(threadId, next);
+    } catch (error) {
+      busy = false;
+      stopChild(error);
+      return;
+    }
+    // busy stays true until the app-server reports the turn over; any queued
+    // line is pumped from onTurnComplete below.
+  }
+
+  onTurnComplete = () => {
+    busy = false;
+    pump();
+  };
+
+  const stdinLines = readline.createInterface({ input: process.stdin });
+  stdinLines.on('line', (line) => {
+    if (!line.trim()) return;
+    let turn;
+    try { turn = JSON.parse(line); }
+    catch (_) {
+      process.stderr.write('[codex-exp] resident bridge dropped a non-JSON stdin line\n');
+      return;
+    }
+    const text = typeof turn === 'string' ? turn : turn?.text;
+    if (typeof text !== 'string' || !text) return;
+    // A caller-supplied threadId switches threads, which is how a host that
+    // lost its in-memory thread (restart) re-attaches instead of forking one.
+    if (turn?.threadId && turn.threadId !== threadId) {
+      openThread(turn.threadId, turn.model || options.model).then((id) => {
+        threadId = id;
+        queued.push({ text, model: turn.model || options.model, effort: turn.effort || options.effort });
+        pump();
+      }).catch((error) => {
+        stopChild(error);
+      });
+      return;
+    }
+    queued.push({
+      text, model: turn?.model || options.model, effort: turn?.effort || options.effort,
+    });
+    pump();
+  });
+  // The host closes a resident session by ending stdin; that is the only
+  // graceful shutdown this lane has, so the app-server goes with it.
+  stdinLines.on('close', () => {
+    terminal = true;
+    stopChild();
+  });
+}
+
+const run = options.resident ? runResident : runOneShot;
+run().catch(stopChild);

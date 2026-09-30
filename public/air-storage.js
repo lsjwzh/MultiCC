@@ -15,6 +15,12 @@
   if (!root || !root.document) return;
   const document = root.document;
   const el = id => document.getElementById(id);
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
   const make = (tag, text, className) => {
     const value = document.createElement(tag);
     if (text != null) value.textContent = text;
@@ -53,17 +59,10 @@
     host.append(styleNode); // replaceChildren 会把它一起清掉，每次重绘都挂回去
   }
 
-  // 跟 manage.js 的 fmtSize 同一份口径（1024 进制、1024 以下原样输出字节），两点不同：
-  // KB 起一律保留 1 位小数（manage.js 的 MB 是 2 位），并补一档 GB —— 临时目录堆到一个 G
-  // 的缓存不是不可能，那时候不该显示成「1024.0 MB」。
-  // 不走 i18n —— 单位是符号，不是句子。
-  function fmtSize(bytes) {
-    const value = Number(bytes) || 0;
-    if (value < 1024) return `${value} B`;
-    if (value < 1048576) return `${(value / 1024).toFixed(1)} KB`;
-    if (value < 1073741824) return `${(value / 1048576).toFixed(1)} MB`;
-    return `${(value / 1073741824).toFixed(1)} GB`;
-  }
+  // 字节数走全站唯一那份（shared/format.js）：一位小数、1024 进制、超过 TB 才停 ——
+  // 临时目录堆到一个 G 的缓存不是不可能，那时候不该显示成「1024.0 MB」。本页只保留
+  // 「没有值时画 0 B」这一处取舍。不走 i18n：单位是符号，不是句子。
+  const STORAGE_SIZE = Object.freeze({ placeholder: '0 B' });
 
   // valueClass 只有目录那一行要用（等宽 + 可断行）；另外两行是短数字，走默认值样式。
   function row(labelText, valueId, valueClass = '') {
@@ -78,7 +77,7 @@
     const count = el('air-storage-count');
     if (count) count.textContent = t('airStorageCount', { n: stats.count });
     const size = el('air-storage-size');
-    if (size) size.textContent = fmtSize(stats.totalSize);
+    if (size) size.textContent = FMT.formatBytes(stats.totalSize, STORAGE_SIZE);
     const dir = el('air-storage-dir');
     if (dir) dir.textContent = stats.dir || '—';
     // 没有文件就没什么可清：按钮灰掉，并补一句为什么 —— 灰按钮自己不会解释。
@@ -118,7 +117,7 @@
       const result = await context.api('/api/uploads/cleanup', undefined, 'DELETE');
       if (status) status.textContent = t('airStorageCleanupDone', {
         deleted: Number(result?.deleted) || 0,
-        freed: fmtSize(result?.freed),
+        freed: FMT.formatBytes(result?.freed, STORAGE_SIZE),
       });
       await load(true); // 删完的数字以服务端重扫为准：结果那句话留在状态行上
     } catch (error) {

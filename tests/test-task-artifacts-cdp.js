@@ -45,10 +45,11 @@ test('artifact sidebar: real page, scoped links, dedupe, search, copy, persisten
       await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...box });
     };
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
-    await page.navigate('/task-shell.html?board=1&task=tsk_a&air=1');
+    // 产物边栏只剩一个宿主：标准聊天页（Air 的任务面板嵌的就是它）。
+    await page.navigate('/chat.html?session=a');
     assert.ok(await page.waitFor(`document.getElementById('task-artifacts-toggle')?.textContent==='产物 3'`));
     assert.equal(await page.evaluate(`document.getElementById('task-artifacts-panel').hidden`), true);
-    await page.evaluate(`document.getElementById('message').value='保留我的草稿'`);
+    await page.evaluate(`document.getElementById('input').value='保留我的草稿'`);
     await click('#task-artifacts-toggle');
     assert.equal(await page.evaluate(`document.getElementById('task-artifacts-toggle').getAttribute('aria-expanded')`), 'true');
     assert.equal(await page.evaluate(`getComputedStyle(document.body).paddingRight`), '310px');
@@ -65,9 +66,9 @@ test('artifact sidebar: real page, scoped links, dedupe, search, copy, persisten
     assert.ok((await page.evaluate('window.__copied')).endsWith('/artifacts/results/results.json'));
     await click('#task-artifacts-close');
     assert.equal(await page.evaluate(`document.activeElement.id`), 'task-artifacts-toggle');
-    assert.equal(await page.evaluate(`document.getElementById('message').value`), '保留我的草稿');
+    assert.equal(await page.evaluate(`document.getElementById('input').value`), '保留我的草稿');
     await click('#task-artifacts-toggle');
-    await page.navigate('/task-shell.html?board=1&task=tsk_a&air=1');
+    await page.navigate('/chat.html?session=a');
     assert.ok(await page.waitFor(`document.getElementById('task-artifacts-panel')?.hidden===false`), 'expanded preference survives reload');
     registry.push({ kind: 'page', title: '<img src=x onerror=alert(1)>', taskId: 'tsk_a', url: '/artifacts/new/index.html' });
     await click('#task-artifacts-refresh');

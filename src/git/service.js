@@ -34,6 +34,17 @@ function isPermissionDeniedGitError(error) {
   return GIT_PERMISSION_DENIED_RE.test(errorText(error));
 }
 
+// macOS ships /usr/bin/git as a Command Line Tools *shim*, not as git. With the
+// tools absent the shim pops an install dialog, prints its own note to stderr
+// and exits non-zero — for every git invocation, in any language. That is not
+// "no repository here", so it must not be answered with one.
+const GIT_TOOLS_MISSING_RE =
+  /xcode-select:|xcrun: error:|No developer tools were found|invalid active developer path|[Cc]ommand line tools are missing/;
+
+function isDeveloperToolsMissingGitError(error) {
+  return GIT_TOOLS_MISSING_RE.test(errorText(error));
+}
+
 async function gitIsRepo(dirPath) {
   try { return await gitRun(dirPath, ['rev-parse', '--is-inside-work-tree']) === 'true'; }
   catch (error) {
@@ -48,6 +59,16 @@ async function gitIsRepo(dirPath) {
       denied.code = 'GIT_PERMISSION_DENIED';
       denied.path = dirPath;
       throw denied;
+    }
+    // Same reasoning, different cause: a missing toolchain is not an empty
+    // directory either. Answering false here sends the caller on to `git init`,
+    // which pops a second install dialog and fails with the same unreadable note.
+    if (isDeveloperToolsMissingGitError(error)) {
+      const missing = new Error(errorText(error)
+        || `git is unavailable at ${dirPath}: macOS developer tools are not installed`);
+      missing.code = 'GIT_TOOLS_MISSING';
+      missing.path = dirPath;
+      throw missing;
     }
     return false;
   }
@@ -1168,6 +1189,7 @@ module.exports = {
   gitIsRepo,
   gitHasCommit,
   isPermissionDeniedGitError,
+  isDeveloperToolsMissingGitError,
   gitBaseBranch,
   gitWorktreeSnapshot,
   gitExportSessionBundle,

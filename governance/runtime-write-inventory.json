@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedAt": "2026-09-18",
+  "reviewedAt": "2026-09-26",
   "entries": [
     {
       "id": "server-env",
@@ -170,6 +170,40 @@
       ]
     },
     {
+      "id": "macos-agent-runtime",
+      "classification": "external-owner",
+      "owner": "macOS desktop agent installer",
+      "rationale": "The per-user LaunchAgent owns its IPC socket, preserved user config/log, and stable client symlink outside a replaceable MultiCC checkout; both roots have explicit MULTICC_AGENT_* overrides.",
+      "migrationStrategy": "Keep the agent directory private and the client link derived/idempotent; uninstall removes the socket and link but preserves config/log. If either default ever moves, copy the config forward and retain a compatibility link before changing the LaunchAgent contract.",
+      "sources": [
+        {
+          "file": "scripts/install-agent.sh",
+          "anchor": "DIR=\"${MULTICC_AGENT_DIR:-$HOME/.multicc/agent}\""
+        },
+        {
+          "file": "scripts/install-agent.sh",
+          "anchor": "LINK=\"${MULTICC_AGENT_LINK:-$HOME/.multicc/bin/multicc-agent}\""
+        },
+        {
+          "file": "src/macos-unlock-probe.js",
+          "anchor": "return process.env.MULTICC_AGENT_BIN || path.join(homedir(), '.multicc', 'bin', 'multicc-agent');"
+        }
+      ]
+    },
+    {
+      "id": "macos-agent-power-preferences",
+      "classification": "external-owner",
+      "owner": "macOS desktop agent (host power services)",
+      "rationale": "The auto-unlock preference is agent-owned state written beside the LaunchAgent's other preserved config under ~/.multicc/agent (MULTICC_AGENT_DIR override), outside any replaceable MultiCC checkout; the resident desktop Agent is the one that reads it back, the server only reports it.",
+      "migrationStrategy": "Keep the write private (0700 directory, 0600 file) and idempotent; if the agent root ever moves, copy power-settings.json forward together with the agent's other config and keep a read-only fallback for one release rather than relocating this file alone.",
+      "sources": [
+        {
+          "file": "src/host-power-services.js",
+          "anchor": "function createPowerPreferences({ dir = process.env.MULTICC_AGENT_DIR || path.join(os.homedir(), '.multicc', 'agent') } = {}) {"
+        }
+      ]
+    },
+    {
       "id": "local-asr-models",
       "classification": "external-owner",
       "owner": "local ASR model installer",
@@ -201,13 +235,13 @@
     },
     {
       "id": "sakurafrp-frpc-binary",
-      "classification": "external-owner",
-      "owner": "SakuraFrp frpc installer",
-      "rationale": "The standalone frpc data-plane binary is a large replaceable third-party runtime asset downloaded from the SakuraFrp CDN, not transactional MultiCC state. Installs without MULTICC_DATA_DIR keep it under the historical ~/.multicc root; configured installs stay isolated below their own data root.",
-      "migrationStrategy": "Keep production assets below a dedicated bin root, verify every download's MD5 and byte size before activation, and reinstall from the /system/clients manifest instead of copying binaries when the layout changes.",
+      "classification": "compatibility-read",
+      "owner": "SakuraFrp monitor (frpc detection)",
+      "rationale": "The standalone frpc client is an advanced setup MultiCC deliberately does not install: the Air tunnel page links to the official download and the monitor only PROBES this path for a user-supplied binary. Installs without MULTICC_DATA_DIR keep the historical ~/.multicc root; configured installs stay isolated below their own data root. Nothing under this root is ever written by MultiCC any more.",
+      "migrationStrategy": "Keep the probe read-only; the path exists only so an frpc the user dropped there (or one an older MultiCC installed) is preferred over a stale PATH copy. Drop the historical-root probe once no supported install can carry a legacy binary.",
       "sources": [
         {
-          "file": "src/tunnel-sakurafrp-install.js",
+          "file": "src/tunnel.js",
           "anchor": "? path.join(os.homedir(), '.multicc', 'bin')"
         }
       ]
@@ -222,6 +256,19 @@
         {
           "file": "src/paths.js",
           "anchor": "? path.join(os.homedir(), '.multicc', 'samples')"
+        }
+      ]
+    },
+    {
+      "id": "human-assist-screenshots",
+      "classification": "ephemeral",
+      "owner": "human-assist screenshot sweep (src/assist-snapshots)",
+      "rationale": "Screenshots taken for remote human assistance are posted into <assistDir>/<sessionId>/ and swept once they are older than the 7-day retention window; they can show logged-in pages, so the root deliberately stays outside the package checkout and is never served from the auth-free /artifacts route. Installs without MULTICC_DATA_DIR keep the historical ~/.multicc root, configured installs stay isolated below their own data root.",
+      "migrationStrategy": "Keep the root disposable and permission-restricted and enforce the 7-day per-file sweep (empty session directories dropped, symlinks left untouched) instead of copying anything forward; when the data root becomes mandatory, drop the historical-root branch rather than migrating the contents.",
+      "sources": [
+        {
+          "file": "src/paths.js",
+          "anchor": "? path.join(os.homedir(), '.multicc', 'assist')"
         }
       ]
     },
@@ -273,7 +320,7 @@
       "sources": [
         {
           "file": "src/routes/session-bundle.js",
-          "anchor": "const tmpBundle = path.join(os.tmpdir(), `multicc-import-${newSid}-${Date.now()}.bundle`);"
+          "anchor": "const tmpBundle = path.join(os.tmpdir(), `multicc-import-${session.id}-${Date.now()}.bundle`);"
         },
         {
           "file": "src/ws/connection-router.js",
@@ -386,6 +433,19 @@
         {
           "file": "src/providers/claude-settings-override.js",
           "anchor": "const OVERRIDE_DIR = path.join(os.homedir(), '.multicc', 'claude-settings-overrides');"
+        }
+      ]
+    },
+    {
+      "id": "turn-hook-wrapper-bin",
+      "classification": "external-owner",
+      "owner": "terminal turn ledger (src/turn-ledger)",
+      "rationale": "Codex trusts a hook by the hash of its command string and persists that trust in the user's CODEX_HOME, so the terminal turn-hook wrapper must live at a fixed per-user path that survives checkout moves and data-root changes.",
+      "migrationStrategy": "Contents are fully derived (wrapper + copy of scripts/multicc-turn-hook.js) and rewritten idempotently on each terminal launch; moving the path would invalidate every granted Codex hook trust, so it stays put and holds nothing else.",
+      "sources": [
+        {
+          "file": "src/turn-ledger/hook-install.js",
+          "anchor": "return path.join(os.homedir(), '.multicc', 'bin');"
         }
       ]
     }

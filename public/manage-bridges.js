@@ -247,6 +247,13 @@
     appendBridgeLogRow(document.getElementById('wx-log'), entry, _wxPrefixes[entry.type] || entry.type, color);
   }
 
+  // 网关跑的是哪条车道，用共享 CLI 目录里的产品名说（权威表在 src/cli/cli-capability.js）。
+  // 旧 manage 页没加载 provider-catalog.js 时退回原始 id —— 和改动前一样，不新增依赖。
+  function _cliName(cli) {
+    const catalog = window.MultiCCProviderCatalog;
+    return (catalog && catalog.cliDisplayName) ? catalog.cliDisplayName(cli) : cli;
+  }
+
   /* ── Gateway session ── */
   function _wxSelectedCli() {
     const checked = document.querySelector('input[name="wx-gw-cli"]:checked');
@@ -262,7 +269,7 @@
     if (!stateEl) return;
 
     if (gw) {
-      stateEl.textContent = `${gw.cli}`;
+      stateEl.textContent = _cliName(gw.cli);
       stateEl.style.background = '#23863640';
       stateEl.style.color = '#3fb950';
       createBtn.style.display = 'none';
@@ -504,7 +511,7 @@
     const destroyBtn = document.getElementById('fs-gw-destroy');
     if (!stateEl) return;
     if (gw) {
-      stateEl.textContent = `${gw.cli}`;
+      stateEl.textContent = _cliName(gw.cli);
       stateEl.style.background = '#23863640';
       stateEl.style.color = '#3fb950';
       createBtn.style.display = 'none';
@@ -738,7 +745,7 @@
           resetBtn = _bid(p, 'gw-reset'), destroyBtn = _bid(p, 'gw-destroy');
     if (!stateEl) return;
     if (gw) {
-      stateEl.textContent = gw.cli;
+      stateEl.textContent = _cliName(gw.cli);
       stateEl.style.background = '#23863640'; stateEl.style.color = '#3fb950';
       createBtn.style.display = 'none'; openBtn.style.display = ''; resetBtn.style.display = ''; destroyBtn.style.display = '';
       const radio = document.querySelector(`input[name="${TOKEN_BRIDGES[p].idp}-gw-cli"][value="${gw.cli}"]`);

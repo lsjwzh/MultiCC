@@ -1,6 +1,8 @@
 'use strict';
 
 const net = require('node:net');
+const { createDeveloperToolsRoutes } = require('./developer-tools');
+const { createMacosPrivacyRoutes } = require('./macos-privacy');
 
 const DEFAULT_VERSION_RESULT = Object.freeze({
   current: '0.0.0',
@@ -257,8 +259,8 @@ function assertSystemRouteDeps(deps) {
 }
 
 function mountSystemRoutes(app, rawDeps) {
-  if (!app || typeof app.get !== 'function') {
-    throw new TypeError('Express app.get is required');
+  if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {
+    throw new TypeError('Express app.get and app.post are required');
   }
   const deps = assertSystemRouteDeps(rawDeps);
   app.get('/api/server-info', createServerInfoHandler(deps));
@@ -272,6 +274,11 @@ function mountSystemRoutes(app, rawDeps) {
   // src/routes/auth.js); the asset URL inside is rendered per request so the
   // same IPA installs over loopback, LAN or Tailscale Funnel HTTPS.
   app.get('/ios-ota/manifest.plist', deps.iosOta.manifestHandler);
+  // Host toolchain repair. Mounted here rather than from server.js because it
+  // needs no host state — only the platform and xcode-select — and server.js
+  // sits against its source-line budget.
+  createDeveloperToolsRoutes().mountRoutes(app);
+  createMacosPrivacyRoutes().mountRoutes(app);
 }
 
 module.exports = {

@@ -1,6 +1,7 @@
 'use strict';
 
 const { completion, createCompletionTracker } = require('./completion');
+const { displayNameOf } = require('../cli/cli-capability');
 
 const { renderPrompt } = require('../message-composer');
 const { extractUpstreamError } = require('../upstream-error');
@@ -137,8 +138,9 @@ function createCodexAdapter(deps) {
   function firstTurnPrompt(prompt, opts) {
     const promptPrefixes = [multiccImgHint];
     if (envConstraint) promptPrefixes.push(envConstraint);
+    if (opts.subagentHint) promptPrefixes.push(opts.subagentHint);
     if (opts.rolePrompt) {
-      promptPrefixes.push(`[角色设定]\n${opts.rolePrompt}\n[角色设定结束]`);
+      promptPrefixes.push(`[Role prompt]\n${opts.rolePrompt}\n[End of role prompt]`);
     }
     return `${promptPrefixes.join('\n\n')}\n\n${prompt}`;
   }
@@ -160,7 +162,8 @@ function createCodexAdapter(deps) {
     cmd,
     buildTerminalCmd(session) {
       const baseArgs = args.length ? ' ' + args.join(' ') : '';
-      const configArgs = configArgsFor(session).map(arg => ` -c '${arg}'`).join('');
+      const configArgs = [...configArgsFor(session), ...(session.turnHookConfigArgs || [])]
+        .map(arg => ` -c '${arg}'`).join('');
       if (session.cliSessionId) return `${cmd}${baseArgs}${configArgs} resume ${session.cliSessionId}`;
       return `${cmd}${baseArgs}${configArgs}`;
     },
@@ -174,7 +177,7 @@ function createCodexAdapter(deps) {
       const isFirstTurn = env.historyHandle.isFirstTurn;
       const prompt = renderPrompt(env);
       let payload = isFirstTurn
-        ? firstTurnPrompt(prompt, { rolePrompt: env.rolePrompt })
+        ? firstTurnPrompt(prompt, { rolePrompt: env.rolePrompt, subagentHint: env.subagentHint })
         : envConstraint ? `${envConstraint}\n\n${prompt}` : prompt;
       if (stayAlivePrompt) payload += `\n${stayAlivePrompt}`;
       const args = ['exec'];
@@ -332,7 +335,7 @@ function createCodexAdapter(deps) {
         if (event.type === 'error' && kind === 'provider' && isCodexInternalNoise(message)) return [];
         return [{
           type: 'error',
-          label: 'Codex',
+          label: displayNameOf('codex'),
           message,
           kind,
           error: {

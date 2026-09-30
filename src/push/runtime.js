@@ -4,6 +4,7 @@ const { sanitizePublicText } = require('../http/public-safety');
 const { isSettledLetter } = require('../classify/vocab');
 const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
 const { BusinessPushRequestError } = require('./business');
+const { notificationCopy } = require('./notification-copy');
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
 const DEFAULT_IDLE_MS = 6000;
@@ -15,8 +16,10 @@ const DEFAULT_COOLDOWN_MS = 8000;
 // prompt), so the words the classifier looks for cannot drift away from what
 // the error pipeline actually recognizes.
 const CLASSIFY_PROMPT = `你是一个意图分析器。下面是一个命令行 AI 编码助手(Claude Code / Codex)终端会话的最近输出。请严格输出三行：
-第1行：当前任务目标，用一个简短的名词性短语（中文≤20字，英文≤10词）。如果没有任务则输出「—」。
+先读进度与状态：从下面的终端输出里把"当前任务"的进度与状态读出来，不要只看最后一行——① 进度：用户提的要求逐条对照，哪些已经落地、哪些做了一半、哪些只说了要做；② 状态：眼下卡在谁身上（还在做 / 已正常收尾 / 等用户拿主意 / 等后台任务或回调 / 被故障截断）。第2行就是这份读数的结论。
+第1行：当前任务目标 —— 动词+对象，说清"要做成什么"，必须可验证（如"把登录页改成暗色主题"）；用户提了多个要求时要全部覆盖。只写做完后的可观察结果，不写过程/手段。如果没有任务则输出「—」。
 第2行：当前阶段，必须是以下五个词之一：规划中 / 实现中 / 验证中 / 收尾中 / 已完成
+       把第1行的要求逐条对照输出内容：还有一条没落地（没做、做了一半、只说了要做、结果没验证过）就不能判「已完成」。只是回到提示符、只是收尾、只是把问题抛回给用户，都不算「已完成」。「已完成」= 目标达成，是唯一表示"这件事做完了"的阶段。
 第3行：仅一个字母，表示当前状态——
   D = 本轮执行成功（终端回到空闲提示符、汇报结果后正常收尾；只描述本轮结果，不代表任务板任务已完成）
   C = AI 应继续（任务还没做完，但可以直接接着跑，不需要用户操作；没有反问/等待迹象）
@@ -235,7 +238,12 @@ function createPushRuntime(options) {
     } catch (error) { warn(label, error); }
   }
 
-  function notify(sessionId, type, message) {
+  // `options.classifyState` is the classify LETTER behind this outcome. It is
+  // needed only where the push TYPE cannot tell two outcomes apart: B (waiting
+  // on a background job) and W (waiting on the user) both push `waiting`, and
+  // they must not say the same words. Callers that have the letter (the
+  // classify broadcast does: `classifyState`) should pass it.
+  function notify(sessionId, type, message, options) {
     if (stopped) return false;
     const monitor = initMonitor(sessionId);
     const timestamp = now();
@@ -245,21 +253,21 @@ function createPushRuntime(options) {
     const session = sessions.get(sessionId);
     const cwd = session ? String(session.cwd || '') : '';
     const shortCwd = cwd.length > 30 ? `...${cwd.slice(-27)}` : cwd;
-    const payloadForLocale = locale => ({
-      title: locale === 'en'
-        ? type === 'waiting' ? `MultiCC #${sessionId}: Action Required`
-          : type === 'error' ? `MultiCC #${sessionId}: Error`
-            : `MultiCC #${sessionId}: Execution succeeded`
-        : type === 'waiting' ? `MultiCC #${sessionId}: 等待操作`
-          : type === 'error' ? `MultiCC #${sessionId}: 出现异常`
-            : `MultiCC #${sessionId}: 执行成功`,
-      body: `${message}\n${shortCwd}`,
-      sessionId,
-      type,
-      locale: locale === 'en' ? 'en' : 'zh',
-      tag: `multicc-${sessionId}`,
-      url: '/manage',
-    });
+    const spec = (options && options.classifyState) || type;
+    // Title copy comes from the one table in ./notification-copy (which reads
+    // the classify vocab) — no per-type string branches here any more.
+    const payloadForLocale = locale => {
+      const copy = notificationCopy(spec, locale);
+      return {
+        title: `MultiCC #${sessionId}: ${copy.title}`,
+        body: `${message}\n${shortCwd}`,
+        sessionId,
+        type,
+        locale: copy.locale,
+        tag: `multicc-${sessionId}`,
+        url: '/manage',
+      };
+    };
     const payload = payloadForLocale('zh');
 
     push.globalStats.lastPushTime = timestamp;

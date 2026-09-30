@@ -99,7 +99,7 @@ function decideRetry(input = {}, deps = {}) {
   if (event === 'empty-exit') {
     // Claude's production path is a persistent stream and uses interruption
     // recovery, while process CLIs get exactly one fresh-session fallback.
-    if (cli === 'claude') return terminal('empty-exit', 'claude-stream-does-not-fresh-retry');
+    if (cli === 'claude' || cli === 'claude-exp') return terminal('empty-exit', 'claude-stream-does-not-fresh-retry');
     if (input.adapterError) return terminal('empty-exit', 'provider-error');
     if (input.killReason) return terminal('empty-exit', 'turn-killed');
     if (input.guardedHandoff) return terminal('handoff-resume', 'fail-closed-no-fresh-retry', { preserveHandoff: true });

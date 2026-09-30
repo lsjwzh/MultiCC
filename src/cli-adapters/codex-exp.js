@@ -2,6 +2,8 @@
 
 const path = require('node:path');
 const { completion, createCompletionTracker } = require('./completion');
+const { displayNameOf } = require('../cli/cli-capability');
+
 const { renderPrompt } = require('../message-composer');
 const { normalizeCodexUsage, routerMcpConfigArgs } = require('./codex');
 
@@ -86,8 +88,8 @@ function createCodexExpAdapter(deps = {}) {
       };
       let prompt = renderPrompt(env);
       if (env.historyHandle.isFirstTurn) {
-        const prefixes = [deps.multiccImgHint, deps.envConstraint];
-        if (env.rolePrompt) prefixes.push(`[角色设定]\n${env.rolePrompt}\n[角色设定结束]`);
+        const prefixes = [deps.multiccImgHint, deps.envConstraint, env.subagentHint];
+        if (env.rolePrompt) prefixes.push(`[Role prompt]\n${env.rolePrompt}\n[End of role prompt]`);
         prompt = `${prefixes.filter(Boolean).join('\n\n')}\n\n${prompt}`;
       } else if (deps.envConstraint) {
         prompt = `${deps.envConstraint}\n\n${prompt}`;
@@ -98,8 +100,27 @@ function createCodexExpAdapter(deps = {}) {
       const effort = deps.codexReasoningLevel?.(session);
       if (effort) args.push('--effort', effort);
       for (const config of configArgs(session)) args.push('--config', config);
-      args.push('--');
-      return { cmd: process.execPath, args, payload: prompt };
+      return {
+        cmd: process.execPath,
+        // One-shot argv: `--` terminates the flags and the prompt is appended
+        // after it by the spawn path.
+        args: [...args, '--'],
+        payload: prompt,
+        // Resident argv: the app-server lane takes its prompt on stdin like every
+        // later turn, so `--resident` stands where the one-shot prompt would and
+        // no `--` may precede it (`--` would swallow the flag as the prompt).
+        streamArgs: [...args, '--resident'],
+        streamBackend: 'app-server',
+        // The thread id is allocated by the app-server and observed from its
+        // `thread/started` notification, so the host must not mint one and must
+        // persist it under cliSessionId — the same field the per-turn lane fills
+        // from the same notification.
+        nativeKey: 'cliSessionId',
+        clientAllocatesNativeId: false,
+        // Per-turn model/effort ride on turn/start, so changing either never
+        // forces the resident app-server to respawn.
+        turnOptions: { model: env.spawnOpts.rawModel || null, effort: effort || null },
+      };
     },
     decodeEvent(event) {
       const method = event?.method;
@@ -111,8 +132,10 @@ function createCodexExpAdapter(deps = {}) {
       }
       if (event.id !== undefined && /(?:requestApproval|Approval)$/.test(method)) {
         return [{
-          type: 'error', label: 'Codex Exp', kind: 'provider',
-          message: 'Codex Exp v1 does not support interactive approvals; the request was cancelled.',
+          // label 跟着展示表走（displayNameOf('codex-exp') 现在是 "Codex"），
+          // 所以这句要跟正文对齐，别再自称 "Codex Exp" —— 那个名字在界面上已经不存在了。
+          type: 'error', label: displayNameOf('codex-exp'), kind: 'provider',
+          message: 'Codex v1 does not support interactive approvals; the request was cancelled.',
         }];
       }
       if (method === 'thread/started') {
@@ -195,12 +218,12 @@ function createCodexExpAdapter(deps = {}) {
         usageByTurn.delete(turn.id);
         activeTurns.delete(turn.id);
         if (turn.status !== 'completed') {
-          return [{ type: 'error', label: 'Codex Exp', message: turn.error?.message || `turn ${turn.status}`, kind: turn.status === 'interrupted' ? 'cancelled' : 'provider' }];
+          return [{ type: 'error', label: displayNameOf('codex-exp'), message: turn.error?.message || `turn ${turn.status}`, kind: turn.status === 'interrupted' ? 'cancelled' : 'provider' }];
         }
         return [{ type: 'complete', cost: null, usage }];
       }
       if (method === 'error') {
-        return [{ type: 'error', label: 'Codex Exp', message: params.error?.message || params.message || 'app-server error', kind: 'provider', error: params.error }];
+        return [{ type: 'error', label: displayNameOf('codex-exp'), message: params.error?.message || params.message || 'app-server error', kind: 'provider', error: params.error }];
       }
       if (method === 'warning' || method === 'configWarning' || method === 'deprecationNotice') {
         return [{ type: 'activity', phase: 'warning', message: params.message || params.summary || '' }];

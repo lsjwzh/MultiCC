@@ -290,22 +290,22 @@ function fakeSource({ accounts = [], tokens = {}, fetch }) {
 
 test('summarizeOAuthUsage maps the usage windows to the unified row shape', () => {
   const usage = {
-    five_hour: { utilization: 0.31, resets_at: '2026-09-02T10:00:00Z' },
-    seven_day: { utilization: 0.5, resets_at: '2026-09-05T00:00:00Z' },
-    seven_day_opus: { utilization: 0.125, resets_at: '2026-09-05T00:00:00Z' },
+    five_hour: { utilization: 31, resets_at: '2026-09-02T10:00:00Z' },
+    seven_day: { utilization: 50, resets_at: '2026-09-05T00:00:00Z' },
+    seven_day_opus: { utilization: 12.5, resets_at: '2026-09-05T00:00:00Z' },
   };
   const rows = claude.summarizeOAuthUsage(usage);
   assert.deepEqual(rows.map((r) => r.window), ['5h', '1wk', '1wk']);
   assert.deepEqual(rows.map((r) => r.label), ['Current session', 'All models', 'Opus']);
-  // utilization is a 0..1 fraction; usedPercent keeps one decimal.
+  // utilization is a 0..100 percent; usedPercent keeps one decimal.
   assert.deepEqual(rows.map((r) => r.usedPercent), [31, 50, 12.5]);
   assert.equal(rows[0].percent, rows[0].usedPercent, 'percent mirrors usedPercent');
   assert.equal(rows[0].resetMs, Date.parse('2026-09-02T10:00:00Z'));
 });
 
 test('summarizeOAuthUsage clamps, skips null-utilization windows, and tolerates bad resets', () => {
-  // utilization can exceed 1 (overage) — clamp to 100, never render >100%.
-  const over = claude.summarizeOAuthUsage({ five_hour: { utilization: 1.4 } });
+  // utilization can exceed 100 (overage) — clamp to 100, never render >100%.
+  const over = claude.summarizeOAuthUsage({ five_hour: { utilization: 140 } });
   assert.equal(over.length, 1);
   assert.equal(over[0].usedPercent, 100);
   assert.equal(over[0].resetMs, null, 'a window with no resets_at still yields a row');
@@ -315,20 +315,50 @@ test('summarizeOAuthUsage clamps, skips null-utilization windows, and tolerates 
   assert.equal(claude.summarizeOAuthUsage({ five_hour: { utilization: null }, seven_day: { utilization: null } }), null);
 
   // A garbage resets_at must not poison the row: keep the percentage, null the reset.
-  const badReset = claude.summarizeOAuthUsage({ five_hour: { utilization: 0.2, resets_at: 'not-a-date' } });
+  const badReset = claude.summarizeOAuthUsage({ five_hour: { utilization: 20, resets_at: 'not-a-date' } });
   assert.equal(badReset[0].usedPercent, 20);
   assert.equal(badReset[0].resetMs, null);
+});
+
+// The scale of `utilization` is the one thing here that fails silently: read it
+// as a 0..1 fraction and a 9% week renders as 100%. This fixture is the live
+// response body (trimmed) from 2026-09-29, where five_hour.utilization === 100
+// matches limits[session].percent === 100 and seven_day === 9 — a percent.
+test('summarizeOAuthUsage reads the live percent payload (limits[] wins)', () => {
+  const live = {
+    five_hour: { utilization: 100, resets_at: '2026-09-29T12:19:59.733155+00:00' },
+    seven_day: { utilization: 9, resets_at: '2026-10-05T05:59:59.733176+00:00' },
+    seven_day_opus: null,
+    limits: [
+      { kind: 'session', percent: 100, severity: 'critical', resets_at: '2026-09-29T12:19:59.733155+00:00', is_active: true },
+      { kind: 'weekly_all', percent: 9, severity: 'normal', resets_at: '2026-10-05T05:59:59.733176+00:00', is_active: false },
+    ],
+    seven_day_breakdown: { rows: [{ key: 'claude_code', display_name: 'Claude Code', percent: 99 }, { key: 'chat', display_name: 'Chats', percent: 1 }] },
+  };
+  const rows = claude.summarizeOAuthUsage(live);
+  assert.deepEqual(rows.map((r) => [r.window, r.usedPercent]), [['5h', 100], ['1wk', 9]]);
+  assert.equal(rows[1].resetMs, Date.parse('2026-10-05T05:59:59.733176+00:00'), 'reset comes through from limits[]');
+  assert.equal(rows[0].line, 'session: 100', 'the window is credited to limits[] when present');
+
+  // limits[] alone is enough — a response that drops the window objects still
+  // yields rows, which is what makes the window naming worth preferring.
+  const limitsOnly = claude.summarizeOAuthUsage({ limits: [{ kind: 'session', percent: 12.5 }] });
+  assert.deepEqual(limitsOnly.map((r) => [r.window, r.usedPercent, r.resetMs]), [['5h', 12.5, null]]);
+
+  // A window object with no matching limit still reads (older response shape).
+  const utilOnly = claude.summarizeOAuthUsage({ five_hour: { utilization: 42 } });
+  assert.equal(utilOnly[0].usedPercent, 42);
 });
 
 test('summarizeOAuthUsage returns null for junk / empty input', () => {
   assert.equal(claude.summarizeOAuthUsage(null), null);
   assert.equal(claude.summarizeOAuthUsage('x'), null);
   assert.equal(claude.summarizeOAuthUsage({}), null);
-  assert.equal(claude.summarizeOAuthUsage({ unknown_window: { utilization: 0.5 } }), null);
+  assert.equal(claude.summarizeOAuthUsage({ unknown_window: { utilization: 50 } }), null);
 });
 
 test('fetchClaudeUsageViaOAuth reads usage with the first usable account token', async () => {
-  const body = { five_hour: { utilization: 0.31, resets_at: '2026-09-02T10:00:00Z' } };
+  const body = { five_hour: { utilization: 31, resets_at: '2026-09-02T10:00:00Z' } };
   const { fetch, calls } = fakeUsageFetch(() => okJson(body));
   claude.configureClaudeOAuthSource(fakeSource({
     accounts: [{ id: 'acct-1', label: 'L', email: 'me@example.com' }],
@@ -341,7 +371,7 @@ test('fetchClaudeUsageViaOAuth reads usage with the first usable account token',
     assert.equal(result.source, 'oauth');
     assert.deepEqual(result.account, { id: 'acct-1', label: 'L', email: 'me@example.com' });
     assert.deepEqual(result.summary.map((r) => r.window), ['5h']);
-    assert.equal(result.usage.five_hour.utilization, 0.31);
+    assert.equal(result.usage.five_hour.utilization, 31);
     assert.equal(calls.length, 1);
     assert.ok(calls[0].url.includes('api.anthropic.com/api/oauth/usage'), 'hits the OAuth usage endpoint');
     assert.equal(calls[0].init.headers.Authorization, 'Bearer oat-1');
@@ -352,7 +382,7 @@ test('fetchClaudeUsageViaOAuth reads usage with the first usable account token',
 });
 
 test('fetchClaudeUsageViaOAuth skips a dead account and uses the next one', async () => {
-  const body = { seven_day: { utilization: 0.4, resets_at: '2026-09-05T00:00:00Z' } };
+  const body = { seven_day: { utilization: 40, resets_at: '2026-09-05T00:00:00Z' } };
   // First account 401s (revoked), second succeeds.
   const { fetch, calls } = fakeUsageFetch((url, init) => (
     init.headers.Authorization === 'Bearer dead' ? errResp(401, 'invalid_token') : okJson(body)
@@ -380,7 +410,7 @@ test('fetchClaudeUsageViaOAuth returns null when no account can be used', async 
 
   // Accounts exist but every credential is unreadable (token null) — must NOT
   // call fetch at all, and must return null so the CDP fallback owns the status.
-  const { fetch, calls } = fakeUsageFetch(() => okJson({ five_hour: { utilization: 0.1 } }));
+  const { fetch, calls } = fakeUsageFetch(() => okJson({ five_hour: { utilization: 10 } }));
   claude.configureClaudeOAuthSource(fakeSource({ accounts: [{ id: 'x' }], tokens: {}, fetch }));
   try {
     assert.equal(await claude.fetchClaudeUsageViaOAuth(), null);
@@ -404,7 +434,7 @@ test('fetchClaudeUsage prefers the OAuth source and never drives a browser', asy
   // CDP fallback is only reached when OAuth returns null; in a test env there is
   // no browser, so if the source were consulted the result would be
   // chrome_unavailable — getting source:'oauth' proves CDP was bypassed.
-  const body = { five_hour: { utilization: 0.22, resets_at: '2026-09-02T10:00:00Z' } };
+  const body = { five_hour: { utilization: 22, resets_at: '2026-09-02T10:00:00Z' } };
   const { fetch, calls } = fakeUsageFetch(() => okJson(body));
   claude.configureClaudeOAuthSource(fakeSource({
     accounts: [{ id: 'acct', label: 'L', email: 'e@x.com' }],
@@ -418,5 +448,216 @@ test('fetchClaudeUsage prefers the OAuth source and never drives a browser', asy
     assert.equal(calls.length, 1);
   } finally {
     claude.configureClaudeOAuthSource(null);
+  }
+});
+
+// ── source 1b: the Claude Code CLI's own credential store ───────────────────
+const cliOauth = require('../src/quota/claude-cli-oauth');
+
+test('parseCredentials accepts both the wrapped and the flat shape', () => {
+  const wrapped = cliOauth.parseCredentials(JSON.stringify({
+    claudeAiOauth: { accessToken: 'sk-ant-oat', refreshToken: 'r', expiresAt: 1_800_000_000_000, subscriptionType: 'pro' },
+  }));
+  assert.deepEqual(
+    { ok: wrapped.ok, token: wrapped.accessToken, sub: wrapped.subscriptionType, exp: wrapped.expiresAt },
+    { ok: true, token: 'sk-ant-oat', sub: 'pro', exp: 1_800_000_000_000 },
+  );
+  const flat = cliOauth.parseCredentials(JSON.stringify({ accessToken: 'tok-2' }));
+  assert.equal(flat.ok, true);
+  assert.equal(flat.accessToken, 'tok-2');
+  assert.equal(flat.expiresAt, null, 'no expiry is not an expiry of 0');
+
+  assert.deepEqual(cliOauth.parseCredentials('not json'), { ok: false, reason: 'not_json' });
+  assert.deepEqual(cliOauth.parseCredentials('{}'), { ok: false, reason: 'access_token_missing' });
+  assert.deepEqual(cliOauth.parseCredentials(''), { ok: false, reason: 'not_json' });
+});
+
+test('readCliCredentials prefers the keychain and falls back to the file', async () => {
+  const keychain = await cliOauth.readCliCredentials({
+    platform: 'darwin',
+    readKeychain: async () => JSON.stringify({ claudeAiOauth: { accessToken: 'from-keychain' } }),
+    readFile: async () => { throw new Error('must not be read'); },
+  });
+  assert.equal(keychain.accessToken, 'from-keychain');
+  assert.equal(keychain.store, 'keychain');
+
+  // Keychain empty (never logged in on this machine, or the entry moved): the
+  // on-disk copy the CLI keeps elsewhere is the fallback, not a failure.
+  const file = await cliOauth.readCliCredentials({
+    platform: 'darwin',
+    readKeychain: async () => null,
+    readFile: async () => JSON.stringify({ claudeAiOauth: { accessToken: 'from-file' } }),
+  });
+  assert.equal(file.accessToken, 'from-file');
+  assert.equal(file.store, 'file');
+
+  const none = await cliOauth.readCliCredentials({
+    platform: 'darwin',
+    readKeychain: async () => null,
+    readFile: async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); },
+  });
+  assert.deepEqual({ ok: none.ok, reason: none.reason, store: none.store }, { ok: false, reason: 'unreadable', store: 'keychain' });
+});
+
+test('fetchCliUsage reads the OAuth usage endpoint with the CLI token', async () => {
+  const body = { five_hour: { utilization: 50, resets_at: '2026-09-02T10:00:00Z' } };
+  const { fetch, calls } = fakeUsageFetch(() => okJson(body));
+  const read = await cliOauth.fetchCliUsage({
+    fetchImpl: fetch,
+    now: () => 1_000_000,
+    readCredentials: async () => ({ ok: true, accessToken: 'cli-tok', expiresAt: 1_000_000 + 3_600_000, subscriptionType: 'pro', store: 'keychain' }),
+  });
+  assert.equal(read.usage.five_hour.utilization, 50);
+  assert.equal(read.account.subscriptionType, 'pro');
+  assert.equal(read.account.store, 'keychain');
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.includes('api.anthropic.com/api/oauth/usage'));
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer cli-tok');
+});
+
+test('fetchCliUsage never spends a request on a dead or missing token', async () => {
+  const { fetch, calls } = fakeUsageFetch(() => okJson({ five_hour: { utilization: 50 } }));
+  // Expired (or about to expire) — the endpoint would 401, so do not ask.
+  assert.equal(await cliOauth.fetchCliUsage({
+    fetchImpl: fetch, now: () => 1_000_000,
+    readCredentials: async () => ({ ok: true, accessToken: 'stale', expiresAt: 1_000_000 + 30_000 }),
+  }), null);
+  // No store at all.
+  assert.equal(await cliOauth.fetchCliUsage({
+    fetchImpl: fetch, readCredentials: async () => ({ ok: false, reason: 'unreadable' }),
+  }), null);
+  // Reader throws (keychain blocked) — null, never an exception out of here.
+  assert.equal(await cliOauth.fetchCliUsage({
+    fetchImpl: fetch, readCredentials: async () => { throw new Error('keychain'); },
+  }), null);
+  // Endpoint rejects the token.
+  assert.equal(await cliOauth.fetchCliUsage({
+    fetchImpl: fakeUsageFetch(() => errResp(401, 'invalid_token')).fetch, now: () => 0,
+    readCredentials: async () => ({ ok: true, accessToken: 'revoked', expiresAt: null }),
+  }), null);
+  assert.equal(calls.length, 0, 'no request without a live token');
+});
+
+test('fetchClaudeUsageViaCli reports the CLI store as its account', async () => {
+  claude.configureClaudeCliUsageSource(async () => ({
+    usage: { five_hour: { utilization: 100, resets_at: '2026-09-29T12:20:00Z' } },
+    account: { id: 'cli', label: 'Claude Code CLI', email: '', subscriptionType: 'pro', store: 'keychain' },
+  }));
+  try {
+    const result = await claude.fetchClaudeUsageViaCli();
+    assert.equal(result.source, 'cli-oauth');
+    assert.equal(result.status, 'ok');
+    assert.equal(result.account.store, 'keychain');
+    assert.equal(result.account.subscriptionType, 'pro');
+    assert.deepEqual(result.summary.map((r) => r.window), ['5h']);
+    assert.equal(result.summary[0].usedPercent, 100);
+    assert.equal(result.url, 'https://api.anthropic.com/api/oauth/usage');
+  } finally {
+    claude.configureClaudeCliUsageSource(null);
+  }
+});
+
+test('fetchClaudeUsageViaCli returns null when the CLI source has nothing', async () => {
+  claude.configureClaudeCliUsageSource(async () => null);
+  try { assert.equal(await claude.fetchClaudeUsageViaCli(), null); } finally { claude.configureClaudeCliUsageSource(null); }
+  // Authenticated but an unrecognized body must not fabricate a row.
+  claude.configureClaudeCliUsageSource(async () => ({ usage: { nothing: true } }));
+  try { assert.equal(await claude.fetchClaudeUsageViaCli(), null); } finally { claude.configureClaudeCliUsageSource(null); }
+});
+
+// ── the page's own JSON API ─────────────────────────────────────────────────
+// A page that answers the in-page usage-API script with whatever the caller
+// hands in; `usageApiAnswer` null models a page without that API (login screen,
+// Cloudflare challenge, a blanket '' from an expression we don't recognize).
+function fakeApiPage({ usageApiAnswer = null, urls = ['https://claude.ai/settings/usage'], bodyText = '', readyState = 'complete' } = {}) {
+  const navigated = [];
+  const apiCalls = [];
+  let urlIdx = 0;
+  return {
+    navigated,
+    apiCalls,
+    enable: async () => {},
+    navigate: async (url) => { navigated.push(url); },
+    async evaluate(expression, options = {}) {
+      if (expression.includes('/api/organizations')) {
+        apiCalls.push({ awaitPromise: Boolean(options && options.awaitPromise) });
+        return usageApiAnswer;
+      }
+      if (expression.includes('location.href')) {
+        const url = urls[Math.min(urlIdx, urls.length - 1)];
+        urlIdx += 1;
+        return url;
+      }
+      if (expression.includes('document.readyState')) return readyState;
+      if (expression.includes('innerText')) return bodyText;
+      return '';
+    },
+    async waitFor(predicate, { timeoutMs = 1000, intervalMs = 1 } = {}) {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        let hit = null;
+        try { hit = await predicate(); } catch (_) { hit = null; }
+        if (hit) return hit;
+        if (Date.now() >= deadline) return null;
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    },
+  };
+}
+
+test('readClaudeUsageApi turns the page API body into the unified rows', async () => {
+  const page = fakeApiPage({
+    usageApiAnswer: { usage: { five_hour: { utilization: 100, resets_at: '2026-09-29T12:20:00Z' }, seven_day: { utilization: 9, resets_at: '2026-10-05T06:00:00Z' } } },
+  });
+  const result = await claude.readClaudeUsageApi(page);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.source, 'usage-api');
+  assert.deepEqual(result.summary.map((r) => [r.window, r.usedPercent]), [['5h', 100], ['1wk', 9]]);
+  assert.equal(result.summary[1].resetMs, Date.parse('2026-10-05T06:00:00Z'));
+  assert.equal(page.apiCalls[0].awaitPromise, true, 'the in-page fetch is a promise; CDP must await it');
+});
+
+test('readClaudeUsageApi declines an unusable answer instead of reporting zeros', async () => {
+  for (const answer of [null, '', { error: 'orgs_http_401' }, { error: 'usage_http_403' }, { nothing: true }]) {
+    const page = fakeApiPage({ usageApiAnswer: answer });
+    assert.equal(await claude.readClaudeUsageApi(page), null);
+  }
+});
+
+test('readClaudeUsageFromPage prefers the page API over scraping the rendered text', async () => {
+  // Both are available here; the JSON one wins because it carries exact
+  // percentages and reset timestamps.
+  const page = fakeApiPage({
+    usageApiAnswer: { usage: { seven_day: { utilization: 65, resets_at: '2026-10-05T06:00:00Z' } } },
+    bodyText: USAGE_TEXT,
+  });
+  const result = await claude.readClaudeUsageFromPage(page);
+  assert.equal(result.source, 'usage-api');
+  assert.deepEqual(result.summary.map((r) => r.window), ['1wk']);
+});
+
+test('readClaudeUsageFromPage still scrapes when the page API is unavailable', async () => {
+  const page = fakeApiPage({ usageApiAnswer: { error: 'orgs_http_401' }, bodyText: USAGE_TEXT });
+  const result = await claude.readClaudeUsageFromPage(page);
+  assert.equal(result.source, 'usage-page');
+  assert.deepEqual(result.summary.map((r) => r.window), ['5h', '1wk', '1m']);
+});
+
+test('fetchClaudeUsage falls to the CLI store when no managed account answers', async () => {
+  // No managed accounts, but the CLI keychain has a live token: that must win
+  // over the browser, so the result can only be cli-oauth (a test env has no
+  // browser, so reaching CDP would show up as chrome_unavailable).
+  claude.configureClaudeOAuthSource(fakeSource({ accounts: [], tokens: {}, fetch: fakeUsageFetch(() => okJson({})).fetch }));
+  claude.configureClaudeCliUsageSource(async () => ({
+    usage: { five_hour: { utilization: 72, resets_at: '2026-09-29T12:20:00Z' } },
+    account: { id: 'cli', label: 'Claude Code CLI', store: 'keychain' },
+  }));
+  try {
+    const result = await claude.fetchClaudeUsage();
+    assert.equal(result.source, 'cli-oauth');
+    assert.equal(result.summary[0].usedPercent, 72);
+  } finally {
+    claude.configureClaudeOAuthSource(null);
+    claude.configureClaudeCliUsageSource(null);
   }
 });

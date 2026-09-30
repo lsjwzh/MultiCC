@@ -4,6 +4,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/message.dart';
+import '../providers/admission_notes.dart';
 import 'chat_debug_log.dart';
 import 'provider_route_gate.dart';
 import 'chat_shell_view.dart';
@@ -390,6 +391,18 @@ class ChatService {
 
       case 'cli_switched':
         _emit('cli_switched', msg);
+        break;
+
+      // Deferred ("applies next turn") configuration: staged by a busy session
+      // so the switch/PATCH cannot take effect immediately. Forwarded so the
+      // header can show what the user picked instead of the old CLI/provider
+      // until the next turn applies it.
+      case 'session_configuration_pending':
+        _emit('session_configuration_pending', msg);
+        break;
+
+      case 'session_configuration_applied':
+        _emit('session_configuration_applied', msg);
         break;
 
       case 'provider_route_event':
@@ -888,7 +901,7 @@ class ChatService {
         ? list
               .map((m) {
                 try {
-                  return ChatMessage.fromHistory(m as Map<String, dynamic>);
+                  return historyRecordMessage(m as Map<String, dynamic>);
                 } catch (_) {
                   return null;
                 }

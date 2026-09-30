@@ -68,6 +68,10 @@
   ]);
   const CODEBUDDY_MODEL_OPTIONS = Object.freeze(['', ...CODEBUDDY_TIER_OPTIONS, ...CODEBUDDY_FALLBACK_MODELS]);
   const DSH_MODEL_OPTIONS = Object.freeze(['', 'deepseek-v4-flash', 'deepseek-v4-pro']);
+  // Gemini CLI / Grok Build model ids are free text; these are the current
+  // headline ids as suggestions only (the picker always offers 自定义/__custom__).
+  const GEMINI_MODEL_OPTIONS = Object.freeze(['', 'gemini-2.5-pro', 'gemini-2.5-flash']);
+  const GROK_MODEL_OPTIONS = Object.freeze(['', 'grok-code-fast-1', 'grok-4']);
   // Provider-less ZCode follows its native config/Coding Plan. Do not hardcode
   // a vendor/model pair here: the native provider may be Z.ai, BigModel, Start
   // Plan, Team Plan, or a user-defined provider.
@@ -91,6 +95,39 @@
     }
     if (!_autoProviderEditorApi) throw new Error('MultiCCAutoProviderEditor is unavailable');
     return _autoProviderEditorApi;
+  }
+
+  // Difficulty routing reads its Jev key from the vault. The editor owns the
+  // flow (check → paste → test) but every request goes through here: the list
+  // call returns names only, a pasted key goes straight into the vault, and the
+  // test route reads it in-process — the value never comes back to the page.
+  //
+  // Every call carries the selected gateway: the same three fields reach the
+  // vault description and the test route, so the verdict the user sees was made
+  // by the host they actually picked.
+  function routingKeyApi() {
+    const json = response => response.json().catch(() => ({}));
+    return {
+      check(name) {
+        return fetch('/api/secrets').then(response => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
+          .then(list => Array.isArray(list) && list.some(entry => entry && entry.name === name));
+      },
+      save(name, value, { gateway } = {}) {
+        const description = autoProviderEditorApi().routingGatewayDescription(gateway);
+        return fetch('/api/secrets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, value, description, source: 'user' }),
+        }).then(response => (response.ok ? null : json(response).then(body => Promise.reject(new Error(body.error || String(response.status))))));
+      },
+      test({ apiKeyName, gateway, endpoint, model, text }) {
+        return fetch('/api/auto-provider/routing/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKeyName, gateway, endpoint, model, text }),
+        }).then(response => (response.status === 404 ? { ok: false, code: 'test_unavailable' } : json(response)));
+      },
+    };
   }
 
   function defaultEffort(cli) {
@@ -201,6 +238,19 @@
       ? api.providerDisplayName(provider) : (provider && provider.name) || '';
   }
 
+  // CLI 展示名与「自持账号」两列来自共享 CLI 目录（权威表：服务端
+  // src/cli/cli-capability.js）。Node 里没有 root，按 raw id 和「有 provider」回落 ——
+  // 与浏览器侧相比只会更保守，不会把某个 CLI 认成另一个 CLI。
+  function cliDisplayName(cli) {
+    const api = root && root.MultiCCProviderCatalog;
+    return api && api.cliDisplayName ? api.cliDisplayName(cli) : String(cli == null ? '' : cli).trim();
+  }
+
+  function cliProviderless(cli) {
+    const api = root && root.MultiCCProviderCatalog;
+    return !!(api && api.cliProviderless && api.cliProviderless(cli));
+  }
+
   function providerShortName(providerId, state) {
     if (!providerId) return translate(state, 'default');
     const provider = providersOf(state).find(item => item && item.id === providerId);
@@ -243,14 +293,26 @@
     return model;
   }
 
+  // Every model dropdown builds its list through buildModelChoices, so this is
+  // the "picker opened" hook: keep the live catalogs from going stale without a
+  // manual /model. Both calls are throttled and never block the render.
+  function nudgeModelCatalog(state) {
+    const cli = state && state.cli;
+    try {
+      if (isCodexCli(cli) && typeof window.syncCodexModelsIfDue === 'function') window.syncCodexModelsIfDue();
+      else if (isClaudeCli(cli) && typeof loadClaudeModels === 'function') void loadClaudeModels();
+    } catch (_) { /* best-effort */ }
+  }
+
   function buildModelChoices(providerId, state) {
+    nudgeModelCatalog(state);
     const tiers = providerAliasTiers(providerId, state);
     if (tiers.length) return [...tiers.map(([tier]) => tier), '__custom__'];
     const options = providerModelOptions(providerId, state);
     if (options.length) return [...options, '__custom__'];
     if (state && isClaudeCli(state.cli)) {
       // Prefer the live list extracted from the installed claude CLI's bundle
-      // (1-day localStorage cache filled by loadClaudeModels(); see
+      // (localStorage cache filled by loadClaudeModels(); see
       // public/shared/models.js) so new Anthropic releases appear without a
       // multicc update. Falls back to the static table on old servers and on
       // the first picker open before refreshClaudeModels() lands.
@@ -277,6 +339,8 @@
         ...concrete.filter(model => !CODEBUDDY_TIER_OPTIONS.includes(model)), '__custom__'];
     }
     if (state && state.cli === 'dsh') return [...DSH_MODEL_OPTIONS, '__custom__'];
+    if (state && state.cli === 'gemini') return [...GEMINI_MODEL_OPTIONS, '__custom__'];
+    if (state && state.cli === 'grok') return [...GROK_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'zcode') return [...ZCODE_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'opencode') {
       // No multicc-managed provider chosen: list the local opencode CLI's
@@ -284,11 +348,28 @@
       // populated by loadOpenCodeModels() (see public/shared/models.js); the
       // first picker open may return [] here, then refreshOpenCodeModels()
       // fires a rebuild once the fetch resolves.
-      const cached = readOpenCodeModelsSync();
-      if (cached.length) return ['', ...cached.map(m => `${m.provider}/${m.model}`), '__custom__'];
+      const nativeId = openCodeNativeProviderOf(providerId);
+      const cached = readOpenCodeModelsSync().filter(m => !nativeId || m.provider === nativeId);
+      // A picked native provider pins its own models — no "follow config" row.
+      if (cached.length) return [...(nativeId ? [] : ['']), ...cached.map(m => `${m.provider}/${m.model}`), '__custom__'];
       return ['', '__custom__'];
     }
     return ['', '__custom__'];
+  }
+
+  // OpenCode's own providers (Zen gateway, Go plan, `opencode auth login`
+  // ones) are not MultiCC providers: they appear in the Provider dropdown as
+  // `opencode-native:<id>` rows that only filter the model list, and save as
+  // provider '' (native config) with a `<id>/<model>` model.
+  const OPENCODE_NATIVE_PREFIX = 'opencode-native:';
+  const OPENCODE_NATIVE_NAMES = { opencode: 'OpenCode Zen', opencodego: 'OpenCode Go' };
+  function openCodeNativeProviderOf(value) {
+    const text = String(value || '');
+    return text.startsWith(OPENCODE_NATIVE_PREFIX) ? text.slice(OPENCODE_NATIVE_PREFIX.length) : '';
+  }
+  function openCodeNativeProviders() {
+    const ids = [...new Set(readOpenCodeModelsSync().map(m => m.provider).filter(Boolean))];
+    return ids.map(id => ({ value: OPENCODE_NATIVE_PREFIX + id, label: `OpenCode 原生 · ${OPENCODE_NATIVE_NAMES[id] || id}` }));
   }
 
   // Synchronous read of a CLI model cache populated by shared/models.js
@@ -311,7 +392,7 @@
   }
 
   function readOpenCodeModelsSync() {
-    return readModelCacheSync('multicc.opencode.models.v1');
+    return readModelCacheSync('multicc.opencode.models.v2');
   }
 
   function readQoderModelsSync() {
@@ -412,6 +493,8 @@
       if (state && state.cli === 'qoder') return localized(state, 'aiConfigDefaultFollowQoder', '默认（跟随 Qoder CN 设置）');
       if (state && state.cli === 'codebuddy') return localized(state, 'aiConfigDefaultFollowWorkBuddy', '默认（跟随 WorkBuddy 设置）');
       if (state && state.cli === 'dsh') return localized(state, 'aiConfigDefaultFollowDsh', '默认（跟随 DSH 配置）');
+      if (state && state.cli === 'gemini') return localized(state, 'aiConfigDefaultFollowGemini', '默认（跟随 Gemini 配置）');
+      if (state && state.cli === 'grok') return localized(state, 'aiConfigDefaultFollowGrok', '默认（跟随 Grok 配置）');
       if (state && state.cli === 'zcode') return localized(state, 'aiConfigDefaultFollowZcode', '默认（跟随 ZCode 设置）');
       return translate(state, 'default');
     }
@@ -424,7 +507,7 @@
         'deep-model': localized(state, 'aiConfigTierDeep', 'deep（深度档）'),
       })[value] || (value === '__custom__' ? translate(state, 'custom') : value);
     }
-    if (state && state.cli === 'dsh') {
+    if (state && (state.cli === 'dsh' || state.cli === 'gemini' || state.cli === 'grok')) {
       return value === '__custom__' ? translate(state, 'custom') : value;
     }
     if (state && state.cli === 'qoder') {
@@ -662,13 +745,13 @@
     const document = documentOf(state);
     const cli = state.cli || 'claude';
     const choicesForEffort = effortOptions(cli);
-    const supportsProvider = cli !== 'qoder' && cli !== 'codebuddy' && cli !== 'dsh';
+    const supportsProvider = !cliProviderless(cli);
     return new Promise((resolve) => {
       ensureModalStyle(document);
       const { overlay, box, body, footer } = modalShell(document, 620);
       body.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
-        <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : (cli === 'codebuddy' ? 'WorkBuddy 使用自身账号与厂商配置。' : cli === 'dsh' ? 'DSH 使用 DeepSeek 自身凭证（DEEPSEEK_API_KEY 或 dsh 内置 credentials）。' : 'Qoder CN 使用自身账号与厂商配置。')}</div>
+        <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : (cli === 'codebuddy' ? 'WorkBuddy 使用自身账号与厂商配置。' : cli === 'dsh' ? 'DSH 使用 DeepSeek 自身凭证（DEEPSEEK_API_KEY 或 dsh 内置 credentials）。' : cli === 'gemini' ? 'Gemini 使用 Google 自身凭证（gemini login 或 GEMINI_API_KEY）。' : cli === 'grok' ? 'Grok 使用 xAI 自身凭证（grok login 或 XAI_API_KEY）。' : 'Qoder CN 使用自身账号与厂商配置。')}</div>
         <div id="ai-provider-section">
           <label style="display:block;font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:5px;">Provider</label>
           <select id="ai-provider" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>
@@ -694,7 +777,7 @@
         </div>
         <div id="ai-agent-section">
           <div style="height:1px;background:var(--chat-line, #30363d);margin:4px 0 14px;"></div>
-          <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${isClaudeCli(cli) ? (cli === 'claude-exp' ? 'Claude Agent SDK' : 'Claude Code') : cli === 'opencode' ? 'OpenCode' : cli === 'qoder' ? 'Qoder CN' : 'WorkBuddy'} Agent</div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${cliDisplayName(cli)} Agent</div>
           <div style="font-size:11px;color:var(--chat-muted, #8b949e);line-height:1.45;margin-bottom:8px;">对应原生 <code>--agent</code>，用于选择该 CLI 已定义的主 agent；它不同于下面的子任务路由。留空使用 CLI 默认 agent。</div>
           <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="${cli === 'opencode' ? '例如 build' : '已定义的 agent 名称'}" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
           <datalist id="ai-agent-list">${cli === 'opencode' ? '<option value="build"></option>' : ''}</datalist>
@@ -720,11 +803,26 @@
       defaultProvider.textContent = cli === 'zcode'
         ? 'ZCode 原生 / Coding Plan'
         : cli === 'opencode'
-          ? 'OpenCode 原生配置（OpenCode Go 等）'
+          ? 'OpenCode 原生配置（全部模型）'
           : translate(state, 'providerDefault');
       const providerAppType = isCodexCli(cli) ? 'codex' : cli;
       const officialProvider = providersOf(state).find(p => p.builtinOfficial && p.appType === providerAppType);
       if (!officialProvider) providerSelect.appendChild(defaultProvider);
+      function syncOpenCodeNativeOptions() {
+        if (cli !== 'opencode') return;
+        let anchor = defaultProvider.parentNode ? defaultProvider : null;
+        for (const native of openCodeNativeProviders()) {
+          let option = [...providerSelect.options].find(o => o.value === native.value);
+          if (!option) {
+            option = document.createElement('option');
+            option.value = native.value;
+            option.textContent = native.label;
+            providerSelect.insertBefore(option, anchor ? anchor.nextSibling : providerSelect.firstChild);
+          }
+          anchor = option;
+        }
+      }
+      syncOpenCodeNativeOptions();
       for (const protocol of ['anthropic', 'openai_responses']) {
         if (autoProvidersForProtocol(protocol, providersOf(state)).length < 2) continue;
         const option = document.createElement('option');
@@ -740,6 +838,12 @@
       }
       const configuredAuto = config.providerSelection?.mode === 'auto' ? config.providerSelection : null;
       providerSelect.value = configuredAuto ? autoOptionValue(configuredAuto.protocol) : (config.provider || officialProvider?.id || '');
+      const nativeFromModel = cli === 'opencode' && !config.provider && !configuredAuto
+        && String(config.model || '').split('/')[0];
+      if (nativeFromModel && [...providerSelect.options].some(o => o.value === OPENCODE_NATIVE_PREFIX + nativeFromModel)) {
+        providerSelect.value = OPENCODE_NATIVE_PREFIX + nativeFromModel;
+      }
+      const effectiveProvider = value => (openCodeNativeProviderOf(value) ? '' : value);
       providerSection.style.display = supportsProvider ? '' : 'none';
       if (!supportsProvider) providerSelect.value = '';
 
@@ -780,11 +884,11 @@
 
       function primaryProviderId() {
         if (autoProtocolFromValue(providerSelect.value) && autoEditorRef) {
-          const read = autoEditorRef.read();
+          const read = autoEditorRef.read({ remember: false });
           const first = read && read.ok ? read.value.candidates[0] : null;
           if (first && first.providerId) return first.providerId;
         }
-        return providerSelect.value;
+        return effectiveProvider(providerSelect.value);
       }
 
       function syncSubCustom() {
@@ -839,6 +943,7 @@
         onChange: () => refreshSubUi(),
         formatProvider: provider => providerLabel(provider, false)
           + providerLimitLabel(provider, state.translate, Date.now()),
+        routingKey: typeof fetch === 'function' ? routingKeyApi() : null,
       });
       autoEditorRef = autoEditor;
       refreshSubUi();
@@ -879,6 +984,17 @@
       }
       rebuildModels(configuredAuto ? (config.provider || '') : providerSelect.value, config.model || '');
       syncAutoEditor();
+      if (cli === 'opencode' && !openCodeNativeProviders().length) {
+        // First open before the catalog landed: add the native rows (and
+        // re-pick the saved one) once the fetch resolves.
+        void refreshOpenCodeModels(() => {
+          syncOpenCodeNativeOptions();
+          const saved = String(config.model || '').split('/')[0];
+          if (!config.provider && saved && [...providerSelect.options].some(o => o.value === OPENCODE_NATIVE_PREFIX + saved)
+            && !providerSelect.value) providerSelect.value = OPENCODE_NATIVE_PREFIX + saved;
+          if (!autoProtocolFromValue(providerSelect.value)) rebuildModels(providerSelect.value, modelSelect.value === '__custom__' ? customModel.value : modelSelect.value);
+        });
+      }
       providerSelect.onchange = () => {
         const autoProtocol = autoProtocolFromValue(providerSelect.value);
         if (!autoProtocol) rebuildModels(providerSelect.value, '');
@@ -905,13 +1021,13 @@
           ? subCustomModel.value.trim()
           : subModelSelect.value;
         close({
-          provider: primary ? primary.providerId : providerSelect.value,
+          provider: primary ? primary.providerId : effectiveProvider(providerSelect.value),
           providerSelection,
           model: primary ? primary.model || '' : selectedModel,
           effort: effortSelect.value,
           agent: isClaudeCli(cli) || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? agentInput.value.trim() : null,
           subagent: resolveSubagent({ cli, providerId: subProviderSelect.value,
-            primaryProviderId: primary ? primary.providerId : providerSelect.value, model: childModel }),
+            primaryProviderId: primary ? primary.providerId : effectiveProvider(providerSelect.value), model: childModel }),
         });
       };
       box.querySelector('#ai-cancel').onclick = () => close(null);
@@ -1023,6 +1139,8 @@
     QODER_MODEL_OPTIONS,
     CODEBUDDY_MODEL_OPTIONS,
     DSH_MODEL_OPTIONS,
+    GEMINI_MODEL_OPTIONS,
+    GROK_MODEL_OPTIONS,
     defaultEffort,
     effortOptions,
     effortLabel,
@@ -1040,6 +1158,8 @@
     providerAliasTiers,
     normalizeModel,
     buildModelChoices,
+    openCodeNativeProviders,
+    openCodeNativeProviderOf,
     stripModelSuffix,
     defaultModelChoice,
     modelChoiceLabel,
@@ -1061,5 +1181,6 @@
     refreshQoderModels,
     refreshCodebuddyModels,
     refreshClaudeModels,
+    routingKeyApi,
   };
 });

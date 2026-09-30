@@ -6,9 +6,44 @@
     const api = window.MultiCCProviderCatalog;
     return api && api.providerDisplayName ? api.providerDisplayName(name) : name;
   };
+  // 车道名一律走共享 CLI 目录（权威表在 src/cli/cli-capability.js）：扶正后的两条
+  // 常驻车道叫 Claude / Codex，内部 id（claude-exp / codex-exp）不该出现在文案里。
+  const cliDisplayName = cli => {
+    const api = window.MultiCCProviderCatalog;
+    return api && api.cliDisplayName ? api.cliDisplayName(cli) : cli;
+  };
+  // 单行的 <option> 没有第二行可放小字：只在一条车道真的换了引擎产品名时，才把引擎
+  // 附在名字后面（扶正的两条常驻车道）；其余车道的小字就是它自己的 id，重复就不写。
+  const cliOptionLabel = cli => {
+    const api = window.MultiCCProviderCatalog;
+    const engine = api && api.cliEngine ? api.cliEngine(cli) : cli;
+    return engine && engine !== cli ? `${cliDisplayName(cli)} · ${engine}` : cliDisplayName(cli);
+  };
+  // 单行文案里的「车道 + 线路」两段：自持账号的车道（providerless）路由名就是它的
+  // 产品名（nativeRouteLabel 与 cliDisplayName 同源），两个一模一样 —— 只说一遍。
+  const laneRouteLabel = (cli, route) => {
+    const name = cliDisplayName(cli);
+    return route && route !== name ? `${name} · ${route}` : name;
+  };
+  // 这条车道能不能出现在 chat 的线路选择里（服务端 cli-capability 的 kinds 列）。
+  const cliOffersInChat = cli => {
+    const api = window.MultiCCProviderCatalog;
+    return api && api.cliOffersIn ? api.cliOffersIn(cli, 'chat') : true;
+  };
+  // chat 的默认线路：列表里第一条 chat 车道。`claude -p` / `codex exec` 那两个一次性
+  // 命令已经不在这张列表里了，兜底也只兜到常驻车道。
+  const firstChatCli = () => (Array.isArray(data?.clis) ? data.clis : []).find(cliOffersInChat) || 'claude-exp';
   function readRouteParams() {
     const params = new URLSearchParams(location.search);
     if (params.get('view') === 'planner') {
+      params.set('view', 'overview');
+      history.replaceState(history.state, '', `${location.pathname}?${params}${location.hash}`);
+    }
+    // 裸 /air（view / dir / task 三个参数全缺）就是控制台那一页。老用户把 /air 当目录首页
+    // 用，新用户第一次打开也该直接看见「跨目录的活动」，而不是先挑一个目录。带 dir= 或
+    // task= 的地址仍然落目录首页（92 处 CDP 用例钉着这条），带 view= 的地址也一字不动；
+    // external 等其它参数只是路过，规整地址时原样留着，不在这里增删。
+    if (!params.get('view') && !params.get('dir') && !params.get('task')) {
       params.set('view', 'overview');
       history.replaceState(history.state, '', `${location.pathname}?${params}${location.hash}`);
     }
@@ -20,15 +55,15 @@
     const requested = params.get('view');
     if (requested === 'directories') return 'library';
     if (requested === 'schedules') return 'schedules';
-    if (requested === 'overview') return 'tasks';
-    if (requested === 'activity') return 'tasks';
+    // 跨目录看任务只有这一个入口，所以 view=activity 和 view=overview 同义。
+    // view=overview 自己就是控制台那一页，走下面 adminModes 那条（它在这张集合里）。
+    if (requested === 'activity') return 'overview';
     if (adminModes.has(requested)) return requested;
     return 'tasks';
   };
-  // 跨目录看任务这件事现在只有这一个入口，所以 view=activity 和 view=overview 同义。
-  let consoleOpen = ['overview', 'activity'].includes(initialParams.get('view'));
   let paletteOpen = false;
   let paletteItems = [];
+  let paletteSearch = null;
   let paletteIndex = 0;
   let data = null;
   // Pin 住的任务（服务端 air-pins.json 那份清单，顺序就是页头那排收藏栏从左到右的
@@ -46,8 +81,6 @@
   window.addEventListener('multicc-air-task-open', () => { syncFrame(); });
   let entry = null;
   let mode = modeFrom(initialParams);
-  let scheduleTasks = [];
-  let scheduleLoading = false;
   let timer;
   let epoch = 0;
   let stopped = false;
@@ -69,22 +102,32 @@
   });
   const POLL_HIDDEN_MS = 15000;
   const POLL_MAX_MS = 30000;
+  // 服务端每次算这份快照要重算全部卡片（线上 1189 张、实测 0.5s）。没人在这台机器
+  // 上动任务时，4 秒一轮纯属白烧 —— 连着两轮内容没变就降到 15 秒，和「后台标签页」
+  // 同一档：内容一样就意味着画面上没有任何东西会变，最多晚一轮发现变化而已。
+  // 不看「有没有卡片在跑」来豁免：任务板上长期挂着别人留下的 running/queued 旧卡
+  // （实测 9 张），拿它当条件等于永远不降频。
+  // document.hidden 在这里帮不上忙：它说的是「标签页被埋」，屏幕睡着时这个页面
+  // 依然是可见的，照旧 4 秒敲一次。
+  const POLL_IDLE_MS = 15000;
+  let idleRounds = 0;
   let quickCreateAttempt = null;
-  let directoryTasksExpanded = false;
-  const directoryTaskFilter = { query: '', status: 'open' };
+  let directorySearch = null;
+  // fullText 默认开：搜索的默认目标是「全部记录（含对话）」，只出现在对话正文里的词
+  // 走不到任务板语料。状态那格管的是不搜索时的列表，搜索另有 searchFilter() 那份口径。
+  const directoryTaskFilter = { query: '', status: 'open', fullText: true };
 
-  // 状态/阶段/阻断原因的文案一律现取 t()：这些表在 render 的每一行上被读，
-  // 而 t() 查不到 key 只会回显 key 本身，所以漏翻是看得见的（不会静默变成中文）。
+  // 状态/阶段/阻断原因的文案一律现取 t()：这些表每一行都会读，而 t() 查不到 key
+  // 只会回显 key 本身 —— 漏翻是看得见的。规范状态的词不在这张表里写第二遍：注册表
+  // （status-presentation.js）的 airLabelKey 是 Air 词表的唯一一份，airStatusLabels()
+  // 一份喂这里、一份喂 air-admin.js，别名（failed / thinking…）也归它折算；本地只留
+  // 租约/容量去向、工作流阶段（planning.js WORKFLOW_STAGES 五个都要有词）和 active/stale。
   const stateNames = {
-    active: t('airStateActive'), succeeded: t('airStateSucceeded'), unknown: t('airStateUnknown'), failed: t('airStateFailed'), error: t('airStateFailed'), cancelled: t('airStateCancelled'),
-    workspace_execution_capacity: t('airStateExecCapacity'), workspace_resident_capacity: t('airStateResidentCapacity'),
-    workspace_restore_capacity: t('airStateRestoreCapacity'), planned: t('airStatePlanned'), resident: t('airStateResident'),
-    retained: t('airStateRetained'), hibernated: t('airStateHibernated'), reserved: t('airStateReserved'), materializing: t('airStateMaterializing'),
-    starting: t('airStateStarting'), running: t('airStateRunning'), uncertain: t('airStateUncertain'), idle: t('airStateIdle'), queued: t('airStateQueued'),
-    waiting: t('airStateWaiting'), archived: t('airStateArchived'), stale: t('airStateStale'),
-    // 工作流阶段（src/task-board/planning.js WORKFLOW_STAGES）五个都要有词：任务行
-    // 会把阶段当补充信息写在徽标后面，漏一个就有一行蹦出英文。
-    inbox: t('airStageInbox'), ready: t('airStageReady'), doing: t('airStateActive'), review: t('airStageReview'), done: t('airStageDone'),
+    ...window.MultiCCStatusPresentation?.airStatusLabels?.(t), active: t('airStateActive'), stale: t('airStateStale'),
+    workspace_execution_capacity: t('airStateExecCapacity'), workspace_resident_capacity: t('airStateResidentCapacity'), planned: t('airStatePlanned'),
+    workspace_restore_capacity: t('airStateRestoreCapacity'), resident: t('airStateResident'), retained: t('airStateRetained'), hibernated: t('airStateHibernated'),
+    reserved: t('airStateReserved'), materializing: t('airStateMaterializing'), starting: t('airStateStarting'), uncertain: t('airStateUncertain'),
+    inbox: t('airStageInbox'), ready: t('airStageReady'), doing: t('airStateActive'), review: t('airStageReview'),
   };
   const blockerNames = {
     view_changed: t('airBlockViewChanged'),
@@ -108,7 +151,8 @@
     t('airStepTurnSucceeded'), t('airStepCodeDelivered'), t('airStepSourceStable'), t('airStepAttribution'),
   ];
 
-  const label = value => stateNames[value] || value || '';
+  const label = value =>   // 本地表优先（active / stale 是 Air 自己的词），其余交给注册表
+    stateNames[value] || window.MultiCCStatusPresentation?.airStatusWordFor?.(value, t) || value || '';
   const node = (tag, text, className) => {
     const element = document.createElement(tag);
     if (text != null) element.textContent = text;
@@ -184,6 +228,24 @@
   const compareDirectoryTasks = (a, b) => taskSortAt(b) - taskSortAt(a)
     || taskMessageAt(b) - taskMessageAt(a)
     || String(a?.id || '').localeCompare(String(b?.id || ''));
+  // 目录首页那份任务列表（`#directory-task-list`）的排序：用户 pin 住的那几条
+  // 照 pin 顺序排最前，其余保持 [tasks] 原有的相对顺序。与侧栏
+  // `sidebarTasks` 同一条「置顶」规矩 —— 页头那排 tab 只在桌面出现，目录页这份
+  // 列表是手机上看「我在盯哪些」的唯一窗口，所以两端都要 pin-first。
+  function pinFirstInDirectory(list) {
+    if (!taskPins.length) return list;
+    const pinned = [];
+    const taken = new Set();
+    for (const id of taskPins) {
+      const task = list.find(item => item.id === id);
+      if (task && !taken.has(id)) {
+        pinned.push(task);
+        taken.add(id);
+      }
+    }
+    if (!pinned.length) return list;
+    return [...pinned, ...list.filter(item => !taken.has(item.id))];
+  }
   // 侧栏的任务区只装「手上的任务」：打开过的排在前面，然后是当前目录里最新的几个。
   // 后一半是必要的 —— 第一次进来没有浏览记录，只有前一半的话列出来是空的，而一条
   // 空列表并不比一条能点的任务更有用。完整的那份列表在控制台（全部目录 + 搜索）。
@@ -193,14 +255,8 @@
   // —— 那个高度本来就是给任务准备的。封顶留着只为挡住真·长尾（一个目录几百条
   // 任务时不去建几百个按钮），所以给得比任何一屏都宽。
   const RECENT_LIMIT = 30;
-  // 目录首页的「最近任务」是抬头下面那一块，扫一眼就该看完 —— 它不是清单，全
-  // 部记录在控制台（这条出路现在由 `#directory-task-more` 明写出来）。手机上
-  // 一列，六行正好一屏多一点；桌面两列，十行五排。再往下加只是把输入框顶得更
-  // 远，而多出来的那些本来也排不进「最近」。
-  const RECENT_ROWS = 10;
-  function recentRowLimit() { return matchMedia('(max-width: 760px)').matches ? 6 : RECENT_ROWS; }
   function recentPool() {
-    return window.MultiCCTaskNotify.recentTasks({ tasks: data?.tasks || [], directoryId, recentTaskIds,
+    return window.MultiCCTaskNotify.recentTasks({ tasks: data?.tasks || [], recentTaskIds,
       limit: RECENT_LIMIT, isUnseen: id => taskNotify?.isUnseen(id), statusOf: taskStatus });
   }
   const urgentTasks = () => window.MultiCCAirAdmin?.urgentTasks?.(data) || [];
@@ -210,13 +266,18 @@
   // 所以一条任务在侧栏和控制台不可能显示成两种状态，彩虹圈也不可能只出现在一边
   // —— 注册表把 spinner 只给了 running，「出错的任务绝不动画」因此不由这里决定。
   const taskStatus = task => window.MultiCCAirAdmin?.taskStatus?.(task) || 'unknown';
+  /** 徽标上真正写出来的那个词。✅ 那一格可能更细（达成目标 / 需要交互，见
+   *  status-presentation.js 的 succeededSubLabel），而下面几行「徽标说过的词不再说
+   *  一遍」的去重要比的正是同一个词 —— 各自读一份就会去错。 */
+  const taskBadgeWord = task => window.MultiCCStatusPresentation
+    ?.succeededSubLabel?.(taskStatus(task), task?.goalState, t) || label(taskStatus(task));
   const isRunningTask = task => window.MultiCCAirAdmin?.isRunning?.(task) === true;
   const runningDirectories = () => window.MultiCCAirAdmin?.runningDirectories?.(data) || new Set();
   const applyRing = (element, on, seed) => window.MultiCCAirAdmin?.applyRing?.(element, on, seed);
   /** 状态徽标（图标 + 中文标签）。没有注册表时给一句可读的兜底文案。 */
   function statusBadge(task, options) {
     return window.MultiCCAirAdmin?.statusBadge?.(task, options)
-      || node('span', label(taskStatus(task)), 'mc-status');
+      || node('span', taskBadgeWord(task), 'mc-status');
   }
 
   // `conditional` 只给每 4 秒被问一次的那两个轮询接口用，它们的调用方知道
@@ -245,8 +306,8 @@
     if (!response.ok || result.ok === false) {
       throw Object.assign(new Error(result.message || result.error || result.code || `HTTP ${response.status}`), result);
     }
-    // 校验符记在「这份正文已经被收下」之后：失败响应（Express 也会给错误体配一个
-    // ETag）要是被记下来，下一轮就会拿它换回 304 —— 一次失败被固化成永远读不到。
+    // 校验符记在「这份正文已被收下」之后：失败响应的 ETag 若被记下，下一轮就会拿它
+    // 换回 304 —— 一次失败被固化成永远读不到。
     if (conditional) {
       const etag = response.headers.get('etag');
       if (etag) resourceEtag.set(path, etag);
@@ -302,30 +363,10 @@
     await refreshEntry();
   }
 
-  // ── 控制台：从左侧展开的一层 ────────────────────────────────────────────
-  // 打开不改地址、不卸载任务；/manage 的旧 view=overview 入口在关闭时一并抹平。
-  function applyConsole(open) {
-    consoleOpen = !!open;
-    document.body.classList.toggle('console-open', consoleOpen);
-    $('overview').setAttribute('aria-expanded', String(consoleOpen));
-    $('console-panel').setAttribute('aria-hidden', String(!consoleOpen));
-    $('console-scrim').hidden = !consoleOpen;
-  }
-  function setConsole(open) {
-    if (consoleOpen === !!open) return;
-    const focusConsole = !!open;
-    applyConsole(open);
-    if (focusConsole) {
-      render();
-      $('console-close').focus();
-      return;
-    }
-    if (new URLSearchParams(location.search).get('view') === 'overview') history.replaceState({}, '', routeUrl());
-    $('overview').focus();
-  }
-
   // ── ⌘K：目录和任务一起搜 ────────────────────────────────────────────────
-  // 找任务不该先要求你想起来它在哪个目录。两类对象同一次搜索、同一个列表。
+  // 找任务不该先要求你想起来它在哪个目录，也不该要求你记得标题里那几个字：
+  // 有全文结果时任务按内容相关度排（服务端算，命中片段直接当副标题），没有时退回
+  // 「手上的任务在前，然后是当前目录，最后是其余任务」这条时间序。
   function paletteCandidates(query) {
     const needle = query.trim().toLowerCase();
     const matches = text => !needle || text.toLowerCase().includes(needle);
@@ -336,17 +377,23 @@
         kind: 'directory', dirId: directory.id,
         title: directory.name, detail: directory.path || t('airDirectoryFallback'),
       }));
-    // 顺序即相关度：手上的任务在前，然后是当前目录，最后是其余任务。
-    const pool = [...recentPool(), ...data.tasks];
+    // 面板是全局搜索，不套状态筛选：归档的任务照样找得到（口径交给 rankedRows 的
+    // 那一份 filterTasks，「全部」就是不过滤）。
+    const ranked = needle
+      ? window.MultiCCAirAdmin?.rankedRows?.(data.tasks, { status: 'all' }, () => '', paletteSearch?.results()) : null;
+    const hits = new Map((ranked || []).map(({ task, snippet }) => [task.id, snippet]));
+    const pool = ranked ? ranked.map(({ task }) => task) : [...recentPool(), ...data.tasks];
     const seen = new Set();
     const tasks = [];
     for (const task of pool) {
-      if (seen.has(task.id) || !matches(task.title || '')) continue;
+      if (seen.has(task.id) || (!ranked && !matches(task.title || ''))) continue;
       seen.add(task.id);
       tasks.push({
         kind: 'task', dirId: task.dirId, id: task.id,
         title: task.title || t('airUntitledTask'),
-        detail: `${directoryName(task.dirId)} · ${label(taskStatus(task))}`,
+        // 命中片段优先：它就答了「为什么搜出这条」。没有片段（本地筛选、目录命中）
+        // 才回到「目录 · 状态」。
+        detail: hits.get(task.id)?.text || `${directoryName(task.dirId)} · ${label(taskStatus(task))}`,
       });
       if (tasks.length >= (needle ? 8 : 6)) break;
     }
@@ -379,12 +426,11 @@
   }
   function openPalette() {
     if (!data || paletteOpen) return;
-    // 用 setConsole 而不是 applyConsole：它顺手把地址里的 view=overview 撤掉，
-    // 否则面板被 ⌘K 顶掉之后，刷新页面又会自己弹回来。
-    if (consoleOpen) setConsole(false);
     paletteOpen = true;
     paletteIndex = 0;
     $('palette-input').value = '';
+    // 面板每次都是空着打开的，上一次的全文结果不能跟进来（清空输入不会触发 input）。
+    paletteSearch?.refresh();
     $('palette').hidden = false;
     $('palette-scrim').hidden = false;
     renderPalette();
@@ -411,11 +457,10 @@
     if (taskId && nextMode === 'tasks') params.set('task', taskId);
     return '/air' + (params.size ? '?' + params : '');
   }
-  // 从控制台或命令面板里选走一个目标，就意味着那一层要让开；地址由这次
-  // 导航决定，浮层不往地址栏里写东西。
+  // 从命令面板里选走一个目标，就意味着那一层要让开；地址由这次导航决定，
+  // 浮层不往地址栏里写东西。
   function closeOverlays() {
     if (paletteOpen) closePalette();
-    if (consoleOpen) applyConsole(false);
     closeOptions();
   }
   // `remember:false` 是给侧栏点开那条路留的：那条路要让 MRU 晚一拍再上台（见
@@ -431,9 +476,10 @@
     const wasTask = !!taskId;
     const state = { airChat: !!task };
     if (dir !== directoryId) {
-      directoryTasksExpanded = false;
+      window.MultiCCAirTaskPager?.reset();
       directoryTaskFilter.query = '';
       directoryTaskFilter.status = 'open';
+      directoryTaskFilter.fullText = true;
     }
     directoryId = dir;
     taskId = task;
@@ -451,9 +497,6 @@
     void window.MultiCCAirTaskEntry?.open({ taskId, api, notice });
   }
   function setMode(next) {
-    // 控制台不再是一种页面模式：任何还写着 setMode('overview') 的入口都换成
-    // 展开这层面板，页面留在原处。
-    if (next === 'overview') { setConsole(true); return; }
     saveDraft();
     // 从 AI Assistant 设置页离开时重查配置：刚在那儿保存过的话，首启配置卡
     // 会在这次渲染里自己消失。
@@ -467,7 +510,7 @@
     closeNav();
     render();
     if (next === 'library') requestAnimationFrame(() => $('directory-search').focus());
-    if (next === 'schedules') void refreshSchedules();
+    if (next === 'schedules') void window.MultiCCAirSchedules?.refresh();
   }
   function resourceText(resource) {
     if (resource?.capacityReason) return label(resource.capacityReason);
@@ -501,7 +544,10 @@
         node('small', activeCount
           ? t('airDirTaskCountActive', { total: taskCount, active: activeCount })
           : t('airDirTaskCount', { total: taskCount })),
-        node('small', t('airDirWorktreeCount', { n: directory.worktreeCount || 0 })));
+        // 这一行不只有「几个」，还有「本地留着几个、睡下几个、还欠几个」：口径与
+        // 拼法都在 air-worktrees.js（目录首页那块面板用的是同一份）。
+        node('small', window.MultiCCAirWorktrees?.summary?.(directory)
+          || t('airDirWorktreeCount', { n: directory.worktreeCount || 0 })));
       button.onclick = () => navigate(directory.id);
       const card = node('article', null, 'directory-card');
       const memo = node('a', t('memoTitle'), 'directory-memo');
@@ -518,39 +564,72 @@
   function renderDirectoryOverview() {
     const dir = data?.directories.find(directory => directory.id === directoryId);
     const tasks = (data?.tasks || []).filter(task => task.dirId === directoryId);
-    const current = tasks.filter(task => !['done', 'archived'].includes(task.status));
-    const running = current.filter(isRunningTask);
-    const planned = current.filter(task => task.recordType === 'planned' && !running.includes(task));
-    const stat = (name, value, detail, tone = '') => {
-      const card = node('article', null, `directory-stat ${tone}`);
-      card.append(node('span', name), node('strong', String(value)), node('small', detail));
+    // 统计口径与 filterTasks 完全同源：taskStatus 是 status-presentation 的权威
+    // 判定（archived/done 生命周期优先），点击卡片 = 按该状态筛选，两者不可能再
+    // 出现「卡片 2 个、列表 29 个」的分叉。
+    const taskStatusOf = task => window.MultiCCAirAdmin?.taskStatus?.(task) || 'unknown';
+    const running = tasks.filter(isRunningTask);
+    const waiting = tasks.filter(task => taskStatusOf(task) === 'waiting');
+    const errored = tasks.filter(task => taskStatusOf(task) === 'error');
+    // 「执行成功」量的是这一轮的结局（runState 折出来的 succeeded），不是生命周期那个
+    // done —— 后者只剩计划看板时代留下的少量记录，卡片常年是个位数，而真正跑成功的
+    // 任务全在 succeeded 上，却一档也筛不出来。
+    const succeededCount = tasks.filter(task => taskStatusOf(task) === 'succeeded').length;
+    // A stat card is a quick filter: clicking it jumps the list to that
+    // category instead of leaving the numbers as dead digits.
+    function quickFilter(status) {
+      directoryTaskFilter.query = '';
+      directoryTaskFilter.status = status;
+      directoryTaskFilter.fullText = true;
+      window.MultiCCAirTaskPager?.reset();
+      renderDirectoryOverview();
+    }
+    const stat = (name, value, detail, tone = '', status = '') => {
+      const card = status ? node('button', null, `directory-stat ${tone}`) : node('article', null, `directory-stat ${tone}`);
+      if (status) {
+        card.type = 'button';
+        card.title = t('airDirStatClickFilter');
+        card.addEventListener('click', () => quickFilter(status));
+      }
+      card.append(node('span', name), node('strong', String(value)));
+      if (detail) card.append(node('small', detail));
       return card;
     };
     $('directory-stats').replaceChildren(
-      stat(t('airStateActive'), current.length, t('airDirRunningNow', { n: running.length }), 'blue'),
-      stat(t('airDirStatPlanned'), planned.length, t('airDirStatPlannedHint')),
-      stat(t('airStageDone'), tasks.filter(task => task.status === 'done').length, t('airDirStatDoneHint'), 'green'),
+      stat(t('airStatRunning'), running.length, '', 'blue', 'running'),
+      stat(t('airStatWaiting'), waiting.length, '', 'amber', 'waiting'),
+      stat(t('airStatError'), errored.length, '', 'red', 'error'),
+      stat(t('airStatSucceeded'), succeededCount, t('airDirStatSucceededHint'), 'green', 'succeeded'),
       stat(t('airStatusAllRecords'), tasks.length, t('airDirArchiveWorktrees', {
         archived: tasks.filter(task => task.status === 'archived').length,
         worktrees: dir?.worktreeCount || 0,
-      })),
+      }), '', 'all'),
     );
-    const filtered = (window.MultiCCAirAdmin?.filterTasks?.(tasks, directoryTaskFilter, () => '') || [...tasks])
-      .sort(compareDirectoryTasks);
-    const rows = directoryTasksExpanded
-      ? filtered
-      : [...tasks].sort(compareDirectoryTasks).slice(0, recentRowLimit());
-    $('directory-task-heading').textContent = directoryTasksExpanded ? t('airDirAllTasks') : t('airRecentTasks');
-    $('directory-overview-count').textContent = directoryTasksExpanded
-      ? t('airDirCountOfTotal', { shown: filtered.length, total: tasks.length })
-      : t('airDirTaskCount', { total: tasks.length });
+    // 全文命中时保持相关度顺序，没有命中照旧按时间排；两条路的状态/目录筛选同属
+    // filterTasks。「框里现在有没有词」是前提：面板被导航重置成空查询时，上一轮的
+    // 命中结果必须让位给完整列表，否则会继续按旧相关度排、连条数都少一截。
+    // 搜索口径与状态那格分开：搜索永远搜全部记录（见 air-admin 的 searchFilter），
+    // 服务端那条路和「还没回来」的本地退路共用同一份，别在结果到达前后给出两种条数。
+    const querying = !!directoryTaskFilter.query.trim();
+    const active = querying ? (window.MultiCCAirAdmin?.searchFilter?.(directoryTaskFilter) || directoryTaskFilter)
+      : directoryTaskFilter;
+    const ranked = querying ? window.MultiCCAirAdmin?.rankedRows?.(tasks, active, () => '', directorySearch?.results()) : null;
+    const snippets = new Map((ranked || []).map(({ task, snippet }) => [task.id, snippet]));
+    const filtered = ranked ? ranked.map(({ task }) => task)
+      : pinFirstInDirectory((window.MultiCCAirAdmin?.filterTasks?.(tasks, active, () => '') || [...tasks]).sort(compareDirectoryTasks));
+    // 这一页画哪几条、右下角页码写什么，都由 air-task-pager.js 算（它自己持有当前页，
+    // 于是换页之后的一次快照刷新不会把人踢回第一页）。
+    const rows = window.MultiCCAirTaskPager?.paint(filtered) || filtered;
+    $('directory-task-heading').textContent = t('airDirAllTasks');
+    // 这里数的是**筛完之后**的条数，不是这一页画了几条 —— 页码里已经写着「第几 / 共几
+    // 页」，抬头再报一次「20 / 45 个任务」是把同一个事实说两遍。
+    $('directory-overview-count').textContent = t('airDirCountOfTotal', { shown: filtered.length, total: tasks.length });
     for (const button of $('directory-task-sort').querySelectorAll('button[data-sort]')) {
       button.setAttribute('aria-pressed', String(button.dataset.sort === directoryTaskSort));
     }
-    $('directory-task-controls').hidden = !directoryTasksExpanded;
     if ($('directory-task-search').value !== directoryTaskFilter.query) $('directory-task-search').value = directoryTaskFilter.query;
     $('directory-task-status').value = directoryTaskFilter.status;
-    document.querySelector('.directory-task-panel')?.classList.toggle('expanded', directoryTasksExpanded);
+    $('directory-task-scope').value = directoryTaskFilter.fullText ? 'full' : 'board';
     $('directory-task-list').replaceChildren(...rows.map(task => {
       const row = node('div', null, 'directory-task-row');
       applyRing(row, isRunningTask(task), task.id);
@@ -559,6 +638,11 @@
       const copy = node('span');
       const meta = node('small', null, 'task-meta');
       meta.append(statusBadge(task));
+      // 目录页这份列表同样给 pin 住的加标记（同侧栏 `renderSidebarTasks`）：列表
+      // 里靠前显示的那几条为什么在那儿，得有说明。
+      if (isPinned(task.id)) meta.append(node('span', '📌', 'task-pin'));
+      const worktreeBadge = window.MultiCCAirAdmin?.worktreeChangeBadge?.(task);
+      if (worktreeBadge) meta.append(worktreeBadge);
       // 阶段只有计划记录才有（`workflowStage` 是计划看板那一列，记录类型由行首那个
       // ◇ 标着）：观察型记录这个字段恒为 null，拿 `status` 兜底写出来的「进行中」是
       // 生命周期词，跟徽标说的不是一回事 —— 徽标「空闲」「执行成功」，旁边一行「进行
@@ -570,10 +654,13 @@
       // the target without turning every compact row into a path dump.
       const worktree = task.resource?.path
         ? `WT${task.resource.branch ? ` · ${task.resource.branch}` : ''}` : '';
-      const extra = [stage, detail, worktree].filter(part => part && !label(taskStatus(task)).includes(part)).join(' · ');
+      const extra = [stage, detail, worktree].filter(part => part && !taskBadgeWord(task).includes(part)).join(' · ');
       if (worktree) meta.title = task.resource.path;
       if (extra) meta.append(node('em', extra, 'task-note'));
       copy.append(node('strong', task.title || t('airUntitledTask')), meta);
+      // 正文/历史轮次里命中时，这一行是「为什么搜出它」的唯一解释（标题里没有查询词）。
+      const snippet = window.MultiCCTaskSearch?.snippetNode?.(snippets.get(task.id));
+      if (snippet) copy.append(snippet);
       const shownAt = taskSortAt(task);
       const time = node('time', shownAt ? new Date(shownAt).toLocaleString(locale(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
       time.title = t(directoryTaskSort === 'visit' ? 'airTaskLastVisit' : 'airTaskLastMessage');
@@ -588,11 +675,6 @@
       return row;
     }));
     if (!rows.length) $('directory-task-list').append(node('p', t('airDirNoTasks'), 'directory-task-empty'));
-    // 截掉的那些得有个去处，否则「最近任务」看着就是全部。数字用的是这个目录
-    // 的全部任务数，不是剩下的条数 —— 说的是「还有多少」，不是「还差几行」。
-    const more = $('directory-task-more');
-    more.hidden = !directoryTasksExpanded && tasks.length <= rows.length;
-    more.textContent = directoryTasksExpanded ? t('airDirCollapseToRecent') : t('airDirViewAllTasks', { n: tasks.length });
     renderQuickPills();
     for (const element of [$('quick-task-input'), $('quick-task-submit'),
       $('quick-task-attach'), $('quick-task-mic')]) element.disabled = !dir;
@@ -611,8 +693,7 @@
   // 「↑ N 个提交未推送」那颗还能按：点开确认一次，然后走目录的 push 接口
   // （POST /api/directories/:id/push —— 和旧控制台 ⋯ 菜单里那个 Push 同一条）。
   const directoryGitView = {
-    dirId: null, status: null, error: '', fetchedAt: 0,
-    logOpen: false, commits: null, logError: '', openHash: null,
+    dirId: null, status: null, error: '', fetchedAt: 0, filesOpen: false,
   };
   const GIT_REFRESH_MS = 60000;
 
@@ -623,7 +704,7 @@
     panel.hidden = !show;
     if (!show) return;
     if (directoryGitView.dirId !== directoryId) {
-      Object.assign(directoryGitView, { status: null, error: '', logOpen: false, commits: null, logError: '', openHash: null });
+      Object.assign(directoryGitView, { status: null, error: '', filesOpen: false });
     }
     if (directoryGitView.dirId !== directoryId || Date.now() - directoryGitView.fetchedAt > GIT_REFRESH_MS) {
       void loadDirectoryGit();
@@ -699,18 +780,15 @@
     const brief = $('directory-git-brief');
     if (!brief) return;
     const note = $('directory-git-note');
-    const list = $('directory-git-list');
     if (directoryGitView.error) {
       brief.replaceChildren(node('p', t('airGitStatusFailed', { msg: directoryGitView.error }), 'directory-git-empty error'));
       if (note) note.textContent = t('airGitReadFailed');
-      if (list) list.hidden = true;
       return;
     }
     const status = directoryGitView.status;
     if (!status) {
       brief.replaceChildren(node('p', t('airGitReading'), 'directory-git-empty'));
       if (note) note.textContent = t('airGitReadingShort');
-      if (list) list.hidden = true;
       return;
     }
     const chips = node('div', null, 'directory-git-chips');
@@ -740,103 +818,39 @@
       }
       if (status.upstream && status.behind) chips.append(chip(t('airGitBehindUpstream', { n: status.behind }), 'warn'));
     }
-    chips.append(chip(status.dirtyFiles?.length
-      ? t('airGitDirtyFiles', { n: status.dirtyFiles.length })
-      : t('airGitMainClean'), status.dirtyFiles?.length ? 'warn' : 'ok'));
+    // 「● N 个未提交文件」和旁边「↑ N 个未推送」一样是一颗能按的胶囊：点开就地展开
+    // 下面那份文件清单，再点收起。纯标签时底下藏着清单也没人看得见。
+    const dirty = status.dirtyFiles || [];
+    let files = null;
+    if (dirty.length) {
+      files = node('details', null, 'directory-git-files');
+      files.open = !!directoryGitView.filesOpen;
+      files.append(node('summary', t('airGitDirtySummary', { n: dirty.length })));
+      const fileList = node('ul');
+      const shown = dirty.slice(0, 50);
+      for (const file of shown) fileList.append(node('li', `${file.status || 'M'}  ${file.path}`));
+      if (dirty.length > shown.length) fileList.append(node('li', t('airGitMoreFiles', { n: dirty.length - shown.length })));
+      files.append(fileList);
+      files.addEventListener('toggle', () => { directoryGitView.filesOpen = files.open; });
+      const dirtyChip = node('button', null, 'directory-git-chip warn is-clickable');
+      dirtyChip.type = 'button';
+      dirtyChip.title = t('airGitDirtySummary', { n: dirty.length });
+      dirtyChip.append(node('span', t('airGitDirtyFiles', { n: dirty.length })),
+        node('span', t('airGitDirtyHint'), 'directory-git-chip-hint'));
+      dirtyChip.onclick = () => {
+        files.open = !files.open;
+        if (files.open) files.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      };
+      chips.append(dirtyChip);
+    } else chips.append(chip(t('airGitMainClean'), 'ok'));
     const actions = node('div', null, 'directory-git-actions');
-    const logButton = node('button', directoryGitView.logOpen ? t('airGitLogCollapse') : t('airGitLogView'), 'subtle');
+    const logButton = node('button', t('gitManagerOpen'), 'subtle');
     logButton.type = 'button';
-    logButton.onclick = () => void toggleDirectoryGitLog();
+    logButton.onclick = () => window.MultiCCGitManager?.open({ dirId: directoryId, api, t });
     actions.append(logButton);
     brief.replaceChildren(chips, actions);
-    if (status.dirtyFiles?.length) {
-      const files = node('details', null, 'directory-git-files');
-      files.append(node('summary',
-        t('airGitDirtySummary', { n: status.dirtyFiles.length })));
-      const fileList = node('ul');
-      const shown = status.dirtyFiles.slice(0, 50);
-      for (const file of shown) fileList.append(node('li', `${file.status || 'M'}  ${file.path}`));
-      if (status.dirtyFiles.length > shown.length) fileList.append(node('li', t('airGitMoreFiles', { n: status.dirtyFiles.length - shown.length })));
-      files.append(fileList);
-      brief.append(files);
-    }
+    if (files) brief.append(files);
     if (note) note.textContent = status.upstream ? t('airGitUpstreamNote', { upstream: status.upstream }) : t('airGitNoUpstreamNote');
-    if (list) {
-      list.hidden = !directoryGitView.logOpen;
-      if (directoryGitView.logOpen) paintDirectoryGitLog(list);
-    }
-  }
-
-  async function toggleDirectoryGitLog() {
-    directoryGitView.logOpen = !directoryGitView.logOpen;
-    if (directoryGitView.logOpen && !directoryGitView.commits && !directoryGitView.logError) {
-      const list = $('directory-git-list');
-      list.replaceChildren(node('p', t('airGitReadingLog'), 'directory-git-empty'));
-      try {
-        const result = await api(`/api/git/log?dirId=${encodeURIComponent(directoryId)}&limit=30`);
-        directoryGitView.commits = result.commits || [];
-      } catch (error) {
-        directoryGitView.logError = error.message;
-      }
-    }
-    paintDirectoryGit();
-  }
-
-  function paintDirectoryGitLog(list) {
-    if (directoryGitView.logError) {
-      list.replaceChildren(node('p', t('airGitLogFailed', { msg: directoryGitView.logError }), 'directory-git-empty error'));
-      return;
-    }
-    const commits = directoryGitView.commits;
-    if (!commits) return;
-    if (!commits.length) {
-      list.replaceChildren(node('p', t('airGitNoCommits'), 'directory-git-empty'));
-      return;
-    }
-    list.replaceChildren(...commits.map(commit => {
-      const item = node('div', null, 'directory-git-commit');
-      const head = node('button', null, 'directory-git-commit-head');
-      head.type = 'button';
-      head.setAttribute('aria-expanded', String(directoryGitView.openHash === commit.hash));
-      const copy = node('span', null, 'directory-git-commit-copy');
-      copy.append(node('code', commit.short || String(commit.hash || '').slice(0, 7)),
-        node('strong', commit.subject || t('airGitNoSubject')));
-      head.append(copy,
-        node('time', commit.date ? commit.date.replace('T', ' ').slice(0, 16) : ''),
-        node('small', `${commit.author || '—'}${commit.refs ? ` · ${commit.refs}` : ''}`));
-      head.onclick = () => void toggleCommitDetail(commit);
-      item.append(head);
-      if (directoryGitView.openHash === commit.hash) {
-        const detail = node('div', null, 'directory-git-commit-detail');
-        if (commit.__stat) detail.append(node('div', commit.__stat, 'directory-git-stat'));
-        detail.append(node('pre', commit.__diff || t('airGitDiffReading'), 'directory-git-diff'));
-        item.append(detail);
-      }
-      return item;
-    }));
-  }
-
-  async function toggleCommitDetail(commit) {
-    if (directoryGitView.openHash === commit.hash) {
-      directoryGitView.openHash = null;
-      paintDirectoryGit();
-      return;
-    }
-    directoryGitView.openHash = commit.hash;
-    if (commit.__diff === undefined) {
-      paintDirectoryGit();
-      try {
-        const result = await api(`/api/git/commit-diff?dirId=${encodeURIComponent(directoryId)}&hash=${encodeURIComponent(commit.hash)}`);
-        commit.__stat = result.stat || '';
-        commit.__diff = result.error ? t('airGitDiffFailed', { msg: result.error })
-          : result.diff || t('airGitNoDiff');
-        if (result.truncated) commit.__diff += t('airGitDiffTruncated');
-      } catch (error) {
-        commit.__stat = '';
-        commit.__diff = t('airGitDiffFailed', { msg: error.message });
-      }
-    }
-    paintDirectoryGit();
   }
 
   function quickTaskId() {
@@ -873,7 +887,51 @@
   // its composer — the same AI 配置 (CLI · provider · model · effort) and 角色
   // dialogs. Nothing about configuring a task is written twice: a pill opens the
   // one dialog and holds the answer until the task is created.
-  function quickStatus(text) { $('quick-task-status').textContent = text || ''; }
+  function quickStatus(text, capacity = false) {
+    $('quick-task-status').textContent = text || '';
+    $('quick-task-status').classList.toggle('capacity-error', capacity);
+  }
+  let retentionPreview = null;
+  const retentionDialog = $('task-retention-dialog');
+  const closeRetention = () => retentionDialog.close();
+  $('task-retention-close').onclick = closeRetention;
+  $('task-retention-cancel').onclick = closeRetention;
+  $('quick-task-retention').onclick = async () => {
+    const dirId = quickTargetDirectoryId();
+    if (!dirId) return;
+    retentionPreview = null;
+    $('task-retention-delete').disabled = true;
+    $('task-retention-list').replaceChildren();
+    $('task-retention-summary').textContent = t('airAdminLoading');
+    retentionDialog.showModal();
+    try {
+      const preview = await api(`/api/task-board/directories/${encodeURIComponent(dirId)}/retention`);
+      if (!retentionDialog.open || dirId !== quickTargetDirectoryId()) return;
+      retentionPreview = { dirId, tasks: preview.tasks || [] };
+      $('task-retention-summary').textContent = retentionPreview.tasks.length
+        ? t('airRetentionSummary', { count: preview.count, limit: preview.limit, n: retentionPreview.tasks.length })
+        : t('airRetentionEmpty');
+      const list = $('task-retention-list');
+      list.replaceChildren(...retentionPreview.tasks.map(task => node('div',
+        `${task.title || task.id} · ${new Date(task.lastInteractionAt).toLocaleString()}`)));
+      $('task-retention-delete').disabled = !retentionPreview.tasks.length;
+    } catch (error) { $('task-retention-summary').textContent = error.message; }
+  };
+  $('task-retention-delete').onclick = async () => {
+    const preview = retentionPreview;
+    if (!preview?.tasks?.length) return;
+    $('task-retention-delete').disabled = true;
+    try {
+      const result = await api(`/api/task-board/directories/${encodeURIComponent(preview.dirId)}/retention`,
+        { taskIds: preview.tasks.map(task => task.id) });
+      closeRetention();
+      await refresh();
+      quickStatus(t('airRetentionDone', { deleted: result.deleted.length, skipped: result.skipped.length }));
+    } catch (error) {
+      $('task-retention-summary').textContent = error.message;
+      $('task-retention-delete').disabled = false;
+    }
+  };
 
   // 侧栏那颗「＋ 新任务」：把上面这**一个**输入框模块搬进弹窗，而不是再长出一张
   // 自己的表单。搬的是节点，所以两处的胶囊、草稿、附件、Goal 上限和绑定的处理器
@@ -904,7 +962,7 @@
     select.disabled = false;
     $('quick-task-slot').append($('quick-task-form'));
     dialog.showModal();
-    // 手机上这个模块平时折成一条细杠（air-quick-fold.js）；弹窗里要的是整张。
+    // 这个模块平时折成一条细杠（air-quick-fold.js）；弹窗里要的是整张。
     window.__airQuickFold?.unfold?.();
     $('quick-task-input').focus();
   }
@@ -920,8 +978,8 @@
     $('empty').append($('quick-task-form'));
     quickDialogDirectoryId = null;
     $('quick-task-dialog-directory').disabled = false;
-    // 手机上它平时折成一条细杠，弹窗里为了写字摊开成整张 —— 回到目录首页就按原来
-    // 的规矩收回去，别让一次「算了」把半屏的卡片留在那儿。盒子里还有草稿时
+    // 它平时折成一条细杠，弹窗里为了写字摊开成整张 —— 回到目录首页就按原来的
+    // 规矩收回去，别让一次「算了」把半屏的卡片留在那儿。盒子里还有草稿时
     // fold() 自己什么都不做：那半句话不该被藏进一条细杠。
     window.__airQuickFold?.fold?.();
   });
@@ -943,7 +1001,7 @@
   // One source of truth for the CLI the panel is about to use: the pill names it
   // and the AI 配置 dialog opens on it, so the two can never disagree about what
   // a task created from here will run.
-  function quickCli() { return quickRuntime.cli || data?.clis?.[0] || 'claude'; }
+  function quickCli() { return quickRuntime.cli || firstChatCli(); }
 
   // 线路胶囊上那一串（CLI · 线路 · 模型 · 状态）会随着 provider 名字变长，而它
   // 左边还压着「＋ 角色」——所以给它一个上限宽度，超出来的部分改成跑马灯一直走，
@@ -1001,10 +1059,12 @@
   function renderQuickPills() {
     const ai = $('quick-ai-pill'), role = $('quick-role-pill');
     if (!ai || !role) return;
-    const route = quickRuntime.providerSelection?.mode === 'auto'
+    const cli = quickCli();
+    const nativeRoute = window.MultiCCProviderCatalog.nativeRouteLabel(cli); // 自持账号的 CLI 显示产品名（共享 CLI 目录出）
+    const route = nativeRoute || (quickRuntime.providerSelection?.mode === 'auto'
       ? `Auto ${quickRuntime.providerSelection.protocol}`
-      : providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute');
-    setPillText(ai, [quickCli(), route, quickRuntime.model || t('airQuickDefaultModel')].join(' · '));
+      : providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute'));
+    setPillText(ai, [laneRouteLabel(cli, route), quickRuntime.model || t('airQuickDefaultModel')].join(' · '));
     ai.title = t('airQuickAiTitle');
     role.textContent = quickRoles.length ? t('airQuickRoleCount', { n: quickRoles.length }) : t('airQuickAddRole');
     role.title = t('airQuickRoleTitle');
@@ -1093,7 +1153,7 @@
     const text = typed + (paths.length ? t('airQuickAttachments', { paths: paths.join(' ') }) : '');
     // The pill's runtime is pinned onto the task at creation; the route it names
     // takes effect immediately, exactly as it does on the chat's own composer.
-    const runtime = { cli: quickRuntime.cli || data.clis[0] || 'claude' };
+    const runtime = { cli: quickRuntime.cli || firstChatCli() };
     for (const key of ['provider', 'providerSelection', 'model', 'effort', 'subagent']) {
       if (quickRuntime[key]) runtime[key] = quickRuntime[key];
     }
@@ -1150,193 +1210,16 @@
         await refresh();
         navigate(targetDirectoryId, created.taskId);
         notice(t('airQuickFirstMessageUnconfirmed', { msg: error.message }));
-      } else quickStatus(error.message);
+      } else {
+        const full = error.code === 'task_shell_task_limit';
+        quickStatus(full ? t('airRetentionFull', { count: 1024, limit: 1024 }) : error.message, full);
+      }
     } finally {
       $('quick-task-submit').disabled = false;
       $('quick-task-dialog-directory').disabled = false;
     }
   }
 
-  function scheduleTime(value) {
-    if (!value) return '—';
-    return new Intl.DateTimeFormat(locale(), {
-      month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
-    }).format(new Date(value));
-  }
-
-  function scheduleRuntime(task) {
-    return [task.cli, task.provider, task.model, task.effort].filter(Boolean).join(' · ') || t('airScheduleFollowTask');
-  }
-
-  function scheduleAction(text, action, className = '') {
-    const button = node('button', text, className);
-    button.type = 'button';
-    button.onclick = action;
-    return button;
-  }
-
-  function renderSchedules() {
-    const list = $('schedule-list');
-    if (!list) return;
-    const enabled = scheduleTasks.filter(task => task.enabled).length;
-    const errors = scheduleTasks.filter(task => task.lastStatus === 'error' || task.taskBindingError).length;
-    $('schedule-summary').replaceChildren(
-      node('span', t('airScheduleRuleCount', { n: scheduleTasks.length })),
-      node('span', t('airScheduleEnabledCount', { n: enabled })),
-      node('span', errors ? t('airScheduleErrorCount', { n: errors }) : t('airScheduleAllHealthy'), errors ? 'warning' : 'healthy'),
-    );
-    list.replaceChildren();
-    if (!scheduleTasks.length) {
-      const empty = node('div', null, 'schedule-empty');
-      empty.append(node('strong', t('airScheduleNoneYet')), node('p', t('airScheduleNoneHint')));
-      list.append(empty);
-      return;
-    }
-    for (const task of scheduleTasks) {
-      const card = node('article', null, 'schedule-card');
-      const head = node('header', null, 'schedule-card-head');
-      const title = node('div');
-      title.append(node('span', 'SCHEDULE', 'eyebrow'), node('h3', task.name));
-      head.append(title, node('span', task.enabled ? t('airScheduleEnabled') : t('airScheduleDisabled'), `schedule-badge ${task.enabled ? 'enabled' : ''}`));
-
-      const timing = node('div', null, 'schedule-timing');
-      const expression = node('code', task.cron);
-      const next = node('div');
-      next.append(node('small', t('airScheduleNextRun')), node('strong', task.enabled ? scheduleTime(task.nextRunAt) : t('airSchedulePaused')));
-      const previous = node('div');
-      previous.append(node('small', t('airScheduleLastFired')), node('strong', task.lastRunAt ? scheduleTime(task.lastRunAt) : t('airScheduleNeverRan')));
-      timing.append(expression, next, previous);
-
-      const fixed = node('button', null, `schedule-fixed-task ${task.taskBindingError || !task.taskId ? 'broken' : ''}`);
-      fixed.type = 'button';
-      fixed.disabled = !task.taskId;
-      const fixedCopy = node('span');
-      fixedCopy.append(node('small', t('airScheduleFixedTask')), node('strong', task.taskTitle || task.name),
-        node('small', task.taskBindingError || (task.taskId ? `${task.taskId} · ${scheduleRuntime(task)}` : t('airScheduleBinding'))));
-      fixed.append(node('span', task.taskBindingError ? '!' : '↗', 'schedule-task-mark'), fixedCopy);
-      if (task.taskId) fixed.onclick = () => navigate(task.dirId, task.taskId);
-
-      const state = node('div', null, `schedule-state ${task.lastStatus === 'error' ? 'error' : ''}`);
-      const stateLabel = task.lastStatus === 'queued' ? t('airScheduleQueued')
-        : task.lastStatus === 'ok' ? t('airScheduleLastAccepted')
-          : task.lastStatus === 'error' ? (task.lastError || t('airScheduleLastFailed')) : t('airScheduleAwaitingFirstRun');
-      state.append(node('span', stateLabel), node('small', t('airScheduleFiredCount', { dir: task.dirName, n: task.runCount || 0 })));
-
-      const prompt = node('p', task.prompt, 'schedule-prompt');
-      const actions = node('footer', null, 'schedule-actions');
-      const run = scheduleAction(t('airScheduleRunNow'), () => runSchedule(task.id), 'primary subtle');
-      // A rule whose fixed task was archived stops executing until a new fixed
-      // task is bound; that repair is explicit, never automatic.
-      const rebind = task.taskBindingError
-        ? scheduleAction(t('airScheduleRebind'), () => rebindSchedule(task.id), 'primary subtle')
-        : null;
-      const toggle = scheduleAction(task.enabled ? t('airSchedulePause') : t('airScheduleEnable'), () => toggleSchedule(task.id, !task.enabled));
-      const edit = scheduleAction(t('airScheduleEdit'), () => openScheduleDialog(task.id));
-      const remove = scheduleAction(t('airScheduleDelete'), () => deleteSchedule(task.id), 'danger');
-      actions.append(run, ...(rebind ? [rebind] : []), toggle, edit, node('span'), remove);
-      card.append(head, timing, fixed, state, prompt, actions);
-      list.append(card);
-    }
-  }
-
-  async function refreshSchedules() {
-    if (scheduleLoading) return;
-    scheduleLoading = true;
-    try {
-      scheduleTasks = await api('/api/cron');
-      renderSchedules();
-    } catch (error) {
-      if (mode === 'schedules') notice(t('airScheduleLoadFailed', { msg: error.message }));
-    } finally { scheduleLoading = false; }
-  }
-
-  function openScheduleDialog(id = null) {
-    if (!data) return;
-    const current = id ? scheduleTasks.find(task => task.id === id) : null;
-    const form = $('schedule-form');
-    form.reset();
-    form.elements.id.value = current?.id || '';
-    form.elements.name.value = current?.name || '';
-    form.elements.cron.value = current?.cron || '0 9 * * *';
-    form.elements.prompt.value = current?.prompt || '';
-    form.elements.enabled.checked = current ? current.enabled : true;
-    form.elements.dirId.replaceChildren(...data.directories.map(directory => {
-      const option = node('option', directory.name);
-      option.value = directory.id;
-      option.selected = directory.id === (current?.dirId || directoryId || data.directories[0]?.id);
-      return option;
-    }));
-    form.elements.cli.replaceChildren(...data.clis.map(cli => {
-      const option = node('option', cli);
-      option.value = cli;
-      option.selected = cli === (current?.cli || 'claude');
-      return option;
-    }));
-    form.elements.dirId.disabled = !!current?.taskId;
-    form.elements.cli.disabled = !!current?.taskId;
-    $('schedule-fixed-note').hidden = !current?.taskId;
-    $('schedule-dialog-title').textContent = current ? t('airScheduleEditTitle') : t('airNewScheduledTask');
-    $('schedule-save').textContent = current ? t('airScheduleSaveRule') : t('airScheduleCreateAndBind');
-    $('schedule-error').textContent = '';
-    $('schedule-dialog').showModal();
-  }
-
-  async function saveSchedule(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const id = form.elements.id.value;
-    const body = {
-      name: form.elements.name.value.trim(),
-      cron: form.elements.cron.value.trim(),
-      prompt: form.elements.prompt.value.trim(),
-      enabled: form.elements.enabled.checked,
-    };
-    if (!id) Object.assign(body, { dirId: form.elements.dirId.value, cli: form.elements.cli.value });
-    $('schedule-save').disabled = true;
-    $('schedule-error').textContent = '';
-    try {
-      await api('/api/cron' + (id ? `/${encodeURIComponent(id)}` : ''), body, id ? 'PATCH' : 'POST');
-      $('schedule-dialog').close();
-      await Promise.all([refreshSchedules(), refresh()]);
-      notice(id ? t('airScheduleRuleUpdated') : t('airScheduleCreated'));
-    } catch (error) { $('schedule-error').textContent = error.message; }
-    finally { $('schedule-save').disabled = false; }
-  }
-
-  async function runSchedule(id) {
-    try {
-      const result = await api(`/api/cron/${encodeURIComponent(id)}/run`, {});
-      await Promise.all([refreshSchedules(), refresh()]);
-      notice(result.decision === 'queued' ? t('airScheduleBusyQueued') : t('airScheduleSentToTask'));
-    } catch (error) { notice(t('airScheduleRunFailed', { msg: error.message })); }
-  }
-
-  async function rebindSchedule(id) {
-    if (!window.confirm(t('airScheduleRebindConfirm'))) return;
-    try {
-      const result = await api(`/api/cron/${encodeURIComponent(id)}/rebind`, {});
-      await Promise.all([refreshSchedules(), refresh()]);
-      notice(t('airScheduleRebound', { id: result.taskId }));
-    } catch (error) {
-      notice(error.code === 'binding_healthy' ? t('airScheduleBindingHealthy') : t('airScheduleRebindFailed', { msg: error.message }));
-    }
-  }
-
-  async function toggleSchedule(id, enabled) {
-    try {
-      await api(`/api/cron/${encodeURIComponent(id)}`, { enabled }, 'PATCH');
-      await refreshSchedules();
-    } catch (error) { notice(t('airScheduleUpdateFailed', { msg: error.message })); }
-  }
-
-  async function deleteSchedule(id) {
-    if (!window.confirm(t('airScheduleDeleteConfirm'))) return;
-    try {
-      await api(`/api/cron/${encodeURIComponent(id)}`, undefined, 'DELETE');
-      await refreshSchedules();
-      notice(t('airScheduleDeleted'));
-    } catch (error) { notice(t('airScheduleDeleteFailed', { msg: error.message })); }
-  }
 
   /** 侧栏「最近任务」那一条带子。单独抽出来是因为它有两个调用点：整页 render，
    *  以及 pin 变了的时候 —— 后者只动了侧栏和页头那排 tab，没必要把整页（含对话
@@ -1359,17 +1242,19 @@
       applyRing(button, isRunningTask(task), task.id);
       // 一行三件事实：状态徽标（图标 + 中文，来自注册表）、标题、然后是这条记录
       // 的类型/阶段/资源去向。目录作为标签跟在同一行里 —— 「最近」这条带子本来就
-      // 是跨目录的（我打开过的任务 + 当前目录的几个），所以每一行都自报家门，
+      // 是跨目录的（未读结果 + 我打开过的任务），所以每一行都自报家门，
       // 而不是只给「不在当前目录」的那几行加标记：一份一半带标签一半不带的列表，
       // 读的人得先知道哪一半是什么规则。
       const meta = node('small', null, 'task-meta');
       meta.append(statusBadge(task));
+      const worktreeBadge = window.MultiCCAirAdmin?.worktreeChangeBadge?.(task);
+      if (worktreeBadge) meta.append(worktreeBadge);
       meta.append(node('em', directoryName(task.dirId), 'task-dir'));
       // 手机上 pin 住的那几条就排在这份列表的最上面，标记说明它们为什么在那儿。
       if (isPinned(task.id)) meta.append(node('span', '📌', 'task-pin'));
       const stage = task.recordType === 'planned' ? t('airSidebarPlanned', { stage: label(task.workflowStage || task.status) }) : '';
       // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。
-      const badgeText = label(taskStatus(task));
+      const badgeText = taskBadgeWord(task);
       const extra = [stage, holdText(task.resource)].filter(part => part && !badgeText.includes(part)).join(' · ');
       button.append(node('strong', task.title), meta);
       if (extra) button.append(node('small', extra, 'task-note'));
@@ -1573,13 +1458,15 @@
     } : selectedEntry;
     const selectedTask = headerEntry?.task || listedTask;
     const adminHeadings = {
-      // 「谁在等我」完整清单（控制台只放几条）。
+      // 控制台这一页自己：跨全部工作目录的任务总览。
+      overview: [t('airCrumbConsole'), t('airConsole'), t('airConsoleHint')],
+      // 「谁在等我」完整清单（控制台只放最近几条）。
       attention: [t('airCrumbConsole'), t('airAdminAttention'), t('airAdminAttentionHint')],
       secrets: [t('airCrumbSettings'), t('airAdminPanelSecrets'), t('secretsVaultShortHint')],
       docs: [t('airCrumbTools'), t('airDocs'), t('airAdminDocsHint')],
       memory: [t('airCrumbTools'), t('airMemoryGraph'), t('airAdminMemoryHint')],
       taskgraph: [t('airCrumbTools'), t('airTaskGraph'), t('airAdminTaskGraphHint')],
-      workspaces: [t('airCrumbTools'), t('workspace'), t('mngWorkspacesSub')],
+      workspaces: [t('airCrumbSettings'), t('airAdminPanelWorkspaces'), t('airAdminPanelWorkspacesDesc')],
       settings: [t('airCrumbSystemSettings'), t('airSettingsCenter'), t('airAdminSettingsHint')],
       voice: [t('airCrumbSettings'), t('airAdminVoice'), t('airAdminVoiceHint')],
       goal: [t('airCrumbSettings'), t('airAdminGoal'), t('airAdminGoalHint')],
@@ -1595,7 +1482,7 @@
     };
     // The card stays lit on the directory's own page; the library is ⌘K / 控制台.
     $('library').classList.toggle('active', mode === 'tasks' && !taskId);
-    $('overview').classList.toggle('active', consoleOpen);
+    $('overview').classList.toggle('active', mode === 'overview');
     $('schedules').classList.toggle('active', mode === 'schedules');
     document.querySelectorAll('[data-air-view]').forEach(button => button.classList.toggle('active', button.dataset.airView === mode));
     if (adminModes.has(mode)) {
@@ -1916,6 +1803,8 @@
     setTaskHeaderInChat(hasTask);
     renderSetupCard();
     if (!directoryId && taskId) directoryId = data.tasks.find(task => task.id === taskId)?.dirId;
+    // 开着的任务就是「打开过」（直接进 ?task= / 后退回来也算）；侧栏点开的那条让给换位两拍去记。
+    if (taskId && recentTaskIds[0] !== taskId && pendingReorderId !== taskId) rememberTask(taskId);
     if (!directoryId || !data.directories.some(directory => directory.id === directoryId)) directoryId = data.directories[0]?.id || null;
     const dir = data.directories.find(directory => directory.id === directoryId);
     $('directory-name').textContent = dir?.name || t('airHeaderNoDirectory');
@@ -1927,37 +1816,36 @@
     renderHeader(dir);
     renderDirectories();
     renderDirectoryOverview();
+    // Worktree 面板、目录侧拉/拖排：模块自管 DOM，这里只递上下文。
+    window.MultiCCAirWorktrees?.render({ data, directoryId, api, notice, refresh });
+    window.MultiCCAirDirectoryNav?.render({ data, directoryId, api, notice, refresh, navigate });
     const adminMode = adminModes.has(mode);
-    $('task-sidebar').hidden = adminMode;
+    // 控制台是主区域里的一页（adminModes 的一员），但它这一页讲的就是任务本身，
+    // 所以侧栏那份「手上的任务」照旧留着 —— 目录首页有它，它也该有。
+    const consoleMode = mode === 'overview';
+    $('task-sidebar').hidden = adminMode && !consoleMode;
     $('directory-library').hidden = mode !== 'library';
-    $('admin-center').hidden = !adminMode;
+    // 每一页只有一块正文：控制台有自己那一块，就不该再让 #admin-center 也站着。
+    $('admin-center').hidden = !adminMode || consoleMode;
+    $('console-center').hidden = !consoleMode;
     $('schedule-center').hidden = mode !== 'schedules';
     $('task-layout').hidden = mode === 'library' || mode === 'schedules' || adminMode;
     // Page actions ride in the header (see air.html): one heading band per view.
     $('add-directory').hidden = mode !== 'library';
     $('schedule-create').hidden = mode !== 'schedules';
     $('admin-actions').hidden = !adminMode;
+    // 保险箱常驻在控制台那一页的工具栏上（见 air.html 的 #console-secrets）。
+    $('console-secrets').hidden = !consoleMode;
     if (adminMode) window.MultiCCAirAdmin?.render(mode, adminContext());
 
-    // 面板状态由 render 统一落到 DOM 上：直接打开 /air?view=overview（/manage
-    // 就落在这儿）时，状态是从地址里读出来的，没有谁调过 setConsole。
-    applyConsole(consoleOpen);
-
-    // 原来挂在「跨目录活动」上的那条常驻信号，现在挂在控制台入口上：不展开
-    // 面板也知道别的目录有事在等我。
+    // 原来挂在「跨目录活动」上的那条常驻信号，现在挂在控制台入口上：不进那一页
+    // 也知道别的目录有事在等我。
     const urgent = urgentTasks();
     $('console-badge').hidden = !urgent.length;
     $('console-badge').textContent = urgent.length ? String(urgent.length) : '';
 
     renderSidebarTasks();
     renderPins();
-
-    // 面板打开时才渲染它的内容：控制台不是页面，所以它不是「当前视图」。
-    if (consoleOpen) {
-      $('console-here').textContent = dir ? t('airConsoleHere', { name: dir.name }) : '';
-      $('console-close').textContent = taskId ? t('airBackToTask') : t('airCloseConsole');
-      window.MultiCCAirAdmin?.render('overview', adminContext());
-    }
 
     // #empty 就是「目录详情」这一页，它不再给谁让位：有对话时它是被浮层盖住的那一层，
     // 没对话时它就是页面上唯一的那一层。所以这里只管浮层开不开，不动 #empty —— 它
@@ -2537,15 +2425,16 @@
     const shown = pending
       ? { ...configEntry.configuration, ...(pending.profile || {}), cli: pending.cli || configEntry.configuration.cli }
       : configEntry?.configuration;
-    // `shown` is undefined for a task that carries no configuration at all — a
-    // missing field must not take the whole render down with it, so every read
-    // goes through `?.`.
+    // `shown` may be undefined — every
+    // read goes through `?., so a missing
+    // config cannot break the render.
     // 待生效那份配置里的 provider 是 id；服务端随 pending 下发了解析好的
     // providerName（见 src/workspace/air-routes.js），名字就在这儿用，没有名字
     // 才退回 id —— 不然下一轮生效的那条线路在药丸上是一串 UUID。
-    const routeName = shown?.providerSelection?.mode === 'auto'
+    const nativeRoute = window.MultiCCProviderCatalog.nativeRouteLabel(shown?.cli);
+    const routeName = nativeRoute || (shown?.providerSelection?.mode === 'auto'
       ? `Auto ${shown.providerSelection.protocol}`
-      : providerDisplayName((pending?.providerName || shown?.providerName || shown?.provider) || '') || t('airQuickDefaultRoute');
+      : providerDisplayName((pending?.providerName || shown?.providerName || shown?.provider) || '') || t('airQuickDefaultRoute'));
     ai.hidden = !configEntry?.sessionId;
     ai.disabled = !configEntry || configEntry.readOnly;
     ai.title = t('airTaskAiTitle');
@@ -2558,7 +2447,7 @@
     // 等到下一次轮询才启动，看上去就是「卡了一下」。
     setComposerBand(doc, row, !ai.hidden || !role.hidden);
     setPillText(ai, shown
-      ? [shown.cli, routeName,
+      ? [laneRouteLabel(shown.cli, routeName),
         (pending ? shown.model : shown.effectiveModel || shown.model) || t('airQuickDefaultModel'),
         pending ? t('airTaskAiPending') : ''].filter(Boolean).join(' · ')
       : '');
@@ -2635,14 +2524,6 @@
       if (result.unchanged) return false;
       if (taskId !== selected) return;
       entry = result;
-      // 直接打开一个任务（书签、通知链接、刷新）和从列表里点进去一样，都是「打开过」。
-      // 不在这儿记一笔，「最近」在刚进页面时就是空的。只有排序真的变了才重画。
-      //
-      // 例外：从侧栏点开的那条，换位已经排进它自己那两拍里了（openSidebarTask 让
-      // navigate 先别记，REORDER_LIFT_MS 之后再记）。详情回来得比那一拍快是常态，
-      // 这里再插一手，等于把它打回「瞬间跳到顶上」——那一拍得让路，谁在等这条
-      // 记录，谁就把它记完。
-      if (recentTaskIds[0] !== selected && pendingReorderId !== selected) { rememberTask(selected); render(); }
       $('task-title').textContent = entry.task.title;
       applyTaskTitleEditing(entry.task);
       $('task-state').textContent = taskStateText(entry);
@@ -2662,6 +2543,9 @@
     let failed = false;
     try {
       const snapshot = await apiConditional('/api/air');
+      // 连着两轮 304 就认为「没人动」，降到 POLL_IDLE_MS。失败的那一轮不改计数
+      // （异常走 catch，到不了这行），免得服务端打嗝被当成"没人在动"。
+      idleRounds = snapshot.unchanged ? idleRounds + 1 : 0;
       if (!snapshot.unchanged) {
         data = snapshot;
         // Pin 的清单随快照一起来（不用为它多打一次接口）。顺序就是页头从左到右的顺序。
@@ -2690,21 +2574,22 @@
       if (entryChanged === null) failed = true;
       // 定时任务与控制台概览只在真的有新数据时重画，否则每 4 秒白建一遍 DOM。
       if (snapshot.unchanged && !entryChanged) return;
-      if (mode === 'schedules' || consoleOpen) await refreshSchedules();
-      if (consoleOpen) window.MultiCCAirAdmin?.render('overview', adminContext());
+      if (mode === 'schedules' || mode === 'overview') await window.MultiCCAirSchedules?.refresh();
+      if (mode === 'overview') window.MultiCCAirAdmin?.render('overview', adminContext());
     } catch (error) { failed = true; notice(error.message); }
     finally { if (failed) pollFailures++; else pollFailures = 0; loading = false; }
   }
 
   function adminContext() {
     return {
-      data, scheduleTasks, api, setMode, navigate, notice, directoryName,
+      data, scheduleTasks: window.MultiCCAirSchedules?.tasks() || [], api, setMode, navigate, notice, directoryName,
       deleteTask: task => deleteTaskById(task),
       // 中文词表只有一份（stateNames）：面板要说的状态词跟侧栏是同一批，
       // 传下去比在 air-admin.js 里再抄一份可靠。
       label,
-      openConsole: () => setConsole(true),
-      closeConsole: () => setConsole(false),
+      // 控制台从一层浮层变成了一页：进出都走 setMode，跟「定时任务」「工作目录库」
+      // 同一条路（地址、页头、正文可见性都由它一次落地）。
+      openConsole: () => setMode('overview'),
       // 「谁在等我」整页读的是外壳这份 /api/air 快照，刷新也只能由外壳去做 ——
       // 让它自己再打一个接口就等于给控制台造了第二份口径。
       refresh: () => refresh(),
@@ -2715,22 +2600,36 @@
   // The sidebar card is the current directory, so it opens that directory's own
   // task page — the full directory library stays on ⌘K and 控制台 › 浏览工作目录.
   $('library').onclick = () => (directoryId ? navigate(directoryId) : setMode('library'));
-  $('overview').onclick = () => setConsole(!consoleOpen);
-  $('directory-task-more').onclick = () => {
-    directoryTasksExpanded = !directoryTasksExpanded;
-    renderDirectoryOverview();
-    if (directoryTasksExpanded) requestAnimationFrame(() => $('directory-task-search').focus());
-  };
+  $('overview').onclick = () => setMode('overview');
+  // 换页只管翻页：页码状态在 air-task-pager.js 里，翻完让 air.js 重画一次列表。
+  window.MultiCCAirTaskPager?.bind(renderDirectoryOverview);
   $('directory-task-search').oninput = event => {
     directoryTaskFilter.query = event.target.value;
+    window.MultiCCAirTaskPager?.reset();
     renderDirectoryOverview();
     $('directory-task-search').focus();
+  };
+  // 目录内搜索同样接全文：命中范围限定在本目录（服务端 dirId），标题没命中、正文
+  // 命中的任务也能被找回来。结果没回来之前仍是上面那条标题筛选。
+  directorySearch = window.MultiCCTaskSearch?.attach($('directory-task-search'), {
+    request: path => api(path),
+    filters: () => ({ dirId: directoryId }),
+    fullText: () => directoryTaskFilter.fullText,
+    onChange: () => { if (directoryId) renderDirectoryOverview(); },
+  });
+  // 换搜索范围要重新问一次服务端（两条语料的召回不同），不能只重画：refresh 会先
+  // 把当前结果作废、退回本地筛选，新结果到了再覆盖。
+  $('directory-task-scope').onchange = event => {
+    directoryTaskFilter.fullText = event.target.value === 'full';
+    window.MultiCCAirTaskPager?.reset();
+    directorySearch?.refresh();
   };
   $('directory-memo').onclick = () => {
     if (directoryId) window.open(`/memo.html?dirId=${encodeURIComponent(directoryId)}`, '_blank', 'noopener');
   };
   $('directory-task-status').onchange = event => {
     directoryTaskFilter.status = event.target.value;
+    window.MultiCCAirTaskPager?.reset();
     renderDirectoryOverview();
   };
   $('directory-task-sort').onclick = event => {
@@ -2738,55 +2637,24 @@
     if (!button || button.dataset.sort === directoryTaskSort) return;
     directoryTaskSort = button.dataset.sort === 'visit' ? 'visit' : 'message';
     try { localStorage.setItem('air:task-sort', JSON.stringify(directoryTaskSort)); } catch (_) {}
+    window.MultiCCAirTaskPager?.reset();
     renderDirectoryOverview();
   };
-  $('console-close').onclick = () => setConsole(false);
-  $('console-scrim').onclick = () => setConsole(false);
   $('palette-scrim').onclick = () => closePalette();
   $('palette-input').oninput = () => { paletteIndex = 0; renderPalette(); };
+  // 全文结果晚一拍到：到了就重画一次（标题匹配的那版已经在屏幕上，不会有空白期）。
+  paletteSearch = window.MultiCCTaskSearch?.attach($('palette-input'), {
+    request: path => api(path),
+    // 面板没有摆开关的地方，就按最宽的来：目录、任务、对话一起搜。
+    fullText: () => true,
+    onChange: () => { if (paletteOpen) { paletteIndex = 0; renderPalette(); } },
+  });
   $('schedules').onclick = () => setMode('schedules');
   document.querySelectorAll('[data-air-view]').forEach(button => { button.onclick = () => setMode(button.dataset.airView); });
 
-  // ── 常用设置里的「关盖运行」 ───────────────────────────────────────────
-  // 设置中心 › 全局配置里那个开关的快捷版：点一下直接切，不用先跳页。这一行只在
-  // macOS 且读得到状态时才出现 —— 非 macOS 的 /api/settings/power 答 available:false，
-  // 接口打不通（旧服务、未登录）也一律当不支持：宁可少一行，也不要摆一个点了没
-  // 反应的按钮。状态读取是 best-effort，失败不弹错误（侧栏不是报错的地方）。
-  const lidSleepRow = $('air-lid-sleep');
-  let lidSleepBusy = false;
-  function paintLidSleep(enabled) {
-    lidSleepRow.classList.toggle('on', !!enabled);
-    lidSleepRow.setAttribute('aria-pressed', String(!!enabled));
-    lidSleepRow.title = enabled ? t('airLidSleepOnTitle') : t('airLidSleepOffTitle');
-  }
-  async function loadLidSleepRow() {
-    if (!lidSleepRow) return;
-    try {
-      const status = await api('/api/settings/power');
-      if (!status.available) { lidSleepRow.hidden = true; return; }
-      paintLidSleep(status.enabled);
-      lidSleepRow.hidden = false;
-    } catch (_) { lidSleepRow.hidden = true; }
-  }
-  async function toggleLidSleep() {
-    if (lidSleepBusy) return;
-    lidSleepBusy = true;
-    const wanted = !lidSleepRow.classList.contains('on');
-    // 先动开关：授权框弹在 Mac 上的时候，它不该还停在旧状态上装没反应。
-    paintLidSleep(wanted);
-    try {
-      const result = await api('/api/settings/power', { enabled: wanted }, 'POST');
-      paintLidSleep(result.enabled);
-      notice(t(result.enabled ? 'airLidSleepOn' : 'airLidSleepOff'));
-    } catch (error) {
-      // 失败退回原状态：开关不能替服务点头。
-      paintLidSleep(!wanted);
-      notice(t('airLidSleepFailed', { msg: error.message }));
-    } finally { lidSleepBusy = false; }
-  }
-  if (lidSleepRow) lidSleepRow.onclick = () => { void toggleLidSleep(); };
-  const sideMore = $('side-more');
-  if (sideMore) sideMore.addEventListener('toggle', () => { if (sideMore.open) void loadLidSleepRow(); });
+  const powerShortcuts = window.MultiCCAirPowerShortcuts.attach({
+    api, notice, openSetup: action => { window.MultiCCAirGlobal.prepareSetup(action); setMode('global'); },
+  });
   $('directory-search').oninput = renderDirectories;
   // Refreshing means reloading what the page is showing. The conversation lives
   // in a frame of its own, so reloading it is a partial reload of this page: the
@@ -2844,12 +2712,12 @@
   // 会让下一次变窄时菜单凭空弹出来。
   matchMedia('(min-width: 761px)').addEventListener('change', event => {
     if (event.matches) closeOptions();
-    // 「最近任务」列几条跟着屏宽走（recentRowLimit），跨过这条线得重新渲染一次，
-    // 否则横竖屏一切回来列表长度还是旧的那个。但只有目录首页用得上这个数 ——
-    // 任务开着的时候那一页没渲染，而这一趟 render 会拿列表里的任务重画页头，
-    // 把只在详情里才有的东西（本轮归属那一段）抹掉。
-    // 760px 这条线还管着两件事：页头那排 pin tab 在手机宽度整个藏掉、pin 的任务
-    // 改在侧栏置顶。这两个都不用重画页头那一段（也就不会碰 title），单独刷。
+    // 760px 这条线管着四件事：页头那排 pin tab 在手机宽度整个藏掉（pin 的任务改在
+    // 侧栏置顶）、目录首页的任务清单从两列变一列、任务面板从「铺满剩余高度」退回
+    // 「自己限高、整页滚」（air.css 那条断点），以及输入框折叠模块要跟着重画那条
+    // 细杠。前两件只管目录首页那一页；任务开着的时候那一页没渲染，而这一趟 render
+    // 会拿列表里的任务重画页头，把只在详情里才有的东西（本轮归属那一段）抹掉。
+    // pin 那两件不用重画页头（也就不会碰 title），单独刷。
     if (!taskId) render();
     else { renderPins(); renderSidebarTasks(); }
   });
@@ -2960,14 +2828,17 @@
   $('task-state').onclick = () => { void toggleDetails(); };
   $('details-close').onclick = closeDetails;
   window.__multiccAirDeleteCurrentTask = () => deleteTask();
-  $('schedule-create').onclick = () => openScheduleDialog();
-  $('schedule-close').onclick = () => $('schedule-dialog').close();
-  $('schedule-cancel').onclick = () => $('schedule-dialog').close();
-  $('schedule-form').onsubmit = saveSchedule;
-  $('schedule-presets').onclick = event => {
-    const preset = event.target.closest('[data-cron]');
-    if (preset) $('schedule-form').elements.cron.value = preset.dataset.cron;
-  };
+  // 定时任务中心整块在 public/air-schedule-center.js（列表、表单、四个动作）。它只
+  // 认识这里递下去的四个东西：全局那些（t / MultiCCApi / getLocale）自己读，air 私有的
+  // 「通知、跳转、刷新、目录与车道快照」得给 —— 同目录首页那个弹层模块的分工。
+  window.MultiCCAirSchedules?.bind({
+    notice, navigate, refresh,
+    directories: () => data?.directories || [],
+    clis: () => data?.clis || [],
+    directoryId: () => directoryId,
+    mode: () => mode,
+    laneRouteLabel, cliOffersInChat, firstChatCli, cliOptionLabel,
+  });
   // 侧栏那颗「＋ 新任务」开的不是一张表单，是把目录首页那个统一输入框模块搬进
   // 弹窗（见 openNewTaskComposer）—— 任务名取正文第一行，创建完直接执行。
   $('create').onclick = openNewTaskComposer;
@@ -2990,8 +2861,9 @@
     }
     if (event.key === 'Escape') {
       // 一层一层地退：先收浮层，再收导航与详情。
+      // 控制台不在这条链上：它是一页，不是一层浮层 —— 离开它走侧栏（或 ⌘K），
+      // 和离开「定时任务」「工作目录库」是同一个动作。
       if (paletteOpen) { closePalette(); return; }
-      if (consoleOpen) { setConsole(false); return; }
       if ($('task-header').classList.contains('options-open')) { closeOptions(); return; }
       if (document.querySelector('#task-pins .pin-tab.is-open')) { closePinPanels(); return; }
       // 对话浮层也在这条链上，而且是最后让位的那一层：展开态先收回默认（页头回来），
@@ -3014,24 +2886,31 @@
     entry = null;
     closeDetails();
     closePalette();
-    applyConsole(['overview', 'activity'].includes(params.get('view')));
     render();
     void window.MultiCCAirTaskEntry?.open({ taskId, api, notice });
-    if (mode === 'schedules' || consoleOpen) void refreshSchedules().then(render);
+    if (mode === 'schedules' || mode === 'overview') void window.MultiCCAirSchedules?.refresh().then(render);
   });
   window.addEventListener('pagehide', () => { saveDraft(); stopped = true; epoch++; clearTimeout(timer); });
   window.addEventListener('pageshow', event => {
     if (event.persisted) { stopped = false; epoch++; void poll(); }
   });
 
+  // 隐藏期间不刷新（见 poll），回到前台先对齐一次：降频后更不该回来还看十几秒前的状态。
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || stopped) return;
+    clearTimeout(timer);
+    epoch++;
+    void poll(epoch);
+  });
+
   async function poll(currentEpoch = epoch) {
     if (stopped || currentEpoch !== epoch) return;
     if (!document.hidden || !data) await refresh();
     if (stopped || currentEpoch !== epoch) return;
-    const base = document.hidden && data ? POLL_HIDDEN_MS : POLL_MS;
+    const base = document.hidden && data ? POLL_HIDDEN_MS : (idleRounds >= 2 ? POLL_IDLE_MS : POLL_MS);
     const delay = pollFailures ? Math.min(base * 2 ** pollFailures, POLL_MAX_MS) : base;
     timer = setTimeout(() => poll(currentEpoch), delay);
   }
-  void loadLidSleepRow();
+  void powerShortcuts.refresh();
   void poll();
 })();

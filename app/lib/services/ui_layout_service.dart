@@ -47,7 +47,7 @@ class UiLayoutService {
   final SettingsService settings;
   UiLayoutService({required this.settings});
 
-  /// 迁移用的旧键：目录顺序从前存在这里（[_DirectoryListBody]）。
+  /// 迁移用的旧键：目录顺序从前存在这里（老首页的目录列表）。
   static const String legacyDirOrderKey = 'directory_order';
 
   UiLayout _layout = const UiLayout.empty();

@@ -1,4 +1,5 @@
 'use strict';
+const { directoryAtCapacity } = require('./capacity');
 const { hash } = require('./context');
 const { handoffSnapshot } = require('./history-context');
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
@@ -70,7 +71,7 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
     if (!splitAlive(suggestion)) return parked ? { ...suggestion, deferred: true, stale: true } : null;
     return parked ? { ...suggestion, deferred: true, stale: false } : suggestion;
   }
-  function propose(sessionId, receiptId, input) {
+  async function propose(sessionId, receiptId, input) {
     if (!input.separation?.title || !input.turnId || !input.anchorMessageId) return null;
     const { receipt, source, shell } = sourceOf(sessionId, receiptId);
     const history = getHistory(sessionId);
@@ -100,8 +101,12 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
     // (ready:false) until a separate decision gives it its own.
     const taskId = `tsk_${hash(id).slice(0, 32)}`;
     const record = getRecord(sessionId);
+    if (!store.get('task', taskId) && directoryAtCapacity(store, source.dirId)) {
+      await ports.ensureTaskSlot(source.dirId, [source.id]);
+      if (!current(suggestion)) return null;
+    }
     store.transaction(() => {
-      if (store.list('task').filter(t => t.dirId === source.dirId).length >= 200) throw fail('task_shell_task_limit');
+      if (!store.get('task', taskId) && directoryAtCapacity(store, source.dirId)) throw fail('task_shell_task_limit');
       if (!store.get('task', taskId)) {
         store.set('task', taskId, { id: taskId, dirId: source.dirId, sessionId: `task-${taskId.slice(4)}`,
           ownerShellId: shell?.id || null, title, taskFirst: true, separatedFromTaskId: source.id,
@@ -284,9 +289,9 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
       // is shared: the new execution and the moved checkout are created inside
       // the same writer barrier the identity was frozen under.
       const legacy = !task;
-      if (legacy && store.list('task').filter(t => t.dirId === source.dirId).length >= 200) throw fail('task_shell_task_limit');
       if (typeof ports.withSeparationBarrier !== 'function') throw fail('separation_barrier_unavailable');
       if (typeof ports.recordSeparationApplication !== 'function') throw fail('separation_application_unavailable');
+      if (legacy && directoryAtCapacity(store, source.dirId)) await ports.ensureTaskSlot(source.dirId, [source.id]);
       const targetTaskId = legacy ? `tsk_${hash(id).slice(0, 32)}` : task.id;
       const targetSessionId = legacy ? `task-${targetTaskId.slice(4)}` : task.sessionId;
       const shellId = `sh_${hash(targetSessionId).slice(0, 24)}`;
@@ -304,6 +309,7 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
         const record = getRecord(sessionId);
         store.transaction(() => {
           if (!alive() || tailMoved()) throw fail('separation_stale');
+          if (legacy && directoryAtCapacity(store, source.dirId)) throw fail('task_shell_task_limit');
           store.set('snapshot', snapshot.hash, snapshot);
           if (legacy) {
             task = { id: targetTaskId, dirId: source.dirId, sessionId: targetSessionId, ownerShellId: shellId,

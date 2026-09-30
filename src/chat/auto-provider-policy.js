@@ -43,7 +43,13 @@ function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000 } = {})
     : Object.freeze({ state: 'available', reason: 'fresh_limit_available' });
 }
 
-function chooseCandidate({ candidates, attempted = new Set(), stickyProviderId = null } = {}) {
+// `preferredTier` is the difficulty verdict for THIS turn (see jev-client).
+// It outranks stickiness: a follow-up that got harder must not stay pinned to
+// the weak model that answered the previous turn. It is a preference, never a
+// filter — when every candidate of that tier has already been attempted, the
+// remaining pool is still eligible, so a dead weak route can fail over upward
+// instead of wedging the turn. A null tier preserves the legacy ordering.
+function chooseCandidate({ candidates, attempted = new Set(), stickyProviderId = null, preferredTier = null } = {}) {
   const eligible = (Array.isArray(candidates) ? candidates : [])
     .filter(candidate => candidate && candidate.enabled !== false && !attempted.has(candidate.providerId));
   const skipped = eligible
@@ -54,6 +60,10 @@ function chooseCandidate({ candidates, attempted = new Set(), stickyProviderId =
     }));
   const usable = eligible.filter(candidate => candidate.limitState !== 'exhausted');
   usable.sort((left, right) => {
+    if (preferredTier) {
+      const tierRank = (left.tier === preferredTier ? 0 : 1) - (right.tier === preferredTier ? 0 : 1);
+      if (tierRank !== 0) return tierRank;
+    }
     if (left.providerId === stickyProviderId && right.providerId !== stickyProviderId) return -1;
     if (right.providerId === stickyProviderId && left.providerId !== stickyProviderId) return 1;
     return left.priority - right.priority || left.index - right.index;

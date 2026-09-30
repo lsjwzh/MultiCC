@@ -107,6 +107,46 @@ async function hostFixture(t, options = {}) {
   const descriptor = id => ({ sessionId: record.id, item: { id }, opts: { deliveryId: id } });
   return { ...f, host, record, descriptor, flags, state, deps, hibernationRuntime };
 }
+test('admission releases the turn lease while fencing and reusing its resident child', { timeout: 10000 }, async t => {
+  const f = await hostFixture(t);
+  f.record.cli = 'codex-exp';
+  const app = require('../src/chat/codex-app-stream').createCodexAppStream();
+  const stream = require('../src/chat/stream-router').createStreamRouter(app, app, app);
+  const bin = require('./helpers/fake-codex-app-server').writeFakeAppServer(f.dir);
+  Object.assign(f.deps, {
+    streamBusy: id => !!stream.status(id)?.busy,
+    closePersistent: id => stream.closeAndWait(id),
+    parkPersistent: (id, w) => stream.parkWorkspace(id, w),
+    claimPersistent: (id, w, opts) => stream.claimWorkspace(id, w, opts),
+  });
+  const id = f.record.id;
+  let pid;
+  try {
+    for (let i = 1; i <= 2; i++) {
+      const d = f.descriptor(`message-${i}`), guard = await f.host.beforeDeliver(d);
+      f.host.bindTurn(id, d.opts, `turn-${i}`); f.host.starting(id, d.opts);
+      stream.ensure(id, { cmd: process.execPath, cwd: f.record.worktreePath, streamBackend: 'app-server',
+        baseArgs: [path.resolve(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs'), '--codex-bin', bin, '--resident'],
+        env: { PATH: process.env.PATH, FAKE_CODEX_LOG: path.join(f.dir, 'requests.jsonl') } });
+      await stream.send(id, 'hello', () => {});
+      const currentPid = stream.status(id).pid;
+      if (pid) assert.equal(currentPid, pid, 'the real bridge PID survives workspace finalization');
+      pid = currentPid;
+      f.host.spawned(id, { pid }); await guard.complete({ accepted: true });
+      f.flags.background = true;
+      f.host.settled(id, { status: 'succeeded' });
+      await new Promise(setImmediate);
+      assert.equal(f.host.hasActiveLease(id), true, 'background writers still hold the execution lease');
+      f.flags.background = false;
+      for (let n = 0; n < 200 && f.host.occupied(id); n++) await new Promise(r => setTimeout(r,5));
+      assert.equal(f.host.hasActiveLease(id), false);
+      assert.equal(stream.status(id).alive, true);
+      await assert.rejects(stream.send(id, 'without a permit', () => {}), { code: 'workspace_busy' });
+    }
+    await stream.claimWorkspace('next-owner', f.host.identify(id));
+    assert.equal(stream.status(id), null, 'a different writer joins the parked process first');
+  } finally { await stream.closeAndWait(id); await stream.closeAndWait('next-owner'); }
+});
 test('first dispatch materializes once, rejects forged permits, and holds claim through background work', async t => {
   const f = await hostFixture(t); assert.equal(fs.existsSync(f.record.worktreePath), false);
   assert.throws(() => f.host.assertPermit(f.record.id, { workspacePermit: {} }), { code: 'workspace_admission_required' });
@@ -120,6 +160,20 @@ test('first dispatch materializes once, rejects forged permits, and holds claim 
   f.flags.background = false; f.host.occupied(f.record.id); await new Promise(setImmediate);
   assert.equal(f.host.occupied(f.record.id), false); assert.equal(f.flags.closes, 1);
   const next = f.descriptor('n'); await f.host.beforeDeliver(next); assert.equal(f.flags.creates, 1);
+});
+test('a resident refusing to park retains its lease without being killed', async t => {
+  const f = await hostFixture(t);
+  f.deps.parkPersistent = () => ({ parked: false });
+  const d = f.descriptor('m'), guard = await f.host.beforeDeliver(d);
+  f.host.bindTurn(f.record.id, d.opts, 't'); f.host.starting(f.record.id, d.opts);
+  await guard.complete({ accepted: true });
+  f.host.settled(f.record.id, { status: 'succeeded' });
+  await new Promise(setImmediate);
+  assert.equal(f.host.hasActiveLease(f.record.id), true);
+  assert.equal(f.flags.closes, 0);
+  f.deps.parkPersistent = () => ({ parked: true });
+  f.host.occupied(f.record.id); await new Promise(setImmediate);
+  assert.equal(f.host.hasActiveLease(f.record.id), false);
 });
 test('accepted duplicate without launch and failed materialization both release only their reservation', async t => {
   const f = await hostFixture(t); const d = f.descriptor('m'), guard = await f.host.beforeDeliver(d);

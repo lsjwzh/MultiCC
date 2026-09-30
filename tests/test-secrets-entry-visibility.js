@@ -7,14 +7,16 @@
  * variables, so this is child-process environment configuration rather than a
  * switch inside some feature group — it belongs at the top of the control
  * center, not buried in a group. The complaint that produced these tests was
- * exactly that: the entry could not be found on the web side at all (the Air
- * shell hides manage.html's #nav, so the only web surfaces were the Air
- * console/settings center), and the App entry sat inside an advanced-only
- * 「服务器设置」 section.
+ * exactly that: the entry could not be found on the web side at all, and the
+ * App entry sat inside an advanced-only 「服务器设置」 section.
  *
- * Static source assertions only — the rendered layout is measured elsewhere
- * (tests/test-manage-mobile-nav-layout.js, tests/test-air-console-cdp.js) and
- * the App side is pinned in app/test/secrets_entry_visibility_test.dart.
+ * The old dashboard (manage.html + manage-secrets.js) used to carry a second
+ * web entry; it was deleted along with the whole page, so Air is now the only
+ * web surface and everything below is about Air.
+ *
+ * Static source assertions only — the rendered layout is measured in
+ * tests/test-air-console-cdp.js and the App side is pinned in
+ * app/test/secrets_entry_visibility_test.dart.
  */
 
 const test = require('node:test');
@@ -36,46 +38,25 @@ function assertContains(haystack, needle, message) {
   );
 }
 
-const manageHtml = read('public/manage.html');
-const manageSecrets = read('public/manage-secrets.js');
 const airAdmin = read('public/air-admin.js');
 const airJs = read('public/air.js');
 const airHtml = read('public/air.html');
 const airSecrets = read('public/air-secrets.js');
-
-test('the vault card is pinned above the scrolling nav list, not inside a group', () => {
-  assertContains(manageHtml, /\.nav-pinned\s*\{/, 'the pinned card needs its own rule so it can sit outside the scrolling list');
-  const card = manageHtml.indexOf('class="nav-item nav-pinned"');
-  const scrollingList = manageHtml.indexOf('id="nav-scroll"');
-  assert.ok(card > 0, 'manage.html must render the pinned vault card');
-  assert.ok(scrollingList > 0, 'manage.html must keep the scrolling nav list');
-  assert.ok(card < scrollingList,
-    'the pinned card must come before #nav-scroll, otherwise it scrolls away with the groups');
-  assertContains(manageHtml, /class="nav-item nav-pinned" data-view="secrets"/,
-    'the pinned card opens the secrets view');
-  assertContains(manageHtml, /id="nav-secrets-count"/, 'the pinned card carries the entry-count badge');
-});
-
-test('the badge counts vault entries on load, not only after the panel is opened', () => {
-  assertContains(manageSecrets, /function refreshSecretCount\(/,
-    'the count must be refreshable without opening the panel');
-  assertContains(manageSecrets, /document\.readyState === 'loading'[\s\S]{0,80}DOMContentLoaded[\s\S]{0,40}else boot\(\)/,
-    'manage-secrets.js must boot the count fetch on page load (the badge otherwise sits at 0)');
-  assertContains(manageSecrets, /window\.refreshSecretCount = refreshSecretCount/,
-    'the console needs to re-read the count after a save or delete');
-});
 
 test('Air surfaces the vault first, and its page header is not the raw mode key', () => {
   assertContains(airAdmin, /^\s{4}secrets: \[t\('airAdminPanelSecrets'\)/m,
     'the vault panel must be registered in legacyPanels');
   assertContains(airAdmin, /\['airAdminGroupFeatured', \['secrets', 'docs', 'memory', 'taskgraph', 'workspaces'\]\]/,
     'the vault must be the first card of the settings center\'s first group');
-  // 控制台那一格现在钉在顶栏上（不用滚到工具格才找得到），所以这条断的是
-  // #console-head 里的常驻按钮，而不是工具格的卡。
-  const consoleHead = airHtml.indexOf('id="console-head"');
+  // 控制台那一格钉在页头工具栏上（不用滚到工具格才找得到）。从前它住在控制台浮层的
+  // #console-head 里；控制台改成主区域里的一页之后，页头那排工具就是唯一常驻的地方
+  // —— #task-tools 在每一页都渲染，被藏起来的只是 #task-layout 那一块正文。
+  const taskTools = airHtml.indexOf('id="task-tools"');
   const consoleSecrets = airHtml.indexOf('id="console-secrets"');
-  assert.ok(consoleSecrets > 0, 'air.html must render the console top-bar vault entry');
-  assert.ok(consoleSecrets > consoleHead, 'the entry must sit inside #console-head');
+  assert.ok(consoleSecrets > 0, 'air.html must render the header vault entry');
+  assert.ok(consoleSecrets > taskTools, 'the entry must sit inside the header toolbar #task-tools');
+  assert.ok(!airHtml.includes('id="console-panel"'),
+    'the console is a page in <main> now, not the slide-over panel this entry used to live in');
   assertContains(airHtml, /id="console-secrets"[^>]*data-air-view="secrets"/,
     'air.js wires [data-air-view] → setMode, so the button needs the attribute to do anything');
   assert.ok(airAdmin.indexOf("['secrets', '🔐',") < 0,

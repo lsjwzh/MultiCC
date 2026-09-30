@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -17,10 +19,21 @@ class _StubQuotaService extends QuotaService {
   final arkBaseUrls = <String?>[];
   final providerBalanceCalls = <String>[];
 
+  /// ark baseUrl -> response; an unmapped url answers null (an unreachable
+  /// host), which is what the existing tests rely on.
+  final arkResponses = <String, Map<String, dynamic>>{};
+  /// ark baseUrl -> gate: that host's fetch parks until the test completes it,
+  /// so a switch can land while the response is still in flight.
+  final arkGates = <String, Completer<Map<String, dynamic>?>>{};
+  /// Answer `null` for every provider-balance query (a transient failure).
+  bool failProviderBalance = false;
+
   @override
-  Future<Map<String, dynamic>?> fetchArkQuota(String? baseUrl) async {
+  Future<Map<String, dynamic>?> fetchArkQuota(String? baseUrl) {
     arkBaseUrls.add(baseUrl);
-    return null;
+    final gate = arkGates[baseUrl ?? ''];
+    if (gate != null) return gate.future;
+    return Future.value(arkResponses[baseUrl ?? '']);
   }
 
   @override
@@ -39,6 +52,7 @@ class _StubQuotaService extends QuotaService {
     String providerId,
   ) async {
     providerBalanceCalls.add('$appType:$providerId');
+    if (failProviderBalance) return null;
     if (providerId == 'deepseek') {
       return {
         'ok': true,
@@ -177,6 +191,87 @@ void main() {
       contains('https://ark.cn-beijing.volces.com/api/coding'),
     );
     expect(provider.arkQuotaView, isNotNull);
+  });
+
+  test(
+    'a failed provider-balance query keeps the last known good bar',
+    () async {
+      final s = await settings();
+      final quota = _StubQuotaService(s);
+      final provider = ChatProvider(
+        settings: s,
+        sessionName: 'test-session',
+        sessionCwd: '/tmp/x',
+        quotaService: quota,
+      );
+      addTearDown(provider.dispose);
+
+      provider.applyProviderCatalog(const <Map<String, dynamic>>[
+        {
+          'id': 'deepseek',
+          'appType': 'codex',
+          'baseUrl': 'https://api.deepseek.com/v1',
+        },
+      ]);
+      provider.applyCliConfig(
+        const SessionCliConfig(
+          cli: SessionCli.codex,
+          provider: 'deepseek',
+          providerBaseUrl: 'https://api.deepseek.com/v1',
+          model: 'deepseek-test',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(provider.balanceView?.text, 'DeepSeek · ¥12.50');
+
+      // The next query times out / answers ok:false. The web's
+      // refreshProviderLimit returns on failure WITHOUT touching the bars (the
+      // server even answers with its cached last-known-good bar for this
+      // reason); nulling it here used to hide the chip until the user switched
+      // provider or CLI again.
+      quota.failProviderBalance = true;
+      provider.refreshVendorQuotas();
+      await Future<void>.delayed(Duration.zero);
+      expect(provider.balanceView?.text, 'DeepSeek · ¥12.50');
+    },
+  );
+
+  test('a late vendor response cannot repaint the previous provider', () async {
+    final s = await settings();
+    final quota = _StubQuotaService(s);
+    const codingPlan = 'https://ark.cn-beijing.volces.com/api/coding';
+    const agentPlan = 'https://ark.cn-beijing.volces.com/api/plan';
+    quota.arkResponses[agentPlan] = {
+      'status': 'ok',
+      'bar': {'text': 'Agent plan · 已用 5%', 'color': '#58a6ff'},
+    };
+    quota.arkGates[codingPlan] = Completer<Map<String, dynamic>?>();
+    final provider = ChatProvider(
+      settings: s,
+      sessionName: 'test-session',
+      sessionCwd: '/tmp/x',
+      quotaService: quota,
+    );
+    addTearDown(provider.dispose);
+
+    provider.applyProviderSwitch(configWith(codingPlan));
+    await Future<void>.delayed(Duration.zero);
+    // The coding-plan query is still open; the switch to the agent plan must
+    // still issue its own query (a bare in-flight flag suppressed it, leaving
+    // the bar blank after the switch had already wiped it).
+    provider.applyProviderSwitch(configWith(agentPlan));
+    await Future<void>.delayed(Duration.zero);
+    expect(provider.arkQuotaView?.text, 'Agent plan · 已用 5%');
+
+    // The old plan's answer lands now: it belongs to a provider this session
+    // has left, so it is dropped instead of painting the previous account's
+    // quota under the new plan.
+    quota.arkGates[codingPlan]!.complete({
+      'status': 'ok',
+      'bar': {'text': 'Coding plan · 已用 12%', 'color': '#58a6ff'},
+    });
+    await Future<void>.delayed(Duration.zero);
+    expect(provider.arkQuotaView?.text, 'Agent plan · 已用 5%');
   });
 
   test(

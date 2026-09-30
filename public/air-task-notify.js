@@ -5,17 +5,40 @@
  * reminder only ever lives in one place (see chat-notifications.js for the same
  * idea on the standalone chat page).
  *
- *   task transitions to a terminal "completed" state AND isn't currently open
- *        └─► ① sidebar row gets `.unseen` (always, visible or background)
- *        └─► ② voice ding + 朗读「任务已完成」 (background tab only)
- *        └─► ③ floating completion panel ([打开][✕]) (visible page only)
- *   user opens the task
- *        └─► ① `.unseen` cleared  ② voice cancelled  ③ floating panel hidden
+ *   the server marks a task (task.attention in /api/air) when its run moves into
+ *   completed / error / waiting, and clears it when anyone opens the task —
+ *   from any Air tab, PWA window or the App (see src/task-board/attention.js)
+ *        └─► ① sidebar row gets `.unseen` while the snapshot carries the mark
+ *        └─► ② sound for marks newer than the ones already rung: ding always;
+ *              + 朗读「任务…已完成」 only when the person is away (tab hidden, or
+ *              visible but no input for 5 min — see shared/user-presence.js)
+ *        └─► ③ floating reminder deck, one card per task ([打开][✕]);
+ *              several stack up and fan out on click (air-notify-deck.js)
+ *   user opens the task (here, or anywhere else)
+ *        └─► ① `.unseen` cleared  ② pending/ongoing voice cancelled  ③ its card leaves
  *
- * `unseen` and the last-observed per-task status are persisted to localStorage,
- * so a task that finishes while the page is closed (or across a reload) is still
- * marked ① / prompted ③ the next time the page is open. "©" closing the floating
- * prompt only hides the panel; the row stays marked until the task is opened.
+ * Whether a task is unseen is never decided here: ① and ③ are both a mirror of
+ * the snapshot's marks, so a task opened anywhere clears its row and its card.
+ * What this page does keep is what it has already RUNG (a watermark on the
+ * server's attention.at, shared by every tab through localStorage), so a
+ * reload, a second tab or a tab that slept in the background never rings twice
+ * for a result that was already announced.
+ *
+ * Sound edge cases (the ones that used to read as contradictions):
+ *   - several tasks finish in one poll, or within the cooldown → ONE ding and
+ *     one sentence naming the most important task (+「另有 N 个」), never a
+ *     burst, and never a silently swallowed second completion;
+ *   - a task opened before its deferred announcement plays is dropped from it;
+ *   - two Air tabs/PWA windows poll the same new mark → only one of them makes
+ *     a sound; each shows its own card (the card is not a sound: it follows the
+ *     mark, so a tab opened later still shows what the row already shows);
+ *   - coming back to a hidden tab cancels narration still queued from while it
+ *     was hidden (it would describe something already on screen);
+ *   - the open task is never announced here: its chat frame owns that sound.
+ *
+ * ✕ on a card only takes that card off the deck; the row stays marked until the
+ * task is opened, and the card comes back with the next page (the mark is still
+ * pending — that is what a reminder owes you).
  *
  * Kept a classic script (no module dep) so air.js can construct it before the
  * first snapshot and hand over the handful of callbacks it needs.
@@ -27,33 +50,59 @@
   // get their own attention tone (red) instead of being silently skipped — a
   // failed run the user hasn't looked at is at least as much "come see this"
   // as a success. Cancellations and archives are deliberately excluded.
+  // `waiting` (a question for the user) is announced too: the open task's chat
+  // frame already dings for it, and a question in a task you are NOT looking at
+  // is the one you are least likely to notice.
   const COMPLETED = new Set(['done', 'succeeded']);
   const ERROR = new Set(['error']);
+  const WAITING = new Set(['waiting']);
+  const KINDS = new Set(['completed', 'error', 'waiting']);
   function attentionKind(status) {
     const key = String(status || '');
     if (COMPLETED.has(key)) return 'completed';
     if (ERROR.has(key)) return 'error';
+    if (WAITING.has(key)) return 'waiting';
     return null;
   }
+  // Which of several simultaneous outcomes the one sentence is about.
+  const KIND_PRIORITY = { error: 3, waiting: 2, completed: 1 };
 
-  const LS_UNSEEN = 'air:notify-unseen';
-  const LS_PREV = 'air:notify-prev';
+  // Before the server kept the mark, each page kept its own copy here. Those
+  // copies disagreed between tabs (the cause of repeated reminders); dropped.
+  const LEGACY_KEYS = ['air:notify-unseen', 'air:notify-prev'];
+  const LS_HEARD = 'air:notify-heard';   // newest attention.at already rung, shared by tabs
   const LS_VOICE = 'air:notify-voice';
-  const PREV_CAP = 200;          // don't let the status watermark grow unbounded
-  const VOICE_COOLDOWN = 8000;   // per-fire cooldown, mirrors chat-notifications
+  const LS_CLAIM = 'air:notify-claim';
+  const VOICE_COOLDOWN = 8000;   // min gap between two sounds, mirrors chat-notifications
   const SPEAK_DELAY_MS = 260;    // let the ding finish before the narration starts
+  const CLAIM_TTL_MS = 120000;   // cross-tab "someone already rang for this" window
+  // Same tones as chat-notifications.js dingFrequencies(), so a sound means the
+  // same thing whichever controller made it.
+  const DING = {
+    completed: [1046.5, 1567.98],
+    error: [783.99, 622.25],
+    waiting: [659.25],
+  };
 
   const STRINGS = {
     completed: { zh: '{title} 已完成', en: '{title} done' },
     errored: { zh: '{title} 出错了', en: '{title} failed' },
+    waiting: { zh: '{title} 在等你回复', en: '{title} needs your reply' },
     floatTitle: { zh: '任务已完成', en: 'Task complete' },
     floatTitleError: { zh: '任务出错', en: 'Task failed' },
+    floatTitleWaiting: { zh: '任务等待回复', en: 'Task needs you' },
     floatOpen: { zh: '打开', en: 'Open' },
     floatClose: { zh: '✕', en: '✕' },
-    floatMore: { zh: '另 {n} 个任务已完成', en: '{n} more done' },
-    // 语音播报那一句：比弹窗标题多一个任务名，所以另开两条而不是复用 completed/errored。
+    deckLabel: { zh: '任务提醒', en: 'Task reminders' },
+    deckHint: { zh: '共 {n} 条 · 点击展开', en: '{n} reminders · click to expand' },
+    deckCollapse: { zh: '收起 ✕', en: 'Collapse ✕' },
+    deckMore: { zh: '还有 {n} 条较早的', en: '{n} older' },
+    // 语音播报那一句：比弹窗标题多一个任务名，所以另开三条而不是复用 completed/errored/waiting。
     spokenCompleted: { zh: '任务「{title}」已完成', en: 'Task "{title}" done' },
     spokenErrored: { zh: '任务「{title}」出错了', en: 'Task "{title}" failed' },
+    spokenWaiting: { zh: '任务「{title}」在等你回复', en: 'Task "{title}" needs your reply' },
+    // 一批多条时的后缀（sentence() 会拼在第一条后面），跟着播报那句的语言走。
+    spokenMore: { zh: '，另有 {n} 个任务有新结果', en: ' · {n} more results' },
   };
 
   function storage() {
@@ -71,17 +120,6 @@
     try { s.setItem(key, JSON.stringify(value)); } catch (_) { /* quota → drop silently */ }
   }
   function isCompleted(status) { return COMPLETED.has(String(status || '')); }
-
-  // The persisted unseen list used to be a bare array of ids; entries written
-  // before the error tone existed read as plain "completed" marks.
-  function readUnseen() {
-    const raw = readJson(LS_UNSEEN, []);
-    if (Array.isArray(raw)) return new Map(raw.map(id => [String(id), 'completed']));
-    if (raw && typeof raw === 'object') {
-      return new Map(Object.entries(raw).filter(([, kind]) => kind === 'completed' || kind === 'error'));
-    }
-    return new Map();
-  }
 
   // Voice was flagged on by default, but a user can silence it without losing
   // the sidebar mark or floating prompt (they are "notification", not "voice").
@@ -114,6 +152,7 @@
     }
     const translate = typeof opts.translate === 'function' ? opts.translate : (key, vars) => {
       const table = STRINGS[key] || {};
+      // 语言判定只留 uiLang() 一处（上面那段就是它）：显式选择 ＞ 系统语言 ＞ 英文。
       const lang = uiLang();
       let text = table[lang] || table.zh || key;
       if (vars) for (const name of Object.keys(vars)) text = text.replace(`{${name}}`, vars[name]);
@@ -121,7 +160,13 @@
     };
     const schedule = typeof opts.setTimeout === 'function' ? opts.setTimeout : win.setTimeout.bind(win);
     const cancelSchedule = typeof opts.clearTimeout === 'function' ? opts.clearTimeout : win.clearTimeout.bind(win);
+    const now = typeof opts.now === 'function' ? opts.now : Date.now;
     const visibility = () => (typeof doc.visibilityState === 'string' ? doc.visibilityState : 'visible');
+    // Presence decides narration (see shared/user-presence.js). Without the
+    // shared tracker the page falls back to "hidden = away".
+    const presence = opts.presence !== undefined ? opts.presence
+      : (win.MultiCCUserPresence?.shared?.() || null);
+    const isAway = () => (presence ? presence.isAway() : visibility() === 'hidden');
     // Folded status resolver: task.status only carries the lifecycle
     // (active/done/archived); whether a run ended in success or error lives in
     // runState. The page hands over the same status-presentation fold the
@@ -129,96 +174,52 @@
     const statusOf = typeof opts.statusOf === 'function'
       ? opts.statusOf : (task => task?.status);
 
-    // Persisted "terminal but not opened" rows (id → attention kind) + the
-    // last status we saw per task.
-    const unseen = readUnseen();
-    const prevStatus = new Map(Object.entries(readJson(LS_PREV, {})));
+    // The server's marks as of the last snapshot (id → { kind, at }), minus
+    // the task on screen and tasks opened here that the server has not caught
+    // up with yet (opened: id → the mark's `at` that was consumed).
+    let unseen = new Map();
+    const opened = new Map();
+    // Newest mark this tab has rung (②); null until the first snapshot. Only
+    // the sound is gated by what was already rung — ① and ③ follow the marks.
+    let tabHeard = null;
+    function sharedHeard() {
+      const raw = storage()?.getItem(LS_HEARD);
+      return raw == null ? null : Number(raw) || 0;
+    }
+    try { const s = storage(); for (const key of LEGACY_KEYS) s?.removeItem(key); } catch (_) {}
 
-    let panel = null;
-    let panelTask = null;
-    let panelTitle = null;
-    let panelBody = null;
-    let lastVoiceAt = 0;
+    let lastVoiceAt = -Infinity;
     let voiceTimer = null;
+    let flushTimer = null;
+    const pendingSound = new Map();  // id → { task, kind } waiting out the cooldown
 
-    function persistUnseen() { writeJson(LS_UNSEEN, Object.fromEntries([...unseen].slice(-PREV_CAP))); }
-    function persistPrev() {
-      const pruned = [...prevStatus.entries()].slice(-PREV_CAP);
-      writeJson(LS_PREV, Object.fromEntries(pruned));
-    }
-
-    // ── ③ Floating completion panel ────────────────────────────────────────
-    function buildPanel() {
-      if (panel) return panel;
-      panel = doc.createElement('div');
-      panel.className = 'task-complete-float';
-      panel.setAttribute('role', 'alert');
-      const text = doc.createElement('div');
-      text.className = 'task-complete-float-text';
-      const title = doc.createElement('div');
-      title.className = 'task-complete-float-title';
-      const body = doc.createElement('div');
-      body.className = 'task-complete-float-body';
-      const actions = doc.createElement('div');
-      actions.className = 'task-complete-float-actions';
-      const open = doc.createElement('button');
-      open.type = 'button';
-      open.className = 'task-complete-open';
-      open.textContent = translate('floatOpen');
-      const close = doc.createElement('button');
-      close.type = 'button';
-      close.className = 'task-complete-close';
-      close.textContent = translate('floatClose');
-      close.setAttribute('aria-label', translate('floatClose'));
-      text.append(title, body);
-      actions.append(open, close);
-      panel.append(text, actions);
-      panelBody = body;
-      panelTitle = title;
-      open.onclick = () => {
-        const task = panelTask;
-        dismissPanel();
-        if (task && openTask) openTask(task);
-      };
-      close.onclick = () => dismissPanel();
-      doc.body.appendChild(panel);
-      return panel;
-    }
-
-    function showPanel(task, kind = 'completed') {
-      panelTask = task || null;
-      buildPanel();
-      if (panelTitle) {
-        panelTitle.textContent = translate(kind === 'error' ? 'floatTitleError' : 'floatTitle') + ' ·';
+    // ── ③ Floating reminder deck (drawn by air-notify-deck.js) ────────────
+    // One card per task that needs you; several stack and fan out on click.
+    // ✕ only takes the card off the deck — the row stays marked until opened.
+    // `shown` is that deck's memory, keyed by the mark's own `at`: a card is put
+    // up once per mark, so a ✕ stays off for this page while the mirrored row
+    // keeps coming back (a reload, another tab) for a mark still pending.
+    const shown = new Map();         // id → the attention.at already on the deck
+    const deckFactory = opts.deck !== undefined ? opts.deck : win.MultiCCNotifyDeck;
+    let deck = null;
+    function getDeck() {
+      if (!deck && deckFactory?.create) {
+        deck = deckFactory.create({
+          window: win, document: doc, translate, setTimeout: schedule, now,
+          onOpen: task => { if (task && openTask) openTask(task); },
+        });
       }
-      const title = task?.title || task?.id || '';
-      if (panelBody) {
-        panelBody.textContent = translate(kind === 'error' ? 'errored' : 'completed', { title });
-      }
-      const more = [...unseen.keys()].filter(id => id !== task?.id).length;
-      if (more > 0 && panelBody) panelBody.textContent += ` · ${translate('floatMore', { n: more })}`;
-      panel.hidden = false;
-      panel.classList.toggle('is-error', kind === 'error');
-      panel.classList.remove('is-hiding');
-      // Re-hide whenever animation timers are abandoned.
-      if (win.__multiccNotifyHide) cancelSchedule(win.__multiccNotifyHide);
+      return deck;
     }
-
-    function dismissPanel() {
-      if (!panel) return;
-      panel.hidden = true;
-      panel.classList.remove('is-error');
-      panelTask = null;
-      if (panelBody) panelBody.textContent = '';
-    }
+    function dismissPanel() { deck?.clear(); }
 
     // ── ② Voice nudge ─────────────────────────────────────────────────────
-    function playDing() {
+    function playDing(kind) {
       try {
         const Ctor = win.AudioContext || win.webkitAudioContext;
         if (!Ctor) return;
         const ctx = new Ctor();
-        const freqs = [1046.5, 1567.98];
+        const freqs = DING[kind] || DING.completed;
         const start = ctx.currentTime;
         freqs.forEach((frequency, index) => {
           const osc = ctx.createOscillator();
@@ -252,82 +253,140 @@
       if (voiceTimer) { cancelSchedule(voiceTimer); voiceTimer = null; }
     }
 
-    function voiceNudge(task, kind = 'completed') {
-      if (!voiceEnabled()) return;
-      // 前台盯着页面时只刷侧边栏亮点/浮动条即可，不吵人；页面退到后台（切走/隐藏）
-      // 时才用语音补一句提醒。浏览器对隐藏标签页的语音有节流，能做就做、做不了静默降级。
-      if (visibility() === 'visible') return;
-      const now = Date.now();
-      if (now - lastVoiceAt < VOICE_COOLDOWN) return;
-      lastVoiceAt = now;
-      playDing();
-      const title = String(task?.title || '').slice(0, 40);
-      // 有任务名就带上（spoken*），没有就退回和浮动条同款的一句话标题（floatTitle*）。
-      const text = kind === 'error'
-        ? (title ? translate('spokenErrored', { title }) : translate('floatTitleError'))
-        : (title ? translate('spokenCompleted', { title }) : translate('floatTitle'));
+    // Cross-tab claim: two tabs polling the same new mark at once both see it
+    // above the shared watermark; the first to ring records it, the other stays quiet.
+    function claimSound(items) {
+      const s = storage();
+      if (!s) return items;
+      const at = now();
+      let claims = {};
+      try { claims = JSON.parse(s.getItem(LS_CLAIM)) || {}; } catch (_) {}
+      const fresh = {};
+      for (const [key, ts] of Object.entries(claims)) if (at - Number(ts) < CLAIM_TTL_MS) fresh[key] = ts;
+      // The mark's time makes the key per-event: the same task asking a second
+      // question a minute later is a new event, not a duplicate.
+      const key = ({ task, kind, at }) => `${task.id}|${kind}|${at || ''}`;
+      const mine = items.filter(item => !fresh[key(item)]);
+      for (const item of mine) fresh[key(item)] = at;
+      try { s.setItem(LS_CLAIM, JSON.stringify(fresh)); } catch (_) {}
+      return mine;
+    }
+
+    // 播报的那一句必须跟着界面语言走（上面 STRINGS 里的 spoken*）：这里以前是
+    // 中文字面量，英文页面上语音会突然说中文。有任务名就用 spoken*（带 {title}），
+    // 没有名就退回和浮动条同款的那句 floatTitle*；多任务只加一条后缀。
+    const SPOKEN_KEY = { error: 'spokenErrored', waiting: 'spokenWaiting', completed: 'spokenCompleted' };
+    const FLOAT_KEY = { error: 'floatTitleError', waiting: 'floatTitleWaiting', completed: 'floatTitle' };
+    function sentence(items) {
+      const [first] = items;
+      const title = String(first.task?.title || '').slice(0, 40);
+      const kind = FLOAT_KEY[first.kind] ? first.kind : 'completed';
+      let text = title ? translate(SPOKEN_KEY[kind], { title }) : translate(FLOAT_KEY[kind]);
+      if (items.length > 1) text += translate('spokenMore', { n: items.length - 1 });
+      return text;
+    }
+
+    // ② One sound per batch: ding always, narration only when away. Presence
+    // is read when the sound actually plays, not when the task finished.
+    function flushSound() {
+      if (flushTimer) { cancelSchedule(flushTimer); flushTimer = null; }
+      const items = [...pendingSound.values()]
+        .filter(({ task }) => unseen.has(String(task.id)));   // opened meanwhile → drop
+      pendingSound.clear();
+      if (!items.length || !voiceEnabled()) return false;
+      const mine = claimSound(items);
+      if (!mine.length) return false;
+      mine.sort((a, b) => KIND_PRIORITY[b.kind] - KIND_PRIORITY[a.kind]);
+      lastVoiceAt = now();
+      playDing(mine[0].kind);
+      if (!isAway()) return true;
+      const text = sentence(mine);
       if (voiceTimer) cancelSchedule(voiceTimer);
-      voiceTimer = schedule(() => speak(text), SPEAK_DELAY_MS);
+      voiceTimer = schedule(() => { voiceTimer = null; speak(text); }, SPEAK_DELAY_MS);
+      return true;
+    }
+
+    function queueSound(task, kind, at) {
+      pendingSound.set(String(task.id), { task, kind, at });
+      const wait = lastVoiceAt + VOICE_COOLDOWN - now();
+      if (wait <= 0) return;           // caller flushes synchronously
+      if (!flushTimer) flushTimer = schedule(flushSound, wait);
     }
 
     // ── ① ② ③ —— one trigger, three consumers ────────────────────────────
-    function fireAttention(task, kind) {
-      unseen.set(String(task.id), kind);
-      persistUnseen();
-      voiceNudge(task, kind);  // ② voice
-      showPanel(task, kind);   // ③ floating (① is live via isUnseen → CSS class)
+    function fireAttention(cards, sounds) {
+      for (const [task, kind, at] of sounds) queueSound(task, kind, at);   // ② sound (batched)
+      if (sounds.length && !flushTimer) flushSound();
+      // ③ every new mark lands on the deck (① is live via isUnseen → CSS class)
+      for (const [task, kind] of cards) getDeck()?.upsert(task, kind);
     }
 
     function markOpened(taskId) {
       const id = String(taskId || '').trim();
       if (!id) return;
-      if (!unseen.has(id)) return;
+      pendingSound.delete(id);
+      // The server clears the mark when the task entry is opened; until the
+      // next snapshot says so, this page already treats it as seen.
+      const mark = unseen.get(id);
+      if (!mark) return;
+      opened.set(id, mark.at);
       unseen.delete(id);
-      persistUnseen();
+      shown.delete(id);
       stopVoice();          // ② voice cancels
-      dismissPanel();       // ③ floating hides
+      deck?.remove(id);     // ③ its card leaves the deck
       // ① sidebar mark disappears on the next render (isUnseen returns false now)
     }
 
-    // Diff the latest snapshot against the watermark; anything that crossed into
-    // a terminal "completed"/"error" state while not the task currently on screen
-    // is a reminder candidate. Only fires when the transition is OBSERVED (prev
-    // in a non-terminal state), so a task that was already done before the
-    // feature/page ever saw it does not spam the page on first load.
+    // Back on a tab that was hidden: narration queued by a throttled
+    // background tab would now describe something already on screen.
+    presence?.onReturn?.(reason => { if (reason === 'visible') stopVoice(); });
+
+    // Read the marks off the latest snapshot. Every task still carrying one gets
+    // its card — the same mirror the sidebar row is, so a reload, a second tab
+    // or a browser that was away shows what still needs you. A mark newer than
+    // anything any tab has RUNG also makes a sound; the very first snapshot a
+    // browser ever sees only sets that watermark, so turning the feature on
+    // never replays a result that was already announced.
+    // A card whose task is no longer marked (opened elsewhere) or has moved on
+    // (someone continued it) leaves the deck.
     function onSnapshot(tasks, currentTaskId) {
-      // Board insertion order can put a recently rerun old task before hundreds
-      // of dormant records. Keep the watermark by activity, not insertion order.
-      const list = Array.isArray(tasks) ? [...tasks].sort((a, b) =>
-        Number(a.updatedAt || 0) - Number(b.updatedAt || 0)) : [];
-      const fires = [];
+      const list = Array.isArray(tasks) ? tasks : [];
+      const current = String(currentTaskId || '');
+      const heard = sharedHeard();
+      if (tabHeard == null) tabHeard = heard;
+      let newest = Math.max(heard || 0, tabHeard || 0);
+      const next = new Map();
+      const cards = [];
+      const sounds = [];
       for (const task of list) {
         const id = String(task?.id || '').trim();
         if (!id) continue;
-        const status = String(statusOf(task) || '');
-        const kind = attentionKind(status);
-        const prev = prevStatus.get(id);
-        const wasAttention = prev != null && attentionKind(prev);
-        const isOpen = id === String(currentTaskId || '');
-        if (isOpen) {                     // on screen → not "unseen"
-          unseen.delete(id);
-        } else if (kind && !wasAttention && prev != null) {
-          // observed terminal transition, not currently open
-          fires.push([task, kind]);
-          unseen.set(id, kind);
+        const mark = task.attention && KINDS.has(task.attention.kind) ? task.attention : null;
+        const at = Number(mark?.at) || 0;
+        if (mark) newest = Math.max(newest, at);
+        if (!mark || at > (opened.get(id) || 0)) opened.delete(id);
+        const live = mark && id !== current && !opened.has(id);
+        if (live) {
+          next.set(id, { kind: mark.kind, at });
+          if (shown.get(id) !== at) {         // once per mark: a ✕ stays off
+            shown.set(id, at);
+            cards.push([task, mark.kind]);
+          }
+          if (heard != null && at > heard) sounds.push([task, mark.kind, at]);
         }
-        prevStatus.delete(id);
-        prevStatus.set(id, status);
-      }
-      if (prevStatus.size > PREV_CAP) {
-        for (const key of prevStatus.keys()) {
-          if (prevStatus.size <= PREV_CAP) break;
-          prevStatus.delete(key);
+        if (!live || !attentionKind(statusOf(task))) {
+          pendingSound.delete(id);
+          shown.delete(id);
+          deck?.remove(id);
         }
       }
-      persistPrev();
-      persistUnseen();
-      for (const [task, kind] of fires) fireAttention(task, kind);
-      return fires.length > 0;
+      unseen = next;
+      tabHeard = newest;
+      if (heard == null || newest > heard) {
+        try { storage()?.setItem(LS_HEARD, String(newest)); } catch (_) {}
+      }
+      fireAttention(cards, sounds);
+      return sounds.length > 0;      // what rung, not what is on screen
     }
 
     // Expose a couple of controls the Air toolbar may want (voice on/off).
@@ -342,21 +401,26 @@
       isUnseen: id => unseen.has(String(id || '')),
       markOpened,
       onSnapshot,
-      panelHidden: () => !panel || panel.hidden,
+      deckIds: () => deck?.ids() || [],
       toggleVoice,
       unseenCount: () => unseen.size,
-      unseenKind: id => unseen.get(String(id || '')) || null,
+      unseenKind: id => unseen.get(String(id || ''))?.kind || null,
       voiceEnabled,
     });
   }
 
-  function recentTasks({ tasks, directoryId, recentTaskIds, limit, isUnseen, statusOf }) {
+  // 侧栏「最近任务」只有两个来源，都跨目录、都不随当前目录变：
+  //   ① 有未读结果的任务（按最后一条消息时间）；
+  //   ② 在这个浏览器里打开过的任务（按最近打开顺序，rememberTask 记最多 12 条）。
+  // 不再拿当前目录的任务来填空位：那样切目录时侧栏会整片换掉，看着像「任务跟着
+  // 目录变」。某个目录的完整任务在目录首页和控制台里。
+  function recentTasks({ tasks, recentTaskIds, limit, isUnseen, statusOf }) {
     const messageAt = task => Number(task?.lastMessageAt || task?.updatedAt || 0);
     const byId = new Map(tasks.map(task => [task.id, task]));
     const pool = [];
     const seen = new Set();
-    // Unread outcomes must remain reachable even outside the current directory
-    // or when all recent slots are already occupied by opened tasks.
+    // Unread outcomes must remain reachable even when all recent slots are
+    // already occupied by opened tasks.
     for (const task of tasks.filter(t => isUnseen(t.id) && !['archived', 'cancelled'].includes(statusOf(t)))
       .sort((a, b) => messageAt(b) - messageAt(a))) {
       seen.add(task.id);
@@ -365,13 +429,6 @@
     for (const id of recentTaskIds) {
       const task = byId.get(id);
       if (!task || seen.has(task.id)) continue;
-      seen.add(task.id);
-      pool.push(task);
-    }
-    const settled = task => (['done', 'archived'].includes(task.status) ? 1 : 0);
-    for (const task of tasks.filter(t => t.dirId === directoryId)
-      .sort((a, b) => settled(a) - settled(b) || messageAt(b) - messageAt(a))) {
-      if (seen.has(task.id)) continue;
       seen.add(task.id);
       pool.push(task);
     }
@@ -384,7 +441,7 @@
     isCompleted,
     attentionKind,
     __resetForTest(storage) {
-      if (storage) { try { storage.removeItem(LS_UNSEEN); storage.removeItem(LS_PREV); } catch (_) {} }
+      if (storage) { try { storage.removeItem(LS_HEARD); storage.removeItem(LS_CLAIM); } catch (_) {} }
     },
   });
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/vendor_quota.dart';
 
 // The app no longer formats vendor bars — the server renders them once and the
@@ -10,6 +11,12 @@ import 'package:multicc_app/models/vendor_quota.dart';
 // turns a server bar into a paintable [VendorQuotaView].
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  // The bar's {ago:} token is resolved by the shared relative-time table, so the
+  // zh catalog has to be loaded the way main() loads it; otherwise the resolver
+  // hands back the raw i18n key instead of 中文.
+  setUpAll(() => I18n.init('zh'));
+
   group('baseUrl gating', () {
     test('ark matches *.volces.com only', () {
       expect(isArkBaseUrl('https://ark.cn-beijing.volces.com/api/coding/v3'), true);
@@ -115,7 +122,7 @@ void main() {
       expect(v.text, '5h 100% 39m · 30s 前 ⟳');
     });
 
-    test('a past deadline reads as "1m", never an empty segment', () {
+    test('a past deadline reads as rolled, never an empty segment', () {
       const now = 1_700_000_000_000;
       final v = vendorViewFromBar(
         const {
@@ -126,9 +133,11 @@ void main() {
         },
         now: now,
       )!;
-      // A deadline already in the past collapses to the 1m floor so the bar's
-      // separators stay well-formed rather than going blank.
-      expect(v.text, '1m 0% 1m');
+      // The window rolled, so the segment says so: a countdown here would read
+      // as "0% used, resets in 1m" next to a percentage from the window that
+      // just ended. The segment stays non-empty so the bar's separators remain
+      // well-formed rather than going blank.
+      expect(v.text, '1m 0% 已重置');
       expect(v.color, VendorQuotaColor.red);
     });
 
@@ -244,6 +253,16 @@ void main() {
       ['claude', 'opencode', '', true],
       ['claude', 'codex', '', false],
       ['claude', 'qoder', '', false],
+      // The -exp builds are the same account/provider pool as their regular
+      // CLI, so they answer every family gate identically.
+      ['claude', 'claude-exp', '', true],
+      // The last branch is provider-agnostic on both ends (the web mirrors this
+      // byte for byte): hiding the Claude window under a Zhipu endpoint is
+      // renderCurrent's job (isClaudeProvider), not this gate's.
+      ['claude', 'claude-exp', zhipu, true],
+      ['codex', 'codex-exp', zhipu, true],
+      ['glm', 'codex-exp', '', true],
+      ['glm', 'claude-exp', zhipu, true],
     ];
     for (final c in cases) {
       test('${c[0]} window under ${c[1]} cli (baseUrl ${c[2] == '' ? "(none)" : c[2]}) → ${c[3]}', () {
@@ -261,7 +280,7 @@ void main() {
 
     test('recognizes both relay protocols, never loopback plumbing', () {
       expect(relayProtocolFromBaseUrl(relayClaude), 'claude');
-      expect(relayProtocolFromBaseUrl('https://mac.tail94695a.ts.net/codex-proxy/cx'), 'codex');
+      expect(relayProtocolFromBaseUrl('https://mac.example-host.ts.net/codex-proxy/cx'), 'codex');
       expect(relayProtocolFromBaseUrl('http://127.0.0.1:3000/claude-proxy/abc/remote'), isNull);
       expect(relayProtocolFromBaseUrl('http://localhost:3000/codex-proxy/abc'), isNull);
       expect(relayProtocolFromBaseUrl('https://open.bigmodel.cn/api/paas/v4'), isNull);
@@ -279,6 +298,13 @@ void main() {
       expect(providerMatchesCli('codex', 'claude', relayCodex), isFalse);
       // opencode's own window stays opencode-only even on a relay provider.
       expect(providerMatchesCli('opencode', 'claude', relayClaude), isFalse);
+      // The relay protocol is judged by CLI family: the -exp builds borrow
+      // through exactly these relays (this is the CLI/protocol pair the app
+      // actually runs with a 借道 provider), so they must keep the window bar.
+      expect(providerMatchesCli('claude', 'claude-exp', relayClaude), isTrue);
+      expect(providerMatchesCli('glm', 'claude-exp', relayClaude), isTrue);
+      expect(providerMatchesCli('codex', 'codex-exp', relayCodex), isTrue);
+      expect(providerMatchesCli('claude', 'codex-exp', relayClaude), isFalse);
     });
 
     test('a borrowed prepaid balance chip is visible for relay providers', () {

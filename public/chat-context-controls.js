@@ -1,6 +1,13 @@
 (function initChatContextControls(global) {
   'use strict';
 
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
+
   function create(options = {}) {
     const document = options.document;
     const window = options.window || global;
@@ -81,7 +88,9 @@
         options.addSystemMsg(translate('contextLevelUnavailable'));
         return;
       }
-      const mb = (n) => `${(Number(n || 0) / 1048576).toFixed(2)} MB`;
+      // 字节数走全站唯一那份（shared/format.js）。这里是诊断输出：原来固定说 MB、
+      // 两位小数，一个 6 KB 的转写会写成「0.01 MB」。
+      const mb = (n) => FMT.formatBytes(n, { unitDecimals: { MB: 2 }, placeholder: '0 B' });
       const parts = [translate('contextLevelSummary', {
         live: mb(t.liveBytes),
         file: mb(t.fileBytes),

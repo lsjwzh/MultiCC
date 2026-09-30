@@ -1,4 +1,6 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/services/air_service.dart';
 import 'package:multicc_app/utils/status_presentation.dart';
 import 'package:multicc_app/widgets/air/air_task_status.dart';
@@ -9,9 +11,11 @@ AirTask _task({
   String dirId = 'd1',
   String status = 'active',
   String? runState,
+  String? goalState,
   String? workflowStage,
   String recordType = '',
   Map<String, dynamic> resource = const {},
+  AirWorktreeChanges? worktreeChanges,
   int updatedAt = 0,
 }) => AirTask(
   id: id,
@@ -23,10 +27,17 @@ AirTask _task({
   readOnly: false,
   workflowStage: workflowStage,
   runState: runState,
+  goalState: goalState,
   resource: resource,
+  worktreeChanges: worktreeChanges,
 );
 
 void main() {
+  // Air 词表出自注册表的 airLabelKey 列，取词走 t()，所以词典得先装好 —— 不然
+  // 拿到的是 key 本身。
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() => I18n.init('zh'));
+
   group('一条任务算什么', () {
     test('生命周期最优先：归档和完成不因为这一轮在跑就被改写成执行中', () {
       expect(
@@ -73,7 +84,7 @@ void main() {
   });
 
   group('谁在等我', () {
-    test('等待回答 > 出错 > 卡在资源 > 正在跑 > 其它', () {
+    test('等待回答 > 出错 > 卡在资源 > 正在跑/等后台任务 > 其它', () {
       expect(airTaskUrgency(_task(runState: 'waiting')), 0);
       expect(airTaskUrgency(_task(runState: 'error')), 1);
       expect(
@@ -86,6 +97,9 @@ void main() {
         2,
       );
       expect(airTaskUrgency(_task(runState: 'running')), 3);
+      // 在等后台任务：有东西在外面跑，不是等我动手。
+      expect(airTaskUrgency(_task(runState: 'background')), 3);
+      expect(airNeedsAttention(_task(runState: 'background')), isFalse);
       // 租约已经交出去：还没跑起来，但名额已经不在池子里了。
       expect(
         airTaskUrgency(_task(resource: const {'lease': 'starting'})),
@@ -152,19 +166,29 @@ void main() {
   });
 
   group('Air 徽标说 Air 词表', () {
-    test('逐条对 Web 的 STATUS_COPY：跟词典里那几个词不是一个说法', () {
-      // App 词典（跟 Web 的 i18n 目录同一份）里 running 是「进行中」、waiting 是
-      // 「等待中」；Air 面说的是另一套（Web `air-admin.js` 的 STATUS_COPY）—— 跟
-      // 侧栏那些阶段、资源去向（`airLabel`）同源。
+    test('词从注册表的 airLabelKey 列取，跟词典里那几个词不是一个说法', () {
+      // App 词典里 running 是「进行中」、waiting 是「等待中」；Air 面说的是另一套 ——
+      // 注册表 airLabelKey 那一列（Web `air-admin.js` 的 STATUS_COPY、`air.js` 的
+      // stateNames 都由它构建），跟侧栏那些阶段、资源去向（`airLabel`）同源。
       expect(airStatusLabel(CanonicalStatus.running), '执行中');
       expect(airStatusLabel(CanonicalStatus.waiting), '等待回答');
       expect(airStatusLabel(CanonicalStatus.blocked), '等待配置');
       expect(airStatusLabel(CanonicalStatus.error), '执行异常');
       expect(airStatusLabel(CanonicalStatus.succeeded), '执行成功');
       expect(airStatusLabel(CanonicalStatus.unknown), '状态未知');
-      // 十二个状态一个不落，别留一个落回原样状态名。
+      // 等后台任务是它自己的词，不是「等待回答」—— 那张卡上没有东西要人回答。
+      expect(airStatusLabel(CanonicalStatus.background), '等待后台任务');
+      expect(
+        airStatusLabel(CanonicalStatus.background),
+        isNot(airStatusLabel(CanonicalStatus.waiting)),
+      );
+      // 每个状态一个不落、一个词也不重：两个状态共用一个词，折叠就又隐身了。
+      final words = <String>{};
       for (final status in CanonicalStatus.values) {
-        expect(airStatusCopy[status], isNotNull, reason: '$status 缺词');
+        final word = airStatusCopy()[status];
+        expect(word, isNotNull, reason: '$status 缺词');
+        expect(word, isNot(status.name), reason: '$status 落回了状态名');
+        expect(words.add(word!), isTrue, reason: '$status 和别的状态同词：$word');
       }
     });
 
@@ -173,6 +197,77 @@ void main() {
       final running = _task(runState: 'running', resource: const {'lease': 'running'});
       expect(airStatusLabel(airTaskStatus(running)), '执行中');
       expect(airTaskDetail(running), '');
+    });
+  });
+
+  group('✅ 那一格的三个说法', () {
+    test('子状态换的只是词，图标/色调/状态本身都不动', () {
+      // 判定在服务端（src/classify/vocab.js goalStateForClassify），客户端只读
+      // goalState 换词；换不到的（没目标、认不出的值）落回「执行成功」。
+      expect(succeededSubLabel(CanonicalStatus.succeeded, 'achieved'), '达成目标');
+      expect(succeededSubLabel(CanonicalStatus.succeeded, 'interact'), '需要交互');
+      expect(succeededSubLabel(CanonicalStatus.succeeded, null), '');
+      expect(succeededSubLabel(CanonicalStatus.succeeded, 'wat'), '');
+      // 子状态只挂在 ✅ 上：别的状态一个字都不换。
+      for (final status in CanonicalStatus.values) {
+        if (status == CanonicalStatus.succeeded) continue;
+        expect(succeededSubLabel(status, 'achieved'), '', reason: '$status 借用了 ✅ 的子状态词');
+      }
+      // 徽标本体：状态没变、颜色没变，只有可见文案换了一个。
+      final achieved = _task(runState: 'succeeded', goalState: 'achieved');
+      expect(airTaskStatus(achieved), CanonicalStatus.succeeded);
+      expect(airTaskSpec(achieved).icon, '✅');
+    });
+
+    testWidgets('徽标画出的是子状态那个词', (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AirTaskStatusBadge(task: _task(runState: 'succeeded', goalState: 'achieved')),
+        ),
+      ));
+      expect(find.text('达成目标'), findsOneWidget);
+      expect(find.text('执行成功'), findsNothing);
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AirTaskStatusBadge(task: _task(runState: 'succeeded', goalState: 'interact')),
+        ),
+      ));
+      expect(find.text('需要交互'), findsOneWidget);
+
+      // 没有子状态（旧服务端 / 没有目标）时还是老样子。
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(body: AirTaskStatusBadge(task: _task(runState: 'succeeded'))),
+      ));
+      expect(find.text('执行成功'), findsOneWidget);
+    });
+
+    test('第二层信息跟徽标实际印的那个词比，不跟粗的词比', () {
+      // 徽标印的是子状态的词，所以「有没有重复说」要以它为准：资源那句话正好
+      // 等于徽标上的词时仍然只印一次（同 Web 那句 `!badgeText.includes(part)`）。
+      final task = _task(
+        runState: 'succeeded',
+        goalState: 'achieved',
+        resource: const {'lease': 'running'},
+      );
+      expect(airTaskDetail(task), '执行中');
+    });
+  });
+
+  group('worktree 待交付图标', () {
+    test('未提交、未合并和两者同时存在时，提示各说各的', () {
+      expect(airWorktreeChangeLabel(_task(
+        worktreeChanges: const AirWorktreeChanges(dirty: true),
+      )), 'Worktree 有未提交改动');
+      expect(airWorktreeChangeLabel(_task(
+        worktreeChanges: const AirWorktreeChanges(ahead: 3),
+      )), 'Worktree 有 3 个提交尚未合并');
+      expect(airWorktreeChangeLabel(_task(
+        worktreeChanges: const AirWorktreeChanges(dirty: true, ahead: 2),
+      )), 'Worktree 有未提交改动，另有 2 个提交尚未合并');
+      expect(airWorktreeChangeLabel(_task(
+        worktreeChanges: const AirWorktreeChanges(),
+      )), '');
     });
   });
 

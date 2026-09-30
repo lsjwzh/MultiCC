@@ -20,6 +20,15 @@
   function el(id) { return document.getElementById(id); }
   function text(t) { return document.createTextNode(t); }
 
+  // 这一页的每一格都是「第一次 fetch 回来后整块重画」出来的，而 applyI18n 只在加载时
+  // 走一遍 —— 静态标记上的 data-i18n 撑不过第一次渲染。所以画出来的每条字符串都得当场
+  // 取词：取不到词典就回落成中文（页面至少还是中文），别把 key 画到屏幕上。
+  function tr(key, fallback, params) {
+    const fn = typeof window !== 'undefined' ? window.t : null;
+    const value = typeof fn === 'function' ? fn(key, params) : key;
+    return value === key && fallback !== undefined ? fallback : value;
+  }
+
   // ── Time formatting ──────────────────────────────────────────
   function formatAbsolute(ts) {
     if (!ts) return '-';
@@ -27,31 +36,22 @@
     if (typeof ts === 'number') d = new Date(ts);
     else d = new Date(ts);
     if (isNaN(d.getTime())) return '-';
-    return d.toLocaleString(getLocale(), {
+    return d.toLocaleString(undefined, {
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit'
     });
   }
 
+  // 活动时间走全站唯一那份（shared/format.js，dashboard.html 里先于本文件加载）：
+  // 档位和措辞都在那一张表里，这里只补一个本页的老规矩 —— 超过一个月的活动时间
+  // 直接给绝对时刻，「37 天前」在这一页没有意义。原来这一份的「刚刚」档是 10 秒，
+  // 别处是 5 秒，同一句话在两个页面上不一样。
   function formatRelative(ts) {
     if (!ts) return '-';
-    var then;
-    if (typeof ts === 'number') then = new Date(ts);
-    else then = new Date(ts);
+    var then = new Date(ts);
     if (isNaN(then.getTime())) return '-';
-
-    var diffMs = Date.now() - then.getTime();
-    var diffSec = Math.floor(diffMs / 1000);
-    var diffMin = Math.floor(diffSec / 60);
-    var diffHr = Math.floor(diffMin / 60);
-    var diffDay = Math.floor(diffHr / 24);
-
-    if (diffSec < 10) return t('dashboardJustNow');
-    if (diffSec < 60) return t('dashboardSecondsAgo', { n: diffSec });
-    if (diffMin < 60) return t('dashboardMinutesAgo', { n: diffMin });
-    if (diffHr < 24) return t('dashboardHoursAgo', { n: diffHr });
-    if (diffDay < 30) return t('dashboardDaysAgo', { n: diffDay });
-    return formatAbsolute(ts);
+    if (Date.now() - then.getTime() >= 30 * 86400000) return formatAbsolute(ts);
+    return window.MultiCCFormat.formatRelativeTime(then.getTime(), { placeholder: '-' });
   }
 
   // ── API calls ────────────────────────────────────────────────
@@ -84,18 +84,19 @@
 
     var html = '';
     // Total
-    html += statCard(t('dashboardStatTotal'), data.total || 0, '');
+    html += statCard(tr('dashboardStatTotal', '总会话数'), data.total || 0, '');
     // Active
-    html += statCard(t('activeSessions'), data.active || 0, data.total ? t('dashboardActivePct', { pct: Math.round((data.active / data.total) * 100) }) : '');
+    html += statCard(tr('dashboardStatActive', '活跃会话'), data.active || 0,
+      data.total ? tr('dashboardActivePct', '{pct}% 活跃', { pct: Math.round((data.active / data.total) * 100) }) : '');
     // By CLI
-    html += statCard(t('dashboardStatCli'), Object.keys(byCli).length || 0, cliDetails || t('dashboardNoData'));
+    html += statCard(tr('dashboardStatCli', 'CLI 分布'), Object.keys(byCli).length || 0, cliDetails || esc(tr('dashboardNoData', '无数据')));
 
     // Also render byKind as an extra card if available
     var byKind = data.byKind || {};
     var kindDetails = Object.keys(byKind).map(function (k) {
       return '<span>' + esc(k) + ': ' + byKind[k] + '</span>';
     }).join('');
-    html += statCard(t('dashboardStatKind'), Object.keys(byKind).length || 0, kindDetails || t('dashboardNoData'));
+    html += statCard(tr('dashboardStatKind', '类型分布'), Object.keys(byKind).length || 0, kindDetails || esc(tr('dashboardNoData', '无数据')));
 
     el('stats-grid').innerHTML = html;
   }
@@ -117,7 +118,7 @@
       wrap.style.display = 'block';
       var empty = document.createElement('div');
       empty.className = 'empty-state';
-      empty.innerHTML = '<div class="icon">📭</div><div>' + esc(t('dashboardNoSessions')) + '</div>';
+      empty.innerHTML = '<div class="icon">📭</div><div>' + esc(tr('dashboardNoSessions', '没有符合条件的会话')) + '</div>';
       wrap.innerHTML = '';
       wrap.appendChild(empty);
       el('session-count').textContent = '0';
@@ -128,14 +129,20 @@
     wrap.innerHTML = '';
     var table = document.createElement('table');
     table.className = 'sessions-table';
+    // 表头也走词典：窄屏时 data-label 会把同一批词印在每一格上，两边必须同源。
+    var colStatus = esc(tr('dashboardColStatus', '状态'));
+    var colLabel = esc(tr('dashboardColLabel', '标签'));
+    var colKind = esc(tr('dashboardColKind', '类型'));
+    var colCreated = esc(tr('dashboardColCreated', '创建时间'));
+    var colActivity = esc(tr('dashboardColLastActivity', '最后活动'));
     var thead = '<thead><tr>' +
-      '<th>' + esc(t('dashboardColStatus')) + '</th>' +
+      '<th>' + colStatus + '</th>' +
       '<th>ID</th>' +
-      '<th>' + esc(t('dashboardColLabel')) + '</th>' +
+      '<th>' + colLabel + '</th>' +
       '<th>CLI</th>' +
-      '<th>' + esc(t('dashboardColKind')) + '</th>' +
-      '<th>' + esc(t('dashboardColCreated')) + '</th>' +
-      '<th>' + esc(t('dashboardColLastActivity')) + '</th>' +
+      '<th>' + colKind + '</th>' +
+      '<th>' + colCreated + '</th>' +
+      '<th>' + colActivity + '</th>' +
       '</tr></thead>';
     table.innerHTML = thead;
     var tbodyEl = document.createElement('tbody');
@@ -145,14 +152,14 @@
 
       // Active dot
       var activeClass = s.active ? 'yes' : 'no';
-      var activeTitle = s.active ? t('dashboardActive') : t('dashboardInactive');
-      tr.appendChild(td('<span class="active-dot ' + activeClass + '" title="' + activeTitle + '"></span><span class="mobile-status-text">' + activeTitle + '</span>', t('dashboardColStatus')));
+      var activeTitle = esc(s.active ? tr('dashboardActive', '活跃') : tr('dashboardInactive', '非活跃'));
+      tr.appendChild(td('<span class="active-dot ' + activeClass + '" title="' + activeTitle + '"></span><span class="mobile-status-text">' + activeTitle + '</span>', colStatus));
 
       // ID
       tr.appendChild(td('<span class="mono">' + esc(s.id || '-') + '</span>', 'ID'));
 
       // Label
-      tr.appendChild(td(esc(s.label || s.id || '-'), t('dashboardColLabel')));
+      tr.appendChild(td(esc(s.label || s.id || '-'), colLabel));
 
       // CLI
       var cliCls = s.cli === 'claude' || s.cli === 'claude-exp' ? 'claude' : (s.cli === 'codex' || s.cli === 'codex-exp') ? 'codex-exp' : 'other';
@@ -160,13 +167,13 @@
 
       // Kind
       var kindCls = s.kind || 'other';
-      tr.appendChild(td('<span class="kind-badge ' + kindCls + '">' + esc(s.kind || '-') + '</span>', t('dashboardColKind')));
+      tr.appendChild(td('<span class="kind-badge ' + kindCls + '">' + esc(s.kind || '-') + '</span>', colKind));
 
       // Created at
-      tr.appendChild(td('<span class="mono">' + formatAbsolute(s.createdAt) + '</span>', t('dashboardColCreated')));
+      tr.appendChild(td('<span class="mono">' + formatAbsolute(s.createdAt) + '</span>', colCreated));
 
       // Last activity
-      tr.appendChild(td('<span class="mono">' + formatRelative(s.lastActivity) + '</span>', t('dashboardColLastActivity')));
+      tr.appendChild(td('<span class="mono">' + formatRelative(s.lastActivity) + '</span>', colActivity));
 
       tbodyEl.appendChild(tr);
     });
@@ -195,19 +202,13 @@
 
   function showLoading() {
     var wrap = el('table-wrap');
-    wrap.innerHTML = '<div class="loading-state">' + esc(t('loading')) + '</div>';
+    wrap.innerHTML = '<div class="loading-state">' + esc(tr('loading', '加载中…')) + '</div>';
   }
 
   // ── HTML escape ──────────────────────────────────────────────
-  function esc(s) {
-    if (s == null) return '';
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
+  // Five characters, shared with every other page (shared/dom-helpers.js is
+  // loaded by dashboard.html before this file).
+  function esc(s) { return escapeHtml(s); }
 
   // ── Data loading ────────────────────────────────────────────
   function loadAll() {
@@ -225,13 +226,15 @@
       updateRefreshIndicator(false);
       if (lastFetchOk) {
         // Only show error on first failure
-        showError(t('dashboardLoadFailed', { message: err.message || err, sec: REFRESH_INTERVAL / 1000 }));
+        showError(tr('dashboardLoadFailed', '数据加载失败: {message} — 将在 {sec}s 后重试',
+          { message: err.message || err, sec: REFRESH_INTERVAL / 1000 }));
         lastFetchOk = false;
       }
       // If we have no data yet, show loading state
       var wrap = el('table-wrap');
       if (!wrap.querySelector('.sessions-table')) {
-        wrap.innerHTML = '<div class="empty-state"><div class="icon">⚠️</div><div>' + esc(t('dashboardWaitingApi')) + '</div></div>';
+        wrap.innerHTML = '<div class="empty-state"><div class="icon">⚠️</div><div>'
+          + esc(tr('dashboardWaitingApi', '等待 API 可用…')) + '</div></div>';
       }
     });
   }
@@ -241,10 +244,10 @@
     var label = el('refresh-label');
     if (ok) {
       dot.style.background = 'var(--green)';
-      label.textContent = t('dashboardUpdatedAt', { time: new Date().toLocaleTimeString(getLocale()) });
+      label.textContent = tr('dashboardUpdatedAt', '已更新 {time}', { time: new Date().toLocaleTimeString() });
     } else {
       dot.style.background = 'var(--red)';
-      label.textContent = t('dashboardDisconnected');
+      label.textContent = tr('dashboardDisconnected', '连接失败');
     }
   }
 
@@ -285,15 +288,15 @@
     btn.addEventListener('click', function () {
       var client = window.MultiCCVoiceLaunch;
       if (!client || typeof client.launch !== 'function') {
-        showError(t('dashboardVoiceModuleMissing'));
+        showError(tr('dashboardVoiceModuleMissing', '语音模块未加载，请刷新页面后重试'));
         return;
       }
       btn.disabled = true;
       client.launch({}).then(function (result) {
-        if (!result.ok) showError(t('dashboardVoiceFailed', { message: result.message || result.code }));
+        if (!result.ok) showError(tr('dashboardVoiceFailed', '语音：{message}', { message: result.message || result.code }));
         else hideError();
       }).catch(function (err) {
-        showError(t('dashboardVoiceLaunchError', { message: err && err.message ? err.message : err }));
+        showError(tr('dashboardVoiceLaunchError', '语音启动异常: {message}', { message: err && err.message ? err.message : err }));
       }).then(function () {
         btn.disabled = false;
       });

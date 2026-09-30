@@ -112,17 +112,11 @@ test('files rotate at maxFileBytes and keep the configured generations', async (
   }
   await until(() => fs.existsSync(path.join(dir, 's.events.jsonl.2')), 'second rotation');
 
-  // The rename chain is async: wait until the directory settles (two equal
-  // consecutive snapshots) before asserting on generations.
-  const snapshot = () => fs.readdirSync(dir).map(f => f + ':' + fs.statSync(path.join(dir, f)).size).sort().join('|');
-  await new Promise(r => setTimeout(r, 30));
-  let prev = snapshot();
-  await until(() => {
-    const cur = snapshot();
-    if (cur === prev) return true;
-    prev = cur;
-    return false;
-  }, 'rotation quiescence', 3000);
+  // No more notes are queued after this point, so awaiting the session queue
+  // is exact quiescence — the rename chain cannot be mid-flight underneath
+  // the assertions. (Snapshot-polling used to catch the gap between two
+  // renames and stat a file that had just moved.)
+  await journal.whenIdle('s');
 
   // seq is monotonic across generations (a rotation never rewinds it mid-queue),
   // the newest event is still readable, and the active file stays bounded.
@@ -168,15 +162,9 @@ test('readAll stitches generations oldest-first with ascending seq', async () =>
     journal.note('s', { type: 'monitor_started', task_id: 't' + i, description: 'p'.repeat(20) });
   }
   await until(() => fs.existsSync(path.join(dir, 's.events.jsonl.1')), 'first rotation');
-  // Wait until the rename chain quiesces before asserting on stitched state.
-  await new Promise(r => setTimeout(r, 30));
-  let prev = journal.readAll('s').map(r => r.seq).join(',');
-  await until(() => {
-    const cur = journal.readAll('s').map(r => r.seq).join(',');
-    if (cur === prev) return true;
-    prev = cur;
-    return false;
-  }, 'readAll quiescence');
+  // Exact quiescence (see the rotation test above): after the queue drains,
+  // readAll sees the final generation layout, not a mid-rename one.
+  await journal.whenIdle('s');
 
   const all = journal.readAll('s');
   const active = journal.read('s');

@@ -30,14 +30,18 @@ class AirServerInfo {
 /// available=false。界面据此决定这一行出不出现 —— 不是一次失败，所以不能拿异常
 /// 当信号（那会把「这台主机没有」和「网断了」说成同一件事）。
 class AirMacLidSleep {
-  const AirMacLidSleep({required this.available, required this.enabled});
+  const AirMacLidSleep({required this.available, required this.enabled, this.unlockAvailable = false, this.unlockEnabled = false});
 
   final bool available;
   final bool enabled;
+  final bool unlockAvailable;
+  final bool unlockEnabled;
 
   factory AirMacLidSleep.fromJson(Map<String, dynamic> data) => AirMacLidSleep(
     available: data['available'] == true,
     enabled: data['enabled'] == true,
+    unlockAvailable: (data['unlockPassword'] as Map?)?['available'] == true,
+    unlockEnabled: (data['unlockPassword'] as Map?)?['enabled'] == true,
   );
 }
 
@@ -284,8 +288,12 @@ class AirOpsService {
   /// 切这个开关要在 Mac 上完成一次管理员授权（服务端跑 osascript），所以这条请求
   /// 可能停很久：超时按服务端那 120s 给，否则 App 会在用户还没按下授权框时自己
   /// 放弃，而 Mac 那边其实已经改了。
-  Future<AirMacLidSleep> setMacLidSleep(bool enabled) async {
-    final uri = Uri.parse(_url('/api/settings/power'));
+  Future<AirMacLidSleep> setMacLidSleep(bool enabled) => _setMacPower('/api/settings/power', enabled);
+
+  Future<AirMacLidSleep> setMacAutoUnlock(bool enabled) => _setMacPower('/api/settings/power/auto-unlock', enabled);
+
+  Future<AirMacLidSleep> _setMacPower(String path, bool enabled) async {
+    final uri = Uri.parse(_url(path));
     final headers = _headers;
     final body = jsonEncode({'enabled': enabled});
     // 走注入的 client（生产留空时才是包级 http.post），和 [_send] 同一条路：
@@ -295,11 +303,12 @@ class AirOpsService {
         ? http.post(uri, headers: headers, body: body)
         : client.post(uri, headers: headers, body: body);
     final response = await call.timeout(const Duration(seconds: 120));
-    final status = AirMacLidSleep.fromJson(_decode(response));
+    final data = _decode(response);
+    final status = AirMacLidSleep.fromJson(data);
     // 失败是「设置没生效」，不是「开关现在是关的」。这里必须抛：返回一个看起来
     // 正常的状态，界面就会把一次失败画成一次成功的切换。
     if (response.statusCode >= 400) {
-      throw Exception('HTTP ${response.statusCode}');
+      throw Exception(data['error'] ?? 'HTTP ${response.statusCode}');
     }
     return status;
   }

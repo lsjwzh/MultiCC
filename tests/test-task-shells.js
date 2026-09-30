@@ -7,12 +7,115 @@ const os = require('node:os');
 const path = require('node:path');
 const { createTaskShellStore } = require('../src/task-shell/store');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
+const { MAX_TASKS_PER_DIRECTORY, directoryTaskCount } = require('../src/task-shell/capacity');
 const { renderLazyContextPrompt, snapshotHistory, verifySnapshot, hash } = require('../src/task-shell/context');
 const { createTaskShellHost } = require('../src/task-shell/host');
 const { displayMessages, displayTask } = require('../src/task-display-attribution');
 
 const { fixture } = require('./helpers/task-shell');
 const input = (key, taskId = null, extra = {}) => ({ clientMsgId: key, taskId, intent: 'work', text: key, ...extra });
+
+test('task-first creation allows 1024 tasks per directory, then rejects only that directory', async t => {
+  const f = fixture(t, { getDirectory: id => id === 'd1' || id === 'd2' ? { id } : null });
+  f.store.transaction(() => {
+    for (let i = 0; i < MAX_TASKS_PER_DIRECTORY - 1; i++) {
+      f.store.set('task', `tsk_seed_${i}`, { id: `tsk_seed_${i}`, dirId: 'd1' });
+    }
+  });
+  assert.equal(directoryTaskCount(f.store, 'd1'), 1023);
+  const last = await f.runtime.createStandalone({ dirId: 'd1', title: 'Allowed task', clientMsgId: 'create-1024' });
+  assert.equal(last.ok, true);
+  assert.equal(directoryTaskCount(f.store, 'd1'), 1024);
+  await assert.rejects(f.runtime.createStandalone({ dirId: 'd1', title: 'Overflow task', clientMsgId: 'create-1025' }),
+    { code: 'task_shell_task_limit', status: 409 });
+  assert.equal(directoryTaskCount(f.store, 'd1'), 1024);
+  assert.equal((await f.runtime.createStandalone({ dirId: 'd2', title: 'Other directory', clientMsgId: 'create-other' })).ok, true);
+});
+
+test('a full directory waits for safe eviction before reserving a new task', async t => {
+  let f;
+  const evictions = [];
+  f = fixture(t, { getDirectory: id => id === 'd1' ? { id } : null,
+    evictTaskForCapacity: async (dirId, listTasks, atCapacity) => {
+      evictions.push(dirId);
+      assert.equal(atCapacity(), true);
+      assert.equal(listTasks().length, MAX_TASKS_PER_DIRECTORY);
+      f.store.remove('task', 'tsk_old');
+    } });
+  f.store.transaction(() => {
+    for (let i = 0; i < MAX_TASKS_PER_DIRECTORY; i++) {
+      f.store.set('task', i === 0 ? 'tsk_old' : `tsk_seed_${i}`,
+        { id: i === 0 ? 'tsk_old' : `tsk_seed_${i}`, dirId: 'd1' });
+    }
+  });
+  const created = await f.runtime.createStandalone({ dirId: 'd1', title: 'After eviction', clientMsgId: 'create-after-evict' });
+  assert.equal(created.ok, true);
+  assert.deepEqual(evictions, ['d1']);
+  assert.equal(f.store.get('task', 'tsk_old'), null);
+  assert.equal(directoryTaskCount(f.store, 'd1'), MAX_TASKS_PER_DIRECTORY);
+});
+
+test('legacy task resolution also evicts at the limit without evicting its current source', async t => {
+  let f;
+  const excluded = [];
+  f = fixture(t, { evictTaskForCapacity: async (_dirId, _list, _full, ids) => {
+    excluded.push(...ids);
+    f.store.remove('task', 'tsk_old');
+  } });
+  const source = f.runtime.adopt(f.a.id, 'a');
+  f.store.transaction(() => {
+    for (let i = 1; i < MAX_TASKS_PER_DIRECTORY; i++) {
+      const id = i === 1 ? 'tsk_old' : `tsk_seed_${i}`;
+      f.store.set('task', id, { id, dirId: 'd1' });
+    }
+  });
+  const task = await f.runtime.resolveTask(f.a.id, { taskId: 'tsk_new' });
+  assert.equal(task.id, 'tsk_new');
+  assert.ok(excluded.includes(source.id));
+  assert.ok(f.store.get('task', source.id));
+  assert.equal(directoryTaskCount(f.store, 'd1'), MAX_TASKS_PER_DIRECTORY);
+});
+
+test('invalid full-directory requests never evict a task before validation', async t => {
+  let evictions = 0;
+  const f = fixture(t, { evictTaskForCapacity: async () => { evictions += 1; } });
+  f.runtime.adopt(f.a.id, 'a');
+  f.store.transaction(() => {
+    for (let i = 1; i < MAX_TASKS_PER_DIRECTORY; i++) {
+      const id = `tsk_seed_${i}`;
+      f.store.set('task', id, { id, dirId: 'd1' });
+    }
+  });
+  await assert.rejects(f.runtime.resolveTask(f.a.id, { taskId: 'bad id' }), { code: 'invalid_input' });
+  await assert.rejects(f.runtime.sendExplicit(f.a.id, input('invalid-target'), { taskId: 'bad id' }), { code: 'invalid_input' });
+  await assert.rejects(f.runtime.sendExplicit(f.a.id, input('invalid-context', null,
+    { contextTaskIds: ['tsk_missing'] }), { taskId: 'tsk_new' }), { code: 'context_requires_new_task' });
+  await assert.rejects(f.runtime.send(f.a.id, input('invalid-reference', null,
+    { newTask: true, contextTaskIds: ['tsk_missing'] })), { code: 'task_not_found' });
+  assert.equal(evictions, 0);
+  assert.equal(directoryTaskCount(f.store, 'd1'), MAX_TASKS_PER_DIRECTORY);
+});
+
+test('a valid new-work message evicts only after admission validation', async t => {
+  let f, evictions = 0;
+  f = fixture(t, { evictTaskForCapacity: async () => {
+    evictions += 1;
+    f.store.remove('task', 'tsk_old');
+  } });
+  const source = f.runtime.adopt(f.a.id, 'a');
+  f.store.transaction(() => {
+    for (let i = 1; i < MAX_TASKS_PER_DIRECTORY; i++) {
+      const id = i === 1 ? 'tsk_old' : `tsk_seed_${i}`;
+      f.store.set('task', id, { id, dirId: 'd1' });
+    }
+  });
+  const sent = await f.runtime.send(f.a.id, input('valid-new-work', null, { newTask: true }));
+  assert.equal(sent.ok, true);
+  assert.notEqual(sent.taskId, source.id);
+  assert.ok(f.store.get('task', source.id));
+  assert.equal(evictions, 1);
+  assert.equal(directoryTaskCount(f.store, 'd1'), MAX_TASKS_PER_DIRECTORY);
+});
 
 test('task-shell display attribution uses the registry code and preserves source tasks', () => {
   const tasks = new Map([
@@ -42,6 +145,40 @@ test('R01 R02: idle and occupied work both continue the server-authoritative cur
   assert.equal(continued.taskId, first.taskId);
   assert.equal(f.sends.at(-1).opts.originContinue, true, 'at-rest continuation must resume an E/W scheduler rather than park behind it');
   assert.equal(f.creations.length, 1);
+});
+
+test('task-first work awaits difficulty routing before delivery and fails open on evaluator errors', async t => {
+  let entered, release;
+  const arrived = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  const f = fixture(t, { getDirectory: id => id === 'd1' ? { id } : null,
+    prepareAdmission: async (sessionId, text, clientMsgId) => {
+    calls.push({ sessionId, text, clientMsgId });
+    entered();
+    await gate;
+  } });
+  const created = await f.runtime.createStandalone({ dirId: 'd1', title: 'Simple work', cli: 'codex', clientMsgId: 'create-simple' });
+  const pending = f.runtime.sendExplicit(created.shellId, input('simple-work'), { taskId: created.taskId, taskStart: true });
+  await arrived;
+  assert.equal(f.sends.length, 0, 'the turn must not start before the Jev verdict');
+  release();
+  const delivered = await pending;
+  assert.equal(f.sends.length, 1);
+  assert.deepEqual(calls, [{ sessionId: delivered.sessionId, text: 'simple-work', clientMsgId: delivered.receiptId }]);
+
+  const fallback = fixture(t, { getDirectory: id => id === 'd1' ? { id } : null,
+    prepareAdmission: () => { throw new Error('gateway unavailable'); } });
+  const other = await fallback.runtime.createStandalone({ dirId: 'd1', title: 'Fallback work', cli: 'codex', clientMsgId: 'create-fallback' });
+  const result = await fallback.runtime.sendExplicit(other.shellId, input('still-deliver'), { taskId: other.taskId, taskStart: true });
+  assert.equal(result.ok, true);
+  assert.equal(fallback.sends.length, 1);
+
+  let legacyPrepares = 0;
+  const legacy = fixture(t, { prepareAdmission: () => { legacyPrepares += 1; } });
+  await legacy.runtime.send(legacy.a.id, input('legacy-work'));
+  assert.equal(legacy.sends.length, 1);
+  assert.equal(legacyPrepares, 0, 'legacy chat shells already prepared on their WebSocket path');
 });
 
 test('cross-shell links are read-only references; input remains owned by its source shell', async t => {
@@ -76,8 +213,8 @@ test('C01 C02: immutable completed exchanges, provenance and tools; no active or
 test('lazy context prompt distinguishes task attribution from execution ownership', () => {
   const prompt = renderLazyContextPrompt('tsk_current');
   assert.match(prompt, /get_task_context/);
-  assert.match(prompt, /不要猜测缺失上下文/);
-  assert.match(prompt, /任务归属与执行会话相互独立/);
+  assert.match(prompt, /do not guess missing context/);
+  assert.match(prompt, /Task ownership and the executing session are independent/);
   assert.match(prompt, /tsk_current/);
 });
 
@@ -146,6 +283,25 @@ test('I01 I02: controls target exact turn/question; competing answers conflict, 
   await assert.rejects(f.runtime.send(f.a.id, input('cancel', a.taskId, { intent: 'cancel', turnId: 'old' })), { code: 'stale_control' });
 });
 
+test('a rejected answer releases its reservation so the question can still be answered', async t => {
+  let reject = true;
+  const f = fixture(t, { send: async (_id, _text, opts) => {
+    if (opts.userInputRequestId && reject) return { ok: false, code: 'stale_control' };
+    return { ok: true };
+  } });
+  const a = await f.runtime.send(f.a.id, input('one'));
+  const task = f.store.get('task', a.taskId);
+  f.statuses.set(task.sessionId, { busy: true, turnId: 'turn1', pending: { taskId: a.taskId, requestId: 'q1', turnId: 'turn1', question: 'Choose' } });
+  await assert.rejects(f.runtime.send(f.a.id, input('first-click', a.taskId, { intent: 'answer', requestId: 'q1', turnId: 'turn1' })), { code: 'stale_control' });
+  assert.equal(f.store.get('answer', `${a.taskId}:q1`) ?? null, null);
+  // A reservation leaked by an older build (receipt rejected, key kept) heals too.
+  const rejected = f.store.list('receipt').find(r => r.payload.clientMsgId === 'first-click');
+  f.store.set('answer', `${a.taskId}:q1`, { receiptId: rejected.id });
+  reject = false;
+  const retry = await f.runtime.send(f.a.id, input('second-click', a.taskId, { intent: 'answer', requestId: 'q1', turnId: 'turn1' }));
+  assert.equal(retry.taskId, a.taskId);
+});
+
 test('F01 F03: creation failure and restart retain target and error; same-key retry repairs', async t => {
   let fail = true;
   const f = fixture(t, { createExecution: async task => {
@@ -185,6 +341,17 @@ test('I03: unmanaged delivery is rejected; original-task host continuations and 
   const delivered = f.sends[0];
   assert.equal(f.runtime.guardAdmission(first.sessionId, delivered.text, delivered.opts), null);
   assert.equal(f.runtime.guardAdmission(first.sessionId, 'modified', delivered.opts).code, 'task_shell_route_required');
+});
+
+test('a durable scheduled message is admitted to a shell-owned session and bound to its task', async t => {
+  const f = fixture(t), first = await f.runtime.send(f.a.id, input('work'));
+  const scheduledOpts = { scheduledMessageId: `wait:scheduled:${first.taskId}` };
+  assert.equal(f.runtime.guardAdmission(first.sessionId, '到点后的追问', scheduledOpts), null,
+    'scheduled future work must not dead-letter with task_shell_route_required');
+  assert.equal(scheduledOpts.taskId, first.taskId,
+    'the timer-delivered message must be attributed to the owned task');
+  assert.equal(f.runtime.guardAdmission(first.sessionId, 'live bypass', {}).code, 'task_shell_route_required',
+    'a live client message without a shell receipt stays rejected');
 });
 
 test('F02: lost acceptance uses the same downstream idempotency key across restart', async t => {
@@ -299,7 +466,7 @@ test('task deep links resolve the exact task and make it the shell focus', async
   const f = fixture(t, { getTask: id => boardTasks[id] || null });
   const adopted = f.runtime.adopt(f.a.id, 'a');
   assert.notEqual(adopted.id, 'tsk-linked');
-  const resolved = f.runtime.resolveTask(f.a.id, { taskId: 'tsk-linked' });
+  const resolved = await f.runtime.resolveTask(f.a.id, { taskId: 'tsk-linked' });
   assert.equal(resolved.id, 'tsk-linked');
   assert.equal(resolved.title, '链接指定任务');
   assert.equal(f.runtime.view(f.a.id).currentTaskId, 'tsk-linked');

@@ -69,7 +69,7 @@ async function stop() {
     assert.equal(status.url, base);
     assert.equal(status.dataDir, process.env.MULTICC_STANDALONE_HOME);
 
-    for (const page of ['/chat.html', '/task-shell.html', '/task-board-entry.js']) {
+    for (const page of ['/chat.html', '/task-shell.html']) {
       assert.equal((await fetch(base + page, { headers: { authorization: 'Bearer clean-install-test' } })).status, 200);
     }
     const directory = await api('/api/directories', { name: 'Fresh install project', path: '/home/node/clean-install-project', create: true });

@@ -182,6 +182,9 @@ function createSessionTriggers(rawDeps) {
     if (cooldownMs > 0 && live.lastFiredAt && firedAt - live.lastFiredAt < cooldownMs) return false;
 
     const chat = deps.chatSessions.get(sessionId);
+    // Deliberately not the shared chat-runtime predicate
+    // (src/session/runtime-busy.js): a trigger is deferred only to avoid talking
+    // over a live stream, and once `isStreaming` clears nothing is streaming.
     if (chat && chat.isStreaming) {
       const key = `${sessionId}:${effective.id}`;
       if (!deferredFires.has(key)) {

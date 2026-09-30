@@ -59,6 +59,8 @@
 </div>
 
 <script src="qrcode.min.js"></script>
+<script src="shared/format.js"></script>
+<script src="shared/dom-helpers.js"></script>
 <script>
 (function () {
   'use strict';
@@ -77,17 +79,13 @@
     errorBanner.classList.add('err');
   }
 
-  // 版本号/bundle id 会被拼进 innerHTML，服务器写什么是它的自由，这里按文本处理。
-  function escapeHtml(value) {
-    return String(value == null ? '' : value).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
-  }
+  // 字节数走全站唯一那份（shared/format.js，页头已加载）。本页只保留自己的取舍：
+  // 没给大小就不画这一格（返回空串），而不是画一个「0 B」。
+  var pkgSize = function (bytes) { return window.MultiCCFormat.formatBytes(bytes, { placeholder: '' }); };
 
-  function fmtSize(bytes) {
-    if (!bytes) return '';
-    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
-  }
+  // 版本号/bundle id 会被拼进 innerHTML，服务器写什么是它的自由，这里按文本处理。
+  // 转义走全站唯一那份：shared/dom-helpers.js 已在页头加载，它会把 escapeHtml
+  // 挂成全局 —— 本页别再自带一份副本（同一条规则只留一处实现）。
 
   function fmtTime(iso) {
     if (!iso) return '';
@@ -133,7 +131,7 @@
       }
       var version = info.versionName ? ('v' + info.versionName + (info.versionCode ? ' (' + info.versionCode + ')' : '')) : t('iosOtaUnknownVersion');
       metaEl.innerHTML =
-        '<b>' + escapeHtml(version) + '</b>' + (fmtSize(info.size) ? ' · ' + fmtSize(info.size) : '') + '<br>' +
+        '<b>' + escapeHtml(version) + '</b>' + (pkgSize(info.size) ? ' · ' + pkgSize(info.size) : '') + '<br>' +
         (info.bundleId ? escapeHtml(info.bundleId) + '<br>' : '') +
         (info.mtime ? escapeHtml(t('iosOtaPublishedAt', { time: fmtTime(info.mtime) })) : '');
       if (!info.installable) {

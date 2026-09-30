@@ -111,7 +111,10 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
   http.Client? httpClient,
 }) async {
   final cli = parseCli(initial.cli);
-  final providers = await prepareAIConfigInputs(
+  // 先弹窗、里面填数据：Provider 池是一趟网络请求（codex 那一支连账号模型目录一起
+  // 现拉），按下去到面板出现之间不该隔着它 —— 会话那条路（openAIConfigSheet）早就
+  // 是这么做的，这里跟上。面板画出来之后这个 future 必然已经落地。
+  final providersFuture = prepareAIConfigInputs(
     settings,
     cli,
     httpClient: httpClient,
@@ -124,18 +127,30 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
     ),
-    builder: (_) => AIConfigSheet(
-      cli: cli,
-      providers: providers,
-      provider: initial.provider,
-      providerSelection: initial.providerSelection,
-      model: initial.model,
-      effort: initial.effort.isEmpty ? cli.defaultEffort : initial.effort,
-      subProviderId: initial.subagent?.providerId,
-      subModel: initial.subagent?.model,
+    builder: (_) => AIConfigSheetDeferred(
+      providers: providersFuture,
+      builder: (context, providers) => AIConfigSheet(
+        cli: cli,
+        providers: providers,
+        provider: initial.provider,
+        providerSelection: initial.providerSelection,
+        model: initial.model,
+        effort: initial.effort.isEmpty ? cli.defaultEffort : initial.effort,
+        subProviderId: initial.subagent?.providerId,
+        subModel: initial.subagent?.model,
+      ),
     ),
   );
   if (picked == null) return null;
+
+  // 面板已经把这个 future 画出来过，这里只是取回来查名字；prepareAIConfigInputs
+  // 自己吞掉了所有网络错误，兜一下只是为了不至于在这条收尾路径上抛出去。
+  List<Map<String, dynamic>> providers;
+  try {
+    providers = await providersFuture;
+  } catch (_) {
+    providers = const [];
+  }
 
   // Auto 选中时真正执行的是池子里的第一条线路，面板已经把它当成 provider 交
   // 出来了（见 AIConfigSheetState.submit），任务记录里也存这一条 —— 否则药丸

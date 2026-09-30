@@ -1,0 +1,971 @@
+{
+  "note": "Golden input→output cases for public/shared/format.js and app/lib/utils/format.dart. The `expected` column is hand-written, then asserted against the JS implementation before this file is written; tests/test-format.js and app/test/format_test.dart run the same entries, so a change on one side only fails on both. `expected` uses \\u escapes for CJK so the file stays ASCII-clean. Only inputs BOTH languages can express belong here: a size or a count handed over as a string is JS-only intake leniency (Dart is statically typed and its callers hold a num), so that rule is pinned in tests/test-format.js instead.",
+  "now": 1758700000000,
+  "cases": [
+    {
+      "fn": "formatBytes",
+      "args": [
+        0
+      ],
+      "opts": {},
+      "expected": "0 B"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1
+      ],
+      "opts": {},
+      "expected": "1 B"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        512
+      ],
+      "opts": {},
+      "expected": "512 B"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1023
+      ],
+      "opts": {},
+      "expected": "1023 B"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1024
+      ],
+      "opts": {},
+      "expected": "1.0 KB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1536
+      ],
+      "opts": {},
+      "expected": "1.5 KB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        5240
+      ],
+      "opts": {},
+      "expected": "5.1 KB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1048575
+      ],
+      "opts": {},
+      "expected": "1024.0 KB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1048576
+      ],
+      "opts": {},
+      "expected": "1.0 MB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        5242880
+      ],
+      "opts": {},
+      "expected": "5.0 MB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1073741824
+      ],
+      "opts": {},
+      "expected": "1.0 GB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        2147483648
+      ],
+      "opts": {},
+      "expected": "2.0 GB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1099511627776
+      ],
+      "opts": {},
+      "expected": "1.0 TB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1125899906842624
+      ],
+      "opts": {},
+      "expected": "1024.0 TB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        null
+      ],
+      "opts": {},
+      "expected": ""
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        -1
+      ],
+      "opts": {},
+      "expected": ""
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1536
+      ],
+      "opts": {
+        "space": false
+      },
+      "expected": "1.5KB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1536
+      ],
+      "opts": {
+        "maxUnit": "KB"
+      },
+      "expected": "1.5 KB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        5242880
+      ],
+      "opts": {
+        "maxUnit": "KB"
+      },
+      "expected": "5120.0 KB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        2097152
+      ],
+      "opts": {
+        "decimals": 2
+      },
+      "expected": "2.00 MB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        -1
+      ],
+      "opts": {
+        "placeholder": "–"
+      },
+      "expected": "–"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        null
+      ],
+      "opts": {
+        "placeholder": "–"
+      },
+      "expected": "–"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        0
+      ],
+      "opts": {
+        "placeholder": "—",
+        "zeroIsMissing": true
+      },
+      "expected": "—"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        524288
+      ],
+      "opts": {
+        "placeholder": "—",
+        "zeroIsMissing": true
+      },
+      "expected": "512.0 KB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        524288
+      ],
+      "opts": {
+        "placeholder": "—",
+        "zeroIsMissing": true,
+        "unitDecimals": {
+          "KB": 0
+        }
+      },
+      "expected": "512 KB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        524288
+      ],
+      "opts": {
+        "unitDecimals": {
+          "KB": 0
+        }
+      },
+      "expected": "512 KB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        2621440
+      ],
+      "opts": {
+        "unitDecimals": {
+          "KB": 0
+        }
+      },
+      "expected": "2.5 MB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        6144
+      ],
+      "opts": {
+        "unitDecimals": {
+          "MB": 2
+        }
+      },
+      "expected": "6.0 KB"
+    },
+    {
+      "fn": "formatBytes",
+      "args": [
+        1048576
+      ],
+      "opts": {
+        "unitDecimals": {
+          "MB": 2
+        }
+      },
+      "expected": "1.00 MB"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758700000000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "刚刚"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758699996000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "刚刚"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758699995000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "5 秒前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758699941000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "59 秒前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758699940000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "1 分钟前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758699910000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "1 分钟前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758696460000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "59 分钟前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758696400000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "1 小时前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758617200000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "23 小时前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758613600000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "1 天前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758527200000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "2 天前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1727164000000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "365 天前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758700060000
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": "刚刚"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        0
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": ""
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        null
+      ],
+      "opts": {
+        "now": 1758700000000
+      },
+      "expected": ""
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        0
+      ],
+      "opts": {
+        "now": 1758700000000,
+        "placeholder": "还没同步过"
+      },
+      "expected": "还没同步过"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758699995000
+      ],
+      "opts": {
+        "now": 1758700000000,
+        "compact": true
+      },
+      "expected": "5s 前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758699960000
+      ],
+      "opts": {
+        "now": 1758700000000,
+        "compact": true
+      },
+      "expected": "40s 前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758699700000
+      ],
+      "opts": {
+        "now": 1758700000000,
+        "compact": true
+      },
+      "expected": "5 分钟前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758689200000
+      ],
+      "opts": {
+        "now": 1758700000000,
+        "compact": true
+      },
+      "expected": "3 小时前"
+    },
+    {
+      "fn": "formatRelativeTime",
+      "args": [
+        1758527200000
+      ],
+      "opts": {
+        "now": 1758700000000,
+        "compact": true
+      },
+      "expected": "2 天前"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        0
+      ],
+      "opts": {},
+      "expected": "0ms"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        120
+      ],
+      "opts": {},
+      "expected": "120ms"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        999
+      ],
+      "opts": {},
+      "expected": "999ms"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        1000
+      ],
+      "opts": {},
+      "expected": "1.0s"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        1500
+      ],
+      "opts": {},
+      "expected": "1.5s"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        9400
+      ],
+      "opts": {},
+      "expected": "9.4s"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        9900
+      ],
+      "opts": {},
+      "expected": "9.9s"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        10000
+      ],
+      "opts": {},
+      "expected": "10s"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        12345
+      ],
+      "opts": {},
+      "expected": "12s"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        59000
+      ],
+      "opts": {},
+      "expected": "59s"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        60000
+      ],
+      "opts": {},
+      "expected": "1m"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        75000
+      ],
+      "opts": {},
+      "expected": "1m 15s"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        120000
+      ],
+      "opts": {},
+      "expected": "2m"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        3600000
+      ],
+      "opts": {},
+      "expected": "60m"
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        null
+      ],
+      "opts": {},
+      "expected": ""
+    },
+    {
+      "fn": "formatDuration",
+      "args": [
+        -5
+      ],
+      "opts": {},
+      "expected": ""
+    },
+    {
+      "fn": "formatPercent",
+      "args": [
+        61.54
+      ],
+      "opts": {},
+      "expected": "61.5%"
+    },
+    {
+      "fn": "formatPercent",
+      "args": [
+        0
+      ],
+      "opts": {},
+      "expected": "0.0%"
+    },
+    {
+      "fn": "formatPercent",
+      "args": [
+        100
+      ],
+      "opts": {},
+      "expected": "100.0%"
+    },
+    {
+      "fn": "formatPercent",
+      "args": [
+        150
+      ],
+      "opts": {},
+      "expected": "100.0%"
+    },
+    {
+      "fn": "formatPercent",
+      "args": [
+        -5
+      ],
+      "opts": {},
+      "expected": "0.0%"
+    },
+    {
+      "fn": "formatPercent",
+      "args": [
+        61.54
+      ],
+      "opts": {
+        "decimals": 0
+      },
+      "expected": "62%"
+    },
+    {
+      "fn": "formatPercent",
+      "args": [
+        33.333
+      ],
+      "opts": {
+        "decimals": 2
+      },
+      "expected": "33.33%"
+    },
+    {
+      "fn": "formatPercent",
+      "args": [
+        null
+      ],
+      "opts": {},
+      "expected": ""
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        0
+      ],
+      "opts": {},
+      "expected": "0"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        5
+      ],
+      "opts": {},
+      "expected": "5"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        999
+      ],
+      "opts": {},
+      "expected": "999"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        1000
+      ],
+      "opts": {},
+      "expected": "1.0k"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        1234
+      ],
+      "opts": {},
+      "expected": "1.2k"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        52500
+      ],
+      "opts": {},
+      "expected": "52.5k"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        238700
+      ],
+      "opts": {},
+      "expected": "238.7k"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        1000000
+      ],
+      "opts": {},
+      "expected": "1.00M"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        2700000
+      ],
+      "opts": {},
+      "expected": "2.70M"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        -5
+      ],
+      "opts": {},
+      "expected": "0"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        200000
+      ],
+      "opts": {
+        "dropZeroDecimal": true
+      },
+      "expected": "200k"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        123456
+      ],
+      "opts": {
+        "dropZeroDecimal": true
+      },
+      "expected": "123.5k"
+    },
+    {
+      "fn": "formatTokenCount",
+      "args": [
+        12345678
+      ],
+      "opts": {
+        "dropZeroDecimal": true
+      },
+      "expected": "12.35M"
+    },
+    {
+      "fn": "formatCompactTokens",
+      "args": [
+        0
+      ],
+      "opts": {},
+      "expected": "0"
+    },
+    {
+      "fn": "formatCompactTokens",
+      "args": [
+        999
+      ],
+      "opts": {},
+      "expected": "999"
+    },
+    {
+      "fn": "formatCompactTokens",
+      "args": [
+        1000
+      ],
+      "opts": {},
+      "expected": "1K"
+    },
+    {
+      "fn": "formatCompactTokens",
+      "args": [
+        1500
+      ],
+      "opts": {},
+      "expected": "1.5K"
+    },
+    {
+      "fn": "formatCompactTokens",
+      "args": [
+        200000
+      ],
+      "opts": {},
+      "expected": "200K"
+    },
+    {
+      "fn": "formatCompactTokens",
+      "args": [
+        123000
+      ],
+      "opts": {},
+      "expected": "123K"
+    },
+    {
+      "fn": "formatCompactTokens",
+      "args": [
+        1000000
+      ],
+      "opts": {},
+      "expected": "1M"
+    },
+    {
+      "fn": "formatCompactTokens",
+      "args": [
+        1500000
+      ],
+      "opts": {},
+      "expected": "1.5M"
+    },
+    {
+      "fn": "formatCompactTokens",
+      "args": [
+        3400000
+      ],
+      "opts": {},
+      "expected": "3.4M"
+    },
+    {
+      "fn": "usageTone",
+      "args": [
+        95,
+        "quota"
+      ],
+      "opts": {},
+      "expected": "danger"
+    },
+    {
+      "fn": "usageTone",
+      "args": [
+        90,
+        "quota"
+      ],
+      "opts": {},
+      "expected": "danger"
+    },
+    {
+      "fn": "usageTone",
+      "args": [
+        89.9,
+        "quota"
+      ],
+      "opts": {},
+      "expected": "warning"
+    },
+    {
+      "fn": "usageTone",
+      "args": [
+        70,
+        "quota"
+      ],
+      "opts": {},
+      "expected": "warning"
+    },
+    {
+      "fn": "usageTone",
+      "args": [
+        69.9,
+        "quota"
+      ],
+      "opts": {},
+      "expected": "calm"
+    },
+    {
+      "fn": "usageTone",
+      "args": [
+        0,
+        "quota"
+      ],
+      "opts": {},
+      "expected": "calm"
+    },
+    {
+      "fn": "usageTone",
+      "args": [
+        80,
+        "context"
+      ],
+      "opts": {},
+      "expected": "danger"
+    },
+    {
+      "fn": "usageTone",
+      "args": [
+        79.9,
+        "context"
+      ],
+      "opts": {},
+      "expected": "warning"
+    },
+    {
+      "fn": "usageTone",
+      "args": [
+        50,
+        "context"
+      ],
+      "opts": {},
+      "expected": "warning"
+    },
+    {
+      "fn": "usageTone",
+      "args": [
+        49.9,
+        "context"
+      ],
+      "opts": {},
+      "expected": "success"
+    },
+    {
+      "fn": "usageTone",
+      "args": [
+        95,
+        "nope"
+      ],
+      "opts": {},
+      "expected": "danger"
+    }
+  ]
+}

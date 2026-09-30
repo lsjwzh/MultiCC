@@ -684,6 +684,39 @@ void main() {
       await _teardown(tester, store, client);
     });
 
+    testWidgets('语言切换压在版本检查同一行，不再单独占一行', (tester) async {
+      final settings = await _settings();
+      final client = MockClient((_) async => _json(const {}));
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      var toggles = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 252,
+              child: AirVersionRow(
+                store: store,
+                language: 'zh',
+                onLanguage: () => toggles++,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final version = tester.getRect(find.byKey(const ValueKey('air-ver-row')));
+      final language = tester.getRect(
+        find.byKey(const ValueKey('air-sidebar-language')),
+      );
+      expect((version.center.dy - language.center.dy).abs(), lessThan(2));
+      expect(language.width, lessThan(64), reason: '中/EN 只占一颗短按钮');
+      await tester.tap(find.byKey(const ValueKey('air-sidebar-language')));
+      expect(toggles, 1);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, store, client);
+    });
+
     testWidgets('开机行由服务端读数反推，本地时钟说了算', (tester) async {
       final settings = await _settings();
       final client = MockClient(
@@ -1150,6 +1183,36 @@ void main() {
   // 里也有一行。状态机只有三种：不知道（读不到）/ 这台主机没这个能力 / 有——界面
   // 只在最后一种情况下摆那一行，所以这三件事必须分得开。
   group('关盖运行（macOS 电源）', () {
+    test('自动解锁快捷设置与关盖运行共用状态，禁止睡眠观测不冒充开关', () async {
+      final settings = await _settings();
+      bool enabled = false;
+      final paths = <String>[];
+      final client = MockClient((request) async {
+        if (request.method == 'POST') {
+          paths.add(request.url.path);
+          enabled = true;
+        }
+        return _json({
+          'available': true, 'enabled': false, 'systemSleepDisabled': true,
+          'unlockPassword': {'available': true, 'enabled': enabled, 'set': true},
+        });
+      });
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      await store.loadLidSleep();
+      expect(store.lidSleepOn, isFalse);
+      expect(store.autoUnlockAvailable, isTrue);
+      expect(store.autoUnlockOn, isFalse);
+      await store.toggleAutoUnlock();
+      expect(paths, ['/api/settings/power/auto-unlock']);
+      expect(store.autoUnlockOn, isTrue);
+      expect(store.lidSleepOn, isFalse);
+      store.lidSleepOn = true;
+      await store.toggleAutoUnlock();
+      expect(paths.length, 1, reason: 'included unlock is not independently disabled');
+      store.dispose();
+      client.close();
+    });
+
     test('这台主机没这个能力：available=false，不是「关着」', () async {
       final settings = await _settings();
       final client = MockClient((request) async {

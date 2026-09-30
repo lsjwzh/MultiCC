@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'settings_service.dart';
+import '../utils/format.dart';
 
 /// 记忆文件的读写：`GET` / `PUT /api/memory/file?rel=…`。
 ///
@@ -204,13 +205,10 @@ int estimateMemoryTokens(String value) {
   return tokens < 1 ? 1 : tokens;
 }
 
-/// Web `formatSize()`（`memory-model.js:226`）：B / KB / MB，一律一位小数。
-String formatMemorySize(int bytes) {
-  if (bytes < 0) return '–';
-  if (bytes < 1024) return '$bytes B';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-}
+/// B / KB / MB / GB / TB，一律一位小数 —— 就是 [formatBytes]（web 那侧同一份是
+/// `public/shared/format.js`）。这个名字留着是因为调用点读起来是「这一格的大小」，
+/// 而它比 [formatBytes] 多一条本页的规矩：没有大小画一个 –，不画 0 B。
+String formatMemorySize(int bytes) => formatBytes(bytes, placeholder: '–');
 
 String _str(dynamic value) => value == null ? '' : value.toString();
 

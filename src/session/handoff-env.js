@@ -316,14 +316,36 @@ function createHandoffEnvService(rawDeps) {
     return results;
   }
 
-  // Put a bundle's memory scopes back on disk. `shared` lands in the target
-  // project's shared folder (existing files win — the local team's knowledge
-  // is never overwritten by an import); the narrower scopes fold into the new
-  // session's private folder with a prefix so readMemoryFolder surfaces them
-  // on the next context build. The `session` scope is deliberately ignored
-  // here — v2 bundles still carry it as the flat memoryFiles payload, and the
-  // import route restores that path directly.
-  function restoreMemoryScopes(scopes, { sessionDir, sharedDir }) {
+  // Memory text is injected into every session's context as trusted
+  // instructions, and the machine/cli/shared scopes are read by sessions the
+  // importer never chose. A file arriving there from another machine must not
+  // be indistinguishable from one this machine wrote, so it carries a header.
+  // A markdown comment: invisible when rendered, visible to anything reading
+  // the raw text (which is what the context build does).
+  function memoryProvenanceHeader(provenance, scope) {
+    if (!provenance) return '';
+    const when = provenance.exportedAt || 'unknown time';
+    const who = provenance.label || provenance.sessionId || 'a source session';
+    const cli = provenance.cli || 'unknown cli';
+    return `<!-- multicc handoff: imported into the ${scope} memory scope from source session`
+      + ` "${who}" (${cli}), exported ${when}. It came from another machine — verify before relying on it. -->\n`;
+  }
+
+  // Put a bundle's memory scopes back on disk, each into the scope it came
+  // from: machine → this machine's global folder, cli → the source CLI's
+  // folder, shared → the target project's shared folder, and the narrower
+  // scopes (task, and anything else) → the imported session's private folder
+  // with a prefix so readMemoryFolder still surfaces them. Demoting machine/cli
+  // into one session's private folder would defeat the point of the handoff:
+  // those layers ARE the execution environment, and only the session that
+  // happened to receive the import could see them.
+  //
+  // Existing files always win, so a re-import is idempotent and local knowledge
+  // is never clobbered. The `session` scope is deliberately ignored here — v2
+  // bundles carry it as the flat memoryFiles payload, and the import route
+  // restores that path directly.
+  function restoreMemoryScopes(scopes, options = {}) {
+    const { folderMemory, cli, sessionDir, sharedDir, provenance } = options;
     const report = {};
     for (const [scope, payload] of Object.entries(scopes || {})) {
       if (scope === 'session') {
@@ -331,9 +353,25 @@ function createHandoffEnvService(rawDeps) {
         continue;
       }
       const entry = { written: [], skipped: [] };
-      const prefix = scope === 'shared' ? '' : (MEMORY_SCOPE_PREFIX[scope] || `${scope}-`);
-      const targetDir = scope === 'shared' ? sharedDir : sessionDir;
-      for (const [rawName, content] of Object.entries((payload && payload.files) || {})) {
+      const files = Object.entries((payload && payload.files) || {});
+      const globalScope = scope === 'machine' || scope === 'cli' || scope === 'shared';
+      let targetDir = null;
+      let prefix = '';
+      if (scope === 'machine') targetDir = (folderMemory && folderMemory.machineDir()) || null;
+      else if (scope === 'cli') targetDir = (cli && folderMemory && folderMemory.cliDir(cli)) || null;
+      else if (scope === 'shared') targetDir = sharedDir || null;
+      else { targetDir = sessionDir || null; prefix = MEMORY_SCOPE_PREFIX[scope] || `${scope}-`; }
+      if (!targetDir) {
+        if (files.length) {
+          entry.skipped.push({ name: '*', reason: globalScope
+            ? `${scope} scope is not resolvable on this machine`
+            : 'no session to fold this scope into' });
+        }
+        report[scope] = entry;
+        continue;
+      }
+      const header = globalScope ? memoryProvenanceHeader(provenance, scope) : '';
+      for (const [rawName, content] of files) {
         const base = safeMemoryFileName(rawName);
         if (!base) { entry.skipped.push({ name: rawName, reason: 'unsafe file name' }); continue; }
         const name = prefix + base;
@@ -344,7 +382,7 @@ function createHandoffEnvService(rawDeps) {
             entry.skipped.push({ name, reason: 'already exists locally' });
             continue;
           }
-          fs.writeFileSync(dest, String(content), 'utf8');
+          fs.writeFileSync(dest, header + String(content), 'utf8');
           entry.written.push(name);
         } catch (e) {
           entry.skipped.push({ name, reason: e.message });
@@ -353,6 +391,39 @@ function createHandoffEnvService(rawDeps) {
       report[scope] = entry;
     }
     return report;
+  }
+
+  // Normalize a git remote to `host/owner/repo` so one repository is recognized
+  // across transports: `git@github.com:a/b.git`, `ssh://git@github.com/a/b.git`
+  // and `https://github.com/a/b.git` all name the same repo. Returns null for a
+  // local path or anything without a recognizable host — "cannot tell", which
+  // callers must not read as "different".
+  function normalizeRepoRemote(remote) {
+    const raw = String(remote || '').trim();
+    if (!raw) return null;
+    if (raw.startsWith('/') || raw.startsWith('.') || /^[a-z]:[\\/]/i.test(raw)) return null;
+    let host = null;
+    let rest = null;
+    const url = raw.match(/^[a-z][a-z0-9+.-]*:\/\/(?:[^/@]*@)?([^/:?#]+)(?::\d+)?\/(.*)$/i);
+    const scp = url ? null : raw.match(/^(?:[^/@\s]*@)?([^:/\s]+):(.*)$/);
+    if (url) { host = url[1]; rest = url[2]; }
+    else if (scp) { host = scp[1]; rest = scp[2]; }
+    if (!host || !rest) return null;
+    const trimmed = rest.replace(/^\/+/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+    if (!trimmed || trimmed.includes(' ')) return null;
+    return `${host.toLowerCase()}/${trimmed.toLowerCase()}`;
+  }
+
+  // Whether the code layer is meaningful: true/false only when both sides name
+  // a repository, null when either side has no origin to compare. Callers treat
+  // null as "attempt it" — git is the final arbiter there, and an unrelated
+  // history has no merge base, so the replay aborts and leaves a note instead
+  // of touching the worktree.
+  function sameRepository(sourceRemote, targetRemote) {
+    const source = normalizeRepoRemote(sourceRemote);
+    const target = normalizeRepoRemote(targetRemote);
+    if (!source || !target) return null;
+    return source === target;
   }
 
   // ── Chat-referenced assets ─────────────────────────────────────────────
@@ -470,65 +541,67 @@ function createHandoffEnvService(rawDeps) {
     const meta = (payload && payload.sessionMeta) || {};
     const ctx = (payload && payload.contextDeps) || {};
     const lines = [];
-    lines.push('# HANDOFF.md — 会话环境移植说明');
+    lines.push('# HANDOFF.md - session environment handoff notes');
     lines.push('');
-    lines.push(`> 由 multicc session bundle v${(payload && payload.v) || '?'} 导出于 ${(payload && payload.exportedAt) || '未知时间'}；`);
-    lines.push(`> 源会话「${meta.label || meta.id}」（${meta.cli || 'claude'}，模型 ${meta.model || '默认'}）。`);
+    lines.push(`> Exported by multicc session bundle v${(payload && payload.v) || '?'} at ${(payload && payload.exportedAt) || 'unknown time'};`);
+    lines.push(`> source session "${meta.label || meta.id}" (${meta.cli || 'claude'}, model ${meta.model || 'default'}).`);
     lines.push('');
-    lines.push('## 来源仓库 / 分支');
-    lines.push(`- 项目目录名：${ctx.dirName || meta.dirId || '未知'}（源机器路径：${ctx.dirPath || '未知'}）`);
-    lines.push(`- 源远端：${ctx.repoRemote || '（无 origin 或未导出）'} — 目标机器需已有同仓库的目录登记`);
-    lines.push(`- 源分支：${meta.branch || '未知'}（基分支：${ctx.baseBranch || '未知'}）`);
-    if (gitNote) lines.push(`- git 恢复说明：${gitNote}`);
+    lines.push('## Source repository / branch');
+    lines.push(`- Project directory name: ${ctx.dirName || meta.dirId || 'unknown'} (path on the source machine: ${ctx.dirPath || 'unknown'})`);
+    lines.push(`- Source remote: ${ctx.repoRemote || '(no origin, or not exported)'} - the code layer replays only onto the same repository; `
+      + 'a directory with a different origin keeps its own history and the replay is skipped (see the Git recovery notes below)');
+    lines.push(`- Source branch: ${meta.branch || 'unknown'} (base branch: ${ctx.baseBranch || 'unknown'})`);
+    if (gitNote) lines.push(`- Git recovery notes: ${gitNote}`);
     lines.push('');
-    lines.push('## 模型 / Provider');
-    lines.push(`- 源模型：${meta.model || '（默认）'}——随包携带，导入时写进新会话。`);
-    lines.push('- Provider 不随包传播：源机器的 provider 选择、环境变量与凭据一律不携带，'
-      + '目标机器用自己的 provider 承接这次 handoff。导入时可用 targetProviderId 指向本机已配置的 provider；'
-      + '不指定则用本机该 CLI 的默认 provider。');
-    lines.push('- 若源模型在本机 provider 上不存在（源机可能用的是另一家线路），'
-      + '请在会话设置里改成本机可用的模型，别拿跨 provider 的模型名去请求。');
+    lines.push('## Model / Provider');
+    lines.push(`- Source model: ${meta.model || '(default)'} - carried in the bundle and written into the new session on import.`);
+    lines.push('- Providers do not travel with the bundle: the source machine\'s provider selection, environment variables, and credentials are never carried; '
+      + 'the target machine serves this handoff with its own provider. On import, targetProviderId may point at a provider configured on this machine; '
+      + 'if omitted, this machine\'s default provider for the CLI is used.');
+    lines.push('- If the source model does not exist on this machine\'s provider (the source machine may have used another vendor), '
+      + 'change the session settings to a model available here instead of requesting a cross-provider model name.');
     lines.push('');
-    lines.push('## 项目指令文件');
+    lines.push('## Project instruction files');
     const docs = ctx.projectDocs || {};
     const docNames = Object.keys(docs);
     if (docNames.length) {
-      for (const name of docNames) lines.push(`- ${name}（已随包携带，内容见 bundle；如目标仓库缺失可从 bundle 恢复）`);
+      for (const name of docNames) lines.push(`- ${name} (carried in the bundle; see the bundle for content and restore it if the target repository lacks it)`);
     } else {
-      lines.push('- （源工作树没有 CLAUDE.md / AGENTS.md）');
+      lines.push('- (the source working tree had no CLAUDE.md / AGENTS.md)');
     }
     lines.push('');
-    lines.push('## 记忆恢复情况');
+    lines.push('## Memory restore report');
     for (const [scope, entry] of Object.entries(memoryReport || {})) {
-      const written = (entry.written || []).slice(0, 8).join('、');
-      lines.push(`- ${scope}：写入 ${entry.written.length} 个文件${written ? `（${written}${entry.written.length > 8 ? '…' : ''}）` : ''}` +
-        (entry.skipped.length ? `，跳过 ${entry.skipped.length} 个（${entry.skipped.map(s => s.name).slice(0, 5).join('、')}…）` : ''));
+      const written = (entry.written || []).slice(0, 8).join(', ');
+      lines.push(`- ${scope}: wrote ${entry.written.length} files${written ? ` (${written}${entry.written.length > 8 ? '...' : ''})` : ''}` +
+        (entry.skipped.length ? `, skipped ${entry.skipped.length} (${entry.skipped.map(s => s.name).slice(0, 5).join(', ')}...)` : ''));
     }
     lines.push('');
-    lines.push('## 技能安装情况');
+    lines.push('## Skill installation report');
     if (Array.isArray(skillResults) && skillResults.length) {
-      for (const r of skillResults) lines.push(`- ${r.name}：${r.status}${r.note ? `（${r.note}）` : ''}`);
-      lines.push('- 抄送到了 ~/.agents/skills，由 skill-sync 分发到各 CLI 的 skills 目录。');
+      for (const r of skillResults) lines.push(`- ${r.name}: ${r.status}${r.note ? ` (${r.note})` : ''}`);
+      lines.push('- Copied to ~/.agents/skills; skill-sync distributes them to each CLI\'s skills directory.');
     } else {
-      lines.push('- 本 bundle 未携带技能（或未检测到被引用的技能）。');
+      lines.push('- This bundle carried no skills (or none of the referenced skills were detected).');
     }
     lines.push('');
-    lines.push('## 对话引用的文件（图片 / 附件）');
+    lines.push('## Files referenced by the conversation (images / attachments)');
     if (Array.isArray(assetMapping) && assetMapping.length) {
-      lines.push('对话里引用的本地文件已随包带来，历史消息中的路径已重写为下列新位置：');
-      for (const m of assetMapping.slice(0, 20)) lines.push(`- ${m.from} → ${m.to}`);
-      if (assetMapping.length > 20) lines.push(`- …共 ${assetMapping.length} 个`);
-      lines.push('- 注意：临时目录会随系统清理，长期需要的文件请转移到项目目录或会话记忆。');
+      lines.push('Local files referenced in the conversation came with the bundle; paths in the history were rewritten to the new locations below:');
+      for (const m of assetMapping.slice(0, 20)) lines.push(`- ${m.from} -> ${m.to}`);
+      if (assetMapping.length > 20) lines.push(`- ...${assetMapping.length} in total`);
+      lines.push('- Note: temporary directories are cleaned by the system; move files you need long-term into the project directory or session memory.');
     } else {
-      lines.push('- 未携带（对话未引用本地文件，或引用的临时文件已被源机器清理）。');
+      lines.push('- None carried (the conversation referenced no local files, or the referenced temporary files were already cleaned on the source machine).');
     }
     lines.push('');
-    lines.push('## 后续构建上下文的建议');
-    lines.push('1. 先读本文件所在文件夹里的记忆文件（含 task-/cli-/machine- 前缀的移植文件）。');
-    lines.push('2. 用 `git log <基分支>..HEAD` 了解本会话已完成的增量；未合入的成果在本会话的 worktree 分支上。');
-    lines.push('3. 缺失的项目指令文件（上方列表）可向源机器索取或从 bundle 的 contextDeps.projectDocs 恢复。');
-    lines.push('4. Provider 由本机决定：bundle 不带源机 provider 配置与凭据，导入副本已接到本机 provider；'
-      + '需要指定时用 targetProviderId 指向本机已配置的 provider。');
+    lines.push('## Suggested next steps to rebuild context');
+    lines.push('1. Read the memory files in the folder containing this file first (narrow scopes such as task memory were folded in here with a prefix); '
+      + 'machine-, CLI- and project-shared memory went back to their own global folders, where every session on this machine reads them.');
+    lines.push('2. Use `git log <base branch>..HEAD` to see the increments this session completed; unmerged work lives on this session\'s worktree branch.');
+    lines.push('3. Missing project instruction files (listed above) can be requested from the source machine or restored from contextDeps.projectDocs in the bundle.');
+    lines.push('4. The provider is decided by this machine: the bundle carries no source provider configuration or credentials, and the imported copy is already attached to a local provider; '
+      + 'use targetProviderId to point at a provider configured here when you need a specific one.');
     return lines.join('\n') + '\n';
   }
 
@@ -548,6 +621,8 @@ function createHandoffEnvService(rawDeps) {
     extractAssetPaths,
     restoreSkillFolders,
     restoreMemoryScopes,
+    normalizeRepoRemote,
+    sameRepository,
     renderHandoffDoc,
     safeRelativePath,
     safeMemoryFileName,

@@ -70,7 +70,7 @@ test('resolution and outbox admission are one mutation with payload idempotency'
   const registered = await waits.register({
     sessionId: 'session-A',
     mode: 'callback',
-    metadata: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 3 },
+    metadata: { taskId: 'task-1' },
   });
   const before = await store.snapshot();
 
@@ -89,8 +89,6 @@ test('resolution and outbox admission are one mutation with payload idempotency'
   assert.equal(after.outbox[`wait:${registered.id}`].state, 'pending');
   assert.deepEqual(after.outbox[`wait:${registered.id}`].payload.data, { alpha: 1, beta: 2 });
   assert.equal(after.outbox[`wait:${registered.id}`].payload.taskId, 'task-1');
-  assert.equal(after.outbox[`wait:${registered.id}`].payload.taskRunId, 'run-1');
-  assert.equal(after.outbox[`wait:${registered.id}`].payload.leaseEpoch, 3);
   assert.equal(fs.readFileSync(file, 'utf8').includes(registered.token), false);
 
   // Canonical JSON treats object key reordering as the same callback payload.
@@ -264,8 +262,6 @@ test('a scheduled user delay atomically becomes ordinary task work', async t => 
     },
     source: 'scheduled',
     taskId: null,
-    taskRunId: null,
-    leaseEpoch: null,
     requestId: null,
     activeEntryId: null,
   });

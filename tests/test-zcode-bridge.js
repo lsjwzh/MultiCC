@@ -259,3 +259,69 @@ test('bridge preserves unknown and failed native endings instead of inventing st
     assert.equal(tracker.finish({ kind: 'process', code: result.status }).state, expected, JSON.stringify(native));
   }
 });
+
+test('engine env points 0.16.9+ at the desktop bundle builtin provider config', () => {
+  const { zcodeEngineEnv } = require('../src/cli-adapters/zcode-engine');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-builtin-'));
+  const engine = path.join(root, 'Resources', 'glm', 'zcode.cjs');
+  fs.mkdirSync(path.dirname(engine), { recursive: true });
+  fs.writeFileSync(engine, '');
+  const base = { PATH: '/bin' };
+  assert.equal(zcodeEngineEnv(engine, base), base, 'missing bundle file leaves env untouched');
+  const config = path.join(root, 'Resources', 'config', 'provider', 'zcode-builtin.json');
+  fs.mkdirSync(path.dirname(config), { recursive: true });
+  fs.writeFileSync(config, '{}');
+  assert.equal(zcodeEngineEnv(engine, base).ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, config);
+  assert.equal(base.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, undefined, 'input env not mutated');
+  const explicit = { ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: '/custom.json' };
+  assert.equal(zcodeEngineEnv(engine, explicit), explicit, 'explicit override wins');
+  assert.equal(zcodeEngineEnv('zcode', base), base, 'bare binary name is not probed');
+});
+
+test('resume retries without runtimeModel when a 0.16.9+ engine rejects the key, and keeps streaming', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-resume-'));
+  const engine = path.join(root, 'zcode.cjs');
+  const log = path.join(root, 'log.jsonl');
+  fs.writeFileSync(engine, `'use strict';
+const fs = require('fs');
+if (process.argv[2] !== 'app-server') process.exit(2);
+const sid = 'sess_00000000-0000-4000-8000-000000000001';
+const out = m => process.stdout.write(JSON.stringify(m) + '\\n');
+const ev = (seq, type, payload) => out({ method: 'session/event', params: { sessionId: sid, seq, type, payload } });
+require('readline').createInterface({ input: process.stdin }).on('line', line => {
+  const m = JSON.parse(line);
+  fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method: m.method, params: m.params }) + '\\n');
+  if (m.method === 'session/resume') {
+    if (m.params.runtimeModel) return out({ id: m.id, error: { code: -32602, message: 'Invalid params — (root): Unrecognized key: "runtimeModel"' } });
+    return out({ id: m.id, result: { session: { sessionId: sid } } });
+  }
+  if (m.method === 'session/subscribe') return out({ id: m.id, result: { eventSeq: 5 } });
+  if (m.method === 'session/send') {
+    out({ id: m.id, result: { accepted: true, sessionId: sid } });
+    ev(6, 'turn.started', {});
+    ev(7, 'model.streaming', { kind: 'text_delta', delta: 'hi', assistantMessageId: 'a1' });
+    ev(8, 'turn.completed', { resultType: 'success', response: 'hi', usage: { inputTokens: 3, outputTokens: 1 } });
+  }
+});
+`);
+  const settings = path.join(root, 'config.json');
+  fs.writeFileSync(settings, JSON.stringify({
+    model: 'zai/glm-5.2',
+    provider: { zai: { kind: 'anthropic', options: { baseURL: 'https://api.z.ai/api/anthropic' }, models: { 'glm-5.2': {} } } },
+  }));
+  const res = spawnSync(process.execPath, [BRIDGE, '--session', 'sess_00000000-0000-4000-8000-000000000001', 'hello'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, ZCODE_ENGINE: engine, ZCODE_SETTINGS: settings },
+    timeout: 15000,
+  });
+  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
+  const resumes = calls.filter(c => c.method === 'session/resume');
+  assert.equal(resumes.length, 2);
+  assert.ok(resumes[0].params.runtimeModel, 'first attempt keeps pre-0.16.9 compatibility');
+  assert.equal(resumes[1].params.runtimeModel, undefined);
+  assert.ok(calls.some(c => c.method === 'session/send'), 'turn ran on app-server, not the legacy path');
+  const events = res.stdout.trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.ok(events.some(e => e.type === 'text' && /hi/.test(e.part && e.part.text)), res.stdout + res.stderr);
+  assert.ok(events.some(e => e.type === 'step_finish' && e.part.reason === 'stop'), res.stdout + res.stderr);
+});

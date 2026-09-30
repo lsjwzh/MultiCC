@@ -31,9 +31,18 @@ const TARGETS = {
   'codex-official': { providerId: 'codex-official', appType: 'codex', host: 'chatgpt.com', apiKey: null, keyHashSeed: 'codex-oauth', strategy: 'codex-oauth-usage' },
 };
 
-function harness({ adapters, fail = [], throwOn = [] } = {}) {
+// `cached` stands in for provider-limit-cache: keys are `<appType>:<id>` (the
+// same composite identity the real cache uses). Every runtime here is wired
+// with a lookupCached, like the server's mountProviderBalanceRoutes is.
+function harness({ adapters, fail = [], throwOn = [], cached = {}, lookupThrows = false } = {}) {
   const seen = [];
+  const recorded = [];
   const runtime = createProviderBalanceRuntime({
+    lookupCached: (appType, id) => {
+      if (lookupThrows) throw new Error('cache exploded');
+      return cached[`${appType}:${id}`] || null;
+    },
+    onResult: (appType, id, result) => { recorded.push({ appType, id, result }); },
     getProvider: (appType, id) => PROVIDERS.find(p => p.id === id && (!appType || p.appType === appType)) || null,
     listProviders: () => PROVIDERS,
     getProviderLimitTarget: (appType, id) => TARGETS[id] || null,
@@ -44,12 +53,34 @@ function harness({ adapters, fail = [], throwOn = [] } = {}) {
         if (fail.includes(target.providerId)) return null;
         return { kind: 'balance', available: true, currency: 'CNY', total: 12.5, granted: 0, toppedUp: 12.5 };
       },
-      'glm-monitor': async () => ({ kind: 'window', provider: 'glm', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.42, resetsAt: null, weeklyUtilization: 0.1 }),
+      'glm-monitor': async (target) => {
+        seen.push(target.providerId);
+        if (throwOn.includes(target.providerId)) throw new Error('boom');
+        if (fail.includes(target.providerId)) return null;
+        return { kind: 'window', provider: 'glm', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.42, resetsAt: null, weeklyUtilization: 0.1 };
+      },
       'codex-oauth-usage': async () => ({ kind: 'window', rateLimitType: 'weekly', status: 'allowed', utilization: 0.77, resetsAt: 1_700_003_600, tier: 'pro' }),
     },
   });
-  return { runtime, seen };
+  return { runtime, seen, recorded };
 }
+
+// A last-known-good entry as provider-limit-cache stores one: the structured
+// summary the clients dispatch on plus the bar text with its {cd:} tokens.
+const CACHED_WINDOW = {
+  'claude:glm-1': {
+    appType: 'claude', providerId: 'glm-1', kind: 'window', status: 'ok',
+    summary: { kind: 'window', provider: 'glm', status: 'allowed', usedPercentage: 58, resetsAtMs: 1_700_003_600_000, observedAtMs: 1_700_000_000_000 },
+    summaryText: '5h 58%', barText: '5h 58% {cd:1700003600000} ⟳',
+    fetchedAt: 1_700_000_000_000, lastError: null,
+  },
+  'claude:ds-1': {
+    appType: 'claude', providerId: 'ds-1', kind: 'balance', status: 'ok',
+    summary: { kind: 'balance', provider: 'deepseek', available: 87.69, total: 100, currency: 'CNY' },
+    summaryText: '¥87.69', barText: 'DeepSeek 余额 · ¥87.69 · {ago:1700000000000}',
+    fetchedAt: 1_700_000_000_000, lastError: null,
+  },
+};
 
 test('queryOne resolves a pollable provider to its adapter DTO', async () => {
   const h = harness();
@@ -108,6 +139,120 @@ test('a throwing adapter never escapes as a 500, and its cause is surfaced', asy
   const result2 = await h2.runtime.queryOne('claude', 'ds-1');
   assert.equal(result2.reason, 'fetch_failed');
   assert.equal(result2.detail, 'HTTP 401 denied');
+});
+
+// ── last-known-good fallback (transient failures only) ──────────────────────
+//
+// A borrowed (借道) provider's live query crosses the network to the lender on
+// every request, so it fails far more often than a local vendor API. The cache
+// keeps the last bar that DID answer; serving it — clearly marked stale — is
+// what keeps the bar on a freshly loaded page instead of vanishing.
+
+test('a transient failure answers with the last-known-good bar, marked stale', async () => {
+  const h = harness({ fail: ['glm-1'], cached: CACHED_WINDOW });
+  const result = await h.runtime.queryOne('claude', 'glm-1');
+  assert.equal(result.ok, true);
+  assert.equal(result.cached, true);
+  assert.equal(result.stale, true);
+  assert.equal(result.detail, undefined);
+  // The species survives: clients dispatch on dto.kind (window bar vs chip).
+  assert.equal(result.dto.kind, 'window');
+  assert.equal(result.dto.usedPercentage, 58);
+  assert.equal(result.fetchedAt, 1_700_000_000_000);
+  // The stored text keeps its own deadline token; the sync stamp is added
+  // because this render has none.
+  assert.equal(result.bar.text, '5h 58% {cd:1700003600000} ⟳ · 上次同步 {ago:1700000000000}');
+  assert.equal(result.bar.color, '#8b949e');
+  assert.match(result.bar.title, /实时查询失败/);
+  assert.equal(result.bar.action, null);
+});
+
+test('a stale balance chip comes back as a balance dto, not a window', async () => {
+  const h = harness({ fail: ['ds-1'], cached: CACHED_WINDOW });
+  const result = await h.runtime.queryOne('claude', 'ds-1');
+  assert.equal(result.ok, true);
+  assert.equal(result.cached, true);
+  assert.equal(result.dto.kind, 'balance');
+  // This stored render already carries its own sync time — never two of them.
+  assert.equal(result.bar.text, 'DeepSeek 余额 · ¥87.69 · {ago:1700000000000}');
+});
+
+test('a stale fallback still records the FAILURE, never a fresh success', async () => {
+  const h = harness({ fail: ['glm-1'], cached: CACHED_WINDOW });
+  await h.runtime.queryOne('claude', 'glm-1');
+  assert.equal(h.recorded.length, 1);
+  const { appType, id, result } = h.recorded[0];
+  assert.equal(appType, 'claude');
+  assert.equal(id, 'glm-1');
+  // ok:false is the contract that makes the recorder stamp lastError only —
+  // passing the fallback (ok:true + dto) would re-date the cached data and make
+  // a stale window look freshly fetched, and would defeat the cache's
+  // never-overwrite-on-failure guarantee.
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'fetch_failed');
+});
+
+test('the failure detail is carried into the stale title', async () => {
+  const h = harness({
+    cached: CACHED_WINDOW,
+    adapters: {
+      'glm-monitor': async () => {
+        const error = new Error('limit fetch failed: Connect Timeout');
+        error.kind = 'limit_fetch_failed';
+        error.detail = 'Connect Timeout';
+        throw error;
+      },
+    },
+  });
+  const result = await h.runtime.queryOne('claude', 'glm-1');
+  assert.equal(result.ok, true);
+  assert.equal(result.cached, true);
+  assert.equal(result.detail, 'Connect Timeout');
+  assert.match(result.bar.title, /Connect Timeout/);
+});
+
+test('unsupported and never-answered providers get no fallback', async () => {
+  // 'unsupported' is a permanent answer, not a transient one: a provider with no
+  // quota surface must not resurrect an unrelated cached bar. (plain-1 has no
+  // entry either, and neither does the failing ds-1 below.)
+  const noSurface = await harness({ cached: { 'claude:plain-1': CACHED_WINDOW['claude:glm-1'] } })
+    .runtime.queryOne('claude', 'plain-1');
+  assert.equal(noSurface.ok, false);
+  assert.equal(noSurface.reason, 'unsupported');
+
+  const neverAnswered = await harness({ fail: ['ds-1'] }).runtime.queryOne('claude', 'ds-1');
+  assert.equal(neverAnswered.ok, false);
+  assert.equal(neverAnswered.reason, 'fetch_failed');
+});
+
+test('a cache lookup that throws leaves the plain failure intact', async () => {
+  const h = harness({ fail: ['glm-1'], cached: CACHED_WINDOW, lookupThrows: true });
+  const result = await h.runtime.queryOne('claude', 'glm-1');
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'fetch_failed');
+});
+
+test('only window / balance entries are served as fallbacks', async () => {
+  // 'claude' (usage scrape) and 'availability' (cooldown) entries are other
+  // producers' business — they carry no dto the balance clients could use.
+  for (const kind of ['claude', 'availability', 'quota']) {
+    const h = harness({
+      fail: ['glm-1'],
+      cached: { 'claude:glm-1': { ...CACHED_WINDOW['claude:glm-1'], kind, summary: { kind, status: 'ok' } } },
+    });
+    const result = await h.runtime.queryOne('claude', 'glm-1');
+    assert.equal(result.ok, false, kind);
+    assert.equal(result.reason, 'fetch_failed', kind);
+  }
+});
+
+test('queryAll carries the stale fallback into its per-provider rows', async () => {
+  const h = harness({ fail: ['glm-1'], cached: CACHED_WINDOW });
+  const all = await h.runtime.queryAll();
+  const row = all.results.find(r => r.providerId === 'glm-1');
+  assert.equal(row.ok, true);
+  assert.equal(row.cached, true);
+  assert.equal(row.name, 'GLM');
 });
 
 test('queryAll reports one row per provider, including unpollable ones', async () => {
@@ -256,6 +401,28 @@ test('relay quota: unknown provider 404, unpollable provider ok:false', async ()
   await routes2['/claude-proxy/:id/remote/quota']({ params: { id: 'plain' } }, unpollable);
   assert.equal(unpollable.statusCode, 200);
   assert.deepEqual(unpollable.body, { ok: false, reason: 'unsupported', providerId: 'plain', appType: 'claude' });
+});
+
+test('relay quota never serves the last-known-good cache, even if handed one', async () => {
+  // The lender side is the one place a cached value must never appear: a
+  // borrower asking "what does this account have left" has to receive the
+  // result of a REAL query, or an explicit ok:false — never this host's stash.
+  const routes = {};
+  const app = { get: (p, hdl) => { routes[p] = hdl; }, post: (p, hdl) => { routes[p] = hdl; } };
+  mountProviderRelayQuotaRoutes(app, {
+    getProvider: (appType, id) => ({ id, appType, name: 'GLM' }),
+    listProviders: () => [],
+    getProviderLimitTarget: (appType, id) => ({ providerId: id, appType, strategy: 'glm-monitor' }),
+    adapters: { 'glm-monitor': async () => null },
+    lookupCached: () => CACHED_WINDOW['claude:glm-1'],
+  });
+  const r = { statusCode: 200, body: null };
+  r.set = () => r; r.status = c => { r.statusCode = c; return r; }; r.json = b => { r.body = b; return r; };
+  await routes['/claude-proxy/:id/remote/quota']({ params: { id: 'glm' } }, r);
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.body.ok, false);
+  assert.equal(r.body.reason, 'fetch_failed');
+  assert.equal(r.body.cached, undefined);
 });
 
 test('relay quota dedups concurrent queries for the same provider', async () => {

@@ -2,17 +2,14 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
+// 注意别叫 t：这个文件的测试回调形参就是 t（测试上下文），会把它盖掉。
+const { t: translate } = require('./helpers/i18n-translator');
 
-// The console panel slides in over a 300ms CSS transition. The test target is a
-// background one — it never renders and never produces frames, so the document
-// timeline does not advance and a bare wait leaves the panel parked at its start
-// position. Capturing a frame is what pumps the timeline; wait the transition out
-// between two captures and the panel has genuinely arrived.
-const settleOverlay = async page => {
-  await page.screenshot('overlay-frame');
-  await page.evaluate(`new Promise(done => setTimeout(done, 400))`);
-  await page.screenshot('overlay-frame');
-};
+// The console used to slide in over a 300ms CSS transition, and this test target is a
+// background one — it never renders and never produces frames, so the document timeline
+// does not advance and a bare wait left the panel parked at its start position. The
+// console is a page in the main area now (#console-center, no transition), so nothing
+// here needs pumping any more: a plain waitFor is the whole story.
 
 test('Air task-first console, management views, roles, configuration, artifacts and mobile', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
@@ -29,16 +26,26 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     configuration: { cli: 'codex', provider: 'codex-lab', providerName: 'Lab Responses', providerSelection: null,
       model: 'gpt-5.5', effectiveModel: 'gpt-5.5', effort: 'medium' }, roleBindings: { version: 0, bindings: [] },
     messages: [] };
+  // compatibleClis 照服务端生成的那份抄（src/providers/core.js compatibleClisForFormat）：
+  // 一条 OpenAI 线路对两个 codex 车道都可用，常驻车道 codex-exp 不是另一条线。少写它
+  // 的话，「新建任务」那颗胶囊（默认落在第一条 chat 车道 = codex-exp）会一个 Provider
+  // 都列不出来 —— 那是 fixture 缺数据，不是面板挑不出来。
   const providerCatalog = { ok: true, available: true, defaults: { codex: 'codex-lab', claude: null }, providers: [
-    { id: 'codex-official', appType: 'codex', name: 'Codex Official', apiFormat: 'openai_responses', compatibleClis: ['codex'], isOfficial: true, model: 'gpt-5.5', modelOptions: ['gpt-5.5'], hasToken: true },
-    { id: 'codex-lab', appType: 'codex', name: 'Lab Responses', apiFormat: 'openai_responses', compatibleClis: ['codex'], model: 'gpt-5.5', modelOptions: ['gpt-5.5', 'gpt-5.6-sol'], hasToken: true },
-    { id: 'codex-backup', appType: 'codex', name: 'Backup Responses', apiFormat: 'openai_responses', compatibleClis: ['codex'], model: 'gpt-5.6-sol', modelOptions: ['gpt-5.6-sol', 'gpt-5.5'], hasToken: true },
+    { id: 'codex-official', appType: 'codex', name: 'Codex Official', apiFormat: 'openai_responses', compatibleClis: ['codex', 'codex-exp'], isOfficial: true, model: 'gpt-5.5', modelOptions: ['gpt-5.5'], hasToken: true },
+    { id: 'codex-lab', appType: 'codex', name: 'Lab Responses', apiFormat: 'openai_responses', compatibleClis: ['codex', 'codex-exp'], model: 'gpt-5.5', modelOptions: ['gpt-5.5', 'gpt-5.6-sol'], hasToken: true },
+    { id: 'codex-backup', appType: 'codex', name: 'Backup Responses', apiFormat: 'openai_responses', compatibleClis: ['codex', 'codex-exp'], model: 'gpt-5.6-sol', modelOptions: ['gpt-5.6-sol', 'gpt-5.5'], hasToken: true },
   ] };
   const configPatches = [], quickDispatches = [], quickCreates = [], syncRequests = [];
   let syncFailure = true;
-  const directory = { id: 'd1', name: 'MultiCC', path: '/projects/multicc' };
-  const otherDirectory = { id: 'd2', name: 'Design Lab', path: '/projects/design-lab' };
-  const airTasks = [{ ...entry.task, dirId: 'd1', status: 'doing', updatedAt: Date.now(), resource: entry.resource },
+  // worktreeCount 是总数，worktreeLifecycle 是拆解（口径来自服务端 registry 的
+  // residency）：只报「几个」看不出这个数是怎么长的 —— 本地真占着磁盘的、睡下只剩
+  // 一条分支引用的、计划了还没落地的，是三种状态，而用户要判断的正是要不要腾地方。
+  const directory = { id: 'd1', name: 'MultiCC', path: '/projects/multicc', worktreeCount: 6,
+    worktreeLifecycle: { resident: 2, retained: 1, hibernated: 2, planned: 1, leased: 1, onDisk: 3, total: 6 } };
+  const otherDirectory = { id: 'd2', name: 'Design Lab', path: '/projects/design-lab', worktreeCount: 0,
+    worktreeLifecycle: { resident: 0, retained: 0, hibernated: 0, planned: 0, leased: 0, onDisk: 0, total: 0 } };
+  const airTasks = [{ ...entry.task, dirId: 'd1', status: 'doing', updatedAt: Date.now(), resource: entry.resource,
+    worktreeChanges: { dirty: true, ahead: 2 } },
     // 另一个目录里、这次会话从没打开过的一条：用来证明「pin 会把它拉到侧栏最
     // 上面」—— 它本来既不在最近记录里，也不在当前目录里。
     { id: 'tsk_far', dirId: 'd2', title: '远端目录里的任务', status: 'active', recordType: 'planned',
@@ -52,7 +59,13 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/air'] = routes['/air.html'];
   routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
-  routes['/api/air'] = () => json({ ok: true, directories: [directory, otherDirectory], clis: ['codex', 'claude'], migration: { errors: [] },
+  // 快照里两条家族都带上：一次性命令（`codex exec` / `claude -p`）走终端，常驻车道
+  // （codex-exp / claude-exp）走 chat —— 服务端发的就是这一整份名单，谁属于哪边由
+  // 车道自己的 kinds 列说（见 src/cli/cli-capability.js）。chat 那几个选择器要能从
+  // 这份名单里挑出常驻车道，所以 fixture 不能只有一次性那两条。
+  routes['/api/air'] = () => json({ ok: true, directories: [directory, otherDirectory], clis: ['codex', 'codex-exp', 'claude', 'claude-exp'], migration: { errors: [] },
+    // 自动回收的策略：面板照着它把「多久没用会被收走」说准，客户端不猜默认值。
+    worktreePolicy: { idleMs: 86400000, intervalMs: 900000, startupDelayMs: 30000, batchSize: 16, enabled: true },
     // The list snapshot and task-entry endpoint read the same runtime in production.
     // Keep the fixture in lockstep when later assertions move the run through
     // running/error/idle; otherwise the stale list row overwrites fresh entry state.
@@ -73,7 +86,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/api/cron'] = () => json([{ id: 'cron-a', name: '每日体验巡检', dirId: 'd1', dirName: 'MultiCC',
     cli: 'codex', provider: 'codex-lab', model: 'gpt-5.6-sol', prompt: '检查 Air 任务体验并记录结果。', cron: '0 9 * * *', enabled: true,
     taskId: 'tsk_a', taskTitle: entry.task.title, taskStatus: 'active', taskUrl: '/air?task=tsk_a&dir=d1',
-    lastRunAt: Date.now() - 60000, lastStatus: 'ok', runCount: 4, nextRunAt: Date.now() + 3600000 }]);
+    lastRunAt: Date.now() - 60000, lastStatus: 'ok', runCount: 4, nextRunAt: Date.now() + 3600000,
+    // 执行记录：面板要能把「跑了什么、哪次失败」摊开给人看。
+    recentRuns: [
+      { at: Date.now() - 60000, reason: 'schedule', status: 'ok', decision: 'continue', taskId: 'tsk_a', receiptId: 'r-2', error: '' },
+      { at: Date.now() - 3600000, reason: 'manual', status: 'error', decision: null, taskId: 'tsk_a', receiptId: null, error: '固定任务已归档或只读' },
+    ] }]);
   routes['/api/docs-registry'] = () => json([
     { id: 'service-a', kind: 'service', title: '本地预览服务', url: 'http://127.0.0.1:4173', status: 'down', startCmd: 'npm run preview', source: 'manual', pinned: true },
     { id: 'page-a', kind: 'page', title: 'Air 改造说明', url: '/docs/air.html', source: 'artifact' },
@@ -125,9 +143,23 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   };
   routes['/api/git/directory-status'] = () => json({ branch: 'main', upstream: 'origin/main', baseBranch: 'main', ahead: gitAhead, behind: 1,
     dirtyFiles: [{ status: 'M', path: 'README.md' }, { status: '??', path: 'notes/scratch.md' }] });
+  // 「现在回收」：默认只收过了闲置阈值的；一个都没收到而本地还占着地方，才轮到
+  // 前端问一句「连最近用过的也一起收吗」—— 那一下才带 force。这里两段式回应，
+  // 正好把「先问后收」这条路走完。
+  const reclaimRequests = [];
+  routes['POST /api/air/worktrees/reclaim'] = ({ body }) => {
+    const value = JSON.parse(body);
+    reclaimRequests.push(value);
+    return json(value.force
+      ? { ok: true, dirId: value.dirId, considered: 3, attempted: 3, hibernated: 3, failed: 0, skipped: 0 }
+      : { ok: true, dirId: value.dirId, considered: 3, attempted: 3, hibernated: 0, failed: 0, skipped: 3 });
+  };
   routes['/api/git/log'] = () => json({ repoPath: '/projects/multicc', commits: [
     { hash: 'c2'.repeat(20), short: 'c2c2c2c', author: 'green', date: '2026-09-17T10:00:00+08:00', subject: 'Air 目录首页加 Git 状态', refs: 'HEAD -> main' },
     { hash: 'c1'.repeat(20), short: 'c1c1c1c', author: 'green', date: '2026-09-16T09:00:00+08:00', subject: '上一条提交', refs: '' },
+  ] });
+  routes['/api/git/commit-files'] = () => json({ hash: 'c2'.repeat(20), files: [
+    { status: 'M', path: 'public/air.js' },
   ] });
   routes['/api/git/commit-diff'] = () => json({ hash: 'c2'.repeat(20), stat: ' air.js | 2 ++', diff: '+新增一行', truncated: false, error: null });
   routes['POST /api/task-shell-tasks/tsk_a/messages'] = async ({ body }) => {
@@ -322,6 +354,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`${frame}?.URL.includes('session=task-a') && ${frame}.readyState==='complete'`));
     assert.ok(await page.waitFor(`${frame}?.body.classList.contains('air-chat') && ${frame}?.getElementById('input')`));
     assert.ok(await page.waitFor(`${frame}.getElementById('merge-btn').parentElement.id==='header-more-menu'`));
+    assert.equal(await page.evaluate(`${frame}.getElementById('header-more-menu').contains(${frame}.getElementById('lang-btn'))`), false,
+      '语言切换已经在 Air 侧栏版本行旁边，对话更多菜单不再重复');
     assert.equal(await page.evaluate(`${frame}.getElementById('session-queue-dock')!==null && ${frame}.getElementById('aux-classify-bar')!==null`), true);
     assert.equal(await page.evaluate(`${frame}.getElementById('goal-btn')!==null && ${frame}.getElementById('merge-btn')!==null && ${frame}.getElementById('diff-modal')!==null`), true);
     assert.ok(await page.waitFor(`${frame}.getElementById('worktree-force-sync-btn')`), JSON.stringify({ requests: page.requests.filter(r=>/merge-status/.test(r.path)), state: await page.evaluate(`({url:${frame}.URL,errors:${frame}.defaultView.__errors,bar:${frame}.getElementById('worktree-bar').outerHTML})`) }));
@@ -376,6 +410,21 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.evaluate(`(()=>{const d=${frame},w=d.defaultView,v=w.MultiCCChatHistoryView.createHistoryView({document:d,messagesEl:d.getElementById('messages'),safeMarkdown:w.MultiCCSafeMarkdown});v.clearMessages();d.getElementById('messages').append(...${JSON.stringify(taskMessages)}.map(m=>v.renderMessage(m)));w.MultiCCChatSessionQueue.render([{entryId:'fifo-1',position:1,state:'pending',text:'继续检查移动端布局'}],{state:'running'},d);w.renderAuxClassify('完善 Air 对话体验','verifying','W')})()`);
     assert.equal(await page.evaluate(`${frame}.querySelector('.tool-card .tool-name').textContent`), 'Read');
+    // Agent 输出的本地文件链接（裸绝对路径或带 server origin）要改写成
+    // /api/download：点开的是文件本身，不是服务器上不存在的那条 404 路由。
+    const localLinkFix = await page.evaluate(`(()=>{const d=${frame},w=d.defaultView;
+      const root=d.createElement('div');
+      const bare=d.createElement('a');bare.href='/Users/me/project/a.dart';bare.textContent='/Users/me/project/a.dart';
+      const prefixed=d.createElement('a');prefixed.href=location.origin+'/Users/me/project/b.dart';prefixed.textContent=location.origin+'/Users/me/project/b.dart';
+      const remote=d.createElement('a');remote.href='https://example.com/Users/x.dart';remote.textContent='https://example.com/Users/x.dart';
+      root.append(bare,prefixed,remote);
+      w.MultiCCChatLocalLinks.fixupLocalFileLinks(root);
+      return [...root.querySelectorAll('a[href]')].map(a=>({href:a.getAttribute('href'),text:a.textContent}));})()`);
+    assert.deepEqual(localLinkFix, [
+      { href: '/api/download?path=%2FUsers%2Fme%2Fproject%2Fa.dart', text: '/Users/me/project/a.dart' },
+      { href: '/api/download?path=%2FUsers%2Fme%2Fproject%2Fb.dart', text: '/Users/me/project/b.dart' },
+      { href: 'https://example.com/Users/x.dart', text: 'https://example.com/Users/x.dart' },
+    ], '本地文件链接改走 /api/download，外站链接原样保留');
     assert.ok(await page.evaluate(`${frame}.getElementById('chat-context-bar').getBoundingClientRect().height<=55`), 'desktop runtime controls fit one row even when disconnected');
     await page.evaluate(`${frame}.getElementById('messages').style.cssText='position:relative;z-index:99999';${frame}.getElementById('header-more-btn').click()`);
     assert.ok(await page.waitFor(`${frame}.getElementById('header-more-menu').matches(':popover-open')`));
@@ -490,6 +539,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}?.textContent.includes('Lab Responses')`), 'AI 配置 renders on the composer card');
     await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
     assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')?.value==='codex-lab'`));
+    // 这条任务的 cli 是 codex（兜底的 `codex exec` 车道）。扶正之后两条 codex 车道的
+    // 大字都是家族名 Codex，区分它们的是小字（codex exec / Codex App Server）。
     assert.equal(await page.evaluate(`document.querySelector('.air-cli-option.selected strong').textContent`), 'Codex');
     // Provider 是下拉（和 chat 的 AI 配置、App 的配置面板同一版），一行装完，
     // 不再是一墙卡片：Auto 池 + 三条 Provider。内置 Official 就是
@@ -551,6 +602,14 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务线路"]').value`), 'codex-lab');
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务模型"]').value`), 'gpt-5.5');
     await page.evaluate(`document.querySelector('dialog[open] .air-config-close').click()`);
+    // WorkBuddy 的待生效配置不能沿用当前 Codex 的线路名。车道那段现在是产品名
+    // （codebuddy -> WorkBuddy），而自持账号车道的路由名与它是同一个 —— 两段合成
+    // 一段，不再重复说两遍。
+    entry.configuration.pendingConfiguration = { cli: 'codebuddy', providerName: null,
+      profile: { provider: null, model: null, effort: null } };
+    await reloadConversation();
+    assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('WorkBuddy · 默认模型 · 下轮生效')`));
+    assert.equal(await page.evaluate(`${composerPill('air-ai-pill')}.textContent.includes('Lab Responses')`), false);
     entry.configuration.pendingConfiguration = null;
     await page.evaluate(`${frame}.defaultView.MultiCCTaskArtifacts.setScope({shellId:'shell-a'})`);
     assert.ok(await page.waitFor(`${frame}?.getElementById('task-artifacts-toggle')?.textContent==='产物 2'`));
@@ -563,9 +622,19 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     const successfulAttribution = entry.attribution;
     entry.execution.status = 'error'; entry.attribution = {};
     await reloadConversation();
-    assert.ok(await page.waitFor(`document.getElementById('delivery-title').textContent==='任务保持进行中'`));
+    // 这两句都是词典里的文案（不是夹具给的标题），所以都按词典取值断 —— 上一轮措辞
+    // 调整（失败→执行异常）就是在这条上过期的。
+    assert.ok(await page.waitFor(`document.getElementById('delivery-title').textContent===${JSON.stringify(translate('airAttrTurnFailedTitle'))}`));
     assert.equal(await page.evaluate(`document.getElementById('delivery-card').hidden`), false);
-    assert.equal(await page.evaluate(`document.getElementById('task-state').textContent.includes('本轮 失败')`), true);
+    // 状态条要说清「这一轮没成」——但具体措辞走词典：这行原本写死「本轮 失败」，
+    // 2026-09-25 那次措辞统一（失败→执行异常）之后它就一直红着。断言该钉的是
+    // 「状态条把失败那一轮说出来了」，不是某一次的具体用词。
+    const failedRun = translate('airSegExecution', { state: translate('airStateFailed') });
+    assert.equal(
+      await page.evaluate(`document.getElementById('task-state').textContent.includes(${JSON.stringify(failedRun)})`),
+      true,
+      `状态条要写出失败那一轮：${failedRun}`,
+    );
     entry.execution.status = 'idle'; entry.attribution = successfulAttribution;
     await reloadConversation();
     assert.ok(await page.waitFor(`document.getElementById('delivery-title').textContent.includes('任务体验收口')`));
@@ -576,6 +645,14 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent==='定时任务' && document.getElementById('task-state').textContent.includes('写入同一任务')`), true);
     assert.equal(await page.evaluate(`document.querySelector('#schedule-center .schedule-hero')===null && document.querySelector('#task-header #schedule-create')!==null`), true);
     assert.equal(await page.evaluate(`document.querySelector('.schedule-fixed-task').innerText.includes('tsk_a')`), true);
+    // 执行记录：默认收起（不占卡片高度），展开后逐条给出时间/来源/结果，
+    // 失败那一条要把原因带出来，而不是只印一个「失败」。
+    assert.equal(await page.evaluate(`document.querySelector('details.schedule-runs')!==null
+      && document.querySelector('details.schedule-runs').open===false`), true);
+    assert.equal(await page.evaluate(`(()=>{const d=document.querySelector('details.schedule-runs');
+      d.open=true; return d.querySelectorAll('.schedule-run').length;})()`), 2);
+    assert.equal(await page.evaluate(`document.querySelector('details.schedule-runs').innerText.includes('固定任务已归档或只读')`), true);
+    assert.equal(await page.evaluate(`document.querySelector('details.schedule-runs').innerText.includes('手动')`), true);
     // 标题行：左边一组说明，右边一个尾巴（计数、✕）。这条曾经全仓没有基础规则，
     // 于是尾巴永远换行 —— 侧栏竖成「任务 / 最近任务 / 1」三条，目录页同样，
     // 每个弹窗的 ✕ 都独占一行。断言按几何量：尾巴要跟头一组有纵向重叠，并且
@@ -599,17 +676,74 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`document.querySelector('.schedule-fixed-task').click()`);
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='完善任务协作体验'`));
     await page.navigate('/air?dir=d1');
-    assert.ok(await page.waitFor(`!document.getElementById('empty').hidden && document.querySelectorAll('.directory-stat').length===4`));
+    assert.ok(await page.waitFor(`!document.getElementById('empty').hidden && document.querySelectorAll('.directory-stat').length===5`));
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent.includes('MultiCC') && document.getElementById('task-state').textContent.includes('/projects/multicc')`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('.directory-task-row').length`), 1);
+    assert.equal(await page.evaluate(`document.querySelector('.directory-task-row .worktree-change-badge')?.title`),
+      'Worktree 有未提交改动，另有 2 个提交尚未合并');
+    assert.equal(await page.evaluate(`document.querySelector('#tasks .worktree-change-badge')?.getAttribute('aria-label')`),
+      'Worktree 有未提交改动，另有 2 个提交尚未合并');
+    // 目录首页这份任务列表也走 pin-first + 📌（同侧栏 `renderSidebarTasks` 的置顶
+    // 规矩）：pin 住的那条排最前，并在行上带钉标记。
+    taskPins = ['tsk_a'];
+    await page.evaluate(`document.getElementById('refresh').click()`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('.directory-task-row').length===1 && document.querySelector('.directory-task-row .task-pin')?.textContent==='📌'`));
+    assert.equal(await page.evaluate(`document.querySelector('.directory-task-row .task-pin').textContent`), '📌',
+      '目录首页 pin 住的加标记');
+    taskPins = [];
+    await page.evaluate(`document.getElementById('refresh').click()`);
+    assert.ok(await page.waitFor(`!document.querySelector('.directory-task-row .task-pin')`));
+    // Worktree 生命周期：只报「几个」看不出这个数是怎么长的，所以本地 / 休眠 / 计划
+    // 分开摆（口径来自服务端 registry 的 residency），右边跟一颗「现在回收」。
+    assert.ok(await page.waitFor(`document.getElementById('directory-worktrees').hidden===false`));
+    assert.equal(await page.evaluate(`document.getElementById('directory-worktree-summary').textContent`),
+      '本地 3 · 休眠 2 · 计划 1 · 占用中 1 （共 6 条会话记录）');
+    assert.equal(await page.evaluate(`document.querySelector('#directory-worktrees .worktree-policy').textContent`), '闲置超过 24 小时会自动回收');
+    // 目录卡那一行是同一个 summary()：不必点进去才知道这个目录在不在涨。
+    assert.equal(await page.evaluate(`[...document.querySelectorAll('#directory-grid small')].some(el=>el.textContent.includes('本地 3 · 休眠 2 · 计划 1'))`), true);
+    // 「现在回收」：先按阈值收一次，一个都没收到而本地还占着地方，才问一句「连最近
+    // 用过的也一起收吗」；点头之后才带 force 再打一次。
+    await page.evaluate(`window.__reclaimAsks=[]; window.confirm = text => { window.__reclaimAsks.push(text); return true; }`);
+    await page.evaluate(`document.querySelector('#directory-worktrees .worktree-reclaim').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('notice').textContent.includes('已回收 3 个')`));
+    assert.deepEqual(reclaimRequests, [{ dirId: 'd1' }, { dirId: 'd1', force: true }],
+      '默认那一下不带 force；force 只出现在用户点头之后的第二次');
+    assert.equal(await page.evaluate(`window.__reclaimAsks.length`), 1);
+    assert.equal(await page.evaluate(`window.__reclaimAsks[0].includes('还有 3 个没到闲置阈值')`), true);
+    assert.equal(await page.evaluate(`document.getElementById('notice').textContent`), '已回收 3 个（检查 3 个，跳过 0 个）');
     // Git 状态卡：未推送提交数、主检出的脏文件，提交列表与 diff 懒加载。
     assert.ok(await page.waitFor(`document.getElementById('directory-git').textContent.includes('2 个提交未推送')`));
     assert.equal(await page.evaluate(`document.getElementById('directory-git').textContent.includes('2 个未提交文件')`), true);
-    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-git-list .directory-git-commit').length`), 0, 'Git 记录默认折叠');
+    // 「● 2 个未提交文件（主检出）」那颗也是能按的：点开就地展开文件清单，再点收起。
+    // 以前它只是颗纯标签 —— 点它没反应，底下那份清单也没人知道该去哪展开。
+    const dirtyChip = `document.querySelector('.directory-git-chips .directory-git-chip.is-clickable')`;
+    assert.equal(await page.evaluate(`${dirtyChip}.tagName`), 'BUTTON', '未提交文件那颗是可点按钮');
+    assert.equal(await page.evaluate(`${dirtyChip}.textContent.includes('查看')`), true, '按钮上写着「查看」');
+    await page.evaluate(`${dirtyChip}.click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.directory-git-files')?.open === true`));
+    assert.equal(await page.evaluate(`[...document.querySelectorAll('.directory-git-files li')].map(li=>li.textContent).join('|')`),
+      'M  README.md|??  notes/scratch.md', '点开后列出全部脏文件');
+    await page.evaluate(`${dirtyChip}.click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.directory-git-files')?.open === false`));
+    assert.equal(await page.evaluate(`document.querySelector('.git-manager')===null`), true, 'Git 管理器默认关闭');
     await page.evaluate(`document.getElementById('directory-git').querySelector('.directory-git-actions button').click()`);
-    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-git-list .directory-git-commit').length===2`));
-    await page.evaluate(`document.querySelectorAll('#directory-git-list .directory-git-commit-head')[0].click()`);
-    assert.ok(await page.waitFor(`document.getElementById('directory-git-list').textContent.includes('+新增一行')`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('.git-manager-commits .git-manager-row').length===2`));
+    await page.evaluate(`document.querySelector('.git-manager-commits .git-manager-row').click()`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('.git-manager-files .git-manager-file').length===1`));
+    await page.evaluate(`document.querySelector('.git-manager-files .git-manager-file').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.git-manager-patch')?.textContent.includes('+新增一行')`));
+    await page.evaluate(`document.querySelector('.git-manager-close').click()`);
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await page.evaluate(`document.getElementById('directory-git').querySelector('.directory-git-actions button').click()`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('.git-manager-commits .git-manager-row').length===2`));
+    await page.evaluate(`document.querySelector('.git-manager-commits .git-manager-row').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.git-manager')?.dataset.step==='files' && document.querySelector('.git-manager-commits').offsetHeight===0`));
+    await page.evaluate(`document.querySelector('.git-manager-files .git-manager-file').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.git-manager')?.dataset.step==='diff' && document.querySelector('.git-manager-patch')`));
+    await page.evaluate(`document.querySelector('.git-manager-back').click()`);
+    assert.equal(await page.evaluate(`document.querySelector('.git-manager').dataset.step`), 'files');
+    await page.evaluate(`document.querySelector('.git-manager-close').click()`);
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     // 「↑ 2 个提交未推送」那颗是能按的：点开确认框，取消不推，确认才 POST
     // /api/directories/:id/push，推完这颗自己变成「已与上游同步」。
     const pushChip = `document.querySelector('.directory-git-chips .directory-git-chip.is-action')`;
@@ -654,9 +788,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.equal(await page.evaluate(`document.getElementById('${id}').offsetParent===null`), true, `${id} 在终端模式下该让位`);
     }
     // 只列当前目录（d1）的终端：别的目录的、以及 chat-kind 的会话都不进来。
-    const termRows = await page.evaluate(`[...document.querySelectorAll('#directory-terminal-list .directory-terminal-row')].map(a=>[a.textContent, a.getAttribute('href')])`);
-    assert.equal(termRows.length, 1, 'd1 只有一条终端会话：' + JSON.stringify(termRows));
-    assert.equal(termRows[0][1], '/?id=term', '终端行指向终端页：' + JSON.stringify(termRows));
+    // 行是「容器 + 打开链接 + 重启/删除」（按钮不能嵌在链接里），所以 href 在链接上。
+    const termRows = await page.evaluate(`[...document.querySelectorAll('#directory-terminal-list .directory-terminal-open')].map(a=>a.getAttribute('href'))`);
+    assert.deepEqual(termRows, ['/?id=term'], '终端行指向终端页：' + JSON.stringify(termRows));
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list [data-action="restart-terminal"]').length`), 1, '行尾那颗重启');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list [data-action="delete-terminal"]').length`), 1, '行尾那颗删除');
     assert.equal(await page.evaluate(`document.getElementById('directory-terminal-count').textContent`), '1 个终端');
     assert.equal(await page.evaluate(`document.getElementById('directory-terminal-list').textContent.includes('FIXED_ROLE_MUST_NOT_SHOW')`), false, 'chat-kind 的角色会话不属于终端');
     screenshots.push(await page.screenshot('directory-terminal-mode-desktop'));
@@ -677,15 +813,19 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('directory-terminal-count').textContent`), '0 个终端');
     assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list .directory-terminal-row').length`), 0);
     await page.navigate('/air?dir=d1');
-    assert.ok(await page.waitFor(`document.querySelectorAll('.directory-stat').length===4`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('.directory-stat').length===5`));
+    // 「＋ 新终端」选 CLI 那一路（弹窗/取消/选中的 CLI 就是建出来的那个）另有一份
+    // 专项 CDP：tests/test-air-directory-terminal-cdp.js —— 它自带最小 fixture，
+    // 不必等这一份长链路跑到目录页。
     // The new-task composer reuses the chat's two composers instead of growing
     // its own CLI/Provider selects: the AI 配置 pill opens the same dialog (with
     // 模型, which the old panel dropped) and hands the runtime back as a draft,
     // and the 角色 pill opens the same role editor.
-    assert.ok(await page.waitFor(`document.getElementById('quick-ai-pill').textContent.includes('codex')`));
+    // 车道那段是产品名（快照里第一条 chat 车道 = codex-exp，扶正后叫 Codex）。
+    assert.ok(await page.waitFor(`document.getElementById('quick-ai-pill').textContent.includes('Codex')`));
     // Nothing is resolved yet for a task that does not exist, so the pill names
     // the CLI default honestly instead of inventing a route.
-    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'codex · 默认线路 · 默认模型');
+    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'Codex · 默认线路 · 默认模型');
     assert.equal(await page.evaluate(`document.querySelectorAll('#quick-task-form select').length`), 0, 'no second CLI/Provider copy on the panel');
     assert.equal(await page.evaluate(`document.getElementById('quick-role-pill').textContent`), '＋ 角色');
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').closest('.mc-composer')===document.getElementById('quick-task-form')`), true, 'both pills ride the composer card');
@@ -705,7 +845,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       q('select[aria-label="子任务模型"]').value='gpt-5.5';
       q('.air-config-form').requestSubmit()})()`);
     assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
-    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'codex · Backup Responses · gpt-5.6-sol');
+    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'Codex · Backup Responses · gpt-5.6-sol');
     assert.equal(configPatches.length, 2, 'a task that does not exist yet is never PATCHed');
     await page.evaluate(`document.getElementById('quick-role-pill').click()`);
     assert.ok(await page.waitFor(`document.querySelector('dialog[open] select option[value=designer]')`));
@@ -804,7 +944,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     }, '弹窗默认当前目录，同时允许改选');
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').closest('.mc-composer')===document.getElementById('quick-task-form')`), true, '三颗胶囊跟着一起搬');
     // 搬动的是同一个节点，不是重新造一个：上面挑好的线路和角色必须原样还在。
-    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'codex · Backup Responses · gpt-5.6-sol');
+    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'Codex · Backup Responses · gpt-5.6-sol');
     assert.equal(await page.evaluate(`document.getElementById('quick-role-pill').textContent`), '1 个角色');
     assert.equal(await page.evaluate(`document.activeElement===document.getElementById('quick-task-input')`), true, '弹窗就是让人写字的，光标直接落下');
     screenshots.push(await page.screenshot('new-task-dialog-desktop'));
@@ -850,7 +990,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     const roleBody = page.requests.filter(r => r.path === '/api/air/tasks/tsk_new/roles').map(r => JSON.parse(r.body)).pop();
     assert.equal(createBody.dirId, 'd2');
     assert.equal(createBody.title, '从目录首页创建任务');
-    assert.equal(createBody.cli, 'codex');
+    // 新建的 chat 任务落在常驻车道（快照里第一条 chat 车道 = codex-exp），不再落到
+    // 一次性 `codex exec` 那条 —— 后者已经退出 chat，只在终端里跑。
+    assert.equal(createBody.cli, 'codex-exp');
     assert.equal(createBody.provider, 'codex-backup');
     assert.equal(createBody.model, 'gpt-5.6-sol', 'the panel no longer drops the model');
     // 草稿模式下尾巴交给调用方：它必须一路走到创建请求里，否则第一条消息执行时
@@ -861,13 +1003,14 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(roleBody.expectedVersion, 0, 'a fresh task binds roles at version 0');
     const order = page.requests.map(r => r.method + ' ' + r.path);
     assert.ok(order.indexOf('POST /api/air/tasks/tsk_new/roles') < order.indexOf('POST /api/task-shell-tasks/tsk_new/messages'), 'roles are bound before the first message runs');
-    // /air?view=overview 还进得去（/manage 就落在这儿），但它不再是「一个页面」：
-    // 它把控制台面板从左滑出来，页头仍是当前目录，底下的任务不卸载。
+    // /air?view=overview 是控制台那一页的正式地址（/manage 就落在这儿）：它开在
+    // 主区域里，页头换成这一页自己的标题，当前任务只是被藏起来、不卸载。
     await page.navigate('/air?view=overview');
-    assert.ok(await page.waitFor(`document.body.classList.contains('console-open') && document.querySelectorAll('#console-content .admin-stat').length===4`));
-    await settleOverlay(page);
-    assert.notEqual(await page.evaluate(`document.getElementById('task-title').textContent`), '控制台', '控制台没有顶掉页头');
-    assert.equal(await page.evaluate(`Math.round(document.getElementById('console-panel').getBoundingClientRect().left)`), 0, '面板从左侧滑到位');
+    assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false && document.querySelectorAll('#console-content .admin-stat').length===5`));
+    assert.equal(await page.evaluate(`document.getElementById('task-title').textContent`), '控制台', '页头是这一页自己的标题');
+    assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), 'overview');
+    assert.equal(await page.evaluate(`document.getElementById('task-layout').hidden`), true, '任务那块正文让开（不是卸载）');
+    assert.equal(await page.evaluate(`document.getElementById('console-center').getBoundingClientRect().right<=innerWidth`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('#console-content .admin-directory-row').length`), 2);
     assert.equal(await page.evaluate(`document.querySelector('#console-content .admin-directory-row').innerText.includes('MultiCC')`), true);
     assert.equal(await page.evaluate(`[...document.querySelectorAll('.air-legacy-frame')].filter(x=>x.offsetParent).length`), 0);
@@ -878,11 +1021,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('air-doc-summary').textContent.includes('2 条登记')`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('.air-legacy-frame').length`), 0);
     await page.evaluate(`document.querySelector('[data-air-view="settings"]').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心' && document.querySelectorAll('.air-setting-card').length===15`));
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心' && document.querySelectorAll('.air-setting-card').length===16`));
     // 保险箱排在第一格：它管的不是某一组功能里的开关，而是子进程的 spawn 环境
     // （条目按同名环境变量注入），所以跟「重要功能」并列，且在最前。
     assert.deepEqual(await page.evaluate(`[...document.querySelector('.air-settings-feature-group').querySelectorAll('.air-setting-card strong')].map(el=>el.textContent)`),
-      ['敏感信息', '服务与文档', '记忆图谱', '任务图谱'], '重要功能固定在设置中心顶部，保险箱第一格');
+      ['敏感信息', '服务与文档', '记忆图谱', '任务图谱', '工作区'], '重要功能固定在设置中心顶部，保险箱第一格');
     assert.equal(await page.evaluate(`document.body.innerText.includes('Provider 配置')`), true);
     // AI Assistant(aux):设置与运行记录在控制台有原生页,不再只能回 manage 弹窗。
     await page.evaluate(`[...document.querySelectorAll('.air-setting-card')].find(x=>x.innerText.includes('AI Assistant')).click()`);
@@ -1102,10 +1245,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     for (const width of [390, 320]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
       await page.navigate('/air?view=overview');
-      assert.ok(await page.waitFor(`document.body.classList.contains('console-open') && document.querySelectorAll('#console-content .admin-stat').length===4`));
-      await settleOverlay(page);
+      assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false && document.querySelectorAll('#console-content .admin-stat').length===5`));
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
-      assert.equal(await page.evaluate(`document.getElementById('console-panel').getBoundingClientRect().right<=innerWidth`), true);
+      assert.equal(await page.evaluate(`document.getElementById('console-center').getBoundingClientRect().right<=innerWidth`), true);
       screenshots.push(await page.screenshot('air-console-mobile-' + width));
     }
     await page.navigate('/air?view=provider');

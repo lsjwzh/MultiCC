@@ -59,7 +59,7 @@ String _quoteHeader(
 ) {
   return translate('msgQuoteHeader', {
     'task': _taskLabel(message, translate),
-    'role': translate(_roleKey(message.role)),
+    'role': translate(_roleKey(message)),
     'time': _clock(message.timestamp),
     'message': _messageIdentity(message) ?? translate('msgQuoteNoTrace'),
   });
@@ -79,11 +79,18 @@ String _taskLabel(
   return translate('msgQuoteNoTask');
 }
 
-String _roleKey(MessageRole role) => switch (role) {
-  MessageRole.user => 'msgQuoteRoleUser',
-  MessageRole.assistant => 'msgQuoteRoleAssistant',
-  MessageRole.system => 'msgQuoteRoleSystem',
-};
+// 🔇 系统注入消息的 role 也是 user（引擎落库的形状），但引用它时算系统行 ——
+// 和 Web 端 chat-quote.js 的 roleOf 同一判断，别把引擎的话记成用户说过的话。
+String _roleKey(ChatMessage message) {
+  if (message.role == MessageRole.user && parseSystemInject(message.content) != null) {
+    return 'msgQuoteRoleSystem';
+  }
+  return switch (message.role) {
+    MessageRole.user => 'msgQuoteRoleUser',
+    MessageRole.assistant => 'msgQuoteRoleAssistant',
+    MessageRole.system => 'msgQuoteRoleSystem',
+  };
+}
 
 /// `<sessionId>:<messageId>` — the handle the task-context reader takes. Falls
 /// back to splitting the shell's composite [ChatMessage.id] when the halves

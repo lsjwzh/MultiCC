@@ -8,7 +8,11 @@
       + '完成后运行与改动相关的检查，核验 git status --short 和 HEAD...基分支 的 ahead/behind，确认 behind 为 0；如仍有 ahead 或保留的改动请说明。报告同步结果后继续原任务。';
   }
 
-  function create({ document, getSession, getShell, readOnly, request, notice }) {
+  function create({ document, getSession, getShell, readOnly, request, notice, translate }) {
+    // Every string below goes through the page's t() (i18n.js); the injected
+    // translator is the only source of language, so a Node caller that has no
+    // page global must pass its own.
+    const tr = (key, params) => (typeof translate === 'function' ? translate(key, params) : key);
     // The affordance renders into every live container: the persistent
     // worktree status row and the conflict banner (the one that also carries
     // 放弃/继续). Containers dropped from the DOM are pruned on each render.
@@ -25,24 +29,25 @@
           button = document.createElement('button');
           button.className = 'worktree-force-sync-btn'; button.type = 'button';
           if (id) button.id = id;
-          button.title = '发送同步指令，由会话保留改动并处理冲突；忙碌时排队';
+          button.title = tr('worktreeForceSyncTitle');
           button.onclick = send; bar.appendChild(button);
         }
         if (button) {
           button.disabled = busy;
-          button.textContent = busy ? '正在发送…' : retry ? '重试同步指令' : '强制同步';
+          button.textContent = busy ? tr('worktreeForceSyncSending')
+            : retry ? tr('worktreeForceSyncRetry') : tr('worktreeForceSync');
         }
       }
     }
     async function send() {
       if (busy || readOnly()) return;
       const sessionId = getSession(), shellId = getShell();
-      if (!sessionId || !shellId) { notice('会话尚未连接，请稍后重试同步指令。'); return; }
+      if (!sessionId || !shellId) { notice(tr('worktreeForceSyncNoSession')); return; }
       busy = true; render();
       try {
         const scope = await request(`/api/task-shells/${encodeURIComponent(shellId)}/chat`);
         if (!scope.taskId || scope.activeSessionId !== sessionId || getSession() !== sessionId) {
-          throw new Error('当前任务已变化，请确认会话后重新发送同步指令。');
+          throw new Error(tr('worktreeForceSyncChanged'));
         }
         // Reuse the receipt key after a lost response. A polling refresh or
         // double click must not start an extra synchronization turn.
@@ -51,12 +56,12 @@
         const result = await request(`/api/task-shell-tasks/${encodeURIComponent(retry.taskId)}/messages`, {
           method: 'POST', json: retry.body,
         });
-        if (result.ok === false) throw new Error(result.error || result.code || '发送失败');
+        if (result.ok === false) throw new Error(result.error || result.code || tr('worktreeForceSyncSendFailed'));
         retry = null;
         notice(result.decision === 'queued'
-          ? '✓ 同步指令已加入 FIFO，轮到后会保留改动、解决冲突并同步。'
-          : '✓ 同步指令已发送，会话将保留改动、解决冲突并同步。');
-      } catch (error) { notice(`✗ 同步指令未确认送达：${error.message}；可重试。`); }
+          ? tr('worktreeForceSyncSentQueued')
+          : tr('worktreeForceSyncSent'));
+      } catch (error) { notice(tr('worktreeForceSyncFailed', { error: error.message })); }
       finally { busy = false; render(); }
     }
     return { render };

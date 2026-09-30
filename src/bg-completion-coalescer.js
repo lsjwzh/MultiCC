@@ -66,6 +66,10 @@ function createCoalescer({ windowMs = DEFAULT_WINDOW_MS, onFlush, setTimer = set
 // one bounded summary that still lists every task.
 function buildNudge(items) {
   if (!Array.isArray(items) || items.length === 0) return '';
+  if (items.some(item => item.kind === 'monitor')) {
+    const lines = items.map(item => `- ${item.desc}（${item.status === 'event' ? '新事件，监听尚未结束' : item.status}） [ref:${item.taskId || item.toolUseId || ''}]\n${String(item.snippet || '').slice(-MERGED_SNIPPET_CAP)}`);
+    return `【后台事件】以下是后台工具的输出，不是用户回复。根据事件继续原任务，不要把监听仍在运行当作任务完成：\n${lines.join('\n')}`;
+  }
   if (items.length === 1) {
     const { desc, status, snippet } = items[0];
     const outLine = snippet
@@ -92,7 +96,7 @@ function buildNudge(items) {
 // the caller supplies the five predicates it computed from session bookkeeping.
 // Precedence mirrors the original inline chain in handleBackgroundTaskEvent:
 //   TaskOutput pull  →  sync/foreground Bash  →  sidechain/subagent
-//   → Monitor stream  →  inject.
+//   → Monitor (owned by the UserPromptSubmit admission hook) → inject.
 //
 // The pure classifier remains conservative when all predicates are false. The
 // runtime performs one additional, turn-aware check before injection: a

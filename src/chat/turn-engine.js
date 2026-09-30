@@ -48,12 +48,15 @@ const {
   providerRetryRouteOptions,
 } = require('./provider-invocation');
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
+const { createAutoRouteNotes } = require('./auto-route-notes');
+const { admissionRootCause, deliverAfterPendingMemory } = require('./admission-progress');
 const { createAutoProviderHandoff } = require('./auto-provider-handoff');
 const { redactProviderRouteCapability } = require('../observability');
 const { createWsEnvelope } = require('../api-contract');
 const { taskIdForShortCode } = require('../classify/task-short-code');
 const { taskStateSeed } = require('./task-state-seed');
 const { composeMessage, renderPrompt } = require('../message-composer');
+const { buildSubagentProviderHint } = require('./host-prompts');
 const managedContext = require('./managed-context');
 const {
   rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary,
@@ -65,6 +68,7 @@ const { buildReplayMessages } = require('../routes/chat-history');
 const chatStream = require('./chat-stream');
 const waitInjector = require('../wait/injector');
 const providers = require('../providers/core');
+const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
 const { createTurnTimingRecorder } = require('./turn-timing');
 const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard } = require('./codex-rollout-guard');
@@ -75,61 +79,11 @@ const { isInternalExecutionSlot } = require('../session/public-session-access');
 const { createDeliveryProbeRegistry, shouldReexecutePersistedDelivery } = require('./delivery-probe');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
 const { processSpawnArgs } = require('./process-spawn-args');
+const { isResident, isResidentSession } = require('../cli/cli-capability');
 
-function admissionRootCause(value) {
-  const raw = value instanceof Error
-    ? value.message
-    : typeof value === 'string' ? value : '';
-  return raw.trim() ? sanitizeApiErrorMessage(raw) : null;
-}
-
-async function deliverAfterPendingMemory(pendingMemory, emitProgress, deliver) {
-  if (!pendingMemory) return deliver();
-  const emit = progress => {
-    try { emitProgress?.(progress); } catch (_) {}
-  };
-  emit({ state: 'waiting', reason: 'memory_distill_pending' });
-  let memoryResult;
-  try {
-    memoryResult = await Promise.resolve(pendingMemory);
-  } catch (error) {
-    memoryResult = { error };
-  }
-  const reason = memoryResult?.error
-    ? 'memory_distill_failed'
-    : memoryResult?.skipped ? 'memory_distill_skipped' : null;
-  const memoryRootCause = reason === 'memory_distill_failed'
-    ? admissionRootCause(memoryResult.error)
-    : null;
-  emit({
-    state: reason ? 'skipped' : 'ready',
-    ...(reason ? { reason } : {}),
-    ...(memoryRootCause ? { rootCause: memoryRootCause } : {}),
-  });
-  try {
-    const delivered = await deliver();
-    if (delivered?.ok === false) {
-      const code = typeof delivered.code === 'string' && /^[a-z0-9_]{1,64}$/.test(delivered.code)
-        ? delivered.code : null;
-      const rootCause = admissionRootCause(delivered.error || delivered.message);
-      emit({
-        state: 'failed',
-        reason: 'message_delivery_rejected',
-        ...(code ? { code } : {}),
-        ...(rootCause ? { rootCause } : {}),
-      });
-    }
-    return delivered;
-  } catch (error) {
-    const rootCause = admissionRootCause(error);
-    emit({
-      state: 'failed',
-      reason: 'message_delivery_failed',
-      ...(rootCause ? { rootCause } : {}),
-    });
-    throw error;
-  }
-}
+// Message-admission progress (the frames that keep a delayed user message
+// visible) lives in ./admission-progress; it is re-exported below because its
+// direct test consumes it from this module's public surface.
 
 function appendAdapterAssistantText(current, text, options = {}) {
   const prior = String(current || '');
@@ -261,6 +215,7 @@ function createChatTurnEngine(deps) {
     getExperimentalTuiChatRuntime,
     getSessionHibernation,
     getWorkspaceAdmission,
+    getSessionGitRuntime,       // const in host; auto-commit rides complete-session-turn
     isShuttingDown,             // let bool _shuttingDown
     getPort,                    // let PORT
     getClaudeOfficialViaProxy,  // let
@@ -306,6 +261,7 @@ function createChatTurnEngine(deps) {
     buildGatewayPrompt,
     buildDispatchContextPrompt,
     buildGoalLimitNote,
+    buildPlanPrompt,
     appendChatMessage,
     loadChatHistory,
     // Read-only transcript view; see the WS replay below for why the cloning
@@ -369,18 +325,26 @@ function createChatTurnEngine(deps) {
   const recordDeliveryProbe = deliveryProbeRegistry.record;
   const runnerDeliveryHandoff = deliveryProbeRegistry.lookup;
   const autoProviderRuntime = deps.autoProviderRuntime || createAutoProviderRuntime({
-    providers, providerLimitCache, emit: chatBroadcast, logger,
+    providers, providerLimitCache, logger, emit: createAutoRouteNotes({ broadcast: chatBroadcast,
+      append: appendChatMessage, records: persistedSessions, save: savePersistedSessionsBestEffort }),
     hasLiveBackgroundTasks: sessionId => {
-      try { return getBackgroundTaskRuntime()?.hasLiveBackgroundTasks?.(sessionId) === true; }
+      try { return getBackgroundTaskRuntime()?.hasProcessBackgroundTasks?.(sessionId) === true; }
       catch (_) { return true; }
     },
   });
+  function prepareAutoProviderAdmission(sessionId, text, clientMsgId) {
+    const session = persistedSessions.get(sessionId);
+    if (!session) return null;
+    return autoProviderRuntime.prepareAdmission({
+      session, text, providers, sessionId, clientMsgId,
+    });
+  }
   const autoProviderHandoff = deps.autoProviderHandoff || createAutoProviderHandoff({
     inject: (sessionId, text, delayMs, metadata) => (
       waitInjector.injectSystemMsg(sessionId, text, delayMs, metadata)
     ),
     hasLiveBackgroundTasks: sessionId => {
-      try { return getBackgroundTaskRuntime()?.hasLiveBackgroundTasks?.(sessionId) === true; }
+      try { return getBackgroundTaskRuntime()?.hasProcessBackgroundTasks?.(sessionId) === true; }
       catch (_) { return true; }
     },
     logger,
@@ -1020,6 +984,21 @@ function createChatTurnEngine(deps) {
         return { blocked: true, code: 'workspace_hibernated' };
       }
     }
+    // Provider egress-IP advanced restriction: fail closed before spawning
+    // when the bound provider declares an allowlist and the host's current
+    // public IP (background-refreshed cache, see providers/egress-ip.js) is
+    // not exactly one of the listed addresses.
+    if (persisted.provider) {
+      const boundProvider = providers.getProvider(undefined, persisted.provider);
+      if (boundProvider) {
+        const egressCheck = checkEgressIpAllowed(boundProvider);
+        if (!egressCheck.allowed) {
+          logger.warn?.('chat_run_egress_ip_blocked', { sessionId: sessionName, code: egressCheck.code, providerId: persisted.provider });
+          try { chatBroadcast(sessionName, { type: 'error', code: egressCheck.code, error: egressCheck.detail }); } catch (_) {}
+          return { blocked: true, code: egressCheck.code };
+        }
+      }
+    }
     const delivery = opts.clientMsgId || opts.deliveryId;
     const replay = delivery && getChatHistoryService().hasPersistedDelivery(sessionName, delivery);
     if (!replay && deps.applyPendingConfiguration?.(sessionName, opts) === false) return { blocked: true };
@@ -1160,19 +1139,19 @@ function createChatTurnEngine(deps) {
     getWorkspaceAdmission?.()?.assertPermit(sessionName, opts);
     const admissionGate = admitRunChatTurn(sessionName, text, opts);
     if (admissionGate.blocked) {
-      // Silent rejections are undebuggable wedges: the outbox keeps retrying,
-      // the queue keeps parking, and neither side leaves a trace. Log every
-      // guard refusal with the code that produced it.
       logger.warn('chat_turn_rejected_guard', {
         sessionId: sessionName,
         code: admissionGate.code || null,
         deliveryClass: opts.deliveryClass || null,
       });
+      if (opts.deliveryId && ['task_identity_mismatch', 'task_shell_route_required',
+        'task_deleted', 'task_archived', 'task_board_read_only'].includes(admissionGate.code)) {
+        throw Object.assign(new Error(admissionGate.code), { code: admissionGate.code, retryable: false });
+      }
       return false;
     }
     if ('delegated' in admissionGate) return admissionGate.delegated;
     const { persisted, existingCs, initialHistory, turnRequest } = admissionGate;
-
     text = turnRequest.text;
     const clientMsgId = turnRequest.identity.clientMsgId || '';
     const deliveryId = turnRequest.identity.deliveryId || '';
@@ -1246,9 +1225,9 @@ function createChatTurnEngine(deps) {
       });
     }
 
-    const streamBusy = turnRequest.cli === 'claude' && !!chatStream.status(sessionName)?.busy;
+    const streamBusy = isResidentSession(turnRequest.cli, persisted) && !!chatStream.status(sessionName)?.busy;
     let claudeManagedProxy = false;
-    if (turnRequest.cli === 'claude' && persisted.provider) {
+    if (isResident(turnRequest.cli) && persisted.provider) {
       try {
         const summary = providerRouterRuntime.getProviderSummary('claude', persisted.provider);
         claudeManagedProxy = !!(summary && (summary.baseUrl
@@ -1262,7 +1241,7 @@ function createChatTurnEngine(deps) {
       sessionExists: true,
       runningTurn: !!(existingCs && existingCs.claudeProc) || streamBusy,
       backgroundWorkActive: claudeManagedProxy
-        && getBackgroundTaskRuntime().hasLiveBackgroundTasks(sessionName),
+        && getBackgroundTaskRuntime().hasProcessBackgroundTasks(sessionName),
     });
     if (admission.decision === 'duplicate') {
       // An accepted duplicate is a settled delivery (this or an earlier
@@ -1501,14 +1480,16 @@ function createChatTurnEngine(deps) {
         text, persisted, sessionName,
         opts: {
           isFirstTurn, goalLimits, taskContextSeed: managed?.seed ?? taskContextHost?.taskShellContextSeed?.(sessionName, opts.taskContextSeed, isFirstTurn) ?? opts.taskContextSeed,
-          mode: cs.cli === 'claude' ? 'streaming' : 'per-turn',
+          mode: isResidentSession(cs.cli, persisted) ? 'streaming' : 'per-turn',
         },
         deps: {
-          resolveRolePrompt: managed?.rolePrompt || folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
+          resolveRolePrompt: managed?.rolePrompt || folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT, buildSubagentProviderHint,
           buildCliHandoffPrompt: (session) => managed ? '' : renderHandoffPrompt(session && session.pendingCliHandoff),
           buildGatewayPrompt, buildDispatchContextPrompt, buildGoalLimitNote,
+          buildPlanPrompt,
           pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast, chatBroadcast,
           normalizeEffort, cliEffortLevel,
+          takeBackgroundStopNote: name => getBackgroundTaskRuntime()?.takeStoppedNote?.(name) || '',
         },
       });
     } catch (e) {
@@ -1529,7 +1510,7 @@ function createChatTurnEngine(deps) {
     const invocationFactory = createProviderInvocationFactory({
       providerRouterRuntime, providerAttemptRuntime: attemptRuntime, effectiveSessionModel,
     });
-    const autoTurn = autoProviderRuntime.beginTurn({ session: persisted, turnId: turn.turnId });
+    const autoTurn = autoProviderRuntime.beginTurn({ session: persisted, turnId: turn.turnId, promptText: text });
     let providerAttemptNo = 0;
     const prepareInvocation = (attemptOptions = {}) => invocationFactory.prepare({
       request: turnRequest, turn, session: persisted, provider, envelope,
@@ -1567,7 +1548,7 @@ function createChatTurnEngine(deps) {
     }
 
     // Streaming and process runners both require the minted workspace permit.
-    if (cs.cli === 'claude') {
+    if (isResidentSession(cs.cli, persisted)) {
       const accepted = runChatTurnStreaming(
         sessionName, cs, persisted, initialInvocation, provider, turn, prepareInvocation, autoTurn, 0, opts,
       );
@@ -2226,44 +2207,43 @@ function createChatTurnEngine(deps) {
   ) {
     getWorkspaceAdmission?.()?.starting(sessionName, workspaceOpts || getWorkspaceAdmission?.()?.optionsForTurn(sessionName, turn), prepared.attempt.routeAttemptId);
     const { invocation, attempt, routeOverrides, binding, proxySessionId } = prepared;
-    // Per-session provider env. buildChildEnv strips inherited ANTHROPIC_* routing
-    // vars before applying the provider env, so the provider choice is always
-    // authoritative — see providers.CLAUDE_ROUTING_KEYS. The full computed env is
-    // passed through; chat-stream uses it verbatim (no second process.env merge).
     const { env: childEnv } = providerRouterRuntime.buildChildEnv(process.env, persisted, {
       TERM: 'dumb', NO_COLOR: '1',
       MULTICC_SESSION_ID: sessionName,
       MULTICC_DIR_ID: persisted.dirId || '',
       MULTICC_BASE_URL: `http://127.0.0.1:${getPort()}`,
     }, routeOverrides);
-    providers.applyClaudeProxyEnv(childEnv, {
-      providerId: binding.providerId, sessionId: proxySessionId,
-      subagent: persisted.subagent, port: getPort(),
+    providers.prepareResidentChildEnv(childEnv, {
+      cli: persisted.cli, providerId: binding.providerId, sessionId: proxySessionId,
+      subagent: persisted.subagent, port: getPort(), logicalSessionId: sessionName,
+      nativeSessionId: persisted.cliSessionId, allowMissingNativeSession: !persisted.cliSessionId,
       officialOAuth: getClaudeOfficialViaProxy(),
     });
-    // Same settings-override as the per-turn spawn path: ~/.claude/settings.json
-    // env must not win over the session's provider routing (see
-    // src/providers/claude-settings-override.js). The file is rewritten each
-    // turn, so a provider switch (which recycles the process via the chat-stream
-    // env fingerprint) is picked up by the respawned process.
     const streamSettingsFile = providers.settingsOverrideFor(sessionName, childEnv, invocation.settings);
+    // Adapter-declared argv for a protocol whose prompt moves from argv to stdin.
+    const streamArgs = invocation.streamArgs || invocation.args;
     const streamBaseArgs = streamSettingsFile
-      ? [...invocation.args, '--settings', streamSettingsFile]
-      : invocation.args;
-    const resumeExistingStream = !!persisted._streamSessionId;
-    if (!persisted._streamSessionId) {
-      persisted._streamSessionId = crypto.randomUUID();
+      ? [...streamArgs, '--settings', streamSettingsFile]
+      : streamArgs;
+    const nativeKey = invocation.nativeKey || (invocation.sdkOptions ? 'cliSessionId' : '_streamSessionId');
+    const resumeExistingStream = invocation.sdkOptions
+      ? !prepared.invocationEnvelope.historyHandle.isFirstTurn : !!persisted[nativeKey];
+    if (invocation.clientAllocatesNativeId !== false && !persisted[nativeKey]) {
+      persisted[nativeKey] = crypto.randomUUID();
       rememberActiveCliState(persisted);
       savePersistedSessionsBestEffort('runtime.streaming-session-id-allocate');
     }
     chatStream.ensure(sessionName, {
       cmd: invocation.cmd,
       cwd: cs.cwd,
-      sessionId: persisted._streamSessionId,
+      sessionId: persisted[nativeKey],
+      sdkOptions: invocation.sdkOptions,
+      streamBackend: invocation.streamBackend,
+      settingsFile: streamSettingsFile,
       resume: resumeExistingStream,
       baseArgs: streamBaseArgs,
       onNewSessionId: (newId) => {
-        persisted._streamSessionId = newId;
+        persisted[nativeKey] = newId;
         rememberActiveCliState(persisted);
         savePersistedSessionsBestEffort('runtime.streaming-session-id-capture');
       },
@@ -2321,8 +2301,8 @@ function createChatTurnEngine(deps) {
       },
       env: childEnv,
       onDispose: () => routerToolHost.releasePersistentProcess(cs),
-      onBackgroundEvent: (evt) => getBackgroundTaskRuntime().handleEvent(sessionName, cs, evt),
-      isBackgroundActive: () => getBackgroundTaskRuntime().hasLiveBackgroundTasks(sessionName),
+      monitorAdmission: true, onBackgroundEvent: (evt) => getBackgroundTaskRuntime().handleEvent(sessionName, cs, evt),
+      isBackgroundActive: () => getBackgroundTaskRuntime().hasProcessBackgroundTasks(sessionName),
       onExit: () => {
         try {
           const reaped = getBackgroundTaskRuntime().reapSessionShadows(sessionName, { reason: 'stream_exit' });
@@ -2362,7 +2342,7 @@ function createChatTurnEngine(deps) {
           || !attemptRuntime.acceptEvent(runner.providerAttempt)) return;
       turnTiming.markFirstByte(sessionName, turn.turnId);
       applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward, turn, runner);
-    }, {
+    }, { turnOptions: invocation.turnOptions,
       onTiming: (phase) => {
         if (phase === 'spawned') { turnTiming.markSpawned(sessionName, turn.turnId); getWorkspaceAdmission?.()?.spawned(sessionName, { pid: chatStream.status(sessionName)?.pid }); }
         else if (phase === 'sent') { turnTiming.markSent(sessionName, turn.turnId); managedContext.contextSent(turn); }
@@ -2457,7 +2437,17 @@ function createChatTurnEngine(deps) {
     setStatus(sessionName, status) {
       setSessionStatus(sessionName, { status, currentFile: null });
     },
-    completeSessionTurn: s => getSessionWorkHost().turnSucceeded(s),
+    completeSessionTurn: s => {
+      getSessionWorkHost().turnSucceeded(s);
+      // Server-side turn-end auto-commit: merges whenever the session switch
+      // allows it, even with no chat page connected (the page-side per-turn
+      // checkbox trigger this replaces could never fire offline). Fire and
+      // forget — git work must not hold up turn finalization.
+      const git = typeof getSessionGitRuntime === 'function' ? getSessionGitRuntime() : null;
+      if (git && typeof git.autoCommitTurn === 'function') {
+        Promise.resolve(git.autoCommitTurn(s)).catch(() => {});
+      }
+    },
     classifyTurnEnd,
     resetInterrupted: sessionName => waitInjector.resetInterrupted(sessionName),
     resumeInterrupted: sessionName => waitInjector.resumeInterrupted(sessionName),
@@ -2735,7 +2725,7 @@ function createChatTurnEngine(deps) {
     }
     const activeRoute = attemptRuntime.snapshot(sessionName);
     const autoProvider = persisted.providerSelection?.mode === 'auto'
-      ? autoProviderRuntime.snapshot(sessionName) : null;
+      ? (autoProviderRuntime.snapshot(sessionName) || persisted.autoProviderLastRoute || null) : null;
     const reconnectRoute = activeRoute && activeRoute.outcome === 'running'
       ? providerAttemptFields(activeRoute) : null;
 
@@ -2934,6 +2924,11 @@ function createChatTurnEngine(deps) {
           let pendingMemory;
           try { pendingMemory = getPendingMemoryDistill(sessionName); }
           catch (error) { pendingMemory = Promise.reject(error); }
+          // Auto Provider difficulty routing has to land before the turn starts —
+          // runChatTurn resolves its initial provider route synchronously — so it
+          // rides this async admission window (see admission-progress.js).
+          const pendingRouting = prepareAutoProviderAdmission(sessionName, msg.text, turnOpts.clientMsgId);
+          if (pendingRouting) await pendingRouting;
           const deliver = () => taskContextHost.deliverSessionMessage(sessionName, msg.text, turnOpts);
           // A pending memory distill delays delivery so the new turn sees the
           // distilled memory. Surface that otherwise-invisible admission phase
@@ -2981,6 +2976,7 @@ function createChatTurnEngine(deps) {
     runChatTurnStreaming,
     finalizeStreamingTurn,
     handleChatWs,
+    prepareAutoProviderAdmission,
   };
 }
 

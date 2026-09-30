@@ -294,8 +294,12 @@ function createChromeCdp(options = {}) {
       dispose: off,
       enable: (domains) => Promise.all(domains.map((domain) => send(`${domain}.enable`, {}))),
       navigate: (url) => send('Page.navigate', { url }),
-      async evaluate(expression) {
-        const result = await send('Runtime.evaluate', { expression, returnByValue: true });
+      // `awaitPromise` is for expressions that end in a promise (an in-page
+      // `fetch` of the very API the page renders from, say): without it CDP
+      // answers with an empty object and the caller would read that as "the
+      // page had nothing to say".
+      async evaluate(expression, { awaitPromise = false } = {}) {
+        const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise });
         return result && result.result ? result.result.value : undefined;
       },
       async responseBody(requestId) {

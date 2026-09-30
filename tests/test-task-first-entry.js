@@ -36,9 +36,16 @@ test('public conversation bookmarks resolve through tasks; Air owns the only cha
   }
   const air = await (await fetch(base + '/air')).text();
   assert.doesNotMatch(air, /view=planner|directory-open-planner/);
-  const legacyManage = await (await fetch(base + '/manage.html?view=memory&embed=air')).text();
-  assert.doesNotMatch(legacyManage, /manage-task-planner|task-planner-root|nav-planner-count/);
-  assert.match(legacyManage, /manage-air-embed\.css/);
+  // 旧管理台整页已删：/manage.html 只剩书签语义，带着 view 转进 Air，
+  // 它那张兼容皮肤（manage-air-embed.css）连同 planner 资源一起 404。
+  const legacyManage = await fetch(base + '/manage.html?view=memory&embed=air', { redirect: 'manual' });
+  assert.equal(legacyManage.status, 302);
+  const legacyTarget = new URL(legacyManage.headers.get('location'), base);
+  assert.equal(legacyTarget.pathname, '/air');
+  assert.equal(legacyTarget.searchParams.get('view'), 'memory');
+  assert.equal(legacyTarget.searchParams.has('embed'), false);
+  assert.equal((await fetch(base + '/manage-air-embed.css')).status, 404);
+  assert.equal((await fetch(base + '/manage.js')).status, 404);
   for (const url of ['/chat?session=a', '/chat.html?session=a', '/task-shell?shell=s', '/task-shell.html?task=t&board=1', '/task-shell.html?air=1', '/task-shell.html?air=1&board=1&shell=s']) {
     const response = await fetch(base + url), html = await response.text();
     assert.equal(response.status, 200, url); assert.match(html, /task-entry.js/);
@@ -49,8 +56,13 @@ test('public conversation bookmarks resolve through tasks; Air owns the only cha
     assert.equal(response.status, 200, url); assert.match(html, /id="messages"/);
     assert.match(html, /chat-air\.css/); assert.doesNotMatch(html, /task-entry\.js/);
   }
+  // 独立的任务壳页面已退役：连它那条 board=1 渲染器书签也走同一个任务入口
+  // （task-entry.html → /api/air/resolve → /air?task=…），不再有第二份渲染器。
   const embedded = await fetch(base + '/task-shell.html?air=1&board=1&task=t');
-  assert.match(await embedded.text(), /task-board-entry.js/);
+  const embeddedHtml = await embedded.text();
+  assert.equal(embedded.status, 200);
+  assert.match(embeddedHtml, /task-entry\.js/);
+  assert.doesNotMatch(embeddedHtml, /task-board-entry\.js/);
 });
 
 test('legacy bookmark resolution retains explicit task identity and encodes its destination', async () => {

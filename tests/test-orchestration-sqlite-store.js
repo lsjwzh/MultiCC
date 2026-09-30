@@ -468,7 +468,7 @@ test('storage has no compiled dependency: SQLite comes from Node, not an addon',
 
   const driver = fs.readFileSync(path.join(root, 'src/sqlite/driver.js'), 'utf8');
   assert.match(driver, /require\('node:sqlite'\)/);
-  for (const file of ['src/task-run/store.js', 'src/task-shell/store.js',
+  for (const file of ['src/task-shell/store.js',
     'src/orchestration/sqlite-store.js', 'src/quota/provider-limit-cache.js', 'src/sqlite-runtime.js']) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.match(source, /sqlite\/driver|require\('\.\/sqlite\/driver'\)/, `${file} must use the shared driver`);

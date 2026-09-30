@@ -207,6 +207,66 @@ void main() {
     expect(cancelled, ['queued-1']);
   });
 
+  testWidgets('double-tapping a queued message opens the edit box and rewrites it', (
+    tester,
+  ) async {
+    final edited = <(String, String)>[];
+    final queue = SessionQueueState.fromEvent({
+      'state': 'queued',
+      'items': [
+        {
+          'entryId': 'queued-1',
+          'state': 'pending',
+          'position': 1,
+          'text': 'original',
+        },
+        {
+          'entryId': 'queued-2',
+          'state': 'leased',
+          'position': 2,
+          'text': 'running',
+        },
+      ],
+    });
+    await tester.pumpWidget(
+      _host(
+        SessionQueuePanel(
+          queue: queue,
+          enabled: true,
+          onAction: (_) async {},
+          onCancelQueued: (_) async {},
+          onEditQueued: (entryId, text) async => edited.add((entryId, text)),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byType(InkWell).first);
+    await tester.pump();
+
+    // 双击还没执行的暂存消息：弹出输入框，改完交回 onEditQueued。
+    await tester.tap(find.byKey(const Key('queued-text-queued-1')));
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.tap(find.byKey(const Key('queued-text-queued-1')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('queued-edit-input')), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const Key('queued-edit-input')),
+      'rewritten',
+    );
+    await tester.tap(find.byKey(const Key('queued-edit-save')));
+    await tester.pumpAndSettle();
+    expect(edited, [('queued-1', 'rewritten')]);
+
+    // 已领取（执行中）的条目不可编辑。
+    final running = find.byKey(const Key('queued-text-queued-2'));
+    expect(running, findsOneWidget);
+    await tester.tap(running);
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.tap(running);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('queued-edit-input')), findsNothing);
+  });
+
   testWidgets('queued entries offer insert; the prioritised one shows running', (
     tester,
   ) async {

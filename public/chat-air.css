@@ -369,10 +369,6 @@ body.air-chat.task-artifacts-chat #task-artifacts-panel,
 body.air-chat.task-artifacts-chat .task-artifacts-toggle { color-scheme: light; }
 .air-chat .task-artifacts-task, .air-chat .task-artifacts-empty,
 .air-chat .task-artifacts-path, .air-chat .task-artifacts-meta { color: var(--chat-muted); opacity: 1; }
-.air-chat .msg.user .msg-auto-commit,
-.air-chat .msg.user .msg-auto-commit:hover { color: var(--chat-blue); border-color: var(--chat-line); }
-.air-chat .msg-auto-commit.done, .air-chat .msg-auto-commit.done::after,
-.air-chat .msg.user .msg-auto-commit.done, .air-chat .msg.user .msg-auto-commit.done::after,
 .air-chat .msg-usage .u-saved { color: var(--chat-success); }
 .air-chat .msg.system-msg.disconnect-banner { color: var(--chat-danger); background: var(--chat-danger-soft); border-color: var(--chat-danger-line); }
 .air-chat .msg.system-msg.disconnect-banner:hover { background: var(--chat-danger-hover); }
@@ -526,10 +522,10 @@ body.air-chat.air-composer-fold #air-composer-pill .ccp-go {
     padding: 4px 14px;
   }
   .air-chat #header { grid-column: 2; grid-row: 1; align-self: center; min-height: 0; }
+  /* 这里原来写死三条中文（连接中/已连接/重连中）：伪元素调不了 t()，英文界面
+     照样冒汉字。文字改由 chat.js 写进 data-status-label，伪元素只负责画。 */
   .air-chat #status { max-width: 34vw; font-size: 0; }
-  .air-chat #status::before { content: "连接中"; font-size: 10px; }
-  .air-chat #status.connected::before { content: "已连接"; }
-  .air-chat #status.error::before { content: "重连中"; }
+  .air-chat #status::before { content: attr(data-status-label); font-size: 10px; }
   /* 分支名长短不可控：它自己省略（#worktree-bar .worktree-label 本来就有
      overflow/ellipsis），别把「强制同步」挤到下一行去。 */
   .air-chat #worktree-bar { grid-column: 1; grid-row: 1; width: 100%; max-width: none; }

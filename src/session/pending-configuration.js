@@ -1,5 +1,7 @@
 'use strict';
 
+const { isChatStateBusy } = require('./runtime-busy');
+
 // Desired settings are durable, but never replace the settings read by a live
 // runner (including its retries and child processes).
 const CONFIG_FIELDS = Object.freeze([
@@ -26,7 +28,9 @@ function configurationBusy(id, { getChatState, getChatStream, hasLiveBackgroundT
     const chat = getChatState(id);
     const stream = getChatStream()?.status?.(id);
     const phase = getPreparation?.(id)?.phase;
-    return !!(phase === 'preparing' || phase === 'running' || chat?._activeRunner || chat?.claudeProc || chat?.isStreaming
+    // chat 运行时忙判定的唯一来源（src/session/runtime-busy.js）；phase / stream /
+    // 后台任务是另外三条独立的轴，各自 OR 上来。
+    return !!(phase === 'preparing' || phase === 'running' || isChatStateBusy(chat)
       || stream?.busy || stream?.queued > 0 || hasLiveBackgroundTasks(id));
   } catch (_) { return true; }
 }

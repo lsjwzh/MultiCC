@@ -224,10 +224,9 @@ function createSessionProfileRoutes(rawDeps) {
           return rejectMutation(400, { error: 'invalid model' });
         }
         s.model = model || null;
-        // Non-Claude chat sessions spawn per turn. Claude chat keeps a warm
-        // process, so close it now or the UI would report the new model while the
-        // next turn still runs on the old one. Terminal sessions still need a
-        // manual restart to relaunch their CLI with it.
+        // Ordinary Claude requires a fresh process to apply --model. The SDK
+        // runner applies setModel() at the next turn boundary; other chat CLIs
+        // spawn per turn. Terminals still need a manual restart.
         if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') closeStream();
         appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
       }
@@ -560,6 +559,35 @@ function createSessionProfileRoutes(rawDeps) {
         },
         forkedFrom: forkMeta.forkedFrom, replayedMessages: sliced.length });
     }));
+
+    // In-process PATCH for host-side edits (provider force-delete unwiring its
+    // references): same validation, staging and side effects as the HTTP route.
+    function applySessionPatch(sessionId, body) {
+      let status = 200, result;
+      patchSession({ params: { id: sessionId }, body: body || {}, query: {} }, {
+        status(code) { status = code; return this; },
+        json(value) { result = value; return this; },
+      });
+      return { status, body: result };
+    }
+
+    // Dry run of the same patch: validation runs against a detached
+    // desired-state draft (pending configuration included) and nothing is
+    // written — no process, rollout, audit event or active route is touched.
+    // Used by the bulk provider reassignment preview so its "this is what would
+    // happen" answer comes from the very code that would do it.
+    function previewSessionPatch(sessionId, body) {
+      const session = persistedSessions.get(sessionId);
+      if (!session) return { status: 404, body: { error: 'session not found' } };
+      const draft = desiredSession(session);
+      let status = 200, result;
+      patchSession({ params: { id: sessionId }, body: body || {}, query: {} }, {
+        status(code) { status = code; return this; },
+        json(value) { result = value; return this; },
+      }, draft);
+      return { status, body: result, draft };
+    }
+    return { applySessionPatch, previewSessionPatch };
   }
 
   return { mountRoutes };

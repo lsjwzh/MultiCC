@@ -4,10 +4,12 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
+const { classifyDisplay } = require('../src/classify/vocab');
 
 function fixture({
   cli = 'opencode', goal = '已识别任务', isStreaming = true, type = 'worker',
   history = null, auxText = null, taskShell = false, toolCalls = [], separationResult = null,
+  board = null, messageSearch = null,
 } = {}) {
   const record = {
     id: 's1', kind: 'chat', cli, type,
@@ -38,6 +40,7 @@ function fixture({
   const observed = {
     enqueued: 0, enqueuedTasks: [], transitions: 0,
     transitionResults: [], transitionOptions: [], broadcasts: [], summaries: [],
+    statuses: [],
     boardReassignments: [], boardGroupLinks: [], shellSettlements: [], separations: [], annotations: [],
   };
   const auxQueue = {
@@ -88,6 +91,7 @@ function fixture({
       settleTaskShellAttribution: (...args) => observed.shellSettlements.push(args),
     }),
     getTaskBoardRuntime: () => ({
+      getBoard: () => board,
       onTurnEnd() {},
       onMessagePersisted() {},
       reassignTurnTask(...args) { observed.boardReassignments.push(args); },
@@ -98,6 +102,7 @@ function fixture({
       onTaskAttributionSettled() {},
     }),
     getUserInputSignalHost: () => ({ apply: (_sessionId, result) => result, pending: () => null }),
+    getMessageSearch: () => messageSearch,
     getApiErrorHost: () => ({ recordApiError() {} }),
     getWaitInjector: () => ({ SYS_PREFIX: '[system]', resetAuto() {}, resetInterrupted() {} }),
     setTaskState: (_sessionId, patch) => {
@@ -105,7 +110,7 @@ function fixture({
     },
     getTaskState: value => value?.taskState || {},
     setSessionSummary: (_sessionId, summary) => observed.summaries.push(summary),
-    setSessionStatus() {},
+    setSessionStatus: (_sessionId, patch) => observed.statuses.push(patch),
     chatBroadcast: (_sessionId, event) => observed.broadcasts.push(event),
     workspaceBroadcast() {},
     terminalBroadcast() {},
@@ -181,6 +186,27 @@ test('unknown liveness fails closed before classify admission', () => {
   assert.equal(h.observed.enqueued, 0);
   assert.equal(h.observed.transitions, 0);
   assert.equal(h.record.taskState.classifyState, 'P');
+});
+
+test('a B verdict waits on a background job, so its copy never asks the user to answer', () => {
+  // B is the letter for "this turn idles on work running somewhere else". It
+  // used to broadcast W's 「等待交互」 and write the canonical `waiting` status,
+  // which is how a card with nothing to answer ended up telling the user to
+  // answer it. Both now come from the letter: its own label, and its own
+  // run state.
+  const h = fixture({ cli: 'claude', type: 'gateway', isStreaming: false });
+  h.chatState.claudeProc = null;
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'background-pending' });
+  assert.equal(h.record.taskState.classifyState, 'B');
+  assert.equal(h.observed.statuses.at(-1).status, 'background', 'not a blanket waiting');
+  const notify = h.observed.broadcasts.filter(event => event.type === 'notify').pop();
+  assert.equal(notify.classifyState, 'B');
+  // Nobody can answer a background job — no copy on this path may ask.
+  assert.match(notify.message, /^后台等待：已识别任务$/);
+  assert.doesNotMatch(notify.message, /等待交互|等待你|回答/);
+  // W keeps its own phrasing: the two letters must not share one sentence.
+  const wLabel = classifyDisplay('W').label;
+  assert.notEqual(wLabel, classifyDisplay('B').label);
 });
 
 test('a succeeded gateway turn deterministically reaches D without Aux classification', () => {
@@ -515,4 +541,88 @@ test('a previously kept split title reuses its task identity without attribution
   assert.equal(h.observed.annotations.at(-1)[2].taskId, 'task-split');
   assert.equal(h.observed.shellSettlements.length, 0);
   assert.equal(h.observed.boardReassignments.length, 0);
+});
+
+// ── 消息索引接线 ─────────────────────────────────────────────────────────────
+// 归因可以问两份语料：任务板自己的摘录，以及消息索引里的完整对话正文。后者是可
+// 选的宿主 port，所以两件事都要钉住——接上时它确实被问到、被排除掉自身，不接或
+// 报错时归因结果一个字都不变。
+
+const MESSAGE_BOARD = {
+  modules: {},
+  deletedTaskIds: [],
+  tasks: {
+    'task-silent': {
+      id: 'task-silent', title: '收尾', dirId: 'dir-web', status: 'active', updatedAt: 1,
+      areas: [], refs: [{ sessionId: 'sess-silent' }],
+    },
+  },
+};
+
+test('a message-only candidate reaches the attribution prompt, asked without this session', async () => {
+  const queries = [];
+  const h = fixture({
+    goal: '新任务',
+    board: MESSAGE_BOARD,
+    messageSearch: {
+      findMessages(options) {
+        queries.push(options);
+        return [{ sessionId: 'sess-silent', messageId: 'm1', kind: 'user', score: 3,
+          snippet: { text: '当时在讨论检索命中的排序', ranges: [] } }];
+      },
+      syncSession: () => null,
+    },
+  });
+  h.chatState.currentUserText = '全文检索';
+  h.machine.scanAndReclassify();
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(queries.length, 1, '扫描路径问了一次消息索引');
+  assert.deepEqual(queries[0].excludeRefIds, ['s1'],
+    '正在被判定的一轮就在自己的历史里，自检索不算证据');
+  assert.ok(queries[0].limit > 1, '给的是候选页而不是单条');
+  assert.equal(h.observed.enqueued, 1);
+  const prompt = h.observed.enqueuedTasks[0].systemPrompt;
+  assert.match(prompt, /内容相关任务（/);
+  assert.match(prompt, /task-silent: 收尾（.*检索命中的排序.*）/,
+    '任务板上搜不到的候选，靠会话正文找回来');
+  assert.match(prompt, /不要仅因命中就复用它的 taskId/);
+});
+
+test('the turn that just ended is nudged into the message index', () => {
+  const synced = [];
+  const h = fixture({
+    cli: 'claude', type: 'gateway', isStreaming: false,
+    messageSearch: { findMessages: () => [], syncSession: id => { synced.push(id); return {}; } },
+  });
+  h.chatState.claudeProc = null;
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
+  // 轮到这一轮就会话自己增量同步，而不是等下一次 60s 扫描——刚说完的话正是下一轮最
+  // 可能被检索到的内容。
+  assert.deepEqual(synced, ['s1']);
+  assert.equal(h.record.taskState.classifyState, 'D');
+});
+
+test('an unwired or broken message index changes no verdict and no prompt', async () => {
+  // 宿主没接 port：候选只有任务板那一份。
+  const unwired = fixture({ goal: '新任务', board: MESSAGE_BOARD });
+  unwired.chatState.currentUserText = '全文检索';
+  unwired.machine.scanAndReclassify();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(unwired.observed.enqueued, 1);
+  assert.doesNotMatch(unwired.observed.enqueuedTasks[0].systemPrompt, /内容相关任务/);
+
+  // 接了一个坏掉的索引：报错只能少一批候选，判定与状态都不受影响。
+  const throwing = fixture({
+    cli: 'claude', type: 'gateway', isStreaming: false, board: MESSAGE_BOARD,
+    messageSearch: {
+      findMessages() { throw new Error('database is closed'); },
+      syncSession() { throw new Error('database is closed'); },
+    },
+  });
+  throwing.chatState.claudeProc = null;
+  throwing.machine.classifyTurnEnd(throwing.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(throwing.record.taskState.classifyState, 'D', '索引坏了不能改变回合判定');
+  assert.equal(throwing.observed.transitions, 1);
+  assert.equal(throwing.observed.enqueued, 0);
 });

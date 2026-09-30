@@ -111,6 +111,51 @@
       attachArea.classList.toggle('has-items', attachArea.children.length > 0);
     }
 
+    // 最近一次真正发出去的 user_message（已装饰的文本 + goal 选项）。异常对话里的
+    // 「重试」按钮重发的就是它：原样的那份数据，不是输入框里现在写着的东西。
+    let lastSent = null;
+    let manualRetrying = false;
+    const sleep = ms => new Promise(resolve => (win.setTimeout || setTimeout)(resolve, ms));
+
+    // 手动重试：先断掉还挂着的这一轮（与停止按钮同一个 cancel 控制），等几秒让
+    // 服务端收干净、上游喘口气，再把原数据重新提交。页面刷新过就没有 lastSent，
+    // 这时退回到调用方给的 fallbackText（最后一条用户气泡的原文）。
+    async function manualRetry(options = {}) {
+      const original = lastSent || (options.fallbackText ? { text: String(options.fallbackText) } : null);
+      if (!original || !original.text) return { ok: false, reason: 'nothing_to_retry' };
+      if (manualRetrying) return { ok: false, reason: 'busy' };
+      manualRetrying = true;
+      const onTick = typeof options.onTick === 'function' ? options.onTick : () => {};
+      try {
+        if (hasOpenTurn()) cancelStreaming();
+        const delayMs = options.delayMs == null ? 3000 : Math.max(0, Number(options.delayMs) || 0);
+        for (let left = delayMs; left > 0; left -= 1000) {
+          onTick(Math.ceil(left / 1000));
+          await sleep(Math.min(1000, left));
+        }
+        if (!isSocketOpen()) {
+          retryTransport();
+          for (let i = 0; i < 20 && !isSocketOpen(); i++) await sleep(250);
+          if (!isSocketOpen()) return { ok: false, reason: 'disconnected' };
+        }
+        const clientMsgId = newClientMsgId();
+        const payload = { type: 'user_message', text: original.text, clientMsgId };
+        if (original.goal) {
+          payload.goal = true;
+          payload.goalLimits = original.goalLimits || {};
+        }
+        stageUserMessage(original.text, clientMsgId);
+        debug('state', `manualRetry() — WS ▶ user_message (${original.text.length} chars)`);
+        if (!transportSend(payload)) return { ok: false, reason: 'send_failed' };
+        lastSent = { ...original };
+        setPendingCancel(false);
+        updateUi();
+        return { ok: true };
+      } finally {
+        manualRetrying = false;
+      }
+    }
+
     function send(sendOptions = {}) {
       if (!inputEl) return false;
       const goalOptions = sendOptions && sendOptions.goal === true ? sendOptions : null;
@@ -190,6 +235,7 @@
           payload.goalLimits = goalOptions.goalLimits || {};
         }
         if (!transportSend(payload)) throw new Error('WebSocket is not open');
+        lastSent = { text, goal: !!goalOptions, goalLimits: goalOptions ? goalOptions.goalLimits || {} : null };
         if (userInputRequestId) consumeUserInputRequestId(userInputRequestId);
         setPendingCancel(false);
         return true;
@@ -807,7 +853,7 @@
       startRecording, stopRecording, uploadAudioForSTT,
       startStreamingVoice, commitStreamingVoice, cancelStreamingVoice,
       showVoicePanel, closeVoicePanel, useVoiceText, fetchRefined,
-      newClientMsgId,
+      newClientMsgId, manualRetry,
     });
   }
 

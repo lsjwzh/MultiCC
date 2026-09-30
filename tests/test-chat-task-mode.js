@@ -15,7 +15,7 @@ test('real task boot preserves resolved read-only and chat URLs with external mo
       const fetch = async route => {
         calls.push(route);
         if (route.endsWith('/chat-session')) return response(readOnly
-          ? { ok: true, readOnly: true, sessionId: null, url: '/task-shell.html?task=task-one&board=1' } : { ok: true, sessionId: 'bound' });
+          ? { ok: true, readOnly: true, sessionId: null, url: '/air?task=task-one' } : { ok: true, sessionId: 'bound' });
         if (route.endsWith('/tasks/resolve')) return response({ sessionId: 'execution' });
         return response({ id: 'sh_main' });
       };

@@ -151,15 +151,15 @@ async function waitUntil(check, message, attempts = 100) {
     assert.equal(sessions.some(session => session.dirId === directory.id), false,
       'registering a directory seeds no role session');
 
-    // The retired Commander-anchored directory composer must fail closed
-    // rather than invent a worker for a fleet that has no typed Commander.
+    // The retired Commander-anchored directory composer is gone outright — the
+    // route no longer exists, so there is no second ingress left to invent a
+    // worker for a fleet that has no typed Commander.
     const legacyDir = await fetch(base + '/api/task-board/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
       body: JSON.stringify({ dirId: directory.id, text: '从任务面板进入统一通道', clientMsgId: 'panel-isolated-1' }),
     });
-    assert.equal(legacyDir.status, 409, 'the legacy dir-level board ingress is retired, never silent');
-    assert.equal((await legacyDir.json()).error, 'commander_not_found');
+    assert.equal(legacyDir.status, 404, 'the legacy dir-level board ingress is retired, never silent');
 
     // A session created by hand is task-first too: it becomes a hidden
     // task-bound chat room with its own worktree, never a fleet-visible role.
@@ -230,17 +230,15 @@ async function waitUntil(check, message, attempts = 100) {
     assert.equal(execRows().length, 1, 'a replay never opens a second execution');
 
     const panelCard = await waitUntil(async () => {
-      const value = await api('GET', '/api/task-board');
-      return value.tasks.find(task => task.id === panelFirst.taskId) || null;
+      const value = await api('GET', '/api/task-shell-tasks/' + panelFirst.taskId);
+      return value?.task?.id === panelFirst.taskId ? value : null;
     }, 'the task did not project from its bound session history');
-    assert.equal(panelCard.chatSessionId, target.id, 'the durable card owns its bound session');
-    assert.equal(panelCard.body, '从任务面板进入统一通道');
-    assert.equal(panelCard.legacy, false);
-    assert.equal(Object.hasOwn(panelCard, 'taskText'), false,
-      'task board index may keep a derived title but never a second canonical body');
     const readOnlyBoard = JSON.parse(fs.readFileSync(paths.taskBoardFile, 'utf8'));
-    const projectedTask = readOnlyBoard.tasks[panelCard.id];
-    assert.equal(Object.hasOwn(projectedTask, 'body'), false);
+    const projectedTask = readOnlyBoard.tasks[panelCard.task.id];
+    assert.ok(projectedTask, 'the task is a durable board card');
+    assert.equal(projectedTask.chatSessionId, target.id, 'the durable card owns its bound session');
+    assert.equal(Object.hasOwn(projectedTask, 'body'), false,
+      'task board index may keep a derived title but never a second canonical body');
     assert.notEqual(projectedTask.chatSessionId, observer.id, 'the observer room never receives the card');
 
     // The empty-room regression this path exists to prevent: the user's own
@@ -262,28 +260,27 @@ async function waitUntil(check, message, attempts = 100) {
     // The task detail view projects that same history — no transport wrapper
     // exists to leak into it any more.
     const detailView = await waitUntil(async () => {
-      const value = await api('GET', '/api/task-board/tasks/' + panelCard.id + '/messages');
-      return value.items?.some(item => item.role === 'assistant'
-        && String(item.text || '').includes('FAKE-WORKER-DONE')) ? value : null;
+      const value = await api('GET', '/api/task-shell-tasks/' + panelCard.task.id + '/history');
+      return value.messages?.some(item => item.role === 'assistant'
+        && String(item.content || '').includes('FAKE-WORKER-DONE')) ? value : null;
     }, 'task detail projection did not include the reply', 250);
-    const detailTexts = detailView.items.map(item => String(item.text || ''));
+    const detailTexts = detailView.messages.map(item => String(item.content || ''));
     assert.equal(detailTexts.filter(text => text === '从任务面板进入统一通道').length, 1,
       'raw admission text appears exactly once in the task detail projection');
-    assert.equal(detailTexts.some(text => text.includes('【Commander 单向路由任务】')
-      || text.includes('[MultiCC 任务运行上下文')), false,
+    assert.equal(detailTexts.some(text => text.includes('[Commander one-way routed task]')
+      || text.includes('[MultiCC task run context')), false,
     'a bound turn carries no transport wrapper and no compiled ledger context');
 
-    // The old per-task send ingress cannot bypass shell ownership.
-    const retired = await fetch(base + '/api/task-board/tasks/' + panelCard.id + '/send', {
+    // The old per-task send ingress is gone: shell ownership is the only way in.
+    const retired = await fetch(base + '/api/task-board/tasks/' + panelCard.task.id + '/send', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
       body: JSON.stringify({ text: 'blocked old ingress', clientMsgId: 'retired' }),
     });
-    assert.equal(retired.status, 409);
-    assert.equal((await retired.json()).error, 'task_shell_route_required');
+    assert.equal(retired.status, 404);
 
     // The same shell continues the same idle execution and native identity.
     const continued = await api('POST', `/api/task-shells/${shellId}/messages`, {
-      taskId: panelCard.id, text: '补充同一任务的验收细节', clientMsgId: 'panel-isolated-2', intent: 'work',
+      taskId: panelCard.task.id, text: '补充同一任务的验收细节', clientMsgId: 'panel-isolated-2', intent: 'work',
     });
     assert.equal(continued.sessionId, target.id);
     const followupExecs = await waitUntil(() => (execRows().length === 2 ? execRows() : null),
@@ -293,18 +290,18 @@ async function waitUntil(check, message, attempts = 100) {
     const followupPayload = String(followupExecs[1].args[followupExecs[1].args.length - 1] || '');
     assert.ok(followupPayload.includes('补充同一任务的验收细节'),
       'follow-up payload carries the new admission text');
-    assert.equal(followupPayload.includes('【Commander 单向路由任务】'), false,
+    assert.equal(followupPayload.includes('[Commander one-way routed task]'), false,
       'the pooled transport wrapper is gone');
-    assert.equal(followupPayload.includes('[MultiCC 任务运行上下文'), false,
+    assert.equal(followupPayload.includes('[MultiCC task run context'), false,
       'a live bound session needs no compiled ledger context — the session IS the context');
 
     const detailAfterFollowup = await waitUntil(async () => {
-      const value = await api('GET', '/api/task-board/tasks/' + panelCard.id + '/messages');
-      const texts = (value.items || []).map(item => String(item.text || ''));
+      const value = await api('GET', '/api/task-shell-tasks/' + panelCard.task.id + '/history');
+      const texts = (value.messages || []).map(item => String(item.content || ''));
       return texts.some(text => text === '补充同一任务的验收细节')
         && texts.filter(text => text.includes('FAKE-WORKER-DONE')).length >= 2 ? value : null;
     }, 'task detail projection did not include the follow-up turn', 250);
-    const followupTexts = detailAfterFollowup.items.map(item => String(item.text || ''));
+    const followupTexts = detailAfterFollowup.messages.map(item => String(item.content || ''));
     assert.equal(followupTexts.filter(text => text === '补充同一任务的验收细节').length, 1,
       'follow-up admission appears exactly once in the projection');
 

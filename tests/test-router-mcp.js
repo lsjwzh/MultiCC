@@ -147,6 +147,11 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.deepEqual(requests[0].body.arguments.options, ['测试环境', '生产环境']);
   const routeSchema = listed.result.tools.find(tool => tool.name === 'route_task').inputSchema;
   const routeTool = listed.result.tools.find(tool => tool.name === 'route_task');
+  for (const name of ['route_task', 'dispatch_master']) {
+    const tool = listed.result.tools.find(item => item.name === name);
+    assert.match(tool.description, /Never pre-create tasks through management HTTP APIs/);
+    assert.match(tool.description, /new_task/);
+  }
   assert.match(routeTool.description, /busy.*available|available.*busy/i);
   assert.match(routeSchema.properties.target_session_id.description, /busy.*available|available.*busy/i);
   assert.match(routeSchema.properties.message.description, /objective/i);
@@ -172,7 +177,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
     message: 'do it',
   });
   const masterTool = listed.result.tools.find(tool => tool.name === 'dispatch_master');
-  assert.deepEqual(masterTool.inputSchema.required, ['target_session_id', 'message', 'mode']);
+  assert.deepEqual(masterTool.inputSchema.required, ['message', 'mode']);
   assert.deepEqual(masterTool.inputSchema.properties.mode.enum, ['sync', 'async']);
   assert.match(masterTool.description, /do not poll/i);
   assert.match(masterTool.description, /dispatch_status/);
@@ -256,10 +261,38 @@ test('an incomplete sync stream returns an explicit dispatch_status recovery con
 
 test('host prompt prefers scoped durable wait tools and keeps raw polling privileged', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'host-prompts.js'), 'utf8');
-  assert.match(source, /优先用它登记持久等待/);
+  assert.match(source, /it registers a durable wait/);
   assert.match(source, /wait_for_external_result/);
   assert.match(source, /get_external_wait/);
   assert.match(source, /cancel_external_wait/);
-  assert.match(source, /只有必须由宿主机执行命令或查询 URL 时/);
+  assert.match(source, /Only when the host itself must run a command or query a URL/);
   assert.doesNotMatch(source, /-d '\{\"mode\":\"callback\"\}'/);
+});
+
+test('permanent admission failures retain retryable:false through JSON and streamed MCP responses', async t => {
+  let stream = false;
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      const error = { code: 'task_identity_mismatch', retryable: false };
+      if (stream) {
+        res.setHeader('content-type', 'application/x-ndjson');
+        res.end(JSON.stringify({ type: 'error', ...error }) + '\n');
+      } else {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(error));
+      }
+    });
+  });
+  const client = clientFor(await listen(server));
+  t.after(async () => { await client.stop(); await close(server); });
+  for (const mode of ['async', 'sync']) {
+    stream = mode === 'sync';
+    const response = await client.call('tools/call', {
+      name: 'dispatch_master', arguments: { target_session_id: 'worker', message: 'work', mode },
+    });
+    assert.equal(response.result.isError, true);
+    assert.equal(response.result.structuredContent.code, 'task_identity_mismatch');
+    assert.equal(response.result.structuredContent.retryable, false);
+  }
 });

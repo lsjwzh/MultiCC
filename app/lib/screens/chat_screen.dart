@@ -30,8 +30,10 @@ import '../widgets/task_separation_prompt.dart';
 import '../widgets/background_tasks_dock.dart';
 import '../widgets/floating_dock.dart';
 import '../widgets/chat_composer_fold.dart';
+import '../widgets/chat_handoff.dart';
 import '../widgets/chat_header.dart';
 import '../widgets/chat_loading_view.dart';
+import '../widgets/chat_notice_scroller.dart';
 import '../widgets/chat_runtime_panels.dart';
 import '../widgets/chat_side_panels.dart';
 import '../widgets/conflict_diff_dialog.dart';
@@ -41,6 +43,7 @@ import '../widgets/scheduled_send_store.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../widgets/input_bar.dart';
 import '../widgets/message_bubble.dart';
+import '../widgets/merge_hint_dock.dart';
 import '../widgets/thinking_indicator.dart';
 import '../widgets/tour_overlay.dart';
 import '../widgets/worktree_status.dart';
@@ -83,6 +86,12 @@ class ChatView extends StatefulWidget {
   final SettingsService settings;
   final VoidCallback? onCollapse;
 
+  /// 手机端浮层的标题区域往下拖 = 收起对话（与 `onCollapse` 同一条出口）。
+  /// Web 的 `#chat-layer` 上这一条是「拖标题区收起」，App 在标题行接住再转发给
+  /// 浮层。为空（独立页/测试宿主）时标题区不挂拖拽手势。
+  final ValueChanged<double>? onSheetDragUpdate;
+  final ValueChanged<double>? onSheetDragEnd;
+
   /// Optional deep-link target: when non-null, the chat scrolls to + highlights
   /// this message once history loads (task-board "jump to message" flow). Null
   /// = normal open with zero behaviour change - the focus code paths are all
@@ -92,6 +101,8 @@ class ChatView extends StatefulWidget {
     super.key,
     required this.settings,
     this.onCollapse,
+    this.onSheetDragUpdate,
+    this.onSheetDragEnd,
     this.focusMessageId,
   });
 
@@ -144,14 +155,6 @@ class _ChatViewState extends State<ChatView> {
   // 幂等键 —— 两个容器（worktree 提示条 / 冲突横幅）共用同一份，跟 Web 一样。
   bool _forceSyncing = false;
   String? _forceSyncClientMsgId;
-  // 每轮自动提交（Web 的 `autoCommitIfNeeded`）：执行状态（在途互斥 + 轮次
-  // 游标）在 controller 上，页面只负责每帧喊一声、并提供「刷新 merge-status」
-  // 这个能力。
-  late final AutoCommitController _autoCommit = AutoCommitController(
-    settings: widget.settings,
-    isAlive: () => mounted,
-    refreshMergeReady: _refreshMergeReady,
-  );
   bool _dispatchExpanded = false;
   // 右侧两个抽屉（调试面板 + 产物边栏）的开关、列表与轮询都在这里。
   late final ChatSidePanels _panels = ChatSidePanels(
@@ -169,6 +172,11 @@ class _ChatViewState extends State<ChatView> {
   // Same, for the background-tasks dock: the scheduled-send dock yields to
   // both, so three floaters can coexist without stacking.
   FloatingDockAnchor? _backgroundAnchor;
+
+  // 「有可合并内容」提示条收起成了悬浮球（web 的 `#merge-hint.collapsed`）：
+  // 收起态归这一层，因为两种形态挂在同一棵树的两个位置（列内横幅 / 悬浮球），
+  // 一个 widget 里换不了。只活到这次会话结束 —— 一次临时让位不该跨启动粘住。
+  bool _mergeHintCollapsed = false;
 
   // 定时发送（Web 的 chat-scheduled-send.js）：一份 store 喂两个入口 ——
   // 输入栏的 ⏱ 和待执行时出现的悬浮球。
@@ -571,12 +579,6 @@ class _ChatViewState extends State<ChatView> {
     super.didChangeDependencies();
     final provider = context.watch<ChatProvider>();
     _syncQuoteInserter(provider);
-    // 一轮结束（WS `result` 帧让 turnEndTick 自增）是自动提交唯一的触发点，
-    // 所以这一步要排在下面那些「换会话才做」的早退之前。
-    _autoCommit.syncTick(
-      provider: provider,
-      manager: context.read<SessionManager>(),
-    );
     // 产物边栏的 scope 是任务壳，握手完成后才拿得到 —— 这里每帧问一次，
     // 拿到就换过去（web 的 `setScope` 也是外部推进来的）。
     _panels.sync(provider.shellId);
@@ -654,16 +656,11 @@ class _ChatViewState extends State<ChatView> {
   }
 
   /// 页头 ⋯ 里的「自动提交✓/✕」（Web 的 `#auto-commit-btn` 点击）。
-  Future<void> _toggleAutoCommit(ChatProvider provider) => _autoCommit.toggle(
-    provider: provider,
-    manager: context.read<SessionManager>(),
-  );
-
-  /// 刷一次 merge-status，并把「现在有没有可合并的东西」告诉自动提交执行器。
-  Future<bool> _refreshMergeReady(String session) async {
-    await _refreshMergeStatus(session);
-    return _mergeStatus?['mergeReady'] == true;
-  }
+  Future<void> _toggleAutoCommit(ChatProvider provider) =>
+      toggleSessionAutoCommit(
+        provider: provider,
+        manager: context.read<SessionManager>(),
+      );
 
   // ── Deep-link focus resolution ────────────────────────────────────────────
   // Called once (post-frame) after the initial history page is applied. If the
@@ -827,6 +824,9 @@ class _ChatViewState extends State<ChatView> {
     bool dispatchExpanded,
     String? artifactsLabel,
   ) {
+    // Scaffold removes the bottom view inset from the MediaQuery it provides
+    // to its body, so capture keyboard visibility before entering it.
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
     return Scaffold(
       backgroundColor: const Color(0xFFf4f8fd),
       body: SafeArea(
@@ -851,6 +851,8 @@ class _ChatViewState extends State<ChatView> {
                       ChatHeader(
                         settings: widget.settings,
                         onCollapse: widget.onCollapse,
+                        onSheetDragUpdate: widget.onSheetDragUpdate,
+                        onSheetDragEnd: widget.onSheetDragEnd,
                         mergeReady: mergeReady,
                         cwd: provider.cwd,
                         branch: _mergeStatus?['branch']?.toString(),
@@ -889,13 +891,23 @@ class _ChatViewState extends State<ChatView> {
                             : () => unawaited(_deleteBoundTask(provider)),
                         advancedMode: widget.settings.advancedMode.value,
                       ),
+                      // The pending-answer card lives OUTSIDE the scrolling
+                      // notices. ChatNoticeScroller becomes a reverse-anchored
+                      // scroll view while the keyboard is up, and a card at the
+                      // top of that list would have its question and first
+                      // options scrolled out of view — the app then showed only
+                      // a sliver wedged under the header. As a plain sibling it
+                      // stays fully visible, matching the web client, whose
+                      // #pending-user-input-card is a flex-shrink:0 item above
+                      // #messages. Its maxHeight is measured against the
+                      // keyboard-excluded body height, so a raised keyboard
+                      // shrinks the card instead of clipping its top.
                       if (provider.pendingUserInput != null &&
                           !provider.pendingUserInputCollapsed)
                         _CenteredChatLane(
                           child: ConstrainedBox(
                             constraints: BoxConstraints(
-                              maxHeight:
-                                  MediaQuery.sizeOf(context).height * 0.38,
+                              maxHeight: constraints.maxHeight * 0.38,
                             ),
                             child: SingleChildScrollView(
                               padding: const EdgeInsets.fromLTRB(10, 7, 10, 0),
@@ -905,10 +917,8 @@ class _ChatViewState extends State<ChatView> {
                                     provider.connectionState ==
                                     ChatConnectionState.connected,
                                 onAnswer: provider.sendMessage,
-                                onSecretSubmit:
-                                    (value) => provider.submitPendingSecret(
-                                      value,
-                                    ),
+                                onSecretSubmit: (value) =>
+                                    provider.submitPendingSecret(value),
                                 onCollapse: provider.collapsePendingUserInput,
                                 onDismiss: () =>
                                     _dismissPendingUserInput(provider),
@@ -916,99 +926,118 @@ class _ChatViewState extends State<ChatView> {
                             ),
                           ),
                         ),
-                      // Liveness pill: only working (🟢) and stalled (🔴) earn a
-                      // dedicated line — they say "a turn is running / stuck".
-                      // idle (🟡) and unknown (⚪) are the resting states; a
-                      // permanent "空闲" row under the header is pure noise.
-                      if (chatLivenessDeservesLine(
-                        _liveness?['state'] as String?,
-                      ))
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: Padding(
-                            padding: const EdgeInsets.only(
-                              left: 12,
-                              right: 12,
-                              bottom: 2,
-                            ),
-                            child: livenessChip(_liveness),
-                          ),
-                        ),
-                      if (provider.hasClassify)
-                        Builder(
-                          builder: (_) {
-                            // 显隐规则集中在 helper 里（web can-mark-done /
-                            // can-cancel-task 两个 class 的等价物），这里只负责把动作接上。
-                            final actions = classifyBarActions(
-                              provider.classifyState,
-                            );
-                            return AuxClassifyBar(
-                              goal: provider.classifyGoal,
-                              phase: provider.classifyPhase,
-                              classifyState: provider.classifyState,
-                              stale: provider.classifyStale,
-                              onMarkTurnSucceeded: actions.canMarkDone
-                                  ? () => _markTurnSucceeded(provider)
-                                  : null,
-                              onCancelTurn: actions.canCancelTask
-                                  ? provider.cancel
-                                  : null,
-                            );
-                          },
-                        ),
-                      _CenteredChatLane(
-                        child: ChatRuntimeNoticePanel(
-                          apiError: provider.apiErrorPolicy,
-                          limit: provider.limitView,
-                          balance: provider.balanceView,
-                          arkUsage: provider.arkQuotaView,
-                          kimiUsage: provider.kimiQuotaView,
-                          claudeUsage: provider.claudeLimitView,
-                          qoderUsage: provider.qoderQuotaView,
-                          opencodeUsage: provider.opencodeQuotaView,
-                          codexUsage: provider.codexQuotaView,
-                          onClaudeQuotaTap: () =>
-                              provider.handleClaudeQuotaTap(),
-                          onQoderQuotaTap: () => provider.handleQoderQuotaTap(),
-                          onOpenCodeQuotaTap: () =>
-                              provider.handleOpenCodeQuotaTap(),
-                          onCodexQuotaTap: () => provider.handleCodexQuotaTap(),
-                          onArkQuotaTap: () => provider.handleArkQuotaTap(),
-                          onKimiQuotaTap: () => provider.handleKimiQuotaTap(),
-                          onRetry:
-                              provider.apiErrorPolicy?.canManualRetry == true
-                              ? () => _retryApiError(provider)
-                              : null,
-                        ),
+                      // The keyboard shortens this sheet without shortening its
+                      // notices. Let the notices scroll in the space left after
+                      // the header and composer, so a worktree warning cannot
+                      // push the focused input underneath the iOS keyboard.
+                      ChatNoticeScroller(
+                        keyboardVisible: keyboardVisible,
+                        children: [
+                              // Liveness pill: only working (🟢) and stalled (🔴) earn a
+                              // dedicated line — they say "a turn is running / stuck".
+                              // idle (🟡) and unknown (⚪) are the resting states; a
+                              // permanent "空闲" row under the header is pure noise.
+                              if (chatLivenessDeservesLine(
+                                _liveness?['state'] as String?,
+                              ))
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(
+                                      left: 12,
+                                      right: 12,
+                                      bottom: 2,
+                                    ),
+                                    child: livenessChip(_liveness),
+                                  ),
+                                ),
+                              if (provider.hasClassify)
+                                Builder(
+                                  builder: (_) {
+                                    // 显隐规则集中在 helper 里（web can-mark-done /
+                                    // can-cancel-task 两个 class 的等价物），这里只负责把动作接上。
+                                    final actions = classifyBarActions(
+                                      provider.classifyState,
+                                    );
+                                    return AuxClassifyBar(
+                                      goal: provider.classifyGoal,
+                                      phase: provider.classifyPhase,
+                                      classifyState: provider.classifyState,
+                                      stale: provider.classifyStale,
+                                      onMarkTurnSucceeded: actions.canMarkDone
+                                          ? () => _markTurnSucceeded(provider)
+                                          : null,
+                                      onCancelTurn: actions.canCancelTask
+                                          ? provider.cancel
+                                          : null,
+                                    );
+                                  },
+                                ),
+                              _CenteredChatLane(
+                                child: ChatRuntimeNoticePanel(
+                                  apiError: provider.apiErrorPolicy,
+                                  limit: provider.limitView,
+                                  balance: provider.balanceView,
+                                  arkUsage: provider.arkQuotaView,
+                                  kimiUsage: provider.kimiQuotaView,
+                                  claudeUsage: provider.claudeLimitView,
+                                  qoderUsage: provider.qoderQuotaView,
+                                  opencodeUsage: provider.opencodeQuotaView,
+                                  codexUsage: provider.codexQuotaView,
+                                  onClaudeQuotaTap: () =>
+                                      provider.handleClaudeQuotaTap(),
+                                  onQoderQuotaTap: () =>
+                                      provider.handleQoderQuotaTap(),
+                                  onOpenCodeQuotaTap: () =>
+                                      provider.handleOpenCodeQuotaTap(),
+                                  onCodexQuotaTap: () =>
+                                      provider.handleCodexQuotaTap(),
+                                  onArkQuotaTap: () =>
+                                      provider.handleArkQuotaTap(),
+                                  onKimiQuotaTap: () =>
+                                      provider.handleKimiQuotaTap(),
+                                  onRetry:
+                                      provider.apiErrorPolicy?.canManualRetry ==
+                                          true
+                                      ? () => _retryApiError(provider)
+                                      : null,
+                                ),
+                              ),
+                              // 卡在冲突里的 rebase 优先于「落后基分支」：那种状态下 behind 是 0
+                              // （rebase 没走完，没得比），两个条不会同时出现，但顺序说明了
+                              // 谁更该先处理 —— 冲突没解决，同步就还没结束。
+                              if (_conflictFiles().isNotEmpty)
+                                WorktreeConflictBanner(
+                                  files: _conflictFiles(),
+                                  onHelp: () =>
+                                      _showConflictHelp(_conflictFiles()),
+                                  onContinue: () => _resolveRebase('continue'),
+                                  onAbort: () => _resolveRebase('abort'),
+                                  onForceSync: () =>
+                                      _forceSyncWorktree(provider),
+                                  forceSyncing: _forceSyncing,
+                                ),
+                              if (_worktreeReclaimed())
+                                WorktreeReclaimedBanner(
+                                  branch: _mergeStatus?['branch']?.toString(),
+                                  onForceSync: () =>
+                                      _forceSyncWorktree(provider),
+                                  forceSyncing: _forceSyncing,
+                                )
+                              else if (_behindCount() > 0)
+                                WorktreeBehindBanner(
+                                  behind: _behindCount(),
+                                  baseBranch: _baseBranchName(),
+                                  syncing: _syncing,
+                                  onSync: () => _syncWorktree(
+                                    provider.executionSessionName,
+                                  ),
+                                  onForceSync: () =>
+                                      _forceSyncWorktree(provider),
+                                  forceSyncing: _forceSyncing,
+                                ),
+                        ],
                       ),
-                      // 卡在冲突里的 rebase 优先于「落后基分支」：那种状态下 behind 是 0
-                      // （rebase 没走完，没得比），两个条不会同时出现，但顺序说明了
-                      // 谁更该先处理 —— 冲突没解决，同步就还没结束。
-                      if (_conflictFiles().isNotEmpty)
-                        WorktreeConflictBanner(
-                          files: _conflictFiles(),
-                          onHelp: () => _showConflictHelp(_conflictFiles()),
-                          onContinue: () => _resolveRebase('continue'),
-                          onAbort: () => _resolveRebase('abort'),
-                          onForceSync: () => _forceSyncWorktree(provider),
-                          forceSyncing: _forceSyncing,
-                        ),
-                      if (_worktreeReclaimed())
-                        WorktreeReclaimedBanner(
-                          branch: _mergeStatus?['branch']?.toString(),
-                          onForceSync: () => _forceSyncWorktree(provider),
-                          forceSyncing: _forceSyncing,
-                        )
-                      else if (_behindCount() > 0)
-                        WorktreeBehindBanner(
-                          behind: _behindCount(),
-                          baseBranch: _baseBranchName(),
-                          syncing: _syncing,
-                          onSync: () =>
-                              _syncWorktree(provider.executionSessionName),
-                          onForceSync: () => _forceSyncWorktree(provider),
-                          forceSyncing: _forceSyncing,
-                        ),
                       Expanded(
                         // 第 4 步「第一份结果已经完成」圈的整块消息区。
                         child: TourAnchor(
@@ -1023,7 +1052,7 @@ class _ChatViewState extends State<ChatView> {
                       ),
                       if (widget.settings.advancedMode.value)
                         const _CenteredChatLane(child: _ContextUsageBar()),
-                      if (mergeReady)
+                      if (mergeReady && !_mergeHintCollapsed)
                         MergeHintBar(
                           text: _mergeStatusText(_mergeStatus),
                           onMerge: () => _mergeCurrent(
@@ -1035,6 +1064,8 @@ class _ChatViewState extends State<ChatView> {
                             settings: widget.settings,
                             sessionId: provider.executionSessionName,
                           ),
+                          onCollapse: () =>
+                              setState(() => _mergeHintCollapsed = true),
                         ),
                       // 手机上往回翻消息时输入区会跟着缩小（Web 的
                       // chat-composer-collapse.js）；桌面宽度下它原样不动。
@@ -1136,6 +1167,25 @@ class _ChatViewState extends State<ChatView> {
                       if (_backgroundAnchor != null) _backgroundAnchor!,
                     ],
                     leftMinBottom: 96,
+                    rightMinBottom: _dispatchRightReserve(provider),
+                  ),
+                // 「有可合并内容」收起后的悬浮球：与上面三个共用同一套 primitive，
+                // 优先级最低 —— 三个球的锚点一起递进去，同侧不互相压住。
+                if (mergeReady && _mergeHintCollapsed)
+                  MergeHintDock(
+                    key: ValueKey('merge-${provider.sessionName}'),
+                    text: _mergeStatusText(_mergeStatus),
+                    onMerge: () =>
+                        _mergeCurrent(context, provider.executionSessionName),
+                    onDiff: () => showSessionDiffDialog(
+                      context,
+                      settings: widget.settings,
+                      sessionId: provider.executionSessionName,
+                    ),
+                    obstacle: _dispatchAnchor,
+                    extraObstacles: [
+                      if (_backgroundAnchor != null) _backgroundAnchor!,
+                    ],
                     rightMinBottom: _dispatchRightReserve(provider),
                   ),
                 Positioned.fill(
@@ -1355,6 +1405,14 @@ Future<void> _shareFromSession(
                       color: Color(0xFFb4701f),
                       fontSize: 12,
                     ),
+                  ),
+                  const SizedBox(height: 14),
+                  // ── 交接包入口（Web share 卡片的 📦 / 📥 mode row）──
+                  handoffShareDialogRow(
+                    context,
+                    ctx,
+                    sessionId: sessionId,
+                    settings: settings,
                   ),
                   const SizedBox(height: 14),
                   // ── Access type ──
@@ -1897,149 +1955,6 @@ String _mergeStatusText(Map<String, dynamic>? status) {
   });
 }
 
-/// 「当前 worktree 有可合并内容」提示条 + 它的收起态（web 的 `#merge-hint`
-/// 与 `chat-merge-hint.js`）。
-///
-/// 琥珀色横幅正好浮在输入区上方那排按钮上，所以给它一个让开的路：收起后只剩
-/// 右边缘一颗贴边药丸，点回来即展开。收起状态由这个 widget 自己持有 —— web 也是
-/// 让 controller 自己管（sessionStorage `multicc.mergeHintCollapsed`），调用点不需要
-/// 知道「收没收起」。这里是页面存活期内的记忆，不落盘：一次临时让位不该跨启动粘住。
-class MergeHintBar extends StatefulWidget {
-  final String text;
-  final VoidCallback onMerge;
-  final VoidCallback onDiff;
-
-  const MergeHintBar({
-    super.key,
-    required this.text,
-    required this.onMerge,
-    required this.onDiff,
-  });
-
-  @override
-  State<MergeHintBar> createState() => _MergeHintBarState();
-}
-
-class _MergeHintBarState extends State<MergeHintBar> {
-  bool _collapsed = false;
-
-  @override
-  Widget build(BuildContext context) {
-    if (_collapsed) {
-      return Align(
-        alignment: Alignment.centerRight,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
-          child: Material(
-            key: const Key('merge-hint-fab'),
-            color: const Color(0xFFa85a25),
-            shape: const StadiumBorder(),
-            elevation: 6,
-            child: InkWell(
-              customBorder: const StadiumBorder(),
-              onTap: () => setState(() => _collapsed = false),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 7,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.merge_type_rounded,
-                      size: 15,
-                      color: Color(0xFFf4f8fd),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      t('mergeContentReady'),
-                      style: const TextStyle(
-                        color: Color(0xFFf4f8fd),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-    return Container(
-      margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: const Color(0xFFfff8eb),
-        border: Border.all(color: const Color(0xFFa85a25)),
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.28),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.merge_type_rounded,
-            size: 16,
-            color: Color(0xFFa85a25),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              widget.text,
-              style: const TextStyle(color: Color(0xFFa85a25), fontSize: 12),
-            ),
-          ),
-          TextButton(
-            onPressed: widget.onDiff,
-            style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFFa85a25),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              minimumSize: Size.zero,
-              side: const BorderSide(color: Color(0xFFa85a25)),
-            ),
-            child: Text(
-              t('viewDiff'),
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-          ),
-          const SizedBox(width: 6),
-          TextButton(
-            onPressed: widget.onMerge,
-            style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFFf4f8fd),
-              backgroundColor: const Color(0xFFa85a25),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              minimumSize: Size.zero,
-            ),
-            child: Text(
-              t('merge'),
-              style: const TextStyle(fontWeight: FontWeight.w700),
-            ),
-          ),
-          IconButton(
-            key: const Key('merge-hint-collapse'),
-            onPressed: () => setState(() => _collapsed = true),
-            icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
-            tooltip: t('mergeHintCollapse'),
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-            color: const Color(0xFFa85a25),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 /// Change-working-directory dialog. Used to hang off the full-width cwd bar
 /// under the header; the bar is gone (the cwd now lives in the header ⋯ menu),
 /// so this stands alone, opened from the menu's 「更换目录」 item.
@@ -2300,18 +2215,14 @@ class _MessageListState extends State<_MessageList> {
     final provider = context.watch<ChatProvider>();
     final messages = provider.messages;
     if (!provider.historyApplied &&
-        !messages.any((m) => m.role == MessageRole.user || m.role == MessageRole.assistant)) {
+        !messages.any(
+          (m) => m.role == MessageRole.user || m.role == MessageRole.assistant,
+        )) {
       return ChatLoadingView(
         onRetry: provider.reconnect,
         status: provider.statusText,
       );
     }
-    // 每轮勾选框挂在最后一条用户消息上（Web 的 `_lastUserBubble`）。没被手动
-    // 勾过的那一轮跟随会话级开关，所以这里要读一次会话记录里的值。
-    final sessionAutoCommit = context.select<SessionManager, bool>(
-      (m) => sessionAutoCommitOf(m.sessions, provider.sessionName),
-    );
-    final lastUserTurnId = lastUserMessageId(messages);
     final admissionProgress = provider.admissionProgressText;
     // 「思考中」那一行的渲染条件收在 provider 上：调试面板也要问同一件事
     // （`stuck` 徽章 = thinking 还在屏幕上但已经不 streaming），两边各写一份
@@ -2352,28 +2263,8 @@ class _MessageListState extends State<_MessageList> {
                     prev == null ||
                     msg.timestamp.difference(prev.timestamp).inMinutes.abs() >=
                         _timeSeparatorGapMinutes;
-                // 只有最后一条用户消息挂每轮勾选框；其余气泡四个参数全走默认值，
-                // 渲染结果跟没有这个功能时逐像素一致。
-                final turnId =
-                    lastUserTurnId != null && msg.id == lastUserTurnId
-                    ? lastUserTurnId
-                    : null;
                 final bubble = _maybeHighlight(
-                  MessageBubble(
-                    message: msg,
-                    showAutoCommit: turnId != null,
-                    autoCommitChecked:
-                        turnId != null &&
-                        provider.turnAutoCommit(
-                          turnId,
-                          fallback: sessionAutoCommit,
-                        ),
-                    autoCommitDone:
-                        turnId != null && provider.isTurnAutoCommitted(turnId),
-                    onAutoCommitChanged: turnId == null
-                        ? null
-                        : (v) => provider.setTurnAutoCommit(turnId, v),
-                  ),
+                  MessageBubble(message: msg),
                   msg.id,
                 );
                 if (!showTime) return bubble;

@@ -38,6 +38,38 @@ void main() {
       expect(parse({'id': 'sess-5', 'dirId': null}).dirId, isNull);
       expect(parse({'id': 'sess-6', 'dirId': 'd2'}).dirId, 'd2');
     });
+
+    test('state / lastActivityAt / createdAt 照读', () {
+      final s = parse({
+        'id': 'sess-7',
+        'dirId': 'd1',
+        'state': 'route_dead',
+        'lastActivityAt': 1800000000000,
+        'createdAt': 1700000000000,
+      });
+      expect(s.state, 'route_dead');
+      expect(s.lastActivityAt, 1800000000000);
+      expect(
+        s.createdAt,
+        DateTime.fromMillisecondsSinceEpoch(1700000000000),
+      );
+    });
+
+    test('老快照没有这三个字段就是 null，不是编一个状态出来', () {
+      final bare = parse({'id': 'sess-8'});
+      expect(bare.state, isNull);
+      expect(bare.lastActivityAt, isNull);
+      expect(bare.createdAt, isNull);
+    });
+
+    test('脏值落回 null：字符串不是时刻，0 也不是', () {
+      expect(
+        parse({'id': 'sess-9', 'lastActivityAt': '昨天'}).lastActivityAt,
+        isNull,
+      );
+      expect(parse({'id': 'sess-9', 'createdAt': 0}).createdAt, isNull);
+      expect(parse({'id': 'sess-9', 'state': '  '}).state, isNull);
+    });
   });
 
   group('AirSnapshot.terminalSessionsOf', () {
@@ -91,6 +123,21 @@ void main() {
       final session = parse({'id': 'sess-10', 'cli': '不认识的工具'}).toSession();
       expect(session.cli, SessionCli.claude);
       expect(session.kind, SessionKind.terminal);
+    });
+
+    test('createdAt 用快照里的真值；缺了才用「现在」顶', () {
+      final stamped = parse({
+        'id': 'sess-11',
+        'createdAt': 1700000000000,
+      }).toSession();
+      expect(
+        stamped.createdAt,
+        DateTime.fromMillisecondsSinceEpoch(1700000000000),
+      );
+      final bare = parse({'id': 'sess-12'}).toSession();
+      final now = DateTime.now();
+      expect(bare.createdAt.isAfter(now.subtract(const Duration(minutes: 1))), isTrue);
+      expect(bare.createdAt.isBefore(now.add(const Duration(minutes: 1))), isTrue);
     });
   });
 }

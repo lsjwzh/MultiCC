@@ -15,6 +15,13 @@
  * 使用 /api/voice/stt (Whisper) 做语音识别 — 与现有 mic 按钮同一通道
  * ════════════════════════════════════════════════════════════════════════════ */
 
+// 通知/播报文案的唯一来源（public/shared/notification-copy.js，由聊天页在本文件
+// 之前加载；Node 下走相对路径 require）。取不到时不自己造词，改说服务端那句原话。
+function outcomeCopyApi() {
+  if (typeof window !== 'undefined' && window.MultiCCNotificationCopy) return window.MultiCCNotificationCopy;
+  return typeof require === 'function' ? require('./shared/notification-copy.js') : null;
+}
+
 class S2SSession {
   constructor(opts) {
     this.opts = opts || {};
@@ -528,8 +535,15 @@ class S2SSession {
     this._taskCompleted = true;
     this._clearTimers();
 
-    const isWaiting = notifyMsg.state === 'waiting';
-    const finalText = isWaiting ? '正在等待你的下一步指示。' : '本轮执行成功。';
+    // 播报的收尾句只有一份：public/shared/notification-copy.js（与聊天条朗读、
+    // 通知标题同一张表）。这里原先自己写「正在等待你的下一步指示。」，和聊天条念的
+    // 「等待你的操作」是同一件事的两句话。判定优先用服务端给的分类字母（B 与 W 的
+    // push type 都是 waiting，说的却不是一回事），没有就退回粗粒度 state。
+    // 兜底不再自己造词：表都加载不到时就说服务端那句原话。
+    const spec = notifyMsg.classifyState || notifyMsg.state;
+    const copy = outcomeCopyApi();
+    const finalText = (copy && copy.notificationVoice(spec))
+      || String(notifyMsg.message || '');
 
     if (this.progressEvents.length > 0) {
       this._reportFinalProgress(finalText);

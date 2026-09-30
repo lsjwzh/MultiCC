@@ -60,6 +60,7 @@ void main() {
         'recordType': '',
         'runState': 'idle',
         'resource': {'residency': 'resident'},
+        'worktreeChanges': {'dirty': true, 'ahead': 2},
         'updatedAt': 200,
       },
       {
@@ -105,7 +106,7 @@ void main() {
             onOpenSearch: () {},
             onOpenConsole: () {},
             onOpenSchedules: () {},
-            onOpenTaskBoard: () {},
+
             onCreateTask: () {},
             onOpenTask: (_) {},
             onOpenDocs: () {},
@@ -115,6 +116,8 @@ void main() {
             onOpenAllDestinations: () {},
             onOpenDestination: (_) {},
             ops: ops,
+            language: settings.lang,
+            onLanguage: () {},
             onOpenPush: () {},
             onLogout: () {},
           ),
@@ -160,6 +163,24 @@ void main() {
     expect(inRow('idle', '目录已准备'), findsOneWidget);
     expect(inRow('done', '已完成'), findsOneWidget);
 
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('有未提交或未合并改动的任务在侧栏显示静态 worktree 图标', (tester) async {
+    await pumpSidebar(tester);
+
+    expect(
+      find.byKey(const ValueKey('air-worktree-change-idle')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('air-worktree-change-run')), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('air-side-task-idle')),
+        matching: find.byTooltip('Worktree 有未提交改动，另有 2 个提交尚未合并'),
+      ),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 

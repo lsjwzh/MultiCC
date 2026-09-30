@@ -69,6 +69,41 @@ void main() {
     expect(entries.last.kind, 'page');
   });
 
+  test('fetchDocsRegistry scopes the list with ?dir= when asked', () async {
+    final settings = await mockSettings();
+    late http.Request captured;
+    final svc = ManageService(
+      settings: settings,
+      httpClient: MockClient((request) async {
+        captured = request;
+        return jsonResponse(200, const []);
+      }),
+    );
+
+    await svc.fetchDocsRegistry(dir: '/Users/me/proj');
+
+    expect(captured.method, 'GET');
+    expect(captured.url.path, '/api/docs-registry');
+    expect(captured.url.queryParameters, {'dir': '/Users/me/proj'});
+  });
+
+  test('fetchDocsRegistry omits the dir parameter when blank', () async {
+    final settings = await mockSettings();
+    late http.Request captured;
+    final svc = ManageService(
+      settings: settings,
+      httpClient: MockClient((request) async {
+        captured = request;
+        return jsonResponse(200, const []);
+      }),
+    );
+
+    await svc.fetchDocsRegistry(dir: '   ');
+
+    // 空目录（没有归属的项目）要的是全量列表，不是 ?dir= 的空串作用域。
+    expect(captured.url.query, isEmpty);
+  });
+
   test('registerDocsService posts kind=service source=user, drops blank fields',
       () async {
     final settings = await mockSettings();
@@ -127,6 +162,34 @@ void main() {
     expect(captured.url.path, '/api/docs-registry/doc%2F1'); // id encoded
     final body = jsonDecode(captured.body) as Map<String, dynamic>;
     expect(body.keys, ['pinned']);
+  });
+
+  test('updateDocsEntry can flip permanent on its own', () async {
+    final settings = await mockSettings();
+    late http.Request captured;
+    final svc = ManageService(
+      settings: settings,
+      httpClient: MockClient((request) async {
+        captured = request;
+        return jsonResponse(200, {
+          'id': 'doc_1',
+          'kind': 'page',
+          'title': 't',
+          'url': '/artifacts/x/r.html',
+          'pinned': true,
+          'permanent': true,
+        });
+      }),
+    );
+
+    final e = await svc.updateDocsEntry('doc_1', permanent: true);
+
+    final body = jsonDecode(captured.body) as Map<String, dynamic>;
+    // 只发改动的那个开关：pinned 由服务端原样保留（两个开关独立）。
+    expect(body.keys, ['permanent']);
+    expect(body['permanent'], isTrue);
+    expect(e.permanent, isTrue);
+    expect(e.pinned, isTrue);
   });
 
   test('deleteDocsEntry sends DELETE to the encoded id', () async {

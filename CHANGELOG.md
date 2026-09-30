@@ -2,11 +2,143 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.2.0 — Auto-commit that fires even when no page is watching (2026-09-29)
+
+### Highlights
+
+- **Auto-commit moved server-side** — a finished turn now commits and merges back to the base branch from the server's turn engine, so turns that end while no chat page is connected (closed laptop, evicted Air frame, app in the background) are merged too instead of piling up in the worktree until the next online turn. Results land in the conversation as transient system messages.
+- **The per-turn auto-commit checkbox is gone** — the little checkbox under the last user message could never cover offline turns by design, so the session-level header toggle is now the single control (Web header and App menu alike), defaulting to on as before.
+- **Planned tasks can be deleted again** — a task whose workspace was never materialized (no turn ever ran) refused deletion with `task_workspace_unverifiable`, which also blocked deleting its directory. A never-created branch now reads as "nothing to lose"; a missing checkout with a surviving branch keeps the old conservative refusal.
+
+## v2.1.6 — A settings drawer that stays tidy, and unlock checks that do not nag (2026-09-28)
+
+### Highlights
+
+- **The settings drawer is a two-level cascade** — the Air settings panel groups related options under sections instead of one long flat list, so host power, tunnel, update and account settings are each one click away instead of a scroll away.
+- **The uncommitted-files pill opens its list** — the main checkout's "N uncommitted files" capsule is now clickable and shows the actual file list with a diff on demand, instead of being a static count.
+- **Unlock access is probed instead of assumed** — the macOS Agent auto-unlock gained a bounded readiness probe (an explicit check, or saving a password, may show the system sheet while the screen is unlocked). The old `privileged-helper` was removed and its routes were folded into the host power surface, with a probe that never returns credentials and stays inside the web client's request timeout.
+- **The main repo's shared `data/` is ignored** — root `data/` is local shared data and no longer a candidate for the git watch.
+
+### Release integrity
+
+- The paint budget now registers the admin-stats marquee keyframe (it only runs while the label overflows, pauses on hover/focus and drops under reduced-motion), keeping the CI gate green.
+
+## v2.1.5 — Task runs folded into the board, and reminders that know you're away (2026-09-27)
+
+### Highlights
+
+- **Task runs live under the task board now** — the separate `task-run` module (store, host, recovery, cleanup, provider bridge, production) was folded into the board's ownership, deleting thousands of lines of duplicated lifecycle. The public surface you rely on — running a task, watching its progress, cancelling it — is unchanged, but there is one place that owns task state instead of two.
+- **The directory card got a Git history browser** — a shared `git-manager` component shows commit history right in the Air directory card, with patches fetched only on demand and repository text always inserted as text.
+- **Reminders know whether anyone is looking** — a shared user-presence probe (page visible and touched within the last five minutes) is the single answer both the task reminders and the chat notifications read, so they never disagree about whether to narrate. Several reminders stack into a fan-out deck with a count badge (errors first), each card with its own open/dismiss.
+- **A directory's schedules are one click away** — the directory overview gains a "schedules for this directory" entry that filters the global cron rules by the directory you are looking at, as a page-internal dialog (bottom sheet on phones).
+- **The Sakura Frp tunnel installer is gone** — the tunnel surface ships without the bundled Sakura installer; the tunnel API is unchanged and manual/third-party installers keep working.
+
+### Release integrity
+
+- The runtime write inventory was trimmed to the surviving write roots, keeping the governance assertion green in CI's deterministic stage.
+
+## v2.1.4 — One-click upgrades from the web, and a Mac that stays awake when asked (2026-09-27)
+
+### Highlights
+
+- **The upgrade button now runs the real installer** — the web UI's update path stops pointing at an in-package re-pack; it fetches `install.sh` from the target tag and runs it against the existing install directory, so an upgrade is byte-for-byte the same flow as a first install (stop, back up, replace, carry port/token across, start). A git checkout still uses `./multicc update`.
+- **Keep the machine awake while a task runs** — an opt-in runtime switch (global settings) holds a `caffeinate` assertion so the display and the lock screen do not come up mid-task; the assertion is released automatically when the server exits, so no orphan process keeps the screen on forever.
+- **The unlock password stays in the login keychain** — the optional auto-unlock password for the MultiCC Agent is written to the macOS login keychain only, never through the vault and never through an LLM.
+- **A directory's artifacts got their own page** — the directory overview's artifact list now opens as a dedicated page (same data as the overview grid), with its own refresh, its own pinned and permanent toggles, and an App counterpart.
+- **The macOS Agent grew a native companion** — the MultiCCAgent framework now carries its own keep-awake and unlock-password plumbing, so the desktop client can keep the screen on and unlock without shelling out through a fragile path.
+
+### Release integrity
+
+- The runtime write inventory is complete again — the human-assist screenshot root was registered as ephemeral, which clears the governance assertion that had been red in CI's deterministic stage since 2026-09-25. The release core gate itself was never affected (it does not run that tier), which is why the release went out while CI was red.
+
+## v2.1.3 — Terminals you can actually work in, and screenshots you can point at (2026-09-26)
+
+### Highlights
+
+- **Point at a screenshot instead of describing it** — a remote assist screenshot can be annotated in the web lightbox or in the App's annotation page: points, boxes and arrows with notes, serialized into a text block the agent reads. The block is byte-identical across the web editor, the App and the agent-side contract, so an annotation made on either end arrives with the same meaning. Screenshots are swept after 7 days per file, emptied session directories are dropped, and symlinks are left alone.
+- **The terminal page became a workspace** — an info bar names the cwd, worktree, branch and the provider·model the terminal runs on, with switching between terminals in the same directory. Sessions gain find, font zoom and shortcuts, and a reconnect or a return to the page replays the screen instead of doubling the scrollback.
+- **Every terminal row says whether it is still usable** — a status dot, how long it has been idle, rename and copy id, plus two repairs: delete (behind a second confirmation) and restart, which also heals a terminal whose managed route has died.
+- **New terminals are configured the way chat is** — pick the CLI first, then Provider and model, in the same dialog the chat composer uses.
+- **Entering a terminal no longer returns 409** — the managed route for a terminal session now carries the capability token.
+- **The CLI catalog is two layers** — family × scenario, with derived lanes. `claude-exp` is Claude and `codex-exp` is Codex again, and one-shot lanes left the chat picker.
+- **Deleting a referenced provider shows what references it** — a structured list of the sessions and configurations involved, with an explicit force delete, instead of a refusal with nothing to act on.
+- **The Air directory overview is five operational stat cards** — each one a quick filter. Active counts what is actually running rather than the unarchived backlog.
+- **The pending-answer bubble can be dragged**, and there is a rebase button next to merge.
+
+### Release integrity
+
+- The reviewed core set was re-audited and the tier manifest is complete again: the three human-assist annotation tests are registered as core, and the release core assertion — red on main since `tests/test-global-lane-tier-alias.js` was registered without moving it — is back in step with the manifest.
+- The monitor-admission core tests no longer race the CLI child they spawn: three of them probed the background hold with a fixed 500ms window, which a loaded machine misses while the child is still starting, so they failed a turn that was in fact held correctly. They now wait for the child's own output before asking whether the turn settled. The file was red on main — 5 of 17 failing on a clean checkout — before this release.
+
+## v2.1.2 — Upgrading from an installation the installer cannot see (2026-09-26)
+
+### Highlights
+
+- **An older installation that is not at the install path is found instead of ignored** — installers from before the standalone package put MultiCC wherever they were run from (`$PWD/MultiCC`), while this release installs to a fixed `~/MultiCC`, so the installation holding a user's history is routinely somewhere else entirely. The installer now looks where that installation can be evidenced — the directory the login service starts MultiCC from, and the directory this run was started in — and reports it.
+- **`--adopt-data <path>` brings the old data across** — sessions, chat history, task databases, memories and provider settings are copied into the new per-user data directory, and the old installation is left exactly as it was: not stopped, not renamed, not upgraded, its own token and port untouched.
+- **Nothing is copied from a directory the user did not name without an answer** — an installation the installer found on its own is reported and left alone; the copy happens only when the user names the path, confirms the question, or passes `--yes`. Where there is no terminal to ask on, the answer is the one that changes nothing, on both platforms.
+- **Windows has the same two paths** — `-AdoptData` and the same "found it, left it alone" report, with the copy verified against a real PowerShell run.
+
+### Installer
+
+- In-place upgrades of a pre-standalone installation (data root inside the package root) are unchanged: the old directory is stopped and kept as a backup, and its data is brought across.
+- The Windows data list and the POSIX one are still identical name-for-name, and both installers derive the destination from `multicc config path` rather than a hard-coded per-user path.
+
 ## Unreleased
 
 ### Improvements and fixes
 
-- **Upgrade-time cleanup of cron fan-out residue** — `./multicc update` records the version it is upgrading from, and the new process archives the per-firing duplicate tasks that releases ≤ 2.0.2 left on the board (archive only: a rule's fixed task is task-shell identity and cannot be merged into). The cleanup runs once per data directory, prints its count in the update output, and never blocks readiness.
+- **A half-installed macOS Agent now repairs itself** — the installer staged the prebuilt agent through `mktemp` (0600) and `cp`, which keeps an existing destination's mode, so a machine that used the packaged binary got the agent installed *without its executable bit*: launchd could never start it, every request failed, and automatic unlock reported "check access" no matter how often the user clicked. Installing now sets the mode explicitly and accepts a prebuilt whose mode was lost in transit (instead of falling back to a local build that needs the Xcode command line tools), the startup provisioning step treats a non-executable binary or a missing client symlink as "install it again" rather than "up to date", and after installing it pings the agent and warns when it is not answering. The unlock probe now separates "no executable bit" / "not installed" / "agent too old" from a plain failed check, so the panel says to restart MultiCC — which repairs it — instead of offering a button that cannot help.
+
+## v2.1.0 — Smarter routing, full-history search, and one unified Air console (2026-09-25)
+
+### Highlights
+
+- **Difficulty-aware Auto Provider routing** — Auto pools can keep a fixed failover order or route each message by difficulty. Jev evaluates the request before admission and sends simple work to economical models while reserving stronger models for complex work. Vercel AI Gateway, OpenRouter, TypeSafe, and custom HTTPS endpoints are supported. Keys remain in the local secrets vault, route decisions are visible in chat, and unavailable or uncertain evaluations follow a configurable safe fallback.
+- **Search the conversation, not just the task title** — Air can search task metadata and the full text of chat history, with ranked and highlighted snippets. A derived FTS index warms incrementally without blocking startup, updates after live turns, and also gives automatic task attribution stronger retrieval evidence.
+- **The Control Center is now fully native in Air** — provider management, official-account switching, relay sharing, ZCode/Kimi native login, workspace hibernation, orphan reconciliation, ignored-file audit, schedules, memory, voice, secrets, and host operations now live in the Air shell. Existing `/manage` and `/manage.html` bookmarks redirect to the corresponding Air view.
+- **Faster, safer long-running sessions** — Codex app-server sessions join Claude in a bounded resident-process pool, preserving native continuity while avoiding unbounded idle processes. Workspace leases serialize writers, restore hibernated worktrees before delivery, and keep active or queued turns from being reclaimed.
+- **Durable task-first dispatch** — `route_task` and `dispatch_master` can create an independent task and its execution session atomically through `new_task`, with idempotent creation and delivery receipts. Existing dispatch-to-session calls remain supported.
+
+### Air, Web, and App improvements
+
+- Added full-history versus task-only search scopes, quick directory switching, drag-to-reorder directories, and server-persisted ordering.
+- Missing coding CLIs can now be installed directly from the CLI update panel; model pickers refresh their Claude and Codex catalogs more reliably.
+- Task rows now show when a worktree has uncommitted changes or commits still waiting to merge.
+- Auto Provider editors on Web and App now suggest local Claude models for provider lines without their own catalog, while retaining a custom-model escape hatch.
+- Provider quota and balance bars now behave consistently across Web and App, including relayed and experimental CLI families, cached last-known-good readings, provider switches, and expired reset windows.
+- Per-message token usage now presents main and separately routed sub-agent usage consistently on Web and App.
+- Task deletion failures now name the tasks retaining a conversation and no longer leave cards stuck in a permanent “deleting” state.
+- English README screenshots are generated from a deterministic mocked fixture.
+
+### Reliability and orchestration
+
+- Release qualification is now explicit and auditable: every test file is classified as core, flow-impacting, or other; stable releases require the exact core manifest plus a pristine standalone installation test, while broader UI, live, CDP, and optional-flow suites remain available without blocking a release.
+- Resident background and sub-agent work may finish after the main reply without being rejected as stale proxy traffic.
+- Monitor admission, process-close handling, watchdog recovery, queued-delivery reporting, and workspace backpressure were tightened so long-running work is not mistaken for completion.
+- A terminal turn ledger now runs in shadow mode, recording Claude/Codex hook evidence for diagnostics without taking over lifecycle decisions.
+- Provider routing rejects mismatched or stale capabilities more precisely and preserves retryable backpressure without consuming delivery budgets.
+- Task-history retention, stale task-run recovery, and worktree capacity reclamation received additional safeguards.
+- **Upgrade-time cleanup of cron fan-out residue** — `./multicc update` archives the per-firing duplicate tasks that releases ≤ 2.0.2 left on the board. The cleanup runs once per data directory, reports its count, and never blocks readiness.
+- Updated the bundled Claude Agent SDK from 0.3.278 to 0.3.280.
+
+### macOS onboarding
+
+- **`computer-use` → `multicc-computer-use`** — the bundled GUI-automation skill now drives the optional MultiCC Agent through one shared Accessibility and Screen Recording grant across every CLI, provider, and `-p` session. It adds element-level see/click/set/press actions, an Esc emergency stop, a one-session lease, locked-screen refusal, automatic install/update, and a fallback path when the agent is absent.
+- The installer now verifies that Git actually works. It distinguishes the `/usr/bin/git` Command Line Tools shim from a real Homebrew, MacPorts, Xcode, or git-scm installation.
+- When Git is unavailable, Air can open the macOS Command Line Tools installer directly.
+- Full Disk Access errors now offer a one-click jump to the correct System Settings pane and identify the exact app or executable that needs permission.
+- The optional lid-sleep helper is narrowly scoped to `pmset -a disablesleep`, validates its sudoers entry before installation, and still falls back to the normal administrator prompt.
+- Desktop builds now enable the hardened runtime, include the Electron/Node entitlements it requires, and declare usage descriptions for Desktop, Documents, Downloads, removable volumes, and network volumes.
+
+### Compatibility
+
+- **No intended REST API or persisted task/provider format break.** Existing ordered Auto Provider pools continue to work unchanged; difficulty routing is opt-in.
+- The old `/manage` document and its private frontend modules were removed. `/manage` and `/manage.html?view=…` bookmarks redirect to Air, but custom tooling that imported legacy `public/manage-*.js` assets must move to supported APIs or Air panels.
+- MultiCC still ships its own Node runtime, but **a working Git installation is required at runtime** because every coding session owns a Git worktree. The installer continues when Git is missing and prints the exact remediation.
+- Full-history search creates a rebuildable derived SQLite index; chat history remains authoritative and no manual migration is required.
+- Jev makes an external evaluation request only when difficulty routing is enabled. Its API key stays in the local vault, and evaluation failure never drops the user message.
+- The Flutter app advances to `2.29.15+133`. Node.js remains `>=22.16`; existing desktop and standalone platform floors are unchanged.
 
 ## v2.0.1 — Task attribution you can see and steer (2026-09-19)
 

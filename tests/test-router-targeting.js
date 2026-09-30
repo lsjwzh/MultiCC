@@ -31,10 +31,6 @@ function fixture(t, overrides = {}) {
     }],
     ['commander', { id: 'commander', dirId: 'dir-a', kind: 'chat', type: 'commander' }],
     ['aux', { id: 'aux', dirId: 'dir-a', kind: 'chat', type: 'aux' }],
-    ['task-slot', {
-      id: 'task-slot', dirId: 'dir-a', kind: 'chat', type: 'worker',
-      taskExecutionSlot: true,
-    }],
   ]);
   const admissions = [];
   const busySet = new Set(overrides.busyTargets || ['slave-busy']);
@@ -54,9 +50,9 @@ function fixture(t, overrides = {}) {
         gateway: false,
         oneWay: opts.oneWay,
         resultMode: opts.resultMode,
-        taskId: opts.taskId,
-        taskStart: opts.taskStart,
-        taskSource: opts.taskSource,
+        taskId: opts.taskId || null,
+        taskStart: opts.taskStart === true,
+        taskSource: opts.taskSource || null,
         taskText: opts.taskText || null,
       },
     });
@@ -136,23 +132,6 @@ test('R11: cross-directory id is rejected with cross_directory', async t => {
     runtime.execute(cap, 'route_task', { target_session_id: 'other-dir', message: 'test' }),
     error => error.code === 'cross_directory',
   );
-});
-
-test('R11b: internal TaskRun slots cannot be addressed by route_task or dispatch_master', async t => {
-  const { runtime, admissions } = fixture(t);
-  for (const [tool, args, turnId] of [
-    ['route_task', { target_session_id: 'task-slot', message: 'bypass pool' }, 'turn-slot-route'],
-    ['dispatch_master', {
-      target_session_id: 'task-slot', message: 'bypass pool', mode: 'async',
-    }, 'turn-slot-master'],
-  ]) {
-    const cap = runtime.issueContext({ sessionId: 'master', turnId });
-    await assert.rejects(
-      runtime.execute(cap, tool, args),
-      error => error.code === 'invalid_target',
-    );
-  }
-  assert.equal(admissions.length, 0, 'ordinary MCP calls never reach dispatch admission');
 });
 
 // ── R4-R6: State interaction ─────────────────────────────────────────────────
@@ -345,11 +324,11 @@ test('S1: dispatch_master message to slave contains dispatch_slave callback inst
   const delivered = admissions[0].message;
   assert.match(delivered, /implement feature X/, 'original message preserved');
   assert.match(delivered, /dispatch_slave/, 'must mention dispatch_slave tool');
-  assert.match(delivered, /回传/, 'must contain callback instruction keyword');
+  assert.match(delivered, /Receipt required/, 'must contain callback instruction keyword');
   assert.match(delivered, /operation_id:"op_/, 'must print the receipt operation id');
   assert.match(delivered, /status:"completed"/, 'must show completed status example');
   assert.match(delivered, /status:"failed"/, 'must show failed status example');
-  assert.match(delivered, /不要轮询/, 'must forbid polling the master');
+  assert.match(delivered, /do not poll/, 'must forbid polling the master');
   // Resolve to avoid dangling promise
   const ops = await operations.list({ kind: 'dispatch' });
   const slaveCap = runtime.issueContext({
@@ -370,8 +349,8 @@ test('S2: route_task (one-way) message does NOT contain dispatch_slave callback 
   });
   assert.equal(admissions.length, 1);
   const delivered = admissions[0].message;
-  assert.match(delivered, /【任务派发方：master · master】/);
+  assert.match(delivered, /\[Dispatched by: master · master\]/);
   assert.match(delivered, /one-way work/, 'route_task preserves the original message');
   assert.doesNotMatch(delivered, /dispatch_slave/);
-  assert.doesNotMatch(delivered, /回传要求/);
+  assert.doesNotMatch(delivered, /Receipt required/);
 });

@@ -110,32 +110,6 @@ function createTaskWorktreeService(options = {}) {
     }
   }
 
-  // Run-boundary entry (task-run-host beforeDeliver): make sure the task
-  // worktree exists, then stamp the slot record onto it. Called once per
-  // delivery attempt; safe to repeat for the same task.
-  async function prepareForRun({ record, taskId } = {}) {
-    if (!record) return { ok: false, code: 'slot_not_found' };
-    const ensured = await ensureForTask(taskId);
-    if (!ensured.ok) return ensured;
-    if (record.branch !== ensured.branch || record.worktreePath !== ensured.worktreePath) {
-      record.worktreePath = ensured.worktreePath;
-      record.branch = ensured.branch;
-    }
-    return ensured;
-  }
-
-  // Run-boundary exit (task-run-host finalizeTerminal): restore the slot's
-  // own deterministic worktree identity. Returns false when there is nothing
-  // to restore (already slot-owned or directory unknown).
-  function releaseSlot({ record } = {}) {
-    if (!record || slotOwnsWorktree(record)) return false;
-    const dir = getDirectory(record.dirId);
-    if (!dir || !dir.path) return false;
-    record.worktreePath = path.join(dir.path, WORKTREE_SUBDIR, record.id);
-    record.branch = `multicc/${record.id}`;
-    return true;
-  }
-
   // Resolution used by the parameterized diff/merge routes.
   function info(taskId) {
     const id = String(taskId || '').trim();
@@ -218,8 +192,6 @@ function createTaskWorktreeService(options = {}) {
 
   return Object.freeze({
     ensureForTask,
-    prepareForRun,
-    releaseSlot,
     info,
     mergeTask,
     cleanupWorktree,

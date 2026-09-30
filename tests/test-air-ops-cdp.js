@@ -33,12 +33,18 @@ test('the Air host-ops region renders, reads light, and drives the update flow',
       headers: { 'content-type': CONTENT_TYPE[extension] || 'application/octet-stream' },
     };
   }
+  for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(f => f.endsWith('.js'))) {
+    routes[`/shared/${file}`] = { body: fs.readFileSync(path.join(publicDir, 'shared', file)), headers: { 'content-type': 'text/javascript' } };
+  }
   // 只留 air-ops.js 是这个用例的本意（别的一起跑会把无关请求搅进来），但 i18n 现在是
   // 页面骨架的一部分：空中文的 t() 由 /i18n.js 提供，不装它模块一取文案就 ReferenceError。
+  // shared/format.js 同理 —— air.html 里它在 air-ops.js 前面（tests/test-format-guard.js
+  // 钉住这个顺序），剪掉它模块取不到数字格式化，下载那两行就画不出来。
   const html = fs.readFileSync(path.join(publicDir, 'air.html'), 'utf8')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '')
     .replace('</body>', '<script src="/i18n-catalog.js"></script><script src="/i18n.js"></script>'
-      + '<script src="/qrcode.min.js"></script><script src="/air-ops.js"></script></body>');
+      + '<script src="/qrcode.min.js"></script><script src="/shared/format.js"></script>'
+      + '<script src="/air-ops.js"></script><script src="/air-more.js"></script></body>');
   routes['/'] = { body: html, headers: { 'content-type': 'text/html; charset=utf-8' } };
 
   routes['/api/version-check'] = json({ current: '1.6.10', channel: 'dev', latest: 'v1.7.0', latestVersion: '1.7.0', updateAvailable: true });
@@ -107,15 +113,19 @@ test('the Air host-ops region renders, reads light, and drives the update flow',
     };
     await assertLight(['#sidebar', '#air-ver-row', '#air-ver-hint', '#air-boot-uptime', '#air-ops-status'], 3.7);
     await assertLight(['#air-ver-current', '#air-boot-time', '.ops-actions button', '.ops-actions a'], 4.5);
+    await page.evaluate('document.getElementById("side-more").click()');
+    await page.screenshot('more-open');
+    await page.evaluate('new Promise(resolve => setTimeout(resolve, 350))');
     const actions = await page.evaluate(`(() => {
       const row = document.querySelector('.ops-actions'), sidebar = document.getElementById('sidebar');
       return { buttons: [...row.querySelectorAll('button, a')].map(el => el.textContent.trim()),
-        fits: row.getBoundingClientRect().right <= sidebar.getBoundingClientRect().right + 1,
+        fits: row.getBoundingClientRect().right <= document.getElementById('more-panel').getBoundingClientRect().right + 1,
         height: Math.min(...[...row.querySelectorAll('button')].map(el => el.getBoundingClientRect().height)) };
     })()`);
     assert.deepEqual(actions.buttons, ['安装包', '二维码', '推送通知', '🔄 重启', '退出登录']);
     assert.ok(actions.fits, 'the two-column action grid must fit the sidebar');
     assert.ok(actions.height >= 26, `tappable action rows, got ${actions.height}px`);
+    await page.evaluate('document.getElementById("more-close").click()');
     // The sidebar is one column of bands that all want their natural height:
     // the fixed chrome, the task list, and this footer. Their minimums add up
     // to more than a 900px window, so something has to give — the footer keeps
@@ -191,13 +201,32 @@ test('the Air host-ops region renders, reads light, and drives the update flow',
     assert.ok(qr.dark > 50 && qr.white > 50, `an unscannable code would be blank or inverted: ${JSON.stringify(qr)}`);
     t.diagnostic('qr: ' + await page.screenshot('air-ops-qr'));
 
+    // ── A laptop at 100% zoom: the opened region must still reach restart ──
+    // 780px 是 1440×900 笔记本去掉浏览器栏后的视口。展开「更多与系统」后底栏比
+    // 剩下的高度还高；侧栏曾经不滚、body 又 overflow:hidden，重启按钮直接被裁掉。
+    await page.evaluate('document.getElementById("ops-dialog").close()');
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 780, deviceScaleFactor: 1, mobile: false });
+    await page.evaluate('document.getElementById("side-more").click();document.getElementById("air-restart-btn").scrollIntoView({block: "nearest"})');
+    await page.screenshot('drawer-layout');
+    await page.evaluate('new Promise(resolve => setTimeout(resolve, 350))');
+    assert.ok(await page.waitFor(`(() => {
+      const box = document.getElementById('air-restart-btn').getBoundingClientRect();
+      return box.height > 0 && box.top >= 0 && box.bottom <= innerHeight + 1;
+    })()`), 'opening 更多与系统 must bring the restart button on screen');
+    assert.ok(await page.evaluate(`document.getElementById('tasks').getBoundingClientRect().height >= 100`),
+      'the task list keeps a usable height instead of collapsing to nothing');
+    t.diagnostic('laptop: ' + await page.screenshot('air-ops-laptop-780'));
+    await page.evaluate('document.getElementById("more-close").click(); document.getElementById("sidebar").scrollTop = 0');
+
     // ── The region holds up on a phone, where the sidebar is a drawer ──────
     await page.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 900, deviceScaleFactor: 1, mobile: true });
-    await page.evaluate('document.getElementById("ops-dialog").close();document.body.classList.add("nav-open");document.getElementById("sidebar").scrollTop = 1e6');
+    await page.evaluate('document.getElementById("ops-dialog").close();document.body.classList.add("nav-open");document.getElementById("sidebar").scrollTop = 1e6;document.getElementById("side-more").click();document.getElementById("air-restart-btn").scrollIntoView({block: "nearest"})');
+    await page.screenshot('drawer-layout');
+    await page.evaluate('new Promise(resolve => setTimeout(resolve, 350))');
     assert.ok(await page.evaluate(`(() => {
       const row = document.querySelector('.ops-actions'), sidebar = document.getElementById('sidebar');
       return row.getBoundingClientRect().right <= innerWidth + 1 && row.scrollWidth <= row.clientWidth + 1
-        && document.getElementById('air-ver-current').getBoundingClientRect().right <= sidebar.getBoundingClientRect().right + 1;
+        && document.getElementById('more-panel').scrollWidth <= document.getElementById('more-panel').clientWidth + 1;
     })()`), 'the ops region must not overflow a 320px drawer');
     t.diagnostic('mobile: ' + await page.screenshot('air-ops-mobile-320'));
 

@@ -121,6 +121,76 @@
     }
     .hdr-btn:hover { background: #30363d; }
 
+    /* ── Find bar (⌘F) ── 贴着终端上方的一条，浏览器查找条那种密度 */
+    #find-bar {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+    }
+    #find-bar[hidden] { display: none; }
+    #find-input {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 10px;
+      background: #0d1117;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+    }
+    #find-input:focus { border-color: #58a6ff; }
+    #find-count { color: #8b949e; font-size: 12px; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+    #find-bar .hdr-btn { padding: 4px 9px; font-size: 12px; }
+
+    /* ── Info bar: 这一页开着的是谁（cwd / worktree / 分支 / provider·model）──
+       终端页认识自己的唯一途径是一条 WS 帧（session_id: {id, cli}），cwd、分支、
+       模型一概不知道；在同目录几个终端之间跳来跳去时，这正是要看的东西。整条是
+       只读的，拿不到就整条 hidden —— 不拿猜的填。 */
+    #term-info {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 4px 12px;
+      background: #10151c;
+      border-bottom: 1px solid #21262d;
+      font-size: 11.5px;
+      color: #8b949e;
+    }
+    #term-info[hidden] { display: none; }
+    /* cwd 是这条里唯一会长的东西：让它省略号，别把右边那几颗芯片挤出屏。 */
+    #term-info-cwd {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      color: #c9d1d9;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    #term-info-cwd.warn { color: #d29922; }
+    .ti-chip {
+      flex: none;
+      padding: 1px 7px;
+      border: 1px solid #30363d;
+      border-radius: 9px;
+      background: #161b22;
+      white-space: nowrap;
+    }
+    .ti-chip[hidden] { display: none; }
+    .ti-chip.warn { color: #d29922; border-color: #d2992255; }
+    #term-info .ti-spacer { flex: 1 1 auto; min-width: 0; }
+    /* 同目录终端切换：只有真有第二条时才出现（切不出去的两颗按钮是噪音）。 */
+    #term-switch { flex: none; display: flex; align-items: center; gap: 4px; }
+    #term-switch[hidden] { display: none; }
+    #term-switch .hdr-btn { padding: 2px 8px; font-size: 12px; line-height: 1.5; }
+    #term-switch-pos { min-width: 32px; text-align: center; font-variant-numeric: tabular-nums; }
+
     /* ── Input Toolbar ── */
     #input-toolbar {
       flex-shrink: 0;
@@ -242,6 +312,9 @@
     #notify-toast.waiting { background: #d29922; }
     #notify-toast.completed,
     #notify-toast.succeeded { background: #238636; }
+    /* 与聊天页同一套档位：client.js 的提示条档位来自共享文案表。 */
+    #notify-toast.running { background: #1f6feb; }
+    #notify-toast.error { background: #da3633; }
     #notify-toast .toast-close {
       position: absolute;
       right: 10px;
@@ -312,6 +385,8 @@
       touch-action: manipulation;
     }
     .mkey:active { background: #388bfd; border-color: #388bfd; color: #fff; }
+    /* 粘滞 Ctrl 点亮态：修饰键还挂着，要一眼可见 */
+    .mkey.armed { background: #238636; border-color: #2ea043; color: #fff; }
 
     #mobile-input-row {
       display: flex;
@@ -714,6 +789,12 @@
         flex-wrap: wrap;
         gap: 8px;
       }
+      /* 360px 的手机上 cwd + 三颗芯片 + 切换器挤不进一行：让它换行，别把信息省略掉。 */
+      #term-info {
+        flex-wrap: wrap;
+        padding: 4px 10px;
+        row-gap: 4px;
+      }
       #header-actions {
         margin-left: 0;
         width: 100%;
@@ -741,10 +822,27 @@
       <a href="/wechat" class="hdr-btn" title="WeChat Bridge">💬</a>
       <button id="memo-btn" class="hdr-btn" data-i18n-title="termProjectMemo" title="项目备忘" onclick="openMemo()">📝</button>
       <a href="/dashboard" class="hdr-btn" data-i18n-title="termSessionDashboard" title="会话状态看板">📊</a>
-      <button id="merge-btn" class="hdr-btn" data-i18n-title="mergeWorktreeTitle" title="把 worktree 合并回基分支">🔀</button>
+      <button id="merge-btn" class="hdr-btn" data-i18n-title="mergeWorktreeTitle" title="把此会话 worktree 合并回基分支">🔀</button>
       <button id="restart-btn" class="hdr-btn" data-i18n-title="termRestartCli" title="重启 Claude 命令">🔄</button>
+      <button id="find-btn" class="hdr-btn" data-i18n-title="termFindInTerminal" title="在终端里查找 (⌘F / Ctrl+F)">🔍</button>
+      <button id="font-down-btn" class="hdr-btn" data-i18n-title="termFontDecrease" title="缩小字号 (⌘- / Ctrl+-)">A−</button>
+      <button id="font-up-btn" class="hdr-btn" data-i18n-title="termFontIncrease" title="放大字号 (⌘+ / Ctrl+=)">A+</button>
       <button class="hdr-btn lang-toggle" type="button" onclick="toggleLang()" data-i18n-title="languageToggle" title="切换语言：中文 / English"></button>
       <button id="reconnect-btn" data-i18n="termReconnect" onclick="connect()">Reconnect</button>
+    </div>
+  </div>
+
+  <!-- 信息条：内容全部由 client.js 从 /api/sessions 填（拿不到就整条 hidden）。 -->
+  <div id="term-info" hidden>
+    <span id="term-info-cwd"></span>
+    <span id="term-info-worktree" class="ti-chip" hidden></span>
+    <span id="term-info-branch" class="ti-chip" hidden></span>
+    <span id="term-info-model" class="ti-chip" hidden></span>
+    <span class="ti-spacer"></span>
+    <div id="term-switch" hidden>
+      <button id="term-prev" class="hdr-btn" data-i18n-title="termPrevSibling" title="同目录的上一个终端">‹</button>
+      <span id="term-switch-pos"></span>
+      <button id="term-next" class="hdr-btn" data-i18n-title="termNextSibling" title="同目录的下一个终端">›</button>
     </div>
   </div>
 
@@ -754,6 +852,15 @@
     <button id="attach-btn" class="toolbar-btn" data-i18n-title="termAttachFile" title="附加文件">📎</button>
     <input id="file-input" type="file" style="display:none">
     <div id="attachments"></div>
+  </div>
+
+  <div id="find-bar" hidden>
+    <input id="find-input" type="text" data-i18n-placeholder="termFindPlaceholder" placeholder="在终端输出里查找…" autocomplete="off" spellcheck="false">
+    <span id="find-count"></span>
+    <button id="find-prev" class="hdr-btn" data-i18n-title="termFindPrev" title="上一个 (⇧Enter)">↑</button>
+    <button id="find-next" class="hdr-btn" data-i18n-title="termFindNext" title="下一个 (Enter)">↓</button>
+    <button id="find-case" class="hdr-btn" data-i18n-title="termFindCase" title="区分大小写" aria-pressed="false">Aa</button>
+    <button id="find-close" class="hdr-btn" data-i18n-title="termFindClose" title="关闭 (Esc)">✕</button>
   </div>
 
   <div id="terminal-wrap">
@@ -766,15 +873,20 @@
     <div id="mobile-keys">
       <button class="mkey" data-seq="&#x1b;">Esc</button>
       <button class="mkey" data-seq="&#x09;">Tab</button>
+      <!-- 粘滞 Ctrl：点亮后下一个键消耗它（Termux 惯例），字母组合不再逐颗枚举 -->
+      <button class="mkey" data-role="ctrl">Ctrl</button>
       <button class="mkey" data-seq="&#x15;">^U</button>
       <button class="mkey" data-seq="&#x03;">^C</button>
       <button class="mkey" data-seq="&#x04;">^D</button>
-      <button class="mkey" data-seq="&#x1b;[A">↑</button>
-      <button class="mkey" data-seq="&#x1b;[B">↓</button>
-      <button class="mkey" data-seq="&#x1b;[D">←</button>
-      <button class="mkey" data-seq="&#x1b;[C">→</button>
-      <button class="mkey" data-seq="&#x1b;[H">Home</button>
-      <button class="mkey" data-seq="&#x1b;[F">End</button>
+      <button class="mkey" data-seq="&#x1b;[A" data-repeat>↑</button>
+      <button class="mkey" data-seq="&#x1b;[B" data-repeat>↓</button>
+      <button class="mkey" data-seq="&#x1b;[D" data-repeat>←</button>
+      <button class="mkey" data-seq="&#x1b;[C" data-repeat>→</button>
+      <!-- claude TUI 翻长输出靠这两个 -->
+      <button class="mkey" data-seq="&#x1b;[5~" data-repeat>PgUp</button>
+      <button class="mkey" data-seq="&#x1b;[6~" data-repeat>PgDn</button>
+      <button class="mkey" data-seq="&#x1b;[H" data-repeat>Home</button>
+      <button class="mkey" data-seq="&#x1b;[F" data-repeat>End</button>
     </div>
     <div id="mobile-input-row">
       <input id="mobile-input" type="text"
@@ -912,11 +1024,16 @@
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/xterm-addon-fit/xterm-addon-fit.js"></script>
   <script src="/vendor/xterm-addon-web-links/xterm-addon-web-links.js"></script>
+  <script src="/vendor/xterm-addon-search/xterm-addon-search.js"></script>
   <script src="pwa.js"></script>
   <script src="voice-stream.js?v=hud20260718b"></script>
   <script src="error-envelope.js"></script>
   <script src="auth-client.js"></script>
   <script src="shared/dom-helpers.js"></script>
+  <script src="shared/format.js"></script>
+  <!-- 通知标题的唯一来源（pwa.js 的本地通知兜底 + client.js 的 speakNotify），
+       本页不加载 i18n.js，模块自带中英兜底。 -->
+  <script src="shared/notification-copy.js"></script>
   <script src="client.js?v=voice-task-label-20260820"></script>
 </body>
 </html>

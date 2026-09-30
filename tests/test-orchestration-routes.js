@@ -148,6 +148,14 @@ function fixture(options = {}) {
           schedule: { state: 'frozen', queued: [{ entryId, position: 1 }] },
         };
       },
+      async editQueued(sessionId, entryId, input) {
+        calls.push({ type: 'queue.edit-queued', sessionId, entryId, input });
+        return options.queueEditQueued || {
+          ok: true,
+          edited: { entryId },
+          schedule: { state: 'frozen', queued: [{ entryId, position: 1 }] },
+        };
+      },
     };
     runtime.tick = async () => {
       calls.push({ type: 'queue.tick' });
@@ -408,6 +416,40 @@ test('session FIFO status and explicit resolution require confirmation and remai
     2,
     'moving a staged message is ordering only: it never cancels the running turn',
   );
+});
+
+test('edit_queued rewrites a pending staged message and maps its error codes', async () => {
+  const current = fixture({ scheduler: true });
+  const edited = await invoke(current.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: {
+      action: 'edit_queued',
+      entryId: 'entry-2',
+      text: 'rewritten input',
+      confirm: true,
+    },
+  });
+  assert.equal(edited.response.statusCode, 200);
+  assert.deepEqual(current.calls.find(call => call.type === 'queue.edit-queued'), {
+    type: 'queue.edit-queued',
+    sessionId: 's1',
+    entryId: 'entry-2',
+    input: { text: 'rewritten input', actor: 'user' },
+  });
+  // 编辑不触发 tick：正文是快照级修改，不推进队列。
+  assert.equal(current.calls.some(call => call.type === 'queue.tick'), false);
+
+  const missing = fixture({ scheduler: true, queueEditQueued: { ok: false, code: 'queued_entry_not_found' } });
+  const missingResult = await invoke(missing.app, 'POST', '/api/sessions/:id/queue/action', {
+    params: { id: 's1' },
+    body: {
+      action: 'edit_queued',
+      entryId: 'gone',
+      text: 'x',
+      confirm: true,
+    },
+  });
+  assert.equal(missingResult.response.statusCode, 404);
 });
 
 test('reorder_queued is ordering only and reports the queue error codes verbatim', async () => {
@@ -942,4 +984,27 @@ test('manual question dismissal validates identity and never calls queue retry o
   assert.equal((await invoke(h.app, 'POST', route, { params: { id: 's1' }, body: { requestId: 'old' } })).response.statusCode, 200);
   assert.deepEqual(received, [['s1', 'old']]);
   assert.equal(h.calls.length, 0);
+});
+
+test('insert_queued requires start evidence and reports terminal delivery failure', async () => {
+  for (const [delivery, active, started, status] of [
+    [null, null, false, 200],
+    [null, { entryId: 'entry-x' }, false, 200],
+    [null, { entryId: 'entry-x', startedAt: 123 }, true, 200],
+    [{ state: 'delivered' }, null, true, 200],
+    [{ state: 'dead-letter', lastError: 'task_identity_mismatch' }, null, false, 409],
+  ]) {
+    const f = fixture({ scheduler: true, queueStatus: { active, queued: [] } });
+    f.runtime.outbox = { get: async () => delivery };
+    const result = await invoke(f.app, 'POST', '/api/sessions/:id/queue/action', {
+      params: { id: 's1' }, body: { action: 'insert_queued', entryId: 'entry-x', confirm: true },
+    });
+    assert.equal(result.response.statusCode, status);
+    assert.equal(result.response.body.started, started);
+    if (status === 409) {
+      assert.equal(result.response.body.ok, false);
+      assert.equal(result.response.body.code, 'queue_delivery_failed');
+      assert.equal(result.response.body.retryable, false);
+    }
+  }
 });

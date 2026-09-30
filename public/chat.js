@@ -221,12 +221,18 @@ function fixupLocalImages(root) {
   });
 }
 
+// Assistant links to local files are rewritten through /api/download by
+// chat-local-links.js (loaded before this file); see window.MultiCCChatLocalLinks.
+
 /* ── DOM refs ── */
 const messagesEl  = document.getElementById('messages');
 let chatScrollController = null;
 const inputEl     = document.getElementById('input');
 const sendBtn     = document.getElementById('send-btn');
 const statusEl    = document.getElementById('status');
+// Filled again on every status change; set here so the narrow Air pill never
+// renders empty during the window before the first connect lands.
+if (statusEl) statusEl.dataset.statusLabel = tt('connecting');
 const costBar     = document.getElementById('cost-bar');
 const cwdPathEl   = document.getElementById('cwd-path');
 const attachArea  = document.getElementById('attach-area');
@@ -245,10 +251,13 @@ const airChatMode = document.body.classList.contains('air-chat');
 const airHostMode = new URLSearchParams(location.search).get('air') === '1'
   && !window.MultiCCShareMode?.active?.();
 const airOwnedById = new Set(['model-btn', 'effort-btn', 'provider-btn', 'role-btn', 'cli-btn']);
-// Removed from Air's More menu entirely: the voice-call entry is not part of
-// the Air surface, and reconnect duplicates the host header's refresh button.
+// Language stays a direct page control where the standalone Chat needs it, but
+// never occupies a duplicate row in More. Air owns that global control beside
+// the sidebar version check; it also omits voice-call and duplicate reconnect.
+const chatHiddenMenuId = new Set(['lang-btn']);
 const airHiddenMenuId = new Set(['s2s-btn', 'reconnect-btn']);
-const headerMenuId = id => !airChatMode || (!airOwnedById.has(id) && !airHiddenMenuId.has(id));
+const headerMenuId = id => !chatHiddenMenuId.has(id)
+  && (!airChatMode || (!airOwnedById.has(id) && !airHiddenMenuId.has(id)));
 const airDeleteTaskBtn = document.getElementById('air-delete-task-btn');
 if (airHostMode && airDeleteTaskBtn) {
   airDeleteTaskBtn.hidden = false;
@@ -283,9 +292,6 @@ function closeHeaderMoreModal() { return headerMoreController.close(); }
 /* ── State ── */
 let ws = null;
 let sessionId = null;
-
-// Simple HTML escape helper (memo + s2s pickers rely on this at top level) —
-// canonical copy in shared/dom-helpers.js.
 
 // Shared Memo protocol/controller; this file keeps only the Chat-specific UI adapter.
 const chatMemoClient = window.MultiCCMemo.createClient({ api: window.MultiCCApi });
@@ -398,24 +404,14 @@ let activeContentType = null;
 let activeContentIndex = -1;
 let currentCli = 'claude';
 const cliBtn = document.getElementById('cli-btn');
-const CLI_META = {
-  claude: { label: 'Claude', color: '#f78166' },
-  'claude-exp': { label: 'Claude Exp', color: '#ff9a76' },
-  codex: { label: 'Codex', color: '#2ea043' },
-  'codex-exp': { label: 'Codex Exp', color: '#20a66a' },
-  opencode: { label: 'OpenCode', color: '#388bfd' },
-  zcode: { label: 'ZCode', color: '#a371f7' },
-  qoder: { label: 'Qoder CN', color: '#ff8a3d' },
-  kimi: { label: 'Kimi Code', color: '#13c2c2' },
-  codebuddy: { label: 'WorkBuddy', color: '#0052d9' },
-  dsh: { label: 'DSH', color: '#4d6bfe' },
-};
-// Vendor-auth CLIs own their account/model config (no multicc provider).
-const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh']);
+// 展示名/颜色/无 provider 这几列来自共享的 CLI 目录（public/provider-catalog.js），
+// 权威表在服务端 src/cli/cli-capability.js —— 以前这张表和另外六份副本各写各的。
+const CLI_META = _providerCatalog.cliMetaMap();
+const PROVIDERLESS_CLIS = _providerCatalog.providerlessClis();
 
 function applyCliUi(cli) {
   const next = CLI_META[cli] ? cli : 'claude';
-  const meta = CLI_META[next];
+  const meta = _providerCatalog.cliMeta(cli);
   currentCli = next; window.MultiCCChatRateLimit?.setCli(next);
   _sessionCli = next;
   const badge = document.querySelector('.badge');
@@ -514,6 +510,7 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   messagesEl,
   safeMarkdown: window.MultiCCSafeMarkdown,
   fixupLocalImages,
+  fixupLocalFileLinks: (window.MultiCCChatLocalLinks && window.MultiCCChatLocalLinks.fixupLocalFileLinks) || (() => {}),
   highlightCodeBlocks,
   buildUsageLine,
   buildTimingLine,
@@ -525,7 +522,7 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   // Quoting reads history, it does not write it — so it stays available in the
   // archive view too, where a message may be the only copy left.
   attachQuoteButton,
-  warn: (...args) => console.warn(...args),
+  warn: (...args) => console.warn(...args), translate: tt,
 });
 const detachIndexedTask = window.MultiCCTaskIndex?.createDetachAction({
   translate: tt, confirm: _chatConfirm, request: (path, body) => chatApi.json(withToken(path), { method: 'POST', json: body }),
@@ -580,6 +577,7 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
   translate: tt,
   maybeScrollToBottom,
   retryTransport: () => chatTransport.retryNow(),
+  onManualRetry: options => chatComposer.manualRetry(options),
   isRestarting: () => _isRestarting,
   getBaseTitle: () => _baseTitle,
   debug: dbg,
@@ -625,6 +623,10 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
   onSocket(socket) { ws = socket; },
   onConnecting({ debugUrl }) {
     statusEl.textContent = 'Connecting...';
+    // The narrow Air layout hides this text and paints a short pill instead
+    // (chat-air.css): a pseudo-element can only read what we put in an
+    // attribute, it cannot call t() itself.
+    statusEl.dataset.statusLabel = tt('connecting');
     statusEl.className = '';
     dbg('ws', `connect() → ${debugUrl}`);
   },
@@ -637,6 +639,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
       return false;
     }
     statusEl.textContent = 'Connected';
+    statusEl.dataset.statusLabel = tt('connected');
     statusEl.className = 'connected';
     statusEl.title = '';
     statusEl.onclick = () => forceReconnect('status click');
@@ -706,6 +709,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
       ? window.MultiCCErrorEnvelope.presentation(envelope, { retrySeconds: secs }) : null;
     statusEl.textContent = _isRestarting ? '重启中…'
       : view ? `${view.headline}：${view.message}` : `Reconnecting in ${secs}s...`;
+    statusEl.dataset.statusLabel = tt(_isRestarting ? 'chatStatusRestarting' : 'chatStatusReconnecting');
     statusEl.className = 'error';
     statusEl.title = envelope && window.MultiCCErrorEnvelope
       ? window.MultiCCErrorEnvelope.diagnosticText(envelope) : '';
@@ -724,6 +728,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     statusEl.textContent = view
       ? `${view.headline}：${view.message}`
       : `WebSocket ticket failed: ${error && error.message || 'unknown error'}`;
+    statusEl.dataset.statusLabel = tt('chatStatusReconnecting');
     statusEl.className = 'error';
     statusEl.title = envelope && window.MultiCCErrorEnvelope
       ? window.MultiCCErrorEnvelope.diagnosticText(envelope) : '';
@@ -949,10 +954,9 @@ function highlightCodeBlocks(root) {
 
 let _lastUserBubble = null;  // the most recent user message bubble (holds the per-turn auto-commit checkbox)
 function addUserMsg(text, clientMsgId) {
-  const div = document.createElement('div');
-  div.className = 'msg user';
-  div.textContent = text;
-  if (clientMsgId) div.dataset.clientMsgId = clientMsgId;
+  // 气泡由 view 造：🔇 系统注入（引擎写的 role=user）在这里和历史回放一样是张
+  // 系统卡，不是用户气泡。勾选/锚点的归属由 view 的 lastUserElement 决定。
+  const div = chatHistoryView.createUserNode(text, clientMsgId);
   // 插入位在待答节点之前：queued:false 广播丢失、admission 进度回填、队列
   // started 后的补画，都可能晚于 message_start —— 那时列表尾上要么是本轮流式
   // 气泡，要么是它之前那个「正在处理…」占位（.thinking-bubble）。占位不是
@@ -961,9 +965,11 @@ function addUserMsg(text, clientMsgId) {
   const streamingTail = chatHistoryView.pendingAnswerAnchor?.({ currentElement: currentMsgEl }) || null;
   if (streamingTail) messagesEl.insertBefore(div, streamingTail);
   else messagesEl.appendChild(div);
-  // Per-message auto-commit checkbox lives under the user's own message.
-  attachAutoCommitCheck(div, _sessionAutoCommit);
-  _lastUserBubble = div;
+  // A system-inject card is not the user's own turn: it takes no last-user
+  // anchor (the server-side turn-end auto-commit no longer needs one either).
+  if (!div.classList.contains('system-inject')) {
+    _lastUserBubble = div;
+  }
   forceScrollToBottom();
   return div;
 }
@@ -986,6 +992,7 @@ function addSystemMsg(text) {
   div.textContent = text;
   messagesEl.appendChild(div);
   maybeScrollToBottom();
+  return div;
 }
 const chatAuthAction = window.MultiCCChatAuthAction.create({ document, chatApi, withToken, getSessionName: () => _sessionName, addSystemMsg, getMessagesEl: () => messagesEl, maybeScrollToBottom });
 /* ── Background-task danmaku panel ──
@@ -1029,7 +1036,6 @@ function resetHistoryPagination() {
 
 /* ── Apply initial/reconnect history without duplicating persisted DOM ── */
 function applyHistoryPlan(plan) {
-  rememberAutoCommitChoice(_lastUserBubble);
   const viewPlan = chatHistoryView.applyPlan(plan, {
     currentElement: currentMsgEl,
     lastUserElement: _lastUserBubble,
@@ -1037,12 +1043,6 @@ function applyHistoryPlan(plan) {
   });
   currentMsgEl = viewPlan.currentElement;
   _lastUserBubble = viewPlan.lastUserElement;
-  // History-rendered user bubbles never carried the per-turn auto-commit
-  // checkbox (only the live addUserMsg path attaches it). Rebuild it on the
-  // last user message so a reloaded session keeps the affordance.
-  if (_lastUserBubble && !_lastUserBubble.querySelector('.msg-auto-commit')) {
-    attachAutoCommitCheck(_lastUserBubble, _sessionAutoCommit);
-  }
 
   // A reconnect refreshes authoritative totals even when they are zero. When
   // no aggregate is provided, only the initial page may reconstruct totals;
@@ -1256,11 +1256,10 @@ messagesEl.addEventListener('scroll', () => {
   }
 }, { passive: true });
 
-function escHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
+/* The page's single escaper: the shared five-character one (shared/dom-helpers.js
+   is loaded before this file). The old textContent→innerHTML copy left quotes raw,
+   so anything rendered into an attribute came out unescaped. */
+function escHtml(s) { return escapeHtml(s); }
 
 function truncate(s, n) {
   return s.length > n ? s.slice(0, n) + '...' : s;
@@ -1272,7 +1271,7 @@ function truncate(s, n) {
    the merge-hint observer and the CDP fixtures call by name. */
 const worktreeSyncRequest = window.MultiCCWorktreeSync.create({ document,
   getSession: () => _sessionName, getShell: () => shellChatView.shellId,
-  readOnly: isReadOnly,
+  readOnly: isReadOnly, translate: tt,
   request: (url, options) => chatApi.json(withToken(url), options), notice: addSystemMsg,
 });
 /* ── 这个帧还在台上吗 ──
@@ -1290,7 +1289,7 @@ const worktreeStatus = window.MultiCCWorktreeStatus.create({ document, tt, withT
   isActive: () => _chatFrameActive,
 });
 function applyMergeStatus(st) { return worktreeStatus.apply(st); }
-function refreshMergeStatus() { return worktreeStatus.refresh(); }
+function refreshMergeStatus(options) { return worktreeStatus.refresh(options); }
 function startMergeStatusPolling() { return worktreeStatus.startPolling(); }
 
 /* ── Liveness pill: is this session working / idle / stalled right now ── */
@@ -1381,46 +1380,6 @@ async function requestMerge() {
 
 mergeBtn?.addEventListener('click', requestMerge);
 mergeHintBtn?.addEventListener('click', requestMerge);
-
-/* ── Auto-commit after a successful turn ── */
-// Called after an assistant turn completes. If the per-message auto-commit
-// checkbox is checked and the worktree has mergeable changes, silently
-// trigger commit + merge.
-let _autoCommitPending = false;  // prevent duplicate auto-commits
-async function autoCommitIfNeeded(bubbleEl) {
-  if (!bubbleEl || _autoCommitPending) return;
-  const row = bubbleEl.querySelector('.msg-auto-commit');
-  if (!row || row.classList.contains('done')) return;
-  const cb = row.querySelector('input[type="checkbox"]');
-  if (!cb || !cb.checked) return;
-  // Check if there's actually something to merge
-  if (!worktreeStatus.mergeReady) return;
-  _autoCommitPending = true;
-  try {
-    addSystemMsg('🚀 自动提交合并中（此轮开启了自动提交）...');
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/merge`), { method: 'POST' });
-    const data = await res.json();
-    const failure = res.ok ? null : chatApi.errorFromPayload(data, { response: res });
-    if (res.ok) {
-      addSystemMsg(data.merged
-        ? `✓ 自动提交完成：已合并 ${data.commits} 个提交回基分支${data.committed ? '（含本次自动提交）' : ''}${data.syncedBack ? '，并已自动把基分支同步回本 worktree' : ''}`
-        : `✓ 自动提交：${data.message || '没有新提交需要合并'}`);
-      // Mark the checkbox as done
-      row.classList.add('done');
-      rememberAutoCommitChoice(bubbleEl);
-      applyMergeStatus({ mergeReady: false, dirty: false, ahead: 0 });
-      refreshMergeStatus();
-    } else if (res.status === 409) {
-      addSystemMsg('⚠️ 自动提交冲突：' + chatApi.errorText(failure) + '。冲突文件：' + (data.conflicts || []).join(', '));
-    } else {
-      addSystemMsg('自动提交失败：' + chatApi.errorText(failure));
-    }
-  } catch (e) {
-    addSystemMsg('自动提交请求失败：' + chatApi.errorText(e));
-  } finally {
-    _autoCommitPending = false;
-  }
-}
 
 /* ── Diff viewer ── */
 /* The list/detail UI lives in chat-diff.js (window.chatDiffViewer). These
@@ -1608,15 +1567,12 @@ function updateModelBtn() {
   const auto = _sessionProviderSelection?.mode === 'auto' ? _sessionProviderSelection : null;
   const shown = auto ? _activeProviderModel : (_sessionEffectiveModel || _sessionModel);
   const actualProvider = _activeProviderName;
+  // 厂商自持账号的 CLI 显示自己的产品名而不是 multicc 线路名（共享 CLI 目录出）。
+  const nativeRoute = _providerCatalog.nativeRouteLabel(_sessionCli);
   const provider = auto
       ? `Auto · ${window.MultiCCChatAiConfig.autoProtocolLabel(auto.protocol)} → ${actualProvider || '待路由'}`
-      : _sessionCli === 'qoder'
-      ? 'Qoder CN'
-      : _sessionCli === 'codebuddy'
-      ? 'WorkBuddy'
-      : _sessionCli === 'dsh'
-      ? 'DSH'
-      : ((_sessionProvider ? providerShortName(_sessionProvider) : '')
+      : (nativeRoute
+      || (_sessionProvider ? providerShortName(_sessionProvider) : '')
       || _sessionProviderDisplayName
       || (_sessionCli === 'zcode' ? 'ZCode 原生' : tt('default')));
   const modelProviderId = auto ? _activeProviderId : _sessionProvider;
@@ -1669,15 +1625,11 @@ async function loadSessionModel() {
   _sessionModel = info.model || ''; _sessionEffectiveModel = info.effectiveModel || info.model || '';
   _sessionEffort = info.effort || ''; _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
   safe('model-btn', updateModelBtn); safe('effort-btn', updateEffortBtn);
-  _sessionAutoCommit = !!info.autoCommit;
+  _sessionAutoCommit = info.autoCommit !== false; // 缺字段 = 开，和 create-record 同一口径
   safe('auto-commit-btn', updateAutoCommitBtn);
-  // History reload attaches the per-turn checkbox before session info lands.
-  // Catch it up to the authoritative session default unless the user already
-  // toggled that bubble's checkbox by hand.
-  syncAutoCommitChoice();
   void window.MultiCCChatAiConfig.maybePromptZcodeSetup({
     cli: _sessionCli, provider: _sessionProvider, sessionId: _sessionName, loadProviders: () => ensureProviderList('zcode'),
-    onProvider: () => modelBtn?.click(), onSettings: () => window.open('/manage.html?view=provider', '_blank', 'noopener'),
+    onProvider: () => modelBtn?.click(), onSettings: () => window.open('/air?view=provider', '_blank', 'noopener'),
   });
 }
 
@@ -2206,13 +2158,12 @@ memoryBtn?.addEventListener('click', () => { openMemoryEditor(); });
 function applyMemoryEvent(memory) { _sessionMemory = memoryToText(memory); updateMemoryBtn(); }
 
 /* ── Per-session auto-commit (auto commit & merge after a successful turn) ── */
+// Session-level switch is the only control: the server merges at turn end
+// whenever this is on (src/routes/session-git.js autoCommitTurn). There is no
+// per-turn checkbox anymore — a client-side per-turn trigger could never fire
+// for turns that end with no page connected.
 const autoCommitBtn = document.getElementById('auto-commit-btn');
 let _sessionAutoCommit = false;
-
-const autoCommitChoices = window.MultiCCAutoCommitChoice.create({ document, storage: () => window.sessionStorage,
-  sessionId: () => _sessionName, lastBubble: () => _lastUserBubble, defaultChecked: () => _sessionAutoCommit, translate: tt });
-function rememberAutoCommitChoice(bubble) { autoCommitChoices.remember(bubble); }
-function syncAutoCommitChoice(force = false) { autoCommitChoices.sync(force); }
 
 function updateAutoCommitBtn() {
   if (!autoCommitBtn) return;
@@ -2233,19 +2184,13 @@ autoCommitBtn?.addEventListener('click', async () => {
     });
     const data = await res.json();
     if (!res.ok) { addSystemMsg('保存失败：' + chatApi.errorText(chatApi.errorFromPayload(data, { response: res }))); return; }
-    _sessionAutoCommit = !!data.autoCommit;
+    _sessionAutoCommit = data.autoCommit !== false;
     updateAutoCommitBtn();
-    syncAutoCommitChoice(true);
-    addSystemMsg(_sessionAutoCommit ? '✓ 已开启「本轮执行成功后自动提交合并」，每轮执行成功后将自动 commit 并合并回基分支' : '✓ 已关闭「本轮执行成功后自动提交合并」');
+    addSystemMsg(_sessionAutoCommit ? '✓ 已开启「每轮执行成功后自动提交合并」，每轮执行成功后将自动 commit 并合并回基分支' : '✓ 已关闭「每轮执行成功后自动提交合并」');
   } catch (e) {
     addSystemMsg('保存失败：' + chatApi.errorText(e));
   }
 });
-
-/* ── Per-message auto-commit checkbox ── */
-// Add a small checkbox under a user message bubble.
-// Returns the checkbox element so caller can read .checked state later.
-function attachAutoCommitCheck(bubble, checked) { return autoCommitChoices.attach(bubble, checked); }
 
 /* ── Session sharing (external web links) ── */
 const shareBtn = document.getElementById('share-btn');
@@ -2279,6 +2224,7 @@ function shareRow(s) {
 // 填，全在 base-url-options.js 里：借道链接问的是同一个问题，两边不能各有各的
 // 答案，所以这里不再自己算一遍。
 const SHARE_BASE_SELECT_STYLE = 'flex:1;min-width:180px;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:12px;padding:7px 9px;';
+const SHARE_MODE_BUTTON_STYLE = 'background:var(--chat-soft, #1b2330);border:1px solid var(--chat-line, #2d3a4f);border-radius:6px;color:var(--chat-blue, #79c0ff);font-size:12px;padding:6px 10px;cursor:pointer;';
 
 async function openShareDialog() {
   const overlay = document.createElement('div');
@@ -2288,7 +2234,7 @@ async function openShareDialog() {
   box.innerHTML = `
     <div style="font-size:15px;font-weight:600;margin-bottom:4px;">${tt('shareSession')}</div>
     <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.6;margin-bottom:10px;">${tt('shareDesc')} <b style="color:var(--chat-warning, #f0883e);">${tt('shareOperateWarn')}</b></div>
-    <div style="margin-bottom:12px;"><button id="sh-msgmode" style="background:var(--chat-soft, #1b2330);border:1px solid var(--chat-line, #2d3a4f);border-radius:6px;color:var(--chat-blue, #79c0ff);font-size:12px;padding:6px 10px;cursor:pointer;">✂️ ${tt('shareSelectedMessages')}</button></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"><button id="sh-msgmode" style="${SHARE_MODE_BUTTON_STYLE}">✂️ ${tt('shareSelectedMessages')}</button><button id="sh-handoff" style="${SHARE_MODE_BUTTON_STYLE}">📦 ${tt('handoffExport')}</button><button id="sh-handoff-in" style="${SHARE_MODE_BUTTON_STYLE}">📥 ${tt('handoffImport')}</button></div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;">
       <span style="font-size:12px;color:var(--chat-muted, #8b949e);flex:none;">链接根域</span>
       <select id="sh-base" disabled data-hint-id="sh-base-hint" style="${SHARE_BASE_SELECT_STYLE}"><option>读取可用地址…</option></select>
@@ -2313,6 +2259,8 @@ async function openShareDialog() {
   const close = () => overlay.remove();
   box.querySelector('#sh-close').onclick = close;
   box.querySelector('#sh-msgmode').onclick = () => { close(); openMessagePicker(); };
+  box.querySelector('#sh-handoff').onclick = () => { close(); window.MultiCCChatHandoff?.openExportDialog({ sessionId: _sessionName }); };
+  box.querySelector('#sh-handoff-in').onclick = () => { close(); window.MultiCCChatHandoff?.openImportDialog({ currentSessionId: _sessionName }); };
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   const msg = box.querySelector('#sh-msg');
   const listEl = box.querySelector('#sh-list');
@@ -2406,10 +2354,9 @@ async function openMessagePicker() {
     msgs = d.messages || [];
   } catch (e) { listEl.textContent = '加载失败：' + chatApi.errorText(e); return; }
   if (!msgs.length) { listEl.textContent = tt('noMessages'); return; }
-  const escH = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   listEl.innerHTML = msgs.map((m, i) => {
     const who = m.role === 'user' ? '我' : 'AI';
-    const preview = escH((m.content || '').replace(/\s+/g, ' ').slice(0, 120)) || (m.tools && m.tools.length ? `（${m.tools.length} 个工具调用）` : '（空）');
+    const preview = escHtml((m.content || '').replace(/\s+/g, ' ').slice(0, 120)) || (m.tools && m.tools.length ? `（${m.tools.length} 个工具调用）` : '（空）');
     return `<label style="display:flex;gap:8px;align-items:flex-start;padding:6px;border-bottom:1px solid var(--chat-soft, #21262d);cursor:pointer;font-size:12px;">
       <input type="checkbox" data-i="${i}" style="margin-top:2px;">
       <span><b style="color:${m.role === 'user' ? 'var(--chat-blue, #79c0ff)' : 'var(--chat-text, #e7eaee)'}">${who}</b> <span style="color:var(--chat-muted, #8b949e)">${preview}</span></span></label>`;
@@ -2484,6 +2431,10 @@ const insertQueuedSessionEntry = window.MultiCCChatSessionQueue.createInsertHand
 const reorderQueuedSessionEntry = window.MultiCCChatSessionQueue.createReorderHandler(
   { fetch: window.fetch.bind(window), withToken, getSessionName: () => _sessionName, notify: showNotifyToast },
 );
+// 双击暂存消息弹输入框改正文（entryId, text）—— 同一条 queue/action 路由。
+const editQueuedSessionEntry = window.MultiCCChatSessionQueue.createEditHandler(
+  { fetch: window.fetch.bind(window), withToken, getSessionName: () => _sessionName, notify: showNotifyToast },
+);
 // Queue controls post to the owner-only queue-action endpoint. A share
 // recipient holds no credentials for it, so every one of these buttons would
 // only ever fail — the staged messages themselves stay readable, which is what
@@ -2492,6 +2443,8 @@ window.MultiCCChatSessionQueue.configure({
   onCancel: SHARE_MODE ? null : cancelQueuedSessionEntry,
   onInsert: SHARE_MODE ? null : insertQueuedSessionEntry,
   onReorder: SHARE_MODE ? null : reorderQueuedSessionEntry,
+  onEdit: SHARE_MODE ? null : editQueuedSessionEntry,
+  translate: tt,
 });
 function consumeUserInputRequestId(requestId) {
   if (chatEventState.pendingUserInputRequestId !== requestId) return;
@@ -2527,7 +2480,6 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     cliMeta: CLI_META,
     updateContextBar,
     noteRequestUsage,
-    autoCommitIfNeeded,
     resetHistoryPagination,
     applyHistoryPlan,
     removeHistoryMessageById,
@@ -2702,6 +2654,21 @@ cwdConfirm.onclick = () => {
    goal-ready (clear objective, clear done-criteria, bounded, executable). The
    user accepts/edits the rewritten version, then it's wrapped in a short
    goal-mode instruction and sent through the normal send() path. */
+// The precheck is a real Aux inference, and Aux is one-at-a-time: measured on
+// this host a single precheck costs ~18s even with an idle queue, and the same
+// queue also carries classify/memory work. The generic API client budget (15s)
+// aborted every precheck before the model could answer — that is the whole
+// "[API_TIMEOUT]" story.
+// The wait budget has exactly one source of truth: the server publishes its own
+// limit as `precheckWaitMs` (/api/settings/goal), the client only adds slack so
+// the server's explicit AUX_TIMEOUT message wins the race instead of a bare
+// client abort. The number is not guessed here on purpose.
+const GOAL_PRECHECK_FALLBACK_WAIT_MS = 180000;
+const GOAL_PRECHECK_SLACK_MS = 30000;
+let goalPrecheckWaitMs = 0;
+function goalPrecheckTimeoutMs() {
+  return (goalPrecheckWaitMs || GOAL_PRECHECK_FALLBACK_WAIT_MS) + GOAL_PRECHECK_SLACK_MS;
+}
 const goalModal       = document.getElementById('goal-modal');
 const goalBtn         = document.getElementById('goal-btn');
 const goalTaskEl      = document.getElementById('goal-task');
@@ -2745,6 +2712,10 @@ async function loadGoalDims() {
   try {
     const res = await fetch(withToken('/api/settings/goal'));
     const d = await res.json();
+    // The server owns the queue, so it owns the budget too (see the comment on
+    // goalPrecheckTimeoutMs). Absent on old servers → keep the fallback.
+    const wait = Number(d && d.precheckWaitMs);
+    goalPrecheckWaitMs = Number.isFinite(wait) && wait > 0 ? wait : 0;
     const dims = d.dimensions || {};
     boxes.forEach(cb => { cb.checked = dims[cb.dataset.dim] !== false; });
   } catch (_) {
@@ -2822,6 +2793,7 @@ if (goalPrecheckBtn) goalPrecheckBtn.onclick = async () => {
   try {
     const data = await chatApi.json(withToken('/api/goal/precheck'), {
       method: 'POST', json: { task, dimensions: collectGoalDims() },
+      timeoutMs: goalPrecheckTimeoutMs(),
     });
     if (!data.ok) throw chatApi.errorFromPayload({ ...data, error: data.error || '预检失败' });
     renderGoalVerdict(data);

@@ -17,6 +17,13 @@
  * tests/test-quota-bar-parity.js + app/test/quota_bar_render_test.dart run the
  * same golden fixtures through both, so a change to one that is not mirrored in
  * the other fails on both ends.
+ *
+ * A second, WEB-ONLY job lives here: a bar also arrives carrying the pieces the
+ * server assembled its Chinese from (textParts/titleParts, see
+ * src/quota/quota-bar-view.js) so a non-Chinese UI can re-render it in its own
+ * language. The app has no renderer for those pieces and displays the server's
+ * bytes verbatim, so nothing below is part of the parity contract — see
+ * renderQuotaParts.
  */
 (function (root, factory) {
   const api = factory();
@@ -25,6 +32,13 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
+  // 时间格式的唯一来源（shared/format.js，air.html / chat.html 里先于本文件加载）。
+  // Node 侧（生成金样夹具、奇偶校验测试）没有页面全局，所以两种取法都留着。
+  const FMT = (typeof require === 'function' ? require('./shared/format.js') : null)
+    || (typeof self !== 'undefined' && self.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || null;
+
   function finiteNumber(value) {
     if (value === null || value === '' || typeof value === 'boolean') return null;
     const number = Number(value);
@@ -32,9 +46,10 @@
   }
 
   // Time left, coarsening as it grows: minutes under an hour, one decimal of an
-  // hour under a day, then days. Never returns '' for a real deadline — a
-  // deadline in the past reads as "1m", so a segment's separators are safe to
-  // bake into the server-rendered string.
+  // hour under a day, then days. Never returns '' for a real deadline, so a
+  // segment's separators are safe to bake into the server-rendered string; a
+  // deadline that has already passed is handled by resolveText (已重置), which
+  // is the only caller.
   function humanizeCountdown(ms) {
     const total = finiteNumber(ms);
     if (total === null || total < 0) return '';
@@ -51,51 +66,112 @@
 
   // How long ago a fetch landed. This is the number that tells the user whether
   // the bar in front of them is worth believing.
+  // 这一格的位置很窄（一条限流条上并排三个窗口段），所以用紧凑档：只有「秒」那一级
+  // 跟别处不同（`57s 前` 而不是 `57 秒前`），分钟以上完全同词。档位表在
+  // shared/format.js，compact 只换那一级的 i18n key。
   function relativeAgo(tsMs, nowMs) {
-    const ts = finiteNumber(tsMs);
-    if (ts === null || ts <= 0) return '';
-    const sec = Math.max(0, Math.floor((nowMs - ts) / 1000));
-    if (sec < 5) return '刚刚';
-    if (sec < 60) return `${sec}s 前`;
-    const min = Math.floor(sec / 60);
-    if (min < 60) return `${min} 分钟前`;
-    const h = Math.floor(min / 60);
-    if (h < 24) return `${h} 小时前`;
-    const d = Math.floor(h / 24);
-    return `${d} 天前`;
+    return FMT.formatRelativeTime(tsMs, { now: nowMs, compact: true });
   }
 
   const TOKEN = /\{(cd|ago):(-?\d+)\}/g;
 
-  function resolveText(text, nowMs) {
+  // A deadline that is already past is NOT "one minute left". The window has
+  // rolled, and the percentage printed next to it belongs to the window that
+  // just ended — a bar redisplayed from cache four hours later would otherwise
+  // read "5h 93% 1m", i.e. 93% used with a minute to go, which is the most
+  // misleading thing this bar can say. Say what happened instead. The segment
+  // stays non-empty, which is what keeps the separators the server baked in
+  // (see humanizeCountdown) safe to expand.
+  const ROLLED_WINDOW = '已重置';
+
+  // `rolledLabel` is the localized spelling of that sentence; the default is the
+  // server's own bytes, which is what the app and the golden fixtures pin.
+  function resolveText(text, nowMs, rolledLabel) {
     if (typeof text !== 'string' || text.indexOf('{') < 0) return text || '';
     return text.replace(TOKEN, (_, kind, raw) => {
       const at = Number(raw);
-      return kind === 'cd' ? humanizeCountdown(Math.max(0, at - nowMs)) : relativeAgo(at, nowMs);
+      if (kind !== 'cd') return relativeAgo(at, nowMs);
+      const left = at - nowMs;
+      return left > 0 ? humanizeCountdown(left) : (rolledLabel || ROLLED_WINDOW);
     });
+  }
+
+  // ── Re-rendering a bar's pieces in another language (Web only) ────────────
+  // The server bakes Chinese into text/title, and it cannot know which language
+  // this client is in (the choice lives in localStorage). So each bar also ships
+  // the pieces those strings were assembled from: `{k, p, s, j}` — k a catalog
+  // key, p its params (a param that is itself a piece nests), s the exact bytes
+  // the server baked in, j the separator that precedes this piece (absent = the
+  // caller's separator). Rendering with s for every piece reproduces the server
+  // string byte for byte; rendering with a translator produces the other
+  // language.
+  //
+  // `translate(key, params, fallback)` is the caller's and MUST return
+  // `fallback` for a key it cannot translate. A piece is a hint, never a
+  // requirement: an old cached bar, or one from a server that learned a new
+  // string, still renders.
+  function renderQuotaPiece(piece, translate) {
+    if (!piece || typeof piece.s !== 'string') return '';
+    let params = null;
+    if (piece.p) {
+      params = {};
+      for (const name of Object.keys(piece.p)) {
+        const value = piece.p[name];
+        if (value === null || value === undefined) params[name] = '';
+        else if (typeof value === 'object' && typeof value.s === 'string') params[name] = renderQuotaPiece(value, translate);
+        else params[name] = value;
+      }
+    }
+    if (!piece.k) return piece.s;
+    const out = translate(piece.k, params, piece.s);
+    return typeof out === 'string' ? out : piece.s;
+  }
+
+  function renderQuotaParts(parts, sep, translate) {
+    if (!Array.isArray(parts) || !parts.length || typeof translate !== 'function') return '';
+    let out = '';
+    let first = true;
+    for (const piece of parts) {
+      if (!piece || typeof piece.s !== 'string') continue;
+      if (!first) out += piece.j !== undefined ? piece.j : sep;
+      out += renderQuotaPiece(piece, translate);
+      first = false;
+    }
+    return out;
   }
 
   /**
    * A server-rendered bar → the strings to paint right now.
    *
    * @param {object} bar   {text, color, title, action, states}
-   * @param {object} [opts] {state, now} — `state` picks one of the server's
-   *   alternative renders (a fetch in flight, a login window waiting on a
-   *   human); an unknown state falls back to the default render rather than
-   *   blanking the bar.
+   * @param {object} [opts] {state, now, translate, rolled} — `state` picks one
+   *   of the server's alternative renders (a fetch in flight, a login window
+   *   waiting on a human); an unknown state falls back to the default render
+   *   rather than blanking the bar. `translate` (with `rolled`, the localized
+   *   "已重置") is the Web-only localization seam: pass it and text/title are
+   *   rebuilt from the bar's pieces in the client's language, leave it out and
+   *   the server's own bytes are resolved, exactly as before and exactly as the
+   *   app does.
    */
   function resolveQuotaBar(bar, opts) {
     if (!bar) return null;
     const o = opts || {};
     const now = finiteNumber(o.now) ?? Date.now();
     const picked = (o.state && bar.states && bar.states[o.state]) || bar;
+    const pick = (plain, parts, sep) => {
+      if (typeof o.translate === 'function') {
+        const rebuilt = renderQuotaParts(picked[parts], sep, o.translate);
+        if (rebuilt) return resolveText(rebuilt, now, o.rolled);
+      }
+      return resolveText(picked[plain], now, o.rolled);
+    };
     return {
-      text: resolveText(picked.text, now),
+      text: pick('text', 'textParts', ' · '),
       color: picked.color || '#8b949e',
-      title: resolveText(picked.title, now),
+      title: pick('title', 'titleParts', '\n'),
       action: picked.action || null,
     };
   }
 
-  return { resolveQuotaBar, resolveText, humanizeCountdown, relativeAgo };
+  return { resolveQuotaBar, resolveText, humanizeCountdown, relativeAgo, renderQuotaParts };
 });

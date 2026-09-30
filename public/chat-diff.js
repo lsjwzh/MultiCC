@@ -38,9 +38,9 @@
   var NARROW_QUERY = '(max-width: 640px)';
   var STATUS_COLOR = {
     M: 'var(--chat-blue, #58a6ff)', A: 'var(--chat-success, #3fb950)', D: 'var(--chat-danger, #f85149)', R: 'var(--chat-purple, #bc8cff)',
-    T: 'var(--chat-warning, #d29922)', C: 'var(--chat-warning, #d29922)',
+    T: 'var(--chat-warning, #d29922)', C: 'var(--chat-warning, #d29922)', U: 'var(--chat-warning, #d29922)',
   };
-  var STATUS_LABEL = { M: 'M', A: 'A', D: 'D', R: 'R', T: 'T', C: 'C' };
+  var STATUS_LABEL = { M: 'M', A: 'A', D: 'D', R: 'R', T: 'T', C: 'C', U: 'U' };
 
   // ── Global accessors (deferred to call-time so script load order is fine) ──
   function withToken(url) {
@@ -504,6 +504,7 @@
     if (data.branch) parts.push(data.branch + ' -> ' + (data.baseBranch || ''));
     parts.push((ms.ahead || 0) + ' 个提交领先');
     if (ms.dirty) parts.push('含未提交改动');
+    if (data.untrackedCount) parts.push('含 ' + data.untrackedCount + ' 个新文件');
     if (data.truncated) parts.push('已截断');
     dom.subTitle.textContent = parts.join(' · ');
 
@@ -512,7 +513,8 @@
     updateFabCount();
     var totalAdd = data.totalAdditions || 0;
     var totalDel = data.totalDeletions || 0;
-    dom.summaryText.textContent = '已更改 ' + files.length + ' 个文件';
+    dom.summaryText.textContent = '已更改 ' + files.length + ' 个文件'
+      + (data.untrackedCount ? '（含 ' + data.untrackedCount + ' 个新文件）' : '');
     dom.summaryAdds.textContent = '+' + totalAdd;
     dom.summaryDels.textContent = '−' + totalDel;
     applyCollapse();

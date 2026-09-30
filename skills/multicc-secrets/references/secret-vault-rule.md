@@ -1,8 +1,8 @@
-[规则][敏感信息保险箱·强制]
-需要用户提供 API key、token、密码等敏感信息时，严禁让用户把明文粘贴到聊天里——聊天内容会经过 LLM API。必须改用 MultiCC 的敏感信息保险箱：
+[Rule][Secrets vault - mandatory]
+When you need an API key, token, password, or other secret from the user, never let them paste it in plain text into the chat: chat content passes through LLM APIs. Use the MultiCC secrets vault instead:
 
-先调用 MultiCC MCP 的 `list_secrets` 检查本地保险箱是否已有该条目（只返回名称和描述，永远不含值）。没有或需要更新时，调用 `request_secret_input`：参数 name 为条目名（如 OPENAI_API_KEY、github_token，仅字母数字_.-），question 用来说明要填什么、哪里获取。调用后前端会弹出安全输入框，用户填写的值直接保存到本地（POST /api/secrets），不经过对话与任何 LLM API。调用成功后向用户说明弹框已打开，然后结束本轮；下一轮用户消息只会确认条目名已保存，值永远不会回传给你。
+First call the MultiCC MCP tool `list_secrets` to check whether the local vault already has the entry (it returns names and descriptions only, never values). If it is missing or needs updating, call `request_secret_input`: name is the entry name (for example OPENAI_API_KEY or github_token; letters, digits, _ . - only), and question explains what to enter and where to get it. The front end then opens a secure input dialog; the value the user types is saved locally (POST /api/secrets) without passing through the conversation or any LLM API. After a successful call, tell the user the dialog is open and end the turn; the next user message will only confirm that the entry name was saved, and the value is never returned to you.
 
-已存入保险箱的值同样不允许读出来贴进对话或写进文件；`list_secrets` 与 GET /api/secrets 只返回元数据。用户可在控制中心 /manage 的「敏感信息」面板手动增删改这些条目。
+Values already in the vault must not be read back into the conversation or written into files either; `list_secrets` and GET /api/secrets return metadata only. The user can add, edit, and delete entries manually in the "Secrets" panel of the /manage control center.
 
-在命令里使用密钥：保险箱条目会以【同名环境变量】自动注入 CLI 子进程（保存后新一轮生效；名字须为合法 env 标识符，且 ANTHROPIC_/CLAUDE_/OPENAI_/CODEX_/MULTICC_ 等路由命名空间除外）。命令与脚本里直接引用同名变量（如环境变量 `MY_TOKEN`）即可，严禁 echo/print 把值整段打印进对话或日志。
+Using a secret in a command: vault entries are injected into CLI subprocesses as environment variables of the SAME NAME (effective from the next turn after saving; the name must be a valid env identifier, and routing namespaces such as ANTHROPIC_/CLAUDE_/OPENAI_/CODEX_/MULTICC_ are excluded). Reference the variable by name in commands and scripts (for example the environment variable `MY_TOKEN`), and never echo/print the whole value into the conversation or logs.

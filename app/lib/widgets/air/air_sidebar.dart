@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../i18n.dart';
 import '../../services/air_service.dart';
 import '../../theme.dart';
 import '../workspace_navigation_drawer.dart';
@@ -13,7 +14,7 @@ import 'air_task_status.dart';
 /// Air 的侧栏（Web `public/air.html` 的 `#sidebar`）。
 ///
 /// 频次收敛和 Web 一样：每天点的（当前工作目录、控制台、定时任务、最近任务、
-/// 新任务）留在外面；偶尔点的（服务与文档、记忆图谱、设置中心、任务看板、开发者
+/// 新任务）留在外面；偶尔点的（服务与文档、记忆图谱、设置中心、开发者
 /// 选项）折进「更多与系统」。手机上没有 ⌘K，找全部目录的入口就是顶上那张目录
 /// 卡片。
 ///
@@ -35,7 +36,6 @@ class AirSidebar extends StatelessWidget {
     required this.onOpenSearch,
     required this.onOpenConsole,
     required this.onOpenSchedules,
-    required this.onOpenTaskBoard,
     required this.onCreateTask,
     required this.onOpenTask,
     required this.onOpenDocs,
@@ -45,6 +45,8 @@ class AirSidebar extends StatelessWidget {
     required this.onOpenAllDestinations,
     required this.onOpenDestination,
     required this.ops,
+    required this.language,
+    required this.onLanguage,
     required this.onOpenPush,
     required this.onLogout,
     this.onOpenVoiceCall,
@@ -74,7 +76,6 @@ class AirSidebar extends StatelessWidget {
   final VoidCallback onOpenSearch;
   final VoidCallback onOpenConsole;
   final VoidCallback onOpenSchedules;
-  final VoidCallback onOpenTaskBoard;
   final VoidCallback onCreateTask;
   final ValueChanged<AirTask> onOpenTask;
 
@@ -94,6 +95,8 @@ class AirSidebar extends StatelessWidget {
   /// 主机运维那几行字的同一份状态：版本行、开机时间、回执各在一处，说的却是
   /// 同一件事（见 [AirOpsStore]）。
   final AirOpsStore ops;
+  final String language;
+  final VoidCallback onLanguage;
 
   /// 「推送通知」在原生侧落到设置中心的那一页（本机通知通道，不是浏览器订阅）。
   final VoidCallback onOpenPush;
@@ -279,7 +282,11 @@ class AirSidebar extends StatelessWidget {
             // 清单和底下这组之间的留白。
             const SizedBox(height: 8),
             // 版本行留在折叠区外：它是「有新版本」唯一的落点，折起来就没人知道。
-            AirVersionRow(store: ops),
+            AirVersionRow(
+              store: ops,
+              language: language,
+              onLanguage: onLanguage,
+            ),
             _MoreSection(
               advancedMode: advancedMode,
               onAdvancedModeChanged: onAdvancedModeChanged,
@@ -287,7 +294,6 @@ class AirSidebar extends StatelessWidget {
               onOpenMemory: onOpenMemory,
               onOpenTaskGraph: onOpenTaskGraph,
               onOpenSettings: onOpenSettings,
-              onOpenTaskBoard: onOpenTaskBoard,
               onOpenAllDestinations: onOpenAllDestinations,
               onOpenDestination: onOpenDestination,
               onOpenVoiceCall: onOpenVoiceCall,
@@ -653,6 +659,10 @@ class _TaskRow extends StatelessWidget {
                   Row(
                     children: [
                       AirTaskStatusBadge(task: task, fontSize: 10, dense: true),
+                      if (task.worktreeChanges?.pending == true) ...[
+                        const SizedBox(width: 6),
+                        AirWorktreeChangeBadge(task: task),
+                      ],
                       // 阶段/资源去向跟在徽标后面（Web 侧栏那行 `.task-note`）。
                       // 原来这里写的是 `airLabel(task.workflowStage ?? task.status)`：
                       // 观察型记录没有阶段、`status` 只有 active/done/archived，于是
@@ -711,7 +721,6 @@ class _MoreSection extends StatelessWidget {
     required this.onOpenMemory,
     required this.onOpenTaskGraph,
     required this.onOpenSettings,
-    required this.onOpenTaskBoard,
     required this.onOpenAllDestinations,
     required this.ops,
     required this.onOpenPush,
@@ -726,7 +735,6 @@ class _MoreSection extends StatelessWidget {
   final VoidCallback onOpenMemory;
   final VoidCallback onOpenTaskGraph;
   final VoidCallback onOpenSettings;
-  final VoidCallback onOpenTaskBoard;
   final VoidCallback onOpenAllDestinations;
   final AirOpsStore ops;
   final VoidCallback onOpenPush;
@@ -738,6 +746,20 @@ class _MoreSection extends StatelessWidget {
 
   /// 机器级语音通话。原生独占 —— Web 侧没有对应页面。
   final VoidCallback? onOpenVoiceCall;
+
+  /// 设置中心某一组里的一行。图标和名字都取自目的地自己
+  /// （[WorkspaceDestination]）：同一个页面在抽屉里和在「全部功能」那一页
+  /// 叫两个名字，是最容易出的错。
+  Widget _panelRow(
+    String semanticKey,
+    WorkspaceDestination destination,
+    VoidCallback onTap,
+  ) => _CompactRow(
+    semanticKey: semanticKey,
+    icon: destination.icon,
+    label: t(destination.labelKey),
+    onTap: onTap,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -815,6 +837,15 @@ class _MoreSection extends StatelessWidget {
                           onTap: () => unawaited(ops.toggleLidSleep()),
                           trailing: _MiniSwitch(on: ops.lidSleepOn),
                         ),
+                      if (ops.autoUnlockAvailable)
+                        _CompactRow(
+                          semanticKey: 'air-more-auto-unlock',
+                          icon: Icons.lock_open_outlined,
+                          label: '允许自动解锁',
+                          toggled: ops.autoUnlockOn,
+                          onTap: () => unawaited(ops.toggleAutoUnlock()),
+                          trailing: _MiniSwitch(on: ops.autoUnlockOn),
+                        ),
                     ],
                   ),
                 ],
@@ -822,38 +853,121 @@ class _MoreSection extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
-          // Web `#side-more .global-links` 的四个全局页。和上面「常用设置」不是
-          // 一类：那边是「改配置」，这边是「去某个页面」。
+          // 设置中心：Web 抽屉一级那一栏的镜像（`air.html` 的 `#settings-tree`）。
+          // Web 桌面是四个分组各带一列向右展开的面板；App 是抽屉，没有第二列，
+          // 所以照 Web 窄屏那一档走 —— 就地折叠，点分组标题展开它自己那几行。
+          // 分组划分和 Web 一字不差（`air-admin.js` 的 settingGroups），分组名和
+          // 行名直接取 Web 那张表的 key：两边各写一套名字，迟早各说各的。
+          //
+          // 少三行不是漏了：敏感信息 / 工作区 / AI Assistant 在 App 里没有目的地
+          // （`WorkspaceDestination` 里没有它们，`AirAllDestinations` 也不列），
+          // 补一行点了没反应的入口比少一行更糟。任务图谱是 App 的原生页
+          // （`TaskGraphScreen`），所以它在「重要功能」里有一行。
           _SideGroupBox(
-            groupKey: 'air-group-global',
+            groupKey: 'air-group-settings',
             child: Padding(
               padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
-              child: _Grid2(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _CompactRow(
-                    semanticKey: 'air-more-docs',
-                    icon: Icons.travel_explore_outlined,
-                    label: '服务与文档',
-                    onTap: onOpenDocs,
+                  _SettingsGroupTile(
+                    tileKey: 'air-more-group-featured',
+                    labelKey: 'airAdminGroupFeatured',
+                    children: [
+                      _panelRow(
+                        'air-more-docs',
+                        WorkspaceDestination.docs,
+                        onOpenDocs,
+                      ),
+                      _panelRow(
+                        'air-more-memory',
+                        WorkspaceDestination.memory,
+                        onOpenMemory,
+                      ),
+                      _CompactRow(
+                        semanticKey: 'air-more-task-graph',
+                        icon: Icons.account_tree_outlined,
+                        label: t('airAdminPanelTaskgraph'),
+                        onTap: onOpenTaskGraph,
+                      ),
+                    ],
                   ),
-                  _CompactRow(
-                    semanticKey: 'air-more-memory',
-                    icon: Icons.hub_outlined,
-                    label: '记忆图谱',
-                    onTap: onOpenMemory,
+                  _SettingsGroupTile(
+                    tileKey: 'air-more-group-ai',
+                    labelKey: 'airAdminGroupAi',
+                    children: [
+                      _panelRow(
+                        'air-more-panel-provider',
+                        WorkspaceDestination.provider,
+                        () => open(WorkspaceDestination.provider),
+                      ),
+                      _panelRow(
+                        'air-more-panel-goal',
+                        WorkspaceDestination.goal,
+                        () => open(WorkspaceDestination.goal),
+                      ),
+                      _panelRow(
+                        'air-more-panel-voice',
+                        WorkspaceDestination.voice,
+                        () => open(WorkspaceDestination.voice),
+                      ),
+                      _panelRow(
+                        'air-more-panel-global',
+                        WorkspaceDestination.global,
+                        () => open(WorkspaceDestination.global),
+                      ),
+                    ],
                   ),
-                  // Web 的 `#side-more .global-links` 里，「任务图谱」夹在记忆图谱和
-                  // 设置中心之间（`air.html`）；App 少这一行就会和 Web 对不上。
-                  _CompactRow(
-                    semanticKey: 'air-more-task-graph',
-                    icon: Icons.account_tree_outlined,
-                    label: '任务图谱',
-                    onTap: onOpenTaskGraph,
+                  _SettingsGroupTile(
+                    tileKey: 'air-more-group-connect',
+                    labelKey: 'airAdminGroupConnect',
+                    children: [
+                      _panelRow(
+                        'air-more-panel-push',
+                        WorkspaceDestination.push,
+                        onOpenPush,
+                      ),
+                      _panelRow(
+                        'air-more-panel-tunnel',
+                        WorkspaceDestination.tunnel,
+                        () => open(WorkspaceDestination.tunnel),
+                      ),
+                      _panelRow(
+                        'air-more-panel-bridges',
+                        WorkspaceDestination.bridges,
+                        () => open(WorkspaceDestination.bridges),
+                      ),
+                    ],
                   ),
+                  _SettingsGroupTile(
+                    tileKey: 'air-more-group-storage',
+                    labelKey: 'airAdminGroupStorage',
+                    children: [
+                      _panelRow(
+                        'air-more-panel-resources',
+                        WorkspaceDestination.resources,
+                        () => open(WorkspaceDestination.resources),
+                      ),
+                      _panelRow(
+                        'air-more-panel-skillsync',
+                        WorkspaceDestination.skillSync,
+                        () => open(WorkspaceDestination.skillSync),
+                      ),
+                      _panelRow(
+                        'air-more-panel-storage',
+                        WorkspaceDestination.storage,
+                        () => open(WorkspaceDestination.storage),
+                      ),
+                    ],
+                  ),
+                  // 四组都折着的时候，这一行是「设置中心还有别的」的唯一线索，
+                  // 也是习惯跳整页的人的老路（Web 那边同样是 `.more-parent` 之外
+                  // 单留的一行）。
                   _CompactRow(
                     semanticKey: 'air-more-settings',
                     icon: Icons.settings_outlined,
-                    label: '设置中心',
+                    label: t('airSettingsCenter'),
+                    hint: t('airSettingsAllPanels'),
                     onTap: onOpenSettings,
                   ),
                 ],
@@ -861,22 +975,16 @@ class _MoreSection extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
-          // App 独有三行：Web Air 的侧栏里没有它们（看板在 Web 是顶层入口、
+          // App 的额外入口：Web Air 的侧栏里没有它们（
           // 「全部功能」走别的路、语音通话是原生独占）。单开一格，不跟上面那四个
           // 全局页挤在同一个框里 —— 「服务与文档 / 记忆图谱 / 任务图谱 / 设置中心」
-          // 是一组，多塞三行进去，这一组的边界就说不清是哪四行了。
+          // 是一组，多塞额外入口进去，这一组的边界就说不清是哪四行了。
           _SideGroupBox(
             groupKey: 'air-group-entries',
             child: Padding(
               padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
               child: _Grid2(
                 children: [
-                  _CompactRow(
-                    semanticKey: 'air-more-board',
-                    icon: Icons.view_kanban_outlined,
-                    label: '查看任务看板',
-                    onTap: onOpenTaskBoard,
-                  ),
                   _CompactRow(
                     semanticKey: 'air-more-all',
                     icon: Icons.apps_rounded,
@@ -983,6 +1091,49 @@ class _SideGroupBox extends StatelessWidget {
   );
 }
 
+/// 设置中心里的一级分组（Web `#settings-tree` 的 `.more-parent`）。
+///
+/// 默认全折：四组摊开是十三行，抽屉一打开先该看见「有哪几组」，而不是某一组的
+/// 内容。展开就是它自己的面板清单 —— Web 窄屏那一档（`air-more.js` 把二级整组
+/// 搬回父行下面）走的就是这条路，两边是同一个交互。
+class _SettingsGroupTile extends StatelessWidget {
+  const _SettingsGroupTile({
+    required this.tileKey,
+    required this.labelKey,
+    required this.children,
+  });
+
+  final String tileKey;
+
+  /// 分组名直接用 Web 那张表的 key（`air-admin.js` 的 `settingGroups`）：
+  /// 两边各写一套名字，分组迟早会对不上。
+  final String labelKey;
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => Theme(
+    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+    child: ExpansionTile(
+      key: ValueKey(tileKey),
+      tilePadding: const EdgeInsets.symmetric(horizontal: 8),
+      childrenPadding: const EdgeInsets.fromLTRB(10, 0, 2, 4),
+      dense: true,
+      title: Text(
+        t(labelKey),
+        style: const TextStyle(
+          color: AppColors.muted,
+          fontSize: 12.5,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      iconColor: AppColors.faint,
+      collapsedIconColor: AppColors.faint,
+      children: children,
+    ),
+  );
+}
+
 /// 两列网格（Web `.frequent-settings` 的 `grid-template-columns: 1fr 1fr`）。
 ///
 /// 用 Row + Expanded 而不是 Wrap：Wrap 的每一格宽度由内容决定，两列的左边缘就
@@ -1029,12 +1180,18 @@ class _CompactRow extends StatelessWidget {
     this.emphasized = false,
     this.toggled,
     this.trailing,
+    this.hint,
   });
 
   final String semanticKey;
   final IconData icon;
   final String label;
   final VoidCallback onTap;
+
+  /// 行尾的一行小字（Web `.more-label small`）。只有「设置中心 / 全部面板」
+  /// 这一行用：它和上面四个分组标题长得像，不写清楚这一行是跳整页的，
+  /// 会被当成第五个分组去点。
+  final String? hint;
 
   /// 加粗变色（Provider 配置）。这一组里只有它是「最常点的那个入口」。
   final bool emphasized;
@@ -1061,7 +1218,8 @@ class _CompactRow extends StatelessWidget {
           onTap: onTap,
           borderRadius: BorderRadius.circular(9),
           child: SizedBox(
-            height: 34,
+            // 带小字的那一行高一点：两行 12.5px 的文字塞进 34px 会挤在一起。
+            height: hint == null ? 34 : 46,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
               child: Row(
@@ -1069,17 +1227,34 @@ class _CompactRow extends StatelessWidget {
                   Icon(icon, size: 15, color: color),
                   const SizedBox(width: 7),
                   Expanded(
-                    child: Text(
-                      label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: color,
-                        fontSize: 12.5,
-                        fontWeight: emphasized
-                            ? FontWeight.w700
-                            : FontWeight.w500,
-                      ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: color,
+                            fontSize: 12.5,
+                            fontWeight: emphasized
+                                ? FontWeight.w700
+                                : FontWeight.w500,
+                          ),
+                        ),
+                        if (hint != null)
+                          Text(
+                            hint!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.faint,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w400,
+                            ),
+                          ),
+                      ],
                     ),
                   ),
                   if (trailing != null) ...[

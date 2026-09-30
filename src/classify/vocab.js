@@ -98,9 +98,17 @@ const CLASSIFY_DISPLAY = {
   },
   B: {  // Wait on background task (terminal only; chat prompt no longer emits B)
     label: '后台等待',
-    pushType: 'waiting', pushTitle: '等待操作',
+    // Own wording, NOT W's borrowed '等待操作': nothing is waiting on the user
+    // while a background job runs, so telling them to act is the same lie the
+    // card used to tell. src/push/notification-copy.js reads this (as it reads
+    // every other letter's pushTitle), so the lock screen and the card agree.
+    pushType: 'waiting', pushTitle: '后台等待',
     voiceText: '等待后台任务', ding: 'waiting',
-    cardStatus: 'waiting', barTint: 'waiting',
+    // Its own run state, NOT `waiting`. `waiting` means "the user must answer";
+    // a turn idling on a background job has nothing to ask, so folding B into it
+    // made every Air card and session row say 「等待回答」 about work the user
+    // cannot act on. Both projections read one value, like E's below.
+    cardStatus: 'background', barTint: 'background',
   },
   E: {  // Abnormal end — API error, or an explicit user/watchdog cancellation
     label: 'API 异常',
@@ -128,18 +136,120 @@ const PHASE_LABELS = {
   wrapping: '收尾中', done: '已完成',
 };
 
+// ── 「执行成功」的三个子状态（展示层，2026-09-29）────────────────────────────
+//
+// D 说的是**这一轮**正常收尾，不是「这件事做完了」：线上 2218 条 D 判定里只有 1293
+// 条带着 phase=已完成，其余分别停在 实现中/验证中/收尾中/规划中。用户要的是把 ✅
+// 那一格再分三档（图标不变，仍是 ✅）：
+//
+//   达成目标（achieved）— 有目标，且当前任务的所有要求都做完了
+//   需要交互（interact）— 有目标，但还得用户再推一把才走得下去
+//   执行成功（没有子状态）— 压根没有目标（纯招呼/系统消息），没什么可"达成"的
+//
+// 判定只读 classify 已经产出的两个字段（goal、phase），不新增模型输出、不看自然
+// 语言：phase 的语义本来就是「把当前任务所有要求都做完了才判已完成」，与「目标达成」
+// 是同一件事的两种说法，另起一问只会得到两个偶尔互相矛盾的答案。
+//
+// 字母不是 D 时没有子状态 —— 那时卡片显示的是 W/B/E 自己的词，这三档只挂在 ✅ 上。
+const GOAL_STATES = Object.freeze({ achieved: 'achieved', interact: 'interact' });
+
+/** 这一轮判定的「执行成功」子状态：achieved / interact / null（没有子状态）。 */
+function goalStateForClassify(result) {
+  if (!isTerminalLetter(result?.state)) return null;
+  const goal = String(result?.goal || '').trim();
+  // '—' / '-' 是提示词约定的「没有任务」占位符（同 parseClassifyResult 的垃圾过滤）。
+  if (!goal || goal === '—' || goal === '-') return null;
+  return result?.phase === 'done' ? GOAL_STATES.achieved : GOAL_STATES.interact;
+}
+
+/** 这个值是不是一个已知的子状态？（读回来的旧记录 / 客户端传来的值都要过这一关） */
+function isGoalState(value) {
+  return value === GOAL_STATES.achieved || value === GOAL_STATES.interact;
+}
+
+// D 的二次分组键（派生值，不落盘）：老系统/老 App 只认 classifyState 本身
+// （D/W/B/E/P，见下方 CLASSIFY_STATES），一旦看到 'D' 就照旧工作。新系统如果
+// 需要按「达成目标 / 需要交互」二次分组（如"把需要交互的任务和等我回答的放一起"），
+// 现算现用这个函数，不新增一个跟 goalState 表达同一件事的存储字段。
+function classifyGroupKey(state, goalState) {
+  if (state !== 'D') return state;
+  if (goalState === GOAL_STATES.achieved) return 'D-G';
+  if (goalState === GOAL_STATES.interact) return 'D-N';
+  return 'D';
+}
+
+// The renderable turn run-state vocabulary. ONE server-side list: every
+// run-state producer (session-work-host.getRunState, task-board aggregation,
+// workspace status) emits only these, and each classify letter's `cardStatus`
+// above is one of them. task-board.normalize builds its TASK_RUN_STATES set
+// from this, so the two can never drift apart.
+const TURN_RUN_STATES = Object.freeze([
+  'queued', 'running', 'waiting', 'background', 'succeeded', 'error', 'idle',
+]);
+
+// The subset of TURN_RUN_STATES that means "a run is still open": executing,
+// queued, waiting for the user, or parked on a background job. `background`
+// counts — that turn is idle only because a job it started is still out there,
+// so nothing about the task has settled. This is the ONE list behind every
+// "may I touch this task?" guard: deleting/relocating
+// (task-board/lifecycle-host.js), and the stop affordance
+// the UIs draw (public/status-presentation.js canStopRunState, mirrored in
+// app/lib/utils/status_presentation.dart). Three hand-kept copies of this array
+// is how the app's ⏹ went missing for a queued or background task.
+const OPEN_RUN_STATES = Object.freeze(['queued', 'running', 'waiting', 'background']);
+
+/** Is this run state one whose run is still open (and therefore stoppable)? */
+function isOpenRunState(state) { return OPEN_RUN_STATES.includes(state); }
+
+// The live classify letters: every value this system can persist as a turn's
+// classifyState. parseClassifyResult itself can only ever return P/D/W/B/E,
+// and state-machine.js never persists anything else — this is the one set
+// here rather than the `new Set(['P','D','W','B','E'])` that
+// session-work/scheduler.js and workspace/runtime.js each used to declare by
+// hand. C is deliberately absent (it is retired and collapses to W); the
+// predicates below still tolerate a legacy persisted 'C' wherever one is read
+// back from an older snapshot.
+const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
+
 // Helpers
 function classifyDisplay(cls) { return CLASSIFY_DISPLAY[cls] || CLASSIFY_DISPLAY['W']; }
+/** classify letter (D/C/W/B/E/P) → its canonical turn run state. */
+function runStateForClassify(cls) { return classifyDisplay(cls).cardStatus; }
 function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 
 // Semantic predicates over the classify LETTER — the single source for "what
 // does this state mean for my subsystem?". Downstream code MUST use these
-// instead of inline `=== 'D'` / `=== 'W'` checks, so the meaning lives here.
-//   isTerminalLetter: D — the current turn executed successfully (terminal).
-//   isSettledLetter:  D or W — won't change without new user input; safe to skip
-//                     for re-classify/push (the user is in charge either way).
+// instead of inline `=== 'D'` / `=== 'W'` checks, so the meaning lives here and
+// a re-lettered vocabulary (B's split from `waiting` is the latest) cannot leave
+// one subsystem reading the old meaning. tests/test-classify-vocab.js fails the
+// build on a fresh inline letter comparison outside this file.
+//
+// The letters answer three independent questions:
+//   Who is acting?      P/C a turn is in flight · W the user · B a background job
+//   Did a turn end?     D cleanly · E in a fault or an explicit cancel
+//   May I move it on?   D/W settle it · P/W/B mean something is still outstanding
+//
+// One-line meanings (each predicate is exactly one decision):
+//   isProcessingLetter:  P (or the retired C) — a turn is in flight right now.
+//   isWaitForUserLetter: W — the turn ended and only the user can move it on.
+//   isBackgroundLetter:  B — the turn ended parked on a background job/callback.
+//   isTerminalLetter:    D — the current turn executed successfully (terminal).
+//   isAbnormalLetter:    E — the turn ended in a fault or an explicit cancel.
+//   isSettledLetter:     D or W — won't change without new user input; safe to
+//                        skip for re-classify/push (the user is in charge).
+//   isParkedLetter:      W or B — the turn ended and is waiting on something
+//                        outside the scheduler (the user, or a background job):
+//                        nothing is running, nothing is being asked of us.
+//   isOutcomeLetter:     D or E — the turn reached a definite outcome (success
+//                        or fault), as opposed to P still running and W/B parked.
+function isProcessingLetter(cls) { return cls === 'P' || cls === 'C'; }
+function isWaitForUserLetter(cls) { return cls === 'W'; }
+function isBackgroundLetter(cls) { return cls === 'B'; }
 function isTerminalLetter(cls) { return cls === 'D'; }
-function isSettledLetter(cls) { return cls === 'D' || cls === 'W'; }
+function isAbnormalLetter(cls) { return cls === 'E'; }
+function isSettledLetter(cls) { return isTerminalLetter(cls) || isWaitForUserLetter(cls); }
+function isParkedLetter(cls) { return isWaitForUserLetter(cls) || isBackgroundLetter(cls); }
+function isOutcomeLetter(cls) { return isTerminalLetter(cls) || isAbnormalLetter(cls); }
 
 // Scheduler events carry this explicit outcome alongside the classify letter.
 // Consumers may project it onto runtime UI, but MUST NOT reinterpret
@@ -182,16 +292,26 @@ function buildClassifySystemPrompt(priorGoal) {
 
 【步骤3·判定】只对"当前任务"这一段判定，输出三行：
 
-第1行：当前任务的目标，用一个简短的名词性短语。
-       语言跟随对话语言：中文用中文（≤20 汉字，如"memo图片更换""给目录卡片加 git 状态行"）；英文用英文（≤10 words, e.g. "Fix login page styling"）。
+先读进度与状态：把当前任务段里用户提出的每条要求逐条列出、回记录里找落点（进度），再看清眼下卡在谁身上（状态：助手还在做 / 已正常收尾 / 在等用户拿主意或回答 / 在等后台任务或回调 / 被 API 异常截断）。第2行的阶段就是这份读数的结论，不要只看最后一句。
+
+第1行：当前任务的目标 —— 一句话说清"要做成什么"，必须可验证。
+       写法：动词 + 对象（必要时带范围），如"把登录页改成暗色主题""给目录卡片加 git 状态行""修复 /api/classify 的 500"。
+       · 这一段里用户提了多个并列要求时，目标要全部覆盖（用"、"并列，如"换 logo、修页脚链接"），不要只写最后一条。
+       · 只写做完后的可观察结果，不写过程或手段（"分析一下""看看代码""继续""优化下"都不能当目标）。
+       · 自检：只看这个目标，能不能一眼判断做没做完？不能就改写成能判断的说法。
+       语言跟随对话语言：中文用中文（≤20 汉字）；英文用英文（≤10 words, e.g. "Fix login page styling"）。
        严格忽略招呼、反问、确认、推进类消息（如"hi""你好""如何了""做到哪了""继续""好了吗" / "hi", "how is it going", "continue"）--这些不是任务目标。
-       已有目标「${priorGoal || '无'}」，如仍围绕同一任务请保持一致。
+       已有目标「${priorGoal || '无'}」，如仍围绕同一任务请保持一致（可以更具体，但不要变成另一件事）。
        如果当前任务段没有任何具体任务（纯招呼/闲聊/系统消息），输出「-」。
 
 第2行：当前任务的阶段，必须原样输出以下五个中文词之一（无论对话语言）：
        规划中 / 实现中 / 验证中 / 收尾中 / 已完成
-       AI 在等用户回复时不应判为「已完成」；只有把当前任务所有要求都做完了才判「已完成」。
-       最新用户消息如果提出了新的具体需求，即使 AI 还没开始做，也应判「规划中」而非「已完成」。
+       判断方法：先把第1行覆盖的要求逐条列出来，再回记录里找每条的落点。
+       · 只要还有一条没有落地（没做、做了一半、只说要做什么、结果没验证过）→ 不能判「已完成」，按进度选 规划中/实现中/验证中/收尾中。
+       · 只有每条要求都有可验证的结果、且没有遗留的下一步 → 才判「已完成」。
+       下列情况都不算「已完成」：助手只是口头说"已完成/搞定了"而记录里看不到结果；助手把问题抛回给用户；收尾了但仍有没做的部分；只是这一轮对话结束了。
+       换句话说：「已完成」= 目标达成，是唯一表示"这件事做完了"的阶段；其余四个阶段都表示"还没做完"。
+       AI 在等用户回复时不应判为「已完成」；最新用户消息如果提出了新的具体需求，即使 AI 还没开始做，也应判「规划中」而非「已完成」。
 
 第3行：仅一个字母，判断【当前任务段】接下来该谁行动：
        D = 本轮执行成功（助手完成了本轮要求，正常收尾、没有反问、也不需要再继续；这只描述 turn outcome，不代表任务板任务已完成）
@@ -204,6 +324,10 @@ function buildClassifySystemPrompt(priorGoal) {
   · 任务还没全部做完、但助手这一轮已经停下（在反问、阶段性停顿、或等用户指示）→ W（交回用户；系统不自动续接）
   · 最新一条是用户的推进消息、AI 还没回应 → 判 P（还在处理），不要判 D
 判断时看当前任务段的整体走向，不是看最后一句有没有问号。回复为空/话没说完判 P。API故障截断判 E。
+
+第3行与第2行各答各的，不要互相迁就：第3行只说"这一轮谁行动"（D/W/P/E），
+这件事到底做没做完由第2行说（「已完成」= 达成目标，其余 = 还没做完、后面还得有人接着干）。
+所以 D + 非「已完成」是正常组合（这一轮正常收尾，但目标还没达成，等用户再推一把）。
 
 判 W 的典型信号（出现其一即判 W，即使任务整体还没做完）：
   · 助手在回复末尾向用户提出"需要用户拿主意/做决定"的请求——二选一、"要不要我做X"、"先做哪个"、"请指定优先级/范围"、"要我现在就动手吗"、"等你确认后再做"。
@@ -219,12 +343,29 @@ module.exports = {
   parseClassifyResult,
   buildClassifySystemPrompt,
   classifyDisplay,
+  runStateForClassify,
   phaseLabel,
   applyUserInputEvidence,
+  // Letter semantics — the only sanctioned way to ask what a letter means.
+  isProcessingLetter,
+  isWaitForUserLetter,
+  isBackgroundLetter,
   isTerminalLetter,
+  isAbnormalLetter,
   isSettledLetter,
+  isParkedLetter,
+  isOutcomeLetter,
   turnOutcomeForClassify,
+  // 「执行成功」的三个子状态：判定 + 值域（展示层读它，不自己推）。
+  goalStateForClassify,
+  isGoalState,
+  classifyGroupKey,
+  GOAL_STATES,
   CLASSIFY_DISPLAY,
+  CLASSIFY_STATES,
   CLASSIFY_TURN_OUTCOME,
+  TURN_RUN_STATES,
+  OPEN_RUN_STATES,
+  isOpenRunState,
   PHASE_LABELS,
 };

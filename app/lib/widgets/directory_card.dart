@@ -3,9 +3,14 @@ import 'package:flutter/material.dart';
 import '../i18n.dart';
 import '../models/message.dart';
 import '../services/workspace_service.dart';
+import '../services/session_service.dart';
+import '../services/settings_service.dart';
 import '../theme.dart';
+import '../screens/directory_artifacts_screen.dart';
 import '../utils/session_status_helpers.dart';
+import '../utils/status_presentation.dart';
 import 'git_status_row.dart';
+import 'git_log_sheet.dart';
 import 'project_stat_pill.dart';
 import 'running_border.dart';
 
@@ -53,7 +58,6 @@ class DirectoryCardViewModel {
       statuses,
       now ?? DateTime.now(),
     );
-    const busy = {'running', 'thinking', 'editing'};
     return DirectoryCardViewModel(
       id: directory.id,
       name: directory.name,
@@ -61,7 +65,9 @@ class DirectoryCardViewModel {
       totalSessions: directory.totalSessions,
       activeSessions: scopedSessions.where((session) => session.active).length,
       pushState: directory.pushState,
-      running: statuses.values.any((status) => busy.contains(status.status)),
+      // 「忙」只有一处定义（registry 的 isBusyStatus）：thinking/editing 是
+      // running 的别名，background 不算忙。
+      running: statuses.values.any((status) => isBusyStatus(status.status)),
       recentEventLabels: List.unmodifiable(
         events
             .toList(growable: false)
@@ -190,8 +196,14 @@ class DirectoryCardCallbacks {
 class DirectoryCard extends StatelessWidget {
   final DirectoryCardViewModel view;
   final DirectoryCardCallbacks callbacks;
+  final SettingsService? settings;
 
-  const DirectoryCard({super.key, required this.view, required this.callbacks});
+  const DirectoryCard({
+    super.key,
+    required this.view,
+    required this.callbacks,
+    this.settings,
+  });
 
   PopupMenuItem<String> _menuItem(
     String value,
@@ -410,6 +422,79 @@ class DirectoryCard extends StatelessWidget {
                                   ),
                                 GitStatusRow(pushState: view.pushState),
                               ],
+                            ),
+                          ),
+                          // 本目录产物：和备忘不同，这颗按钮自己 push 路由，
+                          // 不走 DirectoryCardCallbacks —— 每加一个回调都要在
+                          // main_shell.dart 里写一行接线，而那个文件顶在源码行
+                          // 长闸的天花板上（3167/122298，加一行就红）。这里只
+                          // 需要 view 上的 id/name/path，Navigator 就地可取，
+                          // 所以把行长留给产品本身。唯一的生产构造点就是
+                          // main_shell 的目录卡，不会推出重复或悬空的路由。
+                          IconButton(
+                            key: ValueKey(
+                              'directory-card-artifacts-${view.id}',
+                            ),
+                            icon: const Icon(
+                              Icons.inventory_2_outlined,
+                              size: 19,
+                              color: AppColors.muted,
+                            ),
+                            tooltip: t('airDirArtifactsOpen'),
+                            onPressed: () => Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => DirectoryArtifactsScreen(
+                                  dirId: view.id,
+                                  dirName: view.name,
+                                  dirPath: view.path,
+                                ),
+                              ),
+                            ),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 44,
+                              minHeight: 44,
+                            ),
+                          ),
+                          IconButton(
+                            key: ValueKey('directory-card-git-${view.id}'),
+                            icon: const Icon(
+                              Icons.account_tree_outlined,
+                              size: 19,
+                              color: AppColors.muted,
+                            ),
+                            tooltip: t('gitManagerOpen'),
+                            onPressed: settings == null
+                                ? null
+                                : () => showGitLogSheet(
+                                    context,
+                                    fetchLog: (all) =>
+                                        SessionService(
+                                          settings: settings!,
+                                        ).fetchGitLog(
+                                          dirId: view.id,
+                                          allBranches: all,
+                                        ),
+                                    fetchFiles: (hash) =>
+                                        SessionService(
+                                          settings: settings!,
+                                        ).fetchGitCommitFiles(
+                                          dirId: view.id,
+                                          hash: hash,
+                                        ),
+                                    fetchDiff: (hash, file) =>
+                                        SessionService(
+                                          settings: settings!,
+                                        ).fetchGitCommitDiff(
+                                          dirId: view.id,
+                                          hash: hash,
+                                          file: file,
+                                        ),
+                                  ),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 44,
+                              minHeight: 44,
                             ),
                           ),
                           IconButton(
@@ -656,11 +741,13 @@ class _DirectoryPreview extends StatelessWidget {
                                         vertical: 1,
                                       ),
                                       decoration: BoxDecoration(
-                                        color: const Color(0xFF1e8a55)
-                                            .withValues(alpha: 0.15),
+                                        color: const Color(
+                                          0xFF1e8a55,
+                                        ).withValues(alpha: 0.15),
                                         border: Border.all(
-                                          color: const Color(0xFF1e8a55)
-                                              .withValues(alpha: 0.4),
+                                          color: const Color(
+                                            0xFF1e8a55,
+                                          ).withValues(alpha: 0.4),
                                         ),
                                         borderRadius: BorderRadius.circular(4),
                                       ),

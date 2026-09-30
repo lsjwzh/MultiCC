@@ -550,36 +550,20 @@ void main() {
     });
   });
 
-  // Web 聊天页（Air 模式）的 ⋯ 菜单头两项是 lang-btn / notify-btn
-  // （public/chat.js:257），App 此前两项都缺 —— 这一组钉住「入口在、点了按
-  // Web 的语义变状态」。
-  group('ChatHeader language + task-notify entries', () {
-    testWidgets('语言入口用 Web 的 t(language) 文案，点了翻转持久化语言', (tester) async {
+  group('ChatHeader task-notify entry', () {
+    testWidgets('语言切换已移到 Air 侧栏，不再占用对话更多菜单', (tester) async {
       final settings = await _settings();
       final mgr = SessionManager(settings: settings);
       final provider = ChatProvider(
         settings: settings,
-        sessionName: 's-lang',
+        sessionName: 's-no-lang',
         sessionCwd: '/tmp',
       );
-      expect(settings.lang, 'zh');
-
       await tester.pumpWidget(_host(mgr, settings, provider));
       await tester.tap(find.byIcon(Icons.more_vert));
       await tester.pumpAndSettle();
-
-      // Web 的按钮文字就是 t('language')（zh '中/EN' / en 'EN/中'）。
-      expect(find.byKey(const Key('chat-header-language')), findsOneWidget);
-      expect(find.text('中/EN'), findsOneWidget);
-
-      await tester.tap(find.byKey(const Key('chat-header-language')));
-      await tester.pumpAndSettle();
-
-      // Web 的 toggleLang() 把新语言写进 `multicc_lang` 再重载页面；
-      // App 写的是同一个键（SettingsService.setLanguage → prefs）。
-      expect(settings.lang, 'en');
-      expect(settings.language.value, 'en');
-
+      expect(find.byKey(const Key('chat-header-language')), findsNothing);
+      expect(find.text('中/EN'), findsNothing);
       provider.dispose();
       mgr.dispose();
     });

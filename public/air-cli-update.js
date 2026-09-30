@@ -5,6 +5,13 @@
  * badge when a newer version of some chat CLI is published, and a popover that
  * names each one and upgrades it on demand.
  *
+ * One row per **CLI family**, not per lane: an upgrade replaces the family's CLI
+ * artifact, and that artifact is one thing per family — `codex` and `codex-exp`
+ * derive the same binary and run the same install command. A lane whose engine
+ * does not come from that artifact at all (today `claude-exp`: the Claude Agent
+ * SDK is a dependency of multicc itself) is not an installable row either; it is
+ * reported as a second line under its family, naming who upgrades it.
+ *
  * Where the numbers come from: `GET /api/cli/versions` reports both halves —
  * the version of the binary this host actually spawns (`<bin> --version`) and
  * the version published upstream (npm registry, cached server-side for a day).
@@ -26,22 +33,19 @@
   const POLL_MS = 2500;
   const MAX_WAIT_MS = 8 * 60 * 1000;
 
-  // 产品名，不是文案：中文界面里也是这几个词，所以不进 i18n 词典。
-  const CLI_LABELS = Object.freeze({
-    claude: 'Claude Code',
-    codex: 'Codex',
-    opencode: 'OpenCode',
-    zcode: 'ZCode',
-    qoder: 'Qoder CN',
-    kimi: 'Kimi Code',
-    codebuddy: 'WorkBuddy',
-    dsh: 'DSH',
-  });
+  // 产品名，不是文案：中文界面里也是这几个词，所以不进 i18n 词典。名字按**家族**取
+  // （服务端的键也是家族）：面板行是 CLI 制品，不是车道 —— 车道名（Claude Code /
+  // Codex Exec）在这里会读成「有两三个可升级的 CLI」。这张表和服务端
+  // src/cli/cli-capability.js 同源（web 侧走共享目录 public/provider-catalog.js）。
+  const cliLabel = cli => window.MultiCCProviderCatalog.cliFamilyName(cli);
 
   let lastState = null;
   let lastError = false;
   let opened = false;
-  let upgrade = null; // { cli, jobId } —— 同一时刻只跑一个升级
+  // 每一行各有各的升级任务: 不同 CLI 之间没有任何冲突(服务端只对「同一个安装目标」
+  // 返回 409), 所以不再用一个全局开关把整块面板锁成「一次只能点一个」。
+  // 刷新会重建行 DOM, 所以进度存在这里, render() 之后按 cli 复原。
+  const inFlight = new Map(); // cli -> { phase: 'running', text }
 
   // ── Requests ───────────────────────────────────────────────────────────
   // auth-client.js already wraps window.fetch, so same-origin calls carry the
@@ -122,18 +126,42 @@
     return `v${entry.version} · ${t('airCliUpdateCurrent')}`;
   }
 
+  // 随 MultiCC 走的引擎（服务端 bundled 列）的说明行：「内置 Claude Agent SDK v0.60.0，
+  // 随 MultiCC 一起升级」。面板不碰它 —— 装不了、也升不了（npm 上没有它）—— 但不写出来
+  // 会让这一族看起来像「少了一条车道」。版本可能读不到（依赖被裁剪/包结构变了），那就
+  // 只说引擎，不编一个号。
+  function bundledLine(engine) {
+    return t('airCliUpdateBundled', {
+      engine: engine.engine,
+      version: engine.version ? ` v${engine.version}` : '',
+    });
+  }
+
+  // 未安装的行给一颗「安装」按钮：点一下就跑 /api/cli/:cli/install 那条官方安装
+  // 链路（和升级同一套 job/轮询/日志）。需要手动安装的 CLI（zcode 桌面版等）由
+  // 服务端回 manual 文案，原样写进副标题。
+  function rowMode(entry) {
+    if (!entry.available) return 'install';
+    return entry.updateAvailable ? 'upgrade' : null;
+  }
+
   function buildRow(cli, entry) {
-    const row = node('div', `cli-update-row${entry.updateAvailable ? ' is-update' : ' is-current'}`);
+    const mode = rowMode(entry);
+    const row = node('div', `cli-update-row${entry.updateAvailable ? ' is-update' : (mode === 'install' ? ' is-missing' : ' is-current')}`);
     const name = node('span', 'cli-update-name');
-    name.append(node('strong', null, CLI_LABELS[cli] || cli));
+    name.append(node('strong', null, cliLabel(cli)));
     const status = node('small', 'cli-update-versions', statusLine(entry));
     name.append(status);
+    for (const engine of entry.bundled || []) {
+      name.append(node('small', 'cli-update-bundled', bundledLine(engine)));
+    }
     row.append(name);
-    if (!entry.updateAvailable) return { row, status, button: null };
-    const button = node('button', 'primary', t('airCliUpdateUpgrade'));
+    if (!mode) return { row, status, button: null, mode };
+    const button = node('button', mode === 'install' ? 'secondary' : 'primary',
+      t(mode === 'install' ? 'airCliUpdateInstall' : 'airCliUpdateUpgrade'));
     button.type = 'button';
     row.append(button);
-    return { row, status, button };
+    return { row, status, button, mode };
   }
 
   function render() {
@@ -154,11 +182,20 @@
         ? t('airCliUpdateCount', { count: pending.length })
         : t('airCliUpdateAllCurrent');
     }
-    // 要升级的排最前面：打开浮层就是为了看它们。
-    for (const [cli, entry] of [...pending, ...rows.filter(([, e]) => !e.updateAvailable)]) {
+    // 要升级的排最前面：打开浮层就是为了看它们；未安装的垫底。
+    const installed = rows.filter(([, e]) => !e.updateAvailable && e.available);
+    const missing = rows.filter(([, e]) => !e.updateAvailable && !e.available);
+    for (const [cli, entry] of [...pending, ...installed, ...missing]) {
       const built = buildRow(cli, entry);
       if (built.button) {
-        built.button.onclick = () => { void startUpgrade(cli, built.status, built.button); };
+        built.button.onclick = () => { void startUpgrade(cli, built.status, built.button, built.mode); };
+      }
+      // 重建 DOM 不能把「正在升级」的那一行擦回原样: 另一个 CLI 升级完成触发的
+      // refresh 会走到这里, 若不复原, 用户会以为任务没了。
+      const live = inFlight.get(cli);
+      if (live && live.phase === 'running') {
+        if (built.status) built.status.textContent = live.text;
+        if (built.button) built.button.disabled = true;
       }
       host.append(built.row);
     }
@@ -192,6 +229,17 @@
     close();
   }
 
+  // 侧栏自己滚（窄屏整条抽屉可滚）时浮层不会跟着锚点动，所以一滚就收起。
+  // 但滚**浮层自己**是用户在读这份清单：CLI 多的时候它本来就装不下（超过 10 行），
+  // 把那次滚动当成「离开锚点」会让列表一滚就消失，后面的 CLI 永远看不到 ——
+  // 捕获阶段的 scroll 监听拿到的 target 就是区分这两种滚动的唯一依据。
+  function onScroll(event) {
+    const panel = el('cli-update-pop');
+    const target = event.target;
+    if (panel && target && (target === panel || (typeof panel.contains === 'function' && panel.contains(target)))) return;
+    close();
+  }
+
   function close() {
     const panel = el('cli-update-pop');
     const button = el('cli-update-btn');
@@ -202,7 +250,7 @@
     document.removeEventListener('pointerdown', onOutside, true);
     document.removeEventListener('keydown', onKey, true);
     root.removeEventListener('resize', close);
-    root.removeEventListener('scroll', close, true);
+    root.removeEventListener('scroll', onScroll, true);
   }
 
   function open() {
@@ -218,15 +266,13 @@
     document.addEventListener('pointerdown', onOutside, true);
     document.addEventListener('keydown', onKey, true);
     root.addEventListener('resize', close);
-    // 浮层是 fixed 的：侧栏自己滚（窄屏整条抽屉可滚）时它不会跟着动，会悬在半空
-    // 指向别处，所以一滚就收起。
-    root.addEventListener('scroll', close, true);
+    root.addEventListener('scroll', onScroll, true);
   }
 
   // ── Upgrade ────────────────────────────────────────────────────────────
-  // 同一时刻只跑一个升级，所以进度写回「该行的副标题 + 浮层底部那一块日志」，
-  // 不重建整块 —— 重建会把用户正在看的日志抹掉。
-  function paintProgress(status, text, log) {
+  // 进度写回「该行的副标题 + 浮层底部那一块日志」，不重建整块 —— 重建会把用户
+  // 正在看的日志抹掉。多个 CLI 可以同时升级，所以日志行带产品名前缀，谁的就看得清。
+  function paintProgress(cli, status, text, log) {
     if (status) status.textContent = text;
     const line = el('cli-update-log');
     if (!line) return;
@@ -235,40 +281,59 @@
       line.hidden = true;
       return;
     }
-    line.textContent = log;
+    line.textContent = cli ? `[${cliLabel(cli)}] ${log}` : log;
     line.hidden = false;
     line.scrollTop = line.scrollHeight;
   }
 
-  async function startUpgrade(cli, status, button) {
-    if (upgrade) return;
-    const name = CLI_LABELS[cli] || cli;
+  async function startUpgrade(cli, status, button, mode) {
+    // 同一行不并行(服务端也会 409)，但别的行不受影响。
+    const live = inFlight.get(cli);
+    if (live && live.phase === 'running') return;
+    const install = mode === 'install';
+    const labels = install
+      ? { running: 'airCliUpdateInstalling', done: 'airCliUpdateInstallDone', failed: 'airCliUpdateInstallFailed' }
+      : { running: 'airCliUpdateUpgrading', done: 'airCliUpdateDone', failed: 'airCliUpdateFailed' };
+    const name = cliLabel(cli);
     const entry = ((lastState && lastState.versions) || {})[cli] || {};
-    const inUse = Number(entry.inUseCount) || 0;
-    const question = inUse > 0
-      ? t('airCliUpdateConfirmBusy', { cli: name, count: inUse })
-      : t('airCliUpdateConfirm', { cli: name });
-    if (root.confirm && !root.confirm(question)) return;
+    // 安装一个还没有的 CLI 不影响任何现有会话，点了就装，不再多问一次；升级会
+    // 换掉正在用的二进制，所以仍要确认。
+    if (!install) {
+      const inUse = Number(entry.inUseCount) || 0;
+      const question = inUse > 0
+        ? t('airCliUpdateConfirmBusy', { cli: name, count: inUse })
+        : t('airCliUpdateConfirm', { cli: name });
+      if (root.confirm && !root.confirm(question)) return;
+    }
 
     button.disabled = true;
     let started;
     try {
-      started = await raw(`/api/cli/${encodeURIComponent(cli)}/upgrade`, {});
+      started = await raw(`/api/cli/${encodeURIComponent(cli)}/${install ? 'install' : 'upgrade'}`, {});
     } catch (error) {
       button.disabled = false;
-      paintProgress(status, t('airCliUpdateFailed', { error: error.message }), null);
+      inFlight.delete(cli);
+      paintProgress(cli, status, t(labels.failed, { error: error.message }), null);
       return;
     }
     const data = started.data || {};
+    // 并发点击时服务端已经装好了：直接当完成处理。
+    if (started.ok && data.alreadyInstalled) {
+      inFlight.delete(cli);
+      paintProgress(cli, status, t(labels.done), null);
+      await refresh(true);
+      return;
+    }
     if (!started.ok || !data.jobId) {
       button.disabled = false;
-      paintProgress(status, t('airCliUpdateFailed', { error: data.error || `HTTP ${started.status}` }), null);
+      inFlight.delete(cli);
+      paintProgress(cli, status, t(labels.failed, { error: data.error || `HTTP ${started.status}` }), null);
       return;
     }
 
     button.disabled = false;
-    upgrade = { cli, jobId: data.jobId };
-    paintProgress(status, t('airCliUpdateUpgrading'), null);
+    inFlight.set(cli, { phase: 'running', text: t(labels.running) });
+    paintProgress(cli, status, t(labels.running), null);
     const startedAt = Date.now();
     for (;;) {
       let job = null;
@@ -280,22 +345,25 @@
       }
       if (job) {
         if (job.status === 'done') {
-          upgrade = null;
-          paintProgress(status, t('airCliUpdateDone'), job.logTail || '');
+          inFlight.delete(cli);
+          paintProgress(cli, status, t(labels.done), job.logTail || '');
           await refresh(true);
           return;
         }
         if (job.status === 'error') {
-          upgrade = null;
-          paintProgress(status, t('airCliUpdateFailed', { error: job.error || '' }), job.logTail || '');
+          inFlight.delete(cli);
+          // hint 是服务端查明的具体原因(网络/证书/新版本装到了别的位置)，比一行
+          // 退出码有用得多，必须和日志一起给出来。
+          const detail = job.hint ? `${job.logTail || ''}\n\n${job.hint}` : (job.logTail || '');
+          paintProgress(cli, status, t(labels.failed, { error: job.error || '' }), detail);
           await refresh(false);
           return;
         }
-        paintProgress(status, t('airCliUpdateUpgrading'), job.logTail || '');
+        paintProgress(cli, status, t(labels.running), job.logTail || '');
       }
       if (Date.now() - startedAt > MAX_WAIT_MS) {
-        upgrade = null;
-        paintProgress(status, t('airCliUpdateTimeout'), null);
+        inFlight.delete(cli);
+        paintProgress(cli, status, t('airCliUpdateTimeout'), null);
         return;
       }
       await sleep(POLL_MS);

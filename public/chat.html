@@ -648,13 +648,10 @@
     .msg-usage .u-in { color: var(--chat-blue, #79c0ff); }
     .msg-usage .u-out { color: var(--chat-success, #3fb950); }
     .msg-usage .u-cache { color: var(--chat-warning, #d29922); }
-    /* 主/辅 split badge — separated from in/out/cache by a leading divider. */
-    .msg-usage .u-role {
-      color: var(--chat-muted, #8b949e);
-      padding-left: 10px;
-      border-left: 1px solid var(--chat-soft, #21262d);
-      cursor: help;
-    }
+    /* One row per role (主, and 辅 only for a separately configured sub model):
+       fresh ↑入/↓出 then ♻读/♻写 cache. Each row takes the full width. */
+    .msg-usage .u-row { display: flex; flex-wrap: wrap; gap: 4px 10px; width: 100%; }
+    .msg-usage .u-role { color: var(--chat-muted, #8b949e); font-weight: 600; }
     /* 省主模型 badge — sub-role 替主模型处理的 token 量（四桶总额）。
        深绿 + 浅绿药丸，与 ↓出(var(--chat-success, #3fb950)) 区分，提示这是个正向衍生指标。 */
     .msg-usage .u-saved {
@@ -664,44 +661,6 @@
       border-radius: 8px;
       cursor: help;
     }
-
-    /* ── Per-message auto-commit checkbox ── */
-    .msg-auto-commit {
-      margin-top: 6px;
-      padding-top: 4px;
-      border-top: 1px solid var(--chat-soft, #21262d);
-      font-size: 11px;
-      color: var(--chat-muted, #8b949e);
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      user-select: none;
-      cursor: pointer;
-    }
-    .msg-auto-commit:hover { color: var(--chat-text, #c9d1d9); }
-    .msg-auto-commit input[type="checkbox"] {
-      margin: 0;
-      cursor: pointer;
-      accent-color: #238636;
-    }
-    .msg-auto-commit.done {
-      color: var(--chat-success, #3fb950);
-      cursor: default;
-    }
-    .msg-auto-commit.done::after {
-      content: ' ✓ 已提交';
-      color: var(--chat-success, #3fb950);
-      font-weight: 600;
-    }
-    /* On the blue user bubble the gray text + dark divider are unreadable — lighten them. */
-    .msg.user .msg-auto-commit {
-      border-top-color: rgba(255, 255, 255, 0.25);
-      color: var(--chat-blue, #dbe9ff);
-    }
-    .msg.user .msg-auto-commit:hover { color: #fff; }
-    .msg.user .msg-auto-commit input[type="checkbox"] { accent-color: #2ea043; }
-    .msg.user .msg-auto-commit.done,
-    .msg.user .msg-auto-commit.done::after { color: var(--chat-success, #7ee787); }
 
     /* ── Thinking indicator ── */
     .thinking-bubble {
@@ -1214,7 +1173,7 @@
       border-radius: 50%; border: 1px solid var(--chat-warning, #d29922); background: var(--chat-warning-soft, #2d2108);
       color: var(--chat-warning, #f2cc60); font-size: 15px; font-weight: 700; line-height: 1;
       display: flex; align-items: center; justify-content: center;
-      box-shadow:var(--chat-shadow, 0 6px 18px #000000aa); cursor: pointer; opacity: .75;
+      box-shadow:var(--chat-shadow, 0 6px 18px #000000aa); cursor: grab; touch-action: none; opacity: .75;
       transition: opacity 160ms ease;
     }
     #merge-hint-fab:hover { opacity: 1; }
@@ -1893,7 +1852,7 @@
       pointer-events: none;            /* the outer box owns the gestures */
     }
     #diff-dock-fab:hover .diff-fab-circle { background: #2a7bf5; }
-    #diff-dock-fab.dragging { cursor: grabbing; }
+    #diff-dock-fab.dragging, #merge-hint-fab.dragging { cursor: grabbing; }
     #diff-dock-fab.dragging .diff-fab-circle { box-shadow:var(--chat-shadow, 0 10px 26px #000000cc); }
     #diff-dock-fab[hidden] { display: none; }
     #diff-dock-count {
@@ -2390,6 +2349,7 @@
   <link rel="stylesheet" href="chat-session-queue.css" />
   <link rel="stylesheet" href="chat-task-mode.css" /><link rel="stylesheet" href="chat-task-index.css" /><link rel="stylesheet" href="chat-share-mode.css" /><link rel="stylesheet" href="composer.css" /><link rel="stylesheet" href="chat-air.css" /><link rel="stylesheet" href="chat-header-shapes.css" />
   <link rel="stylesheet" href="chat-quote.css" />
+  <link rel="stylesheet" href="chat-system-inject.css" />
   <link rel="stylesheet" href="chat-task-attribution.css" />
 </head>
 <body><script data-chat-theme-boot>
@@ -2566,6 +2526,7 @@
     <span class="merge-hint-text" data-i18n="mergeHintReady">当前 worktree 有可合并内容。</span>
     <button id="merge-hint-diff-btn" class="ghost" data-i18n="mergeHintViewDiff">查看 Diff</button>
     <button id="merge-hint-btn" data-i18n="merge">合并</button>
+    <button id="merge-hint-rebase-btn" class="ghost" data-i18n="rebase" data-i18n-title="rebaseWorktreeTitle" title="把最新基分支 rebase 进本会话 worktree（保留本会话修改）">rebase</button>
     <button id="merge-hint-collapse-btn" class="mh-collapse" title="收起" aria-label="收起"
             data-i18n-title="mergeHintCollapse" data-i18n-aria-label="mergeHintCollapse">⌄</button>
   </div>
@@ -2889,6 +2850,10 @@
   <script src="i18n.js"></script>
   <script src="shared/models.js"></script>
   <script src="shared/dom-helpers.js"></script>
+  <script src="shared/format.js"></script>
+  <!-- 分类结果的通知标题/语音文案只有这一份（chat-live-ui / chat-notifications /
+       chat-event-controller 都读它），必须先于三个消费方加载。 -->
+  <script src="shared/notification-copy.js"></script>
   <script src="vendor/dompurify/purify.min.js"></script>
   <script src="/vendor/marked/marked.min.js"></script>
   <script src="safe-markdown.js"></script>
@@ -2916,6 +2881,7 @@
   <script src="chat-message-focus.js"></script>
   <script src="chat-scroll-controller.js"></script>
   <script src="memo-controller.js"></script>
+  <script src="shared/user-presence.js"></script>
   <script src="chat-notifications.js"></script>
   <script src="chat-composer.js"></script>
   <script src="chat-live-ui.js"></script>
@@ -2929,6 +2895,7 @@
   <script src="chat-context-controls.js"></script>
   <script src="chat-diff.js"></script>
   <script src="chat-dispatch-hint.js"></script>
+  <script src="chat-local-links.js"></script>
   <script src="chat-dispatch-activity.js"></script>
   <script src="chat-worktree-status.js"></script><script src="chat-merge-hint.js"></script>
   <script src="chat-recovery-service.js"></script>
@@ -2937,8 +2904,8 @@
   <script src="chat-session-features.js"></script><script src="chat-scheduled-send.js"></script>
   <!-- 必须排在 chat.js 前面：chat.js 在顶层就按它判断这一页是不是分享页。 -->
   <script src="chat-share-mode.js"></script>
-  <script src="chat-auto-commit-choice.js"></script>
-  <script src="chat.js"></script><script src="chat-air-toolbar.js"></script><script src="chat-composer-collapse.js"></script>
+  <script src="chat-handoff.js"></script>
+  <script src="chat.js"></script><link rel="stylesheet" href="chat-annotate.css"><script src="chat-annotate.js"></script><script src="chat-air-toolbar.js"></script><script src="chat-composer-collapse.js"></script>
   <script src="tour.js"></script>
 </body>
 </html>

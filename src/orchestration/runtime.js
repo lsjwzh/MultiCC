@@ -12,6 +12,7 @@ const { createOutbox } = require('../outbox');
 const { createWaitService } = require('../wait/service');
 const { deliveryClassForItem } = require('./delivery-classes');
 const { createSessionWorkScheduler } = require('../session-work/scheduler');
+const { isWaitForUserLetter } = require('../classify/vocab');
 const {
   TERMINAL_OPERATION_STATES,
   TERMINAL_TASK_STATES,
@@ -86,9 +87,12 @@ function createOrchestrationRuntime({
   // Optional diagnostic companion to isBusy: (sessionId, item) → string[] of
   // reason codes. Used only for skip logging; never changes the decision.
   busyReasons = null,
+  // Optional: (sessionId) → void. Told exactly when a real queued item was
+  // refused, which is the only signal the workspace escalation reacts to (a
+  // pinned lease means a writer exists, not that anyone is waiting on it).
+  noteBlockedDelivery = null,
   isDeliveryLocked = () => false,
   deliveryGroup = id => id,
-  isSlotUnavailable = () => false,
   hasPersistedDelivery = async () => false,
   // Optional: (sessionId, identity) → null | { known, handedOff, turnId, at }.
   // Distinguishes "persisted to history" from "runner took over" on the
@@ -226,10 +230,6 @@ function createOrchestrationRuntime({
         ? { registrationFingerprint: String(spec.registrationFingerprint).slice(0, 128) }
         : {}),
       ...(spec.taskId ? { taskId: String(spec.taskId).slice(0, 128) } : {}),
-      ...(spec.taskRunId ? {
-        taskRunId: String(spec.taskRunId).slice(0, 128),
-        leaseEpoch: Number(spec.leaseEpoch),
-      } : {}),
       ...(spec.originDispatchId
         ? { originDispatchId: String(spec.originDispatchId).slice(0, 128) }
         : {}),
@@ -241,11 +241,6 @@ function createOrchestrationRuntime({
         clientScheduleId: String(spec.clientScheduleId || '').slice(0, 128),
       } : {}),
     };
-    if (registrationMetadata.taskRunId
-        && (!Number.isSafeInteger(registrationMetadata.leaseEpoch)
-          || registrationMetadata.leaseEpoch < 1)) {
-      throw new TypeError('task-run wait requires a positive leaseEpoch');
-    }
     let metadata;
     if (mode === 'poll') {
       if (!spec.pollCmd && !spec.pollUrl) throw new Error('poll mode needs pollCmd or pollUrl');
@@ -508,7 +503,7 @@ function createOrchestrationRuntime({
           && (operation.ownerSessionId === id || operation.spec?.chatId === id || operation.spec?.targetId === id))) return true;
       if (Object.values(draft.tasks).some(task => task.parentSessionId === id && !TERMINAL_TASK_STATES.has(task.status) && fresh(task))) return true;
       const schedule = draft.sessionSchedules[id];
-      const waitingOnly = schedule?.active && (schedule.classifyState === 'W'
+      const waitingOnly = schedule?.active && (isWaitForUserLetter(schedule.classifyState)
         || ['awaiting_user_input', 'classify_waiting'].includes(schedule.freezeReason));
       return !!(schedule?.active && !waitingOnly && fresh(schedule));
     });
@@ -714,25 +709,16 @@ function createOrchestrationRuntime({
       ? item.turnLineage : {};
   }
 
+  // dispatch.result carries the dispatched worker's task identity as data; it
+  // is never the lineage of the result session's turn (see session-work
+  // scheduler ownPayload).
+  function ownPayload(item) {
+    return item?.payload?.type === 'dispatch.result' ? null : item?.payload;
+  }
+
   function itemTaskId(item) {
     const lineage = itemTurnLineage(item);
-    return lineage.taskId || item?.payload?.taskId || item?.payload?.options?.taskId || null;
-  }
-
-  function itemTaskRunId(item) {
-    const lineage = itemTurnLineage(item);
-    return lineage.taskRunId
-      || item?.payload?.taskRunId
-      || item?.payload?.options?.taskRunId
-      || null;
-  }
-
-  function itemLeaseEpoch(item) {
-    const lineage = itemTurnLineage(item);
-    const parsed = Number(lineage.leaseEpoch
-      ?? item?.payload?.leaseEpoch
-      ?? item?.payload?.options?.leaseEpoch);
-    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+    return lineage.taskId || ownPayload(item)?.taskId || ownPayload(item)?.options?.taskId || null;
   }
 
   function itemOriginDispatchId(item) {
@@ -769,8 +755,6 @@ function createOrchestrationRuntime({
     item.turnLineage = {
       ...itemTurnLineage(item),
       taskId,
-      taskRunId: matches[0].spec?.taskRunId || null,
-      leaseEpoch: matches[0].spec?.leaseEpoch || null,
       originDispatchId: matches[0].id,
       workKind: 'continuation',
       inheritedBy: 'unique_live_task_match',
@@ -795,8 +779,6 @@ function createOrchestrationRuntime({
         ...(payload.options || {}),
         deliveryClass,
         taskId: itemTaskId(item) || undefined,
-        taskRunId: itemTaskRunId(item) || undefined,
-        leaseEpoch: itemLeaseEpoch(item) || undefined,
         originDispatchId: itemOriginDispatchId(item) || undefined,
         originContinue: effectiveWorkKind !== 'task',
         deliveryId: item.id,
@@ -816,16 +798,14 @@ function createOrchestrationRuntime({
         originDispatchId: payload.operationId,
         originContinue: false,
         deliveryId: item.id,
-        clientMsgId: item.id,
+        clientMsgId: payload.clientMsgId || item.id,
+        taskShellReceiptId: payload.taskShellReceiptId || undefined,
+        receivedAt: payload.receivedAt,
         taskId: payload.taskId || undefined,
-        taskRunId: payload.taskRunId || undefined,
-        leaseEpoch: itemLeaseEpoch(item) || undefined,
         // No history intent is passed. A delivered dispatch is the same thing
         // as a message typed into the input box: the engine derives
-        // resume-vs-fresh from live native-session proof. A task run still
-        // starts a fresh thread, but because resetSlot cleared cliSessionId
-        // and the turn count before cleanup could report done — not because
-        // the dispatcher pinned it.
+        // resume-vs-fresh from live native-session proof, never from a
+        // dispatcher-pinned intent.
         taskStart: payload.taskStart === true,
         taskSource: payload.taskSource || undefined,
         taskText: payload.taskText || undefined,
@@ -837,8 +817,6 @@ function createOrchestrationRuntime({
       deliveryId: item.id,
       clientMsgId: item.id,
       taskId: itemTaskId(item) || undefined,
-      taskRunId: itemTaskRunId(item) || undefined,
-      leaseEpoch: itemLeaseEpoch(item) || undefined,
       originDispatchId: itemOriginDispatchId(item) || undefined,
     };
   }
@@ -893,8 +871,7 @@ function createOrchestrationRuntime({
       // The host-busy read must happen before our own claim: claiming emits
       // 'claimed', which projects queueState 'running' onto the session
       // record, so a post-claim isBusy would read its own claim as busy and
-      // defer forever. Slot-lease conflicts are re-checked after the claim
-      // because only the claim reveals the retained run lineage.
+      // defer forever.
       if (isBusy(item.sessionId, item)) {
         return outbox.defer(item.id, item.leaseToken, 'chat session is busy', {
           delayMs: 0,
@@ -907,30 +884,6 @@ function createOrchestrationRuntime({
         });
       }
       schedulerClaimed = true;
-      const claimedActive = schedulerClaim.schedule?.active || {};
-      if (!itemTaskRunId(item) && claimedActive.taskRunId) {
-        item.turnLineage = {
-          ...itemTurnLineage(item),
-          taskId: itemTaskId(item) || claimedActive.taskId || null,
-          taskRunId: claimedActive.taskRunId,
-          leaseEpoch: claimedActive.leaseEpoch || null,
-          originDispatchId: itemOriginDispatchId(item)
-            || claimedActive.originDispatchId || null,
-        };
-      }
-      if (isSlotUnavailable(item.sessionId, item)) {
-        // P0 ordering: settle the transport lease FIRST (silent store mutation),
-        // then release the scheduler claim — its 'claim_released' broadcast then
-        // carries the authoritative post-rollback queue snapshot with this item
-        // already back in the FIFO, instead of broadcasting an intermediate
-        // state that hides the item until some later event fires.
-        const deferred = await outbox.defer(item.id, item.leaseToken, 'task execution slot is leased to another run', {
-          delayMs: 0,
-        });
-        await sessionScheduler.releaseClaim(item, 'host_busy_after_claim');
-        schedulerClaimed = false;
-        return deferred;
-      }
       if (await hasPersistedDelivery(item.sessionId, deliveryId)) {
         // Persisted ≠ delivered. The live turn engine reports whether a runner
         // actually took over for this identity. A known pre-handoff rejection
@@ -943,7 +896,7 @@ function createOrchestrationRuntime({
           try {
             probe = await Promise.resolve(runnerDeliveryProbe(
               item.sessionId,
-              item.payload?.options?.clientMsgId || deliveryId,
+              item.payload?.options?.clientMsgId || item.payload?.clientMsgId || deliveryId,
             ));
           } catch (_) { probe = null; }
         }
@@ -961,8 +914,6 @@ function createOrchestrationRuntime({
         text: deliveryText(item),
         opts: deliveryOptions(item),
         taskId: itemTaskId(item),
-        taskRunId: itemTaskRunId(item),
-        leaseEpoch: itemLeaseEpoch(item),
       };
       deliveryGuard = await Promise.resolve(beforeDeliver(descriptor));
       const accepted = await Promise.resolve(
@@ -1001,12 +952,17 @@ function createOrchestrationRuntime({
       try {
         settled = error.backpressure === true
           ? await outbox.defer(item.id, item.leaseToken, error.code || error.message, { delayMs: 1000 })
-          : await outbox.fail(item.id, item.leaseToken, error, { retryable: true });
+          : await outbox.fail(item.id, item.leaseToken, error, { retryable: error.retryable !== false });
       } catch (settleError) {
         log(`[orchestration] delivery ${item.id} outbox settle failed: ${settleError.message}`);
       }
       if (schedulerClaimed) {
         await sessionScheduler.releaseClaim(item, 'delivery_error').catch(() => {});
+      }
+      if (settled?.deadLetter && item.payload?.type === 'dispatch.request') {
+        await operations.completeDispatch(item.payload.operationId, {
+          status: 'failed', error: error.code || 'delivery_failed', retryable: false,
+        });
       }
       if (settled) return settled;
       throw error;
@@ -1098,6 +1054,9 @@ function createOrchestrationRuntime({
       if (!item) return null;
       if (isBusy(item.sessionId, projected)) {
         noteDeliverySkip(item, 'session_busy', projected);
+        if (typeof noteBlockedDelivery === 'function') {
+          try { noteBlockedDelivery(item.sessionId); } catch (_) { /* diagnostics never veto */ }
+        }
         return null;
       }
       if (inFlightDeliveries.has(item.id)) return null;

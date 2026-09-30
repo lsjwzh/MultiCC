@@ -2,6 +2,12 @@
 
 const path = require('node:path');
 const { createHash } = require('node:crypto');
+// A session still holds an execution claim on the workspace while its turn is
+// in flight (P, or the retired C) or parked (W on the user, B on a background
+// job). This preview is read-only and deliberately conservative — see
+// src/routes/session-git.js for the narrower "can this worktree be synced now"
+// question, which lets W through because nothing is running.
+const { isProcessingLetter, isParkedLetter } = require('../classify/vocab');
 const values = value => value instanceof Map ? [...value.values()]
   : Array.isArray(value) ? value : Object.values(value || {});
 const absolute = value => typeof value === 'string' && path.isAbsolute(value) ? path.normalize(value) : null;
@@ -76,7 +82,8 @@ function inventoryWorkspaces({ sessions = [], directories = [], observations = {
       if (observed.ignoredAccounted !== true) group.reasons.push('ignored_files_unaccounted');
     }
     if (row.isStreaming || row.running || row.hasProcess || row.kind === 'terminal'
-      || ['P', 'B', 'W'].includes(row.taskState?.classifyState)) group.reasons.push('execution_dependency');
+      || isProcessingLetter(row.taskState?.classifyState)
+      || isParkedLetter(row.taskState?.classifyState)) group.reasons.push('execution_dependency');
   }
   const workspaces = [...groups.values()].sort((a,b) => a.path.localeCompare(b.path));
   for (const group of workspaces) {

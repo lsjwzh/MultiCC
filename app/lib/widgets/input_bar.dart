@@ -8,8 +8,10 @@ import '../i18n.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../models/message.dart';
+import '../services/annotation_inbox.dart';
 import '../services/attachment_picker.dart';
 import '../services/chat_service.dart';
+import '../services/goal_precheck.dart';
 import '../services/voice_clip_recorder.dart';
 import '../services/voice_dictation_service.dart';
 import '../services/voice_launch_service.dart';
@@ -84,6 +86,8 @@ class _InputBarState extends State<InputBar> {
       final has = _ctrl.text.trim().isNotEmpty;
       if (has != _hasText) setState(() => _hasText = has);
     });
+    AnnotationInbox.draft.addListener(_onAnnotationDraft);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onAnnotationDraft());
   }
 
   void _onFocusChanged() {
@@ -92,6 +96,7 @@ class _InputBarState extends State<InputBar> {
 
   @override
   void dispose() {
+    AnnotationInbox.draft.removeListener(_onAnnotationDraft);
     _dictation?.removeListener(_onDictationChanged);
     _dictation?.dispose();
     // 谁建的谁销毁：外面传进来的还归外面，这里只摘掉自己挂的监听。
@@ -105,13 +110,14 @@ class _InputBarState extends State<InputBar> {
   // ── File attachment ──
 
   Future<void> _pickAndUpload() async {
-    final provider = context.read<ChatProvider>();
-    final settings = provider.settings;
-
     // iOS 弹「文件 / 相册」二选一（文档选择器够不到相册）；其它平台直接选文件。
     final picked = await pickChatAttachment(context);
-    if (picked == null) return;
+    if (picked == null || !mounted) return;
+    await _uploadPicked(picked);
+  }
 
+  Future<void> _uploadPicked(PickedAttachment picked) async {
+    final settings = context.read<ChatProvider>().settings;
     setState(() => _uploading = true);
     try {
       final uploaded = await uploadChatAttachment(
@@ -134,6 +140,47 @@ class _InputBarState extends State<InputBar> {
       }
     } finally {
       if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  // ── Screenshot annotation hand-off (image viewer → composer) ──
+
+  /// Consume-once: only a mounted input bar on the current, ticking route takes
+  /// the draft. The viewer pops before publishing, so the chat route may still
+  /// be settling — retry for a few frames before leaving it for someone else.
+  void _onAnnotationDraft([int attempt = 0]) {
+    if (!mounted || AnnotationInbox.draft.value == null) return;
+    final route = ModalRoute.of(context);
+    final visible =
+        (route == null || route.isCurrent) && TickerMode.of(context);
+    if (!visible) {
+      if (attempt < 30) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _onAnnotationDraft(attempt + 1),
+        );
+      }
+      return;
+    }
+    final draft = AnnotationInbox.take();
+    if (draft == null) return;
+    final cur = _ctrl.text;
+    final text = cur.trim().isEmpty
+        ? draft.text
+        : '${cur.trimRight()}\n\n${draft.text}';
+    _ctrl.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _focusNode.requestFocus();
+    final png = draft.png;
+    if (png != null) {
+      _uploadPicked(
+        PickedAttachment(
+          bytes: png,
+          filename: draft.filename,
+          mimeType: 'image/png',
+        ),
+      );
     }
   }
 
@@ -676,16 +723,22 @@ class _InputBarState extends State<InputBar> {
     String action, {
     String? entryId,
     int? toIndex,
+    String? text,
   }) async {
     if (!await _confirmQueueChange(action)) return;
     try {
-      await provider.queueAction(action, entryId: entryId, toIndex: toIndex);
+      final started = await provider.queueAction(
+        action,
+        entryId: entryId,
+        toIndex: toIndex,
+        text: text,
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             action == 'insert_queued'
-                ? t('queueInsertAccepted')
+                ? (started ? t('queueInsertAccepted') : t('queueInsertPending'))
                 : action == 'reorder_queued'
                 ? t('queueReorderAccepted')
                 : t('queueActionAccepted'),
@@ -717,6 +770,10 @@ class _InputBarState extends State<InputBar> {
   // proposes a rewrite, then we wrap the accepted task in a short goal-mode
   // instruction and send it through the normal sendMessage() path.
 
+  /// 服务端公布的预检等待上限（/api/settings/goal 的 precheckWaitMs）。null = 旧
+  /// 服务端没给，或还没拉到设置，用 goal_precheck.dart 里的兜底值。
+  int? _goalPrecheckWaitMs;
+
   String _goalWrap(String task) {
     return t('goalExecutionPrompt', {'task': task});
   }
@@ -740,9 +797,25 @@ class _InputBarState extends State<InputBar> {
             headers: headers,
             body: jsonEncode({'task': task, 'dimensions': dims}),
           )
-          .timeout(const Duration(seconds: 45));
+          // The server queues this behind other Aux work and then gives the
+          // model its own budget; this waits for that budget plus slack, so the
+          // server's explicit AUX_TIMEOUT message wins the race instead of a
+          // bare client abort (see services/goal_precheck.dart).
+          .timeout(
+            Duration(milliseconds: goalPrecheckTimeoutMs(_goalPrecheckWaitMs)),
+          );
       if (res.statusCode != 200) {
-        return {'ok': false, 'error': 'HTTP ${res.statusCode}'};
+        // The goal routes answer with JSON on every branch, so prefer the
+        // server's own words over a bare status code.
+        String detail = '';
+        try {
+          final body = jsonDecode(utf8.decode(res.bodyBytes));
+          if (body is Map && body['error'] != null) detail = "${body['error']}";
+        } catch (_) {}
+        return {
+          'ok': false,
+          'error': detail.isNotEmpty ? detail : 'HTTP ${res.statusCode}',
+        };
       }
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     } catch (e) {
@@ -764,6 +837,9 @@ class _InputBarState extends State<InputBar> {
           .timeout(const Duration(seconds: 15));
       if (res.statusCode != 200) return;
       final d = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      // 预检预算跟着服务端走（它拥有 Aux 队列）；旧服务端没这个字段就留 null。
+      final wait = d['precheckWaitMs'];
+      _goalPrecheckWaitMs = wait is num ? wait.toInt() : null;
       final g = (d['dimensions'] as Map?) ?? {};
       for (final k in const ['objective', 'criteria', 'scope', 'executable']) {
         dims[k] = g[k] != false;
@@ -1254,6 +1330,12 @@ class _InputBarState extends State<InputBar> {
                 'reorder_queued',
                 entryId: entryId,
                 toIndex: toIndex,
+              ),
+              onEditQueued: (entryId, text) => _runQueueAction(
+                provider,
+                'edit_queued',
+                entryId: entryId,
+                text: text,
               ),
             ),
 

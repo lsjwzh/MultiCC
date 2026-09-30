@@ -11,22 +11,19 @@ import 'package:multicc_app/widgets/air/air_sidebar.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// 打开一个对话 = 一层盖满内容区的浮层（三端同一套规矩，Web 那侧是
-// `public/air.js` 的 `#chat-layer`）：页头留在外面，而且它必须还是活的 ——
-// 「换下一个任务仍是一步」全靠这一条。展开才连页头一起盖。
+// 打开一个对话 = 一层盖满的浮层（三端同一套规矩，Web 那侧是 `public/air.js` 的
+// `#chat-layer`）。手机默认就展开（连页头一起盖）：顶部不留一条可拖的闲置区，
+// 把空间都留给聊天。收起 = 标题左侧那颗 ⌄、标题区域往下拖、或 Android 返回键。
 //
-// 这里在真的 MainShell 上量：默认态页头那一格到底有没有被吃掉、☰ 点得动点不动、
-// 展开有没有盖到屏幕最上面。Web 那侧有对应的 CDP 用例
-// （tests/test-air-chat-layer-cdp.js），两边量的是同一件事。
+// 这里在真的 MainShell 上量：默认态有没有盖到屏幕最上面、标题区往下拖能不能
+// 收起回首页。Web 那侧有对应的 CDP 用例（tests/test-air-chat-layer-cdp.js）。
 //
 // SessionManager 的构造器会启动 5s 周期刷新，而 flutter_test 在 test body 内部
 // 就检查 pending timers（早于 addTearDown）——所以每个用例都必须在断言之后、
 // body 结束之前 `mgr.dispose()`（跟 chat_header_title_test.dart 同一个道理）。
 void main() {
   const statusBar = 47.0;
-  const barHeight = 36.0; // 浮层顶上那条控制条（拖柄 + 展开）
   const separator = 1.0; // 浮层顶边那条分界线（BoxDecoration 的 border 也算进布局）
-  final contentTop = statusBar + kToolbarHeight; // 首页 AppBar 的下沿
 
   setUpAll(() => I18n.init('zh'));
 
@@ -68,69 +65,53 @@ void main() {
   }
 
   Finder chat() => find.byType(ChatView);
-  Finder expandButton() => find.byKey(const ValueKey('chat-sheet-expand'));
 
-  testWidgets('默认态盖满内容区：页头整条留在外面，聊天紧贴在它下面', (tester) async {
+  testWidgets('默认就展开：聊天从屏幕最上面开始，顶部没有可拖的控制条', (tester) async {
     final mgr = await pumpShell(tester);
 
-    final appBar = tester.getRect(find.byType(AppBar).first);
-    expect(appBar.bottom, contentTop, reason: '页头是普通 AppBar：状态栏 + kToolbarHeight');
     final body = tester.getRect(chat());
     expect(
       body.top,
-      contentTop + separator + barHeight,
-      reason: '浮层上沿就在页头下沿，中间不留缝也不许压到页头',
+      statusBar + separator,
+      reason: '默认展开态从屏幕最上面开始（让出状态栏一条，内容不钻到刘海底下）',
     );
     expect(body.left, 0);
-    expect(body.right, 390, reason: '要盖满整条内容区的宽度');
+    expect(body.right, 390, reason: '要盖满整条宽度');
     expect(body.bottom, 844);
 
-    // 控制条自己也铺满整宽（它是 Column 的孩子，不写明宽度就会缩成拖柄那 42px），
-    // 「展开」靠右站。
-    final expand = tester.getRect(expandButton());
-    expect(expand.right, 390 - 6);
-    expect(expand.top, greaterThanOrEqualTo(contentTop));
-
-    // 页头是活的：点 ☰ 走得通 —— 先收起对话，抽屉再拉出来。
-    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
-    await settleDraining(tester);
-    expect(find.byType(AirSidebar), findsOneWidget);
+    // 那条带拖柄和「展开/收起」的控制条不再存在：顶部空间都留给聊天。
+    expect(find.byKey(const ValueKey('chat-sheet-expand')), findsNothing);
+    expect(find.text('展开'), findsNothing);
+    expect(find.text('收起'), findsNothing);
 
     mgr.dispose();
   });
 
-  testWidgets('展开连页头一起盖，收起再放回内容区', (tester) async {
+  testWidgets('标题区域往下拖就收起回首页', (tester) async {
     final mgr = await pumpShell(tester);
-    expect(find.text('展开'), findsOneWidget);
 
-    await tester.tap(expandButton());
+    // 标题行是收起的落点：往下拖过阈值 = 关掉对话，回到首页。
+    final titleLine = find.textContaining('sess-1');
+    expect(titleLine, findsOneWidget);
+    await tester.drag(titleLine, const Offset(0, 600));
     await settleDraining(tester);
 
-    final appBar = tester.getRect(find.byType(AppBar).first);
-    final body = tester.getRect(chat());
-    expect(
-      body.top,
-      statusBar + separator + barHeight,
-      reason: '展开态从屏幕最上面开始（让出状态栏一条，内容不钻到刘海底下）',
+    expect(mgr.activeSessionId, isNull, reason: '往下拖 = 关掉对话，回到首页');
+    expect(chat(), findsNothing);
+
+    mgr.dispose();
+  });
+
+  testWidgets('标题左侧 ⌄ 点击也收起回首页', (tester) async {
+    final mgr = await pumpShell(tester);
+
+    // ChatHeader 最左边的收起箭头（标题左侧）。
+    await tester.tap(
+      find.byIcon(Icons.keyboard_arrow_down_rounded).first,
     );
-    expect(body.top, lessThan(appBar.bottom), reason: '页头这时候是被盖住的');
-    expect(find.text('收起'), findsOneWidget, reason: '盖住了页头，出口就在这条控制条上');
-
-    await tester.tap(expandButton());
-    await settleDraining(tester);
-    expect(tester.getRect(chat()).top, contentTop + separator + barHeight);
-    expect(find.text('展开'), findsOneWidget);
-
-    mgr.dispose();
-  });
-
-  testWidgets('抓着控制条往下甩就回首页', (tester) async {
-    final mgr = await pumpShell(tester);
-
-    await tester.drag(expandButton(), const Offset(0, 600)); // 甩过 `_dismissBelow`
     await settleDraining(tester);
 
-    expect(mgr.activeSessionId, isNull, reason: '甩下去 = 关掉对话，回到首页');
+    expect(mgr.activeSessionId, isNull, reason: '点 ⌄ = 关掉对话，回到首页');
     expect(chat(), findsNothing);
 
     mgr.dispose();

@@ -1,6 +1,7 @@
 'use strict';
 
 const { createCodexRolloutGuard } = require('../chat/codex-rollout-guard');
+const { isChatStateBusy } = require('../session/runtime-busy');
 
 // Single-session lifecycle routes: DELETE /api/sessions/:id (cascades through
 // the session's worktree, tmux pane and chat process), POST .../relocate
@@ -125,8 +126,10 @@ function createSessionLifecycleRuntime(rawDeps) {
     const activeTerminal = sessions.get(id);
     const activeChat = chatSessions.get(id);
     const activeBackground = backgroundTasksAreLive(id);
+    // chat 运行时忙判定的唯一来源（src/session/runtime-busy.js）。clients.size 是另一
+    // 条轴（有没有人在看这个会话），所以单独 OR 上来。
     const active = activeBackground || !!activeTerminal
-      || !!(activeChat && (activeChat.claudeProc || activeChat.isStreaming || activeChat.clients?.size));
+      || isChatStateBusy(activeChat) || (activeChat?.clients?.size || 0) > 0;
     if (active && !force) {
       return { ok: false, status: 409, body: { ok: false, blocked: true, reasons: ['active'], error: 'active session cannot be relocated' } };
     }

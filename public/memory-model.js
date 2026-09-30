@@ -222,18 +222,14 @@
     }
     return api.json(url, options);
   }
+  // Same five characters as shared/dom-helpers.js. The tree and graph renderers
+  // (memory-controller / memory-graph, which take this by reference) write the
+  // result into attributes — data-rel / data-copy / <option value=> — so the
+  // apostrophe has to be encoded as well, not just the double quote.
   function escapeHtml(str) {
     return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
-  function formatSize(bytes) {
-    const n = Number(bytes);
-    if (!Number.isFinite(n) || n < 0) return '–';
-    if (n < 1024) return n + ' B';
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-    return (n / (1024 * 1024)).toFixed(1) + ' MB';
-  }
-
   async function loadGraph() {
     return normalizeGraphPayload(await apiJson('/api/memory/graph'));
   }
@@ -271,7 +267,6 @@
     deleteFile,
     errorMessage: apiMessage,
     escapeHtml,
-    formatSize,
     MAX_FILE_CONTENT,
   });
 })(typeof window !== 'undefined' ? window : null);

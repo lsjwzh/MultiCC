@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../services/download_ticket_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../utils/format.dart';
 
 /// File browser for a chat session's working directory.
 ///
@@ -304,16 +305,6 @@ class _FileEntry {
       );
 }
 
-String _formatSize(int? bytes) {
-  if (bytes == null) return '';
-  if (bytes < 1024) return '${bytes}B';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)}KB';
-  if (bytes < 1024 * 1024 * 1024) {
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
-  }
-  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)}GB';
-}
-
 class _FileTile extends StatelessWidget {
   final String name;
   final bool isDir;
@@ -349,7 +340,7 @@ class _FileTile extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
       ),
       subtitle: (!isDir && size != null)
-          ? Text(_formatSize(size),
+          ? Text(formatBytes(size),
               style: const TextStyle(
                   color: AppColors.muted, fontSize: 11, fontFamily: 'monospace'))
           : null,

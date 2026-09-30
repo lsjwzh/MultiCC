@@ -125,18 +125,12 @@ test('CC-Switch import and MultiCC local mutations leave the source database unc
 });
 
 test('provider delete confirmation states the local-only boundary in both languages', () => {
-  const manage = fs.readFileSync(path.join(ROOT, 'public', 'manage.js'), 'utf8');
+  const air = fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8');
   const zh = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'assets', 'i18n', 'zh.json'), 'utf8'));
   const en = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'assets', 'i18n', 'en.json'), 'utf8'));
 
-  assert.match(manage, /confirm\(tt\('providerDeleteLocalConfirm', \{ name \}\)\)/);
-  assert.doesNotMatch(manage, /会从\s*cc-switch\s*移除/i);
-  assert.equal(
-    zh.providerDeleteLocalConfirm,
-    '仅删除 MultiCC 本地副本「{name}」，不会修改 CC-Switch；以后从 CC-Switch 同步时可能重新导入。是否继续？',
-  );
-  assert.equal(
-    en.providerDeleteLocalConfirm,
-    'Delete only the MultiCC local copy "{name}"? This does not modify CC-Switch, and a future CC-Switch sync may import it again.',
-  );
+  assert.match(air, /confirm\(t\('airProviderDeleteConfirm', \{ name: displayName\(provider\) \}\)\)/);
+  assert.doesNotMatch(air, /会从\s*cc-switch\s*移除/i);
+  assert.match(zh.airProviderDeleteConfirm, /只删 MultiCC 本地副本，不会修改 CC-Switch/);
+  assert.match(en.airProviderDeleteConfirm, /only the MultiCC local copy .+ CC-Switch is not modified/);
 });

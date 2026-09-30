@@ -2,7 +2,9 @@
 
 const crypto = require('node:crypto');
 const { isCompleted } = require('../cli-adapters/completion');
+const { isResident } = require('../cli/cli-capability');
 const { isProxyFailureCompatibleWithCompletion } = require('./adapter-completion');
+const { isProxyStallCode } = require('../providers/proxy-stall-watch');
 const {
   createExactSecretStreamRedactor, redactExactSecretFragments, redactProviderRouteCapability,
 } = require('../observability');
@@ -49,6 +51,15 @@ function positiveInteger(value, label) {
     throw new ProviderAttemptError(`${label} must be a positive integer`, 'PROVIDER_ATTEMPT_IDENTITY_INVALID');
   }
   return number;
+}
+
+// Optional per-attempt idle budget for the host-side stall watchdog. 0 (the
+// default, and what every non-Auto route passes) means "no watchdog at all".
+// Anything malformed degrades to 0 rather than throwing: a diagnostics budget
+// must never be the reason a turn cannot start.
+function stallTimeoutBudget(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : 0;
 }
 
 function createProviderRevision(input = {}) {
@@ -185,6 +196,10 @@ function snapshot(record) {
     providerRevision: record.providerRevision,
     attemptNo: record.attemptNo,
     routeGeneration: record.routeGeneration,
+    // The idle budget the proxy watchdog enforces for this physical route, and
+    // whether it has already fired. A stalled attempt is not a route to replay.
+    stallTimeoutMs: record.stallTimeoutMs,
+    stalled: record.stalled === true,
     replayFence: record.replayFence,
     visibleOutputObserved: record.visibleOutputObserved,
     toolIntentObserved: record.toolIntentObserved,
@@ -393,6 +408,11 @@ function createProviderAttemptRuntime(options = {}) {
   const audit = typeof options.audit === 'function' ? options.audit : null;
   const resolveProviderRevision = typeof options.resolveProviderRevision === 'function'
     ? options.resolveProviderRevision : null;
+  // 终端会话（tmux 里的长活 CLI）没有回合，它的路由能力存在会话记录上，由宿主注入
+  // 一个只读反查（见 src/providers/terminal-route.js）。没有这个端口时，终端路由照旧
+  // 按「查不到 attempt」拒绝。
+  const resolveTerminalRoute = typeof options.resolveTerminalRoute === 'function'
+    ? options.resolveTerminalRoute : null;
   // A proxied request whose downstream CLI consumer died mid-stream never
   // emits the proxy 'end' that drains its producer. After this grace the
   // entry is provably orphaned (the attempt gate below already guarantees no
@@ -601,11 +621,32 @@ function createProviderAttemptRuntime(options = {}) {
 
     const routeGeneration = (generationBySession.get(sessionId) || 0) + 1;
     generationBySession.set(sessionId, routeGeneration);
-    // This is an invocation-attempt capability, never a warm-process identity.
-    // Rotating at every physical attempt makes an old main/background producer
-    // unambiguously stale. Claude's chat-stream already fingerprints ANTHROPIC_*
-    // env and recycles the idle process with --resume when this URL changes.
-    const proxyRouteToken = required(nextId('proxy-route'), 'proxyRouteToken');
+    // This is a route capability, and for a resident lane it is scoped to the
+    // spawn contract rather than to the physical attempt. A resident child bakes
+    // its route at spawn — Claude through ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
+    // and its --model argv, codex through CODEX_HOME's managed config.toml — and
+    // the lane recycles the warm process the moment any of that changes. A
+    // capability that rotated at every attempt would therefore respawn the child
+    // on every turn and residency could never take effect. The caller that
+    // builds the spawn (provider-invocation) passes the hash of exactly what it
+    // bakes; a resident lane keeps its capability while that hash is unchanged
+    // and mints a fresh one the moment it moves (provider, revision, model,
+    // effort, agent, argv). Per-turn lanes, having no warm process to protect,
+    // still rotate at every physical attempt, and a caller that declines to
+    // prove its spawn contract gets that same rotation.
+    //
+    // Attempt identity does not rest on this token: sameAttempt() compares
+    // routeAttemptId/routeGeneration/turnId, which keep incrementing. What a
+    // stable capability gives up is only the provable staleness of an orphaned
+    // child belonging to an *earlier* attempt of the same spawn contract — such
+    // a child can now reach the proxy during a later attempt. That is
+    // attribution scope, not credential exposure: the child only ever holds this
+    // opaque capability, never a real upstream key.
+    const spawnKey = clean(input.spawnKey);
+    const proxyRouteToken = isResident(cli) && spawnKey && previous
+      && previous.proxyRouteToken && previous.spawnKey === spawnKey
+      ? previous.proxyRouteToken
+      : required(nextId('proxy-route'), 'proxyRouteToken');
     const record = {
       runtimeEpoch,
       decisionId: previous && previous.turnId === turnId
@@ -625,6 +666,9 @@ function createProviderAttemptRuntime(options = {}) {
       attemptNo,
       routeGeneration,
       proxyRouteToken,
+      spawnKey,
+      stallTimeoutMs: stallTimeoutBudget(input.stallTimeoutMs),
+      stalled: false,
       replayFence: continuation && previous ? previous.replayFence : 'none',
       visibleOutputObserved: !!(continuation && previous && previous.visibleOutputObserved),
       toolIntentObserved: !!(continuation && previous && previous.toolIntentObserved),
@@ -761,6 +805,9 @@ function createProviderAttemptRuntime(options = {}) {
     return {
       sessionId: decoded.sessionId,
       token: decoded.token,
+      // 段里到底有没有带能力令牌。`exact` 还要再对上内存里那条 attempt；终端没有
+      // attempt，它只能看这一位加会话记录上的令牌。
+      encoded: decoded.encoded === true,
       record,
       exact: !!(record && decoded.encoded && decoded.token === record.proxyRouteToken),
     };
@@ -785,6 +832,20 @@ function createProviderAttemptRuntime(options = {}) {
     });
   }
 
+  // A resident child outlives its turn, and so does the background work it
+  // started: a run_in_background Task/Workflow subagent keeps calling the proxy
+  // after the main result has closed the attempt — on the sub route when a
+  // subagent provider is configured, on the main route when it is not. While
+  // the capability is still the current one (same spawn contract, no newer
+  // attempt, the turn ended cleanly) that traffic is the same warm process
+  // finishing its own work, not a replay, so it is admitted without reopening
+  // the attempt and is accounted as background: it never becomes a main
+  // producer, so it cannot hold the next turn, and its usage is never bound to
+  // an attempt. A cancelled or failed turn revokes the background too.
+  function backgroundLingers(record) {
+    return !!(record && record.outcome === 'succeeded' && record.spawnKey && isResident(record.cli));
+  }
+
   function authorizeProxyRequest(input = {}) {
     const context = proxyContext(input);
     const { sessionId, record } = context;
@@ -800,9 +861,61 @@ function createProviderAttemptRuntime(options = {}) {
       });
       return Object.freeze({ ok: false, code, sessionId: sessionId || null });
     };
-    if (!sessionId || !context.exact) return reject('proxy_route_capability_mismatch');
-    if (!record || record.outcome !== 'running') return reject('proxy_attempt_not_running');
     const role = clean(input.role || input.roleKind || 'main').toLowerCase();
+    // 终端会话没有回合：它在 currentBySession 里本来就没有记录，能力在会话记录上。
+    // 判定必须发生在 attempt 那套判断之前 —— 那些判断问的正是「有没有一条在跑的
+    // 回合」，对长活终端永远是否。放行的条件与常驻车道同一口径（主线路必须就是这条
+    // 会话自己的 provider，子线路必须在它声明的集合里），只是没有 revision 这一层：
+    // 终端的配置是进程启动时写死的一次性快照，拿它去比「当前 provider 配置」只会让
+    // 一个活着的终端在用户改完 provider 之后莫名失联。
+    if (!record && sessionId && resolveTerminalRoute) {
+      const terminal = resolveTerminalRoute(sessionId);
+      if (terminal) {
+        if (!context.encoded || clean(context.token) !== clean(terminal.token)) {
+          return reject('proxy_route_capability_mismatch');
+        }
+        const requested = clean(input.providerId);
+        if (role === 'main' && requested && requested !== clean(terminal.providerId)) {
+          return reject('provider_route_mismatch');
+        }
+        if (role !== 'main' && role !== 'aux' && requested
+            && !terminal.allowedSubProviderIds.includes(requested)) {
+          return reject('provider_subroute_not_allowed');
+        }
+        auditOnly(sessionId, {
+          type: 'provider_proxy_terminal_route_allowed', operation: 'proxy_preflight',
+          runtimeEpoch, providerId: requested || clean(terminal.providerId), role,
+        });
+        return Object.freeze({ ok: true, code: null, sessionId, attempt: null, terminal: true });
+      }
+    }
+    if (!sessionId || !context.exact) return reject('proxy_route_capability_mismatch');
+    if (backgroundLingers(record)) {
+      if (role === 'main' && clean(input.providerId)
+          && clean(input.providerId) !== record.providerId) {
+        return reject('provider_route_mismatch');
+      }
+      if (role !== 'main' && clean(input.providerId)
+          && !record.allowedSubProviderIds.includes(clean(input.providerId))) {
+        return reject('provider_subroute_not_allowed');
+      }
+      if (resolveProviderRevision) {
+        let revisionMatches = false;
+        try { revisionMatches = clean(resolveProviderRevision(record, input)) === record.providerRevision; }
+        catch (_) {}
+        if (!revisionMatches) return reject('provider_revision_mismatch');
+      }
+      return Object.freeze({
+        ok: true, code: null, sessionId, attempt: snapshot(record), background: true,
+      });
+    }
+    if (!record || record.outcome !== 'running') return reject('proxy_attempt_not_running');
+    // The host already proved this route went silent and is retiring it. A CLI
+    // that re-dials it (codex retries the same stream several times before it
+    // gives up) would only hold the turn open on a line that cannot answer, and
+    // would deny Auto the chance to switch. Not poisoned: the attempt's failure
+    // category is the stall, which the turn's error decision already owns.
+    if (record.stalled === true) return reject('attempt_stalled');
     if (role === 'main' && clean(input.providerId)
         && clean(input.providerId) !== record.providerId) {
       return reject('provider_route_mismatch', true);
@@ -870,7 +983,8 @@ function createProviderAttemptRuntime(options = {}) {
     const { sessionId, record } = context;
     const key = nonMainProducerKey(context, event, role);
     if (phase === 'request') {
-      if (role !== 'aux' && (!context.exact || !record || record.outcome !== 'running')) return null;
+      if (role !== 'aux' && (!context.exact || !record
+          || (record.outcome !== 'running' && !backgroundLingers(record)))) return null;
       endedNonMainProxyProducers.delete(key);
       const producer = nonMainProxyProducers.get(key);
       if (producer) {
@@ -923,6 +1037,13 @@ function createProviderAttemptRuntime(options = {}) {
       return null;
     }
     if (role !== 'main') return record && record.outcome === 'running' ? snapshot(record) : null;
+    // A background request may end after the next turn started; its end still
+    // belongs to the background ledger unless a main request is in flight.
+    const backgroundOpen = nonMainProxyProducers.has(nonMainProducerKey(context, event, 'background'));
+    if (phase === 'request' ? backgroundLingers(record)
+      : backgroundOpen && !(proxyProducers.get(sessionId)?.count > 0)) {
+      return onNonMainProxyActivity(context, event, 'background', phase);
+    }
     if (phase === 'request') {
       endedProxyProducers.delete(sessionId);
       const producer = proxyProducers.get(sessionId);
@@ -1002,7 +1123,9 @@ function createProviderAttemptRuntime(options = {}) {
   function attributeProxyUsage(event = {}) {
     const context = proxyContext(event);
     const sessionId = context.sessionId;
-    const role = clean(event.role || event.roleKind).toLowerCase();
+    let role = clean(event.role || event.roleKind).toLowerCase();
+    if (role === 'main' && context.exact && backgroundLingers(context.record)
+        && !boundProxyAttempt(event) && !endedProxyProducers.has(sessionId)) role = 'background';
     // A warm Claude process may finish its main result while a background/sub
     // request is still pending. The process capability proves the real session,
     // but not which logical turn owns that non-main request, so never fabricate a
@@ -1132,6 +1255,20 @@ function createProviderAttemptRuntime(options = {}) {
       observedAt: Number(now()),
       ...(proxyOutcome ? { proxyOutcome, requestId: proxyOutcome.requestId } : {}),
     });
+    // Host-observed silence, not a client that walked away: the route is dead,
+    // and every later request for this attempt must be refused instead of
+    // re-dialed. The failure above stays the stronger evidence, so the teardown
+    // that follows cannot overwrite it with DOWNSTREAM_DISCONNECT.
+    if (isProxyStallCode(record.proxyFailure.code)) {
+      record.stalled = true;
+      auditOnly(sessionId, {
+        type: 'provider_attempt_stalled', operation: 'proxy_outcome',
+        runtimeEpoch: record.runtimeEpoch, turnId: record.turnId,
+        routeAttemptId: record.routeAttemptId, routeGeneration: record.routeGeneration,
+        providerId: record.providerId, code: record.proxyFailure.code,
+        requestId: record.proxyFailure.requestId || null,
+      });
+    }
     return Object.freeze({ accepted: true, code: null, failure: record.proxyFailure });
   }
 
@@ -1168,6 +1305,9 @@ function createProviderAttemptRuntime(options = {}) {
     proxyFailure,
     proxySessionId,
     resolveProxySessionId,
+    // 终端那条路由（长活会话，没有回合）自己拼能力段：与 proxySessionId 同一种形状，
+    // 只是令牌来自会话记录而不是内存里的 attempt（见 src/providers/terminal-route.js）。
+    encodeProxyRoute: (sessionId, token) => encodeProxySessionId(clean(sessionId), clean(token)),
     snapshot: snapshotSession,
   });
 }

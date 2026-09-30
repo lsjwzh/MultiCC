@@ -1,15 +1,19 @@
 (function () {
   'use strict';
 
-  const CLI_LABELS = Object.freeze({
-    claude: 'Claude Code', 'claude-exp': 'Claude Exp', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode',
-    qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', kimi: 'Kimi Code',
-  });
-  const CLI_MARKS = Object.freeze({
-    claude: 'C', 'claude-exp': 'A', codex: 'X', 'codex-exp': 'E', opencode: 'O', zcode: 'Z', qoder: 'Q',
-    codebuddy: 'W', dsh: 'D', kimi: 'K',
-  });
-  const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh']);
+  // 展示名、短标记、是否自持账号三列都取自共享 CLI 目录（public/provider-catalog.js，
+  // 权威表在服务端 src/cli/cli-capability.js）—— 这里原本各抄了一份副本。
+  const cliLabel = cli => window.MultiCCProviderCatalog.cliDisplayName(cli);
+  const cliMark = cli => window.MultiCCProviderCatalog.cliShortMark(cli);
+  // 兜底车道（服务端 DISPLAY 的 deprecated 列）：车道还能跑，但在淘汰路上。
+  const cliDeprecated = cli => window.MultiCCProviderCatalog.cliDeprecated(cli);
+  // 两行式 CLI 行的**小字**：这条车道底下的引擎。扶正的两条常驻车道写引擎产品名
+  // （Claude Agent SDK / Codex App Server），其余车道就是它自己的 id。
+  const cliEngine = cli => window.MultiCCProviderCatalog.cliEngine(cli);
+  // 这条车道能出现在哪种会话的线路选择里 —— 车道的属性（服务端 kinds 列），不是这一页
+  // 的规矩。任务的线路是 chat 线路，所以这里只取 chat 那一半。
+  const cliOffersIn = (cli, kind) => window.MultiCCProviderCatalog.cliOffersIn(cli, kind);
+  const isProviderless = cli => window.MultiCCProviderCatalog.cliProviderless(cli);
   const EFFORT_LABELS = Object.freeze({
     claude: t('airTaskSettingsEffortClaude'), 'claude-exp': t('airTaskSettingsEffortClaude'), codex: t('airTaskSettingsEffortCodex'), 'codex-exp': t('airTaskSettingsEffortCodex'), opencode: t('airTaskSettingsEffortOpenCode'),
     qoder: t('airTaskSettingsEffortLabel'), codebuddy: t('airTaskSettingsEffortLabel'),
@@ -22,17 +26,79 @@
     return element;
   };
 
+  // Some failures have exactly one command that repairs them. Rather than
+  // printing it and hoping the user opens a terminal, render the button that
+  // runs it — on macOS `xcode-select --install` only raises the system's own
+  // "Install" dialog, so the click the user makes is still the deciding one.
+  const FIX_ACTIONS = {
+    'install-developer-tools': {
+      label: () => t('airTaskSettingsInstallDevTools'),
+      url: '/api/system/developer-tools/install',
+      message: result => (result.status === 'already-installed'
+        ? t('airTaskSettingsInstallDevToolsInstalled')
+        : result.status === 'already-requested'
+          ? t('airTaskSettingsInstallDevToolsPending')
+          : t('airTaskSettingsInstallDevToolsRequested')),
+      failure: () => t('airTaskSettingsInstallDevToolsFailed'),
+    },
+    // macOS privacy cannot be granted programmatically — only the user, in
+    // System Settings, can do it. The button opens the right pane and then
+    // names the exact program to add, which is the part people get wrong.
+    'open-disk-access': {
+      label: () => t('airTaskSettingsOpenDiskAccess'),
+      url: '/api/system/disk-access/open',
+      working: () => t('airTaskSettingsOpenDiskAccessWorking'),
+      message: () => t('airTaskSettingsOpenDiskAccessOpened'),
+      failure: () => t('airTaskSettingsOpenDiskAccessFailed'),
+      detail: async () => {
+        const info = await request('/api/system/disk-access', undefined, 'GET');
+        return info && info.target ? t('airTaskSettingsOpenDiskAccessTarget') + info.target : null;
+      },
+    },
+  };
+
+  function renderFix(container, fix) {
+    const action = FIX_ACTIONS[fix];
+    if (!action) return;
+    const wrap = node('p', null, 'air-fix-action');
+    const button = node('button', action.label());
+    button.type = 'button';
+    const status = node('span', '', 'air-fix-status');
+    const detail = node('code', '', 'air-fix-detail');
+    button.onclick = async () => {
+      button.disabled = true;
+      status.textContent = (action.working || (() => t('airTaskSettingsInstallDevToolsWorking')))();
+      try {
+        const result = await request(action.url, {});
+        status.textContent = action.message(result);
+        // Best-effort: the action already succeeded, so a detail lookup that
+        // fails must not turn it into a reported failure.
+        if (action.detail) {
+          try { detail.textContent = (await action.detail()) || ''; } catch { detail.textContent = ''; }
+        }
+      } catch (cause) {
+        // Keep the button live: a headless launchd host cannot draw the system
+        // dialog, and the user may want to retry after starting MultiCC from a
+        // logged-in session.
+        button.disabled = false;
+        status.textContent = cause.message || action.failure();
+      }
+    };
+    wrap.append(button, status, detail);
+    container.append(wrap);
+  }
+
   function dialog(title, build) {
-    const d = node('dialog'), form = node('form'), error = node('p');
+    const d = node('dialog'), form = node('form'), error = node('p'), fixBox = node('div');
     error.setAttribute('role', 'alert');
     const cancel = node('button', t('airTaskSettingsCancel')), submit = node('button', t('airTaskSettingsSave'));
     cancel.type = 'button'; submit.className = 'primary';
     cancel.onclick = () => d.close(); form.append(node('h2', title));
-    const save = build(form); form.append(error, cancel, submit);
+    const save = build(form); form.append(error, fixBox, cancel, submit);
     form.onsubmit = async event => {
-      event.preventDefault(); submit.disabled = true; error.textContent = '';
+      event.preventDefault(); submit.disabled = true; error.textContent = ''; fixBox.replaceChildren();
       try { await save(); d.close(); }
-      catch (e) { error.textContent = e.message; }
+      catch (e) { error.textContent = e.message; if (e.fix) renderFix(fixBox, e.fix); }
       finally { submit.disabled = false; }
     };
     d.onclose = () => d.remove(); d.append(form); document.body.append(d); d.showModal();
@@ -55,7 +121,11 @@
     try { result = raw ? JSON.parse(raw) : {}; }
     catch (_) { throw new Error(t('airTaskSettingsBadResponse', { status: response.status })); }
     if (!response.ok || result.ok === false) {
-      throw new Error(result.message || result.error || result.code || t('airTaskSettingsRequestFailed', { status: response.status }));
+      const failure = new Error(result.message || result.error || result.code || t('airTaskSettingsRequestFailed', { status: response.status }));
+      // Server-named remedy (see src/directory/service.js). Carried on the Error
+      // so the dialog can offer a button instead of prose the user must retype.
+      if (result.fix) failure.fix = result.fix;
+      throw failure;
     }
     return result;
   }
@@ -72,7 +142,7 @@
     if (cli === 'zcode') return [t('airTaskSettingsNativeZcodeTitle'), t('airTaskSettingsNativeZcodeNote')];
     if (cli === 'opencode') return [t('airTaskSettingsNativeOpenCodeTitle'), t('airTaskSettingsNativeOpenCodeNote')];
     if (cli === 'kimi') return [t('airTaskSettingsNativeKimiTitle'), t('airTaskSettingsNativeKimiNote')];
-    if (PROVIDERLESS_CLIS.has(cli)) return [t('airTaskSettingsNativeCliTitle'), t('airTaskSettingsNativeCliNote')];
+    if (isProviderless(cli)) return [t('airTaskSettingsNativeCliTitle'), t('airTaskSettingsNativeCliNote')];
     return [t('airTaskSettingsNativeDefaultTitle'), t('airTaskSettingsNativeDefaultNote')];
   }
 
@@ -89,6 +159,9 @@
     // the caller, which pins it onto the task at creation. One dialog, one
     // implementation, two surfaces.
     const draft = !entry.sessionId;
+    // 这层对话框也被目录里的「＋ 新终端」用（draft + purpose=terminal）。同一份实现、
+    // 同一套字段，只有几句抬头/说明按用途换个说法 —— 给终端说「新任务」是错的。
+    const terminalDraft = draft && entry.purpose === 'terminal';
     const storedConfig = entry.configuration || {};
     const pending = storedConfig.pendingConfiguration;
     // The editor always opens on the user's desired next-turn route. This keeps
@@ -101,20 +174,21 @@
     const form = node('form', null, 'air-config-form');
     const header = node('header', null, 'air-config-head');
     const heading = node('div');
-    heading.append(node('span', 'TASK ROUTING', 'eyebrow'), node('h2', t('airTaskSettingsHeading')));
+    heading.append(node('span', terminalDraft ? 'TERMINAL ROUTING' : 'TASK ROUTING', 'eyebrow'),
+      node('h2', t(terminalDraft ? 'airTaskSettingsHeadingTerminal' : 'airTaskSettingsHeading')));
     const close = node('button', '×', 'air-config-close');
     close.type = 'button'; close.setAttribute('aria-label', t('airTaskSettingsCloseAria')); close.onclick = () => d.close();
     header.append(heading, close);
     form.append(header, node('p', draft
-      ? t('airTaskSettingsIntroDraft')
+      ? t(terminalDraft ? 'airTaskSettingsIntroTerminal' : 'airTaskSettingsIntroDraft')
       : t('airTaskSettingsIntroTask', { title: entry.task?.title || t('airTaskSettingsCurrentTask') }), 'air-config-intro'));
 
-    const cliSection = section('1 · CLI', t('airTaskSettingsCliNote'));
+    const cliSection = section('1 · CLI', t(terminalDraft ? 'airTaskSettingsCliNoteTerminal' : 'airTaskSettingsCliNote'));
     const cliGrid = node('div', null, 'air-cli-grid');
     cliGrid.setAttribute('role', 'radiogroup'); cliGrid.setAttribute('aria-label', 'CLI');
     cliSection.append(cliGrid); form.append(cliSection);
 
-    const providerSection = section('2 · Provider', t('airTaskSettingsProviderNote'));
+    const providerSection = section('2 · Provider', t(terminalDraft ? 'airTaskSettingsProviderNoteTerminal' : 'airTaskSettingsProviderNote'));
     const providerStatus = node('p', '', 'air-config-status');
     providerStatus.setAttribute('role', 'status');
     const providerField = node('label', null, 'air-config-field');
@@ -158,16 +232,25 @@
 
     const error = node('p', '', 'air-config-error'); error.setAttribute('role', 'alert');
     const foot = node('footer', null, 'air-config-footer');
-    const footCopy = node('p', draft ? t('airTaskSettingsFootDraft') : t('airTaskSettingsFootTask'));
+    const footCopy = node('p', draft
+      ? t(terminalDraft ? 'airTaskSettingsFootTerminal' : 'airTaskSettingsFootDraft')
+      : t('airTaskSettingsFootTask'));
     const actions = node('div');
     const cancel = node('button', t('airTaskSettingsCancel')); cancel.type = 'button'; cancel.onclick = () => d.close();
     const submit = node('button', draft ? t('airTaskSettingsUseConfig') : t('airTaskSettingsSaveConfig'), 'primary'); submit.type = 'submit';
     actions.append(cancel, submit); foot.append(footCopy, actions);
     form.append(error, foot); d.append(form); document.body.append(d); d.showModal();
 
-    const cliList = [...new Set([config.cli || 'claude', ...(Array.isArray(clis) ? clis : [])].filter(Boolean))];
+    // 可选线路按用途分：任务是 chat 线路（一次性车道 `claude -p` / `codex exec` 不在
+    // 这里），终端是 terminal 线路（常驻车道是没有可执行文件的 SDK / app-server，摆
+    // 在这儿选不出来）。当前这条无论如何都留着 —— 否则打开一个跑在旧线路上的会话，
+    // 连自己正在用哪条都看不见。
+    const laneKind = entry.purpose === 'terminal' ? 'terminal' : 'chat';
+    const cliList = [...new Set([config.cli, ...(Array.isArray(clis) ? clis : [])]
+      .filter(Boolean))]
+      .filter(cli => cli === config.cli || cliOffersIn(cli, laneKind));
     const cache = new Map();
-    let currentCli = config.cli || cliList[0] || 'claude';
+    let currentCli = config.cli || cliList[0] || (laneKind === 'terminal' ? 'claude' : 'claude-exp');
     let currentCatalog = null;
     let providers = [];
     let providerValue = '';
@@ -202,8 +285,15 @@
         button.dataset.cli = cli; button.setAttribute('role', 'radio');
         button.setAttribute('aria-checked', String(cli === currentCli));
         button.classList.toggle('selected', cli === currentCli);
-        button.append(node('span', CLI_MARKS[cli] || cli.slice(0, 1).toUpperCase(), 'air-cli-mark'));
-        const copy = node('span'); copy.append(node('strong', CLI_LABELS[cli] || cli), node('small', cli));
+        button.append(node('span', cliMark(cli), 'air-cli-mark'));
+        // 第一行是产品名，第二行（小字）是这条车道底下的引擎 —— 扶正的两条常驻车道
+        // 写引擎产品名，其余车道写自己的 id。兜底车道（服务端 DISPLAY 的 deprecated
+        // 列）在这里明说一句计划淘汰 —— 角标和名字都看不出一条线路是不是过渡品。
+        const copy = node('span');
+        copy.append(
+          node('strong', cliLabel(cli)),
+          node('small', cliDeprecated(cli) ? `${cliEngine(cli)} · ${t('cliLaneDeprecatedNote')}` : cliEngine(cli)),
+        );
         button.append(copy);
         button.onclick = () => { if (cli !== currentCli && !loading) selectCli(cli, false); };
         return button;
@@ -248,7 +338,7 @@
     function renderSubProviders() {
       const head = node('option', t('airTaskSettingsFollowPrimary')); head.value = '';
       const items = [head];
-      if (!PROVIDERLESS_CLIS.has(currentCli)) {
+      if (!isProviderless(currentCli)) {
         for (const provider of providers) {
           if ((currentCli === 'codex' || currentCli === 'codex-exp') && provider.isOfficial) continue;
           // tr 要传进去：缓存里那条「更新于 / 查询失败 / 过期」的尾巴不传就永远是中文。
@@ -283,7 +373,7 @@
 
     function primaryProviderId() {
       if (autoApi.protocolFromValue(providerValue) && autoEditor) {
-        const read = autoEditor.read();
+        const read = autoEditor.read({ remember: false });
         const first = read && read.ok ? read.value.candidates[0] : null;
         if (first && first.providerId) return first.providerId;
       }
@@ -300,7 +390,9 @@
 
     function renderSub(initial) {
       subReady = false; subLineProvider = null;
-      subRow.hidden = !supportsSubagent();
+      // 终端那一遍不进子 agent 线路：那条尾巴是给任务轮次用的，终端的创建接口也
+      // 不收 subagent —— 摆一行选了不生效的东西比不摆更糟。
+      subRow.hidden = !supportsSubagent() || terminalDraft;
       if (subRow.hidden) {
         subProviderSelect.replaceChildren(); subModelSelect.replaceChildren();
         subCustomModel.hidden = true;
@@ -327,14 +419,16 @@
       const protocol = autoApi.protocolFromValue(providerValue);
       autoHost.hidden = !protocol;
       if (!protocol) return;
-      autoEditor = autoApi.mount({
+      const mounted = autoApi.mount({
         document, container: autoHost, providers, protocol,
         initialSelection: config.providerSelection?.mode === 'auto' && config.providerSelection.protocol === protocol
           ? config.providerSelection : null,
         formatProvider: provider => `${provider.name || provider.id}${provider.model ? ` · ${provider.model}` : ''}`,
         // 池子里换人会让「随主」的模型候选跟着换 —— 尾巴得重算。
         onChange: () => refreshSubLine(),
+        routingKey: typeof fetch === 'function' ? aiApi.routingKeyApi() : null,
       });
+      autoEditor = mounted;
     }
 
     function chooseProvider(value, preferredModel = '') {
@@ -349,12 +443,19 @@
       // 支持 Provider 的 CLI 已经有一条真实的内置 Official Provider：空值
       // 「Default login / official account」只是旧 UI 对同一件事的第二种说法，
       // 会让人以为它是另一条线路。Providerless CLI 仍保留自身的原生项。
-      if (PROVIDERLESS_CLIS.has(currentCli) || !official) {
+      if (isProviderless(currentCli) || !official) {
         const [nativeTitle] = nativeProviderCopy(currentCli);
         const head = node('option', nativeTitle); head.value = '';
         options.push(head);
       }
-      if (!PROVIDERLESS_CLIS.has(currentCli)) {
+      // OpenCode 自己的线路（Zen 网关 / Go 订阅 / auth login 的）不是 MultiCC Provider：
+      // 以 opencode-native:<id> 行出现，只筛模型表，保存时 provider 仍为空（原生配置）。
+      if (currentCli === 'opencode') {
+        for (const native of aiApi.openCodeNativeProviders()) {
+          const option = node('option', native.label); option.value = native.value; options.push(option);
+        }
+      }
+      if (!isProviderless(currentCli)) {
         for (const auto of autoApi.availableProtocols(providers)) {
           if (!autoApi.defaultSelection(providers, auto.protocol)
               && config.providerSelection?.protocol !== auto.protocol) continue;
@@ -370,13 +471,20 @@
       const initialAuto = initial && config.providerSelection?.mode === 'auto'
         ? autoApi.optionValue(config.providerSelection.protocol) : '';
       let desired = initialAuto || (initial ? config.provider || '' : currentCatalog?.defaults?.[currentCli] || '');
-      if (!desired && official) desired = official.id;
+      // 原生 OpenCode 会话（provider 为空 + `opencodego/<model>` 模型）必须先从
+      // 模型还原到原生线路，再落到官方默认 —— 否则每次打开都选成「Claude 官方」。
+      const nativeFromModel = currentCli === 'opencode' && initial && !desired && String(config.model || '').split('/')[0];
+      if (nativeFromModel && options.some(option => option.value === 'opencode-native:' + nativeFromModel)) {
+        desired = 'opencode-native:' + nativeFromModel;
+      } else if (!desired && official) {
+        desired = official.id;
+      }
       if (!options.some(option => option.value === desired)) desired = official?.id || '';
       const desiredProvider = providers.find(provider => provider.id === desired);
       chooseProvider(desired, initial ? config.model || '' : desiredProvider?.model || '');
-      providerStatus.textContent = PROVIDERLESS_CLIS.has(currentCli)
-        ? t('airTaskSettingsStatusNative', { cli: CLI_LABELS[currentCli] || currentCli })
-        : providers.length ? t('airTaskSettingsProvidersLoaded', { n: providers.length, cli: CLI_LABELS[currentCli] || currentCli })
+      providerStatus.textContent = isProviderless(currentCli)
+        ? t('airTaskSettingsStatusNative', { cli: cliLabel(currentCli) })
+        : providers.length ? t('airTaskSettingsProvidersLoaded', { n: providers.length, cli: cliLabel(currentCli) })
           : t('airTaskSettingsNoProviders');
     }
 
@@ -398,6 +506,10 @@
         currentCatalog = catalog;
         providers = catalogApi.providersForCli(catalog, cli);
         renderProviders(initial); renderSub(initial); renderEffort(initial ? config.effort : null);
+        // 模型表缓存还没有（Air 页没开过 opencode 会话）：拉到后重画一次，原生线路才出现。
+        if (cli === 'opencode' && !aiApi.openCodeNativeProviders().length) {
+          aiApi.refreshOpenCodeModels(() => { if (epoch === loadEpoch) renderProviders(initial); });
+        }
       } catch (cause) {
         if (epoch !== loadEpoch) return;
         currentCatalog = null; providers = [];
@@ -428,7 +540,7 @@
       try {
         const autoProtocol = autoApi.protocolFromValue(providerValue);
         let providerSelection = null;
-        let provider = providerValue || null;
+        let provider = (!aiApi.openCodeNativeProviderOf(providerValue) && providerValue) || null;
         let model = modelSelect.value === '__custom__' ? customModel.value.trim() : modelSelect.value;
         if (autoProtocol) {
           const selection = autoEditor?.read();
@@ -447,7 +559,7 @@
         }
         const base = `/api/sessions/${encodeURIComponent(entry.sessionId)}`;
         if (currentCli !== config.cli) await request(base + '/switch-cli', { cli: currentCli });
-        if (!PROVIDERLESS_CLIS.has(currentCli)) {
+        if (!isProviderless(currentCli)) {
           // Provider mutation may assign its default model. Persist the chosen
           // model in a second transaction so the provider default cannot win.
           await request(base, { provider, providerSelection }, 'PATCH');

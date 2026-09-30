@@ -473,18 +473,20 @@ test('Editor same-path reopen rejects stale data and tolerates missing optional 
   await assert.doesNotReject(() => h.window.openMemFileEditor('d/missing-dom.md'));
 });
 
-test('Manage loads Memory classic scripts in dependency order and leaves only shell glue', () => {
-  const html = fs.readFileSync(path.join(ROOT, 'public', 'manage.html'), 'utf8');
-  const manage = fs.readFileSync(path.join(ROOT, 'public', 'manage.js'), 'utf8');
+// 旧管理台整页删掉之后，记忆图谱这一套经典模块的宿主只剩 Air：air.html 负责按依赖
+// 顺序把它们引进来，air-memory.js 只画骨架再调它们 —— 取数、力导向渲染、树与编辑器
+// 都还在模块里，宿主自己不许重新长出一套接口调用。
+test('Air loads Memory classic scripts in dependency order and leaves only shell glue', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'air.html'), 'utf8');
+  const shell = fs.readFileSync(path.join(ROOT, 'public', 'air-memory.js'), 'utf8');
   const model = fs.readFileSync(path.join(ROOT, 'public', 'memory-model.js'), 'utf8');
   const graph = fs.readFileSync(path.join(ROOT, 'public', 'memory-graph.js'), 'utf8');
   const controller = fs.readFileSync(path.join(ROOT, 'public', 'memory-controller.js'), 'utf8');
-  const headEnd = html.indexOf('</head>');
   const scripts = [
     'auth-client.js', 'api-client.js', 'memory-model.js', 'memory-graph.js',
-    'memory-controller.js', 'memo-controller.js', 'provider-catalog.js',
+    'memory-controller.js', 'air-memory.js',
   ].map(name => html.indexOf(`<script src="${name}"></script>`));
-  assert.ok(scripts.every(index => index > 0 && index < headEnd));
+  assert.ok(scripts.every(index => index > 0), 'every classic memory module must still be loaded');
   assert.deepEqual([...scripts].sort((a, b) => a - b), scripts);
   assert.doesNotMatch(html, /<script[^>]+type=["']module["'][^>]+memory-/i);
 
@@ -499,7 +501,8 @@ test('Manage loads Memory classic scripts in dependency order and leaves only sh
   assert.match(graph, /invalidate\(\)\s*\{\s*stopSim\(\)/);
   assert.match(graph, /__multiccMemoryGraphEscapeBound/);
   assert.match(controller, /__multiccMemoryEditorEscapeBound/);
-  assert.doesNotMatch(manage, /\/api\/memory\/(?:graph|tree|file)/);
-  assert.doesNotMatch(manage, /window\.loadMemoryGraph\s*=/);
-  assert.doesNotMatch(manage, /window\.loadMemoryTree\s*=/);
+  assert.doesNotMatch(shell, /\/api\/memory\/(?:graph|tree|file)/);
+  assert.doesNotMatch(shell, /window\.loadMemoryGraph\s*=/);
+  assert.doesNotMatch(shell, /window\.loadMemoryTree\s*=/);
+  assert.match(shell, /MultiCCMemoryController/);
 });

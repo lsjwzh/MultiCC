@@ -1,0 +1,47 @@
+name: Core release tests
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Exact manifest core tier
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.32.2'
+          cache: true
+
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          cd app
+          flutter pub get --enforce-lockfile
+
+      # scripts/run-test-tier.js reads tests/test-tiers.json directly. Its
+      # command log is the auditable list of every selected path and variant.
+      - name: Run the exact core tier
+        env:
+          # Match the isolated CI lane: core tests may start fake/isolated
+          # servers, but the release gate must never probe a developer's CLI.
+          CLAUDE_CMD: /bin/true
+          CODEX_CMD: /bin/true
+          OPENCODE_CMD: /bin/true
+          ZCODE_CMD: /bin/true
+        run: npm run test:release:core

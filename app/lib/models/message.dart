@@ -1,8 +1,52 @@
 import 'dart:convert';
 
+import 'package:flutter/material.dart' show Color;
+
+import '../utils/cli_display.dart';
 import 'role_tokens.dart';
 
 enum MessageRole { user, assistant, system }
+
+/// 系统注入消息的前缀 —— 服务端 `src/session/delivery.js` 的 SYSTEM_PREFIX。
+/// 后台任务完成、延迟条件已到、内置任务已中断… 引擎把它们写成 role=user 的历史
+/// 记录，但没人打过这些字：渲染成系统卡而不是用户气泡（见 widgets/message_bubble.dart）。
+const String kSystemInjectPrefix = '🔇';
+
+/// 一条注入消息拆出来的两半：标题（引擎写的【…】标签）和正文。
+class SystemInjectParts {
+  const SystemInjectParts(this.label, this.body);
+
+  final String label;
+  final String body;
+
+  @override
+  String toString() => 'SystemInjectParts($label, $body)';
+}
+
+/// 拆成「标题 + 正文」，与 Web 端 `public/chat-history-view.js` 的
+/// `parseSystemInject` 同一规则（两端要读出同一张卡）。首行是【…】标签时它就是
+/// 标题、其余是正文；引擎还有两种不带标签的单行注入（autoContinue 的「继续：…」、
+/// bgCheck 的「[后台进程检查] …」），那整行当标题、正文留空，卡片就不画展开控件。
+/// 不是注入消息（或只剩一个前缀）时返回 null。
+SystemInjectParts? parseSystemInject(String? content) {
+  final raw = (content ?? '').trimLeft();
+  if (!raw.startsWith(kSystemInjectPrefix)) return null;
+  final rest = raw.substring(kSystemInjectPrefix.length).trim();
+  if (rest.isEmpty) return null;
+  final labelled = RegExp(r'^【([^】\n]+)】[ \t]*\n?').firstMatch(rest);
+  if (labelled != null) {
+    return SystemInjectParts(
+      labelled.group(1)!.trim(),
+      rest.substring(labelled.group(0)!.length).trim(),
+    );
+  }
+  final lineBreak = rest.indexOf('\n');
+  if (lineBreak < 0) return SystemInjectParts(rest, '');
+  return SystemInjectParts(
+    rest.substring(0, lineBreak).trim(),
+    rest.substring(lineBreak + 1).trim(),
+  );
+}
 
 /// Token usage information for a message (mirrors Anthropic's usage shape)
 class MessageUsage {
@@ -17,12 +61,10 @@ class MessageUsage {
   /// result arrives. Null until injected; absent when the turn had no sub-role work.
   int? savedMainTokens;
 
-  /// Main/sub-agent token split from the same `role_token_stats` event — the
-  /// mobile counterpart of the web usage-line tooltip (chat-live-ui.js
-  /// buildUsageLine roleBreakdown branch). Live-updated while a turn streams
-  /// and re-attached to the final usage on result. History replay rebuilds
-  /// messages without it (the server does not persist the split), which is
-  /// the same "totals only" shape history always had.
+  /// Main/sub-agent token split from the same `role_token_stats` event.
+  /// Live-updated while a turn streams and re-attached to the final usage on
+  /// result. History replay restores it from the message's persisted
+  /// `roleUsage` (only turns with sub usage carry one).
   RoleTokenBreakdown? roleBreakdown;
 
   MessageUsage({
@@ -37,6 +79,47 @@ class MessageUsage {
   int get total =>
       inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
   bool get isEmpty => total == 0;
+
+  /// The rows the usage line shows, same rule as the web: 主 is the role
+  /// split's main bucket (or the plain usage when the split has none); 辅 only
+  /// when the sub-agents ran on a separately configured model — otherwise their
+  /// work is the main model's usage and folds into 主.
+  ({RoleTokenBucket? main, RoleTokenBucket? sub}) get displayRoles {
+    final split = roleBreakdown;
+    var main = split?.main;
+    if (main == null || main.isEmpty) {
+      main = RoleTokenBucket(
+        inputTokens: inputTokens,
+        outputTokens: outputTokens,
+        cacheRead: cacheReadTokens,
+        cacheWrite: cacheCreationTokens,
+      );
+    }
+    var sub = split?.sub;
+    if (sub != null && sub.isEmpty) sub = null;
+    if (sub != null && !split!.hasSeparateSubModel) {
+      main = RoleTokenBucket(
+        inputTokens: main.inputTokens + sub.inputTokens,
+        outputTokens: main.outputTokens + sub.outputTokens,
+        cacheRead: main.cacheRead + sub.cacheRead,
+        cacheWrite: main.cacheWrite + sub.cacheWrite,
+      );
+      sub = null;
+    }
+    return (main: main.isEmpty ? null : main, sub: sub);
+  }
+
+  /// A history message's `usage` plus its persisted `roleUsage` split.
+  static MessageUsage? fromHistory(Map<String, dynamic> message) {
+    final raw = message['usage'];
+    final role = message['roleUsage'];
+    if (raw is! Map && role is! Map) return null;
+    final usage = raw is Map
+        ? MessageUsage.fromJson(Map<String, dynamic>.from(raw))
+        : MessageUsage();
+    usage.roleBreakdown = RoleTokenBreakdown.fromRole(role);
+    return usage;
+  }
 
   factory MessageUsage.fromJson(Map<String, dynamic> json) {
     return MessageUsage(
@@ -135,7 +218,10 @@ class ChatMessage {
   /// Client-generated correlation id carried through the durable FIFO. Unlike
   /// [id] this exists before persistence, so delayed chat_msg_meta events can
   /// tag the exact optimistic bubble instead of whichever user bubble is last.
-  final String? clientMsgId;
+  /// A live Auto route note is the one line that learns it late: the server
+  /// only mints the key of the persisted record when the verdict is broadcast,
+  /// so the note that is already on screen adopts it then (AutoRouteLine.settle).
+  String? clientMsgId;
 
   /// Durable interrupted-draft marker (server: `partial` in the unified
   /// history DTO — a mid-turn checkpoint that was never finalized, e.g. the
@@ -190,9 +276,17 @@ class ChatMessage {
   }) : toolCalls = toolCalls ?? [],
        timestamp = timestamp ?? DateTime.now();
 
-  ChatMessage.fromHistory(Map<String, dynamic> json)
-    : role = json['role'] == 'user' ? MessageRole.user : MessageRole.assistant,
-      content = (json['content'] ?? '').toString(),
+  /// [role] / [content] override what the record itself says, for a record
+  /// whose line is **derived** rather than persisted — an Auto route note
+  /// carries the structured verdict plus a plain fallback content, and the chat
+  /// shows the formatted verdict instead (`historyRecordMessage` in
+  /// providers/admission_notes.dart). Every other field still comes from [json].
+  ChatMessage.fromHistory(
+    Map<String, dynamic> json, {
+    MessageRole? role,
+    String? content,
+  }) : role = role ?? (json['role'] == 'user' ? MessageRole.user : MessageRole.assistant),
+      content = content ?? (json['content'] ?? '').toString(),
       toolCalls = _parseHistoryTools(json['tools']),
       timestamp = json['ts'] != null
           ? DateTime.fromMillisecondsSinceEpoch((json['ts'] as num).toInt())
@@ -200,9 +294,7 @@ class ChatMessage {
       isStreaming = json['streaming'] == true,
       isPartial = json['partial'] == true,
       cost = (json['cost'] as num?)?.toDouble(),
-      usage = json['usage'] is Map
-          ? MessageUsage.fromJson(json['usage'] as Map<String, dynamic>)
-          : null,
+      usage = MessageUsage.fromHistory(json),
       contextTrace = json['contextTrace'] is Map
           ? Map<String, dynamic>.from(json['contextTrace'] as Map)
           : null,
@@ -288,6 +380,8 @@ enum SessionCli {
   qoder,
   codebuddy,
   dsh,
+  gemini,
+  grok,
 }
 
 /// Interactive TUI terminal, or stream-json chat.
@@ -313,6 +407,10 @@ SessionCli? tryParseCli(String? s) {
       return SessionCli.codebuddy;
     case 'dsh':
       return SessionCli.dsh;
+    case 'gemini':
+      return SessionCli.gemini;
+    case 'grok':
+      return SessionCli.grok;
     default:
       return null;
   }
@@ -335,12 +433,16 @@ extension SessionCliX on SessionCli {
     SessionCli.qoder => 'qoder',
     SessionCli.codebuddy => 'codebuddy',
     SessionCli.dsh => 'dsh',
+    SessionCli.gemini => 'gemini',
+    SessionCli.grok => 'grok',
     SessionCli.claude => 'claude',
   };
 
   /// Provider pool this CLI maps to. codex has its own pool;
   /// claude/opencode/zcode share the Anthropic-compatible 'claude' pool.
   /// Qoder CN owns its account/BYOK settings and does not expose a MultiCC pool.
+  /// Gemini / Grok ride the ACP lane like opencode and use their own vendor
+  /// login (gemini login / grok login), so they too expose no pool.
   bool get isCodexFamily =>
       this == SessionCli.codex || this == SessionCli.codexExp;
   bool get isClaudeFamily =>
@@ -353,32 +455,38 @@ extension SessionCliX on SessionCli {
       ? 'claude'
       : name;
 
-  /// Human-readable label for UI display.
-  String get displayName => switch (this) {
-    SessionCli.claude => 'Claude',
-    SessionCli.claudeExp => 'Claude Exp',
-    SessionCli.codex => 'Codex',
-    SessionCli.codexExp => 'Codex Exp',
-    SessionCli.opencode => 'OpenCode',
-    SessionCli.zcode => 'ZCode',
-    SessionCli.qoder => 'Qoder CN',
-    SessionCli.codebuddy => 'WorkBuddy',
-    SessionCli.dsh => 'DSH',
-  };
+  /// Human-readable label for UI display. The names live in ONE table
+  /// (`kCliDisplays`, app/lib/utils/cli_display.dart) mirrored from the server's
+  /// src/cli/cli-capability.js DISPLAY — this getter is the only source the UI
+  /// reads, and an id the table does not know keeps its own name.
+  String get displayName => cliDisplayName(name);
 
-  /// Vendor-auth CLIs (qoder / WorkBuddy / DSH) own their account and model
-  /// config; they expose no multicc provider pool.
-  bool get supportsProvider =>
-      this != SessionCli.qoder &&
-      this != SessionCli.codebuddy &&
-      this != SessionCli.dsh;
+  /// Brand colour of the CLI's chip/badge, from that same table.
+  Color get color => cliDisplayColor(name);
+
+  /// 兜底车道，计划淘汰：`codex exec`（内部 id 仍是 codex）留着给常驻 app-server
+  /// 车道服务不了的主机/线路用，新会话该用 [SessionCli.codexExp]。id 不会变，所以
+  /// UI 只能靠展示表里的 deprecated 列知道这件事（src/cli/cli-capability.js DISPLAY）。
+  bool get isDeprecatedLane => cliDeprecated(name);
+
+  /// 淘汰后该换成谁（非淘汰车道为 null），用于那句「该用哪条」的提示。
+  SessionCli? get replacedByLane => tryParseCli(cliReplacedBy(name));
+
+  /// Vendor-auth CLIs (qoder / WorkBuddy / DSH / Gemini / Grok) own their
+  /// account and model config; they expose no multicc provider pool. The list is
+  /// the `providerless` column of the shared CLI table, not a fifth copy of it.
+  bool get supportsProvider => !cliProviderless(name);
   bool get supportsAgent =>
       isClaudeFamily ||
       this == SessionCli.opencode ||
       this == SessionCli.qoder ||
       this == SessionCli.codebuddy;
   bool get supportsSubagent => isClaudeFamily || isCodexFamily;
-  bool get supportsEffort => this != SessionCli.zcode && this != SessionCli.dsh;
+  bool get supportsEffort =>
+      this != SessionCli.zcode &&
+      this != SessionCli.dsh &&
+      this != SessionCli.gemini &&
+      this != SessionCli.grok;
 
   String get effortFieldLabel => switch (this) {
     SessionCli.claude => 'Effort',
@@ -390,6 +498,8 @@ extension SessionCliX on SessionCli {
     SessionCli.qoder => 'Reasoning Effort',
     SessionCli.codebuddy => 'Reasoning Effort',
     SessionCli.dsh => '',
+    SessionCli.gemini => '',
+    SessionCli.grok => '',
   };
 
   String get defaultEffort => switch (this) {
@@ -402,6 +512,8 @@ extension SessionCliX on SessionCli {
     SessionCli.qoder => '',
     SessionCli.codebuddy => '',
     SessionCli.dsh => '',
+    SessionCli.gemini => '',
+    SessionCli.grok => '',
   };
 
   List<String> get effortOptions => switch (this) {
@@ -457,6 +569,8 @@ extension SessionCliX on SessionCli {
       'max',
     ],
     SessionCli.dsh => const [],
+    SessionCli.gemini => const [],
+    SessionCli.grok => const [],
   };
 }
 
@@ -524,6 +638,23 @@ const kDshModelOptions = <MapEntry<String, String>>[
   MapEntry('deepseek-v4-pro', 'deepseek-v4-pro'),
 ];
 
+/// Gemini CLI model suggestions. The CLI accepts any model id its account can
+/// reach, so this is a shortcut list, not a whitelist; mirrors
+/// GEMINI_MODEL_OPTIONS in public/chat-ai-config.js.
+const kGeminiModelOptions = <MapEntry<String, String>>[
+  MapEntry('', '默认（跟随 Gemini 配置）'),
+  MapEntry('gemini-2.5-pro', 'gemini-2.5-pro'),
+  MapEntry('gemini-2.5-flash', 'gemini-2.5-flash'),
+];
+
+/// Grok Build model suggestions (free text in the CLI); mirrors
+/// GROK_MODEL_OPTIONS in public/chat-ai-config.js.
+const kGrokModelOptions = <MapEntry<String, String>>[
+  MapEntry('', '默认（跟随 Grok 配置）'),
+  MapEntry('grok-code-fast-1', 'grok-code-fast-1'),
+  MapEntry('grok-4', 'grok-4'),
+];
+
 String claudeModelShortName(String? model) {
   if (model == null || model.isEmpty) return '默认';
   for (final e in kClaudeModelOptions) {
@@ -546,6 +677,16 @@ String modelShortNameForCli(SessionCli cli, String? model) {
   }
   if (cli == SessionCli.dsh) {
     for (final option in kDshModelOptions) {
+      if (option.key == (model ?? '')) return option.value;
+    }
+  }
+  if (cli == SessionCli.gemini) {
+    for (final option in kGeminiModelOptions) {
+      if (option.key == (model ?? '')) return option.value;
+    }
+  }
+  if (cli == SessionCli.grok) {
+    for (final option in kGrokModelOptions) {
       if (option.key == (model ?? '')) return option.value;
     }
   }
@@ -643,11 +784,18 @@ class SessionProviderCandidate {
   final int priority;
   final bool enabled;
 
+  /// Difficulty ladder rung this route serves (`t1` = simplest), only present on
+  /// a pool that routes by difficulty. The editor's own chip value (1..K) never
+  /// travels — the wire carries these keys, compacted in ascending order by
+  /// [serializeAutoRouting] exactly like public/auto-provider-editor.js.
+  final String? tier;
+
   const SessionProviderCandidate({
     required this.providerId,
     this.model,
     required this.priority,
     this.enabled = true,
+    this.tier,
   });
 
   factory SessionProviderCandidate.fromJson(Map<dynamic, dynamic> json) =>
@@ -656,6 +804,9 @@ class SessionProviderCandidate {
         model: json['model']?.toString(),
         priority: (json['priority'] as num?)?.toInt() ?? 1,
         enabled: json['enabled'] != false,
+        tier: (json['tier']?.toString().trim().isEmpty ?? true)
+            ? null
+            : json['tier'].toString().trim(),
       );
 
   Map<String, dynamic> toJson() => {
@@ -663,6 +814,95 @@ class SessionProviderCandidate {
     'model': model == null || model!.isEmpty ? null : model,
     'priority': priority,
     'enabled': enabled,
+    // Absent on an unrouted pool: the server DTO is a wire contract and an
+    // untouched pool must keep emitting byte-identical JSON.
+    if (tier != null) 'tier': tier,
+  };
+}
+
+/// The difficulty-routing block of an Auto pool (server:
+/// src/providers/auto-provider-config.js `validateRouting`): every message is
+/// first classified by the [provider] (`jev`) into one of [tiers], and the tier
+/// picks the route. [onUnknown] is what an unjudged message falls back to.
+///
+/// [model], [timeoutMs] and [escalation] are knobs the App editor does not
+/// expose; they are carried through so re-saving from the phone never silently
+/// resets what the API or the web editor configured. `null` means "the stored
+/// pool did not carry this key", which is why they are nullable rather than
+/// defaulted — an absent knob must stay absent on the wire.
+class SessionProviderRouting {
+  static const String defaultApiKeyName = 'vercel-api-key';
+
+  final int version;
+  final String provider;
+  final String apiKeyName;
+
+  /// `null` = the stored pool did not carry the key, so a save must not write
+  /// it: 'strong' is the server default and the web editor only emits this when
+  /// it was already there or the user picked something else.
+  final String? onUnknown;
+  final List<String> tiers;
+  final String? model;
+  final int? timeoutMs;
+  final Map<String, double>? escalation;
+
+  const SessionProviderRouting({
+    this.version = 1,
+    this.provider = 'jev',
+    this.apiKeyName = defaultApiKeyName,
+    this.onUnknown,
+    this.tiers = const [],
+    this.model,
+    this.timeoutMs,
+    this.escalation,
+  });
+
+  /// What the router does with a message it could not judge; the server reads a
+  /// missing key as 'strong'.
+  String get resolvedOnUnknown => onUnknown ?? 'strong';
+
+  factory SessionProviderRouting.fromJson(Map<dynamic, dynamic> json) {
+    final rawTiers = json['tiers'];
+    final rawEscalation = json['escalation'];
+    return SessionProviderRouting(
+      version: (json['version'] as num?)?.toInt() ?? 1,
+      provider: json['provider']?.toString() ?? 'jev',
+      apiKeyName: (json['apiKeyName']?.toString().trim().isEmpty ?? true)
+          ? defaultApiKeyName
+          : json['apiKeyName'].toString().trim(),
+      onUnknown: (json['onUnknown']?.toString().trim().isEmpty ?? true)
+          ? null
+          : json['onUnknown'].toString().trim(),
+      tiers: rawTiers is List
+          ? [
+              for (final tier in rawTiers)
+                if (tier?.toString().trim().isNotEmpty ?? false)
+                  tier.toString().trim(),
+            ]
+          : const [],
+      model: (json['model']?.toString().trim().isEmpty ?? true)
+          ? null
+          : json['model'].toString().trim(),
+      timeoutMs: (json['timeoutMs'] as num?)?.toInt(),
+      escalation: rawEscalation is Map
+          ? {
+              for (final entry in rawEscalation.entries)
+                if (entry.value is num)
+                  entry.key.toString(): (entry.value as num).toDouble(),
+            }
+          : null,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'version': version,
+    'provider': provider,
+    'apiKeyName': apiKeyName,
+    if (onUnknown != null) 'onUnknown': onUnknown,
+    'tiers': tiers,
+    if (model != null) 'model': model,
+    if (timeoutMs != null) 'timeoutMs': timeoutMs,
+    if (escalation != null) 'escalation': escalation,
   };
 }
 
@@ -677,6 +917,10 @@ class SessionProviderSelection {
   final bool sticky;
   final bool allowCrossTrust;
 
+  /// Present only on a pool that routes by difficulty; absent (not null-on-wire)
+  /// keeps a plain ordered pool byte-identical to what it always sent.
+  final SessionProviderRouting? routing;
+
   const SessionProviderSelection({
     this.version = 1,
     this.mode = 'auto',
@@ -685,6 +929,7 @@ class SessionProviderSelection {
     required this.maxAttempts,
     this.sticky = true,
     this.allowCrossTrust = false,
+    this.routing,
   });
 
   Map<String, dynamic> toJson() => {
@@ -695,6 +940,7 @@ class SessionProviderSelection {
     'maxAttempts': maxAttempts,
     'sticky': sticky,
     'allowCrossTrust': allowCrossTrust,
+    if (routing != null) 'routing': routing!.toJson(),
   };
 }
 
@@ -709,6 +955,7 @@ SessionProviderSelection? parseProviderSelection(dynamic json) {
       .where((candidate) => candidate.providerId.isNotEmpty)
       .toList(growable: false);
   if (candidates.length < 2) return null;
+  final rawRouting = json['routing'];
   return SessionProviderSelection(
     version: (json['version'] as num?)?.toInt() ?? 1,
     protocol: protocol,
@@ -716,6 +963,12 @@ SessionProviderSelection? parseProviderSelection(dynamic json) {
     maxAttempts: (json['maxAttempts'] as num?)?.toInt() ?? 2,
     sticky: json['sticky'] != false,
     allowCrossTrust: json['allowCrossTrust'] == true,
+    // A difficulty-routed pool must survive the trip through the App: dropping
+    // the block here would let the next save from the phone quietly downgrade
+    // it to a plain ordered pool.
+    routing: rawRouting is Map
+        ? SessionProviderRouting.fromJson(rawRouting)
+        : null,
   );
 }
 
@@ -804,6 +1057,60 @@ Map<SessionCli, bool> parseCliAvailability(dynamic json) {
   return result;
 }
 
+/// 「下一轮生效」的那一份待应用配置（服务端 `pendingConfiguration`）。
+///
+/// 忙碌中的会话不能立刻换 CLI / 线路，服务端把这次选择存成一份待应用配置，下一轮
+/// 开始时才真正落地（`src/session/pending-configuration.js`）。它同时是用户此刻
+/// **看到**的意图：Web 端一律按它显示（聊天页的 `desiredConfig`、Air 药丸的
+/// `shown` 都拿它覆盖当前配置），否则「切了 CLI 却还显示旧的 CLI，Provider 也跟着
+/// 旧的那条走」——用户以为已经切过去了。
+class SessionPendingConfiguration {
+  final SessionCli cli;
+  final bool fresh;
+  final String? provider;
+  final String? providerName;
+  final SessionProviderSelection? providerSelection;
+  final String? model;
+  final String? effort;
+  final String? agent;
+  final SessionSubagent? subagent;
+
+  const SessionPendingConfiguration({
+    required this.cli,
+    this.fresh = false,
+    this.provider,
+    this.providerName,
+    this.providerSelection,
+    this.model,
+    this.effort,
+    this.agent,
+    this.subagent,
+  });
+
+  factory SessionPendingConfiguration.fromJson(Map<String, dynamic> json) {
+    final profile = json['profile'] is Map
+        ? Map<String, dynamic>.from(json['profile'] as Map)
+        : const <String, dynamic>{};
+    return SessionPendingConfiguration(
+      cli: parseCli(json['cli']?.toString()),
+      fresh: json['fresh'] == true,
+      provider: profile['provider']?.toString(),
+      // providerName 不落在 profile 里：它是服务端为了显示随地解析出来的只读名字
+      // （Air 的 taskDetail / open 会在 pending 上挂一个，见 air-routes.js）。
+      providerName: json['providerName']?.toString(),
+      providerSelection: parseProviderSelection(profile['providerSelection']),
+      model: profile['model']?.toString(),
+      effort: profile['effort']?.toString(),
+      agent: profile['agent']?.toString(),
+      subagent: profile['subagent'] is Map
+          ? SessionSubagent.fromJson(
+              Map<String, dynamic>.from(profile['subagent'] as Map),
+            )
+          : null,
+    );
+  }
+}
+
 /// Runtime settings returned by GET /api/sessions/:id and switch-cli.
 class SessionCliConfig {
   final SessionCli cli;
@@ -821,7 +1128,8 @@ class SessionCliConfig {
   final String? agent;
   final SessionSubagent? subagent;
   final bool deferred;
-  final SessionCli? pendingCli;
+  /// 待应用（下轮生效）的那份配置；null = 没有待应用的东西。
+  final SessionPendingConfiguration? pending;
   final bool changed;
   final bool reusedTarget;
 
@@ -841,10 +1149,13 @@ class SessionCliConfig {
     this.agent,
     this.subagent,
     this.deferred = false,
-    this.pendingCli,
+    this.pending,
     this.changed = false,
     this.reusedTarget = false,
   });
+
+  /// 待换的车道（下轮生效）。换道面板拿它当初始选中项。
+  SessionCli? get pendingCli => pending?.cli;
 
   factory SessionCliConfig.fromJson(Map<String, dynamic> json) {
     final handoff = json['pendingCliHandoff'];
@@ -866,8 +1177,10 @@ class SessionCliConfig {
           ? null
           : SessionSubagent.fromJson(json['subagent']),
       deferred: json['deferred'] == true || json['pendingConfiguration'] is Map,
-      pendingCli: json['pendingConfiguration'] is Map
-          ? parseCli(json['pendingConfiguration']['cli']?.toString())
+      pending: json['pendingConfiguration'] is Map
+          ? SessionPendingConfiguration.fromJson(
+              Map<String, dynamic>.from(json['pendingConfiguration'] as Map),
+            )
           : null,
       changed: json['changed'] == true,
       reusedTarget: json['reusedTarget'] == true,
@@ -896,6 +1209,10 @@ class Session {
   final String? agent; // Native --agent for Claude/OpenCode.
   final Map<SessionCli, SessionCliState> cliStates;
   final CliHandoff? pendingCliHandoff;
+
+  /// 下轮才生效的那份配置（服务端 session 行里就有；null = 没有待应用的改动）。
+  /// 任务列表/会话卡片按它显示用户**已经选好**的 CLI 与线路。
+  final SessionPendingConfiguration? pending;
   final bool?
   streaming; // per-session stream mode (claude chat defaults true; server 2ad82ec)
   final String cwd;
@@ -932,6 +1249,7 @@ class Session {
     this.agent,
     this.cliStates = const {},
     this.pendingCliHandoff,
+    this.pending,
     this.streaming,
     this.cwd = '',
     required this.createdAt,
@@ -966,6 +1284,11 @@ class Session {
       cliStates: parseCliStates(json['cliStates']),
       pendingCliHandoff: json['pendingCliHandoff'] is Map
           ? CliHandoff.fromJson(json['pendingCliHandoff'] as Map)
+          : null,
+      pending: json['pendingConfiguration'] is Map
+          ? SessionPendingConfiguration.fromJson(
+              Map<String, dynamic>.from(json['pendingConfiguration'] as Map),
+            )
           : null,
       streaming: json['streaming'] == null ? null : json['streaming'] == true,
       cwd: (json['cwd'] ?? '').toString(),
@@ -1017,6 +1340,7 @@ class Session {
       agent: agent ?? this.agent,
       cliStates: cliStates,
       pendingCliHandoff: pendingCliHandoff,
+      pending: pending,
       streaming: streaming,
       cwd: cwd,
       createdAt: createdAt,
@@ -1151,6 +1475,47 @@ class DirectoryPushState {
   }
 }
 
+/// 定时任务的一次触发记录（服务端 `task.runs`，最近的在前、有界）。
+///
+/// 「上次结果」只有一个格子，回答不了用户真正要问的问题：今天到底跑没跑、总共几次、
+/// 哪一次失败、失败原因是什么。字段就为这几个问题而留，不做通用审计日志。
+class CronRun {
+  final int at; // epoch ms
+  final String reason; // 'schedule'（到点）| 'manual'（点了立即运行）
+  final String status; // 'ok' | 'queued' | 'error' | ...
+
+  /// 失败原因原文（服务端已截断到 200 字符）。
+  final String error;
+
+  const CronRun({
+    required this.at,
+    this.reason = 'schedule',
+    this.status = '',
+    this.error = '',
+  });
+
+  bool get failed => status == 'error';
+
+  /// 这一次的结局，列表里那一列说的话（与 Web 端 airSchedule* 文案同一套说法）。
+  String get outcome {
+    if (status == 'queued') return '已入队';
+    if (status == 'ok') return '成功';
+    return error.isNotEmpty ? error : '失败';
+  }
+
+  /// 谁触发的：定时到点，还是用户按的「立即运行」。
+  String get source => reason == 'manual' ? '手动' : '定时';
+
+  factory CronRun.fromJson(Map<String, dynamic> json) => CronRun(
+    // 时间戳只在是真数字时才算数：脏数据宁可说「—」，也不许在解析里抛异常把
+    // 整张规则表带崩（面板会连一条规则都显示不出来）。
+    at: json['at'] is num ? (json['at'] as num).toInt() : 0,
+    reason: (json['reason'] ?? 'schedule').toString(),
+    status: (json['status'] ?? '').toString(),
+    error: (json['error'] ?? '').toString(),
+  );
+}
+
 /// A multicc-native scheduled (cron) task. Mirrors the `toView` shape returned
 /// by the server's /api/cron endpoints (see cron-tasks.js).
 ///
@@ -1177,6 +1542,11 @@ class CronTask {
   final String? lastStatus; // 'ok' | 'queued' | 'error' | null
   final String lastError;
   final int runCount;
+
+  /// 最近的触发记录（服务端回放上限 10 条，最近的在前）。旧服务端没有这一格时是空表，
+  /// 界面照旧只报「上次结果」—— 编不出历史就不摆一个空壳。
+  final List<CronRun> runs;
+
   final int? nextRunAt; // epoch ms
 
   /// 这条规则的固定 Air 任务。null 表示绑定还没建立起来。
@@ -1205,6 +1575,7 @@ class CronTask {
     this.lastStatus,
     this.lastError = '',
     this.runCount = 0,
+    this.runs = const <CronRun>[],
     this.nextRunAt,
     this.taskId,
     this.taskTitle = '',
@@ -1230,6 +1601,12 @@ class CronTask {
     lastStatus: json['lastStatus']?.toString(),
     lastError: (json['lastError'] ?? '').toString(),
     runCount: (json['runCount'] as num?)?.toInt() ?? 0,
+    runs:
+        (json['recentRuns'] as List?)
+            ?.whereType<Map>()
+            .map((entry) => CronRun.fromJson(Map<String, dynamic>.from(entry)))
+            .toList(growable: false) ??
+        const <CronRun>[],
     nextRunAt: (json['nextRunAt'] as num?)?.toInt(),
     taskId: json['taskId']?.toString(),
     taskTitle: (json['taskTitle'] ?? '').toString(),

@@ -49,6 +49,8 @@
 // misclassified as an API error; a reply that was already persisted stays
 // persisted.
 
+const { isProcessingLetter } = require('../classify/vocab');
+
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_CONFIRMATIONS = 2;
 const DEFAULT_COOLDOWN_MS = 120_000;
@@ -101,7 +103,7 @@ function createStalledTurnRecovery(deps = {}) {
     }
 
     const task = deps.getTaskState(record) || {};
-    if (task.classifyState !== 'P') {
+    if (!isProcessingLetter(task.classifyState)) {
       clearSuspect(sessionId);
       return { sessionId, action: 'skip', reason: 'not_processing' };
     }
@@ -112,6 +114,10 @@ function createStalledTurnRecovery(deps = {}) {
 
     const cs = deps.getChatSession(sessionId) || null;
     const stream = deps.getStreamStatus(sessionId) || null;
+    // Deliberately not the shared chat-runtime predicate
+    // (src/session/runtime-busy.js): this asks "is a STREAM in flight", i.e. can
+    // a stalled stream pump be why nothing is arriving. A turn in its teardown
+    // window (runner released last) is not something stall recovery may touch.
     const inFlight = !!(cs && cs.isStreaming) || !!(stream && stream.busy);
     if (!inFlight) {
       clearSuspect(sessionId);

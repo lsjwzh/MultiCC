@@ -97,7 +97,7 @@ void main() {
       host(
         CreateSessionDialog(
           kind: SessionKind.chat,
-          defaultCli: SessionCli.claude,
+          defaultCli: SessionCli.claudeExp,
           providers: providers(),
           settings: s,
         ),
@@ -135,7 +135,7 @@ void main() {
       host(
         CreateSessionDialog(
           kind: SessionKind.chat,
-          defaultCli: SessionCli.claude,
+          defaultCli: SessionCli.claudeExp,
           providers: providers(),
           defaultProviderId: 'p3', // stale provider, longest detail
           settings: s,
@@ -202,15 +202,17 @@ void main() {
     tester,
   ) async {
     final s = await settings();
+    // 默认线路给的是常驻的 Codex 车道（chat 会话只能落到常驻车道：一次性车道
+    // `claude -p` / `codex exec` 归终端，见 cli_display 的 kinds 列）。
     await tester.pumpWidget(
       host(
         CreateSessionDialog(
           kind: SessionKind.chat,
-          defaultCli: SessionCli.codex,
+          defaultCli: SessionCli.codexExp,
           providers: providers(),
           cliAvailability: const {
-            SessionCli.claude: false,
-            SessionCli.codex: true,
+            SessionCli.claudeExp: false,
+            SessionCli.codexExp: true,
           },
           settings: s,
           basicMode: true,

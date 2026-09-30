@@ -14,7 +14,12 @@ const { createShutdownCoordinator } = require('./shutdown');
 const SHUTDOWN_GRACE_MS = 60000;   // max time to let in-flight turns finish
 
 function createHostLifecycle(deps) {
+  // The CLI lane table is a dependency-free leaf, but this module's require set is
+  // deliberately pinned by tests/test-host-lifecycle-task-run-close.js, so the
+  // predicate arrives as a port like every other runtime here.
+  if (typeof deps?.isResidentSession !== 'function') throw new TypeError('[host-lifecycle] isResidentSession port is required');
   const {
+    isResidentSession,
     // Host state accessors (server.js keeps the source of truth).
     getShuttingDown,
     setShuttingDown,
@@ -57,10 +62,6 @@ function createHostLifecycle(deps) {
     stopOutputCapture,
     routerToolHost,
     sessionPersistence,
-    // Optional durable TaskRun ledger. It is closed last, after every producer
-    // and the legacy session persistence runtime have finished their teardown.
-    taskRunHost,
-    taskRunStore,
     qwenAudioSupervisor,
     sessionHibernationRuntime,
     log = console,
@@ -203,6 +204,9 @@ function createHostLifecycle(deps) {
       task.cancelled = true;
       try { task.reject(error); } catch (_) {}
     }
+    // 并发池：每一个在跑的槽都要标脏，不能只标第一个（旧的 currentTask 语义）。
+    // `|| []` 保持对测试替身（只给 queue/currentTask 的对象）的兼容。
+    for (const task of auxQueue.running || []) task.cancelled = true;
     if (auxQueue.currentTask) auxQueue.currentTask.cancelled = true;
   }
 
@@ -233,7 +237,7 @@ function createHostLifecycle(deps) {
   //   • streaming turn — NO per-turn child; it runs on the persistent chatStream
   //     process and its liveness is chatStream.status(name).busy (not cs.claudeProc).
   shutdownCoordinator.onDrain(async ({ graceMs }) => {
-    const isStreamingBusy = (name, cs) => cs && cs.cli === 'claude' && !!chatStream.status(name)?.busy;
+    const isStreamingBusy = (name, cs) => cs && isResidentSession(cs.cli, cs) && !!chatStream.status(name)?.busy;
     const draining = new Set();
     for (const [name, cs] of chatSessions) {
       if (cs && (cs.claudeProc || isStreamingBusy(name, cs))) draining.add(name);
@@ -292,24 +296,7 @@ function createHostLifecycle(deps) {
       ? orchestrationRuntime.dispose()
       : orchestrationRuntime.stop();
   });
-  if (taskRunHost && typeof taskRunHost.waitForFinalizers === 'function') {
-    shutdownCoordinator.onClose(() => taskRunHost.waitForFinalizers());
-  }
   shutdownCoordinator.onClose(() => sessionPersistence.stop());
-  if (taskRunStore && typeof taskRunStore.close === 'function') {
-    let closeStarted = false;
-    shutdownCoordinator.onClose(async () => {
-      if (closeStarted) return;
-      closeStarted = true;
-      try {
-        await taskRunStore.close();
-      } catch (error) {
-        try {
-          log.error(`[multicc] task-run store close error: ${error && error.message}`);
-        } catch (_) {}
-      }
-    });
-  }
 
   function gracefulShutdown(sig) {
     if (getShuttingDown()) return;

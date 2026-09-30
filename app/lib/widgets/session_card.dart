@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../i18n.dart';
 import '../models/message.dart';
 import '../utils/session_status_helpers.dart';
+import '../utils/cli_display.dart';
 import '../utils/status_presentation.dart';
 import '../providers/session_manager.dart';
 import '../services/session_service.dart';
@@ -51,7 +52,19 @@ class SessionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cliColor = cliBrandColor(session.cli);
+    // 会话忙时的换道/AI 配置是「下轮生效」：卡片显示用户**已经选好**的那一份，与
+    // Web 的卡片同口径（src/workspace/air-routes.js 按 pendingConfiguration 解析
+    // providerName）。否则刚切完车道的会话在列表里还是旧车道 + 旧线路那一行，
+    // 点进去才发现换了。
+    final pending = session.pending;
+    final cli = pending?.cli ?? session.cli;
+    final providerId = pending != null ? pending.provider : session.provider;
+    final modelRaw = pending != null
+        ? (pending.model?.isNotEmpty == true ? pending.model : null)
+        : (session.effectiveModel?.isNotEmpty == true
+              ? session.effectiveModel
+              : (session.model?.isNotEmpty == true ? session.model : null));
+    final cliColor = cliBrandColor(cli);
     final live = liveStatus;
     final lastInteraction = sessionLastInteractionAt(session, live);
     final ago = formatRelativeTime(lastInteraction);
@@ -67,37 +80,36 @@ class SessionCard extends StatelessWidget {
     final mergeReady = live?.mergeReady == true;
     final hasLabel = session.label?.isNotEmpty == true;
     final title = hasLabel ? session.label! : session.id;
-    final modelRaw = session.effectiveModel?.isNotEmpty == true
-        ? session.effectiveModel
-        : (session.model?.isNotEmpty == true ? session.model : null);
     Map? modelAlias;
-    if (modelRaw != null && session.provider?.isNotEmpty == true) {
+    if (modelRaw != null && providerId?.isNotEmpty == true) {
       final m = providers.firstWhere(
-        (p) => p['id'] == session.provider,
+        (p) => p['id'] == providerId,
         orElse: () => {},
       )['aliasMap'];
       if (m is Map) modelAlias = m;
     }
     final model = modelRaw == null
         ? ''
-        : modelDisplayName(session.cli, modelRaw, aliasMap: modelAlias);
+        : modelDisplayName(cli, modelRaw, aliasMap: modelAlias);
     final effort = effortShortNameForCli(
-      session.cli,
-      session.effectiveEffort ?? session.effort,
+      cli,
+      pending != null
+          ? pending.effort
+          : (session.effectiveEffort ?? session.effort),
     );
     // Resolve provider display name from the cached provider list.
     String? provName;
-    if (session.provider != null && session.provider!.isNotEmpty) {
+    if (providerId != null && providerId.isNotEmpty) {
       try {
         final match = providers.firstWhere(
-          (p) => p['id'] == session.provider,
+          (p) => p['id'] == providerId,
           orElse: () => {},
         );
         provName = match['name']?.toString();
       } catch (_) {}
-      provName ??= session.provider!.length > 8
-          ? session.provider!.substring(0, 8)
-          : session.provider;
+      provName ??= providerId.length > 8
+          ? providerId.substring(0, 8)
+          : providerId;
     }
 
     return RunningBorder(
@@ -141,7 +153,10 @@ class SessionCard extends StatelessWidget {
                       ),
                       const SizedBox(width: 6),
                     ],
-                    MiniBadge(label: session.cli.name, color: cliColor),
+                    MiniBadge(
+                      label: cliDisplayName(cli.name),
+                      color: cliColor,
+                    ),
                     if (cardStatus != CanonicalStatus.idle &&
                         cardStatus != CanonicalStatus.unknown) ...[
                       const SizedBox(width: 6),
@@ -386,18 +401,28 @@ class SessionCard extends StatelessWidget {
                           case 'gitlog':
                             showGitLogSheet(
                               context,
-                              fetchLog: (all) => SessionService(
-                                settings: settings,
-                              ).fetchGitLog(
-                                sessionId: session.id,
-                                allBranches: all,
-                              ),
-                              fetchDiff: (hash) => SessionService(
-                                settings: settings,
-                              ).fetchGitCommitDiff(
-                                sessionId: session.id,
-                                hash: hash,
-                              ),
+                              fetchLog: (all) =>
+                                  SessionService(
+                                    settings: settings,
+                                  ).fetchGitLog(
+                                    sessionId: session.id,
+                                    allBranches: all,
+                                  ),
+                              fetchFiles: (hash) =>
+                                  SessionService(
+                                    settings: settings,
+                                  ).fetchGitCommitFiles(
+                                    sessionId: session.id,
+                                    hash: hash,
+                                  ),
+                              fetchDiff: (hash, file) =>
+                                  SessionService(
+                                    settings: settings,
+                                  ).fetchGitCommitDiff(
+                                    sessionId: session.id,
+                                    hash: hash,
+                                    file: file,
+                                  ),
                             );
                             break;
                           case 'rebase':
@@ -434,11 +459,7 @@ class SessionCard extends StatelessWidget {
                           Icons.difference_outlined,
                           t('viewDiff'),
                         ),
-                        _menuItem(
-                          'gitlog',
-                          Icons.history_rounded,
-                          t('gitLog'),
-                        ),
+                        _menuItem('gitlog', Icons.history_rounded, t('gitLog')),
                         _menuItem(
                           'rebase',
                           Icons.call_merge_rounded,
@@ -635,7 +656,7 @@ class SessionCard extends StatelessWidget {
                       value: s.id,
                       child: Text(
                         '${s.label?.isNotEmpty == true ? s.label : s.id}'
-                        ' (${s.cli.name}/${s.kind.name})',
+                        ' (${cliDisplayName(s.cli.name)}/${s.kind.name})',
                       ),
                     ),
                 ],

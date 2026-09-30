@@ -8,11 +8,15 @@
 // 的 Session 解析里（`!= false` = 缺键算开），两边必须一致。
 const test = require('node:test'), assert = require('node:assert/strict');
 const { createSessionRecordFactory } = require('../src/session/create-record');
+// src/session 不能 require 车道表（bounded context），所以由组合根注入；这里给真表，
+// 免得桩掉之后 streaming 这类字段在测试里和生产不一致。
+const { isResidentSession } = require('../src/cli/cli-capability');
 
 // 只看创建默认值：每个端口都换成桩，但记录本身由生产代码拼出来。
 function createHarness() {
   const persisted = new Map();
   const factory = createSessionRecordFactory({
+    isResidentSession,
     sharedWorkspace: () => ({ worktreePath: '/wt/shared', branch: 'multicc/shared' }),
     SUPPORTED_CHAT_CLIS: ['claude', 'codex'],
     validateExperimentalSession: () => ({ ok: true }),
@@ -53,8 +57,33 @@ test('a new session defaults to auto-commit ON, and only an explicit false turns
   assert.equal(persisted.get(created.id).autoCommit, true, '落库的记录也一样');
 
   const optedOut = await factory({ dir, cli: 'claude', kind: 'chat', autoCommit: false });
-  assert.equal(optedOut.session.autoCommit, false, '显式 false 必须真的关掉（实验/任务壳分支靠它）');
+  assert.equal(optedOut.session.autoCommit, false, '显式 false 必须真的关掉（实验分支靠它）');
 
   const optedIn = await factory({ dir, cli: 'claude', kind: 'chat', autoCommit: true });
   assert.equal(optedIn.session.autoCommit, true);
+});
+
+// Air 里新建的任务走任务壳（src/task-shell/host.js 的 createExecution），它曾经写死
+// `autoCommit: false`：会话开关显示「开」是缺省口径，新任务却一律是关。任务壳必须
+// 吃同一个缺省，不能自己再传 false。
+test('Air task-shell executions inherit the auto-commit default instead of forcing it off', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const host = fs.readFileSync(path.join(__dirname, '../src/task-shell/host.js'), 'utf8');
+  const create = host.slice(host.indexOf('createExecution:'), host.indexOf('indexTask:'));
+  assert.ok(create.includes('createSessionRecord'), '找到任务壳的创建入口');
+  assert.doesNotMatch(create, /autoCommit/, '任务壳创建执行会话时不许覆盖 autoCommit');
+});
+
+// 「缺字段怎么读」在每个对外投影里都得是「开」，否则同一条记录在不同入口显示不一样。
+test('every session projection reads a missing autoCommit as ON', () => {
+  const { toSessionDto } = require('../src/session-dto');
+  {
+    assert.equal(toSessionDto({ id: 's', kind: 'chat', cli: 'claude', dirId: 'd' }).autoCommit, true);
+    assert.equal(toSessionDto({ id: 's', kind: 'chat', cli: 'claude', dirId: 'd', autoCommit: false }).autoCommit, false);
+  }
+  const fs = require('node:fs'), path = require('node:path');
+  for (const file of ['src/session-dto.js', 'src/routes/session-admin.js', 'src/workspace/air-routes.js', 'public/chat.js']) {
+    const text = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    assert.equal(/!!\s*[\w.]*\.autoCommit\b/.test(text), false, `${file} 不许用 !! 读 autoCommit（缺键会读成关）`);
+  }
 });

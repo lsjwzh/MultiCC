@@ -1,7 +1,7 @@
 'use strict';
 
-// Task board core — pure logic for the AI-tagged module→task board shown in
-// the fleet panel (meta.html). No I/O and no host state: given a board object
+// Task board core — pure logic for the AI-tagged module→task board. No I/O and
+// no host state: given a board object
 // and inputs, every function here is deterministic, so the whole tagging /
 // aggregation / routing surface is unit-testable without a server.
 //
@@ -10,7 +10,7 @@
 //   classification.js AI tagging/backfill prompts, parsers, board mutations
 //   routing.js        panel-input routing and candidate ranking
 //   view.js           read-side DTO projection
-// planning.js (schema/stages/rank) and merge-runtime.js stay siblings. This
+// planning.js (schema/stages/rank) stays a sibling. This
 // module only re-exports the stable surface every consumer already requires.
 
 const planning = require('./planning');
@@ -72,6 +72,9 @@ module.exports = {
   buildBoardDto: view.buildBoardDto,
   taskRunSessionIds: view.taskRunSessionIds,
   deadDispatchClaim: view.deadDispatchClaim,
+  foreignRunSession: view.foreignRunSession,
+  staleWorkerClaim: view.staleWorkerClaim,
+  soleRunSessionId: view.soleRunSessionId,
   sessionHasTurn: view.sessionHasTurn,
   normalizeTaskRouting: normalize.normalizeTaskRouting,
   setTaskRouting: normalize.setTaskRouting,

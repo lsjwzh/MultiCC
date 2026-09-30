@@ -6,7 +6,7 @@ const { providerSelectionDto } = require('./providers/auto-provider-config');
 // native-CLI implementation details (cwd/worktreePath/cliSessionId), large
 // prompt/memory blobs, credentials, and Error objects.
 
-const SUPPORTED_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh']);
+const SUPPORTED_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok']);
 const SUPPORTED_KINDS = new Set(['chat', 'terminal']);
 const SENSITIVE_KEY = /(?:token|secret|password|stack|(?:^|_)path|cwd|cliSessionId|worktree)/i;
 
@@ -87,7 +87,7 @@ function toSessionDto(source = {}) {
     providerSelection: providerSelectionDto(source.providerSelection),
     experimentalMode: nullableString(source.experimentalMode, 80),
     subagent: subagentDto(source.subagent),
-    autoCommit: !!source.autoCommit,
+    autoCommit: source.autoCommit !== false,
     createdAt: timestamp(source.createdAt),
     lastActivity: timestamp(source.lastActivity),
     clients: Math.max(0, Math.floor(Number(source.clients) || 0)),

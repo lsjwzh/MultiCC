@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../services/air_ops_service.dart';
 import '../../services/qr_encoder.dart';
 import '../../theme.dart';
+import '../../utils/format.dart';
 import 'air_ops_store.dart';
 
 // ── 版本行 ────────────────────────────────────────────────────────────────
@@ -62,11 +63,16 @@ String opsUptimeLabel(int ms) {
 
 // ── 安装包 ────────────────────────────────────────────────────────────────
 
-String opsPackageSize(int bytes) {
-  if (bytes <= 0) return '—';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).round()} KB';
-  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-}
+/// 安装包大小。字节数走全站唯一那份（utils/format.dart；web 那侧同一份定义在
+/// public/shared/format.js，air-ops.js 用同一组选项）。本页只保留自己的取舍：
+/// 0 字节的产物是「还没发布」而不是「0 B」，未知画 —，KB 取整（跟管理台那格报同一个
+/// 文件同一个数）。
+String opsPackageSize(int bytes) => formatBytes(
+      bytes,
+      unitDecimals: const {'KB': 0},
+      placeholder: '—',
+      zeroIsMissing: true,
+    );
 
 String opsPackageMtime(int ms) {
   if (ms <= 0) return '—';
@@ -118,9 +124,16 @@ String opsUpdateHint(AirUpdateRun run, {required bool sawUnreachable}) {
 
 /// 折叠区外的那一行：它是更新提示唯一的落点，藏进折叠里就没人知道有新版本。
 class AirVersionRow extends StatelessWidget {
-  const AirVersionRow({super.key, required this.store});
+  const AirVersionRow({
+    super.key,
+    required this.store,
+    this.language,
+    this.onLanguage,
+  });
 
   final AirOpsStore store;
+  final String? language;
+  final VoidCallback? onLanguage;
 
   @override
   Widget build(BuildContext context) {
@@ -131,7 +144,7 @@ class AirVersionRow extends StatelessWidget {
         final current = info?.current ?? '';
         final badge = opsVersionBadge(info);
         final hint = opsUpdateHintFor(store) ?? opsVersionHint(info, checking: store.versionPending);
-        return Semantics(
+        final version = Semantics(
           button: true,
           label: '版本 $hint，点击检查并安装更新',
           child: Material(
@@ -202,6 +215,37 @@ class AirVersionRow extends StatelessWidget {
               ),
             ),
           ),
+        );
+        if (onLanguage == null) return version;
+        final english = language == 'en';
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(child: version),
+            const SizedBox(width: 5),
+            Tooltip(
+              message: english
+                  ? 'Switch language: 中文 / English'
+                  : '切换语言：中文 / English',
+              child: OutlinedButton(
+                key: const ValueKey('air-sidebar-language'),
+                onPressed: onLanguage,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.blue,
+                  minimumSize: const Size(50, 44),
+                  padding: const EdgeInsets.symmetric(horizontal: 7),
+                  side: const BorderSide(color: AppColors.line),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppColors.radiusChip),
+                  ),
+                ),
+                child: Text(
+                  english ? 'EN/中' : '中/EN',
+                  style: const TextStyle(fontSize: 11),
+                ),
+              ),
+            ),
+          ],
         );
       },
     );

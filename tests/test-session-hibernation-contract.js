@@ -46,10 +46,11 @@ test('host composition gates every real ingress and keeps view paths passive', (
   assert.doesNotMatch(view, /ensureAwake|thaw/i, 'opening a task chat must not thaw it');
 });
 
-test('management task board renders hibernated state without manual controls', () => {
-  const ui = read('public/manage-taskboard.js');
-  assert.match(ui, /workspaceState/);
-  assert.match(ui, /已休眠/);
+test('the Air task list renders hibernated state without manual controls', () => {
+  const ui = read('public/air.js');
+  const zh = JSON.parse(read('app/assets/i18n/zh.json'));
+  assert.match(ui, /hibernated: t\('airStateHibernated'\)/);
+  assert.match(zh.airStateHibernated, /已休眠/);
   assert.doesNotMatch(ui, /manualThaw|hibernateButton|手动休眠/);
 });
 

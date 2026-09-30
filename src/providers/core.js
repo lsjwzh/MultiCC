@@ -31,6 +31,13 @@ const { createOpencodeModelLimitResolver } = require('./opencode-model-limits');
 const { createCodexAttemptHome } = require('../codex/attempt-home');
 const { createCodexSessionHomeRuntime } = require('../codex/session-home');
 const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
+const { normalizeAllowlist: normalizeEgressIpAllowlist } = require('./egress-ip-policy');
+// Resident lanes hold their route across turns, so they own the codex home that
+// bakes it (see the module). It reaches back here for the physical
+// materialization, which is why it is required from this side.
+const {
+  prepareResidentChildEnv, releaseResidentRoute,
+} = require('../codex/resident-route');
 const { codexAccountAuthFilePath } = require('../official-accounts');
 const { relayRouteFromBaseUrl } = require('./relay-share-store');
 const {
@@ -288,6 +295,24 @@ function resolveSessionWireModel(sessionModel, { providerModel = null, providerM
     return sessionModel || (skipDefaultModel ? null : (defaultModel || null));
   }
   return (sessionModel && (ALIAS_TIER_REGEX.test(sessionModel) || served.includes(sessionModel))) ? sessionModel : providerModel;
+}
+
+// Expand a tier alias (opus/sonnet/haiku/fable/default) to the wire model the
+// provider maps it to. A tier is a Claude-CLI concept: there it becomes
+// ANTHROPIC_DEFAULT_<TIER>_MODEL and the CLI resolves it before the request
+// leaves. The global-pool lanes (OpenCode, ZCode, Kimi Code) have no such
+// indirection — the provider config/`--model` they materialize carries literal
+// wire model ids — so a tier left on the session (the picker offers them, and
+// the PATCH guard accepts a tier the provider maps) would be sent upstream as
+// the bare word "opus" and rejected with 400 invalid_request_error. Non-tier
+// values pass through untouched; an unmapped tier returns '' so the caller
+// falls back to the provider's primary model instead of guessing.
+function resolveTierWireModel(summary, model) {
+  const value = String(model || '').trim();
+  if (!value || !ALIAS_TIER_REGEX.test(value)) return value;
+  const entry = summary && summary.aliasMap && summary.aliasMap[value.toLowerCase()];
+  const mapped = typeof entry === 'string' ? entry : (entry && entry.model);
+  return mapped ? String(mapped).trim() : '';
 }
 
 // Strip a "[1m]"-style context suffix for model comparison —
@@ -604,6 +629,10 @@ function summarize(p, opts = {}) {
     builtinOfficial: p.builtinOfficial === true,
     activeAccountId: p.activeAccountId || null,
     quotaKind: p.quotaKind || null,
+    // Advanced option: non-empty means this provider may only be used while
+    // the host's current public IP exactly matches one of these addresses
+    // (see providers/egress-ip-policy.js). Empty/absent = unrestricted.
+    egressIpAllowlist: normalizeEgressIpAllowlist(p.egressIpAllowlist),
     source: p.source || 'local', // 'local' | 'ccswitch'
     baseUrl,
     model,
@@ -793,7 +822,7 @@ function resolveCodexDirectHttp(providerId) {
     : { ...target, canDirect: false };
 }
 
-function createProvider({ appType, name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap }) {
+function createProvider({ appType, name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist }) {
   if (!APP_TYPES.includes(appType)) throw new Error('appType must be claude or codex');
   if (!name || !String(name).trim()) throw new Error('name required');
   // Generate id first so buildSettingsConfig can embed it in the proxy base_url.
@@ -811,6 +840,8 @@ function createProvider({ appType, name, baseUrl, authToken, model, models, apiF
     settingsConfig: cfg,
     createdAt: Date.now(),
   };
+  const normalizedEgressIpAllowlist = normalizeEgressIpAllowlist(egressIpAllowlist);
+  if (normalizedEgressIpAllowlist.length) p.egressIpAllowlist = normalizedEgressIpAllowlist;
   const list = loadStore();
   if (officialCatalog && require('./official-catalog').isOfficial(p)) return summarize(officialCatalog.provider(appType));
   list.push(p);
@@ -818,8 +849,36 @@ function createProvider({ appType, name, baseUrl, authToken, model, models, apiF
   return { id: p.id, appType, name: p.name };
 }
 
-function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap }) {
-  if (officialCatalog && officialCatalog.normalize(appType, id) === `${appType}-official`) throw new Error('请在官方账号中管理登录和切换账号');
+function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist }) {
+  if (officialCatalog && officialCatalog.normalize(appType, id) === `${appType}-official`) {
+    // Login/account identity is OAuth-managed and not editable here. Advanced
+    // settings (currently: egress-IP allowlist) are the one thing an official
+    // provider's editor may still submit — persisted as a minimal override
+    // record (see official-catalog.js's provider() merge), everything else
+    // still bounces to the dedicated official-account flow.
+    if ([name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap].some(v => v !== undefined)) {
+      throw new Error('请在官方账号中管理登录和切换账号');
+    }
+    const officialProviderId = `${appType}-official`;
+    const list = loadStore();
+    const normalized = normalizeEgressIpAllowlist(egressIpAllowlist);
+    let p = list.find(x => x.appType === appType && x.id === officialProviderId);
+    if (!p && normalized.length) {
+      p = { id: officialProviderId, appType, source: 'builtin-override' };
+      list.push(p);
+    }
+    if (p) {
+      if (normalized.length) p.egressIpAllowlist = normalized;
+      else {
+        delete p.egressIpAllowlist;
+        // Nothing else lives on this override record — drop the empty stub.
+        const idx = list.indexOf(p);
+        if (idx !== -1) list.splice(idx, 1);
+      }
+    }
+    saveStore(list);
+    return { id: officialProviderId, appType };
+  }
   const list = loadStore();
   const p = list.find(x => x.appType === appType && x.id === id);
   if (!p) throw new Error('provider not found');
@@ -858,6 +917,11 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
   if (name) p.name = String(name).trim();
   p.apiFormat = normalizeApiFormat(apiFormat || p.apiFormat, appType, cfg);
   p.settingsConfig = cfg;
+  if (egressIpAllowlist !== undefined) {
+    const normalized = normalizeEgressIpAllowlist(egressIpAllowlist);
+    if (normalized.length) p.egressIpAllowlist = normalized;
+    else delete p.egressIpAllowlist;
+  }
   saveStore(list);
   return { id, appType };
 }
@@ -1137,8 +1201,11 @@ function buildOpenCodeRoute(provider, session) {
   const cfg = parseConfig(provider.settingsConfig);
   const summary = summarize(provider);
   const format = summary.apiFormat;
-  const models = uniqueModels([session && session.model, summary.model, ...(summary.modelOptions || [])]);
-  const selected = (session && session.model) || summary.model || models[0] || '';
+  // Tier aliases must reach OpenCode as the mapped wire model id (see
+  // resolveTierWireModel) — this lane has no ANTHROPIC_DEFAULT_*_MODEL layer.
+  const sessionModel = resolveTierWireModel(summary, session && session.model);
+  const models = uniqueModels([sessionModel, summary.model, ...(summary.modelOptions || [])]);
+  const selected = sessionModel || summary.model || models[0] || '';
   const custom = !!summary.baseUrl;
   if (!custom) {
     const nativeId = format === API_FORMATS.ANTHROPIC ? 'anthropic' : 'openai';
@@ -1235,11 +1302,40 @@ function zcodeProviderMaterial(provider) {
   };
 }
 
+function zcodePersonalProviderConfig(id, name, material, modelIds) {
+  return {
+    schemaVersion: 1,
+    config: {
+      providerConfigRules: {
+        providerRules: [{
+          providerId: id,
+          ...(name ? { providerName: String(name) } : {}),
+          enabled: true,
+          config: {
+            group: 'standard-personal',
+            access: { type: 'api-key', ...(material.apiKey ? { apiKey: material.apiKey } : {}) },
+            api: {
+              type: material.kind === 'anthropic' ? 'anthropic-messages' : 'openai-responses',
+              ...(material.baseURL ? { baseUrl: material.baseURL } : {}),
+            },
+            ...(modelIds.length ? { personalModelIds: modelIds } : {}),
+          },
+        }],
+      },
+      modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] },
+    },
+  };
+}
+
 function buildZcodeRoute(provider, session) {
   const summary = summarize(provider);
   const id = zcodeProviderId(provider);
   let selected = String(session && session.model || summary.model || '').trim();
   if (selected.startsWith(`${id}/`)) selected = selected.slice(id.length + 1);
+  // Same tier-alias expansion as the OpenCode lane: ZCode's config.json only
+  // carries literal wire model ids, so an unmapped tier falls through to the
+  // provider's primary model (resolveTierWireModel returns '').
+  selected = resolveTierWireModel(summary, selected);
   const models = uniqueModels([
     selected,
     summary.model,
@@ -1266,6 +1362,17 @@ function buildZcodeRoute(provider, session) {
     provider: { [id]: providerConfig },
   });
   secureFile(configFile);
+  // Engine >=0.16.9 ignores cli/config.json's provider/model and builds its
+  // Provider Registry from <data>/.zcode/v2/provider_config.json instead; the
+  // first personalModelIds entry is the default model. Keep writing both so
+  // older engines still work.
+  const v2Dir = path.join(home, '.zcode', 'v2');
+  const personalFile = path.join(v2Dir, 'provider_config.json');
+  ensurePrivateDir(v2Dir);
+  atomicWriteJson(personalFile, zcodePersonalProviderConfig(id, provider.name, material, [
+    selected, ...models.filter(model => model !== selected),
+  ].filter(Boolean)));
+  secureFile(personalFile);
   return {
     env: {
       HOME: home,
@@ -1299,7 +1406,17 @@ function kimiSessionHome(session) {
 function buildKimiCodeRoute(provider, session) {
   const cfg = parseConfig(provider.settingsConfig);
   const summary = summarize(provider);
-  const models = uniqueModels([session && session.model, summary.model, ...(summary.modelOptions || [])]);
+  // Kimi Code takes its wire model as a bare `--model <id>` (the adapter reads
+  // spawnOpts.rawModel), and this lane has no ANTHROPIC_DEFAULT_*_MODEL layer to
+  // expand a Claude tier — so the tier must be handled here, exactly as on the
+  // OpenCode/ZCode lanes (see resolveTierWireModel). In practice only a
+  // codex-appType provider can reach this lane, and those never carry an
+  // aliasMap, so the guard's usual job is to strip the tier and hand the
+  // provider's own model to `--model`. Reporting the result as qualifiedModel is
+  // what actually replaces the raw persisted session model in that argv.
+  const sessionModel = resolveTierWireModel(summary, session && session.model);
+  const models = uniqueModels([sessionModel, summary.model, ...(summary.modelOptions || [])]);
+  const selected = sessionModel || summary.model || models[0] || '';
   let key = '';
   let baseUrl = '';
   if (summary.apiFormat === API_FORMATS.ANTHROPIC) {
@@ -1323,7 +1440,10 @@ function buildKimiCodeRoute(provider, session) {
       KIMI_API_KEY: key,
       ...(baseUrl ? { KIMI_BASE_URL: baseUrl } : {}),
     },
-    qualifiedModel: null,
+    // Bare wire id, not the `<providerId>/<model>` namespace OpenCode/ZCode
+    // need: kimi's --model is passed straight to the CLI. Null only when the
+    // provider serves no model at all, leaving the caller's own default.
+    qualifiedModel: selected || null,
     providerModel: summary.model || null,
     providerModels: models,
     providerName: provider.name,
@@ -1997,7 +2117,11 @@ function applyClaudeProxyEnv(env, options) {
 }
 
 function codexProviderProxyable(providerOrId) {
-  return cliProviderRouter.codexProviderProxyable(providerOrId, { getProvider });
+  const provider = typeof providerOrId === 'string' ? getProvider('codex', providerOrId) : providerOrId;
+  // Official OAuth has a host-owned relay even though its stored config has no
+  // HTTP endpoint. Use the same capability as applyCodexProxyConfig below.
+  return isOfficialCodexOAuthProvider(provider)
+    || cliProviderRouter.codexProviderProxyable(provider, { getProvider });
 }
 
 function codexProxyConfigRequired(options = {}) {
@@ -2151,6 +2275,8 @@ module.exports = {
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired,
   releaseCodexProxyConfig,
+  prepareResidentChildEnv,
+  releaseResidentRoute,
   materializeCodexRoutingHome,
   codexProviderProxyable,
   isOfficialCodexOAuthProvider,

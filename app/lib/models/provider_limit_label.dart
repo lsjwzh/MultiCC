@@ -1,4 +1,5 @@
 import '../i18n.dart';
+import '../utils/format.dart';
 
 /// Compact suffix appended to a provider option: the cached limit summary plus
 /// freshness / failure / stale markers. Returns '' when there is no cache entry
@@ -40,17 +41,8 @@ String providerLimitDetail(Map<String, dynamic>? provider, {int? nowMs}) {
   return parts.join(' · ');
 }
 
-/// Locale-aware relative freshness. Reuses the existing justNow/secondsAgo/…
-/// keys (same granularity as formatRelativeTime in session_status_helpers).
-String limitAgoText(int tsMs, int? nowMs) {
-  final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
-  var sec = ((now - tsMs) / 1000).floor();
-  if (sec < 0) sec = 0;
-  if (sec < 5) return t('justNow');
-  if (sec < 60) return t('secondsAgo', {'n': '$sec'});
-  final min = sec ~/ 60;
-  if (min < 60) return t('minutesAgo', {'n': '$min'});
-  final h = min ~/ 60;
-  if (h < 24) return t('hoursAgo', {'n': '$h'});
-  return t('daysAgo', {'n': '${h ~/ 24}'});
-}
+/// Locale-aware relative freshness. The threshold table and the i18n keys live
+/// in utils/format.dart ([formatRelativeTime]) — this name is kept because the
+/// caller reads it as "how stale is this quota reading".
+String limitAgoText(int tsMs, int? nowMs) =>
+    formatRelativeTime(tsMs, nowMs: nowMs);

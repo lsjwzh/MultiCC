@@ -3,45 +3,76 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../i18n.dart';
 import '../models/message.dart';
+import '../utils/status_presentation.dart';
 import 'settings_service.dart';
 import 'session_service.dart';
 
-/// 状态词表，逐条对齐 Web Air（`public/air.js` 的 `stateNames`）。两套界面
-/// 说同一件事就得用同一个词，否则「等待目录容量」和「排队中」会被当成两回事。
-const Map<String, String> airStateNames = {
-  'active': '进行中',
-  'succeeded': '成功',
-  'unknown': '结果待核验',
-  'failed': '失败',
-  'error': '失败',
-  'cancelled': '已取消',
-  'workspace_execution_capacity': '等待执行名额',
-  'workspace_resident_capacity': '等待目录容量',
-  'workspace_restore_capacity': '等待目录准备名额',
-  'planned': '执行时准备目录',
-  'resident': '目录已准备',
-  'retained': '目录已保留',
-  'hibernated': '目录已休眠',
-  'reserved': '准备执行',
-  'materializing': '正在准备目录',
-  'starting': '正在启动',
-  'running': '执行中',
-  'uncertain': '等待核实执行状态',
-  'idle': '空闲',
-  'queued': '排队中',
-  'waiting': '等待回答',
-  'archived': '已归档',
-  'stale': '建议已过期',
-  'inbox': '待处理',
-  'ready': '待执行',
-  'doing': '进行中',
-  'review': '待验收',
-  'done': '已完成',
+/// Air 面自己的词表。**规范状态的词不在这里写第二遍**：它们在注册表的
+/// `airLabelKey` 列上（`utils/status_presentation.dart` 的 [StatusSpec.airLabel]，
+/// 取词走 [airStatusWord]），Web 侧同一列由 `public/status-presentation.js` 的
+/// `airStatusLabels()` 出 —— `air.js` 的 `stateNames` 就是这样构建的，两套界面说同
+/// 一件事就得用同一个词。这张表只补 Air 自己那几个值：工作区租约/容量去向、工作流
+/// 阶段，以及生命周期词 `active`（它是「目录里有一个任务」，不是 running）。
+///
+/// 键是服务端原样下发的串，所以别名也得认（`failed` 就是 `error`）：认不出来才落回
+/// 原串，那样界面上会蹦一个英文词，看得见。
+const Map<String, String> _airOnlyStateKeys = {
+  'active': 'airStateActive',
+  'workspace_execution_capacity': 'airStateExecCapacity',
+  'workspace_resident_capacity': 'airStateResidentCapacity',
+  'workspace_restore_capacity': 'airStateRestoreCapacity',
+  'planned': 'airStatePlanned',
+  'resident': 'airStateResident',
+  'retained': 'airStateRetained',
+  'hibernated': 'airStateHibernated',
+  'reserved': 'airStateReserved',
+  'materializing': 'airStateMaterializing',
+  'starting': 'airStateStarting',
+  'uncertain': 'airStateUncertain',
+  'stale': 'airStateStale',
+  'inbox': 'airStageInbox',
+  'ready': 'airStageReady',
+  'doing': 'airStateActive',
+  'review': 'airStageReview',
 };
 
-String airLabel(String? value) =>
-    (value == null || value.isEmpty) ? '' : (airStateNames[value] ?? value);
+/// 整张 Air 词表（原始串 → 词）：规范状态、Air 自己的词、别名合在一起，和 Web
+/// `air.js` 的 `stateNames` + `airStatusWordFor()` 两次查找等价。取词一律走
+/// [airLabel]，这张表只给需要遍历的地方（和测试）用。
+Map<String, String> airStateNames() => {
+  for (final status in CanonicalStatus.values)
+    status.name: airStatusWord(status),
+  for (final entry in _airOnlyStateKeys.entries) entry.key: t(entry.value),
+  // 别名键（failed / completed / …）也进表，但取的是被折到的那个状态的词；表里
+  // 已经有的键（done → statusAliases 说 succeeded、active → running）不覆盖它 ——
+  // Air 自己的词和生命周期判定优先。
+  for (final entry in statusAliases.entries)
+    if (!_airOnlyStateKeys.containsKey(entry.key) &&
+        !CanonicalStatus.values.any((s) => s.name == entry.key))
+      entry.key: airStatusWord(entry.value),
+};
+
+/// 一个原始串在 Air 面上叫什么。规范状态（含 background）先按名字认，再认 Air
+/// 自己的词，最后认别名；都不认就返回 null，交给调用方落回原串。
+String? _airWordFor(String key) {
+  for (final status in CanonicalStatus.values) {
+    if (status.name == key) return airStatusWord(status);
+  }
+  final override = _airOnlyStateKeys[key];
+  if (override != null) return t(override);
+  final alias = statusAliases[key];
+  return alias != null ? airStatusWord(alias) : null;
+}
+
+/// Air 面上一个服务端原始串的词。认不出来的原样透出（界面上会蹦一个英文词，看得
+/// 见），空串进空串出。
+String airLabel(String? value) {
+  final key = (value ?? '').trim();
+  if (key.isEmpty) return '';
+  return _airWordFor(key) ?? key;
+}
 
 /// 页头顶上那排「齐刘海」最多放得下几个。上限由服务端把着（第 6 个回
 /// `pin_limit_reached`），这里这个数只用来先把话说在前面。
@@ -84,6 +115,12 @@ class AirTaskActionException implements Exception {
   String toString() => airTaskActionErrors[code] ?? '操作失败（$code）。';
 }
 
+class AirTaskCapacityException implements Exception {
+  const AirTaskCapacityException();
+  @override
+  String toString() => '此目录已达到 1024 个任务，且没有可自动淘汰的安全任务。请手动删除，或查看安全清理清单；草稿已保留。';
+}
+
 /// 这行卡在哪：先说容量/租约这类会自己好转的原因，没有才说目录是计划态还是已经
 /// 备好 —— 同 Web Air 的 `resourceText`。任务行和详情面板都要这一句，所以放在
 /// 这里而不是任一处界面代码里。
@@ -92,9 +129,29 @@ String airResourceText(Map<String, dynamic>? resource) {
   final capacity = resource['capacityReason']?.toString();
   if (capacity != null && capacity.isNotEmpty) return airLabel(capacity);
   final lease = resource['lease']?.toString();
-  if (lease != null && lease.isNotEmpty && lease != 'idle')
+  if (lease != null && lease.isNotEmpty && lease != 'idle') {
     return airLabel(lease);
+  }
   return airLabel(resource['residency']?.toString());
+}
+
+/// 「本地 3 · 休眠 8 · 计划 1」—— 逐字对应 Web `public/air-worktrees.js` 的
+/// `translate('airWorktreeBreakdown')`。三个数分开说：本地那几个才是真占磁盘的，
+/// 休眠的只剩一条分支引用，计划态还没落地（见 [AirWorktreeLifecycle]）。
+String airWorktreeBreakdown(AirWorktreeLifecycle life) =>
+    '本地 ${life.onDisk} · 休眠 ${life.hibernated} · 计划 ${life.planned}';
+
+/// 目录卡上那行 worktree 摘要：「12 个 Worktree · 本地 3 · 休眠 8 · 计划 1」。
+/// 同一份口径 Web 那边也拼一遍（`air-worktrees.js` 的 `summary()`）—— 分母是总数，
+/// 分子是三种状态。没有拆解（旧服务）或一个 worktree 都没有时只说总数：三个 0 摆
+/// 出来只是噪声，统计卡那行已经说过「0 个 WT」了。
+String airWorktreeSummary(AirDirectory directory) {
+  final life = directory.worktreeLifecycle;
+  final total = directory.worktreeCount > 0
+      ? directory.worktreeCount
+      : (life?.total ?? 0);
+  if (life == null || total == 0) return '$total 个 Worktree';
+  return '$total 个 Worktree · ${airWorktreeBreakdown(life)}';
 }
 
 /// `/api/air` 的一个工作目录。
@@ -112,6 +169,7 @@ class AirDirectory {
     this.externalFleetId,
     this.interactive = false,
     this.worktreeCount = 0,
+    this.worktreeLifecycle,
   });
 
   final String id;
@@ -132,6 +190,19 @@ class AirDirectory {
   /// deletion signal.
   final int worktreeCount;
 
+  /// 这些 worktree 现在各处在什么状态（见 [AirWorktreeLifecycle]）。Web 那边是
+  /// `/api/air` 快照的 `directory.worktreeLifecycle`，两端同一份口径。
+  ///
+  /// 旧服务不给这一格时是 null：那时候只报得出总数，硬说「全是本地」是编数字。
+  final AirWorktreeLifecycle? worktreeLifecycle;
+
+  /// 值不值得摆出拆解那块面板：服务端给了这一格、而且这个目录真的有 worktree。
+  /// 一个都没有时不摆 —— 统计卡那行「0 个 WT」已经说过了。
+  AirWorktreeLifecycle? get visibleWorktreeLifecycle {
+    final life = worktreeLifecycle;
+    return (life != null && life.total > 0) ? life : null;
+  }
+
   static AirDirectory fromJson(Map<String, dynamic> json) => AirDirectory(
     id: '${json['id']}',
     name: '${json['name'] ?? ''}',
@@ -140,6 +211,9 @@ class AirDirectory {
     externalFleetId: json['externalFleetId'] as String?,
     interactive: json['interactive'] == true,
     worktreeCount: (json['worktreeCount'] as num?)?.toInt() ?? 0,
+    worktreeLifecycle: AirWorktreeLifecycle.fromJson(
+      json['worktreeLifecycle'] as Map<String, dynamic>?,
+    ),
   );
 
   /// 把一台外部舰队铺成目录记录。`path` 位放源站 —— 本机没有它的目录，
@@ -153,6 +227,68 @@ class AirDirectory {
     interactive: fleet.interactive,
     worktreeCount: 0,
   );
+}
+
+/// 目录下 worktree 的生命周期拆解。
+///
+/// 只报「有几个 worktree」看不出这个数是怎么长的：本地真占着磁盘的、已经睡下只剩
+/// 一条分支引用的、计划了还没落地的，是三种完全不同的状态 —— 而用户要判断的正是
+/// 「要不要现在腾地方」。口径由服务端按 workspace registry 的 residency 折算
+/// （`src/workspace/air-routes.js` 的 `lifecycleByDirectory`），客户端只读不推断。
+class AirWorktreeLifecycle {
+  const AirWorktreeLifecycle({
+    this.resident = 0,
+    this.retained = 0,
+    this.hibernated = 0,
+    this.planned = 0,
+    this.leased = 0,
+    this.onDisk = 0,
+    this.total = 0,
+  });
+
+  final int resident;
+  final int retained;
+
+  /// 本地 checkout 已删、分支与提交保留，下次打开这条任务时按需重建。
+  final int hibernated;
+
+  /// 记录建了，worktree 还没落地。
+  final int planned;
+
+  /// 此刻正被一条执行中的派发占用 —— 占用的不一定是本地那几份，单独报。
+  final int leased;
+
+  /// resident + retained：磁盘上真有这份 checkout，占地方的就是它们。
+  final int onDisk;
+  final int total;
+
+  /// 快照里没有这一格（旧服务）就返回 null —— 拆解的意义正是区分本地和睡下的，
+  /// 编不出来就不说。
+  static AirWorktreeLifecycle? fromJson(Map<String, dynamic>? json) {
+    if (json == null) return null;
+    int read(String key) => (json[key] as num?)?.toInt() ?? 0;
+    return AirWorktreeLifecycle(
+      resident: read('resident'),
+      retained: read('retained'),
+      hibernated: read('hibernated'),
+      planned: read('planned'),
+      leased: read('leased'),
+      onDisk: read('onDisk'),
+      total: read('total'),
+    );
+  }
+}
+
+/// 自动回收的策略（`/api/air` 快照的 `worktreePolicy`）。面板据此把「多久没用会被
+/// 收走」说准，而不是在客户端再猜一个默认值。
+class AirWorktreePolicy {
+  const AirWorktreePolicy({this.idleMs = 0});
+
+  /// 闲置多久算「可以收」。0 = 自动回收已关闭（`MULTICC_SESSION_HIBERNATE_IDLE_MS=0`）。
+  final int idleMs;
+
+  static AirWorktreePolicy fromJson(Map<String, dynamic>? json) =>
+      AirWorktreePolicy(idleMs: (json?['idleMs'] as num?)?.toInt() ?? 0);
 }
 
 /// 一条工作区分享（`src/fleet-sharing.js` 的 `publicShare`）。
@@ -246,6 +382,26 @@ class ExternalFleet {
 
 /// `/api/air` 的一行任务。字段跟着 Air 的任务行走：状态、工作流阶段、资源占用
 /// 三样是行上唯一要看的东西（见 `public/air.js` 的 `renderOverview`）。
+class AirWorktreeChanges {
+  const AirWorktreeChanges({this.dirty = false, this.ahead = 0});
+
+  /// 工作区里尚未提交的文件（包含未跟踪文件）。
+  final bool dirty;
+
+  /// 当前任务分支领先基分支、尚未合回去的提交数。
+  final int ahead;
+
+  bool get pending => dirty || ahead > 0;
+
+  static AirWorktreeChanges? fromJson(Map<String, dynamic>? json) {
+    if (json == null) return null;
+    return AirWorktreeChanges(
+      dirty: json['dirty'] == true,
+      ahead: ((json['ahead'] as num?)?.toInt() ?? 0).clamp(0, 1 << 31).toInt(),
+    );
+  }
+}
+
 class AirTask {
   const AirTask({
     required this.id,
@@ -260,7 +416,9 @@ class AirTask {
     this.sessionId,
     this.sourceSessionId,
     this.runState,
+    this.goalState,
     this.resource = const {},
+    this.worktreeChanges,
   });
 
   final String id;
@@ -284,7 +442,18 @@ class AirTask {
   /// 这一轮的运行状态，由队列事件折出来（服务端 `task-board/normalize.js` 的
   /// TASK_RUN_STATES）。客户端只读它，不从 [status] 猜。
   final String? runState;
+
+  /// 「执行成功」的子状态：`achieved`（达成目标）/ `interact`（需要交互），其余
+  /// 时刻为 null —— 也就是 ✅ 那一格该说哪三个词里的哪一个。只影响展示文案，
+  /// 取值由服务端 classify 在判定 D 时算好（`src/classify/vocab.js`
+  /// goalStateForClassify），客户端不回推。[runState] 不是 succeeded 时它必为
+  /// null。
+  final String? goalState;
   final Map<String, dynamic> resource;
+
+  /// 外层卡片的待交付提示。服务端从 merge-state 缓存投影；null 表示尚未取到，
+  /// 不是「已确认干净」。behind 不在这里，它是同步状态而不是未交付改动。
+  final AirWorktreeChanges? worktreeChanges;
 
   static AirTask fromJson(Map<String, dynamic> json) => AirTask(
     id: '${json['id']}',
@@ -302,7 +471,11 @@ class AirTask {
     sessionId: json['sessionId'] as String?,
     sourceSessionId: json['sourceSessionId'] as String?,
     runState: json['runState'] as String?,
+    goalState: json['goalState'] as String?,
     resource: (json['resource'] as Map?)?.cast<String, dynamic>() ?? const {},
+    worktreeChanges: AirWorktreeChanges.fromJson(
+      (json['worktreeChanges'] as Map?)?.cast<String, dynamic>(),
+    ),
   );
 
   /// 「完成」在 Air 里有两个词：工作流阶段走 done，归档走 archived。
@@ -320,6 +493,7 @@ class AirSnapshot {
     required this.sessions,
     this.taskPins = const [],
     this.externalFleets = const [],
+    this.worktreePolicy = const AirWorktreePolicy(),
   });
 
   final List<AirDirectory> directories;
@@ -338,6 +512,10 @@ class AirSnapshot {
   /// [directories] 里 —— 这里额外留一份原始记录，好知道「别名、分享链接、
   /// 能不能操作」这些目录记录放不下的字段。
   final List<ExternalFleet> externalFleets;
+
+  /// 自动回收 worktree 的策略（闲置阈值）。面板用它把话说准：多久没动过的会被
+  /// 自动收起来，用户不必去猜一个默认值。
+  final AirWorktreePolicy worktreePolicy;
 
   static AirSnapshot fromJson(
     Map<String, dynamic> json, {
@@ -360,6 +538,9 @@ class AirSnapshot {
         .map((e) => '$e')
         .toList(),
     externalFleets: externalFleets,
+    worktreePolicy: AirWorktreePolicy.fromJson(
+      (json['worktreePolicy'] as Map?)?.cast<String, dynamic>(),
+    ),
   );
 
   /// 这个任务被 pin 住了吗。
@@ -405,9 +586,9 @@ class AirSnapshot {
 
 /// 目录首页 Terminal 模式里的一个终端会话。
 ///
-/// `/api/air` 的 `sessions` 只给移动端要用的四个字段（服务端已经滤掉
+/// `/api/air` 的 `sessions` 只给移动端要用的字段（服务端已经滤掉
 /// aux / gateway），打开时拿 id 去会话表里换一个完整的 [Session]；换不到
-/// （隐藏记录不在 `/api/sessions` 里）就退回这四个字段自己拼一个 ——
+/// （隐藏记录不在 `/api/sessions` 里）就退回这些字段自己拼一个 ——
 /// `TerminalScreen` 要的就是 id 和 label。
 class AirSession {
   const AirSession({
@@ -415,6 +596,9 @@ class AirSession {
     required this.dirId,
     required this.label,
     required this.cli,
+    this.state,
+    this.lastActivityAt,
+    this.createdAt,
   });
 
   final String id;
@@ -422,21 +606,39 @@ class AirSession {
   final String label;
   final String cli;
 
+  /// 服务端折好的三态（`running` / `stopped` / `route_dead`）。老快照没有这个
+  /// 字段：null 就不画状态点，也不编一个状态出来。
+  final String? state;
+
+  /// 最后一次有输出的时刻（epoch 毫秒）。停了的终端没有运行时，也就没有这个
+  /// 时刻 —— null，行上那截「多久没动」直接不出现。
+  final int? lastActivityAt;
+
+  final DateTime? createdAt;
+
   static AirSession fromJson(Map<String, dynamic> json) {
     final id = '${json['id'] ?? ''}';
     final label = '${json['label'] ?? ''}'.trim();
+    final state = '${json['state'] ?? ''}'.trim();
+    final activity = json['lastActivityAt'];
+    final created = json['createdAt'];
     return AirSession(
       id: id,
       dirId: json['dirId']?.toString(),
       // 服务端发的是 `s.label || s.id`，空 label 也兜回 id（同 Web 的行文案）。
       label: label.isEmpty ? id : label,
       cli: '${json['cli'] ?? ''}',
+      state: state.isEmpty ? null : state,
+      lastActivityAt: activity is num ? activity.toInt() : null,
+      createdAt: created is num && created.toInt() > 0
+          ? DateTime.fromMillisecondsSinceEpoch(created.toInt())
+          : null,
     );
   }
 
   /// 只够 TerminalScreen 用的最小会话（会话表里查不到时的兜底）。
   ///
-  /// 快照里没有 createdAt，用「现在」顶上：这个字段在终端页只当元数据看，
+  /// 快照现在带 createdAt；只有早于这个字段的服务端才用「现在」顶上 ——
   /// 拿不到真实值也不该让一整行终端打不开。
   Session toSession() => Session(
     id: id,
@@ -444,7 +646,7 @@ class AirSession {
     label: label,
     cli: parseCli(cli),
     kind: SessionKind.terminal,
-    createdAt: DateTime.now(),
+    createdAt: createdAt ?? DateTime.now(),
   );
 }
 
@@ -521,6 +723,9 @@ class AirService {
     final response = await _request(method, path, body);
     final result = _decode(response);
     if (response.statusCode >= 400 || result['ok'] == false) {
+      if (result['code'] == 'task_shell_task_limit' || result['error'] == 'task_shell_task_limit') {
+        throw const AirTaskCapacityException();
+      }
       throw Exception(
         result['message'] ?? result['code'] ?? 'HTTP ${response.statusCode}',
       );
@@ -589,6 +794,57 @@ class AirService {
     return result;
   }
 
+  /// Search all lifecycle states, including archived conversations.
+  ///
+  /// `dirId` 为 null = 跨全部目录（控制台那一页）。不带这个参数，而不是带上
+  /// `'all'`：服务端把「没给」和「给了一个叫 all 的目录」分得很清楚，后者会被当成
+  /// 一个真实目录名去筛，结果是一条都命不中。
+  Future<List<String>> searchTaskIds(
+    String query, {
+    required String? dirId,
+    required bool fullText,
+  }) async {
+    final paths = [
+      Uri(
+        path: '/api/task-board/search',
+        queryParameters: {
+          'q': query,
+          if (dirId != null) 'dirId': dirId,
+          'limit': '20',
+        },
+      ).toString(),
+      if (fullText)
+        Uri(
+          path: '/api/search/messages',
+          queryParameters: {'q': query, 'limit': '20'},
+        ).toString(),
+    ];
+    Future<Map<String, dynamic>?> read(String path) async {
+      try {
+        return await _get(path);
+      } catch (_) {
+        return null;
+      }
+    }
+    final replies = await Future.wait(paths.map(read));
+    if (replies.every((reply) => reply == null)) {
+      throw StateError('Task search unavailable');
+    }
+    final ids = <String>{};
+    for (var i = 0; i < replies.length; i++) {
+      for (final hit in (replies[i]?['results'] as List? ?? const [])) {
+        if (hit is! Map) continue;
+        final values = i == 0
+            ? [hit['taskId']]
+            : (hit['taskIds'] as List? ?? const []);
+        for (final id in values) {
+          if (id is String && id.isNotEmpty) ids.add(id);
+        }
+      }
+    }
+    return ids.toList();
+  }
+
   Future<AirSnapshot> load() async {
     final data = await _get('/api/air');
     // 远端工作区是第二个请求。它不该拖垮整个快照：这台服务要是还没有这条路由
@@ -606,6 +862,18 @@ class AirService {
   /// 会话，不能在这里接管。
   Future<Map<String, dynamic>> openTask(String taskId) =>
       _get('/api/air/tasks/${Uri.encodeComponent(taskId)}');
+
+  /// 主动回收这个目录下闲置的 worktree（Web 目录页那个「现在回收」）。
+  ///
+  /// 只删本地 checkout，分支与提交始终保留，所以这一步不是「删除」。默认只收过了
+  /// 闲置阈值的；[force] 连最近用过的也一起收 —— 只有用户明确点了那一下才带它。
+  Future<Map<String, dynamic>> reclaimWorktrees(
+    String dirId, {
+    bool force = false,
+  }) => _post('/api/air/worktrees/reclaim', {
+    'dirId': dirId,
+    if (force) 'force': true,
+  });
 
   /// 同一个端点，但读的是详情而不是会话：`attribution` / `execution` 只在这一份
   /// 响应里，任务行上那份 `/api/air` 快照没有它们。
@@ -694,6 +962,13 @@ class AirService {
     '/api/task-board/tasks/${Uri.encodeComponent(taskId)}',
     force ? {'force': true} : null,
   );
+
+  Future<Map<String, dynamic>> previewTaskRetention(String dirId) =>
+      _get('/api/task-board/directories/${Uri.encodeComponent(dirId)}/retention');
+
+  Future<Map<String, dynamic>> deleteTaskRetention(String dirId, List<String> taskIds) =>
+      _post('/api/task-board/directories/${Uri.encodeComponent(dirId)}/retention',
+          {'taskIds': taskIds});
 
   /// 钉住 / 取消钉住一个任务，返回钉住之后的整份清单（顺序就是显示顺序）。
   ///

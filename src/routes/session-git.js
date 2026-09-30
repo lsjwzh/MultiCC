@@ -1,5 +1,11 @@
 'use strict';
 
+const path = require('path');
+const {
+  classifyDisplay, isProcessingLetter, isBackgroundLetter,
+} = require('../classify/vocab');
+const { isChatStateBusy } = require('../session/runtime-busy');
+
 const LOADING_MERGE_STATE = Object.freeze({
   mergeReady: false,
   dirty: false,
@@ -28,7 +34,7 @@ function assertDependencies(deps) {
   for (const name of [
     'gitWorktreeMergeState', 'gitBaseBranch', 'gitRunQueued', 'gitMergeBack',
     'gitSyncFromBase', 'gitRebaseResolve', 'appendEvent', 'workspaceBroadcast',
-    'existsSync', 'now', 'random', 'asyncHandler',
+    'existsSync', 'now', 'random', 'asyncHandler', 'readFile',
   ]) assertFunction(deps[name], name);
   if (!deps.logger || typeof deps.logger.log !== 'function'
       || typeof deps.logger.warn !== 'function') {
@@ -47,6 +53,22 @@ function errorText(error) {
 // caller (commit-diff / diff routes) mirrors the sibling route's behaviour.
 function isMaxBuffer(cause) {
   return !!(cause && cause.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+}
+
+function parseCommitFiles(raw) {
+  const parts = String(raw || '').replace(/^\0+/, '').split('\0');
+  const files = [];
+  for (let i = 0; i < parts.length - 1;) {
+    const status = parts[i++];
+    if (!/^[ACDMRTUXB][0-9]*$/.test(status)) break;
+    const oldPath = parts[i++];
+    if (!oldPath) break;
+    const renamed = status[0] === 'R' || status[0] === 'C';
+    const path = renamed ? parts[i++] : oldPath;
+    if (!path) break;
+    files.push({ status, path, ...(renamed ? { oldPath } : {}) });
+  }
+  return files;
 }
 
 function blockedGitResult(error) {
@@ -144,6 +166,46 @@ function parseDiffFiles(numstatZ, nameStatusZ) {
       binary: file.binary,
     };
   });
+}
+
+// Untracked files are invisible to `git diff <base>`: git only reports the
+// working-tree diff for files already in the index. But merge runs `git add -A`
+// before committing, so a brand-new file IS part of what merge will land —
+// hiding it from the diff UI lets the user approve a merge that quietly adds
+// files they never saw. Collect them from `git ls-files --others` instead.
+async function listUntrackedFiles(execGit, worktree, maxBytes = 4 * 1024 * 1024) {
+  try {
+    const raw = await execGit(worktree,
+      ['-c', 'core.quotepath=false', 'ls-files', '--others', '--exclude-standard', '-z'],
+      { maxBuffer: maxBytes });
+    return String(raw || '').split('\0').filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+}
+
+function isProbablyBinary(buffer) {
+  const sample = buffer.subarray(0, 8000);
+  return sample.includes(0);
+}
+
+// Line count of a text buffer, matching git's numstat convention (a file
+// without a trailing newline still counts its final line).
+function countTextLines(buffer) {
+  const text = buffer.toString('utf8');
+  if (text.length === 0) return 0;
+  const newlines = (text.match(/\n/g) || []).length;
+  return newlines + (text.endsWith('\n') ? 0 : 1);
+}
+
+async function untrackedFileFacts(readFile, worktree, relative) {
+  try {
+    const buffer = await readFile(path.join(worktree, relative));
+    const binary = isProbablyBinary(buffer);
+    return { additions: binary ? 0 : countTextLines(buffer), binary };
+  } catch (_) {
+    return { additions: 0, binary: false };
+  }
 }
 
 function createSessionGitRuntime(rawDeps) {
@@ -259,16 +321,18 @@ function createSessionGitRuntime(rawDeps) {
     return rememberMergeState(mergeStateKey(session), value);
   }
 
+  // 「这个工作树上有活的东西吗」：判定只有一处（src/session/runtime-busy.js）。
+  // 这里曾经对同一个会话给出两种答案 —— 作为同组 member 看时读 `_activeRunner`，
+  // 作为被请求的那个 id 看时只读 claudeProc/isStreaming。
   function isWorktreeActive(sessionId) {
     if (deps.terminalSessions.has(sessionId)) return true;
     const owner = deps.records.get(sessionId)?.workspaceOwnerSessionId || sessionId;
     for (const member of deps.records.values()) {
       if (member.id === sessionId || (member.workspaceOwnerSessionId || member.id) !== owner) continue;
       const state = deps.chatSessions.get(member.id);
-      if (deps.terminalSessions.has(member.id) || state?.claudeProc || state?.isStreaming || state?._activeRunner) return true;
+      if (deps.terminalSessions.has(member.id) || isChatStateBusy(state)) return true;
     }
-    const chat = deps.chatSessions.get(sessionId);
-    return !!(chat && (chat.claudeProc || chat.isStreaming));
+    return isChatStateBusy(deps.chatSessions.get(sessionId));
   }
 
   function sessionSyncGate(sessionId) {
@@ -282,8 +346,23 @@ function createSessionGitRuntime(rawDeps) {
     const state = persisted && persisted.taskState
       ? persisted.taskState.classifyState || null
       : null;
-    if (state === 'C' || state === 'P' || state === 'B') {
-      const label = state === 'B' ? '等待后台任务' : (state === 'C' ? '任务待继续' : '处理中');
+    // "Unfinished" = a turn that is still writing into this worktree, or may
+    // still write: P (and the retired C, which only an older snapshot still
+    // carries) is a turn in flight, and B is a turn that ended parked on a
+    // background job. W is deliberately NOT unfinished — the turn is over, no
+    // process is running (isWorktreeActive above already checked), and the user
+    // is the one asking for the sync, so refusing them would be a dead end.
+    // D/E ended too.
+    //
+    // Reconcile with src/workspace/inventory.js, whose `execution_dependency`
+    // reason DOES include W: that surface is a read-only adoption/reclaim
+    // preview where a session holding an unanswered question is conservative
+    // evidence against touching the workspace. This gate refuses a user command,
+    // so it only refuses while something can still write.
+    if (isProcessingLetter(state) || isBackgroundLetter(state)) {
+      // One word per letter, from the classify vocabulary: a re-lettered B must
+      // not leave a hand-written label behind here.
+      const label = classifyDisplay(state).label;
       return {
         state,
         message: `会话任务未结束（${label}，状态 ${state}），请等待任务完成/暂停后再同步`,
@@ -352,6 +431,85 @@ function createSessionGitRuntime(rawDeps) {
     return out;
   }
 
+  // Shared commit → merge → broadcast flow behind the manual merge route and
+  // the turn-end auto-commit. Returns the gitMergeBack result; when the merge
+  // landed, siblingsSynced is attached after the sibling fast-forward sweep.
+  async function executeMergeBack(dir, identity, { taskId = null, origin = 'manual' } = {}) {
+    const result = await deps.gitMergeBack(dir, identity).catch(error => {
+      deps.logger.warn(`[multicc] merge ${identity.id} failed: ${errorText(error)}`);
+      return failedGitResult(error);
+    });
+    if (!result.ok) return result;
+    deps.logger.log(`[multicc] ${origin === 'auto' ? 'auto-commit merge' : 'merge'} ${identity.branch} → ${dir.baseBranch}: `
+      + (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
+    deps.appendEvent(dir.id, 'merged',
+      result.merged ? `${result.commits} 个提交 → ${dir.baseBranch}` : '无新提交', identity.id);
+    deps.workspaceBroadcast(dir.id, {
+      type: 'merge_status', sessionId: identity.id, ...(taskId ? { taskId } : {}),
+      mergeState: await mergeStateFresh(dir, identity),
+    });
+    if (result.merged) {
+      const synced = await autoSyncSiblingWorktrees(dir, identity.id);
+      if (synced.length) result.siblingsSynced = synced;
+    }
+    return result;
+  }
+
+  // Turn-end auto-commit. The per-turn checkbox under the last user message is
+  // gone: the session-level switch (autoCommit !== false) is the only gate.
+  // The chat turn engine calls this from its complete-session-turn effect, so
+  // the merge runs even when no chat page is connected — the page used to be
+  // the trigger, and turns that ended offline were never merged nor caught up.
+  const autoCommitInflight = new Set();
+  async function autoCommitTurn(sessionId) {
+    const requested = deps.records.get(sessionId);
+    const identity = requested?.workspaceOwnerSessionId
+      ? deps.records.get(requested.workspaceOwnerSessionId) : requested;
+    if (!identity) return { ok: false, skipped: true, reason: 'session_not_found' };
+    if (identity.autoCommit === false) return { ok: false, skipped: true, reason: 'auto_commit_off' };
+    if (!identity.worktreePath || !identity.branch || !deps.existsSync(identity.worktreePath)) {
+      return { ok: false, skipped: true, reason: 'no_worktree' };
+    }
+    if (identity.workspaceState === 'hibernated') {
+      return { ok: false, skipped: true, reason: 'hibernated' };
+    }
+    const dir = deps.directories.get(identity.dirId);
+    if (!dir) return { ok: false, skipped: true, reason: 'directory_not_found' };
+    if (autoCommitInflight.has(identity.id)) return { ok: false, skipped: true, reason: 'inflight' };
+    autoCommitInflight.add(identity.id);
+    try {
+      // A turn just wrote the worktree; the cached poll value is stale. One
+      // authoritative read decides both whether to act and whether to stay
+      // silent (a clean worktree commits nothing and says nothing).
+      const state = await mergeStateFresh(dir, identity);
+      if (!state || state.mergeReady !== true) {
+        return { ok: true, merged: false, skipped: true, reason: 'nothing_to_merge' };
+      }
+      const result = await executeMergeBack(dir, identity, { origin: 'auto' });
+      if (typeof deps.chatBroadcast === 'function' && !result.blocked) {
+        if (result.ok && result.merged) {
+          deps.chatBroadcast(identity.id, { type: 'system', subtype: 'auto_commit',
+            message: `✓ 自动提交完成：已合并 ${result.commits} 个提交回基分支${result.committed ? '（含本次自动提交）' : ''}` });
+        } else if (result.ok) {
+          deps.chatBroadcast(identity.id, { type: 'system', subtype: 'auto_commit',
+            message: '✓ 自动提交：没有新提交需要合并' });
+        } else if (result.conflicts && result.conflicts.length) {
+          deps.chatBroadcast(identity.id, { type: 'system', subtype: 'auto_commit',
+            message: `⚠️ 自动提交冲突：请先手动合并。冲突文件：${result.conflicts.join(', ')}` });
+        } else if (!result.ok) {
+          deps.chatBroadcast(identity.id, { type: 'system', subtype: 'auto_commit',
+            message: `自动提交失败：${result.error || 'unknown'}` });
+        }
+      }
+      return result;
+    } catch (error) {
+      deps.logger.warn(`[multicc] auto-commit merge ${identity.id} failed: ${errorText(error)}`);
+      return failedGitResult(error);
+    } finally {
+      autoCommitInflight.delete(identity.id);
+    }
+  }
+
   function findSession(req, res) {
     const requested = deps.records.get(req.params.id);
     const persisted = requested?.workspaceOwnerSessionId ? deps.records.get(requested.workspaceOwnerSessionId) : requested;
@@ -385,9 +543,13 @@ function createSessionGitRuntime(rawDeps) {
   }
 
   function registerReadRoutes(app) {
-    app.get('/api/sessions/:id/merge-status', (req, res) => {
+    app.get('/api/sessions/:id/merge-status', async (req, res) => {
       const found = findSession(req, res);
       if (!found) return;
+      if (req.query?.refresh === '1' || req.query?.fresh === '1') {
+        res.json(await mergeStateFresh(found.dir, found.persisted));
+        return;
+      }
       res.json(mergeStateCached(found.dir, found.persisted, { priority: true }));
     });
 
@@ -476,11 +638,31 @@ function createSessionGitRuntime(rawDeps) {
       } catch (cause) {
         if (!error) error = errorText(cause);
       }
-      const allFiles = error ? [] : parseDiffFiles(numstat, nameStatus);
+      const trackedFiles = error ? [] : parseDiffFiles(numstat, nameStatus);
+      // New (untracked) files never appear in `git diff <base>`, yet merge's
+      // `git add -A` would land them. Surface them as status 'U' so the merge
+      // preview is honest about what will be committed.
+      const fileCap = 500;
+      let untrackedFiles = [];
+      try {
+        const untrackedPaths = await listUntrackedFiles(deps.gitRunQueued, worktree);
+        for (const relative of untrackedPaths.slice(0, fileCap)) {
+          const facts = await untrackedFileFacts(deps.readFile, worktree, relative);
+          untrackedFiles.push({
+            path: relative,
+            oldPath: null,
+            status: 'U',
+            additions: facts.additions,
+            deletions: 0,
+            binary: facts.binary,
+          });
+        }
+      } catch (_) { /* untracked list stays empty on failure */ }
+      const allFiles = [...trackedFiles, ...untrackedFiles];
+      const untrackedCount = untrackedFiles.length;
       const totalFiles = allFiles.length;
       const totalAdditions = allFiles.reduce((sum, f) => sum + f.additions, 0);
       const totalDeletions = allFiles.reduce((sum, f) => sum + f.deletions, 0);
-      const fileCap = 500;
       const truncated = totalFiles > fileCap;
       const files = truncated ? allFiles.slice(0, fileCap) : allFiles;
       return res.json({
@@ -490,6 +672,7 @@ function createSessionGitRuntime(rawDeps) {
         totalFiles,
         totalAdditions,
         totalDeletions,
+        untrackedCount,
         truncated,
         mergeState: mergeStateCached(dir, persisted),
         error,
@@ -523,6 +706,7 @@ function createSessionGitRuntime(rawDeps) {
       let patch = '';
       let truncated = false;
       let error = null;
+      let untracked = false;
       try {
         patch = await deps.gitRunQueued(worktree,
           ['diff', '--no-color', baseBranch, '--', filePath],
@@ -535,11 +719,44 @@ function createSessionGitRuntime(rawDeps) {
         error = errorText(cause);
         patch = '';
       }
+      if (!patch && !error) {
+        // An empty patch here means either "no change" or "untracked file" —
+        // git diff cannot see files that are not in the index. Check the
+        // untracked list so a brand-new file still renders in the viewer.
+        const untrackedPaths = await listUntrackedFiles(deps.gitRunQueued, worktree);
+        if (untrackedPaths.includes(filePath)) {
+          untracked = true;
+          const buffer = await deps.readFile(path.join(worktree, filePath)).catch(() => null);
+          if (buffer) {
+            const binary = isProbablyBinary(buffer);
+            if (binary) {
+              patch = `Binary files /dev/null and b/${filePath} differ`;
+            } else {
+              const lines = buffer.toString('utf8').split(/\r?\n/);
+              if (lines.length && lines[lines.length - 1] === '') lines.pop();
+              patch = [
+                `diff --git a/${filePath} b/${filePath}`,
+                'new file mode 100644',
+                'index 0000000..0000000',
+                '--- /dev/null',
+                `+++ b/${filePath}`,
+                `@@ -0,0 +1,${lines.length} @@`,
+                ...lines.map(line => `+${line}`),
+              ].join('\n');
+              if (patch.length > patchCap) {
+                patch = patch.slice(0, patchCap);
+                truncated = true;
+              }
+            }
+          }
+        }
+      }
       return res.json({
         path: filePath,
         patch,
         truncated,
         error,
+        untracked,
       });
     });
 
@@ -580,6 +797,25 @@ function createSessionGitRuntime(rawDeps) {
       }
     });
 
+    app.get('/api/git/commit-files', async (req, res) => {
+      const { dirId, sessionId, hash } = req.query;
+      const persisted = sessionId ? deps.records.get(sessionId) : null;
+      const dir = dirId ? deps.directories.get(dirId) : null;
+      const repoPath = sessionId ? persisted?.worktreePath : dir?.path;
+      if (!repoPath || !deps.existsSync(repoPath)) return res.status(404).json({ error: 'repo not found' });
+      if (typeof hash !== 'string' || !/^[0-9a-f]{4,40}$/i.test(hash)) {
+        return res.status(400).json({ error: 'invalid hash' });
+      }
+      try {
+        const raw = await deps.gitRunQueued(repoPath,
+          ['show', '--format=', '--name-status', '-z', '--root', '--first-parent', '--no-color', hash],
+          { maxBuffer: 1024 * 1024 });
+        return res.json({ hash, files: parseCommitFiles(raw) });
+      } catch (error) {
+        return res.status(500).json({ error: errorText(error) });
+      }
+    });
+
     app.get('/api/git/commit-diff', async (req, res) => {
       // Same repo resolution as /api/git/log: a directory repo by dirId, or a
       // session's own worktree by sessionId (the mobile git-history view reads
@@ -605,6 +841,29 @@ function createSessionGitRuntime(rawDeps) {
       const hash = req.query.hash;
       if (typeof hash !== 'string' || !/^[0-9a-f]{4,40}$/i.test(hash)) {
         return res.status(400).json({ error: 'invalid hash' });
+      }
+      const filePath = req.query.file;
+      if (filePath !== undefined) {
+        if (typeof filePath !== 'string' || !filePath || filePath.length > 4096) {
+          return res.status(400).json({ error: 'invalid file' });
+        }
+        try {
+          const raw = await deps.gitRunQueued(repoPath,
+            ['show', '--format=', '--name-status', '-z', '--root', '--first-parent', '--no-color', hash],
+            { maxBuffer: 1024 * 1024 });
+          const changed = parseCommitFiles(raw).find(file => file.path === filePath);
+          if (!changed) return res.status(404).json({ error: 'file not found in commit' });
+          const paths = changed.oldPath ? [changed.oldPath, changed.path] : [changed.path];
+          const diff = await deps.gitRunQueued(repoPath,
+            ['show', '--format=', '--patch', '--root', '--first-parent', '--no-color',
+              '--no-ext-diff', '--no-textconv', hash, '--', ...paths.map(path => `:(literal)${path}`)],
+            { maxBuffer: maxDiffBytes + 16384 });
+          return res.json({ hash, path: filePath, stat: '',
+            diff: diff.slice(0, maxDiffBytes), truncated: diff.length > maxDiffBytes, error: null });
+        } catch (error) {
+          if (isMaxBuffer(error)) return res.json({ hash, path: filePath, stat: '', diff: '', truncated: true, error: null });
+          return res.status(500).json({ error: errorText(error) });
+        }
       }
       let diff = '';
       let truncated = false;
@@ -776,11 +1035,30 @@ function createSessionGitRuntime(rawDeps) {
         if (!error) error = errorText(cause);
       }
       const identity = taskIdentity(info);
-      const allFiles = error ? [] : parseDiffFiles(numstat, nameStatus);
+      const fileCap = 500;
+      const trackedFiles = error ? [] : parseDiffFiles(numstat, nameStatus);
+      // Untracked files are invisible to `git diff <base>` but merge would add
+      // them; surface them with status 'U' (mirrors the session route).
+      let untrackedFiles = [];
+      try {
+        const untrackedPaths = await listUntrackedFiles(deps.gitRunQueued, worktree);
+        for (const relative of untrackedPaths.slice(0, fileCap)) {
+          const facts = await untrackedFileFacts(deps.readFile, worktree, relative);
+          untrackedFiles.push({
+            path: relative,
+            oldPath: null,
+            status: 'U',
+            additions: facts.additions,
+            deletions: 0,
+            binary: facts.binary,
+          });
+        }
+      } catch (_) { /* untracked list stays empty on failure */ }
+      const allFiles = [...trackedFiles, ...untrackedFiles];
+      const untrackedCount = untrackedFiles.length;
       const totalFiles = allFiles.length;
       const totalAdditions = allFiles.reduce((sum, f) => sum + f.additions, 0);
       const totalDeletions = allFiles.reduce((sum, f) => sum + f.deletions, 0);
-      const fileCap = 500;
       const truncated = totalFiles > fileCap;
       const files = truncated ? allFiles.slice(0, fileCap) : allFiles;
       return res.json({
@@ -790,6 +1068,7 @@ function createSessionGitRuntime(rawDeps) {
         totalFiles,
         totalAdditions,
         totalDeletions,
+        untrackedCount,
         truncated,
         mergeState: mergeStateCached(info.dir, identity),
         error,
@@ -815,6 +1094,7 @@ function createSessionGitRuntime(rawDeps) {
       let patch = '';
       let truncated = false;
       let error = null;
+      let untracked = false;
       try {
         patch = await deps.gitRunQueued(info.worktreePath,
           ['diff', '--no-color', baseBranch, '--', filePath],
@@ -827,7 +1107,36 @@ function createSessionGitRuntime(rawDeps) {
         error = errorText(cause);
         patch = '';
       }
-      return res.json({ path: filePath, patch, truncated, error });
+      if (!patch && !error) {
+        const untrackedPaths = await listUntrackedFiles(deps.gitRunQueued, info.worktreePath);
+        if (untrackedPaths.includes(filePath)) {
+          untracked = true;
+          const buffer = await deps.readFile(path.join(info.worktreePath, filePath)).catch(() => null);
+          if (buffer) {
+            const binary = isProbablyBinary(buffer);
+            if (binary) {
+              patch = `Binary files /dev/null and b/${filePath} differ`;
+            } else {
+              const lines = buffer.toString('utf8').split(/\r?\n/);
+              if (lines.length && lines[lines.length - 1] === '') lines.pop();
+              patch = [
+                `diff --git a/${filePath} b/${filePath}`,
+                'new file mode 100644',
+                'index 0000000..0000000',
+                '--- /dev/null',
+                `+++ b/${filePath}`,
+                `@@ -0,0 +1,${lines.length} @@`,
+                ...lines.map(line => `+${line}`),
+              ].join('\n');
+              if (patch.length > patchCap) {
+                patch = patch.slice(0, patchCap);
+                truncated = true;
+              }
+            }
+          }
+        }
+      }
+      return res.json({ path: filePath, patch, truncated, error, untracked });
     });
 
     app.post('/api/task-board/tasks/:taskId/merge', async (req, res) => {
@@ -890,26 +1199,11 @@ function createSessionGitRuntime(rawDeps) {
       if (!found) return;
       const { persisted, dir } = found;
       if (!hasWorktree(persisted, res, '该会话没有 worktree，无需合并')) return;
-      const result = await deps.gitMergeBack(dir, persisted).catch(error => {
-        deps.logger.warn(`[multicc] merge ${persisted.id} failed: ${errorText(error)}`);
-        return failedGitResult(error);
-      });
+      const result = await executeMergeBack(dir, persisted);
       if (!result.ok) {
         const status = result.conflicts && result.conflicts.length ? 409
           : (result.code === 'git_operation_failed' ? 500 : 400);
         return res.status(status).json(result);
-      }
-      deps.logger.log(`[multicc] merge ${persisted.branch} → ${dir.baseBranch}: `
-        + (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
-      deps.appendEvent(dir.id, 'merged',
-        result.merged ? `${result.commits} 个提交 → ${dir.baseBranch}` : '无新提交', persisted.id);
-      deps.workspaceBroadcast(dir.id, {
-        type: 'merge_status', sessionId: persisted.id,
-        mergeState: await mergeStateFresh(dir, persisted),
-      });
-      if (result.merged) {
-        const synced = await autoSyncSiblingWorktrees(dir, persisted.id);
-        if (synced.length) result.siblingsSynced = synced;
       }
       return res.json(result);
     });
@@ -1005,7 +1299,8 @@ function createSessionGitRuntime(rawDeps) {
     mountRoutes,
     mergeStateCached,
     isWorktreeActive,
+    autoCommitTurn,
   });
 }
 
-module.exports = Object.freeze({ createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles });
+module.exports = Object.freeze({ createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles, parseCommitFiles });

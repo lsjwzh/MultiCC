@@ -9,6 +9,11 @@ require('../public/chat-session-queue.js');
 
 const queueApi = globalThis.MultiCCChatSessionQueue;
 const ROOT = path.join(__dirname, '..');
+
+// 文案走 t()（i18n.js）：这里注入同一份中文目录，断言才是页面上的样子。
+const ZH = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/zh.json'), 'utf8'));
+const zhT = (key, params) => String(ZH[key] ?? key)
+  .replace(/\{(\w+)\}/g, (_, name) => (params && name in params ? String(params[name]) : `{${name}}`));
 const ROW_HEIGHT = 30;
 
 function classList() {
@@ -29,6 +34,7 @@ class FakeNode {
     this.style = {};
     this.textContent = '';
     this.attributes = {};
+    this.dataset = {};
     this.listeners = new Map();
     this.parentNode = null;
     this.rect = { top: 0, height: ROW_HEIGHT };
@@ -132,7 +138,7 @@ function drag(list, from, clientY, step = ROW_HEIGHT) {
 
 test('dragging a staged message commits the index it was dropped on', () => {
   const moves = [];
-  queueApi.configure({ onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
+  queueApi.configure({ translate: zhT, onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
   const { documentRef, list } = dockFixture();
   queueApi.render(queueItems(['一', '二', '三']), {}, documentRef);
   layout(list);
@@ -149,7 +155,7 @@ test('dragging a staged message commits the index it was dropped on', () => {
 
 test('dragging upward lands on the row whose midpoint was passed', () => {
   const moves = [];
-  queueApi.configure({ onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
+  queueApi.configure({ translate: zhT, onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
   const { documentRef, list } = dockFixture();
   queueApi.render(queueItems(['一', '二', '三']), {}, documentRef);
   layout(list);
@@ -161,7 +167,7 @@ test('dragging upward lands on the row whose midpoint was passed', () => {
 
 test('a tap or a nudge on the handle moves nothing', () => {
   const moves = [];
-  queueApi.configure({ onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
+  queueApi.configure({ translate: zhT, onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
   const { documentRef, list } = dockFixture();
   queueApi.render(queueItems(['一', '二', '三']), {}, documentRef);
   layout(list);
@@ -183,7 +189,7 @@ test('a tap or a nudge on the handle moves nothing', () => {
 
 test('a queue event during a drag drops the gesture instead of committing a stale index', () => {
   const moves = [];
-  queueApi.configure({ onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
+  queueApi.configure({ translate: zhT, onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
   const { documentRef, list } = dockFixture();
   queueApi.render(queueItems(['一', '二', '三']), {}, documentRef);
   layout(list);
@@ -200,7 +206,7 @@ test('a queue event during a drag drops the gesture instead of committing a stal
 
 test('arrow keys on the handle move one slot and stop at the ends', () => {
   const moves = [];
-  queueApi.configure({ onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
+  queueApi.configure({ translate: zhT, onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
   const { documentRef, list } = dockFixture();
   queueApi.render(queueItems(['一', '二', '三']), {}, documentRef);
   layout(list);
@@ -217,7 +223,7 @@ test('arrow keys on the handle move one slot and stop at the ends', () => {
 });
 
 test('only entries the user may move get a handle', () => {
-  queueApi.configure({ onReorder: () => { throw new Error('must not be called'); } });
+  queueApi.configure({ translate: zhT, onReorder: () => { throw new Error('must not be called'); } });
   const { documentRef, list } = dockFixture();
   queueApi.render([
     { entryId: 'leased', state: 'leased', position: 1, text: '执行中' },
@@ -287,4 +293,67 @@ test('the queue dock keeps its textContent-only rendering', () => {
   assert.match(source, /session-queue-handle/);
   // The handle must be a button so the same move is reachable without a drag.
   assert.match(source, /handle\.type = 'button'/);
+});
+
+test('insert receipt never claims execution without started proof', async () => {
+  const queue = queueApi;
+  for (const started of [false, undefined, true]) {
+    const notices = [];
+    const run = queue.createInsertHandler({
+      fetch: async () => ({ ok: true, json: async () => ({ ok: true, started }) }),
+      withToken: x => x, getSessionName: () => 's1', notify: (...args) => notices.push(args),
+    });
+    assert.equal(await run('entry-1'), started === true);
+    assert.equal(notices[0][1], started === true ? 'completed' : 'info');
+    if (started !== true) assert.match(notices[0][0], /尚未开始/);
+  }
+});
+
+test('the edit handler posts the confirmed text rewrite for the entry', async () => {
+  const requests = [];
+  const notices = [];
+  const handler = queueApi.createEditHandler({
+    fetch: async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, json: async () => ({ ok: true, edited: { entryId: 'entry-2' } }) };
+    },
+    withToken: url => `/tokenized${url}`,
+    getSessionName: () => 'session/1',
+    notify: (message, kind) => notices.push([message, kind]),
+  });
+
+  assert.equal(await handler('entry-2', '重写后的正文'), true);
+  assert.equal(requests[0].url, '/tokenized/api/sessions/session%2F1/queue/action');
+  assert.deepEqual(requests[0].body, {
+    action: 'edit_queued',
+    entryId: 'entry-2',
+    confirm: true,
+    text: '重写后的正文',
+  });
+  assert.deepEqual(notices, [['已修改暂存消息', 'completed']]);
+});
+
+test('double-clicking a pending staged message prompts for its new text', () => {
+  const previous = globalThis.prompt;
+  globalThis.prompt = () => '双击后的新正文';
+  try {
+    const edits = [];
+    queueApi.configure({ translate: zhT,
+      onEdit: async (entryId, text) => edits.push([entryId, text]),
+    });
+    const { documentRef, list } = dockFixture();
+    queueApi.render(queueItems(['原正文']), {}, documentRef);
+    const text = list.querySelector('.session-queue-text');
+    assert.ok(text.dataset.edit === '1', 'a pending entry is editable');
+    text.fire('dblclick');
+    assert.deepEqual(edits, [['entry-1', '双击后的新正文']]);
+
+    // A claimed (running) entry is not editable.
+    queueApi.render([
+      { entryId: 'leased', state: 'leased', position: 1, text: '执行中' },
+    ], {}, documentRef);
+    assert.equal(list.querySelector('.session-queue-text').dataset.edit, undefined);
+  } finally {
+    globalThis.prompt = previous;
+  }
 });

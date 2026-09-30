@@ -2,8 +2,10 @@
 
 const crypto = require('crypto');
 const planning = require('./planning');
-// Task board core — pure logic for the AI-tagged module→task board shown in
-// the fleet panel (meta.html). No I/O and no host state: given a board object
+const attention = require('./attention');
+const { TURN_RUN_STATES } = require('../classify/vocab');
+// Task board core — pure logic for the AI-tagged module→task board. No I/O and
+// no host state: given a board object
 // and inputs, every function here is deterministic, so the whole tagging /
 // aggregation / routing surface is unit-testable without a server.
 //
@@ -33,7 +35,10 @@ const PENDING_TASK_TITLE = '新任务';
 // Runtime projection is deliberately separate from task.status lifecycle.
 // `succeeded` says the latest turn succeeded; only explicit user action writes
 // task.status = 'done'. Legacy runState done/completed is migrated below.
-const TASK_RUN_STATES = new Set(['queued', 'running', 'waiting', 'succeeded', 'error', 'idle']);
+// The vocabulary itself lives in src/classify/vocab.js (TURN_RUN_STATES): the
+// classify letters, the session run state and this board projection all speak
+// one list. Adding a state there is the only edit needed.
+const TASK_RUN_STATES = new Set(TURN_RUN_STATES);
 const MAX_ROUTING_ATTEMPTS = 50;
 
 // Where the card came from, so the board can tell the two admissions apart at
@@ -156,6 +161,8 @@ function normalizeBoard(raw) {
     // Monotonic stamp of the queue event that produced runState. Survives a
     // reload so a heartbeat replayed after restart cannot un-cancel a card.
     if (Number(t.runStateAt) > 0) task.runStateAt = Number(t.runStateAt);
+    // Unseen-result mark (see task-board/attention.js).
+    attention.normalizeAttention(t, task);
     // M3 per-task worktree ledger: where the task's work lives between runs.
     // Absent until the first run creates it; non-strings are dropped.
     if (typeof t.worktreePath === 'string' && t.worktreePath.trim()) {
@@ -592,7 +599,7 @@ function deriveTaskTitle(value) {
       .replace(/^["'“”‘’]+|["'“”‘’]+$/gu, '')
       .trim();
     if (!line || /^【[^】]+】$/u.test(line)) continue;
-    if (/^(?:这是宿主路由器|请在当前 worker 会话|结果保留在当前 worker|不会自动回灌 Commander)/u.test(line)) continue;
+    if (/^(?:这是宿主路由器|请在当前 worker 会话|结果保留在当前 worker|不会自动回灌 Commander|This execution task was delivered directly by the host router|The result stays in the current worker)/u.test(line)) continue;
     if (/^(?:任务|新任务)\s*[:：]?\s*$/u.test(line)) continue;
     return line.slice(0, MAX_TITLE_LEN);
   }

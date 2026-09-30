@@ -111,6 +111,10 @@ function registerInDocsRegistry(kind, rel, title) {
       title: String(title || '').slice(0, 200) || rel,
       url: rel,
       sessionId: process.env.MULTICC_SESSION_ID || '',
+      // Which working directory this publication belongs to. The registry
+      // normalizes a task worktree back to its project, so the panels can group
+      // artifacts by directory instead of only by time.
+      cwd: process.cwd(),
       source: 'agent',
     });
     const url = new URL('/api/docs-registry', BASE);

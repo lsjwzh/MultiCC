@@ -8,15 +8,21 @@ const test = require('node:test');
 const { createOrchestrationStore } = require('../src/orchestration/store');
 const { createOutbox } = require('../src/outbox');
 const {
+  FREEZE_REASON_CLASSIFY,
   createSessionWorkScheduler,
   runStateForFreezeReason,
 } = require('../src/session-work/scheduler');
+const { runStateForClassify } = require('../src/classify/vocab');
 
 test('runStateForFreezeReason maps each freeze reason to a truthful runState', () => {
-  // User / external hand-off → waiting (the only reasons that mean "act now").
+  // User hand-off → waiting (the only reason that means "act now").
   assert.equal(runStateForFreezeReason('awaiting_user_input'), 'waiting');
-  assert.equal(runStateForFreezeReason('awaiting_callback'), 'waiting');
   assert.equal(runStateForFreezeReason('waiting'), 'waiting');
+  // A callback is in someone else's hands: a BACKGROUND wait, not a question.
+  // Folding it into `waiting` made every Air card and session row answer
+  // 「等待回答」 about work the user cannot answer.
+  assert.equal(runStateForFreezeReason('awaiting_callback'), 'background');
+  assert.equal(runStateForFreezeReason('classify_background'), 'background');
   // Faults / interruptions → error, NOT a false "waiting on you".
   assert.equal(runStateForFreezeReason('error'), 'error');
   assert.equal(runStateForFreezeReason('classification_error'), 'error');
@@ -27,7 +33,6 @@ test('runStateForFreezeReason maps each freeze reason to a truthful runState', (
   assert.equal(runStateForFreezeReason('continuation_ready'), 'running');
   assert.equal(runStateForFreezeReason('incomplete_requires_resume'), 'running');
   assert.equal(runStateForFreezeReason('classify_waiting'), 'waiting');
-  assert.equal(runStateForFreezeReason('classify_background'), 'waiting');
   assert.equal(runStateForFreezeReason('classify_error'), 'error');
   assert.equal(runStateForFreezeReason('classify_running'), 'running');
   // Deferred claim → queued.
@@ -37,6 +42,15 @@ test('runStateForFreezeReason maps each freeze reason to a truthful runState', (
   assert.equal(runStateForFreezeReason('something_new'), 'waiting');
   assert.equal(runStateForFreezeReason(null), 'waiting');
   assert.equal(runStateForFreezeReason(undefined), 'waiting');
+  // The table is derived from the classify letters, not hand-copied: every
+  // freeze reason that owes its run state to a letter must agree with the letter.
+  for (const [reason, letter] of Object.entries(FREEZE_REASON_CLASSIFY)) {
+    assert.equal(
+      runStateForFreezeReason(reason),
+      runStateForClassify(letter),
+      `freeze reason ${reason} drifted from classify letter ${letter}`,
+    );
+  }
 });
 
 function fixture(t, options = {}) {
@@ -91,32 +105,6 @@ async function startClaim(harness, item) {
   assert.equal((await harness.scheduler.started(item)).ok, true);
 }
 
-test('task-run fencing survives admission, active ownership and completion events', async t => {
-  const h = fixture(t);
-  const admitted = await h.scheduler.admit({
-    sessionId: 'slot-1',
-    text: 'execute isolated run',
-    options: {
-      taskId: 'task-1',
-      taskRunId: 'run-1',
-      leaseEpoch: 9,
-    },
-    idempotencyKey: 'run-1',
-  });
-  assert.equal(admitted.entry.payload.taskRunId, 'run-1');
-  assert.equal(admitted.entry.payload.leaseEpoch, 9);
-  const item = await claimOne(h, 'slot-1');
-  assert.equal((await h.scheduler.status('slot-1')).active.taskRunId, 'run-1');
-  assert.equal((await h.scheduler.status('slot-1')).active.leaseEpoch, 9);
-  await startClaim(h, item);
-  const completed = await h.scheduler.complete('slot-1', { expectedTaskId: 'task-1' });
-  assert.equal(completed.completed.taskRunId, 'run-1');
-  assert.equal(completed.completed.leaseEpoch, 9);
-  const event = h.events.find(candidate => candidate.type === 'completed');
-  assert.equal(event.taskRunId, 'run-1');
-  assert.equal(event.leaseEpoch, 9);
-});
-
 test('task-shell controls reject stale turns atomically; an admitted answer replays after the next turn', async t => {
   let turn = 'turn1', pending = { requestId: 'q1', taskId: 'task1' };
   const f = fixture(t, { getTurnId: () => turn, getPendingUserInput: () => pending });
@@ -133,50 +121,17 @@ test('task-shell controls reject stale turns atomically; an admitted answer repl
   assert.equal((await f.outbox.list()).length, 1);
 });
 
-test('a correlated control turn resumes the TaskRun retained at a W/B boundary', async t => {
-  const pending = { requestId: 'request-1', taskId: 'task-1', resolved: false };
-  const h = fixture(t, { getPendingUserInput: () => pending });
-  await h.scheduler.admit({
-    sessionId: 'slot-1', text: 'ask user', idempotencyKey: 'run-1',
-    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 9 },
-  });
-  await startClaim(h, await claimOne(h, 'slot-1'));
-  await h.scheduler.complete('slot-1', {
-    expectedTaskId: 'task-1', classifyState: 'W', awaitingRequestId: 'request-1',
-  });
-  const answer = await h.scheduler.admit({
-    sessionId: 'slot-1', text: 'approved', workKind: 'answer',
-    requestId: 'request-1', idempotencyKey: 'answer-1',
-  });
-  assert.equal(answer.entry.payload.taskId, 'task-1');
-  assert.equal(answer.entry.payload.taskRunId, 'run-1');
-  assert.equal(answer.entry.payload.leaseEpoch, 9);
-  const claimed = await claimOne(h, 'slot-1');
-  assert.equal(claimed.payload.taskRunId, 'run-1');
-  assert.equal(claimed.payload.leaseEpoch, 9);
-});
-
-test('an external callback inherits the TaskRun retained at a background boundary', async t => {
-  const h = fixture(t);
-  await h.scheduler.admit({
-    sessionId: 'slot-1', text: 'wait in background', idempotencyKey: 'run-1',
-    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 9 },
-  });
-  await startClaim(h, await claimOne(h, 'slot-1'));
-  await h.scheduler.complete('slot-1', {
-    expectedTaskId: 'task-1', classifyState: 'B',
-  });
-  await h.outbox.enqueue({
-    id: 'wait:run-1',
-    sessionId: 'slot-1',
-    payload: { type: 'wait.result', deliveryText: 'background done' },
-    source: { type: 'wait' },
-  });
-  await claimOne(h, 'slot-1');
-  const active = (await h.scheduler.status('slot-1')).active;
-  assert.equal(active.taskId, 'task-1');
-  assert.equal(active.taskRunId, 'run-1');
-  assert.equal(active.leaseEpoch, 9);
+test('an answer stays correlated after a background continuation advances the signal turn', async t => {
+  // The asking turn was turn1; a background-result continuation kept the open
+  // question but moved the signal turn to turn2. The answer targets turn1.
+  const pending = { requestId: 'q1', taskId: 'task1', turnId: 'turn1' };
+  const f = fixture(t, { getTurnId: () => 'turn2', getPendingUserInput: () => pending });
+  const answer = await f.scheduler.admit({ sessionId: 's1', text: 'A', requestId: 'q1', workKind: 'answer', idempotencyKey: 'r1',
+    options: { taskId: 'task1', taskShellReceiptId: 'r1', taskShellControl: { intent: 'answer', turnId: 'turn1' } } });
+  assert.equal(answer.ok, true);
+  const wrongTurn = await f.scheduler.admit({ sessionId: 's1', text: 'B', requestId: 'q1', workKind: 'answer', idempotencyKey: 'r2',
+    options: { taskId: 'task1', taskShellReceiptId: 'r2', taskShellControl: { intent: 'answer', turnId: 'turn0' } } });
+  assert.equal(wrongTurn.ok, false); assert.equal(wrongTurn.code, 'stale_control');
 });
 
 test('idle starts one item and running work keeps later messages in strict FIFO order', async t => {
@@ -443,6 +398,25 @@ test('async dispatch result waits during P then wakes D/W/E without manufacturin
     assert.equal(claim.payload.type, 'dispatch.result');
     assert.notEqual((await h.scheduler.status('s1')).classifyState, 'B');
   }
+});
+
+test('a dispatch result never lends the dispatched task identity to the owner turn', async t => {
+  const h = fixture(t);
+  await h.outbox.enqueue({
+    id: 'operation:dispatch-2:result',
+    sessionId: 's1',
+    payload: {
+      type: 'dispatch.result', operationId: 'dispatch-2',
+      taskId: 'tsk-worker',
+      deliveryText: 'worker result', result: { status: 'completed', text: 'done' },
+    },
+    source: { type: 'operation', kind: 'dispatch', operationId: 'dispatch-2' },
+  });
+  const claim = await claimOne(h);
+  assert.equal(claim.id, 'operation:dispatch-2:result');
+  const active = (await h.scheduler.status('s1')).active;
+  assert.equal(active.taskId, null, 'owner turn must not run as the worker task');
+  assert.ok(h.events.filter(e => e.entryId === claim.id).every(e => !e.taskId), 'no claimed/started event may mark the worker card');
 });
 
 test('an early structured answer stays off the public FIFO then runs first after the asking turn releases', async t => {
@@ -893,7 +867,7 @@ test('restart advances only when the active run has timestamped structured succe
   const active = await h.scheduler.admit({
     sessionId: 's1',
     text: 'active',
-    options: { taskId: 'task-active', taskRunId: 'run-active', leaseEpoch: 7 },
+    options: { taskId: 'task-active' },
     idempotencyKey: 'active',
   });
   const activeClaim = await claimOne(h);
@@ -921,12 +895,10 @@ test('restart advances only when the active run has timestamped structured succe
   assert.equal(h.events.some(event => (
     event.type === 'completed'
       && event.entryId === active.entry.id
-      && event.taskRunId === 'run-active'
-      && event.leaseEpoch === 7
+      && event.taskId === 'task-active'
       && event.recovered === true
   )), true);
-  assert.equal(state.lastDecision.taskRunId, 'run-active');
-  assert.equal(state.lastDecision.leaseEpoch, 7);
+  assert.equal(state.lastDecision.taskId, 'task-active');
   assert.equal((await claimOne(h)).id, queued.entry.id);
 
   const stale = fixture(t);
@@ -1181,24 +1153,6 @@ test('manual retry is admitted only for classify E', async t => {
   assert.equal(retry.payload.taskId, 'task-failed');
 });
 
-test('an errored TaskRun cannot anonymously resume a scrubbed execution slot', async t => {
-  const failed = fixture(t);
-  await failed.scheduler.admit({
-    sessionId: 'slot-1',
-    text: 'active task run',
-    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 3 },
-    idempotencyKey: 'active-run',
-  });
-  await startClaim(failed, await claimOne(failed, 'slot-1'));
-  await failed.scheduler.complete('slot-1', { classifyState: 'E' });
-  const retry = await failed.scheduler.resolve('slot-1', {
-    action: 'retry',
-    idempotencyKey: 'retry-old-run',
-  });
-  assert.deepEqual(retry, { ok: false, code: 'task_run_retry_requires_new_run' });
-  assert.equal(await claimOne(failed, 'slot-1'), null);
-});
-
 test('a pending queued entry can be cancelled individually but a leased entry cannot', async t => {
   const h = fixture(t);
   await h.scheduler.admit({
@@ -1229,6 +1183,43 @@ test('a pending queued entry can be cancelled individually but a leased entry ca
   });
   assert.equal(leased.id, second.entry.id);
   const tooLate = await h.scheduler.cancelQueued('s1', second.entry.id);
+  assert.equal(tooLate.ok, false);
+  assert.equal(tooLate.code, 'queued_entry_already_claimed');
+});
+
+test('a pending queued entry can be edited in place but a leased one cannot', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 's1', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(h, await claimOne(h));
+  const first = await h.scheduler.admit({
+    sessionId: 's1', text: 'old text', idempotencyKey: 'edit-me',
+  });
+
+  const edited = await h.scheduler.editQueued('s1', first.entry.id, {
+    text: 'new text',
+    actor: 'test',
+  });
+  assert.equal(edited.ok, true);
+  assert.deepEqual(edited.schedule.queued.map(item => item.text), ['new text']);
+  assert.equal(edited.edited.previous, 'old text');
+  assert.equal((await h.outbox.get(first.entry.id)).payload.message, 'new text');
+  assert.equal(h.events.at(-1).type, 'queued_edited');
+
+  // 空正文与超长正文被拒。
+  assert.equal((await h.scheduler.editQueued('s1', first.entry.id, { text: '  ' })).ok, false);
+  assert.equal((await h.scheduler.editQueued('s1', first.entry.id, { text: 'x'.repeat(20001) })).ok, false);
+
+  // 被领取的条目不能再改（守卫与 cancel/reorder 同一条）。
+  assert.equal((await h.scheduler.complete('s1')).ok, true);
+  const [leased] = await h.outbox.claim({
+    workerId: 'race-worker',
+    limit: 1,
+    selectSessionItem: h.scheduler.selectSessionItem,
+  });
+  assert.equal(leased.id, first.entry.id);
+  const tooLate = await h.scheduler.editQueued('s1', first.entry.id, { text: 'too late' });
   assert.equal(tooLate.ok, false);
   assert.equal(tooLate.code, 'queued_entry_already_claimed');
 });
@@ -1410,16 +1401,22 @@ test('structured questions and classify errors keep normal FIFO work staged', as
   assert.equal(await claimOne(errored), null, 'an error freeze keeps the queue staged');
 });
 
-// ── E-at-rest vs Task Board run deliveries ───────────────────────────────────
-// The previous request's E verdict is diagnostic state only. Task Board
-// deliveries, direct input, callbacks and ordinary FIFO work remain eligible.
+// ── E at rest: the fault verdict releases the slot, never the FIFO ───────────
+// Only classify D drains the FIFO automatically (isTerminalLetter): the queue
+// advances on a turn that finished successfully. An E-at-rest queue therefore
+// leaves ordinary FIFO work staged — admission still succeeds, but nothing
+// starts until direct input, a retry/resume control, an explicit insert_queued,
+// or the next D verdict releases it. Direct and control items (CONTROL_KINDS:
+// answer/approval/callback/continuation/retry/resume) carry directRun and are
+// selected exactly as before — see src/session-work/host.js and
+// src/routes/orchestration.js, which always documented D as the sole drain.
 
 async function settleToVerdict(harness, sessionId, classifyState) {
   await harness.scheduler.admit({
     sessionId,
     text: 'first turn',
     idempotencyKey: `${sessionId}-first`,
-    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 1 },
+    options: { taskId: 'task-1' },
   });
   await startClaim(harness, await claimOne(harness, sessionId));
   await harness.scheduler.complete(sessionId, {
@@ -1428,63 +1425,37 @@ async function settleToVerdict(harness, sessionId, classifyState) {
   });
 }
 
-function dispatchRequestPayload({
-  taskRunId = 'run-2', taskId = 'task-1', taskStart = false,
-} = {}) {
-  return {
-    type: 'dispatch.request',
-    operationId: taskRunId,
-    targetId: 'slot-1',
-    message: 're-engagement delivery',
-    taskId,
-    taskStart,
-    taskSource: 'task-board',
-    taskText: null,
-    taskRunId,
-    leaseEpoch: 9,
-  };
-}
-
-test('an E-at-rest queue selects Task Board run deliveries in FIFO order', async t => {
+test('an E-at-rest queue does not auto-drain ordinary queued work', async t => {
   const h = fixture(t);
-  await settleToVerdict(h, 'slot-1', 'E');
-  // Both production shapes are later requests; the prior E verdict cannot
-  // suppress either of them.
-  await h.outbox.enqueue({
-    id: 'operation:run-2:request',
-    sessionId: 'slot-1',
-    payload: dispatchRequestPayload(),
-    source: { type: 'operation', kind: 'dispatch', operationId: 'run-2' },
-  });
-  const enqueued = await h.outbox.enqueue({
-    id: 'operation:run-3:request',
-    sessionId: 'slot-1',
-    payload: dispatchRequestPayload({ taskRunId: 'run-3', taskStart: true }),
-    source: { type: 'operation', kind: 'dispatch', operationId: 'run-3' },
-  });
-  const item = await claimOne(h, 'slot-1');
-  assert.ok(item, 'a task-run-lineage delivery must drain the E-at-rest queue');
-  assert.equal(item.id, 'operation:run-2:request',
-    'the oldest lineage delivery drains first');
-  assert.notEqual(item.id, enqueued.id);
-});
-
-test('an E-at-rest queue drains a later delivery without task-run lineage', async t => {
-  const h = fixture(t);
-  await settleToVerdict(h, 's1', 'E');
-  await h.outbox.enqueue({
-    id: 'operation:plain:request',
+  await h.scheduler.admit({
     sessionId: 's1',
-    payload: {
-      type: 'dispatch.request', operationId: 'plain', targetId: 's1',
-      message: 'no lineage', taskId: null, taskStart: true, taskSource: null,
-      taskText: null, taskRunId: null, leaseEpoch: null,
-    },
-    source: { type: 'operation', kind: 'dispatch', operationId: 'plain' },
+    text: 'active',
+    idempotencyKey: 's1-active',
+    options: { taskId: 'task-1' },
   });
-  const claim = await claimOne(h, 's1');
-  assert.ok(claim, 'a prior request error must not gate this delivery');
-  assert.equal(claim.id, 'operation:plain:request');
+  await startClaim(h, await claimOne(h, 's1'));
+  // A dispatch-like (non-direct) message admitted while running is queued.
+  const queued = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'staged behind the failing turn',
+    source: 'operation',
+    idempotencyKey: 's1-queued',
+  });
+  assert.equal(queued.queued, true);
+  await h.scheduler.complete('s1', { expectedTaskId: 'task-1', classifyState: 'E' });
+  assert.equal(await claimOne(h, 's1'), null,
+    'only a D verdict drains the FIFO automatically');
+  // Staged, not dropped: the entry is still pending and still claimable.
+  const staged = await h.outbox.list({ sessionId: 's1', states: 'pending' });
+  assert.deepEqual(staged.map(item => item.id), [queued.entry.id]);
+  // The escape hatch past an E verdict is an explicit insertion, which
+  // promotes exactly the selected message.
+  h.advance(1);
+  const released = await h.scheduler.insertQueued('s1', queued.entry.id, { actor: 'user' });
+  assert.equal(released.ok, true);
+  const promoted = await claimOne(h, 's1');
+  assert.ok(promoted, 'an explicitly inserted message claims past the E verdict');
+  assert.equal(promoted.id, queued.entry.id);
 });
 
 test('an E-at-rest queue drains a continuation staged before the error verdict', async t => {
@@ -1493,7 +1464,7 @@ test('an E-at-rest queue drains a continuation staged before the error verdict',
     sessionId: 's1',
     text: 'first turn',
     idempotencyKey: 's1-first',
-    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 1 },
+    options: { taskId: 'task-1' },
   });
   await startClaim(h, await claimOne(h, 's1'));
   await h.scheduler.admit({
@@ -1504,7 +1475,7 @@ test('an E-at-rest queue drains a continuation staged before the error verdict',
   });
   await h.scheduler.complete('s1', { expectedTaskId: 'task-1', classifyState: 'E' });
   const claim = await claimOne(h, 's1');
-  assert.ok(claim, 'bounded failure of the active request releases later FIFO work');
+  assert.ok(claim, 'a continuation is direct/control work, so the E verdict never gates it');
   assert.equal(claim.payload.message, 'typed while the failing turn was still running');
 });
 
@@ -1529,7 +1500,7 @@ test('insert-now can still prioritize an entry after an E verdict', async t => {
     sessionId: 's1',
     text: 'first turn',
     idempotencyKey: 's1-first',
-    options: { taskId: 'task-1', taskRunId: 'run-1', leaseEpoch: 1 },
+    options: { taskId: 'task-1' },
   });
   await startClaim(h, await claimOne(h, 's1'));
   const stale = await h.scheduler.admit({
@@ -1601,19 +1572,18 @@ test('public queue snapshots contain no cross-request API hold state', async t =
   assert.ok(await claimOne(h, 's1'), 'the later request claims normally');
 });
 
-test('a W-at-rest queue does not leak task-kind run deliveries past a pending question', async t => {
+test('a W-at-rest queue keeps ordinary queued work staged past a pending question', async t => {
   const h = fixture(t);
   await settleToVerdict(h, 'slot-1', 'W');
-  await h.outbox.enqueue({
-    id: 'operation:run-3:request',
+  await h.scheduler.admit({
     sessionId: 'slot-1',
-    payload: dispatchRequestPayload({ taskRunId: 'run-3', taskStart: true }),
-    source: { type: 'operation', kind: 'dispatch', operationId: 'run-3' },
+    text: 'queued behind the question',
+    source: 'operation',
+    idempotencyKey: 'slot-1-queued',
   });
   assert.equal(await claimOne(h, 'slot-1'), null,
-    'W must keep waiting for the structured answer; task-run lineage only unlocks E');
+    'W must keep waiting for the structured answer; only D drains the FIFO automatically');
 });
-
 
 test('dismissed W question clears durable queue correlation without admitting new work', async t => {
   const h = fixture(t);

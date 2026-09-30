@@ -27,7 +27,9 @@ const codex = createCodexAdapter({
   isTransportDisconnect: message => message === 'transport-disconnect',
 });
 const codexExp = createCodexExpAdapter({ codexCmd: 'codex' });
-const opencode = createOpencodeAdapter({ cmd: 'opencode' });
+// The JSON `run` lane stays reachable via MULTICC_OPENCODE_LEGACY_JSON; the
+// default ACP lane is covered by tests/test-acp-adapter.js.
+const opencode = createOpencodeAdapter({ cmd: 'opencode', env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } });
 const zcode = createZcodeAdapter({ cmd: 'zcode' });
 const qoder = createQoderAdapter({ cmd: 'qoderclicn' });
 const kimi = createKimiAdapter({ cmd: 'kimi' });
@@ -267,6 +269,7 @@ const userInputReminder = 'blocking question -> wait_for_user_answer';
 const opencodeWithReminder = createOpencodeAdapter({
   cmd: 'opencode',
   userInputReminder,
+  env: { MULTICC_OPENCODE_LEGACY_JSON: '1' },
 });
 assert.equal(
   opencodeWithReminder.buildInvocation(opencodeEnvelope).payload,
@@ -292,7 +295,7 @@ assert.deepStrictEqual(
 );
 // 首轮 + rolePrompt → payload 包裹角色设定
 assert.ok(
-  zcode.buildInvocation({ ...opencodeEnvelope, rolePrompt: '你是审查者' }).payload.includes('[角色设定]'),
+  zcode.buildInvocation({ ...opencodeEnvelope, rolePrompt: '你是审查者' }).payload.includes('[Role prompt]'),
 );
 let codexReasoningSession = null;
 const codexModelAware = createCodexAdapter({
@@ -461,7 +464,7 @@ assert.strictEqual(
   assert.strictEqual(firstTurn.cmd, 'kimi');
   assert.strictEqual(firstTurn.payload, 'hello');
   const withRole = kimi.buildInvocation({ ...opencodeEnvelope, rolePrompt: '你是审查者' });
-  assert.strictEqual(withRole.payload, '[角色设定]\n你是审查者\n[角色设定结束]\n\nhello');
+  assert.strictEqual(withRole.payload, '[Role prompt]\n你是审查者\n[End of role prompt]\n\nhello');
   const continuation = kimi.buildInvocation({
     ...opencodeEnvelope,
     historyHandle: { isFirstTurn: false, cliSessionId: 'kimi-sess-1' },

@@ -1,7 +1,10 @@
 'use strict';
 
+const { createHash } = require('node:crypto');
 const { createProviderRevision } = require('./provider-attempt-runtime');
+const { resolveAutoStallTimeoutMs } = require('./auto-stall-timeout');
 const { createProviderRouteProof } = require('./turn-request');
+const { protocolFamilyOf } = require('../cli/cli-capability');
 
 function clean(value) {
   return value == null ? '' : String(value).trim();
@@ -10,9 +13,27 @@ function clean(value) {
 function protocolFor(cli, summary) {
   const explicit = clean(summary && (summary.apiFormat || summary.protocol));
   if (explicit) return explicit;
-  if (cli === 'claude' || cli === 'claude-exp') return 'anthropic';
-  if (cli === 'codex' || cli === 'codex-exp') return 'openai_responses';
-  return clean(cli) || 'native';
+  return protocolFamilyOf(cli, 'api') || clean(cli) || 'native';
+}
+
+// Everything a physical child bakes at spawn, hashed for the route capability.
+// A resident lane keeps its capability while this digest is unchanged and gets a
+// fresh one as soon as it moves, so the lane's own routing fingerprint recycles
+// the warm process exactly when the spawn contract changed — and never because
+// the attempt (or its route token) merely rotated, which is what made residency
+// impossible. Claude bakes its route into ANTHROPIC_* plus --model/--effort/
+// --agent argv, so the argv and SDK options belong here. The codex app-server
+// reads its route from CODEX_HOME and takes model/effort per turn (turn/start,
+// see the adapter's turnOptions), so its provider binding alone is the contract.
+function spawnKeyFor({ cli, providerId, protocol, providerRevision, subagent, invocation }) {
+  const contract = [providerId, protocol, providerRevision, subagent];
+  if (protocolFamilyOf(cli, 'api') !== 'openai_responses') {
+    contract.push(
+      invocation && (invocation.sdkOptions || invocation.streamArgs || invocation.args) || null,
+      invocation && invocation.settings || null,
+    );
+  }
+  return createHash('sha256').update(JSON.stringify(contract)).digest('base64url');
 }
 
 function providerRetryRouteOptions(attempt) {
@@ -125,6 +146,23 @@ function createProviderInvocationFactory(options = {}) {
       attemptNo: input.attemptNo,
       reasonCode: input.reasonCode,
       continuation: input.continuation === true,
+      // Auto Provider only fails over when an attempt errors, so a silently
+      // stalled upstream wedges the turn forever. Every Auto attempt therefore
+      // carries its own idle budget for the proxy watchdog; a non-Auto session
+      // resolves to 0 and the proxy never arms one for it.
+      stallTimeoutMs: resolveAutoStallTimeoutMs(session, input.env),
+      spawnKey: spawnKeyFor({
+        cli: binding.cli, providerId, protocol,
+        providerRevision: protocolFamilyOf(binding.cli, 'api') === 'openai_responses'
+          ? createProviderRevision({ cli: binding.cli, providerId, protocol, model: '_spawn_', summary }) : providerRevision,
+        subagent: session.subagent ? {
+          providerId: clean(session.subagent.providerId), model: clean(session.subagent.model),
+          revision: createProviderRevision({ cli: binding.cli, providerId: session.subagent.providerId,
+            protocol, model: session.subagent.model || '_default_',
+            summary: router.getProviderSummary(undefined, session.subagent.providerId) }),
+        } : null,
+        invocation,
+      }),
     });
     let routeProof;
     let proxySessionId;

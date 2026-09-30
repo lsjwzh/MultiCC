@@ -1,0 +1,118 @@
+/* Same left-edge presentation as the console, with room for readable settings. */
+#side-more { min-height: 44px; font-size: 14px; }
+#side-more > :last-child { margin-left: auto; }
+#more-panel {
+  position: fixed; inset: 0 auto 0 0; margin: 0;
+  width: min(430px, calc(100vw - 22px)); max-width: none;
+  height: 100dvh; max-height: 100dvh; padding: 0;
+  border: 0; border-right: 1px solid var(--hairline); border-radius: 0 22px 22px 0;
+  background: #fff; color: var(--text); box-shadow: 24px 0 80px #2b4c6d29;
+  overflow: hidden;
+}
+#more-panel[open] { display: flex; flex-direction: column; animation: more-slide-in .3s cubic-bezier(.22,.68,.24,1); }
+#more-panel::backdrop { background: rgba(32,49,70,.34); }
+@keyframes more-slide-in { from { transform: translateX(-100%); } to { transform: none; } }
+.more-head { display: flex; align-items: center; gap: 16px; padding: 18px 22px; border-bottom: 1px solid var(--hairline); }
+.more-head h2 { flex: 1; margin: 0; font-size: 22px; }
+.more-head button { min-height: 44px; }
+.more-columns { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.more-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 18px 22px; }
+/* 二级：窄屏与触屏这一列不存在，选中的那一组已经被 air-more.js 搬进抽屉里就地
+   折着（见那边的 relayout）。两列的摆法在文件末尾的 @media 里。 */
+.more-flyout { display: none; }
+#more-panel .side-more-body { gap: 10px; padding: 0; }
+#more-panel .side-group { padding: 10px; border-radius: 16px; }
+#more-panel .side-group-title { margin: 0 0 8px; padding: 0; font-size: 14px; cursor: default; }
+#more-panel .side-group-title::after { content: none; }
+#more-panel .frequent-settings { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+#more-panel .sidebar-setting-row { min-height: 38px; padding: 8px 10px; font-size: 14px; border-radius: 11px; gap: 10px; }
+#more-panel .sidebar-setting-row > span:first-child { flex: 0 0 18px; width: 18px; font-size: 13px; }
+/* 两个电源开关是这一栏里唯一带说明的行：它们改的是系统级行为（还可能要一次管理员
+   授权），收成一行「名字 + 开关」就没人知道自己在开什么。图标 / 名字 / 开关一列，
+   说明另起一行铺满。 */
+#more-panel #air-lid-sleep, #more-panel #air-auto-unlock {
+  grid-column: 1 / -1; display: grid; grid-template-columns: 18px minmax(0, 1fr) 34px;
+  gap: 8px; align-items: start; background: #f5f9fe;
+}
+#more-panel .more-setting-copy { display: contents; text-align: left; }
+.more-setting-copy strong { grid-column: 2; grid-row: 1; font-size: 14px; }
+#more-panel .more-setting-copy small { grid-column: 1 / -1; grid-row: 2; color: var(--muted); font-size: 12px; line-height: 1.6; font-weight: 400; white-space: normal; }
+#more-panel .row-switch { width: 34px; height: 20px; }
+#more-panel .more-setting-copy + .row-switch { grid-column: 3; grid-row: 1; }
+#more-panel .row-switch::after { width: 16px; height: 16px; margin: 2px; }
+#more-panel .on .row-switch::after { transform: translateX(14px); }
+#more-panel .ops-boot-row, #more-panel .ops-boot-uptime { font-size: 13px; }
+/* 主机那一组每行的图标走 ::before + attr(data-icon)，不是子节点 —— air-ops.js 的
+   paintPush 会 textContent 重画推送那一行，子节点会被抹掉（理由写在 air.html 里）。
+   「🔄 重启」没有 data-icon（符号本来就在文案里），但左内边距一样留出来，五行才对齐。 */
+#more-panel .ops-actions button, #more-panel .ops-actions a { position: relative; min-height: 38px; padding-left: 26px; font-size: 14px; }
+#more-panel .ops-actions [data-icon]::before {
+  content: attr(data-icon); position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+  color: #6d89a4; font-size: 12px;
+}
+
+/* ── 一级与二级的行 ─────────────────────────────────────────────────────── */
+.settings-tree { display: grid; gap: 2px; }
+.more-parent, .more-leaf {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 38px;
+  padding: 7px 10px; border: 1px solid transparent; border-radius: 11px;
+  background: transparent; color: #3c566f; text-align: left; font-size: 14px; cursor: pointer;
+}
+.more-leaf { align-items: flex-start; }
+.more-parent:hover, .more-parent.on, .more-leaf:hover { background: #eef5fd; color: var(--accent); }
+.more-parent.on .more-label strong { font-weight: 700; }
+.more-glyph { flex: 0 0 18px; text-align: center; color: #6d89a4; font-size: 13px; }
+.more-leaf .more-glyph { margin-top: 1px; }
+.more-label { flex: 1; min-width: 0; }
+.more-label strong { display: block; font-weight: 600; }
+.more-label small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
+.more-chevron { flex: 0 0 auto; color: #9db2c7; font-size: 13px; transition: transform .18s; }
+/* 展开的那一组，箭头从 › 转到 ⌄：一级的「还有一层」和「已经开着」是同一个符号的
+   两个角度，不给它再配一个图标。 */
+.more-parent.on .more-chevron { color: var(--accent); transform: rotate(90deg); }
+.more-leaf-group { display: grid; gap: 2px; }
+/* 就地折叠时二级在父行下面，缩进 + 一条竖线说清它属于上一行。两列时它在右边那一列，
+   那层从属关系由列本身表达，不再缩进。 */
+.more-rail .more-leaf-group { margin: 2px 0 8px 16px; padding-left: 8px; border-left: 2px solid #d7e7f8; }
+
+.more-flyout-head { display: flex; align-items: baseline; gap: 8px; padding: 0 10px 8px; margin-bottom: 6px; border-bottom: 1px solid var(--hairline); }
+.more-flyout-head strong { font-size: 16px; }
+.more-flyout-head span { color: var(--muted); font-size: 12px; }
+.more-flyout-body { display: grid; gap: 2px; }
+
+#more-status { flex-shrink: 0; margin: 0; padding: 14px 28px; background: #fff4e9; font-size: 14px; line-height: 1.6; }
+#more-status:empty { display: none; }
+
+/* 两列联动：断点必须和 air-more.js 的 CASCADE 查询一致 —— CSS 决定长什么样，
+   那边决定节点挂在哪，对不上就会出现「右边空着、内容在左边叠着」的中间态。 */
+/* 轨道给到 430px 不是随手定的：两个电源开关的说明是一整段（各 60+ 字），
+   再窄就会折成四五行，把「主机」那一段顶到折叠线以下 —— 实测 358px 时整栏
+   自然高度 1032px，430px 加下面那套收紧才压回 900px 窗口里。二级那一列
+   400px 足够放下最长的面板说明（外网穿透那条 28 字），再多是白给。 */
+@media (min-width: 820px) and (hover: hover) {
+  #more-panel { width: min(430px, calc(100vw - 22px)); }
+  #more-panel.has-flyout { width: min(830px, calc(100vw - 22px)); }
+  .more-columns { flex-direction: row; }
+  .more-rail { flex: 0 0 430px; width: 430px; }
+  /* 鼠标够准，桌面这一档把行压矮一点，好让「主机」整段也留在折叠线以上；
+     触屏那一档不跟（那边是手指，44px 的规矩照旧）。 */
+  .more-parent, #more-panel .more-rail .sidebar-setting-row { min-height: 34px; }
+  .more-setting-copy small { line-height: 1.5; }
+  /* 主机那五个短标签在 430px 里排三列就够（两行），省下的 40px 留给折叠线；
+     窄屏只有一列，照旧两列 —— 100px 一格摆「推送通知」太挤。 */
+  #more-panel .ops-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .more-flyout {
+    display: block; flex: 1; min-width: 0; overflow: auto; overscroll-behavior: contain;
+    padding: 18px 22px; border-left: 1px solid var(--hairline); background: #f7fafd;
+  }
+  .more-flyout[hidden] { display: none; }
+}
+
+@media (max-width: 600px) {
+  .more-head { padding: 16px; gap: 8px; }
+  .more-head h2 { font-size: 19px; }
+  .more-scroll { padding: 16px; }
+  #more-panel .side-group { padding: 12px; }
+  #more-status { padding: 12px 16px; }
+}
+@media (prefers-reduced-motion: reduce) { #more-panel[open] { animation: none; } }

@@ -1,6 +1,7 @@
 'use strict';
 
 const { resolveNotifySettingsUpdates } = require('./host-read');
+const { createPowerSettingsHandler, mountPowerWriteRoutes } = require('./host-power');
 
 const LOCAL_ONLY_MESSAGE = '仅可在本机修改';
 const MAX_SECRET_TEXT_LENGTH = 4096;
@@ -228,26 +229,6 @@ function createTunnelRestartHandler(deps) {
   };
 }
 
-// Headless SakuraFrp frpc install (CLI-first onboarding). Local-only: it writes
-// an executable under the managed data root. result.message is already bounded
-// by the tunnel runtime; the access token is never involved here.
-function createTunnelSakurafrpInstallHandler(deps) {
-  return async function tunnelSakurafrpInstallHandler(req, res, next) {
-    if (!requireLocal(deps, req, res)) return undefined;
-    try {
-      const result = await deps.tunnel.sakuraInstallFrpc();
-      if (result && result.ok) return res.json(result);
-      return res.status(400).json({
-        ok: false,
-        reason: (result && result.reason) || 'install_failed',
-        message: (result && result.message) || '',
-      });
-    } catch (error) {
-      return next(error);
-    }
-  };
-}
-
 // Honest public-URL backfill. Plain-http tunnels auto-derive; auto_https tunnels
 // require the user's dashboard-bound *.nyat.app host (validated server-side).
 // Local-only: it writes durable tunnel config.
@@ -333,51 +314,6 @@ function createAccessTokenHandler(deps) {
   };
 }
 
-function createBooleanSettingHandler(deps, setting) {
-  return function booleanSettingHandler(req, res, next) {
-    if (!requireLocal(deps, req, res)) return undefined;
-    const enabled = req.body && req.body.enabled;
-    if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 必须是布尔' });
-    try {
-      const previous = setting.get();
-      const value = enabled ? '1' : '0';
-      persistThenApply(
-        deps,
-        { [setting.envKey]: value },
-        () => setting.set(enabled),
-        () => setting.set(previous),
-        setting.envKey.toLowerCase(),
-      );
-      deps.log(setting.logMessage(enabled));
-      return res.json({ ok: true, enabled });
-    } catch (error) {
-      return next(error);
-    }
-  };
-}
-
-function createPowerSettingsHandler(deps) {
-  return async function powerSettingsHandler(req, res, next) {
-    try {
-      if (!deps.macosPower.isAvailable()) {
-        return res.status(400).json({ error: 'This setting is only available on macOS' });
-      }
-      if (typeof (req.body && req.body.enabled) !== 'boolean') {
-        return res.status(400).json({ error: 'enabled must be a boolean' });
-      }
-      const status = await deps.macosPower.setLidSleepPrevention(req.body.enabled);
-      // Mirror the read route: report the companion battery guard so the UI can
-      // show what protection now applies after the toggle.
-      if (deps.batteryGuard && typeof deps.batteryGuard.getStatus === 'function') {
-        status.batteryGuard = deps.batteryGuard.getStatus();
-      }
-      return res.json({ ok: true, ...status });
-    } catch (error) {
-      return next(error);
-    }
-  };
-}
-
 function assertHostWriteDeps(deps) {
   if (!deps || typeof deps !== 'object') throw new TypeError('host write route dependencies are required');
   for (const name of [
@@ -387,8 +323,6 @@ function assertHostWriteDeps(deps) {
     'setAccessToken',
     'getAllowRemote',
     'isLocalRequest',
-    'getOfficialOAuthEnabled',
-    'setOfficialOAuthEnabled',
   ]) {
     if (typeof deps[name] !== 'function') throw new TypeError(`host write route dependency missing: ${name}`);
   }
@@ -423,17 +357,10 @@ function mountHostWriteRoutes(app, rawDeps) {
   app.post('/api/settings/notify', createNotifySettingsHandler(deps));
   app.post('/api/settings/tunnel', createTunnelSettingsHandler(deps));
   app.post('/api/tunnel/restart/:provider', createTunnelRestartHandler(deps));
-  app.post('/api/tunnel/sakurafrp/install', createTunnelSakurafrpInstallHandler(deps));
   app.post('/api/tunnel/sakurafrp/public-url', createTunnelSakurafrpPublicUrlHandler(deps));
   app.post('/api/tunnel/funnel', createTunnelFunnelHandler(deps));
   app.post('/api/settings/access-token', createAccessTokenHandler(deps));
-  app.post('/api/settings/official-oauth', createBooleanSettingHandler(deps, {
-    envKey: 'CLAUDE_OFFICIAL_VIA_PROXY',
-    get: deps.getOfficialOAuthEnabled,
-    set: deps.setOfficialOAuthEnabled,
-    logMessage: enabled => `[multicc/proxy] official-via-proxy (OAuth replay) ${enabled ? 'enabled' : 'disabled'} via UI`,
-  }));
-  app.post('/api/settings/power', createPowerSettingsHandler(deps));
+  mountPowerWriteRoutes(app, deps);
   // 自动归属档位是主机策略：只在服务端持有的档位阶梯，改动只允许本机发起，
   // 并且先落 .env 再切运行时值（失败按 env 回滚）。
   if (deps.taskAttributionMode) app.post('/api/settings/task-attribution', (req, res) => {
@@ -463,11 +390,9 @@ module.exports = {
   createNotifySettingsHandler,
   createTunnelSettingsHandler,
   createTunnelRestartHandler,
-  createTunnelSakurafrpInstallHandler,
   createTunnelSakurafrpPublicUrlHandler,
   createTunnelFunnelHandler,
   createAccessTokenHandler,
-  createBooleanSettingHandler,
   createPowerSettingsHandler,
   mountHostWriteRoutes,
 };

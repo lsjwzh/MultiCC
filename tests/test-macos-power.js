@@ -2,7 +2,9 @@
 
 const assert = require('assert');
 const {
+  elevatedCommand,
   getLidSleepPrevention,
+  getLidModeSettings,
   isAvailable,
   parseBatteryStatus,
   parseLidSleepPrevention,
@@ -10,6 +12,14 @@ const {
   setLidSleepPrevention,
   sleepNow,
 } = require('../plugins/utils/macos-power');
+
+// The daemon path is covered in test-powerd.js; here it is always absent so
+// these cases never touch a real intent file on a machine that has it installed.
+const NO_POWERD = { setIntent: () => false };
+// The elevated path must not depend on whether this checkout happens to carry
+// the installer, so the prompt cases name a path that does not exist (the
+// plain-pmset command) — the combined command has its own case below.
+const NO_INSTALLER = require('node:path').join(__dirname, '../scripts/install-powerd.sh');
 
 assert.strictEqual(isAvailable('darwin'), true);
 assert.strictEqual(isAvailable('linux'), false);
@@ -31,6 +41,14 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
     enabled: false,
   });
 
+  for (const [intent, observed, expected] of [['off', 1, false], ['none', 1, false], ['on', 0, true], ['on', 1, true]]) {
+    const settings = await getLidModeSettings({
+      platform: 'darwin', powerd: { readIntent: () => intent },
+      execFile: (file, args, options, cb) => cb(null, `SleepDisabled ${observed}\n`, ''),
+    });
+    assert.deepStrictEqual(settings, { available: true, enabled: expected, systemSleepDisabled: !!observed });
+  }
+
   let readArgs;
   assert.deepStrictEqual(await getLidSleepPrevention({
     platform: 'darwin',
@@ -47,6 +65,8 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
   const invocations = [];
   const status = await setLidSleepPrevention(true, {
     platform: 'darwin',
+    powerd: NO_POWERD,
+    powerdInstaller: NO_INSTALLER,
     execFile(file, args, options, callback) {
       invocations.push({ file, args, options });
       if (file === '/usr/bin/pmset') {
@@ -58,13 +78,34 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
   });
 
   assert.strictEqual(invocations[0].file, '/usr/bin/osascript');
-  assert.deepStrictEqual(invocations[0].args, [
-    '-e',
-    'do shell script "/usr/bin/pmset -a disablesleep 1" with administrator privileges',
-  ]);
+  assert.match(invocations[0].args[1], /install-powerd\.sh/);
+  assert.match(invocations[0].args[1], /power-intent/);
   assert.strictEqual(invocations[0].options.timeout, 120000);
   assert.strictEqual(invocations[1].file, '/usr/bin/pmset');
   assert.deepStrictEqual(status, { available: true, enabled: true });
+
+  const combined = elevatedCommand(true, { user: 'green' });
+  assert.match(combined, /install 'green' &&/);
+  assert.match(combined, /'on' > .*power-intent.* && .*disablesleep 1/);
+  assert.throws(() => elevatedCommand(false, { powerdInstaller: '/nonexistent/install.sh' }), /组件缺失/);
+  assert.ok(elevatedCommand(true, { user: "a'b" }).includes("'a'\\''b'"), 'shell quotes are escaped independently');
+
+  // powerd 已经装着：写下意图即可，一个密码框都不该弹。
+  let daemonIntents = [];
+  let daemonStatusReads = 0;
+  const daemonStatus = await setLidSleepPrevention(true, {
+    platform: 'darwin',
+    powerd: { setIntent: (value) => { daemonIntents.push(value); return true; } },
+    powerdWaitMs: 50,
+    powerdPollMs: 1,
+    execFile(file, args, options, callback) {
+      daemonStatusReads += 1;
+      callback(null, 'System-wide power settings:\n SleepDisabled 1\n', '');
+    },
+  });
+  assert.deepStrictEqual(daemonIntents, [true]);
+  assert.strictEqual(daemonStatusReads, 1, '意图生效就该立刻收手，不再问第二次');
+  assert.deepStrictEqual(daemonStatus, { available: true, enabled: true });
 
   await assert.rejects(
     setLidSleepPrevention(false, { platform: 'linux' }),
@@ -74,22 +115,26 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
   await assert.rejects(
     setLidSleepPrevention(false, {
       platform: 'darwin',
+      powerd: NO_POWERD,
+      powerdInstaller: NO_INSTALLER,
       execFile(file, args, options, callback) {
         const error = new Error('execution error: User canceled. (-128)');
         callback(error, '', '');
       },
     }),
-    /authorization was canceled/
+    /已取消授权/
   );
 
   await assert.rejects(
     setLidSleepPrevention(true, {
       platform: 'darwin',
+      powerd: NO_POWERD,
+      powerdInstaller: NO_INSTALLER,
       execFile(file, args, options, callback) {
         callback(null, file === '/usr/bin/pmset' ? 'Battery Power:\n sleep 1\n' : '', '');
       },
     }),
-    /did not take effect/
+    /系统尚未生效/
   );
 
   await assert.rejects(

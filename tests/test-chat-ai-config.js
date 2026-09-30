@@ -10,6 +10,26 @@ const autoEditor = require('../public/auto-provider-editor');
 const providerCatalog = require('../public/provider-catalog');
 
 const ROOT = path.join(__dirname, '..');
+// 显示名只有一份（2026-09-26 扶正）：Anthropic 这条常驻车道的**大字**是产品名
+// Claude，**小字**才是引擎名 Claude Agent SDK（内部 id 仍是 claude-exp）。这张表
+// 原本在四个地方各有一份（chat.js 的 CLI_META、air-task-settings.js 的 CLI_LABELS…），
+// 现在 Web 侧只有 public/provider-catalog.js 一份，服务端权威表在
+// src/cli/cli-capability.js；三端一致性由 tests/test-cli-display-parity.js 锁。
+test('claude-exp shows as "Claude" with the engine line "Claude Agent SDK", never "Claude Exp"', () => {
+  assert.equal(providerCatalog.cliDisplayName('claude-exp'), 'Claude');
+  assert.equal(providerCatalog.cliMeta('claude-exp').label, 'Claude');
+  assert.equal(providerCatalog.CLI_DISPLAY['claude-exp'].displayName, 'Claude');
+  assert.equal(providerCatalog.cliEngine('claude-exp'), 'Claude Agent SDK');
+  assert.equal(providerCatalog.cliMeta('claude-exp').engine, 'Claude Agent SDK');
+  assert.equal(providerCatalog.cliShortMark('claude-exp'), 'A');
+  // 页面不再各持一份标签表：这些文件里不该再出现 claude-exp 的字面标签。
+  const anyUi = ['public/chat.js', 'public/air-task-settings.js', 'src/cli-adapters/claude-exp.js', 'src/cli/switch-runtime.js'];
+  for (const file of anyUi) {
+    const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    assert.ok(!source.includes('Claude Exp'), `${file} still says "Claude Exp"`);
+  }
+});
+
 const CLAUDE_MODELS = [
   { value: '', label: 'Default' },
   { value: 'claude-opus-4-8', label: 'Opus 4.8' },
@@ -112,6 +132,21 @@ test('plain provider models and CLI fallback choices never retain a stale provid
   assert.equal(ai.modelChoiceLabel('', '', dsh), '默认（跟随 DSH 配置）');
   assert.deepEqual(ai.effortOptions('dsh'), []);
 
+  // gemini / grok ride the same ACP lane as opencode and manage their own
+  // vendor login, so their model list is a suggestion shortcut, not a whitelist
+  // (any id the account can reach is still accepted through 自定义…).
+  const gemini = state({ providers: [], defaults: {}, cli: 'gemini' });
+  assert.deepEqual(ai.buildModelChoices('', gemini),
+    ['', 'gemini-2.5-pro', 'gemini-2.5-flash', '__custom__']);
+  assert.equal(ai.modelChoiceLabel('', '', gemini), '默认（跟随 Gemini 配置）');
+  assert.deepEqual(ai.effortOptions('gemini'), []);
+
+  const grok = state({ providers: [], defaults: {}, cli: 'grok' });
+  assert.deepEqual(ai.buildModelChoices('', grok),
+    ['', 'grok-code-fast-1', 'grok-4', '__custom__']);
+  assert.equal(ai.modelChoiceLabel('', '', grok), '默认（跟随 Grok 配置）');
+  assert.deepEqual(ai.effortOptions('grok'), []);
+
   const zcode = state({ providers: [], defaults: {}, cli: 'zcode' });
   assert.deepEqual(ai.buildModelChoices('', zcode), ['', '__custom__']);
   assert.equal(ai.modelChoiceLabel('', '', zcode), '默认（跟随 ZCode 设置）');
@@ -133,11 +168,19 @@ test('plain provider models and CLI fallback choices never retain a stale provid
 test('vendor-managed CLIs stay providerless while ZCode exposes MultiCC providers', () => {
   const source = fs.readFileSync(path.join(ROOT, 'public', 'chat-ai-config.js'), 'utf8');
   const page = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
-  // qoder / codebuddy / dsh are all vendor-auth CLIs: no MultiCC provider pick.
-  assert.match(source, /const supportsProvider = cli !== 'qoder' && cli !== 'codebuddy' && cli !== 'dsh';/);
+  // qoder / codebuddy / dsh / gemini / grok are all vendor-auth CLIs: no MultiCC
+  // provider pick (gemini and grok log in with their own vendor credentials).
+  // The id list lives in the CLI catalog now — both ends derive it, so a sixth
+  // vendor CLI cannot be providerless on one page and not the other. Parity is
+  // pinned by tests/test-cli-display-parity.js.
+  assert.match(source, /const supportsProvider = !cliProviderless\(cli\);/);
+  assert.equal(providerCatalog.cliProviderless('qoder'), true);
+  assert.equal(providerCatalog.cliProviderless('gemini'), true);
+  assert.equal(providerCatalog.cliProviderless('zcode'), false);
   assert.match(source, /ZCode 原生 \/ Coding Plan/);
   assert.match(page, /PROVIDERLESS_CLIS\.has\(_sessionCli\)/);
-  assert.match(page, /const PROVIDERLESS_CLIS = new Set\(\['qoder', 'codebuddy', 'dsh'\]\);/);
+  assert.match(page, /const PROVIDERLESS_CLIS = _providerCatalog\.providerlessClis\(\);/);
+  assert.doesNotMatch(page, /const PROVIDERLESS_CLIS = new Set\(\[/);
   assert.doesNotMatch(page, /_sessionCli !== 'qoder' && _sessionCli !== 'zcode'/);
 });
 
@@ -151,10 +194,10 @@ test('Auto Provider picker exposes protocol pools, ordered candidates and the pe
   assert.match(source, /id="ai-auto-section"/);
   assert.match(source, /autoProviderEditorApi\(\)\.mount/);
   assert.match(source, /const result = autoEditor\.read\(\)/);
-  assert.match(shared, /multicc-auto-editor-priority/);
+  assert.match(shared, /multicc-auto-editor-move-up/);
   assert.match(shared, /cross_trust_confirmation_required/);
   assert.match(shared, /同一对话上下文可能在自动切换时发送给多个上游/);
-  assert.match(shared, /@media \(max-width:640px\)/);
+  assert.match(shared, /@container \(max-width:520px\)/);
   assert.equal(autoEditor.defaultSelection([
     { id: 'official', protocol: 'anthropic', isOfficial: true },
     { id: 'relay-a', protocol: 'anthropic' },
@@ -351,7 +394,7 @@ test("subagent routing policy is one shared rule for chat and Air", () => {
   // Only Claude and Codex can send sub-agents down another line.
   assert.equal(ai.supportsSubagentCli("claude"), true);
   assert.equal(ai.supportsSubagentCli("codex"), true);
-  for (const cli of ["opencode", "zcode", "qoder", "codebuddy", "dsh", "kimi", "", null, undefined]) {
+  for (const cli of ["opencode", "zcode", "qoder", "codebuddy", "dsh", "gemini", "grok", "kimi", "", null, undefined]) {
     assert.equal(ai.supportsSubagentCli(cli), false, `${cli} cannot route sub-agents`);
     assert.equal(ai.resolveSubagent({ cli, providerId: "relay", model: "glm-5.2" }), null);
   }
@@ -370,4 +413,33 @@ test("subagent routing policy is one shared rule for chat and Air", () => {
     { providerId: "relay-b", model: "glm-5.2" },
   );
   assert.deepEqual(ai.resolveSubagent({ cli: "claude" }), null);
+});
+
+test('opencode native providers (Zen / Go) become Provider rows that filter the model list', () => {
+  // The module binds `window` at load time, so load a private copy under a fake window.
+  const modulePath = require.resolve('../public/chat-ai-config');
+  const store = { 'multicc.opencode.models.v2': JSON.stringify({ at: Date.now(), models: [
+    { provider: 'opencodego', model: 'kimi-k2', label: 'opencodego/kimi-k2' },
+    { provider: 'opencode', model: 'big-pickle', label: 'opencode/big-pickle (OpenCode Zen)' },
+    { provider: 'opencodego', model: 'glm-5', label: 'opencodego/glm-5' },
+  ] }) };
+  delete require.cache[modulePath];
+  globalThis.window = { localStorage: { getItem: key => store[key] || null } };
+  const ai = require(modulePath);
+  try {
+    assert.deepEqual(ai.openCodeNativeProviders().map(p => [p.value, p.label]), [
+      ['opencode-native:opencodego', 'OpenCode 原生 · OpenCode Go'],
+      ['opencode-native:opencode', 'OpenCode 原生 · OpenCode Zen'],
+    ]);
+    assert.equal(ai.openCodeNativeProviderOf('opencode-native:opencode'), 'opencode');
+    assert.equal(ai.openCodeNativeProviderOf('prov-1'), '');
+    const state = { cli: 'opencode', providers: [] };
+    assert.deepEqual(ai.buildModelChoices('opencode-native:opencode', state), ['opencode/big-pickle', '__custom__']);
+    assert.deepEqual(ai.buildModelChoices('opencode-native:opencodego', state),
+      ['opencodego/kimi-k2', 'opencodego/glm-5', '__custom__']);
+    assert.equal(ai.buildModelChoices('', state).length, 5);
+  } finally {
+    delete globalThis.window;
+    delete require.cache[modulePath];
+  }
 });

@@ -98,7 +98,16 @@
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  /* 长消息不会把整条队列撑到失控：固定最大显示高度，超出的部分在行内滚动
+     （双击该行可弹输入框查看/修改完整正文）。 */
+  max-height: 3.6em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
+.session-queue-text:hover {
+  background: rgba(255, 255, 255, .03);
+}
+.session-queue-text[data-edit] { cursor: text; }
 .session-queue-actions {
   flex: 0 0 auto;
   display: flex;

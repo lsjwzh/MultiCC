@@ -6,6 +6,9 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const { createSandboxConsole } = require('./helpers/sandbox-console');
+// The VM below pins host-lifecycle's require set to `./shutdown`, so the lane
+// predicate is only reachable through `deps` — pass the production one.
+const { isResidentSession } = require('../src/cli/cli-capability');
 
 const HOST_LIFECYCLE_FILE = path.join(__dirname, '..', 'src', 'host-lifecycle.js');
 
@@ -64,9 +67,10 @@ function loadHostLifecycle() {
   return { ...commonJsModule.exports, getCoordinator: () => coordinator };
 }
 
-function createDeps({ timeline = [], errors = [], taskRunHost, taskRunStore, sessionPersistenceStop } = {}) {
+function createDeps({ timeline = [], errors = [], sessionPersistenceStop } = {}) {
   let shuttingDown = false;
   return {
+    isResidentSession,
     getShuttingDown: () => shuttingDown,
     setShuttingDown: value => { shuttingDown = value; },
     setServiceReady: value => timeline.push(`service-ready:${value}`),
@@ -110,8 +114,6 @@ function createDeps({ timeline = [], errors = [], taskRunHost, taskRunStore, ses
       stop: sessionPersistenceStop || (() => timeline.push('session-persistence-stopped')),
     },
     qwenAudioSupervisor: { stopAll: () => timeline.push('audio-stopped') },
-    taskRunStore,
-    taskRunHost,
     log: {
       log: message => timeline.push(`log:${message}`),
       warn: message => timeline.push(`warn:${message}`),
@@ -119,117 +121,6 @@ function createDeps({ timeline = [], errors = [], taskRunHost, taskRunStore, ses
     },
   };
 }
-
-test('optional TaskRun store closes once, after service quiesce and persisted session shutdown', async () => {
-  const withoutPort = loadHostLifecycle();
-  withoutPort.createHostLifecycle(createDeps());
-  const baselineCloserCount = withoutPort.getCoordinator().closers.length;
-
-  const timeline = [];
-  let closeCalls = 0;
-  const withPort = loadHostLifecycle();
-  withPort.createHostLifecycle(createDeps({
-    timeline,
-    taskRunStore: {
-      async close() {
-        closeCalls += 1;
-        timeline.push('task-run-store-closed');
-      },
-    },
-  }));
-  const coordinator = withPort.getCoordinator();
-  assert.equal(coordinator.closers.length, baselineCloserCount + 1,
-    'omitting the optional port leaves the existing closer list unchanged');
-
-  await coordinator.shutdown({ graceMs: 1 });
-  await coordinator.shutdown({ graceMs: 1 });
-  assert.equal(closeCalls, 1);
-  assert.ok(timeline.indexOf('service-ready:false') < timeline.indexOf('task-run-store-closed'));
-  assert.ok(timeline.indexOf('persisted:teardown.checkpoint') < timeline.indexOf('task-run-store-closed'));
-  assert.ok(timeline.indexOf('session-persistence-stopped') < timeline.indexOf('task-run-store-closed'));
-  assert.equal(timeline.at(-1), 'task-run-store-closed');
-
-  const taskRunCloser = coordinator.closers.at(-1);
-  await taskRunCloser();
-  assert.equal(closeCalls, 1, 'the port itself also guards against duplicate close invocation');
-});
-
-test('shutdown joins TaskRun finalizers before closing their SQLite store', async () => {
-  const timeline = [];
-  const loaded = loadHostLifecycle();
-  loaded.createHostLifecycle(createDeps({
-    timeline,
-    taskRunHost: {
-      async waitForFinalizers() {
-        timeline.push('task-run-finalizers-drained');
-      },
-    },
-    taskRunStore: {
-      close() {
-        timeline.push('task-run-store-closed');
-      },
-    },
-  }));
-  await loaded.getCoordinator().shutdown({ graceMs: 1 });
-  assert.ok(timeline.indexOf('task-run-finalizers-drained') >= 0);
-  assert.ok(timeline.indexOf('orchestration-disposed') < timeline.indexOf('task-run-finalizers-drained'));
-  assert.ok(timeline.indexOf('task-run-finalizers-drained') < timeline.indexOf('session-persistence-stopped'));
-  assert.ok(timeline.indexOf('task-run-finalizers-drained') < timeline.indexOf('task-run-store-closed'));
-});
-
-test('TaskRun store close errors are logged and do not reject or stall shutdown', async () => {
-  const timeline = [];
-  const errors = [];
-  let closeCalls = 0;
-  const loaded = loadHostLifecycle();
-  loaded.createHostLifecycle(createDeps({
-    timeline,
-    errors,
-    taskRunStore: {
-      close() {
-        closeCalls += 1;
-        timeline.push('task-run-store-close-attempted');
-        throw new Error('simulated sqlite close failure');
-      },
-    },
-  }));
-
-  const coordinator = loaded.getCoordinator();
-  await assert.doesNotReject(coordinator.shutdown({ graceMs: 1 }));
-  assert.equal(coordinator.finished, true);
-  assert.equal(closeCalls, 1);
-  assert.ok(timeline.indexOf('session-persistence-stopped') < timeline.indexOf('task-run-store-close-attempted'));
-  assert.equal(errors.length, 1);
-  assert.match(errors[0], /task-run store close error/i);
-  assert.match(errors[0], /simulated sqlite close failure/);
-});
-
-test('TaskRun close is still attempted after an earlier persistence closer fails', async () => {
-  const timeline = [];
-  const errors = [];
-  let closeCalls = 0;
-  const loaded = loadHostLifecycle();
-  loaded.createHostLifecycle(createDeps({
-    timeline,
-    errors,
-    sessionPersistenceStop: () => {
-      timeline.push('session-persistence-attempted');
-      throw new Error('session persistence stop failed');
-    },
-    taskRunStore: {
-      close() {
-        closeCalls += 1;
-        timeline.push('task-run-store-closed');
-      },
-    },
-  }));
-
-  const coordinator = loaded.getCoordinator();
-  await coordinator.shutdown({ graceMs: 1 });
-  assert.equal(closeCalls, 1);
-  assert.ok(timeline.indexOf('session-persistence-attempted') < timeline.indexOf('task-run-store-closed'));
-  assert.ok(errors.some(message => /session persistence stop failed/.test(message)));
-});
 
 test('forced shutdown terminalizes the active provider attempt before closing its runner', async () => {
   const timeline = [];
@@ -277,4 +168,30 @@ test('forced shutdown reaps each chat background shadow exactly once before stre
   const reaps = timeline.filter(value => value === 'background-reap:chat-a:shutdown');
   assert.equal(reaps.length, 1);
   assert.ok(timeline.indexOf(reaps[0]) < timeline.indexOf('stream-close:chat-a'));
+});
+
+// stopAuxQueue 从「一个 currentTask」变成「并发池里的每一个槽」：停机时每一个在飞
+// 的 Aux 请求都要标脏，否则它的结果会在关停中途回流；排队的照旧带着
+// SERVER_SHUTTING_DOWN 被拒。
+test('shutdown marks every running aux slot cancelled, not only the first', async () => {
+  const timeline = [];
+  const rejected = [];
+  const slots = ['slot-1', 'slot-2', 'slot-3'].map(id => ({ id, cancelled: false }));
+  const queued = ['wait-1', 'wait-2'].map(id => ({
+    id,
+    cancelled: false,
+    reject: error => rejected.push({ id, code: error.code }),
+  }));
+  const loaded = loadHostLifecycle();
+  const deps = createDeps({ timeline });
+  deps.auxQueue = { queue: queued, running: slots, processing: true, currentTask: slots[0] };
+  loaded.createHostLifecycle(deps);
+
+  await loaded.getCoordinator().shutdown({ graceMs: 0 });
+
+  assert.deepEqual(rejected, [
+    { id: 'wait-1', code: 'SERVER_SHUTTING_DOWN' },
+    { id: 'wait-2', code: 'SERVER_SHUTTING_DOWN' },
+  ]);
+  assert.deepEqual(slots.map(slot => slot.cancelled), [true, true, true]);
 });

@@ -1,8 +1,8 @@
 'use strict';
 
 // Wiring tests for the SakuraFrp integration surface added in P3:
-//   • tunnel.js exposes sakuraAccess / sakuraInstallFrpc / sakuraApplyPublicUrl
-//   • the managed frpc install path is probed FIRST by the binary detector
+//   • tunnel.js exposes sakuraAccess / sakuraApplyPublicUrl
+//   • the data-root frpc path is probed FIRST by the binary detector
 //   • the access token is resolved server-side and never crosses the boundary
 //   • honest base-URL backfill: auto_https needs a bound *.nyat.app host, plain
 //     http tunnels auto-derive http://nodeHost:remote
@@ -14,9 +14,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const crypto = require('node:crypto');
-
-const { frpcArchKey, defaultFrpcDest } = require('../src/tunnel-sakurafrp-install');
 
 const TOKEN = 'kbl' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4' + 'x3';
 const API = 'https://api.natfrp.com/v4';
@@ -54,17 +51,12 @@ function jsonResponse(body) {
   return { ok: true, status: 200, json: async () => body, arrayBuffer: async () => body };
 }
 
-// Route by URL pathname so one fake fetch can serve user/info, tunnels, nodes,
-// the clients manifest and the binary download.
-function routedFetch(map, bytesByUrl = {}) {
+// Route by URL pathname so one fake fetch can serve user/info, tunnels and nodes.
+function routedFetch(map) {
   const calls = [];
   const fetch = async (url) => {
     calls.push(String(url));
     const parsed = new URL(url);
-    if (bytesByUrl[url]) {
-      const bytes = bytesByUrl[url];
-      return { ok: true, status: 200, arrayBuffer: async () => bytes };
-    }
     const key = parsed.pathname;
     for (const [suffix, body] of Object.entries(map)) {
       if (key.endsWith(suffix)) return jsonResponse(body);
@@ -106,21 +98,24 @@ function plainHttpTunnel() {
 test('tunnel service exports the SakuraFrp integration methods', () => {
   const ctx = loadTunnel(tmpDataDir('multicc-sf-exports-'));
   try {
-    for (const name of ['sakuraAccess', 'sakuraInstallFrpc', 'sakuraApplyPublicUrl']) {
+    for (const name of ['sakuraAccess', 'sakuraApplyPublicUrl']) {
       assert.equal(typeof ctx.tunnel[name], 'function', `${name} must be exported`);
     }
+    // MultiCC never installs frpc: there must be no install entry point left.
+    assert.equal(ctx.tunnel.sakuraInstallFrpc, undefined);
+    assert.equal(typeof ctx.tunnel.defaultFrpcDest, 'function');
   } finally {
     ctx.restore();
   }
 });
 
-test('the managed frpc install path is probed before system locations', () => {
+test('the data-root frpc path is probed before system locations', () => {
   const dataDir = tmpDataDir('multicc-sf-binpath-');
   const ctx = loadTunnel(dataDir);
   try {
-    const managed = defaultFrpcDest({ dataDir });
-    // A managed install must win over a stale /usr/local/bin copy. availability()
-    // reports sakurafrp present once the managed binary exists on disk.
+    const managed = ctx.tunnel.defaultFrpcDest({ dataDir });
+    // A binary the user dropped here must win over a stale /usr/local/bin copy.
+    // availability() reports sakurafrp present once it exists on disk.
     fs.mkdirSync(path.dirname(managed), { recursive: true });
     fs.writeFileSync(managed, '#!/bin/sh\n', { mode: 0o755 });
     assert.equal(ctx.tunnel.availability().sakurafrp, true);
@@ -203,52 +198,3 @@ test('sakuraApplyPublicUrl auto-derives http://host:remote for a plain tunnel', 
   }
 });
 
-test('sakuraInstallFrpc verifies MD5+size and lands an executable at the managed path', async (t) => {
-  const archKey = frpcArchKey();
-  const dataDir = tmpDataDir('multicc-sf-install-');
-  const ctx = loadTunnel(dataDir);
-  try {
-    const dest = defaultFrpcDest({ dataDir });
-    if (!archKey) {
-      const fetch = routedFetch({ '/system/clients': { frpc: { ver: 'x', archs: {} } } });
-      const result = await ctx.tunnel.sakuraInstallFrpc({ fetch });
-      assert.equal(result.ok, false);
-      assert.equal(result.reason, 'install_failed');
-      return;
-    }
-    const bytes = crypto.randomBytes(2048);
-    const hash = crypto.createHash('md5').update(bytes).digest('hex');
-    const downloadUrl = 'https://nya.globalslb.net/frpc/' + archKey;
-    const manifest = {
-      frpc: {
-        ver: '0.51.0-sakura-14',
-        archs: { [archKey]: { title: archKey, url: downloadUrl, hash, size: bytes.length } },
-      },
-    };
-    const fetch = routedFetch({ '/system/clients': manifest }, { [downloadUrl]: bytes });
-    const result = await ctx.tunnel.sakuraInstallFrpc({ fetch });
-    assert.equal(result.ok, true, JSON.stringify(result));
-    assert.equal(result.path, dest);
-    assert.equal(result.version, '0.51.0-sakura-14');
-    const stat = fs.statSync(dest);
-    assert.equal(stat.isFile(), true);
-    assert.equal(stat.mode & 0o777, 0o755);
-    assert.equal(crypto.createHash('md5').update(fs.readFileSync(dest)).digest('hex'), hash);
-    // No partial temp file may survive.
-    assert.equal(fs.readdirSync(path.dirname(dest)).some(f => f.includes('.partial-')), false);
-  } finally {
-    ctx.restore();
-  }
-});
-
-test('sakuraInstallFrpc reports install_failed when the manifest has no verifiable entry', async () => {
-  const ctx = loadTunnel(tmpDataDir('multicc-sf-install-bad-'));
-  try {
-    const fetch = routedFetch({ '/system/clients': { frpc: { ver: 'x', archs: {} } } });
-    const result = await ctx.tunnel.sakuraInstallFrpc({ fetch });
-    assert.equal(result.ok, false);
-    assert.equal(result.reason, 'install_failed');
-  } finally {
-    ctx.restore();
-  }
-});

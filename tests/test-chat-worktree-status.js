@@ -203,3 +203,29 @@ test('one-click sync reports the server refusal verbatim when the checkout vanis
   assert.match(host.notices[1], /^✗ 同步失败：会话工作区已休眠回收/);
   assert.equal(syncButton.disabled, false, 'the button resets once the request is done');
 });
+
+test('fresh merge refresh bypasses the poll cache and returns the authoritative state', async () => {
+  const host = loadModule();
+  const mergeButton = createElement('button');
+  const calls = [];
+  host.window.fetch = async url => {
+    calls.push(url);
+    return { ok: true, json: async () => ({ mergeReady: true, dirty: true, ahead: 0, behind: 0 }) };
+  };
+  const status = host.api.create({
+    document: host.document,
+    tt: host.tt,
+    withToken: url => url,
+    sessionId: () => 'task-1',
+    mergeButton,
+    mergeHint: null,
+    api: host.api_,
+    notice: host.notice,
+    syncRequest: host.syncRequest,
+  });
+
+  const state = await status.refresh({ fresh: true });
+  assert.equal(calls[0], '/api/sessions/task-1/merge-status?refresh=1');
+  assert.equal(state.mergeReady, true);
+  assert.equal(mergeButton.classList.contains('merge-ready'), true);
+});

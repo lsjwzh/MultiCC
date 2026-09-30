@@ -21,7 +21,6 @@ const EXPECTED_PATHS = [
   '/api/tunnel/ipv6',
   '/api/tunnel/sakurafrp',
   '/api/settings/access-token',
-  '/api/settings/official-oauth',
   '/api/settings/power',
 ];
 
@@ -51,10 +50,14 @@ function createHarness(overrides = {}) {
     },
     getAccessToken: () => '',
     isLocalRequest: () => false,
-    getOfficialOAuthEnabled: () => false,
     macosPower: {
       isAvailable: () => false,
-      getLidSleepPrevention: async () => ({ available: true, enabled: true }),
+      getLidModeSettings: async () => ({ available: true, enabled: true }),
+    },
+    powerPreferences: { read: () => false },
+    unlockPassword: {
+      isAvailable: () => true,
+      hasPassword: async () => false,
     },
     ...overrides,
   };
@@ -256,30 +259,25 @@ test('push health exposes fingerprints and explicit safe health DTOs only', asyn
   }
 });
 
-test('settings read live token and official-oauth values instead of mount-time snapshots', async () => {
+test('settings read the live access token instead of a mount-time snapshot', async () => {
   let token = 'secret-123456';
-  let officialEnabled = false;
   const localRequest = { ip: '127.0.0.1' };
   const { routes } = createHarness({
     getAccessToken: () => token,
     isLocalRequest: (req) => req === localRequest,
-    getOfficialOAuthEnabled: () => officialEnabled,
   });
   assert.deepEqual((await invoke(routes, '/api/settings/access-token', localRequest)).body, {
     hasToken: true,
     masked: '****3456',
     canEdit: true,
   });
-  assert.deepEqual((await invoke(routes, '/api/settings/official-oauth')).body, { enabled: false });
 
   token = 'abc';
-  officialEnabled = true;
   assert.deepEqual((await invoke(routes, '/api/settings/access-token', {})).body, {
     hasToken: true,
     masked: '****',
     canEdit: false,
   });
-  assert.deepEqual((await invoke(routes, '/api/settings/official-oauth')).body, { enabled: true });
 });
 
 test('tunnel settings and diagnostics preserve success payloads', async () => {
@@ -355,20 +353,32 @@ test('power settings preserve success branches and delegate all errors', async (
   const available = createHarness({
     macosPower: {
       isAvailable: () => true,
-      getLidSleepPrevention: async () => ({ available: true, enabled: true, source: 'pmset' }),
+      getLidModeSettings: async () => ({ available: true, enabled: true, source: 'pmset' }),
     },
   });
   assert.deepEqual((await invoke(available.routes, '/api/settings/power')).body, {
     available: true,
     enabled: true,
     source: 'pmset',
+    unlockPassword: { available: true, set: false, canEdit: false, requested: false, enabled: false, requiredByLid: true },
   });
+
+
+  const hasPassword = createHarness({
+    macosPower: {
+      isAvailable: () => true,
+      getLidModeSettings: async () => ({ available: true, enabled: true }),
+    },
+    unlockPassword: { isAvailable: () => true, hasPassword: async () => true },
+  });
+  assert.deepEqual((await invoke(hasPassword.routes, '/api/settings/power')).body.unlockPassword,
+    { available: true, set: true, canEdit: false, requested: false, enabled: true, requiredByLid: true });
 
   const operationError = new Error('pmset denied /Users/private token=secret');
   const failing = createHarness({
     macosPower: {
       isAvailable: () => true,
-      getLidSleepPrevention: async () => { throw operationError; },
+      getLidModeSettings: async () => { throw operationError; },
     },
   });
   const response = await invoke(failing.routes, '/api/settings/power');
@@ -381,7 +391,7 @@ test('power settings preserve success branches and delegate all errors', async (
   const availabilityFailing = createHarness({
     macosPower: {
       isAvailable: () => { throw availabilityError; },
-      getLidSleepPrevention: async () => ({ available: true, enabled: true }),
+      getLidModeSettings: async () => ({ available: true, enabled: true }),
     },
   });
   const availabilityResponse = await invoke(availabilityFailing.routes, '/api/settings/power');

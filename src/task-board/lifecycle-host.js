@@ -1,9 +1,11 @@
 'use strict';
-const { gitWorktreeMergeState, gitWorktreeRemove } = require('../git/service');
+const fs = require('node:fs');
+const { gitRun, gitWorktreeMergeState, gitWorktreeRemove } = require('../git/service');
+const { isOpenRunState } = require('../classify/vocab');
 const { taskDirId } = require('./core');
 
 function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getState,
-  getRunState, getHistoryService, destroySession, directories, persist, mutate,
+  getRunState, isSessionBusy = () => false, getHistoryService, destroySession, directories, persist, mutate,
   workspaceBroadcast, chatBroadcast }) {
   function worktrees(ids) {
     return Object.values(getBoard().tasks).filter(t => ids.includes(t.id) && t.worktreePath && t.branch);
@@ -18,9 +20,41 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
     if (!dir) throw Object.assign(new Error('directory_not_found'), { code: 'directory_not_found' });
     const safety = await gitWorktreeMergeState(dir, record);
     const reasons = [];
+    if (!record.worktreePath || !record.branch || safety.reason || safety.conflict) {
+      reasons.push('task_workspace_unverifiable');
+    }
+    if (safety.worktreeMissing && !safety.conflict) {
+      // A missing checkout with a surviving branch ref stays unverifiable
+      // (hibernated or manually wiped — the ref may still hold unmerged work).
+      // But a branch that was never created (planned workspace, never
+      // delivered) means there is literally no work to lose: deleting the
+      // task is safe, and refusing would wedge it forever — the checkout is
+      // only materialized by running a turn.
+      const branchExists = record.branch
+        ? await gitRun(dir.path, ['rev-parse', '--verify', '--quiet', `refs/heads/${record.branch}`]).then(() => true, () => false)
+        : false;
+      if (!branchExists) reasons.length = 0;
+    }
+    if (reasons.length) throw Object.assign(new Error(reasons[0]), { code: reasons[0], reasons });
+    if (safety.worktreeMissing) return;
     if (safety.dirty) reasons.push('task_workspace_dirty');
     if (safety.ahead > 0) reasons.push('task_workspace_unmerged');
+    if (!Number.isFinite(safety.ahead)) reasons.push('task_workspace_unverifiable');
+    if (!reasons.length && record.branch) {
+      try {
+        const currentBranch = await gitRun(record.worktreePath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+        if (currentBranch !== record.branch) reasons.push('task_workspace_unverifiable');
+        const baseBranch = dir.baseBranch || safety.baseBranch;
+        if (!baseBranch) reasons.push('task_workspace_unverifiable');
+        else await gitRun(dir.path, ['merge-base', '--is-ancestor', `refs/heads/${record.branch}`, `refs/heads/${baseBranch}`]);
+      } catch (_) { reasons.push('task_workspace_unverifiable'); }
+    }
     if (reasons.length) throw Object.assign(new Error(reasons[0]), { code: reasons[0], reasons });
+  }
+  async function assertNoIgnoredData(worktreePath) {
+    if (!worktreePath || !fs.existsSync(worktreePath)) return;
+    const ignored = await gitRun(worktreePath, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z', '--directory']);
+    if (ignored) throw Object.assign(new Error('task_workspace_ignored'), { code: 'task_workspace_ignored' });
   }
   function sessions(task, ids) {
     const tasks = Object.values(getBoard().tasks).filter(t => ids.includes(t.id));
@@ -33,7 +67,11 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
       const dedicated = ids.includes(record.taskBoundTaskId);
       const selected = ids.includes(getShell().stateTarget(record.id).taskId);
       const current = ids.includes(record.taskState?.taskId) || ids.includes(getState(record.id)?._currentTaskId);
-      if ((dedicated || selected || current) && ['running', 'queued', 'waiting'].includes(getRunState(record.id))) {
+      // An open run blocks the delete: `background` too, because that turn is
+      // only idle while a job it started is still out there. Membership lives
+      // in src/classify/vocab.js (OPEN_RUN_STATES) — the same list the merge
+      // guard and both UIs read.
+      if ((dedicated || selected || current) && (isOpenRunState(getRunState(record.id)) || isSessionBusy(record.id))) {
         throw Object.assign(new Error('task_busy'), { code: 'task_busy' });
       }
     }
@@ -52,13 +90,17 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
       }
       if (!options.force && ids.includes(record.taskBoundTaskId) && record.worktreePath && !record.workspaceOwnerSessionId) {
         await assertWorkspaceSafe(directories.get(record.dirId), record);
+        if (options.automatic) await assertNoIgnoredData(record.worktreePath);
       }
     }
     for (const member of worktrees(ids)) {
       if (otherTasks.some(t => t.worktreePath === member.worktreePath)) {
         throw Object.assign(new Error('shell_workspace_referenced'), { code: 'shell_workspace_referenced' });
       }
-      if (!options.force) await assertWorkspaceSafe(directories.get(taskDirId(getBoard(), member)), member);
+      if (!options.force) {
+        await assertWorkspaceSafe(directories.get(taskDirId(getBoard(), member)), member);
+        if (options.automatic) await assertNoIgnoredData(member.worktreePath);
+      }
     }
   }
   async function purgeTaskData(task, ids, options = {}) {

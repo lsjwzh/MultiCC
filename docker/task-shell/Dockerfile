@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git curl unzip python3 make g++ chromium fonts-noto-cjk tini tmux openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# No node_modules or npm cache: the real installer runs in a fresh container,
+# No node_modules or npm cache: the release gate starts from a fresh container,
 # and the standalone package it installs carries its own runtime.
 FROM tools AS clean-install
 WORKDIR /candidate

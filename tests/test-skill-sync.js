@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { NEVER_SYNCED_STATUS, createSkillSyncRuntime } = require('../src/skill-sync');
+const { NEVER_SYNCED_STATUS, RETIRED_BUNDLED_SKILLS, createSkillSyncRuntime } = require('../src/skill-sync');
 const { mountSkillSyncRoutes } = require('../src/routes/skill-sync');
 
 function createApp() {
@@ -168,6 +168,56 @@ test('bundled artifact rule installs and upgrades with its relative references i
   }
 });
 
+test('bundled browser skill keeps its adapters and local launcher after sync', t => {
+  const h = createHarness(t);
+  const source = path.join(__dirname, '../skills/multicc-browser');
+  fs.cpSync(source, path.join(h.rootDir, 'skills/multicc-browser'), { recursive: true });
+  assert.equal(h.runtime.installBundledSkills(), 1);
+  h.runtime.syncSharedSkills();
+  // SKILL.md routes the model to the mbrowser reference first; a rename that
+  // skips the sync would leave the installed skill with a dead link.
+  assert.match(fs.readFileSync(path.join(source, 'SKILL.md'), 'utf8'), /references\/mbrowser.md/);
+  for (const provider of h.providers) {
+    const installed = path.join(provider.dir, 'multicc-browser');
+    for (const relative of [
+      'references/openclaw.md',
+      'references/hermes.md',
+      'references/browser-use-local.md',
+      'references/macos-tiers.md',
+      'references/mbrowser.md',
+      'scripts/local_browser_use.py',
+      'scripts/browser_probe.py',
+    ]) {
+      assert.equal(fs.readFileSync(path.join(installed, relative), 'utf8'),
+        fs.readFileSync(path.join(source, relative), 'utf8'));
+    }
+  }
+});
+
+// SKILL.md tells the model to run `scripts/mcu.sh` itself, so the installed
+// copy must carry an executable bit even though git stores these files 100644
+// and cpSync copies that mode over verbatim.
+test('bundled install makes shebang scripts under scripts/ executable', t => {
+  const h = createHarness(t);
+  const source = makeSkill(path.join(h.rootDir, 'skills'), 'scripted-skill', 'v1');
+  fs.mkdirSync(path.join(source, 'scripts'));
+  for (const [name, content] of [
+    ['run.sh', '#!/bin/bash\necho run\n'],
+    ['data.txt', 'plain data, no shebang\n'],
+  ]) {
+    fs.writeFileSync(path.join(source, 'scripts', name), content);
+    fs.chmodSync(path.join(source, 'scripts', name), 0o644);
+  }
+  assert.equal(h.runtime.installBundledSkills(), 1);
+  const destination = path.join(h.agentsSkillsDir, 'scripted-skill', 'scripts');
+  // eslint-disable-next-line no-bitwise
+  assert.notEqual(fs.statSync(path.join(destination, 'run.sh')).mode & 0o111, 0,
+    'a shebang script must land executable');
+  // eslint-disable-next-line no-bitwise
+  assert.equal(fs.statSync(path.join(destination, 'data.txt')).mode & 0o111, 0,
+    'a data file must keep its own mode');
+});
+
 test('bundled install never clobbers a same-named user skill without a version marker', t => {
   const h = createHarness(t);
   const source = path.join(__dirname, '../skills/multicc-artifact');
@@ -179,6 +229,41 @@ test('bundled install never clobbers a same-named user skill without a version m
   assert.match(fs.readFileSync(path.join(destination, 'SKILL.md'), 'utf8'), /user content/);
   assert.ok(h.state.warnings.some(w => w.includes('user content not overwritten')),
     'the conflict is surfaced as a warning');
+});
+
+test('a renamed bundled skill is retired only where this installer owns it', t => {
+  const h = createHarness(t);
+  const [claude, codex, hermes] = h.providers;
+  for (const p of h.providers) fs.mkdirSync(p.dir, { recursive: true });
+  const shared = makeSkill(h.agentsSkillsDir, 'computer-use', '1');
+  fs.mkdirSync(path.join(shared, '.converted/codex'), { recursive: true });
+  fs.symlinkSync(path.join(shared, '.converted/codex'), path.join(codex.dir, 'computer-use'));
+  fs.symlinkSync(shared, path.join(hermes.dir, 'computer-use'));
+  // A hand-cloned upstream under the same name, and an unrelated link: never touched.
+  makeSkill(claude.dir, 'computer-use');
+  const elsewhere = makeSkill(h.tempDir, 'elsewhere');
+  fs.mkdirSync(path.join(h.tempDir, 'other'));
+  fs.symlinkSync(elsewhere, path.join(h.tempDir, 'other', 'computer-use'));
+
+  assert.equal(h.runtime.retireBundledSkills(), 1);
+  assert.ok(!fs.existsSync(shared));
+  assert.throws(() => fs.lstatSync(path.join(codex.dir, 'computer-use')), /ENOENT/);
+  assert.throws(() => fs.lstatSync(path.join(hermes.dir, 'computer-use')), /ENOENT/);
+  assert.ok(fs.existsSync(path.join(claude.dir, 'computer-use/SKILL.md')), 'user clone survives');
+  assert.equal(h.runtime.retireBundledSkills(), 0, 'idempotent');
+});
+
+test('an unmarked user skill under a retired name is kept', t => {
+  const h = createHarness(t);
+  makeSkill(h.agentsSkillsDir, 'computer-use');
+  assert.equal(h.runtime.retireBundledSkills(), 0);
+  assert.ok(fs.existsSync(path.join(h.agentsSkillsDir, 'computer-use/SKILL.md')));
+});
+
+test('no bundled skill ships under a retired name', () => {
+  const bundled = fs.readdirSync(path.join(__dirname, '../skills'));
+  for (const name of RETIRED_BUNDLED_SKILLS) assert.ok(!bundled.includes(name), name);
+  assert.ok(bundled.includes('multicc-computer-use'));
 });
 
 test('real Codex and Hermes conversion copies the shared registration rule', t => {

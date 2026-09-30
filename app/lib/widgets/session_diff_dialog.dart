@@ -521,6 +521,8 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
         return const Color(0xFFb64e43);
       case 'R':
         return const Color(0xFF6f42c1);
+      case 'U':
+        return const Color(0xFFd29922);
       case 'M':
       default:
         return const Color(0xFF1267b5);
@@ -535,6 +537,8 @@ class _SessionDiffDialogState extends State<_SessionDiffDialog> {
         return const Color(0x22b64e43);
       case 'R':
         return const Color(0x226f42c1);
+      case 'U':
+        return const Color(0x22d29922);
       case 'M':
       default:
         return const Color(0x221267b5);

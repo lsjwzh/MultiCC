@@ -116,18 +116,80 @@ function view(text, color, title, action) {
   return Object.freeze({ text, color, title: title || '', action: action || null });
 }
 
+// ── One bar, two languages ─────────────────────────────────────────────────
+// The server cannot pick the words: it renders for every session at once, and
+// the language only exists in the client's localStorage. So a rendered bar also
+// carries the pieces it was built from, and a client that speaks another
+// language rebuilds the line from its own catalog (public/i18n-catalog.js):
+//
+//   {s: '套餐: prolite', k: 'quotaPlanLine', p: {plan: 'prolite'}}
+//    ▲ what this server bakes into text/title, verbatim — the zh client and the
+//      Flutter app (which has no parts renderer) display exactly this
+//    ▲ the catalog key the client renders instead, and its params
+//
+// A piece with no `k` is data (a percentage, a window token, a vendor name) and
+// reads the same in every language. A param may itself be a piece, so a window
+// label or a "no data" note inside a sentence translates with its sentence.
+// `j` overrides the separator a piece follows (the compact bar joins its
+// trailing ⟳ with a space, everything else with ' · ').
+//
+// text and title are ALWAYS assembled from the pieces, never written beside
+// them, so the two can not drift: tests/test-quota-bar-parity.js re-renders
+// every fixture bar from the zh catalog and requires the bytes it gets back.
+function part(key, params, text, j) {
+  const piece = { s: text };
+  if (key) piece.k = key;
+  if (params) piece.p = params;
+  if (j !== undefined) piece.j = j;
+  return piece;
+}
+
+// Pieces → one line. Pieces that render to nothing are simply absent.
+function joinParts(parts, sep) {
+  return (parts || []).filter(Boolean)
+    .map((piece, i) => (i ? ('j' in piece ? piece.j : sep) : '') + piece.s)
+    .join('');
+}
+
+// Concatenate pieces with no separator: the pieces of a composed line.
+function cat(...pieces) {
+  return joinParts(pieces.filter(Boolean), '');
+}
+
+function partsView(textParts, color, titleParts, action) {
+  const base = view(joinParts(textParts, ' · '), color, joinParts(titleParts, '\n'), action);
+  return Object.freeze({
+    ...base,
+    textParts: Object.freeze((textParts || []).filter(Boolean)),
+    titleParts: Object.freeze((titleParts || []).filter(Boolean)),
+  });
+}
+
+// The two tokens that must not be baked in (see the header): a piece carrying an
+// anchor is still one piece, and its `s` keeps the placeholder for the client.
+function syncLine(ago) {
+  return ago ? part('quotaSyncAt', { ago }, `同步于 ${ago}`) : null;
+}
+
+function refreshLine() {
+  return part('quotaClickBarRefresh', null, '点击 bar 刷新');
+}
+
 // Every bar's "a fetch this client started is in flight" render. The vendor name
 // still comes from here rather than from a client-side table.
 function loadingView(label, title) {
-  return view(`${label}：加载中…`, COLOR.gray, title);
+  return partsView([part('quotaLoading', { label }, `${label.s}：加载中…`)], COLOR.gray, [title]);
 }
 
 // The one failure the server cannot render for the client, because the client
 // never reached it: the request itself did not complete. Pre-rendered here with
 // every other state so a dead network still shows the vendor's own name.
 function unreachableView(label) {
-  return view(`${label} · 请求失败 ⟳ 重试`, COLOR.gray,
-    `无法连接 MultiCC 服务，未能取到${label}用量。点击重试。`);
+  return partsView(
+    [part('quotaUnreachableText', { label }, `${label.s} · 请求失败 ⟳ 重试`)],
+    COLOR.gray,
+    [part('quotaUnreachableTitle', { label }, `无法连接 MultiCC 服务，未能取到${label.s}用量。点击重试。`)],
+  );
 }
 
 function withStates(base, states) {
@@ -138,31 +200,55 @@ function withStates(base, states) {
 
 function openCodeBar(value) {
   if (!value) {
-    return view('OpenCode Go 余量 · ⟳ 刷新', COLOR.gray,
-      '点击从 opencode.ai Zen console 拉取 Go 订阅 5h / 周 / 月 用量');
+    return partsView(
+      [part('quotaOpenCodeIdleText', null, 'OpenCode Go 余量 · ⟳ 刷新')],
+      COLOR.gray,
+      [part('quotaOpenCodeIdleTitle', null, '点击从 opencode.ai Zen console 拉取 Go 订阅 5h / 周 / 月 用量')],
+    );
   }
   if (value.status === 'needs_login') {
-    return view('OpenCode Go：需登录 · 点击打开登录窗口', COLOR.red,
-      '你的 Chrome 里没有 opencode.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（opencode.ai/auth），走完 OAuth 后回来再点一次刷新。',
-      'login');
+    return partsView(
+      [part('quotaOpenCodeNeedsLoginText', null, 'OpenCode Go：需登录 · 点击打开登录窗口')],
+      COLOR.red,
+      [part('quotaOpenCodeNeedsLoginTitle', null,
+        '你的 Chrome 里没有 opencode.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（opencode.ai/auth），走完 OAuth 后回来再点一次刷新。')],
+      'login',
+    );
   }
   if (value.status === 'chrome_unavailable') {
-    return view('OpenCode Go：无可连的 Chrome · 点击尝试打开登录窗口', COLOR.yellow,
-      '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；也可以自己开一个带调试端点的 Chrome（--remote-debugging-port=0 即可，我们会从 DevToolsActivePort 找到它）并在其中登录 opencode.ai。',
-      'login');
+    return partsView(
+      [part('quotaOpenCodeChromeUnavailableText', null, 'OpenCode Go：无可连的 Chrome · 点击尝试打开登录窗口')],
+      COLOR.yellow,
+      [part('quotaOpenCodeChromeUnavailableTitle', null,
+        '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；也可以自己开一个带调试端点的 Chrome（--remote-debugging-port=0 即可，我们会从 DevToolsActivePort 找到它）并在其中登录 opencode.ai。')],
+      'login',
+    );
+  }
+  if (value.status === 'no_auth') {
+    return partsView(
+      [part('quotaOpenCodeNoAuthText', null, 'OpenCode Go：订阅 key 失效 · ⟳ 重试')],
+      COLOR.red,
+      [value.error
+        ? part(null, null, value.error)
+        : part('quotaOpenCodeNoAuthTitle', null, 'Zen/Go 订阅 key 被网关拒绝。请在 opencode.ai 控制台重新生成 key，并更新 ~/.config/opencode/opencode.json 里的 apiKey。')],
+    );
   }
   if (value.status !== 'ok' || !value.usage) {
-    return view('OpenCode Go：用量暂不可用 · ⟳ 重试', COLOR.yellow,
-      value.error || '无法从 opencode.ai 拉取 Go 用量');
+    return partsView(
+      [part('quotaOpenCodeUnavailableText', null, 'OpenCode Go：用量暂不可用 · ⟳ 重试')],
+      COLOR.yellow,
+      [value.error ? part(null, null, value.error) : part('quotaOpenCodeUnavailableTitle', null, '无法从 opencode.ai 拉取 Go 用量')],
+    );
   }
   const u = value.usage;
   const fmt = (n) => {
     const r = Math.round(n);
     return Number.isInteger(r) ? String(r) : (Math.round(n * 10) / 10).toString();
   };
-  // `resetInSec` is a duration measured when the console was scraped. Anchoring
-  // it to fetchedAt turns it into a real deadline, so the countdown decays on
-  // screen instead of freezing at whatever it was when the scrape ran.
+  // `resetInSec` is a duration measured when the reading was taken (the Zen API
+  // reports an absolute resetsAt, which ../quota/opencode-zen.js converts).
+  // Anchoring it to fetchedAt turns it into a real deadline, so the countdown
+  // decays on screen instead of freezing at whatever it was when we fetched.
   const fetchedAt = finiteNumber(value.fetchedAt) || 0;
   const resetAt = (sec) => {
     const s = finiteNumber(sec);
@@ -175,9 +261,8 @@ function openCodeBar(value) {
     entries.push({ window: token, seg: windowSeg(token, w.usagePercent, resetAt(w.resetInSec)) });
   }
   const ago = agoTag(value.fetchedAt);
-  let text = `OpenCode Go · ${sortSegs(entries).join(' · ') || '—'}`;
-  if (ago) text += ` · ${ago}`;
-  text += ' ⟳';
+  const viaZenApi = typeof value.source === 'string' && value.source.startsWith('zen-api');
+  const segs = sortSegs(entries).join(' · ') || '—';
 
   const maxPct = Math.max(
     u.rolling?.usagePercent ?? 0,
@@ -188,20 +273,35 @@ function openCodeBar(value) {
   if (maxPct >= 90) color = COLOR.red;
   else if (maxPct >= 70) color = COLOR.yellow;
 
-  const lines = ['OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）'];
-  for (const [key, zh] of [['rolling', '5h'], ['weekly', '周'], ['monthly', '月']]) {
+  const lines = [viaZenApi
+    ? part('quotaOpenCodeUsageTitleZen', null, 'OpenCode Go 订阅用量（Zen API /zen/go/v1/usage）')
+    : part('quotaOpenCodeUsageTitleCdp', null, 'OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）')];
+  for (const [key, zh, lineKey, nameKey] of [
+    ['rolling', '5h', 'quotaOpenCodeWindow5h', null],
+    ['weekly', '周', 'quotaOpenCodeWindowWeekly', 'quotaPeriodWeekly'],
+    ['monthly', '月', 'quotaOpenCodeWindowMonthly', 'quotaPeriodMonthly'],
+  ]) {
     const w = u[key];
     if (!w) continue;
     const at = resetAt(w.resetInSec);
     // An exhausted window reports status:"rate-limited" — say so, because a
     // segment sitting at "0% 余量" alone reads like a glitch.
-    const limited = w.status === 'rate-limited' ? ' · 已限流' : '';
-    lines.push(`${zh}: ${fmt(w.usagePercent)}%${at ? ` · 重置 ${cdTag(at)} 后` : ''}${limited}`);
+    const reset = at ? part('quotaResetAfterSuffix', { at: cdTag(at) }, ` · 重置 ${cdTag(at)} 后`) : null;
+    const limited = w.status === 'rate-limited' ? part('quotaRateLimited', null, ' · 已限流') : null;
+    // The window's own name goes through the dictionary too: "周"/"月" need
+    // translating. "5h" already reads the same in both, so it stays the literal
+    // the server has always baked in.
+    const name = nameKey ? part(nameKey, null, zh) : zh;
+    lines.push(part(lineKey, { name, pct: fmt(w.usagePercent), reset, limited },
+      cat(part(null, null, `${zh}: ${fmt(w.usagePercent)}%`), reset, limited)));
   }
-  if (ago) lines.push(`同步于 ${ago}`);
-  lines.push('点击 bar 刷新');
-  if (u.useBalance) lines.push('已启用：超额用余额兜底');
-  return view(text, color, lines.join('\n'));
+  lines.push(syncLine(ago), refreshLine());
+  if (u.useBalance) lines.push(part('quotaBalanceFallbackEnabled', null, '已启用：超额用余额兜底'));
+  return partsView(
+    [part(null, null, `OpenCode Go · ${segs}`), ago ? part(null, null, ago, ' · ') : null, part(null, null, '⟳', ' ')],
+    color,
+    lines,
+  );
 }
 
 // ── Qoder CN (billing-cycle credits) ────────────────────────────────────────
@@ -214,21 +314,36 @@ function normalizeResetTime(value) {
 
 function qoderBar(value) {
   if (!value) {
-    return view('Qoder CN 余量 · ⟳ 刷新', COLOR.gray, '点击从 qoder.com.cn 拉取 credits 用量');
+    return partsView(
+      [part('quotaQoderIdleText', null, 'Qoder CN 余量 · ⟳ 刷新')],
+      COLOR.gray,
+      [part('quotaQoderIdleTitle', null, '点击从 qoder.com.cn 拉取 credits 用量')],
+    );
   }
   if (value.status === 'needs_login') {
-    return view('Qoder CN：需登录 · 点击打开登录页', COLOR.red,
-      '你的 Chrome 里没有 qoder.com.cn 的登录态。点击将在 Chrome 中打开登录页，登录后再点刷新。',
-      'login');
+    return partsView(
+      [part('quotaQoderNeedsLoginText', null, 'Qoder CN：需登录 · 点击打开登录页')],
+      COLOR.red,
+      [part('quotaQoderNeedsLoginTitle', null,
+        '你的 Chrome 里没有 qoder.com.cn 的登录态。点击将在 Chrome 中打开登录页，登录后再点刷新。')],
+      'login',
+    );
   }
   if (value.status === 'chrome_unavailable') {
-    return view('Qoder CN：无可连的 Chrome · 点击尝试打开登录窗口', COLOR.yellow,
-      '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；在其中登录 qoder.com.cn 一次，之后一周的刷新都走缓存 cookie，不再需要浏览器。',
-      'login');
+    return partsView(
+      [part('quotaQoderChromeUnavailableText', null, 'Qoder CN：无可连的 Chrome · 点击尝试打开登录窗口')],
+      COLOR.yellow,
+      [part('quotaQoderChromeUnavailableTitle', null,
+        '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；在其中登录 qoder.com.cn 一次，之后一周的刷新都走缓存 cookie，不再需要浏览器。')],
+      'login',
+    );
   }
   if (value.status !== 'ok' || !value.quota) {
-    return view('Qoder CN：用量暂不可用 · ⟳ 重试', COLOR.yellow,
-      value.error || '无法从 qoder.com.cn 拉取用量');
+    return partsView(
+      [part('quotaQoderUnavailableText', null, 'Qoder CN：用量暂不可用 · ⟳ 重试')],
+      COLOR.yellow,
+      [value.error ? part(null, null, value.error) : part('quotaQoderUnavailableTitle', null, '无法从 qoder.com.cn 拉取用量')],
+    );
   }
   const q = value.quota;
   const total = q.total_quota?.quota_summary || {};
@@ -246,72 +361,114 @@ function qoderBar(value) {
     ?? normalizeResetTime(value.plan && value.plan.next_refresh_date);
 
   const ago = agoTag(value.fetchedAt);
-  let text = windowSeg('1m', pct, resetAt) || '—';
-  if (ago) text += ` · ${ago}`;
-  text += ' ⟳';
+  const seg = windowSeg('1m', pct, resetAt) || '—';
 
   const planTier = value.plan?.plan_tier?.replace('PLAN_TIER_', '') || '';
-  let title = `Qoder CN 用量（CDP 抓 qoder.com.cn）\n套餐: ${planTier}\n总计: ${used}/${limit} · 剩余 ${remaining}`;
-  if (planQ.limit_value) title += `\n套餐配额: ${planQ.used_value}/${planQ.limit_value}`;
-  if (pkg.limit_value) title += `\n加油包: ${pkg.used_value}/${pkg.limit_value} (剩 ${pkg.remaining_value})`;
-  title += resetAt !== null
-    ? `\n重置: ${cdTag(resetAt)} 后`
-    : '\n到期时间未知（API 未返回 nextResetAt/套餐到期日）';
-  if (ago) title += `\n同步于 ${ago}`;
-  title += '\n点击 bar 刷新';
-  return view(text, unifiedColorFromRemaining(unifiedRemaining(pct)), title);
+  const title = [
+    part('quotaQoderUsageTitle', null, 'Qoder CN 用量（CDP 抓 qoder.com.cn）'),
+    part('quotaPlanLine', { plan: planTier }, `套餐: ${planTier}`),
+    part('quotaTotalLine', { used, limit, remaining }, `总计: ${used}/${limit} · 剩余 ${remaining}`),
+  ];
+  if (planQ.limit_value) {
+    title.push(part('quotaPlanQuotaLine', { used: planQ.used_value, limit: planQ.limit_value },
+      `套餐配额: ${planQ.used_value}/${planQ.limit_value}`));
+  }
+  if (pkg.limit_value) {
+    title.push(part('quotaAddonQuotaLine', { used: pkg.used_value, limit: pkg.limit_value, remaining: pkg.remaining_value },
+      `加油包: ${pkg.used_value}/${pkg.limit_value} (剩 ${pkg.remaining_value})`));
+  }
+  title.push(resetAt !== null
+    ? part('quotaResetAfterLine', { at: cdTag(resetAt) }, `重置: ${cdTag(resetAt)} 后`)
+    : part('quotaExpiryUnknown', null, '到期时间未知（API 未返回 nextResetAt/套餐到期日）'));
+  title.push(syncLine(ago), refreshLine());
+  return partsView(
+    [part(null, null, seg), ago ? part(null, null, ago, ' · ') : null, part(null, null, '⟳', ' ')],
+    unifiedColorFromRemaining(unifiedRemaining(pct)),
+    title,
+  );
 }
 
 // ── Codex (ChatGPT weekly quota) ────────────────────────────────────────────
 
 function codexBar(value) {
   if (!value) {
-    return view('Codex 余量 · ⟳ 刷新', COLOR.gray, '点击从 chatgpt.com 拉取 Codex 周额度用量');
+    return partsView(
+      [part('quotaCodexIdleText', null, 'Codex 余量 · ⟳ 刷新')],
+      COLOR.gray,
+      [part('quotaCodexIdleTitle', null, '点击从 chatgpt.com 拉取 Codex 周额度用量')],
+    );
   }
   if (value.status === 'no_auth') {
-    return view('Codex：未登录 · ⟳ 重试', COLOR.red,
-      '未找到 ~/.codex/auth.json。请先在终端运行 codex 完成登录。');
+    return partsView(
+      [part('quotaCodexNoAuthText', null, 'Codex：未登录 · ⟳ 重试')],
+      COLOR.red,
+      [part('quotaCodexNoAuthTitle', null, '未找到 ~/.codex/auth.json。请先在终端运行 codex 完成登录。')],
+    );
   }
   if (value.status !== 'ok' || !value.weekly) {
-    return view('Codex：用量暂不可用 · ⟳ 重试', COLOR.yellow,
-      value.error || '无法从 chatgpt.com 拉取用量');
+    return partsView(
+      [part('quotaCodexUnavailableText', null, 'Codex：用量暂不可用 · ⟳ 重试')],
+      COLOR.yellow,
+      [value.error ? part(null, null, value.error) : part('quotaCodexUnavailableTitle', null, '无法从 chatgpt.com 拉取用量')],
+    );
   }
   const w = value.weekly;
   const used = w.usedPercent ?? 0;
   const resetAt = w.resetsAt ? w.resetsAt * 1000 : null;
   const ago = agoTag(value.fetchedAt);
-  let text = windowSeg('1wk', used, resetAt) || '—';
-  if (ago) text += ` · ${ago}`;
-  text += ' ⟳';
+  const seg = windowSeg('1wk', used, resetAt) || '—';
+  const remaining = w.remainingPercent ?? 0;
 
-  let title = `Codex 周额度（chatgpt.com/backend-api/wham/usage）\n套餐: ${value.planType || '?'}${value.email ? ' · ' + value.email : ''}\n已用 ${used}% · 剩余 ${w.remainingPercent ?? 0}%`;
-  if (resetAt) title += `\n重置: ${cdTag(resetAt)} 后`;
-  for (const a of (value.additional || [])) title += `\n${a.name}: ${a.usedPercent}% 已用`;
-  if (value.credits && value.credits.hasCredits) title += `\nCredits 余额: ${value.credits.balance}`;
-  if (ago) title += `\n同步于 ${ago}`;
-  title += '\n点击 bar 刷新';
-  return view(text, unifiedColorFromRemaining(unifiedRemaining(value.limitReached ? 100 : used)), title);
+  const title = [
+    part('quotaCodexTitle', null, 'Codex 周额度（chatgpt.com/backend-api/wham/usage）'),
+    part('quotaPlanLine', { plan: `${value.planType || '?'}${value.email ? ' · ' + value.email : ''}` },
+      `套餐: ${value.planType || '?'}${value.email ? ' · ' + value.email : ''}`),
+    part('quotaUsedRemainingLine', { used, remaining }, `已用 ${used}% · 剩余 ${remaining}%`),
+  ];
+  if (resetAt) title.push(part('quotaResetAfterLine', { at: cdTag(resetAt) }, `重置: ${cdTag(resetAt)} 后`));
+  for (const a of (value.additional || [])) {
+    title.push(part('quotaAdditionalWindowLine', { name: a.name, used: a.usedPercent }, `${a.name}: ${a.usedPercent}% 已用`));
+  }
+  if (value.credits && value.credits.hasCredits) {
+    title.push(part('quotaCreditsBalanceLine', { balance: value.credits.balance }, `Credits 余额: ${value.credits.balance}`));
+  }
+  title.push(syncLine(ago), refreshLine());
+  return partsView(
+    [part(null, null, seg), ago ? part(null, null, ago, ' · ') : null, part(null, null, '⟳', ' ')],
+    unifiedColorFromRemaining(unifiedRemaining(value.limitReached ? 100 : used)),
+    title,
+  );
 }
 
 // ── Volcano Ark (火山方舟) ──────────────────────────────────────────────────
 
+// The plan and window labels read inside a sentence, so they are pieces: the
+// tooltip says `Agent团队（当前 provider）` / `Agent Team (current provider)`.
 function arkProductLabel(product) {
-  if (product === 'agent-plan') return 'Agent';
-  if (product === 'coding-plan') return 'Coding';
-  if (product === 'agent-plan-team') return 'Agent团队';
-  if (product === 'coding-plan-team') return 'Coding团队';
-  return product || '?';
+  return arkProductPart(product).s;
+}
+
+function arkProductPart(product) {
+  if (product === 'agent-plan') return part(null, null, 'Agent');
+  if (product === 'coding-plan') return part(null, null, 'Coding');
+  if (product === 'agent-plan-team') return part('quotaArkProductAgentTeam', null, 'Agent团队');
+  if (product === 'coding-plan-team') return part('quotaArkProductCodingTeam', null, 'Coding团队');
+  return part(null, null, product || '?');
 }
 
 function arkPeriodLabel(label) {
+  return arkPeriodPart(label).s;
+}
+
+function arkPeriodPart(label) {
   const l = String(label || '').toLowerCase();
-  if (l === 'weekly') return '周';
-  if (l === 'monthly') return '月';
+  if (l === 'weekly') return part('quotaPeriodWeekly', null, '周');
+  if (l === 'monthly') return part('quotaPeriodMonthly', null, '月');
   // Coding Plan's "current session" window is the same 5h rolling window the
   // Agent Plan reports as "5h" (the official console shows it with a reset
   // countdown too); surface it as 5h so the bar reads uniformly.
-  if (l === 'session') return '5h';
-  return String(label || '?');
+  if (l === 'session') return part(null, null, '5h');
+  return part(null, null, String(label || '?'));
 }
 
 function arkWindowLabel(label) {
@@ -344,26 +501,42 @@ function fmtNum(n) {
 
 function arkBar(value, baseUrl) {
   if (!value) {
-    return view('火山方舟 余量 · ⟳ 刷新', COLOR.gray, '点击通过 arkcli 拉取火山方舟套餐额度');
+    return partsView(
+      [part('quotaArkIdleText', null, '火山方舟 余量 · ⟳ 刷新')],
+      COLOR.gray,
+      [part('quotaArkIdleTitle', null, '点击通过 arkcli 拉取火山方舟套餐额度')],
+    );
   }
   if (value.status === 'needs_auth') {
-    return view('火山方舟：未登录 · 点击登录', COLOR.red,
-      'arkcli 未配置火山 SSO 凭证。点击将打开浏览器完成 SSO 登录，登录后再点刷新。',
-      'ark_login');
+    return partsView(
+      [part('quotaArkNeedsAuthText', null, '火山方舟：未登录 · 点击登录')],
+      COLOR.red,
+      [part('quotaArkNeedsAuthTitle', null, 'arkcli 未配置火山 SSO 凭证。点击将打开浏览器完成 SSO 登录，登录后再点刷新。')],
+      'ark_login',
+    );
   }
   if (value.status === 'needs_install') {
-    return view('火山方舟：未安装 arkcli · 点击安装', COLOR.yellow,
-      '未检测到 arkcli。点击将自动执行 npm install -g @volcengine/ark-cli 安装（需本机有 npm）。',
-      'ark_install');
+    return partsView(
+      [part('quotaArkNeedsInstallText', null, '火山方舟：未安装 arkcli · 点击安装')],
+      COLOR.yellow,
+      [part('quotaArkNeedsInstallTitle', null, '未检测到 arkcli。点击将自动执行 npm install -g @volcengine/ark-cli 安装（需本机有 npm）。')],
+      'ark_install',
+    );
   }
   if (value.status !== 'ok' || !Array.isArray(value.items)) {
-    return view('火山方舟：用量暂不可用 · ⟳ 重试', COLOR.yellow,
-      value.error || '无法通过 arkcli 拉取用量');
+    return partsView(
+      [part('quotaArkUnavailableText', null, '火山方舟：用量暂不可用 · ⟳ 重试')],
+      COLOR.yellow,
+      [value.error ? part(null, null, value.error) : part('quotaArkUnavailableTitle', null, '无法通过 arkcli 拉取用量')],
+    );
   }
   const subscribed = value.items.filter((it) => it.subscribed && !it.error && it.periods && it.periods.length);
   if (!subscribed.length) {
-    return view('火山方舟：无生效套餐 · ⟳ 刷新', COLOR.gray,
-      '当前身份名下没有已订阅的 AgentPlan / CodingPlan');
+    return partsView(
+      [part('quotaArkNoPlanText', null, '火山方舟：无生效套餐 · ⟳ 刷新')],
+      COLOR.gray,
+      [part('quotaArkNoPlanTitle', null, '当前身份名下没有已订阅的 AgentPlan / CodingPlan')],
+    );
   }
   // The plan matching the session's provider baseUrl (or the first subscribed
   // plan when inconclusive) drives the compact bar; every plan's detail still
@@ -384,57 +557,86 @@ function arkBar(value, baseUrl) {
   const titleLines = [];
   for (const it of ordered) {
     const isCurrent = it === plan;
-    titleLines.push(`${arkProductLabel(it.product)}${it.tier ? ' · ' + it.tier : ''}${isCurrent ? '（当前 provider）' : ''}`);
+    titleLines.push(part('quotaArkPlanHeader', {
+      product: arkProductPart(it.product),
+      tier: it.tier ? ` · ${it.tier}` : '',
+      current: isCurrent ? part('quotaArkCurrentProvider', null, '（当前 provider）') : null,
+    }, `${arkProductLabel(it.product)}${it.tier ? ' · ' + it.tier : ''}${isCurrent ? '（当前 provider）' : ''}`));
     for (const p of it.periods) {
       const usedPct = finiteNumber(p.percent);
       const remainingPct = unifiedRemaining(usedPct);
       const remainingText = remainingPct === null ? '余量未知' : `余量 ${fmtNum(remainingPct)}%`;
       const usedPctText = usedPct === null ? '已用未知' : `已用 ${fmtNum(usedPct)}%`;
-      let line = `  ${arkPeriodLabel(p.label)}: `;
-      line += (p.used != null && p.total != null)
-        ? `${remainingText} · ${usedPctText} (${fmtNum(p.used)}/${fmtNum(p.total)})`
-        : `${remainingText} · ${usedPctText}`;
-      if (p.resetAt) line += ` · ${cdTag(p.resetAt)} 后重置`;
-      titleLines.push(line);
+      const totals = (p.used != null && p.total != null) ? ` (${fmtNum(p.used)}/${fmtNum(p.total)})` : '';
+      const reset = p.resetAt ? part('quotaResetSuffix', { at: cdTag(p.resetAt) }, ` · ${cdTag(p.resetAt)} 后重置`) : null;
+      titleLines.push(part('quotaArkPeriodLine', {
+        period: arkPeriodPart(p.label),
+        remaining: remainingPct === null
+          ? part('quotaRemainingUnknown', null, '余量未知')
+          : part('quotaRemainingPct', { pct: fmtNum(remainingPct) }, `余量 ${fmtNum(remainingPct)}%`),
+        used: usedPct === null
+          ? part('quotaUsedUnknown', null, '已用未知')
+          : part('quotaUsedPct', { pct: fmtNum(usedPct) }, `已用 ${fmtNum(usedPct)}%`),
+        total: totals,
+        reset,
+      }, `  ${arkPeriodLabel(p.label)}: ${remainingText} · ${usedPctText}${totals}${p.resetAt ? ` · ${cdTag(p.resetAt)} 后重置` : ''}`));
     }
   }
   const ago = agoTag(value.fetchedAt);
   const segments = sortSegs(entries);
-  const productPrefix = arkProductLabel(plan.product);
-  let text = segments.length ? `${productPrefix} · ${segments.join(' · ')}` : productPrefix;
-  if (ago) text += ` · ${ago}`;
-  text += ' ⟳';
+  const productPart = arkProductPart(plan.product);
 
   const viewer = value.viewer;
-  let title = '火山方舟套餐额度（arkcli usage plan）';
+  const title = [part('quotaArkTitle', null, '火山方舟套餐额度（arkcli usage plan）')];
   if (viewer && (viewer.user_name || viewer.account_id)) {
-    title += `\n身份: ${viewer.user_name || viewer.account_id}${viewer.auth_method ? ' · ' + viewer.auth_method : ''}`;
+    title.push(part('quotaArkIdentityLine', {
+      identity: `${viewer.user_name || viewer.account_id}${viewer.auth_method ? ' · ' + viewer.auth_method : ''}`,
+    }, `身份: ${viewer.user_name || viewer.account_id}${viewer.auth_method ? ' · ' + viewer.auth_method : ''}`));
   }
-  title += '\n' + titleLines.join('\n');
-  if (ago) title += `\n同步于 ${ago}`;
-  title += '\n点击 bar 刷新';
-  return view(text, unifiedColorFromRemaining(unifiedRemaining(maxUsed)), title);
+  title.push(...titleLines, syncLine(ago), refreshLine());
+  return partsView(
+    [
+      productPart,
+      segments.length ? part(null, null, ` · ${segments.join(' · ')}`, '') : null,
+      ago ? part(null, null, ago, ' · ') : null,
+      part(null, null, '⟳', ' '),
+    ],
+    unifiedColorFromRemaining(unifiedRemaining(maxUsed)),
+    title,
+  );
 }
 
 // ── Zhipu official sites (z.ai / bigmodel.cn) ───────────────────────────────
 
 function zhipuBar(value) {
   if (!value) {
-    return view('Zhipu 余量 · ⟳ 刷新', COLOR.gray,
-      '点击从 z.ai / bigmodel.cn 额度端点拉取窗口用量');
+    return partsView(
+      [part('quotaZhipuIdleText', null, 'Zhipu 余量 · ⟳ 刷新')],
+      COLOR.gray,
+      [part('quotaZhipuIdleTitle', null, '点击从 z.ai / bigmodel.cn 额度端点拉取窗口用量')],
+    );
   }
   if (value.status === 'not_configured') {
-    return view('Zhipu：未配置 provider · ⟳ 刷新', COLOR.gray,
-      '没有 baseUrl 指向 z.ai / bigmodel.cn 的 provider，无法拉取用量');
+    return partsView(
+      [part('quotaZhipuNotConfiguredText', null, 'Zhipu：未配置 provider · ⟳ 刷新')],
+      COLOR.gray,
+      [part('quotaZhipuNotConfiguredTitle', null, '没有 baseUrl 指向 z.ai / bigmodel.cn 的 provider，无法拉取用量')],
+    );
   }
   if (value.status !== 'ok' || !Array.isArray(value.sites)) {
-    return view('Zhipu：用量暂不可用 · ⟳ 重试', COLOR.yellow,
-      value.error || '无法从 z.ai / bigmodel.cn 拉取用量');
+    return partsView(
+      [part('quotaZhipuUnavailableText', null, 'Zhipu：用量暂不可用 · ⟳ 重试')],
+      COLOR.yellow,
+      [value.error ? part(null, null, value.error) : part('quotaZhipuUnavailableTitle', null, '无法从 z.ai / bigmodel.cn 拉取用量')],
+    );
   }
   const okSites = value.sites.filter((s) => s && s.ok && Number.isFinite(s.usedPercent));
   if (!okSites.length) {
-    return view('Zhipu：用量暂不可用 · ⟳ 重试', COLOR.yellow,
-      '所有 Zhipu 站点的额度端点都未返回有效窗口数据');
+    return partsView(
+      [part('quotaZhipuUnavailableText', null, 'Zhipu：用量暂不可用 · ⟳ 重试')],
+      COLOR.yellow,
+      [part('quotaZhipuNoValidSiteTitle', null, '所有 Zhipu 站点的额度端点都未返回有效窗口数据')],
+    );
   }
   // The backend orders the caller's current site first; it drives the compact
   // bar (5h + 1wk windows) while every site's detail stays in the tooltip.
@@ -448,47 +650,52 @@ function zhipuBar(value) {
   }
   const titleLines = [];
   for (const site of okSites) {
-    let line = `${site.site} (${site.host}): 5h ${fmtNum(site.usedPercent)}% 已用`;
-    if (site.resetsAt) line += ` · ${cdTag(site.resetsAt)} 后重置`;
-    if (Number.isFinite(site.weeklyUsedPercent)) {
-      line += ` · 周 ${fmtNum(site.weeklyUsedPercent)}% 已用`;
-      if (site.weeklyResetsAt) line += `（${cdTag(site.weeklyResetsAt)} 后重置）`;
-    }
-    if (site.tier) line += ` · ${site.tier}`;
-    titleLines.push(line);
+    const reset = site.resetsAt ? part('quotaResetSuffix', { at: cdTag(site.resetsAt) }, ` · ${cdTag(site.resetsAt)} 后重置`) : null;
+    const weekly = Number.isFinite(site.weeklyUsedPercent) ? part('quotaZhipuWeeklySegment', {
+      pct: fmtNum(site.weeklyUsedPercent),
+      reset: site.weeklyResetsAt
+        ? part('quotaZhipuWeeklyReset', { at: cdTag(site.weeklyResetsAt) }, `（${cdTag(site.weeklyResetsAt)} 后重置）`)
+        : null,
+    }, ` · 周 ${fmtNum(site.weeklyUsedPercent)}% 已用${site.weeklyResetsAt ? `（${cdTag(site.weeklyResetsAt)} 后重置）` : ''}`) : null;
+    titleLines.push(part('quotaZhipuSiteLine', {
+      site: site.site,
+      host: site.host,
+      pct: fmtNum(site.usedPercent),
+      reset,
+      weekly,
+      tier: site.tier ? ` · ${site.tier}` : '',
+    }, `${site.site} (${site.host}): 5h ${fmtNum(site.usedPercent)}% 已用${site.resetsAt ? ` · ${cdTag(site.resetsAt)} 后重置` : ''}${Number.isFinite(site.weeklyUsedPercent) ? ` · 周 ${fmtNum(site.weeklyUsedPercent)}% 已用${site.weeklyResetsAt ? `（${cdTag(site.weeklyResetsAt)} 后重置）` : ''}` : ''}${site.tier ? ` · ${site.tier}` : ''}`));
   }
   const ago = agoTag(value.fetchedAt);
-  let text = sortSegs(entries).join(' · ') || '—';
-  if (ago) text += ` · ${ago}`;
-  text += ' ⟳';
-
-  let title = 'Zhipu 官方站点窗口用量（glm-monitor 额度端点）';
-  title += '\n' + titleLines.join('\n');
-  if (ago) title += `\n同步于 ${ago}`;
-  title += '\n点击 bar 刷新';
-  return view(text, unifiedColorFromRemaining(unifiedRemaining(maxUsed)), title);
+  const segs = sortSegs(entries).join(' · ') || '—';
+  const title = [part('quotaZhipuUsageTitle', null, 'Zhipu 官方站点窗口用量（glm-monitor 额度端点）'), ...titleLines, syncLine(ago), refreshLine()];
+  return partsView(
+    [part(null, null, segs), ago ? part(null, null, ago, ' · ') : null, part(null, null, '⟳', ' ')],
+    unifiedColorFromRemaining(unifiedRemaining(maxUsed)),
+    title,
+  );
 }
 
 // ── Kimi / Moonshot (prepaid balance, or subscription-page windows) ─────────
 
-function kimiReasonText(sites) {
-  if (!Array.isArray(sites) || !sites.length) return '';
+function kimiReasonPart(sites) {
+  if (!Array.isArray(sites) || !sites.length) return null;
   const s = sites[0];
-  if (s.reason === 'auth_rejected') return 'API Key 不支持余额查询（Kimi-for-Coding 密钥无余额接口）';
-  if (s.reason === 'endpoint_not_found') return '余额端点不存在';
-  if (s.reason === 'network_error') return '网络请求失败';
-  if (s.reason === 'bad_shape' || s.reason === 'no_balance_fields') return '接口返回格式异常';
-  return s.reason || '';
+  if (s.reason === 'auth_rejected') return part('quotaKimiReasonAuthRejected', null, 'API Key 不支持余额查询（Kimi-for-Coding 密钥无余额接口）');
+  if (s.reason === 'endpoint_not_found') return part('quotaKimiReasonEndpointNotFound', null, '余额端点不存在');
+  if (s.reason === 'network_error') return part('quotaKimiReasonNetworkError', null, '网络请求失败');
+  if (s.reason === 'bad_shape' || s.reason === 'no_balance_fields') return part('quotaKimiReasonBadShape', null, '接口返回格式异常');
+  return s.reason ? part(null, null, s.reason) : null;
 }
 
-function kimiShortReason(sites) {
-  if (!Array.isArray(sites) || !sites.length) return '';
+function kimiShortReasonPart(sites) {
+  if (!Array.isArray(sites) || !sites.length) return null;
   const s = sites[0];
-  if (s.reason === 'auth_rejected') return '密钥不支持余额查询';
-  if (s.reason === 'endpoint_not_found') return '余额端点不存在';
-  if (s.reason === 'network_error') return '网络请求失败';
-  if (s.reason === 'bad_shape' || s.reason === 'no_balance_fields') return '接口格式异常';
-  return '';
+  if (s.reason === 'auth_rejected') return part('quotaKimiShortAuthRejected', null, '密钥不支持余额查询');
+  if (s.reason === 'endpoint_not_found') return part('quotaKimiShortEndpointNotFound', null, '余额端点不存在');
+  if (s.reason === 'network_error') return part('quotaKimiShortNetworkError', null, '网络请求失败');
+  if (s.reason === 'bad_shape' || s.reason === 'no_balance_fields') return part('quotaKimiShortBadShape', null, '接口格式异常');
+  return null;
 }
 
 function kimiCachedSites(cached) {
@@ -501,28 +708,44 @@ function kimiCachedSites(cached) {
 function kimiCachedView(cachedOk, fetchedAt, reason, headline) {
   const s = cachedOk[0];
   const ago = agoTag(fetchedAt);
-  let text = unifiedBalanceText(s.available, s.currency) || '—';
-  if (ago) text += ` · 上次 ${ago}`;
-  text += ' ⟳';
+  const balance = unifiedBalanceText(s.available, s.currency) || '—';
   let color = COLOR.gray;
   if (s.available <= 0) color = COLOR.red;
   else if (s.available <= 5) color = COLOR.yellow;
-  let title = headline;
-  if (reason) title += `\n原因：${reason}`;
-  if (ago) title += `\n缓存于 ${ago}`;
-  title += '\n点击 bar 重试';
-  return view(text, color, title);
+  const title = [headline];
+  if (reason) title.push(part('quotaKimiCachedReasonLine', { reason }, `原因：${reason.s}`));
+  if (ago) title.push(part('quotaKimiCachedAtLine', { ago }, `缓存于 ${ago}`));
+  title.push(part('quotaKimiRetryHint', null, '点击 bar 重试'));
+  return partsView(
+    [
+      part(null, null, balance),
+      ago ? part(null, null, ` · 上次 ${ago}`) : null,
+      part(null, null, '⟳', ' '),
+    ],
+    color,
+    title,
+  );
 }
 
 function kimiBar(value, cached) {
   const cachedOk = kimiCachedSites(cached);
   if (!value) {
-    if (cachedOk.length) return kimiCachedView(cachedOk, cached.fetchedAt, '', '显示上次缓存值');
-    return view('Kimi 余量 · ⟳ 刷新', COLOR.gray, '点击从 api.moonshot.cn 拉取预付余额');
+    if (cachedOk.length) {
+      return kimiCachedView(cachedOk, cached.fetchedAt, null,
+        part('quotaKimiCachedTitle', null, '显示上次缓存值'));
+    }
+    return partsView(
+      [part('quotaKimiIdleText', null, 'Kimi 余量 · ⟳ 刷新')],
+      COLOR.gray,
+      [part('quotaKimiIdleTitle', null, '点击从 api.moonshot.cn 拉取预付余额')],
+    );
   }
   if (value.status === 'not_configured') {
-    return view('Kimi：未配置 provider · ⟳ 刷新', COLOR.gray,
-      '没有 baseUrl 指向 moonshot / kimi 的 provider，无法拉取余额');
+    return partsView(
+      [part('quotaKimiNotConfiguredText', null, 'Kimi：未配置 provider · ⟳ 刷新')],
+      COLOR.gray,
+      [part('quotaKimiNotConfiguredTitle', null, '没有 baseUrl 指向 moonshot / kimi 的 provider，无法拉取余额')],
+    );
   }
   // An actionable top-level status comes FIRST — ahead of both sites[0].reason
   // and the stale cache. A Kimi-for-Coding key always 401s the balance API (that
@@ -530,19 +753,24 @@ function kimiBar(value, cached) {
   // membership page and reports needs_login when that page has no session.
   if (value.status === 'needs_login' || value.status === 'chrome_unavailable') {
     const needsLogin = value.status === 'needs_login';
-    const titleParts = [value.error || (needsLogin
-      ? '托管浏览器中没有 kimi.com 登录态'
-      : '没有可用的浏览器来打开 kimi.com 订阅页')];
-    const reason = kimiReasonText(value.sites);
-    if (reason) titleParts.push(`余额 API：${reason}`);
+    const lines = [value.error
+      ? part(null, null, value.error)
+      : needsLogin
+        ? part('quotaKimiNeedsLoginTitle', null, '托管浏览器中没有 kimi.com 登录态')
+        : part('quotaKimiNoBrowserTitle', null, '没有可用的浏览器来打开 kimi.com 订阅页')];
+    const reason = kimiReasonPart(value.sites);
+    if (reason) lines.push(part('quotaKimiApiReasonLine', { reason }, `余额 API：${reason.s}`));
     if (cachedOk.length) {
-      titleParts.push(`上次余额：${unifiedBalanceText(cachedOk[0].available, cachedOk[0].currency) || '—'}`);
+      lines.push(part('quotaKimiLastBalanceLine', { amount: unifiedBalanceText(cachedOk[0].available, cachedOk[0].currency) || '—' },
+        `上次余额：${unifiedBalanceText(cachedOk[0].available, cachedOk[0].currency) || '—'}`));
     }
-    titleParts.push('点击将由 multicc 拉起一个 Chrome 登录窗口；登录后回来再点一次刷新。');
-    return view(
-      needsLogin ? 'Kimi：需登录 · 点击打开登录窗口' : 'Kimi：无可用浏览器 · 点击尝试打开登录窗口',
+    lines.push(part('quotaKimiLoginHint', null, '点击将由 multicc 拉起一个 Chrome 登录窗口；登录后回来再点一次刷新。'));
+    return partsView(
+      [needsLogin
+        ? part('quotaKimiNeedsLoginText', null, 'Kimi：需登录 · 点击打开登录窗口')
+        : part('quotaKimiNoBrowserText', null, 'Kimi：无可用浏览器 · 点击尝试打开登录窗口')],
       needsLogin ? COLOR.red : COLOR.yellow,
-      titleParts.join('\n'),
+      lines,
       'login',
     );
   }
@@ -560,57 +788,71 @@ function kimiBar(value, cached) {
       }))
       .filter((s) => Number.isFinite(s.used));
     if (!summary.length) {
-      return view('Kimi 订阅：已登录，未解析出用量 · ⟳ 重试', COLOR.yellow,
-        `已抓到 kimi.com 会员页，但没解析出百分比。\n原文：${String(value.text || '').slice(0, 300)}`);
+      return partsView(
+        [part('quotaKimiSubscriptionNoParseText', null, 'Kimi 订阅：已登录，未解析出用量 · ⟳ 重试')],
+        COLOR.yellow,
+        [part('quotaKimiSubscriptionNoParseTitle', { text: String(value.text || '').slice(0, 300) },
+          `已抓到 kimi.com 会员页，但没解析出百分比。\n原文：${String(value.text || '').slice(0, 300)}`)],
+      );
     }
     const maxPct = Math.max(...summary.map((s) => s.used));
     const ago = agoTag(value.fetchedAt);
-    let text = sortSegs(summary.map((s) => ({
+    const text = sortSegs(summary.map((s) => ({
       window: s.label, seg: windowSeg(s.label, s.used, s.resetAt),
     }))).join(' · ');
-    if (ago) text += ` · ${ago}`;
-    text += ' ⟳';
-    let title = 'Kimi 订阅用量（会员页抓取；订阅 key 无预付余额接口）';
-    for (const s of summary) title += `\n${s.label}: 已用 ${s.used}%`;
-    if (ago) title += `\n同步于 ${ago}`;
-    title += '\n点击 bar 刷新';
-    return view(text, unifiedColorFromRemaining(unifiedRemaining(maxPct)), title);
+    const title = [part('quotaKimiSubscriptionTitle', null, 'Kimi 订阅用量（会员页抓取；订阅 key 无预付余额接口）')];
+    for (const s of summary) {
+      title.push(part('quotaKimiSummaryLine', { label: s.label, used: s.used }, `${s.label}: 已用 ${s.used}%`));
+    }
+    title.push(syncLine(ago), refreshLine());
+    return partsView(
+      [part(null, null, text), ago ? part(null, null, ago, ' · ') : null, part(null, null, '⟳', ' ')],
+      unifiedColorFromRemaining(unifiedRemaining(maxPct)),
+      title,
+    );
   }
   const okSites = (value.status === 'ok' && Array.isArray(value.sites))
     ? value.sites.filter((s) => s && s.ok && Number.isFinite(s.available))
     : [];
   if (!okSites.length) {
-    const reason = kimiReasonText(value.sites);
-    if (cachedOk.length) return kimiCachedView(cachedOk, cached.fetchedAt, reason, '余额刷新失败，显示上次缓存值');
-    const short = kimiShortReason(value.sites);
-    return view(
-      short ? `Kimi：余额暂不可用（${short}）· ⟳ 重试` : 'Kimi：余额暂不可用 · ⟳ 重试',
+    const reason = kimiReasonPart(value.sites);
+    if (cachedOk.length) {
+      return kimiCachedView(cachedOk, cached.fetchedAt, reason,
+        part('quotaKimiCachedStaleTitle', null, '余额刷新失败，显示上次缓存值'));
+    }
+    const short = kimiShortReasonPart(value.sites);
+    return partsView(
+      [short
+        ? part('quotaKimiUnavailableTextReason', { reason: short }, `Kimi：余额暂不可用（${short.s}）· ⟳ 重试`)
+        : part('quotaKimiUnavailableText', null, 'Kimi：余额暂不可用 · ⟳ 重试')],
       COLOR.yellow,
-      reason || value.error || '无法从 api.moonshot.cn 拉取余额',
+      [reason || (value.error ? part(null, null, value.error) : part('quotaKimiUnavailableTitle', null, '无法从 api.moonshot.cn 拉取余额'))],
     );
   }
   const s = okSites[0];
   const titleLines = [];
   for (const site of okSites) {
-    let line = `${site.site} (${site.host}): 可用 ¥${fmtNum(site.available)}`;
-    if (Number.isFinite(site.voucher)) line += ` · 券 ¥${fmtNum(site.voucher)}`;
-    if (Number.isFinite(site.cash)) line += ` · 现金 ¥${fmtNum(site.cash)}`;
-    titleLines.push(line);
+    const available = fmtNum(site.available);
+    const voucher = Number.isFinite(site.voucher) ? part('quotaKimiVoucherSegment', { amount: fmtNum(site.voucher) }, ` · 券 ¥${fmtNum(site.voucher)}`) : null;
+    const cash = Number.isFinite(site.cash) ? part('quotaKimiCashSegment', { amount: fmtNum(site.cash) }, ` · 现金 ¥${fmtNum(site.cash)}`) : null;
+    titleLines.push(part('quotaKimiSiteBalanceLine', {
+      site: site.site, host: site.host, available, voucher, cash,
+    }, `${site.site} (${site.host}): 可用 ¥${available}${Number.isFinite(site.voucher) ? ` · 券 ¥${fmtNum(site.voucher)}` : ''}${Number.isFinite(site.cash) ? ` · 现金 ¥${fmtNum(site.cash)}` : ''}`));
   }
   const ago = agoTag(value.fetchedAt);
-  let text = unifiedBalanceText(s.available, s.currency) || '—';
-  if (ago) text += ` · ${ago}`;
-  text += ' ⟳';
+  const balance = unifiedBalanceText(s.available, s.currency) || '—';
 
   let color = COLOR.blue;
   if (s.available <= 0) color = COLOR.red;
   else if (s.available <= 5) color = COLOR.yellow;
 
-  let title = 'Kimi / Moonshot 预付余额（api.moonshot.cn/v1/users/me/balance）';
-  title += '\n' + titleLines.join('\n');
-  if (ago) title += `\n同步于 ${ago}`;
-  title += '\n点击 bar 刷新';
-  return view(text, color, title);
+  const title = [part('quotaKimiBalanceTitle', null, 'Kimi / Moonshot 预付余额（api.moonshot.cn/v1/users/me/balance）'),
+    ...titleLines, syncLine(ago), refreshLine()];
+  return partsView(
+    [part(null, null, balance), ago ? part(null, null, ago, ' · ') : null, part(null, null, '⟳', ' ')],
+    color,
+    title,
+  );
 }
 
 // ── DeepSeek prepaid balance ────────────────────────────────────────────────
@@ -635,13 +877,17 @@ function normalizeBalance(info) {
 function balanceBar(value) {
   if (!value) return null;
   const total = finiteNumber(value.total);
-  let text = unifiedBalanceText(total, value.currency) || '—';
-  if (value.available === false) text += ' · 余额不足';
+  const balance = unifiedBalanceText(total, value.currency) || '—';
   const color = value.available === false || (total !== null && total <= 5)
     ? COLOR.red
     : (total !== null && total <= 20 ? COLOR.yellow : COLOR.blue);
-  return view(text, color,
-    'DeepSeek 预付费账户余额（来自 api.deepseek.com/user/balance，非窗口配额）');
+  return partsView(
+    [part(null, null, balance),
+      value.available === false ? part('quotaBalanceInsufficient', null, ' · 余额不足', '') : null],
+    color,
+    [part('quotaDeepSeekBalanceTitle', null,
+      'DeepSeek 预付费账户余额（来自 api.deepseek.com/user/balance，非窗口配额）')],
+  );
 }
 
 // ── The passive window event ───────────────────────────────────────────────
@@ -697,14 +943,14 @@ function windowEventBar(info) {
   const token = info.kind === 'weekly' || provider === 'codex' ? '1wk' : '5h';
   const seg = windowSeg(token, used, info.resetsAtMs);
   const label = provider === 'opencode' ? 'OpenCode Go · ' : '';
-  return view(
-    `${label}${seg || token}`,
+  return partsView(
+    [part(null, null, `${label}${seg || token}`)],
     unifiedColorFromRemaining(unifiedRemaining(used)),
-    provider === 'glm'
-      ? 'GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）'
+    [provider === 'glm'
+      ? part('quotaGlmWindowTitle', null, 'GLM Coding Plan 五小时窗口用量（来自 open.bigmodel.cn 额度端点）')
       : provider === 'opencode'
-        ? 'OpenCode Go 订阅窗口用量（来自 opencode 日志中的 provider limit 错误）'
-        : 'Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）',
+        ? part('quotaOpenCodeWindowTitle', null, 'OpenCode Go 订阅窗口用量（来自 opencode 日志中的 provider limit 错误）')
+        : part('quotaCodexWindowTitle', null, 'Codex 订阅周额度用量（来自 chatgpt.com/backend-api/wham/usage）')],
   );
 }
 
@@ -726,6 +972,11 @@ function windowEventBar(info) {
 
 const CLAUDE_PLACEHOLDER_WINDOWS = Object.freeze(['5h', '1wk']);
 const CLAUDE_WINDOW_ZH = Object.freeze({ '5h': '5小时', '1wk': '周', '1m': '月' });
+const CLAUDE_WINDOW_PART = Object.freeze({
+  '5h': part('quotaWindowName5h', null, '5小时'),
+  '1wk': part('quotaWindowNameWeekly', null, '周'),
+  '1m': part('quotaWindowNameMonthly', null, '月'),
+});
 
 function claudeLabelNamesWindow(label) {
   return /session|hour|week|month|\d+\s*(h|day)/i.test(String(label || ''));
@@ -771,36 +1022,36 @@ function claudeWindowRows(usage, live) {
 // rides along: needs_login sends the click to the CDP login window.
 const CLAUDE_SCRAPE_STATES = Object.freeze({
   needs_login: {
-    note: '未登录 claude.ai — 点击打开登录窗口',
-    title: '你的浏览器里没有 claude.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（claude.ai/settings/usage），登录后回来再点一次刷新。',
+    note: part('quotaClaudeScrapeNeedsLoginNote', null, '未登录 claude.ai — 点击打开登录窗口'),
+    title: part('quotaClaudeScrapeNeedsLoginTitle', null, '你的浏览器里没有 claude.ai 的登录态。点击将由 multicc 拉起一个 Chrome 登录窗口（claude.ai/settings/usage），登录后回来再点一次刷新。'),
     action: 'login',
   },
   chrome_unavailable: {
-    note: '无可连的 Chrome — 点击尝试登录',
-    title: '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；也可以自己开一个带调试端点的 Chrome 并在其中登录 claude.ai。',
+    note: part('quotaClaudeScrapeChromeNote', null, '无可连的 Chrome — 点击尝试登录'),
+    title: part('quotaClaudeScrapeChromeTitle', null, '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；也可以自己开一个带调试端点的 Chrome 并在其中登录 claude.ai。'),
     action: 'login',
   },
   ok: {
-    note: '已登录但未解析出周用量',
-    title: '已抓到 claude.ai 用量页，但没解析出窗口百分比。点击重试。',
+    note: part('quotaClaudeScrapeOkNote', null, '已登录但未解析出周用量'),
+    title: part('quotaClaudeScrapeOkTitle', null, '已抓到 claude.ai 用量页，但没解析出窗口百分比。点击重试。'),
   },
 });
 const CLAUDE_SCRAPE_UNAVAILABLE = Object.freeze({
-  note: '用量抓取失败',
-  title: '无法从 claude.ai/settings/usage 拉取窗口用量。点击重试。',
+  note: part('quotaClaudeScrapeFailedNote', null, '用量抓取失败'),
+  title: part('quotaClaudeScrapeFailedTitle', null, '无法从 claude.ai/settings/usage 拉取窗口用量。点击重试。'),
 });
 const CLAUDE_SCRAPE_IDLE = Object.freeze({
-  note: '尚未抓取',
-  title: 'Claude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取周余量；5h 由 Claude Code 上报的 rate_limit_event 实时更新。',
+  note: part('quotaClaudeScrapeIdleNote', null, '尚未抓取'),
+  title: part('quotaClaudeScrapeIdleTitle', null, 'Claude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取周余量；5h 由 Claude Code 上报的 rate_limit_event 实时更新。'),
 });
 const CLAUDE_SCRAPE_FETCHING = Object.freeze({
-  note: '抓取中…',
-  title: '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量（要 30-40 秒）…',
+  note: part('quotaClaudeScrapeFetchingNote', null, '抓取中…'),
+  title: part('quotaClaudeScrapeFetchingTitle', null, '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量（要 30-40 秒）…'),
   action: 'fetching',
 });
 const CLAUDE_SCRAPE_LOGIN_PENDING = Object.freeze({
-  note: '等待登录…',
-  title: '已拉起 Chrome 登录窗口。在其中登录 claude.ai，然后回来再点一次。',
+  note: part('quotaClaudeScrapeLoginPendingNote', null, '等待登录…'),
+  title: part('quotaClaudeScrapeLoginPendingTitle', null, '已拉起 Chrome 登录窗口。在其中登录 claude.ai，然后回来再点一次。'),
   action: 'login_pending',
 });
 
@@ -808,10 +1059,11 @@ const CLAUDE_SCRAPE_LOGIN_PENDING = Object.freeze({
 // scrape is a full browser drive — 30-40s — so a segment that reads the same
 // before and during it makes the click look dead.
 const CLAUDE_ACTION_SEG = Object.freeze({
-  fetching: '⟳ 抓取中…',
-  login_pending: '⟳ 等待登录…',
-  login: '⟳ 登录',
+  fetching: part('quotaClaudeActionFetching', null, '⟳ 抓取中…'),
+  login_pending: part('quotaClaudeActionLoginPending', null, '⟳ 等待登录…'),
+  login: part('quotaClaudeActionLogin', null, '⟳ 登录'),
 });
+const CLAUDE_ACTION_SEG_REFRESH = part('quotaClaudeActionRefresh', null, '⟳ 刷新');
 
 function claudeBarForState(usage, live, state) {
   const rows = claudeWindowRows(usage, live);
@@ -825,15 +1077,23 @@ function claudeBarForState(usage, live, state) {
     .map((w) => ({
       window: w,
       seg: `${w} -`,
-      detail: `${CLAUDE_WINDOW_ZH[w]}: 无数据（${state.note}）`,
+      detail: part('quotaClaudeMissingDetail', { window: CLAUDE_WINDOW_PART[w], note: state.note },
+        `${CLAUDE_WINDOW_ZH[w]}: 无数据（${state.note.s}）`),
     }))
     .concat(rows.map((r) => {
-      const from = r.label && !claudeLabelNamesWindow(r.label) ? `（${r.label}）` : '';
+      const fromPiece = r.label && !claudeLabelNamesWindow(r.label)
+        ? part('quotaClaudeRowFrom', { label: r.label }, `（${r.label}）`)
+        : null;
       const cd = cdTag(r.resetAt);
       return {
         window: r.window,
         seg: windowSeg(r.name, r.used, r.resetAt),
-        detail: `${CLAUDE_WINDOW_ZH[r.window]}${from}: 已用 ${Math.round(r.used)}%${cd ? ` · ${cd} 后重置` : ''}`,
+        detail: part('quotaClaudeWindowDetail', {
+          window: CLAUDE_WINDOW_PART[r.window],
+          from: fromPiece,
+          pct: Math.round(r.used),
+          reset: cd ? part('quotaResetSuffix', { at: cd }, ` · ${cd} 后重置`) : null,
+        }, `${CLAUDE_WINDOW_ZH[r.window]}${fromPiece ? `（${r.label}）` : ''}: 已用 ${Math.round(r.used)}%${cd ? ` · ${cd} 后重置` : ''}`),
       };
     }))
     .map((e, i) => ({ e, i }))
@@ -841,18 +1101,17 @@ function claudeBarForState(usage, live, state) {
     .map(({ e }) => e);
 
   const worst = rows.length ? Math.max(...rows.map((r) => r.used)) : null;
-  const text = entries.map((e) => e.seg)
-    .concat(ago ? [ago] : [], [CLAUDE_ACTION_SEG[state.action] || '⟳ 刷新'])
-    .join(' · ');
+  const textParts = entries.map((e) => part(null, null, e.seg))
+    .concat(ago ? [part(null, null, ago)] : [], [CLAUDE_ACTION_SEG[state.action] || CLAUDE_ACTION_SEG_REFRESH]);
   // The scrape's own status is worth a line only when it explains something — a
   // missing window, a failure, or a fetch in flight. With every window in hand
   // and nothing happening it is noise.
-  const title = ['Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）']
-    .concat(entries.map((e) => e.detail), ago ? [`同步于 ${ago}`] : [],
-      missing.length || state.action === 'fetching' || state.action === 'login_pending' ? [state.title] : [])
-    .join('\n');
-  return view(text, worst === null ? COLOR.gray : unifiedColorFromRemaining(unifiedRemaining(worst)),
-    title, state.action);
+  const titleParts = [part('quotaClaudeTitle', null, 'Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）')]
+    .concat(entries.map((e) => e.detail), ago ? [part('quotaSyncAt', { ago }, `同步于 ${ago}`)] : [],
+      missing.length || state.action === 'fetching' || state.action === 'login_pending' ? [state.title] : []);
+  return partsView(textParts,
+    worst === null ? COLOR.gray : unifiedColorFromRemaining(unifiedRemaining(worst)),
+    titleParts, state.action);
 }
 
 function claudeBar(usage, live) {
@@ -861,7 +1120,7 @@ function claudeBar(usage, live) {
   return withStates(base, {
     fetching: claudeBarForState(usage, live, CLAUDE_SCRAPE_FETCHING),
     login_pending: claudeBarForState(usage, live, CLAUDE_SCRAPE_LOGIN_PENDING),
-    unreachable: unreachableView('Claude'),
+    unreachable: unreachableView(vendorLabel('claude')),
   });
 }
 
@@ -874,17 +1133,25 @@ function claudeBar(usage, live) {
 function labelRoutedProvider(bar, provider) {
   if (!bar) return null;
   const source = provider === 'glm' ? 'GLM' : provider === 'codex' ? 'Codex' : 'Claude';
-  return view(
-    `路由供应商 ${source} · ${bar.text}`,
+  return partsView(
+    [part('quotaRoutedProviderPrefix', { source }, `路由供应商 ${source}`),
+      ...(bar.textParts || [part(null, null, bar.text)])],
     bar.color,
-    `${bar.title || `${source} 额度`}\n此行是当前路由供应商额度，不是 OpenCode Go 订阅额度。`,
+    [...(bar.titleParts || [part(null, null, `${source} 额度`)]),
+      part('quotaRoutedProviderNote', null, '此行是当前路由供应商额度，不是 OpenCode Go 订阅额度。')],
     bar.action,
   );
 }
 
 function labelRoutedBalance(bar) {
   if (!bar) return null;
-  return view(`DeepSeek 余额 · ${bar.text}`, bar.color, bar.title, bar.action);
+  return partsView(
+    [part('quotaDeepSeekBalancePrefix', null, 'DeepSeek 余额'),
+      ...(bar.textParts || [part(null, null, bar.text)])],
+    bar.color,
+    bar.titleParts || [part(null, null, bar.title)],
+    bar.action,
+  );
 }
 
 // ── Public surface ─────────────────────────────────────────────────────────
@@ -899,14 +1166,21 @@ const VENDOR_LABEL = Object.freeze({
   kimi: 'Kimi',
 });
 
+// The vendor's own name as a piece: everything but 火山方舟 reads the same in
+// both languages, so only that one carries a catalog key.
+function vendorLabel(kind) {
+  const label = VENDOR_LABEL[kind] || kind;
+  return kind === 'ark' ? part('quotaVendorArk', null, label) : part(null, null, label);
+}
+
 const LOADING_TITLE = Object.freeze({
-  claude: '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量…',
-  opencode: '正在通过 CDP 抓取 opencode.ai/console ...',
-  codex: '正在从 chatgpt.com 拉取 Codex 周额度...',
-  qoder: '正在通过 CDP 抓取 qoder.com.cn 用量...',
-  ark: '正在通过 arkcli 拉取火山方舟套餐额度...',
-  zhipu: '正在从 z.ai / bigmodel.cn 额度端点拉取窗口用量...',
-  kimi: '正在从 api.moonshot.cn 拉取预付余额...',
+  claude: part('quotaLoadingTitleClaude', null, '正在通过 CDP 打开 claude.ai/settings/usage 解析窗口余量…'),
+  opencode: part('quotaLoadingTitleOpencode', null, '正在通过 CDP 抓取 opencode.ai/console ...'),
+  codex: part('quotaLoadingTitleCodex', null, '正在从 chatgpt.com 拉取 Codex 周额度...'),
+  qoder: part('quotaLoadingTitleQoder', null, '正在通过 CDP 抓取 qoder.com.cn 用量...'),
+  ark: part('quotaLoadingTitleArk', null, '正在通过 arkcli 拉取火山方舟套餐额度...'),
+  zhipu: part('quotaLoadingTitleZhipu', null, '正在从 z.ai / bigmodel.cn 额度端点拉取窗口用量...'),
+  kimi: part('quotaLoadingTitleKimi', null, '正在从 api.moonshot.cn 拉取预付余额...'),
 });
 
 // Ark's install click has its own long-running state, and it is not a fetch.
@@ -915,6 +1189,8 @@ const ARK_INSTALLING = Object.freeze({
   color: COLOR.gray,
   title: '正在执行 npm install -g @volcengine/ark-cli，首次安装可能需要一两分钟...',
   action: null,
+  textParts: Object.freeze([part('quotaArkInstallingText', null, '火山方舟：正在安装 arkcli…')]),
+  titleParts: Object.freeze([part('quotaArkInstallingTitle', null, '正在执行 npm install -g @volcengine/ark-cli，首次安装可能需要一两分钟...')]),
 });
 
 /**
@@ -937,9 +1213,9 @@ function renderQuotaBar(kind, value, opts = {}) {
     case 'claude': return claudeBar(value, opts.live);
     default: return null;
   }
-  const label = VENDOR_LABEL[kind] || kind;
+  const label = vendorLabel(kind);
   const states = {
-    loading: loadingView(label, LOADING_TITLE[kind] || ''),
+    loading: loadingView(label, LOADING_TITLE[kind] || null),
     unreachable: unreachableView(label),
   };
   if (kind === 'ark') states.installing = ARK_INSTALLING;

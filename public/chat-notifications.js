@@ -3,13 +3,29 @@
 // Task notification controller for the standalone chat page.
 // Kept as a classic script because chat.html/chat.js still expose a small set
 // of global functions to inline handlers and older clients.
+//
+// Sound policy for the OPEN task (the Air shell's air-task-notify.js covers the
+// others; both follow the table in shared/user-presence.js):
+//   present (visible + input in the last 5 min) → ding only;
+//   away (hidden, or visible but idle 5 min)    → ding + narration + toast,
+//     plus a system notification when hidden. A toast raised while idle stays
+//     up until the person is back, then lingers the usual 15s.
 (function installChatNotifications(root) {
   const NOTIFY_COOLDOWN = 8000;
+  const SPEAK_DELAY_MS = 260;  // let the ding finish before the narration starts
 
   // 文案走 i18n：浏览器里用 i18n.js 的 t()，Node/旧目录回落到中文默认值。
   function tt(key, fallback) {
     const out = typeof root.t === 'function' ? root.t(key) : '';
     return out && out !== key ? out : fallback;
+  }
+
+  // 通知标题只有一份：public/shared/notification-copy.js（与服务器
+  // src/push/notification-copy.js 同一张表、同一句话）。本地那份 titleSuffix 表
+  // 就是「系统通知说出现异常、本页通知说任务异常」的来历。
+  function outcomeCopy() {
+    return root.MultiCCNotificationCopy
+      || (typeof require === 'function' ? require('./shared/notification-copy.js') : null);
   }
 
   function normalizeNotificationType(type) {
@@ -25,13 +41,10 @@
   function localNotificationPayload(sessionId, text, type, url) {
     const sid = sessionId || 'chat';
     const normalizedType = normalizeNotificationType(type);
-    const titleSuffix = normalizedType === 'waiting'
-      ? '等待操作'
-      : normalizedType === 'error' ? '任务异常' : '执行成功';
     return {
       sessionId: sid,
       type: normalizedType,
-      title: `MultiCC #${sid}: ${titleSuffix}`,
+      title: outcomeCopy().notificationTitle(normalizedType, sid, root.t),
       body: text,
       url,
     };
@@ -68,12 +81,18 @@
     const now = typeof opts.now === 'function' ? opts.now : Date.now;
     const schedule = typeof opts.setTimeout === 'function' ? opts.setTimeout : win.setTimeout.bind(win);
     const cancelSchedule = typeof opts.clearTimeout === 'function' ? opts.clearTimeout : win.clearTimeout.bind(win);
+    // Without the shared presence tracker, fall back to "hidden = away".
+    const presence = opts.presence !== undefined ? opts.presence
+      : (win.MultiCCUserPresence?.shared?.() || null);
+    const isAway = () => (presence ? presence.isAway() : doc.visibilityState !== 'visible');
 
     let enabled = typeof opts.getTaskNotifyEnabled === 'function'
       ? opts.getTaskNotifyEnabled(getSessionId())
       : true;
     const lastNotificationAt = { succeeded: 0, waiting: 0, error: 0 };
     let toastTimer = null;
+    let toastSticky = false;
+    const speechTimers = new Set();
     let togglePromise = null;
 
     function updateButton() {
@@ -142,6 +161,7 @@
     }
 
     function dismissToast() {
+      toastSticky = false;
       if (notifyToast) notifyToast.style.display = 'none';
       if (toastTimer) {
         cancelSchedule(toastTimer);
@@ -149,7 +169,7 @@
       }
     }
 
-    function showToast(text, type) {
+    function showToast(text, type, sticky) {
       if (!notifyToast) return;
       const closeBtn = notifyToast.querySelector('.toast-close');
       notifyToast.textContent = '';
@@ -158,7 +178,15 @@
       notifyToast.className = type;
       notifyToast.style.display = 'block';
       if (toastTimer) cancelSchedule(toastTimer);
-      toastTimer = schedule(dismissToast, type === 'running' ? 8000 : 15000);
+      toastTimer = null;
+      toastSticky = !!sticky;
+      if (!toastSticky) toastTimer = schedule(dismissToast, type === 'running' ? 8000 : 15000);
+    }
+
+    function cancelSpeech() {
+      for (const timer of speechTimers) cancelSchedule(timer);
+      speechTimers.clear();
+      if (win.speechSynthesis) { try { win.speechSynthesis.cancel(); } catch (_) {} }
     }
 
     function playDing(type) {
@@ -196,14 +224,13 @@
       if (timestamp - lastNotificationAt[normalizedType] < NOTIFY_COOLDOWN) return false;
       lastNotificationAt[normalizedType] = timestamp;
 
-      if (doc.visibilityState === 'visible') {
-        playDing(normalizedType);
-        return true;
-      }
+      playDing(normalizedType);
+      if (!isAway()) return true;
 
-      showToast(text, normalizedType);
+      const hidden = doc.visibilityState !== 'visible';
+      showToast(text, normalizedType, !hidden);
 
-      if (typeof opts.showLocalTaskNotification === 'function') {
+      if (hidden && typeof opts.showLocalTaskNotification === 'function') {
         const location = opts.location || win.location || { pathname: '', search: '' };
         opts.showLocalTaskNotification(localNotificationPayload(
           getSessionId(),
@@ -214,11 +241,17 @@
       }
 
       if (win.speechSynthesis && typeof win.SpeechSynthesisUtterance === 'function') {
-        const utterance = new win.SpeechSynthesisUtterance(text);
-        utterance.lang = 'zh-CN';
-        utterance.rate = 1.1;
-        utterance.volume = 0.8;
-        win.speechSynthesis.speak(utterance);
+        // speechSynthesis queues utterances itself; an earlier line still
+        // waiting on its ding must not be overwritten by this one.
+        const timer = schedule(() => {
+          speechTimers.delete(timer);
+          const utterance = new win.SpeechSynthesisUtterance(text);
+          utterance.lang = 'zh-CN';
+          utterance.rate = 1.1;
+          utterance.volume = 0.8;
+          win.speechSynthesis.speak(utterance);
+        }, SPEAK_DELAY_MS);
+        speechTimers.add(timer);
       }
       return true;
     }
@@ -230,17 +263,30 @@
     function onVisibilityChange() {
       if (doc.visibilityState !== 'visible') return;
       dismissToast();
-      if (win.speechSynthesis) win.speechSynthesis.cancel();
+      cancelSpeech();
+    }
+
+    // Back at a visible page after idling: the toast that waited for them now
+    // gets its normal 15s instead of vanishing before anyone read it.
+    function onReturn(reason) {
+      if (reason !== 'active' || !toastSticky) return;
+      toastSticky = false;
+      if (toastTimer) cancelSchedule(toastTimer);
+      toastTimer = schedule(dismissToast, 15000);
     }
 
     if (notifyBtn) notifyBtn.addEventListener('click', onNotifyClick);
     if (notifyToast) notifyToast.addEventListener('click', dismissToast);
     win.addEventListener('multicc-push-state', updateButton);
     doc.addEventListener('visibilitychange', onVisibilityChange);
+    const stopReturn = presence?.onReturn?.(onReturn) || null;
     updateButton();
 
     function destroy() {
       dismissToast();
+      for (const timer of speechTimers) cancelSchedule(timer);
+      speechTimers.clear();
+      if (typeof stopReturn === 'function') stopReturn();
       if (notifyBtn) notifyBtn.removeEventListener('click', onNotifyClick);
       if (notifyToast) notifyToast.removeEventListener('click', dismissToast);
       win.removeEventListener('multicc-push-state', updateButton);

@@ -53,6 +53,31 @@ test('/api/air 内容没变回 304，变了才重新发正文', async () => {
   assert.equal(JSON.parse(changed.body).tasks.length, 2);
 });
 
+test('/api/air 不把迁移的内部 task 全表随正文发出去', async () => {
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  const marker = 'MARKER_TASK_BODY';
+  // 宿主为了省掉第二遍全表扫描，会把迁移读到的 task 全表跟着结果带回来
+  // （src/task-shell/host.js）。这份内部载荷一旦进了快照，每轮正文会从 0.74MB
+  // 涨到 5.5MB —— 客户端只用 migration.errors，不该付这份钱。
+  mountAirRoutes(app, {
+    admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }), capacityReason: () => null },
+    records: new Map(), directories: new Map(), getBoard: () => ({ tasks: {} }), clis: [],
+    shell: {
+      migrateTaskSessions: async () => ({ ok: true, migrated: ['t1'], errors: [],
+        tasks: [{ id: 't1', blob: marker.repeat(400) }] }),
+      taskAccess: () => ({ readOnly: true }),
+    },
+  });
+  const res = airResponse();
+  await handlers.get('/api/air')({ headers: {} }, res);
+  assert.equal(res.statusCode, 200);
+  const payload = JSON.parse(res.body);
+  assert.equal(payload.migration.tasks, undefined, '内部 task 全表不能进正文');
+  assert.deepEqual(payload.migration.migrated, ['t1'], '其余字段照旧透传');
+  assert.equal(payload.migration.ok, true);
+  assert.ok(!res.body.includes(marker), '正文里不该出现任务体内容');
+});
+
 test('/api/air/tasks/:id 详情同样支持 304（3.5MB 的消息正文不再每 4 秒重传）', async () => {
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   let messages = [{ id: 'm1', role: 'user', content: 'x'.repeat(64) }];
@@ -112,5 +137,11 @@ test('Air 前端显式发条件请求，并在 304 时跳过解析与重画', ()
   assert.match(source, /if \(snapshot\.unchanged && !entryChanged\) return;/);
   // 后台标签页别再按 4 秒敲；失败要退避，别在服务端打嗝时持续加码。
   assert.match(source, /const POLL_HIDDEN_MS = 15000;/);
+  // 服务端每轮要重算上千张卡，闲着的时候不该继续按 4 秒敲：连着两轮 304（内容一样
+  // 就意味着画面上不会变）才降到 POLL_IDLE_MS，一旦有变化计数清零。判据只认正文，
+  // 不认「有没有卡片在跑」—— 任务板上长期挂着别人留下的 running/queued 旧卡。
+  assert.match(source, /idleRounds = snapshot\.unchanged \? idleRounds \+ 1 : 0;/);
+  assert.match(source, /idleRounds >= 2 \? POLL_IDLE_MS : POLL_MS/);
+  assert.doesNotMatch(source, /anyRunning/);
   assert.match(source, /const delay = pollFailures \? Math\.min\(base \* 2 \*\* pollFailures, POLL_MAX_MS\) : base;/);
 });

@@ -6,7 +6,8 @@ const { createClaudeExpAdapter } = require('../../src/cli-adapters/claude-exp');
 
 // Drive the real host through admission, context composition, and adapter argv.
 // Stop at buildInvocation, before any provider attempt or process can start.
-module.exports = function prepareTurn({ record, cwd, history = [], connected = false, text = 'hello', goalLimits }) {
+module.exports = function prepareTurn({ record, cwd, history = [], connected = false, text = 'hello', goalLimits,
+  stopAtInvocation = true, hostDeps = {} }) {
   const noop = () => {};
   const ok = () => ({ ok: true });
   let prepared;
@@ -34,6 +35,18 @@ module.exports = function prepareTurn({ record, cwd, history = [], connected = f
     savePersistedSessionsBestEffort: noop,
     chatTurnPreparationRuntime: { claim: ok, settle: noop, markMessageDurable: ok },
     turnProgressHeartbeat: { stop: noop, start: noop },
+    // Mirrors the host key composeMessage's deps reach for (takeBackgroundStopNote).
+    // Its absence is not tolerated: the engine calls the accessor itself, so an
+    // undefined one throws inside composeMessage and aborts the whole turn.
+    getBackgroundTaskRuntime: () => ({
+      hasProcessBackgroundTasks: () => false,
+      takeStoppedNote: () => '',
+      recordMainToolUseId: noop,
+      markTaskOutputAwaiting: noop,
+      handleEvent: noop,
+      reapSessionShadows: () => [],
+      listActiveBackgroundTasks: () => [],
+    }),
     logger: { warn: noop, info: noop, error: noop },
     chatBroadcast: (_id, event) => { if (event.type === 'error') errors.push(event.error); },
     emitTurnOutcome: noop, classifyTurnEnd: noop, cancelClassify: noop,
@@ -51,8 +64,10 @@ module.exports = function prepareTurn({ record, cwd, history = [], connected = f
     effectiveSessionModel: () => record.model,
     providerFor: () => ({ ...adapter, buildInvocation(envelope) {
       prepared = { envelope, invocation: adapter.buildInvocation(envelope) };
-      throw new Error('test stopped after real adapter invocation');
+      if (stopAtInvocation) throw new Error('test stopped after real adapter invocation');
+      return prepared.invocation;
     } }),
+    ...hostDeps,
   });
   engine.runChatTurn(record.id, text, { taskId: 'sdk-task', goalLimits });
   assert.ok(prepared, `host did not reach adapter invocation: ${errors.join('; ')}`);

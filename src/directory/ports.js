@@ -44,6 +44,7 @@ const EVENT_PORT = ['append'];
 const FS_PORT = ['homedir', 'sampleRoot', 'exists', 'isDirectory', 'mkdirp', 'readDirents', 'writeFileExclusive'];
 
 // Pure(ish) path helpers shared with the wider codebase (src/directories.js).
-const HELPER_PORT = ['resolveCwd', 'isHomeOrAbove', 'realPathOf', 'friendlyDirReason'];
+const HELPER_PORT = ['resolveCwd', 'isHomeOrAbove', 'realPathOf', 'friendlyDirReason',
+  'dirReasonFix'];
 
 module.exports = { assertPort, REPOSITORY_PORT, GIT_PORT, SESSION_PORT, EVENT_PORT, FS_PORT, HELPER_PORT };

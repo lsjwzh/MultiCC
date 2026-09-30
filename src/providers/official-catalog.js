@@ -24,9 +24,17 @@ function createOfficialCatalog({ readRecords, readSelection, writeSelection }) {
     if (typeof selected !== 'string' || !/^[a-f0-9]{16}$/.test(selected)) throw new Error('invalid saved official account selection');
     return selected;
   }
+  // The synthetic object is rebuilt from scratch on every read (login/account
+  // state can't be cached), but a handful of advanced settings — e.g. the
+  // egress-IP allowlist — are user-editable and must survive that rebuild.
+  // They live in an override record in the SAME store, keyed by the official id.
+  function overrideOf(type) {
+    return readRecords().find(p => p.id === officialId(type) && p.appType === type) || null;
+  }
   function provider(type, id = officialId(type)) {
     const accountId = active(type);
-    return {
+    const override = overrideOf(type);
+    const result = {
       id, appType: type, name: type === 'codex' ? 'Codex 官方' : 'Claude 官方',
       source: 'builtin', apiFormat: type === 'codex' ? 'openai_responses' : 'anthropic',
       builtinOfficial: true, activeAccountId: accountId,
@@ -35,6 +43,10 @@ function createOfficialCatalog({ readRecords, readSelection, writeSelection }) {
         ...(accountId === 'global' ? {} : { officialAccount: { id: accountId } }),
       },
     };
+    if (override && Array.isArray(override.egressIpAllowlist) && override.egressIpAllowlist.length) {
+      result.egressIpAllowlist = override.egressIpAllowlist;
+    }
+    return result;
   }
   function normalize(type, id) {
     if (!TYPES.includes(type)) return id || null;

@@ -100,7 +100,7 @@ async function main() {
   // context legitimately injects SIBLING TASK TITLES (another task's setup text is
   // its title here), so branch decisions must look at the user turn alone — an
   // injected sibling title must not be mistaken for this turn's instruction.
-  const userText = prompt.split('[进程保活规则')[0].split('【托管上下文结束】').pop();
+  const userText = prompt.split('[Process keep-alive rules')[0].split('【托管上下文结束】').pop();
   let answer, mcpResult = null, marker = '';
   if (userText.includes('HOLD_UPDATE')) {
     while (!fs.existsSync(RELEASE2)) await new Promise(r => setTimeout(r, 100));

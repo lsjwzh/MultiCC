@@ -17,34 +17,49 @@ import '../../utils/status_presentation.dart';
 CanonicalStatus airTaskStatus(AirTask task) =>
     taskStatusOf(status: task.status, runState: task.runState);
 
+/// Shared by directory counters and their result list (same rules as Web).
+enum AirDirectoryTaskFilter {
+  open('进行中与待处理'),
+  running('运行中'),
+  waiting('等待回复'),
+  error('异常'),
+  succeeded('执行成功'),
+  all('全部记录'),
+  archived('已归档');
+
+  const AirDirectoryTaskFilter(this.label);
+  final String label;
+
+  bool matches(AirTask task) => switch (this) {
+    open => task.status != 'done' && task.status != 'archived',
+    running => airTaskRunning(task),
+    waiting => airTaskStatus(task) == CanonicalStatus.waiting,
+    error => airTaskStatus(task) == CanonicalStatus.error,
+    succeeded => airTaskStatus(task) == CanonicalStatus.succeeded,
+    all => true,
+    archived => task.status == 'archived',
+  };
+}
+
 StatusSpec airTaskSpec(AirTask task) =>
     statusSpecOf(StatusDomain.task, airTaskStatus(task));
 
-/// Air 面上每个状态叫什么 —— 逐条对着 Web `public/air-admin.js` 的 `STATUS_COPY`。
+/// Air 面上每个状态叫什么 —— **只有一份**，在注册表的 `airLabelKey` 列上
+/// （`utils/status_presentation.dart` 的 [StatusSpec.airLabel]）。Web 侧同一列由
+/// `public/status-presentation.js` 的 `airStatusLabels()` 出，`air.js` 的
+/// `stateNames` 与控制台的 `STATUS_COPY` 都从它构建。
 ///
 /// 为什么不直接用注册表的 `labelKey`（App 词典里 running 是「进行中」、waiting 是
-/// 「等待中」）：Web 的 Air 面自带一份中文（`air.html` 里没有 t()，`air.js` 的
-/// `label()` 查的也是这份 Air 词表），说的是跟阶段、资源去向（[airLabel]）同源的那
+/// 「等待中」）：Air 面自带一份中文，说的是跟阶段、资源去向（[airLabel]）同源的那
 /// 套词。两套词混着用，同一行就会冒出两个词说同一件事 —— 徽标写「进行中」、旁边那
-/// 行写「执行中」，读的人得先猜它们是不是一回事。
-const Map<CanonicalStatus, String> airStatusCopy = {
-  CanonicalStatus.idle: '空闲',
-  CanonicalStatus.queued: '排队中',
-  CanonicalStatus.running: '执行中',
-  CanonicalStatus.waiting: '等待回答',
-  CanonicalStatus.blocked: '等待配置',
-  CanonicalStatus.error: '执行异常',
-  CanonicalStatus.succeeded: '执行成功',
-  CanonicalStatus.done: '已完成',
-  CanonicalStatus.cancelled: '已取消',
-  CanonicalStatus.archived: '已归档',
-  CanonicalStatus.offline: '已离线',
-  CanonicalStatus.unknown: '状态未知',
-};
+/// 行写「执行中」，读的人得先猜它们是不是一回事。所以 Air 词表单独占注册表的一列，
+/// 而不是在这里再抄一份：手抄的那几份已经漂了（一条在等后台任务、不需要任何人回答
+/// 的卡，曾被这一列写成「等待回答」）。
+String airStatusLabel(CanonicalStatus status) => airStatusWord(status);
 
-/// Air 面上的状态词。兜底是原样的状态名，同 Web 的 `STATUS_COPY[status] || status`。
-String airStatusLabel(CanonicalStatus status) =>
-    airStatusCopy[status] ?? status.name;
+/// 整张表（枚举 → Air 词）。给需要遍历的地方和测试用；取单个状态的词走
+/// [airStatusLabel]。
+Map<CanonicalStatus, String> airStatusCopy() => airStatusWords();
 
 /// Air 面的状态徽标：词走 [airStatusCopy]，可见文案和无障碍名是同一个词（同 Web
 /// `statusBadge()` 那句「translate 恒等于可见文案」）。侧栏的任务行、目录首页的
@@ -64,14 +79,64 @@ class AirTaskStatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final status = airTaskStatus(task);
-    final word = airStatusLabel(status);
+    // ✅ 那一格有三个说法（执行成功 / 需要交互 / 达成目标）：服务端在判定 D 时算
+    // 好子状态随卡片一起来，这里只负责换词，图标、色调、排序都不动。认不出来就
+    // 退回「执行成功」。同 Web 的 `statusBadge()`。
+    final word = succeededSubLabel(status, task.goalState);
+    final shown = word.isEmpty ? airStatusLabel(status) : word;
     return StatusBadge(
       domain: StatusDomain.task,
       status: status,
-      label: word,
-      semanticLabel: word,
+      label: shown,
+      semanticLabel: shown,
       fontSize: fontSize,
       dense: dense,
+    );
+  }
+}
+
+String airWorktreeChangeLabel(AirTask task) {
+  final changes = task.worktreeChanges;
+  if (changes == null || !changes.pending) return '';
+  if (changes.dirty && changes.ahead > 0) {
+    return 'Worktree 有未提交改动，另有 ${changes.ahead} 个提交尚未合并';
+  }
+  if (changes.dirty) return 'Worktree 有未提交改动';
+  return 'Worktree 有 ${changes.ahead} 个提交尚未合并';
+}
+
+/// Web `.worktree-change-badge` 的 App 对位件：静态琥珀色分支图标，tooltip 与
+/// 无障碍名区分「未提交」和「已提交但未合回」。不做常驻动画。
+class AirWorktreeChangeBadge extends StatelessWidget {
+  const AirWorktreeChangeBadge({super.key, required this.task});
+
+  final AirTask task;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = airWorktreeChangeLabel(task);
+    if (label.isEmpty) return const SizedBox.shrink();
+    return Tooltip(
+      message: label,
+      child: Semantics(
+        label: label,
+        image: true,
+        child: Container(
+          key: ValueKey('air-worktree-change-${task.id}'),
+          width: 18,
+          height: 18,
+          decoration: BoxDecoration(
+            color: const Color(0xfffff7df),
+            border: Border.all(color: const Color(0xffe8c982)),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Icon(
+            Icons.merge_type_rounded,
+            size: 13,
+            color: Color(0xff98630c),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -97,7 +162,8 @@ const Set<String> airRunningLeases = {
 };
 
 /// 「谁在等我」的分级权重，越小越急：
-/// 等我回答 → 出错要我去处理 → 卡在资源 → 正在跑。故障排在任何乐观信号前面。
+/// 等我回答 → 出错要我去处理 → 卡在资源 → 正在跑/等后台任务。故障排在任何乐观信
+/// 号前面。
 ///
 /// 这份权重只用来判断「算不算在等我」（见 [airNeedsAttention]），不再决定谁排
 /// 在前面 —— 排序是纯时间，和 Web 一致。
@@ -107,7 +173,9 @@ int airTaskUrgency(AirTask task) {
   if (status == CanonicalStatus.error) return 1;
   final capacity = task.resource['capacityReason']?.toString() ?? '';
   if (capacity.isNotEmpty) return 2;
+  // background（在等后台任务）和 running 同级：有东西在外面跑，不是待办。
   if (status == CanonicalStatus.running ||
+      status == CanonicalStatus.background ||
       airRunningLeases.contains(task.resource['lease']?.toString())) {
     return 3;
   }
@@ -118,8 +186,8 @@ int airTaskUrgency(AirTask task) {
 }
 
 /// 「在等我」的分界线：0 等我回答 · 1 出错要我去处理 · 2 卡在资源 —— 这三类都得
-/// 我动手。3（正在跑）不列进来：跑着的东西不是待办，它不需要我操作。控制台那张
-/// 「等待处理」统计卡走的是同一条线，两处口径必须一致。
+/// 我动手。3（正在跑 / 在等后台任务）不列进来：跑着的东西不是待办，它不需要我操作。
+/// 控制台那张「等待处理」统计卡走的是同一条线，两处口径必须一致。
 bool airNeedsAttention(AirTask task) => airTaskUrgency(task) < 3;
 
 /// 跨所有目录、需要我动手的任务。这条信号原来由侧栏的「跨目录活动」承担，现在
@@ -143,14 +211,15 @@ String airTaskDetail(AirTask task) {
   final stage = task.recordType == 'planned'
       ? airLabel(task.workflowStage ?? task.status)
       : '';
-  final bits = <String>[
-    if (stage.isNotEmpty) '计划 · $stage',
-  ];
+  final bits = <String>[if (stage.isNotEmpty) '计划 · $stage'];
   final held = task.resourceText;
   // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）——
   // 同 Web 侧栏那句 `!badgeText.includes(part)`。比的是徽标上那个词（[airStatusCopy]），
-  // 不是词典里的词：一行上只有一套词的时候，这两句才真的能对上。
-  final badge = airStatusLabel(airTaskStatus(task));
+  // 不是词典里的词：一行上只有一套词的时候，这两句才真的能对上。徽标在 ✅ 上换过
+  // 词时这里也要跟着换，否则「执行成功」会跟「达成目标」重复印一行。
+  final status = airTaskStatus(task);
+  final sub = succeededSubLabel(status, task.goalState);
+  final badge = sub.isEmpty ? airStatusLabel(status) : sub;
   if (held.isNotEmpty && held != stage && !badge.contains(held)) bits.add(held);
   return bits.join(' · ');
 }

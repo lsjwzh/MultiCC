@@ -85,8 +85,47 @@ async function tmuxCapturePane(id) {
   catch (_) { return ''; }
 }
 
+// capture-pane output reshaped so a terminal emulator can replay it as-is:
+// -e keeps colours/attributes, bare "\n" becomes "\r\n" (xterm treats a lone LF as
+// "down one row, same column" → staircase), no trailing newline (it would scroll the
+// last screen line away), and the cursor is put back where the pane has it. The
+// cursor move is relative to the last line (CUU + CHA), not absolute, because the
+// replaying client's viewport height need not match the pane's.
+function formatPaneSnapshot(captured, cursor) {
+  const lines = String(captured || '').split('\n');
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  if (!lines.join('').trim()) return '';
+  let out = lines.join('\r\n') + '\x1b[0m';
+  if (cursor && Number.isFinite(cursor.x) && Number.isFinite(cursor.y) && Number.isFinite(cursor.height)) {
+    const up = Math.max(0, cursor.height - 1 - cursor.y);
+    if (up) out += `\x1b[${up}A`;
+    out += `\x1b[${Math.max(0, cursor.x) + 1}G`;
+  }
+  return out;
+}
+
+async function tmuxCaptureSnapshot(id) {
+  try {
+    const name = tmuxSessionName(id);
+    const [captured, meta] = await Promise.all([
+      run('tmux', ['capture-pane', '-t', name, '-p', '-e', '-S', '-500']),
+      run('tmux', ['display-message', '-t', name, '-p', '#{cursor_x} #{cursor_y} #{pane_height}']).catch(() => ''),
+    ]);
+    const [x, y, height] = String(meta).trim().split(/\s+/).map(Number);
+    return formatPaneSnapshot(captured, { x, y, height });
+  } catch (_) { return ''; }
+}
+
 async function tmuxPaneTty(id) {
   return (await run('tmux', ['display-message', '-t', tmuxSessionName(id), '-p', '#{pane_tty}'])).trim();
+}
+
+// Last time the pane produced output (tmux keeps it across our restarts), or null.
+async function tmuxPaneActivity(id) {
+  try {
+    const sec = Number((await run('tmux', ['display-message', '-t', tmuxSessionName(id), '-p', '#{window_activity}'])).trim());
+    return sec > 0 ? new Date(sec * 1000) : null;
+  } catch (_) { return null; }
 }
 
 async function tmuxPaneCwd(id) {
@@ -145,7 +184,10 @@ module.exports = {
   applyMaxClientSize,
   tmuxKillSession,
   tmuxCapturePane,
+  tmuxCaptureSnapshot,
+  formatPaneSnapshot,
   tmuxPaneTty,
+  tmuxPaneActivity,
   tmuxPaneCwd,
   tmuxWriteInput,
   fifoPathForSession,

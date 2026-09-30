@@ -263,7 +263,7 @@ test('Claude Exp resumes native history even before the first successful reply',
     for (const hasNativeSession of [true, false]) {
       const turn = request({ cli: 'claude-exp', turnCount, hasNativeSession });
       assert.deepEqual(turn.execution, {
-        transport: 'cli-process',
+        transport: 'claude-stream',
         historyIntent: hasNativeSession ? 'resume' : 'first',
         isFirstTurn: !hasNativeSession,
       });
@@ -392,19 +392,17 @@ test('turn lifecycle carries canonical task identity into router tool capabiliti
   assert.equal(Object.isFrozen(turn.task), true);
 });
 
-test('task-run identity and provider attribution stay frozen for the admitted turn', () => {
+test('task identity and provider attribution stay frozen for the admitted turn', () => {
   const normalized = normalizeTurnRequest({
     sessionId: 'worker-1',
     text: 'run the task',
     cli: 'codex',
     taskId: 'task-1',
-    taskRunId: 'run-1',
-    leaseEpoch: 7,
     taskSource: 'task-board',
   });
   const turn = createTurnLifecycle(normalized, { turnId: 'turn-task-run' });
   assert.deepEqual(turn.task, {
-    id: 'task-1', runId: 'run-1', leaseEpoch: 7,
+    id: 'task-1',
     start: false, source: 'task-board',
   });
 
@@ -520,7 +518,7 @@ test('a new Claude attempt is rejected before persistence while background work 
   const admissionStart = source.indexOf('const admission = planTurnAdmission');
   const turnStart = source.indexOf('const turnId =', admissionStart);
   const body = source.slice(admissionStart, turnStart);
-  assert.match(body, /backgroundWorkActive:[\s\S]*hasLiveBackgroundTasks\(sessionName\)/);
+  assert.match(body, /backgroundWorkActive:[\s\S]*hasProcessBackgroundTasks\(sessionName\)/);
   assert.match(body, /background-work-active[\s\S]*本消息尚未执行/);
 });
 

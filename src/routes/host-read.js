@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { readPowerSettings } = require('../host-power-services');
 
 const EMPTY_HEALTH = Object.freeze({
   successCount: 0,
@@ -202,25 +203,10 @@ function createAccessTokenSettingsHandler(deps) {
   };
 }
 
-function createBooleanSettingHandler(getEnabled) {
-  return function booleanSettingHandler(req, res) {
-    res.json({ enabled: getEnabled() });
-  };
-}
-
 function createPowerSettingsHandler(deps) {
   return async function powerSettingsHandler(req, res, next) {
     try {
-      if (!deps.macosPower.isAvailable()) {
-        return res.json({ available: false, enabled: false });
-      }
-      const status = await deps.macosPower.getLidSleepPrevention();
-      // Optional companion: the in-process battery guard that sleeps the Mac
-      // when charge drops while lid-sleep prevention keeps it awake.
-      if (deps.batteryGuard && typeof deps.batteryGuard.getStatus === 'function') {
-        status.batteryGuard = deps.batteryGuard.getStatus();
-      }
-      return res.json(status);
+      return res.json(await readPowerSettings(deps, req));
     } catch (error) {
       return next(error);
     }
@@ -233,7 +219,6 @@ function assertHostReadDeps(deps) {
     'getVapidPublicKey',
     'getAccessToken',
     'isLocalRequest',
-    'getOfficialOAuthEnabled',
   ]) {
     if (typeof deps[name] !== 'function') throw new TypeError(`host read route dependency missing: ${name}`);
   }
@@ -254,7 +239,6 @@ function mountHostReadRoutes(app, rawDeps) {
   app.get('/api/tunnel/ipv6', createTunnelIpv6Handler(deps));
   app.get('/api/tunnel/sakurafrp', createTunnelSakurafrpHandler(deps));
   app.get('/api/settings/access-token', createAccessTokenSettingsHandler(deps));
-  app.get('/api/settings/official-oauth', createBooleanSettingHandler(deps.getOfficialOAuthEnabled));
   app.get('/api/settings/power', createPowerSettingsHandler(deps));
 }
 
@@ -276,7 +260,6 @@ module.exports = {
   createTunnelIpv6Handler,
   createTunnelSakurafrpHandler,
   createAccessTokenSettingsHandler,
-  createBooleanSettingHandler,
   createPowerSettingsHandler,
   mountHostReadRoutes,
 };

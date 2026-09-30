@@ -16,10 +16,11 @@ function fixture(options = {}) {
   const scheduler = {
     status: async () => ({
       state: schedulerState,
+      freezeReason: schedulerState === 'frozen' ? options.freezeReason || null : null,
       active: schedulerState === 'idle'
         ? null
         : {
-          entryId: 'entry-1',
+          entryId: options.activeEntryId || 'entry-1',
           ...(options.activeTaskId ? { taskId: options.activeTaskId } : {}),
           ...(options.activeOriginDispatchId
             ? { originDispatchId: options.activeOriginDispatchId }
@@ -100,7 +101,8 @@ function fixture(options = {}) {
     finishProviderAttempt: (attempt, facts) => calls.push(['finish-provider-attempt', attempt, facts]),
     appendMessage: (...args) => calls.push(['append-message', ...args]),
     cancelPreparation: (...args) => calls.push(['cancel-preparation', ...args]),
-    chatStream: { isAlive: () => false, cancel() {} },
+    stopBackgroundForInsert: sessionId => calls.push(['stop-background', sessionId]),
+    chatStream: options.chatStream || { isAlive: () => false, cancel() {} },
     zcodeAuth: options.zcodeAuth || { ensureZcodeAuth: () => ({ ok: true }) },
     runnerStopTimeoutMs: options.runnerStopTimeoutMs,
     runnerKillGraceMs: options.runnerKillGraceMs,
@@ -294,6 +296,17 @@ test('an immediate same-task successor keeps the dispatch live and marks only th
   assert.equal(result.dispatchSettlement, null);
 });
 
+test('an immediate insert stops background tasks before the runner; a manual cancel does not', async () => {
+  const inserted = cancelFixture();
+  await inserted.h.host.cancelActiveTurn('s1', { source: 'insert_queued' });
+  const names = inserted.h.calls.map(call => call[0]);
+  assert.deepEqual(inserted.h.calls.filter(call => call[0] === 'stop-background'), [['stop-background', 's1']]);
+  assert.ok(names.indexOf('stop-background') < names.indexOf('dispatch'));
+  const manual = cancelFixture();
+  await manual.h.host.cancelActiveTurn('s1', { source: 'manual_cancel' });
+  assert.equal(manual.h.calls.some(call => call[0] === 'stop-background'), false);
+});
+
 test('a partial assistant reply is persisted once, and a cancel never advances the FIFO', async () => {
   const { h } = cancelFixture({
     currentAssistantText: 'half an answer',
@@ -372,6 +385,37 @@ test('a repeat cancel still closes a superseded scheduler entry stuck on running
     'releasing the slot re-drives the FIFO so the priority insert can claim it');
 });
 
+test('a repeat cancel closes a cross-task dispatch entry that supersedes this session\'s own task', async () => {
+  // Production wedge: the active scheduler slot is held by a "回投" delivery
+  // whose taskId belongs to ANOTHER task than the one bound to this session
+  // (_currentTaskId). The repeat-cancel recovery path must close the slot's
+  // ACTUAL owner, not assert the session's own taskId as expected — asserting
+  // the wrong taskId trips active_task_mismatch and silently fails to release
+  // the slot, wedging the FIFO for every subsequent delivery (including a
+  // priority "insert now" message, which is then never claimed).
+  const h = fixture({
+    record: { taskState: { classifyState: 'E', cancelledAt: 1 } },
+    chatState: { _currentTaskId: 'task-own' },
+    activeTaskId: 'task-other',
+  });
+  const result = await h.host.cancelActiveTurn('s1', { source: 'insert_queued' });
+  assert.equal(result.ok, true);
+  assert.equal(result.alreadyCancelled, true);
+  assert.equal(h.calls.some(call => call[0] === 'warn'
+    && call[1] === 'session_cancel_repeat_close_failed'), false,
+    'the mismatch guard must not reject closing the slot\'s real owner');
+  const complete = h.calls.find(call => call[0] === 'complete');
+  assert.ok(complete, 'the cross-task active entry must actually be completed, not silently skipped');
+  assert.equal(complete[1].expectedTaskId, 'task-other',
+    'expectedTaskId must target the slot\'s actual owner, not the session\'s own bound task');
+  assert.equal(h.calls.some(call => call[0] === 'tick'), true,
+    'releasing the slot re-drives the FIFO so the priority insert can claim it');
+  // The session's own task projection is still reconciled against its own id.
+  assert.deepEqual(h.calls.find(call => call[0] === 'reconcile'), [
+    'reconcile', 'task-own', { classifyState: 'E', reason: 'cancel_repeat' },
+  ]);
+});
+
 test('a runner that refuses to stop reports an explicit failure instead of pretending it cancelled', async () => {
   const { h } = cancelFixture({}, { runnerStopTimeoutMs: 0, stuckRunner: true });
   const result = await h.host.cancelActiveTurn('s1');
@@ -402,6 +446,23 @@ test('confirmed cancellation releases the workspace for the next sibling task', 
   assert.equal(workspace.busy('s2'), true);
   assert.equal((await h.host.cancelActiveTurn('s1')).ok, true);
   assert.equal(workspace.busy('s2'), false);
+});
+
+test('SDK cancellation waits for the turn to drain while allowing the native process to remain alive', async () => {
+  let busy = true, interrupted = false;
+  const state = { cli: 'claude-exp', isStreaming: true, _activeRunner: {} };
+  const h = fixture({ chatState: state, runnerStopTimeoutMs: 2000,
+    chatStream: {
+      isAlive: () => true,
+      status: () => ({ busy }),
+      cancel() { interrupted = true; setTimeout(() => { busy = false; }, 20); },
+    },
+  });
+  const result = await h.host.cancelActiveTurn('s1');
+  assert.equal(result.ok, true);
+  assert.equal(interrupted, true);
+  assert.equal(busy, false, 'runner stop must wait for the SDK result/interrupt boundary');
+  assert.equal(state._activeRunner, null);
 });
 
 test('a failed cancellation retains the runner claim and blocks sibling tasks', async () => {
@@ -499,6 +560,26 @@ test('turn boundary parks FIFO until classify D is the sole completion verdict',
   ]);
   assert.equal(h.calls.some(call => call[0] === 'tick'), true);
   assert.equal(h.calls.some(call => call[0] === 'freeze'), false);
+});
+
+test('a slot claimed by a dispatch result closes on the owner session\'s own verdict', async () => {
+  // Legacy persisted slot: the dispatch.result lent the DISPATCHED task's id as
+  // lineage. The owner's turn-end verdict names its own task; rejecting it as
+  // active_task_mismatch left the slot 'assessing' forever (dispatcher wedged,
+  // worker card stuck 「执行中」).
+  const h = fixture({ activeEntryId: 'operation:op-1:result', activeTaskId: 'tsk-worker' });
+  await h.host.turnSucceeded('s1');
+  const classification = await h.host.classifyTransition('s1', 'tsk-owner', { state: 'D' });
+  assert.equal(classification.ok, true);
+  assert.deepEqual(h.calls.find(call => call[0] === 'complete'), [
+    'complete', { expectedTaskId: 'tsk-worker', reason: 'classified_D', classifyState: 'D' },
+  ]);
+
+  // Ordinary entries keep the mismatch guard.
+  const guarded = fixture({ activeTaskId: 'tsk-worker' });
+  await guarded.host.turnSucceeded('s1');
+  const rejected = await guarded.host.classifyTransition('s1', 'tsk-owner', { state: 'D' });
+  assert.equal(rejected.code, 'active_task_mismatch');
 });
 
 test('inactive classify scan repairs a missing turn boundary before applying its verdict', async () => {
@@ -765,19 +846,6 @@ test('recovery state exposes only unresolved request correlation to the schedule
   assert.equal(h.host.recoveryState('s1').pendingUserInput, null);
 });
 
-test('recovery state restores the persisted TaskRun lease without consulting transient chat state', () => {
-  const h = fixture({
-    record: {
-      taskRunLease: { runId: 'run-1', leaseEpoch: 4 },
-      taskState: { classifyState: 'D', startedAt: 100, endedAt: 200 },
-    },
-    chatState: { _currentTaskId: 'task-1', _currentTaskRunId: 'stale-run' },
-  });
-  const recovered = h.host.recoveryState('s1');
-  assert.equal(recovered.taskRunId, 'run-1');
-  assert.equal(recovered.leaseEpoch, 4);
-});
-
 test('gateway recovery projects a durable ended P turn to D, but never invents an unproven end', () => {
   const durable = fixture({
     record: {
@@ -992,5 +1060,42 @@ test('manual dismissal rejects running turns, uncertain owners, and external wai
     if (options.external) h.setPendingWait(true);
     assert.equal((await h.host.dismissUserInput('s1', 'old')).ok, false);
     assert.equal(h.calls.some(c => c[0] === 'resolve-user-input'), false);
+  }
+});
+
+test('a restart-orphaned P turn with a pending question settles as W on that question', async () => {
+  // recover() leaves the dead turn frozen/classify_running; without this the
+  // card showed 执行中 forever although the session was waiting on the user.
+  const h = fixture({
+    record: { id: 's1', kind: 'chat', taskState: { classifyState: 'P', goal: 'g' } },
+    freezeReason: 'classify_running',
+    activeTaskId: 'task-1',
+  });
+  h.forceState('frozen');
+  h.setPending({ requestId: 'usrq-1', taskId: 'task-1' });
+  const result = await h.host.settleRecoveredQuestion('s1');
+  assert.equal(result.ok, true);
+  const verdict = h.calls.find(c => c[0] === 'dispatch');
+  assert.equal(verdict[1].state, 'W');
+  assert.equal(verdict[1].requestId, 'usrq-1');
+  assert.equal(verdict[2].taskId, 'task-1');
+  assert.equal(verdict[2].liveness.state, 'inactive');
+  assert.equal(h.calls.some(c => c[0] === 'resolve-user-input'), false);
+});
+
+test('recovered-question settlement leaves other turns to the dead-runner path', async () => {
+  const noQuestion = fixture({ freezeReason: 'classify_running' });
+  noQuestion.forceState('frozen');
+  assert.equal((await noQuestion.host.settleRecoveredQuestion('s1')).code, 'no_pending_request');
+  const answered = fixture({ freezeReason: 'classify_running' });
+  answered.forceState('frozen');
+  answered.setPending({ requestId: 'usrq-1', resolved: true });
+  assert.equal((await answered.host.settleRecoveredQuestion('s1')).code, 'no_pending_request');
+  const otherFreeze = fixture({ freezeReason: 'incomplete_requires_resume' });
+  otherFreeze.forceState('frozen');
+  otherFreeze.setPending({ requestId: 'usrq-1' });
+  assert.equal((await otherFreeze.host.settleRecoveredQuestion('s1')).code, 'not_recovered_turn');
+  for (const h of [noQuestion, answered, otherFreeze]) {
+    assert.equal(h.calls.some(c => c[0] === 'dispatch'), false);
   }
 });

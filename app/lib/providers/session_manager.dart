@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/widgets.dart';
 
-import '../i18n.dart';
 import '../models/message.dart';
 import '../services/background_service.dart';
 import '../services/notification_service.dart';
@@ -10,6 +9,7 @@ import '../services/settings_service.dart';
 import '../services/ui_layout_service.dart';
 import '../services/workspace_service.dart';
 import '../utils/session_status_helpers.dart';
+import '../utils/status_presentation.dart';
 import 'chat_provider.dart';
 
 class PendingChatOpen {
@@ -94,42 +94,17 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     ));
   }
 
-  /// Currently open fleet (directory) detail panel, or null when none is open.
-  /// The fleet panel lives in the main_shell Stack UNDER the chat sheet, so
-  /// opening a session from it overlays the chat on top; closing the chat
-  /// returns to the fleet panel instead of the bare dashboard.
-  String? _activeFleetDirId;
-  String? get activeFleetDirId => _activeFleetDirId;
-  void openFleetDir(String dirId) {
-    _activeFleetDirId = dirId;
-    notifyListeners();
-  }
-
-  void closeFleetDir() {
-    _activeFleetDirId = null;
-    notifyListeners();
-  }
-
-  /// Registered by the mounted fleet panel so the Android back button can play
-  /// the same slide-down exit as the drag / X paths. Calling [closeFleetDir]
-  /// directly would unmount the panel mid-frame and it would blink out.
-  /// Not display state, so setting it deliberately does not notify.
-  VoidCallback? fleetCollapseHandler;
-
-  /// 对话浮层（`_ChatSheet`）注册的同一件事。除了 Android 返回键，首页 AppBar 的
-  /// ☰ 也走它：抽屉挂在内层 Scaffold 上，而浮层挂在它上面 —— 不先让浮层滑落，
+  /// 对话浮层（`_ChatSheet`）注册的收起入口：除了 Android 返回键，Air 侧栏的 ☰
+  /// 也走它 —— 抽屉挂在内层 Scaffold 上，而浮层挂在它上面，不先让浮层滑落，
   /// 抽屉会拉在浮层底下（屏幕上什么也看不到）。
+  /// Not display state, so setting it deliberately does not notify.
   VoidCallback? chatCollapseHandler;
 
   /// 正在等「浮层滑落完了」的那个人。滑落什么时候结束只有浮层自己知道，所以它
   /// AnimationController 一落地就回头叫 [notifyLayerCollapsed]。
   Completer<void>? _layerCollapse;
 
-  /// 收起目录详情浮层；面板在树上时滑落动画走完才算完成，不在就直接关。
-  Future<void> requestCloseFleetDir() =>
-      _collapseLayer(fleetCollapseHandler, closeFleetDir);
-
-  /// 收起对话浮层，同上。
+  /// 收起对话浮层：面板在树上时滑落动画走完才算完成，不在就直接关。
   Future<void> requestCloseChat() =>
       _collapseLayer(chatCollapseHandler, goToSessionList);
 
@@ -205,9 +180,11 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
         .where((entry) => entry.value.status == 'waiting')
         .map((entry) => entry.key)
         .toSet();
-    const busy = {'running', 'thinking', 'editing'};
+    // 「忙」只有一处定义（registry 的 isBusyStatus，镜像服务端
+    // state-transition.js isRunningStatus）：thinking / editing 是 running 的别名，
+    // 而 background（等后台任务）刻意不算 —— 本进程并没有在推进这一轮。
     final running = statuses.entries
-        .where((entry) => busy.contains(entry.value.status))
+        .where((entry) => isBusyStatus(entry.value.status))
         .map((entry) => entry.key)
         .toSet();
 
@@ -513,11 +490,13 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     if (SettingsService.current?.taskNotifyEnabled(sessionId) == false) return;
     if (!_isInBackground && sessionId == _activeSessionId) return;
     final who = _displayTitleFor(sessionId);
-    final outcome = state == 'waiting'
-        ? t('waitingInteraction')
-        : state == 'error'
-        ? t('errorOccurred')
-        : t('classifySucceeded');
+    // This workspace channel only carries the coarse state, but
+    // workspace_service._handle already wrote the exact classify letter onto
+    // the session status (and notified listeners) just before calling us, so
+    // the wording matches what chat/voice call would say for the same verdict.
+    final outcome = classifyNotificationWord(
+      liveStatus(sessionId)?.classifyState ?? state,
+    );
     NotificationService.show(
       title: 'MultiCC · $who: $outcome',
       body: message.isNotEmpty ? message : who,
@@ -678,8 +657,8 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   // ── Session actions (REST) ─────────────────────────────────────────────────
 
-  Future<void> deleteSession(String id) async {
-    await _sessionService.deleteSession(id);
+  Future<void> deleteSession(String id, {bool force = false}) async {
+    await _sessionService.deleteSession(id, force: force);
     closeSession(id);
     loadDashboard();
   }
@@ -708,8 +687,16 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       fresh: fresh,
     );
     for (final provider in _providers.values) {
-      if (!config.deferred && provider.executionSessionName == id)
+      if (provider.executionSessionName != id) continue;
+      if (config.deferred) {
+        // Deferred: the server kept the old CLI live and staged the picked one
+        // for the next turn. The app must still show what was picked (web does
+        // the same — its pills read the staged config), otherwise the header
+        // keeps showing the old CLI and the AI chip the old CLI's providers.
+        provider.applyPendingConfiguration(config.pending);
+      } else {
         provider.applyCliConfig(config);
+      }
     }
     await loadDashboard();
     return config;

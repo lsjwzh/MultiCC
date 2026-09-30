@@ -16,15 +16,17 @@ const {
 } = require('../src/routes/host-write');
 
 const EXPECTED_PATHS = [
-  '/api/settings/notify',
-  '/api/settings/tunnel',
-  '/api/tunnel/restart/:provider',
-  '/api/tunnel/sakurafrp/install',
-  '/api/tunnel/sakurafrp/public-url',
-  '/api/tunnel/funnel',
-  '/api/settings/access-token',
-  '/api/settings/official-oauth',
-  '/api/settings/power',
+  'POST /api/settings/notify',
+  'POST /api/settings/tunnel',
+  'POST /api/tunnel/restart/:provider',
+  'POST /api/tunnel/sakurafrp/public-url',
+  'POST /api/tunnel/funnel',
+  'POST /api/settings/access-token',
+  'POST /api/settings/power',
+  'POST /api/settings/power/auto-unlock',
+  'POST /api/settings/power/unlock-password',
+  'DELETE /api/settings/power/unlock-password',
+  'POST /api/settings/power/unlock-password/authorize',
 ];
 
 function createResponse() {
@@ -44,8 +46,9 @@ function createResponse() {
 }
 
 async function invoke(routes, routePath, request = {}) {
-  const handler = routes.get(routePath);
-  assert.equal(typeof handler, 'function', `missing handler: ${routePath}`);
+  const method = request.method || 'POST';
+  const handler = routes.get(`${method} ${routePath}`);
+  assert.equal(typeof handler, 'function', `missing handler: ${method} ${routePath}`);
   const req = {
     body: {},
     params: {},
@@ -71,20 +74,21 @@ function presentSafely(error) {
 function createHarness(overrides = {}) {
   const routes = new Map();
   const app = {
-    post(routePath, handler) {
-      assert.equal(routes.has(routePath), false, `duplicate route: ${routePath}`);
-      routes.set(routePath, handler);
-    },
+    post(routePath, handler) { register('POST', routePath, handler); },
+    delete(routePath, handler) { register('DELETE', routePath, handler); },
   };
+  function register(method, routePath, handler) {
+    const key = `${method} ${routePath}`;
+    assert.equal(routes.has(key), false, `duplicate route: ${key}`);
+    routes.set(key, handler);
+  }
   const state = {
     env: {
       BARK_URL: 'https://api.day.app/device-old',
       WEBHOOK_URL: 'https://hooks.example.test/hook-old',
       ACCESS_TOKEN: 'old-token',
-      CLAUDE_OFFICIAL_VIA_PROXY: '0',
     },
     accessToken: 'old-token',
-    oauthEnabled: false,
     allowRemote: false,
     envWrites: [],
     events: [],
@@ -124,14 +128,24 @@ function createHarness(overrides = {}) {
     },
     getAllowRemote: () => state.allowRemote,
     isLocalRequest: req => req.local === true,
-    getOfficialOAuthEnabled: () => state.oauthEnabled,
-    setOfficialOAuthEnabled: enabled => {
-      state.events.push(['oauth-live', enabled]);
-      state.oauthEnabled = enabled;
-    },
     macosPower: {
       isAvailable: () => true,
       setLidSleepPrevention: async enabled => ({ available: true, enabled }),
+      getLidModeSettings: async () => ({ available: true, enabled: true }),
+    },
+    powerPreferences: { read: () => false, write: () => {} },
+    unlockPassword: {
+      isAvailable: () => true,
+      hasPassword: async () => true,
+      setPassword: async () => {},
+      clearPassword: async () => {},
+    },
+    // 真探测会 spawn 本机的 multicc-agent 去读钥匙串：测试里必须永远走桩，
+    // 否则一台装着 Agent 的机器上跑测试就会弹系统授权框。
+    unlockProbe: {
+      isAvailable: () => true,
+      probe: async () => ({ state: 'authorized' }),
+      runtimeReady: async () => true,
     },
     log: message => state.events.push(['log', message]),
     reportFailure: (stage, category) => state.events.push(['failure', { stage, category }]),
@@ -158,10 +172,7 @@ test('mounts the complete host write group behind a narrow dependency boundary',
 
 test('permission matrix preserves authenticated routes and limits only sensitive local settings', async () => {
   const { routes, state } = createHarness();
-  for (const routePath of [
-    '/api/settings/access-token',
-    '/api/settings/official-oauth',
-  ]) {
+  for (const routePath of ['/api/settings/access-token']) {
     const response = await invoke(routes, routePath, {
       local: false,
       body: { enabled: true, on: true, token: 'new-token' },
@@ -558,7 +569,7 @@ test('access-token writes durably before hot reload and refuses unsafe clearing'
   assert.equal(cliTunnel.state.accessToken, 'old-token');
 });
 
-test('access-token and boolean persistence failures leave live values unchanged', async () => {
+test('access-token persistence failures leave live values unchanged', async () => {
   const secret = 'disk full at /Users/private/.env';
   const { routes, state } = createHarness({
     writeEnvFile: () => { throw new Error(secret); },
@@ -567,37 +578,11 @@ test('access-token and boolean persistence failures leave live values unchanged'
     local: true,
     body: { token: 'new-token' },
   });
-  const oauth = await invoke(routes, '/api/settings/official-oauth', {
-    local: true,
-    body: { enabled: true },
-  });
   assert.equal(access.nextError.message, secret);
-  assert.equal(oauth.nextError.message, secret);
   assert.equal(state.accessToken, 'old-token');
-  assert.equal(state.oauthEnabled, false);
-  for (const response of [access, oauth]) {
-    const presented = presentSafely(response.nextError);
-    assert.equal(presented.body.error, 'internal_error');
-    assert.equal(JSON.stringify(presented.body).includes('/Users/private'), false);
-  }
-});
-
-test('official OAuth validates booleans, preserves response DTOs and persists before going live', async () => {
-  const { routes, state } = createHarness();
-  assert.deepEqual((await invoke(routes, '/api/settings/official-oauth', {
-    local: true,
-    body: { enabled: 'true' },
-  })).body, { error: 'enabled 必须是布尔' });
-
-  const oauth = await invoke(routes, '/api/settings/official-oauth', {
-    local: true,
-    body: { enabled: true },
-  });
-  assert.deepEqual(oauth.body, { ok: true, enabled: true });
-  assert.equal(state.oauthEnabled, true);
-  const oauthPersist = state.events.findIndex(([type, value]) => type === 'persist' && value.CLAUDE_OFFICIAL_VIA_PROXY === '1');
-  const oauthLive = state.events.findIndex(([type]) => type === 'oauth-live');
-  assert.ok(oauthPersist >= 0 && oauthPersist < oauthLive);
+  const presented = presentSafely(access.nextError);
+  assert.equal(presented.body.error, 'internal_error');
+  assert.equal(JSON.stringify(presented.body).includes('/Users/private'), false);
 });
 
 test('power settings preserve success and validation responses and redact thrown errors', async () => {
@@ -614,10 +599,20 @@ test('power settings preserve success and validation responses and redact thrown
     local: true,
     body: { enabled: 'true' },
   })).body, { error: 'enabled must be a boolean' });
+  // 权限：这个接口只做一件事（关盖运行），所以没有第二个字段可选。
+  assert.deepEqual((await invoke(routes, '/api/settings/power', {
+    local: true,
+    body: {},
+  })).body, { error: 'enabled must be a boolean' });
   assert.deepEqual((await invoke(routes, '/api/settings/power', {
     local: true,
     body: { enabled: true },
-  })).body, { ok: true, available: true, enabled: true });
+  })).body, {
+    ok: true,
+    available: true,
+    enabled: true,
+    unlockPassword: { available: true, set: true, canEdit: true, requested: false, enabled: true, requiredByLid: true },
+  });
 
   const failure = createHarness({
     macosPower: {
@@ -630,6 +625,181 @@ test('power settings preserve success and validation responses and redact thrown
     body: { enabled: true },
   });
   assert.equal(presentSafely(response.nextError).body.error, 'internal_error');
+});
+
+test('power route releases off intent and presents expected failures without leaking command output', async () => {
+  const power = require('../plugins/utils/macos-power');
+  let intent = 'off';
+  const options = { platform: 'darwin', powerdWaitMs: 0,
+    powerd: { readIntent: () => intent, setIntent: value => { intent = value ? 'on' : 'off'; return true; } },
+    execFile: (file, args, opts, cb) => cb(null, 'SleepDisabled 1\n', '') };
+  const { routes } = createHarness({ macosPower: {
+    isAvailable: () => true,
+    setLidSleepPrevention: enabled => power.setLidSleepPrevention(enabled, options),
+    getLidModeSettings: () => power.getLidModeSettings(options),
+  } });
+  const off = await invoke(routes, '/api/settings/power', { local: true, body: { enabled: false } });
+  assert.equal(off.body.ok, true);
+  assert.equal(off.body.enabled, false);
+  assert.equal(off.body.systemSleepDisabled, true);
+
+  for (const [code, overrides] of [
+    ['power_application_pending', { execFile: (file, args, opts, cb) => cb(null, 'SleepDisabled 0\n', '') }],
+    ['power_authorization_cancelled', { powerd: { setIntent: () => false },
+      execFile: (file, args, opts, cb) => cb(new Error('User canceled. (-128) /Users/private secret'), '', '') }],
+  ]) {
+    const failed = createHarness({ macosPower: { isAvailable: () => true,
+      setLidSleepPrevention: enabled => power.setLidSleepPrevention(enabled, { ...options, ...overrides }) } });
+    const response = await invoke(failed.routes, '/api/settings/power', { local: true, body: { enabled: true } });
+    const presented = presentSafely(response.nextError);
+    assert.equal(presented.statusCode, 409);
+    assert.equal(presented.body.code, code);
+    assert.doesNotMatch(presented.body.error, /internal_error|private|secret/);
+  }
+});
+
+test('lid and unlock switches preserve independent consent and reject incomplete setup', async () => {
+  let current = false, requested = false, set = true, authorized = true;
+  let probeReply = null;
+  let writes = 0, clears = 0;
+  const { routes } = createHarness({
+    macosPower: {
+      isAvailable: () => true,
+      setLidSleepPrevention: async enabled => { current = enabled; writes++; },
+      getLidModeSettings: async () => ({ available: true, enabled: current }),
+    },
+    powerPreferences: { read: () => requested, write: value => { requested = value; } },
+    unlockPassword: { isAvailable: () => true, hasPassword: async () => set, clearPassword: async () => { clears++; } },
+    unlockProbe: { probe: async () => probeReply || { state: authorized ? 'authorized' : 'waiting-for-user' }, runtimeReady: async () => true },
+  });
+  const change = (path, enabled) => invoke(routes, '/api/settings/power' + path, { local: true, body: { enabled } });
+  set = false;
+  assert.equal((await change('', true)).statusCode, 409);
+  assert.equal(writes, 0);
+  set = true; authorized = false;
+  assert.equal((await change('', true)).statusCode, 409);
+  assert.equal(writes, 0);
+  // Agent 自己坏了（丢执行位 / 没装 / 版本老）：回话要指向「重启 MultiCC 自修」，
+  // 而不是让人去点那个怎么点都不会好的「检查授权」。
+  probeReply = { state: 'unavailable', detail: 'agent-not-executable' };
+  const brokenAgent = await change('', true);
+  assert.equal(brokenAgent.statusCode, 409);
+  assert.match(brokenAgent.body.error, /重启 MultiCC/);
+  assert.doesNotMatch(brokenAgent.body.error, /检查授权/);
+  assert.equal(brokenAgent.body.authorization.detail, 'agent-not-executable');
+  // 只是这次没等到确认的，仍然给原来的指引。
+  probeReply = { state: 'unavailable' };
+  assert.match((await change('', true)).body.error, /检查授权/);
+  probeReply = null;
+  authorized = true;
+  assert.equal((await change('', true)).body.unlockPassword.enabled, true);
+  assert.equal(requested, false, 'lid mode does not overwrite independent choice');
+  assert.equal((await change('/auto-unlock', false)).statusCode, 409);
+  assert.equal((await invoke(routes, '/api/settings/power/unlock-password', { local: true, method: 'DELETE' })).statusCode, 409);
+  assert.equal(clears, 0);
+  assert.equal((await change('', false)).body.unlockPassword.enabled, false);
+  assert.equal((await change('/auto-unlock', true)).body.unlockPassword.enabled, true);
+  await change('', true);
+  assert.equal((await change('', false)).body.unlockPassword.enabled, true);
+  const off = await change('/auto-unlock', false);
+  assert.equal(off.body.unlockPassword.enabled, false);
+  assert.equal(off.body.unlockPassword.set, true, 'turning off keeps saved password');
+  assert.equal(clears, 0);
+});
+
+test('unlock password write requires a local socket and never leaks the value', async () => {
+  const writes = [];
+  const clears = [];
+  const { routes } = createHarness({
+    macosPower: { isAvailable: () => true, setLidSleepPrevention: async () => {}, getLidModeSettings: async () => ({ available: true, enabled: false }) },
+    unlockPassword: {
+      isAvailable: () => true,
+      hasPassword: async () => true,
+      setPassword: async password => { writes.push(password); },
+      clearPassword: async () => { clears.push(1); },
+    },
+  });
+
+  // 远程请求被拒
+  const remote = await invoke(routes, '/api/settings/power/unlock-password', {
+    local: false,
+    body: { password: 'sekret' },
+  });
+  assert.equal(remote.statusCode, 403);
+  assert.deepEqual(writes, []);
+
+  const saved = await invoke(routes, '/api/settings/power/unlock-password', {
+    local: true,
+    body: { password: 'sekret' },
+  });
+  assert.equal(saved.statusCode, 200);
+  // 保存成功之后必须**当场**回一次「Agent 读不读得到」：没授权时那个系统框要弹在
+  // 用户面前（此刻屏幕是解锁的），不能拖到锁屏时才弹——那时点不到，Agent 会卡死。
+  assert.deepEqual(saved.body, { ok: true, set: true, authorization: { state: 'authorized' } });
+  assert.deepEqual(writes, ['sekret']);
+
+  const invalid = await invoke(routes, '/api/settings/power/unlock-password', {
+    local: true,
+    body: { password: '' },
+  });
+  assert.equal(invalid.statusCode, 400);
+  assert.deepEqual(writes, ['sekret'], 'empty password is refused before writing');
+
+  const cleared = await invoke(routes, '/api/settings/power/unlock-password', {
+    local: true,
+    method: 'DELETE',
+  });
+  assert.equal(cleared.statusCode, 200);
+  assert.deepEqual(cleared.body, { ok: true, set: false });
+  assert.deepEqual(clears, [1]);
+});
+
+test('unlock authorization can be re-checked without retyping the password', async () => {
+  let probes = 0;
+  const { routes } = createHarness({
+    unlockPassword: {
+      isAvailable: () => true,
+      hasPassword: async () => true,
+      setPassword: async () => {},
+      clearPassword: async () => {},
+    },
+    unlockProbe: {
+      isAvailable: () => true,
+      probe: async () => { probes += 1; return { state: 'waiting-for-user' }; },
+    },
+  });
+
+  // 远程请求照样被拒（和写密码同一条本机专属规矩）
+  assert.equal((await invoke(routes, '/api/settings/power/unlock-password/authorize', {
+    local: false,
+  })).statusCode, 403);
+  assert.equal(probes, 0);
+
+  const checked = await invoke(routes, '/api/settings/power/unlock-password/authorize', { local: true });
+  assert.equal(checked.statusCode, 200);
+  assert.deepEqual(checked.body, { ok: true, authorization: { state: 'waiting-for-user' } });
+  assert.equal(probes, 1);
+
+  // 没条目时不必去问 Agent（也就不会弹任何框）
+  const empty = createHarness({
+    unlockPassword: { isAvailable: () => true, hasPassword: async () => false },
+    unlockProbe: {
+      isAvailable: () => true,
+      probe: async () => { throw new Error('must not probe without an item'); },
+    },
+  });
+  assert.deepEqual((await invoke(empty.routes, '/api/settings/power/unlock-password/authorize', {
+    local: true,
+  })).body, { ok: true, authorization: { state: 'no-password' } });
+
+  // 探测本身炸了（Agent 没装/没在跑）不能说成保存失败：它只是「没能确认」
+  const broken = createHarness({
+    unlockProbe: { isAvailable: () => true, probe: async () => { throw new Error('spawn ENOENT'); } },
+  });
+  assert.deepEqual((await invoke(broken.routes, '/api/settings/power/unlock-password', {
+    local: true,
+    body: { password: 'sekret' },
+  })).body, { ok: true, set: true, authorization: { state: 'unavailable', detail: 'probe-failed' } });
 });
 
 test('tunnel applyConfig requires durable save before publishing memory', () => {
@@ -834,9 +1004,10 @@ test('SakuraFrp settings round-trip through the HTTP boundary and durable reload
     tunnel.init();
     assert.deepEqual(tunnel.getStatus().config.sakurafrp, expected);
 
-    const ui = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-host-settings.js'), 'utf8');
-    assert.match(ui, /const d = await res\.json\(\)\.catch/);
-    assert.match(ui, /d\?\.error \|\| \('HTTP ' \+ res\.status\)/);
+    // 旧 manage 页那份 host-settings 模块随该页删除；同一条口径（服务端给的
+    // message/error 优先于裸 HTTP 状态码）现在落在 Air 唯一的请求出口上。
+    const ui = fs.readFileSync(path.join(__dirname, '..', 'public', 'air.js'), 'utf8');
+    assert.match(ui, /result\.message \|\| result\.error \|\| result\.code \|\| `HTTP \$\{response\.status\}`/);
   } finally {
     if (tunnel) tunnel.stop();
     delete require.cache[modulePath];

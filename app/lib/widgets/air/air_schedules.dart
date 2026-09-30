@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -7,6 +9,8 @@ import '../../services/manage_service.dart';
 import '../../services/session_service.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
+import '../../utils/cli_display.dart';
+import '../cron_run_history.dart';
 import 'air_task_status.dart';
 
 /// 定时任务中心 —— Web `public/air.js` 的 `renderSchedules`（`#schedule-center`）。
@@ -14,6 +18,9 @@ import 'air_task_status.dart';
 /// 一条规则不是个孤零零的计时器：它背后固定挂着一个 Air 任务，到点是把指令送进
 /// 那个任务里继续跑。所以这张卡上三样缺一不可 —— 什么时候跑、跑进哪个任务、
 /// 上一次结果如何。删规则不删任务，也是因为这个分工。
+///
+/// 这一页只是把 [AirSchedulePanel] 铺满整页（页头 + 新建那个 FAB）；目录首页那张
+/// 底部弹层用的是同一个面板，只是多带一个目录过滤。
 class AirSchedulesScreen extends StatefulWidget {
   const AirSchedulesScreen({
     super.key,
@@ -83,6 +90,131 @@ String airScheduleFixedDetail(CronTask task) {
 }
 
 class _AirSchedulesScreenState extends State<AirSchedulesScreen> {
+  final GlobalKey<AirSchedulePanelState> _panel =
+      GlobalKey<AirSchedulePanelState>();
+
+  /// 面板说它开始 / 结束取数了，这两颗按钮跟着灰。面板自己那份状态归它，宿主
+  /// 只留这一位。
+  bool _loading = true;
+
+  void _panelLoading(bool value) {
+    if (!mounted || _loading == value) return;
+    setState(() => _loading = value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      key: const ValueKey('air-schedules'),
+      backgroundColor: AppColors.bg,
+      appBar: AppBar(
+        backgroundColor: AppColors.panel,
+        foregroundColor: AppColors.text,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        title: const Text('定时任务'),
+        actions: [
+          IconButton(
+            key: const ValueKey('air-schedules-refresh'),
+            onPressed: _loading
+                ? null
+                : () => unawaited(_panel.currentState?.reload()),
+            icon: const Icon(Icons.refresh_rounded),
+            color: AppColors.muted,
+            tooltip: '刷新',
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        key: const ValueKey('air-schedules-new'),
+        onPressed: _loading
+            ? null
+            : () => unawaited(_panel.currentState?.openEditor()),
+        backgroundColor: AppColors.accentDark,
+        foregroundColor: AppColors.onAccent,
+        icon: const Icon(Icons.add_rounded),
+        // Web 上这句话挂在顶部工具栏（`#schedule-create`）上，手机上放到
+        // 右手拇指够得着的地方 —— 字不变。
+        label: const Text('新建定时任务'),
+      ),
+      body: AirSchedulePanel(
+        key: _panel,
+        settings: widget.settings,
+        httpClient: widget.httpClient,
+        directories: widget.directories,
+        initialDirectoryId: widget.initialDirectoryId,
+        onOpenTask: widget.onOpenTask,
+        onLoadingChanged: _panelLoading,
+      ),
+    );
+  }
+}
+
+/// 一列定时规则 —— 全局中心和目录首页那张底部弹层用的是**同一份**。
+///
+/// 目录首页要回答的是「我正看着的**这个**目录排了哪些活」，和全局中心问的不是两件
+/// 事：同一条规则的两种视角。所以这里只多一个 [directoryId] 过滤，别的（取数、四个
+/// 动作、新建 / 编辑走的那唯一一个表单）一个字都不改 —— 两份实现迟早会分家，而
+/// 「编辑一条规则」在整个产品里只有一个编辑器。
+class AirSchedulePanel extends StatefulWidget {
+  const AirSchedulePanel({
+    super.key,
+    required this.settings,
+    this.httpClient,
+    this.directories = const <AirDirectory>[],
+    this.initialDirectoryId,
+    this.directoryId,
+    this.onOpenTask,
+    this.onNotice,
+    this.onLoadingChanged,
+    this.shrinkWrap = false,
+    this.padding = const EdgeInsets.fromLTRB(12, 12, 12, 96),
+    this.emptyTitle = '还没有定时任务',
+    this.emptyHint = '新建规则时会同时创建一个固定 Air 任务，后续运行都在该任务中继续。',
+  });
+
+  final SettingsService settings;
+
+  /// 测试注入；生产留空走包级 http。
+  final http.Client? httpClient;
+
+  /// 新建 / 编辑规则时选目标目录。宿主手里已经有 `/api/air` 那份快照，直接带过
+  /// 来就省一次 `/api/directories`；空的话编辑器自己拉一次。
+  final List<AirDirectory> directories;
+
+  /// 新建规则默认选中哪个目录。用户仍可在编辑器里改选其他目录；没有当前目录时
+  /// 留空，回退到第一项。
+  final String? initialDirectoryId;
+
+  /// 只留这个目录的规则（目录首页那层弹层）。留空就是全部 —— 全局中心那一份。
+  final String? directoryId;
+
+  /// 点「固定 Air 任务」→ 打开那条任务。固定任务的工作目录可以和当前目录不是
+  /// 同一个，所以 dirId 和 taskId 一起带出去。
+  final void Function(String dirId, String taskId)? onOpenTask;
+
+  /// 动作的结果说给谁听。全局中心是 Scaffold 的 SnackBar；底部弹层里没有它的位置
+  /// （SnackBar 落在弹层背后，等于没说），所以弹层把这句接过去画在自己那一行上。
+  final ValueChanged<String>? onNotice;
+
+  /// 取数开始 / 结束时告诉宿主一声 —— 宿主那颗刷新按钮要跟着灰。
+  final ValueChanged<bool>? onLoadingChanged;
+
+  /// true = 交给外层滚动，自己只量高度（底部弹层里那张清单就是它在滚）。
+  final bool shrinkWrap;
+
+  final EdgeInsets padding;
+
+  /// 一条规则都没有时说的话。目录视角问的是另一个问题（「这个目录还没有」），
+  /// 所以这两句由宿主给。
+  final String emptyTitle;
+  final String emptyHint;
+
+  @override
+  State<AirSchedulePanel> createState() => AirSchedulePanelState();
+}
+
+class AirSchedulePanelState extends State<AirSchedulePanel> {
   late final ManageService _manage = ManageService(
     settings: widget.settings,
     httpClient: widget.httpClient,
@@ -95,31 +227,53 @@ class _AirSchedulesScreenState extends State<AirSchedulesScreen> {
   @override
   void initState() {
     super.initState();
-    _load();
+    // 第一趟不用先 setState：_loading 本来就是 true。
+    unawaited(reload());
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  /// 重新取一遍这一列规则。宿主那颗刷新、下拉刷新、每个动作之后走的都是它。
+  Future<void> reload() async {
+    _setLoading(true);
+    if (_error != null) setState(() => _error = null);
     try {
       final tasks = await _manage.fetchCronTasks();
       if (!mounted) return;
       setState(() {
-        _tasks = tasks;
-        _loading = false;
+        _tasks = _visible(tasks);
       });
+      _setLoading(false);
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _error = '定时任务读取失败：$e';
-        _loading = false;
       });
+      _setLoading(false);
     }
   }
 
+  void _setLoading(bool value) {
+    if (_loading == value) return;
+    setState(() => _loading = value);
+    widget.onLoadingChanged?.call(value);
+  }
+
+  /// 本目录那层视角只动这一处：服务端返回的 `dirId` 早就有了，不必为它多打一次
+  /// 接口（同 Web 那边按 `?dir=` 过滤）。
+  List<CronTask> _visible(List<CronTask> tasks) {
+    final dirId = widget.directoryId;
+    if (dirId == null) return tasks;
+    return [
+      for (final task in tasks)
+        if (task.dirId == dirId) task,
+    ];
+  }
+
   void _notice(String text) {
+    final sink = widget.onNotice;
+    if (sink != null) {
+      sink(text);
+      return;
+    }
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
@@ -132,7 +286,7 @@ class _AirSchedulesScreenState extends State<AirSchedulesScreen> {
             ? '固定任务正在忙碌，本次执行已经排队。'
             : '执行指令已经送入固定 Air 任务。',
       );
-      await _load();
+      await reload();
     } catch (e) {
       _notice('运行失败：$e');
     }
@@ -141,7 +295,7 @@ class _AirSchedulesScreenState extends State<AirSchedulesScreen> {
   Future<void> _toggle(CronTask task) async {
     try {
       await _manage.updateCronTask(task.id, enabled: !task.enabled);
-      await _load();
+      await reload();
     } catch (e) {
       _notice('更新失败：$e');
     }
@@ -170,7 +324,7 @@ class _AirSchedulesScreenState extends State<AirSchedulesScreen> {
     if (ok != true) return;
     try {
       await _manage.deleteCronTask(task.id);
-      await _load();
+      await reload();
       _notice('定时规则已删除；固定 Air 任务和历史没有删除。');
     } catch (e) {
       _notice('删除失败：$e');
@@ -193,7 +347,9 @@ class _AirSchedulesScreenState extends State<AirSchedulesScreen> {
     }
   }
 
-  Future<void> _openEditor({CronTask? task}) async {
+  /// 新建 / 编辑一条规则的地方 —— 那颗「新建」、卡片上的「编辑规则」、底部弹层的
+  /// 「新建定时任务」都从这里进。整个产品只有这一个表单。
+  Future<void> openEditor({CronTask? task}) async {
     final choices = await _directoryChoices();
     if (!mounted) return;
     if (choices.isEmpty) {
@@ -210,84 +366,65 @@ class _AirSchedulesScreenState extends State<AirSchedulesScreen> {
       ),
     );
     if (saved == true) {
-      await _load();
+      await reload();
       _notice(task == null ? '定时任务已创建，并绑定到唯一的 Air 任务。' : '定时规则已更新；固定任务和历史保持不变。');
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      key: const ValueKey('air-schedules'),
-      backgroundColor: AppColors.bg,
-      appBar: AppBar(
-        backgroundColor: AppColors.panel,
-        foregroundColor: AppColors.text,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        title: const Text('定时任务'),
-        actions: [
-          IconButton(
-            key: const ValueKey('air-schedules-refresh'),
-            onPressed: _loading ? null : _load,
-            icon: const Icon(Icons.refresh_rounded),
-            color: AppColors.muted,
-            tooltip: '刷新',
+    if (_loading) {
+      // 弹层里（shrinkWrap）没有「整页」这个概念，给个几十像素的空当，别让那张
+      // 板子先塌成一行再弹开。
+      return Padding(
+        padding: widget.shrinkWrap
+            ? const EdgeInsets.symmetric(vertical: 34)
+            : EdgeInsets.zero,
+        child: const Center(
+          child: CircularProgressIndicator(color: AppColors.accent),
+        ),
+      );
+    }
+    final rows = <Widget>[
+      if (_error != null)
+        _Notice(text: _error!, tone: AppColors.danger)
+      else
+        _Summary(tasks: _tasks),
+      const SizedBox(height: 10),
+      if (_error == null && _tasks.isEmpty)
+        _EmptySchedule(title: widget.emptyTitle, hint: widget.emptyHint)
+      else
+        for (final task in _tasks) ...[
+          _ScheduleCard(
+            task: task,
+            onRun: () => _run(task),
+            onToggle: () => _toggle(task),
+            onEdit: () => openEditor(task: task),
+            onDelete: () => _delete(task),
+            // 绑定还没建立时这一行是死的：没有可去的地方。绑定坏了但任务还在，
+            // 仍然点得进去（同 Web 的 disabled = !taskId）。
+            onOpenTask:
+                widget.onOpenTask == null || (task.taskId ?? '').isEmpty
+                ? null
+                : () => widget.onOpenTask!(task.dirId, task.taskId!),
           ),
+          const SizedBox(height: 10),
         ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        key: const ValueKey('air-schedules-new'),
-        onPressed: _loading ? null : () => _openEditor(),
-        backgroundColor: AppColors.accentDark,
-        foregroundColor: AppColors.onAccent,
-        icon: const Icon(Icons.add_rounded),
-        // Web 上这句话挂在顶部工具栏（`#schedule-create`）上，手机上放到
-        // 右手拇指够得着的地方 —— 字不变。
-        label: const Text('新建定时任务'),
-      ),
-      body: _loading
-          ? const Center(
-              child: CircularProgressIndicator(color: AppColors.accent),
-            )
-          : RefreshIndicator(
-              color: AppColors.accent,
-              backgroundColor: AppColors.panel,
-              onRefresh: _load,
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-                children: [
-                  if (_error != null)
-                    _Notice(text: _error!, tone: AppColors.danger)
-                  else
-                    _Summary(tasks: _tasks),
-                  const SizedBox(height: 10),
-                  if (_error == null && _tasks.isEmpty)
-                    const _EmptySchedule()
-                  else
-                    for (final task in _tasks) ...[
-                      _ScheduleCard(
-                        task: task,
-                        onRun: () => _run(task),
-                        onToggle: () => _toggle(task),
-                        onEdit: () => _openEditor(task: task),
-                        onDelete: () => _delete(task),
-                        // 绑定还没建立时这一行是死的：没有可去的地方。绑定坏了
-                        // 但任务还在，仍然点得进去（同 Web 的 disabled = !taskId）。
-                        onOpenTask:
-                            widget.onOpenTask == null ||
-                                (task.taskId ?? '').isEmpty
-                            ? null
-                            : () => widget.onOpenTask!(
-                                task.dirId,
-                                task.taskId!,
-                              ),
-                      ),
-                      const SizedBox(height: 10),
-                    ],
-                ],
-              ),
-            ),
+    ];
+    if (widget.shrinkWrap) {
+      return Padding(
+        padding: widget.padding,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: rows,
+        ),
+      );
+    }
+    return RefreshIndicator(
+      color: AppColors.accent,
+      backgroundColor: AppColors.panel,
+      onRefresh: reload,
+      child: ListView(padding: widget.padding, children: rows),
     );
   }
 }
@@ -345,7 +482,10 @@ class _SummaryItem extends StatelessWidget {
 }
 
 class _EmptySchedule extends StatelessWidget {
-  const _EmptySchedule();
+  const _EmptySchedule({required this.title, required this.hint});
+
+  final String title;
+  final String hint;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -355,23 +495,28 @@ class _EmptySchedule extends StatelessWidget {
       borderRadius: BorderRadius.circular(AppColors.radiusPanel),
       border: Border.all(color: AppColors.line),
     ),
-    child: const Column(
+    child: Column(
       children: [
-        Icon(Icons.alarm_off_rounded, size: 40, color: AppColors.faint),
-        SizedBox(height: 14),
+        const Icon(Icons.alarm_off_rounded, size: 40, color: AppColors.faint),
+        const SizedBox(height: 14),
         Text(
-          '还没有定时任务',
-          style: TextStyle(
+          title,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
             color: AppColors.text,
             fontSize: 15,
             fontWeight: FontWeight.w600,
           ),
         ),
-        SizedBox(height: 8),
+        const SizedBox(height: 8),
         Text(
-          '新建规则时会同时创建一个固定 Air 任务，后续运行都在该任务中继续。',
+          hint,
           textAlign: TextAlign.center,
-          style: TextStyle(color: AppColors.faint, fontSize: 12.5, height: 1.6),
+          style: const TextStyle(
+            color: AppColors.faint,
+            fontSize: 12.5,
+            height: 1.6,
+          ),
         ),
       ],
     ),
@@ -460,6 +605,10 @@ class _ScheduleCard extends StatelessWidget {
           _fixedTask(),
           const SizedBox(height: 10),
           _state(),
+          if (task.runs.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            CronRunHistory(task: task),
+          ],
           const SizedBox(height: 10),
           Text(
             task.prompt,
@@ -808,13 +957,20 @@ class _ScheduleEditorDialog extends StatefulWidget {
 }
 
 class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
-  static const List<String> _clis = [
-    'claude',
-    'codex',
+  /// 这份列表的五个位置与 cron_screen 那份一致：定时任务跑的是 chat 线路，所以两个
+  /// 家族取扶正后的常驻车道（`claude -p` / `codex exec` 那两个一次性命令留给终端）。
+  static const List<String> _cliChoices = [
+    'claude-exp',
+    'codex-exp',
     'opencode',
     'zcode',
     'qoder',
   ];
+
+  /// 名字走唯一那份 CLI 展示表；绑在老车道上的规则仍然列出来，否则编辑它时看不见自己
+  /// 在用什么。
+  List<String> get _clis =>
+      _cliChoices.contains(_cli) ? _cliChoices : [_cli, ..._cliChoices];
 
   static const List<(String, String)> _presets = [
     ('0 9 * * *', '每天 09:00'),
@@ -843,7 +999,7 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
   @override
   void initState() {
     super.initState();
-    _cli = widget.task?.cli ?? 'claude';
+    _cli = widget.task?.cli ?? _cliChoices.first;
     _enabled = widget.task?.enabled ?? true;
     final ids = widget.directories.map((d) => d.id).toSet();
     final wanted = widget.task?.dirId ?? widget.initialDirectoryId;
@@ -1006,7 +1162,7 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
                       fieldKey: 'air-schedule-cli',
                       value: _cli,
                       enabled: !_bound,
-                      items: [for (final cli in _clis) (cli, cli)],
+                      items: [for (final cli in _clis) (cli, cliDisplayName(cli))],
                       onChanged: (v) => setState(() => _cli = v),
                     ),
                   ),

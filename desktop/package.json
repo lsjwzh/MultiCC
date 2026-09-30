@@ -2,7 +2,7 @@
   "name": "multicc-desktop",
   "productName": "MultiCC",
   "private": true,
-  "version": "2.0.6",
+  "version": "2.2.0",
   "description": "MultiCC desktop shell — supervises the local MultiCC server and hosts its web UI",
   "homepage": "https://github.com/lsjwzh/MultiCC#readme",
   "main": "main.js",
@@ -18,7 +18,7 @@
   },
   "devDependencies": {
     "electron": "44.1.1",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.16.1"
   },
   "build": {
     "appId": "io.github.lsjwzh.multicc",
@@ -39,17 +39,23 @@
       {
         "from": ".staging/resources/app-server",
         "to": "app-server",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": ".staging/resources/runtime",
         "to": "runtime",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": ".staging/resources/launcher",
         "to": "launcher",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": ".staging/resources/bundle-manifest.json",
@@ -60,11 +66,19 @@
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.png",
       "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "artifactName": "multicc-desktop-${version}-macos-${arch}.${ext}",
       "identity": null,
       "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
         "NSDesktopFolderUsageDescription": "MultiCC 需要访问「桌面」才能把工作目录设在这里。",
         "NSDocumentsFolderUsageDescription": "MultiCC 需要访问「文档」才能把工作目录设在这里。",
@@ -76,7 +90,12 @@
     "win": {
       "icon": "build/icon.png",
       "target": [
-        { "target": "nsis", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "artifactName": "multicc-desktop-${version}-windows-${arch}.${ext}"
     },
@@ -91,8 +110,18 @@
       "category": "Development",
       "maintainer": "MultiCC Team <lsjwzh@users.noreply.github.com>",
       "target": [
-        { "target": "AppImage", "arch": ["x64"] },
-        { "target": "deb", "arch": ["x64"] }
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "artifactName": "multicc-desktop-${version}-linux-x64.${ext}"
     },

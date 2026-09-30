@@ -86,7 +86,7 @@ const boot = ensureDshProfile({ homeDir: tmpHome, runnerSrcDir: runnerSrc });
 assert.strictEqual(boot.dir, profileDir);
 assert.deepStrictEqual(
   JSON.parse(fs.readFileSync(path.join(profileDir, 'package.json'), 'utf8')).dsh.profile.bundles,
-  ['dsh-base', 'dsh-headless'],
+  ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'],
 );
 const patchText = fs.readFileSync(path.join(profileDir, 'cordis.patch.yml'), 'utf8');
 assert.match(patchText, /- id: headless-runner\n {2}disabled: true/);

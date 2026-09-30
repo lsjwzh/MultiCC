@@ -50,6 +50,9 @@ function loadModule() {
     },
   });
   window.window = window;
+  // The notification words come from the shared table; inside the sandbox there
+  // is no `require`, so hand it over the same way a page's <script> tag does.
+  window.MultiCCNotificationCopy = require('../public/shared/notification-copy.js');
 
   vm.runInNewContext(fs.readFileSync(MODULE_FILE, 'utf8'), {
     window,
@@ -85,6 +88,12 @@ function makeToast() {
 async function main() {
   const loaded = loadModule();
   const { api, document, window, scheduled, spoken } = loaded;
+  // Narration waits for the ding (SPEAK_DELAY_MS); run those timers by hand.
+  const flushSpeech = () => {
+    for (const [id, timer] of [...scheduled]) {
+      if (timer.delay === 260) { scheduled.delete(id); timer.fn(); }
+    }
+  };
 
   assert.ok(Object.isFrozen(api));
   assert.deepStrictEqual(Array.from(api.dingFrequencies('completed')), [1046.5, 1567.98]);
@@ -107,7 +116,7 @@ async function main() {
   assert.deepStrictEqual(errorPayload, {
     sessionId: 'alpha',
     type: 'error',
-    title: 'MultiCC #alpha: 任务异常',
+    title: 'MultiCC #alpha: 出现异常',
     body: '接口中断',
     url: '/chat.html?session=alpha',
   });
@@ -164,6 +173,8 @@ async function main() {
   assert.strictEqual(localNotifications.length, 1);
   assert.strictEqual(localNotifications[0].sessionId, 'beta');
   assert.strictEqual(localNotifications[0].url, '/chat.html?session=safe-session&cwd=%2Ftmp%2Ffleet');
+  assert.strictEqual(spoken.length, 0, 'narration waits for the ding');
+  flushSpeech();
   assert.strictEqual(spoken.length, 1);
   assert.strictEqual(spoken[0].text, '执行成功');
   assert.strictEqual(spoken[0].lang, 'zh-CN');
@@ -175,10 +186,11 @@ async function main() {
   assert.strictEqual(localNotifications.length, 1);
   assert.strictEqual(controller.speak('接口异常', 'error'), true, 'error has an independent cooldown bucket');
   assert.strictEqual(localNotifications[1].type, 'error');
-  assert.ok(localNotifications[1].title.includes('任务异常'));
+  assert.ok(localNotifications[1].title.includes('出现异常'));
   clock += api.NOTIFY_COOLDOWN + 1;
   assert.strictEqual(controller.speak('再次执行成功', 'succeeded'), true);
   assert.strictEqual(localNotifications.length, 3);
+  flushSpeech();
 
   document.visibilityState = 'visible';
   clock += api.NOTIFY_COOLDOWN + 1;
@@ -264,6 +276,73 @@ async function main() {
   assert.ok(pwaAt >= 0 && pwaAt < notificationsAt);
   assert.ok(authAt >= 0 && authAt < notificationsAt);
   assert.ok(notificationsAt < chatAt);
+
+  // Presence: visible but idle 5 min counts as away → narration + a toast that
+  // stays up until they are back (no system notification: the page is on screen).
+  {
+    const fresh = loadModule();
+    let away = false;
+    let returnListener = null;
+    const presence = {
+      isAway: () => away,
+      onReturn(fn) { returnListener = fn; return () => { returnListener = null; }; },
+    };
+    const toast = makeToast();
+    const systemNotifs = [];
+    const dings = [];
+    fresh.document.visibilityState = 'visible';
+    const idleController = fresh.api.createNotificationController({
+      window: fresh.window,
+      document: fresh.document,
+      notifyToast: toast,
+      getSessionId: () => 'idle',
+      getTaskNotifyEnabled: () => true,
+      presence,
+      showLocalTaskNotification: (payload) => systemNotifs.push(payload),
+      now: () => clock,
+    });
+    fresh.window.AudioContext = function FakeAudio() { dings.push(1); throw new Error('no audio in test'); };
+    const runSpeech = () => {
+      for (const [id, timer] of [...fresh.scheduled]) {
+        if (timer.delay === 260) { fresh.scheduled.delete(id); timer.fn(); }
+      }
+    };
+
+    clock += api.NOTIFY_COOLDOWN + 1;
+    assert.strictEqual(idleController.speak('执行成功', 'succeeded'), true);
+    runSpeech();
+    assert.strictEqual(dings.length, 1, 'present: ding');
+    assert.strictEqual(fresh.spoken.length, 0, 'present: no narration');
+    assert.notStrictEqual(toast.style.display, 'block', 'present: no toast');
+
+    away = true;
+    clock += api.NOTIFY_COOLDOWN + 1;
+    assert.strictEqual(idleController.speak('执行成功', 'succeeded'), true);
+    runSpeech();
+    assert.strictEqual(dings.length, 2, 'away: still dings');
+    assert.strictEqual(fresh.spoken.length, 1, 'idle-away: narrates');
+    assert.strictEqual(systemNotifs.length, 0, 'visible idle page: no system notification');
+    assert.strictEqual(toast.style.display, 'block');
+    assert.ok(![...fresh.scheduled.values()].some(timer => timer.delay === 15000),
+      'idle toast does not time out while nobody is there');
+
+    returnListener('active');
+    assert.ok([...fresh.scheduled.values()].some(timer => timer.delay === 15000),
+      'once back, the toast gets its normal 15s');
+
+    // Speech still pending when the hidden tab becomes visible is cancelled.
+    away = true;
+    fresh.document.visibilityState = 'hidden';
+    clock += api.NOTIFY_COOLDOWN + 1;
+    idleController.speak('出错了', 'error');
+    assert.strictEqual(systemNotifs.length, 1, 'hidden: system notification');
+    fresh.document.visibilityState = 'visible';
+    fresh.document.listeners.get('visibilitychange')();
+    runSpeech();
+    assert.strictEqual(fresh.spoken.length, 1, 'pending narration dropped on return');
+    idleController.destroy();
+    assert.strictEqual(returnListener, null, 'destroy unsubscribes from presence');
+  }
 
   console.log('chat notification controller tests passed');
 }

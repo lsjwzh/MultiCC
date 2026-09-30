@@ -11,9 +11,11 @@ import '../providers/session_manager.dart';
 import 'agent_preset_picker_sheet.dart';
 import 'provider_option.dart';
 import '../services/agent_preset_service.dart';
+import '../services/auto_provider_routing.dart';
 import '../services/manage_service.dart';
 import '../services/claude_models_service.dart';
 import '../services/codex_models_service.dart';
+import '../services/opencode_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -59,12 +61,17 @@ class _AutoCandidateDraft {
     required this.model,
     required this.priority,
     required this.enabled,
+    this.rung,
   });
 
   final String providerId;
   String model;
   int priority;
   bool enabled;
+
+  /// 用户手点的档位（1 = 最简单），未点过是 null —— 未点过的行每轮按模型名重猜
+  /// （web 的 dataset.rung 与 dataset.value 之分）。空值绝不进 wire。
+  int? rung;
 }
 
 class AIConfigSheet extends StatefulWidget {
@@ -77,6 +84,14 @@ class AIConfigSheet extends StatefulWidget {
   final String? subProviderId;
   final String? subModel;
   final String? agent;
+
+  /// Host-owned network access for the Jev key step (check the vault entry, save
+  /// a pasted key, run one real classification). Same contract as the web
+  /// editor's `routingKey` option: without it the panel only names the vault
+  /// entry and offers no form — which is also what keeps widget tests hermetic.
+  final SettingsService? settings;
+  final http.Client? httpClient;
+
   const AIConfigSheet({
     super.key,
     required this.cli,
@@ -88,6 +103,8 @@ class AIConfigSheet extends StatefulWidget {
     this.subProviderId,
     this.subModel,
     this.agent,
+    this.settings,
+    this.httpClient,
   });
 
   @override
@@ -111,6 +128,27 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   late String _subModel;
   bool _customSubModel = false;
   late final TextEditingController _subCustomCtrl;
+  // Auto 候选池每行的模型选择状态（与子任务选择器同一套下拉 + 自定义…）。
+  // 自定义文本按 providerId 存 controller，切回候选模型时两边保持同步。
+  final Map<String, bool> _autoCustomModel = {};
+  final Map<String, TextEditingController> _autoModelCtrls = {};
+
+  // 难度路由（按难度选线路）。`_autoRoutingEnabled` 关着时整块 routing 不上 wire，
+  // 顺序池的 JSON 与以前逐字节一致；`_seededRouting` 是池子里原本就有的那块，
+  // 用来把本面板不暴露的旋钮（model / timeoutMs / escalation / key 条目名）原样带回去。
+  bool _autoRoutingEnabled = false;
+  String _autoRoutingOnUnknown = 'strong';
+  SessionProviderRouting? _seededRouting;
+  String _autoError = '';
+
+  // Jev key 步骤（与 web 的 routingKey 流程同一套状态机）。
+  String _jevState =
+      'unknown'; // unknown | checking | present | missing | error
+  bool _jevFormOpen = false;
+  bool _jevSaving = false;
+  String _jevResult = '';
+  bool _jevResultGood = false;
+  final TextEditingController _jevKeyCtrl = TextEditingController();
 
   bool get _isClaude => widget.cli.isClaudeFamily;
   bool get _isCodex => widget.cli.isCodexFamily;
@@ -121,6 +159,12 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   void initState() {
     super.initState();
     _provider = widget.cli.supportsProvider ? widget.provider : '';
+    if (widget.cli == SessionCli.opencode && _provider.isEmpty) {
+      _provider = openCodeNativeProviderForModel(
+        widget.model,
+        widget.providers,
+      );
+    }
     if (_provider.isEmpty) {
       for (final p in widget.providers) {
         if (p['builtinOfficial'] == true &&
@@ -157,6 +201,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     _customCtrl.dispose();
     _agentCtrl.dispose();
     _subCustomCtrl.dispose();
+    _jevKeyCtrl.dispose();
+    for (final controller in _autoModelCtrls.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -241,6 +289,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
             model: candidate?.model ?? '',
             priority: candidate?.priority ?? ++nextPriority,
             enabled: candidate?.enabled ?? false,
+            rung: _seededRung(candidate, selection.routing),
           );
         }),
       )
@@ -253,12 +302,16 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 model: candidate.model ?? '',
                 priority: candidate.priority,
                 enabled: candidate.enabled,
+                rung: _seededRung(candidate, selection.routing),
               ),
             ),
       );
     _autoMaxAttempts = selection.maxAttempts;
     _autoSticky = selection.sticky;
     _seededAutoAllowCrossTrust = selection.allowCrossTrust;
+    _seededRouting = selection.routing;
+    _autoRoutingEnabled = selection.routing != null;
+    _autoRoutingOnUnknown = selection.routing?.resolvedOnUnknown ?? 'strong';
     final enabled =
         _autoCandidates.where((candidate) => candidate.enabled).toList()
           ..sort((a, b) => a.priority.compareTo(b.priority));
@@ -266,6 +319,192 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       _provider = enabled.first.providerId;
       _model = _normalizeModel(_provider, enabled.first.model);
     }
+  }
+
+  /// 已配置池里这一行原本落在哪一档（wire 上是 `t1..tK`，面板上显示 1..K）。
+  /// 没路由过的池子一律留空，交给 [resolveAutoRungs] 按模型名猜。
+  int? _seededRung(
+    SessionProviderCandidate? configured,
+    SessionProviderRouting? routing,
+  ) {
+    if (configured == null || routing == null) return null;
+    final rung = autoRungFor(configured, routing.tiers);
+    return rung > 0 ? rung : null;
+  }
+
+  /// 在用的候选行，按优先级（= 尝试顺序）排。web 的 `order` 数组。
+  List<_AutoCandidateDraft> get _autoEnabledOrdered =>
+      _autoCandidates.where((candidate) => candidate.enabled).toList()
+        ..sort((a, b) => a.priority.compareTo(b.priority));
+
+  /// 一行在预览里的写法：`线路名（模型）`，没选模型就只有线路名。
+  String _autoRowText(_AutoCandidateDraft candidate) {
+    final name = _providerName(candidate.providerId);
+    final model = candidate.model.trim();
+    return model.isEmpty
+        ? name
+        : t('autoEditorLineWithModel', {'name': name, 'model': model});
+  }
+
+  /// 每行的生效档位与要画几个档位按钮。手点过的档位留着，没点过的按模型名猜。
+  AutoRungPlan get _autoRungPlan {
+    final rows = _autoEnabledOrdered;
+    return resolveAutoRungs(
+      rowTexts: [for (final row in rows) _autoRowText(row)],
+      chosenRungs: [for (final row in rows) row.rung],
+    );
+  }
+
+  int _autoEffectiveRung(_AutoCandidateDraft candidate) {
+    final rows = _autoEnabledOrdered;
+    final index = rows.indexOf(candidate);
+    if (index < 0) return 0;
+    return _autoRungPlan.rungs[index];
+  }
+
+  void _setAutoRouting(bool on) {
+    setState(() {
+      _autoRoutingEnabled = on;
+      _autoError = '';
+    });
+    // key 状态只在第一次打开「按难度」时查一次，开一次普通池不发请求。
+    if (on && _jevState == 'unknown' && widget.settings != null) {
+      _checkJevKey();
+    }
+  }
+
+  // ── Jev key（难度路由的判定服务）───────────────────────────────────────
+
+  ManageService? get _manage {
+    final settings = widget.settings;
+    if (settings == null) return null;
+    return ManageService(settings: settings, httpClient: widget.httpClient);
+  }
+
+  String get _jevKeyName =>
+      _seededRouting?.apiKeyName ?? SessionProviderRouting.defaultApiKeyName;
+
+  Future<void> _checkJevKey() async {
+    final manage = _manage;
+    if (manage == null) return;
+    setState(() => _jevState = 'checking');
+    try {
+      final entries = await manage.fetchSecrets();
+      if (!mounted) return;
+      setState(() {
+        _jevState = entries.any((entry) => entry['name'] == _jevKeyName)
+            ? 'present'
+            : 'missing';
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _jevState = 'error');
+    }
+  }
+
+  Future<void> _saveJevKey() async {
+    final manage = _manage;
+    if (manage == null) return;
+    // 读一次立刻清空：粘贴进来的 key 不在表单里多留一秒。
+    final value = _jevKeyCtrl.text.trim();
+    _jevKeyCtrl.clear();
+    if (value.isEmpty) {
+      setState(() {
+        _jevResult = t('autoEditorJevKeyEmpty');
+        _jevResultGood = false;
+      });
+      return;
+    }
+    setState(() {
+      _jevSaving = true;
+      _jevResult = t('autoEditorJevKeySaving');
+      _jevResultGood = false;
+    });
+    try {
+      await manage.saveSecret(
+        _jevKeyName,
+        value,
+        description: 'Vercel AI Gateway（Jev 难度路由）',
+      );
+      if (!mounted) return;
+      setState(() {
+        _jevState = 'present';
+        _jevFormOpen = false;
+        _jevResult = '';
+      });
+      await _runJevTest();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _jevResult = t('autoEditorJevKeySaveFailed', {'reason': '$error'});
+        _jevResultGood = false;
+      });
+    } finally {
+      if (mounted) setState(() => _jevSaving = false);
+    }
+  }
+
+  Future<void> _runJevTest() async {
+    final manage = _manage;
+    if (manage == null) return;
+    final sample = t('autoEditorJevSample');
+    setState(() {
+      _jevResult = t('autoEditorJevTesting');
+      _jevResultGood = false;
+    });
+    Map<String, dynamic> result;
+    try {
+      result = await manage.testAutoProviderRouting(
+        apiKeyName: _jevKeyName,
+        text: sample,
+      );
+    } catch (error) {
+      result = {'ok': false, 'code': 'request_failed', 'detail': '$error'};
+    }
+    if (!mounted) return;
+    setState(() {
+      if (result['ok'] == true) {
+        final tier = result['tier'] == 't1' ? 1 : 2;
+        _jevResult = t('autoEditorJevTestOk', {
+          'ms': '${(result['latencyMs'] as num?)?.round() ?? 0}',
+          'sample': sample,
+          'tier': autoTierLabel(tier, 2),
+        });
+        _jevResultGood = true;
+        return;
+      }
+      if (result['code'] == 'jev_key_missing') _jevState = 'missing';
+      final status = (result['status'] as num?)?.toInt() ?? 0;
+      if (status == 401 || status == 403) _jevFormOpen = true;
+      _jevResult = _describeJevFailure(result);
+      _jevResultGood = false;
+    });
+  }
+
+  /// 失败原因说人话（与 web 的 describeJevFailure 同一套映射）。
+  String _describeJevFailure(Map<String, dynamic> result) {
+    final code = '${result['code'] ?? ''}';
+    final status = (result['status'] as num?)?.toInt() ?? 0;
+    if (code == 'jev_key_missing') return t('autoEditorJevErrKeyMissing');
+    if (status == 401 ||
+        status == 403 ||
+        code == 'jev_http_401' ||
+        code == 'jev_http_403') {
+      return t('autoEditorJevErrKeyInvalid', {
+        'status': '${status != 0 ? status : code.substring(code.length - 3)}',
+      });
+    }
+    if (code == 'jev_timeout') return t('autoEditorJevErrTimeout');
+    if (code == 'jev_network') return t('autoEditorJevErrNetwork');
+    if (code == 'test_unavailable') return t('autoEditorJevErrUnavailable');
+    final rawDetail = '${result['detail'] ?? ''}';
+    final detail = rawDetail.isEmpty
+        ? ''
+        : ' · ${rawDetail.length > 160 ? rawDetail.substring(0, 160) : rawDetail}';
+    return t('autoEditorJevErrOther', {
+          'code': code.isEmpty ? 'unknown' : code,
+        }) +
+        detail;
   }
 
   bool get _autoSelectionCrossesTrust {
@@ -296,10 +535,13 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   }
 
   String _providerName(String id) {
-    if (_isQoder) return 'Qoder CN';
-    if (widget.cli == SessionCli.codebuddy) return 'WorkBuddy';
-    if (widget.cli == SessionCli.dsh) return 'DSH';
+    // 自持账号的 CLI 没有 MultiCC 线路，这里显示的是 CLI 自己的名字 —— 走唯一那份展示
+    // 表（SessionCli.displayName，源自 app/lib/utils/cli_display.dart），不再抄五遍。
+    if (!widget.cli.supportsProvider) return widget.cli.displayName;
     if (id.isEmpty) {
+      if (widget.cli == SessionCli.opencode) {
+        return 'OpenCode 原生配置（全部模型）';
+      }
       for (final p in widget.providers) {
         final providerId = p['id']?.toString() ?? '';
         if (p['builtinOfficial'] == true ||
@@ -341,6 +583,22 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     if (widget.cli == SessionCli.dsh) {
       return kDshModelOptions.map((option) => option.key).toList();
     }
+    if (widget.cli == SessionCli.gemini) {
+      return kGeminiModelOptions.map((option) => option.key).toList();
+    }
+    if (widget.cli == SessionCli.grok) {
+      return kGrokModelOptions.map((option) => option.key).toList();
+    }
+    if (widget.cli == SessionCli.opencode && provider.isEmpty) {
+      return ['', ...openCodeNativeModelOptions(widget.providers)];
+    }
+    if (widget.cli == SessionCli.opencode &&
+        isOpenCodeNativeProvider(provider)) {
+      final options = _providerMap(provider)?['modelOptions'];
+      return options is List
+          ? options.map((value) => value.toString()).toList()
+          : const [];
+    }
     final resolvedProvider = _providerMap(provider);
     if (_isCodex &&
         (resolvedProvider == null || resolvedProvider['isOfficial'] == true)) {
@@ -363,6 +621,90 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         : [''];
   }
 
+  // Auto 行的候选：_modelChoices 已含「借道线路落回本机 Claude 目录」的兜底，
+  // 这里只去掉空串（首项「Provider 默认」由下拉自己给）和重复项。
+  List<String> _autoModelChoices(String providerId) {
+    final seen = <String>{};
+    return [
+      for (final choice in _modelChoices(providerId))
+        if (choice.trim().isNotEmpty && seen.add(choice)) choice,
+    ];
+  }
+
+  TextEditingController _autoModelCtrl(_AutoCandidateDraft candidate) =>
+      _autoModelCtrls.putIfAbsent(
+        candidate.providerId,
+        () => TextEditingController(text: candidate.model),
+      );
+
+  // Auto 候选行的模型控件：首项「Provider 默认」（存空串 = 跟随线路默认），
+  // 中间是这条线路的候选，末尾「自定义…」现出文本框 —— 与 Web
+  // auto-provider-editor 同一套语义。配置里已有的、不在候选内的 id 会以
+  // 「自定义…」+ 原值回显，不会被静默丢掉。
+  Widget _buildAutoModelField(_AutoCandidateDraft candidate) {
+    final choices = _autoModelChoices(candidate.providerId);
+    final known = choices.contains(candidate.model);
+    final isCustom =
+        _autoCustomModel[candidate.providerId] ??
+        (candidate.model.isNotEmpty && !known);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        DropdownButtonFormField<String>(
+          key: Key('auto-candidate-model-${candidate.providerId}'),
+          value: isCustom ? '__custom__' : (known ? candidate.model : ''),
+          isExpanded: true,
+          dropdownColor: AppColors.panel,
+          style: const TextStyle(
+            color: AppColors.text,
+            fontSize: 12,
+            fontFamily: 'monospace',
+          ),
+          decoration: _sheetInputDecoration(
+            hint: '留空跟随 Provider 默认模型',
+          ).copyWith(labelText: 'Model'),
+          items: [
+            const DropdownMenuItem(value: '', child: Text('Provider 默认')),
+            for (final choice in choices)
+              DropdownMenuItem(
+                value: choice,
+                child: Text(choice, overflow: TextOverflow.ellipsis),
+              ),
+            const DropdownMenuItem(value: '__custom__', child: Text('自定义…')),
+          ],
+          onChanged: (next) => setState(() {
+            final custom = next == '__custom__';
+            _autoCustomModel[candidate.providerId] = custom;
+            final controller = _autoModelCtrl(candidate);
+            if (custom) {
+              // 现出的文本框从当前存值起步，避免看到上一次留下的旧文本。
+              if (controller.text != candidate.model) {
+                controller.text = candidate.model;
+              }
+            } else {
+              candidate.model = next ?? '';
+              controller.text = candidate.model;
+            }
+          }),
+        ),
+        if (isCustom) ...[
+          const SizedBox(height: 6),
+          TextFormField(
+            key: Key('auto-candidate-model-custom-${candidate.providerId}'),
+            controller: _autoModelCtrl(candidate),
+            style: const TextStyle(
+              color: AppColors.text,
+              fontSize: 12,
+              fontFamily: 'monospace',
+            ),
+            decoration: _sheetInputDecoration(hint: '模型 ID'),
+            onChanged: (value) => candidate.model = value.trim(),
+          ),
+        ],
+      ],
+    );
+  }
+
   // Map a stored wire model id (e.g. claude-opus-4-8) back to its alias tier so
   // the tier dropdown pre-selects instead of dropping into the custom-id field.
   String _normalizeModel(String provider, String model) {
@@ -376,9 +718,12 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   String _modelLabel(String model) {
     if (model.isEmpty) {
-      if (_isQoder) return '默认 / 跟随 Qoder CN 设置';
-      if (widget.cli == SessionCli.codebuddy) return '默认 / 跟随 WorkBuddy 设置';
-      if (widget.cli == SessionCli.dsh) return '默认 / 跟随 DSH 配置';
+      // Vendor-auth CLIs own their account/model settings, so the hint names the
+      // product itself. One branch for all of them: the five ids used to be
+      // spelled out here (and again in message.dart's per-CLI model lists).
+      if (!widget.cli.supportsProvider) {
+        return '默认 / 跟随 ${widget.cli.displayName} 设置';
+      }
       return '默认 / 跟随 Provider';
     }
     return modelShortNameForCli(widget.cli, model);
@@ -412,9 +757,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   String _effortDescription(String value) {
     if (value.isEmpty) {
-      if (_isQoder) return 'Default — Follow Qoder CN settings';
-      if (widget.cli == SessionCli.codebuddy) {
-        return 'Default — Follow WorkBuddy settings';
+      if (!widget.cli.supportsProvider) {
+        return 'Default — Follow ${widget.cli.displayName} settings';
       }
       return 'Default — Follow the selected model/provider';
     }
@@ -528,12 +872,43 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     if (_isAuto) {
       final group = _autoGroup(_autoGroupKey);
       final protocol = group?.protocol ?? widget.providerSelection?.protocol;
-      final enabled =
-          _autoCandidates.where((candidate) => candidate.enabled).toList()
-            ..sort((a, b) => a.priority.compareTo(b.priority));
+      // 与档位预览同一份「在用行、按尝试顺序」的列表：两处各排一次的话，
+      // 同优先级的行在两条路径上可能落到不同下标，档位就会跟错行。
+      final enabled = _autoEnabledOrdered;
       if (protocol == null || protocol.isEmpty || enabled.length < 2) return;
       provider = enabled.first.providerId;
       model = enabled.first.model.trim();
+      // 按难度：rung 折算成 t1..tK 随候选一起上 wire，并附上 routing 块。折算失败
+      // （只有一档、超过上限）时不出面板 —— 静默存成一个「号称按难度」的单档池
+      // 比报错更坏。
+      SessionProviderRouting? routing;
+      final tierByProvider = <String, String>{};
+      if (_autoRoutingEnabled) {
+        final plan = _autoRungPlan;
+        final result = serializeAutoRouting(
+          routes: [
+            for (var index = 0; index < enabled.length; index += 1)
+              AutoRoutedRoute(
+                providerId: enabled[index].providerId,
+                model: enabled[index].model.trim().isEmpty
+                    ? null
+                    : enabled[index].model.trim(),
+                priority: enabled[index].priority.clamp(1, 100),
+                rung: plan.rungs[index],
+              ),
+          ],
+          onUnknown: _autoRoutingOnUnknown,
+          previous: _seededRouting,
+        );
+        if (!result.ok) {
+          setState(() => _autoError = result.error ?? '');
+          return;
+        }
+        routing = result.routing;
+        for (final candidate in result.candidates) {
+          tierByProvider[candidate.providerId] = candidate.tier!;
+        }
+      }
       providerSelection = SessionProviderSelection(
         protocol: protocol,
         candidates: _autoCandidates
@@ -545,13 +920,27 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                     : candidate.model.trim(),
                 priority: candidate.priority.clamp(1, 100),
                 enabled: candidate.enabled,
+                // 关掉按难度时档位必须清掉：留着 tier 又没有 routing 的池子，
+                // 服务端会当成档位不匹配拒掉。
+                tier: candidate.enabled
+                    ? tierByProvider[candidate.providerId]
+                    : null,
               ),
             )
             .toList(growable: false),
         maxAttempts: _autoMaxAttempts.clamp(2, enabled.length.clamp(2, 4)),
         sticky: _autoSticky,
         allowCrossTrust: _autoAllowsCrossTrust,
+        routing: routing,
       );
+    }
+    final providerLabel = providerSelection == null
+        ? _providerName(provider)
+        : 'Auto · ${_protocolLabel(providerSelection.protocol)} → ${_providerName(provider)}';
+    final modelLabel = _modelResultLabel(provider, model);
+    if (widget.cli == SessionCli.opencode &&
+        isOpenCodeNativeProvider(provider)) {
+      provider = '';
     }
     // 子任务：模型有值才算数（只选线路不选模型 = 没设）。线路留空时用这一轮
     // 实际生效的主 Provider —— Auto 档下就是排第一的那个启用候选。
@@ -566,10 +955,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         provider: provider,
         model: model,
         effort: _effort,
-        providerLabel: providerSelection == null
-            ? _providerName(provider)
-            : 'Auto · ${_protocolLabel(providerSelection.protocol)} → ${_providerName(provider)}',
-        modelLabel: _modelResultLabel(provider, model),
+        providerLabel: providerLabel,
+        modelLabel: modelLabel,
         effortLabel: effortShortNameForCli(widget.cli, _effort),
         providerSelection: providerSelection,
         subagent: subagent,
@@ -613,6 +1000,37 @@ class AIConfigSheetState extends State<AIConfigSheet> {
             style: TextStyle(color: AppColors.faint, fontSize: 11),
           ),
           const SizedBox(height: 8),
+          _buildAutoModeRow(),
+          if (_autoRoutingEnabled) ...[
+            const SizedBox(height: 8),
+            _buildAutoJevBox(),
+          ],
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Text(
+                t('autoEditorListTitle'),
+                style: const TextStyle(
+                  color: AppColors.text,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  _autoRoutingEnabled
+                      ? t('autoEditorListHintRouting')
+                      : t('autoEditorListHintOrder'),
+                  style: const TextStyle(
+                    color: AppColors.faint,
+                    fontSize: 10.5,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
           ...ordered.map((candidate) {
             final provider = _providerMap(candidate.providerId);
             return Container(
@@ -676,23 +1094,17 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                     ],
                   ),
                   const SizedBox(height: 6),
-                  TextFormField(
-                    key: Key('auto-candidate-model-${candidate.providerId}'),
-                    initialValue: candidate.model,
-                    style: const TextStyle(
-                      color: AppColors.text,
-                      fontSize: 12,
-                      fontFamily: 'monospace',
-                    ),
-                    decoration: _sheetInputDecoration(
-                      hint: '留空跟随 Provider 默认模型',
-                    ).copyWith(labelText: 'Model'),
-                    onChanged: (value) => candidate.model = value,
-                  ),
+                  _buildAutoModelField(candidate),
+                  if (_autoRoutingEnabled && candidate.enabled) ...[
+                    const SizedBox(height: 6),
+                    _buildAutoTierRow(candidate),
+                  ],
                 ],
               ),
             );
           }),
+          const SizedBox(height: 4),
+          _buildAutoSummary(),
           if (crossesTrust)
             const Text(
               '已选择 Official 与自管 Provider：同一对话上下文可能在自动切换时发送给多个上游。',
@@ -738,6 +1150,396 @@ class AIConfigSheetState extends State<AIConfigSheet> {
             value: _autoSticky,
             onChanged: (value) => setState(() => _autoSticky = value),
           ),
+          if (_autoRoutingEnabled)
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    '判断不了难度时（Jev 超时或没连上）',
+                    style: TextStyle(color: AppColors.faint, fontSize: 11),
+                  ),
+                ),
+                DropdownButton<String>(
+                  key: const Key('auto-provider-jev-unknown'),
+                  value: _autoRoutingOnUnknown,
+                  dropdownColor: AppColors.panel,
+                  style: const TextStyle(color: AppColors.text, fontSize: 12),
+                  items: [
+                    for (final choice in kAutoUnknownChoices)
+                      DropdownMenuItem(
+                        value: choice.$1,
+                        child: Text(t(choice.$2)),
+                      ),
+                  ],
+                  onChanged: (value) =>
+                      setState(() => _autoRoutingOnUnknown = value ?? 'strong'),
+                ),
+              ],
+            ),
+          if (_autoError.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                _autoError,
+                key: const Key('auto-provider-error'),
+                style: const TextStyle(color: AppColors.danger, fontSize: 11),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 「怎么选线路」——第一个决定，一次点击切过去（与 web 的 mode 段同一套文案）。
+  Widget _buildAutoModeRow() {
+    final order = !_autoRoutingEnabled;
+    Widget option({
+      required Key key,
+      required String label,
+      required bool selected,
+      required VoidCallback onTap,
+    }) {
+      return InkWell(
+        key: key,
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(5),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: selected
+                ? AppColors.accent.withValues(alpha: 0.12)
+                : const Color(0xFFeef4fb),
+            border: Border.all(
+              color: selected ? AppColors.accent : const Color(0xFFdce6f1),
+            ),
+            borderRadius: BorderRadius.circular(5),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? AppColors.accent : AppColors.muted,
+              fontSize: 12,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Wrap 而不是 Row：窄一点的面板（或者长一点的译文）不该把这一行挤爆，
+        // 挤不下就换行。
+        Wrap(
+          spacing: 6,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(
+              t('autoEditorModeLabel'),
+              style: const TextStyle(color: AppColors.faint, fontSize: 11),
+            ),
+            const SizedBox(width: 2),
+            option(
+              key: const Key('auto-route-mode-order'),
+              label: t('autoEditorModeOrder'),
+              selected: order,
+              onTap: () => _setAutoRouting(false),
+            ),
+            option(
+              key: const Key('auto-route-mode-routing'),
+              label: t('autoEditorModeRouting'),
+              selected: !order,
+              onTap: () => _setAutoRouting(true),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          order
+              ? t('autoEditorModeOrderDetail')
+              : t('autoEditorModeRoutingDetail'),
+          style: const TextStyle(
+            color: AppColors.muted,
+            fontSize: 11,
+            height: 1.35,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 一行负责简单还是复杂任务。手点过就定住，没点过的按模型名（flash/mini 之流
+  /// 归简单）猜一个，用户随时能改。
+  Widget _buildAutoTierRow(_AutoCandidateDraft candidate) {
+    final plan = _autoRungPlan;
+    final current = _autoEffectiveRung(candidate);
+    return Row(
+      key: Key('auto-candidate-tier-${candidate.providerId}'),
+      children: [
+        const SizedBox(width: 2),
+        for (var rung = 1; rung <= plan.ceiling; rung += 1) ...[
+          Tooltip(
+            message: autoTierLabel(rung, plan.ceiling),
+            child: InkWell(
+              key: Key('auto-candidate-tier-${candidate.providerId}-$rung'),
+              // 用户一动档位就把上一次的报错收掉：他正在解决的就是那件事。
+              onTap: () => setState(() {
+                candidate.rung = rung;
+                _autoError = '';
+              }),
+              borderRadius: BorderRadius.circular(4),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                margin: const EdgeInsets.only(right: 5),
+                decoration: BoxDecoration(
+                  color: current == rung
+                      ? AppColors.accent.withValues(alpha: 0.14)
+                      : const Color(0xFFeef4fb),
+                  border: Border.all(
+                    color: current == rung
+                        ? AppColors.accent
+                        : const Color(0xFFdce6f1),
+                  ),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  autoTierChip(rung, plan.ceiling),
+                  style: TextStyle(
+                    color: current == rung ? AppColors.accent : AppColors.muted,
+                    fontSize: 11,
+                    fontWeight: current == rung
+                        ? FontWeight.w600
+                        : FontWeight.w400,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// 一句话说清这个池子会怎么走（两种模式各一句，与 web 的 renderSummary 同源）。
+  Widget _buildAutoSummary() {
+    final rows = _autoEnabledOrdered;
+    final style = const TextStyle(
+      color: AppColors.muted,
+      fontSize: 11,
+      height: 1.35,
+    );
+    if (rows.length < 2) {
+      return Text(
+        t('autoEditorSummaryNeedTwo'),
+        key: const Key('auto-provider-summary'),
+        style: style.copyWith(color: AppColors.danger),
+      );
+    }
+    if (!_autoRoutingEnabled) {
+      return Text(
+        t('autoEditorSummaryOrder', {
+          'chain': rows.map(_autoRowText).join(t('autoEditorSummaryThen')),
+        }),
+        key: const Key('auto-provider-summary'),
+        style: style,
+      );
+    }
+    final plan = _autoRungPlan;
+    final groups = <int, List<String>>{};
+    for (var index = 0; index < rows.length; index += 1) {
+      groups
+          .putIfAbsent(plan.rungs[index], () => [])
+          .add(_autoRowText(rows[index]));
+    }
+    if (groups.length < 2) {
+      return Text(
+        t('autoEditorSummaryNeedSplit'),
+        key: const Key('auto-provider-summary'),
+        style: style.copyWith(color: AppColors.danger),
+      );
+    }
+    final rungs = groups.keys.toList()..sort();
+    return Text(
+      t('autoEditorSummaryRouting', {
+        'routes': [
+          for (final rung in rungs)
+            '${autoTierLabel(rung, plan.ceiling)} → ${groups[rung]!.join('、')}',
+        ].join('；'),
+      }),
+      key: const Key('auto-provider-summary'),
+      style: style,
+    );
+  }
+
+  /// Jev key 那一条：状态 + 测试/更换 + 粘贴表单。没有 [AIConfigSheet.settings]
+  /// 时只说 key 存在哪个保险箱条目里（与 web 的无 routingKey 分支一致）。
+  Widget _buildAutoJevBox() {
+    final hostOwned = widget.settings != null;
+    final present = _jevState == 'present';
+    String status;
+    var detail = '';
+    if (!hostOwned) {
+      status = t('autoEditorJevTitle');
+      detail = t('autoEditorJevKeyVaultOnly', {'name': _jevKeyName});
+    } else if (_jevState == 'checking' || _jevState == 'unknown') {
+      status = t('autoEditorJevKeyChecking');
+    } else if (present) {
+      status = t('autoEditorJevKeyPresent');
+      detail = t('autoEditorJevKeyPresentDetail', {'name': _jevKeyName});
+    } else if (_jevState == 'missing') {
+      status = t('autoEditorJevKeyMissing');
+      detail = t('autoEditorJevKeyMissingDetail');
+    } else {
+      status = t('autoEditorJevKeyCheckFailed');
+      detail = t('autoEditorJevKeyCheckFailedDetail');
+    }
+    final formVisible =
+        hostOwned &&
+        (_jevFormOpen || _jevState == 'missing' || _jevState == 'error');
+    return Container(
+      key: const Key('auto-provider-jev'),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFeef4fb),
+        border: Border.all(color: const Color(0xFFdce6f1)),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 7,
+                height: 7,
+                margin: const EdgeInsets.only(right: 6),
+                decoration: BoxDecoration(
+                  color: present ? const Color(0xFF2ea043) : AppColors.faint,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              Text(
+                status,
+                key: const Key('auto-jev-status'),
+                style: const TextStyle(
+                  color: AppColors.text,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  detail,
+                  style: const TextStyle(
+                    color: AppColors.faint,
+                    fontSize: 10.5,
+                  ),
+                ),
+              ),
+              if (hostOwned && present)
+                TextButton(
+                  key: const Key('auto-jev-test'),
+                  onPressed: _runJevTest,
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    minimumSize: const Size(36, 26),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: Text(
+                    t('autoEditorJevTest'),
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+              if (hostOwned && present)
+                TextButton(
+                  key: const Key('auto-jev-key-change'),
+                  onPressed: () => setState(() => _jevFormOpen = !_jevFormOpen),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    minimumSize: const Size(36, 26),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: Text(
+                    _jevFormOpen
+                        ? t('autoEditorJevKeyCancel')
+                        : t('autoEditorJevKeyChange'),
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+            ],
+          ),
+          if (hostOwned && _jevState == 'missing') ...[
+            const SizedBox(height: 4),
+            Text(
+              '1. ${t('autoEditorJevStepCreate')}',
+              style: const TextStyle(
+                color: AppColors.muted,
+                fontSize: 11,
+                height: 1.4,
+              ),
+            ),
+            Text(
+              '2. ${t('autoEditorJevStepPaste')}',
+              style: const TextStyle(
+                color: AppColors.muted,
+                fontSize: 11,
+                height: 1.4,
+              ),
+            ),
+          ],
+          if (formVisible) ...[
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('auto-jev-key-input'),
+                    controller: _jevKeyCtrl,
+                    obscureText: true,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    style: const TextStyle(color: AppColors.text, fontSize: 12),
+                    decoration: _sheetInputDecoration(
+                      hint: t('autoEditorJevKeyPlaceholder'),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  key: const Key('auto-jev-key-save'),
+                  onPressed: _jevSaving ? null : _saveJevKey,
+                  child: Text(t('autoEditorJevKeySave')),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              t('autoEditorJevKeyHelp', {'name': _jevKeyName}),
+              style: const TextStyle(
+                color: AppColors.faint,
+                fontSize: 10.5,
+                height: 1.35,
+              ),
+            ),
+          ],
+          if (_jevResult.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                _jevResult,
+                key: const Key('auto-jev-result'),
+                style: TextStyle(
+                  color: _jevResultGood
+                      ? const Color(0xFF2ea043)
+                      : const Color(0xFFa85a25),
+                  fontSize: 11,
+                  height: 1.35,
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -804,9 +1606,13 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                         p['builtinOfficial'] == true &&
                         p['id'] == '${widget.cli.poolKey}-official',
                   ))
-                    const DropdownMenuItem(
+                    DropdownMenuItem(
                       value: '',
-                      child: Text('官方 Provider'),
+                      child: Text(
+                        widget.cli == SessionCli.opencode
+                            ? 'OpenCode 原生配置（全部模型）'
+                            : '官方 Provider',
+                      ),
                     ),
                   ...autoGroups.map(
                     (group) => DropdownMenuItem(
@@ -1115,16 +1921,26 @@ Future<List<Map<String, dynamic>>> prepareAIConfigInputs(
       // sheet wait for the Codex model endpoint (up to 20 seconds).
       await CodexModelsService(settings: settings).load();
     } catch (_) {}
+  } else if (cli == SessionCli.opencode) {
+    try {
+      await OpenCodeModelsService(
+        settings: settings,
+        httpClient: httpClient,
+      ).load();
+    } catch (_) {}
   }
   try {
     if (cli.supportsProvider) {
       final d = await ManageService(
         settings: settings,
         httpClient: httpClient,
-      ).fetchProviders(cli.appType);
-      return (d['providers'] as List? ?? [])
+      ).fetchProvidersForCli(cli.name);
+      final managed = (d['providers'] as List? ?? [])
           .map((e) => (e as Map).cast<String, dynamic>())
           .toList();
+      return cli == SessionCli.opencode
+          ? mergeOpenCodeNativeProviders(managed, OpenCodeModelsService.cached)
+          : managed;
     }
   } catch (_) {}
   return const [];
@@ -1139,16 +1955,100 @@ class _AIConfigInputBundle {
 Future<_AIConfigInputBundle> _loadAIConfigInputs(
   SessionManager manager,
   SettingsService settings,
-  String sessionId,
-) async {
+  String sessionId, {
+  http.Client? httpClient,
+}) async {
   final runtime = await manager.fetchSessionCliConfig(sessionId);
-  final providers = await prepareAIConfigInputs(settings, runtime.cli);
+  final providers = await prepareAIConfigInputs(
+    settings,
+    runtime.cli,
+    httpClient: httpClient,
+  );
   return _AIConfigInputBundle(runtime, providers);
 }
 
+/// 路由已经挂上去了、数据还在路上的那一帧画的东西。「先弹窗、后填数据」的两个
+/// 外壳共用这一份 —— 键也是同一个，测试只认这两个键。
+class _AIConfigLoadingShell extends StatelessWidget {
+  const _AIConfigLoadingShell();
+
+  @override
+  Widget build(BuildContext context) => const SafeArea(
+    child: SizedBox(
+      key: ValueKey('ai-config-loading'),
+      height: 180,
+      child: Center(child: CircularProgressIndicator()),
+    ),
+  );
+}
+
+class _AIConfigLoadErrorShell extends StatelessWidget {
+  const _AIConfigLoadErrorShell();
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        key: const ValueKey('ai-config-load-error'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(t('sessionNotLoaded')),
+          const SizedBox(height: 12),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// 「先弹窗、里面填数据」的通用外壳：Provider 池（连同它要预热的模型清单）还在
+/// 路上时，路由已经挂上去、先画一枚转圈，数据到了再交给 [builder] 画真面板。
+///
+/// 会话那条路（[_AIConfigSheetLoader]）一直就是这个形状；Air 的线路药丸和新建会话
+/// 对话框以前是在外面 `await` 完才 `showModalBottomSheet` —— 按下去到面板出现之间
+/// 白白隔着一次服务端往返，codex 那一支还要现拉一遍账号模型目录。
+class AIConfigSheetDeferred extends StatelessWidget {
+  const AIConfigSheetDeferred({
+    super.key,
+    required this.providers,
+    required this.builder,
+  });
+
+  /// 面板要的那一份 Provider 池。调用方通常还会在弹窗关掉之后再 await 它一次
+  /// （要拿名字），所以这里不吞异常：只有这一个 future，谁用谁接。
+  final Future<List<Map<String, dynamic>>> providers;
+  final Widget Function(
+    BuildContext context,
+    List<Map<String, dynamic>> providers,
+  )
+  builder;
+
+  @override
+  Widget build(BuildContext context) =>
+      FutureBuilder<List<Map<String, dynamic>>>(
+        future: providers,
+        builder: (context, snapshot) {
+          final providers = snapshot.data;
+          if (providers != null) return builder(context, providers);
+          if (snapshot.hasError) return const _AIConfigLoadErrorShell();
+          return const _AIConfigLoadingShell();
+        },
+      );
+}
+
 class _AIConfigSheetLoader extends StatelessWidget {
-  const _AIConfigSheetLoader({required this.future});
+  const _AIConfigSheetLoader({
+    required this.future,
+    this.settings,
+    this.httpClient,
+  });
   final Future<_AIConfigInputBundle> future;
+  final SettingsService? settings;
+  final http.Client? httpClient;
 
   @override
   Widget build(BuildContext context) => FutureBuilder<_AIConfigInputBundle>(
@@ -1170,37 +2070,15 @@ class _AIConfigSheetLoader extends StatelessWidget {
           subProviderId: runtime.subagent?.providerId,
           subModel: runtime.subagent?.model,
           agent: runtime.agent,
+          settings: settings,
+          httpClient: httpClient,
         );
       }
-      if (snapshot.hasError) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              key: const ValueKey('ai-config-load-error'),
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(t('sessionNotLoaded')),
-                const SizedBox(height: 12),
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('关闭'),
-                ),
-              ],
-            ),
-          ),
-        );
-      }
+      if (snapshot.hasError) return const _AIConfigLoadErrorShell();
       // The route is already visible while the session/catalog requests run.
       // This makes a tap respond in the next frame even on a slow phone or a
       // cold Codex model cache.
-      return const SafeArea(
-        child: SizedBox(
-          key: ValueKey('ai-config-loading'),
-          height: 180,
-          child: Center(child: CircularProgressIndicator()),
-        ),
-      );
+      return const _AIConfigLoadingShell();
     },
   );
 }
@@ -1213,12 +2091,18 @@ Future<void> openAIConfigSheet(
   BuildContext context, {
   required SettingsService settings,
   required String sessionId,
+  http.Client? httpClient,
 }) async {
   final mgr = context.read<SessionManager>();
   final messenger = ScaffoldMessenger.of(context);
   // Start I/O and present the route in the same frame. The old path awaited
   // both requests (including a forced Codex refresh) before opening anything.
-  final inputFuture = _loadAIConfigInputs(mgr, settings, sessionId);
+  final inputFuture = _loadAIConfigInputs(
+    mgr,
+    settings,
+    sessionId,
+    httpClient: httpClient,
+  );
   final picked = await showModalBottomSheet<AIConfigResult>(
     context: context,
     isScrollControlled: true,
@@ -1226,7 +2110,11 @@ Future<void> openAIConfigSheet(
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
     ),
-    builder: (_) => _AIConfigSheetLoader(future: inputFuture),
+    builder: (_) => _AIConfigSheetLoader(
+      future: inputFuture,
+      settings: settings,
+      httpClient: httpClient,
+    ),
   );
   if (picked == null) return;
   try {

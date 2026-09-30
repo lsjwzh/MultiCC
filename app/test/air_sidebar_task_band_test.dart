@@ -74,7 +74,7 @@ void main() {
             onOpenSearch: () {},
             onOpenConsole: () {},
             onOpenSchedules: () {},
-            onOpenTaskBoard: () {},
+
             onCreateTask: () {},
             onOpenTask: (_) {},
             onOpenDocs: () {},
@@ -84,6 +84,8 @@ void main() {
             onOpenAllDestinations: () {},
             onOpenDestination: (_) {},
             ops: ops,
+            language: settings.lang,
+            onLanguage: () {},
             onOpenPush: () {},
             onLogout: () {},
           ),

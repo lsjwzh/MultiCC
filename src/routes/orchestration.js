@@ -461,7 +461,7 @@ function createOrchestrationRoutes(rawDeps) {
       const body = req.body || {};
       const action = String(body.action || '').trim();
       if (!['retry', 'resume', 'skip', 'cancel', 'cancel_queued', 'insert_queued',
-        'reorder_queued', 'resolve'].includes(action)) {
+        'reorder_queued', 'edit_queued', 'resolve'].includes(action)) {
         return res.status(400).json({ error: 'invalid_action' });
       }
       if (body.confirm !== true) {
@@ -497,6 +497,22 @@ function createOrchestrationRoutes(rawDeps) {
           );
           const status = result.ok ? 200
             : result.code === 'queued_entry_not_found' ? 404 : 409;
+          return res.status(status).json(result);
+        }
+        if (action === 'edit_queued') {
+          // 改一条还没开始执行的暂存消息正文：客户端双击那条消息弹出输入框，
+          // 改完交到这里。正文会随下一次 schedule 广播同步回所有端。
+          const result = await deps.runtime.sessionScheduler.editQueued(
+            session.id,
+            body.entryId,
+            {
+              text: body.text,
+              actor: 'user',
+            },
+          );
+          const status = result.ok ? 200
+            : result.code === 'queued_entry_not_found' ? 404
+              : result.code === 'queued_entry_text_required' ? 400 : 409;
           return res.status(status).json(result);
         }
         if (action === 'insert_queued') {
@@ -535,8 +551,29 @@ function createOrchestrationRoutes(rawDeps) {
               await deps.runtime.tick();
               schedule = await deps.runtime.sessionScheduler.status(session.id);
             }
+            // A cancel that did not free the slot is not the end of the story:
+            // the promoted entry is still held, and the usual cause is a
+            // completed turn's workspace lease pinned by background work the host
+            // can no longer stop. "Insert now" already asked for the current work
+            // to be interrupted, so escalate — kill the writer — and re-tick.
+            if (entryHeld(schedule) && typeof deps.unstickBlocked === 'function') {
+              result.unstick = await deps.unstickBlocked(session.id, { source: 'insert_queued', trusted: true });
+              for (let attempt = 0; entryHeld(schedule) && attempt < 5; attempt += 1) {
+                await new Promise(resolve => setTimeout(resolve, 300));
+                await deps.runtime.tick();
+                schedule = await deps.runtime.sessionScheduler.status(session.id);
+              }
+            }
             result.schedule = schedule;
-            result.started = !entryHeld(schedule);
+            const delivery = await deps.runtime.outbox?.get?.(body.entryId);
+            result.started = delivery?.state === 'delivered'
+              || (schedule?.active?.entryId === body.entryId && !!schedule.active.startedAt);
+            if (delivery?.state === 'dead-letter' || delivery?.state === 'cancelled') {
+              result.ok = false;
+              result.code = 'queue_delivery_failed';
+              result.error = delivery.lastError || delivery.state;
+              result.retryable = false;
+            }
             if (!result.started) {
               result.holdReasons = typeof deps.busyReasons === 'function'
                 ? deps.busyReasons(session.id) : [];
@@ -561,6 +598,14 @@ function createOrchestrationRoutes(rawDeps) {
             reason: body.reason || 'user_cancelled',
             operationId: req.get('Idempotency-Key') || body.idempotencyKey || body.operationId || null,
           });
+          // A cancel reports ok when there was no runner left to stop, which is
+          // also what a session wedged on a workspace lease looks like. Report
+          // the escalation when something really is waiting behind it (the
+          // admission side owns that check and stays silent otherwise) instead of
+          // answering "cancelled" while the user's next message never arrives.
+          if (result.ok && typeof deps.unstickBlocked === 'function') {
+            result.unstick = await deps.unstickBlocked(session.id, { source: 'manual_cancel' });
+          }
           // No tick(): a cancel does not advance the FIFO. Only a D verdict
           // drains the queue, and that policy lives in the scheduler.
           const status = result.ok ? 200

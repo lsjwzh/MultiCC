@@ -194,6 +194,9 @@ test('Air opens a conversation as an overlay over the directory page, and expand
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes: buildAirRoutes(), screenshotDir: screenshotDir() }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
+    // 侧栏「最近任务」只列未读 + 打开过的（不再拿当前目录的任务填空位）：把这些任务
+    // 预先记成「打开过」，顺序就是 TASKS 的顺序。只在还没记过时写，后面的点击照常改它。
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.getItem('air:recent-tasks')||localStorage.setItem('air:recent-tasks',${JSON.stringify(JSON.stringify(TASKS.map(task => task.id)))})` });
     await page.navigate('/air.html?dir=d1');
     assert.ok(await page.waitFor(`document.querySelectorAll('#tasks button').length === ${TASKS.length}`), '侧栏列出任务');
 
@@ -285,6 +288,9 @@ test('Air switches conversations without piling up history, and back closes the 
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes: buildAirRoutes(), screenshotDir: screenshotDir() }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
+    // 侧栏「最近任务」只列未读 + 打开过的（不再拿当前目录的任务填空位）：把这些任务
+    // 预先记成「打开过」，顺序就是 TASKS 的顺序。只在还没记过时写，后面的点击照常改它。
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.getItem('air:recent-tasks')||localStorage.setItem('air:recent-tasks',${JSON.stringify(JSON.stringify(TASKS.map(task => task.id)))})` });
     await page.navigate('/air.html?dir=d1');
     assert.ok(await page.waitFor(`document.querySelectorAll('#tasks button').length === ${TASKS.length}`), '侧栏列出任务');
     const before = (await page.evaluate(geometry)).historyLength;
@@ -320,6 +326,9 @@ test('Air keeps the mobile title inside the overlay and lets a downward fling cl
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes: buildAirRoutes(), screenshotDir: screenshotDir() }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+    // 侧栏「最近任务」只列未读 + 打开过的（不再拿当前目录的任务填空位）：把这些任务
+    // 预先记成「打开过」，顺序就是 TASKS 的顺序。只在还没记过时写，后面的点击照常改它。
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.getItem('air:recent-tasks')||localStorage.setItem('air:recent-tasks',${JSON.stringify(JSON.stringify(TASKS.map(task => task.id)))})` });
     await page.navigate('/air.html?dir=d1');
     assert.ok(await page.waitFor(`document.querySelectorAll('#tasks button').length === ${TASKS.length}`), '侧栏列出任务');
 

@@ -56,14 +56,38 @@ test('fake Codex emits resumable native identities without a real model', t => {
   assert.equal(guard.enforce({ cli: 'codex', cliSessionId: 'lab-isolated-test' }).action, 'ok');
 });
 
-test('both release workflows require the clean-install gate before building or publishing', () => {
-  for (const [file, job] of [['release.yml', 'android-apk'], ['desktop-release.yml', 'build']]) {
+test('release builds require both exact core and clean-install gates', () => {
+  for (const [file, jobs] of [
+    ['release.yml', ['android-apk']],
+    ['desktop-release.yml', ['build', 'standalone']],
+  ]) {
     const source = fs.readFileSync(path.join(__dirname, '../.github/workflows', file), 'utf8');
     assert.match(source, /clean-install:\s+uses: \.\/\.github\/workflows\/clean-install\.yml/);
-    assert.ok(source.includes(`  ${job}:\n    needs: clean-install\n`));
+    assert.match(source, /core-tests:\s+uses: \.\/\.github\/workflows\/core-tests\.yml/);
+    for (const job of jobs) assert.ok(source.includes(`  ${job}:\n    needs: [core-tests, clean-install]\n`));
+  }
+  const androidWorkflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/release.yml'), 'utf8');
+  assert.doesNotMatch(androidWorkflow, /npm run test:release(?:\s|$)/,
+    'the Android build must not repeat the legacy full Node gate');
+  assert.doesNotMatch(androidWorkflow, /flutter test/,
+    'the Android build must not repeat the full Flutter suite');
+  const coreWorkflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/core-tests.yml'), 'utf8');
+  assert.match(coreWorkflow, /npm run test:release:core/);
+  assert.doesNotMatch(coreWorkflow, /MULTICC_SHELL_BROWSER_TEST/,
+    'CDP remains outside the release core workflow');
+  for (const command of ['CLAUDE_CMD', 'CODEX_CMD', 'OPENCODE_CMD', 'ZCODE_CMD']) {
+    assert.match(coreWorkflow, new RegExp(`${command}: /bin/true`));
   }
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/clean-install.yml'), 'utf8');
   assert.match(workflow, /set -euo pipefail/);
   assert.match(workflow, /npm run test:release:clean-install/);
   assert.match(workflow, /if: always\(\)/);
+
+  const installerGate = fs.readFileSync(path.join(__dirname, '../docker/task-shell/install-and-test.js'), 'utf8');
+  assert.match(installerGate, /scripts\/standalone-bundle\.js/);
+  assert.match(installerGate, /docker\/task-shell\/installed-smoke\.js/);
+  assert.doesNotMatch(installerGate, /docker\/task-shell\/run-tests\.js/,
+    'clean-install must not hide a second application regression suite');
+  assert.doesNotMatch(installerGate, /await run\('npm', \['ci'/,
+    'clean-install must stay a pristine installation test');
 });

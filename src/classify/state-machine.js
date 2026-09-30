@@ -18,15 +18,23 @@ const { SYSTEM_PREFIX } = require('../session/delivery');
 const crypto = require('crypto');
 const {
   classifyDisplay,
+  goalStateForClassify,
   phaseLabel,
+  isProcessingLetter,
+  isWaitForUserLetter,
+  isBackgroundLetter,
+  isTerminalLetter,
+  isAbnormalLetter,
 } = require('./vocab');
 const { taskShortCode } = require('./task-short-code');
 const { deriveTaskTitle, PENDING_TASK_TITLE } = require('../task-board/core');
 const {
+  attributionQueryText,
   buildTaskAttributionConversation,
   buildTaskAttributionSystemPrompt,
   parseTaskAttribution,
   recentTaskContext,
+  retrieveRelatedTasks,
 } = require('./task-attribution');
 const { resolveTurnState } = require('./turn-state');
 
@@ -35,6 +43,15 @@ function assertFunction(value, name) {
     throw new TypeError(`[classify-state-machine] ${name} must be a function`);
   }
 }
+
+// Display copy for a turn's terminal outcome. These are labels, never switches:
+// every branch that acts on an outcome keys on the semantic status
+// (`succeeded` / `error`) that the finalize plan decides, so rewording a label
+// can never change behavior. Mirrors the badge copy in
+// public/status-presentation.js (`succeeded.airLabelKey`).
+const TURN_OUTCOME_LABELS = Object.freeze({
+  succeeded: '执行成功',
+});
 
 function completionVoiceMessage(shortCode, goal) {
   const code = String(shortCode || '').trim();
@@ -85,6 +102,13 @@ function createClassifyStateMachine(rawDeps) {
     // server wires the JSONL-backed log in explicitly. Recording is diagnostic,
     // so a missing sink degrades observability and nothing else.
     getAuxRunLog = () => ({ record: () => null }),
+    // Message-level retrieval (src/search/runtime.js), optional. Absent — or
+    // present but unavailable, which is what a missing FTS5 looks like — means
+    // attribution retrieves from the board's own corpus only, exactly as it did
+    // before the message index existed. Deliberately not defaulted to the shared
+    // runtime: an implicit default would let any test that forgets to inject one
+    // start indexing the real data directory.
+    getMessageSearch = null,
     // Structured background-task ownership. Optional for older hosts/tests;
     // production wires the authoritative background runtime.
     hasBackgroundPending = () => false,
@@ -137,11 +161,11 @@ function createClassifyStateMachine(rawDeps) {
 
   function dispatchStateAction(result, ctx) {
     const { state, goal, phase } = result;
-    // The letter IS the state (single source). Derive the legacy error/background
-    // flags locally so the W/B/E branches below read naturally; future tranches
-    // drop them entirely. No other module derives these from a word+flags shape.
-    const error = state === 'E';
-    const background = state === 'B';
+    // The letter IS the state (single source). The legacy error/background flags
+    // below read the letter through vocab's predicates instead of re-testing it,
+    // so B and E cannot drift apart from what the display map says they mean.
+    const error = isAbnormalLetter(state);
+    const background = isBackgroundLetter(state);
     // An explicit cancellation arrives here as a structured result rather than a
     // ordinary rule verdict: same letter, same transition, same writer — the extra
     // envelope only records who asked and whether the runner actually stopped.
@@ -188,14 +212,17 @@ function createClassifyStateMachine(rawDeps) {
     // and side effects; persisting it early would poison scheduler guards.
     // A cancel is exempt: it *is* the turn boundary, and the runner it stopped
     // may not have flipped isStreaming yet on every adapter.
-    if (liveness.state !== 'inactive' && state !== 'P' && !cancel) {
+    if (liveness.state !== 'inactive' && !isProcessingLetter(state) && !cancel) {
       console.log(`[multicc/scan] ${sessionName} classify candidate held: state=${state}, liveness=${liveness.state}/${liveness.reason || 'unknown'}`);
       return;
     }
 
     // ── Dispatch per state ──────────────────────────────────────────────
-    if (state === 'P') {
+    if (isProcessingLetter(state)) {
       // P — still processing. Two sub-cases:
+      // Only the stream flag, on purpose (not src/session/runtime-busy.js): a
+      // turn whose stream already closed must fall into branch (2), where the
+      // runner boundary owns the single bounded retry.
       if (cs && cs.isStreaming) {
         // (1) Genuinely mid-turn (a turn IS in flight) — just refresh labels.
         const ph = phaseLabel(phase);
@@ -241,16 +268,22 @@ function createClassifyStateMachine(rawDeps) {
         error: error?.message || String(error || ''),
       });
     });
-    if (state === 'D') {
+    if (isTerminalLetter(state)) {
       // D — this turn executed successfully. TaskBoard completion is a separate
       // user-owned lifecycle action and is never inferred here.
       const dismissedQuestion = result.evidence === 'user_dismissed_question';
       const msg = dismissedQuestion ? '待回答问题已标记为已处理'
         : finalGoal ? `执行成功：${finalGoal}` : '执行成功';
+      // ✅ 这一格的三个子状态（达成目标 / 需要交互 / 无子状态），判定读的就是刚落盘
+      // 的 goal + phase（见 vocab.js goalStateForClassify），随判定一起持久化 ——
+      // 卡片不用自己推，也不会有第二份口径。
+      const goalState = dismissedQuestion ? null
+        : goalStateForClassify({ state, goal: finalGoal, phase: finalPhase });
       const completionTaskId = transitionTaskId || entryTaskId;
       const completionTaskShortCode = taskShortCode(completionTaskId);
       const completionNotice = {
         type: 'notify', state: 'succeeded', classifyState: 'D', message: msg,
+        goalState,
         taskShortCode: completionTaskShortCode,
         taskGoal: finalGoal || '',
         voiceMessage: dismissedQuestion ? msg : completionVoiceMessage(completionTaskShortCode, finalGoal),
@@ -267,7 +300,7 @@ function createClassifyStateMachine(rawDeps) {
       setSessionStatus(sessionName, { status: 'succeeded' });
       // D triggers no later state write, so persist it immediately. Otherwise a
       // crash before the next durable operation restores a stale P/W/E snapshot.
-      setTaskState(sessionName, { classifyState: 'D', endedAt: Date.now() });
+      setTaskState(sessionName, { classifyState: 'D', goalState, endedAt: Date.now() });
       getWaitInjector().resetAuto(sessionName);
       // Clear the resume-interrupted counter so any future P-misclassify restarts from
       // count=1 rather than compounding on this concluded task. (Note: this clears the
@@ -321,7 +354,7 @@ function createClassifyStateMachine(rawDeps) {
     // Common waiting-state broadcast — driven by classifyState letter.
     // state is already the letter (W/B/E, or P falling through when exhausted);
     // preserve the old P-fallthrough→W rendering to avoid a behavior shift here.
-    const cls = state === 'P' ? 'W' : state;
+    const cls = isProcessingLetter(state) ? 'W' : state;
     const disp = classifyDisplay(cls);
     const pushType = disp.pushType || 'waiting';  // C/P have null pushType → default 'waiting'
     const policyMessage = error && cs?._lastApiErrorDecision
@@ -330,25 +363,40 @@ function createClassifyStateMachine(rawDeps) {
       : cancel.runnerStopped === false ? '取消失败：任务未能停止'
         : cancel.superseded === true ? '已切换到立即发送的消息'
         : finalGoal ? `已取消：${finalGoal}` : '任务已取消';
+    // B idles on a background job and nothing is asked of the user, so its copy
+    // is the letter's own label (「后台等待」) — never W's 「等待交互」/「等待你」,
+    // which is the same lie `waiting` used to tell on every Air card. W keeps its
+    // own phrasing. The label comes from vocab, so the word is defined once.
     const waitMsg = cancelMsg || (error ? (policyMessage || 'API 异常，未自动重试')
-      : finalGoal ? `等待：${finalGoal}` : '等待交互');
+      : finalGoal ? `${background ? disp.label : '等待'}：${finalGoal}`
+        : background ? disp.label : '等待交互');
     // The user just pressed Cancel — they are looking at the screen. Broadcast
     // (drives the bar and every card) but no lock-screen push.
+    //
+    // The push carries the LETTER, not just the coarse type: B and W both push
+    // `waiting`, so without it the lock screen would announce B with W's
+    // 「等待操作」 and tell the user to act on work nobody is waiting on them for.
     if (isTerminal) {
-      if (!cancel) triggerPush(sessionId, pushType, waitMsg);
+      if (!cancel) triggerPush(sessionId, pushType, waitMsg, { classifyState: cls });
       terminalBroadcast(sessionId, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
     } else {
-      if (!cancel) triggerPush(sessionId, pushType, `[Chat] ${waitMsg}`);
+      if (!cancel) triggerPush(sessionId, pushType, `[Chat] ${waitMsg}`, { classifyState: cls });
       chatBroadcast(sessionName, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
     }
     const dirId2 = persistedSessions.get(sessionName)?.dirId;
     if (dirId2) workspaceBroadcast(dirId2, { type: 'notify', sessionId, state: pushType, classifyState: cls, message: waitMsg });
-    setSessionStatus(sessionName, { status: 'waiting' });
+    // The letter's own run state — B settles as `background`, E as `error`, W as
+    // `waiting`. Same fold as session-work-host.getRunState and the task board,
+    // so a card and its session row cannot disagree about one verdict.
+    setSessionStatus(sessionName, { status: disp.cardStatus });
     // Persist the accurate rule letter. Cancellation metadata remains the guard
     // against stale finalizers and late task-attribution work.
+    // goalState 一并归零：它描述的是「上一次 D 判定说这件事做完了没有」，这一轮不是
+    // D 就不该有值，否则一条随后被重判成 E 的卡会带着上一轮的「达成目标」躺在盘上。
     setTaskState(sessionName, cancel
       ? {
         classifyState: cls,
+        goalState: null,
         endedAt: Date.now(),
         cancelledAt: cancel.at || Date.now(),
         cancelReason: cancel.reason || 'user_cancelled',
@@ -357,9 +405,9 @@ function createClassifyStateMachine(rawDeps) {
         cancelSuperseded: cancel.superseded === true,
         supersededByEntryId: cancel.supersededByEntryId || null,
       }
-      : { classifyState: cls, endedAt: Date.now() });
-    // Reset auto-continue guard on a plain W (user is in charge now). B/E keep their own flow.
-    if (state === 'W') {
+      : { classifyState: cls, goalState: null, endedAt: Date.now() });
+    // Reset auto-continue guard when the user is in charge now. B/E keep their own flow.
+    if (isWaitForUserLetter(state)) {
       getWaitInjector().resetAuto(sessionName);
     }
   }
@@ -370,6 +418,11 @@ function createClassifyStateMachine(rawDeps) {
   const SCAN_INTERVAL_MS = 60 * 1000;
   const SCAN_MAX_QUEUE = 20;        // skip the whole sweep if the queue is already this long
   const SCAN_RETHROTTLE_MS = 2 * 60 * 1000;  // skip a session judged < 2min ago
+  // Message chunks to retrieve per turn. Chunks, not tasks: one conversation
+  // usually matches in several places, and the merge keeps the best per task — so
+  // this has to clear the few tasks it is meant to propose (attribution shows at
+  // most RETRIEVAL_MESSAGE_LIMIT of them) with room for the duplicates.
+  const MESSAGE_HIT_LIMIT = 12;
   // Bounded in-memory ring of recent scanAndReclassify passes, for debugging
   // "when did a scan run, what did it see, and which sessions did it enqueue vs
   // skip (and why)". Queryable via GET /api/scan/history. Never persisted — no fs
@@ -423,7 +476,7 @@ function createClassifyStateMachine(rawDeps) {
     // Explicit user/watchdog cancellation owns the turn boundary. An Aux job
     // already in flight may finish later; never let that stale verdict replace
     // the immediate E. The next real user turn clears cancelledAt before spawn.
-    if (currentState.classifyState === 'E' && currentState.cancelledAt) {
+    if (isAbnormalLetter(currentState.classifyState) && currentState.cancelledAt) {
       logger.info('classify_result_ignored_after_cancel', { sessionId: sessionName, source });
       return;
     }
@@ -455,7 +508,7 @@ function createClassifyStateMachine(rawDeps) {
       actionContext.taskId = options.taskId;
     }
     dispatchStateAction(res, actionContext);
-    console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.state === 'E' ? ' (API error)' : ''}${res.evidence ? ` evidence=${res.evidence}` : ''}`);
+    console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${isAbnormalLetter(res.state) ? ' (API error)' : ''}${res.evidence ? ` evidence=${res.evidence}` : ''}`);
   }
 
   // Aux owns task identity only. It may rename/re-group the turn and attach its
@@ -662,7 +715,7 @@ function createClassifyStateMachine(rawDeps) {
       if (!p || p.type === 'aux' || p.type === 'gateway' || p.kind !== 'chat') continue;
       const ts = getTaskState(p);
 
-      if (ts.classifyState === 'E' && ts.cancelledAt) {
+      if (isAbnormalLetter(ts.classifyState) && ts.cancelledAt) {
         note(sid, ts.classifyState, 'skipped-cancelled', 'explicit cancellation remains authoritative until next user turn');
         continue;
       }
@@ -753,8 +806,12 @@ function createClassifyStateMachine(rawDeps) {
       const stateAtStart = getTaskState(persistedSessions.get(sid));
       const provisionalTaskId = stateAtStart.taskIdentityPending === true ? taskId : null;
       const recentTasks = recentTaskContext(history);
+      const relatedTasks = relatedTasksForTurn({
+        userText: lastUserText(history), replyText: reply, sessionId: sid,
+        excludeTaskIds: recentTasks.map(task => task.taskId),
+      });
       const systemPrompt = buildTaskAttributionSystemPrompt({
-        recentTasks, currentTaskId: taskId, provisionalTaskId,
+        recentTasks, relatedTasks, currentTaskId: taskId, provisionalTaskId,
       });
       const prompt = buildClassifyConversation(sid, reply);
       const anchorMessageId = classifyAnchorMessageId(sid);
@@ -774,7 +831,8 @@ function createClassifyStateMachine(rawDeps) {
         }
         const res = parseTaskAttribution(result.text, {
           fallbackTaskId: taskId,
-          allowedTaskIds: recentTasks.map(task => task.taskId),
+          // 内容相关候选和最近任务一样是「模型见过的既有 ID」，同样是合法答案。
+          allowedTaskIds: [...recentTasks, ...relatedTasks].map(task => task.taskId),
         });
         const boundTaskId = persistedSessions.get(sid)?.taskBoundTaskId || null;
         const resolvedTaskId = boundTaskId || (res.relation === 'same'
@@ -814,6 +872,67 @@ function createClassifyStateMachine(rawDeps) {
     if (cs._classifyTimer) { clearTimeout(cs._classifyTimer); cs._classifyTimer = null; }
     // In-flight work may still finish for audit/provenance. Its captured message
     // anchor is checked before any live task identity can be changed.
+  }
+
+  // 最新一条真实用户消息：全文检索要用「用户这次说了什么」当查询，助手回复只是补充。
+  function lastUserText(history) {
+    const source = Array.isArray(history) ? history : [];
+    for (let index = source.length - 1; index >= 0; index -= 1) {
+      const message = source[index];
+      if (message?.role !== 'user' || typeof message.content !== 'string') continue;
+      if (!message.content.trim() || isSystemInjectedMsg(message.content)) continue;
+      return message.content;
+    }
+    return '';
+  }
+
+  // Message-level hits for one turn: the same bounded query, asked of the whole
+  // conversation corpus instead of the board's excerpts. Deliberately best-effort
+  // at every step (port missing, index unavailable, query throws) because these are
+  // candidate evidence for a judgement, never the judgement itself.
+  function messageHitsForTurn({ sessionId = '', userText = '', replyText = '' } = {}) {
+    const port = typeof getMessageSearch === 'function' ? getMessageSearch() : null;
+    const query = attributionQueryText({ userText, replyText });
+    if (!port || !query || typeof port.findMessages !== 'function') return [];
+    try {
+      return port.findMessages({
+        text: query,
+        limit: MESSAGE_HIT_LIMIT,
+        // The turn being judged is itself in this session's history, so this
+        // session's messages match its own query by construction. Self-retrieval is
+        // not evidence — left in, it would just re-propose the task the session is
+        // already on and crowd out the sessions that actually carry the answer.
+        excludeRefIds: sessionId ? [String(sessionId)] : [],
+      });
+    } catch (error) {
+      logger.warn?.('message_search_failed', { sessionId, error: error.message });
+      return [];
+    }
+  }
+
+  // 「内容相关任务」候选：拿最新一轮的内容去搜整个任务板，补上最近任务列表看不到的
+  // 历史任务（本次会话从没提过的那些）。检索只是给归因多一份证据，不参与判定成败，
+  // 因此任何异常都降级成空数组。
+  //
+  // 两个语料都问：任务板自己的语料（标题/规划/每轮摘录），以及消息索引里的完整对话
+  // 正文（后者只在宿主接了这个 port 时才存在）。摘录很短，一个只在对话里被描述过、
+  // 从没沉淀成标题或摘录的任务只有消息索引能找回来。
+  function relatedTasksForTurn({
+    userText = '', replyText = '', excludeTaskIds = [], sessionId = '',
+  } = {}) {
+    let board = null;
+    try {
+      const runtime = getTaskBoardRuntime();
+      board = typeof runtime?.getBoard === 'function' ? runtime.getBoard() : runtime;
+    } catch (_) {
+      return [];
+    }
+    return retrieveRelatedTasks(board, {
+      userText,
+      replyText,
+      excludeTaskIds,
+      messageHits: messageHitsForTurn({ sessionId, userText, replyText }),
+    });
   }
 
   // Compatibility name retained for route composition; the content is now the
@@ -877,7 +996,7 @@ function createClassifyStateMachine(rawDeps) {
     // applyClassifyResult was only going to throw away. ensureCurrentTask clears
     // cancelledAt when the next real user turn starts, so this never sticks.
     const cancelledState = getTaskState(persistedSessions.get(sessionName));
-    if (cancelledState.classifyState === 'E' && cancelledState.cancelledAt && !cs._taskShellReceiptId) {
+    if (isAbnormalLetter(cancelledState.classifyState) && cancelledState.cancelledAt && !cs._taskShellReceiptId) {
       logger.info('classify_skipped_after_cancel', { sessionId: sessionName });
       return;
     }
@@ -889,6 +1008,10 @@ function createClassifyStateMachine(rawDeps) {
     for (const task of shellOwned ? getTaskContextHost().taskShellRecentTasks(sessionName, shellReceiptId) : []) {
       if (!recentTasks.some(value => value.taskId === task.taskId)) recentTasks.push(task);
     }
+    const relatedTasks = relatedTasksForTurn({
+      userText: userMsg, replyText: reply, sessionId,
+      excludeTaskIds: recentTasks.map(task => task.taskId),
+    });
     const identityState = getTaskState(persistedSessions.get(sessionName));
     const provisionalTaskId = !shellOwned && identityState.taskIdentityPending === true
       ? currentTaskId : null;
@@ -897,7 +1020,7 @@ function createClassifyStateMachine(rawDeps) {
     const runId = requestId;
     const runSource = source || (manual ? 'manual' : 'turn-end');
     const systemPrompt = buildTaskAttributionSystemPrompt({
-      recentTasks, currentTaskId, provisionalTaskId, identityLocked,
+      recentTasks, relatedTasks, currentTaskId, provisionalTaskId, identityLocked,
     });
     const prompt = buildClassifyConversation(sessionName, reply);
     const anchorMessageId = classifyAnchorMessageId(sessionName);
@@ -937,7 +1060,8 @@ function createClassifyStateMachine(rawDeps) {
       }
       const parsedAttribution = parseTaskAttribution(result.text, {
         fallbackTaskId: currentTaskId,
-        allowedTaskIds: recentTasks.map(task => task.taskId),
+        // 内容相关候选和最近任务一样是「模型见过的既有 ID」，同样是合法答案。
+        allowedTaskIds: [...recentTasks, ...relatedTasks].map(task => task.taskId),
       });
       // Explicit task-card/#CODE continuations are stronger than a probabilistic
       // model answer. A malformed `new` verdict must not split or group that
@@ -1034,7 +1158,7 @@ function createClassifyStateMachine(rawDeps) {
           reason: '归集判定本轮为独立新任务（relation=new）',
         } : null);
         const suggestion = separationAsk
-          ? getTaskContextHost().proposeTaskSeparation?.(sessionName, shellReceiptId, {
+          ? await getTaskContextHost().proposeTaskSeparation?.(sessionName, shellReceiptId, {
             separation: separationAsk, turnId, anchorMessageId,
           })
           : null;
@@ -1158,7 +1282,7 @@ function createClassifyStateMachine(rawDeps) {
     applyClassifyResult(cs, sessionName, sessionId, {
       ...verdict,
       goal: cs?.currentTask?.goal || getTaskState(persisted).goal || '',
-      phase: verdict.state === 'D'
+      phase: isTerminalLetter(verdict.state)
         ? 'done' : cs?.currentTask?.phase || getTaskState(persisted).phase || 'planning',
     }, applyOptions);
 
@@ -1175,6 +1299,20 @@ function createClassifyStateMachine(rawDeps) {
       });
     }
     getTaskBoardRuntime().onTurnEnd(cs, sessionName);
+    // The turn that just ended becomes searchable now instead of at the next 60s
+    // sweep: the conversation that just spoke is the one the next turn is most
+    // likely to be about, and the per-session sync is incremental — it re-parses
+    // this session's file and rewrites only the chunks this turn added (measured
+    // ~7ms for a live session). After the verdict above has committed, so a broken
+    // index can only cost candidates, never the verdict itself.
+    try {
+      const messageSearch = typeof getMessageSearch === 'function' ? getMessageSearch() : null;
+      if (messageSearch && typeof messageSearch.syncSession === 'function') {
+        messageSearch.syncSession(sessionId);
+      }
+    } catch (error) {
+      logger.warn?.('message_search_sync_failed', { sessionId, error: error.message });
+    }
   }
 
   // to know "what task is running" and "what's the current status" WHILE the
@@ -1228,6 +1366,9 @@ function createClassifyStateMachine(rawDeps) {
       // is still running (classify will refine shortly).
       setTaskState(sessionName, {
         classifyState: 'P',
+        // 新一轮开始了，上一次 D 判定的子状态不再描述任何东西（同下面那批取消
+        // 信封字段：留着就是一条自相矛盾的记录）。
+        goalState: null,
         cancelledAt: null,
         cancelReason: null,
         cancelSuperseded: false,
@@ -1253,7 +1394,7 @@ function createClassifyStateMachine(rawDeps) {
       taskIdentityState: explicitContinuation ? 'canonical' : 'provisional',
       taskIdentityPending: !explicitContinuation,
       taskIdentityAnchorMessageId: anchorMessageId,
-      classifyState: 'P', cancelledAt: null, cancelReason: null,
+      classifyState: 'P', goalState: null, cancelledAt: null, cancelReason: null,
       cancelSuperseded: false, supersededByEntryId: null,
     });
     recordTaskBoardGoal(sessionName, cs.currentTask.goal, cs.currentTask.phase, cs, 'P');
@@ -1288,26 +1429,32 @@ function createClassifyStateMachine(rawDeps) {
     if (!persisted) return;
     const sessionId = persisted.id || sessionName;
     if (getUserInputSignalHost().pending(sessionName)) { setTaskState(sessionName, { lastTurnEndedAt: Date.now(), endedAt: Date.now() }); return; }
-    // Enrich bare "执行成功" with the stable task name so the dashboard / chat
-    // shows "执行成功：memo图片更换" instead of a dry "执行成功".
-    // Prefer the current turn's stored task name; fall back to the last
-    // session summary (from a prior intent_classify).
-    if (message === '执行成功') {
+    // Enrich a successful turn's summary with the closed-loop goal, so the
+    // dashboard / chat shows "执行成功：memo图片更换" instead of a dry "执行成功".
+    // The switch is `status` — the semantic turn outcome the finalize plan already
+    // decided — and never the message text: `message` is copy, so rewording it
+    // must not change behavior (it is only the label this summary is built from).
+    // Two real effects ride on this branch:
+    //   • the goal suffix (falling back to the last summary's subject when no goal
+    //     was ever extracted);
+    //   • marking the closed-loop task done, which is what makes ensureCurrentTask
+    //     start a fresh task next turn instead of continuing a finished one.
+    if (status === 'succeeded') {
       const cs = chatSessions.get(sessionName);
       // Prefer the closed-loop task goal (noun-phrase, model-generated); fall
       // back to the legacy currentTaskName, then to the last session summary.
       const goal = cs?.currentTask?.goal || cs?.currentTaskName || '';
-      // Mark the closed-loop task done so ensureCurrentTask starts a fresh task
-      // next turn (rather than continuing a finished one).
       if (cs?.currentTask) cs.currentTask.phase = 'done';
+      const label = String(message || '').trim() || TURN_OUTCOME_LABELS.succeeded;
       if (goal) {
-        message = `执行成功：${goal}`;
+        message = `${label}：${goal}`;
       } else {
         const sm = getSessionSummaries().get(sessionId);
         const raw = sm?.summary || '';
-        // Strip any status label prefix plus optional " · subAction" / " — subAction" suffix
-        const clean = raw.replace(/^(正在处理：|处理中：|执行成功：|任务完成：)/, '').replace(/\s*[·—]\s*.+$/, '').trim();
-        if (clean) message = `执行成功：${clean}`;
+        // Strip any status label prefix (historical copies included) plus an
+        // optional " · subAction" / " — subAction" suffix.
+        const clean = raw.replace(/^(正在处理：|处理中：|执行成功：|任务完成：|已完成：)/, '').replace(/\s*[·—]\s*.+$/, '').trim();
+        if (clean) message = `${label}：${clean}`;
       }
     }
 

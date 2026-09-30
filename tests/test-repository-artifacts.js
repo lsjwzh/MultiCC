@@ -74,6 +74,33 @@ function trackedPaths() {
     .toString('utf8').split('\0').filter(Boolean);
 }
 
+// A bundled skill is copied into ~/.agents/skills byte-for-byte, mode included,
+// and only `bin/` is chmodded by the installer. An entry point the skill docs
+// run directly (`MCU=<skill_dir>/scripts/mcu.sh; $MCU backend`) must therefore
+// carry its executable bit in git, or every installed copy is "permission
+// denied" on the user's machine.
+test('bundled skill entry points the docs execute directly are tracked 100755', () => {
+  const indexModes = new Map(
+    childProcess.execFileSync('git', ['ls-files', '-s', '--', 'skills'], { cwd: REPO_ROOT })
+      .toString('utf8').split('\n').filter(Boolean)
+      .map(line => {
+        const [meta, file] = line.split('\t');
+        return [file, meta.split(/\s+/)[0]];
+      }));
+  for (const file of [
+    'skills/multicc-computer-use/scripts/mcu.sh',
+    'skills/multicc-computer-use/scripts/init.sh',
+    'skills/multicc-artifact/bin/artifact',
+    'skills/multicc-browser/bin/mbrowser',
+    'skills/multicc-trigger/bin/mtrigger',
+  ]) {
+    assert.equal(indexModes.get(file), '100755', `${file} must be tracked executable`);
+  }
+  // eslint-disable-next-line no-bitwise
+  assert.equal((fs.statSync(path.join(REPO_ROOT, 'skills', 'multicc-computer-use', 'scripts', 'mcu.sh'))
+    .mode & 0o111) !== 0, true, 'mcu.sh must be executable on disk too');
+});
+
 test('APK and generated sidecars are untracked and ignored build artifacts', () => {
   assert.deepEqual(trackedPaths().filter(file => file.startsWith('public/multicc.apk')), []);
   for (const file of [
@@ -319,13 +346,9 @@ test('publish-apk serializes builds and recovers a stale process lock', () => {
   }
 });
 
-test('manage only downloads the selected local-or-release APK source', () => {
-  const source = fs.readFileSync(path.join(REPO_ROOT, 'public', 'manage-host-settings.js'), 'utf8');
-  const html = fs.readFileSync(path.join(REPO_ROOT, 'public', 'manage.html'), 'utf8');
-  assert.match(html, /id="apk-download-btn"[^>]+href="\/multicc\.apk"/);
-  assert.match(html, /id="apk-source-status"[^>]+aria-live="polite"/);
-  assert.doesNotMatch(html, /apk-build-btn|startApkBuild/);
-  assert.match(source, /info\.source === 'release'/);
-  assert.match(source, /info\.downloadUrl/);
+test('Air only downloads the local APK the host already built', () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public', 'air-ops.js'), 'utf8');
+  assert.match(source, /get\('\/api\/apk-info'\)/);
+  assert.match(source, /apk\.downloadUrl \|\| '\/multicc\.apk'/);
   assert.doesNotMatch(source, /startApkBuild|\/api\/apk-build/);
 });

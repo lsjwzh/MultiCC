@@ -1,6 +1,13 @@
 'use strict';
 
 const { sanitizePublicText } = require('../http/public-safety');
+const { createMacosAgentProvisioner } = require('../macos-agent-provision');
+
+// Names bundled skills used to ship under. Keep entries here permanently:
+// a machine can upgrade from any old version.
+const RETIRED_BUNDLED_SKILLS = Object.freeze([
+  'computer-use', // -> multicc-computer-use (2026-09-25)
+]);
 
 const NEVER_SYNCED_STATUS = Object.freeze({
   ts: 0,
@@ -63,6 +70,12 @@ function createSkillSyncRuntime(rawDeps) {
   const setIntervalFn = deps.setInterval || setInterval;
   const clearIntervalFn = deps.clearInterval || clearInterval;
   const syncIntervalMs = deps.syncIntervalMs || 5 * 60 * 1000;
+  // The bundled computer-use skill drives the MultiCC Agent; keep it installed
+  // and current with the same startup that installs the bundled skills.
+  // null disables; a temp rootDir without the installer is a no-op.
+  const desktopAgent = deps.desktopAgentProvisioner !== undefined
+    ? deps.desktopAgentProvisioner
+    : createMacosAgentProvisioner({ rootDir, logger });
 
   let lastResult = null;
   let running = false;
@@ -80,6 +93,17 @@ function createSkillSyncRuntime(rawDeps) {
   function readSkillVersion(dir) {
     try { return fs.readFileSync(path.join(dir, '.skill-version'), 'utf8').trim(); }
     catch (_) { return null; }
+  }
+
+  function readFileSlice(file, start, length) {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buffer = Buffer.alloc(length);
+      const read = fs.readSync(fd, buffer, 0, length, start);
+      return buffer.subarray(0, read).toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
   }
 
   function isSkillDir(dir) {
@@ -142,7 +166,37 @@ function createSkillSyncRuntime(rawDeps) {
     return lastResult || NEVER_SYNCED_STATUS;
   }
 
+  // A bundled skill that was renamed leaves its old copy installed on every
+  // machine, still advertised to every CLI. Remove it, but only what this
+  // installer provably owns: the shared copy must carry .skill-version, and a
+  // provider entry is removed only if it is a symlink into that copy. A real
+  // directory under the old name (e.g. a hand-cloned upstream) is left alone.
+  function retireBundledSkills() {
+    let retired = 0;
+    for (const name of RETIRED_BUNDLED_SKILLS) {
+      const shared = path.join(agentsSkillsDir, name);
+      if (!fs.existsSync(shared) || readSkillVersion(shared) === null) continue;
+      for (const provider of providers) {
+        const entry = path.join(provider.dir, name);
+        try {
+          if (!fs.lstatSync(entry).isSymbolicLink()) continue;
+          const target = path.resolve(provider.dir, fs.readlinkSync(entry));
+          if (target === shared || target.startsWith(shared + path.sep)) fs.unlinkSync(entry);
+        } catch (_) {}
+      }
+      try {
+        fs.rmSync(shared, { recursive: true, force: true });
+        retired++;
+        logger.log(`[multicc/skills] retired bundled ${name}`);
+      } catch (error) {
+        logger.warn(`[multicc/skills] retire bundled ${name} failed: ${publicSkillError(error)}`);
+      }
+    }
+    return retired;
+  }
+
   function installBundledSkills() {
+    retireBundledSkills();
     const sourceRoot = path.join(rootDir, 'skills');
     let names;
     try { names = fs.readdirSync(sourceRoot); }
@@ -170,6 +224,19 @@ function createSkillSyncRuntime(rawDeps) {
         try {
           for (const file of fs.readdirSync(path.join(destination, 'bin'))) {
             fs.chmodSync(path.join(destination, 'bin', file), 0o755);
+          }
+        } catch (_) {}
+        // scripts/ holds the entry point SKILL.md tells the model to run
+        // directly (`mcu.sh backend`), so a shebang must arrive executable even
+        // when the source lost its exec bit (a 100644 commit, a zip without
+        // modes) — cpSync only carries over whatever mode the source has.
+        // Data files next to them (scroll.swift, *.md) keep their own mode.
+        try {
+          for (const file of fs.readdirSync(path.join(destination, 'scripts'))) {
+            const script = path.join(destination, 'scripts', file);
+            try {
+              if (readFileSlice(script, 0, 2) === '#!') fs.chmodSync(script, 0o755);
+            } catch (_) {}
           }
         } catch (_) {}
         installed++;
@@ -375,6 +442,7 @@ function createSkillSyncRuntime(rawDeps) {
     if (started) return getStatus();
     acceptingAiConversions = true;
     const bundled = installBundledSkills();
+    if (desktopAgent) desktopAgent.ensure();
     let reverseImports = [];
     try {
       reverseImports = skillConverter.importAllProviderSkills() || [];
@@ -424,6 +492,7 @@ function createSkillSyncRuntime(rawDeps) {
     start,
     stop,
     installBundledSkills,
+    retireBundledSkills,
     syncSharedSkills,
     queueAiSkillConversions,
   };
@@ -431,5 +500,6 @@ function createSkillSyncRuntime(rawDeps) {
 
 module.exports = {
   NEVER_SYNCED_STATUS,
+  RETIRED_BUNDLED_SKILLS,
   createSkillSyncRuntime,
 };

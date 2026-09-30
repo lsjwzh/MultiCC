@@ -1,9 +1,17 @@
 'use strict';
 
 const { runStateForFreezeReason } = require('./scheduler');
+const {
+  isProcessingLetter, isBackgroundLetter, isAbnormalLetter, isTerminalLetter,
+} = require('../classify/vocab');
 const zcodeAuth = require('../cli-adapters/zcode-auth');
 const kimiAuth = require('../cli-adapters/kimi-auth');
 const { redactProviderRouteCapability } = require('../observability');
+const { cancelStopsProcess, isResidentSession } = require('../cli/cli-capability');
+const { processAlive } = require('../session/runtime-busy');
+
+// Outbox id of a dispatch result (operation-service completeOperationDraft).
+const DISPATCH_RESULT_ENTRY = /^operation:[^:]+:result(?::\d+)?$/;
 
 function requireFunction(deps, name) {
   if (typeof deps?.[name] !== 'function') {
@@ -104,12 +112,12 @@ function createSessionWorkHost(deps = {}) {
       || (options.originTrigger === true ? 'trigger'
         : options.originContinue === true ? 'continuation' : 'direct');
     const classifyState = deps.getTaskState(deps.getRecord(sessionId))?.classifyState || null;
-    // Only PROCESS (P) stages typed chat input behind the active turn. In every
+    // Only PROCESS stages typed chat input behind the active turn. In every
     // other classify state a typed message is an immediate, correlated
     // continuation of the current native conversation.
     const directContinuation = !requestId
       && source === 'direct'
-      && classifyState !== 'P'
+      && !isProcessingLetter(classifyState)
       && !!status?.active;
     const admissionOptions = { ...options };
     if (!requestId) delete admissionOptions.userInputRequestId;
@@ -228,7 +236,12 @@ function createSessionWorkHost(deps = {}) {
     if (pending.resolved === true) return { ok: true, duplicate: true };
     const cs = deps.getChatSession(sessionId);
     const state = deps.getTaskState(record) || {};
-    if (cs?.isStreaming || state.classifyState === 'P'
+    // Deliberately not the shared chat-runtime predicate
+    // (src/session/runtime-busy.js): this gates on *this* turn — the one that
+    // asked the question — and it already carries two disqualifiers the shared
+    // predicate knows nothing about (a processing classify letter, a live queue
+    // entry). Widening it here would refuse answers it must accept.
+    if (cs?.isStreaming || isProcessingLetter(state.classifyState)
         || (queue.active && queue.state !== 'frozen')) {
       return { ok: false, code: 'turn_still_active' };
     }
@@ -260,6 +273,43 @@ function createSessionWorkHost(deps = {}) {
       classifyState: 'D', reason: 'user_dismissed_question',
     });
     return { ok: true, requestId, resolution: 'dismissed' };
+  }
+
+  // recover() parks a restart-orphaned P turn as frozen/classify_running: its
+  // runner died with the old server, so no turn end will ever classify it. If
+  // it had already asked a structured question, the truthful verdict is W —
+  // the session is waiting on the user, not running and not cancelled.
+  async function settleRecoveredQuestion(sessionId) {
+    const record = deps.getRecord(sessionId);
+    if (!record) return { ok: false, code: 'session_not_found' };
+    const queue = await scheduler()?.status(sessionId);
+    if (!queue?.active || queue.state !== 'frozen' || queue.freezeReason !== 'classify_running') {
+      return { ok: false, code: 'not_recovered_turn' };
+    }
+    const pending = deps.pendingUserInput(sessionId);
+    if (!pending || pending.resolved === true) return { ok: false, code: 'no_pending_request' };
+    const taskId = queue.active.taskId || pending.taskId || null;
+    if (queue.active.taskId && pending.taskId && queue.active.taskId !== pending.taskId) {
+      return { ok: false, code: 'active_task_mismatch' };
+    }
+    const state = deps.getTaskState(record) || {};
+    deps.dispatchStateAction({
+      state: 'W', goal: state.goal || '', phase: state.phase || '',
+      evidence: 'request_user_input', requestId: pending.requestId,
+    }, {
+      sessionName: sessionId, sessionId: record.id || sessionId,
+      cs: deps.getChatSession(sessionId) || null, isTerminal: record.kind !== 'chat', taskId,
+      source: 'restart_recovery', liveness: { state: 'inactive', reason: 'recovered_dead_runner' },
+    });
+    const transition = pendingTransitions.get(sessionId);
+    if (transition) {
+      const result = await transition;
+      if (result?.ok === false) return result;
+    }
+    if (taskId) deps.reconcileTaskProjection?.(taskId, {
+      classifyState: 'W', reason: 'recovered_pending_question',
+    });
+    return { ok: true, classifyState: 'W', requestId: pending.requestId };
   }
 
   async function resolveTask(sessionId, taskId) {
@@ -388,6 +438,12 @@ function createSessionWorkHost(deps = {}) {
       const closing = turnClosures.get(sessionId);
       if (closing) await closing;
       let current = await target.status(sessionId);
+      // Slots claimed before dispatch.result stopped lending its payload as
+      // lineage still carry the DISPATCHED task's id (persisted across
+      // restarts). That id is not an owner of this session's turn, so the
+      // session's own verdict must still be able to close it — otherwise the
+      // slot stays 'assessing' forever and keeps the worker's card 「执行中」.
+      if (DISPATCH_RESULT_ENTRY.test(String(current?.active?.entryId || ''))) taskId = null;
       const currentTaskId = current?.active?.taskId || null;
       if (taskId && currentTaskId && taskId !== currentTaskId) {
         return { ok: false, code: 'active_task_mismatch' };
@@ -414,9 +470,9 @@ function createSessionWorkHost(deps = {}) {
       // result.state is the letter (D/W/B/E/P) — single source. hasPending can
       // still force B (an unresolved structured question waits on callback).
       const resultLetter = result?.state || 'W';
-      const classifyState = resultLetter === 'E' ? 'E'
-        : resultLetter === 'D' ? 'D'
-          : resultLetter === 'B' || runtime.hasPending(sessionId) ? 'B'
+      const classifyState = isAbnormalLetter(resultLetter) ? 'E'
+        : isTerminalLetter(resultLetter) ? 'D'
+          : isBackgroundLetter(resultLetter) || runtime.hasPending(sessionId) ? 'B'
             : 'W';   // W, or P-misjudged-at-turn-end → at-rest
       const pendingInput = deps.pendingUserInput(sessionId);
       // Queue rule: P enqueues, D drains, W/B/E leave the FIFO alone. Every
@@ -453,13 +509,6 @@ function createSessionWorkHost(deps = {}) {
     const record = deps.getRecord(sessionId);
     const state = deps.getTaskState(record);
     const pendingInput = deps.pendingUserInput(sessionId);
-    const persistedRunId = typeof record?.taskRunLease?.runId === 'string'
-      ? record.taskRunLease.runId.trim() : '';
-    const persistedLeaseEpoch = Number(record?.taskRunLease?.leaseEpoch);
-    const taskRunRecovery = persistedRunId
-      && Number.isSafeInteger(persistedLeaseEpoch) && persistedLeaseEpoch > 0
-      ? { taskRunId: persistedRunId, leaseEpoch: persistedLeaseEpoch }
-      : {};
     const endedAt = Number(state.lastTurnEndedAt || state.endedAt) || null;
     // A successful gateway post-turn is already durable before classify runs.
     // If a restart lands in that narrow P window, project D only when a durable
@@ -467,7 +516,7 @@ function createSessionWorkHost(deps = {}) {
     // the final per-entry time and task-id check; an unproven interruption stays
     // P and fails closed instead of being silently discarded.
     const recoveredClassify = record?.type === 'gateway'
-      && state.classifyState === 'P'
+      && isProcessingLetter(state.classifyState)
       && endedAt
       ? 'D'
       : state.classifyState;
@@ -476,7 +525,6 @@ function createSessionWorkHost(deps = {}) {
       startedAt: state.startedAt,
       endedAt,
       taskId: deps.getChatSession(sessionId)?._currentTaskId || null,
-      ...taskRunRecovery,
       // Scheduler recovery needs correlation only; question/options remain in
       // the task-state owner and are never duplicated into orchestration state.
       pendingUserInput: pendingInput && pendingInput.resolved !== true
@@ -636,24 +684,25 @@ function createSessionWorkHost(deps = {}) {
   // moment we signal (the close handler keys off `cs.claudeProc === proc` to know
   // the turn is no longer active), which made the old wait report "stopped" while
   // the CLI was still very much alive. The killed handle is kept separately and
-  // read directly — exitCode/signalCode are set by Node when the process is
-  // reaped, and stopRunner clears the handle on its 'exit' event. Deliberately no
-  // `process.kill(pid, 0)` probe: pids get reused, and a foreign match would be a
-  // false "still running" that never clears.
-  function processAlive(proc) {
-    if (!proc) return false;
-    if (proc.exitCode !== null && proc.exitCode !== undefined) return false;
-    if (proc.signalCode) return false;
-    return true;
-  }
-
+  // read directly via processAlive (shared: src/session/runtime-busy.js), and
+  // stopRunner clears the handle on its 'exit' event.
   function runnerStopped(sessionId) {
     const state = deps.getChatSession(sessionId);
     if (!state) return true;
     if (state.isStreaming) return false;
     if (state.claudeProc) return false;
     if (processAlive(state._cancelledProc)) return false;
-    if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) return false;
+    // Deliberately NOT the shared chat-runtime busy predicate (src/session/
+    // runtime-busy.js): a cancelled resident turn keeps `_activeRunner` until
+    // this very wait completes, so counting it would make the loop never
+    // converge and every cancel would end in the timeout path.
+    // Two ways a resident lane can still be running after a cancel: the child is
+    // still alive (cancel reaps it) or a turn is still in flight (cancel
+    // interrupts it in place and the child outlives the cancel).
+    const streamStopped = cancelStopsProcess(state.cli)
+      ? !deps.chatStream.isAlive(sessionId)
+      : !deps.chatStream.status(sessionId)?.busy;
+    if (!streamStopped) return false;
     return true;
   }
 
@@ -709,7 +758,8 @@ function createSessionWorkHost(deps = {}) {
         outcome: 'failed', errorCategory: 'cancelled', reasonCode: killReason,
       });
     }
-    if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) {
+    if (isResidentSession(state.cli, state)
+        && (deps.chatStream.isAlive(sessionId) || deps.chatStream.status?.(sessionId)?.busy)) {
       log.log?.(`[multicc/chat] [${sessionId}] (streaming) cancel requested (${reason})`);
       deps.chatStream.cancel(sessionId);
     }
@@ -760,7 +810,7 @@ function createSessionWorkHost(deps = {}) {
   // drifted out of sync is repaired rather than left stale.
   function alreadyCancelled(sessionId) {
     const taskState = deps.getTaskState(deps.getRecord(sessionId)) || {};
-    return taskState.classifyState === 'E' && !!taskState.cancelledAt;
+    return isAbnormalLetter(taskState.classifyState) && !!taskState.cancelledAt;
   }
 
   async function runCancel(sessionId, intent) {
@@ -782,6 +832,15 @@ function createSessionWorkHost(deps = {}) {
     );
     const effectiveReason = supersededByEntryId
       ? 'superseded_by_immediate_insert' : reason;
+    // Inserting a message replaces everything the session was doing, including
+    // its background tasks (stopping the resident process takes them with it).
+    // Settle their pending notices first so none of them wakes the session
+    // behind the inserted turn.
+    if ((supersededByEntryId || ['insert_queued', 'force_insert'].includes(source))
+        && typeof deps.stopBackgroundForInsert === 'function') {
+      try { deps.stopBackgroundForInsert(sessionId); }
+      catch (error) { log.warn?.('session_insert_background_stop_failed', { sessionId, error: error.message }); }
+    }
     stopRunner(
       sessionId,
       effectiveReason,
@@ -943,7 +1002,14 @@ function createSessionWorkHost(deps = {}) {
         try {
           const current = await scheduler().status(sessionId);
           if (current?.active) {
-            await classifyTransition(sessionId, taskId, {
+            // The active slot may be held by a cross-task dispatch entry whose
+            // taskId differs from this session's own bound task (a "回投"
+            // delivery). Closing must target the slot's ACTUAL owner, not the
+            // session's task — passing the session's own taskId here would
+            // trip runClassifyTransition's active_task_mismatch guard and
+            // silently fail to release the slot, re-wedging the FIFO.
+            const activeTaskId = current.active?.taskId || null;
+            await classifyTransition(sessionId, activeTaskId, {
               state: 'E',
               cancel: {
                 source: 'cancel_repeat',
@@ -993,6 +1059,7 @@ function createSessionWorkHost(deps = {}) {
     replayState,
     resolveTask,
     dismissUserInput,
+    settleRecoveredQuestion,
     turnFailed,
     turnSucceeded,
   });

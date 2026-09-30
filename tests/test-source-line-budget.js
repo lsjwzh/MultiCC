@@ -79,12 +79,14 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // cannot be quietly parked here, and retiring an entry (by splitting the file
   // back under 3000) means shrinking this list in the same commit. The
   // manage.js entry was retired by the manage-aux-history.js split.
-  // main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台); same rule.
-  // air.js crossed 3000 in 0f276ebc; turn-engine.js is now below 3000 again.
-  // manage.html is the byte-side case: 2977 lines still fits, but giving the legacy
-  // console its 576 data-i18n* attributes took it from 231770 to 249011 bytes, over
-  // the 240000 default. Growth is attributes, not logic, but it is hand-written — so
-  // it is registered as debt rather than parked in REVIEWED_EXEMPTIONS.
-  assert.deepEqual(result.debts.map(entry => entry.file),
-    ['app/lib/screens/main_shell.dart', 'public/air.js', 'public/manage.html']);
+  // main_shell.dart was retired when the task-board UI moved out of it.
+  // air.js crossed 3000 in 0f276ebc and was retired again on 2026-09-29, when
+  // renderSchedules moved to public/air-schedule-center.js and dropped it to
+  // 2903 — the debt entry went in the same commit, so the list below lost it.
+  // chat_provider.dart crossed 3000 (from exactly 3000) in the limit-bar
+  // structural review and was retired on 2026-09-29, when the server-side
+  // auto-commit refactor removed the per-turn checkbox state (~50 lines) and
+  // dropped it to 2963 — the debt entry went in the same commit, so the list
+  // below lost it.
+  assert.deepEqual(result.debts.map(entry => entry.file), []);
 });

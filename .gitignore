@@ -12,6 +12,10 @@ node_modules
 sessions.json
 # Folder-based session/shared memory store (per-session + shared .md, kept local)
 memories/
+# 主仓根目录的跨任务共享数据目录（按「共享文件放主仓根目录」的约定写进来的测量/
+# 报告等，如 data/power-measurements/）。不是仓库源码，保持本地即可；不忽略它会让
+# 主检出一直显示成「有未提交文件」。只挡根目录这一层，别误伤源码里同名子目录。
+/data/
 directories.json
 scheduled_tasks.json
 docs_registry.json
@@ -26,6 +30,9 @@ task-runs.sqlite-shm
 task-shells.sqlite
 task-shells.sqlite-wal
 task-shells.sqlite-shm
+search-index.sqlite
+search-index.sqlite-wal
+search-index.sqlite-shm
 task-run-transcripts/
 task_board.json
 task_board.planning-v2.json
@@ -125,6 +132,8 @@ goal-config.json
 # 营销/推广资料仅本地保存，不上仓库（含竞品对比、KOL 清单、账号策略等敏感内容）
 # 统一放进 marketing-local/；下面两条根目录规则是历史遗留的双保险
 marketing-local/
+# Jev demo render outputs are local deliverables, not repository source.
+/jev-demo-test/demo/
 PROMOTION_PLAN_v2.md
 PROMOTION_EXECUTION.md
 PROMOTION_PLAN.md
@@ -142,6 +151,10 @@ quota-bar-cache.json
 # Local-only scripts (not for git)
 scripts/bigmodel-snatch/
 
+# Browser tool research notes are local to this task, not product documentation.
+docs/browser-control-review-2026-09-22.md
+docs/browser-user-feedback-2026-09-22.md
+
 # 讯飞 503 对比测试脚本（含 API key，仅本地）
 test_xf_503.sh
 
@@ -151,3 +164,7 @@ cli-provider-router/
 
 # Global official-account selection (local runtime state)
 official-provider-selection.json
+
+# Python bytecode from skill scripts and their unittest suites
+__pycache__/
+*.pyc

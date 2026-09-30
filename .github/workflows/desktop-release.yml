@@ -30,13 +30,18 @@ concurrency:
 
 
 jobs:
+  core-tests:
+    uses: ./.github/workflows/core-tests.yml
+    permissions:
+      contents: read
+
   clean-install:
     uses: ./.github/workflows/clean-install.yml
     permissions:
       contents: read
 
   build:
-    needs: clean-install
+    needs: [core-tests, clean-install]
     name: build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -243,7 +248,7 @@ jobs:
   # the Electron desktop app is a shell around, so a failed build here has to
   # stop the release rather than publish a Release whose assets are incomplete.
   standalone:
-    needs: clean-install
+    needs: [core-tests, clean-install]
     name: standalone package (${{ matrix.platform }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:

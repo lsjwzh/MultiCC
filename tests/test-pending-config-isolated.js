@@ -16,23 +16,43 @@ const paths = createPaths({ dataDir: data });
 writeJsonAtomic(paths.directoriesFile, [{ id: 'd1', name: 'Task test', path: project, baseBranch: 'main' }], { kind: 'directories', schemaVersion: 1 });
 writeJsonAtomic(paths.sessionsFile, [{ id: 'legacy', dirId: 'd1', kind: 'chat', cli: 'codex', label: 'Legacy design',
   rolePrompt: 'LEGACY_ROLE', worktreePath: worktree, branch: 'multicc/legacy', autoCommit: false }], { kind: 'sessions', schemaVersion: 1 });
-const fake = path.join(root, 'codex'), invocations = path.join(root, 'runs.jsonl'), preload = path.join(root, 'home.cjs');
+const fake = path.join(root, 'codex'), invocations = path.join(root, 'runs.jsonl'), acpRequests = path.join(root, 'acp-requests.jsonl'), preload = path.join(root, 'home.cjs');
 fs.writeFileSync(preload, 'require("node:os").homedir=()=>'+JSON.stringify(home)+';');
 const release = path.join(root, 'release');
 fs.writeFileSync(fake, `#!/usr/bin/env node
-const fs=require('fs'),p=require('path');const args=process.argv.slice(2);if(!['exec','run'].includes(args[0]))process.exit(0);
+const fs=require('fs'),p=require('path'),readline=require('readline');const args=process.argv.slice(2);if(!['exec','run','acp'].includes(args[0]))process.exit(0);
 const count=fs.existsSync(${JSON.stringify(invocations)})?fs.readFileSync(${JSON.stringify(invocations)},'utf8').trim().split('\\n').length+1:1;
 const id='fake-'+process.env.MULTICC_SESSION_ID, dir=p.join(process.env.CODEX_HOME||p.join(require('os').homedir(),'.codex'),'sessions');
 if(args[0]==='exec'){fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(p.join(dir,'rollout-'+id+'.jsonl'),JSON.stringify({type:'session_meta',payload:{id,cwd:process.cwd()}})+'\\n');}
 fs.appendFileSync(${JSON.stringify(invocations)},JSON.stringify({args,cli:args[0],pid:process.pid,sid:process.env.MULTICC_SESSION_ID})+'\\n');
-const emit=x=>console.log(JSON.stringify(x));emit(args[0]==='exec'?{type:'thread.started',thread_id:id}:{type:'step_start',sessionID:'open-native'});
-const timer=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(release)}+count))return;clearInterval(timer);
-const text='FINAL_RESULT_'+count;
-if(args[0]==='exec'){emit({type:'item.completed',item:{type:'agent_message',text}});emit({type:'turn.completed',usage:{input_tokens:5,output_tokens:3}});}
-else{emit({type:'text',part:{text}});emit({type:'step_finish',part:{reason:'stop',tokens:{}}});}
-},25);
+const emit=x=>console.log(JSON.stringify(x));
+if(args[0]==='acp'){
+  const rpc=x=>emit({jsonrpc:'2.0',...x});
+  readline.createInterface({input:process.stdin}).on('line',line=>{
+    const message=JSON.parse(line);fs.appendFileSync(${JSON.stringify(acpRequests)},JSON.stringify(message)+'\\n');
+    const reply=result=>rpc({id:message.id,result});
+    if(message.method==='initialize')return reply({protocolVersion:1,agentCapabilities:{loadSession:true},agentInfo:{name:'fake-opencode'}});
+    if(message.method==='session/new')return reply({sessionId:'open-native',configOptions:[{id:'model',category:'model',type:'select',currentValue:'opencode/default',options:[{value:'opencode/default'},{value:'opencodego/new-model'}]}]});
+    if(message.method==='session/load')return reply({configOptions:[{id:'model',category:'model',type:'select',currentValue:'opencode/default',options:[{value:'opencode/default'},{value:'opencodego/new-model'}]}]});
+    if(message.method==='session/set_config_option')return reply({configOptions:[]});
+    if(message.method==='session/prompt'){
+      const timer=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(release)}+count))return;clearInterval(timer);
+        rpc({method:'session/update',params:{sessionId:message.params.sessionId,update:{sessionUpdate:'agent_message_chunk',messageId:'answer-'+count,content:{type:'text',text:'FINAL_RESULT_'+count}}}});
+        reply({stopReason:'end_turn',usage:{inputTokens:5,outputTokens:3,totalTokens:8}});
+      },25);
+    }
+  });
+}else{
+  emit(args[0]==='exec'?{type:'thread.started',thread_id:id}:{type:'step_start',sessionID:'open-native'});
+  const timer=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(release)}+count))return;clearInterval(timer);
+    const text='FINAL_RESULT_'+count;
+    if(args[0]==='exec'){emit({type:'item.completed',item:{type:'agent_message',text}});emit({type:'turn.completed',usage:{input_tokens:5,output_tokens:3}});}
+    else{emit({type:'text',part:{text}});emit({type:'step_finish',part:{reason:'stop',tokens:{}}});}
+  },25);
+}
 `, { mode: 0o755 });
 const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
+const acpRows = () => fs.existsSync(acpRequests) ? fs.readFileSync(acpRequests, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
 const persisted = () => readJson(paths.sessionsFile, { legacyIsArray: true }).data;
 let server, base, logs = '';
 async function wait(fn, label) {
@@ -89,11 +109,17 @@ async function api(route, body, status = 200, method) {
     fs.writeFileSync(release+'2', 'done'); await idle();
     await send('THIRD', 'm3');
     await wait(() => rows().length === 3, 'new CLI execution');
-    assert.equal(rows()[2].cli, 'run');
-    assert.match(JSON.stringify(rows()[2].args), /opencodego\/new-model/);
-    assert.match(JSON.stringify(rows()[2].args), /FINAL_RESULT_2/);
+    assert.equal(rows()[2].cli, 'acp');
+    await wait(() => acpRows().some(row => row.method === 'session/prompt'), 'OpenCode ACP prompt');
+    const modelRequest = acpRows().find(row => row.method === 'session/set_config_option');
+    assert.deepEqual(modelRequest.params, { sessionId: 'open-native', configId: 'model', value: 'opencodego/new-model' });
+    const promptRequest = acpRows().find(row => row.method === 'session/prompt');
+    assert.equal(promptRequest.params.sessionId, 'open-native');
+    assert.match(JSON.stringify(promptRequest.params.prompt), /FINAL_RESULT_2/);
+    assert.match(JSON.stringify(promptRequest.params.prompt), /THIRD/);
     assert.equal((await api(sessionUrl)).cli, 'opencode');
     fs.writeFileSync(release+'3', 'done'); await idle();
+    assert.equal(persisted().find(s => s.id === task.sessionId).cliSessionId, 'open-native');
     assert.equal(rows().length, 3);
     console.log('PASS deferred configuration: durable save, untouched active process, queued next model, deferred CLI, final-output handoff, third turn');
   } catch (error) { console.error(error); console.error(logs); process.exitCode = 1; }

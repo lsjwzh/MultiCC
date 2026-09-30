@@ -3,6 +3,7 @@
 const defaultFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { isResidentSession } = require('./cli-capability');
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 const CODEX_REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
@@ -166,7 +167,8 @@ function createSessionPolicy(options) {
       return CODEX_REASONING_LEVELS.has(effort) || CODEX_REASONING_56_LEVELS.has(effort);
     }
     if (cli === 'opencode') return OPENCODE_VARIANTS.has(effort);
-    if (cli === 'zcode' || cli === 'kimi' || cli === 'dsh') return false;
+    if (cli === 'zcode' || cli === 'kimi' || cli === 'dsh'
+      || cli === 'gemini' || cli === 'grok') return false;
     if (cli === 'qoder') return QODER_REASONING_LEVELS.has(effort);
     if (cli === 'codebuddy') return CODEBUDDY_REASONING_LEVELS.has(effort);
     return EFFORT_LEVELS.has(effort);
@@ -249,7 +251,8 @@ function createSessionPolicy(options) {
       const effort = normalizeEffort(session.effort);
       return effort && OPENCODE_VARIANTS.has(effort) ? effort : null;
     }
-    if (cli === 'zcode' || cli === 'kimi' || cli === 'dsh') return null;
+    if (cli === 'zcode' || cli === 'kimi' || cli === 'dsh'
+      || cli === 'gemini' || cli === 'grok') return null;
     if (cli === 'qoder') return qoderEffortLevel(session);
     if (cli === 'codebuddy') return codebuddyEffortLevel(session);
     const effort = normalizeEffort(session.effort);
@@ -360,7 +363,7 @@ function createReportedModelRuntime(options) {
     }
     let updated = 0;
     for (const record of records.values()) {
-      if (record.reportedModel || (record.cli && !['claude', 'claude-exp'].includes(record.cli)) || !record.cliSessionId) continue;
+      if (record.reportedModel || (record.cli && !isResidentSession(record.cli, record)) || !record.cliSessionId) continue;
       if (effectiveSessionModel(record)) continue;
       for (const directory of directories) {
         const transcript = path.join(projects, directory.name, `${record.cliSessionId}.jsonl`);

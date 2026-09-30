@@ -1,6 +1,13 @@
 (function attachMultiCCChatLiveUi(global) {
   'use strict';
 
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
+
   const errorModel = global.MultiCCErrorEnvelope
     || (typeof module === 'object' && module.exports ? require('./error-envelope') : null);
 
@@ -121,13 +128,10 @@
     return next;
   }
 
+  // 一段测出来的墙钟时间走全站唯一那份（shared/format.js）。原来这一份少一个空格
+  // （「1m3s」），跟对话记录里那份（「1m 3s」）同一个意思却长得不一样。
   function fmtDuration(ms) {
-    if (!Number.isFinite(ms) || ms < 0) return '';
-    if (ms < 1000) return `${ms}ms`;
-    const seconds = ms / 1000;
-    if (seconds < 60) return `${seconds.toFixed(1)}s`;
-    const minutes = Math.floor(seconds / 60);
-    return `${minutes}m${Math.round(seconds % 60)}s`;
+    return FMT.formatDuration(ms);
   }
 
   function createLiveUi(options) {
@@ -138,6 +142,7 @@
     const translate = opts.translate || (key => key);
     const maybeScroll = opts.maybeScrollToBottom || (() => {});
     const retryTransport = opts.retryTransport || (() => {});
+    const onManualRetry = typeof opts.onManualRetry === 'function' ? opts.onManualRetry : null;
     const isRestarting = opts.isRestarting || (() => false);
     const debug = opts.debug || (() => {});
     const setTimer = opts.setTimeout || global.setTimeout.bind(global);
@@ -215,84 +220,80 @@
       return span;
     }
 
-    function buildUsageLine(usage, roleBreakdown) {
-      if (!usage && !roleBreakdown) return null;
-      const input = (usage && usage.input_tokens) || 0;
-      const output = (usage && usage.output_tokens) || 0;
-      const cacheRead = (usage && usage.cache_read_input_tokens) || 0;
-      const cacheWrite = (usage && usage.cache_creation_input_tokens) || 0;
-      const number = value => Number(value || 0).toLocaleString('en-US');
-      const short = value => value > 1e6
-        ? `${(value / 1e6).toFixed(2)}M`
-        : value > 1e3 ? `${(value / 1e3).toFixed(1)}k` : Number(value || 0).toLocaleString('en-US');
-
-      if (roleBreakdown && (roleBreakdown.main || roleBreakdown.sub)) {
-        const summarize = value => value ? {
-          input: value.inputTokens || 0,
-          output: value.outputTokens || 0,
-          cacheRead: value.cacheRead || 0,
-          cacheWrite: value.cacheWrite || 0,
-          total: (value.inputTokens || 0) + (value.outputTokens || 0)
-            + (value.cacheRead || 0) + (value.cacheWrite || 0),
-        } : null;
-        const main = summarize(roleBreakdown.main);
-        const sub = summarize(roleBreakdown.sub);
-        const totals = {
-          input: (main?.input || 0) + (sub?.input || 0),
-          output: (main?.output || 0) + (sub?.output || 0),
-          cacheRead: (main?.cacheRead || 0) + (sub?.cacheRead || 0),
-          cacheWrite: (main?.cacheWrite || 0) + (sub?.cacheWrite || 0),
+    // Every per-message token line uses one format: a 主 row (fresh ↑入 / ↓出 plus
+    // ♻读 / ♻写 cache), and a 辅 row in the same shape only when the sub-agents
+    // ran on a separately configured provider/model. Sub-agent work on the main
+    // model is the main model's usage and folds into 主. Plain `usage` (history
+    // turns without a split) is the 主 row.
+    function tokenBucket(value) {
+      return value ? {
+        input: value.inputTokens || 0, output: value.outputTokens || 0,
+        cacheRead: value.cacheRead || 0, cacheWrite: value.cacheWrite || 0,
+      } : null;
+    }
+    function bucketTotal(part) { return part ? part.input + part.output + part.cacheRead + part.cacheWrite : 0; }
+    function hasSeparateSubModel(roleBreakdown) {
+      const subs = roleBreakdown.subByProvider || [];
+      const mains = roleBreakdown.mainByProvider || [];
+      if (!subs.length || !mains.length) return true;
+      const key = entry => `${entry.providerId || ''}|${entry.model || ''}`;
+      const mainKeys = new Set(mains.map(key));
+      return subs.some(entry => !mainKeys.has(key(entry)));
+    }
+    function splitUsageRoles(usage, roleBreakdown) {
+      let main = roleBreakdown ? tokenBucket(roleBreakdown.main) : null;
+      let sub = roleBreakdown ? tokenBucket(roleBreakdown.sub) : null;
+      if (!bucketTotal(main) && usage) {
+        main = {
+          input: usage.input_tokens || 0, output: usage.output_tokens || 0,
+          cacheRead: usage.cache_read_input_tokens || 0, cacheWrite: usage.cache_creation_input_tokens || 0,
         };
-        const total = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
-        if (!total) return null;
-        const line = doc.createElement('div');
-        line.className = 'msg-usage';
-        const tokenLine = (key, fallback, part) => tt(key, fallback, {
-          input: number(part.input), output: number(part.output),
-          read: number(part.cacheRead), write: number(part.cacheWrite),
-        });
-        let tooltip = tt('usageMsgTokenTitle', '本条消息 token 用量（非会话累计）') + '\n';
-        if (main) {
-          tooltip += tokenLine('usageMsgTokenMainLine', '— 主 — 输入 {input} 输出 {output} 缓存读 {read} 缓存写 {write}', main) + '\n';
-        }
-        if (sub) {
-          tooltip += tokenLine('usageMsgTokenSubLine', '— 辅 — 输入 {input} 输出 {output} 缓存读 {read} 缓存写 {write}', sub) + '\n';
-          for (const provider of (roleBreakdown.subByProvider || [])) {
-            tooltip += `    · ${tt('usageMsgTokenProviderLine', '{name} / {model}: ↑入 {input} ↓出 {output}', {
-              name: provider.name || provider.providerId, model: provider.model || '?',
-              input: number(provider.inputTokens), output: number(provider.outputTokens),
-            })}\n`;
-          }
-        }
-        line.title = tooltip.trim();
-        metric(line, 'u-in', tt('usageBadgeIn', '↑入 {n}', { n: number(totals.input) }));
-        metric(line, 'u-out', tt('usageBadgeOut', '↓出 {n}', { n: number(totals.output) }));
-        if (totals.cacheRead) metric(line, 'u-cache', tt('usageBadgeCacheRead', '♻读 {n}', { n: number(totals.cacheRead) }));
-        if (totals.cacheWrite) metric(line, 'u-cache', tt('usageBadgeCacheWrite', '♻写 {n}', { n: number(totals.cacheWrite) }));
-        const roleBadge = (key, fallback, part) => tt(key, fallback, { input: short(part.input), output: short(part.output) });
-        if (main) metric(
-          line, 'u-role', roleBadge('usageBadgeMain', '主 ↑{input} ↓{output}', main),
-          tt('usageMsgTokenMainTooltip', '本条消息主循环：输入 {input} / 输出 {output}',
-            { input: number(main.input), output: number(main.output) }),
-        );
-        if (sub) metric(
-          line, 'u-role', roleBadge('usageBadgeSub', '辅 ↑{input} ↓{output}', sub),
-          tt('usageMsgTokenSubTooltip', '本条消息子任务：输入 {input} / 输出 {output}',
-            { input: number(sub.input), output: number(sub.output) }),
-        );
-        return line;
       }
+      if (!bucketTotal(sub)) sub = null;
+      if (sub && !hasSeparateSubModel(roleBreakdown)) {
+        main = main || tokenBucket({});
+        for (const field of ['input', 'output', 'cacheRead', 'cacheWrite']) main[field] += sub[field];
+        sub = null;
+      }
+      return { main: bucketTotal(main) ? main : null, sub };
+    }
 
-      if (input + output + cacheRead + cacheWrite === 0) return null;
+    function buildUsageLine(usage, roleBreakdown) {
+      const { main, sub } = splitUsageRoles(usage, roleBreakdown);
+      if (!main && !sub) return null;
+      const number = value => FMT.groupedNumber(Number(value || 0));
+      // token 数的紧凑写法与用量面板同一份（shared/format.js）。
+      const short = value => FMT.formatTokenCount(value);
       const line = doc.createElement('div');
       line.className = 'msg-usage';
-      line.title = tt('usageMsgTokenTitle', '本条消息 token 用量（非会话累计）') + '\n' +
-        tt('usageMsgTokenSimple', '输入 {input}\n输出 {output}\n缓存读 {read}\n缓存写 {write}',
-          { input: number(input), output: number(output), read: number(cacheRead), write: number(cacheWrite) });
-      metric(line, 'u-in', tt('usageBadgeIn', '↑入 {n}', { n: number(input) }));
-      metric(line, 'u-out', tt('usageBadgeOut', '↓出 {n}', { n: number(output) }));
-      if (cacheRead) metric(line, 'u-cache', tt('usageBadgeCacheRead', '♻读 {n}', { n: number(cacheRead) }));
-      if (cacheWrite) metric(line, 'u-cache', tt('usageBadgeCacheWrite', '♻写 {n}', { n: number(cacheWrite) }));
+      const tokenLine = (key, fallback, part) => tt(key, fallback, {
+        input: number(part.input), output: number(part.output),
+        read: number(part.cacheRead), write: number(part.cacheWrite),
+      });
+      let tooltip = tt('usageMsgTokenTitle', '本条消息 token 用量（非会话累计）') + '\n';
+      if (main) tooltip += tokenLine('usageMsgTokenMainLine', '— 主 — 输入 {input} 输出 {output} 缓存读 {read} 缓存写 {write}', main) + '\n';
+      if (sub) {
+        tooltip += tokenLine('usageMsgTokenSubLine', '— 辅 — 输入 {input} 输出 {output} 缓存读 {read} 缓存写 {write}', sub) + '\n';
+        for (const provider of (roleBreakdown.subByProvider || [])) {
+          tooltip += `    · ${tt('usageMsgTokenProviderLine', '{name} / {model}: ↑入 {input} ↓出 {output}', {
+            name: provider.name || provider.providerId, model: provider.model || '?',
+            input: number(provider.inputTokens), output: number(provider.outputTokens),
+          })}\n`;
+        }
+      }
+      line.title = tooltip.trim();
+      const row = (labelKey, fallback, part) => {
+        const group = doc.createElement('span');
+        group.className = 'u-row';
+        metric(group, 'u-role', tt(labelKey, fallback));
+        metric(group, 'u-in', tt('usageBadgeIn', '↑入 {n}', { n: short(part.input) }));
+        metric(group, 'u-out', tt('usageBadgeOut', '↓出 {n}', { n: short(part.output) }));
+        metric(group, 'u-cache', tt('usageBadgeCacheRead', '♻读 {n}', { n: short(part.cacheRead) }));
+        metric(group, 'u-cache', tt('usageBadgeCacheWrite', '♻写 {n}', { n: short(part.cacheWrite) }));
+        line.appendChild(group);
+      };
+      if (main) row('usageRoleMain', '主', main);
+      if (sub) row('usageRoleSub', '辅', sub);
       return line;
     }
 
@@ -341,23 +342,32 @@
         || (typeof require === 'function' ? require('./status-presentation.js') : null);
     }
 
-    // Voice/ding are audio concerns and stay here; the visual half (canonical
-    // status → glyph/tone) comes from the registry so the chat bar cannot drift
-    // from the session card and the task board.
+    // Shared outcome-copy table (public/shared/notification-copy.js). Resolved
+    // lazily, exactly like the status registry above.
+    function outcomeCopy() {
+      return global.MultiCCNotificationCopy
+        || (typeof require === 'function' ? require('./shared/notification-copy.js') : null);
+    }
+
+    // Which label/voice/ding a classify outcome gets. The TABLE is shared with
+    // every other notification surface (client.js / pwa.js / chat-event-
+    // controller.js / chat-notifications.js) so the bar cannot say 「等待用户」
+    // about the outcome a lock-screen notification calls 「等待操作」; this
+    // function only localizes it and folds in the canonical status. A caller may
+    // pass a classify LETTER (D/W/B/E/P/C) or the coarse push TYPE
+    // (succeeded/waiting/error) — both resolve to the same row.
     function classifyDisplay(classifyState) {
-      const map = {
-        D: { label: translate('classifySucceeded'), voice: translate('voiceExecutionSucceeded'), ding: 'succeeded' },
-        C: { label: translate('classifyContinuing'), voice: null, ding: null },
-        W: { label: translate('classifyWaitingUser'), voice: translate('voiceWaitingAction'), ding: 'waiting' },
-        B: { label: translate('classifyWaitingBackground'), voice: translate('voiceWaitingBackground'), ding: 'waiting' },
-        E: { label: translate('classifyApiError'), voice: translate('voiceApiInterrupted'), ding: 'error' },
-        P: { label: translate('classifyProcessing'), voice: null, ding: null },
+      const copy = outcomeCopy().notificationCopy(classifyState);
+      const status = statusRegistry().classifyStatus(copy.letter);
+      return {
+        label: translate(copy.labelKey),
+        voice: copy.voiceKey ? translate(copy.voiceKey) : null,
+        ding: copy.ding,
+        status,
+        // barTint is kept for callers that still read it; it now equals the
+        // canonical status rather than a second, hand-maintained vocabulary.
+        barTint: status,
       };
-      const entry = map[classifyState] || map.W;
-      const status = statusRegistry().classifyStatus(map[classifyState] ? classifyState : 'W');
-      // barTint is kept for callers that still read it; it now equals the
-      // canonical status rather than a second, hand-maintained vocabulary.
-      return { ...entry, status, barTint: status };
     }
 
     // The verdict currently on the bar, and whether Aux is still revising it.
@@ -1011,8 +1021,42 @@
         if (details) bar.appendChild(details);
       }
       bar.title = envelope ? errorModel.diagnosticText(envelope) : String(message.message || '');
+      if (onManualRetry) bar.appendChild(manualRetryButton());
       bar.style.color = retryScheduled ? 'var(--chat-warning, #e3b341)' : 'var(--chat-danger, #ff9b9b)';
       bar.style.display = '';
+    }
+
+    // 异常对话的手动重试：断掉当前这一轮 → 等几秒 → 把原数据重新提交。按钮只负责
+    // 表态和倒计时，真正的断开/重发在 composer（它手里有最后一次发出的原始负载）。
+    function lastUserText() {
+      const nodes = messagesEl ? messagesEl.querySelectorAll('.msg.user') : [];
+      const node = nodes.length ? nodes[nodes.length - 1] : null;
+      const first = node && node.firstChild;
+      return first && first.nodeType === 3 ? String(first.nodeValue || '').trim() : '';
+    }
+
+    function manualRetryButton() {
+      const button = doc.createElement('button');
+      button.type = 'button';
+      button.className = 'api-error-retry';
+      button.textContent = '↻ 重试';
+      button.title = '断开当前这一轮，等 3 秒后把原消息重新提交给接口';
+      button.style.cssText = 'margin-left:8px;padding:2px 10px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;font-size:12px;cursor:pointer;';
+      button.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (button.disabled) return;
+        button.disabled = true;
+        const result = await Promise.resolve(onManualRetry({
+          fallbackText: lastUserText(),
+          onTick: seconds => { button.textContent = `${seconds}s 后重新提交…`; },
+        })).catch(() => ({ ok: false, reason: 'error' }));
+        if (result && result.ok) { button.textContent = '已重新提交'; return; }
+        button.disabled = false;
+        button.textContent = result && result.reason === 'nothing_to_retry' ? '没有可重发的消息'
+          : result && result.reason === 'disconnected' ? '连接未恢复，再试一次' : '↻ 重试';
+      });
+      return button;
     }
 
     function clearApiError() {
@@ -1227,14 +1271,41 @@
         description.textContent = '切换后，目标 CLI 会接着当前任务继续工作。每个 CLI 的原对话都会单独保留。';
         const select = doc.createElement('select');
         select.style.cssText = 'width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:7px;color:var(--chat-text, #c9d1d9);font-size:14px;padding:9px 10px;outline:none;margin-bottom:10px;';
+        // 兜底车道的标记由 cliMeta 带进来（catalog 从服务端 DISPLAY 的 deprecated 列
+        // 生成）: 名字后面直接说出来, 选到它时下面还会再解释一句。
+        const DEPRECATED_NOTE = tt('cliLaneDeprecatedNote', '兜底线路，计划淘汰');
+        // 小字（引擎）在 <option> 里没有第二行，所以附在名字后面 —— 只在这条车道真的
+        // 换了一个引擎产品名时才加（扶正的两条常驻车道：Claude Agent SDK / Codex App
+        // Server）；其余车道的小字就是它自己的 id，跟名字重复，不加。
+        const cliLabelText = (value, meta) => {
+          const label = meta?.label || value;
+          const engine = meta?.engine && meta.engine !== value ? ` · ${meta.engine}` : '';
+          return `${label}${engine}${meta?.deprecated ? `（${DEPRECATED_NOTE}）` : ''}`;
+        };
+        // 选中兜底车道时在详情里再说一句, 并指出该用哪条 —— 列表里的角标只是
+        // 提示, 这里才是「你正要切到一条过渡线路」的说明。
+        const deprecationNoteNode = meta => {
+          if (!meta?.deprecated) return null;
+          const note = doc.createElement('div');
+          note.id = 'cli-deprecation-note';
+          note.style.cssText = 'color:var(--chat-warning, #d29922);margin-top:4px;';
+          const replacement = meta.replacedBy ? (cliMeta?.[meta.replacedBy]?.label || meta.replacedBy) : '';
+          note.textContent = `${meta.label} · ${DEPRECATED_NOTE}${replacement ? ` → ${replacement}` : ''}`;
+          return note;
+        };
         for (const [value, meta] of Object.entries(cliMeta || {})) {
+          // 一次性车道（`claude -p` / `codex exec`）不在这张列表里 —— chat 的线路是
+          // 常驻车道，那两个可执行文件属于终端。当前这条永远留着：否则一个跑在旧
+          // 线路上的会话打开这个面板，连自己正在用哪条都看不见。
+          const kinds = (meta && meta.kinds) || ['chat', 'terminal'];
+          if (value !== current && kinds.indexOf('chat') === -1) continue;
           const sessionState = states && states[value];
           const installed = availLocal[value]?.available !== false;
           const option = doc.createElement('option');
           option.value = value;
           // hooks 缺省时退化为旧行为: 未安装 option 禁用; 有 hooks 时可选, 文案仍带 "· 未安装"
           option.disabled = !installed && value !== current && !hasHooks;
-          option.textContent = `${meta.label}${value === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
+          option.textContent = `${cliLabelText(value, meta)}${value === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
           optionMap[value] = option;
           select.appendChild(option);
         }
@@ -1277,7 +1348,7 @@
           const meta = cliMeta?.[cli];
           const sessionState = states && states[cli];
           const installed = isInstalled(cli);
-          option.textContent = `${meta.label}${cli === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
+          option.textContent = `${cliLabelText(cli, meta)}${cli === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
         };
 
         // 渲染进行中/完成/失败状态的安装面板(写入 targetInfo)
@@ -1361,6 +1432,8 @@
             targetInfo.textContent = sessionState?.hasNativeSession
               ? `将继续 ${label} 上次的对话，并带上切换后新增的内容。`
               : `将打开新的 ${label} 对话，并带上当前任务信息。`;
+            const note = deprecationNoteNode(meta);
+            if (note) targetInfo.appendChild(note);
             setOkEnabled(true);
             return;
           }
@@ -1374,7 +1447,16 @@
             targetInfo.textContent = '正在加载安装信息...';
             return;
           }
-          const spec = specs?.[cli];
+          // 选中态是**车道**，而 specs 是**家族**键（升级/安装的对象是家族的 CLI 制品）:
+          // 先落到家族。bundled 车道（引擎随 MultiCC 走，今天只有 claude-exp）没有制品
+          // 可装 —— 拿家族的命令去装会让人以为修好了，所以如实说去哪儿升。
+          const catalog = window.MultiCCProviderCatalog;
+          if (catalog && catalog.cliIsBundled && catalog.cliIsBundled(cli)) {
+            const engines = catalog.cliBundledEnginesOf(cli).map(e => e.engine).join(' / ');
+            targetInfo.textContent = `${label} 的引擎${engines ? `（${engines}）` : ''}随 MultiCC 一起发布，请升级 MultiCC 本身。`;
+            return;
+          }
+          const spec = specs?.[(catalog && catalog.cliFamilyOf && catalog.cliFamilyOf(cli)) || cli];
           if (!spec) {
             targetInfo.textContent = `${label} 暂无可用的安装信息。`;
             return;

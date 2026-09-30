@@ -19,6 +19,12 @@
   if (!root || !root.document) return;
   const document = root.document;
   const el = id => document.getElementById(id);
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
   const make = (tag, text, className) => {
     const value = document.createElement(tag);
     if (text != null) value.textContent = text;
@@ -38,6 +44,13 @@
   let sessions = [];
   let totals = { count: 0, totalSize: 0, protectedCount: 0 };
   const filters = { skills: '', sessions: '' };
+  // 技能按「从哪来」分层（服务端 src/skills.js 的 skillLayer 打的 layer）：先摆
+  // MultiCC 内置与 CLI 自带，用户最常问的就是「哪些是预装的」。插件和 CLI 自带通常
+  // 一长串且不归用户管，默认收起；展开/收起的选择跟过滤条件一样存在模块上。
+  const SKILL_LAYERS = ['bundled', 'cli', 'plugin', 'user', 'project'];
+  const LAYER_KEYS = { bundled: 'airResourcesLayerBundled', cli: 'airResourcesLayerCli', plugin: 'airResourcesLayerPlugin', user: 'airResourcesLayerUser', project: 'airResourcesLayerProject' };
+  // 默认全收起：几百个技能摊开时，分组抬头会被第一组淹没，看不出「分了层」。
+  const openLayers = { bundled: false, cli: false, plugin: false, user: false, project: false };
   let olderThanDays = 30;
   // 样式只建一次：它是这一页的私有词汇（air-resources-*），跟着面板节点走，
   // 不进 air.css —— 一格一份，删掉这一格就是删掉这个文件加这一行。
@@ -68,6 +81,18 @@
 .air-resources-danger { flex: 0 0 auto; min-height: 30px; padding: 4px 10px; color: #a6533c; border: 1px solid transparent; border-radius: 9px; background: transparent; font-size: 9.5px; }
 .air-resources-danger:hover:not(:disabled) { border-color: #eed9d1; background: #fdf4f1; }
 .air-resources-danger:disabled { cursor: not-allowed; color: var(--faint); }
+.air-resources-group { display: grid; gap: 8px; }
+.air-resources-group + .air-resources-group { margin-top: 8px; }
+.air-resources-group-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; color: #2f536f; border: 1px solid var(--hairline); border-left: 4px solid #8fb3d3; border-radius: 12px; background: #f6f9fc; font-size: 12.5px; font-weight: 700; list-style: none; }
+.air-resources-group-head::-webkit-details-marker { display: none; }
+.air-resources-group-head::before { content: '▸'; color: #7d97ae; font-size: 11px; transition: transform .15s; }
+.air-resources-group[open] > .air-resources-group-head::before { transform: rotate(90deg); }
+.air-resources-group[data-layer="bundled"] > .air-resources-group-head { border-left-color: #3d8bd8; background: #eef5fd; }
+.air-resources-group[data-layer="cli"] > .air-resources-group-head { border-left-color: #a6533c; }
+.air-resources-group[data-layer="plugin"] > .air-resources-group-head { border-left-color: #8a6bc2; }
+.air-resources-group[data-layer="project"] > .air-resources-group-head { border-left-color: #2f7a54; }
+.air-resources-group-count { padding: 1px 8px; color: #2f536f; border-radius: 999px; background: #fff; font-size: 10.5px; font-weight: 650; }
+.air-resources-group-hint { overflow: hidden; margin-left: auto; color: var(--muted); font-size: 10.5px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
 .air-resources-status { margin-top: 10px; color: var(--muted); font-size: 10px; }
 `;
     return styleNode;
@@ -80,14 +105,10 @@
     return node;
   }
 
-  // 显示口径照搬 manage.js 的 fmtSize，故意不本地化：单位是 B/KB/MB，与界面语言无关，
-  // 而且读这个数是为了跟磁盘上的目录对账 —— 换个语言不该换个进制。
-  function fmtSize(bytes) {
-    const size = Number(bytes) || 0;
-    if (size < 1024) return size + ' B';
-    if (size < 1048576) return (size / 1024).toFixed(1) + ' KB';
-    return (size / 1048576).toFixed(2) + ' MB';
-  }
+  // 字节数走全站唯一那份（shared/format.js），本页只留自己的两处取舍：KB 一位小数、
+  // MB 两位小数（MB 那个数是为了跟 du 出来的目录大小对账，少一位就对不上），以及
+  // 没有值时画 0 B 而不是空白。故意不本地化：单位是符号，与界面语言无关。
+  const RES_SIZE = Object.freeze({ unitDecimals: { MB: 2 }, placeholder: '0 B' });
 
   // 时间跟保险箱那页同一条口径：给了 getLocale()，英文界面里才不会冒出中文月日。
   function fmtWhen(value) {
@@ -103,7 +124,7 @@
 
   function visibleSkills() {
     return skills.filter(skill =>
-      matches(filters.skills, [skill.provider, skill.source, skill.name, skill.description, skill.path]));
+      matches(filters.skills, [skill.provider, skill.source, skill.layer, skill.name, skill.description, skill.path]));
   }
 
   // preview 也进检索：它不进 DOM，但正是「我记得那句开头」时唯一能对上号的东西。
@@ -131,7 +152,7 @@
     copy.append(make('div', session.title || '', 'air-resources-title'));
     copy.append(make('div', session.cwd || session.project || '', 'air-resources-desc'));
     const when = fmtWhen(session.updatedAt);
-    copy.append(make('div', [session.id, when, fmtSize(session.size)].filter(Boolean).join(' · '), 'air-resources-meta'));
+    copy.append(make('div', [session.id, when, FMT.formatBytes(session.size, RES_SIZE)].filter(Boolean).join(' · '), 'air-resources-meta'));
     row.append(
       make('span', linked ? t('airResourcesBadgeProtected') : t('airResourcesBadgeHistory'),
         'air-resources-badge ' + (linked ? 'is-protected' : 'is-history')),
@@ -155,7 +176,22 @@
     if (count) count.textContent = t('airResourcesSkillsCount', { claude: counts.claude || 0, codex: counts.codex || 0 });
     const visible = visibleSkills();
     if (!visible.length) list.replaceChildren(make('p', t('airResourcesSkillsEmpty'), 'admin-empty'));
-    else list.replaceChildren(...visible.map(skillRow));
+    else list.replaceChildren(...SKILL_LAYERS.map(layer => skillGroup(layer, visible)).filter(Boolean));
+  }
+
+  function skillGroup(layer, visible) {
+    const members = visible.filter(skill => (SKILL_LAYERS.includes(skill.layer) ? skill.layer : 'user') === layer);
+    if (!members.length) return null;
+    const group = make('details', null, 'air-resources-group');
+    group.dataset.layer = layer;
+    // 有过滤词时全部摊开：命中藏在收起的组里等于没命中。
+    group.open = !!String(filters.skills || '').trim() || openLayers[layer];
+    const summary = make('summary', null, 'air-resources-group-head');
+    summary.append(make('span', t(LAYER_KEYS[layer])), make('span', String(members.length), 'air-resources-group-count'),
+      make('span', t(LAYER_KEYS[layer] + 'Hint'), 'air-resources-group-hint'));
+    group.append(summary, ...members.map(skillRow));
+    group.addEventListener('toggle', () => { if (!String(filters.skills || '').trim()) openLayers[layer] = group.open; });
+    return group;
   }
 
   function paintSessions() {
@@ -165,7 +201,7 @@
     if (count) {
       count.textContent = t('airResourcesHistorySummary', {
         n: totals.count || 0,
-        size: fmtSize(totals.totalSize),
+        size: FMT.formatBytes(totals.totalSize, RES_SIZE),
         protected: totals.protectedCount || 0,
       });
     }
@@ -232,7 +268,7 @@
       await load();
       // 释放量用服务端回来的 freed，不用列表里那个 size：列表是删之前读的，
       // 而这句状态说的是「刚才那一下动了多少磁盘」。
-      const message = t('airResourcesDeletedOne', { id: session.id, size: fmtSize(result && result.freed) });
+      const message = t('airResourcesDeletedOne', { id: session.id, size: FMT.formatBytes(result && result.freed, RES_SIZE) });
       setStatus(message);
       context.notice(message);
     } catch (error) {
@@ -251,7 +287,7 @@
       await load();
       const message = t('airResourcesCleanDone', {
         n: (result && result.deleted) || 0,
-        size: fmtSize(result && result.freed),
+        size: FMT.formatBytes(result && result.freed, RES_SIZE),
       });
       setStatus(message);
       context.notice(message);

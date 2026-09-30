@@ -26,6 +26,7 @@ function createRouterToolHost({
   function configure({
     records,
     dispatchToSession,
+    createTask,
     orchestrationRuntime,
     resolveContext,
     taskBoard,
@@ -43,6 +44,7 @@ function createRouterToolHost({
     runtime = createRouterToolRuntime({
       records,
       dispatchToSession,
+      createTask,
       operations: orchestrationRuntime?.operations,
       completeDispatch: (id, result) => orchestrationRuntime.completeDispatch(id, result),
       schedulerStatus: id => orchestrationRuntime.sessionScheduler.status(id),
@@ -100,8 +102,6 @@ function createRouterToolHost({
           originDispatchId: turn.lineage?.kind === 'dispatch' ? turn.lineage.operationId : null,
           userText: turn.userText || '',
           taskId: turn.task?.id || null,
-          taskRunId: turn.task?.runId || null,
-          leaseEpoch: turn.task?.leaseEpoch || null,
           taskStart: turn.task?.start === true,
           taskSource: turn.task?.source || null,
         } : null;
@@ -160,6 +160,7 @@ function createRouterToolHost({
         } catch (error) {
           const status = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
           const code = status >= 500 ? 'router_internal_error' : (error?.code || 'router_error');
+          const retry = typeof error?.retryable === 'boolean' ? { retryable: error.retryable } : {};
           if (status >= 500) logger.error('router_tool_failure', {
             requestId,
             tool: String(req.params.tool || ''),
@@ -168,12 +169,12 @@ function createRouterToolHost({
           });
           if (streaming) {
             writeFrame({
-              type: 'error', code, requestId,
+              type: 'error', code, requestId, ...retry,
               message: status >= 500 ? 'router_internal_error' : (error?.message || code),
             });
             return res.end();
           }
-          return res.status(status).json({ ok: false, code, requestId });
+          return res.status(status).json({ ok: false, code, requestId, ...retry });
         } finally {
           req.removeListener('aborted', abort);
           res.removeListener('close', abort);
@@ -189,8 +190,6 @@ function createRouterToolHost({
     originDispatchId = null,
     userText = '',
     taskId = null,
-    taskRunId = null,
-    leaseEpoch = null,
     taskStart = false,
     taskSource = null,
     baseUrl,
@@ -199,7 +198,7 @@ function createRouterToolHost({
     if (!runtime) throw new Error('router tool runtime is not configured');
     const token = runtime.issueContext({
       sessionId, turnId, requestId, originDispatchId, userText,
-      taskId, taskRunId, leaseEpoch, taskStart, taskSource, dynamic, baseUrl,
+      taskId, taskStart, taskSource, dynamic, baseUrl,
     });
     let revoked = false;
     const revoke = () => {

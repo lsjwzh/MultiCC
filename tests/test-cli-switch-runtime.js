@@ -94,9 +94,12 @@ function createHarness(overrides = {}) {
     installSpecs: overrides.installSpecs,
     spawnProcess: overrides.spawnProcess,
     cliCommands: overrides.cliCommands,
+    // 默认桩: 不读本机真实安装布局(这台机器上的 codex 可能就是 brew 装的)。
+    homebrewOwnerOf: overrides.homebrewOwnerOf || (() => null),
     execFileVersion: overrides.execFileVersion,
     // 默认桩: 不打真实 npm registry。想断言「有新版」的用例自己注入一个。
     fetchLatestVersion: overrides.fetchLatestVersion || (async () => null),
+    fetchLatestVersionWithSource: overrides.fetchLatestVersionWithSource,
     registryBase: overrides.registryBase,
   });
   const app = {
@@ -173,13 +176,16 @@ test('defaults are CLI-specific and provider defaults are resolved lazily', () =
 // opencode, zcode, qoder, kimi" because the running server predated the
 // whitelist extension. Pins the route-level behaviour: both canonical keys are
 // accepted through SUPPORTED_CHAT_CLIS, and the marketing name "workbuddy" is
-// NOT a valid wire key.
-test('switching to vendor-auth CLIs (codebuddy / dsh) passes the supported whitelist', async () => {
+// NOT a valid wire key. gemini / grok are the same shape of vendor-auth CLI and
+// are pinned here too, so a new CLI cannot be added to the roster alone.
+test('switching to vendor-auth CLIs (codebuddy / dsh / gemini / grok) passes the supported whitelist', async () => {
   const { invoke, session } = createHarness({
     availability: {
       claude: { available: true },
       codebuddy: { available: true },
       dsh: { available: true },
+      gemini: { available: true },
+      grok: { available: true },
     },
   });
   const res1 = await invoke({ body: { cli: 'codebuddy' } });
@@ -193,6 +199,14 @@ test('switching to vendor-auth CLIs (codebuddy / dsh) passes the supported white
   assert.equal(res2.body.changed, true);
   assert.equal(res2.body.cli, 'dsh');
   assert.equal(session.cli, 'dsh');
+  const resGemini = await invoke({ body: { cli: 'gemini' } });
+  assert.equal(resGemini.statusCode, 200);
+  assert.equal(resGemini.body.cli, 'gemini');
+  assert.equal(session.cli, 'gemini');
+  const resGrok = await invoke({ body: { cli: 'grok' } });
+  assert.equal(resGrok.statusCode, 200);
+  assert.equal(resGrok.body.cli, 'grok');
+  assert.equal(session.cli, 'grok');
   const res3 = await invoke({ body: { cli: 'workbuddy' } });
   assert.equal(res3.statusCode, 400);
   assert.equal(res3.body.error, `cli must be one of: ${SUPPORTED_CHAT_CLIS.join(', ')}`);
@@ -389,18 +403,24 @@ test('install-specs returns the static official command table', async () => {
   const res = await invokeSpecs();
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.ok, true);
+  // 键是**家族**(= 升级目标), 不是车道: 升级的单位是 CLI 制品, 而 codex 与
+  // codex-exp 派生同一个二进制、跑同一条命令, claude-exp 更是一条没有制品的车道。
+  // 车道 → 家族由客户端用共享目录落(cliFamilyOf), 所以这里不该有车道行。
   assert.deepEqual(res.body.specs, {
     claude: { auto: true, command: 'npm install -g @anthropic-ai/claude-code', display: 'npm install -g @anthropic-ai/claude-code' },
-    'claude-exp': { auto: false, manual: 'Claude Exp 使用 MultiCC 内置的 Claude Agent SDK；请升级 MultiCC 来更新 SDK' },
-    codex: { auto: true, command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
-    'codex-exp': { auto: true, command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
+    codex: { auto: true, command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh', display: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' },
     opencode: { auto: true, command: 'npm install -g opencode-ai', display: 'npm install -g opencode-ai' },
     qoder: { auto: true, command: 'curl -fsSL https://qoder.cn/install | bash', display: 'curl -fsSL https://qoder.cn/install | bash' },
     zcode: { auto: false, manual: 'ZCode 暂无官方 CLI 安装脚本, 请从官网 https://zcode.z.ai 下载安装 ZCode 桌面版(其内置 CLI)' },
     kimi: { auto: true, command: 'npm install -g @moonshot-ai/kimi-code', display: 'npm install -g @moonshot-ai/kimi-code' },
     codebuddy: { auto: true, command: 'npm install -g @tencent-ai/codebuddy-code', display: 'npm install -g @tencent-ai/codebuddy-code' },
     dsh: { auto: true, command: 'npm install -g @deepseek-ai/dsh', display: 'npm install -g @deepseek-ai/dsh' },
+    gemini: { auto: true, command: 'npm install -g @google/gemini-cli', display: 'npm install -g @google/gemini-cli' },
+    grok: { auto: true, command: 'npm install -g @xai-official/grok', display: 'npm install -g @xai-official/grok' },
   });
+  assert.equal(res.body.specs['claude-exp'], undefined);
+  assert.equal(res.body.specs['codex-exp'], undefined);
+  // availability 反过来仍是**车道**键: 「这个 id 能不能被派生」天然按派生路径分开。
   assert.equal(res.body.availability.codex.available, true);
 });
 
@@ -450,7 +470,7 @@ test('install transitions running -> done via a fake spawn that exits 0 and re-c
   assert.equal(res.statusCode, 202);
   assert.equal(res.body.ok, true);
   assert.equal(res.body.cli, 'codex');
-  assert.equal(res.body.command, 'npm install -g @openai/codex');
+  assert.equal(res.body.command, 'curl -fsSL https://chatgpt.com/codex/install.sh | sh');
   const jobId = res.body.jobId;
   // running before exit, stdout 已被环形缓冲收录
   res = await harness.invokeStatus(jobId);
@@ -568,7 +588,15 @@ test('cli/versions reports the spawned binary version and parses noisy output', 
   assert.equal(res.body.versions.qoder.cmd, '/bin/qoderclicn');
   assert.equal(res.body.versions.qoder.available, true);
   assert.equal(res.body.versions.claude.version, '2.0.1');
-  assert.equal(res.body.versions['claude-exp'].version, '0.3.278');
+  // claude-exp 的引擎随 MultiCC 走, 不在升级范围里: 所以它没有自己的一行, 而是挂在
+  // 家族的 bundled 上(面板把这一行写成副标题, 不给装不了的按钮)。版本来自
+  // package.json 里的 SDK 依赖, 跟着真实依赖走, 升级 SDK 不需要改这里。
+  const sdkDep = require('../package.json').dependencies['@anthropic-ai/claude-agent-sdk'];
+  assert.deepEqual(res.body.versions.claude.bundled, [{
+    lane: 'claude-exp', engine: 'Claude Agent SDK', kind: 'chat',
+    available: true, version: String(sdkDep).replace(/^[~^]/, ''),
+  }]);
+  assert.equal(res.body.versions['claude-exp'], undefined);
   assert.equal(res.body.versions.codex.version, '0.20.0');
   assert.equal(res.body.versions.zcode.version, '1.2.3'); // 从 stderr 解析
   // 探测确实用的是 --version, 且解析出的正是注入的那个二进制路径
@@ -745,6 +773,35 @@ test('cli/versions reports inUseCount so the upgrade dialog can name the risk', 
   assert.equal(quiet.body.versions.claude.inUseCount, 0);
 });
 
+test('cli/versions counts a lane against its family, so one CLI is one row', async () => {
+  const exec = fakeExecFile({ '/bin/codex': '0.20.0' });
+  // 活动会话跑的是 codex-exp(Codex App Server) —— 但升级换的是家族的 codex 二进制,
+  // 所以占用必须记在 codex 上, 否则确认框会说「没有任何会话在用, 随便升」。
+  const harness = createHarness({
+    cliCommands: VERSION_CMDS,
+    execFileVersion: exec,
+    availability: { codex: { available: true }, 'codex-exp': { available: true } },
+  });
+  harness.records.get('s1').cli = 'codex-exp';
+  const res = await harness.invokeVersions();
+  assert.equal(res.body.versions.codex.inUseCount, 1);
+  assert.equal(res.body.versions['codex-exp'], undefined);
+});
+
+test('a bundled engine cannot be installed or upgraded — it rides with MultiCC', async () => {
+  // claude-exp 的引擎是 multicc 自己的依赖: 没有制品可装。绝不能拿家族的
+  // `npm install -g @anthropic-ai/claude-code` 糊弄过去 —— 用户会以为修好了。
+  const harness = createHarness({
+    availability: { 'claude-exp': { available: false } },
+  });
+  for (const invoke of [harness.invokeInstall, harness.invokeUpgrade]) {
+    const res = await invoke('claude-exp');
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body.manual, true);
+    assert.match(res.body.error, /MultiCC/);
+  }
+});
+
 test('upgrade runs the official command even though the cli is already installed', async () => {
   let proc = null;
   const fakeSpawn = () => {
@@ -835,4 +892,244 @@ test('a successful upgrade invalidates both caches so the badge clears on the ne
   assert.equal(after.body.versions.claude.version, '2.0.2');
   assert.equal(after.body.versions.claude.updateAvailable, false);
   assert.equal(after.body.updateCount, 0);
+});
+
+// 只要升级命令跑起来, 就必须和「看到最新版的那个源」用同一个源: 官方源不可达时
+// 检测走的是兜底镜像, 安装却去打官方源, 就是「有新版可升级但升级永远失败」。
+test('the install job installs from the registry that answered the version probe', async () => {
+  const spawns = [];
+  const fakeSpawn = (cmd, args, options) => {
+    const ee = new EventEmitter();
+    ee.stdout = new EventEmitter();
+    ee.stderr = new EventEmitter();
+    ee.kill = () => {};
+    spawns.push({ cmd, args, env: options && options.env });
+    return ee;
+  };
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    cliCommands: { claude: '/bin/claude' },
+    execFileVersion: (cmd, args, _options, cb) => cb(null, 'claude v2.0.1', ''),
+    fetchLatestVersionWithSource: async () => ({ version: '2.0.2', registry: 'https://registry.npmmirror.com/' }),
+    availability: { claude: { available: true } },
+  });
+  const versions = await harness.invokeVersions();
+  assert.equal(versions.body.versions.claude.latestRegistry, 'https://registry.npmmirror.com/');
+  assert.equal(versions.body.latestRegistries.claude, 'https://registry.npmmirror.com/');
+
+  const started = await harness.invokeUpgrade('claude');
+  assert.equal(started.statusCode, 202);
+  assert.equal(spawns.length, 1);
+  assert.equal(spawns[0].env.npm_config_registry, 'https://registry.npmmirror.com/');
+  assert.match(spawns[0].args.join(' '), /npm install -g @anthropic-ai\/claude-code/);
+
+  // 上游查不到最新版时不许瞎指定源, 让 npm 自己按用户配置决定
+  const quiet = createHarness({
+    spawnProcess: fakeSpawn,
+    cliCommands: { claude: '/bin/claude' },
+    execFileVersion: (cmd, args, _options, cb) => cb(null, 'claude v2.0.1', ''),
+    fetchLatestVersion: async () => null,
+    availability: { claude: { available: true } },
+  });
+  await quiet.invokeVersions();
+  await quiet.invokeUpgrade('claude');
+  assert.equal(spawns.length, 2);
+  assert.equal(spawns[1].env.npm_config_registry, undefined);
+});
+
+// 「命令成功」≠「multicc 派生的那个二进制升级了」。同一台机器上 claude 既有原生安装
+// (multicc 优先派生的那个)又有 npm 全局安装时, npm 装完新版本, 派生路径纹丝不动 ——
+// 不查这一下, 用户看到的就是一个永远消不掉的「可升级」角标。
+test('an upgrade that leaves the spawned binary untouched is reported as failed, with a way out', async () => {
+  let proc = null;
+  const fakeSpawn = () => {
+    proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    return proc;
+  };
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    cliCommands: { claude: '/bin/claude' },
+    // 无论命令跑多少次, 被派生的那个二进制始终是 2.0.1(新版装到了别的位置)
+    execFileVersion: (cmd, args, _options, cb) => cb(null, 'claude v2.0.1', ''),
+    fetchLatestVersion: async () => '2.0.2',
+    availability: { claude: { available: true } },
+  });
+  const before = await harness.invokeVersions();
+  assert.equal(before.body.versions.claude.updateAvailable, true);
+
+  const started = await harness.invokeUpgrade('claude');
+  assert.equal(started.statusCode, 202);
+  proc.stdout.emit('data', 'changed 1 package in 2s\n');
+  proc.emit('exit', 0, null);
+  for (let i = 0; i < 6; i += 1) await new Promise(resolve => setImmediate(resolve));
+
+  const status = await harness.invokeStatus(started.body.jobId);
+  assert.equal(status.body.job.status, 'error', '派生二进制没变就不能报成功');
+  assert.match(status.body.job.error, /2\.0\.1/);
+  assert.match(status.body.job.hint, /CLAUDE_CMD/);
+  assert.match(status.body.job.hint, /\/bin\/claude/);
+
+  // 命令把派生二进制真的换掉时, 仍然是 done, 且不误报
+  let installed = 'claude v2.0.1';
+  let proc2 = null;
+  const harness2 = createHarness({
+    spawnProcess: () => {
+      proc2 = new EventEmitter();
+      proc2.stdout = new EventEmitter();
+      proc2.stderr = new EventEmitter();
+      proc2.kill = () => {};
+      return proc2;
+    },
+    cliCommands: { claude: '/bin/claude' },
+    execFileVersion: (cmd, args, _options, cb) => cb(null, installed, ''),
+    fetchLatestVersion: async () => '2.0.2',
+    availability: { claude: { available: true } },
+  });
+  await harness2.invokeVersions();
+  const second = await harness2.invokeUpgrade('claude');
+  installed = 'claude v2.0.2';
+  proc2.emit('exit', 0, null);
+  for (let i = 0; i < 6; i += 1) await new Promise(resolve => setImmediate(resolve));
+  const secondStatus = await harness2.invokeStatus(second.body.jobId);
+  assert.equal(secondStatus.body.job.status, 'done');
+  assert.equal(secondStatus.body.job.hint, null);
+});
+
+// codex 与 codex-exp 派生同一个二进制、跑同一条 npm install: 并发跑会让 npm 自己踩
+// 自己的全局目录, 所以串行键是「安装目标」而不是 CLI 名。不同目标仍然可以并行。
+test('install jobs serialize by install target, and different targets run in parallel', async () => {
+  const spawned = [];
+  const fakeSpawn = (cmd, args) => {
+    const ee = new EventEmitter();
+    ee.stdout = new EventEmitter();
+    ee.stderr = new EventEmitter();
+    ee.kill = () => {};
+    spawned.push(args.join(' '));
+    return ee;
+  };
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    availability: { codex: { available: false }, opencode: { available: false }, dsh: { available: false } },
+  });
+  const first = await harness.invokeUpgrade('codex');
+  assert.equal(first.statusCode, 202);
+  // 同一条命令 -> 409, 并说清是另一个 CLI 占着
+  const twin = await harness.invokeUpgrade('codex-exp');
+  assert.equal(twin.statusCode, 409);
+  assert.equal(twin.body.running, true);
+  assert.equal(twin.body.jobId, first.body.jobId);
+  assert.match(twin.body.error, /codex/);
+  // 不同目标 -> 允许并行(用户抱怨的「升级按钮一次只能点一个」)
+  const other = await harness.invokeUpgrade('opencode');
+  assert.equal(other.statusCode, 202);
+  const third = await harness.invokeUpgrade('dsh');
+  assert.equal(third.statusCode, 202);
+  assert.equal(spawned.length, 3);
+  // 三个任务各自独立可查
+  for (const jobId of [first.body.jobId, other.body.jobId, third.body.jobId]) {
+    const status = await harness.invokeStatus(jobId);
+    assert.equal(status.body.job.status, 'running');
+  }
+});
+
+// Homebrew 装的 CLI 不去兼容: 同一条命令里先 brew uninstall, 再 npm 装, 此后 bin 归 npm。
+test('upgrade of a Homebrew-owned binary uninstalls it before the npm install', async () => {
+  const spawns = [];
+  const fakeSpawn = (cmd, args) => {
+    const ee = new EventEmitter();
+    ee.stdout = new EventEmitter();
+    ee.stderr = new EventEmitter();
+    ee.kill = () => {};
+    spawns.push(args.join(' '));
+    return ee;
+  };
+  const seen = [];
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    cliCommands: { claude: '/opt/homebrew/bin/claude', codex: '/opt/homebrew/bin/codex' },
+    homebrewOwnerOf: (cmd) => {
+      seen.push(cmd);
+      return cmd === '/opt/homebrew/bin/claude' ? { kind: 'formula', name: 'claude-code', path: cmd } : null;
+    },
+    availability: { claude: { available: true }, codex: { available: true } },
+  });
+  const res = await harness.invokeUpgrade('claude');
+  assert.equal(res.statusCode, 202);
+  assert.equal(res.body.command, 'brew uninstall --formula claude-code && npm install -g @anthropic-ai/claude-code');
+  assert.equal(spawns[0], '-c brew uninstall --formula claude-code && npm install -g @anthropic-ai/claude-code');
+  assert.deepEqual(seen, ['/opt/homebrew/bin/claude']);
+
+  // 不归 brew 管的照旧只跑安装命令本身。codex 走 curl 车道, 所以这里同时证明了
+  // 「非 npm 渠道不接管」(takeoverCommand 的门槛是 isNpmGlobalInstall)。
+  const plain = await harness.invokeUpgrade('codex');
+  assert.equal(plain.body.command, 'curl -fsSL https://chatgpt.com/codex/install.sh | sh');
+});
+
+// 官方安装脚本里有两个交互 prompt(卸掉旧 npm 版 / 现在启动 codex 吗)。无 TTY 时
+// prompt_yes_no 恰好默认答「否」, 但那是巧合; 显式注入 CODEX_NON_INTERACTIVE 才是
+// 契约 —— 尤其第二个若答「是」会拉起 codex TUI, 直接吊死 install job。
+test('codex install job declares non-interactive env; npm lanes are untouched', async () => {
+  const calls = [];
+  const fakeSpawn = (cmd, args, opts) => {
+    const ee = new EventEmitter();
+    ee.stdout = new EventEmitter();
+    ee.stderr = new EventEmitter();
+    ee.kill = () => {};
+    // args 形如 ['-c', '<shell command>'], 取第二个才是真正跑的那条命令
+    calls.push({ cmd, command: args[1], env: (opts && opts.env) || {} });
+    return ee;
+  };
+  const harness = createHarness({ spawnProcess: fakeSpawn });
+
+  await harness.invokeUpgrade('codex');
+  // codex-exp 与 codex 派生同一个二进制、跑同一条命令: 必须仍被判成同一个安装目标,
+  // 否则两条 curl 会同时抢安装脚本的 install.lock 与 current 软链。现在两条车道先
+  // 落到同一个家族(= 同一个 spec 条目), 所以这条守卫比逐字符比 command 更硬。
+  const twin = await harness.invokeUpgrade('codex-exp');
+  assert.equal(twin.statusCode, 409);
+  assert.equal(twin.body.running, true);
+
+  const claude = await harness.invokeUpgrade('claude');
+  assert.equal(claude.statusCode, 202);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].cmd, 'bash');
+  assert.match(calls[0].command, /chatgpt\.com\/codex\/install\.sh/);
+  assert.equal(calls[0].env.CODEX_NON_INTERACTIVE, '1');
+  // npm 车道不该被这层 injection 波及
+  assert.equal(calls[1].env.CODEX_NON_INTERACTIVE, undefined);
+  assert.equal(calls[1].command, 'npm install -g @anthropic-ai/claude-code');
+});
+
+test('homebrew owner detection follows the real path and refuses unsafe names', () => {
+  const { homebrewOwnerOf, takeoverCommand } = require('../src/cli/homebrew-takeover');
+  const links = {
+    '/opt/homebrew/bin/gemini': '/opt/homebrew/Cellar/gemini-cli/0.29.5/bin/gemini',
+    '/opt/homebrew/bin/codex': '/opt/homebrew/Caskroom/codex/0.40.0/codex-aarch64-apple-darwin',
+    '/opt/homebrew/bin/npmcli': '/opt/homebrew/lib/node_modules/npmcli/bin/cli.js',
+    '/opt/homebrew/bin/evil': '/opt/homebrew/Cellar/a;rm -rf ~/1/bin/evil',
+    '/opt/homebrew/Cellar/node/26.8.1/bin/node': '/opt/homebrew/Cellar/node/26.8.1/bin/node',
+    '/opt/homebrew/bin/node22': '/opt/homebrew/Cellar/node@22/22.1.0/bin/node',
+  };
+  const realpath = (p) => { if (!links[p]) throw new Error('ENOENT'); return links[p]; };
+  assert.deepEqual(homebrewOwnerOf('/opt/homebrew/bin/gemini', { realpath }),
+    { kind: 'formula', name: 'gemini-cli', path: '/opt/homebrew/bin/gemini' });
+  assert.equal(homebrewOwnerOf('/opt/homebrew/bin/codex', { realpath }).kind, 'cask');
+  assert.equal(homebrewOwnerOf('/opt/homebrew/bin/npmcli', { realpath }), null);
+  assert.equal(homebrewOwnerOf('/opt/homebrew/bin/evil', { realpath }), null);
+  assert.equal(homebrewOwnerOf('/opt/homebrew/bin/missing', { realpath }), null);
+  // 运行时(node/npm)永远不卸
+  assert.equal(homebrewOwnerOf('/opt/homebrew/Cellar/node/26.8.1/bin/node', { realpath }), null);
+  assert.equal(homebrewOwnerOf('/opt/homebrew/bin/node22', { realpath }), null);
+  assert.equal(homebrewOwnerOf(null, { realpath }), null);
+
+  const owner = { kind: 'cask', name: 'codex' };
+  assert.equal(takeoverCommand(owner, 'npm install -g @openai/codex'),
+    'brew uninstall --cask codex && npm install -g @openai/codex');
+  // 非 npm 渠道(curl 安装脚本)不接管
+  assert.equal(takeoverCommand(owner, 'curl -fsSL https://qoder.cn/install | bash'),
+    'curl -fsSL https://qoder.cn/install | bash');
 });

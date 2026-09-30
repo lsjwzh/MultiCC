@@ -479,3 +479,32 @@ test('download-ticket rejects missing paths and unauthenticated exchange', async
 test('createAuthRuntime rejects missing dependencies', () => {
   assert.throws(() => createAuthRuntime({}), /express/);
 });
+
+test('creation and message APIs retain the normal local, remote and Fleet authentication contract', async t => {
+  const h = await buildHarness();
+  t.after(h.close);
+  const routes = ['/api/air/tasks', '/api/directories/d1/sessions', '/api/task-board/tasks',
+    '/api/task-shells/shell/messages', '/api/task-shell-tasks/task/messages',
+    '/api/sessions/s1/fork', '/api/settings/access-token'];
+  for (const accessToken of ['', 'sekret']) {
+    h.state.accessToken = accessToken;
+    h.state.local = true;
+    for (const route of routes) {
+      assert.equal((await raw(h.base, route, { method: 'POST' })).status, 200,
+        `normal local UI needs no extra login: ${route}`);
+    }
+    h.state.local = false;
+    for (const route of routes) {
+      const response = await raw(h.base, route, { method: 'POST', headers: {
+        origin: h.base, 'x-multicc-router-capability': 'model-cap',
+      } });
+      assert.equal(response.status, 403, `model instructions do not change remote auth: ${route}`);
+      assert.equal((await response.json()).error.code, 'AUTH_REQUIRED');
+    }
+  }
+  for (const headers of [{ 'x-access-token': 'sekret' }, { cookie: 'multicc_auth=GOODCOOKIE' }]) {
+    assert.equal((await raw(h.base, '/api/air/tasks', { method: 'POST', headers })).status, 200);
+  }
+  h.state.scopedRequest = true;
+  assert.equal((await raw(h.base, '/api/air/tasks', { method: 'POST' })).status, 200);
+});

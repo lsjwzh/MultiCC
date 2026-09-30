@@ -15,6 +15,14 @@
   let loadGeneration = 0;
 
   const byId = id => document.getElementById(id);
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
+  // 五个字符与 shared/dom-helpers.js 的 escapeHtml 同一份语义。本模块是自包含 IIFE，
+  // 页面加载顺序不保证，所以自带一份，不复用页面全局。
   const esc = value => String(value == null ? '' : value)
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
@@ -109,7 +117,10 @@
                 <div class="air-tunnel-step-body">
                   <h4>${t('airTunnelInstallFrpcTitle')}</h4>
                   <p>${t('airTunnelInstallFrpcDesc')}</p>
-                  <button id="air-sf-install" type="button">${t('airTunnelInstallFrpc')}</button>
+                  <div class="air-tunnel-actions">
+                    <a class="air-tunnel-button" href="https://www.natfrp.com/tunnel/download" target="_blank" rel="noopener noreferrer">${t('airTunnelDownloadFrpc')}</a>
+                    <button id="air-sf-recheck" type="button">${t('airTunnelRecheckClient')}</button>
+                  </div>
                 </div>
               </li>
               <li>
@@ -235,15 +246,6 @@
     if (node) node.checked = !!value;
   }
 
-  function formatBytes(value) {
-    let n = Number(value);
-    if (!Number.isFinite(n) || n <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let index = 0;
-    while (n >= 1024 && index < units.length - 1) { n /= 1024; index += 1; }
-    return `${n.toFixed(n >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
-  }
-
   function providerHealth(provider, config, available) {
     if (!config?.enabled && !config?.funnel) return { text: t('airTunnelNotEnabled'), tone: 'neutral' };
     if (available === false) return { text: t('airTunnelClientNotInstalled'), tone: 'warning' };
@@ -321,7 +323,7 @@
     setText('air-sf-client', available ? t('airTunnelInstalledManaged') : t('airTunnelNotDetectedStep2'));
     if (sakura.ok) {
       const user = sakura.user || {};
-      setText('air-sf-account', `${user.name || user.id || t('airTunnelBound')} · ${user.realname ? t('airTunnelRealNameVerified') : t('airTunnelRealNameUnverified')} · ${user.signed ? t('airTunnelCheckedIn') : t('airTunnelNotCheckedIn')} · ${formatBytes(user.trafficUsed)}/${formatBytes(user.trafficTotal)}`);
+      setText('air-sf-account', `${user.name || user.id || t('airTunnelBound')} · ${user.realname ? t('airTunnelRealNameVerified') : t('airTunnelRealNameUnverified')} · ${user.signed ? t('airTunnelCheckedIn') : t('airTunnelNotCheckedIn')} · ${FMT.formatBytes(user.trafficUsed)}/${FMT.formatBytes(user.trafficTotal)}`);
       const access = sakura.access;
       if (access) {
         const reach = access.needsBoundDomain ? t('airTunnelWaitingBoundDomain') : (access.publicUrl || config.url || t('airTunnelWaitingPublicUrl'));
@@ -437,12 +439,6 @@
     input.value = '';
     await load();
     setMessage('air-sf-message', t('airTunnelKeyBound'), 'success');
-  }
-
-  async function installSakura() {
-    const result = await context.api('/api/tunnel/sakurafrp/install', {}, 'POST');
-    await load();
-    setMessage('air-sf-message', `${t('airTunnelFrpcInstalled', { version: result.version || '' })}${result.path ? ` · ${result.path}` : ''}`, 'success');
   }
 
   async function backfillSakura() {
@@ -563,7 +559,9 @@
     byId('air-access-save').onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), 'air-access-message', () => saveAccessPassword(false));
     byId('air-access-clear').onclick = event => runAction(event.currentTarget, t('airTunnelClearing'), 'air-access-message', () => saveAccessPassword(true));
     byId('air-sf-bind').onclick = event => runAction(event.currentTarget, t('airTunnelBinding'), 'air-sf-message', bindSakura);
-    byId('air-sf-install').onclick = event => runAction(event.currentTarget, t('airTunnelDownloading'), 'air-sf-message', installSakura);
+    // frpc 是高级用法：MultiCC 只做检测与托管，安装交给用户自己去官网下载，
+    // 所以这里只有一个「重新检测」，检测路径与页面加载时同一条（见 load()）。
+    byId('air-sf-recheck').onclick = event => runAction(event.currentTarget, t('airTunnelDetecting'), 'air-sf-message', load);
     byId('air-sf-backfill').onclick = event => runAction(event.currentTarget, t('airTunnelBackfilling'), 'air-sf-message', backfillSakura);
     byId('air-sf-save').onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), 'air-sf-message', saveSakura);
     byId('air-sf-restart').onclick = event => runAction(event.currentTarget, t('airTunnelStarting'), 'air-sf-message', () => restartProvider('sakurafrp', 'air-sf-message'));

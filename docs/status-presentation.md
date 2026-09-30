@@ -20,11 +20,16 @@ and against the Dart mirror, so drift fails the build rather than reaching a car
 
 The display layer never invents state. It consumes:
 
-- `src/session-work-host.js` `getRunState(sessionId)` — session run state, whose
-  vocabulary is `src/task-board.js` `TASK_RUN_STATES`
-  `{queued, running, waiting, error, done, idle}`.
+- `src/classify/vocab.js` `TURN_RUN_STATES`
+  `{queued, running, waiting, background, succeeded, error, idle}` — **the** run
+  state vocabulary. `src/task-board/normalize.js` builds its `TASK_RUN_STATES` set
+  from it instead of keeping a copy.
+- `src/session-work-host.js` `getRunState(sessionId)` — session run state, one of
+  the above.
 - `src/session-work-scheduler.js` `FREEZE_REASON_RUN_STATE` — freeze reason enum
-  key → run state.
+  key → run state. Derived from `FREEZE_REASON_CLASSIFY` (reason → classify
+  letter) through `runStateForClassify()`, so a letter-backed freeze reason can
+  never render differently from the same letter's settled verdict.
 - `src/classify/vocab.js` `CLASSIFY_DISPLAY` — classify letter `D/W/B/E/P` →
   `{cardStatus, barTint}`.
 - `src/task-board.js` `task.status` `{active, done, archived}` plus the
@@ -47,7 +52,7 @@ separate enums that happen to share most members.
 
 | | session | task |
 | --- | --- | --- |
-| shared | `idle` `queued` `running` `waiting` `blocked` `error` `done` `cancelled` `unknown` | same |
+| shared | `idle` `queued` `running` `waiting` `background` `blocked` `error` `done` `cancelled` `unknown` | same |
 | domain-only | `offline` | `archived` |
 
 `coerceStatus('session', 'archived')` and `coerceStatus('task', 'offline')` both
@@ -62,6 +67,7 @@ fall to `unknown` rather than leaking across domains.
 | `running` | 🔄 | `running` | **yes** | no | 70 | the only status allowed to animate. |
 | `queued` | 📥 | `info` | no | no | 60 | admitted, not started. |
 | `waiting` | ⏸️ | `waiting` | no | no | 50 | waiting for *your* reply in this conversation. |
+| `background` | ⏳ | `info` | no | no | 45 | idling on a background job (`B`): a callback or a dispatched worker is still out there. Nothing is asked of you. |
 | `done` | ✅ | `success` | no | yes | 30 | finished. |
 | `cancelled` | 🚫 | `muted` | no | yes | 25 | you stopped it. Never rendered as completed. |
 | `archived` | 🗄 | `muted` | no | yes | 20 | task filed away (task domain only). |
@@ -84,7 +90,15 @@ Rules this table encodes:
    bounded ring (`unknownStatusDiagnostics()`, 50 entries) and warned once.
 4. **Waiting ≠ blocked, and neither borrows the error icon.** ⏸️ means "answer
    me"; 🔒 means "go fix a prerequisite". Both are normal, neither is a fault.
-5. **Status is never carried by colour alone** (WCAG 1.4.1). Every badge renders
+5. **`background` is not `waiting`.** ⏸️ asks you something; ⏳ does not — it means
+   the turn is idling on a callback or a dispatched worker. Folding `B` into
+   `waiting` put 「等待回答」 on cards nobody can answer, and made them compete for
+   the same attention as a real question. It ranks below `waiting` (a question
+   always outranks it) and above `succeeded`; faults still outrank it, so a
+   background wait never masks a failure. `background` is also *busy* for
+   scheduling purposes: merge eligibility and Air's "does this need me?" line
+   both treat it like `running`.
+6. **Status is never carried by colour alone** (WCAG 1.4.1). Every badge renders
    an icon plus an accessible name; the visible label is optional.
 
 ## Legacy and adjacent vocabularies
@@ -112,6 +126,9 @@ by a test that asserts it is the *only* divergence in its table:
   that the user must act; the action is "go set up auth/config", not "answer
   here", so it gets the lock rather than the pause.
 
+`awaiting_callback` and `classify_background` are **not** a divergence: the
+scheduler's derived table says `background` for both, and the registry agrees.
+
 Classify `E` used to be a second divergence: the server's `cardStatus` said
 `waiting` while its `barTint` said `error`, so one terminal fact rendered as ⏸️
 on the session list and ❌ in the chat bar. `E.cardStatus` is now `error` too —
@@ -124,6 +141,25 @@ stop is the same abnormal end as an API fault (`E`), distinguished by the
 The status exists so a surface that *does* know the reason can say "you stopped
 this" instead of "the provider failed"; an interrupted turn must never be dressed
 up as completed.
+
+## One word per status per surface
+
+Air (the sidebar task rows and the console) prints statuses in its own words —
+the ones the workspace-lease and workflow-stage words next to it use. That
+vocabulary lives in the registry's `airLabelKey` column, one entry per spec:
+
+```js
+SP.airStatusLabels(window.t)      // every canonical status → its Air word
+SP.airStatusLabel('background', window.t)
+SP.airStatusWordFor(rawValue, window.t)  // alias-tolerant; '' for non-statuses
+```
+
+`public/air.js` builds its `stateNames` from it, `public/air-admin.js` builds its
+`STATUS_COPY` from it, and the app's `airStatusWord()` reads the same column. Two
+hand-kept copies of that table (one in each Air script, one in each of two Dart
+files) is exactly how one Air surface started calling a background wait
+「等待回答」 while another called the same status something else. Adding an Air
+word means adding one `airLabelKey` and one key per locale — never a new table.
 
 ## Component usage
 
@@ -182,8 +218,13 @@ Notes for callers:
 `tests/test-status-presentation.js` (in `npm run test:security`) covers:
 
 - **contract pins** — the classify and freeze tables have exactly the server's
-  key sets and exactly the two divergences above; every server run state coerces
-  to itself in both domains.
+  key sets and exactly the one divergence above; every server run state coerces
+  to itself in both domains; the server's run-state list is read from
+  `TURN_RUN_STATES` and `normalize.js` must build its set from it.
+- **`B` never renders as a question** — classify `B` and its two freeze reasons
+  are `background`; in both locales the badge word, the Air word and the
+  accessible name differ from `waiting`'s and never say "answer"; every canonical
+  status has a *distinct* Air word, so a future fold cannot disguise itself.
 - **invariants** — only `running` spins; `error` is ❌ + `danger` + non-terminal +
   highest priority; `unknown` is never success or spinner.
 - **coverage matrix** — every status × both domains × both renderers: one icon,
@@ -191,11 +232,16 @@ Notes for callers:
   title, `data-status` attributes, tone class, `st-spin` iff `spec.spinner`.
 - **idempotency / replay** — 5× apply, an 8-step transition replay, label toggling.
 - **reason safety** — path/token/URL scrubbing, length cap, HTML escaping.
-- **i18n** — every `labelKey`/`ariaKey` present in both `zh` and `en`, with length
-  caps so a long label cannot break a card.
-- **Web ↔ Dart parity** — the Dart mirror's specs, aliases, freeze table, classify
-  table and both vocabularies are parsed and deep-equalled against the JS registry.
+- **i18n** — every `labelKey`/`ariaKey`/`airLabelKey` present in both `zh` and
+  `en`, with length caps so a long label cannot break a card.
+- **Web ↔ Dart parity** — the Dart mirror's specs (including `airLabelKey`),
+  aliases, freeze table, classify table and both vocabularies are parsed and
+  deep-equalled against the JS registry.
+- **single Air word source** — `air.js`, `air-admin.js`, `air_task_status.dart`
+  and `air_service.dart` must derive their status words from the registry and must
+  not carry a hand copy.
 
 Adding a status means: registry → Dart mirror → both i18n files →
-`npm run i18n:generate` → a `.st-tone-*` rule if the tone is new. The parity and
+`npm run i18n:generate` → a `.st-tone-*` rule if the tone is new → the server
+run-state list in `src/classify/vocab.js` if it is a run state. The parity and
 catalogue tests fail until all of them are done.

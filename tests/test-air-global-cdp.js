@@ -1,21 +1,19 @@
 'use strict';
 // 「全局配置」这一格这次从「嵌旧 manage 页的 iframe」改成了 Air 原生页（air-global.js）。
-// 它装的是两条会真的改主机行为的开关，不是外观偏好，所以每一条都要在真浏览器里断到：
+// 它装的是会真的改主机行为的开关，不是外观偏好，所以每一条都要在真浏览器里断到：
 //   ① 渲染是原生的 —— #admin-content 里没有 .air-legacy-frame，也没有任何 /manage.html
 //      请求（iframe 的 src 会真的发出去，所以这条能证明它没被悄悄嵌回来）；
-//   ② 打开面板只读那两条状态 —— GET /api/settings/official-oauth 与 GET /api/settings/power
-//      各一次（外壳自己 boot 时也读过 power，所以比的是「点进去之后新增的」那一截）；
-//   ③ OAuth：勾选态跟着服务端走；开启是有风险的那一侧，开启前必须先问一句 —— 答「否」时
-//      一个写入请求都不许发、勾选退回原位；答「是」才发，body 逐字段断言，成功提示必须
-//      带「下一轮 spawn 生效」那半句；
-//   ④ 关盖运行：available:false 时整卡不出现（不是灰掉）、error 有值要在页面上现形、
+//   ② 打开面板只读电源那一条状态 —— GET /api/settings/power 一次（外壳自己 boot 时也
+//      读过 power，所以比的是「点进去之后新增的」那一截）；
+//   ③ 关盖运行：available:false 时整卡不出现（不是灰掉）、error 有值要在页面上现形、
 //      勾选态以服务端回的 enabled 为准、写入失败时勾选必须回滚；
-//   ⑤ 安装包（APK / iOS OTA）不在这页重复第二张卡 —— 侧栏「主机操作」那颗才是唯一入口。
+//   ④ 安装包（APK / iOS OTA）不在这页重复第二张卡 —— 侧栏「主机操作」那颗才是唯一入口。
+//   ⑤ Shared first-time setup; switches retain credentials and restore independent consent.
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
 
-test('the Air global panel is native: install hint, guarded OAuth switch, macOS lid-sleep switch', async t => {
+test('the Air global panel is native: install hint and the macOS lid-sleep switch', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   const routes = {}, publicDir = path.resolve(__dirname, '../public');
   const shots = path.join(os.tmpdir(), 'multicc-air-global-qa');
@@ -31,25 +29,26 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
   routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
 
-  // 两个开关的状态都放在 fixture 里，路由读写它 —— 界面跟不跟着服务端走，才有东西可断。
-  let oauth = { enabled: true };
+  // 关盖运行的状态放在 fixture 里，路由读写它 —— 界面跟不跟着服务端走，才有东西可断。
   let power = { available: true, enabled: true };
-  let oauthError = '';
   // 关盖运行那一步会在 Mac 上弹系统授权框：这几个旋钮让「正在等授权 / 服务端说了别的 /
   // 授权被取消」三条路都能在测试里确定性地走一遍。
   let powerDelay = 0, powerNegate = false, powerError = '';
-  const oauthPosts = [], powerPosts = [];
-  routes['GET /api/settings/official-oauth'] = () => json({ enabled: oauth.enabled });
-  routes['POST /api/settings/official-oauth'] = req => {
-    const body = JSON.parse(req.body);
-    oauthPosts.push(body);
-    if (oauthError) {
-      return { status: 500, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: oauthError }) };
-    }
-    oauth = { enabled: !!body.enabled };
-    return json({ ok: true, enabled: oauth.enabled });
+  const powerPosts = [];
+  let agentPermissions = { ok: true, applicable: true, local: true, accessibility: true, screenRecording: true };
+  const permissionOpens = [];
+  routes['GET /api/system/agent-permissions'] = () => json(agentPermissions);
+  routes['POST /api/system/agent-permissions/open'] = req => {
+    permissionOpens.push(JSON.parse(req.body).permission);
+    return json({ ok: true, status: 'opened' });
   };
-  routes['GET /api/settings/power'] = () => json(power);
+  let unlockPassword = { available: true, set: false, canEdit: true, requested: false };
+  const powerReply = () => ({ ...power, unlockPassword: { ...unlockPassword,
+    enabled: unlockPassword.set && (unlockPassword.requested || power.enabled), requiredByLid: power.enabled } });
+  let unlockAuthorization = { state: 'authorized' };
+  let unlockSaveError = '', unlockDeleteError = '', unlockSaveDelay = 0;
+  const unlockPosts = []; // { method, body }：POST 存、DELETE 删、POST authorize 重问一次
+  routes['GET /api/settings/power'] = () => json(powerReply());
   routes['POST /api/settings/power'] = async req => {
     const body = JSON.parse(req.body);
     powerPosts.push(body);
@@ -59,17 +58,48 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     }
     const enabled = powerNegate ? !body.enabled : !!body.enabled;
     power = { available: true, enabled };
-    return json({ ok: true, available: true, enabled });
+    return json({ ok: true, ...powerReply() });
   };
+  const unlockToggles = [];
+  routes['POST /api/settings/power/auto-unlock'] = req => {
+    const body = JSON.parse(req.body);
+    unlockToggles.push(body);
+    unlockPassword.requested = body.enabled;
+    return json({ ok: true, ...powerReply() });
+  };
+  routes['POST /api/settings/power/unlock-password'] = async req => {
+    const body = JSON.parse(req.body);
+    unlockPosts.push({ method: 'POST', body });
+    if (unlockSaveDelay) await new Promise(resolve => setTimeout(resolve, unlockSaveDelay));
+    if (unlockSaveError) {
+      return { status: 500, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: unlockSaveError }) };
+    }
+    unlockPassword = { ...unlockPassword, set: true };
+    // 真服务端存完会当场问一次 Agent「你到底读不读得到」，回执就是这个 authorization。
+    return json({ ok: true, set: true, authorization: unlockAuthorization });
+  };
+  routes['DELETE /api/settings/power/unlock-password'] = () => {
+    unlockPosts.push({ method: 'DELETE' });
+    if (unlockDeleteError) {
+      return { status: 500, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: unlockDeleteError }) };
+    }
+    unlockPassword = { available: true, set: false };
+    return json({ ok: true, set: false });
+  };
+  routes['POST /api/settings/power/unlock-password/authorize'] = () => {
+    unlockPosts.push({ method: 'POST', path: 'authorize' });
+    return json({ ok: true, authorization: unlockAuthorization });
+  };
+
   routes['/api/air'] = () => json({ ok: true, directories: [{ id: 'd1', name: 'MultiCC 主仓', path: '/projects/multicc' }], clis: ['codex'], migration: { errors: [] }, tasks: [], sessions: [] });
   routes['/api/cron'] = () => json([]);
   routes['/api/docs-registry'] = () => json([]);
 
   await withCdpHarness({ routes, screenshotDir: shots }, async page => {
-    // 外壳自己也读这两条（侧栏「关盖运行」那颗），所以只盯这两条接口、并且拿
+    // 外壳自己也读这一条（侧栏「关盖运行」那颗），所以只盯这个接口、并且拿
     // 「点进面板之前」当基准，才分得清哪一次是面板打的。
     const calls = () => page.requests
-      .filter(r => /^\/api\/settings\/(official-oauth|power)$/.test(r.path))
+      .filter(r => r.path === '/api/settings/power')
       .map(r => `${r.method} ${r.path}`);
     const text = selector => page.evaluate(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? null`);
     const t = key => page.evaluate(`t(${JSON.stringify(key)})`);
@@ -86,9 +116,9 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
 
     // ── ⓪ 安装包的入口在侧栏，是唯一那个（这一页不再有第二张下载卡） ───────
     await page.navigate('/air?dir=d1&view=overview');
-    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`), '控制台打开');
+    assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false`), '控制台那一页打开');
     // 它住在侧栏「更多与系统」那一栏里（默认收着），展开就该点得到。
-    await page.evaluate(`document.getElementById('side-more').open = true`);
+    await page.evaluate(`document.getElementById('side-more').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-apk-btn')?.checkVisibility() === true`), '安装包那颗按钮展开「更多与系统」就在，一直点得到');
     await page.screenshot('00-apk-entry');
 
@@ -104,15 +134,17 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     await page.evaluate(`[...document.querySelectorAll('.air-setting-card')].find(card => card.querySelector('strong')?.textContent === ${JSON.stringify(globalLabel)}).click()`);
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent === ${JSON.stringify(globalLabel)}`), '点进去落在全局配置页');
     assert.equal(await page.evaluate(`document.getElementById('task-breadcrumb').textContent`), await t('airCrumbSettings'), '面包屑说的是设置中心这一类');
-    // 两条状态都回来了再数请求：面板打开时打的就是这两条，各一次。
+    // 状态回来了再数请求：面板打开时打的就是电源这一条，一次。
     assert.ok(await page.waitFor(`(() => {
-      const state = document.getElementById('air-global-oauth-state');
+      const state = document.getElementById('air-global-power-status');
       const card = document.getElementById('air-global-power-card');
       const toggle = document.getElementById('air-global-power-toggle');
       return !!state && state.textContent.length > 0 && !!card && !card.hidden && !!toggle && !toggle.disabled;
-    })()`), '两条状态都读回来了');
+    })()`), '电源状态读回来了');
     assert.deepEqual(calls().slice(base).sort(),
-      ['GET /api/settings/official-oauth', 'GET /api/settings/power'], '打开面板只读那两条状态：各一次');
+      ['GET /api/settings/power'], '打开面板只读电源那一条状态：一次');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-oauth-enabled')`), null,
+      'OAuth 重放那一块已经整块退场，页面上不该再有那颗勾');
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .air-legacy-frame').length`), 0, '原生面板里没有旧 manage 的 iframe');
     assert.equal(page.requests.some(r => r.path === '/manage.html'), false, 'iframe 的 src 会真的发出去 —— 没这条请求才算真没嵌');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].map(b => b.textContent.replace(/\\s+/g,''))`),
@@ -122,75 +154,9 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     assert.equal(await text('#admin-content .air-global-hint'), await t('airGlobalInstallHint'), '顶上是安装包的指路');
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content a[href*="multicc.apk"], #admin-content a[href*="ios-ota"]').length`), 0,
       '这页不许再画一张下载卡 —— 同一件事两个入口正是这次迁移要消掉的');
-    // 风险告知是整段搬过来的，不是一句带过：它必须是一个能换行的段落（\n 分行靠
-    // pre-line 显示），长度和关键词这两条等 i18n 合并进来之后才量得到 —— key 还没进
-    // 字典时 t() 会把 key 原样退回，那时页面文本和 t() 是同一个字符串，比长度没意义。
-    const risk = await text('#admin-content .air-global-risk');
-    assert.equal(risk, await t('airGlobalOauthRisk'), '风险告知照旧页整段搬过来');
-    assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('#admin-content .air-global-risk')).whiteSpace`), 'pre-line',
-      '这段是有分行的长文，不是一行小字');
-    if (risk !== 'airGlobalOauthRisk') {
-      assert.ok(risk.length > 120, `这段不是一句带过的提示（${risk.length} 字）`);
-      for (const word of ['OAuth', 'Anthropic']) {
-        assert.ok(risk.includes(word), `风险告知里得说清「重放订阅 ${word} token」这件事`);
-      }
-    }
     await page.screenshot('01-global-native-desktop');
 
-    // ── ③ OAuth：勾选态跟服务端走，开启前必须先问一句 ─────────────────────
-    assert.equal(await page.evaluate(`document.getElementById('air-global-oauth-enabled').checked`), true, '服务端说开着，勾选态就是开着');
-    assert.equal(await text('#air-global-oauth-state'), await t('airGlobalOauthOn'), '卡片右上说已开启');
-    // 换成「未开启」再刷新一次：勾选和状态都得跟着服务端翻过来（顺手验工具条那一下）。
-    oauth = { enabled: false };
-    await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].find(b => b.textContent.includes('↻')).click()`);
-    assert.ok(await page.waitFor(`document.getElementById('air-global-oauth-enabled').checked === false`), '刷新后勾选跟着服务端');
-    assert.equal(await text('#air-global-oauth-state'), await t('airGlobalOauthOff'), '卡片右上说已关闭');
-
-    // 开启前那一次问句：答「否」时一个写入请求都不许发，勾选退回原位。
-    await page.evaluate(`window.__realConfirm = window.confirm; window.__asked = []; window.confirm = text => { window.__asked.push(text); return false; }`);
-    await page.evaluate(`document.getElementById('air-global-oauth-enabled').click()`);
-    // 「不该发的请求」没有回包可等，所以给它一点时间现形，免得比请求先到就判它没发。
-    await new Promise(resolve => setTimeout(resolve, 150));
-    assert.equal(oauthPosts.length, 0, '答「否」时不发写入请求');
-    assert.equal(page.requests.some(r => r.method === 'POST' && r.path === '/api/settings/official-oauth'), false, '连一条 POST 都不该出现');
-    assert.equal(await page.evaluate(`document.getElementById('air-global-oauth-enabled').checked`), false, '勾选退回原位（还是未勾）');
-    assert.deepEqual(await page.evaluate(`window.__asked`), [await t('airGlobalOauthConfirm')],
-      '问的就是旧页那一句：重放订阅 token、可能违反服务条款、有账号风险');
-
-    // 答「是」：才发，body 逐字段断言，成功提示带「下一轮 spawn 生效」。
-    await page.evaluate(`window.confirm = text => { window.__asked.push(text); return true; }`);
-    await page.evaluate(`document.getElementById('air-global-oauth-enabled').click()`);
-    const onNote = (await t('airGlobalOauthOn')) + (await t('airGlobalOauthSpawnNote'));
-    assert.ok(await page.waitFor(`document.getElementById('air-global-oauth-msg').textContent === ${JSON.stringify(onNote)}`),
-      '开启后的提示是「已开启（下一轮 spawn 生效）」这一句');
-    await settle(oauthPosts, 1);
-    assert.deepEqual(oauthPosts, [{ enabled: true }], '写入 body 就这一项');
-    assert.equal(await page.evaluate(`document.getElementById('air-global-oauth-enabled').checked`), true);
-    assert.equal(await text('#air-global-oauth-state'), await t('airGlobalOauthOn'));
-
-    // 关掉是安全的那一侧：不再问，直接发 { enabled: false }。
-    await page.evaluate(`document.getElementById('air-global-oauth-enabled').click()`);
-    const offNote = (await t('airGlobalOauthOff')) + (await t('airGlobalOauthSpawnNote'));
-    assert.ok(await page.waitFor(`document.getElementById('air-global-oauth-msg').textContent === ${JSON.stringify(offNote)}`),
-      '关闭后的提示是「已关闭（下一轮 spawn 生效）」这一句');
-    await settle(oauthPosts, 2);
-    assert.deepEqual(oauthPosts, [{ enabled: true }, { enabled: false }], '关掉也要落库');
-    assert.equal(await page.evaluate(`window.__asked.length`), 2, '只有开启那一次问了（关掉不问）');
-
-    // 写入失败：勾选退回原值并说明原因（停在用户点过的那一态就是替服务端点头）。
-    oauthError = '写入被拒绝（演示）';
-    await page.evaluate(`window.confirm = () => true`); // 这条路要真的走到 POST，问句先放行
-    await page.evaluate(`document.getElementById('air-global-oauth-enabled').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('air-global-oauth-msg').className.includes('err')`), '失败要现形');
-    await settle(oauthPosts, 3);
-    assert.deepEqual(oauthPosts.at(-1), { enabled: true }, '失败前那一次也真的发出去了');
-    assert.equal(await page.evaluate(`document.getElementById('air-global-oauth-enabled').checked`), false, '失败后勾选退回原值（未勾）');
-    assert.equal(await text('#air-global-oauth-msg'), await tParams('airGlobalOauthFailed', { message: oauthError }), '失败原因写给用户看');
-    assert.equal(await page.evaluate(`document.getElementById('air-global-oauth-enabled').disabled`), false, '失败也要能再试一次');
-    oauthError = '';
-    await page.evaluate(`window.confirm = window.__realConfirm`);
-
-    // ── ④ 关盖运行：可见性、错误、以及勾选态到底谁说了算 ───────────────────
+    // ── ③ 关盖运行：可见性、错误、以及勾选态到底谁说了算 ───────────────────
     assert.equal(await page.evaluate(`document.getElementById('air-global-power-card').checkVisibility()`), true, 'available:true 时整卡可见');
     assert.equal(await page.evaluate(`document.getElementById('air-global-power-toggle').checked`), true);
     assert.equal(await text('#air-global-power-status'), await t('airGlobalPowerOn'));
@@ -253,5 +219,144 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     assert.equal(await page.evaluate(`document.getElementById('air-global-power-card').hidden`), false, '这张卡还在（支持这个平台）');
     powerError = '';
     await page.screenshot('02-global-power');
+
+
+    const click = id => page.evaluate(`document.getElementById('air-global-${id}').click()`);
+    const checked = id => page.evaluate(`document.getElementById('air-global-${id}').checked`);
+    const ready = async () => assert.ok(await page.waitFor(`!document.getElementById('air-global-power-toggle').disabled`));
+    // First-time lid setup: neither switch claims success before saving.
+    power = { available: true, enabled: false };
+    unlockPassword = { available: true, set: false, canEdit: true, requested: false };
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    await click('power-toggle');
+    assert.equal(await checked('power-toggle'), false);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-block').hidden`), false);
+    assert.equal(powerPosts.length, 3, 'no power mutation before password setup');
+    await click('unlock-cancel');
+    assert.equal(await checked('power-toggle'), false);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-block').hidden`), true);
+    await click('power-toggle');
+    await page.evaluate(`document.getElementById('air-global-unlock-password').value = 'fixture-only'`);
+    unlockSaveDelay = 150;
+    await click('unlock-save');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-password').value`), '', 'clear immediately, including on failure');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-cancel').disabled`), true);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-power-toggle').checked && !document.getElementById('air-global-power-toggle').disabled`));
+    assert.equal(await checked('unlock-toggle'), true);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-toggle').disabled`), true, 'included unlock cannot be disabled independently');
+    assert.equal(unlockPosts.filter(p => p.method === 'POST').length, 1);
+    unlockSaveDelay = 0;
+    await click('power-toggle');
+    await ready();
+    assert.equal(await checked('unlock-toggle'), false, 'restores earlier independent choice');
+
+    // Re-enable both switches without entering or deleting a password.
+    await click('unlock-toggle');
+    await ready();
+    assert.equal(await checked('unlock-toggle'), true);
+    await click('unlock-toggle');
+    await ready();
+    assert.equal(await checked('unlock-toggle'), false);
+    assert.equal(unlockPosts.filter(p => p.method === 'DELETE').length, 0);
+    assert.equal(unlockPassword.set, true);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-block').hidden`), true);
+    await click('power-toggle'); await ready();
+    await click('power-toggle'); await ready();
+    assert.equal(unlockPosts.filter(p => p.method === 'POST').length, 1, 'reuse saved credentials');
+
+    // Failed setup: status and retry remain visible, no feature enabled.
+    unlockPassword.set = false;
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    await click('unlock-toggle');
+    unlockAuthorization = { state: 'waiting-for-user' };
+    await page.evaluate(`document.getElementById('air-global-unlock-password').value = 'fixture-only'`);
+    await click('unlock-save'); await ready();
+    assert.equal(await checked('unlock-toggle'), false);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-status').checkVisibility()`), true);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-authorize').checkVisibility()`), true);
+    unlockAuthorization = { state: 'authorized' };
+    await click('unlock-authorize');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-toggle').checked && !document.getElementById('air-global-unlock-toggle').disabled`));
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-password').value`), '');
+
+    // Agent 自己坏了（装的时候丢了执行位 / 压根没装）：指引要指向「重启 MultiCC 自修」，
+    // 并把那个怎么点都不会好的「检查授权」收起来 —— 现场就是在它上面一直打转。
+    // 按钮的回包是异步的（element.click() 一返回就去断言会读到上一次的状态），所以按
+    // 文案+按钮可见性一起等。
+    const authorized = (key, buttonVisible) => page.waitFor(
+      `document.getElementById('air-global-unlock-status').textContent === t(${JSON.stringify(key)})`
+      + ` && document.getElementById('air-global-unlock-authorize').checkVisibility() === ${buttonVisible}`);
+    unlockPassword = { available: true, set: true, canEdit: true, requested: false };
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    unlockAuthorization = { state: 'unavailable', detail: 'agent-not-executable' };
+    await click('unlock-authorize');
+    assert.ok(await authorized('airGlobalUnlockAgentBroken', false));
+    assert.equal(await text('#air-global-unlock-status'), await t('airGlobalUnlockAgentBroken'));
+    unlockAuthorization = { state: 'unavailable', detail: 'agent-not-installed' };
+    await click('unlock-authorize');
+    assert.ok(await authorized('airGlobalUnlockAgentMissing', false));
+    // 没有 detail 的「没能确认」仍然保留原话与按钮（可能只是这次没等到）。
+    unlockAuthorization = { state: 'unavailable' };
+    await click('unlock-authorize');
+    assert.ok(await authorized('airGlobalUnlockProbeUnknown', true));
+    assert.equal(await text('#air-global-unlock-status'), await t('airGlobalUnlockProbeUnknown'));
+    unlockAuthorization = { state: 'authorized' };
+
+    // Remote first-time setup explains where to go, without an unusable form.
+    unlockPassword = { available: true, set: false, canEdit: false, requested: false };
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    await click('unlock-toggle');
+    assert.equal(await text('#air-global-unlock-status'), await t('airGlobalUnlockLocal'));
+    assert.equal(await checked('unlock-toggle'), false);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-block').hidden`), true);
+
+    // User report: system sleep disabled must not turn MultiCC's shortcut on.
+    power = { available: true, enabled: false, systemSleepDisabled: true };
+    unlockPassword = { available: true, set: true, canEdit: true, requested: false };
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    assert.equal(await page.evaluate(`document.getElementById('air-lid-sleep').classList.contains('on')`), false);
+    assert.equal(await page.evaluate(`document.getElementById('air-auto-unlock').hidden`), false);
+    assert.equal(await text('#air-global-power-status'), await t('airGlobalPowerExternal'));
+    await page.evaluate(`document.getElementById('air-auto-unlock').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-auto-unlock').classList.contains('on') && !document.getElementById('air-auto-unlock').disabled`));
+    assert.deepEqual(unlockToggles.at(-1), { enabled: true });
+    // First-time shortcut opens the shared password form in one click.
+    unlockPassword = { available: true, set: false, canEdit: true, requested: false };
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    await page.evaluate(`document.getElementById('air-auto-unlock').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-block')?.hidden === false`));
+    assert.equal(await checked('unlock-toggle'), false);
+    await click('unlock-cancel');
+    await page.screenshot('03-global-unlock');
+
+    // Grant guidance belongs to desktop automation. A newly enabled lid mode
+    // opens the first missing macOS pane and leaves an explanation in a dialog.
+    power = { available: true, enabled: false };
+    unlockPassword = { available: true, set: true, canEdit: true, requested: false };
+    agentPermissions = { ...agentPermissions, accessibility: false, screenRecording: false };
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    await click('power-toggle');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-dialog').open`));
+    assert.deepEqual(permissionOpens, ['accessibility']);
+    assert.match(await text('#air-global-permission-body'), /MultiCC Agent/);
+    agentPermissions = { ...agentPermissions, accessibility: true };
+    await click('permission-check');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-body').textContent === t('airGlobalPermissionsMissing', {name:t('airGlobalPermissionsRecording')})`));
+    await click('permission-open');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-open').disabled === false`));
+    assert.deepEqual(permissionOpens, ['accessibility', 'screenRecording']);
+    agentPermissions = { ...agentPermissions, screenRecording: true };
+    await click('permission-check');
+    assert.ok(await page.waitFor(`!document.getElementById('air-global-permission-dialog').open`));
+
+    // The settings-center shortcut has its own POST path. It must reach the
+    // same permission guide after enabling, without requiring password setup.
+    await click('power-toggle'); await ready();
+    agentPermissions = { ...agentPermissions, accessibility: false };
+    await page.navigate('/air?dir=d1&view=settings');
+    assert.ok(await page.waitFor(`document.getElementById('air-lid-sleep') && !document.getElementById('air-lid-sleep').classList.contains('on')`));
+    await page.evaluate(`document.getElementById('air-lid-sleep').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-dialog')?.open === true`));
+    assert.deepEqual(permissionOpens, ['accessibility', 'screenRecording', 'accessibility']);
   });
 });

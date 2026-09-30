@@ -71,7 +71,6 @@ test('Air renders and operates the regional tunnel page without the legacy manag
     user: { name: 'Air User', realname: true, signed: true, trafficUsed: 1024, trafficTotal: 1024 * 1024 },
     access: { tunnelId: 42, name: 'multicc', online: true, nodeName: '上海 BGP', needsBoundDomain: true },
     tunnelCount: 1, configUrl: config.sakurafrp.url, needsBoundDomain: true });
-  routes['POST /api/tunnel/sakurafrp/install'] = () => json({ ok: true, version: '0.51.0-sakura-14', path: '/fixture/frpc' });
   routes['POST /api/tunnel/sakurafrp/public-url'] = () => json({ ok: true, url: config.sakurafrp.url });
   routes['/api/tunnel/funnel'] = () => json({ status: config.tailscale.funnel ? 'https://air.example.ts.net (Funnel on)' : 'No serve config' });
   routes['POST /api/tunnel/funnel'] = ({ body }) => {
@@ -95,6 +94,11 @@ test('Air renders and operates the regional tunnel page without the legacy manag
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.air-tunnel-route > header h3')].map(el=>el.textContent)`),
       ['SakuraFrp · 樱花内网穿透', 'Tailscale Funnel']);
     assert.equal(await page.evaluate(`document.body.textContent.includes('must-not-render')`), false, 'Sakura access key must never be rendered');
+    // frpc 是高级功能：MultiCC 不再代装，第 2 步只给官网下载入口 + 重新检测。
+    assert.equal(await page.evaluate(`document.getElementById('air-sf-install') === null`), true, 'MultiCC must not install frpc itself');
+    assert.equal(await page.evaluate(`(() => { const link = [...document.querySelectorAll('.air-tunnel-route.cn a')].find(el => el.textContent.includes('frpc')); return link ? link.href : null; })()`),
+      'https://www.natfrp.com/tunnel/download', 'step 2 must link to the official SakuraFrp download page');
+    assert.equal(await page.evaluate(`document.getElementById('air-sf-recheck') !== null`), true, 'step 2 must keep a re-check action');
     assert.equal(await page.evaluate(`document.getElementById('air-access-status').textContent`), '已保护');
     assert.match(await page.evaluate(`document.getElementById('air-ts-ipv6').textContent`), /直连已就绪/);
     const desktop = await page.screenshot('air-tunnel-desktop');

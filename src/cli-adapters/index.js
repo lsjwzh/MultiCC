@@ -13,6 +13,8 @@ const { createQoderAdapter } = require('./qoder');
 const { createKimiAdapter } = require('./kimi');
 const { createCodebuddyAdapter } = require('./codebuddy');
 const { createDshAdapter } = require('./dsh');
+const { createGeminiAdapter } = require('./gemini');
+const { createGrokAdapter } = require('./grok');
 
 function createCliAdapters(deps) {
   const commands = resolveCliCommands({ isWindows: deps.isWindows });
@@ -79,12 +81,16 @@ function createCliAdapters(deps) {
     createOpencodeAdapter({
       cmd: commands.opencode,
       userInputReminder: deps.userInputReminder,
+      routerMcpNode,
+      routerMcpScript,
     }),
     createZcodeAdapter({ cmd: commands.zcode }),
     createQoderAdapter({ cmd: commands.qoder, routerMcpNode, routerMcpScript }),
     createKimiAdapter({ cmd: commands.kimi, routerMcpNode, routerMcpScript }),
     createCodebuddyAdapter({ cmd: commands.codebuddy, routerMcpNode, routerMcpScript }),
     createDshAdapter({ cmd: commands.dsh }),
+    createGeminiAdapter({ cmd: commands.gemini, routerMcpNode, routerMcpScript }),
+    createGrokAdapter({ cmd: commands.grok, routerMcpNode, routerMcpScript }),
   ]);
 
   return { commands, registry };

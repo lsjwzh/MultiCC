@@ -31,6 +31,22 @@ Map<String, dynamic> sessionAIConfigPatchBody({
   return body;
 }
 
+/// 删除会话被工作区安全规则挡下（服务端 409，reasons 里带 dirty / unmerged，见
+/// `src/routes/session-lifecycle.js` 与 `destroySessionCascade`）。这不代表删不掉：
+/// 界面把风险说清楚、用户同意后再带 `force` 重来 —— 和 Web 那条删除一个规矩。
+class SessionDeleteBlockedException implements Exception {
+  SessionDeleteBlockedException(this.message, this.reasons);
+
+  final String message;
+  final List<String> reasons;
+
+  bool get dirty => reasons.contains('dirty');
+  bool get unmerged => reasons.contains('unmerged');
+
+  @override
+  String toString() => message;
+}
+
 class SessionService {
   final SettingsService settings;
 
@@ -138,8 +154,11 @@ class SessionService {
   // ── CLI install (three-endpoint contract shared with web/CLI) ──────────────
 
   /// Fetch install specs for all supported CLIs. Returns the parsed response
-  /// map `{ok, specs:{<cli>:{auto, command?, display?, manual?}}}`. On HTTP
-  /// error sets `ok: false` + `error` so callers can degrade gracefully.
+  /// map `{ok, specs:{<family>:{auto, command?, display?, manual?}}, availability:{<lane>:{available}}}`
+  /// — `specs` is keyed by **family** (the upgrade unit is the family's CLI
+  /// artifact; see cli_display.dart's `cliFamilyOf`), `availability` by lane
+  /// (whether a given id can be spawned). On HTTP error sets `ok: false` +
+  /// `error` so callers can degrade gracefully.
   Future<Map<String, dynamic>> fetchCliInstallSpecs() async {
     final res = await http
         .get(Uri.parse(_url('/api/cli/install-specs')), headers: _headers)
@@ -191,11 +210,29 @@ class SessionService {
     return map;
   }
 
-  Future<void> deleteSession(String id) async {
+  /// 删除会话（`DELETE /api/sessions/:id`）。
+  ///
+  /// [force] 只用于「工作区里有未提交改动 / 未合入的提交」这种被安全规则挡下的
+  /// 情况：服务端默认拒绝（409 + reasons），界面先问一次再带 force 重来。挡住时抛
+  /// [SessionDeleteBlockedException]，调用方据此决定要不要二次确认；其余失败照旧
+  /// 抛普通异常。
+  Future<void> deleteSession(String id, {bool force = false}) async {
     final res = await http
-        .delete(Uri.parse(_url('/api/sessions/$id')), headers: _headers)
+        .delete(
+          Uri.parse(_url('/api/sessions/$id${force ? '?force=1' : ''}')),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 10));
-    if (res.statusCode >= 400) throw Exception('${res.statusCode}');
+    if (res.statusCode < 400) return;
+    final body = _tryParseJson(res.body);
+    final reasons = ((body?['reasons'] as List?) ?? const [])
+        .map((e) => '$e')
+        .toList();
+    final message = body?['error']?.toString() ?? '${res.statusCode}';
+    if (reasons.any((reason) => reason == 'dirty' || reason == 'unmerged')) {
+      throw SessionDeleteBlockedException(message, reasons);
+    }
+    throw Exception(message);
   }
 
   /// Terminal-only: kills the tmux session and respawns the CLI with a fresh
@@ -1211,10 +1248,13 @@ class SessionService {
     return Session.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
-  String? _tryParseError(String body) {
+  String? _tryParseError(String body) =>
+      _tryParseJson(body)?['error']?.toString();
+
+  Map<String, dynamic>? _tryParseJson(String body) {
     try {
       final j = jsonDecode(body);
-      if (j is Map && j['error'] != null) return j['error'].toString();
+      if (j is Map) return j.cast<String, dynamic>();
     } catch (_) {}
     return null;
   }
@@ -1252,6 +1292,28 @@ class SessionService {
         .toList();
   }
 
+  Future<List<GitCommitFile>> fetchGitCommitFiles({
+    String? dirId,
+    String? sessionId,
+    required String hash,
+  }) async {
+    final q = StringBuffer('hash=${Uri.encodeQueryComponent(hash)}');
+    if (dirId != null) q.write('&dirId=${Uri.encodeQueryComponent(dirId)}');
+    if (sessionId != null) {
+      q.write('&sessionId=${Uri.encodeQueryComponent(sessionId)}');
+    }
+    final res = await http
+        .get(Uri.parse(_url('/api/git/commit-files?$q')), headers: _headers)
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode >= 400) {
+      throw Exception(_tryParseError(res.body) ?? '${res.statusCode}');
+    }
+    final files = (jsonDecode(res.body) as Map)['files'] as List? ?? [];
+    return files
+        .map((e) => GitCommitFile.fromJson(Map<String, dynamic>.from(e as Map)))
+        .toList();
+  }
+
   /// Diff + stat of one commit, resolved against the same repo as
   /// [fetchGitLog]. `diff` is raw patch text (server caps it at 1MB and sets
   /// `truncated` when it had to cut).
@@ -1259,8 +1321,10 @@ class SessionService {
     String? dirId,
     String? sessionId,
     required String hash,
+    String? file,
   }) async {
     final q = StringBuffer('hash=${Uri.encodeQueryComponent(hash)}');
+    if (file != null) q.write('&file=${Uri.encodeQueryComponent(file)}');
     if (dirId != null) {
       q.write('&dirId=${Uri.encodeQueryComponent(dirId)}');
     }

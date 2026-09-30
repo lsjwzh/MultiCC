@@ -144,7 +144,7 @@ test('manual fork is durable, idempotent, independent and preserves the original
   assert.notEqual(a.taskId, task.id); assert.notEqual(a.shellId, f.a.id);
   assert.equal(f.runtime.taskAccess(task.id).readOnly, true); assert.equal(f.runtime.taskAccess(a.taskId).readOnly, false);
   assert.equal(f.runtime.view(f.a.id).currentTaskId, task.id);
-  assert.throws(() => f.runtime.resolveTask(a.shellId, { taskId: 'tsk_wrong' }), { code: 'standalone_task_identity_locked' });
+  await assert.rejects(f.runtime.resolveTask(a.shellId, { taskId: 'tsk_wrong' }), { code: 'standalone_task_identity_locked' });
   const forked = f.store.get('task', a.taskId), snapshot = f.store.get('snapshot', forked.snapshotIds[0]);
   assert.equal(forked.forkedFromTaskId, task.id); assert.equal(verifySnapshot(snapshot, snapshot.hash), true);
   assert.equal(snapshot.messages.at(-1).partial, true);

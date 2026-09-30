@@ -13,7 +13,8 @@ const adapters = [
   require('../src/cli-adapters/claude-exp').createClaudeExpAdapter({}),
   require('../src/cli-adapters/codex').createCodexAdapter({}),
   require('../src/cli-adapters/codex-exp').createCodexExpAdapter({}),
-  require('../src/cli-adapters/opencode').createOpencodeAdapter({}),
+  // Legacy JSON lane; the default ACP lane's completion is covered by test-acp-adapter.js.
+  require('../src/cli-adapters/opencode').createOpencodeAdapter({ env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } }),
   require('../src/cli-adapters/zcode').createZcodeAdapter({}),
   require('../src/cli-adapters/qoder').createQoderAdapter({}),
   require('../src/cli-adapters/kimi').createKimiAdapter({}),

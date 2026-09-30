@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:xterm/xterm.dart';
@@ -7,7 +9,9 @@ import '../providers/session_manager.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../services/terminal_service.dart';
+import '../utils/cli_display.dart';
 import '../widgets/conflict_diff_dialog.dart';
+import '../widgets/terminal_copy_button.dart';
 import 'memo_screen.dart';
 
 class TerminalScreen extends StatefulWidget {
@@ -28,12 +32,21 @@ class _TerminalScreenState extends State<TerminalScreen> {
   late TerminalService _svc;
   TerminalConnectionState _connState = TerminalConnectionState.disconnected;
 
+  /// 用粘滞 Ctrl 版的 Terminal：键盘条的 Ctrl 键和软键盘的字母输入共享
+  /// 同一个 armed 状态（见 StickyCtrlTerminal 的注释）。
+  final StickyCtrlTerminal _terminal = StickyCtrlTerminal(maxLines: 5000);
+
+  /// 长按选中的那一段文字归它管（xterm 的 TerminalView 自己建的那份拿不到），
+  /// 「复制」按钮要读的就是它的 selection。
+  final TerminalController _controller = TerminalController();
+
   @override
   void initState() {
     super.initState();
     _svc = TerminalService(
       settings: widget.settings,
       sessionId: widget.session.id,
+      terminalOverride: _terminal,
     );
     _svc.onStateChange.listen((s) {
       if (mounted) setState(() => _connState = s);
@@ -43,7 +56,9 @@ class _TerminalScreenState extends State<TerminalScreen> {
 
   @override
   void dispose() {
+    _controller.dispose();
     _svc.dispose();
+    _terminal.ctrlArmed.dispose();
     super.dispose();
   }
 
@@ -131,22 +146,40 @@ class _TerminalScreenState extends State<TerminalScreen> {
         child: Column(
           children: [
             Expanded(
-              child: TerminalView(
-                _svc.terminal,
-                theme: _kTerminalTheme,
-                textStyle: const TerminalStyle(
-                  fontSize: 13,
-                  fontFamily: 'monospace',
-                ),
-                autofocus: true,
-                backgroundOpacity: 1.0,
-                padding: const EdgeInsets.all(4),
-                onSecondaryTapDown: (details, offset) {
-                  // Context menu for copy on long press could be added here
-                },
+              // 浮层而不是插进 Column：TerminalView 是 autoResize 的，多一行就
+              // 会 resize 远端 pty，把整屏输出重排一次。
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: TerminalView(
+                      _terminal,
+                      controller: _controller,
+                      theme: _kTerminalTheme,
+                      textStyle: const TerminalStyle(
+                        fontSize: 13,
+                        fontFamily: 'monospace',
+                      ),
+                      autofocus: true,
+                      backgroundOpacity: 1.0,
+                      padding: const EdgeInsets.all(4),
+                      // 不开这个，iOS 软键盘的退格键永远敲不到 onDelete（空编辑态
+                      // 下 updateEditingValue 根本不来）——手机上就「不能回退删除」。
+                      deleteDetection: true,
+                    ),
+                  ),
+                  // 长按选中文字之后才有东西可点（见 TerminalCopyButton）。
+                  Positioned(
+                    right: 12,
+                    bottom: 12,
+                    child: TerminalCopyButton(
+                      terminal: _terminal,
+                      controller: _controller,
+                    ),
+                  ),
+                ],
               ),
             ),
-            _MobileKeyBar(terminal: _svc.terminal),
+            TerminalKeyBar(terminal: _terminal, ctrlArmed: _terminal.ctrlArmed),
           ],
         ),
       ),
@@ -347,17 +380,10 @@ void _openMemoFromTerminal(BuildContext context, String sessionId) {
 }
 
 Widget _cliBadge(SessionCli cli) {
-  final color = switch (cli) {
-    SessionCli.claude => const Color(0xFFc2622f),
-    SessionCli.claudeExp => const Color(0xFFdf7950),
-    SessionCli.codex => const Color(0xFF1e8a55),
-    SessionCli.codexExp => const Color(0xFF20a66a),
-    SessionCli.opencode => const Color(0xFF6d4fd1),
-    SessionCli.zcode => const Color(0xFF0e7fb8),
-    SessionCli.qoder => const Color(0xFFc25e1e),
-    SessionCli.codebuddy => const Color(0xFF2a5fd8),
-    SessionCli.dsh => const Color(0xFF2b44d6),
-  };
+  // 品牌色只有一份（utils/cli_display.dart 的家族表）。这里原先手抄了一张 11 个色值的
+  // 表，其中 claude-exp 是自造的 0xFFdf7950、codex-exp 用的是 Web 的十六进制值 ——
+  // 同一家族的徽标于是有两种橙、两种绿。
+  final color = cliDisplayColor(cli.name);
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
     decoration: BoxDecoration(
@@ -372,10 +398,65 @@ Widget _cliBadge(SessionCli cli) {
   );
 }
 
-/// Mobile-friendly key bar for common terminal keys
-class _MobileKeyBar extends StatelessWidget {
+/// 粘滞 Ctrl（Termux/Blink 惯例）：armed 时下一个字母输入自动变成 Ctrl+字母。
+/// 软键盘的字母在 xterm 里走 `keyInput(keyA..keyZ)`（terminal_view 的
+/// _onInsert 先按 hardware key 试），所以拦 keyInput 就同时覆盖了软键盘、
+/// 键盘条和物理键盘三条来路；textInput 兜 IME 直落文本的那条路。
+class StickyCtrlTerminal extends Terminal {
+  StickyCtrlTerminal({super.maxLines});
+
+  final ValueNotifier<bool> ctrlArmed = ValueNotifier<bool>(false);
+
+  static bool _isLetter(TerminalKey key) {
+    final name = key.name;
+    return name.length == 4 && name.startsWith('key');
+  }
+
+  @override
+  bool keyInput(
+    TerminalKey key, {
+    bool shift = false,
+    bool alt = false,
+    bool ctrl = false,
+  }) {
+    final armed = ctrlArmed.value && !ctrl && !alt && !shift;
+    if (armed) {
+      // 粘滞是一次性的：下一个键无论是什么都吃掉（Termux 行为），只有真按着
+      // Ctrl 的组合键不消耗它。
+      ctrlArmed.value = false;
+      if (_isLetter(key)) {
+        return super.keyInput(key, ctrl: true);
+      }
+      // 方向键等非字母键也带着 Ctrl 发（Ctrl+←→ 在 readline 里是按词跳），
+      // 键位表不收的组合再按原样发一次。
+      return super.keyInput(key, ctrl: true) || super.keyInput(key);
+    }
+    return super.keyInput(key, shift: shift, alt: alt, ctrl: ctrl);
+  }
+
+  @override
+  void textInput(String text) {
+    if (ctrlArmed.value && text.length == 1) {
+      final c = text.codeUnitAt(0);
+      final lower = c >= 0x41 && c <= 0x5A ? c + 0x20 : c;
+      if (lower >= 0x61 && lower <= 0x7A) {
+        ctrlArmed.value = false;
+        charInput(lower, ctrl: true);
+        return;
+      }
+    }
+    super.textInput(text);
+  }
+}
+
+/// Mobile-friendly key bar for common terminal keys. Public so the widget test
+/// can pump it alone and assert each key emits the right byte.
+class TerminalKeyBar extends StatelessWidget {
   final Terminal terminal;
-  const _MobileKeyBar({required this.terminal});
+  /// 粘滞 Ctrl 的开关状态。只在是 [StickyCtrlTerminal] 时由屏幕传入其自带的
+  /// notifier；传 null 则不显示 Ctrl 键（退化成无粘滞的旧行为）。
+  final ValueNotifier<bool>? ctrlArmed;
+  const TerminalKeyBar({super.key, required this.terminal, this.ctrlArmed});
 
   @override
   Widget build(BuildContext context) {
@@ -389,26 +470,38 @@ class _MobileKeyBar extends StatelessWidget {
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
+            // 回车和退格放在最左：软键盘的退格靠 deleteDetection 才工作、回车键
+            // 依输入法而定，这两个是手机上「终端能不能用」的底线，必须一眼可见。
+            _Key('⌫', () => terminal.keyInput(TerminalKey.backspace),
+                repeat: true),
+            _Key('Enter', () => terminal.keyInput(TerminalKey.enter)),
+            // Ctrl+C 留成一颗实体键：中断跑飞的命令是安全操作，不该要两步。
             _Key(
               'Ctrl+C',
               () => terminal.keyInput(TerminalKey.keyC, ctrl: true),
             ),
-            _Key(
-              'Ctrl+D',
-              () => terminal.keyInput(TerminalKey.keyD, ctrl: true),
-            ),
-            _Key(
-              'Ctrl+Z',
-              () => terminal.keyInput(TerminalKey.keyZ, ctrl: true),
-            ),
+            // 其余 Ctrl 组合（^A/^E/^W/^U/^D/^Z…）交给粘滞 Ctrl，不再逐颗枚举。
+            if (ctrlArmed != null)
+              _CtrlKey(ctrlArmed: ctrlArmed!),
             _Key('Tab', () => terminal.keyInput(TerminalKey.tab)),
             _Key('Esc', () => terminal.keyInput(TerminalKey.escape)),
-            _Key('↑', () => terminal.keyInput(TerminalKey.arrowUp)),
-            _Key('↓', () => terminal.keyInput(TerminalKey.arrowDown)),
-            _Key('←', () => terminal.keyInput(TerminalKey.arrowLeft)),
-            _Key('→', () => terminal.keyInput(TerminalKey.arrowRight)),
-            _Key('Home', () => terminal.keyInput(TerminalKey.home)),
-            _Key('End', () => terminal.keyInput(TerminalKey.end)),
+            _Key('↑', () => terminal.keyInput(TerminalKey.arrowUp),
+                repeat: true),
+            _Key('↓', () => terminal.keyInput(TerminalKey.arrowDown),
+                repeat: true),
+            _Key('←', () => terminal.keyInput(TerminalKey.arrowLeft),
+                repeat: true),
+            _Key('→', () => terminal.keyInput(TerminalKey.arrowRight),
+                repeat: true),
+            // claude TUI 里翻长输出全靠这两个，方向键一格一格翻不动。
+            _Key('PgUp', () => terminal.keyInput(TerminalKey.pageUp),
+                repeat: true),
+            _Key('PgDn', () => terminal.keyInput(TerminalKey.pageDown),
+                repeat: true),
+            _Key('Home', () => terminal.keyInput(TerminalKey.home),
+                repeat: true),
+            _Key('End', () => terminal.keyInput(TerminalKey.end),
+                repeat: true),
           ],
         ),
       ),
@@ -416,15 +509,88 @@ class _MobileKeyBar extends StatelessWidget {
   }
 }
 
-class _Key extends StatelessWidget {
+/// 粘滞 Ctrl 键：点亮 = armed，下一个键消耗掉它。样式和 [_Key] 同一套，
+/// 只是 armed 时换成主题蓝底白字，让「修饰键还挂着」一眼可见。
+class _CtrlKey extends StatelessWidget {
+  final ValueNotifier<bool> ctrlArmed;
+  const _CtrlKey({required this.ctrlArmed});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: ctrlArmed,
+      builder: (context, armed, _) {
+        return GestureDetector(
+          // 读当前值而不是 builder 闭包里的 armed：消耗粘滞的那次 keyInput 可能
+          // 还没来得及 rebuild，用旧值会把「取消」错算成「保持」。
+          onTap: () => ctrlArmed.value = !ctrlArmed.value,
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: armed ? const Color(0xFF1267b5) : const Color(0xFFf8fbff),
+              border: Border.all(
+                color: armed ? const Color(0xFF1267b5) : const Color(0xFFdce6f1),
+              ),
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Text(
+              'Ctrl',
+              style: TextStyle(
+                color: armed ? const Color(0xFFffffff) : const Color(0xFF233249),
+                fontSize: 12,
+                fontFamily: 'monospace',
+                fontWeight: armed ? FontWeight.w700 : FontWeight.w400,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _Key extends StatefulWidget {
   final String label;
   final VoidCallback onTap;
-  const _Key(this.label, this.onTap);
+  /// 长按连发（Termux 行为）：按住约半秒后每 80ms 重复触发——删一行字、
+  /// 连续翻页不用一下一下点。
+  final bool repeat;
+  const _Key(this.label, this.onTap, {this.repeat = false});
+
+  @override
+  State<_Key> createState() => _KeyState();
+}
+
+class _KeyState extends State<_Key> {
+  Timer? _repeatTimer;
+
+  void _startRepeat() {
+    _repeatTimer = Timer.periodic(const Duration(milliseconds: 80), (_) {
+      widget.onTap();
+    });
+  }
+
+  void _stopRepeat() {
+    _repeatTimer?.cancel();
+    _repeatTimer = null;
+  }
+
+  @override
+  void dispose() {
+    _stopRepeat();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: widget.onTap,
+      // 长按进入连发后 onTap 不再触发（同一手势二者取其一），
+      // 抬手/取消都走 _stopRepeat 收尾。
+      onLongPress: widget.repeat ? _startRepeat : null,
+      onLongPressUp: _stopRepeat,
+      onLongPressCancel: _stopRepeat,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 3),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -434,7 +600,7 @@ class _Key extends StatelessWidget {
           borderRadius: BorderRadius.circular(5),
         ),
         child: Text(
-          label,
+          widget.label,
           style: const TextStyle(
             color: Color(0xFF233249),
             fontSize: 12,

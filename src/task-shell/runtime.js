@@ -1,4 +1,5 @@
 'use strict';
+const { MAX_TASKS_PER_DIRECTORY, directoryAtCapacity } = require('./capacity');
 
 const { randomUUID } = require('node:crypto');
 const {
@@ -28,10 +29,18 @@ function createTaskShellRuntime(ports) {
     store, getRecord, getHistory, getExecution, createExecution, indexTask, send, cancel,
     getTask = () => null,
   } = ports;
+  async function ensureTaskSlot(dirId, excludedIds = []) {
+    if (!directoryAtCapacity(store, dirId)) return;
+    await ports.evictTaskForCapacity?.(dirId, () => store.list('task'), () => directoryAtCapacity(store, dirId), excludedIds);
+    if (directoryAtCapacity(store, dirId)) throw failure('task_shell_task_limit',
+      `Task limit reached (${MAX_TASKS_PER_DIRECTORY} tasks/project)`, 409);
+  }
   const flights = new Map();
   const roles = require('./role-bindings').createRoleBindings(store, { getRecord, getDirectory: ports.getDirectory, assertWritable });
-  const taskActions = require('./task-actions').createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports, shell, open, chatScope });
-  const separation = require('./separation').createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles });
+  // Keep port reads live: host/tests may replace a callback after construction.
+  const capacityPorts = Object.assign(Object.create(ports), { ensureTaskSlot });
+  const taskActions = require('./task-actions').createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports: capacityPorts, shell, open, chatScope });
+  const separation = require('./separation').createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports: capacityPorts, ownerOf: taskActions.ownerOf, roles });
   const independent = require('./independent-continue').createIndependentContinuation({ store, getRecord, getHistory,
     getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles, hasCapacity });
   const relations = require('./relations').createTaskRelations({ store, taskTitle: id => store.get('task', id)?.title || null,
@@ -334,8 +343,8 @@ function createTaskShellRuntime(ports) {
       if (indexedSession && indexedSession.dirId !== s.dirId) throw failure('project_mismatch', 'Tasks must belong to the same project', 403);
       const title = String(indexed?.title || identity.taskText || identity.title || id).trim().slice(0, 120) || id;
       if (!task) {
-        if (store.list('task').filter(value => value.dirId === s.dirId).length >= 200) {
-          throw failure('task_shell_task_limit', 'Task limit reached (200 tasks/project)', 429);
+        if (directoryAtCapacity(store, s.dirId)) {
+          throw failure('task_shell_task_limit', `Task limit reached (${MAX_TASKS_PER_DIRECTORY} tasks/project)`, 429);
         }
         const sessionId = indexedSession?.kind === 'chat' ? indexedSession.id : `task-${id.replace(/^tsk_/, '')}`;
         const owned = owns(sessionId);
@@ -351,8 +360,23 @@ function createTaskShellRuntime(ports) {
       return task;
     });
   }
-  function resolveTask(shellId, identity = {}) {
+  function validateNewLocate(shellId, identity) {
+    const s = shell(shellId), id = identifier(identity.taskId, 'taskId');
+    if (s.standalone && s.currentTaskId && id !== s.currentTaskId) throw failure('standalone_task_identity_locked');
+    if (!getRecord(s.sourceSessionId)) throw failure('source_session_missing');
+    const indexed = indexedTask(id), indexedSession = indexed?.chatSessionId && getRecord(indexed.chatSessionId);
+    if (indexedSession && indexedSession.dirId !== s.dirId) throw failure('project_mismatch', 'Tasks must belong to the same project', 403);
+    const sessionId = indexedSession?.kind === 'chat' ? indexedSession.id : `task-${id.replace(/^tsk_/, '')}`;
+    const owned = owns(sessionId);
+    if (owned && owned.id !== id) throw failure('task_identity_mismatch');
+    return s;
+  }
+  async function resolveTask(shellId, identity = {}) {
     assertWritable(identity.taskId);
+    if (!store.get('task', identity.taskId)) {
+      const owner = validateNewLocate(shellId, identity);
+      await ensureTaskSlot(owner.dirId, [owner.currentTaskId, owner.defaultTaskId]);
+    }
     const task = locateOrCreate(shellId, identity);
     const s = shell(shellId);
     if (taskActions.ownerOf(task)?.id !== shellId) throw failure('task_owner_mismatch');
@@ -413,11 +437,11 @@ function createTaskShellRuntime(ports) {
       messages: displayMessages(messages, task, { getTask: id => store.get('task', id) || getTask(id), codeFor: ports.taskShortCode }),
       snapshots: task.snapshotIds.map(id => store.get('snapshot', id)) };
   }
-  function normalize(raw = {}) {
+  function normalize(raw = {}, internalDispatch = false) {
     const clientMsgId = identifier(raw.clientMsgId, 'clientMsgId');
     const intent = raw.intent || 'work';
     if (!['work', 'steer', 'answer', 'cancel'].includes(intent)) throw failure('invalid_intent', 'invalid_intent', 400);
-    if (typeof raw.text !== 'string' || (intent !== 'cancel' && !raw.text.trim()) || raw.text.length > 32000) throw failure('invalid_text', 'invalid_text', 400);
+    if (typeof raw.text !== 'string' || (intent !== 'cancel' && !raw.text.trim()) || raw.text.length > (internalDispatch ? 270000 : 32000)) throw failure('invalid_text', 'invalid_text', 400);
     const list = field => {
       if (raw[field] == null) return [];
       if (!Array.isArray(raw[field]) || raw[field].length > 3) throw failure('invalid_input', `invalid ${field}`, 400);
@@ -440,6 +464,12 @@ function createTaskShellRuntime(ports) {
       || state.pending.taskId !== payload.taskId)) throw failure('stale_control', 'The question is no longer pending');
     if (payload.intent === 'steer' && state.pending && !state.pending.resolved) throw failure('answer_required');
   }
+  // A reservation whose receipt never landed (rejected/failed) does not hold
+  // the question; this also heals reservations leaked before release existed.
+  function answerReserved(key) {
+    const held = store.get('answer', key);
+    return !!held && !['rejected', 'failed'].includes(store.get('receipt', held.receiptId)?.status);
+  }
   async function reserve(s, payload, receiptId, fingerprint, delivery = {}) {
     if (s.standalone && payload.newTask) throw failure('standalone_task_identity_locked');
     const selectedTaskId = payload.newTask ? null : payload.taskId || s.currentTaskId || s.defaultTaskId || null;
@@ -448,7 +478,7 @@ function createTaskShellRuntime(ports) {
     const observedClaim = target ? store.get('claim', target.id)?.receiptId : null;
     const state = target ? await getExecution(target.sessionId) : null;
     if (payload.intent !== 'work') {
-      if (payload.intent === 'answer' && store.get('answer', `${target.id}:${payload.requestId}`)) throw failure('answer_already_reserved');
+      if (payload.intent === 'answer' && answerReserved(`${target.id}:${payload.requestId}`)) throw failure('answer_already_reserved');
       checkControl(payload, state);
     }
     const references = [...new Set([...payload.contextTaskIds, ...payload.dependsOn])];
@@ -458,6 +488,15 @@ function createTaskShellRuntime(ports) {
       const sourceState = await getExecution(source.sessionId);
       if (payload.dependsOn.includes(id) && (sourceState.busy !== false || !sourceState.completed)) throw failure('dependency_not_ready');
       contexts.set(id, snapshotHistory(id, getHistory(source.sessionId), { activeTurnId: sourceState.turnId && sourceState.busy ? sourceState.turnId : null }));
+    }
+    if (!target && payload.intent === 'work' && !store.get('receipt', receiptId) && directoryAtCapacity(store, s.dirId)) {
+      const currentShell = shell(s.id);
+      if (!delivery.taskIdentityLocked && payload.expectedCursorVersion != null
+          && payload.expectedCursorVersion !== (currentShell.cursorVersion || 0)) {
+        throw failure('stale_shell_cursor', 'The current task changed; refresh before sending');
+      }
+      if (!getRecord(s.sourceSessionId)) throw failure('source_session_missing');
+      await ensureTaskSlot(s.dirId, [s.currentTaskId, s.defaultTaskId]);
     }
     return store.transaction(() => {
       const existing = store.get('receipt', receiptId);
@@ -480,7 +519,7 @@ function createTaskShellRuntime(ports) {
       if (target && payload.intent === 'work' && references.length) throw failure('context_requires_new_task', 'Start a new task to import versioned context');
       let task = target;
       if (!task) {
-        if (store.list('task').filter(t => t.dirId === s.dirId).length >= 200) throw failure('task_shell_task_limit', 'Task limit reached (200 tasks/project)', 429);
+        if (directoryAtCapacity(store, s.dirId)) throw failure('task_shell_task_limit', `Task limit reached (${MAX_TASKS_PER_DIRECTORY} tasks/project)`, 429);
         const snapshotIds = [];
         for (const value of contexts.values()) { store.set('snapshot', value.hash, value); snapshotIds.push(value.hash); }
         const id = `tsk_${randomUUID().replace(/-/g, '')}`;
@@ -493,7 +532,7 @@ function createTaskShellRuntime(ports) {
       }
       if (payload.intent === 'answer') {
         const key = `${task.id}:${payload.requestId}`;
-        if (store.get('answer', key)) throw failure('answer_already_reserved');
+        if (answerReserved(key)) throw failure('answer_already_reserved');
         store.set('answer', key, { receiptId });
       }
       const originReceipt = payload.intent !== 'work' && store.get('delivery:run', payload.turnId)?.binding?.receiptId;
@@ -507,6 +546,7 @@ function createTaskShellRuntime(ports) {
         roleSnapshotId: payload.intent === 'work' ? roles.snapshot(task.id) : controlRole || queuedRole || roles.snapshot(task.id),
         taskIdentityLocked: delivery.taskIdentityLocked === true,
         taskMetadata: delivery.taskMetadata || null,
+        dispatch: delivery.dispatch || null,
         cursorVersion: payload.intent === 'work' ? (currentShell.cursorVersion || 0) + 1 : currentShell.cursorVersion || 0,
         status: 'reserved', decision: target ? payload.intent === 'work' ? (busy ? 'queued' : 'continue') : payload.intent : 'new',
         contextSavings: payload.intent === 'work' ? {
@@ -525,7 +565,12 @@ function createTaskShellRuntime(ports) {
     });
   }
   async function deliver(receipt) {
-    if (receipt.status === 'accepted') return receipt.result;
+    if (receipt.status === 'accepted') {
+      // Re-read the durable operation through its idempotent admission: cached
+      // queue/status from the original receipt may be days out of date.
+      if (receipt.dispatch) return { ...receipt.result, ...await dispatchReceipt(receipt), duplicate: true };
+      return receipt.result;
+    }
     const task = store.get('task', receipt.taskId);
     if (!task.ownerShellId) { task.ownerShellId = taskActions.ownerOf(task)?.id || receipt.shellId; store.set('task', task.id, task); }
     const needsCapacity = receipt.payload.intent === 'work';
@@ -548,8 +593,21 @@ function createTaskShellRuntime(ports) {
         const state = await getExecution(task.sessionId);
         checkControl(p, state);
         result = await cancel(task.sessionId, p.turnId);
+      } else if (receipt.dispatch) {
+        receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
+        result = await dispatchReceipt(receipt);
       } else {
         const metadata = receipt.taskMetadata || {};
+        // Task-first HTTP delivery bypasses the chat WebSocket admission path.
+        // Older chat shells already pass through that path before landing here;
+        // preparing those again would make two Jev calls for one message.
+        // Jev must finish before the synchronous turn route is selected, just
+        // as it does for a direct chat message. A failed evaluation is a
+        // fail-open optimisation, never a reason to lose the task message.
+        if (p.intent === 'work' && task.taskFirst === true && typeof ports.prepareAdmission === 'function') {
+          try { await ports.prepareAdmission(task.sessionId, p.text, receipt.id); }
+          catch (_) { /* the routing runtime falls back to onUnknown */ }
+        }
         receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
         result = await send(task.sessionId, p.text, {
           taskId: task.id, taskStart: receipt.taskIdentityLocked ? metadata.taskStart !== false : true,
@@ -568,7 +626,7 @@ function createTaskShellRuntime(ports) {
       if (!result?.ok) throw failure(result?.code || 'delivery_failed', result?.error || result?.code || 'delivery_failed');
       receipt = { ...receipt, ...store.get('receipt', receipt.id) };
       receipt.status = 'accepted'; receipt.error = null;
-      receipt.result = { ok: true, taskId: task.id, sessionId: task.sessionId, receiptId: receipt.id, decision: receipt.decision };
+      receipt.result = { ...(receipt.dispatch ? result : {}), ok: true, taskId: task.id, sessionId: task.sessionId, receiptId: receipt.id, decision: receipt.decision };
       store.set('receipt', receipt.id, receipt);
       if (receipt.payload.intent === 'work') store.transaction(() => {
         const owner = shell(receipt.shellId);
@@ -584,12 +642,18 @@ function createTaskShellRuntime(ports) {
       const notDelivered = error.code === 'stale_control';
       receipt.status = notDelivered ? 'rejected' : 'failed'; receipt.error = cleanError(error);
       store.set('receipt', receipt.id, receipt);
-      throw Object.assign(failure(receipt.error.code, receipt.error.message, error.status || 500), { receiptId: receipt.id, taskId: task.id, notDelivered });
+      // The reservation only guards against a second delivered answer. One that
+      // never landed must not lock the question against every later attempt.
+      if (receipt.payload.intent === 'answer') {
+        const key = `${task.id}:${receipt.payload.requestId}`;
+        if (store.get('answer', key)?.receiptId === receipt.id) store.remove('answer', key);
+      }
+      throw Object.assign(failure(receipt.error.code, receipt.error.message, error.status || error.statusCode || 500), { receiptId: receipt.id, taskId: task.id, notDelivered });
     } finally { if (needsCapacity) launching.delete(task.id); }
   }
   async function sendInput(shellId, raw, delivery = {}) {
-    const s = shell(shellId), payload = normalize(raw);
-    const id = `sr_${hash([s.id, payload.clientMsgId]).slice(0, 40)}`, fingerprint = hash(payload);
+    const s = shell(shellId), payload = normalize(raw, !!delivery.dispatch);
+    const id = `sr_${hash([s.id, payload.clientMsgId]).slice(0, 40)}`, fingerprint = hash(delivery.dispatch ? [payload, delivery.dispatch] : payload);
     let receipt = store.get('receipt', id);
     if (receipt && receipt.fingerprint !== fingerprint) throw failure('idempotency_conflict');
     if (flights.has(id)) return flights.get(id);
@@ -600,7 +664,39 @@ function createTaskShellRuntime(ports) {
     flights.set(id, operation);
     try { return await operation; } finally { flights.delete(id); }
   }
-  function sendExplicit(shellId, raw, identity = {}) {
+  function dispatchReceipt(receipt) {
+    const task = store.get('task', receipt.taskId);
+    assertWritable(task.id);
+    return ports.dispatch(task.sessionId, receipt.payload.text, {
+      ...receipt.dispatch, taskId: task.id, taskStart: false, taskSource: 'task-shell',
+      clientMsgId: receipt.id, idempotencyKey: receipt.dispatch.idempotencyKey || receipt.id,
+      taskShellReceiptId: receipt.id, receivedAt: receipt.createdAt,
+    });
+  }
+  function dispatchFromSession(sessionId, text, options = {}) {
+    if (typeof ports.dispatch !== 'function') throw failure('dispatch_unavailable');
+    // Address the exact execution's owner, never the shell's mutable cursor.
+    const s = open(sessionId);
+    const task = owns(sessionId) || adopt(s.id, sessionId);
+    if (!task?.id || task.unavailable) throw failure('task_shell_state_unavailable');
+    if (options.taskId && options.taskId !== task.id) throw failure('task_identity_mismatch');
+    const dispatch = Object.fromEntries(['ownerSessionId', 'replyTo', 'oneWay', 'resultMode',
+      'requireIdle', 'operationId', 'idempotencyKey', 'allowCommander', 'queueIfBusy']
+      .filter(key => options[key] !== undefined).map(key => [key, options[key]]));
+    return sendInput(taskActions.ownerOf(task).id, {
+      text, intent: 'work', taskId: task.id,
+      clientMsgId: `dispatch_${hash([options.ownerSessionId, options.idempotencyKey || options.operationId || randomUUID()]).slice(0, 40)}`,
+    }, { taskIdentityLocked: true, dispatch });
+  }
+  async function sendExplicit(shellId, raw, identity = {}) {
+    if (!store.get('task', identity.taskId)) {
+      const payload = normalize({ ...raw, taskId: identity.taskId });
+      if (payload.intent !== 'work' || payload.contextTaskIds.length || payload.dependsOn.length) {
+        throw failure('context_requires_new_task', 'Start a new task to import versioned context');
+      }
+      const owner = validateNewLocate(shellId, identity);
+      await ensureTaskSlot(owner.dirId, [owner.currentTaskId, owner.defaultTaskId]);
+    }
     const task = locateOrCreate(shellId, identity);
     return sendInput(shellId, { ...raw, taskId: task.id }, {
       taskIdentityLocked: true,
@@ -712,7 +808,8 @@ function createTaskShellRuntime(ports) {
     const s = shell(shellId);
     const receipt = store.get('receipt', identifier(receiptId, 'receiptId'));
     if (!receipt || receipt.shellId !== s.id) throw failure('receipt_not_found', 'receipt_not_found', 404);
-    return sendInput(s.id, receipt.payload);
+    return sendInput(s.id, receipt.payload, { taskIdentityLocked: receipt.taskIdentityLocked,
+      taskMetadata: receipt.taskMetadata, dispatch: receipt.dispatch });
   }
   // Undoing an accepted identity change puts the shell cursor back where it
   // was. It refuses once another turn has moved the cursor: that turn was
@@ -781,6 +878,14 @@ function createTaskShellRuntime(ports) {
       return { ok: false, code: 'task_switching',
         message: '这个任务正在切换执行环境，请等这次切换结束后再发送。' };
     }
+    // A durable scheduled message is user-authored future work delivered by the
+    // orchestration timer, not a live client send. It never travels through the
+    // shell WebSocket, so there is no receipt to match. Without an exemption it
+    // dead-lettered with task_shell_route_required — the user's message was
+    // shown as pending and then vanished without ever executing. Bind it to the
+    // owned task like a host continuation so downstream attribution stays on the
+    // task and the turn actually runs.
+    if (options.scheduledMessageId) { options.taskId = task.id; return null; }
     return { ok: false, code: 'task_shell_route_required' };
   }
   // Task-level directory move (Air 任务「移动」): the board relocates the
@@ -808,14 +913,16 @@ function createTaskShellRuntime(ports) {
     prepareContext: (id, options) => contextPlanner.prepare(owns(id), options),
     contextSent: (id, receipt, turn) => { const task = owns(id); if (task) contextPlanner.sent(task, receipt, turn); },
     contextComplete: (id, receipt, turn, success) => { const task = owns(id); if (task) contextPlanner.complete(task, receipt, turn, success); },
-    separation, roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.list('task'),
+    // listTasks 是任务板读投影的热路径：一次 /api/air 里迁移与卡片刻画各读一次
+    // 全表（线上 514 行 / 4.5MB）。走行缓存后同一份内容只解析一遍（store.js）。
+    separation, roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.cachedList('task'),
     // 任务图谱的只读快照：壳、持久任务、link 三张表一次拉全，供路由层聚合。
     taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link'),
       relations: store.list('relation') }),
     getSnapshot: id => { try { return store.get('snapshot', id); } catch (_) { return null; } },
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, restoreSettledCursor, locateOrCreate,
-    resolveTask, selectTarget, sendExplicit, relocateTask, independent, relations,
+    resolveTask, selectTarget, sendExplicit, dispatchFromSession, relocateTask, independent, relations,
   };
 }
 

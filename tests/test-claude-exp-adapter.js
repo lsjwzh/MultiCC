@@ -10,6 +10,7 @@ const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { createClaudeExpAdapter } = require('../src/cli-adapters/claude-exp');
 const { processSpawnArgs } = require('../src/chat/process-spawn-args');
 const { createSessionRecordFactory } = require('../src/session/create-record');
+const { isResidentSession } = require('../src/cli/cli-capability');
 const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
 const { hasNativeHistory } = require('../src/cli-adapters/claude-exp-history');
@@ -127,7 +128,8 @@ test('Agent SDK bridge maps MultiCC options without making a live request', asyn
 
 test('claude-exp is chat-only at the canonical session boundary', async () => {
   const create = createSessionRecordFactory({
-    SUPPORTED_CHAT_CLIS, validateExperimentalSession: () => ({ ok: true }), tuiChatMirrorEnabled: () => false,
+    isResidentSession, SUPPORTED_CHAT_CLIS,
+    validateExperimentalSession: () => ({ ok: true }), tuiChatMirrorEnabled: () => false,
   });
   assert.deepEqual(await create({ dir: { id: 'd' }, cli: 'claude-exp', kind: 'terminal' }), {
     ok: false, error: 'claude-exp only supports chat sessions',

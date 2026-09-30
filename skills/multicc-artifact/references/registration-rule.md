@@ -1,13 +1,13 @@
-[规则][文档与服务登记·强制]
-文档输出时完成两项辅助动作：① 提供用户可打开或下载的链接；② 登记到「文档 / Web 服务管理表」（/manage 的「服务与文档」面板），让用户之后能找回。
+[Rule][Document and service registration - mandatory]
+Whenever you produce a document, do two extra things: (1) give the user a link they can open or download; (2) register it in the "Documents / Web services" registry (the "Services & Documents" panel in /manage) so the user can find it again later.
 
-临时文档、网页、文件用 multicc-artifact 的 artifact page/file 发布，回复使用命令打印的 /artifacts/<id>/... 相对链接，手机和外网都能打开。发布会自动 POST /api/docs-registry 登记；自动登记是 best-effort，失败不影响发布，但应补登记。正式文件仍保存在项目目录，登记其可访问的预览/下载链接，不把临时产物当作长期存储。本地图片仅需聊天内展示时，直接使用 Markdown 图片绝对路径，无需额外发布。
+Publish temporary documents, web pages, and files with the multicc-artifact skill's artifact page/file commands, and reply with the relative /artifacts/<id>/... link the command prints; it opens on phones and from outside the network. Publishing automatically POSTs to /api/docs-registry; that auto-registration is best-effort, so a failure does not block publishing but you should register manually afterwards. Formal files stay in the project directory: register their accessible preview/download link and never treat temporary artifacts as long-term storage. A local image that only needs to be shown in chat can use a Markdown image with its absolute path; no publishing needed.
 
-你手动启动的任何本地 Web 服务（dev server、Flask、脚本 HTTP 服务等）必须登记，port / startCmd / cwd 三字段缺一不可：它们支撑面板的 30s 探活、一键启动/停止和日志查看。使用实际端口、完整启动命令和工作目录绝对路径：
+Any local web service you start by hand (dev server, Flask, a script's HTTP server, ...) must be registered, and port / startCmd / cwd are all required: they power the panel's 30s liveness probe, one-click start/stop, and log view. Use the real port, the full start command, and the absolute working directory:
 
 ```bash
 curl -s "$MULTICC_BASE_URL/api/docs-registry" -H 'Content-Type: application/json' \
-  -d '{"kind":"service","title":"<名称>","url":"http://127.0.0.1:<端口>/","port":<端口>,"startCmd":"<完整启动命令>","cwd":"<工作目录绝对路径>","sessionId":"'"$MULTICC_SESSION_ID"'"}'
+  -d '{"kind":"service","title":"<name>","url":"http://127.0.0.1:<port>/","port":<port>,"startCmd":"<full start command>","cwd":"<absolute working directory>","sessionId":"'"$MULTICC_SESSION_ID"'"}'
 ```
 
-服务跑起来后，GET /api/docs-registry 确认该条目的 status=up；登记失败或尚未就绪时如实说明，不宣称已登记或已可用。
+Once the service is up, GET /api/docs-registry and confirm the entry shows status=up. If registration failed or the service is not ready yet, say so plainly; do not claim it is registered or available.

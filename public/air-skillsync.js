@@ -17,6 +17,12 @@
   if (!root || !root.document) return;
   const document = root.document;
   const el = id => document.getElementById(id);
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
   const make = (tag, text, className) => {
     const value = document.createElement(tag);
     if (text != null) value.textContent = text;
@@ -66,15 +72,11 @@
     return style;
   }
 
-  // 旧页 _ssRelTime 的搬迁。相对时间是给人的，不是给机器算的：一分钟内说「刚刚」，
-  // 之后逐级退到分钟 / 小时 / 天。ts 缺失说的是「还没同步过」，不是「零秒前」。
+  // 旧页 _ssRelTime 的搬迁。相对时间走全站唯一那份（shared/format.js）：一分钟内
+  // 说「刚刚」，之后逐级退到分钟 / 小时 / 天，具体档位和措辞都在那一张表里。本页
+  // 只保留自己的取舍 —— ts 缺失说的是「还没同步过」，不是「零秒前」。
   function relTime(ts) {
-    if (!ts) return t('airSkillsyncNever');
-    const diff = Date.now() - ts;
-    if (diff < 60000) return t('airSkillsyncJustNow');
-    if (diff < 3600000) return t('airSkillsyncMinutesAgo', { n: Math.floor(diff / 60000) });
-    if (diff < 86400000) return t('airSkillsyncHoursAgo', { n: Math.floor(diff / 3600000) });
-    return t('airSkillsyncDaysAgo', { n: Math.floor(diff / 86400000) });
+    return FMT.formatRelativeTime(ts, { placeholder: t('airSkillsyncNever') });
   }
 
   // 绝对时间给「到底是哪一刻」，相对时间给「多久以前」—— 两个都留着，少一个就得自己换算。

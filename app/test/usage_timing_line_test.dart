@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/message.dart';
 import 'package:multicc_app/widgets/message_bubble.dart';
 
@@ -41,13 +42,12 @@ void main() {
 
     expect(find.textContaining('↑入'), findsOneWidget);
     expect(find.textContaining('↓出'), findsOneWidget);
-    expect(find.textContaining('⏱读'), findsOneWidget);
-    expect(find.textContaining('⏱写'), findsOneWidget);
+    expect(find.textContaining('♻读'), findsOneWidget);
+    expect(find.textContaining('♻写'), findsOneWidget);
     expect(
       find.textContaining(RegExp(r'🕐 \d{2}:\d{2}:\d{2}')),
       findsOneWidget,
     );
-    // The timing line's ⏱ duration and the cache badges' ⏱ glyph coexist.
     expect(find.textContaining(RegExp(r'⏱ \d')), findsOneWidget);
   });
 
@@ -75,6 +75,36 @@ void main() {
     );
     expect(find.textContaining('↑入'), findsNothing);
     expect(find.textContaining('⏱'), findsOneWidget);
+  });
+
+  testWidgets('主 row always; 辅 row only for a separately routed sub model', (
+    tester,
+  ) async {
+    Map<String, dynamic> history(String subProvider) => {
+      'role': 'assistant',
+      'content': 'x',
+      'usage': {'input_tokens': 56, 'output_tokens': 5156},
+      'roleUsage': {
+        'main': {'inputTokens': 56, 'outputTokens': 5156, 'cacheRead': 2698338},
+        'mainByProvider': [
+          {'providerId': 'glm', 'model': 'glm-5'},
+        ],
+        'sub': {'inputTokens': 10, 'outputTokens': 900, 'cacheRead': 40000},
+        'subByProvider': [
+          {'providerId': subProvider, 'model': 'glm-5'},
+        ],
+      },
+    };
+    await pumpBubble(tester, message: ChatMessage.fromHistory(history('ds')));
+    expect(find.text(t('usageRoleMain')), findsOneWidget);
+    expect(find.text(t('usageRoleSub')), findsOneWidget);
+    expect(find.textContaining('↑入'), findsNWidgets(2));
+    expect(find.textContaining('2.70M'), findsOneWidget);
+
+    await pumpBubble(tester, message: ChatMessage.fromHistory(history('glm')));
+    expect(find.text(t('usageRoleSub')), findsNothing);
+    expect(find.textContaining('↑入'), findsOneWidget);
+    expect(find.textContaining('2.74M'), findsOneWidget);
   });
 
   testWidgets('long token counts on a narrow lane do not overflow the bubble', (

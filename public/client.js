@@ -7,6 +7,21 @@ console.log('[multicc] client.js build', window.__multiccClientBuild);
 
 // Simple HTML escape helper — canonical copy in shared/dom-helpers.js.
 
+// 字节数/相对时间的唯一来源（shared/format.js，index.html 里先于本文件加载）。这是普通
+// 脚本，没有自己的 require，也拿不到别的模块的局部别名 —— 文件面板和上传上限这两处
+// 一直在用 FMT 却没人定义过它，一画到文件大小就是 ReferenceError。取法同 air-push.js。
+const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+  || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+  || null;
+
+// 画进 DOM 的每一句都走这里：i18n.js 的 t() 取不到词条就把 key 原样返回，那会把
+// termCwdUnknown 这种东西印到屏幕上。中文原样留在调用点当兜底，词典没加载时页面
+// 至少还是中文。（本文件是普通脚本，t 就是页面全局那个。）
+function tr(key, fallback, params) {
+  const value = typeof t === 'function' ? t(key, params) : key;
+  return value === key && fallback !== undefined ? fallback : value;
+}
+
 // Open the project memo (stored in multicc, not in the project) as a popup.
 async function openMemo() {
   const mm = document.getElementById('memo-modal');
@@ -222,12 +237,20 @@ if (_isMobile && window.visualViewport) {
   });
 }
 
+// 字号：10–24，记在 localStorage（刷新/重连后保持）。改完必须 fit + 把新的 cols/rows
+// 报给服务端，否则 tmux 那边还是旧宽度，行会折得乱七八糟。
+const FONT_MIN = 10, FONT_MAX = 24, FONT_KEY = 'multicc-terminal-font-size';
+let fontSize = (() => {
+  const saved = Number(localStorage.getItem(FONT_KEY));
+  return Number.isFinite(saved) && saved >= FONT_MIN && saved <= FONT_MAX ? saved : 14;
+})();
+
 const term = new Terminal({
   cursorBlink: true,
   allowProposedApi: true,
   scrollback: _isMobile ? 1000 : 5000,
   fontFamily: '"Cascadia Code", "Fira Code", "Jetbrains Mono", Consolas, "Courier New", monospace',
-  fontSize: 14,
+  fontSize,
   lineHeight: 1.25,
   theme: {
     background:          '#0d1117',
@@ -245,11 +268,98 @@ const term = new Terminal({
 
 const fitAddon     = new FitAddon.FitAddon();
 const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+const searchAddon  = new SearchAddon.SearchAddon();
 
 term.loadAddon(fitAddon);
 term.loadAddon(webLinksAddon);
+term.loadAddon(searchAddon);
 term.open(document.getElementById('terminal'));
 fitAddon.fit();
+
+/* ── Find in the buffer (⌘F / Ctrl+F) ──
+   终端输出动辄几千行，肉眼滚是找不动东西的。命中计数走 addon 自己的结果回调，
+   所以「3/17」这种数字是搜索项的真实命中数，不是我们另算的一份。 */
+const FIND_DECORATIONS = {
+  matchOverviewRuler: '#58a6ff', activeMatchColorOverviewRuler: '#f78166',
+  matchBackground: '#1f6feb55', activeMatchBackground: '#f7816655',
+};
+const findBar   = document.getElementById('find-bar');
+const findInput = document.getElementById('find-input');
+const findCount = document.getElementById('find-count');
+const findCase  = document.getElementById('find-case');
+let findCaseSensitive = false;
+
+function runFind(incremental, backwards) {
+  const query = findInput.value;
+  if (!query) { findCount.textContent = ''; searchAddon.clearDecorations?.(); return; }
+  const options = { incremental, caseSensitive: findCaseSensitive, decorations: FIND_DECORATIONS };
+  if (backwards) searchAddon.findPrevious(query, options);
+  else searchAddon.findNext(query, options);
+}
+
+function openFind() {
+  findBar.hidden = false;
+  findInput.focus();
+  findInput.select();
+  runFind(true, false);
+}
+
+function closeFind() {
+  findBar.hidden = true;
+  findCount.textContent = '';
+  if (document.activeElement === findInput) term.focus();
+}
+
+searchAddon.onDidChangeResults?.(({ resultIndex, resultCount }) => {
+  findCount.textContent = resultCount ? `${resultIndex + 1}/${resultCount}` : tr('termFindNoMatch', '无匹配');
+});
+document.getElementById('find-btn').onclick = () => (findBar.hidden ? openFind() : closeFind());
+document.getElementById('find-prev').onclick = () => runFind(false, true);
+document.getElementById('find-next').onclick = () => runFind(false, false);
+document.getElementById('find-close').onclick = closeFind;
+findCase.onclick = () => {
+  findCaseSensitive = !findCaseSensitive;
+  findCase.setAttribute('aria-pressed', String(findCaseSensitive));
+  findCase.style.color = findCaseSensitive ? '#f78166' : '';
+  runFind(false, false);
+};
+findInput.addEventListener('input', () => runFind(true, false));
+findInput.addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); runFind(false, event.shiftKey); }
+  else if (event.key === 'Escape') { event.preventDefault(); closeFind(); }
+});
+
+/* ── Font size (A-/A+ 与 ⌘± / Ctrl±) ── */
+function applyFontSize(next) {
+  const size = Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round(next)));
+  if (size === fontSize) return size;
+  fontSize = size;
+  term.options.fontSize = size;
+  try { localStorage.setItem(FONT_KEY, String(size)); } catch (_) {}
+  fitAddon.fit();   // cols/rows 变了 → term.onResize → 自动发一次 {type:'resize'}
+  return size;
+}
+document.getElementById('font-up-btn').onclick = () => applyFontSize(fontSize + 1);
+document.getElementById('font-down-btn').onclick = () => applyFontSize(fontSize - 1);
+
+/* ── 快捷键：在 xterm 之前拦一道（返回 false = xterm 不处理，也不发给 PTY） ──
+   只用**平台的主修饰键**：macOS 认 ⌘、其它认 Ctrl。这样 mac 上 Ctrl+K（shell 的
+   kill-line）照旧发给 CLI，只有 ⌘K 才是清屏。 */
+const IS_MAC = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
+term.attachCustomKeyEventHandler(event => {
+  if (event.type !== 'keydown') return true;
+  const mod = IS_MAC ? event.metaKey : event.ctrlKey;
+  const key = (event.key || '').toLowerCase();
+  if (key === 'escape' && !findBar.hidden) { closeFind(); return false; }
+  if (!mod || event.altKey) return true;
+  if (key === 'f') { event.preventDefault(); openFind(); return false; }
+  if (key === 'g') { event.preventDefault(); runFind(false, event.shiftKey); return false; }
+  if (key === '=' || key === '+') { event.preventDefault(); applyFontSize(fontSize + 1); return false; }
+  if (key === '-') { event.preventDefault(); applyFontSize(fontSize - 1); return false; }
+  if (key === '0') { event.preventDefault(); applyFontSize(14); return false; }
+  if (key === 'k') { event.preventDefault(); term.clear(); return false; }
+  return true;
+});
 
 /* ── Status helpers ── */
 const dot          = document.getElementById('status-dot');
@@ -308,6 +418,218 @@ if (sessionLabel) {
       setTimeout(() => { sessionLabel.textContent = prev; }, 1500);
     });
   });
+}
+
+/* ── 信息条 + 同目录终端切换 ──
+   这一页认识自己的唯一途径是一条 WS 帧（session_id: {id, cli}）：cwd、分支、
+   provider·model 一概不知道，而在同目录几个终端之间跳来跳去时，「现在这条开在哪个
+   worktree、哪个模型上、落后基分支几个提交」正是要看的东西。
+   数据一次 `GET /api/sessions` 就够（列表里每条都带 cwd / mergeState / provider /
+   model / dirId），顺带把同目录的终端算出来 —— 不再逐条问详情。
+   也不轮询：终端页是长期挂着的，分支不会自己动；真要动，relocate 帧和切回前台各刷一次。 */
+const infoBar      = document.getElementById('term-info');
+const infoCwd      = document.getElementById('term-info-cwd');
+const infoWorktree = document.getElementById('term-info-worktree');
+const infoBranch   = document.getElementById('term-info-branch');
+const infoModel    = document.getElementById('term-info-model');
+const switchBox    = document.getElementById('term-switch');
+const switchPos    = document.getElementById('term-switch-pos');
+const termPrevBtn  = document.getElementById('term-prev');
+const termNextBtn  = document.getElementById('term-next');
+
+let _termCtx = null;    // 上屏的那份事实（也是测试读的口子）
+let _termCtxGen = 0;    // 只让最后一次刷新的结果上屏：慢的旧请求不该盖掉新的
+
+/** 托管 worktree 一律住在 `<repo>/.multicc-worktrees/<name>`（agent 的是
+ *  `.claude/worktrees/<name>`）。读不出来就是主检出 —— 不硬编一个名字。 */
+function worktreeNameOf(cwd) {
+  const match = /\/\.(?:multicc-worktrees|claude\/worktrees)\/([^/]+)/.exec(String(cwd || ''));
+  return match ? match[1] : null;
+}
+
+function _stamp(value) {
+  const n = typeof value === 'number' ? value : Date.parse(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** mergeState 有好几种「没有分支可说」的形状，各有各的实话：`{reason:'loading'}` 是
+ *  还没算出来（不等于没有分支）、`no-worktree` 是这条会话就没有 worktree、
+ *  `worktreeMissing` 是有记录但目录已被回收、`conflict` 是合不进去。一律不猜分支名。 */
+function describeMerge(state) {
+  const ms = (state && typeof state === 'object') ? state : {};
+  const said = {
+    branch: typeof ms.branch === 'string' && ms.branch ? ms.branch : null,
+    baseBranch: typeof ms.baseBranch === 'string' && ms.baseBranch ? ms.baseBranch : null,
+    behind: Number.isFinite(ms.behind) ? ms.behind : 0,
+    ahead: Number.isFinite(ms.ahead) ? ms.ahead : 0,
+    note: null,
+  };
+  // hibernated 也带 worktreeMissing:true（src/git/service.js），所以它得先判：
+  // 休眠是可恢复的，别说成「已回收」。
+  if (ms.reason === 'hibernated') said.note = tr('termMergeHibernated', '工作区已休眠');
+  else if (ms.worktreeMissing) said.note = tr('termMergeReclaimed', 'worktree 已回收');
+  else if (ms.reason === 'no-worktree') said.note = tr('termMergeNoWorktree', '无 worktree');
+  else if (ms.conflict) said.note = tr('termMergeConflict', '有冲突');
+  return said;
+}
+
+function buildTermContext(self, merge, rows, id) {
+  const said = describeMerge(merge);
+  const dirId = self.dirId || null;
+  const sameDir = new Map();
+  for (const row of rows) {
+    if (!row || row.kind !== 'terminal' || ['aux', 'gateway'].includes(row.type)) continue;
+    // 自己这条连 dirId 都没有（老记录）：那就只认它自己，别把别的目录的终端塞进切换器。
+    if (dirId ? row.dirId !== dirId : row.id !== id) continue;
+    sameDir.set(row.id, { id: row.id, label: row.label || null, at: _stamp(row.createdAt) });
+  }
+  if (!sameDir.has(id)) sameDir.set(id, { id, label: self.label || null, at: _stamp(self.createdAt) });
+  const siblings = [...sameDir.values()]
+    .sort((a, b) => a.at - b.at || String(a.id).localeCompare(String(b.id)))
+    .map(entry => ({ id: entry.id, label: entry.label }));
+  return {
+    id,
+    cwd: typeof self.cwd === 'string' && self.cwd ? self.cwd : null,
+    dirId,
+    cli: self.cli || null,
+    worktree: worktreeNameOf(self.cwd),
+    worktreeNote: said.note,
+    branch: said.branch,
+    baseBranch: said.baseBranch,
+    behind: said.behind,
+    ahead: said.ahead,
+    provider: self.provider || null,
+    model: self.effectiveModel || self.model || null,
+    siblings,
+    index: siblings.findIndex(entry => entry.id === id),
+  };
+}
+
+function setChip(el, text, { warn = false, title = '' } = {}) {
+  if (!el) return;
+  if (!text) { el.hidden = true; el.textContent = ''; el.title = ''; return; }
+  el.hidden = false;
+  el.textContent = text;
+  el.classList.toggle('warn', warn);
+  el.title = title || text;
+}
+
+function paintTermSwitch(ctx) {
+  if (!switchBox) return;
+  const list = (ctx && ctx.siblings) || [];
+  // 只有一条终端时不给切换器：切不出去的两颗按钮是噪音。
+  if (list.length < 2 || !ctx || ctx.index < 0) { switchBox.hidden = true; return; }
+  switchBox.hidden = false;
+  if (switchPos) {
+    switchPos.textContent = `${ctx.index + 1}/${list.length}`;
+    const name = entry => entry.label || entry.id;
+    switchPos.title = list.map((entry, i) => `${i === ctx.index ? '›' : ' '} ${name(entry)}`).join('\n');
+  }
+  const prev = siblingEntry(-1), next = siblingEntry(1);
+  if (termPrevBtn) termPrevBtn.title = tr('termPrevTerminal', '上一个终端：{name}', { name: prev ? (prev.label || prev.id) : '' });
+  if (termNextBtn) termNextBtn.title = tr('termNextTerminal', '下一个终端：{name}', { name: next ? (next.label || next.id) : '' });
+}
+
+function paintTermInfo(ctx) {
+  _termCtx = ctx;
+  if (!infoBar) return;
+  if (!ctx) {
+    infoBar.hidden = true;
+    if (switchBox) switchBox.hidden = true;
+    return;
+  }
+  infoBar.hidden = false;
+  setChip(infoCwd, ctx.cwd || tr('termCwdUnknown', '未知目录'), {
+    warn: !ctx.cwd,
+    title: ctx.cwd
+      ? tr('termCwdTitle', '工作目录：{path}', { path: ctx.cwd })
+      : tr('termCwdMissing', '服务端没报上来这条会话的工作目录'),
+  });
+  setChip(infoWorktree, ctx.worktree ? `worktree ${ctx.worktree}` : ctx.worktreeNote, {
+    warn: !ctx.worktree && !!ctx.worktreeNote,
+    title: ctx.worktree
+      ? tr('termWorktreeTitle', '托管 worktree：{path}', { path: ctx.cwd })
+      : (ctx.worktreeNote || ''),
+  });
+  const branch = ctx.branch
+    ? `⎇ ${ctx.branch}${ctx.behind ? ` ↓${ctx.behind}` : ''}${ctx.ahead ? ` ↑${ctx.ahead}` : ''}`
+    : null;
+  // 基分支那句和没有基分支那句是两条词条：中英文的括号和语序没法用一次拼接糊过去。
+  const branchTitle = ctx.baseBranch
+    ? tr('termBranchTitleBase', '分支 {branch}（基分支 {base}）：落后 {behind}、领先 {ahead}',
+      { branch: ctx.branch, base: ctx.baseBranch, behind: ctx.behind, ahead: ctx.ahead })
+    : tr('termBranchTitle', '分支 {branch}：落后 {behind}、领先 {ahead}',
+      { branch: ctx.branch, behind: ctx.behind, ahead: ctx.ahead });
+  setChip(infoBranch, branch, {
+    warn: ctx.behind > 0,
+    title: branch ? branchTitle : '',
+  });
+  setChip(infoModel, [ctx.provider, ctx.model].filter(Boolean).join(' · '), {
+    title: tr('termModelTitle', 'provider：{provider} · 模型：{model}', {
+      provider: ctx.provider || tr('termNotSpecified', '未指定'),
+      model: ctx.model || tr('termNotSpecified', '未指定'),
+    }),
+  });
+  paintTermSwitch(ctx);
+}
+
+/** 环形走位：同目录终端就那几条，走到头再走一圈比按不动更符合手感。 */
+function siblingEntry(delta) {
+  const list = _termCtx ? _termCtx.siblings : [];
+  if (!_termCtx || _termCtx.index < 0 || list.length < 2) return null;
+  return list[(_termCtx.index + delta + list.length) % list.length] || null;
+}
+
+function siblingTarget(delta) {
+  const entry = siblingEntry(delta);
+  return entry ? entry.id : null;
+}
+
+function gotoSibling(delta) {
+  const id = siblingTarget(delta);
+  if (!id) return;
+  const params = new URLSearchParams(location.search);
+  params.set('id', id);
+  location.href = `${location.pathname}?${params.toString()}`;
+}
+
+if (termPrevBtn) termPrevBtn.onclick = () => gotoSibling(-1);
+if (termNextBtn) termNextBtn.onclick = () => gotoSibling(1);
+
+async function fetchJsonOrNull(url) {
+  try {
+    const response = await fetch(withToken(url));
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (_) {
+    return null;   // 信息条是附属信息：拿不到就不显示，不去打扰终端本身
+  }
+}
+
+async function loadTerminalContext() {
+  if (!currentSessionId) return null;
+  const gen = ++_termCtxGen;
+  const id = currentSessionId;
+  const listed = await fetchJsonOrNull('/api/sessions');
+  if (gen !== _termCtxGen) return null;
+  const rows = Array.isArray(listed) ? listed : [];
+  // 列表里通常就有自己；万一没有（fleet 隐藏的、刚建还没进表的），退回去单问一次详情。
+  const self = rows.find(row => row && row.id === id)
+    || await fetchJsonOrNull(`/api/sessions/${encodeURIComponent(id)}`);
+  if (gen !== _termCtxGen) return null;
+  if (!self || typeof self !== 'object') { paintTermInfo(null); return null; }
+  let merge = self.mergeState || null;
+  const cached = describeMerge(merge);
+  if (!cached.branch && !cached.note) {
+    // 列表带的是缓存的那份 mergeState，第一次读常常还是 {reason:'loading'}。补一次现算的
+    // —— 只补这一次，不轮询。
+    const fresh = await fetchJsonOrNull(`/api/sessions/${encodeURIComponent(id)}/merge-status?refresh=1`);
+    if (gen !== _termCtxGen) return null;
+    if (fresh && typeof fresh === 'object') merge = fresh;
+  }
+  const ctx = buildTermContext(self, merge, rows, id);
+  paintTermInfo(ctx);
+  return ctx;
 }
 
 /* ── Voice Notifications (task complete / waiting for action) ── */
@@ -419,7 +741,16 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-function speakNotify(text, type) {
+// 通知文案只有一份：public/shared/notification-copy.js（与服务器
+// src/push/notification-copy.js 同一张表）。本页不加载 i18n.js，模块自带的
+// 中文/英文兜底就是这里显示的词。
+function outcomeCopy() {
+  return typeof MultiCCNotificationCopy !== 'undefined' ? MultiCCNotificationCopy : null;
+}
+
+// `spec` is a classify LETTER (D/W/B/E/P/C) or the coarse push type — one table
+// decides the words, the toast class and the local-notification bucket.
+function speakNotify(text, spec) {
   if (!_notifyEnabled) return;
   const now = Date.now();
   // Skip within first 5s of connection (replay buffer)
@@ -427,8 +758,13 @@ function speakNotify(text, type) {
   // Page is in foreground — user can see the terminal, no need to notify
   if (document.visibilityState === 'visible') return;
 
-  const succeeded = type === 'succeeded' || type === 'completed';
-  if (succeeded) {
+  const copy = outcomeCopy();
+  const entry = copy ? copy.notificationCopy(spec) : null;
+  // 进行中（P）与续报（C）在表里没有推送种类：它们只是状态更新，所以走 'running'
+  // 那一档 —— 以前这种帧会被当成成功，提示条染绿还朗读一句「本轮执行成功」。
+  const kind = (entry && entry.type)
+    || (spec === 'waiting' || spec === 'error' ? spec : 'running');
+  if (kind === 'succeeded') {
     if (now - _notifyLastSucceeded < NOTIFY_COOLDOWN) return;
     _notifyLastSucceeded = now;
   } else {
@@ -437,15 +773,16 @@ function speakNotify(text, type) {
   }
 
   // Show visual toast + play voice
-  showNotifyToast(text, type);
+  showNotifyToast(text, kind);
+  // 表说这一档没什么可念的（C / P）：只更新提示条，别出声、别弹系统通知。
+  if (entry && !entry.voiceKey) return;
 
   if (typeof showLocalTaskNotification === 'function') {
     const sid = sessionId || _params.get('id') || 'terminal';
-    const isWaiting = !succeeded;
     showLocalTaskNotification({
       sessionId: sid,
-      type: isWaiting ? 'waiting' : 'succeeded',
-      title: isWaiting ? t('termNotifyWaitingTitle', { sid }) : t('termNotifySucceededTitle', { sid }),
+      type: kind,
+      title: copy ? copy.notificationTitle(spec, sid) : `MultiCC #${sid}`,
       body: text,
       url: location.pathname + location.search,
     });
@@ -578,11 +915,15 @@ async function connect() {
   ws.onmessage = ({ data }) => {
     try {
       const msg = JSON.parse(data);
+      if (!msg || typeof msg !== 'object') return;
       if (msg.type === 'session_id') {
         currentSessionId = msg.id;
         refreshNotifyPreference();
         updateSessionLabel(msg.id);
         updateTabIdentity(msg.id);
+        // 新建的终端 URL 里没有 ?id，id 是这一帧才给的 —— 信息条也是到这一刻才有
+        // 真东西可说，所以在这里刷（而不只在页面加载时刷）。
+        loadTerminalContext();
         // Badge: indicate which CLI is running (Claude orange / Codex green)
         if (msg.cli) {
           const logo = document.querySelector('#header .logo');
@@ -612,6 +953,12 @@ async function connect() {
         if (location.search !== `?${_urlParams.toString()}`) {
           history.replaceState(null, '', newUrl);
         }
+      } else if (msg.type === 'snapshot') {
+        // 服务端在 attach 时补的「现在屏幕上是这样」（含 500 行回看）。先 reset 再写，
+        // 所以重连/刷新是**替换**而不是追加 —— 否则刷新一次就多一份重复内容。
+        _writeBuf = '';
+        term.reset();
+        term.write(msg.data, () => term.scrollToBottom());
       } else if (msg.type === 'output' || msg.type === 'error') {
         if (_redrawing) resetRedrawTimer();
         // Batch writes: accumulate data and flush via rAF to avoid flooding xterm.js
@@ -627,10 +974,16 @@ async function connect() {
         }
       } else if (msg.type === 'notify') {
         // Server-side aux-AI verdict (single judge): turn succeeded / waiting.
-        const waiting = msg.state === 'waiting';
-        const completionVoice = !waiting && typeof msg.voiceMessage === 'string'
+        // The frame carries the classify LETTER when there is one (B and W both
+        // push type 'waiting'); the table owns the wording, so this page no
+        // longer says '正在等待您的操作' where the chat bar says '等待你的操作'.
+        const copy = outcomeCopy();
+        const spec = msg.classifyState || msg.state;
+        const isSucceeded = copy ? copy.notificationCopy(spec).type === 'succeeded' : msg.state !== 'waiting';
+        const completionVoice = isSucceeded && typeof msg.voiceMessage === 'string'
           ? msg.voiceMessage.trim() : '';
-        speakNotify(waiting ? t('termVoiceWaiting') : (completionVoice || t('termVoiceSucceeded')), waiting ? 'action' : 'succeeded');
+        speakNotify(completionVoice || (copy ? copy.notificationVoice(spec) : '') || msg.message,
+          spec);
       } else if (msg.type === 'exit') {
         term.write(msg.data);
         _sessionExited = true;
@@ -646,10 +999,24 @@ async function connect() {
         term.clear();
         term.write(`\x1b[33m${t('termTermRelocating', { cwd: msg.cwd })}\x1b[0m\r\n`);
         filesBrowsePath = null; // reset so panel loads new cwd on next open/refresh
+        // 换了目录，信息条上那个 cwd 立刻就是错的。先用帧里带的顶上；分支和「无
+        // worktree」那类话是旧目录的事实，一律清掉等重连后整份刷 —— 猜不得。
+        // 同目录切换器也是旧目录的事实：收成只剩自己，免得 ‹/› 跳进旧目录的终端。帧里的
+        // gen 先加一：在途的旧刷新回来时不许再把旧目录画回去。
+        _termCtxGen++;
+        if (_termCtx && msg.cwd) {
+          const self = _termCtx.siblings[_termCtx.index] || { id: currentSessionId, label: null, at: 0 };
+          paintTermInfo({ ..._termCtx, cwd: msg.cwd, worktree: worktreeNameOf(msg.cwd), dirId: null,
+            siblings: [self], index: 0,
+            worktreeNote: null, branch: null, baseBranch: null, behind: 0, ahead: 0 });
+        }
         _wsGen++;  // invalidate current onclose handler to prevent auto-reconnect
         ws.close();
         setTimeout(() => {
           connect();
+          loadTerminalContext();
+          // 服务端要等 worktree 搬完才改 dirId/分支，大仓库 800ms 常常不够：晚些再补一次。
+          setTimeout(loadTerminalContext, 4000);
           if (filesPanelOpen) setTimeout(() => loadFiles(null), 1000);
         }, 800);
       } else if (msg.type === 'file_saved') {
@@ -676,6 +1043,9 @@ async function connect() {
 // Immediately reconnect when page returns to foreground (mobile app switch)
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
+  // 挂着不动的这段时间里，目录/分支可能已经被别处动过了：信息条重读一次。放在
+  // _sessionExited 那道早退之前 —— 会话结束了也不等于那条 cwd 说的是别的目录。
+  loadTerminalContext();
   if (_sessionExited) return;
   if (ws && ws.readyState === WebSocket.OPEN) {
     // Connection is alive — force a resize to trigger tmux TUI redraw so the
@@ -1455,6 +1825,7 @@ document.getElementById('terminal-wrap').addEventListener('click', () => {
 /* ── Mobile Input Bar ── */
 const mobileInput = document.getElementById('mobile-input');
 const mobileSend  = document.getElementById('mobile-send');
+const mobileKeys  = document.getElementById('mobile-keys');
 
 function sendToTerminal(text) {
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1462,11 +1833,70 @@ function sendToTerminal(text) {
   }
 }
 
+/* 粘滞 Ctrl（Termux 惯例）：点亮后下一个键消耗它——键盘条上的方向/Home/End
+   变成 Ctrl 组合序列（Ctrl+←→ 在 readline 里按词跳），输入框里敲的单个字母
+   直接发 ^X 控制字符，不用再逐颗枚举 ^A/^E/^W… 组合键。 */
+const CTRL_SEQ = {
+  '\x1b[A': '\x1b[1;5A', '\x1b[B': '\x1b[1;5B',
+  '\x1b[C': '\x1b[1;5C', '\x1b[D': '\x1b[1;5D',
+  '\x1b[H': '\x1b[1;5H', '\x1b[F': '\x1b[1;5F',
+};
+let ctrlSticky = false;
+function setCtrlSticky(on) {
+  ctrlSticky = on;
+  const btn = mobileKeys.querySelector('.mkey[data-role="ctrl"]');
+  if (btn) btn.classList.toggle('armed', on);
+}
+
+mobileInput.addEventListener('keydown', (e) => {
+  if (!ctrlSticky) return;
+  if (e.key.length === 1 && /[a-z]/i.test(e.key)) {
+    e.preventDefault();
+    sendToTerminal(String.fromCharCode(e.key.toUpperCase().charCodeAt(0) & 0x1f));
+    setCtrlSticky(false);
+  }
+});
+// 输入框失焦就熄掉：粘滞是「下一个键」的一次性状态，不该跨焦点残留。
+mobileInput.addEventListener('blur', () => setCtrlSticky(false));
+
+/* 长按连发（Termux 行为）：按住方向/翻页/Home/End 约半秒后每 110ms 重复。
+   repeatFired 让连发结束后的那次 click 不再多发一下（click 跟在 pointerup 后面）。 */
+let repeatHold = null, repeatRun = null, repeatFired = false;
+function stopKeyRepeat() {
+  clearTimeout(repeatHold);
+  clearInterval(repeatRun);
+  repeatHold = repeatRun = null;
+}
+mobileKeys.addEventListener('pointerdown', (e) => {
+  const btn = e.target.closest('.mkey');
+  // data-repeat 是无值的标记属性，dataset 里是空字符串——判存在不能判真值。
+  if (!btn || !('repeat' in btn.dataset) || !btn.dataset.seq) return;
+  repeatFired = false;
+  stopKeyRepeat();
+  repeatHold = setTimeout(() => {
+    repeatRun = setInterval(() => {
+      repeatFired = true;
+      sendToTerminal(btn.dataset.seq);
+    }, 110);
+  }, 420);
+});
+['pointerup', 'pointercancel'].forEach(ev =>
+  mobileKeys.addEventListener(ev, stopKeyRepeat));
+window.addEventListener('blur', stopKeyRepeat);
+
 // Special key buttons
-document.getElementById('mobile-keys').addEventListener('click', (e) => {
+mobileKeys.addEventListener('click', (e) => {
   const btn = e.target.closest('.mkey');
   if (!btn) return;
-  sendToTerminal(btn.dataset.seq);
+  if (repeatFired) { repeatFired = false; return; }
+  if (btn.dataset.role === 'ctrl') { setCtrlSticky(!ctrlSticky); return; }
+  let seq = btn.dataset.seq;
+  if (!seq) return;
+  if (ctrlSticky) {
+    setCtrlSticky(false);
+    if (CTRL_SEQ[seq]) seq = CTRL_SEQ[seq];
+  }
+  sendToTerminal(seq);
   // Brief visual feedback without stealing keyboard focus from input
 });
 
@@ -1605,13 +2035,6 @@ function fileExt(name) {
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
 }
 
-function formatSize(bytes) {
-  if (bytes === null) return '';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
 async function loadFiles(dirPath) {
   filesError.style.display = 'none';
   filesList.innerHTML = `<div style="padding:16px 12px; font-size:12px; color:#6e7681;">${escapeHtml(t('loading'))}</div>`;
@@ -1677,7 +2100,7 @@ function makeFileItem(name, isDir, fullPath, size, onDirClick) {
   if (!isDir && fullPath) {
     const sizeEl = document.createElement('span');
     sizeEl.className = 'fi-size';
-    sizeEl.textContent = formatSize(size);
+    sizeEl.textContent = FMT.formatBytes(size, { placeholder: '' });
 
     const actions = document.createElement('div');
     actions.className = 'fi-actions';
@@ -1781,7 +2204,12 @@ const MAX_UPLOAD_SIZE = 25 * 1024 * 1024; // 25 MB
 
 function uploadFile(file) {
   if (file.size > MAX_UPLOAD_SIZE) {
-    alert(t('termFileTooLarge', { size: (file.size / 1024 / 1024).toFixed(1) }));
+    // 这句以前是中文字面量（英文页面上弹中文）。数字和单位都由词条排：FMT 递进去的
+    // 已经是「26.3 MB」这种带单位的串，上限也从 MAX_UPLOAD_SIZE 现算，别再写死 25 MB。
+    alert(t('termFileTooLarge', {
+      size: FMT.formatBytes(file.size, { maxUnit: 'MB' }),
+      limit: FMT.formatBytes(MAX_UPLOAD_SIZE, { maxUnit: 'MB', unitDecimals: { MB: 0 } }),
+    }));
     return;
   }
   const reader = new FileReader();
@@ -1911,10 +2339,42 @@ initCwdSkip.addEventListener('click', () => {
   connect();
 });
 
+/* ── 对外契约 ──
+   终端页没有模块系统，CDP 测试要能驱动它（喂一条服务端消息、量字号、开查找），
+   所以这里显式暴露一层最小 API —— 与 Air 侧的 window.MultiCCAirXxx 同一个办法，
+   不是给生产代码用的后门。 */
+window.MultiCCTerminal = Object.freeze({
+  terminal: term,
+  search: searchAddon,
+  // 测试用：喂一条服务端消息 = 走真正的 ws.onmessage（不复制一份解析/渲染逻辑）。
+  applyServerMessage: msg => { if (typeof ws?.onmessage === 'function') ws.onmessage({ data: JSON.stringify(msg) }); },
+  // 测试用：替身 socket —— 抓键盘条/输入框发出的 input 帧（夹具里 WS 升不了级）。
+  attachTestSocket: fake => { ws = fake; },
+  openFind,
+  closeFind,
+  findVisible: () => !findBar.hidden,
+  findQuery: () => findInput.value,
+  findCount: () => findCount.textContent,
+  fontPx: () => fontSize,
+  setFontPx: applyFontSize,
+  isMac: IS_MAC,
+  // 信息条 / 同目录切换：读的是上屏那一份事实；切换只暴露「会去哪一条」这个纯函数
+  // —— 真的跳页会把测试自己这一页换掉，所以跳转留在 onclick 上。
+  termContext: () => _termCtx,
+  infoBarVisible: () => !!infoBar && !infoBar.hidden,
+  switcherVisible: () => !!switchBox && !switchBox.hidden,
+  siblingIds: () => (_termCtx ? _termCtx.siblings.map(entry => entry.id) : []),
+  siblingIndex: () => (_termCtx ? _termCtx.index : -1),
+  siblingTarget,
+  loadTerminalContext,
+  constants: Object.freeze({ FONT_MIN, FONT_MAX, FONT_KEY }),
+});
+
 /* ── Start ── */
 // If this is a new session (no id in URL), show directory picker first
 if (currentSessionId) {
   connect();
+  loadTerminalContext();   // 信息条：与 socket 无关，各自去拿各自的事实
 } else {
   showInitCwdPicker();
 }

@@ -1,6 +1,10 @@
 'use strict';
 
-// ── Run `./multicc update` from the web UI ──
+// ── Run the updater from the web UI ──
+// A git checkout runs `./multicc update`; a standalone package runs install.sh
+// against its own install directory (see the "Standalone package" section
+// below) — either way the process this module starts is a detached shell that
+// stops the running server, replaces it, and starts the new one.
 //
 // The hard constraint here is that the update restarts the server: the process
 // that starts the run is not the process that can report how it ended. So the
@@ -18,10 +22,20 @@ const path = require('node:path');
 
 const BASH_PATH = '/bin/bash';
 const MANAGER_NAME = 'multicc';
+const INSTALL_REPO = 'lsjwzh/MultiCC';
 const UPDATE_LOG_RELATIVE = path.join('logs', 'update.log');
 // Distinctive enough that update output can never counterfeit it by accident.
 const EXIT_MARKER = '__MULTICC_UPDATE_EXIT__';
 const START_MARKER = '__MULTICC_UPDATE_START__';
+// Step boundaries printed by `./multicc update` (see update_step there):
+// `__MULTICC_UPDATE_STEP__ <id> <start|done|skip> <epochSeconds> [note]`.
+const STEP_MARKER = '__MULTICC_UPDATE_STEP__';
+// The order the manager runs them in. A run that exits early (already up to
+// date) simply never reaches the later ones; the client shows them as skipped.
+const UPDATE_STEPS = Object.freeze(['deps', 'check', 'fetch', 'install', 'verify', 'restart', 'ready']);
+// A run may declare its own step list first (the standalone package has no
+// git/npm steps): `__MULTICC_UPDATE_PLAN__ <id> <id> ...`.
+const PLAN_MARKER = '__MULTICC_UPDATE_PLAN__';
 // npm install on a cold cache is the slow case; anything past this is a run
 // that died without writing its marker (host reboot, SIGKILL, disk full).
 const STALE_AFTER_MS = 15 * 60 * 1000;
@@ -60,6 +74,130 @@ function buildUpdateShellCommand(options = {}) {
     `  ${bashPath} ./${managerName} ${args};`,
     `  echo "${EXIT_MARKER} $?"; } > ${quotedLog} 2>&1`,
   ].join('\n');
+}
+
+// ── Standalone package ──
+// The standalone launcher runs the server from <resources>/app-server with the
+// desktop environment (MULTICC_DESKTOP=1) but no Electron. It has no git
+// checkout and no bash manager; the web UI updates it by running install.sh
+// against the existing install directory (see buildInstallScriptShellCommand),
+// the same script a first install would have piped into bash. The bundled
+// CLI's own `multicc update` (scripts/standalone-cli.js) still exists as a
+// terminal-only fallback for platforms install.sh does not cover (Windows).
+// The log lives in the data directory either way: the bundle it would
+// otherwise sit in is the thing being replaced.
+function detectStandaloneUpdate(options = {}) {
+  const { rootDir, env = process.env, fsImpl = fs, pathImpl = path, platform = process.platform } = options;
+  if (!rootDir || !/^(1|true|yes|on)$/i.test(String(env.MULTICC_DESKTOP || '').trim())) return null;
+  if (env.ELECTRON_RUN_AS_NODE) return null;
+  const resources = pathImpl.dirname(rootDir);
+  const cliPath = pathImpl.join(resources, 'launcher', 'standalone-cli.js');
+  const runtimeNode = platform === 'win32'
+    ? pathImpl.join(resources, 'runtime', 'node.exe')
+    : pathImpl.join(resources, 'runtime', 'bin', 'node');
+  try {
+    if (!fsImpl.statSync(cliPath).isFile() || !fsImpl.statSync(runtimeNode).isFile()) return null;
+  } catch (_) {
+    return null;
+  }
+  const dataDir = env.MULTICC_DATA_DIR ? pathImpl.resolve(env.MULTICC_DATA_DIR) : pathImpl.join(resources, '..');
+  // install.sh's `--dir` needs the true package root, not just "one level up
+  // from Resources": on macOS that layout is
+  // <root>/MultiCC.app/Contents/Resources, three levels down from <root>, not
+  // one. Mirrors scripts/standalone-cli.js's resolveLayout() bundleRoot.
+  const bundleRoot = env.MULTICC_STANDALONE_ROOT
+    ? pathImpl.resolve(env.MULTICC_STANDALONE_ROOT)
+    : resources.endsWith(pathImpl.join('MultiCC.app', 'Contents', 'Resources'))
+      ? pathImpl.resolve(resources, '..', '..', '..')
+      : pathImpl.resolve(resources, '..');
+  return Object.freeze({
+    resources,
+    cliPath,
+    runtimeNode,
+    bundleRoot,
+    logPath: pathImpl.join(dataDir, UPDATE_LOG_RELATIVE),
+    platform,
+  });
+}
+
+function updateLogPath({ rootDir, env = process.env, fsImpl = fs, pathImpl = path } = {}) {
+  const standalone = detectStandaloneUpdate({ rootDir, env, fsImpl, pathImpl });
+  return standalone ? standalone.logPath : pathImpl.join(rootDir, UPDATE_LOG_RELATIVE);
+}
+
+// The web UI's "upgrade" button now runs the same install.sh a first-time user
+// would pipe into bash, pointed back at the existing install directory. That
+// script already knows how to stop the running instance, back up the old
+// bundle, unpack the target release, carry the port/token config across, and
+// start the result — so this file no longer needs its own swap/restart logic
+// for the standalone package, only the plumbing to fetch and invoke it.
+// install.sh itself is not shipped inside the package (see
+// scripts/standalone-bundle.js), so it is fetched from the tag being installed
+// — pinning the installer to the same release it is installing, exactly as
+// the pinned-tag one-liner in install.sh's own usage text does.
+function buildInstallScriptShellCommand({ standalone, targetVersion, port }) {
+  const versionNumber = targetVersion ? String(targetVersion).replace(/^v/, '').trim() : '';
+  const versionTag = versionNumber ? `v${versionNumber}` : '';
+  // Unknown target: fetch the installer off main (its own `--version latest`
+  // one-liner does the same) and let it resolve "latest" itself.
+  const scriptRef = versionTag || 'main';
+  const versionArg = versionTag || 'latest';
+  const scriptUrl = `https://raw.githubusercontent.com/${INSTALL_REPO}/${scriptRef}/install.sh`;
+  const quotedLog = shellQuote(standalone.logPath);
+  const quotedDir = shellQuote(standalone.bundleRoot);
+  const quotedPort = shellQuote(String(port || 3000));
+  const quotedUrl = shellQuote(scriptUrl);
+  const quotedVersionArg = shellQuote(versionArg);
+  return [
+    `mkdir -p ${shellQuote(path.dirname(standalone.logPath))}`,
+    '{',
+    // `target=` records the version this run is installing, so a client that
+    // reattaches after a page reload (or a second tab) can resume the same
+    // "wait for /api/version-check to report this exact version" check the
+    // client that started the run is doing — see parseUpdateLog's target group.
+    `  echo "${START_MARKER} $(date -u +%Y-%m-%dT%H:%M:%SZ) force=0 target=${versionNumber}";`,
+    '  TMP="$(mktemp 2>/dev/null || echo /tmp/multicc-install-$$.sh)";',
+    '  DL_RC=1;',
+    '  if command -v curl >/dev/null 2>&1; then',
+    `    curl -fsSL ${quotedUrl} -o "$TMP"; DL_RC=$?;`,
+    '  elif command -v wget >/dev/null 2>&1; then',
+    `    wget -q -O "$TMP" ${quotedUrl}; DL_RC=$?;`,
+    '  else',
+    '    echo "install.sh fetch failed: neither curl nor wget is available" >&2;',
+    '  fi;',
+    '  if [ "$DL_RC" -eq 0 ] && [ -s "$TMP" ]; then',
+    // Run the downloaded script through bash explicitly rather than exec it:
+    // a pipe/redirect download does not reliably preserve the executable bit,
+    // and install.sh is a bash script (arrays, process substitution) that dies
+    // with a bare "syntax error near unexpected token" the moment POSIX sh —
+    // or /bin/sh, which on macOS is bash in POSIX mode — reaches line 467.
+    '    BASH_BIN="$(command -v bash 2>/dev/null || echo /bin/bash)";',
+    `    "$BASH_BIN" "$TMP" --dir ${quotedDir} --version ${quotedVersionArg} --port ${quotedPort} --no-open;`,
+    '    RC=$?;',
+    '  else',
+    '    echo "install.sh fetch failed (exit $DL_RC)" >&2;',
+    '    RC=1;',
+    '  fi;',
+    '  rm -f "$TMP";',
+    `  echo "${EXIT_MARKER} $RC";`,
+    `} > ${quotedLog} 2>&1`,
+  ].join('\n');
+}
+
+function preflightStandaloneUpdate({ standalone, fsImpl = fs, pathImpl = path }) {
+  // The detached child is a /bin/sh one-liner; Windows standalone installs
+  // update from their own terminal (`multicc update`) instead.
+  if (standalone.platform === 'win32') {
+    throw new UpdatePreflightError('UPDATE_STANDALONE_WINDOWS', 'run `multicc update` in a terminal to update this install');
+  }
+  const logDir = pathImpl.dirname(standalone.logPath);
+  try {
+    fsImpl.mkdirSync(logDir, { recursive: true });
+    fsImpl.accessSync(logDir, fsImpl.constants.W_OK);
+  } catch (error) {
+    throw new UpdatePreflightError('UPDATE_LOG_UNWRITABLE', 'the update log directory is not writable', error);
+  }
+  return standalone;
 }
 
 function preflightUpdate(options = {}) {
@@ -132,10 +270,12 @@ function parseUpdateLog(content) {
   const text = String(content == null ? '' : content);
   let startedAt = null;
   let force = false;
-  const startMatch = text.match(new RegExp(`${START_MARKER} (\\S+) force=(\\d)`));
+  let targetVersion = null;
+  const startMatch = text.match(new RegExp(`${START_MARKER} (\\S+) force=(\\d)(?: target=(\\S*))?`));
   if (startMatch) {
     startedAt = startMatch[1];
     force = startMatch[2] === '1';
+    targetVersion = startMatch[3] || null;
   }
   // Last match wins: the manager itself can never emit this line, but a future
   // caller appending to the log would, and the newest terminator is the true one.
@@ -146,10 +286,57 @@ function parseUpdateLog(content) {
     exitCode = Number(exitMatch[1]);
     exitMatch = exitPattern.exec(text);
   }
-  const tail = text.replace(new RegExp(`^${START_MARKER}.*\\n?`, 'm'), '')
+  const steps = parseUpdateSteps(text);
+  const tail = collapseCarriageReturns(text.replace(new RegExp(`^${START_MARKER}.*\\n?`, 'm'), '')
     .replace(new RegExp(`${EXIT_MARKER} \\d+\\n?`, 'g'), '')
+    .replace(new RegExp(`^(?:${STEP_MARKER}|${PLAN_MARKER}) .*\\n?`, 'gm'), ''))
     .trim();
-  return { startedAt, force, exitCode, tail };
+  return { startedAt, force, targetVersion, exitCode, steps, tail };
+}
+
+// git/npm progress rewrites one line with \r; a log file keeps every frame.
+// Only the last frame of each line is worth showing.
+function collapseCarriageReturns(text) {
+  return String(text).split('\n').map(line => {
+    const frames = line.split('\r').filter(frame => frame.trim());
+    return frames.length ? frames[frames.length - 1] : '';
+  }).join('\n');
+}
+
+// One entry per known step, in run order: pending until its start marker,
+// running until done/skip. Timestamps are epoch seconds from the manager, so
+// durations survive the server restart in the middle of the run.
+// `progress` (standalone download) only updates the running step's detail.
+function parseUpdateSteps(text) {
+  const source = String(text == null ? '' : text);
+  const plan = new RegExp(`^${PLAN_MARKER} (.+)$`, 'm').exec(source);
+  const ids = plan ? plan[1].trim().split(/\s+/).filter(id => /^[a-z][a-z0-9-]*$/.test(id)).slice(0, 12) : UPDATE_STEPS;
+  const byId = new Map(ids.map(id => [id, { id, state: 'pending', startedAt: null, endedAt: null, note: null, progress: null }]));
+  const pattern = new RegExp(`^${STEP_MARKER} (\\S+) (start|done|skip|progress) (\\d+)(?: (.*))?$`, 'gm');
+  let match = pattern.exec(source);
+  while (match) {
+    const step = byId.get(match[1]);
+    if (step && match[2] === 'progress') {
+      if (step.state === 'running' && match[4]) {
+        const percent = /(\d{1,3})%/.exec(match[4]);
+        step.progress = { text: match[4].trim().slice(0, 80), percent: percent ? Math.min(100, Number(percent[1])) : null };
+      }
+    } else if (step) {
+      const at = new Date(Number(match[3]) * 1000).toISOString();
+      if (match[2] === 'start') {
+        step.state = 'running';
+        step.startedAt = at;
+      } else {
+        step.state = match[2] === 'done' ? 'done' : 'skipped';
+        step.endedAt = at;
+        if (!step.startedAt) step.startedAt = at;
+      }
+      if (match[2] !== 'start') step.progress = null;
+      if (match[4]) step.note = match[4].trim().slice(0, 80);
+    }
+    match = pattern.exec(source);
+  }
+  return [...byId.values()];
 }
 
 // State is a pure function of (log file, clock). No in-memory run handle is
@@ -157,6 +344,7 @@ function parseUpdateLog(content) {
 function readUpdateStatus(options = {}) {
   const {
     rootDir,
+    env = process.env,
     fsImpl = fs,
     pathImpl = path,
     now = Date.now,
@@ -164,25 +352,29 @@ function readUpdateStatus(options = {}) {
     staleAfterMs = STALE_AFTER_MS,
   } = options;
   if (!rootDir) throw new TypeError('update status requires rootDir');
-  const logPath = pathImpl.join(rootDir, UPDATE_LOG_RELATIVE);
+  const logPath = updateLogPath({ rootDir, env, fsImpl, pathImpl });
 
   let stat;
   try {
     stat = fsImpl.statSync(logPath);
   } catch (_) {
-    return { state: 'idle', running: false, exitCode: null, startedAt: null, updatedAt: null, force: false, tail: '', logPath };
+    return { state: 'idle', running: false, exitCode: null, startedAt: null, updatedAt: null, force: false, steps: [], tail: '', logPath };
   }
 
   let content = '';
+  let steps = [];
   try {
     const buffer = fsImpl.readFileSync(logPath);
     const text = buffer.toString('utf8');
     content = text.length > tailBytes * 4 ? text.slice(-tailBytes * 4) : text;
+    // Steps come from the whole file: a long npm install pushes the early
+    // markers out of the tail window, and they would read as never started.
+    steps = parseUpdateSteps(text);
   } catch (_) {
     content = '';
   }
 
-  const parsed = parseUpdateLog(content);
+  const parsed = { ...parseUpdateLog(content), steps };
   const updatedAt = new Date(stat.mtimeMs || stat.mtime || 0).toISOString();
   const tail = parsed.tail.length > tailBytes ? parsed.tail.slice(-tailBytes) : parsed.tail;
 
@@ -194,6 +386,8 @@ function readUpdateStatus(options = {}) {
       startedAt: parsed.startedAt,
       updatedAt,
       force: parsed.force,
+      targetVersion: parsed.targetVersion,
+      steps: parsed.steps,
       tail,
       logPath,
     };
@@ -211,6 +405,8 @@ function readUpdateStatus(options = {}) {
     startedAt: parsed.startedAt,
     updatedAt,
     force: parsed.force,
+    targetVersion: parsed.targetVersion,
+    steps: parsed.steps,
     silentMs,
     tail,
     logPath,
@@ -222,6 +418,9 @@ function startDetachedUpdate(options = {}) {
     spawn,
     rootDir,
     force = false,
+    // Only consulted for the standalone (install.sh) path.
+    targetVersion = null,
+    port = null,
     env = process.env,
     log = console,
     onFailure = () => {},
@@ -234,12 +433,18 @@ function startDetachedUpdate(options = {}) {
 
   // Synchronous, before the route acknowledges: a run that cannot even read the
   // manager must not be reported as started.
-  preflightUpdate({ rootDir, fsImpl, pathImpl });
-
-  const command = buildUpdateShellCommand({ rootDir, force });
+  const standalone = detectStandaloneUpdate({ rootDir, env, fsImpl, pathImpl });
+  let command;
+  if (standalone) {
+    preflightStandaloneUpdate({ standalone, fsImpl, pathImpl });
+    command = buildInstallScriptShellCommand({ standalone, targetVersion, port });
+  } else {
+    preflightUpdate({ rootDir, fsImpl, pathImpl });
+    command = buildUpdateShellCommand({ rootDir, force });
+  }
   const child = spawn('/bin/sh', ['-c', command], {
-    cwd: rootDir,
-    // Detached is load-bearing, not hygiene: `./multicc update` restarts the
+    cwd: standalone ? standalone.bundleRoot : rootDir,
+    // Detached is load-bearing, not hygiene: the update stops and restarts the
     // server, and do_stop kills the server's process group. Sharing that group
     // would have the update kill itself halfway through.
     detached: true,
@@ -264,7 +469,9 @@ function startDetachedUpdate(options = {}) {
 
   child.once('error', error => reportFailure('UPDATE_CHILD_ERROR', error));
   child.unref();
-  log.log(`[multicc] /api/update: detached update scheduled (force=${force ? 1 : 0})`);
+  log.log(standalone
+    ? `[multicc] /api/update: detached install.sh update scheduled (target=${targetVersion || 'latest'})`
+    : `[multicc] /api/update: detached update scheduled (force=${force ? 1 : 0})`);
   return child;
 }
 
@@ -274,12 +481,20 @@ module.exports = {
   UPDATE_LOG_RELATIVE,
   EXIT_MARKER,
   START_MARKER,
+  STEP_MARKER,
+  PLAN_MARKER,
+  UPDATE_STEPS,
   STALE_AFTER_MS,
+  INSTALL_REPO,
   UpdatePreflightError,
   shellQuote,
   buildUpdateShellCommand,
+  buildInstallScriptShellCommand,
+  detectStandaloneUpdate,
+  updateLogPath,
   preflightUpdate,
   parseUpdateLog,
+  parseUpdateSteps,
   readUpdateStatus,
   startDetachedUpdate,
 };

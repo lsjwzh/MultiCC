@@ -3,7 +3,11 @@
 const { hash } = require('./context');
 const { historySnapshot, shellRecords } = require('./history-context');
 const { displayMessages, displayTask } = require('../task-display-attribution');
+const { directoryAtCapacity } = require('./capacity');
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
+// Air is the only task surface left. A task link is an Air task URL, and the
+// directory rides along so the page can name the task without a second lookup.
+const airTaskUrl = (id, dirId) => `/air?task=${encodeURIComponent(id)}${dirId ? `&dir=${encodeURIComponent(dirId)}` : ''}`;
 
 // Explicit task entry preserves identity; it never follows a conversation cursor.
 function createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports, shell, open, chatScope }) {
@@ -69,7 +73,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       planningRevision: lifecycle.planningRevision ?? task.planningRevision ?? null,
       priority: lifecycle.priority || task.priority || null, dueAt: lifecycle.dueAt || task.dueAt || null,
       ...a }, ports.taskShortCode), messages, execution,
-      sessionId: sid, ...a, url: `/task-shell.html?task=${encodeURIComponent(id)}&board=1`,
+      sessionId: sid, ...a, url: airTaskUrl(id, task.dirId),
       returnUrl: a.sourceSessionId ? `/chat.html?session=${encodeURIComponent(a.sourceSessionId)}` : null };
   }
   async function bindPlannedTask(id, options = {}) {
@@ -131,11 +135,11 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       if (!owner) throw fail('source_session_missing');
       let task = receipt && store.get('task', receipt.taskId);
       if (!task) {
-        if (store.list('task').filter(t => t.dirId === owner.dirId).length >= 200) throw fail('task_shell_task_limit');
         const entry = await taskEntry(id);
         if (entry.execution.busy !== false) throw fail('fork_source_busy', 'Wait for the source task to finish before forking');
         if (!ports.captureForkBaseline) throw fail('fork_unavailable');
         const captured = await ports.captureForkBaseline(source, owner, async () => historySnapshot(id, (await taskEntry(id)).messages));
+        if (directoryAtCapacity(store, owner.dirId)) await ports.ensureTaskSlot(owner.dirId, [source.id]);
         const { history, ...baseline } = captured;
         const snapshot = history || historySnapshot(id, entry.messages);
         const taskId = `tsk_${hash(key).slice(0, 32)}`, sessionId = `task-${taskId.slice(4)}`;
@@ -146,6 +150,8 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
           ready: false, createdAt: Date.now(), snapshotIds: [snapshot.hash], forkBaseline: baseline,
           runtime: Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent'].filter(k => record?.[k] !== undefined).map(k => [k, record[k]])) };
         store.transaction(() => {
+          // A different create can fill the final slot during baseline capture.
+          if (directoryAtCapacity(store, owner.dirId)) throw fail('task_shell_task_limit');
           store.set('snapshot', snapshot.hash, snapshot);
           store.set('task', task.id, task);
           store.set('shell', shellId, { id: shellId, sourceSessionId: sessionId, dirId: owner.dirId,
@@ -165,7 +171,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
         if (!indexed?.ok) throw fail('task_index_failed');
         receipt.status = 'ready';
         receipt.result = { ok: true, taskId: task.id, sessionId: task.sessionId, shellId: task.ownerShellId,
-          url: `/task-shell.html?task=${encodeURIComponent(task.id)}&board=1` };
+          url: airTaskUrl(task.id, task.dirId) };
         store.set('fork', key, receipt);
         return receipt.result;
       } catch (error) {
@@ -193,8 +199,9 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       if (receipt && receipt.fingerprint !== fingerprint) throw fail('idempotency_conflict');
       if (receipt?.result) return receipt.result;
       let task = receipt && store.get('task', receipt.taskId);
+      if (!task && directoryAtCapacity(store, input.dirId)) await ports.ensureTaskSlot(input.dirId);
       if (!task) store.transaction(() => {
-        if (store.list('task').filter(t => t.dirId === input.dirId).length >= 200) throw fail('task_shell_task_limit');
+        if (directoryAtCapacity(store, input.dirId)) throw fail('task_shell_task_limit');
         const taskId = `tsk_${hash(key).slice(0, 32)}`, sessionId = `task-${taskId.slice(4)}`, shellId = `sh_${hash(sessionId).slice(0, 24)}`;
         task = { id: taskId, dirId: input.dirId, title: input.title.trim(), sessionId, ownerShellId: shellId, taskFirst: true,
           snapshotIds: [], ready: false, createdAt: Date.now(), runtime };
@@ -212,7 +219,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       }
       if (!(await indexTask(task))?.ok) throw fail('task_index_failed');
       receipt.result = { ok: true, taskId: task.id, sessionId: task.sessionId, shellId: task.ownerShellId,
-        url: `/air?task=${encodeURIComponent(task.id)}&dir=${encodeURIComponent(task.dirId)}` };
+        url: airTaskUrl(task.id, task.dirId) };
       store.set('task-create', key, receipt); return receipt.result;
     })();
     forks.set(key, operation);

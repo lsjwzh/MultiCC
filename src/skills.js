@@ -14,6 +14,9 @@ const state = require('./state/container');
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 const CLAUDE_PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 const SKILL_FILE = 'SKILL.md';
+// `.converted/<cli>` holds the per-CLI copies skill-sync derives from each
+// canonical ~/.agents skill; listing them would show every shared skill 2-3x.
+const SKIP_DIRS = new Set(['node_modules', '.git', '.converted']);
 
 function readFileSlice(filePath, start, length) {
   const fd = fs.openSync(filePath, 'r');
@@ -24,6 +27,31 @@ function readFileSlice(filePath, start, length) {
   } finally {
     fs.closeSync(fd);
   }
+}
+
+// Which shelf a skill sits on, so the resources page can answer "which of
+// these did I write, and which came with something": MultiCC's own bundled
+// skills (repo `skills/`, copied into ~/.agents/skills by installBundledSkills),
+// the CLI's own system skills (Codex keeps them under skills/.system), plugin
+// skills, the user's own global skills, and project-local ones.
+const BUNDLED_ROOT = path.join(__dirname, '..', 'skills');
+let bundledNames = null;
+function bundledSkillNames() {
+  if (bundledNames) return bundledNames;
+  bundledNames = new Set();
+  try {
+    for (const name of fs.readdirSync(BUNDLED_ROOT)) {
+      if (fs.existsSync(path.join(BUNDLED_ROOT, name, SKILL_FILE))) bundledNames.add(name);
+    }
+  } catch (_) {}
+  return bundledNames;
+}
+
+function skillLayer(filePath, source) {
+  if (source === 'plugin') return 'plugin';
+  if (source === 'project') return 'project';
+  if (filePath.split(path.sep).includes('.system')) return 'cli';
+  return bundledSkillNames().has(path.basename(path.dirname(filePath))) ? 'bundled' : 'user';
 }
 
 function skillMetadata(filePath, provider, source) {
@@ -37,7 +65,7 @@ function skillMetadata(filePath, provider, source) {
   let stat = null;
   try { stat = fs.statSync(filePath); } catch (_) {}
   return {
-    provider, source, name: title, description,
+    provider, source, layer: skillLayer(filePath, source), name: title, description,
     path: filePath,
     updatedAt: stat?.mtime?.toISOString() || null,
   };
@@ -58,7 +86,7 @@ function scanSkillRoot(root, provider, source, maxDepth, out, seen) {
           seen.add(key);
           out.push(skillMetadata(full, provider, source));
         }
-      } else if (entry.isDirectory() && depth < maxDepth && entry.name !== 'node_modules' && entry.name !== '.git') {
+      } else if (entry.isDirectory() && depth < maxDepth && !SKIP_DIRS.has(entry.name)) {
         walk(full, depth + 1);
       }
     }

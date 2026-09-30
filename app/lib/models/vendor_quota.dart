@@ -151,8 +151,13 @@ bool isDeepseekBaseUrl(String? baseUrl) {
 /// through it, or the provider baseUrl points at DeepSeek — mirroring the web
 /// `balanceMatchesCli`. This is the gate that makes the bar swap instantly on a
 /// cli/provider switch instead of lingering from the previous context.
+///
+/// The CLI test is by FAMILY ([isCodexCli]), exactly like the web: a codex-exp
+/// session is the same account against the same provider, and when this was a
+/// literal `== 'codex'` the DeepSeek/借道 balance existed on the phone's web
+/// view and not in the app.
 bool balanceBarVisibleFor(String cliName, String? providerBaseUrl) {
-  if (cliName == 'codex' || cliName == 'opencode') return true;
+  if (isCodexCli(cliName) || cliName == 'opencode') return true;
   return isDeepseekBaseUrl(providerBaseUrl) || isRelayBaseUrl(providerBaseUrl);
 }
 
@@ -169,28 +174,45 @@ bool isClaudeProviderBaseUrl(String? baseUrl) {
   return RegExp(r'(^|\.)(anthropic|claude)\.(com|ai)$').hasMatch(h);
 }
 
+/// Whether a CLI id belongs to the Claude family. Claude Code and the Claude
+/// Agent SDK build share one account, one provider pool and one subscription,
+/// so every Claude-specific gate covers both. Mirrors the web `isClaudeCli`.
+bool isClaudeCli(String cliName) =>
+    cliName == 'claude' || cliName == 'claude-exp';
+
+/// The Codex mirror of [isClaudeCli] (codex / codex-exp). Mirrors the web
+/// `isCodexCli`.
+bool isCodexCli(String cliName) =>
+    cliName == 'codex' || cliName == 'codex-exp';
+
 /// Whether a passive rate-limit window bar produced by [provider] can be on
 /// screen while the given CLI is active. Mirrors the web `providerMatchesCli`
 /// byte for byte in rule form:
 ///   • opencode's own window → only under the opencode CLI;
 ///   • a 借道 (relay) provider → its window passed through from the lender
 ///     belongs to whichever CLI speaks the relay's protocol (claude-proxy →
-///     claude, codex-proxy → codex; opencode either way);
+///     the Claude family, codex-proxy → the Codex family; opencode either way);
 ///   • glm / codex windows → under codex/opencode, and glm additionally under
 ///     any CLI while the provider baseUrl points at Zhipu (the claude CLI can
 ///     route through a Zhipu endpoint);
-///   • everything else (claude windows) → under claude/opencode.
+///   • everything else (claude windows) → under the Claude family/opencode.
 bool providerMatchesCli(String provider, String cliName, String? providerBaseUrl) {
   if (provider == 'opencode') return cliName == 'opencode';
   final relayProtocol = relayProtocolFromBaseUrl(providerBaseUrl);
   if (relayProtocol != null) {
-    return cliName == relayProtocol || cliName == 'opencode';
+    // The protocol is judged by CLI family, not by literal id: claude-exp and
+    // codex-exp share the account, the provider pool and the relay protocol
+    // surface of their regular CLIs, so a borrowed window must survive in an
+    // -exp session.
+    final familyMatches =
+        relayProtocol == 'codex' ? isCodexCli(cliName) : isClaudeCli(cliName);
+    return familyMatches || cliName == 'opencode';
   }
   if (provider == 'glm' || provider == 'codex') {
-    if (cliName == 'codex' || cliName == 'opencode') return true;
+    if (isCodexCli(cliName) || cliName == 'opencode') return true;
     return provider == 'glm' && isZhipuBaseUrl(providerBaseUrl);
   }
-  return cliName == 'claude' || cliName == 'opencode';
+  return isClaudeCli(cliName) || cliName == 'opencode';
 }
 
 /// Host to pass as `?host=` so the backend puts the current site first.

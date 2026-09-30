@@ -287,3 +287,76 @@ test('real ws close events distinguish completed handshakes from abrupt peer los
     assert.ok(log.durationMs >= 0);
   }
 });
+
+// 终端 attach 的快照顺序。这三条守的是同一件事：重连时屏上要「就是服务端现在的样子」，
+// 既不能被随后到来的重绘冲掉，也不能把重绘冲掉，更不能把一个已经走掉的客户端留在扇出里。
+function terminalHarness(t, capture) {
+  const order = [];
+  let releaseCapture;
+  const gate = new Promise(resolve => { releaseCapture = resolve; });
+  const h = harness(t, { overrides: {
+    sendWs: (_ws, message) => order.push(`send:${message.type}`),
+    tmuxCaptureSnapshot: async () => { order.push('capture'); await gate; return capture; },
+    tmuxResize: () => order.push('tmuxResize'),
+    applyMaxClientSize: () => order.push('applyMaxClientSize'),
+    pushOnInput: () => {},
+  } });
+  return { ...h, order, releaseCapture };
+}
+
+test('terminal attach: snapshot lands before the client resize that triggers a repaint', async t => {
+  const h = terminalHarness(t, 'old screen\r\n');
+  const ws = new FakeSocket();
+  // The handler parks on capture-pane synchronously, so this resize is exactly the
+  // one that would otherwise be applied — and repainted — before the snapshot.
+  const connecting = h.connect('/ws?id=terminal', ws);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 80, rows: 24 })));
+  assert.deepEqual(h.order, ['send:session_id', 'capture'], 'resize is held while capturing');
+  h.releaseCapture();
+  await connecting;
+  assert.deepEqual(h.order, [
+    'send:session_id', 'capture', 'send:snapshot', 'tmuxResize', 'applyMaxClientSize',
+  ]);
+  assert.equal(h.terminal.clients.size, 1, 'client joins the fan-out once the snapshot is out');
+  assert.equal(ws._desiredCols, 80, 'the held resize is still applied');
+});
+
+test('terminal attach: an empty pane sends no snapshot but still attaches', async t => {
+  const h = terminalHarness(t, '\r\n   \r\n');
+  const ws = new FakeSocket();
+  const connecting = h.connect('/ws?id=terminal', ws);
+  ws.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 80, rows: 24 })));
+  h.releaseCapture();
+  await connecting;
+  assert.deepEqual(h.order, [
+    'send:session_id', 'capture', 'tmuxResize', 'applyMaxClientSize',
+  ], 'a blank capture would just push an empty screen down');
+  assert.equal(h.terminal.clients.size, 1);
+});
+
+test('terminal attach: a client that leaves mid-capture is not left in the fan-out', async t => {
+  const h = terminalHarness(t, 'old screen\r\n');
+  const ws = new FakeSocket();
+  const connecting = h.connect('/ws?id=terminal', ws);
+  ws.finishClose();
+  h.releaseCapture();
+  await connecting;
+  assert.deepEqual(h.order, ['send:session_id', 'capture', 'applyMaxClientSize'],
+    'only the detach from the close handler runs — no snapshot to a closed socket');
+  assert.ok(!h.order.includes('send:snapshot'), 'nothing is sent to a closed socket');
+  assert.equal(h.terminal.clients.size, 0, 'no dead socket left behind to leak the session');
+});
+
+// 真 tmux capture-pane -p 的行尾是裸 "\n"、末尾还拖一串空行（实测）。原样写给 xterm 会
+// 走成阶梯（LF 只下移不回车），末尾换行还会把最后一行屏幕顶出视口。
+test('terminal snapshot: capture-pane text is reshaped for replay', () => {
+  const { formatPaneSnapshot } = require('../src/tmux');
+  const captured = 'aaa\nbbb\nccc\n\n\n\n\n\n\n\n';
+  const out = formatPaneSnapshot(captured, { x: 0, y: 3, height: 10 });
+  assert.ok(!/[^\r]\n/.test(out), 'every LF is preceded by CR');
+  assert.ok(out.startsWith('aaa\r\nbbb\r\nccc\r\n'));
+  assert.equal(out.split('\r\n').length, 10, '10 screen rows → 9 line breaks, none after the last row');
+  assert.ok(out.endsWith('\x1b[0m\x1b[6A\x1b[1G'), 'cursor goes back to row 3 (6 up from the last of 10 rows), col 0');
+  assert.equal(formatPaneSnapshot('\n   \n\n', { x: 0, y: 0, height: 3 }), '', 'blank pane → no snapshot');
+  assert.ok(formatPaneSnapshot('x\n', {}).endsWith('x\x1b[0m'), 'missing cursor info → no cursor move');
+});

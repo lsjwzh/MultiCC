@@ -8,19 +8,25 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../i18n.dart';
 import '../theme.dart';
+import '../utils/format.dart';
 import '../models/message.dart';
 import '../models/role_tokens.dart';
 import '../providers/chat_provider.dart';
+import '../services/annotation_inbox.dart';
 import '../services/download_ticket_service.dart';
 import '../services/message_quote.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../utils/code_highlight.dart';
+import 'image_annotate_screen.dart';
 import 'tool_card.dart';
 
 /// Resolve a markdown link href and open it externally.
 ///
-/// Handles three forms:
+/// Handles four forms:
+///  - a local filesystem absolute path (`/Users/…/x.dart`, `file:///…`) — with
+///    or without the configured server origin prefix — is opened as the file
+///    itself (streamed through `/api/download`), never as a server URL
 ///  - absolute `http(s)://…` links → opened as-is
 ///  - root-relative links like `/artifacts/<id>/index.html` (multicc artifacts,
 ///    file downloads) → resolved against the configured server base URL
@@ -28,14 +34,24 @@ import 'tool_card.dart';
 Future<void> _handleLinkTap(BuildContext context, String? href) async {
   if (href == null || href.trim().isEmpty) return;
   var target = href.trim();
+  final settings = SettingsService.current;
+
+  // 本地文件链接：agent 可能写裸绝对路径，也可能因为知道 `MULTICC_BASE_URL`
+  // 而写 `http://<server>/Users/...`。两者都要打开**文件**本身，而不是在服务器上
+  // 找一个不存在的路由（点出去就是 404）。剥掉 origin 后走 `/api/download`。
+  final localPath = localFileLinkPath(target, settings);
+  if (localPath != null && settings != null) {
+    await _openLocalFile(context, localPath, settings);
+    return;
+  }
 
   // Root-relative path: resolve against the multicc server we're talking to.
   if (target.startsWith('/')) {
-    final base = SettingsService.current?.buildHttpUrl(target);
+    final base = settings?.buildHttpUrl(target);
     if (base != null) target = base;
   } else if (!target.contains('://') && !target.startsWith('mailto:')) {
     // Bare host or path without a scheme — assume http for the current server.
-    final base = SettingsService.current?.buildHttpUrl('/$target');
+    final base = settings?.buildHttpUrl('/$target');
     if (base != null) target = base;
   }
 
@@ -54,16 +70,97 @@ Future<void> _handleLinkTap(BuildContext context, String? href) async {
   }
 }
 
-/// Long-press action sheet: copy and quote always; delete only when the message
-/// has a server-side history id (streaming / not-yet-persisted bubbles aren't
-/// addressable — the id arrives via the chat_msg_meta WS event once saved).
-Future<void> _showMessageActions(
+/// 把聊天里的本地文件链接解析成本机绝对路径；不是本地文件就返回 null。
+///
+/// 接受两种形态（与 Web `fixupLocalFileLinks` 同一条判定）：
+///   - 裸绝对路径：`/Users/…`、`/tmp/…`、`file:///…`（匹配 [_localImgRe]）
+///   - 带 server origin：`http://127.0.0.1:3000/Users/…` —— 只有 origin 与当前
+///     配置的服务器一致时才剥掉 origin，剩下就是文件路径；别把外站链接当成文件。
+@visibleForTesting
+String? localFileLinkPath(String target, SettingsService? settings) {
+  var path = target;
+  if (path.startsWith('file://')) path = path.substring('file://'.length);
+  if (_localImgRe.hasMatch(path)) return path;
+
+  final uri = Uri.tryParse(path);
+  if (uri == null ||
+      !uri.hasScheme ||
+      (uri.scheme != 'http' && uri.scheme != 'https')) {
+    return null;
+  }
+  final serverHost = settings?.host ?? '';
+  if (serverHost.isEmpty) return null;
+  final server = Uri.tryParse(
+    serverHost.startsWith('http') ? serverHost : 'http://$serverHost',
+  );
+  if (server == null) return null;
+  if (uri.scheme != server.scheme ||
+      uri.host.toLowerCase() != server.host.toLowerCase()) {
+    return null;
+  }
+  if ((uri.hasPort && !server.hasPort) ||
+      (!uri.hasPort && server.hasPort) ||
+      (uri.hasPort && uri.port != server.port)) {
+    return null;
+  }
+  final p = uri.path;
+  return _localImgRe.hasMatch(p) ? p : null;
+}
+
+/// 通过 `/api/download` 打开服务器上的一个本地文件（流式下载/预览）。鉴权走
+/// download-ticket，与文件浏览器打开文件是同一条路。
+Future<void> _openLocalFile(
+  BuildContext context,
+  String path,
+  SettingsService settings,
+) async {
+  final messenger = ScaffoldMessenger.of(context);
+  try {
+    final request = buildMulticcDownloadRequest(
+      host: settings.host,
+      path: path,
+      accessToken: settings.token,
+    );
+    final tickets = DownloadTicketClient();
+    final uri = await tickets.authorize(
+      request: request,
+      ticketEndpoint: Uri.parse(
+        settings.buildHttpUrl('/api/auth/download-ticket'),
+      ),
+    );
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+      return;
+    }
+  } catch (_) {
+    // Fall through to a stable snack error without leaking a token/ticket.
+  }
+  if (context.mounted) {
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text('无法打开文件：$path'),
+        duration: const Duration(milliseconds: 1800),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+}
+
+/// 一条消息在长按菜单里能做的事，按展示顺序。
+enum MessageAction { copy, quote, delete, fork }
+
+/// 这条消息该摆哪几个动作 —— 全 App 唯一一份清单。
+///
+/// 少一个入口不会有任何报错：输入框通道（provider 的 `quoteInserter`）没人登记，
+/// 菜单里就少一行，功能静悄悄地没了。所以这份判定必须能被单独测。
+List<MessageAction> availableMessageActions(
   BuildContext context,
   ChatMessage message, {
   bool serverActions = true,
-}) async {
-  // Delete/fork are session-history operations bound to ChatProvider + the
-  // session REST surface; transcript-only hosts (task detail) get copy only.
+  bool allowQuote = true,
+}) {
+  // 删除/分叉是会话历史操作，绑 ChatProvider + 会话 REST 接口；只读转录宿主
+  // （任务详情）只给复制。
   final provider = context.read<ChatProvider?>();
   final canDelete =
       serverActions &&
@@ -71,72 +168,99 @@ Future<void> _showMessageActions(
       (message.id ?? '').isNotEmpty;
   // 引用要落进输入框，所以能不能引用问的是「本宿主有没有输入框」，不是
   // 「能不能动服务端历史」—— 引用不改任何东西，只是把已有的话搬进输入框。
-  // 没有输入框就别摆这个入口：摆了也点不出结果。
-  final quote = provider?.quoteInserter == null
-      ? ''
-      : buildMessageQuote(message);
+  // 没有输入框、或者这条消息本来就摘不出引用块（空白消息），都别摆这个入口：
+  // 摆了也点不出结果。
+  final quote = allowQuote && provider?.quoteInserter != null
+      ? buildMessageQuote(message)
+      : '';
   final canQuote = quote.isNotEmpty;
-  final action = await showModalBottomSheet<String>(
-    context: context,
-    backgroundColor: const Color(0xFFffffff),
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
-    ),
-    builder: (ctx) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ListTile(
-            leading: const Icon(Icons.copy_outlined, color: Color(0xFF6f8096)),
-            title: Text(
-              I18n.of('msgCopyAction'),
-              style: const TextStyle(color: Color(0xFF233249)),
-            ),
-            onTap: () => Navigator.pop(ctx, 'copy'),
+  return [
+    MessageAction.copy,
+    if (canQuote) MessageAction.quote,
+    if (canDelete) MessageAction.delete,
+    if (canDelete) MessageAction.fork,
+  ];
+}
+
+/// 动作在菜单里的名字。
+String messageActionLabel(MessageAction action) => switch (action) {
+  MessageAction.copy => I18n.of('msgCopyAction'),
+  MessageAction.quote => I18n.of('msgQuoteAction'),
+  MessageAction.delete => I18n.of('msgDeleteAction'),
+  MessageAction.fork => I18n.of('msgForkAction'),
+};
+
+/// 执行一个菜单动作。
+Future<void> runMessageAction(
+  BuildContext context,
+  ChatMessage message,
+  MessageAction action,
+) async {
+  switch (action) {
+    case MessageAction.copy:
+      _copyMessage(context, messageCopyText(message));
+    case MessageAction.quote:
+      final quote = context.read<ChatProvider?>()?.quoteInserter == null
+          ? ''
+          : buildMessageQuote(message);
+      if (quote.isEmpty) return;
+      _quoteMessage(context, message, quote);
+    case MessageAction.delete:
+      await _confirmDeleteMessage(context, message);
+    case MessageAction.fork:
+      await _forkFromMessage(context, message);
+  }
+}
+
+/// 把一条消息的文字交给**系统**的选择机制。
+///
+/// 长按选中之后弹的是系统自己的工具条（iOS 上的拷贝 / 查询 / 共享…），和用户在
+/// 系统里选任何一段文字走的是同一条路 —— 选择、拖动句柄、全选、放大镜全都是原生的。
+/// App 的动作（复制内容 / 引用 / 隐藏 / 分叉）追加在系统条目之后，所以菜单换了宿主
+/// 但没有丢。
+///
+/// 一条气泡只有一个选择域，正文、代码块、工具输出因此可以连着一起选。代价是长按
+/// 手势从此归选择用，不再有第二个长按入口。`_MarkdownContent` 也相应关掉了自己的
+/// `selectable`：`SelectableText` 会另起一个选择域，把正文从这条链上摘出去，正文
+/// 就成了唯一弹不出 App 动作的地方。
+class _MessageSelection extends StatelessWidget {
+  const _MessageSelection({
+    required this.message,
+    required this.child,
+    this.serverActions = true,
+    this.allowQuote = true,
+  });
+
+  final ChatMessage message;
+  final Widget child;
+  final bool serverActions;
+  final bool allowQuote;
+
+  @override
+  Widget build(BuildContext context) {
+    return SelectionArea(
+      contextMenuBuilder: (ctx, state) =>
+          AdaptiveTextSelectionToolbar.buttonItems(
+            anchors: state.contextMenuAnchors,
+            buttonItems: [
+              ...state.contextMenuButtonItems,
+              for (final action in availableMessageActions(
+                ctx,
+                message,
+                serverActions: serverActions,
+                allowQuote: allowQuote,
+              ))
+                ContextMenuButtonItem(
+                  label: messageActionLabel(action),
+                  onPressed: () {
+                    state.hideToolbar();
+                    runMessageAction(ctx, message, action);
+                  },
+                ),
+            ],
           ),
-          if (canQuote)
-            ListTile(
-              leading: const Icon(Icons.format_quote, color: Color(0xFF0965cf)),
-              title: Text(
-                I18n.of('msgQuoteAction'),
-                style: const TextStyle(color: Color(0xFF233249)),
-              ),
-              onTap: () => Navigator.pop(ctx, 'quote'),
-            ),
-          if (canDelete)
-            ListTile(
-              leading: const Icon(
-                Icons.delete_outline,
-                color: Color(0xFFb64e43),
-              ),
-              title: Text(
-                I18n.of('msgDeleteAction'),
-                style: const TextStyle(color: Color(0xFFb64e43)),
-              ),
-              onTap: () => Navigator.pop(ctx, 'delete'),
-            ),
-          if (canDelete)
-            ListTile(
-              leading: const Icon(Icons.call_split, color: Color(0xFF137780)),
-              title: Text(
-                I18n.of('msgForkAction'),
-                style: const TextStyle(color: Color(0xFF137780)),
-              ),
-              onTap: () => Navigator.pop(ctx, 'fork'),
-            ),
-        ],
-      ),
-    ),
-  );
-  if (!context.mounted) return;
-  if (action == 'copy') {
-    _copyMessage(context, message.content);
-  } else if (action == 'quote') {
-    _quoteMessage(context, message, quote);
-  } else if (action == 'delete') {
-    await _confirmDeleteMessage(context, message);
-  } else if (action == 'fork') {
-    await _forkFromMessage(context, message);
+      child: child,
+    );
   }
 }
 
@@ -219,12 +343,47 @@ Future<void> _confirmDeleteMessage(
   }
 }
 
+/// 一条消息里能复制的全部文本：正文 + 每个工具调用的命令与输出。
+///
+/// 「复制内容」原先只取 `message.content`。于是纯工具轮（模型只发工具调用、没有
+/// 正文的那条）取到空串，点下去静默返回 —— 用户看到的就是「长按之后没有复制
+/// 功能」；而长按工具输出时，复制到的又是正文，不是长按的那一块。工具卡片的
+/// 输入/输出本来就画在这个气泡里，它就是这条消息的内容。
+String messageCopyText(ChatMessage message) {
+  final parts = <String>[];
+  final prose = message.content.trim();
+  if (prose.isNotEmpty) parts.add(prose);
+  for (final call in message.toolCalls) {
+    final buffer = StringBuffer();
+    final head = call.description.trim();
+    if (head.isNotEmpty) buffer.writeln(head);
+    final result = (call.result ?? '').trim();
+    if (result.isNotEmpty) buffer.write(result);
+    final text = buffer.toString().trim();
+    if (text.isNotEmpty) parts.add(text);
+  }
+  return parts.join('\n\n');
+}
+
 /// Copy a message's text to the clipboard with a brief confirmation.
+///
+/// 没东西可复制时必须**说出来**：静默返回等于「点了没反应」，用户只会认为复制
+/// 功能坏了 —— 纯工具轮的长按正是踩在这上面。
 void _copyMessage(BuildContext context, String text) {
   final t = text.trim();
-  if (t.isEmpty) return;
+  final messenger = ScaffoldMessenger.of(context);
+  if (t.isEmpty) {
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('这条消息没有可复制的内容'),
+        duration: Duration(milliseconds: 1600),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    return;
+  }
   Clipboard.setData(ClipboardData(text: t));
-  ScaffoldMessenger.of(context).showSnackBar(
+  messenger.showSnackBar(
     const SnackBar(
       content: Text('已复制'),
       duration: Duration(milliseconds: 1200),
@@ -301,37 +460,28 @@ class MessageBubble extends StatelessWidget {
   /// is an audit trail and is never mutated from a bubble.
   final bool enableServerActions;
 
-  /// 这一轮的用户气泡下面要不要挂「本轮执行成功后自动提交合并」勾选框
-  /// （Web 的 `attachAutoCommitCheck`，只挂在最后一条用户消息上）。默认全关，
-  /// 所以别的宿主（任务详情页那种只读转录）渲染出来和以前完全一样。
-  final bool showAutoCommit;
-  final bool autoCommitChecked;
-
-  /// 这一轮已经自动提交过了 —— 勾选框还在，但变成只读的「✓ 已提交」。
-  final bool autoCommitDone;
-  final ValueChanged<bool>? onAutoCommitChanged;
-
   const MessageBubble({
     super.key,
     required this.message,
     this.enableServerActions = true,
-    this.showAutoCommit = false,
-    this.autoCommitChecked = false,
-    this.autoCommitDone = false,
-    this.onAutoCommitChanged,
   });
 
   @override
   Widget build(BuildContext context) {
     switch (message.role) {
       case MessageRole.user:
+        // 🔇 系统注入（引擎写的 role=user）不是人打的：画成系统卡，不画用户气泡。
+        final injected = parseSystemInject(message.content);
+        if (injected != null) {
+          return _SystemInjectBubble(
+            message: message,
+            parts: injected,
+            enableServerActions: enableServerActions,
+          );
+        }
         return _UserBubble(
           message: message,
           enableServerActions: enableServerActions,
-          showAutoCommit: showAutoCommit,
-          autoCommitChecked: autoCommitChecked,
-          autoCommitDone: autoCommitDone,
-          onAutoCommitChanged: onAutoCommitChanged,
         );
       case MessageRole.assistant:
         return _AssistantBubble(
@@ -347,17 +497,9 @@ class MessageBubble extends StatelessWidget {
 class _UserBubble extends StatelessWidget {
   final ChatMessage message;
   final bool enableServerActions;
-  final bool showAutoCommit;
-  final bool autoCommitChecked;
-  final bool autoCommitDone;
-  final ValueChanged<bool>? onAutoCommitChanged;
   const _UserBubble({
     required this.message,
     this.enableServerActions = true,
-    this.showAutoCommit = false,
-    this.autoCommitChecked = false,
-    this.autoCommitDone = false,
-    this.onAutoCommitChanged,
   });
 
   @override
@@ -369,12 +511,9 @@ class _UserBubble extends StatelessWidget {
             : MediaQuery.of(context).size.width;
         return Align(
           alignment: Alignment.centerRight,
-          child: GestureDetector(
-            onLongPress: () => _showMessageActions(
-              context,
-              message,
-              serverActions: enableServerActions,
-            ),
+          child: _MessageSelection(
+            message: message,
+            serverActions: enableServerActions,
             child: Container(
               constraints: BoxConstraints(maxWidth: laneWidth * 0.85),
               margin: const EdgeInsets.symmetric(vertical: 4),
@@ -400,12 +539,6 @@ class _UserBubble extends StatelessWidget {
                       height: 1.5,
                     ),
                   ),
-                  if (showAutoCommit)
-                    _AutoCommitRow(
-                      checked: autoCommitChecked,
-                      done: autoCommitDone,
-                      onChanged: onAutoCommitChanged,
-                    ),
                   _TaskAttributionTail(message: message, isUser: true),
                 ],
               ),
@@ -413,75 +546,6 @@ class _UserBubble extends StatelessWidget {
           ),
         );
       },
-    );
-  }
-}
-
-/// 用户气泡里那行「本轮执行成功后自动提交合并」（Web 的 `.msg-auto-commit`）。
-/// 它落在蓝底气泡里，所以分隔线和文字都走白色系 —— Web 那边也为这个场景单独
-/// 覆盖过 `--chat-muted` 的灰字。
-class _AutoCommitRow extends StatelessWidget {
-  final bool checked;
-  final bool done;
-  final ValueChanged<bool>? onChanged;
-  const _AutoCommitRow({
-    required this.checked,
-    required this.done,
-    this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final color = done ? const Color(0xFF7ee787) : const Color(0xFFdbe9ff);
-    final locked = done || onChanged == null;
-    return Tooltip(
-      message: t('autoCommitTitle'),
-      child: Padding(
-        padding: const EdgeInsets.only(top: 6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(height: 1, color: const Color(0x40ffffff)),
-            const SizedBox(height: 4),
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: locked ? null : () => onChanged!(!checked),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: Checkbox(
-                      value: checked,
-                      onChanged: locked ? null : (v) => onChanged!(v ?? false),
-                      activeColor: const Color(0xFF2ea043),
-                      checkColor: Colors.white,
-                      side: BorderSide(color: color.withValues(alpha: 0.7)),
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      done
-                          ? '${t('autoCommitPerMsg')} ${t('autoCommitPerMsgDone')}'
-                          : t('autoCommitPerMsg'),
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: color,
-                        fontWeight: done ? FontWeight.w600 : FontWeight.normal,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -507,12 +571,9 @@ class _AssistantBubble extends StatelessWidget {
             : MediaQuery.of(context).size.width;
         return Align(
           alignment: Alignment.centerLeft,
-          child: GestureDetector(
-            onLongPress: () => _showMessageActions(
-              context,
-              message,
-              serverActions: enableServerActions,
-            ),
+          child: _MessageSelection(
+            message: message,
+            serverActions: enableServerActions,
             child: Container(
               constraints: BoxConstraints(maxWidth: laneWidth * 0.92),
               margin: const EdgeInsets.symmetric(vertical: 4),
@@ -538,9 +599,15 @@ class _AssistantBubble extends StatelessWidget {
                   if (hasTools && advancedMode)
                     ToolCallGroup(toolCalls: message.toolCalls),
                   if (hasTools && advancedMode)
-                    ToolTrajectory(toolCalls: message.toolCalls),
+                    ToolTrajectory(
+                      toolCalls: message.toolCalls,
+                      turnDurationMs: message.durationMs,
+                    ),
                   if (hasTools && !advancedMode)
-                    _BasicToolSummary(toolCalls: message.toolCalls),
+                    _BasicToolSummary(
+                      toolCalls: message.toolCalls,
+                      durationMs: message.durationMs,
+                    ),
                   if (!hasText && !hasTools && message.isStreaming)
                     const _StreamingDot(),
                   // Token usage line
@@ -629,9 +696,9 @@ class _TaskAttributionTail extends StatelessWidget {
 }
 
 class _BasicToolSummary extends StatefulWidget {
-  const _BasicToolSummary({required this.toolCalls});
-
+  const _BasicToolSummary({required this.toolCalls, this.durationMs});
   final List<ToolCall> toolCalls;
+  final int? durationMs;
 
   @override
   State<_BasicToolSummary> createState() => _BasicToolSummaryState();
@@ -725,7 +792,10 @@ class _BasicToolSummaryState extends State<_BasicToolSummary> {
               child: Column(
                 children: [
                   ToolCallGroup(toolCalls: widget.toolCalls),
-                  ToolTrajectory(toolCalls: widget.toolCalls),
+                  ToolTrajectory(
+                    toolCalls: widget.toolCalls,
+                    turnDurationMs: widget.durationMs,
+                  ),
                 ],
               ),
             ),
@@ -740,79 +810,76 @@ class _TokenUsageLine extends StatelessWidget {
   final MessageUsage usage;
   const _TokenUsageLine({required this.usage});
 
-  static String _fmt(int n) {
-    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}k';
-    return n.toString();
-  }
-
   /// Format a token count for display: >1e6 → X.XXM, >1e3 → X.Xk,
-  /// else thousand-separated raw number.
-  static String _fmtSaved(int n) {
-    if (n >= 1000000) {
-      return '${(n / 1000000).toStringAsFixed(2)}M';
-    }
-    if (n >= 1000) {
-      return '${(n / 1000).toStringAsFixed(1)}k';
-    }
-    return n.toString().replaceAllMapped(
-      RegExp(r'\B(?=(\d{3})+(?!\d))'),
-      (m) => ',',
-    );
-  }
+  /// else thousand-separated raw number. The rules live in utils/format.dart
+  /// (`formatTokenCount`), which the web's chat-live-ui .msg-usage row shares.
+  static String _fmtSaved(int n) => formatTokenCount(n);
 
   @override
   Widget build(BuildContext context) {
-    final i = usage.inputTokens;
-    final o = usage.outputTokens;
-    final cr = usage.cacheReadTokens;
-    final cw = usage.cacheCreationTokens;
-    final saved = usage.savedMainTokens;
+    // One format for every message (mirrors the web .msg-usage u-row): a 主
+    // row, plus a 辅 row only for a separately configured sub model — each
+    // with fresh ↑入/↓出 and ♻读/♻写 cache.
+    final roles = usage.displayRoles;
     final breakdown = usage.roleBreakdown;
-
+    Widget row(String label, RoleTokenBucket b, {Widget? trailing}) => Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFF6f8096),
+            fontSize: 10.5,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        _UsageBadge(
+          label: '↑入',
+          value: _fmtSaved(b.inputTokens),
+          color: const Color(0xFF1267b5),
+        ),
+        _UsageBadge(
+          label: '↓出',
+          value: _fmtSaved(b.outputTokens),
+          color: const Color(0xFF2ba67a),
+        ),
+        _UsageBadge(
+          label: '♻读',
+          value: _fmtSaved(b.cacheRead),
+          color: const Color(0xFFa85a25),
+        ),
+        _UsageBadge(
+          label: '♻写',
+          value: _fmtSaved(b.cacheWrite),
+          color: const Color(0xFF6d4fd1),
+        ),
+        ?trailing,
+      ],
+    );
+    final detail = breakdown != null && !breakdown.isEmpty
+        ? _RoleDetailChip(breakdown: breakdown)
+        : null;
+    final main = roles.main;
+    final sub = roles.sub;
     return Padding(
       padding: const EdgeInsets.only(top: 6),
-      // Wrap, not Row: with cache/saved badges plus the role chip, realistic
-      // token counts overflow a 320dp lane by 250px+ inside a Row (clipped
-      // badges read as "token stats vanished"). The web line (.msg-usage) is
-      // flex-wrap:wrap; this mirrors it - badges flow onto the next line
-      // instead of past the bubble edge.
-      child: Wrap(
-        spacing: 6,
-        runSpacing: 4,
+      // Wrap per row, not Row: realistic token counts overflow a 320dp lane
+      // inside a Row. Badges flow onto the next line instead of past the edge.
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _UsageBadge(
-            label: '↑入',
-            value: _fmt(i),
-            color: const Color(0xFF1267b5),
-          ),
-          _UsageBadge(
-            label: '↓出',
-            value: _fmt(o),
-            color: const Color(0xFF2ba67a),
-          ),
-          if (cr > 0)
-            _UsageBadge(
-              label: '⏱读',
-              value: _fmt(cr),
-              color: const Color(0xFFa85a25),
+          if (main != null)
+            row(
+              t('usageRoleMain'),
+              main,
+              trailing: sub == null ? detail : null,
             ),
-          if (cw > 0)
-            _UsageBadge(
-              label: '⏱写',
-              value: _fmt(cw),
-              color: const Color(0xFF6d4fd1),
-            ),
-          if (saved != null && saved > 0)
-            _UsageBadge(
-              label: '省主≈',
-              value: _fmtSaved(saved),
-              color: const Color(0xFF2ba67a),
-            ),
-          // Per-role detail (main / sub / by-provider) - the mobile counterpart
-          // of the web usage-line tooltip. Only present for live turns that
-          // received a role_token_stats event; history replay has no split.
-          if (breakdown != null && !breakdown.isEmpty)
-            _RoleDetailChip(breakdown: breakdown),
+          if (sub != null) ...[
+            const SizedBox(height: 4),
+            row(t('usageRoleSub'), sub, trailing: detail),
+          ],
         ],
       ),
     );
@@ -1035,13 +1102,9 @@ class _TimingLine extends StatelessWidget {
   final int? durationMs;
   const _TimingLine({this.timestamp, this.durationMs});
 
-  static String _fmtDuration(int ms) {
-    if (ms < 1000) return '${ms}ms';
-    final s = ms / 1000;
-    if (s < 60) return '${s.toStringAsFixed(1)}s';
-    final m = (s / 60).floor();
-    return '${m}m${(s % 60).round()}s';
-  }
+  /// 一段测出来的墙钟时间：走 utils/format.dart 的 [formatDuration]（web 那侧
+  /// chat-live-ui / chat-history-view 同一份）。
+  static String _fmtDuration(int ms) => formatDuration(ms);
 
   @override
   Widget build(BuildContext context) {
@@ -1200,7 +1263,11 @@ class _MarkdownContent extends StatelessWidget {
               vertical: 4,
             ),
           ),
-          selectable: true,
+          // 关掉自己的选择域，正文才会并进气泡那一个 `SelectionArea`
+          // （见 `_MessageSelection`）。这里开 `selectable: true` 会渲染成
+          // `SelectableText`，它另起一个选择域：正文能选，但选中后弹的系统工具条
+          // 里没有 App 的动作，而且选不过相邻的代码块 —— 一条消息被切成两半。
+          selectable: false,
           onTapLink: (text, href, title) => _handleLinkTap(context, href),
         ),
         if (isStreaming) const _StreamingDot(),
@@ -1237,8 +1304,12 @@ class _FencedCodeBuilder extends MarkdownElementBuilder {
 
 /// One highlighted code block. The surrounding `pre` container already paints
 /// the codeblock background/border, so this supplies only the padding and the
-/// horizontal scroll the default renderer had. Text.rich participates in the
-/// ancestor SelectionArea — select/copy is preserved on both paths.
+/// horizontal scroll the default renderer had.
+///
+/// 这里的 `Text.rich` 自己不带选择域：它靠祖先那个 `SelectionArea`（气泡外层的
+/// `_MessageSelection`）参与选中，长按弹的是系统工具条。原先的注释写着「参与祖先
+/// SelectionArea，两条路径都保留选中/复制」，当时全 App 根本没有 SelectionArea，
+/// 于是代码块既选不中、又只有「复制内容」能救 —— 现在那句才成立。
 class _FencedCodeBlock extends StatelessWidget {
   final List<CodeSpan> spans;
   const _FencedCodeBlock({required this.spans});
@@ -1308,6 +1379,109 @@ class _StreamingDotState extends State<_StreamingDot>
   }
 }
 
+/// 🔇 系统注入卡（Web 的 `.msg.user.system-inject`）：一行「图标 + 【…】标题」，
+/// 正文默认压成一行省略号，点标题展开（展开态按原文换行）。
+///
+/// 它出现在会话里的身份是 role=user（引擎就是这么落库的），所以它在别的「用户
+/// 消息」语义里必须被排除：画成系统卡而不是用户气泡（本文件的分支直接绕开
+/// `_UserBubble`），引用时算系统行（services/message_quote.dart 的 _roleKey）。
+class _SystemInjectBubble extends StatefulWidget {
+  const _SystemInjectBubble({
+    required this.message,
+    required this.parts,
+    this.enableServerActions = true,
+  });
+
+  final ChatMessage message;
+  final SystemInjectParts parts;
+  final bool enableServerActions;
+
+  @override
+  State<_SystemInjectBubble> createState() => _SystemInjectBubbleState();
+}
+
+class _SystemInjectBubbleState extends State<_SystemInjectBubble> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final body = widget.parts.body;
+    final hasBody = body.isNotEmpty;
+    return Align(
+      alignment: Alignment.centerLeft,
+      // 和其它气泡同一张菜单：复制/引用，落库后还能删除（只删显示，与 Web 的 ✕ 一致）。
+      child: _MessageSelection(
+        message: widget.message,
+        serverActions: widget.enableServerActions,
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          constraints: const BoxConstraints(maxWidth: 620),
+          decoration: BoxDecoration(
+            color: AppColors.bgSoft,
+            border: Border.all(color: AppColors.line),
+            borderRadius: BorderRadius.circular(AppColors.radiusChip),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                // 标题行整条都是展开开关；没有正文的注入（一行的「继续：…」）不接点击。
+                onTap: hasBody ? () => setState(() => _open = !_open) : null,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('🔇', style: TextStyle(fontSize: 11)),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        widget.parts.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.muted,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    if (hasBody) ...[
+                      const SizedBox(width: 6),
+                      Icon(
+                        _open ? Icons.expand_more : Icons.chevron_right,
+                        size: 14,
+                        color: AppColors.faint,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (hasBody)
+                Padding(
+                  padding: const EdgeInsets.only(top: 3),
+                  child: Text(
+                    body,
+                    // 折叠 = 一行省略号；展开 = 全文，换行按原文保留。
+                    maxLines: _open ? null : 1,
+                    overflow: _open ? TextOverflow.visible : TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.faint,
+                      fontSize: 12,
+                      height: 1.45,
+                    ),
+                  ),
+                ),
+              _TaskAttributionTail(message: widget.message),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _SystemBubble extends StatelessWidget {
   final ChatMessage message;
   const _SystemBubble({required this.message});
@@ -1315,8 +1489,12 @@ class _SystemBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: GestureDetector(
-        onLongPress: () => _copyMessage(context, message.content),
+      // 系统行（role=system）在会话里没有身份可指认，也就没有引用/删除/分叉，
+      // 只剩复制 —— 但复制同样走系统工具条，和其它气泡一致。
+      child: _MessageSelection(
+        message: message,
+        serverActions: false,
+        allowQuote: false,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Text(
@@ -1357,8 +1535,12 @@ class _InlineImage extends StatelessWidget {
       child: GestureDetector(
         onTap: () => Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (_) =>
-                _ImageZoomScreen(url: url, name: name, headers: headers),
+            builder: (_) => _ImageZoomScreen(
+              url: url,
+              name: name,
+              headers: headers,
+              sessionId: _currentSessionId(context),
+            ),
             fullscreenDialog: true,
           ),
         ),
@@ -1393,6 +1575,14 @@ class _InlineImage extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+String _currentSessionId(BuildContext context) {
+  try {
+    return context.read<ChatProvider>().executionSessionName;
+  } catch (_) {
+    return '';
   }
 }
 
@@ -1441,10 +1631,12 @@ class _ImageZoomScreen extends StatefulWidget {
   final String url;
   final String name;
   final Map<String, String> headers;
+  final String sessionId;
   const _ImageZoomScreen({
     required this.url,
     required this.name,
     required this.headers,
+    this.sessionId = '',
   });
 
   @override
@@ -1460,6 +1652,23 @@ class _ImageZoomScreenState extends State<_ImageZoomScreen> {
     super.dispose();
   }
 
+  /// Annotate → the draft goes to the composer via [AnnotationInbox]; pop
+  /// first so the chat route is current when the input bar picks it up.
+  Future<void> _annotate() async {
+    final draft = await Navigator.of(context).push<AnnotationDraft>(
+      MaterialPageRoute(
+        builder: (_) => ImageAnnotateScreen(
+          url: widget.url,
+          headers: widget.headers,
+          sessionId: widget.sessionId,
+        ),
+      ),
+    );
+    if (draft == null || !mounted) return;
+    Navigator.of(context).pop();
+    AnnotationInbox.publish(draft);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1473,6 +1682,11 @@ class _ImageZoomScreenState extends State<_ImageZoomScreen> {
           overflow: TextOverflow.ellipsis,
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.edit_outlined, size: 20),
+            tooltip: t('annotAction'),
+            onPressed: _annotate,
+          ),
           IconButton(
             icon: const Icon(Icons.refresh, size: 20),
             tooltip: '重置缩放',

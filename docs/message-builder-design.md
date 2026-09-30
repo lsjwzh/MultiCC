@@ -139,6 +139,11 @@ A3 拆分切断今日同处完成的逻辑（拼 text 同时 mark delivered+broa
 
 gateway 与 dispatch 互斥（由 `persisted.type` 决定），不会同时出现。
 
+> 上表是**重构当时**（复刻 prepend 链）的层清单，`server.js` 行号属于那个快照。之后新增的层
+> （`task-context` order 12、`cli-handoff` order 15、`turn-plan` order 18、`background-stopped` order 25）
+> 不在表里：**活清单以 `src/message-composer.js` 的工厂与 `tests/test-message-composer-golden.js`
+> Suite 1/2/5/7 为准**，本节只作为该次重构的验收记录保留。
+
 ---
 
 ## 四、composeMessage() 签名与行为

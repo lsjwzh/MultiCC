@@ -18,6 +18,8 @@
 /// is not mirrored in the other fails on both ends.
 library;
 
+import '../utils/format.dart';
+
 /// The server's palette, as ARGB. The client picks no colors of its own.
 ///
 /// These four are a verbatim mirror of `COLOR` in `src/quota/quota-bar-view.js`
@@ -58,9 +60,10 @@ class QuotaBar {
 }
 
 /// Time left, coarsening as it grows: minutes under an hour, one decimal of an
-/// hour under a day, then days. Never returns '' for a real deadline — a
-/// deadline in the past reads as "1m", so a segment's separators are safe to
-/// bake into the server-rendered string.
+/// hour under a day, then days. Never returns '' for a real deadline, so a
+/// segment's separators are safe to bake into the server-rendered string; a
+/// deadline that has already passed is handled by [resolveQuotaText] (已重置),
+/// which is the only caller.
 String humanizeCountdown(num? ms) {
   if (ms == null || !ms.isFinite || ms < 0) return '';
   final totalH = ms / 3600000;
@@ -79,28 +82,37 @@ String humanizeCountdown(num? ms) {
 
 /// How long ago a fetch landed. This is the number that tells the user whether
 /// the bar in front of them is worth believing.
+///
+/// The table lives in utils/format.dart ([formatRelativeTime]) together with the
+/// web copy in public/shared/format.js; this wrapper only pins the compact
+/// seconds tier (`57s 前`, not `57 秒前`) the bar's narrow strip needs — the
+/// same `compact: true` the web module passes. Before that the three strings
+/// here were written out by hand and hardcoded in Chinese, so an English bar
+/// said `5 分钟前`.
 String relativeAgo(num? tsMs, int nowMs) {
-  if (tsMs == null || !tsMs.isFinite || tsMs <= 0) return '';
-  var sec = ((nowMs - tsMs) / 1000).floor();
-  if (sec < 0) sec = 0;
-  if (sec < 5) return '刚刚';
-  if (sec < 60) return '${sec}s 前';
-  final min = sec ~/ 60;
-  if (min < 60) return '$min 分钟前';
-  final h = min ~/ 60;
-  if (h < 24) return '$h 小时前';
-  return '${h ~/ 24} 天前';
+  if (tsMs == null || !tsMs.isFinite) return '';
+  return formatRelativeTime(tsMs.toInt(), nowMs: nowMs, compact: true);
 }
 
 final RegExp _token = RegExp(r'\{(cd|ago):(-?\d+)\}');
+
+/// A deadline that is already past is NOT "one minute left". The window has
+/// rolled, and the percentage printed next to it belongs to the window that
+/// just ended — a bar restored from cache hours later would otherwise read
+/// "5h 93% 1m", i.e. 93% used with a minute to go, which is the most misleading
+/// thing this bar can say. Say what happened instead. The segment stays
+/// non-empty, which is what keeps the separators the server baked in (see
+/// [humanizeCountdown]) safe to expand. Mirrors `ROLLED_WINDOW` in
+/// public/quota-bar-view.js.
+const String rolledWindowText = '已重置';
 
 String resolveQuotaText(String? text, int nowMs) {
   if (text == null || text.isEmpty || !text.contains('{')) return text ?? '';
   return text.replaceAllMapped(_token, (m) {
     final at = int.tryParse(m.group(2) ?? '') ?? 0;
-    return m.group(1) == 'cd'
-        ? humanizeCountdown((at - nowMs) < 0 ? 0 : (at - nowMs))
-        : relativeAgo(at, nowMs);
+    if (m.group(1) != 'cd') return relativeAgo(at, nowMs);
+    final left = at - nowMs;
+    return left > 0 ? humanizeCountdown(left) : rolledWindowText;
   });
 }
 

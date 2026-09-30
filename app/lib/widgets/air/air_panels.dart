@@ -6,6 +6,7 @@ import '../../services/air_service.dart';
 import '../../services/attachment_picker.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
+import '../../utils/cli_display.dart';
 import '../marquee_text.dart';
 import '../voice_input_button.dart';
 import 'air_role_editor.dart';
@@ -255,7 +256,8 @@ class _DirectoryCard extends StatelessWidget {
                       directory.external
                           ? '共享工作区'
                                 '${directory.interactive ? '' : ' · 授权已失效'}'
-                          : '${tasks.length} 个任务 · $active 个未完成 · ${directory.worktreeCount} 个 Worktree',
+                          : '${tasks.length} 个任务 · $active 个未完成'
+                                ' · ${airWorktreeSummary(directory)}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -406,6 +408,10 @@ class AirTaskTile extends StatelessWidget {
               Row(
                 children: [
                   AirTaskStatusBadge(task: task, fontSize: 10.5),
+                  if (task.worktreeChanges?.pending == true) ...[
+                    const SizedBox(width: 6),
+                    AirWorktreeChangeBadge(task: task),
+                  ],
                   // 副行自己吃掉剩下的宽度（空着也占着），时间才总在行尾。
                   const SizedBox(width: 8),
                   Expanded(
@@ -487,83 +493,80 @@ class AirStatusBadge extends StatelessWidget {
   }
 }
 
-/// 当前目录那一块统计 —— 四张卡与 Web `air.js` 的 `renderDirectoryOverview()`
-/// 一一对应：进行中 / 计划任务 / 已完成 / 全部记录，连副标题都照抄。
-///
-/// 取值全部用同一份判定：「进行中」排除生命周期已完结的 `done`/`archived`，
-/// 「正在执行」只认注册表的 spinner（`airTaskRunning`），「计划任务」是
-/// `recordType === 'planned'` 且还没跑起来的那批。从前这里算的是另一组数
-/// （任务/未完成/执行中/待回答），同一份快照在 Web 和 App 上会得出四个不同的
-/// 数字，看上去像两套后端。
+/// Directory counters and quick filters share the Web status semantics.
 class AirDirectoryStats extends StatelessWidget {
   const AirDirectoryStats({
     super.key,
     required this.tasks,
     this.worktreeCount = 0,
+    this.onFilter,
   });
 
   final List<AirTask> tasks;
   final int worktreeCount;
+  final ValueChanged<AirDirectoryTaskFilter>? onFilter;
 
   @override
   Widget build(BuildContext context) {
-    final current = tasks
-        .where((task) => task.status != 'done' && task.status != 'archived')
-        .toList();
-    final running = current.where(airTaskRunning);
-    final planned = current.where(
-      (task) => task.recordType == 'planned' && !airTaskRunning(task),
-    );
-    final done = tasks.where((task) => task.status == 'done').length;
-    final archived = tasks.where((task) => task.status == 'archived').length;
-    final tiles = <Widget>[
-      _StatTile(
-        label: '进行中',
-        value: '${current.length}',
-        detail: '${running.length} 个正在执行',
-        tone: _StatTone.blue,
-      ),
-      _StatTile(label: '计划任务', value: '${planned.length}', detail: '待开始或继续规划'),
-      _StatTile(
-        label: '已完成',
-        value: '$done',
-        detail: '仍保留在本目录',
-        tone: _StatTone.green,
-      ),
-      _StatTile(
-        label: '全部记录',
-        value: '${tasks.length}',
-        detail: '$archived 个已归档 · $worktreeCount 个 WT',
-      ),
+    final archived = tasks
+        .where(AirDirectoryTaskFilter.archived.matches)
+        .length;
+    const filters = [
+      AirDirectoryTaskFilter.running,
+      AirDirectoryTaskFilter.waiting,
+      AirDirectoryTaskFilter.error,
+      AirDirectoryTaskFilter.succeeded,
+      AirDirectoryTaskFilter.all,
     ];
-    // Web `air.css` 的 `@media (max-width: 1040px)` 把 `#directory-stats` 从四列
-    // 改成两列 —— 手机上四张卡挤成一排，副标题会被截成「待开始或继…」，那行字
-    // 正是这张卡要说的意思。断点跟着 Web 走，两端的列数就不会分岔。
-    if (MediaQuery.sizeOf(context).width > 1040)
-      return Row(children: _spread(tiles));
-    return Column(
-      children: [
-        Row(children: _spread(tiles.sublist(0, 2))),
-        const SizedBox(height: 10),
-        Row(children: _spread(tiles.sublist(2, 4))),
-      ],
+    final tiles = [
+      for (final filter in filters)
+        _StatTile(
+          key: ValueKey('air-stat-${filter.name}'),
+          label: filter.label,
+          value: '${tasks.where(filter.matches).length}',
+          detail: switch (filter) {
+            AirDirectoryTaskFilter.succeeded => '仍保留在本目录',
+            AirDirectoryTaskFilter.all =>
+              '$archived 个已归档 · $worktreeCount 个 WT',
+            _ => '',
+          },
+          tone: switch (filter) {
+            AirDirectoryTaskFilter.running => _StatTone.blue,
+            AirDirectoryTaskFilter.waiting => _StatTone.amber,
+            AirDirectoryTaskFilter.error => _StatTone.red,
+            AirDirectoryTaskFilter.succeeded => _StatTone.green,
+            _ => _StatTone.plain,
+          },
+          onTap: onFilter == null ? null : () => onFilter!(filter),
+        ),
+    ];
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth > 1040 ? 5 : 2;
+        return Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            for (var i = 0; i < tiles.length; i++)
+              SizedBox(
+                width: columns == 2 && i == tiles.length - 1
+                    ? constraints.maxWidth
+                    : (constraints.maxWidth - (columns - 1) * 10) / columns,
+                child: tiles[i],
+              ),
+          ],
+        );
+      },
     );
   }
-
-  static List<Widget> _spread(List<Widget> tiles) => [
-    for (var i = 0; i < tiles.length; i++) ...[
-      if (i > 0) const SizedBox(width: 10),
-      Expanded(child: tiles[i]),
-    ],
-  ];
 }
 
-/// Web `air.css` 的 `.directory-stat`：卡片顶上那截 18×3 的色条只有 blue/green
-/// 两种，其余两张是默认灰。色条是「哪张卡值得先看」的唯一提示，别省。
-enum _StatTone { plain, blue, green }
+enum _StatTone { plain, blue, green, amber, red }
 
 class _StatTile extends StatelessWidget {
   const _StatTile({
+    super.key,
+    this.onTap,
     required this.label,
     required this.value,
     required this.detail,
@@ -574,58 +577,65 @@ class _StatTile extends StatelessWidget {
   final String value;
   final String detail;
   final _StatTone tone;
+  final VoidCallback? onTap;
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-    decoration: BoxDecoration(
-      color: AppColors.panel,
-      borderRadius: BorderRadius.circular(AppColors.radiusCard),
-      border: Border.all(color: AppColors.line),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 18,
-          height: 3,
-          margin: const EdgeInsets.only(bottom: 6),
-          decoration: BoxDecoration(
-            color: switch (tone) {
-              _StatTone.blue => const Color(0xFF4D9BEA),
-              _StatTone.green => const Color(0xFF43B88A),
-              _StatTone.plain => const Color(0xFFAEBFD0),
-            },
-            borderRadius: BorderRadius.circular(4),
-          ),
-        ),
-        Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: Color(0xFF6D8094), fontSize: 10),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 2),
-          child: Text(
-            value,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Color(0xFF2D4D68),
-              fontSize: 19,
-              height: 1.1,
-              fontWeight: FontWeight.w700,
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(AppColors.radiusCard),
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(AppColors.radiusCard),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 18,
+            height: 3,
+            margin: const EdgeInsets.only(bottom: 6),
+            decoration: BoxDecoration(
+              color: switch (tone) {
+                _StatTone.blue => const Color(0xFF4D9BEA),
+                _StatTone.green => const Color(0xFF43B88A),
+                _StatTone.plain => const Color(0xFFAEBFD0),
+                _StatTone.amber => const Color(0xFFE3B341),
+                _StatTone.red => const Color(0xFFDA3633),
+              },
+              borderRadius: BorderRadius.circular(4),
             ),
           ),
-        ),
-        Text(
-          detail,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: Color(0xFF8A9AAB), fontSize: 10.5),
-        ),
-      ],
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Color(0xFF6D8094), fontSize: 10),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Color(0xFF2D4D68),
+                fontSize: 19,
+                height: 1.1,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Text(
+            detail,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Color(0xFF8A9AAB), fontSize: 10.5),
+          ),
+        ],
+      ),
     ),
   );
 }
@@ -661,6 +671,7 @@ class AirQuickComposer extends StatefulWidget {
     this.service,
     this.httpClient,
     this.autofocus = false,
+    this.docked = false,
   });
 
   /// 角色库（`/api/agent-presets`）要走服务地址和令牌，角色编辑器需要它。
@@ -668,6 +679,10 @@ class AirQuickComposer extends StatefulWidget {
   final List<String> clis;
   final bool busy;
   final AirService? service;
+
+  /// 贴底可伸缩模式（目录首页用）：空闲时收成一行贴底输入条（同聊天页 InputBar
+  /// 的形态），聚焦或有草稿/附件时才展开成整块创建面板；弹层里那一份保持常开。
+  final bool docked;
 
   /// 线路面板要先拉这个 CLI 的 Provider 池。宿主已经有客户端的就传进来，
   /// 测试拿它桩掉整条线。
@@ -714,15 +729,56 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   /// 那格整行掉到下面一行），这里跟着摆。
   String _voiceStatus = '';
 
+  /// 贴底模式的展开态。收起/展开跟着焦点和草稿走：聚焦或有字/有附件就展开，
+  /// 失焦且空草稿就收回去 —— 输入条不该在没人用时占着半屏。
+  bool _expanded = false;
+  final _focus = FocusNode();
+
   @override
   void initState() {
     super.initState();
-    _cli = widget.clis.isEmpty ? 'claude' : widget.clis.first;
+    // 任务的线路是 chat 线路：取列表里第一条能作 chat 的车道 —— 一次性
+    // `claude -p` / `codex exec` 已经不在 chat 的选择里了（服务端 cli-capability 的
+    // kinds 列），所以这里也不再默认到它们。
+    _cli = widget.clis.firstWhere(
+      (cli) => cliOffersIn(cli, 'chat'),
+      orElse: () => 'claude-exp',
+    );
     _runtime = AirTaskRuntime(cli: _cli);
+    _focus.addListener(_onFocusChanged);
+    _controller.addListener(_onDraftChanged);
+  }
+
+  void _onFocusChanged() {
+    if (!widget.docked) return;
+    if (_focus.hasFocus) {
+      if (!_expanded) setState(() => _expanded = true);
+    } else if (_expanded &&
+        _controller.text.trim().isEmpty &&
+        _attachments.isEmpty) {
+      setState(() => _expanded = false);
+    }
+  }
+
+  /// 点收起条：先展开，等展开面板里那颗真输入框挂上之后再要焦点 —— 键盘走
+  /// 正常的「聚焦抬起」路径，而不是靠换组件时把焦点搬过去（那条路 iOS 不抬）。
+  void _expandAndFocus() {
+    setState(() => _expanded = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focus.requestFocus();
+    });
+  }
+
+  void _onDraftChanged() {
+    // 收起条上那一行字读的是草稿（🎙 写进来的也算），不在展开态才需要重建。
+    if (widget.docked && !_expanded) setState(() {});
   }
 
   @override
   void dispose() {
+    _focus.removeListener(_onFocusChanged);
+    _focus.dispose();
+    _controller.removeListener(_onDraftChanged);
     _controller.dispose();
     _roundsCtrl.dispose();
     _budgetCtrl.dispose();
@@ -782,6 +838,9 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   }
 
   Future<void> _pickCli() async {
+    // 开弹层前先收焦点：弹层关掉时焦点会还给输入框，贴底条就会莫名其妙
+    // 又展开一次。先 unfocus，焦点监听会把空草稿的展开态收回去。
+    _focus.unfocus();
     final choice = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: AppColors.panel,
@@ -805,9 +864,26 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                 ),
               ),
             ),
-            for (final cli in widget.clis)
+            // 名字走唯一那份 CLI 展示表；小字是这条车道底下的引擎（扶正的两条常驻
+            // 车道写引擎产品名，其余车道写自己的 id，跟名字重复就不重复画）。一次性
+            // 车道不在任务的候选里 —— 它们属于终端 —— 但当前那条永远留着。
+            for (final cli in widget.clis.where(
+              (c) => c == _cli || cliOffersIn(c, 'chat'),
+            ))
               ListTile(
-                title: Text(cli, style: const TextStyle(color: AppColors.text)),
+                title: Text(
+                  cliDisplayName(cli),
+                  style: const TextStyle(color: AppColors.text),
+                ),
+                subtitle: cliEngine(cli) == cli
+                    ? null
+                    : Text(
+                        cliEngine(cli),
+                        style: const TextStyle(
+                          color: AppColors.muted,
+                          fontSize: 11,
+                        ),
+                      ),
                 trailing: cli == _cli
                     ? const Icon(Icons.check_rounded, color: AppColors.accent)
                     : null,
@@ -829,6 +905,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   /// 给新任务挑线路、模型和推理强度。结果先留在这一层，等创建任务时随
   /// `POST /api/air/tasks` 一起写下去 —— 第一条消息就按它执行（同 Web Air）。
   Future<void> _editRuntime() async {
+    _focus.unfocus();
     final picked = await showAirTaskRuntimeEditor(
       context,
       settings: widget.settings,
@@ -842,6 +919,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   /// 建出任务、发第一条消息之前再写下去 —— 绑定说的是「下一条消息」，那条消息
   /// 正是紧接着要发的那条。
   Future<void> _editRoles() async {
+    _focus.unfocus();
     final edited = await showAirRoleEditor(
       context,
       settings: widget.settings,
@@ -851,8 +929,127 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     if (edited != null && mounted) setState(() => _roles = edited);
   }
 
+  /// 提交草稿（收起条的发送键和展开面板的「创建并执行」走同一条流水线）。
+  Future<void> _submit() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty) return;
+    final rounds = _readLimit(_roundsCtrl, max: 200);
+    final budget = _readLimit(_budgetCtrl);
+    final sent = await widget.onSubmit(
+      text: _composedText(text),
+      cli: _cli,
+      runtime: _runtime,
+      roles: _roles,
+      goal: _goal,
+      goalRounds: _goal ? rounds : null,
+      goalBudget: _goal ? budget : null,
+    );
+    if (!sent || !mounted) return;
+    // 任务建出去了才清草稿；角色和线路也一起清 —— 一个任务
+    // 的上下文不该悄悄漏进下一个任务。附件同样清掉：它已经
+    // 随正文交出去了，留着会跟着下一个任务再发一遍。
+    setState(() {
+      _controller.clear();
+      _roles = const [];
+      _runtime = AirTaskRuntime(cli: _cli);
+      _goal = false;
+      _attachments.clear();
+      _attachError = '';
+      _roundsCtrl.text = '200';
+      _budgetCtrl.clear();
+    });
+    // 贴底模式交完就收键盘：焦点监听会把空草稿的展开态一起收回去。
+    if (widget.docked) _focus.unfocus();
+  }
+
+  /// 贴底收起态：一行输入条（形态同聊天页 InputBar）。聚焦即展开成整块面板，
+  /// 所以这里只留「写一句话 + 发送」和最少的状态提示（🎯 / 附件角标）。
+  Widget _buildCollapsedBar() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(AppColors.radiusPanel),
+        border: Border.all(color: AppColors.line),
+      ),
+      padding: const EdgeInsets.all(6),
+      child: Row(
+        children: [
+          IconButton(
+            key: const ValueKey('air-quick-attach'),
+            onPressed: widget.busy || _uploading ? null : _pickAttach,
+            iconSize: 19,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            visualDensity: VisualDensity.compact,
+            tooltip: '上传图片或文件',
+            icon: Icon(
+              _uploading
+                  ? Icons.hourglass_top_rounded
+                  : Icons.attach_file_rounded,
+              color: AppColors.faint,
+            ),
+          ),
+          Expanded(
+            // 收起条里不放真输入框：焦点落在它身上再换组件展开，iOS 的键盘
+            // 不会跟着新 EditableText 再抬起来。这里只做样子，点一下先展开、
+            // 再把焦点请求到展开面板里那颗真输入框上（常规路径，键盘正常）。
+            child: GestureDetector(
+              key: const ValueKey('air-quick-input'),
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.busy ? null : _expandAndFocus,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 9,
+                ),
+                child: Text(
+                  _controller.text.isEmpty ? '描述要完成的任务…' : _controller.text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: _controller.text.isEmpty
+                        ? AppColors.faint
+                        : AppColors.text,
+                    fontSize: 13.5,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          if (_goal)
+            const Padding(
+              padding: EdgeInsets.only(left: 6),
+              child: Text('🎯', style: TextStyle(fontSize: 15)),
+            ),
+          if (_attachments.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 6),
+              child: Icon(
+                Icons.attach_file_rounded,
+                size: 15,
+                color: AppColors.accent,
+              ),
+            ),
+          IconButton(
+            key: const ValueKey('air-quick-submit'),
+            onPressed: widget.busy ? null : _submit,
+            iconSize: 20,
+            constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
+            visualDensity: VisualDensity.compact,
+            tooltip: '创建并执行',
+            icon: Icon(
+              Icons.send_rounded,
+              color: widget.busy ? AppColors.faint : AppColors.accentDark,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (widget.docked && !_expanded) return _buildCollapsedBar();
     return Container(
       decoration: BoxDecoration(
         color: AppColors.panel,
@@ -925,6 +1122,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
           TextField(
             key: const ValueKey('air-quick-input'),
             controller: _controller,
+            focusNode: _focus,
             autofocus: widget.autofocus,
             maxLines: 4,
             minLines: 3,
@@ -1039,6 +1237,23 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                         color: AppColors.faint,
                       ),
                     ),
+                    IconButton(
+                      key: const ValueKey('air-quick-hide-keyboard'),
+                      onPressed: () =>
+                          FocusManager.instance.primaryFocus?.unfocus(),
+                      iconSize: 19,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      tooltip: '收起键盘',
+                      icon: const Icon(
+                        Icons.keyboard_hide_rounded,
+                        color: AppColors.faint,
+                      ),
+                    ),
                     Tooltip(
                       message: '以 Goal 模式发送：先预检目标与完成标准',
                       child: FilterChip(
@@ -1062,37 +1277,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               const SizedBox(width: 4),
               FilledButton(
                 key: const ValueKey('air-quick-submit'),
-                onPressed: widget.busy
-                    ? null
-                    : () async {
-                        final text = _controller.text.trim();
-                        if (text.isEmpty) return;
-                        final rounds = _readLimit(_roundsCtrl, max: 200);
-                        final budget = _readLimit(_budgetCtrl);
-                        final sent = await widget.onSubmit(
-                          text: _composedText(text),
-                          cli: _cli,
-                          runtime: _runtime,
-                          roles: _roles,
-                          goal: _goal,
-                          goalRounds: _goal ? rounds : null,
-                          goalBudget: _goal ? budget : null,
-                        );
-                        if (!sent || !mounted) return;
-                        // 任务建出去了才清草稿；角色和线路也一起清 —— 一个任务
-                        // 的上下文不该悄悄漏进下一个任务。附件同样清掉：它已经
-                        // 随正文交出去了，留着会跟着下一个任务再发一遍。
-                        setState(() {
-                          _controller.clear();
-                          _roles = const [];
-                          _runtime = AirTaskRuntime(cli: _cli);
-                          _goal = false;
-                          _attachments.clear();
-                          _attachError = '';
-                          _roundsCtrl.text = '200';
-                          _budgetCtrl.clear();
-                        });
-                      },
+                onPressed: widget.busy ? null : _submit,
                 style: FilledButton.styleFrom(
                   backgroundColor: AppColors.accentDark,
                   minimumSize: const Size(0, 36),

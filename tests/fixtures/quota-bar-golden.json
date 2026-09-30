@@ -499,7 +499,7 @@
       }
     },
     {
-      "name": "cd-past-deadline-reads-1m",
+      "name": "cd-past-deadline-reads-rolled",
       "bar": {
         "text": "x {cd:1699999999000}",
         "color": "#58a6ff",
@@ -508,7 +508,7 @@
       },
       "state": null,
       "expected": {
-        "text": "x 1m",
+        "text": "x 已重置",
         "colorHex": "#58a6ff",
         "title": "",
         "action": null

@@ -36,6 +36,7 @@ const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 const { rememberClaudeScrape, renderClaudeBar } = require('../quota/claude-bar-state');
 const { fetchUsage, USAGE_URL } = require('../claude-auth/official-oauth');
+const { fetchCliUsage } = require('../quota/claude-cli-oauth');
 
 const CDP_TIMEOUT_MS = Number(process.env.CLAUDE_QUOTA_TIMEOUT_MS || 15000);
 function panelTextTimeoutMs() {
@@ -188,6 +189,48 @@ function summarizeUsageText(text, nowMs = Date.now()) {
   return hits.length ? hits : null;
 }
 
+// claude.ai renders the settings/usage panel from its own JSON API:
+//
+//   GET /api/organizations               → [ { uuid, ... } ]
+//   GET /api/organizations/<uuid>/usage  → { five_hour: { utilization, resets_at }, seven_day: … }
+//
+// Running that fetch INSIDE the page means the browser's claude.ai cookies and
+// its Cloudflare clearance both apply, so this is a plain JSON read of exactly
+// the numbers the panel prints — no hydration wait, no per-locale label
+// matching, exact reset timestamps. The body is the same shape as the OAuth
+// control plane, so it reuses summarizeOAuthUsage.
+//
+// A non-object answer (401 from the login screen, a Cloudflare challenge page,
+// a future API rename) is `null`: the text scrape below still owns that case.
+const USAGE_API_SCRIPT = `(async () => {
+  try {
+    const orgs = await fetch('/api/organizations', { headers: { accept: 'application/json' } });
+    if (!orgs.ok) return { error: 'orgs_http_' + orgs.status };
+    const list = await orgs.json();
+    const org = Array.isArray(list) ? list.find((o) => o && o.uuid) : null;
+    if (!org) return { error: 'no_org' };
+    const usage = await fetch('/api/organizations/' + org.uuid + '/usage', { headers: { accept: 'application/json' } });
+    if (!usage.ok) return { error: 'usage_http_' + usage.status };
+    return { usage: await usage.json() };
+  } catch (err) { return { error: String((err && err.message) || err) }; }
+})()`;
+
+async function readClaudeUsageApi(page) {
+  let body;
+  try { body = await page.evaluate(USAGE_API_SCRIPT, { awaitPromise: true }); } catch (_) { return null; }
+  if (!body || body.error || !body.usage) return null;
+  const summary = summarizeOAuthUsage(body.usage);
+  if (!summary) return null;
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    source: 'usage-api',
+    url: CLAUDE_USAGE_URL,
+    summary,
+    usage: body.usage,
+  };
+}
+
 async function readClaudeUsageFromPage(page) {
   await page.enable(['Runtime', 'Page']);
   await page.navigate(CLAUDE_USAGE_URL);
@@ -205,6 +248,10 @@ async function readClaudeUsageFromPage(page) {
   }, { timeoutMs: Math.floor(CDP_TIMEOUT_MS / 2) });
   if (!settled) return { status: 'unavailable', error: 'usage page never settled' };
   if (hitLogin) return { status: 'needs_login', error: 'claude.ai 登录态缺失，点余量徽标可打开登录窗口' };
+
+  // 1b. Ask the page for its own JSON before waiting on the rendered panel.
+  const viaApi = await readClaudeUsageApi(page);
+  if (viaApi) return viaApi;
 
   // 2. Wait for the usage panel itself (percentages + window markers), not the
   //    shell. The SPA hydrates asynchronously, so it gets the larger budget.
@@ -227,36 +274,56 @@ async function readClaudeUsageFromPage(page) {
 // ── source 1: official-account OAuth control plane ─────────────────────────
 // The usage endpoint's windows → the unified tokens every quota surface
 // renders. Labels mirror the scraped page's own wording so a bar reading
-// that switches source mid-day reads the same. utilization is a 0..1
-// fraction (the per-account manage UI already assumes this shape).
+// that switches source mid-day reads the same.
+//
+// SCALE: `utilization` is a 0..100 PERCENT, not a 0..1 fraction. Measured live
+// against both producers (api.anthropic.com/api/oauth/usage and claude.ai's own
+// /api/organizations/<uuid>/usage, 2026-09-29): five_hour.utilization === 100
+// while the same response's limits[] says { kind:'session', percent:100 }, and
+// seven_day was 9 (9%) — the old clamp to 0..1 rendered that week as 100%.
+// `limits[]` is preferred where present: same number, but it also names the
+// window (session / weekly_all) and carries severity.
 const OAUTH_WINDOWS = Object.freeze([
   { key: 'five_hour', window: '5h', label: 'Current session' },
   { key: 'seven_day', window: '1wk', label: 'All models' },
   { key: 'seven_day_opus', window: '1wk', label: 'Opus' },
   { key: 'seven_day_sonnet', window: '1wk', label: 'Sonnet' },
 ]);
+// Kind → the window OBJECT it replaces. Keyed by object name, not by the '1wk'
+// label: three entries above share that label, so a label-keyed lookup would
+// emit one weekly limit as three rows (Opus and Sonnet included).
+const LIMIT_KIND_TO_KEY = Object.freeze({ session: 'five_hour', weekly_all: 'seven_day' });
 
 function summarizeOAuthUsage(usage) {
   if (!usage || typeof usage !== 'object') return null;
+  const limits = Array.isArray(usage.limits) ? usage.limits : [];
+  const limitByKey = {};
+  for (const limit of limits) {
+    const key = limit && LIMIT_KIND_TO_KEY[limit.kind];
+    if (key && limit.percent != null && Number.isFinite(Number(limit.percent))) limitByKey[key] = limit;
+  }
   const hits = [];
   for (const { key, window, label } of OAUTH_WINDOWS) {
     const w = usage[key];
-    if (!w || typeof w !== 'object') continue;
+    const limit = limitByKey[key];
+    const hasWindow = w && typeof w === 'object';
+    if (!limit && !hasWindow) continue;
     // A window that doesn't apply to this plan reports utilization:null. Check
     // it BEFORE Number() — Number(null) is 0 (finite), which would otherwise
     // emit a bogus 0% row for a window the account doesn't even have.
-    if (w.utilization == null) continue;
-    const utilization = Number(w.utilization);
-    if (!Number.isFinite(utilization)) continue;
-    const usedPercent = Math.round(Math.max(0, Math.min(1, utilization)) * 1000) / 10;
-    const resetMs = w.resets_at ? Date.parse(String(w.resets_at)) : NaN;
+    const raw = limit ? Number(limit.percent) : Number(w.utilization);
+    if (!limit && w.utilization == null) continue;
+    if (!Number.isFinite(raw)) continue;
+    const usedPercent = Math.round(Math.max(0, Math.min(100, raw)) * 10) / 10;
+    const resetAt = (limit && limit.resets_at) || (w && w.resets_at) || null;
+    const resetMs = resetAt ? Date.parse(String(resetAt)) : NaN;
     hits.push({
       window,
       label,
       usedPercent,
       percent: usedPercent,
       resetMs: Number.isFinite(resetMs) ? resetMs : null,
-      line: `${key}: ${utilization}`,
+      line: `${limit ? `${limit.kind}: ${raw}` : `${key}: ${raw}`}`,
     });
   }
   return hits.length ? hits : null;
@@ -331,11 +398,48 @@ async function fetchClaudeUsageViaOAuth() {
   return null;
 }
 
+// ── source 1b: the Claude Code CLI's own keychain credential ───────────────
+// Same control plane as above, but the token comes from the CLI's credential
+// store instead of a multicc-managed account. This is the common case on a
+// machine where the user runs Claude Code: it answers for the account the CLI
+// spends, needs no browser and no login in multicc's own quota profile.
+let cliUsageSource = fetchCliUsage;
+
+function configureClaudeCliUsageSource(source) {
+  cliUsageSource = typeof source === 'function' ? source : fetchCliUsage;
+}
+
+async function fetchClaudeUsageViaCli() {
+  let read;
+  try { read = await cliUsageSource(); } catch (_) { return null; }
+  if (!read || !read.usage) return null;
+  const summary = summarizeOAuthUsage(read.usage);
+  if (!summary) return null;
+  const store = read.account && read.account.store;
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    source: 'cli-oauth',
+    url: USAGE_URL,
+    account: {
+      id: (read.account && read.account.id) || 'cli',
+      label: (read.account && read.account.label) || 'Claude Code CLI',
+      email: (read.account && read.account.email) || '',
+      subscriptionType: (read.account && read.account.subscriptionType) || '',
+      store: store || '',
+    },
+    summary,
+    usage: read.usage,
+  };
+}
+
 // ── source 2: CDP scrape of claude.ai/settings/usage ───────────────────────
 
 async function fetchClaudeUsage() {
   const viaOAuth = await fetchClaudeUsageViaOAuth();
   if (viaOAuth) return viaOAuth;
+  const viaCli = await fetchClaudeUsageViaCli();
+  if (viaCli) return viaCli;
 
   const managed = getManagedQuotaBrowser();
   const sources = [
@@ -426,8 +530,11 @@ module.exports = {
   mountClaudeUsageQuotaRoutes,
   fetchClaudeUsage,
   fetchClaudeUsageViaOAuth,
+  fetchClaudeUsageViaCli,
   summarizeOAuthUsage,
   configureClaudeOAuthSource,
+  configureClaudeCliUsageSource,
+  readClaudeUsageApi,
   summarizeUsageText,
   usagePanelReady,
   windowTokenForLabel,

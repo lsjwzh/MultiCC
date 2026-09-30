@@ -28,7 +28,7 @@ function normalizeSubagentInput({ cli, provider = null, subagent = null, validPr
   if (!model) return { ok: false, error: 'subagent model required' };
   if (appType === 'codex') {
     // Codex materializes a second model_provider from the sub-task route, so it
-    // needs a main provider to fall back to and an endpoint it can actually call.
+    // needs a main provider and either an HTTP endpoint or the official relay.
     if (!provider) return { ok: false, error: 'Codex subagent routing requires a selected main provider' };
     if (!providers.codexProviderProxyable(v.value)) {
       return { ok: false, error: 'Codex subagent provider has no callable HTTP endpoint' };

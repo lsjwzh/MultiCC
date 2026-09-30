@@ -30,6 +30,7 @@ The AI Assistant is the core background service for intent classification, task 
 - Configured from its own console page in the Air console (Settings › AI & execution) — a lightweight flash-tier model is enough.
 - Run records are visible on the same page.
 - Works alongside the per-session AI configuration pill in the new-task composer.
+- **Runs as a concurrent pool** (5 slots by default, `MULTICC_AUX_CONCURRENCY`) instead of one serial lane: judges for different sessions no longer queue behind each other, interactive work (Goal precheck, console commands) is inserted ahead of opportunistic background jobs, and two aux tasks carrying the same session key never overlap — so a session's successive judgements stay strictly oldest-first. The few jobs that must be strictly ordered (memory distill/review, which write shared memory folders and advance the review cursor) keep a single-slot lane of their own. The console page shows `active/capacity` plus the queue depth for both.
 
 ## Multi-provider support
 
@@ -202,7 +203,7 @@ A single operational surface for everything:
 
 - **Tailscale Funnel**: one-click toggle in `/manage` to expose your MultiCC server to the public internet via Tailscale.
 - **花生壳 (phtunnel) monitor**: optional shell watchdog that restarts the DDNS client if the public URL goes unreachable.
-- **SakuraFrp (樱花frp)**: CLI-based tunnel provider with launcher detection, diagnostics, and monitoring — falls back to a local `frpc` binary when no launcher is configured.
+- **SakuraFrp (樱花frp)**: CLI-based tunnel provider with launcher detection, diagnostics, and monitoring — falls back to a local `frpc` binary when no launcher is configured. The standalone `frpc` client is an advanced setup MultiCC does **not** install for you: the Air tunnel page links to the official download, then re-checks whether the binary is on the PATH (or in `~/.multicc/bin`).
 - All three tunnel modes are managed from the dashboard with live status indicators.
 
 ## Security

@@ -11,9 +11,14 @@ test('Air themes restored/live messages, expanded tools, diagnostics and artifac
       'content-type': file.endsWith('.js') ? 'text/javascript' : 'text/css',
     } };
   }
+  for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(f => f.endsWith('.js'))) {
+    routes[`/shared/${file}`] = { body: fs.readFileSync(path.join(publicDir, 'shared', file)), headers: { 'content-type': 'text/javascript' } };
+  }
   // Keep the real Chat DOM and every local stylesheet; isolate the renderer
   // from live sessions and network boot. Markup is a saved highlighter output.
-  const scripts = ['error-envelope', 'status-presentation', 'chat-token-readout', 'chat-usage-readout',
+  // shared/format.js 排在渲染器前面，跟 chat.html 里的顺序一致：下面这几个模块的
+  // 数字（时长 / token 数 / 用量色）都取那一份，缺了它渲染时就是 null.formatDuration。
+  const scripts = ['shared/format', 'error-envelope', 'status-presentation', 'chat-token-readout', 'chat-usage-readout',
     'chat-live-ui', 'chat-history-view', 'chat-user-input-card', 'task-artifacts', 'chat-air-toolbar'];
   const html = fs.readFileSync(path.join(publicDir, 'chat.html'), 'utf8')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '')
@@ -96,6 +101,17 @@ test('Air themes restored/live messages, expanded tools, diagnostics and artifac
       live.renderApiError({state:'retry_wait',provider:'demo',httpStatus:429,category:'quota',message:'稍后自动重试'});
     })()`);
     for(const x of await inspect(['.diff-add','.diff-del','.diff-hunk','.diff-conflict','#api-error-bar']))assert.ok(x.lightness>.75 && x.contrast>=4.5,JSON.stringify(x));
+    // 异常对话的手动重试：失败态的错误条带一个「重试」按钮，点下去把倒计时交给宿主。
+    await page.evaluate(String.raw`(() => {
+      window.retryCalls=[];
+      const retryLive=MultiCCChatLiveUi.createLiveUi({document,window,messagesEl:document.getElementById('messages'),
+        onManualRetry:o=>{retryCalls.push(o.fallbackText);o.onTick(3);return {ok:true};}});
+      retryLive.renderApiError({state:'failed',provider:'demo',httpStatus:500,category:'server_error',message:'上游 500'});
+      document.querySelector('#api-error-bar .api-error-retry').click();
+    })()`);
+    assert.ok(await page.waitFor('document.querySelector("#api-error-bar .api-error-retry").textContent==="已重新提交"'),'重试按钮走完一轮');
+    assert.equal(await page.evaluate('retryCalls.length'),1);
+    for(const x of await inspect(['#api-error-bar .api-error-retry']))assert.ok(x.contrast>=4.5,JSON.stringify(x));
     // Theme removal verifies fallback colors still work on legacy Chat.
     await page.evaluate('document.body.classList.remove("air-chat")');
     assert.equal(await page.evaluate('getComputedStyle(document.querySelector(".tool-body")).backgroundColor'),'rgb(13, 17, 23)');

@@ -20,11 +20,14 @@ ToolCall _tool({
   isError: isError,
 );
 
-Widget _trajectoryHost(List<ToolCall> tools) => MaterialApp(
+Widget _trajectoryHost(List<ToolCall> tools, {int? turnDurationMs}) => MaterialApp(
   home: Scaffold(
     body: Align(
       alignment: Alignment.topLeft,
-      child: SizedBox(width: 200, child: ToolTrajectory(toolCalls: tools)),
+      child: SizedBox(
+        width: 200,
+        child: ToolTrajectory(toolCalls: tools, turnDurationMs: turnDurationMs),
+      ),
     ),
   ),
 );
@@ -83,6 +86,55 @@ void main() {
     expect(find.textContaining('wall-clock'), findsNothing);
   });
 
+  testWidgets('wall-clock spans the whole turn when the server stamped LLM time', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _trajectoryHost(
+        [
+          _tool(id: 'a', name: 'Bash', startedAt: 0, endedAt: 5000),
+          _tool(
+            id: 'b',
+            name: 'Read',
+            startedAt: 7500,
+            endedAt: 10000,
+            isError: true,
+          ),
+        ],
+        turnDurationMs: 20000,
+      ),
+    );
+
+    expect(find.byKey(const Key('tool-trajectory')), findsOneWidget);
+    // 墙钟含大模型请求时间：标签说 20s，不是工具自己那 10s。
+    expect(find.text('⏱ 2 tools · 20s wall-clock'), findsOneWidget);
+    final track = tester.getRect(
+      find.byKey(const Key('tool-trajectory-track')),
+    );
+    final first = tester.getRect(
+      find.byKey(const ValueKey('tool-trajectory-segment-0-ok')),
+    );
+    final second = tester.getRect(
+      find.byKey(const ValueKey('tool-trajectory-segment-1-error')),
+    );
+    expect(first.left - track.left, closeTo(0, 0.1));
+    expect(first.width, closeTo(track.width * 0.25, 0.1));
+    expect(second.left - track.left, closeTo(track.width * 0.375, 0.1));
+    expect(second.width, closeTo(track.width * 0.125, 0.1));
+
+    // 比工具窗口还小的 turn 时长不会把条缩到工具之下。
+    await tester.pumpWidget(
+      _trajectoryHost(
+        [
+          _tool(id: 'a', name: 'Bash', startedAt: 0, endedAt: 5000),
+          _tool(id: 'b', name: 'Read', startedAt: 7500, endedAt: 10000),
+        ],
+        turnDurationMs: 4000,
+      ),
+    );
+    expect(find.text('⏱ 2 tools · 10s wall-clock'), findsOneWidget);
+  });
+
   testWidgets('assistant bubble includes the trajectory under its tools', (
     tester,
   ) async {
@@ -93,6 +145,7 @@ void main() {
         _tool(id: 'a', name: 'Bash', startedAt: 1000, endedAt: 2500),
         _tool(id: 'b', name: 'Read', startedAt: 3000, endedAt: 3120),
       ],
+      durationMs: 8000,
     );
 
     await tester.pumpWidget(
@@ -103,6 +156,6 @@ void main() {
 
     expect(find.byType(ToolCallGroup), findsOneWidget);
     expect(find.byType(ToolTrajectory), findsOneWidget);
-    expect(find.text('⏱ 2 tools · 2.1s wall-clock'), findsOneWidget);
+    expect(find.text('⏱ 2 tools · 8.0s wall-clock'), findsOneWidget);
   });
 }

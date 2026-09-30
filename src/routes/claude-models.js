@@ -49,7 +49,20 @@ const CLAUDE_MODELS_FALLBACK = Object.freeze([
   { model: 'claude-haiku-4-5', label: 'Haiku 4.5' },
 ]);
 
-let cache = null; // { at: number, models: Array }
+let cache = null; // { at: number, models: Array, bundleKey?: string }
+
+// Identity of the bundle a cached list was extracted from. New model ids only
+// ever appear when the CLI is upgraded, and an upgrade swaps the realpath (or
+// at least mtime/size) — so keying the cache on it makes a fresh install show
+// its models on the next picker open instead of a day later (claude-opus-5-5
+// stayed hidden for a day after 2.1.280 landed purely because of the TTL).
+function bundleKey(file) {
+  if (!file) return '';
+  try {
+    const st = fs.statSync(file);
+    return `${file}:${st.mtimeMs}:${st.size}`;
+  } catch (_) { return ''; }
+}
 
 // Locate the live claude CLI bundle. `which claude` is typically a symlink
 // (~/.local/bin/claude → ~/.local/share/claude/versions/<ver>); resolve it so
@@ -174,17 +187,20 @@ function curateModels(result) {
 
 function listClaudeModels(options = {}, callback) {
   if (typeof options === 'function') { callback = options; options = {}; }
-  if (cache && (Date.now() - cache.at) < CLAUDE_TTL_MS) {
+  let bundle = '';
+  try { bundle = options.bundleFile || resolveClaudeBundle(options.home); } catch (_) { bundle = ''; }
+  const key = bundleKey(bundle);
+  const sameBundle = cache && (cache.bundleKey == null || !key || cache.bundleKey === key);
+  if (!options.force && cache && sameBundle && (Date.now() - cache.at) < CLAUDE_TTL_MS) {
     return setImmediate(() => callback(null, cache.models, 'cache'));
   }
   setImmediate(() => {
     let models = [];
     try {
-      const bundle = options.bundleFile || resolveClaudeBundle(options.home);
       if (bundle) models = curateModels(extractModels(bundle));
     } catch (_) { models = []; }
     if (models.length) {
-      cache = { at: Date.now(), models };
+      cache = { at: Date.now(), models, bundleKey: key };
       return callback(null, models, 'cli');
     }
     // Do not cache the fallback: an uninstalled/broken CLI should recover on
@@ -196,7 +212,8 @@ function listClaudeModels(options = {}, callback) {
 function mountClaudeModelRoutes(app) {
   if (!app || typeof app.get !== 'function') return;
   app.get('/api/claude/models', (req, res) => {
-    listClaudeModels((err, models, source) => {
+    const force = /^(?:1|true)$/i.test(String((req && req.query && req.query.refresh) || ''));
+    listClaudeModels({ force }, (err, models, source) => {
       if (err) return res.status(503).json({ error: 'claude models unavailable', models: [] });
       res.json({ models, source, cached: source === 'cache' });
     });

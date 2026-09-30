@@ -113,7 +113,7 @@ _ => CodexStatus::Running,
 ```json
 {"thread":{"id":"01a0c3ad-d676-75a1-9e2b-b85279a8b21d",
  "sessionId":"01a0c3ad-d676-75a1-9e2b-b85279a8b21d",
- "path":"/Users/Zhuanz/.multicc/codex-attemp…",
+ "path":"~/.multicc/codex-attempt-…",
  "historyMode":"paginated","modelProvider":"custom","model":"deepseek-v4-flash",
  "status":{"type":"idle"},"cliVersion":…,"originator":…,"gitInfo":…}}
 ```

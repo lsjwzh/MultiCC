@@ -239,51 +239,22 @@ test('planning rank is Fleet-scoped and survives repeated midpoint exhaustion by
   assert.equal(new Set(ranks).size, ranks.length);
 });
 
-test('planned send lazily creates its bound chat and advances only to doing', async () => {
+test('a follow-up on a planned card lazily creates its bound chat and advances only to doing', async () => {
   const fixture = mkRuntime();
-  const routes = planningRoutes(fixture.runtime);
-  const created = planningResponse();
-  await routes.get('POST /api/task-board/tasks')({ body: {
+  const created = planning.createPlannedTask(fixture.runtime.getBoard(), {
     title: '待启动', description: '执行这项计划', dirId: 'dir-1', workflowStage: 'ready',
-  } }, created);
-  const sent = planningResponse();
-  routes.get('POST /api/task-board/tasks/:taskId/send')({
-    params: { taskId: created.body.task.id },
-    body: {
-      message: '执行这项计划', clientMsgId: 'plan-send-1',
-      expectedRevision: created.body.task.planningRevision,
-    },
-  }, sent);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(sent.code, 200);
+  }).task;
+  const sent = await fixture.runtime.routeCommanderFollowup(
+    'commander-1', created.id, '执行这项计划', { clientMsgId: 'plan-send-1' },
+  );
+  assert.equal(sent.ok, true);
   assert.equal(fixture.creates.length, 1);
   assert.equal(fixture.sessionMessages.length, 1);
-  assert.equal(sent.body.task.workflowStage, 'doing');
-  assert.equal(sent.body.task.status, 'active');
-  assert.equal(sent.body.task.runState === 'succeeded', false,
+  const task = fixture.runtime.getBoard().tasks[created.id];
+  assert.equal(task.workflowStage, 'doing');
+  assert.equal(task.status, 'active');
+  assert.equal(task.runState === 'succeeded', false,
     'a successful send does not infer review/done from runtime projection');
-});
-
-test('planned send rejects a stale revision before binding, delivery or stage mutation', async () => {
-  const fixture = mkRuntime();
-  const routes = planningRoutes(fixture.runtime);
-  const created = planningResponse();
-  await routes.get('POST /api/task-board/tasks')({ body: {
-    title: '版本已过期', dirId: 'dir-1', workflowStage: 'ready',
-  } }, created);
-  const sent = planningResponse();
-  routes.get('POST /api/task-board/tasks/:taskId/send')({
-    params: { taskId: created.body.task.id },
-    body: { text: '不能启动', clientMsgId: 'stale-start', expectedRevision: 99 },
-  }, sent);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(sent.code, 409);
-  assert.equal(sent.body.error, 'revision_conflict');
-  assert.equal(fixture.creates.length, 0);
-  assert.equal(fixture.sessionMessages.length, 0);
-  const task = fixture.runtime.getBoard().tasks[created.body.task.id];
-  assert.equal(task.workflowStage, 'ready');
-  assert.equal(task.planningRevision, 1);
 });
 
 test('status completion and reopening keep planned workflow stage aligned', async () => {
@@ -394,7 +365,7 @@ test('first planning write rolls back the primary file when recovery sidecar fai
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('a delivered planned send reports persistence failure and does not fake doing', async () => {
+test('a delivered planned follow-up reports persistence failure and does not fake doing', async () => {
   let failWrites = false;
   const fixture = mkRuntime({
     atomicWriteJson: (file, value) => {
@@ -402,22 +373,17 @@ test('a delivered planned send reports persistence failure and does not fake doi
       fs.writeFileSync(file, JSON.stringify(value));
     },
   });
-  const routes = planningRoutes(fixture.runtime);
-  const created = planningResponse();
-  await routes.get('POST /api/task-board/tasks')({ body: {
+  const created = planning.createPlannedTask(fixture.runtime.getBoard(), {
     title: '发送落盘失败', dirId: 'dir-1', workflowStage: 'ready',
-  } }, created);
+  }).task;
   failWrites = true;
-  const sent = planningResponse();
-  routes.get('POST /api/task-board/tasks/:taskId/send')({
-    params: { taskId: created.body.task.id },
-    body: { text: '开始执行', clientMsgId: 'persist-fail-send' },
-  }, sent);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(sent.code, 500);
-  assert.equal(sent.body.error, 'persistence_failed');
+  const sent = await fixture.runtime.routeCommanderFollowup(
+    'commander-1', created.id, '开始执行', { clientMsgId: 'persist-fail-send' },
+  );
+  assert.equal(sent.ok, false);
+  assert.equal(sent.code, 'persistence_failed');
   assert.equal(fixture.sessionMessages.length, 1, 'delivery is surfaced honestly on retry');
-  assert.equal(fixture.runtime.getBoard().tasks[created.body.task.id].workflowStage, 'ready');
+  assert.equal(fixture.runtime.getBoard().tasks[created.id].workflowStage, 'ready');
 });
 
 test('status planning alignment rolls back and reports 500 when persistence fails', async () => {

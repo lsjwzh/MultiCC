@@ -108,7 +108,6 @@ test('dispatch admission derives busy from classify plus the repo lease, never f
   // the session worktree (gitMergeBack rewrites the very path the CLI runs in),
   // which classify structurally cannot see — so it, and only it, is OR'd in.
   assert.match(predicate, /sessionWorkHost\?\.isRunActive\(sid\)/);
-  assert.match(predicate, /taskRunHost\?\.isSlotUnavailable\(sid, item \|\| \{\}\)/);
   assert.match(predicate, /defaultRepoActor\.isLeased\(sid\)/);
   for (const liveness of [/isStreaming/, /orchestrationChatBusy/, /chatTurnPreparationRuntime/, /claudeProc/]) {
     assert.doesNotMatch(predicate, liveness, 'dispatch admission must not read liveness');
@@ -153,7 +152,7 @@ test('only the shutdown drain reads raw liveness for a work decision', () => {
     'src/task-board/core.js', 'src/task-board/normalize.js',
     'src/task-board/classification.js', 'src/task-board/routing.js',
     'src/task-board/view.js', 'src/task-board/planning.js',
-    'src/task-board/merge-runtime.js', 'src/routes/task-board.js',
+    'src/routes/task-board.js',
   ]) {
     assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /isStreaming|claudeProc/, file);
   }

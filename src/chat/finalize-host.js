@@ -159,6 +159,9 @@ function createTurnFinalizationExecutor(rawPorts) {
         break;
       case 'emit-turn-outcome':
         ports.emitTurnOutcome(sessionName, {
+          // `status` is what the state machine branches on; `message` is display
+          // copy only (the label the summary is built from) — rewording it must
+          // not change behavior.
           status: entry.status,
           notifyState: entry.notifyState,
           message: '执行成功',

@@ -301,22 +301,16 @@ test('Air 加载这个模块，并挂到 Provider 页上', () => {
   assert.doesNotMatch(provider, /完整用量统计/);
 });
 
-test('旧页那份统计/用量还在，两边功能对得上', () => {
-  const html = read('public/manage.html');
-  const js = read('public/manage.js');
+test('统计/用量这一格的窗口、口径与接口一个不少', () => {
+  // 旧页（manage.html + manage.js）那一份已随控制台整页删除，这里只剩 Air 原生这一份：
+  // 四个窗口、两种口径、两条接口 —— 搬家不是借口，哪一样少了都算功能回退。
+  const air = read('public/air-usage.js');
   for (const window_ of ['today', 'week', 'month', 'all']) {
-    assert.match(html, new RegExp(`data-w="${window_}"`), `旧页少了 ${window_} 窗口`);
+    assert.match(air, new RegExp(`'${window_}'`), `少了 ${window_} 窗口`);
   }
   for (const metric of ['fresh', 'inclusive']) {
-    assert.match(html, new RegExp(`data-metric="${metric}"`), `旧页少了 ${metric} 口径`);
+    assert.match(air, new RegExp(`'${metric}'`), `少了 ${metric} 口径`);
   }
-  assert.match(html, /id="global-usage-body"/);
-  assert.match(html, /id="by-role-card-body"/);
-  assert.match(js, /api\/token-usage\/global/);
-  assert.match(js, /api\/token-usage\/by-role/);
-
-  // 新页面用的是同一对接口，同一套窗口与口径 —— 同一个数字两处不该有两个说法。
-  const air = read('public/air-usage.js');
   assert.match(air, /api\/token-usage\/global/);
   assert.match(air, /api\/token-usage\/by-role/);
   assert.match(air, /token_by_role\.json/);

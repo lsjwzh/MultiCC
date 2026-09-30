@@ -59,6 +59,7 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     isHomeOrAbove: (p) => p === '/home/u' || p === '/home' || p === '/',
     realPathOf,
     friendlyDirReason: (r) => `friendly:${r}`,
+    dirReasonFix: (r) => (String(r).includes('xcode-select') ? 'install-developer-tools' : null),
   };
   const svc = createDirectoryService({ repo, git, sessions: sessionPort, events, fsPort, helpers, newId: () => 'id-1' });
   return { svc, repo, calls, git, fsDirs };
@@ -102,6 +103,15 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     const r = await fakes.svc.register({ name: 'x', path: '/p/a' });
     ok(!r.ok && r.message === 'friendly:boom', 'register: git-init failure → friendly error');
     ok(!fakes.repo.get('id-1') && fakes.calls.saved === 0, 'register: failed record rolled back, never saved');
+    ok(r.extra === undefined, 'register: a failure with no known remedy carries no fix code');
+
+    // A failure the host knows how to repair must reach the client as a code, not
+    // only as prose — that code is what turns the remedy into a clickable button.
+    const repairable = makeFakes({ fsDirs: new Set(['/p', '/p/a']) });
+    repairable.git.ensureReady = () => ({ ok: false, reason: 'git-error: xcode-select: note: No developer tools were found' });
+    const rf = await repairable.svc.register({ name: 'x', path: '/p/a' });
+    ok(!rf.ok && rf.extra && rf.extra.fix === 'install-developer-tools',
+      'register: missing developer tools → fix code for the UI');
     void svc; void repo;
   }
 
@@ -239,6 +249,18 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     ok(r.ok && r.data.ok === true && r.data.pushed === true, 'push: success shape { ok, ...result }');
     ok(fakes.calls.events.some(e => e.type === 'pushed' && e.detail === '2 个提交 → origin/main'),
       'push: event appended with push summary');
+  }
+
+  // ── reorder (console drag-sort; order persisted as registry order) ──
+  {
+    const dirs = ['a', 'b', 'c', 'd'].map(id => ({ id, name: id, path: `/p/${id}` }));
+    const { svc, repo, calls } = makeFakes({ dirs });
+    let r = svc.reorder(['c', 'ghost', 'a', 'c']);
+    ok(r.ok && r.data.ids.join() === 'c,a,b,d', 'reorder: listed ids first, unknown/dup ignored, rest keep order');
+    ok(repo.list().map(d => d.id).join() === 'c,a,b,d' && repo.snapshot()[0].id === 'c', 'reorder: list() and persisted snapshot follow new order');
+    ok(calls.saved === 1, 'reorder: saved once');
+    r = svc.reorder('nope');
+    ok(!r.ok && r.code === 'invalid', 'reorder: non-array rejected');
   }
 
   // ── friendlyDirReason (real impl) ──

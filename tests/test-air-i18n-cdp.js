@@ -1,5 +1,5 @@
 'use strict';
-// Air 是唯一的产品主界面（/ 、/manage、/chat.html、/task-shell.html 都 302 到它），
+// Air 是唯一的产品主界面（/ 、/manage、/chat.html 302 到它，/task-shell.html 经任务入口页落到它），
 // 所以「整个产品 UI 能在中文/English 之间切换」这句话最终就落在这一页上。这组断言
 // 盯两件事：
 //   ① 语言切到 en 之后，Air 壳里不能再有任何中文 —— 文本节点、title / aria-label /
@@ -46,6 +46,11 @@ function assetRoutes(publicDir) {
   for (const file of fs.readdirSync(publicDir).filter(name => /\.(js|css|html|svg)$/.test(name))) {
     const type = types[file.slice(file.lastIndexOf('.') + 1)];
     routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)), headers: { 'content-type': `${type}; charset=utf-8` } };
+  }
+  // 帧里的对话页会带 shared/ 下的公共模块（chat.html 自己的 script 标签），真服务端
+  // 是当静态文件发的；夹具少发一个，帧里那几个渲染器取数字时就会拿到 null。
+  for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(name => name.endsWith('.js'))) {
+    routes['/shared/' + file] = { body: fs.readFileSync(path.join(publicDir, 'shared', file)), headers: { 'content-type': 'text/javascript; charset=utf-8' } };
   }
   return routes;
 }
@@ -136,7 +141,6 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
   };
   // 对话帧是另一个文档，本测试只断 Air 自己那一页：给个空壳，省掉一堆无关请求。
   routes['/chat.html'] = { body: '<!doctype html><meta charset="utf-8"><title>frame</title>', headers: { 'content-type': 'text/html; charset=utf-8' } };
-  routes['/task-shell.html'] = routes['/chat.html'];
 
   const configuration = { cli: 'codex', provider: 'codex-lab', providerName: 'Lab Responses', providerSelection: null,
     model: 'gpt-5.5', effectiveModel: 'gpt-5.5', effort: 'medium' };
@@ -177,6 +181,19 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
   routes['/api/aux/config'] = () => json({});
   routes['/api/aux/status'] = () => json({});
   routes['/api/aux/history'] = () => json({ runs: [] });
+  // 工作区那一格（air-workspaces.js）：空回包只会画出四句「还没有…」，那等于没扫。
+  // 所以这里把四块卡都喂满 —— 超预算标记、待建/迁移中两个可选计数、孤儿的删与留、
+  // 审计里的目录条目与截断标记，每一条都对应面板里一句只在该分支出现的文案。
+  routes['/api/workspaces/overview'] = () => json({
+    status: { awakeLimit: 2, idleMs: 5_400_000, scheduled: true, stopped: false, sweeping: false },
+    totals: { awake: 3, hibernated: 4 },
+    directories: [{ id: 'd1', path: '/projects/multicc', awake: 3, hibernated: 4, planned: 1, transitioning: 1, total: 9 }],
+    removedIgnoredAudit: [{ sessionId: 's1', title: 'Fix login redirect', at: '2026-09-20T04:05:00.000Z',
+      entries: [{ path: '.env.local', bytes: 2048 }, { path: 'node_modules', files: 120, truncated: true }] }],
+    orphans: { at: '2026-09-20T03:00:00.000Z', total: 2, removed: 1, deleteOrphans: true, orphans: [
+      { path: '/projects/multicc/.wt/a', branch: 'multicc/task-a', ahead: 0, dirty: false, removed: true },
+      { path: '/projects/multicc/.wt/b', branch: null, ahead: 3, dirty: true, removed: false }] },
+  });
 
   // 浏览器的 locale 必须钉死：这套断言验的是「非中文系统默认英文」，而宿主往往是
   // 中文（这台开发机就是），不钉的话 navigator.language 是 zh-CN，用例会在自己机器上变红。
@@ -204,6 +221,15 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
     assert.equal(await page.evaluate('document.documentElement.lang'), 'zh', 'an explicit choice boots the shell in Chinese');
     assert.equal(await page.evaluate('document.getElementById("task-list-title").textContent'), '最近任务');
     assert.equal(await page.evaluate('document.getElementById("air-lang-btn").textContent'), '中/EN');
+    const bottomTools = await page.evaluate(`(() => {
+      const version = document.getElementById('air-ver-row').getBoundingClientRect();
+      const lang = document.getElementById('air-lang-btn').getBoundingClientRect();
+      return { centerGap: Math.abs(version.top + version.height / 2 - lang.top - lang.height / 2),
+        langWidth: lang.width, sameParent: version.parentElement === lang.parentElement };
+    })()`);
+    assert.equal(bottomTools.sameParent, true, '语言与版本检查应在同一行容器');
+    assert.ok(bottomTools.centerGap <= 2, JSON.stringify(bottomTools));
+    assert.ok(bottomTools.langWidth < 64, '中/EN 只占一颗短按钮：' + JSON.stringify(bottomTools));
     const zhDirty = await page.evaluate(SCAN);
     assert.ok(zhDirty.length > 5, `the scanner must actually find Chinese in Chinese mode, got ${JSON.stringify(zhDirty)}`);
     t.diagnostic('zh scan: ' + zhDirty.length + ' nodes');
@@ -241,14 +267,18 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
         one('#palette-note', 'airPaletteSearchHint'),
         one('#schedule-dialog-title', 'airNewScheduledTask'),
         one('#schedule-save', 'airScheduleCreateAndBind'),
-        one('#console-close', 'airBackToTask'),
+        // 控制台从前那颗「返回任务」的关闭按钮没了（它是一页，退路是地址和侧栏），
+        // 这个 key 现在只剩 More 抽屉左上角那一颗在用。
+        one('#more-close', 'airBackToTask'),
         // 目录首页顶部那道 Chat / Terminal 切换（air-directory-mode.js）：Chat /
         // Terminal 两个词本身中英同形（不在这条 notEqual 断言里），但终端那一块的
         // 文案是翻出来的 —— 连同空态一起钉住（fixture 的 sessions 是空的）。
         one('#directory-terminals [data-i18n="airTerminalsHeading"]', 'airTerminalsHeading'),
         one('#directory-terminal-new [data-i18n="airNewTerminal"]', 'airNewTerminal'),
         one('#directory-terminal-list .directory-terminal-empty', 'airTerminalsEmpty'),
-        ...many('#sidebar .nav-row [data-i18n]', ['airConsole', 'airScheduledTasks']),
+        // 「＋ 新终端」现在开的是 chat 那套配置对话框：那一层的文案由 airTaskSettings*
+        // 那批键管（另有它自己的 spot），这一页只剩按钮本身（上面那条）。
+        ...many('#sidebar .nav-row [data-i18n]', ['airConsole', 'airScheduledTasks', 'airMoreSystem']),
         ...many('#delivery-steps span', ['airStepTurnSucceeded', 'airStepCodeDelivered', 'airStepSourceStable', 'airStepAttribution']),
       ];
     })()`);
@@ -281,7 +311,9 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
       };
     })()`);
     assert.equal(quickRoute.zhCodex, OFFICIAL_NAME_ZH, 'the catalog still holds the server-side name in Chinese');
-    assert.equal(quickRoute.label, ['codex', quickRoute.codex, quickRoute.model].join(' · '),
+    // 第一段是车道的产品名（服务端 DISPLAY 的 displayName），不是内部 id。扶正之后
+    // 它是家族名 Codex：一次性 `codex exec` 车道与常驻的 Codex App Server 同名。
+    assert.equal(quickRoute.label, ['Codex', quickRoute.codex, quickRoute.model].join(' · '),
       'the new-task band names the official route in English, not in the stored Chinese');
     assert.ok(!/[㐀-鿿]/.test(quickRoute.label), `the official route still renders Chinese: ${quickRoute.label}`);
 
@@ -338,8 +370,8 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
     // 面板模块一旦没挂上就会静默退回 iframe，而 iframe 里的中文恰好是扫不到的 ——
     // 那样这道关会绿着放走一整格没搬完的页面。
     const ADMIN_VIEWS = [
-      'docs', 'secrets', 'memory', 'taskgraph', 'voice', 'goal', 'provider', 'global',
-      'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage',
+      'docs', 'secrets', 'memory', 'taskgraph', 'workspaces', 'voice', 'goal', 'provider',
+      'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage',
     ];
     // 先把「谁没挂上」说清楚：下面每格失败时报的是「还在嵌旧页面」，而根因往往是某个
     // 模块的 <script> 没加载（或者加载时抛了错）—— 那一行直接把名字给出来。
@@ -347,6 +379,7 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
       'MultiCCAirMemory', 'MultiCCAirTaskgraph', 'MultiCCAirVoice', 'MultiCCAirGoal',
       'MultiCCAirGlobal', 'MultiCCAirPush', 'MultiCCAirBridges', 'MultiCCAirResources',
       'MultiCCAirSkillsync', 'MultiCCAirStorage', 'MultiCCAirProvider', 'MultiCCAirTunnel',
+      'MultiCCAirWorkspaces', 'MultiCCAirProviderAdvanced',
     ].filter(name => !window[name]))`));
     for (const view of [...ADMIN_VIEWS, 'settings']) {
       // 除设置中心自己，每一格在设置中心都有一张卡片（legacyPanels 是卡片文案的来源），
@@ -363,10 +396,8 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
         const panel = document.getElementById('admin-content');
         return !!panel && panel.textContent.trim().length > 0;
       })()`), `the "${view}" panel must render something to scan`);
-      // 判据是「这一格真的把旧管理台装进来了」，而不是「DOM 里有没有那个 iframe 元素」：
-      // Provider 页的「高级」折叠区里就留着一个 air-legacy-frame，但它是惰性的
-      // （只写 dataset.src，展开高级时才落到 src 上），没展开时它不加载任何文档 ——
-      // 那属于「已知还没搬的旧页面」，不该被这条断言算成整格没搬完。
+      // 旧 manage 页已经删了，所以这条不再有任何豁免：哪一格的正文里出现指向它的
+      // iframe，都只可能是搬迁退回去了（而 iframe 里的中文恰好是扫不到的）。
       assert.deepEqual(
         await page.evaluate(`(() => [...document.querySelectorAll('#admin-content iframe')]
           .map(frame => frame.getAttribute('src') || '')
@@ -379,6 +410,21 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
       // 记一下每格画出多少字：空面板扫出来当然干净，那不算数。
       t.diagnostic(`${view} panel (${via}): ${await page.evaluate(`document.getElementById('admin-content').textContent.trim().length`)} chars`);
     }
+
+    // Provider 页的「高级」默认折叠，上面那一圈只扫到它的外壳。官方多账号 / 借道 /
+    // ZCode / Kimi 四块正文是展开时才画的（air-provider-advanced.js），所以单独展开一次
+    // 再扫：这四块以前藏在旧 manage 页的 iframe 里，正是这道关扫不到的地方。
+    await page.evaluate(`(() => {
+      document.querySelector('[data-air-card="provider"]')?.click();
+      window.MultiCCAirProvider.toggleAdvanced();
+    })()`);
+    assert.ok(await page.waitFor(`(() => {
+      const host = document.getElementById('air-provider-advanced-body');
+      return !!host && host.childElementCount > 0;
+    })()`), 'the Provider panel must draw the advanced block when it is expanded');
+    const advancedLeaked = await page.evaluate(SCAN);
+    assert.deepEqual(advancedLeaked, [], `Chinese left in the Provider advanced block:\n  ${advancedLeaked.join('\n  ')}`);
+    t.diagnostic('provider advanced block: ' + await page.evaluate(`document.getElementById('air-provider-advanced-body').textContent.trim().length`) + ' chars');
 
     // ── 硬要求：整个 Air 文档里不再有中文 ─────────────────────────────────
     // 浮层、对话框、详情抽屉都留在 DOM 里（只是没显示），所以这一次扫描已经把它们
@@ -427,7 +473,7 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
       label: document.getElementById('quick-ai-pill').textContent.trim(),
       codex: window.I18N.zh.providerOfficialCodex, model: window.I18N.zh.airQuickDefaultModel,
     }))()`);
-    assert.equal(quickZh.label, ['codex', quickZh.codex, quickZh.model].join(' · '),
+    assert.equal(quickZh.label, ['Codex', quickZh.codex, quickZh.model].join(' · '),
       'the official route is Chinese again — the mapping translates the name, it does not scrub it');
     assert.equal(quickZh.codex, OFFICIAL_NAME_ZH, 'Chinese mode still shows the stored name');
     assert.ok((await page.evaluate(SCAN)).length > 5, 'the Chinese shell must be back');
@@ -528,7 +574,10 @@ test('the embedded chat document is English too, including the composer band Air
         aiTitle: window.t('airTaskAiTitle') };
     })()`);
     assert.equal(band.hidden, false, 'the band must be showing — a hidden pill would make the next assertion vacuous');
-    assert.equal(band.text, ['codex', band.codex, band.model].join(' · '),
+    // 第一段是车道的产品名（服务端 DISPLAY 的 displayName），不是内部 id ——
+    // 扶正之后两条 codex 车道都叫家族名 Codex（小字才是 codex exec / Codex App
+    // Server）。名字是数据，这里只钉住它与 provider 那段一起出现在药丸上、且都是英文。
+    assert.equal(band.text, ['Codex', band.codex, band.model].join(' · '),
       'the official route in the composer band must be the English name');
     assert.ok(!/[㐀-鿿]/.test(band.text), `the composer band still renders Chinese: ${band.text}`);
     assert.equal(band.title, band.aiTitle, 'the pill talks through the dictionary too');

@@ -20,17 +20,25 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 const SP = require('../public/status-presentation.js');
-const { CLASSIFY_DISPLAY } = require('../src/classify/vocab.js');
+const { CLASSIFY_DISPLAY, TURN_RUN_STATES } = require('../src/classify/vocab.js');
 const { FREEZE_REASON_RUN_STATE } = require('../src/session-work/scheduler.js');
 
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 
-/** TASK_RUN_STATES is module-private in src/task-board/normalize.js; read the literal. */
+/**
+ * The server's run-state list is `TURN_RUN_STATES` in src/classify/vocab.js — ONE
+ * list. src/task-board/normalize.js must build its Set from it rather than keep a
+ * second hand copy (that copy is how `background` would go missing on the board
+ * while every other surface learned about it).
+ */
 function serverTaskRunStates() {
   const src = read('src/task-board/normalize.js');
-  const m = /const TASK_RUN_STATES = new Set\(\[([^\]]*)\]\)/.exec(src);
-  assert.ok(m, 'TASK_RUN_STATES literal not found in src/task-board/normalize.js');
-  return m[1].split(',').map(s => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
+  assert.match(
+    src,
+    /const TASK_RUN_STATES = new Set\(TURN_RUN_STATES\)/,
+    'src/task-board/normalize.js must build TASK_RUN_STATES from TURN_RUN_STATES',
+  );
+  return [...TURN_RUN_STATES];
 }
 
 // ── Minimal DOM ─────────────────────────────────────────────────────────────
@@ -136,6 +144,52 @@ test('every server run state is a first-class display status', () => {
     assert.equal(SP.coerceStatus('task', state), state, `task runState ${state}`);
     assert.equal(SP.coerceStatus('session', state), state, `session runState ${state}`);
   }
+});
+
+test('a background wait is its own status, never the waiting word', () => {
+  // classify B: the turn is idling on a callback or a dispatched worker. Nothing
+  // is asked of the user, so it must not be folded into `waiting` — that fold is
+  // what made Air answer 「等待回答」 about work nobody can answer.
+  assert.equal(CLASSIFY_DISPLAY.B.cardStatus, 'background');
+  assert.equal(CLASSIFY_DISPLAY.B.barTint, 'background');
+  assert.equal(SP.classifyStatus('B'), 'background');
+  assert.notEqual(SP.classifyStatus('B'), SP.classifyStatus('W'), 'B and W must stay two statuses');
+  assert.ok(serverTaskRunStates().includes('background'), 'background must be one of the run states');
+  assert.equal(SP.freezeReasonStatus('awaiting_callback'), 'background');
+  assert.equal(SP.freezeReasonStatus('classify_background'), 'background');
+  assert.equal(SP.coerceStatus('session', 'background'), 'background');
+  assert.equal(SP.coerceStatus('task', 'background'), 'background');
+
+  // Both languages, both ends of the vocabulary: the badge word and the Air word
+  // for a background wait must differ from `waiting`'s, and neither may ask the
+  // user anything.
+  for (const [locale, file] of [['zh', 'app/assets/i18n/zh.json'], ['en', 'app/assets/i18n/en.json']]) {
+    const catalog = JSON.parse(read(file));
+    const t = key => catalog[key] ?? key;
+    const word = SP.airStatusLabel('background', t);
+    assert.ok(word && word !== 'airStateBackground', `${locale}: background has no Air word`);
+    assert.equal(word, t('airStateBackground'), `${locale}: Air word must come from the registry column`);
+    assert.notEqual(word, SP.airStatusLabel('waiting', t), `${locale}: Air says the same thing for waiting and background`);
+    assert.notEqual(t('statusBackground'), t('statusWaiting'), `${locale}: the two labels collide`);
+    assert.ok(!/回答|answer/i.test(t('statusAriaBackground')), `${locale}: background's accessible name must not ask the user`);
+    assert.ok(!/回答|answer/i.test(word), `${locale}: a background wait must not read as a question`);
+  }
+
+  // Raw values Air's `label()` actually receives: the canonical name resolves to
+  // the background word, not to the waiting one — and air.js's own fallback
+  // (`airStatusWordFor`) agrees with `airStatusLabels()`, which is what lets the
+  // sidebar drop its hand-kept status table.
+  const zh = JSON.parse(read('app/assets/i18n/zh.json'));
+  const t = key => zh[key] ?? key;
+  assert.equal(SP.airStatusWordFor('background', t), SP.airStatusLabel('background', t));
+  assert.notEqual(SP.airStatusWordFor('background', t), SP.airStatusWordFor('waiting', t));
+  // Every canonical status has its own Air word: two states sharing one word is
+  // how a fold becomes invisible again.
+  const words = Object.keys(SP.STATUS_PRESENTATION).map(name => SP.airStatusLabel(name, t));
+  assert.equal(new Set(words).size, words.length, `Air words collide: ${words.join(' / ')}`);
+  const en = JSON.parse(read('app/assets/i18n/en.json'));
+  const wordsEn = Object.keys(SP.STATUS_PRESENTATION).map(name => SP.airStatusLabel(name, key => en[key] ?? key));
+  assert.equal(new Set(wordsEn).size, wordsEn.length, `Air words collide in en: ${wordsEn.join(' / ')}`);
 });
 
 // ── 2. Registry invariants ──────────────────────────────────────────────────
@@ -422,7 +476,10 @@ test('every label and aria key exists in both zh and en', () => {
   for (const spec of Object.values(SP.STATUS_PRESENTATION)) {
     keys.add(spec.labelKey);
     keys.add(spec.ariaKey);
+    keys.add(spec.airLabelKey);
   }
+  // ✅ 的子状态印在同一枚徽标上，缺一条就会把 statusGoalAchieved 这种裸键印出去。
+  for (const key of Object.values(SP.GOAL_STATE_LABEL_KEYS)) keys.add(key);
   for (const key of keys) {
     const occurrences = catalog.split(`"${key}"`).length - 1;
     assert.ok(occurrences >= 2, `${key} must be defined in both zh and en (found ${occurrences})`);
@@ -433,16 +490,59 @@ test('zh and en both define the status keys in the source catalogs', () => {
   const zh = JSON.parse(read('app/assets/i18n/zh.json'));
   const en = JSON.parse(read('app/assets/i18n/en.json'));
   for (const spec of Object.values(SP.STATUS_PRESENTATION)) {
-    for (const key of [spec.labelKey, spec.ariaKey]) {
+    for (const key of [spec.labelKey, spec.ariaKey, spec.airLabelKey]) {
       assert.ok(zh[key], `zh.json missing ${key}`);
       assert.ok(en[key], `en.json missing ${key}`);
+      assert.notEqual(zh[key], key, `zh.json ${key} is still the raw key`);
+      assert.notEqual(en[key], key, `en.json ${key} is still the raw key`);
       // Long copy breaks cards; the visible labels stay short in both languages.
       if (key === spec.labelKey) {
         assert.ok(zh[key].length <= 8, `zh label ${key} too long for a card: ${zh[key]}`);
         assert.ok(en[key].length <= 16, `en label ${key} too long for a card: ${en[key]}`);
       }
+      // The Air column prints on the same badge, so it is bounded too.
+      if (key === spec.airLabelKey) {
+        assert.ok(zh[key].length <= 8, `zh Air word ${key} too long for a badge: ${zh[key]}`);
+        assert.ok(en[key].length <= 24, `en Air word ${key} too long for a badge: ${en[key]}`);
+      }
     }
   }
+  // 子状态换的是同一枚徽标上的同一个词，长度门槛跟 Air 词一样。
+  for (const key of Object.values(SP.GOAL_STATE_LABEL_KEYS)) {
+    assert.ok(zh[key] && zh[key] !== key, `zh.json missing ${key}`);
+    assert.ok(en[key] && en[key] !== key, `en.json missing ${key}`);
+    assert.ok(zh[key].length <= 8, `zh 子状态词 ${key} too long for a badge: ${zh[key]}`);
+    assert.ok(en[key].length <= 24, `en 子状态词 ${key} too long for a badge: ${en[key]}`);
+  }
+});
+
+// ── 7b. ✅ 的子状态：只有 succeeded 会换词，换不到就落回粗的那个词 ─────────────
+
+test('succeededSubLabel only refines ✅, and never invents a word', () => {
+  const dict = { statusGoalAchieved: '达成目标', statusGoalInteract: '需要交互' };
+  const t = (key) => dict[key] || key;
+  assert.deepEqual(SP.GOAL_STATE_LABEL_KEYS, { achieved: 'statusGoalAchieved', interact: 'statusGoalInteract' });
+  assert.equal(SP.succeededSubLabel('succeeded', 'achieved', t), '达成目标');
+  assert.equal(SP.succeededSubLabel('succeeded', 'interact', t), '需要交互');
+  // 服务端历史值 / 别名折成 succeeded 之后同样换词（completed 是 turn outcome 的老写法）
+  assert.equal(SP.succeededSubLabel('completed', 'achieved', t), '达成目标');
+  // 大小写与空白不算第二个值：这是个展示用词表，宽容一点读没坏处。
+  assert.equal(SP.succeededSubLabel('succeeded', ' Achieved ', t), '达成目标');
+  // 没有子状态、或者子状态不是这两个之一：返回空串，调用方 || 落回注册表的词
+  assert.equal(SP.succeededSubLabel('succeeded', null, t), '');
+  assert.equal(SP.succeededSubLabel('succeeded', 'done', t), '');
+  assert.equal(SP.succeededSubLabel('succeeded', 'succeeded', t), '');
+  assert.equal(SP.succeededSubLabel('succeeded', '', t), '');
+  // 子状态只挂在 ✅ 上 —— 其余状态的卡片写的是它们自己的词，一个字都不换
+  for (const status of ['idle', 'queued', 'running', 'waiting', 'background',
+    'blocked', 'error', 'done', 'cancelled', 'archived', 'offline', 'unknown', 'failed']) {
+    assert.equal(SP.succeededSubLabel(status, 'achieved', t), '',
+      `${status} 不该借用 ✅ 的子状态词`);
+  }
+  // 词典缺键（旧服务端 / 生成物没跟上）时绝不能把裸键印到徽标上
+  assert.equal(SP.succeededSubLabel('succeeded', 'achieved', (key) => key), '');
+  assert.equal(SP.succeededSubLabel('succeeded', 'achieved'), '');
+  assert.equal(SP.succeededSubLabel(null, 'achieved', t), '');
 });
 
 // ── 8. Web ↔ Flutter parity ─────────────────────────────────────────────────
@@ -469,6 +569,7 @@ function parseDart() {
       priority: Number(field('priority')),
       labelKey: field('labelKey'),
       ariaKey: field('ariaKey'),
+      airLabelKey: field('airLabelKey'),
     };
   }
   const mapOf = (name) => {
@@ -490,6 +591,18 @@ function parseDart() {
   assert.ok(ringBlock, 'dart ringTints not found');
   const ringTints = [...ringBlock[1].matchAll(/0xFF([0-9A-Fa-f]{6})/g)]
     .map(m => `#${m[1].toLowerCase()}`);
+  // ✅ 的子状态词表：两端必须逐键一致，否则同一条任务在 Web 说「达成目标」、在
+  // App 说「需要交互」。
+  const goalBlock = /const Map<String, String> goalStateLabelKeys = \{([\s\S]*?)\n\};/.exec(src);
+  assert.ok(goalBlock, 'dart goalStateLabelKeys not found');
+  const goalStateLabelKeys = {};
+  for (const m of goalBlock[1].matchAll(/'([^']+)': '([^']+)',/g)) goalStateLabelKeys[m[1]] = m[2];
+  // 取词入口本身也要在：Dart 没有 JS 的导出清单，缺了只能靠这行。
+  assert.match(
+    src,
+    /String succeededSubLabel\(Object\? status, Object\? goalState\)/,
+    'dart succeededSubLabel not found',
+  );
   return {
     specs,
     aliases: mapOf('statusAliases'),
@@ -497,7 +610,9 @@ function parseDart() {
     classify: mapOf('classifyLetterStatus'),
     sessionStatuses: setOf('sessionStatuses'),
     taskStatuses: setOf('taskStatuses'),
+    openRunStates: setOf('openRunStates'),
     ringTints,
+    goalStateLabelKeys,
   };
 }
 
@@ -508,6 +623,8 @@ test('Flutter mirrors the web registry exactly', () => {
   assert.deepEqual(dart.taskStatuses, [...SP.TASK_STATUSES], 'task vocabulary drifted');
   assert.deepEqual(Object.keys(dart.specs).sort(), Object.keys(SP.STATUS_PRESENTATION).sort());
   assert.deepEqual(dart.ringTints, [...SP.RING_TINTS], '运行标记的调色板两端漂移了');
+  assert.deepEqual(dart.goalStateLabelKeys, SP.GOAL_STATE_LABEL_KEYS,
+    '✅ 子状态词表两端漂移了（Web 的 GOAL_STATE_LABEL_KEYS vs Dart 的 goalStateLabelKeys）');
 
   for (const [name, web] of Object.entries(SP.STATUS_PRESENTATION)) {
     assert.deepEqual(dart.specs[name], {
@@ -518,6 +635,7 @@ test('Flutter mirrors the web registry exactly', () => {
       priority: web.priority,
       labelKey: web.labelKey,
       ariaKey: web.ariaKey,
+      airLabelKey: web.airLabelKey,
     }, `spec for ${name} differs between web and app`);
   }
 
@@ -530,13 +648,132 @@ test('Flutter mirrors the web registry exactly', () => {
   }, 'classify table differs between web and app');
 });
 
+// ── 8b. 「忙」与「还开着的 run」：两端各自只有一处判定 ────────────────────────
+//
+// 这两个问题以前在每个消费者那里各写一遍集合：Dart 三份
+// {'running','thinking','editing'}、服务端两份 ['queued','running','waiting',
+// 'background']、App 的 ⏹ 又是第三份 `runState == 'running' || 'waiting'`。手抄的
+// 集合就是「排队中 / 等后台任务」的任务在 App 上停不掉、而在 Web 上却能被合并的原因。
+
+test('isBusyStatus is the registry mirror of the server workspace-busy predicate', () => {
+  const { RUNNING_STATUSES, SESSION_STATUSES, isRunningStatus } = require('../src/session/state-transition.js');
+  for (const status of SESSION_STATUSES) {
+    assert.equal(SP.isBusyStatus(status), isRunningStatus(status),
+      `the busy answer for session status ${status} differs from isRunningStatus`);
+  }
+  // background 是「等别人派出去的活」，两端都不是忙：本进程没有在推进这一轮。
+  // 注册表给它的词也不是「执行中」。
+  assert.equal(SP.isBusyStatus('background'), false);
+  assert.equal(isRunningStatus('background'), false);
+  assert.ok(!RUNNING_STATUSES.has('background'));
+  // 别名表刻意更宽：registry 认历史词，服务端的活状态表不认，这是两件事。
+  for (const alias of ['working', 'processing', 'assessing', 'busy', 'claimed']) {
+    assert.equal(SP.isBusyStatus(alias), true, `${alias} is a legacy alias of running`);
+    assert.ok(!SESSION_STATUSES.has(alias), `${alias} must not be a live server status`);
+  }
+  assert.equal(SP.isBusyStatus('waiting'), false);
+  assert.equal(SP.isBusyStatus('idle'), false);
+  assert.equal(SP.isBusyStatus(null), false);
+  assert.equal(SP.isBusyStatus('nonsense'), false);
+});
+
+test('canStopRunState is the one open-run list, server to both UIs', () => {
+  const { OPEN_RUN_STATES, isOpenRunState } = require('../src/classify/vocab.js');
+  assert.deepEqual([...SP.OPEN_RUN_STATES], [...OPEN_RUN_STATES], 'the web open-run list drifted');
+  const dart = parseDart();
+  assert.deepEqual(dart.openRunStates, [...OPEN_RUN_STATES],
+    'the Dart open-run set drifted from src/classify/vocab.js');
+  for (const state of ['queued', 'running', 'waiting', 'background']) {
+    assert.equal(SP.canStopRunState(state), true, `${state} is an open run`);
+    assert.equal(isOpenRunState(state), true);
+  }
+  for (const state of ['succeeded', 'error', 'idle', 'cancelled', 'blocked', 'done', 'archived', '']) {
+    assert.equal(SP.canStopRunState(state), false, `${state} is not an open run`);
+  }
+  // Dart 端必须是同一个集合上的判断，不是另一份手抄。
+  const dartSrc = read('app/lib/utils/status_presentation.dart');
+  assert.match(
+    dartSrc,
+    /bool canStopRunState\(Object\? raw\) =>\n\s+openRunStates\.contains\(coerceStatus\(StatusDomain\.task, raw\)\);/,
+    'the Dart stop predicate must read openRunStates',
+  );
+  assert.match(
+    dartSrc,
+    /bool isBusyStatus\(Object\? raw\) =>\n\s+coerceStatus\(StatusDomain\.session, raw\) == CanonicalStatus\.running;/,
+    'the Dart busy predicate must go through coerceStatus, not a hand-kept set',
+  );
+});
+
+test('no surface keeps a hand copy of either set', () => {
+  // App：三处手抄的 {'running','thinking','editing'} 已全部改问 registry。
+  for (const file of [
+    'app/lib/providers/session_manager.dart',
+    'app/lib/services/dashboard_workspace_store.dart',
+    'app/lib/widgets/directory_card.dart',
+  ]) {
+    const src = read(file);
+    assert.doesNotMatch(src, /'running',\s*'thinking',\s*'editing'/,
+      `${file} still lists the busy statuses by hand`);
+    assert.ok(src.includes('utils/status_presentation.dart'), `${file} must import the registry`);
+    assert.match(src, /isBusyStatus\(/, `${file} must ask the registry`);
+  }
+  // 服务端那个守卫读 vocab 的同一个函数。
+  for (const file of ['src/task-board/lifecycle-host.js']) {
+    const src = read(file);
+    assert.match(src, /require\('\.\.\/classify\/vocab'\)/);
+    assert.match(src, /isOpenRunState\(/, `${file} must read the shared open-run list`);
+    assert.doesNotMatch(src, /'queued', 'running', 'waiting', 'background'/);
+  }
+});
+
+test('the Air word column is the one source for every Air surface', () => {
+  // The words Air prints for a status live in the `airLabelKey` column of the
+  // specs (parity asserted above). What this test defends is that nobody keeps a
+  // SECOND copy of them: four hand-kept tables (air.js stateNames, air-admin.js
+  // STATUS_COPY, the app's airServiceNames and airStatusCopy) had already drifted
+  // apart, which is how one Air surface ended up calling a background wait
+  // 「等待回答」.
+  const dartSrc = read('app/lib/utils/status_presentation.dart');
+  assert.match(
+    dartSrc,
+    /String airStatusWord\(CanonicalStatus status\) => statusPresentation\[status\]!\.airLabel;/,
+    'the Dart Air word must read the registry column',
+  );
+
+  // Web: both Air scripts build their table from the registry.
+  for (const file of ['public/air.js', 'public/air-admin.js']) {
+    assert.ok(read(file).includes('airStatusLabels'), `${file} must build its status words from the registry`);
+  }
+  // The console's old hand-kept status table read these keys; its remaining
+  // airAdminStatus* uses are the liveness pill (Up/Down/Starting/Unknown), the
+  // queue's idle word and the archived filter chip — other axes, not statuses.
+  assert.ok(
+    !/airAdminStatus(Queued|Running|Waiting|Background|Blocked|Error|Succeeded|Done|Cancelled|Offline)/.test(read('public/air-admin.js')),
+    'public/air-admin.js still reads the old hand-kept status words',
+  );
+
+  // App: the two tables that used to list the canonical statuses now derive them.
+  for (const file of ['app/lib/widgets/air/air_task_status.dart', 'app/lib/services/air_service.dart']) {
+    const src = read(file);
+    assert.ok(/airStatusWord|airStatusWords/.test(src), `${file} must derive its Air words from the registry`);
+    // The directory filter chips answer "which rows to show", not "what a status
+    // is called" — a different axis, so their labels may coincide with a status
+    // word. Same exemption the console's liveness pill already gets above.
+    const withoutFilterChips = src.replace(/enum AirDirectoryTaskFilter \{[\s\S]*?\n\}/g, '');
+    assert.ok(
+      !/'(空闲|排队中|执行中|等待回答|等待配置|执行成功|执行异常|状态未知)'/.test(withoutFilterChips),
+      `${file} still keeps a hand copy of the status words`,
+    );
+  }
+});
+
 // ── 9. Wiring: pages that draw badges must load the registry and its CSS ────
 
 test('badge-rendering pages load status-presentation.js and status-badge.css', () => {
   // Air joined the list when its task band and console started drawing status
   // through the registry: it used to invent its own words per surface, which is
   // exactly the drift this test exists to stop.
-  for (const page of ['public/manage.html', 'public/chat.html', 'public/air.html']) {
+  for (const page of ['public/chat.html', 'public/air.html']) {
     const html = read(page);
     assert.ok(html.includes('<script src="status-presentation.js"></script>'), `${page}: registry script`);
     assert.ok(html.includes('status-badge.css'), `${page}: tone stylesheet`);

@@ -107,6 +107,19 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
       }
       return false;
     };
+    // 「再拉一次」要等的是**次数涨上去**，不是「尾巴还是这个形状」：同一个请求重复出现时，
+    // 后者在动作发生**之前**就已经成立，等一下立刻返回，紧接着那条按调用次数比全序列的
+    // 断言就变成跟异步请求赛跑（2026-09-29 实测在干净 main 上也会红）。次数是这里唯一
+    // 能把「已经发生过」和「刚刚又发生了一次」分开的口径。
+    const waitForCallCount = async (call, count, timeoutMs = 4000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (memoryCalls().filter(entry => entry === call).length >= count) return true;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      return false;
+    };
+    const callsOf = call => memoryCalls().filter(entry => entry === call).length;
     const text = selector => page.evaluate(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? null`);
     const label = key => page.evaluate(`t(${JSON.stringify(key)})`);
     const transform = () => page.evaluate(`document.getElementById('mem-graph-viewport').getAttribute('transform')`);
@@ -116,7 +129,7 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
 
     // ── ① 从控制台的工具格进去：原生面板，不嵌旧 manage 页 ──────────────────
     await page.navigate('/air?dir=d1&view=overview');
-    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`), '控制台打开');
+    assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false`), '控制台那一页打开');
     const T = {
       memory: await label('airAdminPanelMemory'),
       backToConsole: await label('airAdminBackToConsole'),
@@ -149,7 +162,7 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
     assert.equal(page.requests.some(r => r.path === '/manage.html'), false, 'iframe 的 src 会真的发出去 —— 没这条请求才算真没嵌');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].map(b => b.textContent.replace(/\\s+/g,''))`),
       ['←' + T.backToConsole, '↻' + T.refresh], '工具条是面板自己的（返回控制台 / 刷新），不是旧页面的');
-    assert.equal(await page.evaluate(`document.body.classList.contains('console-open')`), false, '进整页时控制台让开');
+    assert.equal(await page.evaluate(`document.getElementById('console-center').hidden`), true, '换页时控制台那一页让开');
     assert.equal(await text('.air-memory-title span'), T.title, '标题沿用旧页那个 key');
     assert.equal(await text('#mem-tabs .mtab.active'), '🕸 ' + T.tabGraph, '默认落在图谱 tab');
     assert.equal(await text('#mem-tabs .mtab[data-memtab="tree"]'), '🌳 ' + T.tabTree);
@@ -196,8 +209,9 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
     assert.equal(await transform(), before, '「重置视图」把取景框放回原处');
 
     // ── ④ 面板工具条的「刷新」按当前 tab 重拉 ──────────────────────────────
+    const graphsBefore = callsOf('GET /api/memory/graph');
     await page.evaluate(`document.querySelectorAll('#admin-actions button')[1].click()`);
-    assert.ok(await waitForCalls(['GET /api/memory/graph']), '还在图谱 tab 时，刷新就是再拉一次图谱');
+    assert.ok(await waitForCallCount('GET /api/memory/graph', graphsBefore + 1), '还在图谱 tab 时，刷新就是再拉一次图谱');
     assert.ok(await page.waitFor(`document.querySelectorAll('#mem-graph-svg .mem-node').length === 3`), '重拉之后画布又画好了');
     assert.deepEqual(memoryCalls(), ['GET /api/memory/graph', 'GET /api/memory/graph']);
 
@@ -209,9 +223,11 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
     assert.equal(await text('#mem-tabs .mtab.active'), '🌳 ' + T.tabTree);
     assert.equal(await text('#mem-tree .mt-grp-machine .mt-grp-label'), '🛡 机器全局记忆 (_machine)',
       '树的分组标题是 memory-controller.js 内部拼的（不走 t()），按原样比');
-    // 切到树状之后再按刷新：这次重拉的该是树。
+    // 切到树状之后再按刷新：这次重拉的该是树（同样要等次数涨上去 —— 切 tab 那一次
+    // 已经把「最后一条是树」摆好了，比尾巴形状等于白比）。
+    const treesBefore = callsOf('GET /api/memory/tree');
     await page.evaluate(`document.querySelectorAll('#admin-actions button')[1].click()`);
-    assert.ok(await waitForCalls(['GET /api/memory/tree']), '树状 tab 上的刷新重拉树');
+    assert.ok(await waitForCallCount('GET /api/memory/tree', treesBefore + 1), '树状 tab 上的刷新重拉树');
     assert.ok(await page.waitFor(`document.querySelectorAll('#mem-tree .mt-file').length === 4`), '重拉之后树又画好了');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#mem-tree .mt-body.open')].length`), 3,
       '重画之后回到默认展开态（机器全局 + CLI + 公共记忆 三组，项目与会话两层是收着的）');

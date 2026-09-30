@@ -5,13 +5,14 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createHistoryView } = require('../public/chat-history-view');
+const { createHistoryView, parseSystemInject } = require('../public/chat-history-view');
 const liveUiApi = require('../public/chat-live-ui');
 
 const ROOT = path.join(__dirname, '..');
 const VIEW_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-history-view.js'), 'utf8');
 const CHAT_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat.js'), 'utf8');
 const EVENT_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-event-controller.js'), 'utf8');
+const LINKS_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-local-links.js'), 'utf8');
 const HTML = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
 const LIVE_UI_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-live-ui.js'), 'utf8');
 
@@ -203,15 +204,12 @@ test('view upserts persisted ids and keeps user content text-only', () => {
   assert.equal(messagesEl.children[0].textContent, 'authoritative');
 });
 
-test('committed user message replaces its optimistic bubble and preserves per-turn controls', () => {
+test('committed user message replaces its optimistic bubble', () => {
   const { document, messagesEl, view } = fixture();
   const optimistic = document.createElement('div');
   optimistic.className = 'msg user';
   optimistic.dataset.clientMsgId = 'browser-1';
   optimistic.textContent = 'send once';
-  const autoCommit = document.createElement('label');
-  autoCommit.className = 'msg-auto-commit';
-  optimistic.appendChild(autoCommit);
   messagesEl.appendChild(optimistic);
 
   const committed = view.commitMessage({
@@ -224,7 +222,6 @@ test('committed user message replaces its optimistic bubble and preserves per-tu
   assert.equal(messagesEl.querySelectorAll('.msg.user').length, 1);
   assert.equal(committed.node.dataset.msgId, 'user-1');
   assert.equal(committed.node.dataset.clientMsgId, 'browser-1');
-  assert.equal(committed.node.querySelector('.msg-auto-commit'), autoCommit);
   assert.equal(committed.lastUserElement, committed.node);
 });
 
@@ -453,6 +450,38 @@ test('turn trajectory places each measured tool at its real offset', () => {
   assert.ok(parseFloat(edgeSegs[1].style.width) < 0.76, 'right-edge sliver is clamped, not overflowing');
 });
 
+test('turn trajectory spans the whole turn when the server stamped LLM time', () => {
+  const { document, view } = fixture();
+  const content = document.createElement('div');
+
+  // Tools alone run 0–10s, but the server's durationMs says the turn (LLM
+  // request/response on both ends + tools) was 20s. The wall-clock window must
+  // widen to the full turn so the strip includes the model time, and the label
+  // must say 20s, not the tool-only 10s.
+  const strip = view.renderToolTrajectory(content, [
+    { name: 'Bash', startedAt: 0, endedAt: 5000 },
+    { name: 'Read', startedAt: 7500, endedAt: 10000 },
+  ], 20000);
+  assert.ok(strip, 'two measured tools + a turn duration render a strip');
+  const segs = strip.querySelectorAll('.tool-trajectory-seg');
+  assert.equal(segs[0].style.left, '0%');
+  assert.equal(segs[0].style.width, '25%');
+  assert.equal(segs[1].style.left, '37.5%');
+  assert.equal(segs[1].style.width, '12.5%');
+  assert.equal(strip.querySelector('.tool-trajectory-label').textContent,
+    '⏱ 2 tools · 20s wall-clock', 'wall-clock counts the model time, not just tools');
+
+  // A turn duration smaller than the tool window is ignored (never shrink the
+  // strip below the measured tools) — the fallback stays the tool window.
+  const shrunk = view.renderToolTrajectory(content, [
+    { name: 'A', startedAt: 0, endedAt: 5000 },
+    { name: 'B', startedAt: 7500, endedAt: 10000 },
+  ], 4000);
+  assert.equal(shrunk.querySelector('.tool-trajectory-label').textContent,
+    '⏱ 2 tools · 10s wall-clock');
+  assert.equal(shrunk.querySelectorAll('.tool-trajectory-seg')[1].style.left, '75%');
+});
+
 test('turn trajectory is absent unless two tools are measured', () => {
   const { document, view } = fixture();
   const content = document.createElement('div');
@@ -540,9 +569,11 @@ test('token usage and wall-clock timing render as independent sibling lines', ()
   });
   assert.equal(usageOf(both).length, 1, 'adding wall clock must not drop the token line');
   assert.equal(timingOf(both).length, 1);
-  assert.match(usageOf(both)[0].textContent, /↑入 9,273/);
-  assert.match(usageOf(both)[0].textContent, /♻读 609,536/);
-  assert.match(timingOf(both)[0].textContent, /⏱ 1m11s/);
+  assert.match(usageOf(both)[0].textContent, /主↑入 9\.3k↓出 1\.8k♻读 609\.5k♻写 18\.4k/, 'history uses the unified 主 row');
+  assert.match(usageOf(both)[0].title, /缓存读 609,536/, 'tooltip keeps exact counts');
+  // 分与秒之间有一个空格 —— 与 web 另一处（chat-live-ui 的 fmtDuration）以及 App
+  // 里同一个 formatDuration 输出一致（原来这一处是「1m11s」）。
+  assert.match(timingOf(both)[0].textContent, /⏱ 1m 11s/);
   // Siblings under .msg-content: stacked block lines, so neither can clip or
   // overlay the other however long the numbers get.
   assert.equal(usageOf(both)[0].parentNode, timingOf(both)[0].parentNode);
@@ -567,6 +598,21 @@ test('token usage and wall-clock timing render as independent sibling lines', ()
   });
   assert.equal(usageOf(zeroUsage).length, 0);
   assert.equal(timingOf(zeroUsage).length, 1);
+});
+
+test('persisted roleUsage replays the 辅 row only for a separately routed sub model', () => {
+  const { view } = usageAwareFixture();
+  const rows = node => node.querySelectorAll('.u-row').map(row => row.textContent);
+  const roleUsage = (subProvider) => ({
+    main: { inputTokens: 56, outputTokens: 5156, cacheRead: 2698338, cacheWrite: 238716 },
+    mainByProvider: [{ providerId: 'glm', model: 'glm-5' }],
+    sub: { inputTokens: 10, outputTokens: 900, cacheRead: 40000, cacheWrite: 0 },
+    subByProvider: [{ providerId: subProvider, model: subProvider === 'glm' ? 'glm-5' : 'ds-4' }],
+  });
+  const routed = view.renderMessage({ id: 'r1', role: 'assistant', content: 'x', usage: { input_tokens: 1 }, roleUsage: roleUsage('ds') });
+  assert.deepEqual(rows(routed), ['主↑入 56↓出 5.2k♻读 2.70M♻写 238.7k', '辅↑入 10↓出 900♻读 40.0k♻写 0']);
+  const sameModel = view.renderMessage({ id: 'r2', role: 'assistant', content: 'x', roleUsage: roleUsage('glm') });
+  assert.deepEqual(rows(sameModel), ['主↑入 66↓出 6.1k♻读 2.74M♻写 238.7k'], 'sub work on the main model folds into 主');
 });
 
 test('both metric lines wrap instead of overflowing a narrow bubble', () => {
@@ -755,6 +801,13 @@ test('classic host delegates persisted and streaming DOM ownership to the view',
   assert.doesNotMatch(CHAT_SOURCE, /contentEl\.innerHTML\s*=\s*renderMarkdown/);
   assert.equal((VIEW_SOURCE.match(/\.innerHTML\s*=/g) || []).length, 1, 'one reviewed safe Markdown sink');
   assert.match(VIEW_SOURCE, /const safeHtml = safeMarkdown\.render\(text\)/);
+  // Assistant links to local files must be rewritten through /api/download so
+  // clicking them opens the file instead of a 404 server route. The fixup lives
+  // in chat-local-links.js (loaded before chat.js); the host injects it into the
+  // view and the view calls it on the rendered Markdown root.
+  assert.match(LINKS_SOURCE, /function fixupLocalFileLinks\(root\)/);
+  assert.match(CHAT_SOURCE, /fixupLocalFileLinks: \(window\.MultiCCChatLocalLinks && window\.MultiCCChatLocalLinks\.fixupLocalFileLinks\)/);
+  assert.match(VIEW_SOURCE, /fixupLocalFileLinks\(markdownRoot\)/);
 });
 
 test('script order is local purifier, parser, safety boundary, state, quote, view, host', () => {
@@ -786,4 +839,162 @@ test('vendored DOMPurify bytes and license match recorded official npm provenanc
   assert.match(provenance, /dompurify\/-\/dompurify-3\.2\.6\.tgz/);
   assert.match(provenance, /sha512-\/2GogDQlohXPZe6D6NOgQvXLPSYBqIWMnZ8zzOhn09REE4ey/);
   assert.match(provenance, /No local\s+changes were made/);
+});
+
+test('a persisted Auto route note renders through the live formatter and adopts the live line', () => {
+  const zh = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/zh.json'), 'utf8'));
+  const translate = (key, params) => String(zh[key] ?? key)
+    .replace(/\{(\w+)\}/g, (_, name) => (params && name in params ? String(params[name]) : `{${name}}`));
+  const { document, messagesEl, view } = fixture({ translate });
+  const autoRoute = {
+    phase: 'selected', providerId: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-v4-flash',
+    tier: 't1', preferredTier: 't1',
+    routing: { source: 'jev', code: 'jev_choice', tierIndex: 0, tierCount: 2, latencyMs: 400 },
+  };
+  const note = view.renderMessage({
+    id: 'n1', role: 'system', kind: 'auto_route', content: 'Auto → DeepSeek · deepseek-v4-flash',
+    clientMsgId: 'auto-route-t1-1', autoRoute,
+  });
+  assert.equal(note.textContent, '🧭 Jev 判定为简单任务 · 选用 DeepSeek（deepseek-v4-flash） · 用时 0.4 秒');
+  assert.equal(note.dataset.clientMsgId, 'auto-route-t1-1');
+  assert.equal(note.hidden, undefined);
+  // A verdict the formatter has nothing to say about keeps its slot but draws nothing.
+  const silent = view.renderMessage({ id: 'n2', role: 'system', autoRoute: { ...autoRoute, routing: { source: 'jev' } } });
+  assert.equal(silent.textContent, '');
+  assert.equal(silent.hidden, true);
+
+  // The live line (no id yet) is adopted by the replayed record instead of doubled.
+  const live = document.createElement('div');
+  live.className = 'msg system-msg';
+  live.textContent = 'live verdict';
+  live.dataset.clientMsgId = 'auto-route-t1-1';
+  messagesEl.appendChild(live);
+  view.applyPlan({
+    operations: [{ kind: 'append', id: 'n1', message: {
+      id: 'n1', role: 'system', clientMsgId: 'auto-route-t1-1', autoRoute,
+    } }],
+    messages: [], hasMore: false, streamingTail: null,
+  });
+  assert.equal(messagesEl.querySelectorAll('.msg.system-msg').length, 1);
+  assert.equal(view.findById('n1').textContent, note.textContent);
+});
+
+// ── 🔇 system-injected messages (src/session/delivery.js SYSTEM_PREFIX) ──
+// They are persisted as role=user but nobody typed them. The card keeps the
+// `user` class for the backtracking selectors; `system-inject` marks it as
+// "not a user turn" for everything else.
+
+test('injected message parsing splits the 【…】 title from its body', () => {
+  const done = parseSystemInject('🔇【后台任务完成】你之前启动的后台任务（x）已结束（状态：completed）。');
+  assert.deepEqual({ label: done.label, body: done.body },
+    { label: '后台任务完成', body: '你之前启动的后台任务（x）已结束（状态：completed）。' });
+
+  const multi = parseSystemInject('🔇【后台任务完成 ×2】多个任务已结束：\n- a\n- b');
+  assert.equal(multi.label, '后台任务完成 ×2');
+  assert.equal(multi.body, '多个任务已结束：\n- a\n- b', '正文的换行必须原样保留');
+
+  // autoContinue / bgCheck ship no bracket label on a single line: that line is
+  // the whole title, and there is no body to expand.
+  assert.deepEqual(
+    { ...parseSystemInject('🔇继续：如果已经可以推进就继续。') },
+    { label: '继续：如果已经可以推进就继续。', body: '' });
+  const labelled = parseSystemInject('  🔇[后台进程检查] 请现在处理\n第二行');
+  assert.equal(labelled.label, '[后台进程检查] 请现在处理');
+  assert.equal(labelled.body, '第二行');
+
+  // Not injected at all — including a bare prefix with nothing after it.
+  assert.equal(parseSystemInject('普通用户消息'), null);
+  assert.equal(parseSystemInject('🔇'), null);
+});
+
+test('an injected 🔇 message renders as a collapsed card, not a user bubble', () => {
+  const content = '🔇【后台任务完成 ×2】多个后台任务已结束，请一并推进：\n- 构建\n- 部署';
+  const { view } = fixture();
+  const node = view.renderMessage({ id: 'u1', role: 'user', content, clientMsgId: 'c1' });
+  assert.equal(node.classList.contains('user'), true, '回溯选择器仍按 .msg.user 找节点');
+  assert.equal(node.classList.contains('system-inject'), true);
+  assert.equal(node.dataset.clientMsgId, 'c1');
+  assert.equal(node.querySelector('.system-inject-label').textContent, '后台任务完成 ×2');
+  assert.equal(node.querySelector('.system-inject-body').textContent, '多个后台任务已结束，请一并推进：\n- 构建\n- 部署');
+  // The 🔇 glyph stays the leading icon, so the text-based detector still reads
+  // this node as injected even without the modifier class.
+  assert.equal(node.textContent.trimStart().startsWith('🔇'), true);
+  assert.equal(node.querySelector('.system-inject-icon').textContent, '🔇');
+  assert.equal(node.querySelector('.system-inject-body').innerHTML, '', '正文只能是文本节点');
+
+  // Collapsed by default; the title line toggles the body open. Same affordance
+  // as a tool card (chat-history-view's own header.onclick pattern).
+  assert.equal(node.classList.contains('open'), false);
+  node.querySelector('.system-inject-head').onclick();
+  assert.equal(node.classList.contains('open'), true);
+  node.querySelector('.system-inject-head').onclick();
+  assert.equal(node.classList.contains('open'), false);
+
+  // A label-less one-liner has nothing to expand: no arrow, no click handler.
+  const single = view.renderMessage({ id: 'u2', role: 'user', content: '🔇继续：请继续未完成的任务' });
+  assert.equal(single.querySelector('.system-inject-body'), null);
+  assert.equal(single.querySelector('.system-inject-arrow'), null);
+  assert.equal(single.querySelector('.system-inject-head').onclick, null);
+  assert.equal(single.querySelector('.system-inject-label').textContent, '继续：请继续未完成的任务');
+});
+
+test('an injected card never becomes the last-user anchor', () => {
+  const { view, messagesEl } = fixture();
+  const real = view.commitMessage({ id: 'u1', role: 'user', content: 'real question' });
+  assert.equal(real.lastUserElement.dataset.msgId, 'u1');
+
+  const injected = view.commitMessage(
+    { id: 'u2', role: 'user', content: '🔇【内置任务已中断】Task x 仍未结束。' },
+    { lastUserElement: real.lastUserElement },
+  );
+  assert.equal(injected.node.classList.contains('system-inject'), true);
+  assert.equal(injected.lastUserElement.dataset.msgId, 'u1',
+    '注入卡不能顶掉「最后一条用户消息」——自动提交勾选、重发取原文都挂在这个锚点上');
+
+  // The history-replay path must not anchor on it either.
+  const plan = view.applyPlan({
+    operations: [{ kind: 'append', id: 'u3', message: {
+      id: 'u3', role: 'user', content: '🔇【延迟条件已到】请检查当前状态并继续。',
+    } }],
+    messages: [], hasMore: false, streamingTail: null,
+  });
+  assert.equal(plan.lastUserElement, null);
+  assert.equal(messagesEl.children.length, 3);
+  assert.equal(messagesEl.children[2].classList.contains('system-inject'), true);
+
+  // …and a role-tagged commit with no body never lands on the card: the taggable
+  // selector skips `.system-inject` entirely (here it falls back to the earlier
+  // real bubble instead).
+  const card = messagesEl.children[2];
+  assert.equal(card.querySelector('.system-inject-label').textContent, '延迟条件已到');
+  assert.notEqual(view.tagLatestMessage('user', 'u9', 'client-9'), card);
+  const later = view.commitMessage({ id: 'u4', role: 'user', content: 'another real question' });
+  assert.equal(view.tagLatestMessage('user', 'u10', 'client-10'), later.node, '真用户气泡照旧可被认领');
+  assert.equal(later.lastUserElement.dataset.msgId, 'u4');
+});
+
+test('duplicate detection still backtracks across an injected card', () => {
+  const { view, messagesEl } = fixture();
+  const answer = 'the same reply to the same turn, long enough to be contained';
+  view.commitMessage({ id: 'a1', role: 'assistant', content: answer });
+  view.commitMessage({ id: 'u1', role: 'user', content: '🔇继续：你上一轮提到的外部结果可以推进了。' });
+  view.commitMessage({ id: 'a2', role: 'assistant', content: answer + ' (retried)' });
+  // If the card were read as a real user turn the walk would stop there and the
+  // older copy would survive as a duplicate.
+  assert.equal(messagesEl.querySelectorAll('.msg.assistant').length, 1, '🔇 nudge 不是真用户轮，去重照旧');
+  assert.ok(view.findById('a2'));
+  assert.equal(messagesEl.querySelectorAll('.msg.user').length, 1, '卡片仍带 user 类');
+  assert.equal(messagesEl.querySelectorAll('.msg.user:not(.system-inject)').length, 0);
+});
+
+test('the rest of the chat UI treats an injected card as a system line', () => {
+  const quoteSource = fs.readFileSync(path.join(ROOT, 'public/chat-quote.js'), 'utf8');
+  assert.match(quoteSource, /contains\('system-inject'\)\) return 'system'/,
+    '引用注入卡时角色算系统，不算「我」');
+  // Both live creation paths go through the view's single user-node producer.
+  assert.match(CHAT_SOURCE, /const div = chatHistoryView\.createUserNode\(text, clientMsgId\)/);
+  assert.match(VIEW_SOURCE, /createUserNode,/);
+  // The card styles must land after chat-air.css: they win over
+  // `.air-chat .msg.user` on load order, not on specificity.
+  assert.ok(HTML.indexOf('chat-air.css') < HTML.indexOf('chat-system-inject.css'));
 });

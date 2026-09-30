@@ -13,6 +13,15 @@ const eventApi = require('../public/chat-event-controller');
 
 const ROOT = path.join(__dirname, '..');
 
+// 目录是断言的中文来源：界面文案走 t()，测试就注入同一份目录，见 zhT。
+const ZH = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/zh.json'), 'utf8'));
+const EN = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/en.json'), 'utf8'));
+const dictT = dict => (key, params) => String(dict[key] ?? key)
+  .replace(/\{(\w+)\}/g, (_, name) => (params && name in params ? String(params[name]) : `{${name}}`));
+const zhT = dictT(ZH);
+// 暂存消息的 dock 也走 t()：页面在 chat.js 里注入 tt，测试在这里注入目录。
+global.MultiCCChatSessionQueue.configure({ translate: zhT });
+
 function classList() {
   const values = new Set();
   return {
@@ -167,7 +176,8 @@ function controllerFixture(hostOverrides) {
   const host = {
     debug(...args) { debugCalls.push(args); },
     warn(...args) { calls.push(['warn', ...args]); },
-    translate: (key, params) => `${key}:${JSON.stringify(params || {})}`,
+    // 文案现在全走 t()，所以夹具注入真实目录：断言仍然看中文，和页面一致。
+    translate: (key, params) => (key in ZH ? zhT(key, params) : `${key}:${JSON.stringify(params || {})}`),
     getSessionName: () => 'session-1',
     refreshNotifyPreference() { calls.push('notify-pref'); },
     updateTabIdentity() {},
@@ -193,7 +203,6 @@ function controllerFixture(hostOverrides) {
     applyCliSwitchState() {},
     cliMeta: { claude: { label: 'Claude' }, codex: { label: 'Codex' } },
     updateContextBar() { calls.push('context'); },
-    autoCommitIfNeeded() {},
     resetHistoryPagination() {},
     applyHistoryPlan() {},
     removeHistoryMessageById() {},
@@ -229,11 +238,14 @@ test('event module exports a frozen narrow API and codex reconnect classifier', 
 });
 
 test('progress heartbeat formatter exposes only safe bounded status fields', () => {
+  // 时长由 shared/format.js 的 formatDuration 出：150.9 秒进到「分」那一档时秒数按
+  // 四舍五入（2m 31s），而不是先把总秒数截断再取模（2m 30s）。
   assert.equal(eventApi.formatProgressHeartbeat({
     phase: 'tool', elapsedMs: 150_900, toolKind: 'subagent',
     prompt: 'secret prompt', output: 'secret output', token: 'sk-secret',
-  }), '正在调用工具 · 2m 30s · 子 Agent');
-  assert.equal(eventApi.formatProgressHeartbeat({ phase: 'unknown', elapsedMs: -1 }), '仍在执行 · 0s');
+  }, zhT), '正在调用工具 · 2m 31s · 子 Agent');
+  // 负数不是一个「零秒」的读数，是垃圾值 —— 那一格直接不画，不编一个 0s 出来。
+  assert.equal(eventApi.formatProgressHeartbeat({ phase: 'unknown', elapsedMs: -1 }, zhT), '仍在执行');
 });
 
 test('memory admission progress shows the user message immediately and updates one loading bubble', () => {
@@ -278,6 +290,29 @@ test('memory admission progress shows the user message immediately and updates o
     fixture.liveUi.getThinkingElement().querySelector('.thinking-label').textContent,
     '正在处理…',
   );
+});
+
+test('a difficulty-routing wait and a memory wait share one bubble', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  // Auto Provider difficulty routing rides the admission window *before* the
+  // memory distill, so a routed pool emits this stage first and the memory stage
+  // second — two frames, one message, the same clientMsgId. The client keys the
+  // bubble on clientMsgId alone, so the second frame must reuse the first's.
+  const base = { type: 'message_admission_progress', state: 'waiting', message: '重构 provider 层', clientMsgId: 'client-routing-1' };
+  fixture.controller.handleEvent({
+    ...base, stage: 'auto_provider_routing', reason: 'auto_provider_routing_pending',
+  }, generation);
+  fixture.controller.handleEvent({
+    ...base, stage: 'memory_distill', reason: 'memory_distill_pending',
+  }, generation);
+  assert.deepEqual(
+    fixture.calls.filter(call => Array.isArray(call) && call[0] === 'user'),
+    [['user', '重构 provider 层', 'client-routing-1']],
+    'two admission stages for one message never draw two bubbles',
+  );
+  assert.ok(fixture.liveUi.getThinkingElement(),
+    'the loader survives the second stage instead of being torn down');
 });
 
 test('memory failure stays visible while queued admission retires its transient loader', () => {
@@ -941,7 +976,7 @@ test('Flutter keeps the pending answer card above the message lane, not in the b
   const pending = screen.indexOf('if (provider.pendingUserInput != null &&');
   const messages = screen.indexOf('child: _MessageList(');
   assert.ok(pending >= 0 && pending < messages);
-  assert.match(screen, /maxHeight:\s*MediaQuery\.sizeOf\(context\)\.height \* 0\.38/);
+  assert.match(screen, /maxHeight:\s*(?:MediaQuery\.sizeOf\(context\)\.height|constraints\.maxHeight)\s*\*\s*0\.38/);
   assert.doesNotMatch(inputBar, /PendingUserInputPanel\s*\(/);
 });
 
@@ -1036,7 +1071,7 @@ test('queue immediate insert handler executes the selected entry now', async () 
   const handler = global.MultiCCChatSessionQueue.createInsertHandler({
     fetch: async (url, options) => {
       requests.push({ url, options });
-      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      return { ok: true, status: 200, json: async () => ({ ok: true, started: true }) };
     },
     withToken: url => `/tokenized${url}`,
     getSessionName: () => 'session/1',
@@ -1275,8 +1310,10 @@ test('live UI renders token and timing nodes through textContent only', () => {
     subByProvider: [{ name: '<img onerror=boom>', model: 'm', inputTokens: 5, outputTokens: 1 }],
   });
   assert.equal(line.className, 'msg-usage');
-  assert.ok(line.children.some(child => child.textContent === '主 ↑10 ↓2'));
-  assert.ok(line.children.some(child => child.textContent === '辅 ↑5 ↓1'));
+  assert.deepEqual(line.children.map(row => row.children.map(cell => cell.textContent).join(' ')), [
+    '主 ↑入 10 ↓出 2 ♻读 1 ♻写 0',
+    '辅 ↑入 5 ↓出 1 ♻读 0 ♻写 0',
+  ]);
   assert.doesNotMatch(line.title, /合计/);
   assert.match(line.title, /非会话累计/);
   assert.match(line.title, /<img onerror=boom>/, 'tooltip remains inert text');
@@ -1500,24 +1537,18 @@ test('Flutter attachments offer the iOS photo library, not just the Files picker
   assert.match(picker, /FilePicker\.platform\.pickFiles\(withData:\s*true\)/);
   assert.match(picker, /readAsBytes/);
 
-  // Both attachment call sites delegate to the shared picker and never drive
+  // The attachment call site delegates to the shared picker and never drives
   // FilePicker directly (the direct path is what hid the photo album on iOS).
-  for (const rel of ['input_bar.dart', 'task_board_view.dart']) {
-    const source = fs.readFileSync(
-      path.join(ROOT, 'app', 'lib', 'widgets', rel),
-      'utf8',
-    );
-    assert.match(source, /pickChatAttachment\(context\)/, `${rel} routes through the shared picker`);
-    assert.doesNotMatch(source, /FilePicker\.platform/, `${rel} must not pick files inline`);
-    if (rel === 'input_bar.dart') {
-      // input_bar 把整个 PickedAttachment 交给共享上传助手（multipart 流程归它），
-      // 不再自己摊开 bytes/filename 字段。
-      assert.match(source, /uploadChatAttachment\(\s*settings:\s*settings,\s*picked:\s*picked,/,
-        `${rel} uploads the picked attachment through the shared helper`);
-    } else {
-      assert.match(source, /picked\.filename/, `${rel} uploads under the picked filename`);
-    }
-  }
+  const inputBar = fs.readFileSync(
+    path.join(ROOT, 'app', 'lib', 'widgets', 'input_bar.dart'),
+    'utf8',
+  );
+  assert.match(inputBar, /pickChatAttachment\(context\)/, 'input_bar.dart routes through the shared picker');
+  assert.doesNotMatch(inputBar, /FilePicker\.platform/, 'input_bar.dart must not pick files inline');
+  // input_bar 把整个 PickedAttachment 交给共享上传助手（multipart 流程归它），
+  // 不再自己摊开 bytes/filename 字段。
+  assert.match(inputBar, /uploadChatAttachment\(\s*settings:\s*settings,\s*picked:\s*picked,/,
+    'input_bar.dart uploads the picked attachment through the shared helper');
 
   // Sheet labels are localized in both catalogs (zh is authoritative).
   for (const locale of ['zh', 'en']) {
@@ -1560,7 +1591,7 @@ test('a refusal with its own reason is shown as prose instead of a bare code', (
   fixture.controller.handleEvent({ type: 'error', code: 'task_switching', error: 'task_switching',
     message: '这个任务正在切换执行环境，请等切换结束后再发送这条消息。' }, generation);
   const shown = fixture.calls.filter(call => Array.isArray(call) && call[0] === 'system').map(call => call[1]);
-  assert.ok(shown.some(value => value.startsWith('Error: taskSwitchingRefused')),
+  assert.ok(shown.some(value => value.startsWith(`Error: ${zhT('taskSwitchingRefused')}`)),
     `the reader gets the reason, not the code: ${shown.join(' | ')}`);
   assert.equal(fixture.state.isStreaming, false);
 });
@@ -1594,4 +1625,161 @@ test('system warning with authAction routes to the auth-action renderer, with pl
     type: 'system', subtype: 'warning', message: 'other action', authAction: { kind: 'unknown' },
   }, hooked.controller.beginGeneration()), true);
   assert.deepEqual(hooked.calls.filter(c => c[0] === 'system'), [['system', 'other action']]);
+});
+
+function autoRoute(routing, extra = {}) {
+  return {
+    type: 'provider_auto_route', version: 1, mode: 'auto', phase: 'selected',
+    providerId: 'deepseek', providerName: 'DeepSeek 官方', model: 'deepseek-v4-flash',
+    tier: 't1', preferredTier: 't1', routing, ...extra,
+  };
+}
+
+test('the Jev note says which tier was judged and which line/model answers', () => {
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2, latencyMs: 412,
+    }), zhT),
+    '🧭 Jev 判定为简单任务 · 选用 DeepSeek 官方（deepseek-v4-flash） · 用时 0.4 秒',
+  );
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'jev', code: 'jev_low_confidence', tier: 't2', tierIndex: 1, tierCount: 2,
+    }, { providerName: 'OpenRouter', model: 'gpt-5.5', tier: 't2', preferredTier: 't2' }), zhT),
+    '🧭 Jev 判定为复杂任务（不太有把握，已往强的提一档） · 选用 OpenRouter（gpt-5.5）',
+  );
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'jev', code: 'jev_choice', tier: 't2', tierIndex: 1, tierCount: 3,
+    }, { model: null }), zhT),
+    '🧭 Jev 判定为中等任务 · 选用 DeepSeek 官方',
+  );
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2,
+    }), dictT(EN)),
+    '🧭 Jev rated this a simple task · using DeepSeek 官方 (deepseek-v4-flash)',
+  );
+});
+
+test('the Jev note explains a fallback and a tier whose lines were all unavailable', () => {
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'fallback', code: 'jev_key_missing', tier: 't2', tierIndex: 1, tierCount: 2, onUnknown: 'strong',
+    }, { providerName: 'OpenRouter', model: 'gpt-5.5', tier: 't2', preferredTier: 't2' }), zhT),
+    '🧭 Jev 没判断出来（还没配置 Jev key）· 按设置交给强模型 · 选用 OpenRouter（gpt-5.5）',
+  );
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'fallback', code: 'jev_http_502', tier: null, tierIndex: null, tierCount: 2, onUnknown: 'priority',
+    }), zhT),
+    '🧭 Jev 没判断出来（网关返回 502）· 按线路顺序来 · 选用 DeepSeek 官方（deepseek-v4-flash）',
+  );
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2,
+    }, { providerName: 'OpenRouter', model: 'gpt-5.5', tier: 't2' }), zhT),
+    '🧭 Jev 判定为简单任务 · 选用 OpenRouter（gpt-5.5）（简单任务的线路暂不可用，改用这条）',
+  );
+  assert.equal(eventApi.formatAutoRouteNote(autoRoute(null), zhT), '');
+  assert.equal(eventApi.formatAutoRouteNote(autoRoute({ source: 'jev', tierIndex: 0, tierCount: 2 },
+    { phase: 'switched' }), zhT), '', 'only the initial selection is narrated');
+});
+
+function noteFixture() {
+  const list = new FakeElement('div');
+  Object.defineProperty(FakeElement.prototype, 'isConnected', {
+    configurable: true, get() { return !!this.parentNode; },
+  });
+  const fixture = controllerFixture({
+    translate: zhT,
+    addSystemMsg(text) {
+      const node = new FakeElement('div');
+      node.className = 'msg system-msg';
+      node.textContent = text;
+      return list.appendChild(node);
+    },
+  });
+  return { ...fixture, notes: () => list.children.map(node => node.textContent), nodes: () => list.children };
+}
+
+test('the "judging" line is rewritten in place into the verdict', () => {
+  const fixture = noteFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'message_admission_progress', stage: 'auto_provider_routing', state: 'waiting',
+    reason: 'auto_provider_routing_pending', message: '改个错别字', clientMsgId: 'c-jev-1',
+  }, generation);
+  assert.deepEqual(fixture.notes(), ['🧭 Jev 正在判断这条消息的难度…']);
+  assert.equal(fixture.liveUi.getThinkingElement().querySelector('.thinking-label').textContent,
+    '🧭 Jev 正在判断这条消息的难度…', 'the loader no longer claims a memory distill is running');
+  fixture.controller.handleEvent(autoRoute({
+    source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2, latencyMs: 1250,
+  }), generation);
+  assert.deepEqual(fixture.notes(),
+    ['🧭 Jev 判定为简单任务 · 选用 DeepSeek 官方（deepseek-v4-flash） · 用时 1.3 秒']);
+  // A later turn that nobody asked Jev about stays silent.
+  fixture.controller.handleEvent(autoRoute({
+    source: 'fallback', code: 'jev_not_prepared', tier: 't2', tierIndex: 1, tierCount: 2, onUnknown: 'strong',
+  }), generation);
+  assert.equal(fixture.notes().length, 1);
+});
+
+test('a failed admission takes its "judging" line with it', () => {
+  const fixture = noteFixture();
+  const generation = fixture.controller.beginGeneration();
+  const base = { type: 'message_admission_progress', message: '做个大重构', clientMsgId: 'c-jev-2' };
+  fixture.controller.handleEvent({ ...base, stage: 'auto_provider_routing', state: 'waiting' }, generation);
+  fixture.controller.handleEvent({ ...base, state: 'failed', reason: 'message_delivery_failed' }, generation);
+  assert.deepEqual(fixture.notes(), ['消息提交失败（内部提交阶段），请重试。']);
+});
+
+test('a message queued behind a live turn gets its verdict line when its turn starts', () => {
+  const fixture = noteFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.state.isStreaming = true;
+  fixture.controller.handleEvent({
+    type: 'message_admission_progress', stage: 'auto_provider_routing', state: 'waiting',
+    message: '排队的消息', clientMsgId: 'c-jev-3',
+  }, generation);
+  assert.deepEqual(fixture.notes(), [], 'nothing is drawn inside the running answer');
+  fixture.state.isStreaming = false;
+  fixture.controller.handleEvent(autoRoute({
+    source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2,
+  }), generation);
+  assert.deepEqual(fixture.notes(), ['🧭 Jev 判定为简单任务 · 选用 DeepSeek 官方（deepseek-v4-flash）']);
+});
+
+test('the live verdict line carries the persisted note key so a replay adopts it', () => {
+  const fixture = noteFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent(autoRoute({
+    source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2,
+  }, { noteClientMsgId: 'auto-route-turn-9-1' }), generation);
+  fixture.controller.handleEvent({
+    type: 'message_admission_progress', stage: 'auto_provider_routing', state: 'waiting',
+    message: '下一条', clientMsgId: 'c-jev-9',
+  }, generation);
+  fixture.controller.handleEvent(autoRoute({
+    source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2,
+  }, { noteClientMsgId: 'auto-route-turn-10-1' }), generation);
+  const keys = fixture.nodes().map(node => node.dataset.clientMsgId);
+  assert.deepEqual(keys, ['auto-route-turn-9-1', 'auto-route-turn-10-1']);
+});
+
+test('Auto init frames name the line that last answered, not the first candidate', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'task-auto-1234', is_streaming: false, cli: 'codex',
+    model: 'gpt-5.5', providerRouteProtocolVersion: 1, providerRoute: null,
+    providerId: 'deepseek', providerName: 'DeepSeek',
+    providerSelection: { mode: 'auto', protocol: 'openai_responses' },
+    autoProvider: { providerId: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-v4-flash' },
+  }, generation);
+  assert.equal(fixture.state.activeProviderId, 'deepseek');
+  assert.equal(fixture.state.activeProviderName, 'DeepSeek');
+  assert.equal(fixture.state.activeProviderModel, 'deepseek-v4-flash');
+  assert.deepEqual(fixture.calls.find(call => call[0] === 'system'),
+    ['system', 'Session: task-aut... | codex | deepseek-v4-flash']);
 });

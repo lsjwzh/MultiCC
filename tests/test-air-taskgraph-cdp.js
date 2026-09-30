@@ -305,14 +305,14 @@ test('the Air task graph panel is native: id skeleton, drawn canvas, live intera
     await page.evaluate(`window.__firstCanvas = document.getElementById('tg-graph-canvas')`);
     const graphCallsBeforeReentry = graphCalls.length;
     await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].find(b => b.textContent.includes('返回控制台')).click()`);
-    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`), '返回控制台把控制台那层放下来');
+    assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false`), '返回控制台回到控制台那一页');
     await page.evaluate(`[...document.querySelectorAll('.admin-tool-card')].find(c => c.textContent.includes(t('airAdminPanelTaskgraph'))).click()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('#tg-graph-svg .tg-node').length === ${nodes.length}`), '再进来画布照样画出来');
     assert.deepEqual(await page.evaluate(`(() => {
       const canvas = document.getElementById('tg-graph-canvas');
-      return { consoleClosed: !document.body.classList.contains('console-open'), fresh: canvas !== window.__firstCanvas,
+      return { consoleLeft: document.getElementById('console-center').hidden, fresh: canvas !== window.__firstCanvas,
         bound: canvas.__tgBound === true, nodes: document.querySelectorAll('#tg-graph-svg .tg-node').length };
-    })()`), { consoleClosed: true, fresh: true, bound: true, nodes: nodes.length },
+    })()`), { consoleLeft: true, fresh: true, bound: true, nodes: nodes.length },
       '新画布一样绑上了指针事件（懒渲染那条路）');
     assert.equal(graphCalls.length, graphCallsBeforeReentry, '再进来读的是缓存，不再打一趟接口');
 

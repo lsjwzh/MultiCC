@@ -22,6 +22,10 @@ const { t, getLocale } = require('./helpers/i18n-translator');
 const ROOT = path.join(__dirname, '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'air-cli-update.js'), 'utf8');
 const AIR_HTML = fs.readFileSync(path.join(ROOT, 'public', 'air.html'), 'utf8');
+// 页面先加载共享的 CLI 目录（air.html 的 <script src="provider-catalog.js">），浮层里的
+// CLI 名字从它取。沙箱照页面的顺序来 —— 少了它，浮层渲染就只能在读 .cliDisplayName
+// 时崩掉，而不是在这里红。
+const CATALOG = require('../public/provider-catalog');
 
 // ── Minimal DOM ────────────────────────────────────────────────────────────
 class FakeClassList {
@@ -103,6 +107,7 @@ const TXT = {
   current: t('airCliUpdateCurrent'),
   notInstalled: t('airCliUpdateNotInstalled'),
   allCurrent: t('airCliUpdateAllCurrent'),
+  upgrading: t('airCliUpdateUpgrading'),
 };
 
 function entry(overrides = {}) {
@@ -168,6 +173,7 @@ function buildContext({ fetchImpl, confirmResult = true }) {
     console: createSandboxConsole(),
     t,
     getLocale,
+    MultiCCProviderCatalog: CATALOG,
   };
   context.window = context;
   vm.createContext(context);
@@ -255,8 +261,9 @@ test('浮层把可升级的排在前面，并说清「查不到最新版」与�
   const texts = rowTexts(context.registry);
   assert.equal(texts.length, 4);
   assert.match(context.registry['cli-update-summary'].textContent, /1/);
-  // Claude Code 在最前：打开浮层就是为了看要升级的那个
-  assert.match(texts[0], /Claude Code/);
+  // 行名是**家族**: 打开浮层就是为了看要升级的那个 CLI, 而升级换的是家族的制品
+  // (Claude Code 是车道名, 在这里会读成「另一个可升级的东西」)。
+  assert.match(texts[0], /^Claude(?! Code)/);
   assert.match(texts[0], /v2\.0\.1 → v2\.0\.2/);
   assert.match(texts.find(text => text.includes('Codex')), new RegExp(TXT.current));
   // qoder 是「无法检测最新版」，不是「已是最新」
@@ -280,9 +287,35 @@ test('升级前必须问过用户；有会话在用该 CLI 时把风险说清楚
   rowButtons(refused.registry)[0].onclick();
   await settle();
   assert.equal(refused.asked.length, 1);
-  assert.match(refused.asked[0], /Claude Code/);
+  assert.match(refused.asked[0], /Claude(?! Code)/);
   assert.match(refused.asked[0], /3/, '要说出有几个会话正在用它');
   assert.deepEqual(fetchImpl.calls.map(call => call.path), ['/api/cli/versions'], '用户拒绝时不能发出升级请求');
+});
+
+test('随 MultiCC 走的引擎挂在家族行下面，不是一行卖不出去的升级', async () => {
+  const context = buildContext({
+    fetchImpl: createFetch({
+      '/api/cli/versions': versionsBody({
+        claude: entry({
+          latest: '2.0.2', updateAvailable: true,
+          // 服务端的家族行: CLI 制品一个版本, 随 MultiCC 走的引擎另算(bundled 列)
+          bundled: [{ lane: 'claude-exp', engine: 'Claude Agent SDK', kind: 'chat', available: true, version: '0.60.4' }],
+        }),
+        codex: entry({ version: '0.20.0', latest: '0.20.0' }),
+      }, 1),
+    }),
+  });
+  await settle();
+  openPopover(context.registry);
+  const texts = rowTexts(context.registry);
+  // 一个 CLI 一行: 内置引擎不单独占一行(旧表按车道铺开时它就是一行假动作)
+  assert.equal(texts.length, 2);
+  const claudeRow = texts.find(text => text.startsWith('Claude'));
+  assert.match(claudeRow, /^Claude(?! Code)/);
+  assert.match(claudeRow, /Claude Agent SDK v0\.60\.4/, '要说出这个引擎是什么版本、跟谁走');
+  assert.match(claudeRow, /MultiCC/);
+  // 只有 CLI 制品的那个家族有可点的升级按钮
+  assert.equal(rowButtons(context.registry).length, 1);
 });
 
 test('确认后跑官方升级、轮询到完成，并用 ?refresh=1 让角标清零', async () => {
@@ -321,4 +354,86 @@ test('升级请求被拒时把错误说出来，不留下一个假装在跑的�
   const button = rowButtons(context.registry)[0];
   assert.equal(button.disabled, false, '失败后按钮要恢复，不能永久禁用');
   assert.match(rowTexts(context.registry)[0], /busy/);
+});
+
+// 用户抱怨的「升级按钮一次只能点一个」: 不同 CLI 之间本来就没有冲突(服务端只对同一
+// 个安装目标 409), 界面不该用一个全局开关把它们串起来。
+test('两个 CLI 可以同时升级，完成的那一个不会擦掉另一个的进度', async () => {
+  const codexStatus = { value: 'running' };
+  const fetchImpl = createFetch({
+    '/api/cli/versions': versionsBody({
+      claude: entry({ latest: '2.0.2', updateAvailable: true }),
+      codex: entry({ version: '0.20.0', latest: '0.21.0', updateAvailable: true }),
+    }, 2),
+    '/api/cli/versions?refresh=1': versionsBody({
+      claude: entry({ version: '2.0.2', latest: '2.0.2' }),
+      codex: entry({ version: '0.20.0', latest: '0.21.0', updateAvailable: true }),
+    }, 1),
+    'POST /api/cli/claude/upgrade': { status: 202, body: { ok: true, jobId: 'job_claude', cli: 'claude' } },
+    'POST /api/cli/codex/upgrade': { status: 202, body: { ok: true, jobId: 'job_codex', cli: 'codex' } },
+    '/api/cli/install-status/job_claude': {
+      ok: true,
+      body: { ok: true, job: { id: 'job_claude', cli: 'claude', status: 'done', exitCode: 0, error: null, logTail: 'claude upgraded\n' } },
+    },
+    '/api/cli/install-status/job_codex': () => ({
+      ok: true,
+      body: {
+        ok: true,
+        job: { id: 'job_codex', cli: 'codex', status: codexStatus.value, exitCode: null, error: null, logTail: 'installing codex\n' },
+      },
+    }),
+  });
+  const context = buildContext({ fetchImpl });
+  await settle();
+  openPopover(context.registry);
+  const buttons = rowButtons(context.registry);
+  assert.equal(buttons.length, 2, '两个 CLI 都该有升级按钮');
+  buttons[0].onclick();
+  buttons[1].onclick();
+  await settle();
+  assert.ok(fetchImpl.called('POST', '/api/cli/claude/upgrade'), '第二个升级不该被第一个挡住');
+  assert.ok(fetchImpl.called('POST', '/api/cli/codex/upgrade'));
+
+  // claude 已经完成并触发了一次刷新: 重建后的 codex 行必须还在「升级中」且按钮禁用
+  const codexRow = rowTexts(context.registry).find(text => text.includes('Codex'));
+  assert.match(codexRow, new RegExp(TXT.upgrading), '完成的那一个不能把另一个的进度擦掉');
+  const disabled = rowButtons(context.registry).filter(button => button.disabled);
+  assert.equal(disabled.length, 1, '只剩还在跑的那个按钮是禁用的');
+  assert.notEqual(context.registry['cli-update-log'].textContent, '', '进度日志不能是空的');
+
+  // 第二个跑完后一切归位: 角标清零, 按钮不再禁用
+  codexStatus.value = 'done';
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  assert.equal(rowButtons(context.registry).filter(button => button.disabled).length, 0);
+  assert.match(context.registry['cli-update-log'].textContent, /installing codex/);
+  // 角标数的是「还剩几个可升级」: claude 已完成, 桩里 codex 仍是旧版, 所以是 1。
+  assert.equal(context.registry['cli-update-badge'].textContent, '1');
+});
+
+// 升级「命令成功但没作用到派生的二进制」这类失败, 服务端会带回具体原因(hint);
+// 只显示一行退出码用户无从下手。
+test('升级失败时把服务端查明的具体原因一并说出来', async () => {
+  const hint = '新版本装到了另一个位置，multicc 实际派生的这个二进制没有变化。解决办法二选一：① 设置环境变量 CLAUDE_CMD …';
+  const fetchImpl = createFetch({
+    '/api/cli/versions': versionsBody({ claude: entry({ latest: '2.0.2', updateAvailable: true }) }, 1),
+    'POST /api/cli/claude/upgrade': { status: 202, body: { ok: true, jobId: 'job_hint', cli: 'claude' } },
+    '/api/cli/install-status/job_hint': {
+      ok: true,
+      body: {
+        ok: true,
+        job: {
+          id: 'job_hint', cli: 'claude', status: 'error', exitCode: 0,
+          error: '升级命令已完成，但 multicc 派生的 /bin/claude 仍是 v2.0.1',
+          hint, logTail: 'changed 1 package\n',
+        },
+      },
+    },
+  });
+  const context = buildContext({ fetchImpl });
+  await settle();
+  openPopover(context.registry);
+  rowButtons(context.registry)[0].onclick();
+  await settle();
+  assert.match(rowTexts(context.registry)[0], /v2\.0\.1/);
+  assert.match(context.registry['cli-update-log'].textContent, /CLAUDE_CMD/);
 });

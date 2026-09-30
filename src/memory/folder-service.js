@@ -1,6 +1,6 @@
 'use strict';
 
-const { DOCS_REGISTRY_RULE_MARKER, ensureBuiltinSharedMemory } = require('./builtin-rules');
+const { DOCS_REGISTRY_RULE_MARKER, LEGACY_MARKERS, ensureBuiltinSharedMemory } = require('./builtin-rules');
 
 // Per-session injection caps (chars of folder content surfaced into each
 // session's system prompt). These are the per-session CONTEXT COST dials —
@@ -187,7 +187,7 @@ ${body}
     });
     const sharedText = deps.readMemoryFolder(shared, SHARED_MEM_CAP, {
       primaryNames: ['MEMORY.md'],
-      priorityEntryMarkers: [DOCS_REGISTRY_RULE_MARKER],
+      priorityEntryMarkers: [DOCS_REGISTRY_RULE_MARKER, ...LEGACY_MARKERS.docsRegistry],
     });
     // 瀑布的宽层：机器全局与 CLI 特有。空层不注入段落（省 token）。
     const machineText = deps.readMemoryFolder(machineDir(), MACHINE_MEM_CAP, {
@@ -206,29 +206,29 @@ ${body}
 
     const sections = [];
     const tier = (heading, text) => {
-      if (text && text.trim()) sections.push(`【${heading}】\n${text}`);
+      if (text && text.trim()) sections.push(`[${heading}]\n${text}`);
     };
-    tier('机器全局记忆（本机所有会话共享）', machineText);
-    tier(`CLI 记忆（${persisted.cli}）`, cliText);
-    tier('任务记忆', taskText);
-    tier('私有记忆', ownText || '（空）');
-    tier('公共记忆', sharedText || '（空）');
+    tier('Machine-global memory (shared by every session on this machine)', machineText);
+    tier(`CLI memory (${persisted.cli})`, cliText);
+    tier('Task memory', taskText);
+    tier('Private memory', ownText || '(empty)');
+    tier('Shared memory', sharedText || '(empty)');
 
     return (
-`[记忆库｜原生会话快照] 你有一个持久记忆文件夹（存在 multicc 数据区，不在本仓库、不进 git）。以下正文会在原生 CLI 会话启动/重建时形成快照；会话中写入会立即落盘并由工具结果确认，但不会改写已经运行中的系统提示词。
-· 私有记忆（仅本会话可见）文件夹：${own}
-· 公共记忆（本项目所有会话共享）文件夹：${shared}
-· 机器全局（本机所有会话）文件夹：${machineDir()}
-· CLI 特有（${persisted.cli}）文件夹：${cliFolder || '（无效 cli 名）'}
-· 任务级（当前任务 ${currentTaskId || '无'}）文件夹：${taskFolder || '（无绑定任务）'}
-· 技能记忆根目录：${path.join(deps.memoryStoreRoot, String(persisted.dirId), 'skills')}（按需 Read，不自动注入）
-· 保存短小、稳定的事实时，优先调用受控记忆接口（原子写入、去重、容量与安全检查）：
-  curl -s "$MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/memory/action" -H 'Content-Type: application/json' -d '{"action":"add","scope":"own","content":"要记住的事实"}'
-  action 可为 add / replace / remove；replace/remove 另传 oldText。
-  scope 分层：own=本会话 / shared=本项目 / task=当前任务（自动定位，也可传 taskId 指定）/ machine=本机全局（门槛最高）/ cli=当前 CLI 特有 / skill=技能记忆（另传 skill=<技能名>）。较长的专题笔记仍可直接 Write/Edit 为独立 .md 文件。
+`[Memory store | native session snapshot] You have a persistent memory folder (kept in the multicc data area, outside this repository and outside git). The body below is snapshotted when the native CLI session starts or is rebuilt; writes during the session land on disk immediately and are confirmed by the tool result, but they do not rewrite the system prompt of an already-running session.
+- Private memory (visible only to this session) folder: ${own}
+- Shared memory (all sessions of this project) folder: ${shared}
+- Machine-global (all sessions on this machine) folder: ${machineDir()}
+- CLI-specific (${persisted.cli}) folder: ${cliFolder || '(invalid cli name)'}
+- Task-level (current task ${currentTaskId || 'none'}) folder: ${taskFolder || '(no bound task)'}
+- Skill memory root: ${path.join(deps.memoryStoreRoot, String(persisted.dirId), 'skills')} (Read on demand; not auto-injected)
+- To save a short, stable fact, prefer the managed memory endpoint (atomic write, dedupe, capacity and safety checks):
+  curl -s "$MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/memory/action" -H 'Content-Type: application/json' -d '{"action":"add","scope":"own","content":"the fact to remember"}'
+  action is one of add / replace / remove; replace/remove also take oldText.
+  scope tiers: own = this session / shared = this project / task = current task (located automatically; pass taskId to target one) / machine = machine-global (highest bar) / cli = current CLI only / skill = skill memory (also pass skill=<skill name>). Longer topic notes can still be written directly with Write/Edit as standalone .md files.
 
 ${sections.join('\n\n')}
-[记忆库结束]`
+[End of memory store]`
     );
   }
 

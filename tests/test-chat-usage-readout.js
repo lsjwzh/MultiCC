@@ -29,7 +29,9 @@ test('a live request measures the context; the turn total only estimates it', ()
   const measured = buildUsageView({
     requestUsage: REQUEST, turnUsage: AGGREGATED_TURN, contextWindow: WINDOW,
   }).summary;
-  assert.equal(measured.text, '上下文 123.0k / 200k · 61.5%');
+  // 占用量与窗口用同一个紧凑口径（formatTokenCount + dropZeroDecimal）：123000
+  // 写「123k」，跟旁边那个「200k」一样不带 .0。
+  assert.equal(measured.text, '上下文 123k / 200k · 61.5%');
   assert.equal(measured.exact, true);
   assert.ok(!measured.text.includes('≈'), 'a measurement is not hedged');
 
@@ -79,7 +81,7 @@ test('nothing known renders nothing, so the row disappears instead of lying', ()
 
 test('an unknown context window reports occupancy without a fake denominator', () => {
   const view = buildUsageView({ requestUsage: REQUEST, contextWindow: 0 });
-  assert.equal(view.summary.text, '上下文 123.0k');
+  assert.equal(view.summary.text, '上下文 123k');
   assert.equal(view.summary.hasBar, false);
 });
 
@@ -186,7 +188,7 @@ test('the panel opens on hover, pins on click, and never opens with nothing to s
   };
 
   readout.render(sources);
-  assert.match(bar.innerHTML, /上下文 123\.0k/);
+  assert.match(bar.innerHTML, /上下文 123k/);
   assert.match(bar.innerHTML, /详情/, 'the row advertises that there is more');
   assert.equal(readout.isOpen(), false);
 

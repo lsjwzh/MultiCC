@@ -5,6 +5,7 @@
 // host stays under its line budget; behavior is unchanged unless noted.
 
 const fs = require('node:fs');
+const { isChatStateBusy } = require('./runtime-busy');
 const { createSessionHibernationRuntime } = require('./hibernation');
 
 // Non-terminal orchestration rows older than this no longer pin a workspace
@@ -57,9 +58,11 @@ function createSessionHibernation(deps) {
       }
       try { if (getWorkspaceAdmission()?.hasActiveLease?.(id)) blockers.push('workspace_lease'); } catch (_) { blockers.push('workspace_lease_unknown'); }
       if (defaultRepoActor.isLeased(id)) blockers.push('repo_lease');
-      if (chat?.isStreaming || chat?.claudeProc || chat?._cancelledProc || chat?._activeRunner) blockers.push('active_cli');
+      // 会话的 chat 运行时忙（唯一判定，见 src/session/runtime-busy.js）。下面的
+      // active_stream / background_task 是另外两条独立的轴，各自成条 blocker。
+      if (isChatStateBusy(chat)) blockers.push('active_cli');
       if (stream?.busy || stream?.queued) blockers.push('active_stream');
-      if (backgroundTaskRuntime.hasLiveBackgroundTasks(id)) blockers.push('background_task');
+      if ((backgroundTaskRuntime.hasProcessBackgroundTasks || backgroundTaskRuntime.hasLiveBackgroundTasks)(id)) blockers.push('background_task');
       if (waitInjector.hasWait(id)) blockers.push('pending_wait');
       const durableStaleMs = Number(process.env.MULTICC_HIBERNATE_DURABLE_STALE_MS || DEFAULT_DURABLE_STALE_MS);
       if (orchestrationRuntime && await orchestrationRuntime.hasSessionActivity(id, { staleMs: durableStaleMs })) blockers.push('durable_work');
@@ -70,7 +73,12 @@ function createSessionHibernation(deps) {
       }
       return blockers;
     },
-    closePersistent: id => chatStream.closeAndWait(id),
+    closePersistent: async (id, record) => {
+      // Shared-shell sessions can leave the last warm child under a sibling ID.
+      // Retire every child on the checkout before hibernation removes it.
+      await chatStream.claimWorkspace?.(id, { id: record.workspaceId, path: record.worktreePath }, { exclusive: true });
+      return chatStream.closeAndWait(id);
+    },
     updateChatCwd: (id, cwd) => { const chat = chatSessions.get(id); if (chat) chat.cwd = cwd; },
     pathExists: record => !!record.worktreePath && fs.existsSync(record.worktreePath),
     idleMs: process.env.MULTICC_SESSION_HIBERNATE_IDLE_MS,

@@ -63,27 +63,29 @@ test('the Air vault panel is native: metadata-only list, per-name reveal, real w
 
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
 
-    // ── ⓪ 控制台顶栏上那颗常驻入口：打开控制台就在，不用滚到工具格 ────────
+    // ── ⓪ 页头工具栏上那颗常驻入口：它管的不是某一组功能里的开关，而是子进程的
+    //       spawn 环境，所以跟这一页的其它动作并列排在页头，不用滚到工具格 ─────
     await page.navigate('/air?dir=d1&view=overview');
-    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`), '控制台打开');
+    assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false`), '控制台那一页打开');
     const topBar = await page.evaluate(`(() => {
-      const head = document.getElementById('console-head');
+      const tools = document.getElementById('task-tools');
       const button = document.getElementById('console-secrets');
       if (!button) return null;
       const b = button.getBoundingClientRect();
-      return { inHead: head.contains(button), text: button.textContent.replace(/\\s+/g,''), visible: button.checkVisibility() };
+      return { inTools: tools.contains(button), text: button.textContent.replace(/\\s+/g,''), visible: button.checkVisibility() };
     })()`);
-    assert.deepEqual(topBar, { inHead: true, text: '🔐敏感信息', visible: true }, '保险箱入口钉在控制台顶栏上');
-    // 顶栏那颗现在就是唯一的控制台入口 —— 工具格里不该再留一张同样的卡。
+    assert.deepEqual(topBar, { inTools: true, text: '🔐敏感信息', visible: true }, '保险箱入口钉在页头工具栏上');
+    // 这一颗现在就是控制台那一片唯一的入口 —— 工具格里不该再留一张同样的卡。
     assert.equal(await page.evaluate(`[...document.querySelectorAll('.admin-tool-card')].some(card => card.textContent.includes('敏感信息'))`), false,
       '工具格里不再重复一张保险箱卡');
     await page.screenshot('00-console-topbar');
     await page.evaluate(`document.getElementById('console-secrets').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='敏感信息'`), '顶栏那颗一键到保险箱整页');
-    assert.equal(await page.evaluate(`document.body.classList.contains('console-open')`), false, '进整页时控制台让开');
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='敏感信息'`), '那颗一键到保险箱整页');
+    assert.equal(await page.evaluate(`document.getElementById('console-center').hidden`), true, '换页时控制台那一页让开');
+    assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), 'secrets');
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .air-legacy-frame').length`), 0);
 
-    // ⓪ 已经打过一次列表接口（顶栏那颗真的把面板渲染过一遍），所以下面几段
+    // ⓪ 已经打过一次列表接口（那颗真的把面板渲染过一遍），所以下面几段
     // 比的是「这一轮从零开始打了什么」，锚点先记下来。
     const base = calls().length;
 

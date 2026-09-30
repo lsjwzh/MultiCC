@@ -34,6 +34,22 @@ direct network can set an explicit non-loopback `HOST` together with
 | `KIMI_CMD` | *(auto-detected)* | Override path to the Kimi Code `kimi` binary |
 | `KIMI_API_KEY` / `KIMI_BASE_URL` | *(unset)* | Native Kimi Code credential fallback; provider-bound sessions get these injected per session instead |
 
+### AI Assistant (aux) queue
+
+The AI Assistant (aux) is the background HTTP model behind intent classification,
+task attribution and Goal prechecks. It runs as a concurrent pool — not a single
+serial lane — with one strict-order lane beside it:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MULTICC_AUX_CONCURRENCY` | `5` | Concurrent aux requests in the pool (clamped to 1–16). `AUX_CONCURRENCY` is accepted as an alias. |
+| `AUX_TIMEOUT_MS` | `90000` | Timeout for a single aux HTTP call. |
+| `GOAL_PRECHECK_TIMEOUT_MS` | `max(30000, 2 × AUX_TIMEOUT_MS)` | How long `POST /api/goal/precheck` waits for a verdict before answering `{ ok: false, code: 'AUX_TIMEOUT' }`. Published to clients as `precheckWaitMs` by `GET /api/settings/goal`, so the web UI and the app derive their own budget instead of hard-coding one. |
+
+`GET /api/aux/status` reports the pool: `active` / `capacity` / `concurrency`
+alongside the legacy `processing`, `currentTask` and `queueDepth` fields, plus a
+per-lane `lanes.serial` / `lanes.pool` breakdown.
+
 ### Turn liveness and recovery
 
 | Variable | Default | Description |

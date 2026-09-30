@@ -49,7 +49,6 @@ function makePorts(overrides = {}) {
     history: { appendFinal: overrides.appendFinal || (() => true) },
     usage: {
       commit: overrides.commitUsage || (() => true),
-      ...(overrides.commitTaskRunUsage ? { commitTaskRun: overrides.commitTaskRunUsage } : {}),
       ...(overrides.afterUsageCommit ? { afterCommit: overrides.afterUsageCommit } : {}),
     },
     effects: { deliver: overrides.deliverEffect || (() => ({ ok: true })) },
@@ -66,9 +65,6 @@ test('host ports are narrow and coordinator imports no runtime I/O', () => {
   assert.throws(() => assertChatHostPorts({
     ...ports, usage: { ...ports.usage, afterCommit: true },
   }), /usage\.afterCommit/);
-  assert.throws(() => assertChatHostPorts({
-    ...ports, usage: { ...ports.usage, commitTaskRun: true },
-  }), /usage\.commitTaskRun/);
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'host-coordinator.js'), 'utf8');
   assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false);
 });
@@ -259,58 +255,6 @@ test('authoritative usage commit is retriable, runner-owned and claimed exactly 
   assert.equal(coordinator.commitUsage({ ...owned, usage: { input_tokens: 4 } }).code, 'usage_already_recorded');
   assert.equal(commitCalls, 2);
   assert.equal(observerCalls, 1);
-});
-
-test('task-run usage is a second durable stage and a failed stage never repeats legacy usage', () => {
-  const owned = makeOwned({ kind: 'process', request: { cli: 'codex' } });
-  owned.turn.task = Object.freeze({
-    ...owned.turn.task, id: 'task-1', runId: 'run-1', leaseEpoch: 7,
-  });
-  const order = [];
-  const taskWrites = [false, true];
-  const payloads = [];
-  const coordinator = createChatHostCoordinator(makePorts({
-    commitUsage: () => { order.push('legacy'); return true; },
-    commitTaskRunUsage: payload => {
-      order.push('task-run');
-      payloads.push(payload);
-      return taskWrites.shift();
-    },
-    afterUsageCommit: () => order.push('after'),
-  }));
-  assert.equal(coordinator.appendResult({
-    ...owned, boundary: 'result', message: { role: 'assistant', content: 'done' },
-  }).durable, true);
-
-  const first = coordinator.commitUsage({ ...owned, usage: { input_tokens: 4 } });
-  assert.equal(first.committed, false);
-  assert.equal(first.code, 'task_run_usage_commit_failed');
-  assert.equal(coordinator.claimPostTurnPlan({ ...owned, finalText: 'done' }).code,
-    'task_run_usage_not_durable');
-
-  const second = coordinator.commitUsage({ ...owned, usage: { input_tokens: 4 } });
-  assert.equal(second.committed, true);
-  assert.equal(coordinator.commitUsage({ ...owned, usage: { input_tokens: 4 } }).code,
-    'usage_already_recorded');
-  assert.deepEqual(order, ['legacy', 'task-run', 'task-run', 'after']);
-  assert.equal(payloads.length, 2);
-  assert.equal(payloads[0].taskRunId, 'run-1');
-  assert.equal(payloads[0].taskId, 'task-1');
-  assert.equal(payloads[0].idempotencyKey, 'usage:turn-1:runner-1');
-  assert.deepEqual(payloads[1], payloads[0], 'task-run retry retains stable identity and content');
-});
-
-test('a task-run usage port is not called for ordinary session turns', () => {
-  const owned = makeOwned();
-  let taskRunCalls = 0;
-  const coordinator = createChatHostCoordinator(makePorts({
-    commitTaskRunUsage: () => { taskRunCalls += 1; return true; },
-  }));
-  coordinator.appendResult({
-    ...owned, boundary: 'result', message: { role: 'assistant', content: 'done' },
-  });
-  assert.equal(coordinator.commitUsage({ ...owned, usage: { input_tokens: 1 } }).committed, true);
-  assert.equal(taskRunCalls, 0);
 });
 
 test('dispatch return is claimed only after matching durable delivery proof', async () => {
@@ -547,110 +491,6 @@ test('host runtime keeps history stable and commits usage to the frozen attempt 
   assert.equal(committed.attribution.providerId, 'provider-b');
 });
 
-test('host runtime normalizes task-run usage before turn completion and fails closed on retry', () => {
-  const owned = makeOwned({ kind: 'process', request: { cli: 'codex' } });
-  owned.turn.task = Object.freeze({
-    ...owned.turn.task, id: 'task-1', runId: 'run-1', leaseEpoch: 7,
-  });
-  const state = {
-    _activeTurn: owned.turn,
-    _activeRunner: owned.runner,
-    cli: 'codex',
-    providerId: 'provider-1',
-    providerName: 'Provider One',
-    model: 'model-1',
-  };
-  const events = [];
-  const taskRunPayloads = [];
-  let taskRunAttempt = 0;
-  const runtime = createChatHostRuntime({
-    appendMessage: () => { events.push('append'); return true; },
-    persistUsage: () => { events.push('legacy-usage'); return true; },
-    persistTaskRunUsage: payload => {
-      events.push('task-run-usage');
-      taskRunPayloads.push(payload);
-      taskRunAttempt += 1;
-      if (taskRunAttempt === 1) return { ok: true };
-      return {
-        inserted: true, duplicate: false, corrected: false,
-        eventId: payload.eventId, revision: 1,
-      };
-    },
-    afterUsageCommit: () => events.push('after-usage'),
-    getSessionState: () => state,
-    consumeHandoff: () => events.push('handoff'),
-    emitTurnComplete: () => events.push('turn-complete'),
-    emitDispatchComplete: () => { throw new Error('unexpected dispatch'); },
-    emitGatewayComplete: () => { throw new Error('unexpected gateway'); },
-    logSuppressed: detail => events.push(`suppressed:${detail.reason}`),
-  });
-  assert.equal(runtime.persistFinalAssistantResult(
-    'session-1', state, owned.turn, owned.runner,
-    { role: 'assistant', content: 'done' }, { resultEvent: true },
-  ), true);
-  const usage = {
-    input_tokens: 10,
-    cache_read_input_tokens: 4,
-    cache_creation_input_tokens: 2,
-    output_tokens: 3,
-    reasoning_output_tokens: 1,
-  };
-  assert.equal(runtime.recordDurableTurnUsage('session-1', owned.runner, usage), false);
-  assert.equal(runtime.runDurablePostTurn(
-    'session-1', state, { type: 'normal' }, owned.turn, owned.runner, 'done', {},
-  ), false);
-  assert.equal(events.includes('turn-complete'), false);
-
-  assert.equal(runtime.recordDurableTurnUsage('session-1', owned.runner, usage), true);
-  assert.equal(runtime.runDurablePostTurn(
-    'session-1', state, { type: 'normal' }, owned.turn, owned.runner, 'done', {},
-  ), true);
-  assert.equal(runtime.recordDurableTurnUsage('session-1', owned.runner, usage), true);
-  assert.deepEqual(events, [
-    'append', 'legacy-usage', 'task-run-usage',
-    'suppressed:task_run_usage_not_durable',
-    'task-run-usage', 'after-usage', 'handoff', 'turn-complete',
-  ]);
-  assert.equal(taskRunPayloads.length, 2);
-  assert.equal(taskRunPayloads[0].eventId, taskRunPayloads[1].eventId);
-  assert.match(taskRunPayloads[0].eventId, /^tru_[a-f0-9]{32}$/);
-  assert.equal(Number.isSafeInteger(taskRunPayloads[0].event.occurredAt), true);
-  assert.deepEqual(taskRunPayloads[0], taskRunPayloads[1]);
-  assert.deepEqual(taskRunPayloads[0], {
-    runId: 'run-1',
-    taskRunId: 'run-1',
-    taskId: 'task-1',
-    leaseEpoch: 7,
-    taskRunLease: { runId: 'run-1', leaseEpoch: 7 },
-    providerBinding: {
-      sessionId: 'session-1', cli: 'codex', providerId: 'provider-1', model: 'model-1',
-      roleKind: 'main', agentRole: null, routeName: 'main',
-    },
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    runnerId: 'runner-1',
-    idempotencyKey: 'usage:turn-1:runner-1',
-    eventId: taskRunPayloads[0].eventId,
-    event: {
-      eventId: taskRunPayloads[0].eventId,
-      sourceEventId: 'usage:turn-1:runner-1',
-      occurredAt: taskRunPayloads[0].event.occurredAt,
-      providerId: 'provider-1',
-      providerName: 'Provider One',
-      cli: 'codex',
-      protocol: 'openai-responses',
-      model: 'model-1',
-      roleKind: 'main',
-      routeName: 'main',
-      source: 'reconciled',
-      coverage: 'observed',
-      status: 'success',
-      tokens: { input: 10, cacheRead: 4, cacheWrite: 2, output: 3, reasoning: 1 },
-    },
-    usage: { input: 10, cacheRead: 4, cacheWrite: 2, output: 3, reasoning: 1 },
-  });
-});
-
 test('host runtime never lets a typed Commander fan out through assistant markers', () => {
   const owned = makeOwned({ request: { originDispatchId: 'taskboard-operation' } });
   const state = { _activeTurn: owned.turn, _activeRunner: owned.runner };
@@ -676,4 +516,39 @@ test('host runtime never lets a typed Commander fan out through assistant marker
   assert.deepEqual(events, [
     'handoff', 'turn-complete', 'return:taskboard-operation',
   ]);
+});
+
+test('host runtime persists the turn role split only when sub-agent usage exists', () => {
+  const saved = [];
+  const snapshots = new Map([
+    ['with-sub', {
+      main: { inputTokens: 5, outputTokens: 6, cacheRead: 7, cacheWrite: 8 },
+      mainByProvider: [{ providerId: 'p-main', model: 'm1' }],
+      sub: { inputTokens: 1, outputTokens: 2, cacheRead: 3, cacheWrite: 4 },
+      subByProvider: [{ providerId: 'p-sub', model: 'm2' }],
+    }],
+    ['main-only', { main: { inputTokens: 5 }, mainByProvider: [], sub: null, subByProvider: [] }],
+  ]);
+  for (const sessionId of snapshots.keys()) {
+    const owned = makeOwned();
+    const state = { _activeTurn: owned.turn, _activeRunner: owned.runner, _resultSaved: false };
+    const runtime = createChatHostRuntime({
+      appendMessage: (_id, message) => { saved.push(message); return true; },
+      persistUsage: () => true,
+      afterUsageCommit() {},
+      getSessionState: () => state,
+      roleUsageSnapshot: id => snapshots.get(id),
+      consumeHandoff() {},
+      emitTurnComplete() {},
+      emitDispatchComplete() {},
+      emitGatewayComplete() {},
+      logSuppressed() {},
+    });
+    runtime.persistFinalAssistantResult(sessionId, state, owned.turn, owned.runner,
+      { role: 'assistant', content: 'done' }, { resultEvent: true });
+  }
+  assert.deepEqual(saved[0].roleUsage.sub, { inputTokens: 1, outputTokens: 2, cacheRead: 3, cacheWrite: 4 });
+  assert.equal(saved[0].roleUsage.subByProvider[0].providerId, 'p-sub');
+  assert.equal(saved[0].roleUsage.mainByProvider[0].providerId, 'p-main');
+  assert.equal('roleUsage' in saved[1], false, 'main-only turns keep the plain history shape');
 });

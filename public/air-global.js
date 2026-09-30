@@ -1,22 +1,7 @@
 'use strict';
 
-// Air 原生「全局配置」面板 —— 主机的两条全局开关（原生 DOM，不再嵌旧 manage 页）。
-// 后端契约见 src/routes/host-read.js / host-write.js：
-//   GET/POST /api/settings/official-oauth → { enabled }
-//   GET/POST /api/settings/power          → { available, enabled, error? }
-//
-// 旧 manage 的 global 那一格还有第三张卡（Android APK / iOS OTA 下载）。那张**不搬**：
-// 侧栏「更多与系统 › 主机操作」里的「安装包」按钮（air-ops.js 的 openApkPanel）早就读
-// 同一对接口列下载行了，同一件事两个入口正是这次迁移要消掉的，所以这页只在顶上留一句
-// 指路（见 airGlobalInstallHint），不再画第二张下载卡。
-//
-// 两条开关都不是普通的偏好，各自的「说错话」代价不一样，所以规矩分开写：
-//   · OAuth 重放：开启是**有风险**的动作（在官方客户端之外重放订阅 token），所以开启
-//     前必须先问一句；答「否」时勾选要回滚且一个请求都不许发 —— 勾上就等于替用户答应
-//     了一件他没答应的事。
-//   · 关盖运行：切换要在 Mac 上弹系统授权框、可能要等很久，而且服务端才是「到底生效
-//     没有」的唯一裁判。所以过程里先按住开关并说明在等授权，结果一律以服务端回的
-//     enabled 为准；失败必须把勾选退回去，不能留下一个服务端并不认账的勾。
+// Native global settings. Password setup is shared by both macOS switches;
+// only server-confirmed state is displayed, and credentials are kept on disable.
 (function initAirGlobal(root) {
   if (!root || !root.document) return;
   const document = root.document;
@@ -31,6 +16,7 @@
   // render(host, context) 每进一次面板就重建 DOM，回调里要用的 context 只能存在模块上
   // （同 air-secrets.js）：它由 air.js 每次渲染递进来。
   let context = null;
+  let setupFromShortcut = null;
   let styleNode = null;
 
   // 样式跟模块走：这页是后加的，不去动 air.css（那份是外壳和各面板共用的）。
@@ -57,6 +43,17 @@
         .air-global-status { min-width: 0; color: var(--faint); font-size: 10.5px; overflow-wrap: anywhere; }
         .air-global-status.ok { color: #2f7d52; }
         .air-global-status.err { color: #b34b34; }
+        /* 两条设置之间只隔一条细线：允许自动解锁是同一张卡里的第二件事，那张卡的抬头
+           （MACOS）同时罩着两条，所以它不该再画一张自己的卡。 */
+        .air-global-sep { padding-top: 4px; border-top: 1px solid var(--hairline); }
+        .air-global-block { display: grid; gap: 7px; }
+        #air-global-unlock-password { width: auto; min-width: 0; flex: 1 1 240px; }
+        .air-global-permission-dialog { max-width: min(460px, calc(100vw - 28px)); border: 1px solid var(--hairline);
+          border-radius: 14px; padding: 22px; color: #25445e; box-shadow: 0 16px 50px rgba(18,45,70,.22); }
+        .air-global-permission-dialog::backdrop { background: rgba(14,32,48,.48); }
+        .air-global-permission-dialog h3 { margin: 0 0 8px; }
+        .air-global-permission-dialog p { line-height: 1.6; }
+        .air-global-permission-dialog .air-global-foot { margin-top: 15px; }
       `;
     }
     host.append(styleNode); // replaceChildren 会把它一起清掉，每次重绘都挂回去
@@ -73,89 +70,7 @@
     return { head, note };
   }
 
-  // ── OAuth 重放 ─────────────────────────────────────────────────────────
-  function oauthCard() {
-    const panel = make('section', null, 'admin-panel air-global-card');
-    const { head, note } = card('PROXY', t('airGlobalOauthTitle'));
-    note.id = 'air-global-oauth-state'; // 「已开启 / 已关闭」也要算状态，它得被单独取到
-
-    const checkbox = make('input');
-    checkbox.type = 'checkbox';
-    checkbox.id = 'air-global-oauth-enabled';
-    checkbox.disabled = true; // 状态没回来之前不让点：这颗勾会真的改子进程怎么起
-    checkbox.onchange = () => { void toggleOauth(); };
-    const label = make('label', null, 'air-global-toggle');
-    label.append(checkbox, make('span', t('airGlobalOauthToggle')));
-    const row = make('div', null, 'air-global-row');
-    row.append(label);
-
-    const status = make('span', '', 'air-global-status');
-    status.id = 'air-global-oauth-msg';
-
-    panel.append(head, make('p', t('airGlobalOauthRisk'), 'air-global-risk'), row, status);
-    return panel;
-  }
-
-  function paintOauth(enabled) {
-    const checkbox = el('air-global-oauth-enabled');
-    if (checkbox) { checkbox.checked = enabled; checkbox.disabled = false; }
-    const state = el('air-global-oauth-state');
-    if (state) state.textContent = t(enabled ? 'airGlobalOauthOn' : 'airGlobalOauthOff');
-  }
-
-  async function loadOauth() {
-    const checkbox = el('air-global-oauth-enabled');
-    const status = el('air-global-oauth-msg');
-    try {
-      const data = await context.api('/api/settings/official-oauth');
-      paintOauth(!!(data && data.enabled));
-      if (status) { status.textContent = ''; status.className = 'air-global-status'; }
-    } catch (error) {
-      // 读不到就把它按住并说明原因：一个不知道真假的勾比没有勾更坏。
-      if (checkbox) { checkbox.disabled = true; checkbox.checked = false; }
-      const state = el('air-global-oauth-state');
-      if (state) state.textContent = '';
-      if (status) {
-        status.textContent = t('airGlobalOauthReadFailed', { message: error.message || String(error) });
-        status.className = 'air-global-status err';
-      }
-    }
-  }
-
-  async function toggleOauth() {
-    const checkbox = el('air-global-oauth-enabled');
-    const status = el('air-global-oauth-msg');
-    if (!checkbox) return;
-    const previous = !checkbox.checked;
-    // 开启是有风险的那一侧，必须先问一句。答「否」就到此为止：勾选退回原位，请求一个不发
-    // —— 服务端没被问过，界面也不该替它先表态。
-    if (checkbox.checked && !root.confirm(t('airGlobalOauthConfirm'))) {
-      checkbox.checked = false;
-      return;
-    }
-    const wanted = checkbox.checked;
-    checkbox.disabled = true;
-    if (status) { status.textContent = t('airGlobalOauthSaving'); status.className = 'air-global-status'; }
-    try {
-      const data = await context.api('/api/settings/official-oauth', { enabled: wanted });
-      const settled = !!(data && data.enabled);
-      paintOauth(settled);
-      if (status) {
-        status.textContent = t(settled ? 'airGlobalOauthOn' : 'airGlobalOauthOff') + t('airGlobalOauthSpawnNote');
-        status.className = 'air-global-status ok';
-      }
-    } catch (error) {
-      // 写失败就把勾退回原值：停在「用户点过」的那一态是在替服务端点头。
-      checkbox.checked = previous;
-      checkbox.disabled = false;
-      if (status) {
-        status.textContent = t('airGlobalOauthFailed', { message: error.message || String(error) });
-        status.className = 'air-global-status err';
-      }
-    }
-  }
-
-  // ── 关盖运行（仅 macOS） ───────────────────────────────────────────────
+  // ── 电源：只有两条对外设置（关盖运行、允许自动解锁） ──────────────────────
   function powerCard() {
     const panel = make('section', null, 'admin-panel air-global-card');
     panel.id = 'air-global-power-card';
@@ -180,85 +95,366 @@
     status.id = 'air-global-power-status';
     const foot = make('div', null, 'air-global-foot');
     foot.append(refresh, status);
+    const permissionButton = make('button', t('airGlobalPermissionsButton'));
+    permissionButton.type = 'button';
+    permissionButton.id = 'air-global-permissions-button';
+    permissionButton.hidden = true;
+    permissionButton.onclick = () => { void checkAgentPermissions(true); };
+    const permissionDialog = make('dialog', null, 'air-global-permission-dialog');
+    permissionDialog.id = 'air-global-permission-dialog';
+    const permissionTitle = make('h3', t('airGlobalPermissionsTitle'));
+    const permissionBody = make('p', '', 'air-global-permission-body');
+    permissionBody.id = 'air-global-permission-body';
+    const permissionActions = make('div', null, 'air-global-foot');
+    const permissionOpen = make('button', t('airGlobalPermissionsOpen'));
+    permissionOpen.type = 'button';
+    permissionOpen.id = 'air-global-permission-open';
+    permissionOpen.onclick = () => { void openAgentPermission(); };
+    const permissionCheck = make('button', t('airGlobalPermissionsRecheck'));
+    permissionCheck.type = 'button';
+    permissionCheck.id = 'air-global-permission-check';
+    permissionCheck.onclick = () => { void checkAgentPermissions(false); };
+    const permissionClose = make('button', t('airGlobalPermissionsClose'));
+    permissionClose.type = 'button';
+    permissionClose.onclick = () => permissionDialog.close();
+    permissionActions.append(permissionOpen, permissionCheck, permissionClose);
+    permissionDialog.append(permissionTitle, permissionBody, permissionActions);
 
-    panel.append(head, label, make('p', t('airGlobalPowerDesc'), 'air-global-desc'), foot);
+    // Password setup is shared by both switches; saved credentials survive disabling.
+    const unlockToggle = make('input');
+    unlockToggle.type = 'checkbox';
+    unlockToggle.id = 'air-global-unlock-toggle';
+    unlockToggle.disabled = true;
+    unlockToggle.onchange = () => { void toggleUnlock(); };
+    const unlockLabel = make('label', null, 'air-global-toggle');
+    unlockLabel.append(unlockToggle, make('span', t('airGlobalUnlockToggle')));
+
+    const unlockBlock = make('div', null, 'air-global-block');
+    unlockBlock.id = 'air-global-unlock-block';
+    unlockBlock.hidden = true;
+    const pwInput = make('input');
+    pwInput.type = 'password';
+    pwInput.id = 'air-global-unlock-password';
+    pwInput.placeholder = t('airGlobalUnlockPlaceholder');
+    pwInput.autocomplete = 'off';
+    pwInput.onkeydown = (event) => { if (event.key === 'Enter') void saveUnlockPassword(); };
+    const saveBtn = make('button', t('airGlobalUnlockSave'));
+    saveBtn.type = 'button';
+    saveBtn.id = 'air-global-unlock-save';
+    saveBtn.onclick = () => { void saveUnlockPassword(); };
+    // 授权那一次没点上（人没看见框，或者点晚了）时的重试：条目已经在钥匙串里，所以
+    // **不用重输密码** —— 再问一次就是把那个系统框再弹一次。
+    const authorizeBtn = make('button', t('airGlobalUnlockAuthorize'));
+    authorizeBtn.type = 'button';
+    authorizeBtn.id = 'air-global-unlock-authorize';
+    authorizeBtn.onclick = () => { void authorizeUnlockPassword(); };
+    const unlockStatus = make('span', '', 'air-global-status');
+    unlockStatus.id = 'air-global-unlock-status';
+    const unlockRow = make('div', null, 'air-global-foot');
+    const cancel = make('button', t('airGlobalUnlockCancel'));
+    cancel.type = 'button';
+    cancel.id = 'air-global-unlock-cancel';
+    cancel.onclick = cancelPassword;
+    unlockRow.append(pwInput, saveBtn, cancel);
+    unlockBlock.append(unlockRow);
+    authorizeBtn.hidden = true;
+    const change = make('button', t('airGlobalUnlockChange'));
+    change.type = 'button';
+    change.id = 'air-global-unlock-change';
+    change.onclick = () => requestPassword('change');
+    const forget = make('button', t('airGlobalUnlockForget'));
+    forget.type = 'button';
+    forget.id = 'air-global-unlock-forget';
+    forget.onclick = () => { void forgetPassword(); };
+    const unlockFoot = make('div', null, 'air-global-foot');
+    unlockFoot.append(unlockStatus, authorizeBtn, change, forget);
+
+    panel.append(
+      head,
+      label,
+      make('p', t('airGlobalPowerDesc'), 'air-global-desc'),
+      foot,
+      permissionButton,
+      permissionDialog,
+      make('div', null, 'air-global-sep'),
+      unlockLabel,
+      make('p', t('airGlobalUnlockDesc'), 'air-global-desc'),
+      unlockBlock,
+      unlockFoot,
+    );
     return panel;
   }
 
-  async function loadPower() {
-    const panel = el('air-global-power-card');
-    const toggle = el('air-global-power-toggle');
-    const status = el('air-global-power-status');
-    if (!panel || !toggle) return;
+  let powerState = null;
+  let powerBusy = false;
+  let pendingPowerAction = null;
+  let nextPermission = null;
+  let permissionLocal = false;
+
+  async function openAgentPermission() {
+    if (!nextPermission) return;
+    const button = el('air-global-permission-open');
+    button.disabled = true;
     try {
-      const data = await context.api('/api/settings/power');
-      // 不支持的平台直接整卡消失，不是灰掉：这张卡在非 macOS 上没有任何意义。
-      if (!data || data.available === false) {
-        panel.hidden = true;
-        if (status) status.textContent = '';
+      await context.api('/api/system/agent-permissions/open', { permission: nextPermission }, 'POST');
+      el('air-global-permission-body').textContent = t('airGlobalPermissionsGuide', {
+        name: nextPermission === 'accessibility' ? t('airGlobalPermissionsAccessibility') : t('airGlobalPermissionsRecording'),
+      });
+    } catch (error) {
+      el('air-global-permission-body').textContent = t('airGlobalPermissionsOpenFailed', { message: error.message });
+    } finally { button.disabled = false; }
+  }
+
+  async function checkAgentPermissions(autoOpen) {
+    const dialog = el('air-global-permission-dialog');
+    if (!dialog) return;
+    try {
+      const data = await context.api('/api/system/agent-permissions');
+      permissionLocal = data.local === true;
+      if (!data.ok) {
+        nextPermission = null;
+        el('air-global-permission-body').textContent = t('airGlobalPermissionsAgentUnavailable');
+      } else if (data.accessibility && data.screenRecording) {
+        nextPermission = null;
+        if (dialog.open) dialog.close();
         return;
-      }
-      panel.hidden = false;
-      toggle.disabled = false;
-      toggle.checked = !!data.enabled;
-      if (status) {
-        if (data.error) {
-          // 读到了「这个平台支持，但状态读不出来」：卡留着，把原因写在状态行上。
-          status.textContent = t('airGlobalPowerReadFailed', { message: data.error });
-          status.className = 'air-global-status err';
-        } else {
-          status.textContent = t(data.enabled ? 'airGlobalPowerOn' : 'airGlobalPowerOff');
-          status.className = `air-global-status${data.enabled ? ' ok' : ''}`;
-        }
+      } else {
+        nextPermission = !data.accessibility ? 'accessibility' : 'screenRecording';
+        const name = nextPermission === 'accessibility'
+          ? t('airGlobalPermissionsAccessibility') : t('airGlobalPermissionsRecording');
+        el('air-global-permission-body').textContent = data.local
+          ? t('airGlobalPermissionsMissing', { name }) : t('airGlobalPermissionsLocal', { name });
+        if (autoOpen && data.local) await openAgentPermission();
       }
     } catch (error) {
-      // 连可用性都问不出来时也把卡收起来（同旧页）：留在屏幕上的是一个读不到真状态的开关。
-      panel.hidden = true;
-      if (status) status.textContent = '';
+      nextPermission = null;
+      permissionLocal = false;
+      el('air-global-permission-body').textContent = t('airGlobalPermissionsCheckFailed', { message: error.message });
+    }
+    el('air-global-permission-open').hidden = !nextPermission || !permissionLocal;
+    if (!dialog.open) dialog.showModal();
+  }
+
+  function setPowerBusy(busy) {
+    powerBusy = busy;
+    for (const id of ['power-toggle', 'unlock-toggle', 'power-refresh', 'unlock-save', 'unlock-authorize', 'unlock-change', 'unlock-forget', 'unlock-cancel']) {
+      const node = el('air-global-' + id);
+      if (node) node.disabled = busy;
+    }
+    if (!busy && powerState) paintUnlock(powerState.unlockPassword);
+  }
+
+  function paintPower(data, broadcast = true) {
+    powerState = data;
+    if (broadcast) root.dispatchEvent(new CustomEvent("multicc-power-changed", { detail: data }));
+    const panel = el('air-global-power-card');
+    panel.hidden = data.available === false;
+    const toggle = el('air-global-power-toggle');
+    toggle.checked = !!data.enabled;
+    toggle.disabled = powerBusy || !!data.error;
+    const status = el('air-global-power-status');
+    status.textContent = data.error ? t('airGlobalPowerReadFailed', { message: data.error }) : t(data.enabled ? 'airGlobalPowerOn' : 'airGlobalPowerOff');
+    if (!data.error && !data.enabled && data.systemSleepDisabled) status.textContent = t('airGlobalPowerExternal');
+    status.className = 'air-global-status' + (data.error ? ' err' : data.enabled ? ' ok' : '');
+    el('air-global-permissions-button').hidden = !data.enabled;
+    paintUnlock(data.unlockPassword);
+  }
+
+  async function loadPower() {
+    if (powerBusy) return;
+    try { paintPower(await context.api('/api/settings/power')); }
+    catch (error) {
+      const panel = el('air-global-power-card');
+      panel.hidden = false;
+      el('air-global-power-toggle').disabled = true;
+      el('air-global-unlock-toggle').disabled = true;
+      el('air-global-power-status').textContent = t('airGlobalPowerReadFailed', { message: error.message });
+    }
+  }
+
+  const AUTHORIZATION_TEXT = {
+    authorized: 'airGlobalUnlockAuthorized',
+    'waiting-for-user': 'airGlobalUnlockWaitAuthorize',
+    'no-password': 'airGlobalUnlockNotStored',
+    unavailable: 'airGlobalUnlockProbeUnknown',
+  };
+  // Agent 自身坏了（没执行权限 / 没装 / 版本老）时，点多少次「检查授权」都不会好，
+  // 指引必须换成「重启 MultiCC 会自动修」——否则用户会在这个按钮上一直打转。
+  const RESTART_FIXES = {
+    'agent-not-executable': 'airGlobalUnlockAgentBroken',
+    'agent-not-installed': 'airGlobalUnlockAgentMissing',
+    'agent-update-required': 'airGlobalUnlockAgentOutdated',
+  };
+  function paintAuthorization(authorization) {
+    const state = authorization?.state || 'unavailable';
+    const restartFixesIt = !!RESTART_FIXES[authorization?.detail];
+    const status = el('air-global-unlock-status');
+    status.textContent = t(RESTART_FIXES[authorization?.detail]
+      || AUTHORIZATION_TEXT[state] || AUTHORIZATION_TEXT.unavailable);
+    status.className = 'air-global-status' + (state === 'authorized' ? ' ok' : ' err');
+    el('air-global-unlock-authorize').hidden = state === 'authorized' || restartFixesIt
+      || powerState?.unlockPassword?.canEdit === false;
+  }
+
+  function paintUnlock(value) {
+    const toggle = el('air-global-unlock-toggle');
+    const required = !!powerState?.enabled;
+    toggle.checked = !!value?.enabled;
+    toggle.disabled = powerBusy || !value?.available || !!value.error || required;
+    const status = el('air-global-unlock-status');
+    if (!pendingPowerAction) {
+      status.className = 'air-global-status' + (value?.error ? ' err' : value?.enabled ? ' ok' : '');
+      status.textContent = t(value?.error ? 'airGlobalUnlockUnreadable' : required && !value?.set ? 'airGlobalUnlockNeedPassword' : required ? 'airGlobalUnlockIncluded' : value?.enabled ? 'airGlobalUnlockSaved' : 'airGlobalUnlockOff');
+      el('air-global-unlock-block').hidden = true;
+    }
+    const local = value?.canEdit !== false;
+    el('air-global-unlock-change').hidden = !local || (!value?.set && !required);
+    el('air-global-unlock-forget').hidden = !local || !value?.set || required || !!value?.enabled;
+  }
+
+  function requestPassword(action) {
+    if (powerState?.unlockPassword?.canEdit === false) {
+      el('air-global-unlock-status').textContent = t('airGlobalUnlockLocal');
+      return;
+    }
+    pendingPowerAction = action;
+    el('air-global-unlock-block').hidden = false;
+    el('air-global-unlock-authorize').hidden = !powerState?.unlockPassword?.set;
+    el('air-global-unlock-status').textContent = t('airGlobalUnlockNeedPassword');
+    el('air-global-unlock-password').focus();
+  }
+
+  function cancelPassword() {
+    if (powerBusy) return;
+    pendingPowerAction = null;
+    el('air-global-unlock-password').value = '';
+    el('air-global-unlock-authorize').hidden = true;
+    paintPower(powerState);
+  }
+
+  async function applyPower(action, enabled) {
+    if (powerBusy) return;
+    if (enabled && !powerState?.unlockPassword?.set) {
+      paintPower(powerState); // Neither switch is on until setup finishes.
+      requestPassword(action);
+      return;
+    }
+    setPowerBusy(true);
+    el('air-global-power-status').textContent = t('airGlobalPowerWaiting');
+    let failure = null;
+    try {
+      const path = action === 'lid' ? '/api/settings/power' : '/api/settings/power/auto-unlock';
+      paintPower(await context.api(path, { enabled }));
+      pendingPowerAction = null;
+    } catch (error) {
+      // A timeout may follow a successful change: re-read instead of guessing.
+      try { paintPower(await context.api('/api/settings/power')); } catch (_) { /* keep last known state */ }
+      failure = error;
+      pendingPowerAction = enabled && error.code === 'unlock_authorization_required' ? action : null;
+    } finally { setPowerBusy(false); }
+    if (failure) {
+      el('air-global-power-status').textContent = t('airGlobalPowerFailed', { message: failure.message });
+      el('air-global-power-status').className = 'air-global-status err';
+      el('air-global-unlock-authorize').hidden = !pendingPowerAction || powerState?.unlockPassword?.canEdit === false;
+    } else if (action === 'lid' && enabled && powerState?.enabled) {
+      await checkAgentPermissions(true);
     }
   }
 
   async function togglePower() {
-    const toggle = el('air-global-power-toggle');
-    const status = el('air-global-power-status');
-    if (!toggle) return;
-    const previous = !toggle.checked;
-    // 这一步会在 Mac 上弹系统授权框、可能等上几十秒：先按住开关，别让人以为没反应再点一次。
-    toggle.disabled = true;
-    if (status) { status.textContent = t('airGlobalPowerWaiting'); status.className = 'air-global-status'; }
-    try {
-      const data = await context.api('/api/settings/power', { enabled: toggle.checked });
-      // 勾选态以服务端回的为准：授权被取消、pmset 没生效时它会说 no。
-      toggle.checked = !!(data && data.enabled);
-      if (status) {
-        status.textContent = t(toggle.checked ? 'airGlobalPowerOn' : 'airGlobalPowerOff');
-        status.className = `air-global-status${toggle.checked ? ' ok' : ''}`;
-      }
-    } catch (error) {
-      toggle.checked = previous;
-      if (status) {
-        status.textContent = t('airGlobalPowerFailed', { message: error.message || String(error) });
-        status.className = 'air-global-status err';
-      }
-    } finally {
-      toggle.disabled = false;
-    }
+    await applyPower('lid', el('air-global-power-toggle').checked);
+  }
+  async function toggleUnlock() {
+    await applyPower('unlock', el('air-global-unlock-toggle').checked);
   }
 
-  // 两块互相独立：一块读失败不该把另一块也变成一行错误，所以各自 catch、一起等。
+  async function finishPasswordSetup(data) {
+    if (data?.authorization?.state !== 'authorized') {
+      paintAuthorization(data?.authorization);
+      return;
+    }
+    const action = pendingPowerAction;
+    pendingPowerAction = null;
+    el('air-global-unlock-block').hidden = true;
+    if (action && action !== 'change') await applyPower(action, true);
+    else { await loadPower(); paintAuthorization(data.authorization); }
+  }
+
+  async function saveUnlockPassword() {
+    if (powerBusy) return;
+    const input = el('air-global-unlock-password');
+    if (!input.value) { input.focus(); return; }
+    const password = input.value;
+    input.value = ''; // Never retain the password in the DOM after submitting.
+    setPowerBusy(true);
+    el('air-global-unlock-status').textContent = t('airGlobalPowerWaiting');
+    let data;
+    try {
+      data = await context.api('/api/settings/power/unlock-password', { password }, 'POST');
+      powerState.unlockPassword.set = !!data.set;
+    } catch (error) {
+      el('air-global-unlock-status').textContent = t('airGlobalUnlockFailed', { message: error.message });
+      el('air-global-unlock-status').className = 'air-global-status err';
+    } finally { setPowerBusy(false); }
+    if (data) await finishPasswordSetup(data);
+  }
+
+  async function authorizeUnlockPassword() {
+    if (powerBusy) return;
+    setPowerBusy(true);
+    let data;
+    try { data = await context.api('/api/settings/power/unlock-password/authorize', {}); }
+    catch (error) { el('air-global-unlock-status').textContent = t('airGlobalUnlockFailed', { message: error.message }); }
+    finally { setPowerBusy(false); }
+    if (data) await finishPasswordSetup(data);
+  }
+
+  async function forgetPassword() {
+    if (powerBusy) return;
+    setPowerBusy(true);
+    let error;
+    try { await context.api('/api/settings/power/unlock-password', undefined, 'DELETE'); }
+    catch (failure) { error = failure; }
+    finally { setPowerBusy(false); }
+    await loadPower();
+    if (error) el('air-global-unlock-status').textContent = t('airGlobalUnlockFailed', { message: error.message });
+  }
+
   function load() {
-    return Promise.all([loadOauth(), loadPower()]);
+    return loadPower();
+  }
+
+  function beginPowerSetup(action) {
+    if (!action || !powerState) return;
+    if (action === 'permissions') { void checkAgentPermissions(true); return; }
+    if (!powerState.unlockPassword?.set) requestPassword(action);
+    else {
+      pendingPowerAction = action;
+      paintAuthorization({ state: 'waiting-for-user' });
+    }
   }
 
   function render(host, ctx) {
     context = ctx;
+    pendingPowerAction = null;
+    powerState = null;
+    powerBusy = false;
     // 安装包（APK / iOS OTA）不在这页重复第二遍 —— 见文件头。这里只留一句指路。
     const install = make('section', null, 'admin-panel');
     install.append(make('p', t('airGlobalInstallHint'), 'admin-empty air-global-hint'));
-    host.replaceChildren(install, oauthCard(), powerCard());
+    host.replaceChildren(install, powerCard());
     injectStyle(host);
-    return load();
+    const action = setupFromShortcut;
+    setupFromShortcut = null;
+    return load().then(() => beginPowerSetup(action));
   }
 
-  root.MultiCCAirGlobal = Object.freeze({ render, refresh: () => load() });
+  root.addEventListener('multicc-power-changed', event => {
+    if (el('air-global-power-card') && !powerBusy && event.detail !== powerState) paintPower(event.detail, false);
+  });
+
+  root.MultiCCAirGlobal = Object.freeze({ render, refresh: () => load(), prepareSetup: action => {
+    if (el('air-global-power-card')?.checkVisibility() && powerState) beginPowerSetup(action);
+    else setupFromShortcut = action;
+  } });
 })(typeof window !== 'undefined' ? window : null);

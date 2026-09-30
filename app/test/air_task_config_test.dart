@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -378,6 +379,67 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  /// 「先弹窗、里面填数据」：Provider 池还在路上时，面板必须已经开在屏幕上了。
+  /// 以前这里是 `await prepareAIConfigInputs(...)` 完才 `showModalBottomSheet`，
+  /// 按下去到面板出现之间白白隔着一次服务端往返（用户报的就是这个等待）。
+  testWidgets('池子还在路上，面板就已经开出来了（转圈），到了再画面板', (tester) async {
+    final settings = await _settings();
+    final gate = Completer<http.Response>();
+    var providerCalls = 0;
+    final client = MockClient((request) async {
+      if (request.url.path.startsWith('/api/providers')) {
+        providerCalls++;
+        return gate.future;
+      }
+      return http.Response(
+        jsonEncode({'ok': true}),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+
+    await tester.pumpWidget(
+      _editorHost(
+        settings: settings,
+        initial: const AirTaskRuntime(cli: 'claude'),
+        httpClient: client,
+        onPicked: (_) {},
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('open')));
+    // 只推几帧：池子那趟请求还卡在 gate 上。
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+
+    expect(providerCalls, 1, reason: '池子这一趟已经发出去了');
+    expect(
+      find.byKey(const ValueKey('ai-config-loading')),
+      findsOneWidget,
+      reason: '数据没到也不能按下去没反应 —— 面板的壳先出来',
+    );
+
+    gate.complete(
+      http.Response(
+        jsonEncode({
+          'ok': true,
+          'providers': [
+            {'id': 'p1', 'name': '火山方舟', 'protocol': 'anthropic'},
+          ],
+        }),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('ai-config-loading')), findsNothing);
+    expect(find.text('保存'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('面板上取消，药丸还是原来那句话', (tester) async {
     final settings = await _settings();
 
@@ -586,5 +648,102 @@ void main() {
       'model': 'm2',
     });
     expect(tester.takeException(), isNull);
+  });
+
+  group('贴底可伸缩输入条', () {
+    final cliPill = find.byKey(const ValueKey('air-quick-cli'));
+    final input = find.byKey(const ValueKey('air-quick-input'));
+
+    Future<void> pumpDocked(WidgetTester tester, SettingsService settings) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(390, 844);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                const Expanded(child: SizedBox()),
+                AirQuickComposer(
+                  docked: true,
+                  settings: settings,
+                  clis: const ['claude', 'codex'],
+                  busy: false,
+                  httpClient: _providerClient(<String>[], const []),
+                  onSubmit: ({
+                    required String text,
+                    required String cli,
+                    required AirTaskRuntime runtime,
+                    required List<AirRoleBinding> roles,
+                    required bool goal,
+                    int? goalRounds,
+                    int? goalBudget,
+                  }) async => true,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('空闲时是一行贴底条，聚焦才展开成整块面板', (tester) async {
+      final settings = await _settings();
+      await pumpDocked(tester, settings);
+
+      expect(cliPill, findsNothing, reason: '收起态不摆整排药丸');
+      expect(input, findsOneWidget);
+      await tester.tap(input);
+      await tester.pumpAndSettle();
+      expect(cliPill, findsOneWidget, reason: '聚焦就展开');
+      expect(find.text('创建并执行 ↑'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('失焦且草稿空就收回去；草稿还在就留着', (tester) async {
+      final settings = await _settings();
+      await pumpDocked(tester, settings);
+
+      await tester.tap(input);
+      await tester.pumpAndSettle();
+      await tester.enterText(input, '改一下登录页的错误提示');
+      await tester.pumpAndSettle();
+      expect(cliPill, findsOneWidget);
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+      expect(cliPill, findsOneWidget, reason: '草稿还有归属，展开态留着');
+
+      await tester.enterText(input, '');
+      await tester.pumpAndSettle();
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+      expect(cliPill, findsNothing, reason: '空草稿失焦就收回去');
+      expect(input, findsOneWidget, reason: '收回去也还是一行输入条');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('开弹层前先收焦点：弹层关掉后贴底条是收起的', (tester) async {
+      final settings = await _settings();
+      await pumpDocked(tester, settings);
+
+      await tester.tap(input);
+      await tester.pumpAndSettle();
+      expect(cliPill, findsOneWidget);
+      await tester.tap(cliPill);
+      await tester.pumpAndSettle();
+      expect(find.text('AI 工具'), findsOneWidget);
+
+      await tester.tapAt(const Offset(195, 60));
+      await tester.pumpAndSettle();
+      expect(find.text('AI 工具'), findsNothing);
+      expect(
+        cliPill,
+        findsNothing,
+        reason: '焦点不被弹层还回来，贴底条保持收起',
+      );
+      expect(tester.takeException(), isNull);
+    });
   });
 }

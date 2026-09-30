@@ -16,6 +16,7 @@ import '../services/settings_service.dart';
 import '../screens/file_browser_screen.dart';
 import '../screens/settings_screen.dart';
 import '../utils/context_level.dart';
+import '../utils/cli_display.dart';
 import '../screens/share_messages_screen.dart';
 import 'cli_switch_sheet.dart';
 import 'git_log_sheet.dart';
@@ -24,6 +25,12 @@ import 'model_chip.dart';
 class ChatHeader extends StatelessWidget {
   final SettingsService settings;
   final VoidCallback? onCollapse;
+
+  /// 手机端浮层：标题区域往下拖 = 收起对话。与 [onCollapse] 是同一个出口，但走
+  /// 拖拽（`onVerticalDragUpdate` / `onVerticalDragEnd`）而不是点击。独立页/测试
+  /// 宿主不传，标题区就不挂拖拽手势（双击改名照旧）。
+  final ValueChanged<double>? onSheetDragUpdate;
+  final ValueChanged<double>? onSheetDragEnd;
   final bool mergeReady;
   final VoidCallback onMerge;
   final VoidCallback onRole;
@@ -68,6 +75,8 @@ class ChatHeader extends StatelessWidget {
     super.key,
     required this.settings,
     this.onCollapse,
+    this.onSheetDragUpdate,
+    this.onSheetDragEnd,
     required this.mergeReady,
     required this.onMerge,
     required this.onRole,
@@ -239,6 +248,18 @@ class ChatHeader extends StatelessWidget {
               ],
             ],
           );
+          // 手机端浮层的收起手势挂在标题行上：整行往下拖 = 收起对话。它只拦纵向
+          // 拖动，双击改名、点标题其它动作不受影响。独立页不传回调就不挂。
+          final dragTitle = onSheetDragUpdate != null && onSheetDragEnd != null
+              ? GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onVerticalDragUpdate: (d) =>
+                      onSheetDragUpdate!(d.delta.dy),
+                  onVerticalDragEnd: (d) =>
+                      onSheetDragEnd!(d.velocity.pixelsPerSecond.dy),
+                  child: titleLine,
+                )
+              : titleLine;
           // On narrow screens the fixed chrome above alone was wider than the
           // row (brand + labelled clear-context button ≈ +170px), so the brand
           // wordmark is dropped — the collapse arrow and the CLI badge still
@@ -281,7 +302,17 @@ class ChatHeader extends StatelessWidget {
               // badge never kisses the collapse arrow.
               const SizedBox(width: 6),
               _ChatCliBadge(
-                cli: provider.cli,
+                cli: provider.pendingConfiguration.desiredCli(provider.cli),
+                // 忙碌中的换道是「下轮生效」：角标就显示用户已经选好的那条车道，
+                // 并挂上下轮生效的记号 —— 否则切完还是旧的 CLI，连 AI 配置药丸
+                // 也还是旧车道那一池 Provider。
+                appliesNextTurn: provider.pendingConfiguration.hasCliSwitch(
+                  provider.cli,
+                ),
+                // 窄页头这一行是固定预算：名字留到页头的三分之一，多出来的部分
+                // 省略号，换道图标让位（tap 仍然打开换道面板）。
+                compact: narrow,
+                maxLabelWidth: narrow ? constraints.maxWidth / 3 : null,
                 onTap: () => openCliSwitchSheet(
                   context,
                   sessionId: provider.executionSessionName,
@@ -332,11 +363,14 @@ class ChatHeader extends StatelessWidget {
                 tooltip: t('reconnect'),
                 onTap: () => _forceReconnect(context, provider),
               ),
-              // Provider / Model / Effort unified chip.
+              // Provider / Model / Effort unified chip. `desiredCli` + `pending`:
+              // 会话忙时换道是「下轮生效」，药丸要跟着用户选好的那条车道走，
+              // 否则列的还是旧车道的 Provider 池（web 的 modelBtn 同一个口径）。
               const SizedBox(width: 4),
               ModelChip(
                 sessionId: provider.executionSessionName,
-                cli: provider.cli,
+                cli: provider.pendingConfiguration.desiredCli(provider.cli),
+                pending: provider.pendingConfiguration.value,
                 settings: settings,
                 compact: narrow,
               ),
@@ -364,12 +398,6 @@ class ChatHeader extends StatelessWidget {
               onDebug: onDebug,
               settings: settings,
               sessionId: provider.sessionName,
-              // Web 的 `#lang-btn` 就是 toggleLang()：翻 localStorage 里的
-              // `multicc_lang` 再重载页面。App 侧的等价物是 SettingsService 的
-              // 语言偏好（同一个 'multicc_lang' 键），main() 监听它重建
-              // MaterialApp —— 等价于 Web 的重载，但不用重启 app。
-              onLanguage: () =>
-                  settings.setLanguage(settings.lang == 'zh' ? 'en' : 'zh'),
               artifactsLabel: artifactsLabel,
               onArtifacts: onArtifacts,
               onDeleteTask: onDeleteTask,
@@ -399,10 +427,16 @@ class ChatHeader extends StatelessWidget {
                       sessionId: provider.executionSessionName,
                       allBranches: all,
                     ),
-                fetchDiff: (hash) =>
+                fetchFiles: (hash) =>
+                    SessionService(settings: settings).fetchGitCommitFiles(
+                      sessionId: provider.executionSessionName,
+                      hash: hash,
+                    ),
+                fetchDiff: (hash, file) =>
                     SessionService(settings: settings).fetchGitCommitDiff(
                       sessionId: provider.executionSessionName,
                       hash: hash,
+                      file: file,
                     ),
               ),
               onRestart: () => _confirmRestartSpawn(context, provider),
@@ -424,7 +458,7 @@ class ChatHeader extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 // Full-width title line: never squeezed by the chrome above.
-                titleLine,
+                dragTitle,
               ],
             );
           }
@@ -434,7 +468,7 @@ class ChatHeader extends StatelessWidget {
               const SizedBox(width: 6),
               // Expanded (not Flexible) so the title always keeps whatever
               // space the fixed chrome leaves — never collapses to zero.
-              Expanded(child: titleLine),
+              Expanded(child: dragTitle),
               connectionDot,
               ...actions,
             ],
@@ -1008,7 +1042,6 @@ class _HeaderOverflowMenu extends StatelessWidget {
   /// 为这一项 setState。
   final SettingsService settings;
   final String sessionId;
-  final VoidCallback onLanguage;
   final String? artifactsLabel;
   final VoidCallback onArtifacts;
   final VoidCallback? onDeleteTask;
@@ -1036,7 +1069,6 @@ class _HeaderOverflowMenu extends StatelessWidget {
     required this.onDebug,
     required this.settings,
     required this.sessionId,
-    required this.onLanguage,
     this.artifactsLabel,
     required this.onArtifacts,
     this.onDeleteTask,
@@ -1092,9 +1124,6 @@ class _HeaderOverflowMenu extends StatelessWidget {
             break;
           case 'debug':
             onDebug();
-            break;
-          case 'language':
-            onLanguage();
             break;
           case 'task-notify':
             // 见 toggleTaskNotifyWithPermission：Web 点 `#notify-btn` 除了落盘
@@ -1153,15 +1182,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
           const Color(0xFF233249),
         ),
         const PopupMenuDivider(),
-        // Web 的 ⋯ 菜单头两项就是语言切换和任务提醒（public/chat.js:257 的 ids
-        // 列表：'lang-btn', 'notify-btn', …），App 也把它们排在最前面。
-        _item(
-          'language',
-          Icons.translate_outlined,
-          t('language'),
-          const Color(0xFF233249),
-          key: const Key('chat-header-language'),
-        ),
+        // 语言切换已经收口到 Air 侧栏版本检查旁边；对话菜单不再重复占一行。
         _item(
           'task-notify',
           // 图标/颜色也跟着三态走：开且已授权=实心通知，开但没授权=空心通知
@@ -1504,7 +1525,31 @@ class _SessionTitle extends StatelessWidget {
 class _ChatCliBadge extends StatelessWidget {
   final SessionCli cli;
   final VoidCallback onTap;
-  const _ChatCliBadge({required this.cli, required this.onTap});
+
+  /// 会话正忙时换道是「下轮生效」：cli 已经是用户选好的那条，但引擎还在跑旧的。
+  /// 没有这个记号，用户切完看到的是一颗新名字的角标，下一轮之前的表现却全像没切。
+  final bool appliesNextTurn;
+
+  /// 窄页头：这一行只有 344px 的预算，装不下「名字 + 换道图标」两样 —— 图标是装饰
+  /// （点这颗角标本来就是去换道，tooltip 也写着），先让给它名字。同时给名字一个上
+  /// 限并允许省略号：产品名长短随语言/线路变（Claude Code / Qoder CN / WorkBuddy），
+  /// 一行固定宽度的 chrome 不该被一个名字顶出去。
+  final bool compact;
+
+  /// 名字的宽度上限（null = 按内容）。窄页头按页头宽度折算一个份额传进来。
+  final double? maxLabelWidth;
+
+  /// 窄页头 pending 记号占的横向尺寸（10px 图标 + 2px 间距）：从名字份额里扣掉，
+  /// 保证「有 pending 记号」和「没 pending 记号」两种状态下角标总宽一致。
+  static const double pendingSlot = 12;
+
+  const _ChatCliBadge({
+    required this.cli,
+    required this.onTap,
+    this.appliesNextTurn = false,
+    this.compact = false,
+    this.maxLabelWidth,
+  });
   @override
   Widget build(BuildContext context) {
     final color = switch (cli) {
@@ -1517,9 +1562,24 @@ class _ChatCliBadge extends StatelessWidget {
       SessionCli.qoder => const Color(0xFFc25e1e),
       SessionCli.codebuddy => const Color(0xFF2a5fd8),
       SessionCli.dsh => const Color(0xFF2b44d6),
+      SessionCli.gemini => const Color(0xFF4285f4),
+      SessionCli.grok => const Color(0xFF8c8f96),
     };
+    // 窄页头名字的宽度上限是在调用方按「整行份额」算好的常量，pending 记号要在这
+    // 份额里挤出来，不能额外撑宽这一行 —— 否则 360px 上 Spacer 已经没有余量了。
+    final double? nameBudget = maxLabelWidth == null
+        ? null
+        : (compact && appliesNextTurn
+              ? maxLabelWidth! - _ChatCliBadge.pendingSlot
+              : maxLabelWidth);
+    // 记号颜色对齐 web 的 [data-pending]（chat-layout.css: content:attr(data-pending);
+    // font-size:10px; margin-left:6px; color:#bd842e）—— 换道面板里的「下轮生效」
+    // 与页头角标上的这一笔是同一件事的两种呈现，颜色不该各走各的。
+    const pendingColor = Color(0xFFbd842e);
     return Tooltip(
-      message: '切换会话 CLI',
+      message: appliesNextTurn
+          ? '切换会话 CLI（${t('cliSwitchPending')}）'
+          : '切换会话 CLI',
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(4),
@@ -1533,16 +1593,45 @@ class _ChatCliBadge extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                cli.name,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 9,
-                  fontWeight: FontWeight.w700,
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: nameBudget ?? double.infinity,
+                ),
+                child: Text(
+                  // 产品名，不是内部 id：这颗角标在 chat 页头上，写 claude-exp 等于把
+                  // 实现细节印在用户眼前（扶正后这条车道就叫 Claude）。
+                  cliDisplayName(cli.name),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
-              const SizedBox(width: 2),
-              Icon(Icons.swap_horiz_rounded, size: 11, color: color),
+              if (appliesNextTurn) ...[
+                if (compact) ...[
+                  // 窄页头：文字记号（中文 4 字 ≈ 46px、英文更长）会顶爆固定预算，
+                  // 落一个小沙漏图标占住换道图标本该占的位；词在 tooltip 里。
+                  const SizedBox(width: 2),
+                  const Icon(
+                    Icons.schedule_rounded,
+                    size: 10,
+                    color: pendingColor,
+                  ),
+                ] else ...[
+                  const SizedBox(width: 6),
+                  Text(
+                    t('cliSwitchPending'),
+                    style: const TextStyle(fontSize: 10, color: pendingColor),
+                  ),
+                ],
+              ],
+              if (!compact) ...[
+                const SizedBox(width: 2),
+                Icon(Icons.swap_horiz_rounded, size: 11, color: color),
+              ],
             ],
           ),
         ),

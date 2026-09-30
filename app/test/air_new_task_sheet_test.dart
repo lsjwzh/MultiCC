@@ -39,6 +39,9 @@ Widget _host({
   required SettingsService settings,
   required AirNewTaskSubmit onSubmit,
   List<String> clis = const ['claude', 'codex'],
+  AirService? service,
+  String? Function()? errorText,
+  bool Function()? capacityExceeded,
 }) => MaterialApp(
   home: Builder(
     builder: (context) => Scaffold(
@@ -56,6 +59,9 @@ Widget _host({
             httpClient: _client(),
             clis: clis,
             onSubmit: onSubmit,
+            service: service,
+            errorText: errorText,
+            capacityExceeded: capacityExceeded,
           ),
           child: const Text('打开'),
         ),
@@ -94,6 +100,29 @@ Future<void> _open(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('容量错误显示在仍打开的新任务弹层内，草稿保留并可查看清理入口', (tester) async {
+    final settings = await _settings();
+    final client = MockClient((request) async => http.Response(
+      jsonEncode({'ok': true, 'count': 1024, 'limit': 1024, 'tasks': <Object>[]}),
+      200, headers: {'content-type': 'application/json; charset=utf-8'},
+    ));
+    await tester.pumpWidget(_host(
+      settings: settings,
+      service: AirService(settings: settings, httpClient: client),
+      onSubmit: _recorder(<String>[], landed: false),
+      errorText: () => const AirTaskCapacityException().toString(),
+      capacityExceeded: () => true,
+    ));
+    await _open(tester);
+    await tester.enterText(find.byKey(const ValueKey('air-quick-input')), '仍要创建的任务');
+    await tester.tap(find.byKey(const ValueKey('air-quick-submit')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已达到 1024 个任务'), findsOneWidget);
+    expect(find.text('查看安全清理清单 / 自行管理任务'), findsOneWidget);
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('air-quick-input'))).controller!.text,
+        '仍要创建的任务');
+    expect(find.byType(BottomSheet), findsOneWidget);
+  });
   testWidgets('开的是统一输入框模块，不是另一张表单', (tester) async {
     final settings = await _settings();
     await tester.pumpWidget(
@@ -141,6 +170,30 @@ void main() {
     );
   });
 
+  testWidgets('收起键盘保留新任务草稿，也能重新聚焦', (tester) async {
+    final settings = await _settings();
+    await tester.pumpWidget(
+      _host(settings: settings, onSubmit: _recorder(<String>[])),
+    );
+    await _open(tester);
+
+    final input = find.byKey(const ValueKey('air-quick-input'));
+    await tester.enterText(input, '仍需继续编辑的草稿');
+    final field = tester.widget<TextField>(input);
+    expect(field.focusNode!.hasFocus, isTrue);
+
+    await tester.tap(find.byKey(const ValueKey('air-quick-hide-keyboard')));
+    await tester.pumpAndSettle();
+    expect(field.focusNode!.hasFocus, isFalse);
+    expect(field.controller!.text, '仍需继续编辑的草稿');
+    expect(find.byType(BottomSheet), findsOneWidget);
+
+    await tester.tap(input);
+    await tester.pump();
+    expect(field.focusNode!.hasFocus, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   /// 同一份模块在目录首页是常驻的：页面一进来就弹键盘会顶掉滚动位置，而它本来
   /// 就在最上面 —— 够不着才需要打字。焦点这一点是两处唯一的差别，单独盯住。
   testWidgets('目录首页那一份不抢焦点', (tester) async {
@@ -173,6 +226,45 @@ void main() {
           .autofocus,
       isFalse,
     );
+  });
+
+  testWidgets('目录首页贴底输入框收起键盘后保留草稿', (tester) async {
+    final settings = await _settings();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AirQuickComposer(
+            settings: settings,
+            clis: const ['claude'],
+            busy: false,
+            docked: true,
+            onSubmit:
+                ({
+                  required String text,
+                  required String cli,
+                  required AirTaskRuntime runtime,
+                  required List<AirRoleBinding> roles,
+                  required bool goal,
+                  int? goalRounds,
+                  int? goalBudget,
+                }) async => true,
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const ValueKey('air-quick-input')));
+    await tester.pump();
+    final input = find.byKey(const ValueKey('air-quick-input'));
+    await tester.enterText(input, '首页草稿');
+    final field = tester.widget<TextField>(input);
+    expect(field.focusNode!.hasFocus, isTrue);
+
+    await tester.tap(find.byKey(const ValueKey('air-quick-hide-keyboard')));
+    await tester.pumpAndSettle();
+    expect(field.focusNode!.hasFocus, isFalse);
+    expect(field.controller!.text, '首页草稿');
+    expect(find.byKey(const ValueKey('air-quick-submit')), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('交出去的是那段话和当前线路，成了这一层自己收掉', (tester) async {

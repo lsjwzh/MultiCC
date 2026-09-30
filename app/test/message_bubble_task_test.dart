@@ -1,79 +1,55 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/message.dart';
-import 'package:multicc_app/models/task_board.dart';
+import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/message_bubble.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-// A1 (I-A1): the task transcript renders through the SAME bubble tree as the
-// session chat — no second renderer. The projection chatMessageFromTask maps
-// the unified messages DTO onto ChatMessage, and MessageBubble's server
-// actions (delete/fork — session-history operations bound to ChatProvider)
-// are disabled for transcript hosts so a long press offers copy only.
+// The task transcript renders through the SAME bubble tree as the session chat
+// — no second renderer. MessageBubble's server actions (delete/fork —
+// session-history operations bound to ChatProvider) are disabled for
+// transcript hosts so a long press offers copy only.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUpAll(() => I18n.init('zh'));
 
-  test('chatMessageFromTask projects the transcript row onto the shared bubble model', () {
-    final msg = chatMessageFromTask(
-      const TaskMessage(
-        sessionId: '',
-        role: 'assistant',
-        messageId: 'm-9',
-        ts: 1724000004000,
-        text: '部分输出',
-        taskRunId: 'run-9',
-        partial: true,
-      ),
-    );
-    expect(msg.role, MessageRole.assistant);
-    expect(msg.content, '部分输出');
-    expect(msg.id, 'm-9');
-    expect(msg.timestamp.millisecondsSinceEpoch, 1724000004000);
-    expect(msg.isPartial, isTrue);
-    expect(msg.isStreaming, isFalse);
-
-    final user = chatMessageFromTask(
-      const TaskMessage(sessionId: '', role: 'user', text: '继续', ts: 0),
-    );
-    expect(user.role, MessageRole.user);
-    expect(user.id, isNull); // id-less rows stay unaddressable, never fabricated
-    expect(user.isPartial, isFalse);
-  });
-
   test('ChatMessage.fromHistory accepts the partial marker from the unified DTO', () {
-    final msg = ChatMessage.fromHistory({
-      'id': 'm-2',
-      'role': 'assistant',
-      'content': '半截回答',
-      'ts': 1724000004000,
-      'partial': true,
-    });
-    expect(msg.isPartial, isTrue);
-    expect(msg.isStreaming, isFalse);
-  });
+      final msg = ChatMessage.fromHistory({
+        'id': 'm-2',
+        'role': 'assistant',
+        'content': '半截回答',
+        'ts': 1724000004000,
+        'partial': true,
+      });
+      expect(msg.isPartial, isTrue);
+      expect(msg.isStreaming, isFalse);
+    },
+  );
 
   test('history and late attribution retain the server-owned task short code', () {
-    final history = ChatMessage.fromHistory({
-      'id': 'm-3',
-      'role': 'assistant',
-      'content': '完成',
-      'taskId': 'tsk_3',
-      'taskName': '同步消息归属',
-      'taskShortCode': 'A1B2',
-    });
-    expect(history.taskShortCode, 'A1B2');
+      final history = ChatMessage.fromHistory({
+        'id': 'm-3',
+        'role': 'assistant',
+        'content': '完成',
+        'taskId': 'tsk_3',
+        'taskName': '同步消息归属',
+        'taskShortCode': 'A1B2',
+      });
+      expect(history.taskShortCode, 'A1B2');
 
-    final live = ChatMessage(role: MessageRole.user, content: '继续');
-    live.applyAttribution({
-      'taskId': 'tsk_4',
-      'taskName': '新的消息任务',
-      'taskShortCode': 'C3D4',
-    });
-    expect(live.taskShortCode, 'C3D4');
-  });
+      final live = ChatMessage(role: MessageRole.user, content: '继续');
+      live.applyAttribution({
+        'taskId': 'tsk_4',
+        'taskName': '新的消息任务',
+        'taskShortCode': 'C3D4',
+      });
+      expect(live.taskShortCode, 'C3D4');
+    },
+  );
 
   testWidgets('user and assistant bubbles show the same subtle task tail', (
     tester,
@@ -131,82 +107,84 @@ void main() {
     expect(find.byKey(const ValueKey('message-task-tail')), findsNothing);
   });
 
-  testWidgets('task rows render markdown and the interrupted marker via the shared bubble', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: MessageBubble(
-            enableServerActions: false,
-            message: chatMessageFromTask(
-              const TaskMessage(
-                sessionId: '',
-                role: 'assistant',
-                messageId: 'm-9',
-                ts: 1724000004000,
-                text: '**加粗**输出',
-                partial: true,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    expect(find.textContaining('输出中断'), findsOneWidget);
-    expect(find.textContaining('加粗'), findsOneWidget);
-  });
-
   testWidgets('transcript hosts hide delete/fork; session hosts keep them', (
     tester,
   ) async {
+    // 用户气泡（纯 Text）而不是 AI 正文：正文走 markdown，落成 `Text.rich`
+    // （data 为空），测试里不好定位，而这条契约与角色无关。平台钉成 iOS，工具条
+    // 的形态才是 App 里那一个。
     ChatMessage row({required bool withId}) => ChatMessage(
-      role: MessageRole.assistant,
+      role: MessageRole.user,
       content: '内容',
       id: withId ? 'm-1' : null,
     );
 
-    // Drive the bubble's long-press handler directly: pixel-level gesture
-    // simulation against the markdown body is font-metric flaky in the test
-    // environment (the arena never resolves), while the contract under test
-    // is what the sheet offers once the handler runs.
-    Future<void> openSheet() async {
-      final gd = tester.widget<GestureDetector>(
-        find.descendant(
-          of: find.byType(MessageBubble),
-          matching: find.byType(GestureDetector),
-        ),
+    /// 长按气泡，等菜单（系统的选择工具条）弹出来。
+    ///
+    /// 这里必须走真实手势：菜单是 `SelectionArea` 弹的，直接调回调会恰好漏掉
+    /// 「长按有没有落到选择上」这半条链路 —— 而它正是这次改动本身。
+    Future<void> openMenu() async {
+      final gesture = await tester.startGesture(
+        tester.getRect(find.text('内容')).center,
       );
-      gd.onLongPress!();
+      await tester.pump(const Duration(milliseconds: 700));
+      await gesture.up();
       await tester.pumpAndSettle();
     }
 
-    // Transcript host: server actions disabled — copy only, even with an id.
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: MessageBubble(
-            enableServerActions: false,
-            message: row(withId: true),
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    try {
+      // Transcript host: server actions disabled — copy only, even with an id.
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MessageBubble(
+              enableServerActions: false,
+              message: row(withId: true),
+            ),
           ),
         ),
-      ),
-    );
-    await openSheet();
-    expect(find.text('复制内容'), findsOneWidget);
-    expect(find.text('隐藏'), findsNothing);
-    expect(find.text('从此处分叉会话'), findsNothing);
-    await tester.tap(find.text('复制内容'));
-    await tester.pumpAndSettle();
+      );
+      await openMenu();
+      expect(find.text('复制内容'), findsOneWidget);
+      expect(find.text('隐藏'), findsNothing);
+      expect(find.text('从此处分叉会话'), findsNothing);
+      await tester.tap(find.text('复制内容'));
+      await tester.pumpAndSettle();
 
-    // Session host (default): id-addressable message keeps delete + fork.
-    await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: MessageBubble(message: row(withId: true)))),
-    );
-    await openSheet();
-    expect(find.text('复制内容'), findsOneWidget);
-    expect(find.text('隐藏'), findsOneWidget);
-    expect(find.text('从此处分叉会话'), findsOneWidget);
+      // Session host (default): id-addressable message keeps delete + fork.
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: MessageBubble(message: row(withId: true))),
+        ),
+      );
+      await openMenu();
+      expect(find.text('复制内容'), findsOneWidget);
+      expect(find.text('隐藏'), findsOneWidget);
+      expect(find.text('从此处分叉会话'), findsOneWidget);
+    } finally {
+      // 必须写在测试体内：addTearDown 晚于 flutter_test 的 debug 变量不变量检查。
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  // 产出链接优化：agent 输出的本地文件链接（裸绝对路径或带 server origin）要
+  // 解析成文件路径走 /api/download，而不是当成服务器路由 404。外站链接不动。
+  test('localFileLinkPath resolves local file links, leaves remote URLs alone', () async {
+    SharedPreferences.setMockInitialValues({
+      'multicc_host': '127.0.0.1:3000',
+    });
+    final settings = await SettingsService.getInstance();
+    // 裸绝对路径（含 file://）。
+    expect(localFileLinkPath('/Users/me/project/a.dart', settings), '/Users/me/project/a.dart');
+    expect(localFileLinkPath('file:///tmp/x.png', settings), '/tmp/x.png');
+    expect(localFileLinkPath('/tmp/x.png', settings), '/tmp/x.png');
+    // 带 server origin：只有 origin 与配置的服务器一致才剥掉。
+    expect(localFileLinkPath('http://127.0.0.1:3000/Users/me/b.dart', settings), '/Users/me/b.dart');
+    // 外站 / 端口不符 / 非文件路径一律不当作本地文件。
+    expect(localFileLinkPath('http://example.com/Users/x.dart', settings), isNull);
+    expect(localFileLinkPath('http://127.0.0.1:9999/Users/y.dart', settings), isNull);
+    expect(localFileLinkPath('/artifacts/abc/index.html', settings), isNull);
+    expect(localFileLinkPath('https://127.0.0.1:3000/Users/z.dart', settings), isNull);
   });
 }

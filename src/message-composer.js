@@ -17,7 +17,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 /**
- * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'gateway'|'dispatch-context'|'cross-agent-notes'} ContextLayerKind
+ * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'turn-plan'|'gateway'|'dispatch-context'|'background-stopped'|'cross-agent-notes'} ContextLayerKind
  */
 
 /**
@@ -25,7 +25,7 @@
  *
  * @typedef {Object} ContextLayer
  * @property {ContextLayerKind} kind  - discriminator (unique within an envelope)
- * @property {number} order           - explicit sort key: 10=goal-limit, 12=task-context, 15=cli-handoff, 20=gateway/dispatch-context, 30=cross-agent-notes
+ * @property {number} order           - explicit sort key: 10=goal-limit, 12=task-context, 15=cli-handoff, 18=turn-plan, 20=gateway/dispatch-context, 25=background-stopped, 30=cross-agent-notes
  * @property {string} text            - complete block INCLUDING its own trailing separator; concatenated with no extra separator
  */
 
@@ -135,9 +135,9 @@ function validateEnvelope(env) {
     }
 
     // 4. systemPrompt derivation consistency
-    const expectedSys = env.rolePrompt ? `${env.imgHint}\n\n${env.rolePrompt}` : env.imgHint;
+    const expectedSys = [env.imgHint, env.subagentHint, env.rolePrompt].filter(Boolean).join('\n\n');
     if (env.systemPrompt !== expectedSys) {
-      violations.push('systemPrompt derivation mismatch (expected rolePrompt ? imgHint+\\n\\n+rolePrompt : imgHint)');
+      violations.push('systemPrompt derivation mismatch (expected [imgHint, subagentHint?, rolePrompt?].join(\\n\\n))');
     }
   }
 
@@ -185,9 +185,9 @@ function validateEnvelope(env) {
  * @param {boolean|undefined} input.opts.skipDefaultModel
  * @param {string[]} [input.opts.disallowedTools=[]]
  * @param {Object} input.deps - injected dependencies (avoids a circular require of server.js):
- *   { resolveRolePrompt, multiccImgHint, buildCliHandoffPrompt, buildGatewayPrompt, buildDispatchContextPrompt,
- *     buildGoalLimitNote, pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast,
- *     chatBroadcast, normalizeEffort, cliEffortLevel }
+ *   { resolveRolePrompt, multiccImgHint, buildSubagentProviderHint, buildCliHandoffPrompt, buildGatewayPrompt, buildDispatchContextPrompt,
+ *     buildGoalLimitNote, buildPlanPrompt?, pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast,
+ *     chatBroadcast, normalizeEffort, cliEffortLevel, takeBackgroundStopNote? }
  * @returns {MessageEnvelope}
  */
 function composeMessage({ text, persisted, sessionName, opts, deps }) {
@@ -206,7 +206,11 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
   // ── System prompt (single computation point; today rolePrompt is resolved at server.js:9077) ──
   const rolePrompt = deps.resolveRolePrompt(persisted);
   const imgHint = deps.multiccImgHint;
-  const systemPrompt = rolePrompt ? `${imgHint}\n\n${rolePrompt}` : imgHint;
+  // Sub-agent provider steering sits between the host hint and the role prompt
+  // so it reads as host policy, not as part of the user's role text.
+  const subagentHint = typeof deps.buildSubagentProviderHint === 'function'
+    ? (deps.buildSubagentProviderHint(persisted.subagent) || '') : '';
+  const systemPrompt = [imgHint, subagentHint, rolePrompt].filter(Boolean).join('\n\n');
 
   // ── Context layers ──
   // Today's assembly (server.js:9035-9068) prepends in this order:
@@ -242,6 +246,24 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
       if (handoff) contextLayers.push({ kind: 'cli-handoff', order: 15, text: handoff });
     }
 
+    // order 18: plan + progress reporting. Injected on EVERY chat turn (the
+    // caller supplies the builder; a host without one gets no layer), because it
+    // is the agent-side half of the goal/achievement contract the classify
+    // prompt reads back: state the decomposition, then state which steps
+    // actually landed and with what evidence.
+    //
+    // Deliberately NOT injected into:
+    //  • aux sessions — internal classification/attribution jobs whose output is
+    //    parsed, and whose prompt is not a conversation with the user;
+    //  • gateway sessions — the WeChat/voice router, whose reply is a
+    //    machine-parsed control block, not prose to a person.
+    // `bare` (continue/retry) already skips every layer, this one included.
+    if (typeof deps.buildPlanPrompt === 'function'
+      && persisted.type !== 'aux' && persisted.type !== 'gateway') {
+      const plan = deps.buildPlanPrompt(persisted, sessionName);
+      if (plan) contextLayers.push({ kind: 'turn-plan', order: 18, text: plan });
+    }
+
     // order 20: gateway OR dispatch-context (mutually exclusive; today server.js:9055-9060).
     // buildGatewayPrompt('') returns the system block ending in '\n\n' and satisfies
     //   buildGatewayPrompt('') + X === buildGatewayPrompt(X)  (byte-verified).
@@ -254,13 +276,20 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
       if (dc) contextLayers.push({ kind: 'dispatch-context', order: 20, text: dc });
     }
 
+    // order 25: one-shot notice that "insert now" stopped this session's
+    // background tasks, so the model does not wait on notifications that will
+    // never arrive.
+    const stoppedNote = typeof deps.takeBackgroundStopNote === 'function'
+      ? deps.takeBackgroundStopNote(sessionName) : '';
+    if (stoppedNote) contextLayers.push({ kind: 'background-stopped', order: 25, text: stoppedNote });
+
     // order 30: cross-agent notes (today server.js:9036-9054, including side effects).
     const pendingNotes = deps.pendingNotesFor(sessionName).slice(0, 10);
     if (pendingNotes.length) {
-      let block = '[multicc 跨 agent 留言 — 来自同目录下的其他 agent]\n';
-      for (const n of pendingNotes) block += `- 来自「${n.fromLabel}」：${n.body}\n`;
-      block += '[留言结束]\n\n';
-      if (block.length > 4000) block = block.slice(0, 4000) + '\n…(截断)\n\n';
+      let block = '[multicc cross-agent notes - from other agents in the same directory]\n';
+      for (const n of pendingNotes) block += `- From "${n.fromLabel}": ${n.body}\n`;
+      block += '[End of notes]\n\n';
+      if (block.length > 4000) block = block.slice(0, 4000) + '\n...(truncated)\n\n';
       contextLayers.push({ kind: 'cross-agent-notes', order: 30, text: block });
 
       // SIDE EFFECTS (today server.js:9043-9053; non-idempotent -- fires once per
@@ -292,6 +321,7 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
 
   const envelope = {
     imgHint,
+    subagentHint,
     rolePrompt,
     systemPrompt,
     contextLayers: contextLayers.sort((a, b) => a.order - b.order),

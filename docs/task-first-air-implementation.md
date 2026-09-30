@@ -5,6 +5,37 @@
 [任务页状态示意](/artifacts/d8e290aafe7802e1/ui-states.html)。
 此文件作为仓库内的长期实施记录；网页是辅助预览。
 
+## 2026-09-29：控制台从侧边浮层改成主区域里的一页
+
+2026-09-12 那批把控制台做成了盖在原页面上的一层（见下文那条记录）。用户要求它跟目录首页
+一样，是点右侧主区域打开的一页。改动落在 `public/air.html`、`air.js`、`air-admin.js`、`air.css`、
+`app/assets/i18n/*` 与 `tests/test-air-*-cdp.js`：
+
+- **一页 = 一块正文。** 删掉 `#console-panel` / `#console-scrim` / `#console-head` / `#console-body`
+  和 `body.console-open` 整段；`#console-center` 与 `#directory-library` / `#admin-center` /
+  `#schedule-center` / `#task-layout` 同级，`render()` 里各自按 `hidden` 一人一块地切。没有遮罩、
+  没有滑入动画，也就没有「盒子还在屏外但量得到」这种中间态。
+- **地址是这一页自己的。** 它跟着 `view=overview` 走：点侧栏那行打开、可刷新、可分享、可后退。
+  没有「关掉」这回事 —— Escape 不动它（快捷键链路里那一档已删），退出靠后退、侧栏换一行、
+  或从清单里点走一条任务。旧书签 `?view=planner` 的迁移不变（载入与 popstate 两处都做），
+  `/manage` 入口仍落在这一页上。
+- **常驻入口不降级。** `#console-secrets`（🔐 敏感信息）从被删掉的 `#console-head` 移到页头
+  工具栏 `#task-tools`：它管的是子进程的 spawn 环境，是常驻入口，不该埋进工具格；窄屏仍只留图标。
+- **文案跟着走。** 删 `airCloseConsole`（浮层的「关闭控制台」不再存在），`airConsoleHere`
+  （「· 当前 {name}」）换成 `airConsoleHint`（这一页页头状态行那句话，与 attention / settings
+  那几条同形）。i18n 目录比上一版多 26 字节，按棘轮重登记为 7206/450664。
+- **验证。** `test-air-console-cdp.js` 改判 `#console-center.hidden`，并加了「一页只站一块正文」
+  的矩阵、Escape 不关、后退回到原处、⌘K 不改地址这几条；其余 `test-air-*-cdp` 从
+  `body.console-open` / `#console-head` 换到新语义。静态门禁（i18n / 敏感信息入口 / 行长闸）全绿。
+  App 侧不动：它本来就是独立 push 的 `AirConsoleScreen`，跟这次改动方向一致。
+- 顺带修掉测试自己的一处错觉：那条读像素的断言（「圈真的画出来了吗」）此前靠运气 —— 后台 target
+  带 clip 的截图会把新旧两帧拼起来，实测出现过四条边只扫到两条。现在读不到就先催一帧再读，
+  催几次仍不齐才判失败（真缺边照样红）。
+
+已知边界：窄屏下这一页就是主区域全文，不再像浮层那样「留一条边」；正文靠自己的 padding 收窄。
+这次只动静态资源（`public/*`），不用重启服务 —— 但已开着的 Air 页面从不自己 reload，要手动
+刷新才拿得到新的 `air.js` / `air.css`。
+
 ## 2026-09-20：定时规则不再二次分叉，绑定失效可显式修复
 
 「一条定时规则，每次执行都新开一个任务」是 2026-09-04 到 2026-09-11 之间的回归，已由

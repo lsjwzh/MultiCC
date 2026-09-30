@@ -88,6 +88,108 @@ test('each physical invocation resolves and proves one immutable concrete provid
   assert.equal(session.provider, 'provider-a', 'route resolution never mutates the preferred session provider');
 });
 
+test('a resident lane keeps one route capability across turns and follows the spawn contract', () => {
+  const { attempts, factory } = makeHarness();
+  const session = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet' };
+  const envelope = { userText: 'hello', spawnOpts: {}, historyHandle: {} };
+  const { request, turn } = turnInput();
+  const spawning = argv => ({ buildInvocation: () => ({ cmd: 'claude', args: argv }) });
+
+  const first = factory.prepare({
+    request, turn, session, provider: spawning(['-p', '--model', 'sonnet']), envelope, attemptNo: 1,
+  });
+  attempts.finishAttempt(first.attempt, { outcome: 'succeeded' });
+  const warm = factory.prepare({
+    request, turn: { ...turn, turnId: 'turn-2' }, session,
+    provider: spawning(['-p', '--model', 'sonnet']), envelope, attemptNo: 1,
+  });
+  assert.equal(warm.proxySessionId, first.proxySessionId,
+    'a warm resident child must keep routing on the capability it was spawned with');
+  attempts.finishAttempt(warm.attempt, { outcome: 'succeeded' });
+  const respawned = factory.prepare({
+    request, turn: { ...turn, turnId: 'turn-3' }, session,
+    provider: spawning(['-p', '--model', 'opus']), envelope, attemptNo: 1,
+  });
+  assert.notEqual(respawned.proxySessionId, warm.proxySessionId,
+    'a new --model is baked at spawn, so the child respawns on a fresh capability');
+});
+
+test('a codex app-server resident child keys its route on the binding, not on per-turn argv', () => {
+  let sequence = 0;
+  const attempts = createProviderAttemptRuntime({
+    runtimeEpoch: 'epoch-1', nextId: prefix => `${prefix}-${++sequence}`,
+  });
+  const router = {
+    createBinding(session, overrides = {}) {
+      return createProviderBinding({
+        sessionId: session.id, cli: session.cli, providerId: session.provider,
+        model: overrides.model !== undefined ? overrides.model : session.model,
+        roleKind: 'main', routeName: 'main',
+      });
+    },
+    resolveSpawnEnv() {
+      return {
+        providerName: 'Codex A', providerModel: 'gpt-5-codex',
+        providerModels: ['gpt-5-codex'], skipDefaultModel: true,
+      };
+    },
+    getProviderSummary() { return { id: 'provider-a', name: 'Codex A', apiFormat: 'openai_responses' }; },
+  };
+  const factory = createProviderInvocationFactory({
+    providerRouterRuntime: router, providerAttemptRuntime: attempts,
+    effectiveSessionModel: session => session.model,
+  });
+  const request = normalizeTurnRequest({
+    sessionId: 'session-1', text: 'hello', cli: 'codex-exp',
+    hasNativeHistory: false, forceFirst: true,
+  });
+  const turn = createTurnLifecycle(request, { turnId: 'turn-1' });
+  const session = { id: 'session-1', cli: 'codex-exp', provider: 'provider-a', model: 'gpt-5-codex' };
+  const envelope = { userText: 'hello', spawnOpts: { rawModel: 'gpt-5-codex' }, historyHandle: {} };
+  const spawning = argv => ({
+    buildInvocation: () => ({
+      cmd: 'codex', args: argv, streamArgs: [...argv, '--resident'],
+      streamBackend: 'app-server', nativeKey: 'cliSessionId', clientAllocatesNativeId: false,
+      turnOptions: { model: null, effort: null },
+    }),
+  });
+
+  const first = factory.prepare({
+    request, turn, session, provider: spawning(['bridge', '--model', 'gpt-5-codex']),
+    envelope, attemptNo: 1,
+  });
+  attempts.finishAttempt(first.attempt, { outcome: 'succeeded' });
+  const second = factory.prepare({
+    request, turn: { ...turn, turnId: 'turn-2' }, session,
+    provider: spawning(['bridge', '--model', 'gpt-5-codex', '--effort', 'high']),
+    envelope, attemptNo: 1,
+  });
+  assert.equal(second.proxySessionId, first.proxySessionId,
+    'the app-server takes model/effort per turn, so argv is not part of its spawn contract');
+  attempts.finishAttempt(second.attempt, { outcome: 'succeeded' });
+  session.model = 'other-main-model';
+  const third = factory.prepare({ request, turn: { ...turn, turnId: 'turn-3' }, session,
+    provider: spawning(['bridge', '--model', session.model]), envelope, attemptNo: 1 });
+  assert.equal(third.proxySessionId, first.proxySessionId, 'a per-turn model change does not invalidate the home');
+});
+
+test('changing only the Codex subagent model rotates its baked route', () => {
+  const { factory, attempts } = makeHarness();
+  const session = { id: 'session-1', cli: 'codex-exp', provider: 'provider-a', model: 'main',
+    subagent: { providerId: 'provider-b', model: 'child-old' } };
+  const request = normalizeTurnRequest({ sessionId: session.id, text: 'hello', cli: session.cli, forceFirst: true });
+  const provider = { buildInvocation: () => ({ cmd: 'node', streamArgs: ['bridge', '--resident'], payload: 'hello' }) };
+  const prepare = n => factory.prepare({ request, turn: createTurnLifecycle(request, { turnId: `turn-${n}` }),
+    session, provider, envelope: { userText: 'hello', spawnOpts: {}, historyHandle: {} }, attemptNo: 1 });
+  const first = prepare(1);
+  attempts.finishAttempt(first.attempt, { outcome: 'succeeded' });
+  session.subagent.model = 'child-new';
+  const second = prepare(2);
+  assert.notEqual(second.proxySessionId, first.proxySessionId);
+  attempts.finishAttempt(second.attempt, { outcome: 'succeeded' });
+  assert.equal(prepare(3).proxySessionId, second.proxySessionId);
+});
+
 test('child env route overrides do not qualify an OpenCode-style wire model twice', () => {
   const attempts = createProviderAttemptRuntime({
     runtimeEpoch: 'epoch-1', nextId: prefix => `${prefix}-1`,
@@ -356,4 +458,70 @@ test('bare retries rebuild invocation text without replaying composition layers'
   assert.deepEqual(captured.contextLayers, []);
   assert.equal(captured.suffix, '');
   assert.equal(captured.historyHandle.cliSessionId, 'native-1');
+});
+
+// ---------------------------------------------------------------------------
+// The Auto-only idle budget handed to the proxy stall watchdog
+// ---------------------------------------------------------------------------
+
+function prepareFor(session, input = {}) {
+  const { attempts, factory } = makeHarness();
+  const provider = { buildInvocation: envelope => ({ cmd: 'claude', payload: envelope.userText }) };
+  const { request, turn } = turnInput();
+  const invocation = factory.prepare({
+    request, turn, session, provider,
+    envelope: { userText: 'hello', spawnOpts: {}, historyHandle: {} },
+    attemptNo: 1, ...input,
+  });
+  return { attempts, invocation };
+}
+
+test('only an Auto session arms a stall watchdog, with the reviewed default budget', () => {
+  const auto = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet',
+    providerSelection: { version: 1, mode: 'auto', protocol: 'anthropic', candidates: [] } };
+  assert.equal(prepareFor(auto).invocation.attempt.stallTimeoutMs, 120_000);
+  assert.equal(prepareFor(auto, { env: {} }).invocation.attempt.stallTimeoutMs, 120_000);
+  // A concrete session keeps today's behaviour exactly: no budget, so the proxy
+  // never wraps its response object.
+  const manual = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet',
+    providerSelection: { version: 1, mode: 'manual', candidates: [] } };
+  assert.equal(prepareFor(manual).invocation.attempt.stallTimeoutMs, 0);
+  assert.equal(prepareFor(manual, { env: { MULTICC_AUTO_STALL_TIMEOUT_MS: '45000' } })
+    .invocation.attempt.stallTimeoutMs, 0, 'an env var cannot arm a watchdog on a non-Auto session');
+  assert.equal(prepareFor({ id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet' })
+    .invocation.attempt.stallTimeoutMs, 0);
+});
+
+test('the environment overrides the Auto budget and can switch the watchdog off', () => {
+  const auto = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet',
+    providerSelection: { version: 1, mode: 'auto', protocol: 'anthropic', candidates: [] } };
+  const budget = env => prepareFor(auto, { env }).invocation.attempt.stallTimeoutMs;
+  assert.equal(budget({ MULTICC_AUTO_STALL_TIMEOUT_MS: '45000' }), 45_000);
+  assert.equal(budget({ MULTICC_AUTO_STALL_TIMEOUT_MS: '0' }), 0, 'zero disables the watchdog');
+  assert.equal(budget({ MULTICC_AUTO_STALL_TIMEOUT_MS: '1000' }), 15_000, 'clamped up to the floor');
+  assert.equal(budget({ MULTICC_AUTO_STALL_TIMEOUT_MS: '3600000' }), 600_000, 'clamped down to the ceiling');
+  assert.equal(budget({ MULTICC_AUTO_STALL_TIMEOUT_MS: 'later' }), 120_000, 'unparseable keeps the default');
+});
+
+test('the budget travels with every physical attempt, the failover one included', () => {
+  const { attempts, factory } = makeHarness();
+  const auto = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet',
+    providerSelection: { version: 1, mode: 'auto', protocol: 'anthropic', candidates: [] } };
+  const provider = { buildInvocation: envelope => ({ cmd: 'claude', payload: envelope.userText }) };
+  const envelope = { userText: 'hello', spawnOpts: {}, historyHandle: {} };
+  const { request, turn } = turnInput();
+  const env = { MULTICC_AUTO_STALL_TIMEOUT_MS: '45000' };
+  const first = factory.prepare({
+    request, turn, session: auto, provider, envelope, attemptNo: 1, env,
+  });
+  assert.equal(first.attempt.stallTimeoutMs, 45_000);
+  assert.equal(first.attempt.providerId, 'provider-a');
+  attempts.finishAttempt(first.attempt, { outcome: 'failed', errorCategory: 'timeout' });
+  const next = factory.prepare({
+    request, turn, session: auto, provider, envelope, attemptNo: 2, env,
+    providerId: 'provider-b', reasonCode: 'auto_failover',
+  });
+  assert.equal(next.attempt.providerId, 'provider-b');
+  assert.equal(next.attempt.stallTimeoutMs, 45_000,
+    'the switched line gets its own idle budget, not the failed attempt\'s leftovers');
 });

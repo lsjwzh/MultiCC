@@ -4,9 +4,14 @@
 // Each CLI keeps its own native session and settings; continuity between those
 // independent sessions is provided by a bounded, visible-text checkpoint.
 
-const SUPPORTED_CHAT_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh']);
-const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh']);
+const SUPPORTED_CHAT_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok']);
 const { repairZcodeSessionState } = require('./cli-adapters/zcode-session');
+const { isResidentSession, providerlessClis } = require('./cli/cli-capability');
+
+// Derived, not listed: "owns its own account/model config" is a column of the
+// canonical CLI table (src/cli/cli-capability.js DISPLAY). The set that used to
+// be written out here was one of three copies of the same five ids.
+const PROVIDERLESS_CLIS = providerlessClis();
 
 function supportedCli(cli) {
   return SUPPORTED_CHAT_CLIS.includes(String(cli || ''));
@@ -96,7 +101,7 @@ function activateCliState(session, targetCli, options = {}) {
   session.agent = state.agent || null;
   if (state.reportedModel) session.reportedModel = state.reportedModel;
   else delete session.reportedModel;
-  session.streaming = targetCli === 'claude' && session.kind === 'chat';
+  session.streaming = isResidentSession(targetCli, session) && session.kind === 'chat';
   session.cliSwitchEpoch = Math.max(0, Number(session.cliSwitchEpoch) || 0) + 1;
 
   session.cliStates[targetCli] = {

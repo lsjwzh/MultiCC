@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/models/message.dart';
+import 'package:multicc_app/utils/cli_display.dart';
 import 'package:multicc_app/widgets/ai_config_sheet.dart';
 import 'package:multicc_app/widgets/cli_switch_sheet.dart';
 
@@ -110,6 +111,26 @@ void main() {
       expect(SessionCli.claudeExp.supportsSubagent, isTrue);
       expect(SessionCli.claudeExp.poolKey, 'claude');
       expect(SessionCli.claudeExp.defaultEffort, 'medium');
+      // 显示名跟产品走：扶正后的常驻 SDK 车道是 "Claude"，终端那条 `claude -p`
+      // 用的也是同一个产品名（区别在小字：Claude Agent SDK / claude -p），三端一致
+      // 性见 tests/test-cli-display-parity.js）。
+      expect(SessionCli.claudeExp.displayName, 'Claude');
+      expect(SessionCli.claude.displayName, 'Claude');
+      // 小字写它底下的引擎，不写内部 id。
+      expect(cliEngine(SessionCli.claudeExp.name), 'Claude Agent SDK');
+      expect(cliEngine(SessionCli.codexExp.name), 'Codex App Server');
+
+      // 显示名同样跟产品走：扶正后的常驻车道 codex-exp 叫 Codex，兜底的 codex exec
+      // （内部 id codex）也叫 Codex，并被标成计划淘汰 —— 选择器靠 [isDeprecatedLane]
+      // 说出那句「兜底线路，计划淘汰 · Codex」。
+      expect(SessionCli.codexExp.displayName, 'Codex');
+      expect(SessionCli.codex.displayName, 'Codex');
+      expect(SessionCli.codex.isDeprecatedLane, isTrue);
+      expect(SessionCli.codex.replacedByLane, SessionCli.codexExp);
+      for (final cli in SessionCli.values.where((c) => c != SessionCli.codex)) {
+        expect(cli.isDeprecatedLane, isFalse, reason: '${cli.name} is not on the way out');
+        expect(cli.replacedByLane, isNull);
+      }
 
       expect(SessionCli.opencode.supportsAgent, isTrue);
       expect(SessionCli.opencode.supportsSubagent, isFalse);
@@ -128,6 +149,26 @@ void main() {
       expect(SessionCli.qoder.supportsSubagent, isFalse);
       expect(SessionCli.qoder.effortFieldLabel, 'Reasoning Effort');
       expect(SessionCli.qoder.effortOptions, contains('xhigh'));
+
+      // Gemini / Grok ride the ACP lane like opencode and sign in with their own
+      // vendor account: no MultiCC pool, no effort knob, their own model list.
+      for (final cli in [SessionCli.gemini, SessionCli.grok]) {
+        expect(cli.supportsProvider, isFalse);
+        expect(cli.supportsSubagent, isFalse);
+        expect(cli.supportsEffort, isFalse);
+        expect(cli.effortOptions, isEmpty);
+      }
+      expect(tryParseCli('gemini'), SessionCli.gemini);
+      expect(SessionCli.gemini.displayName, 'Gemini');
+      expect(SessionCli.gemini.name, 'gemini');
+      expect(tryParseCli('grok'), SessionCli.grok);
+      expect(SessionCli.grok.displayName, 'Grok');
+      expect(SessionCli.grok.name, 'grok');
+      expect(kGeminiModelOptions.map((e) => e.key), contains('gemini-2.5-pro'));
+      expect(kGrokModelOptions.map((e) => e.key), contains('grok-4'));
+      expect(modelShortNameForCli(SessionCli.gemini, 'gemini-2.5-flash'),
+        'gemini-2.5-flash');
+      expect(modelShortNameForCli(SessionCli.grok, ''), '默认（跟随 Grok 配置）');
     });
 
     test('parses CLI state, availability and native agent fields', () {
@@ -177,6 +218,8 @@ void main() {
       tester,
     ) async {
       await tester.pumpWidget(_host(_configSheet(SessionCli.claude)));
+      // 标题取 CLI 的展示名（cli_display.dart）：claude 那一档是 "Claude"，
+      // 所以这里跟着变成 "Claude Agent"。
       expect(find.text('Claude Agent'), findsOneWidget);
       expect(find.text('子任务'), findsOneWidget);
       expect(find.text('Effort'), findsOneWidget);
@@ -305,11 +348,12 @@ void main() {
   testWidgets(
     'CLI switch sheet reports resume state and disables missing CLI',
     (tester) async {
-      // The sheet renders every SessionCli.values entry and treats a CLI that
-      // is absent from cliAvailability as unavailable unless it is the
-      // session's current CLI. Deriving the map from the enum keeps "exactly
-      // one disabled row" true when a new CLI is added; a hand-written subset
-      // silently marks every omitted CLI unavailable instead.
+      // The sheet renders the chat-capable lanes (the server's `kinds` column)
+      // plus the session's own current lane, and treats a CLI that is absent
+      // from cliAvailability as unavailable unless it is the session's current
+      // CLI. Deriving the map from the enum keeps "exactly one disabled row"
+      // true when a new CLI is added; a hand-written subset silently marks
+      // every omitted CLI unavailable instead.
       final availability = <SessionCli, bool>{
         for (final cli in SessionCli.values) cli: true,
       };
@@ -317,7 +361,7 @@ void main() {
       final config = SessionCliConfig(
         cli: SessionCli.claude,
         cliStates: const {
-          SessionCli.codex: SessionCliState(hasNativeSession: true),
+          SessionCli.codexExp: SessionCliState(hasNativeSession: true),
         },
         cliAvailability: availability,
       );
@@ -325,6 +369,18 @@ void main() {
 
       expect(find.textContaining('可恢复上次原生会话'), findsOneWidget);
       expect(find.text('未安装或不可执行'), findsOneWidget);
+
+      // 一次性车道（`claude -p` / `codex exec`）退出 chat：codex 不是当前车道，
+      // 即使带着原生会话状态也不该出现在这张表里；claude 是当前车道，所以留着
+      // —— 跑在旧线路上的会话要能找到自己在哪。
+      expect(find.byKey(const Key('cli-switch-option-codex')), findsNothing);
+      expect(find.byKey(const Key('cli-switch-option-claude')), findsOneWidget);
+
+      // 小字写引擎：扶正的两条常驻车道底下是引擎产品名，其余车道的小字就是
+      // 自己的 id（跟大字重复），不画。
+      expect(find.text('Claude Agent SDK'), findsOneWidget);
+      expect(find.text('Codex App Server'), findsOneWidget);
+      expect(find.text('opencode'), findsNothing);
 
       final zcode = tester.widget<InkWell>(
         find.byKey(const Key('cli-switch-option-zcode')),

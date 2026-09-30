@@ -18,21 +18,34 @@ const SHARED_FILES_RULE = fs.readFileSync(path.join(__dirname,
   '../../skills/multicc-workspaces/references/shared-files-rule.md'), 'utf8').trim();
 const SHARED_FILES_RULE_MARKER = SHARED_FILES_RULE.split('\n')[0];
 
+// The rules were seeded in Chinese before 2026-09-24. Existing shared
+// MEMORY.md files still carry those first lines; recognising them keeps the
+// English version from being appended as a duplicate entry.
+const LEGACY_MARKERS = Object.freeze({
+  docsRegistry: Object.freeze(['[规则][文档与服务登记·强制]']),
+  secretVault: Object.freeze(['[规则][敏感信息保险箱·强制]']),
+  sharedFiles: Object.freeze(['[规则][共享文件约定·强制]']),
+});
+
 // Immutable built-ins, seeded into every shared MEMORY.md and injected as
 // pinned retrieval entries. Order only matters for first-seed layout.
 const BUILTIN_RULES = Object.freeze([
-  { rule: DOCS_REGISTRY_RULE, marker: DOCS_REGISTRY_RULE_MARKER },
-  { rule: SECRET_VAULT_RULE, marker: SECRET_VAULT_RULE_MARKER },
-  { rule: SHARED_FILES_RULE, marker: SHARED_FILES_RULE_MARKER },
+  { rule: DOCS_REGISTRY_RULE, marker: DOCS_REGISTRY_RULE_MARKER, legacyMarkers: LEGACY_MARKERS.docsRegistry },
+  { rule: SECRET_VAULT_RULE, marker: SECRET_VAULT_RULE_MARKER, legacyMarkers: LEGACY_MARKERS.secretVault },
+  { rule: SHARED_FILES_RULE, marker: SHARED_FILES_RULE_MARKER, legacyMarkers: LEGACY_MARKERS.sharedFiles },
 ]);
 
-function hasRuleMarker(text, marker) {
+function hasRuleMarker(text, marker, legacyMarkers = []) {
   // Older hand-written entries put the body on the marker's own line.
-  return text.split(/\r?\n/).some(line => line.trimStart().startsWith(marker));
+  const markers = [marker, ...legacyMarkers];
+  return text.split(/\r?\n/).some(line => {
+    const head = line.trimStart();
+    return markers.some(m => head.startsWith(m));
+  });
 }
 
 function hasDocsRegistryRule(text) {
-  return hasRuleMarker(text, DOCS_REGISTRY_RULE_MARKER);
+  return hasRuleMarker(text, DOCS_REGISTRY_RULE_MARKER, LEGACY_MARKERS.docsRegistry);
 }
 
 function ensureBuiltinSharedMemory(sharedDir) {
@@ -45,8 +58,8 @@ function ensureBuiltinSharedMemory(sharedDir) {
     if (error.code !== 'ENOENT') throw error;
   }
   let updated = false;
-  for (const { rule, marker } of BUILTIN_RULES) {
-    if (hasRuleMarker(content, marker)) continue;
+  for (const { rule, marker, legacyMarkers } of BUILTIN_RULES) {
+    if (hasRuleMarker(content, marker, legacyMarkers)) continue;
     // Do not normalize, deduplicate or rewrite the user's existing bytes.
     // Startup and session seeding are synchronous in the same server process.
     content += (content ? ENTRY_DELIMITER : '') + rule + '\n';
@@ -64,6 +77,7 @@ module.exports = {
   SHARED_FILES_RULE,
   SHARED_FILES_RULE_MARKER,
   BUILTIN_RULES,
+  LEGACY_MARKERS,
   hasDocsRegistryRule,
   ensureBuiltinSharedMemory,
 };

@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/services/air_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air/air_task_details.dart';
@@ -11,6 +12,11 @@ import 'package:multicc_app/widgets/air/air_task_details.dart';
 /// 交付卡那一整段判断是「本轮 ≠ 任务完成 ≠ 归属生效」这条规则的唯一出口，
 /// 每种组合都得说一句对得上号的话，所以这些分支直接对着纯函数测。
 void main() {
+  // 交付卡里的词（含「等待回答」）现在从注册表的 airLabelKey 列经 t() 取，
+  // 词典没装好就只会拿到 key 本身。
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() => I18n.init('zh'));
+
   Map<String, dynamic> value({
     Map<String, dynamic>? task,
     Map<String, dynamic>? execution,

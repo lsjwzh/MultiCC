@@ -70,11 +70,12 @@ const {
   projectHistoryUsage,
   summarizeHistoryUsage,
 } = require('./src/codex/usage');
-const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
+const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { createTerminalProxyRoutes } = require('./src/providers/terminal-route');
 const { findProviderReferences } = require('./src/providers/references');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
+const { isResidentSession, displayNameOf } = require('./src/cli/cli-capability');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
 const { renderPrompt } = require('./src/message-composer');
 const {
@@ -113,9 +114,8 @@ const { mountHostReadRoutes } = require('./src/routes/host-read');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
-const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskRunRoutes } = require('./src/routes/task-runs');
-const { createTaskRunStore } = require('./src/task-run/store'); const { createProductionTaskRunHost } = require('./src/task-run/production'); const { reconcileTaskRunSlotLeases } = require('./src/task-run/recovery');
-const { createTaskRunProviderBridge } = require('./src/task-run/provider-bridge'); const { createCommanderMigrationState } = require('./src/commander-migration');
+const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
+const { createCommanderMigrationState } = require('./src/commander-migration');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
@@ -180,7 +180,7 @@ const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLa
 const { taskShortCode, initTaskShortCodeRegistry } = require('./src/classify/task-short-code');
 const { installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness } = require('./src/classify/aux-verdict-health');
 const { recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
-const { createHostPrompts } = require('./src/chat/host-prompts');
+const { createHostPrompts, buildPlanProgressPrompt } = require('./src/chat/host-prompts');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
 const { createDispatchProgressSubscription } = require('./src/dispatch/progress');
@@ -199,7 +199,7 @@ const { createChatHistoryFileRepository } = require('./src/session');
 const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
-const { createTaskContextHost, createTaskRunStreamEmitter } = require('./src/task-context-host');
+const { createTaskContextHost } = require('./src/task-context-host');
 const { createSessionWorkHost } = require('./src/session-work/host');
 const {
   normalizeTurnRequest,
@@ -244,10 +244,10 @@ const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const { createHostEnv } = require('./src/host-env');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
-const taskRunStore = createTaskRunStore({ file: MULTICC_PATHS.taskRunDbFile }); const providerRelayShares = createProviderRelayShareStore({ file: MULTICC_PATHS.providerRelaySharesFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
+const providerRelayShares = createProviderRelayShareStore({ file: MULTICC_PATHS.providerRelaySharesFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
-const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS);
+const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS); const turnLedgerRuntime = require('./src/turn-ledger/runtime').createTurnLedgerRuntime({ dataDir: MULTICC_PATHS.root, codexCmd: () => cliCommands.codex }).start(); // 终端轮次账本：hook→spool→TurnLedger，影子模式只观测不接管状态
 const auxRunLog = createAuxRunLog({ dir: MULTICC_PATHS.auxRunsDir, log: (event, detail) => console.warn(`[multicc/aux-run-log] ${event}`, detail) });
 const chatSessions = new Map();
 let chatHistoryRuntime = null;
@@ -255,9 +255,9 @@ let chatHistoryService = null;
 // This runtime deliberately owns preparation only. The established streaming
 // and per-process runners keep their existing lifecycle after spawn is accepted.
 const chatTurnPreparationRuntime = createTurnRuntimeStore();
-let orchestrationRuntime = null; let taskRunHost = null; let sessionWorkHost = null; let sessionHibernationRuntime = null; let workspaceAdmission = null; let worktreeOrphanScanner = null;
+let orchestrationRuntime = null; let sessionWorkHost = null; let sessionHibernationRuntime = null; let workspaceAdmission = null; let worktreeOrphanScanner = null;
 const observability = createObservability({ service: 'multicc' });
-const { logger, metrics } = observability;
+const { logger, metrics } = observability; const messageSearchRuntime = () => getSharedSearchRuntime({ dataDir: MULTICC_PATHS.root, logger }); // 消息全文索引（src/search/runtime.js）：进程内单例、按数据目录记忆化，首个 message-search 请求或启动时那次 .start() 才真正建库开扫
 const apiErrorPolicy = createApiErrorPolicyRuntime({ logger, metrics });
 const routerToolHost = createRouterToolHost({
   express, isLocalRequest, logger,
@@ -410,7 +410,7 @@ app.get('/readyz', healthHandlers.readyz);
 app.get('/metrics', (req, res) => {
   let activeTurns = 0;
   for (const [name, cs] of chatSessions) {
-    if (cs && (cs.claudeProc || cs.isStreaming || (chatStream.status(name) && chatStream.status(name).busy))) activeTurns++;
+    if (cs && (isChatStateBusy(cs) || chatStream.status(name)?.busy)) activeTurns++;
   }
   const waitStats = waitInjector.stats();
   res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8').send(metrics.render({
@@ -443,16 +443,14 @@ const {
   codexStayAlivePrompt: CODEX_STAY_ALIVE_PROMPT,
   multiccImgHint: MULTICC_IMG_HINT,
   userInputReminder: USER_INPUT_REMINDER,
-} = createHostPrompts(process.env);
-// Default-OFF, opt-in: route claude-official (OAuth-subscription) sessions THROUGH
-// the proxy by replaying the macOS Keychain OAuth token. OFF: official sessions
-// bypass the proxy and connect direct to api.anthropic.com (subagent routing
-// unavailable for them). ON: enables subagent routing on official sessions
-// (⚠️ replays subscription OAuth outside the official client — ToS + shared-Keychain
-// considerations; hot-reloadable via POST /api/settings/official-oauth, persisted).
-let CLAUDE_OFFICIAL_VIA_PROXY = String(process.env.CLAUDE_OFFICIAL_VIA_PROXY ?? '1') === '1';
-// Keep CPR's official Claude branch in sync with the host default/toggle.
-process.env.CLAUDE_OFFICIAL_VIA_PROXY = CLAUDE_OFFICIAL_VIA_PROXY ? '1' : '0';
+} = createHostPrompts(process.env, { assistRoot: MULTICC_PATHS.assistDir });
+// Always-on: route claude-official (OAuth-subscription) sessions THROUGH the
+// proxy by replaying the macOS Keychain OAuth token, enabling subagent routing
+// on official sessions (⚠️ replays subscription OAuth outside the official
+// client — ToS + shared-Keychain considerations). No longer user-toggleable.
+const CLAUDE_OFFICIAL_VIA_PROXY = true;
+// Keep CPR's official Claude branch in sync with the host default.
+process.env.CLAUDE_OFFICIAL_VIA_PROXY = '1';
 
 // Model/provider display and effort policy is independent from process runners.
 // It reads user defaults on demand so /model and CLI config changes are visible
@@ -586,7 +584,7 @@ const { findCodexSessionId } = createCodexSessionFinder({
 // stateful recoverTmuxSessions() (below) stays — it rebuilds core session state.
 const {
   TMUX_PREFIX, tmuxSessionName, tmuxListSessions, tmuxHasSession, tmuxCreateSession, tmuxResize,
-  applyMaxClientSize, tmuxKillSession, tmuxCapturePane, tmuxPaneTty,
+  applyMaxClientSize, tmuxKillSession, tmuxCaptureSnapshot, tmuxPaneTty, tmuxPaneActivity,
   tmuxWriteInput, startOutputCapture, stopOutputCapture,
 } = require('./src/tmux');
 
@@ -648,7 +646,7 @@ const invalidSessions = new Map();       // sessionId → reason; recovery is sk
 // Destructured so existing call sites are unchanged. ensureDirGitReady() and
 // the loadDirectories/saveDirectories persistence stay below in server.js.
 const {
-  isHomeOrAbove, realPathOf, dirSuitability, friendlyDirReason, directoryWriteDenied,
+  isHomeOrAbove, realPathOf, dirSuitability, friendlyDirReason, dirReasonFix, directoryWriteDenied,
 } = require('./src/directories');
 
 // Make sure a directory is a usable git repo; refuses $HOME and missing paths.
@@ -927,7 +925,7 @@ const directoryModule = createDirectoryModule({
       .map(e => ({ name: e.name, isDirectory: e.isDirectory(), isSymbolicLink: e.isSymbolicLink() })),
     writeFileExclusive: (p, content) => { try { fs.writeFileSync(p, content, { flag: 'wx' }); return true; } catch (e) { if (e.code === 'EEXIST') return false; throw e; } },
   },
-  helpers: { resolveCwd, isHomeOrAbove, realPathOf, friendlyDirReason },
+  helpers: { resolveCwd, isHomeOrAbove, realPathOf, friendlyDirReason, dirReasonFix },
   // Cross-file transaction wiring updates both state files under one journal entry, so a crash between the
   // two writes is finished by replayJournals() on next boot rather than
   // leaving the two files inconsistent (dir deleted + its sessions still
@@ -1000,7 +998,7 @@ const {
 } = gatewayHost;
 
 // ── Session management ──
-// { id, tmuxName, ttyPath, outputStream, fifoPath, buffer: string[], clients: Set<ws>, createdAt, lastActivity, cwd, exitCheckTimer }
+// { id, tmuxName, ttyPath, outputStream, fifoPath, clients: Set<ws>, createdAt, lastActivity, cwd, exitCheckTimer }
 const sessions = new Map();
 
 // Publish the three core Maps to the shared state registry (same references).
@@ -1077,30 +1075,29 @@ async function createSession(id) {
   }
 
   const provider = providerFor(persisted);
-  // Per-session provider override is injected into tmux; Codex capture below
-  // also uses the selected CODEX_HOME.
+  // Per-session provider override goes into tmux (Codex capture uses the same
+  // CODEX_HOME). The route segment is the session's proxy capability, never a bare id.
+  const routeSession = terminalProxyRoutes.sessionSegment(persisted);
   const provEnv = providerRouterRuntime.resolveSpawnEnv(persisted);
   const termEnv = { ...provEnv.env, ...(persisted.loginEnv || {}) }; secretsVault.applyEnvOverlay(termEnv); // loginEnv: allowlisted login-terminal pins (sanitizeLoginEnv), e.g. CODEX_HOME=<account dir>; 保险箱条目按名注入 env（set-if-absent，见 src/secrets-vault.js）
   if (persisted.cli === 'claude') {
     for (const k of providers.CLAUDE_ROUTING_KEYS) {
       if (!(k in termEnv)) termEnv[k] = '';
     }
-    // Route interactive tmux claude through the per-session/per-role proxy too.
-    providers.applyClaudeProxyEnv(termEnv, {
-      providerId: persisted.provider, sessionId: id,
+    providers.applyClaudeProxyEnv(termEnv, { // 交互式 tmux claude 也走 per-session/per-role 代理
+      providerId: persisted.provider, sessionId: routeSession,
       subagent: persisted.subagent, port: PORT,
       officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
     });
   } else if (persisted.cli === 'codex') {
     providers.applyCodexProxyConfig(termEnv, {
-      providerId: persisted.provider, sessionId: id,
+      providerId: persisted.provider, sessionId: routeSession,
       subagent: persisted.subagent, port: PORT,
     });
   }
 
-  // For Claude: pre-allocate a stable session UUID so chat-mode `--resume` works.
-  // For Codex: leave cliSessionId null on first launch and capture it asynchronously
-  // by scanning ~/.codex/sessions after the process boots.
+  // Claude: pre-allocate a stable UUID so chat-mode `--resume` works. Codex: capture
+  // cliSessionId by scanning ~/.codex/sessions after the process boots.
   if (provider.name === 'claude' && !persisted.cliSessionId) {
     persisted.cliSessionId = crypto.randomUUID();
     savePersistedSessionsBestEffort('runtime.terminal-session-id');
@@ -1115,7 +1112,7 @@ async function createSession(id) {
     // Login flows run the CLI's own interactive login command, not the TUI.
     const loginCmd = persisted.loginFlow === 'codex-login' ? `${cliCommands.codex} login`
       : persisted.loginFlow === 'claude-auth-login' ? `${cliCommands.claude} auth login` : vendorLoginTerminalCmd(persisted.loginFlow, cliCommands);
-    const terminalCmd = loginCmd || provider.buildTerminalCmd(launchSession || {});
+    const terminalCmd = loginCmd || provider.buildTerminalCmd(turnLedgerRuntime.prepareTerminal(launchSession || {}, termEnv));
     await tmuxCreateSession(id, cwd, 80, 24, terminalCmd, termEnv);
   } else {
     console.log(`[multicc] Attaching to existing tmux session: ${tmuxSessionName(id)}`);
@@ -1128,13 +1125,6 @@ async function createSession(id) {
   // Start output capture via pipe-pane → FIFO
   const { stream, fifoPath } = await startOutputCapture(id);
 
-  // Pre-fill buffer with current terminal content for recovered sessions
-  const initialBuffer = [];
-  if (isRecovery) {
-    const captured = await tmuxCapturePane(id);
-    if (captured) initialBuffer.push(captured);
-  }
-
   const session = {
     id,
     cli: provider.name,
@@ -1144,7 +1134,6 @@ async function createSession(id) {
     ttyPath,
     outputStream: stream,
     fifoPath,
-    buffer: initialBuffer,
     clients: new Set(),
     primaryClient: null,
     // Tmux pane size = max(cols) × max(rows) across all attached clients.
@@ -1153,7 +1142,10 @@ async function createSession(id) {
     appliedCols: 0,
     appliedRows: 0,
     createdAt: persisted ? new Date(persisted.createdAt) : new Date(),
-    lastActivity: new Date(),
+    lastActivity: (isRecovery && await tmuxPaneActivity(id)) || new Date(),
+    // Provider this process was actually spawned with; undefined when we only re-attached
+    // (then the persisted record is the best we know). /api/air route_dead reads it.
+    spawnedProvider: isRecovery ? undefined : (persisted?.provider || null),
     cwd,
     exitCheckTimer: null,
   };
@@ -1185,8 +1177,6 @@ async function createSession(id) {
   stream.on('data', (data) => {
     const str = utf8Decoder.write(data);
     if (!str) return; // partial UTF-8 character buffered, wait for more bytes
-    session.buffer.push(str);
-    if (session.buffer.length > 500) session.buffer.shift();
     session.lastActivity = new Date();
     broadcastTo(session.clients, { type: 'output', data: str });
     // Server-side push notification detection
@@ -1210,7 +1200,7 @@ async function createSession(id) {
         console.log(`[multicc] Session ${id} exited (tmux session gone)`);
         cleanupPushMonitor(id);
         if (session.captureTimer) { clearInterval(session.captureTimer); session.captureTimer = null; }
-        const cliLabel = session.cli === 'qoder' ? 'Qoder CN' : session.cli === 'codex' ? 'Codex' : session.cli === 'codebuddy' ? 'WorkBuddy' : session.cli === 'dsh' ? 'DSH' : 'Claude Code';
+        const cliLabel = displayNameOf(session.cli || 'claude'); // 旧 terminal 会话没有 cli 字段
         const exitMsg = `\r\n\x1b[33m[${cliLabel} process exited]\x1b[0m\r\n`;
         broadcastTo(session.clients, { type: 'exit', data: exitMsg });
         await stopOutputCapture(session);
@@ -1227,8 +1217,6 @@ async function createSession(id) {
           newStream.on('data', (data) => {
             const str = newDecoder.write(data);
             if (!str) return;
-            session.buffer.push(str);
-            if (session.buffer.length > 500) session.buffer.shift();
             session.lastActivity = new Date();
             broadcastTo(session.clients, { type: 'output', data: str });
             pushOnOutput(id, str);
@@ -1321,15 +1309,12 @@ const livenessRuntime = createLivenessRuntime({
   probeSession: async (sessionId, sig) => livenessProcessProbe.probe(
     sig && Number.isInteger(sig.pid) ? sig.pid : null, livenessRolloutPath(persistedSessions.get(sessionId))),
 });
-const taskRunProviderBridge = createTaskRunProviderBridge({ records: persistedSessions,
-  recordActivity: event => livenessRuntime.recordProxyActivity(event), recordLegacyUsage: recordUsageObserved,
-  recordTaskRunUsage: event => taskRunHost?.recordObservedUsage(event) });
-const providerAttemptRuntime = createProviderAttemptRuntime({ emit: chatBroadcast, audit: (id, event) => turnEventJournal.note(id, event), resolveProviderRevision: attempt => createProviderRevision({ cli: attempt.cli, providerId: attempt.providerId, protocol: attempt.protocol, model: attempt.model, summary: attempt.providerId === '_default_' ? null : providerRouterRuntime.getProviderSummary(undefined, attempt.providerId) }) });
+const providerAttemptRuntime = createProviderAttemptRuntime({ emit: chatBroadcast, audit: (id, event) => turnEventJournal.note(id, event), resolveProviderRevision: attempt => createProviderRevision({ cli: attempt.cli, providerId: attempt.providerId, protocol: attempt.protocol, model: attempt.model, summary: attempt.providerId === '_default_' ? null : providerRouterRuntime.getProviderSummary(undefined, attempt.providerId) }), resolveTerminalRoute: sessionId => terminalProxyRoutes.lookup(sessionId) });
+const terminalProxyRoutes = createTerminalProxyRoutes({ persistedSessions, persist: savePersistedSessionsBestEffort, encode: (id, token) => providerAttemptRuntime.encodeProxyRoute(id, token) }); // 终端那条托管路由的能力：存在会话记录上，跨重启有效
 function handleProxyUsage(event) {
   const tagged = providerAttemptRuntime.attributeProxyUsage(event);
-  if (tagged.routeAttribution === 'exact' || tagged.producerBound === true) {
-    taskRunProviderBridge.onUsageObserved(tagged);
-  } else if (String(event.roleKind || event.role || 'main').toLowerCase() !== 'main') {
+  if (tagged.routeAttribution === 'exact' || tagged.producerBound === true
+      || String(event.roleKind || event.role || 'main').toLowerCase() !== 'main') {
     recordUsageObserved(tagged);
   }
 }
@@ -1349,7 +1334,9 @@ providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['claude'], authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, claudeProxy: { readOfficialCredential: arg => claudeAccountCredentials.readOfficialCredential(arg) }, // multi-account: marked providers resolve the account credential (refresh-on-read); the shared login keeps the default Keychain read
   onUsageObserved: handleProxyUsage,
   onProxyOutcome: handleProxyOutcome,
-  onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
+  // A 409 here is a host decision, and it used to leave no trace at all.
+  onRejected: event => logger.warn('provider_proxy_route_rejected', event),
+  onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) livenessRuntime.recordProxyActivity({ ...event, sessionId: bound.sessionId }); },
   // Token-level delta + Claude 5h rate-limit sidecars: see src/chat/proxy-broadcast.js.
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
@@ -1363,7 +1350,8 @@ const codexProxyMounts = providerRouterRuntime.mountProtocolProxies(app, {
   onTransportRotate: event => { metrics.inc('multicc_provider_dispatcher_rotations_total'); logger.warn('provider_dispatcher_rotated', event); },
   onUsageObserved: handleProxyUsage,
   onProxyOutcome: handleProxyOutcome,
-  onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
+  onRejected: event => logger.warn('provider_proxy_route_rejected', event),
+  onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) livenessRuntime.recordProxyActivity({ ...event, sessionId: bound.sessionId }); },
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
 // Session query, dashboard, workspace and classify-admin routes share one
@@ -1376,11 +1364,15 @@ const sessionGitRuntime = createSessionGitRuntime({
   gitRunQueued, gitMergeBack: (dir, session, opts) => gitMergeBack(dir, session, { ...opts, evidence: workspaceAdmission?.mergeHooks(session.id) }),
   gitSyncFromBase, gitRebaseResolve,
   appendEvent, workspaceBroadcast: (...args) => workspaceBroadcast(...args),
+  // Ephemeral result notice for the turn-end auto-commit; chatBroadcast is a
+  // hoisted function declaration, safe to reference before its definition line.
+  chatBroadcast: (...args) => chatBroadcast(...args),
   // M3 task-surface resolvers — lazy arrows: taskBoardRuntime is declared
   // later; the ports only fire at request time, after composition completes.
   resolveTaskWorktree: id => taskBoardRuntime?.taskWorktree?.info(id) || null,
   cleanupTaskWorktree: (id, o) => taskBoardRuntime?.taskWorktree?.cleanupWorktree(id, o),
   existsSync: fs.existsSync, now: Date.now, random: Math.random, asyncHandler, logger: console,
+  readFile: fs.promises.readFile,
 });
 const mergeStateCached = sessionGitRuntime.mergeStateCached;
 const classifyStateMachine = createClassifyStateMachine({
@@ -1392,7 +1384,7 @@ const classifyStateMachine = createClassifyStateMachine({
   getSessionWorkHost: () => sessionWorkHost,
   getLivenessRuntime: () => livenessRuntime,
   getTaskContextHost: () => taskContextHost,
-  getTaskBoardRuntime: () => taskBoardRuntime,
+  getTaskBoardRuntime: () => taskBoardRuntime, getMessageSearch: () => messageSearchRuntime(),
   getUserInputSignalHost: () => userInputSignalHost,
   getApiErrorHost: () => apiErrorHost,
   getWaitInjector: () => waitInjector,
@@ -1412,7 +1404,7 @@ const classifyStateMachine = createClassifyStateMachine({
   appendChatMessage: (...args) => appendChatMessage(...args),
   annotateChatTurn: (...args) => chatHistoryRuntime?.annotateTurn(...args) || [],
   getAuxRunLog: () => auxRunLog,
-  hasBackgroundPending: sessionName => backgroundTaskRuntime.hasLiveBackgroundTasks(sessionName),
+  hasBackgroundPending: sessionName => backgroundTaskRuntime.hasProcessBackgroundTasks(sessionName),
   // P4 蒸馏：folderMemory 在下方才创建，这里闭包惰性取——写入只发生在 turn
   // 结束后，届时早已初始化完成。
   writeTaskMemoryCandidate: (sessionName, taskId, candidate) => taskMemoryDistiller.record({
@@ -1549,7 +1541,7 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 function createSessionRecord(input) {
   return require('./src/session/create-record').createSessionRecordFactory({
     sharedWorkspace: require('./src/task-shell/workspace').sharedWorkspace,
-    SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow
+    SUPPORTED_CHAT_CLIS, isResidentSession, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow
   })(input);
 }
 
@@ -1576,7 +1568,7 @@ const cliSwitchRuntime = createCliSwitchRuntime({
   cliStateSummary,
   gitWorktreeSnapshot,
   cwdForSession,
-  getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasLiveBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
+  getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasProcessBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
   cancelClassify,
   assignKillReason, finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
   appendMessage: appendChatMessage,
@@ -1600,7 +1592,7 @@ cliSwitchRuntime.startUpdateWatch();
 // PATCH + fork profile routes: label/model/effort/agent/rolePrompt/memory/provider/
 // subagent edits, and Happier-parity transcript fork. Handler logic lives in
 // src/routes/session-profile.js; only host wiring stays here.
-createSessionProfileRoutes({
+const { applySessionPatch, previewSessionPatch } = createSessionProfileRoutes({
   persistedSessions,
   directories,
   sessionPersistence,
@@ -1609,7 +1601,7 @@ createSessionProfileRoutes({
   providerRouterRuntime,
   // chatStream / providerRoutes are composed further down this file; resolve
   // them lazily or mounting would hit the const TDZ before boot finishes.
-  getChatStream: () => chatStream, getChatState: id => chatSessions.get(id), hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasLiveBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
+  getChatStream: () => chatStream, getChatState: id => chatSessions.get(id), hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasProcessBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
   validProviderId: (...args) => validProviderId(...args),
   asyncHandler,
   appendEvent,
@@ -1700,7 +1692,7 @@ sessionGitRuntime.mountRoutes(app);
 const sessionLifecycleRuntime = createSessionLifecycleRuntime({
   sessions, chatSessions, persistedSessions, directories, invalidSessions,
   sessionPersistence,
-  getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasLiveBackgroundTasks(id) === true, reapBackgroundTasks: (id, reason) => backgroundTaskRuntime?.reapSessionShadows(id, { reason }) || 0,
+  getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasProcessBackgroundTasks(id) === true, reapBackgroundTasks: (id, reason) => backgroundTaskRuntime?.reapSessionShadows(id, { reason }) || 0,
   // sessionWorkHost is composed further down this file; forward lazily past the TDZ.
   getSessionWorkHost: () => sessionWorkHost,
   asyncHandler,
@@ -1741,6 +1733,11 @@ const updateRoute = createUpdateRoute({
   spawn,
   rootDir: __dirname,
   getShuttingDown: () => _shuttingDown,
+  getPort: () => PORT,
+  fs,
+  path,
+  https,
+  gitRun,
 }); updateRoute.mountRoutes(app);
 
 // ── Per-session metadata: inter-agent notes + liveness ──
@@ -1814,7 +1811,7 @@ function reportHostControlFailure(component, stage, category) {
 tunnel.setFailureReporter((stage, category) => {
   reportHostControlFailure('tunnel', stage, category);
 });
-const chatStream = require('./src/chat/chat-stream');
+const chatStream = require('./src/chat/chat-stream'); const { isChatStateBusy } = require('./src/session/runtime-busy');
 const waitInjector = require('./src/wait/injector');
 const sessionDelivery = require('./src/session/delivery').createSessionDelivery({
   admit: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, opts),
@@ -1877,7 +1874,6 @@ mountHostReadRoutes(app, {
   tunnel,
   getAccessToken: () => ACCESS_TOKEN,
   isLocalRequest,
-  getOfficialOAuthEnabled: () => CLAUDE_OFFICIAL_VIA_PROXY,
   macosPower, batteryGuard: batteryGuardRuntime,
 });
 
@@ -1897,11 +1893,6 @@ mountHostWriteRoutes(app, {
   },
   getAllowRemote: () => networkPolicy.allowRemote,
   isLocalRequest,
-  getOfficialOAuthEnabled: () => CLAUDE_OFFICIAL_VIA_PROXY,
-  setOfficialOAuthEnabled: (enabled) => {
-    CLAUDE_OFFICIAL_VIA_PROXY = enabled;
-    process.env.CLAUDE_OFFICIAL_VIA_PROXY = enabled ? '1' : '0';
-  },
   macosPower, batteryGuard: batteryGuardRuntime,
   taskAttributionMode: { get: () => taskShellHost.attributionSettings().getMode(), set: mode => taskShellHost.attributionSettings().setMode(mode) },
   log: message => console.log(message),
@@ -1935,7 +1926,7 @@ const {
   AUX_SESSION_ID,
   AUX_HISTORY_MAX,
   auxQueue,
-  getAuxConfig,
+  getAuxConfig, clearAuxProvider,
   resolveGoalLimits,
   buildGoalLimitNote,
 } = mountAuxGoalRoutes(app, {
@@ -2000,27 +1991,31 @@ function dispatchTargetBusyReasons(sid, item = null) {
   catch (err) { reasons.push(err?.code || 'workspace_occupied_check_failed'); }
   try { if (sessionWorkHost?.isRunActive(sid)) reasons.push('run_active'); }
   catch (_) { reasons.push('run_active_check_failed'); }
-  try { if (taskRunHost?.isSlotUnavailable(sid, item || {})) reasons.push('task_slot_unavailable'); }
-  catch (_) { reasons.push('task_slot_check_failed'); }
   try { if (defaultRepoActor.isLeased(sid)) reasons.push('repo_lease'); }
   catch (_) { reasons.push('repo_lease_check_failed'); }
   try { if (taskShellHost.isWorkspaceBusy(sid)) reasons.push('task_shell_workspace_busy'); }
   catch (_) { reasons.push('task_shell_busy_check_failed'); }
+  // Occupancy outliving its delivery is annotated, never reclaimed: `reasons`
+  // is already non-empty here, so a diagnostic can never create a busy verdict.
+  if (reasons.length) {
+    try { const stuck = workspaceAdmission?.stuckHint(sid); if (stuck) reasons.push(stuck); }
+    catch (_) { /* diagnostics never change the decision */ }
+  }
   return reasons;
 }
 function dispatchTargetBusy(sid, item = null) {
   return dispatchTargetBusyReasons(sid, item).length > 0;
 }
 const taskBoardRuntime = createTaskBoardRuntime({
-  ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete'), mutate: (source, fn) => sessionPersistence.mutate(source, fn), workspaceBroadcast, chatBroadcast }),
+  ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), isSessionBusy: sid => dispatchTargetBusy(sid), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete'), mutate: (source, fn) => sessionPersistence.mutate(source, fn), workspaceBroadcast, chatBroadcast }),
   file: MULTICC_PATHS.taskBoardFile,
-  taskRuns: taskRunStore, auxQueue, records: persistedSessions, createSessionRecord, releaseTaskBoundSession: sessionLifecycleRuntime.releaseTaskBoundSession,
+  getPinnedTaskIds: () => require('./src/workspace/pins').readStoredPinIds(MULTICC_PATHS.airPinsFile),
+  listShellTasks: () => taskShellHost.listTasks(),
+  isSessionBusy: sid => dispatchTargetBusy(sid),
+  auxQueue, records: persistedSessions, createSessionRecord, releaseTaskBoundSession: sessionLifecycleRuntime.releaseTaskBoundSession,
   loadHistory: sessionId => viewChatHistory(sessionId),
   dispatchToSession,
   sendSessionMessage: (...args) => taskContextHost.deliverSessionMessage(...args),
-  terminateTaskRun: input => taskRunHost.terminateRun(input), cancelUndeliveredTaskRun: async (operationId, context = {}) => {
-    const result = await orchestrationRuntime.operations.cancelUndeliveredDispatch(operationId, { taskRunId: context.runId, reason: 'task marked done before start' });
-    if (result?.ok) cancelDispatchRun(operationId); return result; },
   workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload),
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
@@ -2036,13 +2031,12 @@ const taskBoardRuntime = createTaskBoardRuntime({
   relocateShellTask: (taskId, dirId, opts) => taskShellHost.relocateTask(taskId, dirId, opts),
   logger: console,
 });
-taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, logger }).mountRoutes(app);
+taskBoardRuntime.mountRoutes(app); createTaskSearchRoutes({ getBoard: () => taskBoardRuntime.getBoard(), messages: messageSearchRuntime, logger }).mountRoutes(app); messageSearchRuntime().start();
 const taskContextHost = createTaskContextHost({
-  getState: sessionId => chatSessions.get(sessionId), emitClients: createTaskRunStreamEmitter(broadcastTo, chatSessions, persistedSessions, workspaceBroadcast),
+  getState: sessionId => chatSessions.get(sessionId), emitClients: broadcastTo,
   append: (sessionId, message) => chatHistoryRuntime.appendMessage(sessionId, message),
   getTaskBoard: () => taskBoardRuntime, getTaskShells: () => taskShellHost, classifyDisplay,
   containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),
-  recordTaskRunMessage: (sessionId, message) => taskRunHost?.recordMessage(sessionId, message),
   randomUUID: () => crypto.randomUUID(), getRecord: sessionId => persistedSessions.get(sessionId),
   runTurn: (sessionId, text, options) => chatTurnEngine.admitChatWork(sessionId, text, options),
 });
@@ -2070,9 +2064,9 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   subscribeChat: listener => { bus.on('chat:stream-progress', listener); return () => bus.off('chat:stream-progress', listener); },
   getWorkHost: () => sessionWorkHost, getScheduler: () => orchestrationRuntime?.sessionScheduler,
   recentEvents: dirId => recentEvents(dirId),
-  deliver: (...args) => taskContextHost.deliverSessionMessage(...args),
+  deliver: (...args) => taskContextHost.deliverSessionMessage(...args), dispatch: (...args) => dispatchToSession(...args), prepareAutoProviderAdmission: (...args) => chatTurnEngine.prepareAutoProviderAdmission(...args),
   persistRecords: (source, fn) => sessionPersistence.mutate(source, fn), closeExecution: id => chatStream.closeAndWait(id), resetChatState: id => chatSessions.delete(id),
-  hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), ensureWorkspaceAwake: id => sessionHibernationRuntime.ensureAwake(id),
+  hasBackground: id => backgroundTaskRuntime.hasProcessBackgroundTasks(id), ensureWorkspaceAwake: id => sessionHibernationRuntime.ensureAwake(id),
   getWorkspaceAdmission: () => workspaceAdmission,
 });
 taskShellHost.mountRoutes(app);
@@ -2110,7 +2104,7 @@ const providerRoutes = createProviderRoutes({
   providerRouterRuntime,
   findProviderReferences,
   persistedSessions, providerRelayShares,
-  getAuxConfig,
+  getAuxConfig, clearAuxProvider, applySessionPatch, previewSessionPatch,
   claudeCmd: CLAUDE_CMD,
   getPort: () => PORT,
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
@@ -2160,11 +2154,11 @@ require('./src/routes/workspaces').mountWorkspaceRoutes(app, {
 providerRoutes.mountManagementRoutes(app);
 
 // GET /api/providers/:appType/:id/balance + GET /api/providers/balances —
-// explicit per-provider and all-at-once quota/balance queries for the manage
-// page, reusing the usage-limit poller's vendor adapters. Each query outcome is
-// mirrored into the persistent provider-limit cache (onResult), so an on-demand
-// balance check also refreshes the pickers' last-known summaries.
-mountProviderBalanceRoutes(app, { ...providers, onResult: limitRecorder.recordProvider });
+// per-provider and all-at-once quota/balance queries for the manage page, reusing
+// the usage-limit poller's adapters. Outcomes mirror into the provider-limit cache
+// (onResult); lookupCached reads it back so a transient failure answers last-known-
+// good cached+stale — never for a 借道 lender (relay routes pass no lookupCached).
+mountProviderBalanceRoutes(app, { ...providers, onResult: limitRecorder.recordProvider, lookupCached: (appType, id) => providerLimitCache.get(appType, id) });
 
 // ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,
 // pre-turn auth check). Mounted after provider routes for logical grouping.
@@ -2220,15 +2214,7 @@ chatHistoryRuntime = createChatHistoryRuntime({
 });
 chatHistoryService = chatHistoryRuntime.service;
 chatHistoryRuntime.mountRoutes(app);
-taskRunHost = createProductionTaskRunHost({ taskRunStore, dataRoot: MULTICC_PATHS.root, providerHomesDir: providers.CODEX_HOMES_DIR, codexSessionHomesDir: providers.CODEX_SESSION_HOMES_DIR,
-  records: persistedSessions, directories, chatStream, clearNativeCliStates: record => { if (record) delete record.pendingCliHandoff; return clearAllNativeCliStates(record); },
-  deleteChatHistory: id => chatHistoryService.deleteSession(id), resetChatState: id => { const state = chatSessions.get(id); if (state) { state.chatTurnCount = 0; delete state._currentTaskId; delete state._currentTaskRunId; delete state._currentTaskLeaseEpoch; } },
-  resetRoleUsage: resetRoleTokenUsage, persistRecords: savePersistedSessionsBestEffort,
-  drainProviderProducers: (id, lease) => taskRunProviderBridge.waitForDrain(id, lease), onRunUpdated: ({ taskId }) => taskBoardRuntime.notifyTaskRun(taskId), getTaskState: id => getTaskState(persistedSessions.get(id)), onRunFailed: ({ taskId, runId }) => taskBoardRuntime.autoRetryTaskRun({ taskId, runId }),
-  prepareTaskWorktree: i => taskBoardRuntime.taskWorktree?.prepareForRun(i) || { ok: false, code: 'worktree_service_unavailable' },
-  releaseTaskWorktree: i => taskBoardRuntime.taskWorktree?.releaseSlot(i),
-  providerSnapshot: id => { const record = persistedSessions.get(id) || {}; return { providerId: record.provider || '_default_', providerName: record.provider || '_default_', cli: record.cli || '', model: effectiveSessionModel(record) || '' }; }, logger });
-createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app);
+createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app); turnLedgerRuntime.mountRoutes(app);
 
 // Compatibility wrappers preserve the earlier host composition point.
 function loadChatHistory(sessionId) { return chatHistoryRuntime.load(sessionId); }
@@ -2255,12 +2241,11 @@ const {
 } = createChatHostRuntime({
   appendMessage: appendChatMessage,
   persistUsage: accumulateTokenUsage,
-  persistTaskRunUsage: payload => taskRunHost.recordMainUsage(payload),
   afterUsageCommit: (sessionId, attribution) => {
     broadcastProviderTokenStats(sessionId, attribution);
     broadcastRoleTokenStats(sessionId);
   },
-  getSessionState: (sessionId) => chatSessions.get(sessionId),
+  getSessionState: (sessionId) => chatSessions.get(sessionId), roleUsageSnapshot: id => roleTokenTracker.snapshot(id),
   consumeHandoff: consumePendingCliHandoff,
   emitTurnComplete: (sessionId, state, completion) => bus.emit('chat:turn-complete', sessionId, state, completion),
   emitDispatchComplete: (operationId, sessionId, text) => bus.emit('chat:dispatch-complete', operationId, sessionId, text),
@@ -2376,9 +2361,8 @@ const cleanupPushMonitor = pushRuntime.cleanup;
 
 // ── Task state persistence (step ①) ───────────────────────────────────────────
 // persisted.taskState is the durable closed-loop task snapshot: it survives
-// restarts so the reconcile (②) can
-// decide what was running, whether it stalled, and whether to nudge. Falls back
-// to {} for legacy sessions that predate this field.
+// restarts so the reconcile (②) can decide what was running, whether it stalled,
+// and whether to nudge. Falls back to {} for legacy sessions predating this field.
 //
 // Shape:
 //   { goal, phase, startedAt, endedAt, lastSummary, lastSummaryAt,
@@ -2474,7 +2458,7 @@ sessionWorkHost = createSessionWorkHost({
   assignKillReason,
   finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
   releaseProviderProducers: (sessionId, reason) => providerAttemptRuntime.forceReleaseProducers(sessionId, reason),
-  appendMessage: appendChatMessage,
+  stopBackgroundForInsert: sessionId => backgroundTaskRuntime.stopForInsert(sessionId), appendMessage: appendChatMessage,
   onTerminalWork: (sessionId, completion) => {
     workspaceAdmission?.settled(sessionId, completion);
     Promise.resolve(sessionHibernationRuntime?.touchTerminal(sessionId, completion)).catch(error => {
@@ -2534,11 +2518,17 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, persistence: sessionPersistence,
   ensureDir: ensureDirGitReady, addWorktree: gitWorktreeAdd, validate: gitWorktreeValidate,
   getState: id => chatSessions.get(id), hibernation: () => sessionHibernationRuntime,
-  hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), streamBusy: id => !!chatStream.status(id)?.busy,
+  hasBackground: id => backgroundTaskRuntime.hasProcessBackgroundTasks(id), streamBusy: id => !!chatStream.status(id)?.busy,
   closePersistent: id => chatStream.closeAndWait(id),
+  parkPersistent: (id, workspace) => chatStream.parkWorkspace(id, workspace),
+  claimPersistent: (id, workspace, opts) => chatStream.claimWorkspace(id, workspace, opts),
+  // Escalation inputs: stopping a pinned writer also means settling the host's
+  // belief that its background work still runs — and only once it went quiet.
+  reapBackground: (id, opts) => backgroundTaskRuntime.reapSessionShadows(id, opts),
+  backgroundSilence: id => backgroundTaskRuntime.backgroundSilenceMs(id),
   updateCwd: (id, cwd) => { const state = chatSessions.get(id); if (state) state.cwd = cwd; },
   pendingInput: id => userInputSignalHost.pending(id), loadHistory: id => viewChatHistory(id),
-  budgets: { executionLimit: Number(process.env.MULTICC_WORKSPACE_RUN_LIMIT || 8), residentLimit: Number(process.env.MULTICC_WORKSPACE_RESIDENT_LIMIT || 128), restoreLimit: Number(process.env.MULTICC_WORKSPACE_RESTORE_LIMIT || 2), staleUncertainMs: Number(process.env.MULTICC_WORKSPACE_STALE_UNCERTAIN_MS || 300000) },
+  budgets: { executionLimit: Number(process.env.MULTICC_WORKSPACE_RUN_LIMIT || 8), residentLimit: Number(process.env.MULTICC_WORKSPACE_RESIDENT_LIMIT || 128), restoreLimit: Number(process.env.MULTICC_WORKSPACE_RESTORE_LIMIT || 2), staleUncertainMs: Number(process.env.MULTICC_WORKSPACE_STALE_UNCERTAIN_MS || 300000), stuckBlockedMs: Number(process.env.MULTICC_WORKSPACE_STUCK_BLOCKED_MS || 1800000), stuckSilenceMs: Number(process.env.MULTICC_WORKSPACE_STUCK_SILENCE_MS || 600000) },
   log: (event, data) => logger.warn(event, data),
   // P4 交付蒸馏：merge 回执 published 后把交付记录写进任务级记忆。
   onIntegrationPublished: ({ sessionId, taskId, baseRef, operationId }) => {
@@ -2560,16 +2550,22 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
 });
 
 require('./src/workspace/air-routes').mountAirRoutes(app, {
-  admission: workspaceAdmission,
+  admission: workspaceAdmission, hibernation: () => sessionHibernationRuntime,
+  // 分相位计时（air_snapshot_slow）只在明显偏慢的轮次落一行，宿主接上 logger 才启用
+  // 「刚重启的两分钟每 5s 一行」那档，测试与工具进程拿不到它就自动静默。
+  logger,
   records: persistedSessions,
+  // 运行时那张表（不是落盘的那张）：终端行要说准「进程还在不在、多久没动」，只有它
+  // 知道。按引用传，所以每轮快照读到的都是当下的事实。
+  sessions,
   directories,
   shell: taskShellHost,
-  getBoard: () => taskBoardRuntime.getBoard(),
+  getBoard: () => taskBoardRuntime.getBoard(), markTaskSeen: id => taskBoardRuntime.markTaskSeen(id),
   clis: SUPPORTED_CHAT_CLIS,
   providerName: sessionProviderName,
   effectiveModel: effectiveSessionModel,
-  effectiveEffort: effectiveSessionEffort,
-  serializeSubagent,
+  effectiveEffort: effectiveSessionEffort, mergeStateCached,
+  serializeSubagent, getSessionRunState: id => sessionWorkHost?.getRunState(id) || 'idle', cronSessionIds: () => cronTasks.sessionIds(),
 });
 
 const tuiChatMirrorRuntime = createTuiChatMirrorRuntime({ enabled: tuiChatMirrorEnabled(), records: persistedSessions, cwdForSession, providerFor, send: sendWs, setSessionStatus, saveBestEffort: source => savePersistedSessionsBestEffort(source), logger });
@@ -2585,6 +2581,7 @@ const chatTurnEngine = createChatTurnEngine({
   getChatHistoryService: () => chatHistoryService,
   getExperimentalTuiChatRuntime: () => tuiChatMirrorRuntime, applyPendingConfiguration: cliSwitchRuntime.applyPendingConfiguration,
   getSessionHibernation: () => sessionHibernationRuntime, getWorkspaceAdmission: () => workspaceAdmission,
+  getSessionGitRuntime: () => sessionGitRuntime,
   isShuttingDown: () => _shuttingDown,
   getPort: () => PORT,
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
@@ -2626,6 +2623,10 @@ const chatTurnEngine = createChatTurnEngine({
   buildGatewayPrompt,
   buildDispatchContextPrompt,
   buildGoalLimitNote,
+  // Per-turn plan/progress layer (message-composer kind 'turn-plan'). Every
+  // chat turn carries it; aux and gateway sessions are excluded inside the
+  // composer, not here.
+  buildPlanPrompt: buildPlanProgressPrompt,
   appendChatMessage,
   loadChatHistory,
   viewChatHistory,
@@ -2674,7 +2675,7 @@ services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile, databaseFile: MULTICC_PATHS.orchestrationDbFile,
   runChatTurn: chatTurnEngine.runChatTurn,
-  isBusy: dispatchTargetBusy, busyReasons: dispatchTargetBusyReasons, deliveryGroup: id => taskShellHost.workspaceGroup(id), isSlotUnavailable: (sid, item) => !!taskRunHost?.isSlotUnavailable(sid, item || {}),
+  isBusy: dispatchTargetBusy, busyReasons: dispatchTargetBusyReasons, noteBlockedDelivery: id => workspaceAdmission?.noteBlockedDelivery(id), deliveryGroup: id => taskShellHost.workspaceGroup(id),
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,
   runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
   deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox,
@@ -2688,9 +2689,9 @@ orchestrationRuntime = createOrchestrationRuntime({
   // instead of a worker-wide deadlock (see orchestration-runtime processOutbox).
   isDeliveryLocked: sid => !!persistedSessions.get(sid)?.taskBoundTaskId
     && !!sessionHibernationRuntime?.isLocked?.(taskShellHost.workspaceGroup(sid)),
-  beforeDeliver: async descriptor => { const guard = await workspaceAdmission.beforeDeliver(descriptor); try { await taskRunHost.beforeDeliver(descriptor); return guard; } catch (error) { await guard?.complete({ accepted: false, durable: false }); throw error; } }, beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({ store: taskRunStore, records: persistedSessions, persistRecords: savePersistedSessionsBestEffort, resumeCleanup: item => taskRunHost.resumeCleanup(item), resetSlot: item => taskRunHost.resetSlotForRecovery(item), getSchedulerStatus: slotId => sessionScheduler.status(slotId), recoverTerminal: event => taskRunHost.recoverTerminal(event), log: message => logger.warn(message) }),
+  beforeDeliver: descriptor => workspaceAdmission.beforeDeliver(descriptor),
   getSessionRecoveryState: id => sessionWorkHost.recoveryState(id),
-  onSchedulerEvent: event => { sessionWorkHost.onSchedulerEvent(event); void taskRunHost.onSchedulerEvent(event).catch(error => logger.warn('task_run_finalize_failed', { error: error.message })); },
+  onSchedulerEvent: event => { sessionWorkHost.onSchedulerEvent(event); },
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
 });
@@ -2704,7 +2705,7 @@ const processingWatchdog = createProcessingWatchdog({
   isPidAlive(pid) {
     try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
   },
-  cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options),
+  cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options), settleRecoveredQuestion: id => sessionWorkHost.settleRecoveredQuestion(id),
   logger,
 });
 // Companion to the dead-runner watchdog: observes the liveness `stalled` verdict.
@@ -2724,7 +2725,7 @@ const providerLogWatchdog = createProviderLogWatchdog({ listRecords: () => persi
   recordLimit: limitRecorder.recordSession });
 const logHousekeeping = createLogHousekeeping({ logsDir: path.join(__dirname, 'logs'), logger,
   retainDays: envNumber(process.env.MULTICC_LOG_RETAIN_DAYS), keepTailBytes: envNumber(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) });
-routerToolHost.configure({ records: persistedSessions, dispatchToSession, orchestrationRuntime, taskBoard: taskBoardRuntime,
+routerToolHost.configure({ records: persistedSessions, dispatchToSession, createTask: input => taskShellHost.createTask(input), orchestrationRuntime, taskBoard: taskBoardRuntime,
   recordUserInput: signal => sessionWorkHost.recordInput(signal), listSecrets: () => secretsVault.list(), cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts),
   onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission, imageBridge: createOfficialImageBridgeRuntime({ paths: MULTICC_PATHS, resolveSessionCwd: cwdForSession, providers, officialAccounts, registerArtifact: docsRegistry.register, codexCommand: cliCommands.codex }), getTaskContext: (context, query) => taskShellHost.refillContext(context.sessionId, { ...query, receiptId: context.requestId }) });
 
@@ -2757,6 +2758,8 @@ createOrchestrationRoutes({
   cancelActiveTurn: (sessionId, options) => sessionWorkHost.cancelActiveTurn(sessionId, options),
   dismissUserInput: (id, requestId) => sessionWorkHost.dismissUserInput(id, requestId),
   busyReasons: dispatchTargetBusyReasons,
+  // "Cancel did not take" gets one more move: stop the writer holding it.
+  unstickBlocked: (id, opts) => workspaceAdmission?.escalate(id, opts),
 }).mountRoutes(app);
 
 // WebSocket authentication, endpoint routing, terminal attachment and keep-alive
@@ -2782,6 +2785,7 @@ mountWsConnectionRouter(wss, {
   resolveCwd,
   tmuxWriteInput,
   tmuxResize,
+  tmuxCaptureSnapshot,
   applyMaxClientSize,
   pushOnInput,
   handleChatWs: (ws, req, urlObj) => chatTurnEngine.handleChatWs(ws, req, urlObj),
@@ -2843,7 +2847,7 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
 
 // Scheduled tasks (定时任务): every rule owns one fixed Air task and enters it through the
 // task-shell receipt protocol, complementing the lower-level per-session triggers.
-cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskId: id => taskShellHost.artifactTaskId(id) }); secretsVault.mount(app); // docs-registry/secrets-vault = /manage 管理表与敏感信息保险箱（同行以守 3000 行预算）
+cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskId: id => taskShellHost.artifactTaskId(id), resolveDir: id => directories.get(persistedSessions.get(id)?.dirId)?.path || null }); secretsVault.mount(app); // docs-registry/secrets-vault = /manage 管理表与敏感信息保险箱（同行以守 3000 行预算）
 cronTasks.init({
   directories,
   clis: SUPPORTED_CHAT_CLIS,
@@ -2860,6 +2864,7 @@ tunnel.init();
 
 // Graceful shutdown and service timers live in src/host-lifecycle.js; mutable host state stays lazy via accessors.
 const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostLifecycle({
+  isResidentSession,
   getShuttingDown: () => _shuttingDown,
   setShuttingDown: (v) => { _shuttingDown = v; },
   setServiceReady: (v) => { serviceReady = v; },
@@ -2896,16 +2901,13 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   stopOutputCapture,
   routerToolHost,
   sessionPersistence,
-  taskRunHost,
-  taskRunStore,
   qwenAudioSupervisor,
   sessionHibernationRuntime,
 });
 shutdownCoordinator.onClose(() => { taskShellHost.close(); workspaceAdmission.close(); }); shutdownCoordinator.onClose(() => codexProxyMounts.codex?.close?.());
-// Terminal error handler: catches errors that reach next(err) or throw out of
-// async handlers wrapped with asyncHandler(). Redacts stacks/stderr, returns a
-// generic {error, requestId} so clients can't fingerprint the filesystem.
-// Registered LAST so every route falls through here.
+// Terminal error handler: catches next(err) and anything thrown by an
+// asyncHandler() route. Redacts stacks/stderr into a generic {error, requestId}
+// so clients can't fingerprint the filesystem. Registered LAST so everything falls here.
 app.use(safeErrorHandler(logger));
 
 (async () => {
@@ -2951,6 +2953,8 @@ app.use(safeErrorHandler(logger));
     worktreeOrphanScanner.start();
     try { voiceHost.prepareBoot(); } catch (err) { logger.warn('voice_boot_prepare_failed', { error: err.message }); }
     qwenAudioSupervisor.reconcileAll().catch(err => logger.warn('voice_reconcile_failed', { error: err && err.message }));
+    // Resident children are a machine-wide process budget, not a per-directory one.
+    const residentPool = require('./src/chat/resident-composition').createResidentPoolComposition({ chatStream, backgroundTaskRuntime, sessionWorkHost, logger, getWorkspaceAdmission: () => workspaceAdmission }); trackServiceTimer(setInterval(() => residentPool.sweep(), residentPool.policy().sweepMs));
     // Periodic scan retries unresolved task attribution; first tick waits for Aux warm-up.
     trackServiceTimer(setTimeout(() => scanAndReclassify(), 6000));
     trackServiceTimer(setInterval(() => scanAndReclassify(), SCAN_INTERVAL_MS));
@@ -2962,8 +2966,8 @@ app.use(safeErrorHandler(logger));
       .catch(error => logger.warn('provider_log_watchdog_sweep_failed', { error: error.message })), providerLogWatchdog.PROVIDER_LOG_WATCHDOG_INTERVAL_MS));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
-const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, [...taskRunStore.listPinnedArtifactIds(), ...docsRegistry.listPinnedArtifactIds()]); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
-    trackServiceTimer(setInterval(() => cleanupArtifacts(), 6 * 3600 * 1000));
+const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, docsRegistry.listPermanentArtifactIds()); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
+    trackServiceTimer(setInterval(() => cleanupArtifacts(), 6 * 3600 * 1000)); require('./src/assist-snapshots').startAssistSweep({ assistDir: MULTICC_PATHS.assistDir, trackTimer: trackServiceTimer, log: (message) => logger.info('assist_snapshot_cleanup', { message }) });
     // Keep the official OAuth credential alive. The check is a credential read;
     // it only runs the CLI once the expiry is close, so the router never has to
     // report "run `claude` once to refresh the Keychain" to a user. Boot counts

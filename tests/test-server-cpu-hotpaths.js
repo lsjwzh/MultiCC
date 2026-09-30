@@ -402,6 +402,9 @@ test('bulk merge-state refreshes are bounded, Fleet-fair, and prioritize interac
     now: () => 1000,
     random: () => 0,
     asyncHandler: handler => handler,
+    // Only untracked-file facts read files, and this test drives the merge-state
+    // sweep, so an empty read is enough to satisfy the runtime's contract.
+    readFile: async () => Buffer.from(''),
     logger: { log() {}, warn() {} },
     cacheTtlMs: 1000,
     cacheJitterMs: 0,

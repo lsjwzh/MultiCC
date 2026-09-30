@@ -25,8 +25,7 @@
     docs: [t('airAdminPanelDocs'), t('airAdminPanelDocsDesc'), 'DOCS'],
     memory: [t('airAdminPanelMemory'), t('airAdminPanelMemoryDesc'), 'MEMORY'],
     taskgraph: [t('airAdminPanelTaskgraph'), t('airAdminPanelTaskgraphDesc'), 'TASKGRAPH'],
-    // 工作区（worktree 休眠回收）还是 legacy iframe 页：manage 那边的视图同名。
-    workspaces: [t('workspace'), t('mngWorkspacesSub'), 'WORKSPACES'],
+    workspaces: [t('airAdminPanelWorkspaces'), t('airAdminPanelWorkspacesDesc'), 'WORKSPACES'],
     // aux 不是 legacy iframe 页(manage 那边配置在弹窗里,没有 view 可嵌)——
     // 这条只为设置中心的卡片和 modes 集合提供元数据,渲染走下面的 renderAux。
     aux: ['AI Assistant', t('airAdminPanelAuxDesc'), 'AUX'],
@@ -66,22 +65,20 @@
     resources: { module: 'MultiCCAirResources', back: 'settings' },
     skillsync: { module: 'MultiCCAirSkillsync', back: 'settings' },
     storage: { module: 'MultiCCAirStorage', back: 'settings' },
+    workspaces: { module: 'MultiCCAirWorkspaces', back: 'settings' },
   };
   let activeMode = null;
   let currentContext = null;
   // 控制台里那份「全部任务」的筛选，存在模块上而不是 DOM 上：面板每次重开都会
   // 重建 DOM，筛选跟着输入框一起丢掉的话，翻回去看同一条列表要重挑一次。
-  const consoleFilter = { query: '', status: 'open', dir: 'all' };
+  //
+  // fullText 默认开：搜索的默认目标是「全部记录（含对话）」，因为只出现在对话正文里
+  // 的词走不到任务板语料。注意它换的不是上面那条状态口径 —— 列表默认仍是「进行中与
+  // 待处理」，搜索另有一份 searchFilter()（见下）。
+  // view 是顶上展开了哪一格过滤项（running/waiting/error/today/all），null = 都收着。
+  const consoleFilter = { query: '', status: 'open', dir: 'all', fullText: true, view: null };
   // 面板是给人看的，不是导出用的：超过这个数就只显示最近的一批，并把总数说清楚。
   const TASK_LIST_LIMIT = 60;
-  // 「谁在等我」是面板的第一格，也是打开控制台第一眼要看的东西，所以它只留最近更新的
-  // 几条：一屏扫完，剩下的交给它自己的整页（这一格的「查看全部」）。不封顶的话，
-  // 等我的任务一多，这一格就把下面的「全部任务」和工具格整片推出视野 ——
-  // 控制台变成一份清单的滚动条。
-  //
-  // 「最近更新」是纯时间倒序，不按紧急度分层：刚动过的那几条才是我脑子里还挂着的事，
-  // 而一条三小时前出错、此后没人碰过的任务，即使更「急」也排不到刚接手的前面。
-  const ATTENTION_LIMIT = 5;
 
   // 手机上页头的工具都收进「⋯」浮层，浮层里每一行都摆成「图标 + 名字」两列
   // （air.css 的 760px 块）。图标得是自己一个节点，名字才站得到第二列上 ——
@@ -105,9 +102,10 @@
   }
 
   // The Air shell header owns the page title (air.js renderHeader); a view only
-  // contributes its actions. Page views put them in the header toolbar; the
-  // console panel is an overlay, so its actions stay inside the panel instead of
-  // rewriting the header of the page it is covering.
+  // contributes its actions, and they ride in the header toolbar — one heading
+  // band per view. The console used to be an overlay and kept its actions inside
+  // the panel (it was covering another page's header); it is a page now, so it
+  // follows the same rule as every other page.
   function setActions(actions = [], hostId = 'admin-actions') {
     el(hostId).replaceChildren(...actions);
   }
@@ -119,14 +117,13 @@
   // `runState === 'running'`：注册表只给 running 设了 spinner，于是「出错的任务
   // 绝不动画」是一条规则，而不是每个用到状态的地方各判一遍。
   const RUNNING_LEASES = ['reserved', 'materializing', 'starting', 'running', 'uncertain'];
-  // Air 不带 i18n 词典（air.html 里没有 t()），注册表的 labelKey 在这儿查不到文案，
-  // 所以显式给一份中文。词表跟 air.js 的 stateNames 是同源的，只是这里只需要状态名。
-  const STATUS_COPY = Object.freeze({
-    idle: t('airAdminStatusIdle'), queued: t('airAdminStatusQueued'), running: t('airAdminStatusRunning'), waiting: t('airAdminStatusWaiting'), blocked: t('airAdminStatusBlocked'),
-    error: t('airAdminStatusError'), succeeded: t('airAdminStatusSucceeded'), done: t('airAdminStatusDone'), cancelled: t('airAdminStatusCancelled'),
-    archived: t('airAdminStatusArchived'), offline: t('airAdminStatusOffline'), unknown: t('airAdminStatusUnknown'),
-  });
   const registry = () => root.MultiCCStatusPresentation;
+  // 状态词只有一份，在注册表的 airLabelKey 列上（Air 面自带的词表，跟阶段、资源
+  // 去向那些词同源），由 airStatusLabels() 取给这一页和侧栏（air.js 的 stateNames）。
+  // 这张表从前是手抄的，于是同一个状态在侧栏和控制台能读出两个词 —— 比如「等待回答」
+  // 出现在一条只是在等后台任务、根本不需要用户动手的卡上。
+  // t() 是 air.html 的全局（i18n.js 载入），Air 是带词典的。
+  const STATUS_COPY = Object.freeze(registry()?.airStatusLabels?.(t) || {});
 
   /** 权威状态：生命周期（archived/done）优先，其次是这一轮的 runState。 */
   function taskStatus(task) {
@@ -151,8 +148,8 @@
    *  调色板和哈希都住在 status-presentation.js —— 老看板那张卡片的描边用的是同
    *  一份（.card-border-rainbow 和 .ring-running 是同一条规则的两个壳），同一件
    *  东西在两页上不该是两个颜色，所以这里不再自己留一份调色板。
-   *  status-presentation.js 必须在本脚本之前加载（air.html / manage.html 里就是
-   *  这么排的）；万一没有，圈退回主题强调色 —— 少一个变量不该让圈整个消失。 */
+   *  status-presentation.js 必须在本脚本之前加载（air.html 里就是这么排的）；
+   *  万一没有，圈退回主题强调色 —— 少一个变量不该让圈整个消失。 */
   function ringTint(seed) {
     const shared = registry();
     return shared ? shared.ringTint(seed) : '#7fb0ff';
@@ -173,10 +170,16 @@
     else element.style.setProperty('--ring-tint', ringTint(seed));
   }
 
-  /** 状态徽标：图标 + 中文标签，可访问名称与可见文案是同一句话。 */
+  /** 状态徽标：图标 + 中文标签，可访问名称与可见文案是同一句话。
+   *
+   *  ✅ 那一格整张卡共用，但词可能更细一点：服务端判定 D 时会随判定一起落下
+   *  「达成目标 / 需要交互」（`task.goalState`，没有目标就没有这个值），于是同一枚
+   *  对勾下写着三个不同的说法。图标、色调、优先级都不动 —— 细分只发生在文案上，
+   *  而词表只有一份（status-presentation.js 的 succeededSubLabel）。 */
   function statusBadge(task, opts = {}) {
     const spec = taskSpec(task);
-    const label = STATUS_COPY[spec.status] || spec.status;
+    const label = registry()?.succeededSubLabel?.(spec.status, task?.goalState, t)
+      || STATUS_COPY[spec.status] || spec.status;
     const badge = make('span');
     const api = registry();
     if (api) {
@@ -186,6 +189,32 @@
       badge.className = `mc-status st-tone-${spec.tone}`;
       badge.textContent = `${spec.icon} ${label}`;
     }
+    return badge;
+  }
+
+  /**
+   * 外层任务卡只标「还有改动没交付」：dirty 是未提交文件，ahead 是已经提交但尚未
+   * 合回基分支。behind 代表需要同步基分支，不属于这枚图标的语义，客户端不推断它。
+   */
+  function worktreeChangeLabel(task) {
+    const changes = task?.worktreeChanges;
+    if (!changes || typeof changes !== 'object') return '';
+    const dirty = changes.dirty === true;
+    const ahead = Math.max(0, Number.parseInt(changes.ahead, 10) || 0);
+    if (dirty && ahead) return t('airWorktreePendingBoth', { n: ahead });
+    if (dirty) return t('airWorktreePendingDirty');
+    if (ahead) return t('airWorktreePendingAhead', { n: ahead });
+    return '';
+  }
+
+  /** 静态的 worktree 待交付图标；tooltip 与无障碍名说清是哪一种改动。 */
+  function worktreeChangeBadge(task) {
+    const label = worktreeChangeLabel(task);
+    if (!label) return null;
+    const badge = make('span', '⎇', 'worktree-change-badge');
+    badge.title = label;
+    badge.setAttribute('role', 'img');
+    badge.setAttribute('aria-label', label);
     return badge;
   }
 
@@ -204,8 +233,11 @@
     const held = resource.capacityReason ? context.label(resource.capacityReason)
       : resource.lease && resource.lease !== 'idle' ? context.label(resource.lease)
         : context.label(resource.residency);
-    // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。
-    const badgeText = context.label(taskStatus(task));
+    // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。徽标在
+    // ✅ 上换过词时（达成目标 / 需要交互）这里也得跟着换，否则同一行会同时印
+    // 「达成目标」和「执行成功」两个词说同一件事。
+    const badgeText = registry()?.succeededSubLabel?.(taskStatus(task), task?.goalState, t)
+      || context.label(taskStatus(task));
     if (held && held !== stage && !badgeText.includes(held)) bits.push(held);
     return bits.join(' · ');
   }
@@ -213,18 +245,56 @@
   /**
    * 控制台与目录面板共用的任务筛选语义。directoryName 只在跨目录搜索时传入；
    * 目录首页已经把 rows 收窄到一个目录，所以搜索标题即可。
+   *
+   * `keepOrder` 给全文检索用：那批任务进来时已经是相关度顺序，时间排序会把服务端
+   * 算出来的名次抹掉。除了不排序，其余筛选一字不差 —— 状态与目录的口径只有这一份。
    */
-  function filterTasks(tasks, filter = {}, directoryName = () => '') {
+  function filterTasks(tasks, filter = {}, directoryName = () => '', { keepOrder = false } = {}) {
     const status = filter.status || 'open';
     const dir = filter.dir || 'all';
     const needle = String(filter.query || '').trim().toLowerCase();
-    return (tasks || [])
+    // 状态口径与目录概览的统计卡同源：taskStatus 是权威判定（archived/done 生命周期
+    // 优先），所以「运行中/等待回复/异常/执行成功」四张卡与这里的筛选永远不会分叉。
+    // 成功那档问的是这一轮的结局（succeeded），不是生命周期 done —— 后者只剩旧看板
+    // 时代的少量记录，拿它当「跑成功了吗」会筛出一个几乎空、且越用越旧的清单。
+    const rows = (tasks || [])
       .filter(task => status === 'all' ? true
         : status === 'archived' ? task.status === 'archived'
-          : !['done', 'archived'].includes(task.status))
-      .filter(task => dir === 'all' || task.dirId === dir)
-      .filter(task => !needle || `${task.title || ''} ${directoryName(task.dirId)}`.toLowerCase().includes(needle))
-      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+          : status === 'succeeded' ? taskStatus(task) === 'succeeded'
+            : status === 'running' ? isRunning(task)
+              : status === 'waiting' ? taskStatus(task) === 'waiting'
+                : status === 'error' ? taskStatus(task) === 'error'
+                  : !['done', 'archived'].includes(task.status))
+      .filter(task => dir === 'all' || task.dirId === dir);
+    if (keepOrder) return rows;
+    // 本地过滤按标题（和目录名）匹配：它仍是即时反馈，也是全文检索不可用时的退路。
+    const matched = !needle ? rows
+      : rows.filter(task => `${task.title || ''} ${directoryName(task.dirId)}`.toLowerCase().includes(needle));
+    return matched.sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  }
+
+  /**
+   * 搜索用的筛选口径：搜索永远搜「全部记录」，不套状态那格 —— 默认只看在办会把已
+   * 归档任务的命中静默滤掉（服务端有结果、列表显示 0 条），而那正是「明明搜得到却
+   * 搜不到」的来源。状态选择器管的是不搜索时的列表；目录那格照旧参与（它本来就是
+   * 搜索范围的一部分）。
+   */
+  function searchFilter(filter = {}) {
+    return { ...filter, status: 'all' };
+  }
+
+  /**
+   * 全文检索结果 → 相关度顺序的任务数组（服务端顺序，逐条仍是同一份筛选口径）。
+   * rankedHits 会把两条语料合成一份：任务板命中在前，会话正文命中接在后面（同一条
+   * 任务只留最强的那次）。
+   */
+  function rankedRows(tasks, filter, directoryName, results) {
+    const ranked = window.MultiCCTaskSearch?.rankedHits?.(results, tasks);
+    if (!ranked?.length) return null;
+    const snippets = new Map(ranked.map(({ task, hit }) => [task.id, hit.snippet]));
+    const rows = filterTasks(ranked.map(({ task }) => task), filter, directoryName, { keepOrder: true });
+    // 本地状态/目录筛选可能把命中的前几名滤掉，滤掉的那几条不该继续占位置。
+    return rows.map(task => ({ task, snippet: snippets.get(task.id) || null }));
   }
 
   /** 一条任务行：徽标 + 标题 + 目录/阶段 + 时间；删除是独立按钮，避免按钮嵌套。 */
@@ -252,10 +322,16 @@
     // 对齐（App 的任务行同一天也照这个改了）。
     const meta = make('small', null, 'task-meta');
     meta.append(statusBadge(task, options.badge || {}));
+    const worktreeBadge = worktreeChangeBadge(task);
+    if (worktreeBadge) meta.append(worktreeBadge);
     const where = options.dir === false ? '' : context.directoryName(task.dirId);
     const note = [where, taskDetail(task, context)].filter(Boolean).join(' · ');
     if (note) meta.append(make('em', note, 'task-note'));
     copy.append(make('strong', task.title || t('airAdminUntitledTask')), meta);
+    // 全文检索命中时把命中的那段原文摆出来：标题里没有查询词、却在正文/历史轮次里
+    // 命中时，这一行就是「为什么它被搜出来」的唯一解释。
+    const snippet = window.MultiCCTaskSearch?.snippetNode?.(options.snippet);
+    if (snippet) copy.append(snippet);
     body.append(copy, make('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString(getLocale(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
     row.append(body);
     if (options.deletable && context.deleteTask) {
@@ -282,12 +358,12 @@
     if (status === 'waiting') return 0;
     if (status === 'error') return 1;
     if (task.resource?.capacityReason) return 2;
-    if (status === 'running' || RUNNING_LEASES.includes(task.resource?.lease)) return 3;
+    if (status === 'running' || status === 'background' || RUNNING_LEASES.includes(task.resource?.lease)) return 3;
     if (status === 'done' || status === 'archived') return 5;
     return 4;
   }
   // 「在等我」的分界线：0 等我回答 · 1 出错要我去处理 · 2 卡在资源 —— 这三类都得
-  // 我动手。3（正在跑）不列进来：跑着的东西不是待办，它不需要我操作。上面那张
+  // 我动手。3（正在跑 / 后台等待）不列进来：跑着的东西不是待办，它不需要我操作。上面那张
   // 「等待处理」统计卡走的是同一条线，两处口径必须一致。
   function needsAttention(task) { return taskUrgency(task) < 3; }
   // 谁在等我由上面那条线筛出来，排在最前面的是最近动过的那条 —— 刚有动静的
@@ -298,10 +374,49 @@
       .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
   }
 
+  // 「今日完成」：这一轮跑成功（succeeded）或生命周期 done、且最后一次更新落在今天
+  // 本地零点之后。任务没有单独的完成时间戳，updatedAt 就是它结束的那一刻。
+  function doneToday(task, now = Date.now()) {
+    const status = taskStatus(task);
+    if (status !== 'succeeded' && task.status !== 'done') return false;
+    const midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    return Number(task.updatedAt || 0) >= midnight.getTime();
+  }
+
+  // 统计卡的小字放不下时不截成省略号，而是来回滚动（跑马灯）把整句露出来：
+  // 这行字往往是唯一说明「这个数字数的是什么」的地方，砍掉后半句就没意义了。
+  // 放不放得下只能量出来 —— 卡宽跟着视口和列数变，所以挂 ResizeObserver，每次
+  // 卡片尺寸变了重新量一次；放得下就撤掉动画，保持静止。
+  const marqueeObserver = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(entries => { for (const entry of entries) fitMarquee(entry.target); })
+    : null;
+  function fitMarquee(box) {
+    // 控制台每次重画都换一批新卡，旧卡摘下来后就别再盯着了。
+    if (!box.isConnected) { marqueeObserver?.unobserve(box); return; }
+    const text = box.firstElementChild;
+    if (!text) return;
+    // 滚动时文字两侧各多 6px 内边距（给渐隐遮罩留位置）：量的是不含它的净宽，
+    // 否则每量一次就多算 12px。
+    const padding = box.classList.contains('marquee') ? 12 : 0;
+    const overflow = Math.ceil(text.scrollWidth - padding - box.clientWidth);
+    const scrolling = box.clientWidth > 0 && overflow > 1;
+    box.classList.toggle('marquee', scrolling);
+    if (!scrolling) return;
+    // 终点把那 12px 内边距算回去，最后一个字才能完整露出来。
+    box.style.setProperty('--marquee-shift', `-${overflow + 12}px`);
+    // 速度恒定（约 30px/s），外加两头各停一会儿，长句不会滚得飞快。
+    box.style.setProperty('--marquee-duration', `${Math.max(4, overflow / 30 + 2.5).toFixed(1)}s`);
+  }
+
   function statCard(label, value, detail, tone, onClick) {
     const card = make(onClick ? 'button' : 'article', null, `admin-stat ${tone || ''}`);
     if (onClick) { card.type = 'button'; card.onclick = onClick; }
-    card.append(make('span', label), make('strong', String(value)), make('small', detail));
+    const small = make('small', null, 'admin-stat-detail');
+    small.title = detail;
+    small.append(make('span', detail, 'admin-stat-detail-text'));
+    card.append(make('span', label), make('strong', String(value)), small);
+    if (marqueeObserver) marqueeObserver.observe(small);
     return card;
   }
 
@@ -310,25 +425,51 @@
     const tasks = data?.tasks || [];
     const directories = data?.directories || [];
     const active = tasks.filter(task => task.status !== 'done' && task.status !== 'archived');
-    const executing = active.filter(isRunning);
-    const waiting = active.filter(needsAttention);
+    const executing = tasks.filter(isRunning).sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+    // 「等我回复」和「异常」拆成两格：前者是要我回答 / 卡在资源上的，后者是跑出错的。
+    // 两格合起来仍是 urgentTasks —— 侧栏徽标数的是这个总数。
+    const urgent = urgentTasks(data);
+    const failed = urgent.filter(task => taskStatus(task) === 'error');
+    const waitingMe = urgent.filter(task => taskStatus(task) !== 'error');
+    const finished = tasks.filter(task => doneToday(task)).sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
     const enabledSchedules = (scheduleTasks || []).filter(task => task.enabled);
     const running = runningDirectories(data);
-    // The overview lives in the console panel; `#admin-content` is the fallback
-    // for any host that renders it as a page.
+    // The overview is 控制台's own page; `#admin-content` is the fallback for any
+    // host that renders it without that page (it used to be the only host).
     const panel = el('console-content');
     setActions([
       action(t('airAdminBrowseDirectories'), () => setMode('library'), '', panelIcon('▦')),
       action(t('airAdminNewTask'), () => { setMode('tasks'); setTimeout(() => el('create')?.click(), 0); }, 'primary', keepsGlyph('＋')),
-    ], panel ? 'console-actions' : 'admin-actions');
+    ]);
 
     const content = panel || el('admin-content');
-    const stats = make('div', null, 'admin-stats');
-    stats.append(
-      statCard(t('airAdminWorkDirectories'), directories.length, running.size ? t('airAdminDirectoriesRunning', { n: running.size }) : t('airAdminUnifiedLibrary'), 'blue', () => setMode('library')),
-      statCard(t('airAdminActiveTasks'), active.length, t('airAdminTasksExecuting', { n: executing.length }), 'green', () => setMode('tasks')),
-      statCard(t('airAdminNeedsAttention'), waiting.length, waiting.length ? t('airAdminWaitingDetail') : t('airAdminNothingPending'), waiting.length ? 'amber' : ''),
-      statCard(t('airAdminScheduledTasks'), enabledSchedules.length, t('airAdminScheduleRules', { n: (scheduleTasks || []).length }), 'purple', () => setMode('schedules')),
+    // 大字只放「能点开看清单」的五个过滤项：进行中 / 等我回复 / 异常 / 今日完成 / 全部。
+    // 目录数、定时任务数是背景信息，不是要处理的东西 —— 降成下面那行小字。
+    // 点一格，统计带和工作目录之间就展开那一格的清单（有最大高度，自己滚）；再点
+    // 同一格收起。默认什么都不展开：控制台第一眼是数字，不是一堵清单墙。
+    const stats = make('div', null, 'admin-stats console-filter-tabs');
+    const tiles = [
+      ['running', t('airAdminTileRunning'), executing.length, running.size ? t('airAdminDirectoriesRunning', { n: running.size }) : t('airAdminTileRunningIdle'), 'green'],
+      ['waiting', t('airAdminTileWaiting'), waitingMe.length, waitingMe.length ? t('airAdminTileWaitingDetail') : t('airAdminNothingPending'), waitingMe.length ? 'amber' : ''],
+      ['error', t('airAdminTileError'), failed.length, failed.length ? t('airAdminTileErrorDetail') : t('airAdminTileErrorNone'), failed.length ? 'red' : ''],
+      ['today', t('airAdminTileToday'), finished.length, t('airAdminTileTodayDetail'), 'blue'],
+      ['all', t('airAdminTileAll'), active.length, t('airAdminTileAllDetail', { n: tasks.length }), 'purple'],
+    ];
+    const tileButtons = new Map();
+    for (const [view, label, count, detail, tone] of tiles) {
+      const card = statCard(label, count, detail, tone, () => {
+        consoleFilter.view = consoleFilter.view === view ? null : view;
+        paintDrawer();
+      });
+      card.dataset.view = view;
+      tileButtons.set(view, card);
+      stats.append(card);
+    }
+    const meta = make('div', null, 'console-overview-meta');
+    meta.append(
+      action(t('airAdminMetaDirectories', { n: directories.length }), () => setMode('library'), 'console-meta-link'),
+      make('span', '·'),
+      action(t('airAdminMetaSchedules', { n: enabledSchedules.length, total: (scheduleTasks || []).length }), () => setMode('schedules'), 'console-meta-link'),
     );
 
     const assistant = action('', () => setMode('aux'), 'admin-assistant-card');
@@ -344,38 +485,20 @@
       make('small', t('airAdminAssistantDesc')),
     );
 
-    const attention = make('section', null, 'admin-panel console-attention');
-    const attentionHead = make('div', null, 'admin-panel-head');
-    attentionHead.append(make('div'));
-    attentionHead.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), make('h3', t('airAdminWhoNeedsMe')));
-    // 清单本来就按最近更新排过，所以「只显示前几条」砍掉的是最久没动过的那些，
-    // 留下的仍是眼下最近有动静的人。总数照报，别让封顶看起来像「就这么几条」。
-    const urgent = urgentTasks(data);
-    const overflowed = urgent.length > ATTENTION_LIMIT;
-    const attentionMeta = make('div', null, 'admin-panel-meta');
-    attentionMeta.append(make('span', overflowed
-      ? t('airAdminAttentionOverflow', { total: urgent.length, limit: ATTENTION_LIMIT })
-      : t('airAdminSortedByRecent'), 'admin-panel-note'));
-    // 没超过就没有第二页可去，出口不出现 —— 按钮跟着「有地方可去」出现，而不是
-    // 常驻一个点了没反应的「全部」。
-    if (overflowed) attentionMeta.append(action(t('airAdminViewAllCount', { n: urgent.length }), () => setMode('attention')));
-    attentionHead.append(attentionMeta);
-    const attentionList = make('div', null, 'admin-recent-list');
-    // 从面板里点走一条任务时，面板自己让开（onOpen），否则它盖住的正是刚落上去的那一页。
-    for (const task of urgent.slice(0, ATTENTION_LIMIT)) attentionList.append(taskRow(task, context, { onOpen: () => context.closeConsole?.() }));
-    if (!attentionList.children.length) attentionList.append(make('p', t('airAdminNoAttentionTasks'), 'admin-empty'));
-    attention.append(attentionHead, attentionList);
+    // 展开区：四格共用一个面板，换格只换标题和清单。「全部」多一排搜索与筛选 ——
+    // 它就是原来目录下面那张「全部任务」，搬上来之后底下不再重复一份。
+    const drawer = make('section', null, 'admin-panel console-filter-panel');
+    drawer.id = 'console-filter-panel';
+    const drawerHead = make('div', null, 'admin-panel-head');
+    drawerHead.append(make('div'));
+    const drawerTitle = make('h3');
+    drawerHead.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), drawerTitle);
+    const drawerNote = make('span', '', 'admin-panel-note');
+    drawerNote.id = 'console-task-note';
+    const drawerMeta = make('div', null, 'admin-panel-meta');
+    drawerMeta.append(drawerNote, action(t('airAdminCollapse'), () => { consoleFilter.view = null; paintDrawer(); }, 'console-filter-close'));
+    drawerHead.append(drawerMeta);
 
-    const split = make('div', null, 'admin-overview-grid');
-    // 全部任务：控制台是跨目录的，这里不按当前目录收窄 —— 目录是执行上下文，
-    // 不是「能不能看见这条任务」的前提。
-    const allPanel = make('section', null, 'admin-panel');
-    const allHead = make('div', null, 'admin-panel-head');
-    allHead.append(make('div', null));
-    allHead.firstChild.append(make('span', t('airAdminAllTasksEyebrow'), 'eyebrow'), make('h3', t('airAdminAllTasks')));
-    const allNote = make('span', '', 'admin-panel-note');
-    allNote.id = 'console-task-note';
-    allHead.append(allNote);
     const controls = make('div', null, 'admin-task-controls');
     const search = make('input');
     search.type = 'search';
@@ -392,6 +515,15 @@
       statusPick.append(option);
     }
     statusPick.value = consoleFilter.status;
+    const scopePick = make('select');
+    scopePick.id = 'console-task-scope';
+    scopePick.setAttribute('aria-label', t('airSearchScopeLabel'));
+    for (const [value, text] of [['full', t('airSearchScopeFull')], ['board', t('airSearchScopeBoard')]]) {
+      const option = make('option', text);
+      option.value = value;
+      scopePick.append(option);
+    }
+    scopePick.value = consoleFilter.fullText ? 'full' : 'board';
     const dirPick = make('select');
     dirPick.id = 'console-task-dir';
     dirPick.setAttribute('aria-label', t('airAdminFilterByDirectory'));
@@ -405,27 +537,84 @@
     }
     dirPick.value = directories.some(d => d.id === consoleFilter.dir) ? consoleFilter.dir : 'all';
     consoleFilter.dir = dirPick.value;
-    const allList = make('div', null, 'admin-recent-list');
+    controls.append(search, statusPick, scopePick, dirPick);
+    const allList = make('div', null, 'admin-recent-list console-filter-list');
     allList.id = 'console-task-list';
+    drawer.append(drawerHead, controls, allList);
+
+    // 点走一条只是 navigate —— 控制台从前是浮层，得先把那层收掉再跳；现在它自己
+    // 就是一页，navigate 会把模式切回 tasks，不需要谁再补一手。
+    const openRow = (task, extra = {}) => taskRow(task, context, extra);
     // 只重画列表，不重画面板：每敲一个字就 replaceChildren 的话，输入框会在第一次
     // 按键后失去焦点。筛选状态存在模块里，所以重开面板还是同一份筛选。
+    // 全文检索控制器。构造时就会跑一次 onChange，所以先声明成 null：那一刻
+    // paintTaskList 只能走本地筛选，等控制器拿到结果再覆盖（见下面的赋值）。
+    let fullText = null;
     function paintTaskList() {
-      const rows = filterTasks(tasks, consoleFilter, context.directoryName);
+      if (consoleFilter.view !== 'all') return;
+      // 有全文结果就按相关度排（标题没命中、正文命中的任务因此能被找到）；没有
+      // （还没回来 / 报错 / 查询为空）就退回原来的本地标题筛选，面板从不空着。
+      // 有查询时口径换成 searchFilter()：服务端那次和「还没回来/报错」的本地退路
+      // 必须同一份口径，否则同一句话在结果回来前后能搜出两种条数。
+      const querying = !!consoleFilter.query.trim();
+      const filter = querying ? searchFilter(consoleFilter) : consoleFilter;
+      const rows = (querying
+        ? rankedRows(tasks, filter, context.directoryName, fullText?.results())
+        : null) || filterTasks(tasks, filter, context.directoryName).map(task => ({ task }));
       const shown = rows.slice(0, TASK_LIST_LIMIT);
-      allList.replaceChildren(...shown.map(task => taskRow(task, context, {
-        onOpen: () => context.closeConsole?.(), deletable: true,
-      })));
+      allList.replaceChildren(...shown.map(({ task, snippet }) => openRow(task, { deletable: true, snippet })));
       if (!rows.length) allList.append(make('p', t('airAdminNoMatchingTasks'), 'admin-empty'));
-      allNote.textContent = rows.length > shown.length
+      drawerNote.textContent = rows.length > shown.length
         ? t('airAdminTaskCountLimited', { total: rows.length, shown: shown.length })
         : t('airAdminNItems', { n: rows.length });
     }
+    // 四个固定过滤项的清单：口径就是上面那几格数字用的同一份数组，数字和清单不会分叉。
+    const fixedLists = {
+      running: [executing, 'airAdminNoRunningTasks'],
+      waiting: [waitingMe, 'airAdminNoAttentionTasks'],
+      error: [failed, 'airAdminNoErrorTasks'],
+      today: [finished, 'airAdminNoDoneToday'],
+    };
+    function paintDrawer() {
+      const view = consoleFilter.view;
+      for (const [key, card] of tileButtons) {
+        card.classList.toggle('selected', key === view);
+        card.setAttribute('aria-expanded', String(key === view));
+      }
+      drawer.hidden = !view;
+      if (!view) return;
+      drawer.dataset.view = view;
+      drawerTitle.textContent = tiles.find(([key]) => key === view)[1];
+      controls.hidden = view !== 'all';
+      if (view === 'all') { paintTaskList(); return; }
+      const [list, emptyKey] = fixedLists[view];
+      const shown = list.slice(0, TASK_LIST_LIMIT);
+      allList.replaceChildren(...shown.map(task => openRow(task)));
+      if (!list.length) allList.append(make('p', t(emptyKey), 'admin-empty'));
+      drawerNote.textContent = list.length > shown.length
+        ? t('airAdminTaskCountLimited', { total: list.length, shown: shown.length })
+        : t('airAdminNItems', { n: list.length });
+    }
     search.oninput = () => { consoleFilter.query = search.value; paintTaskList(); };
+    // 搜索框同时挂两条路：本地筛选立刻重画（上面那条），全文结果到了再按相关度覆盖
+    // 一次。过滤条件不发给服务端 —— 「进行中」这类口径只此一份，命中结果回到这里
+    // 再按同一份 filterTasks 收窄，服务端只负责「哪些任务的正文里出现过这些词」。
+    fullText = window.MultiCCTaskSearch?.attach(search, {
+      request: path => context.api(path),
+      limit: TASK_LIST_LIMIT,
+      fullText: () => consoleFilter.fullText,
+      onChange: () => paintTaskList(),
+    });
     statusPick.onchange = () => { consoleFilter.status = statusPick.value; paintTaskList(); };
+    // 搜索范围换了要重新问一次服务端（两条语料的召回不同），不能只重画：
+    // 缓存按「查询词 + 范围」分开，所以换回来是立刻的。
+    scopePick.onchange = () => {
+      consoleFilter.fullText = scopePick.value === 'full';
+      fullText?.refresh();
+      paintTaskList();
+    };
     dirPick.onchange = () => { consoleFilter.dir = dirPick.value; paintTaskList(); };
-    controls.append(search, statusPick, dirPick);
-    allPanel.append(allHead, controls, allList);
-    paintTaskList();
+    paintDrawer();
 
     const workspacePanel = make('section', null, 'admin-panel admin-directory-panel');
     const workspaceHead = make('div', null, 'admin-panel-head');
@@ -438,6 +627,7 @@
       const unfinished = directoryTasks.filter(task => !['done', 'archived'].includes(task.status));
       const executingCount = unfinished.filter(isRunning).length;
       const row = action('', () => navigate(directory.id), 'admin-directory-row');
+      row.dataset.dirId = directory.id;
       // 任务对应的目录也要带圈：一个「有活在跑」的目录不该等到点进去才发现。
       applyRing(row, running.has(directory.id), directory.id);
       const copy = make('span');
@@ -448,6 +638,8 @@
       workspaceList.append(row);
     }
     if (!directories.length) workspaceList.append(make('p', t('airAdminNoDirectories'), 'admin-empty'));
+    // 拖着换顺序，顺序存服务端（air-directory-nav.js）。
+    window.MultiCCAirDirectoryNav?.sortable(workspaceList, context);
     workspacePanel.append(workspaceHead, workspaceList);
 
     const tools = make('section', null, 'admin-panel');
@@ -455,8 +647,8 @@
     toolHead.append(make('div'));
     toolHead.firstChild.append(make('span', 'SYSTEM TOOLS', 'eyebrow'), make('h3', t('airAdminServicesAndSettings')));
     const toolGrid = make('div', null, 'admin-tool-grid');
-    // 保险箱不在这张格子里：它在控制台的顶栏上（air.html 的 #console-secrets），
-    // 跟「返回任务」并列常驻，不用滚到工具格才找得到。
+    // 保险箱不在这张格子里：它在控制台那一页的页头工具栏上（air.html 的
+    // #console-secrets），跟这一页的其它动作并列常驻，不用滚到工具格才找得到。
     const shortcuts = [
       ['docs', '▤', t('airAdminPanelDocs'), t('airAdminPanelDocsDesc')],
       ['memory', '◇', t('airAdminPanelMemory'), t('airAdminMemoryShortDesc')],
@@ -470,11 +662,9 @@
       toolGrid.append(button);
     }
     tools.append(toolHead, toolGrid);
-    split.append(allPanel, tools);
-    // 控制台要回答的是两件「一眼扫完」的事：谁在等我，以及我有哪些目录。所以「工作目录」
-    // 紧跟在「谁在等我」后面 —— 它是这一页的第二眼，不该压在「全部任务」和工具格底下
-    // 等用户滚到底才看见。
-    content.replaceChildren(stats, assistant, attention, workspacePanel, split);
+    // 顺序：过滤项（大字）→ 背景计数（小字）→ 展开的清单 → 工作目录 → AI 助手 → 工具。
+    // 清单夹在过滤项和目录之间，点哪格就在它正下方长出来，不用滚到底去找。
+    content.replaceChildren(stats, meta, drawer, workspacePanel, assistant, tools);
   }
 
   // 「谁在等我」的整页：控制台那一格只放最近更新的几条，完整清单在这里。它和控制台
@@ -502,6 +692,16 @@
     panel.append(head, list);
     el('admin-content').replaceChildren(panel);
   }
+
+  // ── 服务与文档：排列方式（按时间 / 按目录）────────────────────────────
+  // 两个视图吃的是同一份服务端列表：永久保留 → 置顶 → 最新。切换只重画 DOM，
+  // 不重新拉数据 —— 顺序是服务端的事，这里只决定「平铺」还是「按目录分组」。
+  // 选择存在本机，写法同 air.js 的 air:task-sort（读取失败一律退回按时间）。
+  const DOCS_SCOPE_KEY = 'air:docs-scope';
+  let docsScope = 'time';
+  try { if (localStorage.getItem(DOCS_SCOPE_KEY) === 'dir') docsScope = 'dir'; } catch (_) {}
+  // 最近一次拉到的条目：两个视图都从这里画，切换视图时才有东西可画。
+  let docsEntries = [];
 
   function isLoopback(hostname) {
     return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(String(hostname || '').toLowerCase());
@@ -532,6 +732,17 @@
     } catch (error) { currentContext.notice(error.message); }
   }
 
+  // 永久保留与置顶是两件互不相关的事：置顶只改排序，永久保留才是「永不被回收」
+  // 那句承诺（7 天清理与登记表淘汰都只看它）。所以两颗按钮、两次独立 PATCH，
+  // 谁都不顺带改另一个。
+  async function togglePermanent(entry) {
+    try {
+      await currentContext.api(`/api/docs-registry/${encodeURIComponent(entry.id)}`, { permanent: !entry.permanent }, 'PATCH');
+      currentContext.notice(t(entry.permanent ? 'docsregPermanentOff' : 'docsregPermanentOn'));
+      await loadDocs();
+    } catch (error) { currentContext.notice(error.message); }
+  }
+
   async function removeEntry(entry) {
     if (!confirm(t('airAdminConfirmDeleteEntry', { name: entry.title }))) return;
     try {
@@ -551,6 +762,7 @@
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
     titleRow.append(link);
+    if (entry.permanent) titleRow.append(make('span', `🔒 ${t('artifactKeepForever')}`, 'air-doc-tag permanent'));
     if (entry.pinned) titleRow.append(make('span', t('airAdminPinned'), 'air-doc-tag pin'));
     if (entry.expired) titleRow.append(make('span', t('airAdminExpired'), 'air-doc-tag expired'));
     const status = entry.kind === 'service' ? `${entry.status === 'up' ? t('airAdminStatusUp') : entry.status === 'starting' ? t('airAdminStatusStarting') : entry.status === 'down' ? t('airAdminStatusDown') : t('airAdminStatusUnknown')} · ` : '';
@@ -568,9 +780,89 @@
         actions.append(start);
       }
     }
-    actions.append(action(entry.pinned ? t('airAdminUnpin') : t('airAdminPinned'), () => togglePin(entry), 'subtle'), action(t('airAdminDelete'), () => removeEntry(entry), 'danger'));
+    actions.append(
+      action(`${entry.permanent ? '🔒 ' : ''}${t(entry.permanent ? 'artifactKeepForeverOff' : 'artifactKeepForever')}`, () => togglePermanent(entry), 'subtle'),
+      action(entry.pinned ? t('airAdminUnpin') : t('airAdminPinned'), () => togglePin(entry), 'subtle'),
+      action(t('airAdminDelete'), () => removeEntry(entry), 'danger'),
+    );
     card.append(icon, copy, actions);
     return card;
+  }
+
+  function renderDocGroup(group) {
+    const section = make('section', null, 'air-doc-group');
+    const head = make('div', null, 'air-doc-group-head');
+    head.append(make('strong', group.name));
+    // 绝对路径是次要信息：目录名重名时（同名项目放在不同父目录下）靠它分辨。
+    if (group.path) head.append(make('small', group.path));
+    section.append(head, ...group.entries.map(renderDocEntry));
+    return section;
+  }
+
+  // 按目录分组：组顺序 = 条目在服务端响应里**第一次出现**的顺序，组内也保持服务端
+  // 顺序。所以永久保留那条所在的组天然在最前面（置顶同理），而不是按目录名的字母序
+  // ——字母序会把「置顶的那条所在的目录」排到一个跟它毫无关系的位置去。
+  // dir 为 null 的条目（旧登记、没有工作目录归属）单独成一组，永远排最后。
+  function docsDirGroups() {
+    const groups = new Map();
+    for (const entry of docsEntries) {
+      const key = entry.dir || '';
+      let group = groups.get(key);
+      if (!group) {
+        group = { key, name: entry.dir ? (entry.dirName || entry.dir) : t('docsNoDir'), path: entry.dir || '', entries: [] };
+        groups.set(key, group);
+      }
+      group.entries.push(entry);
+    }
+    const ordered = [...groups.values()].filter(group => group.key);
+    const unassigned = groups.get('');
+    if (unassigned) ordered.push(unassigned);
+    return ordered;
+  }
+
+  // 只重画列表，不重新拉数据（排列方式不属于服务端那一层的选择）。
+  function paintDocs() {
+    const list = el('air-doc-list');
+    if (!list) return;
+    list.replaceChildren(...(docsScope === 'dir' ? docsDirGroups().map(renderDocGroup) : docsEntries.map(renderDocEntry)));
+    if (!docsEntries.length) list.append(make('p', t('airAdminNoDocs'), 'admin-empty'));
+  }
+
+  function setDocsScope(scope) {
+    const next = scope === 'dir' ? 'dir' : 'time';
+    if (next === docsScope) return;
+    docsScope = next;
+    try { localStorage.setItem(DOCS_SCOPE_KEY, next); } catch (_) {}
+    const switchEl = el('air-docs-scope');
+    if (switchEl) {
+      for (const button of switchEl.querySelectorAll('button[data-scope]')) {
+        button.setAttribute('aria-selected', String(button.dataset.scope === docsScope));
+      }
+    }
+    paintDocs();
+  }
+
+  // 形状抄目录首页那道 Chat / Terminal 切换（#directory-mode，air.html）：role=tablist
+  // + button role=tab + aria-selected。不共用那个类，免得改一处动两页。
+  function docsScopeSwitch() {
+    const wrap = make('div', null, 'air-docs-scope');
+    wrap.id = 'air-docs-scope';
+    wrap.setAttribute('role', 'tablist');
+    wrap.setAttribute('data-i18n-aria-label', 'docsScopeLabel');
+    wrap.setAttribute('aria-label', t('docsScopeLabel'));
+    // 文案与 key 同时写：data-i18n 让 applyI18n() 在切语言时能重取，t() 让这一屏
+    // 一画出来就是对的（面板不经过整页重绘）。
+    for (const [scope, key] of [['time', 'docsScopeTime'], ['dir', 'docsScopeDir']]) {
+      const button = make('button', t(key));
+      button.type = 'button';
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', String(docsScope === scope));
+      button.setAttribute('data-i18n', key);
+      button.dataset.scope = scope;
+      button.onclick = () => setDocsScope(scope);
+      wrap.append(button);
+    }
+    return wrap;
   }
 
   async function loadDocs() {
@@ -579,13 +871,13 @@
     list.replaceChildren(make('p', t('airAdminLoadingDocs'), 'admin-empty'));
     try {
       const entries = await currentContext.api('/api/docs-registry');
+      docsEntries = Array.isArray(entries) ? entries : [];
       const summary = el('air-doc-summary');
       if (summary) {
-        const services = entries.filter(entry => entry.kind === 'service');
-        summary.textContent = t('airAdminDocsSummary', { total: entries.length, up: services.filter(entry => entry.status === 'up').length, services: services.length });
+        const services = docsEntries.filter(entry => entry.kind === 'service');
+        summary.textContent = t('airAdminDocsSummary', { total: docsEntries.length, up: services.filter(entry => entry.status === 'up').length, services: services.length });
       }
-      list.replaceChildren(...entries.map(renderDocEntry));
-      if (!entries.length) list.append(make('p', t('airAdminNoDocs'), 'admin-empty'));
+      paintDocs();
     } catch (error) {
       list.replaceChildren(make('p', t('airAdminLoadFailed', { message: error.message }), 'admin-empty error'));
     }
@@ -602,7 +894,7 @@
     top.lastChild.id = 'air-doc-summary';
     const list = make('div', null, 'air-doc-list');
     list.id = 'air-doc-list';
-    wrap.append(top, list);
+    wrap.append(top, docsScopeSwitch(), list);
     el('admin-content').replaceChildren(wrap);
     void loadDocs();
   }
@@ -682,9 +974,18 @@
     if (!body) return;
     const s = auxView.status || {};
     const health = s.health || {};
+    const serial = (s.lanes && s.lanes.serial) || {};
+    // 并发池读数：active/total 是「几个槽在跑」，queueDepth 仍是「几个在排队」。
+    // 老服务端只肯给 processing/queueDepth 时退化成 1/1，不编造槽位数。
+    const capacity = Number(s.capacity) > 0
+      ? Number(s.capacity)
+      : (Number(s.concurrency) > 0 ? Number(s.concurrency) + 1 : 1);
+    const active = Number.isFinite(Number(s.active)) ? Number(s.active) : (s.processing ? 1 : 0);
     const state = s.processing ? t('airAdminProcessing') : (s.queueDepth > 0 ? t('airAdminQueuedCount', { n: s.queueDepth }) : t('airAdminStatusIdle'));
     const rows = [
       [t('airAdminLabelStatus'), s.currentTask ? t('airAdminStatusExecuting', { state, type: s.currentTask.type || '' }) : state],
+      [t('airAdminPool'), t('airAdminPoolValue', { active, total: capacity, queued: Number(s.queueDepth) || 0 })],
+      [t('airAdminSerialLane'), t('airAdminSerialLaneValue', { active: Number(serial.active) || 0, queued: Number(serial.queueDepth) || 0 })],
       [t('airAdminTotalProcessed'), t('airAdminNItems', { n: s.totalProcessed || 0 })],
       [t('airAdminLastRun'), s.lastTaskTime ? new Date(s.lastTaskTime).toLocaleString(getLocale()) : '—'],
     ];
@@ -725,10 +1026,13 @@
     const model = make('select');
     const cli = config.cliAvailability || null;
     const noCliAtAll = !!cli && cli.claude === false && cli.codex === false;
+    // 单一事实源是服务端的 src/cli/switch-runtime.js(OFFICIAL_INSTALL_SPECS), 这里的
+    // 兜底只在 installSpecs 读不到时才走。它必须跟上, 否则前端会教用户跑一条 multicc
+    // 自己已经不再使用的命令 —— 这条 codex 分支就从 npm 换成了官方安装脚本。
     const installCmd = (cliId) => {
       const spec = auxView.installSpecs?.specs?.[cliId];
       return (spec && (spec.display || spec.command))
-        || (cliId === 'codex' ? 'npm install -g @openai/codex' : 'npm install -g @anthropic-ai/claude-code');
+        || (cliId === 'codex' ? 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' : 'npm install -g @anthropic-ai/claude-code');
     };
     const cliBanner = make('div', '', 'air-aux-warn');
     cliBanner.hidden = !noCliAtAll;
@@ -920,27 +1224,6 @@
     content.replaceChildren(groups);
   }
 
-  // 还没搬成原生页的格子才走这里（把旧 manage 页整页嵌进来）。侧栏那十几格现在
-  // 全在 nativePanels 里，所以这条只剩 render() 末尾那道「认不出的 mode」的兜底 ——
-  // 留着是为了下一格还没搬的面板仍能直接开，而不是为了模块没挂上时顶替
-  // （那种情况见 renderModuleMissing）。
-  function renderLegacy(mode, context) {
-    const [title] = legacyPanels[mode] || [mode];
-    const legacyView = mode;
-    const homeMode = ['memory', 'taskgraph'].includes(mode) ? 'overview' : 'settings';
-    setActions([
-      action(homeMode === 'overview' ? t('airAdminBackToConsole') : t('airAdminBackToSettings'), () => context.setMode(homeMode), '', panelIcon('←')),
-      action(t('airAdminOpenInNewPage'), () => window.open(`/manage.html?view=${encodeURIComponent(legacyView)}`, '_blank', 'noopener'), '', panelIcon('↗')),
-    ]);
-    const note = make('div', null, 'air-migration-note');
-    note.append(make('strong', t('airAdminMigrating')), make('span', t('airAdminMigrationNote')));
-    const frame = make('iframe', null, 'air-legacy-frame');
-    frame.title = title;
-    frame.src = `/manage.html?view=${encodeURIComponent(legacyView)}&embed=air`;
-    frame.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups allow-modals allow-downloads');
-    el('admin-content').replaceChildren(note, frame);
-  }
-
   // 面板模块没挂上时的兜底（旧页面、缓存了半套静态资源）：说一句「刷新页面重试」，
   // 不再把旧管理台的 iframe 塞回来。旧页已经不再维护，英文模式下它还会露出一屏中文，
   // 而且塞回来的是另一份文档 —— 用户看到的是「一个长得不一样的旧界面」，比一句
@@ -1021,7 +1304,10 @@
     if (mode === 'aux') return renderAux(context);
     if (mode === 'secrets') return renderSecrets(context);
     if (nativePanels[mode]) return renderNative(mode, context);
-    renderLegacy(mode, context);
+    // 认不出的 mode：旧 manage 页已经删了，没有「先嵌回去」这条退路。工具条先回到
+    // 设置中心（否则留着上一格的按钮，点下去动的是另一格），正文说一句刷新重试。
+    setActions([action(t('airAdminBackToSettings'), () => context.setMode('settings'), '', panelIcon('←'))]);
+    renderModuleMissing();
   }
 
   function bindServiceDialog(context) {
@@ -1062,7 +1348,11 @@
     isRunning,
     runningDirectories,
     statusBadge,
+    worktreeChangeLabel,
+    worktreeChangeBadge,
     applyRing,
     filterTasks,
+    searchFilter,
+    rankedRows,
   });
 })(typeof window !== 'undefined' ? window : null);

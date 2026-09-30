@@ -444,7 +444,6 @@ test('chat-session endpoint surfaces failure modes honestly', async () => {
 
 function mkBoundFixture(overrides = {}) {
   const calls = { sent: [], routed: [], runs: [] };
-  const taskRunsStub = overrides.taskRuns === undefined ? null : overrides.taskRuns;
   const fixture = mkRuntime({
     records: new Map([
       ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', label: 'Agent Commander', cli: 'codex' }],
@@ -458,7 +457,6 @@ function mkBoundFixture(overrides = {}) {
       calls.routed.push(input);
       return { ok: true, targetSessionId: 'slot-1', operationId: 'op-1' };
     },
-    ...(taskRunsStub ? { taskRuns: taskRunsStub } : {}),
     ...(overrides.loadHistory ? { loadHistory: overrides.loadHistory } : {}),
     ...(overrides.runtimeOverrides || {}),
     ...(overrides.deps || {}),
@@ -500,23 +498,27 @@ test('bound follow-up bypasses commander and posts straight to the bound session
   assert.equal(dto.tasks.find(t => t.id === 'task-1').runState, 'running');
 });
 
-// P4 · cold start. The ledger reaches the MODEL as a prompt-only layer; what
-// reaches the TRANSCRIPT is exactly what the user typed, so the task chat view
-// is the ordinary chat view down to its very first bubble.
-test('cold start seeds the compiled ledger as prompt context, never as the user message', async () => {
-  const taskRunsStub = {
-    // beginRun/admitRun presence is the runtime's feature check for the store.
-    beginRun: input => ({ ...input, leaseEpoch: 1 }),
-    listTaskRuns: () => [{ runId: 'tr_1' }],
-    getRunMessages: () => [
-      { messageId: 'mm1', role: 'user', kind: 'admission', content: '先复现闪退堆栈', createdAt: 1 },
-      { messageId: 'mm2', role: 'assistant', kind: 'message', content: '已定位到空指针', createdAt: 2 },
-    ],
-  };
+// P4 · cold start. The task transcript reaches the MODEL as a prompt-only
+// layer; what reaches the TRANSCRIPT is exactly what the user typed, so the
+// task chat view is the ordinary chat view down to its very first bubble.
+const TASK_HISTORY = [
+  { id: 'mu1', role: 'user', content: '先复现闪退堆栈', ts: 1 },
+  { id: 'ma1', role: 'assistant', content: '已定位到空指针', ts: 2 },
+];
+
+// Give the seeded task a resolvable historical ref so legacyImportMessages has
+// something to project.
+function seedTaskHistory(fixture) {
+  const task = fixture.runtime.getBoard().tasks['task-1'];
+  task.refs[0].userMsgId = 'mu1';
+  task.refs[0].assistantMsgId = 'ma1';
+}
+
+test('cold start seeds the task transcript as prompt context, never as the user message', async () => {
   const fixture = mkBoundFixture({
-    taskRuns: taskRunsStub,
-    loadHistory: () => [], // bound session never spoke → cold start
+    loadHistory: () => TASK_HISTORY, // bound session never spoke → cold start
   });
+  seedTaskHistory(fixture);
   const result = await fixture.runtime.routeCommanderFollowup(
     'commander-1', 'task-1', '继续修', { clientMsgId: 'k2' });
 
@@ -527,12 +529,12 @@ test('cold start seeds the compiled ledger as prompt context, never as the user 
   assert.equal(sent.text, '继续修');
   // The compiled wall rides the turn options as a prompt prefix instead.
   const seed = sent.options.taskContextSeed;
-  assert.match(seed, /\[MultiCC 任务运行上下文/);
+  assert.match(seed, /\[MultiCC task run context/);
   assert.match(seed, /先复现闪退堆栈/);
   assert.match(seed, /已定位到空指针/);
   // No 当前要求 section and no copy of the user text: composeMessage appends
   // the user message after the layer, so a copy here would duplicate it.
-  assert.equal(seed.includes('当前要求'), false);
+  assert.equal(seed.includes('Current request'), false);
   assert.equal(seed.includes('继续修'), false);
   // Layers concatenate with no separator — the seed carries its own.
   assert.equal(seed.endsWith('\n\n'), true);
@@ -541,16 +543,9 @@ test('cold start seeds the compiled ledger as prompt context, never as the user 
 
 test('a warm native session sends no seed: the session IS the context', async () => {
   const fixture = mkBoundFixture({
-    taskRuns: {
-      beginRun: input => ({ ...input, leaseEpoch: 1 }),
-      listTaskRuns: () => [{ runId: 'tr_1' }],
-      getRunMessages: () => [
-        { messageId: 'mm1', role: 'user', kind: 'admission', content: '先复现闪退堆栈', createdAt: 1 },
-      ],
-    },
-    // Empty transcript (e.g. the user cleared it) but a live native session:
-    // the CLI still remembers the task, so re-walling it would be a reset.
-    loadHistory: () => [],
+    // A live native session: the CLI still remembers the task, so re-walling
+    // it would be a reset even though the card carries history.
+    loadHistory: () => TASK_HISTORY,
     runtimeOverrides: {
       records: new Map([
         ['commander-1', { id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1', cli: 'codex' }],
@@ -561,6 +556,7 @@ test('a warm native session sends no seed: the session IS the context', async ()
       ]),
     },
   });
+  seedTaskHistory(fixture);
   await fixture.runtime.routeCommanderFollowup(
     'commander-1', 'task-1', '继续修', { clientMsgId: 'k3' });
 
@@ -571,46 +567,17 @@ test('a warm native session sends no seed: the session IS the context', async ()
 
 test('a persisted first turn that never reached the CLI still seeds', async () => {
   const fixture = mkBoundFixture({
-    taskRuns: {
-      beginRun: input => ({ ...input, leaseEpoch: 1 }),
-      listTaskRuns: () => [{ runId: 'tr_1' }],
-      getRunMessages: () => [
-        { messageId: 'mm1', role: 'user', kind: 'admission', content: '先复现闪退堆栈', createdAt: 1 },
-      ],
-    },
-    // The transcript already holds a user message (persist happens before the
+    // The transcript already holds the turn (persist happens before the
     // provider runs), yet no native session exists — the previous attempt died
     // in between. Gating on the transcript would ship this turn contextless.
-    loadHistory: () => [{ id: 'm1', role: 'user', content: '第一次尝试' }],
+    loadHistory: () => TASK_HISTORY,
   });
+  seedTaskHistory(fixture);
   await fixture.runtime.routeCommanderFollowup(
     'commander-1', 'task-1', '继续修', { clientMsgId: 'k4' });
 
   assert.equal(fixture.calls.sent.length, 1);
   assert.match(fixture.calls.sent[0].options.taskContextSeed, /先复现闪退堆栈/);
-});
-
-test('an open TaskRun refuses the follow-up honestly: no second executor', async () => {
-  const taskRunsStub = {
-    beginRun: input => ({ ...input, leaseEpoch: 1 }),
-    listTaskRuns: () => [
-      { runId: 'tr_open', executionStatus: 'running', usageStatus: 'collecting', cleanupState: 'blocked', startedAt: 1, leaseEpoch: 1 },
-    ],
-    getRunMessages: () => [],
-    admitRun: ({ run }) => ({ run: { ...run, executionStatus: 'running', usageStatus: 'collecting', cleanupState: 'blocked' } }),
-    appendMessage: () => {},
-  };
-  const fixture = mkBoundFixture({ taskRuns: taskRunsStub });
-  const result = await fixture.runtime.routeCommanderFollowup(
-    'commander-1', 'task-1', '继续修', { clientMsgId: 'k3' });
-
-  // The pooled path is retired: a legacy run that still owns the task makes
-  // the follow-up refuse (wait for it to end or cancel it) instead of opening
-  // a second executor or re-entering the drain path.
-  assert.equal(result.ok, false);
-  assert.equal(result.code, 'task_run_open');
-  assert.equal(fixture.calls.routed.length, 0);
-  assert.equal(fixture.calls.sent.length, 0);
 });
 
 test('a dangling binding heals by re-creating the bound session, not by pooling', async () => {
@@ -660,18 +627,17 @@ function mkStartFixture(overrides = {}) {
   return { ...fixture, calls };
 }
 
-test('board task start binds a hidden session and opens its first turn directly', async () => {
+test('task start binds a hidden session and opens its first turn directly', async () => {
   const fixture = mkStartFixture();
-  const routes = mkRoutes(fixture.runtime);
-  const send = routes.get('POST /api/task-board/send');
-  const res = response();
-  await send({ body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, res);
+  const result = await fixture.runtime.routeCommanderInput('commander-1', '新任务：做 X', {
+    source: 'task-board', clientMsgId: 'ck1',
+  });
 
-  assert.equal(res.code, 200);
-  assert.equal(res.body.taskBound, true);
-  assert.equal(res.body.routingMode, 'task-bound');
-  assert.equal(res.body.commanderSessionId, null);
-  const taskId = res.body.taskId;
+  assert.equal(result.ok, true);
+  assert.equal(result.taskBound, true);
+  assert.equal(result.routeMode, 'task-bound');
+  assert.equal(result.targetSessionId, 'sess-new-1');
+  const taskId = result.taskId;
   assert.ok(taskId);
 
   // The binding was created with the task marker and inherited runtime.
@@ -698,15 +664,12 @@ test('board task start binds a hidden session and opens its first turn directly'
 
 test('replayed task start answers duplicate without a second turn or dispatch', async () => {
   const fixture = mkStartFixture();
-  const routes = mkRoutes(fixture.runtime);
-  const send = routes.get('POST /api/task-board/send');
-  const first = response();
-  await send({ body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, first);
-  const second = response();
-  await send({ body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, second);
+  const options = { source: 'task-board', clientMsgId: 'ck1' };
+  const first = await fixture.runtime.routeCommanderInput('commander-1', '新任务：做 X', options);
+  const second = await fixture.runtime.routeCommanderInput('commander-1', '新任务：做 X', options);
 
-  assert.equal(second.code, 200);
-  assert.equal(second.body.duplicate, true);
+  assert.equal(first.ok, true);
+  assert.equal(second.duplicate, true);
   assert.equal(fixture.calls.sent.length, 1);
   assert.equal(fixture.calls.routed.length, 0);
   assert.equal(fixture.calls.created.length, 1);
@@ -716,16 +679,15 @@ test('a failed session CREATE reports honestly — no silent pooled fallback', a
   const fixture = mkStartFixture({
     deps: { createSessionRecord: async () => ({ ok: false, error: 'worktree 创建失败： boom' }) },
   });
-  const routes = mkRoutes(fixture.runtime);
-  const res = response();
-  await routes.get('POST /api/task-board/send')(
-    { body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, res);
+  const result = await fixture.runtime.routeCommanderInput('commander-1', '新任务：做 X', {
+    source: 'task-board', clientMsgId: 'ck1',
+  });
 
   // The pooled path is retired (#38): a CREATE failure is surfaced to the
-  // user instead of quietly dropping the task into the TaskRun ledger where
-  // its messages were invisible in the chat view (the empty-room incident).
-  assert.equal(res.code, 502);
-  assert.match(res.body.error, /worktree/);
+  // user instead of quietly dropping the task into a ledger where its messages
+  // were invisible in the chat view (the empty-room incident).
+  assert.equal(result.ok, false);
+  assert.match(result.code, /worktree/);
   assert.equal(fixture.calls.routed.length, 0);
   assert.equal(fixture.calls.sent.length, 0);
   assert.equal(Object.keys(fixture.runtime.getBoard().tasks).length, 0,
@@ -738,13 +700,12 @@ test('a failed SEND on a live binding never falls through to the slots', async (
       sendSessionMessage: async () => ({ ok: false, code: 'turn_rejected' }),
     },
   });
-  const routes = mkRoutes(fixture.runtime);
-  const res = response();
-  await routes.get('POST /api/task-board/send')(
-    { body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, res);
+  const result = await fixture.runtime.routeCommanderInput('commander-1', '新任务：做 X', {
+    source: 'task-board', clientMsgId: 'ck1',
+  });
 
-  assert.equal(res.code, 502);
-  assert.equal(res.body.error, 'turn_rejected');
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'turn_rejected');
   assert.equal(fixture.calls.routed.length, 0); // no dual executors, ever
 });
 
@@ -759,106 +720,42 @@ test('a replay after a failed SEND reuses the already-bound session (no leak)', 
       },
     },
   });
-  const routes = mkRoutes(fixture.runtime);
-  const send = routes.get('POST /api/task-board/send');
-  const first = response();
-  await send({ body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, first);
-  assert.equal(first.code, 502);
+  const options = { source: 'task-board', clientMsgId: 'ck1' };
+  const first = await fixture.runtime.routeCommanderInput('commander-1', '新任务：做 X', options);
+  assert.equal(first.ok, false);
   failFirst = false;
-  const second = response();
-  await send({ body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck1' } }, second);
+  const second = await fixture.runtime.routeCommanderInput('commander-1', '新任务：做 X', options);
 
-  assert.equal(second.code, 200);
-  assert.equal(second.body.taskBound, true);
+  assert.equal(second.ok, true);
+  assert.equal(second.taskBound, true);
   // The retry healed onto the SAME session record — 1:1 holds across crashes.
   assert.equal(fixture.calls.created.length, 1);
   assert.equal(fixture.calls.sent.length, 1);
   assert.equal(fixture.calls.sent[0].sessionId, 'sess-new-1');
 });
 
-/* ── #37a · runtime fields are cli-scoped: cross-CLI inheritance is a mix the
-   validator rejects (the silent CREATE failure behind the worker_unavailable
-   incident — commander had switched to codex, the composer defaulted claude) ── */
-
-function mkCliFixture(commanderOverrides = {}) {
-  const fixture = mkStartFixture({
-    deps: {
-      records: new Map([
-        ['commander-1', {
-          id: 'commander-1', kind: 'chat', type: 'commander', dirId: 'dir-1',
-          cli: 'codex', model: 'gpt-5.6-sol', provider: 'p-codex', effort: 'ultra',
-          ...commanderOverrides,
-        }],
-      ]),
-    },
-  });
-  return { ...fixture, send: mkRoutes(fixture.runtime).get('POST /api/task-board/send') };
-}
-
-test('a composer cli pick that differs from the commander drops cross-CLI runtime fields', async () => {
-  const { send, calls } = mkCliFixture();
-  const res = response();
-  await send({
-    body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck-cli', cli: 'claude' },
-  }, res);
-
-  assert.equal(res.code, 200);
-  assert.equal(calls.created.length, 1);
-  const created = calls.created[0];
-  assert.equal(created.cli, 'claude');
-  assert.equal(created.provider, '', 'a codex provider must never ride a claude session');
-  assert.equal(created.effort, null, "'ultra' is a codex-only reasoning level");
-  assert.equal(created.model, null, 'a codex model is meaningless on claude');
-});
-
-test('a matching commander cli still inherits provider/model/effort', async () => {
-  const { send, calls } = mkCliFixture({ effort: 'high' });
-  const res = response();
-  await send({
-    body: { text: '新任务：做 X', dirId: 'dir-1', clientMsgId: 'ck-cli-same', cli: 'codex' },
-  }, res);
-
-  assert.equal(res.code, 200);
-  const created = calls.created[0];
-  assert.equal(created.cli, 'codex');
-  assert.equal(created.provider, 'p-codex');
-  assert.equal(created.effort, 'high');
-  assert.equal(created.model, 'gpt-5.6-sol');
-});
-
 /* ── archive retains the bound session and history ── */
 
-function mkReleaseFixture(overrides = {}) {
-  const released = [];
+function mkReleaseFixture() {
   const records = new Map([
     ['bound-9', { id: 'bound-9', kind: 'chat', dirId: 'dir-1', taskBoundTaskId: 'task-9' }],
   ]);
-  const { runtime, file } = mkRuntime({
-    records,
-    releaseTaskBoundSession: async id => {
-      released.push(id);
-      if (overrides.releaseResult) return overrides.releaseResult;
-      if (id === 'bound-9') records.delete(id);
-      return { ok: true };
-    },
-  });
+  const { runtime, file } = mkRuntime({ records });
   seedTask(runtime, {
     id: 'task-9', title: '归档释放', status: 'done',
     chatSessionId: 'bound-9',
     refs: [{ sessionId: 'bound-9', dirId: 'dir-1', ts: 1 }],
   });
-  return { runtime, file, released, records, routes: mkRoutes(runtime) };
+  return { runtime, file, records, routes: mkRoutes(runtime) };
 }
 
-test('archive-completed retains the archived task\'s bound session and history pointer', async () => {
-  const { routes, file, released } = mkReleaseFixture();
-  const res = response();
-  await routes.get('POST /api/task-board/archive-completed')({ body: {} }, res);
+test('batch archive retains the archived task\'s bound session and history pointer', async () => {
+  const { runtime, file } = mkReleaseFixture();
+  const result = await runtime.archiveTasks(['task-9']);
 
-  assert.equal(res.code, 200);
-  assert.equal(res.body.archivedCount, 1);
-  assert.deepEqual(released, [], 'archive retains its evidence');
-  assert.equal(res.body.releasedSessions, 0);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.archived, ['task-9']);
+  assert.equal(runtime.getBoard().tasks['task-9'].status, 'archived');
   const persisted = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.equal(persisted.tasks['task-9'].chatSessionId, 'bound-9',
     'the history pointer stays durable');
@@ -872,7 +769,6 @@ test('manual archived and done statuses both retain the bound session', async ()
   await f1.routes.get('POST /api/task-board/tasks/:taskId/status')(
     { params: { taskId: 'task-9' }, body: { status: 'archived' } }, res1);
   assert.equal(res1.code, 200);
-  assert.deepEqual(f1.released, [], 'manual archive retains evidence');
   assert.equal(res1.body.releasedSession, false);
   assert.equal(res1.body.releasedSessions, 0);
   assert.equal(f1.runtime.getBoard().tasks['task-9'].chatSessionId, 'bound-9');
@@ -883,7 +779,6 @@ test('manual archived and done statuses both retain the bound session', async ()
   assert.equal(restored.body.releasedSession, false);
   assert.equal(restored.body.releasedSessions, 0);
   assert.equal(restored.body.task.status, 'active');
-  assert.deepEqual(f1.released, []);
   assert.ok(f1.records.has('bound-9'));
   assert.equal(JSON.parse(fs.readFileSync(f1.file, 'utf8')).tasks['task-9'].chatSessionId, 'bound-9');
 
@@ -894,151 +789,7 @@ test('manual archived and done statuses both retain the bound session', async ()
   await f2.routes.get('POST /api/task-board/tasks/:taskId/status')(
     { params: { taskId: 'task-9' }, body: { status: 'done' } }, res2);
   assert.equal(res2.code, 200);
-  assert.deepEqual(f2.released, [], 'done never releases');
   assert.equal(f2.runtime.getBoard().tasks['task-9'].chatSessionId, 'bound-9');
-});
-
-test('archive never invokes destructive release, even for an active bound session', async () => {
-  const { routes, released } = mkReleaseFixture({ releaseResult: { ok: false, blocked: true, reasons: ['active'] } });
-  const res = response();
-  await routes.get('POST /api/task-board/archive-completed')({ body: {} }, res);
-
-  assert.equal(res.code, 200, 'archiving itself succeeds');
-  assert.deepEqual(released, [], 'release is never attempted');
-  assert.equal(res.body.releasedSessions, 0);
-  // The session still exists, so the pointer must not be dangled.
-  assert.equal(routes && true, true);
-});
-
-/* ── task composer runtime picks (指定 cli/provider，默认=最近活跃) ── */
-
-function mkRuntimePickFixture() {
-  const created = [];
-  const histDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-tbhist-'));
-  const { runtime, deps } = mkRuntime({
-    chatHistoryDir: histDir,
-    createSessionRecord: async input => {
-      created.push(input);
-      const session = { id: `sess-new-${created.length}`, ...input, dirId: input.dir.id };
-      deps.records.set(session.id, session);
-      return { ok: true, id: session.id, session };
-    },
-  });
-  return { runtime, deps, created, histDir, routes: mkRoutes(runtime) };
-}
-
-test('send pins cli/provider on the bound session at creation; absence keeps commander inheritance', async () => {
-  const { routes, created } = mkRuntimePickFixture();
-  // 1) no picks → commander runtime inheritance (the P1 default, unchanged)
-  const plain = response();
-  await routes.get('POST /api/task-board/send')(
-    { body: { text: '新任务：做 A', dirId: 'dir-1', clientMsgId: 'ck-a' } }, plain);
-  assert.equal(plain.code, 200);
-  assert.equal(created.length, 1);
-  assert.equal(created[0].cli, 'codex', 'commander cli inherited when unspecified');
-  assert.equal(created[0].provider, 'p-1', 'commander provider inherited when unspecified');
-
-  // 2) explicit picks win over the commander inheritance
-  const pinned = response();
-  await routes.get('POST /api/task-board/send')(
-    { body: { text: '新任务：做 B', dirId: 'dir-1', clientMsgId: 'ck-b', cli: 'claude', provider: 'p-glm' } },
-    pinned);
-  assert.equal(pinned.code, 200);
-  assert.equal(created.length, 2);
-  assert.equal(created[1].cli, 'claude', 'explicit cli beats commander inheritance');
-  assert.equal(created[1].provider, 'p-glm', 'explicit provider beats commander inheritance');
-});
-
-test('suggested-runtime returns the most recently active chat session\'s runtime', async () => {
-  const { deps, histDir, routes } = mkRuntimePickFixture();
-  deps.records.set('chat-a', { id: 'chat-a', kind: 'chat', dirId: 'dir-1', cli: 'codex', provider: 'p-1' });
-  deps.records.set('chat-b', { id: 'chat-b', kind: 'chat', dirId: 'dir-1', cli: 'claude', provider: 'p-glm', model: 'glm-4.7' });
-  fs.writeFileSync(path.join(histDir, 'chat-a.json'), '[]');
-  fs.writeFileSync(path.join(histDir, 'chat-b.json'), '[]');
-  // chat-b is the most recently written transcript → its runtime is the default.
-  const older = new Date(Date.now() - 3600_000);
-  fs.utimesSync(path.join(histDir, 'chat-a.json'), older, older);
-
-  const res = response();
-  await routes.get('GET /api/task-board/suggested-runtime')({}, res);
-  assert.equal(res.code, 200);
-  assert.equal(res.body.ok, true);
-  assert.equal(res.body.source, 'recent');
-  assert.equal(res.body.cli, 'claude');
-  assert.equal(res.body.provider, 'p-glm');
-  assert.equal(res.body.model, 'glm-4.7');
-});
-
-test('suggested-runtime skips synthetic ids and falls back to host defaults', async () => {
-  const { histDir, routes } = mkRuntimePickFixture();
-  // __aux__/__gateway__ histories are synthetic, never a provider source.
-  fs.writeFileSync(path.join(histDir, '__aux__.json'), '[]');
-
-  const res = response();
-  await routes.get('GET /api/task-board/suggested-runtime')({}, res);
-  assert.equal(res.code, 200);
-  assert.deepEqual(
-    { cli: res.body.cli, provider: res.body.provider, model: res.body.model, source: res.body.source },
-    { cli: 'claude', provider: '', model: null, source: 'default' });
-});
-
-/* ── Auto Provider pick (⚡ Auto · <protocol>) travels as a pool, not an id ── */
-
-test('an Auto provider pick reaches session creation as a pool with no concrete provider', async () => {
-  const { routes, created } = mkRuntimePickFixture();
-  const selection = {
-    version: 1,
-    mode: 'auto',
-    protocol: 'anthropic',
-    candidates: [
-      { providerId: 'p-glm', model: 'glm-4.7', priority: 1, enabled: true },
-      { providerId: 'p-kimi', model: null, priority: 2, enabled: true },
-    ],
-    maxAttempts: 2,
-    sticky: true,
-    allowCrossTrust: false,
-  };
-  const res = response();
-  await routes.get('POST /api/task-board/send')({
-    body: {
-      text: '新任务：走 Auto', dirId: 'dir-1', clientMsgId: 'ck-auto',
-      cli: 'claude', providerSelection: selection,
-    },
-  }, res);
-
-  assert.equal(res.code, 200);
-  assert.equal(created.length, 1);
-  const input = created[0];
-  assert.equal(input.cli, 'claude');
-  assert.deepEqual(input.providerSelection, selection, 'the pool rides through untouched');
-  // Auto has no single provider: leaving the field unset lets createSessionRecord
-  // derive the manual fallback from the primary candidate. An empty string would
-  // instead pin "no provider" and silently defeat the pool.
-  assert.equal('provider' in input && input.provider !== undefined, false,
-    'no concrete provider is pinned for an Auto pick');
-
-  // An explicit provider alongside a pool still wins (manual override).
-  const both = response();
-  await routes.get('POST /api/task-board/send')({
-    body: {
-      text: '新任务：Auto + 明确 provider', dirId: 'dir-1', clientMsgId: 'ck-auto-2',
-      cli: 'claude', provider: 'p-pinned', providerSelection: selection,
-    },
-  }, both);
-  assert.equal(both.code, 200);
-  assert.equal(created[1].provider, 'p-pinned');
-  assert.deepEqual(created[1].providerSelection, selection);
-
-  // A malformed selection is not a pool — it must never reach creation as one.
-  const junk = response();
-  await routes.get('POST /api/task-board/send')({
-    body: {
-      text: '新任务：坏 selection', dirId: 'dir-1', clientMsgId: 'ck-auto-3',
-      cli: 'claude', providerSelection: 'auto',
-    },
-  }, junk);
-  assert.equal(junk.code, 200);
-  assert.equal(created[2].providerSelection, undefined);
 });
 
 /* ── live board updates reach the directory sockets, not just Meta ── */

@@ -88,9 +88,14 @@
   }
 
   // ── baseUrl / cli predicates (client view-state only) ──
+  // The host is the ONE string both ends must agree on byte for byte (it is a
+  // fixture cell and it feeds `?host=` params + storage keys), and the two
+  // platforms serialize an IPv6 host differently: WHATWG `URL.hostname` keeps
+  // the brackets (`[::1]`) while Dart's `Uri.host` drops them (`::1`). Strip
+  // them, so the same baseUrl yields the same host everywhere.
   function hostFromBaseUrl(baseUrl) {
     if (!baseUrl || typeof baseUrl !== 'string') return '';
-    try { return new URL(baseUrl).hostname.toLowerCase(); } catch (_) { return ''; }
+    try { return new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, ''); } catch (_) { return ''; }
   }
   function isArkBaseUrl(baseUrl) {
     const h = hostFromBaseUrl(baseUrl);
@@ -137,31 +142,73 @@
   }
   function isRelayBaseUrl(baseUrl) { return relayProtocolFromBaseUrl(baseUrl) !== null; }
   function isCodexCli(cli) { return cli === 'codex' || cli === 'codex-exp'; }
+  // Claude Code and the Claude Agent SDK build share one account, one
+  // provider pool and one subscription, so every Claude-specific bar belongs to
+  // both. Gating this on the literal 'claude' hid the whole subscription bar
+  // under claude-exp: the exact-Provider branch only fired after a passive
+  // window event, so before the first turn the bar was simply missing.
+  function isClaudeCli(cli) { return cli === 'claude' || cli === 'claude-exp'; }
   function arkPlanFromBaseUrl(baseUrl) {
     if (!baseUrl || typeof baseUrl !== 'string') return null;
     try { const p = new URL(baseUrl).pathname.toLowerCase(); if (p.includes('/coding')) return 'coding-plan'; if (p.includes('/plan')) return 'agent-plan'; } catch (_) {}
     return null;
   }
   // A window limit shows only under a CLI that could have produced it: Claude 5h
-  // under claude/opencode, GLM 5h under codex/opencode (and the claude CLI when
-  // pointed at a Zhipu endpoint), Codex weekly under codex/opencode, and
-  // OpenCode Go's own window only under opencode.
-  function providerMatchesCli(provider, cli) {
+  // under the Claude family (claude / claude-exp) or opencode, GLM 5h under
+  // codex/opencode (and the claude CLI when pointed at a Zhipu endpoint), Codex
+  // weekly under the Codex family or opencode, and OpenCode Go's own window only
+  // under opencode.
+  // The gate is a PURE function of (kind, cli, baseUrl) so the app's mirror and
+  // the fixture-driven parity test can drive the exact same code the browser
+  // runs; the exported one-arg-less wrapper below only supplies the live
+  // provider. Keeping the baseUrl implicit is what let the app's copy drift
+  // unnoticed until a borrowed window went missing on web only.
+  function providerMatchesCliIn(provider, cli, baseUrl) {
     if (provider === 'opencode') return cli === 'opencode';
     // 借道 provider：窗口余量经 relay 透传到达，协议对上 CLI 即属于当前会话。
-    const relayProtocol = relayProtocolFromBaseUrl(currentProviderBaseUrl);
-    if (relayProtocol) return cli === relayProtocol || cli === 'opencode';
+    // 协议按 CLI 家族判，不按字面 id：claude-exp / codex-exp 与各自的正式 CLI
+    // 共用同一个账号、同一个 provider 池，说的也是同一个 relay 协议面，所以
+    // 借道窗口必须在 -exp 会话里显示（此前 `cli === relayProtocol` 把它们全挡了）。
+    const relayProtocol = relayProtocolFromBaseUrl(baseUrl);
+    if (relayProtocol) {
+      const familyMatches = relayProtocol === 'codex' ? isCodexCli(cli) : isClaudeCli(cli);
+      return familyMatches || cli === 'opencode';
+    }
     if (provider === 'glm' || provider === 'codex') {
       if (isCodexCli(cli) || cli === 'opencode') return true;
-      return provider === 'glm' && isZhipuBaseUrl(currentProviderBaseUrl);
+      return provider === 'glm' && isZhipuBaseUrl(baseUrl);
     }
-    return cli === 'claude' || cli === 'claude-exp' || cli === 'opencode';
+    return isClaudeCli(cli) || cli === 'opencode';
+  }
+  function providerMatchesCli(provider, cli) {
+    return providerMatchesCliIn(provider, cli, currentProviderBaseUrl);
   }
 
   // ── DOM painter ──
+  // Language lives only on the client (localStorage['multicc_lang']), so the
+  // server renders its Chinese and ships the pieces alongside; in English we
+  // rebuild text/title from them. A key the catalog does not know falls back to
+  // the server's own bytes, so a bar cached before this existed still renders.
+  function barTranslate(key, params, fallback) {
+    const dict = global.I18N && global.I18N.en;
+    const value = dict && typeof dict[key] === 'string' ? dict[key] : null;
+    if (value === null) return fallback;
+    if (!params) return value;
+    return value.replace(/\{(\w+)\}/g, (m, name) => (name in params ? String(params[name]) : m));
+  }
+  // 语言判定在这一处：getLang() === 'en' 才走片段重建，中文（含缺省）原样使用
+  // 服务端字节，与 App 端行为一致。
   function resolveBar(bar, state) {
     if (!bar) return null;
-    return resolveQuotaBar ? resolveQuotaBar(bar, { state }) : bar;
+    if (!resolveQuotaBar) return bar;
+    if ((typeof global.getLang === 'function' ? global.getLang() : 'zh') !== 'en') {
+      return resolveQuotaBar(bar, { state });
+    }
+    return resolveQuotaBar(bar, {
+      state,
+      translate: barTranslate,
+      rolled: barTranslate('quotaRolledWindow', null, '已重置'),
+    });
   }
   function hideBar(element) {
     if (!element) return;
@@ -329,7 +376,14 @@
         .then(({ httpOk, body }) => {
           arkSlot.setInstallInFlight(false);
           if (httpOk && body.status === 'ok') arkSlot.refresh(true);
-          else arkSlot.setCurrent({ status: 'unavailable', error: body.error || '自动安装失败，请手动运行 npm install -g @volcengine/ark-cli' });
+          // The server's own error text (body.error) wins when present; this one
+          // is the client's, so it is spelled for the language on screen.
+          else {
+            arkSlot.setCurrent({
+              status: 'unavailable',
+              error: body.error || barTranslate('quotaArkInstallFailed', null, '自动安装失败，请手动运行 npm install -g @volcengine/ark-cli'),
+            });
+          }
         })
         .catch(() => arkSlot.setInstallInFlight(false));
     } else if (cur && cur.status === 'needs_auth') {
@@ -353,6 +407,7 @@
   let currentProviderAppType = '';
   let currentProviderPending = false;
   let providerRevision = 0;
+  let providerIdentityKnown = false;
   let currentSession = '';
   let cliInitialized = false;
   let currentLimitInfo = null;   // raw rate_limit_info (provider/resetsAt for gating + timer)
@@ -367,13 +422,28 @@
   let expiryTimer = null;
 
   function limitStorageKey(session) { const s = String(session || '').trim(); return s ? `multicc:claude-rate-limit:v1:${s}` : ''; }
-  function saveLimitBar(session, bar) {
+  // The window bar is stored WITH the provider identity that produced it. The
+  // display gate is providerMatchesCli(info.provider, cli) — a bar restored
+  // without its info could only ever paint through the exact-Provider branch,
+  // so a borrowed (借道) window vanished on every page load even though its text
+  // was sitting in localStorage.
+  function saveLimitBar(session, bar, info) {
     const k = limitStorageKey(session), s = browserStorage(); if (!s || !k || !bar) return;
-    try { s.setItem(k, JSON.stringify(bar)); } catch (_) {}
+    try { s.setItem(k, JSON.stringify({ bar, info: info || null })); } catch (_) {}
   }
+  // Returns { bar, info } for both the current record and the legacy bare-bar
+  // shape written before the identity was persisted (a bar has no `bar` field,
+  // so the two are unambiguous).
   function loadLimitBar(session) {
     const k = limitStorageKey(session), s = browserStorage(); if (!s || !k) return null;
-    try { return JSON.parse(s.getItem(k) || 'null'); } catch (_) { return null; }
+    let raw = null;
+    try { raw = JSON.parse(s.getItem(k) || 'null'); } catch (_) { return null; }
+    if (!raw || typeof raw !== 'object') return null;
+    if (raw.bar && typeof raw.bar === 'object') {
+      return { bar: raw.bar, info: raw.info && typeof raw.info === 'object' ? raw.info : null };
+    }
+    if (!raw.text) return null;
+    return { bar: raw, info: null };
   }
   function limitProvider() {
     if (!currentLimitInfo) return null;
@@ -402,7 +472,7 @@
       // The render's trailing '⟳' segment promises a refresh; wire it to the
       // same query that produced the bar.
       onBarClick = () => refreshProviderLimit();
-    } else if (currentCli === 'claude' && claudeProvider) {
+    } else if (isClaudeCli(currentCli) && claudeProvider) {
       // Claude subscription: the scrape (full, with weekly) is authoritative;
       // before it lands the live 5h event or the idle render stands in.
       bar = (currentClaudeUsage && currentClaudeUsage.bar) || currentLimitBar || idleBarFor('claude');
@@ -456,18 +526,25 @@
     currentSession = String(sessionName || currentSession || '').trim();
     currentLimitInfo = info || null;
     currentLimitBar = bar || null;
-    if (currentLimitBar && currentSession) saveLimitBar(currentSession, currentLimitBar);
+    if (currentLimitBar && currentSession) saveLimitBar(currentSession, currentLimitBar, currentLimitInfo);
     renderCurrent();
     return currentLimitBar ? { provider: limitProvider(), bar: currentLimitBar } : null;
   }
 
-  let providerLimitInFlight = false;
+  let providerLimitInFlightKey = null;
   async function refreshProviderLimit() {
     if (!currentProviderAppType || !currentProviderId) return null;
-    // Click-reachable (the provider window bar's ⟳): one query at a time.
-    if (providerLimitInFlight) return null;
+    // Click-reachable (the provider window bar's ⟳): one query at a time for a
+    // given provider. Keyed on the identity, not a bare flag: a provider switch
+    // landing while the previous provider's query is still open must not be
+    // suppressed by it — that response belongs to the OLD provider and is
+    // dropped by the revision check below, so suppressing the new query left the
+    // bar blank (and, since the switch had just wiped the bars, showing nothing)
+    // until some unrelated event happened to fetch again.
+    const inFlightKey = `${currentProviderAppType}:${currentProviderId}`;
+    if (providerLimitInFlightKey === inFlightKey) return null;
     const revision = providerRevision;
-    providerLimitInFlight = true;
+    providerLimitInFlightKey = inFlightKey;
     try {
       const res = await fetch(`/api/providers/${encodeURIComponent(currentProviderAppType)}/${encodeURIComponent(currentProviderId)}/balance`, { credentials: 'same-origin' });
       const data = await res.json();
@@ -478,11 +555,15 @@
       renderAll();
       return kind === 'balance' ? currentBalanceBar : currentProviderWindowBar;
     } catch (_) { return null; }
-    finally { providerLimitInFlight = false; }
+    finally { if (providerLimitInFlightKey === inFlightKey) providerLimitInFlightKey = null; }
   }
   function restoreFiveHourRateLimit(sessionName) {
     currentSession = String(sessionName || '').trim();
-    currentLimitBar = loadLimitBar(currentSession);
+    const record = loadLimitBar(currentSession);
+    currentLimitBar = record ? record.bar : null;
+    // Only fill in the identity — a live event that already landed is fresher
+    // than anything on disk, and its info drives scheduleExpiry().
+    if (record && record.info && !currentLimitInfo) currentLimitInfo = record.info;
     renderCurrent();
     return currentLimitBar;
   }
@@ -504,11 +585,16 @@
   // Money remaining, no reset window, arrives on a WS event already rendered.
   let currentBalanceBar = null;
   function balanceStorageKey(session) { return `multicc.usageBalance.${String(session || '').trim()}`; }
-  function balanceMatchesCli(cli) {
+  // Same pure-core split as providerMatchesCliIn: the app mirror takes the
+  // baseUrl explicitly, so the contract test needs the same shape here.
+  function balanceBarVisibleFor(cli, baseUrl) {
     return isCodexCli(cli) || cli === 'opencode'
-      || isDeepseekBaseUrl(currentProviderBaseUrl)
+      || isDeepseekBaseUrl(baseUrl)
       // 借道 provider 借来的可能是预付费余额（DeepSeek 等），事件由 relay 透传。
-      || isRelayBaseUrl(currentProviderBaseUrl);
+      || isRelayBaseUrl(baseUrl);
+  }
+  function balanceMatchesCli(cli) {
+    return balanceBarVisibleFor(cli, currentProviderBaseUrl);
   }
   function renderBalance() {
     const element = global.document?.getElementById?.('usage-balance-bar');
@@ -589,16 +675,36 @@
     const nextAppType = String(meta.appType || relayProtocolFromBaseUrl(next)
       || (nextId ? (isCodexCli(currentCli) ? 'codex' : 'claude') : ''));
     const nextPending = meta.pending === true;
-    const changed = next !== currentProviderBaseUrl || nextId !== currentProviderId
-      || nextAppType !== currentProviderAppType || nextPending !== currentProviderPending;
+    // Like setCli, the FIRST call is the page reporting which provider its
+    // session runs on, not a switch — and the restored window bar on screen
+    // belongs to exactly that provider. Treating it as a switch deleted the
+    // session's persisted passive bar on every page load (借道 providers have no
+    // other source before the first turn). A real switch still wipes.
+    const firstReport = !providerIdentityKnown;
+    providerIdentityKnown = true;
+    // The identity is (baseUrl, providerId, appType) — and nothing else.
+    // `pending` is ROUTING state: it only says auto-selection has not picked a
+    // route yet. Folding it into the identity made a pending flip wipe the bars
+    // of the identity still on screen and delete their persisted copies, i.e.
+    // the same "the bar vanished" failure this file has been fixed for twice
+    // already (a borrowed provider has no other source until a turn runs).
+    const changed = !firstReport && (next !== currentProviderBaseUrl || nextId !== currentProviderId
+      || nextAppType !== currentProviderAppType);
+    const pendingFlipped = !firstReport && nextPending !== currentProviderPending;
     currentProviderBaseUrl = next;
     currentProviderId = nextId;
     currentProviderAppType = nextAppType;
     currentProviderPending = nextPending;
+    // Both a first report and a real switch invalidate whatever is in flight
+    // for the identity that was current a moment ago (the restore at load time
+    // already fired its own queries); only a switch may discard what is on
+    // screen. A pending flip is not a switch, but it does re-decide the route,
+    // so data already in flight for it must not paint either — hence the
+    // revision bump without the wipe.
+    if (firstReport || changed || pendingFlipped) providerRevision += 1;
     if (changed) {
       // Different accounts can share a baseUrl. Drop every provider-owned
-      // display and invalidate old requests before fetching the new selection.
-      providerRevision += 1;
+      // display before fetching the new selection.
       currentLimitInfo = null; currentLimitBar = null; currentProviderWindowBar = null; currentBalanceBar = null;
       currentClaudeUsage = null; claudeUsageFetchInFlight = false;
       claudeLoginPending = false; claudeLastErrorAt = 0;
@@ -617,8 +723,10 @@
     // A provider switch must immediately reflect the new provider's quota: pull
     // fresh data for whichever vendor the new baseUrl points at. The error
     // backoff is cleared first — it exists to stop a broken endpoint from being
-    // hammered, not to stall an explicit user action.
-    if (changed) {
+    // hammered, not to stall an explicit user action. The first report fetches
+    // too (it used to, as a "change" from the empty default): the identity is
+    // only known now, so this is the page's first chance to query it.
+    if (firstReport || changed) {
       arkSlot.clearBackoff(); kimiSlot.clearBackoff();
       restoreServerQuotaBars();
       refreshProviderLimit();
@@ -650,9 +758,16 @@
     isZhipuBaseUrl, isKimiBaseUrl, isArkBaseUrl, isDeepseekBaseUrl, isClaudeProvider,
     isRelayBaseUrl, relayProtocolFromBaseUrl,
     arkPlanFromBaseUrl, providerMatchesCli, quotaBarClick,
+    // Pure (baseUrl-explicit) forms: the app mirror's exact counterparts, and
+    // the functions tests/test-quota-gating-parity.js freezes into the shared
+    // gating fixture that app/test/quota_gating_parity_test.dart also reads.
+    providerMatchesCliIn, balanceBarVisibleFor, balanceMatchesCli, hostFromBaseUrl,
     // The resolver is exposed so tests can drive the shared golden fixtures
     // through the same expansion path the browser uses.
     QuotaBarView,
+    // The bar's own resolve+localize step, for the same reason: a test drives
+    // the language gate end to end instead of re-implementing it.
+    resolveBar,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.MultiCCChatRateLimit = api;

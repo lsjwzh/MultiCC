@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles } = require('../src/routes/session-git');
+const { createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles, parseCommitFiles } = require('../src/routes/session-git');
 
 function createFakeApp() {
   const routes = new Map();
@@ -46,7 +46,7 @@ function createFixture(overrides = {}) {
   const chatSessions = overrides.chatSessions || new Map();
   const calls = {
     mergeState: [], baseBranch: [], run: [], merge: [], sync: [], rebase: [],
-    events: [], broadcasts: [], logs: [], warnings: [],
+    events: [], broadcasts: [], logs: [], warnings: [], chatBroadcasts: [],
   };
   const implementations = {
     gitWorktreeMergeState: async (dir, session) => {
@@ -82,10 +82,12 @@ function createFixture(overrides = {}) {
     ...implementations,
     appendEvent: (...args) => calls.events.push(args),
     workspaceBroadcast: (...args) => calls.broadcasts.push(args),
+    chatBroadcast: (...args) => calls.chatBroadcasts.push(args),
     existsSync: overrides.existsSync || (() => true),
     now: () => clock,
     random: () => 0,
     asyncHandler: overrides.asyncHandler || (handler => handler),
+    readFile: overrides.readFile || (async () => Buffer.from('')),
     logger: {
       log: value => calls.logs.push(value),
       warn: value => calls.warnings.push(value),
@@ -102,14 +104,15 @@ function createFixture(overrides = {}) {
   };
 }
 
-test('mountRoutes installs the ten routes once per app', () => {
+test('mountRoutes installs the Git routes once per app', () => {
   const fixture = createFixture();
   fixture.runtime.mountRoutes(fixture.app);
   assert.deepEqual(Object.keys(fixture.runtime).sort(), [
-    'isWorktreeActive', 'mergeStateCached', 'mountRoutes',
+    'autoCommitTurn', 'isWorktreeActive', 'mergeStateCached', 'mountRoutes',
   ]);
   assert.deepEqual([...fixture.app.routes.keys()].sort(), [
     'GET /api/git/commit-diff',
+    'GET /api/git/commit-files',
     'GET /api/git/directory-status',
     'GET /api/git/log',
     'GET /api/sessions/:id/diff',
@@ -125,7 +128,7 @@ test('mountRoutes installs the ten routes once per app', () => {
 test('every Git route is registered through the shared async error boundary', () => {
   let wrapped = 0;
   createFixture({ asyncHandler: handler => { wrapped += 1; return handler; } });
-  assert.equal(wrapped, 10);
+  assert.equal(wrapped, 11);
 });
 
 test('production host delegates the complete Git route surface through narrow ports', () => {
@@ -138,7 +141,7 @@ test('production host delegates the complete Git route surface through narrow po
   for (const route of [
     '/api/sessions/:id/merge-status', '/api/sessions/:id/diff',
     '/api/sessions/:id/diff/files', '/api/sessions/:id/diff/file',
-    '/api/git/log', '/api/git/commit-diff', '/api/git/directory-status',
+    '/api/git/log', '/api/git/commit-files', '/api/git/commit-diff', '/api/git/directory-status',
     '/api/sessions/:id/merge', '/api/sessions/:id/sync', '/api/sessions/:id/rebase',
   ]) {
     assert.equal(server.includes(route), false, `${route} is no longer inline in the host`);
@@ -183,6 +186,30 @@ test('merge-state cache is single-flight, bounded, and fresh refreshes immediate
   });
   assert.equal(fresh.statusCode, 200);
   assert.equal(fixture.runtime.mergeStateCached(dir, session).ahead, 3);
+});
+
+test('merge-status?refresh=1 bypasses the cached state', async () => {
+  let calls = 0;
+  const fixture = createFixture({
+    implementations: {
+      gitWorktreeMergeState: async () => {
+        calls += 1;
+        return { mergeReady: calls > 1, dirty: calls > 1, ahead: calls - 1, behind: 0 };
+      },
+    },
+  });
+  const dir = fixture.directories.get('d1');
+  const session = fixture.records.get('s1');
+  assert.deepEqual(fixture.runtime.mergeStateCached(dir, session), LOADING_MERGE_STATE);
+  await tick();
+  assert.equal(calls, 1);
+  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/merge-status'), {
+    params: { id: 's1' }, query: { refresh: '1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(calls, 2);
+  assert.equal(response.body.mergeReady, true);
+  assert.equal(fixture.runtime.mergeStateCached(dir, session).mergeReady, true);
 });
 
 test('diff preserves missing-worktree errors, truncation and best-effort stat', async () => {
@@ -279,6 +306,39 @@ test('git log bounds limit, supports all branches, and parses NUL records', asyn
   const invalid = await invoke(fixture.app.routes.get('GET /api/git/log'));
   assert.equal(invalid.statusCode, 400);
   assert.deepEqual(invalid.body, { error: 'dirId or sessionId required' });
+});
+
+test('commit files retain rename paths and file diffs stay within the selected commit', async () => {
+  assert.deepEqual(parseCommitFiles('M\0README.md\0R100\0old name.txt\0new name.txt\0'), [
+    { status: 'M', path: 'README.md' },
+    { status: 'R100', path: 'new name.txt', oldPath: 'old name.txt' },
+  ]);
+  const fixture = createFixture({ implementations: {
+    gitRunQueued: async (repo, args) => {
+      fixture.calls.run.push({ repo, args });
+      if (args.includes('--name-status')) return 'M\0README.md\0R100\0old name.txt\0new name.txt\0';
+      return 'diff --git a/old name.txt b/new name.txt\n+hello';
+    },
+  } });
+  const files = await invoke(fixture.app.routes.get('GET /api/git/commit-files'), {
+    query: { dirId: 'd1', hash: 'abcdef0123' },
+  });
+  assert.equal(files.statusCode, 200);
+  assert.equal(files.body.files[1].path, 'new name.txt');
+  const diff = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { dirId: 'd1', hash: 'abcdef0123', file: 'new name.txt' },
+  });
+  assert.equal(diff.statusCode, 200);
+  assert.match(diff.body.diff, /hello/);
+  assert.deepEqual(fixture.calls.run.at(-1).args.slice(-3), ['--', ':(literal)old name.txt', ':(literal)new name.txt']);
+  const missing = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { dirId: 'd1', hash: 'abcdef0123', file: 'secret.txt' },
+  });
+  assert.equal(missing.statusCode, 404);
+  const invalid = await invoke(fixture.app.routes.get('GET /api/git/commit-files'), {
+    query: { dirId: 'd1', hash: '--output=x' },
+  });
+  assert.equal(invalid.statusCode, 400);
 });
 
 test('commit-diff validates hash, resolves directory, and returns diff/stat', async () => {
@@ -523,6 +583,41 @@ test('active and classify gates block sync while force bypasses both', async () 
   assert.equal(fixture.calls.broadcasts.at(-1)[1].type, 'merge_status');
 });
 
+test('the sync gate blocks only letters that can still write into the worktree', async () => {
+  // "Unfinished" is about writing, not about who is waiting: P (a turn in
+  // flight) and the retired-but-persisted C are mid-turn, B ended parked on a
+  // background job that may still write. W ended with the user holding the
+  // question — nothing is running and the user is the one asking, so refusing
+  // the sync would be a dead end. D/E ended too, and an unclassified session has
+  // no turn at all. (src/workspace/inventory.js's read-only preview counts W as
+  // execution_dependency instead; that surface does not refuse a user command.)
+  const fixture = createFixture();
+  assert.equal(fixture.runtime.isWorktreeActive('s1'), false);
+  const BLOCKED = { P: true, C: true, B: true, W: false, D: false, E: false };
+  for (const [letter, blocked] of Object.entries(BLOCKED)) {
+    fixture.records.get('s1').taskState.classifyState = letter;
+    fixture.calls.sync.length = 0;
+    const response = await invoke(fixture.app.routes.get('POST /api/sessions/:id/sync'), {
+      params: { id: 's1' },
+    });
+    assert.equal(response.statusCode, blocked ? 409 : 200, `${letter} sync status`);
+    if (blocked) {
+      assert.equal(response.body.classifyState, letter, `${letter} reported state`);
+      assert.equal(fixture.calls.sync.length, 0, `${letter} must not reach git`);
+    } else {
+      assert.equal(fixture.calls.sync.length, 1, `${letter} should reach git`);
+    }
+  }
+  // No letter at all (never classified) is not a reason to refuse.
+  delete fixture.records.get('s1').taskState;
+  fixture.calls.sync.length = 0;
+  const unclassified = await invoke(fixture.app.routes.get('POST /api/sessions/:id/sync'), {
+    params: { id: 's1' },
+  });
+  assert.equal(unclassified.statusCode, 200);
+  assert.equal(fixture.calls.sync.length, 1);
+});
+
 test('merge reports sibling active, dirty, unmerged, conflicts and successful sync', async () => {
   const records = new Map([
     ['s1', { id: 's1', dirId: 'd1', branch: 'b1', worktreePath: '/wt/1' }],
@@ -683,6 +778,138 @@ test('rebase maps action, force, conflict and actor operation metadata while alw
   assert.equal(rejected.calls.broadcasts.length, 1);
 });
 
+test('autoCommitTurn merges a ready worktree and reports the result to the chat', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitMergeBack: async (dir, session) => {
+        fixture.calls.merge.push([dir.id, session.id]);
+        return { ok: true, merged: true, commits: 2, committed: true };
+      },
+    },
+  });
+  const result = await fixture.runtime.autoCommitTurn('s1');
+  assert.equal(result.ok, true);
+  assert.equal(result.merged, true);
+  assert.deepEqual(fixture.calls.merge, [['d1', 's1']]);
+  assert.equal(fixture.calls.logs.some(line => line.includes('auto-commit merge')), true);
+  assert.equal(fixture.calls.events.some(([, event]) => event === 'merged'), true);
+  assert.equal(fixture.calls.broadcasts.some(([, payload]) => payload.type === 'merge_status'
+    && payload.sessionId === 's1'), true);
+  assert.deepEqual(fixture.calls.chatBroadcasts, [['s1', {
+    type: 'system', subtype: 'auto_commit',
+    message: '✓ 自动提交完成：已合并 2 个提交回基分支（含本次自动提交）',
+  }]]);
+});
+
+test('autoCommitTurn resolves the workspace owner before checking the switch', async () => {
+  const records = new Map([
+    ['slot-1', { id: 'slot-1', dirId: 'd1', workspaceOwnerSessionId: 's1' }],
+    ['s1', { id: 's1', dirId: 'd1', branch: 'multicc/s1', worktreePath: '/repo/wt-s1' }],
+  ]);
+  const on = createFixture({ records });
+  const merged = await on.runtime.autoCommitTurn('slot-1');
+  assert.equal(merged.ok, true);
+  assert.equal(on.calls.merge.length, 1, 'owner identity drives the merge');
+  assert.equal(on.calls.chatBroadcasts[0][0], 's1', 'notice goes to the owner session');
+
+  records.get('s1').autoCommit = false;
+  const off = createFixture({ records });
+  const skipped = await off.runtime.autoCommitTurn('slot-1');
+  assert.deepEqual(skipped, { ok: false, skipped: true, reason: 'auto_commit_off' });
+  assert.equal(off.calls.merge.length, 0);
+  assert.equal(off.calls.chatBroadcasts.length, 0);
+});
+
+test('autoCommitTurn skips missing switch targets without touching git', async () => {
+  const fixture = createFixture();
+  assert.deepEqual(await fixture.runtime.autoCommitTurn('missing'),
+    { ok: false, skipped: true, reason: 'session_not_found' });
+
+  fixture.records.get('s1').worktreePath = null;
+  assert.deepEqual(await fixture.runtime.autoCommitTurn('s1'),
+    { ok: false, skipped: true, reason: 'no_worktree' });
+
+  fixture.records.get('s1').worktreePath = '/repo/wt-s1';
+  fixture.records.get('s1').workspaceState = 'hibernated';
+  assert.deepEqual(await fixture.runtime.autoCommitTurn('s1'),
+    { ok: false, skipped: true, reason: 'hibernated' });
+  assert.equal(fixture.calls.merge.length, 0);
+  assert.equal(fixture.calls.mergeState.length, 0, 'cheap gates run before any git read');
+  assert.equal(fixture.calls.chatBroadcasts.length, 0);
+
+  const gone = createFixture({ existsSync: () => false });
+  assert.deepEqual(await gone.runtime.autoCommitTurn('s1'),
+    { ok: false, skipped: true, reason: 'no_worktree' });
+});
+
+test('autoCommitTurn stays silent when the worktree has nothing to merge', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitWorktreeMergeState: async () => ({ mergeReady: false, dirty: false, ahead: 0, behind: 0 }),
+    },
+  });
+  const result = await fixture.runtime.autoCommitTurn('s1');
+  assert.deepEqual(result, { ok: true, merged: false, skipped: true, reason: 'nothing_to_merge' });
+  assert.equal(fixture.calls.merge.length, 0);
+  assert.equal(fixture.calls.chatBroadcasts.length, 0, 'a clean worktree commits nothing and says nothing');
+});
+
+test('autoCommitTurn reports an empty merge and conflicts as chat system messages', async () => {
+  const empty = createFixture({
+    implementations: { gitMergeBack: async () => ({ ok: true, merged: false, commits: 0 }) },
+  });
+  await empty.runtime.autoCommitTurn('s1');
+  assert.equal(empty.calls.chatBroadcasts.at(-1)[1].message, '✓ 自动提交：没有新提交需要合并');
+
+  const conflicted = createFixture({
+    implementations: { gitMergeBack: async () => ({ ok: false, conflicts: ['a.js', 'b.js'] }) },
+  });
+  const result = await conflicted.runtime.autoCommitTurn('s1');
+  assert.equal(result.ok, false);
+  assert.equal(conflicted.calls.chatBroadcasts.at(-1)[1].message,
+    '⚠️ 自动提交冲突：请先手动合并。冲突文件：a.js, b.js');
+
+  const failed = createFixture({
+    implementations: { gitMergeBack: async () => ({ ok: false, error: 'spawn git ENOENT' }) },
+  });
+  await failed.runtime.autoCommitTurn('s1');
+  assert.equal(failed.calls.chatBroadcasts.at(-1)[1].message, '自动提交失败：spawn git ENOENT');
+});
+
+test('autoCommitTurn runs once per session while a merge is in flight', async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const fixture = createFixture({
+    implementations: {
+      gitMergeBack: async (dir, session) => {
+        fixture.calls.merge.push([dir.id, session.id]);
+        return gate;
+      },
+    },
+  });
+  const first = fixture.runtime.autoCommitTurn('s1');
+  await tick();
+  const second = await fixture.runtime.autoCommitTurn('s1');
+  assert.deepEqual(second, { ok: false, skipped: true, reason: 'inflight' });
+  release({ ok: true, merged: true, commits: 1 });
+  const result = await first;
+  assert.equal(result.merged, true);
+  assert.equal(fixture.calls.merge.length, 1);
+});
+
+test('autoCommitTurn contains unexpected git failures', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitMergeBack: async () => { throw new Error('boom'); },
+    },
+  });
+  const result = await fixture.runtime.autoCommitTurn('s1');
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'git_operation_failed');
+  assert.equal(fixture.calls.warnings.length > 0, true);
+  assert.equal(fixture.calls.chatBroadcasts.at(-1)[1].subtype, 'auto_commit');
+});
+
 test('route lookups preserve legacy 404/400 DTOs', async () => {
   const fixture = createFixture();
   const missingSession = await invoke(fixture.app.routes.get('GET /api/sessions/:id/merge-status'), {
@@ -827,6 +1054,97 @@ test('diff/files truncates at 500 files but reports the full total', async () =>
   assert.equal(response.body.truncated, true);
   assert.equal(response.body.totalAdditions, 501);
   assert.equal(response.body.totalDeletions, 501);
+});
+
+test('diff/files lists untracked files with status U and counts their lines', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args, options) => {
+        fixture.calls.run.push({ repo, args, options });
+        if (args.includes('--numstat')) return '';
+        if (args.includes('--name-status')) return '';
+        if (args.includes('ls-files')) return 'brand-new.js\0new dir/notes.txt\0binary.dat\0';
+        return '';
+      },
+    },
+    readFile: async (absolute) => {
+      fixture.calls.read = fixture.calls.read || [];
+      fixture.calls.read.push(absolute);
+      if (absolute.endsWith('binary.dat')) return Buffer.from([1, 2, 0, 3]);
+      if (absolute.endsWith('notes.txt')) return Buffer.from('one\n two \n', 'utf8');
+      return Buffer.from('line1\nline2\nline3\n', 'utf8');
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/files'), {
+    params: { id: 's1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.untrackedCount, 3);
+  assert.equal(response.body.totalFiles, 3);
+  assert.equal(response.body.totalAdditions, 5); // 3 + 2 + 0
+  assert.equal(response.body.totalDeletions, 0);
+  assert.deepEqual(response.body.files, [
+    { path: 'brand-new.js', oldPath: null, status: 'U', additions: 3, deletions: 0, binary: false },
+    { path: 'new dir/notes.txt', oldPath: null, status: 'U', additions: 2, deletions: 0, binary: false },
+    { path: 'binary.dat', oldPath: null, status: 'U', additions: 0, deletions: 0, binary: true },
+  ]);
+  assert.ok(fixture.calls.run.some(call =>
+    call.args.includes('ls-files') && call.args.includes('--others')
+    && call.args.includes('--exclude-standard')), 'untracked list queried with exclude-standard');
+  assert.equal(fixture.calls.read.length, 3, 'each untracked file read for line counts');
+});
+
+test('diff/file serves an untracked file as a new-file patch', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args, options) => {
+        fixture.calls.run.push({ repo, args, options });
+        if (args.includes('ls-files')) return 'src/newfile.js\0';
+        return '';
+      },
+    },
+    readFile: async () => Buffer.from('const x = 1;\nconsole.log(x);\n', 'utf8'),
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: 'src/newfile.js' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.untracked, true);
+  assert.equal(response.body.error, null);
+  assert.match(response.body.patch, /^diff --git a\/src\/newfile\.js b\/src\/newfile\.js/m);
+  assert.match(response.body.patch, /new file mode 100644/);
+  assert.match(response.body.patch, /@@ -0,0 \+1,2 @@/);
+  assert.match(response.body.patch, /\n\+const x = 1;/);
+  assert.match(response.body.patch, /\n\+console\.log\(x\);/);
+});
+
+test('diff/file leaves tracked unchanged files alone and reports binary untracked', async () => {
+  // Tracked file with no diff: patch stays empty, not flagged untracked.
+  const unchanged = createFixture({
+    implementations: {
+      gitRunQueued: async () => '',
+    },
+  });
+  const plain = await invoke(unchanged.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: 'src/tracked.js' },
+  });
+  assert.equal(plain.body.untracked, false);
+  assert.equal(plain.body.patch, '');
+
+  const binary = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args) => {
+        if (args.includes('ls-files')) return 'img/logo.png\0';
+        return '';
+      },
+    },
+    readFile: async () => Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]),
+  });
+  const bin = await invoke(binary.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: 'img/logo.png' },
+  });
+  assert.equal(bin.body.untracked, true);
+  assert.match(bin.body.patch, /Binary files/);
 });
 
 test('diff/files preserves missing-worktree error and maps git errors', async () => {
@@ -1022,8 +1340,10 @@ test('task diff/file returns the single-file patch from the task worktree', asyn
     params: { taskId: 'tsk-1' }, query: { path: 'src/a.js' },
   });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body, { path: 'src/a.js', patch: '', truncated: false, error: null });
-  assert.deepEqual(fixture.calls.run.at(-1).args, ['diff', '--no-color', 'main', '--', 'src/a.js']);
+  assert.deepEqual(response.body, { path: 'src/a.js', patch: '', truncated: false, error: null, untracked: false });
+  assert.ok(fixture.calls.run.some(call =>
+    JSON.stringify(call.args) === JSON.stringify(['diff', '--no-color', 'main', '--', 'src/a.js'])),
+  'diff ran inside the task worktree against the task base branch');
 
   const invalid = await invoke(fixture.app.routes.get('GET /api/task-board/tasks/:taskId/diff/file'), {
     params: { taskId: 'tsk-1' }, query: { path: '-x' },

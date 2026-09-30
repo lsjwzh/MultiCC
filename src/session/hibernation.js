@@ -269,11 +269,14 @@ function createSessionHibernationRuntime(options = {}) {
     return serialized(sessionId, () => ensureAwakeUnlocked(sessionId));
   }
 
-  async function hibernateUnlocked(sessionId, { eligibilityChecked = false, ignoreIdle = false, allowTypes = [] } = {}) {
+  async function hibernateUnlocked(sessionId, { eligibilityChecked = false, ignoreIdle = false, idleMs: idleMsOverride = null, allowTypes = [] } = {}) {
     const record = records.get(sessionId);
     if (!record) return { ok: false, code: 'session_not_found' };
     if (stateOf(record) === 'hibernated') return { ok: true, already: true };
-    const effectiveIdleMs = ignoreIdle ? 0 : idleMs;
+    // 手动回收可以指定自己的闲置阈值（面板上说的是「闲置超过 N 小时的」），
+    // 没人给就用运行时的默认值。非法数字一律忽略，不许把阈值变成 NaN。
+    const effectiveIdleMs = ignoreIdle ? 0
+      : (idleMsOverride != null && Number.isFinite(Number(idleMsOverride)) ? Number(idleMsOverride) : idleMs);
     const preliminary = evaluateSessionEligibility(record, { nowMs: now(), idleMs: effectiveIdleMs, allowTypes });
     if (!eligibilityChecked && !preliminary.eligible) {
       publish('hibernate', 'skip', sessionId, preliminary.reasons[0] || 'ineligible');
@@ -398,6 +401,26 @@ function createSessionHibernationRuntime(options = {}) {
     })();
     sweepPromise = work.finally(() => { sweepPromise = null; });
     return sweepPromise;
+  }
+
+  // 用户点一下的「主动回收」：和定时 sweep 是同一条路径，区别只在参数 ——
+  // dirId 限定某个目录，idleMs 覆盖闲置阈值，force 表示「不等闲置、能收就收」。
+  // 它永远不 reject：回收失败只是一次不成功的尝试，不该把面板按钮变成 500。
+  async function reclaim({ dirId = null, idleMs: idleMsOverride = null, force = false, limit = null } = {}) {
+    if (stopped) return { ok: false, code: 'hibernation_stopped', considered: 0, attempted: 0, hibernated: 0, failed: 0, skipped: 0 };
+    const candidates = reclaimer.candidatesFor({ dirId, ignoreIdle: force, idleMs: idleMsOverride, reportSkips: true });
+    const budget = Math.max(1, Math.min(64, Number(limit) || batchSize));
+    // 回执里报这次**真正用的**阈值：没给覆盖值时是运行时的配置（默认 24 小时），
+    // force 就是 0（不等闲置）。注意不能拿 Number(null) === 0 去判断 —— 那会把
+    // 「没给覆盖值」读成「阈值就是 0」，回执看起来就像偷偷 force 了一次。
+    const effectiveIdleMs = force ? 0
+      : (idleMsOverride != null && Number.isFinite(Number(idleMsOverride)) ? Number(idleMsOverride) : idleMs);
+    try {
+      const result = await reclaimer.runCandidates(candidates, { limit: budget, ignoreIdle: force, idleMs: idleMsOverride });
+      return { ok: true, dirId, idleMs: effectiveIdleMs, considered: candidates.length, ...result };
+    } catch (error) {
+      return { ok: false, code: safeErrorCode(error, 'reclaim_failed'), considered: candidates.length, attempted: 0, hibernated: 0, failed: 1, skipped: 0 };
+    }
   }
 
   async function reconcileStartup() {
@@ -525,6 +548,12 @@ function createSessionHibernationRuntime(options = {}) {
       capacityReclaims: reclaimer.pendingCapacity(), activeOperations: operations.size });
   }
 
+  // 面板要说清「多久没用的会被自动收走」，这个数字只能来自运行时本身，
+  // 不能在客户端再写一份默认值（那样两边一定会漂移）。
+  function policy() {
+    return Object.freeze({ idleMs, intervalMs, startupDelayMs, batchSize, enabled: idleMs > 0 && intervalMs > 0 });
+  }
+
   return Object.freeze({
     acquireDelivery,
     admit,
@@ -533,6 +562,8 @@ function createSessionHibernationRuntime(options = {}) {
     enforceAwakeBudget,
     hibernate,
     isLocked,
+    policy,
+    reclaim,
     reclaimForCapacity: reclaimer.reclaimForCapacity,
     reconcileStartup,
     start,

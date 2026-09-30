@@ -28,6 +28,7 @@ const FIXTURE = path.join(ROOT, 'tests', 'fixtures', 'desktop-fixture-server.js'
 
 const { findFreePort, probePort } = require(path.join(DESKTOP, 'lib', 'port-chooser.js'));
 const { waitForReadiness } = require(path.join(DESKTOP, 'lib', 'health-probe.js'));
+const { MACOS_AGENT_FILES, POWERD_FILES } = require(path.join(ROOT, 'scripts', 'desktop-bundle-server.js'));
 const desktopEnv = require(path.join(DESKTOP, 'lib', 'desktop-env.js'));
 const { createBackendSupervisor } = require(path.join(DESKTOP, 'lib', 'backend-supervisor.js'));
 const { reclaimOrphan, pidAlive } = require(path.join(DESKTOP, 'lib', 'orphan-reclaim.js'));
@@ -428,11 +429,17 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
     '--out', path.join(out, 'app-server'), '--no-install'], { encoding: 'utf8' });
   assert.equal(res.status, 0, `staging failed: ${res.stderr}`);
   const staged = path.join(out, 'app-server');
-  for (const must of ['server.js', 'src/paths.js', 'public/manage.html', 'public/chat.html',
+  for (const must of ['server.js', 'src/paths.js', 'public/air.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'plugins/bridges/wechat-ilink.js', 'plugins/cron/cron-tasks.js',
     'skills/multicc-artifact/references/registration-rule.md',
-    'package.json']) {
+    'package.json', ...MACOS_AGENT_FILES, ...POWERD_FILES]) {
     assert.ok(fs.existsSync(path.join(staged, must)), `staged tree missing ${must}`);
+  }
+  // The macOS agent installer is run by the server at startup, and the powerd
+  // installer is run inside the one admin prompt 「关盖运行」 raises: both must
+  // stay executable or the prompt would silently do nothing.
+  for (const sh of [...MACOS_AGENT_FILES, ...POWERD_FILES].filter(f => f.endsWith('.sh'))) {
+    assert.ok(fs.statSync(path.join(staged, sh)).mode & 0o100, `${sh} must stay executable`);
   }
   // server.js requires every plugins/* module unconditionally at boot; a tree
   // without them dies before /readyz (caught for real by the local smoke run).
@@ -455,8 +462,8 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
 function stubRepoRoot(dir) {
   fs.writeFileSync(path.join(dir, 'package.json'),
     `${JSON.stringify({ name: 'stub', version: '1.0.0', dependencies: {} }, null, 2)}\n`);
-  for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'public/manage.html',
-    'scripts/multicc-router-mcp.js',
+  for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'public/air.html',
+    'scripts/multicc-router-mcp.js', ...MACOS_AGENT_FILES, ...POWERD_FILES,
     'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md']) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -654,7 +661,7 @@ test('desktop-stage-standalone stages the same Resources tree a package ships', 
   const res = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'desktop-stage-standalone.js'),
     '--out', out, '--no-install', '--no-runtime'], { encoding: 'utf8' });
   assert.equal(res.status, 0, `staging failed: ${res.stderr}`);
-  for (const must of ['app-server/server.js', 'app-server/public/manage.html',
+  for (const must of ['app-server/server.js', 'app-server/public/air.html',
     'launcher/standalone-launcher.js', 'launcher/standalone-cli.js',
     'launcher/lib/backend-supervisor.js', 'launcher/lib/desktop-env.js',
     'bundle-manifest.json']) {
@@ -720,6 +727,8 @@ test('desktop packaging config: pinned versions, stable names, user-scope instal
   const pkg = require(path.join(DESKTOP, 'package.json'));
   assert.equal(pkg.version, rootPkg.version, 'desktop version tracks the root package');
   assert.equal(pkg.devDependencies.electron, '44.1.1', 'electron pinned exactly: its bundled Node 24 is the storage runtime');
+  assert.equal(pkg.devDependencies['electron-builder'], '^26.16.1',
+    'electron-builder 26.16.1 fixes CSC_LINK temporary-keychain password handling (#10101)');
   const b = pkg.build;
   assert.equal(b.asar, true);
   assert.equal(pkg.main, 'main.js');

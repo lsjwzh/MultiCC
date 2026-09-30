@@ -73,6 +73,12 @@ function createPaths({ dataDir } = {}) {
     detachedDir: root === PKG_ROOT
       ? path.join(os.homedir(), '.multicc', 'detached')
       : path.join(root, 'detached'),
+    // Human-assist screenshots (<assistDir>/<sessionId>/*.png) the agent posts
+    // into chat for the user to annotate. They can show logged-in pages, so they
+    // stay out of the package checkout and the auth-free /artifacts route.
+    assistDir: root === PKG_ROOT
+      ? path.join(os.homedir(), '.multicc', 'assist')
+      : path.join(root, 'assist'),
     // Large, replaceable third-party runtimes do not belong in the source
     // checkout. Production keeps them under ~/.multicc while isolated tests
     // keep every byte below their MULTICC_DATA_DIR.
@@ -125,8 +131,10 @@ function createPaths({ dataDir } = {}) {
     // Values live ONLY here (0600) and never pass through any LLM transcript.
     secretsFile: path.join(root, 'secrets.json'),
     taskBoardFile: path.join(root, 'task_board.json'),
-    taskRunDbFile: path.join(root, 'task-runs.sqlite'),
     taskShellDbFile: path.join(root, 'task-shells.sqlite'),
+    // Full-text index over chat_history (src/search/index-store.js). Derived data:
+    // deleting it only costs the next rebuild.
+    searchIndexDbFile: path.join(root, 'search-index.sqlite'),
     // Outward task short-code registry (taskId→#CODE), guaranteeing the 4-char
     // display handle is unique fleet-wide. See src/classify/task-short-code.js.
     taskShortCodesFile: path.join(root, 'task-short-codes.json'),

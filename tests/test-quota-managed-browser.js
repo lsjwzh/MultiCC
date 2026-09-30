@@ -152,6 +152,46 @@ test('attachManaged launches headless once when nothing is running, then reuses 
   }
 });
 
+// The headless user agent is not cosmetic and not interchangeable: headless
+// Chrome announces "HeadlessChrome/…", which is the token Cloudflare answers
+// with an interstitial instead of the claude.ai usage panel. Nothing about that
+// failure is visible from this side (the launch succeeds, the page loads, the
+// numbers are simply absent), so the flag is pinned here — a refactor that
+// drops it would otherwise look green until someone noticed a missing quota bar.
+test('a headless launch presents the plain user agent, not HeadlessChrome', async () => {
+  const fake = await startFakeChrome();
+  const profileDir = tmpProfile();
+  // A real executable that answers `--version` the way Chrome does, so the
+  // version probe is exercised rather than stubbed away.
+  const bin = path.join(profileDir, 'fake-chrome');
+  fs.writeFileSync(bin, '#!/bin/sh\necho "Google Chrome 154.0.8037.58"\n', { mode: 0o755 });
+  const spawned = [];
+  const managed = createManagedQuotaBrowser({
+    profileDir,
+    binary: bin,
+    spawnChrome: (spawnBin, args) => {
+      const proc = fakeProc(4002);
+      spawned.push({ bin: spawnBin, args, proc });
+      setTimeout(() => fake.writeActivePortFile(profileDir), 30);
+      return proc;
+    },
+    startupTimeoutMs: 4000,
+  });
+  try {
+    const browser = await managed.attachManaged();
+    browser.close();
+    const uaFlag = spawned[0].args.find((a) => a.startsWith('--user-agent='));
+    assert.ok(uaFlag, 'a headless launch must set --user-agent');
+    assert.ok(!/HeadlessChrome/.test(uaFlag), 'the headless token is what gets challenged');
+    assert.match(uaFlag, /Chrome\/154\.0\.0\.0 Safari\/537\.36$/, 'the UA names the same build, headed form');
+    // The tab URL stays the last argument: Chrome treats a trailing URL as "open this".
+    assert.equal(spawned[0].args[spawned[0].args.length - 1], 'about:blank');
+  } finally {
+    managed.stopManaged();
+    await fake.close();
+  }
+});
+
 test('concurrent attachManaged calls share one launch', async () => {
   const fake = await startFakeChrome();
   const profileDir = tmpProfile();

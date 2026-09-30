@@ -4,6 +4,7 @@ import '../i18n.dart';
 import '../models/chat_runtime_state.dart';
 import '../models/dispatch_queue.dart';
 import '../models/vendor_quota.dart';
+import '../theme.dart';
 import '../utils/status_presentation.dart';
 
 class PendingUserInputPanel extends StatefulWidget {
@@ -311,6 +312,10 @@ class SessionQueuePanel extends StatefulWidget {
   /// 可选，省略时列表不给拖动手柄，仍是只能取消的静态列表。
   final Future<void> Function(String entryId, int toIndex)? onReorderQueued;
 
+  /// 「修改正文」：双击一条还没执行的暂存消息，弹出输入框改正文（web 端
+  /// 双击同一动作）。可选，省略时行的正文只读、不改。
+  final Future<void> Function(String entryId, String text)? onEditQueued;
+
   const SessionQueuePanel({
     super.key,
     required this.queue,
@@ -319,6 +324,7 @@ class SessionQueuePanel extends StatefulWidget {
     required this.onCancelQueued,
     this.onInsertQueued,
     this.onReorderQueued,
+    this.onEditQueued,
   });
 
   @override
@@ -340,6 +346,62 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// 双击一条还没执行的暂存消息：弹出输入框改正文（web 端 `session-queue-text`
+  /// 的 dblclick 同一动作）。改完交回服务端，随下一次 schedule 广播刷新所有端。
+  Future<void> _editQueued(SessionQueueItem item) async {
+    final controller = TextEditingController(text: item.text);
+    final messenger = ScaffoldMessenger.of(context);
+    final next = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFFffffff),
+        title: Text(
+          t('queuedMessageEditTitle'),
+          style: const TextStyle(fontSize: 15, color: Color(0xFF20364d)),
+        ),
+        content: TextField(
+          key: const Key('queued-edit-input'),
+          controller: controller,
+          autofocus: true,
+          maxLines: 5,
+          maxLength: 20000,
+          style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
+          decoration: sheetInputDecoration(
+            hint: t('queuedMessageEditHint'),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(
+              t('cancel'),
+              style: const TextStyle(color: Color(0xFF6f8096)),
+            ),
+          ),
+          TextButton(
+            key: const Key('queued-edit-save'),
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: Text(
+              t('save'),
+              style: const TextStyle(
+                color: Color(0xFF1267b5),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    final edit = widget.onEditQueued;
+    if (next == null || edit == null) return;
+    final value = next.trim();
+    if (value.isEmpty || value == item.text) return;
+    await _run(() => edit(item.entryId, value));
+    messenger.showSnackBar(
+      SnackBar(content: Text(t('queuedMessageEdited'))),
+    );
   }
 
   @override
@@ -560,12 +622,26 @@ class _SessionQueuePanelState extends State<SessionQueuePanel> {
               ),
             ),
           Expanded(
-            child: Text(
-              '${item.position}. ${item.text.isEmpty ? t('queuedMessageFallback') : item.text}',
-              style: const TextStyle(
-                color: Color(0xFF31465b),
-                fontSize: 12,
-                height: 1.4,
+            child: GestureDetector(
+              // 长消息不会把整条队列撑到失控：正文固定在最多 3 行的高度内，
+              // 双击弹出输入框查看/修改完整正文。
+              onDoubleTap: item.canEdit && widget.onEditQueued != null
+                  ? () => _editQueued(item)
+                  : null,
+              child: Container(
+                key: Key('queued-text-${item.entryId}'),
+                constraints: const BoxConstraints(maxHeight: 3 * 1.4 * 12),
+                padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+                child: SingleChildScrollView(
+                  child: Text(
+                    '${item.position}. ${item.text.isEmpty ? t('queuedMessageFallback') : item.text}',
+                    style: const TextStyle(
+                      color: Color(0xFF31465b),
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
               ),
             ),
           ),

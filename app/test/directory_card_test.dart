@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/message.dart';
+import 'package:multicc_app/screens/directory_artifacts_screen.dart';
 import 'package:multicc_app/services/workspace_service.dart';
 import 'package:multicc_app/widgets/directory_card.dart';
 
@@ -80,6 +82,34 @@ void main() {
       '🔄 Architect 同步：main',
     ]);
     expect(() => view.recentEventLabels.add('mutate'), throwsUnsupportedError);
+  });
+
+  test('view model does not count a parked background turn as running', () {
+    final now = DateTime(2026, 7, 18, 12);
+    final session = Session(
+      id: 'parked',
+      dirId: 'dir-1',
+      label: 'Parker',
+      createdAt: now.subtract(const Duration(hours: 1)),
+    );
+    final view = DirectoryCardViewModel.fromModels(
+      directory: Directory(
+        id: 'dir-1',
+        name: 'Fleet',
+        path: '/tmp/fleet',
+        createdAt: now,
+      ),
+      sessions: [session],
+      statuses: const {
+        'parked': SessionStatus(status: 'background'),
+      },
+      events: const [],
+      now: now,
+    );
+
+    // `background` means the turn is parked on a background task; this process
+    // is not executing it, so the directory card must not read as busy.
+    expect(view.running, isFalse);
   });
 
   test('view model keeps the previous fallback task wording', () {
@@ -220,5 +250,68 @@ void main() {
     expect(leaveTargets, ['dir-1']);
     expect(drops, ['source->dir-1']);
     expect(dragEnded, 1);
+  });
+
+  // 本目录产物那颗按钮自己 push 路由（main_shell 顶在源码行长闸天花板上，
+  // 加不进回调接线），所以这里守两件事：按钮在备忘左边、点开真的到得了
+  // 「本目录产物」页。
+  testWidgets('artifacts button opens the per-directory artifacts screen', (
+    tester,
+  ) async {
+    // 页面要 SettingsService（生产走单例），把宿主 prefs 备好，
+    // 免得测试里走成「拿不到配置」那条错误分支。
+    SharedPreferences.setMockInitialValues({
+      'multicc_host': 'http://server.example',
+      'multicc_token': 'secret',
+    });
+    await tester.pumpWidget(
+      _host(
+        DirectoryCard(
+          view: const DirectoryCardViewModel(
+            id: 'dir-1',
+            name: 'Fleet One',
+            path: '/tmp/fleet-one',
+            totalSessions: 0,
+            activeSessions: 0,
+            pushState: null,
+            running: false,
+            recentEventLabels: [],
+          ),
+          callbacks: DirectoryCardCallbacks(
+            onOpen: () {},
+            onOpenMemo: () {},
+            onShowUncommitted: () {},
+            onRename: () {},
+            onDelete: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final artifacts = find.byKey(
+      const ValueKey('directory-card-artifacts-dir-1'),
+    );
+    final memo = find.byKey(const ValueKey('directory-card-memo-dir-1'));
+    expect(artifacts, findsOneWidget);
+    expect(find.byTooltip(t('airDirArtifactsOpen')), findsOneWidget);
+    // 产物按钮紧挨在备忘之前（备忘那颗仍在）。
+    expect(
+      tester.getTopLeft(artifacts).dx,
+      lessThan(tester.getTopLeft(memo).dx),
+    );
+
+    await tester.tap(artifacts);
+    await tester.pumpAndSettle();
+
+    final screen = tester.widget<DirectoryArtifactsScreen>(
+      find.byType(DirectoryArtifactsScreen),
+    );
+    expect(screen.dirId, 'dir-1');
+    expect(screen.dirName, 'Fleet One');
+    // 目录卡上的 path 就是 ?dir= 的作用域（服务端按它归一化到所属项目）。
+    expect(screen.dirPath, '/tmp/fleet-one');
+
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 }

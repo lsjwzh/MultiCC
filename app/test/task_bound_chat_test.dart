@@ -6,15 +6,13 @@ import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:multicc_app/models/message.dart';
-import 'package:multicc_app/services/manage_service.dart';
 import 'package:multicc_app/services/session_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 
-// P3 · task chat = ordinary chat. The two fail-soft ports behind the handoff:
-// ManageService.ensureTaskChatSession (get-or-create the 1:1 bound session)
-// and SessionService.fetchTaskBoundSession (resolve a fleet-hidden session by
-// its server marker). Both must never throw — any error means the caller
-// keeps its legacy behaviour (ledger projection / not-found snackbar).
+// P3 · task chat = ordinary chat. The fail-soft port behind the handoff:
+// SessionService.fetchTaskBoundSession (resolve a fleet-hidden session by its
+// server marker). It must never throw — any error means the caller keeps its
+// legacy behaviour (ledger projection / not-found snackbar).
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -26,137 +24,6 @@ void main() {
     });
     return SettingsService.getInstance();
   }
-
-  group('ManageService.ensureTaskChatSession', () {
-    test(
-      'posts to the chat-session endpoint and returns the session id',
-      () async {
-        final settings = await mockSettings();
-        late http.Request captured;
-        final svc = ManageService(
-          settings: settings,
-          httpClient: MockClient((request) async {
-            captured = request;
-            return http.Response(
-              jsonEncode({
-                'ok': true,
-                'sessionId': 'sess-bound-1',
-                'created': true,
-              }),
-              200,
-            );
-          }),
-        );
-
-        final sid = await svc.ensureTaskChatSession('tsk-1');
-
-        expect(sid, 'sess-bound-1');
-        expect(captured.method, 'POST');
-        expect(captured.url.path, '/api/task-board/tasks/tsk-1/chat-session');
-        expect(captured.headers['x-access-token'], 'secret');
-      },
-    );
-
-    test('fails soft on server errors, offline and malformed bodies', () async {
-      final settings = await mockSettings();
-      for (final status in [501, 404, 409, 502]) {
-        final svc = ManageService(
-          settings: settings,
-          httpClient: MockClient(
-            (request) async => http.Response('{}', status),
-          ),
-        );
-        expect(
-          await svc.ensureTaskChatSession('tsk-1'),
-          isNull,
-          reason: 'status $status',
-        );
-      }
-      final down = ManageService(
-        settings: settings,
-        httpClient: MockClient((request) async => throw Exception('down')),
-      );
-      expect(await down.ensureTaskChatSession('tsk-1'), isNull);
-      final malformed = ManageService(
-        settings: settings,
-        httpClient: MockClient(
-          (request) async => http.Response(jsonEncode({'ok': true}), 200),
-        ),
-      );
-      expect(await malformed.ensureTaskChatSession('tsk-1'), isNull);
-    });
-  });
-
-  group('explicit shell task selection', () {
-    test(
-      'cached binding still selects the requested task before opening',
-      () async {
-        final requests = <http.Request>[];
-        final svc = ManageService(
-          settings: await mockSettings(),
-          httpClient: MockClient((r) async {
-            requests.add(r);
-            if (r.url.path == '/api/task-board/tasks/tsk-A/chat-session')
-              return http.Response('{"ok":true,"sessionId":"entry"}', 200);
-            if (r.url.path == '/api/task-shells')
-              return http.Response('{"id":"shell"}', 200);
-            return http.Response(
-              '{"id":"tsk-A","sessionId":"execution-A"}',
-              200,
-            );
-          }),
-        );
-        expect(
-          await svc.resolveTaskChatSession('tsk-A', boundSessionId: 'entry'),
-          'entry',
-        );
-        expect(requests.map((r) => r.url.path), [
-          '/api/task-board/tasks/tsk-A/chat-session',
-          '/api/task-shells',
-          '/api/task-shells/shell/tasks/resolve',
-        ]);
-        expect(jsonDecode(requests[1].body), {'sessionId': 'entry'});
-        expect(jsonDecode(requests.last.body), {'taskId': 'tsk-A'});
-        expect(
-          requests.every((r) => r.headers['x-access-token'] == 'secret'),
-          isTrue,
-        );
-      },
-    );
-    test(
-      'failed task selection never falls back to the wrong current execution',
-      () async {
-        final svc = ManageService(
-          settings: await mockSettings(),
-          httpClient: MockClient((r) async {
-            if (r.url.path == '/api/task-shells')
-              return http.Response('{"id":"shell"}', 200);
-            return http.Response('{"code":"project_mismatch"}', 403);
-          }),
-        );
-        expect(
-          await svc.resolveTaskChatSession('tsk-A', boundSessionId: 'entry'),
-          isNull,
-        );
-      },
-    );
-    test('unbound task resolves binding then shell selection', () async {
-      final paths = <String>[];
-      final svc = ManageService(
-        settings: await mockSettings(),
-        httpClient: MockClient((r) async {
-          paths.add(r.url.path);
-          if (r.url.path.endsWith('/chat-session'))
-            return http.Response('{"ok":true,"sessionId":"entry"}', 200);
-          if (r.url.path == '/api/task-shells')
-            return http.Response('{"id":"shell"}', 200);
-          return http.Response('{"id":"tsk-A"}', 200);
-        }),
-      );
-      expect(await svc.resolveTaskChatSession('tsk-A'), 'entry');
-      expect(paths.length, 3);
-    });
-  });
 
   group('SessionService.fetchTaskBoundSession', () {
     test('resolves a marked record into a chat Session shell', () async {

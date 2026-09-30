@@ -3,6 +3,7 @@
 const path = require('node:path');
 const { renderPrompt } = require('../message-composer');
 const { createClaudeAdapter } = require('./claude');
+const { displayNameOf } = require('../cli/cli-capability');
 
 function createClaudeExpAdapter(deps = {}) {
   const base = createClaudeAdapter(deps);
@@ -45,13 +46,18 @@ function createClaudeExpAdapter(deps = {}) {
         cmd: process.execPath,
         args,
         payload: renderPrompt(env),
+        sdkOptions: {
+          model, effort, agent: so.rawAgent, systemPrompt: env.systemPrompt,
+          disallowedTools: deps.chatDisallowedTools || [], maxTurns: so.maxTurns,
+          routerNode: deps.routerMcpNode, routerScript: deps.routerMcpScript,
+        },
         ...(ultracode ? { settings: { ultracode: true } } : {}),
       };
     },
     decodeEvent(event) {
       if (event?.type === 'system' && event.subtype === 'sdk_error') {
         return [{
-          type: 'error', label: 'Claude Exp', kind: 'provider',
+      type: 'error', label: displayNameOf('claude-exp'), kind: 'provider',
           message: event.error || 'Claude Agent SDK bridge failed',
         }];
       }

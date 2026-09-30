@@ -1,6 +1,9 @@
 'use strict';
 
 const { isMainResult } = require('../cli-adapters/result-completion');
+const { isMonitorHandoffResult } = require('./monitor-admission');
+const { createMonitorControl } = require('./monitor-control');
+const { createBackgroundHold } = require('./background-hold');
 
 // ── Persistent streaming Claude process per chat session ──
 //
@@ -40,20 +43,15 @@ const { spawn } = require('child_process');
 const sessions = new Map();
 
 const DEFAULT_IDLE_MS = 10 * 60 * 1000; // kill a warm-but-unused process after 10min
-// Ceiling on how long a process may be HELD past idle purely because a
-// background task is still registered as live. A genuinely-working task keeps
-// refreshing this window (each background event resets idleHeldSince), so the
-// ceiling only bites a task that has been registered-but-silent for the whole
-// window — i.e. a leaked/stuck shadow. When it trips, the process is reclaimed
-// and the exit path reaps the shadows + surfaces `interrupted`.
-const DEFAULT_IDLE_MAX_HOLD_MS = 2 * 60 * 60 * 1000; // 2h
 // How long cancel()/close() let a SIGTERM'd process exit on its own before
 // SIGKILL. Matches the cancel path's grace window in session-work-host.
 const CLOSE_KILL_GRACE_MS = 1_500;
-// How long a recycle waits for a graceful exit before escalating (and again before
-// giving up on the exit event entirely). Longer than the close path: a recycle is
+// How long a recycle waits for a graceful exit before escalating. A recycle is
 // not urgent, and the prompt exits on its own once stdin quiesces.
 const RECYCLE_KILL_GRACE_MS = 3_000;
+const closer = require('./process-close').createProcessCloser({
+  timeoutMs: CLOSE_KILL_GRACE_MS + 1_000, code: 'CHAT_STREAM_CLOSE_TIMEOUT',
+});
 
 function isAlive(name) {
   const s = sessions.get(name);
@@ -126,8 +124,27 @@ function spawnProc(name, cfg) {
     if (sessions.get(name)?.proc !== proc) return;
     s.stderrTail = (s.stderrTail + chunk.toString()).slice(-1000);
   });
+  proc.stdin.on('error', () => {
+    if (sessions.get(name)?.proc !== proc) return;
+    s.recycling = true;
+    try { proc.kill('SIGTERM'); } catch (_) {}
+    armKillEscalation(proc, CLOSE_KILL_GRACE_MS);
+  });
   proc.on('exit', (code, signal) => { if (sessions.get(name)?.proc === proc) onExit(name, code, signal); });
-  proc.on('error', (err) => { if (sessions.get(name)?.proc === proc) onExit(name, null, null, err); });
+  proc.on('error', (err) => {
+    if (sessions.get(name)?.proc !== proc) return;
+    if (!proc.pid) onExit(name, null, null, err); else s.recycling = true;
+  });
+
+  s.monitorControl = s.monitorAdmission && s.onBackgroundEvent
+    ? createMonitorControl(proc, event => s.onBackgroundEvent(event), prompt => s.current?.text === prompt) : null;
+  if (s.monitorControl) s.monitorControl.initialized.then(() => {
+    if (sessions.get(name)?.proc === proc) pump(name);
+  }, error => {
+    if (sessions.get(name)?.proc !== proc) return;
+    for (const item of s.queue.splice(0)) item.reject(error);
+    cancel(name);
+  });
 
   return proc;
 }
@@ -224,6 +241,10 @@ function onStdout(name, chunk) {
       continue;
     }
 
+    if (s.monitorControl?.accept(evt)) continue;
+    // Self-wake queries of a held turn stream into it; their results stay internal.
+    if (s.current?.hold?.held && s.current.hold.observe(evt)) continue;
+    if (isMonitorHandoffResult(evt)) continue;
     if (recoverMissingResume(name, evt)) return;
     if (s.current) s.current.eventCount += 1;
 
@@ -232,8 +253,10 @@ function onStdout(name, chunk) {
       // keep our id; CLI honors --session-id, but record just in case
     }
 
-    if (s.current && typeof s.current.onEvent === 'function') {
-      try { s.current.onEvent(evt); } catch (_) {}
+    const cur = s.current;
+    if (cur && isMainResult(evt) && holdTurn(name, s, cur, evt)) continue;
+    if (cur && typeof cur.onEvent === 'function') {
+      try { cur.onEvent(evt); } catch (_) {}
     }
 
     // Background task events (task_started/task_updated/task_notification/
@@ -243,23 +266,29 @@ function onStdout(name, chunk) {
     // post-result events would be silently dropped. Forward them through a
     // SEPARATE callback independent of s.current so the server can shadow-tail
     // Monitor output and surface progress to the UI.
-    if (s.onBackgroundEvent && evt.type === 'system' &&
+    // A cancelled process reports its dying tasks as stopped; onExit reaps them.
+    if (s.onBackgroundEvent && !s.recycling && evt.type === 'system' &&
         /^(task_started|task_progress|task_updated|task_notification|background_tasks_changed)$/.test(evt.subtype || '')) {
       try { s.onBackgroundEvent(evt); } catch (_) {}
-      // A live background signal = the task is genuinely progressing. Refresh the
-      // idle-hold clock so an actively-working task never trips the hard ceiling,
-      // and re-arm idle if the turn is over (so the 10-min window restarts from
-      // this activity rather than the last user turn).
-      s.idleHeldSince = 0;
+      // Start a fresh idle window after a background event.
       if (!s.busy && s.queue.length === 0) armIdle(name);
     }
 
     // A `result` event marks the END of the current turn. The process stays
     // alive and ready for the next message.
-    if (isMainResult(evt)) {
-      finishTurn(name, evt);
-    }
+    if (isMainResult(evt)) finishTurn(name, evt);
   }
+}
+
+// Returns true when the main result is held until background work finishes.
+function holdTurn(name, s, cur, evt) {
+  cur.hold ||= createBackgroundHold({ ...s.backgroundHold, hasBackground: () => !!s.isBackgroundActive?.(),
+    release: result => {
+      if (sessions.get(name) !== s || s.current !== cur) return;
+      try { cur.onEvent?.(result); } catch (_) {}
+      finishTurn(name, result);
+    } });
+  return cur.hold.start(evt);
 }
 
 function finishTurn(name, resultEvt) {
@@ -267,6 +296,7 @@ function finishTurn(name, resultEvt) {
   if (!s) return;
   s.started = true;
   const cur = s.current;
+  cur?.hold?.dispose();
   s.current = null;
   s.busy = false;
   if (cur && typeof cur.resolve === 'function') {
@@ -283,6 +313,7 @@ function onExit(name, code, signal, err) {
   clearIdle(s);
   const wasBusy = s.busy;
   const cur = s.current;
+  cur?.hold?.dispose();
   s.proc = null;
   s.busy = false;
   s.current = null;
@@ -327,27 +358,17 @@ function onExit(name, code, signal, err) {
 //
 // `recycling` blocks every pump for this session until the exit lands, so a process
 // that ignores SIGTERM would wedge the session for good — hence the escalation to
-// SIGKILL and, if even that produces no exit event, releasing the flag so turns can
-// resume (a respawn alongside a zombie beats a session that accepts no messages).
+// SIGKILL. The fence remains until actual exit; a second writer must never be
+// spawned alongside an unconfirmed first one.
 function killForRecycle(name, s) {
   const proc = s.proc;
   s.recycling = true;
   clearIdle(s);
-  try { proc.kill('SIGTERM'); }
-  catch (_) {
-    s.recycling = false;
-    setImmediate(() => pump(name));
-    return false;
-  }
+  // A signal error is not exit evidence. Keep the fence until onExit.
+  try { proc.kill('SIGTERM'); } catch (_) {}
   const escalate = setTimeout(() => {
     if (s.proc !== proc || !s.recycling) return;
     try { proc.kill('SIGKILL'); } catch (_) {}
-    const release = setTimeout(() => {
-      if (s.proc !== proc || !s.recycling) return;
-      s.recycling = false;
-      pump(name);
-    }, RECYCLE_KILL_GRACE_MS);
-    if (release.unref) release.unref();
   }, RECYCLE_KILL_GRACE_MS);
   if (escalate.unref) escalate.unref();
   return true;
@@ -357,6 +378,13 @@ function killForRecycle(name, s) {
 function pump(name) {
   const s = sessions.get(name);
   if (!s || s.busy || s.recycling) return;
+  if (closer.isClosing(name)) {
+    if (!s.joiningClose) {
+      s.joiningClose = true;
+      void closer.drained(name).then(() => { s.joiningClose = false; pump(name); });
+    }
+    return;
+  }
   const next = s.queue.shift();
   if (!next) return;
 
@@ -370,6 +398,10 @@ function pump(name) {
   // persisted, so nothing is lost.
   if (isAlive(name) && s.spawnedFingerprint !== null &&
       routeFingerprint(s.env) !== s.spawnedFingerprint) {
+    if (s.isBackgroundActive?.()) {
+      next.reject(Object.assign(new Error('Background work still owns the process'), { code: 'CHAT_BACKGROUND_ACTIVE' }));
+      return;
+    }
     s.queue.unshift(next);
     s.recycleRequested = false;   // the respawn satisfies any pending request too
     killForRecycle(name, s);
@@ -395,9 +427,9 @@ function pump(name) {
     try { spawnProc(name, s); }
     catch (e) { next.reject(e); return; }
   }
+  if (s.monitorControl && !s.monitorControl.ready) { s.queue.unshift(next); return; }
   s.busy = true;
   s.current = next;
-  s.idleHeldSince = 0; // a real user turn is fresh activity; reset the hold clock
   clearIdle(s);
   // Turn-timing: the process is ready for this message (fresh spawn above or a
   // warm reuse) — this is t1 on the streaming path.
@@ -430,21 +462,17 @@ function armIdle(name) {
 // process that still owns live background work must NOT be killed — doing so
 // murders the running task and orphans its shadow monitor (the root cause of
 // the "后台任务一直转圈" bug). While background work is live we hold the process
-// and re-check next window, bounded by idleMaxHoldMs so a permanently-silent
-// (leaked) task can't pin it forever.
+// and re-check next window. Silence only warrants a host warning; terminating
+// background work requires an explicit user cancellation.
 function reclaimIfIdle(name) {
   const s = sessions.get(name);
   if (!s) return;
   if (!isAlive(name) || s.busy || s.queue.length > 0) return;
   const bgActive = typeof s.isBackgroundActive === 'function' && s.isBackgroundActive();
-  if (bgActive) {
-    if (!s.idleHeldSince) s.idleHeldSince = Date.now();
-    const maxHold = s.idleMaxHoldMs || DEFAULT_IDLE_MAX_HOLD_MS;
-    if (Date.now() - s.idleHeldSince < maxHold) { armIdle(name); return; }
-    // ceiling exceeded → fall through and reclaim (exit path reaps + surfaces interrupted)
-  }
-  s.idleHeldSince = 0;
+  if (bgActive) { armIdle(name); return; }
+  s.recycling = true;
   try { s.proc.stdin.end(); } catch (_) {}
+  armKillEscalation(s.proc, CLOSE_KILL_GRACE_MS);
   // graceful close; context is recoverable via --resume on next send
 }
 
@@ -468,16 +496,17 @@ function ensure(name, cfg) {
       beforeSpawn: cfg.beforeSpawn || null,
       env: cfg.env || {},
       idleMs: cfg.idleMs || DEFAULT_IDLE_MS,
-      idleMaxHoldMs: cfg.idleMaxHoldMs || DEFAULT_IDLE_MAX_HOLD_MS,
       isBackgroundActive: cfg.isBackgroundActive || null,
+      backgroundHold: cfg.backgroundHold || null,
       onExit: cfg.onExit || null,
       onDispose: cfg.onDispose || null,
       onNewSessionId: cfg.onNewSessionId || null,
       onResumeTargetMissing: cfg.onResumeTargetMissing || null,
       onBackgroundEvent: cfg.onBackgroundEvent || null,
+      monitorAdmission: cfg.monitorAdmission === true,
       proc: null, started: false, busy: false,
       queue: [], current: null, lineBuf: '', stderrTail: '',
-      idleTimer: null, idleHeldSince: 0,
+      idleTimer: null,
       recycling: false, spawnedFingerprint: null,
       recycleRequested: false, recycleReason: '',
       lastSpawnWasResume: false,
@@ -495,7 +524,7 @@ function ensure(name, cfg) {
     if (cfg.onExit !== undefined) s.onExit = cfg.onExit;
     if (cfg.onDispose !== undefined) s.onDispose = cfg.onDispose;
     if (cfg.isBackgroundActive !== undefined) s.isBackgroundActive = cfg.isBackgroundActive;
-    if (cfg.idleMaxHoldMs !== undefined) s.idleMaxHoldMs = cfg.idleMaxHoldMs;
+    if (cfg.backgroundHold !== undefined) s.backgroundHold = cfg.backgroundHold;
   }
   return s;
 }
@@ -581,7 +610,10 @@ function cancel(name) {
   // Reject queued sends so callers don't hang.
   const pending = s.queue.splice(0);
   for (const q of pending) { try { q.reject(new Error('cancelled')); } catch (_) {} }
+  // A held turn's answer is complete; only its background work is cut short.
+  if (s.current?.hold?.held) s.current.hold.flush();
   if (s.proc) {
+    s.recycling = true;
     try { s.proc.kill('SIGTERM'); } catch (_) {}
     armKillEscalation(s.proc, CLOSE_KILL_GRACE_MS);
   }
@@ -603,6 +635,7 @@ function cancel(name) {
 //     instead of running alongside a respawn.
 function close(name) {
   const s = sessions.get(name);
+  closer.track(name, s?.proc);
   cancel(name);
   if (!s) return;
   clearIdle(s);
@@ -621,43 +654,8 @@ function close(name) {
 // gone proves no new turn can use the process, but transcript cleanup must also
 // wait until the captured CLI process has actually exited (including SIGKILL
 // escalation). Existing callers keep close()'s synchronous contract.
-function closeAndWait(name, { timeoutMs = CLOSE_KILL_GRACE_MS + 1_000 } = {}) {
-  const numericTimeout = Number(timeoutMs);
-  if (!Number.isFinite(numericTimeout) || numericTimeout < 1) {
-    return Promise.reject(Object.assign(new TypeError('valid close timeout required'), {
-      code: 'CHAT_STREAM_CLOSE_TIMEOUT_INVALID',
-    }));
-  }
-  const processState = sessions.get(name)?.proc || null;
-  if (!processState || processState.exitCode !== null) {
-    close(name);
-    return Promise.resolve(Object.freeze({ closed: true, hadProcess: false }));
-  }
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let timer = null;
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      try { processState.removeListener('exit', onExit); } catch (_) {}
-      if (error) reject(error);
-      else resolve(Object.freeze({ closed: true, hadProcess: true }));
-    };
-    const onExit = () => finish();
-    try { processState.once('exit', onExit); } catch (cause) {
-      finish(Object.assign(new Error('cannot join native chat process', { cause }), {
-        code: 'CHAT_STREAM_CLOSE_JOIN_FAILED',
-      }));
-      return;
-    }
-    timer = setTimeout(() => finish(Object.assign(
-      new Error('native chat process did not exit before the cleanup deadline'),
-      { code: 'CHAT_STREAM_CLOSE_TIMEOUT' },
-    )), numericTimeout);
-    close(name);
-    if (processState.exitCode !== null) finish();
-  });
+function closeAndWait(name, opts) {
+  return closer.wait(name, () => close(name), opts);
 }
 
 function status(name) {
@@ -667,6 +665,7 @@ function status(name) {
     alive: isAlive(name),
     busy: s.busy,
     queued: s.queue.length,
+    backgroundActive: !!s.isBackgroundActive?.(),
     started: s.started,
     pid: s.proc ? s.proc.pid : null,
     recycling: s.recycling,
@@ -674,4 +673,9 @@ function status(name) {
   };
 }
 
-module.exports = { ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle };
+module.exports = require('./stream-router').createStreamRouter(
+  { ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle, isClosing: closer.isClosing,
+    waitForClose: (name, opts) => closer.wait(name, () => {}, opts) },
+  require('./claude-sdk-stream').createSdkStream(),
+  require('./codex-app-stream').createCodexAppStream(),
+);

@@ -8,6 +8,7 @@ import '../models/dispatch_queue.dart';
 import '../models/message.dart';
 import '../models/role_tokens.dart';
 import '../models/usage_readout.dart';
+import '../utils/format.dart';
 import '../models/vendor_quota.dart';
 import '../services/chat_debug_log.dart';
 import '../services/chat_service.dart';
@@ -18,55 +19,28 @@ import '../services/quota_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../services/transcript_live_folder.dart';
+import '../utils/session_status_helpers.dart';
+import 'admission_notes.dart';
+import 'pending_configuration.dart';
 
 // Re-exported so existing tests keep importing the sidecar helpers from the
 // provider (their pre-extraction home); the implementation now lives with the
 // shared folder.
 export '../services/transcript_live_folder.dart'
     show toolCallById, applyReasoningDelta, applyToolArgsDelta;
+export 'admission_notes.dart';
 
 part 'chat_provider_history.dart';
 
 bool _isRecoverableCodexReconnectErrorText(String text) {
+  // 与 public/chat-event-controller.js 的同名判定逐字对齐：前缀是车道展示名，2026-09-24
+  // 改名后一次性车道写 "Codex Exec 出错："（原来 "Codex"），三种拼法都收，否则一次
+  // 瞬时重连会被当成真错误画进对话。
   return RegExp(
-        r'^Codex 出错：Reconnecting\.\.\.\s*\d+/\d+\s*\(',
+        r'^(?:Codex|Codex Exp|Codex Exec) 出错：Reconnecting\.\.\.\s*\d+/\d+\s*\(',
       ).hasMatch(text) &&
       (text.contains('stream disconnected before completion') ||
           text.contains('response.completed'));
-}
-
-@visibleForTesting
-String? admissionProgressI18nKey(Map<String, dynamic> payload) {
-  switch (payload['state']?.toString()) {
-    case 'waiting':
-      return 'admissionMemoryWaiting';
-    case 'ready':
-      return 'admissionMemoryReady';
-    case 'skipped':
-      return payload['reason'] == 'memory_distill_failed'
-          ? 'admissionMemoryFailed'
-          : 'admissionMemorySkipped';
-    default:
-      return null;
-  }
-}
-
-@visibleForTesting
-String? admissionProgressDetail(Map<String, dynamic> payload) {
-  for (final key in const ['rootCause', 'code']) {
-    final value = payload[key];
-    if (value is! String) continue;
-    final normalized = value
-        .replaceAll(RegExp(r'[\r\n\t]+'), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    if (normalized.isNotEmpty) {
-      return normalized.length > 240
-          ? normalized.substring(0, 240)
-          : normalized;
-    }
-  }
-  return null;
 }
 
 // ── Staged user sends: a sent message waiting for the server's FIFO verdict ─
@@ -413,10 +387,15 @@ class ChatProvider extends ChangeNotifier {
   SessionCli get cli => _cli;
   String? _lastCliSwitchHandoffId;
 
+  /// 会话忙时服务端把用户的改动暂存成 pendingConfiguration（下一轮才落地）；那份
+  /// 暂存才是用户此刻的意图，页头与药丸按它显示。见 pending_configuration.dart。
+  final PendingConfiguration pendingConfiguration = PendingConfiguration();
+
   String _statusText = 'Disconnected';
   String get statusText => _statusText;
 
   String? _admissionProgressText;
+  final _autoRouteLine = AutoRouteLine();
   String? _admissionProgressClientMsgId;
   String? get admissionProgressText => _admissionProgressText;
 
@@ -460,16 +439,11 @@ class ChatProvider extends ChangeNotifier {
   ApiErrorPolicyState? _apiErrorPolicy;
   ApiErrorPolicyState? get apiErrorPolicy => _apiErrorPolicy;
 
+  // The record behind the passive rate_limit_event. It is read by [limitView]
+  // (which gates it through providerMatchesCli/balanceBarVisibleFor — the single
+  // gate, see models/vendor_quota.dart) and by the expiry timer below; it is
+  // persisted to the local runtime cache so a cold start can repaint the bars.
   UsageWindowLimit? _usageWindowLimit;
-  UsageWindowLimit? get usageWindowLimit {
-    final value = _usageWindowLimit;
-    if (value == null ||
-        !value.isActiveAt(DateTime.now()) ||
-        !value.matchesCli(_cli.name)) {
-      return null;
-    }
-    return value;
-  }
 
   // ── Server-rendered quota bars ────────────────────────────────────────────
   // Every bar below is the server's render, resolved here at paint time. The
@@ -644,6 +618,7 @@ class ChatProvider extends ChangeNotifier {
   String _providerLimitId = '';
   String _providerLimitAppType = '';
   int _providerLimitRevision = 0;
+  bool _providerIdentityKnown = false;
   Map<String, dynamic>? _activeProviderLimit;
   SessionProviderSelection? _providerSelection;
   SessionProviderSelection? get providerSelection => _providerSelection;
@@ -669,8 +644,12 @@ class ChatProvider extends ChangeNotifier {
   bool _arkInstalling = false;
   bool _kimiLoading = false;
   bool _qoderLoading = false;
-  bool _arkInFlight = false;
-  bool _kimiInFlight = false;
+  // Keyed on the host each query was issued for, for the same reason as
+  // _providerLimitInFlightKey: a switch that lands mid-flight must not suppress
+  // the new host's query (the old response is dropped by the requestBaseUrl
+  // check anyway, so suppressing the new one would blank the bar).
+  String? _arkInFlightUrl;
+  String? _kimiInFlightUrl;
   bool _qoderInFlight = false;
   int _arkErrorAt = 0;
   int _kimiErrorAt = 0;
@@ -748,53 +727,6 @@ class ChatProvider extends ChangeNotifier {
   int get sessionInputTokens => _sessionInputTokens;
   int get sessionOutputTokens => _sessionOutputTokens;
   Map<String, dynamic>? get contextTrace => _contextTrace;
-
-  // ── 自动提交（对齐 web 的 `#auto-commit-btn` + 每轮气泡勾选） ─────────────
-  //
-  // Web 把「这一轮要不要自动提交」存在 DOM 上：勾选框挂在用户气泡里，会话级
-  // 开关同步新气泡时跳过 `userTouched` 的那条。这里用两张表把同一套语义搬到
-  // Dart —— 聊天页重建消息列表是常态，DOM 那套没法照搬。
-
-  /// 用户亲手改过的那些轮：这些不再跟随会话级开关。
-  final Map<String, bool> _turnAutoCommit = {};
-  final Set<String> _turnAutoCommitTouched = {};
-
-  /// 已经自动提交过的轮（对应 web 给气泡加的 `.done`）。服务端不记这件事，
-  /// 所以它只活在本次会话的内存里。
-  final Set<String> _autoCommittedTurns = {};
-
-  /// 每收到一个 `result` 帧自增。它是「这一轮结束了」的唯一信号 —— 自动提交
-  /// 要等它，而不是等流式停止（一次多步 agent 运行中间会停好几次）。
-  int _turnEndTick = 0;
-  int get turnEndTick => _turnEndTick;
-
-  /// 这一轮（这条用户消息开启的那一轮）是否勾了自动提交。
-  ///
-  /// 没被手工改过就跟随 [fallback]（会话级开关的当前值）—— web 也是这么
-  /// initialize 的：`addUserMsg(..., checked = _sessionAutoCommit)`。
-  bool turnAutoCommit(String msgId, {required bool fallback}) {
-    if (_turnAutoCommitTouched.contains(msgId)) {
-      return _turnAutoCommit[msgId] ?? fallback;
-    }
-    return fallback;
-  }
-
-  /// 用户手点这条气泡的勾选框。点过就进 touched 集合，之后会话级开关再变也
-  /// 不会覆盖这一轮的选择。
-  void setTurnAutoCommit(String msgId, bool value) {
-    if (msgId.isEmpty) return;
-    _turnAutoCommit[msgId] = value;
-    _turnAutoCommitTouched.add(msgId);
-    notifyListeners();
-  }
-
-  bool isTurnAutoCommitted(String msgId) => _autoCommittedTurns.contains(msgId);
-
-  void markTurnAutoCommitted(String msgId) {
-    if (msgId.isEmpty) return;
-    _autoCommittedTurns.add(msgId);
-    notifyListeners();
-  }
 
   // ── 引用消息的落地通道 ─────────────────────────────────────────────────────
   //
@@ -939,7 +871,8 @@ class ChatProvider extends ChangeNotifier {
       );
       // Restored unconditionally (the web localStorage limit bar has no
       // staleness filter either): a past 5h reset still leaves the weekly
-      // windows on the bar, and paint-time {cd} tokens clamp themselves.
+      // windows on the bar, and paint-time {cd} tokens resolve that window to
+      // 已重置 rather than to a live-looking countdown.
       if (parsed != null) {
         _usageWindowLimit = parsed;
         _armUsageExpiry();
@@ -1052,9 +985,10 @@ class ChatProvider extends ChangeNotifier {
     if (reset == null) return;
     final delayMs = reset - DateTime.now().millisecondsSinceEpoch + 50;
     if (delayMs <= 0) {
-      // Already past the reset: just re-render (the {cd} tokens clamp), the way
-      // the web expiry timer does. The limit is NOT cleared — its bar still
-      // shows the windows that have not reset (e.g. weekly).
+      // Already past the reset: just re-render, the way the web expiry timer
+      // does — the {cd} token now resolves to 已重置, so the bar stops claiming
+      // the old reading is still counting down. The limit is NOT cleared — its
+      // bar still shows the windows that have not reset (e.g. weekly).
       notifyListeners();
       return;
     }
@@ -1062,7 +996,7 @@ class ChatProvider extends ChangeNotifier {
       Duration(milliseconds: delayMs.clamp(1, 2147000000).toInt()),
       () {
         // Mirrors the web scheduleExpiry: re-render at the 5h reset so a stale
-        // countdown refreshes; the bar itself is not cleared (weekly windows
+        // countdown becomes 已重置; the bar itself is not cleared (weekly windows
         // have not reset).
         notifyListeners();
       },
@@ -1132,6 +1066,8 @@ class ChatProvider extends ChangeNotifier {
 
       case 'system_init':
         unawaited(refreshDispatchQueue());
+        // system_init 帧里没有 pendingConfiguration，补一次 REST（见该方法）。
+        unawaited(refreshPendingConfiguration());
         final msg = evt.payload as Map<String, dynamic>;
         final sid = (msg['session_id'] ?? msg['session'])?.toString();
         if (sid != null && sid.isNotEmpty) _sessionId = sid;
@@ -1165,7 +1101,7 @@ class ChatProvider extends ChangeNotifier {
             ? 'Connected · Auto'
             : model != null
             ? t('connectedModel', {'model': model})
-            : t('connectedCli', {'cli': _cli.name});
+            : t('connectedCli', {'cli': _cli.displayName});
 
         final serverStreaming = msg['is_streaming'] == true;
         if (serverStreaming && _folder.currentMsg == null) {
@@ -1177,6 +1113,14 @@ class ChatProvider extends ChangeNotifier {
         notifyListeners();
         break;
 
+      case 'session_configuration_pending':
+      case 'session_configuration_applied':
+        // 另一端暂存 → 立刻显示成选好的那条；轮次边界已落地 → 记号清掉。
+        if (pendingConfiguration.syncFromEvent(evt.type, evt.payload)) {
+          notifyListeners();
+        }
+        break;
+
       case 'system_msg':
         _addSystemMsg(evt.payload as String);
         break;
@@ -1185,6 +1129,8 @@ class ChatProvider extends ChangeNotifier {
         final msg = evt.payload as Map<String, dynamic>;
         final next = parseCli(msg['cli']?.toString());
         final from = parseCli(msg['fromCli']?.toString());
+        // 换道真的落地了（延迟换道的落点就是轮次边界）：暂存的那份不再是「待生效」。
+        pendingConfiguration.clear();
         if (next != _cli) _clearCliQuotaBackoff();
         _cli = next;
         _providerSelection = parseProviderSelection(msg['providerSelection']);
@@ -1423,31 +1369,15 @@ class ChatProvider extends ChangeNotifier {
           }
         } else {
           // Prefer the precise classifyState letter (D/W/B/E/P) when the
-          // server provides it; fall back to the coarse notify state.
-          final cls = (p['classifyState'] ?? '').toString().toUpperCase();
-          String outcome;
-          switch (cls) {
-            case 'D':
-              outcome = t('classifySucceeded');
-              break;
-            case 'E':
-              outcome = t('apiError');
-              break;
-            case 'C': // Legacy server: retired C is safest as wait-for-user.
-            case 'W':
-              outcome = t('waitingAction');
-              break;
-            case 'B':
-              outcome = t('waitingBackground');
-              break;
-            default:
-              outcome = notifyState == 'waiting'
-                  ? t('waitingInteraction')
-                  : notifyState == 'error'
-                  ? t('errorOccurred')
-                  : t('classifySucceeded');
-          }
-          _maybeNotify(outcome, notifyMsg);
+          // server provides it; fall back to the coarse notify state. The
+          // wording itself lives in session_status_helpers (one table shared
+          // with the task list and the voice call), so notifications, the
+          // chat bar and TTS all say the same thing for one outcome.
+          final cls = (p['classifyState'] ?? '').toString();
+          _maybeNotify(
+            classifyNotificationWord(cls.isEmpty ? notifyState : cls),
+            notifyMsg,
+          );
         }
         break;
 
@@ -1615,6 +1545,7 @@ class ChatProvider extends ChangeNotifier {
               _admissionProgressText = null;
               _admissionProgressClientMsgId = null;
             }
+            _autoRouteLine.drop(_messages);
             _statusText = t('admissionDeliveryFailedShort');
             final detail = admissionProgressDetail(p);
             _addSystemMsg(
@@ -1623,6 +1554,16 @@ class ChatProvider extends ChangeNotifier {
                   : t('admissionDeliveryFailedWithCause', {'cause': detail}),
             );
             break;
+          }
+          if (p['stage'] == 'auto_provider_routing' &&
+              p['state'] == 'waiting') {
+            // A message queued behind a running answer gets its line when its
+            // own turn starts, not drawn into the middle of that answer.
+            if (isStreaming) {
+              notifyListeners();
+              break;
+            }
+            _autoRouteLine.judging(_messages);
           }
           final key = admissionProgressI18nKey(p);
           if (key == null) break;
@@ -1839,6 +1780,7 @@ class ChatProvider extends ChangeNotifier {
   void applyCliConfig(SessionCliConfig config) {
     if (config.cli != _cli) _clearCliQuotaBackoff();
     _cli = config.cli;
+    pendingConfiguration.update(config.pending);
     _providerSelection = config.providerSelection;
     _clearActualProviderRoute();
     if (_providerSelection == null) {
@@ -1859,7 +1801,7 @@ class ChatProvider extends ChangeNotifier {
         ? 'Connected · Auto'
         : model != null && model.isNotEmpty
         ? 'Connected · $model'
-        : 'Connected · ${config.cli.name}';
+        : 'Connected · ${config.cli.displayName}';
     if (_providerSelection == null) {
       _setProviderBaseUrl(config.providerBaseUrl ?? '');
     } else {
@@ -1870,7 +1812,7 @@ class ChatProvider extends ChangeNotifier {
 
   /// Update the active provider baseUrl and, when it changed, immediately pull
   /// fresh quota for whichever vendor it points at (mirrors the web
-  /// setProviderBaseUrl refresh-on-change behavior).
+  /// setProviderBaseUrl refresh-on-change behavior; the first call is a report).
   void _setProviderBaseUrl(String baseUrl) {
     final next = baseUrl.trim();
     final nextProviderId = (_activeProviderId ?? '').trim();
@@ -1878,9 +1820,10 @@ class ChatProvider extends ChangeNotifier {
         ? ''
         : (_providerCatalogAppTypes[nextProviderId] ?? _cli.appType);
     final changed =
-        next != _providerBaseUrl ||
-        nextProviderId != _providerLimitId ||
-        nextAppType != _providerLimitAppType;
+        _providerIdentityKnown &&
+        (next != _providerBaseUrl ||
+            nextProviderId != _providerLimitId ||
+            nextAppType != _providerLimitAppType);
     _providerBaseUrl = next;
     _providerLimitId = nextProviderId;
     _providerLimitAppType = nextAppType;
@@ -1902,8 +1845,15 @@ class ChatProvider extends ChangeNotifier {
       // setProviderBaseUrl clears backoff the same way).
       _arkErrorAt = 0;
       _kimiErrorAt = 0;
-      refreshVendorQuotas();
+      // The vendor bars too: they are per-host, and web setProviderBaseUrl
+      // resets both slots here. Keeping them showed the previous Volcengine /
+      // Moonshot account's quota under the new provider until its own fetch
+      // landed (or forever, if that fetch failed).
+      _arkQuota = null;
+      _kimiQuota = null;
     }
+    if (!_providerIdentityKnown || changed) refreshVendorQuotas();
+    _providerIdentityKnown = true;
   }
 
   /// A provider-only switch (PATCH /api/sessions/:id with provider/model while
@@ -1914,6 +1864,7 @@ class ChatProvider extends ChangeNotifier {
   /// saveSession (chat.js: "without this call the bar kept showing the OLD
   /// provider until the next loadSessionModel()").
   void applyProviderSwitch(SessionCliConfig config) {
+    pendingConfiguration.update(config.pending);
     _providerSelection = config.providerSelection;
     _clearActualProviderRoute();
     if (_providerSelection == null) {
@@ -1935,11 +1886,21 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Learn the "applies next turn" configuration without touching the running
+  /// route: deferred switch-cli/PATCH response, or the connect-time REST refresh.
+  void applyPendingConfiguration(SessionPendingConfiguration? pending) {
+    if (pendingConfiguration.update(pending)) notifyListeners();
+  }
+
   /// ChatService has already run ProviderRouteGate before emitting these
   /// events. Auto policy events are only plans; only a physical attempt route
   /// event is allowed to establish the displayed actual provider.
   @visibleForTesting
   void applyProviderRoutingEvent(String type, Map<dynamic, dynamic> source) {
+    if (type == 'provider_auto_route') {
+      if (_autoRouteLine.settle(_messages, source)) notifyListeners();
+      return;
+    }
     if (type != 'provider_route_event') return;
     _applyActualProviderRoute(source);
     notifyListeners();
@@ -2105,34 +2066,71 @@ class ChatProvider extends ChangeNotifier {
 
   int _nowMs() => DateTime.now().millisecondsSinceEpoch;
 
+  // One provider-balance query at a time per provider identity (the web's
+  // providerLimitInFlight): this is fired by every provider change and is
+  // click-reachable from the bar's ⟳, so without the guard a burst stacks
+  // duplicate in-flight requests. Keyed on the identity rather than a bare
+  // boolean: a switch landing while the previous provider's query is still open
+  // must not be suppressed by it — that response belongs to the OLD provider and
+  // the revision check below drops it, so suppressing the new query left the bar
+  // blank until some unrelated event fired one (a bare flag did exactly that on
+  // two provider changes in the same microtask, e.g. the CLI config arriving
+  // immediately before the provider PATCH's own re-learn).
+  String? _providerLimitInFlightKey;
+
   Future<void> _fetchActiveProviderLimit(
     int revision,
     String appType,
     String providerId,
   ) async {
-    final data = await _quota.fetchProviderBalance(appType, providerId);
-    if (revision != _providerLimitRevision ||
-        appType != _providerLimitAppType ||
-        providerId != _providerLimitId) {
-      return;
+    final inFlightKey = '$appType:$providerId';
+    if (_providerLimitInFlightKey == inFlightKey) return;
+    _providerLimitInFlightKey = inFlightKey;
+    try {
+      final data = await _quota.fetchProviderBalance(appType, providerId);
+      if (revision != _providerLimitRevision ||
+          appType != _providerLimitAppType ||
+          providerId != _providerLimitId) {
+        return;
+      }
+      // A failed query must NOT erase a good bar. The web's refreshProviderLimit
+      // returns on failure without touching the bars, and the server answers a
+      // transient upstream failure with its cached last-known-good bar for
+      // exactly this reason; nulling it here (the old behavior) meant one 20s
+      // timeout hid the chip until the user switched provider or CLI again.
+      // Nothing is kept across an identity change: that path clears the field.
+      if (data == null || data['ok'] != true) return;
+      _activeProviderLimit = data;
+      notifyListeners();
+    } finally {
+      if (_providerLimitInFlightKey == inFlightKey) {
+        _providerLimitInFlightKey = null;
+      }
     }
-    _activeProviderLimit = data?['ok'] == true ? data : null;
-    notifyListeners();
   }
 
   Future<void> _fetchArkQuota({bool force = false}) async {
-    if (_arkInFlight) return;
+    // Pinned to the baseUrl this query was issued for: a response that lands
+    // after the provider moved on belongs to the previous plan/provider, and
+    // writing it here used to repaint the old window under the new provider.
+    final requestBaseUrl = _providerBaseUrl;
+    if (_arkInFlightUrl == requestBaseUrl) return;
     if (!force &&
         _arkErrorAt != 0 &&
         _nowMs() - _arkErrorAt < _vendorQuotaBackoffMs) {
       return;
     }
-    _arkInFlight = true;
+    _arkInFlightUrl = requestBaseUrl;
     _arkLoading = true;
     notifyListeners();
-    final data = await _quota.fetchArkQuota(_providerBaseUrl);
-    _arkInFlight = false;
-    _arkLoading = false;
+    final data = await _quota.fetchArkQuota(requestBaseUrl);
+    // Only this query's own bookkeeping: if it was superseded by a query for
+    // another host, that one owns the loading flag and will clear it.
+    if (_arkInFlightUrl == requestBaseUrl) {
+      _arkInFlightUrl = null;
+      _arkLoading = false;
+    }
+    if (requestBaseUrl != _providerBaseUrl) { notifyListeners(); return; }
     if (data == null) {
       _arkErrorAt = _nowMs();
     } else {
@@ -2144,20 +2142,24 @@ class ChatProvider extends ChangeNotifier {
   }
 
   Future<void> _fetchKimiQuota({bool force = false}) async {
-    if (_kimiInFlight) return;
+    final requestBaseUrl = _providerBaseUrl;
+    if (_kimiInFlightUrl == requestBaseUrl) return;
     if (!force &&
         _kimiErrorAt != 0 &&
         _nowMs() - _kimiErrorAt < _vendorQuotaBackoffMs) {
       return;
     }
-    _kimiInFlight = true;
+    _kimiInFlightUrl = requestBaseUrl;
     _kimiLoading = true;
     notifyListeners();
     final data = await _quota.fetchKimiQuota(
-      kimiHostFromBaseUrl(_providerBaseUrl),
+      kimiHostFromBaseUrl(requestBaseUrl),
     );
-    _kimiInFlight = false;
-    _kimiLoading = false;
+    if (_kimiInFlightUrl == requestBaseUrl) {
+      _kimiInFlightUrl = null;
+      _kimiLoading = false;
+    }
+    if (requestBaseUrl != _providerBaseUrl) { notifyListeners(); return; }
     if (data == null) {
       _kimiErrorAt = _nowMs();
     } else {
@@ -2515,17 +2517,14 @@ class ChatProvider extends ChangeNotifier {
     }
     final ms = (msg['durationMs'] as num?)?.toInt();
     final turns = (msg['num_turns'] as num?)?.toInt();
-    if (ms != null) _turnDurationText = _fmtDuration(ms);
+    if (ms != null) _turnDurationText = formatDuration(ms);
     if (turns != null) _turnCount = turns;
 
     // Completion notification is NOT fired here: a `result` only means the
     // stream stopped, which during a multi-step agent run happens between
     // turns too. The server's aux-AI debounces the pause and decides
     // done-vs-waiting, then sends a `notify` event — that is the single judge.
-    //
-    // 自动提交仍然挂在这个帧上（web 的 `handleResult` → `autoCommitIfNeeded`）：
-    // 它要的是「这一轮跑完了」，与上面那条「跑完 ≠ 做完」的判定互不干扰。
-    _turnEndTick++;
+    // （自动提交也走服务端：回合落库后由 turn-engine 触发，不依赖这个帧。）
     notifyListeners();
   }
 
@@ -2588,6 +2587,16 @@ class ChatProvider extends ChangeNotifier {
         _bgSweepTimer = null;
       }
     });
+  }
+
+  /// 连接时补齐「下轮生效」的那份改动：system_init 帧不带它，不补这一次 REST，
+  /// App 重启在 deferral 窗口里就会出现两个答案。
+  Future<void> refreshPendingConfiguration() async {
+    final target = executionSessionName;
+    if (target.isEmpty) return;
+    final config = await fetchPendingConfiguration(settings, target);
+    if (config == null || target != executionSessionName) return;
+    applyPendingConfiguration(config.pending);
   }
 
   // ── Dispatch activity (polled projection; no WS push in the contract) ─────
@@ -2698,15 +2707,6 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Human-friendly duration: 820ms / 6.2s / 1m3s
-  static String _fmtDuration(int ms) {
-    if (ms < 1000) return '${ms}ms';
-    final s = ms / 1000;
-    if (s < 60) return '${s.toStringAsFixed(1)}s';
-    final m = (s / 60).floor();
-    return '${m}m${(s % 60).round()}s';
-  }
-
   // ── Public actions ─────────────────────────────────────────────────────────
 
   /// 返回本次发送用的 clientMsgId（送不出去时是 null，调用方不能当成已发送）。
@@ -2769,10 +2769,11 @@ class ChatProvider extends ChangeNotifier {
   /// Explicit scheduler control. The APP never mutates or advances the queue
   /// itself; even after a successful POST it only applies the returned server
   /// schedule (and the following WS event will reconcile it again).
-  Future<void> queueAction(
+  Future<bool> queueAction(
     String action, {
     String? entryId,
     int? toIndex,
+    String? text,
   }) async {
     // Causality anchor: any `session_queue` WS event that lands while this
     // request is in flight is at least as authoritative as the action's own
@@ -2789,6 +2790,7 @@ class ChatProvider extends ChangeNotifier {
       action,
       entryId: entryId,
       toIndex: toIndex,
+      text: text,
     );
     final schedule = result['schedule'];
     if (schedule is Map) {
@@ -2798,10 +2800,12 @@ class ChatProvider extends ChangeNotifier {
         wsSeqAtRequest,
         _sessionQueueEventSeq,
       );
-      if (next == null) return;
-      _sessionQueue = next;
-      notifyListeners();
+      if (next != null) {
+        _sessionQueue = next;
+        notifyListeners();
+      }
     }
+    return action != 'insert_queued' || result['started'] == true;
   }
 
   /// Cancel the in-flight response. Matches the web client's cancelStreaming():

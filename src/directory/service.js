@@ -23,6 +23,14 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
   assertPort('fsPort', fsPort, FS_PORT);
   assertPort('helpers', helpers, HELPER_PORT);
 
+  // The controller spreads `extra` into the HTTP body, so a failure with no
+  // one-command remedy must yield undefined rather than a null field every
+  // client would have to special-case.
+  const fixExtra = (reason) => {
+    const fix = helpers.dirReasonFix(reason);
+    return fix ? { fix } : undefined;
+  };
+
   const dirBaseBranch = async (d) => d.baseBranch || await git.baseBranch(d.path);
 
   // Browse / autocomplete filesystem directories for the "new directory" picker.
@@ -79,6 +87,8 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
         kimi_terminal: 0, kimi_chat: 0,
         codebuddy_terminal: 0, codebuddy_chat: 0,
         dsh_terminal: 0, dsh_chat: 0,
+        gemini_terminal: 0, gemini_chat: 0,
+        grok_terminal: 0, grok_chat: 0,
       };
       for (const s of sessions.listByDir(d.id)) {
         const k = `${s.cli || 'claude'}_${s.kind || 'terminal'}`;
@@ -123,7 +133,10 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     const ready = await git.ensureReady(dir);
     if (!ready.ok) {
       repo.remove(dir.id);
-      return err('invalid', helpers.friendlyDirReason(ready.reason));
+      // Carry the fix code alongside the prose so the client can offer the one
+      // command that repairs this (e.g. installing macOS developer tools) as a
+      // button rather than as text to retype.
+      return err('invalid', helpers.friendlyDirReason(ready.reason), fixExtra(ready.reason));
     }
     repo.save();
     // Seed a default Agent Commander chat session so a workspace coordinator is ready
@@ -161,7 +174,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
         // Path changed → re-verify git readiness for the new location.
         git.unmarkReady(d.id);
         const ready = await git.ensureReady(d);
-        if (!ready.ok) return err('invalid', helpers.friendlyDirReason(ready.reason));
+        if (!ready.ok) return err('invalid', helpers.friendlyDirReason(ready.reason), fixExtra(ready.reason));
       }
     }
     if (body.rolePrompt !== undefined) {
@@ -280,7 +293,28 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     }
   }
 
-  return { browseFs, listAnnotated, register, createSample, update, remove, push, uncommitted, commitAll };
+  // User-chosen display order (drag-sort in the console). The order IS the
+  // registry's insertion order: directories.json is an array and every list()
+  // walks the Map, so re-inserting in the requested order persists it without a
+  // separate sort field. Ids the client didn't mention (registered from another
+  // tab meanwhile) keep their relative order at the tail; unknown ids are ignored.
+  function reorder(ids) {
+    if (!Array.isArray(ids)) return err('invalid', 'ids array required');
+    const wanted = [];
+    const seen = new Set();
+    for (const raw of ids) {
+      const id = String(raw || '');
+      if (!id || seen.has(id) || !repo.get(id)) continue;
+      seen.add(id);
+      wanted.push(repo.get(id));
+    }
+    const rest = repo.list().filter(d => !seen.has(d.id));
+    for (const d of [...wanted, ...rest]) { repo.remove(d.id); repo.add(d); }
+    repo.save();
+    return ok({ ok: true, ids: repo.list().map(d => d.id) });
+  }
+
+  return { browseFs, listAnnotated, register, createSample, update, reorder, remove, push, uncommitted, commitAll };
 }
 
 module.exports = { createDirectoryService };

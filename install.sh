@@ -2,11 +2,11 @@
 # ============================================================================
 # MultiCC — One-Click Installer (standalone package)
 # ============================================================================
-# MultiCC version  2.0.6
+# MultiCC version  2.2.0
 # Release channel  stable — see https://github.com/lsjwzh/MultiCC/releases
 # ============================================================================
 # Usage — stable release, no flags needed:
-#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.6/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.2.0/install.sh | bash
 #
 # Usage — newest release instead of this pinned one:
 #   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash -s -- --version latest
@@ -14,14 +14,16 @@
 # Or download and run it locally:
 #   chmod +x install.sh && ./install.sh
 #
-# You do NOT need Node, npm, git, Homebrew or Xcode. This script only downloads
+# You do NOT need Node, npm, git, Homebrew or Xcode to run this script: it only downloads
 # the standalone package for your platform, verifies its checksum and unpacks
 # it; the package carries its own Node runtime and its own dependencies. The
 # only tools it needs are curl (or wget), tar and a SHA-256 utility.
+# MultiCC itself does need a working git at runtime (one worktree per session);
+# this script checks for it at the end and prints how to install it.
 #
 # Options:
 #   --dir <path>        Install into this directory (default: ~/MultiCC)
-#   --version <v>       Release to install: v2.0.6 (default) or "latest"
+#   --version <v>       Release to install: v2.2.0 (default) or "latest"
 #   --token <xxx>       Pre-set ACCESS_TOKEN (default: auto-generate)
 #   --port <port>       Server port (default: 3000)
 #   --from <path|url>   Install from a local archive/directory or URL instead
@@ -36,6 +38,20 @@
 #   cd ~/MultiCC && ./multicc status  # show the running version and URL
 #   cd ~/MultiCC && ./multicc service install  # start automatically on login
 # ============================================================================
+
+# ── Bash requirement ───────────────────────────────────────────────────────
+# The script below uses arrays and process substitution, so it only runs under
+# bash. Started through `sh install.sh` — or /bin/sh, which on macOS is bash in
+# POSIX mode — bash-only syntax aborts with a bare "syntax error near
+# unexpected token", which is how the web updater used to invoke it. Re-exec
+# under a real bash instead of failing halfway through.
+if [ -z "${BASH_VERSION:-}" ] || { set -o | grep -q '^posix[[:space:]]*on$'; }; then
+  if [ -n "$0" ] && [ -f "$0" ] && command -v bash >/dev/null 2>&1; then
+    exec bash "$0" "$@"
+  fi
+  echo "[ERROR] install.sh requires bash. Run it as: bash install.sh" >&2
+  exit 1
+fi
 
 set -euo pipefail
 
@@ -75,15 +91,19 @@ gen_token() {
 }
 
 # MultiCC version — keep in sync with package.json when cutting a release
-INSTALLER_VERSION="2.0.6"
+INSTALLER_VERSION="2.2.0"
 
 # ── Parse flags ──────────────────────────────────────────────────────────
 INSTALL_DIR=""
 ACCESS_TOKEN=""
 PORT="3000"
+PORT_GIVEN=false
+ASSUME_YES=false
 NO_SERVICE=false
 NO_START=false
 NO_OPEN=false
+COPY_LEGACY_DATA=true
+ADOPT_DATA_FROM=""
 VERSION=""
 FROM=""
 
@@ -95,12 +115,15 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dir)       need_val "$1" "$#"; INSTALL_DIR="$2"; shift 2 ;;
     --token)     need_val "$1" "$#"; ACCESS_TOKEN="$2"; shift 2 ;;
-    --port)      need_val "$1" "$#"; PORT="$2"; shift 2 ;;
+    --port)      need_val "$1" "$#"; PORT="$2"; PORT_GIVEN=true; shift 2 ;;
     --version|-V) need_val "$1" "$#"; VERSION="$2"; shift 2 ;;
     --from)      need_val "$1" "$#"; FROM="$2"; shift 2 ;;
+    --yes|-y)     ASSUME_YES=true; shift ;;
     --no-service) NO_SERVICE=true; shift ;;
     --no-start)   NO_START=true; NO_SERVICE=true; shift ;;
     --no-open)    NO_OPEN=true; shift ;;
+    --no-data)    COPY_LEGACY_DATA=false; shift ;;
+    --adopt-data) need_val "$1" "$#"; ADOPT_DATA_FROM="$2"; shift 2 ;;
     --no-apk)     warn "--no-apk is no longer needed; APK builds are always on demand"; shift ;;
     # `--branch` and `--no-clone` belonged to the old git-clone installer. They
     # are kept as compatibility shims so an older published command line still
@@ -120,8 +143,9 @@ Usage — newest release instead of this pinned one:
 Or download and run it locally:
   chmod +x install.sh && ./install.sh
 
-No Node, npm, git, Homebrew or Xcode required: the standalone package ships
-its own runtime.
+No Node, npm, git, Homebrew or Xcode required to install: the standalone
+package ships its own runtime. MultiCC does need a working git to run;
+the installer checks and tells you how to get it.
 
 Options:
   --dir <path>        Install into this directory (default: ~/MultiCC)
@@ -129,6 +153,11 @@ Options:
   --token <xxx>       Pre-set ACCESS_TOKEN (default: auto-generate)
   --port <port>       Server port (default: 3000)
   --from <path|url>   Install from a local archive/directory or URL instead of GitHub
+  --yes               Upgrade an older installation without asking first
+  --no-data           Keep an older installation's data in the backup instead of
+                      bringing it across
+  --adopt-data <path> Bring the data of an older installation at <path> across
+                      (see "Upgrading from an older installation" below)
   --no-service        Skip the start-on-login setup
   --no-start          Install and configure only; do not start MultiCC
   --no-open           Start MultiCC but do not open a browser
@@ -139,6 +168,15 @@ The normal path starts MultiCC and opens the browser before this script exits.
 After install:
   cd ~/MultiCC && ./multicc status           # show the running version and URL
   cd ~/MultiCC && ./multicc service install  # start automatically on login
+
+Upgrading from an older installation:
+  An installation from before the standalone package is upgraded in place when it
+  is the directory being installed into: it is stopped, kept as a backup (never
+  deleted), and its settings and data come across.
+  If it is somewhere else — the oldest installers put MultiCC wherever they were
+  run from, and this one installs to ~/MultiCC — it is reported and left exactly
+  as it is, and its data can be brought across as a copy with:
+    --adopt-data <path>
 HELP
       exit 0
       ;;
@@ -187,10 +225,15 @@ fi
 
 # Same download with either tool; -f/--fail turns an HTTP 404 into a failure
 # instead of a saved HTML error page that would later fail extraction.
+# curl's default meter is a wide stats table (mostly zeros during DNS/TLS,
+# easy to mistake for "stuck") — --progress-bar/-# instead prints a single
+# percentage that updates in place, the same \r-per-frame shape the web UI's
+# update.log tail already collapses down to one line. wget's non-tty default
+# already prints a plain "N% ... ETA" per line, so it is left as-is.
 download() {
   local url="$1" dest="$2"
   if [ "$DOWNLOADER" = "curl" ]; then
-    curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -o "$dest" "$url"
+    curl -fL --progress-bar --retry 3 --retry-delay 2 --connect-timeout 20 -o "$dest" "$url"
   elif [ "$DOWNLOADER" = "wget" ]; then
     wget -O "$dest" "$url"
   else
@@ -334,14 +377,552 @@ is_multicc_install() {
   esac
 }
 
+# ── Installations from before the standalone package ──────────────────────
+# The guard below used to reject every one of these outright, and that is a
+# real trap: each of them WAS a valid MultiCC installation, put there by a
+# published installer, and its own launcher said so. Three shapes exist in the
+# wild, all of them installed by something the user was told to run:
+#   * a source checkout — the old installer placed the repository itself at the
+#     install path and installed its dependencies there, so the directory IS
+#     the project: root `multicc`, package.json, node_modules, and (when the
+#     installer wrote it) a .env still holding the ACCESS_TOKEN in use;
+#   * a hand-unpacked portable release — MultiCC.app or Resources/ carrying the
+#     shipped manifest, but no root launcher, which only came with the later
+#     bundle layout;
+#   * a bundle that was unpacked, trimmed or left half-installed — launcher and
+#     its own runtime, with no manifest at all.
+# What every one of them lacks is the full triple is_multicc_install() wants.
+#
+# Being generous here would undo the protection that function was deliberately
+# tightened for (a developer's checkout must not be replaced by the default
+# ~/MultiCC path). So identity is checked, not just file names: MultiCC's own
+# package.json, a manifest that only a shipped bundle carries, or the app /
+# runtime layout no unrelated project would have. A directory holding a file
+# that merely happens to be called `multicc` still gets the old refusal.
+has_multicc_manifest() {
+  [ -f "$1/MultiCC.app/Contents/Resources/bundle-manifest.json" ] \
+    || [ -f "$1/Resources/bundle-manifest.json" ]
+}
+
+is_legacy_multicc_install() {
+  [ -d "$1" ] || return 1
+  is_multicc_install "$1" && return 1
+  # A shipped bundle, in a layout older than the one today's check describes.
+  has_multicc_manifest "$1" && return 0
+  { [ -f "$1/multicc" ] || [ -f "$1/multicc.cmd" ]; } || return 1
+  if [ -f "$1/package.json" ] \
+    && grep -qE '"name"[[:space:]]*:[[:space:]]*"multicc"' "$1/package.json" 2>/dev/null; then
+    return 0
+  fi
+  [ -d "$1/MultiCC.app" ] || [ -d "$1/Resources/runtime" ]
+}
+
+# ── An older installation that is somewhere else entirely ─────────────────
+# Not every old installation is at the path this run installs into. The oldest
+# installer put MultiCC wherever it happened to be run from — $PWD/MultiCC by
+# default, $PWD itself with --no-clone — while this release installs to
+# ~/MultiCC, so an installation that predates the standalone package is
+# routinely somewhere else on the machine. Two things remember where: the login
+# service it registered, which still names the directory it starts from, and the
+# directory this run was started in. Both are only candidates — each still has
+# to pass the same identity check as an old installation at the target path, so
+# a directory that merely looks similar is never touched.
+
+# The directory the machine's own login service starts MultiCC from, if one is
+# registered. That service is the strongest evidence available: it is the OS
+# saying "MultiCC is installed here".
+legacy_service_dir() {
+  local plist unit dir=""
+  case "$PLATFORM" in
+    darwin)
+      plist="$HOME/Library/LaunchAgents/com.multicc.server.plist"
+      [ -f "$plist" ] || return 1
+      # ProgramArguments carries "<node> <dir>/server.js"; the directory in
+      # front of server.js is the installation the login job starts.
+      dir="$(sed -n 's:.*<string>\([^<]*\)/server\.js</string>.*:\1:p' "$plist" 2>/dev/null | head -1)"
+      ;;
+    linux)
+      unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/multicc.service"
+      [ -f "$unit" ] || return 1
+      # ExecStart=<node> [flags] <dir>/server.js — the directory is the last
+      # word before the script, whatever runtime or flags come first.
+      dir="$(sed -n 's/^[[:space:]]*ExecStart=.*[[:space:]]\(\/[^[:space:]]*\)\/server\.js.*/\1/p' "$unit" 2>/dev/null | head -1)"
+      ;;
+    *) return 1 ;;
+  esac
+  [ -n "$dir" ] || return 1
+  printf '%s' "$dir"
+}
+
+# Candidate directories, most trustworthy first. Paths may contain spaces, so
+# this is read one line at a time rather than split into words.
+legacy_elsewhere_candidates() {
+  local dir
+  dir="$(legacy_service_dir || true)"
+  [ -n "$dir" ] && printf '%s\n' "$dir"
+  printf '%s\n' "$PWD/MultiCC" "$PWD"
+  return 0
+}
+
+# The first candidate that really is a pre-standalone installation. Sets
+# LEGACY_ELSEWHERE (empty when there is none) instead of printing, so the loop
+# runs in this shell and the answer survives it.
+LEGACY_ELSEWHERE=""
+detect_legacy_elsewhere() {
+  local install_dir="$1" candidate
+  LEGACY_ELSEWHERE=""
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    candidate="$(cd "$candidate" 2>/dev/null && pwd)" || continue
+    [ "$candidate" = "$install_dir" ] && continue
+    is_legacy_multicc_install "$candidate" || continue
+    LEGACY_ELSEWHERE="$candidate"
+    break
+  done < <(legacy_elsewhere_candidates)
+  return 0
+}
+
+# Whether that installation is running right now, from the pid file its own
+# launcher kept. A running installation is still writing the files a copy would
+# read, so it is worth saying out loud before offering one.
+legacy_install_running() {
+  local pid_file="$1/.multicc.pid" pid
+  [ -f "$pid_file" ] || return 1
+  pid="$(tr -dc '0-9' < "$pid_file" 2>/dev/null | head -1)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+# Values the old installation was configured with. Filled in by
+# prepare_legacy_upgrade() and applied after the new package is in place, so a
+# user coming from an old install keeps the token their phone/bookmarks and the
+# port they reach it on. The old installer wrote these into the install
+# directory's own .env (data and configuration moved to the per-user data
+# directory later), so that file is the only place left to read them from.
+LEGACY_DIR=""
+LEGACY_ENV_FILE=""
+LEGACY_TOKEN=""
+LEGACY_PORT=""
+# Whether the old installation's data is copied into the new data directory.
+# Starts from the --no-data flag and can still be declined at the prompt.
+LEGACY_DATA_COPY="$COPY_LEGACY_DATA"
+# Set when a real old installation's data was deliberately left in the backup,
+# so the summary can say where it is and where it would have to go.
+LEGACY_DATA_LEFT_BEHIND=false
+
+# An older installation that is NOT the directory this run installs into. It is
+# never moved, stopped, renamed or written to: the only thing taken from it is a
+# copy of the data, and only when the user asked for it (--adopt-data) or said
+# yes to the question. ADOPT_EXPLICIT records which of the two it was, because
+# the answer changes what may happen without a terminal to ask on.
+ADOPT_DIR=""
+ADOPT_COPY="$COPY_LEGACY_DATA"
+ADOPT_EXPLICIT=false
+ADOPT_DATA_LEFT_BEHIND=false
+
+read_legacy_env() {
+  local env_file="$1/.env"
+  LEGACY_ENV_FILE="$env_file"
+  [ -f "$env_file" ] || return 0
+  LEGACY_TOKEN="$(grep -E '^ACCESS_TOKEN=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  LEGACY_PORT="$(grep -E '^PORT=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+}
+
+# Every state artifact a pre-standalone installation kept in its own directory.
+# The names come from src/paths.js: for those releases the data root WAS the
+# package root, so this is what sat next to the code. Listing them one by one
+# instead of copying the directory wholesale is deliberate — the same directory
+# also held the source checkout, node_modules, .git and the bundle itself, and
+# none of that is data. Anything not on this list is either rebuilt on demand
+# (caches, the search index) or already lived outside the install directory:
+# detached jobs, voice runtimes and sample workspaces went to ~/.multicc even
+# then (src/paths.js detachedDir/voiceRuntimesDir/sampleWorkspacesDir), which is
+# why they keep working across this upgrade untouched.
+legacy_data_items() {
+  printf '%s\n' \
+    sessions.json directories.json .journal chat_history \
+    aux_runs events bridges artifacts \
+    notes.json token_usage.json token_daily.json token_by_role.json \
+    providers.json shares.json fleet-shares.json external-fleets.json \
+    push_subscriptions.json push_notification_receipts.json \
+    tunnel-config.json tunnel-repair-ledger.json aux-config.json goal-config.json \
+    provider-defaults.json provider-relay-shares.json \
+    provider-limit-cache.db provider-limit-cache.json quota-bar-cache.json \
+    scheduled_tasks.json cron_fanout_migration.json docs_registry.json secrets.json \
+    task_board.json task-runs.sqlite task-shells.sqlite search-index.sqlite \
+    task-short-codes.json ui-layout.json air-pins.json \
+    orchestration.sqlite orchestration.json voice_examples.json whisper_vocab.json \
+    memories
+}
+
+# True when the old installation actually has any of it, so a user who upgraded
+# from a fresh checkout is never asked about data that does not exist.
+legacy_data_present() {
+  local item
+  for item in $(legacy_data_items); do
+    [ -e "$1/$item" ] && return 0
+  done
+  return 1
+}
+
+# Size in KB, for telling the user what they are about to copy. Integer shell
+# arithmetic only: awk is not guaranteed to be here (the checksum step already
+# warns when it is missing) and this must not become a new hard dependency.
+legacy_data_size() {
+  local item size total=0
+  for item in $(legacy_data_items); do
+    [ -e "$1/$item" ] || continue
+    size="$(du -sk "$1/$item" 2>/dev/null | awk '{print $1}' 2>/dev/null || true)"
+    case "$size" in ''|*[!0-9]*) continue ;; esac
+    total=$((total + size))
+  done
+  printf '%s' "$total"
+}
+
+human_size() {
+  if [ "$1" -ge 1048576 ]; then
+    printf '%s GB' "$(( $1 / 1048576 ))"
+  elif [ "$1" -ge 1024 ]; then
+    printf '%s MB' "$(( $1 / 1024 ))"
+  else
+    printf '%s KB' "$1"
+  fi
+}
+
+# Something to say about an older installation that is not the one being
+# replaced, and — when the user is there to say yes — consent to copy its data.
+#
+# It is never started, stopped, renamed or written to. What it does give up is
+# the login service: the label (com.multicc.server) is the same one this release
+# installs, so installing the service takes the old installation's place at
+# login. It keeps running until then and can still be started by hand.
+#
+# The copy is offered, never assumed. With no terminal to ask on (the documented
+# `curl … | bash`) a directory the user did not name is reported and left alone,
+# with the one flag that includes it printed — `--yes` still counts as an answer
+# because it is the same default the question offers.
+prepare_adopt() {
+  local dir="$1" answer="" data_kb
+  [ -n "$dir" ] || return 0
+  [ -d "$dir" ] || return 0
+  if ! legacy_data_present "$dir"; then
+    info "Another MultiCC installation is on this machine, at $dir (it holds no data)"
+    ADOPT_COPY=false
+    return 0
+  fi
+
+  data_kb="$(legacy_data_size "$dir")"
+  echo ""
+  echo "  ${C_BOLD}Another MultiCC installation is on this machine:${C_RESET}"
+  echo "    $dir"
+  echo "  It is not the directory being installed into, so nothing in it is changed."
+  echo "  It holds about $(human_size "$data_kb") of data: sessions, chat history, the"
+  echo "  task boards, memories and provider settings. Its own token and port are not"
+  echo "  taken — what data is copied, nothing else; this installation is configured"
+  echo "  on its own."
+  if legacy_install_running "$dir"; then
+    echo "  ${C_YELLOW}It also looks like it is still running${C_RESET} — it keeps writing those files,"
+    echo "  so a copy taken now is a snapshot of this moment; stop it first for a clean one."
+  fi
+
+  # Named on the command line: the user has already decided.
+  if [ "$ADOPT_EXPLICIT" = true ]; then
+    if [ "$ADOPT_COPY" = false ]; then
+      ADOPT_DATA_LEFT_BEHIND=true
+      warn "Both --adopt-data and --no-data were given — nothing was copied."
+      return 0
+    fi
+    ok "Bringing your data across from $dir"
+    return 0
+  fi
+
+  if [ "$ADOPT_COPY" = false ]; then
+    ADOPT_DATA_LEFT_BEHIND=true
+    echo "  Its data stays where it is (--no-data). Include it later with:"
+    echo "    ${C_CYAN}--adopt-data '$dir'${C_RESET}"
+    return 0
+  fi
+  if [ "$ASSUME_YES" = true ]; then
+    ok "Bringing your data across from $dir"
+    return 0
+  fi
+  if [ -r /dev/tty ]; then
+    echo "  Copy it into this installation, so your history is here? The original stays"
+    echo "  where it is, as a second MultiCC you can keep or delete afterwards."
+    # No answer is not a yes. `[ -r /dev/tty ]` only inspects the device node's
+    # permissions, so it is true on a machine with no controlling terminal too,
+    # where the read fails at once — and this default is the one no one chose.
+    # An empty answer still means "yes": that is the enter key.
+    read -r -p "  ${C_YELLOW}>>${C_RESET} Bring it across? [Y/n] " answer </dev/tty || answer="__no_terminal__"
+    case "${answer:-y}" in
+      y|Y|"")
+        ok "Bringing your data across from $dir"
+        return 0
+        ;;
+      __no_terminal__)
+        ADOPT_COPY=false
+        ADOPT_DATA_LEFT_BEHIND=true
+        ;;
+      *)
+        ADOPT_COPY=false
+        ADOPT_DATA_LEFT_BEHIND=true
+        info "Left where it is — this installation starts without it"
+        echo "       Include it later with: --adopt-data '$dir'"
+        return 0
+        ;;
+    esac
+  fi
+  ADOPT_COPY=false
+  ADOPT_DATA_LEFT_BEHIND=true
+  echo "  Nothing was copied: this installation starts without it. To include it, re-run"
+  echo "  with:"
+  echo "    ${C_CYAN}--adopt-data '$dir'${C_RESET}"
+  return 0
+}
+
+# The data directory the standalone launcher hands the server is
+# `<userData>/data`, where userData is whatever directory the CLI keeps
+# multicc.env in (desktop/lib/desktop-env.js: dataRoot = join(userData, 'data')).
+# Asking the CLI keeps this correct on every platform instead of re-deriving it
+# from ~/Library/Application Support here.
+legacy_data_target() {
+  local env_file
+  env_file="$("${MULTICC_CMD[@]}" config path 2>/dev/null || true)"
+  [ -n "$env_file" ] || return 1
+  printf '%s/data' "$(dirname "$env_file")"
+}
+
+# Copy the old data out of the backup into the new data directory. The source is
+# read, never written, and the destination is only ever an empty directory: if
+# something is already in there it is either a second MultiCC or a first run of
+# the new server, and both are newer than the source. The source directory is
+# passed in so the same code serves both an installation that was replaced and
+# one that is being left where it is.
+bring_legacy_data_across() {
+  local src="$1" target item copied=0 failed=0
+  [ -n "$src" ] || return 0
+  [ -d "$src" ] || return 0
+
+  if ! target="$(legacy_data_target)"; then
+    warn "Could not work out where this release keeps its data; nothing was copied."
+    echo "       Your data is untouched in $src."
+    return 0
+  fi
+  if [ -d "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ]; then
+    warn "This release already has data of its own — nothing was copied."
+    echo "       $target"
+    echo "       Your old data is untouched in $src."
+    return 0
+  fi
+  if ! mkdir -p "$target" 2>/dev/null; then
+    warn "Could not create $target; nothing was copied."
+    echo "       Your data is untouched in $src."
+    return 0
+  fi
+
+  for item in $(legacy_data_items); do
+    [ -e "$src/$item" ] || continue
+    [ -e "$target/$item" ] && continue
+    if cp -Rp "$src/$item" "$target/$item" 2>/dev/null; then
+      copied=$((copied + 1))
+    else
+      failed=$((failed + 1))
+      warn "Could not copy $item"
+    fi
+  done
+
+  if [ "$copied" -eq 0 ] && [ "$failed" -eq 0 ]; then
+    rmdir "$target" 2>/dev/null || true
+    info "No data from the previous installation needed bringing across"
+    return 0
+  fi
+  ok "Brought your data across: $copied item(s) into $target"
+  if [ "$failed" -gt 0 ]; then
+    warn "$failed item(s) could not be copied and are still only in $src."
+  fi
+  echo "       Sessions, chat history, tasks and memories are read from there now."
+  echo "       The backup keeps its own copy — nothing was moved or deleted, so it is"
+  echo "       safe to delete $src once the new installation looks right."
+  return 0
+}
+
+# Stop a pre-standalone installation and take its directory out of the way,
+# without ever deleting it. Called only after the new package has been
+# downloaded and verified, so a failed download leaves the old install alone.
+prepare_legacy_upgrade() {
+  local dir="$1" stamp answer=""
+  stamp="$(date +%Y%m%d%H%M%S)"
+  LEGACY_DIR="$dir.legacy-$stamp"
+
+  read_legacy_env "$dir"
+  if [ -n "$LEGACY_TOKEN" ]; then
+    info "Found the ACCESS_TOKEN of your previous installation — it will be kept"
+  fi
+
+  # Ask before touching a directory we did not create. The old installers ran
+  # from a git checkout, and someone who deliberately cloned MultiCC into this
+  # path should not have it renamed out from under them without a word. Without
+  # a terminal (the documented `curl … | bash` path) there is nobody to ask, and
+  # the move is reversible anyway: the directory is renamed, never removed.
+  if [ "$ASSUME_YES" = false ] && [ -r /dev/tty ]; then
+    echo ""
+    echo "  ${C_BOLD}An older MultiCC installation was found at:${C_RESET}"
+    echo "    $dir"
+    echo "  It will be stopped and kept as:"
+    echo "    $LEGACY_DIR"
+    echo "  Nothing is deleted — your data, sessions and chat history are untouched."
+    read -r -p "  ${C_YELLOW}>>${C_RESET} Upgrade it in place? [Y/n] " answer </dev/tty || answer=""
+    case "${answer:-y}" in
+      y|Y|"") ;;
+      *)
+        err "Upgrade cancelled. Nothing was changed."
+        echo "       Install somewhere else with --dir, or move that directory away yourself."
+        exit 1
+        ;;
+    esac
+  fi
+
+  # 1. Take the old login service out first. Its label (com.multicc.server) is
+  #    the same one the standalone package installs, and it points at this
+  #    directory: leave it loaded and it will keep trying to start a launcher
+  #    that has been renamed away, while the new service fights it for the port.
+  #    `uninstall` is the old script's own command: it unloads the login job and
+  #    stops the server. Running it is best-effort — that launcher is a shell
+  #    script that wants a system Node runtime, which may be long gone by now —
+  #    so a failure falls through to a direct launchctl unload. Neither path may
+  #    abort the upgrade: a leftover process is something the next `multicc
+  #    stop` can still deal with, a half-moved installation is not.
+  local stopped=false
+  if [ -x "$dir/multicc" ]; then
+    if (cd "$dir" && ./multicc uninstall) >/dev/null 2>&1; then
+      stopped=true
+      ok "Stopped the previous installation and removed its auto-start service"
+    fi
+  fi
+  if [ "$stopped" = false ]; then
+    # The old login job has to go whatever else happens: it points at this
+    # directory, and KeepAlive means launchd would keep restarting a launcher
+    # that is about to be renamed away.
+    if [ "$PLATFORM" = "darwin" ]; then
+      local plist="$HOME/Library/LaunchAgents/com.multicc.server.plist"
+      if [ -f "$plist" ]; then
+        launchctl unload "$plist" 2>/dev/null || true
+        rm -f "$plist"
+        info "Removed the previous auto-start service"
+      fi
+    elif [ "$PLATFORM" = "linux" ]; then
+      # The old installer never wrote this unit, it printed one for the user to
+      # paste — so it is removed only when it is really there, and the user is
+      # told, because they may have written it by hand.
+      local unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/multicc.service"
+      if [ -f "$unit" ]; then
+        systemctl --user disable --now multicc >/dev/null 2>&1 || true
+        rm -f "$unit"
+        info "Removed the previous auto-start service"
+      fi
+    fi
+    if [ -x "$dir/multicc" ]; then
+      (cd "$dir" && ./multicc stop) >/dev/null 2>&1 && ok "Stopped the previous installation" || true
+    fi
+  fi
+
+  # 2. Move it aside. `mv` on the same filesystem is atomic and cheap even for
+  #    a source checkout with node_modules in it, and it keeps every byte of the
+  #    old configuration recoverable if something about the new package is not
+  #    wanted after all.
+  if ! mv "$dir" "$LEGACY_DIR"; then
+    err "Could not move the previous installation out of the way."
+    echo "       Move $dir away yourself and re-run the installer."
+    exit 1
+  fi
+  ok "Previous installation kept at $LEGACY_DIR"
+  if [ -n "$LEGACY_TOKEN" ]; then
+    echo "       Its settings were read from $LEGACY_DIR/.env and are being reused."
+  fi
+  if [ "$stopped" = false ]; then
+    warn "Could not stop the previous instance automatically."
+    echo "       If it is still running it holds the old port, and the new installation will"
+    echo "       come up on the next free one — check 'multicc status' before pointing anyone at it."
+  fi
+
+  # The old releases kept their data inside the install directory: sessions,
+  # chat history, tasks and memories all lived next to the code. This release
+  # reads them from a per-user data directory instead, so without an explicit
+  # copy the upgrade starts empty even though every byte is still on disk. The
+  # copy itself happens later, once the new package is in place and before the
+  # server has run for the first time — here we only find out how much there is
+  # and let the user opt out.
+  if ! legacy_data_present "$LEGACY_DIR"; then
+    LEGACY_DATA_COPY=false
+  elif [ "$LEGACY_DATA_COPY" = true ]; then
+    local data_kb
+    data_kb="$(legacy_data_size "$LEGACY_DIR")"
+    if [ "$ASSUME_YES" = false ] && [ -r /dev/tty ]; then
+      echo ""
+      echo "  Your previous installation also holds about $(human_size "$data_kb") of data:"
+      echo "  sessions, chat history, the task boards, memories and provider settings."
+      echo "  It stays in the backup either way; bringing it across means the new"
+      echo "  installation starts with your history instead of empty."
+      read -r -p "  ${C_YELLOW}>>${C_RESET} Bring it across? [Y/n] " answer </dev/tty || answer=""
+      case "${answer:-y}" in
+        y|Y|"") ;;
+        *) LEGACY_DATA_COPY=false ;;
+      esac
+    fi
+  fi
+  if [ "$LEGACY_DATA_COPY" = false ] && legacy_data_present "$LEGACY_DIR"; then
+    LEGACY_DATA_LEFT_BEHIND=true
+    warn "Your data stays in the backup: $LEGACY_DIR"
+    echo "       This release reads a per-user data directory, so it starts empty."
+    echo "       Nothing was deleted — every session and every byte is still in there,"
+    echo "       and whatever should be used can still be copied by hand: the rest of"
+    echo "       this run prints exactly which directory to copy it into."
+  fi
+  return 0
+}
+
 if [ -e "$INSTALL_DIR" ] && [ ! -d "$INSTALL_DIR" ]; then
   err "$INSTALL_DIR exists and is not a directory."
   exit 1
 fi
+LEGACY_PENDING=false
 if [ -d "$INSTALL_DIR" ] && ! is_multicc_install "$INSTALL_DIR"; then
-  if [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+  if is_legacy_multicc_install "$INSTALL_DIR"; then
+    LEGACY_PENDING=true
+  elif [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
     err "$INSTALL_DIR already exists and does not look like a MultiCC installation."
     echo "       Nothing was deleted. Pick another location with --dir, or move that directory away."
+    exit 1
+  fi
+fi
+if [ "$LEGACY_PENDING" = true ]; then
+  info "An older MultiCC installation was found at $INSTALL_DIR"
+  echo "       It predates the standalone package. It will be stopped and kept as a"
+  echo "       backup next to the new installation; nothing in it is deleted."
+fi
+
+# Whether this run replaces an installation that is already here. An upgrade in
+# place already has whatever history matters; only a first install goes looking
+# for a second installation elsewhere on the machine (see the data step below).
+TARGET_HAD_INSTALL=false
+if [ "$LEGACY_PENDING" = false ] && [ -d "$INSTALL_DIR" ] && is_multicc_install "$INSTALL_DIR"; then
+  TARGET_HAD_INSTALL=true
+fi
+
+# --adopt-data: an old installation the user named. Checked here, before
+# anything is downloaded, so a wrong path costs nothing.
+if [ -n "$ADOPT_DATA_FROM" ]; then
+  if [ "$LEGACY_PENDING" = true ]; then
+    warn "--adopt-data was ignored: $INSTALL_DIR is itself an older installation,"
+    echo "       and it is that installation's data which is being brought across."
+  elif [ -d "$ADOPT_DATA_FROM" ] && is_legacy_multicc_install "$ADOPT_DATA_FROM"; then
+    ADOPT_DIR="$(cd "$ADOPT_DATA_FROM" && pwd)"
+    ADOPT_EXPLICIT=true
+    info "Using the data of the older installation at $ADOPT_DIR"
+  else
+    err "--adopt-data: not a pre-standalone MultiCC installation: $ADOPT_DATA_FROM"
+    echo "       Point it at a directory that is one — its own multicc launcher and"
+    echo "       package.json are what identify it."
     exit 1
   fi
 fi
@@ -499,7 +1080,11 @@ fi
 
 # ── Install (replace any previous version) ────────────────────────────────
 step "Installing to $INSTALL_DIR"
-if [ -d "$INSTALL_DIR" ] && is_multicc_install "$INSTALL_DIR"; then
+if [ "$LEGACY_PENDING" = true ]; then
+  # Reached only after the new package has been downloaded and verified, so a
+  # failed download never disturbs an installation that still works.
+  prepare_legacy_upgrade "$INSTALL_DIR"
+elif [ -d "$INSTALL_DIR" ] && is_multicc_install "$INSTALL_DIR"; then
   info "Existing installation found — replacing it (your data is kept)"
   # A running server would keep serving from the directory we are about to
   # replace, so ask it to stop first. Failure to stop is not fatal: the new
@@ -520,7 +1105,14 @@ fi
 
 if ! mv "$UNPACK_DIR" "$INSTALL_DIR"; then
   err "Could not move the package into place."
-  if [ -n "$OLD_DIR" ] && [ -d "$OLD_DIR" ]; then
+  # Whatever was moved aside goes back, so a failed install never leaves someone
+  # with neither the new installation nor the working old one. For a legacy
+  # upgrade that means the backup stops being a backup and becomes the install
+  # again — which is the right trade when the alternative is nothing at all.
+  if [ -n "$LEGACY_DIR" ] && [ -d "$LEGACY_DIR" ]; then
+    mv "$LEGACY_DIR" "$INSTALL_DIR" 2>/dev/null \
+      && warn "Your previous installation was put back at $INSTALL_DIR."
+  elif [ -n "$OLD_DIR" ] && [ -d "$OLD_DIR" ]; then
     mv "$OLD_DIR" "$INSTALL_DIR" 2>/dev/null && warn "The previous installation was restored."
   fi
   exit 1
@@ -528,6 +1120,61 @@ fi
 [ -n "$OLD_DIR" ] && rm -rf "$OLD_DIR"
 chmod +x "$INSTALL_DIR/multicc" 2>/dev/null || true
 ok "Installed MultiCC ${VERSION_NUMBER}"
+
+# ── Check git ─────────────────────────────────────────────────────────────
+# MultiCC gives every session its own git worktree, so git has to actually work
+# here. The package ships its own Node runtime, but it cannot ship git. On macOS
+# /usr/bin/git is only a Command Line Tools shim: it exists even when the tools
+# do not, and every call then pops an install dialog and exits non-zero — which
+# surfaces much later as "无法将目录初始化为 git 仓库" the first time a directory
+# is added. `xcode-select -p` answers the question without triggering that
+# dialog, so it is asked first and `git --version` only runs behind it.
+step "Checking git"
+# What is required is a working git, NOT the Command Line Tools — a git from
+# Homebrew, MacPorts or git-scm.com is just as good, and nagging those users to
+# install Xcode tools they do not need would be wrong. So the tools are only
+# consulted when the only git on PATH is /usr/bin/git, which on macOS is the
+# shim. Any other path is a real binary and can be asked for its version safely.
+GIT_MISSING=false
+GIT_NEEDS_CLT=false
+GIT_PATH="$(command -v git 2>/dev/null || true)"
+if [ -z "$GIT_PATH" ]; then
+  GIT_MISSING=true
+  # Written as a full `if`, not `[ ... ] && ...`: under `set -e` the && form
+  # exits non-zero on every non-macOS host and would abort the installer.
+  if [ "$PLATFORM" = "darwin" ]; then GIT_NEEDS_CLT=true; fi
+elif [ "$PLATFORM" = "darwin" ] && [ "$GIT_PATH" = "/usr/bin/git" ] && ! xcode-select -p >/dev/null 2>&1; then
+  # Only the shim is present and it has nothing behind it. Do not run it: that
+  # is what pops the install dialog in the middle of an install script.
+  GIT_MISSING=true
+  GIT_NEEDS_CLT=true
+elif ! "$GIT_PATH" --version >/dev/null 2>&1; then
+  GIT_MISSING=true
+fi
+if [ "$GIT_MISSING" = true ]; then
+  if [ "$GIT_NEEDS_CLT" = true ]; then
+    warn "git does not work yet — macOS Command Line Tools are not installed."
+    echo "       MultiCC needs a working git (every session gets its own worktree)."
+    echo "       Fix it with one command, then confirm in the dialog it opens:"
+    echo "         ${C_CYAN}xcode-select --install${C_RESET}"
+    echo "       Already have Xcode? Point the tools at it instead:"
+    echo "         ${C_CYAN}sudo xcode-select --switch /Applications/Xcode.app${C_RESET}"
+    echo "       Any other git works too (Homebrew, git-scm.com) — the tools are"
+    echo "       just the shortest route."
+  elif [ "$PLATFORM" = "darwin" ]; then
+    warn "git is on PATH but does not run: ${GIT_PATH}"
+    echo "       MultiCC needs a working git (every session gets its own worktree)."
+    echo "       Reinstall it, e.g. 'brew install git' or from https://git-scm.com."
+  else
+    warn "git was not found on PATH."
+    echo "       MultiCC needs a working git (every session gets its own worktree)."
+    echo "       Install it with your package manager, e.g. 'sudo apt install git'."
+  fi
+  echo "       Installation continues — MultiCC starts fine, but adding a"
+  echo "       directory will fail until git works."
+else
+  ok "git is available"
+fi
 
 # ── Configure ─────────────────────────────────────────────────────────────
 # The command is the bundle's own CLI, so the config lands wherever the CLI
@@ -540,8 +1187,37 @@ if [ ! -x "$MULTICC_BIN" ] && [ "$PLATFORM" != "win32" ]; then
   exit 1
 fi
 
+# A pre-standalone installation kept its settings in the install directory's own
+# .env, and that file holds more than the token and the port: the push (VAPID)
+# key pair and any ASR credentials the server generated on its first start live
+# there too, and silently dropping them breaks notifications that used to work.
+# So the whole file is carried across — never over one that already has content,
+# which is what a second installation would be looking at.
+if [ -n "$LEGACY_ENV_FILE" ] && [ -f "$LEGACY_ENV_FILE" ]; then
+  TARGET_ENV="$("${MULTICC_CMD[@]}" config path 2>/dev/null || true)"
+  if [ -n "$TARGET_ENV" ] && [ ! -s "$TARGET_ENV" ]; then
+    mkdir -p "$(dirname "$TARGET_ENV")" 2>/dev/null || true
+    if cp "$LEGACY_ENV_FILE" "$TARGET_ENV" 2>/dev/null; then
+      chmod 600 "$TARGET_ENV" 2>/dev/null || true
+      info "Kept the settings from your previous installation"
+    fi
+  fi
+fi
+
+# Order matters. An explicit --token wins; otherwise the token the previous
+# (pre-standalone) installation was configured with is the one the user's
+# bookmarks, phone and other devices already carry, so it is preferred over a
+# token that happens to sit in the data directory already.
+if [ -z "$ACCESS_TOKEN" ] && [ -n "$LEGACY_TOKEN" ]; then
+  ACCESS_TOKEN="$LEGACY_TOKEN"
+fi
+if [ "$PORT_GIVEN" = false ] && [ -n "$LEGACY_PORT" ]; then
+  PORT="$LEGACY_PORT"
+fi
+
 if [ -n "$ACCESS_TOKEN" ]; then
-  "${MULTICC_CMD[@]}" config set ACCESS_TOKEN "$ACCESS_TOKEN" >/dev/null && ok "ACCESS_TOKEN saved"
+  "${MULTICC_CMD[@]}" config set ACCESS_TOKEN "$ACCESS_TOKEN" >/dev/null \
+    && ok "ACCESS_TOKEN saved${LEGACY_TOKEN:+ (kept from the previous installation)}"
 elif EXISTING_TOKEN="$("${MULTICC_CMD[@]}" config get ACCESS_TOKEN 2>/dev/null)" && [ -n "$EXISTING_TOKEN" ]; then
   ACCESS_TOKEN="$EXISTING_TOKEN"
   info "Keeping the existing ACCESS_TOKEN"
@@ -551,6 +1227,39 @@ else
   "${MULTICC_CMD[@]}" config set ACCESS_TOKEN "$ACCESS_TOKEN" >/dev/null && ok "ACCESS_TOKEN generated"
 fi
 "${MULTICC_CMD[@]}" config set PORT "$PORT" >/dev/null && ok "PORT set to $PORT"
+
+# ── Bring an older installation's data across ─────────────────────────────
+# Runs before the server has ever started: the destination has to be empty for
+# the copy to be safe, and the first start is what makes it non-empty.
+LEGACY_DATA_DEST=""
+if [ "$LEGACY_PENDING" = true ]; then
+  step "Bringing your data across"
+  if [ "$LEGACY_DATA_COPY" = true ]; then
+    bring_legacy_data_across "$LEGACY_DIR"
+  else
+    info "Skipped — the previous installation's data stays in $LEGACY_DIR"
+  fi
+else
+  # Nothing was replaced here, which is not the same as there being nothing to
+  # bring across: an installation from before the standalone package is usually
+  # somewhere else on the machine (see detect_legacy_elsewhere). Only a first
+  # install looks — an upgrade in place already has the history that matters,
+  # and an installation named with --adopt-data is used whatever this is.
+  if [ -z "$ADOPT_DIR" ] && [ "$TARGET_HAD_INSTALL" = false ]; then
+    detect_legacy_elsewhere "$INSTALL_DIR"
+    ADOPT_DIR="$LEGACY_ELSEWHERE"
+  fi
+  if [ -n "$ADOPT_DIR" ]; then
+    prepare_adopt "$ADOPT_DIR"
+    if [ "$ADOPT_COPY" = true ]; then
+      step "Bringing your data across"
+      bring_legacy_data_across "$ADOPT_DIR"
+    fi
+  fi
+fi
+# Resolved for the summary whatever the answer was: a "no" is only useful if the
+# user leaves knowing where their history is and where it would have to go.
+LEGACY_DATA_DEST="$(legacy_data_target 2>/dev/null || true)"
 
 # ── Start on login (optional) ─────────────────────────────────────────────
 if [ "$NO_SERVICE" = false ]; then
@@ -652,6 +1361,37 @@ echo ""
 echo "  Sessions, providers and chat history live outside this directory,"
 echo "  so replacing or updating the package never touches them."
 echo ""
+if [ "$LEGACY_DATA_LEFT_BEHIND" = true ]; then
+  echo "  ${C_BOLD}${C_YELLOW}Your previous sessions are still in the backup${C_RESET}"
+  echo "    Backup:       $LEGACY_DIR"
+  echo "    This release: ${LEGACY_DATA_DEST:-<whatever the line under '$CMD_NAME config path' points at>/data}"
+  echo "    To use them, stop MultiCC, copy what you want out of the backup into the"
+  echo "    directory above, and start it again. Nothing was deleted."
+  echo ""
+fi
+if [ "$ADOPT_DATA_LEFT_BEHIND" = true ] && [ -n "$ADOPT_DIR" ]; then
+  echo "  ${C_BOLD}${C_YELLOW}Another MultiCC installation still holds data for you${C_RESET}"
+  echo "    Old install:  $ADOPT_DIR"
+  echo "    This release: ${LEGACY_DATA_DEST:-<the directory under '$CMD_NAME config path'>/data}"
+  echo "    Nothing in it was changed, and it was not moved or stopped. To use that"
+  echo "    data here, re-run this installer with --adopt-data '$ADOPT_DIR', or copy"
+  echo "    what you want into the directory above and start MultiCC again."
+  echo ""
+fi
+# Repeated here because the check above scrolls past behind the service prompt
+# and the startup output — this is the last thing on screen, and it is the one
+# thing standing between a finished install and a working first session.
+if [ "$GIT_MISSING" = true ]; then
+  if [ "$PLATFORM" = "darwin" ]; then
+    echo "  ${C_BOLD}${C_YELLOW}One thing left: install git${C_RESET}"
+    echo "    ${C_CYAN}xcode-select --install${C_RESET}"
+    echo "    Until that finishes, adding a directory fails with a git error."
+  else
+    echo "  ${C_BOLD}${C_YELLOW}One thing left: install git${C_RESET}"
+    echo "    MultiCC needs git on PATH; adding a directory fails until it is there."
+  fi
+  echo ""
+fi
 ok "Happy building!"
 echo ""
 

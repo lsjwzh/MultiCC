@@ -9,6 +9,25 @@ const MAX_PROBE_CANDIDATE_LENGTH = 200;
 const { runSpeedtestRequest } = require('../providers/speedtest-request');
 const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
 const { officialAccountIdFromProvider } = require('../official-accounts');
+const { createRoutingTest } = require('./auto-provider-routing-test');
+const { detachProviderReferences } = require('../providers/force-detach');
+const { isValidIp } = require('../providers/egress-ip');
+const { reassignProviderSessions } = require('../provider-reassign');
+
+// req.body.egressIpAllowlist arrives as an array (or is absent — leave the
+// stored value untouched on PATCH, that's the `undefined` case) or `null`/`[]`
+// to clear it. Anything containing a non-IP string is a config mistake, not a
+// provider mismatch, so it is rejected here rather than silently dropped.
+function parseEgressIpAllowlist(body) {
+  const value = body.egressIpAllowlist;
+  if (value === undefined) return undefined;
+  if (value === null) return [];
+  if (!Array.isArray(value)) throw new Error('egressIpAllowlist must be an array of IP addresses');
+  const list = value.map(v => String(v).trim()).filter(Boolean);
+  const invalid = list.find(ip => !isValidIp(ip));
+  if (invalid) throw new Error(`egressIpAllowlist contains an invalid IP address: ${invalid}`);
+  return list;
+}
 
 function publicError(error, fallback) {
   return sanitizePublicText(error && error.message, fallback);
@@ -246,6 +265,7 @@ function createProviderRoutes(rawDeps) {
 
     app.post('/api/providers', (req, res) => {
       try {
+        const egressIpAllowlist = parseEgressIpAllowlist(req.body);
         const result = deps.providers.createProvider({
           appType: (req.body.appType || '').trim(),
           name: req.body.name,
@@ -256,6 +276,7 @@ function createProviderRoutes(rawDeps) {
           ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
           settingsConfig: req.body.settingsConfig,
           aliasMap: req.body.aliasMap,
+          ...(egressIpAllowlist !== undefined ? { egressIpAllowlist } : {}),
         });
         res.json({ ok: true, ...result });
       } catch (error) {
@@ -265,6 +286,7 @@ function createProviderRoutes(rawDeps) {
 
     app.patch('/api/providers/:appType/:id', (req, res) => {
       try {
+        const egressIpAllowlist = parseEgressIpAllowlist(req.body);
         deps.providers.updateProvider(req.params.appType, req.params.id, {
           name: req.body.name,
           baseUrl: req.body.baseUrl,
@@ -274,6 +296,7 @@ function createProviderRoutes(rawDeps) {
           ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
           settingsConfig: req.body.settingsConfig,
           aliasMap: req.body.aliasMap,
+          ...(egressIpAllowlist !== undefined ? { egressIpAllowlist } : {}),
         });
         res.json({ ok: true });
       } catch (error) {
@@ -290,16 +313,41 @@ function createProviderRoutes(rawDeps) {
           defaults: providerDefaults,
           aux: deps.getAuxConfig(),
         });
-        if (references.length) {
+        const force = ['1', 'true'].includes(String(req.query.force || '').toLowerCase());
+        const forceable = typeof deps.applySessionPatch === 'function' && typeof deps.clearAuxProvider === 'function';
+        if (references.length && !(force && forceable)) {
           return res.status(409).json({
             error: 'provider is still referenced',
             code: 'PROVIDER_IN_USE',
             references,
+            forceable,
           });
+        }
+        let detached = [];
+        if (references.length) {
+          const result = detachProviderReferences({
+            providerId: req.params.id,
+            references,
+            sessions: deps.persistedSessions,
+            applySessionPatch: deps.applySessionPatch,
+            clearDefault: (cli) => { if (providerDefaults[cli] === req.params.id) { providerDefaults[cli] = null; saveProviderDefaults(); } },
+            clearAuxProvider: deps.clearAuxProvider,
+          });
+          if (result.failed.length) {
+            return res.status(409).json({
+              error: 'provider references could not all be detached',
+              code: 'PROVIDER_DETACH_FAILED',
+              references: result.failed,
+              detached: result.detached,
+              forceable: false,
+            });
+          }
+          detached = result.detached;
+          log.warn?.(`[multicc] force-deleting provider ${req.params.appType}/${req.params.id}: detached ${detached.length} reference(s)`);
         }
         const ok = deps.providers.deleteProvider(req.params.appType, req.params.id);
         if (ok) deps.providerRelayShares.revokeProvider(req.params.appType, req.params.id);
-        res.json({ ok });
+        res.json(references.length ? { ok, forced: true, detached } : { ok });
       } catch (error) {
         res.status(400).json({ error: publicError(error, 'provider delete failed') });
       }
@@ -447,6 +495,66 @@ function createProviderRoutes(rawDeps) {
       }
     });
 
+    // Batch reassignment of every session bound to this provider
+    // (「批量迁移会话…」). Listing/planning/simulation live in
+    // src/provider-reassign.js; this route only resolves the two provider
+    // records and hands the per-session move to the ordinary session PATCH, so
+    // a bulk move behaves exactly like N manual switches in the AI dialog.
+    // Body: { targetProviderId?, dryRun? }. Omit targetProviderId (dry-run only)
+    // to get the bound-session list plus the compatible targets for the UI.
+    app.post('/api/providers/:appType/:id/reassign-sessions', (req, res) => {
+      const appType = String(req.params.appType || '').trim();
+      if (appType !== 'claude' && appType !== 'codex') {
+        return res.status(400).json({ error: 'invalid app type' });
+      }
+      const sourceProvider = deps.providers.getProvider(appType, req.params.id);
+      if (!sourceProvider) return res.status(404).json({ error: 'provider not found' });
+      const body = (req.body && typeof req.body === 'object') ? req.body : {};
+      const rawTarget = body.targetProviderId;
+      const targetProviderId = rawTarget == null || rawTarget === '' ? null : String(rawTarget).trim();
+      const dryRun = body.dryRun === true || body.dryRun === '1' || body.dryRun === 'true';
+      if (targetProviderId === req.params.id) {
+        return res.status(400).json({ error: 'target provider must differ from the source' });
+      }
+      if (!targetProviderId && !dryRun) {
+        return res.status(400).json({ error: 'targetProviderId is required' });
+      }
+      let targetProvider = null;
+      if (targetProviderId) {
+        // Provider ids are globally unique, so the target may live in the other
+        // pool (an OpenCode/ZCode session can move across pools).
+        targetProvider = deps.providers.getProvider(undefined, targetProviderId);
+        if (!targetProvider) return res.status(404).json({ error: 'target provider not found' });
+      }
+      if (typeof deps.applySessionPatch !== 'function') {
+        return res.status(409).json({ error: 'session patch runtime unavailable' });
+      }
+      try {
+        res.json(reassignProviderSessions({
+          appType,
+          providerId: req.params.id,
+          sourceProvider,
+          targetProviderId,
+          targetProvider,
+          dryRun,
+          sessions: deps.persistedSessions,
+          references: deps.findProviderReferences({
+            appType,
+            providerId: req.params.id,
+            sessions: deps.persistedSessions,
+            defaults: providerDefaults,
+            aux: deps.getAuxConfig(),
+          }),
+          listProviders: () => deps.providers.listProviders(),
+          validProviderId,
+          applySessionPatch: deps.applySessionPatch,
+          previewSessionPatch: deps.previewSessionPatch,
+        }));
+      } catch (error) {
+        res.status(400).json({ error: publicError(error, 'provider reassignment failed') });
+      }
+    });
+
     // Each exported relay receives its own provider-scoped credential. The
     // share code discloses it once; durable inventory stores only its hash and
     // usage counters. No server-wide credential can open provider relays.
@@ -543,6 +651,10 @@ function createProviderRoutes(rawDeps) {
       saveProviderDefaults();
       res.json({ ok: true, defaults: providerDefaults });
     });
+
+    // Lives here rather than in server.js (at its line budget): the Auto
+    // Provider editor's "测试一下" for difficulty routing.
+    (deps.autoProviderRoutingTest || createRoutingTest()).mount(app);
   }
 
   return Object.freeze({

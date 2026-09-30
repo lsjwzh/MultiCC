@@ -22,12 +22,18 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 const { atomicWriteJson } = require('../runtime-security');
+const { zcodeEngineEnv } = require('./zcode-engine');
 
 const HOME = os.homedir();
 const DESKTOP_CONFIG_PATH = path.join(HOME, '.zcode', 'v2', 'config.json');
 const CREDENTIALS_PATH = path.join(HOME, '.zcode', 'v2', 'credentials.json');
 const CLI_CONFIG_PATH = path.join(HOME, '.zcode', 'cli', 'config.json');
 const CLI_CONFIG_DIR = path.dirname(CLI_CONFIG_PATH);
+// Engine >=0.16.9 registry of personal providers (written by the desktop app's
+// migration / settings); cli/config.json no longer supplies provider or model.
+const PERSONAL_PROVIDER_CONFIG_PATH = path.join(HOME, '.zcode', 'v2', 'provider_config.json');
+// Builtin template the personal rule inherits api/models from.
+const PROVIDER_TEMPLATE_IDS = { zai: 'zai-api', bigmodel: 'bigmodel-api' };
 
 // Desktop provider key -> CLI provider key mapping.
 // Desktop uses "builtin:zai" / "builtin:bigmodel"; CLI uses "zai" / "bigmodel".
@@ -122,6 +128,61 @@ function buildCliConfig(providerId, apiKey, opts = {}) {
   };
 }
 
+function personalProviderRules(config) {
+  const rules = config && config.config && config.config.providerConfigRules
+    && config.config.providerConfigRules.providerRules;
+  return Array.isArray(rules) ? rules : [];
+}
+
+// Usable = enabled rule with an inline key, or a Z.AI/BigModel account rule
+// (OAuth; the engine owns those credentials).
+function personalProviderStatus() {
+  for (const rule of personalProviderRules(readJsonSafe(PERSONAL_PROVIDER_CONFIG_PATH))) {
+    if (!rule || rule.enabled === false || !rule.config) continue;
+    const access = rule.config.access || {};
+    if ((typeof access.apiKey === 'string' && access.apiKey.trim()) || access.type === 'zhipu-account') {
+      return {
+        configured: true,
+        provider: rule.providerId,
+        hasKey: true,
+        source: 'provider_config',
+        kind: rule.config.api && rule.config.api.type || null,
+        baseURL: rule.config.api && rule.config.api.baseUrl || '',
+        model: null,
+      };
+    }
+  }
+  return null;
+}
+
+function writePersonalProviderKey(providerId, apiKey, baseURL) {
+  const current = readJsonSafe(PERSONAL_PROVIDER_CONFIG_PATH);
+  const base = current && typeof current === 'object' && current.config ? current : {
+    schemaVersion: 1,
+    config: { modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] } },
+  };
+  const templateId = PROVIDER_TEMPLATE_IDS[providerId];
+  const rule = {
+    providerId: templateId,
+    templateId,
+    config: {
+      group: 'standard-personal',
+      access: { type: 'api-key', apiKey },
+      // Template rules honour an api override (verified on 0.16.9), so a custom
+      // endpoint keeps the template's models while routing to the new baseUrl.
+      ...(baseURL && baseURL !== PROVIDER_BASE_URLS[providerId]
+        ? { api: { type: 'anthropic-messages', baseUrl: baseURL } } : {}),
+    },
+  };
+  const rules = personalProviderRules(base).filter(item => item && item.providerId !== templateId);
+  const next = {
+    ...base,
+    config: { ...base.config, providerConfigRules: { ...(base.config.providerConfigRules || {}), providerRules: [rule, ...rules] } },
+  };
+  fs.mkdirSync(path.dirname(PERSONAL_PROVIDER_CONFIG_PATH), { recursive: true, mode: 0o700 });
+  atomicWriteJson(PERSONAL_PROVIDER_CONFIG_PATH, next);
+}
+
 /**
  * Atomically write CLI config. Creates directory if needed.
  */
@@ -166,7 +227,7 @@ function getZcodeAuthStatus() {
   const config = readCliConfig();
 
   if (!config || !config.provider) {
-    return { configured: false, provider: null, hasKey: false, source: 'none' };
+    return personalProviderStatus() || { configured: false, provider: null, hasKey: false, source: 'none' };
   }
 
   const selectedProvider = typeof config.model === 'string' && config.model.includes('/')
@@ -193,6 +254,9 @@ function getZcodeAuthStatus() {
       }
     }
   }
+
+  const personal = personalProviderStatus();
+  if (personal) return personal;
 
   // No key in CLI config -- check if desktop has one we could sync.
   const desktopKeys = detectDesktopApiKeys();
@@ -225,6 +289,8 @@ function setZcodeApiKey(providerId, apiKey, opts = {}) {
     baseURL: opts.baseURL || PROVIDER_BASE_URLS[providerId],
   });
   writeCliConfig(config);
+  // Engine >=0.16.9 reads the key (and any custom endpoint) from provider_config.json.
+  writePersonalProviderKey(providerId, key, opts.baseURL);
   return { ok: true, provider: providerId };
 }
 
@@ -250,7 +316,7 @@ function isZcodeLoginAvailable() {
 function spawnZcodeLogin() {
   const engine = process.env.ZCODE_ENGINE
     || '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs';
-  const env = { ...process.env };
+  const env = { ...zcodeEngineEnv(engine) };
   // Official login owns the native ~/.zcode tree, never a per-session
   // MultiCC provider override inherited from an unusual launcher environment.
   delete env.ZCODE_DATA_BASE_DIR;
@@ -300,6 +366,7 @@ module.exports = {
   DESKTOP_CONFIG_PATH,
   CREDENTIALS_PATH,
   CLI_CONFIG_PATH,
+  PERSONAL_PROVIDER_CONFIG_PATH,
   PROVIDER_BASE_URLS,
   PROVIDER_MODELS,
 };

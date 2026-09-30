@@ -10,7 +10,11 @@
 //     终端那一块上场。不是「排在一起换个位置」，是互相让位；
 //   · 终端那份清单按 `dirId` 滤（服务端 `/api/air` 的 `sessions` 已经只给
 //     terminal-kind，这里再按目录收一次 —— 和 App 的 `terminalSessionsOf` 同一条
-//     判据）。点一行去那个终端页（`/?id=<sessionId>`，旧侧栏那一组用的同一个地址）。
+//     判据）。点一行去那个终端页（`/?id=<sessionId>`，旧侧栏那一组用的同一个地址）；
+//   · 一行还要说清「这一条现在还能用吗」：状态点 + 多久没动，两个坏态（进程退了 /
+//     托管路由失效）各配一句怎么办。取值是服务端折好的 `state`，这里只翻译；
+//   · 一行还带重命名（`PATCH /api/sessions/:id` 的 label）与复制 id —— 默认名是
+//     「CLI · 模型」，同款终端开三个就分不出谁是谁，而 id 是 8 位随机串，手抄必错。
 //
 // 为什么是独立文件：air.js 本身贴着 3000 行的行数闸门（`scripts/check-source-line-
 // budget.js`），一个模块只加一行 render 调用比往主文件里塞一百行 DOM 逻辑稳。
@@ -31,6 +35,11 @@
   let dirId = null;
   let ctx = null;
   let creating = false;
+  // 数字与相对时间的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的
+  // 沙箱里既没有页面全局也没有 require，所以三种取法都留着（同 air-push.js）。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
 
   // air.js 每次 render 递进来的一份上下文（同 air-admin.js 的 render(mode, ctx)）：
   // 快照、当前目录、当前任务、api、notice 以及「最近用过的那套 CLI」。
@@ -58,9 +67,54 @@
     }
   }
 
+  // 刚删掉的那些先在本机记一笔：`ctx.data` 是上一次快照，删完不等下一次轮询就把这一行
+  // 抹掉，数字也跟着变。快照回头自然不会再带它们。
+  const removed = new Set();
+  // 刚改的名字同理：改完立刻重画，不等下一轮快照把新 label 带回来。它只是过桥：快照
+  // 一带回同样的名字、或过了 15s，就让快照说了算 —— 否则别的设备后来再改名，这里永远
+  // 盖着自己那份旧名字。
+  const renamed = new Map();
+  const RENAME_BRIDGE_MS = 15000;
+
   function terminations() {
     const sessions = ctx?.data?.sessions || [];
-    return sessions.filter(session => (session.kind || 'terminal') === 'terminal' && session.dirId === dirId);
+    return sessions.filter(session => (session.kind || 'terminal') === 'terminal'
+      && session.dirId === dirId && !removed.has(session.id))
+      .map(session => {
+        const bridge = renamed.get(session.id);
+        if (!bridge) return session;
+        if ((session.label || session.id) === bridge.label || Date.now() - bridge.at > RENAME_BRIDGE_MS) {
+          renamed.delete(session.id);
+          return session;
+        }
+        return { ...session, label: bridge.label };
+      });
+  }
+
+  // 状态点与那两句话都只翻译服务端折好的 `state`（/api/air 的 sessions[].state），
+  // 客户端不再推一遍「进程还在吗」—— 它手里只有落盘记录，推不出来。
+  const STATE_LABEL_KEY = {
+    running: 'airTerminalStateRunning',
+    stopped: 'airTerminalStateStopped',
+    route_dead: 'airTerminalStateRouteDead',
+  };
+  // running 不给提示行：一切正常的时候，多一行字只是噪音。另两态必须说清「怎么了、
+  // 怎么办」，否则用户看到的只是一颗灰点或红点。
+  const STATE_HINT_KEY = {
+    stopped: 'airTerminalStoppedHint',
+    route_dead: 'airTerminalRouteDeadHint',
+  };
+
+  // 一行元信息：`claude · 运行中 · 最后输出 5 分钟前`。没有 state 的老快照就只剩 CLI；
+  // 停了的终端 lastActivityAt 是 null，「多久没动」那一段直接不出现 —— 拿不到时刻还
+  // 硬说「刚刚」，就是把一条死进程报成活的。
+  function metaText(session) {
+    const parts = [session.cli || ''];
+    const stateKey = STATE_LABEL_KEY[session.state];
+    if (stateKey) parts.push(translate(stateKey));
+    const ago = FMT ? FMT.formatRelativeTime(session.lastActivityAt, { placeholder: '' }) : '';
+    if (ago) parts.push(translate('airTerminalLastOutput', { ago }));
+    return parts.filter(Boolean).join(' · ');
   }
 
   function paintTerminals() {
@@ -75,16 +129,168 @@
       list.replaceChildren(node('p', translate('airTerminalsEmpty'), 'directory-terminal-empty'));
       return;
     }
+    // 一行 = 打开那条终端的链接 + 重命名 + 复制 id + 重启 + 删除。按钮不能放进 <a> 里
+    // （嵌套可交互元素是无效 HTML，点它们会跟着跳走），所以外层是 div、里面并排 ——
+    // 和目录任务行（`directory-task-row`）同一种结构，样式复用 `.task-delete`。
     list.replaceChildren(...sessions.map(session => {
-      const link = node('a', null, 'directory-terminal-row');
+      const label = session.label || session.id;
+      const row = node('div', null, 'directory-terminal-row');
+      const link = node('a', null, 'directory-terminal-open');
       link.href = `/?id=${encodeURIComponent(session.id)}`;
-      link.append(
-        node('span', '›_', 'directory-terminal-mark'),
-        node('strong', session.label || session.id),
-        node('small', session.cli || ''),
-      );
-      return link;
+      const title = node('span', null, 'directory-terminal-title');
+      const dot = node('span', null, 'directory-terminal-dot');
+      if (session.state) dot.dataset.state = session.state;
+      dot.setAttribute('aria-hidden', 'true');
+      title.append(dot, node('strong', label));
+      const text = node('span', null, 'directory-terminal-text');
+      text.append(title, node('small', metaText(session), 'directory-terminal-meta'));
+      const hintKey = STATE_HINT_KEY[session.state];
+      if (hintKey) {
+        const hint = node('small', translate(hintKey), 'directory-terminal-hint');
+        hint.dataset.state = session.state;
+        text.append(hint);
+      }
+      link.append(node('span', '›_', 'directory-terminal-mark'), text);
+      const action = (text_, className, actionName, ariaKey, handler) => {
+        const button = node('button', text_, `task-delete ${className}`);
+        button.type = 'button';
+        button.dataset.action = actionName;
+        button.setAttribute('aria-label', translate(ariaKey, { label }));
+        button.title = button.getAttribute('aria-label');
+        button.onclick = event => {
+          event.preventDefault();
+          event.stopPropagation();
+          void handler(session, button);
+        };
+        return button;
+      };
+      // 重命名：终端行的默认名字是「CLI · 模型」（见下面的 create），一个目录里开三个
+      // 同款终端就分不出谁是谁了。
+      const rename = action('✎', 'terminal-rename', 'rename-terminal', 'airTerminalRenameAria', renameTerminal);
+      // 复制 id：终端页地址、派发目标、报障定位都要这个 8 位随机串，手抄必错。
+      const copy = action('⧉', 'terminal-copy', 'copy-terminal-id', 'airTerminalCopyIdAria', copyTerminalId);
+      // 重启：杀掉 tmux 里的进程、按当前 provider/CLI 重新 spawn 一次。它也是那条
+      // 托管路由失联（改过 provider、或早于能力令牌那次修复建的终端）的愈合路径。
+      const restart = action('↻', 'terminal-restart', 'restart-terminal', 'airTerminalRestartAria', restartTerminal);
+      const remove = node('button', translate('delete'), 'task-delete danger');
+      remove.type = 'button';
+      remove.dataset.action = 'delete-terminal';
+      remove.setAttribute('aria-label', translate('airDeleteTerminalAria', { label }));
+      remove.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        void removeTerminal(session, remove);
+      };
+      row.append(link, rename, copy, restart, remove);
+      return row;
     }));
+  }
+
+  // 重命名走 `PATCH /api/sessions/:id` 的 label —— 服务端早就收这个字段（chat 那边
+  // `renameSessionFromChat` 用的是同一条），所以这里只负责问一句和把回执说出来。
+  // 留空 = 撤掉自定义名：服务端把空 label 存成 null，行文案随 `label || id` 退回 id。
+  async function renameTerminal(session, button) {
+    if (!ctx || !session?.id) return;
+    const label = session.label || session.id;
+    const next = root.prompt(translate('airTerminalRenamePrompt', { label }), label === session.id ? '' : label);
+    // prompt 取消是 null，清空是 ''：只有前者算「不改」。
+    if (next === null) return;
+    // 服务端 label 上限 80（超了回一句英文 400）；App 输入框同样 maxLength 80。
+    const value = next.trim().slice(0, 80);
+    if (button) button.disabled = true;
+    try {
+      await ctx.api(`/api/sessions/${encodeURIComponent(session.id)}`, { label: value }, 'PATCH');
+      renamed.set(session.id, { label: value || session.id, at: Date.now() });
+      paintTerminals();
+      ctx.notice?.(translate('airTerminalRenamed'));
+    } catch (error) {
+      ctx.notice?.(translate('airTerminalRenameFailed', { error: error?.message || error }));
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  // 复制 id。异步剪贴板 API 要安全上下文 + 授权，局域网 http 访问拿不到，所以退回
+  // 隐藏 textarea + execCommand 那条老路。两条都失败才说失败 —— 「已复制」这句话必须
+  // 是真的，否则用户会拿着一个空剪贴板去粘贴。
+  async function copyTerminalId(session) {
+    if (!session?.id) return;
+    let copied = false;
+    try {
+      if (root.navigator?.clipboard?.writeText) {
+        await root.navigator.clipboard.writeText(session.id);
+        copied = true;
+      }
+    } catch (_) {}
+    if (!copied) {
+      const area = node('textarea');
+      try {
+        area.value = session.id;
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.append(area);
+        area.select();
+        copied = document.execCommand('copy');
+      } catch (_) {
+      } finally {
+        area.remove();
+      }
+    }
+    ctx?.notice?.(copied
+      ? translate('airTerminalIdCopied', { id: session.id })
+      : translate('airTerminalCopyIdFailed', { id: session.id }));
+  }
+
+  // 重启一条终端（`POST /api/sessions/:id/restart`，只对终端有效）：杀掉 tmux 里的
+  // 进程、按这条会话当前的 CLI/Provider 重新 spawn。CLI 会以**全新对话**重开
+  // （服务端会清掉 cliSessionId），所以先问一句。
+  async function restartTerminal(session, button) {
+    if (!ctx || !session?.id) return;
+    const label = session.label || session.id;
+    if (!root.confirm(translate('airTerminalRestartConfirm', { label }))) return;
+    if (button) button.disabled = true;
+    try {
+      await ctx.api(`/api/sessions/${encodeURIComponent(session.id)}/restart`, {});
+      ctx.notice?.(translate('airTerminalRestarted'));
+    } catch (error) {
+      ctx.notice?.(translate('airTerminalRestartFailed', { error: error?.message || error }));
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  // 删一条终端会话（`DELETE /api/sessions/:id`）。worktree 里还有未提交改动 / 未合入
+  // 的提交时，服务端默认拒绝（409 + reasons），这时再问一次「仍然删除？」，同意才带
+  // force 重来 —— 和目录任务行那条删除一个规矩（`deleteTaskById`）。
+  async function removeTerminal(session, button) {
+    if (!ctx || !session?.id) return;
+    const label = session.label || session.id;
+    if (!root.confirm(translate('airDeleteTerminalConfirm', { label }))) return;
+    const path = `/api/sessions/${encodeURIComponent(session.id)}`;
+    if (button) button.disabled = true;
+    try {
+      try {
+        await ctx.api(path, undefined, 'DELETE');
+      } catch (error) {
+        const reasons = new Set([error?.code, error?.message, ...(error?.reasons || [])]);
+        const findings = [
+          ...(reasons.has('dirty') ? [translate('airDeleteRiskDirty')] : []),
+          ...(reasons.has('unmerged') ? [translate('airDeleteRiskUnmerged')] : []),
+        ];
+        if (!findings.length || !root.confirm(translate('airDeleteTerminalRiskConfirm', { label, findings: findings.join('\n') }))) {
+          ctx.notice?.(translate('airTerminalDeleteFailed', { error: error?.message || error }));
+          return;
+        }
+        await ctx.api(path, { force: true }, 'DELETE');
+      }
+      removed.add(session.id);
+      paintTerminals();
+      ctx.notice?.(translate('airTerminalDeleted'));
+    } catch (error) {
+      ctx.notice?.(translate('airTerminalDeleteFailed', { error: error?.message || error }));
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   function setMode(next) {
@@ -93,22 +299,77 @@
     render();
   }
 
-  // 本目录新建终端：POST /api/directories/:id/sessions（kind=terminal），CLI 用
-  // 「最近用过的那套」（外壳那颗新任务输入框的同一个默认）。建好直接去那个终端页，
-  // 回来的路是浏览器后退 —— 和点一行已有终端是同一种跳转。
-  async function create() {
+  // 可选的 CLI：快照里服务端认的那一份（`/api/air` 的 `clis`）。哪条车道能进终端
+  // 是车道自己的事实（服务端 cli-capability 的 kinds 列，经共享 CLI 目录下发），
+  // 这里不自己维护一张排除表 —— 常驻车道（claude-exp / codex-exp）是进程内的
+  // SDK / app-server，没有可执行文件能丢进终端，目录里本来就说不支持 terminal；
+  // 目录还没加载时退回旧口径（`-exp` 后缀 = chat 专用适配器，不是给人用的终端）。
+  function terminalClis() {
+    const api = root.MultiCCProviderCatalog;
+    const offersTerminal = cli =>
+      api?.cliOffersIn ? api.cliOffersIn(cli, 'terminal') : !cli.endsWith('-exp');
+    return [...new Set((ctx?.data?.clis || [])
+      .map(cli => String(cli || ''))
+      .filter(cli => cli && offersTerminal(cli)))];
+  }
+
+  function recentCli() { return String(ctx?.defaultCli?.() || ''); }
+
+  // 默认值 = 这个目录最近用过的那条，但它来自 chat 那颗胶囊（`air.js` 的 quickCli），
+  // 可能是条常驻车道 —— 终端起不来。不在候选里就退回第一条可用的。
+  function defaultTerminalCli() {
+    const recent = recentCli();
+    const clis = terminalClis();
+    return clis.includes(recent) ? recent : (clis[0] || 'claude');
+  }
+
+  // 「＋ 新终端」：**和 chat 的「AI 配置」是同一个对话框**（`air-task-settings.js` 的
+  // `configuration(entry, clis, onApply)`，draft 模式）—— CLI、Provider、模型、推理
+  // 强度都在那一层挑。用户明确要求终端要能像 chat 一样选线路，不是只挑一个 CLI；
+  // 所以这里不再自己长一套选择 UI，把「选什么」交给那一份唯一实现。
+  function openCreateDialog() {
+    if (creating || !dirId || !ctx) return;
+    const settings = root.MultiCCAirSettings;
+    if (!settings?.configuration) return;
+    const clis = terminalClis();
+    settings.configuration(
+      {
+        // purpose 让那一层把抬头/说明换成终端口吻（同一份实现，只是不说「新任务」）。
+        purpose: 'terminal',
+        task: { title: translate('airNewTerminal') },
+        // 打开时的默认值 = 这个目录最近用过的那套（和 chat 那颗胶囊同一个口径），
+        // 但对话框里每一项都能改。
+        configuration: { ...(ctx.data?.lastRuntime || {}), cli: defaultTerminalCli() },
+      },
+      clis,
+      runtime => void create(runtime),
+    );
+  }
+
+  // 本目录新建终端：POST /api/directories/:id/sessions（kind=terminal）。建好直接去
+  // 那个终端页，回来的路是浏览器后退 —— 和点一行已有终端是同一种跳转。
+  async function create(runtime) {
     const button = el('directory-terminal-new');
     if (creating || !dirId || !ctx) return;
-    const preferred = ctx.defaultCli?.();
-    const cli = [preferred, ...(ctx.data?.clis || []), 'claude'].find(value => value && value !== 'codex-exp' && value !== 'claude-exp');
+    const cli = String(runtime?.cli || '');
+    if (!cli) return;
     creating = true;
     if (button) button.disabled = true;
     try {
-      const session = await ctx.api(`/api/directories/${encodeURIComponent(dirId)}/sessions`,
-        { cli, kind: 'terminal', label: cli });
+      // 终端行的名字把 CLI 与模型写进去：列表里一眼看得出这一条是拿什么起的。
+      // 「没选」的字段一律不发明文空串（服务端把 '' 当「显式不指定」，和省略不是
+      // 一回事），所以逐项按需带上。
+      const label = [cli, runtime.model || null].filter(Boolean).join(' · ');
+      const session = await ctx.api(`/api/directories/${encodeURIComponent(dirId)}/sessions`, {
+        cli, kind: 'terminal', label,
+        ...(runtime.provider ? { provider: runtime.provider } : {}),
+        ...(runtime.providerSelection ? { providerSelection: runtime.providerSelection } : {}),
+        ...(runtime.model ? { model: runtime.model } : {}),
+        ...(runtime.effort ? { effort: runtime.effort } : {}),
+      });
       root.location.assign(`/?id=${encodeURIComponent(session.id)}`);
     } catch (error) {
-      ctx.notice?.(translate('airTerminalCreateFailed', { detail: String(error?.message || error) }));
+      ctx.notice?.(translate('airTerminalCreateFailed', { error: error?.message || error }));
     } finally {
       creating = false;
       if (button) button.disabled = false;
@@ -117,7 +378,7 @@
 
   el('directory-mode-chat')?.addEventListener('click', () => setMode('chat'));
   el('directory-mode-terminal')?.addEventListener('click', () => setMode('terminal'));
-  el('directory-terminal-new')?.addEventListener('click', () => void create());
+  el('directory-terminal-new')?.addEventListener('click', openCreateDialog);
 
   root.MultiCCAirDirectoryMode = { render, setMode, currentMode: () => mode };
 })(typeof window !== 'undefined' ? window : null);

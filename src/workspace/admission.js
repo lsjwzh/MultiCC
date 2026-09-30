@@ -6,8 +6,10 @@ const { promisify } = require('node:util');
 const exec = promisify(execFile);
 const { createTaskShellStore } = require('../task-shell/store');
 const { createWorkspaceRegistry } = require('./registry');
+const { createWriterEscalation } = require('./writer-escalation');
 const { WORKTREE_SUBDIR } = require('../git/service');
 const { captureCodeRevision } = require('../task-routing/code-revision');
+const { isChatStateBusy } = require('../session/runtime-busy');
 const BACKPRESSURE_CODES = new Set([
   'workspace_busy',
   'workspace_lease_unavailable',
@@ -20,9 +22,19 @@ const failure = code => Object.assign(new Error(code), {
   // use the bounded outbox retry path instead of cycling forever in FIFO.
   backpressure: BACKPRESSURE_CODES.has(code),
 });
-const processAlive = proc => !!proc && proc.exitCode == null && proc.signalCode == null;
+const ACTIVE_LEASE_STATES = new Set(['reserved', 'materializing', 'starting', 'running', 'uncertain']);
 
 const DEFAULT_STALE_UNCERTAIN_MS = 5 * 60 * 1000;
+
+// How long a *waiting delivery* may stay vetoed by a completed turn's own lease
+// before that condition is named as stuck, and how quiet the pinning background
+// work must have been for the same window. Deliberately long: this is a
+// threshold for *reporting*, never for acting — a build that keeps printing is
+// never called stuck, and even a stuck one is only ever reported.
+const DEFAULT_STUCK_BLOCKED_MS = 30 * 60 * 1000;
+const DEFAULT_STUCK_SILENCE_MS = 10 * 60 * 1000;
+// The stop is only believed once the host agrees nothing is live any more.
+const ESCALATION_SETTLE_MS = 2000;
 
 // Residency is a filesystem fact and the filesystem is not this layer's to
 // trust blindly, so it is re-observed rather than assumed. Not every tick: the
@@ -36,11 +48,17 @@ function createWorkspaceAdmission(deps) {
     onIntegrationPublished: deps.onIntegrationPublished,
   });
   const permits = new WeakSet(), active = new Map();
+  // Armed by a delivery the host refused, disarmed by the delivery that finally
+  // gets through. The lease alone says a writer exists, not that anyone is
+  // waiting on it, so this is the only evidence escalation reacts to.
+  const blockedSince = new Map(), escalating = new Set(), stuckNoticed = new Set();
+  const writers = deps.writerEscalation || createWriterEscalation({ log: (event, data) => deps.log(event, data) });
   let closed = false, lastResidencyReclaimAt = 0;
   const settleTimer = setInterval(() => {
     for (const [id, permit] of active) if (permit.terminal) void drain(id, permit);
     reapStaleUncertainLeases();
     reclaimGoneWorkspaces();
+    noticeStuckBlocked();
   }, 1000);
   settleTimer.unref();
   const applicable = record => record?.kind === 'chat' && !['aux', 'gateway'].includes(record.type) && !record.taskExecutionSlot && !record.experimentalMode;
@@ -72,10 +90,12 @@ function createWorkspaceAdmission(deps) {
     registry.bind(id, workspace.id);
     return workspace;
   }
+  // 「这个会话还在写它自己的工作树吗」= chat 运行时忙（唯一判定，见
+  // src/session/runtime-busy.js）或有后台任务/常驻 stream 泵在跑。这三条是独立的轴，
+  // 所以在这里 OR 起来而不是塞进那个判定里。
   function isLive(id) {
     const state = deps.getState(id);
-    return !!(state?.isStreaming || processAlive(state?.claudeProc) || processAlive(state?._cancelledProc)
-      || state?._activeRunner || deps.hasBackground(id) || deps.streamBusy(id));
+    return isChatStateBusy(state) || deps.hasBackground(id) || deps.streamBusy(id);
   }
   function hasActiveLease(id) {
     const workspace = identify(id);
@@ -197,11 +217,18 @@ function createWorkspaceAdmission(deps) {
     permits.add(permit); active.set(descriptor.sessionId, permit);
     let materialized = false;
     try {
+      // The execution lease is ours now; retire another session's parked child
+      // on this checkout before restoring or delivering to its next writer.
+      await deps.claimPersistent?.(descriptor.sessionId, workspace);
       await materialize(descriptor.sessionId, lease);
       materialized = true;
       try { permit.startCode = await captureCodeRevision(workspace.path); }
       catch (error) { permit.startObservationError = /^code_[a-z_]+$/.test(error.message) ? error.message : 'code_observation_failed'; }
       await require('../task-shell/role-bindings').prepareRoleContext(store, descriptor, deps);
+      // This delivery got through, so nothing is blocked behind the workspace any
+      // more: the next refusal arms a fresh window.
+      blockedSince.delete(descriptor.sessionId);
+      stuckNoticed.delete(descriptor.sessionId);
       descriptor.opts.workspacePermit = permit;
       return { complete(outcome) {
         if (outcome.accepted && registry.lease(workspace.id)?.state !== 'reserved') {
@@ -221,7 +248,7 @@ function createWorkspaceAdmission(deps) {
       // validated and marked resident. Do not mislabel those failures as a Git
       // materialization failure or permanently pin an otherwise healthy tree.
       const reason = materialized ? 'prelaunch_failed' : 'materialization_failed';
-      if (!materialized && fs.existsSync(workspace.path)) registry.retain(lease, reason);
+      if (!materialized && error.code !== 'workspace_busy' && fs.existsSync(workspace.path)) registry.retain(lease, reason);
       registry.release(lease, { stopped: true, reason });
       active.delete(descriptor.sessionId); throw error;
     }
@@ -283,10 +310,16 @@ function createWorkspaceAdmission(deps) {
     permit.draining = true;
     const release = (async () => {
       try {
-        // A warm native process also owns its directory. Close and confirm it
-        // before releasing this run; background work prevents this path.
-        const stopped = await deps.closePersistent?.(id);
-        if (closed || stopped?.closed !== true || active.get(id) !== permit || isLive(id)) return;
+        // Parked residency cannot accept new sends without the next execution
+        // lease. Unknown/per-turn backends retain the verified-close fallback.
+        const workspace = registry.workspace(permit.lease.workspaceId);
+        const residency = deps.parkPersistent?.(id, workspace);
+        // A busy/queued/recycling resident refused to park: retain its lease,
+        // never turn that refusal into a destructive close fallback.
+        if (residency && residency.parked !== true) return;
+        const parked = residency?.parked === true;
+        const stopped = parked ? null : await deps.closePersistent?.(id);
+        if (closed || (!parked && stopped?.closed !== true) || active.get(id) !== permit || isLive(id)) return;
         if (permit.evidenceBound) {
           try {
             const code = await captureCodeRevision(permit.lease.workspaceId && registry.workspace(permit.lease.workspaceId)?.path);
@@ -294,6 +327,7 @@ function createWorkspaceAdmission(deps) {
               leaseId: permit.lease.id, generation: permit.lease.generation, code });
           } catch (error) { deps.log('writer_barrier_not_recorded', { sessionId: id, code: error.code || error.message }); }
         }
+        if (closed || active.get(id) !== permit || isLive(id)) return;
         registry.release(permit.lease, { stopped: true, reason: permit.terminal.status || 'stopped' });
         active.delete(id);
       } catch (error) { deps.log('workspace_release_retained', { sessionId: id, code: error.code }); }
@@ -365,6 +399,124 @@ function createWorkspaceAdmission(deps) {
       }
     }
   }
+  // ── A stuck delivery: reported, never reclaimed ────────────────────────────
+  // `drain()` refuses to release while anything bound to the session is live,
+  // because a live background task may still be writing the checkout. That stays
+  // exactly as it is: no lease is force-released on a timer, and nothing on this
+  // path signals a process. What was missing is the *reporting* — a lease a
+  // completed turn will not let go looked identical to ordinary occupancy, so a
+  // queue that could never advance named only "workspace_occupied" and left the
+  // user to guess. Stopping the writer stays a user decision, and the two
+  // explicit intents that mean it (cancel, insert now) escalate on demand.
+  function noteBlockedDelivery(sessionId) {
+    if (closed || !sessionId || blockedSince.has(sessionId)) return;
+    blockedSince.set(sessionId, Date.now());
+  }
+  function window(value, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+  }
+  // The full condition: someone is waiting on this session, the turn that owns
+  // the lease is over, the pin is still live, and (if that pin reports progress
+  // at all) it has gone quiet for the window. Silence is only a signal when
+  // there is background work to be silent: no live background work means the pin
+  // is the writer process itself, which is just as stuck and worth naming.
+  function stuckSince(sessionId) {
+    const since = blockedSince.get(sessionId);
+    if (!since || Date.now() - since < window(deps.budgets?.stuckBlockedMs, DEFAULT_STUCK_BLOCKED_MS)) return null;
+    // The condition is gone (the turn moved on, or the writer died and the
+    // normal drain owns it): forget the arm so a later wedge reports again.
+    const forget = () => { blockedSince.delete(sessionId); stuckNoticed.delete(sessionId); return null; };
+    const permit = active.get(sessionId);
+    if (permit && !permit.terminal) return forget();
+    if (!isLive(sessionId)) return forget();
+    if (typeof deps.backgroundSilence !== 'function') return null;
+    let silence = Infinity;
+    try { silence = Number(deps.backgroundSilence(sessionId)); } catch (_) { silence = Infinity; }
+    const quiet = !silence || silence >= window(deps.budgets?.stuckSilenceMs, DEFAULT_STUCK_SILENCE_MS);
+    return quiet ? { since, silence } : null;
+  }
+  // Once per armed window, so a wedge does not log every second while it lasts.
+  function noticeStuckBlocked() {
+    if (closed) return;
+    for (const sessionId of [...blockedSince.keys()]) {
+      const stuck = stuckSince(sessionId);
+      if (!stuck || stuckNoticed.has(sessionId)) continue;
+      stuckNoticed.add(sessionId);
+      let leaseId = null;
+      try { leaseId = registry.lease(identify(sessionId)?.id)?.id || null; } catch (_) { leaseId = null; }
+      deps.log('workspace_delivery_stuck', { sessionId, leaseId, blockedMs: Date.now() - stuck.since,
+        silenceMs: Number.isFinite(stuck.silence) ? stuck.silence : null,
+        // Reported, not repaired: the message stays queued until the user stops
+        // the writer (cancel / insert now) — this line exists to tell them why.
+        hint: 'stop_the_writer_manually' });
+    }
+  }
+  // Surfaced to the host as an extra busy reason, so the queue's own diagnostics
+  // (`delivery_skipped`, and insert-now's `holdReasons`) say what is wrong
+  // instead of reporting plain occupancy forever.
+  function stuckHint(id) {
+    if (closed || !blockedSince.has(id)) return null;
+    return stuckSince(id) ? 'workspace_stuck_background' : null;
+  }
+  async function escalate(id, { reason = 'force_release', source = 'host', trusted = false } = {}) {
+    if (closed) return { ok: false, escalated: false, released: false, code: 'admission_closed' };
+    if (escalating.has(id)) return { ok: false, escalated: false, released: false, code: 'escalation_in_progress' };
+    if (!trusted && !blockedSince.has(id)) return { ok: false, escalated: false, released: false, code: 'no_blocked_delivery' };
+    let workspace = null;
+    try { workspace = identify(id); }
+    catch (error) { return { ok: false, escalated: false, released: false, code: error.code || 'workspace_identity_unresolved' }; }
+    const lease = workspace && registry.lease(workspace.id);
+    if (!lease || !ACTIVE_LEASE_STATES.has(lease.state)) return { ok: false, escalated: false, released: false, code: 'no_active_lease' };
+    // Shared checkout does not grant cancellation authority over its writer.
+    if (lease.sessionId !== id) return { ok: false, escalated: false, released: false, code: 'workspace_owned_by_other_session' };
+    const permit = active.get(id);
+    if (permit && !permit.terminal) return { ok: false, escalated: false, released: false, code: 'turn_still_running' };
+    escalating.add(id);
+    try {
+      // Descendants first: they hold the checkout and the hung handle, and they
+      // are what the managed close below cannot reach on its own.
+      const descendants = await writers.stopDescendants(lease.pid, { reason });
+      let reaped = 0;
+      try { reaped = deps.reapBackground?.(id, { reason: `escalated:${reason}` }) || 0; }
+      catch (error) { deps.log('workspace_escalation_reap_failed', { sessionId: id, code: error.code || 'reap_failed' }); }
+      // The managed close is preferred for the writer itself: it is the only path
+      // that also settles the stream state. A writer that refuses it gets the
+      // same ladder its descendants just got.
+      let closedOk = false;
+      try { closedOk = (await deps.closePersistent?.(id))?.closed === true; }
+      catch (error) { deps.log('workspace_escalation_close_failed', { sessionId: id, code: error.code || 'close_failed' }); }
+      let killed = descendants.killed, survivors = [...descendants.survivors];
+      if (!closedOk && lease.pid) {
+        const hard = await writers.stopWriter(lease.pid, { reason });
+        closedOk = hard.ok;
+        killed += hard.killed;
+        survivors = [...new Set([...survivors, ...hard.survivors])];
+      }
+      const deadline = Date.now() + ESCALATION_SETTLE_MS;
+      while (isLive(id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+      const stillLive = isLive(id);
+      const outcome = { reason, source, killed, reaped, closed: closedOk, live: stillLive,
+        stop: descendants.code, survivors };
+      // Nothing is released on a stop that was not confirmed. An unverified
+      // writer is precisely what the lease exists to refuse, and a release
+      // granted on hope is how two writers end up in one checkout.
+      if (survivors.length || !closedOk || stillLive) {
+        deps.log('workspace_escalation_incomplete', { sessionId: id, leaseId: lease.id, ...outcome });
+        return { ok: false, escalated: true, released: false, ...outcome };
+      }
+      blockedSince.delete(id);
+      stuckNoticed.delete(id);
+      // A permit releases through drain() so the evidence barrier and the writer
+      // barrier still run. A lease no delivery owns (a crash leftover) has no
+      // permit path and is released directly, exactly like the stale sweep.
+      if (permit) await drain(id, permit);
+      else registry.release(lease, { stopped: true, reason: `escalated:${reason}` });
+      const released = !ACTIVE_LEASE_STATES.has(registry.lease(workspace.id)?.state);
+      deps.log(released ? 'workspace_lease_escalated' : 'workspace_escalation_release_pending', { sessionId: id, leaseId: lease.id, ...outcome });
+      return { ok: released, escalated: true, released, ...outcome };
+    } finally { escalating.delete(id); }
+  }
   // A worktree can go away without the registry ever being told: relocate
   // detaches the old one, hibernation detaches the current one, and a session
   // deleted by hand takes its directory with it. The record left behind still
@@ -401,6 +553,7 @@ function createWorkspaceAdmission(deps) {
     let stopped = false;
     try {
       await materialize(sessionId, lease);
+      await deps.claimPersistent?.(sessionId, workspace, { exclusive: true });
       const closedPersistent = await deps.closePersistent?.(sessionId);
       if (closedPersistent?.closed !== true || siblingLive()) throw failure('workspace_busy');
       stopped = true;
@@ -416,6 +569,7 @@ function createWorkspaceAdmission(deps) {
     }
   }
   return { identify, occupied, hasActiveLease, beforeDeliver, assertPermit, starting, spawned, settled, bindTurn, finalized, optionsForTurn, initialize,
+    noteBlockedDelivery, escalate, noticeStuckBlocked, stuckHint,
     mergeHooks: id => evidence.hooks(id), recoverEvidence: id => evidence.recover(id),
     deliveryEvidence: (id, turnId) => evidence.summary(id, turnId), verifyBaseline: (receipt, cwd) => evidence.verifyBaseline(receipt, cwd),
     withSeparationBarrier, recordSeparationApplication: input => evidence.recordSeparationApplication(input),

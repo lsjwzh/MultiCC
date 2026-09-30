@@ -1,9 +1,20 @@
 (function attachMultiCCChatEventController(global) {
   'use strict';
 
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
+
   function isRecoverableCodexReconnectErrorText(text) {
     const value = String(text || '');
-    return /^Codex 出错：Reconnecting\.\.\.\s*\d+\/\d+\s*\(/i.test(value)
+    // 前缀是车道的展示名（turn-engine 用 `${label} 出错：…` 拼），而 2026-09-24 给
+    // 两条车道改了名：这条文本来自一次性车道，它的 label 现在是 "Codex Exec"（原来
+    // 是 "Codex"）。三种拼法都收：新名、旧名，以及 turn-engine / finalize-host 里
+    // 硬编码的 "Codex 出错："。只认一种拼法的话，一次瞬时重连会被当成真错误弹给用户。
+    return /^(?:Codex|Codex Exp|Codex Exec) 出错：Reconnecting\.\.\.\s*\d+\/\d+\s*\(/i.test(value)
       && /stream disconnected before completion|response\.completed/i.test(value);
   }
 
@@ -18,20 +29,22 @@
       ? api.providerDisplayName(value || '') : (value || '');
   }
 
+  // 下面三张表存的是目录键，不是文案：心跳和准入进度都是界面 chrome，字样必须
+  // 跟着 t() 走（服务端只发 phase / toolKind 这类枚举，语言由这里决定）。
   const PROGRESS_PHASES = Object.freeze({
-    starting: '正在启动',
-    thinking: '正在处理',
-    tool: '正在调用工具',
-    recovering: '正在恢复连接',
-    finalizing: '正在收尾',
+    starting: 'progressPhaseStarting',
+    thinking: 'progressPhaseThinking',
+    tool: 'progressPhaseTool',
+    recovering: 'progressPhaseRecovering',
+    finalizing: 'progressPhaseFinalizing',
   });
   const PROGRESS_TOOLS = Object.freeze({
-    subagent: '子 Agent',
-    monitor: '后台监控',
-    process: '命令执行',
-    filesystem: '文件操作',
-    search: '代码检索',
-    network: '网络请求',
+    subagent: 'progressToolSubagent',
+    monitor: 'progressToolMonitor',
+    process: 'progressToolProcess',
+    filesystem: 'progressToolFilesystem',
+    search: 'progressToolSearch',
+    network: 'progressToolNetwork',
   });
   const ATTEMPT_OWNED_EVENT_TYPES = Object.freeze({
     part_delta: true,
@@ -48,13 +61,14 @@
     succeeded: true,
     released: true,
   });
+  // 这几个键 App 端也用（admission_notes.dart），两边别各写一份文案。
   const ADMISSION_PROGRESS_LABELS = Object.freeze({
-    waiting: '已收到消息 · 正在整理会话记忆，完成后自动继续',
-    ready: '记忆整理完成 · 正在提交消息',
-    memory_distill_failed: '记忆整理失败 · 已跳过并继续提交消息',
-    memory_distill_skipped: '记忆整理已跳过 · 正在继续提交消息',
-    starting: '消息已提交 · 正在启动',
-    processing: '正在处理…',
+    waiting: 'admissionMemoryWaiting',
+    ready: 'admissionMemoryReady',
+    memory_distill_failed: 'admissionMemoryFailed',
+    memory_distill_skipped: 'admissionMemorySkipped',
+    starting: 'admissionStarting',
+    processing: 'admissionProcessing',
   });
 
   function admissionDetail(value) {
@@ -70,15 +84,65 @@
     return model;
   }
 
-  function formatProgressHeartbeat(message) {
+  // The translator is an argument rather than a host lookup: this is called from
+  // the danmaku path and from the unit tests, and neither owns the page global.
+  function formatProgressHeartbeat(message, translate) {
+    const tr = typeof translate === 'function' ? translate : (key => key);
     const source = message && typeof message === 'object' ? message : {};
-    const phase = PROGRESS_PHASES[source.phase] || '仍在执行';
-    const elapsedSeconds = Math.max(0, Math.floor((Number(source.elapsedMs) || 0) / 1000));
-    const elapsed = elapsedSeconds >= 60
-      ? `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`
-      : `${elapsedSeconds}s`;
-    const tool = PROGRESS_TOOLS[source.toolKind];
+    const phase = tr(PROGRESS_PHASES[source.phase] || 'progressPhaseRunning');
+    // 一段测出来的时间走全站唯一那份（shared/format.js）。原来这里把秒以下抹掉、
+    // 又把零秒说成「0s」—— 一个 900ms 的工具调用会被记成 0。
+    const elapsed = FMT.formatDuration(Number(source.elapsedMs) || 0);
+    const tool = source.toolKind ? tr(PROGRESS_TOOLS[source.toolKind] || '') : '';
     return [phase, elapsed, tool].filter(Boolean).join(' · ');
+  }
+
+  // Difficulty routing note: the one line a chat shows for "Jev judged this
+  // message, so this line/model answers it". Built from the provider_auto_route
+  // `selected` event alone; '' means there is nothing worth saying.
+  const AUTO_ROUTE_WHY = Object.freeze({
+    jev_key_missing: 'autoRouteWhyKey',
+    jev_timeout: 'autoRouteWhyTimeout',
+    jev_http_401: 'autoRouteWhyAuth',
+    jev_http_403: 'autoRouteWhyAuth',
+    jev_network: 'autoRouteWhyNetwork',
+    jev_not_prepared: 'autoRouteWhyNotJudged',
+  });
+  const AUTO_ROUTE_ACTION = Object.freeze({
+    strong: 'autoRouteUseStrong', weak: 'autoRouteUseWeak', priority: 'autoRouteUsePriority',
+  });
+
+  function formatAutoRouteNote(event, translate) {
+    const tr = typeof translate === 'function' ? translate : (key => key);
+    const routing = event && event.routing;
+    if (!routing || event.phase !== 'selected' || !event.providerName) return '';
+    const tierName = (index, count) => {
+      if (!Number.isInteger(index) || !Number.isInteger(count) || count < 2) return '';
+      if (count > 3) return tr('autoRouteTierNth', { n: index + 1, count });
+      if (index === 0) return tr('autoRouteTierSimple');
+      return tr(index >= count - 1 ? 'autoRouteTierComplex' : 'autoRouteTierMedium');
+    };
+    const name = displayProviderName(event.providerName);
+    const model = visibleProviderModel(event.model);
+    let target = model ? tr('autoRouteTarget', { name, model }) : name;
+    const preferred = tierName(routing.tierIndex, routing.tierCount);
+    // Every line of the judged tier was out of quota or already tried.
+    if (preferred && event.tier && event.preferredTier && event.tier !== event.preferredTier) {
+      target += tr('autoRouteTierBusy', { tier: preferred });
+    }
+    if (routing.source === 'jev') {
+      if (!preferred) return '';
+      const raised = routing.code && routing.code !== 'jev_choice' ? tr('autoRouteRaised') : '';
+      const seconds = Number(routing.latencyMs) > 0
+        ? tr('autoRouteLatency', { sec: (Number(routing.latencyMs) / 1000).toFixed(1) }) : '';
+      return tr('autoRouteDecided', { tier: preferred + raised, target }) + seconds;
+    }
+    if (routing.source !== 'fallback') return '';
+    const code = String(routing.code || '');
+    const whyKey = AUTO_ROUTE_WHY[code] || (/^jev_http_\d+$/.test(code) ? 'autoRouteWhyHttp' : 'autoRouteWhyOther');
+    const reason = tr(whyKey, { status: code.slice('jev_http_'.length) });
+    const action = tr(AUTO_ROUTE_ACTION[routing.onUnknown] || AUTO_ROUTE_ACTION.strong);
+    return tr('autoRouteFallback', { reason, action, target });
   }
 
   function taskAwareCompletionVoice(message, fallback) {
@@ -107,6 +171,13 @@
     let activeProviderModelRoute = null;
     let activeProviderModelSource = '';
     const pendingAdmissionIds = new Set();
+    // The "Jev is judging…" line of the message being admitted; the turn's
+    // selected route rewrites it in place into the verdict.
+    let autoRouteNoteEl = null;
+    // Every label this controller paints is chrome, so it goes through the
+    // page's t() (i18n.js). The host owns the page; a Node caller without one
+    // gets the key back, which is what the unit tests assert against.
+    const tr = (key, params) => (typeof host.translate === 'function' ? host.translate(key, params) : key);
 
     function resetProviderRouteGate() {
       providerRouteProtocolVersion = 0;
@@ -249,9 +320,9 @@
       host.debug?.('event', `WS ◀ ${summary}`);
     }
 
-    function finishTurnProgress(kind, text) {
+    function finishTurnProgress(kind, key) {
       if (!activeProgressTurnId) return;
-      liveUi.pushDanmaku(kind || 'done', text || '本轮已结束', `turn:${activeProgressTurnId}`);
+      liveUi.pushDanmaku(kind || 'done', tr(key || 'turnProgressDone'), `turn:${activeProgressTurnId}`);
       activeProgressTurnId = null;
     }
 
@@ -265,7 +336,13 @@
       const parts = [];
       if (state.sessionId) parts.push(`Session: ${state.sessionId.slice(0, 8)}...`);
       if (message.cli) parts.push(message.cli);
-      if (message.model) parts.push(message.model);
+      // Auto mode: the session model is only the first candidate's; name the
+      // line that actually answered (running route, else the last routed one).
+      const initAuto = (message.providerSelection !== undefined
+        ? message.providerSelection : state.sessionProviderSelection)?.mode === 'auto';
+      const autoLine = initAuto ? (message.providerRoute || message.autoProvider || null) : null;
+      const infoModel = visibleProviderModel(autoLine?.model) || message.model;
+      if (infoModel) parts.push(infoModel);
       const infoLine = parts.join(' | ');
       if (infoLine && infoLine !== state.lastInitInfoLine) {
         state.lastInitInfoLine = infoLine;
@@ -278,14 +355,14 @@
       if (message.providerSelection !== undefined) state.sessionProviderSelection = message.providerSelection || null;
       const autoMode = state.sessionProviderSelection?.mode === 'auto';
       if (message.providerId !== undefined) {
-        if (autoMode) state.activeProviderId = message.providerRoute ? (message.providerId || '') : '';
+        if (autoMode) state.activeProviderId = message.providerRoute ? (message.providerId || '') : (message.autoProvider?.providerId || '');
         else state.sessionProvider = message.providerId || '';
       }
       if (message.providerName !== undefined) {
-        if (autoMode) state.activeProviderName = message.providerRoute ? displayProviderName(message.providerName) : '';
+        if (autoMode) state.activeProviderName = displayProviderName(message.providerRoute ? message.providerName : message.autoProvider?.providerName || '');
         else state.sessionProviderDisplayName = displayProviderName(message.providerName);
       }
-      if (autoMode) state.activeProviderModel = visibleProviderModel(message.providerRoute?.model);
+      if (autoMode) state.activeProviderModel = visibleProviderModel(message.providerRoute?.model || message.autoProvider?.model);
       if (message.cliStates) state.sessionCliStates = message.cliStates;
       if (message.cliAvailability) state.cliAvailability = message.cliAvailability;
       if (message.agent !== undefined) state.sessionAgent = message.agent || '';
@@ -305,7 +382,7 @@
         host.transportSend?.({ type: 'cancel' });
       } else if (message.is_streaming && !state.isStreaming) {
         state.isStreaming = true;
-        liveUi.showThinking(ADMISSION_PROGRESS_LABELS.processing);
+        liveUi.showThinking(tr(ADMISSION_PROGRESS_LABELS.processing));
         host.startTitleAnimation?.();
         host.updateUI?.();
       } else if (!message.is_streaming && state.isStreaming) {
@@ -315,7 +392,7 @@
         host.stopTitleAnimation?.();
         host.addSystemMsg?.('⚠️ Response completed while disconnected. Check history above.');
         host.updateUI?.();
-        finishTurnProgress('done', '本轮已结束');
+        finishTurnProgress('done', 'turnProgressDone');
       }
       if (message.providerId !== undefined) state.providerId = message.providerId;
       if (message.providerName !== undefined) state.providerName = message.providerName;
@@ -346,7 +423,10 @@
           const timing = liveUi.buildTimingLine({ role: 'assistant', ts: Date.now(), durationMs: duration });
           if (timing) content.appendChild(timing);
         }
-        if (content) historyView.renderToolTrajectory?.(content, trajTools);
+        if (content) historyView.renderToolTrajectory?.(content, trajTools,
+          Number.isFinite(message.durationMs)
+            ? message.durationMs
+            : (state.turnStartMs ? Date.now() - state.turnStartMs : undefined));
       }
       state.turnStartMs = 0;
       host.stopTitleAnimation?.();
@@ -365,8 +445,7 @@
       }
       host.updateContextBar?.(message.usage, message.modelUsage);
       host.updateUI?.();
-      host.autoCommitIfNeeded?.(state.lastUserBubble);
-      finishTurnProgress('done', '本轮已完成');
+      finishTurnProgress('done', 'turnProgressCompleted');
     }
 
     function handleHistoryReset(message) {
@@ -442,13 +521,37 @@
           applyProviderRouteModel(message);
           host.updateProviderBtn?.();
           break;
-        case 'provider_auto_route':
+        case 'provider_auto_route': {
           // Policy selection is only a reservation. The attempt-owned route
-          // event above is the authority that a physical provider actually began.
+          // event above is the authority that a physical provider actually began;
+          // this only narrates the difficulty verdict behind the reservation.
+          if (message.phase !== 'selected' || !message.routing) break;
+          const pendingNote = autoRouteNoteEl && autoRouteNoteEl.isConnected ? autoRouteNoteEl : null;
+          autoRouteNoteEl = null;
+          // Turns nobody asked Jev about (continuations, nudges) stay silent.
+          if (!pendingNote && message.routing.code === 'jev_not_prepared') break;
+          const note = formatAutoRouteNote(message, host.translate);
+          if (!note) { pendingNote?.remove?.(); break; }
+          const noteEl = pendingNote || host.addSystemMsg?.(note);
+          if (pendingNote) pendingNote.textContent = note;
+          // Same key as the persisted history record, so a replay adopts this line.
+          if (noteEl?.dataset && message.noteClientMsgId) noteEl.dataset.clientMsgId = message.noteClientMsgId;
           break;
+        }
         case 'system':
           if (message.subtype === 'init') applySystemInit(message);
-          else if (message.subtype === 'agent_notes' && Array.isArray(message.notes)) host.addAgentNotes?.(message.notes);
+          else if (message.subtype === 'cli_handoff_applied' && message.fromCli && message.toCli) {
+            // The server cannot know this page's language, so it sends the lane
+            // pair and the reason and lets us write the sentence. `message.message`
+            // stays the fallback: history persisted before these fields existed
+            // only carries that string.
+            host.addSystemMsg?.(tr(
+              ['history_clear_keep', 'manual_native_context_rotate', 'auto_native_context_rotate'].includes(message.reason)
+                ? 'cliHandoffAppliedCheckpoint'
+                : 'cliHandoffAppliedTransfer',
+              { from: message.fromCli, to: message.toCli },
+            ));
+          } else if (message.subtype === 'agent_notes' && Array.isArray(message.notes)) host.addAgentNotes?.(message.notes);
           else if (message.message) {
             const handled = !!(message.authAction && typeof host.addAuthActionMsg === 'function'
               && host.addAuthActionMsg(message.message, message.authAction) === true);
@@ -468,7 +571,13 @@
           break;
         case 'cli_switched':
           host.applyCliSwitchState?.(message);
-          host.addSystemMsg?.(`⇄ CLI 已从 ${host.cliMeta?.[message.fromCli]?.label || message.fromCli} 切换到 ${host.cliMeta?.[message.cli]?.label || message.cli}；下一条消息会携带结构化上下文交接${message.reusedTarget ? '并恢复该 CLI 原会话' : ''}`);
+          // Same keys the App renders (chat_provider.dart) — one wording, two
+          // clients. The lane labels themselves are catalog data, not text.
+          host.addSystemMsg?.('⇄ ' + tr('cliSwitched', {
+            from: host.cliMeta?.[message.fromCli]?.label || message.fromCli,
+            to: host.cliMeta?.[message.cli]?.label || message.cli,
+            resumed: message.reusedTarget ? tr('cliSessionResumedSuffix') : '',
+          }));
           host.loadSessionModel?.();
           break;
         case 'stream_event': handleStreamEvent(message.event, expectedGeneration); break;
@@ -490,6 +599,7 @@
               main: message.role.main || null,
               sub: message.role.sub || null,
               subByProvider: message.role.subByProvider || [],
+              mainByProvider: message.role.mainByProvider || [],
             };
             if (state.currentMsgEl && state.isStreaming) {
               liveUi.attachUsageLine(state.currentMsgEl, null, state.roleTokens);
@@ -498,7 +608,7 @@
           }
           break;
         case 'monitor_started':
-          if (message.background !== false) liveUi.pushDanmaku('start', message.description || message.command || '后台任务', message.task_id);
+          if (message.background !== false) liveUi.pushDanmaku('start', message.description || message.command || tr('backgroundTaskUnnamed'), message.task_id);
           break;
         case 'monitor_done':
           if (message.background !== false) {
@@ -508,18 +618,18 @@
             liveUi.pushDanmaku(
               message.status === 'error' || message.status === 'failed' ? 'fail'
                 : message.status === 'interrupted' ? 'stale' : 'done',
-              message.summary || message.description || '后台任务', message.task_id,
+              message.summary || message.description || tr('backgroundTaskUnnamed'), message.task_id,
             );
           }
           break;
         case 'monitor_progress':
           if (message.background !== false) {
-            liveUi.pushDanmaku('progress', message.description || '后台任务仍在执行', message.task_id);
+            liveUi.pushDanmaku('progress', message.description || tr('backgroundTaskStillRunning'), message.task_id);
           }
           break;
         case 'progress_heartbeat':
           activeProgressTurnId = String(message.turnId || 'active');
-          liveUi.pushDanmaku('progress', formatProgressHeartbeat(message), `turn:${activeProgressTurnId}`);
+          liveUi.pushDanmaku('progress', formatProgressHeartbeat(message, host.translate), `turn:${activeProgressTurnId}`);
           break;
         case 'background_tasks':
           liveUi.reconcileDanmakuTasks?.((message.tasks || []).map(t => t && (t.id || t.task_id)).filter(Boolean));
@@ -575,7 +685,7 @@
           state.pendingUserInputRequestId = message.requestId || null;
           if (host.renderPendingUserInput?.(message) !== true) {
             host.addSystemMsg?.([
-              '需要你的确认：' + (message.question || '请补充必要信息'),
+              tr('pendingInputNeedsConfirm') + (message.question || tr('pendingInputFallback')),
               Array.isArray(message.options) && message.options.length
                 ? message.options.map((option, index) => `${index + 1}. ${option}`).join('\n')
                 : '',
@@ -595,17 +705,28 @@
           if (clientMsgId && text && !historyView.findByClientMsgId?.(clientMsgId)) {
             host.addUserMessage?.(text, clientMsgId);
           }
+          if (message.stage === 'auto_provider_routing' && message.state === 'waiting') {
+            // Behind a live turn the message only queues; its verdict line lands
+            // when its own turn starts instead of inside the running answer.
+            if (!state.isStreaming && !(autoRouteNoteEl && autoRouteNoteEl.isConnected)) {
+              autoRouteNoteEl = host.addSystemMsg?.(host.translate?.('autoRouteJudging')) || null;
+            }
+            if (!state.isStreaming) liveUi.showThinking(host.translate?.('autoRouteJudging'));
+            break;
+          }
           if (message.state === 'failed') {
+            autoRouteNoteEl?.remove?.();
+            autoRouteNoteEl = null;
             if (clientMsgId) pendingAdmissionIds.delete(clientMsgId);
             if (!state.isStreaming) {
-              if (pendingAdmissionIds.size) liveUi.showThinking(ADMISSION_PROGRESS_LABELS.waiting);
+              if (pendingAdmissionIds.size) liveUi.showThinking(tr(ADMISSION_PROGRESS_LABELS.waiting));
               else liveUi.hideThinking();
             }
             const detail = admissionDetail(message.rootCause) || admissionDetail(message.code);
             host.addSystemMsg?.(detail
-              ? `消息提交失败（原因：${detail}），请重试。`
-              : '消息提交失败（内部提交阶段），请重试。');
-            host.showNotifyToast?.('消息提交失败，请重试', 'error');
+              ? tr('admissionDeliveryFailedWithCause', { cause: detail })
+              : tr('admissionDeliveryFailed'));
+            host.showNotifyToast?.(tr('admissionDeliveryFailedToast'), 'error');
             break;
           }
           const baseLabel = message.state === 'skipped'
@@ -615,8 +736,8 @@
             ? admissionDetail(message.rootCause)
             : '';
           const label = rootCause
-            ? `记忆整理失败（根因：${rootCause}）· 已跳过并继续提交消息`
-            : baseLabel;
+            ? tr('admissionMemoryFailedWithCause', { cause: rootCause })
+            : tr(baseLabel);
           if (message.state === 'skipped' && message.reason === 'memory_distill_failed') {
             host.showNotifyToast?.(label, 'running');
             host.addSystemMsg?.(label);
@@ -653,7 +774,7 @@
               if (!historyView.findByClientMsgId?.(clientMsgId)) host.addUserMessage?.(text, clientMsgId);
             }
             if (clientMsgId && pendingAdmissionIds.delete(clientMsgId) && !state.isStreaming) {
-              if (message.queued === false) liveUi.showThinking(ADMISSION_PROGRESS_LABELS.starting);
+              if (message.queued === false) liveUi.showThinking(tr(ADMISSION_PROGRESS_LABELS.starting));
               else if (pendingAdmissionIds.size === 0) liveUi.hideThinking();
             }
           }
@@ -666,13 +787,17 @@
           );
           if (message.event === 'queued' && message.queued !== false) {
             host.showNotifyToast?.(
-              message.queuePosition ? `消息已排队（第 ${message.queuePosition} 位）` : '消息已持久排队',
+              message.queuePosition
+                ? tr('queuedMessagePosition', { n: message.queuePosition })
+                : tr('queuedMessagePersisted'),
               'running',
             );
           } else if (message.event === 'frozen') {
-            host.addSystemMsg?.(`队列已冻结：${message.freezeReason || '当前任务尚未成功完成'}`);
+            host.addSystemMsg?.(tr('sessionQueueFrozen', {
+              reason: message.freezeReason || tr('sessionQueueFrozenDefault'),
+            }));
           } else if (message.event === 'started') {
-            host.showNotifyToast?.('已开始执行队首任务', 'running');
+            host.showNotifyToast?.(tr('sessionQueueHeadStarted'), 'running');
           }
           break;
         }
@@ -713,7 +838,7 @@
           pendingAdmissionIds.clear();
           state.isStreaming = true;
           state.lastFinishedText = '';
-          liveUi.showThinking(ADMISSION_PROGRESS_LABELS.processing);
+          liveUi.showThinking(tr(ADMISSION_PROGRESS_LABELS.processing));
           host.startTitleAnimation?.();
           host.updateUI?.();
           break;
@@ -725,7 +850,7 @@
             host.updateUI?.();
           }
           liveUi.settleTurnScopedDanmaku?.();
-          finishTurnProgress('done', '本轮已结束');
+          finishTurnProgress('done', 'turnProgressDone');
           // Refresh OpenCode Go quota after every turn end (debounced 60s
           // inside refreshOpenCodeQuota on error, no-op under non-opencode CLIs).
           // Skip when streaming was cancelled (pendingCancel) to avoid spurious
@@ -739,19 +864,22 @@
           }
           break;
         case 'notify': {
+          // A frame carries the classify LETTER when the server had one; the
+          // coarse state (succeeded/waiting/error) otherwise. Both resolve
+          // through the shared copy table (liveUi.classifyDisplay), so a
+          // letter-less frame speaks exactly what the bar shows — no second,
+          // hand-written fallback that drifts from it. C is retired (the parser
+          // collapses it to W) and P is mid-turn: neither has anything to
+          // announce, and the table is what says so (`voice === null`).
           const classifyState = message.classifyState || null;
-          if (message.state === 'running' || classifyState === 'P' || classifyState === 'C') {
-            host.showNotifyToast?.(message.message || '任务进行中', 'running');
-          } else {
-            const display = liveUi.classifyDisplay(classifyState);
-            const completionVoice = classifyState === 'D'
-              ? taskAwareCompletionVoice(message, display.voice) : '';
-            if (display.voice) host.speakNotify?.(completionVoice || display.voice, display.ding);
-            else {
-              const waiting = message.state === 'waiting';
-              host.speakNotify?.(waiting ? '等待操作' : '本轮执行成功', waiting ? 'waiting' : 'succeeded');
-            }
+          const display = liveUi.classifyDisplay(classifyState || message.state);
+          if (message.state === 'running' || !display.voice) {
+            host.showNotifyToast?.(message.message || tr('taskInProgress'), 'running');
+            break;
           }
+          const completionVoice = classifyState === 'D'
+            ? taskAwareCompletionVoice(message, display.voice) : '';
+          host.speakNotify?.(completionVoice || display.voice, display.ding);
           break;
         }
         case 'error':
@@ -769,7 +897,7 @@
           host.stopTitleAnimation?.();
           host.updateUI?.();
           liveUi.settleTurnScopedDanmaku?.();
-          finishTurnProgress('fail', '本轮执行失败');
+          finishTurnProgress('fail', 'turnProgressFailed');
           break;
         default: break;
       }
@@ -1009,6 +1137,7 @@
   const api = Object.freeze({
     createEventController,
     isRecoverableCodexReconnectErrorText,
+    formatAutoRouteNote,
     formatProgressHeartbeat,
     taskAwareCompletionVoice,
   });

@@ -227,7 +227,7 @@ function waitForFrame(socket, type) {
   historySocket.terminate();
   response = await api('GET', `/api/sessions/${dirtySessionId}/history`);
   assert.deepEqual(response.data.messages, []);
-  response = await api('GET', `/api/task-board/tasks/retained-task/messages`);
+  response = await api('GET', '/api/task-shell-tasks/retained-task/history');
   assert.equal(response.data.messages.length, 2, 'task projection still reads every original message');
   response = await api('POST', '/api/task-board/tasks/retained-task/status', { status: 'archived' });
   assert.equal(response.status, 200);

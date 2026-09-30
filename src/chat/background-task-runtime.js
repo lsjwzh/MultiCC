@@ -53,10 +53,23 @@ function createBackgroundTaskRuntime(deps = {}) {
   const syncBashTasks = timedStore(livenessTtlMs);
   const subagentTasks = timedStore(livenessTtlMs);
   const monitorTasks = timedStore(livenessTtlMs);
+  // Monitor processes are retained separately from writer shadows: an idle
+  // watch must not pin its originating execution lease. Terminal entries stay
+  // briefly so the hook can identify notifications arriving after the bookend.
+  const monitorWatches = new Map();
+  const monitorEvents = timedStore(dedupTtlMs);
   // Native task ids outlive the tool event that created them. Keep the owning
   // MultiCC turn so a completion can distinguish "the originating turn is
   // still consuming this tool" from "the turn already ended; wake it again".
   const taskOrigins = new Map();
+  // Main-thread background tasks (run_in_background Bash / Agent) whose result
+  // the host delivers itself. A resident CLI also wakes the model with its own
+  // native notification query; the UserPromptSubmit hook consults this map so
+  // exactly one of the two reaches the model. `delivered` flips once the host
+  // queued (or deliberately suppressed) the result.
+  const ownedTasks = new Map();
+  // One-shot note for the next turn: background tasks stopped by "insert now".
+  const stoppedNotes = new Map();
   const mainToolUses = new Map();
   const knownSessions = new Set();
 
@@ -185,6 +198,19 @@ function createBackgroundTaskRuntime(deps = {}) {
     return origin;
   }
 
+  function ownTask(sessionName, taskId, origin, description) {
+    const entries = nested(ownedTasks, sessionName, true);
+    const timestamp = now();
+    for (const [key, value] of entries) if (timestamp - value.at > livenessTtlMs) entries.delete(key);
+    entries.set(String(taskId), { at: timestamp, delivered: false, originTurnId: origin && origin.turnId || null,
+      description: safeDescription(description, '') });
+  }
+
+  function ownedTask(sessionName, taskId) {
+    const value = taskId && nested(ownedTasks, sessionName)?.get(String(taskId));
+    return value && now() - value.at <= livenessTtlMs ? value : null;
+  }
+
   function markTaskOutputAwaiting(sessionName, input) {
     if (!input || input.block !== true || !input.task_id) return false;
     return tagTimed(taskOutputAwaiting, sessionName, input.task_id);
@@ -276,15 +302,40 @@ function createBackgroundTaskRuntime(deps = {}) {
     return false;
   }
 
+  function hasProcessBackgroundTasks(sessionName) {
+    return hasLiveBackgroundTasks(sessionName)
+      || [...(monitorWatches.get(sessionName)?.values() || [])].some(watch => watch.live
+        // A completion bookend can precede the native prompt hook. Give that
+        // already-finished task a bounded drain window, preserving its last
+        // notification without imposing any deadline on running work.
+        || (!watch.terminalHandled && now() - watch.endedAt < 5000));
+  }
+
+  // Longest silence among this session's live background shadows. Any tail line
+  // counts as activity and a shadow that never printed reports Infinity, so a
+  // task that is still reporting progress can never be mistaken for a hung one.
+  // The workspace escalation reads this: a lease pinned by background work is
+  // only escalated once that work has stopped saying anything at all.
+  function backgroundSilenceMs(sessionName, at = now()) {
+    const sessionShadows = shadows.get(sessionName);
+    if (!sessionShadows || sessionShadows.size === 0) return 0;
+    let longest = 0;
+    for (const taskId of sessionShadows.keys()) {
+      if (!isBackgroundShadow(sessionName, taskId)) continue;
+      longest = Math.max(longest, at - sessionShadows.get(taskId).lastProgressAt);
+    }
+    return longest;
+  }
+
   // Authoritative live-task snapshot for a (re)connecting client: the current
   // set of background tasks the server still believes are running. The frontend
   // reconciles its danmaku against this to settle any spinner whose terminal
   // `monitor_done` was lost in transit.
   function listActiveBackgroundTasks(sessionName) {
     const sessionShadows = shadows.get(sessionName);
-    if (!sessionShadows || sessionShadows.size === 0) return [];
-    const out = [];
-    for (const [taskId, shadow] of sessionShadows) {
+    const out = [...(monitorWatches.get(sessionName) || [])].filter(([, watch]) => watch.live)
+      .map(([id, watch]) => ({ id, task_id: id, description: safeDescription(watch.description) }));
+    for (const [taskId, shadow] of sessionShadows || []) {
       if (!isBackgroundShadow(sessionName, taskId)) continue;
       out.push({ id: taskId, task_id: taskId, description: safeDescription(shadow.description) });
     }
@@ -292,19 +343,22 @@ function createBackgroundTaskRuntime(deps = {}) {
   }
 
   // Safety net for the case the completion event can never arrive: the host
-  // process died (idle-kill hard ceiling, crash, cancel, restart) while tasks
+  // process died (crash, cancel, restart) while tasks
   // were still open. For each surviving shadow we stop the tail, mark the ledger
   // `interrupted`, and broadcast a synthetic `monitor_done(interrupted)` so the
   // UI settles instead of spinning until the 180s stale timer. Idempotent: a
   // second call finds no shadows and returns 0.
   function reapSessionShadows(sessionName, opts = {}) {
     const sessionShadows = shadows.get(sessionName);
-    if (!sessionShadows || sessionShadows.size === 0) return 0;
+    const watches = monitorWatches.get(sessionName);
+    const ids = new Set([...(sessionShadows?.keys() || []),
+      ...[...(watches || [])].filter(([, watch]) => watch.live).map(([id]) => id)]);
     const reason = String(opts.reason || 'process_exit');
     let reaped = 0;
-    for (const taskId of [...sessionShadows.keys()]) {
+    for (const taskId of ids) {
       const background = isBackgroundShadow(sessionName, taskId);
-      const description = sessionShadows.get(taskId)?.description || '';
+      const description = sessionShadows?.get(taskId)?.description || watches?.get(taskId)?.description || '';
+      if (watches?.has(taskId)) Object.assign(watches.get(taskId), { live: false, endedAt: now(), terminalHandled: true });
       stopShadow(sessionName, taskId);
       const origin = consumeTaskOrigin(sessionName, taskId);
       observe({
@@ -353,15 +407,37 @@ function createBackgroundTaskRuntime(deps = {}) {
     return 'interrupted';
   }
 
-  function outputSnippet(outputFile) {
-    if (!outputFile) return '';
+  // An Agent task's output file is its sidechain transcript (JSONL records).
+  // The model needs the agent's final report, never raw transcript records.
+  function agentReport(text) {
+    const lines = text.split('\n');
+    try { if (JSON.parse(lines[0]).isSidechain !== true) return null; } catch (_) { return null; }
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      let entry;
+      try { entry = JSON.parse(lines[i]); } catch (_) { continue; }
+      const content = entry && entry.type === 'assistant' ? entry.message?.content : null;
+      const report = typeof content === 'string' ? content : Array.isArray(content)
+        ? content.filter(block => block?.type === 'text').map(block => block.text).join('\n') : '';
+      if (report.trim()) return report;
+    }
+    return '';
+  }
+
+  // `report` is the final text the notification itself carries: the stream
+  // event can arrive before the transcript's last record is written.
+  function outputSnippet(outputFile, result, report) {
+    if (!outputFile && !result) return '';
     try {
-      const value = readFile(outputFile, 'utf8');
+      const value = result || readFile(outputFile, 'utf8');
       if (value && typeof value.then === 'function') {
         log('warn', 'background task readFile must be synchronous');
         return '';
       }
-      const output = redactProviderRouteCapability(String(value || ''));
+      const text = String(value || '');
+      const final = result ? text : agentReport(text);
+      const output = redactProviderRouteCapability(final === '' && report ? String(report) : final ?? text);
+      // A report reads top-down; a log's newest lines matter most.
+      if (final !== null) return output.length > outputCap * 8 ? `${output.slice(0, outputCap * 8)}\n…（报告已截断）` : output;
       return output.length > outputCap ? output.slice(-outputCap) : output;
     } catch (_) {
       return '';
@@ -382,8 +458,14 @@ function createBackgroundTaskRuntime(deps = {}) {
     const subagent = !!(event.tool_use_id && !tool);
     const origin = recordTaskOrigin(sessionName, taskId, chatState, event.tool_use_id);
     if (sync) tagTimed(syncBashTasks, sessionName, taskId);
-    if (monitor) tagTimed(monitorTasks, sessionName, taskId);
+    if (monitor) {
+      tagTimed(monitorTasks, sessionName, taskId);
+      const watches = nested(monitorWatches, sessionName, true);
+      for (const [id, watch] of watches) if (!watch.live && now() - watch.endedAt > dedupTtlMs) watches.delete(id);
+      watches.set(String(taskId), { live: true, description: event.description || '', toolUseId: event.tool_use_id });
+    }
     if (subagent) tagTimed(subagentTasks, sessionName, taskId);
+    if (!sync && !monitor && !subagent) ownTask(sessionName, taskId, origin, event.description);
     const outputFile = monitorOutputFilePath(event.session_id || '', taskId, chatState && chatState.cwd);
     observe({
       sessionId: sessionName,
@@ -404,14 +486,14 @@ function createBackgroundTaskRuntime(deps = {}) {
       command,
       background: !sync,
     });
-    if (!persistentMonitor) startShadow(sessionName, taskId, outputFile, event.description || '');
+    if (!monitor) startShadow(sessionName, taskId, outputFile, event.description || '');
     return { handled: true, kind: sync ? 'sync-bash' : persistentMonitor ? 'monitor-persistent' : monitor ? 'monitor' : subagent ? 'agent-task' : 'background-task' };
   }
 
   function handleProgress(sessionName, event) {
     const taskId = event.task_id;
     if (!taskId) return { handled: false };
-    const status = statusForProgress(event.status);
+    const status = statusForProgress(event.status || event.patch?.status);
     observe({
       sessionId: sessionName,
       taskId,
@@ -440,7 +522,9 @@ function createBackgroundTaskRuntime(deps = {}) {
       : [];
     const tool = tools.find(item => item && item.id === toolUseId);
     if (!tool || typeof tool.result !== 'string') return false;
-    if (tool.name === 'Bash' && tool.input && tool.input.run_in_background) {
+    // A background launch (Bash or Agent) returns only a launch stub; its
+    // result has not been seen unless the launching turn is still streaming.
+    if (tool.input && tool.input.run_in_background) {
       const activeTurnId = String(chatState && chatState._activeTurn && chatState._activeTurn.turnId || '').trim();
       return !!(
         chatState && chatState.isStreaming === true
@@ -453,12 +537,14 @@ function createBackgroundTaskRuntime(deps = {}) {
 
   function handleCompletion(sessionName, chatState, event) {
     const taskId = event.task_id;
+    const watch = monitorWatches.get(sessionName)?.get(String(taskId));
+    if (watch) Object.assign(watch, { live: false, endedAt: now() });
     stopShadow(sessionName, taskId);
     const origin = consumeTaskOrigin(sessionName, taskId);
     const outputFile = event.output_file || (taskId && event.session_id
       ? monitorOutputFilePath(event.session_id, taskId, chatState && chatState.cwd)
       : null);
-    const snippet = outputSnippet(outputFile);
+    const snippet = outputSnippet(outputFile, event.result, event.summary);
     const ledgerStatus = statusForCompletion(event.status);
     observe({
       sessionId: sessionName,
@@ -484,8 +570,8 @@ function createBackgroundTaskRuntime(deps = {}) {
     });
     if (!chatState) return { handled: true, decision: 'none' };
     const subagent = hasTimed(subagentTasks, sessionName, taskId);
-    const monitor = hasTimed(monitorTasks, sessionName, taskId);
-    const sidechainByToolUse = !!(event.tool_use_id && !isMainToolUseId(sessionName, event.tool_use_id));
+    const monitor = !!watch || hasTimed(monitorTasks, sessionName, taskId);
+    const sidechainByToolUse = !watch && !!(event.tool_use_id && !isMainToolUseId(sessionName, event.tool_use_id));
     const decision = classifyCompletion({
       awaitingTaskOutput: hasTimed(taskOutputAwaiting, sessionName, taskId),
       sync,
@@ -497,18 +583,37 @@ function createBackgroundTaskRuntime(deps = {}) {
       log('warn', 'background task classifier returned an invalid decision');
       return { handled: true, decision: 'invalid' };
     }
+    const owned = !watch && ownedTask(sessionName, taskId);
     if (decision.action === 'suppress') {
+      if (owned) owned.delivered = true;
       if (decision.reason === 'taskoutput') consumeTimed(taskOutputAwaiting, sessionName, taskId);
       else if (decision.reason === 'sync-bash') consumeTimed(syncBashTasks, sessionName, taskId);
       else if (decision.reason === 'sidechain') consumeTimed(subagentTasks, sessionName, taskId);
-      else if (decision.reason === 'monitor') consumeTimed(monitorTasks, sessionName, taskId);
+      else if (decision.reason === 'monitor') {
+        consumeTimed(monitorTasks, sessionName, taskId);
+        // The terminal bookend includes an authoritative output file. Queue it
+        // here as well: native TaskStop/exit paths may suppress the prompt hook.
+        // A live turn already knows (its own TaskStop, or the CLI hands the
+        // event over in-turn); if not, the CLI's idle hook still reports it.
+        if (watch && !watch.terminalQueued && chatState?.isStreaming !== true) {
+          watch.terminalQueued = true;
+          noteBgResultInjected(sessionName);
+          coalescer.add(sessionName, { kind: 'monitor', desc: event.summary || watch.description,
+            status: event.status || 'completed', snippet, taskId, toolUseId: watch.toolUseId });
+        }
+      }
       return { handled: true, decision: decision.reason };
     }
     if (turnAlreadyHasResult(chatState, event.tool_use_id, origin)) {
       return { handled: true, decision: 'turn-result' };
     }
+    // The native notification query won the race and was already admitted.
+    if (owned && owned.delivered) return { handled: true, decision: 'native-prompt' };
+    // Any live turn gets the notification from the CLI itself; if the turn
+    // ends first, the CLI's idle hook reports it (handleTaskPrompt).
+    if (owned && chatState.isStreaming === true) return { handled: true, decision: 'live-turn' };
     const item = {
-      desc: event.description || event.summary || '后台任务',
+      desc: owned?.description || safeDescription(event.description || event.summary, '后台任务'),
       status: event.status || 'completed',
       snippet,
       taskId: taskId || null,
@@ -518,6 +623,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       noteBgResultInjected(sessionName);
       knownSessions.add(sessionName);
       coalescer.add(sessionName, item);
+      if (owned) owned.delivered = true;
     } catch (error) {
       log('warn', 'background task completion buffering failed', error);
       return { handled: true, decision: 'failed' };
@@ -525,16 +631,100 @@ function createBackgroundTaskRuntime(deps = {}) {
     return { handled: true, decision: 'inject' };
   }
 
+  // A native notification query for a main-thread background task. The host
+  // owns delivery, so the native query is always swallowed: either the host
+  // already queued this result (duplicate), or the hook arrived first and the
+  // host queues it now. The one exception is a completion that arrives while
+  // any turn is streaming — the CLI hands that over in-turn.
+  function handleTaskPrompt(sessionName, chatState, event) {
+    const owned = ownedTask(sessionName, event.task_id);
+    if (!owned) return { handled: false };
+    if (!owned.delivered && chatState && chatState.isStreaming === true) return { handled: false };
+    if (event.probe) return { handled: true, monitorOwned: true };
+    if (owned.delivered) return { handled: true, monitorOwned: true, decision: 'duplicate' };
+    owned.delivered = true;
+    noteBgResultInjected(sessionName);
+    coalescer.add(sessionName, { desc: owned.description || safeDescription(event.summary, '后台任务'),
+      status: event.status || 'completed', snippet: outputSnippet(event.output_file, event.result), taskId: event.task_id, toolUseId: event.tool_use_id || null });
+    return { handled: true, monitorOwned: true, decision: 'inject' };
+  }
+
+  // "Insert now" replaces the running work with the user's message: the
+  // resident process is stopped and its background tasks die with it. Drop
+  // completions still waiting in the coalescer (they would wake the session
+  // right after the inserted turn) and leave the next turn a note so the model
+  // does not wait on tasks that no longer exist.
+  function stopForInsert(sessionName) {
+    if (!sessionName) return 0;
+    const tasks = listActiveBackgroundTasks(sessionName);
+    coalescer.cancel(sessionName);
+    for (const owned of nested(ownedTasks, sessionName)?.values() || []) owned.delivered = true;
+    if (tasks.length) stoppedNotes.set(sessionName, tasks.map(task => `${task.task_id}: ${task.description}`));
+    return tasks.length;
+  }
+
+  function takeStoppedNote(sessionName) {
+    const tasks = stoppedNotes.get(sessionName);
+    if (!tasks) return '';
+    stoppedNotes.delete(sessionName);
+    return `[Background tasks stopped] The user interrupted the previous turn with this message, which stopped these background tasks before they finished. Do not wait for their notifications; rerun one only if it is still needed.\n${tasks.map(line => `- ${line}`).join('\n')}\n\n`;
+  }
+
+  // The page's task row shows the Monitor's latest event line next to its
+  // description; the full event still reaches only the model.
+  function showMonitorEvent(sessionName, event, watch) {
+    const lines = String(event.output || '').split('\n').map(line => line.trim()).filter(Boolean);
+    const label = safeDescription(watch.description || event.summary, 'Monitor');
+    broadcast(sessionName, { type: 'monitor_progress', task_id: event.task_id, background: true,
+      description: safeDescription(lines.length ? `${label} · ${lines.at(-1)}` : label) });
+  }
+
   function handleEvent(sessionName, chatState, event) {
     if (!sessionName || !event || typeof event !== 'object') return { handled: false };
     event = redactProviderRouteCapability(event);
     knownSessions.add(sessionName);
+    if (event.subtype === 'monitor_prompt') {
+      const watch = monitorWatches.get(sessionName)?.get(String(event.task_id));
+      if (!watch) return handleTaskPrompt(sessionName, chatState, event);
+      if (!watch.live && now() - watch.endedAt > dedupTtlMs) return { handled: false };
+      // Monitor events stay inside the resident session. During a live turn
+      // the CLI attaches them to that turn's next request, so leave them
+      // native. Between turns they would start an unadmitted query: block
+      // progress without queueing a 🔇 turn per event — only the terminal
+      // bookend below continues the task.
+      const inTurn = chatState?.isStreaming === true;
+      // An in-turn batch is only ever probed (the hook then leaves it native);
+      // an idle one is probed and then delivered — show each event once.
+      if (!event.status && (inTurn || !event.probe)) showMonitorEvent(sessionName, event, watch);
+      // Once the host has queued the terminal report, a native repeat (even
+      // inside the turn that delivers it) is a duplicate.
+      if (inTurn && !(event.status && watch.terminalQueued)) return { handled: false };
+      if (event.probe) return { handled: true, monitorOwned: true };
+      if (!event.status) return { handled: true, monitorOwned: true, decision: 'progress' };
+      watch.terminalHandled = true;
+      if (watch.terminalQueued) return { handled: true, monitorOwned: true, decision: 'duplicate' };
+      watch.terminalQueued = true;
+      if (event.event_id && hasTimed(monitorEvents, sessionName, event.event_id)) {
+        return { handled: true, monitorOwned: true, decision: 'duplicate' };
+      }
+      const item = { kind: 'monitor', desc: event.summary || watch.description || 'Monitor',
+        status: event.status, snippet: String(event.output || '').slice(0, outputCap),
+        taskId: event.task_id, toolUseId: watch.toolUseId || null };
+      noteBgResultInjected(sessionName);
+      coalescer.add(sessionName, item);
+      if (event.event_id) tagTimed(monitorEvents, sessionName, event.event_id);
+      return { handled: true, monitorOwned: true, decision: 'inject' };
+    }
     if (event.subtype === 'task_started') return handleStarted(sessionName, chatState, event);
     if (event.subtype === 'task_progress' || event.subtype === 'task_updated') {
       return handleProgress(sessionName, event);
     }
     if (event.subtype === 'task_notification') return handleCompletion(sessionName, chatState, event);
     if (event.subtype === 'background_tasks_changed') {
+      const ids = new Set((event.tasks || []).map(task => String(task.task_id)));
+      for (const [id, watch] of monitorWatches.get(sessionName) || []) {
+        if (watch.live && !ids.has(id)) Object.assign(watch, { live: false, endedAt: now() });
+      }
       broadcast(sessionName, { type: 'background_tasks', tasks: event.tasks || [] });
       return { handled: true };
     }
@@ -555,7 +745,11 @@ function createBackgroundTaskRuntime(deps = {}) {
     syncBashTasks.map.delete(sessionName);
     subagentTasks.map.delete(sessionName);
     monitorTasks.map.delete(sessionName);
+    monitorWatches.delete(sessionName);
+    monitorEvents.map.delete(sessionName);
     taskOrigins.delete(sessionName);
+    ownedTasks.delete(sessionName);
+    stoppedNotes.delete(sessionName);
     mainToolUses.delete(sessionName);
     knownSessions.delete(sessionName);
     return killed;
@@ -570,6 +764,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       ...subagentTasks.map.keys(),
       ...monitorTasks.map.keys(),
       ...taskOrigins.keys(),
+      ...ownedTasks.keys(),
       ...mainToolUses.keys(),
     ]);
     let killed = 0;
@@ -582,8 +777,12 @@ function createBackgroundTaskRuntime(deps = {}) {
     recordMainToolUseId,
     markTaskOutputAwaiting,
     hasLiveBackgroundTasks,
+    hasProcessBackgroundTasks,
+    backgroundSilenceMs,
     listActiveBackgroundTasks,
     reapSessionShadows,
+    stopForInsert,
+    takeStoppedNote,
     stopSession,
     stopAll,
   });

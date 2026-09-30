@@ -13,7 +13,7 @@ test('SW01: A -> B -> A -> B keeps each native identity and routes normal follow
   const b = await f.runtime.send(f.a.id, input('B-first', { newTask: true }));
   f.statuses.set(b.sessionId, { busy: false });
   for (const [taskId, sessionId, key] of [[a.id, 'a', 'A-again'], [b.taskId, b.sessionId, 'B-again']]) {
-    f.runtime.resolveTask(f.a.id, { taskId });
+    await f.runtime.resolveTask(f.a.id, { taskId });
     const sent = await f.runtime.send(f.a.id, input(key));
     assert.equal(sent.taskId, taskId); assert.equal(sent.sessionId, sessionId);
     assert.equal(f.sends.at(-1).id, sessionId);
@@ -49,7 +49,7 @@ test('FK01: fork old A while B is selected; original A/B remain usable and fork 
   assert.equal(f.sends.length, 1, 'fork creation must not invoke the model');
   const forkTask = f.store.get('task', fork.taskId);
   const frozen = f.store.get('snapshot', forkTask.snapshotIds[0]);
-  f.runtime.resolveTask(f.a.id, { taskId: a.id });
+  await f.runtime.resolveTask(f.a.id, { taskId: a.id });
   const original = await f.runtime.send(f.a.id, input('A-after-fork'));
   f.histories.get('a').push({ id: 'a2', role: 'user', taskId: a.id, content: 'A after fork' });
   assert.equal(original.sessionId, 'a');
@@ -94,7 +94,7 @@ test('state traversal matches chat scope across cursor switches and never follow
   assert.deepEqual(f.runtime.stateSources(b.sessionId), ['a']);
   assert.equal(JSON.stringify(f.store.list('shell')), before, 'projection reads never create or move shells');
   changed.length = 0;
-  f.runtime.resolveTask(f.a.id, { taskId: a.id });
+  await f.runtime.resolveTask(f.a.id, { taskId: a.id });
   await Promise.resolve();
   assert.deepEqual(changed, ['a']);
   assert.equal(f.runtime.stateTarget('a').executionSessionId, 'a');

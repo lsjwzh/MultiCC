@@ -45,6 +45,31 @@ AirService _service(
 );
 
 void main() {
+  test('第 1025 个任务的机器错误码变成明确容量提示', () async {
+    final settings = await _settings();
+    final service = AirService(settings: settings, httpClient: MockClient((_) async =>
+      http.Response(jsonEncode({'ok': false, 'code': 'task_shell_task_limit',
+        'message': 'Task limit reached (1024 tasks/project)'}), 409,
+        headers: {'content-type': 'application/json; charset=utf-8'})));
+    await expectLater(service.createTask(dirId: 'd1', title: '新任务', clientMsgId: 'c1'),
+        throwsA(isA<AirTaskCapacityException>()));
+  });
+
+  test('清理接口先 GET 预览，再 POST 明确选中的任务 id，不传 force', () async {
+    final settings = await _settings();
+    final requests = <http.Request>[];
+    final service = AirService(settings: settings, httpClient: MockClient((request) async {
+      requests.add(request);
+      return http.Response(jsonEncode({'ok': true, 'tasks': <Object>[], 'deleted': <Object>[], 'skipped': <Object>[]}),
+          200, headers: {'content-type': 'application/json; charset=utf-8'});
+    }));
+    await service.previewTaskRetention('d1');
+    await service.deleteTaskRetention('d1', ['old']);
+    expect(requests.map((request) => request.method).toList(), ['GET', 'POST']);
+    expect(requests.map((request) => request.url.path).toList(),
+        ['/api/task-board/directories/d1/retention', '/api/task-board/directories/d1/retention']);
+    expect(jsonDecode(requests.last.body), {'taskIds': ['old']});
+  });
   group('renameTask', () {
     test('任务标题写入任务身份端点，任务 id 会安全编码', () async {
       final settings = await _settings();
@@ -57,15 +82,141 @@ void main() {
     });
   });
 
+  group('reclaimWorktrees', () {
+    test('默认只带 dirId：不过阈值就不该替用户做「连最近用过的也收」的决定', () async {
+      final settings = await _settings();
+      final posts = _sink();
+      await _service(settings, posts).reclaimWorktrees('d1');
+      expect(posts.single, {
+        'path': '/api/air/worktrees/reclaim',
+        'body': {'dirId': 'd1'},
+      });
+    });
+
+    test('force 只在用户点头之后才出现（Web air-worktrees.js 同一条）', () async {
+      final settings = await _settings();
+      final posts = _sink();
+      await _service(settings, posts).reclaimWorktrees('d1', force: true);
+      expect(posts.single['body'], {'dirId': 'd1', 'force': true});
+    });
+  });
+
+  group('worktree 生命周期 DTO', () {
+    test('三个数分开读，本地 = resident + retained（服务端已经算好）', () {
+      final directory = AirDirectory.fromJson({
+        'id': 'd1',
+        'name': '仓库',
+        'path': '/tmp/repo',
+        'worktreeCount': 12,
+        'worktreeLifecycle': {
+          'resident': 2,
+          'retained': 1,
+          'hibernated': 8,
+          'planned': 1,
+          'leased': 3,
+          'onDisk': 3,
+          'total': 12,
+        },
+      });
+      final life = directory.worktreeLifecycle!;
+      expect(
+        [life.onDisk, life.hibernated, life.planned, life.leased],
+        [3, 8, 1, 3],
+      );
+      expect(life.total, 12);
+      expect(
+        airWorktreeSummary(directory),
+        '12 个 Worktree · 本地 3 · 休眠 8 · 计划 1',
+      );
+    });
+
+    test('旧服务没有这一格：只说总数，不编一个「全是本地」出来', () {
+      final directory = AirDirectory.fromJson({
+        'id': 'd1',
+        'name': '仓库',
+        'path': '/tmp/repo',
+        'worktreeCount': 4,
+      });
+      expect(directory.worktreeLifecycle, isNull);
+      expect(directory.visibleWorktreeLifecycle, isNull);
+      expect(airWorktreeSummary(directory), '4 个 Worktree');
+    });
+
+    test('一个 worktree 都没有：也只说总数，三个 0 摆出来只是噪声', () {
+      final empty = AirDirectory.fromJson({
+        'id': 'd1',
+        'name': '仓库',
+        'path': '/tmp/repo',
+        'worktreeCount': 0,
+        'worktreeLifecycle': {
+          'resident': 0,
+          'retained': 0,
+          'hibernated': 0,
+          'planned': 0,
+          'leased': 0,
+          'onDisk': 0,
+          'total': 0,
+        },
+      });
+      expect(empty.visibleWorktreeLifecycle, isNull);
+      expect(airWorktreeSummary(empty), '0 个 Worktree');
+    });
+
+    test('自动回收的阈值跟着快照下来，客户端不猜默认值', () {
+      final snapshot = AirSnapshot.fromJson({
+        'directories': const [],
+        'tasks': const [],
+        'clis': const [],
+        'sessions': const [],
+        'worktreePolicy': {'idleMs': 3600000},
+      });
+      expect(snapshot.worktreePolicy.idleMs, 3600000);
+      // 旧服务连这一格都没有：0 读作「自动回收已关闭」，不编一个 24 小时出来。
+      expect(AirSnapshot.fromJson(const {}).worktreePolicy.idleMs, 0);
+    });
+  });
+
+  group('任务 worktree 待交付状态', () {
+    test('dirty 与 ahead 分开读取；behind 不会被客户端猜成待交付', () {
+      final dirty = AirTask.fromJson({
+        'id': 'dirty',
+        'dirId': 'd1',
+        'title': '脏工作区',
+        'status': 'active',
+        'recordType': '',
+        'updatedAt': 1,
+        'worktreeChanges': {'dirty': true, 'ahead': 2, 'behind': 9},
+      });
+      expect(dirty.worktreeChanges?.dirty, isTrue);
+      expect(dirty.worktreeChanges?.ahead, 2);
+      expect(dirty.worktreeChanges?.pending, isTrue);
+
+      final clean = AirTask.fromJson({
+        'id': 'clean',
+        'dirId': 'd1',
+        'title': '只落后',
+        'status': 'active',
+        'recordType': '',
+        'updatedAt': 1,
+        'worktreeChanges': {'dirty': false, 'ahead': 0, 'behind': 9},
+      });
+      expect(clean.worktreeChanges?.pending, isFalse);
+      expect(
+        AirTask.fromJson(const {'id': 'old'}).worktreeChanges,
+        isNull,
+        reason: '旧服务没给字段时是未知，不伪装成已确认干净',
+      );
+    });
+  });
+
   group('createTask', () {
     test('只给必填项时，可选字段一个都不出现', () async {
       final settings = await _settings();
       final posts = _sink();
-      await _service(settings, posts).createTask(
-        dirId: 'd1',
-        title: '登录页面',
-        clientMsgId: 'c1',
-      );
+      await _service(
+        settings,
+        posts,
+      ).createTask(dirId: 'd1', title: '登录页面', clientMsgId: 'c1');
       expect(posts.single['body'], {
         'dirId': 'd1',
         'title': '登录页面',
@@ -119,10 +270,7 @@ void main() {
         title: '登录页面',
         clientMsgId: 'c1',
         model: '外面那个',
-        runtime: const {
-          'provider': 'p1',
-          'model': 'runtime 里那个',
-        },
+        runtime: const {'provider': 'p1', 'model': 'runtime 里那个'},
       );
       final body = posts.single['body']!;
       expect(body['provider'], 'p1');
@@ -134,11 +282,10 @@ void main() {
     test('普通消息不带 goal 相关的键', () async {
       final settings = await _settings();
       final posts = _sink();
-      await _service(settings, posts).sendFirstMessage(
-        taskId: 't1',
-        text: '开始吧',
-        clientMsgId: 'c1',
-      );
+      await _service(
+        settings,
+        posts,
+      ).sendFirstMessage(taskId: 't1', text: '开始吧', clientMsgId: 'c1');
       expect(posts.single['path'], '/api/task-shell-tasks/t1/messages');
       expect(posts.single['body'], {
         'text': '开始吧',
@@ -182,11 +329,10 @@ void main() {
     test('任务 id 里带斜杠也不会把路径拼坏', () async {
       final settings = await _settings();
       final posts = _sink();
-      await _service(settings, posts).sendFirstMessage(
-        taskId: 'a/b',
-        text: '开始吧',
-        clientMsgId: 'c1',
-      );
+      await _service(
+        settings,
+        posts,
+      ).sendFirstMessage(taskId: 'a/b', text: '开始吧', clientMsgId: 'c1');
       expect(posts.single['path'], '/api/task-shell-tasks/a%2Fb/messages');
     });
   });

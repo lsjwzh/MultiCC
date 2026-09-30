@@ -5,15 +5,17 @@
 // with the vendor's "authentication required" text, the UI offers to open one
 // of these whitelisted login terminal sessions (same pattern as codex-login /
 // claude-auth-login in src/session/create-record.js).
+const { displayNameOf } = require('../cli/cli-capability');
+
 const VENDOR_LOGIN = Object.freeze({
   codebuddy: Object.freeze({
     loginFlow: 'codebuddy-login',
-    label: 'WorkBuddy',
+    label: displayNameOf('codebuddy'),
     loginCommand: '/login',
   }),
   qoder: Object.freeze({
     loginFlow: 'qoder-login',
-    label: 'Qoder CN',
+    label: displayNameOf('qoder'),
     loginCommand: '/login',
   }),
 });

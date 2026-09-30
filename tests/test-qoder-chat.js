@@ -8,6 +8,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const WebSocket = require('ws');
 const { assertTestDir } = require('../src/paths');
 
@@ -80,7 +81,9 @@ function runTurn(text, timeoutMs = 10000) {
       else resolve({ assistant, assistantEvents, snapshotEvents });
     };
     const timer = setTimeout(() => finish(new Error('Qoder turn timed out')), timeoutMs);
-    ws.on('open', () => ws.send(JSON.stringify({ type: 'user_message', text })));
+    ws.on('open', () => ws.send(JSON.stringify({
+      type: 'user_message', text, taskShell: true, clientMsgId: randomUUID(),
+    })));
     ws.on('message', raw => {
       let event;
       try { event = JSON.parse(raw.toString()); } catch (_) { return; }

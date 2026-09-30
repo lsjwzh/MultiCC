@@ -32,6 +32,7 @@ function fixture(options = {}) {
       calls.push([id, cancelOptions]);
       return { ok: true };
     },
+    settleRecoveredQuestion: options.settleRecoveredQuestion,
     now: () => at,
     startGraceMs: options.startGraceMs ?? 10_000,
     deadConfirmMs: options.deadConfirmMs ?? 5_000,
@@ -90,4 +91,38 @@ test('processing watchdog does not expect a process while scheduler awaits class
   const result = await h.watchdog.sweep();
   assert.equal(result.results[0].reason, 'awaiting_classify');
   assert.deepEqual(h.calls, []);
+});
+
+test('processing watchdog settles a restart-orphaned P onto its pending question', async () => {
+  // recover() parks the orphan frozen/classify_running; nothing else ever judges
+  // it, so the card stayed 执行中 forever although a question was pending.
+  const settled = [];
+  const h = fixture({
+    scheduler: { state: 'frozen', freezeReason: 'classify_running', active: { entryId: 'entry-1' } },
+    settleRecoveredQuestion: async id => { settled.push(id); return { ok: true, requestId: 'usrq-1' }; },
+  });
+  assert.equal((await h.watchdog.sweep()).results[0].reason, 'no_live_runner');
+  h.advance(5_000);
+  const result = await h.watchdog.sweep();
+  assert.equal(result.results[0].action, 'settled_waiting');
+  assert.deepEqual(settled, ['s1']);
+  assert.deepEqual(h.calls, []);
+});
+
+test('processing watchdog cancels a restart-orphaned P with no pending question', async () => {
+  const h = fixture({
+    scheduler: { state: 'frozen', freezeReason: 'classify_running', active: { entryId: 'entry-1' } },
+    settleRecoveredQuestion: async () => ({ ok: false, code: 'no_pending_request' }),
+  });
+  await h.watchdog.sweep();
+  h.advance(5_000);
+  const result = await h.watchdog.sweep();
+  assert.equal(result.results[0].action, 'cancelled');
+  assert.equal(h.calls.length, 1);
+});
+
+test('processing watchdog still waits on a frozen turn that is not a recovery orphan', async () => {
+  const h = fixture({ scheduler: { state: 'frozen', freezeReason: 'incomplete_requires_resume', active: { entryId: 'entry-1' } } });
+  const result = await h.watchdog.sweep();
+  assert.equal(result.results[0].reason, 'awaiting_classify');
 });

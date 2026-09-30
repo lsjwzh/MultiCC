@@ -18,13 +18,14 @@ const { isZcodeSessionId } = require('./zcode-session');
 
 const BRIDGE = path.join(__dirname, 'zcode-bridge.cjs');
 const TERMINAL_BRIDGE = path.join(__dirname, 'zcode-terminal.cjs');
-const LABEL = 'ZCode';
+const { displayNameOf } = require('../cli/cli-capability');
+const LABEL = displayNameOf('zcode');
 const shellArg = value => JSON.stringify(String(value));
 
 function createZcodeAdapter({ cmd } = {}) {
   return {
     name: 'zcode',
-    createCompletionTracker: createStepCompletionTracker,
+    createCompletionTracker: () => createStepCompletionTracker({ streamBoundary: true }),
     cmd,
     // 终端/交互模式：打开引擎的 TUI（需 ZCODE_ENGINE 指向 zcode.cjs）。
     buildTerminalCmd(session) {
@@ -43,10 +44,26 @@ function createZcodeAdapter({ cmd } = {}) {
       if (env.spawnOpts.rawModel) args.push('--model', env.spawnOpts.rawModel);
       const prompt = renderPrompt(env);
       const payload = isFirstTurn && env.rolePrompt
-        ? `[角色设定]\n${env.rolePrompt}\n[角色设定结束]\n\n${prompt}`
+        ? `[Role prompt]\n${env.rolePrompt}\n[End of role prompt]\n\n${prompt}`
         : prompt;
       // cmd = bridge（带 shebang 的可执行 .cjs）；multicc 会把 payload 追加为末尾 argv。
-      return { cmd: BRIDGE, args, payload };
+      return {
+        cmd: BRIDGE,
+        args,
+        payload,
+        // 常驻车道（cli-capability: zcode = resident）：bridge 带 `--resident` 常驻，
+        // 引擎 app-server 与原生会话跨轮存活，prompt 每轮一行从 stdin 进（见
+        // zcode-bridge.cjs §6），不再追加末尾 argv。
+        streamArgs: [...args, '--resident'],
+        streamBackend: 'zcode-app-server',
+        // 原生会话 id 由引擎分配（sess_…），宿主从事件的 sessionID 学到后存在
+        // cliSessionId —— 与一次性路径同一字段，所以两条路径可以互相续轮。
+        nativeKey: 'cliSessionId',
+        clientAllocatesNativeId: false,
+        // 模型随轮下发，bridge 每轮按厂商配置校验（provider/模型切换改写配置文件，
+        // 宿主按配置摘要重起子进程）。
+        turnOptions: { model: env.spawnOpts.rawModel || null },
+      };
     },
     // bridge 输出 opencode raw 事件 shape，按 opencode-like 同款逻辑解码。
     decodeEvent(event) {
@@ -59,7 +76,21 @@ function createZcodeAdapter({ cmd } = {}) {
       if (event.type === 'step_start') {
         decoded.push({ type: 'status', status: 'thinking' });
       } else if (event.type === 'text' && part.text) {
-        decoded.push({ type: 'assistant_text', text: part.text });
+        // delta=true：bridge 走 app-server 时 text 事件就是 token 级分片，必须原样
+        // 接着拼（否则宿主会按 `\n\n` 拼成分段垃圾）。legacy 路径一轮只有一条 text
+        // 事件，delta 与否等价。
+        decoded.push({ type: 'assistant_text', text: part.text, delta: true });
+      } else if (event.type === 'reasoning' && part.text) {
+        // 思考分片按「快照」下发（part.text 是累计全文）：宿主对同一 id 的 thinking
+        // 事件是覆盖式更新，只有 snapshot 才不会每片都新建一张 Thinking 卡片。
+        // 收尾那一条带 completed=true，用来关掉卡片（同 codex-exp 的写法）。
+        decoded.push({
+          type: 'thinking',
+          id: part.id || part.partID || `reasoning_${event.sessionID || 'current'}`,
+          text: part.text,
+          snapshot: true,
+          ...(part.completed === true ? { completed: true } : { delta: true }),
+        });
       } else if (event.type === 'tool_use' || event.type === 'tool_call') {
         const state = part.state || {};
         decoded.push({

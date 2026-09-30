@@ -191,6 +191,16 @@ test('ZCode maps all protocols to isolated native provider kinds', () => {
     assert.equal(config.provider[routeId].options[otherCredential], undefined);
     assert.deepEqual(config.provider[routeId].models[model], { id: model });
     assert.equal(fs.statSync(spawn.env.ZCODE_SETTINGS).mode & 0o777, 0o600);
+    // Engine >=0.16.9 registry: same provider in v2/provider_config.json, the
+    // session model first so it is the engine's default.
+    const personalFile = path.join(spawn.env.ZCODE_DATA_BASE_DIR, '.zcode', 'v2', 'provider_config.json');
+    const [rule] = JSON.parse(fs.readFileSync(personalFile, 'utf8')).config.providerConfigRules.providerRules;
+    assert.equal(rule.providerId, routeId);
+    assert.equal(rule.config.api.type, kind === 'anthropic' ? 'anthropic-messages' : 'openai-responses');
+    assert.equal(rule.config.api.baseUrl, baseURL);
+    assert.deepEqual(rule.config.access, { type: 'api-key', apiKey: credential });
+    assert.equal(rule.config.personalModelIds[0], model);
+    assert.equal(fs.statSync(personalFile).mode & 0o777, 0o600);
     configPaths.add(spawn.env.ZCODE_SETTINGS);
   }
   assert.equal(configPaths.size, 4, 'each session receives an isolated ZCode config tree');
