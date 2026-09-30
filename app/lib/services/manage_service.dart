@@ -435,9 +435,10 @@ class ManageService {
   /// Aux config + provider lists for the pickers.
   /// `{protocol, providerId?, model?, protocols, providersByProtocol}`.
   Future<Map<String, dynamic>> fetchAuxConfig() async {
-    final res = await http
-        .get(Uri.parse(_url('/api/aux/config')), headers: _headers)
-        .timeout(const Duration(seconds: 10));
+    // 走 [_send]，这样可注入的 [httpClient] 才在链路上 —— 控制台的首启配置卡就是
+    // 拿这一份判断「亮不亮」，widget 测试靠它把 wire stub 掉；绕过去的话那次请求
+    // 会真的打到 settings.host 上去。
+    final res = await _send('GET', '/api/aux/config');
     if (res.statusCode >= 400) _throw(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
         .cast<String, dynamic>();

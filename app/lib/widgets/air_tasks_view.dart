@@ -1125,13 +1125,14 @@ class _AirTasksViewState extends State<AirTasksView>
     setState(() => _mode = _AirMode.console);
   }
 
-  void _openAiAssistant() {
+  /// AI Assistant 那一页。返回的 Future 在页面关掉时完成 —— 控制台上的首启配置卡
+  /// 要等这一刻再问一次 `/api/aux/config`，刚在那儿配好的话卡片当场消失（同 Web
+  /// 离开 aux 设置页时重查一次）。
+  Future<void> _openAiAssistant() async {
     _closeDrawer();
-    unawaited(
-      Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => AuxScreen(settings: widget.settings),
-        ),
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => AuxScreen(settings: widget.settings),
       ),
     );
   }
