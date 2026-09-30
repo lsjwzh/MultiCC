@@ -6,7 +6,7 @@
 // grant that does nothing).
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { createMacosPrivacyRoutes, FULL_DISK_ACCESS_URL } = require('../src/routes/macos-privacy');
+const { createMacosPrivacyRoutes, FULL_DISK_ACCESS_URL, AGENT_PERMISSION_URLS } = require('../src/routes/macos-privacy');
 
 const silent = { log() {}, warn() {}, error() {} };
 
@@ -95,6 +95,38 @@ test('off macOS there is nothing to open', async () => {
   assert.equal(res.statusCode, 400);
   assert.equal(res.body.code, 'NOT_APPLICABLE');
   assert.deepEqual(run.calls, [], 'nothing is spawned off macOS');
+});
+
+test('Agent permissions report only the two grants needed for desktop automation', async () => {
+  const run = fakeRun({ stdout: JSON.stringify({ ok: true, accessibility: false, screenRecording: true,
+    unlockPassword: true, platform: { os: '15.3' } }) });
+  const routes = createMacosPrivacyRoutes({ platform: 'darwin', run, agentBin: '/agent' });
+  const res = fakeRes();
+  await routes.agentPermissionsHandler({ socket: { remoteAddress: '127.0.0.1' } }, res);
+  assert.deepEqual(res.body, { ok: true, applicable: true, local: true,
+    accessibility: false, screenRecording: true });
+  assert.deepEqual(run.calls, [['/agent', 'status']]);
+});
+
+test('opening an Agent permission selects its exact pane and requires a local request', async () => {
+  const run = fakeRun({});
+  const routes = createMacosPrivacyRoutes({ platform: 'darwin', run });
+  const remote = fakeRes();
+  await routes.openAgentPermissionHandler({ socket: { remoteAddress: '192.168.1.2' },
+    body: { permission: 'accessibility' } }, remote);
+  assert.equal(remote.statusCode, 403);
+  const local = { socket: { remoteAddress: '::1' }, body: { permission: 'screenRecording' } };
+  const opened = fakeRes();
+  await routes.openAgentPermissionHandler(local, opened);
+  assert.equal(opened.body.status, 'opened');
+  assert.deepEqual(run.calls, [['/usr/bin/open', AGENT_PERMISSION_URLS.screenRecording]]);
+  const invalid = fakeRes();
+  await routes.openAgentPermissionHandler({ ...local, body: { permission: 'other' } }, invalid);
+  assert.equal(invalid.statusCode, 400);
+  const inherited = fakeRes();
+  await routes.openAgentPermissionHandler({ ...local, body: { permission: 'toString' } }, inherited);
+  assert.equal(inherited.statusCode, 400);
+  assert.equal(run.calls.length, 1);
 });
 
 test('the permission-denied failure actually routes to this button', () => {

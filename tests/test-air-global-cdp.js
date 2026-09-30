@@ -35,6 +35,13 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
   // 授权被取消」三条路都能在测试里确定性地走一遍。
   let powerDelay = 0, powerNegate = false, powerError = '';
   const powerPosts = [];
+  let agentPermissions = { ok: true, applicable: true, local: true, accessibility: true, screenRecording: true };
+  const permissionOpens = [];
+  routes['GET /api/system/agent-permissions'] = () => json(agentPermissions);
+  routes['POST /api/system/agent-permissions/open'] = req => {
+    permissionOpens.push(JSON.parse(req.body).permission);
+    return json({ ok: true, status: 'opened' });
+  };
   let unlockPassword = { available: true, set: false, canEdit: true, requested: false };
   const powerReply = () => ({ ...power, unlockPassword: { ...unlockPassword,
     enabled: unlockPassword.set && (unlockPassword.requested || power.enabled), requiredByLid: power.enabled } });
@@ -321,5 +328,35 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     assert.equal(await checked('unlock-toggle'), false);
     await click('unlock-cancel');
     await page.screenshot('03-global-unlock');
+
+    // Grant guidance belongs to desktop automation. A newly enabled lid mode
+    // opens the first missing macOS pane and leaves an explanation in a dialog.
+    power = { available: true, enabled: false };
+    unlockPassword = { available: true, set: true, canEdit: true, requested: false };
+    agentPermissions = { ...agentPermissions, accessibility: false, screenRecording: false };
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    await click('power-toggle');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-dialog').open`));
+    assert.deepEqual(permissionOpens, ['accessibility']);
+    assert.match(await text('#air-global-permission-body'), /MultiCC Agent/);
+    agentPermissions = { ...agentPermissions, accessibility: true };
+    await click('permission-check');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-body').textContent === t('airGlobalPermissionsMissing', {name:t('airGlobalPermissionsRecording')})`));
+    await click('permission-open');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-open').disabled === false`));
+    assert.deepEqual(permissionOpens, ['accessibility', 'screenRecording']);
+    agentPermissions = { ...agentPermissions, screenRecording: true };
+    await click('permission-check');
+    assert.ok(await page.waitFor(`!document.getElementById('air-global-permission-dialog').open`));
+
+    // The settings-center shortcut has its own POST path. It must reach the
+    // same permission guide after enabling, without requiring password setup.
+    await click('power-toggle'); await ready();
+    agentPermissions = { ...agentPermissions, accessibility: false };
+    await page.navigate('/air?dir=d1&view=settings');
+    assert.ok(await page.waitFor(`document.getElementById('air-lid-sleep') && !document.getElementById('air-lid-sleep').classList.contains('on')`));
+    await page.evaluate(`document.getElementById('air-lid-sleep').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-dialog')?.open === true`));
+    assert.deepEqual(permissionOpens, ['accessibility', 'screenRecording', 'accessibility']);
   });
 });
