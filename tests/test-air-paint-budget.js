@@ -116,7 +116,7 @@ test('圈的调色板：每一档都过得了像素门槛，而且是按 id 挑�
     const saturation = Math.max(r, g, b) - Math.min(r, g, b);
     assert.ok(saturation >= 60, `${tint} 太淡了（max-min=${saturation} < 60）：像素断言会在这一档上失败`);
   }
-  // 颜色靠 id 定，不靠随机数：列表每 4 秒随快照重画一次，随机会让同一行一直换色。
+  // 颜色靠 id 定，不靠随机数：列表每 15 秒随快照重画一次，随机会让同一行一直换色。
   assert.ok(/function ringTint\(seed\)/.test(STATUS_PRESENTATION), 'ringTint 应该由 seed 决定颜色');
   const hashBody = STATUS_PRESENTATION.slice(STATUS_PRESENTATION.indexOf('function ringTint(seed)'));
   assert.equal(/Math\.random\(/.test(hashBody.slice(0, hashBody.indexOf('\n  }'))), false,

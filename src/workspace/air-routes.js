@@ -6,7 +6,7 @@ const { isAbnormalLetter, isGoalState } = require('../classify/vocab');
 const { createAirPinRuntime } = require('./pins');
 const { pendingAttention } = require('../task-board/attention');
 
-// Air 是轮询页面：每 4 秒要把「任务板快照」（线上约 580KB、1069 张卡）和
+// Air 是轮询页面：每 15 秒要把「任务板快照」（线上约 580KB、1069 张卡）和
 // 「当前任务详情」（实测 3.5MB，3.2MB 是消息正文）各拉一次，浏览器每轮都要
 // 解析近 4MB JSON 并把整块 DOM 重建一遍。绝大多数轮次内容根本没变，所以两个
 // 读接口支持条件请求：内容一样就回 304，客户端保留现有视图、不再解析。
@@ -107,7 +107,7 @@ function createPhaseReporter(config, state) {
 // task-shell/host.js：迁移已经把 task 全表读过一遍并带回来了）。它不是这份快照
 // 要回答的东西 —— 客户端只用 `errors`（见 public/air.js 的 airMigrationPending）
 // —— 而 445 条完整任务体一旦随快照发出去，每轮正文会从 0.74MB 撑到 5.5MB，
-// 每 4 秒让浏览器解析一次。这里按白名单式地剔掉它，其余字段原样透传。
+// 每 15 秒让浏览器解析一次。这里按白名单式地剔掉它，其余字段原样透传。
 function publicMigration(migration) {
   if (!migration || typeof migration !== 'object') return migration;
   const { tasks: _internalTasks, ...published } = migration;
@@ -285,7 +285,7 @@ function mountAirRoutes(app, deps) {
       const access = timedAdd('accessMs', () => deps.shell.taskAccess(t));
       const taskResource = resource(sessionId, admission, admissionIdx);
       // 外层卡片只需要回答「这份 worktree 还有东西没交付吗」，不要把完整 merge
-      // 状态（冲突文件、分支细节等）复制进 4 秒一轮的 Air 快照。状态来自和任务页头
+      // 状态（冲突文件、分支细节等）复制进 15 秒一轮的 Air 快照。状态来自和任务页头
       // 同一份缓存；首次读取触发后台刷新，下一轮快照自然带上结果。只触发磁盘上真实
       // 驻留的 worktree：hibernated / planned 没有 checkout，逐条跑 Git 既没意义，
       // 也会让上千张历史卡片排进状态队列。

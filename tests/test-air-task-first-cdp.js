@@ -315,7 +315,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`document.getElementById('task-pins').hidden===true`));
     assert.deepEqual(pinPosts, ['tsk_a', 'tsk_a'], '取消 pin 走的是同一条 toggle');
     assert.equal(await page.evaluate(`document.getElementById('pin-task').getAttribute('aria-pressed')`), 'false');
-    // 页头下面那条 #notice 是页面的状态行，pin 的回执在这儿说一句 —— 真机上 4 秒
+    // 页头下面那条 #notice 是页面的状态行，pin 的回执在这儿说一句 —— 真机上 15 秒
     // 一次的轮询会把它擦掉，但这个后台 target 不产帧、轮询不跑。后面那些断言量的
     // 是「页头和对话之间什么都没有」，所以这里把它收干净。
     await page.evaluate(`document.getElementById('notice').textContent=''`);

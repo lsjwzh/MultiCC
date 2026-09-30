@@ -1,5 +1,5 @@
 'use strict';
-// Air 是纯轮询页面：每 4 秒拉一次任务板快照（线上约 580KB）和当前任务详情
+// Air 是纯轮询页面：每 15 秒拉一次任务板快照（线上约 580KB）和当前任务详情
 // （实测 3.5MB，其中 3.2MB 是消息正文）。内容没变时必须能 304 收场，否则
 // 服务端每轮都要把这几 MB 写出去、浏览器每轮都要解析并重建一遍 DOM。
 const test = require('node:test');
@@ -78,7 +78,7 @@ test('/api/air 不把迁移的内部 task 全表随正文发出去', async () =>
   assert.ok(!res.body.includes(marker), '正文里不该出现任务体内容');
 });
 
-test('/api/air/tasks/:id 详情同样支持 304（3.5MB 的消息正文不再每 4 秒重传）', async () => {
+test('/api/air/tasks/:id 详情同样支持 304（3.5MB 的消息正文不再每 15 秒重传）', async () => {
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   let messages = [{ id: 'm1', role: 'user', content: 'x'.repeat(64) }];
   mountAirRoutes(app, {
@@ -135,13 +135,14 @@ test('Air 前端显式发条件请求，并在 304 时跳过解析与重画', ()
   assert.match(source, /taskId && \(refreshSelectedEntry \|\| !\$\('task-details'\)\.hidden\)\s*\? await refreshEntry\(\) : false/);
   assert.doesNotMatch(source, /void refreshEntry\(\);/, '导航不能再先下载完整详情');
   assert.match(source, /if \(snapshot\.unchanged && !entryChanged\) return;/);
-  // 后台标签页别再按 4 秒敲；失败要退避，别在服务端打嗝时持续加码。
-  assert.match(source, /const POLL_HIDDEN_MS = 15000;/);
-  // 服务端每轮要重算上千张卡，闲着的时候不该继续按 4 秒敲：连着两轮 304（内容一样
-  // 就意味着画面上不会变）才降到 POLL_IDLE_MS，一旦有变化计数清零。判据只认正文，
-  // 不认「有没有卡片在跑」—— 任务板上长期挂着别人留下的 running/queued 旧卡。
-  assert.match(source, /idleRounds = snapshot\.unchanged \? idleRounds \+ 1 : 0;/);
-  assert.match(source, /idleRounds >= 2 \? POLL_IDLE_MS : POLL_MS/);
+  // 只有一个轮询档：15 秒（2026-09-30 要求活跃/后台/空闲全拉平，App 端
+  // air_tasks_view.dart 的 _snapshotPollInterval 也是同一个数字）。
+  assert.match(source, /const POLL_MS = 15000;/);
+  // 分档机械已经删干净，别再长回来：三档同值后降档判断无档可降，留着只会误导。
+  // 只钉声明与赋值（注释里会照实写到这些名字，那是删除记录，不是复活）。
+  assert.doesNotMatch(source, /const POLL_HIDDEN_MS|const POLL_IDLE_MS|idleRounds\s*=/);
+  // 判据不与「有没有卡片在跑」挂钩 —— 任务板上长期挂着别人留下的 running/queued 旧卡。
   assert.doesNotMatch(source, /anyRunning/);
-  assert.match(source, /const delay = pollFailures \? Math\.min\(base \* 2 \*\* pollFailures, POLL_MAX_MS\) : base;/);
+  // 失败退避仍在，且以这唯一一档为底：别在服务端打嗝时持续加码。
+  assert.match(source, /const delay = pollFailures \? Math\.min\(POLL_MS \* 2 \*\* pollFailures, POLL_MAX_MS\) : POLL_MS;/);
 });
