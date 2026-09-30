@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm/xterm.dart';
 
 import 'package:multicc_app/screens/terminal_screen.dart';
+import 'package:multicc_app/services/settings_service.dart';
 
 // 手机上「终端能不能用」的底线是键盘条里有没有回车和退格：软键盘的退格靠
 // TerminalView 的 deleteDetection（terminal_screen 里已开），回车键则依输入法
@@ -130,5 +132,102 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     final after = '\x7f'.allMatches(sent.join('')).length;
     expect(after, delCount, reason: 'repeat stops on release');
+  });
+
+  testWidgets('gesture pad: swipe emits arrow keys per 26px step',
+      (tester) async {
+    final terminal = Terminal();
+    final sent = <String>[];
+    terminal.onOutput = sent.add;
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: TerminalGesturePad(terminal: terminal)),
+    ));
+
+    final gesture =
+        await tester.startGesture(tester.getCenter(find.byType(TerminalGesturePad)));
+    // 上滑 62px：两颗 ↑（26px 一颗），余量 10px 不发。
+    await gesture.moveBy(const Offset(0, -62));
+    await tester.pump();
+    // 右滑 40px：一颗 →。
+    await gesture.moveBy(const Offset(40, 0));
+    await tester.pump();
+    await gesture.up();
+    await tester.pump();
+
+    final out = sent.join('');
+    final ups = '\x1b[A'.allMatches(out).length;
+    final rights = '\x1b[C'.allMatches(out).length;
+    expect(ups, 2, reason: '62px up = two ↑ steps (got $ups in ${out.codeUnits})');
+    expect(rights, 1, reason: '40px right = one → step');
+
+    // 抬手清零：再来一段滑动，上一段的余量不掺和。
+    sent.clear();
+    final g2 =
+        await tester.startGesture(tester.getCenter(find.byType(TerminalGesturePad)));
+    await g2.moveBy(const Offset(0, -15)); // < 一步，但接上旧余量 10px 也该是 0 颗
+    await tester.pump();
+    await g2.up();
+    expect('\x1b[A'.allMatches(sent.join('')).length, 0,
+        reason: 'residual distance is dropped on release');
+  });
+
+  testWidgets('custom macro keys render, fire onMacro, and ＋ shows the entry',
+      (tester) async {
+    final terminal = Terminal();
+    const macro = TerminalMacro(label: 'gs', text: 'git status');
+    final tapped = <TerminalMacro>[];
+    var edits = 0;
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: TerminalKeyBar(
+          terminal: terminal,
+          macros: const [macro],
+          onMacro: tapped.add,
+          onEditMacros: () => edits++,
+        ),
+      ),
+    ));
+
+    // 固定键一排摆满 800 宽的测试视口，宏键在横滚区里得先滚进来才点得到。
+    await tester.ensureVisible(find.text('gs'));
+    await tester.pump();
+    await tester.tap(find.text('gs'));
+    await tester.pump();
+    expect(tapped, const [macro], reason: 'macro tap reports the whole macro');
+
+    await tester.ensureVisible(find.text('＋'));
+    await tester.pump();
+    await tester.tap(find.text('＋'));
+    await tester.pump();
+    expect(edits, 1, reason: '＋ opens the macro manager');
+  });
+
+  testWidgets('custom macros round-trip through SettingsService',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.getInstance();
+
+    expect(settings.readTerminalMacros(), const [],
+        reason: 'no macros by default');
+
+    const macros = [
+      TerminalMacro(label: 'gs', text: 'git status'),
+      TerminalMacro(label: 'll', text: 'ls -la', sendEnter: false),
+    ];
+    await settings.saveTerminalMacros(macros);
+    expect(settings.readTerminalMacros(), macros,
+        reason: 'macros survive a save/load round-trip');
+
+    // 坏条目在解析层被丢弃（整份坏 JSON 走 readTerminalMacros 的同一条
+    // try/catch；单例已握住旧缓存，这里就不换仓重放了）。
+    expect(TerminalMacro.fromJson('nope'), isNull);
+    expect(TerminalMacro.fromJson({'label': '', 'text': 'x'}), isNull);
+    expect(TerminalMacro.fromJson({'label': 'a', 'text': 'b', 'enter': false})?.sendEnter,
+        isFalse);
+    expect(
+        TerminalMacro.fromJson({'label': 'a', 'text': 'b'})?.sendEnter, isTrue,
+        reason: 'missing enter flag defaults to true');
   });
 }

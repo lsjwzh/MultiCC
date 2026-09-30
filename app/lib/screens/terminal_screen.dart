@@ -32,6 +32,9 @@ class _TerminalScreenState extends State<TerminalScreen> {
   late TerminalService _svc;
   TerminalConnectionState _connState = TerminalConnectionState.disconnected;
 
+  /// 键盘条上的自定义按键（常用命令存成一颗键）。只在本设备持久化。
+  List<TerminalMacro> _macros = const [];
+
   /// 用粘滞 Ctrl 版的 Terminal：键盘条的 Ctrl 键和软键盘的字母输入共享
   /// 同一个 armed 状态（见 StickyCtrlTerminal 的注释）。
   final StickyCtrlTerminal _terminal = StickyCtrlTerminal(maxLines: 5000);
@@ -43,6 +46,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
   @override
   void initState() {
     super.initState();
+    _macros = widget.settings.readTerminalMacros();
     _svc = TerminalService(
       settings: widget.settings,
       sessionId: widget.session.id,
@@ -60,6 +64,156 @@ class _TerminalScreenState extends State<TerminalScreen> {
     _svc.dispose();
     _terminal.ctrlArmed.dispose();
     super.dispose();
+  }
+
+  /// 点自定义按键：把保存的文本原样打进终端，「发送后回车」时再补一个 CR。
+  /// 粘滞 Ctrl 先熄掉 —— 文本宏和修饰键没有合理的组合语义。
+  void _sendMacro(TerminalMacro macro) {
+    _terminal.ctrlArmed.value = false;
+    _terminal.textInput(macro.text);
+    if (macro.sendEnter) _terminal.keyInput(TerminalKey.enter);
+  }
+
+  Future<void> _manageMacros() async {
+    var list = List<TerminalMacro>.from(_macros);
+    final labelCtrl = TextEditingController();
+    final textCtrl = TextEditingController();
+    var sendEnter = true;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFFffffff),
+          title: const Text(
+            '自定义按键',
+            style: TextStyle(fontSize: 15, color: Color(0xFF20364d)),
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (list.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      '把常用命令存成一颗键，点一下就发进终端。',
+                      style: TextStyle(color: Color(0xFF6f8096), fontSize: 12),
+                    ),
+                  ),
+                for (final macro in list)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '${macro.label}  →  ${macro.text}',
+                          style: const TextStyle(
+                            color: Color(0xFF233249),
+                            fontSize: 12,
+                            fontFamily: 'monospace',
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () => setDialogState(
+                          () => list.removeWhere((m) => m == macro),
+                        ),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 6),
+                          child: Icon(
+                            Icons.close,
+                            size: 16,
+                            color: Color(0xFF8b9cae),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                const Divider(height: 20),
+                TextField(
+                  controller: labelCtrl,
+                  decoration: const InputDecoration(
+                    labelText: '按键名（如 gs）',
+                    isDense: true,
+                  ),
+                ),
+                TextField(
+                  controller: textCtrl,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: '发送内容（如 git status）',
+                    isDense: true,
+                  ),
+                ),
+                InkWell(
+                  onTap: () => setDialogState(() => sendEnter = !sendEnter),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 32,
+                        child: Checkbox(
+                          value: sendEnter,
+                          onChanged: (v) =>
+                              setDialogState(() => sendEnter = v ?? false),
+                        ),
+                      ),
+                      const Text(
+                        '发送后回车',
+                        style: TextStyle(color: Color(0xFF6f8096), fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                final label = labelCtrl.text.trim();
+                final text = textCtrl.text;
+                if (label.isEmpty ||
+                    text.isEmpty ||
+                    list.length >= SettingsService.terminalMacroMax) {
+                  return;
+                }
+                setDialogState(() {
+                  list.add(TerminalMacro(
+                    label: label,
+                    text: text,
+                    sendEnter: sendEnter,
+                  ));
+                  labelCtrl.clear();
+                  textCtrl.clear();
+                });
+              },
+              child: const Text(
+                '添加',
+                style: TextStyle(color: Color(0xFF1267b5)),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text(
+                '完成',
+                style: TextStyle(
+                  color: Color(0xFF1267b5),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    labelCtrl.dispose();
+    textCtrl.dispose();
+    if (list != _macros) {
+      await widget.settings.saveTerminalMacros(list);
+      if (mounted) setState(() => _macros = list);
+    }
   }
 
   Future<void> _confirmMerge() async {
@@ -179,7 +333,13 @@ class _TerminalScreenState extends State<TerminalScreen> {
                 ],
               ),
             ),
-            TerminalKeyBar(terminal: _terminal, ctrlArmed: _terminal.ctrlArmed),
+            TerminalKeyBar(
+              terminal: _terminal,
+              ctrlArmed: _terminal.ctrlArmed,
+              macros: _macros,
+              onMacro: _sendMacro,
+              onEditMacros: _manageMacros,
+            ),
           ],
         ),
       ),
@@ -456,7 +616,19 @@ class TerminalKeyBar extends StatelessWidget {
   /// 粘滞 Ctrl 的开关状态。只在是 [StickyCtrlTerminal] 时由屏幕传入其自带的
   /// notifier；传 null 则不显示 Ctrl 键（退化成无粘滞的旧行为）。
   final ValueNotifier<bool>? ctrlArmed;
-  const TerminalKeyBar({super.key, required this.terminal, this.ctrlArmed});
+  /// 自定义按键：屏幕侧负责持久化和发送（onMacro），键盘条只管摆出来。
+  final List<TerminalMacro> macros;
+  final ValueChanged<TerminalMacro>? onMacro;
+  /// 传了才显示「＋」（管理自定义按键的入口）。
+  final VoidCallback? onEditMacros;
+  const TerminalKeyBar({
+    super.key,
+    required this.terminal,
+    this.ctrlArmed,
+    this.macros = const [],
+    this.onMacro,
+    this.onEditMacros,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -466,43 +638,125 @@ class TerminalKeyBar extends StatelessWidget {
         border: Border(top: BorderSide(color: Color(0xFFdce6f1))),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            // 回车和退格放在最左：软键盘的退格靠 deleteDetection 才工作、回车键
-            // 依输入法而定，这两个是手机上「终端能不能用」的底线，必须一眼可见。
-            _Key('⌫', () => terminal.keyInput(TerminalKey.backspace),
-                repeat: true),
-            _Key('Enter', () => terminal.keyInput(TerminalKey.enter)),
-            // Ctrl+C 留成一颗实体键：中断跑飞的命令是安全操作，不该要两步。
-            _Key(
-              'Ctrl+C',
-              () => terminal.keyInput(TerminalKey.keyC, ctrl: true),
+      child: Row(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  // 回车和退格放在最左：软键盘的退格靠 deleteDetection 才工作、回车键
+                  // 依输入法而定，这两个是手机上「终端能不能用」的底线，必须一眼可见。
+                  _Key('⌫', () => terminal.keyInput(TerminalKey.backspace),
+                      repeat: true),
+                  _Key('Enter', () => terminal.keyInput(TerminalKey.enter)),
+                  // Ctrl+C 留成一颗实体键：中断跑飞的命令是安全操作，不该要两步。
+                  _Key(
+                    'Ctrl+C',
+                    () => terminal.keyInput(TerminalKey.keyC, ctrl: true),
+                  ),
+                  // 其余 Ctrl 组合（^A/^E/^W/^U/^D/^Z…）交给粘滞 Ctrl，不再逐颗枚举。
+                  if (ctrlArmed != null)
+                    _CtrlKey(ctrlArmed: ctrlArmed!),
+                  _Key('Tab', () => terminal.keyInput(TerminalKey.tab)),
+                  _Key('Esc', () => terminal.keyInput(TerminalKey.escape)),
+                  _Key('↑', () => terminal.keyInput(TerminalKey.arrowUp),
+                      repeat: true),
+                  _Key('↓', () => terminal.keyInput(TerminalKey.arrowDown),
+                      repeat: true),
+                  _Key('←', () => terminal.keyInput(TerminalKey.arrowLeft),
+                      repeat: true),
+                  _Key('→', () => terminal.keyInput(TerminalKey.arrowRight),
+                      repeat: true),
+                  // claude TUI 里翻长输出全靠这两个，方向键一格一格翻不动。
+                  _Key('PgUp', () => terminal.keyInput(TerminalKey.pageUp),
+                      repeat: true),
+                  _Key('PgDn', () => terminal.keyInput(TerminalKey.pageDown),
+                      repeat: true),
+                  _Key('Home', () => terminal.keyInput(TerminalKey.home),
+                      repeat: true),
+                  _Key('End', () => terminal.keyInput(TerminalKey.end),
+                      repeat: true),
+                  // 自定义按键排在固定键后面：常用命令离手边近一点。
+                  for (final macro in macros)
+                    _Key(macro.label, () => onMacro?.call(macro)),
+                  if (onEditMacros != null)
+                    _Key('＋', onEditMacros!, tooltip: '自定义按键'),
+                ],
+              ),
             ),
-            // 其余 Ctrl 组合（^A/^E/^W/^U/^D/^Z…）交给粘滞 Ctrl，不再逐颗枚举。
-            if (ctrlArmed != null)
-              _CtrlKey(ctrlArmed: ctrlArmed!),
-            _Key('Tab', () => terminal.keyInput(TerminalKey.tab)),
-            _Key('Esc', () => terminal.keyInput(TerminalKey.escape)),
-            _Key('↑', () => terminal.keyInput(TerminalKey.arrowUp),
-                repeat: true),
-            _Key('↓', () => terminal.keyInput(TerminalKey.arrowDown),
-                repeat: true),
-            _Key('←', () => terminal.keyInput(TerminalKey.arrowLeft),
-                repeat: true),
-            _Key('→', () => terminal.keyInput(TerminalKey.arrowRight),
-                repeat: true),
-            // claude TUI 里翻长输出全靠这两个，方向键一格一格翻不动。
-            _Key('PgUp', () => terminal.keyInput(TerminalKey.pageUp),
-                repeat: true),
-            _Key('PgDn', () => terminal.keyInput(TerminalKey.pageDown),
-                repeat: true),
-            _Key('Home', () => terminal.keyInput(TerminalKey.home),
-                repeat: true),
-            _Key('End', () => terminal.keyInput(TerminalKey.end),
-                repeat: true),
-          ],
+          ),
+          // 触控板不跟着键区横滚（固定在最右），方向键从此可以拖出来。
+          TerminalGesturePad(terminal: terminal),
+        ],
+      ),
+    );
+  }
+}
+
+/// 触控手势区（Termius 的 hold-and-drag 一族）：滑动发送方向键，位移每满
+/// 26px 发一颗，移动方向就是箭头方向，两轴各自计数（斜滑 = 交替两个方向）。
+/// 对 claude TUI 的列表选择来说，这就是「不用一格一格点方向键」的那只手。
+class TerminalGesturePad extends StatefulWidget {
+  final Terminal terminal;
+  const TerminalGesturePad({super.key, required this.terminal});
+
+  @override
+  State<TerminalGesturePad> createState() => _TerminalGesturePadState();
+}
+
+class _TerminalGesturePadState extends State<TerminalGesturePad> {
+  static const double _stepPx = 26;
+  double _dx = 0;
+  double _dy = 0;
+
+  void _onPan(DragUpdateDetails details) {
+    _dx += details.delta.dx;
+    _dy += details.delta.dy;
+    while (_dy <= -_stepPx) {
+      _dy += _stepPx;
+      widget.terminal.keyInput(TerminalKey.arrowUp);
+    }
+    while (_dy >= _stepPx) {
+      _dy -= _stepPx;
+      widget.terminal.keyInput(TerminalKey.arrowDown);
+    }
+    while (_dx <= -_stepPx) {
+      _dx += _stepPx;
+      widget.terminal.keyInput(TerminalKey.arrowLeft);
+    }
+    while (_dx >= _stepPx) {
+      _dx -= _stepPx;
+      widget.terminal.keyInput(TerminalKey.arrowRight);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: '滑动发送方向键',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanUpdate: _onPan,
+        onPanEnd: (_) {
+          // 抬手清零余量：下一段滑动不该继承上一段的零头方向。
+          _dx = 0;
+          _dy = 0;
+        },
+        child: Container(
+          margin: const EdgeInsets.only(left: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          height: 28,
+          decoration: BoxDecoration(
+            color: const Color(0xFFf8fbff),
+            border: Border.all(color: const Color(0xFFdce6f1)),
+            borderRadius: BorderRadius.circular(5),
+          ),
+          child: const Icon(
+            Icons.open_with,
+            size: 16,
+            color: Color(0xFF6f8096),
+          ),
         ),
       ),
     );
@@ -556,7 +810,8 @@ class _Key extends StatefulWidget {
   /// 长按连发（Termux 行为）：按住约半秒后每 80ms 重复触发——删一行字、
   /// 连续翻页不用一下一下点。
   final bool repeat;
-  const _Key(this.label, this.onTap, {this.repeat = false});
+  final String? tooltip;
+  const _Key(this.label, this.onTap, {this.repeat = false, this.tooltip});
 
   @override
   State<_Key> createState() => _KeyState();
@@ -599,12 +854,15 @@ class _KeyState extends State<_Key> {
           border: Border.all(color: const Color(0xFFdce6f1)),
           borderRadius: BorderRadius.circular(5),
         ),
-        child: Text(
-          widget.label,
-          style: const TextStyle(
-            color: Color(0xFF233249),
-            fontSize: 12,
-            fontFamily: 'monospace',
+        child: Tooltip(
+          message: widget.tooltip ?? '',
+          child: Text(
+            widget.label,
+            style: const TextStyle(
+              color: Color(0xFF233249),
+              fontSize: 12,
+              fontFamily: 'monospace',
+            ),
           ),
         ),
       ),

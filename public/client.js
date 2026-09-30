@@ -826,6 +826,10 @@ let _initialCwd = '';   // set by directory picker for new sessions
 let _initialId  = '';   // custom session ID from directory picker
 
 async function connect() {
+  // 测试替身（attachTestSocket）挂着时不重连：夹具起的是静态站点，WS 升不了级，
+  // 重连只会把替身顶掉——1 秒后所有断言的帧就静默丢了。
+  if (ws && ws.__multiccTestSocket) return;
+
   // Cancel any pending reconnect
   if (_reconnectTimer) {
     clearTimeout(_reconnectTimer);
@@ -1890,6 +1894,15 @@ mobileKeys.addEventListener('click', (e) => {
   if (!btn) return;
   if (repeatFired) { repeatFired = false; return; }
   if (btn.dataset.role === 'ctrl') { setCtrlSticky(!ctrlSticky); return; }
+  if (btn.dataset.role === 'macro-add') { openMacroDialog(); return; }
+  if (btn.dataset.macroIndex !== undefined) {
+    const macro = loadMacros()[+btn.dataset.macroIndex];
+    if (macro) {
+      setCtrlSticky(false); // 文本宏和粘滞修饰键没有合理的组合语义
+      sendToTerminal(macro.text + (macro.enter === false ? '' : '\r'));
+    }
+    return;
+  }
   let seq = btn.dataset.seq;
   if (!seq) return;
   if (ctrlSticky) {
@@ -1899,6 +1912,120 @@ mobileKeys.addEventListener('click', (e) => {
   sendToTerminal(seq);
   // Brief visual feedback without stealing keyboard focus from input
 });
+
+/* ── 触控手势区（Termius 的 hold-and-drag 一族）：滑动发方向键，位移每满
+   26px 发一颗，两轴各自计数（斜滑 = 交替两个方向）。距离自己算，不用
+   e.movementX —— 合成事件（测试）和部分浏览器不保证它有值。 */
+const gesturePad = document.getElementById('gesture-pad');
+if (gesturePad) {
+  const PAD_STEP = 26;
+  let padActive = false, padX = 0, padY = 0, padLastX = 0, padLastY = 0;
+  const padSend = seq => sendToTerminal(ctrlSticky && CTRL_SEQ[seq] ? (setCtrlSticky(false), CTRL_SEQ[seq]) : seq);
+  gesturePad.addEventListener('pointerdown', e => {
+    padActive = true; padX = 0; padY = 0;
+    padLastX = e.clientX; padLastY = e.clientY;
+    try { gesturePad.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+  gesturePad.addEventListener('pointermove', e => {
+    if (!padActive) return;
+    padX += e.clientX - padLastX; padLastX = e.clientX;
+    padY += e.clientY - padLastY; padLastY = e.clientY;
+    while (padY <= -PAD_STEP) { padY += PAD_STEP; padSend('\x1b[A'); }
+    while (padY >=  PAD_STEP) { padY -= PAD_STEP; padSend('\x1b[B'); }
+    while (padX <= -PAD_STEP) { padX += PAD_STEP; padSend('\x1b[D'); }
+    while (padX >=  PAD_STEP) { padX -= PAD_STEP; padSend('\x1b[C'); }
+  });
+  // 抬手/取消清零余量：下一段滑动不继承上一段的零头方向。
+  ['pointerup', 'pointercancel'].forEach(ev =>
+    gesturePad.addEventListener(ev, () => { padActive = false; padX = 0; padY = 0; }));
+}
+
+/* ── 自定义按键：localStorage（`multicc:terminal-macros`），App 端同款存
+   SharedPreferences——两端各存各的，不上服务器。坏数据收敛在读取侧。 */
+const MACRO_KEY = 'multicc:terminal-macros';
+const MACRO_MAX = 12;
+const macroModal   = document.getElementById('macro-modal');
+const macroList    = document.getElementById('macro-list');
+const macroLabel   = document.getElementById('macro-label');
+const macroText    = document.getElementById('macro-text');
+const macroEnter   = document.getElementById('macro-enter');
+const macroAddBtn  = document.getElementById('macro-add');
+const macroClose   = document.getElementById('macro-close');
+const macroKeysHost = document.getElementById('macro-keys');
+
+function loadMacros() {
+  try {
+    const list = JSON.parse(localStorage.getItem(MACRO_KEY) || '[]');
+    if (!Array.isArray(list)) return [];
+    return list.filter(m => m && typeof m.label === 'string' && typeof m.text === 'string'
+      && m.label.trim() && m.text).slice(0, MACRO_MAX);
+  } catch (_) { return []; }
+}
+
+function saveMacros(list) {
+  try { localStorage.setItem(MACRO_KEY, JSON.stringify(list.slice(0, MACRO_MAX))); } catch (_) {}
+  renderMacroKeys();
+}
+
+function renderMacroKeys() {
+  if (!macroKeysHost) return;
+  macroKeysHost.textContent = '';
+  loadMacros().forEach((macro, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'mkey';
+    btn.dataset.macroIndex = i;
+    btn.textContent = macro.label;
+    btn.title = macro.text;
+    macroKeysHost.appendChild(btn);
+  });
+}
+
+function renderMacroList() {
+  if (!macroList) return;
+  macroList.textContent = '';
+  loadMacros().forEach((macro, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:4px 0;';
+    const label = document.createElement('span');
+    label.style.cssText = 'font-size:12px; color:#c9d1d9; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    label.textContent = `${macro.label}  →  ${macro.text}`;
+    const del = document.createElement('button');
+    del.textContent = '✕';
+    del.style.cssText = 'flex-shrink:0; background:none; border:none; color:#8b949e; cursor:pointer; font-size:12px; padding:4px;';
+    del.addEventListener('click', () => {
+      const list = loadMacros();
+      list.splice(i, 1);
+      saveMacros(list);
+      renderMacroList();
+    });
+    row.append(label, del);
+    macroList.appendChild(row);
+  });
+}
+
+function openMacroDialog() {
+  if (!macroModal) return;
+  renderMacroList();
+  macroModal.style.display = 'flex';
+}
+
+if (macroAddBtn) macroAddBtn.addEventListener('click', () => {
+  const label = macroLabel.value.trim();
+  const text = macroText.value;
+  if (!label || !text) return;
+  const list = loadMacros();
+  if (list.length >= MACRO_MAX) return;
+  list.push({ label, text, enter: macroEnter.checked });
+  saveMacros(list);
+  renderMacroList();
+  macroLabel.value = '';
+  macroText.value = '';
+});
+if (macroClose) macroClose.addEventListener('click', () => { macroModal.style.display = 'none'; });
+if (macroModal) macroModal.addEventListener('click', e => {
+  if (e.target === macroModal) macroModal.style.display = 'none';
+});
+renderMacroKeys();
 
 // Collect attached file paths and clear chips
 function collectAttachments() {
@@ -2349,7 +2476,7 @@ window.MultiCCTerminal = Object.freeze({
   // 测试用：喂一条服务端消息 = 走真正的 ws.onmessage（不复制一份解析/渲染逻辑）。
   applyServerMessage: msg => { if (typeof ws?.onmessage === 'function') ws.onmessage({ data: JSON.stringify(msg) }); },
   // 测试用：替身 socket —— 抓键盘条/输入框发出的 input 帧（夹具里 WS 升不了级）。
-  attachTestSocket: fake => { ws = fake; },
+  attachTestSocket: fake => { fake.__multiccTestSocket = true; ws = fake; },
   openFind,
   closeFind,
   findVisible: () => !findBar.hidden,
@@ -2367,6 +2494,11 @@ window.MultiCCTerminal = Object.freeze({
   siblingIndex: () => (_termCtx ? _termCtx.index : -1),
   siblingTarget,
   loadTerminalContext,
+  // 移动端键盘条的扩展件：触控板/自定义按键的真交互在 DOM 事件上，测试用
+  // 这两个钩子驱动（喂 localStorage、看弹窗），发送帧照旧走 attachTestSocket 抓。
+  refreshMacros: renderMacroKeys,
+  macroDialogVisible: () => !!macroModal && macroModal.style.display !== 'none',
+  loadMacros,
   constants: Object.freeze({ FONT_MIN, FONT_MAX, FONT_KEY }),
 });
 

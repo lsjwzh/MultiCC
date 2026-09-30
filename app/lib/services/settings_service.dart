@@ -38,6 +38,44 @@ class ChatWidthSetting {
   String toString() => 'ChatWidthSetting(limited: $limited, max: $max)';
 }
 
+/// 终端键盘条上的一个自定义按键：点一下把 [text] 原样打进终端（「发送后回车」
+/// 时再补一个 CR）。Web 端同款存在 localStorage，这里走 SharedPreferences。
+@immutable
+class TerminalMacro {
+  final String label;
+  final String text;
+  final bool sendEnter;
+  const TerminalMacro({
+    required this.label,
+    required this.text,
+    this.sendEnter = true,
+  });
+
+  Map<String, dynamic> toJson() => {'label': label, 'text': text, 'enter': sendEnter};
+
+  static TerminalMacro? fromJson(dynamic raw) {
+    if (raw is! Map) return null;
+    final label = (raw['label'] ?? '').toString().trim();
+    final text = (raw['text'] ?? '').toString();
+    if (label.isEmpty || text.isEmpty) return null;
+    return TerminalMacro(
+      label: label,
+      text: text,
+      sendEnter: raw['enter'] is bool ? raw['enter'] as bool : true,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is TerminalMacro &&
+      other.label == label &&
+      other.text == text &&
+      other.sendEnter == sendEnter;
+
+  @override
+  int get hashCode => Object.hash(label, text, sendEnter);
+}
+
 /// One remembered server connection (URL + its token).
 class ServerHistoryEntry {
   final String host;
@@ -92,6 +130,9 @@ class SettingsService {
   /// 聊天区最大宽度的滑杆范围，与 Web 的 `chat-layout.js` 同值（640–2400）。
   static const int chatWidthMin = 640;
   static const int chatWidthMaxLimit = 2400;
+
+  /// 终端键盘条的自定义按键。条就这么宽，塞不下太多。
+  static const int terminalMacroMax = 12;
 
   static SettingsService? _instance;
 
@@ -310,6 +351,32 @@ class SettingsService {
     await _prefs.setString(
       '$_keyDispatchModePrefix$sessionId',
       mode.wireName,
+    );
+  }
+
+  /// 终端键盘条的自定义按键。坏 JSON / 超量都收敛在读取侧，写入侧只存
+  /// 已经过对话框校验的条目。
+  List<TerminalMacro> readTerminalMacros() {
+    final raw = _prefs.getString('multicc_terminal_macros');
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const [];
+      return decoded
+          .map(TerminalMacro.fromJson)
+          .whereType<TerminalMacro>()
+          .take(terminalMacroMax)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> saveTerminalMacros(List<TerminalMacro> macros) async {
+    final trimmed = macros.take(terminalMacroMax).toList();
+    await _prefs.setString(
+      'multicc_terminal_macros',
+      trimmed.isEmpty ? '' : jsonEncode(trimmed.map((m) => m.toJson()).toList()),
     );
   }
 
