@@ -19,7 +19,6 @@ const crypto = require('crypto');
 const {
   classifyDisplay,
   goalStateForClassify,
-  GOAL_STATES,
   phaseLabel,
   isProcessingLetter,
   isWaitForUserLetter,
@@ -280,16 +279,10 @@ function createClassifyStateMachine(rawDeps) {
       // 卡片不用自己推，也不会有第二份口径。
       const goalState = dismissedQuestion ? null
         : goalStateForClassify({ state, goal: finalGoal, phase: finalPhase });
-      // 子状态不再只是 goalState 这个附加字段：把它提升成真正持久化的字母（G/
-      // N），这样以后要做二次状态判别（比如把「需要交互」和 W 分到一组）可以直接
-      // 认字母，不用先解出 goalState 再判断。图标/色调/优先级不变——vocab.js 的
-      // CLASSIFY_DISPLAY.G/N 与 D 共用同一套 cardStatus/barTint。
-      const persistedClassifyState = goalState === GOAL_STATES.achieved ? 'G'
-        : goalState === GOAL_STATES.interact ? 'N' : 'D';
       const completionTaskId = transitionTaskId || entryTaskId;
       const completionTaskShortCode = taskShortCode(completionTaskId);
       const completionNotice = {
-        type: 'notify', state: 'succeeded', classifyState: persistedClassifyState, message: msg,
+        type: 'notify', state: 'succeeded', classifyState: 'D', message: msg,
         goalState,
         taskShortCode: completionTaskShortCode,
         taskGoal: finalGoal || '',
@@ -307,7 +300,7 @@ function createClassifyStateMachine(rawDeps) {
       setSessionStatus(sessionName, { status: 'succeeded' });
       // D triggers no later state write, so persist it immediately. Otherwise a
       // crash before the next durable operation restores a stale P/W/E snapshot.
-      setTaskState(sessionName, { classifyState: persistedClassifyState, goalState, endedAt: Date.now() });
+      setTaskState(sessionName, { classifyState: 'D', goalState, endedAt: Date.now() });
       getWaitInjector().resetAuto(sessionName);
       // Clear the resume-interrupted counter so any future P-misclassify restarts from
       // count=1 rather than compounding on this concluded task. (Note: this clears the

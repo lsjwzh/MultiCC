@@ -209,7 +209,7 @@ test('a B verdict waits on a background job, so its copy never asks the user to 
   assert.notEqual(wLabel, classifyDisplay('B').label);
 });
 
-test('a succeeded gateway turn deterministically reaches D (persisted as G) without Aux classification', () => {
+test('a succeeded gateway turn deterministically reaches D without Aux classification', () => {
   const h = fixture({ cli: 'claude', type: 'gateway', isStreaming: false });
   h.chatState.claudeProc = null;
   h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
@@ -217,10 +217,7 @@ test('a succeeded gateway turn deterministically reaches D (persisted as G) with
   assert.equal(h.observed.transitions, 1);
   assert.equal(h.observed.transitionResults[0].state, 'D');
   assert.equal(h.observed.transitionResults[0].evidence, 'gateway_turn_succeeded');
-  // A gateway completion synthesizes phase:'done' (no Aux verdict to say otherwise),
-  // so goalStateForClassify reads it as 'achieved' and persists G, not plain D —
-  // same cardStatus/barTint as D, only the sub-state letter differs.
-  assert.equal(h.record.taskState.classifyState, 'G');
+  assert.equal(h.record.taskState.classifyState, 'D');
   const notify = h.observed.broadcasts.find(event => event.type === 'notify');
   assert.match(notify.taskShortCode, /^[0-9A-Z]{4}$/);
   assert.equal(notify.taskGoal, '已识别任务');
@@ -603,8 +600,7 @@ test('the turn that just ended is nudged into the message index', () => {
   // 轮到这一轮就会话自己增量同步，而不是等下一次 60s 扫描——刚说完的话正是下一轮最
   // 可能被检索到的内容。
   assert.deepEqual(synced, ['s1']);
-  // Gateway completion → phase:'done' → goalState 'achieved' → persisted as G (see above).
-  assert.equal(h.record.taskState.classifyState, 'G');
+  assert.equal(h.record.taskState.classifyState, 'D');
 });
 
 test('an unwired or broken message index changes no verdict and no prompt', async () => {
@@ -626,8 +622,7 @@ test('an unwired or broken message index changes no verdict and no prompt', asyn
   });
   throwing.chatState.claudeProc = null;
   throwing.machine.classifyTurnEnd(throwing.chatState, 's1', { classification: 'succeeded' });
-  // Gateway completion → phase:'done' → goalState 'achieved' → persisted as G (see above).
-  assert.equal(throwing.record.taskState.classifyState, 'G', '索引坏了不能改变回合判定');
+  assert.equal(throwing.record.taskState.classifyState, 'D', '索引坏了不能改变回合判定');
   assert.equal(throwing.observed.transitions, 1);
   assert.equal(throwing.observed.enqueued, 0);
 });

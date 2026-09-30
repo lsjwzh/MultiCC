@@ -203,9 +203,7 @@ test('a turn ending while a persistent Monitor is still live must not be classif
   // and the turn would wrongly reach D.
   const regressed = fixture({ hasBackgroundPending: sessionName => runtime.hasLiveBackgroundTasks(sessionName) });
   regressed.machine.classifyTurnEnd(regressed.chatState, 's1', { classification: 'succeeded' });
-  // Rules-only completion forces phase:'done', so goalStateForClassify persists
-  // this as G (a D sub-state), not plain D — same underlying bug either way.
-  assert.equal(regressed.record.taskState.classifyState, 'G',
+  assert.equal(regressed.record.taskState.classifyState, 'D',
     'proves the narrow wiring is the exact production bug this test guards against');
 });
 
@@ -382,13 +380,12 @@ test('a planned retry owns the turn, so no premature E is published', () => {
   assert.equal(h.observed.transitions, 0);
 });
 
-test('clean turn success reaches D (persisted as G) and still attempts Aux after an earlier Aux failure', () => {
+test('clean turn success reaches D and still attempts Aux after an earlier Aux failure', () => {
   const h = fixture({ auxUnhealthy: true });
   h.machine.classifyTurnEnd(h.chatState, 's1', {
     classification: 'succeeded', turnId: 'turn-offline',
   });
-  // Rules-only completion forces phase:'done' → goalState 'achieved' → persisted as G.
-  assert.equal(h.record.taskState.classifyState, 'G');
+  assert.equal(h.record.taskState.classifyState, 'D');
   assert.equal(h.observed.enqueued, 1,
     'historical Aux health must not suppress a new attribution request');
   assert.equal(h.record.taskState.classifyHistory.at(-1).evidence, 'turn_succeeded');

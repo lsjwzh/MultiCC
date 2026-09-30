@@ -363,8 +363,6 @@ const Map<String, CanonicalStatus> classifyLetterStatus = {
   'B': CanonicalStatus.background,
   'E': CanonicalStatus.error,
   'P': CanonicalStatus.running,
-  'G': CanonicalStatus.succeeded,
-  'N': CanonicalStatus.succeeded,
 };
 
 /// classify 字母 → canonical 状态；认不出来记诊断并落 unknown。
