@@ -20,8 +20,6 @@ import '../screens/setup_screen.dart';
 import '../screens/task_graph_screen.dart';
 import '../screens/terminal_screen.dart';
 import '../services/air_service.dart';
-import '../services/manage_service.dart';
-import '../services/opencode_models_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -1985,67 +1983,19 @@ class _AirTasksViewState extends State<AirTasksView>
     final initialCli =
         tryParseCli(_data?.clis.firstOrNull) ?? SessionCli.claude;
 
-    // 默认 CLI 的 Provider 池要先拿到，对话框才有一份可选的线路；换 CLI 时对话框
-    // 自己会按新 CLI 的 appType 重新拉（同 chat 那条路）。
-    List<Map<String, dynamic>> providers = [];
-    String? defaultProviderId;
-    try {
-      if (initialCli.supportsProvider) {
-        if (initialCli == SessionCli.opencode) {
-          await OpenCodeModelsService(settings: widget.settings).load();
-        }
-        final d = await ManageService(
-          settings: widget.settings,
-        ).fetchProvidersForCli(initialCli.name);
-        providers = (d['providers'] as List? ?? [])
-            .map((e) => (e as Map).cast<String, dynamic>())
-            .toList();
-        if (initialCli == SessionCli.opencode) {
-          providers = mergeOpenCodeNativeProviders(
-            providers,
-            OpenCodeModelsService.cached,
-          );
-        }
-        final defaults = d['defaults'];
-        if (defaults is Map && defaults[initialCli.name] != null) {
-          defaultProviderId = defaults[initialCli.name].toString();
-        }
-      }
-    } catch (_) {}
-
-    Map<SessionCli, bool> cliAvailability = const {};
-    try {
-      final installInfo = await SessionService(
-        settings: widget.settings,
-      ).fetchCliInstallSpecs();
-      final availability = installInfo['availability'];
-      if (availability is Map) {
-        cliAvailability = {
-          for (final cli in SessionCli.values)
-            cli: availability[cli.name] is Map
-                ? availability[cli.name]['available'] == true
-                : false,
-        };
-      }
-    } catch (_) {}
-    if (!mounted) return;
-
-    // 整机一个可用 CLI 都没有时不必开一张只能空转的表（和 chat 那颗按钮同一句提示）。
-    if (cliAvailability.isNotEmpty &&
-        !SessionCli.values.any((cli) => cliAvailability[cli] == true)) {
-      setState(() => _error = t('noCompatibleAi'));
-      return;
-    }
-
+    // 弹窗先出来，Provider 池和各车道的安装情况由对话框自己补（`selfLoad`）：两样
+    // 都是网络请求，按下去到弹窗出现之间不该隔着它们 —— 换 CLI 时它本来也会自己
+    // 按新 CLI 的 appType 重拉一趟。原来「整机一个可用 CLI 都没有」那句兜底是拿到
+    // 安装情况之后才判的，这一步也跟着搬进了对话框（见 CreateSessionDialog）。
     final result = await showDialog<CreateSessionResult>(
       context: context,
       builder: (_) => CreateSessionDialog(
         kind: SessionKind.terminal,
         defaultCli: initialCli,
-        providers: providers,
-        defaultProviderId: defaultProviderId,
-        cliAvailability: cliAvailability,
+        providers: const [],
         settings: widget.settings,
+        selfLoad: true,
+        httpClient: widget.httpClient,
         // 终端**始终**给完整那张表（CLI / Provider / 模型 / 推理强度）：chat 在基础
         // 模式下会用「推荐」替你选一条线路，而终端要挑的正是「跑哪个 CLI、哪条
         // 线路」——没有等价的可推荐项，选不了等于没得选。Web 那边也没有基础模式，
