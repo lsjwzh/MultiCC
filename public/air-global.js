@@ -48,6 +48,12 @@
         .air-global-sep { padding-top: 4px; border-top: 1px solid var(--hairline); }
         .air-global-block { display: grid; gap: 7px; }
         #air-global-unlock-password { width: auto; min-width: 0; flex: 1 1 240px; }
+        .air-global-permission-dialog { max-width: min(460px, calc(100vw - 28px)); border: 1px solid var(--hairline);
+          border-radius: 14px; padding: 22px; color: #25445e; box-shadow: 0 16px 50px rgba(18,45,70,.22); }
+        .air-global-permission-dialog::backdrop { background: rgba(14,32,48,.48); }
+        .air-global-permission-dialog h3 { margin: 0 0 8px; }
+        .air-global-permission-dialog p { line-height: 1.6; }
+        .air-global-permission-dialog .air-global-foot { margin-top: 15px; }
       `;
     }
     host.append(styleNode); // replaceChildren 会把它一起清掉，每次重绘都挂回去
@@ -89,6 +95,30 @@
     status.id = 'air-global-power-status';
     const foot = make('div', null, 'air-global-foot');
     foot.append(refresh, status);
+    const permissionButton = make('button', t('airGlobalPermissionsButton'));
+    permissionButton.type = 'button';
+    permissionButton.id = 'air-global-permissions-button';
+    permissionButton.hidden = true;
+    permissionButton.onclick = () => { void checkAgentPermissions(true); };
+    const permissionDialog = make('dialog', null, 'air-global-permission-dialog');
+    permissionDialog.id = 'air-global-permission-dialog';
+    const permissionTitle = make('h3', t('airGlobalPermissionsTitle'));
+    const permissionBody = make('p', '', 'air-global-permission-body');
+    permissionBody.id = 'air-global-permission-body';
+    const permissionActions = make('div', null, 'air-global-foot');
+    const permissionOpen = make('button', t('airGlobalPermissionsOpen'));
+    permissionOpen.type = 'button';
+    permissionOpen.id = 'air-global-permission-open';
+    permissionOpen.onclick = () => { void openAgentPermission(); };
+    const permissionCheck = make('button', t('airGlobalPermissionsRecheck'));
+    permissionCheck.type = 'button';
+    permissionCheck.id = 'air-global-permission-check';
+    permissionCheck.onclick = () => { void checkAgentPermissions(false); };
+    const permissionClose = make('button', t('airGlobalPermissionsClose'));
+    permissionClose.type = 'button';
+    permissionClose.onclick = () => permissionDialog.close();
+    permissionActions.append(permissionOpen, permissionCheck, permissionClose);
+    permissionDialog.append(permissionTitle, permissionBody, permissionActions);
 
     // Password setup is shared by both switches; saved credentials survive disabling.
     const unlockToggle = make('input');
@@ -144,6 +174,8 @@
       label,
       make('p', t('airGlobalPowerDesc'), 'air-global-desc'),
       foot,
+      permissionButton,
+      permissionDialog,
       make('div', null, 'air-global-sep'),
       unlockLabel,
       make('p', t('airGlobalUnlockDesc'), 'air-global-desc'),
@@ -156,6 +188,52 @@
   let powerState = null;
   let powerBusy = false;
   let pendingPowerAction = null;
+  let nextPermission = null;
+  let permissionLocal = false;
+
+  async function openAgentPermission() {
+    if (!nextPermission) return;
+    const button = el('air-global-permission-open');
+    button.disabled = true;
+    try {
+      await context.api('/api/system/agent-permissions/open', { permission: nextPermission }, 'POST');
+      el('air-global-permission-body').textContent = t('airGlobalPermissionsGuide', {
+        name: nextPermission === 'accessibility' ? t('airGlobalPermissionsAccessibility') : t('airGlobalPermissionsRecording'),
+      });
+    } catch (error) {
+      el('air-global-permission-body').textContent = t('airGlobalPermissionsOpenFailed', { message: error.message });
+    } finally { button.disabled = false; }
+  }
+
+  async function checkAgentPermissions(autoOpen) {
+    const dialog = el('air-global-permission-dialog');
+    if (!dialog) return;
+    try {
+      const data = await context.api('/api/system/agent-permissions');
+      permissionLocal = data.local === true;
+      if (!data.ok) {
+        nextPermission = null;
+        el('air-global-permission-body').textContent = t('airGlobalPermissionsAgentUnavailable');
+      } else if (data.accessibility && data.screenRecording) {
+        nextPermission = null;
+        if (dialog.open) dialog.close();
+        return;
+      } else {
+        nextPermission = !data.accessibility ? 'accessibility' : 'screenRecording';
+        const name = nextPermission === 'accessibility'
+          ? t('airGlobalPermissionsAccessibility') : t('airGlobalPermissionsRecording');
+        el('air-global-permission-body').textContent = data.local
+          ? t('airGlobalPermissionsMissing', { name }) : t('airGlobalPermissionsLocal', { name });
+        if (autoOpen && data.local) await openAgentPermission();
+      }
+    } catch (error) {
+      nextPermission = null;
+      permissionLocal = false;
+      el('air-global-permission-body').textContent = t('airGlobalPermissionsCheckFailed', { message: error.message });
+    }
+    el('air-global-permission-open').hidden = !nextPermission || !permissionLocal;
+    if (!dialog.open) dialog.showModal();
+  }
 
   function setPowerBusy(busy) {
     powerBusy = busy;
@@ -178,6 +256,7 @@
     status.textContent = data.error ? t('airGlobalPowerReadFailed', { message: data.error }) : t(data.enabled ? 'airGlobalPowerOn' : 'airGlobalPowerOff');
     if (!data.error && !data.enabled && data.systemSleepDisabled) status.textContent = t('airGlobalPowerExternal');
     status.className = 'air-global-status' + (data.error ? ' err' : data.enabled ? ' ok' : '');
+    el('air-global-permissions-button').hidden = !data.enabled;
     paintUnlock(data.unlockPassword);
   }
 
@@ -277,6 +356,8 @@
       el('air-global-power-status').textContent = t('airGlobalPowerFailed', { message: failure.message });
       el('air-global-power-status').className = 'air-global-status err';
       el('air-global-unlock-authorize').hidden = !pendingPowerAction || powerState?.unlockPassword?.canEdit === false;
+    } else if (action === 'lid' && enabled && powerState?.enabled) {
+      await checkAgentPermissions(true);
     }
   }
 
@@ -345,6 +426,7 @@
 
   function beginPowerSetup(action) {
     if (!action || !powerState) return;
+    if (action === 'permissions') { void checkAgentPermissions(true); return; }
     if (!powerState.unlockPassword?.set) requestPassword(action);
     else {
       pendingPowerAction = action;

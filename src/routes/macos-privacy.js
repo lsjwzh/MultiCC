@@ -12,16 +12,58 @@
 // MultiCC was started (terminal, .app bundle, launchd), so the path is computed
 // rather than guessed at by the user.
 const { execFile } = require('node:child_process');
+const path = require('node:path');
+const { homedir } = require('node:os');
 
 const OPEN_TIMEOUT_MS = 10000;
 const FULL_DISK_ACCESS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles';
+const AGENT_PERMISSION_URLS = Object.freeze({
+  accessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+  screenRecording: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+});
+
+function isLocal(req) {
+  const address = req?.socket?.remoteAddress || '';
+  return address === '::1' || address === '127.0.0.1' || address === '::ffff:127.0.0.1';
+}
 
 function createMacosPrivacyRoutes({
   platform = process.platform,
   run = execFile,
   log = console,
   permissionTargets = require('../directories').macPermissionTargets,
+  agentBin = process.env.MULTICC_AGENT_BIN || path.join(homedir(), '.multicc', 'bin', 'multicc-agent'),
 } = {}) {
+  async function agentPermissionsHandler(req, res) {
+    if (platform !== 'darwin') return res.json({ ok: true, applicable: false });
+    const result = await new Promise(resolve => {
+      run(agentBin, ['status'], { timeout: 3000, encoding: 'utf8' }, (error, stdout) => {
+        if (error) return resolve(null);
+        try { resolve(JSON.parse(stdout)); } catch { resolve(null); }
+      });
+    });
+    if (!result || result.ok !== true) return res.json({ ok: false, applicable: true,
+      local: isLocal(req), error: 'agent-unavailable' });
+    // Only these two booleans cross the API; Agent status contains more detail
+    // that the permission setup page has no reason to expose.
+    return res.json({ ok: true, applicable: true, local: isLocal(req),
+      accessibility: result.accessibility === true, screenRecording: result.screenRecording === true });
+  }
+
+  async function openAgentPermissionHandler(req, res) {
+    if (platform !== 'darwin') return res.status(400).json({ ok: false, error: 'macOS only' });
+    if (!isLocal(req)) return res.status(403).json({ ok: false, error: '请在这台 Mac 上打开权限设置。' });
+    const permission = req.body?.permission;
+    const url = Object.prototype.hasOwnProperty.call(AGENT_PERMISSION_URLS, permission)
+      ? AGENT_PERMISSION_URLS[permission] : null;
+    if (!url) return res.status(400).json({ ok: false, error: 'unknown permission' });
+    const result = await new Promise(resolve => {
+      run('/usr/bin/open', [url], { timeout: OPEN_TIMEOUT_MS, encoding: 'utf8' }, error => resolve(error));
+    });
+    if (result) return res.status(500).json({ ok: false, error: result.message });
+    return res.json({ ok: true, status: 'opened' });
+  }
+
   // GET — what the user must add, so the UI can show a copyable path next to
   // the button instead of prose the user has to parse.
   async function targetHandler(req, res) {
@@ -65,9 +107,11 @@ function createMacosPrivacyRoutes({
   function mountRoutes(app) {
     app.get('/api/system/disk-access', targetHandler);
     app.post('/api/system/disk-access/open', openHandler);
+    app.get('/api/system/agent-permissions', agentPermissionsHandler);
+    app.post('/api/system/agent-permissions/open', openAgentPermissionHandler);
   }
 
-  return { mountRoutes, targetHandler, openHandler };
+  return { mountRoutes, targetHandler, openHandler, agentPermissionsHandler, openAgentPermissionHandler };
 }
 
-module.exports = { createMacosPrivacyRoutes, FULL_DISK_ACCESS_URL };
+module.exports = { createMacosPrivacyRoutes, FULL_DISK_ACCESS_URL, AGENT_PERMISSION_URLS };

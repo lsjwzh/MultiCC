@@ -37,6 +37,15 @@
         notice(t(action === 'lid'
           ? (result.enabled ? 'airLidSleepOn' : result.systemSleepDisabled ? 'airGlobalPowerExternal' : 'airLidSleepOff')
           : (result.unlockPassword?.enabled ? 'airGlobalUnlockSaved' : 'airGlobalUnlockOff')));
+        if (action === 'lid' && wanted && result.enabled) {
+          try {
+            const permissions = await api('/api/system/agent-permissions');
+            if (permissions.ok && (!permissions.accessibility || !permissions.screenRecording)) {
+              root.MultiCCAirMore?.close();
+              openSetup('permissions');
+            }
+          } catch (_) { /* The switch succeeded; a permission check may be retried in Global Settings. */ }
+        }
       } catch (error) {
         notice(t('airGlobalPowerFailed', { message: error.message }));
         if (error.code === 'unlock_setup_required' || error.code === 'unlock_authorization_required') { root.MultiCCAirMore?.close(); openSetup(action); }
