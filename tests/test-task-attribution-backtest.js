@@ -42,9 +42,12 @@ test('prompt tells the parser to read the task progress and status before naming
     recentTasks: recentTaskContext(history), currentTaskId: 'tsk-login',
   });
   assert.match(system, /先读进度与状态/);
+  // ① 的读数优先来自助手自报的步骤进度（turn-plan 层要求每轮报 N/M done），
+  // 没有才回退逐条找落点——两条路都必须在提示词里。
+  assert.match(system, /自报进度[\s\S]*?不要自己另编一份/);
   assert.match(system, /已经落地 \/ 做了一半 \/ 只说了要做 \/ 完全没做/);
-  assert.match(system, /只有每条要求都有可验证的结果/);
-  assert.match(system, /都不算 done/);
+  assert.match(system, /所有步骤都标完成、且没有未决步骤或遗留下一步，才填 done/);
+  assert.match(system, /不算 done/);
   // Naming rule: verifiable verb + object, and a continuation keeps its name.
   assert.match(system, /不写过程或手段/);
   assert.match(system, /不要换个说法/);
@@ -93,6 +96,18 @@ test('parser passes the model goalState through and drops unknown values', () =>
   // 提示词契约必须真的把 goalState 要出来（模型不知道要答它，判定就永远走回退）。
   assert.match(buildTaskAttributionSystemPrompt({}), /随后独立判断 goalState（achieved\|interact\|null）/);
   assert.match(buildTaskAttributionSystemPrompt({}), /"goalState":"achieved\|interact\|null"/);
+});
+
+test('phase reads the assistant self-reported step progress before inferring its own', () => {
+  // chat 轮次都带 turn-plan 层（host-prompts buildPlanProgressPrompt）：助手每轮被
+  // 要求列 2-6 步计划并报「N/M done」。归因 phase 必须优先采信这份自报进度，
+  // 只有记录里没有时才回退自己逐条找落点——否则就是第二份口径。
+  const prompt = buildTaskAttributionSystemPrompt({});
+  assert.match(prompt, /自报进度/);
+  assert.match(prompt, /不要自己另编一份/);
+  assert.match(prompt, /"N\/M done"/);
+  assert.match(prompt, /所有步骤都标完成、且没有未决步骤或遗留下一步，才填 done/);
+  assert.match(prompt, /还有未勾项而口头说"已完成"[\s\S]*?不算 done/);
 });
 
 test('new related tasks keep a distinct identity and accept only a recent related task id', () => {
