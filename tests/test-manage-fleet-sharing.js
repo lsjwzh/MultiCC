@@ -45,8 +45,11 @@ test('workspace sharing UI keeps passwords write-only and uses the bounded API s
 test('workspace share and import dialogs expose complete close controls', () => {
   const source = read('public/manage-fleet-sharing.js');
   const styles = read('public/manage-fleet-sharing.css');
-  assert.match(source, /class="fs-modal-close"[^>]+onclick="closeFleetShareModal\(\)"[^>]+aria-label="关闭分享工作区弹窗"/);
-  assert.match(source, /class="fs-modal-close"[^>]+onclick="closeImportFleetModal\(\)"[^>]+aria-label="关闭导入工作区弹窗"/);
+  // 这两条 aria-label 现在走 tr()，值成了模板字面量：`aria-label="${tr('key', '关闭…')}"`。
+  // 断言从「属性值恰好是那串中文」放宽成「属性值里带着那句中文」，屏读标签这条不变量
+  // 没变 —— 真有谁把 aria-label 整个删掉，这里照样红。
+  assert.match(source, /class="fs-modal-close"[^>]+onclick="closeFleetShareModal\(\)"[^>]+aria-label="[^"]*关闭分享工作区弹窗[^"]*"/);
+  assert.match(source, /class="fs-modal-close"[^>]+onclick="closeImportFleetModal\(\)"[^>]+aria-label="[^"]*关闭导入工作区弹窗[^"]*"/);
   assert.match(source, /event\.target===this\)closeFleetShareModal\(\)/);
   assert.match(source, /event\.target===this\)closeImportFleetModal\(\)/);
   assert.match(source, /event\.key !== 'Escape'/);

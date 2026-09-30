@@ -36,7 +36,7 @@ async function openMemo() {
 
   if (!dirId) {
     const statusEl = document.getElementById('memo-status');
-    if (statusEl) statusEl.textContent = '无法确定工作区 ID，会话可能没有归属工作区';
+    if (statusEl) statusEl.textContent = t('termMemoNoDir');
     mm.style.display = 'flex';
     return;
   }
@@ -61,21 +61,21 @@ async function loadMemo() {
   const statusEl = document.getElementById('memo-status');
   try {
     const r = await fetch(withToken(`/api/directories/${encodeURIComponent(dirId)}/memo`));
-    if (!r.ok) { if (statusEl) statusEl.textContent = '加载失败：HTTP ' + r.status; return; }
+    if (!r.ok) { if (statusEl) statusEl.textContent = t('termLoadFailed', { msg: 'HTTP ' + r.status }); return; }
     const data = await r.json();
     const ta = document.getElementById('memo-text');
     if (ta) ta.value = data.text || '';
     const subEl = document.getElementById('memo-subtitle');
-    if (subEl) subEl.textContent = data.path || (data.exists ? '' : '· 文件尚未创建（保存即创建）');
+    if (subEl) subEl.textContent = data.path || (data.exists ? '' : t('termMemoNotCreated'));
     try {
       const dirs = await (await fetch(withToken('/api/directories'))).json();
       const d = (dirs || []).find(x => x.id === dirId);
       if (d) {
         const titleEl = document.getElementById('memo-title');
-        if (titleEl) titleEl.textContent = `📝 ${d.name} · 备忘`;
+        if (titleEl) titleEl.textContent = t('termMemoTitleNamed', { name: d.name });
       }
     } catch (_) {}
-  } catch (e) { if (statusEl) statusEl.textContent = '加载失败：' + e.message; }
+  } catch (e) { if (statusEl) statusEl.textContent = t('termLoadFailed', { msg: e.message }); }
 }
 
 async function saveMemo() {
@@ -84,15 +84,15 @@ async function saveMemo() {
   const text = document.getElementById('memo-text')?.value;
   if (text === undefined) return;
   const statusEl = document.getElementById('memo-status');
-  if (statusEl) statusEl.textContent = '保存中…';
+  if (statusEl) statusEl.textContent = t('termSaving');
   try {
     const r = await fetch(withToken(`/api/directories/${encodeURIComponent(dirId)}/memo`), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     });
-    if (!r.ok) { const e = await r.json().catch(() => ({})); if (statusEl) statusEl.textContent = '保存失败：' + (e.error || r.status); return; }
-    if (statusEl) statusEl.textContent = '已保存 · ' + new Date().toLocaleTimeString();
-  } catch (e) { if (statusEl) statusEl.textContent = '保存失败：' + e.message; }
+    if (!r.ok) { const e = await r.json().catch(() => ({})); if (statusEl) statusEl.textContent = t('termSaveFailed', { msg: e.error || r.status }); return; }
+    if (statusEl) statusEl.textContent = t('termSavedAt', { time: new Date().toLocaleTimeString(getLocale()) });
+  } catch (e) { if (statusEl) statusEl.textContent = t('termSaveFailed', { msg: e.message }); }
 }
 
 function memoCurrentLineText() {
@@ -118,7 +118,7 @@ async function memoOpenPicker() {
   const text = memoCurrentLineText();
   if (!text) {
     const statusEl = document.getElementById('memo-status');
-    if (statusEl) statusEl.textContent = '当前行为空，无法发送';
+    if (statusEl) statusEl.textContent = t('termMemoEmptyLine');
     return;
   }
   try {
@@ -127,7 +127,7 @@ async function memoOpenPicker() {
       .filter(s => s.dirId === dirId && s.kind === 'chat' && s.type !== 'aux' && s.type !== 'gateway');
     if (!sessions.length) {
       const statusEl = document.getElementById('memo-status');
-      if (statusEl) statusEl.textContent = '该工作区还没有 chat 会话，请先新建一个';
+      if (statusEl) statusEl.textContent = t('termMemoNoSessions');
       return;
     }
     const preview = document.getElementById('memo-picker-preview');
@@ -148,7 +148,7 @@ async function memoOpenPicker() {
     if (picker) picker.style.display = 'flex';
   } catch (e) {
     const statusEl = document.getElementById('memo-status');
-    if (statusEl) statusEl.textContent = '加载会话列表失败：' + e.message;
+    if (statusEl) statusEl.textContent = t('termLoadSessionsFailed', { msg: e.message });
   }
 }
 
@@ -163,15 +163,15 @@ async function memoConfirmSend(sessionId) {
   const text = memoCurrentLineText();
   if (!text || !dirId) return;
   const statusEl = document.getElementById('memo-status');
-  if (statusEl) statusEl.textContent = `发送到 ${sessionId}…`;
+  if (statusEl) statusEl.textContent = t('termSendingTo', { id: sessionId });
   try {
     const r = await fetch(withToken(`/api/directories/${encodeURIComponent(dirId)}/memo/send`), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, sessionId }),
     });
-    if (!r.ok) { const e = await r.json().catch(() => ({})); if (statusEl) statusEl.textContent = '发送失败：' + (e.error || r.status); return; }
-    if (statusEl) statusEl.textContent = '已发送到 ' + sessionId + ' · ' + new Date().toLocaleTimeString();
-  } catch (e) { if (statusEl) statusEl.textContent = '发送失败：' + e.message; }
+    if (!r.ok) { const e = await r.json().catch(() => ({})); if (statusEl) statusEl.textContent = t('termSendFailed', { msg: e.error || r.status }); return; }
+    if (statusEl) statusEl.textContent = t('termSentTo', { id: sessionId, time: new Date().toLocaleTimeString(getLocale()) });
+  } catch (e) { if (statusEl) statusEl.textContent = t('termSendFailed', { msg: e.message }); }
 }
 
 // Bind memo popup events
@@ -338,12 +338,12 @@ function updateNotifyBtn() {
     notifyBtn.style.background = '#1f6feb';
     notifyBtn.style.borderColor = '#58a6ff';
     notifyBtn.style.color = '#fff';
-    notifyBtn.title = pushOn ? '任务提醒 (系统通知已开启)' : '任务提醒 (点击开启系统通知)';
+    notifyBtn.title = pushOn ? t('termNotifyOnPush') : t('termNotifyOn');
   } else {
     notifyBtn.style.background = '#21262d';
     notifyBtn.style.borderColor = '#30363d';
     notifyBtn.style.color = '#c9d1d9';
-    notifyBtn.title = '任务提醒 (已关闭)';
+    notifyBtn.title = t('termNotifyOff');
   }
 }
 updateNotifyBtn();
@@ -445,7 +445,7 @@ function speakNotify(text, type) {
     showLocalTaskNotification({
       sessionId: sid,
       type: isWaiting ? 'waiting' : 'succeeded',
-      title: isWaiting ? `MultiCC #${sid}: 等待操作` : `MultiCC #${sid}: 执行成功`,
+      title: isWaiting ? t('termNotifyWaitingTitle', { sid }) : t('termNotifySucceededTitle', { sid }),
       body: text,
       url: location.pathname + location.search,
     });
@@ -453,7 +453,7 @@ function speakNotify(text, type) {
 
   if (window.speechSynthesis) {
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'zh-CN';
+    utterance.lang = getLocale();
     utterance.rate = 1.1;
     utterance.volume = 0.8;
     window.speechSynthesis.speak(utterance);
@@ -478,7 +478,7 @@ function scheduleReconnect() {
   if (_sessionExited || _reconnectTimer) return;
   const delay = Math.min(1000 * Math.pow(2, _reconnectAttempt), 30000);
   _reconnectAttempt++;
-  setStatus('connecting', `${Math.ceil(delay / 1000)}s 后重连…`);
+  setStatus('connecting', t('termReconnectingIn', { s: Math.ceil(delay / 1000) }));
   _reconnectTimer = setTimeout(() => {
     _reconnectTimer = null;
     connect();
@@ -500,7 +500,7 @@ async function connect() {
   const gen = ++_wsGen;
   _sessionExited = false;
 
-  setStatus('connecting', 'Connecting…');
+  setStatus('connecting', t('connecting'));
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const cwdParam = _initialCwd ? `&cwd=${encodeURIComponent(_initialCwd)}` : '';
@@ -533,7 +533,7 @@ async function connect() {
       mask.id = '__redraw-mask';
       mask.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;' +
         'background:#0d1117;color:#8b949e;font-size:14px;z-index:100;';
-      mask.textContent = '正在恢复会话…';
+      mask.textContent = t('termRestoringSession');
       _termWrap.parentElement.style.position = 'relative';
       _termWrap.parentElement.appendChild(mask);
     }
@@ -559,7 +559,7 @@ async function connect() {
   }
 
   ws.onopen = () => {
-    setStatus('connected', 'Connected');
+    setStatus('connected', t('connected'));
     // Clear stale content before resize — the TUI redraw will repaint correctly
     term.clear();
     startRedrawBlank();
@@ -630,21 +630,21 @@ async function connect() {
         const waiting = msg.state === 'waiting';
         const completionVoice = !waiting && typeof msg.voiceMessage === 'string'
           ? msg.voiceMessage.trim() : '';
-        speakNotify(waiting ? '正在等待您的操作' : (completionVoice || '本轮执行成功'), waiting ? 'action' : 'succeeded');
+        speakNotify(waiting ? t('termVoiceWaiting') : (completionVoice || t('termVoiceSucceeded')), waiting ? 'action' : 'succeeded');
       } else if (msg.type === 'exit') {
         term.write(msg.data);
         _sessionExited = true;
-        setStatus('disconnected', 'Session ended');
+        setStatus('disconnected', t('termStatusSessionEnded'));
       } else if (msg.type === 'restart') {
         term.clear();
-        term.write(`\x1b[33m[正在重启 Claude 命令…]\x1b[0m\r\n`);
+        term.write(`\x1b[33m${t('termTermRestarting')}\x1b[0m\r\n`);
         _wsGen++;          // invalidate onclose so it won't auto-reconnect
         _reconnectAttempt = 0;
         ws.close();
         setTimeout(() => connect(), 300);  // new session already ready on server
       } else if (msg.type === 'relocate') {
         term.clear();
-        term.write(`\x1b[33m[正在切换到: ${msg.cwd}]\x1b[0m\r\n`);
+        term.write(`\x1b[33m${t('termTermRelocating', { cwd: msg.cwd })}\x1b[0m\r\n`);
         filesBrowsePath = null; // reset so panel loads new cwd on next open/refresh
         _wsGen++;  // invalidate current onclose handler to prevent auto-reconnect
         ws.close();
@@ -663,9 +663,9 @@ async function connect() {
   ws.onclose = () => {
     if (gen !== _wsGen) return;    // stale — connect() or relocate already called
     if (_sessionExited) {
-      setStatus('disconnected', 'Session ended');
+      setStatus('disconnected', t('termStatusSessionEnded'));
     } else {
-      setStatus('disconnected', 'Disconnected');
+      setStatus('disconnected', t('disconnected'));
       scheduleReconnect();
     }
   };
@@ -720,23 +720,23 @@ const mergeBtn = document.getElementById('merge-btn');
 if (mergeBtn) {
   mergeBtn.addEventListener('click', async () => {
     if (!currentSessionId) return;
-    if (!confirm('把此会话 worktree 的改动合并回基分支？\n未提交的改动会先自动提交。')) return;
+    if (!confirm(t('mergeWorktreeConfirm'))) return;
     mergeBtn.disabled = true;
-    term.write('\r\n\x1b[36m[正在合并 worktree...]\x1b[0m\r\n');
+    term.write(`\r\n\x1b[36m${t('termTermMerging')}\x1b[0m\r\n`);
     try {
       const res = await fetch(withToken(`/api/sessions/${currentSessionId}/merge`), { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
         term.write(data.merged
-          ? `\x1b[32m[✓ 已合并 ${data.commits} 个提交回基分支]\x1b[0m\r\n`
-          : `\x1b[32m[✓ ${data.message || '没有新提交需要合并'}]\x1b[0m\r\n`);
+          ? `\x1b[32m${t('termTermMerged', { n: data.commits })}\x1b[0m\r\n`
+          : `\x1b[32m[✓ ${data.message || t('termNoCommitsToMerge')}]\x1b[0m\r\n`);
       } else if (res.status === 409) {
-        term.write(`\x1b[31m[⚠️ 合并冲突，已 abort。冲突文件: ${(data.conflicts || []).join(', ')}]\x1b[0m\r\n`);
+        term.write(`\x1b[31m${t('termTermMergeConflict', { files: (data.conflicts || []).join(', ') })}\x1b[0m\r\n`);
       } else {
-        term.write(`\x1b[31m[合并失败: ${data.error || res.status}]\x1b[0m\r\n`);
+        term.write(`\x1b[31m${t('termTermMergeFailed', { msg: data.error || res.status })}\x1b[0m\r\n`);
       }
     } catch (err) {
-      term.write(`\x1b[31m[合并请求失败: ${err.message}]\x1b[0m\r\n`);
+      term.write(`\x1b[31m${t('termTermMergeRequestFailed', { msg: err.message })}\x1b[0m\r\n`);
     } finally {
       mergeBtn.disabled = false;
     }
@@ -855,9 +855,9 @@ function sendVoiceText(text, raw, refined) {
 
 async function fetchRefined(raw) {
   console.log('[voice-client] fetchRefined called, raw length:', raw.length);
-  vpStatus.textContent = '处理中…';
+  vpStatus.textContent = t('termProcessing');
   vpRefined.value = '';
-  vpRefined.placeholder = 'AI 处理中…';
+  vpRefined.placeholder = t('termAiProcessing');
   _vpRefinedFinal = '';
   const timingInfo = {};
   const vpTimingEl = document.getElementById('vp-timing');
@@ -886,27 +886,27 @@ async function fetchRefined(raw) {
     _vpRefinedFinal = vpRefined.value;
     console.log('[voice-client] Timing info:', timingInfo);
     if (vpRefined.value.trim()) {
-      vpStatus.textContent = '✓ 完成';
+      vpStatus.textContent = t('termDoneCheck');
     } else if (!data.ok) {
-      vpStatus.textContent = `⚠ ${data.text || '失败'}`;
+      vpStatus.textContent = `⚠ ${data.text || t('termFailedShort')}`;
     } else {
-      vpStatus.textContent = '⚠ AI 未返回结果';
+      vpStatus.textContent = `⚠ ${t('termAiNoResult')}`;
     }
-    vpRefined.placeholder = '（AI 处理完毕，可手动编辑）';
+    vpRefined.placeholder = t('termAiEditableDone');
     if (vpTimingEl) {
       const labels = [];
-      if (timingInfo.server_total != null) labels.push(`服务端 ${(timingInfo.server_total / 1000).toFixed(1)}s`);
-      if (timingInfo.frontend_total != null) labels.push(`总耗时 ${(timingInfo.frontend_total / 1000).toFixed(1)}s`);
+      if (timingInfo.server_total != null) labels.push(t('termTimingServer', { s: (timingInfo.server_total / 1000).toFixed(1) }));
+      if (timingInfo.frontend_total != null) labels.push(t('termTimingTotal', { s: (timingInfo.frontend_total / 1000).toFixed(1) }));
       vpTimingEl.textContent = labels.join(' | ');
     }
   } catch (e) {
     console.error('[voice-client] fetchRefined error:', e.name, e.message, e);
     if (e.name === 'AbortError') {
-      vpStatus.textContent = '⚠ 超时';
+      vpStatus.textContent = `⚠ ${t('termTimeoutShort')}`;
     } else {
-      vpStatus.textContent = '⚠ 失败';
+      vpStatus.textContent = `⚠ ${t('termFailedShort')}`;
     }
-    vpRefined.placeholder = '（处理失败，可手动输入）';
+    vpRefined.placeholder = t('termAiEditableFailed');
   } finally {
     clearTimeout(timeoutId);
     console.log('[voice-client] fetchRefined finished. Final status:', vpStatus.textContent);
@@ -916,7 +916,7 @@ async function fetchRefined(raw) {
 function showVoicePanel(rawText) {
   vpRaw.value = rawText;
   vpRefined.value = '';
-  vpRefined.placeholder = '点击「AI 重排」按钮处理';
+  vpRefined.placeholder = t('termClickRefineHint');
   vpStatus.textContent = '';
   _vpRefinedFinal = '';
   voicePanel.classList.add('open');
@@ -957,19 +957,19 @@ window.__multiccRecReady = async () => {
   clearTimeout(_bridgeRecTimeout);
   isRecording = false;
   micBtn.classList.remove('active');
-  micStatus.textContent = '识别中…';
+  micStatus.textContent = t('termRecognizing');
   try {
     const resp = await fetch('http://localhost/__recording');
     const blob = await resp.blob();
     if (blob.size > 0) {
       uploadAudioForSTT(blob);
     } else {
-      micStatus.textContent = '录音为空';
+      micStatus.textContent = t('termRecordingEmpty');
       setTimeout(() => { micStatus.textContent = ''; }, 3000);
     }
   } catch (e) {
     console.error('[voice-bridge] fetch recording error:', e);
-    micStatus.textContent = `获取录音失败: ${e.message}`;
+    micStatus.textContent = t('termGetRecordingFailed', { msg: e.message });
     setTimeout(() => { micStatus.textContent = ''; }, 4000);
   }
 };
@@ -978,7 +978,7 @@ window.__multiccRecError = (msg) => {
   clearTimeout(_bridgeRecTimeout);
   isRecording = false;
   micBtn.classList.remove('active');
-  micStatus.textContent = `录音错误: ${msg}`;
+  micStatus.textContent = t('termRecordingError', { msg });
   console.error('[voice-bridge] error:', msg);
   setTimeout(() => { micStatus.textContent = ''; }, 4000);
 };
@@ -988,7 +988,7 @@ function startRecording() {
     window.MultiCCBridge.startRecording();
     isRecording = true;
     micBtn.classList.add('active');
-    micStatus.textContent = '正在录音…';
+    micStatus.textContent = t('termRecording');
     return;
   }
 
@@ -1022,23 +1022,23 @@ function startRecording() {
     mediaRecorder.start();
     isRecording = true;
     micBtn.classList.add('active');
-    micStatus.textContent = '正在录音…';
+    micStatus.textContent = t('termRecording');
   }).catch(err => {
     console.error('[voice] getUserMedia error:', err);
-    micStatus.textContent = `麦克风错误: ${err.message}`;
+    micStatus.textContent = t('termMicError', { msg: err.message });
     setTimeout(() => { micStatus.textContent = ''; }, 3000);
   });
 }
 
 function stopRecording() {
   if (_hasNativeBridge && isRecording) {
-    micStatus.textContent = '处理中…';
+    micStatus.textContent = t('termProcessing');
     // Timeout: if Java callback never fires, reset state
     _bridgeRecTimeout = setTimeout(() => {
       if (isRecording) {
         isRecording = false;
         micBtn.classList.remove('active');
-        micStatus.textContent = '录音超时，请重试';
+        micStatus.textContent = t('termRecordingTimeout');
         setTimeout(() => { micStatus.textContent = ''; }, 3000);
       }
     }, 15000);
@@ -1046,7 +1046,7 @@ function stopRecording() {
       clearTimeout(_bridgeRecTimeout);
       isRecording = false;
       micBtn.classList.remove('active');
-      micStatus.textContent = `停止失败: ${e.message}`;
+      micStatus.textContent = t('termStopFailed', { msg: e.message });
       setTimeout(() => { micStatus.textContent = ''; }, 3000);
     }
     return;
@@ -1061,7 +1061,7 @@ function stopRecording() {
 
 async function uploadAudioForSTT(blob) {
   micBtn.classList.add('processing');
-  micStatus.textContent = '识别中…';
+  micStatus.textContent = t('termRecognizing');
   try {
     const formData = new FormData();
     formData.append('file', blob, 'recording.webm');
@@ -1072,12 +1072,12 @@ async function uploadAudioForSTT(blob) {
     if (data.text && data.text.trim()) {
       showVoicePanel(data.text.trim());
     } else {
-      micStatus.textContent = '未识别到语音';
+      micStatus.textContent = t('termNoSpeech');
       setTimeout(() => { micStatus.textContent = ''; }, 3000);
     }
   } catch (err) {
     console.error('[voice] STT upload error:', err);
-    micStatus.textContent = `识别失败: ${err.message}`;
+    micStatus.textContent = t('termRecognitionFailed', { msg: err.message });
     setTimeout(() => { micStatus.textContent = ''; }, 4000);
   } finally {
     micBtn.classList.remove('processing');
@@ -1148,7 +1148,7 @@ function _hudRenderRaw() {
       vhRawText.appendChild(s);
     }
   } else {
-    vhRawText.innerHTML = '<span class="vh-partial">聆听中…</span>';
+    vhRawText.innerHTML = `<span class="vh-partial">${escapeHtml(t('termListening'))}</span>`;
   }
 }
 
@@ -1219,7 +1219,7 @@ async function startStreamingVoice() {
 
   _hudReset();
   vhHud.classList.add('open');
-  _hudSetStatus('聆听中');
+  _hudSetStatus(t('termListening'));
   micBtn.classList.add('active');
   _streamingActive = true;
   isRecording = true;
@@ -1248,8 +1248,8 @@ async function startStreamingVoice() {
       _streamingActive = false;
       isRecording = false;
       micBtn.classList.remove('active');
-      if (text) _hudSetStatus('识别完成，AI 处理中…', 'done');
-      else      _hudSetStatus('未识别到语音', 'done');
+      if (text) _hudSetStatus(t('termRecognizedRefining'), 'done');
+      else      _hudSetStatus(t('termNoSpeech'), 'done');
     },
     onError: (msg) => {
       _hudSetStatus('⚠ ' + msg, 'done');
@@ -1259,7 +1259,7 @@ async function startStreamingVoice() {
     },
   });
   _voiceStream.start().catch(err => {
-    _hudSetStatus('⚠ ' + (err.message || '启动失败'), 'done');
+    _hudSetStatus('⚠ ' + (err.message || t('termStartFailed')), 'done');
     _streamingActive = false;
     isRecording = false;
     micBtn.classList.remove('active');
@@ -1269,7 +1269,7 @@ async function startStreamingVoice() {
 // Stop listening but keep the HUD visible so a late refine can still complete
 // before the user hits 发送.
 function stopStreamingVoice() {
-  _hudSetStatus('识别中…');
+  _hudSetStatus(t('termRecognizing'));
   micBtn.classList.remove('active');
   if (_voiceStream) { try { _voiceStream.stop(); } catch (_) {} }
   _streamingActive = false;
@@ -1284,7 +1284,7 @@ async function commitStreamingVoice() {
   _streamingActive = false;
   isRecording = false;
   micBtn.classList.remove('active');
-  _hudSetStatus('识别中…');
+  _hudSetStatus(t('termRecognizing'));
 
   // Wait up to 800ms for the last VAD-closed segment to land after stop() —
   // SenseVoice needs ~100-200ms to decode the trailing chunk when the user
@@ -1347,8 +1347,9 @@ console.log('[voice] canStream=%s canLegacyRecord=%s hasNativeBridge=%s',
 
 if (!_canLegacyRecord && !_canStream) {
   micBtn.disabled = true;
-  micBtn.title = '此浏览器不支持录音（需要 HTTPS 或 localhost）';
+  micBtn.title = t('termRecordUnsupported');
 } else {
+  micBtn.title = t('termVoiceInput');
   micBtn.onclick = () => {
     // Real-time streaming when a provider is configured; otherwise legacy upload.
     const useStream = _canStream && streamingAvailable();
@@ -1386,7 +1387,7 @@ function onFileSaved({ tempId, path: filePath, name }) {
   if (chip) {
     chip.dataset.path = filePath;
     chip.classList.remove('pending');
-    chip.title = `点击插入路径：${filePath}`;
+    chip.title = t('termClickInsertPath', { path: filePath });
     pendingChips.delete(tempId);
   }
   // On mobile, also insert path into the input field so it's visible and ready to send
@@ -1402,7 +1403,7 @@ function onFileSaved({ tempId, path: filePath, name }) {
 function createChip(name, thumbUrl, filePath) {
   const chip = document.createElement('div');
   chip.className = 'attach-chip';
-  if (filePath) { chip.dataset.path = filePath; chip.title = `点击插入路径：${filePath}`; }
+  if (filePath) { chip.dataset.path = filePath; chip.title = t('termClickInsertPath', { path: filePath }); }
 
   if (thumbUrl) {
     const img = document.createElement('img');
@@ -1422,7 +1423,7 @@ function createChip(name, thumbUrl, filePath) {
   const rm = document.createElement('span');
   rm.className   = 'chip-remove';
   rm.textContent = '×';
-  rm.title       = '移除';
+  rm.title       = t('termRemove');
   rm.onclick = (e) => { e.stopPropagation(); chip.remove(); };
 
   chip.append(span, rm);
@@ -1515,17 +1516,17 @@ const relocateError    = document.getElementById('relocate-error');
 async function openRelocateDialog() {
   if (!currentSessionId) return;
   relocateError.style.display = 'none';
-  relocateCurrent.textContent = '获取中…';
+  relocateCurrent.textContent = t('termFetching');
   relocateInput.value = '';
   relocateModal.style.display = 'flex';
   try {
     const res = await fetch(withToken(`/api/sessions/${currentSessionId}`));
     const s = await res.json();
     const cwd = s.cwd || '';
-    relocateCurrent.textContent = cwd || '(未知)';
+    relocateCurrent.textContent = cwd || t('termUnknown');
     relocateInput.value = cwd;
   } catch (_) {
-    relocateCurrent.textContent = '(获取失败)';
+    relocateCurrent.textContent = t('termFetchFailedShort');
   }
   relocateInput.focus();
   relocateInput.select();
@@ -1549,12 +1550,12 @@ relocateInput.addEventListener('keydown', (e) => {
 relocateConfirm.addEventListener('click', async () => {
   const newCwd = relocateInput.value.trim();
   if (!newCwd) {
-    relocateError.textContent = '请输入工作区路径';
+    relocateError.textContent = t('termEnterWorkspacePath');
     relocateError.style.display = 'block';
     return;
   }
   relocateConfirm.disabled = true;
-  relocateConfirm.textContent = '切换中…';
+  relocateConfirm.textContent = t('termSwitching');
   relocateError.style.display = 'none';
   try {
     const res = await fetch(withToken(`/api/sessions/${currentSessionId}/relocate`), {
@@ -1563,7 +1564,7 @@ relocateConfirm.addEventListener('click', async () => {
       body: JSON.stringify({ cwd: newCwd }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || '切换失败');
+    if (!res.ok) throw new Error(data.error || t('termSwitchFailed'));
     relocateModal.style.display = 'none';
     // Server sends a 'relocate' WS message which triggers clear + reconnect
   } catch (e) {
@@ -1571,7 +1572,7 @@ relocateConfirm.addEventListener('click', async () => {
     relocateError.style.display = 'block';
   } finally {
     relocateConfirm.disabled = false;
-    relocateConfirm.textContent = '切换工作区';
+    relocateConfirm.textContent = t('termSwitchWorkspace');
   }
 });
 
@@ -1613,7 +1614,7 @@ function formatSize(bytes) {
 
 async function loadFiles(dirPath) {
   filesError.style.display = 'none';
-  filesList.innerHTML = '<div style="padding:16px 12px; font-size:12px; color:#6e7681;">加载中…</div>';
+  filesList.innerHTML = `<div style="padding:16px 12px; font-size:12px; color:#6e7681;">${escapeHtml(t('loading'))}</div>`;
 
   const params = new URLSearchParams();
   if (dirPath) {
@@ -1625,7 +1626,7 @@ async function loadFiles(dirPath) {
   try {
     const res  = await fetch(withToken(`/api/files?${params}`));
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || '加载失败');
+    if (!res.ok) throw new Error(data.error || t('termLoadFailedShort'));
 
     filesBrowsePath = data.path;
     filesPanelPath.textContent = data.path;
@@ -1648,7 +1649,7 @@ function renderFiles({ path: dir, parent, files }) {
   }
 
   if (files.length === 0) {
-    filesList.innerHTML += '<div style="padding:16px 12px; font-size:12px; color:#6e7681;">工作区为空</div>';
+    filesList.innerHTML += `<div style="padding:16px 12px; font-size:12px; color:#6e7681;">${escapeHtml(t('termWorkspaceEmpty'))}</div>`;
     return;
   }
 
@@ -1683,7 +1684,7 @@ function makeFileItem(name, isDir, fullPath, size, onDirClick) {
 
     const downloadBtn = document.createElement('a');
     downloadBtn.className = 'fi-action-btn';
-    downloadBtn.title = '下载';
+    downloadBtn.title = t('termDownload');
     downloadBtn.textContent = '↓';
     downloadBtn.href = withToken(`/api/download?path=${encodeURIComponent(fullPath)}`);
     downloadBtn.download = name;
@@ -1693,7 +1694,7 @@ function makeFileItem(name, isDir, fullPath, size, onDirClick) {
     if (INLINE_EXTS.has(fileExt(name))) {
       const viewBtn = document.createElement('a');
       viewBtn.className = 'fi-action-btn';
-      viewBtn.title = '在浏览器中打开';
+      viewBtn.title = t('termOpenInBrowser');
       viewBtn.textContent = '👁';
       viewBtn.href = withToken(`/api/download?path=${encodeURIComponent(fullPath)}&inline=1`);
       viewBtn.target = '_blank';
@@ -1780,7 +1781,7 @@ const MAX_UPLOAD_SIZE = 25 * 1024 * 1024; // 25 MB
 
 function uploadFile(file) {
   if (file.size > MAX_UPLOAD_SIZE) {
-    alert(`文件过大：${(file.size / 1024 / 1024).toFixed(1)} MB，上限 25 MB`);
+    alert(t('termFileTooLarge', { size: (file.size / 1024 / 1024).toFixed(1) }));
     return;
   }
   const reader = new FileReader();
@@ -1814,7 +1815,7 @@ let _initAllDirs     = []; // full directory list for filtering
 let _initParent      = ''; // parent path for ".." entry
 
 function showInitCwdPicker() {
-  setStatus('disconnected', '请选择工作区');
+  setStatus('disconnected', t('termPickWorkspace'));
   if (!initCwdModal) { console.error('[multicc] init-cwd-modal not found'); connect(); return; }
   // Show modal FIRST, before anything that might throw
   initCwdModal.style.display = 'flex';
@@ -1831,7 +1832,7 @@ async function loadInitDirs(dirPath, updateInput = true) {
   try {
     const res = await fetch(withToken(`/api/files?path=${encodeURIComponent(dirPath)}`));
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || '加载失败');
+    if (!res.ok) throw new Error(data.error || t('termLoadFailedShort'));
     _initBrowsePath = data.path;
     _initParent = data.parent || '';
     _initAllDirs = data.files.filter(f => f.isDir);
@@ -1856,7 +1857,7 @@ function renderInitDirs(dirs) {
       <span style="font-size:12px;color:#79c0ff;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.name}</span>
     </div>`;
   }
-  if (!dirs.length && !_initParent) html = '<div style="padding:12px;font-size:12px;color:#8b949e;">无匹配工作区</div>';
+  if (!dirs.length && !_initParent) html = `<div style="padding:12px;font-size:12px;color:#8b949e;">${escapeHtml(t('termNoMatchingWorkspace'))}</div>`;
   initCwdBrowser.innerHTML = html;
   initCwdBrowser.querySelectorAll('.file-item').forEach(el => {
     el.addEventListener('click', () => loadInitDirs(el.dataset.path));

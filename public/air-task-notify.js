@@ -51,6 +51,9 @@
     floatOpen: { zh: '打开', en: 'Open' },
     floatClose: { zh: '✕', en: '✕' },
     floatMore: { zh: '另 {n} 个任务已完成', en: '{n} more done' },
+    // 语音播报那一句：比弹窗标题多一个任务名，所以另开两条而不是复用 completed/errored。
+    spokenCompleted: { zh: '任务「{title}」已完成', en: 'Task "{title}" done' },
+    spokenErrored: { zh: '任务「{title}」出错了', en: 'Task "{title}" failed' },
   };
 
   function storage() {
@@ -98,16 +101,20 @@
     const doc = opts.document || win.document;
     const getCurrentTaskId = typeof opts.getCurrentTaskId === 'function' ? opts.getCurrentTaskId : () => null;
     const openTask = typeof opts.openTask === 'function' ? opts.openTask : null;
+    // 语言只有一处判定：public/i18n.js 的 getLang()（显式选择 ＞ 系统语言 ＞ 英文）。
+    // 就地这份只在窗口里没有 i18n.js（老缓存页面）时兜底，规则必须和它一致 ——
+    // 兜底成中文会让英文系统上的任务提醒 bubble 说中文。语音合成也读它。
+    function uiLang() {
+      try {
+        if (typeof win.getLang === 'function') return win.getLang();
+        const stored = win.localStorage?.getItem('multicc_lang');
+        return stored === 'en' || stored === 'zh' ? stored
+          : (/^zh/i.test(win.navigator?.language || '') ? 'zh' : 'en');
+      } catch (_) { return 'en'; }
+    }
     const translate = typeof opts.translate === 'function' ? opts.translate : (key, vars) => {
       const table = STRINGS[key] || {};
-      // Follow the page's own language toggle (multicc_lang) first, then the
-      // browser locale — the same rule the rest of the Air UI uses.
-      let lang = 'zh';
-      try {
-        const stored = win.localStorage?.getItem('multicc_lang');
-        lang = /^en$/i.test(stored || '') ? 'en' : /^zh/i.test(stored || '') ? 'zh' : lang;
-      } catch (_) {}
-      if (!/^zh/i.test(lang)) lang = /zh/i.test(win.navigator?.language || '') ? 'zh' : 'en';
+      const lang = uiLang();
       let text = table[lang] || table.zh || key;
       if (vars) for (const name of Object.keys(vars)) text = text.replace(`{${name}}`, vars[name]);
       return text;
@@ -232,7 +239,8 @@
     function speak(text) {
       if (win.speechSynthesis && typeof win.SpeechSynthesisUtterance === 'function') {
         const utterance = new win.SpeechSynthesisUtterance(text);
-        utterance.lang = 'zh-CN';
+        // 念的是哪国话就得报哪国 lang，否则英文内容会被中文语音库按拼音读出来。
+        utterance.lang = uiLang() === 'zh' ? 'zh-CN' : 'en-US';
         utterance.rate = 1.1;
         utterance.volume = 0.75;
         win.speechSynthesis.speak(utterance);
@@ -254,8 +262,10 @@
       lastVoiceAt = now;
       playDing();
       const title = String(task?.title || '').slice(0, 40);
-      const outcome = kind === 'error' ? '出错了' : '已完成';
-      const text = title ? `任务「${title}」${outcome}` : `任务${outcome}`;
+      // 有任务名就带上（spoken*），没有就退回和浮动条同款的一句话标题（floatTitle*）。
+      const text = kind === 'error'
+        ? (title ? translate('spokenErrored', { title }) : translate('floatTitleError'))
+        : (title ? translate('spokenCompleted', { title }) : translate('floatTitle'));
       if (voiceTimer) cancelSchedule(voiceTimer);
       voiceTimer = schedule(() => speak(text), SPEAK_DELAY_MS);
     }

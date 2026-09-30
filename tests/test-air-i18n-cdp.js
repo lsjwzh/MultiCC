@@ -178,15 +178,30 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
   routes['/api/aux/status'] = () => json({});
   routes['/api/aux/history'] = () => json({ runs: [] });
 
-  await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-air-i18n-qa') }, async page => {
+  // 浏览器的 locale 必须钉死：这套断言验的是「非中文系统默认英文」，而宿主往往是
+  // 中文（这台开发机就是），不钉的话 navigator.language 是 zh-CN，用例会在自己机器上变红。
+  await withCdpHarness({ routes, locale: 'en-US', screenshotDir: path.join(os.tmpdir(), 'multicc-air-i18n-qa') }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     const booted = () => page.waitFor('document.getElementById("task-title").textContent === "Round the billing totals correctly"');
     await page.navigate('/air?dir=d1&task=tsk_here');
     assert.ok(await booted(), 'Air must boot in the fixture');
 
-    // ── 默认仍然是中文：老用户打开 Air 不会被换掉语言 ──────────────────────
+    // ── 默认跟随系统语言。这台无头浏览器不是中文环境（下一行断言先钉住这个前提），
+    //     所以「全新安装、什么都没选」打开 Air 应该直接是英文界面 —— 这正是国际
+    //     目录站（AppImageHub）收录时要求的那一条：非中文环境默认英文。 ──────────
+    const systemLanguage = await page.evaluate('navigator.language');
+    assert.ok(!/^zh/i.test(systemLanguage), `the harness browser must not be a Chinese locale, got ${systemLanguage}`);
     assert.equal(await page.evaluate('localStorage.getItem("multicc_lang")'), null, 'a fresh install stores no language');
-    assert.equal(await page.evaluate('document.documentElement.lang'), 'zh', 'the shell boots in Chinese');
+    assert.equal(await page.evaluate('document.documentElement.lang'), 'en',
+      'a non-Chinese system boots the shell in English without anyone choosing');
+    assert.equal(await page.evaluate('document.getElementById("air-lang-btn").textContent'), 'EN/中');
+
+    // ── 中文环境（或用户自己选过中文）时仍然是中文；扫描器也必须真的找得到中文，
+    //     否则「英文页里没有中文」这条断言可以靠整页空白骗过去。 ────────────────
+    await page.evaluate(`localStorage.setItem('multicc_lang', 'zh')`);
+    await page.navigate('/air?dir=d1&task=tsk_here');
+    assert.ok(await booted(), 'Air must boot in the fixture');
+    assert.equal(await page.evaluate('document.documentElement.lang'), 'zh', 'an explicit choice boots the shell in Chinese');
     assert.equal(await page.evaluate('document.getElementById("task-list-title").textContent'), '最近任务');
     assert.equal(await page.evaluate('document.getElementById("air-lang-btn").textContent'), '中/EN');
     const zhDirty = await page.evaluate(SCAN);
@@ -452,6 +467,8 @@ test('the embedded chat document is English too, including the composer band Air
   routes['/api/version-check'] = () => json({ current: '2.40.0', channel: 'dev', latestVersion: '2.40.0', updateAvailable: false });
   routes['/api/server-info'] = () => json({ url: 'http://192.168.1.9:3000', uptimeMs: 3600_000 });
 
+  // 浏览器的 locale 必须钉死：这套断言验的是「非中文系统默认英文」，而宿主往往是
+  // 中文（这台开发机就是），不钉的话 navigator.language 是 zh-CN，用例会在自己机器上变红。
   await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-air-i18n-qa') }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     const FRAME = 'document.getElementById("conversation").contentDocument';

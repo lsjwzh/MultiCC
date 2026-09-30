@@ -1354,9 +1354,10 @@ test('task rows expose quick archive immediately after the classify action', () 
     /\$\{assignment \? `<button class="tb-reclassify"[\s\S]*?<\/button>` : ''\}<button class="tb-quick-archive"/);
   for (const source of [manage, meta]) {
     assert.match(source, /\/api\/task-board\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/status/);
-    assert.match(source, /归档该任务？（从任务板隐藏，数据保留）/);
     assert.match(source, /stopPropagation\(\)/);
   }
+  assert.match(manage, /归档该任务？（从任务板隐藏，数据保留）/);
+  assert.match(meta, /t\('metaArchiveConfirm'\)/);
 });
 
 test('board send binds a fresh task-bound session even with multiple active ordinary sessions', async () => {
@@ -1472,7 +1473,7 @@ test('task body UI folds long text and escapes or text-renders untrusted content
   assert.match(meta, /pre\.textContent = t\.body/);
   assert.match(meta, /reconcileSnapshot\(d\)/);
   assert.match(meta, /partitionTaskIdentity\(tasks\)/);
-  assert.match(meta, /历史身份待确认/);
+  assert.match(meta, /t\('metaLegacyIdentity'/);
   assert.doesNotMatch(manage, /innerHTML\s*=\s*t(?:ask)?\.body/);
   assert.doesNotMatch(meta, /innerHTML\s*=\s*t\.body/);
 });

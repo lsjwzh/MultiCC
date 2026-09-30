@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createSandboxConsole } = require('./helpers/sandbox-console');
+const i18nTranslator = require('./helpers/i18n-translator');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -42,6 +43,9 @@ test('setView("provider") auto-calls setProvTab with the active tab', () => {
   const context = {
     console: createSandboxConsole(),
     URLSearchParams,
+    // 页面脚本文案走 t()：沙箱里没有 i18n.js，按既有 helper 给一份只查 zh.json 的替身。
+    t: i18nTranslator.t,
+    getLocale: i18nTranslator.getLocale,
     JSON,
     setTimeout(fn) { const t = setTimeout(fn); timers.push(t); return t; },
     clearTimeout(id) { clearTimeout(id); },
@@ -58,6 +62,9 @@ test('setView("provider") auto-calls setProvTab with the active tab', () => {
       },
       querySelectorAll() { return []; },
       getElementById() { return null; },
+      // 页面自己挂 DOMContentLoaded 回调（翻译面包屑 / optgroup 的 label）：
+      // 真浏览器里有，这个假 document 也得接住，否则整段脚本在加载期就抛。
+      addEventListener() {},
     },
     // setProvTab is defined elsewhere in the HTML — stub it so setView can call it
     setProvTab(name) { lastSetProvTabArg = name; },
@@ -93,6 +100,9 @@ test('setView("overview") returns to tasks without initializing providers', () =
   const context = {
     console: createSandboxConsole(),
     URLSearchParams,
+    // 页面脚本文案走 t()：沙箱里没有 i18n.js，按既有 helper 给一份只查 zh.json 的替身。
+    t: i18nTranslator.t,
+    getLocale: i18nTranslator.getLocale,
     JSON,
     setTimeout() { return 1; },
     clearTimeout() {},
@@ -104,6 +114,9 @@ test('setView("overview") returns to tasks without initializing providers', () =
       querySelector() { return null; },
       querySelectorAll() { return []; },
       getElementById() { return null; },
+      // 页面自己挂 DOMContentLoaded 回调（翻译面包屑 / optgroup 的 label）：
+      // 真浏览器里有，这个假 document 也得接住，否则整段脚本在加载期就抛。
+      addEventListener() {},
     },
     setProvTab() { setProvTabCalled = true; },
     loadMemoryGraph() {},

@@ -27,6 +27,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createSandboxConsole } = require('./helpers/sandbox-console');
+const i18nTranslator = require('./helpers/i18n-translator');
 
 const ROOT = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(ROOT, 'public/manage.html'), 'utf8');
@@ -143,6 +144,10 @@ function sandbox(extra = {}) {
     Promise,
     document: fakeDocument(),
     getSelection: () => null,
+    // manage.html 的提交树区块现在走 t()：沙箱里没有 i18n.js，按既有 helper 给一份
+    // 只查 zh.json 的替身（中文原文就是这些断言看到的字）。
+    t: i18nTranslator.t,
+    getLocale: i18nTranslator.getLocale,
     ...extra,
   };
   context.window = context;

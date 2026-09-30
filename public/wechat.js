@@ -39,7 +39,7 @@ function showLoggedIn(loggedIn) {
     btnQR.style.display = 'none';
     btnLogout.style.display = '';
     qrImg.style.display = 'none';
-    setLoginStatus('已登录微信', 'login-ok');
+    setLoginStatus(t('manageBridgesWechatLoggedIn'), 'login-ok');
   } else {
     btnQR.style.display = '';
     btnLogout.style.display = 'none';
@@ -56,7 +56,7 @@ function showStatus(text, isError) {
 
 /* ── QR Login ── */
 async function getQRCode() {
-  setLoginStatus('获取二维码中...', 'login-wait');
+  setLoginStatus(t('manageBridgesQrFetching'), 'login-wait');
   try {
     const res = await fetch('/api/wechat/qrcode');
     const data = await res.json();
@@ -67,13 +67,13 @@ async function getQRCode() {
       qrImg.src = data.image.startsWith('data:') ? data.image : `data:image/png;base64,${data.image}`;
       qrImg.style.display = 'block';
     }
-    setLoginStatus('请用微信扫描二维码', 'login-wait');
+    setLoginStatus(t('manageBridgesQrScanWechat'), 'login-wait');
 
     // Start polling login status
     stopLoginPoll();
     loginPollTimer = setInterval(pollLoginStatus, 2000);
   } catch (e) {
-    setLoginStatus(`获取失败: ${e.message}`, 'login-err');
+    setLoginStatus(t('manageBridgesQrFailed', { message: e.message }), 'login-err');
   }
 }
 
@@ -84,10 +84,10 @@ async function pollLoginStatus() {
     if (data.status === 'confirmed') {
       stopLoginPoll();
       showLoggedIn(true);
-      showStatus('登录成功');
+      showStatus(t('wechatLoginOk'));
     } else if (data.status === 'expired' || data.status === 'error') {
       stopLoginPoll();
-      setLoginStatus(data.error || '二维码已过期，请重新获取', 'login-err');
+      setLoginStatus(data.error || t('wechatQrExpired'), 'login-err');
       document.getElementById('qr-img').style.display = 'none';
     }
   } catch (_) { /* network error, keep trying */ }
@@ -103,9 +103,9 @@ async function logout() {
     showLoggedIn(false);
     setRunning(false);
     disconnectSSE();
-    showStatus('已退出登录');
+    showStatus(t('wechatLoggedOut'));
   } catch (e) {
-    showStatus(`退出失败: ${e.message}`, true);
+    showStatus(t('wechatLogoutFailed', { message: e.message }), true);
   }
 }
 
@@ -126,7 +126,7 @@ async function loadSessions() {
     const sessions = await res.json();
     const sel = document.getElementById('cfg-session');
     const pending = sel.dataset.pending || sel.value;
-    sel.innerHTML = '<option value="">-- 选择会话 --</option>';
+    sel.innerHTML = `<option value="">${t('wechatSelectSession')}</option>`;
     for (const s of sessions) {
       const opt = document.createElement('option');
       opt.value = s.id;
@@ -150,9 +150,9 @@ async function saveConfig() {
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    showStatus('配置已保存');
+    showStatus(t('wechatConfigSaved'));
   } catch (e) {
-    showStatus(`保存失败: ${e.message}`, true);
+    showStatus(t('wechatSaveFailed', { message: e.message }), true);
   }
 }
 
@@ -172,9 +172,9 @@ async function startBridge() {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     setRunning(true);
     connectSSE();
-    showStatus('桥接已启动');
+    showStatus(t('wechatBridgeStarted'));
   } catch (e) {
-    showStatus(`启动失败: ${e.message}`, true);
+    showStatus(t('wechatStartFailed', { message: e.message }), true);
   }
 }
 
@@ -183,9 +183,9 @@ async function stopBridge() {
     await fetch('/api/wechat/stop', { method: 'POST' });
     setRunning(false);
     disconnectSSE();
-    showStatus('桥接已停止');
+    showStatus(t('wechatBridgeStopped'));
   } catch (e) {
-    showStatus(`停止失败: ${e.message}`, true);
+    showStatus(t('wechatStopFailed', { message: e.message }), true);
   }
 }
 
@@ -241,10 +241,10 @@ async function sendMsg() {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      showStatus(data.error || `发送失败: HTTP ${res.status}`, true);
+      showStatus(data.error || t('wechatSendHttpFailed', { status: res.status }), true);
     }
   } catch (e) {
-    showStatus(`发送失败: ${e.message}`, true);
+    showStatus(t('wechatSendFailed', { message: e.message }), true);
   }
 }
 

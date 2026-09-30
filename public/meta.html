@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-i18n-doc-title="metaDocTitle">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -185,32 +185,33 @@
 </head>
 <body>
 <header>
-  <h1>🫡 舰队指挥台</h1>
+  <h1 data-i18n="metaTitle">🫡 舰队指挥台</h1>
   <span class="sub" id="fleet-stat">—</span>
-  <span class="ws-state" id="ws-state">连接中…</span>
+  <span class="ws-state" id="ws-state" data-i18n="metaConnecting">连接中…</span>
+  <button class="btn-sec lang-toggle" type="button" onclick="toggleLang()" data-i18n-title="languageToggle" title="切换语言：中文 / English"></button>
 </header>
 <main>
   <div class="left-col">
     <div class="tb-wrap">
-      <div class="tb-head"><span>📋 任务板</span><span class="tb-count" id="tb-count">加载中…</span><span class="tb-head-actions"><button class="btn-sec" id="tb-merge-mode" onclick="toggleTaskMergeMode(event)" title="手动选择同类任务进行合并" disabled>合并任务</button><button class="btn-sec" id="tb-archive-completed" onclick="archiveCompletedTasks(this)" title="归档全部已完成任务" disabled>🧹 一键清理</button><button class="btn-icon" onclick="fetchTaskBoard()" title="刷新任务板">🔄</button></span></div>
+      <div class="tb-head"><span data-i18n="metaTaskBoardHeading">📋 任务板</span><span class="tb-count" id="tb-count" data-i18n="loading">加载中…</span><span class="tb-head-actions"><button class="btn-sec" id="tb-merge-mode" onclick="toggleTaskMergeMode(event)" data-i18n="metaMergeMode" data-i18n-title="metaMergeModeTitle" title="手动选择同类任务进行合并" disabled>合并任务</button><button class="btn-sec" id="tb-archive-completed" onclick="archiveCompletedTasks(this)" data-i18n="metaCleanup" data-i18n-title="metaArchiveCompletedTitle" title="归档全部已完成任务" disabled>🧹 一键清理</button><button class="btn-icon" onclick="fetchTaskBoard()" data-i18n-title="metaRefreshBoard" title="刷新任务板">🔄</button></span></div>
       <div class="tb-merge-bar" id="tb-merge-bar"></div>
-      <div id="taskboard"><div class="tb-empty">还没有任务。对话结束后由 AI 自动归档到这里。</div></div>
+      <div id="taskboard"><div class="tb-empty" data-i18n="metaBoardEmpty">还没有任务。对话结束后由 AI 自动归档到这里。</div></div>
     </div>
     <section class="fleet" id="fleet"></section>
   </div>
   <section class="task-detail" id="task-detail">
-     <div class="td-placeholder">点击左侧「任务板」中的任务，查看它在各会话中的完整对话轨迹，<br>并可从下方输入框派发后续消息（自动路由会先交给 Agent Commander）。</div>
+     <div class="td-placeholder"><span data-i18n="metaDetailPlaceholder1">点击左侧「任务板」中的任务，查看它在各会话中的完整对话轨迹，</span><br><span data-i18n="metaDetailPlaceholder2">并可从下方输入框派发后续消息（自动路由会先交给 Agent Commander）。</span></div>
   </section>
   <aside>
-    <h2>向会话派活 / 发消息</h2>
-    <div class="sel-info" id="sel-info">未选择会话。点击左侧任一会话。</div>
-    <textarea id="task" placeholder="向选中的会话派一道自包含任务…&#10;例：检查 src/auth.js 的 token 刷新逻辑，报告风险点"></textarea>
+    <h2 data-i18n="metaDispatchSection">向会话派活 / 发消息</h2>
+    <div class="sel-info" id="sel-info" data-i18n="metaNoSessionSelected">未选择会话。点击左侧任一会话。</div>
+    <textarea id="task" data-i18n-placeholder="metaTaskPlaceholder" placeholder="向选中的会话派一道自包含任务…&#10;例：检查 src/auth.js 的 token 刷新逻辑，报告风险点"></textarea>
     <div style="margin-top:8px; display:flex; gap:8px;">
-      <button id="dispatch-btn" disabled>📤 派活 (dispatch)</button>
-      <button class="btn-sec" id="msg-btn" disabled>💬 发消息</button>
+      <button id="dispatch-btn" data-i18n="metaDispatchBtn" disabled>📤 派活 (dispatch)</button>
+      <button class="btn-sec" id="msg-btn" data-i18n="metaMsgBtn" disabled>💬 发消息</button>
       <span class="msg" id="result"></span>
     </div>
-    <div class="events" id="events"><div style="color:#6e7681">实时事件流…</div></div>
+    <div class="events" id="events"><div style="color:#6e7681" data-i18n="metaEventsStream">实时事件流…</div></div>
   </aside>
 </main>
 <script src="error-envelope.js"></script>
@@ -239,8 +240,8 @@ async function connect() {
   try { url = await window.multiccWsUrl(rawUrl); }
   catch (_) { setTimeout(connect, 2000); return; }
   ws = new WebSocket(url);
-  ws.onopen = () => { $('ws-state').textContent = '已连接'; $('ws-state').className = 'ws-state ws-on'; };
-  ws.onclose = () => { $('ws-state').textContent = '断开'; $('ws-state').className = 'ws-state ws-off';
+  ws.onopen = () => { $('ws-state').textContent = t('metaConnected'); $('ws-state').className = 'ws-state ws-on'; };
+  ws.onclose = () => { $('ws-state').textContent = t('metaDisconnected'); $('ws-state').className = 'ws-state ws-off';
                        setTimeout(connect, 2000); };
   ws.onmessage = (e) => {
     const d = JSON.parse(e.data);
@@ -294,7 +295,7 @@ function render() {
   for (const [dirId, dir] of dirMap) {
     const g = document.createElement('div'); g.className = 'dir-group';
     const head = document.createElement('div'); head.className = 'dir-head';
-    head.innerHTML = `<span><span class="dir-label">${esc(dir.label || dirId.slice(0,8))}</span> · ${dir.sessions.size} 舰</span><span>${esc(dirId.slice(0,8))}</span>`;
+    head.innerHTML = `<span><span class="dir-label">${esc(dir.label || dirId.slice(0,8))}</span> · ${dir.sessions.size} ${esc(t('metaShipsUnit'))}</span><span>${esc(dirId.slice(0,8))}</span>`;
     g.appendChild(head);
     const list = document.createElement('div'); list.className = 'sess-list';
     for (const [sid, s] of dir.sessions) {
@@ -312,14 +313,14 @@ function render() {
     g.appendChild(list);
     fleet.appendChild(g);
   }
-  $('fleet-stat').textContent = `${totalDirs} 工作区 · ${totalSess} 会话`;
+  $('fleet-stat').textContent = t('metaFleetStat', { dirs: totalDirs, sessions: totalSess });
 }
 function updateAside() {
   const info = $('sel-info');
-  if (!selected) { info.textContent = '未选择会话。'; $('dispatch-btn').disabled = $('msg-btn').disabled = true; return; }
+  if (!selected) { info.textContent = t('metaNoSessionSelectedShort'); $('dispatch-btn').disabled = $('msg-btn').disabled = true; return; }
   let s = null, dirLabel = null;
   for (const [_, dir] of dirMap) { if (dir.sessions.has(selected)) { s = dir.sessions.get(selected); dirLabel = dir.label; break; } }
-  if (!s) { info.textContent = '会话已不在工作区。'; return; }
+  if (!s) { info.textContent = t('metaSessionGone'); return; }
   info.innerHTML = `→ <span class="sel-name">${esc(s.label || selected)}</span><br>
     <span style="color:#8b949e">id: ${esc(selected)} · ${esc(s.cli||'?')} · ${esc(dirLabel||'?')}</span>`;
   $('dispatch-btn').disabled = $('msg-btn').disabled = false;
@@ -334,17 +335,17 @@ async function postAction(path, body, okMsg) {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.status);
-    $('result').textContent = okMsg || (d.note || '已发送'); $('result').className = 'msg ok';
+    $('result').textContent = okMsg || (d.note || t('metaSent')); $('result').className = 'msg ok';
   } catch (e) { $('result').textContent = e.message; $('result').className = 'msg err'; }
   finally { updateAside(); }
 }
 $('dispatch-btn').onclick = () => {
-  const msg = $('task').value.trim(); if (!msg) { $('result').textContent='请输入任务'; $('result').className='msg err'; return; }
-  postAction('dispatch', { target: selected, message: msg }, '任务已派发，结果将回流到本会话');
+  const msg = $('task').value.trim(); if (!msg) { $('result').textContent=t('metaEnterTask'); $('result').className='msg err'; return; }
+  postAction('dispatch', { target: selected, message: msg }, t('metaDispatched'));
 };
 $('msg-btn').onclick = () => {
   const msg = $('task').value.trim(); if (!msg) return;
-  postAction('notes', { toSessionId: selected, body: msg }, '留言已送达');
+  postAction('notes', { toSessionId: selected, body: msg }, t('metaNoteSent'));
 };
 
 /* ── 任务板：模块 › 任务 两级树 + 任务详情 + 面板输入框 ───────────── */
@@ -374,15 +375,15 @@ function currentTaskMergePlan() {
 
 function taskMergeBlockText(reason) {
   const messages = {
-    task_busy: '任务正在执行、排队或等待，暂不能合并',
-    task_classifying: '任务正在归类，完成后才能合并',
-    source_workspace: '该任务仍有 worktree/分支；请先清理，或先勾选它作为保留任务',
-    origin_mismatch: '暂不支持独立任务与会话任务互相合并',
-    directory_mismatch: '暂不支持跨工作区合并任务',
-    too_few: '至少选择 2 个任务',
-    empty: '请先选择要保留的任务',
+    task_busy: 'metaMergeBlockTaskBusy',
+    task_classifying: 'metaMergeBlockClassifying',
+    source_workspace: 'metaMergeBlockSourceWorkspace',
+    origin_mismatch: 'metaMergeBlockOrigin',
+    directory_mismatch: 'metaMergeBlockDirectory',
+    too_few: 'metaMergeBlockTooFew',
+    empty: 'metaMergeBlockEmpty',
   };
-  return messages[reason] || '该任务暂不能合并';
+  return messages[reason] ? t(messages[reason]) : t('metaMergeBlockGeneric');
 }
 
 function taskMergeCandidateState(task) {
@@ -423,10 +424,10 @@ function exitTaskMergeMode() {
 function timeAgo(ts) {
   if (!ts) return '';
   const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return '刚刚';
-  if (s < 3600) return `${Math.floor(s/60)}分钟前`;
-  if (s < 86400) return `${Math.floor(s/3600)}小时前`;
-  return `${Math.floor(s/86400)}天前`;
+  if (s < 60) return t('metaTimeJustNow');
+  if (s < 3600) return t('metaTimeMinutesAgo', { n: Math.floor(s/60) });
+  if (s < 86400) return t('metaTimeHoursAgo', { n: Math.floor(s/3600) });
+  return t('metaTimeDaysAgo', { n: Math.floor(s/86400) });
 }
 
 async function fetchTaskBoard() {
@@ -525,9 +526,9 @@ function renderTaskMergeBar(visibleTasks) {
   const modeButton = $('tb-merge-mode');
   const canStart = hasTaskMergePair(visibleTasks);
   modeButton.disabled = taskMergeMode ? false : !canStart;
-  modeButton.textContent = taskMergeMode ? '取消合并' : '合并任务';
-  modeButton.title = taskMergeMode ? '退出合并模式'
-    : canStart ? '手动选择同类任务进行合并' : '当前没有两个可合并的同类任务';
+  modeButton.textContent = taskMergeMode ? t('metaMergeCancelMode') : t('metaMergeMode');
+  modeButton.title = taskMergeMode ? t('metaMergeExitTitle')
+    : canStart ? t('metaMergeModeTitle') : t('metaMergeNoPairTitle');
   const bar = $('tb-merge-bar');
   if (!taskMergeMode) {
     bar.style.display = 'none';
@@ -539,12 +540,12 @@ function renderTaskMergeBar(visibleTasks) {
   const target = tasks[0];
   const origin = target ? window.MultiCCTaskBoardUi.taskOrigin(target) : null;
   const summary = target
-    ? `已选 ${tasks.length} 个${origin.label}；保留「${target.title}」，其余并入`
-    : '请先勾选要保留的任务，再勾选要并入的同类任务';
+    ? t('metaMergeSelectedSummary', { n: tasks.length, kind: origin.label, keeper: target.title })
+    : t('metaMergePrompt');
   bar.style.display = 'flex';
   bar.innerHTML = `<span class="tb-merge-summary">${esc(summary)}</span><span class="tb-merge-actions">
-    <button id="tb-merge-submit" title="${esc(plan.ok ? '执行合并' : taskMergeBlockText(plan.reason))}"${plan.ok ? '' : ' disabled'}>合并${tasks.length >= 2 ? ` ${tasks.length} 个` : ''}</button>
-    <button class="btn-sec" id="tb-merge-cancel">取消</button></span>`;
+    <button id="tb-merge-submit" title="${esc(plan.ok ? t('metaMergeExecute') : taskMergeBlockText(plan.reason))}"${plan.ok ? '' : ' disabled'}>${esc(t('merge'))}${tasks.length >= 2 ? ` ${esc(t('metaCountTasks', { n: tasks.length }))}` : ''}</button>
+    <button class="btn-sec" id="tb-merge-cancel">${esc(t('cancel'))}</button></span>`;
   bar.querySelector('#tb-merge-submit').onclick = event => submitTaskMerge(event, event.currentTarget);
   bar.querySelector('#tb-merge-cancel').onclick = toggleTaskMergeMode;
 }
@@ -554,7 +555,7 @@ async function submitTaskMerge(event, button) {
   const plan = currentTaskMergePlan();
   if (!plan.ok) return alert(taskMergeBlockText(plan.reason));
   const sourceLines = plan.sources.map(task => `  • ${task.title}`).join('\n');
-  if (!confirm(`合并 ${plan.sources.length + 1} 个${plan.origin.label}？\n\n保留任务：「${plan.target.title}」\n将以下任务并入它：\n${sourceLines}\n\n合并后，被并入的任务将不再单独显示。`)) return;
+  if (!confirm(t('metaMergeConfirm', { n: plan.sources.length + 1, kind: plan.origin.label, keeper: plan.target.title, sources: sourceLines }))) return;
   button.disabled = true;
   try {
     const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(plan.targetId)}/merge-tasks`, {
@@ -572,10 +573,10 @@ async function submitTaskMerge(event, button) {
     await fetchTaskBoard();
     await loadTaskDetail(plan.targetId, true);
     alert(mergedCount
-      ? `已合并 ${mergedCount} 个任务到「${plan.target.title}」`
-      : `「${plan.target.title}」已是合并后的最新状态`);
+      ? t('metaMergeDone', { n: mergedCount, title: plan.target.title })
+      : t('metaMergeAlready', { title: plan.target.title }));
   } catch (e) {
-    alert('合并失败：' + window.MultiCCTaskBoardUi.taskMergeErrorMessage(e));
+    alert(t('metaMergeFailed') + window.MultiCCTaskBoardUi.taskMergeErrorMessage(e));
     button.disabled = false;
   }
 }
@@ -588,9 +589,9 @@ async function reclassifyTask(taskId, button) {
     });
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
-    alert(`已加入 ${d.queued || 0} 个任务，归档 ${d.archived || 0} 个无上下文任务，跳过 ${d.skipped || 0} 个`);
+    alert(t('metaReclassifyDone', { queued: d.queued || 0, archived: d.archived || 0, skipped: d.skipped || 0 }));
     await fetchTaskBoard();
-  } catch (e) { alert('重新归类失败：' + e.message); }
+  } catch (e) { alert(t('metaReclassifyFailed') + e.message); }
   finally { if (button) button.disabled = false; }
 }
 
@@ -602,9 +603,9 @@ async function reclassifyAllPending(button) {
     });
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.note || d.error || r.status);
-    alert(`已加入 ${d.queued || 0} 个任务，归档 ${d.archived || 0} 个无上下文任务，跳过 ${d.skipped || 0} 个`);
+    alert(t('metaReclassifyDone', { queued: d.queued || 0, archived: d.archived || 0, skipped: d.skipped || 0 }));
     await fetchTaskBoard();
-  } catch (e) { alert('批量归类失败：' + e.message); }
+  } catch (e) { alert(t('metaReclassifyAllFailed') + e.message); }
   finally { if (button) button.disabled = false; }
 }
 
@@ -618,11 +619,11 @@ async function archiveTaskFromBoard(taskId, button) {
     if (!r.ok || !d.ok) throw new Error(d.error || r.status);
     if (selectedTask === taskId) {
       selectedTask = null;
-      $('task-detail').innerHTML = '<div class="td-placeholder">已归档。</div>';
+      $('task-detail').innerHTML = `<div class="td-placeholder">${esc(t('metaArchived'))}</div>`;
     }
     await fetchTaskBoard();
   } catch (e) {
-    alert('归档失败：' + e.message);
+    alert(t('metaArchiveFailed') + e.message);
     if (button) button.disabled = false;
   }
 }
@@ -632,7 +633,7 @@ function bindQuickTaskArchive(row, task) {
   if (!button) return;
   button.onclick = (event) => {
     event.stopPropagation();
-    if (confirm('归档该任务？（从任务板隐藏，数据保留）')) archiveTaskFromBoard(task.id, button);
+    if (confirm(t('metaArchiveConfirm'))) archiveTaskFromBoard(task.id, button);
   };
 }
 
@@ -644,25 +645,25 @@ function createTaskBoardRow(task, showModule) {
   const mergeDisabled = taskMergeMode && !mergeSelected && !mergeState.ok;
   const mergeTarget = selectedMergeTasks()[0];
   const mergeRole = taskMergeMode && mergeSelected
-    ? `<span class="tb-merge-role${mergeTarget?.id === task.id ? ' keeper' : ''}">${mergeTarget?.id === task.id ? '保留' : '并入'}</span>` : '';
+    ? `<span class="tb-merge-role${mergeTarget?.id === task.id ? ' keeper' : ''}">${mergeTarget?.id === task.id ? esc(t('metaMergeRoleKeeper')) : esc(t('metaMergeRoleSource'))}</span>` : '';
   const mergeTitle = mergeDisabled ? taskMergeBlockText(mergeState.reason)
-    : mergeSelected ? '取消选择'
-      : selectedMergeTaskIds.size ? '选择为待并入任务' : '选择为保留任务';
+    : mergeSelected ? t('metaMergeDeselect')
+      : selectedMergeTaskIds.size ? t('metaMergeSelectSource') : t('metaMergeSelectKeeper');
   const mergeSelect = taskMergeMode
     ? `<span class="tb-merge-select" title="${esc(mergeTitle)}"><input type="checkbox" aria-label="${esc(mergeTitle)}"${mergeSelected ? ' checked' : ''}${mergeDisabled ? ' disabled' : ''}></span>` : '';
   const row = document.createElement('div');
   row.className = 'tb-task' + (display.done ? ' done' : '')
     + (selectedTask === task.id ? ' selected' : '') + clsRun + (taskMergeMode ? ' merge-mode' : '');
   row.dataset.taskId = task.id;
-  row.title = taskMergeMode ? mergeTitle : '查看任务详情';
+  row.title = taskMergeMode ? mergeTitle : t('metaViewTaskDetail');
   const assignment = task.moduleAssignment;
   const body = task.body
-    ? `<details class="tb-body-fold"><summary>任务正文</summary><pre>${esc(task.body)}</pre></details>`
+    ? `<details class="tb-body-fold"><summary>${esc(t('metaTaskBody'))}</summary><pre>${esc(task.body)}</pre></details>`
     : task.identityState === 'orphaned_admission' || task.identityState === 'legacy_unresolved'
-      ? '<span class="tb-body-pending">旧记录缺少 canonical 正文，未自动合并</span>'
-      : '<span class="tb-body-pending">正文等待目标会话持久化…</span>';
+      ? `<span class="tb-body-pending">${esc(t('metaBodyMissingLegacy'))}</span>`
+      : `<span class="tb-body-pending">${esc(t('metaBodyPending'))}</span>`;
   const attempt = Number(task.attemptCount) > 1
-    ? `<span>${Number(task.attemptCount)} 次投递</span>` : '';
+    ? `<span>${esc(t('metaAttemptCount', { n: Number(task.attemptCount) }))}</span>` : '';
   const module = showModule ? tb.modules.find(item => item.id === task.moduleId) : null;
   const moduleLabel = module
     ? `<span class="tb-related-module">${esc(module.name)}</span>` : '';
@@ -670,7 +671,7 @@ function createTaskBoardRow(task, showModule) {
     ${mergeSelect}
     ${statusIconHtml(display)}
     <span class="tb-title-cell"><span class="tb-title">${originHtml(task)}${moduleLabel}${mergeRole}${esc(task.title)}</span>${body}</span>
-    <span class="tb-meta"><span class="tb-run-state st-tone-${display.tone}">${esc(display.label)}</span>${taskRoutingHtml(task)}${attempt}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? '归类中…' : assignment.lastError ? '重新归类' : '归类'}</button>` : ''}<button class="tb-quick-archive" title="快捷归档该任务">归档</button><span>${task.refCount}轮 · ${esc(timeAgo(task.lastTs))}</span></span>`;
+    <span class="tb-meta"><span class="tb-run-state st-tone-${display.tone}">${esc(display.label)}</span>${taskRoutingHtml(task)}${attempt}${assignment ? `<button class="tb-reclassify"${assignment.running ? ' disabled' : ''} title="${esc(assignment.lastError || '')}">${assignment.running ? esc(t('metaClassifying')) : assignment.lastError ? esc(t('metaReclassify')) : esc(t('metaClassify'))}</button>` : ''}<button class="tb-quick-archive" title="${esc(t('metaQuickArchiveTitle'))}">${esc(t('metaArchive'))}</button><span>${esc(t('metaRefCount', { n: task.refCount }))} · ${esc(timeAgo(task.lastTs))}</span></span>`;
   row.querySelector('.tb-body-fold')?.addEventListener('click', event => event.stopPropagation());
   row.onclick = () => handleTaskBoardRowClick(task);
   const mergeCheckbox = row.querySelector('.tb-merge-select input');
@@ -693,7 +694,7 @@ function appendRelatedTaskGroups(box, groups) {
     group.className = 'tb-related-group';
     group.open = true;
     const summary = document.createElement('summary');
-    summary.innerHTML = `<span>🧩 ${esc(item.title || '关联任务')} · ${item.tasks.length}</span><span>关联任务</span>`;
+    summary.innerHTML = `<span>🧩 ${esc(item.title || t('metaRelatedTask'))} · ${item.tasks.length}</span><span>${esc(t('metaRelatedTask'))}</span>`;
     group.appendChild(summary);
     for (const task of item.tasks) group.appendChild(createTaskBoardRow(task, true));
     box.appendChild(group);
@@ -707,7 +708,7 @@ function appendTaskIdentityGroups(box, tasks) {
   const group = document.createElement('details');
   group.className = 'tb-legacy-group';
   const summary = document.createElement('summary');
-  summary.textContent = `历史身份待确认 · ${identity.unresolved.length}（未自动合并）`;
+  summary.textContent = t('metaLegacyIdentity', { n: identity.unresolved.length });
   group.appendChild(summary);
   for (const task of identity.unresolved) group.appendChild(createTaskBoardRow(task));
   box.appendChild(group);
@@ -723,11 +724,11 @@ async function archiveCompletedTasks(button) {
     if (!r.ok || !d.ok) throw new Error(d.error || r.status);
     if (selectedTask && (d.taskIds || []).includes(selectedTask)) {
       selectedTask = null;
-      $('task-detail').innerHTML = '<div class="td-placeholder">已归档全部已完成任务。</div>';
+      $('task-detail').innerHTML = `<div class="td-placeholder">${esc(t('metaAllCompletedArchived'))}</div>`;
     }
     await fetchTaskBoard();
   } catch (e) {
-    alert('一键清理失败：' + e.message);
+    alert(t('metaCleanupFailed') + e.message);
     if (button) button.disabled = false;
   }
 }
@@ -742,13 +743,13 @@ function renderTaskBoard() {
   const cleanup = $('tb-archive-completed');
   if (cleanup) {
     cleanup.disabled = completedCount === 0;
-    cleanup.textContent = `🧹 一键清理${completedCount ? ` (${completedCount})` : ''}`;
+    cleanup.textContent = t('metaCleanup') + (completedCount ? ` (${completedCount})` : '');
   }
   const grouped = window.MultiCCTaskBoardUi.partitionTaskGroups(visible, tb.taskGroups);
-  const groupSuffix = grouped.groups.length ? ` · ${grouped.groups.length} 关联组` : '';
-  $('tb-count').textContent = `${tb.modules.length} 模块 · ${visible.length} 任务${groupSuffix}`;
+  const groupSuffix = grouped.groups.length ? t('metaRelatedGroups', { n: grouped.groups.length }) : '';
+  $('tb-count').textContent = t('metaBoardCount', { modules: tb.modules.length, tasks: visible.length }) + groupSuffix;
   if (!visible.length) {
-    box.innerHTML = '<div class="tb-empty">还没有任务。从任务面板或 Commander 发起新任务后会显示在这里。</div>';
+    box.innerHTML = `<div class="tb-empty">${esc(t('metaBoardEmpty2'))}</div>`;
     return;
   }
   appendRelatedTaskGroups(box, grouped.groups);
@@ -757,7 +758,7 @@ function renderTaskBoard() {
     if (!tasks.length) continue;
     const collapsed = collapsedMods.has(mod.id);
     const mrow = document.createElement('div'); mrow.className = 'tb-mod';
-    mrow.innerHTML = `<span>${collapsed ? '▸' : '▾'} <span class="tb-mod-name">${esc(mod.name)}</span> · ${tasks.length}</span><span class="tb-mod-actions">${mod.source === 'classify' ? '<button class="tb-reclassify">全部重新归类</button>' : ''}<span>${esc(timeAgo(mod.lastTs))}</span></span>`;
+    mrow.innerHTML = `<span>${collapsed ? '▸' : '▾'} <span class="tb-mod-name">${esc(mod.name)}</span> · ${tasks.length}</span><span class="tb-mod-actions">${mod.source === 'classify' ? `<button class="tb-reclassify">${esc(t('metaReclassifyAll'))}</button>` : ''}<span>${esc(timeAgo(mod.lastTs))}</span></span>`;
     mrow.onclick = () => { collapsed ? collapsedMods.delete(mod.id) : collapsedMods.add(mod.id); renderTaskBoard(); };
     const retryAll = mrow.querySelector('.tb-reclassify');
     if (retryAll) retryAll.onclick = (e) => { e.stopPropagation(); reclassifyAllPending(retryAll); };
@@ -774,14 +775,14 @@ function renderTaskBoard() {
 
 async function loadTaskDetail(taskId, silent) {
   const panel = $('task-detail');
-  if (!silent) panel.innerHTML = '<div class="td-placeholder">加载中…</div>';
+  if (!silent) panel.innerHTML = `<div class="td-placeholder">${esc(t('loading'))}</div>`;
   let d;
   try {
     const r = await fetch(`/api/task-board/tasks/${encodeURIComponent(taskId)}/messages`);
     d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.error || r.status);
   } catch (e) {
-    if (!silent) panel.innerHTML = `<div class="td-placeholder">加载失败：${esc(e.message)}</div>`;
+    if (!silent) panel.innerHTML = `<div class="td-placeholder">${esc(t('metaLoadFailed'))}${esc(e.message)}</div>`;
     return;
   }
   if (selectedTask !== taskId) return;   // 用户已切换
@@ -803,13 +804,13 @@ function renderTaskDetail(d) {
   const head = document.createElement('div'); head.className = 'td-head';
   const sessChips = t.sessionIds.map(sid => {
     const href = window.MultiCCTaskBoardUi.sessionChatUrl(sid);
-    return `<a class="td-chip td-session-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="打开对应会话">🖥 ${esc(tb.sessionLabels?.[sid] || sid)} ↗</a>`;
+    return `<a class="td-chip td-session-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="${esc(window.t('metaOpenSession'))}">🖥 ${esc(tb.sessionLabels?.[sid] || sid)} ↗</a>`;
   }).join('');
   const routingLabel = window.MultiCCTaskBoardUi.taskRoutingLabel(t);
   const routingChip = routingLabel ? `<span class="td-chip tb-route-state">🫡 ${esc(routingLabel)}</span>` : '';
   const areaChips = (t.areas || []).map(a => `<span class="td-chip">${esc(a)}</span>`).join('');
   head.innerHTML = `
-    <div class="td-crumb">${esc(mod ? mod.name : '未分组')} ›</div>
+    <div class="td-crumb">${esc(mod ? mod.name : window.t('metaUngrouped'))} ›</div>
     <div class="td-title-row">
       <span class="td-title">${esc(t.title)}</span>
       ${window.MultiCCStatusPresentation.statusBadgeHtml('task', display.status, {
@@ -817,11 +818,11 @@ function renderTaskDetail(d) {
         className: `td-badge ${display.running ? 'active' : ''}`,
       })}
       <span class="td-actions">
-        ${t.moduleAssignment ? `<button class="btn-sec" id="td-reclassify"${t.moduleAssignment.running ? ' disabled' : ''}>🔄 ${t.moduleAssignment.running ? '归类中…' : t.moduleAssignment.lastError ? '重新归类' : '归类'}</button>` : ''}
+        ${t.moduleAssignment ? `<button class="btn-sec" id="td-reclassify"${t.moduleAssignment.running ? ' disabled' : ''}>🔄 ${t.moduleAssignment.running ? esc(window.t('metaClassifying')) : t.moduleAssignment.lastError ? esc(window.t('metaReclassify')) : esc(window.t('metaClassify'))}</button>` : ''}
         ${t.status === 'active'
-          ? '<button class="btn-sec" id="td-done">✅ 标记完成</button>'
-          : '<button class="btn-sec" id="td-reopen">♻️ 重开</button>'}
-        <button class="btn-sec" id="td-archive">🗄 归档</button>
+          ? `<button class="btn-sec" id="td-done">✅ ${esc(window.t('metaMarkDone'))}</button>`
+          : `<button class="btn-sec" id="td-reopen">♻️ ${esc(window.t('metaReopen'))}</button>`}
+        <button class="btn-sec" id="td-archive">🗄 ${esc(window.t('metaArchive'))}</button>
       </span>
     </div>
     <div class="td-chips">${routingChip}${sessChips}${areaChips}</div>`;
@@ -829,7 +830,7 @@ function renderTaskDetail(d) {
     const bodyFold = document.createElement('details');
     bodyFold.className = 'td-body-fold';
     const summary = document.createElement('summary');
-    summary.textContent = t.legacy ? '旧记录任务正文' : '完整任务正文';
+    summary.textContent = t.legacy ? window.t('metaLegacyBody') : window.t('metaFullBody');
     const pre = document.createElement('pre');
     pre.textContent = t.body;
     bodyFold.appendChild(summary);
@@ -845,7 +846,7 @@ function renderTaskDetail(d) {
 
   const msgs = document.createElement('div'); msgs.className = 'td-msgs';
   if (!d.items.length) {
-    msgs.innerHTML = '<div class="td-placeholder">该任务还没有关联对话。</div>';
+    msgs.innerHTML = `<div class="td-placeholder">${esc(window.t('metaNoRelatedChat'))}</div>`;
   }
   for (const it of d.items) {
     const sessionHref = window.MultiCCTaskBoardUi.sessionChatUrl(it.sessionId, it.messageId);
@@ -853,17 +854,17 @@ function renderTaskDetail(d) {
     card.className = `td-msg ${it.role}${sessionHref ? ' td-msg-link' : ''}`;
     if (sessionHref) {
       card.href = sessionHref; card.target = '_blank'; card.rel = 'noopener noreferrer';
-      card.title = '打开会话并定位到这条消息';
+      card.title = window.t('metaOpenMessage');
     }
     const headEl = document.createElement('div'); headEl.className = 'td-msg-head';
-    const time = it.ts ? new Date(it.ts).toLocaleString('zh-CN', { hour12: false }) : '?';
+    const time = it.ts ? new Date(it.ts).toLocaleString(getLocale(), { hour12: false }) : '?';
     headEl.innerHTML = `
-      <span class="td-sess">${esc(it.sessionLabel || it.sessionId || '临时执行')}${sessionHref ? ' ↗' : ''}</span>
+      <span class="td-sess">${esc(it.sessionLabel || it.sessionId || window.t('metaTransientRun'))}${sessionHref ? ' ↗' : ''}</span>
       <span>${esc(time)}</span>
-      <span class="td-role-${it.role}">${it.role === 'user' ? '👤 用户' : '🤖 助手'}</span>
-      ${it.lost ? '<span style="color:#f85149">（原消息已清理，仅存摘要）</span>' : ''}`;
+      <span class="td-role-${it.role}">${it.role === 'user' ? esc(window.t('metaRoleUser')) : esc(window.t('metaRoleAssistant'))}</span>
+      ${it.lost ? `<span style="color:#f85149">${esc(window.t('metaMessageLost'))}</span>` : ''}`;
     const body = document.createElement('div'); body.className = 'td-msg-body';
-    body.textContent = it.text || '（空）';
+    body.textContent = it.text || window.t('metaEmptyText');
     card.appendChild(headEl); card.appendChild(body);
     msgs.appendChild(card);
   }
@@ -871,17 +872,17 @@ function renderTaskDetail(d) {
 
   const compose = document.createElement('div'); compose.className = 'td-compose';
   const commanderId = t.routing?.mode === 'commander' ? t.routing.targetSessionId : null;
-  const targetOptions = ['<option value="">🎯 自动路由（Commander-first）</option>']
+  const targetOptions = [`<option value="">🎯 ${esc(window.t('metaAutoRoute'))}</option>`]
     .concat(t.sessionIds.filter(sid => sid !== commanderId).map(sid =>
       `<option value="${esc(sid)}">${esc(tb.sessionLabels?.[sid] || sid)}</option>`)).join('');
   compose.innerHTML = `
-        <textarea id="td-input" placeholder="向该任务派发后续消息…（Commander 单向路由到空闲 worker）"></textarea>
+        <textarea id="td-input" placeholder="${esc(window.t('metaTaskFollowupPlaceholder'))}"></textarea>
     <div class="td-compose-row">
       <select id="td-target">${targetOptions}</select>
-      <button id="td-send">🚀 发送</button>
+      <button id="td-send">🚀 ${esc(window.t('metaSend'))}</button>
       <span class="msg" id="td-result"></span>
     </div>
-    <div class="hint">发送后消息会以「【任务：${esc(t.title)}】」为前缀投递到目标会话，回复完成后自动归档回本任务。</div>`;
+    <div class="hint">${esc(window.t('metaSendHint', { title: t.title }))}</div>`;
   panel.appendChild(compose);
 
   const setStatus = async (status) => {
@@ -890,16 +891,16 @@ function renderTaskDetail(d) {
         method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ status }) });
       const res = await r.json();
       if (!r.ok) throw new Error(res.error || r.status);
-      if (status === 'archived') { selectedTask = null; panel.innerHTML = '<div class="td-placeholder">已归档。</div>'; }
+      if (status === 'archived') { selectedTask = null; panel.innerHTML = `<div class="td-placeholder">${esc(window.t('metaArchived'))}</div>`; }
       else loadTaskDetail(t.id, true);
       fetchTaskBoard();
-    } catch (e) { alert('操作失败：' + e.message); }
+    } catch (e) { alert(window.t('metaOpFailed') + e.message); }
   };
   const doneBtn = panel.querySelector('#td-done');
   if (doneBtn) doneBtn.onclick = () => setStatus('done');
   const reopenBtn = panel.querySelector('#td-reopen');
   if (reopenBtn) reopenBtn.onclick = () => setStatus('active');
-  panel.querySelector('#td-archive').onclick = () => { if (confirm('归档该任务？（从任务板隐藏，数据保留）')) setStatus('archived'); };
+  panel.querySelector('#td-archive').onclick = () => { if (confirm(window.t('metaArchiveConfirm'))) setStatus('archived'); };
   const reclassifyBtn = panel.querySelector('#td-reclassify');
   if (reclassifyBtn) reclassifyBtn.onclick = () => reclassifyTask(t.id, reclassifyBtn);
 
@@ -910,9 +911,9 @@ function renderTaskDetail(d) {
     const input = panel.querySelector('#td-input');
     const resultEl = panel.querySelector('#td-result');
     const text = input.value.trim();
-    if (!text) { resultEl.textContent = '请输入内容'; resultEl.className = 'msg err'; return; }
+    if (!text) { resultEl.textContent = window.t('metaEnterContent'); resultEl.className = 'msg err'; return; }
     sendBtn.disabled = true;
-    resultEl.textContent = '路由中…'; resultEl.className = 'msg';
+    resultEl.textContent = window.t('metaRouting'); resultEl.className = 'msg';
     try {
       const target = panel.querySelector('#td-target').value || undefined;
       if (!pendingFollowupId || pendingFollowupText !== text) {
@@ -927,8 +928,8 @@ function renderTaskDetail(d) {
       const res = await r.json();
       if (!r.ok || !res.ok) throw new Error(res.note || res.error || r.status);
       resultEl.textContent = res.taskBound
-        ? `已进入任务会话「${res.targetLabel}」${res.queued ? '（已安全排队）' : ''}`
-        : `已路由到「${res.targetLabel}」，回复将自动归档回本任务`;
+        ? window.t('metaEnteredTaskSession', { label: res.targetLabel }) + (res.queued ? window.t('metaQueuedSafely') : '')
+        : window.t('metaRoutedTo', { label: res.targetLabel });
       resultEl.className = 'msg ok';
       input.value = '';
       pendingFollowupId = '';
@@ -945,7 +946,7 @@ function showGatheringFloat() {
   if (gatheringFloat) return;
   gatheringFloat = document.createElement('div');
   gatheringFloat.style.cssText = 'position:fixed;bottom:20px;right:20px;background:rgba(0,0,0,0.85);color:#fff;padding:12px 18px;border-radius:8px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
-  gatheringFloat.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite">🔄</span> 任务归拢中…';
+  gatheringFloat.innerHTML = `<span style="display:inline-block;animation:spin 1s linear infinite">🔄</span> ${esc(t('metaGathering'))}`;
   document.body.appendChild(gatheringFloat);
   const style = document.createElement('style');
   style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';

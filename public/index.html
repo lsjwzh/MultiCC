@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh" data-i18n-doc-title="termPageTitle">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
@@ -11,6 +11,8 @@
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon.svg" />
   <title>MultiCC — Claude Code in Browser</title>
+  <script src="i18n-catalog.js"></script>
+  <script src="i18n.js"></script>
   <link rel="stylesheet" href="/vendor/xterm/xterm.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -730,25 +732,26 @@
   <div id="header">
     <span class="logo">Multi<span>CC</span></span>
     <div id="status-dot" class="connecting"></div>
-    <span id="status-label">Connecting…</span>
+    <span id="status-label" data-i18n="connecting">Connecting…</span>
     <span id="session-label"></span>
     <div id="header-actions">
-        <button id="save-cwd-btn" class="hdr-btn" title="更改工作区" style="display:none">📂</button>
-      <button id="files-btn" class="hdr-btn" title="文件浏览器">📁</button>
-      <button id="notify-btn" class="hdr-btn" title="语音通知 (点击开启/关闭)">🔔</button>
+        <button id="save-cwd-btn" class="hdr-btn" data-i18n-title="termChangeWorkspace" title="更改工作区" style="display:none">📂</button>
+      <button id="files-btn" class="hdr-btn" data-i18n-title="termFileBrowser" title="文件浏览器">📁</button>
+      <button id="notify-btn" class="hdr-btn">🔔</button>
       <a href="/wechat" class="hdr-btn" title="WeChat Bridge">💬</a>
-      <button id="memo-btn" class="hdr-btn" title="项目备忘" onclick="openMemo()">📝</button>
-      <a href="/dashboard" class="hdr-btn" title="会话状态看板">📊</a>
-      <button id="merge-btn" class="hdr-btn" title="把此会话 worktree 合并回基分支">🔀</button>
-      <button id="restart-btn" class="hdr-btn" title="重启 Claude 命令">🔄</button>
-      <button id="reconnect-btn" onclick="connect()">Reconnect</button>
+      <button id="memo-btn" class="hdr-btn" data-i18n-title="termProjectMemo" title="项目备忘" onclick="openMemo()">📝</button>
+      <a href="/dashboard" class="hdr-btn" data-i18n-title="termSessionDashboard" title="会话状态看板">📊</a>
+      <button id="merge-btn" class="hdr-btn" data-i18n-title="mergeWorktreeTitle" title="把 worktree 合并回基分支">🔀</button>
+      <button id="restart-btn" class="hdr-btn" data-i18n-title="termRestartCli" title="重启 Claude 命令">🔄</button>
+      <button class="hdr-btn lang-toggle" type="button" onclick="toggleLang()" data-i18n-title="languageToggle" title="切换语言：中文 / English"></button>
+      <button id="reconnect-btn" data-i18n="termReconnect" onclick="connect()">Reconnect</button>
     </div>
   </div>
 
   <div id="input-toolbar">
-    <button id="mic-btn" class="toolbar-btn" title="语音输入 (点击开始/停止)">🎤</button>
+    <button id="mic-btn" class="toolbar-btn" data-i18n-title="termVoiceInput" title="语音输入 (点击开始/停止)">🎤</button>
     <span id="mic-status"></span>
-    <button id="attach-btn" class="toolbar-btn" title="附加文件">📎</button>
+    <button id="attach-btn" class="toolbar-btn" data-i18n-title="termAttachFile" title="附加文件">📎</button>
     <input id="file-input" type="file" style="display:none">
     <div id="attachments"></div>
   </div>
@@ -775,33 +778,36 @@
     </div>
     <div id="mobile-input-row">
       <input id="mobile-input" type="text"
+        data-i18n-placeholder="termMobileInputPlaceholder"
         placeholder="输入命令，回车发送…"
         autocomplete="off" autocorrect="off"
         autocapitalize="off" spellcheck="false" />
-      <button id="mobile-send">发送</button>
+      <button id="mobile-send" data-i18n="termSend">发送</button>
     </div>
   </div>
 
   <!-- Initial directory picker modal (shown for new sessions) -->
   <div id="init-cwd-modal" style="display:none; position:fixed; inset:0; background:#000000cc; z-index:15000; align-items:center; justify-content:center;">
     <div style="background:#161b22; border:1px solid #30363d; border-radius:12px; padding:24px; width:540px; max-width:92vw; box-shadow:0 16px 48px #00000099;">
-      <div style="font-size:16px; font-weight:700; color:#f0f6fc; margin-bottom:6px;">选择工作区</div>
-      <div style="font-size:12px; color:#8b949e; margin-bottom:16px;">Claude Code 将在此工作区中启动，请选择项目所在的本地文件夹</div>
-      <div style="font-size:12px; color:#8b949e; margin-bottom:6px;">本地路径</div>
+      <div style="font-size:16px; font-weight:700; color:#f0f6fc; margin-bottom:6px;" data-i18n="termSelectWorkspace">选择工作区</div>
+      <div style="font-size:12px; color:#8b949e; margin-bottom:16px;" data-i18n="termInitWorkspaceDesc">Claude Code 将在此工作区中启动，请选择项目所在的本地文件夹</div>
+      <div style="font-size:12px; color:#8b949e; margin-bottom:6px;" data-i18n="termLocalPath">本地路径</div>
       <input id="init-cwd-input" type="text"
         style="width:100%; background:#0d1117; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; font-size:13px; font-family:monospace; padding:8px 12px; outline:none; margin-bottom:8px; box-sizing:border-box;"
+        data-i18n-placeholder="termWorkspacePathAbsPlaceholder"
         placeholder="输入工作区路径，支持 ~ 和绝对路径…"
         autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
       <div id="init-cwd-browser" style="max-height:240px; overflow-y:auto; border:1px solid #21262d; border-radius:6px; background:#0d1117; margin-bottom:12px;"></div>
-      <div style="font-size:12px; color:#8b949e; margin-bottom:6px;">Session ID（留空自动生成）</div>
+      <div style="font-size:12px; color:#8b949e; margin-bottom:6px;" data-i18n="termSessionIdLabel">Session ID（留空自动生成）</div>
       <input id="init-session-id" type="text"
         style="width:100%; background:#0d1117; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; font-size:13px; font-family:monospace; padding:8px 12px; outline:none; margin-bottom:12px; box-sizing:border-box;"
+        data-i18n-placeholder="termSessionIdPlaceholder"
         placeholder="例如 my-project、gps-edm…"
         autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
       <div id="init-cwd-error" style="font-size:12px; color:#f85149; margin-bottom:12px; display:none;"></div>
       <div style="display:flex; justify-content:flex-end; gap:10px;">
-        <button id="init-cwd-skip" style="padding:7px 16px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; font-size:13px; cursor:pointer;">使用默认 (Home)</button>
-        <button id="init-cwd-confirm" style="padding:7px 16px; border-radius:6px; border:1px solid #2ea043; background:#238636; color:#fff; font-size:13px; font-weight:600; cursor:pointer;">启动</button>
+        <button id="init-cwd-skip" style="padding:7px 16px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; font-size:13px; cursor:pointer;" data-i18n="termUseDefaultHome">使用默认 (Home)</button>
+        <button id="init-cwd-confirm" style="padding:7px 16px; border-radius:6px; border:1px solid #2ea043; background:#238636; color:#fff; font-size:13px; font-weight:600; cursor:pointer;" data-i18n="termLaunch">启动</button>
       </div>
     </div>
   </div>
@@ -809,18 +815,19 @@
   <!-- Relocate directory modal -->
   <div id="relocate-modal" style="display:none; position:fixed; inset:0; background:#00000099; z-index:10000; align-items:center; justify-content:center;">
     <div style="background:#161b22; border:1px solid #30363d; border-radius:12px; padding:24px; width:500px; max-width:92vw; box-shadow:0 16px 48px #00000099;">
-      <div style="font-size:15px; font-weight:600; color:#f0f6fc; margin-bottom:16px;">更改工作区</div>
-      <div style="font-size:12px; color:#8b949e; margin-bottom:4px;">当前工作区</div>
+      <div style="font-size:15px; font-weight:600; color:#f0f6fc; margin-bottom:16px;" data-i18n="termChangeWorkspace">更改工作区</div>
+      <div style="font-size:12px; color:#8b949e; margin-bottom:4px;" data-i18n="termCurrentWorkspace">当前工作区</div>
       <div id="relocate-current" style="font-family:monospace; font-size:12px; color:#58a6ff; margin-bottom:16px; word-break:break-all; padding:6px 10px; background:#0d1117; border-radius:6px; border:1px solid #21262d;"></div>
-      <div style="font-size:12px; color:#8b949e; margin-bottom:6px;">新工作区路径</div>
+      <div style="font-size:12px; color:#8b949e; margin-bottom:6px;" data-i18n="termNewWorkspacePath">新工作区路径</div>
       <input id="relocate-input" type="text"
         style="width:100%; background:#0d1117; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; font-size:13px; font-family:monospace; padding:8px 12px; outline:none; margin-bottom:16px; box-sizing:border-box;"
+        data-i18n-placeholder="termWorkspacePathRelPlaceholder"
         placeholder="输入工作区路径，支持 ~ 和相对路径…"
         autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
       <div id="relocate-error" style="font-size:12px; color:#f85149; margin-bottom:12px; display:none;"></div>
       <div style="display:flex; justify-content:flex-end; gap:10px;">
-        <button id="relocate-cancel" style="padding:7px 16px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; font-size:13px; cursor:pointer;">取消</button>
-        <button id="relocate-confirm" style="padding:7px 16px; border-radius:6px; border:1px solid #2ea043; background:#238636; color:#fff; font-size:13px; font-weight:600; cursor:pointer;">切换工作区</button>
+        <button id="relocate-cancel" style="padding:7px 16px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; font-size:13px; cursor:pointer;" data-i18n="cancel">取消</button>
+        <button id="relocate-confirm" style="padding:7px 16px; border-radius:6px; border:1px solid #2ea043; background:#238636; color:#fff; font-size:13px; font-weight:600; cursor:pointer;" data-i18n="termSwitchWorkspace">切换工作区</button>
       </div>
     </div>
   </div>
@@ -828,9 +835,9 @@
   <!-- File Browser Panel -->
   <div id="files-panel">
     <div id="files-panel-header">
-      <span class="fp-title">📁 文件浏览器</span>
-      <button class="fp-btn" id="files-refresh-btn" title="刷新">↺</button>
-      <button class="fp-btn" id="files-close-btn" title="关闭">✕</button>
+      <span class="fp-title" data-i18n="termFileBrowserTitle">📁 文件浏览器</span>
+      <button class="fp-btn" id="files-refresh-btn" data-i18n-title="refresh" title="刷新">↺</button>
+      <button class="fp-btn" id="files-close-btn" data-i18n-title="close" title="关闭">✕</button>
     </div>
     <div id="files-panel-path">—</div>
     <div id="files-error"></div>
@@ -840,16 +847,16 @@
   <!-- Voice Processing Panel -->
   <div id="voice-panel">
     <div id="voice-panel-inner">
-      <div class="vp-header">🎤 语音处理</div>
-      <div class="vp-section-label">原始识别</div>
+      <div class="vp-header" data-i18n="termVoicePanelTitle">🎤 语音处理</div>
+      <div class="vp-section-label" data-i18n="termRawTranscript">原始识别</div>
       <textarea id="vp-raw"></textarea>
-      <div class="vp-section-label">AI 专业重排 <span id="vp-status"></span></div>
-      <textarea id="vp-refined" placeholder="AI 处理中…"></textarea>
+      <div class="vp-section-label"><span data-i18n="termAiRefine">AI 专业重排</span> <span id="vp-status"></span></div>
+      <textarea id="vp-refined" data-i18n-placeholder="termAiProcessing" placeholder="AI 处理中…"></textarea>
       <div id="vp-timing" class="vp-timing"></div>
       <div class="vp-actions">
-        <button id="vp-cancel">取消</button>
-        <button id="vp-use-raw" class="primary">使用原文</button>
-        <button id="vp-use-refined">AI 重排</button>
+        <button id="vp-cancel" data-i18n="cancel">取消</button>
+        <button id="vp-use-raw" class="primary" data-i18n="termUseRaw">使用原文</button>
+        <button id="vp-use-refined" data-i18n="termRefineBtn">AI 重排</button>
       </div>
     </div>
   </div>
@@ -858,7 +865,7 @@
   <div id="voice-hud">
     <div class="vh-row vh-raw">
       <div class="vh-icon">🎤</div>
-      <div class="vh-text" id="vh-raw-text"><span class="vh-partial">聆听中…</span></div>
+      <div class="vh-text" id="vh-raw-text"><span class="vh-partial" data-i18n="termListening">聆听中…</span></div>
     </div>
     <div class="vh-row vh-refined">
       <div class="vh-icon">✨</div>
@@ -867,11 +874,11 @@
     <div class="vh-bar">
       <div class="vh-status">
         <span class="vh-dot"></span>
-        <span id="vh-status-text">聆听中</span>
+        <span id="vh-status-text" data-i18n="termListening">聆听中</span>
       </div>
       <div class="vh-btns">
-        <button id="vh-cancel" title="放弃并关闭">取消</button>
-        <button id="vh-send" class="vh-primary" title="停止听并发送">发送</button>
+        <button id="vh-cancel" data-i18n-title="termVhCancelTitle" title="放弃并关闭" data-i18n="cancel">取消</button>
+        <button id="vh-send" class="vh-primary" data-i18n-title="termVhSendTitle" title="停止听并发送" data-i18n="termSend">发送</button>
       </div>
     </div>
   </div>
@@ -881,22 +888,22 @@
     <div style="background:#161b22; border:1px solid #30363d; border-radius:12px; width:min(96vw, 1200px); max-height:95vh; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 16px 48px #00000099;">
       <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #30363d;flex-shrink:0;">
         <div style="flex:1;min-width:0;">
-          <div id="memo-title" style="font-size:14px;font-weight:600;color:#f0f6fc;">📝 备忘</div>
+          <div id="memo-title" style="font-size:14px;font-weight:600;color:#f0f6fc;" data-i18n="termMemoTitle">📝 备忘</div>
           <div id="memo-subtitle" style="font-size:11px;color:#8b949e;font-family:monospace;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
         </div>
-        <button class="hdr-btn" id="memo-send-btn" title="把光标所在行发到该工作区的某个 chat 会话">→ 发送当前行</button>
-        <button class="hdr-btn" id="memo-save-btn" title="保存 (Ctrl/Cmd+S)" style="background:#238636;border-color:#2ea043;color:#fff;">保存</button>
-        <button class="hdr-btn" id="memo-close-btn">关闭</button>
+        <button class="hdr-btn" id="memo-send-btn" data-i18n-title="termMemoSendTitle" title="把光标所在行发到该工作区的某个 chat 会话" data-i18n="termMemoSendLine">→ 发送当前行</button>
+        <button class="hdr-btn" id="memo-save-btn" data-i18n-title="termMemoSaveTitle" title="保存 (Ctrl/Cmd+S)" style="background:#238636;border-color:#2ea043;color:#fff;" data-i18n="save">保存</button>
+        <button class="hdr-btn" id="memo-close-btn" data-i18n="close">关闭</button>
       </div>
-      <textarea id="memo-text" spellcheck="false" style="flex:1;width:100%;background:#0d1117;color:#c9d1d9;border:0;outline:0;padding:12px 16px;font-family:monospace;font-size:14px;line-height:1.6;resize:none;" placeholder="在这里写备忘…&#10;例：&#10;# todo&#10;- [ ] 任务一&#10;- [ ] 任务二"></textarea>
+      <textarea id="memo-text" spellcheck="false" style="flex:1;width:100%;background:#0d1117;color:#c9d1d9;border:0;outline:0;padding:12px 16px;font-family:monospace;font-size:14px;line-height:1.6;resize:none;" data-i18n-placeholder="termMemoPlaceholder" placeholder="在这里写备忘…&#10;例：&#10;# todo&#10;- [ ] 任务一&#10;- [ ] 任务二"></textarea>
       <div id="memo-status" style="padding:6px 12px;font-size:11px;color:#6e7681;border-top:1px solid #21262d;font-family:monospace;"></div>
       <!-- Send-picker mini-modal -->
       <div id="memo-picker" style="display:none;position:absolute;inset:0;background:#00000066;align-items:center;justify-content:center;border-radius:12px;">
         <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px 18px;width:min(90%, 440px);">
-          <h3 style="font-size:13px;color:#f0f6fc;margin-bottom:6px;">发送到 chat 会话</h3>
+          <h3 style="font-size:13px;color:#f0f6fc;margin-bottom:6px;" data-i18n="termSendToChat">发送到 chat 会话</h3>
           <div id="memo-picker-preview" style="color:#8b949e;font-size:11px;margin-bottom:10px;font-family:monospace;word-break:break-word;background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:6px 8px;max-height:90px;overflow:auto;"></div>
           <div id="memo-picker-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;max-height:280px;overflow:auto;"></div>
-          <div style="text-align:right;"><button class="hdr-btn" onclick="memoPickerClose()">取消</button></div>
+          <div style="text-align:right;"><button class="hdr-btn" onclick="memoPickerClose()" data-i18n="cancel">取消</button></div>
         </div>
       </div>
     </div>

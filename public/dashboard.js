@@ -27,7 +27,7 @@
     if (typeof ts === 'number') d = new Date(ts);
     else d = new Date(ts);
     if (isNaN(d.getTime())) return '-';
-    return d.toLocaleString(undefined, {
+    return d.toLocaleString(getLocale(), {
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit'
     });
@@ -46,11 +46,11 @@
     var diffHr = Math.floor(diffMin / 60);
     var diffDay = Math.floor(diffHr / 24);
 
-    if (diffSec < 10) return '刚刚';
-    if (diffSec < 60) return diffSec + ' 秒前';
-    if (diffMin < 60) return diffMin + ' 分钟前';
-    if (diffHr < 24) return diffHr + ' 小时前';
-    if (diffDay < 30) return diffDay + ' 天前';
+    if (diffSec < 10) return t('dashboardJustNow');
+    if (diffSec < 60) return t('dashboardSecondsAgo', { n: diffSec });
+    if (diffMin < 60) return t('dashboardMinutesAgo', { n: diffMin });
+    if (diffHr < 24) return t('dashboardHoursAgo', { n: diffHr });
+    if (diffDay < 30) return t('dashboardDaysAgo', { n: diffDay });
     return formatAbsolute(ts);
   }
 
@@ -84,18 +84,18 @@
 
     var html = '';
     // Total
-    html += statCard('总会话数', data.total || 0, '');
+    html += statCard(t('dashboardStatTotal'), data.total || 0, '');
     // Active
-    html += statCard('活跃会话', data.active || 0, data.total ? (Math.round((data.active / data.total) * 100) + '% 活跃') : '');
+    html += statCard(t('activeSessions'), data.active || 0, data.total ? t('dashboardActivePct', { pct: Math.round((data.active / data.total) * 100) }) : '');
     // By CLI
-    html += statCard('CLI 分布', Object.keys(byCli).length || 0, cliDetails || '无数据');
+    html += statCard(t('dashboardStatCli'), Object.keys(byCli).length || 0, cliDetails || t('dashboardNoData'));
 
     // Also render byKind as an extra card if available
     var byKind = data.byKind || {};
     var kindDetails = Object.keys(byKind).map(function (k) {
       return '<span>' + esc(k) + ': ' + byKind[k] + '</span>';
     }).join('');
-    html += statCard('类型分布', Object.keys(byKind).length || 0, kindDetails || '无数据');
+    html += statCard(t('dashboardStatKind'), Object.keys(byKind).length || 0, kindDetails || t('dashboardNoData'));
 
     el('stats-grid').innerHTML = html;
   }
@@ -117,7 +117,7 @@
       wrap.style.display = 'block';
       var empty = document.createElement('div');
       empty.className = 'empty-state';
-      empty.innerHTML = '<div class="icon">📭</div><div>没有符合条件的会话</div>';
+      empty.innerHTML = '<div class="icon">📭</div><div>' + esc(t('dashboardNoSessions')) + '</div>';
       wrap.innerHTML = '';
       wrap.appendChild(empty);
       el('session-count').textContent = '0';
@@ -129,13 +129,13 @@
     var table = document.createElement('table');
     table.className = 'sessions-table';
     var thead = '<thead><tr>' +
-      '<th>状态</th>' +
+      '<th>' + esc(t('dashboardColStatus')) + '</th>' +
       '<th>ID</th>' +
-      '<th>标签</th>' +
+      '<th>' + esc(t('dashboardColLabel')) + '</th>' +
       '<th>CLI</th>' +
-      '<th>类型</th>' +
-      '<th>创建时间</th>' +
-      '<th>最后活动</th>' +
+      '<th>' + esc(t('dashboardColKind')) + '</th>' +
+      '<th>' + esc(t('dashboardColCreated')) + '</th>' +
+      '<th>' + esc(t('dashboardColLastActivity')) + '</th>' +
       '</tr></thead>';
     table.innerHTML = thead;
     var tbodyEl = document.createElement('tbody');
@@ -145,14 +145,14 @@
 
       // Active dot
       var activeClass = s.active ? 'yes' : 'no';
-      var activeTitle = s.active ? '活跃' : '非活跃';
-      tr.appendChild(td('<span class="active-dot ' + activeClass + '" title="' + activeTitle + '"></span><span class="mobile-status-text">' + activeTitle + '</span>', '状态'));
+      var activeTitle = s.active ? t('dashboardActive') : t('dashboardInactive');
+      tr.appendChild(td('<span class="active-dot ' + activeClass + '" title="' + activeTitle + '"></span><span class="mobile-status-text">' + activeTitle + '</span>', t('dashboardColStatus')));
 
       // ID
       tr.appendChild(td('<span class="mono">' + esc(s.id || '-') + '</span>', 'ID'));
 
       // Label
-      tr.appendChild(td(esc(s.label || s.id || '-'), '标签'));
+      tr.appendChild(td(esc(s.label || s.id || '-'), t('dashboardColLabel')));
 
       // CLI
       var cliCls = s.cli === 'claude' || s.cli === 'claude-exp' ? 'claude' : (s.cli === 'codex' || s.cli === 'codex-exp') ? 'codex-exp' : 'other';
@@ -160,13 +160,13 @@
 
       // Kind
       var kindCls = s.kind || 'other';
-      tr.appendChild(td('<span class="kind-badge ' + kindCls + '">' + esc(s.kind || '-') + '</span>', '类型'));
+      tr.appendChild(td('<span class="kind-badge ' + kindCls + '">' + esc(s.kind || '-') + '</span>', t('dashboardColKind')));
 
       // Created at
-      tr.appendChild(td('<span class="mono">' + formatAbsolute(s.createdAt) + '</span>', '创建'));
+      tr.appendChild(td('<span class="mono">' + formatAbsolute(s.createdAt) + '</span>', t('dashboardColCreated')));
 
       // Last activity
-      tr.appendChild(td('<span class="mono">' + formatRelative(s.lastActivity) + '</span>', '活动'));
+      tr.appendChild(td('<span class="mono">' + formatRelative(s.lastActivity) + '</span>', t('dashboardColLastActivity')));
 
       tbodyEl.appendChild(tr);
     });
@@ -195,7 +195,7 @@
 
   function showLoading() {
     var wrap = el('table-wrap');
-    wrap.innerHTML = '<div class="loading-state">加载中…</div>';
+    wrap.innerHTML = '<div class="loading-state">' + esc(t('loading')) + '</div>';
   }
 
   // ── HTML escape ──────────────────────────────────────────────
@@ -225,13 +225,13 @@
       updateRefreshIndicator(false);
       if (lastFetchOk) {
         // Only show error on first failure
-        showError('数据加载失败: ' + (err.message || err) + ' — 将在 ' + (REFRESH_INTERVAL / 1000) + 's 后重试');
+        showError(t('dashboardLoadFailed', { message: err.message || err, sec: REFRESH_INTERVAL / 1000 }));
         lastFetchOk = false;
       }
       // If we have no data yet, show loading state
       var wrap = el('table-wrap');
       if (!wrap.querySelector('.sessions-table')) {
-        wrap.innerHTML = '<div class="empty-state"><div class="icon">⚠️</div><div>等待 API 可用…</div></div>';
+        wrap.innerHTML = '<div class="empty-state"><div class="icon">⚠️</div><div>' + esc(t('dashboardWaitingApi')) + '</div></div>';
       }
     });
   }
@@ -241,10 +241,10 @@
     var label = el('refresh-label');
     if (ok) {
       dot.style.background = 'var(--green)';
-      label.textContent = '已更新 ' + new Date().toLocaleTimeString();
+      label.textContent = t('dashboardUpdatedAt', { time: new Date().toLocaleTimeString(getLocale()) });
     } else {
       dot.style.background = 'var(--red)';
-      label.textContent = '连接失败';
+      label.textContent = t('dashboardDisconnected');
     }
   }
 
@@ -285,15 +285,15 @@
     btn.addEventListener('click', function () {
       var client = window.MultiCCVoiceLaunch;
       if (!client || typeof client.launch !== 'function') {
-        showError('语音模块未加载，请刷新页面后重试');
+        showError(t('dashboardVoiceModuleMissing'));
         return;
       }
       btn.disabled = true;
       client.launch({}).then(function (result) {
-        if (!result.ok) showError('语音：' + (result.message || result.code));
+        if (!result.ok) showError(t('dashboardVoiceFailed', { message: result.message || result.code }));
         else hideError();
       }).catch(function (err) {
-        showError('语音启动异常: ' + (err && err.message ? err.message : err));
+        showError(t('dashboardVoiceLaunchError', { message: err && err.message ? err.message : err }));
       }).then(function () {
         btn.disabled = false;
       });

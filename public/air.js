@@ -1573,13 +1573,13 @@
     } : selectedEntry;
     const selectedTask = headerEntry?.task || listedTask;
     const adminHeadings = {
-      // 「谁在等我」完整清单（控制台只放最近几条）。
+      // 「谁在等我」完整清单（控制台只放几条）。
       attention: [t('airCrumbConsole'), t('airAdminAttention'), t('airAdminAttentionHint')],
       secrets: [t('airCrumbSettings'), t('airAdminPanelSecrets'), t('secretsVaultShortHint')],
       docs: [t('airCrumbTools'), t('airDocs'), t('airAdminDocsHint')],
       memory: [t('airCrumbTools'), t('airMemoryGraph'), t('airAdminMemoryHint')],
       taskgraph: [t('airCrumbTools'), t('airTaskGraph'), t('airAdminTaskGraphHint')],
-      workspaces: [t('airCrumbTools'), '工作区', 'worktree 休眠回收'],
+      workspaces: [t('airCrumbTools'), t('workspace'), t('mngWorkspacesSub')],
       settings: [t('airCrumbSystemSettings'), t('airSettingsCenter'), t('airAdminSettingsHint')],
       voice: [t('airCrumbSettings'), t('airAdminVoice'), t('airAdminVoiceHint')],
       goal: [t('airCrumbSettings'), t('airAdminGoal'), t('airAdminGoalHint')],

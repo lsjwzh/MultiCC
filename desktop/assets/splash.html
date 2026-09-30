@@ -1,8 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>MultiCC</title>
+<script src="shell-i18n.js"></script>
 <style>
   :root { color-scheme: dark; }
   html, body { height: 100%; margin: 0; }
@@ -29,6 +30,7 @@
 <body>
   <div class="logo">MultiCC</div>
   <div class="spin"></div>
-  <div class="tip">正在启动本地服务，首次启动可能需要一点时间…</div>
+  <div class="tip" data-shell-i18n="starting"></div>
+  <script>window.MultiCCShellI18n.apply();</script>
 </body>
 </html>

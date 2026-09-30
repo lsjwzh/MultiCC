@@ -81,6 +81,10 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // manage.js entry was retired by the manage-aux-history.js split.
   // main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台); same rule.
   // air.js crossed 3000 in 0f276ebc; turn-engine.js is now below 3000 again.
+  // manage.html is the byte-side case: 2977 lines still fits, but giving the legacy
+  // console its 576 data-i18n* attributes took it from 231770 to 249011 bytes, over
+  // the 240000 default. Growth is attributes, not logic, but it is hand-written — so
+  // it is registered as debt rather than parked in REVIEWED_EXEMPTIONS.
   assert.deepEqual(result.debts.map(entry => entry.file),
-    ['app/lib/screens/main_shell.dart', 'public/air.js']);
+    ['app/lib/screens/main_shell.dart', 'public/air.js', 'public/manage.html']);
 });

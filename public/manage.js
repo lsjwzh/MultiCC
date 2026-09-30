@@ -26,17 +26,17 @@ Object.assign(window, { openMemo, closeMemoModal, memoSave, memoCurrentLineText,
 async function renameDirectory(id) {
   const dir = _cachedDirectories.find(d => d.id === id);
   if (!dir) return;
-  const next = await showPrompt('重命名工作区', dir.name || '');
+  const next = await showPrompt(tt('mngRenameDirTitle'), dir.name || '');
   if (next === null) return;
   const name = next.trim();
-  if (!name) { showToast('名称不能为空', true); return; }
-  if (name.length > 80) { showToast('名称过长（最多 80 字）', true); return; }
+  if (!name) { showToast(tt('mngNameEmpty'), true); return; }
+  if (name.length > 80) { showToast(tt('mngNameTooLong'), true); return; }
   try {
     await providerApi.json(`/api/directories/${encodeURIComponent(id)}${tokenQS('?')}`, {
       method: 'PATCH',
       json: { name },
     });
-    showToast(`已重命名为 ${name}`);
+    showToast(tt('mngRenamed', { name }));
     loadDashboard();
   } catch (err) {
     showToast(`Error: ${providerApi.errorText(err)}`, true);
@@ -50,7 +50,7 @@ async function deleteDirectory(id) {
   const msg = hasSessions
     ? `Delete "${dir.name}" and ALL its sessions? This cannot be undone.`
     : `Delete empty directory "${dir.name}"?`;
-  if (!(await showConfirm(msg, { danger: true, okText: '删除' }))) return;
+  if (!(await showConfirm(msg, { danger: true, okText: tt('delete') }))) return;
   try {
     const qs = tokenQS('?');
     const url = `/api/directories/${id}${qs}${qs ? '&' : '?'}force=1`;
@@ -267,8 +267,8 @@ function openSessionChat(id, _cwd) {
 async function deleteSession(id) {
   // Commander is removed together with its workspace; the backend enforces this too.
   const rec = _cachedSessions.find(sess => sess.id === id);
-  if (rec?.type === 'commander') { showToast('指挥官会话不可单独删除，只能随其所属工作区一起删除', true); return; }
-  if (!(await showConfirm(`Delete session ${id}?\nThe PTY process will be terminated.`, { danger: true, okText: '删除' }))) return;
+  if (rec?.type === 'commander') { showToast(tt('mngCommanderDelete'), true); return; }
+  if (!(await showConfirm(`Delete session ${id}?\nThe PTY process will be terminated.`, { danger: true, okText: tt('delete') }))) return;
   try {
     await providerApi.json(`/api/sessions/${encodeURIComponent(id)}` + tokenQS('?'), { method: 'DELETE' });
     showToast(`Session ${id} deleted`);
@@ -293,7 +293,7 @@ async function showDiff(sessionId) {
   const contentEl = document.getElementById('diff-content');
   if (!modal) return;
   titleEl.textContent = `Diff · ${sessionId}`;
-  subEl.textContent = '加载中…';
+  subEl.textContent = tt('loading');
   statEl.textContent = '';
   contentEl.innerHTML = '';
   modal.style.display = 'flex';
@@ -302,20 +302,20 @@ async function showDiff(sessionId) {
     const ms = data.mergeState || {};
     const parts = [];
     if (data.branch) parts.push(`${data.branch} → ${data.baseBranch || ''}`);
-    parts.push(`${ms.ahead || 0} 个提交领先`);
-    if (ms.dirty) parts.push('含未提交改动');
-    if (data.truncated) parts.push('已截断到 1MB');
+    parts.push(tt('aheadCommits', { n: ms.ahead || 0 }));
+    if (ms.dirty) parts.push(tt('dirtyChanges'));
+    if (data.truncated) parts.push(tt('mngTruncated1MB'));
     subEl.textContent = parts.join(' · ');
-    statEl.textContent = (data.stat || '').trim() || '(无变更)';
+    statEl.textContent = (data.stat || '').trim() || tt('mngNoChanges');
     contentEl.replaceChildren(renderDiffLines(data.diff || ''));
     if (data.error) {
       const errLine = document.createElement('div');
       errLine.className = 'diff-line diff-del';
-      errLine.textContent = `错误：${data.error}`;
+      errLine.textContent = tt('mngErrorDetail', { detail: data.error });
       contentEl.appendChild(errLine);
     }
   } catch (e) {
-    subEl.textContent = `请求失败：${providerApi.errorText(e)}`;
+    subEl.textContent = tt('mngRequestFailed', { detail: providerApi.errorText(e) });
   }
 }
 
@@ -328,10 +328,10 @@ function showMergeConflictDiff(sessionId, data) {
   const modal = document.getElementById('diff-modal');
   if (!modal) return;
   const conflicts = data.conflicts || [];
-  document.getElementById('diff-title').textContent = `合并冲突 · ${sessionId}`;
+  document.getElementById('diff-title').textContent = tt('mngMergeConflictTitle', { id: sessionId });
   document.getElementById('diff-subtitle').textContent =
-    `${conflicts.length} 个冲突文件 · 合并已 abort，基分支未改动${data.conflictDiffTruncated ? ' · Diff 已截断' : ''}`;
-  document.getElementById('diff-stat').textContent = conflicts.join('\n') || '(未获取到冲突文件)';
+    tt('mngMergeConflictSub', { n: conflicts.length }) + (data.conflictDiffTruncated ? tt('mngDiffTruncatedSuffix') : '');
+  document.getElementById('diff-stat').textContent = conflicts.join('\n') || tt('mngNoConflictFiles');
   document.getElementById('diff-content').replaceChildren(renderDiffLines(data.conflictDiff || ''));
   modal.style.display = 'flex';
 }
@@ -342,7 +342,7 @@ function renderDiffLines(text) {
     const empty = document.createElement('div');
     empty.className = 'diff-line diff-meta';
     empty.style.cssText = 'text-align:center;padding:24px;';
-    empty.textContent = '（无变更）';
+    empty.textContent = tt('mngNoChanges');
     fragment.appendChild(empty);
     return fragment;
   }
@@ -367,26 +367,26 @@ function renderDiffLines(text) {
   if (truncated) {
     const note = document.createElement('span');
     note.className = 'diff-line diff-meta';
-    note.textContent = `… 行数过多已截断（${lines.length - MAX_LINES} 行省略）`;
+    note.textContent = tt('mngDiffTruncatedLines', { n: lines.length - MAX_LINES });
     fragment.appendChild(note);
   }
   return fragment;
 }
 
 async function mergeSession(id) {
-  if (!(await showConfirm(`把会话 ${id} 的 worktree 合并回基分支？\n未提交的改动会先自动提交。`, { okText: '合并' }))) return;
+  if (!(await showConfirm(tt('mergeBody'), { okText: tt('merge') }))) return;
   try {
     const data = await providerApi.json(`/api/sessions/${encodeURIComponent(id)}/merge` + tokenQS('?'), { method: 'POST' });
-    showToast(data.merged ? `已合并 ${data.commits} 个提交回基分支` : (data.message || '没有新提交需要合并'));
+    showToast(data.merged ? tt('merged', { n: data.commits }) : (data.message || tt('mergeNoNewCommits')));
     const prev = _workspaceStatus.get(id) || {};
     _workspaceStatus.set(id, { ...prev, mergeState: { ...(prev.mergeState || {}), mergeReady: false, dirty: false, ahead: 0 } });
     updateSessionMergeDom(id);
     await loadDashboard();
   } catch (err) {
     if (err.status === 409) {
-      showToast(`合并冲突，已 abort：${providerApi.errorText(err)}`, true);
+      showToast(tt('mergeConflict', { files: providerApi.errorText(err) }), true);
       showMergeConflictDiff(id, err.details || {});
-    } else showToast(`合并失败：${providerApi.errorText(err)}`, true);
+    } else showToast(tt('mergeFailed', { error: providerApi.errorText(err) }), true);
   }
 }
 
@@ -396,20 +396,19 @@ async function showSyncConflictHelp(id) {
   const ms = st?.mergeState || {};
   const files = ms.conflictFiles || [];
   const wt = (_cachedSessions.find(s => s.id === id) || {}).worktreePath || '<worktree>';
-  const msg = `会话 ${id} 同步时与基分支发生冲突，rebase 已暂停。\n\n` +
-    `冲突文件（${files.length}）：\n${files.map(f => '  · ' + f).join('\n') || '  (无)'}\n\n` +
-    `手动解决步骤：\n` +
-    `1. 进入 worktree：cd ${wt}\n` +
-    `2. 编辑上面的文件，消除 <<<<<<< / ======= / >>>>>>> 冲突标记\n` +
-    `3. 解决后点「继续」（= git add -A && git rebase --continue）\n\n` +
-    `点「继续」表示已解决；点「取消」可暂时关闭。`;
+  const msg = tt('mngSyncConflictHelp', {
+    id,
+    n: files.length,
+    files: files.map(f => '  · ' + f).join('\n') || '  ' + tt('mngNoneParen'),
+    wt,
+  });
   // Primary path: user resolved → continue. Cancel just closes; aborting the
   // rebase is offered as an explicit follow-up so it can't happen by accident.
-  const cont = await showConfirm(msg, { okText: '继续', cancelText: '取消' });
+  const cont = await showConfirm(msg, { okText: tt('worktreeConflictContinue'), cancelText: tt('cancel') });
   if (cont) { await resolveRebase(id, 'continue'); return; }
   const abort = await showConfirm(
-    `要放弃这次同步、把 worktree 回滚到同步前的状态吗？\n（git rebase --abort，本地已提交的改动不受影响）`,
-    { okText: '放弃 rebase', cancelText: '保留冲突现场', danger: true });
+    tt('mngAbortRebaseConfirm'),
+    { okText: tt('mngAbortRebase'), cancelText: tt('mngKeepConflict'), danger: true });
   if (abort) await resolveRebase(id, 'abort');
 }
 
@@ -419,12 +418,12 @@ async function resolveRebase(id, action) {
       method: 'POST',
       json: { action },
     });
-    if (data.aborted) showToast('已放弃 rebase，worktree 回到同步前状态');
-    else if (data.done) showToast('冲突已解决，同步完成');
-    else showToast('rebase 已继续');
+    if (data.aborted) showToast(tt('rebaseAborted'));
+    else if (data.done) showToast(tt('rebaseDone'));
+    else showToast(tt('rebaseContinued'));
     await loadDashboard();
   } catch (err) {
-    showToast(`${err.status === 409 ? '仍有冲突未解决' : '操作失败'}：${providerApi.errorText(err)}`, true);
+    showToast(tt(err.status === 409 ? 'mngConflictsRemain' : 'mngOpFailed', { detail: providerApi.errorText(err) }), true);
   }
 }
 
@@ -558,18 +557,18 @@ function updateSessionStatusDom(sessionId) {
 function eventLabel(evt) {
   const who = evt.sessionLabel || evt.sessionId || '';
   switch (evt.type) {
-    case 'session_created': return `🆕 新建会话 ${who}（${evt.detail || ''}）`;
-    case 'session_renamed': return `✏️ 会话改名为 ${evt.detail || who}`;
-    case 'session_model_changed': return `🧠 切换模型 ${evt.detail || who}`;
-    case 'session_cli_changed': return `⇄ 切换 CLI ${evt.detail || who}`;
-    case 'session_deleted': return `🗑 删除会话 ${evt.detail || who}`;
-    case 'merged':          return `🔀 ${who} 合并：${evt.detail || ''}`;
-    case 'memory_updated':  return `🧠 ${who} ${evt.detail || '更新会话记忆'}`;
-    case 'synced':          return `🔄 ${who} 同步：${evt.detail || ''}`;
-    case 'sync_conflict':   return `⚠️ ${who} ${evt.detail || '同步冲突'}`;
-    case 'dispatch':        return `📤 ${who} 分发 ${evt.detail || ''}`;
-    case 'note':            return `📨 ${who} 留言 ${evt.detail || ''}`;
-    case 'note_delivered':  return `📬 ${who}：${evt.detail || ''}`;
+    case 'session_created': return tt('eventCreated', { who, detail: evt.detail || '' });
+    case 'session_renamed': return tt('eventRenamed', { detail: evt.detail || who });
+    case 'session_model_changed': return tt('mngEventModelChanged', { detail: evt.detail || who });
+    case 'session_cli_changed': return tt('mngEventCliChanged', { detail: evt.detail || who });
+    case 'session_deleted': return tt('eventDeleted', { detail: evt.detail || who });
+    case 'merged':          return tt('eventMerged', { who, detail: evt.detail || '' });
+    case 'memory_updated':  return tt('mngEventMemory', { who, detail: evt.detail || tt('mngMemoryUpdated') });
+    case 'synced':          return tt('eventSynced', { who, detail: evt.detail || '' });
+    case 'sync_conflict':   return evt.detail ? tt('mngEventSyncConflict', { who, detail: evt.detail }) : tt('eventConflict', { who });
+    case 'dispatch':        return tt('eventDispatch', { who, detail: evt.detail || '' });
+    case 'note':            return tt('eventNote', { who, detail: evt.detail || '' });
+    case 'note_delivered':  return tt('eventNoteDelivered', { who, detail: evt.detail || '' });
     default:                return `· ${evt.type} ${who}`;
   }
 }
@@ -589,16 +588,16 @@ function renderEventTimeline(dirId) {
   const total = allEvents.length;
 
   const rowsHtml = n
-    ? displayEvents.map(e => `<div class="wb-event-row"><span class="t">${new Date(e.ts).toLocaleTimeString()}</span> ${escapeHtml(eventLabel(e))}</div>`).join('')
-    : '<div class="wb-event-row dim">暂无活动</div>';
+    ? displayEvents.map(e => `<div class="wb-event-row"><span class="t">${new Date(e.ts).toLocaleTimeString(getLocale())}</span> ${escapeHtml(eventLabel(e))}</div>`).join('')
+    : '<div class="wb-event-row dim">' + escapeHtml(tt('noRecentActivity')) + '</div>';
 
   const expandBtnHtml = total > 3
-    ? `<button class="btn btn-sm" style="margin-top:8px;font-size:11px;" onclick="event.stopPropagation(); openEventsPage('${escapeHtml(dirId)}')">查看全部 (${total} 条) ↗</button>`
+    ? `<button class="btn btn-sm" style="margin-top:8px;font-size:11px;" onclick="event.stopPropagation(); openEventsPage('${escapeHtml(dirId)}')">${escapeHtml(tt('mngViewAllCount', { n: total }))}</button>`
     : '';
 
   return `<div class="wb-events" id="wb-events-${escapeHtml(dirId)}">
     <div style="padding:8px 10px;background:rgba(0,0,0,0.2);border-radius:8px;margin-bottom:12px;">
-      <div style="font-size:12px;color:var(--faint);margin-bottom:6px;">活动</div>
+      <div style="font-size:12px;color:var(--faint);margin-bottom:6px;">${escapeHtml(tt('activity'))}</div>
       <div class="wb-events-list" style="display:block;">${rowsHtml}</div>
       ${expandBtnHtml}
     </div>
@@ -625,7 +624,7 @@ function updateSessionSummaryDom(sessionId) {
   const ico = window.MultiCCStatusPresentation
     .presentation('session', sessionCardStatusFor(sessionId)).icon;
   el.textContent = text ? ico + ' ' + text : '';
-  el.title = text ? `最近任务：${text}` : '';
+  el.title = text ? tt('mngRecentTask', { text }) : '';
   el.style.display = text ? '' : 'none';
 }
 
@@ -697,9 +696,11 @@ function updateSessionMergeDom(sessionId) {
   const ms = st?.mergeState || {};
   const ready = !!ms.mergeReady;
   btn.classList.toggle('merge-ready', ready);
-  btn.title = ready
-    ? `可合并：${ms.dirty ? '有未提交改动' : ''}${ms.dirty && ms.ahead > 0 ? '，' : ''}${ms.ahead > 0 ? `${ms.ahead} 个提交领先` : ''}`
-    : '把 worktree 合并回基分支';
+  const mergeDetail = [
+    ms.dirty ? tt('dirtyChanges') : '',
+    ms.ahead > 0 ? tt('aheadCommits', { n: ms.ahead }) : '',
+  ].filter(Boolean).join(tt('mngCommaSep'));
+  btn.title = ready ? tt('mergeReadyTitle', { detail: mergeDetail }) : tt('mergeWorktreeTitle');
 
   // Live-sync the conflict badge (⚠️ N) — a parked rebase conflict that needs
   // manual resolution. Created/removed independently of the merge badge.
@@ -708,7 +709,8 @@ function updateSessionMergeDom(sessionId) {
   const conflictFiles = ms.conflictFiles || [];
   let cbadge = document.getElementById(`sess-conflict-${sessionId}`);
   if (hasConflict) {
-    const ctitle = `同步冲突：${conflictFiles.length} 个文件待解决（${conflictFiles.slice(0, 5).join(', ')}）— 点击查看如何解决`;
+    const ctitle = tt('worktreeConflictBanner', { n: conflictFiles.length })
+      + tt('mngConflictClickHint', { files: conflictFiles.slice(0, 5).join(', ') });
     if (!cbadge) {
       cbadge = document.createElement('button');
       cbadge.className = 'sess-conflict-btn';
@@ -728,7 +730,7 @@ function updateSessionMergeDom(sessionId) {
   let badge = document.getElementById(`sess-merge-${sessionId}`);
   if (ready) {
     const label = `🔀${ms.ahead > 0 ? ' ' + ms.ahead : ''}`;
-    const title = `可合并：${ms.dirty ? '有未提交改动' : ''}${ms.dirty && ms.ahead > 0 ? '，' : ''}${ms.ahead > 0 ? `${ms.ahead} 个提交领先` : ''} — 点击合并`;
+    const title = tt('mergeReadyTitle', { detail: mergeDetail }) + tt('mngClickToMerge');
     if (!badge) {
       badge = document.createElement('button');
       badge.className = 'sess-merge-btn';
@@ -749,7 +751,7 @@ function openNoteModal(fromId) {
   if (!from) return;
   const siblings = _cachedSessions.filter(s =>
     s.dirId === from.dirId && s.id !== fromId && s.type !== 'aux');
-  if (!siblings.length) { showToast('该工作区下没有其他会话可留言', true); return; }
+  if (!siblings.length) { showToast(tt('leaveNoteNoTarget'), true); return; }
 
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:#000000bb;z-index:20000;display:flex;align-items:center;justify-content:center;';
@@ -757,13 +759,13 @@ function openNoteModal(fromId) {
     `<option value="${escapeHtml(s.id)}">${escapeHtml(s.label || s.id)} (${escapeHtml(s.cli)}/${escapeHtml(s.kind)})</option>`).join('');
   overlay.innerHTML = `
     <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px;width:440px;max-width:92vw;">
-      <div style="font-size:14px;font-weight:600;color:#f0f6fc;margin-bottom:4px;">给同工作区 Agent 留言</div>
-      <div style="font-size:11px;color:#8b949e;margin-bottom:12px;">来自 ${escapeHtml(from.label || from.id)}。留言会在对方下一轮对话开始时送达。</div>
+      <div style="font-size:14px;font-weight:600;color:#f0f6fc;margin-bottom:4px;">${escapeHtml(tt('mngNoteTitle'))}</div>
+      <div style="font-size:11px;color:#8b949e;margin-bottom:12px;">${escapeHtml(tt('mngNoteFrom', { from: from.label || from.id }))}${escapeHtml(tt('leaveNoteHint'))}</div>
       <select id="note-target" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 9px;margin-bottom:10px;">${opts}</select>
-      <textarea id="note-body" rows="4" placeholder="留言内容…" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;resize:vertical;outline:none;"></textarea>
+      <textarea id="note-body" rows="4" placeholder="${escapeHtml(tt('leaveNoteBody'))}" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;resize:vertical;outline:none;"></textarea>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
-        <button class="btn" id="note-cancel">取消</button>
-        <button class="btn btn-green" id="note-send">发送</button>
+        <button class="btn" id="note-cancel">${escapeHtml(tt('cancel'))}</button>
+        <button class="btn btn-green" id="note-send">${escapeHtml(tt('leaveNoteSend'))}</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -773,14 +775,14 @@ function openNoteModal(fromId) {
   overlay.querySelector('#note-send').onclick = async () => {
     const toId = overlay.querySelector('#note-target').value;
     const body = overlay.querySelector('#note-body').value.trim();
-    if (!body) { showToast('留言内容不能为空', true); return; }
+    if (!body) { showToast(tt('mngNoteEmpty'), true); return; }
     try {
       await providerApi.json(`/api/sessions/${encodeURIComponent(fromId)}/notes` + tokenQS('?'), {
         method: 'POST', json: { toSessionId: toId, body },
       });
-      showToast('留言已发送'); close();
+      showToast(tt('leaveNoteSent')); close();
     } catch (err) {
-      showToast(`发送失败：${providerApi.errorText(err)}`, true);
+      showToast(tt('leaveNoteFailed', { error: providerApi.errorText(err) }), true);
     }
   };
 }
@@ -894,7 +896,7 @@ async function loadVoiceSettings() {
     document.getElementById('vs-model').value = data.model || '';
     document.getElementById('ws-base-url').value = data.whisperBaseUrl || '';
     document.getElementById('ws-api-key').value = '';
-    document.getElementById('ws-api-key').placeholder = data.hasWhisperKey ? data.whisperApiKey : 'gsk_... (留空则复用 OpenRouter Key)';
+    document.getElementById('ws-api-key').placeholder = data.hasWhisperKey ? data.whisperApiKey : tt('airVoiceWhisperKeyHint');
     document.getElementById('ws-model').value = data.whisperModel || '';
     document.getElementById('ws-language').value = data.whisperLanguage || 'zh';
     document.getElementById('ws-prompt').value = data.whisperPrompt || '';
@@ -980,7 +982,7 @@ async function saveGoalSettings() {
     });
     status.textContent = 'Saved';
     status.className = 'status-text ok';
-    showToast('Goal 预检设置已保存');
+    showToast(tt('mngGoalSaved'));
     loadGoalSettings();
   } catch (err) {
     status.textContent = `Failed: ${providerApi.errorText(err)}`;
@@ -1006,12 +1008,12 @@ async function loadMacosPowerSettings() {
     card.style.display = '';
     if (data.error) throw providerApi.errorFromPayload(data);
     toggle.checked = !!data.enabled;
-    status.textContent = data.enabled ? '已开启' : '已关闭';
+    status.textContent = data.enabled ? tt('mngEnabled') : tt('mngDisabled');
     status.className = `status-text ${data.enabled ? 'ok' : ''}`;
   } catch (error) {
     card.style.display = available ? '' : 'none';
     if (available) {
-      status.textContent = `读取失败：${providerApi.errorText(error)}`;
+      status.textContent = tt('airAdminLoadFailed', { message: providerApi.errorText(error) });
       status.className = 'status-text err';
     }
   }
@@ -1022,7 +1024,7 @@ async function saveMacosPowerSettings() {
   const status = document.getElementById('macos-power-status');
   const requested = toggle.checked;
   toggle.disabled = true;
-  status.textContent = '等待管理员授权…';
+  status.textContent = tt('airGlobalPowerWaiting');
   status.className = 'status-text';
 
   try {
@@ -1031,12 +1033,12 @@ async function saveMacosPowerSettings() {
       json: { enabled: requested },
     });
     toggle.checked = !!data.enabled;
-    status.textContent = data.enabled ? '已开启' : '已关闭';
+    status.textContent = data.enabled ? tt('mngEnabled') : tt('mngDisabled');
     status.className = `status-text ${data.enabled ? 'ok' : ''}`;
-    showToast(data.enabled ? '已开启关盖保持运行' : '已恢复关盖睡眠');
+    showToast(data.enabled ? tt('mngPowerOnToast') : tt('mngPowerOffToast'));
   } catch (error) {
     toggle.checked = !requested;
-    status.textContent = `设置失败：${providerApi.errorText(error)}`;
+    status.textContent = tt('mngSettingsSaveFailed', { message: providerApi.errorText(error) });
     status.className = 'status-text err';
   } finally {
     toggle.disabled = false;
@@ -1046,7 +1048,7 @@ async function saveMacosPowerSettings() {
 /* ── Streaming ASR Settings (modal) ── */
 function _asrBadge(el, ready) {
   if (!el) return;
-  el.textContent = ready ? '● 就绪' : '○ 未配置';
+  el.textContent = ready ? tt('airVoiceAsrReady') : tt('airVoiceAsrNotConfigured');
   el.style.color = ready ? '#3fb950' : '#6e7681';
 }
 
@@ -1056,14 +1058,14 @@ async function loadAsrSettings() {
     const a = data.asr || {};
     const st = a.status || {};
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
-    const ph = (id, has, hint) => { const el = document.getElementById(id); if (el) { el.value = ''; el.placeholder = has ? '已配置（留空不修改）' : hint; } };
+    const ph = (id, has, hint) => { const el = document.getElementById(id); if (el) { el.value = ''; el.placeholder = has ? tt('airVoiceKeyConfiguredHint') : hint; } };
 
     if (document.getElementById('asr-provider')) document.getElementById('asr-provider').value = a.provider || 'openai';
     ph('asr-openai-key', a.hasOpenaiKey, 'sk-...');
     set('asr-openai-url', a.openaiUrl);
     set('asr-openai-model', a.openaiModel);
-    ph('asr-volc-appid', a.hasVolcAppId, '火山 App ID');
-    ph('asr-volc-token', a.hasVolcToken, '火山 Access Token');
+    ph('asr-volc-appid', a.hasVolcAppId, tt('airVoicePhVolcAppId'));
+    ph('asr-volc-token', a.hasVolcToken, tt('airVoicePhVolcToken'));
     set('asr-volc-resource', a.volcResourceId);
     set('asr-volc-url', a.volcUrl);
     set('asr-funasr-url', a.funasrUrl);
@@ -1076,12 +1078,13 @@ async function loadAsrSettings() {
     // Summary line on the Voice Settings card
     const sum = document.getElementById('asr-summary');
     if (sum) {
-      const names = { openai: 'OpenAI Realtime', volcano: '火山引擎', funasr: 'FunASR' };
+      const names = { openai: tt('airVoiceAsrNameOpenai'), volcano: tt('airVoiceAsrNameVolcano'), funasr: tt('airVoiceAsrNameFunasr') };
       const ready = [];
-      if (st.openai && st.openai.ready) ready.push('OpenAI');
-      if (st.volcano && st.volcano.ready) ready.push('火山');
-      if (st.funasr && st.funasr.ready) ready.push('FunASR');
-      sum.textContent = `默认：${names[a.provider] || a.provider || '—'}` + (ready.length ? ` · 已配置：${ready.join('、')}` : ' · 尚未配置任何提供商');
+      if (st.openai && st.openai.ready) ready.push(tt('airVoiceAsrShortOpenai'));
+      if (st.volcano && st.volcano.ready) ready.push(tt('airVoiceAsrShortVolcano'));
+      if (st.funasr && st.funasr.ready) ready.push(tt('airVoiceAsrShortFunasr'));
+      sum.textContent = tt('airVoiceAsrSummary', { provider: names[a.provider] || a.provider || '—' })
+        + (ready.length ? tt('airVoiceAsrSummaryReady', { list: ready.join(tt('airVoiceAsrListSep')) }) : tt('airVoiceAsrSummaryNone'));
       sum.style.color = ready.length ? '#8b949e' : '#d29922';
     }
   } catch (_) {}
@@ -1116,11 +1119,11 @@ async function saveAsrSettings() {
       method: 'POST',
       json: { asr },
     });
-    if (status) { status.textContent = '已保存'; status.style.color = '#3fb950'; }
-    showToast('流式 ASR 设置已保存');
+    if (status) { status.textContent = tt('saved'); status.style.color = '#3fb950'; }
+    showToast(tt('airVoiceAsrSavedNotice'));
     loadAsrSettings();
   } catch (err) {
-    if (status) { status.textContent = `失败：${providerApi.errorText(err)}`; status.style.color = '#f85149'; }
+    if (status) { status.textContent = tt('mngFailed', { detail: providerApi.errorText(err) }); status.style.color = '#f85149'; }
   }
 }
 
@@ -1155,7 +1158,7 @@ async function loadCronTasks() {
     const cnt = document.getElementById('cron-count');
     if (cnt) cnt.textContent = tasks.length ? `(${tasks.length})` : '';
     if (!tasks.length) {
-      list.innerHTML = '<div style="color:#6e7681;font-size:13px;">还没有定时任务。点「+ 新建」，或让 agent 帮你登记。</div>';
+      list.innerHTML = '<div style="color:#6e7681;font-size:13px;">' + escapeHtml(tt('mngCronEmpty')) + '</div>';
       list.classList.remove('multicc-auto-grid');
       return;
     }
@@ -1180,44 +1183,44 @@ async function loadCronTasks() {
         <!-- 标题行 -->
         <div style="display:flex;align-items:center;gap:8px;">
           <span style="font-weight:600;color:var(--text);font-size:15px;">${escapeHtml(t.name)}</span>
-          <span style="font-size:11px;padding:2px 7px;border-radius:5px;background:${t.enabled ? 'rgba(63,185,80,0.15)' : 'rgba(110,118,129,0.15)'};color:${t.enabled ? 'var(--accent)' : 'var(--faint)'};font-weight:500;">${t.enabled ? '启用' : '停用'}</span>
+          <span style="font-size:11px;padding:2px 7px;border-radius:5px;background:${t.enabled ? 'rgba(63,185,80,0.15)' : 'rgba(110,118,129,0.15)'};color:${t.enabled ? 'var(--accent)' : 'var(--faint)'};font-weight:500;">${t.enabled ? escapeHtml(tt('airScheduleEnable')) : escapeHtml(tt('mngDisable'))}</span>
           <span style="flex:1;"></span>
         </div>
 
         <!-- 活动块 -->
         <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(0,0,0,0.2);border-radius:8px;min-height:36px;">
-          <span style="font-size:12px;color:var(--faint);">活动</span>
+          <span style="font-size:12px;color:var(--faint);">${escapeHtml(tt('activity'))}</span>
           ${sessionActive ? `
             <span class="dot active" style="width:8px;height:8px;"></span>
-            <span style="font-size:12px;color:var(--accent);">正在运行</span>
+            <span style="font-size:12px;color:var(--accent);">${escapeHtml(tt('mngNowRunning'))}</span>
           ` : t.lastRunAt ? `
-            <span style="font-size:12px;color:var(--muted);">上次 ${_cronTime(t.lastRunAt)}</span>
-            <span style="font-size:12px;color:${statusColor};">· ${t.lastStatus === 'ok' ? '成功' : (t.lastError || t.lastStatus)}</span>
-            ${t.enabled && t.nextRunAt ? `<span style="font-size:12px;color:var(--faint);">· 下次 ${_cronTime(t.nextRunAt)}</span>` : ''}
+            <span style="font-size:12px;color:var(--muted);">${escapeHtml(tt('mngLastRun', { time: _cronTime(t.lastRunAt) }))}</span>
+            <span style="font-size:12px;color:${statusColor};">· ${t.lastStatus === 'ok' ? escapeHtml(tt('mngSuccess')) : escapeHtml(t.lastError || t.lastStatus)}</span>
+            ${t.enabled && t.nextRunAt ? `<span style="font-size:12px;color:var(--faint);">· ${escapeHtml(tt('mngNextRun', { time: _cronTime(t.nextRunAt) }))}</span>` : ''}
           ` : `
-            <span style="font-size:12px;color:var(--faint);">尚未运行</span>
+            <span style="font-size:12px;color:var(--faint);">${escapeHtml(tt('mngNeverRun'))}</span>
           `}
         </div>
 
         <!-- 固定 Air 任务 -->
         ${t.taskId ? `
-          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(58,214,197,0.07);border:1px solid rgba(58,214,197,0.18);border-radius:8px;cursor:pointer;" onclick="event.stopPropagation(); openCronAirTask('${escapeHtml(t.id)}')" title="打开固定 Air 任务">
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(58,214,197,0.07);border:1px solid rgba(58,214,197,0.18);border-radius:8px;cursor:pointer;" onclick="event.stopPropagation(); openCronAirTask('${escapeHtml(t.id)}')" title="${escapeHtml(tt('mngOpenPinnedTask'))}">
             <span class="dot ${sessionActive ? 'active' : ''}" style="width:8px;height:8px;"></span>
             <div style="flex:1;min-width:0;">
-              <div style="font-size:11px;color:var(--accent);">固定 Air 任务</div>
+              <div style="font-size:11px;color:var(--accent);">${escapeHtml(tt('mngPinnedTask'))}</div>
               <div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(t.taskTitle || t.name)}</div>
               <div style="font-size:11px;color:var(--faint);display:flex;gap:6px;align-items:center;">
                 <span>${escapeHtml(t.taskId)}</span>
                 ${sessionModel ? `<span>· ${escapeHtml(sessionModel)}</span>` : ''}
               </div>
             </div>
-            <button class="btn btn-sm" onclick="event.stopPropagation(); openCronAirTask('${escapeHtml(t.id)}')" title="打开固定 Air 任务">
-              打开
+            <button class="btn btn-sm" onclick="event.stopPropagation(); openCronAirTask('${escapeHtml(t.id)}')" title="${escapeHtml(tt('mngOpenPinnedTask'))}">
+              ${escapeHtml(tt('open'))}
             </button>
           </div>
         ` : `
           <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(0,0,0,0.15);border-radius:8px;">
-            <span style="font-size:12px;color:var(--danger);">固定 Air 任务绑定失败：${escapeHtml(t.taskBindingError || '等待迁移')}</span>
+            <span style="font-size:12px;color:var(--danger);">${escapeHtml(tt('mngPinnedTaskBindFailed', { error: t.taskBindingError || tt('mngAwaitMigration') }))}</span>
           </div>
         `}
 
@@ -1229,7 +1232,7 @@ async function loadCronTasks() {
           <span>·</span>
           <span>${escapeHtml(t.cli)}</span>
           <span>·</span>
-          <span>创建者 ${escapeHtml(t.createdBy)}</span>
+          <span>${escapeHtml(tt('mngCreatedBy', { name: t.createdBy }))}</span>
         </div>
 
         <!-- prompt 预览 -->
@@ -1239,11 +1242,11 @@ async function loadCronTasks() {
 
         <!-- 操作按钮 -->
         <div style="display:flex;gap:6px;margin-top:auto;padding-top:4px;border-top:1px solid var(--line);">
-          <button class="btn btn-sm" title="立即运行" onclick="runCronTask('${t.id}')">▶ 运行</button>
-          <button class="btn btn-sm" onclick="toggleCronTask('${t.id}', ${t.enabled ? 'false' : 'true'})">${t.enabled ? '停用' : '启用'}</button>
-          <button class="btn btn-sm" onclick="openCronModal('${t.id}')">编辑</button>
+          <button class="btn btn-sm" title="${escapeHtml(tt('mngRunNow'))}" onclick="runCronTask('${t.id}')">${escapeHtml(tt('mngRunBtn'))}</button>
+          <button class="btn btn-sm" onclick="toggleCronTask('${t.id}', ${t.enabled ? 'false' : 'true'})">${t.enabled ? escapeHtml(tt('mngDisable')) : escapeHtml(tt('airScheduleEnable'))}</button>
+          <button class="btn btn-sm" onclick="openCronModal('${t.id}')">${escapeHtml(tt('mngEdit'))}</button>
           <span style="flex:1;"></span>
-          <button class="btn btn-sm btn-danger" onclick="deleteCronTask('${t.id}')">删除</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteCronTask('${t.id}')">${escapeHtml(tt('delete'))}</button>
         </div>
       `;
       list.appendChild(row);
@@ -1256,7 +1259,7 @@ async function loadCronTasks() {
     list.style.gap = '12px';
     list.classList.add('multicc-auto-grid');
   } catch (err) {
-    list.innerHTML = `<div style="color:var(--danger);font-size:13px;">加载失败：${escapeHtml(providerApi.errorText(err))}</div>`;
+    list.innerHTML = `<div style="color:var(--danger);font-size:13px;">${escapeHtml(tt('airAdminLoadFailed', { message: providerApi.errorText(err) }))}</div>`;
   }
 }
 
@@ -1288,7 +1291,7 @@ async function openCronModal(id) {
     try { _cronTasksCache = await (await fetch('/api/cron' + tokenQS('?'))).json(); } catch (_) {}
     task = _cronTasksCache.find(t => t.id === id) || null;
   }
-  title.textContent = task ? '⏰ 编辑定时任务' : '⏰ 新建定时任务';
+  title.textContent = task ? tt('mngCronEdit') : tt('mngCronNew');
   document.getElementById('cron-edit-id').value = task ? task.id : '';
   document.getElementById('cron-f-name').value = task ? task.name : '';
   _populateCronDirs(task ? task.dirId : ((_cachedDirectories[0] && _cachedDirectories[0].id) || ''));
@@ -1323,19 +1326,19 @@ async function saveCronTask() {
     body.dirId = document.getElementById('cron-f-dir').value;
     body.cli = document.getElementById('cron-f-cli').value;
   }
-  if (!body.name) { status.textContent = '任务名不能为空'; status.style.color = '#f85149'; return; }
-  if (!body.prompt.trim()) { status.textContent = 'prompt 不能为空'; status.style.color = '#f85149'; return; }
+  if (!body.name) { status.textContent = tt('mngTaskNameRequired'); status.style.color = '#f85149'; return; }
+  if (!body.prompt.trim()) { status.textContent = tt('mngPromptRequired'); status.style.color = '#f85149'; return; }
   try {
     const url = '/api/cron' + (id ? '/' + id : '') + tokenQS('?');
     await providerApi.json(url, {
       method: id ? 'PATCH' : 'POST',
       json: body,
     });
-    showToast(id ? '已更新定时任务' : '已创建定时任务');
+    showToast(id ? tt('mngCronUpdated') : tt('mngCronCreated'));
     closeCronModal();
     loadCronTasks();
   } catch (err) {
-    status.textContent = `失败：${providerApi.errorText(err)}`; status.style.color = '#f85149';
+    status.textContent = tt('mngFailed', { detail: providerApi.errorText(err) }); status.style.color = '#f85149';
   }
 }
 
@@ -1343,9 +1346,9 @@ async function runCronTask(id) {
   try {
     const data = await providerApi.json(`/api/cron/${encodeURIComponent(id)}/run` + tokenQS('?'), { method: 'POST' });
     if (!data.ok) throw providerApi.errorFromPayload(data);
-    showToast(data.decision === 'queued' ? '固定任务忙碌，本次执行已排队' : '已送入固定 Air 任务');
+    showToast(data.decision === 'queued' ? tt('mngCronQueued') : tt('mngCronDispatched'));
     loadCronTasks();
-  } catch (err) { showToast(`运行失败：${providerApi.errorText(err)}`, true); }
+  } catch (err) { showToast(tt('mngRunFailed', { detail: providerApi.errorText(err) }), true); }
 }
 
 async function toggleCronTask(id, enabled) {
@@ -1359,10 +1362,10 @@ async function toggleCronTask(id, enabled) {
 }
 
 async function deleteCronTask(id) {
-  if (!(await showConfirm('删除这个定时任务？', { danger: true, okText: '删除' }))) return;
+  if (!(await showConfirm(tt('mngDeleteCronConfirm'), { danger: true, okText: tt('delete') }))) return;
   try {
     await providerApi.json(`/api/cron/${encodeURIComponent(id)}` + tokenQS('?'), { method: 'DELETE' });
-    showToast('已删除');
+    showToast(tt('mngDeleted'));
     loadCronTasks();
   } catch (err) { showToast(`Error: ${providerApi.errorText(err)}`, true); }
 }
@@ -1463,12 +1466,12 @@ function renderSkills() {
 let _skillSyncData = null;
 
 function _ssRelTime(ts) {
-  if (!ts) return '未同步';
+  if (!ts) return tt('airSkillsyncNever');
   const diff = Date.now() - ts;
-  if (diff < 60000) return '刚刚';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
-  return `${Math.floor(diff / 86400000)} 天前`;
+  if (diff < 60000) return tt('airSkillsyncJustNow');
+  if (diff < 3600000) return tt('airSkillsyncMinutesAgo', { n: Math.floor(diff / 60000) });
+  if (diff < 86400000) return tt('airSkillsyncHoursAgo', { n: Math.floor(diff / 3600000) });
+  return tt('airSkillsyncDaysAgo', { n: Math.floor(diff / 86400000) });
 }
 
 async function loadSkillSyncStatus() {
@@ -1487,14 +1490,14 @@ function renderSkillSyncStatus() {
   if (!d) return;
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
 
-  set('ss-last', d.ts ? `${new Date(d.ts).toLocaleString()} · ${_ssRelTime(d.ts)}` : '尚未同步');
-  set('ss-shared-count', `${d.sharedSkillCount || 0} 个技能`);
-  set('ss-run', `+${d.linkCount || 0} 软链 · ${d.skipCount || 0} 跳过 · ${d.convCount || 0} 转换 · 反向导入 ${d.reverseImportCount || 0}`);
+  set('ss-last', d.ts ? `${new Date(d.ts).toLocaleString(getLocale())} · ${_ssRelTime(d.ts)}` : tt('airSkillsyncNeverSynced'));
+  set('ss-shared-count', tt('airSkillsyncSharedCount', { n: d.sharedSkillCount || 0 }));
+  set('ss-run', tt('airSkillsyncRunSummary', { linked: d.linkCount || 0, skipped: d.skipCount || 0, converted: d.convCount || 0, reverse: d.reverseImportCount || 0 }));
   const q = d.aiQueue || {};
-  set('ss-queue', (q.queueLength || 0) === 0 ? '空闲' : `${q.queueLength} 个待转换${q.timerActive ? '（批处理中…）' : ''}`);
+  set('ss-queue', (q.queueLength || 0) === 0 ? tt('airSkillsyncQueueIdle') : tt('airSkillsyncQueuePending', { n: q.queueLength }) + (q.timerActive ? tt('airSkillsyncQueueBusy') : ''));
 
   const summary = document.getElementById('skillsync-summary');
-  if (summary) summary.textContent = `${d.sharedSkillCount || 0} 共享 · ${_ssRelTime(d.ts)}`;
+  if (summary) summary.textContent = tt('airSkillsyncSummary', { count: d.sharedSkillCount || 0, rel: _ssRelTime(d.ts) });
   const navBadge = document.getElementById('nav-skillsync-count');
   if (navBadge) navBadge.textContent = String(d.sharedSkillCount || 0);
 
@@ -1518,15 +1521,15 @@ function renderSkillSyncStatus() {
             <span class="resource-badge ${badgeCls}">${escapeHtml(k)}</span>
             <div class="resource-main">
               <div class="resource-title">${escapeHtml(k)}</div>
-              <div class="resource-meta">${p.linked || 0} 软链 · ${p.skipped || 0} 跳过 · ${p.converted || 0} 转换</div>
+              <div class="resource-meta">${escapeHtml(tt('airSkillsyncProviderMeta', { linked: p.linked || 0, skipped: p.skipped || 0, converted: p.converted || 0 }))}</div>
             </div>
           </div>`;
         }).join('')
-      : '<div class="resource-empty">暂无同步数据</div>';
+      : '<div class="resource-empty">' + escapeHtml(tt('airSkillsyncNoProviders')) + '</div>';
   }
 
   const lc = document.getElementById('ss-list-count');
-  if (lc) lc.textContent = `${d.sharedSkillCount || 0} 个`;
+  if (lc) lc.textContent = tt('airSkillsyncListCount', { n: d.sharedSkillCount || 0 });
   renderSkillSyncSkills();
 }
 
@@ -1538,7 +1541,7 @@ function renderSkillSyncSkills() {
   const query = (document.getElementById('ss-filter')?.value || '').trim().toLowerCase();
   const filtered = names.filter(n => !query || n.toLowerCase().includes(query));
   if (!filtered.length) {
-    list.innerHTML = `<div class="resource-empty">${names.length ? 'No matching skills' : '暂无共享技能'}</div>`;
+    list.innerHTML = `<div class="resource-empty">${escapeHtml(names.length ? tt('airSkillsyncNoMatch') : tt('airSkillsyncNoSkills'))}</div>`;
     return;
   }
   const queued = new Set((((d || {}).aiQueue || {}).items || []).map(i => i.skillName));
@@ -1546,7 +1549,7 @@ function renderSkillSyncSkills() {
     <div class="resource-row">
       <span class="resource-badge">skill</span>
       <div class="resource-main">
-        <div class="resource-title">${escapeHtml(n)}${queued.has(n) ? ' <span style="color:var(--muted);font-size:10px;font-weight:400;">· AI 转换中</span>' : ''}</div>
+        <div class="resource-title">${escapeHtml(n)}${queued.has(n) ? ' <span style="color:var(--muted);font-size:10px;font-weight:400;">· ' + escapeHtml(tt('airSkillsyncAiConverting')) + '</span>' : ''}</div>
       </div>
     </div>`).join('');
 }
@@ -1554,18 +1557,18 @@ function renderSkillSyncSkills() {
 async function runSkillSync() {
   const btn = document.getElementById('ss-run-btn');
   const status = document.getElementById('ss-status');
-  if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
+  if (btn) { btn.disabled = true; btn.textContent = tt('airSkillsyncSyncing'); }
   if (status) { status.className = 'status-text'; status.textContent = ''; }
   try {
     const data = await providerApi.json('/api/skill-sync/run' + tokenQS('?'), { method: 'POST' });
     if (!data.ok) throw providerApi.errorFromPayload(data);
     _skillSyncData = data.result;
     renderSkillSyncStatus();
-    if (status) { status.className = 'status-text ok'; status.textContent = '同步完成'; }
+    if (status) { status.className = 'status-text ok'; status.textContent = tt('airSkillsyncSyncDone'); }
   } catch (err) {
-    if (status) { status.className = 'status-text err'; status.textContent = '同步失败: ' + providerApi.errorText(err); }
+    if (status) { status.className = 'status-text err'; status.textContent = tt('airSkillsyncSyncFailed', { error: providerApi.errorText(err) }); }
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '立即同步'; }
+    if (btn) { btn.disabled = false; btn.textContent = tt('airSkillsyncSyncNow'); }
   }
 }
 
@@ -1662,7 +1665,7 @@ async function loadUploadStats() {
 
 async function cleanupUploads() {
   const stStatus = document.getElementById('st-status');
-  if (!(await showConfirm('Delete all temporary uploaded files?', { danger: true, okText: '删除' }))) return;
+  if (!(await showConfirm('Delete all temporary uploaded files?', { danger: true, okText: tt('delete') }))) return;
   try {
     stStatus.textContent = 'Cleaning...';
     const data = await providerApi.json('/api/uploads/cleanup' + tokenQS('?'), { method: 'DELETE' });
@@ -1677,15 +1680,15 @@ async function cleanupUploads() {
 /* ── Provider config (cc-switch) ── */
 let _providerData = { available: false, providers: [], defaults: { claude: null, codex: null } };
 const PROVIDER_PRESETS = [
-  { key: 'claude-subscription', label: 'Claude 官方订阅', appType: 'claude', baseUrl: '', model: '', note: '无需 key，留空 Key 直接创建=走本地登录/订阅' },
-  { key: 'claude-api', label: 'Claude 官方 API', appType: 'claude', baseUrl: 'https://api.anthropic.com', model: '' },
-  { key: 'claude-glm', label: '智谱 GLM', appType: 'claude', baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-4.6', models: 'glm-5.3\nglm-5.2\nglm-5-turbo', aliasMap: { fable: { model: 'glm-5.3', name: 'GLM5.3' } } },
+  { key: 'claude-subscription', label: tt('mngPresetClaudeSub'), appType: 'claude', baseUrl: '', model: '', note: tt('mngPresetSubNote') },
+  { key: 'claude-api', label: tt('mngPresetClaudeApi'), appType: 'claude', baseUrl: 'https://api.anthropic.com', model: '' },
+  { key: 'claude-glm', label: tt('mngPresetGlm'), appType: 'claude', baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-4.6', models: 'glm-5.3\nglm-5.2\nglm-5-turbo', aliasMap: { fable: { model: 'glm-5.3', name: 'GLM5.3' } } },
   { key: 'claude-deepseek', label: 'DeepSeek', appType: 'claude', baseUrl: 'https://api.deepseek.com/anthropic', model: 'deepseek-chat' },
   { key: 'claude-minimax', label: 'MiniMax', appType: 'claude', baseUrl: 'https://api.minimaxi.com/anthropic', model: 'MiniMax-M2' },
-  { key: 'claude-qwen', label: 'Qwen 通义千问', appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
-  { key: 'claude-openrouter', label: 'OpenRouter', appType: 'claude', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', note: '必须用 /api 不是 /api/v1' },
-  { key: 'codex-official', label: 'OpenAI（Codex 官方）', appType: 'codex', baseUrl: '', model: '', models: '', note: '走 ChatGPT 登录；可用模型由当前账号的 Codex model/list 动态发现' },
-  { key: 'codex-xf-maas', label: '讯飞 MaaS Coding', appType: 'codex', apiFormat: 'openai_responses', baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopglm52', models: 'xopglm52', note: 'Responses 协议经稳定性兼容代理；DeepSeek V4 Pro (DS4) 已废弃，统一用 GLM 5.2' },
+  { key: 'claude-qwen', label: tt('mngPresetQwen'), appType: 'claude', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus' },
+  { key: 'claude-openrouter', label: 'OpenRouter', appType: 'claude', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', note: tt('mngPresetOpenrouterNote') },
+  { key: 'codex-official', label: tt('mngPresetOpenaiCodex'), appType: 'codex', baseUrl: '', model: '', models: '', note: tt('mngPresetCodexNote') },
+  { key: 'codex-xf-maas', label: tt('mngPresetXf'), appType: 'codex', apiFormat: 'openai_responses', baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopglm52', models: 'xopglm52', note: tt('mngPresetXfNote') },
 ];
 
 function providerModelList(primary, raw) {
@@ -1773,7 +1776,7 @@ function applyProviderPreset() {
   if (format) format.value = preset.apiFormat || (preset.appType === 'claude' ? 'anthropic' : 'openai_responses');
   token.value = '';
   if (status) {
-    status.textContent = preset.note || '已套用模板，请填写 API Key';
+    status.textContent = preset.note || tt('mngPresetApplied');
     status.className = 'status-text';
   }
   token.focus();
@@ -1808,11 +1811,11 @@ async function loadProviders() {
     const text = ccUnavail.querySelector('.status-text');
     if (text) {
       if (!ccStatus.dbFound || ccStatus.reason === 'database-not-found') {
-        text.textContent = '未检测到 cc-switch 数据库（~/.cc-switch/cc-switch.db），无法导入。';
+        text.textContent = tt('mngCcswitchMissing');
       } else if (ccStatus.reason === 'native-runtime-unavailable') {
-        text.textContent = '已找到 cc-switch 数据库，但当前 Node 运行时不带 SQLite（需要 Node 22.16 及以上，内置 node:sqlite）。升级 Node 后重试，无需编译。';
+        text.textContent = tt('mngCcswitchNoSqlite');
       } else {
-        text.textContent = ccStatus.message || 'cc-switch 当前不可导入，请检查服务端状态。';
+        text.textContent = ccStatus.message || tt('mngCcswitchUnavailable');
       }
     }
   }
@@ -1831,14 +1834,14 @@ let _guMetric = 'fresh';
 
 async function loadGlobalUsage(force) {
   const body = document.getElementById('global-usage-body');
-  if (body && force) body.innerHTML = '<span style="color:var(--faint);font-size:13px">重新扫描中…</span>';
+  if (body && force) body.innerHTML = `<span style="color:var(--faint);font-size:13px">${escapeHtml(tt('airUsageRescanning'))}</span>`;
   try {
     const base = '/api/token-usage/global';
     const qs = tokenQS('?');
     const url = base + qs + (force ? (qs ? '&refresh=1' : '?refresh=1') : '');
     _globalUsage = await providerApi.json(url);
   } catch (e) {
-    if (body) body.innerHTML = `<span class="status-text err">加载失败：${escapeHtml(providerApi.errorText(e))}</span>`;
+    if (body) body.innerHTML = `<span class="status-text err">${escapeHtml(tt('airUsageLoadFailed', { message: providerApi.errorText(e) }))}</span>`;
     return;
   }
   renderGlobalUsage();
@@ -1872,9 +1875,9 @@ function renderGuTrend() {
     </div>`;
   }).join('');
   const scope = fresh && hasFreshTrend
-    ? '新鲜 token/天（输入+输出）'
-    : `含缓存 token/天${fresh ? '（旧服务兼容回退）' : ''}`;
-  return `<div style="margin-top:12px"><div style="font-size:11px;color:var(--faint);margin-bottom:6px">近 ${days.length} 个有活动的日子（${scope}）</div>${bars}</div>`;
+    ? tt('airUsageTrendFreshDetail')
+    : tt('airUsageTrendInclusiveDetail') + (fresh ? tt('mngTrendFallback') : '');
+  return `<div style="margin-top:12px"><div style="font-size:11px;color:var(--faint);margin-bottom:6px">${escapeHtml(tt('airUsageTrendHead', { n: days.length, detail: scope }))}</div>${bars}</div>`;
 }
 
 function renderGlobalUsage() {
@@ -1896,7 +1899,7 @@ function renderGlobalUsage() {
       ? b.inputTokens + b.outputTokens + b.cacheWrite + b.cacheRead
       : b.inputTokens + b.outputTokens,
   })).sort((a, b) => b.total - a.total);
-  if (!rows.length) { body.innerHTML = '<span style="color:var(--faint);font-size:13px">该时段暂无数据</span>'; return; }
+  if (!rows.length) { body.innerHTML = `<span style="color:var(--faint);font-size:13px">${escapeHtml(tt('airUsageNoDataForWindow'))}</span>`; return; }
   const ft = formatTokens;
   let tin = 0, tout = 0, tcw = 0, tcr = 0, tmsg = 0;
   const trh = rows.map(r => {
@@ -1913,20 +1916,20 @@ function renderGlobalUsage() {
   }).join('');
   const fresh = tin + tout, grand = tin + tout + tcw + tcr;
   const selectedTotal = _guMetric === 'inclusive' ? grand : fresh;
-  const selectedLabel = _guMetric === 'inclusive' ? '含缓存总计' : '新鲜总计';
-  const gen = _globalUsage.generatedAt ? new Date(_globalUsage.generatedAt).toLocaleTimeString() : '';
+  const selectedLabel = _guMetric === 'inclusive' ? tt('airUsageInclusiveTotal') : tt('airUsageFreshTotal');
+  const gen = _globalUsage.generatedAt ? new Date(_globalUsage.generatedAt).toLocaleTimeString(getLocale()) : '';
   body.innerHTML = `
     <table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead><tr style="color:var(--faint);font-size:11px">
-        <th style="text-align:left;padding:4px 8px">模型</th><th style="text-align:right;padding:4px 8px">新鲜输入</th><th style="text-align:right;padding:4px 8px">输出</th><th style="text-align:right;padding:4px 8px">缓存写</th><th style="text-align:right;padding:4px 8px">缓存读</th><th style="text-align:right;padding:4px 8px">${selectedLabel}</th>
+        <th style="text-align:left;padding:4px 8px">${escapeHtml(tt('airUsageModel'))}</th><th style="text-align:right;padding:4px 8px">${escapeHtml(tt('airUsageFreshInput'))}</th><th style="text-align:right;padding:4px 8px">${escapeHtml(tt('airUsageOutput'))}</th><th style="text-align:right;padding:4px 8px">${escapeHtml(tt('roleTokenCacheWrite'))}</th><th style="text-align:right;padding:4px 8px">${escapeHtml(tt('roleTokenCacheRead'))}</th><th style="text-align:right;padding:4px 8px">${escapeHtml(selectedLabel)}</th>
       </tr></thead>
       <tbody>${trh}</tbody>
       <tfoot><tr style="border-top:1px solid var(--line);font-weight:600">
-        <td style="text-align:left;padding:6px 8px">合计</td><td style="text-align:right;padding:6px 8px">${ft(tin)}</td><td style="text-align:right;padding:6px 8px">${ft(tout)}</td><td style="text-align:right;padding:6px 8px">${ft(tcw)}</td><td style="text-align:right;padding:6px 8px">${ft(tcr)}</td><td style="text-align:right;padding:6px 8px">${ft(selectedTotal)}</td>
+        <td style="text-align:left;padding:6px 8px">${escapeHtml(tt('airUsageTotal'))}</td><td style="text-align:right;padding:6px 8px">${ft(tin)}</td><td style="text-align:right;padding:6px 8px">${ft(tout)}</td><td style="text-align:right;padding:6px 8px">${ft(tcw)}</td><td style="text-align:right;padding:6px 8px">${ft(tcr)}</td><td style="text-align:right;padding:6px 8px">${ft(selectedTotal)}</td>
       </tr></tfoot>
     </table>
     <div style="margin-top:8px;font-size:12px;color:var(--muted)">
-      当前口径（${selectedLabel}）：<b style="color:var(--text)">${ft(selectedTotal)}</b> · 新鲜：${ft(fresh)} · 含缓存：${ft(grand)} · ${tmsg} 次响应${gen ? ` · 扫描于 ${gen}` : ''}
+      ${escapeHtml(tt('mngCurrentMetric', { label: selectedLabel }))}<b style="color:var(--text)">${ft(selectedTotal)}</b> · ${escapeHtml(tt('mngFreshLabel'))}${ft(fresh)} · ${escapeHtml(tt('mngInclusiveLabel'))}${ft(grand)} · ${escapeHtml(tt('airUsageSummaryResponses', { n: tmsg }))}${gen ? ' · ' + escapeHtml(tt('mngScannedAt', { time: gen })) : ''}
     </div>
     ${renderGuTrend()}`;
 }
@@ -1944,7 +1947,7 @@ async function loadByRoleUsage() {
     const url = '/api/token-usage/by-role' + tokenQS('?');
     _byRoleData = await providerApi.json(url);
   } catch (e) {
-    if (body) body.innerHTML = `<span class="status-text err">加载失败：${escapeHtml(providerApi.errorText(e))}</span>`;
+    if (body) body.innerHTML = `<span class="status-text err">${escapeHtml(tt('airUsageLoadFailed', { message: providerApi.errorText(e) }))}</span>`;
     return;
   }
   renderByRoleCard();
@@ -1953,7 +1956,7 @@ async function loadByRoleUsage() {
 function renderByRoleCard() {
   const body = document.getElementById('by-role-card-body');
   if (!body || !_byRoleData || !Object.keys(_byRoleData).length) {
-    if (body) body.innerHTML = '<span style="color:var(--faint);font-size:13px">暂无数据</span>';
+    if (body) body.innerHTML = `<span style="color:var(--faint);font-size:13px">${escapeHtml(tt('airUsageNoData'))}</span>`;
     return;
   }
 
@@ -1982,19 +1985,19 @@ function renderByRoleCard() {
   body.innerHTML = `
     <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:6px">
       <div style="min-width:80px">
-        <div style="font-size:11px;color:var(--faint)">今天</div>
+        <div style="font-size:11px;color:var(--faint)">${escapeHtml(tt('airUsageToday'))}</div>
         <div style="font-size:20px;font-weight:600;color:var(--accent)">${ft(todayTotal)}</div>
       </div>
       <div style="min-width:80px">
-        <div style="font-size:11px;color:var(--faint)">本周</div>
+        <div style="font-size:11px;color:var(--faint)">${escapeHtml(tt('airUsageWeek'))}</div>
         <div style="font-size:20px;font-weight:600;color:var(--accent)">${ft(weekTotal)}</div>
       </div>
       <div style="min-width:80px">
-        <div style="font-size:11px;color:var(--faint)">本月</div>
+        <div style="font-size:11px;color:var(--faint)">${escapeHtml(tt('airUsageMonth'))}</div>
         <div style="font-size:20px;font-weight:600;color:var(--accent)">${ft(monthTotal)}</div>
       </div>
       <div style="min-width:80px">
-        <div style="font-size:11px;color:var(--faint)">全部</div>
+        <div style="font-size:11px;color:var(--faint)">${escapeHtml(tt('airUsageAll'))}</div>
         <div style="font-size:20px;font-weight:600;color:var(--accent)">${ft(allTotal)}</div>
       </div>
     </div>`;
@@ -2004,8 +2007,8 @@ async function importProviders() {
   const status = document.getElementById('prov-import-status');
   try {
     const d = await providerApi.json('/api/providers/import', { method: 'POST' });
-    if (status) { status.textContent = `已导入 ${d.imported} 个、刷新 ${d.updated} 个`; status.className = 'status-text ok'; }
-    showToast(`从 cc-switch 同步：新增 ${d.imported}、刷新 ${d.updated}（共 ${d.total}）`);
+    if (status) { status.textContent = tt('mngImportStatus', { imported: d.imported, updated: d.updated }); status.className = 'status-text ok'; }
+    showToast(tt('mngImportToast', { imported: d.imported, updated: d.updated, total: d.total }));
     loadProviders();
   } catch (err) {
     if (status) { status.textContent = `Failed: ${providerApi.errorText(err)}`; status.className = 'status-text err'; }
@@ -2015,7 +2018,7 @@ async function importProviders() {
 function providerLabel(p) {
   const protocol = p.apiFormat === 'openai_responses' ? '[Responses]' : '[Anthropic]';
   const bits = [p.name, protocol];
-  if (p.isOfficial) bits.push('· 默认登录/订阅');
+  if (p.isOfficial) bits.push(tt('mngDefaultLoginSub'));
   else if (p.baseUrl) bits.push('· ' + p.baseUrl.replace(/^https?:\/\//, ''));
   if (p.model) bits.push('· ' + p.model);
   return bits.join(' ');
@@ -2028,7 +2031,7 @@ function renderProviderDefaults() {
     if (!sel) continue;
     const list = groups[cli];
     const cur = _providerData.defaults[cli] || '';
-    sel.innerHTML = (list.some(p => p.builtinOfficial) ? '' : '<option value="">默认登录 / 订阅（不覆盖）</option>') +
+    sel.innerHTML = (list.some(p => p.builtinOfficial) ? '' : `<option value="">${escapeHtml(tt('providerDefault'))}</option>`) +
       list.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(providerLabel(p))}</option>`).join('');
     sel.value = cur;
   }
@@ -2079,11 +2082,11 @@ function renderProviderList() {
     if (stat) {
       const wf = providerCatalog.formatUsageWindow;
       const parts = [];
-      if (stat.today) { const s = wf(stat.today); if (s) parts.push(`日${s}`); }
-      if (stat.week) { const s = wf(stat.week); if (s) parts.push(`周${s}`); }
-      if (stat.month) { const s = wf(stat.month); if (s) parts.push(`月${s}`); }
+      if (stat.today) { const s = wf(stat.today); if (s) parts.push(tt('mngUsageDay', { value: s })); }
+      if (stat.week) { const s = wf(stat.week); if (s) parts.push(tt('mngUsageWeek', { value: s })); }
+      if (stat.month) { const s = wf(stat.month); if (s) parts.push(tt('mngUsageMonth', { value: s })); }
       const cumulativeDetail = providerCatalog.formatUsageCumulative(stat);
-      parts.push(`累计 <b>${formatTokens(stat.totalTokens)}</b>（${cumulativeDetail} · ${stat.turnCount}轮/${stat.sessionCount}会话）`);
+      parts.push(tt('mngCumulativeUsage', { total: formatTokens(stat.totalTokens), detail: escapeHtml(cumulativeDetail), turns: stat.turnCount, sessions: stat.sessionCount }));
       statHtml = parts.join(' · ');
     }
     const latBadge = latencyBadge(p.id);
@@ -2093,35 +2096,35 @@ function renderProviderList() {
     return `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;flex-wrap:wrap;">
       <div style="flex:1 1 200px;min-width:0">
-        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(providerCatalog.providerDisplayName(p))} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'} · 可用于 ${(p.compatibleClis || []).map(x => x === 'claude' ? 'Claude' : x === 'codex' ? 'Codex' : 'OpenCode').join(' / ')}</span>${latBadge}</div>
-        <div data-quota-id="${escapeHtml(p.id)}" style="font-size:11px;font-weight:600;margin-top:3px;color:var(--faint)">余量 —</div>
+        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(providerCatalog.providerDisplayName(p))} <span style="font-weight:400;font-size:11px;color:var(--faint)">${escapeHtml(p.source === 'ccswitch' ? tt('mngFromCcswitch') : tt('mngLocal'))} · ${escapeHtml(tt('mngUsableFor'))} ${(p.compatibleClis || []).map(x => x === 'claude' ? 'Claude' : x === 'codex' ? 'Codex' : 'OpenCode').join(' / ')}</span>${latBadge}</div>
+        <div data-quota-id="${escapeHtml(p.id)}" style="font-size:11px;font-weight:600;margin-top:3px;color:var(--faint)">${escapeHtml(tt('mngQuotaDash'))}</div>
         <div data-balance-id="${escapeHtml(p.id)}" style="display:none;font-size:11px;font-weight:600;margin-top:2px;color:var(--faint)"></div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}
-        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? '官方账号统一管理 · 账号切换对新请求生效' : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
+        <div style="font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.isOfficial ? tt('mngOfficialManaged') : (p.baseUrl || ''))}${(p.modelOptions || []).length > 1 ? ' · ' + (p.modelOptions || []).length + ' models' : (p.model ? ' · ' + escapeHtml(p.model) : '')}${p.tokenMask ? ' · ' + escapeHtml(p.tokenMask) : ''}</div>
       </div>
       <div style="display:flex;gap:8px;margin-left:auto;">
-      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="balanceProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">余量</button>
-      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="speedTestProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">测速</button> <button class="btn" style="padding:4px 10px;font-size:12px" onclick="shareRelayProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')" title="生成借道分享码，让另一台 multicc 通过本机代理使用这个 provider">借道分享</button>
-      ${p.builtinOfficial ? '<button class="btn" style="padding:4px 10px;font-size:12px" onclick="document.getElementById(&quot;official-accounts-card&quot;).scrollIntoView({behavior:&quot;smooth&quot;})">管理账号</button>' : `      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">编辑</button>
-      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">删除</button>`}
+      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="balanceProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">${escapeHtml(tt('mngQuotaBtn'))}</button>
+      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="speedTestProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}',this)">${escapeHtml(tt('airProviderSpeedTest'))}</button> <button class="btn" style="padding:4px 10px;font-size:12px" onclick="shareRelayProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')" title="${escapeHtml(tt('mngRelayShareTitle'))}">${escapeHtml(tt('mngRelayShare'))}</button>
+      ${p.builtinOfficial ? `<button class="btn" style="padding:4px 10px;font-size:12px" onclick="document.getElementById(&quot;official-accounts-card&quot;).scrollIntoView({behavior:&quot;smooth&quot;})">${escapeHtml(tt('mngManageAccounts'))}</button>` : `      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="editProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}')">${escapeHtml(tt('airProviderEdit'))}</button>
+      <button class="btn" style="padding:4px 10px;font-size:12px" onclick="deleteProvider('${escapeHtml(p.appType)}','${escapeHtml(p.id)}','${escapeHtml(p.name)}')">${escapeHtml(tt('delete'))}</button>`}
 
       </div>
     </div>`;
   };
   const emptyMsg = !_providerData.providers.length
-    ? '还没有 provider。' + (_providerData.available ? '在下方新增。' : 'cc-switch 不可用。')
-    : '该协议下暂无 provider。';
+    ? tt('mngNoProvidersYet') + (_providerData.available ? tt('mngAddBelow') : tt('mngCcswitchDown'))
+    : tt('mngNoProviderProtocol');
   for (const proto of ['anthropic', 'openai_responses']) {
     const box = document.getElementById('prov-cards-' + proto);
     if (!box) continue;
     const list = groups[proto] || [];
     const count = document.getElementById('prov-count-' + proto);
-    if (count) count.textContent = list.length ? `· ${list.length} 个` : '';
+    if (count) count.textContent = list.length ? tt('mngCountItems', { n: list.length }) : '';
     if (!list.length) {
       box.innerHTML = `<span style="color:var(--faint);font-size:13px">${emptyMsg}</span>`;
       continue;
     }
-    const speedAll = `<div style="margin-top:2px"><button class="btn" style="padding:2px 8px;font-size:11px" onclick="speedTestGroup(this,'${escapeHtml(list.map(p => p.appType + '|' + p.id).join(','))}')">全部测速</button> <button class="btn" style="padding:2px 8px;font-size:11px" onclick="balanceGroup(this)">全部查余量</button></div>`;
+    const speedAll = `<div style="margin-top:2px"><button class="btn" style="padding:2px 8px;font-size:11px" onclick="speedTestGroup(this,'${escapeHtml(list.map(p => p.appType + '|' + p.id).join(','))}')">${escapeHtml(tt('mngSpeedAll'))}</button> <button class="btn" style="padding:2px 8px;font-size:11px" onclick="balanceGroup(this)">${escapeHtml(tt('mngBalanceAll'))}</button></div>`;
     box.innerHTML = list.map(cardHtml).join('') + speedAll;
   }
   providerCatalog.injectProviderQuotas(_providerData);
@@ -2132,7 +2135,7 @@ function renderProviderList() {
 let _providerLatency = {};
 
 async function speedTestProvider(appType, id, btn) {
-  if (btn) { btn.textContent = '测速中…'; btn.disabled = true; }
+  if (btn) { btn.textContent = tt('mngSpeedTesting'); btn.disabled = true; }
   try {
     _providerLatency[id] = await providerApi.json(
       '/api/providers/' + encodeURIComponent(appType) + '/' + encodeURIComponent(id) + '/speedtest',
@@ -2141,14 +2144,14 @@ async function speedTestProvider(appType, id, btn) {
   } catch (e) {
     _providerLatency[id] = { ok: false, ms: 0, status: e.status || 0, error: providerApi.errorText(e) };
   }
-  if (btn) { btn.textContent = '测速'; btn.disabled = false; }
+  if (btn) { btn.textContent = tt('airProviderSpeedTest'); btn.disabled = false; }
   renderProviderList();
 }
 
 async function speedTestGroup(btn, idList) {
   const ids = idList.split(',').filter(Boolean);
   if (!ids.length) return;
-  if (btn) { btn.textContent = '测速中…'; btn.disabled = true; }
+  if (btn) { btn.textContent = tt('mngSpeedTesting'); btn.disabled = true; }
   // Run all in parallel
   await Promise.all(ids.map(s => {
     const [appType, id] = s.split('|');
@@ -2163,7 +2166,7 @@ async function speedTestGroup(btn, idList) {
       }
     })();
   }));
-  if (btn) { btn.textContent = '全部测速'; btn.disabled = false; }
+  if (btn) { btn.textContent = tt('mngSpeedAll'); btn.disabled = false; }
   renderProviderList();
 }
 
@@ -2177,7 +2180,7 @@ async function saveProviderDefaults() {
     const d = await providerApi.json('/api/provider-defaults', { method: 'PUT', json: body });
     _providerData = { ..._providerData, defaults: providerCatalog.normalizeDefaults(d.defaults) };
     if (status) { status.textContent = 'Saved'; status.className = 'status-text ok'; }
-    showToast('全局默认 provider 已保存');
+    showToast(tt('airProviderDefaultsSaved'));
   } catch (err) {
     if (status) { status.textContent = `Failed: ${providerApi.errorText(err)}`; status.className = 'status-text err'; }
   }
@@ -2195,11 +2198,11 @@ async function createProvider() {
   body.models = providerModelList(body.model, document.getElementById('prov-new-models')?.value || '');
   body.apiFormat = document.getElementById('prov-new-apiformat')?.value;
   if (body.appType === 'claude') body.aliasMap = readAliasMapFields('prov-new-alias');
-  if (!body.name) { if (status) { status.textContent = '名称必填'; status.className = 'status-text err'; } return; }
+  if (!body.name) { if (status) { status.textContent = tt('mngNameRequired'); status.className = 'status-text err'; } return; }
   try {
     await providerApi.json('/api/providers', { method: 'POST', json: body });
     if (status) { status.textContent = 'Created'; status.className = 'status-text ok'; }
-    showToast('Provider 已创建：' + body.name);
+    showToast(tt('mngProviderCreatedPrefix') + body.name);
     document.getElementById('prov-new-name').value = '';
     document.getElementById('prov-new-baseurl').value = '';
     document.getElementById('prov-new-token').value = '';
@@ -2234,46 +2237,46 @@ function editProvider(appType, id) {
      <div style="display:flex;align-items:center;gap:6px">
        <input data-k="API Key" type="password" value="${escapeHtml(val || '')}" placeholder="${escapeHtml(ph)}" autocomplete="off"
          style="flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box">
-       <button type="button" class="btn eye-toggle" style="padding:4px 8px;font-size:12px;flex-shrink:0" title="显示/隐藏 Key">👁</button>
+       <button type="button" class="btn eye-toggle" style="padding:4px 8px;font-size:12px;flex-shrink:0" title="${escapeHtml(tt('mngToggleKey'))}">👁</button>
      </div></label>`;
   // Model-mapping section (claude only): opus/sonnet/haiku/fable → wire model + optional display name.
   const aliasSection = appType !== 'claude' ? '' : (() => {
     const tierLabel = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable' };
     const inputCss = 'flex:1;min-width:0;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12.5px;padding:7px 9px;outline:none;box-sizing:border-box';
     const header = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:11px;color:var(--faint)">
-      <span style="width:48px;flex-shrink:0">别名</span>
-      <span style="flex:1;min-width:0">模型名（显示名）</span>
-      <span style="flex:1;min-width:0">映射名（真实模型id）</span>
+      <span style="width:48px;flex-shrink:0">${escapeHtml(tt('mngAliasCol'))}</span>
+      <span style="flex:1;min-width:0">${escapeHtml(tt('mngModelNameCol'))}</span>
+      <span style="flex:1;min-width:0">${escapeHtml(tt('mngMapNameCol'))}</span>
     </div>`;
     const rows = ALIAS_TIERS.map(t => {
       const entry = (p.aliasMap && p.aliasMap[t]) || {};
       return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
         <span style="width:48px;flex-shrink:0;font-size:12px;color:var(--faint)">${tierLabel[t]}</span>
-        <input id="ep-alias-${t}-name" type="text" value="${escapeHtml(entry.name || '')}" placeholder="如 GLM5.2（可选）" autocomplete="off" style="${inputCss}">
-        <input id="ep-alias-${t}-model" type="text" value="${escapeHtml(entry.model || '')}" placeholder="如 glm-5.2（可选）" autocomplete="off" style="${inputCss}">
+        <input id="ep-alias-${t}-name" type="text" value="${escapeHtml(entry.name || '')}" placeholder="${escapeHtml(tt('mngAliasNamePh'))}" autocomplete="off" style="${inputCss}">
+        <input id="ep-alias-${t}-model" type="text" value="${escapeHtml(entry.model || '')}" placeholder="${escapeHtml(tt('mngAliasModelPh'))}" autocomplete="off" style="${inputCss}">
       </div>`;
     }).join('');
     return `<div style="margin-bottom:10px">
-      <div style="font-size:12px;color:var(--faint);margin-bottom:6px">模型映射（分级覆盖，可选；留空=该级别不映射）</div>
+      <div style="font-size:12px;color:var(--faint);margin-bottom:6px">${escapeHtml(tt('mngTierOverrideHeader'))}</div>
       ${header}
       ${rows}
     </div>`;
   })();
   overlay.innerHTML = `
     <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:440px;max-width:92vw;">
-      <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:14px">编辑 Provider · ${escapeHtml(p.appType)}</div>
-      ${field('名称', p.name, '名称')}
-      ${field('Base URL', p.baseUrl, 'https://…（留空=官方/订阅）')}
-      ${field('Model', p.model, '可选')}
-      ${textarea('模型列表', (p.modelOptions || []).join('\n'), '每行一个模型；留空则只使用 Model')}
+      <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:14px">${escapeHtml(tt('mngEditProviderTitle', { appType: p.appType }))}</div>
+      ${field(tt('airProviderName'), p.name, tt('airProviderName'))}
+      ${field('Base URL', p.baseUrl, tt('mngBaseUrlPlaceholder'))}
+      ${field('Model', p.model, tt('mngOptional'))}
+      ${textarea(tt('mngModelsLabel'), (p.modelOptions || []).join('\n'), tt('mngModelsPh'))}
       ${aliasSection}
-      ${appType === 'codex' ? `<label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">上游协议</div>
+      ${appType === 'codex' ? `<label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">${escapeHtml(tt('airProviderUpstreamProtocol'))}</div>
         <select id="ep-apiformat" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px"><option value="openai_responses" ${p.apiFormat === 'openai_responses' ? 'selected' : ''}>OpenAI Responses</option></select>
       </label>` : ''}
-      ${keyField('', p.hasToken ? '留空 = 保留原 key（' + (p.tokenMask || '已设置') + '）' : '未设置')}
+      ${keyField('', p.hasToken ? tt('mngKeepKey', { mask: p.tokenMask || tt('mngTokenSet') }) : tt('mngNotSetPh'))}
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
-        <button class="btn" id="ep-cancel" style="font-size:13px">取消</button>
-        <button class="btn btn-green" id="ep-save" style="font-size:13px">保存</button>
+        <button class="btn" id="ep-cancel" style="font-size:13px">${escapeHtml(tt('cancel'))}</button>
+        <button class="btn btn-green" id="ep-save" style="font-size:13px">${escapeHtml(tt('save'))}</button>
       </div>
       <div id="ep-status" class="status-text" style="margin-top:8px"></div>
     </div>`;
@@ -2284,10 +2287,10 @@ function editProvider(appType, id) {
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   overlay.querySelector('#ep-save').onclick = async () => {
     const body = {
-      name: val('名称'),
+      name: val(tt('airProviderName')),
       baseUrl: val('Base URL'),
       model: val('Model'),
-      models: providerModelList(val('Model'), val('模型列表')),
+      models: providerModelList(val('Model'), val(tt('mngModelsLabel'))),
     };
     body.apiFormat = appType === 'claude' ? 'anthropic' : overlay.querySelector('#ep-apiformat')?.value;
     if (appType === 'claude') body.aliasMap = readAliasMapFields('ep-alias', overlay);
@@ -2298,7 +2301,7 @@ function editProvider(appType, id) {
       await providerApi.json(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}`, {
         method: 'PATCH', json: body,
       });
-      showToast('Provider 已更新');
+      showToast(tt('airProviderUpdated'));
       close();
       loadProviders();
     } catch (err) { st.textContent = 'Failed: ' + providerApi.errorText(err); st.className = 'status-text err'; }
@@ -2309,15 +2312,15 @@ async function deleteProvider(appType, id, name) {
   if (!confirm(tt('providerDeleteLocalConfirm', { name }))) return;
   try {
     await providerApi.json(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    showToast('已删除：' + name);
+    showToast(tt('mngDeletedPrefix') + name);
     loadProviders();
   } catch (err) {
     const refs = providerCatalog.deleteReferenceDisplayData(err);
     const refText = refs.items.map((item) => {
-      const kind = { main: '主会话', subagent: '子 Agent', default: '默认 Provider', aux: 'Aux' }[item.kind] || item.kind;
+      const kind = { main: tt('mngKindMain'), subagent: tt('mngKindSubagent'), default: tt('mngKindDefault'), aux: 'Aux' }[item.kind] || item.kind;
       return `${kind} ${item.title}`;
-    }).join('、');
-    showToast('删除失败：' + providerApi.errorText(err) + (refText ? `（仍被引用：${refText}）` : ''), true);
+    }).join(tt('mngListSep'));
+    showToast(tt('airResourcesFailed', { message: providerApi.errorText(err) }) + (refText ? tt('mngStillReferenced', { ref: refText }) : ''), true);
   }
 }
 
@@ -2401,7 +2404,7 @@ window.checkVersion = function () {
   const badge = document.getElementById('ver-badge');
 
   if (icon) icon.textContent = '⏳';
-  if (hint) hint.textContent = '检查中…';
+  if (hint) hint.textContent = tt('checking');
   if (badge) badge.style.display = 'none';
 
   fetch('/api/version-check')
@@ -2420,13 +2423,13 @@ window.checkVersion = function () {
       }
       if (hint) {
         if (data.updateAvailable) {
-          hint.textContent = '有新版 v' + data.latestVersion + ' 可用！';
+          hint.textContent = tt('mngNewVersionAvail', { version: data.latestVersion });
           hint.style.color = 'var(--accent)';
         } else if (data.apiError) {
-          hint.textContent = '已是最新（离线）';
+          hint.textContent = tt('mngUpToDateOffline');
           hint.style.color = '';
         } else {
-          hint.textContent = '已是最新';
+          hint.textContent = tt('syncAlreadyLatest');
           hint.style.color = '';
         }
       }
@@ -2434,7 +2437,7 @@ window.checkVersion = function () {
     .catch(() => {
       window._versionCheckRunning = false;
       if (icon) icon.textContent = '📦';
-      if (hint) { hint.textContent = '检查失败'; hint.style.color = ''; }
+      if (hint) { hint.textContent = tt('updateCheckFailedTitle'); hint.style.color = ''; }
     });
 };
 
@@ -2467,17 +2470,17 @@ async function loadZcodeAuth() {
     if (d.configured) {
       const providerName = d.provider === 'zai'
         ? 'Z.ai'
-        : (d.provider === 'bigmodel' ? 'BigModel' : (d.provider || '自定义 Provider'));
-      statusEl.innerHTML = '<span class="status-text ok">✓ 已配置</span> — Provider: <b>' + escapeHtml(providerName) + '</b> · Model: <code>' + escapeHtml(d.model || '') + '</code>';
+        : (d.provider === 'bigmodel' ? 'BigModel' : (d.provider || tt('mngCustomProvider')));
+      statusEl.innerHTML = '<span class="status-text ok">' + escapeHtml(tt('mngConfigured')) + '</span> — Provider: <b>' + escapeHtml(providerName) + '</b> · Model: <code>' + escapeHtml(d.model || '') + '</code>';
       actionsEl.style.display = 'flex';
-      document.getElementById('zcode-sync-btn').textContent = '重新同步桌面 API Key';
+      document.getElementById('zcode-sync-btn').textContent = tt('mngResyncDesktopKey');
     } else if (d.source === 'desktop_available' && d.desktopProviders?.length > 0) {
       const dp = d.desktopProviders[0];
       const dpName = dp.id === 'zai' ? 'Z.ai' : 'BigModel';
-      statusEl.innerHTML = '<span class="status-text" style="color:var(--warn)">⚠ 未配置</span> — 检测到桌面端有 ' + escapeHtml(dpName) + ' 的 API Key，可一键同步';
+      statusEl.innerHTML = '<span class="status-text" style="color:var(--warn)">' + escapeHtml(tt('mngNotConfiguredWarn')) + '</span> — ' + escapeHtml(tt('mngDesktopKeyDetected', { name: dpName }));
       actionsEl.style.display = 'flex';
     } else {
-      statusEl.innerHTML = '<span class="status-text err">✗ 原生连接未配置</span> — 可登录 Coding Plan、同步桌面 API Key，或为会话选择上方普通 Provider';
+      statusEl.innerHTML = '<span class="status-text err">' + escapeHtml(tt('mngNativeNotConfigured')) + '</span> — ' + escapeHtml(tt('mngNativeHint'));
       actionsEl.style.display = 'flex';
     }
 
@@ -2485,7 +2488,7 @@ async function loadZcodeAuth() {
     if (loginBtn) loginBtn.style.display = d.loginAvailable ? '' : 'none';
   } catch (e) {
     const el = document.getElementById('zcode-auth-status');
-    if (el) el.textContent = '加载失败: ' + providerApi.errorText(e);
+    if (el) el.textContent = tt('mngLoadFailedPrefix') + providerApi.errorText(e);
   }
 }
 
@@ -2494,36 +2497,36 @@ async function syncZcodeAuth() {
     const d = await providerApi.json('/api/zcode/auth/sync', { method: 'POST' });
     if (d.ok) {
       const providerName = d.provider === 'zai' ? 'Z.ai' : 'BigModel';
-      showToast('已从桌面端同步 ' + providerName + ' API Key', 'success');
+      showToast(tt('mngDesktopKeySynced', { name: providerName }), 'success');
     } else {
       showToast(providerApi.errorText(providerApi.errorFromPayload({
-        ...d, error: d.message || '同步失败：未检测到桌面端 API Key',
+        ...d, error: d.message || tt('mngSyncNoDesktopKey'),
       })), 'error');
     }
     loadZcodeAuth();
   } catch (e) {
-    showToast('同步失败: ' + providerApi.errorText(e), 'error');
+    showToast(tt('airSkillsyncSyncFailed', { error: providerApi.errorText(e) }), 'error');
   }
 }
 
 async function loginZcode() {
   const btn = document.getElementById('zcode-login-btn');
-  if (btn) { btn.disabled = true; btn.textContent = '登录中…（请在浏览器完成授权）'; }
+  if (btn) { btn.disabled = true; btn.textContent = tt('mngLoggingInBrowser'); }
   try {
     const d = await providerApi.json('/api/zcode/auth/login', { method: 'POST' });
     if (d.ok) {
-      showToast('ZCode 登录成功', 'success');
+      showToast(tt('mngZcodeLoginOk'), 'success');
     } else if (d.code === 'login_timeout') {
-      showToast(`[${d.code}] 登录超时，如浏览器已打开请完成授权`, 'info');
+      showToast(tt('mngLoginTimeout', { code: d.code }), 'info');
     } else {
       showToast(providerApi.errorText(providerApi.errorFromPayload({
-        ...d, error: d.message || d.error || '登录失败',
+        ...d, error: d.message || d.error || tt('mngLoginFailed'),
       })), 'error');
     }
   } catch (e) {
-    showToast('登录失败: ' + providerApi.errorText(e), 'error');
+    showToast(tt('mngLoginFailedPrefix') + providerApi.errorText(e), 'error');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '登录 Z.ai Coding Plan'; }
+    if (btn) { btn.disabled = false; btn.textContent = tt('mngLoginZai'); }
     loadZcodeAuth();
   }
 }
@@ -2538,7 +2541,7 @@ async function saveZcodeManualKey() {
   const apiKey = document.getElementById('zcode-manual-key')?.value?.trim();
   const statusEl = document.getElementById('zcode-manual-status');
   if (!providerId || !apiKey) {
-    if (statusEl) statusEl.textContent = '请填写 Provider 和 API Key';
+    if (statusEl) statusEl.textContent = tt('mngNeedProviderKey');
     return;
   }
   try {
@@ -2546,17 +2549,17 @@ async function saveZcodeManualKey() {
       method: 'PUT', json: { providerId, apiKey },
     });
     if (d.ok) {
-      showToast('ZCode API Key 已保存', 'success');
+      showToast(tt('mngZcodeKeySaved'), 'success');
       document.getElementById('zcode-manual-key').value = '';
       document.getElementById('zcode-manual-form').style.display = 'none';
       loadZcodeAuth();
     } else {
       if (statusEl) statusEl.textContent = providerApi.errorText(providerApi.errorFromPayload({
-        ...d, error: d.error || d.message || '保存失败',
+        ...d, error: d.error || d.message || tt('memSaveFailed'),
       }));
     }
   } catch (e) {
-    if (statusEl) statusEl.textContent = '保存失败: ' + providerApi.errorText(e);
+    if (statusEl) statusEl.textContent = tt('mngSaveFailedPrefix') + providerApi.errorText(e);
   }
 }
 
@@ -2577,10 +2580,10 @@ async function loadKimiAuth() {
     if (!statusEl || !actionsEl) return;
 
     if (d.configured) {
-      statusEl.innerHTML = '<span class="status-text ok">✓ 已配置</span> — 来源: <b>' + escapeHtml(d.source === 'env_key' ? '环境变量 KIMI_API_KEY' : '凭证文件') + '</b>';
+      statusEl.innerHTML = '<span class="status-text ok">' + escapeHtml(tt('mngConfigured')) + '</span> — ' + escapeHtml(tt('mngSourcePrefix')) + '<b>' + escapeHtml(d.source === 'env_key' ? tt('mngEnvVarKimi') : tt('mngCredentialFile')) + '</b>';
       actionsEl.style.display = 'flex';
     } else {
-      statusEl.innerHTML = '<span class="status-text err">✗ 未配置</span> — 可登录 Kimi Code 或手动填写 API Key，也可为会话绑定上方 MultiCC Provider';
+      statusEl.innerHTML = '<span class="status-text err">' + escapeHtml(tt('mngNotConfiguredErr')) + '</span> — ' + escapeHtml(tt('mngKimiHint'));
       actionsEl.style.display = 'flex';
     }
 
@@ -2588,28 +2591,28 @@ async function loadKimiAuth() {
     if (loginBtn) loginBtn.style.display = d.loginAvailable ? '' : 'none';
   } catch (e) {
     const el = document.getElementById('kimi-auth-status');
-    if (el) el.textContent = '加载失败: ' + providerApi.errorText(e);
+    if (el) el.textContent = tt('mngLoadFailedPrefix') + providerApi.errorText(e);
   }
 }
 
 async function loginKimi() {
   const btn = document.getElementById('kimi-login-btn');
-  if (btn) { btn.disabled = true; btn.textContent = '登录中…（请在浏览器完成授权）'; }
+  if (btn) { btn.disabled = true; btn.textContent = tt('mngLoggingInBrowser'); }
   try {
     const d = await providerApi.json('/api/kimi/auth/login', { method: 'POST' });
     if (d.ok) {
-      showToast('Kimi Code 登录成功', 'success');
+      showToast(tt('mngKimiLoginOk'), 'success');
     } else if (d.code === 'login_timeout') {
-      showToast(`[${d.code}] 登录超时，如浏览器已打开请完成授权`, 'info');
+      showToast(tt('mngLoginTimeout', { code: d.code }), 'info');
     } else {
       showToast(providerApi.errorText(providerApi.errorFromPayload({
-        ...d, error: d.message || d.error || '登录失败',
+        ...d, error: d.message || d.error || tt('mngLoginFailed'),
       })), 'error');
     }
   } catch (e) {
-    showToast('登录失败: ' + providerApi.errorText(e), 'error');
+    showToast(tt('mngLoginFailedPrefix') + providerApi.errorText(e), 'error');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '登录 Kimi Code'; }
+    if (btn) { btn.disabled = false; btn.textContent = tt('mngLoginKimi'); }
     loadKimiAuth();
   }
 }
@@ -2624,7 +2627,7 @@ async function saveKimiManualKey() {
   const baseURL = document.getElementById('kimi-manual-baseurl')?.value?.trim() || undefined;
   const statusEl = document.getElementById('kimi-manual-status');
   if (!apiKey) {
-    if (statusEl) statusEl.textContent = '请填写 API Key';
+    if (statusEl) statusEl.textContent = tt('mngNeedApiKey');
     return;
   }
   try {
@@ -2632,18 +2635,18 @@ async function saveKimiManualKey() {
       method: 'PUT', json: { apiKey, baseURL },
     });
     if (d.ok) {
-      showToast('Kimi API Key 已保存', 'success');
+      showToast(tt('mngKimiKeySaved'), 'success');
       document.getElementById('kimi-manual-key').value = '';
       document.getElementById('kimi-manual-baseurl').value = '';
       document.getElementById('kimi-manual-form').style.display = 'none';
       loadKimiAuth();
     } else {
       if (statusEl) statusEl.textContent = providerApi.errorText(providerApi.errorFromPayload({
-        ...d, error: d.error || d.message || '保存失败',
+        ...d, error: d.error || d.message || tt('memSaveFailed'),
       }));
     }
   } catch (e) {
-    if (statusEl) statusEl.textContent = '保存失败: ' + providerApi.errorText(e);
+    if (statusEl) statusEl.textContent = tt('mngSaveFailedPrefix') + providerApi.errorText(e);
   }
 }
 

@@ -11,6 +11,14 @@
  *   vs.stop();          // user released mic → flush + finalize
  *   vs.abort();         // cancel without finalizing
  */
+// 这个模块被 index / chat / test-voice-realtime 三处加载，自己不带头词典：页面
+// 挂了 i18n.js 就借用它的 t，没挂（测试页）就退回中文原文，免得为了两句话再复制一份。
+function voiceTr(key, fallback) {
+  const translate = typeof window !== 'undefined' ? window.t : undefined;
+  const text = typeof translate === 'function' ? translate(key) : key;
+  return text === key ? fallback : text;
+}
+
 class VoiceStream {
   constructor(opts) {
     this.opts = opts || {};
@@ -57,12 +65,12 @@ class VoiceStream {
           if (this.opts.onDone) this.opts.onDone(m.text || '');
           this._teardown();
         } else if (m.type === 'error') {
-          if (this.opts.onError) this.opts.onError(m.message || 'ASR 错误');
-          if (!settled) { settled = true; reject(new Error(m.message || 'ASR 错误')); }
+          if (this.opts.onError) this.opts.onError(m.message || voiceTr('voiceAsrError', 'ASR 错误'));
+          if (!settled) { settled = true; reject(new Error(m.message || voiceTr('voiceAsrError', 'ASR 错误'))); }
         }
       };
       ws.onerror = () => {
-        if (this.opts.onError) this.opts.onError('语音连接失败');
+        if (this.opts.onError) this.opts.onError(voiceTr('voiceConnectFailed', '语音连接失败'));
         if (!settled) { settled = true; reject(new Error('ws error')); }
       };
       ws.onclose = () => { this._teardown(); };

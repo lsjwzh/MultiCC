@@ -11,6 +11,13 @@
  *   vo.stop();                // interrupt playback
  */
 
+// 同 voice-session.js：借页面的 t，借不到就退回中文原文。
+function voiceTr(key, fallback) {
+  const translate = typeof window !== 'undefined' ? window.t : undefined;
+  const text = typeof translate === 'function' ? translate(key) : key;
+  return text === key ? fallback : text;
+}
+
 class VoiceOutput {
   constructor(opts) {
     this.opts = opts || {};
@@ -114,7 +121,7 @@ class VoiceOutput {
           resolved = true;
           reject(new Error('WebSocket error'));
         }
-        if (this.opts.onError) this.opts.onError('语音连接失败');
+        if (this.opts.onError) this.opts.onError(voiceTr('voiceConnectFailed', '语音连接失败'));
       };
 
       ws.onclose = () => {

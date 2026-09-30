@@ -41,9 +41,22 @@ const MIGRATION_DEBT = Object.freeze({
   // 回去，但闸只认字节不认「这条该不该有」：就地压掉同区几行注释的赘语把这笔抵掉了，
   // 于是高水位继续往下走到 3039/163299。工作区面板页头（adminHeadings 加一条
   // workspaces）用同样的办法就地抵掉，高水位再往下压一格到 3038/163257。
+  // 国际化收尾那轮给工作区的面包屑补了第三个词（t('mngWorkspacesSub')），行数仍卡在
+  // 3038，字节再压 5 到 163252 —— 同样是把同一处注释的赘语挤掉，不新增行。
   'public/air.js': Object.freeze({
     ceiling: 3038,
-    byteCeiling: 163257,
+    byteCeiling: 163252,
+    target: 3000,
+  }),
+  // public/manage.html 是唯一一处「为国际化主动加字节」的越线：给它 576 处
+  // data-i18n* 属性之后从 231770 涨到 249011 字节，越过默认的 240000（行数 2977，
+  // 还在 3000 以内）。涨的全是属性，没有一行逻辑 —— 但它是手写的旧控制台，不是生成物，
+  // 所以不能走 REVIEWED_EXEMPTIONS，只能按迁移债登记。旧控制台正在被 Air 逐格取代
+  // （非 embed 的视图已经 302 到 /air），等它整个退场这条债一起销掉；在那之前天花板
+  // 压在已提交的高水位上，再涨必须回来改这里。
+  'public/manage.html': Object.freeze({
+    ceiling: 2977,
+    byteCeiling: 249011,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -106,9 +119,16 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 藏在 iframe 里的中文一下子进了 Air 的扫描面：Air 的 i18n 关卡只认 DOM 文本，旧页
   // 里的字面量以前扫不到、现在扫得到，于是这四个模块也一并入典（键名前缀沿用它们各自
   // 的面板名）。中文值逐字保留，中文渲染与既有断言不受影响。
+  // 多语言收尾这一轮把「除 Air 之外的每个页面」都扫进了 test:i18n（原先只扫
+  // air*/chat/manage 那几支），扫出来的缺口一并补上：旧控制台 manage.html 的 407 条
+  // （576 处 data-i18n* 属性）、运行期往 DOM 里写字的那几个 manage 模块
+  // （manage-fleet-sharing / manage-official-accounts / manage-host-settings，各 prefix
+  //  对应 mngFs / mngOa / mngHost），以及 task-shell.html 那个一直没挂 data-i18n 的
+  // 「任务计划」。共 +927 条键（中英各一行）→ 6222 行涨到 8550 行。涨的依然是数据量，
+  // 天花板按测试自己的 countLines 量法压在当前高水位上。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6222,
-    maxBytes: 380667,
+    maxLines: 8550,
+    maxBytes: 521979,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

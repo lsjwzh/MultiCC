@@ -9,16 +9,17 @@
   const ID_RE = /^[A-Za-z0-9._:-]{1,160}$/;
   const SECRET_KEY_RE = /(?:token|secret|password|passwd|authorization|cookie|api[_-]?key|credential)/i;
   const SECRET_QUERY_RE = /([?&](?:token|access_token|auth_token|api_key|apikey|authorization)=)[^&#\s]*/gi;
+  // 值存 i18n key 而非文案：本模块常先于 i18n.js 加载，顶层取词会拿错语言或直接报错。
   const FAMILY_LABELS = Object.freeze({
-    auth: '登录或权限错误',
-    network: '本机网络或连接错误',
-    remote: '共享工作区不可达',
-    route: 'Provider 路由失败',
-    provider: 'Provider / 模型错误',
-    conflict: '状态冲突',
-    runtime: '运行时错误',
-    lifecycle: '服务生命周期错误',
-    internal: '内部错误',
+    auth: 'errEnvFamilyAuth',
+    network: 'errEnvFamilyNetwork',
+    remote: 'errEnvFamilyRemote',
+    route: 'errEnvFamilyRoute',
+    provider: 'errEnvFamilyProvider',
+    conflict: 'errEnvFamilyConflict',
+    runtime: 'errEnvFamilyRuntime',
+    lifecycle: 'errEnvFamilyLifecycle',
+    internal: 'errEnvFamilyInternal',
   });
   const DEFAULT_ACTIONS = Object.freeze({
     auth: 'login',
@@ -31,6 +32,12 @@
     lifecycle: 'restart',
     internal: 'copy_details',
   });
+
+  // 取词延迟到使用时：本模块可能先于 i18n.js 加载，也可能在完全没加载 i18n 的页面上跑。
+  // 没有 window.t 时回落成 key 本身，保证不抛错。
+  function tr(key, params) {
+    return root && typeof root.t === 'function' ? root.t(key, params) : key;
+  }
 
   function cleanId(value) {
     const text = typeof value === 'string' ? value.trim() : '';
@@ -207,11 +214,11 @@
   function presentation(input, options = {}) {
     const envelope = input && input.version === 'v1' ? input : normalize(input, options);
     const retrySuffix = envelope.retryable && Number(options.retrySeconds) > 0
-      ? `，${Math.max(1, Math.round(Number(options.retrySeconds)))}s 后重试`
+      ? tr('errEnvRetrySuffix', { n: Math.max(1, Math.round(Number(options.retrySeconds))) })
       : '';
     return Object.freeze({
       envelope,
-      headline: FAMILY_LABELS[envelope.family] || FAMILY_LABELS.internal,
+      headline: tr(FAMILY_LABELS[envelope.family] || FAMILY_LABELS.internal),
       message: `${visibleMessage(envelope)}${retrySuffix}`,
       tone: envelope.retryable ? 'warning' : 'danger',
       action: envelope.action,
@@ -220,23 +227,25 @@
 
   function diagnosticText(input) {
     const envelope = input && input.version === 'v1' ? input : normalize(input);
+    // 标签与值分开拼接：message/detail/序列化 JSON 里可能含 `{xx}`，走 t 的插值会被误替换。
     const lines = [
-      `错误: ${visibleMessage(envelope)}`,
+      `${tr('errEnvDiagErrorLabel')} ${visibleMessage(envelope)}`,
       envelope.httpStatus ? `HTTP: ${envelope.httpStatus}` : '',
-      `分类: ${envelope.category} (${envelope.family})`,
-      `可重试: ${envelope.retryable ? 'yes' : 'no'}`,
-      `建议动作: ${envelope.action}`,
-      `作用域: ${envelope.scope}`,
+      `${tr('errEnvDiagCategoryLabel')} ${envelope.category} (${envelope.family})`,
+      `${tr('errEnvDiagRetryableLabel')} ${envelope.retryable ? 'yes' : 'no'}`,
+      `${tr('errEnvDiagActionLabel')} ${envelope.action}`,
+      `${tr('errEnvDiagScopeLabel')} ${envelope.scope}`,
       envelope.requestId ? `requestId: ${envelope.requestId}` : '',
       envelope.correlationId ? `correlationId: ${envelope.correlationId}` : '',
       envelope.upstreamRequestId ? `upstreamRequestId: ${envelope.upstreamRequestId}` : '',
-      `时间: ${envelope.occurredAt}`,
-      envelope.detail && envelope.detail !== envelope.message ? `原始详情: ${envelope.detail}` : '',
+      `${tr('errEnvDiagTimeLabel')} ${envelope.occurredAt}`,
+      envelope.detail && envelope.detail !== envelope.message
+        ? `${tr('errEnvDiagDetailLabel')} ${envelope.detail}` : '',
     ].filter(Boolean);
     const original = safeValue(envelope.original);
     if (original && typeof original === 'object' && Object.keys(original).length) {
       const serialized = redactText(JSON.stringify(original, null, 2), 6000);
-      if (serialized && serialized !== '{}') lines.push(`原始错误对象:\n${serialized}`);
+      if (serialized && serialized !== '{}') lines.push(`${tr('errEnvDiagOriginalLabel')}\n${serialized}`);
     }
     return lines.join('\n');
   }
@@ -247,22 +256,22 @@
     const details = doc.createElement('details');
     details.className = 'mc-error-details';
     const summary = doc.createElement('summary');
-    summary.textContent = options.summary || '诊断详情';
+    summary.textContent = options.summary || tr('errEnvDiagSummary');
     const pre = doc.createElement('pre');
     pre.textContent = diagnosticText(envelope);
     const copy = doc.createElement('button');
     copy.type = 'button';
     copy.className = 'mc-error-copy';
-    copy.textContent = '复制';
+    copy.textContent = tr('errEnvCopy');
     copy.addEventListener('click', async (event) => {
       if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
       try {
         const nav = (root && root.navigator) || (typeof navigator !== 'undefined' ? navigator : null);
         if (!nav || !nav.clipboard || typeof nav.clipboard.writeText !== 'function') throw new Error('clipboard unavailable');
         await nav.clipboard.writeText(pre.textContent);
-        copy.textContent = '已复制';
+        copy.textContent = tr('errEnvCopied');
       } catch (_) {
-        copy.textContent = '复制失败';
+        copy.textContent = tr('errEnvCopyFailed');
       }
     });
     details.append(summary, pre, copy);
@@ -311,17 +320,18 @@
     const closeCode = Number(event.code) || 1006;
     const reason = firstText(event.reason);
     const meanings = {
-      1000: 'WebSocket 正常关闭',
-      1001: 'WebSocket 端点离开',
-      1006: 'WebSocket 异常断开，未收到关闭帧',
-      1008: 'WebSocket 请求违反服务端策略',
-      1011: 'WebSocket 服务端发生异常',
-      1012: 'WebSocket 服务正在重启',
-      1013: 'WebSocket 服务暂时过载',
+      1000: 'errEnvWs1000',
+      1001: 'errEnvWs1001',
+      1006: 'errEnvWs1006',
+      1008: 'errEnvWs1008',
+      1011: 'errEnvWs1011',
+      1012: 'errEnvWs1012',
+      1013: 'errEnvWs1013',
     };
+    const meaningKey = meanings[closeCode];
     return normalize({
       code: `WS_CLOSE_${closeCode}`,
-      message: reason || meanings[closeCode] || `WebSocket 已关闭 (${closeCode})`,
+      message: reason || (meaningKey ? tr(meaningKey) : '') || tr('errEnvWsClosed', { code: closeCode }),
       retryable: ![1000, 1008].includes(closeCode),
     }, {
       ...context,

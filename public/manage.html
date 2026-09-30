@@ -687,7 +687,7 @@
       #topbar{padding-inline:8px;gap:6px}
       #topbar .crumb small{display:none}
       #topbar .btn.primary{font-size:0;min-width:78px}
-      #topbar .btn.primary::after{content:'+ 工作区';font-size:13px}
+      #topbar .btn.primary::after{content:attr(data-label-short);font-size:13px}
       #topbar-help,#topbar-refresh{display:none}
       #kpi-row{gap:8px;margin-bottom:18px}
       .kpi{padding:12px}
@@ -849,14 +849,14 @@
          pushes .nav-bottom (restart/logout) out of the viewport on phones. -->
     <div id="nav-scroll">
     <div class="nav-label" data-i18n="workspace">Workspace</div>
-    <button class="nav-item active" data-view="overview" onclick="setView('overview')"><span class="ic">◧</span> <span>工作目录与任务</span> <span class="badge" id="nav-dir-count">0</span></button>
+    <button class="nav-item active" data-view="overview" onclick="setView('overview')"><span class="ic">◧</span> <span data-i18n="mngNavOverview">工作目录与任务</span> <span class="badge" id="nav-dir-count">0</span></button>
     <!-- Cron sits with Overview, not under Settings: it is scheduled work that
          spawns sessions, so it belongs with the live view of what is running
          rather than with the config panes. -->
     <button class="nav-item" data-view="cron" onclick="setView('cron')"><span class="ic">⏱</span> <span data-i18n="cronTasks">定时任务</span> <span class="badge" id="nav-cron-count">0</span></button>
     <button class="nav-item" data-view="memory" onclick="setView('memory')"><span class="ic">🧠</span> <span data-i18n="memoryGraph">记忆图谱</span> <span class="badge" id="nav-memory-count">0</span></button>
-    <button class="nav-item" data-view="taskgraph" onclick="setView('taskgraph')"><span class="ic">⛓</span> <span>任务图谱</span></button>
-    <button class="nav-item" data-view="workspaces" onclick="setView('workspaces')"><span class="ic">▦</span> <span>工作区</span></button>
+    <button class="nav-item" data-view="taskgraph" onclick="setView('taskgraph')"><span class="ic">⛓</span> <span data-i18n="mngNavTaskgraph">任务图谱</span></button>
+    <button class="nav-item" data-view="workspaces" onclick="setView('workspaces')"><span class="ic">▦</span> <span data-i18n="mngNavWorkspaces">工作区</span></button>
     <button class="nav-item" data-view="docs" onclick="setView('docs')"><span class="ic">🗂</span> <span data-i18n="docsServices">服务与文档</span></button>
 
     <div class="nav-label" data-i18n="settingsTitle">Settings</div>
@@ -880,11 +880,11 @@
       <div id="version-bar" style="padding:10px 4px 6px;border-top:1px solid var(--line)">
         <!-- Click = check, then offer to install. Falls back to a plain check if
              manage-update.js failed to load, so the row is never a dead click. -->
-        <div style="display:flex;align-items:center;gap:8px;cursor:pointer" onclick="(window.onVersionBarClick||window.checkVersion)()" title="点击检查并安装更新">
+        <div style="display:flex;align-items:center;gap:8px;cursor:pointer" onclick="(window.onVersionBarClick||window.checkVersion)()" data-i18n-title="airCheckUpdate" title="点击检查并安装更新">
           <span id="ver-icon" style="font-size:13px;opacity:.8">📦</span>
           <span style="flex:1;min-width:0">
             <div id="ver-current" style="font-family:var(--mono);font-size:11px;color:var(--text);line-height:1.3">v—</div>
-            <div id="ver-hint" style="font-family:var(--mono);font-size:10px;color:var(--faint);line-height:1.3">检查中…</div>
+            <div id="ver-hint" style="font-family:var(--mono);font-size:10px;color:var(--faint);line-height:1.3" data-i18n="mngChecking">检查中…</div>
           </span>
           <span id="ver-badge" style="display:none;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:20px;background:var(--accent-dim);color:var(--accent);font-weight:600">NEW</span>
         </div>
@@ -916,14 +916,14 @@
   <main id="main">
     <header id="topbar">
       <button class="icon-btn" id="nav-toggle" onclick="document.body.classList.toggle('nav-open')" aria-controls="nav" aria-expanded="false" data-i18n-title="menu" title="菜单">☰</button>
-      <div class="crumb" id="crumb"><span>工作目录与任务</span> <small id="crumb-sub"></small></div>
+      <div class="crumb" id="crumb"><span data-i18n="mngNavOverview">工作目录与任务</span> <small id="crumb-sub"></small></div>
       <div class="topspace"></div>
       <div class="search"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索工作区 / 会话…" oninput="filterDirs(this.value)" /></div>
       <button class="icon-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
       <button class="icon-btn" id="topbar-help" onclick="startOnboarding()" data-i18n-title="onboarding" title="引导">❓</button>
       <button class="icon-btn" id="topbar-refresh" onclick="loadDashboard()" data-i18n-title="refresh" title="刷新">⟳</button>
-      <button class="btn" type="button" onclick="openImportFleetModal()" title="从另一台 MultiCC 导入共享工作区"><span aria-hidden="true">⇩</span> <span class="fleet-import-label">导入工作区</span></button>
-      <button class="btn primary" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建工作区</button>
+      <button class="btn" type="button" onclick="openImportFleetModal()" data-i18n-title="mngImportFleetTitle" title="从另一台 MultiCC 导入共享工作区"><span aria-hidden="true">⇩</span> <span class="fleet-import-label" data-i18n="mngImportWorkspace">导入工作区</span></button>
+      <button class="btn primary" onclick="openNewDirectoryModal()" data-i18n="newDirectory" data-label-short="+ 工作区" data-i18n-label-short="mngNewWorkspaceShort">＋ 新建工作区</button>
     </header>
 
     <div id="content">
@@ -1056,17 +1056,17 @@
             <button class="btn btn-sm" onclick="loadMemoryGraph(undefined, true)" data-i18n="refresh">刷新</button>
           </div>
           <div id="mem-tabs">
-            <button class="mtab active" data-memtab="graph" onclick="setMemTab('graph')">🕸 图谱</button>
-            <button class="mtab" data-memtab="tree" onclick="setMemTab('tree')">🌳 树状</button>
+            <button class="mtab active" data-memtab="graph" onclick="setMemTab('graph')" data-i18n="mngMemTabGraph">🕸 图谱</button>
+            <button class="mtab" data-memtab="tree" onclick="setMemTab('tree')" data-i18n="mngMemTabTree">🌳 树状</button>
           </div>
           <div id="mem-graph-pane">
-          <p class="sec-desc">项目记忆系统的可视化网络：每个 <b>记忆节点</b>（.md 文件）显示标题与摘要，节点之间的 <code>[[wikilink]]</code> 关联构成 <b>有向边</b>（类型 reference，强度=引用次数）。点击节点看详情，空白处按住拖拽平移，滚轮缩放。</p>
+          <p class="sec-desc"><span data-i18n="mngMemGraphDescA">项目记忆系统的可视化网络：每个 </span><b data-i18n="mngMemGraphNode">记忆节点</b><span data-i18n="mngMemGraphDescB">（.md 文件）显示标题与摘要，节点之间的 </span><code>[[wikilink]]</code><span data-i18n="mngMemGraphDescC"> 关联构成 </span><b data-i18n="mngMemGraphEdge">有向边</b><span data-i18n="mngMemGraphDescD">（类型 reference，强度=引用次数）。点击节点看详情，空白处按住拖拽平移，滚轮缩放。</span></p>
           <div id="mem-graph-wrap">
             <div id="mem-graph-toolbar">
-              <label style="font-size:12px;color:var(--muted)">项目
+              <label style="font-size:12px;color:var(--muted)"><span data-i18n="mngProject">项目</span>
                 <select id="mem-graph-project" onchange="loadMemoryGraph(this.value)"></select>
               </label>
-              <button class="btn btn-sm" onclick="memGraphResetView()">重置视图</button>
+              <button class="btn btn-sm" onclick="memGraphResetView()" data-i18n="mngResetView">重置视图</button>
               <span id="mem-graph-meta"></span>
               <div style="flex:1"></div>
               <div id="mem-graph-legend"></div>
@@ -1074,25 +1074,25 @@
             <div id="mem-graph-canvas">
               <svg id="mem-graph-svg"></svg>
               <div id="mem-graph-empty"></div>
-              <div id="mem-graph-hint">拖拽平移 · 滚轮缩放 · 点击节点看详情 · 拖动节点可固定</div>
+              <div id="mem-graph-hint" data-i18n="mngGraphHint">拖拽平移 · 滚轮缩放 · 点击节点看详情 · 拖动节点可固定</div>
               <div class="mem-zoom-btns">
-                <button onclick="memGraphZoom(1.2)" title="放大">＋</button>
-                <button onclick="memGraphZoom(1/1.2)" title="缩小">－</button>
-                <button onclick="memGraphResetView()" title="重置" style="font-size:12px">⊙</button>
+                <button onclick="memGraphZoom(1.2)"  data-i18n-title="mngZoomIn" title="放大">＋</button>
+                <button onclick="memGraphZoom(1/1.2)"  data-i18n-title="mngZoomOut" title="缩小">－</button>
+                <button onclick="memGraphResetView()"  data-i18n-title="mngReset" title="重置" style="font-size:12px">⊙</button>
               </div>
             </div>
           </div>
           </div><!-- /#mem-graph-pane -->
           <div id="mem-tree-pane" style="display:none">
-            <p class="sec-desc">按 <b>机器全局（_machine）/ CLI 特有（_cli）→ 项目 → 公共（_shared）/ 技能（skills）/ 任务（tasks）/ 会话（sessions）</b> 五层瀑布梳理全部记忆文件。每个文件显示<b>存放位置</b>与<b>估算 token 数</b>，点击可随时打开编辑。token 为无依赖估算（中文≈1.5/字，其余≈4字符/token），仅作体量参考。</p>
+            <p class="sec-desc"><span data-i18n="mngMemTreeDescA">按 </span><b data-i18n="mngMemTreeLevels">机器全局（_machine）/ CLI 特有（_cli）→ 项目 → 公共（_shared）/ 技能（skills）/ 任务（tasks）/ 会话（sessions）</b><span data-i18n="mngMemTreeDescB"> 五层瀑布梳理全部记忆文件。每个文件显示</span><b data-i18n="mngMemTreePath">存放位置</b><span data-i18n="mngMemTreeAnd">与</span><b data-i18n="mngMemTreeTokens">估算 token 数</b><span data-i18n="mngMemTreeDescC">，点击可随时打开编辑。token 为无依赖估算（中文≈1.5/字，其余≈4字符/token），仅作体量参考。</span></p>
             <div id="mem-tree-toolbar">
-              <span id="mem-tree-stats">加载中…</span>
+              <span id="mem-tree-stats" data-i18n="loading">加载中…</span>
               <div style="flex:1"></div>
-              <button class="btn btn-sm" onclick="memTreeExpandAll(true)">展开全部</button>
-              <button class="btn btn-sm" onclick="memTreeExpandAll(false)">折叠全部</button>
-              <button class="btn btn-sm" onclick="loadMemoryTree(true)">刷新</button>
+              <button class="btn btn-sm" onclick="memTreeExpandAll(true)" data-i18n="mngExpandAll">展开全部</button>
+              <button class="btn btn-sm" onclick="memTreeExpandAll(false)" data-i18n="mngCollapseAll">折叠全部</button>
+              <button class="btn btn-sm" onclick="loadMemoryTree(true)" data-i18n="refresh">刷新</button>
             </div>
-            <div id="mem-tree"><div class="mt-empty">加载中…</div></div>
+            <div id="mem-tree"><div class="mt-empty" data-i18n="loading">加载中…</div></div>
           </div>
         </section>
 
@@ -1139,16 +1139,16 @@
             #tg-node-open{background:#238636;border:1px solid #2ea043;border-radius:6px;color:#fff;font-size:12px;padding:6px 12px;cursor:pointer;margin-bottom:12px}
             #tg-node-open:hover{filter:brightness(1.08)}
           </style>
-          <div class="sec-head"><h2><span>⛓ 任务图谱</span> <span id="tg-graph-count-pill" style="color:var(--faint);font-weight:400;font-size:12px"></span></h2><div class="line"></div>
+          <div class="sec-head"><h2><span data-i18n="mngTaskGraphTitle">⛓ 任务图谱</span> <span id="tg-graph-count-pill" style="color:var(--faint);font-weight:400;font-size:12px"></span></h2><div class="line"></div>
             <button class="btn btn-sm" onclick="loadTaskGraph(undefined, true)" data-i18n="refresh">刷新</button>
           </div>
-          <p class="sec-desc">任务关联网络：每个 <b>任务节点</b> 按 classify 状态着色（P/D/W/B/E），<b>provisional（身份未锁）半透明</b>、canonical 实色；<b>任务壳</b>画成小菱形。边分四类：<code>parent</code> 父子（classify 归因落位） / <code>group</code> 同组（taskGroups） / <code>merged</code> 合并别名 / <code>shell-link</code> 壳链接。点击节点看详情并可跳转 Air。</p>
+          <p class="sec-desc"><span data-i18n="mngTaskGraphDescA">任务关联网络：每个 </span><b data-i18n="mngTaskGraphNode">任务节点</b><span data-i18n="mngTaskGraphDescB"> 按 classify 状态着色（P/D/W/B/E），</span><b data-i18n="mngTaskGraphProvisional">provisional（身份未锁）半透明</b><span data-i18n="mngTaskGraphDescC">、canonical 实色；</span><b data-i18n="mngTaskGraphShell">任务壳</b><span data-i18n="mngTaskGraphDescD">画成小菱形。边分四类：</span><code>parent</code><span data-i18n="mngTaskGraphEdgeParent"> 父子（classify 归因落位） / </span><code>group</code><span data-i18n="mngTaskGraphEdgeGroup"> 同组（taskGroups） / </span><code>merged</code><span data-i18n="mngTaskGraphEdgeMerged"> 合并别名 / </span><code>shell-link</code><span data-i18n="mngTaskGraphEdgeShell"> 壳链接。点击节点看详情并可跳转 Air。</span></p>
           <div id="tg-graph-wrap">
             <div id="tg-graph-toolbar">
-              <label style="font-size:12px;color:var(--muted)">项目
+              <label style="font-size:12px;color:var(--muted)"><span data-i18n="mngProject">项目</span>
                 <select id="tg-graph-project" onchange="loadTaskGraph(this.value)"></select>
               </label>
-              <button class="btn btn-sm" onclick="tgGraphResetView()">重置视图</button>
+              <button class="btn btn-sm" onclick="tgGraphResetView()" data-i18n="mngResetView">重置视图</button>
               <span id="tg-graph-meta"></span>
               <div style="flex:1"></div>
               <div id="tg-graph-legend"></div>
@@ -1156,11 +1156,11 @@
             <div id="tg-graph-canvas">
               <svg id="tg-graph-svg"></svg>
               <div id="tg-graph-empty"></div>
-              <div id="tg-graph-hint">拖拽平移 · 滚轮缩放 · 点击节点看详情 · 拖动节点可固定</div>
+              <div id="tg-graph-hint" data-i18n="mngGraphHint">拖拽平移 · 滚轮缩放 · 点击节点看详情 · 拖动节点可固定</div>
               <div class="tg-zoom-btns">
-                <button onclick="tgGraphZoom(1.2)" title="放大">＋</button>
-                <button onclick="tgGraphZoom(1/1.2)" title="缩小">－</button>
-                <button onclick="tgGraphResetView()" title="重置" style="font-size:12px">⊙</button>
+                <button onclick="tgGraphZoom(1.2)"  data-i18n-title="mngZoomIn" title="放大">＋</button>
+                <button onclick="tgGraphZoom(1/1.2)"  data-i18n-title="mngZoomOut" title="缩小">－</button>
+                <button onclick="tgGraphResetView()"  data-i18n-title="mngReset" title="重置" style="font-size:12px">⊙</button>
               </div>
             </div>
           </div>
@@ -1170,7 +1170,7 @@
               <h3 id="tg-node-title"></h3>
               <div class="mn-slug" id="tg-node-id"></div>
               <div class="mn-tags" id="tg-node-tags"></div>
-              <button id="tg-node-open" style="display:none">在 Air 中打开 ↗</button>
+              <button id="tg-node-open" style="display:none" data-i18n="mngOpenInAir">在 Air 中打开 ↗</button>
               <div class="mn-summary" id="tg-node-detail"></div>
               <div class="mn-links" id="tg-node-links"></div>
             </div>
@@ -1179,20 +1179,20 @@
 
         <!-- ─── Workspaces（worktree 休眠回收） ─── -->
         <section class="view" data-view="workspaces">
-          <div class="sec-head"><h2>▦ 工作区 <span id="ws-count" style="color:var(--faint);font-weight:400;"></span></h2><div class="line"></div>
-            <button class="btn btn-sm" onclick="loadWorkspacePanel()">刷新</button>
-            <button class="btn btn-green btn-sm" onclick="runWorkspaceSweep(false)">立即休眠清扫</button>
-            <button class="btn btn-sm" onclick="runWorkspaceSweep(true)" title="同时对账孤儿 worktree">清扫＋孤儿对账</button>
+          <div class="sec-head"><h2><span data-i18n="mngTitleWorkspaces">▦ 工作区</span> <span id="ws-count" style="color:var(--faint);font-weight:400;"></span></h2><div class="line"></div>
+            <button class="btn btn-sm" onclick="loadWorkspacePanel()" data-i18n="refresh">刷新</button>
+            <button class="btn btn-green btn-sm" onclick="runWorkspaceSweep(false)" data-i18n="mngSweepNow">立即休眠清扫</button>
+            <button class="btn btn-sm" onclick="runWorkspaceSweep(true)" data-i18n-title="mngSweepOrphanTitle" title="同时对账孤儿 worktree" data-i18n="mngSweepOrphan">清扫＋孤儿对账</button>
           </div>
-          <p class="sec-desc">闲置会话的 worktree 会被休眠回收（分支保留，可随时解冻）；每目录活跃数受 LRU 预算限制。回收时被 .gitignore 忽略的未知文件会被删除并留审计清单。</p>
-          <div class="settings-card" style="max-width:none"><div class="sc-header">概览</div><div class="sc-body" id="ws-summary" style="gap:8px;"></div></div>
-          <div class="settings-card" style="max-width:none"><div class="sc-header">工作目录</div><div class="sc-body" id="ws-dirs" style="gap:6px;"></div></div>
+          <p class="sec-desc" data-i18n="mngWorkspacesDesc">闲置会话的 worktree 会被休眠回收（分支保留，可随时解冻）；每目录活跃数受 LRU 预算限制。回收时被 .gitignore 忽略的未知文件会被删除并留审计清单。</p>
+          <div class="settings-card" style="max-width:none"><div class="sc-header" data-i18n="mngOverview">概览</div><div class="sc-body" id="ws-summary" style="gap:8px;"></div></div>
+          <div class="settings-card" style="max-width:none"><div class="sc-header" data-i18n="mngWorkDirs">工作目录</div><div class="sc-body" id="ws-dirs" style="gap:6px;"></div></div>
           <div class="settings-card" style="max-width:none">
-            <div class="sc-header">孤儿 worktree 对账</div>
+            <div class="sc-header" data-i18n="mngOrphanReconcile">孤儿 worktree 对账</div>
             <div class="sc-body" id="ws-orphans" style="gap:6px;"></div>
           </div>
           <div class="settings-card" style="max-width:none">
-            <div class="sc-header">忽略文件删除审计</div>
+            <div class="sc-header" data-i18n="mngIgnoredAudit">忽略文件删除审计</div>
             <div class="sc-body" id="ws-audit" style="gap:6px;"></div>
           </div>
         </section>
@@ -1203,11 +1203,11 @@
             <button class="btn btn-sm" onclick="loadCronTasks()" data-i18n="refresh">刷新</button>
             <button class="btn btn-green btn-sm" onclick="openCronModal()">＋ <span data-i18n="create">新建</span></button>
           </div>
-          <p class="sec-desc">定时任务已接入 MultiCC Air：每条规则绑定一个固定任务，所有周期运行共享同一任务历史。新的完整界面可从 Air 打开。</p>
-          <div style="margin-bottom:12px;"><a class="btn btn-green btn-sm" href="/air?view=schedules">在 MultiCC Air 中管理 ↗</a></div>
+          <p class="sec-desc" data-i18n="mngCronDesc">定时任务已接入 MultiCC Air：每条规则绑定一个固定任务，所有周期运行共享同一任务历史。新的完整界面可从 Air 打开。</p>
+          <div style="margin-bottom:12px;"><a class="btn btn-green btn-sm" href="/air?view=schedules" data-i18n="mngManageInAir">在 MultiCC Air 中管理 ↗</a></div>
           <div class="settings-card" style="max-width:none">
             <div class="sc-body" id="cron-list" style="gap:10px;">
-              <div style="color:var(--faint);font-size:13px;">加载中…</div>
+              <div style="color:var(--faint);font-size:13px;" data-i18n="loading">加载中…</div>
             </div>
           </div>
         </section>
@@ -1216,9 +1216,9 @@
         <section class="view" data-view="voice">
           <div class="sec-head"><h2 data-i18n="voiceSettings">语音设置</h2><div class="line"></div></div>
           <div class="settings-card">
-            <div class="sc-header">Qwen Audio Agent — 全局实时语音 Gateway</div>
+            <div class="sc-header" data-i18n="mngQwenHeader">Qwen Audio Agent — 全局实时语音 Gateway</div>
             <div class="sc-body">
-              <div class="sec-desc" style="margin:0">全机只有一个实时语音进程。Dashboard 的全局入口和各个 Chat 的电话按钮都连它：从 Chat 打开就固定说给当前会话，从 Dashboard 打开则由语音 Router 选择对应项目的普通 Worker，任务板记录实际派发结果。Key / 模型 / 音色本来就是全局配置。</div>
+              <div class="sec-desc" style="margin:0" data-i18n="mngQwenDesc">全机只有一个实时语音进程。Dashboard 的全局入口和各个 Chat 的电话按钮都连它：从 Chat 打开就固定说给当前会话，从 Dashboard 打开则由语音 Router 选择对应项目的普通 Worker，任务板记录实际派发结果。Key / 模型 / 音色本来就是全局配置。</div>
               <div class="setting-row"><label>DashScope Key</label><input id="qwen-audio-key" type="password" autocomplete="off" placeholder="sk-..." /></div>
               <div class="setting-row"><label>Realtime Endpoint</label><input id="qwen-audio-url" type="text" placeholder="wss://dashscope.aliyuncs.com/api-ws/v1/realtime" /></div>
               <div class="setting-row"><label>Voice Model</label><input id="qwen-audio-model" type="text" placeholder="qwen-audio-3.0-realtime-plus" /></div>
@@ -1226,17 +1226,17 @@
               <div id="qwen-audio-global" style="display:flex;flex-direction:column;gap:8px;"></div>
             </div>
             <div class="sc-footer" style="flex-wrap:wrap;gap:8px;">
-              <button class="btn" onclick="saveQwenAudioSettings()">保存语音配置</button>
-              <button class="btn" id="qwen-audio-install" onclick="installQwenAudioRuntime()">安装运行时</button>
-              <button class="btn btn-green" id="qwen-audio-enable" onclick="enableQwenAudioGlobal()">安装并启用全局语音</button>
+              <button class="btn" onclick="saveQwenAudioSettings()" data-i18n="mngSaveVoiceConfig">保存语音配置</button>
+              <button class="btn" id="qwen-audio-install" onclick="installQwenAudioRuntime()" data-i18n="mngInstallRuntime">安装运行时</button>
+              <button class="btn btn-green" id="qwen-audio-enable" onclick="enableQwenAudioGlobal()" data-i18n="mngEnableGlobalVoice">安装并启用全局语音</button>
               <span class="status-text" id="qwen-audio-status"></span>
             </div>
           </div>
           <div class="settings-card">
-            <div class="sc-header">实时语音识别 — 流式 ASR（豆包式体验）</div>
+            <div class="sc-header" data-i18n="mngAsrHeader">实时语音识别 — 流式 ASR（豆包式体验）</div>
             <div class="sc-body">
-              <div class="sec-desc" style="margin:0">边说边出字的低延迟听写。国内建议「火山引擎」，国外默认「OpenAI Realtime」，离线/数据不出机可用「FunASR」。每家独立配置 AppID/Key。</div>
-              <div><button class="btn btn-green" onclick="openAsrModal()">⚙ 配置流式 ASR…</button>
+              <div class="sec-desc" style="margin:0" data-i18n="mngAsrDesc">边说边出字的低延迟听写。国内建议「火山引擎」，国外默认「OpenAI Realtime」，离线/数据不出机可用「FunASR」。每家独立配置 AppID/Key。</div>
+              <div><button class="btn btn-green" onclick="openAsrModal()" data-i18n="mngConfigureAsr">⚙ 配置流式 ASR…</button>
               <span class="status-text" id="asr-summary" style="margin-left:8px;"></span></div>
             </div>
           </div>
@@ -1253,7 +1253,7 @@
             <div class="sc-header">Voice STT — Whisper</div>
             <div class="sc-body">
               <div class="setting-row"><label>API Endpoint</label><input id="ws-base-url" type="text" placeholder="https://openrouter.ai/api/v1" /></div>
-              <div class="setting-row"><label>API Key</label><input id="ws-api-key" type="password" placeholder="gsk_... (留空则复用 OpenRouter Key)" autocomplete="off" /></div>
+              <div class="setting-row"><label>API Key</label><input id="ws-api-key" type="password" data-i18n-placeholder="mngWsApiKeyPh" placeholder="gsk_... (留空则复用 OpenRouter Key)" autocomplete="off" /></div>
               <div class="setting-row"><label>Model</label><input id="ws-model" type="text" placeholder="whisper-large-v3-turbo" /></div>
               <div class="setting-row"><label>Language</label><input id="ws-language" type="text" placeholder="zh" style="max-width:120px" /><span style="font-size:12px;color:var(--faint)">ISO-639-1 code (zh/en/ja/...)</span></div>
               <div class="setting-row"><label>Prompt</label><input id="ws-prompt" type="text" placeholder="React, useState, TypeScript, Claude Code, MultiCC, SSE" /></div>
@@ -1266,9 +1266,9 @@
         <!-- ─── Goal precheck ─── -->
         <section class="view" data-view="goal">
           <div class="sec-head"><h2 data-i18n="goalPrecheck">Goal 预检设置</h2><div class="line"></div></div>
-          <p class="sec-desc">以 Goal 模式发送任务前，辅助 AI 会按下面启用的维度检查任务是否合格；不合格会给出改写建议。可在聊天的 🎯 弹窗里临时调整本次检查的维度。</p>
+          <p class="sec-desc" data-i18n="mngGoalDesc">以 Goal 模式发送任务前，辅助 AI 会按下面启用的维度检查任务是否合格；不合格会给出改写建议。可在聊天的 🎯 弹窗里临时调整本次检查的维度。</p>
           <div class="settings-card">
-            <div class="sc-header">检查维度（限制项）</div>
+            <div class="sc-header" data-i18n="mngGoalDimsHeader">检查维度（限制项）</div>
             <div class="sc-body">
               <label style="display:flex;align-items:baseline;gap:8px;cursor:pointer;font-size:13px;color:var(--text)">
                 <input type="checkbox" id="goal-dim-objective" style="margin:0" />
@@ -1282,7 +1282,7 @@
               <label style="display:flex;align-items:baseline;gap:8px;cursor:pointer;font-size:13px;color:var(--text)">
                 <input type="checkbox" id="goal-dim-executable" style="margin:0" />
                 <b style="min-width:96px" data-i18n="goalExecutable">可独立执行</b><span style="color:var(--faint);font-size:12px" data-i18n="goalExecutableHint">无需追问关键信息即可开工，或缺失能合理默认</span></label>
-              <div class="setting-row"><label>通过分数阈值</label><input id="goal-min-score" type="number" min="0" max="100" style="max-width:100px" /><span style="font-size:12px;color:var(--faint)">符合度低于此分判为「建议完善」；0 = 不强制</span></div>
+              <div class="setting-row"><label data-i18n="airGoalMinScore">通过分数阈值</label><input id="goal-min-score" type="number" min="0" max="100" style="max-width:100px" /><span style="font-size:12px;color:var(--faint)" data-i18n="airGoalMinScoreHint">符合度低于此分判为「建议完善」；0 = 不强制</span></div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="saveGoalSettings()">Save</button><span class="status-text" id="goal-status"></span></div>
           </div>
@@ -1291,33 +1291,33 @@
         <!-- ─── Provider (cc-switch) ─── -->
         <section class="view" data-view="provider">
           <div class="sec-head"><h2 data-i18n="providerConfig">Provider 配置</h2><div class="line"></div></div>
-          <p class="sec-desc">由 <b>multicc 自己管理</b>（存于项目内 providers.json），可在此自由增删改。<b>cc-switch</b> 仅作为导入来源——点下方「从 cc-switch 导入」把它的 provider 同步进来（可重复同步，不重复）。每个会话可单独选用一个 provider，spawn 时只给该会话的进程注入对应配置（claude 注入 ANTHROPIC_*，codex 用独立 CODEX_HOME，OpenCode / ZCode 按声明协议生成原生隔离配置），会话间互相独立。「全局默认」= 新建 Claude/Codex 会话自动套用；「默认登录」= 走各 CLI 本机订阅 / OAuth。</p>
+          <p class="sec-desc"><span data-i18n="mngProviderDescA">由 </span><b data-i18n="mngProviderSelf">multicc 自己管理</b><span data-i18n="mngProviderDescB">（存于项目内 providers.json），可在此自由增删改。</span><b>cc-switch</b><span data-i18n="mngProviderDescC"> 仅作为导入来源——点下方「从 cc-switch 导入」把它的 provider 同步进来（可重复同步，不重复）。每个会话可单独选用一个 provider，spawn 时只给该会话的进程注入对应配置（claude 注入 ANTHROPIC_*，codex 用独立 CODEX_HOME，OpenCode / ZCode 按声明协议生成原生隔离配置），会话间互相独立。「全局默认」= 新建 Claude/Codex 会话自动套用；「默认登录」= 走各 CLI 本机订阅 / OAuth。</span></p>
 
           <div class="settings-card">
-            <div class="sc-header">从 cc-switch 导入 / 同步</div>
+            <div class="sc-header" data-i18n="mngImportFromCcswitch">从 cc-switch 导入 / 同步</div>
             <div class="sc-body">
-              <p style="font-size:12px;color:var(--faint);margin:0">读取 ~/.cc-switch/cc-switch.db，把其中的 provider 同步进 multicc 自己的存储（按来源去重，已存在的会刷新）。导入后即可在下方自由编辑或删除，不会改动 cc-switch。</p>
-              <div id="provider-ccswitch-unavailable" style="display:none;margin-top:8px;"><span class="status-text err">未检测到 cc-switch 数据库（~/.cc-switch/cc-switch.db），无法导入。</span></div>
+              <p style="font-size:12px;color:var(--faint);margin:0" data-i18n="mngImportFromCcswitchDesc">读取 ~/.cc-switch/cc-switch.db，把其中的 provider 同步进 multicc 自己的存储（按来源去重，已存在的会刷新）。导入后即可在下方自由编辑或删除，不会改动 cc-switch。</p>
+              <div id="provider-ccswitch-unavailable" style="display:none;margin-top:8px;"><span class="status-text err" data-i18n="mngCcswitchMissing">未检测到 cc-switch 数据库（~/.cc-switch/cc-switch.db），无法导入。</span></div>
             </div>
-            <div class="sc-footer"><button class="btn btn-green" id="prov-import-btn" onclick="importProviders()">从 cc-switch 导入</button><button class="btn" id="prov-relay-import-btn" onclick="importRelayProvider()" title="粘贴另一台 multicc 生成的借道分享码，导入它的远程 provider">导入借道 Provider</button><button class="btn" id="prov-relay-records-btn" onclick="manageRelayShares()">借道记录</button><span class="status-text" id="prov-import-status"></span></div>
+            <div class="sc-footer"><button class="btn btn-green" id="prov-import-btn" onclick="importProviders()" data-i18n="mngBtnImportCcswitch">从 cc-switch 导入</button><button class="btn" id="prov-relay-import-btn" onclick="importRelayProvider()" data-i18n-title="mngRelayImportTitle" title="粘贴另一台 multicc 生成的借道分享码，导入它的远程 provider" data-i18n="mngRelayImport">导入借道 Provider</button><button class="btn" id="prov-relay-records-btn" onclick="manageRelayShares()" data-i18n="mngRelayRecords">借道记录</button><span class="status-text" id="prov-import-status"></span></div>
           </div>
 
           <div class="settings-card">
-            <div class="sc-header">全局默认 Provider</div>
+            <div class="sc-header" data-i18n="mngGlobalDefaultProvider">全局默认 Provider</div>
             <div class="sc-body">
-              <div class="setting-row"><label>Claude 默认</label><select id="prov-default-claude" style="min-width:240px"></select></div>
-              <div class="setting-row"><label>Codex 默认</label><select id="prov-default-codex" style="min-width:240px"></select></div>
+              <div class="setting-row"><label data-i18n="mngClaudeDefault">Claude 默认</label><select id="prov-default-claude" style="min-width:240px"></select></div>
+              <div class="setting-row"><label data-i18n="mngCodexDefault">Codex 默认</label><select id="prov-default-codex" style="min-width:240px"></select></div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="saveProviderDefaults()">Save</button><span class="status-text" id="prov-default-status"></span></div>
           </div>
 
           <div class="settings-card" id="official-accounts-card">
-            <div class="sc-header">官方账号（全局切换）</div>
+            <div class="sc-header" data-i18n="mngOfficialAccounts">官方账号（全局切换）</div>
             <div class="sc-body" id="official-accounts-body">
-              <p style="font-size:12px;color:var(--faint);margin:0">Claude 和 Codex 各保留一个官方 Provider。在这里切换账号，所有使用对应官方 Provider 的会话从新请求起使用该账号。</p>
-              <span style="color:var(--faint);font-size:13px">加载中…</span>
+              <p style="font-size:12px;color:var(--faint);margin:0" data-i18n="mngOfficialAccountsDesc">Claude 和 Codex 各保留一个官方 Provider。在这里切换账号，所有使用对应官方 Provider 的会话从新请求起使用该账号。</p>
+              <span style="color:var(--faint);font-size:13px" data-i18n="loading">加载中…</span>
             </div>
-            <div class="sc-footer"><button class="btn btn-green" data-act="add" data-vendor="codex">+ Codex 官方账号</button><button class="btn btn-green" data-act="add" data-vendor="claude">+ Claude 官方账号</button><span class="status-text" id="official-accounts-status"></span></div>
+            <div class="sc-footer"><button class="btn btn-green" data-act="add" data-vendor="codex" data-i18n="mngAddCodexOfficial">+ Codex 官方账号</button><button class="btn btn-green" data-act="add" data-vendor="claude" data-i18n="mngAddClaudeOfficial">+ Claude 官方账号</button><span class="status-text" id="official-accounts-status"></span></div>
           </div>
 
           <div class="prov-tabs" id="prov-tabs" role="tablist">
@@ -1325,37 +1325,37 @@
             <button class="prov-tab" data-ptab="openai_responses" onclick="setProvTab('openai_responses')">⚡ OpenAI Responses</button>
             <button class="prov-tab" data-ptab="zcode" onclick="setProvTab('zcode')">🔗 ZCode</button>
             <button class="prov-tab" data-ptab="kimi" onclick="setProvTab('kimi')">🔗 Kimi</button>
-            <button class="prov-tab" data-ptab="stats" onclick="setProvTab('stats')">📊 统计 / 用量</button>
+            <button class="prov-tab" data-ptab="stats" onclick="setProvTab('stats')" data-i18n="mngTabStats">📊 统计 / 用量</button>
           </div>
 
           <div class="prov-pane" data-ptab="anthropic">
             <div class="settings-card">
               <div class="sc-header">Anthropic Messages <span style="font-weight:400;font-size:12px;color:var(--faint)" id="prov-count-anthropic"></span></div>
-              <div class="sc-body" id="prov-cards-anthropic" style="gap:8px;"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
+              <div class="sc-body" id="prov-cards-anthropic" style="gap:8px;"><span style="color:var(--faint);font-size:13px" data-i18n="loading">加载中…</span></div>
             </div>
           </div>
 
           <div class="prov-pane" data-ptab="openai_responses" style="display:none">
             <div class="settings-card">
               <div class="sc-header">OpenAI Responses <span style="font-weight:400;font-size:12px;color:var(--faint)" id="prov-count-openai_responses"></span></div>
-              <div class="sc-body" id="prov-cards-openai_responses" style="gap:8px;"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
+              <div class="sc-body" id="prov-cards-openai_responses" style="gap:8px;"><span style="color:var(--faint);font-size:13px" data-i18n="loading">加载中…</span></div>
             </div>
           </div>
 
 
           <div class="prov-pane" data-ptab="zcode" style="display:none">
             <div class="settings-card">
-            <div class="sc-header">ZCode 原生连接 / Coding Plan</div>
+            <div class="sc-header" data-i18n="mngZcodeHeader">ZCode 原生连接 / Coding Plan</div>
             <div class="sc-body" id="zcode-auth-body" style="gap:8px;">
-              <p style="font-size:12px;color:var(--faint);margin:0;line-height:1.55">这里管理会话选择「ZCode 原生 / Coding Plan」时使用的官方配置。普通 API Provider 请在上方创建（Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 均可），ZCode 会按会话生成隔离配置，不改动此原生连接。</p>
-              <div id="zcode-auth-status" style="font-size:13px;color:var(--faint)">检查中…</div>
+              <p style="font-size:12px;color:var(--faint);margin:0;line-height:1.55" data-i18n="mngZcodeDesc">这里管理会话选择「ZCode 原生 / Coding Plan」时使用的官方配置。普通 API Provider 请在上方创建（Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 均可），ZCode 会按会话生成隔离配置，不改动此原生连接。</p>
+              <div id="zcode-auth-status" style="font-size:13px;color:var(--faint)" data-i18n="mngChecking">检查中…</div>
               <div id="zcode-auth-actions" style="display:none;flex-direction:column;gap:8px;">
                 <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                  <button class="btn btn-green" style="padding:4px 12px;font-size:12px" id="zcode-login-btn" onclick="loginZcode()">登录 Z.ai Coding Plan</button>
-                  <button class="btn" style="padding:4px 12px;font-size:12px" id="zcode-sync-btn" onclick="syncZcodeAuth()">同步桌面 API Key</button>
-                  <button class="btn" style="padding:4px 12px;font-size:12px" onclick="toggleZcodeManualForm()">配置原生 API Key</button>
+                  <button class="btn btn-green" style="padding:4px 12px;font-size:12px" id="zcode-login-btn" onclick="loginZcode()" data-i18n="mngLoginZai">登录 Z.ai Coding Plan</button>
+                  <button class="btn" style="padding:4px 12px;font-size:12px" id="zcode-sync-btn" onclick="syncZcodeAuth()" data-i18n="mngSyncDesktopKey">同步桌面 API Key</button>
+                  <button class="btn" style="padding:4px 12px;font-size:12px" onclick="toggleZcodeManualForm()" data-i18n="mngConfigNativeKey">配置原生 API Key</button>
                 </div>
-                <p style="font-size:11px;color:var(--faint);margin:0;line-height:1.5">当前 ZCode 0.15.2 仅公开稳定的 Z.ai Coding Plan CLI 登录。BigModel / Team / Start Plan 的桌面登录状态不会自动同步给 headless CLI；请为 MultiCC 创建普通 Provider/API Key，避免误用其他账户。</p>
+                <p style="font-size:11px;color:var(--faint);margin:0;line-height:1.5" data-i18n="mngZcodeNote">当前 ZCode 0.15.2 仅公开稳定的 Z.ai Coding Plan CLI 登录。BigModel / Team / Start Plan 的桌面登录状态不会自动同步给 headless CLI；请为 MultiCC 创建普通 Provider/API Key，避免误用其他账户。</p>
                 <div id="zcode-manual-form" style="display:none;flex-direction:column;gap:6px;padding:8px 0;">
                   <div class="setting-row"><label>Provider</label>
                     <select id="zcode-manual-provider" style="min-width:200px">
@@ -1364,10 +1364,10 @@
                     </select>
                   </div>
                   <div class="setting-row"><label>API Key</label>
-                    <input type="password" id="zcode-manual-key" placeholder="粘贴 API Key" style="min-width:300px;flex:1">
+                    <input type="password" id="zcode-manual-key" data-i18n-placeholder="mngPasteApiKey" placeholder="粘贴 API Key" style="min-width:300px;flex:1">
                   </div>
                   <div style="display:flex;gap:8px;">
-                    <button class="btn btn-green" style="padding:4px 12px;font-size:12px" onclick="saveZcodeManualKey()">保存</button>
+                    <button class="btn btn-green" style="padding:4px 12px;font-size:12px" onclick="saveZcodeManualKey()" data-i18n="save">保存</button>
                     <span class="status-text" id="zcode-manual-status"></span>
                   </div>
                 </div>
@@ -1378,25 +1378,25 @@
 
           <div class="prov-pane" data-ptab="kimi" style="display:none">
             <div class="settings-card">
-            <div class="sc-header">Kimi Code 原生连接</div>
+            <div class="sc-header" data-i18n="mngKimiHeader">Kimi Code 原生连接</div>
             <div class="sc-body" id="kimi-auth-body" style="gap:8px;">
-              <p style="font-size:12px;color:var(--faint);margin:0;line-height:1.55">这里管理会话选择「Kimi Code 原生」时使用的凭证。设置了 API Key 或完成登录后，Kimi Code 会话可以正常启动。若已绑定 MultiCC Provider，则忽略此原生配置。</p>
-              <div id="kimi-auth-status" style="font-size:13px;color:var(--faint)">检查中…</div>
+              <p style="font-size:12px;color:var(--faint);margin:0;line-height:1.55" data-i18n="mngKimiDesc">这里管理会话选择「Kimi Code 原生」时使用的凭证。设置了 API Key 或完成登录后，Kimi Code 会话可以正常启动。若已绑定 MultiCC Provider，则忽略此原生配置。</p>
+              <div id="kimi-auth-status" style="font-size:13px;color:var(--faint)" data-i18n="mngChecking">检查中…</div>
               <div id="kimi-auth-actions" style="display:none;flex-direction:column;gap:8px;">
                 <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                  <button class="btn btn-green" style="padding:4px 12px;font-size:12px" id="kimi-login-btn" onclick="loginKimi()">登录 Kimi Code</button>
-                  <button class="btn" style="padding:4px 12px;font-size:12px" onclick="toggleKimiManualForm()">配置 API Key</button>
+                  <button class="btn btn-green" style="padding:4px 12px;font-size:12px" id="kimi-login-btn" onclick="loginKimi()" data-i18n="mngLoginKimi">登录 Kimi Code</button>
+                  <button class="btn" style="padding:4px 12px;font-size:12px" onclick="toggleKimiManualForm()" data-i18n="mngConfigApiKey">配置 API Key</button>
                 </div>
-                <p style="font-size:11px;color:var(--faint);margin:0;line-height:1.5">Kimi Code 通过环境变量 KIMI_API_KEY 或 ~/.kimi-code/credentials/ 下的凭证文件鉴权。手动填写的 API Key 会保存在原生 KIMI_CODE_HOME 目录中，下次创建 Kimi Code 会话时自动生效。</p>
+                <p style="font-size:11px;color:var(--faint);margin:0;line-height:1.5" data-i18n="mngKimiNote">Kimi Code 通过环境变量 KIMI_API_KEY 或 ~/.kimi-code/credentials/ 下的凭证文件鉴权。手动填写的 API Key 会保存在原生 KIMI_CODE_HOME 目录中，下次创建 Kimi Code 会话时自动生效。</p>
                 <div id="kimi-manual-form" style="display:none;flex-direction:column;gap:6px;padding:8px 0;">
                   <div class="setting-row"><label>API Key</label>
-                    <input type="password" id="kimi-manual-key" placeholder="粘贴 Kimi API Key" style="min-width:300px;flex:1">
+                    <input type="password" id="kimi-manual-key" data-i18n-placeholder="mngPasteKimiKey" placeholder="粘贴 Kimi API Key" style="min-width:300px;flex:1">
                   </div>
-                  <div class="setting-row"><label>Base URL（可选）</label>
-                    <input type="text" id="kimi-manual-baseurl" placeholder="留空则使用 Kimi 默认端点" style="min-width:300px;flex:1">
+                  <div class="setting-row"><label data-i18n="mngBaseUrlOptional">Base URL（可选）</label>
+                    <input type="text" id="kimi-manual-baseurl" data-i18n-placeholder="mngKimiDefaultEndpointPh" placeholder="留空则使用 Kimi 默认端点" style="min-width:300px;flex:1">
                   </div>
                   <div style="display:flex;gap:8px;">
-                    <button class="btn btn-green" style="padding:4px 12px;font-size:12px" onclick="saveKimiManualKey()">保存</button>
+                    <button class="btn btn-green" style="padding:4px 12px;font-size:12px" onclick="saveKimiManualKey()" data-i18n="save">保存</button>
                     <span class="status-text" id="kimi-manual-status"></span>
                   </div>
                 </div>
@@ -1408,74 +1408,74 @@
           <div class="prov-pane" data-ptab="stats" style="display:none">
           <div class="settings-card">
             <div class="sc-header" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-              <span>全部 CLI 用量（Claude + Codex · 按模型 · 最准）</span>
-              <button class="btn" style="padding:4px 10px;font-size:12px" onclick="loadGlobalUsage(true)">重新扫描</button>
+              <span data-i18n="mngUsageHeader">全部 CLI 用量（Claude + Codex · 按模型 · 最准）</span>
+              <button class="btn" style="padding:4px 10px;font-size:12px" onclick="loadGlobalUsage(true)" data-i18n="mngRescan">重新扫描</button>
             </div>
             <div class="sc-body">
-              <p style="font-size:12px;color:var(--faint);margin:0 0 8px">直接读取 <code>~/.claude/projects</code> 与 <code>~/.codex/sessions</code> 会话转录，覆盖<b>本机全部 CLI 用量</b>（Claude Code + Codex，含你在终端里直接跑的、与 multicc 无关的）。Claude 按 requestId 去重；Codex 取累计用量差分。与上方「per-provider 统计」口径不同，此处为全局只读参考。<span style="color:var(--amber)">琥珀色</span> = Claude 官方模型。</p>
+              <p style="font-size:12px;color:var(--faint);margin:0 0 8px"><span data-i18n="mngUsageDescA">直接读取 </span><code>~/.claude/projects</code><span data-i18n="mngUsageDescB"> 与 </span><code>~/.codex/sessions</code><span data-i18n="mngUsageDescC"> 会话转录，覆盖</span><b data-i18n="mngUsageAll">本机全部 CLI 用量</b><span data-i18n="mngUsageDescD">（Claude Code + Codex，含你在终端里直接跑的、与 multicc 无关的）。Claude 按 requestId 去重；Codex 取累计用量差分。与上方「per-provider 统计」口径不同，此处为全局只读参考。</span><span style="color:var(--amber)" data-i18n="mngUsageAmber">琥珀色</span><span data-i18n="mngUsageDescE"> = Claude 官方模型。</span></p>
               <div id="gu-tabs" style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
-                <button class="btn gu-tab" data-w="today" onclick="setGuWindow('today')">今天</button>
-                <button class="btn gu-tab" data-w="week" onclick="setGuWindow('week')">本周</button>
-                <button class="btn gu-tab" data-w="month" onclick="setGuWindow('month')">本月</button>
-                <button class="btn gu-tab" data-w="all" onclick="setGuWindow('all')">全部</button>
+                <button class="btn gu-tab" data-w="today" onclick="setGuWindow('today')" data-i18n="mngToday">今天</button>
+                <button class="btn gu-tab" data-w="week" onclick="setGuWindow('week')" data-i18n="mngThisWeek">本周</button>
+                <button class="btn gu-tab" data-w="month" onclick="setGuWindow('month')" data-i18n="mngThisMonth">本月</button>
+                <button class="btn gu-tab" data-w="all" onclick="setGuWindow('all')" data-i18n="mngAll">全部</button>
               </div>
               <div id="gu-metric-tabs" style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
-                <span style="font-size:11px;color:var(--faint);margin-right:2px">统计口径</span>
-                <button class="btn gu-metric-tab" data-metric="fresh" onclick="setGuMetric('fresh')">新鲜 Token</button>
-                <button class="btn gu-metric-tab" data-metric="inclusive" onclick="setGuMetric('inclusive')">含缓存 Token</button>
+                <span style="font-size:11px;color:var(--faint);margin-right:2px" data-i18n="mngUsageMetricLabel">统计口径</span>
+                <button class="btn gu-metric-tab" data-metric="fresh" onclick="setGuMetric('fresh')" data-i18n="mngUsageFresh">新鲜 Token</button>
+                <button class="btn gu-metric-tab" data-metric="inclusive" onclick="setGuMetric('inclusive')" data-i18n="mngUsageInclusive">含缓存 Token</button>
               </div>
-              <div id="global-usage-body"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
+              <div id="global-usage-body"><span style="color:var(--faint);font-size:13px" data-i18n="loading">加载中…</span></div>
             </div>
           </div>
 
           <div class="settings-card">
-            <div class="sc-header">省主模型 Token</div>
+            <div class="sc-header" data-i18n="mngSaveMainTokenHeader">省主模型 Token</div>
             <div class="sc-body">
-              <p style="font-size:12px;color:var(--faint);margin:0 0 8px">子任务（Task/Agent/Workflow）替主模型处理的 token 量，没派给子任务的话本要让主模型跑。直接从持久账本 <code>token_by_role.json</code> 读取。</p>
-              <div id="by-role-card-body"><span style="color:var(--faint);font-size:13px">加载中…</span></div>
+              <p style="font-size:12px;color:var(--faint);margin:0 0 8px"><span data-i18n="mngRoleDescA">子任务（Task/Agent/Workflow）替主模型处理的 token 量，没派给子任务的话本要让主模型跑。直接从持久账本 </span><code>token_by_role.json</code><span data-i18n="mngRoleDescB"> 读取。</span></p>
+              <div id="by-role-card-body"><span style="color:var(--faint);font-size:13px" data-i18n="loading">加载中…</span></div>
             </div>
           </div>
           </div>
 
           <div class="settings-card" id="prov-new-card">
-            <div class="sc-header">新增 Provider</div>
+            <div class="sc-header" data-i18n="mngNewProviderHeader">新增 Provider</div>
             <div class="sc-body">
-              <div class="setting-row"><label>模板</label>
+              <div class="setting-row"><label data-i18n="mngTemplate">模板</label>
                 <select id="prov-new-preset" onchange="applyProviderPreset()" style="min-width:260px;max-width:100%">
-                  <option value="">自定义（手动填写）</option>
-                  <optgroup label="Claude（Anthropic 兼容）">
-                    <option value="claude-subscription">Claude 官方订阅</option>
-                    <option value="claude-api">Claude 官方 API</option>
-                    <option value="claude-glm">智谱 GLM</option>
+                  <option value="" data-i18n="mngPresetCustom">自定义（手动填写）</option>
+                  <optgroup data-i18n-label="mngPresetGroupClaude" label="Claude（Anthropic 兼容）">
+                    <option value="claude-subscription" data-i18n="mngPresetClaudeSub">Claude 官方订阅</option>
+                    <option value="claude-api" data-i18n="mngPresetClaudeApi">Claude 官方 API</option>
+                    <option value="claude-glm" data-i18n="mngPresetGlm">智谱 GLM</option>
                     <option value="claude-deepseek">DeepSeek</option>
                     <option value="claude-minimax">MiniMax</option>
-                    <option value="claude-qwen">Qwen 通义千问</option>
+                    <option value="claude-qwen" data-i18n="mngPresetQwen">Qwen 通义千问</option>
                     <option value="claude-openrouter">OpenRouter</option>
                   </optgroup>
                   <optgroup label="Codex">
-                    <option value="codex-official">OpenAI（Codex 官方）</option>
-                    <option value="codex-xf-maas">讯飞 MaaS Coding</option>
+                    <option value="codex-official" data-i18n="mngPresetOpenaiCodex">OpenAI（Codex 官方）</option>
+                    <option value="codex-xf-maas" data-i18n="mngPresetXf">讯飞 MaaS Coding</option>
                   </optgroup>
                 </select></div>
-              <div class="setting-row"><label>类型</label>
+              <div class="setting-row"><label data-i18n="mngFieldType">类型</label>
                 <select id="prov-new-apptype" style="max-width:140px"><option value="claude">claude</option><option value="codex">codex</option></select></div>
-              <div class="setting-row"><label>名称</label><input id="prov-new-name" type="text" placeholder="如 DeepSeek / OpenRouter" /></div>
-              <div class="setting-row"><label>Base URL</label><input id="prov-new-baseurl" type="text" placeholder="https://api.deepseek.com/anthropic（留空=官方/订阅）" /></div>
-              <div class="setting-row"><label>API Key</label><div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1"><input id="prov-new-token" type="password" placeholder="sk-..." autocomplete="off" style="flex:1;min-width:0" /><button type="button" class="btn eye-toggle" data-target="prov-new-token" style="padding:4px 8px;font-size:12px;flex-shrink:0" title="显示/隐藏 Key">👁</button></div></div>
-              <div class="setting-row"><label>Model</label><input id="prov-new-model" type="text" placeholder="默认模型，如 deepseek-chat（可选）" /></div>
-              <div class="setting-row"><label>模型列表</label><textarea id="prov-new-models" rows="3" placeholder="每行一个模型；留空则只使用上面的 Model" style="min-height:74px"></textarea></div>
+              <div class="setting-row"><label data-i18n="mngName">名称</label><input id="prov-new-name" type="text" data-i18n-placeholder="mngNamePh" placeholder="如 DeepSeek / OpenRouter" /></div>
+              <div class="setting-row"><label>Base URL</label><input id="prov-new-baseurl" type="text" data-i18n-placeholder="mngBaseUrlPh" placeholder="https://api.deepseek.com/anthropic（留空=官方/订阅）" /></div>
+              <div class="setting-row"><label>API Key</label><div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1"><input id="prov-new-token" type="password" placeholder="sk-..." autocomplete="off" style="flex:1;min-width:0" /><button type="button" class="btn eye-toggle" data-target="prov-new-token" style="padding:4px 8px;font-size:12px;flex-shrink:0" data-i18n-title="mngToggleKey" title="显示/隐藏 Key">👁</button></div></div>
+              <div class="setting-row"><label>Model</label><input id="prov-new-model" type="text" data-i18n-placeholder="mngModelPh" placeholder="默认模型，如 deepseek-chat（可选）" /></div>
+              <div class="setting-row"><label data-i18n="mngModelsLabel">模型列表</label><textarea id="prov-new-models" rows="3" data-i18n-placeholder="mngModelsPh" placeholder="每行一个模型；留空则只使用上面的 Model" style="min-height:74px"></textarea></div>
               <div id="prov-new-alias-row" class="setting-row">
-                <label>模型映射<div style="font-size:11px;color:var(--faint);font-weight:400;margin-top:2px">分级覆盖（可选）</div></label>
+                <label><span data-i18n="mngModelMap">模型映射</span><div style="font-size:11px;color:var(--faint);font-weight:400;margin-top:2px" data-i18n="mngTierOverride">分级覆盖（可选）</div></label>
                 <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">
-                  <div style="font-size:11px;color:var(--faint)">让 Claude Code 内部 opus/sonnet/haiku/fable 分级请求路由到该 provider 的指定模型；留空则不覆盖该级别。</div>
-                  <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--faint)"><span style="width:52px;flex-shrink:0">别名</span><span style="flex:1;min-width:0">模型名（显示名）</span><span style="flex:1;min-width:0">映射名（真实模型id）</span></div>
-                  <div style="display:flex;align-items:center;gap:6px"><span style="width:52px;flex-shrink:0;font-size:12px;color:var(--muted)">Opus</span><input id="prov-new-alias-opus-name" type="text" placeholder="如 GLM5.2（可选）" style="flex:1;min-width:0" /><input id="prov-new-alias-opus-model" type="text" placeholder="如 glm-5.2（可选）" style="flex:1;min-width:0" /></div>
-                  <div style="display:flex;align-items:center;gap:6px"><span style="width:52px;flex-shrink:0;font-size:12px;color:var(--muted)">Sonnet</span><input id="prov-new-alias-sonnet-name" type="text" placeholder="如 GLM5.2（可选）" style="flex:1;min-width:0" /><input id="prov-new-alias-sonnet-model" type="text" placeholder="如 glm-5.2（可选）" style="flex:1;min-width:0" /></div>
-                  <div style="display:flex;align-items:center;gap:6px"><span style="width:52px;flex-shrink:0;font-size:12px;color:var(--muted)">Haiku</span><input id="prov-new-alias-haiku-name" type="text" placeholder="如 GLM5.2（可选）" style="flex:1;min-width:0" /><input id="prov-new-alias-haiku-model" type="text" placeholder="如 glm-5.2（可选）" style="flex:1;min-width:0" /></div>
-                  <div style="display:flex;align-items:center;gap:6px"><span style="width:52px;flex-shrink:0;font-size:12px;color:var(--muted)">Fable</span><input id="prov-new-alias-fable-name" type="text" placeholder="如 GLM5.2（可选）" style="flex:1;min-width:0" /><input id="prov-new-alias-fable-model" type="text" placeholder="如 glm-5.2（可选）" style="flex:1;min-width:0" /></div>
+                  <div style="font-size:11px;color:var(--faint)" data-i18n="mngTierOverrideDesc">让 Claude Code 内部 opus/sonnet/haiku/fable 分级请求路由到该 provider 的指定模型；留空则不覆盖该级别。</div>
+                  <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--faint)"><span style="width:52px;flex-shrink:0" data-i18n="mngAliasCol">别名</span><span style="flex:1;min-width:0" data-i18n="mngModelNameCol">模型名（显示名）</span><span style="flex:1;min-width:0" data-i18n="mngMapNameCol">映射名（真实模型id）</span></div>
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:52px;flex-shrink:0;font-size:12px;color:var(--muted)">Opus</span><input id="prov-new-alias-opus-name" type="text" data-i18n-placeholder="mngAliasNamePh" placeholder="如 GLM5.2（可选）" style="flex:1;min-width:0" /><input id="prov-new-alias-opus-model" type="text" data-i18n-placeholder="mngAliasModelPh" placeholder="如 glm-5.2（可选）" style="flex:1;min-width:0" /></div>
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:52px;flex-shrink:0;font-size:12px;color:var(--muted)">Sonnet</span><input id="prov-new-alias-sonnet-name" type="text" data-i18n-placeholder="mngAliasNamePh" placeholder="如 GLM5.2（可选）" style="flex:1;min-width:0" /><input id="prov-new-alias-sonnet-model" type="text" data-i18n-placeholder="mngAliasModelPh" placeholder="如 glm-5.2（可选）" style="flex:1;min-width:0" /></div>
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:52px;flex-shrink:0;font-size:12px;color:var(--muted)">Haiku</span><input id="prov-new-alias-haiku-name" type="text" data-i18n-placeholder="mngAliasNamePh" placeholder="如 GLM5.2（可选）" style="flex:1;min-width:0" /><input id="prov-new-alias-haiku-model" type="text" data-i18n-placeholder="mngAliasModelPh" placeholder="如 glm-5.2（可选）" style="flex:1;min-width:0" /></div>
+                  <div style="display:flex;align-items:center;gap:6px"><span style="width:52px;flex-shrink:0;font-size:12px;color:var(--muted)">Fable</span><input id="prov-new-alias-fable-name" type="text" data-i18n-placeholder="mngAliasNamePh" placeholder="如 GLM5.2（可选）" style="flex:1;min-width:0" /><input id="prov-new-alias-fable-model" type="text" data-i18n-placeholder="mngAliasModelPh" placeholder="如 glm-5.2（可选）" style="flex:1;min-width:0" /></div>
                 </div>
               </div>
-              <div class="setting-row" id="prov-new-proxy-row"><label>上游协议</label><select id="prov-new-apiformat"><option value="anthropic">Anthropic Messages</option><option value="openai_responses">OpenAI Responses</option></select></div>
+              <div class="setting-row" id="prov-new-proxy-row"><label data-i18n="mngUpstreamProtocol">上游协议</label><select id="prov-new-apiformat"><option value="anthropic">Anthropic Messages</option><option value="openai_responses">OpenAI Responses</option></select></div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="createProvider()">Create</button><span class="status-text" id="prov-new-status"></span></div>
           </div>
@@ -1483,7 +1483,7 @@
 
         <!-- ─── macOS Power (hidden on other platforms) ─── -->
         <section class="view" data-view="global">
-          <div class="sec-head"><h2>全局配置</h2><div class="line"></div></div>
+          <div class="sec-head"><h2 data-i18n="globalConfig">全局配置</h2><div class="line"></div></div>
 
           <!-- Android APK: local ignored artifact first, exact-version GitHub
                Release Asset second. Builds only happen in the release job. -->
@@ -1505,30 +1505,30 @@
 
           <!-- 官方会话走代理 (OAuth 重放) -->
           <div class="settings-card">
-            <div class="sc-header">官方会话走代理 (OAuth 重放) <span id="cc-oauth-hint" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
+            <div class="sc-header"><span data-i18n="mngOauthHeader">官方会话走代理 (OAuth 重放)</span> <span id="cc-oauth-hint" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
             <div class="sc-body">
               <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:8px;">
-                让「主 provider = Claude 官方（OAuth 订阅登录）」的会话<b>也经本地代理中转</b>——代理从 macOS 钥匙串读取订阅 OAuth token 转发到 api.anthropic.com。<b>唯一作用</b>：让官方会话的 Task 子任务也能路由到便宜 provider（否则官方会话直连、子任务只能与主进程同用官方）。配了 provider 的会话本来就一律经本地代理（127.0.0.1）中转，此开关只影响官方订阅会话。
-                <br><b>· 关闭（默认，推荐）：</b>官方会话直连 Anthropic，子任务无法独立路由。<b>零风险。</b>
-                <br><b>· 开启：</b>⚠️ 会在官方客户端之外重放订阅 OAuth token，<b>可能违反 Anthropic 服务条款、有账号风险</b>；且与 CLI 共用同一钥匙串条目。仅只读钥匙串（不刷新），token 过期后需运行一次 <code>claude</code>。知情自担风险再开。
+                <span data-i18n="mngOauthDescA">让「主 provider = Claude 官方（OAuth 订阅登录）」的会话</span><b data-i18n="mngOauthDescB">也经本地代理中转</b><span data-i18n="mngOauthDescC">——代理从 macOS 钥匙串读取订阅 OAuth token 转发到 api.anthropic.com。</span><b data-i18n="mngOauthOnly">唯一作用</b><span data-i18n="mngOauthDescD">：让官方会话的 Task 子任务也能路由到便宜 provider（否则官方会话直连、子任务只能与主进程同用官方）。配了 provider 的会话本来就一律经本地代理（127.0.0.1）中转，此开关只影响官方订阅会话。</span>
+                <br><b data-i18n="mngOauthOffLabel">· 关闭（默认，推荐）：</b><span data-i18n="mngOauthOffText">官方会话直连 Anthropic，子任务无法独立路由。</span><b data-i18n="mngOauthZero">零风险。</b>
+                <br><b data-i18n="mngOauthOnLabel">· 开启：</b><span data-i18n="mngOauthOnWarn">⚠️ 会在官方客户端之外重放订阅 OAuth token，</span><b data-i18n="mngOauthRisk">可能违反 Anthropic 服务条款、有账号风险</b><span data-i18n="mngOauthOnText">；且与 CLI 共用同一钥匙串条目。仅只读钥匙串（不刷新），token 过期后需运行一次 </span><code>claude</code><span data-i18n="mngOauthOnEnd">。知情自担风险再开。</span>
               </div>
-              <div class="setting-row"><label>官方会话走代理</label><input id="cc-oauth-enabled" type="checkbox" style="width:auto;" onchange="saveOfficialOAuthSetting()" /></div>
+              <div class="setting-row"><label data-i18n="mngOauthLabel">官方会话走代理</label><input id="cc-oauth-enabled" type="checkbox" style="width:auto;" onchange="saveOfficialOAuthSetting()" /></div>
             </div>
             <div class="sc-footer"><span class="status-text" id="cc-oauth-msg"></span></div>
           </div>
 
           <!-- macOS 电源（仅 macOS 可见；非 macOS 自动隐藏） -->
           <div class="settings-card" id="macos-power-card" style="display:none;">
-            <div class="sc-header">关盖运行 <span style="font-size:11px;font-weight:400;color:var(--faint);">· macOS</span></div>
+            <div class="sc-header"><span data-i18n="mngLidRunHeader">关盖运行</span> <span style="font-size:11px;font-weight:400;color:var(--faint);">· macOS</span></div>
             <div class="sc-body">
               <label class="toggle-label">
                 <input id="macos-lid-sleep-toggle" type="checkbox" onchange="saveMacosPowerSettings()" />
-                <span>关盖时保持运行，不进入睡眠</span>
+                <span data-i18n="mngLidRunHint">关盖时保持运行，不进入睡眠</span>
               </label>
-              <div class="sec-desc" style="margin:0">开启后会阻止所有系统睡眠（包括关盖睡眠）。切换时需要在 Mac 上完成管理员授权，请注意散热和耗电。</div>
+              <div class="sec-desc" style="margin:0" data-i18n="mngLidDesc">开启后会阻止所有系统睡眠（包括关盖睡眠）。切换时需要在 Mac 上完成管理员授权，请注意散热和耗电。</div>
             </div>
             <div class="sc-footer">
-              <button class="btn" onclick="loadMacosPowerSettings()">刷新状态</button>
+              <button class="btn" onclick="loadMacosPowerSettings()" data-i18n="mngRefreshStatus">刷新状态</button>
               <span class="status-text" id="macos-power-status"></span>
             </div>
           </div>
@@ -1536,7 +1536,7 @@
 
         <!-- ─── Push ─── -->
         <section class="view" data-view="push">
-          <div class="sec-head"><h2>推送通知</h2><div class="line"></div></div>
+          <div class="sec-head"><h2 data-i18n="pushNotifications">推送通知</h2><div class="line"></div></div>
           <div class="settings-card">
             <div class="sc-header">Subscription Status</div>
             <div class="sc-body">
@@ -1571,135 +1571,135 @@
 
         <!-- ─── 外网穿透 Tunnel ─── -->
         <section class="view" data-view="tunnel">
-          <div class="sec-head"><h2>外网穿透监控</h2><div class="line"></div></div>
+          <div class="sec-head"><h2 data-i18n="mngTunnelTitle">外网穿透监控</h2><div class="line"></div></div>
           <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:14px;">
-            勾选并配置后，服务会定期探活外网入口。Tailscale Funnel 会绕过本机 MagicDNS，经公共 DNS 和公网边缘验证 HTTPS；仅当映射和本机源站正常、全部已验证公网边缘连续 3 轮发生传输层故障时，才限频重新应用 Funnel。映射缺失、证书/身份异常、部分边缘故障都只告警，绝不会自动 reset。
+            <span data-i18n="mngTunnelDesc">勾选并配置后，服务会定期探活外网入口。Tailscale Funnel 会绕过本机 MagicDNS，经公共 DNS 和公网边缘验证 HTTPS；仅当映射和本机源站正常、全部已验证公网边缘连续 3 轮发生传输层故障时，才限频重新应用 Funnel。映射缺失、证书/身份异常、部分边缘故障都只告警，绝不会自动 reset。</span>
           </div>
 
           <!-- 访问密码 ACCESS_TOKEN -->
           <div class="settings-card">
-            <div class="sc-header">访问密码 (ACCESS_TOKEN) <span id="tnl-token-hint" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
+            <div class="sc-header"><span data-i18n="mngAccessToken">访问密码 (ACCESS_TOKEN)</span> <span id="tnl-token-hint" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
             <div class="sc-body">
               <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:8px;">
-                外网访问的登录密码。<b>未设置时任何人凭 URL 即可访问</b>——开启公网 Funnel / 花生壳前务必设置。出于安全，仅可在本机 (localhost) 打开本页时修改，其它设备只能看到掩码。
+                <span data-i18n="mngAccessTokenDescA">外网访问的登录密码。</span><b data-i18n="mngAccessTokenDescB">未设置时任何人凭 URL 即可访问</b><span data-i18n="mngAccessTokenDescC">——开启公网 Funnel / 花生壳前务必设置。出于安全，仅可在本机 (localhost) 打开本页时修改，其它设备只能看到掩码。</span>
               </div>
-              <div class="setting-row"><label>访问密码</label><input id="tnl-token" type="text" placeholder="未设置" autocomplete="off" /></div>
+              <div class="setting-row"><label data-i18n="mngAccessTokenLabel">访问密码</label><input id="tnl-token" type="text" data-i18n-placeholder="mngNotSetPh" placeholder="未设置" autocomplete="off" /></div>
             </div>
-            <div class="sc-footer"><button class="btn btn-green" id="tnl-token-save" onclick="saveAccessToken()">保存</button><span class="status-text" id="tnl-token-msg"></span></div>
+            <div class="sc-footer"><button class="btn btn-green" id="tnl-token-save" onclick="saveAccessToken()" data-i18n="save">保存</button><span class="status-text" id="tnl-token-msg"></span></div>
           </div>
 
           <!-- 花生壳 -->
           <div class="settings-card">
-            <div class="sc-header">花生壳 (PhDDNS) <span id="tnl-ph-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
+            <div class="sc-header"><span data-i18n="mngOray">花生壳 (PhDDNS)</span> <span id="tnl-ph-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
             <div class="sc-body">
-              <div class="setting-row"><label>启用监控</label><input id="tnl-ph-enabled" type="checkbox" style="width:auto;" /></div>
-              <div class="setting-row"><label>仅监控</label><input id="tnl-ph-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;">只探活，不自动重启客户端</span></div>
-              <div class="setting-row"><label>探活 URL</label><input id="tnl-ph-url" type="text" placeholder="https://xxxx.vicp.fun/manage" /></div>
-              <div class="setting-row"><label>状态</label><span id="tnl-ph-status" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label data-i18n="mngEnableMonitor">启用监控</label><input id="tnl-ph-enabled" type="checkbox" style="width:auto;" /></div>
+              <div class="setting-row"><label data-i18n="mngMonitorOnly">仅监控</label><input id="tnl-ph-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;" data-i18n="mngMonitorOnlyHint">只探活，不自动重启客户端</span></div>
+              <div class="setting-row"><label data-i18n="mngProbeUrl">探活 URL</label><input id="tnl-ph-url" type="text" placeholder="https://xxxx.vicp.fun/manage" /></div>
+              <div class="setting-row"><label data-i18n="mngStatusLabel">状态</label><span id="tnl-ph-status" style="font-size:13px;color:var(--text);">—</span></div>
             </div>
-            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" id="tnl-ph-restart" onclick="restartTunnel('phddns')">立即重启</button><span class="status-text" id="tnl-ph-msg"></span></div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()" data-i18n="save">保存</button><button class="btn" id="tnl-ph-restart" onclick="restartTunnel('phddns')" data-i18n="mngRestartNow">立即重启</button><span class="status-text" id="tnl-ph-msg"></span></div>
           </div>
 
           <!-- Tailscale -->
           <div class="settings-card">
             <div class="sc-header">Tailscale <span id="tnl-ts-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
             <div class="sc-body">
-              <div class="setting-row"><label>启用监控</label><input id="tnl-ts-enabled" type="checkbox" style="width:auto;" /></div>
-              <div class="setting-row"><label>仅监控</label><input id="tnl-ts-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;">只探活，不自动修复 Funnel</span></div>
-              <div class="setting-row"><label>备用探活 URL</label><input id="tnl-ts-url" type="text" placeholder="非 Funnel 模式使用；Funnel 地址会自动读取" /></div>
-              <div class="setting-row"><label>实际公网地址</label><span id="tnl-ts-publicurl" style="font-size:12px;color:var(--text);font-family:var(--mono);word-break:break-all;">等待公网探测…</span></div>
-              <div class="setting-row"><label>状态</label><span id="tnl-ts-status" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label data-i18n="mngEnableMonitor">启用监控</label><input id="tnl-ts-enabled" type="checkbox" style="width:auto;" /></div>
+              <div class="setting-row"><label data-i18n="mngMonitorOnly">仅监控</label><input id="tnl-ts-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;" data-i18n="mngMonitorOnlyHintTs">只探活，不自动修复 Funnel</span></div>
+              <div class="setting-row"><label data-i18n="mngBackupProbeUrl">备用探活 URL</label><input id="tnl-ts-url" type="text" data-i18n-placeholder="mngBackupProbePh" placeholder="非 Funnel 模式使用；Funnel 地址会自动读取" /></div>
+              <div class="setting-row"><label data-i18n="mngPublicUrlActual">实际公网地址</label><span id="tnl-ts-publicurl" style="font-size:12px;color:var(--text);font-family:var(--mono);word-break:break-all;" data-i18n="mngWaitingProbe">等待公网探测…</span></div>
+              <div class="setting-row"><label data-i18n="mngStatusLabel">状态</label><span id="tnl-ts-status" style="font-size:13px;color:var(--text);">—</span></div>
               <div style="border-top:1px solid var(--border);margin:6px 0;"></div>
-              <div class="setting-row"><label>公网 Funnel</label><input id="tnl-ts-funnel" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;">勾选并点「应用 Funnel」= 执行 tailscale funnel --bg &lt;端口&gt;，把服务暴露到公网</span></div>
-              <div class="setting-row"><label>Funnel 端口</label><input id="tnl-ts-funnelport" type="number" min="1" placeholder="3000" /></div>
-              <div class="setting-row"><label>Funnel 状态</label><span id="tnl-ts-funnelstatus" style="font-size:12px;color:var(--text);font-family:var(--mono);white-space:pre-wrap;">—</span></div>
+              <div class="setting-row"><label data-i18n="mngPublicFunnel">公网 Funnel</label><input id="tnl-ts-funnel" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;" data-i18n="mngFunnelHint">勾选并点「应用 Funnel」= 执行 tailscale funnel --bg &lt;端口&gt;，把服务暴露到公网</span></div>
+              <div class="setting-row"><label data-i18n="mngFunnelPort">Funnel 端口</label><input id="tnl-ts-funnelport" type="number" min="1" placeholder="3000" /></div>
+              <div class="setting-row"><label data-i18n="mngFunnelStatus">Funnel 状态</label><span id="tnl-ts-funnelstatus" style="font-size:12px;color:var(--text);font-family:var(--mono);white-space:pre-wrap;">—</span></div>
               <div style="border-top:1px solid var(--border);margin:6px 0;"></div>
-              <div class="setting-row"><label>IPv6 直连</label><span id="tnl-ipv6-status" style="font-size:13px;color:var(--text);">—</span></div>
-              <div class="setting-row"><label>本机全局 IPv6</label><span id="tnl-ipv6-addr" style="font-size:12px;color:var(--faint);font-family:var(--mono);white-space:pre-wrap;word-break:break-all;">—</span></div>
-              <div class="setting-row" style="font-size:11px;color:var(--faint);">有全局 IPv6 + Tailscale 认到 → 远程（如手机流量）可走 IPv6 直连，绕开 DERP 中继，更快、不限流量。</div>
+              <div class="setting-row"><label data-i18n="mngIpv6Direct">IPv6 直连</label><span id="tnl-ipv6-status" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label data-i18n="mngLocalIpv6">本机全局 IPv6</label><span id="tnl-ipv6-addr" style="font-size:12px;color:var(--faint);font-family:var(--mono);white-space:pre-wrap;word-break:break-all;">—</span></div>
+              <div class="setting-row" style="font-size:11px;color:var(--faint);" data-i18n="mngIpv6Hint">有全局 IPv6 + Tailscale 认到 → 远程（如手机流量）可走 IPv6 直连，绕开 DERP 中继，更快、不限流量。</div>
             </div>
-            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="applyFunnel()">应用 Funnel</button><button class="btn" onclick="loadIpv6Status(true)">检测 IPv6</button><button class="btn" id="tnl-ts-restart" onclick="restartTunnel('tailscale')">重连控制面</button><span class="status-text" id="tnl-ts-msg"></span></div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()" data-i18n="save">保存</button><button class="btn" onclick="applyFunnel()" data-i18n="mngApplyFunnel">应用 Funnel</button><button class="btn" onclick="loadIpv6Status(true)" data-i18n="mngDetectIpv6">检测 IPv6</button><button class="btn" id="tnl-ts-restart" onclick="restartTunnel('tailscale')" data-i18n="mngReconnectControl">重连控制面</button><span class="status-text" id="tnl-ts-msg"></span></div>
           </div>
 
           <!-- Natapp -->
           <div class="settings-card">
             <div class="sc-header">Natapp <span id="tnl-na-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
             <div class="sc-body">
-              <div class="setting-row"><label>启用监控</label><input id="tnl-na-enabled" type="checkbox" style="width:auto;" /></div>
-              <div class="setting-row"><label>仅监控</label><input id="tnl-na-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;">只探活，不自动重启客户端</span></div>
-              <div class="setting-row"><label>公网 URL</label><input id="tnl-na-url" type="text" placeholder="填该隧道的公网地址，用于健康检测" /></div>
-              <div class="setting-row"><label>凭证</label><input id="tnl-na-authtoken" type="password" placeholder="authtoken / 访问密钥" autocomplete="off" /></div>
-              <div class="setting-row"><label>端口</label><input id="tnl-na-port" type="number" min="1" placeholder="3000" /></div>
-              <div class="setting-row"><label>启动命令（高级）</label><textarea id="tnl-na-startcmd" rows="2" style="min-height:48px;resize:vertical;" placeholder="留空用默认模板；支持占位符 {authtoken} {port}"></textarea></div>
-              <div class="setting-row"><label>状态</label><span id="tnl-na-status" style="font-size:13px;color:var(--text);">-</span></div>
+              <div class="setting-row"><label data-i18n="mngEnableMonitor">启用监控</label><input id="tnl-na-enabled" type="checkbox" style="width:auto;" /></div>
+              <div class="setting-row"><label data-i18n="mngMonitorOnly">仅监控</label><input id="tnl-na-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;" data-i18n="mngMonitorOnlyHint">只探活，不自动重启客户端</span></div>
+              <div class="setting-row"><label data-i18n="mngPublicUrlLabel">公网 URL</label><input id="tnl-na-url" type="text" data-i18n-placeholder="mngTunnelUrlPh" placeholder="填该隧道的公网地址，用于健康检测" /></div>
+              <div class="setting-row"><label data-i18n="mngCredential">凭证</label><input id="tnl-na-authtoken" type="password" data-i18n-placeholder="mngCredentialPh" placeholder="authtoken / 访问密钥" autocomplete="off" /></div>
+              <div class="setting-row"><label data-i18n="mngPort">端口</label><input id="tnl-na-port" type="number" min="1" placeholder="3000" /></div>
+              <div class="setting-row"><label data-i18n="mngStartCmd">启动命令（高级）</label><textarea id="tnl-na-startcmd" rows="2" style="min-height:48px;resize:vertical;" data-i18n-placeholder="mngStartCmdPh" placeholder="留空用默认模板；支持占位符 {authtoken} {port}"></textarea></div>
+              <div class="setting-row"><label data-i18n="mngStatusLabel">状态</label><span id="tnl-na-status" style="font-size:13px;color:var(--text);">-</span></div>
             </div>
-            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" id="tnl-na-restart" onclick="restartTunnel('natapp')">立即重启</button><span class="status-text" id="tnl-na-msg"></span></div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()" data-i18n="save">保存</button><button class="btn" id="tnl-na-restart" onclick="restartTunnel('natapp')" data-i18n="mngRestartNow">立即重启</button><span class="status-text" id="tnl-na-msg"></span></div>
           </div>
 
           <!-- cpolar -->
           <div class="settings-card">
             <div class="sc-header">cpolar <span id="tnl-cp-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
             <div class="sc-body">
-              <div class="setting-row"><label>启用监控</label><input id="tnl-cp-enabled" type="checkbox" style="width:auto;" /></div>
-              <div class="setting-row"><label>仅监控</label><input id="tnl-cp-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;">只探活，不自动重启客户端</span></div>
-              <div class="setting-row"><label>公网 URL</label><input id="tnl-cp-url" type="text" placeholder="填该隧道的公网地址，用于健康检测" /></div>
-              <div class="setting-row"><label>凭证</label><input id="tnl-cp-authtoken" type="password" placeholder="authtoken / 访问密钥" autocomplete="off" /></div>
-              <div class="setting-row"><label>端口</label><input id="tnl-cp-port" type="number" min="1" placeholder="3000" /></div>
-              <div class="setting-row"><label>启动命令（高级）</label><textarea id="tnl-cp-startcmd" rows="2" style="min-height:48px;resize:vertical;" placeholder="留空用默认模板；支持占位符 {authtoken} {port}"></textarea></div>
-              <div class="setting-row"><label>状态</label><span id="tnl-cp-status" style="font-size:13px;color:var(--text);">-</span></div>
-              <div style="font-size:11px;color:var(--faint);">authtoken 会在重启时自动写入</div>
+              <div class="setting-row"><label data-i18n="mngEnableMonitor">启用监控</label><input id="tnl-cp-enabled" type="checkbox" style="width:auto;" /></div>
+              <div class="setting-row"><label data-i18n="mngMonitorOnly">仅监控</label><input id="tnl-cp-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;" data-i18n="mngMonitorOnlyHint">只探活，不自动重启客户端</span></div>
+              <div class="setting-row"><label data-i18n="mngPublicUrlLabel">公网 URL</label><input id="tnl-cp-url" type="text" data-i18n-placeholder="mngTunnelUrlPh" placeholder="填该隧道的公网地址，用于健康检测" /></div>
+              <div class="setting-row"><label data-i18n="mngCredential">凭证</label><input id="tnl-cp-authtoken" type="password" data-i18n-placeholder="mngCredentialPh" placeholder="authtoken / 访问密钥" autocomplete="off" /></div>
+              <div class="setting-row"><label data-i18n="mngPort">端口</label><input id="tnl-cp-port" type="number" min="1" placeholder="3000" /></div>
+              <div class="setting-row"><label data-i18n="mngStartCmd">启动命令（高级）</label><textarea id="tnl-cp-startcmd" rows="2" style="min-height:48px;resize:vertical;" data-i18n-placeholder="mngStartCmdPh" placeholder="留空用默认模板；支持占位符 {authtoken} {port}"></textarea></div>
+              <div class="setting-row"><label data-i18n="mngStatusLabel">状态</label><span id="tnl-cp-status" style="font-size:13px;color:var(--text);">-</span></div>
+              <div style="font-size:11px;color:var(--faint);" data-i18n="mngAuthtokenNote">authtoken 会在重启时自动写入</div>
             </div>
-            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" id="tnl-cp-restart" onclick="restartTunnel('cpolar')">立即重启</button><span class="status-text" id="tnl-cp-msg"></span></div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()" data-i18n="save">保存</button><button class="btn" id="tnl-cp-restart" onclick="restartTunnel('cpolar')" data-i18n="mngRestartNow">立即重启</button><span class="status-text" id="tnl-cp-msg"></span></div>
           </div>
 
           <!-- SakuraFrp -->
           <div class="settings-card">
             <div class="sc-header">SakuraFrp <span id="tnl-sf-avail" style="font-size:11px;font-weight:400;color:var(--faint);"></span></div>
             <div class="sc-body">
-              <div style="font-size:11px;color:var(--faint);margin-bottom:8px;">macOS 安装了 SakuraFrp 启动器时，默认通过启动器恢复其中已保存的隧道；自定义启动命令仍使用命令行客户端。</div>
-              <div class="setting-row"><label>启用监控</label><input id="tnl-sf-enabled" type="checkbox" style="width:auto;" /></div>
-              <div class="setting-row"><label>仅监控</label><input id="tnl-sf-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;">只探活，不自动重启客户端（URL 借给别家隧道监控时用）</span></div>
-              <div class="setting-row"><label>公网 URL</label><input id="tnl-sf-url" type="text" placeholder="填该隧道的公网地址，用于健康检测" /></div>
-              <div class="setting-row"><label>凭证</label><input id="tnl-sf-authtoken" type="password" placeholder="authtoken / 访问密钥" autocomplete="off" /></div>
-              <div class="setting-row"><label>端口</label><input id="tnl-sf-port" type="number" min="1" placeholder="3000" /></div>
-              <div class="setting-row"><label>启动命令（高级）</label><textarea id="tnl-sf-startcmd" rows="2" style="min-height:48px;resize:vertical;" placeholder="留空用默认模板；支持占位符 {authtoken} {port}"></textarea></div>
-              <div class="setting-row"><label>状态</label><span id="tnl-sf-status" style="font-size:13px;color:var(--text);">-</span></div>
-              <div class="setting-row"><label>账户</label><span id="tnl-sf-account" style="font-size:12px;color:var(--faint);">-</span></div>
-              <div class="setting-row"><label>隧道</label><span id="tnl-sf-tunnel" style="font-size:12px;color:var(--faint);">-</span></div>
-              <div class="setting-row"><label>命令行客户端</label>
+              <div style="font-size:11px;color:var(--faint);margin-bottom:8px;" data-i18n="mngSakuraNote">macOS 安装了 SakuraFrp 启动器时，默认通过启动器恢复其中已保存的隧道；自定义启动命令仍使用命令行客户端。</div>
+              <div class="setting-row"><label data-i18n="mngEnableMonitor">启用监控</label><input id="tnl-sf-enabled" type="checkbox" style="width:auto;" /></div>
+              <div class="setting-row"><label data-i18n="mngMonitorOnly">仅监控</label><input id="tnl-sf-monitoronly" type="checkbox" style="width:auto;" /> <span style="font-size:11px;color:var(--faint);margin-left:8px;" data-i18n="mngMonitorOnlyHintSf">只探活，不自动重启客户端（URL 借给别家隧道监控时用）</span></div>
+              <div class="setting-row"><label data-i18n="mngPublicUrlLabel">公网 URL</label><input id="tnl-sf-url" type="text" data-i18n-placeholder="mngTunnelUrlPh" placeholder="填该隧道的公网地址，用于健康检测" /></div>
+              <div class="setting-row"><label data-i18n="mngCredential">凭证</label><input id="tnl-sf-authtoken" type="password" data-i18n-placeholder="mngCredentialPh" placeholder="authtoken / 访问密钥" autocomplete="off" /></div>
+              <div class="setting-row"><label data-i18n="mngPort">端口</label><input id="tnl-sf-port" type="number" min="1" placeholder="3000" /></div>
+              <div class="setting-row"><label data-i18n="mngStartCmd">启动命令（高级）</label><textarea id="tnl-sf-startcmd" rows="2" style="min-height:48px;resize:vertical;" data-i18n-placeholder="mngStartCmdPh" placeholder="留空用默认模板；支持占位符 {authtoken} {port}"></textarea></div>
+              <div class="setting-row"><label data-i18n="mngStatusLabel">状态</label><span id="tnl-sf-status" style="font-size:13px;color:var(--text);">-</span></div>
+              <div class="setting-row"><label data-i18n="mngAccountLabel">账户</label><span id="tnl-sf-account" style="font-size:12px;color:var(--faint);">-</span></div>
+              <div class="setting-row"><label data-i18n="mngTunnelLabel">隧道</label><span id="tnl-sf-tunnel" style="font-size:12px;color:var(--faint);">-</span></div>
+              <div class="setting-row"><label data-i18n="mngCliClient">命令行客户端</label>
                 <span style="display:inline-flex;gap:8px;align-items:center;">
-                  <button class="btn" id="tnl-sf-install" onclick="installSakurafrp()">安装 frpc</button>
+                  <button class="btn" id="tnl-sf-install" onclick="installSakurafrp()" data-i18n="mngInstallFrpc">安装 frpc</button>
                   <span class="status-text" id="tnl-sf-install-msg"></span>
                 </span>
               </div>
-              <div class="setting-row"><label>回填公网地址</label>
+              <div class="setting-row"><label data-i18n="mngBackfillLabel">回填公网地址</label>
                 <span style="display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                  <input id="tnl-sf-bounddomain" type="text" style="max-width:240px;" placeholder="auto_https 隧道需粘贴绑定的 *.nyat.app 域名" />
-                  <button class="btn" id="tnl-sf-backfill" onclick="backfillSakurafrpUrl()">回填</button>
+                  <input id="tnl-sf-bounddomain" type="text" style="max-width:240px;" data-i18n-placeholder="mngBoundDomainPh" placeholder="auto_https 隧道需粘贴绑定的 *.nyat.app 域名" />
+                  <button class="btn" id="tnl-sf-backfill" onclick="backfillSakurafrpUrl()" data-i18n="mngBackfill">回填</button>
                   <span class="status-text" id="tnl-sf-backfill-msg"></span>
                 </span>
               </div>
             </div>
-            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" id="tnl-sf-restart" onclick="restartTunnel('sakurafrp')">立即重启</button><span class="status-text" id="tnl-sf-msg"></span></div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()" data-i18n="save">保存</button><button class="btn" id="tnl-sf-restart" onclick="restartTunnel('sakurafrp')" data-i18n="mngRestartNow">立即重启</button><span class="status-text" id="tnl-sf-msg"></span></div>
           </div>
 
           <!-- 高级参数 -->
           <div class="settings-card">
-            <div class="sc-header">监控参数</div>
+            <div class="sc-header" data-i18n="mngMonitorParams">监控参数</div>
             <div class="sc-body">
-              <div class="setting-row"><label>探活间隔(秒)</label><input id="tnl-interval" type="number" min="10" placeholder="30" /></div>
-              <div class="setting-row"><label>失败阈值(次)</label><input id="tnl-failthreshold" type="number" min="1" placeholder="2" /></div>
-              <div class="setting-row"><label>重启冷却(秒)</label><input id="tnl-cooldown" type="number" min="0" placeholder="120" /></div>
-              <div class="setting-row"><label>每小时尝试上限</label><input id="tnl-maxrestarts" type="number" min="1" placeholder="5" /></div>
+              <div class="setting-row"><label data-i18n="mngIntervalSec">探活间隔(秒)</label><input id="tnl-interval" type="number" min="10" placeholder="30" /></div>
+              <div class="setting-row"><label data-i18n="mngFailThreshold">失败阈值(次)</label><input id="tnl-failthreshold" type="number" min="1" placeholder="2" /></div>
+              <div class="setting-row"><label data-i18n="mngCooldownSec">重启冷却(秒)</label><input id="tnl-cooldown" type="number" min="0" placeholder="120" /></div>
+              <div class="setting-row"><label data-i18n="mngMaxPerHour">每小时尝试上限</label><input id="tnl-maxrestarts" type="number" min="1" placeholder="5" /></div>
             </div>
-            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" onclick="loadTunnelSettings()">刷新状态</button><span class="status-text" id="tnl-adv-msg"></span></div>
+            <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()" data-i18n="save">保存</button><button class="btn" onclick="loadTunnelSettings()" data-i18n="mngRefreshStatus">刷新状态</button><span class="status-text" id="tnl-adv-msg"></span></div>
           </div>
         </section>
 
         <!-- ─── Bridges (collapsible per-platform) ─── -->
         <section class="view" data-view="bridges">
-          <div class="sec-head"><h2>消息桥接 Bridges</h2><div class="line"></div></div>
-          <div style="font-size:11px;color:var(--faint);line-height:1.5;margin-bottom:14px;">每个平台为一个独立网关（专用 <code>__&lt;平台&gt;_gateway__</code> 会话），架构一致。点击标题展开/收起对应平台的配置。</div>
+          <div class="sec-head"><h2 data-i18n="mngBridgesH2">消息桥接 Bridges</h2><div class="line"></div></div>
+          <div style="font-size:11px;color:var(--faint);line-height:1.5;margin-bottom:14px;"><span data-i18n="mngBridgesDescA">每个平台为一个独立网关（专用 </span><code data-i18n="mngBridgesCode">__&lt;平台&gt;_gateway__</code><span data-i18n="mngBridgesDescB"> 会话），架构一致。点击标题展开/收起对应平台的配置。</span></div>
           <style>
             .bridge-acc{border:1px solid var(--line-strong);border-radius:var(--radius);margin-bottom:12px;overflow:hidden;background:linear-gradient(180deg,rgba(255,255,255,.022),transparent 90px),var(--panel);box-shadow:var(--elev);transition:box-shadow .18s,border-color .18s;}
             .bridge-acc[open]{box-shadow:var(--elev-hi);}
@@ -1719,22 +1719,22 @@
 
           <!-- WeChat accordion -->
           <details class="bridge-acc" open>
-            <summary class="bridge-sum"><span class="ic">💬</span> WeChat (iLink) <span class="bridge-hint">微信扫码入口</span></summary>
+            <summary class="bridge-sum"><span class="ic">💬</span> WeChat (iLink) <span class="bridge-hint" data-i18n="mngWechatHint">微信扫码入口</span></summary>
             <div class="bridge-body">
           <div class="settings-card">
-            <div class="sc-header">微信登录</div>
+            <div class="sc-header" data-i18n="mngWechatLogin">微信登录</div>
             <div class="sc-body" style="align-items:center;">
               <img id="wx-qr-img" style="max-width:180px;border-radius:8px;border:2px solid var(--line);display:none;" alt="QR" />
               <div id="wx-login-status" style="font-size:12px;margin:4px 0;"></div>
               <div style="display:flex;gap:8px;">
-                <button class="btn" id="wx-btn-qr" onclick="wechatGetQR()">获取登录二维码</button>
-                <button class="btn btn-danger" id="wx-btn-logout" onclick="wechatLogout()" style="display:none;">退出登录</button>
+                <button class="btn" id="wx-btn-qr" onclick="wechatGetQR()" data-i18n="mngGetLoginQr">获取登录二维码</button>
+                <button class="btn btn-danger" id="wx-btn-logout" onclick="wechatLogout()" style="display:none;" data-i18n="logout">退出登录</button>
               </div>
-              <div style="font-size:11px;color:var(--faint);line-height:1.5;text-align:center;margin-top:4px;">微信扫码绑定 ClawBot 插件。登录有效期 24 小时。</div>
+              <div style="font-size:11px;color:var(--faint);line-height:1.5;text-align:center;margin-top:4px;" data-i18n="mngWechatQrHint">微信扫码绑定 ClawBot 插件。登录有效期 24 小时。</div>
             </div>
           </div>
           <div class="settings-card">
-            <div class="sc-header">Gateway 会话 <span id="wx-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);">未创建</span></div>
+            <div class="sc-header"><span data-i18n="mngGatewaySession">Gateway 会话</span> <span id="wx-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);" data-i18n="mngNotCreated">未创建</span></div>
             <div class="sc-body">
               <div class="setting-row" id="wx-gw-cli-row">
                 <label>Agent</label>
@@ -1743,30 +1743,30 @@
                   <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="wx-gw-cli" value="codex" /> Codex</label>
                 </div>
               </div>
-              <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>专用聊天会话作为微信入口；消息统一进入 Gateway，由 Gateway 会话根据上下文判断直接回答、追问或引导到具体 session。</span></div>
+              <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span data-i18n="mngWechatGatewayDesc">专用聊天会话作为微信入口；消息统一进入 Gateway，由 Gateway 会话根据上下文判断直接回答、追问或引导到具体 session。</span></div>
             </div>
             <div class="sc-footer">
-              <button class="btn btn-green" id="wx-gw-create" onclick="wechatGatewayCreate()">创建 Gateway</button>
-              <button class="btn" id="wx-gw-open" onclick="wechatGatewayOpen()" style="display:none;">打开聊天</button>
-              <button class="btn" id="wx-gw-reset" onclick="wechatGatewayReset()" style="display:none;">重置对话</button>
-              <button class="btn btn-danger" id="wx-gw-destroy" onclick="wechatGatewayDestroy()" style="display:none;">销毁</button>
+              <button class="btn btn-green" id="wx-gw-create" onclick="wechatGatewayCreate()" data-i18n="mngCreateGateway">创建 Gateway</button>
+              <button class="btn" id="wx-gw-open" onclick="wechatGatewayOpen()" style="display:none;" data-i18n="mngOpenChat">打开聊天</button>
+              <button class="btn" id="wx-gw-reset" onclick="wechatGatewayReset()" style="display:none;" data-i18n="mngResetConversation">重置对话</button>
+              <button class="btn btn-danger" id="wx-gw-destroy" onclick="wechatGatewayDestroy()" style="display:none;" data-i18n="mngDestroy">销毁</button>
               <span class="status-text" id="wx-gw-status"></span>
             </div>
           </div>
           <div class="settings-card">
-            <div class="sc-header">桥接运行</div>
-            <div class="sc-body"><div class="setting-row"><label>输出缓冲 (ms)</label><input id="wx-idle" type="number" value="5000" min="2000" step="500" /></div></div>
+            <div class="sc-header" data-i18n="mngBridgeRunning">桥接运行</div>
+            <div class="sc-body"><div class="setting-row"><label data-i18n="mngOutputBufferMs">输出缓冲 (ms)</label><input id="wx-idle" type="number" value="5000" min="2000" step="500" /></div></div>
             <div class="sc-footer">
-              <button class="btn btn-green" id="wx-btn-start" onclick="wechatStart()">启动桥接</button>
-              <button class="btn btn-danger" id="wx-btn-stop" onclick="wechatStop()" disabled>停止</button>
-              <button class="btn" onclick="wechatSaveConfig()">保存</button>
+              <button class="btn btn-green" id="wx-btn-start" onclick="wechatStart()" data-i18n="mngStartBridge">启动桥接</button>
+              <button class="btn btn-danger" id="wx-btn-stop" onclick="wechatStop()" disabled data-i18n="mngStop">停止</button>
+              <button class="btn" onclick="wechatSaveConfig()" data-i18n="save">保存</button>
               <span class="status-text" id="wx-status"></span>
             </div>
           </div>
           <div class="settings-card">
-            <div class="sc-header">消息日志 <span id="wx-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
+            <div class="sc-header"><span data-i18n="mngMessageLog">消息日志</span> <span id="wx-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
             <div id="wx-log" style="max-height:260px;overflow-y:auto;padding:8px 12px;font-size:12px;font-family:var(--mono);background:var(--bg-soft);display:flex;flex-direction:column;gap:2px;">
-              <div style="color:var(--faint);text-align:center;padding:20px 0;">桥接未启动</div>
+              <div style="color:var(--faint);text-align:center;padding:20px 0;" data-i18n="mngBridgeNotStarted">桥接未启动</div>
             </div>
           </div>
             </div>
@@ -1774,28 +1774,28 @@
 
           <!-- Feishu accordion -->
           <details class="bridge-acc">
-            <summary class="bridge-sum"><span class="ic">📨</span> 飞书 Feishu <span class="bridge-hint">Lark 长连接</span></summary>
+            <summary class="bridge-sum"><span class="ic">📨</span> <span data-i18n="mngFeishuTitle">飞书 Feishu</span> <span class="bridge-hint" data-i18n="mngFeishuHint">Lark 长连接</span></summary>
             <div class="bridge-body">
           <div class="settings-card">
-            <div class="sc-header">应用凭证 <span id="fs-cfg-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);">未配置</span></div>
+            <div class="sc-header"><span data-i18n="mngAppCredentials">应用凭证</span> <span id="fs-cfg-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);" data-i18n="mngNotConfigured">未配置</span></div>
             <div class="sc-body">
               <div class="setting-row"><label>App ID</label><input id="fs-appid" type="text" placeholder="cli_xxxxxxxx" autocomplete="off" /></div>
-              <div class="setting-row"><label>App Secret</label><input id="fs-appsecret" type="password" placeholder="留空表示不修改" autocomplete="off" /></div>
-              <div class="setting-row"><label>域</label>
+              <div class="setting-row"><label>App Secret</label><input id="fs-appsecret" type="password" data-i18n-placeholder="mngLeaveBlankPh" placeholder="留空表示不修改" autocomplete="off" /></div>
+              <div class="setting-row"><label data-i18n="mngDomain">域</label>
                 <select id="fs-domain">
-                  <option value="feishu" selected>feishu (飞书)</option>
-                  <option value="lark">lark (国际版)</option>
+                  <option value="feishu" selected data-i18n="mngFeishuOption">feishu (飞书)</option>
+                  <option value="lark" data-i18n="mngLarkOption">lark (国际版)</option>
                 </select>
               </div>
-              <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>在飞书开放平台「企业自建应用」获取 App ID / Secret，开启机器人能力，事件订阅选「使用长连接接收事件」，订阅 <code>im.message.receive_v1</code>，开通 <code>im:message</code> 收发权限并发版。</span></div>
+              <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngFeishuCredDescA">在飞书开放平台「企业自建应用」获取 App ID / Secret，开启机器人能力，事件订阅选「使用长连接接收事件」，订阅 </span><code>im.message.receive_v1</code><span data-i18n="mngFeishuCredDescB">，开通 </span><code>im:message</code><span data-i18n="mngFeishuCredDescC"> 收发权限并发版。</span></span></div>
             </div>
             <div class="sc-footer">
-              <button class="btn" onclick="feishuSaveConfig()">保存凭证</button>
+              <button class="btn" onclick="feishuSaveConfig()" data-i18n="mngSaveCredentials">保存凭证</button>
               <span class="status-text" id="fs-cfg-status"></span>
             </div>
           </div>
           <div class="settings-card">
-            <div class="sc-header">Gateway 会话 <span id="fs-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);">未创建</span></div>
+            <div class="sc-header"><span data-i18n="mngGatewaySession">Gateway 会话</span> <span id="fs-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);" data-i18n="mngNotCreated">未创建</span></div>
             <div class="sc-body">
               <div class="setting-row" id="fs-gw-cli-row">
                 <label>Agent</label>
@@ -1804,29 +1804,29 @@
                   <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="fs-gw-cli" value="codex" /> Codex</label>
                 </div>
               </div>
-              <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>专用聊天会话作为飞书入口（与微信 Gateway 同架构，独立会话 <code>__feishu_gateway__</code>），消息统一进入 Gateway 由其判断如何回应。</span></div>
+              <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngFeishuGatewayDescA">专用聊天会话作为飞书入口（与微信 Gateway 同架构，独立会话 </span><code>__feishu_gateway__</code><span data-i18n="mngFeishuGatewayDescB">），消息统一进入 Gateway 由其判断如何回应。</span></span></div>
             </div>
             <div class="sc-footer">
-              <button class="btn btn-green" id="fs-gw-create" onclick="feishuGatewayCreate()">创建 Gateway</button>
-              <button class="btn" id="fs-gw-open" onclick="feishuGatewayOpen()" style="display:none;">打开聊天</button>
-              <button class="btn" id="fs-gw-reset" onclick="feishuGatewayReset()" style="display:none;">重置对话</button>
-              <button class="btn btn-danger" id="fs-gw-destroy" onclick="feishuGatewayDestroy()" style="display:none;">销毁</button>
+              <button class="btn btn-green" id="fs-gw-create" onclick="feishuGatewayCreate()" data-i18n="mngCreateGateway">创建 Gateway</button>
+              <button class="btn" id="fs-gw-open" onclick="feishuGatewayOpen()" style="display:none;" data-i18n="mngOpenChat">打开聊天</button>
+              <button class="btn" id="fs-gw-reset" onclick="feishuGatewayReset()" style="display:none;" data-i18n="mngResetConversation">重置对话</button>
+              <button class="btn btn-danger" id="fs-gw-destroy" onclick="feishuGatewayDestroy()" style="display:none;" data-i18n="mngDestroy">销毁</button>
               <span class="status-text" id="fs-gw-status"></span>
             </div>
           </div>
           <div class="settings-card">
-            <div class="sc-header">桥接运行 <span id="fs-ws-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">长连接</span></div>
-            <div class="sc-body"><div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>启动后建立 WebSocket 长连接接收飞书消息，无需公网回调。请先保存凭证并创建 Gateway。</span></div></div>
+            <div class="sc-header"><span data-i18n="mngBridgeRunning">桥接运行</span> <span id="fs-ws-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);" data-i18n="mngLongConnection">长连接</span></div>
+            <div class="sc-body"><div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngFeishuRunDesc">启动后建立 WebSocket 长连接接收飞书消息，无需公网回调。请先保存凭证并创建 Gateway。</span></span></div></div>
             <div class="sc-footer">
-              <button class="btn btn-green" id="fs-btn-start" onclick="feishuStart()">启动桥接</button>
-              <button class="btn btn-danger" id="fs-btn-stop" onclick="feishuStop()" disabled>停止</button>
+              <button class="btn btn-green" id="fs-btn-start" onclick="feishuStart()" data-i18n="mngStartBridge">启动桥接</button>
+              <button class="btn btn-danger" id="fs-btn-stop" onclick="feishuStop()" disabled data-i18n="mngStop">停止</button>
               <span class="status-text" id="fs-status"></span>
             </div>
           </div>
           <div class="settings-card">
-            <div class="sc-header">消息日志 <span id="fs-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
+            <div class="sc-header"><span data-i18n="mngMessageLog">消息日志</span> <span id="fs-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
             <div id="fs-log" style="max-height:260px;overflow-y:auto;padding:8px 12px;font-size:12px;font-family:var(--mono);background:var(--bg-soft);display:flex;flex-direction:column;gap:2px;">
-              <div style="color:var(--faint);text-align:center;padding:20px 0;">桥接未启动</div>
+              <div style="color:var(--faint);text-align:center;padding:20px 0;" data-i18n="mngBridgeNotStarted">桥接未启动</div>
             </div>
           </div>
             </div>
@@ -1834,18 +1834,18 @@
 
           <!-- Telegram accordion -->
           <details class="bridge-acc">
-            <summary class="bridge-sum"><span class="ic">📡</span> Telegram <span id="tg-cfg-state" class="bridge-badge">未配置</span></summary>
+            <summary class="bridge-sum"><span class="ic">📡</span> Telegram <span id="tg-cfg-state" class="bridge-badge" data-i18n="mngNotConfigured">未配置</span></summary>
             <div class="bridge-body">
               <div class="settings-card">
-                <div class="sc-header">应用凭证</div>
+                <div class="sc-header" data-i18n="mngAppCredentials">应用凭证</div>
                 <div class="sc-body">
-                  <div class="setting-row"><label>Bot Token</label><input id="tg-botToken" type="password" placeholder="123456:ABC...（留空表示不修改）" autocomplete="off" /></div>
-                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>在 Telegram 找 <code>@BotFather</code> 创建机器人获取 Token。群聊里需对 BotFather 发送 <code>/setprivacy</code> 设为 Disable，或在群中 @ 机器人，否则收不到群消息。</span></div>
+                  <div class="setting-row"><label>Bot Token</label><input id="tg-botToken" type="password" data-i18n-placeholder="mngTgTokenPh" placeholder="123456:ABC...（留空表示不修改）" autocomplete="off" /></div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngTgCredDescA">在 Telegram 找 </span><code>@BotFather</code><span data-i18n="mngTgCredDescB"> 创建机器人获取 Token。群聊里需对 BotFather 发送 </span><code>/setprivacy</code><span data-i18n="mngTgCredDescC"> 设为 Disable，或在群中 @ 机器人，否则收不到群消息。</span></span></div>
                 </div>
-                <div class="sc-footer"><button class="btn" onclick="bridgeSaveConfig('telegram')">保存凭证</button><span class="status-text" id="tg-cfg-status"></span></div>
+                <div class="sc-footer"><button class="btn" onclick="bridgeSaveConfig('telegram')" data-i18n="mngSaveCredentials">保存凭证</button><span class="status-text" id="tg-cfg-status"></span></div>
               </div>
               <div class="settings-card">
-                <div class="sc-header">Gateway 会话 <span id="tg-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);">未创建</span></div>
+                <div class="sc-header"><span data-i18n="mngGatewaySession">Gateway 会话</span> <span id="tg-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);" data-i18n="mngNotCreated">未创建</span></div>
                 <div class="sc-body">
                   <div class="setting-row" id="tg-gw-cli-row">
                     <label>Agent</label>
@@ -1854,29 +1854,29 @@
                       <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="tg-gw-cli" value="codex" /> Codex</label>
                     </div>
                   </div>
-                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>专用会话 <code>__telegram_gateway__</code>，与微信 Gateway 同架构。</span></div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngTgGatewayDescA">专用会话 </span><code>__telegram_gateway__</code><span data-i18n="mngTgGatewayDescB">，与微信 Gateway 同架构。</span></span></div>
                 </div>
                 <div class="sc-footer">
-                  <button class="btn btn-green" id="tg-gw-create" onclick="bridgeGatewayCreate('telegram')">创建 Gateway</button>
-                  <button class="btn" id="tg-gw-open" onclick="bridgeGatewayOpen('telegram')" style="display:none;">打开聊天</button>
-                  <button class="btn" id="tg-gw-reset" onclick="bridgeGatewayReset('telegram')" style="display:none;">重置对话</button>
-                  <button class="btn btn-danger" id="tg-gw-destroy" onclick="bridgeGatewayDestroy('telegram')" style="display:none;">销毁</button>
+                  <button class="btn btn-green" id="tg-gw-create" onclick="bridgeGatewayCreate('telegram')" data-i18n="mngCreateGateway">创建 Gateway</button>
+                  <button class="btn" id="tg-gw-open" onclick="bridgeGatewayOpen('telegram')" style="display:none;" data-i18n="mngOpenChat">打开聊天</button>
+                  <button class="btn" id="tg-gw-reset" onclick="bridgeGatewayReset('telegram')" style="display:none;" data-i18n="mngResetConversation">重置对话</button>
+                  <button class="btn btn-danger" id="tg-gw-destroy" onclick="bridgeGatewayDestroy('telegram')" style="display:none;" data-i18n="mngDestroy">销毁</button>
                   <span class="status-text" id="tg-gw-status"></span>
                 </div>
               </div>
               <div class="settings-card">
-                <div class="sc-header">桥接运行 <span id="tg-ws-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">长轮询</span></div>
-                <div class="sc-body"><div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>启动后用 Bot API 长轮询接收消息，无需公网回调。请先保存 Token 并创建 Gateway。</span></div></div>
+                <div class="sc-header"><span data-i18n="mngBridgeRunning">桥接运行</span> <span id="tg-ws-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);" data-i18n="mngLongPolling">长轮询</span></div>
+                <div class="sc-body"><div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngTgRunDesc">启动后用 Bot API 长轮询接收消息，无需公网回调。请先保存 Token 并创建 Gateway。</span></span></div></div>
                 <div class="sc-footer">
-                  <button class="btn btn-green" id="tg-btn-start" onclick="bridgeStart('telegram')">启动桥接</button>
-                  <button class="btn btn-danger" id="tg-btn-stop" onclick="bridgeStop('telegram')" disabled>停止</button>
+                  <button class="btn btn-green" id="tg-btn-start" onclick="bridgeStart('telegram')" data-i18n="mngStartBridge">启动桥接</button>
+                  <button class="btn btn-danger" id="tg-btn-stop" onclick="bridgeStop('telegram')" disabled data-i18n="mngStop">停止</button>
                   <span class="status-text" id="tg-status"></span>
                 </div>
               </div>
               <div class="settings-card">
-                <div class="sc-header">消息日志 <span id="tg-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
+                <div class="sc-header"><span data-i18n="mngMessageLog">消息日志</span> <span id="tg-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
                 <div id="tg-log" style="max-height:260px;overflow-y:auto;padding:8px 12px;font-size:12px;font-family:var(--mono);background:var(--bg-soft);display:flex;flex-direction:column;gap:2px;">
-                  <div style="color:var(--faint);text-align:center;padding:20px 0;">桥接未启动</div>
+                  <div style="color:var(--faint);text-align:center;padding:20px 0;" data-i18n="mngBridgeNotStarted">桥接未启动</div>
                 </div>
               </div>
             </div>
@@ -1884,18 +1884,18 @@
 
           <!-- Discord accordion -->
           <details class="bridge-acc">
-            <summary class="bridge-sum"><span class="ic">🎮</span> Discord <span id="dc-cfg-state" class="bridge-badge">未配置</span></summary>
+            <summary class="bridge-sum"><span class="ic">🎮</span> Discord <span id="dc-cfg-state" class="bridge-badge" data-i18n="mngNotConfigured">未配置</span></summary>
             <div class="bridge-body">
               <div class="settings-card">
-                <div class="sc-header">应用凭证</div>
+                <div class="sc-header" data-i18n="mngAppCredentials">应用凭证</div>
                 <div class="sc-body">
-                  <div class="setting-row"><label>Bot Token</label><input id="dc-botToken" type="password" placeholder="留空表示不修改" autocomplete="off" /></div>
-                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>在 Discord Developer Portal 建 Application → Bot 复制 Token。务必开启 <code>MESSAGE CONTENT INTENT</code>；用 OAuth2 URL 邀请进服务器并授予读/发消息权限。</span></div>
+                  <div class="setting-row"><label>Bot Token</label><input id="dc-botToken" type="password" data-i18n-placeholder="mngLeaveBlankPh" placeholder="留空表示不修改" autocomplete="off" /></div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngDcCredDescA">在 Discord Developer Portal 建 Application → Bot 复制 Token。务必开启 </span><code>MESSAGE CONTENT INTENT</code><span data-i18n="mngDcCredDescB">；用 OAuth2 URL 邀请进服务器并授予读/发消息权限。</span></span></div>
                 </div>
-                <div class="sc-footer"><button class="btn" onclick="bridgeSaveConfig('discord')">保存凭证</button><span class="status-text" id="dc-cfg-status"></span></div>
+                <div class="sc-footer"><button class="btn" onclick="bridgeSaveConfig('discord')" data-i18n="mngSaveCredentials">保存凭证</button><span class="status-text" id="dc-cfg-status"></span></div>
               </div>
               <div class="settings-card">
-                <div class="sc-header">Gateway 会话 <span id="dc-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);">未创建</span></div>
+                <div class="sc-header"><span data-i18n="mngGatewaySession">Gateway 会话</span> <span id="dc-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);" data-i18n="mngNotCreated">未创建</span></div>
                 <div class="sc-body">
                   <div class="setting-row" id="dc-gw-cli-row">
                     <label>Agent</label>
@@ -1904,29 +1904,29 @@
                       <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="dc-gw-cli" value="codex" /> Codex</label>
                     </div>
                   </div>
-                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>专用会话 <code>__discord_gateway__</code>，与微信 Gateway 同架构。</span></div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngDcGatewayDescA">专用会话 </span><code>__discord_gateway__</code><span data-i18n="mngDcGatewayDescB">，与微信 Gateway 同架构。</span></span></div>
                 </div>
                 <div class="sc-footer">
-                  <button class="btn btn-green" id="dc-gw-create" onclick="bridgeGatewayCreate('discord')">创建 Gateway</button>
-                  <button class="btn" id="dc-gw-open" onclick="bridgeGatewayOpen('discord')" style="display:none;">打开聊天</button>
-                  <button class="btn" id="dc-gw-reset" onclick="bridgeGatewayReset('discord')" style="display:none;">重置对话</button>
-                  <button class="btn btn-danger" id="dc-gw-destroy" onclick="bridgeGatewayDestroy('discord')" style="display:none;">销毁</button>
+                  <button class="btn btn-green" id="dc-gw-create" onclick="bridgeGatewayCreate('discord')" data-i18n="mngCreateGateway">创建 Gateway</button>
+                  <button class="btn" id="dc-gw-open" onclick="bridgeGatewayOpen('discord')" style="display:none;" data-i18n="mngOpenChat">打开聊天</button>
+                  <button class="btn" id="dc-gw-reset" onclick="bridgeGatewayReset('discord')" style="display:none;" data-i18n="mngResetConversation">重置对话</button>
+                  <button class="btn btn-danger" id="dc-gw-destroy" onclick="bridgeGatewayDestroy('discord')" style="display:none;" data-i18n="mngDestroy">销毁</button>
                   <span class="status-text" id="dc-gw-status"></span>
                 </div>
               </div>
               <div class="settings-card">
-                <div class="sc-header">桥接运行 <span id="dc-ws-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Gateway WS</span></div>
-                <div class="sc-body"><div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>启动后建立 Gateway WebSocket 长连接接收消息。请先保存 Token 并创建 Gateway。</span></div></div>
+                <div class="sc-header"><span data-i18n="mngBridgeRunning">桥接运行</span> <span id="dc-ws-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Gateway WS</span></div>
+                <div class="sc-body"><div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngDcRunDesc">启动后建立 Gateway WebSocket 长连接接收消息。请先保存 Token 并创建 Gateway。</span></span></div></div>
                 <div class="sc-footer">
-                  <button class="btn btn-green" id="dc-btn-start" onclick="bridgeStart('discord')">启动桥接</button>
-                  <button class="btn btn-danger" id="dc-btn-stop" onclick="bridgeStop('discord')" disabled>停止</button>
+                  <button class="btn btn-green" id="dc-btn-start" onclick="bridgeStart('discord')" data-i18n="mngStartBridge">启动桥接</button>
+                  <button class="btn btn-danger" id="dc-btn-stop" onclick="bridgeStop('discord')" disabled data-i18n="mngStop">停止</button>
                   <span class="status-text" id="dc-status"></span>
                 </div>
               </div>
               <div class="settings-card">
-                <div class="sc-header">消息日志 <span id="dc-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
+                <div class="sc-header"><span data-i18n="mngMessageLog">消息日志</span> <span id="dc-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
                 <div id="dc-log" style="max-height:260px;overflow-y:auto;padding:8px 12px;font-size:12px;font-family:var(--mono);background:var(--bg-soft);display:flex;flex-direction:column;gap:2px;">
-                  <div style="color:var(--faint);text-align:center;padding:20px 0;">桥接未启动</div>
+                  <div style="color:var(--faint);text-align:center;padding:20px 0;" data-i18n="mngBridgeNotStarted">桥接未启动</div>
                 </div>
               </div>
             </div>
@@ -1934,19 +1934,19 @@
 
           <!-- Slack accordion -->
           <details class="bridge-acc">
-            <summary class="bridge-sum"><span class="ic">💼</span> Slack <span id="sk-cfg-state" class="bridge-badge">未配置</span></summary>
+            <summary class="bridge-sum"><span class="ic">💼</span> Slack <span id="sk-cfg-state" class="bridge-badge" data-i18n="mngNotConfigured">未配置</span></summary>
             <div class="bridge-body">
               <div class="settings-card">
-                <div class="sc-header">应用凭证</div>
+                <div class="sc-header" data-i18n="mngAppCredentials">应用凭证</div>
                 <div class="sc-body">
-                  <div class="setting-row"><label>Bot Token</label><input id="sk-botToken" type="password" placeholder="xoxb-...（留空表示不修改）" autocomplete="off" /></div>
-                  <div class="setting-row"><label>App Token</label><input id="sk-appToken" type="password" placeholder="xapp-...（留空表示不修改）" autocomplete="off" /></div>
-                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>在 api.slack.com/apps 建 App：开启 <code>Socket Mode</code> 获取 App-Level Token（<code>xapp-</code>，scope <code>connections:write</code>）；OAuth 安装拿 Bot Token（<code>xoxb-</code>）；Event Subscriptions 订阅 <code>message.channels</code> 等；把 Bot 邀请进频道。</span></div>
+                  <div class="setting-row"><label>Bot Token</label><input id="sk-botToken" type="password" data-i18n-placeholder="mngSlackBotTokenPh" placeholder="xoxb-...（留空表示不修改）" autocomplete="off" /></div>
+                  <div class="setting-row"><label>App Token</label><input id="sk-appToken" type="password" data-i18n-placeholder="mngSlackAppTokenPh" placeholder="xapp-...（留空表示不修改）" autocomplete="off" /></div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngSlackCredDescA">在 api.slack.com/apps 建 App：开启 </span><code>Socket Mode</code><span data-i18n="mngSlackCredDescB"> 获取 App-Level Token（</span><code>xapp-</code><span data-i18n="mngSlackCredDescC">，scope </span><code>connections:write</code><span data-i18n="mngSlackCredDescD">）；OAuth 安装拿 Bot Token（</span><code>xoxb-</code><span data-i18n="mngSlackCredDescE">）；Event Subscriptions 订阅 </span><code>message.channels</code><span data-i18n="mngSlackCredDescF"> 等；把 Bot 邀请进频道。</span></span></div>
                 </div>
-                <div class="sc-footer"><button class="btn" onclick="bridgeSaveConfig('slack')">保存凭证</button><span class="status-text" id="sk-cfg-status"></span></div>
+                <div class="sc-footer"><button class="btn" onclick="bridgeSaveConfig('slack')" data-i18n="mngSaveCredentials">保存凭证</button><span class="status-text" id="sk-cfg-status"></span></div>
               </div>
               <div class="settings-card">
-                <div class="sc-header">Gateway 会话 <span id="sk-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);">未创建</span></div>
+                <div class="sc-header"><span data-i18n="mngGatewaySession">Gateway 会话</span> <span id="sk-gw-state" style="font-size:11px;padding:1px 8px;border-radius:10px;margin-left:8px;background:rgba(255,255,255,.06);color:var(--muted);" data-i18n="mngNotCreated">未创建</span></div>
                 <div class="sc-body">
                   <div class="setting-row" id="sk-gw-cli-row">
                     <label>Agent</label>
@@ -1955,29 +1955,29 @@
                       <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="sk-gw-cli" value="codex" /> Codex</label>
                     </div>
                   </div>
-                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>专用会话 <code>__slack_gateway__</code>，与微信 Gateway 同架构。</span></div>
+                  <div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngSlackGatewayDescA">专用会话 </span><code>__slack_gateway__</code><span data-i18n="mngSlackGatewayDescB">，与微信 Gateway 同架构。</span></span></div>
                 </div>
                 <div class="sc-footer">
-                  <button class="btn btn-green" id="sk-gw-create" onclick="bridgeGatewayCreate('slack')">创建 Gateway</button>
-                  <button class="btn" id="sk-gw-open" onclick="bridgeGatewayOpen('slack')" style="display:none;">打开聊天</button>
-                  <button class="btn" id="sk-gw-reset" onclick="bridgeGatewayReset('slack')" style="display:none;">重置对话</button>
-                  <button class="btn btn-danger" id="sk-gw-destroy" onclick="bridgeGatewayDestroy('slack')" style="display:none;">销毁</button>
+                  <button class="btn btn-green" id="sk-gw-create" onclick="bridgeGatewayCreate('slack')" data-i18n="mngCreateGateway">创建 Gateway</button>
+                  <button class="btn" id="sk-gw-open" onclick="bridgeGatewayOpen('slack')" style="display:none;" data-i18n="mngOpenChat">打开聊天</button>
+                  <button class="btn" id="sk-gw-reset" onclick="bridgeGatewayReset('slack')" style="display:none;" data-i18n="mngResetConversation">重置对话</button>
+                  <button class="btn btn-danger" id="sk-gw-destroy" onclick="bridgeGatewayDestroy('slack')" style="display:none;" data-i18n="mngDestroy">销毁</button>
                   <span class="status-text" id="sk-gw-status"></span>
                 </div>
               </div>
               <div class="settings-card">
-                <div class="sc-header">桥接运行 <span id="sk-ws-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Socket Mode</span></div>
-                <div class="sc-body"><div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span>启动后用 Socket Mode 长连接接收消息，无需公网回调。请先保存两个 Token 并创建 Gateway。</span></div></div>
+                <div class="sc-header"><span data-i18n="mngBridgeRunning">桥接运行</span> <span id="sk-ws-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Socket Mode</span></div>
+                <div class="sc-body"><div class="setting-row" style="font-size:11px;color:var(--faint);line-height:1.5;"><span><span data-i18n="mngSlackRunDesc">启动后用 Socket Mode 长连接接收消息，无需公网回调。请先保存两个 Token 并创建 Gateway。</span></span></div></div>
                 <div class="sc-footer">
-                  <button class="btn btn-green" id="sk-btn-start" onclick="bridgeStart('slack')">启动桥接</button>
-                  <button class="btn btn-danger" id="sk-btn-stop" onclick="bridgeStop('slack')" disabled>停止</button>
+                  <button class="btn btn-green" id="sk-btn-start" onclick="bridgeStart('slack')" data-i18n="mngStartBridge">启动桥接</button>
+                  <button class="btn btn-danger" id="sk-btn-stop" onclick="bridgeStop('slack')" disabled data-i18n="mngStop">停止</button>
                   <span class="status-text" id="sk-status"></span>
                 </div>
               </div>
               <div class="settings-card">
-                <div class="sc-header">消息日志 <span id="sk-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
+                <div class="sc-header"><span data-i18n="mngMessageLog">消息日志</span> <span id="sk-running-badge" style="font-size:10px;padding:1px 8px;border-radius:10px;margin-left:8px;display:none;background:rgba(58,214,197,.14);color:var(--accent);">Running</span></div>
                 <div id="sk-log" style="max-height:260px;overflow-y:auto;padding:8px 12px;font-size:12px;font-family:var(--mono);background:var(--bg-soft);display:flex;flex-direction:column;gap:2px;">
-                  <div style="color:var(--faint);text-align:center;padding:20px 0;">桥接未启动</div>
+                  <div style="color:var(--faint);text-align:center;padding:20px 0;" data-i18n="mngBridgeNotStarted">桥接未启动</div>
                 </div>
               </div>
             </div>
@@ -2015,34 +2015,34 @@
 
         <!-- ─── Skill Sync ─── -->
         <section class="view" data-view="skillsync">
-          <div class="sec-head"><h2>技能同步</h2><div class="line"></div></div>
-          <p class="sec-desc">Skills 以 <code>~/.agents/skills</code> 为唯一权威源，自动同步到 Claude / Codex / Hermes 三端：Claude 直接软链，Codex / Hermes 经 skill-converter 转换后软链。启动时、每 5 分钟、以及监听到目录变化时自动运行。</p>
+          <div class="sec-head"><h2 data-i18n="skillSync">技能同步</h2><div class="line"></div></div>
+          <p class="sec-desc"><span data-i18n="mngSkillSyncDescA">Skills 以 </span><code>~/.agents/skills</code><span data-i18n="mngSkillSyncDescB"> 为唯一权威源，自动同步到 Claude / Codex / Hermes 三端：Claude 直接软链，Codex / Hermes 经 skill-converter 转换后软链。启动时、每 5 分钟、以及监听到目录变化时自动运行。</span></p>
 
           <div class="settings-card">
-            <div class="sc-header">同步状态 <span id="skillsync-summary" style="color:var(--muted);font-size:11px;font-weight:400;margin-left:8px;">—</span></div>
+            <div class="sc-header"><span data-i18n="mngSyncStatus">同步状态</span> <span id="skillsync-summary" style="color:var(--muted);font-size:11px;font-weight:400;margin-left:8px;">—</span></div>
             <div class="sc-body">
-              <div class="setting-row"><label>上次同步</label><span id="ss-last" style="font-size:13px;color:var(--text);">—</span></div>
-              <div class="setting-row"><label>共享技能</label><span id="ss-shared-count" style="font-size:13px;color:var(--text);">—</span></div>
-              <div class="setting-row"><label>本轮结果</label><span id="ss-run" style="font-size:12px;color:var(--muted);font-family:var(--mono);">—</span></div>
-              <div class="setting-row"><label>AI 转换队列</label><span id="ss-queue" style="font-size:13px;color:var(--text);">—</span></div>
-              <div class="setting-row" id="ss-error-row" style="display:none;"><label>错误</label><span id="ss-error" style="font-size:12px;color:var(--danger);word-break:break-all;">—</span></div>
+              <div class="setting-row"><label data-i18n="mngLastSync">上次同步</label><span id="ss-last" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label data-i18n="mngSharedSkills">共享技能</label><span id="ss-shared-count" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row"><label data-i18n="mngRunResult">本轮结果</label><span id="ss-run" style="font-size:12px;color:var(--muted);font-family:var(--mono);">—</span></div>
+              <div class="setting-row"><label data-i18n="mngAiConvertQueue">AI 转换队列</label><span id="ss-queue" style="font-size:13px;color:var(--text);">—</span></div>
+              <div class="setting-row" id="ss-error-row" style="display:none;"><label data-i18n="mngLabelError">错误</label><span id="ss-error" style="font-size:12px;color:var(--danger);word-break:break-all;">—</span></div>
             </div>
             <div class="sc-footer">
-              <button class="btn btn-green" id="ss-run-btn" onclick="runSkillSync()">立即同步</button>
-              <button class="btn" onclick="loadSkillSyncStatus()">刷新</button>
+              <button class="btn btn-green" id="ss-run-btn" onclick="runSkillSync()" data-i18n="mngSyncNow">立即同步</button>
+              <button class="btn" onclick="loadSkillSyncStatus()" data-i18n="refresh">刷新</button>
               <span class="status-text" id="ss-status"></span>
             </div>
           </div>
 
           <div class="settings-card">
-            <div class="sc-header">三端分发 Providers</div>
+            <div class="sc-header" data-i18n="mngDistProviders">三端分发 Providers</div>
             <div id="ss-providers" class="resource-list"><div class="resource-empty">Loading…</div></div>
           </div>
 
           <div class="settings-card">
-            <div class="sc-header">共享技能 <span id="ss-list-count" style="color:var(--muted);font-size:11px;font-weight:400;margin-left:8px;">—</span></div>
+            <div class="sc-header"><span data-i18n="mngSharedSkills">共享技能</span> <span id="ss-list-count" style="color:var(--muted);font-size:11px;font-weight:400;margin-left:8px;">—</span></div>
             <div class="resource-toolbar">
-              <input id="ss-filter" type="search" placeholder="按名称过滤" oninput="renderSkillSyncSkills()" />
+              <input id="ss-filter" type="search" data-i18n-placeholder="mngFilterByName" placeholder="按名称过滤" oninput="renderSkillSyncSkills()" />
             </div>
             <div id="ss-skills-list" class="resource-list"><div class="resource-empty">Loading…</div></div>
           </div>
@@ -2050,7 +2050,7 @@
 
         <!-- ─── Temp Uploads ─── -->
         <section class="view" data-view="storage">
-          <div class="sec-head"><h2>临时上传</h2><div class="line"></div></div>
+          <div class="sec-head"><h2 data-i18n="temporaryUploads">临时上传</h2><div class="line"></div></div>
           <div class="settings-card">
             <div class="sc-header">Uploaded File Cache</div>
             <div class="sc-body">
@@ -2070,28 +2070,28 @@
           <p class="sec-desc" data-i18n="docsregDesc">所有 agent 发布的网页/文件和你登记的本地 web 服务。临时产物 7 天后自动清理（📌 置顶可豁免），过期条目会标注。</p>
           <div class="settings-card" style="max-width:none">
             <div class="sc-body" id="docsreg-list" style="gap:8px;">
-              <div style="color:var(--faint);font-size:13px;">加载中…</div>
+              <div style="color:var(--faint);font-size:13px;" data-i18n="loading">加载中…</div>
             </div>
           </div>
         </section>
 
         <section class="view" data-view="secrets">
-          <div class="sec-head"><h2><span>🔐 敏感信息</span> <span id="secrets-count" style="color:var(--faint);font-weight:400;"></span></h2><div class="line"></div>
-            <button class="btn btn-sm" onclick="loadSecrets()">刷新</button>
+          <div class="sec-head"><h2><span data-i18n="mngTitleSecrets">🔐 敏感信息</span> <span id="secrets-count" style="color:var(--faint);font-weight:400;"></span></h2><div class="line"></div>
+            <button class="btn btn-sm" onclick="loadSecrets()" data-i18n="refresh">刷新</button>
           </div>
-          <p class="sec-desc">本地保险箱：存放 API key、token 等敏感信息。agent 通过 request_secret_input 弹安全输入框收集，值只存本地（0600），<b>不经过对话与任何 LLM API</b>；此处可手动增删改、查看与复制。</p>
+          <p class="sec-desc"><span data-i18n="mngSecretsDescA">本地保险箱：存放 API key、token 等敏感信息。agent 通过 request_secret_input 弹安全输入框收集，值只存本地（0600），</span><b data-i18n="mngSecretsDescB">不经过对话与任何 LLM API</b><span data-i18n="mngSecretsDescC">；此处可手动增删改、查看与复制。</span></p>
           <div class="settings-card" style="max-width:780px">
-            <div class="sc-head" style="font-weight:600;">新增 / 覆盖条目</div>
+            <div class="sc-head" style="font-weight:600;" data-i18n="mngSecretAddHeader">新增 / 覆盖条目</div>
             <div class="sc-body" style="gap:10px;">
-              <div class="setting-row"><label>名称</label><input id="secret-name" type="text" autocomplete="off" spellcheck="false" placeholder="如 OPENAI_API_KEY（字母数字_.-，≤64）" /></div>
-              <div class="setting-row"><label>值</label><input id="secret-value" type="password" autocomplete="off" placeholder="密钥明文，仅存本地" /><button class="btn btn-sm eye-toggle" type="button" data-target="secret-value">👁</button></div>
-              <div class="setting-row"><label>备注</label><input id="secret-desc" type="text" autocomplete="off" placeholder="用途说明（可选）" /></div>
-              <div style="display:flex;justify-content:flex-end;"><button class="btn btn-green btn-sm" onclick="secretsSave()">保存到保险箱</button></div>
+              <div class="setting-row"><label data-i18n="mngName">名称</label><input id="secret-name" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="mngSecretNamePh" placeholder="如 OPENAI_API_KEY（字母数字_.-，≤64）" /></div>
+              <div class="setting-row"><label data-i18n="mngSecretValue">值</label><input id="secret-value" type="password" autocomplete="off" data-i18n-placeholder="mngSecretValuePh" placeholder="密钥明文，仅存本地" /><button class="btn btn-sm eye-toggle" type="button" data-target="secret-value">👁</button></div>
+              <div class="setting-row"><label data-i18n="mngSecretDesc">备注</label><input id="secret-desc" type="text" autocomplete="off" data-i18n-placeholder="mngSecretDescPh" placeholder="用途说明（可选）" /></div>
+              <div style="display:flex;justify-content:flex-end;"><button class="btn btn-green btn-sm" onclick="secretsSave()" data-i18n="mngSaveToVault">保存到保险箱</button></div>
             </div>
           </div>
           <div class="settings-card" style="max-width:780px">
             <div class="sc-body" id="secrets-list" style="gap:8px;">
-              <div style="color:var(--faint);font-size:13px;">加载中…</div>
+              <div style="color:var(--faint);font-size:13px;" data-i18n="loading">加载中…</div>
             </div>
           </div>
         </section>
@@ -2117,20 +2117,20 @@
   <div id="newdir-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="newdir-title">
     <div class="modal-card workspace-setup-card">
       <header class="workspace-setup-head">
-        <h3 id="newdir-title">创建工作区</h3>
-        <p>工作区是希望 MultiCC 帮你处理的本地文件夹。添加后即可在其中创建任务。</p>
+        <h3 id="newdir-title" data-i18n="mngNewDirTitle">创建工作区</h3>
+        <p data-i18n="mngNewDirIntro">工作区是希望 MultiCC 帮你处理的本地文件夹。添加后即可在其中创建任务。</p>
       </header>
       <div class="workspace-setup-fields">
-        <label class="workspace-field"><span>工作区名称（可选）</span><input id="newdir-name" type="text" placeholder="留空时使用文件夹名称" autocomplete="off" /></label>
-        <label class="workspace-field path"><span>本地路径</span><input id="newdir-path" type="text" placeholder="/Users/you/code/my-project" autocomplete="off" oninput="onNewDirPathInput()" /></label>
+        <label class="workspace-field"><span data-i18n="mngNewDirNameLabel">工作区名称（可选）</span><input id="newdir-name" type="text" data-i18n-placeholder="mngNewDirNamePh" placeholder="留空时使用文件夹名称" autocomplete="off" /></label>
+        <label class="workspace-field path"><span data-i18n="mngLocalPath">本地路径</span><input id="newdir-path" type="text" placeholder="/Users/you/code/my-project" autocomplete="off" oninput="onNewDirPathInput()" /></label>
         <div id="newdir-suggest"></div>
-        <label class="workspace-path-create"><input id="newdir-create" type="checkbox" /> 路径不存在时，创建这个文件夹</label>
+        <label class="workspace-path-create"><input id="newdir-create" type="checkbox" /> <span data-i18n="mngCreateIfMissing">路径不存在时，创建这个文件夹</span></label>
       </div>
-      <div class="workspace-setup-note">角色在任务中按需附加；任务首次执行时才准备工作区。</div>
+      <div class="workspace-setup-note" data-i18n="mngNewDirNote">角色在任务中按需附加；任务首次执行时才准备工作区。</div>
       <div id="newdir-status" class="workspace-setup-status" role="status" aria-live="polite"></div>
       <div class="workspace-setup-actions">
-        <button id="newdir-cancel" class="btn" type="button" onclick="closeNewDirectoryModal()">取消</button>
-        <button id="newdir-submit" class="btn btn-green" type="button" onclick="submitNewDirectory()">创建工作目录</button>
+        <button id="newdir-cancel" class="btn" type="button" onclick="closeNewDirectoryModal()" data-i18n="cancel">取消</button>
+        <button id="newdir-submit" class="btn btn-green" type="button" onclick="submitNewDirectory()" data-i18n="mngCreateWorkDir">创建工作目录</button>
       </div>
     </div>
   </div>
@@ -2139,16 +2139,16 @@
   <div id="asr-modal" class="modal-backdrop" onclick="if(event.target===this)closeAsrModal()">
     <div class="modal-card" style="width:min(96vw,560px);max-height:92vh;overflow-y:auto;display:flex;flex-direction:column;">
       <div style="display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);gap:8px;">
-        <div style="flex:1;color:var(--text);font-size:15px;font-weight:600;">⚙ 实时语音识别（流式 ASR）</div>
-        <button class="btn" onclick="closeAsrModal()">关闭</button>
+        <div style="flex:1;color:var(--text);font-size:15px;font-weight:600;" data-i18n="mngAsrModalTitle">⚙ 实时语音识别（流式 ASR）</div>
+        <button class="btn" onclick="closeAsrModal()" data-i18n="close">关闭</button>
       </div>
       <div style="padding:16px 18px;">
         <div class="setting-row" style="margin-bottom:14px;">
-          <label>默认提供商</label>
+          <label data-i18n="mngDefaultProvider">默认提供商</label>
           <select id="asr-provider">
-            <option value="openai">OpenAI Realtime（国外默认）</option>
-            <option value="volcano">火山引擎（国内 / 豆包同款）</option>
-            <option value="funasr">FunASR（自建 / 离线）</option>
+            <option value="openai" data-i18n="mngAsrOptOpenai">OpenAI Realtime（国外默认）</option>
+            <option value="volcano" data-i18n="mngAsrOptVolcano">火山引擎（国内 / 豆包同款）</option>
+            <option value="funasr" data-i18n="mngAsrOptFunasr">FunASR（自建 / 离线）</option>
           </select>
         </div>
         <div style="border-top:1px solid var(--line);padding-top:12px;margin-bottom:6px;display:flex;align-items:center;gap:8px;">
@@ -2159,15 +2159,15 @@
         <div class="setting-row"><label>Endpoint</label><input id="asr-openai-url" type="text" placeholder="wss://api.openai.com/v1/realtime" /></div>
         <div class="setting-row"><label>Model</label><input id="asr-openai-model" type="text" placeholder="gpt-4o-transcribe" /></div>
         <div style="border-top:1px solid var(--line);padding-top:12px;margin:12px 0 6px;display:flex;align-items:center;gap:8px;">
-          <span style="font-size:13px;color:var(--text);font-weight:600;">火山引擎 流式 ASR</span>
+          <span style="font-size:13px;color:var(--text);font-weight:600;" data-i18n="mngAsrVolcHeader">火山引擎 流式 ASR</span>
           <span id="asr-volc-badge" class="status-text"></span>
         </div>
-        <div class="setting-row"><label>App ID</label><input id="asr-volc-appid" type="text" autocomplete="off" placeholder="火山 App ID" /></div>
-        <div class="setting-row"><label>Access Token</label><input id="asr-volc-token" type="password" autocomplete="off" placeholder="火山 Access Token" /></div>
+        <div class="setting-row"><label>App ID</label><input id="asr-volc-appid" type="text" autocomplete="off" data-i18n-placeholder="mngAsrVolcAppIdPh" placeholder="火山 App ID" /></div>
+        <div class="setting-row"><label>Access Token</label><input id="asr-volc-token" type="password" autocomplete="off" data-i18n-placeholder="mngAsrVolcTokenPh" placeholder="火山 Access Token" /></div>
         <div class="setting-row"><label>Resource ID</label><input id="asr-volc-resource" type="text" placeholder="volc.bigasr.sauc.duration" /></div>
         <div class="setting-row"><label>Endpoint</label><input id="asr-volc-url" type="text" placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel" /></div>
         <div style="border-top:1px solid var(--line);padding-top:12px;margin:12px 0 6px;display:flex;align-items:center;gap:8px;">
-          <span style="font-size:13px;color:var(--text);font-weight:600;">FunASR（自建）</span>
+          <span style="font-size:13px;color:var(--text);font-weight:600;" data-i18n="mngAsrFunasrHeader">FunASR（自建）</span>
           <span id="asr-funasr-badge" class="status-text"></span>
         </div>
         <div class="setting-row"><label>WS URL</label><input id="asr-funasr-url" type="text" placeholder="ws://127.0.0.1:10095" /></div>
@@ -2175,8 +2175,8 @@
       </div>
       <div style="display:flex;align-items:center;gap:10px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--line);">
         <span class="status-text" id="asr-status"></span>
-        <button class="btn" onclick="closeAsrModal()">取消</button>
-        <button class="btn btn-green" onclick="saveAsrSettings()">保存</button>
+        <button class="btn" onclick="closeAsrModal()" data-i18n="cancel">取消</button>
+        <button class="btn btn-green" onclick="saveAsrSettings()" data-i18n="save">保存</button>
       </div>
     </div>
   </div>
@@ -2185,36 +2185,36 @@
   <div id="cron-modal" class="modal-backdrop" onclick="if(event.target===this)closeCronModal()">
     <div class="modal-card" style="width:min(96vw,560px);max-height:92vh;overflow-y:auto;display:flex;flex-direction:column;">
       <div style="display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);gap:8px;">
-        <div style="flex:1;color:var(--text);font-size:15px;font-weight:600;" id="cron-modal-title">⏰ 新建定时任务</div>
-        <button class="btn" onclick="closeCronModal()">关闭</button>
+        <div style="flex:1;color:var(--text);font-size:15px;font-weight:600;" id="cron-modal-title" data-i18n="mngCronModalTitle">⏰ 新建定时任务</div>
+        <button class="btn" onclick="closeCronModal()" data-i18n="close">关闭</button>
       </div>
       <div style="padding:16px 18px;">
         <input type="hidden" id="cron-edit-id" />
-        <div class="setting-row"><label>任务名</label><input id="cron-f-name" type="text" placeholder="例如：每天早报" /></div>
-        <div class="setting-row"><label>目标工作区</label><select id="cron-f-dir" style="flex:1;"></select></div>
+        <div class="setting-row"><label data-i18n="mngTaskNameLabel">任务名</label><input id="cron-f-name" type="text" data-i18n-placeholder="mngTaskNamePh" placeholder="例如：每天早报" /></div>
+        <div class="setting-row"><label data-i18n="mngTargetWorkspace">目标工作区</label><select id="cron-f-dir" style="flex:1;"></select></div>
         <div class="setting-row"><label>CLI</label><select id="cron-f-cli"><option value="claude">claude</option><option value="codex">codex</option></select></div>
-        <p id="cron-fixed-task-note" style="display:none;margin:0 0 12px 134px;color:var(--muted);font-size:11px;line-height:1.5;">目录与 AI 配置已经归属于固定 Air 任务；请打开该任务修改 CLI / Provider。</p>
-        <div class="setting-row"><label>cron</label><input id="cron-f-cron" type="text" placeholder="分 时 日 月 周，如 0 9 * * *" style="font-family:var(--mono);" /></div>
+        <p id="cron-fixed-task-note" style="display:none;margin:0 0 12px 134px;color:var(--muted);font-size:11px;line-height:1.5;" data-i18n="mngCronFixedTaskNote">目录与 AI 配置已经归属于固定 Air 任务；请打开该任务修改 CLI / Provider。</p>
+        <div class="setting-row"><label>cron</label><input id="cron-f-cron" type="text" data-i18n-placeholder="mngCronExprPh" placeholder="分 时 日 月 周，如 0 9 * * *" style="font-family:var(--mono);" /></div>
         <div style="padding:0 0 8px 134px;display:flex;flex-wrap:wrap;gap:6px;">
-          <button class="btn btn-sm" onclick="cronPreset('0 9 * * *')">每天9点</button>
-          <button class="btn btn-sm" onclick="cronPreset('0 * * * *')">每小时</button>
-          <button class="btn btn-sm" onclick="cronPreset('*/30 * * * *')">每30分</button>
-          <button class="btn btn-sm" onclick="cronPreset('0 9 * * 1')">每周一9点</button>
-          <button class="btn btn-sm" onclick="cronPreset('0 9 1 * *')">每月1号9点</button>
+          <button class="btn btn-sm" onclick="cronPreset('0 9 * * *')" data-i18n="mngCronDaily9">每天9点</button>
+          <button class="btn btn-sm" onclick="cronPreset('0 * * * *')" data-i18n="mngCronHourly">每小时</button>
+          <button class="btn btn-sm" onclick="cronPreset('*/30 * * * *')" data-i18n="mngCronEvery30">每30分</button>
+          <button class="btn btn-sm" onclick="cronPreset('0 9 * * 1')" data-i18n="mngCronMon9">每周一9点</button>
+          <button class="btn btn-sm" onclick="cronPreset('0 9 1 * *')" data-i18n="mngCronMonthly1">每月1号9点</button>
           <span id="cron-next-hint" style="font-size:12px;color:var(--faint);align-self:center;"></span>
         </div>
         <div class="setting-row" style="align-items:flex-start;">
           <label style="padding-top:8px;">Prompt</label>
-          <textarea id="cron-f-prompt" placeholder="到点要执行的完整指令" style="min-height:90px;resize:vertical;font-family:inherit;"></textarea>
+          <textarea id="cron-f-prompt" data-i18n-placeholder="mngCronPromptPh" placeholder="到点要执行的完整指令" style="min-height:90px;resize:vertical;font-family:inherit;"></textarea>
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);cursor:pointer;user-select:none;margin-top:6px;">
-          <input id="cron-f-enabled" type="checkbox" checked style="margin:0;" /> 启用
+          <input id="cron-f-enabled" type="checkbox" checked style="margin:0;" /> <span data-i18n="mngEnabledLabel">启用</span>
         </label>
       </div>
       <div style="display:flex;align-items:center;gap:10px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--line);">
         <span class="status-text" id="cron-modal-status"></span>
-        <button class="btn" onclick="closeCronModal()">取消</button>
-        <button class="btn btn-green" onclick="saveCronTask()">保存</button>
+        <button class="btn" onclick="closeCronModal()" data-i18n="cancel">取消</button>
+        <button class="btn btn-green" onclick="saveCronTask()" data-i18n="save">保存</button>
       </div>
     </div>
   </div>
@@ -2234,13 +2234,13 @@
     <div class="modal-card" style="padding:20px;width:min(94vw,460px);">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
         <div style="flex:1;min-width:0;">
-          <div style="color:var(--text);font-size:15px;font-weight:650;">AI Assistant 模型</div>
-          <div style="color:var(--muted);font-size:11px;margin-top:3px;">用于等待/完成判断、语音整理、任务摘要等辅助任务。</div>
+          <div style="color:var(--text);font-size:15px;font-weight:650;" data-i18n="mngAuxModelTitle">AI Assistant 模型</div>
+          <div style="color:var(--muted);font-size:11px;margin-top:3px;" data-i18n="mngAuxModelDesc">用于等待/完成判断、语音整理、任务摘要等辅助任务。</div>
         </div>
-        <button class="btn btn-sm" onclick="closeAuxModal()">关闭</button>
+        <button class="btn btn-sm" onclick="closeAuxModal()" data-i18n="close">关闭</button>
       </div>
       <div class="setting-row" style="align-items:flex-start;">
-        <label style="padding-top:8px;">协议</label>
+        <label style="padding-top:8px;" data-i18n="mngProtocol">协议</label>
         <select id="aux-protocol" onchange="refreshAuxProviderOptions()" style="flex:1;min-width:0;background:var(--bg-soft);border:1px solid var(--line);border-radius:9px;color:var(--text);font-size:13px;padding:8px 10px;outline:none;">
           <option value="anthropic">Anthropic Messages</option>
           <option value="openai">OpenAI Responses / Chat Completions</option>
@@ -2256,10 +2256,10 @@
       </div>
       <div style="display:flex;align-items:center;gap:10px;margin-top:16px;">
         <button class="btn btn-sm" id="aux-reclassify-btn" onclick="reclassifyAllSessions()"
-          title="用当前 AI 助手模型，重新判定所有会话的目标与阶段">🔄 重跑所有会话</button>
+          data-i18n-title="mngReclassifyTitle" title="用当前 AI 助手模型，重新判定所有会话的目标与阶段" data-i18n="mngReclassify">🔄 重跑所有会话</button>
         <span class="status-text" id="aux-modal-status" style="margin-left:auto;"></span>
-        <button class="btn" onclick="closeAuxModal()">取消</button>
-        <button class="btn btn-green" onclick="saveAuxConfig()">保存</button>
+        <button class="btn" onclick="closeAuxModal()" data-i18n="cancel">取消</button>
+        <button class="btn btn-green" onclick="saveAuxConfig()" data-i18n="save">保存</button>
       </div>
     </div>
   </div>
@@ -2288,11 +2288,11 @@
           <div id="dir-detail-title" style="color:var(--text);font-size:15px;font-weight:680;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
           <div id="dir-detail-subtitle" style="color:var(--blue);font-size:11px;font-family:var(--mono);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
         </div>
-        <button class="btn btn-sm" id="dir-detail-memo" title="项目备忘">📝</button>
-        <button class="btn btn-sm" id="dir-detail-push" style="display:none">↑ 推送</button>
-        <button class="btn btn-sm" id="dir-detail-git" title="Git 提交树" style="display:none" onclick="openGitTree()">🌳</button>
-        <button class="btn add-new btn-sm" id="dir-detail-add" title="新建会话">+ 新建</button>
-        <button class="btn" onclick="closeDirectoryDetail()">关闭</button>
+        <button class="btn btn-sm" id="dir-detail-memo" data-i18n-title="mngProjectMemo" title="项目备忘">📝</button>
+        <button class="btn btn-sm" id="dir-detail-push" style="display:none" data-i18n="mngPushUp">↑ 推送</button>
+        <button class="btn btn-sm" id="dir-detail-git" data-i18n-title="mngGitCommitTree" title="Git 提交树" style="display:none" onclick="openGitTree()">🌳</button>
+        <button class="btn add-new btn-sm" id="dir-detail-add" data-i18n-title="mngNewSessionTitle" title="新建会话" data-i18n="mngAddNew">+ 新建</button>
+        <button class="btn" onclick="closeDirectoryDetail()" data-i18n="close">关闭</button>
       </div>
       <div id="dir-detail-body" style="flex:1;overflow:auto;padding:16px 18px;"></div>
       <div id="tb-dir-composer" style="display:none;padding:0 18px;"></div>
@@ -2306,7 +2306,7 @@
           <div id="diff-title" style="color:var(--text);font-size:14px;font-weight:600;">Diff</div>
           <div id="diff-subtitle" style="color:var(--muted);font-size:11px;font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
         </div>
-        <button class="btn" onclick="closeDiffModal()">关闭</button>
+        <button class="btn" onclick="closeDiffModal()" data-i18n="close">关闭</button>
       </div>
       <div id="diff-stat" style="padding:8px 16px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted);white-space:pre;overflow-x:auto;max-height:140px;overflow-y:auto;"></div>
       <div id="diff-content" style="flex:1;overflow:auto;padding:8px 0;font-family:var(--mono);font-size:12px;line-height:1.45;color:var(--text);"></div>
@@ -2316,18 +2316,18 @@
   <!-- Memory node detail modal -->
   <div id="mem-node-modal" onclick="if(event.target===this)memNodeModalClose()">
     <div id="mem-node-card">
-      <button class="mn-close" onclick="memNodeModalClose()" title="关闭">×</button>
+      <button class="mn-close" onclick="memNodeModalClose()" data-i18n-title="close" title="关闭">×</button>
       <h3 id="mem-node-title"></h3>
       <div class="mn-slug" id="mem-node-slug"></div>
       <div id="mem-node-meta">
         <div class="mn-path-row">
-          <code id="mem-node-path" title="存放位置"></code>
-          <button class="mn-icobtn" id="mem-node-copy" title="复制路径">📋</button>
+          <code id="mem-node-path" data-i18n-title="mngMemTreePath" title="存放位置"></code>
+          <button class="mn-icobtn" id="mem-node-copy" data-i18n-title="mngCopyPath" title="复制路径">📋</button>
         </div>
         <div class="mn-statrow">
-          <span>📊 估算 tokens: <b id="mem-node-tokens">–</b></span>
-          <span>📦 大小: <b id="mem-node-size">–</b></span>
-          <button id="mem-node-edit" style="display:none">📝 打开编辑</button>
+          <span><span data-i18n="mngEstTokens">📊 估算 tokens:</span> <b id="mem-node-tokens">–</b></span>
+          <span><span data-i18n="mngSizeLabel">📦 大小:</span> <b id="mem-node-size">–</b></span>
+          <button id="mem-node-edit" style="display:none" data-i18n="mngOpenEdit">📝 打开编辑</button>
         </div>
       </div>
       <div class="mn-tags" id="mem-node-tags"></div>
@@ -2342,15 +2342,15 @@
       <div class="mf-head">
         <span class="mf-title" id="mem-file-title"></span>
         <span class="mf-tok" id="mem-file-tok"></span>
-        <button class="mf-close" onclick="memFileEditorClose()" title="关闭">×</button>
+        <button class="mf-close" onclick="memFileEditorClose()" data-i18n-title="close" title="关闭">×</button>
       </div>
       <div class="mf-path" id="mem-file-path"></div>
-      <textarea id="mem-file-ta" spellcheck="false" placeholder="# 记忆内容…"></textarea>
+      <textarea id="mem-file-ta" spellcheck="false" data-i18n-placeholder="mngMemPlaceholder" placeholder="# 记忆内容…"></textarea>
       <div class="mf-foot">
         <span class="mf-msg" id="mem-file-msg"></span>
-        <button class="mf-btn mf-del" id="mem-file-del">🗑 删除</button>
-        <button class="mf-btn" onclick="memFileEditorClose()">关闭</button>
-        <button class="mf-btn mf-save" id="mem-file-save">保存 (⌘/Ctrl+Enter)</button>
+        <button class="mf-btn mf-del" id="mem-file-del" data-i18n="mngDeleteBtn">🗑 删除</button>
+        <button class="mf-btn" onclick="memFileEditorClose()" data-i18n="close">关闭</button>
+        <button class="mf-btn mf-save" id="mem-file-save" data-i18n="mngSaveShortcut">保存 (⌘/Ctrl+Enter)</button>
       </div>
     </div>
   </div>
@@ -2360,12 +2360,12 @@
     <div class="modal-card" style="width:min(96vw,1200px);height:min(95vh,900px);display:flex;flex-direction:column;background:var(--bg);">
       <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);gap:8px;">
         <div style="flex:1;min-width:0;">
-          <div id="memo-title" style="color:var(--text);font-size:14px;font-weight:600;">📝 备忘</div>
+          <div id="memo-title" style="color:var(--text);font-size:14px;font-weight:600;" data-i18n="mngMemoTitle">📝 备忘</div>
           <div id="memo-subtitle" style="color:var(--muted);font-size:11px;font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
         </div>
-        <button class="btn" onclick="memoSendCurrentLine()" title="把光标所在行发到该工作区的某个 chat 会话">→ 发送当前行</button>
-        <button class="btn btn-green" onclick="memoSave()" title="保存（Ctrl/Cmd+S）">保存</button>
-        <button class="btn" onclick="closeMemoModal()">关闭</button>
+        <button class="btn" onclick="memoSendCurrentLine()" data-i18n-title="mngMemoSendTitle" title="把光标所在行发到该工作区的某个 chat 会话" data-i18n="mngMemoSend">→ 发送当前行</button>
+        <button class="btn btn-green" onclick="memoSave()" data-i18n-title="mngMemoSaveTitle" title="保存（Ctrl/Cmd+S）" data-i18n="save">保存</button>
+        <button class="btn" onclick="closeMemoModal()" data-i18n="close">关闭</button>
       </div>
       <textarea id="memo-text" spellcheck="false" style="flex:1;background:var(--bg);color:var(--text);border:0;outline:0;padding:12px 16px;font-family:var(--mono);font-size:14px;line-height:1.6;resize:none;"></textarea>
       <div id="memo-status" style="padding:6px 16px;font-size:11px;color:var(--faint);border-top:1px solid var(--line);font-family:var(--mono);"></div>
@@ -2374,10 +2374,10 @@
 
   <div id="memo-picker" class="modal-backdrop" style="z-index:10000;">
     <div class="modal-card" style="padding:14px 18px;width:min(90vw,440px);">
-      <div style="color:var(--text);font-size:13px;font-weight:600;margin-bottom:6px;">发送到 chat 会话</div>
+      <div style="color:var(--text);font-size:13px;font-weight:600;margin-bottom:6px;" data-i18n="mngSendToChat">发送到 chat 会话</div>
       <div id="memo-picker-preview" style="color:var(--muted);font-size:11px;margin-bottom:10px;font-family:var(--mono);word-break:break-word;background:var(--bg-soft);border:1px solid var(--line);border-radius:8px;padding:6px 8px;"></div>
       <div id="memo-picker-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;max-height:280px;overflow:auto;"></div>
-      <div style="text-align:right;"><button class="btn" onclick="memoPickerClose()">取消</button></div>
+      <div style="text-align:right;"><button class="btn" onclick="memoPickerClose()" data-i18n="cancel">取消</button></div>
     </div>
   </div>
 
@@ -2414,22 +2414,22 @@
     /* ── Redesign shell: nav view switching, KPI row, search ── */
     (function () {
       const TITLES = {
-        overview: ['工作目录与任务', ''], cron: ['定时任务', '到点自动新建会话执行'],
-        voice: ['语音 Voice', '流式识别与转写'], power: ['macOS 电源', '关盖与系统睡眠设置'],
-        goal: ['目标 Goal', '会话目标与自动分类'],
-        provider: ['Provider', '多供应商接入与默认配置'],
-        global: ['全局设置', '语言与通用偏好'],
-        push: ['推送通知', 'Web Push 与备用通道'],
-        tunnel: ['外网穿透', '花生壳 / Tailscale 自动监控'],
-        bridges: ['消息桥接', '微信 / 飞书 / Telegram / Discord / Slack 入口'],
-        resources: ['Agent 资源', 'Skills 与历史会话'],
-        skillsync: ['技能同步', 'Skills 跨 Provider 同步状态'],
-        storage: ['临时上传', '上传文件缓存'],
-        docs: ['服务与文档', '生成的文档与本地 web 服务'],
-        secrets: ['🔐 敏感信息', '本地密钥保险箱 · 值不经过 LLM'],
-        memory: ['🧠 记忆图谱', '项目记忆系统网络'],
-        taskgraph: ['⛓ 任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接'],
-        workspaces: ['▦ 工作区', 'worktree 休眠回收：预算 / 审计 / 孤儿对账'],
+        overview: [t('mngNavOverview'), ''], cron: [t('scheduledTasks'), t('mngCronSub')],
+        voice: [t('mngTitleVoice'), t('mngVoiceSub')], power: [t('mngTitlePower'), t('mngPowerSub')],
+        goal: [t('mngTitleGoal'), t('mngGoalSub')],
+        provider: ['Provider', t('mngProviderSub')],
+        global: [t('mngTitleGlobal'), t('mngGlobalSub')],
+        push: [t('pushNotifications'), t('mngPushSub')],
+        tunnel: [t('tunnel'), t('mngTunnelSub')],
+        bridges: [t('mngBridgesH2'), t('mngBridgesSub')],
+        resources: [t('mngTitleResources'), t('mngResourcesSub')],
+        skillsync: [t('skillSync'), t('mngSkillsyncSub')],
+        storage: [t('temporaryUploads'), t('mngStorageSub')],
+        docs: [t('docsServices'), t('mngDocsSub')],
+        secrets: [t('mngTitleSecrets'), t('mngSecretsSub')],
+        memory: [t('mngTitleMemory'), t('mngMemorySub')],
+        taskgraph: [t('mngTaskGraphTitle'), t('mngTaskgraphSub')],
+        workspaces: [t('mngTitleWorkspaces'), t('mngWorkspacesSub')],
       };
       window.setView = function (v) {
         if (v === 'tasks' || v === 'planner') {
@@ -2481,15 +2481,15 @@
         <div class="kpi clickable" title="${t('activeSessions')}" onclick="showActiveSessions(event)"><div class="k-top"><span class="dot"></span>${t('activeSessions')}</div><div class="k-num" id="kpi-active">0</div><div class="k-sub" id="kpi-active-sub">claude 0 · codex 0</div><div class="k-bar"></div></div>
         <div class="kpi alt clickable" title="${t('waitingInput')}" onclick="showWaitingSessions(event)"><div class="k-top"><span class="dot"></span>${t('waitingInput')}</div><div class="k-num" id="kpi-wait">0</div><div class="k-sub">${t('replyNeeded')}</div><div class="k-bar"></div></div>
         <div class="kpi blue"><div class="k-top"><span class="dot"></span>${t('directories')}</div><div class="k-num" id="kpi-dirs">0</div><div class="k-sub" id="kpi-sess-sub">${t('sessionCount', { n: 0 })}</div><div class="k-bar"></div></div>
-        <div class="kpi grey clickable" title="${t('scheduledTasks') || '定时任务'}" onclick="showCronTasks(event)"><div class="k-top"><span class="dot"></span>${t('scheduledTasks') || '定时任务'}</div><div class="k-num" id="kpi-cron">0</div><div class="k-sub">${t('registered')}</div><div class="k-bar"></div></div>`;
+        <div class="kpi grey clickable" title="${t('scheduledTasks')}" onclick="showCronTasks(event)"><div class="k-top"><span class="dot"></span>${t('scheduledTasks')}</div><div class="k-num" id="kpi-cron">0</div><div class="k-sub">${t('registered')}</div><div class="k-bar"></div></div>`;
 
       // AI Assistant band: the tile on its own row (it used to be a fat 2-col
       // tile in the KPI row and stretched the page), plus a compact grid of the
       // latest classify tasks painted by renderAuxClassifyGrid() (manage.js).
       const auxRow = document.getElementById('aux-row');
       if (auxRow) auxRow.innerHTML = `
-        <div class="kpi purple clickable aux" id="kpi-aux" title="AI Assistant" onclick="openAuxHistoryModal()"><div class="k-top"><span class="dot"></span><span class="k-name">AI Assistant</span><span class="status-badge idle" id="kpi-aux-status">空闲</span><span class="k-acts"><button class="btn btn-sm" onclick="event.stopPropagation(); openAuxModal()">模型</button><button class="btn btn-sm" onclick="event.stopPropagation(); openAuxHistoryModal()">History</button></span></div><div class="k-num"><span id="kpi-aux-num">0</span> <span id="kpi-aux-warm" title="进程未就绪" style="font-size:15px;color:#484f58;">○</span><span style="font-size:12px;font-weight:500;color:var(--faint);"> processed</span></div><div class="k-sub ellipsis" id="kpi-aux-sub" title="辅助 AI 当前模型">auxqueue</div><div class="k-bar"></div></div>
-        <div class="aux-classify"><div class="aux-cls-head"><span class="dot" style="width:6px;height:6px;border-radius:50%;background:#8957e5;box-shadow:0 0 8px #8957e5;"></span>最新 classify 任务<button class="aux-cls-more" onclick="openAuxHistoryModal()" title="查看全部">全部 ›</button></div><div class="aux-cls-grid" id="aux-cls-grid"><div class="aux-cls-empty">暂无任务记录</div></div></div>`;
+        <div class="kpi purple clickable aux" id="kpi-aux" title="AI Assistant" onclick="openAuxHistoryModal()"><div class="k-top"><span class="dot"></span><span class="k-name">AI Assistant</span><span class="status-badge idle" id="kpi-aux-status">${t('idle')}</span><span class="k-acts"><button class="btn btn-sm" onclick="event.stopPropagation(); openAuxModal()">${t('mngModelShort')}</button><button class="btn btn-sm" onclick="event.stopPropagation(); openAuxHistoryModal()">History</button></span></div><div class="k-num"><span id="kpi-aux-num">0</span> <span id="kpi-aux-warm" title="${t('mngWarmNotReady')}" style="font-size:15px;color:#484f58;">○</span><span style="font-size:12px;font-weight:500;color:var(--faint);"> processed</span></div><div class="k-sub ellipsis" id="kpi-aux-sub" title="${t('mngAuxCurrentModel')}">auxqueue</div><div class="k-bar"></div></div>
+        <div class="aux-classify"><div class="aux-cls-head"><span class="dot" style="width:6px;height:6px;border-radius:50%;background:#8957e5;box-shadow:0 0 8px #8957e5;"></span>${t('mngLatestClassify')}<button class="aux-cls-more" onclick="openAuxHistoryModal()" title="${t('mngViewAll')}">${t('mngAllChevron')}</button></div><div class="aux-cls-grid" id="aux-cls-grid"><div class="aux-cls-empty">${t('mngNoTaskRecords')}</div></div></div>`;
 
       function num(s) { const m = String(s || '').match(/\d+/); return m ? +m[0] : 0; }
       function updateKpis() {
@@ -2529,9 +2529,9 @@
         const all = (typeof _cachedSessions !== 'undefined' && _cachedSessions) ? _cachedSessions : [];
         const s = all.find(x => x.type === 'aux');
         const aux = (s && s.auxStatus) || {};
-        let cls = 'idle', text = aux.warmReady ? '就绪' : '空闲';
-        if (aux.processing) { cls = 'running'; text = '处理中'; }
-        else if (aux.queueDepth > 0) { cls = 'waiting'; text = `${aux.queueDepth} 排队`; }
+        let cls = 'idle', text = aux.warmReady ? t('mngReady') : t('idle');
+        if (aux.processing) { cls = 'running'; text = t('mngProcessing'); }
+        else if (aux.queueDepth > 0) { cls = 'waiting'; text = t('mngQueued', { n: aux.queueDepth }); }
         const badge = document.getElementById('kpi-aux-status');
         if (badge) { badge.className = 'status-badge ' + cls; badge.textContent = text; }
         const numEl = document.getElementById('kpi-aux-num');
@@ -2540,7 +2540,7 @@
         if (warm) {
           warm.textContent = aux.warmReady ? '●' : '○';
           warm.style.color = aux.warmReady ? '#3fb950' : '#484f58';
-          warm.title = aux.warmReady ? '进程已预热' : '进程未就绪';
+          warm.title = aux.warmReady ? t('mngWarmReady') : t('mngWarmNotReady');
         }
         const sub = document.getElementById('kpi-aux-sub');
         if (sub) {
@@ -2558,6 +2558,21 @@
           b.style.display = (!q || b.textContent.toLowerCase().includes(q)) ? '' : 'none';
         });
       };
+      // applyI18n 会用通用标题覆盖面包屑，这里在它之后再按当前视图写回。
+      document.addEventListener('DOMContentLoaded', function () {
+        const v = document.body.dataset.view;
+        const tt = TITLES[v];
+        if (!tt) return;
+        const crumb = document.getElementById('crumb');
+        if (crumb && crumb.firstChild) crumb.firstChild.textContent = tt[0] + ' ';
+        const sub = document.getElementById('crumb-sub');
+        if (sub) sub.textContent = tt[1];
+      });
+      // optgroup 的文案是 label 属性，applyI18n 不认，这里补上（顶栏窄屏按钮的短文案同理）。
+      document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('[data-i18n-label]').forEach(el => { el.label = t(el.dataset.i18nLabel); });
+        document.querySelectorAll('[data-i18n-label-short]').forEach(el => { el.setAttribute('data-label-short', t(el.dataset.i18nLabelShort)); });
+      });
     })();
   </script>
   <script src="tour.js"></script>
@@ -2566,12 +2581,12 @@
   <div id="git-tree-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)closeGitTree()">
     <div class="modal-card" style="width:min(96vw,800px);max-height:88vh;display:flex;flex-direction:column;background:var(--bg);">
       <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;">
-        <span style="font-weight:680;font-size:14px;">🌳 Git 提交树</span>
+        <span style="font-weight:680;font-size:14px;" data-i18n="mngGitTreeTitle">🌳 Git 提交树</span>
         <span id="git-tree-path" style="font-size:11px;color:var(--blue);font-family:var(--mono);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
-        <button class="btn btn-sm" onclick="closeGitTree()">关闭</button>
+        <button class="btn btn-sm" onclick="closeGitTree()" data-i18n="close">关闭</button>
       </div>
       <div id="git-tree-body" style="flex:1;overflow:auto;padding:12px 16px;font-size:12px;font-family:var(--mono);line-height:1.6;">
-        加载中…
+        <span data-i18n="loading">加载中…</span>
       </div>
     </div>
   </div>
@@ -2580,27 +2595,27 @@
   <div id="git-commit-diff-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)closeCommitDiff()">
     <div class="modal-card" style="width:min(96vw,900px);max-height:88vh;display:flex;flex-direction:column;background:var(--bg);">
       <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;">
-        <span style="font-weight:680;font-size:14px;flex-shrink:0;">📄 提交 diff</span>
+        <span style="font-weight:680;font-size:14px;flex-shrink:0;" data-i18n="mngCommitDiffTitle">📄 提交 diff</span>
         <span id="gcd-short" style="font-family:var(--mono);font-size:12px;color:var(--accent);flex-shrink:0;"></span>
         <span id="gcd-subject" style="font-size:12px;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
-        <button class="btn btn-sm" onclick="backToGitTree()">返回提交树</button>
-        <button class="btn btn-sm" onclick="closeCommitDiff()">关闭</button>
+        <button class="btn btn-sm" onclick="backToGitTree()" data-i18n="mngBackToGitTree">返回提交树</button>
+        <button class="btn btn-sm" onclick="closeCommitDiff()" data-i18n="close">关闭</button>
       </div>
       <div id="gcd-ai" class="gcd-ai"></div>
       <div id="gcd-stat" style="padding:6px 16px;font-size:11px;color:var(--muted);font-family:var(--mono);border-bottom:1px solid var(--line);"></div>
-      <div id="gcd-diff" style="flex:1;overflow:auto;padding:8px 0;font-family:var(--mono);font-size:12px;line-height:1.55;">加载中…</div>
+      <div id="gcd-diff" style="flex:1;overflow:auto;padding:8px 0;font-family:var(--mono);font-size:12px;line-height:1.55;" data-i18n="loading">加载中…</div>
     </div>
   </div>
   <!-- AI Assistant (aux) history — simple popup modal, no side panel -->
   <div id="aux-history-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)closeAuxHistoryModal()">
     <div class="modal-card" style="width:min(96vw,720px);max-height:88vh;display:flex;flex-direction:column;background:var(--bg);">
       <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;">
-        <span style="font-weight:680;font-size:14px;color:#d2a8ff;">🤖 AI 助手历史</span>
-        <span style="font-size:11px;color:var(--muted);flex:1;">AuxQueue — 意图分类服务</span>
-        <button class="btn btn-sm" onclick="closeAuxHistoryModal()">关闭</button>
+        <span style="font-weight:680;font-size:14px;color:#d2a8ff;" data-i18n="mngAuxHistoryTitle">🤖 AI 助手历史</span>
+        <span style="font-size:11px;color:var(--muted);flex:1;" data-i18n="mngAuxQueueSub">AuxQueue — 意图分类服务</span>
+        <button class="btn btn-sm" onclick="closeAuxHistoryModal()" data-i18n="close">关闭</button>
       </div>
       <div id="aux-modal-body" style="flex:1;overflow:auto;padding:12px 16px;font-size:12px;font-family:var(--mono);line-height:1.5;">
-        加载中…
+        <span data-i18n="loading">加载中…</span>
       </div>
     </div>
   </div>
@@ -2668,7 +2683,7 @@
         row.appendChild(subject);
         row.appendChild(gitTreeText('git-chevron', '›'));
         row.style.cursor = 'pointer';
-        row.title = String(c.subject || '') + '  ·  点击查看该提交的 diff';
+        row.title = String(c.subject || '') + '  ·  ' + t('mngClickCommitDiff');
         // Mirrors the chat diff card, whose file rows are real <button>s: a row
         // that opens a view must be reachable and operable from the keyboard.
         row.setAttribute('role', 'button');
@@ -2698,21 +2713,21 @@
       if (!id) return;
       window._gitTreeDir = id;
       document.getElementById('git-tree-modal').style.display = 'flex';
-      document.getElementById('git-tree-body').textContent = '加载中…';
+      document.getElementById('git-tree-body').textContent = t('loading');
       document.getElementById('git-tree-path').textContent = '';
       fetch('/api/git/log?dirId=' + encodeURIComponent(id) + '&limit=50')
         .then(r => r.json())
         .then(data => {
           const safe = data && typeof data === 'object' ? data : {};
-          if (safe.error) { showGitTreeMessage('错误: ' + String(safe.error), 'var(--red)'); return; }
+          if (safe.error) { showGitTreeMessage(t('mngErrorPrefix') + String(safe.error), 'var(--red)'); return; }
           document.getElementById('git-tree-path').textContent = String(safe.repoPath || '');
           if (!Array.isArray(safe.commits) || !safe.commits.length) {
-            showGitTreeMessage('暂无提交记录', 'var(--muted)');
+            showGitTreeMessage(t('mngNoCommits'), 'var(--muted)');
             return;
           }
           renderGitTree(safe);
         })
-        .catch(e => { showGitTreeMessage('加载失败: ' + String(e && e.message || e), 'var(--red)'); });
+        .catch(e => { showGitTreeMessage(t('mngLoadFailedPrefix') + String(e && e.message || e), 'var(--red)'); });
     }
     function closeGitTree() {
       document.getElementById('git-tree-modal').style.display = 'none';
@@ -2753,7 +2768,7 @@
       statEl.textContent = '';
       statEl.style.display = 'none';
       var diffEl = document.getElementById('gcd-diff');
-      diffEl.textContent = '加载中…';
+      diffEl.textContent = window.t('loading');
       document.getElementById('git-commit-diff-modal').style.display = 'flex';
 
       fetch('/api/git/commit-diff?dirId=' + encodeURIComponent(window._gitTreeDir || '') + '&hash=' + encodeURIComponent(hash))
@@ -2765,7 +2780,7 @@
             diffEl.textContent = '';
             var err = document.createElement('div');
             err.className = 'diff-line diff-del';
-            err.textContent = '加载 diff 失败：' + String(d.error);
+            err.textContent = window.t('mngLoadDiffFailedPrefix') + String(d.error);
             diffEl.appendChild(err);
             return;
           }
@@ -2778,7 +2793,7 @@
             var empty = document.createElement('div');
             empty.className = 'diff-line diff-meta';
             empty.style.cssText = 'text-align:center;padding:24px;';
-            empty.textContent = '该提交无可显示的 diff（可能是空合并提交）';
+            empty.textContent = window.t('mngEmptyDiff');
             diffEl.appendChild(empty);
           } else {
             diffEl.replaceChildren(renderDiffLines(diff));
@@ -2787,7 +2802,7 @@
             var tr = document.createElement('div');
             tr.className = 'diff-line diff-meta';
             tr.style.cssText = 'text-align:center;padding:8px;';
-            tr.textContent = '⚠ diff 过长已截断';
+            tr.textContent = window.t('mngDiffTruncated');
             diffEl.appendChild(tr);
           }
           if (diff && String(diff).trim()) {
@@ -2798,7 +2813,7 @@
             wrap.className = 'gcd-ai-loading';
             var t = document.createElement('span');
             t.className = 'gcd-cancelled';
-            t.textContent = '无 diff 内容，跳过 AI 总结';
+            t.textContent = window.t('mngNoDiffSkipSummary');
             wrap.appendChild(t);
             ai.appendChild(wrap);
           }
@@ -2808,7 +2823,7 @@
           diffEl.textContent = '';
           var e2 = document.createElement('div');
           e2.className = 'diff-line diff-del';
-          e2.textContent = '加载 diff 失败：' + ((err && err.message) || String(err));
+          e2.textContent = window.t('mngLoadDiffFailedPrefix') + ((err && err.message) || String(err));
           diffEl.appendChild(e2);
         });
     }
@@ -2823,10 +2838,15 @@
       var body = String(diff || '');
       var truncated = false;
       if (body.length > 24000) { body = body.slice(0, 24000); truncated = true; }
-      var prompt = '你是代码审查助手。请用中文总结以下 git commit 的整体改动（commit: ' + short + ' ' + subject + '）。' +
-        '要求：1) 一两句话概括这次提交做了什么；2) 3-6 条要点列出关键改动；3) 若有潜在风险或值得注意的点最后列出，没有则不列。' +
-        '总输出 200 字内，纯文本，不要用 markdown 代码块。diff 内容如下：\n\n' + body +
-        (truncated ? '\n(diff 过长已截断)' : '');
+      var prompt = (window.getLang() === 'zh'
+        ? '你是代码审查助手。请用中文总结以下 git commit 的整体改动（commit: ' + short + ' ' + subject + '）。' +
+          '要求：1) 一两句话概括这次提交做了什么；2) 3-6 条要点列出关键改动；3) 若有潜在风险或值得注意的点最后列出，没有则不列。' +
+          '总输出 200 字内，纯文本，不要用 markdown 代码块。diff 内容如下：\n\n' + body +
+          (truncated ? '\n(diff 过长已截断)' : '')
+        : 'You are a code review assistant. Summarize the overall change of the following git commit in English (commit: ' + short + ' ' + subject + '). ' +
+          'Requirements: 1) one or two sentences on what this commit does; 2) list 3-6 key changes as bullet points; 3) if there are risks or noteworthy points, list them last, otherwise omit. ' +
+          'Keep the whole output under 200 words, plain text, no markdown code fences. The diff follows:\n\n' + body +
+          (truncated ? '\n(diff truncated)' : ''));
 
       var payload = { id: id, type: 'commit_diff_summary', prompt: prompt, meta: { dirId: window._gitTreeDir, hash: hash } };
       fetch('/api/aux/enqueue', {
@@ -2841,7 +2861,7 @@
           if (window._gcdAbort && window._gcdAbort.id === id) window._gcdAbort = null;
           if (data && data.ok && data.result != null) renderGcdResult(String(data.result));
           else if (data && data.error === 'cancelled') renderGcdCancelled();
-          else renderGcdError((data && data.error) || '未知错误', function () { startCommitSummary(hash, short, subject, diff); });
+          else renderGcdError((data && data.error) || t('mngUnknownError'), function () { startCommitSummary(hash, short, subject, diff); });
         })
         .catch(function (err) {
           if (token !== window._gcdReqToken) return;
@@ -2878,12 +2898,12 @@
       sp.className = 'gcd-spinner';
       wrap.appendChild(sp);
       var txt = document.createElement('span');
-      txt.textContent = 'AI 正在总结该提交…';
+      txt.textContent = t('mngSummarizing');
       wrap.appendChild(txt);
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn btn-sm gcd-cancel';
-      btn.textContent = '取消';
+      btn.textContent = t('cancel');
       btn.addEventListener('click', function (e) { e.preventDefault(); cancelGcdSummary(); });
       wrap.appendChild(btn);
       ai.appendChild(wrap);
@@ -2901,13 +2921,13 @@
       wrap.className = 'gcd-ai-loading';
       var t = document.createElement('span');
       t.className = 'gcd-cancelled';
-      t.textContent = '已取消总结';
+      t.textContent = window.t('mngSummaryCancelled');
       wrap.appendChild(t);
       if (window._gcdCtx && window._gcdCtx.hash && window._gcdCtx.diff && String(window._gcdCtx.diff).trim()) {
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'btn btn-sm gcd-retry';
-        btn.textContent = '重新总结';
+        btn.textContent = window.t('mngResummarize');
         btn.addEventListener('click', function (e) {
           e.preventDefault();
           var c = window._gcdCtx;
@@ -2923,12 +2943,12 @@
       wrap.className = 'gcd-ai-loading';
       var t = document.createElement('span');
       t.className = 'gcd-error';
-      t.textContent = '总结失败：' + msg;
+      t.textContent = window.t('mngSummaryFailedPrefix') + msg;
       wrap.appendChild(t);
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn btn-sm gcd-retry';
-      btn.textContent = '重试';
+      btn.textContent = window.t('retry');
       btn.addEventListener('click', function (e) { e.preventDefault(); onRetry(); });
       wrap.appendChild(btn);
       ai.appendChild(wrap);

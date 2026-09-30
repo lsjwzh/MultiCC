@@ -110,8 +110,8 @@
       : null);
   }
 
-  function translate(key) {
-    return typeof global.t === 'function' ? global.t(key) : key;
+  function translate(key, params) {
+    return typeof global.t === 'function' ? global.t(key, params) : key;
   }
 
   // Task-card status. The vocabulary, icons, tones and animation policy all come
@@ -155,8 +155,8 @@
       ? task.origin
       : /^tsk-[0-9a-f]{32}$/.test(String(task?.id || '')) ? 'board' : 'session';
     return origin === 'board'
-      ? { key: 'board', icon: '\uD83D\uDCCB', label: '\u72EC\u7ACB\u4EFB\u52A1', title: '\u5728\u4EFB\u52A1\u677F\u521B\u5EFA\uFF0C\u8DD1\u5728\u5B83\u81EA\u5DF1\u7684\u4EFB\u52A1\u4F1A\u8BDD\u91CC' }
-      : { key: 'session', icon: '\uD83D\uDCAC', label: '\u4F1A\u8BDD\u4EFB\u52A1', title: '\u5728\u4F1A\u8BDD\u5BF9\u8BDD\u4E2D\u4EA7\u751F\u7684\u4EFB\u52A1' };
+      ? { key: 'board', icon: '\uD83D\uDCCB', label: translate('tbOriginBoard'), title: translate('tbOriginBoardHint') }
+      : { key: 'session', icon: '\uD83D\uDCAC', label: translate('tbOriginSession'), title: translate('tbOriginSessionHint') };
   }
 
   function sameTaskOrigin(first, second) {
@@ -257,29 +257,29 @@
     const code = String(typeof value === 'string' ? value
       : payload.error || payload.code || payload.message || '').trim();
     const messages = {
-      invalid_merge_request: '合并请求无效，请刷新任务板后重试',
-      task_not_found: '有任务已不存在，请刷新后重新选择',
-      target_already_merged: '保留任务已被并入其他任务，请刷新后重新选择',
-      target_not_mergeable: '保留任务已归档或不可合并',
-      source_already_merged: '有待并入任务已合并到其他任务，请刷新后重新选择',
-      source_not_mergeable: '有待并入任务已归档或不可合并',
-      task_origin_mismatch: '独立任务与会话任务不能互相合并',
-      task_directory_mismatch: '暂不支持跨工作区合并任务',
-      task_busy: '有任务正在执行、排队或等待，请稍后重试',
-      task_worktree_conflict: '待并入任务仍有 worktree/分支；请先清理，或把它作为首个保留任务',
-      task_merge_persist_failed: '合并结果保存失败，原任务未变更，请重试',
+      invalid_merge_request: 'tbMergeErrInvalidRequest',
+      task_not_found: 'tbMergeErrTaskNotFound',
+      target_already_merged: 'tbMergeErrTargetAlreadyMerged',
+      target_not_mergeable: 'tbMergeErrTargetNotMergeable',
+      source_already_merged: 'tbMergeErrSourceAlreadyMerged',
+      source_not_mergeable: 'tbMergeErrSourceNotMergeable',
+      task_origin_mismatch: 'tbMergeErrOriginMismatch',
+      task_directory_mismatch: 'tbMergeErrDirectoryMismatch',
+      task_busy: 'tbMergeErrBusy',
+      task_worktree_conflict: 'tbMergeErrWorktreeConflict',
+      task_merge_persist_failed: 'tbMergeErrPersistFailed',
     };
-    if (messages[code]) return messages[code];
+    if (messages[code]) return translate(messages[code]);
     if (/failed to fetch|networkerror|network request failed/i.test(code)) {
-      return '网络请求失败，请检查连接后重试';
+      return translate('tbMergeErrNetwork');
     }
     // A caller may wrap an already-localized server message in Error before the
     // shared catch path sees it. Preserve that text instead of wrapping it a
     // second time as “任务合并失败（中文文案）”.
     if (/[㐀-鿿]/.test(code)) return code;
-    if (code) return `任务合并失败（${code}）`;
-    if (payload.status) return `任务合并失败（HTTP ${payload.status}）`;
-    return '任务合并失败，请稍后重试';
+    if (code) return translate('tbMergeErrFailedWith', { code });
+    if (payload.status) return translate('tbMergeErrFailedHttp', { status: payload.status });
+    return translate('tbMergeErrGeneric');
   }
 
   function taskRoutingLabel(task) {
@@ -294,11 +294,13 @@
     if (!routing || routing.mode !== 'commander' || !routing.targetSessionId) return '';
     const id = routing.targetSessionId;
     const label = routing.targetLabel || id;
-    const commander = `已交给 Commander · ${label}${label === id ? '' : ` (${id})`}`;
+    // 这一块眼下被上面那句 return '' 挡住了，但文案照样走词典：谁哪天把 chip 放回来，
+    // 不该顺手把两行中文带回英文界面。
+    const commander = `${translate('tbRoutingCommander', { label })}${label === id ? '' : ` (${id})`}`;
     if (!routing.workerSessionId) return commander;
     const workerId = routing.workerSessionId;
     const workerLabel = routing.workerLabel || workerId;
-    const elastic = routing.elasticWorkerCreated ? ' · 动态扩容' : '';
+    const elastic = routing.elasticWorkerCreated ? translate('tbRoutingElastic') : '';
     return `${commander} → ${workerLabel}${workerLabel === workerId ? '' : ` (${workerId})`}${elastic}`;
   }
 

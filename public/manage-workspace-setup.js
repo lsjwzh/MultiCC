@@ -26,9 +26,19 @@
     },
   };
 
+  // 语言判定只有一处：public/i18n.js 的 getLang()（显式选择 ＞ 系统语言 ＞ 英文）。
+  // 这里问它，不自己读 localStorage 再写死中文 —— 那版在英文系统上会把「创建工作区」
+  // 弹窗里的进度文案一直显示成中文。
   function language() {
-    try { return global.localStorage.getItem('multicc_lang') === 'en' ? 'en' : 'zh'; }
-    catch (_) { return 'zh'; }
+    try {
+      if (typeof global.getLang === 'function') return global.getLang();
+    } catch (_) {}
+    try {
+      const stored = global.localStorage.getItem('multicc_lang');
+      if (stored === 'en' || stored === 'zh') return stored;
+      const nav = global.navigator || {};
+      return /^zh/i.test(nav.language || '') ? 'zh' : 'en';
+    } catch (_) { return 'en'; }
   }
   function tr(key, params) {
     let value = copy[language()][key] || key;

@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createSandboxConsole } = require('./helpers/sandbox-console');
+const i18nTranslator = require('./helpers/i18n-translator');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -81,6 +82,10 @@ function browserContext() {
     String,
     Number,
     encodeURIComponent,
+    // 这些模块的文案现在走页面的 t()：沙箱里没有 i18n.js，用既有 helper 的
+    // 只查 zh.json 替身 —— 中文原文正是下面断言里写的那些字。
+    t: i18nTranslator.t,
+    getLocale: i18nTranslator.getLocale,
     confirm: () => true,
     addEventListener(type, handler) { listeners.push({ type, handler }); },
     location: { protocol: 'http:', host: 'localhost:3000', origin: 'http://localhost:3000', search: '' },
@@ -476,7 +481,8 @@ test('the sidebar shows when the service last started, derived from uptime not t
     harness.context.document.getElementById('boot-time').textContent,
     `${pad(boot.getMonth() + 1)}-${pad(boot.getDate())} ${pad(boot.getHours())}:${pad(boot.getMinutes())}`,
   );
-  assert.equal(harness.context.document.getElementById('boot-uptime').textContent, '2h 15m');
+  // 「已运行」那截前缀是词典里的（uptimeDuration），沙箱的 t 查的是 zh.json。
+  assert.equal(harness.context.document.getElementById('boot-uptime').textContent, '已运行 2h 15m');
 });
 
 test('the uptime line is translated, and the short clock keeps the full instant in its tooltip', async () => {
@@ -500,7 +506,9 @@ test('uptime is coarse, and a server that just came up says so rather than showi
   for (const [uptimeMs, expected] of cases) {
     const harness = bootHarness({ uptimeMs });
     await harness.context.loadBootTime();
-    assert.equal(harness.context.document.getElementById('boot-uptime').textContent, expected, `${uptimeMs}ms`);
+    // 断的仍是 fmtUptime 的粗粒度（不足 1 分钟 / 天小时各一档），只是外面套了
+    // 词典里 uptimeDuration 的前缀。
+    assert.equal(harness.context.document.getElementById('boot-uptime').textContent, `已运行 ${expected}`, `${uptimeMs}ms`);
   }
 });
 

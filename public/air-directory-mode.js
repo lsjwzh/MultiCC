@@ -108,7 +108,7 @@
         { cli, kind: 'terminal', label: cli });
       root.location.assign(`/?id=${encodeURIComponent(session.id)}`);
     } catch (error) {
-      ctx.notice?.(`新建终端失败：${error?.message || error}`);
+      ctx.notice?.(translate('airTerminalCreateFailed', { detail: String(error?.message || error) }));
     } finally {
       creating = false;
       if (button) button.disabled = false;

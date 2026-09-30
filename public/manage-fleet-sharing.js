@@ -12,6 +12,16 @@
   const api = global.MultiCCApi;
   const errorModel = global.MultiCCErrorEnvelope;
 
+  // 文案走页面的 t()（manage.html 挂了 i18n.js）；测试沙箱/旧缓存里没有 t 时
+  // 退回中文原文，不让文案变成 key 或抛错。
+  function tr(key, fallback, params) {
+    const T = typeof window !== 'undefined' && typeof window.t === 'function' ? window.t : null;
+    let text = T ? T(key, params) : key;
+    if (text === key) text = fallback;
+    if (params) for (const name of Object.keys(params)) text = text.split('{' + name + '}').join(String(params[name]));
+    return text;
+  }
+
   function syntheticSessionId(fleetId, remoteSessionId) {
     return `${fleetId}::${remoteSessionId}`;
   }
@@ -105,34 +115,34 @@
     host.innerHTML = `
       <div id="fleet-share-modal" class="modal-backdrop fleet-share-modal" role="dialog" aria-modal="true" aria-labelledby="fleet-share-title" onclick="if(event.target===this)closeFleetShareModal()">
         <div class="modal-card">
-          <div class="fs-modal-head"><h3 id="fleet-share-title">分享工作区</h3><button class="fs-modal-close" type="button" onclick="closeFleetShareModal()" aria-label="关闭分享工作区弹窗" title="关闭">×</button></div>
+          <div class="fs-modal-head"><h3 id="fleet-share-title">${tr('mngFsShareTitle', '分享工作区')}</h3><button class="fs-modal-close" type="button" onclick="closeFleetShareModal()" aria-label="${tr('mngFsCloseShareAria', '关闭分享工作区弹窗')}" title="${tr('close', '关闭')}">×</button></div>
           <div class="fs-modal-body">
           <div id="fleet-share-sub" class="fs-sub"></div>
-          <div class="fs-field"><label for="fleet-share-password">访问密码（至少 6 位）</label><input id="fleet-share-password" type="password" autocomplete="new-password" /></div>
+          <div class="fs-field"><label for="fleet-share-password">${tr('mngFsPasswordLabel', '访问密码（至少 6 位）')}</label><input id="fleet-share-password" type="password" autocomplete="new-password" /></div>
           <div class="fs-row">
-            <div class="fs-field"><label for="fleet-share-days">有效天数</label><input id="fleet-share-days" type="number" min="1" max="365" value="7" /></div>
-            <div class="fs-field"><label for="fleet-share-accesses">最多导入次数</label><input id="fleet-share-accesses" type="number" min="1" max="10000" value="10" /></div>
+            <div class="fs-field"><label for="fleet-share-days">${tr('mngFsDaysLabel', '有效天数')}</label><input id="fleet-share-days" type="number" min="1" max="365" value="7" /></div>
+            <div class="fs-field"><label for="fleet-share-accesses">${tr('mngFsAccessesLabel', '最多导入次数')}</label><input id="fleet-share-accesses" type="number" min="1" max="10000" value="10" /></div>
           </div>
-          <div class="fs-field"><label for="fleet-share-description">给接收方的说明（可选）</label><textarea id="fleet-share-description" maxlength="500"></textarea></div>
-          <div class="fs-note">接收方可查看并操作此工作区的会话和代码变更；不会获得 Provider 凭据或其他工作区的管理权限。</div>
+          <div class="fs-field"><label for="fleet-share-description">${tr('mngFsDescriptionLabel', '给接收方的说明（可选）')}</label><textarea id="fleet-share-description" maxlength="500"></textarea></div>
+          <div class="fs-note">${tr('mngFsShareNote', '接收方可查看并操作此工作区的会话和代码变更；不会获得 Provider 凭据或其他工作区的管理权限。')}</div>
           <div id="fleet-share-error" class="fs-error"></div>
-          <div class="fs-actions"><button class="btn" type="button" onclick="closeFleetShareModal()">取消</button><button id="fleet-share-create" class="btn btn-green" type="button" onclick="createFleetShare()">生成分享链接</button></div>
-          <div id="fleet-share-result" class="fs-result"><strong>分享链接已生成</strong><div class="fs-copy-row"><input id="fleet-share-url" readonly /><button class="btn" type="button" onclick="copyFleetShareUrl()">复制</button></div><div class="fs-note" style="margin-top:7px">请把密码通过单独渠道发给接收方。</div></div>
-          <div class="fs-existing"><h4>现有分享</h4><div id="fleet-share-list"><span class="fs-note">加载中…</span></div></div>
+          <div class="fs-actions"><button class="btn" type="button" onclick="closeFleetShareModal()">${tr('cancel', '取消')}</button><button id="fleet-share-create" class="btn btn-green" type="button" onclick="createFleetShare()">${tr('mngFsCreate', '生成分享链接')}</button></div>
+          <div id="fleet-share-result" class="fs-result"><strong>${tr('mngFsResultTitle', '分享链接已生成')}</strong><div class="fs-copy-row"><input id="fleet-share-url" readonly /><button class="btn" type="button" onclick="copyFleetShareUrl()">${tr('copy', '复制')}</button></div><div class="fs-note" style="margin-top:7px">${tr('mngFsPasswordNote', '请把密码通过单独渠道发给接收方。')}</div></div>
+          <div class="fs-existing"><h4>${tr('mngFsExisting', '现有分享')}</h4><div id="fleet-share-list"><span class="fs-note">${tr('loading', '加载中…')}</span></div></div>
           </div>
         </div>
       </div>
       <div id="fleet-import-modal" class="modal-backdrop fleet-share-modal" role="dialog" aria-modal="true" aria-labelledby="fleet-import-title" onclick="if(event.target===this)closeImportFleetModal()">
         <div class="modal-card">
-          <div class="fs-modal-head"><h3 id="fleet-import-title">导入共享工作区</h3><button class="fs-modal-close" type="button" onclick="closeImportFleetModal()" aria-label="关闭导入工作区弹窗" title="关闭">×</button></div>
+          <div class="fs-modal-head"><h3 id="fleet-import-title">${tr('mngFsImportTitle', '导入共享工作区')}</h3><button class="fs-modal-close" type="button" onclick="closeImportFleetModal()" aria-label="${tr('mngFsCloseImportAria', '关闭导入工作区弹窗')}" title="${tr('close', '关闭')}">×</button></div>
           <div class="fs-modal-body">
-          <div class="fs-sub">粘贴另一台 MultiCC 生成的工作区分享链接。导入后会出现在工作区列表中，操作仍在来源实例执行。</div>
-          <div class="fs-field"><label for="fleet-import-url">分享链接</label><input id="fleet-import-url" type="url" autocomplete="off" placeholder="https://host/fleet-share/fleet_share_…" /></div>
-          <div class="fs-field"><label for="fleet-import-password">分享密码</label><input id="fleet-import-password" type="password" autocomplete="off" /></div>
-          <div class="fs-field"><label for="fleet-import-alias">本地别名（可选）</label><input id="fleet-import-alias" type="text" maxlength="120" placeholder="例如：远程开发机" /></div>
-          <div class="fs-note">密码只用于本次导入，不会保存到本机；本机仅保存随机的工作区范围授权。</div>
+          <div class="fs-sub">${tr('mngFsImportSub', '粘贴另一台 MultiCC 生成的工作区分享链接。导入后会出现在工作区列表中，操作仍在来源实例执行。')}</div>
+          <div class="fs-field"><label for="fleet-import-url">${tr('mngFsUrlLabel', '分享链接')}</label><input id="fleet-import-url" type="url" autocomplete="off" placeholder="https://host/fleet-share/fleet_share_…" /></div>
+          <div class="fs-field"><label for="fleet-import-password">${tr('mngFsImportPasswordLabel', '分享密码')}</label><input id="fleet-import-password" type="password" autocomplete="off" /></div>
+          <div class="fs-field"><label for="fleet-import-alias">${tr('mngFsAliasLabel', '本地别名（可选）')}</label><input id="fleet-import-alias" type="text" maxlength="120" placeholder="${tr('mngFsAliasPlaceholder', '例如：远程开发机')}" /></div>
+          <div class="fs-note">${tr('mngFsImportNote', '密码只用于本次导入，不会保存到本机；本机仅保存随机的工作区范围授权。')}</div>
           <div id="fleet-import-error" class="fs-error"></div>
-          <div class="fs-actions"><button class="btn" type="button" onclick="closeImportFleetModal()">取消</button><button id="fleet-import-submit" class="btn btn-green" type="button" onclick="submitImportFleet()">导入</button></div>
+          <div class="fs-actions"><button class="btn" type="button" onclick="closeImportFleetModal()">${tr('cancel', '取消')}</button><button id="fleet-import-submit" class="btn btn-green" type="button" onclick="submitImportFleet()">${tr('mngFsImport', '导入')}</button></div>
           </div>
         </div>
       </div>`;
@@ -143,13 +153,13 @@
     const list = el('fleet-share-list');
     if (!list) return;
     if (!shares.length) {
-      list.innerHTML = '<span class="fs-note">还没有有效分享。</span>';
+      list.innerHTML = `<span class="fs-note">${tr('mngFsNoShares', '还没有有效分享。')}</span>`;
       return;
     }
     list.innerHTML = shares.map(share => `
       <div class="fs-share-row">
-        <div style="min-width:0"><div class="fs-share-url" title="${escapeHtml(share.url)}">${escapeHtml(share.url)}</div><div class="fs-share-meta">${share.expired ? '已过期' : `剩余 ${share.remainingAccesses}/${share.maxAccesses} 次`} · 截止 ${escapeHtml(displayDate(share.expiresAt))}</div></div>
-        <button class="btn btn-sm btn-danger" type="button" onclick="revokeFleetShare('${escapeHtml(share.token)}')">撤销</button>
+        <div style="min-width:0"><div class="fs-share-url" title="${escapeHtml(share.url)}">${escapeHtml(share.url)}</div><div class="fs-share-meta">${share.expired ? tr('docsregExpired', '已过期') : tr('mngFsRemainingTimes', '剩余 {remaining}/{max} 次', { remaining: share.remainingAccesses, max: share.maxAccesses })} · ${tr('mngFsExpiresAt', '截止 {date}', { date: escapeHtml(displayDate(share.expiresAt)) })}</div></div>
+        <button class="btn btn-sm btn-danger" type="button" onclick="revokeFleetShare('${escapeHtml(share.token)}')">${tr('revoke', '撤销')}</button>
       </div>`).join('');
   }
 
@@ -176,7 +186,7 @@
     const fleet = (_cachedDirectories || []).find(item => item.id === fleetId);
     if (!fleet) return;
     activeFleetId = fleetId;
-    el('fleet-share-sub').textContent = `为「${fleet.name}」创建跨实例、工作区范围的操作授权。`;
+    el('fleet-share-sub').textContent = tr('mngFsShareSub', '为「{name}」创建跨实例、工作区范围的操作授权。', { name: fleet.name });
     el('fleet-share-password').value = '';
     el('fleet-share-days').value = '7';
     el('fleet-share-accesses').value = '10';
@@ -206,7 +216,7 @@
       el('fleet-share-url').value = data.url;
       el('fleet-share-result').style.display = 'block';
       await loadFleetShares();
-      showToast('工作区分享链接已生成');
+      showToast(tr('mngFsShareCreated', '工作区分享链接已生成'));
     } catch (error) {
       setError('fleet-share-error', error);
     } finally {
@@ -216,14 +226,14 @@
 
   async function revokeFleetShare(token) {
     if (!activeFleetId) return;
-    if (!(await showConfirm('撤销这个工作区分享？已发出的链接会立即失效。', { danger: true, okText: '撤销' }))) return;
+    if (!(await showConfirm(tr('mngFsRevokeConfirm', '撤销这个工作区分享？已发出的链接会立即失效。'), { danger: true, okText: tr('revoke', '撤销') }))) return;
     try {
       await api.json(`/api/fleets/${encodeURIComponent(activeFleetId)}/share/${encodeURIComponent(token)}`, { method: 'DELETE' });
       await loadFleetShares();
-      showToast('工作区分享已撤销');
+      showToast(tr('mngFsShareRevoked', '工作区分享已撤销'));
     } catch (error) {
       const detail = displayError(error);
-      showToast(`撤销失败：${detail.displayMessage || detail.message}`, true);
+      showToast(tr('mngFsRevokeFailed', '撤销失败：{message}', { message: detail.displayMessage || detail.message }), true);
     }
   }
 
@@ -231,7 +241,7 @@
     const value = el('fleet-share-url').value;
     try { await navigator.clipboard.writeText(value); }
     catch (_) { el('fleet-share-url').select(); document.execCommand('copy'); }
-    showToast('分享链接已复制');
+    showToast(tr('mngFsCopied', '分享链接已复制'));
   }
 
   function closeFleetShareModal() {
@@ -257,7 +267,7 @@
   function openImportFleetModal(externalId) {
     ensureModals();
     const existing = externalId ? externalFleets.find(item => item.id === externalId) : null;
-    el('fleet-import-title').textContent = existing ? '刷新共享工作区' : '导入共享工作区';
+    el('fleet-import-title').textContent = existing ? tr('mngFsRefreshTitle', '刷新共享工作区') : tr('mngFsImportTitle', '导入共享工作区');
     el('fleet-import-url').value = existing ? existing.shareUrl : '';
     el('fleet-import-password').value = '';
     el('fleet-import-alias').value = existing ? existing.alias : '';
@@ -281,7 +291,7 @@
       });
       closeModal('fleet-import-modal');
       await loadExternalFleets();
-      showToast(`已导入共享工作区「${data.fleet.name}」`);
+      showToast(tr('mngFsImported', '已导入共享工作区「{name}」', { name: data.fleet.name }));
     } catch (error) {
       setError('fleet-import-error', error);
     } finally {
@@ -373,7 +383,7 @@
 
   function sessionSubtitle(session) {
     return session.external
-      ? `#${session.remoteSessionId} · ${session.sourceOrigin || '共享工作区'}`
+      ? `#${session.remoteSessionId} · ${session.sourceOrigin || tr('mngFsFallbackName', '共享工作区')}`
       : `#${session.id} · ${session.cwd || ''}`;
   }
 
@@ -448,23 +458,23 @@
     try {
       const data = await api.json(`/api/external-fleets/${encodeURIComponent(id)}/refresh`, { method: 'POST' });
       await loadExternalFleets();
-      showToast(`共享工作区「${data.fleet.name}」已刷新`);
+      showToast(tr('mngFsRefreshed', '共享工作区「{name}」已刷新', { name: data.fleet.name }));
     } catch (error) {
       const detail = displayError(error);
-      showToast(`刷新失败：${detail.displayMessage || detail.message}`, true);
+      showToast(tr('mngFsRefreshFailed', '刷新失败：{message}', { message: detail.displayMessage || detail.message }), true);
     }
   }
 
   async function removeExternalFleet(id) {
     const fleet = externalFleets.find(item => item.id === id);
-    if (!fleet || !(await showConfirm(`移除共享工作区「${fleet.name}」？来源实例不会受影响。`, { danger: true, okText: '移除' }))) return;
+    if (!fleet || !(await showConfirm(tr('mngFsRemoveConfirm', '移除共享工作区「{name}」？来源实例不会受影响。', { name: fleet.name }), { danger: true, okText: tr('airRoleEditorRemove', '移除') }))) return;
     try {
       await api.json(`/api/external-fleets/${encodeURIComponent(id)}`, { method: 'DELETE' });
       await loadExternalFleets();
-      showToast('共享工作区已移除');
+      showToast(tr('mngFsRemoved', '共享工作区已移除'));
     } catch (error) {
       const detail = displayError(error);
-      showToast(`移除失败：${detail.displayMessage || detail.message}`, true);
+      showToast(tr('mngFsRemoveFailed', '移除失败：{message}', { message: detail.displayMessage || detail.message }), true);
     }
   }
 

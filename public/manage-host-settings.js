@@ -1,6 +1,16 @@
 (function initManageHostSettings(global) {
   'use strict';
 
+  // 文案走页面的 t()（manage.html 挂了 i18n.js）；测试沙箱/旧缓存里没有 t 时
+  // 退回中文原文，不让文案变成 key 或抛错。
+  function tr(key, fallback, params) {
+    const T = typeof window !== 'undefined' && typeof window.t === 'function' ? window.t : null;
+    let text = T ? T(key, params) : key;
+    if (text === key) text = fallback;
+    if (params) for (const name of Object.keys(params)) text = text.split('{' + name + '}').join(String(params[name]));
+    return text;
+  }
+
   /* ── Push Notification Diagnostics ── */
 
   function formatTimestamp(ts) {
@@ -184,20 +194,20 @@
   function tnlFmtStatus(p, prov, avail) {
     // p = runtime provider state; prov = config provider {enabled,url}
     const observeOnly = !prov.enabled && !!prov.funnel;
-    if (!prov.enabled && !prov.funnel) return '未启用';
+    if (!prov.enabled && !prov.funnel) return tr('airTunnelNotEnabled', '未启用');
     const funnelProbe = !!prov.funnel && p.probeMode === 'tailscale_funnel_public';
-    if (!prov.url && !prov.funnel) return '未配置 URL';
-    if (!p.lastCheckAt) return '等待首次探活…';
+    if (!prov.url && !prov.funnel) return tr('mngHostTnlNoUrl', '未配置 URL');
+    if (!p.lastCheckAt) return tr('mngHostTnlWaitingFirstProbe', '等待首次探活…');
     const when = new Date(p.lastCheckAt).toLocaleTimeString();
     if (p.probeVerdict === 'degraded') {
-      let s = `公网 Funnel 部分可用 · 边缘 ${p.edgeSuccessCount || 0}/${p.resolvedAddressCount || 0} · ${when}`;
-      s += ' · 已告警，不自动修复';
+      let s = tr('mngHostTnlFunnelDegraded', '公网 Funnel 部分可用 · 边缘 {ok}/{total} · {at}', { ok: p.edgeSuccessCount || 0, total: p.resolvedAddressCount || 0, at: when });
+      s += tr('mngHostTnlAlertedNoFix', ' · 已告警，不自动修复');
       return s;
     }
     if (p.probeVerdict === 'indeterminate') {
-      let s = `公网探针不确定 (${p.probeError || 'unknown'}) · ${when}`;
+      let s = tr('mngHostTnlProbeIndeterminate', '公网探针不确定 ({error}) · {at}', { error: p.probeError || 'unknown', at: when });
       if (prov.monitorOnly) {
-        s += funnelProbe ? ' · 仅监控（不自动修复 Funnel）' : ' · 仅监控（不自动重启）';
+        s += funnelProbe ? tr('mngHostTnlMonitorOnlyFunnel', ' · 仅监控（不自动修复 Funnel）') : tr('mngHostTnlMonitorOnlyRestart', ' · 仅监控（不自动重启）');
         return s;
       }
       if (p.lastAction) s += ` · ${p.lastAction}`;
@@ -205,35 +215,41 @@
     }
     // URL 探活 与 客户端进程 是两个维度：URL 活着不代表本机的 frpc/natapp
     // 在跑（这个 URL 可能根本是别家隧道的），措辞上必须分开。
-    const label = funnelProbe ? '公网 Funnel' : 'URL 探活';
-    let s = label + ' ' + (p.healthy ? `正常 (HTTP ${p.lastHttpCode})` : `异常 (HTTP ${p.lastHttpCode}，连续 ${p.consecutiveFails} 次)`);
-    if (funnelProbe && p.resolvedAddressCount) s += ` · 边缘 ${p.edgeSuccessCount || 0}/${p.resolvedAddressCount}`;
+    const label = funnelProbe ? tr('mngHostTnlLabelFunnel', '公网 Funnel') : tr('mngHostTnlLabelUrlProbe', 'URL 探活');
+    let s = label + ' ' + (p.healthy
+      ? tr('mngHostTnlHealthy', '正常 (HTTP {code})', { code: p.lastHttpCode })
+      : tr('mngHostTnlUnhealthy', '异常 (HTTP {code}，连续 {fails} 次)', { code: p.lastHttpCode, fails: p.consecutiveFails }));
+    if (funnelProbe && p.resolvedAddressCount) s += tr('mngHostTnlEdgeCount', ' · 边缘 {ok}/{total}', { ok: p.edgeSuccessCount || 0, total: p.resolvedAddressCount });
     s += ` · ${when}`;
     if (observeOnly) {
-      s += ' · 仅观察（自动修复未启用）';
+      s += tr('mngHostTnlObserveOnly', ' · 仅观察（自动修复未启用）');
       return s;
     }
     if (prov.monitorOnly) {
-      s += funnelProbe ? ' · 仅监控（不自动修复 Funnel）' : ' · 仅监控（不自动重启）';
+      s += funnelProbe ? tr('mngHostTnlMonitorOnlyFunnel', ' · 仅监控（不自动修复 Funnel）') : tr('mngHostTnlMonitorOnlyRestart', ' · 仅监控（不自动重启）');
       return s;
     }
     // 客户端二进制不存在时 multicc 根本无法托管/重启它（URL 往往是外部隧道
     // 提供的）——显示中性事实，而不是任何历史重启文案。
     if (avail === false) {
-      s += ' · 客户端: 未安装（非 multicc 托管）';
+      s += tr('mngHostTnlClientMissing', ' · 客户端: 未安装（非 multicc 托管）');
       return s;
     }
     if (p.restartTimes && p.restartTimes.length) {
-      s += funnelProbe ? ` · 近1h修复/重连 ${p.restartTimes.length} 次` : ` · 近1h重启 ${p.restartTimes.length} 次`;
+      s += funnelProbe
+        ? tr('mngHostTnlReconnects', ' · 近1h修复/重连 {count} 次', { count: p.restartTimes.length })
+        : tr('mngHostTnlRestarts', ' · 近1h重启 {count} 次', { count: p.restartTimes.length });
     }
     // Provider diagnosis (today SakuraFrp): the URL probe only says "dead",
     // the actionable reason comes from the client's own log. Put it BEFORE
     // the restart bookkeeping so 流量耗尽 is never buried under 等待冷却.
     if (p.diagnosis && p.diagnosis.reason) {
-      s += ` · 诊断: ${p.diagnosis.reason}`;
-      if (p.diagnosis.detail) s += `（${p.diagnosis.detail}）`;
+      s += tr('mngHostTnlDiagnosis', ' · 诊断: {reason}', { reason: p.diagnosis.reason });
+      if (p.diagnosis.detail) s += tr('mngHostTnlDiagnosisDetail', '（{detail}）', { detail: p.diagnosis.detail });
     }
-    if (p.lastAction) s += funnelProbe ? ` · 最近动作: ${p.lastAction}` : ` · 客户端: ${p.lastAction}`;
+    if (p.lastAction) s += funnelProbe
+      ? tr('mngHostTnlLastAction', ' · 最近动作: {action}', { action: p.lastAction })
+      : tr('mngHostTnlClientAction', ' · 客户端: {action}', { action: p.lastAction });
     return s;
   }
 
@@ -251,16 +267,16 @@
         input.disabled = false;
         input.readOnly = false;
         input.value = '';
-        input.placeholder = d.hasToken ? '已设置（留空保存=清除；输入新值=修改）' : '未设置';
-        if (hint) { hint.textContent = '· 本机可修改'; hint.style.color = 'var(--faint)'; }
+        input.placeholder = d.hasToken ? tr('mngHostTokenPhSet', '已设置（留空保存=清除；输入新值=修改）') : tr('mngNotSetPh', '未设置');
+        if (hint) { hint.textContent = '· ' + tr('mngHostEditableHere', '本机可修改'); hint.style.color = 'var(--faint)'; }
         if (btn) btn.disabled = false;
       } else {
         // remote: read-only masked.
         input.disabled = true;
         input.readOnly = true;
         input.value = d.masked || '';
-        input.placeholder = d.hasToken ? '' : '未设置';
-        if (hint) { hint.textContent = '· 仅本机可修改'; hint.style.color = 'var(--faint)'; }
+        input.placeholder = d.hasToken ? '' : tr('mngNotSetPh', '未设置');
+        if (hint) { hint.textContent = '· ' + tr('mngHostLocalOnly', '仅本机可修改'); hint.style.color = 'var(--faint)'; }
         if (btn) btn.disabled = true;
       }
     } catch (_) {}
@@ -271,20 +287,20 @@
     const msg = document.getElementById('tnl-token-msg');
     if (!input || input.disabled) return;
     const token = input.value;
-    if (token.includes('****')) { if (msg) { msg.textContent = '未修改'; msg.className = 'status-text'; } return; }
-    if (token.trim() && !confirm('保存后，外网/局域网访问都需要用此密码登录，旧的登录会话会失效。确定？')) return;
-    if (!token.trim() && !confirm('留空保存将清除访问密码，任何人凭 URL 即可访问。确定？')) return;
+    if (token.includes('****')) { if (msg) { msg.textContent = tr('mngHostTokenUnchanged', '未修改'); msg.className = 'status-text'; } return; }
+    if (token.trim() && !confirm(tr('mngHostTokenConfirmSet', '保存后，外网/局域网访问都需要用此密码登录，旧的登录会话会失效。确定？'))) return;
+    if (!token.trim() && !confirm(tr('mngHostTokenConfirmClear', '留空保存将清除访问密码，任何人凭 URL 即可访问。确定？'))) return;
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (_urlToken) headers['X-Access-Token'] = _urlToken;
       const res = await fetch('/api/settings/access-token', { method: 'POST', headers, body: JSON.stringify({ token }) });
       const d = await res.json();
       if (!res.ok || d.error) throw new Error(d.error || ('HTTP ' + res.status));
-      if (msg) { msg.textContent = d.hasToken ? '已保存' : '已清除'; msg.className = 'status-text ok'; }
-      showToast('访问密码已更新');
+      if (msg) { msg.textContent = d.hasToken ? tr('saved', '已保存') : tr('mngHostTokenCleared', '已清除'); msg.className = 'status-text ok'; }
+      showToast(tr('mngHostTokenUpdated', '访问密码已更新'));
       loadAccessToken();
     } catch (e) {
-      if (msg) { msg.textContent = '错误: ' + e.message; msg.className = 'status-text err'; }
+      if (msg) { msg.textContent = tr('mngHostErrPrefix', '错误: {msg}', { msg: e.message }); msg.className = 'status-text err'; }
     }
   }
 
@@ -298,7 +314,7 @@
       const d = await res.json();
       cb.checked = !!d.enabled;
       cb.disabled = false;
-      if (hint) hint.textContent = '· ' + (d.enabled ? '已开启 ⚠️' : '已关闭');
+      if (hint) hint.textContent = '· ' + (d.enabled ? tr('airGlobalOauthOn', '已开启') + ' ⚠️' : tr('airGlobalOauthOff', '已关闭'));
     } catch (_) {}
   }
 
@@ -306,7 +322,7 @@
     const cb = document.getElementById('cc-oauth-enabled');
     const msg = document.getElementById('cc-oauth-msg');
     if (!cb) return;
-    if (cb.checked && !confirm('开启后会在官方客户端之外重放你的订阅 OAuth token，可能违反 Anthropic 服务条款并有账号风险。确定开启？')) {
+    if (cb.checked && !confirm(tr('mngHostOauthConfirmEnable', '开启后会在官方客户端之外重放你的订阅 OAuth token，可能违反 Anthropic 服务条款并有账号风险。确定开启？'))) {
       cb.checked = false; return;
     }
     const enabled = cb.checked;
@@ -318,10 +334,10 @@
       if (!res.ok || d.error) throw new Error(d.error || ('HTTP ' + res.status));
       cb.checked = !!d.enabled;
       const hint = document.getElementById('cc-oauth-hint');
-      if (hint) hint.textContent = '· ' + (d.enabled ? '已开启 ⚠️' : '已关闭');
-      if (msg) { msg.textContent = (d.enabled ? '已开启' : '已关闭') + '（下一轮 spawn 生效）'; msg.className = 'status-text ok'; }
+      if (hint) hint.textContent = '· ' + (d.enabled ? tr('airGlobalOauthOn', '已开启') + ' ⚠️' : tr('airGlobalOauthOff', '已关闭'));
+      if (msg) { msg.textContent = d.enabled ? tr('mngHostOauthSavedOn', '已开启（下一轮 spawn 生效）') : tr('mngHostOauthSavedOff', '已关闭（下一轮 spawn 生效）'); msg.className = 'status-text ok'; }
     } catch (e) {
-      if (msg) { msg.textContent = '错误: ' + e.message; msg.className = 'status-text err'; }
+      if (msg) { msg.textContent = tr('mngHostErrPrefix', '错误: {msg}', { msg: e.message }); msg.className = 'status-text err'; }
     }
   }
 
@@ -333,10 +349,10 @@
     if (!btn) return;
     if (monitorOnly) {
       btn.disabled = true;
-      btn.title = tailscaleMode ? '仅监控模式下不修复 Funnel 或重连控制面' : '仅监控模式下不重启客户端';
+      btn.title = tailscaleMode ? tr('mngHostGateMonitorTailscale', '仅监控模式下不修复 Funnel 或重连控制面') : tr('mngHostGateMonitorRestart', '仅监控模式下不重启客户端');
       return;
     }
-    if (available === false) { btn.disabled = true; btn.title = '未检测到客户端，请先安装'; return; }
+    if (available === false) { btn.disabled = true; btn.title = tr('mngHostGateClientMissing', '未检测到客户端，请先安装'); return; }
     btn.disabled = false;
     btn.title = '';
   }
@@ -350,9 +366,9 @@
       const c = st.config, av = st.availability || {}, pr = st.providers || {};
       // availability hints
       const phAvail = document.getElementById('tnl-ph-avail');
-      if (phAvail) phAvail.textContent = av.phddns ? '· 已安装' : '· 未检测到 PhDDNS.app';
+      if (phAvail) phAvail.textContent = av.phddns ? '· ' + tr('qwenAudioStateReady', '已安装') : '· ' + tr('mngHostPhMissing', '未检测到 PhDDNS.app');
       const tsAvail = document.getElementById('tnl-ts-avail');
-      if (tsAvail) tsAvail.textContent = av.tailscale ? '· CLI 可用' : '· 未检测到 tailscale CLI';
+      if (tsAvail) tsAvail.textContent = av.tailscale ? '· ' + tr('mngHostTsCliOk', 'CLI 可用') : '· ' + tr('mngHostTsCliMissing', '未检测到 tailscale CLI');
       // phddns
       document.getElementById('tnl-ph-enabled').checked = !!c.phddns.enabled;
       document.getElementById('tnl-ph-monitoronly').checked = !!c.phddns.monitorOnly;
@@ -365,7 +381,7 @@
       document.getElementById('tnl-ts-url').value = c.tailscale.url || '';
       document.getElementById('tnl-ts-status').textContent = tnlFmtStatus(pr.tailscale || {}, c.tailscale, av.tailscale);
       const tsPublicUrl = document.getElementById('tnl-ts-publicurl');
-      if (tsPublicUrl) tsPublicUrl.textContent = pr.tailscale?.publicUrl || '等待公网探测…';
+      if (tsPublicUrl) tsPublicUrl.textContent = pr.tailscale?.publicUrl || tr('mngHostTsWaitingPublic', '等待公网探测…');
       tnlGateRestart('tnl-ts-restart', av.tailscale, !!c.tailscale.monitorOnly, true);
       document.getElementById('tnl-ts-funnel').checked = !!c.tailscale.funnel;
       document.getElementById('tnl-ts-funnelport').value = c.tailscale.funnelPort || 3000;
@@ -380,7 +396,7 @@
       document.getElementById('tnl-na-status').textContent = tnlFmtStatus(pr.natapp || {}, na, av.natapp);
       tnlGateRestart('tnl-na-restart', av.natapp, !!na.monitorOnly);
       const naAvail = document.getElementById('tnl-na-avail');
-      if (naAvail) naAvail.textContent = av.natapp ? '· 已安装' : '· 未检测到 natapp';
+      if (naAvail) naAvail.textContent = av.natapp ? '· ' + tr('qwenAudioStateReady', '已安装') : '· ' + tr('mngHostNatappMissing', '未检测到 natapp');
       // cpolar (硬编码隧道)
       const cp = c.cpolar || {};
       document.getElementById('tnl-cp-enabled').checked = !!cp.enabled;
@@ -392,7 +408,7 @@
       document.getElementById('tnl-cp-status').textContent = tnlFmtStatus(pr.cpolar || {}, cp, av.cpolar);
       tnlGateRestart('tnl-cp-restart', av.cpolar, !!cp.monitorOnly);
       const cpAvail = document.getElementById('tnl-cp-avail');
-      if (cpAvail) cpAvail.textContent = av.cpolar ? '· 已安装' : '· 未检测到 cpolar';
+      if (cpAvail) cpAvail.textContent = av.cpolar ? '· ' + tr('qwenAudioStateReady', '已安装') : '· ' + tr('mngHostCpMissing', '未检测到 cpolar');
       // sakurafrp (硬编码隧道)
       const sf = c.sakurafrp || {};
       document.getElementById('tnl-sf-enabled').checked = !!sf.enabled;
@@ -404,7 +420,7 @@
       document.getElementById('tnl-sf-status').textContent = tnlFmtStatus(pr.sakurafrp || {}, sf, av.sakurafrp);
       tnlGateRestart('tnl-sf-restart', av.sakurafrp, !!sf.monitorOnly);
       const sfAvail = document.getElementById('tnl-sf-avail');
-      if (sfAvail) sfAvail.textContent = av.sakurafrp ? '· 已安装' : '· 未检测到 sakurafrp';
+      if (sfAvail) sfAvail.textContent = av.sakurafrp ? '· ' + tr('qwenAudioStateReady', '已安装') : '· ' + tr('mngHostSfMissing', '未检测到 sakurafrp');
       loadFunnelStatus();
       loadIpv6Status();
       loadSakurafrpEnrichment();
@@ -482,28 +498,28 @@
       const res = await fetch('/api/settings/tunnel', { method: 'POST', headers, body: JSON.stringify(body) });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.ok) throw new Error(d?.error || ('HTTP ' + res.status));
-      if (msg) { msg.textContent = '已保存'; msg.className = 'status-text ok'; }
-      showToast('外网穿透设置已保存');
+      if (msg) { msg.textContent = tr('saved', '已保存'); msg.className = 'status-text ok'; }
+      showToast(tr('mngHostTunnelSaved', '外网穿透设置已保存'));
       loadTunnelSettings();
     } catch (e) {
-      if (msg) { msg.textContent = '错误: ' + e.message; msg.className = 'status-text err'; }
+      if (msg) { msg.textContent = tr('mngHostErrPrefix', '错误: {msg}', { msg: e.message }); msg.className = 'status-text err'; }
     }
   }
 
   async function restartTunnel(provider) {
     const msgId = { phddns: 'tnl-ph-msg', tailscale: 'tnl-ts-msg', natapp: 'tnl-na-msg', cpolar: 'tnl-cp-msg', sakurafrp: 'tnl-sf-msg' }[provider];
     const msg = document.getElementById(msgId);
-    if (msg) { msg.textContent = '正在重启…'; msg.className = 'status-text'; }
+    if (msg) { msg.textContent = tr('mngHostRestarting', '正在重启…'); msg.className = 'status-text'; }
     try {
       const headers = {};
       if (_urlToken) headers['X-Access-Token'] = _urlToken;
       const res = await fetch('/api/tunnel/restart/' + provider, { method: 'POST', headers });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.message || data.error || ('HTTP ' + res.status));
-      if (msg) { msg.textContent = data.message || '已触发重启'; msg.className = 'status-text ok'; }
+      if (msg) { msg.textContent = data.message || tr('mngHostRestartTriggered', '已触发重启'); msg.className = 'status-text ok'; }
       setTimeout(loadTunnelSettings, 1500);
     } catch (e) {
-      if (msg) { msg.textContent = '失败: ' + e.message; msg.className = 'status-text err'; }
+      if (msg) { msg.textContent = tr('mngHostFailPrefix', '失败: {msg}', { msg: e.message }); msg.className = 'status-text err'; }
     }
   }
 
@@ -529,31 +545,32 @@
       const data = await res.json();
       if (!res.ok || !data.ok) {
         const why = data.reason === 'no_token'
-          ? '未绑定访问密钥（在"凭证"填写，或 macOS 启动器登录后自动读取）'
-          : data.reason === 'api_error' ? 'API 调用失败：' + (data.message || '') : '不可用';
+          ? tr('mngHostSfNoToken', '未绑定访问密钥（在"凭证"填写，或 macOS 启动器登录后自动读取）')
+          : data.reason === 'api_error' ? tr('mngHostSfApiError', 'API 调用失败：{msg}', { msg: data.message || '' }) : tr('apkSourceUnavailable', '不可用');
         if (acct) acct.textContent = why;
         if (tnl) tnl.textContent = '-';
         return;
       }
       const u = data.user || {};
       if (acct) {
-        acct.textContent = `${u.name || u.id || '?'} · 流量 ${sfFmtBytes(u.trafficUsed)}/${sfFmtBytes(u.trafficTotal)}`
-          + ` · ${u.signed ? '已签到' : '未签到'}` + (u.realname ? ' · 已实名' : '');
+        acct.textContent = tr('mngHostSfTrafficLine', '{name} · 流量 {used}/{total}', { name: u.name || u.id || '?', used: sfFmtBytes(u.trafficUsed), total: sfFmtBytes(u.trafficTotal) })
+          + (u.signed ? tr('mngHostSfSigned', ' · 已签到') : tr('mngHostSfNotSigned', ' · 未签到'))
+          + (u.realname ? tr('mngHostSfRealname', ' · 已实名') : '');
       }
       const a = data.access;
       if (tnl) {
         if (a) {
-          const reach = a.needsBoundDomain ? '需绑定 *.nyat.app 域名（auto_https）'
-            : a.publicUrl ? a.publicUrl : '无公网地址（' + (a.reason || '未知') + '）';
-          tnl.textContent = `${a.name || a.tunnelId} · ${a.type || '?'} · ${a.online ? '在线' : '离线'}`
+          const reach = a.needsBoundDomain ? tr('mngHostSfNeedsBoundDomain', '需绑定 *.nyat.app 域名（auto_https）')
+            : a.publicUrl ? a.publicUrl : tr('mngHostSfNoPublicUrl', '无公网地址（{reason}）', { reason: a.reason || tr('airOpsUnknown', '未知') });
+          tnl.textContent = (a.name || a.tunnelId) + ' · ' + (a.type || '?') + ' · ' + (a.online ? tr('airTunnelOnline', '在线') : tr('airTunnelOffline', '离线'))
             + ` · ${a.nodeName || a.nodeHost || ''} · ${reach}`;
         } else {
-          tnl.textContent = data.tunnelCount ? `共 ${data.tunnelCount} 条隧道` : '无隧道';
+          tnl.textContent = data.tunnelCount ? tr('mngHostSfTunnelCount', '共 {count} 条隧道', { count: data.tunnelCount }) : tr('mngHostSfNoTunnels', '无隧道');
         }
       }
       // Only auto_https tunnels need the paste box; others auto-derive.
       if (boundInput) boundInput.style.display = data.needsBoundDomain ? '' : 'none';
-      if (backfillBtn) backfillBtn.textContent = data.needsBoundDomain ? '回填' : '自动回填';
+      if (backfillBtn) backfillBtn.textContent = data.needsBoundDomain ? tr('mngBackfill', '回填') : tr('mngHostSfAutoBackfill', '自动回填');
     } catch (_) { /* enrichment is best-effort; the panel still works without it */ }
   }
 
@@ -561,17 +578,17 @@
     const btn = document.getElementById('tnl-sf-install');
     const msg = document.getElementById('tnl-sf-install-msg');
     if (btn) btn.disabled = true;
-    if (msg) { msg.textContent = '正在下载并校验 frpc…'; msg.className = 'status-text'; }
+    if (msg) { msg.textContent = tr('mngHostSfInstalling', '正在下载并校验 frpc…'); msg.className = 'status-text'; }
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (_urlToken) headers['X-Access-Token'] = _urlToken;
       const res = await fetch('/api/tunnel/sakurafrp/install', { method: 'POST', headers });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.message || data.reason || ('HTTP ' + res.status));
-      if (msg) { msg.textContent = '已安装 frpc ' + (data.version || '') + ' → ' + (data.path || ''); msg.className = 'status-text ok'; }
+      if (msg) { msg.textContent = tr('mngHostSfInstalledMsg', '已安装 frpc {version} → {path}', { version: data.version || '', path: data.path || '' }); msg.className = 'status-text ok'; }
       loadTunnelSettings();
     } catch (e) {
-      if (msg) { msg.textContent = '安装失败: ' + e.message; msg.className = 'status-text err'; }
+      if (msg) { msg.textContent = tr('mngHostInstallFailed', '安装失败: {msg}', { msg: e.message }); msg.className = 'status-text err'; }
     } finally {
       if (btn) btn.disabled = false;
     }
@@ -582,7 +599,7 @@
     const msg = document.getElementById('tnl-sf-backfill-msg');
     const boundInput = document.getElementById('tnl-sf-bounddomain');
     if (btn) btn.disabled = true;
-    if (msg) { msg.textContent = '正在回填…'; msg.className = 'status-text'; }
+    if (msg) { msg.textContent = tr('mngHostBackfilling', '正在回填…'); msg.className = 'status-text'; }
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (_urlToken) headers['X-Access-Token'] = _urlToken;
@@ -593,13 +610,13 @@
       const data = await res.json();
       if (!res.ok || !data.ok) {
         const hint = data.reason === 'bound_domain_required'
-          ? '请填写绑定的 *.nyat.app 域名' : (data.message || data.reason || ('HTTP ' + res.status));
+          ? tr('mngHostSfPleaseBoundDomain', '请填写绑定的 *.nyat.app 域名') : (data.message || data.reason || ('HTTP ' + res.status));
         throw new Error(hint);
       }
-      if (msg) { msg.textContent = '已回填公网地址：' + data.url; msg.className = 'status-text ok'; }
+      if (msg) { msg.textContent = tr('mngHostSfBackfilled', '已回填公网地址：{url}', { url: data.url }); msg.className = 'status-text ok'; }
       loadTunnelSettings();
     } catch (e) {
-      if (msg) { msg.textContent = '回填失败: ' + e.message; msg.className = 'status-text err'; }
+      if (msg) { msg.textContent = tr('mngHostBackfillFailed', '回填失败: {msg}', { msg: e.message }); msg.className = 'status-text err'; }
     } finally {
       if (btn) btn.disabled = false;
     }
@@ -610,20 +627,20 @@
   // (drains in-flight messages, then relaunches). All sessions briefly disconnect
   // and auto-reconnect once the fresh instance is up.
   async function restartMulticcService() {
-    if (!(await showConfirm('确定要重启 multicc 服务吗？\n这会短暂断开所有会话，随后自动重连（在途消息会先保存）。', { danger: true, okText: '重启' }))) return;
+    if (!(await showConfirm(tr('mngHostRestartConfirm', '确定要重启 multicc 服务吗？\n这会短暂断开所有会话，随后自动重连（在途消息会先保存）。'), { danger: true, okText: tr('restart', '重启') }))) return;
     const headers = { 'Content-Type': 'application/json' };
     if (_urlToken) headers['X-Access-Token'] = _urlToken;
     try {
       const res = await fetch('/api/restart', { method: 'POST', headers });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { showToast('重启失败：' + (data.error || 'HTTP ' + res.status), true); return; }
+      if (!res.ok) { showToast(tr('mngHostRestartFailed', '重启失败：{msg}', { msg: data.error || 'HTTP ' + res.status }), true); return; }
       if (data.activeStreaming > 0) {
-        showToast('⚠️ 有 ' + data.activeStreaming + ' 个会话正在输出，将先尝试保存其在途内容，再重启', true);
+        showToast(tr('mngHostRestartActiveStreams', '⚠️ 有 {count} 个会话正在输出，将先尝试保存其在途内容，再重启', { count: data.activeStreaming }), true);
       } else {
-        showToast('重启请求已发送，服务即将重启…');
+        showToast(tr('mngHostRestartSent', '重启请求已发送，服务即将重启…'));
       }
     } catch (e) {
-      showToast('重启请求失败：' + e.message, true);
+      showToast(tr('mngHostRestartReqFailed', '重启请求失败：{msg}', { msg: e.message }), true);
     }
   }
 
@@ -634,7 +651,7 @@
     try {
       const res = await fetch('/api/tunnel/funnel' + tokenQS('?'));
       const data = await res.json();
-      el.textContent = (data.status && data.status.trim()) || '未开启 (No serve config)';
+      el.textContent = (data.status && data.status.trim()) || tr('mngHostFunnelOff', '未开启 (No serve config)');
     } catch (_) { el.textContent = '—'; }
   }
 
@@ -644,32 +661,32 @@
     const sEl = document.getElementById('tnl-ipv6-status');
     const aEl = document.getElementById('tnl-ipv6-addr');
     if (!sEl) return;
-    if (manual) sEl.textContent = '检测中…';
+    if (manual) sEl.textContent = tr('mngHostIpv6Checking', '检测中…');
     try {
       const res = await fetch('/api/tunnel/ipv6' + tokenQS('?'));
       const d = await res.json();
       if (!res.ok || d.error) throw new Error(d.error || ('HTTP ' + res.status));
       const ts = d.tailscale || {};
       if (d.directReady) {
-        sEl.textContent = '✅ 就绪 — 远程可走 IPv6 直连';
+        sEl.textContent = tr('mngHostIpv6Ready', '✅ 就绪 — 远程可走 IPv6 直连');
         sEl.style.color = 'var(--green, #16a34a)';
       } else if (!d.host || !d.host.hasGlobalV6) {
-        sEl.textContent = '❌ 本机无全局 IPv6（路由器/ISP 未下发）';
+        sEl.textContent = tr('mngHostIpv6NoGlobal', '❌ 本机无全局 IPv6（路由器/ISP 未下发）');
         sEl.style.color = 'var(--err, #dc2626)';
       } else if (ts.available && ts.ipv6 === false) {
-        sEl.textContent = '⚠️ 有本机地址但 Tailscale 测不通 IPv6（可能被运营商拦入站）';
+        sEl.textContent = tr('mngHostIpv6TsBlocked', '⚠️ 有本机地址但 Tailscale 测不通 IPv6（可能被运营商拦入站）');
         sEl.style.color = 'var(--warn, #d97706)';
       } else {
-        sEl.textContent = '✅ 本机有全局 IPv6' + (ts.available ? '' : '（无 tailscale CLI，未二次验证）');
+        sEl.textContent = tr('mngHostIpv6GlobalOk', '✅ 本机有全局 IPv6') + (ts.available ? '' : tr('mngHostIpv6NoCliNote', '（无 tailscale CLI，未二次验证）'));
         sEl.style.color = 'var(--green, #16a34a)';
       }
       const addrs = (d.host && d.host.addresses || []).map(x => `${x.address} (${x.iface})`);
-      let line = addrs.length ? addrs.join('\n') : '无';
+      let line = addrs.length ? addrs.join('\n') : tr('airPushNone', '无');
       if (ts.detail) line += `\nTailscale netcheck → IPv6: ${ts.detail}`;
-      if (ts.nearestDerp) line += `\n最近 DERP 中继: ${ts.nearestDerp}`;
+      if (ts.nearestDerp) line += tr('mngHostIpv6NearestDerp', '\n最近 DERP 中继: {derp}', { derp: ts.nearestDerp });
       if (aEl) aEl.textContent = line;
     } catch (e) {
-      sEl.textContent = '检测失败: ' + e.message;
+      sEl.textContent = tr('mngHostDetectFailed', '检测失败: {msg}', { msg: e.message });
       sEl.style.color = 'var(--err, #dc2626)';
     }
   }
@@ -679,20 +696,20 @@
     const msg = document.getElementById('tnl-ts-msg');
     const on = document.getElementById('tnl-ts-funnel').checked;
     const port = parseInt(document.getElementById('tnl-ts-funnelport').value, 10) || 3000;
-    if (on && !confirm(`确定开启 Funnel 公网访问？\n这会把端口 ${port} 暴露到整个互联网（任何人凭 URL 可访问）。\n请确认已设置足够强的 ACCESS_TOKEN。`)) return;
-    if (msg) { msg.textContent = on ? '正在开启 Funnel…' : '正在关闭 Funnel…'; msg.className = 'status-text'; }
+    if (on && !confirm(tr('mngHostFunnelConfirm', '确定开启 Funnel 公网访问？\n这会把端口 {port} 暴露到整个互联网（任何人凭 URL 可访问）。\n请确认已设置足够强的 ACCESS_TOKEN。', { port }))) return;
+    if (msg) { msg.textContent = on ? tr('mngHostFunnelEnabling', '正在开启 Funnel…') : tr('mngHostFunnelDisabling', '正在关闭 Funnel…'); msg.className = 'status-text'; }
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (_urlToken) headers['X-Access-Token'] = _urlToken;
       const res = await fetch('/api/tunnel/funnel', { method: 'POST', headers, body: JSON.stringify({ on, port }) });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || data.message || ('HTTP ' + res.status));
-      if (msg) { msg.textContent = data.message || '完成'; msg.className = 'status-text ok'; }
+      if (msg) { msg.textContent = data.message || tr('done', '完成'); msg.className = 'status-text ok'; }
       // Persist the funnel flag/port into config too, then refresh status.
       saveTunnelSettings();
       setTimeout(loadFunnelStatus, 1200);
     } catch (e) {
-      if (msg) { msg.textContent = '失败: ' + e.message; msg.className = 'status-text err'; }
+      if (msg) { msg.textContent = tr('mngHostFailPrefix', '失败: {msg}', { msg: e.message }); msg.className = 'status-text err'; }
     }
   }
 
