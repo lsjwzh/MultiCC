@@ -87,10 +87,15 @@
   let loading = false;
   // 轮询是本页面唯一的数据来源（Air 没有 WebSocket），所以只能靠「有没有变」
   // 决定要不要重画。服务端给两个读接口算 ETag；内容没变时回 304，这里就完全
-  // 跳过解析与 DOM 重建。刷新失败时指数退避，别在服务端打嗝时继续每 4 秒敲。
+  // 跳过解析与 DOM 重建。刷新失败时指数退避，别在服务端打嗝时继续按同一节奏敲。
   const resourceEtag = new Map();
   let pollFailures = 0;
-  const POLL_MS = 4000;
+  // 只有一个轮询档，活跃 / 后台标签页 / 内容没变都是它。2026-09-30 用户要求统一到
+  // 15 秒，App 端（air_tasks_view.dart 的 _snapshotPollInterval）也是同一个数字。
+  // 数字不是随手挑的：服务端每轮要重算全部卡片（线上 1189 张、实测 0.5s），再快
+  // 就是白烧。原先分三档（活跃 4s / 后台 15s / 空闲 15s），拉平之后降档判断没有了
+  // 可降的空间，那套机械（POLL_HIDDEN_MS / POLL_IDLE_MS / idleRounds）已删。
+  const POLL_MS = 15000;
   // 任务完成/出错未读提醒：统一事件源，三处消费（侧边栏未读高亮、语音、浮动条）。
   // 唯一全局实例；openTask 走 navigate（同一路径也负责把未读标记清掉）。
   // statusOf 把 status+runState 折算成与徽标同一份的状态，出错的任务因此也能
@@ -100,17 +105,8 @@
     openTask: task => navigate(task?.dirId, task?.id),
     statusOf: task => taskStatus(task),
   });
-  const POLL_HIDDEN_MS = 15000;
+  // 失败退避的上限（不是轮询档位）：连续失败时按 2 的幂往上翻，翻到这个数就封顶。
   const POLL_MAX_MS = 30000;
-  // 服务端每次算这份快照要重算全部卡片（线上 1189 张、实测 0.5s）。没人在这台机器
-  // 上动任务时，4 秒一轮纯属白烧 —— 连着两轮内容没变就降到 15 秒，和「后台标签页」
-  // 同一档：内容一样就意味着画面上没有任何东西会变，最多晚一轮发现变化而已。
-  // 不看「有没有卡片在跑」来豁免：任务板上长期挂着别人留下的 running/queued 旧卡
-  // （实测 9 张），拿它当条件等于永远不降频。
-  // document.hidden 在这里帮不上忙：它说的是「标签页被埋」，屏幕睡着时这个页面
-  // 依然是可见的，照旧 4 秒敲一次。
-  const POLL_IDLE_MS = 15000;
-  let idleRounds = 0;
   let quickCreateAttempt = null;
   let directorySearch = null;
   // fullText 默认开：搜索的默认目标是「全部记录（含对话）」，只出现在对话正文里的词
@@ -280,7 +276,7 @@
       || node('span', taskBadgeWord(task), 'mc-status');
   }
 
-  // `conditional` 只给每 4 秒被问一次的那两个轮询接口用，它们的调用方知道
+  // `conditional` 只给每 15 秒被问一次的那两个轮询接口用，它们的调用方知道
   // 「没变」是正常结果。通用 api() 绝不能这么干：别的 GET 调用方要的是数据本身，
   // 收到「没变」会当成空数据用。条件请求由客户端显式发起，不依赖浏览器/代理的
   // 缓存行为（这个页面所有 GET 都是 no-store）。
@@ -1034,7 +1030,7 @@
     } catch (_) { return 0; }
   }
 
-  // 只在状态真的变了的时候动 class/变量：这条带子每 4 秒会随快照重画一次，而
+  // 只在状态真的变了的时候动 class/变量：这条带子每 15 秒会随快照重画一次，而
   // 「移除再添加」这个类（中间还读了一次 clientWidth，强制过一次样式重算）等于
   // 每次都把动画从头来过 —— 屏幕上就是跑马灯走一下、弹回起点、再走一下。
   function setPillText(pill, text) {
@@ -1368,7 +1364,7 @@
     if (!container) return;
     // 手机上这一排整个不出现（air.css 的 760px 块同理）：pin 的任务在侧栏置顶。两处都判是因为这里还决定建不建 DOM。
     if (phoneLayout() || !taskPins.length) { container.replaceChildren(); container.hidden = true; pinSignature = ''; return; }
-    // 4 秒一次的轮询不许拆掉悬停中的卡：内容没变就不重建（悬停不改内容）。
+    // 15 秒一次的轮询不许拆掉悬停中的卡：内容没变就不重建（悬停不改内容）。
     const tasks = pinnedTasks();
     const signature = tasks.map(task => [task.id, task.title, taskStatus(task), isRunningTask(task), directoryName(task.dirId), task.workflowStage || ''].join('\u0001')).join('\u0002');
     container.hidden = false;
@@ -2543,9 +2539,6 @@
     let failed = false;
     try {
       const snapshot = await apiConditional('/api/air');
-      // 连着两轮 304 就认为「没人动」，降到 POLL_IDLE_MS。失败的那一轮不改计数
-      // （异常走 catch，到不了这行），免得服务端打嗝被当成"没人在动"。
-      idleRounds = snapshot.unchanged ? idleRounds + 1 : 0;
       if (!snapshot.unchanged) {
         data = snapshot;
         // Pin 的清单随快照一起来（不用为它多打一次接口）。顺序就是页头从左到右的顺序。
@@ -2572,7 +2565,7 @@
       const entryChanged = taskId && (refreshSelectedEntry || !$('task-details').hidden)
         ? await refreshEntry() : false;
       if (entryChanged === null) failed = true;
-      // 定时任务与控制台概览只在真的有新数据时重画，否则每 4 秒白建一遍 DOM。
+      // 定时任务与控制台概览只在真的有新数据时重画，否则每 15 秒白建一遍 DOM。
       if (snapshot.unchanged && !entryChanged) return;
       if (mode === 'schedules' || mode === 'overview') await window.MultiCCAirSchedules?.refresh();
       if (mode === 'overview') window.MultiCCAirAdmin?.render('overview', adminContext());
@@ -2895,7 +2888,7 @@
     if (event.persisted) { stopped = false; epoch++; void poll(); }
   });
 
-  // 隐藏期间不刷新（见 poll），回到前台先对齐一次：降频后更不该回来还看十几秒前的状态。
+  // 隐藏期间不刷新（见 poll），回到前台先对齐一次：否则回来还盯着十几秒前的状态。
   document.addEventListener('visibilitychange', () => {
     if (document.hidden || stopped) return;
     clearTimeout(timer);
@@ -2907,8 +2900,7 @@
     if (stopped || currentEpoch !== epoch) return;
     if (!document.hidden || !data) await refresh();
     if (stopped || currentEpoch !== epoch) return;
-    const base = document.hidden && data ? POLL_HIDDEN_MS : (idleRounds >= 2 ? POLL_IDLE_MS : POLL_MS);
-    const delay = pollFailures ? Math.min(base * 2 ** pollFailures, POLL_MAX_MS) : base;
+    const delay = pollFailures ? Math.min(POLL_MS * 2 ** pollFailures, POLL_MAX_MS) : POLL_MS;
     timer = setTimeout(() => poll(currentEpoch), delay);
   }
   void powerShortcuts.refresh();

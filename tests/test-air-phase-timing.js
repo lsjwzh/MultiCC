@@ -8,7 +8,7 @@
 //   2. 正文与 ETag 逐字节不受影响：数字一旦进 payload，每轮快照都会"变"，客户端再也
 //      拿不到 304 —— 那就等于为了诊断把代价乘十；
 //   3. 静默与限流：默认阈值下快轮次一行不打、慢轮次也至少隔 gap 才打一行，否则日志
-//      会比它要诊断的开销还贵（这接口每 4 秒一轮）；
+//      会比它要诊断的开销还贵（这接口每 15 秒一轮）；
 //   4. 启动窗口那一档只在宿主接了 logger 时生效。
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -116,7 +116,7 @@ test('快轮次静默、慢轮次限流：日志不能比它诊断的开销还�
   const slow = fixture({ costMs: 110, diagnostics: DEFAULT_LIKE });
   await get(slow.handlers, {});
   await get(slow.handlers, {});
-  assert.equal(slow.phaseLines().length, 1, '限流没生效，每 4 秒一轮会变成每轮一行');
+  assert.equal(slow.phaseLines().length, 1, '限流没生效，每 15 秒一轮会变成每轮一行');
 
   // 间隔清零后同样的两轮就该落两行 —— 证明上一条是限流而不是「根本没打」。
   const eager = fixture({ costMs: 30 });

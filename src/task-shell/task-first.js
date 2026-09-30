@@ -39,7 +39,7 @@ function createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports 
         try {
           // 已经 promote 且已建索引的行不再走 promote()：那是 roles.snapshot()
           // （四读一写、还会重算角色快照哈希）加一次回读，稳态下全是空转，
-          // 而 Air 快照每 4 秒就要问一次迁移 —— 线上 514 行任务每轮白跑一遍。
+          // 而 Air 快照每 15 秒就要问一次迁移 —— 线上 514 行任务每轮白跑一遍。
           // 上面那个循环早就用同一个条件跳过它们了，这里只是对齐。
           const promoted = original.taskFirst && indexed.has(original.id);
           const task = promoted ? original : promote(original);

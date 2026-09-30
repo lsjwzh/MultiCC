@@ -1,5 +1,5 @@
 'use strict';
-// Air 是纯轮询页面（没有 WebSocket），每 4 秒把任务板快照拉一次。这里用真浏览器
+// Air 是纯轮询页面（没有 WebSocket），每 15 秒把任务板快照拉一次。这里用真浏览器
 // 验证条件请求端到端成立：服务端算 ETag、内容没变回 304，客户端在 304 上既不重画
 // DOM，也不会漏掉真正变化的下一轮。
 const test = require('node:test');
@@ -58,8 +58,8 @@ test('Air 轮询：没变回 304 且不重画，变了立刻更新', async t => 
     // 给这一行盖个戳：只有真的重画了列表，这个标记才会跟着旧节点一起消失。
     assert.equal(await page.evaluate(`(() => { const row = document.querySelector('#directory-task-list > *'); row.dataset.airProbe = 'kept'; return row.dataset.airProbe; })()`), 'kept');
 
-    // 至少跨过两轮 4 秒轮询。
-    await sleep(9000);
+    // 至少跨过两轮 15 秒轮询（首轮在 t=0，加上 15s / 30s 两轮）。
+    await sleep(32000);
     assert.ok(polls.total >= 3, '轮询应该继续发生，实际 ' + polls.total);
     assert.ok(polls.conditional >= 1, '第二轮起要带 If-None-Match，实际 ' + polls.conditional);
     assert.ok(polls.notModified >= 1, '内容没变必须 304，实际 ' + polls.notModified);
@@ -72,7 +72,7 @@ test('Air 轮询：没变回 304 且不重画，变了立刻更新', async t => 
       migration: { errors: [] }, sessions: [],
       tasks: [{ id: 'tsk_0', title: '任务 A2', status: 'active', dirId: 'd1', updatedAt: 2000 }],
     });
-    assert.ok(await page.waitFor(`${rowText}.includes('任务 A2')`, { timeoutMs: 12000 }),
+    assert.ok(await page.waitFor(`${rowText}.includes('任务 A2')`, { timeoutMs: 25000 }),
       '数据变了必须更新到界面上：' + await page.evaluate(rowText));
     assert.deepEqual(await page.evaluate('window.__errors || []'), []);
     await page.screenshot('01-air-conditional-poll');

@@ -470,7 +470,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(cover.bg, 'rgb(239, 246, 255)', '它还是不透明的');
     await assertRingDrawn(page, '.space-card', '当前目录卡片（目录视图）');
     // 圈的颜色是「按 id 挑」而不是「每次随机」：整页重来一遍，同一张卡片还得是同一
-    // 个色。列表本来每 4 秒就随快照重画一次，随机会让同一行一直在换颜色。
+    // 个色。列表本来每 15 秒就随快照重画一次，随机会让同一行一直在换颜色。
     const tintOf = () => page.evaluate(`getComputedStyle(document.querySelector('.space-card')).getPropertyValue('--ring-tint').trim()`);
     const firstTint = await tintOf();
     assert.match(firstTint, /^#[0-9a-f]{6}$/i, `圈的 --ring-tint 该是调色板里的颜色，实际是 ${JSON.stringify(firstTint)}`);
