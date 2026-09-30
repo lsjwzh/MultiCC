@@ -1481,6 +1481,7 @@ function createChatTurnEngine(deps) {
         opts: {
           isFirstTurn, goalLimits, taskContextSeed: managed?.seed ?? taskContextHost?.taskShellContextSeed?.(sessionName, opts.taskContextSeed, isFirstTurn) ?? opts.taskContextSeed,
           mode: isResidentSession(cs.cli, persisted) ? 'streaming' : 'per-turn',
+          lang: opts.lang,
         },
         deps: {
           resolveRolePrompt: managed?.rolePrompt || folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT, buildSubagentProviderHint,
@@ -2921,6 +2922,9 @@ function createChatTurnEngine(deps) {
           if (typeof msg.userInputRequestId === 'string' && msg.userInputRequestId.trim()) {
             turnOpts.userInputRequestId = msg.userInputRequestId.trim();
           }
+          // Chat page's 中文/English toggle at send time; composeMessage turns
+          // this into an output-language instruction appended to the suffix.
+          if (msg.lang === 'zh' || msg.lang === 'en') turnOpts.lang = msg.lang;
           let pendingMemory;
           try { pendingMemory = getPendingMemoryDistill(sessionName); }
           catch (error) { pendingMemory = Promise.reject(error); }

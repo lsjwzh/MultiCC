@@ -719,6 +719,43 @@ console.log('── Suite 7: turn-plan layer ──');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
+// Suite 8: opts.lang -> output-language instruction appended to the suffix
+// (chat page's 中文/English toggle rides the suffix slot alongside ultracode)
+// ═══════════════════════════════════════════════════════════════════════
+console.log('── Suite 8: opts.lang suffix ──');
+
+(function suite8() {
+  const deps = makeDeps();
+  const sessionName = 's1';
+  const text = 'hi';
+
+  const en = composeMessage({ text, persisted: basePersisted({ type: null, effort: 'high' }), sessionName, opts: { isFirstTurn: true, lang: 'en' }, deps });
+  assert(en.suffix === '\n\nAll output must be in English.', '8a lang=en appends the English instruction');
+  assert(renderPrompt(en).endsWith('All output must be in English.'), '8a instruction reaches the rendered prompt tail');
+
+  const zh = composeMessage({ text, persisted: basePersisted({ type: null, effort: 'high' }), sessionName, opts: { isFirstTurn: true, lang: 'zh' }, deps });
+  assert(zh.suffix === '\n\n所有输出都用中文输出。', '8b lang=zh appends the Chinese instruction');
+
+  const none = composeMessage({ text, persisted: basePersisted({ type: null, effort: 'high' }), sessionName, opts: { isFirstTurn: true }, deps });
+  assert(none.suffix === '', '8c no lang -> no suffix change (byte-equivalence preserved)');
+
+  const invalid = composeMessage({ text, persisted: basePersisted({ type: null, effort: 'high' }), sessionName, opts: { isFirstTurn: true, lang: 'fr' }, deps });
+  assert(invalid.suffix === '', '8d unrecognized lang value is ignored');
+
+  // 8e: coexists with the ultracode suffix, ultracode first then language.
+  const both = composeMessage({ text, persisted: basePersisted({ type: null, effort: 'ultracode' }), sessionName, opts: { isFirstTurn: true, lang: 'en' }, deps });
+  assert(both.suffix === '\n\n[Use ultracode mode: orchestrate this task with the Workflow tool.]\n\nAll output must be in English.',
+    '8e ultracode + lang suffixes concatenate in order');
+
+  // 8f: excluded for aux (internal parsed-output jobs) and bare (continue/retry),
+  // matching the ultracode suffix's own gating.
+  const aux = composeMessage({ text, persisted: basePersisted({ type: 'aux', effort: 'high' }), sessionName, opts: { isFirstTurn: true, lang: 'en' }, deps });
+  assert(aux.suffix === '', '8f aux session ignores lang');
+  const bareLang = composeMessage({ text, persisted: basePersisted({ type: null, effort: 'high' }), sessionName, opts: { isFirstTurn: true, lang: 'en', bare: true }, deps });
+  assert(bareLang.suffix === '', '8f bare turn ignores lang');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
 console.log('');
 console.log(`${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

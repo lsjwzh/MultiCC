@@ -178,6 +178,7 @@ function validateEnvelope(env) {
  * @param {boolean} input.opts.isFirstTurn          - drives --session-id vs --resume (per-turn)
  * @param {Object|undefined} input.opts.goalLimits  - { maxRounds, maxBudget }
  * @param {string|undefined} input.opts.taskContextSeed - compiled task ledger prefix for a task-bound session's first turn (prompt only; never persisted as the user message)
+ * @param {'zh'|'en'|undefined} input.opts.lang - chat page's UI language toggle at send time; appends an output-language instruction to the suffix (never persisted as part of userText)
  * @param {'per-turn'|'streaming'} [input.opts.mode='per-turn']
  * @param {boolean} [input.opts.bare=false]         - true: skip contextLayers + suffix (continue/retry paths)
  * @param {string|undefined} input.opts.providerModel
@@ -201,6 +202,7 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
     providerModels,
     skipDefaultModel,
     disallowedTools = [],
+    lang,
   } = opts || {};
 
   // ── System prompt (single computation point; today rolePrompt is resolved at server.js:9077) ──
@@ -315,9 +317,17 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
   const ultracode = !bare
     && persisted.type !== 'aux'
     && deps.normalizeEffort(persisted.effort) === 'ultracode';
-  const suffix = ultracode
+  const ultracodeSuffix = ultracode
     ? '\n\n[Use ultracode mode: orchestrate this task with the Workflow tool.]'
     : '';
+  // Chat page's 中文/English toggle rides the same suffix slot: it must reach
+  // the model as an instruction, not sit in userText where it would pollute
+  // the persisted transcript. Excluded for aux (internal parsed-output jobs)
+  // and bare (continue/retry), matching the ultracode suffix's own gating.
+  const langSuffix = (!bare && persisted.type !== 'aux' && (lang === 'zh' || lang === 'en'))
+    ? (lang === 'en' ? '\n\nAll output must be in English.' : '\n\n所有输出都用中文输出。')
+    : '';
+  const suffix = ultracodeSuffix + langSuffix;
 
   const envelope = {
     imgHint,

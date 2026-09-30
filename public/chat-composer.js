@@ -116,6 +116,12 @@
     let lastSent = null;
     let manualRetrying = false;
     const sleep = ms => new Promise(resolve => (win.setTimeout || setTimeout)(resolve, ms));
+    // Chat page's 中文/English toggle (public/i18n.js) at send time; server turns
+    // this into an output-language instruction appended to the prompt suffix.
+    const currentLang = () => {
+      try { return typeof win.getLang === 'function' ? win.getLang() : null; }
+      catch { return null; }
+    };
 
     // 手动重试：先断掉还挂着的这一轮（与停止按钮同一个 cancel 控制），等几秒让
     // 服务端收干净、上游喘口气，再把原数据重新提交。页面刷新过就没有 lastSent，
@@ -144,6 +150,8 @@
           payload.goal = true;
           payload.goalLimits = original.goalLimits || {};
         }
+        const retryLang = original.lang || currentLang();
+        if (retryLang === 'zh' || retryLang === 'en') payload.lang = retryLang;
         stageUserMessage(original.text, clientMsgId);
         debug('state', `manualRetry() — WS ▶ user_message (${original.text.length} chars)`);
         if (!transportSend(payload)) return { ok: false, reason: 'send_failed' };
@@ -234,8 +242,10 @@
           payload.goal = true;
           payload.goalLimits = goalOptions.goalLimits || {};
         }
+        const lang = currentLang();
+        if (lang === 'zh' || lang === 'en') payload.lang = lang;
         if (!transportSend(payload)) throw new Error('WebSocket is not open');
-        lastSent = { text, goal: !!goalOptions, goalLimits: goalOptions ? goalOptions.goalLimits || {} : null };
+        lastSent = { text, goal: !!goalOptions, goalLimits: goalOptions ? goalOptions.goalLimits || {} : null, lang: lang === 'zh' || lang === 'en' ? lang : null };
         if (userInputRequestId) consumeUserInputRequestId(userInputRequestId);
         setPendingCancel(false);
         return true;
