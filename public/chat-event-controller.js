@@ -877,10 +877,7 @@
             host.showNotifyToast?.(message.message || tr('taskInProgress'), 'running');
             break;
           }
-          // D and its two goalState sub-letters (G=达成目标, N=需要交互) all get
-          // the task-aware voice — they're the same terminal-success outcome,
-          // just with a different badge word.
-          const completionVoice = (classifyState === 'D' || classifyState === 'G' || classifyState === 'N')
+          const completionVoice = classifyState === 'D'
             ? taskAwareCompletionVoice(message, display.voice) : '';
           host.speakNotify?.(completionVoice || display.voice, display.ding);
           break;

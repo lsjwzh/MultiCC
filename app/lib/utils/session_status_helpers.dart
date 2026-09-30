@@ -55,8 +55,6 @@ const Map<String, String> _classifyLabelKey = {
   'B': 'classifyWaitingBackground',
   'E': 'classifyApiError',
   'P': 'classifyProcessing',
-  'G': 'statusGoalAchieved',
-  'N': 'statusGoalInteract',
 };
 
 ({Color color, String label, String emoji})? classifyBadge(String? s) {
@@ -146,18 +144,6 @@ const Map<String, ClassifyNotificationCopy> _classifyCopy = {
     letter: 'P', type: null, wordKey: 'classifyProcessing',
     labelKey: 'classifyProcessing', voiceKey: null,
     ding: null, background: false,
-  ),
-  // G/N: D 的两个 goalState 子态（达成目标/需要交互），推送/播报文案与 D 完全
-  // 一致，只有短标签不同。
-  'G': ClassifyNotificationCopy(
-    letter: 'G', type: 'succeeded', wordKey: 'classifySucceeded',
-    labelKey: 'statusGoalAchieved', voiceKey: 'voiceExecutionSucceeded',
-    ding: 'succeeded', background: false,
-  ),
-  'N': ClassifyNotificationCopy(
-    letter: 'N', type: 'succeeded', wordKey: 'classifySucceeded',
-    labelKey: 'statusGoalInteract', voiceKey: 'voiceExecutionSucceeded',
-    ding: 'succeeded', background: false,
   ),
 };
 
