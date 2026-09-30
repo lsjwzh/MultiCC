@@ -30,7 +30,9 @@
   const document = root.document;
   const el = id => document.getElementById(id);
 
-  const POLL_MS = 2500;
+  // 与页面快照轮询同一个档位（15s 单档，见 public/air.js 的 POLL_MS）：同机多会话
+  // 同时看进度时，2.5s 一次会把服务端压出抖动。代价是升级进度最多晚 15s 刷新。
+  const POLL_MS = 15000;
   const MAX_WAIT_MS = 8 * 60 * 1000;
 
   // 产品名，不是文案：中文界面里也是这几个词，所以不进 i18n 词典。名字按**家族**取

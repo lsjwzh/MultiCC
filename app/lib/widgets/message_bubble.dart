@@ -567,14 +567,22 @@ class _AssistantBubble extends StatelessWidget {
     // 模型归属的落点（与 Web 端同一条规则，见 public/chat-live-ui.js 的
     // attachModelAttribution）：优先贴到轨迹那行「⏱ N tools · Xs wall-clock」的
     // 最右端 —— 那是页脚里最像「这轮多久」的一行；工具不足两个时那一行整个不画
-    // （[hasTrajectoryContent]），于是退到 🕐/⏱ 时间行；两行都不在（老历史缺时间
-    // 戳、基本模式）才自占一行。前两种情况下这些行的右边本来就是空的，所以既不
-    // 多占一行，也挤不掉原有内容。
+    // （[hasTrajectoryContent]），于是退到 🕐/⏱ 时间行（那一行两种模式都画，见
+    // 下面 _TimingLine 那道条件）；两行都没内容（时间戳与耗时都没有的老历史）才
+    // 自占一行。前两种情况下这些行的右边本来就是空的，所以既不多占一行，也挤不
+    // 掉原有内容 —— 基本模式同样走前两种落点，不再落到自占一行那一档。
     final trajectoryShown =
         hasTools && advancedMode && hasTrajectoryContent(message.toolCalls);
-    // _TimingLine 只在 advancedMode 且有 durationMs 时才建，而消息的时间戳
-    // （message.timestamp）本来就非空，所以那一行只要建了就必定有内容可写。
-    final timingShown = advancedMode && message.durationMs != null;
+    // timingShown 同时管两件事，必须是同一个条件：① 那一行真的画得出来，② 归属
+    // 有宿主行可贴。判据的下半截直接问 [_TimingLine.hasContent]（= 那一行自己的
+    // 渲染条件，唯一真源）—— 宿主行自己是空的，右边就没有那块空位，归属贴上去等于
+    // 白贴，还会连带丢掉本来该有的兜底。
+    //
+    // 上半截是流式期间先不画：Web 的活体气泡同样如此（public/chat-event-controller.js
+    // 只在 result 事件里补这一行），否则回复还在写的时候页脚就冒出一个时钟，两端在
+    // 流式期间对不上，收尾时那一行还要跳一下。
+    final timingShown = !(message.isStreaming && message.durationMs == null)
+        && _TimingLine.hasContent(message.timestamp, message.durationMs);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -628,15 +636,19 @@ class _AssistantBubble extends StatelessWidget {
                   // Token usage line
                   if (message.usage != null && !message.usage!.isEmpty)
                     _TokenUsageLine(usage: message.usage!),
-                  // Timing line: reply timestamp + task duration
-                  if (advancedMode && message.durationMs != null)
+                  // Timing line: reply timestamp + task duration.
+                  // 两种模式都建（基本模式一样要知道「这轮什么时候回的、跑了多久」，
+                  // 而且归属也要有个宿主行可贴）。闸门就是上面的 timingShown：它与
+                  // 这一行的渲染条件、以及归属的落点判定用的是同一个布尔 —— 三处
+                  // 不可能走散。
+                  if (timingShown)
                     _TimingLine(
                       timestamp: message.timestamp,
                       durationMs: message.durationMs,
                       // 轨迹文案行不在时，归属才退到这一行（两处只能贴一处）。
-                      attribution: (timingShown && !trajectoryShown)
-                          ? message.modelAttribution
-                          : null,
+                      attribution: trajectoryShown
+                          ? null
+                          : message.modelAttribution,
                     ),
                   // Durable interrupted draft (partial): never continues.
                   if (message.isPartial)
@@ -670,8 +682,16 @@ class _AssistantBubble extends StatelessWidget {
 }
 
 /// 归属的**兜底**一行：页脚里那两行（轨迹的墙钟文案行、🕐/⏱ 时间行）都不在时才
-/// 走这里 —— 正常情况下看不到它，因为归属总是搭在别的一行上。右对齐，并且仍然
-/// 只在真的有归属时渲染（attribution 为 null / 三段全空 = 不留空壳）。
+/// 走这里。右对齐，并且仍然只在真的有归属时渲染（attribution 为 null / 三段全空
+/// = 不留空壳）。
+///
+/// **App 上它现在是够不到的，但理由不是一个恒真的条件**：归属只在 result 事件里
+/// 落到消息上（见 transcript_live_folder 的 attachResultUsage），那一刻气泡已经
+/// 不是流式了，于是时间行必定在场（`timingShown` 在非流式下就是
+/// [_TimingLine.hasContent]，而 [ChatMessage.timestamp] 非空 ⇒ 恒真）。留着它是当
+/// 这两条不变量被破坏时的安全网 —— 否则那种情况下归属会静默消失，而不是退化成
+/// 一行。Web 侧（public/chat-live-ui.js 的 `.msg-model-attribution-row`）是**同一
+/// 套**兜底，但那边够得到：老历史记录的 `ts` 可以为空。两端结构一致是有意的。
 ///
 /// 一段会话里可以换过多次线路/模型，逐条标注才好溯源。只挂在 assistant 气泡上：
 /// user / system 消息没有「哪个模型产出」这回事。
@@ -1161,6 +1181,16 @@ class _TimingLine extends StatelessWidget {
   /// chat-live-ui / chat-history-view 同一份）。
   static String _fmtDuration(int ms) => formatDuration(ms);
 
+  /// 这一行**真的会画出内容**吗 —— 就是 [build] 的渲染条件，唯一真源。时钟段看
+  /// [timestamp]，时长段看 [durationMs]（负数不画）；两段都没有时 build 返回
+  /// [SizedBox.shrink]，不留痕迹。
+  ///
+  /// 模型归属的落点判定必须问这一句（而不是自己另写一份「有没有时间行」）：宿主
+  /// 行自己是空的，右边就没有那块空位，归属贴上去等于白贴，还会连带丢掉本来的
+  /// 自占一行兜底。参数是 nullable 的，所以调用方可以把消息字段直接递进来。
+  static bool hasContent(DateTime? timestamp, int? durationMs) =>
+      timestamp != null || (durationMs != null && durationMs >= 0);
+
   @override
   Widget build(BuildContext context) {
     final parts = <Widget>[];
@@ -1197,7 +1227,9 @@ class _TimingLine extends StatelessWidget {
       );
     }
 
-    if (parts.isEmpty) return const SizedBox.shrink();
+    // 与 [hasContent] 同义（parts 非空 <=> 至少一段有值），写成这一步而不是直接
+    // 数 parts，是为了让「画画的条件」和「调用方判落点的条件」永远是同一句。
+    if (!hasContent(timestamp, durationMs)) return const SizedBox.shrink();
 
     // Wrap for the same reason the usage line above wraps: a large text-scale
     // factor or a long duration must push the clock onto its own line rather
