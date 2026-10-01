@@ -398,7 +398,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(await page.evaluate(`document.activeElement===document.getElementById('console-task-search')`), true, '重画列表不夺走搜索框焦点');
     assert.equal(await page.evaluate(`document.querySelectorAll('#console-task-list .admin-recent-row').length`), 1);
     assert.deepEqual(await page.evaluate(`(() => { const s=getComputedStyle(document.getElementById('console-task-list')); return [s.overflowY,s.maxHeight]; })()`),
-      ['auto', '350px'], '全部任务列表有固定上限并在内部滚动');
+      ['visible', 'none'], '全部任务列表不创建第二层滚动');
 
     // ── 彩虹圈：运行中的任务，和任务对应的目录 ───────────────────────────
     // 圈只有一份定义（status-presentation.js 只给 running 设了 spinner），所以它
@@ -648,6 +648,29 @@ test('the directory task list keeps its filters, shares page scrolling, paginate
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#directory-task-list strong')].map(e=>e.textContent)`), ['已经归档']);
     // 状态过滤是这副清单的常态，抬头不会跟着变回「最近任务」—— 那个两态的开关
     // 已经被分页替掉了。
+
+    // 控制台「全部任务」复用同一套 20 条分页和消息/访问时钟；其它四格仍是短清单。
+    tasks = Array.from({ length: 45 }, (_, i) => ({ id: `c${i}`, dirId: 'd1', title: `控制台任务 ${i}`,
+      status: 'active', runState: 'idle', updatedAt: 1000 + i, lastMessageAt: 3000 - i,
+      resource: { residency: 'planned', lease: 'idle' } }));
+    await page.navigate('/air?view=overview');
+    await page.evaluate(`document.querySelector('.console-filter-tabs .admin-stat[data-view="all"]').click()`);
+    assert.equal(await page.evaluate(`document.querySelectorAll('#console-task-list .admin-recent-row').length`), 20);
+    assert.equal(await page.evaluate(`document.querySelector('#console-task-list strong').textContent`), '控制台任务 0', '按消息而非元数据更新时间排');
+    assert.equal(await page.evaluate(`document.getElementById('console-task-page').textContent`), '第 1 / 3 页');
+    await page.evaluate(`document.getElementById('console-task-next').click()`);
+    assert.equal(await page.evaluate(`document.querySelector('#console-task-list strong').textContent`), '控制台任务 20');
+    assert.equal(await page.evaluate(`document.getElementById('console-task-page').textContent`), '第 2 / 3 页');
+    await page.evaluate(`document.querySelector('#console-task-sort [data-sort="visit"]').click()`);
+    assert.equal(await page.evaluate(`document.querySelector('#console-task-list strong').textContent`), '控制台任务 0', '无访问记录时退回消息时间');
+    assert.equal(await page.evaluate(`document.getElementById('console-task-page').textContent`), '第 1 / 3 页', '换排序回第一页');
+    await page.evaluate(`localStorage.setItem('air:task-visited-at', JSON.stringify({c30:9000,c8:8000}));document.querySelector('#console-task-sort [data-sort="message"]').click();document.querySelector('#console-task-sort [data-sort="visit"]').click()`);
+    assert.equal(await page.evaluate(`document.querySelector('#console-task-list strong').textContent`), '控制台任务 30', '有访问记录按本机访问时间排');
+    await page.evaluate(`(() => { const i=document.getElementById('console-task-search');i.value='任务 4';i.dispatchEvent(new Event('input')); })()`);
+    assert.equal(await page.evaluate(`document.getElementById('console-task-pager').hidden`), true, '筛成一页就藏分页条');
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    assert.deepEqual(await page.evaluate(`(() => { const s=getComputedStyle(document.getElementById('console-task-list'));return [s.overflowY,s.maxHeight,document.documentElement.scrollWidth<=innerWidth]; })()`),
+      ['visible', 'none', true], '手机任务行随控制台整页滚动、不产生第二滚动层或横向溢出');
   });
 });
 

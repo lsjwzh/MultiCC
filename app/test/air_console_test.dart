@@ -35,9 +35,7 @@ MockClient _client(
   final path = request.url.path;
   // 记录带查询串的完整路径：控制台那一份检索是**跨目录**的，它不传 dirId 这件事
   // 只能从请求本身看出来（见「服务端命中」那条用例）。
-  requests.add(
-    request.url.query.isEmpty ? path : '$path?${request.url.query}',
-  );
+  requests.add(request.url.query.isEmpty ? path : '$path?${request.url.query}');
   if (path == '/api/cron') {
     if (schedulesFail) return http.Response('nope', 500);
     return http.Response(
@@ -113,11 +111,7 @@ MockClient _client(
       'clis': const ['claude'],
       'directories': [
         for (var i = 1; i <= directories; i++)
-          {
-            'id': 'd$i',
-            'name': '工作目录 ${i == 1 ? 'A' : 'B'}',
-            'path': '/p/$i',
-          },
+          {'id': 'd$i', 'name': '工作目录 ${i == 1 ? 'A' : 'B'}', 'path': '/p/$i'},
       ],
       'tasks': tasks ?? _baseTasks,
     }),
@@ -206,9 +200,12 @@ List<Map<String, dynamic>> _fiveTileTasks() => [
   },
 ];
 
-Future<SettingsService> _settings() async {
+Future<SettingsService> _settings({
+  Map<String, Object> extra = const {},
+}) async {
   SharedPreferences.setMockInitialValues({
     'multicc_host': 'http://localhost:3000',
+    ...extra,
   });
   return SettingsService.getInstance();
 }
@@ -276,7 +273,10 @@ Finder _row(String id) => find.byKey(ValueKey('air-console-task-$id'));
 /// 在「全部」那一格的搜索框里打字。检索是防抖的（180ms），这一跳要跑过它，服务端
 /// 那一步才会真的发出去；结果回来之前列表先按本地标题筛过一遍，所以两头都稳。
 Future<void> _type(WidgetTester tester, String text) async {
-  await tester.enterText(find.byKey(const ValueKey('air-console-search')), text);
+  await tester.enterText(
+    find.byKey(const ValueKey('air-console-search')),
+    text,
+  );
   await tester.pump(const Duration(milliseconds: 250));
   await tester.pumpAndSettle();
 }
@@ -526,11 +526,7 @@ void main() {
     // 搜一条已归档的：服务端命中已归档任务时，默认只看在办会把结果整片滤掉，所以
     // 有搜索词这一格强制按「全部记录」走。
     await _type(tester, '旧任务');
-    expect(
-      _row('t4'),
-      findsOneWidget,
-      reason: '有搜索词时不再被状态档静默滤掉',
-    );
+    expect(_row('t4'), findsOneWidget, reason: '有搜索词时不再被状态档静默滤掉');
     // 那一格自己的档位没被改写 —— 清空关键词就回到原样。
     expect(find.text('进行中与待处理'), findsOneWidget);
     await _type(tester, '');
@@ -934,7 +930,9 @@ void main() {
     expect(
       tester.getTopLeft(find.byKey(const ValueKey('air-attention-task-e2'))).dy,
       lessThan(
-        tester.getTopLeft(find.byKey(const ValueKey('air-attention-task-w3'))).dy,
+        tester
+            .getTopLeft(find.byKey(const ValueKey('air-attention-task-w3')))
+            .dy,
       ),
       reason: '最近更新的排在前面，不按紧急度分层',
     );
@@ -954,10 +952,8 @@ void main() {
     client.close();
   });
 
-  testWidgets('列表是给人看的：超过 60 条只显示最近的，并说清总数', (tester) async {
-    // 60 条任务行都要真的落在渲染树里（滚动列表只建可见的那几行），所以这一块画布
-    // 得给够。
-    _tallCanvas(tester, size: const Size(900, 9000));
+  testWidgets('全部任务每页 20 条，四页可翻完 65 条且筛选会回第一页', (tester) async {
+    _tallCanvas(tester, size: const Size(900, 4200));
     final settings = await _settings();
     final client = _client(
       <String>[],
@@ -979,13 +975,122 @@ void main() {
     await tester.pumpAndSettle();
     await _openTile(tester, 'all');
 
-    expect(find.text('65 条 · 显示最近 60 条'), findsOneWidget);
-    // 留下的是最近更新的那 60 条，最旧的那 5 条被封顶挡在外面。
+    expect(find.text('65 条'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-console-page-label')),
+      findsOneWidget,
+    );
+    expect(find.text('第 1 / 4 页'), findsOneWidget);
     expect(_row('n64'), findsOneWidget);
-    expect(_row('n5'), findsOneWidget);
-    for (final id in const ['n4', 'n3', 'n2', 'n1', 'n0']) {
-      expect(_row(id), findsNothing, reason: '$id 太旧，进不了这一页');
+    expect(_row('n45'), findsOneWidget);
+    expect(_row('n44'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('air-console-page-next')));
+    await tester.pumpAndSettle();
+    expect(find.text('第 2 / 4 页'), findsOneWidget);
+    expect(_row('n44'), findsOneWidget);
+    expect(_row('n25'), findsOneWidget);
+    await _type(tester, '任务 3');
+    expect(find.text('第 1 / 4 页'), findsNothing);
+    expect(_row('n3'), findsOneWidget);
+    await _type(tester, '');
+    for (var i = 0; i < 3; i++) {
+      await tester.tap(find.byKey(const ValueKey('air-console-page-next')));
+      await tester.pumpAndSettle();
     }
+    expect(find.text('第 4 / 4 页'), findsOneWidget);
+    expect(_row('n4'), findsOneWidget);
+    expect(_row('n0'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextButton>(
+            find.byKey(const ValueKey('air-console-page-next')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('控制台排序复用目录按钮：消息时间与本机访问时间各自生效', (tester) async {
+    _tallCanvas(tester);
+    final settings = await _settings(
+      extra: {
+        'air:task-visited-at': jsonEncode({'v2': 9000, 'v1': 1000}),
+      },
+    );
+    final client = _client(
+      <String>[],
+      tasks: [
+        for (final (id, messageAt, updatedAt) in const [
+          ('v1', 3000, 1000),
+          ('v2', 2000, 5000),
+          ('v3', 1000, 9000),
+        ])
+          {
+            'id': id,
+            'dirId': 'd1',
+            'title': id,
+            'status': 'active',
+            'runState': 'idle',
+            'lastMessageAt': messageAt,
+            'updatedAt': updatedAt,
+            'resource': const {'residency': 'planned', 'lease': 'idle'},
+          },
+      ],
+    );
+    await tester.pumpWidget(_console(settings: settings, client: client));
+    await tester.pumpAndSettle();
+    await _openTile(tester, 'all');
+    expect(
+      tester.getTopLeft(_row('v1')).dy,
+      lessThan(tester.getTopLeft(_row('v2')).dy),
+    );
+    await tester.tap(find.byKey(const ValueKey('air-task-sort-visit')));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(_row('v2')).dy,
+      lessThan(tester.getTopLeft(_row('v1')).dy),
+    );
+    expect(find.byKey(const ValueKey('air-console-page-label')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('手机控制台只有整页一层滚动，从任务行可反向滑回页首', (tester) async {
+    _tallCanvas(tester, size: const Size(390, 844));
+    final settings = await _settings();
+    final client = _client(
+      <String>[],
+      tasks: [
+        for (var i = 0; i < 25; i++)
+          {
+            'id': 'm$i',
+            'dirId': 'd1',
+            'title': '任务 $i',
+            'status': 'active',
+            'runState': 'idle',
+            'updatedAt': 1700000000000 + i,
+            'resource': const {'residency': 'planned', 'lease': 'idle'},
+          },
+      ],
+    );
+    await tester.pumpWidget(_console(settings: settings, client: client));
+    await tester.pumpAndSettle();
+    await _openTile(tester, 'all');
+    expect(find.byType(ListView), findsOneWidget);
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('air-console-task-m5')),
+    );
+    await tester.pumpAndSettle();
+    final scroll = tester.state<ScrollableState>(find.byType(Scrollable).first);
+    final before = scroll.position.pixels;
+    expect(before, greaterThan(0));
+    await tester.drag(_row('m5'), const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(scroll.position.pixels, lessThan(before));
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
@@ -1043,7 +1148,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('air-console-setup')), findsOneWidget);
     expect(find.text(t('airSetupTitle')), findsOneWidget);
-    expect(find.byKey(const ValueKey('air-console-setup-import')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-console-setup-import')),
+      findsOneWidget,
+    );
     expect(find.byKey(const ValueKey('air-console-setup-aux')), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());

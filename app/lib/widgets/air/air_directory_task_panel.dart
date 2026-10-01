@@ -135,31 +135,7 @@ class AirDirectoryTaskPanel extends StatelessWidget {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                padding: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  color: AppColors.bgSoft,
-                  borderRadius: BorderRadius.circular(9),
-                  border: Border.all(color: AppColors.line),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _TaskSortButton(
-                      value: AirDirectoryTaskSort.message,
-                      label: '消息',
-                      selected: sort == AirDirectoryTaskSort.message,
-                      onTap: onSort,
-                    ),
-                    _TaskSortButton(
-                      value: AirDirectoryTaskSort.visit,
-                      label: '访问',
-                      selected: sort == AirDirectoryTaskSort.visit,
-                      onTap: onSort,
-                    ),
-                  ],
-                ),
-              ),
+              AirTaskSortSwitch(sort: sort, onSort: onSort),
               const SizedBox(width: 8),
               Text(
                 '$filteredCount / $totalCount 个任务',
@@ -280,36 +256,94 @@ class AirDirectoryTaskPanel extends StatelessWidget {
 
   /// 翻页条。只有一页时不摆 —— 「第 1 / 1 页」是噪声，不是信息。
   Widget _buildPager(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: AppColors.line)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          TextButton(
-            key: const ValueKey('air-tasks-page-prev'),
-            onPressed: page > 1 ? () => onPage(page - 1) : null,
-            child: const Text('上一页'),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            child: Text(
-              '第 $page / $pageCount 页',
-              key: const ValueKey('air-tasks-page-label'),
-              style: const TextStyle(color: AppColors.muted, fontSize: 12),
-            ),
-          ),
-          TextButton(
-            key: const ValueKey('air-tasks-page-next'),
-            onPressed: page < pageCount ? () => onPage(page + 1) : null,
-            child: const Text('下一页'),
-          ),
-        ],
-      ),
-    );
+    return AirTaskPagerBar(page: page, pageCount: pageCount, onPage: onPage);
   }
+}
+
+/// 目录首页与控制台共用同一组排序按钮。
+class AirTaskSortSwitch extends StatelessWidget {
+  const AirTaskSortSwitch({
+    super.key,
+    required this.sort,
+    required this.onSort,
+  });
+
+  final AirDirectoryTaskSort sort;
+  final ValueChanged<AirDirectoryTaskSort> onSort;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(2),
+    decoration: BoxDecoration(
+      color: AppColors.bgSoft,
+      borderRadius: BorderRadius.circular(9),
+      border: Border.all(color: AppColors.line),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _TaskSortButton(
+          value: AirDirectoryTaskSort.message,
+          label: '消息',
+          selected: sort == AirDirectoryTaskSort.message,
+          onTap: onSort,
+        ),
+        _TaskSortButton(
+          value: AirDirectoryTaskSort.visit,
+          label: '访问',
+          selected: sort == AirDirectoryTaskSort.visit,
+          onTap: onSort,
+        ),
+      ],
+    ),
+  );
+}
+
+/// 两处任务列表共用分页条：只有超过一页才由宿主摆出来。
+class AirTaskPagerBar extends StatelessWidget {
+  const AirTaskPagerBar({
+    super.key,
+    required this.page,
+    required this.pageCount,
+    required this.onPage,
+    this.keyPrefix = 'air-tasks',
+  });
+
+  final int page;
+  final int pageCount;
+  final ValueChanged<int> onPage;
+  final String keyPrefix;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+    decoration: const BoxDecoration(
+      border: Border(top: BorderSide(color: AppColors.line)),
+    ),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        TextButton(
+          key: ValueKey('$keyPrefix-page-prev'),
+          onPressed: page > 1 ? () => onPage(page - 1) : null,
+          child: const Text('上一页'),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          child: Text(
+            '第 $page / $pageCount 页',
+            key: ValueKey('$keyPrefix-page-label'),
+            style: const TextStyle(color: AppColors.muted, fontSize: 12),
+          ),
+        ),
+        TextButton(
+          key: ValueKey('$keyPrefix-page-next'),
+          onPressed: page < pageCount ? () => onPage(page + 1) : null,
+          child: const Text('下一页'),
+        ),
+      ],
+    ),
+  );
 }
 
 /// 抬头右边那两颗排序键（Web `#directory-task-sort` 的 `button[data-sort]`）。

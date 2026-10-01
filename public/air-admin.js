@@ -76,8 +76,9 @@
   // 的词走不到任务板语料。注意它换的不是上面那条状态口径 —— 列表默认仍是「进行中与
   // 待处理」，搜索另有一份 searchFilter()（见下）。
   // view 是顶上展开了哪一格过滤项（running/waiting/error/today/all），null = 都收着。
-  const consoleFilter = { query: '', status: 'open', dir: 'all', fullText: true, view: null };
-  // 面板是给人看的，不是导出用的：超过这个数就只显示最近的一批，并把总数说清楚。
+  const consoleFilter = { query: '', status: 'open', dir: 'all', fullText: true, view: null, page: 1, sort: 'message' };
+  const TASK_PAGE_SIZE = 20;
+  // 其余四个统计格仍是短清单；「全部任务」单独按每页 20 条翻页。
   const TASK_LIST_LIMIT = 60;
 
   // 手机上页头的工具都收进「⋯」浮层，浮层里每一行都摆成「图标 + 名字」两列
@@ -497,7 +498,21 @@
     drawerNote.id = 'console-task-note';
     const drawerMeta = make('div', null, 'admin-panel-meta');
     drawerMeta.append(drawerNote, action(t('airAdminCollapse'), () => { consoleFilter.view = null; paintDrawer(); }, 'console-filter-close'));
-    drawerHead.append(drawerMeta);
+    const sortSwitch = make('div', null, 'task-sort-switch console-task-sort');
+    sortSwitch.id = 'console-task-sort';
+    sortSwitch.setAttribute('role', 'group');
+    sortSwitch.setAttribute('aria-label', t('airTaskSortLabel'));
+    for (const [sort, key] of [['message', 'airTaskSortMessage'], ['visit', 'airTaskSortVisit']]) {
+      const button = action(t(key), () => {
+        if (consoleFilter.sort === sort) return;
+        consoleFilter.sort = sort;
+        consoleFilter.page = 1;
+        paintTaskList();
+      });
+      button.dataset.sort = sort;
+      sortSwitch.append(button);
+    }
+    drawerHead.append(sortSwitch, drawerMeta);
 
     const controls = make('div', null, 'admin-task-controls');
     const search = make('input');
@@ -540,7 +555,17 @@
     controls.append(search, statusPick, scopePick, dirPick);
     const allList = make('div', null, 'admin-recent-list console-filter-list');
     allList.id = 'console-task-list';
-    drawer.append(drawerHead, controls, allList);
+    const pager = make('nav', null, 'directory-task-pager console-task-pager');
+    pager.id = 'console-task-pager';
+    pager.setAttribute('aria-label', t('airTaskPagination'));
+    const prev = action(t('airTaskPagePrev'), () => goPage(-1));
+    prev.id = 'console-task-prev';
+    const pageLabel = make('span');
+    pageLabel.id = 'console-task-page';
+    const next = action(t('airTaskPageNext'), () => goPage(1));
+    next.id = 'console-task-next';
+    pager.append(prev, pageLabel, next);
+    drawer.append(drawerHead, controls, allList, pager);
 
     // 点走一条只是 navigate —— 控制台从前是浮层，得先把那层收掉再跳；现在它自己
     // 就是一页，navigate 会把模式切回 tasks，不需要谁再补一手。
@@ -550,6 +575,26 @@
     // 全文检索控制器。构造时就会跑一次 onChange，所以先声明成 null：那一刻
     // paintTaskList 只能走本地筛选，等控制器拿到结果再覆盖（见下面的赋值）。
     let fullText = null;
+    let pageCount = 1;
+    function goPage(delta) {
+      const target = consoleFilter.page + delta;
+      if (target < 1 || target > pageCount) return;
+      consoleFilter.page = target;
+      paintTaskList();
+      root.requestAnimationFrame(() => {
+        const scroller = el('console-center');
+        if (scroller) scroller.scrollTop += drawerHead.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      });
+    }
+    function sortRows(rows) {
+      let visits = {};
+      try { visits = JSON.parse(root.localStorage.getItem('air:task-visited-at') || '{}') || {}; } catch (_) {}
+      const messageAt = task => Number(task.lastMessageAt || task.updatedAt || 0);
+      const sortAt = task => consoleFilter.sort === 'visit' ? Number(visits[task.id] || 0) : messageAt(task);
+      return rows.sort((a, b) => sortAt(b.task) - sortAt(a.task)
+        || messageAt(b.task) - messageAt(a.task)
+        || String(a.task.id).localeCompare(String(b.task.id)));
+    }
     function paintTaskList() {
       if (consoleFilter.view !== 'all') return;
       // 有全文结果就按相关度排（标题没命中、正文命中的任务因此能被找到）；没有
@@ -558,15 +603,24 @@
       // 必须同一份口径，否则同一句话在结果回来前后能搜出两种条数。
       const querying = !!consoleFilter.query.trim();
       const filter = querying ? searchFilter(consoleFilter) : consoleFilter;
-      const rows = (querying
+      const ranked = querying
         ? rankedRows(tasks, filter, context.directoryName, fullText?.results())
-        : null) || filterTasks(tasks, filter, context.directoryName).map(task => ({ task }));
-      const shown = rows.slice(0, TASK_LIST_LIMIT);
+        : null;
+      const rows = ranked || filterTasks(tasks, filter, context.directoryName).map(task => ({ task }));
+      // 正文命中时保留相关度；否则用与目录首页相同的消息/本机访问时钟。
+      if (!ranked) sortRows(rows);
+      pageCount = Math.max(1, Math.ceil(rows.length / TASK_PAGE_SIZE));
+      consoleFilter.page = Math.min(Math.max(1, consoleFilter.page), pageCount);
+      const start = (consoleFilter.page - 1) * TASK_PAGE_SIZE;
+      const shown = rows.slice(start, start + TASK_PAGE_SIZE);
       allList.replaceChildren(...shown.map(({ task, snippet }) => openRow(task, { deletable: true, snippet })));
       if (!rows.length) allList.append(make('p', t('airAdminNoMatchingTasks'), 'admin-empty'));
-      drawerNote.textContent = rows.length > shown.length
-        ? t('airAdminTaskCountLimited', { total: rows.length, shown: shown.length })
-        : t('airAdminNItems', { n: rows.length });
+      drawerNote.textContent = t('airAdminNItems', { n: rows.length });
+      pageLabel.textContent = t('airTaskPageOf', { page: consoleFilter.page, total: pageCount });
+      prev.disabled = consoleFilter.page <= 1;
+      next.disabled = consoleFilter.page >= pageCount;
+      pager.hidden = pageCount <= 1;
+      for (const button of sortSwitch.children) button.setAttribute('aria-pressed', String(button.dataset.sort === consoleFilter.sort));
     }
     // 四个固定过滤项的清单：口径就是上面那几格数字用的同一份数组，数字和清单不会分叉。
     const fixedLists = {
@@ -586,6 +640,8 @@
       drawer.dataset.view = view;
       drawerTitle.textContent = tiles.find(([key]) => key === view)[1];
       controls.hidden = view !== 'all';
+      sortSwitch.hidden = view !== 'all';
+      pager.hidden = view !== 'all' || pageCount <= 1;
       if (view === 'all') { paintTaskList(); return; }
       const [list, emptyKey] = fixedLists[view];
       const shown = list.slice(0, TASK_LIST_LIMIT);
@@ -595,7 +651,7 @@
         ? t('airAdminTaskCountLimited', { total: list.length, shown: shown.length })
         : t('airAdminNItems', { n: list.length });
     }
-    search.oninput = () => { consoleFilter.query = search.value; paintTaskList(); };
+    search.oninput = () => { consoleFilter.query = search.value; consoleFilter.page = 1; paintTaskList(); };
     // 搜索框同时挂两条路：本地筛选立刻重画（上面那条），全文结果到了再按相关度覆盖
     // 一次。过滤条件不发给服务端 —— 「进行中」这类口径只此一份，命中结果回到这里
     // 再按同一份 filterTasks 收窄，服务端只负责「哪些任务的正文里出现过这些词」。
@@ -605,15 +661,16 @@
       fullText: () => consoleFilter.fullText,
       onChange: () => paintTaskList(),
     });
-    statusPick.onchange = () => { consoleFilter.status = statusPick.value; paintTaskList(); };
+    statusPick.onchange = () => { consoleFilter.status = statusPick.value; consoleFilter.page = 1; paintTaskList(); };
     // 搜索范围换了要重新问一次服务端（两条语料的召回不同），不能只重画：
     // 缓存按「查询词 + 范围」分开，所以换回来是立刻的。
     scopePick.onchange = () => {
       consoleFilter.fullText = scopePick.value === 'full';
+      consoleFilter.page = 1;
       fullText?.refresh();
       paintTaskList();
     };
-    dirPick.onchange = () => { consoleFilter.dir = dirPick.value; paintTaskList(); };
+    dirPick.onchange = () => { consoleFilter.dir = dirPick.value; consoleFilter.page = 1; paintTaskList(); };
     paintDrawer();
 
     const workspacePanel = make('section', null, 'admin-panel admin-directory-panel');
