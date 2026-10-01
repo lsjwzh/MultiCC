@@ -664,64 +664,78 @@ class _AddLineSheetState extends State<_AddLineSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
+    final maxHeight = (MediaQuery.sizeOf(context).height - keyboardInset) * 0.9;
     return SafeArea(
       child: Padding(
-        padding: EdgeInsets.only(
-          left: 18,
-          right: 18,
-          top: 16,
-          bottom: 18 + MediaQuery.of(context).viewInsets.bottom,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              '添加线路',
-              style: TextStyle(
-                color: AppColors.text,
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              key: const ValueKey('run-add-line-search'),
-              onChanged: (value) => setState(() => _query = value.trim()),
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: AppColors.text,
-                fontSize: 13,
-              ),
-              decoration: runConfigInputDecoration(hint: '搜索线路'),
-            ),
-            const SizedBox(height: 10),
-            if (_loading)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 24),
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (_allFailed)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                child: Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        '线路列表加载失败',
-                        style: TextStyle(color: AppColors.danger, fontSize: 12),
-                      ),
-                    ),
-                    TextButton(
-                      key: const ValueKey('run-add-line-retry'),
-                      onPressed: _load,
-                      child: const Text('重试'),
-                    ),
-                  ],
+        padding: EdgeInsets.only(bottom: keyboardInset),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxHeight),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  '添加线路',
+                  style: TextStyle(
+                    color: AppColors.text,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-              )
-            else
-              ..._grouped(),
-          ],
+                const SizedBox(height: 10),
+                TextField(
+                  key: const ValueKey('run-add-line-search'),
+                  onChanged: (value) => setState(() => _query = value.trim()),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppColors.text,
+                    fontSize: 13,
+                  ),
+                  decoration: runConfigInputDecoration(hint: '搜索线路'),
+                ),
+                const SizedBox(height: 10),
+                Flexible(
+                  child: ListView(
+                    key: const ValueKey('run-add-line-list'),
+                    shrinkWrap: true,
+                    children: [
+                      if (_loading)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 24),
+                          child: Center(child: CircularProgressIndicator()),
+                        )
+                      else if (_allFailed)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          child: Row(
+                            children: [
+                              const Expanded(
+                                child: Text(
+                                  '线路列表加载失败',
+                                  style: TextStyle(
+                                    color: AppColors.danger,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                              TextButton(
+                                key: const ValueKey('run-add-line-retry'),
+                                onPressed: _load,
+                                child: const Text('重试'),
+                              ),
+                            ],
+                          ),
+                        )
+                      else
+                        ..._grouped(),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

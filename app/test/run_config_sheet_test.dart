@@ -714,6 +714,76 @@ void main() {
     expect(calls, greaterThan(before), reason: '重试要真的再打一次');
   });
 
+  testWidgets('添加线路：长清单在刘海屏内滚动，搜索框留在上方', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
+    addTearDown(tester.view.reset);
+    final s = await settings(host: 'http://server.example');
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/providers') {
+        return _json(200, {
+          'providers': [
+            for (var i = 0; i < 32; i++)
+              {'id': 'line-$i', 'name': '线路 $i', 'protocol': 'anthropic'},
+          ],
+        });
+      }
+      return _json(200, {'ok': true});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claudeExp,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claudeExp: true},
+        providerSelection: pool,
+      ),
+      out,
+    );
+    await tester.ensureVisible(find.byKey(const Key('run-add-line')));
+    await tester.tap(find.byKey(const Key('run-add-line')));
+    await tester.pumpAndSettle();
+
+    final list = find.byKey(const Key('run-add-line-list'));
+    final search = find.byKey(const Key('run-add-line-search'));
+    final scrollable = find.descendant(
+      of: list,
+      matching: find.byType(Scrollable),
+    );
+    final position = tester.state<ScrollableState>(scrollable).position;
+    expect(position.maxScrollExtent, greaterThan(0));
+    expect(
+      tester.getTopLeft(find.text('添加线路').last).dy,
+      greaterThanOrEqualTo(47),
+    );
+    final searchTop = tester.getTopLeft(search).dy;
+    await tester.drag(list, const Offset(0, -600));
+    await tester.pumpAndSettle();
+    expect(position.pixels, greaterThan(0));
+    expect(tester.getTopLeft(search).dy, searchTop);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('run-add-line-claude-exp-line-31')),
+      350,
+      scrollable: scrollable,
+    );
+    final last = find.byKey(const Key('run-add-line-claude-exp-line-31'));
+    expect(last.hitTestable(), findsOneWidget);
+    await tester.tap(last);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('run-pool-row-claude-exp:line-31')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   // ── 页头 chip ───────────────────────────────────────────────────────────
 
   testWidgets('chip：固定一条写 CLI · 线路 · 模型，自动挑选写池子条数', (tester) async {
