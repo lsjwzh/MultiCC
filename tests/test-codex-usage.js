@@ -73,6 +73,30 @@ test('same-epoch regressions fail closed instead of recounting from zero', () =>
   assert.deepEqual(result.cumulativeUsage, cumulative(100, 70, 20, 5));
 });
 
+test('Codex App Server keeps smaller later turns and their history footers', () => {
+  const first = cumulative(100, 70, 20);
+  const second = cumulative(20, 10, 3);
+  const result = normalizeCodexTurnUsage({
+    usage: second,
+    history: [{ role: 'assistant', usage: first, usageCumulative: first }],
+    cliSessionId: 'same-thread',
+    perTurn: true,
+  });
+  assert.equal(result.code, 'per_turn');
+  assert.deepEqual(result.usage, second);
+  assert.equal(result.cumulativeUsage, null);
+  const history = [
+    { role: 'assistant', usage: first },
+    { role: 'assistant', usage: second },
+  ];
+  assert.deepEqual(projectHistoryUsage(history, { perTurn: true }), history);
+  const largerLaterTurn = cumulative(120, 80, 25);
+  assert.deepEqual(projectHistoryUsage([
+    history[0], { role: 'assistant', usage: largerLaterTurn },
+  ])[1].usage, cumulative(20, 10, 5),
+  'the old cumulative projection would undercount a larger later turn');
+});
+
 test('history projection fixes legacy footers and strips private baselines', () => {
   const epoch = usageEpochForSessionId('thread-a');
   const history = [
@@ -174,6 +198,33 @@ test('Codex host sends one delta to history, ledger, role tracker and live resul
   }]);
   assert.equal(calls.some(call => call[0] === 'status'), false,
     'usage/result persistence cannot announce success before runner settlement');
+});
+
+test('Codex App Server host forwards the measured turn without a cumulative baseline', () => {
+  const usage = cumulative(20, 10, 3);
+  let persistedMessage;
+  let forwarded;
+  const host = createCodexUsageHost({
+    loadHistory: () => [{ role: 'assistant', usage: cumulative(100, 70, 20) }],
+    reconcileRole() {},
+    clearIncrementalSave() {},
+    persistFinalAssistantResult(_session, _state, _turn, _runner, message) {
+      persistedMessage = message;
+      return true;
+    },
+    recordDurableTurnUsage() {},
+    recordResultEvent() {},
+  });
+  host.complete({
+    evt: { type: 'complete', usage },
+    cs: { currentAssistantText: 'done', currentToolCalls: [], chatTurnCount: 1 },
+    persisted: { cli: 'codex-exp', cliSessionId: 'same-thread' },
+    sessionName: 'session-a', turn: {}, runner: {},
+    forward: event => { forwarded = event; },
+  });
+  assert.deepEqual(persistedMessage.usage, usage);
+  assert.equal(Object.hasOwn(persistedMessage, 'usageCumulative'), false);
+  assert.deepEqual(forwarded.usage, usage);
 });
 
 test('the fallback result frame carries the model attribution the message was stamped with', () => {

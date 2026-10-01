@@ -56,19 +56,19 @@ test('native deltas remain deltas while reasoning is one keyed snapshot', () => 
 test('app-server usage and terminal status normalize into existing contracts', () => {
   const adapter = createCodexExpAdapter();
   assert.deepEqual(appServerUsage({
-    last: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 7, reasoningOutputTokens: 3 },
+    last: { inputTokens: 100, cachedInputTokens: 40, cacheWriteInputTokens: 5, outputTokens: 7, reasoningOutputTokens: 3 },
     modelContextWindow: 258400,
   }), {
-    input_tokens: 60, cached_input_tokens: 40, cache_write_input_tokens: 0,
+    input_tokens: 60, cached_input_tokens: 40, cache_creation_input_tokens: 5,
     output_tokens: 7, reasoning_output_tokens: 3, model_context_window: 258400,
     cache_read_input_tokens: 40,
   });
   assert.deepEqual(addUsage(
     { input_tokens: 60, cache_read_input_tokens: 40, output_tokens: 7, model_context_window: 258400 },
-    { input_tokens: 20, cache_read_input_tokens: 5, output_tokens: 2, reasoning_output_tokens: 1 },
+    { input_tokens: 20, cache_read_input_tokens: 5, cache_creation_input_tokens: 4, output_tokens: 2, reasoning_output_tokens: 1 },
   ), {
     input_tokens: 80, cached_input_tokens: 0, cache_read_input_tokens: 45,
-    cache_write_input_tokens: 0, output_tokens: 9, reasoning_output_tokens: 1,
+    cache_creation_input_tokens: 4, output_tokens: 9, reasoning_output_tokens: 1,
     model_context_window: 258400,
   });
   const tracker = createAdapterCompletion(adapter);
@@ -87,7 +87,7 @@ test('app-server usage and terminal status normalize into existing contracts', (
   tracker.observe(completed, completedEvents);
   assert.deepEqual(completedEvents[0].usage, {
     input_tokens: 100, cached_input_tokens: 50, cache_read_input_tokens: 50,
-    cache_write_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 0,
+    cache_creation_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 0,
     model_context_window: 258400,
   });
   assert.equal(tracker.finish({ kind: 'process', code: 0 }).state, 'completed');
