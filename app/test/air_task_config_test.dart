@@ -91,8 +91,16 @@ void main() {
         providerSelection: SessionProviderSelection(
           protocol: 'anthropic',
           candidates: const [
-            SessionProviderCandidate(providerId: 'p1', model: 'm1', priority: 1),
-            SessionProviderCandidate(providerId: 'p2', model: 'm2', priority: 2),
+            SessionProviderCandidate(
+              providerId: 'p1',
+              model: 'm1',
+              priority: 1,
+            ),
+            SessionProviderCandidate(
+              providerId: 'p2',
+              model: 'm2',
+              priority: 2,
+            ),
           ],
           maxAttempts: 2,
         ),
@@ -130,7 +138,11 @@ void main() {
         providerSelection: SessionProviderSelection(
           protocol: 'anthropic',
           candidates: const [
-            SessionProviderCandidate(providerId: 'p1', model: 'm1', priority: 1),
+            SessionProviderCandidate(
+              providerId: 'p1',
+              model: 'm1',
+              priority: 1,
+            ),
             SessionProviderCandidate(providerId: 'p2', priority: 2),
           ],
           maxAttempts: 2,
@@ -178,19 +190,20 @@ void main() {
             ]),
             clis: const ['claude'],
             busy: false,
-            onSubmit: ({
-              required String text,
-              required String cli,
-              required AirTaskRuntime runtime,
-              required List<AirRoleBinding> roles,
-              required bool goal,
-              int? goalRounds,
-              int? goalBudget,
-            }) async {
-              submittedText = text;
-              submitted = runtime;
-              return true;
-            },
+            onSubmit:
+                ({
+                  required String text,
+                  required String cli,
+                  required AirTaskRuntime runtime,
+                  required List<AirRoleBinding> roles,
+                  required bool goal,
+                  int? goalRounds,
+                  int? goalBudget,
+                }) async {
+                  submittedText = text;
+                  submitted = runtime;
+                  return true;
+                },
           ),
         ),
       ),
@@ -201,7 +214,7 @@ void main() {
     expect(
       find.descendant(
         of: find.byKey(const ValueKey('air-quick-ai')),
-        matching: find.text('默认线路 · 默认模型'),
+        matching: find.text('Claude · 默认线路 · 默认模型'),
       ),
       findsOneWidget,
     );
@@ -226,7 +239,7 @@ void main() {
     expect(
       find.descendant(
         of: find.byKey(const ValueKey('air-quick-ai')),
-        matching: find.text('火山方舟 · 默认模型'),
+        matching: find.text('Claude · 火山方舟 · 默认模型'),
       ),
       findsOneWidget,
     );
@@ -245,6 +258,69 @@ void main() {
     // 没动过推理强度，就带上这个 CLI 的默认值 —— 面板里显示的也是它。
     expect(submitted!.effort, 'medium');
     expect(submitted!.toCreateBody()['provider'], 'p1');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('同一颗药丸切 CLI 后，显示与创建请求使用同一条新车道', (tester) async {
+    final settings = await _settings();
+    String? submittedCli;
+    AirTaskRuntime? submittedRuntime;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AirQuickComposer(
+            settings: settings,
+            httpClient: _providerClient(<String>[], const []),
+            clis: const ['claude-exp', 'codex-exp'],
+            busy: false,
+            onSubmit:
+                ({
+                  required String text,
+                  required String cli,
+                  required AirTaskRuntime runtime,
+                  required List<AirRoleBinding> roles,
+                  required bool goal,
+                  int? goalRounds,
+                  int? goalBudget,
+                }) async {
+                  submittedCli = cli;
+                  submittedRuntime = runtime;
+                  return true;
+                },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('air-quick-cli')), findsNothing);
+    final aiPill = find.byKey(const ValueKey('air-quick-ai'));
+    expect(
+      find.descendant(of: aiPill, matching: find.text('Claude · 默认线路 · 默认模型')),
+      findsOneWidget,
+    );
+    await tester.tap(aiPill);
+    await tester.pumpAndSettle();
+    final codex = find.byKey(const ValueKey('run-cli-option-codex-exp'));
+    await tester.ensureVisible(codex);
+    await tester.tap(codex);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.descendant(of: aiPill, matching: find.textContaining('Codex · ')),
+      findsOneWidget,
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('air-quick-input')),
+      '修复登录页',
+    );
+    await tester.tap(find.byKey(const ValueKey('air-quick-submit')));
+    await tester.pumpAndSettle();
+    expect(submittedCli, 'codex-exp');
+    expect(submittedRuntime!.cli, submittedCli);
+    expect(submittedRuntime!.toCreateBody()['cli'], 'codex-exp');
     expect(tester.takeException(), isNull);
   });
 
@@ -271,21 +347,22 @@ void main() {
             httpClient: _providerClient(<String>[], const []),
             clis: const ['claude'],
             busy: false,
-            onSubmit: ({
-              required String text,
-              required String cli,
-              required AirTaskRuntime runtime,
-              required List<AirRoleBinding> roles,
-              required bool goal,
-              int? goalRounds,
-              int? goalBudget,
-            }) async {
-              submits++;
-              seenGoal = goal;
-              seenRounds = goalRounds ?? -1;
-              seenBudget = goalBudget ?? -1;
-              return true;
-            },
+            onSubmit:
+                ({
+                  required String text,
+                  required String cli,
+                  required AirTaskRuntime runtime,
+                  required List<AirRoleBinding> roles,
+                  required bool goal,
+                  int? goalRounds,
+                  int? goalBudget,
+                }) async {
+                  submits++;
+                  seenGoal = goal;
+                  seenRounds = goalRounds ?? -1;
+                  seenBudget = goalBudget ?? -1;
+                  return true;
+                },
           ),
         ),
       ),
@@ -353,19 +430,20 @@ void main() {
             httpClient: _providerClient(<String>[], const []),
             clis: const ['claude'],
             busy: false,
-            onSubmit: ({
-              required String text,
-              required String cli,
-              required AirTaskRuntime runtime,
-              required List<AirRoleBinding> roles,
-              required bool goal,
-              int? goalRounds,
-              int? goalBudget,
-            }) async {
-              rounds = goalRounds;
-              budget = goalBudget;
-              return true;
-            },
+            onSubmit:
+                ({
+                  required String text,
+                  required String cli,
+                  required AirTaskRuntime runtime,
+                  required List<AirRoleBinding> roles,
+                  required bool goal,
+                  int? goalRounds,
+                  int? goalBudget,
+                }) async {
+                  rounds = goalRounds;
+                  budget = goalBudget;
+                  return true;
+                },
           ),
         ),
       ),
@@ -455,15 +533,16 @@ void main() {
             httpClient: _providerClient(<String>[], const []),
             clis: const ['claude'],
             busy: false,
-            onSubmit: ({
-              required String text,
-              required String cli,
-              required AirTaskRuntime runtime,
-              required List<AirRoleBinding> roles,
-              required bool goal,
-              int? goalRounds,
-              int? goalBudget,
-            }) async => true,
+            onSubmit:
+                ({
+                  required String text,
+                  required String cli,
+                  required AirTaskRuntime runtime,
+                  required List<AirRoleBinding> roles,
+                  required bool goal,
+                  int? goalRounds,
+                  int? goalBudget,
+                }) async => true,
           ),
         ),
       ),
@@ -483,7 +562,7 @@ void main() {
     expect(
       find.descendant(
         of: find.byKey(const ValueKey('air-quick-ai')),
-        matching: find.text('默认线路 · 默认模型'),
+        matching: find.text('Claude · 默认线路 · 默认模型'),
       ),
       findsOneWidget,
     );
@@ -580,7 +659,11 @@ void main() {
   test('子任务尾巴：模型为空就是没设，不为空才跟着任务一起发下去', () {
     // 没设过尾巴 —— 一个字段都不多发。
     expect(
-      const AirTaskRuntime(cli: 'claude', provider: 'p1', model: 'm1').toCreateBody(),
+      const AirTaskRuntime(
+        cli: 'claude',
+        provider: 'p1',
+        model: 'm1',
+      ).toCreateBody(),
       {'cli': 'claude', 'provider': 'p1', 'model': 'm1'},
     );
     // 只挑了线路没挑模型 = 没设：空壳也不发，否则服务端会当成「设了」拒掉。
@@ -666,10 +749,13 @@ void main() {
   });
 
   group('贴底可伸缩输入条', () {
-    final cliPill = find.byKey(const ValueKey('air-quick-cli'));
+    final aiPill = find.byKey(const ValueKey('air-quick-ai'));
     final input = find.byKey(const ValueKey('air-quick-input'));
 
-    Future<void> pumpDocked(WidgetTester tester, SettingsService settings) async {
+    Future<void> pumpDocked(
+      WidgetTester tester,
+      SettingsService settings,
+    ) async {
       tester.view.devicePixelRatio = 1;
       tester.view.physicalSize = const Size(390, 844);
       addTearDown(tester.view.resetPhysicalSize);
@@ -686,15 +772,16 @@ void main() {
                   clis: const ['claude', 'codex'],
                   busy: false,
                   httpClient: _providerClient(<String>[], const []),
-                  onSubmit: ({
-                    required String text,
-                    required String cli,
-                    required AirTaskRuntime runtime,
-                    required List<AirRoleBinding> roles,
-                    required bool goal,
-                    int? goalRounds,
-                    int? goalBudget,
-                  }) async => true,
+                  onSubmit:
+                      ({
+                        required String text,
+                        required String cli,
+                        required AirTaskRuntime runtime,
+                        required List<AirRoleBinding> roles,
+                        required bool goal,
+                        int? goalRounds,
+                        int? goalBudget,
+                      }) async => true,
                 ),
               ],
             ),
@@ -708,11 +795,11 @@ void main() {
       final settings = await _settings();
       await pumpDocked(tester, settings);
 
-      expect(cliPill, findsNothing, reason: '收起态不摆整排药丸');
+      expect(aiPill, findsNothing, reason: '收起态不摆整排药丸');
       expect(input, findsOneWidget);
       await tester.tap(input);
       await tester.pumpAndSettle();
-      expect(cliPill, findsOneWidget, reason: '聚焦就展开');
+      expect(aiPill, findsOneWidget, reason: '聚焦就展开');
       expect(find.text('创建并执行 ↑'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
@@ -725,16 +812,16 @@ void main() {
       await tester.pumpAndSettle();
       await tester.enterText(input, '改一下登录页的错误提示');
       await tester.pumpAndSettle();
-      expect(cliPill, findsOneWidget);
+      expect(aiPill, findsOneWidget);
       FocusManager.instance.primaryFocus?.unfocus();
       await tester.pumpAndSettle();
-      expect(cliPill, findsOneWidget, reason: '草稿还有归属，展开态留着');
+      expect(aiPill, findsOneWidget, reason: '草稿还有归属，展开态留着');
 
       await tester.enterText(input, '');
       await tester.pumpAndSettle();
       FocusManager.instance.primaryFocus?.unfocus();
       await tester.pumpAndSettle();
-      expect(cliPill, findsNothing, reason: '空草稿失焦就收回去');
+      expect(aiPill, findsNothing, reason: '空草稿失焦就收回去');
       expect(input, findsOneWidget, reason: '收回去也还是一行输入条');
       expect(tester.takeException(), isNull);
     });
@@ -745,19 +832,15 @@ void main() {
 
       await tester.tap(input);
       await tester.pumpAndSettle();
-      expect(cliPill, findsOneWidget);
-      await tester.tap(cliPill);
+      expect(aiPill, findsOneWidget);
+      await tester.tap(aiPill);
       await tester.pumpAndSettle();
-      expect(find.text('AI 工具'), findsOneWidget);
+      expect(find.text('运行配置'), findsOneWidget);
 
       await tester.tapAt(const Offset(195, 60));
       await tester.pumpAndSettle();
-      expect(find.text('AI 工具'), findsNothing);
-      expect(
-        cliPill,
-        findsNothing,
-        reason: '焦点不被弹层还回来，贴底条保持收起',
-      );
+      expect(find.text('运行配置'), findsNothing);
+      expect(aiPill, findsNothing, reason: '焦点不被弹层还回来，贴底条保持收起');
       expect(tester.takeException(), isNull);
     });
   });

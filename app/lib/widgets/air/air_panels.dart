@@ -712,7 +712,6 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   // 「0 或空」都算不限 —— 判定见 [_readLimit]。
   final _roundsCtrl = TextEditingController(text: '200');
   final _budgetCtrl = TextEditingController();
-  String _cli = '';
   // 这里存的是「还没有任务的那一份角色」和「还没有任务的那一条线路」，创建时
   // 随任务一起写下去；建完就清空 —— 一个任务的上下文不该悄悄漏进下一个任务
   // （同 Web Air 的 quickRoles / quickRuntime）。
@@ -741,11 +740,11 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     // 任务的线路是 chat 线路：取列表里第一条能作 chat 的车道 —— 一次性
     // `claude -p` / `codex exec` 已经不在 chat 的选择里了（服务端 cli-capability 的
     // kinds 列），所以这里也不再默认到它们。
-    _cli = widget.clis.firstWhere(
+    final cli = widget.clis.firstWhere(
       (cli) => cliOffersIn(cli, 'chat'),
       orElse: () => 'claude-exp',
     );
-    _runtime = AirTaskRuntime(cli: _cli);
+    _runtime = AirTaskRuntime(cli: cli);
     _focus.addListener(_onFocusChanged);
     _controller.addListener(_onDraftChanged);
   }
@@ -838,59 +837,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     }
   }
 
-  Future<void> _pickCli() async {
-    // 开弹层前先收焦点：弹层关掉时焦点会还给输入框，贴底条就会莫名其妙
-    // 又展开一次。先 unfocus，焦点监听会把空草稿的展开态收回去。
-    _focus.unfocus();
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: AppColors.panel,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(
-          top: Radius.circular(AppColors.radiusPanel),
-        ),
-      ),
-      builder: (ctx) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 18, 20, 6),
-              child: Text(
-                'AI 工具',
-                style: TextStyle(
-                  color: AppColors.text,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-            // 新选项只提供当前聊天车道，已有记录仍以家族名展示。
-            for (final cli in widget.clis.where((c) => cliOffersIn(c, 'chat')))
-              ListTile(
-                title: Text(
-                  cliDisplayName(cli),
-                  style: const TextStyle(color: AppColors.text),
-                ),
-                trailing: cliFamilyOf(cli) == cliFamilyOf(_cli)
-                    ? const Icon(Icons.check_rounded, color: AppColors.accent)
-                    : null,
-                onTap: () => Navigator.pop(ctx, cli),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (choice != null && mounted) {
-      setState(() {
-        _cli = choice;
-        // 换 CLI 等于换了一整池 Provider 和模型，旧的线路不能带过去。
-        _runtime = _runtime.withCli(choice);
-      });
-    }
-  }
-
-  /// 给新任务挑线路、模型和推理强度。结果先留在这一层，等创建任务时随
+  /// 给新任务挑 CLI、线路、模型和推理强度。结果先留在这一层，等创建任务时随
   /// `POST /api/air/tasks` 一起写下去 —— 第一条消息就按它执行（同 Web Air）。
   Future<void> _editRuntime() async {
     _focus.unfocus();
@@ -899,6 +846,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
       settings: widget.settings,
       httpClient: widget.httpClient,
       initial: _runtime,
+      availableClis: widget.clis,
     );
     if (picked != null && mounted) setState(() => _runtime = picked);
   }
@@ -925,7 +873,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     final budget = _readLimit(_budgetCtrl);
     final sent = await widget.onSubmit(
       text: _composedText(text),
-      cli: _cli,
+      cli: _runtime.cli,
       runtime: _runtime,
       roles: _roles,
       goal: _goal,
@@ -939,7 +887,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     setState(() {
       _controller.clear();
       _roles = const [];
-      _runtime = AirTaskRuntime(cli: _cli);
+      _runtime = AirTaskRuntime(cli: _runtime.cli);
       _goal = false;
       _attachments.clear();
       _attachError = '';
@@ -1048,7 +996,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 三颗药丸在 320px 上挤不进一行（线路那颗本身就是一句话），所以让它
+          // 两颗药丸在 320px 上可能挤不进一行，所以让它们
           // 换行而不是横着溢出 —— Web 那边窄屏同样靠换行排。
           Wrap(
             spacing: 8,
@@ -1057,20 +1005,13 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               Tooltip(
                 message: '新任务的 AI 配置：CLI、线路与模型（创建后即生效）',
                 child: _Pill(
-                  key: const ValueKey('air-quick-cli'),
-                  label: _cli.isEmpty ? 'AI 工具' : _cli,
-                  icon: Icons.memory_rounded,
-                  onTap: widget.busy ? null : _pickCli,
-                ),
-              ),
-              Tooltip(
-                message: '新任务的 AI 配置：CLI、线路与模型（创建后即生效）',
-                child: _Pill(
                   key: const ValueKey('air-quick-ai'),
-                  label: _runtime.routeLabel,
+                  label:
+                      '${cliDisplayName(_runtime.cli)} · ${_runtime.routeLabel}',
                   icon: Icons.tune_rounded,
                   active: _runtime.provider.isNotEmpty || _runtime.isAuto,
-                  labelMaxWidth: 240,
+                  labelMaxWidth: (MediaQuery.sizeOf(context).width * 0.68)
+                      .clamp(0.0, 320.0),
                   onTap: widget.busy ? null : _editRuntime,
                 ),
               ),
@@ -1322,9 +1263,9 @@ class _Pill extends StatelessWidget {
   final VoidCallback? onTap;
   final bool active;
 
-  /// 线路那颗药丸的文字上限（Web `.mc-composer__pill--ai` 的 `min(68%, 320px)`）。
+  /// 运行配置药丸的文字上限（Web `.mc-composer__pill--ai` 的 `min(68%, 320px)`）。
   /// 线路名是用户数据，长了就把旁边的按钮挤走 —— 超过上限就走跑马灯，见
-  /// [MarqueeText]。别的药丸（CLI、角色）文字短且固定，不需要上限。
+  /// [MarqueeText]。角色药丸文字短且固定，不需要上限。
   final double? labelMaxWidth;
 
   @override
