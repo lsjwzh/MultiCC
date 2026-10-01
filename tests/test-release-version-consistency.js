@@ -180,13 +180,19 @@ test('core runner covers every selected path and expands declared variants', () 
   // 的线路按价格铺开而不是砍成最便宜的六个；四档封顶且未知价永远排在最贵那档。完全
   // hermetic：纯函数 + 注入的价表 stub，不碰网络、不碰 ~/.multicc、不绑端口、不起进程。
   // 295 + 1 = 296，deterministic 254 + 1 = 255，commands 281 + 1 = 282。
-  assert.equal(core.length, 296, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 296);
+  // 2026-10-01 共享语音输入组件（public/voice-composer.js）：注册
+  // tests/test-voice-composer.js 为 core deterministic。它钉的是 Chat 页与 Air
+  // 快速任务输入框共用同一套听写实现的契约——直接驱动模块两条路径（流式/legacy）、
+  // 经由 Chat composer 证明 onCommit 真的是 send()、以及 air.html/air.js 的静态接线。
+  // 完全 hermetic：vm + 注入的假 DOM 对象，不碰网络、端口、真进程或时钟。
+  // 296 + 1 = 297，deterministic 255 + 1 = 256，commands 282 + 1 = 283。
+  assert.equal(core.length, 297, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 297);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 255);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 256);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 17,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -196,8 +202,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 282,
-    '279 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 283,
+    '280 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
