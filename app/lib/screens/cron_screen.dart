@@ -404,8 +404,12 @@ class _CronEditorState extends State<_CronEditor> {
   /// already bound to one of those still lists its own lane (see [_cronClis]).
   static const _cliChoices = <String>['claude-exp', 'codex-exp', 'opencode', 'zcode', 'qoder'];
 
-  List<String> get _cronClis =>
-      _cliChoices.contains(_cli) ? _cliChoices : [_cli, ..._cliChoices];
+  List<String> get _cronClis => _cliChoices.contains(_cli)
+      ? _cliChoices
+      : [
+          _cli,
+          ..._cliChoices.where((cli) => cliFamilyOf(cli) != cliFamilyOf(_cli)),
+        ];
 
   @override
   void initState() {

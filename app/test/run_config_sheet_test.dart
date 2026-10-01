@@ -98,6 +98,42 @@ void main() {
     return SettingsService.getInstance();
   }
 
+  testWidgets('窄屏键盘展开时保存仍可点，旧会话不重复显示 CLI', (tester) async {
+    tester.view.physicalSize = const Size(320, 600);
+    tester.view.devicePixelRatio = 1;
+    tester.view.viewInsets = const FakeViewPadding(bottom: 260);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetViewInsets);
+    final out = _Captured();
+    await _open(
+      tester,
+      const RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: _claudeProviders,
+        provider: 'relay',
+        model: '',
+        effort: 'medium',
+        cliAvailability: {
+          SessionCli.claudeExp: true,
+          SessionCli.codexExp: true,
+        },
+      ),
+      out,
+    );
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('run-cli-option-claude')), findsNothing);
+    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsOneWidget);
+    expect(find.textContaining('Agent SDK'), findsNothing);
+    expect(find.textContaining('App Server'), findsNothing);
+    final save = find.widgetWithText(ElevatedButton, '保存');
+    expect(save.hitTestable(), findsOneWidget);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+    expect(out.value?.switchToCli, isNull);
+    expect(out.value?.provider, 'relay');
+  });
+
   // ── 固定一条 ────────────────────────────────────────────────────────────
 
   testWidgets('固定一条：线路、模型、推理强度一起交回去', (tester) async {

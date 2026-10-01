@@ -744,6 +744,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`document.querySelector('.git-manager-files .git-manager-file').click()`);
     assert.ok(await page.waitFor(`document.querySelector('.git-manager-patch')?.textContent.includes('+新增一行')`));
     await page.evaluate(`document.querySelector('.git-manager-close').click()`);
+    assert.ok(await page.waitFor(`!document.querySelector('.git-manager')`));
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await page.evaluate(`document.getElementById('directory-git').querySelector('.directory-git-actions button').click()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('.git-manager-commits .git-manager-row').length===2`));
@@ -1287,6 +1288,18 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('sidebar').getBoundingClientRect().left>=0`), true);
     await page.evaluate(`document.getElementById('nav-scrim').click()`);
     assert.equal(await page.evaluate(`document.getElementById('sidebar').getBoundingClientRect().right<=0`), true);
+    // A saved legacy auto row stays intact, with just one option per product.
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 900, deviceScaleFactor: 1, mobile: true });
+    await page.evaluate(`window.MultiCCRunConfig.open({configuration:{cli:'codex',provider:'codex-lab',providerSelection:{mode:'auto',cliSwitch:'failover',protocol:'openai_responses',candidates:[{cli:'codex',providerId:'codex-lab',model:'gpt-5.5'},{cli:'codex-exp',providerId:'codex-backup',model:'gpt-5.6-sol'}]}}},['claude','claude-exp','codex','codex-exp','opencode'],value=>{window.__legacySaved=value})`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('.rc-row-cli').length===2`));
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.rc-row-cli')].map(s=>({value:s.value,codex:[...s.options].filter(o=>o.textContent==='Codex').length}))`), [{value:'codex',codex:1},{value:'codex-exp',codex:1}]);
+    assert.equal(await page.evaluate(`/Agent SDK|App Server|claude -p|codex exec/.test(document.querySelector('.air-config-dialog').innerText)`), false);
+    assert.ok(await page.waitFor(`document.querySelectorAll('.rc-row .rc-issue').length===0`));
+    assert.ok(await page.evaluate(`document.querySelector('.air-config-footer p').textContent.includes('跨 1 个 CLI')`));
+    screenshots.push(await page.screenshot('runtime-config-legacy-pool-mobile'));
+    await page.evaluate(`document.querySelector('.air-config-dialog form').requestSubmit()`);
+    assert.ok(await page.waitFor(`window.__legacySaved`));
+    assert.deepEqual(await page.evaluate(`window.__legacySaved.providerSelection.candidates.map(c=>c.cli)`), ['codex','codex-exp']);
     assert.deepEqual(await page.evaluate('window.__errors||[]'), []);
     assert.deepEqual(await page.evaluate(`document.getElementById('conversation').contentWindow.__errors||[]`), []);
   });

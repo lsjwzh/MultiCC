@@ -423,7 +423,9 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       isExpanded: true,
       dropdownColor: AppColors.panel,
       decoration: runConfigInputDecoration(),
-      style: const TextStyle(color: AppColors.text, fontSize: 12.5),
+      style: Theme.of(
+        context,
+      ).textTheme.bodyMedium?.copyWith(color: AppColors.text, fontSize: 12.5),
       items: [
         const DropdownMenuItem(value: '', child: Text('线路默认')),
         if (autoAllowed)
@@ -686,7 +688,10 @@ class _AddLineSheetState extends State<_AddLineSheet> {
             TextField(
               key: const ValueKey('run-add-line-search'),
               onChanged: (value) => setState(() => _query = value.trim()),
-              style: const TextStyle(color: AppColors.text, fontSize: 13),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: AppColors.text,
+                fontSize: 13,
+              ),
               decoration: runConfigInputDecoration(hint: '搜索线路'),
             ),
             const SizedBox(height: 10),
