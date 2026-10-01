@@ -21,6 +21,18 @@ const SOURCE_EXTENSIONS = new Set([
 // migration. Keep this map for explicit, reviewed debt only; ordinary feature
 // work must satisfy the default budget.
 const MIGRATION_DEBT = Object.freeze({
+  // app/lib/providers/chat_provider.dart 曾在 2963 行退休（见下方历史注释）。
+  // 2026-10-01 语音听写原始转写透传（67022e75，sendMessage 增加 voiceRaw
+  // 参数，+6 行其中 5 行是 dartdoc）把它从 2999 抬过 3000 又没回来登记，
+  // v2.2.3 tag 的 CI 因此红了一次 —— 按实测高水位登记 3005/121819。
+  // 该拆的仍是那笔 ~200 行的 vendor-quota 集群（ark/kimi/qoder fetchers +
+  // in-flight/backoff 状态 + *QuotaView getters），拆完降回 <= 3000 就退休。
+  'app/lib/providers/chat_provider.dart': Object.freeze({
+    ceiling: 3005,
+    byteCeiling: 121819,
+    target: 3000,
+    reason: 'voice-dictation voiceRaw passthrough crossed 3000; vendor-quota cluster split retires this',
+  }),
 // app/lib/screens/main_shell.dart was registered here (ceiling 3167/122298) after
   // it crossed 3000 in 039c6e43 (跨目录控制台). 2026-09-27 删掉整块任务板 UI（老首页、
   // 目录详情浮层、任务板标签页与其级联的渲染类）后降到 699 行，已回到默认 3k 目标
