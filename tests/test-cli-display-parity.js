@@ -773,7 +773,8 @@ test('the former hand-written label tables are gone', () => {
   // The one surviving CLI_META is chat.js's, and it is built from the catalog.
   const chat = read('public/chat.js');
   assert.match(chat, /CLI_META = _providerCatalog\.cliMetaMap\(\)/, 'chat.js must build CLI_META from the catalog');
-  assert.match(chat, /nativeRouteLabel\(/, 'chat.js must take the native route label from the catalog');
+  assert.match(chat, /MultiCCRunConfig\.pillModel\(/, 'Chat uses the shared runtime pill');
+  assert.match(read('public/run-config.js'), /catalog\.nativeRouteLabel\(/, 'the shared pill takes native labels from the catalog');
   const dartMessage = read('app/lib/models/message.dart');
   assert.match(dartMessage, /String get displayName => cliDisplayName\(name\)/, 'message.dart must delegate to cli_display.dart');
 });

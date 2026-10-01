@@ -21,7 +21,7 @@ test('claude-exp shows as "Claude" with the engine line "Claude Agent SDK", neve
   assert.equal(providerCatalog.CLI_DISPLAY['claude-exp'].displayName, 'Claude');
   assert.equal(providerCatalog.cliEngine('claude-exp'), 'Claude Agent SDK');
   assert.equal(providerCatalog.cliMeta('claude-exp').engine, 'Claude Agent SDK');
-  assert.equal(providerCatalog.cliShortMark('claude-exp'), 'A');
+  assert.equal(providerCatalog.cliShortMark('claude-exp'), 'C');
   // 页面不再各持一份标签表：这些文件里不该再出现 claude-exp 的字面标签。
   const anyUi = ['public/chat.js', 'public/air-task-settings.js', 'src/cli-adapters/claude-exp.js', 'src/cli/switch-runtime.js'];
   for (const file of anyUi) {
@@ -204,11 +204,14 @@ test('Auto Provider picker exposes protocol pools, ordered candidates and the pe
     { id: 'relay-b', protocol: 'anthropic' },
     { id: 'relay-c', protocol: 'anthropic' },
   ], 'anthropic').candidates.length, 2);
-  assert.match(page, /providerSelection: picked\.providerSelection/);
-  assert.match(page, /Auto · \$\{window\.MultiCCChatAiConfig\.autoProtocolLabel/);
-  assert.match(page, /actualProvider \|\| '待路由'/,
+  assert.match(page, /MultiCCRunConfig\.open\(/);
+  assert.match(page, /MultiCCRunConfig\.pillModel\(/);
+  const run = require('../public/run-config');
+  const selection = { mode: 'auto', candidates: [{ providerId: 'a' }, { providerId: 'b' }] };
+  assert.equal(run.pillModel({ current: { providerSelection: selection },
+    next: { providerSelection: selection }, currentRoute: 'Configured primary' }).turn, '',
     'Auto must not claim its configured primary before a physical attempt begins');
-  assert.match(page, /\? _activeProviderId : _sessionProvider/,
+  assert.match(page, /\? _activeProviderId : effectiveProviderIdForChoices\(_sessionProvider\)/,
     'the quota bar must follow the physical Auto route after failover');
 });
 
