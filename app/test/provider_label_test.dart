@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:multicc_app/widgets/model_chip.dart';
+import 'package:multicc_app/widgets/run_config/run_labels.dart';
 
 /// 会话里存的是 Provider id，芯片上要的是名字。这条规则有一条硬底线：**知道名字
 /// 就绝不显示 id** —— 屏幕上出现 8dc4-4585 这种片段，就是「选完线路看不到名字」

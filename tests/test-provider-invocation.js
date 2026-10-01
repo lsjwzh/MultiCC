@@ -32,6 +32,14 @@ function makeHarness() {
     resolveSpawnEnv(session, overrides = {}) {
       const providerId = overrides.providerId ?? session.provider;
       calls.push({ method: 'resolve', providerId });
+      // A provider-less route (OpenCode native) has no managed provider to
+      // qualify a model through: the model stands as the selection gave it.
+      if (!providerId) {
+        return {
+          providerName: null,
+          qualifiedModel: overrides.model !== undefined ? overrides.model : session.model,
+        };
+      }
       return { providerName: summaries[providerId]?.name, qualifiedModel: `${providerId}-wire-model` };
     },
     getProviderSummary(_appType, providerId) { return summaries[providerId] || null; },
@@ -524,4 +532,47 @@ test('the budget travels with every physical attempt, the failover one included'
   assert.equal(next.attempt.providerId, 'provider-b');
   assert.equal(next.attempt.stallTimeoutMs, 45_000,
     'the switched line gets its own idle budget, not the failed attempt\'s leftovers');
+});
+
+test('an OpenCode-native line spawns as a provider-less opencode session on its own model', () => {
+  const { calls, factory } = makeHarness();
+  // The session keeps its own provider/model; only this attempt's route changes.
+  const session = { id: 'session-1', cli: 'opencode', provider: 'zen-managed', model: 'zen-model' };
+  const provider = { buildInvocation: envelope => ({ cmd: 'opencode', payload: envelope.userText }) };
+  const envelope = { userText: 'hello', spawnOpts: {}, historyHandle: {} };
+  const request = normalizeTurnRequest({
+    sessionId: 'session-1', text: 'hello', cli: 'opencode',
+    hasNativeHistory: false, forceFirst: true,
+  });
+  const turn = createTurnLifecycle(request, { turnId: 'turn-1' });
+  const first = factory.prepare({
+    request, turn, session, provider, envelope, attemptNo: 1,
+    providerId: 'opencode-native:opencode', model: 'opencode/big-pickle',
+  });
+  // `opencode-native:<id>` is not a MultiCC route: it must resolve exactly like a
+  // provider-less opencode session, so '' goes down to the router (OpenCode
+  // reads its own config and credentials) while the candidate's `<id>/<model>`
+  // stays the wire model.
+  assert.deepEqual(calls.map(call => call.providerId), ['']);
+  assert.equal(first.binding.providerId, null);
+  assert.equal(first.binding.cli, 'opencode');
+  assert.equal(first.binding.model, 'opencode/big-pickle');
+  assert.equal(first.attempt.providerId, '_default_');
+  assert.equal(first.routeOverrides.model, 'opencode/big-pickle');
+  assert.equal(session.provider, 'zen-managed', 'the session provider is never rewritten');
+  assert.equal(session.model, 'zen-model');
+});
+
+test('a managed provider id is passed through to the router unchanged', () => {
+  const { calls, factory } = makeHarness();
+  const session = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet' };
+  const provider = { buildInvocation: envelope => ({ cmd: 'claude', payload: envelope.userText }) };
+  const envelope = { userText: 'hello', spawnOpts: {}, historyHandle: {} };
+  const { request, turn } = turnInput();
+  const prepared = factory.prepare({
+    request, turn, session, provider, envelope, attemptNo: 1,
+    providerId: 'provider-b', model: 'b-model',
+  });
+  assert.deepEqual(calls.map(call => call.providerId), ['provider-b']);
+  assert.equal(prepared.binding.providerId, 'provider-b');
 });

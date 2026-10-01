@@ -5,6 +5,7 @@ const { createProviderRevision } = require('./provider-attempt-runtime');
 const { resolveAutoStallTimeoutMs } = require('./auto-stall-timeout');
 const { createProviderRouteProof } = require('./turn-request');
 const { protocolFamilyOf } = require('../cli/cli-capability');
+const { nativeOpenCodeId } = require('../providers/native-opencode');
 
 function clean(value) {
   return value == null ? '' : String(value).trim();
@@ -67,8 +68,18 @@ function createProviderInvocationFactory(options = {}) {
         || typeof provider.buildInvocation !== 'function') {
       throw new TypeError('provider invocation input is incomplete');
     }
+    // Get the transport-correct provider for the spawn. An Auto Provider pool
+    // can pick OpenCode's own provider (`opencode-native:<id>`), which is not a
+    // MultiCC route: it must spawn exactly like a provider-less opencode session
+    // — the CLI reads its own config and credentials — with the candidate's
+    // `<id>/<model>` as the wire model. Mapping it to '' here (an empty provider
+    // resolves to the native config for the opencode lane) keeps every layer
+    // below free of the native id, so nothing ever looks up a managed provider
+    // that does not exist.
+    const spawnProviderId = nativeOpenCodeId(input.providerId) !== null
+      ? '' : input.providerId;
     const selectionOverrides = Object.freeze({
-      ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
+      ...(input.providerId !== undefined ? { providerId: spawnProviderId } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
     });
     const hasModelOverride = input.model !== undefined;

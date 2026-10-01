@@ -11,7 +11,7 @@ import 'package:multicc_app/services/quota_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/utils/cli_display.dart';
 import 'package:multicc_app/widgets/chat_header.dart';
-import 'package:multicc_app/widgets/model_chip.dart';
+import 'package:multicc_app/widgets/run_config/run_chip.dart';
 
 /// 「下轮生效」口径的回归：**app 上切换 CLI 后，页头还显示旧 CLI、AI 药丸还是
 /// 旧车道的 Provider 池**。
@@ -294,7 +294,7 @@ void main() {
     ),
   );
 
-  testWidgets('窄页头角标显示待生效的那条车道，并挂着「下轮生效」', (tester) async {
+  testWidgets('窄页头运行配置 chip 读待生效的那条车道，并挂着「下轮生效」', (tester) async {
     final s = await settings();
     final mgr = SessionManager(settings: s);
     final provider = ChatProvider(
@@ -318,11 +318,15 @@ void main() {
 
     await pumpHeader(tester, mgr, s, provider);
 
-    expect(find.text(pendingName), findsOneWidget);
-    expect(find.text(liveName), findsNothing);
+    // 窄页头里 chip 是紧凑形态（只有图标 + tooltip，不写字），所以车道从 chip
+    // 自己的 `cli` 上断言：必须是用户选的那条，而不是会话正跑着的 codex。
+    final chip = tester.widget<RunChip>(find.byType(RunChip));
+    expect(chip.cli, SessionCli.claudeExp);
+    expect(chip.cli, isNot(provider.cli));
+    expect(chip.pending, isNotNull);
     // 窄页头用 tooltip 承载「下轮生效」四个字（文字标记会把这一行顶爆）。
     expect(
-      find.byTooltip('切换会话 CLI（${t('cliSwitchPending')}）'),
+      find.byTooltip('运行配置（${t('cliSwitchPending')}）'),
       findsOneWidget,
     );
 
@@ -330,7 +334,7 @@ void main() {
     mgr.dispose();
   });
 
-  testWidgets('AI 药丸按待生效的那份线路/模型渲染', (tester) async {
+  testWidgets('运行配置 chip 按待生效的那份线路/模型渲染', (tester) async {
     final s = await settings();
     final mgr = SessionManager(settings: s);
     final provider = ChatProvider(
@@ -350,7 +354,7 @@ void main() {
           home: Scaffold(
             body: Align(
               alignment: Alignment.topCenter,
-              child: ModelChip(
+              child: RunChip(
                 sessionId: 's-chip',
                 cli: SessionCli.claudeExp,
                 settings: s,
@@ -367,8 +371,8 @@ void main() {
     );
     await tester.pump();
 
-    // 药丸显示的是 pending 里的线路 + 模型，而不是会话记录里旧车道那一份。
-    expect(find.textContaining('p-new | m-new'), findsOneWidget);
+    // chip 显示的是 pending 里的线路 + 模型，而不是会话记录里旧车道那一份。
+    expect(find.textContaining('p-new · m-new'), findsOneWidget);
     // 宽形态下「下轮生效」直接写在药丸上（web 的 [data-pending]::after 同款）。
     expect(find.text(t('cliSwitchPending')), findsOneWidget);
 

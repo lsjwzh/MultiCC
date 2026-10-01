@@ -10,7 +10,8 @@ import 'package:multicc_app/models/message.dart';
 import 'package:multicc_app/services/manage_service.dart';
 import 'package:multicc_app/services/opencode_models_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
-import 'package:multicc_app/widgets/ai_config_sheet.dart';
+import 'package:multicc_app/widgets/run_config/run_config_sheet.dart';
+import 'package:multicc_app/widgets/run_config/run_config_wire.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -74,7 +75,7 @@ void main() {
           ),
         ],
       );
-      AIConfigResult? result;
+      RunConfigOutcome? result;
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -82,10 +83,10 @@ void main() {
               builder: (context) => ElevatedButton(
                 key: const Key('open'),
                 onPressed: () async {
-                  result = await showModalBottomSheet<AIConfigResult>(
+                  result = await showModalBottomSheet<RunConfigOutcome>(
                     context: context,
                     isScrollControlled: true,
-                    builder: (_) => AIConfigSheet(
+                    builder: (_) => RunConfigSheet(
                       cli: SessionCli.opencode,
                       providers: providers,
                       provider: '',
@@ -103,14 +104,17 @@ void main() {
 
       await tester.tap(find.byKey(const Key('open')));
       await tester.pumpAndSettle();
-      expect(find.textContaining('OpenCode 原生 · OpenCode Zen'), findsOneWidget);
+      expect(find.textContaining('OpenCode Zen'), findsOneWidget);
 
-      await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+      final linePicker = find.byType(DropdownButtonFormField<String>).first;
+      await tester.ensureVisible(linePicker);
+      await tester.pumpAndSettle();
+      await tester.tap(linePicker);
       await tester.pumpAndSettle();
       expect(find.textContaining('Anthropic Relay'), findsWidgets);
       expect(find.textContaining('OpenAI Relay'), findsWidgets);
-      expect(find.textContaining('OpenCode 原生 · OpenCode Go'), findsWidgets);
-      await tester.tap(find.textContaining('OpenCode 原生 · OpenCode Zen').last);
+      expect(find.textContaining('OpenCode Go'), findsWidgets);
+      await tester.tap(find.textContaining('OpenCode Zen').last);
       await tester.pumpAndSettle();
 
       final save = find.widgetWithText(ElevatedButton, '保存');
@@ -121,7 +125,7 @@ void main() {
       expect(result, isNotNull);
       expect(result!.provider, isEmpty);
       expect(result!.model, 'opencode/big-pickle');
-      expect(result!.providerLabel, 'OpenCode 原生 · OpenCode Zen');
+      expect(result!.providerLabel, 'OpenCode Zen');
     },
   );
 }

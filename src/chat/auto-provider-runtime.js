@@ -6,6 +6,12 @@ const {
   validateProviderSelection,
 } = require('../providers/auto-provider-config');
 const {
+  NATIVE_OPENCODE_PREFIX,
+  nativeOpenCodeId,
+  syntheticNativeOpenCodeProvider,
+} = require('../providers/native-opencode');
+const { peekOpenCodeModels } = require('../routes/opencode-models');
+const {
   chooseCandidate,
   failoverSafety,
   limitState,
@@ -74,7 +80,22 @@ function createAutoProviderRuntime(options = {}) {
   // lane is failing would otherwise hand the session back and forth forever.
   const hopsBySession = new Map();
 
-  function laneCatalog(cli) {
+  // The `<id>/<model>` wire ids OpenCode's own providers serve, read straight
+  // from the 1-day model cache the /api/opencode/models route keeps. A cold
+  // cache is not a failure: the native line simply keeps no model list and the
+  // CLI falls back to its own default.
+  function nativeModelOptions(id) {
+    return (peekOpenCodeModels() || [])
+      .filter(entry => entry && entry.provider === id && entry.model)
+      .map(entry => `${entry.provider}/${entry.model}`);
+  }
+
+  // `nativeIds` are the OpenCode-native ids this pool names on the lane (see
+  // catalogCandidates). They are not MultiCC providers, so a synthetic entry is
+  // added per id: the runtime then treats the line exactly like any other route
+  // (model choices included) while the spawn path resolves it to OpenCode's own
+  // config.
+  function laneCatalog(cli, nativeIds = null) {
     const appType = providers.appTypeForCli(cli);
     const resolvedAppTypes = typeof providers.appTypesForCli === 'function'
       ? providers.appTypesForCli(cli)
@@ -83,8 +104,15 @@ function createAutoProviderRuntime(options = {}) {
     const catalog = appTypes.length
       ? appTypes.flatMap(type => providers.listProviders(type))
       : providers.listProviders(appType);
-    return new Map((Array.isArray(catalog) ? catalog : [])
+    const byId = new Map((Array.isArray(catalog) ? catalog : [])
       .map(provider => [String(provider.id), provider]));
+    if (cli === 'opencode' && nativeIds && nativeIds.size) {
+      for (const id of nativeIds) {
+        const key = NATIVE_OPENCODE_PREFIX + id;
+        if (!byId.has(key)) byId.set(key, syntheticNativeOpenCodeProvider(id, nativeModelOptions(id)));
+      }
+    }
+    return byId;
   }
 
   // Every line of the pool, on every lane, with its limit state and — for a
@@ -92,8 +120,18 @@ function createAutoProviderRuntime(options = {}) {
   function catalogCandidates(session, selection) {
     const home = session.cli || 'claude';
     const lanes = new Map();
+    // Native OpenCode ids this pool names, per lane: a synthetic entry is built
+    // only for a line the pool actually uses.
+    const nativeIds = new Map();
+    for (const candidate of selection.candidates) {
+      const cli = candidate.cli || home;
+      const nativeId = cli === 'opencode' ? nativeOpenCodeId(candidate.providerId) : null;
+      if (nativeId === null) continue;
+      if (!nativeIds.has(cli)) nativeIds.set(cli, new Set());
+      nativeIds.get(cli).add(nativeId);
+    }
     const lane = cli => {
-      if (!lanes.has(cli)) lanes.set(cli, laneCatalog(cli));
+      if (!lanes.has(cli)) lanes.set(cli, laneCatalog(cli, nativeIds.get(cli)));
       return lanes.get(cli);
     };
     const base = selection.candidates.map((candidate, index) => {
@@ -119,7 +157,18 @@ function createAutoProviderRuntime(options = {}) {
     });
     const priced = selection.routing && selection.routing.tiering === 'price';
     if (!priced) {
-      return { candidates: base, ladder: Object.freeze({ tiers: null, tierOf: () => null }) };
+      // A manual ladder is hand-tagged on the lines themselves. An auto-model
+      // line still expands over the models its provider serves — every variant
+      // keeps the line's tier — and inside a tier the variants go cheapest
+      // first, by price alone. Price is an internal sort key here, never shown.
+      const expands = !!selection.routing && base.some(candidate => candidate.autoModel);
+      const candidates = expands
+        ? expandCandidates(base, { priceTable: pricing(), requirePrice: false })
+        : base;
+      return {
+        candidates,
+        ladder: Object.freeze({ tiers: null, tierOf: () => null, byPrice: expands }),
+      };
     }
     const expanded = expandCandidates(base, { priceTable: pricing() });
     const ladder = priceLadder(expanded);
@@ -180,7 +229,7 @@ function createAutoProviderRuntime(options = {}) {
       candidates: list,
       preferredTier: decision && decision.tier || null,
       ladder: ladder.tiers,
-      byPrice: !!ladder.tiers,
+      byPrice: ladder.byPrice === true || !!ladder.tiers,
       preferCli: cli,
       stickyProviderId: selection.sticky ? stickyBySession.get(session.id) : null,
     }).candidate;
@@ -206,10 +255,13 @@ function createAutoProviderRuntime(options = {}) {
       planned: true,
     });
     pendingBySession.set(session.id, reservation);
-    return plan(session, reservation, picked, decision);
+    // A price ladder is the only pool that publishes a price: a manual pool uses
+    // it purely as an internal sort key.
+    return plan(session, reservation, picked, decision,
+      Array.isArray(ladder.tiers) && ladder.tiers.length > 0);
   }
 
-  function plan(session, reservation, candidate = null, decision = null) {
+  function plan(session, reservation, candidate = null, decision = null, priceTiered = false) {
     hopsBySession.set(session.id, (hopsBySession.get(session.id) || 0) + 1);
     const fromCli = session.cli || 'claude';
     const event = Object.freeze({
@@ -227,7 +279,7 @@ function createAutoProviderRuntime(options = {}) {
       tier: candidate && candidate.tier || null,
       reasonCode: reservation.reasonCode || null,
       routing: decision,
-      ...priceFields(candidate),
+      ...(priceTiered ? priceFields(candidate) : {}),
     });
     try { emit(session.id, event); } catch (_) {}
     logger.info?.('auto_provider_cli_switch_planned', {
@@ -298,7 +350,10 @@ function createAutoProviderRuntime(options = {}) {
     if (pending?.fromProviderId && (!pending.fromCli || pending.fromCli === turnCli)) {
       attempted.add(pending.fromProviderId);
     }
-    const byPrice = !!ladder.tiers;
+    const byPrice = ladder.byPrice === true || !!ladder.tiers;
+    // Only a price ladder publishes a price; a manual pool's variants carry one
+    // purely so the chooser can order them, and it never reaches the wire.
+    const priceTiered = Array.isArray(ladder.tiers) && ladder.tiers.length > 0;
     let current = null;
     let physicalAttempt = 0;
     let selectionFailureReason = null;
@@ -332,7 +387,7 @@ function createAutoProviderRuntime(options = {}) {
         // Lane and price only exist for the pools that have them, so a legacy
         // pool's event keeps its exact shape.
         ...(selection.cliSwitch ? { cli: candidate && candidate.cli || turnCli } : {}),
-        ...priceFields(candidate),
+        ...(priceTiered ? priceFields(candidate) : {}),
         ...details,
       });
       currentBySession.set(session.id, event);

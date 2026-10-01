@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/message.dart';
-import 'package:multicc_app/widgets/ai_config_sheet.dart';
+import 'package:multicc_app/widgets/run_config/run_config_sheet.dart';
 
 /// Widget regression for the App provider picker: each provider option carries a
 /// compact cached-limit suffix (summary + freshness / failure / stale), and a
@@ -16,13 +16,14 @@ void main() {
 
   final now = DateTime.now().millisecondsSinceEpoch;
 
-  Widget host(AIConfigSheet sheet) => MaterialApp(
+  Widget host(RunConfigSheet sheet) => MaterialApp(
         home: Scaffold(
           body: SizedBox(width: 360, height: 740, child: sheet),
         ),
       );
 
-  AIConfigSheet sheetWith(List<Map<String, dynamic>> providers) => AIConfigSheet(
+  RunConfigSheet sheetWith(List<Map<String, dynamic>> providers) =>
+      RunConfigSheet(
         cli: SessionCli.claude,
         providers: providers,
         provider: 'p1',
@@ -45,7 +46,11 @@ void main() {
       };
 
   Future<void> openProviderDropdown(WidgetTester tester) async {
-    await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+    // 线路下拉在 CLI 卡片底下，面板比测试窗口高，先滚到它。
+    final picker = find.byType(DropdownButtonFormField<String>).first;
+    await tester.ensureVisible(picker);
+    await tester.pumpAndSettle();
+    await tester.tap(picker);
     await tester.pumpAndSettle();
   }
 

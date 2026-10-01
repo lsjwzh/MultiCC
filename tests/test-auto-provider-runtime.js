@@ -785,6 +785,186 @@ test('inside one price tier the cheaper line wins, and priority only breaks its 
   assert.equal(pool.events.at(-1).price, 1);
 });
 
+// ── manual tiering with an auto-model line ───────────────────────────────────
+
+function manualPool({ candidates, prices = {}, verdictTier = 'simple', catalog = null, tiers = null }) {
+  const now = 1_000_000;
+  const list = catalog || [
+    { id: 'flex', name: 'Flex', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'flex-cheap', modelOptions: ['flex-cheap', 'flex-pricey'] },
+    { id: 'fixed', name: 'Fixed', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'fixed-m', modelOptions: ['fixed-m'] },
+    { id: 'heavy', name: 'Heavy', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'heavy-m', modelOptions: ['heavy-m'] },
+  ];
+  const providers = {
+    appTypeForCli: () => 'claude',
+    appTypesForCli: () => ['claude'],
+    listProviders: () => list,
+    providerSupportsCli: (provider, cli) => provider.compatibleClis.includes(cli),
+    modelValidForProvider: () => true,
+  };
+  const events = [];
+  const routing = createAutoProviderRouting({
+    jev: { classify: async () => ({ ok: true, tier: verdictTier, reasonCode: 'jev_choice' }) },
+    now: () => now,
+    ttlMs: 60_000,
+  });
+  const runtime = createAutoProviderRuntime({
+    providers,
+    routing,
+    // The manual ladder needs prices only as a sort key, so a stub keeps the
+    // shared table (and its background refresh) out of the test.
+    priceTable: { lookup: model => (model in prices
+      ? { blended: prices[model], input: 0, output: 0, model, source: 'stub' } : null) },
+    providerLimitCache: { get: () => null },
+    limitCacheStaleMs: 60_000,
+    now: () => now,
+    emit: (_sessionId, event) => events.push(event),
+    hasLiveBackgroundTasks: () => false,
+  });
+  const session = {
+    id: 's-manual', cli: 'claude', provider: 'legacy-concrete',
+    providerSelection: {
+      version: 1, mode: 'auto', maxAttempts: 2, sticky: false, candidates,
+      routing: { provider: 'jev', tiers: tiers || [...new Set(candidates.map(c => c.tier))] },
+    },
+  };
+  return { runtime, session, providers, events };
+}
+
+test('a manual ladder expands an auto-model line and tries its cheapest model first', async () => {
+  const pool = manualPool({
+    prices: { 'flex-cheap': 1, 'flex-pricey': 9 },
+    candidates: [
+      { providerId: 'flex', priority: 1, autoModel: true, tier: 'simple' },
+      { providerId: 'fixed', priority: 2, model: 'fixed-m', tier: 'complex' },
+    ],
+  });
+  await pool.runtime.prepareTurn({ session: pool.session, text: '改个 typo', providers: pool.providers });
+  const turn = pool.runtime.beginTurn({ session: pool.session, turnId: 't-manual', promptText: '改个 typo' });
+  // The verdict lands on 'simple'; both variants of flex keep that tier, and the
+  // cheaper one is tried first even though it is not the provider's default.
+  assert.deepEqual(turn.initial(), {
+    providerId: 'flex', model: 'flex-cheap', reasonCode: 'auto_initial_selection',
+  });
+  assert.equal(turn.routing.tier, 'simple');
+  // The price that ordered the variants is an internal sort key: a manual pool
+  // never reports one, unlike a price-tiered pool whose event audits it.
+  const selected = pool.events.at(-1);
+  assert.equal('price' in selected, false);
+  assert.equal('priceSource' in selected, false);
+});
+
+test('a manual auto-model variant with no known price still runs, ranked last in its tier', async () => {
+  const pool = manualPool({
+    prices: { 'fixed-m': 2 },
+    candidates: [
+      { providerId: 'flex', priority: 1, autoModel: true, tier: 'simple' },
+      { providerId: 'fixed', priority: 9, model: 'fixed-m', tier: 'simple' },
+      { providerId: 'heavy', priority: 50, model: 'heavy-m', tier: 'complex' },
+    ],
+  });
+  await pool.runtime.prepareTurn({ session: pool.session, text: '改个 typo', providers: pool.providers });
+  // Both lines are hand-tagged 'simple', so the tier cannot separate them. The
+  // auto-model line's models have no price, which only ranks them *last* inside
+  // the tier — the line is still eligible, and never dropped for being unpriced.
+  const turn = pool.runtime.beginTurn({ session: pool.session, turnId: 't-manual-noprice', promptText: '改个 typo' });
+  const first = turn.initial();
+  assert.equal(first.providerId, 'fixed');
+  assert.equal(first.model, 'fixed-m');
+});
+
+// ── OpenCode native pool candidates ──────────────────────────────────────────
+
+function opencodeProviders() {
+  return {
+    appTypeForCli: cli => (cli === 'codex' ? 'codex' : 'claude'),
+    appTypesForCli: () => ['claude', 'codex'],
+    listProviders: () => [],
+    providerSupportsCli: () => true,
+    modelValidForProvider: () => true,
+  };
+}
+
+test('a native OpenCode line is a pool candidate whose models come from the opencode cache', async () => {
+  const { _setCacheForTest, _resetCacheForTest } = require('../src/routes/opencode-models');
+  _setCacheForTest(Date.now(), [
+    { provider: 'opencode', model: 'big-pickle', label: 'opencode/big-pickle' },
+    { provider: 'opencode', model: 'grok-code', label: 'opencode/grok-code' },
+    { provider: 'opencodego', model: 'kimi-k2', label: 'opencodego/kimi-k2' },
+  ]);
+  try {
+    const providers = opencodeProviders();
+    const routing = createAutoProviderRouting({
+      jev: { classify: async () => ({ ok: true, tier: 'simple', reasonCode: 'jev_choice' }) },
+      now: () => 1_000_000,
+      ttlMs: 60_000,
+    });
+    const runtime = createAutoProviderRuntime({
+      providers,
+      routing,
+      priceTable: { lookup: () => null },
+      providerLimitCache: { get: () => null },
+      limitCacheStaleMs: 60_000,
+      now: () => 1_000_000,
+      emit: () => {},
+      hasLiveBackgroundTasks: () => false,
+    });
+    const session = {
+      id: 's-native', cli: 'opencode', provider: 'legacy-concrete',
+      providerSelection: {
+        version: 1, mode: 'auto', maxAttempts: 2, sticky: false,
+        candidates: [
+          { providerId: 'opencode-native:opencode', cli: 'opencode', autoModel: true, priority: 1, tier: 'simple' },
+          { providerId: 'opencode-native:opencodego', cli: 'opencode', model: 'opencodego/kimi-k2', priority: 2, tier: 'complex' },
+        ],
+        routing: { provider: 'jev', tiers: ['simple', 'complex'] },
+      },
+    };
+    await runtime.prepareTurn({ session, text: '改个 typo', providers });
+    const turn = runtime.beginTurn({ session, turnId: 't-native', promptText: '改个 typo' });
+    // The auto-model native line expands over the cache's `<id>/<model>` ids for
+    // the id it names, and the verdict picks one of them.
+    assert.deepEqual(turn.initial(), {
+      providerId: 'opencode-native:opencode', model: 'opencode/big-pickle',
+      reasonCode: 'auto_initial_selection',
+    });
+  } finally {
+    _resetCacheForTest();
+  }
+});
+
+test('a native OpenCode line without a cached model list still routes on its default', () => {
+  const { _resetCacheForTest } = require('../src/routes/opencode-models');
+  _resetCacheForTest();
+  const providers = opencodeProviders();
+  const events = [];
+  const runtime = createAutoProviderRuntime({
+    providers,
+    priceTable: { lookup: () => null },
+    providerLimitCache: { get: () => null },
+    limitCacheStaleMs: 60_000,
+    now: () => 1_000_000,
+    emit: (_sessionId, event) => events.push(event),
+    hasLiveBackgroundTasks: () => false,
+  });
+  const session = {
+    id: 's-native-cold', cli: 'opencode',
+    providerSelection: {
+      version: 1, mode: 'auto', maxAttempts: 2, sticky: false,
+      candidates: [
+        { providerId: 'opencode-native:opencode', cli: 'opencode', priority: 1 },
+        { providerId: 'opencode-native:opencodego', cli: 'opencode', model: 'opencodego/kimi-k2', priority: 2 },
+      ],
+    },
+  };
+  const turn = runtime.beginTurn({ session, turnId: 't-native-cold' });
+  // No cache, no modelOptions: the line keeps a null model, so OpenCode runs its
+  // own default rather than a fabricated one.
+  assert.deepEqual(turn.initial(), {
+    providerId: 'opencode-native:opencode', model: null, reasonCode: 'auto_initial_selection',
+  });
+  assert.equal(events[0].providerName, 'OpenCode Zen');
+});
+
 test('an auto-model line is expanded, and the judged tier picks the model', async () => {
   const specs = [
     { id: 'flex', priority: 1, autoModel: true, prices: { 'flex-cheap': 1, 'flex-pricey': 9 } },

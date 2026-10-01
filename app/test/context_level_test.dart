@@ -166,7 +166,7 @@ void main() {
       );
 
       await tester.tap(find.text(t('clearCtx')));
-      // 这里不能用 pumpAndSettle：头部的模型胶囊是跑马灯（model_chip.dart 的
+      // 这里不能用 pumpAndSettle：头部的运行配置胶囊是跑马灯（run_chip.dart 的
       // MarqueeText），而测试字体每个字形都是等宽的方块，`官方 Provider | 默认
       // | medium` 必然超过它 220px 的上限 —— 溢出就 repeat(reverse: true)，ticker
       // 永远不停，pumpAndSettle 只会等到超时。真实字体下这句话装得下，跑马灯不

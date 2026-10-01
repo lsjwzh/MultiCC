@@ -799,9 +799,10 @@ class SessionProviderCandidate {
   final String? cli;
 
   /// Let the runtime pick this route's model per turn from the price ladder
-  /// instead of pinning [model] (server: `provider_auto_model_requires_price_tiering`).
-  /// Only legal with `routing.tiering == 'price'` and mutually exclusive with a
-  /// pinned model, so a legacy pool never carries it.
+  /// instead of pinning [model] (server: `provider_auto_model_requires_routing`).
+  /// Only legal when the pool carries a `routing` block (any role, any tiering)
+  /// and mutually exclusive with a pinned model, so a legacy pool never carries
+  /// it.
   final bool autoModel;
 
   const SessionProviderCandidate({

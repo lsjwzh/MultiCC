@@ -29,8 +29,8 @@
   const DEFAULT_CLI_SWITCH = 'failover';
   // How a routed pool's tiers are decided: hand-tagged candidates (`manual`) or
   // the shared price table, recomputed per turn (`price`). Mirrors
-  // ROUTING_TIERINGS — `price` is the only shape `autoModel` lines are allowed
-  // in, because picking a model needs a ranking to pick by.
+  // ROUTING_TIERINGS — an `autoModel` line is allowed under either one, because
+  // what it needs is a router to pick the model, not specifically a price list.
   const DEFAULT_ROUTING_TIERING = 'manual';
   const PRICE_TIERING = 'price';
   // 候选池预设：每次新建 Auto Provider 都要重新勾一遍候选、调一遍优先级太费事，
@@ -563,13 +563,13 @@
       : null;
     if (routing && routing.ok === false) return routing;
     const cleanCandidates = routing ? routing.candidates : stripped;
-    // Picking a model per turn needs a ranking to pick by, and that ranking is
-    // the price ladder — without it an auto-model line would silently mean
-    // "first", which the server refuses as well.
-    if (cleanCandidates.some(candidate => candidate.autoModel)
-        && !(routing && routing.value.tiering === PRICE_TIERING)) {
-      return fail(tt('autoEditorAutoModelNeedsPrice', '「自动选模型」只在「按价格」档位依据下可用。'),
-        'provider_auto_model_requires_price_tiering');
+    // Picking a model per turn needs a router, and the router is whatever the
+    // pool's `routing` block describes (Jev, either tiering). Without a routed
+    // pool an auto-model line would silently mean "first", which the server
+    // refuses with the same code.
+    if (cleanCandidates.some(candidate => candidate.autoModel) && !routing) {
+      return fail(tt('autoEditorAutoModelNeedsRouting', '「自动选模型」只在「按难度」线路池里可用。'),
+        'provider_auto_model_requires_routing');
     }
     const crossCli = selectionCrossesCli(cleanCandidates);
     const providers = Array.isArray(draft.providers) ? draft.providers : [];
@@ -1839,8 +1839,8 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         tt('autoEditorModelAria', '{provider} 模型', { provider: label }));
       custom.style.cssText = 'box-sizing:border-box;width:100%;min-width:0;margin-top:5px';
       show(custom, false);
-      // 自动选模型：这一行不钉住模型，每轮由价格表挑。它与钉住的模型互斥（服务端
-      // 也只接受「按价格自动分层」下的 autoModel），所以勾上就把下拉清空并禁掉。
+      // 自动选模型：这一行不钉住模型，每轮由路由器（Jev）挑。它与钉住的模型互斥
+      // （服务端也只在池子带 routing 时才接受 autoModel），所以勾上就把下拉清空并禁掉。
       const autoField = make('label', 'multicc-auto-editor-auto-model-field');
       const autoModel = make('input', 'multicc-auto-editor-auto-model');
       autoModel.type = 'checkbox';
