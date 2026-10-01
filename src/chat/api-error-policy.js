@@ -805,6 +805,26 @@ function resetWaitLabel(delayMs) {
   return `（约 ${Math.max(2, Math.round(hours / 24))} 天后重置）`;
 }
 
+// Host-side stop reasons are NOT provider faults. Naming the real one is the
+// difference between 「本轮因服务重启被中断」 and a phantom 「上游 API 中断」
+// reported for a turn that never saw an API error at all.
+const HOST_STOP_LABELS = Object.freeze({
+  shutdown: '本轮因服务重启或关闭被中断',
+  server_shutting_down: '本轮因服务重启或关闭被中断',
+  sigint: '本轮因服务重启或关闭被中断',
+  sigterm: '本轮因服务重启或关闭被中断',
+  user_cancel: '本轮被用户取消',
+  new_user_message: '本轮被新消息打断',
+  cli_switch: '本轮因切换 CLI 车道被中断',
+  relocate: '本轮因会话迁移被中断',
+  session_delete: '本轮因会话被删除而终止',
+});
+
+// Sources that observe the host stopping a turn, or that carry a classify
+// fallback verdict with no provider evidence behind it. A turn that ended
+// through one of them must never be announced as an upstream API outage.
+const NON_PROVIDER_SOURCES = new Set(['host_interruption', 'classifier_legacy']);
+
 function retryNotice(decision) {
   if (!decision || !decision.error) return '上游 API 请求失败，未自动重试。';
   const { error } = decision;
@@ -816,6 +836,16 @@ function retryNotice(decision) {
   if (error.category === 'adapter_configuration') {
     return `CLI 或适配器配置错误，未自动重试。${causeNotice}${error.userAction}`;
   }
+  if (error.category === 'cancel_shutdown') {
+    // A host-side stop names itself, and its cause is the stop itself — so the
+    // reason is not repeated as a 「根因」 line. Provider text that merely
+    // mentions its own shutdown carries no label and keeps the generic wording
+    // below: that one really did come from upstream.
+    const hostLabel = HOST_STOP_LABELS[String(error.code || '').toLowerCase()];
+    if (hostLabel) {
+      return `${hostLabel}，不是上游 API 故障；未自动重放。${error.userAction}`;
+    }
+  }
   if (decision.action === 'retry') {
     const seconds = Math.max(1, Math.ceil((decision.delayMs || 0) / 1000));
     return `上游 API 暂时不可用，将在 ${seconds} 秒后进行受控重试（${decision.attempt}/${error.maxAttempts}）。${causeNotice}`;
@@ -825,7 +855,12 @@ function retryNotice(decision) {
     return `额度或限流窗口尚未恢复${window}，系统不会短周期重试。${causeNotice}${error.userAction}`;
   }
   if (decision.reason === 'unsafe_replay_boundary') {
-    return `上游 API 中断，但本轮已有部分输出或工具执行；为避免重复副作用，未自动重放。${causeNotice}${error.userAction}`;
+    // Only announce an upstream interruption when the evidence really came from
+    // the provider boundary. A host-stopped turn, or a verdict carrying no
+    // provider evidence at all, is an interruption — not an API outage.
+    const fromProvider = !!error.code && !NON_PROVIDER_SOURCES.has(error.source);
+    const lead = fromProvider ? '上游 API 中断，但本轮' : '本轮未正常结束（非上游 API 故障）。';
+    return `${lead}已有部分输出或工具执行；为避免重复副作用，未自动重放。${causeNotice}${error.userAction}`;
   }
   if (decision.reason === 'retry_budget_exhausted') {
     const budget = decision.budgetExhaustedBy === 'attempts'

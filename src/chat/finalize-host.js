@@ -139,6 +139,11 @@ function createTurnFinalizationExecutor(rawPorts) {
         // guess for outcomes the boundary already proved.
         ports.classifyTurnEnd(cs, sessionName, {
           classification: entry.classification || null,
+          // Why the turn really ended when the host stopped it (restart, CLI
+          // switch, relocation, user cancel). The classify centre reports this
+          // as the cause instead of inventing a provider API error for a turn
+          // that never saw one.
+          killReason: entry.killReason || null,
           turnId: context.turn?.turnId || null,
           // Correlate the verdict with the task identity captured when this
           // turn was admitted.  The live session pointer is intentionally not

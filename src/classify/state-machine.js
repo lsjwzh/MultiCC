@@ -335,20 +335,36 @@ function createClassifyStateMachine(rawDeps) {
     // user deliberately stopped.
     if (error && !cancel) {
       if (!cs?._lastApiErrorDecision) {
+        // A host-side stop is structured evidence in its own right. Recording
+        // it as such is what keeps a restart-interrupted turn from being
+        // announced as 「上游 API 中断」: `shutdown` / `cli_switch` / `relocate`
+        // / `user_cancel` classify as cancel_shutdown, so the notice names the
+        // real cause instead of a placeholder provider error.
+        const raw = ctx.killReason ? {
+          source: 'host_interruption',
+          provider: persisted?.cli || 'unknown',
+          code: ctx.killReason,
+          message: `本轮被主机侧中断（原因：${ctx.killReason}）`,
+        } : {
+          // Nothing structured exists, so say exactly that. The old text claimed
+          // a provider API error the turn never observed.
+          source: 'classifier_legacy',
+          provider: persisted?.cli || 'unknown',
+          code: null,
+          message: '本轮结束时未取得结构化错误证据（无提供方错误文本，也无主机侧中断原因）',
+        };
         evaluateTurnApiError({
           sessionName,
           cs,
           persisted,
           turn: cs?._activeTurn,
           runner: cs?._activeRunner,
-          raw: {
-            source: 'classifier_legacy',
-            provider: persisted?.cli || 'unknown',
-            code: 'classifier_api_error',
-            message: 'classifier reported an API error without structured provider evidence',
-          },
+          raw,
           attempt: cs?._apiRetryAttempt || 0,
           phase: 'stream',
+          // Conservative replay guard: this verdict is reached precisely when
+          // the boundary could not prove a safe replay point, and the policy
+          // still fails fast for cancel_shutdown regardless of this flag.
           partialOutput: true,
           sideEffects: turnHasSideEffects(cs),
         });
@@ -512,6 +528,9 @@ function createClassifyStateMachine(rawDeps) {
     // Liveness independently proved the structured verdict may commit.
     const actionContext = {
       sessionName, sessionId, cs, isTerminal: false, cwd, source, liveness,
+      // Only a turn-end verdict carries a host-side stop reason; scan-driven
+      // reclassifications leave it null and fall back to the transcript.
+      killReason: options.killReason || null,
     };
     if (Object.prototype.hasOwnProperty.call(options, 'taskId')) {
       actionContext.taskId = options.taskId;
@@ -1272,6 +1291,10 @@ function createClassifyStateMachine(rawDeps) {
   // The two paths deliberately share no state writer.
   function classifyTurnEnd(cs, sessionName, options = {}) {
     const { classification, turnId = null, identityLocked = false } = options;
+    // Why the host stopped the turn (restart, CLI switch, relocation, user
+    // cancel), when it did. It travels to the E branch so an interrupted turn
+    // reports its real cause instead of a fabricated provider API error.
+    const killReason = options.killReason ? String(options.killReason) : null;
     cancelClassify(cs);
     const persisted = persistedSessions.get(sessionName);
     getAuxQueue().cancelClassifyFor(sessionName);
@@ -1292,7 +1315,7 @@ function createClassifyStateMachine(rawDeps) {
         && !!userInputHost.pending(sessionName),
       backgroundPending,
     });
-    const applyOptions = { cwd: cs?.cwd, source: 'multicc/turn-rules' };
+    const applyOptions = { cwd: cs?.cwd, source: 'multicc/turn-rules', killReason };
     // The scheduler verdict belongs to the task admitted for this turn, not to
     // the mutable task pointer that Aux may update later. An explicit null is
     // still meaningful: session-work-host then correlates against its own
