@@ -355,6 +355,7 @@ class AirTaskTile extends StatelessWidget {
     final detail = airTaskDetail(task);
     final subtitle = [
       if (directoryName.isNotEmpty) directoryName,
+      if ((task.providerName ?? '').isNotEmpty) task.providerName!,
       if (detail.isNotEmpty) detail,
       if ((task.resource['path']?.toString() ?? '').isNotEmpty)
         'WT${(task.resource['branch']?.toString() ?? '').isNotEmpty ? ' · ${task.resource['branch']}' : ''}',

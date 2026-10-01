@@ -309,6 +309,9 @@ function mountAirRoutes(app, deps) {
         recordType: t.recordType || null, workflowStage: t.workflowStage || null,
         updatedAt: t.updatedAt || t.createdAt, lastMessageAt,
         sessionId, ...access,
+        // 当前绑定线路来自任务自己的会话，不拿全局默认值猜；无绑定时留空。
+        providerName: record?.provider
+          ? (deps.providerName?.(record) || record.provider) : null,
         // 这一轮到底在不在跑，是队列事件折出来的事实（src/task-board/normalize.js
         // TASK_RUN_STATES），不是客户端能从 status 猜出来的：status 只有
         // active/done/archived 三个人为的生命周期取值，「执行中」根本不在里面。

@@ -415,6 +415,7 @@ class AirTask {
     this.workflowStage,
     this.sessionId,
     this.sourceSessionId,
+    this.providerName,
     this.runState,
     this.goalState,
     this.resource = const {},
@@ -438,6 +439,8 @@ class AirTask {
   final String? workflowStage;
   final String? sessionId;
   final String? sourceSessionId;
+  /// 当前任务会话绑定的 Provider 显示名；无绑定时不显示。
+  final String? providerName;
 
   /// 这一轮的运行状态，由队列事件折出来（服务端 `task-board/normalize.js` 的
   /// TASK_RUN_STATES）。客户端只读它，不从 [status] 猜。
@@ -470,6 +473,7 @@ class AirTask {
     workflowStage: json['workflowStage'] as String?,
     sessionId: json['sessionId'] as String?,
     sourceSessionId: json['sourceSessionId'] as String?,
+    providerName: json['providerName'] as String?,
     runState: json['runState'] as String?,
     goalState: json['goalState'] as String?,
     resource: (json['resource'] as Map?)?.cast<String, dynamic>() ?? const {},
