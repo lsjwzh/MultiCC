@@ -633,12 +633,12 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #notice:empty { display: none; }
 #task-layout { min-height: 0; flex: 1; display: flex; }
 #task-content { min-width: 0; flex: 1; display: flex; flex-direction: column; position: relative; overflow: hidden; background: linear-gradient(145deg, #fff, #f7faff); }
-/* 目录首页是一列卡片，整列自己滚（代码卡在任务面板下面，滚下去看）。唯一要吃高度的
-   是任务面板：它不吃「剩余高度」，而是由 air-task-pager.js 按「滚动口可见高 − 面板上
-   面那一段 − 输入框占掉的那条带子」算出一个像素值写进 --directory-task-panel-h
-   （上面那一段里有统计卡、配置卡，它们是出现/隐藏的，写成 CSS 里的 dvh 减常数一改就
-   错位）。 */
+/* 目录首页是一列卡片，整列在 #empty 里单层滚动；任务清单不再制造第二个滚动口。 */
 #empty { min-height: 0; flex: 1; overflow: auto; padding: 28px 34px 24px; color: var(--muted); }
+.directory-task-sticky-copy { display: none; position: absolute; z-index: 4; top: 0; left: 34px; right: 34px; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 15px; border: 1px solid #dbe6f1; border-radius: 0 0 12px 12px; background: rgba(255,255,255,.97); box-shadow: 0 3px 10px #35577d14; pointer-events: none; }
+.directory-task-sticky-copy.is-visible { display: flex; }
+.directory-task-sticky-copy strong { color: #35536d; font-size: 15px; }
+.directory-task-sticky-copy span { color: #6d8094; font-size: 11px; white-space: nowrap; }
 /* ── 目录视图切换：Chat（默认）／ Terminal ─────────────────────────────────────
    终端属于每个目录，摆在目录页最前面。两类东西**互相让位**，不是排成一列：
    终端模式下 Chat 那一整块（统计卡 / 最近任务 / Git / 新任务输入框）整块收起，
@@ -763,21 +763,15 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 }
 .worktree-reclaim { min-height: 30px; margin-left: auto; padding: 0 14px; border: 1px solid #bcd8f2; border-radius: 9px; background: var(--blue-soft); color: var(--accent-strong); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 .worktree-reclaim:disabled { opacity: .5; cursor: default; }
-/* ── 当前目录的任务面板 ────────────────────────────────────────────────────
-   一张三段的卡：抬头、筛选条、分页条都固定，中间那份清单吃掉剩下的高度并在自己内部
-   滚（align-content: start：行保持自己的高度，多出来的空间不会按行等分）。整张卡的高度
-   由 air-task-pager.js 写进 --directory-task-panel-h；JS 没上线时退回 auto —— 那时候
-   面板按内容长、整页滚，功能不丢。手机上高度交回 760px 那条断点（清单不抢高度）。 */
-.directory-task-panel { display: flex; flex-direction: column; height: var(--directory-task-panel-h, auto); overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
+/* ── 当前目录的任务面板：真实表头、当前页与分页条同属 #empty 滚动层。 ── */
+.directory-task-panel { display: flex; flex-direction: column; height: auto; overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
 .directory-task-panel .section-heading { flex: 0 0 auto; padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
 .directory-task-heading-actions { display: flex; align-items: center; gap: 10px; }
 .task-sort-switch { display: inline-flex; padding: 2px; border: 1px solid #dce6ef; border-radius: 9px; background: #f3f7fb; }
 .task-sort-switch button { min-height: 0; padding: 3px 8px; border: 0; border-radius: 6px; background: transparent; color: #7a8c9e; font-size: 9.5px; line-height: 1.35; }
 .task-sort-switch button[aria-pressed="true"] { background: #fff; color: #2e73b8; box-shadow: 0 1px 4px #27496814; font-weight: 650; }
-/* 清单自己滚、自己撑满：`min-height: 0` 是让它在 flex 列里真的能被压小（默认的
-   min-height: auto 会顶回去），align-content 是防回归的保险 —— 将来谁给它一个固定
-   高度也不会把行拉开。 */
-#directory-task-list { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; overflow-y: auto; overscroll-behavior: contain; }
+/* 不能给清单 max-height + overflow:auto：那会再次锁住从任务行返回页首的手势。 */
+#directory-task-list { flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; overflow: visible; }
 .directory-task-row { min-width: 0; display: flex; align-items: stretch; padding: 0; border: 0; border-right: 1px solid #e8eef5; border-bottom: 1px solid #e8eef5; border-radius: 0; background: transparent; text-align: left; }
 .directory-task-row:nth-child(2n) { border-right: 0; }
 .directory-task-row:hover, .directory-task-row:focus-within { background: #f2f8fe; }
@@ -789,8 +783,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-task-mark { color: #3b8edc; font-size: 18px; }
 .directory-task-empty { grid-column: 1 / -1; padding: 26px; text-align: center; font-size: 11px; }
 .directory-task-controls { grid-template-columns: minmax(0, 1fr) auto; margin: 0; padding: 10px 14px; border-bottom: 1px solid #e8eef5; background: #f8fbfe; }
-/* 分页条：面板的第三段（抬头 / 筛选 / 分页三段固定，中间那份清单自己滚）。一页 20 条
-   （两列十行）由 air-task-pager.js 定，只有一页时整条收起 —— 所以它不是常驻的页脚，
+/* 分页条：当前页末尾。一页 20 条由 air-task-pager.js 定，只有一页时整条收起，
    而是「翻得动才出现」的一条。
    `flex-direction: row` 必须显式写：全局那条 `nav { flex-direction: column }` 是按元素名
    命中的，这里只写 display 的话，类选择器赢得过 nav 的 display、赢不过它没写的
@@ -1810,12 +1803,8 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #empty { padding: 19px 12px 24px; }
   #directory-task-list { grid-template-columns: 1fr; }
   .directory-task-row { border-right: 0; }
-  /* 手机上「清单吃掉剩余高度」这件事要退回去：一列的行本来就比桌面高一倍，把
-     面板按到剩余高度里，能看见的只剩两三行，而整页又还得往下滚 —— 两个滚动条
-     互相打架。手机上让面板按内容长、整页一起滚，只给它一个上限，免得几百条任务
-     把输入框推到很远的地方。高度那条变量（air-task-pager.js 在桌面上写的）在这里
-     被 height: auto 顶掉 —— 断点里不按窗口算高度。 */
-  #empty > .directory-task-panel { height: auto; max-height: min(420px, 52dvh); }
+  /* 手机同样只滚 #empty；当前页最多 20 条，由分页控制长度。 */
+  .directory-task-sticky-copy { left: 12px; right: 12px; }
   /* 任务行的标题在手机上占两行：一行 11px 的标题在 390px 屏上只装得下十来个字，
      读不出这条任务是干什么的（目录首页由用户报的那张图就是这个）。标题是这一行
      里唯一必须读全的字段，字也给它放大到副行之上；徽标与阶段仍在它下面那行，徽标
@@ -2021,6 +2010,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
      让路、不重述结构」的原则，页头内边距交回上面那条基础手机档。 */
   #task-title { font-size: 21px; }
   #empty { padding: 18px 16px 24px; }
+  .directory-task-sticky-copy { left: 16px; right: 16px; }
   .directory-task-panel, .directory-git-panel, .admin-panel { border-radius: 20px; }
 }
 /* 统计卡在手机上的内边距单独收在 421px 以上：≤420px 那一档把它压到 9px 是为了在

@@ -516,6 +516,7 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   highlightCodeBlocks,
   buildUsageLine,
   buildTimingLine,
+  attachModelAttribution,
   // Task mode renders read-only ledger history: no per-message delete/fork.
   // A share is the same deal, and for a stronger reason: those two buttons write
   // to the owner's transcript, and a recipient must never be handed one.
@@ -779,6 +780,9 @@ function accumulateLiveUsage(usage, bucket) { return chatLiveUi.accumulateLiveUs
 function buildUsageLine(usage, roleBreakdown) { return chatLiveUi.buildUsageLine(usage, roleBreakdown); }
 function fmtDuration(ms) { return chatLiveUi.fmtDuration(ms); }
 function buildTimingLine(message) { return chatLiveUi.buildTimingLine(message); }
+// 归属是往已有那一行的最右端贴一段字（不是新起一行），所以历史回放拿到的是一次
+// 落位调用，而不是一个待插入的节点 —— 落点规则只有 chat-live-ui 一份。
+function attachModelAttribution(contentEl, attribution) { return chatLiveUi.attachModelAttribution(contentEl, attribution); }
 
 // ── Per-message delete ──
 // Hover "×" on a bubble whose server-side history id is known. Deleting

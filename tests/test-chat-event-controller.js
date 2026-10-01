@@ -395,6 +395,38 @@ test('turn and monitor progress update stable rows and terminal events close the
   ]);
 });
 
+// 服务端在实时 result 帧里带同一个 modelAttribution（和落库那条逐字一致），
+// 所以「正在流式的气泡」当场就有归属行，不必等刷新。
+test('the result frame paints the model attribution onto the finished bubble', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.state.currentMsgEl = fixture.bubble;
+  fixture.state.isStreaming = true;
+  fixture.controller.handleEvent({
+    type: 'result',
+    usage: { input_tokens: 10, output_tokens: 2 },
+    durationMs: 1200,
+    modelAttribution: { cli: 'claude', providerId: 'zhipu', providerName: 'Zhipu', model: 'glm-4.6' },
+  }, generation);
+  const lines = fixture.content.querySelectorAll('.msg-model-attribution');
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].textContent, '由 Claude · Zhipu · glm-4.6 产出');
+  // 贴在时间行最右端（不额外占一行）：页脚里那一行本来就写着这轮跑了多久。
+  const timing = fixture.content.querySelectorAll('.msg-timing')[0];
+  assert.ok(timing, 'result 带来 durationMs 时会补上时间行');
+  assert.equal(timing.children[timing.children.length - 1], lines[0], '归属挂在时间行末尾');
+  assert.notEqual(fixture.content.children[fixture.content.children.length - 1], lines[0],
+    '不该是 .msg-content 的又一行');
+
+  // 老服务端 / 无可说的归属：同一个 result 帧不带这个字段，就什么都不画。
+  const bare = controllerFixture();
+  bare.state.currentMsgEl = bare.bubble;
+  bare.controller.handleEvent({
+    type: 'result', usage: { input_tokens: 1 },
+  }, bare.controller.beginGeneration());
+  assert.equal(bare.content.querySelectorAll('.msg-model-attribution').length, 0);
+});
+
 test('completion notification speaks the authoritative task short label', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();

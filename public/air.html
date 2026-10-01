@@ -225,6 +225,10 @@
 
     <section id="task-layout">
       <div id="task-content">
+        <div id="directory-task-sticky-copy" class="directory-task-sticky-copy" aria-hidden="true">
+          <strong data-i18n="airDirAllTasks">全部任务</strong>
+          <span id="directory-task-sticky-count"></span>
+        </div>
         <div id="empty">
           <!-- 目录视图切换：Chat（任务与对话，默认）／ Terminal（**本目录**的终端会话）。
                终端属于每个目录，不属于侧栏：它原来是「更多与系统」里和设置、主机运维
@@ -254,7 +258,7 @@
           </section>
           <div id="directory-stats" aria-label="当前目录任务统计" data-i18n-aria-label="airDirectoryStats"></div>
           <section class="directory-task-panel">
-            <div class="section-heading">
+            <div id="directory-task-real-heading" class="section-heading">
               <div><span class="caption" data-i18n="airCurrentDirectory">当前目录</span><strong id="directory-task-heading" data-i18n="airDirAllTasks">全部任务</strong></div>
               <div class="directory-task-heading-actions">
                 <div id="directory-task-sort" class="task-sort-switch" role="group" aria-label="任务排序方式" data-i18n-aria-label="airTaskSortLabel">
@@ -264,8 +268,7 @@
                 <span id="directory-overview-count"></span>
               </div>
             </div>
-            <!-- 筛选条默认就摆在面板里（不再等「查看全部」才出现）：这一页现在就是
-                那份完整清单，抬头、筛选、分页三行固定，列表自己滚。 -->
+            <!-- 筛选仍属于真实表头；上方只读的粘性副本只展示标题与数量。 -->
             <div id="directory-task-controls" class="admin-task-controls directory-task-controls">
               <input id="directory-task-search" type="search" placeholder="搜索任务标题" data-i18n-placeholder="airSearchTaskTitle" aria-label="搜索当前目录任务" data-i18n-aria-label="airSearchDirectoryTask">
               <select id="directory-task-status" aria-label="按状态筛选当前目录任务" data-i18n-aria-label="airFilterDirectoryTaskStatus">
@@ -282,8 +285,7 @@
                 <option value="board" data-i18n="airSearchScopeBoard">仅任务标题与摘要</option>
               </select>
             </div>
-            <!-- 列表吃掉面板剩下的高度（air.css）：条目多过一页时不再往下长，多出来
-                 的交由下面那条分页（air-task-pager.js），而不是一路把输入框顶出屏幕。 -->
+            <!-- 当前页至多 20 条，与页头、页尾同在 #empty 这一层滚动。 -->
             <div id="directory-task-list"></div>
             <nav id="directory-task-pager" class="directory-task-pager" hidden aria-label="任务分页" data-i18n-aria-label="airTaskPagination">
               <button id="directory-task-prev" type="button" data-i18n="airTaskPagePrev">上一页</button>

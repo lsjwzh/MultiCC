@@ -63,7 +63,12 @@ void main() {
       ),
     );
     expect(find.textContaining('↑入'), findsOneWidget);
-    expect(find.textContaining('🕐'), findsNothing);
+    // 时间行现在两种模式都建（不再被 advancedMode / durationMs 挡着）：每条消息都
+    // 有时间戳，所以时钟段总在 —— 与 Web 的 buildTimingLine 同一条判据
+    // （hasTimestamp || hasDuration）。这条用例要的只是「两行互不遮蔽」，所以这里
+    // 断言的是「没有 ⏱ 时长段」，时钟段在不在由上面那条用例管。
+    expect(find.textContaining('⏱'), findsNothing);
+    expect(find.textContaining('🕐'), findsOneWidget);
 
     await pumpBubble(
       tester,

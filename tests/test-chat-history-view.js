@@ -551,6 +551,7 @@ function usageAwareFixture() {
   return fixture({
     buildUsageLine: liveUi.buildUsageLine,
     buildTimingLine: liveUi.buildTimingLine,
+    attachModelAttribution: liveUi.attachModelAttribution,
   });
 }
 
@@ -598,6 +599,94 @@ test('token usage and wall-clock timing render as independent sibling lines', ()
   });
   assert.equal(usageOf(zeroUsage).length, 0);
   assert.equal(timingOf(zeroUsage).length, 1);
+});
+
+// 模型归属行：一段会话里可能换过多次模型，所以每条 assistant 消息自己带一段
+// 「由 {车道} · {线路} · {模型} 产出」。渲染器是活体那边同一个（chat-live-ui），
+// 老历史（没有这个字段）不画空壳。
+test('the model attribution rides at the right end of the time row, and only when present', () => {
+  const { view } = usageAwareFixture();
+  const attributed = view.renderMessage({
+    id: 'm1', role: 'assistant', content: 'done',
+    usage: { input_tokens: 12, output_tokens: 3 }, durationMs: 1000,
+    modelAttribution: { cli: 'claude', providerId: 'zhipu', providerName: 'Zhipu', model: 'glm-4.6' },
+  });
+  const lines = attributed.querySelectorAll('.msg-model-attribution');
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].textContent, '由 Claude · Zhipu · glm-4.6 产出');
+  assert.match(lines[0].title, /同一段会话里可以换过多次/);
+  // 不额外占一行：它贴在时间行里，是那一行的最后一个子节点（靠 CSS 的
+  // margin-left:auto 贴到最右），而不是 .msg-content 的又一个孩子。
+  const timing = attributed.querySelectorAll('.msg-timing')[0];
+  assert.ok(timing, '这条消息有时间行');
+  assert.equal(timing.children[timing.children.length - 1], lines[0]);
+  const content = attributed.querySelector('.msg-content');
+  assert.notEqual(content.children[content.children.length - 1], lines[0], '不该自成一行');
+  assert.equal(attributed.querySelectorAll('.msg-usage').length, 1);
+  assert.equal(attributed.querySelectorAll('.msg-timing').length, 1);
+
+  // 轨迹条也在时优先贴它（那一行的文案就是「N tools · 时长 wall-clock」，页脚里最像
+  // 「这轮多久」的一行）—— 两个有刻度的工具才会画出轨迹条。
+  const withTrajectory = view.renderMessage({
+    id: 'm1b', role: 'assistant', content: 'x', durationMs: 5000,
+    tools: [
+      { id: 't1', name: 'Bash', input: { command: 'ls' }, result: 'ok', startedAt: 1000, endedAt: 2500 },
+      { id: 't2', name: 'Read', input: { file_path: '/a' }, result: 'x', startedAt: 3000, endedAt: 3120 },
+    ],
+    modelAttribution: { cli: 'claude', model: 'glm-4.6' },
+  });
+  const label = withTrajectory.querySelectorAll('.tool-trajectory-label')[0];
+  assert.ok(label, '两个有刻度的工具会画出轨迹条');
+  const inStrip = withTrajectory.querySelectorAll('.msg-model-attribution')[0];
+  assert.equal(label.children[label.children.length - 1], inStrip, '优先贴在轨迹文案行最右端');
+  assert.equal(withTrajectory.querySelectorAll('.msg-model-attribution').length, 1, '只贴一处');
+
+  // 认不出来的车道回落到原始 id，别印成另一个产品名。
+  const unknownLane = view.renderMessage({
+    id: 'm2', role: 'assistant', content: 'x',
+    modelAttribution: { cli: 'brand-new-cli', model: 'some-model' },
+  });
+  assert.equal(unknownLane.querySelectorAll('.msg-model-attribution')[0].textContent,
+    '由 brand-new-cli · some-model 产出');
+  // 这条既没有时间戳/时长（不建时间行）也没有成对的工具（不画轨迹条），两道宿主
+  // 行都没有 → 才轮到兜底那行。`.msg-content` 是普通块，`margin-left:auto` 在那儿
+  // 不成立，所以兜底要自带一层推右的 flex 容器（App 侧是同一条规则的 Align.centerRight）。
+  const fallbackRow = unknownLane.querySelectorAll('.msg-model-attribution-row')[0];
+  assert.ok(fallbackRow, '两道宿主行都不在时才走兜底容器');
+  assert.equal(fallbackRow.children.length, 1);
+  assert.equal(fallbackRow.children[0], unknownLane.querySelectorAll('.msg-model-attribution')[0]);
+  assert.equal(unknownLane.querySelectorAll('.msg-model-attribution').length, 1, '兜底也只贴一处');
+
+  // `_default_` 是「没显式选线路」的哨兵，不是线路名：服务端本该丢掉它，客户端也得
+  // 再兜一道 —— App 侧 ModelAttribution 就是这么做的，两端对同一份输入要显示一样的
+  // 东西，否则这一格会在 Web 上被当成线路名念出来。
+  const sentinel = view.renderMessage({
+    id: 'm2b', role: 'assistant', content: 'x',
+    modelAttribution: { cli: 'codex-exp', providerId: '_default_', providerName: '_default_', model: 'gpt-5-codex' },
+  });
+  assert.equal(sentinel.querySelectorAll('.msg-model-attribution')[0].textContent,
+    '由 Codex · gpt-5-codex 产出');
+
+  // 四个键全被当掉时整行也不该出现（不能只剩前缀）。
+  const allSentinel = view.renderMessage({
+    id: 'm2c', role: 'assistant', content: 'x',
+    modelAttribution: { cli: '_default_', providerId: '', providerName: null, model: '   ' },
+  });
+  assert.equal(allSentinel.querySelectorAll('.msg-model-attribution').length, 0);
+
+  // 没有这个字段（更早的历史、或服务端认为无可说的）→ 整行不存在，不留空壳。
+  const bare = view.renderMessage({
+    id: 'm3', role: 'assistant', content: 'x',
+    usage: { input_tokens: 12, output_tokens: 3 }, durationMs: 1000,
+  });
+  assert.equal(bare.querySelectorAll('.msg-model-attribution').length, 0);
+
+  // user / system 行没有产出者，带上字段也不画。
+  const user = view.renderMessage({
+    id: 'm4', role: 'user', content: 'x',
+    modelAttribution: { cli: 'claude', model: 'glm-4.6' },
+  });
+  assert.equal(user.querySelectorAll('.msg-model-attribution').length, 0);
 });
 
 test('persisted roleUsage replays the 辅 row only for a separately routed sub model', () => {

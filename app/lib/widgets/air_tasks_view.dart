@@ -149,6 +149,12 @@ class _AirTasksViewState extends State<AirTasksView>
   /// 现在第几页（从 1 起）。换目录、改筛选、改搜索都回到第 1 页 —— 换了条件还停
   /// 在第 7 页，看到的往往是空的。
   int _tasksPage = 1;
+  final _taskPageScroll = ScrollController();
+  final _taskViewportKey = GlobalKey();
+  final _taskHeadingKey = GlobalKey();
+  final _taskListKey = GlobalKey();
+  bool _showTaskHeadingCopy = false;
+  bool _taskHeadingCheckQueued = false;
 
   /// 打开 Air 就落在控制台（Web 那边裸 `/air` 也落这一页）。第一眼要看到的是
   /// 「有什么在跑、有什么在等我」，而不是某一个目录里的对话。
@@ -169,6 +175,7 @@ class _AirTasksViewState extends State<AirTasksView>
   @override
   void initState() {
     super.initState();
+    _taskPageScroll.addListener(_scheduleTaskHeadingCheck);
     WidgetsBinding.instance.addObserver(this);
     unawaited(_loadStore());
     _ops.start();
@@ -185,12 +192,60 @@ class _AirTasksViewState extends State<AirTasksView>
     if (_foreground) _refresh();
   }
 
+  @override
+  void didChangeMetrics() => _scheduleTaskHeadingCheck();
+
+  void _scheduleTaskHeadingCheck() {
+    if (_taskHeadingCheckQueued) return;
+    _taskHeadingCheckQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _taskHeadingCheckQueued = false;
+      if (!mounted) return;
+      final viewport =
+          _taskViewportKey.currentContext?.findRenderObject() as RenderBox?;
+      final heading =
+          _taskHeadingKey.currentContext?.findRenderObject() as RenderBox?;
+      final list =
+          _taskListKey.currentContext?.findRenderObject() as RenderBox?;
+      var visible = false;
+      if (_mode == _AirMode.tasks &&
+          _dirMode == _DirectoryMode.chat &&
+          viewport?.hasSize == true &&
+          heading?.hasSize == true &&
+          list?.hasSize == true) {
+        final top = viewport!.localToGlobal(Offset.zero).dy;
+        final bottom = top + viewport.size.height;
+        final headingBottom =
+            heading!.localToGlobal(Offset.zero).dy + heading.size.height;
+        final listTop = list!.localToGlobal(Offset.zero).dy;
+        final listBottom = listTop + list.size.height;
+        visible = headingBottom <= top && listBottom > top && listTop < bottom;
+      }
+      if (_showTaskHeadingCopy != visible) {
+        setState(() => _showTaskHeadingCopy = visible);
+      }
+    });
+  }
+
+  void _changeTaskPage(int value) {
+    setState(() => _tasksPage = value);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final heading = _taskHeadingKey.currentContext;
+      if (heading != null) {
+        Scrollable.ensureVisible(heading, duration: Duration.zero);
+      }
+      _scheduleTaskHeadingCheck();
+    });
+  }
+
   void _onAdvancedModeChanged() {
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    _taskPageScroll.dispose();
     _directorySearch.dispose();
     _timer?.cancel();
     _taskSearch.dispose();
@@ -1674,8 +1729,14 @@ class _AirTasksViewState extends State<AirTasksView>
                   _openDestination(WorkspaceDestination.cron);
                 case 'retention':
                   if (_directoryId != null) {
-                    unawaited(showAirTaskRetentionDialog(context,
-                      service: _service, directoryId: _directoryId!, onChanged: _refresh));
+                    unawaited(
+                      showAirTaskRetentionDialog(
+                        context,
+                        service: _service,
+                        directoryId: _directoryId!,
+                        onChanged: _refresh,
+                      ),
+                    );
                   }
                 case 'refresh':
                   unawaited(_refresh());
@@ -1721,15 +1782,28 @@ class _AirTasksViewState extends State<AirTasksView>
               width: double.infinity,
               color: AppColors.dangerSoft,
               padding: const EdgeInsets.fromLTRB(18, 10, 18, 10),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(_error, style: const TextStyle(color: AppColors.danger, fontSize: 12.5)),
-                if (_capacityError && _directoryId != null)
-                  TextButton(
-                    onPressed: () => showAirTaskRetentionDialog(context,
-                      service: _service, directoryId: _directoryId!, onChanged: _refresh),
-                    child: const Text('查看安全清理清单 / 自行管理任务'),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _error,
+                    style: const TextStyle(
+                      color: AppColors.danger,
+                      fontSize: 12.5,
+                    ),
                   ),
-              ]),
+                  if (_capacityError && _directoryId != null)
+                    TextButton(
+                      onPressed: () => showAirTaskRetentionDialog(
+                        context,
+                        service: _service,
+                        directoryId: _directoryId!,
+                        onChanged: _refresh,
+                      ),
+                      child: const Text('查看安全清理清单 / 自行管理任务'),
+                    ),
+                ],
+              ),
             ),
           Expanded(
             child: switch (_mode) {
@@ -2037,12 +2111,8 @@ class _AirTasksViewState extends State<AirTasksView>
     }
   }
 
-  /// 目录首页（Chat 模式）的三段：**固定的抬头区**（统计卡 + 工作区卡 + 路径）、
-  /// **占满剩余高度的清单卡**（自己滚，翻页）、以及贴底的创建输入条（在
-  /// [_buildDirectory] 那一层）。
-  ///
-  /// 为什么抬头固定、清单自己滚：筛选和抬头在滚动里被推走之后，「我按的是哪个
-  /// 状态」和「列表在看什么」就分家了；反过来，行多起来时该滚的是行，不是整页。
+  /// 目录首页（Chat 模式）只保留一层滚动：统计卡、真实任务表头、当前页和代码卡
+  /// 连续排列。真实表头离屏时才显示只读的精简副本，反向手势可直接回到页首。
   Widget _buildTasks(
     AirSnapshot? data,
     AirDirectory? directory,
@@ -2061,107 +2131,148 @@ class _AirTasksViewState extends State<AirTasksView>
         ? null
         : directory.visibleWorktreeLifecycle;
     final pageCount = _pageCountFor(tasks.length);
-    // 抬头这一截有多高由内容说了算（统计卡 + 工作区卡 + 路径），小窗口里它可能比
-    // 整个可视高度还高。抬头固定、清单自己滚是这一页要的形状，但「固定」不等于
-    // 「无限高」—— 所以给它封顶：最多吃掉六成高度，而且必须先给清单卡留下它自己
-    // 那份最小高度（抬头 + 筛选那两截是死的）。多出来的部分在抬头那一截里自己滚。
-    // 不然小窗口上多出来的那几十像素就是 RenderFlex 溢出。
-    return LayoutBuilder(
-      builder: (context, constraints) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          ConstrainedBox(
-            constraints: BoxConstraints(
-              maxHeight: constraints.maxHeight.isFinite
-                  ? (constraints.maxHeight - AirDirectoryTaskPanel.minHeight)
-                      .clamp(0.0, constraints.maxHeight * 0.62)
-                  : double.infinity,
-            ),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  AirDirectoryStats(
-                    tasks: all,
-                    worktreeCount: directory?.worktreeCount ?? 0,
-                    // 统计卡就是一颗快速筛选键：点它 = 按这个状态筛清单。点完回到
-                    // 第 1 页 —— 换了筛选条件还停在旧页码，看到的往往是空的。
-                    onFilter: (filter) => setState(() {
-                      _directorySearch.reset();
-                      _tasksPage = 1;
-                      _taskStatus = filter;
-                      _taskQuery = '';
-                      _taskSearch.clear();
-                    }),
+    _scheduleTaskHeadingCheck();
+    return Stack(
+      key: _taskViewportKey,
+      children: [
+        RefreshIndicator(
+          onRefresh: _refresh,
+          child: SingleChildScrollView(
+            key: const ValueKey('air-directory-page-scroll'),
+            controller: _taskPageScroll,
+            physics: const AlwaysScrollableScrollPhysics(),
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                AirDirectoryStats(
+                  tasks: all,
+                  worktreeCount: directory?.worktreeCount ?? 0,
+                  // 统计卡就是一颗快速筛选键：点它 = 按这个状态筛清单。点完回到
+                  // 第 1 页 —— 换了筛选条件还停在旧页码，看到的往往是空的。
+                  onFilter: (filter) => setState(() {
+                    _directorySearch.reset();
+                    _tasksPage = 1;
+                    _taskStatus = filter;
+                    _taskQuery = '';
+                    _taskSearch.clear();
+                  }),
+                ),
+                const SizedBox(height: 18),
+                if (worktrees != null)
+                  AirWorkspaceCard(
+                    lifecycle: worktrees,
+                    pushState: _directoryPushState,
+                    idleMs: data?.worktreePolicy.idleMs ?? 0,
+                    busy: _reclaiming,
+                    onReclaim: () => _reclaimWorktrees(directory!),
                   ),
-                  const SizedBox(height: 18),
-                  if (worktrees != null)
-                    AirWorkspaceCard(
-                      lifecycle: worktrees,
-                      pushState: _directoryPushState,
-                      idleMs: data?.worktreePolicy.idleMs ?? 0,
-                      busy: _reclaiming,
-                      onReclaim: () => _reclaimWorktrees(directory!),
+                if (directory != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      directory.path,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.faint,
+                        fontSize: 11.5,
+                      ),
                     ),
-                  if (directory != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Text(
-                        directory.path,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                  ),
+                const SizedBox(height: 12),
+                AirDirectoryTaskPanel(
+                  headingKey: _taskHeadingKey,
+                  listKey: _taskListKey,
+                  rows: _pageRows(tasks),
+                  filteredCount: tasks.length,
+                  totalCount: all.length,
+                  page: _tasksPage.clamp(1, pageCount),
+                  pageCount: pageCount,
+                  sort: _taskSort,
+                  searchController: _taskSearch,
+                  status: _taskStatus,
+                  fullText: _fullText,
+                  searching: _directorySearch.loading,
+                  searchFailed: _directorySearch.failed,
+                  onSort: (value) {
+                    // 换排序和换筛选是一回事：顺序变了还停在旧页码，看到的还是「中间
+                    // 那一截」，回第 1 页才说得清从头看起看的是哪一份顺序。
+                    setState(() {
+                      _tasksPage = 1;
+                      _taskSort = value;
+                    });
+                    unawaited(_store?.setTaskSort(value.name));
+                  },
+                  onSearch: _searchDirectory,
+                  onStatus: (value) => setState(() {
+                    _tasksPage = 1;
+                    _taskStatus = value;
+                  }),
+                  onScope: (value) {
+                    _fullText = value;
+                    _searchDirectory(_taskQuery);
+                  },
+                  onPage: _changeTaskPage,
+                  rowBuilder: _directoryTaskTile,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_showTaskHeadingCopy && tasks.isNotEmpty)
+          Positioned(
+            top: 0,
+            left: 20,
+            right: 20,
+            child: IgnorePointer(
+              child: ExcludeSemantics(
+                child: Container(
+                  key: const ValueKey('air-directory-task-sticky-copy'),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.panel,
+                    border: Border.all(color: AppColors.line),
+                    borderRadius: const BorderRadius.vertical(
+                      bottom: Radius.circular(12),
+                    ),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x1435577D),
+                        blurRadius: 10,
+                        offset: Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        '全部任务',
+                        style: TextStyle(
+                          color: AppColors.text,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        '${tasks.length} / ${all.length} 个任务',
                         style: const TextStyle(
                           color: AppColors.faint,
                           fontSize: 11.5,
                         ),
                       ),
-                    ),
-                ],
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-              child: AirDirectoryTaskPanel(
-                rows: _pageRows(tasks),
-                filteredCount: tasks.length,
-                totalCount: all.length,
-                page: _tasksPage.clamp(1, pageCount),
-                pageCount: pageCount,
-                sort: _taskSort,
-                searchController: _taskSearch,
-                status: _taskStatus,
-                fullText: _fullText,
-                searching: _directorySearch.loading,
-                searchFailed: _directorySearch.failed,
-                onSort: (value) {
-                  // 换排序和换筛选是一回事：顺序变了还停在旧页码，看到的还是「中间
-                  // 那一截」，回第 1 页才说得清从头看起看的是哪一份顺序。
-                  setState(() {
-                    _tasksPage = 1;
-                    _taskSort = value;
-                  });
-                  unawaited(_store?.setTaskSort(value.name));
-                },
-                onSearch: _searchDirectory,
-                onStatus: (value) => setState(() {
-                  _tasksPage = 1;
-                  _taskStatus = value;
-                }),
-                onScope: (value) {
-                  _fullText = value;
-                  _searchDirectory(_taskQuery);
-                },
-                onPage: (value) => setState(() => _tasksPage = value),
-                rowBuilder: _directoryTaskTile,
-                onRefresh: _refresh,
-              ),
-            ),
-          ),
-        ],
-      ),
+      ],
     );
   }
 

@@ -17,6 +17,8 @@ const {
   decideRunnerFinality,
   createChatHostCoordinator,
   createChatHostRuntime,
+  modelAttributionFor,
+  modelAttributionField,
 } = require('../src/chat');
 
 function makeRequest(overrides = {}) {
@@ -550,5 +552,78 @@ test('host runtime persists the turn role split only when sub-agent usage exists
   assert.deepEqual(saved[0].roleUsage.sub, { inputTokens: 1, outputTokens: 2, cacheRead: 3, cacheWrite: 4 });
   assert.equal(saved[0].roleUsage.subByProvider[0].providerId, 'p-sub');
   assert.equal(saved[0].roleUsage.mainByProvider[0].providerId, 'p-main');
-  assert.equal('roleUsage' in saved[1], false, 'main-only turns keep the plain history shape');
+  assert.equal('roleUsage' in saved[1], false, 'a main-only turn still carries no roleUsage');
+  // Same rule, same reason, for the per-message model attribution: a runner with
+  // no bound route has nothing to say, so no key appears and the plain history
+  // shape (and every older message without the field) stays exactly as it was.
+  assert.equal('modelAttribution' in saved[1], false, 'an unattributed turn keeps the plain history shape');
+});
+
+// A session can switch provider/model mid-conversation, so the producer is a
+// per-message fact. Only these four display strings are ever written: the
+// attempt identity (decisionId / routeAttemptId / …) belongs to the usage
+// capability, not to a durable chat-history DTO.
+function persistAssistantWith(usageAttribution, message = { role: 'assistant', content: 'done' }) {
+  const saved = [];
+  const owned = makeOwned({ usageAttribution });
+  const state = { _activeTurn: owned.turn, _activeRunner: owned.runner, _resultSaved: false };
+  const runtime = createChatHostRuntime({
+    appendMessage: (_id, entry) => { saved.push(entry); return true; },
+    persistUsage: () => true,
+    afterUsageCommit() {},
+    getSessionState: () => state,
+    consumeHandoff() {},
+    emitTurnComplete() {},
+    emitDispatchComplete() {},
+    emitGatewayComplete() {},
+    logSuppressed() {},
+  });
+  runtime.persistFinalAssistantResult('session-1', state, owned.turn, owned.runner, message, { resultEvent: true });
+  return { saved, owned, state };
+}
+
+test('the host stamps the producing model on the assistant message it persists', () => {
+  const { saved, owned, state } = persistAssistantWith({
+    cli: 'claude', providerId: 'zhipu', providerName: 'Zhipu', model: 'glm-4.6',
+    protocol: 'anthropic-messages', roleKind: 'main',
+  });
+  assert.deepEqual(saved[0].modelAttribution, {
+    cli: 'claude', providerId: 'zhipu', providerName: 'Zhipu', model: 'glm-4.6',
+  });
+  assert.deepEqual(Object.keys(saved[0].modelAttribution),
+    ['cli', 'providerId', 'providerName', 'model'],
+    'exactly the four display keys, in the frozen order');
+
+  // The live `result` frame spreads the same helper on the same state/turn/runner
+  // (turn-engine), so a streaming bubble and the reloaded history cannot drift.
+  assert.deepEqual(modelAttributionField(state, owned.turn, owned.runner),
+    { modelAttribution: saved[0].modelAttribution });
+});
+
+test('empty and _default_ attribution facts are dropped, and an empty set writes no field', () => {
+  // providerId `_default_` means "no route configured, the CLI's own login
+  // answered" — it names no producer. The CLI-free model fallback says as little.
+  const partial = persistAssistantWith({
+    cli: 'claude-exp', providerId: '_default_', providerName: '_default_', model: '_default_',
+  });
+  assert.deepEqual(partial.saved[0].modelAttribution, { cli: 'claude-exp' });
+
+  // Nothing at all → the key is absent, not an empty object.
+  const none = persistAssistantWith(undefined);
+  assert.equal('modelAttribution' in none.saved[0], false);
+  assert.equal(modelAttributionFor(none.state, none.owned.turn, none.owned.runner), null);
+  assert.deepEqual(modelAttributionField(none.state, none.owned.turn, none.owned.runner), {});
+
+  // A user row has no producer: the stamp is assistant-only.
+  const asUser = persistAssistantWith({ cli: 'claude', providerId: 'zhipu', model: 'glm-4.6' },
+    { role: 'user', content: 'hello' });
+  assert.equal('modelAttribution' in asUser.saved[0], false, 'user messages are never attributed');
+});
+
+test('the live result frame carries the attribution the durable stamp writes', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const frame = source.slice(source.indexOf("forward({ type: 'result'"));
+  assert.ok(frame.length > 0, 'the result frame is still emitted from the turn engine');
+  assert.match(frame.slice(0, 400), /modelAttributionField\(cs, turn, runner\)/,
+    'the frame spreads the same cs/turn/runner computation the history stamp used');
 });

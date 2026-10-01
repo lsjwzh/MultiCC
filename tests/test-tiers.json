@@ -465,6 +465,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/message_bubble_model_attribution_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/message_bubble_task_test.dart",
       "tier": "flow",
       "lane": "flutter"

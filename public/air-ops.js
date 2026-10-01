@@ -22,7 +22,10 @@
   const FMT = root.MultiCCFormat
     || (typeof require === 'function' ? require('./shared/format.js') : null);
 
-  const POLL_MS = 2500;
+  // 与页面快照轮询同一个档位（15s 单档，见 public/air.js 的 POLL_MS）：本机同时开
+  // 多个会话时，这两个更新流程同时在看进度，2.5s 一次的请求叠起来足以把服务端压出
+  // 抖动。代价是更新进度对话框/服务重启探测最多晚 15s 才反映出来，可以接受。
+  const POLL_MS = 15000;
   const MAX_WAIT_MS = 20 * 60 * 1000;
 
   // ── Requests ───────────────────────────────────────────────────────────

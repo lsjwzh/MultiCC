@@ -257,6 +257,11 @@ function createCodexUsageHost(deps = {}) {
     } else {
       deps.recordResultEvent(turn, runner, { current: true, persisted: false });
     }
+    // This fallback result frame (no native result event arrived) is the only
+    // one the live bubble sees, so it spreads the same attribution the durable
+    // message above was stamped with — reload must not add a line.
+    const attribution = typeof deps.modelAttributionField === 'function'
+      ? deps.modelAttributionField(cs, turn, runner) : {};
     forward({
       type: 'result',
       total_cost_usd: cs.currentCost,
@@ -264,6 +269,7 @@ function createCodexUsageHost(deps = {}) {
       durationMs: cs.turnStartedAt ? now() - cs.turnStartedAt : undefined,
       num_turns: cs.chatTurnCount,
       ...(contextTrace ? { contextTrace } : {}),
+      ...attribution,
     });
     // Completion/status belongs to the adapter + runner settlement boundary.
     return normalized;

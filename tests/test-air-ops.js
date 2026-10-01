@@ -22,6 +22,16 @@ const { createSandboxConsole } = require('./helpers/sandbox-console');
 const { t, getLocale } = require('./helpers/i18n-translator');
 
 const ROOT = path.join(__dirname, '..');
+
+// 页面自己的轮询档位，直接从源码里读 —— 不写死一个数字，产品的 `POLL_MS` 一改，
+// 下面的假时钟就跟着走，不会悄悄走散。多个用例靠「睡满一个轮询间隔，下一次结果
+// 就可见了」推进假时钟；档位若与这里对不上，那些断言会在毫无线索的地方变红。
+const POLL_MS_UNDER_TEST = (() => {
+  const source = fs.readFileSync(path.join(ROOT, 'public', 'air-ops.js'), 'utf8');
+  const match = /const POLL_MS = (\d+);/.exec(source);
+  if (!match) throw new Error('public/air-ops.js 里找不到 `const POLL_MS = <数字>;`');
+  return Number(match[1]);
+})();
 const SOURCE = fs.readFileSync(path.join(ROOT, 'public/air-ops.js'), 'utf8');
 const FORMAT_SOURCE = fs.readFileSync(path.join(ROOT, 'public/shared/format.js'), 'utf8');
 const AIR_HTML = fs.readFileSync(path.join(ROOT, 'public/air.html'), 'utf8');
@@ -125,9 +135,10 @@ function registryFrom(html) {
 }
 
 // ── Harness ────────────────────────────────────────────────────────────────
-// Timers are virtual. The update poll wakes on a 2.5s cadence and the result
-// only arrives on a later tick, so real waits would both slow the suite down
-// and let the 3s boot re-check race the assertions; a test drives the clock
+// Timers are virtual. The update poll wakes on the page's own cadence
+// (POLL_MS_UNDER_TEST, read off the source) and the result only arrives on a
+// later tick, so real waits would both slow the suite down by that interval and
+// let the 3s boot re-check race the assertions; a test drives the clock
 // itself (see `advance`) and every wait stays deterministic. Delays are
 // recorded as scheduled, so the cadence itself is still assertable.
 function createClock() {
@@ -340,7 +351,7 @@ test('clicking the version row asks first, then updates and reloads once the ser
   // The run itself is the host's; the page only polls for it. One poll
   // interval is enough to see the exit marker.
   assert.equal(reloads.length, 0, 'nothing reloads while the update is still running');
-  await advance(2500);
+  await advance(POLL_MS_UNDER_TEST);
   await settle();
   assert.equal(reloads.length, 1, 'the page reloads exactly once after the server comes back');
   assert.match(registry['air-ver-hint'].textContent, /更新完成|重载/);
@@ -383,7 +394,7 @@ test('a running update shows each step, where it is stuck, and a failed step', a
   assert.match(dialogText(registry), /2\/7 步/);
   assert.match(dialogText(registry), /Receiving objects: 40%/, 'the raw log stays visible under the steps');
 
-  await advance(2500);
+  await advance(POLL_MS_UNDER_TEST);
   await settle();
   assert.equal(stepRows()[2].className, 'ops-step is-failed', 'the step that never finished is the one marked failed');
   assert.ok(findButton(registry, '强制重试') || findButton(registry, t('airOpsForceRetry')));
@@ -471,7 +482,7 @@ test('clicking while an update is already running attaches to it instead of star
 
   // The attached run is still the host's; its own poll has to finish before
   // the page can reload.
-  await advance(2500);
+  await advance(POLL_MS_UNDER_TEST);
   await settle();
   assert.equal(reloads.length, 1, 'the attached run still reloads when it finishes');
 });
@@ -499,7 +510,7 @@ test('a failed update shows the log and offers the force retry it was missing', 
   assert.match(dialogText(registry), /正在更新，请勿关闭本机/);
 
   // The exit marker is only visible on the next wake-up.
-  await advance(2500);
+  await advance(POLL_MS_UNDER_TEST);
   await settle();
   assert.match(dialogText(registry), /fatal: not a git repository/);
   assert.ok(findButton(registry, '强制更新重试'), 'a non-forced failure must offer the force retry');

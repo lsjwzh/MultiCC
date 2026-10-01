@@ -22,6 +22,15 @@ const { t, getLocale } = require('./helpers/i18n-translator');
 const ROOT = path.join(__dirname, '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'air-cli-update.js'), 'utf8');
 const AIR_HTML = fs.readFileSync(path.join(ROOT, 'public', 'air.html'), 'utf8');
+
+// 页面自己的轮询档位，从源码里读 —— 不写死数字，产品的 `POLL_MS` 一改这里就跟着走。
+// 升级浮层靠「睡满一个轮询间隔，下一次 install-status 才可见」推进，档位对不上的话
+// 断言会在这里红，而不是让整个套件多等十几秒真实时间。
+const POLL_MS_UNDER_TEST = (() => {
+  const match = /const POLL_MS = (\d+);/.exec(SOURCE);
+  if (!match) throw new Error('public/air-cli-update.js 里找不到 `const POLL_MS = <数字>;`');
+  return Number(match[1]);
+})();
 // 页面先加载共享的 CLI 目录（air.html 的 <script src="provider-catalog.js">），浮层里的
 // CLI 名字从它取。沙箱照页面的顺序来 —— 少了它，浮层渲染就只能在读 .cliDisplayName
 // 时崩掉，而不是在这里红。
@@ -146,8 +155,56 @@ function createFetch(routes) {
 
 const settle = async () => { for (let i = 0; i < 12; i += 1) await new Promise(resolve => setImmediate(resolve)); };
 
+// 虚拟时钟（与 tests/test-air-ops.js 同一套）：升级过程中模块会 `await sleep(POLL_MS)`
+// 醒来查一次 install-status，真实等待在 15s 档下既慢又会让进程多活十几秒，所以把
+// setTimeout/setInterval 换成本地时钟，用例自己推进 —— 顺带让「要睡满一个轮询间隔」
+// 这件事在断言里显式写出来，而不是藏在一个 3000 的魔法数里。
+function createClock() {
+  const scheduled = [];
+  const pending = [];
+  const cancelled = new Set();
+  let seq = 0;
+  let now = 0;
+
+  // 一次唤醒要先把一整条 await fetch 链的微任务跑完，下一轮定时器才会被排上。
+  const flush = async () => {
+    for (let i = 0; i < 12; i += 1) await new Promise(resolve => setImmediate(resolve));
+  };
+
+  return {
+    scheduled,
+    schedule(fn, ms, repeat) {
+      const delay = Number(ms) || 0;
+      scheduled.push(delay);
+      const id = (seq += 1);
+      pending.push({ id, delay, repeat, at: now + delay, fn });
+      return id;
+    },
+    clear(id) {
+      cancelled.add(id);
+      const index = pending.findIndex(entry => entry.id === id);
+      if (index >= 0) pending.splice(index, 1);
+    },
+    async advance(ms = 0) {
+      const target = now + (Number(ms) || 0);
+      for (;;) {
+        pending.sort((a, b) => a.at - b.at || a.id - b.id);
+        const next = pending[0];
+        if (!next || next.at > target) break;
+        pending.shift();
+        now = next.at;
+        next.fn();
+        if (next.repeat && !cancelled.has(next.id)) pending.push({ ...next, at: now + next.delay });
+        await flush();
+      }
+      now = target;
+    },
+  };
+}
+
 function buildContext({ fetchImpl, confirmResult = true }) {
   const registry = registryFrom(AIR_HTML);
+  const clock = createClock();
   const listeners = {};
   const document = {
     readyState: 'complete',
@@ -163,10 +220,10 @@ function buildContext({ fetchImpl, confirmResult = true }) {
     document,
     addEventListener: document.addEventListener,
     removeEventListener: document.removeEventListener,
-    setTimeout,
-    clearTimeout,
-    setInterval,
-    clearInterval,
+    setTimeout: (fn, ms) => clock.schedule(fn, ms, false),
+    clearTimeout: id => clock.clear(id),
+    setInterval: (fn, ms) => clock.schedule(fn, ms, true),
+    clearInterval: id => clock.clear(id),
     innerWidth: 1440,
     fetch: fetchImpl,
     confirm: question => { asked.push(question); return confirmResult; },
@@ -178,7 +235,7 @@ function buildContext({ fetchImpl, confirmResult = true }) {
   context.window = context;
   vm.createContext(context);
   vm.runInContext(SOURCE, context, { filename: 'air-cli-update.js' });
-  return { context, registry, asked };
+  return { context, registry, asked, clock };
 }
 
 function openPopover(registry) {
@@ -403,7 +460,8 @@ test('两个 CLI 可以同时升级，完成的那一个不会擦掉另一个的
 
   // 第二个跑完后一切归位: 角标清零, 按钮不再禁用
   codexStatus.value = 'done';
-  await new Promise(resolve => setTimeout(resolve, 3000));
+  // 睡满一个轮询间隔（再宽 1s 让整条 await 链落定），模块才会再查一次 job_codex。
+  await context.clock.advance(POLL_MS_UNDER_TEST + 1000);
   assert.equal(rowButtons(context.registry).filter(button => button.disabled).length, 0);
   assert.match(context.registry['cli-update-log'].textContent, /installing codex/);
   // 角标数的是「还剩几个可升级」: claude 已完成, 桩里 codex 仍是旧版, 所以是 1。

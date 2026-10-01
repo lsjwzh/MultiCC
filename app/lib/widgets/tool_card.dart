@@ -2,8 +2,11 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../i18n.dart';
 import '../models/message.dart';
 import '../models/tool_input_view.dart';
+import '../utils/cli_display.dart';
+import 'run_config/run_labels.dart';
 
 const Map<String, String> _kToolIcons = {
   'Bash': '>_',
@@ -204,6 +207,80 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
   String _truncate(String s, int max) => s.length > max ? '${s.substring(0, max)}…' : s;
 }
 
+/// [attribution] 的展示名：车道/线路/模型，各自非空才占一段；空表 = 没有可说的。
+///
+/// 车道复用 `cli_display.dart` 的展示表（未知 id 回落成 id 本身）；线路复用
+/// `run_config/run_labels.dart` 的 `providerDisplayLabel`（catalog 里没有时用服务端随消息
+/// 下发的 `providerName`，再退到 id —— 与聊天头部那颗胶囊同一套说法）。
+List<String> modelAttributionSegments(ModelAttribution? attribution) {
+  if (attribution == null) return const [];
+  final segments = <String>[];
+  final cli = attribution.cli;
+  if (cli != null && cli.isNotEmpty) {
+    final name = cliDisplayName(cli);
+    if (name.isNotEmpty) segments.add(name);
+  }
+  final providerId = attribution.providerId ?? '';
+  final providerName = attribution.providerName ?? '';
+  if (providerId.isNotEmpty || providerName.isNotEmpty) {
+    final name = providerDisplayLabel(
+      providerId,
+      providers: const <Map<String, dynamic>>[],
+      resolved: providerName.isEmpty ? null : providerName,
+      model: attribution.model,
+    );
+    if (name.isNotEmpty) segments.add(name);
+  }
+  final model = attribution.model;
+  if (model != null && model.isNotEmpty) segments.add(model);
+  return segments;
+}
+
+/// 「由 <车道> · <线路> · <模型> 产出」那一小段字。
+///
+/// 它是**搭车**显示的：贴到页脚某一行（轨迹的「N tools · 时长 wall-clock」文案
+/// 行，或 🕐/⏱ 时间行）的最右端，不额外占一行 —— 那些行右边本来就是空的。靠右由
+/// 宿主行负责（Flutter 侧是 Row 的 spaceBetween，Web 侧是 flex 的 margin-left:auto），
+/// 这里只管这段字本身：弱化小字 + 悬停说明 + 窄屏省略号。
+///
+/// [segments] 为空 = 没有可说的，返回空壳；调用方**不该**把它塞进宿主行 ——
+/// 那会多出一个空的 flex 项，把那一行的排布也带歪。
+class ModelAttributionLabel extends StatelessWidget {
+  const ModelAttributionLabel({super.key, required this.segments});
+
+  /// 非空的展示名，由 [modelAttributionSegments] 给出。
+  final List<String> segments;
+
+  @override
+  Widget build(BuildContext context) {
+    if (segments.isEmpty) return const SizedBox.shrink();
+    return Tooltip(
+      message: t('chatModelAttributionHint'),
+      child: Text(
+        t('chatModelAttribution', {'what': segments.join(' · ')}),
+        key: const ValueKey('message-model-attribution'),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
+      ),
+    );
+  }
+}
+
+/// 至少两个测量完整（起止都在、结束不早于开始）的工具才会画出轨迹条 ——
+/// 也是那行「⏱ N tools · 时长 wall-clock」文案的成立条件（两者同生共死）。
+/// 模型归属要搭在那一行上，落点判定因此得先问这一句。
+bool hasTrajectoryContent(List<ToolCall> toolCalls) =>
+    _measuredTools(toolCalls).length >= 2;
+
+List<ToolCall> _measuredTools(List<ToolCall> toolCalls) => toolCalls
+    .where((tool) {
+      final startedAt = tool.startedAt;
+      final endedAt = tool.endedAt;
+      return startedAt != null && endedAt != null && endedAt >= startedAt;
+    })
+    .toList(growable: false);
+
 /// Turn-internal tool trajectory, matching the Web strip.
 ///
 /// Each measured tool is positioned at its real start offset and sized by its
@@ -219,15 +296,20 @@ class ToolTrajectory extends StatelessWidget {
   /// 整轮墙钟时长（用户发出 → AI 回复完成），包含大模型请求时间。缺省时退回
   /// 工具自身最早开始 → 最晚结束那段窗口。
   final int? turnDurationMs;
-  const ToolTrajectory({super.key, required this.toolCalls, this.turnDurationMs});
+
+  /// 这条回复的模型归属，贴在文案行的**最右端**（不额外占一行）。缺省/null
+  /// （老历史、服务端没说话、或归属已经贴在别处）时这一块与从前一字不差。
+  final ModelAttribution? attribution;
+  const ToolTrajectory({
+    super.key,
+    required this.toolCalls,
+    this.turnDurationMs,
+    this.attribution,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final measured = toolCalls.where((tool) {
-      final startedAt = tool.startedAt;
-      final endedAt = tool.endedAt;
-      return startedAt != null && endedAt != null && endedAt >= startedAt;
-    }).toList(growable: false);
+    final measured = _measuredTools(toolCalls);
     if (measured.length < 2) return const SizedBox.shrink();
 
     final firstStartedAt = measured
@@ -285,14 +367,34 @@ class ToolTrajectory extends StatelessWidget {
               },
             ),
             const SizedBox(height: 3),
-            Text(
-              '⏱ ${measured.length} tools · $duration wall-clock',
-              key: const Key('tool-trajectory-label'),
-              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
-            ),
+            _labelRow(measured.length, duration),
           ],
         ),
       ),
+    );
+  }
+
+  /// 「⏱ N tools · Xs wall-clock」那一行。模型归属就搭在这一行的最右端 ——
+  /// 页脚里这一行右边本来就是空的，不必为它多占一行。没有归属时返回的就是
+  /// 从前那个孤零零的 [Text]，一个字都不变。
+  Widget _labelRow(int toolCount, String duration) {
+    final label = Text(
+      '⏱ $toolCount tools · $duration wall-clock',
+      key: const Key('tool-trajectory-label'),
+      style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
+    );
+    final segments = modelAttributionSegments(attribution);
+    if (segments.isEmpty) return label;
+    // 两段都用 Flexible：窄屏 / 大字号下各自让位（文案换行、归属省略号），
+    // 谁都不越出气泡。spaceBetween 是「贴右」的机关 —— 余量全部落在两段之间，
+    // 归属那一段因此顶在这一行的最右端（Web 侧是同一个意思的 margin-left:auto）。
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Flexible(child: label),
+        const SizedBox(width: 10),
+        Flexible(child: ModelAttributionLabel(segments: segments)),
+      ],
     );
   }
 }

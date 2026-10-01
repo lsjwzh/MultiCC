@@ -2242,6 +2242,7 @@ const {
   isCurrentTurnRunner,
   assistantCheckpointKey,
   persistFinalAssistantResult,
+  modelAttributionField,
   recordDurableTurnUsage,
   runDurablePostTurn,
 } = createChatHostRuntime({
@@ -2264,6 +2265,7 @@ const codexUsageHost = createCodexUsageHost({
   reconcileRole: reconcileCodexRoleUsage,
   clearIncrementalSave: chatHistoryRuntime.clearIncrementalSave,
   persistFinalAssistantResult,
+  modelAttributionField,
   recordDurableTurnUsage,
   recordResultEvent,
   setSessionStatus,
@@ -2641,6 +2643,7 @@ const chatTurnEngine = createChatTurnEngine({
   sendWs,
   turnEventJournal,
   persistFinalAssistantResult,
+  modelAttributionField,
   recordDurableTurnUsage,
   runDurablePostTurn,
   isCurrentTurnRunner,
