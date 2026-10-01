@@ -1057,10 +1057,24 @@
     if (!ai || !role) return;
     const cli = quickCli();
     const nativeRoute = window.MultiCCProviderCatalog.nativeRouteLabel(cli); // 自持账号的 CLI 显示产品名（共享 CLI 目录出）
-    const route = nativeRoute || (quickRuntime.providerSelection?.mode === 'auto'
-      ? `Auto ${quickRuntime.providerSelection.protocol}`
-      : providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute'));
-    setPillText(ai, [laneRouteLabel(cli, route), quickRuntime.model || t('airQuickDefaultModel')].join(' · '));
+    const route = nativeRoute || providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute');
+    const model = quickRuntime.model || t('airQuickDefaultModel');
+    const pillApi = window.MultiCCRunConfig;
+    const pillView = pillApi ? pillApi.pillModel({
+      current: { ...quickRuntime, cli },
+      next: { ...quickRuntime, cli, model },
+      pending: false,
+      currentRoute: route,
+      currentModel: model,
+    }) : null;
+    setPillText(ai, pillView ? pillApi.pillText(pillView) : [laneRouteLabel(cli, route), model].join(' · '));
+    if (pillView) {
+      // 标记（CLI 短标 / 自动线路的 ⚡）走 CSS ::before 的 attr()，文字仍逐字节和
+      // 以前一样 —— CDP 断言读的是 textContent。
+      ai.dataset.mark = pillView.mark || '';
+      ai.classList.toggle('is-auto', pillView.tone === 'auto');
+      ai.classList.toggle('is-pending', !!pillView.pending);
+    }
     ai.title = t('airQuickAiTitle');
     role.textContent = quickRoles.length ? t('airQuickRoleCount', { n: quickRoles.length }) : t('airQuickAddRole');
     role.title = t('airQuickRoleTitle');
@@ -1068,8 +1082,8 @@
   }
 
   function openQuickConfiguration() {
-    if (!directoryId) return;
-    window.MultiCCAirSettings.configuration(
+    if (!directoryId || !window.MultiCCRunConfig) return;
+    window.MultiCCRunConfig.open(
       { task: { title: t('airNewTask') }, configuration: { ...quickRuntime, cli: quickCli() } }, data?.clis,
       runtime => { quickRuntime = runtime; quickRuntimeDirty = true; renderQuickPills(); },
     );
@@ -2442,21 +2456,47 @@
     // 先把这条带子显出来再量宽度：隐藏时量到的 clientWidth 是 0，那样跑马灯得
     // 等到下一次轮询才启动，看上去就是「卡了一下」。
     setComposerBand(doc, row, !ai.hidden || !role.hidden);
-    setPillText(ai, shown
-      ? [laneRouteLabel(shown.cli, routeName),
-        (pending ? shown.model : shown.effectiveModel || shown.model) || t('airQuickDefaultModel'),
-        pending ? t('airTaskAiPending') : ''].filter(Boolean).join(' · ')
-      : '');
+    // 文案由 run-config.js 那一处算（固定一条 = CLI · 线路 · 模型；自动挑选 =
+    // ⚡ 自动 · 按难度/按顺序 · N 条 ｜本轮 …）。这里只把已经兜底好的名字递进去，
+    // 输出的字符串和以前逐字节一致 —— 一堆 CDP 断言钉着它。
+    const shownModel = shown
+      ? ((pending ? shown.model : shown.effectiveModel || shown.model) || t('airQuickDefaultModel'))
+      : '';
+    const pillApi = window.MultiCCRunConfig;
+    const pill = shown && pillApi
+      ? pillApi.pillModel({
+        current: configEntry?.configuration || {},
+        next: { ...shown, model: shownModel },
+        pending: !!pending,
+        pendingLabel: t('airTaskAiPending'),
+        currentRoute: routeName,
+        currentModel: shownModel,
+      })
+      : null;
+    setPillText(ai, pill ? pillApi.pillText(pill) : '');
+    if (pill) {
+      ai.dataset.mark = pill.mark || '';
+      ai.classList.toggle('is-auto', pill.tone === 'auto');
+      ai.classList.toggle('is-pending', !!pill.pending);
+    }
   }
+
+  // 这个任务的「运行配置」。宿主自己的药丸（下面 ai.onclick）用它，聊天帧里
+  // zcode 引导那种程序化入口也用它 —— chat.js 在 iframe 里，调不动宿主，
+  // 只能通过 window.parent.__multiccAirRunConfig 回来。
+  function openTaskConfiguration() {
+    const configEntry = (entry?.task?.id === taskId && entry.configuration ? entry : window.__multiccAirTaskOpen);
+    if (configEntry?.sessionId && !configEntry.readOnly && window.MultiCCRunConfig) {
+      window.MultiCCRunConfig.open(configEntry, data.clis, refreshEntry);
+    }
+  }
+  window.__multiccAirRunConfig = openTaskConfiguration;
 
   function bindComposerControls() {
     const controls = composerControls();
     if (!controls || frameComposerBound === controls.doc) return;
     frameComposerBound = controls.doc;
-    controls.ai.onclick = () => {
-      const configEntry = entry?.task?.id === taskId && entry.configuration ? entry : window.__multiccAirTaskOpen;
-      if (configEntry?.sessionId && !configEntry.readOnly) window.MultiCCAirSettings.configuration(configEntry, data.clis, refreshEntry);
-    };
+    controls.ai.onclick = () => openTaskConfiguration();
     controls.role.onclick = () => {
       const configEntry = entry?.task?.id === taskId && entry.configuration ? entry : window.__multiccAirTaskOpen;
       if (configEntry?.roleBindings && !configEntry.readOnly) {

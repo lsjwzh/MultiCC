@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/services/opencode_models_service.dart';
-import 'package:multicc_app/widgets/model_chip.dart';
+import 'package:multicc_app/widgets/run_config/run_labels.dart';
 
 /// Reproduction: an opencode session using its native OpenCode Go config saves
 /// provider='' (empty) with a native `opencodego/<model>` model id. The chat
@@ -13,7 +13,7 @@ void main() {
     {'id': 'codex-official', 'name': 'Codex 官方', 'builtinOfficial': true},
     {
       'id': 'opencode-native:opencodego',
-      'name': 'OpenCode 原生 · OpenCode Go',
+      'name': 'OpenCode Go',
       'appType': 'opencode',
       'nativeOpenCode': true,
       'nativeProvider': 'opencodego',
@@ -24,12 +24,12 @@ void main() {
   test('opencode native session shows the native provider, not Claude 官方', () {
     expect(
       providerDisplayLabel('', providers: merged, model: 'opencodego/kimi-k2'),
-      'OpenCode 原生 · OpenCode Go',
+      'OpenCode Go',
     );
     // Catalog row missing (models cache empty): the model prefix still names it.
     expect(
       providerDisplayLabel('', providers: const [], model: 'opencodego/kimi-k2'),
-      'OpenCode 原生 · OpenCode Go',
+      'OpenCode Go',
     );
   });
 
@@ -43,12 +43,13 @@ void main() {
     // resolves native names when the catalog row is missing.
     expect(
       providerDisplayLabel('', providers: merged, model: 'opencodego/glm-5.2'),
-      'OpenCode 原生 · OpenCode Go',
+      'OpenCode Go',
     );
   });
 
   test('native display name helper mirrors the picker rows', () {
-    expect(openCodeNativeProviderDisplayName('opencodego'), 'OpenCode 原生 · OpenCode Go');
-    expect(openCodeNativeProviderDisplayName('opencode'), 'OpenCode 原生 · OpenCode Zen');
+    // 车道本来就是 OpenCode，名字不再重复一遍厂商。
+    expect(openCodeNativeProviderDisplayName('opencodego'), 'OpenCode Go');
+    expect(openCodeNativeProviderDisplayName('opencode'), 'OpenCode Zen');
   });
 }

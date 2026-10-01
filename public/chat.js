@@ -1634,7 +1634,7 @@ async function loadSessionModel() {
 }
 
 modelBtn?.addEventListener('click', async () => {
-  // 每次打开前重新拉取一次会话配置，避免重连/加载未完成时弹窗显示默认值。
+  if (airChatMode) { try { window.parent?.__multiccAirRunConfig?.(); } catch (_) { /* 宿主没起来 */ } return; }
   await loadSessionModel();
   const desired = window.MultiCCChatAiConfig.desiredConfig({ cli: _sessionCli, pendingConfiguration: _pendingConfiguration });
   const configCli = desired.cli;

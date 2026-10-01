@@ -4,7 +4,9 @@ import 'package:http/http.dart' as http;
 import '../../models/message.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
-import '../ai_config_sheet.dart';
+import '../ai_config_sheet.dart' show prepareAIConfigInputs;
+import '../run_config/run_config_sheet.dart';
+import '../run_config/run_config_wire.dart';
 
 /// 一个新任务还没创建时选好的执行线路 —— Web 侧是
 /// `MultiCCAirSettings.configuration` 的草稿模式（`quickRuntime`）。
@@ -120,16 +122,16 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
     httpClient: httpClient,
   );
   if (!context.mounted) return null;
-  final picked = await showModalBottomSheet<AIConfigResult>(
+  final picked = await showModalBottomSheet<RunConfigOutcome>(
     context: context,
     isScrollControlled: true,
     backgroundColor: AppColors.panel,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
     ),
-    builder: (_) => AIConfigSheetDeferred(
+    builder: (_) => RunConfigSheetDeferred(
       providers: providersFuture,
-      builder: (context, providers) => AIConfigSheet(
+      builder: (context, providers) => RunConfigSheet(
         cli: cli,
         providers: providers,
         provider: initial.provider,
@@ -138,6 +140,8 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
         effort: initial.effort.isEmpty ? cli.defaultEffort : initial.effort,
         subProviderId: initial.subagent?.providerId,
         subModel: initial.subagent?.model,
+        settings: settings,
+        httpClient: httpClient,
       ),
     ),
   );
@@ -153,10 +157,11 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
   }
 
   // Auto 选中时真正执行的是池子里的第一条线路，面板已经把它当成 provider 交
-  // 出来了（见 AIConfigSheetState.submit），任务记录里也存这一条 —— 否则药丸
+  // 出来了（见 RunConfigSheetBase._submit），任务记录里也存这一条 —— 否则药丸
   // 会显示「Auto」，而任务实际上跑在别的 Provider 上。
   return AirTaskRuntime(
-    cli: initial.cli,
+    // 面板上换了 CLI（固定一条换了车道，或池子第一条在别的车道上）就按它建任务。
+    cli: picked.switchToCli ?? initial.cli,
     providerSelection: picked.providerSelection,
     provider: picked.provider,
     providerName: _providerNameOf(providers, picked.provider) ?? '',

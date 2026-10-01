@@ -323,16 +323,16 @@
     return clis.includes(recent) ? recent : (clis[0] || 'claude');
   }
 
-  // 「＋ 新终端」：**和 chat 的「AI 配置」是同一个对话框**（`air-task-settings.js` 的
-  // `configuration(entry, clis, onApply)`，draft 模式）—— CLI、Provider、模型、推理
-  // 强度都在那一层挑。用户明确要求终端要能像 chat 一样选线路，不是只挑一个 CLI；
-  // 所以这里不再自己长一套选择 UI，把「选什么」交给那一份唯一实现。
+  // 「＋ 新终端」：**和 chat 的「运行配置」是同一个对话框**（`run-config.js` 的
+  // `open(entry, clis, onSaved)`，draft 模式）—— CLI、Provider、模型、推理强度都在
+  // 那一层挑。用户明确要求终端要能像 chat 一样选线路，不是只挑一个 CLI；所以这里
+  // 不再自己长一套选择 UI，把「选什么」交给那一份唯一实现。
   function openCreateDialog() {
     if (creating || !dirId || !ctx) return;
-    const settings = root.MultiCCAirSettings;
-    if (!settings?.configuration) return;
+    const settings = root.MultiCCRunConfig;
+    if (!settings?.open) return;
     const clis = terminalClis();
-    settings.configuration(
+    settings.open(
       {
         // purpose 让那一层把抬头/说明换成终端口吻（同一份实现，只是不说「新任务」）。
         purpose: 'terminal',

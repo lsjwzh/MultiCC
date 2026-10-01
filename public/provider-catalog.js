@@ -545,10 +545,12 @@
     const apiFormat = API_FORMATS.has(value.apiFormat)
       ? value.apiFormat
       : (appType === 'claude' ? 'anthropic' : 'openai_responses');
-    const zcodeCompatible = !!safeBaseUrl(value.baseUrl) && value.hasToken === true;
+    // zcode / kimi 这两条车道自己不带上游：一条线路要同时有 baseUrl 和 token 才跑得动
+    // （kimi 只认 openai_responses）。
+    const credentialCompatible = !!safeBaseUrl(value.baseUrl) && value.hasToken === true;
     const defaultClis = [
-      ...(apiFormat === 'anthropic' ? ['claude', 'claude-exp', 'opencode'] : ['codex', 'codex-exp', 'opencode']),
-      ...(zcodeCompatible ? ['zcode'] : []),
+      ...(apiFormat === 'anthropic' ? ['claude', 'claude-exp', 'opencode'] : ['codex', 'codex-exp', 'opencode', 'kimi']),
+      ...(credentialCompatible ? ['zcode'] : []),
     ];
     return Object.freeze({
       id,
@@ -559,8 +561,9 @@
       protocol: apiFormat,
       wireApi: ['messages', 'responses', 'chat_completions', 'chat-completions'].includes(value.wireApi) ? value.wireApi : '',
       compatibleClis: Object.freeze((Array.isArray(value.compatibleClis) ? value.compatibleClis : defaultClis)
-        .filter(cli => ['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode'].includes(cli)
-          && (cli !== 'zcode' || zcodeCompatible))),
+        .filter(cli => ['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi'].includes(cli)
+          && (cli !== 'zcode' || credentialCompatible)
+          && (cli !== 'kimi' || (credentialCompatible && apiFormat === 'openai_responses')))),
       baseUrl: safeBaseUrl(value.baseUrl),
       model,
       modelOptions: Object.freeze(normalizeModelOptions(value.modelOptions || value.models, model)),

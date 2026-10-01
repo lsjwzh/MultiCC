@@ -125,6 +125,17 @@ test('a route keeps its own default model when none of the models it serves can 
   assert.equal(expanded[0].price, null);
 });
 
+test('a manual ladder keeps every model the line serves, an unknown price ranked last', () => {
+  const expanded = expandCandidates([
+    autoRoute('flex', ['m-a', 'm-free', 'm-b']),
+  ], { priceTable: table({ 'm-a': 3, 'm-b': 1 }), requirePrice: false });
+  // requirePrice is price tiering's own rule (route only over what it can
+  // price). A manual ladder already has its tiers and only wants the ordering,
+  // so the unpriced model stays in the pool — ranked last, never dropped.
+  assert.deepEqual(expanded.map(candidate => candidate.model), ['m-b', 'm-a', 'm-free']);
+  assert.deepEqual(expanded.map(candidate => candidate.price && candidate.price.blended), [1, 3, null]);
+});
+
 test('the variant budget is shared by every route in the pool', () => {
   const budget = Array.from({ length: 4 }, (_, at) => autoRoute(`r${at}`, TWELVE));
   assert.equal(expandCandidates(budget, { priceTable: table(TWELVE_PRICES) }).length, MAX_VARIANTS);

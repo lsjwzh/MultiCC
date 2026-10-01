@@ -14,7 +14,7 @@ import 'package:multicc_app/widgets/chat_header.dart';
 /// ChatHeader 在真实 ChatProvider 上渲染。设置指向本机不可达端口：
 /// WS/HTTP 全部快速失败并被 service 吞掉，标题渲染是纯同步路径。
 ///
-/// SessionManager 也必须是真的：ModelChip 在 build 里 watch 它（切 AI 配置
+/// SessionManager 也必须是真的：RunChip 在 build 里 watch 它（运行配置面板
 /// 的入口）。注意它的构造器会启动 5s 周期刷新并调 loadDashboard()——
 /// flutter_test 在 test body 内部就检查 pending timers（早于 addTearDown），
 /// 所以两个对象都必须在断言之后、body 结束之前显式 dispose。

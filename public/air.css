@@ -1477,7 +1477,7 @@ dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; white-
    three-step information architecture, but uses Air's light, compact cards. */
 .air-config-dialog { max-width: 760px; padding: 0; overflow: auto; background: #fbfdff; }
 .air-config-form { min-width: 0; }
-.air-config-head { position: sticky; z-index: 3; top: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 23px 25px 16px; border-bottom: 1px solid rgba(220, 230, 241, .88); background: rgba(251, 253, 255, .94); }
+.air-config-head { position: sticky; z-index: 3; top: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 23px 25px 16px; border-bottom: 1px solid rgba(220, 230, 241, .88); background: #fbfdff; }
 .air-config-head h2 { margin-top: 3px; font-size: 21px; }
 .air-config-close { min-width: 38px; padding: 4px; color: #718398; border-color: transparent; background: transparent; font-size: 24px; line-height: 1; }
 .air-config-intro { padding: 16px 25px 2px; color: var(--muted); font-size: 12px; line-height: 1.65; }
@@ -1489,9 +1489,14 @@ dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; white-
 .air-cli-option { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 10px; color: #536a82; border-color: #e0e9f2; text-align: left; }
 .air-cli-option.selected { color: #0d63c4; border-color: #a9cff6; background: #edf6ff; box-shadow: inset 0 0 0 1px #d4e8fc; }
 .air-cli-mark { width: 29px; height: 29px; flex: 0 0 29px; display: grid; place-items: center; color: #fff; border-radius: 9px; background: linear-gradient(145deg, #66a9ed, #2678ce); font-size: 12px; font-weight: 750; }
-.air-cli-option strong, .air-cli-option small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.air-cli-option strong { font-size: 12px; }
-.air-cli-option small { margin-top: 1px; font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* The card's text column shrinks under the mark so the sub-line can ellipsize
+   instead of pushing the card wider than its grid cell. */
+.air-cli-option > span { min-width: 0; }
+.air-cli-option strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }
+/* The sub-line is one line: `engine · N 条` never breaks between the count and
+   its unit ("3 / 条"), and the ellipsis falls on the engine if the card is
+   narrow. */
+.air-cli-option small { display: block; overflow: hidden; margin-top: 1px; font-size: 9px; line-height: 1.3; white-space: nowrap; text-overflow: ellipsis; }
 .air-config-status { min-height: 18px; margin: -3px 0 8px; color: var(--muted); font-size: 10px; }
 .air-config-status button { margin-left: 5px; padding: 2px 8px; color: #4c7daa; border: 1px solid #d5e2ef; border-radius: 7px; background: #fff; font-size: 10px; cursor: pointer; }
 .air-sub { margin-top: 12px; padding-top: 12px; border-top: 1px solid #edf3f9; }
@@ -1507,7 +1512,7 @@ dialog .air-config-field input, dialog .air-config-field select { margin-top: 0;
 dialog .air-config-field input { margin-top: 7px; }
 .air-config-error { min-height: 19px; margin: 9px 25px 0 !important; font-size: 11px; }
 .air-config-error:empty { visibility: hidden; }
-.air-config-footer { position: sticky; z-index: 3; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 5px; padding: 14px 25px 18px; border-top: 1px solid rgba(220, 230, 241, .9); background: rgba(251, 253, 255, .95); }
+.air-config-footer { position: sticky; z-index: 3; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 5px; padding: 14px 25px 18px; border-top: 1px solid rgba(220, 230, 241, .9); background: #fbfdff; }
 .air-config-footer p { color: var(--muted); font-size: 10px; }
 .air-config-footer > div { display: flex; gap: 8px; }
 .air-config-footer button { min-width: 86px; }
@@ -2309,3 +2314,144 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
 .directory-flyout-row.is-current { background: #e8f1fb; }
 .directory-flyout-row strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .directory-flyout-row small { overflow: hidden; color: #7f90a2; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── 运行配置（run-config.js）────────────────────────────────────────────────
+   一颗「运行」胶囊开出来的唯一对话框：固定一条 / 自动挑选两种模式。皮沿用
+   .air-config-dialog 那一套（air-task-settings 留下的），这里只补 .rc-* 那几块
+   —— 模式段、线路池的行、添加线路的分组列表、Jev 面板、以及胶囊上的标记。 */
+.rc-mode-host { padding: 13px 17px; }
+.rc-seg { display: inline-flex; min-width: 0; gap: 3px; padding: 3px; border: 1px solid #dbe6f1; border-radius: 11px; background: #f2f7fc; }
+.rc-seg-btn {
+  min-width: 0; padding: 7px 13px; color: #5d7a97; border: 0; border-radius: 9px;
+  background: transparent; font-size: 12px; font-weight: 620; cursor: pointer;
+}
+.rc-seg-btn:hover { color: #2f6ba6; }
+/* A segment lights up from its ARIA state, which every segment sets — the
+   `.on` class is only belt-and-braces for the effort row. */
+.rc-seg-btn.on, .rc-seg-btn[aria-checked="true"] { color: #0d63c4; background: #fff; box-shadow: 0 1px 3px #355d8524; }
+.rc-modes { display: flex; width: 100%; }
+.rc-modes .rc-seg-btn { flex: 1 1 0; text-align: center; }
+.rc-fixed[hidden], .rc-auto[hidden] { display: none; }
+
+.rc-two { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; margin-bottom: 12px; }
+.rc-field { display: block; min-width: 0; color: #5f7286; font-size: 10px; }
+.rc-field > span { display: block; margin-bottom: 5px; }
+.rc-field select, .rc-field input {
+  width: 100%; min-width: 0; margin: 0; padding: 7px 9px; color: #24425e; border: 1px solid #dbe6f1;
+  border-radius: 9px; background: #fbfdff; font-size: 12px;
+}
+.rc-field input[hidden] { display: none; }
+.rc-note { margin: 7px 0 0; color: #7f90a2; font-size: 10px; line-height: 1.5; }
+.rc-faint { margin: 6px 2px; color: #93a4b5; font-size: 11px; }
+.rc-advanced { margin-top: 12px; padding-top: 12px; border-top: 1px solid #edf3f9; }
+.rc-advanced > summary { color: #4c7daa; font-size: 11px; cursor: pointer; list-style: none; }
+.rc-advanced > summary::-webkit-details-marker { display: none; }
+.rc-advanced > summary::before { content: '▸ '; }
+.rc-advanced[open] > summary::before { content: '▾ '; }
+.rc-advanced-body { margin-top: 11px; }
+.rc-effort-field { margin-bottom: 12px; }
+.rc-efforts { display: flex; width: 100%; }
+.rc-efforts .rc-seg-btn { flex: 1 1 0; text-align: center; }
+.air-cli-option.is-off { opacity: .62; cursor: default; }
+.air-cli-option .rc-reason { color: #b07b32; }
+.rc-mark.s { width: 20px; height: 20px; flex: 0 0 20px; border-radius: 7px; font-size: 10px; }
+
+/* 自动挑选 */
+.rc-radios { display: grid; gap: 8px; margin-bottom: 13px; }
+.rc-radio { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid #e0e9f2; border-radius: 12px; cursor: pointer; }
+.rc-radio.on { border-color: #a9cff6; background: #f4f9ff; box-shadow: inset 0 0 0 1px #dcecfc; }
+.rc-radio-dot { width: 15px; height: 15px; flex: 0 0 15px; margin-top: 1px; border: 1.5px solid #b6c7d8; border-radius: 50%; }
+.rc-radio.on .rc-radio-dot { border-color: #2b83dd; background: radial-gradient(circle, #2b83dd 0 4.5px, #fff 5px); }
+.rc-radio b { display: block; color: #2c4a67; font-size: 12px; }
+.rc-radio-detail { display: block; margin-top: 2px; color: #7f90a2; font-size: 10px; line-height: 1.45; }
+.rc-tier-row { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; }
+.rc-tier-row > span { color: #5f7286; font-size: 10px; }
+.rc-tier-row[hidden] { display: none; }
+
+/* Jev 面板 */
+.rc-jev { margin-bottom: 13px; padding: 11px 12px; border: 1px solid #e0e9f2; border-radius: 12px; background: #fbfdff; }
+.rc-jev[hidden] { display: none; }
+.rc-jev-line { display: flex; align-items: center; gap: 8px; }
+.rc-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #c6d4e2; }
+.rc-jev.ok .rc-dot { background: #3aa675; }
+.rc-jev.missing .rc-dot { background: #d9a441; }
+.rc-jev-status { font-size: 12px; color: #2c4a67; }
+.rc-jev-detail { min-width: 0; overflow: hidden; color: #7f90a2; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.rc-jev-actions { margin-left: auto; display: flex; gap: 10px; }
+.rc-link { padding: 0; color: #3d80c4; border: 0; background: none; font-size: 11px; cursor: pointer; }
+.rc-link:hover { text-decoration: underline; }
+.rc-jev-form { display: none; gap: 10px; margin-top: 11px; padding-top: 11px; border-top: 1px solid #edf3f9; }
+.rc-jev.missing .rc-jev-form, .rc-jev.editing .rc-jev-form { display: grid; }
+.rc-jev-gateways { display: flex; flex-wrap: wrap; }
+/* A hint line under a control (Jev key help, the difficulty explainer): one
+   small, muted sentence, never the browser's default paragraph size. */
+.rc-fine { margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.55; }
+
+/* 线路池 */
+.rc-pool { display: grid; gap: 7px; }
+.rc-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 9px 10px; border: 1px solid #e2ebf4; border-radius: 12px; background: #fff; }
+.rc-row.rc-warn { border-color: #f0d69a; background: #fffaf0; }
+.rc-row.rc-drop { border-color: #79b3e8; box-shadow: inset 0 0 0 1px #bfdcf7; }
+.rc-rank { color: #93a4b5; font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
+.rc-row-main { min-width: 0; display: grid; gap: 5px; }
+.rc-row-l1, .rc-row-l2 { display: flex; align-items: center; gap: 7px; min-width: 0; }
+/* The route pick on a pool row is one compact control: the CLI's mark rides
+   inside the select's own left padding, so the row reads
+   [mark + CLI][line name] instead of a mark box next to a wide blank select. */
+.rc-cli-chip { position: relative; display: inline-flex; align-items: center; min-width: 0; }
+.rc-cli-chip .rc-mark { position: absolute; left: 6px; z-index: 1; pointer-events: none; }
+.rc-row-cli { width: auto; max-width: 176px; padding-left: 29px; }
+.rc-line-name { min-width: 0; overflow: hidden; color: #2c4a67; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.rc-select, .rc-row-cli { padding: 5px 7px; color: #33587a; border: 1px solid #dbe6f1; border-radius: 8px; background: #fbfdff; font-size: 11px; }
+.rc-row-cli { padding-left: 29px; }
+.rc-row-model { min-width: 0; flex: 1 1 auto; max-width: 260px; }
+.rc-row-model-custom { min-width: 0; flex: 1 1 auto; max-width: 200px; padding: 5px 7px; border: 1px solid #dbe6f1; border-radius: 8px; font-size: 11px; }
+.rc-row-model-custom[hidden] { display: none; }
+.rc-row-tier { max-width: 96px; }
+.rc-issue { color: #9a6a1f; font-size: 11px; }
+.rc-ops { display: flex; align-items: center; gap: 3px; }
+.rc-handle, .rc-remove { width: 24px; height: 24px; padding: 0; color: #9fb0c1; border: 0; border-radius: 7px; background: none; font-size: 13px; cursor: pointer; }
+.rc-handle { cursor: grab; }
+.rc-handle:hover { color: #5d7a97; background: #f2f7fc; }
+.rc-remove:hover { color: #c2564e; background: #fdf1f0; }
+.rc-add { margin-top: 9px; padding: 8px 13px; color: #3d80c4; border: 1px dashed #b9d6f0; border-radius: 10px; background: #f7fbff; font-size: 12px; cursor: pointer; }
+.rc-add:hover, .rc-add.on { border-color: #79b3e8; background: #eef6ff; }
+
+/* 添加线路 */
+.rc-picker-host { display: grid; gap: 8px; margin-top: 9px; }
+.rc-picker-host[hidden] { display: none; }
+.rc-search { width: 100%; padding: 7px 10px; border: 1px solid #dbe6f1; border-radius: 9px; background: #fbfdff; font-size: 12px; }
+.rc-picker-list { max-height: 260px; overflow: auto; display: grid; gap: 4px; padding: 4px 2px; }
+.rc-picker-group { display: flex; align-items: center; gap: 7px; margin: 6px 2px 1px; color: #7f90a2; font-size: 10px; letter-spacing: .04em; }
+.rc-picker-group em { color: #a8b7c6; font-style: normal; }
+.rc-picker-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid #e6eef6; border-radius: 9px; background: #fff; text-align: left; cursor: pointer; }
+.rc-picker-item:hover { border-color: #b9d6f0; background: #f7fbff; }
+.rc-picker-item.is-pooled { background: #f6f9fc; opacity: .74; }
+.rc-picker-name { min-width: 0; flex: 1 1 auto; overflow: hidden; color: #2c4a67; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.rc-picker-model { color: #93a4b5; font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.rc-picker-right { color: #3aa675; font-size: 10px; }
+.rc-picker-error { display: flex; align-items: center; gap: 8px; color: #9a6a1f; font-size: 11px; }
+.rc-retry { padding: 3px 9px; color: #4c7daa; border: 1px solid #d5e2ef; border-radius: 7px; background: #fff; font-size: 10px; cursor: pointer; }
+
+/* 更多 / 跨信任 */
+.rc-more { margin-top: 12px; padding-top: 12px; border-top: 1px solid #edf3f9; }
+.rc-more > summary { color: #4c7daa; font-size: 11px; cursor: pointer; list-style: none; }
+.rc-more > summary::-webkit-details-marker { display: none; }
+.rc-more > summary::before { content: '▸ '; }
+.rc-more[open] > summary::before { content: '▾ '; }
+.rc-more-body { display: grid; gap: 10px; margin-top: 11px; }
+.rc-more-body .rc-field { max-width: 220px; }
+.rc-check { display: flex; align-items: center; gap: 7px; color: #5f7286; font-size: 11px; }
+/* The page's global `input { width: 100% }` (air.css input/select/textarea rule)
+   would stretch a bare checkbox into a full-width pill; checkboxes in these two
+   rows are a fixed 15px box that never grows. */
+.rc-check input[type="checkbox"], .rc-cross-trust input[type="checkbox"] { width: 15px; height: 15px; flex: 0 0 15px; margin: 0; }
+.rc-cross-trust { display: flex; align-items: flex-start; gap: 8px; margin: 11px 25px 0; color: #8a6d2f; font-size: 10px; line-height: 1.5; }
+.rc-cross-trust[hidden] { display: none; }
+
+@media (max-width: 720px) {
+  .rc-two { grid-template-columns: 1fr; }
+  .rc-modes, .rc-efforts { flex-wrap: wrap; }
+  .rc-row { grid-template-columns: 22px minmax(0, 1fr) auto; }
+  .rc-row-l2 { flex-wrap: wrap; }
+}

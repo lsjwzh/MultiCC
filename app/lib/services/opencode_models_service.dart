@@ -21,9 +21,14 @@ bool isOpenCodeNativeProvider(String value) =>
 /// OPENCODE_NATIVE_NAMES (public/chat-ai-config.js) and the synthetic rows
 /// created in [mergeOpenCodeNativeProviders]; a provider the table does not
 /// know keeps its raw id so nothing is ever mislabelled as another vendor.
+///
+/// The lane is already OpenCode, so the name no longer repeats it — the old
+/// `OpenCode 原生 · OpenCode Go` said the vendor twice.
 String openCodeNativeProviderDisplayName(String provider) {
   const names = {'opencode': 'OpenCode Zen', 'opencodego': 'OpenCode Go'};
-  return 'OpenCode 原生 · ${names[provider] ?? provider}';
+  final name = names[provider];
+  if (name != null) return name;
+  return provider.isEmpty ? 'OpenCode' : 'OpenCode · $provider';
 }
 
 class OpenCodeModel {

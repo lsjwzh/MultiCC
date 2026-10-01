@@ -362,10 +362,17 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`${frame}.getElementById('worktree-sync-btn')!==null && ${frame}.getElementById('worktree-bar').offsetHeight>0`), true);
     assert.equal(await page.evaluate(`['header','worktree-bar','aux-classify-bar'].every(id=>${frame}.getElementById(id).parentElement.id==='chat-context-bar')`), true);
     const skin = await page.evaluate(pillSkin);
-    const skinOf = p => [p.radius, p.pad, p.font, p.bg, p.edge, p.mark];
+    // 比形状不比标记：::before 现在是 data-mark 画的 CLI 短标，而两颗胶囊绑的是两条
+    // 不同的车道（对话那颗是任务的 codex，新任务那颗是目录最近用的 codex-exp），
+    // 标记本来就该不同。形状必须一模一样。
+    const skinOf = p => [p.radius, p.pad, p.font, p.bg, p.edge];
     assert.deepEqual(skinOf(skin.chat), skinOf(skin.form), `对话页 AI 胶囊与新任务表单不是同一颗：${JSON.stringify(skin)}`);
     assert.deepEqual(skinOf(skin.chatRole), skinOf(skin.formRole), `对话页角色胶囊与新任务表单不是同一颗：${JSON.stringify(skin)}`);
-    assert.equal(skin.chat.mark, '"◆"', `AI 胶囊丢了 ◆：${JSON.stringify(skin.chat)}`);
+    // ::before 的标记不再是那颗 ◆ 了：run-config.js 把 CLI 的短标（这里是 codex 的
+    // E）写进 data-mark，composer.css 用 attr() 画出来。对话帧与新任务表单必须画
+    // 同一个字母（上一行的 deepEqual 已经把它们逐项比过）。
+    assert.equal(skin.chat.mark, '"E"', `AI 胶囊该画 codex 的短标：${JSON.stringify(skin.chat)}`);
+    assert.equal(skin.form.mark, '"X"', `新任务表单那颗画的是它自己那条车道的短标（codex-exp → X）：${JSON.stringify(skin.form)}`);
     assert.equal(skin.chat.cls.trim(), 'mc-composer__pill mc-composer__pill--ai', JSON.stringify(skin.chat));
     assert.equal(skin.chatRole.cls.trim(), 'mc-composer__pill mc-composer__pill--role', JSON.stringify(skin.chatRole));
     assert.equal(await page.evaluate(`document.getElementById('delivery-card').closest('#task-details')!==null && document.getElementById('delivery-card').offsetHeight===0`), true, 'delivery details take no space above chat');
@@ -538,26 +545,26 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(page.requests.some(r => /role-workers|\/sessions$/.test(r.path) && r.method !== 'GET'), false);
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}?.textContent.includes('Lab Responses')`), 'AI 配置 renders on the composer card');
     await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
-    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')?.value==='codex-lab'`));
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"]')?.value==='codex-lab'`));
     // 这条任务的 cli 是 codex（兜底的 `codex exec` 车道）。扶正之后两条 codex 车道的
     // 大字都是家族名 Codex，区分它们的是小字（codex exec / Codex App Server）。
     assert.equal(await page.evaluate(`document.querySelector('.air-cli-option.selected strong').textContent`), 'Codex');
-    // Provider 是下拉（和 chat 的 AI 配置、App 的配置面板同一版），一行装完，
-    // 不再是一墙卡片：Auto 池 + 三条 Provider。内置 Official 就是
-    // 默认，不再另造一条空值的「默认登录」。
-    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]').options.length`), 4);
-    assert.equal(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]');const o=s.options[0];return o.value.startsWith('__auto__')&&o.textContent.includes('Auto')})()`), true);
-    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"] option[value=""]') === null`), true);
-    // 子任务尾巴就挂在 Provider 配置后面：线路 + 模型两个下拉，Codex 排掉官方账号
+    // 线路是一个下拉（「固定一条」那一栏），三条 Codex Provider 一行装完。从前那个
+    // 池子里的 Auto 项没了 —— 自动那条路现在是模式段上的「自动挑选」。内置 Official
+    // 就是默认，不再另造一条空值的「默认登录」。
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"]').options.length`), 3);
+    assert.equal(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="线路"]');return [...s.options].every(o=>!o.value.startsWith('__auto__'))})()`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"] option[value=""]') === null`), true);
+    // 子任务尾巴藏在「高级」里：线路 + 模型两个下拉，Codex 排掉官方账号
     // （它没有可调用的 HTTP 端点，服务端也会拒）。
-    assert.deepEqual(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="子任务线路"]');return [s.options.length, s.options[0].textContent, [...s.options].some(o=>o.value==='codex-official')]})()`), [3, '随主', false]);
+    assert.deepEqual(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="子任务线路"]');return [s.options.length, s.options[0].textContent, [...s.options].some(o=>o.value==='codex-official')]})()`), [3, '随主（默认）', false]);
     assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="子任务模型"]').options[0].textContent`), '不设置');
     await page.evaluate(String.raw`(()=>{const q=s=>document.querySelector('.air-config-dialog[open] '+s);
-      const provider=q('select[aria-label="Provider"]'); provider.value='codex-backup'; provider.dispatchEvent(new Event('change',{bubbles:true}));
+      const provider=q('select[aria-label="线路"]'); provider.value='codex-backup'; provider.dispatchEvent(new Event('change',{bubbles:true}));
       const model=q('select[aria-label="模型"]'); model.value='gpt-5.6-sol';
       const line=q('select[aria-label="子任务线路"]'); line.value='codex-lab'; line.dispatchEvent(new Event('change',{bubbles:true}));
       q('select[aria-label="子任务模型"]').value='gpt-5.5';
-      q('select[aria-label="推理强度"]').value='high';
+      q('.rc-effort-high').click();
       q('.air-config-form').requestSubmit()})()`);
     assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
     assert.equal(configPatches.length, 2);
@@ -582,7 +589,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(marquee.pill <= 321, `胶囊不超过上限宽度：${marquee.pill}`);
     assert.ok(parseFloat(marquee.shift) <= -2, `跑马灯位移来自真实溢出：${marquee.shift}`);
     assert.equal(marquee.animation, 'mc-pill-marquee');
-    assert.equal(marquee.mark, '"◆"');
+    assert.equal(marquee.mark, '"E"', '跑马灯里的标记仍是 CLI 短标');
     // 跑马灯是视觉效果：断言只能证明类名、位移和上限宽度，形状得留一张图给人看。
     const bandBox = await page.evaluate(`(()=>{const f=document.getElementById('conversation');const r=${frame}.getElementById('air-composer-meta').getBoundingClientRect();const o=f.getBoundingClientRect();return {x:o.x+r.x-8,y:o.y+r.y-6,width:r.width+16,height:r.height+12};})()`);
     const bandShot = await page.send('Page.captureScreenshot', { format: 'png', clip: { ...bandBox, scale: 2 }, captureBeyondViewport: false });
@@ -596,8 +603,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('Lab Responses')`));
     assert.equal(await page.evaluate(`${composerPill('air-ai-pill')}.classList.contains('is-marquee')`), false);
     await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
-    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')?.value==='codex-lab'`));
-    assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="推理强度"]').value`), 'low');
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"]')?.value==='codex-lab'`));
+    // 推理强度不再是下拉，是一排按钮，选中的那颗 aria-checked=true。
+    assert.equal(await page.evaluate(`document.querySelector('dialog[open] .rc-effort-low[aria-checked="true"]')!==null`), true);
     // 存过的子任务线路要能读回来，否则再打开面板一次就会把它清掉。
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务线路"]').value`), 'codex-lab');
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务模型"]').value`), 'gpt-5.5');
@@ -834,12 +842,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(dirHeadings.length >= 2, '目录页该有侧栏和目录两块标题行：' + JSON.stringify(dirHeadings));
     assert.equal(dirHeadings.every(r => r.ok), true, '标题行的尾巴必须跟标题并排，不能换行：' + JSON.stringify(dirHeadings));
     await page.evaluate(`document.getElementById('quick-ai-pill').click()`);
-    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')`), JSON.stringify({ pill: await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), selected: await page.evaluate(`document.querySelector('.air-cli-option.selected strong')?.textContent`), requests: page.requests.slice(-6).map(r => r.method + ' ' + r.path) }));
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"]')`), JSON.stringify({ pill: await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), selected: await page.evaluate(`document.querySelector('.air-cli-option.selected strong')?.textContent`), requests: page.requests.slice(-6).map(r => r.method + ' ' + r.path) }));
     screenshots.push(await page.screenshot('directory-composer-config-desktop'));
-    assert.equal(await page.evaluate(`!!document.querySelector('.air-config-dialog[open] .air-config-field select[aria-label="模型"]')`), true, 'model selection survives on the panel');
+    assert.equal(await page.evaluate(`!!document.querySelector('.air-config-dialog[open] .rc-field select[aria-label="模型"]')`), true, 'model selection survives on the panel');
     assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="子任务线路"]').options.length`), 3, 'the tail rides the panel for a task that does not exist yet');
     await page.evaluate(String.raw`(()=>{const q=s=>document.querySelector('.air-config-dialog[open] '+s);
-      const provider=q('select[aria-label="Provider"]'); provider.value='codex-backup'; provider.dispatchEvent(new Event('change',{bubbles:true}));
+      const provider=q('select[aria-label="线路"]'); provider.value='codex-backup'; provider.dispatchEvent(new Event('change',{bubbles:true}));
       const model=q('select[aria-label="模型"]'); model.value='gpt-5.6-sol';
       const line=q('select[aria-label="子任务线路"]'); line.value='codex-lab'; line.dispatchEvent(new Event('change',{bubbles:true}));
       q('select[aria-label="子任务模型"]').value='gpt-5.5';
@@ -1112,7 +1120,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.equal(await page.evaluate(`${composerPill('air-role-pill')}.getBoundingClientRect().right<=${frame}.documentElement.clientWidth`), true);
       if (width === 390) {
         await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
-        assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')`));
+        assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"]')`));
         assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog').scrollWidth<=document.querySelector('.air-config-dialog').clientWidth`), true);
         await page.evaluate(`document.querySelector('.air-config-close').click()`);
       }

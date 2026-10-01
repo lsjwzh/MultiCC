@@ -183,6 +183,14 @@ function listOpenCodeModels(callback, opts = {}) {
   });
 }
 
+// Synchronous read of whatever the 1-day cache already holds. It never spawns
+// the CLI and never blocks: a cold cache reports no models, which is exactly how
+// a native OpenCode line survives a cold boot without the live list. The Auto
+// Provider runtime uses it to give such a line its `<id>/<model>` choices.
+function peekOpenCodeModels() {
+  return cache && Array.isArray(cache.models) ? cache.models : [];
+}
+
 function mountOpenCodeModelRoutes(app) {
   if (!app || typeof app.get !== 'function') return;
   // ?refresh=1 skips the 1-day cache (e.g. after adding a key to opencode.json unlocks paid models).
@@ -199,6 +207,7 @@ module.exports = {
   mountOpenCodeModelRoutes,
   listOpenCodeModels,
   parseOpenCodeStdout,
+  peekOpenCodeModels,
   readOpenCodeJsonFallback,
   mergeOpenCodeModels,
   // exposed for tests

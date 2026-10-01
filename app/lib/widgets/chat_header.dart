@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../i18n.dart';
-import '../models/message.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../services/chat_service.dart';
@@ -16,11 +15,9 @@ import '../services/settings_service.dart';
 import '../screens/file_browser_screen.dart';
 import '../screens/settings_screen.dart';
 import '../utils/context_level.dart';
-import '../utils/cli_display.dart';
 import '../screens/share_messages_screen.dart';
-import 'cli_switch_sheet.dart';
 import 'git_log_sheet.dart';
-import 'model_chip.dart';
+import 'run_config/run_chip.dart';
 
 class ChatHeader extends StatelessWidget {
   final SettingsService settings;
@@ -298,26 +295,6 @@ class ChatHeader extends StatelessWidget {
             if (advancedMode) ...[
               const SizedBox(width: 4),
               brand,
-              // One spacing slot whether or not the brand renders, so the CLI
-              // badge never kisses the collapse arrow.
-              const SizedBox(width: 6),
-              _ChatCliBadge(
-                cli: provider.pendingConfiguration.desiredCli(provider.cli),
-                // 忙碌中的换道是「下轮生效」：角标就显示用户已经选好的那条车道，
-                // 并挂上下轮生效的记号 —— 否则切完还是旧的 CLI，连 AI 配置药丸
-                // 也还是旧车道那一池 Provider。
-                appliesNextTurn: provider.pendingConfiguration.hasCliSwitch(
-                  provider.cli,
-                ),
-                // 窄页头这一行是固定预算：名字留到页头的三分之一，多出来的部分
-                // 省略号，换道图标让位（tap 仍然打开换道面板）。
-                compact: narrow,
-                maxLabelWidth: narrow ? constraints.maxWidth / 3 : null,
-                onTap: () => openCliSwitchSheet(
-                  context,
-                  sessionId: provider.executionSessionName,
-                ),
-              ),
             ],
           ];
           // Connection dot — tap to manually reconnect when disconnected.
@@ -367,12 +344,15 @@ class ChatHeader extends StatelessWidget {
               // 会话忙时换道是「下轮生效」，药丸要跟着用户选好的那条车道走，
               // 否则列的还是旧车道的 Provider 池（web 的 modelBtn 同一个口径）。
               const SizedBox(width: 4),
-              ModelChip(
+              // 运行配置（CLI · 线路 · 模型 · 强度，或自动挑选的池子）。CLI 角标
+              // 与 AI 配置药丸已经并进这一枚 chip，点开只有「运行配置」一个面板。
+              RunChip(
                 sessionId: provider.executionSessionName,
                 cli: provider.pendingConfiguration.desiredCli(provider.cli),
                 pending: provider.pendingConfiguration.value,
                 settings: settings,
                 compact: narrow,
+                maxLabelWidth: narrow ? constraints.maxWidth / 3 : null,
               ),
               const SizedBox(width: 4),
               if (!provider.historyArchive)
@@ -1515,124 +1495,6 @@ class _SessionTitle extends StatelessWidget {
                 fontFamily: 'monospace',
               ),
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ChatCliBadge extends StatelessWidget {
-  final SessionCli cli;
-  final VoidCallback onTap;
-
-  /// 会话正忙时换道是「下轮生效」：cli 已经是用户选好的那条，但引擎还在跑旧的。
-  /// 没有这个记号，用户切完看到的是一颗新名字的角标，下一轮之前的表现却全像没切。
-  final bool appliesNextTurn;
-
-  /// 窄页头：这一行只有 344px 的预算，装不下「名字 + 换道图标」两样 —— 图标是装饰
-  /// （点这颗角标本来就是去换道，tooltip 也写着），先让给它名字。同时给名字一个上
-  /// 限并允许省略号：产品名长短随语言/线路变（Claude Code / Qoder CN / WorkBuddy），
-  /// 一行固定宽度的 chrome 不该被一个名字顶出去。
-  final bool compact;
-
-  /// 名字的宽度上限（null = 按内容）。窄页头按页头宽度折算一个份额传进来。
-  final double? maxLabelWidth;
-
-  /// 窄页头 pending 记号占的横向尺寸（10px 图标 + 2px 间距）：从名字份额里扣掉，
-  /// 保证「有 pending 记号」和「没 pending 记号」两种状态下角标总宽一致。
-  static const double pendingSlot = 12;
-
-  const _ChatCliBadge({
-    required this.cli,
-    required this.onTap,
-    this.appliesNextTurn = false,
-    this.compact = false,
-    this.maxLabelWidth,
-  });
-  @override
-  Widget build(BuildContext context) {
-    final color = switch (cli) {
-      SessionCli.claude => const Color(0xFFc2622f),
-      SessionCli.claudeExp => const Color(0xFFdf7950),
-      SessionCli.codex => const Color(0xFF1e8a55),
-      SessionCli.codexExp => const Color(0xFF20a66a),
-      SessionCli.opencode => const Color(0xFF6d4fd1),
-      SessionCli.zcode => const Color(0xFF0e7fb8),
-      SessionCli.qoder => const Color(0xFFc25e1e),
-      SessionCli.codebuddy => const Color(0xFF2a5fd8),
-      SessionCli.dsh => const Color(0xFF2b44d6),
-      SessionCli.gemini => const Color(0xFF4285f4),
-      SessionCli.grok => const Color(0xFF8c8f96),
-    };
-    // 窄页头名字的宽度上限是在调用方按「整行份额」算好的常量，pending 记号要在这
-    // 份额里挤出来，不能额外撑宽这一行 —— 否则 360px 上 Spacer 已经没有余量了。
-    final double? nameBudget = maxLabelWidth == null
-        ? null
-        : (compact && appliesNextTurn
-              ? maxLabelWidth! - _ChatCliBadge.pendingSlot
-              : maxLabelWidth);
-    // 记号颜色对齐 web 的 [data-pending]（chat-layout.css: content:attr(data-pending);
-    // font-size:10px; margin-left:6px; color:#bd842e）—— 换道面板里的「下轮生效」
-    // 与页头角标上的这一笔是同一件事的两种呈现，颜色不该各走各的。
-    const pendingColor = Color(0xFFbd842e);
-    return Tooltip(
-      message: appliesNextTurn
-          ? '切换会话 CLI（${t('cliSwitchPending')}）'
-          : '切换会话 CLI',
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(4),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.15),
-            border: Border.all(color: color.withValues(alpha: 0.4)),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxWidth: nameBudget ?? double.infinity,
-                ),
-                child: Text(
-                  // 产品名，不是内部 id：这颗角标在 chat 页头上，写 claude-exp 等于把
-                  // 实现细节印在用户眼前（扶正后这条车道就叫 Claude）。
-                  cliDisplayName(cli.name),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: color,
-                    fontSize: 9,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              if (appliesNextTurn) ...[
-                if (compact) ...[
-                  // 窄页头：文字记号（中文 4 字 ≈ 46px、英文更长）会顶爆固定预算，
-                  // 落一个小沙漏图标占住换道图标本该占的位；词在 tooltip 里。
-                  const SizedBox(width: 2),
-                  const Icon(
-                    Icons.schedule_rounded,
-                    size: 10,
-                    color: pendingColor,
-                  ),
-                ] else ...[
-                  const SizedBox(width: 6),
-                  Text(
-                    t('cliSwitchPending'),
-                    style: const TextStyle(fontSize: 10, color: pendingColor),
-                  ),
-                ],
-              ],
-              if (!compact) ...[
-                const SizedBox(width: 2),
-                Icon(Icons.swap_horiz_rounded, size: 11, color: color),
-              ],
-            ],
           ),
         ),
       ),

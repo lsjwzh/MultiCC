@@ -137,6 +137,15 @@
    wide window, where the band has room the pill should not spend. */
 .mc-composer__pill--ai { flex: 0 1 auto; max-width: min(68%, 320px); color: #2468b5; border-color: #d2e6fb; background: #eaf3ff; }
 .mc-composer__pill--ai::before { content: '◆'; margin-right: 6px; font-size: 9px; vertical-align: 1px; }
+/* The run-config pill swaps the ◆ for the chosen CLI's short mark / the ⚡ of an
+   automatic pool, and tints itself when the route is automatic or when the saved
+   change only lands next turn. `data-mark` and the two state classes are written
+   by air.js on the Air composer pill; the plain chat page never sets them, so it
+   keeps its ◆ and blue. Lives here (not air.css) because the Air chat runs in an
+   iframe that loads composer.css but not air.css. */
+.mc-composer__pill--ai[data-mark]::before { content: attr(data-mark); }
+.mc-composer__pill--ai.is-auto { color: #6b46b8; border-color: #ddd2f4; background-image: linear-gradient(#f6f2ff, #f6f2ff); }
+.mc-composer__pill--ai.is-pending { color: #8a6d2f; border-color: #f0d69a; background: #fff8e8; }
 .mc-composer__pill--role { flex: 0 0 auto; }
 
 /* The route text is one inner box so it can be scrolled inside a pill that never

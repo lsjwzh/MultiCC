@@ -93,7 +93,9 @@ test('Air loads the shared Auto provider editor before the surfaces that mount i
   assert.ok(editor < aiConfig, 'the editor must load before chat-ai-config.js');
   assert.doesNotMatch(html, /<script[^>]+type=["']module["'][^>]+auto-provider-editor/i);
   // The production picker path mounts the shared editor rather than keeping a
-  // surface-local copy of the candidate UI.
-  const settingsSrc = fs.readFileSync(path.join(__dirname, '..', 'public', 'air-task-settings.js'), 'utf8');
-  assert.match(settingsSrc, /MultiCCAutoProviderEditor/);
+  // surface-local copy of the candidate UI. That surface is the unified run
+  // config now (public/run-config.js); air-task-settings.js keeps only the
+  // directory dialog.
+  const runConfigSrc = fs.readFileSync(path.join(__dirname, '..', 'public', 'run-config.js'), 'utf8');
+  assert.match(runConfigSrc, /MultiCCAutoProviderEditor/);
 });

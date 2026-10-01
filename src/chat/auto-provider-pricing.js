@@ -73,7 +73,14 @@ function byPrice(left, right) {
 // Candidates in, priced (and, for autoModel lines, expanded) candidates out.
 // Variants keep the candidate's providerId and index: attempts are still
 // counted per route, so a quota failure retires every model of that route.
-function expandCandidates(candidates, { priceTable = null } = {}) {
+//
+// `requirePrice` is the difference between the two ladders. A price-tiered pool
+// can only route over models it can price, so an unpriceable variant is dropped
+// (and a route with none keeps its own default model). A manual pool already has
+// its ladder — the hand-tagged tiers — and only wants the variants so the
+// cheapest one inside a tier goes first; there every model the provider serves
+// stays, with an unknown price ranking last through the same byPrice order.
+function expandCandidates(candidates, { priceTable = null, requirePrice = true } = {}) {
   const out = [];
   let variants = 0;
   for (const candidate of candidates) {
@@ -81,11 +88,11 @@ function expandCandidates(candidates, { priceTable = null } = {}) {
       out.push({ ...candidate, price: priceOf(priceTable, candidate.model) });
       continue;
     }
-    const priced = modelChoices(candidate.provider)
-      .map(model => ({ ...candidate, model, price: priceOf(priceTable, model) }))
-      .filter(variant => variant.price);
+    const choices = modelChoices(candidate.provider)
+      .map(model => ({ ...candidate, model, price: priceOf(priceTable, model) }));
+    const priced = requirePrice ? choices.filter(variant => variant.price) : choices;
     if (!priced.length) {
-      // Nothing the table knows: keep the route itself on its default model
+      // Nothing to choose from: keep the route itself on its default model
       // rather than dropping a line the user put in the pool.
       out.push({ ...candidate, price: priceOf(priceTable, candidate.model) });
       continue;

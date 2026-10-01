@@ -21,7 +21,7 @@ function catalog() {
     // lane (so one lane can be made to mix protocols), and a codex-format route
     // that speaks only a sibling lane of its app type (so a lane can refuse it
     // as a CLI mismatch rather than as a missing provider).
-    { id: 'claude-multi', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude', 'opencode', 'codex'], modelOptions: [] },
+    { id: 'claude-multi', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude', 'opencode', 'codex'], modelOptions: ['multi-model'] },
     { id: 'codex-locked', appType: 'codex', apiFormat: 'openai_responses', compatibleClis: ['codex-exp'], modelOptions: [] },
   ];
   return {
@@ -290,7 +290,7 @@ test('price tiering is accepted only without a hand-tagged ladder', () => {
   assert.equal('tiering' in manual.value.routing, false);
 });
 
-test('an auto-model line needs price tiering before it can pick a model per turn', () => {
+test('an auto-model line needs routing before it can pick a model per turn', () => {
   const providers = catalog();
   const pinned = validateProviderSelection(selection({
     candidates: [
@@ -300,22 +300,25 @@ test('an auto-model line needs price tiering before it can pick a model per turn
   }), { cli: 'claude', providers });
   assert.equal(pinned.code, 'invalid_provider_candidate');
   assert.match(pinned.error, /cannot pin a model and pick one automatically/);
-  // Without a price ranking there is nothing to pick by: "the provider's first
-  // model" is not a decision, so the line is refused rather than defaulted.
+  // Without routing there is nothing to pick by: "the provider's first model" is
+  // not a decision, so the line is refused rather than defaulted.
   assert.equal(validateProviderSelection(selection({
     candidates: [
       { providerId: 'empty', priority: 1, autoModel: true },
       { providerId: 'backup', model: 'good-model', priority: 2 },
     ],
-  }), { cli: 'claude', providers }).code, 'provider_auto_model_requires_price_tiering');
-  // A hand-tagged ladder is still not a price ranking.
-  assert.equal(validateProviderSelection(selection({
+  }), { cli: 'claude', providers }).code, 'provider_auto_model_requires_routing');
+  // Either ladder gives the turn a tier to land on, so a hand-tagged pool takes
+  // an auto-model line exactly like a price-tiered one does.
+  const manual = validateProviderSelection(selection({
     candidates: [
       { providerId: 'empty', priority: 1, autoModel: true, tier: 'weak' },
       { providerId: 'backup', model: 'good-model', priority: 2, tier: 'strong' },
     ],
     routing: { provider: 'jev' },
-  }), { cli: 'claude', providers }).code, 'provider_auto_model_requires_price_tiering');
+  }), { cli: 'claude', providers });
+  assert.equal(manual.ok, true, manual.error);
+  assert.equal(manual.value.candidates[0].autoModel, true);
   const priced = validateProviderSelection(selection({
     candidates: [
       { providerId: 'empty', priority: 1, autoModel: true },
@@ -375,6 +378,151 @@ test('primaryProviderCandidate can be scoped to one lane of a cross-CLI pool', (
   // A candidate that never named a lane is not another lane's: it stays eligible
   // on every lane, which is how a lane-less legacy candidate keeps working.
   assert.equal(primaryProviderCandidate({ candidates: [candidates[2]] }, 'kimi').providerId, 'plain');
+});
+
+// ── derived protocol ─────────────────────────────────────────────────────────
+//
+// The redesigned client writes `cli` on every candidate and may omit
+// `protocol` entirely; the server reads it off the pool instead of demanding it.
+
+test('the protocol is derived from the pool when the client omits it', () => {
+  const providers = catalog();
+  const derived = validateProviderSelection(selection({ protocol: undefined }), { cli: 'claude', providers });
+  assert.equal(derived.ok, true, derived.error);
+  assert.equal(derived.value.protocol, 'anthropic');
+  // The stored DTO still carries the resolved protocol, so an old client never
+  // reads an empty field back.
+  assert.equal(providerSelectionDto(derived.value).protocol, 'anthropic');
+
+  // A cross-CLI pool derives from the first enabled line that has one.
+  const cross = validateProviderSelection({
+    version: 1, mode: 'auto', maxAttempts: 2,
+    candidates: [
+      { providerId: 'claude-multi', cli: 'claude', model: 'multi-model' },
+      { providerId: 'responses-a', model: 'gpt-a', cli: 'codex' },
+    ],
+  }, { cli: 'claude', providers });
+  assert.equal(cross.ok, true, cross.error);
+  assert.equal(cross.value.protocol, 'anthropic');
+
+  // An explicit but unknown value is still refused.
+  assert.equal(validateProviderSelection(selection({ protocol: 'bogus' }), { cli: 'claude', providers }).code,
+    'invalid_provider_protocol');
+});
+
+test('a pool of only native OpenCode lines derives the neutral default protocol', () => {
+  const result = validateProviderSelection({
+    version: 1, mode: 'auto', maxAttempts: 2,
+    candidates: [
+      { providerId: 'opencode-native:opencode', cli: 'opencode', model: 'opencode/big-pickle' },
+      { providerId: 'opencode-native:opencodego', cli: 'opencode', model: 'opencodego/kimi-k2' },
+    ],
+  }, { cli: 'opencode', providers: catalog() });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.protocol, 'anthropic');
+});
+
+// ── OpenCode native pool candidates ──────────────────────────────────────────
+
+test('an OpenCode native candidate is validated structurally, without the live model list', () => {
+  const providers = catalog();
+  const pool = candidates => ({ version: 1, mode: 'auto', maxAttempts: 2, candidates });
+  const ok = validateProviderSelection(pool([
+    { providerId: 'opencode-native:opencode', cli: 'opencode', model: 'opencode/big-pickle' },
+    { providerId: 'opencode-native:opencodego', cli: 'opencode', model: 'opencodego/kimi-k2' },
+  ]), { cli: 'claude', providers });
+  assert.equal(ok.ok, true, ok.error);
+  // The native lines are never looked up in a provider store and read as
+  // user-managed (they cross no trust domain with each other).
+  assert.equal(ok.value.candidates.every(candidate => candidate.cli === 'opencode'), true);
+
+  // An unusable id, a foreign lane and a model outside the provider namespace
+  // are all refused before OpenCode is ever asked for its models.
+  const badId = validateProviderSelection(pool([
+    { providerId: 'opencode-native:-bad', cli: 'opencode' },
+    { providerId: 'opencode-native:opencodego', cli: 'opencode' },
+  ]), { cli: 'claude', providers });
+  assert.equal(badId.code, 'invalid_provider_candidate');
+  assert.match(badId.error, /invalid OpenCode provider id/);
+  const wrongLane = validateProviderSelection(pool([
+    { providerId: 'opencode-native:opencode', cli: 'claude' },
+    { providerId: 'opencode-native:opencodego', cli: 'opencode' },
+  ]), { cli: 'claude', providers });
+  assert.equal(wrongLane.code, 'invalid_provider_candidate');
+  assert.match(wrongLane.error, /only usable on the opencode cli/);
+  const wrongModel = validateProviderSelection(pool([
+    { providerId: 'opencode-native:opencode', cli: 'opencode', model: 'opencodego/kimi-k2' },
+    { providerId: 'opencode-native:opencodego', cli: 'opencode' },
+  ]), { cli: 'claude', providers });
+  assert.equal(wrongModel.code, 'invalid_provider_candidate');
+  assert.match(wrongModel.error, /must start with "opencode\/"/);
+});
+
+test('a native OpenCode line is the same route whether or not it names its cli', () => {
+  const providers = catalog();
+  // On the opencode lane the cli may stay implicit, exactly like a managed line.
+  const implicit = validateProviderSelection({
+    version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2,
+    candidates: [
+      { providerId: 'opencode-native:opencode', model: 'opencode/big-pickle' },
+      { providerId: 'opencode-native:opencodego', model: 'opencodego/kimi-k2' },
+    ],
+  }, { cli: 'opencode', providers });
+  assert.equal(implicit.ok, true, implicit.error);
+  assert.equal('cli' in implicit.value.candidates[0], false);
+});
+
+// ── the redesigned client's pools ────────────────────────────────────────────
+
+test('a cross-CLI new-UI pool validates with no protocol field and a price ladder', () => {
+  const result = validateProviderSelection({
+    version: 1, mode: 'auto', maxAttempts: 3,
+    candidates: [
+      { providerId: 'claude-multi', cli: 'claude', model: 'multi-model' },
+      { providerId: 'opencode-native:opencode', cli: 'opencode', autoModel: true },
+      { providerId: 'claude-multi', cli: 'opencode' },
+    ],
+    cliSwitch: 'routing',
+    routing: { provider: 'jev', tiering: 'price' },
+  }, { cli: 'claude', providers: catalog() });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.protocol, 'anthropic');
+  assert.equal(result.value.cliSwitch, 'routing');
+  assert.deepEqual(selectionClis(result.value), ['claude', 'opencode']);
+  // The round-trip the editor performs must be a fixed point.
+  const dto = providerSelectionDto(result.value);
+  const again = validateProviderSelection(dto, { cli: 'claude', providers: catalog() });
+  assert.equal(again.ok, true, again.error);
+  assert.deepEqual(again.value, result.value);
+});
+
+test('an in-order failover pool of concrete models needs no routing', () => {
+  const result = validateProviderSelection({
+    version: 1, mode: 'auto', maxAttempts: 2,
+    candidates: [
+      { providerId: 'claude-multi', cli: 'claude', model: 'multi-model' },
+      { providerId: 'responses-a', cli: 'codex', model: 'gpt-a' },
+    ],
+    cliSwitch: 'failover',
+  }, { cli: 'claude', providers: catalog() });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.cliSwitch, 'failover');
+  assert.equal('routing' in result.value, false);
+});
+
+test('a manual ladder takes an auto-model line and keeps the weakest-first tier order', () => {
+  const result = validateProviderSelection(selection({
+    protocol: undefined,
+    candidates: [
+      { providerId: 'empty', model: 'bad-model', priority: 1, tier: 'simple' },
+      { providerId: 'backup', priority: 2, tier: 'medium', autoModel: true },
+      { providerId: 'claude-multi', model: 'multi-model', priority: 3, tier: 'complex' },
+    ],
+    routing: { provider: 'jev', tiers: ['simple', 'medium', 'complex'] },
+  }), { cli: 'claude', providers: catalog() });
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(result.value.routing.tiers, ['simple', 'medium', 'complex']);
+  assert.equal(result.value.candidates[1].autoModel, true);
 });
 
 test('OpenCode and ZCode Auto pools resolve both provider stores and validate models in the provider own store', () => {

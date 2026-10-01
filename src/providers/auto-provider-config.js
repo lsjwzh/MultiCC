@@ -17,6 +17,10 @@ const {
   JEV_GATEWAYS,
   MAX_ENDPOINT_CHARS,
 } = require('./jev-client');
+const {
+  NATIVE_OPENCODE_ID,
+  nativeOpenCodeId,
+} = require('./native-opencode');
 
 const PROTOCOLS = new Set(['anthropic', 'openai_responses']);
 const PROVIDER_ID = /^[A-Za-z0-9._:-]{1,160}$/;
@@ -156,6 +160,34 @@ function validateCandidate(raw, index, context) {
   }
   let trustDomain = null;
   let protocol = null;
+  // OpenCode's own providers are named, not looked up: they are validated
+  // structurally (the id and the `<id>/` model prefix) so a stored pool survives
+  // a cold boot, without ever asking the live OpenCode model list. They are
+  // protocol-agnostic, so they never take part in the protocol-mix check.
+  const nativeId = nativeOpenCodeId(providerId);
+  if (nativeId !== null) {
+    if (!NATIVE_OPENCODE_ID.test(nativeId)) {
+      return fail(`candidate ${index + 1} has an invalid OpenCode provider id`, 'invalid_provider_candidate');
+    }
+    const lane = cli || context.homeCli || null;
+    if (lane !== 'opencode') {
+      return fail(`candidate ${index + 1} names an OpenCode native provider, which is only usable on the opencode cli`,
+        'invalid_provider_candidate');
+    }
+    if (model && !model.startsWith(`${nativeId}/`)) {
+      return fail(`candidate ${index + 1} model must start with "${nativeId}/"`, 'invalid_provider_candidate');
+    }
+    const value = { providerId, model, priority, enabled };
+    if (tier != null) value.tier = tier;
+    if (cli != null) value.cli = cli;
+    if (autoModel) value.autoModel = true;
+    return Object.freeze({
+      ok: true,
+      value: Object.freeze(value),
+      trustDomain: 'user-managed',
+      protocol: null,
+    });
+  }
   const catalog = context.catalogFor ? context.catalogFor(cli) : context.catalog;
   if (catalog) {
     const provider = catalog.byId.get(providerId);
@@ -166,8 +198,9 @@ function validateCandidate(raw, index, context) {
     if (!supports) return fail(`provider ${providerId} does not support ${catalog.cli}`, 'provider_cli_mismatch');
     protocol = protocolOf(provider);
     // A single-lane pool keeps its one protocol; a cross-CLI pool checks the
-    // protocol per lane instead (see validateProviderSelection).
-    if (!context.crossCli && protocol !== context.protocol) {
+    // protocol per lane instead (see validateProviderSelection). A derived
+    // protocol (context.protocol null) is not enforced: it is read off the pool.
+    if (!context.crossCli && context.protocol && protocol !== context.protocol) {
       return fail(`provider ${providerId} does not use ${context.protocol}`, 'provider_protocol_mismatch');
     }
     if (model && typeof catalog.providers.modelValidForProvider === 'function'
@@ -428,8 +461,16 @@ function validateProviderSelection(input, options = {}) {
     return fail('providerSelection must be null/manual or an Auto Provider object');
   }
   if (input.version != null && input.version !== 1) return fail('unsupported providerSelection version');
-  const protocol = String(input.protocol || '').trim();
-  if (!PROTOCOLS.has(protocol)) return fail('invalid Auto Provider protocol', 'invalid_provider_protocol');
+  // The protocol is derived from the pool when the client omits it: the wire
+  // format of the first enabled line that has one. A pool that is entirely
+  // protocol-agnostic — OpenCode's own providers — declares the neutral default
+  // rather than an empty field. An explicit but unknown value is still refused,
+  // because "some protocol I do not know" cannot be routed.
+  const declaredProtocol = String(input.protocol || '').trim();
+  if (declaredProtocol && !PROTOCOLS.has(declaredProtocol)) {
+    return fail('invalid Auto Provider protocol', 'invalid_provider_protocol');
+  }
+  let derivedProtocol = null;
   if (!Array.isArray(input.candidates) || input.candidates.length < 2
       || input.candidates.length > MAX_CANDIDATES) {
     return fail(`Auto Provider requires 2-${MAX_CANDIDATES} candidates`, 'invalid_provider_candidates');
@@ -466,10 +507,15 @@ function validateProviderSelection(input, options = {}) {
       raw = { ...raw, cli: homeCli };
     }
     const result = validateCandidate(raw, index, {
-      protocol, crossCli, catalog: crossCli ? null : laneCatalog(null),
+      protocol: declaredProtocol || null, homeCli, crossCli,
+      catalog: crossCli ? null : laneCatalog(null),
       catalogFor: crossCli ? laneCatalog : null,
     });
     if (!result.ok) return result;
+    // The derived protocol is the first enabled line that has one, in pool order.
+    if (!declaredProtocol && !derivedProtocol && result.value.enabled && result.protocol) {
+      derivedProtocol = result.protocol;
+    }
     // The same route may serve two lanes (an Anthropic-format key used by both
     // claude and opencode); within one lane it may appear once.
     const key = `${result.value.cli || ''}\n${result.value.providerId}`;
@@ -487,6 +533,7 @@ function validateProviderSelection(input, options = {}) {
     candidates.push(result.value);
     if (result.value.enabled && result.trustDomain) trustDomains.add(result.trustDomain);
   }
+  const protocol = declaredProtocol || derivedProtocol || 'anthropic';
   if (laneProtocols.size && ![...laneProtocols.values()].includes(protocol)) {
     return fail(`no candidate uses ${protocol}`, 'provider_protocol_mismatch');
   }
@@ -507,12 +554,13 @@ function validateProviderSelection(input, options = {}) {
   }
   const routing = validateRouting(input.routing, candidates);
   if (routing && routing.ok === false) return routing;
-  // Picking a model per turn needs a ranking to pick by; that ranking is the
-  // price ladder, so an auto-model line without it would silently mean "first".
-  if (candidates.some(candidate => candidate.autoModel)
-      && !(routing && routing.value.tiering === 'price')) {
-    return fail('automatic model selection requires price tiering',
-      'provider_auto_model_requires_price_tiering');
+  // Picking a model per turn needs a routing decision to pick by — a manual
+  // ladder tags the lines, a price ladder ranks them; either gives the turn a
+  // tier to land on. Without routing the pick would silently mean "the first
+  // model", which is not a decision at all.
+  if (candidates.some(candidate => candidate.autoModel) && !routing) {
+    return fail('automatic model selection requires routing',
+      'provider_auto_model_requires_routing');
   }
   const value = {
     version: 1,

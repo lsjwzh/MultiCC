@@ -99,7 +99,8 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
     });
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/air?dir=d1');
-    assert.ok(await page.waitFor(`document.querySelectorAll('.directory-stat').length===4`));
+    // 五张卡：运行 / 等待 / 出错 / 成功 / 全部（air.js renderDirectoryOverview）。
+    assert.ok(await page.waitFor(`document.querySelectorAll('.directory-stat').length===5`));
 
     // ① 默认 chat：终端那一块不显示，Chat 的内容在。
     assert.equal(await page.evaluate(`document.getElementById('empty').classList.contains('is-terminal-mode')`), false, '默认是 chat');
@@ -204,17 +205,19 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
     // ③ 新建终端：开的是 **chat 那套配置对话框**（CLI / Provider / 模型），不是只列
     // 一个 CLI 的小列表 —— 用户明确要求「要和 chat 一样，可以选终端和 provider」。
     await page.evaluate(`document.getElementById('directory-terminal-new').click()`);
-    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')`), '新建终端要先开配置对话框');
-    // 同一层对话框，但说的是终端（不把「新任务」那套抬头照搬过来）。
-    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] h2').textContent`), '终端 AI 配置');
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"]')`), '新建终端要先开配置对话框');
+    // 同一层对话框（运行配置），抬头用终端口吻的 eyebrow 区分。
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] h2').textContent`), '运行配置');
     assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] .eyebrow').textContent`), 'TERMINAL ROUTING');
-    // 可选 CLI = 快照里去掉实验车道那两条；默认落在最近用过的那套（codex）。
+    // 卡片 = 快照里能给终端的车道（claude / codex / opencode / gemini）+ 常驻车道表里
+    // 这里没装或没给的那几条（claude-exp / codex-exp 标「这个用途用不了」，zcode / kimi
+    // 标「未安装」）。默认落在最近用过的那套（codex）。
     const choices = await page.evaluate(`[...document.querySelectorAll('.air-config-dialog[open] .air-cli-option')].map(b=>b.dataset.cli).sort()`);
-    assert.deepEqual(choices, ['claude', 'codex', 'gemini', 'opencode'], '实验车道不是常规终端选项：' + JSON.stringify(choices));
+    assert.deepEqual(choices, ['claude', 'claude-exp', 'codex', 'codex-exp', 'gemini', 'kimi', 'opencode', 'zcode'], 'CLI 卡片要覆盖常驻车道表与快照：' + JSON.stringify(choices));
     assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] .air-cli-option.selected').dataset.cli`), 'codex', '默认落在最近用过的那套');
     assert.ok(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="模型"]').options.length > 1`), '模型也跟着这条线路给出来');
-    // 子 agent 线路是任务轮次的东西，终端的创建接口不收它 —— 不摆一行选了不生效的字段。
-    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] .air-sub').hidden`), true, '终端这遍不摆子任务线路');
+    // 子 agent 线路是任务轮次的东西，终端的创建接口不收它 —— 整块「高级」不摆出来。
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] .rc-advanced').hidden`), true, '终端这遍不摆子任务线路');
     screenshots.push(await page.screenshot('directory-terminal-config-dialog'));
 
     // 取消 = 什么都没建（不是「取消也照建」）。
@@ -224,12 +227,12 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
 
     // 选一条线路 + 模型（不是「最近用过的那套」的默认值）：建出来的必须就是它们。
     await page.evaluate(`document.getElementById('directory-terminal-new').click()`);
-    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')`));
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"]')`));
     // 对话框的线路池是异步拉的：等选项真的到了再挑 —— 在空 select 上赋 value 会静默
     // 变成「没选」，提交那一侧就会以「没有可用线路」拒绝，看起来像是没建。
-    assert.ok(await page.waitFor(`[...document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]').options].some(o=>o.value==='codex-lab')`), '线路池要加载完');
+    assert.ok(await page.waitFor(`[...document.querySelector('.air-config-dialog[open] select[aria-label="线路"]').options].some(o=>o.value==='codex-lab')`), '线路池要加载完');
     await page.evaluate(String.raw`(()=>{const q=s=>document.querySelector('.air-config-dialog[open] '+s);
-      const provider=q('select[aria-label="Provider"]'); provider.value='codex-lab'; provider.dispatchEvent(new Event('change',{bubbles:true}))})()`);
+      const provider=q('select[aria-label="线路"]'); provider.value='codex-lab'; provider.dispatchEvent(new Event('change',{bubbles:true}))})()`);
     assert.ok(await page.waitFor(`[...document.querySelector('.air-config-dialog[open] select[aria-label="模型"]').options].some(o=>o.value==='gpt-5.6-sol')`), '模型列表要跟着线路刷新');
     await page.evaluate(String.raw`(()=>{const q=s=>document.querySelector('.air-config-dialog[open] '+s);
       q('select[aria-label="模型"]').value='gpt-5.6-sol';

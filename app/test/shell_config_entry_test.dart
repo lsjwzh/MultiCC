@@ -8,7 +8,7 @@ import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/message.dart';
 import 'package:multicc_app/providers/session_manager.dart';
 import 'package:multicc_app/services/settings_service.dart';
-import 'package:multicc_app/widgets/ai_config_sheet.dart';
+import 'package:multicc_app/widgets/run_config/run_config_sheet.dart';
 
 class HiddenExecutionManager extends SessionManager {
   HiddenExecutionManager(SettingsService settings) : super(settings: settings);
@@ -35,7 +35,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() => I18n.init('zh'));
   testWidgets(
-    'hidden task execution can open AI config without a Fleet record',
+    'hidden task execution can open the run-config sheet without a Fleet record',
     (tester) async {
       SharedPreferences.setMockInitialValues({
         'multicc_host': 'http://127.0.0.1:1',
@@ -50,7 +50,7 @@ void main() {
               home: Scaffold(
                 body: Builder(
                   builder: (context) => TextButton(
-                    onPressed: () => openAIConfigSheet(
+                    onPressed: () => openRunConfigSheet(
                       context,
                       settings: settings,
                       sessionId: 'task-hidden',
@@ -66,7 +66,7 @@ void main() {
         await tester.tap(find.text('configure'));
         await tester.pumpAndSettle();
         expect(manager.requested, 'task-hidden');
-        expect(find.byType(AIConfigSheet), findsOneWidget);
+        expect(find.byType(RunConfigSheet), findsOneWidget);
         expect(find.text(I18n.of('sessionNotLoaded')), findsNothing);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
@@ -76,7 +76,7 @@ void main() {
   );
 
   testWidgets(
-    'AI config route opens before a slow runtime/model request finishes',
+    'run-config route opens before a slow runtime/model request finishes',
     (tester) async {
       SharedPreferences.setMockInitialValues({
         'multicc_host': 'http://127.0.0.1:1',
@@ -91,7 +91,7 @@ void main() {
               home: Scaffold(
                 body: Builder(
                   builder: (context) => TextButton(
-                    onPressed: () => openAIConfigSheet(
+                    onPressed: () => openRunConfigSheet(
                       context,
                       settings: settings,
                       sessionId: 'slow-task',
@@ -110,13 +110,13 @@ void main() {
           findsOneWidget,
           reason: '点击后下一帧就要看到弹层，不等网络',
         );
-        expect(find.byType(AIConfigSheet), findsNothing);
+        expect(find.byType(RunConfigSheet), findsNothing);
 
         manager.config.complete(
           SessionCliConfig(cli: SessionCli.zcode, model: 'fixture-model'),
         );
         await tester.pumpAndSettle();
-        expect(find.byType(AIConfigSheet), findsOneWidget);
+        expect(find.byType(RunConfigSheet), findsOneWidget);
       } finally {
         if (!manager.config.isCompleted) {
           manager.config.complete(

@@ -943,8 +943,9 @@ test('price tiering writes no ladder, and an auto-model line carries no model', 
   assert.deepEqual([...validated.value.candidates].map(candidate => [candidate.providerId, candidate.model, candidate.autoModel === true]),
     [['managed-a', null, true], ['managed-b', 'model-b', false]]);
 
-  // The same two lines with a hand-tagged ladder instead: refused, because an
-  // auto-model line needs the price ladder to pick a model from.
+  // The same two lines with a hand-tagged ladder instead: accepted. An
+  // auto-model line needs only *a* routing decision to choose a model per turn;
+  // on a manual ladder its variants keep the line's own tier.
   const manualOnServer = serverContract.validateProviderSelection({
     version: 1, mode: 'auto', protocol: 'anthropic',
     candidates: [
@@ -953,9 +954,18 @@ test('price tiering writes no ladder, and an auto-model line carries no model', 
     ],
     routing: { provider: 'jev', tiers: ['t1', 't2'] },
   }, { cli: 'claude', providers: registry });
-  assert.equal(manualOnServer.code, 'provider_auto_model_requires_price_tiering');
-  assert.equal(editor.serializeDraft({ ...draft, tiering: 'manual' }).code,
-    'provider_auto_model_requires_price_tiering');
+  assert.equal(manualOnServer.ok, true, manualOnServer.error);
+  assert.equal(manualOnServer.value.candidates[0].autoModel, true);
+  // The client agrees with the server: a manual ladder accepts the same
+  // auto-model line (its tier comes from the line's own rung).
+  const manualPool = editor.serializeDraft({ ...draft, tiering: 'manual' });
+  assert.equal(manualPool.ok, true, manualPool.error);
+  assert.equal(manualPool.value.candidates[0].autoModel, true);
+  assert.equal(serverContract.validateProviderSelection(manualPool.value, { cli: 'claude', providers: registry }).ok, true);
+  // …but an auto-model line with no router at all is still refused, under the
+  // server's own code.
+  assert.equal(editor.serializeDraft({ ...draft, routingEnabled: false, tiering: 'manual' }).code,
+    'provider_auto_model_requires_routing');
   // …and a line cannot both pin a model and pick one per turn.
   assert.equal(editor.serializeDraft({
     ...draft, candidates: [{ ...candidates[0], model: 'model-a' }, candidates[1]],

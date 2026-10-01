@@ -388,8 +388,16 @@ test('web and app explain next-turn CLI changes without force intent', () => {
   const webPicker = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat-live-ui.js'), 'utf8');
   const appService = fs.readFileSync(
     path.join(__dirname, '..', 'app', 'lib', 'services', 'session_service.dart'), 'utf8');
-  const appPicker = fs.readFileSync(
-    path.join(__dirname, '..', 'app', 'lib', 'widgets', 'cli_switch_sheet.dart'), 'utf8');
+  // App 侧的「换道 / 线路面板」合并成了一枚运行配置 chip + 一张「运行配置」面板
+  // （cli_switch_sheet.dart 已删除），"下轮生效" 的文案落在这两个文件里。
+  const appPicker = [
+    fs.readFileSync(
+      path.join(__dirname, '..', 'app', 'lib', 'widgets', 'run_config', 'run_chip.dart'),
+      'utf8'),
+    fs.readFileSync(
+      path.join(__dirname, '..', 'app', 'lib', 'widgets', 'run_config', 'run_config_sheet.dart'),
+      'utf8'),
+  ].join('\n');
   assert.match(webHost, /JSON\.stringify\(picked\)/);
   assert.doesNotMatch(appService.slice(appService.indexOf('Future<SessionCliConfig> switchSessionCli'), appService.indexOf('// ── CLI install')), /'force': true/);
   for (const source of [webPicker, appPicker]) {

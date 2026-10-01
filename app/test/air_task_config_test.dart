@@ -211,7 +211,11 @@ void main() {
 
     // 面板开在这颗药丸说的那个 CLI 上，Provider 池是现拉的。
     expect(requests, contains('GET /api/providers'));
-    await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+    // 线路下拉在 CLI 卡片下面，600 高的测试视口里落在折线以下 —— 先滚进可视区。
+    final linePicker = find.byType(DropdownButtonFormField<String>).first;
+    await tester.ensureVisible(linePicker);
+    await tester.pumpAndSettle();
+    await tester.tap(linePicker);
     await tester.pumpAndSettle();
     await tester.tap(find.text('火山方舟').last);
     await tester.pumpAndSettle();
@@ -468,8 +472,13 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('air-quick-ai')));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('取消'));
+    // 取消按钮在面板底部，600 高的测试视口里落在折线以下 —— 先滚进去再点。
+    final cancel = find.text('取消');
+    await tester.ensureVisible(cancel);
     await tester.pumpAndSettle();
+    await tester.tap(cancel);
+    await tester.pumpAndSettle();
+    expect(find.text('保存'), findsNothing);
 
     expect(
       find.descendant(
@@ -630,10 +639,16 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('open')));
     await tester.pumpAndSettle();
 
+    // 子任务线路在「高级」里，展开才看得见。
+    final advanced = find.byKey(const ValueKey('run-advanced-toggle'));
+    await tester.ensureVisible(advanced);
+    await tester.tap(advanced);
+    await tester.pumpAndSettle();
+
     // 存过的子任务线路要显示回来，否则再打开面板存一次就把它清掉了。
     expect(
       find.descendant(
-        of: find.byKey(const Key('subagent-provider')),
+        of: find.byKey(const Key('run-subagent-provider')),
         matching: find.text('B 家 · m2'),
       ),
       findsOneWidget,

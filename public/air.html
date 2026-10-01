@@ -668,6 +668,10 @@
   <script src="shared/models.js"></script>
   <script src="chat-ai-config.js"></script>
   <script src="air-task-settings.js"></script>
+  <!-- 运行配置（CLI / 线路 / 模型 / 推理强度 + 自动线路池）的唯一对话框。air.js 那颗
+       「运行」胶囊开的就是它；依赖 provider-catalog / auto-provider-editor / chat-ai-config
+       的全局，所以排在它们后面、air.js 前面。 -->
+  <script src="run-config.js"></script>
   <script src="air-role-editor.js"></script>
   <!-- 用量统计要先于线路页那个模块加载：Provider 页渲染时会把它挂上去。 -->
   <script src="air-usage.js"></script>
