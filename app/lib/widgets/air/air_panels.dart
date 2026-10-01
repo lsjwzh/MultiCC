@@ -8,7 +8,7 @@ import '../../services/settings_service.dart';
 import '../../theme.dart';
 import '../../utils/cli_display.dart';
 import '../marquee_text.dart';
-import '../voice_input_button.dart';
+import '../voice_composer.dart';
 import 'air_role_editor.dart';
 import 'air_task_config.dart';
 import 'air_task_status.dart';
@@ -725,9 +725,10 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   bool _uploading = false;
   String _attachError = '';
 
-  /// 🎙 的状态文案。Web 把它摆在动作行里那格 `#quick-task-status` 上（窄屏
-  /// 那格整行掉到下面一行），这里跟着摆。
-  String _voiceStatus = '';
+  /// 🎙 语音输入：与聊天页输入条共用同一个 [VoiceComposerController]（流式听写
+  /// `/ws/voice` 加实时浮层，起不来回退整段 `/api/voice/stt`）—— 行为完全一样，
+  /// 不再另摘一套。识别到的文本由它自己插进 [_controller]。
+  late final VoiceComposerController _voice;
 
   /// 贴底模式的展开态。收起/展开跟着焦点和草稿走：聚焦或有字/有附件就展开，
   /// 失焦且空草稿就收回去 —— 输入条不该在没人用时占着半屏。
@@ -745,8 +746,18 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
       orElse: () => 'claude-exp',
     );
     _runtime = AirTaskRuntime(cli: cli);
+    _voice = VoiceComposerController(
+      settings: widget.settings,
+      target: _controller,
+    );
+    // 🎙 的实时浮层是条件挂载的，所以整块面板要跟着语音状态重建。
+    _voice.addListener(_onVoiceChanged);
     _focus.addListener(_onFocusChanged);
     _controller.addListener(_onDraftChanged);
+  }
+
+  void _onVoiceChanged() {
+    if (mounted) setState(() {});
   }
 
   void _onFocusChanged() {
@@ -776,6 +787,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
 
   @override
   void dispose() {
+    _voice.dispose();
     _focus.removeListener(_onFocusChanged);
     _focus.dispose();
     _controller.removeListener(_onDraftChanged);
@@ -801,17 +813,6 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   String _composedText(String typed) => _attachments.isEmpty
       ? typed
       : '$typed\n\n附件：${_attachments.map((a) => a.path).join(' ')}';
-
-  /// 转写好的话追加进草稿（Web `air.js:513-515`：有内容就空一格接上，然后
-  /// 把焦点放回输入框）。光标停在末尾，接着写或者直接创建都行。
-  void _appendVoiceText(String text) {
-    final current = _controller.text.trim();
-    final merged = current.isEmpty ? text : '$current $text';
-    _controller.value = TextEditingValue(
-      text: merged,
-      selection: TextSelection.collapsed(offset: merged.length),
-    );
-  }
 
   Future<void> _pickAttach() async {
     final picked = await pickChatAttachment(context);
@@ -985,6 +986,8 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
 
   @override
   Widget build(BuildContext context) {
+    // 🎙 跟着当前设置走（顶层的 settings 会随会话/登录刷新）。
+    _voice.syncSettings(widget.settings);
     if (widget.docked && !_expanded) return _buildCollapsedBar();
     return Container(
       decoration: BoxDecoration(
@@ -1048,6 +1051,13 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               ),
             ),
           const SizedBox(height: 8),
+          // 🎙 流式听写的实时浮层：与聊天页输入条同一块，摆在输入框上方，
+          // 说的过程中就能看见字（起不来才回退到整段录音面板）。
+          if (_voice.showHud)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: VoiceDictationHud(controller: _voice),
+            ),
           TextField(
             key: const ValueKey('air-quick-input'),
             controller: _controller,
@@ -1139,14 +1149,12 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                   runSpacing: 6,
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    VoiceInputButton(
+                    // 🎙 与聊天页输入条同一颗按钮（同一份 [VoiceComposerController]，
+                    // 同尺寸同配色 —— 用户要求「以会话页为准」）。
+                    VoiceMicButton(
                       key: const ValueKey('air-quick-mic'),
-                      settings: widget.settings,
+                      controller: _voice,
                       enabled: !widget.busy,
-                      onText: _appendVoiceText,
-                      onStatus: (message) {
-                        if (mounted) setState(() => _voiceStatus = message);
-                      },
                     ),
                     IconButton(
                       key: const ValueKey('air-quick-attach'),
@@ -1225,17 +1233,6 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               ),
             ],
           ),
-          // 🎙 的状态（Web `#quick-task-status`，窄屏那条 `flex-basis: 100%` 的
-          // 规则让它整行掉到动作行下面）。
-          if (_voiceStatus.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                _voiceStatus,
-                key: const ValueKey('air-quick-voice-status'),
-                style: const TextStyle(color: AppColors.muted, fontSize: 11),
-              ),
-            ),
         ],
       ),
     );
