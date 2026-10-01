@@ -302,13 +302,7 @@
       }
     }
 
-    function addToolResult(toolState, value, isError) {
-      if (!toolState || !toolState.card) return;
-      toolState.card.classList.remove('tool-running');
-      const body = toolState.card.querySelector('.tool-body');
-      if (!body) return;
-      // A repeated tool_result is an upsert, not a second result block.
-      for (const old of Array.from(body.querySelectorAll('.tool-result-owned'))) old.remove();
+    function appendResultBlock(body, value, isError) {
       const label = document.createElement('div');
       label.className = 'tool-result-label tool-result-owned' + (isError ? ' error' : '');
       label.textContent = isError ? 'Error:' : 'Result:';
@@ -317,6 +311,18 @@
       result.textContent = truncate(value, 2000);
       body.appendChild(label);
       body.appendChild(result);
+    }
+
+    function addToolResult(toolState, value, isError) {
+      if (!toolState || !toolState.card) return;
+      toolState.card.classList.remove('tool-running');
+      const body = toolState.card.querySelector('.tool-body');
+      if (!body) return;
+      // A repeated tool_result is an upsert, not a second result block.
+      for (const old of Array.from(body.querySelectorAll('.tool-result-owned'))) old.remove();
+      // Thinking's "result" is its own text again (already shown as the input):
+      // settle the card without a second copy of the prose.
+      if (isError || toolState.name !== 'Thinking') appendResultBlock(body, value, isError);
       const description = toolState.card.querySelector('.tool-desc');
       if (description) {
         // Timing provenance (DSH-style three-state):
@@ -396,7 +402,8 @@
         endedAt: Number.isFinite(tool.endedAt) ? tool.endedAt : null,
       };
       updateToolInput(state);
-      if (tool.result !== undefined) addToolResult(state, tool.result, !!tool.is_error);
+      // Thinking persists no result (its text is the input), yet it is finished.
+      if (tool.result !== undefined || state.name === 'Thinking') addToolResult(state, tool.result, !!tool.is_error);
       else {
         const description = card.querySelector('.tool-desc');
         const input = tool.input && typeof tool.input === 'object' ? tool.input : {};

@@ -98,6 +98,18 @@ function cleanThinkingBlocks(message) {
   return message;
 }
 
+// Synthetic Thinking tools used to persist their text twice (input.text and an
+// identical result). Drop the copy on read so old transcripts shed it on their
+// next persist instead of shipping double bytes in every history page.
+function dropThinkingResultCopies(message) {
+  if (!message || !Array.isArray(message.tools)) return message;
+  for (const tool of message.tools) {
+    if (tool && tool.name === 'Thinking' && typeof tool.result === 'string'
+        && tool.input && tool.result === tool.input.text) delete tool.result;
+  }
+  return message;
+}
+
 function freezeEvent(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
   for (const child of Object.values(value)) freezeEvent(child);
@@ -151,7 +163,7 @@ function createChatHistoryService({
     if (!Array.isArray(source)) return [];
     const normalized = [];
     for (const item of source.filter(item => item && typeof item === 'object')) {
-      const message = cleanThinkingBlocks(jsonClone(item));
+      const message = dropThinkingResultCopies(cleanThinkingBlocks(jsonClone(item)));
       if (message.role && !message.id) message.id = String(idFactory());
       if (message.role === 'assistant' && !message._interim) {
         while (normalized.at(-1)?.role === 'assistant' && normalized.at(-1)?._interim) {

@@ -232,6 +232,31 @@ test('chat history normalizes, removes interim messages and deduplicates final a
   assert.equal(service.latestAssistantAt('s1').getTime() > 0, true);
 });
 
+test('chat history drops the legacy Thinking result copy but keeps real results', () => {
+  const store = new Map([['s1', [
+    { id: 'u1', role: 'user', content: 'hi' },
+    { id: 'a1', role: 'assistant', content: 'ok', tools: [
+      { name: 'Thinking', id: 't1', input: { text: 'reasoning' }, result: 'reasoning' },
+      { name: 'Thinking', id: 't2', input: { text: 'a' }, result: 'different' },
+      { name: 'read', id: 'r1', input: { text: 'same' }, result: 'same' },
+    ] },
+  ]]]);
+  const service = createChatHistoryService({
+    history: {
+      read: id => store.get(id) || [],
+      write: (id, messages) => store.set(id, messages),
+      deleteSession: id => store.delete(id),
+      hasPersistedDelivery: () => false,
+    },
+    idFactory: () => 'gen',
+  });
+  const [thinking, unequal, read] = service.read('s1')[1].tools;
+  assert.equal('result' in thinking, false);
+  assert.equal(thinking.input.text, 'reasoning');
+  assert.equal(unequal.result, 'different');
+  assert.equal(read.result, 'same');
+});
+
 test('chat history dedups a 🔇-nudge-separated retry and keeps only the latest reply', () => {
   const store = new Map();
   let sequence = 0;
