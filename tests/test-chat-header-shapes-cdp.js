@@ -105,3 +105,48 @@ test('More menu: every row is an icon column plus a name column, names share one
     await page.screenshot('shapes-2-mobile-menu');
   });
 });
+
+test('standalone Chat opens shared runtime settings and preserves pending subagent settings on save', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const json = value => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
+  const provider = { id: 'relay', name: 'Test Relay', protocol: 'anthropic', appType: 'claude',
+    compatibleClis: ['claude-exp'], hasToken: true, baseUrl: 'https://fixture.invalid',
+    model: 'claude-sonnet-4-6', modelOptions: ['claude-sonnet-4-6', 'claude-opus-4-8'] };
+  const info = { cli: 'claude-exp', provider: 'relay', model: 'claude-sonnet-4-6',
+    cliAvailability: { 'claude-exp': { available: true }, 'codex-exp': { available: true } },
+    pendingConfiguration: { cli: 'claude-exp', profile: { provider: 'relay', model: 'claude-opus-4-8',
+      subagent: { providerId: 'relay', model: 'claude-sonnet-4-6' } } } };
+  const pendingProfile = info.pendingConfiguration.profile;
+  const fixture = { ...routes,
+    '/api/sessions/runtime': ({ req, body }) => {
+      if (req.method === 'PATCH') Object.assign(pendingProfile, JSON.parse(body));
+      return json(info);
+    },
+    '/api/providers': () => json({ providers: [provider], defaults: { claude: 'relay' } }),
+  };
+  const screenshots = process.env.MULTICC_RUNTIME_QA_DIR || qaDir();
+  await withCdpHarness({ routes: fixture, screenshotDir: screenshots }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await page.navigate('/chat.html?session=runtime');
+    assert.ok(await page.waitFor(`document.getElementById('model-btn')?.textContent.includes('claude-opus-4-8')`));
+    const header = await page.evaluate(`({ pill: document.getElementById('model-btn').getBoundingClientRect().toJSON(),
+      legacy: ['cli-btn','provider-btn','effort-btn'].map(id => getComputedStyle(document.getElementById(id)).display) })`);
+    assert.ok(header.pill.width > 0 && header.pill.right <= 390, JSON.stringify(header));
+    assert.deepEqual(header.legacy, ['none', 'none', 'none']);
+    await page.evaluate(`document.getElementById('model-btn').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .rc-model')?.value === 'claude-opus-4-8'`));
+    assert.equal(await page.evaluate(`document.querySelector('.rc-sub-provider').value`), 'relay');
+    const metrics = await page.send('Page.getLayoutMetrics');
+    assert.equal(metrics.cssLayoutViewport.clientWidth, 390);
+    console.log('Runtime settings screenshot (390×844 CSS pixels):', await page.screenshot('chat-runtime-config-open'));
+    await page.evaluate(`document.querySelector('.rc-model').value = 'claude-sonnet-4-6';
+      document.querySelector('.rc-model').dispatchEvent(new Event('change'));
+      document.querySelector('.air-config-form').requestSubmit()`);
+    assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
+    assert.equal(pendingProfile.model, 'claude-sonnet-4-6');
+    assert.deepEqual(pendingProfile.subagent, { providerId: 'relay', model: 'claude-sonnet-4-6' });
+    assert.ok(page.requests.some(req => req.method === 'PATCH' && req.path === '/api/sessions/runtime'));
+    assert.match(await page.evaluate(`document.getElementById('model-btn').textContent`), /下轮生效/);
+    console.log('Runtime save screenshot (390×844 CSS pixels):', await page.screenshot('chat-runtime-config-saved'));
+  });
+});

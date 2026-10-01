@@ -254,7 +254,9 @@ const airOwnedById = new Set(['model-btn', 'effort-btn', 'provider-btn', 'role-b
 // Language stays a direct page control where the standalone Chat needs it, but
 // never occupies a duplicate row in More. Air owns that global control beside
 // the sidebar version check; it also omits voice-call and duplicate reconnect.
-const chatHiddenMenuId = new Set(['lang-btn']);
+const unifiedRunConfig = !airChatMode && !!window.MultiCCRunConfig;
+document.body.classList.toggle('chat-unified-config', unifiedRunConfig);
+const chatHiddenMenuId = new Set(['lang-btn', ...(unifiedRunConfig ? ['model-btn', 'cli-btn', 'effort-btn', 'provider-btn'] : [])]);
 const airHiddenMenuId = new Set(['s2s-btn', 'reconnect-btn']);
 const headerMenuId = id => !chatHiddenMenuId.has(id)
   && (!airChatMode || (!airOwnedById.has(id) && !airHiddenMenuId.has(id)));
@@ -1562,28 +1564,29 @@ function showAIConfigPicker(config) {
   return window.MultiCCChatAiConfig.showAIConfigPicker(config, chatAiConfigState());
 }
 
+function runtimeConfiguration() {
+  return { cli: _sessionCli, provider: _sessionProvider,
+    providerName: _sessionProviderDisplayName || providerShortName(_sessionProvider),
+    providerSelection: _sessionProviderSelection, model: _sessionModel,
+    effectiveModel: _sessionEffectiveModel, effort: _sessionEffectiveEffort || _sessionEffort,
+    subagent: _sessionSubagent, agent: _sessionAgent, pendingConfiguration: _pendingConfiguration };
+}
+
 function updateModelBtn() {
-  if (!modelBtn) return;
-  const auto = _sessionProviderSelection?.mode === 'auto' ? _sessionProviderSelection : null;
-  const shown = auto ? _activeProviderModel : (_sessionEffectiveModel || _sessionModel);
-  const actualProvider = _activeProviderName;
-  // 厂商自持账号的 CLI 显示自己的产品名而不是 multicc 线路名（共享 CLI 目录出）。
-  const nativeRoute = _providerCatalog.nativeRouteLabel(_sessionCli);
-  const provider = auto
-      ? `Auto · ${window.MultiCCChatAiConfig.autoProtocolLabel(auto.protocol)} → ${actualProvider || '待路由'}`
-      : (nativeRoute
-      || (_sessionProvider ? providerShortName(_sessionProvider) : '')
-      || _sessionProviderDisplayName
-      || (_sessionCli === 'zcode' ? 'ZCode 原生' : tt('default')));
-  const modelProviderId = auto ? _activeProviderId : _sessionProvider;
-  const model = shown ? modelDisplayName(shown, modelProviderId) : tt('default');
-  const effort = effortShortName(_sessionEffectiveEffort || _sessionEffort);
-  const agent = (_sessionCli === 'claude' || _sessionCli === 'opencode' || _sessionCli === 'qoder' || _sessionCli === 'codebuddy') && _sessionAgent
-    ? `Agent ${_sessionAgent}`
-    : '';
-  // 前面那个 🧠 现在由 data-hdr-icon 画（chat-header-shapes.css 的「页头动作的两种形状」）：
-  // 浮层里图标和名字各占一列，名字里再带一遍就成了两个图标。
-  modelBtn.textContent = [provider, model, effort, agent].filter(Boolean).join(' | ');
+  if (!modelBtn || !window.MultiCCRunConfig) return;
+  const current = runtimeConfiguration();
+  const next = _pendingConfiguration
+    ? { ...current, ...(_pendingConfiguration.profile || {}), cli: _pendingConfiguration.cli || current.cli }
+    : current;
+  const pill = window.MultiCCRunConfig.pillModel({ current, next,
+    currentRoute: providerShortName(next.provider) || next.providerName,
+    pending: !!_pendingConfiguration, pendingLabel: '下轮生效' });
+  modelBtn.textContent = window.MultiCCRunConfig.pillText(pill);
+  modelBtn.dataset.mark = pill.mark;
+  modelBtn.dataset.tone = pill.tone;
+  modelBtn.title = modelBtn.textContent;
+  modelBtn.removeAttribute('data-hdr-icon');
+  modelBtn.classList.add('chat-run-config-pill');
   modelBtn.style.display = '';
 }
 
@@ -1636,61 +1639,12 @@ async function loadSessionModel() {
 modelBtn?.addEventListener('click', async () => {
   if (airChatMode) { try { window.parent?.__multiccAirRunConfig?.(); } catch (_) { /* 宿主没起来 */ } return; }
   await loadSessionModel();
-  const desired = window.MultiCCChatAiConfig.desiredConfig({ cli: _sessionCli, pendingConfiguration: _pendingConfiguration });
-  const configCli = desired.cli;
-  if (!PROVIDERLESS_CLIS.has(configCli)) {
-    await ensureProviderList(configCli, { loading: true });
-  }
-  const picked = await window.MultiCCChatAiConfig.showAIConfigPicker({
-    provider: _sessionProvider,
-    providerSelection: _sessionProviderSelection,
-    model: _sessionModel,
-    effort: _sessionEffectiveEffort || _sessionEffort || defaultEffortForCurrentCli(),
-    subagent: _sessionSubagent,
-    agent: _sessionAgent,
-    ...(_pendingConfiguration?.profile || {}),
-  }, { ...chatAiConfigState(), cli: configCli });
-  if (picked === null) return;
-  try {
-    const data = await window.MultiCCChatAiConfig.saveSession(_sessionName, {
-      provider: picked.provider,
-      providerSelection: picked.providerSelection,
-      model: picked.model,
-      effort: picked.effort,
-      ...((configCli === 'claude' || configCli === 'claude-exp' || configCli === 'opencode' || configCli === 'qoder' || configCli === 'codebuddy') ? { agent: picked.agent } : {}),
-      ...((configCli === 'claude' || configCli === 'claude-exp' || configCli === 'codex' || configCli === 'codex-exp') ? { subagent: picked.subagent } : {}),
-    });
-    if (data.deferred) {
-      await loadSessionModel();
-      addSystemMsg('✓ AI 配置已保存，下轮生效；本轮继续使用原配置');
-      return;
-    }
-    _sessionProvider = data.provider || '';
-    _sessionProviderBaseUrl = data.providerBaseUrl || _sessionProviderBaseUrl;
-    _sessionProviderBaseUrl = data.providerBaseUrl || _sessionProviderBaseUrl;
-    _sessionProviderSelection = data.providerSelection || null;
+  const clis = Object.keys(_cliAvailability).filter(cli => _cliAvailability[cli]?.available !== false);
+  window.MultiCCRunConfig.open({ sessionId: _sessionName, configuration: runtimeConfiguration() }, clis, async () => {
     _activeProviderId = ''; _activeProviderName = ''; _activeProviderModel = '';
-    _sessionSubagent = data.subagent || null;
-    _sessionAgent = data.agent || '';
-    _sessionModel = data.model || '';
-    _sessionEffectiveModel = data.effectiveModel || data.model || '';
-    _sessionEffort = data.effort || '';
-    _sessionEffectiveEffort = data.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
-    // The quota bars key off the active provider's baseUrl, which only reaches
-    // them through updateProviderBtn(). This is the live provider-switch path
-    // (the standalone provider button is hidden), so without this call the bar
-    // kept showing the OLD provider until the next loadSessionModel().
-    updateProviderBtn(); // also calls updateModelBtn()
-    const _savedModel = _sessionEffectiveModel || _sessionModel;
-    const savedProvider = _sessionProviderSelection?.mode === 'auto'
-      ? `Auto · ${window.MultiCCChatAiConfig.autoProtocolLabel(_sessionProviderSelection.protocol)}`
-      : providerShortName(_sessionProvider);
-    const savedParts = [savedProvider, _savedModel ? modelDisplayName(_savedModel, _sessionProvider) : tt('default'), effortShortName(_sessionEffectiveEffort)];
-    if ((configCli === 'claude' || configCli === 'opencode' || configCli === 'qoder' || configCli === 'codebuddy') && _sessionAgent) savedParts.push(`Agent ${_sessionAgent}`);
-    addSystemMsg(`✓ AI 配置已保存：${savedParts.filter(Boolean).join(' | ')}，下一轮对话生效`);
-  } catch (e) {
-    addSystemMsg('AI 配置保存失败：' + chatApi.errorText(e));
-  }
+    await loadSessionModel();
+    addSystemMsg(_pendingConfiguration ? '✓ 运行配置已保存，下轮生效；本轮继续使用原配置' : '✓ 运行配置已保存，下一轮对话生效');
+  });
 });
 
 effortBtn?.addEventListener('click', async () => {
