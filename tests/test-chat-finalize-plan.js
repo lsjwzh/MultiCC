@@ -311,6 +311,31 @@ test('process API, adapter and nonzero failures freeze instead of advancing FIFO
   }
 });
 
+test('the host kill reason travels with the verdict instead of being dropped', () => {
+  // A restart (SIGINT → killReason 'shutdown') ends the turn with classification
+  // 'interrupted'. Without the reason on the effect the classify centre can only
+  // guess why, and it used to announce a fabricated provider API error.
+  const killed = resolveTurnFinalization(planTurnFinalization(base({
+    killReason: 'shutdown', code: null, signal: 'SIGINT',
+  })));
+  const entry = killed.effects.find(effect => effect.type === 'classify-turn-end');
+  assert.equal(entry.classification, 'interrupted');
+  assert.equal(entry.killReason, 'shutdown');
+
+  const switched = resolveTurnFinalization(planTurnFinalization(base({
+    runnerKind: 'stream', cli: 'claude', resultEvent: false,
+    resultDurable: false, apiError: true, killReason: 'cli_switch',
+  })));
+  assert.equal(switched.effects.find(effect => effect.type === 'classify-turn-end').killReason,
+    'cli_switch');
+
+  // A turn that ended on its own evidence carries no host reason at all.
+  const clean = resolveTurnFinalization(planTurnFinalization(base()), {
+    appendPersisted: true, resultDurable: true,
+  });
+  assert.equal(clean.effects.find(effect => effect.type === 'classify-turn-end').killReason, null);
+});
+
 test('clean process completion names the structured succeeded boundary', () => {
   const resolved = resolveTurnFinalization(planTurnFinalization(base()), {
     appendPersisted: true,

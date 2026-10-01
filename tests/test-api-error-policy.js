@@ -353,6 +353,53 @@ test('cancellation and shutdown never retry; unknown gets at most one controlled
   assert.equal(second.action, 'fail_fast');
 });
 
+test('a host-stopped turn is announced as a host stop, never as an upstream API outage', () => {
+  // /api/restart (SIGINT), a CLI switch, a relocation and a user cancel all end
+  // the turn from the host side. The notice must name that, because the old
+  // generic copy told the user 「上游 API 请求失败」 for a turn no provider
+  // request ever failed in.
+  for (const [code, label] of [
+    ['shutdown', /服务重启或关闭/],
+    ['sigterm', /服务重启或关闭/],
+    ['user_cancel', /用户取消/],
+    ['cli_switch', /切换 CLI 车道/],
+    ['relocate', /会话迁移/],
+  ]) {
+    const result = decide({
+      source: 'host_interruption', provider: 'claude', code,
+      message: `host interruption: ${code}`,
+    }, { phase: 'stream', partialOutput: true });
+    assert.equal(result.error.category, 'cancel_shutdown');
+    assert.equal(result.action, 'fail_fast');
+    assert.equal(result.reason, 'cancelled_or_shutdown');
+    const notice = retryNotice(result);
+    assert.match(notice, label);
+    assert.match(notice, /不是上游 API 故障/);
+    assert.doesNotMatch(notice, /上游 API 中断|上游 API 请求失败/);
+  }
+});
+
+test('a verdict with no provider evidence never claims an upstream API outage', () => {
+  const result = decide({
+    source: 'classifier_legacy', provider: 'claude', code: null,
+    message: '本轮结束时未取得结构化错误证据（无提供方错误文本，也无主机侧中断原因）',
+  }, { phase: 'stream', partialOutput: true });
+  assert.equal(result.action, 'fail_fast');
+  assert.equal(result.reason, 'unsafe_replay_boundary');
+  const notice = retryNotice(result);
+  assert.match(notice, /本轮未正常结束（非上游 API 故障）/);
+  assert.doesNotMatch(notice, /上游 API 中断/);
+});
+
+test('a real provider failure at the replay boundary still names the upstream outage', () => {
+  const result = decide({
+    source: 'process_stderr', provider: 'claude', code: 'overloaded_error',
+    httpStatus: 503, message: 'API Error: 503 overloaded',
+  }, { phase: 'stream', partialOutput: true });
+  assert.equal(result.reason, 'unsafe_replay_boundary');
+  assert.match(retryNotice(result), /上游 API 中断/);
+});
+
 test('only the per-request attempt count caps host retries', () => {
   const raw = {
     message: 'API Error: 502 getaddrinfo ENOTFOUND open.bigmodel.cn',

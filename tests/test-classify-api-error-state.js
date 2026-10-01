@@ -59,7 +59,7 @@ function fixture({
   const observed = {
     enqueued: 0, enqueuedTasks: [], cancelledFor: [], transitions: 0,
     transitionTaskIds: [],
-    broadcasts: [], pushes: [], evaluated: 0, boardTurnEnds: 0,
+    broadcasts: [], pushes: [], evaluated: 0, evaluatedRaw: [], boardTurnEnds: 0,
     auxRuns: [], annotations: [], taskAttributionSettled: [],
   };
   let releaseAux = () => {};
@@ -118,7 +118,7 @@ function fixture({
     workspaceBroadcast() {},
     terminalBroadcast() {},
     triggerPush: (_sessionId, type, message) => observed.pushes.push([type, message]),
-    evaluateTurnApiError() { observed.evaluated += 1; },
+    evaluateTurnApiError(args) { observed.evaluated += 1; observed.evaluatedRaw.push(args); },
     turnHasSideEffects: () => false,
     retryNotice: () => '上游 API 请求失败，未自动重试。检查错误详情后决定是否手动重试',
     loadChatHistory: () => history,
@@ -405,6 +405,36 @@ test('a legacy API error with no policy decision still records one before publis
   const h = fixture({ lastDecision: null });
   h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'api-error' });
   assert.equal(h.observed.evaluated, 1);
+  assert.equal(h.record.taskState.classifyState, 'E');
+  // The fallback must not invent provider evidence it never saw: no upstream
+  // code is claimed, so the notice cannot announce an upstream API outage.
+  assert.equal(h.observed.evaluatedRaw[0].raw.source, 'classifier_legacy');
+  assert.equal(h.observed.evaluatedRaw[0].raw.code, null);
+});
+
+test('a host-stopped turn reports its kill reason instead of a fabricated provider error', () => {
+  // /api/restart kills the active runner with killReason 'shutdown'; cli_switch
+  // and relocate do the same. The verdict must carry the real host reason so the
+  // E branch records cancel_shutdown rather than 「上游 API 中断」.
+  for (const killReason of ['shutdown', 'cli_switch', 'relocate']) {
+    const h = fixture({ lastDecision: null });
+    h.machine.classifyTurnEnd(h.chatState, 's1', {
+      classification: 'interrupted', killReason,
+    });
+    assert.equal(h.observed.evaluated, 1, `${killReason}: the verdict is recorded once`);
+    const raw = h.observed.evaluatedRaw[0].raw;
+    assert.equal(raw.source, 'host_interruption', `${killReason}: host-side evidence, not a provider one`);
+    assert.equal(raw.code, killReason);
+    assert.equal(h.record.taskState.classifyState, 'E');
+  }
+});
+
+test('a host reason never overrides a decision the boundary already made', () => {
+  const h = fixture({ lastDecision: { action: 'fail_fast', error: FAIL_FAST } });
+  h.machine.classifyTurnEnd(h.chatState, 's1', {
+    classification: 'api-error', killReason: 'shutdown',
+  });
+  assert.equal(h.observed.evaluated, 0, 'an existing structured decision is reused as-is');
   assert.equal(h.record.taskState.classifyState, 'E');
 });
 

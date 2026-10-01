@@ -249,39 +249,49 @@ function planRetryBlockedFinalization(sourcePlan, overrides = {}) {
 
 function statusEffects(plan, durableAfterAppend) {
   const facts = plan.facts;
+  // The host-side kill reason travels with the verdict. It is the only real
+  // evidence a turn ended because MultiCC itself stopped it (restart, CLI
+  // switch, relocation, user cancel); without it the classify centre has
+  // nothing to report but a guess, and a restart used to surface as a
+  // fabricated provider API error.
+  const turnEnd = (classification) => effect('classify-turn-end', {
+    classification,
+    killReason: facts.killReason || null,
+  });
   if (!facts.apiError && !facts.killReason && !facts.guardedHandoffResumeFailure && !isCompleted(facts.completion)) return [
     effect('set-status', { status: 'waiting', reason: 'runner-not-completed' }),
     effect('freeze-interrupted', { reason: facts.completion.state === 'failed' ? 'error'
       : facts.completion.state === 'cancelled' ? 'cancelled' : 'unknown_interruption' }),
-    effect('classify-turn-end', { classification: facts.completion.state === 'unknown' ? 'unknown-interruption' : 'interrupted' }),
+    turnEnd(facts.completion.state === 'unknown' ? 'unknown-interruption' : 'interrupted'),
   ];
   if (facts.runnerKind === 'process') {
     if (facts.killReason) return [
       effect('set-status', { status: 'waiting', reason: 'explicit-kill' }),
       effect('freeze-interrupted', { reason: facts.killReason === 'user_cancel' ? 'cancelled' : 'interrupted' }),
-      effect('classify-turn-end', { classification: 'interrupted' }),
+      turnEnd('interrupted'),
     ];
     if (facts.apiError || facts.adapterError
         || facts.exitKind === 'nonzero_exit' || facts.exitKind === 'signaled') {
       const effects = [
         effect('freeze-interrupted', { reason: 'error' }),
-        effect('classify-turn-end', {
-          classification: facts.apiError ? 'api-error' : 'interrupted',
-        }),
+        turnEnd(facts.apiError ? 'api-error' : 'interrupted'),
       ];
       return effects;
     }
+    // A durable clean close can never carry a host stop (the killed branch above
+    // owns every one), so the success verdict below is spelled out rather than
+    // routed through turnEnd(); tests/test-chat-turn-core.js pins that pairing.
     if (durableAfterAppend) {
       const effects = [
         effect('complete-session-turn'),
-        effect('classify-turn-end', { classification: 'succeeded' }),
+        effect('classify-turn-end', { classification: 'succeeded', killReason: null }),
       ];
       return effects;
     }
     return [
       effect('set-status', { status: 'waiting', reason: facts.exitKind }),
       effect('freeze-interrupted', { reason: 'unknown_interruption' }),
-      effect('classify-turn-end', { classification: 'unknown-interruption' }),
+      turnEnd('unknown-interruption'),
     ];
   }
 
@@ -290,19 +300,19 @@ function statusEffects(plan, durableAfterAppend) {
       effect('reset-interrupted-resume'),
       effect('set-status', { status: 'idle', reason: 'handoff-resume-failed' }),
       effect('freeze-interrupted', { reason: 'handoff_resume_failed' }),
-      effect('classify-turn-end', { classification: 'handoff-resume-failed' }),
+      turnEnd('handoff-resume-failed'),
       effect('report-handoff-resume-failure', { preserveHandoff: true }),
     ];
   }
   if (facts.apiError) return [
     effect('freeze-interrupted', { reason: 'error' }),
-    effect('classify-turn-end', { classification: 'api-error' }),
+    turnEnd('api-error'),
   ];
   if (durableAfterAppend) {
     return [
       effect('reset-interrupted-resume'),
       effect('complete-session-turn'),
-      effect('classify-turn-end', { classification: 'succeeded' }),
+      turnEnd('succeeded'),
       effect('emit-turn-outcome', { status: 'succeeded', notifyState: 'succeeded' }),
     ];
   }
@@ -310,7 +320,7 @@ function statusEffects(plan, durableAfterAppend) {
     return [
       effect('set-status', { status: 'idle', reason: 'result-not-durable' }),
       effect('freeze-interrupted', { reason: 'message_not_durable' }),
-      effect('classify-turn-end', { classification: 'result-not-durable' }),
+      turnEnd('result-not-durable'),
       effect('report-result-persistence-failure'),
     ];
   }
@@ -318,13 +328,13 @@ function statusEffects(plan, durableAfterAppend) {
     return [
       effect('set-status', { status: 'waiting', reason: 'unknown-interruption' }),
       effect('freeze-interrupted', { reason: 'unknown_interruption' }),
-      effect('classify-turn-end', { classification: 'unknown-interruption' }),
+      turnEnd('unknown-interruption'),
     ];
   }
   return [
     effect('set-status', { status: 'waiting', reason: 'explicit-kill' }),
     effect('freeze-interrupted', { reason: facts.killReason === 'user_cancel' ? 'cancelled' : 'interrupted' }),
-    effect('classify-turn-end', { classification: 'interrupted' }),
+    turnEnd('interrupted'),
   ];
 }
 
