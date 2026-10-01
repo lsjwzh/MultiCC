@@ -644,7 +644,7 @@
       // the target without turning every compact row into a path dump.
       const worktree = task.resource?.path
         ? `WT${task.resource.branch ? ` · ${task.resource.branch}` : ''}` : '';
-      const extra = [stage, detail, worktree].filter(part => part && !taskBadgeWord(task).includes(part)).join(' · ');
+      const extra = [task.providerName, stage, detail, worktree].filter(part => part && !taskBadgeWord(task).includes(part)).join(' · ');
       if (worktree) meta.title = task.resource.path;
       if (extra) meta.append(node('em', extra, 'task-note'));
       copy.append(node('strong', task.title || t('airUntitledTask')), meta);
@@ -1259,7 +1259,7 @@
       const stage = task.recordType === 'planned' ? t('airSidebarPlanned', { stage: label(task.workflowStage || task.status) }) : '';
       // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。
       const badgeText = taskBadgeWord(task);
-      const extra = [stage, holdText(task.resource)].filter(part => part && !badgeText.includes(part)).join(' · ');
+      const extra = [task.providerName, stage, holdText(task.resource)].filter(part => part && !badgeText.includes(part)).join(' · ');
       button.append(node('strong', task.title), meta);
       if (extra) button.append(node('small', extra, 'task-note'));
       button.onclick = () => openSidebarTask(task);

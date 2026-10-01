@@ -4,6 +4,7 @@ import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/services/air_service.dart';
 import 'package:multicc_app/utils/status_presentation.dart';
 import 'package:multicc_app/widgets/air/air_task_status.dart';
+import 'package:multicc_app/widgets/air/air_panels.dart';
 
 /// 造一条任务，只给这一份判定真正会读的字段。
 AirTask _task({
@@ -37,6 +38,34 @@ void main() {
   // 拿到的是 key 本身。
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() => I18n.init('zh'));
+
+  test('任务卡从快照读取绑定的 Provider 名称，不从全局默认值猜', () {
+    final bound = AirTask.fromJson({
+      'id': 'bound', 'dirId': 'd1', 'title': '任务', 'status': 'active',
+      'recordType': 'planned', 'updatedAt': 0, 'readOnly': false,
+      'providerName': '智谱',
+    });
+    final unbound = AirTask.fromJson({
+      'id': 'unbound', 'dirId': 'd1', 'title': '任务', 'status': 'active',
+      'recordType': 'planned', 'updatedAt': 0, 'readOnly': false,
+    });
+    expect(bound.providerName, '智谱');
+    expect(unbound.providerName, isNull);
+  });
+
+  testWidgets('任务行显示已绑定 Provider，无绑定时不显示', (tester) async {
+    AirTask task(String id, String? providerName) => AirTask(
+      id: id, dirId: 'd1', title: '任务 $id', status: 'active',
+      recordType: 'planned', updatedAt: 0, readOnly: false,
+      providerName: providerName,
+    );
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: Column(children: [
+      AirTaskTile(task: task('bound', '智谱'), onTap: () {}),
+      AirTaskTile(task: task('unbound', null), onTap: () {}),
+    ]))));
+    expect(find.textContaining('智谱'), findsOneWidget);
+    expect(find.textContaining('默认线路'), findsNothing);
+  });
 
   group('一条任务算什么', () {
     test('生命周期最优先：归档和完成不因为这一轮在跑就被改写成执行中', () {

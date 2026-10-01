@@ -498,6 +498,27 @@ test('Air snapshot carries the most recently worked chat runtime as lastRuntime'
   assert.equal(JSON.stringify(response).includes('private'), false);
 });
 
+test('Air task cards expose only their own bound Provider display name', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (path, fn) => handlers.set(path, fn), post() {} };
+  mountAirRoutes(app, {
+    admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map([['bound', { id: 'bound', dirId: 'd1', kind: 'chat', provider: 'p1', providerSecret: 'PRIVATE' }]]),
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ tasks: {
+      bound: { id: 'bound', title: 'Bound', status: 'active', sessionId: 'bound' },
+      unbound: { id: 'unbound', title: 'Unbound', status: 'active' },
+    } }),
+    clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) },
+    providerName: record => record.provider === 'p1' ? 'Provider One' : null,
+  });
+  const res = airResponse(); await handlers.get('/api/air')({}, res);
+  const response = JSON.parse(res.body);
+  assert.equal(response.tasks.find(task => task.id === 'bound').providerName, 'Provider One');
+  assert.equal(response.tasks.find(task => task.id === 'unbound').providerName, null);
+  assert.equal(JSON.stringify(response).includes('PRIVATE'), false);
+});
+
 test('Air snapshot leaves lastRuntime null when no chat session has a cli', async () => {
   const { mountAirRoutes } = require('../src/workspace/air-routes');
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };

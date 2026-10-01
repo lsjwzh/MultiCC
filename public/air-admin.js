@@ -325,7 +325,7 @@
     const worktreeBadge = worktreeChangeBadge(task);
     if (worktreeBadge) meta.append(worktreeBadge);
     const where = options.dir === false ? '' : context.directoryName(task.dirId);
-    const note = [where, taskDetail(task, context)].filter(Boolean).join(' · ');
+    const note = [where, task.providerName, taskDetail(task, context)].filter(Boolean).join(' · ');
     if (note) meta.append(make('em', note, 'task-note'));
     copy.append(make('strong', task.title || t('airAdminUntitledTask')), meta);
     // 全文检索命中时把命中的那段原文摆出来：标题里没有查询词、却在正文/历史轮次里
