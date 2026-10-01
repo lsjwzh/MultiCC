@@ -12,6 +12,11 @@
   <link rel="stylesheet" href="status-badge.css">
   <link rel="stylesheet" href="air.css">
   <link rel="stylesheet" href="air-more.css">
+  <!-- Voice HUD / refine panel / mic toast for the quick-task composer. Same
+       markup and styles as the Chat page (public/voice-composer.css mirrors
+       chat.html's inline rules); the shared module public/voice-composer.js
+       drives both, so dictation behaves identically here and in the chat. -->
+  <link rel="stylesheet" href="voice-composer.css">
   <link rel="stylesheet" href="git-manager.css">
   <script src="auth-client.js"></script>
   <!-- i18n 必须早于所有 Air 模块：air.js / air-*.js 在初始化阶段就会调用 t()，
@@ -355,6 +360,50 @@
               <button id="quick-task-submit" class="primary" type="submit" data-i18n="airCreateAndRun">创建并执行 ↑</button>
             </div>
             <button id="quick-task-retention" class="quick-task-retention" type="button" data-i18n="airRetentionManage">管理任务容量</button>
+            <!-- Voice layer: the Chat page's own mic toast, floating HUD and
+                 refine panel (public/voice-composer.css mirrors chat.html's
+                 inline rules), driven by public/voice-composer.js. It rides
+                 inside the composer form so the ＋新任务 dialog — a top-layer
+                 <dialog> — shows it above its backdrop; on the directory home
+                 it floats fixed near the box exactly as in Chat. Buttons carry
+                 explicit type="button" because they now live in a <form>. -->
+            <div id="quick-task-voice">
+              <div id="mic-toast"></div>
+              <div id="voice-hud">
+                <div class="vh-row vh-raw">
+                  <div class="vh-icon">🎤</div>
+                  <div class="vh-text" id="vh-raw-text" contenteditable="true" data-placeholder="聆听中…" data-i18n-data-placeholder="voiceRawPlaceholder"></div>
+                </div>
+                <div class="vh-row vh-refined">
+                  <div class="vh-icon">✨</div>
+                  <div class="vh-text" id="vh-refined-text" contenteditable="true" data-placeholder="（AI 处理中…）" data-i18n-data-placeholder="voiceRefinedPlaceholder"></div>
+                </div>
+                <div class="vh-bar">
+                  <div class="vh-status">
+                    <span class="vh-dot"></span>
+                    <span id="vh-status-text" data-i18n="voiceStatusListening">聆听中</span>
+                  </div>
+                  <div class="vh-btns">
+                    <button id="vh-cancel" type="button" title="放弃并关闭" data-i18n-title="voiceCancelTitle" data-i18n="cancel">取消</button>
+                    <button id="vh-send" type="button" class="vh-primary" title="停止听并直接发送" data-i18n-title="voiceSendTitle" data-i18n="voiceSend">发送</button>
+                  </div>
+                </div>
+              </div>
+              <div id="voice-panel">
+                <div id="voice-panel-inner">
+                  <div style="font-size:14px;font-weight:600;color:var(--chat-heading, #f0f6fc);">Voice Input</div>
+                  <div class="vp-label">Raw transcription</div>
+                  <textarea id="vp-raw"></textarea>
+                  <div class="vp-label">AI refined <span id="vp-status" style="color:var(--chat-success, #3fb950);font-size:10px;"></span></div>
+                  <textarea id="vp-refined" placeholder="Processing..."></textarea>
+                  <div class="vp-actions">
+                    <button id="vp-cancel" type="button">Cancel</button>
+                    <button id="vp-use-raw" type="button">Use raw</button>
+                    <button id="vp-use-refined" type="button" class="primary">Use refined</button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </form>
         </div>
 
@@ -784,6 +833,13 @@
        所以它必须活在 air.js 之外。排在 air.js 前面：air.js 启动时调它的 bind()。 -->
   <script src="air-task-pager.js"></script>
   <script src="git-manager.js"></script>
+  <!-- Voice dictation for the quick-task composer. Same two modules the Chat
+       page loads: voice-stream.js (VoiceStream over /ws/voice) and the shared
+       public/voice-composer.js. auth-client.js (loaded at the top) already
+       provides window.multiccWsUrl. Must precede air.js, which builds the
+       composer. -->
+  <script src="voice-stream.js"></script>
+  <script src="voice-composer.js"></script>
   <script src="air.js"></script>
   <script src="air-more.js"></script>
   <!-- 要晚于 air.js：它先给输入框填好内容，折叠才有东西可以念在杠上。 -->

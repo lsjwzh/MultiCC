@@ -1,0 +1,226 @@
+/* Voice HUD / panel / mic toast for the shared voice composer
+   (public/voice-composer.js). The rules are the Chat page's, lifted out of
+   chat.html's inline <style> so the Air directory — which mounts the same
+   module on its quick-task composer — renders the identical floating HUD, the
+   legacy refine panel and the mic toast. Chat keeps its inline copies; this
+   file is only linked by air.html, so nothing on the Chat page changes.
+
+   Air's canvas is light and does not define the Chat page's --chat-* tokens,
+   so we light them up here on exactly the elements that use them; the Chat
+   page's own `var(--chat-x, fallback)` declarations stay byte-identical. */
+#mic-toast,
+#voice-hud,
+#voice-panel {
+  --chat-canvas: #f7faff;
+  --chat-surface: #fff;
+  --chat-soft: #eef3f8;
+  --chat-line: #d5e1ed;
+  --chat-text: #31465b;
+  --chat-heading: #20364d;
+  --chat-muted: #596d82;
+  --chat-blue: #1267b5;
+  --chat-success: #20734f;
+  --chat-danger: #b43b3b;
+  --chat-overlay: rgba(40, 61, 87, .24);
+  --chat-shadow: 0 16px 48px #29486624;
+}
+
+/* ── Mic status toast ── */
+#mic-toast {
+  display: none;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--chat-surface, #161b22);
+  border: 1px solid var(--chat-line, #30363d);
+  border-radius: 12px;
+  padding: 16px 24px;
+  font-size: 14px;
+  color: var(--chat-text, #c9d1d9);
+  z-index: 9000;
+  box-shadow: var(--chat-shadow, 0 8px 32px #00000066);
+  text-align: center;
+}
+#mic-toast.show { display: block; }
+
+/* ── Voice HUD (real-time streaming ASR: 边说边出字 + 停顿自动 refine) ──
+ * Floats above the composer. Committed transcript on top (🎤 line), AI-refined
+ * text below (✨ line, fades in when refine returns). */
+#voice-hud {
+  display: none;
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 112px;                   /* clear of the quick-task composer */
+  z-index: 9500;
+  width: min(720px, 94vw);
+  background: var(--chat-surface, #161b22ee);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--chat-line, #30363d);
+  border-radius: 12px;
+  box-shadow: var(--chat-shadow, 0 8px 32px #00000099);
+  padding: 12px 14px 10px;
+  color: var(--chat-text, #c9d1d9);
+  font-family: system-ui, 'Segoe UI', sans-serif;
+}
+#voice-hud.open { display: block; }
+#voice-hud .vh-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  min-height: 22px;
+  line-height: 1.55;
+}
+#voice-hud .vh-icon {
+  flex: 0 0 22px;
+  font-size: 14px;
+  opacity: .8;
+  padding-top: 1px;
+}
+#voice-hud .vh-text {
+  flex: 1;
+  font-size: 15px;
+  word-break: break-word;
+  min-height: 22px;
+  outline: none;
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px dashed transparent;
+  cursor: text;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+#voice-hud .vh-text[contenteditable="true"]:hover,
+#voice-hud .vh-text[contenteditable="true"]:focus {
+  border-color: var(--chat-line, #30363d);
+  background: #0d111744;
+}
+#voice-hud .vh-text[contenteditable="true"]:focus {
+  border-color: #388bfd;
+  background: var(--chat-canvas, #0d1117);
+}
+#voice-hud .vh-text[data-placeholder]:empty::before {
+  content: attr(data-placeholder);
+  color: var(--chat-muted, #6e7681);
+  pointer-events: none;
+}
+#voice-hud .vh-raw .vh-text { color: var(--chat-text, #c9d1d9); }
+#voice-hud .vh-raw .vh-partial { color: var(--chat-muted, #8b949e); font-style: italic; }
+#voice-hud .vh-refined .vh-text {
+  color: var(--chat-blue, #79c0ff);
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 140ms ease;
+  min-height: 22px;
+}
+#voice-hud.has-refined .vh-refined .vh-text { opacity: 1; }
+#voice-hud.refining .vh-refined .vh-text::after {
+  content: ' ✨';
+  animation: vh-pulse 1s ease-in-out infinite;
+}
+@keyframes vh-pulse { 0%,100%{opacity:.3}50%{opacity:1} }
+#voice-hud .vh-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--chat-soft, #21262d);
+  font-size: 11px;
+  color: var(--chat-muted, #6e7681);
+}
+#voice-hud .vh-status { display: flex; align-items: center; gap: 5px; }
+#voice-hud .vh-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--chat-danger, #f85149);
+  box-shadow: 0 0 6px var(--chat-danger, #f85149);
+  animation: vh-blink 1.2s ease-in-out infinite;
+}
+#voice-hud.done .vh-dot {
+  background: var(--chat-success, #3fb950);
+  box-shadow: 0 0 6px var(--chat-success, #3fb950);
+  animation: none;
+}
+@keyframes vh-blink { 0%,100%{opacity:1}50%{opacity:.35} }
+#voice-hud .vh-btns { display: flex; gap: 6px; }
+#voice-hud .vh-btns button {
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--chat-line, #30363d);
+  background: var(--chat-soft, #21262d);
+  color: var(--chat-text, #c9d1d9);
+  cursor: pointer;
+  font-family: inherit;
+}
+#voice-hud .vh-btns button:hover { background: var(--chat-line, #30363d); }
+#voice-hud .vh-btns .vh-primary {
+  background: #1f6feb;
+  border-color: #388bfd;
+  color: #fff;
+  font-weight: 600;
+}
+#voice-hud .vh-btns .vh-primary:hover { background: #388bfd; }
+
+/* The voice layer rides inside the quick-task composer form (so the ＋新任务
+   dialog, a top-layer <dialog>, can paint it above its own backdrop). That makes
+   it a direct child, which the Air fold rule would hide
+   (air.css: `#quick-task-form.is-folded > :not(#quick-task-expand)`). Its three
+   children are all out of flow and closed by default, so the wrapper costs
+   nothing when shown — keep it visible so an already-open HUD survives a fold.
+   This file loads after air.css, so the equal-specificity rule wins the tie. */
+#quick-task-form.is-folded > #quick-task-voice { display: block; }
+
+/* ── Voice panel (legacy one-shot recording → refine) ── */
+#voice-panel {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: var(--chat-overlay, #00000088);
+  z-index: 20000;
+  align-items: center;
+  justify-content: center;
+}
+#voice-panel.open { display: flex; }
+#voice-panel-inner {
+  background: var(--chat-surface, #161b22);
+  border: 1px solid var(--chat-line, #30363d);
+  border-radius: 12px;
+  padding: 16px;
+  width: 500px;
+  max-width: 94vw;
+  box-shadow: var(--chat-shadow, 0 16px 48px #00000099);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.vp-label { font-size: 11px; color: var(--chat-muted, #8b949e); }
+#voice-panel textarea {
+  width: 100%;
+  background: var(--chat-canvas, #0d1117);
+  border: 1px solid var(--chat-line, #30363d);
+  border-radius: 6px;
+  color: var(--chat-text, #c9d1d9);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 8px 10px;
+  resize: vertical;
+  outline: none;
+  min-height: 60px;
+}
+#voice-panel textarea:focus { border-color: #388bfd; }
+.vp-actions {
+  display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;
+}
+.vp-actions button {
+  padding: 7px 14px; border-radius: 6px; border: 1px solid var(--chat-line, #30363d);
+  background: var(--chat-soft, #21262d); color: var(--chat-text, #c9d1d9); font-size: 13px; cursor: pointer;
+}
+.vp-actions button:hover { background: var(--chat-line, #30363d); }
+.vp-actions button.primary {
+  background: #238636; border-color: #2ea043; color: #fff; font-weight: 600;
+}
+.vp-actions button.primary:hover { background: #2ea043; }

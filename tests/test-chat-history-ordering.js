@@ -187,6 +187,11 @@ function eventController(view, state = {}) {
 
 function loadComposer(window) {
   const context = vm.createContext({ window, console, setTimeout, clearTimeout });
+  // The composer delegates voice input to the shared module, which the real
+  // page loads first; mirror that order in the sandbox.
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'public/voice-composer.js'), 'utf8'), context, {
+    filename: 'voice-composer.js',
+  });
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'public/chat-composer.js'), 'utf8'), context, {
     filename: 'chat-composer.js',
   });

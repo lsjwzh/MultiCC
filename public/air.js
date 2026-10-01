@@ -1091,45 +1091,28 @@
     });
   }
 
-  // Dictation: press to record, press again to stop, one-shot transcription.
-  let quickRecorder = null;
-  let quickRecorderChunks = [];
-  async function toggleQuickDictation() {
-    const button = $('quick-task-mic');
-    if (quickRecorder && quickRecorder.state === 'recording') { quickRecorder.stop(); return; }
-    let stream;
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-    catch (_) { quickStatus(t('airQuickMicDenied')); return; }
-    quickRecorderChunks = [];
-    const mime = window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus' : undefined;
-    try { quickRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
-    catch (_) {
-      stream.getTracks().forEach(track => track.stop());
-      quickStatus(t('airQuickRecordUnsupported'));
-      return;
-    }
-    quickRecorder.ondataavailable = event => { if (event.data?.size) quickRecorderChunks.push(event.data); };
-    quickRecorder.onstop = async () => {
-      stream.getTracks().forEach(track => track.stop());
-      button.classList.remove('rec');
-      const blob = new Blob(quickRecorderChunks, { type: 'audio/webm' });
-      if (!blob.size) { quickStatus(''); return; }
-      quickStatus(t('airQuickTranscribing'));
-      try {
-        const form = new FormData(); form.append('file', blob, 'recording.webm');
-        const response = await fetch('/api/voice/stt', { method: 'POST', body: form });
-        const result = await response.json();
-        if (!response.ok || !result.text) throw new Error(result.error || t('airQuickNoSpeech'));
-        const input = $('quick-task-input');
-        input.value = input.value ? `${input.value} ${result.text.trim()}` : result.text.trim();
-        input.focus();
-        quickStatus('');
-      } catch (error) { quickStatus(t('airQuickTranscribeFailed', { msg: error.message })); }
-    };
-    quickRecorder.start();
-    button.classList.add('rec');
-    quickStatus(t('airQuickRecording'));
+  // Dictation on the quick-task composer is the Chat page's own voice module
+  // (public/voice-composer.js): press the mic to stream speech into the floating
+  // HUD with live AI refine, press again (or 发送) to replace the input and
+  // commit; a second, legacy path records one shot and opens the refine panel.
+  // The only host difference is onCommit — here it submits this form exactly as
+  // pressing 创建并执行 / Enter does. Guarded so a CDP harness that strips
+  // scripts cannot blank the page.
+  function bindQuickVoice() {
+    const voiceComposer = window.MultiCCVoiceComposer;
+    const input = $('quick-task-input');
+    const micButton = $('quick-task-mic');
+    if (!voiceComposer || !input || !micButton) return;
+    voiceComposer.createVoiceComposer({
+      window, document, navigator, location,
+      fetch: window.fetch.bind(window),
+      withToken: url => url,
+      input,
+      micButton,
+      micToast: $('mic-toast'),
+      hasNativeBridge: typeof window.MultiCCBridge !== 'undefined' && !!window.MultiCCBridge,
+      onCommit: () => $('quick-task-form').requestSubmit(),
+    });
   }
 
   function renderQuickGoalLimits() {
@@ -2762,7 +2745,7 @@
   $('quick-task-form').onsubmit = submitQuickTask;
   $('quick-task-attach').onclick = () => $('quick-task-file-input').click();
   $('quick-task-file-input').onchange = event => void uploadQuickTaskFiles(event.target.files);
-  $('quick-task-mic').onclick = () => void toggleQuickDictation();
+  bindQuickVoice();
   $('quick-task-goal').onchange = renderQuickGoalLimits;
   $('quick-ai-pill').onclick = openQuickConfiguration;
   $('quick-role-pill').onclick = openQuickRoles;

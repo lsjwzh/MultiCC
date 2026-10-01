@@ -852,7 +852,11 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .quick-task-actions > label { display: flex; align-items: center; gap: 5px; width: auto; color: #60758a; font-size: 10.5px; white-space: nowrap; }
 .quick-task-actions input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
 .quick-task-actions button { min-height: 32px; padding: 5px 9px; font-size: 11px; }
-#quick-task-mic.rec { color: #fff; border-color: #c9553f; background: #d1604a; }
+/* The shared voice module (public/voice-composer.js) drives this mic, so the
+   button wears the Chat page's own classes: .recording while capturing,
+   .processing while the clip uploads. */
+#quick-task-mic.recording { color: #fff; border-color: #c9553f; background: #d1604a; }
+#quick-task-mic.processing { opacity: .6; }
 /* Goal limits only exist while Goal mode is on (air.js → renderQuickGoalLimits):
    a quiet row of numbers under the input rather than more buttons in the band. */
 .quick-task-goal-limits { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 6px 12px 0; color: #60758a; font-size: 10.5px; }

@@ -838,14 +838,20 @@ test('every voice entry point goes through the one launch endpoint', () => {
 });
 
 test('plain microphone dictation is untouched by the realtime voice gateway', () => {
+  // Dictation lives in the shared voice module both the Chat page and the Air
+  // directory's quick composer load; the composer delegates to it.
+  const voice = readRepoFile('public/voice-composer.js');
+  assert.match(voice, /\/ws\/voice/, 'web dictation still streams to /ws/voice');
   const composer = readRepoFile('public/chat-composer.js');
-  assert.match(composer, /\/ws\/voice/, 'web dictation still streams to /ws/voice');
+  assert.match(composer, /MultiCCVoiceComposer/, 'the chat composer delegates voice input');
 
   const dictation = readRepoFile('app/lib/services/voice_dictation_service.dart');
   assert.match(dictation, /\/ws\/voice/);
-  const inputBar = readRepoFile('app/lib/widgets/input_bar.dart');
-  assert.match(inputBar, /VoiceDictationService/);
-  assert.match(inputBar, /_toggleDictation/);
+  // App 同理：会话页输入条与目录快速新建共用 voice_composer.dart。
+  const voiceComposer = readRepoFile('app/lib/widgets/voice_composer.dart');
+  assert.match(voiceComposer, /VoiceDictationService/);
+  assert.match(voiceComposer, /toggleMic/);
+  assert.match(readRepoFile('app/lib/widgets/input_bar.dart'), /VoiceComposerController/);
 
   // The launch path owns no microphone: dictation and realtime voice stay
   // separate features on separate buttons.

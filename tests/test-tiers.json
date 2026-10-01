@@ -720,6 +720,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/voice_composer_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/workspace_navigation_drawer_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -4987,6 +4992,15 @@
       "path": "tests/test-voice-compare.js",
       "tier": "other",
       "lane": "live"
+    },
+    {
+      "path": "tests/test-voice-composer.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
     },
     {
       "path": "tests/test-voice-gateway-proxy.js",
