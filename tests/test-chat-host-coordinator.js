@@ -627,3 +627,38 @@ test('the live result frame carries the attribution the durable stamp writes', (
   assert.match(frame.slice(0, 400), /modelAttributionField\(cs, turn, runner\)/,
     'the frame spreads the same cs/turn/runner computation the history stamp used');
 });
+
+// server.js takes these off `createChatHostRuntime()`'s return value, not off the
+// module. A name that is exported but missing from the frozen object arrives as
+// `undefined` at every call site — and the turn engine calls it unguarded while
+// finalizing a `result` event, so the throw aborts finalization, leaves the
+// session's provider attempt in `running`, and every later delivery fails
+// preparation with "provider attempt is still running". Read the real
+// destructuring site so the object and its consumer cannot drift again.
+test('the runtime exposes every helper the server destructures from it', () => {
+  const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  // `[^{}]*` (rather than a lazy `[\s\S]*?`) keeps the match anchored to the
+  // destructuring block that actually feeds the factory instead of spanning from
+  // some earlier `const {` in the file.
+  const destructure = serverSource.match(/const\s*\{([^{}]*)\}\s*=\s*createChatHostRuntime\(/);
+  assert.ok(destructure, 'server.js still destructures the host runtime');
+  const names = destructure[1].split(',').map(name => name.trim()).filter(Boolean);
+  assert.ok(names.includes('modelAttributionField'),
+    'the turn engine call site depends on this exact name being destructured');
+
+  const runtime = createChatHostRuntime({
+    appendMessage: () => true,
+    persistUsage: () => true,
+    afterUsageCommit() {},
+    getSessionState: () => null,
+    consumeHandoff() {},
+    emitTurnComplete() {},
+    emitDispatchComplete() {},
+    emitGatewayComplete() {},
+    logSuppressed() {},
+  });
+  for (const name of names) {
+    assert.equal(typeof runtime[name], 'function',
+      `${name} is destructured by server.js and must exist on the host runtime`);
+  }
+});
