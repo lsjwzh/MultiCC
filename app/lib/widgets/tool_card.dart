@@ -6,7 +6,7 @@ import '../i18n.dart';
 import '../models/message.dart';
 import '../models/tool_input_view.dart';
 import '../utils/cli_display.dart';
-import 'model_chip.dart';
+import 'run_config/run_labels.dart';
 
 const Map<String, String> _kToolIcons = {
   'Bash': '>_',
@@ -210,7 +210,7 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
 /// [attribution] 的展示名：车道/线路/模型，各自非空才占一段；空表 = 没有可说的。
 ///
 /// 车道复用 `cli_display.dart` 的展示表（未知 id 回落成 id 本身）；线路复用
-/// `model_chip.dart` 的 `providerDisplayLabel`（catalog 里没有时用服务端随消息
+/// `run_config/run_labels.dart` 的 `providerDisplayLabel`（catalog 里没有时用服务端随消息
 /// 下发的 `providerName`，再退到 id —— 与聊天头部那颗胶囊同一套说法）。
 List<String> modelAttributionSegments(ModelAttribution? attribution) {
   if (attribution == null) return const [];

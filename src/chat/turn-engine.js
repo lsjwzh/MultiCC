@@ -613,12 +613,9 @@ function createChatTurnEngine(deps) {
         // error-only envelope remains eligible for a safe bounded retry.
         recordResultEvent(turn, runner, { current: true, persisted: false });
       }
-      // Include durationMs + num_turns in the result broadcast so clients
-      // (web + app) can display per-message task timing without client-side
-      // clock guesswork. durationMs is the wall-clock time from turnStartedAt
-      // (user submit) to this result — "模型接到消息到输出完成的耗时".
+      // Broadcast per-message timing to Web/App: durationMs runs from
+      // user submit (turnStartedAt) to this result, without client clock guesses.
       const _resultDurationMs = cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined;
-      // Same cs/turn/runner the durable stamp spreads → live and reloaded agree.
       forward({ type: 'result', total_cost_usd: evt.total_cost_usd, usage, durationMs: _resultDurationMs,
         num_turns: cs.chatTurnCount, ...(contextTrace ? { contextTrace } : {}),
         ...modelAttributionField(cs, turn, runner) });
