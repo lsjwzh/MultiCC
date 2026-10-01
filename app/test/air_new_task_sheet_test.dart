@@ -102,25 +102,43 @@ Future<void> _open(WidgetTester tester) async {
 void main() {
   testWidgets('容量错误显示在仍打开的新任务弹层内，草稿保留并可查看清理入口', (tester) async {
     final settings = await _settings();
-    final client = MockClient((request) async => http.Response(
-      jsonEncode({'ok': true, 'count': 1024, 'limit': 1024, 'tasks': <Object>[]}),
-      200, headers: {'content-type': 'application/json; charset=utf-8'},
-    ));
-    await tester.pumpWidget(_host(
-      settings: settings,
-      service: AirService(settings: settings, httpClient: client),
-      onSubmit: _recorder(<String>[], landed: false),
-      errorText: () => const AirTaskCapacityException().toString(),
-      capacityExceeded: () => true,
-    ));
+    final client = MockClient(
+      (request) async => http.Response(
+        jsonEncode({
+          'ok': true,
+          'count': 1024,
+          'limit': 1024,
+          'tasks': <Object>[],
+        }),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      ),
+    );
+    await tester.pumpWidget(
+      _host(
+        settings: settings,
+        service: AirService(settings: settings, httpClient: client),
+        onSubmit: _recorder(<String>[], landed: false),
+        errorText: () => const AirTaskCapacityException().toString(),
+        capacityExceeded: () => true,
+      ),
+    );
     await _open(tester);
-    await tester.enterText(find.byKey(const ValueKey('air-quick-input')), '仍要创建的任务');
+    await tester.enterText(
+      find.byKey(const ValueKey('air-quick-input')),
+      '仍要创建的任务',
+    );
     await tester.tap(find.byKey(const ValueKey('air-quick-submit')));
     await tester.pumpAndSettle();
     expect(find.textContaining('已达到 1024 个任务'), findsOneWidget);
     expect(find.text('查看安全清理清单 / 自行管理任务'), findsOneWidget);
-    expect(tester.widget<TextField>(find.byKey(const ValueKey('air-quick-input'))).controller!.text,
-        '仍要创建的任务');
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const ValueKey('air-quick-input')))
+          .controller!
+          .text,
+      '仍要创建的任务',
+    );
     expect(find.byType(BottomSheet), findsOneWidget);
   });
   testWidgets('开的是统一输入框模块，不是另一张表单', (tester) async {
@@ -140,10 +158,10 @@ void main() {
     expect(find.text('工作目录 A'), findsOneWidget);
     expect(find.text('/project/a'), findsOneWidget);
 
-    // 关键：装的就是目录首页那一个模块，三颗胶囊一个不少。
+    // 关键：装的就是目录首页那一个模块，AI 配置和角色各一颗胶囊。
     expect(find.byType(AirQuickComposer), findsOneWidget);
     expect(find.byKey(const ValueKey('air-quick-input')), findsOneWidget);
-    expect(find.byKey(const ValueKey('air-quick-cli')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-quick-cli')), findsNothing);
     expect(find.byKey(const ValueKey('air-quick-ai')), findsOneWidget);
     expect(find.byKey(const ValueKey('air-quick-role')), findsOneWidget);
     expect(find.byKey(const ValueKey('air-quick-goal')), findsOneWidget);

@@ -78,8 +78,7 @@ class AirTaskRuntime {
   String get summary =>
       [cli.isEmpty ? '默认 CLI' : cli, routeName, modelLabel].join(' · ');
 
-  /// App 里 CLI 由旁边那颗药丸自己挑（Web 是一颗药丸兼管两件事），所以药丸上
-  /// 只写后两段，不把 CLI 说两遍。
+  /// 线路和模型部分；输入区把 CLI 显示名接在它前面，合成唯一一颗配置药丸。
   String get routeLabel => [routeName, modelLabel].join(' · ');
 
   /// 创建任务时要带上的字段。空值不发 —— 服务端把「没传」当成「用目录默认」，
@@ -89,7 +88,8 @@ class AirTaskRuntime {
     return {
       if (cli.isNotEmpty) 'cli': cli,
       if (provider.isNotEmpty) 'provider': provider,
-      if (providerSelection != null) 'providerSelection': providerSelection!.toJson(),
+      if (providerSelection != null)
+        'providerSelection': providerSelection!.toJson(),
       if (model.isNotEmpty) 'model': model,
       if (effort.isNotEmpty) 'effort': effort,
       // 子任务尾巴跟着主线路一起走：模型为空就是没设（只挑线路不挑模型 = 随主），
@@ -102,8 +102,7 @@ class AirTaskRuntime {
   }
 }
 
-/// 给新任务挑线路。和 Web 同一条规则：CLI 由输入区那颗药丸决定（换 CLI 就是
-/// 换一整池 Provider 和模型，两件事不能拆开做），这里只管线路、模型与推理强度。
+/// 给新任务挑 CLI、线路、模型和推理强度；换 CLI 时面板会清掉旧线路与模型。
 ///
 /// 取消返回 null；确定返回新的一份，由调用方留在输入区，等创建任务时写下去。
 Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
@@ -111,6 +110,7 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
   required SettingsService settings,
   required AirTaskRuntime initial,
   http.Client? httpClient,
+  List<String>? availableClis,
 }) async {
   final cli = parseCli(initial.cli);
   // 先弹窗、里面填数据：Provider 池是一趟网络请求（codex 那一支连账号模型目录一起
@@ -142,6 +142,12 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
         subModel: initial.subagent?.model,
         settings: settings,
         httpClient: httpClient,
+        cliAvailability: {
+          for (final candidate in SessionCli.values)
+            candidate:
+                candidate.name == cli.name ||
+                (availableClis?.contains(candidate.name) ?? false),
+        },
       ),
     ),
   );
@@ -164,7 +170,9 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
     cli: picked.switchToCli ?? initial.cli,
     providerSelection: picked.providerSelection,
     provider: picked.provider,
-    providerName: _providerNameOf(providers, picked.provider) ?? '',
+    providerName: picked.provider.isEmpty
+        ? ''
+        : (_providerNameOf(providers, picked.provider) ?? picked.providerLabel),
     model: picked.model,
     effort: picked.effort,
     // 子任务尾巴和主线路一起交回来。面板已经在模型为空时折成 null（只挑线路

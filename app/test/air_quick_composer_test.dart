@@ -9,8 +9,8 @@ import 'package:multicc_app/widgets/air/air_task_config.dart';
 
 /// 目录首页贴底那条创建输入条（[AirQuickComposer] 的 `docked` 形态）。
 ///
-/// 它默认只是**一行**：一颗回形针、一句灰字占位、一颗发送键。整块面板（CLI /
-/// 线路 / 角色三颗药丸 + 多行输入 + Goal）只在「用户要写东西」的时候才铺开 ——
+/// 它默认只是**一行**：一颗回形针、一句灰字占位、一颗发送键。整块面板（一颗
+/// CLI/Provider/模型配置药丸 + 角色药丸 + 多行输入 + Goal）只在「用户要写东西」的时候才铺开 ——
 /// 一进目录页就铺着一大块空输入框，等于把清单挤掉三分之一，而九成的时间里用户
 /// 是来看任务的。
 ///
@@ -74,7 +74,7 @@ void main() {
     expect(find.text('描述要完成的任务…'), findsOneWidget);
     expect(_realInput, findsNothing, reason: '真输入框只在展开态才挂');
     expect(find.text('创建并执行 ↑'), findsNothing);
-    // 三颗药丸（CLI / 线路 / 角色）也不在这一行里。
+    // 两颗药丸（运行配置 / 角色）也不在这一行里。
     expect(find.byKey(const ValueKey('air-quick-cli')), findsNothing);
     expect(find.byKey(const ValueKey('air-quick-ai')), findsNothing);
     expect(find.byKey(const ValueKey('air-quick-role')), findsNothing);
@@ -92,9 +92,28 @@ void main() {
 
     expect(_realInput, findsOneWidget);
     expect(find.text('创建并执行 ↑'), findsOneWidget);
-    expect(find.byKey(const ValueKey('air-quick-cli')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-quick-cli')), findsNothing);
     expect(find.byKey(const ValueKey('air-quick-ai')), findsOneWidget);
     expect(find.byKey(const ValueKey('air-quick-role')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('320px 下合并的配置药丸与角色仍在屏内', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 640);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await _pump(tester, onSubmit: () async => true);
+    await tester.tap(find.byKey(const ValueKey('air-quick-input')));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final ai = find.byKey(const ValueKey('air-quick-ai'));
+    final role = find.byKey(const ValueKey('air-quick-role'));
+    expect(ai, findsOneWidget);
+    expect(role, findsOneWidget);
+    expect(find.byKey(const ValueKey('air-quick-cli')), findsNothing);
+    expect(tester.getBottomRight(ai).dx, lessThanOrEqualTo(320));
+    expect(tester.getBottomRight(role).dx, lessThanOrEqualTo(320));
     expect(tester.takeException(), isNull);
   });
 
