@@ -369,9 +369,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.deepEqual(skinOf(skin.chat), skinOf(skin.form), `对话页 AI 胶囊与新任务表单不是同一颗：${JSON.stringify(skin)}`);
     assert.deepEqual(skinOf(skin.chatRole), skinOf(skin.formRole), `对话页角色胶囊与新任务表单不是同一颗：${JSON.stringify(skin)}`);
     // ::before 的标记不再是那颗 ◆ 了：run-config.js 把 CLI 的短标（这里是 codex 的
-    // E）写进 data-mark，composer.css 用 attr() 画出来。对话帧与新任务表单必须画
+    // X）写进 data-mark，composer.css 用 attr() 画出来。对话帧与新任务表单必须画
     // 同一个字母（上一行的 deepEqual 已经把它们逐项比过）。
-    assert.equal(skin.chat.mark, '"E"', `AI 胶囊该画 codex 的短标：${JSON.stringify(skin.chat)}`);
+    assert.equal(skin.chat.mark, '"X"', `AI 胶囊该画 codex 的短标：${JSON.stringify(skin.chat)}`);
     assert.equal(skin.form.mark, '"X"', `新任务表单那颗画的是它自己那条车道的短标（codex-exp → X）：${JSON.stringify(skin.form)}`);
     assert.equal(skin.chat.cls.trim(), 'mc-composer__pill mc-composer__pill--ai', JSON.stringify(skin.chat));
     assert.equal(skin.chatRole.cls.trim(), 'mc-composer__pill mc-composer__pill--role', JSON.stringify(skin.chatRole));
@@ -546,9 +546,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}?.textContent.includes('Lab Responses')`), 'AI 配置 renders on the composer card');
     await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
     assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"]')?.value==='codex-lab'`));
-    // 这条任务的 cli 是 codex（兜底的 `codex exec` 车道）。扶正之后两条 codex 车道的
-    // 大字都是家族名 Codex，区分它们的是小字（codex exec / Codex App Server）。
+    // 旧 codex 会话仍显示产品名，不再摆两张引擎卡片或露出引擎后缀。
     assert.equal(await page.evaluate(`document.querySelector('.air-cli-option.selected strong').textContent`), 'Codex');
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.rc-cli-card strong')].map(n=>n.textContent).filter(n=>n==='Codex'||n==='Claude').sort()`), ['Claude', 'Codex']);
+    assert.equal(await page.evaluate(`/Agent SDK|App Server|claude -p|codex exec/.test(document.querySelector('.air-config-dialog').innerText)`), false);
+    assert.equal(await page.evaluate(`document.querySelector('.rc-cli-card[data-cli="codex"]')===null`), true);
+    screenshots.push(await page.screenshot('runtime-config-air-products'));
     // 线路是一个下拉（「固定一条」那一栏），三条 Codex Provider 一行装完。从前那个
     // 池子里的 Auto 项没了 —— 自动那条路现在是模式段上的「自动挑选」。内置 Official
     // 就是默认，不再另造一条空值的「默认登录」。
@@ -589,7 +592,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(marquee.pill <= 321, `胶囊不超过上限宽度：${marquee.pill}`);
     assert.ok(parseFloat(marquee.shift) <= -2, `跑马灯位移来自真实溢出：${marquee.shift}`);
     assert.equal(marquee.animation, 'mc-pill-marquee');
-    assert.equal(marquee.mark, '"E"', '跑马灯里的标记仍是 CLI 短标');
+    assert.equal(marquee.mark, '"X"', '跑马灯里的标记仍是 CLI 短标');
     // 跑马灯是视觉效果：断言只能证明类名、位移和上限宽度，形状得留一张图给人看。
     const bandBox = await page.evaluate(`(()=>{const f=document.getElementById('conversation');const r=${frame}.getElementById('air-composer-meta').getBoundingClientRect();const o=f.getBoundingClientRect();return {x:o.x+r.x-8,y:o.y+r.y-6,width:r.width+16,height:r.height+12};})()`);
     const bandShot = await page.send('Page.captureScreenshot', { format: 'png', clip: { ...bandBox, scale: 2 }, captureBeyondViewport: false });

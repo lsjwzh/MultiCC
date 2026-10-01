@@ -435,6 +435,10 @@
   }
 
   function cliShortMark(cli) {
+    // Product badges do not distinguish current and legacy execution engines.
+    const id = cliKey(cli);
+    if (id === 'claude' || id === 'claude-exp') return 'C';
+    if (id === 'codex' || id === 'codex-exp') return 'X';
     const entry = cliEntry(cli);
     if (entry) return entry.shortMark;
     // An unknown id still gets its own letter; an empty one has none to give,

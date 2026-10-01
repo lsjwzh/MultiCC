@@ -11,16 +11,16 @@ InputDecoration runConfigInputDecoration({String? hint}) {
     hintText: hint,
     hintStyle: const TextStyle(color: AppColors.faint),
     filled: true,
-    fillColor: const Color(0xFFf4f8fd),
+    fillColor: const Color(0xFFf8fafc),
     isDense: true,
-    contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-    border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
     enabledBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(6),
+      borderRadius: BorderRadius.circular(12),
       borderSide: const BorderSide(color: Color(0xFFdce6f1)),
     ),
     focusedBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(6),
+      borderRadius: BorderRadius.circular(12),
       borderSide: const BorderSide(color: AppColors.accent),
     ),
   );

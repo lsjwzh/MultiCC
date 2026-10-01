@@ -7,6 +7,17 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
   List<Widget> buildAutoSection() {
     return [
       _autoPickOrderRow(),
+      const SizedBox(height: 8),
+      Text(
+        _order == RunPickOrder.order
+            ? '依次尝试线路，不可用时自动换下一条。'
+            : 'Jev 判断每条消息的难度，再选择合适的线路。',
+        style: const TextStyle(
+          color: AppColors.muted,
+          fontSize: 12,
+          height: 1.5,
+        ),
+      ),
       if (_order == RunPickOrder.difficulty) ..._autoDifficultyExtras(),
       const SizedBox(height: 14),
       const Text(
@@ -76,57 +87,21 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
     required String detail,
     required bool selected,
     required VoidCallback onTap,
-  }) {
-    return InkWell(
+  }) => Tooltip(
+    message: detail,
+    child: _segmentedButton(
       key: key,
+      label: label,
+      selected: selected,
       onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        decoration: BoxDecoration(
-          color: selected
-              ? AppColors.accent.withValues(alpha: 0.12)
-              : const Color(0xFFf4f8fd),
-          border: Border.all(
-            color: selected ? AppColors.accent : const Color(0xFFdce6f1),
-          ),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: TextStyle(
-                color: selected ? AppColors.accent : AppColors.text,
-                fontSize: 12.5,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              detail,
-              style: const TextStyle(
-                color: AppColors.muted,
-                fontSize: 10.5,
-                height: 1.35,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+    ),
+  );
 
   List<Widget> _autoDifficultyExtras() {
     return [
       const SizedBox(height: 12),
-      _jevRow(),
-      const SizedBox(height: 10),
-      const Text(
-        '档位',
-        style: TextStyle(color: AppColors.faint, fontSize: 12),
-      ),
+
+      const Text('档位', style: TextStyle(color: AppColors.faint, fontSize: 12)),
       const SizedBox(height: 5),
       Row(
         children: [
@@ -157,6 +132,17 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
           ),
         ],
       ),
+      const SizedBox(height: 8),
+      Text(
+        _tiering == RunTiering.jev ? '线路和模型交给 Jev，无需手动标档。' : '为每条线路标注简单、中等或复杂。',
+        style: const TextStyle(
+          color: AppColors.muted,
+          fontSize: 12,
+          height: 1.5,
+        ),
+      ),
+      const SizedBox(height: 10),
+      _jevRow(),
     ];
   }
 
@@ -164,15 +150,13 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
     final ready = _rowPoolsReady;
     return Container(
       key: const ValueKey('run-jev-status'),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: ready
-            ? const Color(0xFFf4f8fd)
-            : const Color(0xFFfff6e8),
+        color: ready ? const Color(0xFFf4f8fd) : const Color(0xFFfff6e8),
         border: Border.all(
           color: ready ? const Color(0xFFdce6f1) : const Color(0xFFf0c98a),
         ),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
         ready
@@ -218,13 +202,15 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       padding: const EdgeInsets.only(bottom: 8),
       child: Container(
         key: Key('run-pool-row-${row.id}'),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: hasProblem ? const Color(0xFFFFF6E8) : const Color(0xFFf4f8fd),
           border: Border.all(
-            color: hasProblem ? const Color(0xFFF0C98A) : const Color(0xFFdce6f1),
+            color: hasProblem
+                ? const Color(0xFFF0C98A)
+                : const Color(0xFFdce6f1),
           ),
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(12),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -376,8 +362,9 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
         decoration: BoxDecoration(
-          color: cliBrandColor(tryParseCli(row.lane) ?? widget.cli)
-              .withValues(alpha: 0.15),
+          color: cliBrandColor(
+            tryParseCli(row.lane) ?? widget.cli,
+          ).withValues(alpha: 0.15),
           borderRadius: BorderRadius.circular(4),
         ),
         child: Text(
@@ -396,7 +383,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
   /// 原生/未知处理 —— OpenCode 原生只有 opencode，未知协议只有 opencode。
   List<String> _compatibleLanes(RunPoolRow row) {
     if (isOpenCodeNativeProvider(row.providerId)) return const ['opencode'];
-    for (final lane in kAutoLanes) {
+    for (final lane in {row.lane, ...kAutoLanes}) {
       final provider = _providerMap(lane, row.providerId);
       if (provider != null) return lanesForLine(provider);
     }
@@ -419,13 +406,17 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
   Widget _rowModelPicker(int index) {
     final row = _rows[index];
     final cli = tryParseCli(row.lane) ?? widget.cli;
-    final choices = runModelChoices(cli, row.providerId, _poolFor(row.lane))
-        .where((m) => m.trim().isNotEmpty)
-        .toList();
+    final choices = runModelChoices(
+      cli,
+      row.providerId,
+      _poolFor(row.lane),
+    ).where((m) => m.trim().isNotEmpty).toList();
     final autoAllowed = _order == RunPickOrder.difficulty;
     final value = row.autoModel
         ? '__auto__'
-        : (choices.contains(row.model) ? row.model : (row.model.isEmpty ? '' : '__custom__'));
+        : (choices.contains(row.model)
+              ? row.model
+              : (row.model.isEmpty ? '' : '__custom__'));
     return DropdownButtonFormField<String>(
       key: Key('run-pool-model-${row.id}'),
       value: value,
@@ -436,10 +427,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       items: [
         const DropdownMenuItem(value: '', child: Text('线路默认')),
         if (autoAllowed)
-          const DropdownMenuItem(
-            value: '__auto__',
-            child: Text('自动（Jev 挑）'),
-          ),
+          const DropdownMenuItem(value: '__auto__', child: Text('自动（Jev 挑）')),
         ...choices.map(
           (m) => DropdownMenuItem(
             value: m,
@@ -452,9 +440,13 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         ),
         DropdownMenuItem(
           value: '__custom__',
-          child: Text(row.model.isNotEmpty && !choices.contains(row.model) && !row.autoModel
-              ? '自定义…（${row.model}）'
-              : '自定义…'),
+          child: Text(
+            row.model.isNotEmpty &&
+                    !choices.contains(row.model) &&
+                    !row.autoModel
+                ? '自定义…（${row.model}）'
+                : '自定义…',
+          ),
         ),
       ],
       onChanged: (v) => setState(() {
@@ -521,11 +513,8 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
-      builder: (_) => _AddLineSheet(
-        pool: _pool,
-        rows: _rows,
-        available: _available,
-      ),
+      builder: (_) =>
+          _AddLineSheet(pool: _pool, rows: _rows, available: _available),
     );
     if (picked == null || !mounted) return;
     setState(() => _rows.add(picked));
@@ -632,13 +621,11 @@ class _AddLineSheetState extends State<_AddLineSheet> {
   bool _allFailed = false;
   String _query = '';
 
-  List<String> get _lanes => kAutoLanes
-      .where((lane) {
-        final cli = tryParseCli(lane);
-        if (cli == null) return false;
-        return cli.supportsProvider && widget.available(cli);
-      })
-      .toList();
+  List<String> get _lanes => kAutoLanes.where((lane) {
+    final cli = tryParseCli(lane);
+    if (cli == null) return false;
+    return cli.supportsProvider && widget.available(cli);
+  }).toList();
 
   @override
   void initState() {
@@ -752,10 +739,11 @@ class _AddLineSheetState extends State<_AddLineSheet> {
         return name.toLowerCase().contains(_query.toLowerCase());
       }).toList();
       if (entries.isEmpty) continue;
-      // 组与组之间来一条细线：两组的标题都是「Claude · Agent SDK」这种一行的
-      // 时候，光靠间距分不出哪条线路归哪一组。
+      // 分隔产品分组，让线路归属清晰可见。
       if (groups > 0) {
-        out.add(const Divider(height: 13, thickness: 1, color: Color(0xFFe6eef7)));
+        out.add(
+          const Divider(height: 13, thickness: 1, color: Color(0xFFe6eef7)),
+        );
       }
       groups += 1;
       out.add(

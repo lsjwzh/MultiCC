@@ -21,7 +21,7 @@ function catalog() {
     // lane (so one lane can be made to mix protocols), and a codex-format route
     // that speaks only a sibling lane of its app type (so a lane can refuse it
     // as a CLI mismatch rather than as a missing provider).
-    { id: 'claude-multi', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude', 'opencode', 'codex'], modelOptions: ['multi-model'] },
+    { id: 'claude-multi', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude', 'opencode', 'zcode', 'codex'], modelOptions: ['multi-model'] },
     { id: 'codex-locked', appType: 'codex', apiFormat: 'openai_responses', compatibleClis: ['codex-exp'], modelOptions: [] },
   ];
   return {
@@ -222,7 +222,7 @@ test('one route may serve two lanes but never twice in the same lane', () => {
   assert.deepEqual(selectionClis(shared.value), ['codex', 'opencode']);
 });
 
-test('a lane may not mix protocols, and the pool must use its declared one', () => {
+test('a multi-protocol lane may mix protocols, but the pool must use its declared one', () => {
   const providers = catalog();
   const mixed = validateProviderSelection(crossCliSelection({
     protocol: 'openai_responses',
@@ -231,9 +231,7 @@ test('a lane may not mix protocols, and the pool must use its declared one', () 
       { providerId: 'claude-multi', priority: 2, cli: 'opencode' },
     ],
   }), { cli: 'claude', providers });
-  assert.equal(mixed.ok, false);
-  assert.equal(mixed.code, 'provider_protocol_mismatch');
-  assert.match(mixed.error, /candidates on opencode mix protocols/);
+  assert.equal(mixed.ok, true, mixed.error);
   // Every lane may agree with itself and still leave the declared protocol
   // unused — the pool would then spawn on a wire format it never declared.
   assert.equal(validateProviderSelection(crossCliSelection({
@@ -243,6 +241,43 @@ test('a lane may not mix protocols, and the pool must use its declared one', () 
       { providerId: 'empty', model: 'bad-model', priority: 2, cli: 'claude' },
     ],
   }), { cli: 'claude', providers }).code, 'provider_protocol_mismatch');
+});
+
+test('mixed OpenCode and ZCode pools survive save/reload with explicit and implicit lanes', () => {
+  for (const cli of ['opencode', 'zcode']) {
+    for (const explicit of [false, true]) {
+      const providers = catalog();
+      const candidates = ['responses-a', 'claude-multi'].map(providerId => ({
+        providerId, ...(explicit ? { cli } : {}),
+      }));
+      const saved = validateProviderSelection({ mode: 'auto', candidates }, { cli, providers });
+      assert.equal(saved.ok, true, saved.error);
+      assert.equal(saved.value.protocol, 'openai_responses');
+      const dto = providerSelectionDto(saved.value);
+      const reloaded = validateProviderSelection(dto, { cli, providers });
+      assert.equal(reloaded.ok, true, reloaded.error);
+      assert.deepEqual(providerSelectionDto(reloaded.value), dto);
+      const mismatch = validateProviderSelection({
+        mode: 'auto', protocol: 'anthropic', candidates: [
+          { providerId: 'responses-a', ...(explicit ? { cli } : {}) },
+          { providerId: 'responses-b', ...(explicit ? { cli } : {}) },
+        ],
+      }, { cli, providers });
+      assert.equal(mismatch.code, 'provider_protocol_mismatch');
+    }
+  }
+});
+
+test('single-protocol lanes reject mixed pools even before the derived protocol is persisted', () => {
+  const providers = { ...catalog(), appTypesForCli: () => ['claude', 'codex'] };
+  for (const explicit of [false, true]) {
+    const candidates = ['responses-a', 'claude-multi'].map(providerId => ({
+      providerId, ...(explicit ? { cli: 'codex' } : {}),
+    }));
+    const result = validateProviderSelection({ mode: 'auto', candidates }, { cli: 'codex', providers });
+    assert.equal(result.code, 'provider_protocol_mismatch');
+    assert.match(result.error, /candidates on codex mix protocols/);
+  }
 });
 
 test('cliSwitch is written only for a cross-CLI pool and defaults to failover', () => {

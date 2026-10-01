@@ -167,21 +167,13 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   Color _cliOptionColor(SessionCli cli) =>
       _cliAvailable(cli) ? const Color(0xFF233249) : const Color(0xFF8a9aab);
 
-  /// 线路下拉的一项（**菜单里**的样子）：大字是产品名，下面那行小字是这条车道底下
-  /// 的引擎。扶正的两条常驻车道底下确实是一个引擎产品（Claude Agent SDK / Codex App
-  /// Server），得写出来；其余车道的小字就是自己的 id，跟名字重复，就不再画一行。
-  ///
-  /// 两行式交给 [ProviderOption]：它按「有没有竖向空间」决定画几行（开着的那张菜单
-  /// 里两行，收起的字段只有固定单行高，就只画大字）—— provider 的限额细节走的就是
-  /// 这条规则，这里不另写一份。
-  Widget _cliOptionLabel(SessionCli cli) {
-    final engine = cliEngine(cli.name);
-    return ProviderOption(
-      main: _cliOptionMain(cli),
-      detail: engine == cli.name ? '' : engine,
-      mainStyle: TextStyle(color: _cliOptionColor(cli), fontSize: 13),
-    );
-  }
+  /// 新建会话只显示产品名，引擎实现不作为用户选项。
+  Widget _cliOptionLabel(SessionCli cli) => Text(
+    _cliOptionMain(cli),
+    maxLines: 1,
+    overflow: TextOverflow.ellipsis,
+    style: TextStyle(color: _cliOptionColor(cli), fontSize: 13),
+  );
 
   /// 收起的那一格里的同一项：只有大字（那份两行式是菜单用的，见 [_cliOptionLabel]）。
   Widget _cliOptionClosedLabel(SessionCli cli) => Text(

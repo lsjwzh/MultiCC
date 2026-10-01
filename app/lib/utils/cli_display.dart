@@ -391,6 +391,9 @@ Color cliDisplayColor(String? id) => kCliDisplays[_key(id)]?.color ?? AppColors.
 
 /// id → 折叠徽标的字母。
 String cliShortMark(String? id) {
+  final family = cliFamilyOf(id);
+  if (family == 'claude') return 'C';
+  if (family == 'codex') return 'X';
   final entry = kCliDisplays[_key(id)];
   if (entry != null) return entry.mark;
   final name = cliDisplayName(id);
