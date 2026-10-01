@@ -65,6 +65,7 @@ const {
 const { cliHandoffSummary } = require('../cli/switch-runtime');
 const { summarizeHistoryUsage } = require('../codex/usage');
 const { buildReplayMessages } = require('../routes/chat-history');
+const { fitHistoryFrame } = require('./history-frame-budget');
 const chatStream = require('./chat-stream');
 const waitInjector = require('../wait/injector');
 const providers = require('../providers/core');
@@ -818,11 +819,10 @@ function createChatTurnEngine(deps) {
         const reasoningProgress = adapterReasoningProgressEvent(evt);
         if (reasoningProgress) forward(reasoningProgress);
         let tool = evt.id && cs.currentToolCalls.find(item => item.id === evt.id);
-        if (tool && evt.snapshot === true) {
-          tool.input = { text: evt.text || '' };
-          tool.result = evt.text || '';
-        } else {
-          tool = { name: 'Thinking', input: { text: evt.text || '' }, id: evt.id, result: evt.text || '' };
+        // Text lives in input only; a copy in result doubled reasoning-heavy turns.
+        if (tool && evt.snapshot === true) tool.input = { text: evt.text || '' };
+        else {
+          tool = { name: 'Thinking', input: { text: evt.text || '' }, id: evt.id };
           cs.currentToolCalls.push(tool);
           getBackgroundTaskRuntime().recordMainToolUseId(sessionName, evt.id);
         }
@@ -2756,7 +2756,7 @@ function createChatTurnEngine(deps) {
 
     // Replay saved history + in-progress assistant response (if any).
     // Send only the newest page over WS on connect; older messages are fetched
-    // on demand via GET /history?before=<id> as the user scrolls up.
+    // on demand via GET /history?before=<id>. That one frame is byte-budgeted.
     // The replay helper also recognizes the crash-safety `_interim` record. It
     // promotes that stable-id entry to the one live streaming tail, rather than
     // sending both the persisted first batch and a cumulative id-less copy.
@@ -2764,8 +2764,8 @@ function createChatTurnEngine(deps) {
     const canonicalPage = shellId
       ? taskContextHost.taskShellChatHistory(shellId, { ...historyOptions, activeSessionId: sessionName })
       : getChatHistoryRuntime().paginate(sessionName, historyOptions);
-    const page = { messages: canonicalPage.messages, hasMore: canonicalPage.hasMore };
-    const replayMessages = shellId ? page.messages : buildReplayMessages(page.messages, cs);
+    const page = fitHistoryFrame(shellId ? canonicalPage.messages : buildReplayMessages(canonicalPage.messages, cs), canonicalPage.hasMore);
+    const replayMessages = page.messages;
     // Include authoritative cumulative token usage from the persistent
     // accumulator so the frontend doesn't need to reconstruct it from the
     // rolling chat_history window (which trims old messages).

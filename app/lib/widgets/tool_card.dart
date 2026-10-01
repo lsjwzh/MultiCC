@@ -170,7 +170,9 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
                       ),
                     ),
                   ],
-                  if (widget.toolCall.result != null) ...[
+                  // Thinking 的 result 就是它自己的正文（上面已经显示过），不再重复一遍。
+                  if (widget.toolCall.result != null &&
+                      (isError || widget.toolCall.name != 'Thinking')) ...[
                     const SizedBox(height: 8),
                     Text(
                       isError ? 'Error:' : 'Result:',
