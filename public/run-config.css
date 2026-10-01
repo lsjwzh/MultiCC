@@ -78,6 +78,14 @@ dialog .air-config-field input { margin-top: 7px; }
 .rc-modes { display: flex; width: 100%; }
 .rc-modes .rc-seg-btn { flex: 1 1 0; text-align: center; }
 .rc-fixed[hidden], .rc-auto[hidden] { display: none; }
+.rc-preset-bar { display:flex; align-items:end; flex-wrap:wrap; gap:8px; margin-bottom:16px; padding-bottom:14px; border-bottom:1px solid #edf3f9; }
+.rc-preset-bar .rc-preset-field { flex:1 1 180px; margin:0; }
+.rc-preset-bar > button { min-height:36px; font-size:11px; }
+.rc-preset-form { display:flex; flex:1 1 100%; flex-wrap:wrap; gap:7px; }
+.rc-preset-form input { flex:1 1 170px; width:auto; min-width:0; }
+.rc-preset-form button { min-height:36px; font-size:11px; }
+.rc-preset-status { flex:1 1 100%; margin:0; color:#64809b; font-size:10px; line-height:1.5; }
+.rc-preset-status:empty { display:none; }
 .rc-two { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; margin-bottom: 12px; }
 .rc-field { display: block; min-width: 0; color: #5f7286; font-size: 10px; }
 .rc-field > span { display: block; margin-bottom: 5px; }

@@ -19,6 +19,7 @@ import 'package:multicc_app/services/quota_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/run_config/run_chip.dart';
 import 'package:multicc_app/widgets/run_config/run_config_models.dart';
+import 'package:multicc_app/widgets/run_config/run_config_presets.dart';
 import 'package:multicc_app/widgets/run_config/run_config_sheet.dart';
 import 'package:multicc_app/widgets/run_config/run_config_wire.dart';
 import 'package:multicc_app/widgets/run_config/run_labels.dart';
@@ -287,6 +288,43 @@ void main() {
       'modelOptions': ['glm-5.2'],
     },
   ];
+
+  test('线路池预设持久化挑选策略与档位，但不保存跨信任许可', () async {
+    SharedPreferences.setMockInitialValues({});
+    final store = RunConfigPresetStore();
+    await store.save(
+      RunConfigPreset(
+        id: 'tiered',
+        name: '分级组合',
+        protocol: 'anthropic',
+        rows: [
+          RunPoolRow(lane: 'claude', providerId: 'cheap', markedTier: 1),
+          RunPoolRow(
+            lane: 'claude',
+            providerId: 'strong',
+            autoModel: true,
+            markedTier: 2,
+          ),
+        ],
+        pickOrder: RunPickOrder.difficulty,
+        tiering: RunTiering.manual,
+        maxAttempts: 2,
+        sticky: false,
+        savedAt: 1,
+      ),
+    );
+    final restored = (await store.load()).single;
+    expect(restored.pickOrder, RunPickOrder.difficulty);
+    expect(restored.tiering, RunTiering.manual);
+    expect(restored.rows[1].markedTier, 2);
+    expect(restored.rows[1].autoModel, isTrue);
+    expect(restored.sticky, isFalse);
+    final raw = (await SharedPreferences.getInstance()).getString(
+      runConfigPresetKey,
+    )!;
+    expect(raw, isNot(contains('allowCrossTrust')));
+    expect(raw, isNot(contains('apiKey')));
+  });
 
   testWidgets('按顺序的池子：行、模型下拉、更多里的策略，保存原样写回', (tester) async {
     final out = _Captured();
@@ -781,6 +819,141 @@ void main() {
       find.byKey(const Key('run-pool-row-claude-exp:line-31')),
       findsOneWidget,
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('线路池预设：存草稿、取消套用、确认套用，再由底部保存生效', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/providers') {
+        return _json(200, {'providers': poolProviders});
+      }
+      return _json(200, {'ok': true});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: pool,
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claude: true},
+      ),
+      out,
+    );
+
+    await tester.tap(find.byKey(const Key('run-preset-save')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('run-preset-name')), '日常双线路');
+    await tester.tap(find.byKey(const Key('run-preset-name-save')));
+    await tester.pumpAndSettle();
+    expect(out.value, isNull, reason: '存预设不等于保存会话');
+    final raw = (await SharedPreferences.getInstance()).getString(
+      runConfigPresetKey,
+    )!;
+    expect(raw, contains('日常双线路'));
+    expect(raw, isNot(contains('allowCrossTrust')));
+    expect(raw, isNot(contains('apiKey')));
+
+    final cheap = find.byKey(const Key('run-pool-row-claude:cheap'));
+    final strong = find.byKey(const Key('run-pool-row-claude:strong'));
+    await tester.ensureVisible(cheap);
+    await tester.tap(
+      find.descendant(of: cheap, matching: find.byTooltip('下移')),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(strong).dy, lessThan(tester.getTopLeft(cheap).dy));
+
+    Future<void> choose() async {
+      await tester.ensureVisible(find.byKey(const Key('run-preset-choose')));
+      await tester.tap(find.byKey(const Key('run-preset-choose')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('日常双线路'));
+      await tester.pumpAndSettle();
+    }
+
+    await choose();
+    await tester.tap(
+      find.descendant(of: find.byType(AlertDialog), matching: find.text('取消')),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(strong).dy, lessThan(tester.getTopLeft(cheap).dy));
+
+    await choose();
+    await tester.tap(find.text('套用').last);
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(cheap).dy, lessThan(tester.getTopLeft(strong).dy));
+    expect(out.value, isNull);
+    await _save(tester);
+    expect(out.value?.providerSelection?.candidates.first.providerId, 'cheap');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('预设中的线路消失时不覆盖草稿；删除预设也不改当前池', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    await RunConfigPresetStore().save(
+      RunConfigPreset(
+        id: 'stale',
+        name: '旧组合',
+        protocol: 'anthropic',
+        rows: [
+          RunPoolRow(lane: 'claude', providerId: 'cheap'),
+          RunPoolRow(lane: 'claude', providerId: 'deleted-line'),
+        ],
+        pickOrder: RunPickOrder.order,
+        tiering: RunTiering.jev,
+        maxAttempts: 2,
+        sticky: true,
+        savedAt: 1,
+      ),
+    );
+    final client = MockClient(
+      (request) async => _json(200, {'providers': poolProviders}),
+    );
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: pool,
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claude: true},
+      ),
+      out,
+    );
+
+    await tester.tap(find.byKey(const Key('run-preset-choose')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('旧组合'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('套用').last);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已不可用，未套用'), findsOneWidget);
+    expect(find.byKey(const Key('run-pool-row-claude:strong')), findsOneWidget);
+    expect(
+      find.byKey(const Key('run-pool-row-claude:deleted-line')),
+      findsNothing,
+    );
+
+    await tester.tap(find.byKey(const Key('run-preset-choose')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-preset-delete-stale')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除').last);
+    await tester.pumpAndSettle();
+    expect(await RunConfigPresetStore().load(), isEmpty);
+    expect(find.byKey(const Key('run-pool-row-claude:strong')), findsOneWidget);
+    expect(out.value, isNull);
     expect(tester.takeException(), isNull);
   });
 

@@ -6,6 +6,8 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
   @override
   List<Widget> buildAutoSection() {
     return [
+      _autoPresetBar(),
+      const SizedBox(height: 14),
       _autoPickOrderRow(),
       const SizedBox(height: 8),
       Text(
@@ -35,6 +37,267 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       if (_autoMore) ..._autoMoreSection(),
       const SizedBox(height: 6),
     ];
+  }
+
+  Widget _autoPresetBar() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text('预设', style: TextStyle(color: AppColors.faint, fontSize: 12)),
+      const SizedBox(height: 6),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          OutlinedButton.icon(
+            key: const ValueKey('run-preset-choose'),
+            onPressed: _presets.isEmpty || _presetBusy ? null : _choosePreset,
+            icon: const Icon(Icons.bookmarks_outlined, size: 16),
+            label: Text(_presets.isEmpty ? '暂无预设' : '选择预设（${_presets.length}）'),
+          ),
+          TextButton.icon(
+            key: const ValueKey('run-preset-save'),
+            onPressed: _presetBusy ? null : _savePreset,
+            icon: const Icon(Icons.add_rounded, size: 16),
+            label: const Text('存为预设'),
+          ),
+        ],
+      ),
+      if (_presetNotice.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            _presetNotice,
+            key: const ValueKey('run-preset-notice'),
+            style: TextStyle(
+              color: _presetNoticeError ? AppColors.danger : AppColors.muted,
+              fontSize: 11,
+            ),
+          ),
+        ),
+    ],
+  );
+
+  void _presetMessage(String message, {bool error = false}) {
+    if (!mounted) return;
+    setState(() {
+      _presetNotice = message;
+      _presetNoticeError = error;
+    });
+  }
+
+  Future<bool> _confirmPreset(
+    String title,
+    String detail,
+    String action,
+  ) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: Text(title),
+            content: Text(detail),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: Text(action),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<void> _savePreset() async {
+    final result = _autoSelectionResult();
+    if (!result.ok) {
+      _presetMessage(result.error ?? '先配置至少两条可用线路', error: true);
+      return;
+    }
+    var typedName = '';
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('存为预设'),
+        content: TextField(
+          key: const ValueKey('run-preset-name'),
+          autofocus: true,
+          maxLength: 40,
+          textInputAction: TextInputAction.done,
+          decoration: const InputDecoration(hintText: '预设名称'),
+          onChanged: (value) => typedName = value,
+          onSubmitted: (value) {
+            if (value.trim().isNotEmpty) {
+              Navigator.pop(dialogContext, value.trim());
+            }
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('run-preset-name-save'),
+            onPressed: () {
+              final value = typedName.trim();
+              if (value.isNotEmpty) Navigator.pop(dialogContext, value);
+            },
+            child: const Text('保存预设'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || !mounted) return;
+    final existing = _presets
+        .where((item) => item.name.toLowerCase() == name.toLowerCase())
+        .firstOrNull;
+    if (existing != null &&
+        !await _confirmPreset(
+          '覆盖同名预设？',
+          '“$name”已有保存的线路组合。覆盖后无法恢复旧组合。',
+          '覆盖',
+        )) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _presetBusy = true);
+    try {
+      final preset = RunConfigPreset(
+        id:
+            existing?.id ??
+            DateTime.now().microsecondsSinceEpoch.toRadixString(36),
+        name: name,
+        protocol: result.protocol,
+        rows: [
+          for (final row in _rows.where((row) => row.sendable))
+            RunPoolRow(
+              lane: row.lane,
+              providerId: row.providerId,
+              model: row.model,
+              autoModel: row.autoModel,
+              markedTier: row.markedTier,
+            ),
+        ],
+        pickOrder: _order,
+        tiering: _tiering,
+        maxAttempts: result.selection!.maxAttempts,
+        sticky: _sticky,
+        savedAt: DateTime.now().millisecondsSinceEpoch,
+      );
+      final saved = await _presetStore.save(preset);
+      if (mounted) setState(() => _presets = saved);
+      _presetMessage('已存为预设；当前会话还需点击底部“保存”才会生效。');
+    } catch (_) {
+      _presetMessage('预设未能保存到本机，请重试。', error: true);
+    } finally {
+      if (mounted) setState(() => _presetBusy = false);
+    }
+  }
+
+  Future<void> _choosePreset() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.panel,
+      builder: (sheetContext) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.7,
+          ),
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              const ListTile(title: Text('选择线路预设')),
+              for (final preset in _presets)
+                ListTile(
+                  key: Key('run-preset-${preset.id}'),
+                  title: Text(preset.name),
+                  subtitle: Text(
+                    '${preset.rows.length} 条线路 · ${preset.pickOrder == RunPickOrder.difficulty ? '按难度' : '按顺序'}',
+                  ),
+                  onTap: () => Navigator.pop(sheetContext, preset.id),
+                  trailing: IconButton(
+                    key: Key('run-preset-delete-${preset.id}'),
+                    tooltip: '删除预设',
+                    onPressed: () =>
+                        Navigator.pop(sheetContext, 'delete:${preset.id}'),
+                    icon: const Icon(Icons.delete_outline_rounded),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (action == null || !mounted) return;
+    final deleting = action.startsWith('delete:');
+    final id = deleting ? action.substring(7) : action;
+    final preset = _presets.where((item) => item.id == id).firstOrNull;
+    if (preset == null) return;
+    if (deleting) {
+      if (!await _confirmPreset(
+        '删除预设？',
+        '只删除本机保存的“${preset.name}”，不会修改当前线路池。',
+        '删除',
+      )) {
+        return;
+      }
+      try {
+        final remaining = await _presetStore.delete(id);
+        if (mounted) setState(() => _presets = remaining);
+        _presetMessage('已删除预设；当前线路池未改变。');
+      } catch (_) {
+        _presetMessage('预设未能删除，请重试。', error: true);
+      }
+      return;
+    }
+    if (!await _confirmPreset(
+      '套用“${preset.name}”？',
+      '这会替换面板里尚未保存的线路池草稿；当前会话不会立即改变。',
+      '套用',
+    )) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _presetBusy = true);
+    try {
+      for (final row in preset.rows) {
+        final cli = tryParseCli(row.lane);
+        if (cli == null || !_available(cli)) {
+          _presetMessage('预设中的 ${row.lane} 车道当前不可用，未套用。', error: true);
+          return;
+        }
+        final pool = await _pool.forCli(row.lane);
+        final matching = pool
+            ?.where((item) => item['id'] == row.providerId)
+            .firstOrNull;
+        // 旧会话仍可能用 claude/codex 车道；它们不在“新建线路”的现代车道菜单里，
+        // 但协议兼容时可以继续套用既有预设。
+        if (matching == null ||
+            !laneServesProtocol(row.lane, providerProtocolOf(matching))) {
+          _presetMessage('预设中的 ${row.providerId} 线路已不可用，未套用。', error: true);
+          return;
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _rows
+          ..clear()
+          ..addAll(preset.copyRows());
+        _order = preset.pickOrder;
+        _tiering = preset.tiering;
+        _maxAttempts = preset.maxAttempts;
+        _sticky = preset.sticky;
+        _allowCrossTrust = false;
+        _autoError = '';
+      });
+      _presetMessage('已套用草稿；检查线路后点击底部“保存”。混用官方与自建线路需重新确认。');
+    } finally {
+      if (mounted) setState(() => _presetBusy = false);
+    }
   }
 
   // ── 怎么挑 ────────────────────────────────────────────────────────────

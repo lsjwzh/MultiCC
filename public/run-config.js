@@ -747,6 +747,7 @@
     let maxAttempts = MIN_ATTEMPTS;
     let sticky = true;
     let crossTrustConfirmed = false;
+    let activePresetId = '';
     let jev = null;
     let loading = false;
     let epoch = 0;
@@ -936,6 +937,32 @@
 
     // 自动挑选
     const autoSection = el(doc, 'section', 'air-config-section rc-auto');
+    const presetBar = el(doc, 'div', 'rc-preset-bar');
+    const presetField = el(doc, 'label', 'rc-field rc-preset-field');
+    presetField.append(el(doc, 'span', null, tt('runConfigPreset', '预设')));
+    const presetSelect = el(doc, 'select', 'rc-preset');
+    presetSelect.setAttribute('aria-label', tt('autoEditorPresetPlaceholder', '套用预设…'));
+    presetField.append(presetSelect);
+    const presetOpen = el(doc, 'button', 'rc-preset-open', tt('autoEditorPresetOpen', '存为预设'));
+    presetOpen.type = 'button';
+    const presetDelete = el(doc, 'button', 'rc-preset-delete', tt('autoEditorPresetDelete', '删除预设'));
+    presetDelete.type = 'button';
+    const presetForm = el(doc, 'div', 'rc-preset-form');
+    const presetName = el(doc, 'input', 'rc-preset-name');
+    presetName.type = 'text';
+    presetName.maxLength = 40;
+    presetName.placeholder = tt('runConfigPresetName', '预设名称');
+    presetName.setAttribute('aria-label', tt('runConfigPresetName', '预设名称'));
+    const presetSave = el(doc, 'button', 'rc-preset-save primary', tt('autoEditorPresetOpen', '存为预设'));
+    presetSave.type = 'button';
+    const presetCancel = el(doc, 'button', 'rc-preset-cancel', tt('runConfigCancel', '取消'));
+    presetCancel.type = 'button';
+    const presetStatus = el(doc, 'p', 'rc-preset-status');
+    presetStatus.setAttribute('role', 'status');
+    presetForm.append(presetName, presetSave, presetCancel);
+    presetBar.append(presetField, presetOpen, presetDelete, presetForm, presetStatus);
+    show(presetForm, false);
+    show(presetDelete, false);
     const pickHead = el(doc, 'div', 'air-config-section-head');
     pickHead.append(el(doc, 'h3', null, tt('runConfigPickHead', '怎么挑')), el(doc, 'p', null, tt('runConfigPickNote', '线路之间可以跨 CLI')));
     const pickList = el(doc, 'div', 'rc-radios');
@@ -949,7 +976,7 @@
     const tierPrice = segButton(doc, tierSeg, 'rc-tier-price', tt('runConfigTierPrice', '交给 Jev'), tt('runConfigTierPriceHint', '由 Jev 按难度挑，不用逐行标'));
     const tierManual = segButton(doc, tierSeg, 'rc-tier-manual', tt('runConfigTierManual', '我自己标'), tt('runConfigTierManualHint', '每行标一个简单 / 中等 / 复杂'));
     tierRow.append(tierSeg);
-    autoSection.append(pickHead, pickList, jevHost, tierRow);
+    autoSection.append(presetBar, pickHead, pickList, jevHost, tierRow);
 
     const poolHead = el(doc, 'div', 'air-config-section-head');
     const poolTitle = el(doc, 'h3', null, tt('runConfigPoolHead', '线路池'));
@@ -960,7 +987,7 @@
     addButton.type = 'button';
     const pickerHost = el(doc, 'div', 'rc-picker-host');
     const more = el(doc, 'details', 'rc-more');
-    const moreSummary = el(doc, 'summary', null, tt('runConfigMore', '更多：最多试几条 / 粘住上次成功 / 预设'));
+    const moreSummary = el(doc, 'summary', null, tt('runConfigMore', '更多：最多试几条 / 粘住上次成功'));
     const moreBody = el(doc, 'div', 'rc-more-body');
     const maxField = el(doc, 'label', 'rc-field');
     maxField.append(el(doc, 'span', null, tt('runConfigMaxAttempts', '最多试几条')));
@@ -970,11 +997,7 @@
     const stickyBox = el(doc, 'input');
     stickyBox.type = 'checkbox';
     stickyLabel.append(stickyBox, el(doc, 'span', null, tt('runConfigSticky', '粘住上次成功的线路')));
-    const presetField = el(doc, 'label', 'rc-field');
-    presetField.append(el(doc, 'span', null, tt('runConfigPreset', '预设')));
-    const presetSelect = el(doc, 'select', 'rc-preset');
-    presetField.append(presetSelect);
-    moreBody.append(maxField, stickyLabel, presetField);
+    moreBody.append(maxField, stickyLabel);
     more.append(moreSummary, moreBody);
     autoSection.append(poolHead, poolList, addButton, pickerHost, more);
     form.append(autoSection);
@@ -1415,9 +1438,13 @@
 
     function renderPresets() {
       const presets = readPresets();
-      presetSelect.replaceChildren(option(doc, '', tt('runConfigPresetNone', '（不用预设）')), ...presets.map(item => option(doc, item.id, item.name || tt('runConfigPresetRecent', '最近用过'))));
-      presetSelect.value = '';
-      show(presetField, presets.length > 0);
+      presetSelect.replaceChildren(option(doc, '', presets.length
+        ? tt('autoEditorPresetPlaceholder', '套用预设…') : tt('autoEditorPresetEmpty', '还没有预设')),
+      ...presets.map(item => option(doc, item.id, item.name || tt('runConfigPresetRecent', '最近用过'))));
+      if (!presets.some(item => item.id === activePresetId)) activePresetId = '';
+      presetSelect.value = activePresetId;
+      presetSelect.disabled = !presets.length;
+      show(presetDelete, !!activePresetId);
     }
 
     function readPresets() {
@@ -1427,6 +1454,55 @@
         const raw = JSON.parse(storage.getItem(PRESET_KEY) || '[]');
         return (Array.isArray(raw) ? raw : []).filter(item => item && Array.isArray(item.candidates) && item.candidates.length >= 2);
       } catch (_) { return []; }
+    }
+
+    function writePresets(list) {
+      try {
+        const storage = scope() && scope().localStorage;
+        if (!storage) return false;
+        storage.setItem(PRESET_KEY, JSON.stringify(list));
+        return true;
+      } catch (_) { return false; }
+    }
+
+    function showPresetForm(open) {
+      show(presetForm, open);
+      show(presetOpen, !open);
+      if (open) presetName.focus();
+    }
+
+    function savePreset() {
+      const built = buildAutoSelection({ rows, pick, tiering, routing: jev ? jev.read() : null,
+        providers: allProviders(), maxAttempts, sticky, crossTrustConfirmed });
+      if (!built.ok) { presetStatus.textContent = built.error; return; }
+      const name = presetName.value.trim();
+      if (!name) { presetStatus.textContent = tt('runConfigPresetNameRequired', '请先填写预设名称。'); presetName.focus(); return; }
+      const current = readPresets();
+      const existing = current.find(item => clean(item.name).toLowerCase() === name.toLowerCase());
+      if (existing && !scope().confirm(tt('runConfigPresetOverwrite', '同名预设已存在。覆盖后无法恢复旧组合，确定覆盖吗？'))) return;
+      const protocol = rows.map(row => protocolOf(rowLine(row))).find(Boolean) || 'anthropic';
+      const entry = {
+        id: existing?.id || `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+        name, protocol, pick, tiering, maxAttempts: built.value.maxAttempts,
+        sticky: sticky !== false, savedAt: Date.now(),
+        candidates: built.value.candidates.map(candidate => ({
+          providerId: candidate.providerId, cli: candidate.cli, model: candidate.model || null,
+          priority: candidate.priority, ...(candidate.tier ? { tier: candidate.tier } : {}),
+          ...(candidate.autoModel ? { autoModel: true } : {}),
+        })),
+      };
+      // 与 auto-provider-editor 共用原有本机预设目录；不写 key、Jev 端点和跨信任确认。
+      const named = [entry, ...current.filter(item => !item.recent && item.id !== entry.id
+        && clean(item.name).toLowerCase() !== name.toLowerCase())].slice(0, 20);
+      if (!writePresets([...named, ...current.filter(item => item.recent)])) {
+        presetStatus.textContent = tt('runConfigPresetStoreFailed', '预设未能保存到本机，请重试。');
+        return;
+      }
+      activePresetId = entry.id;
+      presetName.value = '';
+      showPresetForm(false);
+      renderPresets();
+      presetStatus.textContent = tt('runConfigPresetSavedDraft', '已存为预设；当前会话还需点击底部“保存”才会生效。');
     }
 
     // ── 添加线路：按 CLI 分组 ────────────────────────────────────────────────
@@ -1540,20 +1616,44 @@
       }));
     }
 
-    function applyPreset(id) {
+    async function applyPreset(id) {
       const preset = readPresets().find(item => item.id === id);
       if (!preset) return;
-      rows = (preset.candidates || []).map(candidate => ({
+      if (!scope().confirm(tt('runConfigPresetReplaceDraft', '套用预设会替换当前未保存的线路池草稿；当前会话不会立即改变。确定套用吗？'))) {
+        presetSelect.value = activePresetId;
+        return;
+      }
+      const nextRows = (preset.candidates || []).map(candidate => ({
         providerId: String(candidate.providerId || ''),
         cli: candidate.cli || (isNativeLine(candidate.providerId) ? 'opencode' : currentCli),
-        model: candidate.model || '', customModel: '', autoModel: false,
+        model: candidate.model || '', customModel: '', autoModel: candidate.autoModel === true,
         tier: candidate.tier === 't2' ? 'medium' : candidate.tier === 't3' ? 'complex' : 'simple',
         name: '', enabled: true,
       }));
+      const available = new Set(availableClis().filter(item => item.ok).map(item => item.cli));
+      for (const cli of new Set(nextRows.map(row => row.cli))) {
+        if (!available.has(cli)) { presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。'); presetSelect.value = activePresetId; return; }
+        if (nextRows.some(row => row.cli === cli && !isNativeLine(row.providerId))) {
+          try { await loadCatalog(cli); } catch (_) { presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。'); presetSelect.value = activePresetId; return; }
+        }
+      }
+      if (nextRows.some(row => isNativeLine(row.providerId)
+        ? !aiApi.openCodeNativeProviders().some(item => item.value === row.providerId)
+        : !!rowIssue(row, rowLine(row), cliLabel))) {
+        presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。');
+        presetSelect.value = activePresetId;
+        return;
+      }
+      rows = nextRows;
+      if (preset.pick === PICK_ORDER || preset.pick === PICK_DIFFICULTY) pick = preset.pick;
+      if (preset.tiering === PRICE_TIERING || preset.tiering === DEFAULT_TIERING) tiering = preset.tiering;
       if (preset.maxAttempts) maxAttempts = Number(preset.maxAttempts);
       if (preset.sticky != null) sticky = preset.sticky !== false;
-      renderPool();
+      crossTrustConfirmed = false;
+      activePresetId = id;
+      renderAuto();
       renderFooter();
+      presetStatus.textContent = tt('runConfigPresetAppliedDraft', '已套用草稿；检查线路后点击底部“保存”。混用官方与自建线路需重新确认。');
     }
 
     // ── 页脚 / 忙闲 / 子任务 ────────────────────────────────────────────────
@@ -1723,7 +1823,24 @@
     maxSelect.onchange = () => { maxAttempts = Number(maxSelect.value); renderFooter(); };
     stickyBox.onchange = () => { sticky = stickyBox.checked; };
     crossTrustBox.onchange = () => { crossTrustConfirmed = crossTrustBox.checked; };
-    presetSelect.onchange = () => applyPreset(presetSelect.value);
+    presetSelect.onchange = () => {
+      const id = presetSelect.value;
+      if (id) applyPreset(id);
+      else { activePresetId = ''; show(presetDelete, false); }
+    };
+    presetOpen.onclick = () => { presetStatus.textContent = ''; showPresetForm(true); };
+    presetCancel.onclick = () => showPresetForm(false);
+    presetSave.onclick = () => savePreset();
+    presetName.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); savePreset(); } };
+    presetDelete.onclick = () => {
+      if (!activePresetId || !scope().confirm(tt('runConfigPresetDeleteConfirm', '只删除本机预设，不会修改当前线路池。确定删除吗？'))) return;
+      if (!writePresets(readPresets().filter(item => item.id !== activePresetId))) {
+        presetStatus.textContent = tt('runConfigPresetStoreFailed', '预设未能保存到本机，请重试。'); return;
+      }
+      activePresetId = '';
+      renderPresets();
+      presetStatus.textContent = tt('autoEditorPresetDeleted', '预设已删除。');
+    };
     lineSelect.onchange = () => {
       providerValue = lineSelect.value;
       customModelValue = '';

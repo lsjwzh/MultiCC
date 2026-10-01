@@ -27,6 +27,7 @@ import '../ai_config_sheet.dart' show prepareAIConfigInputs;
 import '../provider_option.dart';
 import 'run_config_lanes.dart';
 import 'run_config_models.dart';
+import 'run_config_presets.dart';
 import 'run_config_style.dart';
 import 'run_config_wire.dart';
 import 'run_labels.dart';
@@ -121,6 +122,11 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
   bool _autoMore = false;
   String _autoError = '';
   SessionProviderRouting? _seededRouting;
+  final RunConfigPresetStore _presetStore = RunConfigPresetStore();
+  List<RunConfigPreset> _presets = const [];
+  String _presetNotice = '';
+  bool _presetNoticeError = false;
+  bool _presetBusy = false;
 
   /// 每条车道各自的 Provider 池：换 CLI、加线路都要现取，取过的留着。
   late final RunPoolService _pool;
@@ -147,6 +153,9 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     _agentCtrl = TextEditingController(text: widget.agent ?? '');
     _seedAuto();
     if (widget.providerSelection != null) _mode = RunConfigMode.auto;
+    _presetStore.load().then((presets) {
+      if (mounted) setState(() => _presets = presets);
+    });
   }
 
   @override
@@ -414,33 +423,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
   }
 
   void _submitAuto() {
-    // 「我自己标」：没点过档位的行按模型名先猜一次（flash/mini 这类归简单），
-    // 和 web 的 syncRungs 同一条规则 —— 不然刚切过来的池子会因为「只有一档」
-    // 存不出去。猜不出来的（名字分不出高下）按顺序第一条接简单任务。
-    if (_order == RunPickOrder.difficulty && _tiering == RunTiering.manual) {
-      final plan = resolveAutoRungs(
-        rowTexts: [
-          for (final row in _rows)
-            '${runLineName(row.providerId, _poolFor(row.lane))}（${row.model}）',
-        ],
-        chosenRungs: [for (final row in _rows) row.markedTier],
-      );
-      for (var i = 0; i < _rows.length; i += 1) {
-        _rows[i].markedTier ??= plan.rungs[i];
-      }
-    }
-    final result = buildAutoSelection(
-      AutoWireInput(
-        sessionLane: widget.cli.name,
-        rows: _rows,
-        pickOrder: _order,
-        tiering: _tiering,
-        maxAttempts: _maxAttempts,
-        sticky: _sticky,
-        allowCrossTrust: _allowCrossTrust,
-        previousRouting: _seededRouting,
-      ),
-    );
+    final result = _autoSelectionResult();
     if (!result.ok) {
       setState(() => _autoError = result.error ?? '');
       return;
@@ -465,6 +448,36 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
           mainProvider: provider,
         ),
         switchToCli: result.switchToCli,
+      ),
+    );
+  }
+
+  AutoWireResult _autoSelectionResult() {
+    // 「我自己标」：没点过档位的行按模型名先猜一次（flash/mini 这类归简单），
+    // 和 web 的 syncRungs 同一条规则 —— 不然刚切过来的池子会因为「只有一档」
+    // 存不出去。猜不出来的（名字分不出高下）按顺序第一条接简单任务。
+    if (_order == RunPickOrder.difficulty && _tiering == RunTiering.manual) {
+      final plan = resolveAutoRungs(
+        rowTexts: [
+          for (final row in _rows)
+            '${runLineName(row.providerId, _poolFor(row.lane))}（${row.model}）',
+        ],
+        chosenRungs: [for (final row in _rows) row.markedTier],
+      );
+      for (var i = 0; i < _rows.length; i += 1) {
+        _rows[i].markedTier ??= plan.rungs[i];
+      }
+    }
+    return buildAutoSelection(
+      AutoWireInput(
+        sessionLane: widget.cli.name,
+        rows: _rows,
+        pickOrder: _order,
+        tiering: _tiering,
+        maxAttempts: _maxAttempts,
+        sticky: _sticky,
+        allowCrossTrust: _allowCrossTrust,
+        previousRouting: _seededRouting,
       ),
     );
   }

@@ -1300,6 +1300,22 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`document.querySelector('.air-config-dialog form').requestSubmit()`);
     assert.ok(await page.waitFor(`window.__legacySaved`));
     assert.deepEqual(await page.evaluate(`window.__legacySaved.providerSelection.candidates.map(c=>c.cli)`), ['codex','codex-exp']);
+    // 自动池预设放在池子上方：存预设不保存会话，套用只改草稿，底部保存才交回配置。
+    await page.evaluate(`window.confirm=()=>true;window.MultiCCRunConfig.open({configuration:{cli:'codex-exp',provider:'codex-lab',providerSelection:{mode:'auto',cliSwitch:'failover',protocol:'openai_responses',candidates:[{cli:'codex-exp',providerId:'codex-lab',model:'gpt-5.5'},{cli:'codex-exp',providerId:'codex-backup',model:'gpt-5.6-sol'}]}}},['codex-exp'],value=>{window.__presetSaved=value})`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .rc-preset-open')`));
+    await page.evaluate(`document.querySelector('.rc-preset-open').click();document.querySelector('.rc-preset-name').value='双线路测试';document.querySelector('.rc-preset-save').click()`);
+    assert.ok(await page.waitFor(`JSON.parse(localStorage.getItem('multicc.autoProvider.presets.v1')||'[]').some(p=>p.name==='双线路测试')`));
+    const presetOnDisk = await page.evaluate(`JSON.parse(localStorage.getItem('multicc.autoProvider.presets.v1')).find(p=>p.name==='双线路测试')`);
+    assert.equal(presetOnDisk.candidates.length, 2);
+    assert.equal('allowCrossTrust' in presetOnDisk, false, '预设不储存跨信任确认');
+    assert.equal('routing' in presetOnDisk, false, '预设不储存 Jev 网关/key');
+    assert.equal(await page.evaluate(`window.__presetSaved===undefined`), true, '存预设不能提前提交会话');
+    await page.evaluate(`document.querySelectorAll('.rc-row .rc-remove')[1].click();const s=document.querySelector('.rc-preset');s.value='';s.dispatchEvent(new Event('change'));s.value=JSON.parse(localStorage.getItem('multicc.autoProvider.presets.v1')).find(p=>p.name==='双线路测试').id;s.dispatchEvent(new Event('change'))`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('.rc-row').length===2`));
+    assert.equal(await page.evaluate(`document.querySelector('.rc-preset-bar').getBoundingClientRect().right<=innerWidth`), true);
+    await page.evaluate(`document.querySelector('.air-config-dialog form').requestSubmit()`);
+    assert.ok(await page.waitFor(`window.__presetSaved`));
+    assert.equal(await page.evaluate(`window.__presetSaved.providerSelection.candidates.length`), 2);
     assert.deepEqual(await page.evaluate('window.__errors||[]'), []);
     assert.deepEqual(await page.evaluate(`document.getElementById('conversation').contentWindow.__errors||[]`), []);
   });
