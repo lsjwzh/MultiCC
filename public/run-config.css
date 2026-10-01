@@ -180,9 +180,7 @@ dialog .air-config-field input { margin-top: 7px; }
 .rc-more-body { display: grid; gap: 10px; margin-top: 11px; }
 .rc-more-body .rc-field { max-width: 220px; }
 .rc-check { display: flex; align-items: center; gap: 7px; color: #5f7286; font-size: 11px; }
-.rc-check input[type="checkbox"], .rc-cross-trust input[type="checkbox"] { width: 15px; height: 15px; flex: 0 0 15px; margin: 0; }
-.rc-cross-trust { display: flex; align-items: flex-start; gap: 8px; margin: 11px 25px 0; color: #8a6d2f; font-size: 10px; line-height: 1.5; }
-.rc-cross-trust[hidden] { display: none; }
+.rc-check input[type="checkbox"] { width: 15px; height: 15px; flex: 0 0 15px; margin: 0; }
 @media (max-width: 720px) {
 .rc-two { grid-template-columns: 1fr; }
 .rc-modes, .rc-efforts { flex-wrap: wrap; }

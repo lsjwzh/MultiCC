@@ -633,12 +633,13 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #notice:empty { display: none; }
 #task-layout { min-height: 0; flex: 1; display: flex; }
 #task-content { min-width: 0; flex: 1; display: flex; flex-direction: column; position: relative; overflow: hidden; background: linear-gradient(145deg, #fff, #f7faff); }
-/* 目录首页是一列卡片，整列在 #empty 里单层滚动；任务清单不再制造第二个滚动口。 */
-#empty { min-height: 0; flex: 1; overflow: auto; padding: 28px 34px 24px; color: var(--muted); }
-.directory-task-sticky-copy { display: none; position: absolute; z-index: 4; top: 0; left: 34px; right: 34px; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 15px; border: 1px solid #dbe6f1; border-radius: 0 0 12px 12px; background: rgba(255,255,255,.97); box-shadow: 0 3px 10px #35577d14; pointer-events: none; }
-.directory-task-sticky-copy.is-visible { display: flex; }
-.directory-task-sticky-copy strong { color: #35536d; font-size: 15px; }
-.directory-task-sticky-copy span { color: #6d8094; font-size: 11px; white-space: nowrap; }
+/* 目录首页是一列卡片，整列在 #empty 里单层滚动；任务清单不再制造第二个滚动口。
+   这里【没有】padding-top：分页那张卡的表头是 `position: sticky; top: 0`，而
+   sticky 的 top 是相对滚动容器的**内容盒**解析的 —— 留一层 padding-top，表头就会
+   钉在那一层下面，滚动时内容会从它上面的缝隙里穿过去。首屏那道留白因此改挂在
+   第一个孩子身上（见下一条），两种写法看着一样，钉住的位置差一整条 padding。 */
+#empty { min-height: 0; flex: 1; overflow: auto; padding: 0 34px 24px; color: var(--muted); }
+#empty > :first-child { margin-top: 28px; }
 /* ── 目录视图切换：Chat（默认）／ Terminal ─────────────────────────────────────
    终端属于每个目录，摆在目录页最前面。两类东西**互相让位**，不是排成一列：
    终端模式下 Chat 那一整块（统计卡 / 最近任务 / Git / 新任务输入框）整块收起，
@@ -765,12 +766,17 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .worktree-reclaim:disabled { opacity: .5; cursor: default; }
 /* ── 当前目录的任务面板：真实表头、当前页与分页条同属 #empty 滚动层。 ── */
 .directory-task-panel { display: flex; flex-direction: column; height: auto; overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
+/* 抬头 + 筛选包成一块：分页时它就是那条钉住的表头（见文件末尾的手机/桌面两档）。
+   分成两个节点写 sticky 会各自钉一次，第二块还得再算一遍第一块的高度 —— 一块够了。 */
+.directory-task-panel-head { flex: 0 0 auto; display: flex; flex-direction: column; }
 .directory-task-panel .section-heading { flex: 0 0 auto; padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
 .directory-task-heading-actions { display: flex; align-items: center; gap: 10px; }
 .task-sort-switch { display: inline-flex; padding: 2px; border: 1px solid #dce6ef; border-radius: 9px; background: #f3f7fb; }
 .task-sort-switch button { min-height: 0; padding: 3px 8px; border: 0; border-radius: 6px; background: transparent; color: #7a8c9e; font-size: 9.5px; line-height: 1.35; }
 .task-sort-switch button[aria-pressed="true"] { background: #fff; color: #2e73b8; box-shadow: 0 1px 4px #27496814; font-weight: 650; }
-/* 不能给清单 max-height + overflow:auto：那会再次锁住从任务行返回页首的手势。 */
+/* 手机这一档不能给清单 max-height + overflow:auto：那会再次锁住从任务行返回页首的
+   手势（手指落在清单上时滚动被它吃掉，回不到统计卡）。桌面那一档相反 —— 分页时
+   清单自己内滚、页面不动，见文件末尾的 min-width:761px 那一段。 */
 #directory-task-list { flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; overflow: visible; }
 .directory-task-row { min-width: 0; display: flex; align-items: stretch; padding: 0; border: 0; border-right: 1px solid #e8eef5; border-bottom: 1px solid #e8eef5; border-radius: 0; background: transparent; text-align: left; }
 .directory-task-row:nth-child(2n) { border-right: 0; }
@@ -1596,7 +1602,8 @@ main { background: transparent; }
 .pin-tab { border-radius: 15px; background: #fff; box-shadow: var(--shadow-1); }
 
 /* ── 目录首页 ────────────────────────────────────────────────────────── */
-#empty { padding: 30px 34px 24px; }
+#empty { padding: 0 34px 24px; }
+#empty > :first-child { margin-top: 30px; }
 #directory-stats { gap: 14px; margin-bottom: 18px; }
 .directory-stat { padding: 17px 19px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-1); }
 .directory-stat span { font-size: 12px; }
@@ -1804,11 +1811,11 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #delivery-destination { width: 100%; }
   #task-details { width: 100%; border-left: 0; }
   #directory-library { padding: 22px 15px; }
-  #empty { padding: 19px 12px 24px; }
+  #empty { padding: 0 12px 24px; }
+  #empty > :first-child { margin-top: 19px; }
   #directory-task-list { grid-template-columns: 1fr; }
   .directory-task-row { border-right: 0; }
   /* 手机同样只滚 #empty；当前页最多 20 条，由分页控制长度。 */
-  .directory-task-sticky-copy { left: 12px; right: 12px; }
   /* 任务行的标题在手机上占两行：一行 11px 的标题在 390px 屏上只装得下十来个字，
      读不出这条任务是干什么的（目录首页由用户报的那张图就是这个）。标题是这一行
      里唯一必须读全的字段，字也给它放大到副行之上；徽标与阶段仍在它下面那行，徽标
@@ -2015,9 +2022,55 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
      ≤64px」的不变量（对话页头由 is-chat-header 自己那档管，不受影响）。按本块「给紧凑值
      让路、不重述结构」的原则，页头内边距交回上面那条基础手机档。 */
   #task-title { font-size: 21px; }
-  #empty { padding: 18px 16px 24px; }
-  .directory-task-sticky-copy { left: 16px; right: 16px; }
+  #empty { padding: 0 16px 24px; }
+  #empty > :first-child { margin-top: 18px; }
   .directory-task-panel, .directory-git-panel, .admin-panel { border-radius: 20px; }
+}
+
+/* ── 手机（≤760px，与下面几档同一个断点）：表头钉在 #empty 上 ────────────────
+   整页只有 #empty 一个滚动口。分页那张卡的表头（抬头 + 筛选）滚到滚动口顶就钉住，
+   行继续滚；面板走完（下面还有 ≥ 面板高−表头高 的内容可滚）表头自己撒手，反向
+   则重新钉住。全靠 position: sticky，没有第二个滚动容器，也没有接力逻辑。
+
+   面板本身必须变成 overflow: visible —— 否则它就成了表头的滚动祖先，而面板高度
+   是 auto（内容高度），滚动范围是 0，sticky 退化成「待在面板顶部」，页面滚它
+   跟着滚走，等于没钉。圆角跟着拆开：面板不再裁剪，改由头/尾两块自己收口。
+   （`#directory-task-list` 上的 overflow: hidden 只为自己收圆角，它没有可滚的
+   溢出，不影响手指从任务行反向上滑回页首 —— 会吃掉那个手势的是
+   max-height + overflow:auto，这里没有 max-height。） */
+@media (max-width: 760px) {
+  .directory-task-panel { overflow: visible; }
+  .directory-task-panel > #directory-task-list { overflow: hidden; border-radius: 0 0 20px 20px; }
+  .directory-task-panel > #directory-task-pager { border-radius: 0 0 20px 20px; }
+  .directory-task-panel.is-paged > .directory-task-panel-head {
+    position: sticky; top: 0; z-index: 3;
+    border-radius: 20px 20px 0 0;
+    /* 钉住时任务行从它下面过，底色必须**不透明** —— 面板自己那层是 90% 白，
+       顶不住。抬头那一段本来是透明的，这里补上。 */
+    background: #fff;
+  }
+  /* 分页时面板至少铺满一个滚动口（多出来的高度由 air-task-pager.js 按
+     #empty.clientHeight 写进 min-height）：表头钉住那一刻「表头 + 当前页」正好
+     盖满整屏，而不是半屏卡片、半屏后面的内容。 */
+  .directory-task-panel.is-paged > #directory-task-list { flex: 1 1 auto; }
+  /* 底部那个输入框是 sticky 的（bottom: 12px，见上面那条）：它浮在滚动口下沿，
+     而面板分页后正好铺满整屏，于是「面板下沿 = 滚动口下沿」那一刻分页条正被它
+     压着。给面板补一段与输入框等高的下边距（高度由 air-task-pager.js 量出写进
+     --quick-task-form-h），页尾才有足够行程整个升到输入框之上。
+     选择器带 #empty 是必须的：#empty .directory-task-panel 那条 18px 的 ID 权重
+     更高，光写类名盖不掉它。 */
+  #empty .directory-task-panel.is-paged { margin-bottom: calc(18px + var(--quick-task-form-h, 0px)); }
+}
+
+/* ── 桌面（≥761px）：固定高度 + 清单自己内滚，页面不动 ──────────────────────
+   用户对 PC 的要求就是这一条：面板给个大概的固定高度，里面自己滑。表头是面板的
+   第一个 flex 孩子，本来就在清单上面，不需要 sticky；面板保持 overflow: hidden，
+   圆角和边框照旧裁在卡片上。断点复用页面唯一那条手机档（≤760px），不另起一个。 */
+@media (min-width: 761px) {
+  .directory-task-panel.is-paged { height: min(560px, 65vh); }
+  .directory-task-panel.is-paged > #directory-task-list {
+    flex: 1 1 auto; overflow: auto; overscroll-behavior: contain;
+  }
 }
 /* 统计卡在手机上的内边距单独收在 421px 以上：≤420px 那一档把它压到 9px 是为了在
    320px 上不折行，那是小屏的事，不该被这次视觉变更抬回去。 */

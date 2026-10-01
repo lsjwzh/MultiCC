@@ -291,7 +291,7 @@ test('routing keeps knobs the editor cannot express, and refuses one tier', () =
   }).code, 'provider_routing_requires_tiers');
 });
 
-test('mixed Official and user-managed candidates require explicit confirmation', () => {
+test('mixed Official and user-managed candidates save without a confirmation step', () => {
   const draft = {
     protocol: 'anthropic',
     providers: providers(),
@@ -303,12 +303,20 @@ test('mixed Official and user-managed candidates require explicit confirmation',
     sticky: true,
   };
   assert.equal(editor.selectionCrossesTrust(draft.candidates, draft.providers), true);
-  const denied = editor.serializeDraft(draft);
-  assert.equal(denied.ok, false);
-  assert.equal(denied.code, 'cross_trust_confirmation_required');
-  const confirmed = editor.serializeDraft({ ...draft, crossTrustConfirmed: true });
-  assert.equal(confirmed.ok, true);
-  assert.equal(confirmed.value.allowCrossTrust, true);
+  // 混用官方与自管是默认允许的：编辑器直接放行，替用户带上 allowCrossTrust。
+  const mixed = editor.serializeDraft(draft);
+  assert.equal(mixed.ok, true, mixed.error);
+  assert.equal(mixed.value.allowCrossTrust, true);
+  // 单一信任域不需要 allowCrossTrust。
+  const managedOnly = editor.serializeDraft({
+    ...draft,
+    candidates: [
+      { providerId: 'managed-a', model: 'model-a', priority: 1, enabled: true },
+      { providerId: 'managed-b', model: 'model-b', priority: 2, enabled: true },
+    ],
+  });
+  assert.equal(managedOnly.ok, true);
+  assert.equal(managedOnly.value.allowCrossTrust, false);
 });
 
 function mountEditor(options = {}) {
@@ -343,21 +351,16 @@ test('mounted controller shows the lines in use in order and keeps the rest one 
 
   click('official', 'add-one');
   assert.deepEqual(inList(), ['managed-a', 'managed-b', 'official']);
-  const blocked = control.read();
-  assert.equal(blocked.code, 'cross_trust_confirmation_required');
-  const confirm = container.querySelector('.multicc-auto-editor-cross-trust-confirm');
-  assert.equal(document.activeElement, confirm);
-  confirm.checked = true;
-  confirm.emit('change');
+  assert.equal(container.querySelector('.multicc-auto-editor-cross-trust-confirm'), null,
+    'the cross-trust confirmation checkbox is gone');
   const allowed = control.read();
-  assert.equal(allowed.ok, true);
-  assert.equal(allowed.value.allowCrossTrust, true);
+  assert.equal(allowed.ok, true, allowed.error);
+  assert.equal(allowed.value.allowCrossTrust, true, 'a mixed pool carries the flag with no tick');
   assert.deepEqual(allowed.value.candidates.map(candidate => [candidate.providerId, candidate.priority]),
     [['managed-a', 1], ['managed-b', 2], ['official', 3]], 'priority is simply the position in the list');
 
   click('official', 'remove');
   assert.deepEqual(inPool(), ['official', 'managed-c'], 'a removed line goes back to the add list');
-  assert.equal(confirm.checked, false, 'leaving the mixed pool drops the confirmation');
 
   const style = document.getElementById('multicc-auto-provider-editor-style');
   assert.match(style.textContent, /@container \(max-width:520px\)/);
@@ -434,23 +437,26 @@ test('a configured pool can be saved as a named preset and applied to a fresh ed
   assert.equal(store.data.length, 0);
 });
 
-test('a pool mixing official and managed lines saves as a preset without the cross-trust tick', () => {
+test('a pool mixing official and managed lines saves and round-trips without any cross-trust tick', () => {
   const store = memoryPresetStore();
   const first = mountEditor({ presetStore: store });
   first.click('official', 'add-one');
   first.$('preset-open').emit('click');
   first.$('preset-name').value = '混用';
   first.$('preset-save').emit('click');
-  assert.equal(store.data.length, 1, '预设不带确认，所以不该被确认拦住');
-  assert.equal('allowCrossTrust' in store.data[0], false, '确认不随预设落盘');
-  assert.equal(first.control.read({ remember: false }).code, 'cross_trust_confirmation_required',
-    '正式保存仍要先勾确认');
+  assert.equal(store.data.length, 1);
+  assert.equal('allowCrossTrust' in store.data[0], false,
+    '跨信任标记由保存时按池子算出来，不随预设落盘');
+  const saved = first.control.read({ remember: false });
+  assert.equal(saved.ok, true, saved.error);
+  assert.equal(saved.value.allowCrossTrust, true, '混池直接保存，不用先勾确认');
 
   const second = mountEditor({ presetStore: store });
   second.$('preset-select').value = store.data[0].id;
   second.$('preset-select').emit('change');
-  assert.equal(second.control.read({ remember: false }).code, 'cross_trust_confirmation_required',
-    '套用后同样要重新确认');
+  const applied = second.control.read({ remember: false });
+  assert.equal(applied.ok, true, applied.error);
+  assert.equal(applied.value.allowCrossTrust, true, '套用后同样是混池，直接可存');
 });
 
 test('reading a valid pool records it as a recent preset, deduplicated and capped', () => {

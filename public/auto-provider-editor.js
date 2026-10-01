@@ -573,11 +573,9 @@
     }
     const crossCli = selectionCrossesCli(cleanCandidates);
     const providers = Array.isArray(draft.providers) ? draft.providers : [];
+    // 混用官方账号与他人自管 Provider 是允许的，默认就这样跑：跨信任域时一律带上
+    // allowCrossTrust（服务端只有在它为 true 时才放行跨信任池），不再要求勾选确认。
     const crossesTrust = selectionCrossesTrust(cleanCandidates, providers);
-    if (crossesTrust && draft.crossTrustConfirmed !== true) {
-      return fail(tt('autoEditorCrossTrustRequired', '混合 Official 与自管 Provider 前，请先确认跨上游发送风险。'),
-        'cross_trust_confirmation_required');
-    }
     const requestedAttempts = Number(draft.maxAttempts) || 2;
     const maxAttempts = Math.max(2, Math.min(MAX_ATTEMPTS, cleanCandidates.length, requestedAttempts));
     return Object.freeze({
@@ -589,7 +587,7 @@
         candidates: cleanCandidates,
         maxAttempts,
         sticky: draft.sticky !== false,
-        allowCrossTrust: crossesTrust && draft.crossTrustConfirmed === true,
+        allowCrossTrust: crossesTrust,
         // Only a pool that actually spans lanes has a lane policy; a single-CLI
         // pool keeps exactly the wire shape it had before cross-CLI existed.
         ...(crossCli ? { cliSwitch: cliSwitchOf(draft) } : {}),
@@ -742,8 +740,6 @@ ${P} ${P}-add>summary::-webkit-details-marker{display:none}
 ${P} ${P}-summary{margin-top:10px;padding:7px 10px;border-radius:8px;background:color-mix(in srgb,var(--ape-accent) 8%,transparent)}
 ${P} ${P}-summary.bad{background:color-mix(in srgb,var(--ape-warn) 10%,transparent);color:var(--ape-warn)}
 ${P}-error{margin-top:8px;color:var(--ape-danger)}
-${P} ${P}-warning{display:grid;gap:6px;margin-top:10px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--ape-warn) 45%,transparent);border-radius:8px;color:var(--ape-warn)}
-${P} ${P}-warning label{align-items:flex-start;color:var(--ape-fg)}
 ${P} ${P}-more{margin-top:10px;padding-top:8px;border-top:1px solid var(--ape-line)}
 ${P} ${P}-more>summary{padding:2px 0;color:var(--ape-fg);font-size:12px;cursor:pointer}
 ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
@@ -975,16 +971,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     const error = make('div', 'multicc-auto-editor-error');
     error.setAttribute('role', 'alert');
     error.style.display = 'none';
-    const warning = make('div', 'multicc-auto-editor-warning');
-    warning.style.display = 'none';
-    const confirmLabel = make('label');
-    const confirm = make('input', 'multicc-auto-editor-cross-trust-confirm');
-    confirm.type = 'checkbox';
-    confirmLabel.append(confirm, document.createTextNode(
-      tt('autoEditorCrossTrustConfirm', '我确认允许本候选池跨这些上游发送对话上下文')));
-    warning.append(make('div', '',
-      tt('autoEditorCrossTrustWarning', '已选择 Official 与自管 Provider：同一对话上下文可能在自动切换时发送给多个上游。')),
-    confirmLabel);
 
     // Rarely-touched knobs stay folded; the summary line shows their values.
     const more = make('details', 'multicc-auto-editor-more');
@@ -1017,7 +1003,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
 
     container.replaceChildren(top, modeRow, modeHint, cliSwitchRow, cliSwitchHint,
       tieringRow, tieringHint, jevBox, listHead, list, addBox, summary,
-      error, warning, more);
+      error, more);
 
     function rows() {
       return allRows.slice();
@@ -1118,7 +1104,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       if (on && !order.includes(row) && order.length < MAX_CANDIDATES) order.push(row);
       if (!on) order = order.filter(item => item !== row);
       arrange();
-      if (!selectionCrossesTrust(enabledCandidates(), providers)) confirm.checked = false;
       notify();
     }
 
@@ -1473,13 +1458,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       return extra.length ? [...providers, ...extra] : providers;
     }
 
-    function syncTrustWarning({ preserveConfirmation = true } = {}) {
-      const mixed = selectionCrossesTrust(enabledCandidates(), readProviders());
-      warning.style.display = mixed ? '' : 'none';
-      if (!mixed || !preserveConfirmation) confirm.checked = false;
-      return mixed;
-    }
-
     function setRouting(on) {
       routingOn = !!on;
       setChecked(orderMode, !routingOn);
@@ -1521,7 +1499,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       tieringHint.textContent = priceTiering
         ? tt('autoEditorTieringDetailPrice', '每轮按价格表排档，便宜的先上；标了「自动选模型」的线路还会按这一轮的判断挑模型。')
         : tt('autoEditorTieringDetailManual', '每条线路的难度档位由你亲手标注。');
-      const crossesTrust = syncTrustWarning();
       if (routingOn && !priceTiering) syncRungs();
       // 自动选模型只在「按价格自动分层」下成立（服务端也只接受这种组合）。切回手动
       // 分层时把它放掉：一个看不见的勾不该把随后的保存顶回去。
@@ -1554,8 +1531,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         onChange(Object.freeze({
           protocol,
           enabledCount: order.length,
-          crossesTrust,
-          crossTrustConfirmed: confirm.checked,
         }));
       }
     }
@@ -1990,7 +1965,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       maxAttempts.value = String(configuredSelection?.maxAttempts
         || Math.max(2, Math.min(3, order.length)));
       sticky.checked = configuredSelection ? configuredSelection.sticky !== false : true;
-      confirm.checked = configuredSelection?.allowCrossTrust === true;
       // The gateway belongs to the routing config, not to the session: seed it
       // from the configured pool so re-saving keeps the same one. A pool that
       // predates the field has none, and it was always evaluated through Vercel.
@@ -2036,7 +2010,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
 
     maxAttempts.addEventListener('change', notify);
     sticky.addEventListener('change', notify);
-    confirm.addEventListener('change', notify);
     orderMode.addEventListener('click', () => {
       setRouting(false);
       notify();
@@ -2097,8 +2070,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
           candidates: rawCandidates(),
           maxAttempts: Number(maxAttempts.value),
           sticky: sticky.checked,
-          // 存预设不带跨信任确认（套用后正式保存仍要重新勾），所以不在这里拦。
-          crossTrustConfirmed: readOptions.forPreset === true || confirm.checked,
           routingEnabled: routingOn,
           // Both are pool-level: the lane policy is only written when some line
           // spans a lane, and the tiering only ridealong with a routing config.
@@ -2112,7 +2083,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
             && initialSelection.routing) || null,
         });
         showError(result.ok ? '' : result.error);
-        if (!result.ok && result.code === 'cross_trust_confirmation_required') confirm.focus();
         // 宿主读出一份有效池子就意味着它要被用上了：顺手记进「最近使用」。
         if (result.ok && result.value && readOptions.remember !== false && presetStore) {
           storePresets(rememberPreset(loadPresets(), result.value, { recent: true, now: now() }));

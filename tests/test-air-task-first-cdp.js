@@ -1316,15 +1316,36 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`document.querySelector('.air-config-dialog form').requestSubmit()`);
     assert.ok(await page.waitFor(`window.__presetSaved`));
     assert.equal(await page.evaluate(`window.__presetSaved.providerSelection.candidates.length`), 2);
-    // 官方 + 自管混用的池子：存预设不需要先勾跨信任确认（预设不存它），底部保存仍要。
+    // 关掉的上一个对话框要等 close 事件才从文档里摘掉，所以下面每个选择器都限定在
+    // 当前 [open] 的那个对话框里 —— 否则等待会被上一份的残留 DOM 提前满足，而新对话框
+    // 的 boot 还没跑完（submit 还是忙的），那一提交就落空了。
+    const D = selector => `document.querySelector('.air-config-dialog[open] ${selector}')`;
+    const submitDialog = () => page.evaluate(`document.querySelector('.air-config-dialog[open] form').requestSubmit()`);
+    // 官方 + 自管混用的池子：默认就是可以混的 —— 没有跨信任勾选框，底部保存直接过，
+    // 客户端替用户带上 allowCrossTrust（服务端只在它为 true 时放行跨信任池）。
     await page.evaluate(`window.MultiCCRunConfig.open({configuration:{cli:'codex-exp',provider:'codex-official',providerSelection:{mode:'auto',cliSwitch:'failover',protocol:'openai_responses',candidates:[{cli:'codex-exp',providerId:'codex-official',model:'gpt-5.5'},{cli:'codex-exp',providerId:'codex-lab',model:'gpt-5.5'}]}}},['codex-exp'],value=>{window.__mixedSaved=value})`);
-    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .rc-preset-open')&&document.querySelectorAll('.rc-row').length===2`));
-    await page.evaluate(`document.querySelector('.rc-preset-open').click();document.querySelector('.rc-preset-name').value='混用测试';document.querySelector('.rc-preset-save').click()`);
-    assert.ok(await page.waitFor(`JSON.parse(localStorage.getItem('multicc.autoProvider.presets.v1')||'[]').some(p=>p.name==='混用测试')`));
-    await page.evaluate(`document.querySelector('.air-config-dialog form').requestSubmit()`);
-    assert.equal(await page.evaluate(`window.__mixedSaved===undefined&&!!document.querySelector('.air-config-dialog[open]')`), true, '正式保存仍要先确认');
-    await page.evaluate(`const b=document.querySelector('.air-config-dialog[open] .rc-cross-trust input');b.checked=true;b.dispatchEvent(new Event('change'));document.querySelector('.air-config-dialog form').requestSubmit()`);
-    assert.ok(await page.waitFor(`window.__mixedSaved`));
+    assert.ok(await page.waitFor(`${D('.rc-preset-open')}&&document.querySelectorAll('.air-config-dialog[open] .rc-row').length===2`));
+    assert.equal(await page.evaluate(`${D('.rc-cross-trust')}===null`), true, '混池不再有跨信任确认勾选框');
+    await submitDialog();
+    const mixedResult = await page.waitFor(`(window.__mixedSaved?{ok:true}:null)||(${D('.air-config-error')}.textContent?{error:${D('.air-config-error')}.textContent}:null)`);
+    assert.ok(mixedResult && mixedResult.ok, `混池直接保存，不用先勾确认：${JSON.stringify(mixedResult)}`);
+    assert.equal(await page.evaluate(`window.__mixedSaved.providerSelection.allowCrossTrust`), true);
+    // 自动挑选也有「子任务线路/模型」这一处高级块（和固定一条共用），设置随保存交回，
+    // 也随预设落盘/回填：留空 = 跟随主线路。
+    await page.evaluate(`window.MultiCCRunConfig.open({configuration:{cli:'codex-exp',provider:'codex-lab',providerSelection:{mode:'auto',cliSwitch:'failover',protocol:'openai_responses',candidates:[{cli:'codex-exp',providerId:'codex-lab',model:'gpt-5.5'},{cli:'codex-exp',providerId:'codex-backup',model:'gpt-5.6-sol'}]}}},['codex-exp'],value=>{window.__autoSubSaved=value})`);
+    assert.ok(await page.waitFor(`${D('.rc-preset-open')}&&document.querySelectorAll('.air-config-dialog[open] .rc-row').length===2`));
+    assert.equal(await page.evaluate(`getComputedStyle(${D('.rc-advanced')}).display!=='none'`), true, '自动模式下子任务高级块可见');
+    await page.evaluate(`(()=>{const p=${D('.rc-sub-provider')};p.value='codex-lab';p.dispatchEvent(new Event('change'));const m=${D('.rc-sub-model')};m.value='__custom__';m.dispatchEvent(new Event('change'));${D('.rc-sub-model-custom')}.value='gpt-5.5';})()`);
+    await page.evaluate(`${D('.rc-preset-open')}.click();${D('.rc-preset-name')}.value='带子任务';${D('.rc-preset-save')}.click()`);
+    assert.ok(await page.waitFor(`JSON.parse(localStorage.getItem('multicc.autoProvider.presets.v1')||'[]').some(p=>p.name==='带子任务')`));
+    assert.deepEqual(await page.evaluate(`JSON.parse(localStorage.getItem('multicc.autoProvider.presets.v1')).find(p=>p.name==='带子任务').subagent`), { providerId: 'codex-lab', model: 'gpt-5.5' });
+    // 把子任务草稿清掉再套用预设：设置要跟着预设回来。
+    await page.evaluate(`(()=>{const p=${D('.rc-sub-provider')};p.value='';p.dispatchEvent(new Event('change'));const s=${D('.rc-preset')};s.value='';s.dispatchEvent(new Event('change'));s.value=JSON.parse(localStorage.getItem('multicc.autoProvider.presets.v1')).find(p=>p.name==='带子任务').id;s.dispatchEvent(new Event('change'));})()`);
+    assert.ok(await page.waitFor(`${D('.rc-sub-provider')}&&${D('.rc-sub-provider')}.value==='codex-lab'`), '套用预设后子任务线路回到草稿里');
+    await submitDialog();
+    const autoSubResult = await page.waitFor(`(window.__autoSubSaved?{ok:true}:null)||(${D('.air-config-error')}.textContent?{error:${D('.air-config-error')}.textContent}:null)`);
+    assert.ok(autoSubResult && autoSubResult.ok, `自动模式保存应成功：${JSON.stringify(autoSubResult)}`);
+    assert.deepEqual(await page.evaluate(`window.__autoSubSaved.subagent`), { providerId: 'codex-lab', model: 'gpt-5.5' });
     assert.deepEqual(await page.evaluate('window.__errors||[]'), []);
     assert.deepEqual(await page.evaluate(`document.getElementById('conversation').contentWindow.__errors||[]`), []);
   });

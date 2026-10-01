@@ -271,7 +271,9 @@
       candidates,
       maxAttempts: Math.max(MIN_ATTEMPTS, Math.min(MAX_ATTEMPTS, candidates.length, requested)),
       sticky: draft.sticky !== false,
-      allowCrossTrust: crossesTrust(candidates, providers) && draft.crossTrustConfirmed === true,
+      // 混用官方账号与别人配的线路是允许的，默认就这样跑：跨信任域时一律带上
+      // allowCrossTrust（服务端只有在它为 true 时才放行跨信任池）。
+      allowCrossTrust: crossesTrust(candidates, providers),
       cliSwitch: difficulty ? 'routing' : 'failover',
     };
     if (difficulty) {
@@ -285,10 +287,6 @@
         ...(routing.model ? { model: routing.model } : {}),
         ...(manual ? { tiers } : { tiering: 'price' }),
       };
-    }
-    if (crossesTrust(candidates, providers) && draft.crossTrustConfirmed !== true) {
-      return fail('这份池子同时用了官方账号和别人配的线路，需要确认后再保存。',
-        'cross_trust_confirmation_required');
     }
     return ok(selection);
   }
@@ -746,7 +744,6 @@
     let rows = [];
     let maxAttempts = MIN_ATTEMPTS;
     let sticky = true;
-    let crossTrustConfirmed = false;
     let activePresetId = '';
     let jev = null;
     let loading = false;
@@ -758,6 +755,10 @@
     let pickerFilter = "";
     let pickerData = null;
     let pickerListHost = null;
+    // 子任务（高级块）的草稿：config.subagent 是打开时读到的已存值，套用预设会把它
+    // 换成预设里的那份。renderSub 只在「主 CLI + 种子」变化时重铺下拉，其余时候保留
+    // 界面上的改动（拖排序、换主线路不该把子任务选择打回去）。
+    let subagentSeed = config.subagent && typeof config.subagent === 'object' ? config.subagent : null;
 
     function loadCatalog(cli) {
       if (catalogs.has(cli)) return Promise.resolve(catalogs.get(cli));
@@ -932,7 +933,7 @@
     subRow.append(subProviderField, subModelField);
     advancedBody.append(subRow, el(doc, 'p', 'rc-note', tt('runConfigSubHint', '子任务留空就是跟随主线路。')));
     advanced.append(advancedSummary, advancedBody);
-    fixedSection.append(fixedHead, cliGrid, lineRow, effortField, fixedStatus, advanced);
+    fixedSection.append(fixedHead, cliGrid, lineRow, effortField, fixedStatus);
     form.append(fixedSection);
 
     // 自动挑选
@@ -1001,12 +1002,10 @@
     more.append(moreSummary, moreBody);
     autoSection.append(poolHead, poolList, addButton, pickerHost, more);
     form.append(autoSection);
-    const crossTrustLabel = el(doc, 'label', 'rc-cross-trust');
-    const crossTrustBox = el(doc, 'input');
-    crossTrustBox.type = 'checkbox';
-    crossTrustLabel.append(crossTrustBox, el(doc, 'span', null,
-      tt('runConfigCrossTrust', '这份池子混用了「官方账号」和别人配的线路，我确认要这样跑。')));
-    autoSection.append(crossTrustLabel);
+    // 子任务线路/模型是「固定一条」和「自动挑选」共用的同一个高级块 —— 两种模式下
+    // 都只有这一处，摆在当前模式内容的下面（固定模式下 autoSection 是隐藏的，这块
+    // 自然跟在固定段后面）。显示/隐藏由 renderSub 按主线路的 CLI 决定。
+    form.append(advanced);
 
     const error = el(doc, 'p', 'air-config-error');
     error.setAttribute('role', 'alert');
@@ -1205,8 +1204,8 @@
     // The sub-task model keeps an explicit "leave it to the main line" as its
     // first option — an empty value means "no subagent override at all", which
     // is not the same as picking the main provider's default model.
-    function fillSubModel(select, custom, providerId, preferred) {
-      const state = modelState(currentCli);
+    function fillSubModel(select, custom, cli, providerId, preferred) {
+      const state = modelState(cli);
       const choices = [...new Set(aiApi.buildModelChoices(providerId, state))]
         .filter(choice => choice && choice !== '__custom__');
       const wanted = aiApi.normalizeModel(providerId, preferred || '', state);
@@ -1254,30 +1253,55 @@
       return providerValue;
     }
 
-    function renderSub() {
-      const supported = aiApi.supportsSubagentCli(currentCli) && !terminalDraft;
+    // 子任务挂在「主线路」上：固定一条时是选中的 CLI，自动挑选时是池子里排第一
+    // 那行的 CLI —— 与 primaryProviderId() 认的主线路一致。主 CLI 不支持子任务就
+    // 整块隐藏（和服务端 SUBAGENT_CLIS 一张表）。
+    function subCli() {
+      if (mode === MODE_AUTO) return rows.length ? clean(rows[0].cli) : '';
+      return currentCli;
+    }
+
+    // force=true 只在套用预设这类「种子真的换了」的场合用；平时由 dataset.seedKey
+    // 判断要不要重铺下拉，好让用户在界面上的改动活下来。
+    function renderSub(force) {
+      const cli = subCli();
+      const supported = !!cli && aiApi.supportsSubagentCli(cli) && !terminalDraft;
       show(advanced, supported);
-      if (!supported) return;
+      if (!supported) { delete subProviderSelect.dataset.seedKey; return; }
+      const prevProvider = subProviderSelect.value;
+      const prevModel = subModelSelect.value === '__custom__' ? subModelCustom.value.trim() : subModelSelect.value;
+      const prevCustom = subModelSelect.value === '__custom__';
       const items = [option(doc, '', tt('runConfigSubFollow', '随主（默认）'))];
-      for (const provider of providersOf(currentCli)) {
-        if ((currentCli === 'codex' || currentCli === 'codex-exp') && provider.isOfficial) continue;
+      for (const provider of providersOf(cli)) {
+        if ((cli === 'codex' || cli === 'codex-exp') && provider.isOfficial) continue;
         items.push(option(doc, provider.id, aiApi.providerLabel(provider, false)));
       }
       subProviderSelect.replaceChildren(...items);
-      const saved = config.subagent && config.subagent.model ? config.subagent : null;
-      const wanted = saved ? String(saved.providerId || '') : '';
-      subProviderSelect.value = items.some(item => item.value === wanted) ? wanted : '';
-      fillSubModel(subModelSelect, subModelCustom,
-        subProviderSelect.value || primaryProviderId(), saved ? saved.model || '' : '');
+      const seed = subagentSeed;
+      const wanted = seed ? String(seed.providerId || '') : '';
+      const seedKey = [cli, wanted, seed ? (seed.model || '') : ''].join('\u0000');
+      if (force || subProviderSelect.dataset.seedKey !== seedKey) {
+        subProviderSelect.value = items.some(item => item.value === wanted) ? wanted : '';
+        fillSubModel(subModelSelect, subModelCustom, cli,
+          subProviderSelect.value || primaryProviderId(), seed ? seed.model || '' : '');
+        subProviderSelect.dataset.seedKey = seedKey;
+        return;
+      }
+      // 主 CLI 没变：保住用户在子任务上做的选择，只按新目录把下拉重铺一遍。
+      subProviderSelect.value = items.some(item => item.value === prevProvider) ? prevProvider : '';
+      fillSubModel(subModelSelect, subModelCustom, cli,
+        subProviderSelect.value || primaryProviderId(), prevModel);
+      if (prevCustom) { subModelSelect.value = '__custom__'; show(subModelCustom, true); }
     }
 
     // Switching the sub-task 线路 only reshuffles the model list for that line —
     // it must not snap the 线路 select back to the saved value.
     function refreshSubLine() {
-      if (!aiApi.supportsSubagentCli(currentCli) || terminalDraft) return;
+      const cli = subCli();
+      if (!cli || !aiApi.supportsSubagentCli(cli) || terminalDraft) return;
       const current = subModelSelect.value === '__custom__'
         ? subModelCustom.value.trim() : subModelSelect.value;
-      fillSubModel(subModelSelect, subModelCustom,
+      fillSubModel(subModelSelect, subModelCustom, cli,
         subProviderSelect.value || primaryProviderId(), current);
     }
 
@@ -1424,6 +1448,8 @@
     function renderPool() {
       poolList.replaceChildren(...rows.map((row, index) => poolRowView(row, index)));
       renderMore();
+      // 池子第一行就是 Auto 的主线路，子任务高级块跟着它走（换主/排序要重铺）。
+      renderSub();
     }
 
     function renderMore() {
@@ -1472,9 +1498,8 @@
     }
 
     function savePreset() {
-      // 预设不存跨信任确认，套用后正式保存仍要重新确认，所以这里不拦。
       const built = buildAutoSelection({ rows, pick, tiering, routing: jev ? jev.read() : null,
-        providers: allProviders(), maxAttempts, sticky, crossTrustConfirmed: true });
+        providers: allProviders(), maxAttempts, sticky });
       if (!built.ok) { presetStatus.textContent = built.error; return; }
       const name = presetName.value.trim();
       if (!name) { presetStatus.textContent = tt('runConfigPresetNameRequired', '请先填写预设名称。'); presetName.focus(); return; }
@@ -1482,6 +1507,8 @@
       const existing = current.find(item => clean(item.name).toLowerCase() === name.toLowerCase());
       if (existing && !scope().confirm(tt('runConfigPresetOverwrite', '同名预设已存在。覆盖后无法恢复旧组合，确定覆盖吗？'))) return;
       const protocol = rows.map(row => protocolOf(rowLine(row))).find(Boolean) || 'anthropic';
+      // 子任务设置（线路 id + 模型，不含任何密钥）跟池子一起存进预设；留空 = 跟随主线路。
+      const subagent = collectSubagent();
       const entry = {
         id: existing?.id || `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
         name, protocol, pick, tiering, maxAttempts: built.value.maxAttempts,
@@ -1491,8 +1518,9 @@
           priority: candidate.priority, ...(candidate.tier ? { tier: candidate.tier } : {}),
           ...(candidate.autoModel ? { autoModel: true } : {}),
         })),
+        ...(subagent ? { subagent } : {}),
       };
-      // 与 auto-provider-editor 共用原有本机预设目录；不写 key、Jev 端点和跨信任确认。
+      // 与 auto-provider-editor 共用原有本机预设目录；不写 key、Jev 端点。
       const named = [entry, ...current.filter(item => !item.recent && item.id !== entry.id
         && clean(item.name).toLowerCase() !== name.toLowerCase())].slice(0, 20);
       if (!writePresets([...named, ...current.filter(item => item.recent)])) {
@@ -1650,23 +1678,18 @@
       if (preset.tiering === PRICE_TIERING || preset.tiering === DEFAULT_TIERING) tiering = preset.tiering;
       if (preset.maxAttempts) maxAttempts = Number(preset.maxAttempts);
       if (preset.sticky != null) sticky = preset.sticky !== false;
-      crossTrustConfirmed = false;
+      // 预设里的子任务设置（老预设没有这一段 = 跟随主线路）。
+      subagentSeed = preset.subagent && preset.subagent.model ? preset.subagent : null;
       activePresetId = id;
       renderAuto();
+      renderSub(true);
       renderFooter();
-      presetStatus.textContent = tt('runConfigPresetAppliedDraft', '已套用草稿；检查线路后点击底部“保存”。混用官方与自建线路需重新确认。');
+      presetStatus.textContent = tt('runConfigPresetAppliedDraft', '已套用草稿；检查线路后点击底部“保存”。');
     }
 
     // ── 页脚 / 忙闲 / 子任务 ────────────────────────────────────────────────
     function currentModelValue() {
       return modelSelect.value === '__custom__' ? modelCustom.value.trim() : modelSelect.value;
-    }
-
-    function autoPreview() {
-      const built = buildAutoSelection({
-        rows, pick, tiering, maxAttempts, sticky, crossTrustConfirmed: true, providers: allProviders(),
-      });
-      return built.ok ? built.value : null;
     }
 
     function renderFooter() {
@@ -1682,12 +1705,6 @@
           m: new Set(rows.map(row => chatChoiceCli(row.cli))).size,
         });
       }
-      const built = autoPreview();
-      const mixed = !!(built && buildAutoSelection({
-        rows, pick, tiering, maxAttempts, sticky, crossTrustConfirmed: false, providers: allProviders(),
-      }).code === 'cross_trust_confirmation_required');
-      show(crossTrustLabel, mode === MODE_AUTO && mixed);
-      crossTrustBox.checked = crossTrustConfirmed;
     }
 
     function setBusy(value) {
@@ -1697,10 +1714,11 @@
     }
 
     function collectSubagent() {
-      if (terminalDraft || !aiApi.supportsSubagentCli(currentCli)) return null;
+      const cli = subCli();
+      if (terminalDraft || !cli || !aiApi.supportsSubagentCli(cli)) return null;
       const model = subModelSelect.value === '__custom__' ? subModelCustom.value.trim() : subModelSelect.value;
       return aiApi.resolveSubagent({
-        cli: currentCli,
+        cli,
         providerId: subProviderSelect.value,
         primaryProviderId: primaryProviderId(),
         model,
@@ -1731,12 +1749,13 @@
       }
       const built = buildAutoSelection({
         rows, pick, tiering, routing: jev ? jev.read() : null,
-        providers: allProviders(), maxAttempts, sticky, crossTrustConfirmed,
+        providers: allProviders(), maxAttempts, sticky,
       });
       if (!built.ok) throw new Error(built.error);
       const selection = built.value;
       const primary = selection.candidates[0];
-      const subagent = aiApi.resolveSubagent({ cli: primary.cli, providerId: primary.providerId, primaryProviderId: primary.providerId, model: '' });
+      // 子任务的高级设置和固定一条共用：留空 = 跟随主线路（resolveSubagent 会给 null）。
+      const subagent = collectSubagent();
       if (draft) {
         await onSaved({ cli: primary.cli, provider: primary.providerId, providerSelection: selection,
           model: primary.model || null, effort: null, subagent });
@@ -1748,7 +1767,7 @@
         await request(`${base}/switch-cli`, { cli: primary.cli });
       }
       await request(base, { provider: primary.providerId, providerSelection: selection }, 'PATCH');
-      await request(base, { model: primary.model || null }, 'PATCH');
+      await request(base, { model: primary.model || null, subagent }, 'PATCH');
       await onSaved();
       dialog.close();
     }
@@ -1823,7 +1842,6 @@
     addButton.onclick = () => togglePicker();
     maxSelect.onchange = () => { maxAttempts = Number(maxSelect.value); renderFooter(); };
     stickyBox.onchange = () => { sticky = stickyBox.checked; };
-    crossTrustBox.onchange = () => { crossTrustConfirmed = crossTrustBox.checked; };
     presetSelect.onchange = () => {
       const id = presetSelect.value;
       if (id) applyPreset(id);
