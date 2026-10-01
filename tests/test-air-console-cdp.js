@@ -418,18 +418,20 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
       ['登录页空状态文案'], '「进行中」只列在跑的');
     await page.evaluate(`document.querySelector('.console-filter-tabs .admin-stat[data-view="all"]').click()`);
 
-    // 从清单里点走一条在跑的任务：这一页让开、落到那个任务所属的目录，而且落到哪儿
-    // 都得看得见「它在跑」—— 页头状态行、侧栏的任务行、当前目录卡片三处同时亮。
+    // 从清单里点走一条在跑的任务：对话在当前目录上打开，不切到任务所属的目录 ——
+    // 在哪打开就回哪去，关掉对话回到控制台那一页（地址保持当前目录 + 那条任务）。
+    // 圈照旧在页头状态行和侧栏的任务行上；当前目录卡片只在当前目录有在跑的活时
+    // 才带圈，不跟着任务跳目录。
     await page.evaluate(`(() => { const s=document.getElementById('console-task-dir'); s.value='all'; s.dispatchEvent(new Event('change')); })()`);
     await page.evaluate(`(() => { const i=document.getElementById('console-task-search'); i.value=''; i.dispatchEvent(new Event('input')); })()`);
     await page.evaluate(`[...document.querySelectorAll('#console-task-list .admin-recent-row')].find(r=>r.innerText.includes('登录页空状态文案')).click()`);
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='登录页空状态文案'`));
     assert.ok(await consoleHidden(page), '点走一条就离开控制台那一页');
     assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), null, '落回任务页，地址里不再有 view');
-    assert.equal(await page.evaluate(`document.getElementById('directory-name').textContent`), 'Gapasea', '落到了任务所属的目录');
+    assert.equal(await page.evaluate(`document.getElementById('directory-name').textContent`), 'MultiCC 主仓', '留在当前目录，不跳到任务所属的目录');
     assert.ok(await page.waitFor(`document.getElementById('task-state').classList.contains('ring-running')`), '页头状态行带圈');
     assert.equal(await page.evaluate(`document.querySelector('#tasks button.ring-running .task-dir').textContent`), 'Gapasea', '侧栏里在跑的那条也带圈');
-    assert.equal(await page.evaluate(`document.querySelector('.space-card').classList.contains('ring-running')`), true, '当前目录卡片带圈');
+    assert.equal(await page.evaluate(`document.querySelector('.space-card').classList.contains('ring-running')`), false, '当前目录卡片不带圈（没切到任务所属的目录）');
     assert.equal(await page.evaluate(`document.querySelector('#tasks button.ring-running .mc-status-label').textContent`), '执行中');
     // 页头那行状态是个 22px 高的小胶囊，圈画在上面本来就容易撞：它自己还有一枚
     // ::after 的「 ›」（「这里能点」的提示）。圈因此走 ::before —— 箭头得原地不动。
@@ -437,7 +439,6 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
       '状态行的「 ›」还在（圈改到 ::before 之后没把它顶掉）');
     await page.screenshot('06-ring-task-state');
     await assertRingDrawn(page, '#task-state', '页头状态行');
-    await assertRingDrawn(page, '.space-card', '当前目录卡片（任务视图）');
     await assertRingDrawn(page, '#tasks button.ring-running', '侧栏里在跑的那条任务行');
     // 目录库那一页也认同一个圈。这一页的动作骑在页头工具栏上（一页只有一个标题带），
     // 所以「浏览工作目录」是 #admin-actions 里的第一颗 —— 从前它是面板正文里那排。

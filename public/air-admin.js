@@ -303,7 +303,7 @@
     const row = make('div', null, 'admin-recent-row');
     const openTask = () => {
       options.onOpen?.();
-      context.navigate(task.dirId, task.id);
+      context.navigate(context.directoryId, task.id);
     };
     row.tabIndex = 0;
     row.setAttribute('role', 'button');
