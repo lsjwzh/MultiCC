@@ -2,6 +2,15 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.2.3 — One run-config dialog instead of three (2026-10-01)
+
+### Highlights
+
+- **A single "run config" capsule replaces the three separate CLI / model / effort buttons** — picking a lane, CLI and model used to take two passes (choose the CLI in the task bar, then choose it again inside the Auto Provider editor); the new `public/run-config.js` dialog shows both the fixed-lane and auto-pick-pool modes in one place and reuses the provider catalog and AI-config logic as pure functions instead of duplicating them. The old `air-task-settings.js` three-step form is gone.
+- **Voice input is a shared composer module** — streaming dictation (with the floating refine HUD) and the legacy one-shot recording path were extracted out of `chat-composer.js` into `public/voice-composer.js`, so the Chat page and the Air directory's quick-task composer now share one implementation instead of two copies drifting apart.
+- **Codex per-turn usage accounting** — `src/codex/usage.js` gained a `perTurn` mode for the app-server adapter, which already sums request-level usage updates itself; only `codex exec`'s cumulative thread snapshot still needs the old baseline-diffing path.
+- **Chat history framing and finalize-plan fixes** — `src/chat/history-frame-budget.js`, `finalize-plan.js` and `finalize-host.js` picked up edge-case fixes alongside broader i18n coverage in `public/i18n.js` and `public/i18n-catalog.js`.
+
 ## v2.2.2 — Auto Provider knows what each model costs (2026-10-01)
 
 ### Highlights

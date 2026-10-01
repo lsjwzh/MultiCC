@@ -871,6 +871,15 @@
       ]
     },
     {
+      "path": "tests/test-air-directory-panel-scroll-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
       "path": "tests/test-air-directory-status-filter-cdp.js",
       "tier": "flow",
       "lane": "cdp"
@@ -2827,6 +2836,15 @@
       "owner": "npm:test:cdp",
       "entrypoints": [
         "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-history-frame-budget.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
       ]
     },
     {
