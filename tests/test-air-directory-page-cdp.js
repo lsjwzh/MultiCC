@@ -16,7 +16,7 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
 
-test('the directory home stacks git+worktrees into one card, filters always on, a fixed list band with pagination, and a folded composer', async t => {
+test('the directory home shares one scroll layer, shows a compact sticky heading, paginates, and keeps its composer', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   const routes = {}, publicDir = path.resolve(__dirname, '../public');
   const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -122,7 +122,7 @@ test('the directory home stacks git+worktrees into one card, filters always on, 
     assert.equal(controls.visible, true);
     assert.equal(controls.beforeList, true, '筛选在清单上面');
 
-    // ── 清单铺满剩余高度 + 一页一页翻 ─────────────────────────────────────
+    // ── 清单与整页同层滚动 + 一页一页翻 ───────────────────────────────────
     const page1 = await page.evaluate(`(() => {
       const panel = document.querySelector('.directory-task-panel'), list = document.getElementById('directory-task-list');
       const pager = document.getElementById('directory-task-pager');
@@ -149,18 +149,38 @@ test('the directory home stacks git+worktrees into one card, filters always on, 
     assert.ok(page1.listH > 0, `清单得看得见：${JSON.stringify(page1)}`);
     assert.ok(Math.abs(page1.listBottom - page1.pagerTop) <= 1 && Math.abs(page1.pagerBottom - page1.panelBottom) <= 1,
       `清单上下都贴着邻居，吃满中间那一段：${JSON.stringify(page1)}`);
-    assert.equal(page1.scrolls, true, '20 条装不下这一段高度，清单自己滚，而不是把面板撑长');
+    assert.equal(page1.scrolls, false, '清单本身不制造第二滚动口');
+    assert.ok(page1.panelH > page1.listH, '面板随当前页内容自然撑开');
+
+    // 表头滚出时精简副本出现；从任务行向上滚可回页首，不被内层滚动锁住。
+    await page.evaluate(`(() => { const e=document.getElementById('empty'), h=document.getElementById('directory-task-real-heading');
+      e.scrollTop += h.getBoundingClientRect().bottom-e.getBoundingClientRect().top+8; })()`);
+    assert.ok(await page.waitFor(`document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
+    await page.evaluate(`document.getElementById('directory-mode-terminal').click()`);
+    assert.ok(await page.waitFor(`!document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
+    await page.evaluate(`document.getElementById('directory-mode-chat').click()`);
+    await page.evaluate(`(() => { const e=document.getElementById('empty'), h=document.getElementById('directory-task-real-heading');
+      e.scrollTop += h.getBoundingClientRect().bottom-e.getBoundingClientRect().top+8; })()`);
+    assert.ok(await page.waitFor(`document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
+    assert.equal(await page.evaluate(`document.getElementById('directory-task-sticky-count').textContent`), '45 / 45 个任务');
+    await page.evaluate(`document.getElementById('empty').scrollTop=0`);
+    assert.ok(await page.waitFor(`!document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
+    assert.equal(await page.evaluate(`document.getElementById('empty').scrollTop`), 0, '从任务行可返回页首');
 
     // 先滚一段再翻页：新一页必须从第一行读起。
-    await page.evaluate(`document.getElementById('directory-task-list').scrollTop = 200`);
+    await page.evaluate(`document.getElementById('empty').scrollTop = 200`);
     await page.evaluate(`document.getElementById('directory-task-next').click()`);
     assert.ok(await page.waitFor(`document.getElementById('directory-task-page').textContent==='第 2 / 3 页'`));
+    assert.ok(await page.waitFor(`Math.abs(document.getElementById('directory-task-real-heading').getBoundingClientRect().top - document.getElementById('empty').getBoundingClientRect().top) <= 2`));
     const page2 = await page.evaluate(`(() => { const list=document.getElementById('directory-task-list');
       return { rows: list.querySelectorAll('.directory-task-row').length, first: list.querySelector('.directory-task-row strong').textContent,
-        scrollTop: list.scrollTop, prevOff: document.getElementById('directory-task-prev').disabled }; })()`);
+        scrollTop: document.getElementById('empty').scrollTop,
+        headingTop: document.getElementById('directory-task-real-heading').getBoundingClientRect().top,
+        viewportTop: document.getElementById('empty').getBoundingClientRect().top,
+        prevOff: document.getElementById('directory-task-prev').disabled }; })()`);
     assert.equal(page2.rows, 20);
     assert.notEqual(page2.first, page1.title, '第二页是另一批任务');
-    assert.equal(page2.scrollTop, 0, '换页回到第一行');
+    assert.ok(Math.abs(page2.headingTop - page2.viewportTop) <= 2, '换页回到真实表头');
     assert.equal(page2.prevOff, false);
     await page.evaluate(`document.getElementById('directory-task-next').click()`);
     assert.ok(await page.waitFor(`document.getElementById('directory-task-page').textContent==='第 3 / 3 页'`));
@@ -177,14 +197,13 @@ test('the directory home stacks git+worktrees into one card, filters always on, 
     await page.evaluate(`(() => { const i=document.getElementById('directory-task-search'); i.value='目录任务 07'; i.dispatchEvent(new Event('input')); })()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===1`));
     assert.equal(await page.evaluate(`document.getElementById('directory-task-pager').hidden`), true, '一页装得下就不摆分页条');
-    // 条数不决定面板高矮：剩一条时分页条收起、清单把那 56px 收回来，但面板自己那一段
-    // 「剩余高度」一格没变（内容撑不长的卡）。
+    // 剩一条时面板按内容收起，不能保留一整页的空白。
     const oneRow = await page.evaluate(`(() => { const panel=document.querySelector('.directory-task-panel'), list=document.getElementById('directory-task-list');
       return { panelH: Math.round(panel.getBoundingClientRect().height), listH: Math.round(list.getBoundingClientRect().height),
         bottom: Math.round(list.getBoundingClientRect().bottom), panelBottom: Math.round(panel.getBoundingClientRect().bottom) }; })()`);
-    assert.equal(oneRow.panelH, page1.panelH, '面板是固定的那一段高度，不随条数长');
+    assert.ok(oneRow.panelH < page1.panelH, '面板随当前页条数收起');
     assert.ok(Math.abs(oneRow.bottom - oneRow.panelBottom) <= 1, '分页条收起后清单正好补上那块');
-    assert.ok(oneRow.listH > page1.listH, '收起的分页条那点高度归清单');
+    assert.ok(oneRow.listH < page1.listH, '只剩一条时列表也缩小');
     await page.evaluate(`(() => { const i=document.getElementById('directory-task-search'); i.value=''; i.dispatchEvent(new Event('input')); })()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===20`));
 
@@ -227,11 +246,8 @@ test('the directory home stacks git+worktrees into one card, filters always on, 
     assert.ok(await page.waitFor(`document.getElementById('quick-task-form').classList.contains('is-folded')`));
     assert.equal(await page.evaluate(`document.activeElement===document.getElementById('quick-task-expand')`), true);
 
-    // ── 1440x900：清单那一张卡吃「统计卡下面 → 输入框上面」那一整段 ───────────
-    // 1200 那边只证明了「铺满、贴着分页条」；这里证明它真的是按这一屏算出来的：
-    // 上边不越统计卡、下边不钻到 sticky 的输入框底下、一屏里读得下好几行任务。
+    // ── 1440x900：桌面同样只有 #empty 这一层滚动 ─────────────────────────
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
-    assert.ok(await page.waitFor(`document.documentElement.style.getPropertyValue('--directory-task-panel-h')!==''`));
     const band = await page.evaluate(`(() => {
       const box = e => { const b = e.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, h: b.height }; };
       const panel = document.querySelector('.directory-task-panel');
@@ -244,13 +260,12 @@ test('the directory home stacks git+worktrees into one card, filters always on, 
         statsBottom: box(document.getElementById('directory-stats')).bottom,
         rowH: Math.round(row), fullRows: Math.floor(list.clientHeight / row),
         scrolls: list.scrollHeight > list.clientHeight,
-        styled: document.documentElement.style.getPropertyValue('--directory-task-panel-h'),
+        pageScrolls: document.getElementById('empty').scrollHeight > document.getElementById('empty').clientHeight,
       }; })()`);
     assert.ok(band.panel.top >= band.statsBottom - 1, `面板从统计卡下面开始：${JSON.stringify(band)}`);
-    assert.ok(band.panel.bottom <= band.form.top + 0.5, `卡的下沿停在输入框上面（不互相压）：${JSON.stringify(band)}`);
-    assert.ok(band.fullRows >= 3, `一屏至少三整行（六条）：${JSON.stringify(band)}`);
     assert.ok(band.list.h >= 200, `清单自己那一段得读得下几行：${JSON.stringify(band)}`);
-    assert.equal(band.scrolls, true, '20 条仍装不下这一页，清单还是自己滚');
+    assert.equal(band.scrolls, false, '桌面也不嵌套任务列表滚动口');
+    assert.equal(band.pageScrolls, true, '页级滚动覆盖所有内容');
     await page.screenshot('directory-list-1440x900.png');
 
     // 代码卡在面板下面（滚下去看），滚到底时最后那行「现在回收」必须整行露在输入框之上
@@ -271,6 +286,16 @@ test('the directory home stacks git+worktrees into one card, filters always on, 
     assert.ok(tail.reclaim.bottom <= tail.form.top, `「现在回收」整行露在输入框之上：${JSON.stringify(tail)}`);
     await page.screenshot('directory-bottom-1440x900.png');
     await page.evaluate(`document.getElementById('empty').scrollTop = 0`);
+
+    // 手机 390px：触摸任务行时也只滚 #empty，副本随真实表头进出视口。
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await page.evaluate(`(() => { const e=document.getElementById('empty'), h=document.getElementById('directory-task-real-heading');
+      e.scrollTop += h.getBoundingClientRect().bottom-e.getBoundingClientRect().top+8; })()`);
+    assert.ok(await page.waitFor(`document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
+    assert.equal(await page.evaluate(`document.getElementById('directory-task-list').scrollHeight > document.getElementById('directory-task-list').clientHeight`), false);
+    await page.evaluate(`document.getElementById('empty').scrollTop=0`);
+    assert.ok(await page.waitFor(`!document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
+    assert.equal(await page.evaluate(`document.getElementById('empty').scrollTop`), 0);
 
     assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true, '这一页不该横向溢出');
     assert.deepEqual(await page.evaluate('window.__errors'), []);

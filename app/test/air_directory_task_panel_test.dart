@@ -5,12 +5,11 @@ import 'package:multicc_app/services/air_service.dart';
 import 'package:multicc_app/widgets/air/air_directory_task_panel.dart';
 import 'package:multicc_app/widgets/air/air_task_status.dart';
 
-/// 目录首页那张任务清单卡：抬头 + 常驻的筛选行 + 占满剩余高度、自己滚的清单 +
-/// 翻页条。
+/// 目录任务卡与宿主共用一个滚动层；筛选、当前页和分页仍保持完整。
 ///
 /// 这一组钉的是用户点名要的三件事：
 /// * 筛选**默认就摆着**（从前藏在「查看全部」那颗按钮后面）；
-/// * 清单自己滚 —— 抬头与筛选在卡片里固定，只有行在动；
+/// * 从任务行反向滚动可返回真实表头；
 /// * 条数多了走翻页（上一页 / 第 x / y 页 / 下一页），不再有「查看全部」那条
 ///   无限长的路。
 AirTask _task(int i) => AirTask(
@@ -38,8 +37,7 @@ Widget _host({
   TextEditingController? controller,
 }) => MaterialApp(
   home: Scaffold(
-    body: SizedBox(
-      height: 520,
+    body: SingleChildScrollView(
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: AirDirectoryTaskPanel(
@@ -161,6 +159,9 @@ void main() {
       isNull,
       reason: '已经在第 1 页，没有上一页可去',
     );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('air-tasks-page-next')),
+    );
     await tester.tap(find.byKey(const ValueKey('air-tasks-page-next')));
     expect(pages, [2]);
     expect(tester.takeException(), isNull);
@@ -187,12 +188,15 @@ void main() {
           .onPressed,
       isNull,
     );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('air-tasks-page-prev')),
+    );
     await tester.tap(find.byKey(const ValueKey('air-tasks-page-prev')));
     expect(pages, [1]);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('清单自己滚：抬头与筛选不在滚动区里', (tester) async {
+  testWidgets('清单与抬头同属宿主滚动层，反向可回到页首', (tester) async {
     await tester.pumpWidget(
       _host(
         rows: [for (var i = 1; i <= 20; i++) _task(i)],
@@ -206,7 +210,16 @@ void main() {
 
     final list = find.byKey(const ValueKey('air-directory-task-scroll'));
     expect(list, findsOneWidget);
-    // 抬头、筛选、翻页条都在滚动区外（滚它们不动）。
+    expect(
+      find.descendant(of: list, matching: find.byType(Scrollable)),
+      findsNothing,
+    );
+    final verticalScroll = find.byWidgetPredicate(
+      (widget) =>
+          widget is Scrollable && widget.axisDirection == AxisDirection.down,
+    );
+    expect(verticalScroll, findsOneWidget);
+    // 真实抬头、筛选、当前页与分页按顺序排列。
     expect(
       tester.getTopLeft(find.byKey(const ValueKey('air-tasks-heading'))).dy,
       lessThan(
@@ -228,6 +241,16 @@ void main() {
             .getTopLeft(find.byKey(const ValueKey('air-tasks-page-label')))
             .dy,
       ),
+    );
+    final scroll = tester.state<ScrollableState>(verticalScroll);
+    scroll.position.jumpTo(scroll.position.maxScrollExtent);
+    await tester.pump();
+    expect(scroll.position.pixels, greaterThan(0));
+    scroll.position.jumpTo(0);
+    await tester.pump();
+    expect(
+      tester.getTopLeft(find.byKey(const ValueKey('air-tasks-heading'))).dy,
+      lessThan(tester.getTopLeft(list).dy),
     );
     expect(tester.takeException(), isNull);
   });

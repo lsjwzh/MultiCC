@@ -16,12 +16,13 @@ import 'package:multicc_app/widgets/workspace_navigation_drawer.dart';
 /// 一份两目录两任务的快照：d1 里有一条未完成的、一条归档的，d2 空着。
 /// `/api/air/tasks/:id` 是另一套形状（多了 attribution / execution），单独给。
 
-/// 目录首页那张清单自己的滚动区。页面里不止一个 Scrollable（抬头那一截在小窗口
-/// 下也能滚），所以凡是要「滚到某一行」的地方都得指名道姓，不能靠
-/// `find.byType(Scrollable)` 去猜。
+/// 目录页唯一的滚动区；真实表头和任务行都在这里。
 final Finder _directoryTaskScrollable = find.descendant(
-  of: find.byKey(const ValueKey('air-directory-task-scroll')),
-  matching: find.byType(Scrollable),
+  of: find.byKey(const ValueKey('air-directory-page-scroll')),
+  matching: find.byWidgetPredicate(
+    (widget) =>
+        widget is Scrollable && widget.axisDirection == AxisDirection.down,
+  ),
 );
 
 MockClient _client(
@@ -353,31 +354,47 @@ void main() {
         return http.Response('{"ok":true,"results":[]}', 200);
       }
       if (request.url.path == '/api/search/messages') {
-        return http.Response('{"ok":true,"results":[{"taskIds":["other-dir","t2"]}]}', 200);
+        return http.Response(
+          '{"ok":true,"results":[{"taskIds":["other-dir","t2"]}]}',
+          200,
+        );
       }
-      return http.Response.fromStream(await fallback.send(
-        http.Request(request.method, request.url)
-          ..headers.addAll(request.headers)
-          ..bodyBytes = request.bodyBytes,
-      ));
+      return http.Response.fromStream(
+        await fallback.send(
+          http.Request(request.method, request.url)
+            ..headers.addAll(request.headers)
+            ..bodyBytes = request.bodyBytes,
+        ),
+      );
     });
     tester.view.physicalSize = const Size(430, 1400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(MaterialApp(home: AirTasksView(settings: settings, httpClient: client)));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
     await tester.pumpAndSettle();
     await openDirectory(tester, 'd1');
     await tester.tap(find.byKey(const ValueKey('air-stat-running')));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const ValueKey('air-directory-task-search')), '正文关键词');
+    await tester.enterText(
+      find.byKey(const ValueKey('air-directory-task-search')),
+      '正文关键词',
+    );
     await tester.pump(const Duration(milliseconds: 250));
     await tester.pumpAndSettle();
     expect(find.text('1 / 2 个任务'), findsOneWidget);
-    await tester.ensureVisible(find.byKey(const ValueKey('air-directory-task-scroll')));
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('air-directory-task-scroll')),
+    );
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('air-directory-task-t2')), findsOneWidget);
-    await tester.ensureVisible(find.byKey(const ValueKey('air-directory-search-scope')));
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('air-directory-search-scope')),
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('air-directory-search-scope')));
     await tester.pumpAndSettle();
@@ -385,7 +402,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('air-directory-task-t2')), findsNothing);
-    await tester.enterText(find.byKey(const ValueKey('air-directory-task-search')), '');
+    await tester.enterText(
+      find.byKey(const ValueKey('air-directory-task-search')),
+      '',
+    );
     await tester.pumpAndSettle();
     expect(find.text('0 / 2 个任务'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -401,13 +421,18 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(MaterialApp(
-      home: AirTasksView(settings: settings, httpClient: client),
-    ));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
     await tester.pumpAndSettle();
     await openDirectory(tester, 'd1');
     expect(find.byKey(const ValueKey('air-directory-memo')), findsOneWidget);
-    expect(find.byKey(const ValueKey('air-directory-artifacts')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-directory-artifacts')),
+      findsOneWidget,
+    );
     expect(
       find.byKey(const ValueKey('air-directory-schedules')),
       findsOneWidget,
@@ -415,7 +440,10 @@ void main() {
     for (final status in ['running', 'waiting', 'error', 'succeeded']) {
       await tester.tap(find.byKey(ValueKey('air-stat-$status')));
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('air-directory-task-status')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('air-directory-task-status')),
+        findsOneWidget,
+      );
       expect(find.byKey(const ValueKey('air-directory-task-t1')), findsNothing);
       expect(find.byKey(const ValueKey('air-directory-task-t2')), findsNothing);
       expect(find.text('0 / 2 个任务'), findsOneWidget);
@@ -596,12 +624,13 @@ void main() {
     expect(find.text('任务 8'), findsOneWidget);
     expect(find.text('任务 7'), findsOneWidget);
     // 从前窄屏只摆六行，剩下的挂在一颗「查看全部 N 个任务 ›」后面，还要点一下才
-    // 展开；现在整份清单交给列表自己滚（一页 20 条），八条一条不少地进了 itemCount，
+    // 展开；现在整份清单与页面一起滚（一页 20 条），八条一条不少，
     // 那颗按钮也就不存在了。
-    final list = tester.widget<ListView>(
+    expect(
       find.byKey(const ValueKey('air-directory-task-scroll')),
+      findsOneWidget,
     );
-    expect(list.semanticChildCount, 8);
+    expect(find.byKey(const ValueKey('air-directory-task-t1')), findsOneWidget);
     expect(
       find.byKey(const ValueKey('air-tasks-more')),
       findsNothing,
@@ -643,19 +672,46 @@ void main() {
     expect(find.text('第 1 / 2 页'), findsOneWidget);
     // 第 1 页是最近的那 20 条（lastMessageAt 倒序）。
     expect(find.text('任务 25'), findsOneWidget);
-    final firstPage = tester.widget<ListView>(
-      find.byKey(const ValueKey('air-directory-task-scroll')),
+    expect(find.byKey(const ValueKey('air-directory-task-t6')), findsOneWidget);
+
+    final pageScroll = tester
+        .widget<SingleChildScrollView>(
+          find.byKey(const ValueKey('air-directory-page-scroll')),
+        )
+        .controller!;
+    final heading = find.byKey(const ValueKey('air-tasks-heading'));
+    final viewport = find.byKey(const ValueKey('air-directory-page-scroll'));
+    pageScroll.jumpTo(
+      pageScroll.offset +
+          tester.getBottomLeft(heading).dy -
+          tester.getTopLeft(viewport).dy +
+          8,
     );
-    expect(firstPage.semanticChildCount, 20);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('air-directory-task-sticky-copy')),
+      findsOneWidget,
+      reason: '真实表头滚走、任务行在视口内时只显示精简副本',
+    );
+    await tester.drag(viewport, const Offset(0, 1100));
+    await tester.pumpAndSettle();
+    expect(pageScroll.offset, 0, reason: '从任务行反向拖动应回到页首');
+    expect(
+      find.byKey(const ValueKey('air-directory-task-sticky-copy')),
+      findsNothing,
+    );
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('air-tasks-page-next')),
+    );
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const ValueKey('air-tasks-page-next')));
     await tester.pumpAndSettle();
     expect(find.text('第 2 / 2 页'), findsOneWidget);
     // 第 2 页只剩尾巴那 5 条：最早的那 5 条（任务 5…任务 1）。
-    final secondPage = tester.widget<ListView>(
-      find.byKey(const ValueKey('air-directory-task-scroll')),
-    );
-    expect(secondPage.semanticChildCount, 5);
+    expect(find.byKey(const ValueKey('air-directory-task-t25')), findsNothing);
+    expect(find.byKey(const ValueKey('air-directory-task-t1')), findsOneWidget);
     expect(find.text('任务 1'), findsOneWidget);
 
     // 换筛选条件回到第 1 页 —— 换了条件还停在旧页码，看到的往往是空的。

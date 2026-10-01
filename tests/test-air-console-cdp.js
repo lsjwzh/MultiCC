@@ -551,7 +551,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
   console.log('截图目录: ' + shots);
 });
 
-test('the directory task list keeps its filters, fills the remaining height and paginates, and deletes in place', async t => {
+test('the directory task list keeps its filters, shares page scrolling, paginates, and deletes in place', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   const routes = {}, publicDir = path.resolve(__dirname, '../public');
   const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -605,17 +605,16 @@ test('the directory task list keeps its filters, fills the remaining height and 
     assert.equal(await page.evaluate(`document.getElementById('directory-task-controls').hidden`), false);
     assert.deepEqual(await page.evaluate(`(() => { const l=document.getElementById('directory-task-list'),s=getComputedStyle(l);
       return [document.querySelectorAll('#directory-task-list .directory-task-row').length,s.overflowY]; })()`),
-      [12, 'auto'], 'default filter shows open rows in a scroller of its own');
+      [12, 'visible'], 'default filter shows open rows without a nested scroller');
     // 12 条还装得下一页（一页 20），分页条根本不该露面。
     assert.equal(await page.evaluate(`document.getElementById('directory-task-pager').hidden`), true, '一页装得下就不摆分页条');
-    // 清单吃的是面板剩下的高度：它的下沿就贴着面板的内容底边，既不被行数撑长，
-    // 也不在下面留一块空白。
+    // 清单随内容长高，下沿贴着面板内容底边。
     const band = await page.evaluate(`(() => {
       const panel = document.querySelector('.directory-task-panel'), list = document.getElementById('directory-task-list');
       const p = panel.getBoundingClientRect(), l = list.getBoundingClientRect();
       const pad = parseFloat(getComputedStyle(panel).paddingBottom) || 0;
       return { h: Math.round(l.height), gap: Math.round(p.bottom - pad - l.bottom), panelH: Math.round(p.height) }; })()`);
-    assert.ok(band.h > 0 && Math.abs(band.gap) <= 1, `清单铺满面板剩余高度：${JSON.stringify(band)}`);
+    assert.ok(band.h > 0 && Math.abs(band.gap) <= 1, `清单贴着面板底边：${JSON.stringify(band)}`);
 
     // 这 12 条都是观察型记录（没有 recordType，也没有阶段），徽标说「空闲」—— 行上
     // 那行小字不许再写一遍「进行中」：那是生命周期（active）的翻法，跟徽标说的不是
@@ -629,17 +628,14 @@ test('the directory task list keeps its filters, fills the remaining height and 
 
     await page.evaluate(`(() => { const i=document.getElementById('directory-task-search');i.value='12';i.dispatchEvent(new Event('input')); })()`);
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#directory-task-list strong')].map(e=>e.textContent)`), ['目录任务 12']);
-    // 筛剩一条时清单**不缩**：面板那一段高度是固定的（抬头 / 筛选 / 分页三段钉住），
-    // 剩下一行的空间就空在清单下面；行自己保持自己的高度，不被网格按行等分撑成一整片
-    // 半屏高的空卡（align-content: start）。一页装得下时分页条还会收起，那 50 来像素
-    // 也归清单 —— 只会变大，不会缩回内容高。
+    // 筛剩一条时清单收起，行仍保持自己的高度。
     const squeezed = await page.evaluate(`(() => {
       const list = document.getElementById('directory-task-list');
       const row = list.querySelector('.directory-task-row');
       const l = list.getBoundingClientRect(), r = row.getBoundingClientRect();
       return { listHeight: Math.round(l.height), rowHeight: Math.round(r.height),
                offset: Math.round(r.top - l.top), pagerHidden: document.getElementById('directory-task-pager').hidden }; })()`);
-    assert.ok(squeezed.listHeight >= band.h, `筛剩一条时清单只会变更大：${JSON.stringify({ squeezed, band })}`);
+    assert.ok(squeezed.listHeight < band.h, `筛剩一条时清单按内容收起：${JSON.stringify({ squeezed, band })}`);
     assert.ok(squeezed.rowHeight < 100, `行保持自己的高度，不被拉长：${JSON.stringify(squeezed)}`);
     assert.ok(squeezed.offset >= 0 && squeezed.offset < 2, `行贴着清单顶部排：${JSON.stringify(squeezed)}`);
     await page.evaluate(`window.confirm=()=>true;document.querySelector('#directory-task-list .task-delete').click()`);

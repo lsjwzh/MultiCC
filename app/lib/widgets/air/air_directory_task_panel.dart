@@ -8,14 +8,14 @@ import 'air_task_status.dart';
 /// [message] = 最后一条消息的时间（默认），[visit] = 本机最后访问这条任务的时间。
 enum AirDirectoryTaskSort { message, visit }
 
-/// 目录首页那张任务清单卡（Web `.directory-task-panel`）：抬头 + **常驻**的筛选行
-/// + 占满剩余高度、自己滚的清单 + 底部的翻页条。
+/// 目录首页任务卡（Web `.directory-task-panel`）：真实抬头、筛选、当前页与翻页条
+/// 都跟随宿主的单层滚动；最多 20 行，不再创建抢占反向手势的内层 ListView。
 ///
 /// 三处形态各有理由，用户也都点名要过：
 /// * **筛选常驻**：原来它藏在「查看全部 N 个任务 ›」后面 —— 藏起来的筛选等于没有
 ///   筛选，想按状态找一条任务时，先得猜到那个按钮在下面。
-/// * **清单占满剩下的高度**：抬头和筛选不动，滚的只有行。列表长起来时「筛选被滚出
-///   屏幕」比「列表滚得久」难用得多。
+/// * **单层滚动**：从任务行反向上滑能直接返回统计卡和页首；离屏时由宿主显示
+///   只含标题和数量的副本，筛选控件不复制。
 /// * **翻页替掉「查看全部」**：那颗按钮后面挂的是无限长的清单，翻页至少说得清
 ///   「一共几页、现在第几页」。
 ///
@@ -41,13 +41,9 @@ class AirDirectoryTaskPanel extends StatelessWidget {
     required this.onScope,
     required this.onPage,
     required this.rowBuilder,
-    this.onRefresh,
+    this.headingKey,
+    this.listKey,
   });
-
-  /// 这张卡最少要占这么高：抬头和筛选是固定的两截（合起来一百八十来像素），再
-  /// 矮下去它们自己就把卡片撑破。宿主拿这个数给自己上面那一截（统计卡 + 工作区卡
-  /// + 路径）封顶 —— 小窗口里宁可让抬头自己滚，也不能把清单挤到摆不下一行筛选。
-  static const double minHeight = 196;
 
   /// 当前这一页要摆的行（已经切片）。
   final List<AirTask> rows;
@@ -83,8 +79,9 @@ class AirDirectoryTaskPanel extends StatelessWidget {
   final ValueChanged<int> onPage;
   final Widget Function(AirTask task) rowBuilder;
 
-  /// 下拉刷新（接管列表那一段的拖动）。
-  final Future<void> Function()? onRefresh;
+  /// 宿主用这两个锚点判断精简表头副本何时出现。
+  final GlobalKey? headingKey;
+  final GlobalKey? listKey;
 
   @override
   Widget build(BuildContext context) {
@@ -95,14 +92,13 @@ class AirDirectoryTaskPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppColors.radiusCard),
         border: Border.all(color: AppColors.line),
       ),
-      // 清单自己滚，卡片本身不滚 —— 圆角才不会把某一行切掉一半。
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _buildHeading(context),
+          KeyedSubtree(key: headingKey, child: _buildHeading(context)),
           _buildFilters(context),
-          Expanded(child: _buildList(context)),
+          KeyedSubtree(key: listKey, child: _buildList(context)),
           if (pageCount > 1) _buildPager(context),
         ],
       ),
@@ -252,7 +248,7 @@ class AirDirectoryTaskPanel extends StatelessWidget {
   }
 
   Widget _buildList(BuildContext context) {
-    final list = rows.isEmpty
+    return rows.isEmpty
         ? const Center(
             child: Padding(
               padding: EdgeInsets.symmetric(horizontal: 18, vertical: 28),
@@ -267,19 +263,19 @@ class AirDirectoryTaskPanel extends StatelessWidget {
               ),
             ),
           )
-        : ListView.separated(
+        : Padding(
             key: const ValueKey('air-directory-task-scroll'),
-            // 往下拖列表就收键盘：贴底输入条的焦点监听接着会把展开态收回去，
-            // 用户不必靠「提交」或开弹层才能把面板收掉。
-            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-            itemCount: rows.length,
-            separatorBuilder: (_, _) => const SizedBox(height: 10),
-            itemBuilder: (_, index) => rowBuilder(rows[index]),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var index = 0; index < rows.length; index++) ...[
+                  if (index > 0) const SizedBox(height: 10),
+                  rowBuilder(rows[index]),
+                ],
+              ],
+            ),
           );
-    final refresh = onRefresh;
-    if (refresh == null) return list;
-    return RefreshIndicator(onRefresh: refresh, child: list);
   }
 
   /// 翻页条。只有一页时不摆 —— 「第 1 / 1 页」是噪声，不是信息。
