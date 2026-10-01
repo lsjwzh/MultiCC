@@ -46,8 +46,8 @@ void main() {
     expect(cliDisplayName('claude-exp'), 'Claude');
     expect(cliDisplayName('codex'), 'Codex');
     expect(cliDisplayName('codex-exp'), 'Codex');
-    expect(cliShortMark('claude-exp'), 'A');
-    expect(cliShortMark('codex'), 'E');
+    expect(cliShortMark('claude-exp'), 'C');
+    expect(cliShortMark('codex'), 'X');
     expect(cliShortMark('codex-exp'), 'X');
     expect(cliDisplayName('opencode'), 'OpenCode');
     expect(cliDisplayName('zcode'), 'ZCode');

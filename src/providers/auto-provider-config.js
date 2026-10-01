@@ -73,6 +73,8 @@ const DEFAULT_ROUTING_TIMEOUT_MS = 2_500;
 // picks a line on another CLI. Only lanes whose provider is a user-selectable
 // route are eligible — a providerless lane has nothing for the pool to pick.
 const AUTO_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi']);
+// These lanes resolve the API dialect independently for each physical attempt.
+const MULTI_PROTOCOL_CLIS = new Set(['opencode', 'zcode']);
 // When a cross-CLI pool leaves the session's current lane:
 //   failover — only when no line on the current CLI is usable (default; a lane
 //              switch costs a handoff, so it is the last resort);
@@ -197,10 +199,10 @@ function validateCandidate(raw, index, context) {
       : Array.isArray(provider.compatibleClis) && provider.compatibleClis.includes(catalog.cli);
     if (!supports) return fail(`provider ${providerId} does not support ${catalog.cli}`, 'provider_cli_mismatch');
     protocol = protocolOf(provider);
-    // A single-lane pool keeps its one protocol; a cross-CLI pool checks the
-    // protocol per lane instead (see validateProviderSelection). A derived
-    // protocol (context.protocol null) is not enforced: it is read off the pool.
-    if (!context.crossCli && context.protocol && protocol !== context.protocol) {
+    // On multi-protocol lanes the pool protocol is descriptive: each provider
+    // binding supplies its own wire dialect. Other lanes retain the constraint.
+    if (!context.crossCli && !MULTI_PROTOCOL_CLIS.has(catalog.cli)
+        && context.protocol && protocol !== context.protocol) {
       return fail(`provider ${providerId} does not use ${context.protocol}`, 'provider_protocol_mismatch');
     }
     if (model && typeof catalog.providers.modelValidForProvider === 'function'
@@ -496,6 +498,7 @@ function validateProviderSelection(input, options = {}) {
   const ids = new Set();
   const trustDomains = new Set();
   const laneProtocols = new Map();
+  const poolProtocols = new Set();
   for (let index = 0; index < input.candidates.length; index += 1) {
     let raw = input.candidates[index];
     if (crossCli && raw && typeof raw === 'object' && !Array.isArray(raw)
@@ -523,9 +526,11 @@ function validateProviderSelection(input, options = {}) {
       return fail(`provider ${result.value.providerId} appears more than once`, 'duplicate_provider_candidate');
     }
     ids.add(key);
-    if (crossCli && result.protocol) {
-      const lane = result.value.cli;
-      if (laneProtocols.has(lane) && laneProtocols.get(lane) !== result.protocol) {
+    if (result.protocol) {
+      poolProtocols.add(result.protocol);
+      const lane = result.value.cli || homeCli;
+      if (!MULTI_PROTOCOL_CLIS.has(lane)
+          && laneProtocols.has(lane) && laneProtocols.get(lane) !== result.protocol) {
         return fail(`candidates on ${lane} mix protocols`, 'provider_protocol_mismatch');
       }
       laneProtocols.set(lane, result.protocol);
@@ -534,7 +539,7 @@ function validateProviderSelection(input, options = {}) {
     if (result.value.enabled && result.trustDomain) trustDomains.add(result.trustDomain);
   }
   const protocol = declaredProtocol || derivedProtocol || 'anthropic';
-  if (laneProtocols.size && ![...laneProtocols.values()].includes(protocol)) {
+  if (poolProtocols.size && !poolProtocols.has(protocol)) {
     return fail(`no candidate uses ${protocol}`, 'provider_protocol_mismatch');
   }
   const cliSwitch = input.cliSwitch == null || input.cliSwitch === ''

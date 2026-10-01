@@ -12,13 +12,7 @@
     const api = window.MultiCCProviderCatalog;
     return api && api.cliDisplayName ? api.cliDisplayName(cli) : cli;
   };
-  // 单行的 <option> 没有第二行可放小字：只在一条车道真的换了引擎产品名时，才把引擎
-  // 附在名字后面（扶正的两条常驻车道）；其余车道的小字就是它自己的 id，重复就不写。
-  const cliOptionLabel = cli => {
-    const api = window.MultiCCProviderCatalog;
-    const engine = api && api.cliEngine ? api.cliEngine(cli) : cli;
-    return engine && engine !== cli ? `${cliDisplayName(cli)} · ${engine}` : cliDisplayName(cli);
-  };
+  const cliOptionLabel = cli => cliDisplayName(cli);
   // 单行文案里的「车道 + 线路」两段：自持账号的车道（providerless）路由名就是它的
   // 产品名（nativeRouteLabel 与 cliDisplayName 同源），两个一模一样 —— 只说一遍。
   const laneRouteLabel = (cli, route) => {

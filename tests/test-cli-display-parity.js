@@ -795,3 +795,9 @@ test('chat.html and air.html load provider-catalog.js before every CLI-name cons
     }
   }
 });
+
+// Execution-lane marks remain in metadata, but user-visible badges are products.
+test('CLI badges hide legacy engine distinctions and normalize stored IDs', () => {
+  for (const cli of ['claude', 'claude-exp', ' CLAUDE-EXP ']) assert.equal(CATALOG.cliShortMark(cli), 'C');
+  for (const cli of ['codex', 'codex-exp', ' CODEX ']) assert.equal(CATALOG.cliShortMark(cli), 'X');
+});

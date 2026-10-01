@@ -440,32 +440,14 @@
     return catalog && catalog.cliDisplayName ? catalog.cliDisplayName(cli) : clean(cli);
   }
 
-  // The engine name minus the family word it repeats: "Claude Agent SDK" under
-  // the family "Claude" is just "Agent SDK"; "Codex App Server" under "Codex" is
-  // "App Server". Returns '' when the engine says nothing the family doesn't
-  // already say (the plain lane's engine is its own id).
-  function shortEngine(family, engine, id) {
-    const value = String(engine || '').trim();
-    if (!value) return '';
-    const lower = value.toLowerCase();
-    const fam = String(family || '').toLowerCase();
-    if (lower === fam || lower === String(id || '').toLowerCase()) return '';
-    if (fam && lower.startsWith(fam + ' ')) return value.slice(fam.length + 1).trim();
-    return value;
+  // Only the product name belongs in runtime configuration. Legacy IDs remain
+  // readable, but execution engines are an internal compatibility detail.
+  function cliChoiceLabel(cli) {
+    return cliLabel(cli);
   }
 
-  // 一行文字里的 CLI 名字。家族名分不开同一家族的两条车道（claude / claude-exp
-  // 都叫 Claude，codex / codex-exp 都叫 Codex），所以凡是只有一行位置的地方
-  // （下拉选项、分组标题）都补上引擎当区分 —— 但引擎里重复家族名的那截要去掉，
-  // 不然就成了「Codex · Codex App Server」：`Codex` / `Codex · App Server`，
-  // `Claude` / `Claude · Agent SDK`。家族名已经是唯一区分的（zcode / kimi）就
-  // 不补后缀。
-  function cliChoiceLabel(cli) {
-    const family = cliLabel(cli);
-    const catalog = scope() && scope().MultiCCProviderCatalog;
-    const engine = catalog && catalog.cliEngine ? catalog.cliEngine(cli) : '';
-    const suffix = shortEngine(family, engine, clean(cli));
-    return suffix ? `${family} · ${suffix}` : family;
+  function chatChoiceCli(cli) {
+    return cli === 'claude' ? 'claude-exp' : cli === 'codex' ? 'codex-exp' : cli;
   }
 
   function request(url, body, method = 'POST') {
@@ -754,7 +736,7 @@
 
     // ── 状态 ────────────────────────────────────────────────────────────────
     let mode = MODE_FIXED;
-    let currentCli = config.cli || cliList[0] || 'claude';
+    let currentCli = config.cli || cliList[0] || (terminalDraft ? 'claude' : 'claude-exp');
     let providers = [];
     let providerValue = '';
     let customModelValue = '';
@@ -1050,9 +1032,9 @@
 
     function availableClis() {
       const known = new Set(Array.isArray(clis) ? clis.map(String) : []);
-      const list = [...new Set([...AUTO_CLIS, config.cli, ...known].filter(Boolean))];
+      const list = [...new Set([...AUTO_CLIS, config.cli, ...known].filter(Boolean))].filter(offersIn);
       return list.map(cli => {
-        if (cli === config.cli || known.has(cli)) {
+        if (cli === config.cli || known.has(cli) || (!terminalDraft && cli === chatChoiceCli(config.cli))) {
           return offersIn(cli)
             ? { cli, ok: true, reason: '' }
             : { cli, ok: false, reason: cliPurposeReason(cli) };
@@ -1061,19 +1043,14 @@
       });
     }
 
-    // 卡片的第二行：家族名分不开两条车道（Claude / Claude Agent SDK、Codex /
-    // Codex App Server），所以这里说引擎，后面再带上有几条可用的线路。引擎就是
-    // 车道的 id 时（zcode / kimi / 终端里的 claude）不重复念一遍。
+    // The second line describes available routes, without exposing the engine.
     function cliCardCopy(cli) {
       if (providerless(cli)) return tt('runConfigCliOwnAccount', '使用 {name} 自己的账号', { name: cliLabel(cli) });
       const catalog = catalogs.get(cli);
       if (!catalog && !catalogErrors.has(cli)) return '…';
-      const engine = catalogApi.cliEngine ? catalogApi.cliEngine(cli) : '';
-      const head = shortEngine(cliLabel(cli), engine, clean(cli));
-      if (catalogErrors.has(cli)) return [head, tt('runConfigLoadFailedShort', '加载失败')].filter(Boolean).join(' · ');
+      if (catalogErrors.has(cli)) return tt('runConfigLoadFailedShort', '加载失败');
       const count = providersOf(cli).length + (cli === 'opencode' ? aiApi.openCodeNativeProviders().length : 0);
-      const tail = count ? tt('runConfigCliLineCount', '{n} 条', { n: count }) : tt('runConfigCliNoLines', '没有可用线路');
-      return [head, tail].filter(Boolean).join(' · ');
+      return count ? tt('runConfigCliLineCount', '{n} 条', { n: count }) : tt('runConfigCliNoLines', '没有可用线路');
     }
 
     function renderCliCards() {
@@ -1082,8 +1059,9 @@
         button.type = 'button';
         button.dataset.cli = item.cli;
         button.setAttribute('role', 'radio');
-        button.setAttribute('aria-checked', String(item.cli === currentCli));
-        button.classList.toggle('selected', item.cli === currentCli);
+        const selected = item.cli === (terminalDraft ? currentCli : chatChoiceCli(currentCli));
+        button.setAttribute('aria-checked', String(selected));
+        button.classList.toggle('selected', selected);
         button.classList.toggle('is-off', !item.ok);
         const copy = el(doc, 'span');
         const small = el(doc, 'small', null, item.ok ? cliCardCopy(item.cli) : item.reason);
@@ -1326,9 +1304,10 @@
       // 也是「留在原位标出来」而不是让下拉空着。其余能跑的 CLI 排后面，不能跑的
       // 置灰，理由用短标签（长句会被截断成看不懂的半截话）。原生线路（Zen / Go）
       // 只有 OpenCode 能跑，线路名自己已经说了是哪条，所以那颗下拉就只写「OpenCode」，
-      // 不再补引擎后缀免得被 176px 截成半句；完整名字进 title。
+      // 名字和提示统一使用产品名，旧引擎值只保留在配置里。
       const native = isNativeLine(row.providerId);
-      const cliValues = [...new Set([row.cli, ...availableClis().filter(item => item.ok).map(item => item.cli)])].filter(Boolean);
+      const cliValues = [...new Set([row.cli, ...availableClis().filter(item => item.ok)
+        .map(item => !terminalDraft && item.cli === chatChoiceCli(row.cli) ? row.cli : item.cli)])].filter(Boolean);
       for (const choice of cliChoicesForLine(line, cliLabel, cliValues)) {
         const own = choice.cli === row.cli;
         const base = native ? cliLabel(choice.cli) : cliChoiceLabel(choice.cli);

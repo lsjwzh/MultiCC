@@ -864,27 +864,14 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                 ),
               ),
             ),
-            // 名字走唯一那份 CLI 展示表；小字是这条车道底下的引擎（扶正的两条常驻
-            // 车道写引擎产品名，其余车道写自己的 id，跟名字重复就不重复画）。一次性
-            // 车道不在任务的候选里 —— 它们属于终端 —— 但当前那条永远留着。
-            for (final cli in widget.clis.where(
-              (c) => c == _cli || cliOffersIn(c, 'chat'),
-            ))
+            // 新选项只提供当前聊天车道，已有记录仍以家族名展示。
+            for (final cli in widget.clis.where((c) => cliOffersIn(c, 'chat')))
               ListTile(
                 title: Text(
                   cliDisplayName(cli),
                   style: const TextStyle(color: AppColors.text),
                 ),
-                subtitle: cliEngine(cli) == cli
-                    ? null
-                    : Text(
-                        cliEngine(cli),
-                        style: const TextStyle(
-                          color: AppColors.muted,
-                          fontSize: 11,
-                        ),
-                      ),
-                trailing: cli == _cli
+                trailing: cliFamilyOf(cli) == cliFamilyOf(_cli)
                     ? const Icon(Icons.check_rounded, color: AppColors.accent)
                     : null,
                 onTap: () => Navigator.pop(ctx, cli),

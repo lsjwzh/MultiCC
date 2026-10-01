@@ -131,10 +131,18 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
   @override
   void initState() {
     super.initState();
-    _pool = RunPoolService(settings: widget.settings, httpClient: widget.httpClient);
+    _pool = RunPoolService(
+      settings: widget.settings,
+      httpClient: widget.httpClient,
+    );
     _cli = widget.cli;
     _providers = widget.providers;
     _laneCounts[_cli.name] = _providers.length;
+    for (final cli in _offeredClis) {
+      if (cliFamilyOf(cli.name) == cliFamilyOf(_cli.name)) {
+        _laneCounts[cli.name] = _providers.length;
+      }
+    }
     _seedFixed();
     _agentCtrl = TextEditingController(text: widget.agent ?? '');
     _seedAuto();
@@ -176,11 +184,15 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
         _model.isNotEmpty && !_choicesFor(_provider).contains(_model);
     _customCtrl = TextEditingController(text: _customModel ? _model : '');
     _subProvider = widget.subProviderId ?? '';
-    _subModel = _seedModel(_subProvider.isEmpty ? _provider : _subProvider,
-        widget.subModel ?? '');
-    _customSubModel = _subModel.isNotEmpty &&
-        !_choicesFor(_subProvider.isEmpty ? _provider : _subProvider)
-            .contains(_subModel);
+    _subModel = _seedModel(
+      _subProvider.isEmpty ? _provider : _subProvider,
+      widget.subModel ?? '',
+    );
+    _customSubModel =
+        _subModel.isNotEmpty &&
+        !_choicesFor(
+          _subProvider.isEmpty ? _provider : _subProvider,
+        ).contains(_subModel);
     _subCustomCtrl = TextEditingController(
       text: _customSubModel ? _subModel : '',
     );
@@ -244,15 +256,13 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
 
   // ── 车道目录 ──────────────────────────────────────────────────────────
 
-  /// 面板上列出来的车道：chat 能跑的（一次性 `-p` / `exec` 车道不进这张表），
-  /// 加上会话现在这条 —— 一个跑在旧车道上的会话，选项里连自己都找不到就没法知道
-  /// 自己正在用哪条。
-  List<SessionCli> get _offeredClis => SessionCli.values
-      .where((cli) => cli == widget.cli || cliOffersIn(cli.name, 'chat'))
-      .toList();
+  /// 只展示当前聊天车道。旧会话保留原 id，但选项按产品家族高亮。
+  List<SessionCli> get _offeredClis =>
+      SessionCli.values.where((cli) => cliOffersIn(cli.name, 'chat')).toList();
 
   bool _available(SessionCli cli) =>
-      widget.cliAvailability[cli] ?? (cli == widget.cli);
+      widget.cliAvailability[cli] ??
+      (cliFamilyOf(cli.name) == cliFamilyOf(widget.cli.name));
 
   /// 首帧之后给每张车道卡补「N 条线路」。取不到就空着，不阻塞面板。
   void _bootstrapCounts() {
@@ -273,7 +283,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
   }
 
   List<Map<String, dynamic>> _poolFor(String lane) =>
-      _pool.cached(lane) ?? (lane == widget.cli.name ? widget.providers : const []);
+      _pool.cached(lane) ??
+      (cliFamilyOf(lane) == cliFamilyOf(widget.cli.name)
+          ? widget.providers
+          : const []);
 
   /// 一条线路在池子里的记录（找不到返回 null = 目录里没有这条）。
   Map<String, dynamic>? _providerMap(String lane, String providerId) {
@@ -320,7 +333,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
   }
 
   /// 换到一条新车道时的默认线路：官方那条，找不到就用第一条。
-  String _seedProviderFor(SessionCli cli, List<Map<String, dynamic>> providers) {
+  String _seedProviderFor(
+    SessionCli cli,
+    List<Map<String, dynamic>> providers,
+  ) {
     for (final p in providers) {
       if (p['builtinOfficial'] == true &&
           p['id'] == '${cli.poolKey}-official') {
@@ -382,12 +398,9 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
       model: model,
       effort: _effort,
       providerLabel: providerLabel,
-      modelLabel: model.isEmpty ? '默认' : runModelOptionLabel(
-        _cli,
-        _provider,
-        model,
-        _providers,
-      ),
+      modelLabel: model.isEmpty
+          ? '默认'
+          : runModelOptionLabel(_cli, _provider, model, _providers),
       subProviderId: _subProvider,
       subModel: subModel,
       includeAgent: _cli.supportsAgent,
@@ -471,55 +484,126 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
 
   Widget buildSheet(BuildContext context) {
     _bootstrapCounts();
-    return SafeArea(
-      child: SingleChildScrollView(
-        padding: EdgeInsets.only(
-          left: 18,
-          right: 18,
-          top: 16,
-          bottom: 18 + MediaQuery.of(context).viewInsets.bottom,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              '运行配置',
-              style: TextStyle(
-                color: AppColors.text,
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 12),
-            _modeToggle(),
-            const SizedBox(height: 14),
-            if (_mode == RunConfigMode.fixed) ..._buildFixedSection(),
-            if (_mode == RunConfigMode.auto) ...buildAutoSection(),
-            if (_autoError.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                _autoError,
-                key: const ValueKey('run-config-error'),
-                style: const TextStyle(color: AppColors.danger, fontSize: 12),
-              ),
-            ],
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
+    final media = MediaQuery.of(context);
+    final availableHeight = media.size.height - media.viewInsets.bottom;
+    final compactHeader = availableHeight < 440;
+    return Material(
+      color: AppColors.panel,
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      clipBehavior: Clip.antiAlias,
+      child: SafeArea(
+        child: Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.viewInsetsOf(context).bottom,
+          ),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: availableHeight * 0.9),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('取消'),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (!compactHeader)
+                        Center(
+                          child: Container(
+                            width: 36,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFdce6f1),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
+                        ),
+                      if (!compactHeader) const SizedBox(height: 16),
+                      const Text(
+                        '运行配置',
+                        style: TextStyle(
+                          color: AppColors.text,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      if (!compactHeader) const SizedBox(height: 5),
+                      if (!compactHeader)
+                        const Text(
+                          '选择工具、线路与模型',
+                          style: TextStyle(
+                            color: AppColors.muted,
+                            fontSize: 12,
+                          ),
+                        ),
+                      const SizedBox(height: 18),
+                      _modeToggle(),
+                    ],
+                  ),
                 ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: _canSubmit ? _submit : null,
-                  child: const Text('保存'),
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (_mode == RunConfigMode.fixed)
+                          ..._buildFixedSection(),
+                        if (_mode == RunConfigMode.auto) ...buildAutoSection(),
+                        if (_autoError.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            _autoError,
+                            key: const ValueKey('run-config-error'),
+                            style: const TextStyle(
+                              color: AppColors.danger,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                  decoration: const BoxDecoration(
+                    border: Border(top: BorderSide(color: Color(0xFFe6eef7))),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          style: TextButton.styleFrom(
+                            minimumSize: const Size(0, 46),
+                          ),
+                          child: const Text('取消'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        flex: 2,
+                        child: ElevatedButton(
+                          onPressed: _canSubmit ? _submit : null,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.accent,
+                            foregroundColor: Colors.white,
+                            minimumSize: const Size(0, 46),
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: const Text('保存'),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -574,14 +658,11 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
       }
     }
     return [
-      const Text(
-        'CLI',
-        style: TextStyle(color: AppColors.faint, fontSize: 12),
-      ),
+      const Text('CLI', style: TextStyle(color: AppColors.faint, fontSize: 12)),
       const SizedBox(height: 6),
-      ...shown.map(_cliCard),
+      _cliGrid(shown),
       if (hidden.isNotEmpty) _unavailableToggle(hidden.length),
-      if (_showUnavailable) ...hidden.map(_cliCard),
+      if (_showUnavailable) _cliGrid(hidden),
       // 自持账号的车道没有 MultiCC 线路池：不画线路下拉，模型/强度照旧（模型候选
       // 来自它自己的目录）。
       if (!_cli.supportsProvider) ...[
@@ -636,19 +717,33 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     return _countingLanes.contains(cli.name) ? '正在数…' : '没有可用线路';
   }
 
+  Widget _cliGrid(List<SessionCli> clis) => LayoutBuilder(
+    builder: (context, constraints) {
+      final columns = constraints.maxWidth >= 340 ? 2 : 1;
+      final width = (constraints.maxWidth - (columns - 1) * 10) / columns;
+      return Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: [
+          for (final cli in clis) SizedBox(width: width, child: _cliCard(cli)),
+        ],
+      );
+    },
+  );
+
   Widget _cliCard(SessionCli cli) {
     final available = _available(cli);
-    final selected = cli == _cli;
+    final selected = cliFamilyOf(cli.name) == cliFamilyOf(_cli.name);
     final color = cliBrandColor(cli);
     final sub = _cliCardSubLabel(cli, available);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: EdgeInsets.zero,
       child: InkWell(
         key: Key('run-cli-option-${cli.name}'),
         onTap: available ? () => _selectCli(cli) : null,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(12),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
           decoration: BoxDecoration(
             color: selected
                 ? color.withValues(alpha: 0.10)
@@ -658,7 +753,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
                   ? color.withValues(alpha: 0.65)
                   : const Color(0xFFdce6f1),
             ),
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: BorderRadius.circular(12),
           ),
           child: Row(
             children: [
@@ -667,7 +762,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
                 height: 30,
                 child: Radio<SessionCli>(
                   value: cli,
-                  groupValue: _cli,
+                  groupValue: selected ? cli : null,
                   onChanged: available
                       ? (value) => _selectCli(value ?? _cli)
                       : null,
@@ -698,9 +793,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          color: available
-                              ? AppColors.muted
-                              : AppColors.faint,
+                          color: available ? AppColors.muted : AppColors.faint,
                           fontSize: 11,
                           height: 1.25,
                         ),
@@ -719,12 +812,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
 
   String _unavailableReason(SessionCli cli) {
     if (cliIsBundled(cli.name)) {
-      final engines = cliBundledEnginesOf(cli.name)
-          .map((e) => e.engine)
-          .join(' / ');
-      return engines.isEmpty
-          ? '引擎随 MultiCC 一起发布，请升级 MultiCC 本身'
-          : '引擎（$engines）随 MultiCC 一起发布，请升级 MultiCC 本身';
+      return '随 MultiCC 一起发布，请升级 MultiCC';
     }
     final spec = _specFor(cli);
     if (spec != null && spec['auto'] != true) {
@@ -749,8 +837,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     // value 找不到任何 item，DropdownButton 直接断言失败。
     final hasOfficial = _providers.any(
       (p) =>
-          p['builtinOfficial'] == true &&
-          p['id'] == '${_cli.poolKey}-official',
+          p['builtinOfficial'] == true && p['id'] == '${_cli.poolKey}-official',
     );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -837,10 +924,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
                 ),
               ),
             ),
-            const DropdownMenuItem(
-              value: '__custom__',
-              child: Text('自定义…'),
-            ),
+            const DropdownMenuItem(value: '__custom__', child: Text('自定义…')),
           ],
           onChanged: (v) => setState(() {
             _customModel = v == '__custom__';
@@ -961,7 +1045,9 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
                 items: [
                   const DropdownMenuItem(value: '', child: Text('随主')),
                   ..._providers
-                      .where((p) => !(_cli.isCodexFamily && p['isOfficial'] == true))
+                      .where(
+                        (p) => !(_cli.isCodexFamily && p['isOfficial'] == true),
+                      )
                       .map(
                         (p) => DropdownMenuItem(
                           value: p['id']?.toString() ?? '',
@@ -997,12 +1083,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
                     (m) => DropdownMenuItem(
                       value: m,
                       child: Text(
-                        runModelOptionLabel(
-                          _cli,
-                          _subProvider,
-                          m,
-                          _providers,
-                        ),
+                        runModelOptionLabel(_cli, _subProvider, m, _providers),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -1274,16 +1355,18 @@ Widget _segmentedButton({
   return InkWell(
     key: key,
     onTap: onTap,
-    borderRadius: BorderRadius.circular(6),
+    borderRadius: BorderRadius.circular(12),
     child: Container(
       alignment: Alignment.center,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: selected ? AppColors.accent.withValues(alpha: 0.12) : const Color(0xFFf4f8fd),
+        color: selected
+            ? AppColors.accent.withValues(alpha: 0.12)
+            : const Color(0xFFf4f8fd),
         border: Border.all(
           color: selected ? AppColors.accent : const Color(0xFFdce6f1),
         ),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
         label,

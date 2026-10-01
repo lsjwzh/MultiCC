@@ -1281,14 +1281,7 @@
         // 兜底车道的标记由 cliMeta 带进来（catalog 从服务端 DISPLAY 的 deprecated 列
         // 生成）: 名字后面直接说出来, 选到它时下面还会再解释一句。
         const DEPRECATED_NOTE = tt('cliLaneDeprecatedNote', '兜底线路，计划淘汰');
-        // 小字（引擎）在 <option> 里没有第二行，所以附在名字后面 —— 只在这条车道真的
-        // 换了一个引擎产品名时才加（扶正的两条常驻车道：Claude Agent SDK / Codex App
-        // Server）；其余车道的小字就是它自己的 id，跟名字重复，不加。
-        const cliLabelText = (value, meta) => {
-          const label = meta?.label || value;
-          const engine = meta?.engine && meta.engine !== value ? ` · ${meta.engine}` : '';
-          return `${label}${engine}${meta?.deprecated ? `（${DEPRECATED_NOTE}）` : ''}`;
-        };
+        const cliLabelText = (value, meta) => meta?.label || value;
         // 选中兜底车道时在详情里再说一句, 并指出该用哪条 —— 列表里的角标只是
         // 提示, 这里才是「你正要切到一条过渡线路」的说明。
         const deprecationNoteNode = meta => {
@@ -1301,11 +1294,9 @@
           return note;
         };
         for (const [value, meta] of Object.entries(cliMeta || {})) {
-          // 一次性车道（`claude -p` / `codex exec`）不在这张列表里 —— chat 的线路是
-          // 常驻车道，那两个可执行文件属于终端。当前这条永远留着：否则一个跑在旧
-          // 线路上的会话打开这个面板，连自己正在用哪条都看不见。
+          // 只提供当前 chat 线路；旧会话在下方仍按产品名显示当前 CLI。
           const kinds = (meta && meta.kinds) || ['chat', 'terminal'];
-          if (value !== current && kinds.indexOf('chat') === -1) continue;
+          if (kinds.indexOf('chat') === -1) continue;
           const sessionState = states && states[value];
           const installed = availLocal[value]?.available !== false;
           const option = doc.createElement('option');
@@ -1316,7 +1307,7 @@
           optionMap[value] = option;
           select.appendChild(option);
         }
-        select.value = current;
+        select.value = current === 'claude' ? 'claude-exp' : current === 'codex' ? 'codex-exp' : current;
         const targetInfo = doc.createElement('div');
         targetInfo.style.cssText = 'min-height:34px;font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.5;margin-bottom:8px;';
         const resetRow = doc.createElement('label');

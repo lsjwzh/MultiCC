@@ -118,7 +118,7 @@ void main() {
     expect(find.text('运行配置'), findsOneWidget);
     expect(find.byKey(const Key('run-mode-fixed')), findsOneWidget);
     expect(find.byKey(const Key('run-order-order')), findsNothing);
-    expect(find.byKey(const Key('run-cli-option-claude')), findsOneWidget);
+    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsOneWidget);
     // 用不了的车道折在「未安装的 N 个」底下，点开才铺出来。
     expect(find.byKey(const Key('run-cli-option-codex-exp')), findsNothing);
     expect(find.byKey(const Key('run-cli-unavailable-toggle')), findsOneWidget);
@@ -158,9 +158,7 @@ void main() {
     expect(out.value?.switchToCli, isNull, reason: '车道没换');
   });
 
-  testWidgets('固定一条：换了 CLI 要带回 switchToCli；没线路的车道说自己的账号', (
-    tester,
-  ) async {
+  testWidgets('固定一条：换了 CLI 要带回 switchToCli；没线路的车道说自己的账号', (tester) async {
     final out = _Captured();
     await _open(
       tester,
@@ -170,10 +168,7 @@ void main() {
         provider: 'relay',
         model: '',
         effort: 'medium',
-        cliAvailability: {
-          SessionCli.claude: true,
-          SessionCli.qoder: true,
-        },
+        cliAvailability: {SessionCli.claude: true, SessionCli.qoder: true},
       ),
       out,
     );
@@ -204,18 +199,18 @@ void main() {
       ),
       out,
     );
-    expect(find.byKey(const Key('run-cli-option-claude')), findsOneWidget);
+    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('run-mode-auto')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('run-order-order')), findsOneWidget);
-    expect(find.byKey(const Key('run-cli-option-claude')), findsNothing);
+    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsNothing);
     // 空池子先给一句提示，而且存不出去。
     expect(find.text('池子还是空的，先添加线路'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('run-mode-fixed')));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('run-cli-option-claude')), findsOneWidget);
+    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsOneWidget);
     expect(find.byKey(const Key('run-order-order')), findsNothing);
     expect(out.value, isNull);
   });
@@ -277,18 +272,20 @@ void main() {
     expect(find.byKey(const Key('run-pool-row-claude:strong')), findsOneWidget);
     expect(find.text('便宜线'), findsOneWidget);
     expect(find.text('主力线'), findsOneWidget);
-    expect(find.byKey(const Key('run-pool-model-claude:strong')), findsOneWidget);
+    expect(
+      find.byKey(const Key('run-pool-model-claude:strong')),
+      findsOneWidget,
+    );
     // 按顺序没有档位可选（那是按难度才有的东西）。
     expect(find.byKey(const Key('run-pool-tier-claude:cheap-1')), findsNothing);
 
     // 「▸ 更多」里才放策略开关。
     expect(find.byKey(const Key('run-sticky')), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('run-auto-more-toggle')));
     await tester.tap(find.byKey(const Key('run-auto-more-toggle')));
     await tester.pumpAndSettle();
     expect(
-      tester
-          .widget<SwitchListTile>(find.byKey(const Key('run-sticky')))
-          .value,
+      tester.widget<SwitchListTile>(find.byKey(const Key('run-sticky'))).value,
       isFalse,
       reason: '池子里的 sticky=false 要回显',
     );
@@ -333,12 +330,18 @@ void main() {
 
     await tester.tap(find.byKey(const Key('run-tiering-manual')));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('run-pool-tier-claude:cheap-1')), findsOneWidget);
+    expect(
+      find.byKey(const Key('run-pool-tier-claude:cheap-1')),
+      findsOneWidget,
+    );
     expect(
       find.byKey(const Key('run-pool-tier-claude:strong-3')),
       findsOneWidget,
     );
     // 手点一下「便宜线 = 简单」：没点的那条按模型名猜（主力线归复杂）。
+    await tester.ensureVisible(
+      find.byKey(const Key('run-pool-tier-claude:cheap-1')),
+    );
     await tester.tap(find.byKey(const Key('run-pool-tier-claude:cheap-1')));
     await tester.pumpAndSettle();
 
@@ -347,15 +350,13 @@ void main() {
     expect(routing?.provider, 'jev');
     expect(routing?.tiers, ['t1', 't2']);
     expect(out.value?.providerSelection?.cliSwitch, 'routing');
-    expect(
-      out.value?.providerSelection?.candidates.map((c) => c.tier),
-      ['t1', 't2'],
-    );
+    expect(out.value?.providerSelection?.candidates.map((c) => c.tier), [
+      't1',
+      't2',
+    ]);
   });
 
-  testWidgets('交给 Jev：写价格档，候选不带 tier，面板不暴露的旋钮原样带回', (
-    tester,
-  ) async {
+  testWidgets('交给 Jev：写价格档，候选不带 tier，面板不暴露的旋钮原样带回', (tester) async {
     final out = _Captured();
     await _open(
       tester,
@@ -386,7 +387,8 @@ void main() {
             apiKeyName: 'my-key',
             model: 'typesafe-ai/jev',
             timeoutMs: 4000,
-          ),        ),
+          ),
+        ),
       ),
       out,
     );
@@ -424,16 +426,12 @@ void main() {
             'name': 'Responses 中继',
             'protocol': 'openai_responses',
           },
-          {
-            'id': 'strong',
-            'name': '主力线',
-            'protocol': 'openai_responses',
-          },
+          {'id': 'strong', 'name': '主力线', 'protocol': 'openai_responses'},
         ],
         provider: 'relay',
         model: '',
         effort: 'medium',
-        cliAvailability: {SessionCli.claude: true, SessionCli.codex: true},
+        cliAvailability: {SessionCli.claude: true, SessionCli.codexExp: true},
         providerSelection: SessionProviderSelection(
           protocol: 'openai_responses',
           candidates: [
@@ -463,11 +461,14 @@ void main() {
     // 换成 codex（responses 车道，菜单里排最前的那条）就合法了 —— 行 id 跟着车道走。
     await tester.tap(find.text('Codex').first);
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('run-pool-row-codex:relay')), findsOneWidget);
+    expect(
+      find.byKey(const Key('run-pool-row-codex-exp:relay')),
+      findsOneWidget,
+    );
 
     await _save(tester);
-    expect(out.value?.providerSelection?.candidates.first.cli, 'codex');
-    expect(out.value?.switchToCli, 'codex', reason: '池子第一条换了车道');
+    expect(out.value?.providerSelection?.candidates.first.cli, 'codex-exp');
+    expect(out.value?.switchToCli, 'codex-exp', reason: '池子第一条换了车道');
   });
 
   testWidgets('遗留的无效行：黄标 + 原因，但不进候选也不算有效行', (tester) async {
@@ -516,20 +517,21 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(find.textContaining('OpenCode 原生线路只能跑在 OpenCode 车道上'), findsOneWidget);
+    expect(
+      find.textContaining('OpenCode 原生线路只能跑在 OpenCode 车道上'),
+      findsOneWidget,
+    );
 
     // 另外两条有效 → 仍能存，只是坏行不上 wire。
     await _save(tester);
     expect(out.value?.providerSelection?.candidates, hasLength(2));
-    expect(
-      out.value?.providerSelection?.candidates.map((c) => c.providerId),
-      ['cheap', 'strong'],
-    );
+    expect(out.value?.providerSelection?.candidates.map((c) => c.providerId), [
+      'cheap',
+      'strong',
+    ]);
   });
 
-  testWidgets('添加线路：只列能用到的组合，OpenCode 那一组只列它自己的原生线路', (
-    tester,
-  ) async {
+  testWidgets('添加线路：只列能用到的组合，OpenCode 那一组只列它自己的原生线路', (tester) async {
     final s = await settings(host: 'http://server.example');
     final client = MockClient((request) async {
       final cli = request.url.queryParameters['cli'] ?? '';
@@ -547,21 +549,13 @@ void main() {
         if (cli == 'opencode') {
           return _json(200, {
             'providers': [
-              {
-                'id': 'oc-managed',
-                'name': 'OC 中继',
-                'protocol': 'anthropic',
-              },
+              {'id': 'oc-managed', 'name': 'OC 中继', 'protocol': 'anthropic'},
             ],
           });
         }
         return _json(200, {
           'providers': [
-            {
-              'id': '$cli-line',
-              'name': '$cli 线路',
-              'protocol': 'anthropic',
-            },
+            {'id': '$cli-line', 'name': '$cli 线路', 'protocol': 'anthropic'},
           ],
         });
       }
@@ -581,7 +575,7 @@ void main() {
         httpClient: client,
         cliAvailability: {
           SessionCli.claude: true,
-          SessionCli.codex: true,
+          SessionCli.codexExp: true,
           SessionCli.opencode: true,
         },
         providerSelection: const SessionProviderSelection(
@@ -604,18 +598,20 @@ void main() {
       out,
     );
 
+    await tester.ensureVisible(find.byKey(const Key('run-add-line')));
     await tester.tap(find.byKey(const Key('run-add-line')));
     await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('run-add-line-search')), findsOneWidget);
     // OpenCode 组里只有它自己的原生线路（中继那一条要回上面的 claude 组找）。
     expect(
-      find.byKey(
-        const Key('run-add-line-opencode-opencode-native:opencodego'),
-      ),
+      find.byKey(const Key('run-add-line-opencode-opencode-native:opencodego')),
       findsOneWidget,
     );
-    expect(find.byKey(const Key('run-add-line-opencode-oc-managed')), findsNothing);
+    expect(
+      find.byKey(const Key('run-add-line-opencode-oc-managed')),
+      findsNothing,
+    );
     expect(find.textContaining('上面的线路也都能跑'), findsOneWidget);
     // 已经在池子里的那条挂着 ✓，点不动。
     expect(find.text('✓ 已在池里'), findsOneWidget);
@@ -633,14 +629,17 @@ void main() {
     // 搜索能过滤，点一条就把行加进池子。
     await tester.enterText(find.byKey(const Key('run-add-line-search')), '线路');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('run-add-line-codex-codex-line')));
+    await tester.tap(
+      find.byKey(const Key('run-add-line-codex-exp-codex-exp-line')),
+    );
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('run-pool-row-codex:codex-line')), findsOneWidget);
+    expect(
+      find.byKey(const Key('run-pool-row-codex-exp:codex-exp-line')),
+      findsOneWidget,
+    );
   });
 
-  testWidgets('添加线路：整批取不到时说加载失败并给重试，不是「没有可用线路」', (
-    tester,
-  ) async {
+  testWidgets('添加线路：整批取不到时说加载失败并给重试，不是「没有可用线路」', (tester) async {
     final s = await settings(host: 'http://server.example');
     var calls = 0;
     final client = MockClient((request) async {
@@ -662,11 +661,12 @@ void main() {
         effort: 'medium',
         settings: s,
         httpClient: client,
-        cliAvailability: {SessionCli.claude: true, SessionCli.codex: true},
+        cliAvailability: {SessionCli.claude: true, SessionCli.codexExp: true},
         providerSelection: pool,
       ),
       out,
     );
+    await tester.ensureVisible(find.byKey(const Key('run-add-line')));
     await tester.tap(find.byKey(const Key('run-add-line')));
     await tester.pumpAndSettle();
 
@@ -738,12 +738,12 @@ void main() {
 
   // ── 文案与折叠 ──────────────────────────────────────────────────────────
 
-  test('车道标签分得开同家族的两条车道（镜像 Web cliChoiceLabel）', () {
+  test('车道标签只展示产品名（镜像 Web cliChoiceLabel）', () {
     expect(cliChoiceLabel('claude'), 'Claude');
-    expect(cliChoiceLabel('claude-exp'), 'Claude · Agent SDK');
+    expect(cliChoiceLabel('claude-exp'), 'Claude');
     expect(cliChoiceLabel('codex'), 'Codex');
-    expect(cliChoiceLabel('codex-exp'), 'Codex · App Server');
-    expect(cliChoiceLabel('opencode'), 'OpenCode · acp');
+    expect(cliChoiceLabel('codex-exp'), 'Codex');
+    expect(cliChoiceLabel('opencode'), 'OpenCode');
     expect(cliChoiceLabel('zcode'), 'ZCode');
     expect(cliChoiceLabel('kimi'), 'Kimi Code');
   });
@@ -751,9 +751,17 @@ void main() {
   test('chip 的强度写中文档名，不写 wire 值', () {
     expect(effortChipLabel(SessionCli.claude, 'medium'), '中');
     expect(effortChipLabel(SessionCli.claude, 'xhigh'), '最高');
-    expect(effortChipLabel(SessionCli.claude, ''), '中', reason: '空串 = 车道默认 medium');
+    expect(
+      effortChipLabel(SessionCli.claude, ''),
+      '中',
+      reason: '空串 = 车道默认 medium',
+    );
     expect(effortChipLabel(SessionCli.codexExp, 'minimal'), '最低');
-    expect(effortChipLabel(SessionCli.zcode, 'medium'), '', reason: '不支持强度的车道不写');
+    expect(
+      effortChipLabel(SessionCli.zcode, 'medium'),
+      '',
+      reason: '不支持强度的车道不写',
+    );
   });
 
   test('chip 的线路段把「官方 Provider」收成「官方」', () {
@@ -785,7 +793,7 @@ void main() {
     );
 
     // 只有会话现在这条能用：其余全折在「▸ 未安装的 N 个」底下。
-    expect(find.byKey(const Key('run-cli-option-claude')), findsOneWidget);
+    expect(find.byKey(const Key('run-cli-option-claude-exp')), findsOneWidget);
     expect(find.byKey(const Key('run-cli-option-codex-exp')), findsNothing);
     expect(find.byKey(const Key('run-cli-option-opencode')), findsNothing);
     expect(find.textContaining('未安装的'), findsOneWidget);
@@ -802,7 +810,7 @@ void main() {
     expect(find.byKey(const Key('run-cli-option-codex-exp')), findsNothing);
   });
 
-  testWidgets('行首车道菜单用的是分得开的名字', (tester) async {
+  testWidgets('行首车道菜单每个产品只提供一条现代车道', (tester) async {
     final out = _Captured();
     await _open(
       tester,
@@ -819,12 +827,16 @@ void main() {
 
     await tester.tap(find.byKey(const Key('run-pool-lane-claude:cheap')));
     await tester.pumpAndSettle();
-    // 同家族的两条车道不再都叫 "Claude" / "Codex"。
-    expect(find.text('Claude · Agent SDK'), findsOneWidget);
-    expect(find.text('Codex · App Server'), findsOneWidget);
+    final items = tester
+        .widgetList<PopupMenuItem<String>>(find.byType(PopupMenuItem<String>))
+        .map((item) => item.value)
+        .toList();
+    expect(items, containsAll(['claude-exp', 'codex-exp']));
+    expect(items, isNot(contains('claude')));
+    expect(items, isNot(contains('codex')));
     expect(find.text('Codex'), findsOneWidget);
     expect(find.text('Kimi Code'), findsOneWidget);
-    expect(find.text('OpenCode · acp'), findsOneWidget);
+    expect(find.text('OpenCode'), findsOneWidget);
   });
 }
 

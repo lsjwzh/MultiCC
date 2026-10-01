@@ -1809,7 +1809,11 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       cliSelect.title = tt('autoEditorCliLabel', '这条线路跑在哪个 CLI');
       // '' first: the session's own lane is the default every pool starts on,
       // and the only value that writes no `cli` field at all.
-      for (const value of ['', ...AUTO_CLIS]) {
+      const choices = ['', ...AUTO_CLIS.filter(value => value !== 'claude' && value !== 'codex')];
+      // A saved legacy row keeps its ID, represented by the same family option.
+      const visibleChoices = choices.map(value => (lane === 'claude' && value === 'claude-exp')
+        || (lane === 'codex' && value === 'codex-exp') ? lane : value);
+      for (const value of visibleChoices) {
         const option = make('option', '', cliOptionLabel(value));
         option.value = value;
         cliSelect.appendChild(option);

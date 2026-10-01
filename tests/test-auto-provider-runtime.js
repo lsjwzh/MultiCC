@@ -311,6 +311,46 @@ test('OpenCode runtime discovers Codex-pool candidates and reads their own quota
   ]);
 });
 
+test('OpenCode and ZCode fail over across API dialects after a pool is saved and reloaded', () => {
+  const { validateProviderSelection, providerSelectionDto } = require('../src/providers/auto-provider-config');
+  for (const cli of ['opencode', 'zcode']) {
+    const catalog = [
+      { id: 'anthropic-route', appType: 'claude', apiFormat: 'anthropic', model: 'claude-model' },
+      { id: 'responses-route', appType: 'codex', apiFormat: 'openai_responses', model: 'gpt-model' },
+    ];
+    const providers = {
+      appTypeForCli: () => 'claude',
+      appTypesForCli: () => ['claude', 'codex'],
+      listProviders: appType => catalog.filter(provider => provider.appType === appType),
+      providerSupportsCli: (_provider, lane) => lane === cli,
+    };
+    for (const explicit of [false, true]) {
+      const saved = validateProviderSelection({
+        mode: 'auto', sticky: false, candidates: catalog.map(provider => ({
+          providerId: provider.id, ...(explicit ? { cli } : {}),
+        })),
+      }, { cli, providers });
+      assert.equal(saved.ok, true, saved.error);
+      const events = [];
+      const runtime = createAutoProviderRuntime({
+        providers, emit: (_sessionId, event) => events.push(event),
+      });
+      const turn = runtime.beginTurn({
+        session: { id: `${cli}-${explicit}`, cli, providerSelection: providerSelectionDto(saved.value) },
+        turnId: 'mixed-dialect',
+      });
+      assert.deepEqual(turn.initial(), {
+        providerId: 'anthropic-route', model: 'claude-model', reasonCode: 'auto_initial_selection',
+      });
+      const next = turn.failover(quotaDecision(), openAttempt());
+      assert.equal(next.decision.action, 'retry');
+      assert.equal(next.invocationOptions.providerId, 'responses-route');
+      assert.equal(next.invocationOptions.model, 'gpt-model');
+      assert.deepEqual(events.map(event => event.protocol), ['anthropic', 'openai_responses']);
+    }
+  }
+});
+
 test('observable output and non-provider failures close the cross-provider replay boundary', () => {
   const { runtime, session, events } = fixture({ emptyFetchedAt: 900_000 });
   const turn = runtime.beginTurn({ session, turnId: 'turn-1' });

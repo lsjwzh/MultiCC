@@ -75,28 +75,8 @@ String runProviderChipLabel(
   return label == officialProviderLabel ? '官方' : label;
 }
 
-/// 一行文字里对一条车道的叫法。家族名分不开同一家族的两条车道（claude 与
-/// claude-exp 都叫 Claude），所以单行位置（下拉项、分组标题、行首 chip）补上引擎
-/// 当区分，但引擎里重复家族名的那截去掉 —— `Claude` / `Claude · Agent SDK`、
-/// `Codex` / `Codex · App Server`。家族名已经唯一的（OpenCode / Kimi Code）不补。
-/// 镜像 Web run-config.js 的 cliChoiceLabel / shortEngine。
-String cliChoiceLabel(String? id) {
-  final family = cliDisplayName(id);
-  final suffix = _shortEngine(family, cliEngine(id), id);
-  return suffix.isEmpty ? family : '$family · $suffix';
-}
-
-String _shortEngine(String family, String engine, String? id) {
-  final value = engine.trim();
-  if (value.isEmpty) return '';
-  final lower = value.toLowerCase();
-  final name = family.trim().toLowerCase();
-  if (lower == name || lower == (id ?? '').trim().toLowerCase()) return '';
-  if (name.isNotEmpty && lower.startsWith('$name ')) {
-    return value.substring(name.length + 1).trim();
-  }
-  return value;
-}
+/// 对用户只展示 CLI 产品名；保留旧车道 id 以读取已有会话。
+String cliChoiceLabel(String? id) => cliDisplayName(id);
 
 /// Auto 池子在 chip 上的说法：`Auto · <协议> → <本轮真正跑的那条>`。
 String autoProviderRouteLabel(String protocol, String? actualProviderName) {
