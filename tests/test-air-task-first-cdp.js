@@ -749,7 +749,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`document.getElementById('directory-git').querySelector('.directory-git-actions button').click()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('.git-manager-commits .git-manager-row').length===2`));
     await page.evaluate(`document.querySelector('.git-manager-commits .git-manager-row').click()`);
-    assert.ok(await page.waitFor(`document.querySelector('.git-manager')?.dataset.step==='files' && document.querySelector('.git-manager-commits').offsetHeight===0`));
+    assert.ok(await page.waitFor(`document.querySelector('.git-manager')?.dataset.step==='files' && document.querySelector('.git-manager-commits').offsetHeight===0 && document.querySelectorAll('.git-manager-files .git-manager-file').length===1`));
     await page.evaluate(`document.querySelector('.git-manager-files .git-manager-file').click()`);
     assert.ok(await page.waitFor(`document.querySelector('.git-manager')?.dataset.step==='diff' && document.querySelector('.git-manager-patch')`));
     await page.evaluate(`document.querySelector('.git-manager-back').click()`);
