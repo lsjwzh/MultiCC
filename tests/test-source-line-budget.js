@@ -87,6 +87,9 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // structural review and was retired on 2026-09-29, when the server-side
   // auto-commit refactor removed the per-turn checkbox state (~50 lines) and
   // dropped it to 2963 — the debt entry went in the same commit, so the list
-  // below lost it.
-  assert.deepEqual(result.debts.map(entry => entry.file), []);
+  // below lost it. It crossed again on 2026-10-01 (voice-dictation voiceRaw
+  // passthrough, 67022e75, +6 lines) without a registration, which turned the
+  // v2.2.3 tag CI red; the entry is back at 3005/121819, so the list below
+  // carries it again until the vendor-quota cluster split retires it.
+  assert.deepEqual(result.debts.map(entry => entry.file), ['app/lib/providers/chat_provider.dart']);
 });
