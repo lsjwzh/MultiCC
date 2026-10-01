@@ -96,7 +96,7 @@
   // 进入未读（红色调），而不是只有「已完成」才提醒。
   const taskNotify = window.MultiCCTaskNotify?.create({
     getCurrentTaskId: () => taskId,
-    openTask: task => navigate(task?.dirId, task?.id),
+    openTask: task => navigate(directoryId, task?.id),
     statusOf: task => taskStatus(task),
   });
   // 失败退避的上限（不是轮询档位）：连续失败时按 2 的幂往上翻，翻到这个数就封顶。
@@ -412,7 +412,7 @@
     const item = paletteItems[index];
     if (!item) return;
     closePalette();
-    navigate(item.dirId, item.kind === 'task' ? item.id : null);
+    navigate(item.kind === 'task' ? directoryId : item.dirId, item.kind === 'task' ? item.id : null);
   }
   function openPalette() {
     if (!data || paletteOpen) return;
@@ -1277,11 +1277,11 @@
       pendingReorderId = null;
     }
     // 已经在顶上（或者那条根本不在这一列里）就没有换位可言，照旧立刻走。
-    if (!row || list.children[0] === row) { navigate(task.dirId, task.id); return; }
+    if (!row || list.children[0] === row) { navigate(directoryId, task.id); return; }
     pendingReorderId = task.id;
     motion.lift(list, task.id);
     // 对话先切：换位只是这条带子自己的家务事，没理由让对话等它。
-    navigate(task.dirId, task.id, { remember: false });
+    navigate(directoryId, task.id, { remember: false });
     pendingReorderTimer = setTimeout(() => {
       pendingReorderTimer = null;
       const id = pendingReorderId;
@@ -1379,7 +1379,7 @@
       if (stage) panelMeta.append(node('span', stage));
       const go = node('button', t('airOpenTask'), 'pin-panel-open');
       go.type = 'button';
-      go.onclick = () => navigate(task.dirId, task.id);
+      go.onclick = () => navigate(directoryId, task.id);
       panel.append(node('strong', task.title || t('airUntitledTask'), 'pin-panel-title'), panelMeta, go);
       open.setAttribute('aria-expanded', 'false');
       open.setAttribute('aria-controls', panel.id);
@@ -1985,7 +1985,7 @@
         await api(path, { force: true }, 'DELETE');
       }
       // 删除当前打开的任务时先退回目录；从列表删别的任务则留在原地，让筛选和滚动容器继续可用。
-      if (selectedId === taskId) navigate(task?.dirId || directoryId);
+      if (selectedId === taskId) navigate(directoryId);
       await refresh();
       notice(t('airTaskDeleted'));
     });
@@ -2235,7 +2235,7 @@
     if (integration) actions.unshift(actionButton(t('airReconcileDelivery'), reconcileDelivery, 'reconcile'));
     if (['kept', 'separated'].includes(separation?.state) && separation.targetTaskId && separation.targetTaskId !== value.task.id) {
       actions.push(actionButton(separation.state === 'separated' ? t('airOpenSeparatedTask') : t('airOpenRelatedTask'),
-        () => navigate(value.task.dirId || directoryId, separation.targetTaskId), 'open-separated'));
+        () => navigate(directoryId, separation.targetTaskId), 'open-separated'));
     }
     // “留在当前会话”只决定壳，不撤销已经拆出的任务 ID。关联任务自己的
     // 详情页因此始终保留签出入口，之后任何时候都能迁到独立会话。
@@ -2268,7 +2268,7 @@
         throw Object.assign(error, { message: blockerNames[error?.code] || taskActionError(error) });
       }
       if (decision === 'separate' && result?.taskId) {
-        navigate(value.task.dirId || directoryId, result.taskId);
+        navigate(directoryId, result.taskId);
         notice(t('airSeparatedCreated', { title: separation.targetTitle || '' }));
         return;
       }
@@ -2592,7 +2592,7 @@
 
   function adminContext() {
     return {
-      data, scheduleTasks: window.MultiCCAirSchedules?.tasks() || [], api, setMode, navigate, notice, directoryName,
+      data, scheduleTasks: window.MultiCCAirSchedules?.tasks() || [], api, setMode, navigate, notice, directoryName, directoryId,
       deleteTask: task => deleteTaskById(task),
       // 中文词表只有一份（stateNames）：面板要说的状态词跟侧栏是同一批，
       // 传下去比在 air-admin.js 里再抄一份可靠。

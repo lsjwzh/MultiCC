@@ -697,7 +697,10 @@ class _AirTasksViewState extends State<AirTasksView>
                   Navigator.pop(sheetContext);
                   unawaited(() async {
                     await _refresh();
-                    if (mounted) _openTaskById(dirId, task.id);
+                    if (mounted) {
+                      _selectDirectory(dirId);
+                      _openTaskById(dirId, task.id);
+                    }
                   }());
                 },
                 // 删除之后任务已经不存在，只能关掉面板：留在原处刷新的话，详情
@@ -1239,15 +1242,10 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
-  /// 按 id 打开一条任务：跨目录也认，先切目录再进对话。
+  /// 按 id 打开一条任务：跨目录也认，直接开对话，不切目录 —— 在哪打开就回哪去，
+  /// 关掉对话回到打开它的那一页（Web 的 `navigate(directoryId, taskId)` 同款）。
   void _openTaskById(String dirId, String taskId) {
-    final task = _data?.taskOf(taskId);
-    if (task == null) {
-      _selectDirectory(dirId);
-      return;
-    }
-    if (task.dirId != _directoryId) _selectDirectory(task.dirId);
-    unawaited(_open(task));
+    unawaited(_openTask(taskId));
   }
 
   /// 网页版控制台。原生页已经能干活了，这里留一个明确出口，不是默认入口。
@@ -1294,14 +1292,12 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
-  /// 图谱详情里「在 Air 打开」：先切到任务所属目录（列表跟着换），再照常打开。
+  /// 图谱详情里「在 Air 打开」：直接开对话，不切目录 —— 在哪打开就回哪去，
+  /// 关掉对话回到打开它的那一页（Web 的 `navigate(directoryId, taskId)` 同款）。
   ///
   /// 任务可能不在当前目录的快照里（图谱是跨目录的），所以这里按 id 打开，
   /// 不要求先能在这份列表里找到那一行。
   Future<void> _openTaskFromGraph(String dirId, String taskId) async {
-    if (dirId.isNotEmpty && dirId != _directoryId) {
-      _selectDirectory(dirId);
-    }
     await _openTask(taskId);
   }
 
@@ -1795,12 +1791,11 @@ class _AirTasksViewState extends State<AirTasksView>
               _AirMode.console => AirConsoleBody(
                 settings: widget.settings,
                 httpClient: widget.httpClient,
-                // 点开一条任务 = 先落到它自己的目录页，再把它升起来。Web 那边从
-                // 控制台点一行也是这样：地址变成「那个目录 + 那条任务」，不是
-                // 停在控制台上盖一层。控制台是跨目录的，所以这一跳带着任务自己
-                // 的目录走，不看当前选的是哪个目录。
+                // 点开一条任务 = 直接开对话，不切目录 —— 在哪打开就回哪去：关掉对话回到
+                // 控制台这一页（Web 那边 `navigate(directoryId, taskId)` 同款）。
+                // 控制台是跨目录的，任务可能不在当前目录里，但打开对话本身不依赖
+                // 目录切换。
                 onOpenTask: (task) {
-                  _selectDirectory(task.dirId);
                   unawaited(_open(task));
                 },
                 onOpenLibrary: () => setState(() => _mode = _AirMode.library),
