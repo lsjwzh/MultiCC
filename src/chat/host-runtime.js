@@ -246,6 +246,12 @@ function createChatHostRuntime(rawPorts) {
     isCurrentTurnRunner: coordinator.isCurrentTurnRunner,
     assistantCheckpointKey: coordinator.assistantCheckpointKey,
     persistFinalAssistantResult,
+    // Part of the runtime contract, not just a module-level helper: server.js
+    // destructures this off the returned object and hands it to the turn engine
+    // (live `result` frame) and the codex usage host. Omitting it here makes the
+    // name undefined at both call sites — the turn engine then throws mid
+    // finalization and wedges the session's provider attempt.
+    modelAttributionField,
     recordDurableTurnUsage,
     runDurablePostTurn,
   });
