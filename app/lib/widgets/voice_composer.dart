@@ -32,7 +32,10 @@ class VoiceComposerController extends ChangeNotifier {
        _target = target,
        _buildDictation =
            buildDictation ?? debugDictationBuilder ?? _defaultDictation,
-       _clip = (buildClip ?? debugClipBuilder ?? _defaultClip)();
+       _clip = (buildClip ?? debugClipBuilder ?? _defaultClip)() {
+    // 输入框被清空（用户全删）就不再算作听写来源。
+    _target.addListener(_onTargetChanged);
+  }
 
   static VoiceDictationService _defaultDictation(SettingsService settings) =>
       VoiceDictationService(settings: settings);
@@ -57,8 +60,22 @@ class VoiceComposerController extends ChangeNotifier {
   VoiceDictationService? _dictation;
   bool _legacyFallbackArmed = false;
 
+  /// 最近一次流式听写提交的产物。提交只把原文填进输入框，这里记住它的来源：
+  /// 发送时据此给帧打 voice 标记、并在用户改过字时回传反馈。输入框被清空、
+  /// 换成别的内容、或发送出去之后丢掉。
+  VoiceDictationResult? _pendingVoice;
+  VoiceDictationService? _pendingVoiceService;
+
+  /// 本条消息里所有听写段的原文（多段追加时按行拼接）。
+  String? _pendingVoiceRaw;
+
+  /// 输入框是不是「只有这一段听写」：追加到已有内容后面时，用户最终文本里混着
+  /// 别的来源，拿它和这一段原文对比会把别处的英文词误学成纠错词，所以不回传反馈。
+  bool _pendingVoiceSolo = false;
+
   /// 宿主最近一次 build 的 context —— 回退路径靠它弹 SnackBar / 底部面板。
   BuildContext? _host;
+
   /// 宿主还在树上 —— 异步回调里要 notifyListeners 之前先问一句它。
   bool get _live => _host != null && _host!.mounted;
 
@@ -83,6 +100,7 @@ class VoiceComposerController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _target.removeListener(_onTargetChanged);
     _dictation?.removeListener(_onDictationChanged);
     _dictation?.dispose();
     _clip.dispose();
@@ -139,8 +157,11 @@ class VoiceComposerController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 提交听写结果：填进输入框（保留可编辑，误触代价大，不直接发送），并
-  /// fire-and-forget 回传润色反馈给服务端做质量评估。
+  /// 提交听写结果：把原始转写填进输入框（保留可编辑，误触代价大，不直接发送）。
+  ///
+  /// 不再等服务端润色（那条要 2–13s 还会改写用户原话），原文直接进框；发送时
+  /// 再带上 voice 标记让主模型结合上下文纠错。反馈也挪到发送时用「用户最后真正
+  /// 发出的文本」回传（见 [reportVoiceFeedback]）。
   Future<void> commit(BuildContext context) async {
     _host = context;
     final d = _dictation;
@@ -157,12 +178,46 @@ class VoiceComposerController extends ChangeNotifier {
       return;
     }
     final current = _target.text.trim();
+    final previousRaw = current.isEmpty ? null : _pendingVoiceRaw;
     _target.text = current.isEmpty ? result.text : '$current\n${result.text}';
     _target.selection = TextSelection.collapsed(offset: _target.text.length);
-    d.reportFeedback(result, userFinal: result.text);
+    // 记住这一段的来源：发送时打 voice 标记、并回传反馈。
+    _pendingVoice = result;
+    _pendingVoiceService = d;
+    _pendingVoiceRaw = previousRaw == null
+        ? result.raw
+        : '$previousRaw\n${result.raw}';
+    _pendingVoiceSolo = current.isEmpty;
   }
 
   void cancel() => _dictation?.cancel();
+
+  /// 当前输入是不是听写来的；是的话返回未经润色的原始转写，否则 null。
+  String? get pendingVoiceRaw =>
+      _pendingVoice == null ? null : _pendingVoiceRaw;
+
+  /// 发送之后调用：丢掉听写来源标记，别把它带到下一条消息上。
+  void clearPendingVoice() {
+    _pendingVoice = null;
+    _pendingVoiceService = null;
+    _pendingVoiceRaw = null;
+    _pendingVoiceSolo = false;
+  }
+
+  /// 发送一条听写来的消息之后调用：把「原文 / 润色稿 / 用户最后真正发出的文本」
+  /// 回传服务端做质量评估与词表学习。纯旁路，失败不影响已发出的消息。用户原样
+  /// 发出（没改字）时没有可学的，[VoiceDictationService.reportFeedback] 会跳过。
+  void reportVoiceFeedback(String sentText) {
+    final result = _pendingVoice;
+    final service = _pendingVoiceService;
+    if (result == null || service == null || !_pendingVoiceSolo) return;
+    service.reportFeedback(result, userFinal: sentText);
+  }
+
+  /// 输入框清空（用户全删）就不再算作听写来源。
+  void _onTargetChanged() {
+    if (_target.text.trim().isEmpty) clearPendingVoice();
+  }
 
   // ── 整段录音（流式听写起不来时的退路）──
 
@@ -372,6 +427,9 @@ class VoiceComposerController extends ChangeNotifier {
                             _target.selection = TextSelection.collapsed(
                               offset: _target.text.length,
                             );
+                            // 这是整段录音那条退路，不是流式听写：别把它的文本
+                            // 当成听写来源（原文对不上，也不该带 voice 标记）。
+                            clearPendingVoice();
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF0965cf),

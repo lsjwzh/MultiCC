@@ -174,6 +174,8 @@ class _InputBarState extends State<InputBar> {
       text: text,
       selection: TextSelection.collapsed(offset: text.length),
     );
+    // 注释草稿是另一条来源，别让上一条听写的 voice 标记粘到它上面。
+    _voice.clearPendingVoice();
     _focusNode.requestFocus();
     final png = draft.png;
     if (png != null) {
@@ -297,15 +299,22 @@ class _InputBarState extends State<InputBar> {
       goal = command == '/goal';
     }
     if (!_guardConnectedSend(provider)) return;
+    // 听写来源：提交听写时记下的原始转写。发出去后连同反馈一起清掉。
+    final voiceRaw = _voice.pendingVoiceRaw;
     // Append attachment paths
     if (_attachments.isNotEmpty) {
       final paths = _attachments.map((a) => a['path']!).join(' ');
       text = text.isEmpty ? paths : '$text $paths';
     }
     if (text.isEmpty) return;
+    // 反馈只学用户自己写的话：附件路径与下面的派发装饰都是 App 加上去的，不算
+    // 用户词汇，所以在这两处拼接之前先把这一份留下来。
+    final userFinal = text;
     // 装饰必须在交给 provider 之前：气泡与真正发出去的 payload 用同一个字符串。
     text = decorateDispatchHint(text, enabled: commander, mode: _dispatchMode);
-    provider.sendMessage(text, goal: goal);
+    provider.sendMessage(text, goal: goal, voiceRaw: voiceRaw);
+    if (voiceRaw != null) _voice.reportVoiceFeedback(userFinal);
+    _voice.clearPendingVoice();
     _ctrl.clear();
     // Unlike Android, iOS has no persistent system affordance for hiding the
     // software keyboard. A completed composer action must therefore release

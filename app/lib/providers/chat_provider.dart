@@ -2712,11 +2712,16 @@ class ChatProvider extends ChangeNotifier {
   /// 返回本次发送用的 clientMsgId（送不出去时是 null，调用方不能当成已发送）。
   /// [clientMsgId] 用来把这条消息钉在一个调用方选定的幂等键上 —— 强制同步的
   /// 重试要走同一条（服务端按它去重）。
+  ///
+  /// [voiceRaw] 是听写来源的原始转写（未润色）。非空时服务端据此告诉模型这条
+  /// 消息来自语音、可能含同音/转写错误。手打的消息不传，帧里就不会多出这两个
+  /// 字段。
   String? sendMessage(
     String text, {
     bool goal = false,
     Map<String, dynamic>? goalLimits,
     String? clientMsgId,
+    String? voiceRaw,
   }) {
     final message = text.trim();
     if (message.isEmpty) return null;
@@ -2725,6 +2730,7 @@ class ChatProvider extends ChangeNotifier {
       goal: goal,
       goalLimits: goalLimits,
       clientMsgId: clientMsgId,
+      voiceRaw: voiceRaw,
     );
     if (sentMsgId == null) {
       // Half-open / dead socket — don't pretend the message was sent.

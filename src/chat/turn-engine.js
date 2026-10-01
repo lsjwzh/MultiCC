@@ -55,7 +55,7 @@ const { redactProviderRouteCapability } = require('../observability');
 const { createWsEnvelope } = require('../api-contract');
 const { taskIdForShortCode } = require('../classify/task-short-code');
 const { taskStateSeed } = require('./task-state-seed');
-const { composeMessage, renderPrompt } = require('../message-composer');
+const { composeMessage, renderPrompt, normalizeVoiceInput } = require('../message-composer');
 const { buildSubagentProviderHint } = require('./host-prompts');
 const managedContext = require('./managed-context');
 const {
@@ -1481,7 +1481,7 @@ function createChatTurnEngine(deps) {
         opts: {
           isFirstTurn, goalLimits, taskContextSeed: managed?.seed ?? taskContextHost?.taskShellContextSeed?.(sessionName, opts.taskContextSeed, isFirstTurn) ?? opts.taskContextSeed,
           mode: isResidentSession(cs.cli, persisted) ? 'streaming' : 'per-turn',
-          lang: opts.lang,
+          lang: opts.lang, voice: opts.voice,
         },
         deps: {
           resolveRolePrompt: managed?.rolePrompt || folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT, buildSubagentProviderHint,
@@ -2922,9 +2922,9 @@ function createChatTurnEngine(deps) {
           if (typeof msg.userInputRequestId === 'string' && msg.userInputRequestId.trim()) {
             turnOpts.userInputRequestId = msg.userInputRequestId.trim();
           }
-          // Chat page's 中文/English toggle at send time; composeMessage turns
-          // this into an output-language instruction appended to the suffix.
+          // Send-time 中文/English toggle + voice-dictation marker; composeMessage renders both.
           if (msg.lang === 'zh' || msg.lang === 'en') turnOpts.lang = msg.lang;
+          if (normalizeVoiceInput(msg)) turnOpts.voice = normalizeVoiceInput(msg);
           let pendingMemory;
           try { pendingMemory = getPendingMemoryDistill(sessionName); }
           catch (error) { pendingMemory = Promise.reject(error); }

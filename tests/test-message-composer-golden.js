@@ -21,7 +21,7 @@
 // does not weaken byte-level regression coverage.
 // ═══════════════════════════════════════════════════════════════════════
 
-const { composeMessage, renderPrompt, buildAutoCommitStatusPrompt } = require('../src/message-composer');
+const { composeMessage, renderPrompt, buildAutoCommitStatusPrompt, normalizeVoiceInput } = require('../src/message-composer');
 const { createClaudeAdapter } = require('../src/cli-adapters/claude');
 const { createCodexAdapter } = require('../src/cli-adapters/codex');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
@@ -760,6 +760,50 @@ console.log('── Suite 8: opts.lang suffix ──');
   assert(aux.suffix === '', '8f aux session ignores lang');
   const bareLang = composeMessage({ text, persisted: basePersisted({ type: null, effort: 'high' }), sessionName, opts: { isFirstTurn: true, lang: 'en', bare: true }, deps });
   assert(bareLang.suffix === '', '8f bare turn ignores lang');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
+// Suite 9: opts.voice -> voice-input layer (dictated messages only)
+// ═══════════════════════════════════════════════════════════════════════
+console.log('── Suite 9: opts.voice layer ──');
+
+(function suite9() {
+  const deps = makeDeps();
+  const sessionName = 's1';
+  const persisted = basePersisted({ type: null, effort: 'high' });
+
+  assert(normalizeVoiceInput({ text: 'x' }) === null, '9a typed message carries no voice option');
+  assert(eq(normalizeVoiceInput({ inputSource: 'voice', voiceRaw: '  瑞迪斯  ' }), { raw: '瑞迪斯' }), '9a raw transcript is trimmed');
+  assert(normalizeVoiceInput({ inputSource: 'voice', voiceRaw: 'x'.repeat(9000) }).raw.length === 4000, '9a raw transcript is capped');
+  assert(eq(normalizeVoiceInput({ inputSource: 'voice', voiceRaw: 42 }), { raw: '' }), '9a non-string raw degrades to empty');
+
+  const typed = composeMessage({ text: 'hi', persisted, sessionName, opts: { isFirstTurn: true }, deps });
+  assert(!typed.contextLayers.some(l => l.kind === 'voice-input'), '9b typed message: no voice layer (byte-equivalence preserved)');
+
+  const same = composeMessage({ text: '看下瑞迪斯', persisted, sessionName, opts: { isFirstTurn: true, voice: { raw: '看下瑞迪斯' } }, deps });
+  const layer = same.contextLayers[same.contextLayers.length - 1];
+  assert(layer.kind === 'voice-input' && layer.order === 35, '9c voice layer is the last layer, right above the user text');
+  assert(/^\[Voice input\]/.test(layer.text) && layer.text.endsWith('\n\n'), '9c layer is English and carries its own separator');
+  assert(!layer.text.includes('<raw_transcript>'), '9c unedited dictation does not repeat the transcript');
+  assert(renderPrompt(same).endsWith(layer.text + '看下瑞迪斯'), '9c layer renders directly before userText');
+
+  const edited = composeMessage({ text: '看下 Redis', persisted, sessionName, opts: { isFirstTurn: true, voice: { raw: '看下瑞迪斯' } }, deps });
+  const editedLayer = edited.contextLayers.find(l => l.kind === 'voice-input');
+  assert(editedLayer.text.includes('<raw_transcript>\n看下瑞迪斯\n</raw_transcript>'), '9d edited dictation includes the raw transcript');
+  assert(edited.userText === '看下 Redis', '9d userText stays exactly what was sent');
+
+  for (const type of ['aux', 'gateway']) {
+    const env = composeMessage({ text: 'hi', persisted: basePersisted({ type, effort: 'high' }), sessionName, opts: { isFirstTurn: true, voice: { raw: 'hi' } }, deps });
+    assert(!env.contextLayers.some(l => l.kind === 'voice-input'), `9e ${type} session ignores voice`);
+  }
+  const bare = composeMessage({ text: 'hi', persisted, sessionName, opts: { isFirstTurn: true, bare: true, voice: { raw: 'hi' } }, deps });
+  assert(!bare.contextLayers.some(l => l.kind === 'voice-input'), '9e bare turn ignores voice');
+
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const engine = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  assert(/turnOpts\.voice = normalizeVoiceInput\(msg\)/.test(engine), '9f WS user_message parses the voice marker');
+  assert(/voice: opts\.voice/.test(engine), '9f turn-engine forwards opts.voice into composeMessage');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════

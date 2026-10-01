@@ -151,6 +151,7 @@ class _ConnectedChatProvider extends ChatProvider {
     String? clientMsgId,
     bool goal = false,
     Map<String, dynamic>? goalLimits,
+    String? voiceRaw,
   }) => 'test-msg';
 }
 

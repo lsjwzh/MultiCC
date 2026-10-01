@@ -228,7 +228,9 @@ function createTaskShellHost(deps) {
   }
   async function sendFromSession(id, text, options = {}) {
     const shell = open(id), rt = getRuntime();
-    const payload = { text, clientMsgId: options.clientMsgId || randomUUID(), intent: 'work' };
+    const payload = { text, clientMsgId: options.clientMsgId || randomUUID(), intent: 'work',
+      ...(options.lang ? { lang: options.lang } : {}),
+      ...(options.voice ? { inputSource: 'voice', voiceRaw: options.voice.raw } : {}) };
     if (options.userInputRequestId) {
       const { execution } = await rt.detail(shell.id, shell.currentTaskId);
       Object.assign(payload, { taskId: shell.currentTaskId, intent: 'answer', requestId: options.userInputRequestId, turnId: execution.turnId });
@@ -252,6 +254,8 @@ function createTaskShellHost(deps) {
     const result = await rt.send(shell.id, { text: intent === 'cancel' ? '' : message.text,
       clientMsgId: message.clientMsgId, taskId: intent === 'work' ? null : rt.owns(id)?.id || shell.currentTaskId, intent,
       ...(message.goal === true ? { goal: true, goalLimits: message.goalLimits } : {}),
+      ...(message.lang ? { lang: message.lang } : {}),
+      ...(message.inputSource === 'voice' ? { inputSource: 'voice', voiceRaw: message.voiceRaw } : {}),
       ...(intent !== 'work' ? { turnId: message.turnId, requestId: message.userInputRequestId } : {}) });
     return { ...result, shellId: shell.id, clientMsgId: message.clientMsgId };
   }
