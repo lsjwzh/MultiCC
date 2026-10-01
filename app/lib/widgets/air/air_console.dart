@@ -14,6 +14,7 @@ import '../../utils/status_presentation.dart';
 import '../workspace_navigation_drawer.dart';
 import 'air_attention_screen.dart';
 import 'air_directory_search.dart';
+import 'air_directory_task_panel.dart';
 import 'air_panels.dart';
 import 'air_task_status.dart';
 import 'air_task_actions.dart';
@@ -79,9 +80,9 @@ class AirConsoleBody extends StatefulWidget {
   State<AirConsoleBody> createState() => _AirConsoleBodyState();
 }
 
-/// 控制台是给人看的，不是导出用的：超过这个数就只显示最近的一批，并把总数
-/// 说清楚（同 Web `TASK_LIST_LIMIT`）。
+/// 其余四格维持短清单；「全部任务」与目录首页一样每页 20 条。
 const int _taskListLimit = 60;
+const int _taskPageSize = 20;
 
 /// 顶上那五个过滤格（同 Web `air-admin.js` 的 `tiles`）：进行中 / 等我回复 /
 /// 异常 / 今日完成 / 全部。点一格，统计带和工作目录之间就展开那一格的清单；再点
@@ -127,6 +128,10 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
     httpClient: widget.httpClient,
   );
   final _searchController = TextEditingController();
+  final _drawerKey = GlobalKey();
+  AirLocalStore? _localStore;
+  AirDirectoryTaskSort _taskSort = AirDirectoryTaskSort.message;
+  int _taskPage = 1;
 
   /// 全文检索（同 Web 控制台挂的 `MultiCCTaskSearch`）。本地按标题筛是即时反馈，
   /// 也是服务端结果拿不到时的退路：断网、老服务没有这条路由、接口报错，都只表现
@@ -171,7 +176,17 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
   void initState() {
     super.initState();
     _search.addListener(_onSearchChanged);
+    unawaited(_loadLocalStore());
     _load();
+  }
+
+  Future<void> _loadLocalStore() async {
+    try {
+      final store = await AirLocalStore.load();
+      if (mounted) setState(() => _localStore = store);
+    } catch (_) {
+      // 本机访问记录不可读时仍可按消息排序，控制台不因此失败。
+    }
   }
 
   @override
@@ -190,13 +205,19 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
   /// 搜索框的每一跳都同时喂两条路：本地标题筛选立刻重画，全文结果到了再按相关度
   /// 覆盖一次。口径照 Web 的 `MultiCCTaskSearch.attach`。
   void _onQueryChanged(String value) {
-    setState(() => _query = value);
+    setState(() {
+      _query = value;
+      _taskPage = 1;
+    });
     _search.search(value, null, _fullText);
   }
 
   /// 换了搜索范围要重新问一次服务端（两条语料的召回不同），不能只重画。
   void _onScopeChanged(bool value) {
-    setState(() => _fullText = value);
+    setState(() {
+      _fullText = value;
+      _taskPage = 1;
+    });
     _search.search(_query, null, value);
   }
 
@@ -336,9 +357,7 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
         .where(status.matches)
         .where((task) => _dir == 'all' || task.dirId == _dir)
         .toList();
-    if (!querying) {
-      return rows..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    }
+    if (!querying) return _sortTasks(rows);
     // 有全文结果就按相关度排（标题没命中、正文命中的任务因此能被找到）；没有
     // （还没回来 / 报错）就退回按标题筛，列表从不空着。命中池里找不到的 id
     // （任务刚被删掉）直接跳过，不编造行。
@@ -349,14 +368,42 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
         ..sort((a, b) => rank[a.id]!.compareTo(rank[b.id]!));
       if (ranked.isNotEmpty) return ranked;
     }
-    return rows
-        .where(
-          (task) => '${task.title} ${_directoryName(task.dirId)}'
-              .toLowerCase()
-              .contains(needle),
-        )
-        .toList()
-      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return _sortTasks(
+      rows
+          .where(
+            (task) => '${task.title} ${_directoryName(task.dirId)}'
+                .toLowerCase()
+                .contains(needle),
+          )
+          .toList(),
+    );
+  }
+
+  int _taskSortAt(AirTask task) => _taskSort == AirDirectoryTaskSort.visit
+      ? (_localStore?.visitedAt(task.id) ?? 0)
+      : (task.lastMessageAt > 0 ? task.lastMessageAt : task.updatedAt);
+
+  List<AirTask> _sortTasks(List<AirTask> rows) {
+    final visits = _localStore?.taskVisitedAt ?? const <String, int>{};
+    int sortAt(AirTask task) => _taskSort == AirDirectoryTaskSort.visit
+        ? (visits[task.id] ?? 0)
+        : (task.lastMessageAt > 0 ? task.lastMessageAt : task.updatedAt);
+    int messageAt(AirTask task) =>
+        task.lastMessageAt > 0 ? task.lastMessageAt : task.updatedAt;
+    return rows..sort((a, b) {
+      final primary = sortAt(b).compareTo(sortAt(a));
+      if (primary != 0) return primary;
+      final message = messageAt(b).compareTo(messageAt(a));
+      return message != 0 ? message : a.id.compareTo(b.id);
+    });
+  }
+
+  void _changePage(int page) {
+    setState(() => _taskPage = page);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final target = _drawerKey.currentContext;
+      if (target != null) Scrollable.ensureVisible(target, alignment: 0.02);
+    });
   }
 
   @override
@@ -384,7 +431,12 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
         .where((task) => task.enabled)
         .length;
     final rows = _filteredTasks;
-    final shown = rows.take(_taskListLimit).toList();
+    final pageCount = (rows.length / _taskPageSize).ceil().clamp(1, 1 << 30);
+    final page = _taskPage.clamp(1, pageCount);
+    final shown = rows
+        .skip((page - 1) * _taskPageSize)
+        .take(_taskPageSize)
+        .toList();
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -442,29 +494,47 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
             ),
             if (_tile != null) ...[
               const SizedBox(height: 10),
-              _TileDrawer(
-                tile: _tile!,
-                executing: executing,
-                waitingMe: waitingMe,
-                failed: failed,
-                finished: finished,
-                rows: rows,
-                shown: shown,
-                searchController: _searchController,
-                status: _status,
-                dir: _dir,
-                fullText: _fullText,
-                directories: data?.directories ?? const [],
-                directoryName: _directoryName,
-                onQuery: _onQueryChanged,
-                onStatus: (value) => setState(() => _status = value),
-                onScope: _onScopeChanged,
-                onDir: (value) => setState(() => _dir = value),
-                onOpenTask: widget.onOpenTask,
-                onDeleteTask: _deleteTask,
-                unread: urgent.length,
-                onOpenAttention: () => _openAttention(urgent),
-                onClose: () => setState(() => _tile = null),
+              KeyedSubtree(
+                key: _drawerKey,
+                child: _TileDrawer(
+                  tile: _tile!,
+                  executing: executing,
+                  waitingMe: waitingMe,
+                  failed: failed,
+                  finished: finished,
+                  rows: rows,
+                  shown: shown,
+                  page: page,
+                  pageCount: pageCount,
+                  sort: _taskSort,
+                  sortAt: _taskSortAt,
+                  searchController: _searchController,
+                  status: _status,
+                  dir: _dir,
+                  fullText: _fullText,
+                  directories: data?.directories ?? const [],
+                  directoryName: _directoryName,
+                  onQuery: _onQueryChanged,
+                  onStatus: (value) => setState(() {
+                    _status = value;
+                    _taskPage = 1;
+                  }),
+                  onScope: _onScopeChanged,
+                  onDir: (value) => setState(() {
+                    _dir = value;
+                    _taskPage = 1;
+                  }),
+                  onSort: (value) => setState(() {
+                    _taskSort = value;
+                    _taskPage = 1;
+                  }),
+                  onPage: _changePage,
+                  onOpenTask: widget.onOpenTask,
+                  onDeleteTask: _deleteTask,
+                  unread: urgent.length,
+                  onOpenAttention: () => _openAttention(urgent),
+                  onClose: () => setState(() => _tile = null),
+                ),
               ),
             ],
             const SizedBox(height: 15),
@@ -497,9 +567,7 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
               ),
             ),
             const SizedBox(height: 15),
-            _AssistantCard(
-              onTap: () => unawaited(_openAiAssistant()),
-            ),
+            _AssistantCard(onTap: () => unawaited(_openAiAssistant())),
             const SizedBox(height: 15),
             _Panel(
               eyebrow: 'SYSTEM TOOLS',
@@ -605,11 +673,7 @@ class _SetupCard extends StatelessWidget {
         TextSpan(text: body),
       ],
     ),
-    style: const TextStyle(
-      color: AppColors.text,
-      fontSize: 13,
-      height: 1.5,
-    ),
+    style: const TextStyle(color: AppColors.text, fontSize: 13, height: 1.5),
   );
 
   @override
@@ -662,7 +726,7 @@ class _SetupCard extends StatelessWidget {
                 _step(
                   t('airSetupAux'),
                   '${t('airSetupAuxText')}${t('airSetupAuxMust')}'
-                      '${t('airSetupAuxText2')}',
+                  '${t('airSetupAuxText2')}',
                 ),
                 if (cliMissing) ...[
                   const SizedBox(height: 10),
@@ -785,7 +849,9 @@ class _SetupAction extends StatelessWidget {
             border: Border.all(
               color: quiet
                   ? Colors.transparent
-                  : (primary ? const Color(0xFFB9D9F8) : const Color(0xFFDBE6F1)),
+                  : (primary
+                        ? const Color(0xFFB9D9F8)
+                        : const Color(0xFFDBE6F1)),
             ),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -1068,6 +1134,10 @@ class _TileDrawer extends StatelessWidget {
     required this.finished,
     required this.rows,
     required this.shown,
+    required this.page,
+    required this.pageCount,
+    required this.sort,
+    required this.sortAt,
     required this.searchController,
     required this.status,
     required this.dir,
@@ -1078,6 +1148,8 @@ class _TileDrawer extends StatelessWidget {
     required this.onStatus,
     required this.onScope,
     required this.onDir,
+    required this.onSort,
+    required this.onPage,
     required this.onOpenTask,
     required this.onDeleteTask,
     required this.unread,
@@ -1094,6 +1166,10 @@ class _TileDrawer extends StatelessWidget {
   /// 「全部」那一格筛完之后的清单；其余四格用不到。
   final List<AirTask> rows;
   final List<AirTask> shown;
+  final int page;
+  final int pageCount;
+  final AirDirectoryTaskSort sort;
+  final int Function(AirTask) sortAt;
   final TextEditingController searchController;
   final AirDirectoryTaskFilter status;
   final String dir;
@@ -1104,6 +1180,8 @@ class _TileDrawer extends StatelessWidget {
   final ValueChanged<AirDirectoryTaskFilter> onStatus;
   final ValueChanged<bool> onScope;
   final ValueChanged<String> onDir;
+  final ValueChanged<AirDirectoryTaskSort> onSort;
+  final ValueChanged<int> onPage;
   final ValueChanged<AirTask> onOpenTask;
   final ValueChanged<AirTask> onDeleteTask;
 
@@ -1130,7 +1208,9 @@ class _TileDrawer extends StatelessWidget {
     return _Panel(
       eyebrow: 'ACROSS ALL WORKSPACES',
       title: t(tile.labelKey),
-      note: total > visible.length
+      note: tile == _ConsoleTile.all
+          ? t('airAdminNItems', {'n': '$total'})
+          : total > visible.length
           ? t('airAdminTaskCountLimited', {
               'total': '$total',
               'shown': '${visible.length}',
@@ -1156,6 +1236,11 @@ class _TileDrawer extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (tile == _ConsoleTile.all) ...[
+            Align(
+              alignment: Alignment.centerRight,
+              child: AirTaskSortSwitch(sort: sort, onSort: onSort),
+            ),
+            const SizedBox(height: 8),
             _controls(context),
             const SizedBox(height: 10),
           ],
@@ -1166,6 +1251,7 @@ class _TileDrawer extends StatelessWidget {
               task: visible[i],
               directoryName: directoryName(visible[i].dirId),
               showTime: true,
+              timeAt: tile == _ConsoleTile.all ? sortAt(visible[i]) : null,
               onTap: () => onOpenTask(visible[i]),
               // 删除只在「全部」那格里给：其余四格都是「现在有事」的清单，在这里
               // 删掉一条，读的人多半还没看清它是什么。
@@ -1182,6 +1268,15 @@ class _TileDrawer extends StatelessWidget {
             ),
           ],
           if (visible.isEmpty) _Empty(t(tile.emptyKey)),
+          if (tile == _ConsoleTile.all && pageCount > 1) ...[
+            const SizedBox(height: 10),
+            AirTaskPagerBar(
+              page: page,
+              pageCount: pageCount,
+              onPage: onPage,
+              keyPrefix: 'air-console',
+            ),
+          ],
         ],
       ),
     );

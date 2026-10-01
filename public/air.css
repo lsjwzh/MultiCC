@@ -1493,6 +1493,10 @@ dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; white-
 .console-filter-panel .admin-task-controls[hidden] { display: none; }
 .console-filter-close { padding: 2px 8px; color: var(--muted); border: 0; background: none; font-size: 10.5px; cursor: pointer; }
 #console-task-list { max-height: min(350px, 44dvh); overflow-y: auto; overscroll-behavior: contain; padding-right: 3px; }
+#console-filter-panel[data-view="all"] #console-task-list { max-height: none; overflow: visible; padding-right: 0; }
+.console-task-sort[hidden], .console-task-pager[hidden] { display: none; }
+.console-task-pager { margin: 10px -17px -17px; border-radius: 0 0 22px 22px; }
+#console-task-page { color: #6d8094; font-size: 11px; white-space: nowrap; }
 
 .admin-assistant-card { width: 100%; min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; margin: 0 0 15px; padding: 13px 16px; color: #315675; border-color: #cfe1f4; border-radius: 16px; background: linear-gradient(135deg, rgba(240, 247, 255, .98), rgba(250, 247, 255, .98)); text-align: left; box-shadow: 0 10px 28px #416b9b0d; }
 .admin-assistant-card:hover { border-color: #b9d5f1; background: linear-gradient(135deg, #eaf4ff, #f5f1ff); }
@@ -1869,6 +1873,8 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   .air-usage-role-grid { grid-template-columns: 1fr 1fr; }
   .air-legacy-frame { min-height: 620px; height: calc(100dvh - 260px); }
   #console-center { padding: 22px 15px 36px; }
+  .console-filter-panel .admin-panel-head { flex-wrap: wrap; }
+  .console-filter-panel .console-task-sort { order: 3; }
   #palette { top: 68px; max-height: min(520px, calc(100dvh - 110px)); }
   #palette footer { gap: 10px; }
 
