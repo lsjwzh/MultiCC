@@ -12,7 +12,7 @@ function appServerUsage(source) {
   return normalizeCodexUsage({
     input_tokens: Number(usage.inputTokens || 0),
     cached_input_tokens: Number(usage.cachedInputTokens || 0),
-    cache_write_input_tokens: Number(usage.cacheWriteInputTokens || 0),
+    cache_creation_input_tokens: Number(usage.cacheWriteInputTokens || 0),
     output_tokens: Number(usage.outputTokens || 0),
     reasoning_output_tokens: Number(usage.reasoningOutputTokens || 0),
     ...(source?.modelContextWindow != null ? { model_context_window: source.modelContextWindow } : {}),
@@ -23,7 +23,7 @@ function addUsage(current = {}, next = {}) {
   const summed = {};
   for (const key of [
     'input_tokens', 'cached_input_tokens', 'cache_read_input_tokens',
-    'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens',
+    'cache_creation_input_tokens', 'output_tokens', 'reasoning_output_tokens',
   ]) {
     summed[key] = Number(current[key] || 0) + Number(next[key] || 0);
   }

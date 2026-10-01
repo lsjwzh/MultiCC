@@ -93,10 +93,20 @@ function lastCumulativeBaseline(history, epoch) {
   return null;
 }
 
-function normalizeCodexTurnUsage({ usage, history, cliSessionId } = {}) {
+function normalizeCodexTurnUsage({ usage, history, cliSessionId, perTurn = false } = {}) {
   const current = normalizeCodexCumulative(usage);
   if (!current) {
     return Object.freeze({ usage: {}, cumulativeUsage: null, usageEpoch: null, code: 'invalid' });
+  }
+  // The app-server adapter has already summed the request-level updates for
+  // this turn. Only codex exec reports a cumulative thread snapshot here.
+  if (perTurn) {
+    return Object.freeze({
+      usage: usageFromVector(current, usage),
+      cumulativeUsage: null,
+      usageEpoch: null,
+      code: 'per_turn',
+    });
   }
   const usageEpoch = usageEpochForSessionId(cliSessionId);
   const previous = lastCumulativeBaseline(history, usageEpoch);
@@ -143,7 +153,7 @@ function normalizeCodexTurnUsage({ usage, history, cliSessionId } = {}) {
 // instead — untouched messages pass through by reference and a message we must
 // change is shallow-copied first — so the persisted history is still never
 // mutated (pinned by tests/test-codex-usage.js).
-function projectHistoryUsage(messages) {
+function projectHistoryUsage(messages, { perTurn = false } = {}) {
   const source = Array.isArray(messages) ? messages : [];
   const projected = new Array(source.length);
   const baselines = new Map();
@@ -160,6 +170,9 @@ function projectHistoryUsage(messages) {
       projected[index] = stripped;
       continue;
     }
+    // codex-exp history already contains one turn per usage block. Applying
+    // the codex exec cumulative projection would subtract neighbouring turns.
+    if (perTurn) continue;
     if (!looksLikeCodexUsage(message.usage)) continue;
     const current = normalizeCodexCumulative(message.usage);
     const previous = baselines.get(explicitEpoch);
@@ -231,6 +244,7 @@ function createCodexUsageHost(deps = {}) {
       usage: evt.usage || {},
       history: deps.loadHistory(sessionName),
       cliSessionId: persisted.cliSessionId,
+      perTurn: persisted.cli === 'codex-exp',
     });
     const usage = normalized.usage;
     if (normalized.code === 'regression' && logger && typeof logger.warn === 'function') {

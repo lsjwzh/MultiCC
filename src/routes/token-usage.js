@@ -286,7 +286,9 @@ function createTokenUsageRoutes(rawDeps) {
     for (const sessionId of sessionIds) {
       if (sessionId === '__aux__' || sessionId === '__gateway__' || accumulated[sessionId]) continue;
       try {
-        const messages = projectHistoryUsage(deps.chatHistoryRepository.readStrict(sessionId));
+        const messages = projectHistoryUsage(deps.chatHistoryRepository.readStrict(sessionId), {
+          perTurn: deps.persistedSessions.get(sessionId)?.cli === 'codex-exp',
+        });
         let inputTokens = 0;
         let outputTokens = 0;
         let turnCount = 0;

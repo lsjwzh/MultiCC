@@ -2216,7 +2216,9 @@ chatHistoryRuntime = createChatHistoryRuntime({
   getActiveBackgroundTasks: id => backgroundTaskRuntime?.listActiveBackgroundTasks(id) || [],
   chatStream, cwdForSession,
   trackPendingMemoryDistill: _trackPendingMemoryDistill,
-  projectMessages: (_sessionId, messages) => projectHistoryUsage(messages), taskShortCode, logger,
+  projectMessages: (sessionId, messages) => projectHistoryUsage(messages, {
+    perTurn: persistedSessions.get(sessionId)?.cli === 'codex-exp',
+  }), taskShortCode, logger,
 });
 chatHistoryService = chatHistoryRuntime.service;
 chatHistoryRuntime.mountRoutes(app);
