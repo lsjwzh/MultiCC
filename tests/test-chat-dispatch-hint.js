@@ -12,7 +12,15 @@ const vm = require('node:vm');
 
 const ROOT = path.join(__dirname, '..');
 const HINT_SRC = fs.readFileSync(path.join(ROOT, 'public/chat-dispatch-hint.js'), 'utf8');
+const VOICE_SRC = fs.readFileSync(path.join(ROOT, 'public/voice-composer.js'), 'utf8');
 const COMPOSER_SRC = fs.readFileSync(path.join(ROOT, 'public/chat-composer.js'), 'utf8');
+
+// The composer delegates voice input to the shared module; mount it first so a
+// standalone composer sandbox matches the real page's script order.
+function runComposer(context) {
+  vm.runInContext(VOICE_SRC, context, { filename: 'voice-composer.js' });
+  vm.runInContext(COMPOSER_SRC, context, { filename: 'chat-composer.js' });
+}
 
 const MODE_VALUES = ['dispatch_master_sync', 'dispatch_master_async', 'route_task', 'none'];
 
@@ -445,7 +453,7 @@ test('the composer sends and stages the very same decorated string', () => {
     },
   };
   const context = vm.createContext({ window, console, setTimeout, clearTimeout });
-  vm.runInContext(COMPOSER_SRC, context, { filename: 'chat-composer.js' });
+  runComposer(context);
 
   const sent = [];
   const staged = [];
@@ -482,7 +490,7 @@ test('a failed send restores what the user typed, not the decorated copy', () =>
     MultiCCChatDispatchHint: { decorate: text => text + ' [SUFFIX]' },
   };
   const context = vm.createContext({ window, console, setTimeout, clearTimeout });
-  vm.runInContext(COMPOSER_SRC, context, { filename: 'chat-composer.js' });
+  runComposer(context);
 
   const inputEl = { value: '部署新版本', style: {}, scrollHeight: 32 };
   const composer = window.MultiCCChatComposer.createComposer({
@@ -512,7 +520,7 @@ test('a session without the hint module keeps the prompt byte-identical', () => 
     clearTimeout,
   };
   const context = vm.createContext({ window, console, setTimeout, clearTimeout });
-  vm.runInContext(COMPOSER_SRC, context, { filename: 'chat-composer.js' });
+  runComposer(context);
 
   const sent = [];
   const inputEl = { value: 'hello', style: {}, scrollHeight: 32 };

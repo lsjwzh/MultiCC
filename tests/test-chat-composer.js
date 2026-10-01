@@ -23,6 +23,12 @@ function loadModule(overrides = {}) {
     clearTimeout,
   }, overrides.window || {});
   const context = vm.createContext({ window, console, setTimeout, clearTimeout });
+  // The composer delegates all voice logic to the shared module, which the host
+  // page loads first (public/voice-composer.js). Mount it in the same sandbox so
+  // the delegated entry points are real here too.
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'public/voice-composer.js'), 'utf8'), context, {
+    filename: 'voice-composer.js',
+  });
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'public/chat-composer.js'), 'utf8'), context, {
     filename: 'chat-composer.js',
   });
@@ -414,8 +420,12 @@ test('chat host loads composer before chat and keeps compatibility/password gate
   const html = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
   const host = fs.readFileSync(path.join(ROOT, 'public/chat.js'), 'utf8');
   const module = fs.readFileSync(path.join(ROOT, 'public/chat-composer.js'), 'utf8');
+  // Voice dictation now lives in the shared module both pages load.
+  const voice = fs.readFileSync(path.join(ROOT, 'public/voice-composer.js'), 'utf8');
   const scripts = [...html.matchAll(/<script\s+src="([^"]+)"/g)].map(match => match[1]);
   assert.ok(scripts.indexOf('chat-notifications.js') < scripts.indexOf('chat-composer.js'));
+  assert.ok(scripts.indexOf('voice-composer.js') < scripts.indexOf('chat-composer.js'),
+    'voice-composer.js must load before chat-composer.js delegates to it');
   assert.ok(scripts.indexOf('chat-composer.js') < scripts.indexOf('chat.js'));
   assert.match(host, /function send\(opts = \{\}\) \{ return chatComposer\?\.send\(opts\); \}/);
   assert.match(host, /function cancelStreaming\(\) \{ return chatComposer\?\.cancelStreaming\(\); \}/);
@@ -423,7 +433,9 @@ test('chat host loads composer before chat and keeps compatibility/password gate
   assert.match(host, /firstrun-pw-gate/);
   assert.doesNotMatch(host, /new MediaRecorder\(/);
   assert.doesNotMatch(host, /new VoiceStream\(/);
-  assert.match(module, /new win\.VoiceStream\(/);
+  assert.doesNotMatch(module, /new win\.VoiceStream\(/, 'the recorder moved out of chat-composer.js');
+  assert.match(module, /MultiCCVoiceComposer/, 'chat-composer delegates to the shared voice module');
+  assert.match(voice, /new win\.VoiceStream\(/);
   assert.ok(host.split('\n').length <= 4100, `chat.js has ${host.split('\n').length} lines`);
   assert.ok(module.split('\n').length < 2000);
 });
