@@ -12,14 +12,13 @@ import '../services/annotation_inbox.dart';
 import '../services/attachment_picker.dart';
 import '../services/chat_service.dart';
 import '../services/goal_precheck.dart';
-import '../services/voice_clip_recorder.dart';
-import '../services/voice_dictation_service.dart';
 import '../services/voice_launch_service.dart';
 import '../utils/dispatch_hint.dart';
 import 'chat_runtime_panels.dart';
 import 'dispatch_mode_selector.dart';
 import 'scheduled_send_dock.dart';
 import 'scheduled_send_store.dart';
+import 'voice_composer.dart';
 
 // Goal precheck dimension keys → short chip labels (web/app kept in sync).
 Map<String, String> get _goalDimShort => {
@@ -64,14 +63,9 @@ class _InputBarState extends State<InputBar> {
   final List<Map<String, String>> _attachments = [];
   bool _uploading = false;
 
-  // 整段录音 → `/api/voice/stt`：流式听写起不来时的退路。录音那件事本身收在
-  // [VoiceClipRecorder] 里 —— Air 快速新建和任务板用的是同一份。
-  final _clip = VoiceClipRecorder();
-
-  // 流式听写（/ws/voice）：边说边出字 + 实时润色，对齐 web 的语音 HUD。服务端 ASR
-  // 或麦克风不可用时回退到上面的 m4a → /api/voice/stt 整段上传。
-  VoiceDictationService? _dictation;
-  bool _legacyFallbackArmed = false;
+  // 语音输入（流式听写 /ws/voice，起不来回退整段 m4a → /api/voice/stt）。
+  // 这一套与目录快速新建共用同一个 [VoiceComposerController] —— 交互只有一份。
+  late final VoiceComposerController _voice;
 
   // Commander 专属的「派发方式」四选一，按会话记住（web 端同一组下拉）。
   DispatchMode _dispatchMode = DispatchMode.defaultMode;
@@ -80,6 +74,13 @@ class _InputBarState extends State<InputBar> {
   @override
   void initState() {
     super.initState();
+    _voice = VoiceComposerController(
+      settings: context.read<ChatProvider>().settings,
+      target: _ctrl,
+    );
+    // 录音/转写状态会改写输入框的边框色与提示语，所以整条输入条要跟着重建
+    // （原先这些 setState 散在录音流程里，现在由控制器统一通知）。
+    _voice.addListener(_onVoiceChanged);
     widget.draftSink?.value = _scheduleDraft;
     _focusNode.addListener(_onFocusChanged);
     _ctrl.addListener(() {
@@ -94,16 +95,18 @@ class _InputBarState extends State<InputBar> {
     if (mounted) setState(() {});
   }
 
+  void _onVoiceChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
     AnnotationInbox.draft.removeListener(_onAnnotationDraft);
-    _dictation?.removeListener(_onDictationChanged);
-    _dictation?.dispose();
+    _voice.dispose();
     // 谁建的谁销毁：外面传进来的还归外面，这里只摘掉自己挂的监听。
     _focusNode.removeListener(_onFocusChanged);
     if (widget.focusNode == null) _focusNode.dispose();
     if (widget.controller == null) _ctrl.dispose();
-    _clip.dispose();
     super.dispose();
   }
 
@@ -184,9 +187,11 @@ class _InputBarState extends State<InputBar> {
     }
   }
 
-  // ── Voice recording ──
-
-  // 实时语音改为全局 Qwen 语音网关：这里只向 Host 申请一张 launch 票据，
+  // ── Realtime voice call ──
+  //
+  // 普通语音输入（点麦克风说一句）在 [VoiceComposerController] 里，与目录快速
+  // 新建共用；这里这颗只负责「打语音电话」。实时语音走全局 Qwen 语音网关：这里
+  // 只向 Host 申请一张 launch 票据，
   // 带上当前会话 id 表示「在这个会话里说话」，Host 会固定投给该会话。只有
   // Dashboard 的全局入口才由 worker-only Router 选择项目和普通 Worker；App
   // 不参与决定，也不携带长期 token。
@@ -203,338 +208,6 @@ class _InputBarState extends State<InputBar> {
         backgroundColor: const Color(0xFFb64e43),
       ),
     );
-  }
-
-  Future<void> _toggleRecording() async {
-    if (_clip.isRecording) {
-      await _stopAndTranscribe();
-    } else {
-      await _startRecording();
-    }
-  }
-
-  Future<void> _startRecording() async {
-    if (!await _clip.start()) return;
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _stopAndTranscribe() async {
-    final settings = context.read<ChatProvider>().settings;
-    setState(() {});
-    try {
-      final text = await _clip.stopAndTranscribe(settings);
-      if (text.isNotEmpty && mounted) {
-        _showVoicePanel(text);
-      }
-    } on VoiceClipException catch (e) {
-      // 非 200 与路上出错本来就是两种说法（`STT failed: 500` / `STT error: …`），
-      // 由异常自己拼好。
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('$e'),
-            backgroundColor: const Color(0xFFb64e43),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() {});
-    }
-  }
-
-  // ── Voice panel (raw → optional AI refine) ──
-
-  void _showVoicePanel(String rawText) {
-    final rawCtrl = TextEditingController(text: rawText);
-    bool isRefining = false;
-    String? refinedText;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFFffffff),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setSheetState) {
-            return Padding(
-              padding: EdgeInsets.fromLTRB(
-                16,
-                16,
-                16,
-                MediaQuery.of(ctx).viewInsets.bottom + 16,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    '🎤 ${t('voiceRecognition')}',
-                    style: const TextStyle(
-                      color: Color(0xFF20364d),
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    t('voiceRawTranscript'),
-                    style: const TextStyle(
-                      color: Color(0xFF6f8096),
-                      fontSize: 12,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  TextField(
-                    controller: rawCtrl,
-                    maxLines: 4,
-                    style: const TextStyle(
-                      color: Color(0xFF233249),
-                      fontSize: 14,
-                    ),
-                    decoration: InputDecoration(
-                      filled: true,
-                      fillColor: const Color(0xFFf4f8fd),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: const BorderSide(color: Color(0xFFdce6f1)),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: const BorderSide(color: Color(0xFFdce6f1)),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: const BorderSide(color: Color(0xFF1267b5)),
-                      ),
-                    ),
-                  ),
-                  if (refinedText != null) ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      t('aiRefine'),
-                      style: const TextStyle(
-                        color: Color(0xFF6f8096),
-                        fontSize: 12,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFf4f8fd),
-                        border: Border.all(color: const Color(0xFF0965cf)),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        refinedText!,
-                        style: const TextStyle(
-                          color: Color(0xFF233249),
-                          fontSize: 14,
-                        ),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: () => Navigator.pop(ctx),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFF6f8096),
-                            side: const BorderSide(color: Color(0xFFdce6f1)),
-                          ),
-                          child: Text(t('cancel')),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: isRefining
-                              ? null
-                              : () async {
-                                  setSheetState(() => isRefining = true);
-                                  final result = await _fetchRefined(
-                                    rawCtrl.text,
-                                  );
-                                  if (result != null) {
-                                    setSheetState(() {
-                                      refinedText = result;
-                                      isRefining = false;
-                                    });
-                                  } else {
-                                    setSheetState(() => isRefining = false);
-                                  }
-                                },
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFF6f8096),
-                            side: const BorderSide(color: Color(0xFFdce6f1)),
-                          ),
-                          child: isRefining
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Color(0xFF6f8096),
-                                  ),
-                                )
-                              : Text(t('aiRefine')),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: () {
-                            final text =
-                                (refinedText != null &&
-                                    refinedText!.trim().isNotEmpty)
-                                ? refinedText!
-                                : rawCtrl.text;
-                            Navigator.pop(ctx);
-                            final current = _ctrl.text;
-                            _ctrl.text = current.isEmpty
-                                ? text
-                                : '$current $text';
-                            _ctrl.selection = TextSelection.collapsed(
-                              offset: _ctrl.text.length,
-                            );
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF0965cf),
-                            foregroundColor: Colors.white,
-                          ),
-                          child: Text(
-                            refinedText != null
-                                ? t('useAiText')
-                                : t('useOriginalText'),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Future<String?> _fetchRefined(String raw) async {
-    try {
-      final provider = context.read<ChatProvider>();
-      final settings = provider.settings;
-      final uri = Uri.parse(settings.buildHttpUrl('/api/voice/refine'));
-      final headers = <String, String>{'Content-Type': 'application/json'};
-      if (settings.token.isNotEmpty) {
-        headers['X-Access-Token'] = settings.token;
-      }
-      final res = await http
-          .post(uri, headers: headers, body: jsonEncode({'raw': raw}))
-          .timeout(const Duration(seconds: 30));
-      if (res.statusCode != 200) return null;
-      final data = jsonDecode(utf8.decode(res.bodyBytes));
-      if (data is! Map<String, dynamic> || data['ok'] != true) return null;
-      final result = (data['text'] ?? '').toString().trim();
-      return result.isNotEmpty ? result : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // ── Streaming voice dictation (/ws/voice) ──
-
-  void _onDictationChanged() {
-    if (!mounted) return;
-    final d = _dictation;
-    // 启动失败且一个字都没识别到：回退旧的整段上传，别让用户对着空 HUD 干等。
-    if (d != null &&
-        d.state == VoiceDictationState.failed &&
-        !d.hasText &&
-        !_legacyFallbackArmed) {
-      _legacyFallbackArmed = true;
-      _dictation?.removeListener(_onDictationChanged);
-      _dictation = null;
-      setState(() {});
-      _fallbackLegacyRecording();
-      return;
-    }
-    setState(() {});
-  }
-
-  /// 麦克风按钮：正在听写就提交，否则开始一轮流式听写。
-  Future<void> _toggleDictation(
-    ChatProvider provider, {
-    required bool commander,
-  }) async {
-    final d = _dictation;
-    if (d != null && d.isBusy) {
-      await _commitDictation(provider, commander: commander);
-      return;
-    }
-    await _startDictation(provider);
-  }
-
-  Future<void> _startDictation(ChatProvider provider) async {
-    if (_dictation == null) {
-      _dictation = VoiceDictationService(settings: provider.settings);
-      _dictation!.addListener(_onDictationChanged);
-    }
-    _legacyFallbackArmed = false;
-    final ok = await _dictation!.start();
-    if (!mounted) return;
-    if (!ok) {
-      // /ws/voice 或麦克风不可用：回退旧的整段上传流程。
-      _dictation?.removeListener(_onDictationChanged);
-      _dictation = null;
-      setState(() {});
-      await _toggleRecording();
-    } else {
-      setState(() {});
-    }
-  }
-
-  Future<void> _commitDictation(
-    ChatProvider provider, {
-    required bool commander,
-  }) async {
-    final d = _dictation;
-    if (d == null) return;
-    final result = await d.commit();
-    if (!mounted) return;
-    if (result.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(t('voiceEmpty')),
-          backgroundColor: const Color(0xFF8b9cae),
-        ),
-      );
-      return;
-    }
-    // 填进输入框（保留可编辑，移动端误触代价大，不直接发送），并 fire-and-forget
-    // 回传润色反馈给服务端做质量评估。
-    final current = _ctrl.text.trim();
-    _ctrl.text = current.isEmpty ? result.text : '$current\n${result.text}';
-    _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
-    d.reportFeedback(result, userFinal: result.text);
-  }
-
-  void _cancelDictation() => _dictation?.cancel();
-
-  Future<void> _fallbackLegacyRecording() async {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(t('voiceStreamUnavailable')),
-        backgroundColor: const Color(0xFF8b9cae),
-      ),
-    );
-    await _toggleRecording();
   }
 
   // ── Dispatch hint (commander only) ──
@@ -1304,6 +977,8 @@ class _InputBarState extends State<InputBar> {
     final isConnected =
         provider.connectionState == ChatConnectionState.connected;
     final canSend = (_hasText || _attachments.isNotEmpty) && isConnected;
+    // 语音输入要跟着当前会话的设置走（切会话后 token/host/lang 都会换）。
+    _voice.syncSettings(provider.settings);
 
     return SafeArea(
       top: false,
@@ -1416,17 +1091,10 @@ class _InputBarState extends State<InputBar> {
 
             // Streaming voice dictation HUD — lives just above the input row so the
             // live transcript is visible while the keyboard / send button stay usable.
-            if (_dictation != null &&
-                _dictation!.state != VoiceDictationState.idle &&
-                _dictation!.state != VoiceDictationState.done)
+            if (_voice.showHud)
               Padding(
                 padding: const EdgeInsets.only(bottom: 6),
-                child: _VoiceDictationHud(
-                  dictation: _dictation!,
-                  onCancel: _cancelDictation,
-                  onCommit: () =>
-                      _commitDictation(provider, commander: isCommander),
-                ),
+                child: VoiceDictationHud(controller: _voice),
               ),
 
             // Input row
@@ -1445,24 +1113,11 @@ class _InputBarState extends State<InputBar> {
 
                 // Voice button — streaming /ws/voice dictation (falls back to the
                 // legacy m4a → /api/voice/stt flow when the socket is unavailable).
-                _SmallButton(
-                  onTap: (_dictation?.isBusy ?? false)
-                      ? () => _commitDictation(provider, commander: isCommander)
-                      : (!_clip.isTranscribing && isConnected)
-                      ? () => _toggleDictation(provider, commander: isCommander)
-                      : null,
-                  icon: (_dictation?.state == VoiceDictationState.finalizing)
-                      ? Icons.hourglass_top_rounded
-                      : (_dictation?.isBusy ?? false)
-                      ? Icons.check_circle_rounded
-                      : _clip.isTranscribing
-                      ? Icons.hourglass_top_rounded
-                      : _clip.isRecording
-                      ? Icons.stop_circle_rounded
-                      : Icons.mic_rounded,
-                  color: (_dictation?.isBusy ?? false) || _clip.isRecording
-                      ? const Color(0xFF0965cf)
-                      : const Color(0xFF6f8096),
+                VoiceMicButton(
+                  key: const Key('chat-mic-button'),
+                  controller: _voice,
+                  enabled: isConnected,
+                  iconSize: 20,
                 ),
                 const SizedBox(width: 4),
 
@@ -1496,7 +1151,7 @@ class _InputBarState extends State<InputBar> {
                     decoration: BoxDecoration(
                       color: const Color(0xFFf4f8fd),
                       border: Border.all(
-                        color: _clip.isRecording
+                        color: _voice.isRecording
                             ? const Color(0xFFb64e43)
                             : _focusNode.hasFocus
                             ? const Color(0xFF1267b5)
@@ -1519,13 +1174,13 @@ class _InputBarState extends State<InputBar> {
                         height: 1.4,
                       ),
                       decoration: InputDecoration(
-                        hintText: _clip.isRecording
+                        hintText: _voice.isRecording
                             ? t('recording')
-                            : _clip.isTranscribing
+                            : _voice.isTranscribing
                             ? t('transcribing')
                             : t('typeMessage'),
                         hintStyle: TextStyle(
-                          color: _clip.isRecording
+                          color: _voice.isRecording
                               ? const Color(0xFFb64e43)
                               : const Color(0xFF8b9cae),
                         ),
@@ -1588,157 +1243,6 @@ class _InputBarState extends State<InputBar> {
         ),
       ),
     );
-  }
-}
-
-/// 流式听写的实时浮层：原文（已定稿 + 待定灰字）、润色稿、状态、取消/提交。
-/// 用 ListenableBuilder 直接订阅 [VoiceDictationService]，状态变了就重建。
-class _VoiceDictationHud extends StatelessWidget {
-  final VoiceDictationService dictation;
-  final VoidCallback onCancel;
-  final VoidCallback onCommit;
-
-  const _VoiceDictationHud({
-    required this.dictation,
-    required this.onCancel,
-    required this.onCommit,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: dictation,
-      builder: (ctx, _) {
-        final raw = dictation.rawFinal;
-        final partial = dictation.rawPartial;
-        final refined = dictation.refined;
-        final failed = dictation.state == VoiceDictationState.failed;
-        final hasRaw = raw.trim().isNotEmpty || partial.trim().isNotEmpty;
-        final accent = failed
-            ? const Color(0xFFb64e43)
-            : const Color(0xFF0965cf);
-        return Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: const Color(0xFFf4f8fd),
-            border: Border.all(color: accent),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    failed
-                        ? Icons.error_outline_rounded
-                        : Icons.graphic_eq_rounded,
-                    size: 14,
-                    color: accent,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      _stateLabel(),
-                      style: const TextStyle(
-                        color: Color(0xFF6f8096),
-                        fontSize: 11,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              if (hasRaw || refined.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                if (hasRaw)
-                  Text.rich(
-                    TextSpan(
-                      children: [
-                        TextSpan(
-                          text: raw,
-                          style: const TextStyle(
-                            color: Color(0xFF233249),
-                            fontSize: 14,
-                          ),
-                        ),
-                        if (partial.isNotEmpty)
-                          TextSpan(
-                            text: partial,
-                            style: const TextStyle(
-                              color: Color(0xFF6f8096),
-                              fontSize: 14,
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                if (refined.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFffffff),
-                      border: Border.all(
-                        color: const Color(0xFF0965cf).withValues(alpha: 0.5),
-                      ),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      refined,
-                      style: const TextStyle(
-                        color: Color(0xFF233249),
-                        fontSize: 14,
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(onPressed: onCancel, child: Text(t('cancel'))),
-                  const SizedBox(width: 4),
-                  FilledButton.icon(
-                    onPressed: dictation.state == VoiceDictationState.finalizing
-                        ? null
-                        : onCommit,
-                    icon: const Icon(Icons.send_rounded, size: 16),
-                    label: Text(t('voiceSubmit')),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF0965cf),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 4,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  String _stateLabel() {
-    switch (dictation.state) {
-      case VoiceDictationState.starting:
-        return t('voiceStarting');
-      case VoiceDictationState.listening:
-        return t('voiceListening');
-      case VoiceDictationState.finalizing:
-        return t('voiceFinalizing');
-      case VoiceDictationState.failed:
-        return dictation.errorDetail.isNotEmpty
-            ? '⚠ ${dictation.errorDetail}'
-            : t('voiceFailed');
-      default:
-        return '';
-    }
   }
 }
 

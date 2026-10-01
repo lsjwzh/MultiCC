@@ -18,7 +18,20 @@ import 'settings_service.dart';
 ///
 /// 听写（边说边出字、`/ws/voice`）是另一件事，在
 /// [VoiceDictationService](voice_dictation_service.dart) 里。
-class VoiceClipRecorder {
+///
+/// 这份契约只把上面那几个动作列出来，好让语音输入那份共用交互在测试里能塞一个
+/// 假录音器进来（真录音要平台通道，widget 测试里没有）。
+abstract class VoiceClipRecording {
+  bool get isRecording;
+  bool get isTranscribing;
+
+  Future<bool> start();
+  Future<String> stopAndTranscribe(SettingsService settings);
+  Future<void> cancel();
+  void dispose();
+}
+
+class VoiceClipRecorder implements VoiceClipRecording {
   VoiceClipRecorder({AudioRecorder? recorder})
     : _recorder = recorder ?? AudioRecorder();
 
@@ -27,12 +40,17 @@ class VoiceClipRecorder {
   bool _recording = false;
   bool _transcribing = false;
 
+  @override
   bool get isRecording => _recording;
+
+  @override
   bool get isTranscribing => _transcribing;
+
   bool get isBusy => _recording || _transcribing;
 
   /// 开录。拿不到麦克风权限就返回 false（Web 那边是 `getUserMedia` 抛异常，
   /// 文案「无法访问麦克风，请检查浏览器权限。」）。
+  @override
   Future<bool> start() async {
     if (_recording) return true;
     if (!await _recorder.hasPermission()) return false;
@@ -55,6 +73,7 @@ class VoiceClipRecorder {
   ///
   /// 转写失败抛 [VoiceClipException]；录音本身出问题（没在录、文件没了）返回
   /// 空串，跟「什么都没识别到」一个下场。
+  @override
   Future<String> stopAndTranscribe(SettingsService settings) async {
     if (!_recording) return '';
     final path = await _recorder.stop();
@@ -95,6 +114,7 @@ class VoiceClipRecorder {
   }
 
   /// 丢掉这一段（用户中途取消，或者宿主不想要了）。
+  @override
   Future<void> cancel() async {
     if (!_recording) return;
     final path = await _recorder.stop();
@@ -102,6 +122,7 @@ class VoiceClipRecorder {
     if (path != null) await _deleteQuietly(path);
   }
 
+  @override
   void dispose() {
     _recorder.dispose();
   }
