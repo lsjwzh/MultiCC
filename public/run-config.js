@@ -1578,7 +1578,7 @@
       } else {
         footCopy.textContent = tt('runConfigSummaryAuto', '{n} 条线路 · 跨 {m} 个 CLI', {
           n: rows.length,
-          m: new Set(rows.map(row => row.cli)).size,
+          m: new Set(rows.map(row => chatChoiceCli(row.cli))).size,
         });
       }
       const built = autoPreview();
@@ -1789,12 +1789,17 @@
     }
 
     async function warmOtherClis() {
-      for (const item of availableClis()) {
-        if (!item.ok || item.cli === currentCli || catalogs.has(item.cli)) continue;
+      const wanted = new Set([...availableClis().filter(item => item.ok).map(item => item.cli),
+        ...rows.map(row => row.cli)].filter(Boolean));
+      for (const cli of wanted) {
+        if (cli === currentCli || catalogs.has(cli)) continue;
         const current = epoch;
-        try { await loadCatalog(item.cli); } catch (_) { /* 计数位会显示加载失败 */ }
+        try { await loadCatalog(cli); } catch (_) { /* 计数位会显示加载失败 */ }
         if (current !== epoch) return;
         renderCliCards();
+        // Stored pools may include another product or an older compatible ID.
+        // Refresh those rows when their catalog arrives, clearing stale warnings.
+        renderPool();
       }
     }
 

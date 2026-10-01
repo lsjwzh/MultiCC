@@ -2453,5 +2453,6 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   .rc-two { grid-template-columns: 1fr; }
   .rc-modes, .rc-efforts { flex-wrap: wrap; }
   .rc-row { grid-template-columns: 22px minmax(0, 1fr) auto; }
-  .rc-row-l2 { flex-wrap: wrap; }
+  .rc-row-l1, .rc-row-l2 { flex-wrap: wrap; }
+  .rc-line-name { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; }
 }

@@ -852,7 +852,9 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
           isExpanded: true,
           dropdownColor: AppColors.panel,
           decoration: runConfigInputDecoration(),
-          style: const TextStyle(color: AppColors.text, fontSize: 13),
+          style: Theme.of(
+            context,
+          ).textTheme.bodyMedium?.copyWith(color: AppColors.text, fontSize: 13),
           items: [
             if (!hasOfficial)
               DropdownMenuItem(
@@ -912,7 +914,9 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
           isExpanded: true,
           dropdownColor: AppColors.panel,
           decoration: runConfigInputDecoration(),
-          style: const TextStyle(color: AppColors.text, fontSize: 13),
+          style: Theme.of(
+            context,
+          ).textTheme.bodyMedium?.copyWith(color: AppColors.text, fontSize: 13),
           items: [
             ...choices.map(
               (m) => DropdownMenuItem(
@@ -1041,7 +1045,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
                 isExpanded: true,
                 dropdownColor: AppColors.panel,
                 decoration: runConfigInputDecoration(),
-                style: const TextStyle(color: AppColors.text, fontSize: 13),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppColors.text,
+                  fontSize: 13,
+                ),
                 items: [
                   const DropdownMenuItem(value: '', child: Text('随主')),
                   ..._providers
@@ -1076,7 +1083,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
                 isExpanded: true,
                 dropdownColor: AppColors.panel,
                 decoration: runConfigInputDecoration(),
-                style: const TextStyle(color: AppColors.text, fontSize: 13),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppColors.text,
+                  fontSize: 13,
+                ),
                 items: [
                   const DropdownMenuItem(value: '', child: Text('不设置')),
                   ...subChoices.map(
@@ -1135,7 +1145,9 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
         TextField(
           controller: _agentCtrl,
           maxLength: 80,
-          style: const TextStyle(color: AppColors.text, fontSize: 13),
+          style: Theme.of(
+            context,
+          ).textTheme.bodyMedium?.copyWith(color: AppColors.text, fontSize: 13),
           decoration: runConfigInputDecoration(
             hint: _cli == SessionCli.opencode
                 ? '例如 build；留空使用默认 agent'
