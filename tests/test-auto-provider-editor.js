@@ -434,6 +434,25 @@ test('a configured pool can be saved as a named preset and applied to a fresh ed
   assert.equal(store.data.length, 0);
 });
 
+test('a pool mixing official and managed lines saves as a preset without the cross-trust tick', () => {
+  const store = memoryPresetStore();
+  const first = mountEditor({ presetStore: store });
+  first.click('official', 'add-one');
+  first.$('preset-open').emit('click');
+  first.$('preset-name').value = '混用';
+  first.$('preset-save').emit('click');
+  assert.equal(store.data.length, 1, '预设不带确认，所以不该被确认拦住');
+  assert.equal('allowCrossTrust' in store.data[0], false, '确认不随预设落盘');
+  assert.equal(first.control.read({ remember: false }).code, 'cross_trust_confirmation_required',
+    '正式保存仍要先勾确认');
+
+  const second = mountEditor({ presetStore: store });
+  second.$('preset-select').value = store.data[0].id;
+  second.$('preset-select').emit('change');
+  assert.equal(second.control.read({ remember: false }).code, 'cross_trust_confirmation_required',
+    '套用后同样要重新确认');
+});
+
 test('reading a valid pool records it as a recent preset, deduplicated and capped', () => {
   const store = memoryPresetStore();
   const { control } = mountEditor({ presetStore: store });

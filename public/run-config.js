@@ -1472,8 +1472,9 @@
     }
 
     function savePreset() {
+      // 预设不存跨信任确认，套用后正式保存仍要重新确认，所以这里不拦。
       const built = buildAutoSelection({ rows, pick, tiering, routing: jev ? jev.read() : null,
-        providers: allProviders(), maxAttempts, sticky, crossTrustConfirmed });
+        providers: allProviders(), maxAttempts, sticky, crossTrustConfirmed: true });
       if (!built.ok) { presetStatus.textContent = built.error; return; }
       const name = presetName.value.trim();
       if (!name) { presetStatus.textContent = tt('runConfigPresetNameRequired', '请先填写预设名称。'); presetName.focus(); return; }

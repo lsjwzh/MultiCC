@@ -1625,7 +1625,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     }
 
     function savePreset() {
-      const result = controller.read({ remember: false });
+      const result = controller.read({ remember: false, forPreset: true });
       if (!result.ok || !result.value) return result;
       const name = presetName.value.trim();
       storePresets(rememberPreset(loadPresets(), result.value, { name, now: now() }));
@@ -2097,7 +2097,8 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
           candidates: rawCandidates(),
           maxAttempts: Number(maxAttempts.value),
           sticky: sticky.checked,
-          crossTrustConfirmed: confirm.checked,
+          // 存预设不带跨信任确认（套用后正式保存仍要重新勾），所以不在这里拦。
+          crossTrustConfirmed: readOptions.forPreset === true || confirm.checked,
           routingEnabled: routingOn,
           // Both are pool-level: the lane policy is only written when some line
           // spans a lane, and the tiering only ridealong with a routing config.

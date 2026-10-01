@@ -1316,6 +1316,15 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`document.querySelector('.air-config-dialog form').requestSubmit()`);
     assert.ok(await page.waitFor(`window.__presetSaved`));
     assert.equal(await page.evaluate(`window.__presetSaved.providerSelection.candidates.length`), 2);
+    // 官方 + 自管混用的池子：存预设不需要先勾跨信任确认（预设不存它），底部保存仍要。
+    await page.evaluate(`window.MultiCCRunConfig.open({configuration:{cli:'codex-exp',provider:'codex-official',providerSelection:{mode:'auto',cliSwitch:'failover',protocol:'openai_responses',candidates:[{cli:'codex-exp',providerId:'codex-official',model:'gpt-5.5'},{cli:'codex-exp',providerId:'codex-lab',model:'gpt-5.5'}]}}},['codex-exp'],value=>{window.__mixedSaved=value})`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .rc-preset-open')&&document.querySelectorAll('.rc-row').length===2`));
+    await page.evaluate(`document.querySelector('.rc-preset-open').click();document.querySelector('.rc-preset-name').value='混用测试';document.querySelector('.rc-preset-save').click()`);
+    assert.ok(await page.waitFor(`JSON.parse(localStorage.getItem('multicc.autoProvider.presets.v1')||'[]').some(p=>p.name==='混用测试')`));
+    await page.evaluate(`document.querySelector('.air-config-dialog form').requestSubmit()`);
+    assert.equal(await page.evaluate(`window.__mixedSaved===undefined&&!!document.querySelector('.air-config-dialog[open]')`), true, '正式保存仍要先确认');
+    await page.evaluate(`const b=document.querySelector('.air-config-dialog[open] .rc-cross-trust input');b.checked=true;b.dispatchEvent(new Event('change'));document.querySelector('.air-config-dialog form').requestSubmit()`);
+    assert.ok(await page.waitFor(`window.__mixedSaved`));
     assert.deepEqual(await page.evaluate('window.__errors||[]'), []);
     assert.deepEqual(await page.evaluate(`document.getElementById('conversation').contentWindow.__errors||[]`), []);
   });
