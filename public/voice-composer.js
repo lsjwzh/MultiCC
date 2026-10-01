@@ -411,7 +411,9 @@
       hud?.classList.remove('open');
       if (!text || !inputEl) return;
       setInputValue(text);
-      onCommit(text);
+      // Second arg marks the send as dictated so the server can tell the model
+      // to expect recognition errors; raw is the unrefined ASR transcript.
+      onCommit(text, { inputSource: 'voice', raw: raw.trim() });
       fetchFn(withToken('/api/voice/feedback'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ raw: raw.trim(), refined: hudRefined, userFinal: text }),

@@ -580,6 +580,17 @@ test('goal limits survive normalized receipt retry without changing the message 
   assert.equal(seen[1].idempotencyKey, seen[0].idempotencyKey);
 });
 
+test('voice marker and send-time language reach delivery options; junk values are dropped', async t => {
+  const seen = [];
+  const f = fixture(t, { send: async (_id, _text, options) => { seen.push(options); return { ok: true }; } });
+  await f.runtime.send(f.a.id, input('dictated', null, { inputSource: 'voice', voiceRaw: '  看下瑞迪斯 ', lang: 'en' }));
+  await f.runtime.send(f.a.id, input('typed', null, { inputSource: 'keyboard', voiceRaw: 'ignored', lang: 'fr' }));
+  assert.deepEqual(seen[0].voice, { raw: '看下瑞迪斯' });
+  assert.equal(seen[0].lang, 'en');
+  assert.equal(seen[1].voice, undefined);
+  assert.equal(seen[1].lang, undefined);
+});
+
 test('P3: admission is refused with a reason while the task switches execution', async t => {
   const observed = [];
   let runtime = null;

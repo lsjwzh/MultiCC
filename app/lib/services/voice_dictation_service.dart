@@ -2,7 +2,7 @@
 //
 // 对齐 web 的 public/voice-stream.js + chat-composer.js 的语音 HUD：
 //   麦克风 → PCM16LE 单声道帧 → /ws/voice → 边说边回 partial/final →
-//   final 变动后去抖调用 /api/voice/refine 润色 → 用户点发送时取 refined||raw。
+//   用户点提交时取原始转写填进输入框（不再等服务端润色，见 [autoRefine]）。
 //
 // 与旧的「录 m4a → /api/voice/stt → 面板」相比，用户在说的过程中就能看见文字，
 // 也不用等整段上传。旧流程保留在 input_bar 里当回退：这条链路依赖 /ws/voice
@@ -109,6 +109,13 @@ class VoiceDictationService extends ChangeNotifier {
   /// 轮询上面两个宽限期的粒度。
   final Duration pollInterval;
 
+  /// 是否在听写过程中自动调用 /api/voice/refine 润色。
+  ///
+  /// 默认关：润色要 2–13s，还会改写用户原话；现在改成把原始转写直接填进输入框，
+  /// 由主模型结合上下文纠错（听写帧另外带 voiceRaw）。留这个开关是因为润色链路
+  /// 与状态（[refined] / [_runRefine]）还在，需要时才显式打开。
+  final bool autoRefine;
+
   VoiceDictationService({
     required this.settings,
     WsTicketClient? wsTicketClient,
@@ -119,6 +126,7 @@ class VoiceDictationService extends ChangeNotifier {
     this.finalGrace = const Duration(milliseconds: 800),
     this.refineGrace = const Duration(seconds: 3),
     this.pollInterval = const Duration(milliseconds: 80),
+    this.autoRefine = false,
   }) : _auth = WsTicketConnectionGate(wsTicketClient ?? WsTicketClient()),
        _connect = channelFactory ?? WebSocketChannel.connect,
        _ownedRecorder = micOpener == null ? AudioRecorder() : null,
@@ -223,7 +231,7 @@ class VoiceDictationService extends ChangeNotifier {
     return true;
   }
 
-  /// 停采、催服务端出最后一段 final、等润色收敛，返回该发出去的文本。
+  /// 停采、催服务端出最后一段 final，返回该发出去的文本（默认就是原始转写）。
   Future<VoiceDictationResult> commit() async {
     final generation = _generation;
     if (_state != VoiceDictationState.listening &&
@@ -246,15 +254,18 @@ class VoiceDictationService extends ChangeNotifier {
     }
 
     // 去抖还没到点就立刻跑一次；已经在跑就等它，超时按现有结果发。
-    if (_refineTimer != null) {
-      _refineTimer!.cancel();
-      _refineTimer = null;
-      final raw = _rawFinal.trim();
-      if (raw.isNotEmpty) await _runRefine(generation, raw);
-    } else if (_refineInFlight != null) {
-      try {
-        await _refineInFlight!.timeout(refineGrace);
-      } catch (_) {}
+    // 默认(autoRefine=false)不润色，直接把原文交出去，不在这里等任何 future。
+    if (autoRefine) {
+      if (_refineTimer != null) {
+        _refineTimer!.cancel();
+        _refineTimer = null;
+        final raw = _rawFinal.trim();
+        if (raw.isNotEmpty) await _runRefine(generation, raw);
+      } else if (_refineInFlight != null) {
+        try {
+          await _refineInFlight!.timeout(refineGrace);
+        } catch (_) {}
+      }
     }
     if (generation != _generation) return _snapshot();
 
@@ -272,11 +283,17 @@ class VoiceDictationService extends ChangeNotifier {
     _setState(VoiceDictationState.idle);
   }
 
-  /// 把「识别原文 / 润色稿 / 用户最终发出的文本」回传给服务端做润色质量评估。
-  /// 纯旁路，失败不影响已经发出去的消息。
+  /// 把「识别原文 / 润色稿 / 用户最终发出的文本」回传给服务端做润色质量评估与
+  /// 词表学习。纯旁路，失败不影响已经发出去的消息。
+  ///
+  /// 现在默认不润色，[VoiceDictationResult.refined] 常为空字符串；服务端用
+  /// `userFinal != refined` 判断是否记录，所以这里照发。用户没改字（userFinal
+  /// 与原文相同）时没有可学的，直接跳过不发。
   void reportFeedback(VoiceDictationResult result, {String? userFinal}) {
     final raw = result.raw.trim();
     if (raw.isEmpty) return;
+    final finalText = (userFinal ?? result.text).trim();
+    if (finalText.isEmpty || finalText == raw) return;
     final headers = <String, String>{'Content-Type': 'application/json'};
     if (settings.token.isNotEmpty) headers['X-Access-Token'] = settings.token;
     _http
@@ -286,7 +303,7 @@ class VoiceDictationService extends ChangeNotifier {
           body: jsonEncode({
             'raw': raw,
             'refined': result.refined,
-            'userFinal': (userFinal ?? result.text).trim(),
+            'userFinal': finalText,
           }),
         )
         .catchError((_) => http.Response('', 599));
@@ -329,7 +346,8 @@ class VoiceDictationService extends ChangeNotifier {
         _rawFinal = (msg['text'] ?? '').toString();
         _rawPartial = '';
         notifyListeners();
-        _scheduleRefine(generation);
+        // 默认不自动润色：原文就是最终文本，交给主模型按上下文纠错。
+        if (autoRefine) _scheduleRefine(generation);
         break;
       case 'done':
         final text = (msg['text'] ?? '').toString();

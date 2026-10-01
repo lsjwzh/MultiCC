@@ -253,6 +253,10 @@
         }
         const lang = currentLang();
         if (lang === 'zh' || lang === 'en') payload.lang = lang;
+        if (sendOptions.voice) {
+          payload.inputSource = 'voice';
+          payload.voiceRaw = String(sendOptions.voice.raw || '');
+        }
         if (!transportSend(payload)) throw new Error('WebSocket is not open');
         lastSent = { text, goal: !!goalOptions, goalLimits: goalOptions ? goalOptions.goalLimits || {} : null, lang: lang === 'zh' || lang === 'en' ? lang : null };
         if (userInputRequestId) consumeUserInputRequestId(userInputRequestId);
@@ -424,7 +428,7 @@
         hasNativeBridge,
         installNativeBridgeCallbacks: opts.installNativeBridgeCallbacks !== false,
         autoBind: false,
-        onCommit: () => send(),
+        onCommit: (_text, meta) => send(meta && meta.inputSource === 'voice' ? { voice: { raw: meta.raw || '' } } : {}),
       })
       : noVoiceComposer();
     const bindVoice = () => voice.bindVoice();

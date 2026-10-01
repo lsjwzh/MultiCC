@@ -17,7 +17,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 /**
- * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'turn-plan'|'autocommit-status'|'gateway'|'dispatch-context'|'background-stopped'|'cross-agent-notes'} ContextLayerKind
+ * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'turn-plan'|'autocommit-status'|'gateway'|'dispatch-context'|'background-stopped'|'cross-agent-notes'|'voice-input'} ContextLayerKind
  */
 
 /**
@@ -25,7 +25,7 @@
  *
  * @typedef {Object} ContextLayer
  * @property {ContextLayerKind} kind  - discriminator (unique within an envelope)
- * @property {number} order           - explicit sort key: 10=goal-limit, 12=task-context, 15=cli-handoff, 18=turn-plan, 19=autocommit-status, 20=gateway/dispatch-context, 25=background-stopped, 30=cross-agent-notes
+ * @property {number} order           - explicit sort key: 10=goal-limit, 12=task-context, 15=cli-handoff, 18=turn-plan, 19=autocommit-status, 20=gateway/dispatch-context, 25=background-stopped, 30=cross-agent-notes, 35=voice-input
  * @property {string} text            - complete block INCLUDING its own trailing separator; concatenated with no extra separator
  */
 
@@ -179,6 +179,7 @@ function validateEnvelope(env) {
  * @param {Object|undefined} input.opts.goalLimits  - { maxRounds, maxBudget }
  * @param {string|undefined} input.opts.taskContextSeed - compiled task ledger prefix for a task-bound session's first turn (prompt only; never persisted as the user message)
  * @param {'zh'|'en'|undefined} input.opts.lang - chat page's UI language toggle at send time; appends an output-language instruction to the suffix (never persisted as part of userText)
+ * @param {{raw: string}|null|undefined} input.opts.voice - set when the message was dictated (see normalizeVoiceInput); adds the voice-input layer with the raw ASR transcript
  * @param {'per-turn'|'streaming'} [input.opts.mode='per-turn']
  * @param {boolean} [input.opts.bare=false]         - true: skip contextLayers + suffix (continue/retry paths)
  * @param {string|undefined} input.opts.providerModel
@@ -204,6 +205,37 @@ function buildAutoCommitStatusPrompt(persisted) {
   return `[AutoCommit status as of this message] The page-header AutoCommit switch for this session is currently ${autoCommitOn ? 'ON' : 'OFF'}. This is a factual status readout, not an instruction: ${autoCommitOn ? 'MultiCC will attempt to commit (and merge, if configured) your changes after this turn on its own; you do not need to run git commit/merge yourself' : 'nothing outside this conversation will commit your changes after this turn'}. Do not commit or merge in this prompt unless the user explicitly asked you to in this message -- keep your own statements about committing consistent with this status rather than assuming the opposite.\n\n`;
 }
 
+// Voice-dictation metadata accepted from a chat client: `inputSource: 'voice'`
+// plus the unedited ASR transcript (`voiceRaw`). Returns the per-turn option
+// shape `{ raw }`, or null for typed messages. The raw text is capped so a
+// client can never use it to smuggle an unbounded second prompt.
+const VOICE_RAW_MAX = 4000;
+function normalizeVoiceInput(source) {
+  if (!source || source.inputSource !== 'voice') return null;
+  const raw = typeof source.voiceRaw === 'string' ? source.voiceRaw.trim().slice(0, VOICE_RAW_MAX) : '';
+  return { raw };
+}
+
+// order-35 layer text: tells the model the user message below came from speech
+// recognition so it reconciles mis-recognitions against the conversation
+// context. The raw transcript is included only when the sent text differs from
+// it (user edits or an automatic cleanup pass); otherwise the message itself IS
+// the raw transcript.
+function buildVoiceInputPrompt(voice, text) {
+  const raw = voice && typeof voice.raw === 'string' ? voice.raw : '';
+  const edited = raw && raw !== String(text || '').trim();
+  return '[Voice input] The user message below was dictated and transcribed by speech recognition'
+    + (edited ? ', then edited before sending (by the user or an automatic cleanup pass)' : ' and has not been proofread by the user')
+    + '. Expect homophone/near-homophone errors (Chinese), English technical terms split or transliterated into Chinese'
+    + ' (e.g. "work tree" -> worktree, "瑞迪斯" -> Redis), misheard numbers/file/function/branch names, and wrong punctuation.\n'
+    + '- Infer the intended words from the current conversation, the files being worked on, and identifiers that have already appeared.\n'
+    + '- If you act on a corrected reading, state it in one line at the top of your reply, e.g. "（按语音纠正理解为：…）". Say nothing if no correction was needed.\n'
+    + '- Ask before acting only when different readings lead to different irreversible actions (delete, commit, send, config change); otherwise proceed with the most likely reading.\n'
+    + '- Do not comment on transcription quality or ask the user to repeat.\n'
+    + (edited ? `- Raw transcript before editing (prefer the message below; consult this when a word there looks wrong or seems to have been added):\n<raw_transcript>\n${raw}\n</raw_transcript>\n` : '')
+    + '[End of voice input note]\n\n';
+}
+
 function composeMessage({ text, persisted, sessionName, opts, deps }) {
   const {
     isFirstTurn,
@@ -216,6 +248,7 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
     skipDefaultModel,
     disallowedTools = [],
     lang,
+    voice,
   } = opts || {};
 
   // ── System prompt (single computation point; today rolePrompt is resolved at server.js:9077) ──
@@ -333,6 +366,13 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
         notes: pendingNotes.map(n => ({ from: n.fromLabel, body: n.body })),
       });
     }
+
+    // order 35: dictated message. Sits last, directly above the user text it
+    // describes. Same exclusions as turn-plan: aux jobs and gateway routers
+    // never receive client voice metadata as a conversation.
+    if (voice && persisted.type !== 'aux' && persisted.type !== 'gateway') {
+      contextLayers.push({ kind: 'voice-input', order: 35, text: buildVoiceInputPrompt(voice, text) });
+    }
   }
 
   // ── Suffix (today server.js:9073-9074) ──
@@ -409,4 +449,7 @@ function renderPrompt(envelope) {
     .join('') + envelope.userText + envelope.suffix;
 }
 
-module.exports = { composeMessage, renderPrompt, validateEnvelope, buildAutoCommitStatusPrompt };
+module.exports = {
+  composeMessage, renderPrompt, validateEnvelope, buildAutoCommitStatusPrompt,
+  normalizeVoiceInput, buildVoiceInputPrompt,
+};

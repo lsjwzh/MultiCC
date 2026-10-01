@@ -181,10 +181,13 @@ test('chat-composer delegates its voice API and commit runs send()', async () =>
     transportSend: payload => { sent.push(payload); return true; },
     updateUi() {}, addSystemMessage() {},
   });
+  ids.get('vh-raw-text').textContent = '发出去的句子原文';
   ids.get('vh-refined-text').textContent = '发出去的句子';
   await composer.commitStreamingVoice();
   assert.equal(sent.length, 1, 'onCommit is the chat send() path');
   assert.equal(sent[0].text, '发出去的句子');
+  assert.equal(sent[0].inputSource, 'voice', 'a dictated send is marked as voice input');
+  assert.equal(sent[0].voiceRaw, '发出去的句子原文', 'the raw ASR transcript rides along for the model');
   assert.equal(inputEl.value, '', 'send() clears the input it just filled');
 });
 

@@ -660,11 +660,17 @@ class ChatService {
   /// dedupes on it, so a caller that re-sends the same logical message after a
   /// lost response (the chat page's 强制同步 button) passes the same value twice
   /// and the second one is dropped instead of starting a second turn.
+  ///
+  /// [voiceRaw] marks the message as dictated: the unedited ASR transcript. The
+  /// server then tells the model to expect recognition errors and includes the
+  /// raw text (see src/message-composer.js's normalizeVoiceInput). Omit it for
+  /// typed messages — the two extra frame fields are only added when it is set.
   String? send(
     String text, {
     bool goal = false,
     Map<String, dynamic>? goalLimits,
     String? clientMsgId,
+    String? voiceRaw,
   }) {
     if (_channel == null || _state != ChatConnectionState.connected) {
       connect();
@@ -681,6 +687,11 @@ class ChatService {
         'text': text,
         'clientMsgId': id,
       };
+      final voice = (voiceRaw ?? '').trim();
+      if (voice.isNotEmpty) {
+        payload['inputSource'] = 'voice';
+        payload['voiceRaw'] = voice;
+      }
       final pendingRequestId = _pendingUserInputRequestId;
       if (pendingRequestId != null && pendingRequestId.isNotEmpty) {
         payload['userInputRequestId'] = pendingRequestId;

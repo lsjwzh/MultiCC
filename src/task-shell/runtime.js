@@ -454,6 +454,10 @@ function createTaskShellRuntime(ports) {
       turnId: raw.turnId == null ? null : identifier(raw.turnId, 'turnId'),
       requestId: raw.requestId == null ? null : identifier(raw.requestId, 'requestId') };
     if (raw.goal === true || raw.goalLimits != null) result.goalLimits = resolveGoalLimits(raw.goalLimits);
+    // Per-message presentation hints carried to composeMessage: the send-time
+    // UI language and the voice-dictation marker with its raw ASR transcript.
+    if (raw.lang === 'zh' || raw.lang === 'en') result.lang = raw.lang;
+    if (raw.inputSource === 'voice') result.voice = { raw: typeof raw.voiceRaw === 'string' ? raw.voiceRaw.trim().slice(0, 4000) : '' };
     if (intent !== 'work' && (result.newTask || !result.taskId || !result.turnId || result.contextTaskIds.length || result.dependsOn.length)) throw failure('invalid_control', 'Controls require the original task and turn', 400);
     if (intent === 'answer' && !result.requestId) throw failure('invalid_control', 'Answer requires requestId', 400);
     return result;
@@ -616,6 +620,7 @@ function createTaskShellRuntime(ports) {
           clientMsgId: receipt.id, idempotencyKey: receipt.id, taskShellReceiptId: receipt.id,
           receivedAt: receipt.createdAt,
           ...(p.goalLimits ? { goalLimits: p.goalLimits } : {}),
+          ...(p.lang ? { lang: p.lang } : {}), ...(p.voice ? { voice: p.voice } : {}),
           ...(p.intent !== 'work' ? { taskShellControl: { intent: p.intent, turnId: p.turnId } } : {}),
           taskContextSeed: '',
           taskShellAutoClassify: p.intent === 'work' && p.newTask !== true && !receipt.taskIdentityLocked && !taskActions.ownerOf(task)?.standalone,

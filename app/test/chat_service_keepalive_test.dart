@@ -464,4 +464,33 @@ void main() {
       });
     },
   );
+
+  test('voice dictation flags the user_message frame with inputSource/voiceRaw', () async {
+    await setupSettings();
+    fakeAsync((async) {
+      final (service, channels) = makeService();
+      service.connect();
+      async.flushMicrotasks();
+      expect(service.state, ChatConnectionState.connected);
+
+      service.send('把这段话说出去', voiceRaw: '把这段话说出去 原话');
+      final voice = jsonDecode(channels.last.sent.last) as Map;
+      expect(voice['type'], 'user_message');
+      expect(voice['inputSource'], 'voice');
+      expect(voice['voiceRaw'], '把这段话说出去 原话');
+
+      // Typed messages must not grow the two extra fields.
+      service.send('typed by hand');
+      final typed = jsonDecode(channels.last.sent.last) as Map;
+      expect(typed.containsKey('inputSource'), isFalse);
+      expect(typed.containsKey('voiceRaw'), isFalse);
+
+      // A whitespace-only transcript counts as typed too.
+      service.send('blank raw', voiceRaw: '   ');
+      final blank = jsonDecode(channels.last.sent.last) as Map;
+      expect(blank.containsKey('inputSource'), isFalse);
+
+      service.dispose();
+    });
+  });
 }
