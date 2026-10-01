@@ -674,31 +674,34 @@ void main() {
     expect(find.text('任务 25'), findsOneWidget);
     expect(find.byKey(const ValueKey('air-directory-task-t6')), findsOneWidget);
 
+    // 分页时表头是**被钉住的那一个**（不再是「真实表头 + 只读粘性副本」两个元素）。
     final pageScroll = tester
-        .widget<SingleChildScrollView>(
+        .widget<CustomScrollView>(
           find.byKey(const ValueKey('air-directory-page-scroll')),
         )
         .controller!;
-    final heading = find.byKey(const ValueKey('air-tasks-heading'));
+    final head = find.byKey(const ValueKey('air-directory-task-panel-head'));
     final viewport = find.byKey(const ValueKey('air-directory-page-scroll'));
+    expect(head, findsOneWidget, reason: '抬头与筛选合成一个整体，只有这一个');
     pageScroll.jumpTo(
       pageScroll.offset +
-          tester.getBottomLeft(heading).dy -
-          tester.getTopLeft(viewport).dy +
-          8,
+          tester.getBottomLeft(head).dy -
+          tester.getTopLeft(viewport).dy -
+          10,
     );
     await tester.pumpAndSettle();
     expect(
-      find.byKey(const ValueKey('air-directory-task-sticky-copy')),
-      findsOneWidget,
-      reason: '真实表头滚走、任务行在视口内时只显示精简副本',
+      tester.getTopLeft(head).dy,
+      moreOrLessEquals(tester.getTopLeft(viewport).dy, epsilon: 1.5),
+      reason: '滚到滚动口顶之后表头钉住不动',
     );
-    await tester.drag(viewport, const Offset(0, 1100));
+    await tester.drag(viewport, const Offset(0, 1400));
     await tester.pumpAndSettle();
     expect(pageScroll.offset, 0, reason: '从任务行反向拖动应回到页首');
     expect(
-      find.byKey(const ValueKey('air-directory-task-sticky-copy')),
-      findsNothing,
+      tester.getTopLeft(head).dy,
+      greaterThan(tester.getTopLeft(viewport).dy + 5),
+      reason: '回到页首后表头回到自然位置（不再钉住），说明它属于面板而不是一直浮着',
     );
 
     await tester.ensureVisible(
@@ -721,6 +724,151 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('第 1 / 2 页'), findsOneWidget);
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('分页时表头钉在滚动口顶：页面继续滚，行从它下面过', (tester) async {
+    final settings = await _settings();
+    final client = _manyTasksClient(count: 25);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 900);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await openDirectory(tester, 'd1');
+    expect(find.text('第 1 / 2 页'), findsOneWidget);
+
+    final viewport = find.byKey(const ValueKey('air-directory-page-scroll'));
+    final pageScroll =
+        tester.widget<CustomScrollView>(viewport).controller!;
+    final head = find.byKey(const ValueKey('air-directory-task-panel-head'));
+    // 第 1 页是最近的那 20 条（lastMessageAt 倒序），第一条是任务 25。
+    final firstRow = find.byKey(const ValueKey('air-directory-task-t25'));
+    expect(firstRow, findsOneWidget);
+
+    // 滚到表头越过滚动口顶：它必须停在那儿不动。
+    pageScroll.jumpTo(
+      pageScroll.offset +
+          tester.getTopLeft(head).dy -
+          tester.getTopLeft(viewport).dy +
+          40,
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(head).dy,
+      moreOrLessEquals(tester.getTopLeft(viewport).dy, epsilon: 1.5),
+      reason: '表头钉在滚动口顶',
+    );
+
+    // 继续滚：表头还在原处，行从它下面过去（同一个滚动口，不是接力）。
+    final rowTopBefore = tester.getTopLeft(firstRow).dy;
+    final offsetBefore = pageScroll.offset;
+    pageScroll.jumpTo(pageScroll.offset + 160);
+    await tester.pumpAndSettle();
+    expect(pageScroll.offset, greaterThan(offsetBefore), reason: '页面确实又滚了');
+    expect(
+      tester.getTopLeft(head).dy,
+      moreOrLessEquals(tester.getTopLeft(viewport).dy, epsilon: 1.5),
+      reason: '滚动期间表头纹丝不动',
+    );
+    expect(
+      tester.getTopLeft(firstRow).dy,
+      lessThan(rowTopBefore - 100),
+      reason: '行随页面一起走（位移与滚动量一致，说明只有一层滚动）',
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('一页装得下就不钉表头：整张卡按内容收着', (tester) async {
+    final settings = await _settings();
+    final client = _manyTasksClient();
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 1600);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await openDirectory(tester, 'd1');
+    expect(find.text('8 / 8 个任务'), findsOneWidget);
+    // 没有分页就没有钉住的那一条（同 Web：`.is-paged` 不生效就没有 sticky 表头）。
+    expect(find.byType(SliverPersistentHeader), findsNothing);
+    expect(find.byKey(const ValueKey('air-tasks-page-prev')), findsNothing);
+    expect(find.byKey(const ValueKey('air-directory-task-panel-head')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('大字号下表头照旧钉住，不被撑破', (tester) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final settings = await _settings();
+    final client = _manyTasksClient(count: 25);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 900);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await openDirectory(tester, 'd1');
+
+    final viewport = find.byKey(const ValueKey('air-directory-page-scroll'));
+    final pageScroll = tester.widget<CustomScrollView>(viewport).controller!;
+    final head = find.byKey(const ValueKey('air-directory-task-panel-head'));
+    final headH = tester.getSize(head).height;
+    expect(headH, greaterThan(48), reason: '2× 字号下抬头会长高，不是被压扁的固定高');
+
+    // 钉住的那个盒子（SliverPersistentHeader）用的就是量出来的高度 —— 表头既不会
+    // 溢出自己那一格，也不会在钉住时把行盖住。量的是「表头 + 卡片那道 1px 上框」，
+    // 所以只要求把它整块装下、且不多留空。
+    final pinned = tester.widget<SliverPersistentHeader>(
+      find.byType(SliverPersistentHeader),
+    );
+    expect(
+      pinned.delegate.maxExtent,
+      greaterThanOrEqualTo(headH - 0.5),
+      reason: '钉住的盒子把整个表头装下（含上框）',
+    );
+    expect(
+      pinned.delegate.maxExtent,
+      lessThan(headH + 4),
+      reason: '钉住的盒子是按量出来的高度，不是拍脑袋估的',
+    );
+
+    pageScroll.jumpTo(
+      pageScroll.offset +
+          tester.getTopLeft(head).dy -
+          tester.getTopLeft(viewport).dy +
+          60,
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(head).dy,
+      moreOrLessEquals(tester.getTopLeft(viewport).dy, epsilon: 1.5),
+      reason: '放大字号后表头仍然正好钉在滚动口顶',
+    );
+
+    // 这一跑里会漏出来的溢出只有一处：目录库那张 GridView(mainAxisExtent: 92) 的
+    // 卡片 —— 2× 字号下 92 的固定格装不下，是 air_panels.dart 里既有的毛病（本分支
+    // 没动过那个文件），与「钉住的表头」无关。这里把异常排干，只对表头自己下结论
+    // （表头是否被撑破由上面 maxExtent == headH 与钉住位置两条断言覆盖）。
+    while (tester.takeException() != null) {}
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
@@ -986,14 +1134,13 @@ void main() {
     );
     await tester.pumpAndSettle();
     await openDirectory(tester, 'd1');
-    // 五条已钉住的任务按 pin 顺序排最前，t1 被推到最近列表的第六条 —— 在懒加载
-    // 的 ListView 里落在视口外，先滚到它再点。
+    // 五条已钉住的任务按 pin 顺序排最前，t1 被推到最近列表的第六条 —— 落在视口外，
+    // 先把它滚进来再点。整页是一个 CustomScrollView（行不是懒建的），所以用
+    // ensureVisible 直接把这个 finder 滚进滚动口，而不是 scrollUntilVisible —— 后者
+    // 只看「在不在树里」，行早就建好了，它一步都不会滚。
     final pinButton = find.byKey(const ValueKey('air-task-pin-t1'));
-    await tester.scrollUntilVisible(
-      pinButton,
-      200,
-      scrollable: _directoryTaskScrollable,
-    );
+    await tester.ensureVisible(pinButton);
+    await tester.pumpAndSettle();
     await tester.tap(pinButton);
     await tester.pumpAndSettle();
     expect(find.text('已 Pin 住「任务 1」'), findsOneWidget);

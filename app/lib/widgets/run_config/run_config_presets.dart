@@ -1,6 +1,6 @@
 // 自动线路池的本机预设。与 Web 的 multicc.autoProvider.presets.v1 兼容：
-// 只存线路 id、车道、模型和挑选策略；不存 Provider 密钥、Jev 网关凭据或
-// allowCrossTrust（套用混用官方/自建线路的池子时仍须重新确认）。
+// 只存线路 id、车道、模型、挑选策略和子任务线路/模型（providerId + model，
+// 不含任何密钥），也不存 allowCrossTrust（混池默认放行，套用时按池子重算）。
 library;
 
 import 'dart:convert';
@@ -22,6 +22,8 @@ class RunConfigPreset {
     required this.maxAttempts,
     required this.sticky,
     required this.savedAt,
+    this.subagentProviderId = '',
+    this.subagentModel = '',
   });
 
   final String id;
@@ -33,6 +35,11 @@ class RunConfigPreset {
   final int maxAttempts;
   final bool sticky;
   final int savedAt;
+
+  /// 子任务线路（空 = 跟随主线路）+ 子任务模型（空 = 没设置子任务）。老预设
+  /// 没有这一段，读出来就是两个空串 —— 等价于「跟随主线路」。
+  final String subagentProviderId;
+  final String subagentModel;
 
   List<RunPoolRow> copyRows() => [
     for (final row in rows)
@@ -54,6 +61,9 @@ class RunConfigPreset {
     'tiering': tiering == RunTiering.jev ? 'price' : 'manual',
     'maxAttempts': maxAttempts,
     'sticky': sticky,
+    // 和 web 一样只在真有子任务时写这一段；只写线路 id + 模型。
+    if (subagentModel.isNotEmpty)
+      'subagent': {'providerId': subagentProviderId, 'model': subagentModel},
     'candidates': [
       for (var index = 0; index < rows.length; index++)
         {
@@ -113,6 +123,15 @@ class RunConfigPreset {
             (raw['pick'] == null && rows.any((row) => row.markedTier != null))
         ? RunPickOrder.difficulty
         : RunPickOrder.order;
+    // 老预设（web 与本 App 早先写的）没有 subagent 这一段：读不到就是「跟随
+    // 主线路」，不补默认值也不算损坏。
+    final subagent = raw['subagent'];
+    final subagentModel = subagent is Map
+        ? (subagent['model'] ?? '').toString().trim()
+        : '';
+    final subagentProviderId = subagentModel.isEmpty
+        ? ''
+        : (subagent is Map ? (subagent['providerId'] ?? '').toString().trim() : '');
     return RunConfigPreset(
       id: id,
       name: name,
@@ -123,6 +142,8 @@ class RunConfigPreset {
       maxAttempts: _int(raw['maxAttempts'], 2).clamp(2, 4),
       sticky: raw['sticky'] != false,
       savedAt: _int(raw['savedAt'], 0),
+      subagentProviderId: subagentProviderId,
+      subagentModel: subagentModel,
     );
   }
 

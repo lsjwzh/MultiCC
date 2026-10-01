@@ -150,11 +150,11 @@ class _AirTasksViewState extends State<AirTasksView>
   /// 在第 7 页，看到的往往是空的。
   int _tasksPage = 1;
   final _taskPageScroll = ScrollController();
-  final _taskViewportKey = GlobalKey();
-  final _taskHeadingKey = GlobalKey();
-  final _taskListKey = GlobalKey();
-  bool _showTaskHeadingCopy = false;
-  bool _taskHeadingCheckQueued = false;
+
+  /// 分页时被钉住的那个表头。只为一件事：换页之后把表头带回视野（同 Web 的
+  /// `MultiCCAirTaskPager.go()`）—— 人是在页尾点「下一页」的，不回滚就只能看到
+  /// 新页的尾巴。滚动口本身从 [_taskPageScroll] 的 position 上取，不用另挂 key。
+  final _taskHeadKey = GlobalKey();
 
   /// 打开 Air 就落在控制台（Web 那边裸 `/air` 也落这一页）。第一眼要看到的是
   /// 「有什么在跑、有什么在等我」，而不是某一个目录里的对话。
@@ -175,7 +175,6 @@ class _AirTasksViewState extends State<AirTasksView>
   @override
   void initState() {
     super.initState();
-    _taskPageScroll.addListener(_scheduleTaskHeadingCheck);
     WidgetsBinding.instance.addObserver(this);
     unawaited(_loadStore());
     _ops.start();
@@ -192,50 +191,36 @@ class _AirTasksViewState extends State<AirTasksView>
     if (_foreground) _refresh();
   }
 
-  @override
-  void didChangeMetrics() => _scheduleTaskHeadingCheck();
-
-  void _scheduleTaskHeadingCheck() {
-    if (_taskHeadingCheckQueued) return;
-    _taskHeadingCheckQueued = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _taskHeadingCheckQueued = false;
-      if (!mounted) return;
-      final viewport =
-          _taskViewportKey.currentContext?.findRenderObject() as RenderBox?;
-      final heading =
-          _taskHeadingKey.currentContext?.findRenderObject() as RenderBox?;
-      final list =
-          _taskListKey.currentContext?.findRenderObject() as RenderBox?;
-      var visible = false;
-      if (_mode == _AirMode.tasks &&
-          _dirMode == _DirectoryMode.chat &&
-          viewport?.hasSize == true &&
-          heading?.hasSize == true &&
-          list?.hasSize == true) {
-        final top = viewport!.localToGlobal(Offset.zero).dy;
-        final bottom = top + viewport.size.height;
-        final headingBottom =
-            heading!.localToGlobal(Offset.zero).dy + heading.size.height;
-        final listTop = list!.localToGlobal(Offset.zero).dy;
-        final listBottom = listTop + list.size.height;
-        visible = headingBottom <= top && listBottom > top && listTop < bottom;
-      }
-      if (_showTaskHeadingCopy != visible) {
-        setState(() => _showTaskHeadingCopy = visible);
-      }
-    });
-  }
-
+  /// 换页之后把表头带回视野（同 Web `MultiCCAirTaskPager.go()` 里那句
+  /// `empty.scrollTop += heading.top - empty.top`）。
+  ///
+  /// 只在表头**还在滚动口下面**时才滚：它已经钉在顶上（甚至更上面）时位移是负的，
+  /// 再滚一次会把人往回转，那是倒退不是复位。
   void _changeTaskPage(int value) {
     setState(() => _tasksPage = value);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final heading = _taskHeadingKey.currentContext;
-      if (heading != null) {
-        Scrollable.ensureVisible(heading, duration: Duration.zero);
+      if (!_taskPageScroll.hasClients) return;
+      final viewport = _taskPageScroll.position.context.storageContext
+          .findRenderObject() as RenderBox?;
+      final head =
+          _taskHeadKey.currentContext?.findRenderObject() as RenderBox?;
+      if (viewport == null ||
+          head == null ||
+          !viewport.hasSize ||
+          !head.hasSize) {
+        return;
       }
-      _scheduleTaskHeadingCheck();
+      final delta = head.localToGlobal(Offset.zero).dy -
+          viewport.localToGlobal(Offset.zero).dy;
+      if (delta <= 0.5) return;
+      final position = _taskPageScroll.position;
+      _taskPageScroll.jumpTo(
+        (position.pixels + delta).clamp(
+          position.minScrollExtent,
+          position.maxScrollExtent,
+        ),
+      );
     });
   }
 
@@ -2112,7 +2097,12 @@ class _AirTasksViewState extends State<AirTasksView>
   }
 
   /// 目录首页（Chat 模式）只保留一层滚动：统计卡、真实任务表头、当前页和代码卡
-  /// 连续排列。真实表头离屏时才显示只读的精简副本，反向手势可直接回到页首。
+  /// 连续排列，反向手势可直接回到页首。
+  ///
+  /// 分页（超过一页）时表头**钉住**：抬头 + 筛选是同一个 sliver（
+  /// [AirDirectoryTaskPanelHead]），滚到滚动口顶就停在那一行，行继续从它下面过，
+  /// 面板走完它自己撒手 —— 同 Web 的 `position: sticky`，没有第二个滚动容器，也就
+  /// 没有「现在该谁滚」这份要维护的接力状态。不分页时整张卡按内容自然高度。
   Widget _buildTasks(
     AirSnapshot? data,
     AirDirectory? directory,
@@ -2131,148 +2121,154 @@ class _AirTasksViewState extends State<AirTasksView>
         ? null
         : directory.visibleWorktreeLifecycle;
     final pageCount = _pageCountFor(tasks.length);
-    _scheduleTaskHeadingCheck();
-    return Stack(
-      key: _taskViewportKey,
-      children: [
-        RefreshIndicator(
-          onRefresh: _refresh,
-          child: SingleChildScrollView(
-            key: const ValueKey('air-directory-page-scroll'),
-            controller: _taskPageScroll,
-            physics: const AlwaysScrollableScrollPhysics(),
-            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                AirDirectoryStats(
-                  tasks: all,
-                  worktreeCount: directory?.worktreeCount ?? 0,
-                  // 统计卡就是一颗快速筛选键：点它 = 按这个状态筛清单。点完回到
-                  // 第 1 页 —— 换了筛选条件还停在旧页码，看到的往往是空的。
-                  onFilter: (filter) => setState(() {
-                    _directorySearch.reset();
-                    _tasksPage = 1;
-                    _taskStatus = filter;
-                    _taskQuery = '';
-                    _taskSearch.clear();
-                  }),
-                ),
-                const SizedBox(height: 18),
-                if (worktrees != null)
-                  AirWorkspaceCard(
-                    lifecycle: worktrees,
-                    pushState: _directoryPushState,
-                    idleMs: data?.worktreePolicy.idleMs ?? 0,
-                    busy: _reclaiming,
-                    onReclaim: () => _reclaimWorktrees(directory!),
-                  ),
-                if (directory != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Text(
-                      directory.path,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.faint,
-                        fontSize: 11.5,
-                      ),
-                    ),
-                  ),
-                const SizedBox(height: 12),
-                AirDirectoryTaskPanel(
-                  headingKey: _taskHeadingKey,
-                  listKey: _taskListKey,
-                  rows: _pageRows(tasks),
-                  filteredCount: tasks.length,
-                  totalCount: all.length,
-                  page: _tasksPage.clamp(1, pageCount),
-                  pageCount: pageCount,
-                  sort: _taskSort,
-                  searchController: _taskSearch,
-                  status: _taskStatus,
-                  fullText: _fullText,
-                  searching: _directorySearch.loading,
-                  searchFailed: _directorySearch.failed,
-                  onSort: (value) {
-                    // 换排序和换筛选是一回事：顺序变了还停在旧页码，看到的还是「中间
-                    // 那一截」，回第 1 页才说得清从头看起看的是哪一份顺序。
-                    setState(() {
+    final page = _tasksPage.clamp(1, pageCount);
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: CustomScrollView(
+        key: const ValueKey('air-directory-page-scroll'),
+        controller: _taskPageScroll,
+        physics: const AlwaysScrollableScrollPhysics(),
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+            sliver: SliverToBoxAdapter(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  AirDirectoryStats(
+                    tasks: all,
+                    worktreeCount: directory?.worktreeCount ?? 0,
+                    // 统计卡就是一颗快速筛选键：点它 = 按这个状态筛清单。点完回到
+                    // 第 1 页 —— 换了筛选条件还停在旧页码，看到的往往是空的。
+                    onFilter: (filter) => setState(() {
+                      _directorySearch.reset();
                       _tasksPage = 1;
-                      _taskSort = value;
-                    });
-                    unawaited(_store?.setTaskSort(value.name));
-                  },
-                  onSearch: _searchDirectory,
-                  onStatus: (value) => setState(() {
-                    _tasksPage = 1;
-                    _taskStatus = value;
-                  }),
-                  onScope: (value) {
-                    _fullText = value;
-                    _searchDirectory(_taskQuery);
-                  },
-                  onPage: _changeTaskPage,
-                  rowBuilder: _directoryTaskTile,
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (_showTaskHeadingCopy && tasks.isNotEmpty)
-          Positioned(
-            top: 0,
-            left: 20,
-            right: 20,
-            child: IgnorePointer(
-              child: ExcludeSemantics(
-                child: Container(
-                  key: const ValueKey('air-directory-task-sticky-copy'),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 11,
+                      _taskStatus = filter;
+                      _taskQuery = '';
+                      _taskSearch.clear();
+                    }),
                   ),
-                  decoration: BoxDecoration(
-                    color: AppColors.panel,
-                    border: Border.all(color: AppColors.line),
-                    borderRadius: const BorderRadius.vertical(
-                      bottom: Radius.circular(12),
+                  const SizedBox(height: 18),
+                  if (worktrees != null)
+                    AirWorkspaceCard(
+                      lifecycle: worktrees,
+                      pushState: _directoryPushState,
+                      idleMs: data?.worktreePolicy.idleMs ?? 0,
+                      busy: _reclaiming,
+                      onReclaim: () => _reclaimWorktrees(directory!),
                     ),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x1435577D),
-                        blurRadius: 10,
-                        offset: Offset(0, 3),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        '全部任务',
-                        style: TextStyle(
-                          color: AppColors.text,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      Text(
-                        '${tasks.length} / ${all.length} 个任务',
+                  if (directory != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        directory.path,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           color: AppColors.faint,
                           fontSize: 11.5,
                         ),
                       ),
-                    ],
-                  ),
-                ),
+                    ),
+                  const SizedBox(height: 12),
+                ],
               ),
             ),
           ),
-      ],
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+            sliver: _buildTaskPanelSliver(
+              tasks: tasks,
+              all: all,
+              pageCount: pageCount,
+              page: page,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 任务卡那一段。返回的是 **sliver**（不是 widget）：分页时表头要单独作为一个
+  /// 被钉住的 sliver 摆出去，和不分页时的整张卡不是同一种盒子。
+  Widget _buildTaskPanelSliver({
+    required List<AirTask> tasks,
+    required List<AirTask> all,
+    required int pageCount,
+    required int page,
+  }) {
+    final head = AirDirectoryTaskPanelHead(
+      key: const ValueKey('air-directory-task-panel-head'),
+      filteredCount: tasks.length,
+      totalCount: all.length,
+      sort: _taskSort,
+      searchController: _taskSearch,
+      status: _taskStatus,
+      fullText: _fullText,
+      searching: _directorySearch.loading,
+      searchFailed: _directorySearch.failed,
+      onSort: (value) {
+        // 换排序和换筛选是一回事：顺序变了还停在旧页码，看到的还是「中间那一截」，
+        // 回第 1 页才说得清从头看起看的是哪一份顺序。
+        setState(() {
+          _tasksPage = 1;
+          _taskSort = value;
+        });
+        unawaited(_store?.setTaskSort(value.name));
+      },
+      onSearch: _searchDirectory,
+      onStatus: (value) => setState(() {
+        _tasksPage = 1;
+        _taskStatus = value;
+      }),
+      onScope: (value) {
+        _fullText = value;
+        _searchDirectory(_taskQuery);
+      },
+    );
+
+    // 一页装得下：整张卡按内容自然高度，表头不钉（同 Web，`.is-paged` 不生效）。
+    if (pageCount <= 1) {
+      return SliverToBoxAdapter(
+        child: Container(
+          key: const ValueKey('air-directory-task-card'),
+          decoration: BoxDecoration(
+            color: AppColors.panel,
+            borderRadius: BorderRadius.circular(AppColors.radiusCard),
+            border: Border.all(color: AppColors.line),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              head,
+              AirDirectoryTaskPanelBody(
+                rows: _pageRows(tasks),
+                page: page,
+                pageCount: pageCount,
+                onPage: _changeTaskPage,
+                rowBuilder: _directoryTaskTile,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // 分页：表头钉住，主体至少铺满一屏（一个滚动口高 − 表头高），圆角跟着拆到
+    // 头/尾两块上（卡片不再整体裁剪 —— 钉住时表头已经跑出卡片的裁剪范围）。
+    return _PinnedTaskPanelSliver(
+      head: head,
+      headKey: _taskHeadKey,
+      bodyBuilder: (fillHeight) => AirDirectoryTaskPanelBody(
+        rows: _pageRows(tasks),
+        page: page,
+        pageCount: pageCount,
+        onPage: _changeTaskPage,
+        rowBuilder: _directoryTaskTile,
+        minHeight: fillHeight,
+      ),
     );
   }
 
@@ -2362,6 +2358,204 @@ class _AirTasksViewState extends State<AirTasksView>
     );
     if (deleted && mounted) await _refresh();
   }
+}
+
+/// 分页的任务卡：表头被钉住，主体至少铺满一屏。
+///
+/// 和 Web 是同一套形状（`.directory-task-panel.is-paged` + `position: sticky`）：
+/// 只有一个滚动口（外层 CustomScrollView），表头的包含块是这一组 sliver
+/// （[SliverMainAxisGroup]）—— 所以面板走完它自己撒手，不需要谁去「接力」，
+/// 也不存在「现在该谁滚」这份状态。
+///
+/// 表头高度必须是个确定值（[SliverPersistentHeaderDelegate] 的要求），而抬头 +
+/// 筛选是两行会随字体缩放长高的真实控件，估一个数迟早在大字号下溢出。所以这里
+/// **量**：先按未钉住的普通 sliver 摆一帧（同一棵树里的探针把那帧的高度读出来），
+/// 拿到确切高度之后再换成钉住的 [SliverPersistentHeader]。换字体大小（
+/// didChangeDependencies 里的 textScaler）和换宽度都会让量测作废重来。
+class _PinnedTaskPanelSliver extends StatefulWidget {
+  const _PinnedTaskPanelSliver({
+    required this.head,
+    required this.headKey,
+    required this.bodyBuilder,
+  });
+
+  /// 表头（抬头 + 筛选，一个整体）。
+  final Widget head;
+
+  /// 宿主换页后用它把表头带回视野。
+  final GlobalKey headKey;
+
+  /// 主体。参数是算出来的 `minHeight`（一个滚动口高 − 表头高；表头还没量出来时
+  /// 为 null）。
+  final Widget Function(double? minHeight) bodyBuilder;
+
+  @override
+  State<_PinnedTaskPanelSliver> createState() => _PinnedTaskPanelSliverState();
+}
+
+class _PinnedTaskPanelSliverState extends State<_PinnedTaskPanelSliver> {
+  /// 表头的自然高度；null = 还没量出来。
+  double? _extent;
+
+  /// 上一次量测所用的宽度。换宽度（旋转、分屏）要按新宽度重量一遍。
+  double? _probedWidth;
+
+  final _probeKey = GlobalKey();
+
+  TextScaler? _scaler;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final scaler = MediaQuery.textScalerOf(context);
+    if (_scaler != scaler) {
+      _scaler = scaler;
+      // 重建中写字段是安全的；表头高度会随字号变，旧的那个数必须作废。
+      _extent = null;
+    }
+  }
+
+  void _scheduleMeasure(double width) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_probedWidth != width) {
+        setState(() {
+          _probedWidth = width;
+          _extent = null;
+        });
+        return;
+      }
+      final box = _probeKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) return;
+      final measured = box.size.height;
+      if (_extent == null || (measured - _extent!).abs() > 0.5) {
+        setState(() => _extent = measured);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SliverLayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.crossAxisExtent;
+        _probedWidth ??= width;
+        if (_probedWidth != width || _extent == null) _scheduleMeasure(width);
+        final extent = _extent;
+        final viewport = constraints.viewportMainAxisExtent;
+        return SliverMainAxisGroup(
+          slivers: [
+            if (extent == null)
+              // 量测帧：同一个表头先当普通 sliver 摆着（这一帧不钉住，肉眼看不出
+              // 差别 —— 页面刚建出来还没人滚），探针把它的高度读走。
+              SliverToBoxAdapter(
+                child: SizedBox(
+                  key: _probeKey,
+                  width: width,
+                  child: _PinnedCardTop(child: widget.head),
+                ),
+              )
+            else
+              SliverPersistentHeader(
+                pinned: true,
+                delegate: _TaskPanelHeadDelegate(
+                  extent: extent,
+                  child: KeyedSubtree(
+                    key: widget.headKey,
+                    child: _PinnedCardTop(child: widget.head),
+                  ),
+                ),
+              ),
+            SliverToBoxAdapter(
+              child: _PinnedCardBottom(
+                child: widget.bodyBuilder(
+                  extent == null || viewport <= extent ? null : viewport - extent,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// 钉住那段滚动时卡片被拆成两半：表头那半领上边框 + 上圆角，主体那半领下边框 +
+/// 下圆角。表头那半必须自带**不透明**底色 —— 行会从它下面穿过去，而它已经不在
+/// 卡片的裁剪范围里了。
+class _PinnedCardTop extends StatelessWidget {
+  const _PinnedCardTop({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    // 用 Container 而不是 DecoratedBox：`Container` 会把边框那 1px 让给内边距，
+    // 孩子不会被画在边框底下（和上面那张整卡的做法一致）。
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: AirDirectoryTaskPanel.topRadius,
+        border: Border(
+          top: BorderSide(color: AppColors.line),
+          left: BorderSide(color: AppColors.line),
+          right: BorderSide(color: AppColors.line),
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: child,
+    );
+  }
+}
+
+/// 主体那半：下边框 + 下圆角（同 Web 给 `#directory-task-list` / 分页条补的那两个
+/// 圆角）。
+class _PinnedCardBottom extends StatelessWidget {
+  const _PinnedCardBottom({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: AirDirectoryTaskPanel.bottomRadius,
+        border: Border(
+          bottom: BorderSide(color: AppColors.line),
+          left: BorderSide(color: AppColors.line),
+          right: BorderSide(color: AppColors.line),
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: child,
+    );
+  }
+}
+
+/// 高度量出来之后交给它的钉住表头。
+class _TaskPanelHeadDelegate extends SliverPersistentHeaderDelegate {
+  _TaskPanelHeadDelegate({required this.extent, required this.child});
+
+  final double extent;
+  final Widget child;
+
+  @override
+  double get minExtent => extent;
+
+  @override
+  double get maxExtent => extent;
+
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) => child;
+
+  @override
+  bool shouldRebuild(covariant _TaskPanelHeadDelegate oldDelegate) =>
+      oldDelegate.extent != extent || oldDelegate.child != child;
 }
 
 /// 任务头部工具条上的一枚图标按钮（Web `.task-tools button` 的图标形态）。

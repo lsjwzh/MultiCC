@@ -225,10 +225,6 @@
 
     <section id="task-layout">
       <div id="task-content">
-        <div id="directory-task-sticky-copy" class="directory-task-sticky-copy" aria-hidden="true">
-          <strong data-i18n="airDirAllTasks">全部任务</strong>
-          <span id="directory-task-sticky-count"></span>
-        </div>
         <div id="empty">
           <!-- 目录视图切换：Chat（任务与对话，默认）／ Terminal（**本目录**的终端会话）。
                终端属于每个目录，不属于侧栏：它原来是「更多与系统」里和设置、主机运维
@@ -257,33 +253,41 @@
             <nav id="directory-terminal-list" aria-label="本目录终端列表" data-i18n-aria-label="airTerminalsList"></nav>
           </section>
           <div id="directory-stats" aria-label="当前目录任务统计" data-i18n-aria-label="airDirectoryStats"></div>
-          <section class="directory-task-panel">
-            <div id="directory-task-real-heading" class="section-heading">
-              <div><span class="caption" data-i18n="airCurrentDirectory">当前目录</span><strong id="directory-task-heading" data-i18n="airDirAllTasks">全部任务</strong></div>
-              <div class="directory-task-heading-actions">
-                <div id="directory-task-sort" class="task-sort-switch" role="group" aria-label="任务排序方式" data-i18n-aria-label="airTaskSortLabel">
-                  <button type="button" data-sort="message" data-i18n="airTaskSortMessage">消息</button>
-                  <button type="button" data-sort="visit" data-i18n="airTaskSortVisit">访问</button>
+          <section id="directory-task-panel" class="directory-task-panel">
+            <!-- 抬头与筛选是**同一个** sticky 元素：整页只有 #empty 一个滚动口，
+                 表头滚到滚动口顶就钉住，行继续滚，面板走完自己撒手 —— 没有第二个
+                 滚动容器，也没有把滚动在两个容器之间来回交接的逻辑。以前这里是
+                 「真实抬头 + 一个只读的粘性副本」（#directory-task-sticky-copy），
+                 副本要 JS 量位置、要跟真实表头对时，现在不需要了。
+                 面板一旦分页（`.is-paged`），这一块就是钉住的那一条；不分页时它
+                 是普通动态高度列表的抬头，`.is-paged` 那条规则不生效。 -->
+            <div id="directory-task-panel-head" class="directory-task-panel-head">
+              <div id="directory-task-real-heading" class="section-heading">
+                <div><span class="caption" data-i18n="airCurrentDirectory">当前目录</span><strong id="directory-task-heading" data-i18n="airDirAllTasks">全部任务</strong></div>
+                <div class="directory-task-heading-actions">
+                  <div id="directory-task-sort" class="task-sort-switch" role="group" aria-label="任务排序方式" data-i18n-aria-label="airTaskSortLabel">
+                    <button type="button" data-sort="message" data-i18n="airTaskSortMessage">消息</button>
+                    <button type="button" data-sort="visit" data-i18n="airTaskSortVisit">访问</button>
+                  </div>
+                  <span id="directory-overview-count"></span>
                 </div>
-                <span id="directory-overview-count"></span>
               </div>
-            </div>
-            <!-- 筛选仍属于真实表头；上方只读的粘性副本只展示标题与数量。 -->
-            <div id="directory-task-controls" class="admin-task-controls directory-task-controls">
-              <input id="directory-task-search" type="search" placeholder="搜索任务标题" data-i18n-placeholder="airSearchTaskTitle" aria-label="搜索当前目录任务" data-i18n-aria-label="airSearchDirectoryTask">
-              <select id="directory-task-status" aria-label="按状态筛选当前目录任务" data-i18n-aria-label="airFilterDirectoryTaskStatus">
-                <option value="open" data-i18n="airStatusOpenAndPending">进行中与待处理</option>
-                <option value="running" data-i18n="airStatRunning">运行中</option>
-                <option value="waiting" data-i18n="airStatWaiting">等待回复</option>
-                <option value="error" data-i18n="airStatError">异常</option>
-                <option value="succeeded" data-i18n="airStatSucceeded">执行成功</option>
-                <option value="all" data-i18n="airStatusAllRecords">全部记录</option>
-                <option value="archived" data-i18n="airStatusArchived">已归档</option>
-              </select>
-              <select id="directory-task-scope" aria-label="搜索范围" data-i18n-aria-label="airSearchScopeLabel">
-                <option value="full" data-i18n="airSearchScopeFull">全部记录（含对话）</option>
-                <option value="board" data-i18n="airSearchScopeBoard">仅任务标题与摘要</option>
-              </select>
+              <div id="directory-task-controls" class="admin-task-controls directory-task-controls">
+                <input id="directory-task-search" type="search" placeholder="搜索任务标题" data-i18n-placeholder="airSearchTaskTitle" aria-label="搜索当前目录任务" data-i18n-aria-label="airSearchDirectoryTask">
+                <select id="directory-task-status" aria-label="按状态筛选当前目录任务" data-i18n-aria-label="airFilterDirectoryTaskStatus">
+                  <option value="open" data-i18n="airStatusOpenAndPending">进行中与待处理</option>
+                  <option value="running" data-i18n="airStatRunning">运行中</option>
+                  <option value="waiting" data-i18n="airStatWaiting">等待回复</option>
+                  <option value="error" data-i18n="airStatError">异常</option>
+                  <option value="succeeded" data-i18n="airStatSucceeded">执行成功</option>
+                  <option value="all" data-i18n="airStatusAllRecords">全部记录</option>
+                  <option value="archived" data-i18n="airStatusArchived">已归档</option>
+                </select>
+                <select id="directory-task-scope" aria-label="搜索范围" data-i18n-aria-label="airSearchScopeLabel">
+                  <option value="full" data-i18n="airSearchScopeFull">全部记录（含对话）</option>
+                  <option value="board" data-i18n="airSearchScopeBoard">仅任务标题与摘要</option>
+                </select>
+              </div>
             </div>
             <!-- 当前页至多 20 条，与页头、页尾同在 #empty 这一层滚动。 -->
             <div id="directory-task-list"></div>

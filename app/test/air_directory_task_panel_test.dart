@@ -271,4 +271,31 @@ void main() {
     expect(find.textContaining('没有匹配的任务'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('2× 字号下这张卡本身不撑破：抬头、筛选、翻页条都收得住', (tester) async {
+    // 单独摆这张卡（不掺目录库那张 GridView 的固定格），所以这里的溢出只可能来自
+    // 卡片自己 —— 表头、筛选行、翻页条都得在大字号下收得住。
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      _host(
+        rows: [for (var i = 1; i <= 20; i++) _task(i)],
+        filteredCount: 25,
+        totalCount: 25,
+        page: 1,
+        pageCount: 2,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 抬头、筛选、翻页条都还在（只是字更大）。
+    expect(find.byKey(const ValueKey('air-tasks-heading')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-tasks-count')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-tasks-page-label')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

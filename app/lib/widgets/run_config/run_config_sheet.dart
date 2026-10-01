@@ -118,7 +118,6 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
   RunTiering _tiering = RunTiering.jev;
   int _maxAttempts = 2;
   bool _sticky = true;
-  bool _allowCrossTrust = false;
   bool _autoMore = false;
   String _autoError = '';
   SessionProviderRouting? _seededRouting;
@@ -230,7 +229,6 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     _seededRouting = selection.routing;
     _maxAttempts = selection.maxAttempts;
     _sticky = selection.sticky;
-    _allowCrossTrust = selection.allowCrossTrust;
     _order = selection.routing != null
         ? RunPickOrder.difficulty
         : RunPickOrder.order;
@@ -307,6 +305,83 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
 
   List<String> _choicesFor(String provider) =>
       runModelChoices(_cli, provider, _providers);
+
+  /// 池子里同时有官方线路和用户自管线路吗 —— 相当于 web 的 selectionCrossesTrust
+  /// （trust 域有两个就跨域）。混用本来就是这个面板的常态：跨域时不该拦，只是
+  /// 服务端要知道「这是用户知情的混合池」，所以这里算出来直接上 wire。
+  bool _poolCrossesTrust() {
+    var official = false;
+    var managed = false;
+    for (final row in _rows) {
+      if (!row.sendable) continue;
+      // 池子里查不到的（OpenCode 原生前缀、目录里已删掉的线路）不计信任域 ——
+      // web 的 selectionCrossesTrust 也是这么过滤的。
+      final provider = _providerMap(row.lane, row.providerId);
+      if (provider == null) continue;
+      if (provider['isOfficial'] == true) {
+        official = true;
+      } else {
+        managed = true;
+      }
+      if (official && managed) return true;
+    }
+    return false;
+  }
+
+  // ── 自动挑选的子任务（和固定一条共用同一份 state 与控件） ────────────────
+  //
+  // 子任务挂在「主线路」上：自动挑选时主线路就是池子里排第一的那行 —— 和 web
+  // 的 subCli()/primaryProviderId() 认的是同一条。主车道不支持子任务（服务端的
+  // SUBAGENT_CLIS 一张表）就整块不画、也不上 wire，和固定一条一致。
+
+  String get _autoPrimaryLane => _rows.isEmpty ? '' : _rows.first.lane;
+
+  String get _autoPrimaryProviderId =>
+      _rows.isEmpty ? '' : _rows.first.providerId;
+
+  SessionCli? _autoSubCli() {
+    if (_rows.isEmpty) return null;
+    final cli = tryParseCli(_rows.first.lane);
+    return (cli != null && cli.supportsSubagent) ? cli : null;
+  }
+
+  /// 子任务线路候选所在的车道池 —— 就是主线路那条车道。
+  List<Map<String, dynamic>> _autoSubPool() => _poolFor(_autoPrimaryLane);
+
+  /// 下拉里认得的那条子任务线路。目录里没有的按「随主」处理 —— 和 web 一致
+  /// （给 <select> 塞一个不存在的 value，浏览器也会回落成空）。
+  String _autoSubProviderId(List<Map<String, dynamic>> pool) =>
+      pool.any((p) => p['id']?.toString() == _subProvider) ? _subProvider : '';
+
+  /// 模型候选挂在「子任务线路」上；没选线路（随主）时跟主线路的线路走。
+  List<String> _autoSubChoices(
+    SessionCli cli,
+    List<Map<String, dynamic>> pool,
+    String providerId,
+  ) => runModelChoices(
+    cli,
+    providerId.isEmpty ? _autoPrimaryProviderId : providerId,
+    pool,
+  ).where((m) => m.isNotEmpty).toList();
+
+  /// 界面上那个值折成要保存的模型：自定义手填优先，候选里没有的按「没设置」
+  /// 处理（列表里摆不出来的值不该偷偷上 wire）。
+  String _autoSubModel(List<String> choices) => _customSubModel
+      ? _subCustomCtrl.text.trim()
+      : (choices.contains(_subModel) ? _subModel : '');
+
+  /// 自动挑选的子任务设置：主车道支持才返回，模型空 = 不上 wire（跟随主线路）。
+  SessionSubagent? _collectAutoSubagent(String mainProvider) {
+    final cli = _autoSubCli();
+    if (cli == null) return null;
+    final pool = _autoSubPool();
+    final providerId = _autoSubProviderId(pool);
+    return buildSubagent(
+      subProviderId: providerId,
+      subModel: _autoSubModel(_autoSubChoices(cli, pool, providerId)),
+      mainProvider: mainProvider,
+    );
+  }
 
   // ── 固定一条：换 CLI / 线路 ────────────────────────────────────────────
 
@@ -442,11 +517,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
         modelLabel: result.firstModel.isEmpty ? '默认' : result.firstModel,
         effortLabel: effortShortNameForCli(widget.cli, widget.effort),
         providerSelection: result.selection,
-        subagent: buildSubagent(
-          subProviderId: widget.subProviderId ?? '',
-          subModel: widget.subModel ?? '',
-          mainProvider: provider,
-        ),
+        subagent: _collectAutoSubagent(provider),
         switchToCli: result.switchToCli,
       ),
     );
@@ -476,7 +547,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
         tiering: _tiering,
         maxAttempts: _maxAttempts,
         sticky: _sticky,
-        allowCrossTrust: _allowCrossTrust,
+        allowCrossTrust: _poolCrossesTrust(),
         previousRouting: _seededRouting,
       ),
     );
@@ -1030,116 +1101,146 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     );
   }
 
+  /// 子任务的「线路 + 模型」两个下拉。固定一条与自动挑选共用同一份 state 和
+  /// 同一对控件键，差别只在主线路是谁（固定一条 = 选中的车道；自动挑选 = 池子
+  /// 第一条），所以这里都当参数收。
+  ///
+  /// [providerId] 是折算后认得的子任务线路（空 = 跟随主线路），[choices] 是它
+  /// 名下的模型候选，[model] 是折算后可显示也可保存的模型值（候选里没有的按
+  /// 「不设置」处理 —— 摆不进下拉的值不该偷偷上 wire）。
+  List<Widget> _subagentFields({
+    required SessionCli cli,
+    required List<Map<String, dynamic>> pool,
+    required String providerId,
+    required String mainProviderId,
+    required List<String> choices,
+    required String model,
+  }) {
+    final labelProvider = providerId.isEmpty ? mainProviderId : providerId;
+    final out = <Widget>[
+      Row(
+        children: [
+          const Text(
+            '子任务',
+            style: TextStyle(
+              color: AppColors.text,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              key: const Key('run-subagent-provider'),
+              value: providerId,
+              isExpanded: true,
+              dropdownColor: AppColors.panel,
+              decoration: runConfigInputDecoration(),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: AppColors.text,
+                fontSize: 13,
+              ),
+              items: [
+                const DropdownMenuItem(value: '', child: Text('随主')),
+                ...pool
+                    .where((p) => !(cli.isCodexFamily && p['isOfficial'] == true))
+                    .map(
+                      (p) => DropdownMenuItem(
+                        value: p['id']?.toString() ?? '',
+                        child: ProviderOption(
+                          main:
+                              '${p['name'] ?? p['id']}'
+                              '${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
+                          detail: providerLimitDetail(p),
+                        ),
+                      ),
+                    ),
+              ],
+              onChanged: (v) => setState(() {
+                _subProvider = v ?? '';
+                _customSubModel = false;
+                _subCustomCtrl.text = '';
+                _subModel = '';
+              }),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              key: const Key('run-subagent-model'),
+              value: _customSubModel
+                  ? '__custom__'
+                  : (choices.contains(model) ? model : ''),
+              isExpanded: true,
+              dropdownColor: AppColors.panel,
+              decoration: runConfigInputDecoration(),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: AppColors.text,
+                fontSize: 13,
+              ),
+              items: [
+                const DropdownMenuItem(value: '', child: Text('不设置')),
+                ...choices.map(
+                  (m) => DropdownMenuItem(
+                    value: m,
+                    child: Text(
+                      runModelOptionLabel(cli, labelProvider, m, pool),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+                const DropdownMenuItem(
+                  value: '__custom__',
+                  child: Text('自定义…'),
+                ),
+              ],
+              onChanged: (v) => setState(() {
+                _customSubModel = v == '__custom__';
+                if (!_customSubModel) _subModel = v ?? '';
+              }),
+            ),
+          ),
+        ],
+      ),
+    ];
+    if (_customSubModel) {
+      out.add(const SizedBox(height: 6));
+      out.add(
+        TextField(
+          controller: _subCustomCtrl,
+          style: const TextStyle(
+            color: AppColors.text,
+            fontSize: 13,
+            fontFamily: 'monospace',
+          ),
+          decoration: runConfigInputDecoration(hint: '模型 ID'),
+        ),
+      );
+    }
+    return out;
+  }
+
   List<Widget> _advancedSection() {
     final out = <Widget>[];
     if (_cli.supportsSubagent) {
-      final subChoices = _choicesFor(
-        _subProvider.isEmpty ? _provider : _subProvider,
-      ).where((m) => m.isNotEmpty).toList();
-      final subValue = _customSubModel
-          ? '__custom__'
-          : (subChoices.contains(_subModel) ? _subModel : '');
-      out.add(
-        Row(
-          children: [
-            const Text(
-              '子任务',
-              style: TextStyle(
-                color: AppColors.text,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: DropdownButtonFormField<String>(
-                key: const Key('run-subagent-provider'),
-                value: _subProvider,
-                isExpanded: true,
-                dropdownColor: AppColors.panel,
-                decoration: runConfigInputDecoration(),
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppColors.text,
-                  fontSize: 13,
-                ),
-                items: [
-                  const DropdownMenuItem(value: '', child: Text('随主')),
-                  ..._providers
-                      .where(
-                        (p) => !(_cli.isCodexFamily && p['isOfficial'] == true),
-                      )
-                      .map(
-                        (p) => DropdownMenuItem(
-                          value: p['id']?.toString() ?? '',
-                          child: ProviderOption(
-                            main:
-                                '${p['name'] ?? p['id']}'
-                                '${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
-                            detail: providerLimitDetail(p),
-                          ),
-                        ),
-                      ),
-                ],
-                onChanged: (v) => setState(() {
-                  _subProvider = v ?? '';
-                  _customSubModel = false;
-                  _subCustomCtrl.text = '';
-                  _subModel = '';
-                }),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: DropdownButtonFormField<String>(
-                key: const Key('run-subagent-model'),
-                value: subValue,
-                isExpanded: true,
-                dropdownColor: AppColors.panel,
-                decoration: runConfigInputDecoration(),
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppColors.text,
-                  fontSize: 13,
-                ),
-                items: [
-                  const DropdownMenuItem(value: '', child: Text('不设置')),
-                  ...subChoices.map(
-                    (m) => DropdownMenuItem(
-                      value: m,
-                      child: Text(
-                        runModelOptionLabel(_cli, _subProvider, m, _providers),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ),
-                  const DropdownMenuItem(
-                    value: '__custom__',
-                    child: Text('自定义…'),
-                  ),
-                ],
-                onChanged: (v) => setState(() {
-                  _customSubModel = v == '__custom__';
-                  if (!_customSubModel) _subModel = v ?? '';
-                }),
-              ),
-            ),
-          ],
+      final subProviderId = _providers.any(
+        (p) => p['id']?.toString() == _subProvider,
+      )
+          ? _subProvider
+          : '';
+      out.addAll(
+        _subagentFields(
+          cli: _cli,
+          pool: _providers,
+          providerId: subProviderId,
+          mainProviderId: _provider,
+          choices: _choicesFor(
+            subProviderId.isEmpty ? _provider : subProviderId,
+          ).where((m) => m.isNotEmpty).toList(),
+          model: _subModel,
         ),
       );
-      if (_customSubModel) {
-        out.add(const SizedBox(height: 6));
-        out.add(
-          TextField(
-            controller: _subCustomCtrl,
-            style: const TextStyle(
-              color: AppColors.text,
-              fontSize: 13,
-              fontFamily: 'monospace',
-            ),
-            decoration: runConfigInputDecoration(hint: '模型 ID'),
-          ),
-        );
-      }
     }
     if (_cli.supportsAgent) {
       out.add(const SizedBox(height: 12));

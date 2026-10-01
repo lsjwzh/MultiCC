@@ -195,8 +195,10 @@ test('Auto Provider picker exposes protocol pools, ordered candidates and the pe
   assert.match(source, /autoProviderEditorApi\(\)\.mount/);
   assert.match(source, /const result = autoEditor\.read\(\)/);
   assert.match(shared, /multicc-auto-editor-move-up/);
-  assert.match(shared, /cross_trust_confirmation_required/);
-  assert.match(shared, /同一对话上下文可能在自动切换时发送给多个上游/);
+  // 混用官方与自管线路是默认允许的：编辑器里不再有跨信任确认这一步。
+  assert.doesNotMatch(shared, /cross_trust_confirmation_required/);
+  assert.doesNotMatch(shared, /multicc-auto-editor-cross-trust-confirm/);
+  assert.match(shared, /allowCrossTrust: crossesTrust/);
   assert.match(shared, /@container \(max-width:520px\)/);
   assert.equal(autoEditor.defaultSelection([
     { id: 'official', protocol: 'anthropic', isOfficial: true },

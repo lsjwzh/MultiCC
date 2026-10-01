@@ -35,7 +35,34 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       _autoAddLine(),
       _autoMoreToggle(),
       if (_autoMore) ..._autoMoreSection(),
+      // 子任务（高级）：和固定一条同一项设置、同一份 state，只是主线路换成池子
+      // 第一条。它那条车道的 CLI 不支持子任务（和固定一条同一张表）就整块不画。
+      if (_autoSubCli() != null) ...[
+        _advancedToggle(),
+        if (_advanced) ..._autoSubagentSection(),
+      ],
       const SizedBox(height: 6),
+    ];
+  }
+
+  /// 自动挑选的「子任务」：线路候选从主线路那条车道的池子里取，模型候选挂在
+  /// 选中的子任务线路上（随主时跟主线路的线路走）。留空 = 跟随主线路。
+  List<Widget> _autoSubagentSection() {
+    final cli = _autoSubCli();
+    if (cli == null) return const [];
+    final pool = _autoSubPool();
+    final providerId = _autoSubProviderId(pool);
+    final choices = _autoSubChoices(cli, pool, providerId);
+    return [
+      const SizedBox(height: 6),
+      ..._subagentFields(
+        cli: cli,
+        pool: pool,
+        providerId: providerId,
+        mainProviderId: _autoPrimaryProviderId,
+        choices: choices,
+        model: _autoSubModel(choices),
+      ),
     ];
   }
 
@@ -165,6 +192,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
     if (!mounted) return;
     setState(() => _presetBusy = true);
     try {
+      final subagent = _collectAutoSubagent(_autoPrimaryProviderId);
       final preset = RunConfigPreset(
         id:
             existing?.id ??
@@ -186,6 +214,9 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         maxAttempts: result.selection!.maxAttempts,
         sticky: _sticky,
         savedAt: DateTime.now().millisecondsSinceEpoch,
+        // 子任务线路 id + 模型跟池子一起存（不含任何密钥）；留空 = 跟随主线路。
+        subagentProviderId: subagent?.providerId ?? '',
+        subagentModel: subagent?.model ?? '',
       );
       final saved = await _presetStore.save(preset);
       if (mounted) setState(() => _presets = saved);
@@ -291,10 +322,24 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         _tiering = preset.tiering;
         _maxAttempts = preset.maxAttempts;
         _sticky = preset.sticky;
-        _allowCrossTrust = false;
+        _subProvider = preset.subagentProviderId;
+        _subModel = preset.subagentModel;
+        _customSubModel = false;
+        _subCustomCtrl.text = preset.subagentModel;
+        // 预设里那条子任务模型的候选可能还没取回来（池子是异步的）：取不到就
+        // 先按「自定义」摆出来，等价于 web 的 renderSub(true) 重播一次种子。
+        final subCli = _autoSubCli();
+        if (subCli != null) {
+          final pool = _autoSubPool();
+          final providerId = _autoSubProviderId(pool);
+          if (_subModel.isNotEmpty &&
+              !_autoSubChoices(subCli, pool, providerId).contains(_subModel)) {
+            _customSubModel = true;
+          }
+        }
         _autoError = '';
       });
-      _presetMessage('已套用草稿；检查线路后点击底部“保存”。混用官方与自建线路需重新确认。');
+      _presetMessage('已套用草稿；检查线路后点击底部“保存”。');
     } finally {
       if (mounted) setState(() => _presetBusy = false);
     }
@@ -842,20 +887,6 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
           style: TextStyle(color: AppColors.text, fontSize: 13),
         ),
         onChanged: (value) => setState(() => _sticky = value),
-      ),
-      SwitchListTile(
-        key: const ValueKey('run-cross-trust'),
-        value: _allowCrossTrust,
-        contentPadding: EdgeInsets.zero,
-        title: const Text(
-          '允许官方与自建线路互相兜底',
-          style: TextStyle(color: AppColors.text, fontSize: 13),
-        ),
-        subtitle: const Text(
-          '混用官方登录和用户自建线路时需要确认',
-          style: TextStyle(color: AppColors.muted, fontSize: 11),
-        ),
-        onChanged: (value) => setState(() => _allowCrossTrust = value),
       ),
     ];
   }

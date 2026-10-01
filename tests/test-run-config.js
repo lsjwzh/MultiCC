@@ -272,17 +272,18 @@ test('buildAutoSelection：自动（Jev 挑）只在按难度下折成 autoModel
   assert.equal(result.value.candidates[1].model, 'glm-4.6');
 });
 
-test('buildAutoSelection：官方与自管混池要显式确认', () => {
+test('buildAutoSelection：官方与自管混池默认放行，跨信任域时带上 allowCrossTrust', () => {
   const providers = [{ id: 'official-1', isOfficial: true }, { id: 'user-1', isOfficial: false }];
   const draft = {
     pick: run.PICK_ORDER, providers,
     rows: [{ providerId: 'official-1', cli: 'codex' }, { providerId: 'user-1', cli: 'claude' }],
   };
-  assert.equal(run.buildAutoSelection(draft).code, 'cross_trust_confirmation_required');
-  const confirmed = run.buildAutoSelection({ ...draft, crossTrustConfirmed: true });
-  assert.equal(confirmed.ok, true);
-  assert.equal(confirmed.value.allowCrossTrust, true);
-  // 同一信任域不需要确认。
+  // 不再有「混用需要确认」这一步：混池直接存，客户端替用户带上 allowCrossTrust，
+  // 服务端只有在它为 true 时才放行跨信任池。
+  const mixed = run.buildAutoSelection(draft);
+  assert.equal(mixed.ok, true, mixed.error);
+  assert.equal(mixed.value.allowCrossTrust, true);
+  // 同一信任域不需要 allowCrossTrust。
   const single = run.buildAutoSelection({ pick: run.PICK_ORDER, providers, rows: [{ providerId: 'official-1', cli: 'codex' }, { providerId: 'official-1', cli: 'opencode' }] });
   assert.equal(single.ok, true);
   assert.equal(single.value.allowCrossTrust, false);

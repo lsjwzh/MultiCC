@@ -1,12 +1,17 @@
 'use strict';
 // 目录首页这一页的形状：git 与 worktree 合成一张卡、筛选常驻、清单一页一页翻、
-// 底下的新任务输入框默认折成一条细杠。
+// 底下的新任务输入框默认折成一条细杠，分页时表头钉住。
 //
 // 这四件事原来是四个各自为政的小状态：worktree 是 git 旁边另一张平级的卡（同一件
 // 事两条标题）、筛选藏在「查看全部」后面、清单要么只画最近十条要么展开成三百九十
 // 像素高的窗口、输入框在桌面永远是整张（它 sticky，桌面一样压着清单的尾巴）。现在
-// 是：一张卡上下两行、清单那张卡的高度按这一屏算（统计卡下面 → 输入框上面）、条数
-// 交给分页、输入框哪儿都先折着。
+// 是：一张卡上下两行、条数交给分页、输入框哪儿都先折着。
+//
+// 表头原来是「真实抬头 + 一个只读的粘性副本」两个元素（副本要 JS 量位置、要跟真实
+// 抬头对时）。现在是**抬头 + 筛选合成一个整体**：手机档它 `position: sticky` 钉在
+// #empty 这一个滚动口上，桌面档面板给固定高度 min(560px, 65vh)、清单自己内滚。
+// 这一份只管桌面这一档和各处几何；手机档那两个方向的 sticky 接力由
+// test-air-directory-panel-scroll-cdp.js 用真触摸钉死。
 //
 // 45 条任务是故意的：一页 20 条，45 正好是「三页、最后一页只有 5 条」，第一页与
 // 最后一页的行数必须不一样，否则「翻页真的换了内容」这件事就没被证明。
@@ -149,38 +154,53 @@ test('the directory home shares one scroll layer, shows a compact sticky heading
     assert.ok(page1.listH > 0, `清单得看得见：${JSON.stringify(page1)}`);
     assert.ok(Math.abs(page1.listBottom - page1.pagerTop) <= 1 && Math.abs(page1.pagerBottom - page1.panelBottom) <= 1,
       `清单上下都贴着邻居，吃满中间那一段：${JSON.stringify(page1)}`);
-    assert.equal(page1.scrolls, false, '清单本身不制造第二滚动口');
-    assert.ok(page1.panelH > page1.listH, '面板随当前页内容自然撑开');
+    // 桌面（≥761px）这一档是**清单自己内滚**：面板给一个固定高度
+    // min(560px, 65vh)，用户在清单里滑，页面不动。手机档相反（表头 sticky +
+    // 整页一个滚动口），那一条在 test-air-directory-panel-scroll-cdp.js 里钉。
+    assert.equal(page1.scrolls, true, '桌面清单自己内滚（固定高度，用户自己滑）');
+    assert.equal(page1.panelH, 560, '桌面面板固定高 = min(560px, 65vh)，1200x900 下取 560');
+    assert.ok(page1.panelH > page1.listH, '表头 + 分页条仍占着面板上下两头');
 
-    // 表头滚出时精简副本出现；从任务行向上滚可回页首，不被内层滚动锁住。
-    await page.evaluate(`(() => { const e=document.getElementById('empty'), h=document.getElementById('directory-task-real-heading');
-      e.scrollTop += h.getBoundingClientRect().bottom-e.getBoundingClientRect().top+8; })()`);
-    assert.ok(await page.waitFor(`document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
+    // 抬头 + 筛选合成**一个**元素（不再有「真实表头 + 只读粘性副本」）。桌面这一档
+    // 它**不** sticky：面板是固定高度、清单自己内滚，表头作为面板第一个 flex 孩子
+    // 一直在面板顶上。所以这里把 #empty 滚到表头正好落在滚动口顶 —— 不带 +40 的
+    // 过冲（过冲一下桌面档它就跟着页面滚上去了；手机档才靠过冲去证明「钉住」，
+    // 那一条在 test-air-directory-panel-scroll-cdp.js 里）。
+    await page.evaluate(`(() => { const e=document.getElementById('empty'), h=document.getElementById('directory-task-panel-head');
+      e.scrollTop += h.getBoundingClientRect().top-e.getBoundingClientRect().top; })()`);
+    assert.ok(await page.waitFor(`Math.abs(document.getElementById('directory-task-panel-head').getBoundingClientRect().top - document.getElementById('empty').getBoundingClientRect().top) <= 1`),
+      '滚到滚动口顶后表头停在滚动口顶');
+    assert.equal(await page.evaluate(`document.getElementById('directory-task-list').scrollTop`), 0,
+      '表头是被页面这一层滚出来的，不是清单内滚出来的');
     await page.evaluate(`document.getElementById('directory-mode-terminal').click()`);
-    assert.ok(await page.waitFor(`!document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
+    assert.ok(await page.waitFor(`document.getElementById('directory-task-panel').offsetParent===null`));
     await page.evaluate(`document.getElementById('directory-mode-chat').click()`);
-    await page.evaluate(`(() => { const e=document.getElementById('empty'), h=document.getElementById('directory-task-real-heading');
-      e.scrollTop += h.getBoundingClientRect().bottom-e.getBoundingClientRect().top+8; })()`);
-    assert.ok(await page.waitFor(`document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
-    assert.equal(await page.evaluate(`document.getElementById('directory-task-sticky-count').textContent`), '45 / 45 个任务');
+    assert.ok(await page.waitFor(`document.getElementById('directory-task-panel').offsetParent!==null`));
+    await page.evaluate(`(() => { const e=document.getElementById('empty'), h=document.getElementById('directory-task-panel-head');
+      e.scrollTop += h.getBoundingClientRect().top-e.getBoundingClientRect().top; })()`);
+    assert.ok(await page.waitFor(`Math.abs(document.getElementById('directory-task-panel-head').getBoundingClientRect().top - document.getElementById('empty').getBoundingClientRect().top) <= 1`),
+      '切回 chat 后表头照旧停在滚动口顶');
+    assert.equal(await page.evaluate(`document.getElementById('directory-overview-count').textContent`), '45 / 45 个任务');
     await page.evaluate(`document.getElementById('empty').scrollTop=0`);
-    assert.ok(await page.waitFor(`!document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
+    assert.ok(await page.waitFor(`document.getElementById('directory-task-panel-head').getBoundingClientRect().top > document.getElementById('empty').getBoundingClientRect().top + 5`),
+      '回到页首表头回到自然位置（撒手）');
     assert.equal(await page.evaluate(`document.getElementById('empty').scrollTop`), 0, '从任务行可返回页首');
 
-    // 先滚一段再翻页：新一页必须从第一行读起。
+    // 先滚一段再翻页：新一页必须从表头读起（同 Web 的 `go()`：页首点在页尾，
+    // 不回滚就只能看到新页的尾巴）。
     await page.evaluate(`document.getElementById('empty').scrollTop = 200`);
     await page.evaluate(`document.getElementById('directory-task-next').click()`);
     assert.ok(await page.waitFor(`document.getElementById('directory-task-page').textContent==='第 2 / 3 页'`));
-    assert.ok(await page.waitFor(`Math.abs(document.getElementById('directory-task-real-heading').getBoundingClientRect().top - document.getElementById('empty').getBoundingClientRect().top) <= 2`));
+    assert.ok(await page.waitFor(`Math.abs(document.getElementById('directory-task-panel-head').getBoundingClientRect().top - document.getElementById('empty').getBoundingClientRect().top) <= 2`));
     const page2 = await page.evaluate(`(() => { const list=document.getElementById('directory-task-list');
       return { rows: list.querySelectorAll('.directory-task-row').length, first: list.querySelector('.directory-task-row strong').textContent,
         scrollTop: document.getElementById('empty').scrollTop,
-        headingTop: document.getElementById('directory-task-real-heading').getBoundingClientRect().top,
+        headTop: document.getElementById('directory-task-panel-head').getBoundingClientRect().top,
         viewportTop: document.getElementById('empty').getBoundingClientRect().top,
         prevOff: document.getElementById('directory-task-prev').disabled }; })()`);
     assert.equal(page2.rows, 20);
     assert.notEqual(page2.first, page1.title, '第二页是另一批任务');
-    assert.ok(Math.abs(page2.headingTop - page2.viewportTop) <= 2, '换页回到真实表头');
+    assert.ok(Math.abs(page2.headTop - page2.viewportTop) <= 2, '换页把表头带回滚动口顶');
     assert.equal(page2.prevOff, false);
     await page.evaluate(`document.getElementById('directory-task-next').click()`);
     assert.ok(await page.waitFor(`document.getElementById('directory-task-page').textContent==='第 3 / 3 页'`));
@@ -264,7 +284,7 @@ test('the directory home shares one scroll layer, shows a compact sticky heading
       }; })()`);
     assert.ok(band.panel.top >= band.statsBottom - 1, `面板从统计卡下面开始：${JSON.stringify(band)}`);
     assert.ok(band.list.h >= 200, `清单自己那一段得读得下几行：${JSON.stringify(band)}`);
-    assert.equal(band.scrolls, false, '桌面也不嵌套任务列表滚动口');
+    assert.equal(band.scrolls, true, '桌面这一档清单自己内滚（面板给了固定高度）');
     assert.equal(band.pageScrolls, true, '页级滚动覆盖所有内容');
     await page.screenshot('directory-list-1440x900.png');
 
@@ -287,14 +307,18 @@ test('the directory home shares one scroll layer, shows a compact sticky heading
     await page.screenshot('directory-bottom-1440x900.png');
     await page.evaluate(`document.getElementById('empty').scrollTop = 0`);
 
-    // 手机 390px：触摸任务行时也只滚 #empty，副本随真实表头进出视口。
+    // 手机 390px：还是只滚 #empty 这一层，表头滚到顶就钉住，清单不自己内滚。
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-    await page.evaluate(`(() => { const e=document.getElementById('empty'), h=document.getElementById('directory-task-real-heading');
-      e.scrollTop += h.getBoundingClientRect().bottom-e.getBoundingClientRect().top+8; })()`);
-    assert.ok(await page.waitFor(`document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
-    assert.equal(await page.evaluate(`document.getElementById('directory-task-list').scrollHeight > document.getElementById('directory-task-list').clientHeight`), false);
+    await page.evaluate(`(() => { const e=document.getElementById('empty'), h=document.getElementById('directory-task-panel-head');
+      e.scrollTop += h.getBoundingClientRect().top-e.getBoundingClientRect().top+40; })()`);
+    assert.ok(await page.waitFor(`Math.abs(document.getElementById('directory-task-panel-head').getBoundingClientRect().top - document.getElementById('empty').getBoundingClientRect().top) <= 1`),
+      '手机上表头钉在滚动口顶');
+    assert.equal(await page.evaluate(`document.getElementById('directory-task-list').scrollHeight > document.getElementById('directory-task-list').clientHeight`), false,
+      '手机清单没有可滚的溢出（它只是借 overflow:hidden 收自己的圆角）');
+    assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('directory-task-panel')).overflow`), 'visible',
+      '面板在手机上必须 overflow:visible —— 不然它就成了表头的滚动祖先，钉住范围变 0');
     await page.evaluate(`document.getElementById('empty').scrollTop=0`);
-    assert.ok(await page.waitFor(`!document.getElementById('directory-task-sticky-copy').classList.contains('is-visible')`));
+    assert.ok(await page.waitFor(`document.getElementById('directory-task-panel-head').getBoundingClientRect().top > document.getElementById('empty').getBoundingClientRect().top + 5`));
     assert.equal(await page.evaluate(`document.getElementById('empty').scrollTop`), 0);
 
     assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true, '这一页不该横向溢出');

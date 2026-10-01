@@ -326,6 +326,66 @@ void main() {
     expect(raw, isNot(contains('apiKey')));
   });
 
+  test('预设存子任务线路与模型（不含密钥），老预设读出来是「跟随主线路」', () async {
+    SharedPreferences.setMockInitialValues({});
+    final store = RunConfigPresetStore();
+    await store.save(
+      RunConfigPreset(
+        id: 'with-sub',
+        name: '带子任务',
+        protocol: 'anthropic',
+        rows: [
+          RunPoolRow(lane: 'claude', providerId: 'cheap'),
+          RunPoolRow(lane: 'claude', providerId: 'strong'),
+        ],
+        pickOrder: RunPickOrder.order,
+        tiering: RunTiering.jev,
+        maxAttempts: 2,
+        sticky: true,
+        savedAt: 1,
+        subagentProviderId: 'strong',
+        subagentModel: 'glm-5.2',
+      ),
+    );
+    final raw = (await SharedPreferences.getInstance()).getString(
+      runConfigPresetKey,
+    )!;
+    expect(raw, contains('"subagent"'));
+    expect(raw, contains('glm-5.2'));
+    expect(raw, isNot(contains('apiKey')));
+    final restored = (await store.load()).single;
+    expect(restored.subagentProviderId, 'strong');
+    expect(restored.subagentModel, 'glm-5.2');
+
+    // 老预设（本 App 早先与 web 早先写的）没有 subagent 这一段。
+    SharedPreferences.setMockInitialValues({
+      runConfigPresetKey: jsonEncode([
+        {
+          'id': 'legacy',
+          'name': '老预设',
+          'protocol': 'anthropic',
+          'pick': 'order',
+          'tiering': 'price',
+          'maxAttempts': 2,
+          'sticky': true,
+          'savedAt': 1,
+          'candidates': [
+            {'providerId': 'cheap', 'cli': 'claude', 'model': null, 'priority': 1},
+            {
+              'providerId': 'strong',
+              'cli': 'claude',
+              'model': null,
+              'priority': 2,
+            },
+          ],
+        },
+      ]),
+    });
+    final legacy = (await RunConfigPresetStore().load()).single;
+    expect(legacy.subagentProviderId, '');
+    expect(legacy.subagentModel, '');
+  });
+
   testWidgets('按顺序的池子：行、模型下拉、更多里的策略，保存原样写回', (tester) async {
     final out = _Captured();
     await _open(
@@ -376,6 +436,170 @@ void main() {
     // 面板交回的第一条就是这一轮真跑的那条。
     expect(out.value?.provider, 'cheap');
     expect(out.value?.model, 'glm-4.5-flash');
+  });
+
+  // ── 混池 + 子任务 ───────────────────────────────────────────────────────
+
+  const mixedProviders = <Map<String, dynamic>>[
+    {
+      'id': 'official-line',
+      'name': '官方',
+      'protocol': 'anthropic',
+      'isOfficial': true,
+      'modelOptions': ['claude-opus-5'],
+    },
+    {
+      'id': 'my-line',
+      'name': '自建',
+      'protocol': 'anthropic',
+      'modelOptions': ['glm-5.2'],
+    },
+  ];
+
+  const mixedPool = SessionProviderSelection(
+    protocol: 'anthropic',
+    candidates: [
+      SessionProviderCandidate(
+        providerId: 'official-line',
+        priority: 1,
+        cli: 'claude',
+      ),
+      SessionProviderCandidate(providerId: 'my-line', priority: 2, cli: 'claude'),
+    ],
+    maxAttempts: 2,
+    sticky: true,
+  );
+
+  testWidgets('官方与自管的混池默认放行：没有跨信任开关，wire 上带 allowCrossTrust', (
+    tester,
+  ) async {
+    final out = _Captured();
+    await _open(
+      tester,
+      const RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: mixedProviders,
+        provider: 'my-line',
+        model: '',
+        effort: 'medium',
+        providerSelection: mixedPool,
+      ),
+      out,
+    );
+
+    // 面板上不该再有这门开关（连「更多」里也没有）。
+    expect(find.byKey(const Key('run-cross-trust')), findsNothing);
+    expect(find.textContaining('跨信任'), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('run-auto-more-toggle')));
+    await tester.tap(find.byKey(const Key('run-auto-more-toggle')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('run-cross-trust')), findsNothing);
+
+    await _save(tester);
+    expect(out.value?.providerSelection?.allowCrossTrust, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('只有自管线路的池子不标 allowCrossTrust', (tester) async {
+    final out = _Captured();
+    await _open(
+      tester,
+      const RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: pool,
+      ),
+      out,
+    );
+    await _save(tester);
+    expect(out.value?.providerSelection?.allowCrossTrust, isFalse);
+  });
+
+  testWidgets('自动挑选：子任务线路与模型和固定一条同一项设置，一起交回去', (
+    tester,
+  ) async {
+    final out = _Captured();
+    await _open(
+      tester,
+      const RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: pool,
+      ),
+      out,
+    );
+
+    // 子任务在「高级」里，默认折着 —— 和固定一条是同一条设置。
+    expect(find.byKey(const Key('run-subagent-provider')), findsNothing);
+    final advanced = find.byKey(const ValueKey('run-advanced-toggle'));
+    await tester.ensureVisible(advanced);
+    await tester.tap(advanced);
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('主力线').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('run-subagent-model')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-model')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('glm-5.2').last);
+    await tester.pumpAndSettle();
+
+    await _save(tester);
+    expect(out.value?.subagent?.providerId, 'strong');
+    expect(out.value?.subagent?.model, 'glm-5.2');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('自动挑选：主车道不支持子任务时，「高级：子任务」整块不出现', (tester) async {
+    final out = _Captured();
+    await _open(
+      tester,
+      const RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: [],
+        provider: '',
+        model: '',
+        effort: 'medium',
+        // 池子排第一的那行是 gemini —— 它不在子任务 CLI 表里（只有 claude / codex 两家）。
+        providerSelection: SessionProviderSelection(
+          protocol: 'anthropic',
+          candidates: [
+            SessionProviderCandidate(
+              providerId: 'gem-line',
+              priority: 1,
+              cli: 'gemini',
+            ),
+            SessionProviderCandidate(
+              providerId: 'other-line',
+              priority: 2,
+              cli: 'gemini',
+            ),
+          ],
+          maxAttempts: 2,
+          sticky: true,
+        ),
+      ),
+      out,
+    );
+
+    expect(
+      find.byKey(const Key('run-pool-row-gemini:gem-line')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('run-advanced-toggle')), findsNothing);
+    expect(find.byKey(const Key('run-subagent-provider')), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('按难度：Jev 就绪状态 + 档位来源，两档都写得出', (tester) async {
@@ -891,6 +1115,99 @@ void main() {
     expect(out.value, isNull);
     await _save(tester);
     expect(out.value?.providerSelection?.candidates.first.providerId, 'cheap');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('预设带上子任务：存下来再套用，子任务线路与模型回到面板', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/providers') {
+        return _json(200, {'providers': poolProviders});
+      }
+      return _json(200, {'ok': true});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: pool,
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claude: true},
+      ),
+      out,
+    );
+
+    // 先挂一条子任务线路 + 模型。
+    final advanced = find.byKey(const ValueKey('run-advanced-toggle'));
+    await tester.ensureVisible(advanced);
+    await tester.tap(advanced);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('主力线').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('run-subagent-model')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-model')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('glm-5.2').last);
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(const Key('run-preset-save')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-preset-save')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('run-preset-name')), '带子任务');
+    await tester.tap(find.byKey(const Key('run-preset-name-save')));
+    await tester.pumpAndSettle();
+    final raw = (await SharedPreferences.getInstance()).getString(
+      runConfigPresetKey,
+    )!;
+    expect(raw, contains('"subagent"'));
+    expect(raw, contains('"providerId":"strong"'));
+
+    // 把子任务改回「随主」，再套用预设 —— 设置要跟着回来。
+    await tester.ensureVisible(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('随主').last);
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('run-subagent-provider')),
+        matching: find.text('主力线'),
+      ),
+      findsNothing,
+    );
+
+    await tester.ensureVisible(find.byKey(const Key('run-preset-choose')));
+    await tester.tap(find.byKey(const Key('run-preset-choose')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('带子任务'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('套用').last);
+    await tester.pumpAndSettle();
+    // 预设里的子任务线路回到面板上（下拉按钮里显示的是它的名字）。
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('run-subagent-provider')),
+        matching: find.text('主力线'),
+      ),
+      findsOneWidget,
+    );
+
+    await _save(tester);
+    expect(out.value?.subagent?.providerId, 'strong');
+    expect(out.value?.subagent?.model, 'glm-5.2');
     expect(tester.takeException(), isNull);
   });
 
