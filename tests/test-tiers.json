@@ -3202,6 +3202,11 @@
       ]
     },
     {
+      "path": "tests/test-native-session-guard.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-newcomer-onboarding.js",
       "tier": "other",
       "lane": "deterministic",

@@ -398,6 +398,10 @@ function createChatTurnEngine(deps) {
     logger, codexSessionHomeFor: providers.codexSessionHome,
     prepareCodexSessionHome: providers.prepareCodexSessionHome,
   });
+  // Same archive contract for the other resume-capable CLI lanes.
+  const nativeSessionGuard = deps.nativeSessionGuard || require('./native-session-guard').createNativeSessionGuard({ logger,
+    zcodeSessionHomeFor: id => providers.zcodeSessionHome({ id }),
+    kimiSessionHomeFor: id => providers.kimiSessionHome({ id }) });
   // Turn-admission water-level guard for OpenCode native sessions. Decision
   // only; rotation itself happens in runChatTurn via the shared
   // pendingCliHandoff machinery. See ./opencode-context-guard.js.
@@ -405,7 +409,7 @@ function createChatTurnEngine(deps) {
   // One boot-time sweep so expired archives get pruned even if no turn ever
   // archives again; delayed so it never touches startup critical path.
   const rolloutArchiveSweepTimer = setTimeout(() => {
-    try { codexRolloutGuard.sweepExpiredArchives({ force: true }); } catch (_) {}
+    try { codexRolloutGuard.sweepExpiredArchives({ force: true }); nativeSessionGuard.sweepExpiredArchives({ force: true }); } catch (_) {}
   }, 10000);
   rolloutArchiveSweepTimer.unref?.();
   function turnTimingsField(sessionName, turnId) {
@@ -1015,38 +1019,45 @@ function createChatTurnEngine(deps) {
       ? existingCs.chatTurnCount
       : (initialHistory = loadChatHistory(sessionName)).filter(message => message.role === 'assistant').length;
     const turnCli = (existingCs && existingCs.cli) || persisted.cli || 'claude';
-    // Pre-resume rollout size guard (codex only): an oversized rollout makes
-    // `codex exec resume` hang internally before its first upstream request.
-    // Archiving it here and clearing cliSessionId turns THIS turn into a fresh
-    // thread; MultiCC context layers are recomposed below by composeMessage.
-    if (turnCli === 'codex' && persisted.cliSessionId) {
+    // Pre-resume rollout size guard (codex lanes): oversized rollouts hang
+    // `codex exec resume`, and codex-exp's app-server re-scans them during
+    // startup state-DB backfill. Archiving + clearing cliSessionId makes THIS
+    // turn a fresh thread; context layers are recomposed by composeMessage.
+    if ((turnCli === 'codex' || turnCli === 'codex-exp') && persisted.cliSessionId) {
       const guardResult = codexRolloutGuard.enforce(persisted);
       if (guardResult.action === 'blocked') {
-        logger.error('codex_rollout_guard_blocked', {
-          sessionId: sessionName, code: guardResult.code,
-        });
-        chatBroadcast(sessionName, {
-          type: 'error', code: guardResult.code,
-          error: 'Codex 原生会话历史无法唯一定位；为避免恢复到错误上下文，本轮已阻止。请检查重复的 rollout 文件。',
-        });
+        logger.error('codex_rollout_guard_blocked', { sessionId: sessionName, code: guardResult.code });
+        chatBroadcast(sessionName, { type: 'error', code: guardResult.code,
+          error: 'Codex 原生会话历史无法唯一定位；为避免恢复到错误上下文，本轮已阻止。请检查重复的 rollout 文件。' });
         return { blocked: true, code: guardResult.code };
       }
       if (guardResult.action === 'archived') {
         persisted.cliSessionId = null;
         savePersistedSessionsBestEffort();
-        logger.warn('codex_rollout_archived', {
-          sessionId: sessionName,
-          archivedCliSessionId: guardResult.cliSessionId,
-          maxBytes: guardResult.maxBytes,
-          archived: guardResult.archived.map(item => ({ file: item.file, sizeBytes: item.sizeBytes, archivedTo: item.archivedTo })),
-        });
+        logger.warn('codex_rollout_archived', { sessionId: sessionName,
+          archivedCliSessionId: guardResult.cliSessionId, maxBytes: guardResult.maxBytes,
+          archived: guardResult.archived.map(item => ({ file: item.file, sizeBytes: item.sizeBytes, archivedTo: item.archivedTo })) });
         appendEvent(persisted.dirId, 'codex_rollout_archived',
           `codex rollout 超过 ${(guardResult.maxBytes / 1048576).toFixed(0)}MB 已归档，本轮将重建上下文`, sessionName);
-        chatBroadcast(sessionName, {
-          type: 'system',
-          subtype: 'rollout_archived',
-          message: `codex 原生会话历史过大（rollout > ${Math.round(guardResult.maxBytes / 1048576)}MB），已归档并重建上下文；旧历史文件保留在归档目录，未删除。`,
-        });
+        chatBroadcast(sessionName, { type: 'system', subtype: 'rollout_archived',
+          message: `codex 原生会话历史过大（rollout > ${Math.round(guardResult.maxBytes / 1048576)}MB），已归档并重建上下文；旧历史文件保留在归档目录，未删除。` });
+      }
+    }
+    // Same archive-don't-delete size guard for the other resume-capable lanes
+    // (zcode/kimi/codebuddy/qoder/dsh) — see ./native-session-guard.js.
+    if (nativeSessionGuard.handles(turnCli) && persisted.cliSessionId) {
+      const nativeResult = nativeSessionGuard.enforce(persisted);
+      if (nativeResult.action === 'archived') {
+        persisted.cliSessionId = null;
+        persisted._streamSessionId = null;
+        savePersistedSessionsBestEffort();
+        logger.warn('native_session_archived', { sessionId: sessionName, cli: turnCli,
+          archivedCliSessionId: nativeResult.cliSessionId, maxBytes: nativeResult.maxBytes,
+          archived: nativeResult.archived.map(item => ({ file: item.file, sizeBytes: item.sizeBytes, archivedTo: item.archivedTo })) });
+        appendEvent(persisted.dirId, 'native_session_archived',
+          `${turnCli} 原生会话历史超过 ${Math.round(nativeResult.maxBytes / 1048576)}MB 已归档，本轮将重建上下文`, sessionName);
+        chatBroadcast(sessionName, { type: 'system', subtype: 'rollout_archived',
+          message: `${turnCli} 原生会话历史过大（>${Math.round(nativeResult.maxBytes / 1048576)}MB），已归档并重建上下文；旧历史文件保留在归档目录，未删除。` });
       }
     }
     // Pre-turn water-level guard (opencode only): when the CURRENT native
@@ -1064,38 +1075,24 @@ function createChatTurnEngine(deps) {
         });
         checkpoint.reason = 'auto_native_context_rotate';
         persisted.pendingCliHandoff = {
-          id: `checkpoint_${crypto.randomBytes(8).toString('hex')}`,
-          fromCli: 'opencode',
-          toCli: 'opencode',
-          createdAt: checkpoint.createdAt,
-          status: 'pending',
-          reason: 'auto_native_context_rotate',
-          reusedTarget: false,
-          checkpoint,
+          id: `checkpoint_${crypto.randomBytes(8).toString('hex')}`, fromCli: 'opencode', toCli: 'opencode',
+          createdAt: checkpoint.createdAt, status: 'pending',
+          reason: 'auto_native_context_rotate', reusedTarget: false, checkpoint,
         };
         const clearedNativeSessions = clearAllNativeCliStates(persisted);
         rememberActiveCliState(persisted);
         savePersistedSessionsBestEffort('runtime.opencode-context-rotate');
-        logger.warn('opencode_context_rotated', {
-          sessionId: sessionName,
-          rotatedCliSessionId: contextVerdict.cliSessionId,
-          tokensTotal: contextVerdict.tokensTotal,
-          contextLimit: contextVerdict.contextLimit,
-          ratio: contextVerdict.ratio,
-          threshold: contextVerdict.threshold,
-          clearedNativeSessions,
-        });
+        logger.warn('opencode_context_rotated', { sessionId: sessionName,
+          rotatedCliSessionId: contextVerdict.cliSessionId, tokensTotal: contextVerdict.tokensTotal,
+          contextLimit: contextVerdict.contextLimit, ratio: contextVerdict.ratio,
+          threshold: contextVerdict.threshold, clearedNativeSessions });
         appendEvent(persisted.dirId, 'opencode_context_rotated',
           `OpenCode 原生上下文水位 ${(contextVerdict.ratio * 100).toFixed(0)}%（${contextVerdict.tokensTotal}/${contextVerdict.contextLimit} tokens），已自动轮换原生会话`, sessionName);
-        chatBroadcast(sessionName, {
-          type: 'system',
-          subtype: 'native_context_rotated',
-          auto: true,
-          message: `OpenCode 原生上下文水位已达 ${(contextVerdict.ratio * 100).toFixed(0)}%，本轮自动切换到新的原生会话并附带最近上下文摘要；完整对话历史保留不变。`,
-        });
+        chatBroadcast(sessionName, { type: 'system', subtype: 'native_context_rotated', auto: true,
+          message: `OpenCode 原生上下文水位已达 ${(contextVerdict.ratio * 100).toFixed(0)}%，本轮自动切换到新的原生会话并附带最近上下文摘要；完整对话历史保留不变。` });
       }
     }
-    // Preserve legacy Claude admission without mutating duplicate deliveries.
+    // Preserve legacy Claude admission without mutating duplicate deliveries;
     // Exp and existing chat states require persisted native-history proof.
     const willAllocateClaudeNativeSession = !existingCs && turnCli === 'claude' && !persisted.cliSessionId;
     const inheritedLineage = opts.originContinue === true

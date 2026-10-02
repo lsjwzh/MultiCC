@@ -2297,6 +2297,8 @@ module.exports = {
   CODEX_SESSION_HOMES_DIR,
   ZCODE_HOMES_DIR,
   KIMI_HOMES_DIR,
+  zcodeSessionHome,
+  kimiSessionHome,
   buildKimiCodeRoute,
   WIRE_DEFAULT_MODEL,
   probeRelayModels,
