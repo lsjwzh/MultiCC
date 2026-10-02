@@ -28,8 +28,8 @@ const MIGRATION_DEBT = Object.freeze({
   // 该拆的仍是那笔 ~200 行的 vendor-quota 集群（ark/kimi/qoder fetchers +
   // in-flight/backoff 状态 + *QuotaView getters），拆完降回 <= 3000 就退休。
   'app/lib/providers/chat_provider.dart': Object.freeze({
-    ceiling: 3005,
-    byteCeiling: 121819,
+    ceiling: 3004,
+    byteCeiling: 121585,
     target: 3000,
     reason: 'voice-dictation voiceRaw passthrough crossed 3000; vendor-quota cluster split retires this',
   }),
@@ -324,9 +324,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 涨的依然是数据量：天花板压在当前高水位上，再涨必须回来改这里。
   'public/i18n-catalog.js': Object.freeze({
     // 合并前 main 的值：7714 / 489418。合并后按重新生成的真实数字抬到这一格。
-    // Shared setup, cancel and saved-password management for the two power switches.
-    maxLines: 8520,
-    maxBytes: 536314,
+    // Includes the shared Bark phone setup and management copy.
+    maxLines: 8526,
+    maxBytes: 537322,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

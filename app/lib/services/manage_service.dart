@@ -812,6 +812,13 @@ class ManageService {
         .cast<String, dynamic>();
   }
 
+  Future<Map<String, dynamic>> barkDeviceAction(Map<String, dynamic> action) async {
+    final res = await _send('POST', '/api/push/bark-devices',
+        body: jsonEncode(action), timeout: const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+  }
+
   Future<Map<String, dynamic>> testBark() async {
     final res = await http
         .post(Uri.parse(_url('/api/push/test-bark')), headers: _headers)

@@ -313,5 +313,15 @@ test('the Air push panel is native: masked Bark placeholder, exact POST bodies, 
     assert.ok(narrow.rowOverflow <= 1, `读数行不许溢出内容区（${narrow.rowOverflow}）`);
     assert.ok(narrow.actionOverflow <= 1, `按钮行不许溢出内容区（${narrow.actionOverflow}）`);
     await page.screenshot('04-push-native-mobile');
+
+    // Updated servers expose a phone list. The production page wires the new
+    // component and hides the single-address controls without a second fetch.
+    notify.barkDevices = [{ id: 'legacy', name: '原有手机', enabled: true, legacy: true }];
+    await page.navigate('/air?dir=d1&view=push');
+    assert.ok(await page.waitFor(`document.querySelector('#air-bark-phones .air-bark-phone') !== null`));
+    assert.equal(await page.evaluate(`document.getElementById('air-push-legacy-bark').hidden`), true);
+    assert.equal(await page.evaluate(`document.getElementById('air-push-test-bark').hidden`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.air-bark-devices').textContent.includes(t('barkPhonesScope'))`), true);
+
   });
 });

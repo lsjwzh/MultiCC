@@ -4,6 +4,7 @@ const { sanitizePublicText } = require('../http/public-safety');
 const { isSettledLetter } = require('../classify/vocab');
 const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
 const { BusinessPushRequestError } = require('./business');
+const { mountBarkDeviceRoutes } = require('./bark-devices');
 const { notificationCopy } = require('./notification-copy');
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
@@ -127,7 +128,7 @@ function createPushRuntime(options) {
   }
 
   function hasNotifyConsumer(sessionId) {
-    if (push.subscriptions.size > 0 || push.cfg.BARK_URL || push.cfg.WEBHOOK_URL) return true;
+    if (push.subscriptions.size > 0 || (push.hasBarkDevices ? push.hasBarkDevices() : push.cfg.BARK_URL) || push.cfg.WEBHOOK_URL) return true;
     if ((sessions.get(sessionId)?.clients?.size || 0) > 0) return true;
     const dirId = persistedSessions.get(sessionId)?.dirId;
     return !!(dirId && (workspaceClients.get(dirId)?.size || 0) > 0);
@@ -304,6 +305,7 @@ function createPushRuntime(options) {
     if (!app || typeof app.post !== 'function' || typeof app.delete !== 'function') {
       throw new TypeError('push routes require Express post/delete');
     }
+    if (push.barkDevices) mountBarkDeviceRoutes(app, push.barkDevices, route);
     app.post('/api/push/subscribe', route(async (req, res) => {
       const subscription = req.body;
       if (!subscription || !subscription.endpoint) {
@@ -378,10 +380,11 @@ function createPushRuntime(options) {
       }
     }));
     app.post('/api/push/test-bark', route(async (req, res) => {
-      if (!push.cfg.BARK_URL) return res.status(400).json({ error: 'Bark URL not configured' });
-      await push.sendBarkNotification(
+      if (!(push.hasBarkDevices ? push.hasBarkDevices() : push.cfg.BARK_URL)) return res.status(400).json({ error: 'Bark URL not configured' });
+      const result = await push.sendBarkNotification(
         'MultiCC Test', `Bark test at ${new Date(now()).toLocaleTimeString()}`, '/manage',
       );
+      if (result?.ok === false) return res.status(502).json({ error: 'bark_test_failed' });
       return res.json({ ok: true });
     }));
     app.post('/api/push/test-webhook', route(async (req, res) => {

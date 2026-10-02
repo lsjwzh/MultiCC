@@ -132,7 +132,7 @@ function createPushHealthHandler(deps) {
       subscriptions: subs,
       subscriptionCount: deps.push.subscriptions.size,
       global: globalHealthDto(deps.push.globalStats),
-      bark: channelHealthDto(!!deps.push.cfg.BARK_URL, deps.push.barkHealth),
+      bark: channelHealthDto(deps.push.hasBarkDevices ? deps.push.hasBarkDevices() : !!deps.push.cfg.BARK_URL, deps.push.barkHealth),
       webhook: channelHealthDto(!!deps.push.cfg.WEBHOOK_URL, deps.push.webhookHealth),
     });
   };
@@ -145,7 +145,8 @@ function createNotifySettingsHandler(deps) {
     res.json({
       barkUrl: bark.masked,
       barkOrigin: bark.origin,
-      hasBark: bark.configured,
+      hasBark: deps.push.hasBarkDevices ? deps.push.hasBarkDevices() : bark.configured,
+      ...(deps.push.barkDevices ? { barkDevices: deps.push.barkDevices.list() } : {}),
       webhookUrl: webhook.masked,
       webhookOrigin: webhook.origin,
       hasWebhook: webhook.configured,
