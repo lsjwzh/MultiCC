@@ -6,8 +6,9 @@ import 'package:flutter/services.dart';
 /// MultiCC is in the background.
 ///
 /// No-op on every non-Android platform: iOS forbids long-lived background
-/// sockets, so there is nothing to start there (the app relies on server-side
-/// push + seamless resume instead).
+/// sockets, so there is nothing to start there. Native APNs delivery is not yet
+/// wired; server Web Push/Bark are separate channels, not native App delivery.
+/// Resume reconnects the sockets, but cannot supply timely background alerts.
 class BackgroundKeepAlive {
   static const _channel = MethodChannel('com.multicc.multicc_app/keepalive');
 

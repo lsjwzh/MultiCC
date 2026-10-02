@@ -2528,14 +2528,13 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Send a local notification if this session is not currently visible.
+  /// iOS also presents alerts for the currently visible conversation.
   void _maybeNotify(String title, String detail) {
-    final settings = SettingsService.current;
-    if (settings?.notificationsEnabled == false) return;
-    // 会话级「任务提醒」开关（Web 页头 `#notify-btn` → public/pwa.js
-    // getTaskNotifyEnabled）：关掉只静音这一个会话，全局开关不动。
-    if (settings?.taskNotifyEnabled(sessionName) == false) return;
-    if (isInBackground || !isActive) {
+    if (NotificationService.shouldNotifySession(
+      sessionId: sessionName,
+      isActive: isActive,
+      isInBackground: isInBackground,
+    )) {
       final who = titleLabel;
       NotificationService.show(
         title: 'MultiCC · $who: $title',
