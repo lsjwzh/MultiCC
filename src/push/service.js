@@ -14,6 +14,7 @@ const fs = require('fs');
 const { createPaths } = require('../paths');
 const { atomicWriteJson } = require('../runtime-security');
 const { createBusinessPushService } = require('./business');
+const { createBarkDevices } = require('./bark-devices');
 const http = require('http');
 const https = require('https');
 const webpush = require('web-push');
@@ -142,22 +143,24 @@ async function sendPushToAll(payload) {
   });
 }
 
-// Bark push notification (iOS backup)
-function sendBarkNotification(title, body, url) {
-  if (!cfg.BARK_URL) return;
-  const barkUrl = `${cfg.BARK_URL.replace(/\/$/, '')}/${encodeURIComponent(title)}/${encodeURIComponent(body)}?url=${encodeURIComponent(url || '')}&group=multicc`;
-  barkHealth.lastSendTime = Date.now();
-  const mod = barkUrl.startsWith('https') ? https : http;
-  mod.get(barkUrl, res => {
-    barkHealth.lastSuccess = res.statusCode >= 200 && res.statusCode < 300;
-    if (!barkHealth.lastSuccess) barkHealth.lastError = `HTTP ${res.statusCode}`;
-    else barkHealth.lastError = '';
-    res.resume();
-  }).on('error', err => {
+// Legacy BARK_URL remains a virtual device until explicitly disabled/removed.
+const barkDevices = createBarkDevices({ file: PUSH_PATHS.barkDevicesFile, getLegacyUrl: () => cfg.BARK_URL });
+function hasBarkDevices() {
+  try { return barkDevices.hasEnabled(); } catch (_) { return false; }
+}
+async function sendBarkNotification(title, body, url) {
+  try {
+    if (!barkDevices.hasEnabled()) return { ok: true, accepted: 0, results: [] };
+    barkHealth.lastSendTime = Date.now();
+    const result = await barkDevices.send(title, body, url);
+    barkHealth.lastSuccess = result.ok;
+    barkHealth.lastError = result.ok ? '' : 'delivery_error';
+    return result;
+  } catch (_) {
     barkHealth.lastSuccess = false;
-    barkHealth.lastError = err.message;
-    console.error('[multicc/push] Bark send failed:', err.message);
-  });
+    barkHealth.lastError = 'storage_error';
+    return { ok: false, accepted: 0, results: [] };
+  }
 }
 
 // Generic webhook notification
@@ -196,6 +199,8 @@ module.exports = {
   healthStats,
   globalStats,
   barkHealth,
+  barkDevices,
+  hasBarkDevices,
   webhookHealth,
   businessPush,
   getHealthEntry,

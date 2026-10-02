@@ -104,3 +104,36 @@ test('payload factory errors are isolated to their subscription and counted', as
   });
   assert.deepEqual(sent, [['https://push.test/b', JSON.stringify({ title: 'ok' })]]);
 });
+
+test('production Bark service fans out to enabled phones even with no legacy env URL', async t => {
+  const http = require('node:http');
+  const received = [];
+  const server = http.createServer((req, res) => {
+    received.push(req.url);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ code: 200 }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const legacy = push.cfg.BARK_URL;
+  push.cfg.BARK_URL = '';
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const ids = [];
+  try {
+    ids.push(push.barkDevices.add({ name: 'One', url: base + '/one' }));
+    ids.push(push.barkDevices.add({ name: 'Two', url: base + '/two' }));
+    assert.equal(push.hasBarkDevices(), true);
+    let result = await push.sendBarkNotification('Ready', 'Check task', '');
+    assert.equal(result.accepted, 2);
+    assert.equal(received.length, 2);
+    push.barkDevices.update(ids[0], { enabled: false });
+    received.length = 0;
+    result = await push.sendBarkNotification('Ready', 'Check task', '');
+    assert.equal(result.accepted, 1);
+    assert.ok(received[0].startsWith('/two/'));
+    assert.equal(push.barkHealth.lastSuccess, true);
+  } finally {
+    for (const id of ids) push.barkDevices.remove(id);
+    push.cfg.BARK_URL = legacy;
+    await new Promise(resolve => server.close(resolve));
+  }
+});

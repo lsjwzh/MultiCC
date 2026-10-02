@@ -3,9 +3,10 @@ import 'package:flutter/material.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../widgets/bark_devices_card.dart';
 
 /// 推送通知通道 — 镜像网页 manage 页「推送通知」面板：查看 Bark / Webhook 配置
-/// 状态、编辑通道 URL、发送测试通知。移动端只读 + 可改 URL（不涉及密钥）。
+/// 状态、管理接收提醒的手机、发送测试通知。设备地址只写入，不回显密钥。
 class PushSettingsScreen extends StatefulWidget {
   final SettingsService settings;
   const PushSettingsScreen({super.key, required this.settings});
@@ -159,17 +160,23 @@ class _PushSettingsScreenState extends State<PushSettingsScreen> {
                   child: ListView(
                     padding: const EdgeInsets.all(12),
                     children: [
-                      _healthCard(),
-                      const SizedBox(height: 12),
-                      _channelCard(
-                        title: 'Bark',
-                        hint: 'iOS Bark App 推送。填 Bark 的完整 URL（含 key）。',
-                        controller: _barkCtrl,
-                        status: _barkStatus,
-                        onSave: _saveBark,
-                        onTest: _testBark,
-                        configured: _cfg?['hasBark'] == true,
-                      ),
+                      if (_cfg?['barkDevices'] is List)
+                        BarkDevicesCard(
+                          service: _manage,
+                          devices: (_cfg!['barkDevices'] as List)
+                              .map((d) => (d as Map).cast<String, dynamic>())
+                              .toList(),
+                        )
+                      else
+                        _channelCard(
+                          title: 'Bark',
+                          hint: 'iOS Bark App 推送。填 Bark 的完整 URL（含 key）。',
+                          controller: _barkCtrl,
+                          status: _barkStatus,
+                          onSave: _saveBark,
+                          onTest: _testBark,
+                          configured: _cfg?['hasBark'] == true,
+                        ),
                       const SizedBox(height: 12),
                       _channelCard(
                         title: 'Webhook',
@@ -180,6 +187,8 @@ class _PushSettingsScreenState extends State<PushSettingsScreen> {
                         onTest: _testWebhook,
                         configured: _cfg?['hasWebhook'] == true,
                       ),
+                      const SizedBox(height: 12),
+                      _healthCard(),
                       const SizedBox(height: 16),
                       SizedBox(
                         width: double.infinity,

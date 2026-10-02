@@ -206,6 +206,15 @@
       // （表单里得有个「该填成什么样」的样子）。
       if (bark) bark.placeholder = cfg.hasBark ? (cfg.barkUrl || t('airPushBarkConfigured')) : t('airPushBarkPlaceholder');
       if (webhook) webhook.value = cfg.webhookUrl || '';
+      const multi = Array.isArray(cfg.barkDevices) && root.MultiCCBarkDevices;
+      for (const id of ['air-push-legacy-bark', 'air-push-legacy-bark-hint', 'air-push-test-bark']) {
+        if (el(id)) el(id).hidden = !!multi;
+      }
+      const phones = el('air-bark-phones');
+      if (multi && phones) root.MultiCCBarkDevices.render(phones, {
+        api: context.api, t, devices: cfg.barkDevices, refreshHealth: loadHealth,
+      });
+
     } catch (error) {
       if (banner) {
         banner.textContent = t('airAdminLoadFailed', { message: error.message || String(error) });
@@ -377,9 +386,11 @@
       input.onkeydown = event => { if (event.key === 'Enter') void saveNotify(); };
     }
     const barkField = make('label', null, 'air-aux-field');
+    barkField.id = 'air-push-legacy-bark';
     barkField.append(make('span', t('airPushBarkUrl')), bark);
     // 这行说明只在 Bark 那一格下面（装 App、去哪儿抄 URL），跟着输入框走。
     const hint = make('p', null, 'air-push-hint');
+    hint.id = 'air-push-legacy-bark-hint';
     const link = make('a', t('airPushBarkApp'));
     link.href = 'https://apps.apple.com/app/bark-push/id1403753865';
     link.target = '_blank';
@@ -408,7 +419,8 @@
 
   function build() {
     const page = make('div', null, 'air-push-page');
-    page.append(style(), clientCard(), healthCard(), backupCard());
+    const phones = make('div'); phones.id = 'air-bark-phones';
+    page.append(style(), phones, clientCard(), healthCard(), backupCard());
     return page;
   }
 
