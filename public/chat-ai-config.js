@@ -693,6 +693,42 @@
     });
   }
 
+  // 官方线路是「每个已登录账号一条」（<type>-official-<账号 id>）。会话里存着
+  // 的裸 <type>-official 是服务端的别名，指向默认账号 —— 列表里没有这个 id，
+  // 就把它落到 isDefaultOfficial 那一行上。一个账号都没登录时只剩一条
+  // needsLogin 占位（「选此登录」），保存它顺手拉起该厂商的登录流程。
+  function officialRow(list, appType) {
+    const rows = (list || []).filter(p => p && p.builtinOfficial && (!appType || p.appType === appType));
+    return rows.find(p => p.isDefaultOfficial) || rows[0] || null;
+  }
+
+  function pickerProviderValue(current, list, official) {
+    if (current && (list || []).some(p => p && p.id === current)) return current;
+    if (official && /^(?:claude|codex)-official$/.test(current || '')) return official.id;
+    return current || (official && official.id) || '';
+  }
+
+  function startOfficialLogin(provider, options = {}) {
+    if (!provider || provider.needsLogin !== true) return null;
+    const vendor = provider.appType === 'codex' ? 'codex' : 'claude';
+    const doc = documentOf(options);
+    const win = doc && doc.defaultView || root;
+    let api;
+    try { api = requiredApi(options); } catch (_) { return null; }
+    // 弹窗必须在用户手势里打开，否则会被拦；先开空白页，拿到地址再跳转。
+    const tab = win && typeof win.open === 'function' ? win.open('about:blank', '_blank') : null;
+    return api.json(`/api/${vendor}/accounts`, { method: 'POST', json: { label: '' } })
+      .then(data => {
+        const url = vendor === 'codex'
+          ? (data && data.loginSessionId ? 'index.html?id=' + encodeURIComponent(data.loginSessionId) : '')
+          : (data && data.oauthUrl) || '';
+        if (url && tab) tab.location.href = url;
+        else if (tab) tab.close();
+        return data;
+      })
+      .catch(error => { if (tab) tab.close(); throw error; });
+  }
+
   function showProviderPicker(current, list, options = {}) {
     const document = documentOf(options);
     const t = typeof options.translate === 'function' ? options.translate : key => key;
@@ -708,7 +744,7 @@
       const defaultOption = document.createElement('option');
       defaultOption.value = '';
       defaultOption.textContent = t('providerDefault');
-      const officialProvider = (list || []).find(p => p.builtinOfficial);
+      const officialProvider = officialRow(list);
       if (!officialProvider) select.appendChild(defaultOption);
       for (const provider of list || []) {
         const option = document.createElement('option');
@@ -716,7 +752,7 @@
         option.textContent = providerLabel(provider, true) + providerLimitLabel(provider, t, Date.now());
         select.appendChild(option);
       }
-      select.value = current || officialProvider?.id || '';
+      select.value = pickerProviderValue(current, list, officialProvider);
       body.appendChild(select);
       if (!list || !list.length) {
         const empty = document.createElement('div');
@@ -735,7 +771,12 @@
       footer.append(cancel, save);
       document.body.appendChild(overlay);
       const close = result => { overlay.remove(); resolve(result); };
-      save.onclick = () => close({ value: select.value });
+      save.onclick = () => {
+        const picked = (list || []).find(p => p && p.id === select.value);
+        const login = startOfficialLogin(picked, options);
+        if (login) login.catch(() => {});
+        close({ value: select.value });
+      };
       cancel.onclick = () => close(null);
       overlay.onclick = event => { if (event.target === overlay) close(null); };
     });
@@ -806,7 +847,7 @@
           ? 'OpenCode 原生配置（全部模型）'
           : translate(state, 'providerDefault');
       const providerAppType = isCodexCli(cli) ? 'codex' : cli;
-      const officialProvider = providersOf(state).find(p => p.builtinOfficial && p.appType === providerAppType);
+      const officialProvider = officialRow(providersOf(state), providerAppType);
       if (!officialProvider) providerSelect.appendChild(defaultProvider);
       function syncOpenCodeNativeOptions() {
         if (cli !== 'opencode') return;
@@ -837,7 +878,7 @@
         providerSelect.appendChild(option);
       }
       const configuredAuto = config.providerSelection?.mode === 'auto' ? config.providerSelection : null;
-      providerSelect.value = configuredAuto ? autoOptionValue(configuredAuto.protocol) : (config.provider || officialProvider?.id || '');
+      providerSelect.value = configuredAuto ? autoOptionValue(configuredAuto.protocol) : pickerProviderValue(config.provider, providersOf(state), officialProvider);
       const nativeFromModel = cli === 'opencode' && !config.provider && !configuredAuto
         && String(config.model || '').split('/')[0];
       if (nativeFromModel && [...providerSelect.options].some(o => o.value === OPENCODE_NATIVE_PREFIX + nativeFromModel)) {
@@ -1023,6 +1064,9 @@
         const childModel = subModelSelect.value === '__custom__'
           ? subCustomModel.value.trim()
           : subModelSelect.value;
+        const loginTarget = providersOf(state).find(p => p && p.id === providerSelect.value);
+        const login = startOfficialLogin(loginTarget, state);
+        if (login) login.catch(() => {});
         close({
           provider: primary ? primary.providerId : effectiveProvider(providerSelect.value),
           providerSelection,
@@ -1135,6 +1179,9 @@
   }
 
   return {
+    officialRow,
+    pickerProviderValue,
+    startOfficialLogin,
     desiredConfig,
     EFFORT_OPTIONS,
     CODEX_REASONING_OPTIONS,

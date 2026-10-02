@@ -74,7 +74,8 @@
     for (const key of Object.keys(windowLabel)) {
       const w = usage[key];
       if (!w || typeof w.utilization !== 'number') continue;
-      const remaining = Math.max(0, Math.round((1 - w.utilization) * 100));
+      // utilization is a 0..100 percent (see routes/claude-usage-quota.js SCALE).
+      const remaining = Math.max(0, Math.round(100 - w.utilization));
       const color = remaining <= 5 ? '#f85149' : remaining <= 20 ? '#d29922' : '#58a6ff';
       let resets = '';
       if (w.resets_at) {

@@ -2978,6 +2978,7 @@
   "pendingInputSubmit": "Submit",
   "providerOfficialClaude": "Claude Official",
   "providerOfficialCodex": "Codex Official",
+  "providerOfficialSignIn": "select to sign in",
   "sessionQueueAssessing": "Waiting for the completion verdict; the queue is paused",
   "sessionQueueHint": "Sent automatically when the current reply finishes",
   "sessionQueuePaused": "Paused: {reason}",

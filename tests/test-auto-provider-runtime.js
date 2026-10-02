@@ -211,7 +211,7 @@ test('a fresh terminal cache status is skipped even without a balance summary', 
   const { limitState } = require('../src/chat/auto-provider-policy');
   assert.deepEqual(limitState({ status: 'quota_exhausted', fetchedAt: 990_000 }, {
     now: 1_000_000, staleAfterMs: 60_000,
-  }), { state: 'exhausted', reason: 'fresh_limit_exhausted' });
+  }), { state: 'exhausted', reason: 'fresh_limit_exhausted', usedPercent: null });
 });
 
 test('a fresh rejected window summary is exhausted even below 100 percent', () => {
@@ -221,7 +221,7 @@ test('a fresh rejected window summary is exhausted even below 100 percent', () =
     summary: { kind: 'window', status: 'rejected', usedPercentage: 90 },
     summaryText: '5h 0%',
   }, { now: 1_000_000, staleAfterMs: 60_000 }), {
-    state: 'exhausted', reason: 'fresh_limit_exhausted',
+    state: 'exhausted', reason: 'fresh_limit_exhausted', usedPercent: 90,
   });
 });
 
@@ -235,10 +235,10 @@ test('an active provider cooldown is skipped and expiry permits a fresh probe', 
     },
   };
   assert.deepEqual(limitState(entry, { now: 1_000_000, staleAfterMs: 60_000 }), {
-    state: 'exhausted', reason: 'provider_cooldown_active',
+    state: 'exhausted', reason: 'provider_cooldown_active', usedPercent: null,
   });
   assert.deepEqual(limitState(entry, { now: 1_020_000, staleAfterMs: 60_000 }), {
-    state: 'stale', reason: 'provider_cooldown_expired',
+    state: 'stale', reason: 'provider_cooldown_expired', usedPercent: null,
   });
 });
 
@@ -1028,4 +1028,72 @@ test('an auto-model line is expanded, and the judged tier picks the model', asyn
   const fixedTurn = await priceTurn(fixed, '更难的活', 't3');
   assert.equal(fixedTurn.initial().providerId, 'fixed');
   assert.equal(fixed.events.at(-1).price, 20);
+});
+
+// ── Official accounts: one provider per signed-in login, steered by quota ──
+
+test('per-account usage windows feed limitState: fullest live window, reset windows ignored, 100% is exhausted', () => {
+  const { limitState } = require('../src/chat/auto-provider-policy');
+  const entry = windows => ({ status: 'ok', fetchedAt: 990_000, summary: { kind: 'claude', status: 'ok', windows } });
+  assert.deepEqual(limitState(entry([{ window: '5h', usedPercent: 40, resetMs: 2_000_000 }, { window: '7d', usedPercent: 72, resetMs: 9_000_000 }]),
+    { now: 1_000_000, staleAfterMs: 60_000 }), { state: 'available', reason: 'fresh_limit_available', usedPercent: 72 });
+  assert.equal(limitState(entry([{ window: '5h', usedPercent: 99, resetMs: 999_000 }, { window: '7d', usedPercent: 10 }]),
+    { now: 1_000_000, staleAfterMs: 60_000 }).usedPercent, 10, 'a window past its reset no longer binds');
+  assert.equal(limitState(entry([{ window: '5h', usedPercent: 100, resetMs: 2_000_000 }]),
+    { now: 1_000_000, staleAfterMs: 60_000 }).state, 'exhausted');
+  const stale = limitState(entry([{ window: '5h', usedPercent: 55 }]), { now: 990_000 + 10 * 60_000, staleAfterMs: 60_000 });
+  assert.equal(stale.state, 'stale');
+  assert.equal(stale.usedPercent, 55, 'a sweeper reading stays a steering hint after it stops being a verdict');
+  assert.equal(limitState(entry([{ window: '5h', usedPercent: 55 }]), { now: 990_000 + 31 * 60_000, staleAfterMs: 60_000 }).usedPercent, null);
+});
+
+test('chooseCandidate steers between official accounts by headroom without bouncing a sticky session', () => {
+  const { chooseCandidate } = require('../src/chat/auto-provider-policy');
+  const line = (providerId, usedPercent, index, extra = {}) => ({
+    providerId, index, priority: 0, enabled: true, trustDomain: 'official', limitState: 'available', usedPercent, ...extra,
+  });
+  // No sticky route: the account with more headroom wins over pool order.
+  assert.equal(chooseCandidate({ candidates: [line('acct-a', 70, 0), line('acct-b', 15, 1)] }).candidate.providerId, 'acct-b');
+  // Within the same 20-point band, pool order stands.
+  assert.equal(chooseCandidate({ candidates: [line('acct-a', 30, 0), line('acct-b', 25, 1)] }).candidate.providerId, 'acct-a');
+  // Sticky wins until its account nears the limit…
+  assert.equal(chooseCandidate({ candidates: [line('acct-a', 70, 0), line('acct-b', 15, 1)], stickyProviderId: 'acct-a' }).candidate.providerId, 'acct-a');
+  // …then the session leaves before the upstream starts rejecting.
+  assert.equal(chooseCandidate({ candidates: [line('acct-a', 93, 0), line('acct-b', 15, 1)], stickyProviderId: 'acct-a' }).candidate.providerId, 'acct-b');
+  // Unknown usage is never treated as headroom or pressure.
+  assert.equal(chooseCandidate({ candidates: [line('acct-a', null, 0), line('acct-b', 15, 1)] }).candidate.providerId, 'acct-a');
+  // Jev's tier verdict still comes first: quota only orders inside the preferred tier.
+  assert.equal(chooseCandidate({
+    candidates: [line('acct-a', 80, 0, { tier: 'strong' }), line('acct-b', 5, 1, { tier: 'weak' })], preferredTier: 'strong',
+  }).candidate.providerId, 'acct-a');
+  // Non-official pools keep their legacy order regardless of usage.
+  assert.equal(chooseCandidate({ candidates: [line('relay-a', 70, 0, { trustDomain: 'relay' }), line('relay-b', 5, 1, { trustDomain: 'relay' })] }).candidate.providerId, 'relay-a');
+});
+
+test('official account usage sweeper records every signed-in account under its own provider id', async () => {
+  const { createOfficialAccountUsageSweeper, claudeUsageWindows } = require('../src/quota/official-account-usage');
+  assert.deepEqual(claudeUsageWindows({ five_hour: { utilization: 42, resets_at: null }, seven_day: { utilization: null } }),
+    [{ window: '5h', label: 'Current session', usedPercent: 42, resetMs: null }]);
+  const recorded = [];
+  const A = 'aaaaaaaaaaaaaaaa', B = 'bbbbbbbbbbbbbbbb', C = 'cccccccccccccccc';
+  const sweeper = createOfficialAccountUsageSweeper({
+    accounts: {
+      listClaudeAccounts: () => [{ id: A, loggedIn: true }, { id: B, loggedIn: true }, { id: C, loggedIn: false }],
+      listCodexAccounts: () => [{ id: A, loggedIn: true }],
+    },
+    credentials: { readAccountToken: async id => ({ token: `tok-${id}` }) },
+    recorder: { recordOfficialWindows: (appType, providerId, data) => recorded.push([appType, providerId, data.windows[0].usedPercent]) },
+    readClaudeUsage: async (_fetch, token) => {
+      if (token === `tok-${B}`) throw Object.assign(new Error('rate limited'), { status: 429, retryAfterMs: 60_000 });
+      return { five_hour: { utilization: 12 } };
+    },
+    pollCodex: async () => { throw new Error('single codex account must not be polled'); },
+    logger: { warn() {} },
+    now: () => 1_000_000,
+  });
+  assert.equal(await sweeper.sweepOnce(), 1);
+  assert.deepEqual(recorded, [['claude', `claude-official-${A}`, 12]]);
+  recorded.length = 0;
+  await sweeper.sweepOnce();
+  assert.deepEqual(recorded, [['claude', `claude-official-${A}`, 12]], 'a throttled account is backed off, not hammered');
 });

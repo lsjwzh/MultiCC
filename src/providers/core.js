@@ -95,7 +95,15 @@ function enableUnifiedOfficialProviders() {
       catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
     },
     writeSelection: selection => atomicWriteJson(selectionFile, selection),
+    listAccounts: (() => {
+      const store = require('../official-accounts').createOfficialAccountStore();
+      return type => (type === 'codex' ? store.listCodexAccounts() : store.listClaudeAccounts());
+    })(),
   });
+}
+// Built-in official identities: the vendor alias and every per-account id.
+function isOfficialProviderId(appType, id) {
+  return !!officialCatalog && require('./official-catalog').isOfficialProviderId(appType, id);
 }
 function normalizeOfficialProviderId(type, id) { return officialCatalog ? officialCatalog.normalize(type, id) : id; }
 function getOfficialAccountSelection(type) { return officialCatalog ? officialCatalog.active(type) : null; }
@@ -628,6 +636,11 @@ function summarize(p, opts = {}) {
     // hostname reveals nothing about the vendor.
     builtinOfficial: p.builtinOfficial === true,
     activeAccountId: p.activeAccountId || null,
+    // Official entry with no usable login yet: pickers render it as
+    // "select to log in" and start the account login flow when it is picked.
+    needsLogin: p.needsLogin === true,
+    accountEmail: p.accountEmail || null,
+    isDefaultOfficial: p.isDefaultOfficial === true,
     quotaKind: p.quotaKind || null,
     // Advanced option: non-empty means this provider may only be used while
     // the host's current public IP exactly matches one of these addresses
@@ -665,7 +678,8 @@ function resolveAuxHttpTarget(protocol, providerId, { port, claudeOfficialViaPro
     const env = cfg.env || {};
     const hasBase = !!env.ANTHROPIC_BASE_URL;
     const hasKey = !!(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
-    const officialOAuth = providerId === 'claude-official' && claudeOfficialViaProxy;
+    const officialOAuth = (providerId === 'claude-official' || !!(cfg.officialAccount && cfg.officialAccount.id))
+      && claudeOfficialViaProxy;
     if (!(hasBase && hasKey) && !officialOAuth) {
       return { available: false, protocol: normalized, reason: 'provider has no HTTP credentials' };
     }
@@ -850,7 +864,7 @@ function createProvider({ appType, name, baseUrl, authToken, model, models, apiF
 }
 
 function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist }) {
-  if (officialCatalog && officialCatalog.normalize(appType, id) === `${appType}-official`) {
+  if (officialCatalog && (isOfficialProviderId(appType, id) || isOfficialProviderId(appType, officialCatalog.normalize(appType, id)))) {
     // Login/account identity is OAuth-managed and not editable here. Advanced
     // settings (currently: egress-IP allowlist) are the one thing an official
     // provider's editor may still submit — persisted as a minimal override
@@ -927,7 +941,7 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
 }
 
 function deleteProvider(appType, id) {
-  if (officialCatalog && officialCatalog.normalize(appType, id) === `${appType}-official`) throw new Error('官方 Provider 为内置入口，请在官方账号中管理账号');
+  if (officialCatalog && (isOfficialProviderId(appType, id) || isOfficialProviderId(appType, officialCatalog.normalize(appType, id)))) throw new Error('官方 Provider 为内置入口，请在官方账号中管理账号');
   const list = loadStore();
   const next = list.filter(p => !(p.appType === appType && p.id === id));
   if (next.length === list.length) return false;
@@ -2243,7 +2257,7 @@ function applyCodexProxyConfig(env, options) {
 }
 
 module.exports = {
-  enableUnifiedOfficialProviders, normalizeOfficialProviderId, getOfficialAccountSelection, selectOfficialAccount,
+  enableUnifiedOfficialProviders, normalizeOfficialProviderId, isOfficialProviderId, getOfficialAccountSelection, selectOfficialAccount,
   ccSwitchAvailable,
   getCcSwitchStatus,
   appTypeForCli,

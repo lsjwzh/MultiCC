@@ -42,8 +42,7 @@ String providerDisplayLabel(
     for (final provider in providers) {
       final providerId = provider['id']?.toString() ?? '';
       if (provider['builtinOfficial'] == true ||
-          providerId == 'claude-official' ||
-          providerId == 'codex-official') {
+          isOfficialProviderId(providerId)) {
         return provider['name']?.toString() ?? officialProviderLabel;
       }
     }
@@ -90,4 +89,30 @@ String autoProviderRouteLabel(String protocol, String? actualProviderName) {
       ? '待路由'
       : actualProviderName;
   return 'Auto · $protocolLabel → $actual';
+}
+
+/// 官方线路是「每个已登录账号一条」：`<pool>-official-<16 位账号 id>`；一个账号
+/// 都没登录时只剩 `<pool>-official` 这一条「选此登录」占位。
+bool isOfficialProviderId(String id, [String? poolKey]) {
+  final match = RegExp(
+    r'^(claude|codex)-official(-[a-f0-9]{16})?$',
+  ).firstMatch(id);
+  return match != null && (poolKey == null || match.group(1) == poolKey);
+}
+
+/// 该车道的默认官方线路：服务端标了 isDefaultOfficial 的那条，否则第一条官方。
+String? defaultOfficialProviderId(
+  String poolKey,
+  List<Map<String, dynamic>> providers,
+) {
+  String? first;
+  for (final p in providers) {
+    final id = p['id']?.toString() ?? '';
+    if (p['builtinOfficial'] != true || !isOfficialProviderId(id, poolKey)) {
+      continue;
+    }
+    if (p['isDefaultOfficial'] == true) return id;
+    first ??= id;
+  }
+  return first;
 }
