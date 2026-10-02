@@ -1,19 +1,38 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../i18n.dart';
+import 'settings_service.dart';
 
 class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static bool _initialized = false;
 
+  /// Both socket paths use the same preferences and visibility policy. iOS
+  /// tasks may take long enough that even the open conversation needs an alert.
+  static bool shouldNotifySession({
+    required String sessionId,
+    required bool isActive,
+    required bool isInBackground,
+  }) {
+    final settings = SettingsService.current;
+    if (settings?.notificationsEnabled == false ||
+        settings?.taskNotifyEnabled(sessionId) == false) {
+      return false;
+    }
+    return (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) ||
+        isInBackground ||
+        !isActive;
+  }
+
   /// Whether the notification permission alert may be shown. Defaults to true;
   /// set `--dart-define=SKIP_NOTIF_PROMPT=true` to suppress it (used for
   /// automated simulator runs).
-  static const bool _promptForPermission =
-      !bool.fromEnvironment('SKIP_NOTIF_PROMPT');
+  static const bool _promptForPermission = !bool.fromEnvironment(
+    'SKIP_NOTIF_PROMPT',
+  );
 
   /// 系统通知权限的**同步**缓存。
   ///
@@ -74,7 +93,9 @@ class NotificationService {
       await _plugin
           .initialize(
             settings: InitializationSettings(
-              android: const AndroidInitializationSettings('@mipmap/ic_launcher'),
+              android: const AndroidInitializationSettings(
+                '@mipmap/ic_launcher',
+              ),
               iOS: const DarwinInitializationSettings(
                 // Deliberately not requested here. The iOS authorization alert
                 // is presented before the Flutter view has drawn its first
@@ -249,6 +270,7 @@ class NotificationService {
     final now = DateTime.now();
     final last = _recent[id];
     if (last != null && now.difference(last) < _dedupWindow) return;
+    _recent.removeWhere((_, time) => now.difference(time) >= _dedupWindow);
     _recent[id] = now;
 
     final android = AndroidNotificationDetails(
@@ -263,13 +285,22 @@ class NotificationService {
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
+      presentBanner: true,
+      presentList: true,
     );
-    await _plugin.show(
-      id: id,
-      title: title,
-      body: body,
-      notificationDetails: NotificationDetails(android: android, iOS: ios),
-      payload: payload,
-    );
+    try {
+      await _plugin.show(
+        id: id,
+        title: title,
+        body: body,
+        notificationDetails: NotificationDetails(android: android, iOS: ios),
+        payload: payload,
+      );
+    } catch (_) {
+      // A notification failure must not interrupt chat event handling. Allow
+      // the other socket path to retry instead of deduplicating a failed send.
+      if (_recent[id] == now) _recent.remove(id);
+      debugPrint('MultiCC: local notification could not be displayed');
+    }
   }
 }
