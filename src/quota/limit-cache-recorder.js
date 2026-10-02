@@ -282,6 +282,24 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     });
   }
 
+  // Per-account official usage (one provider per signed-in account, see
+  // official-catalog.js). The account identity is explicit, so no session
+  // lookup: `windows` is [{window, label, usedPercent (0..100), resetMs}].
+  // Auto reads these windows to steer between accounts before one runs dry.
+  function recordOfficialWindows(appType, providerId, { windows, fetchedAt } = {}) {
+    if (!providerId || !Array.isArray(windows)) return null;
+    const at = fetchedAt || now();
+    const rows = windows.filter(w => w && Number.isFinite(Number(w.usedPercent)));
+    const text = rows.map(w => `${w.window || '?'} ${Math.round(Number(w.usedPercent))}%`).join(' · ');
+    return cache.record(appType, providerId, {
+      kind: 'claude',
+      summary: { kind: 'claude', status: 'ok', fetchedAt: at, windows: rows },
+      summaryText: compactBarText(text),
+      barText: text || null,
+      fetchedAt: at,
+    });
+  }
+
   // Live identity set (for pruning orphaned cache entries after deletion).
   function liveKeys() {
     const set = new Set();
@@ -299,6 +317,7 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     recordProviderFailure,
     recordVendor,
     recordClaude,
+    recordOfficialWindows,
     resolveByHost,
     resolveByBaseUrl,
     liveKeys,

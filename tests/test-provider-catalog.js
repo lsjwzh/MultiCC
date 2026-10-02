@@ -384,10 +384,12 @@ test('providerDisplayName keeps the official identity translatable', () => {
   assert.equal(catalog.providerDisplayName(null), '');
   assert.equal(catalog.officialProviderKind({ id: 'gpt', appType: 'codex', name: 'Responses' }), '');
 
-  // normalizeProvider 会丢掉 builtinOfficial、isOfficial 对内置记录也是 false，
-  // 所以 id 才是归一化后唯一还在的身份信号——这条断了英文界面就会漏中文。
+  // normalizeProvider 保留 builtinOfficial（选择器靠它认官方行），id 仍是兜底身份信号。
   const normalized = catalog.normalizeProvider({ ...codexBuiltin, source: 'builtin' });
-  assert.equal(normalized.builtinOfficial, undefined);
+  assert.equal(normalized.builtinOfficial, true);
+  assert.equal(catalog.officialProviderKind({ id: 'claude-official-0123456789abcdef', appType: 'claude', name: 'x' }), 'claude');
+  assert.equal(catalog.providerDisplayName({ id: 'claude-official', appType: 'claude', name: 'Claude 官方 · 选此登录', needsLogin: true }),
+    'Claude 官方 · 选此登录');
   assert.equal(catalog.providerDisplayName(normalized), 'Codex 官方');
   assert.equal(catalog.officialProviderKind(normalized), 'codex');
 });

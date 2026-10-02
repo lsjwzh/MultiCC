@@ -2978,6 +2978,7 @@
   "pendingInputSubmit": "提交",
   "providerOfficialClaude": "Claude 官方",
   "providerOfficialCodex": "Codex 官方",
+  "providerOfficialSignIn": "选此登录",
   "sessionQueueAssessing": "等待完成判定，队列已暂停",
   "sessionQueueHint": "当前回复完成后自动发送",
   "sessionQueuePaused": "已暂停：{reason}",

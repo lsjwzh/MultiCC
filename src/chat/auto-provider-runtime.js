@@ -152,6 +152,7 @@ function createAutoProviderRuntime(options = {}) {
         model: candidate.model || provider && provider.model || null,
         limitState: limit.state,
         limitReason: limit.reason,
+        usedPercent: limit.usedPercent == null ? null : limit.usedPercent,
         cli,
       });
     });

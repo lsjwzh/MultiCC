@@ -324,9 +324,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 涨的依然是数据量：天花板压在当前高水位上，再涨必须回来改这里。
   'public/i18n-catalog.js': Object.freeze({
     // 合并前 main 的值：7714 / 489418。合并后按重新生成的真实数字抬到这一格。
-    // Includes the shared Bark phone setup and management copy.
-    maxLines: 8526,
-    maxBytes: 537322,
+    // Includes the shared Bark phone setup, management copy and the official "select to sign in" label.
+    maxLines: 8528,
+    maxBytes: 537419,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

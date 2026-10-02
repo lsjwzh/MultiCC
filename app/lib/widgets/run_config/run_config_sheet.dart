@@ -172,14 +172,15 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     if (widget.cli == SessionCli.opencode && _provider.isEmpty) {
       _provider = openCodeNativeProviderForModel(widget.model, _providers);
     }
-    if (_provider.isEmpty && widget.cli.supportsProvider) {
-      for (final p in _providers) {
-        if (p['builtinOfficial'] == true &&
-            p['id'] == '${widget.cli.poolKey}-official') {
-          _provider = p['id'].toString();
-          break;
-        }
-      }
+    // 会话里存的裸 <pool>-official 是服务端指向默认账号的别名；账号登录后
+    // 列表里只有按账号拆开的几条，把别名落到默认那条上。
+    final aliasMissing =
+        _provider == '${widget.cli.poolKey}-official' &&
+        !_providers.any((p) => p['id'] == _provider);
+    if ((_provider.isEmpty || aliasMissing) && widget.cli.supportsProvider) {
+      _provider =
+          defaultOfficialProviderId(widget.cli.poolKey, _providers) ??
+          _provider;
     }
     _model = _seedModel(_provider, widget.model);
     if (_model.isEmpty) _model = _defaultModelFor(_provider);
@@ -421,12 +422,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     SessionCli cli,
     List<Map<String, dynamic>> providers,
   ) {
-    for (final p in providers) {
-      if (p['builtinOfficial'] == true &&
-          p['id'] == '${cli.poolKey}-official') {
-        return p['id'].toString();
-      }
-    }
+    final official = defaultOfficialProviderId(cli.poolKey, providers);
+    if (official != null) return official;
     return providers.isEmpty ? '' : (providers.first['id']?.toString() ?? '');
   }
 
@@ -919,10 +916,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     // 没有官方那条线路时，空串也要有自己的一行：OpenCode 是「原生配置」，
     // 其余车道就是「官方 Provider」。少了这行，_provider 为空时下拉的
     // value 找不到任何 item，DropdownButton 直接断言失败。
-    final hasOfficial = _providers.any(
-      (p) =>
-          p['builtinOfficial'] == true && p['id'] == '${_cli.poolKey}-official',
-    );
+    final hasOfficial =
+        defaultOfficialProviderId(_cli.poolKey, _providers) != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1143,7 +1138,9 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
               items: [
                 const DropdownMenuItem(value: '', child: Text('随主')),
                 ...pool
-                    .where((p) => !(cli.isCodexFamily && p['isOfficial'] == true))
+                    .where(
+                      (p) => !(cli.isCodexFamily && p['isOfficial'] == true),
+                    )
                     .map(
                       (p) => DropdownMenuItem(
                         value: p['id']?.toString() ?? '',
@@ -1224,9 +1221,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
   List<Widget> _advancedSection() {
     final out = <Widget>[];
     if (_cli.supportsSubagent) {
-      final subProviderId = _providers.any(
-        (p) => p['id']?.toString() == _subProvider,
-      )
+      final subProviderId =
+          _providers.any((p) => p['id']?.toString() == _subProvider)
           ? _subProvider
           : '';
       out.addAll(

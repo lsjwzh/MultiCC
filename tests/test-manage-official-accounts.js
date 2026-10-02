@@ -108,11 +108,11 @@ test('renderClaudeQuota renders remaining percent per window and escapes resets'
   const html = renderClaudeQuota({
     status: 'ok',
     usage: {
-      five_hour: { utilization: 0.31, resets_at: inTwoHours },
-      seven_day: { utilization: 0.985, resets_at: inTwoHours },
+      five_hour: { utilization: 31, resets_at: inTwoHours },
+      seven_day: { utilization: 98.5, resets_at: inTwoHours },
     },
   });
-  assert.match(html, /5h 剩 69%/, 'five_hour utilization 0.31 → 69% remaining');
+  assert.match(html, /5h 剩 69%/, 'five_hour utilization is a 0..100 percent: 31 → 69% remaining');
   assert.match(html, /周 剩 2%/, 'seven_day rounds to 2% remaining');
   assert.match(html, /#f85149/, 'nearly-exhausted window renders red');
   assert.match(html, /2h/, 'reset countdown is humanized');

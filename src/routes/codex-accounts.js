@@ -15,6 +15,7 @@
 //   DELETE /api/codex/accounts/:id        remove an inactive credential dir
 
 const { officialAccountIdFromProvider } = require('../official-accounts');
+const { accountProviderId } = require('../providers/official-catalog');
 
 function sanitizeLabel(value) {
   return String(value == null ? '' : value).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64);
@@ -61,11 +62,14 @@ function mountCodexAccountRoutes(app, deps) {
   });
 
   function accountDto(account) {
-    const provider = unified ? providers.getProvider('codex', 'codex-official') : providerForAccount(account.id);
+    // Unified mode: every signed-in account is its own provider
+    // (`codex-official-<accountId>`); a not-yet-signed-in account has no
+    // provider record yet, but its id is stable so the picker can match it.
+    const provider = unified ? providers.getProvider('codex', accountProviderId('codex', account.id)) : providerForAccount(account.id);
     return {
       ...account,
       active: activeId() === account.id,
-      providerId: provider ? provider.id : null,
+      providerId: unified ? accountProviderId('codex', account.id) : provider ? provider.id : null,
       providerName: provider ? provider.name : null,
       refresh: refresherStatus(account.id),
     };
@@ -106,7 +110,7 @@ function mountCodexAccountRoutes(app, deps) {
     const account = accounts.createCodexAccount({ label });
     let providerId = null;
     try {
-      const created = unified ? providers.getProvider('codex', 'codex-official') : providers.createProvider({
+      const created = unified ? { id: accountProviderId('codex', account.id) } : providers.createProvider({
         appType: 'codex',
         name: `Codex 官方 · ${label || account.id.slice(0, 6)}`,
         settingsConfig: {

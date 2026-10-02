@@ -27,6 +27,7 @@ const {
   waitForCallback,
 } = require('../claude-auth/official-oauth');
 const { officialAccountIdFromProvider } = require('../official-accounts');
+const { accountProviderId } = require('../providers/official-catalog');
 
 function sanitizeLabel(value) {
   return String(value == null ? '' : value).replace(/[ -]/g, '').trim().slice(0, 64);
@@ -72,11 +73,14 @@ function mountClaudeAccountRoutes(app, deps) {
   });
 
   function accountDto(account) {
-    const provider = unified ? providers.getProvider('claude', 'claude-official') : providerForAccount(account.id);
+    // Unified mode: every signed-in account is its own provider
+    // (`claude-official-<accountId>`); a not-yet-signed-in account has no
+    // provider record yet, but its id is stable so the picker can match it.
+    const provider = unified ? providers.getProvider('claude', accountProviderId('claude', account.id)) : providerForAccount(account.id);
     return {
       ...account,
       active: activeId() === account.id,
-      providerId: provider ? provider.id : null,
+      providerId: unified ? accountProviderId('claude', account.id) : provider ? provider.id : null,
       providerName: provider ? provider.name : null,
       credential: credentials.status(account.id),
       login: loginStatus(account.id),
@@ -141,7 +145,7 @@ function mountClaudeAccountRoutes(app, deps) {
     const account = accounts.createClaudeAccount({ label });
     let providerId = null;
     try {
-      const created = unified ? providers.getProvider('claude', 'claude-official') : providers.createProvider({
+      const created = unified ? { id: accountProviderId('claude', account.id) } : providers.createProvider({
         appType: 'claude',
         name: `Claude 官方 · ${label || account.id.slice(0, 6)}`,
         // No baseUrl/token: the cpr official branch resolves the credential
@@ -201,6 +205,10 @@ function mountClaudeAccountRoutes(app, deps) {
     }
     try {
       const usage = await fetchUsage(fetchImpl, cred.token);
+      // Feed Auto's per-account steering too (see quota/official-account-usage).
+      if (typeof deps.recordUsage === 'function') {
+        try { deps.recordUsage(accountProviderId('claude', accountId), usage); } catch (_) {}
+      }
       res.json({ status: 'ok', fetchedAt: Date.now(), usage });
     } catch (error) {
       // 401 = the token was revoked/expired beyond refresh — say no_auth so the

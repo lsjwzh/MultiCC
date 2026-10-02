@@ -73,8 +73,9 @@
   function officialProviderKind(value) {
     if (value && typeof value === 'object') {
       const id = text(value.id, 180).toLowerCase();
-      if (id === 'codex-official') return 'codex';
-      if (id === 'claude-official') return 'claude';
+      // 每个已登录账号一条：<type>-official-<16 位账号 id>。
+      const account = /^(claude|codex)-official(?:-[a-f0-9]{16})?$/.exec(id);
+      if (account) return account[1];
       const appType = text(value.appType, 20).toLowerCase();
       if (value.builtinOfficial === true && APP_TYPES.has(appType)) return appType;
       return officialKindFromName(value.name);
@@ -97,7 +98,10 @@
     const base = kind === 'codex'
       ? tt('providerOfficialCodex', 'Codex 官方')
       : tt('providerOfficialClaude', 'Claude 官方');
-    const suffix = officialNameSuffix(value);
+    // 一个账号都没登录时只剩一条占位，后缀是可翻译的「选此登录」。
+    const suffix = value && typeof value === 'object' && value.needsLogin === true
+      ? tt('providerOfficialSignIn', '选此登录')
+      : officialNameSuffix(value);
     return suffix ? base + OFFICIAL_SUFFIX_SEPARATOR + suffix : base;
   }
 
@@ -576,6 +580,10 @@
         tokenMask: safeTokenMask(value.tokenMask),
       hasToken: value.hasToken === true,
       isOfficial: value.isOfficial === true,
+      // 内置官方线路（每个已登录账号一条，或一个都没登录时的「选此登录」占位）。
+      builtinOfficial: value.builtinOfficial === true,
+      isDefaultOfficial: value.isDefaultOfficial === true,
+      needsLogin: value.needsLogin === true,
       limit: normalizeProviderLimit(value.limit),
     });
   }
