@@ -4,6 +4,7 @@ import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 import '../widgets/bark_devices_card.dart';
+import '../widgets/fcm_status_card.dart';
 
 /// 推送通知通道 — 镜像网页 manage 页「推送通知」面板：查看 Bark / Webhook 配置
 /// 状态、管理接收提醒的手机、发送测试通知。设备地址只写入，不回显密钥。
@@ -160,6 +161,7 @@ class _PushSettingsScreenState extends State<PushSettingsScreen> {
                   child: ListView(
                     padding: const EdgeInsets.all(12),
                     children: [
+                      const FcmStatusCard(),
                       if (_cfg?['barkDevices'] is List)
                         BarkDevicesCard(
                           service: _manage,

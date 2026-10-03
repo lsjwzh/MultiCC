@@ -14,6 +14,7 @@ const fs = require('fs');
 const { createPaths } = require('../paths');
 const { atomicWriteJson } = require('../runtime-security');
 const { createBusinessPushService } = require('./business');
+const { createFcmDevices } = require('./fcm-devices');
 const { createBarkDevices } = require('./bark-devices');
 const http = require('http');
 const https = require('https');
@@ -143,6 +144,8 @@ async function sendPushToAll(payload) {
   });
 }
 
+const fcmDevices = createFcmDevices({ file: PUSH_PATHS.fcmDevicesFile });
+
 // Legacy BARK_URL remains a virtual device until explicitly disabled/removed.
 const barkDevices = createBarkDevices({ file: PUSH_PATHS.barkDevicesFile, getLegacyUrl: () => cfg.BARK_URL });
 function hasBarkDevices() {
@@ -200,6 +203,7 @@ module.exports = {
   globalStats,
   barkHealth,
   barkDevices,
+  fcmDevices,
   hasBarkDevices,
   webhookHealth,
   businessPush,

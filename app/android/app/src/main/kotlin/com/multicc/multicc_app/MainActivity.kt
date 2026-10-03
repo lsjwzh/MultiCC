@@ -7,10 +7,13 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var fcmBridge: FcmBridge? = null
     private val channelName = "com.multicc.multicc_app/keepalive"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        fcmBridge = FcmBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        fcmBridge?.tap(intent)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -25,6 +28,22 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        fcmBridge?.tap(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        TaskNotifications.foreground = true
+    }
+
+    override fun onPause() {
+        TaskNotifications.foreground = false
+        super.onPause()
     }
 
     private fun startKeepAlive() {

@@ -5,6 +5,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../i18n.dart';
 import 'settings_service.dart';
+import 'fcm_service.dart';
 
 class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
@@ -267,6 +268,18 @@ class NotificationService {
     int id = 0,
     String? payload,
   }) async {
+    if (FcmService.supported && FcmService.current != null) {
+      try {
+        final handled = await FcmService.channel
+            .invokeMethod<bool>('show', {
+              'title': title,
+              'body': body,
+              'sessionId': payload ?? '',
+            })
+            .timeout(const Duration(seconds: 2));
+        if (handled == true) return;
+      } catch (_) {} // Older native shell: retain the local plugin fallback.
+    }
     final now = DateTime.now();
     final last = _recent[id];
     if (last != null && now.difference(last) < _dedupWindow) return;

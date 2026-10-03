@@ -492,6 +492,21 @@ test('notify enforces cooldown and produces localized Web Push plus Bark/Webhook
   await flush();
 });
 
+test('FCM-only installs count as consumers and task verdicts use the FCM transport', async () => {
+  const harness = createHarness();
+  const calls = [];
+  harness.push.fcmDevices = { hasEnabled: () => true, send: async factory => calls.push(factory({ locale: 'en' })) };
+  harness.runtime.notify('term', 'waiting', 'needs input', { classifyState: 'W' });
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].sessionId, 'term');
+  assert.equal(calls[0].locale, 'en');
+  assert.equal(calls[0].body.includes('needs input'), true);
+  // The consumer check must not depend on Web Push/Bark being configured.
+  assert.equal(harness.runtime.onOutput('term', 'new terminal output'), true);
+  assert.equal(harness.state.timers.length, 1);
+});
+
 test('the terminal classify prompt reads progress and status before answering', () => {
   // The terminal-side classifier (legacy CLI lanes) is the same "internal
   // parsing" job as the chat-side one: no plan block, but it must read the

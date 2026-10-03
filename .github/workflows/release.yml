@@ -166,6 +166,25 @@ jobs:
           cd app
           flutter pub get --enforce-lockfile
 
+      - name: Test optional Android FCM failure boundaries
+        working-directory: app/android
+        run: ./gradlew :app:testDebugUnitTest
+
+      # Optional Firebase Android client config, not a service-account key.
+      # Leave unset for installations/builds which do not use Google push.
+      - name: Prepare optional Firebase client config
+        env:
+          MULTICC_FIREBASE_ANDROID_CONFIG_JSON: ${{ secrets.MULTICC_FIREBASE_ANDROID_CONFIG_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$MULTICC_FIREBASE_ANDROID_CONFIG_JSON" ]; then
+            config_file="$RUNNER_TEMP/multicc-google-services.json"
+            printf '%s' "$MULTICC_FIREBASE_ANDROID_CONFIG_JSON" > "$config_file"
+            chmod 600 "$config_file"
+            echo "MULTICC_FIREBASE_ANDROID_CONFIG=$config_file" >> "$GITHUB_ENV"
+          fi
+
       - name: Build and verify official APK
         shell: bash
         run: |

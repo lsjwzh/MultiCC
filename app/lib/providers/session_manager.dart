@@ -6,6 +6,7 @@ import '../services/background_service.dart';
 import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
+import '../services/fcm_service.dart';
 import '../services/ui_layout_service.dart';
 import '../services/workspace_service.dart';
 import '../utils/session_status_helpers.dart';
@@ -274,7 +275,11 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   Session? get pendingTerminalSession => _pendingTerminalSession;
   void clearPendingTerminal() => _pendingTerminalSession = null;
 
+  late final FcmService fcm;
+
   SessionManager({required this.settings}) {
+    fcm = FcmService(settings: settings, onTap: openSessionFromNotification);
+    fcm.start();
     _sessionService = SessionService(settings: settings);
     WidgetsBinding.instance.addObserver(this);
     loadDashboard();
@@ -324,6 +329,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      fcm.refresh();
       // Back in the foreground — the keep-alive foreground service (if it was
       // running) is no longer needed; drop its ongoing notification + wake lock.
       BackgroundKeepAlive.stop();
@@ -824,8 +830,9 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final config = await _sessionService.fetchSessionCliConfig(id);
       for (final provider in _providers.values) {
-        if (provider.executionSessionName == id)
+        if (provider.executionSessionName == id) {
           provider.applyProviderSwitch(config);
+        }
       }
     } catch (_) {
       // Non-fatal: bars keep the previous provider until the next CLI switch
@@ -864,7 +871,14 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   // ── Cleanup ────────────────────────────────────────────────────────────────
 
   @override
+  void notifyListeners() {
+    fcm.setActiveSession(_activeSessionId);
+    super.notifyListeners();
+  }
+
+  @override
   void dispose() {
+    fcm.dispose();
     _pendingChatOpen = null;
     WidgetsBinding.instance.removeObserver(this);
     _refreshTimer?.cancel();

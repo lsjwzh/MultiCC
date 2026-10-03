@@ -4308,5 +4308,16 @@
   "rsPermHint": "已打开系统设置：请给 MultiCC Agent 勾上开关，完成后这里自动继续",
   "rsPermRemote": "授权只能在这台 Mac 上完成——请回到 Mac 前操作，或在 Air 全局设置的电源卡里点「检查授权」",
   "rsErrAx": "MultiCC Agent 未获辅助功能授权，无法远程操作",
-  "rsErrSr": "MultiCC Agent 未获屏幕录制授权，无法看到画面"
+  "rsErrSr": "MultiCC Agent 未获屏幕录制授权，无法看到画面",
+  "fcmTitle": "安卓离线通知（FCM）",
+  "fcmRegistered": "此手机已登记，可以尝试接收离线通知。",
+  "fcmNotConfigured": "Firebase 尚未配置完成。",
+  "fcmNoGoogle": "此手机没有可用的 Google Play 服务。",
+  "fcmDisabled": "离线通知已关闭，或尚未连接服务器。",
+  "fcmUnavailable": "暂时无法连接推送服务，稍后会重试。",
+  "fcmFallback": "FCM 不可用时，聊天仍可正常使用；后台提醒可使用现有的保持连接功能。",
+  "fcmRetry": "重试连接",
+  "fcmTest": "发送测试通知",
+  "fcmTestAccepted": "Google 已接受发送请求，请检查手机是否收到通知。",
+  "fcmTestFailed": "测试发送未成功，请稍后重试。"
 }

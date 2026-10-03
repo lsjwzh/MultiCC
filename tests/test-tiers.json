@@ -195,6 +195,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/bark_devices_card_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/basic_mode_message_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -380,6 +385,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/fcm_service_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/fleet_session_order_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -500,6 +510,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/notification_foreground_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/opencode_native_label_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -572,6 +587,16 @@
     {
       "path": "app/test/quota_gating_parity_test.dart",
       "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/remote_screen_rfb_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/remote_screen_service_test.dart",
+      "tier": "core",
       "lane": "flutter"
     },
     {
@@ -1462,6 +1487,16 @@
       "entrypoints": [
         "npm:test:core"
       ]
+    },
+    {
+      "path": "tests/test-bark-devices-cdp.js",
+      "tier": "flow",
+      "lane": "cdp"
+    },
+    {
+      "path": "tests/test-bark-devices.js",
+      "tier": "core",
+      "lane": "deterministic"
     },
     {
       "path": "tests/test-battery-guard.js",
@@ -2691,6 +2726,11 @@
       "entrypoints": [
         "npm:test:security"
       ]
+    },
+    {
+      "path": "tests/test-fcm-push.js",
+      "tier": "core",
+      "lane": "deterministic"
     },
     {
       "path": "tests/test-file-transfer-routes.js",

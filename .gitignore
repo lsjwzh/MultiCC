@@ -169,3 +169,7 @@ official-provider-selection.json
 # Python bytecode from skill scripts and their unittest suites
 __pycache__/
 *.pyc
+
+# Android FCM local configuration and private device tokens
+fcm-devices.json
+app/android/app/google-services.json

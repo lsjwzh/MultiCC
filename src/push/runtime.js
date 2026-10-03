@@ -128,7 +128,7 @@ function createPushRuntime(options) {
   }
 
   function hasNotifyConsumer(sessionId) {
-    if (push.subscriptions.size > 0 || (push.hasBarkDevices ? push.hasBarkDevices() : push.cfg.BARK_URL) || push.cfg.WEBHOOK_URL) return true;
+    if (push.fcmDevices?.hasEnabled() || push.subscriptions.size > 0 || (push.hasBarkDevices ? push.hasBarkDevices() : push.cfg.BARK_URL) || push.cfg.WEBHOOK_URL) return true;
     if ((sessions.get(sessionId)?.clients?.size || 0) > 0) return true;
     const dirId = persistedSessions.get(sessionId)?.dirId;
     return !!(dirId && (workspaceClients.get(dirId)?.size || 0) > 0);
@@ -283,6 +283,9 @@ function createPushRuntime(options) {
     fireAndForget('web push failed', () => push.sendPushToAll(
       subscription => payloadForLocale(subscription.locale),
     ));
+    if (push.fcmDevices) fireAndForget('FCM notification failed', () => push.fcmDevices.send(
+      device => payloadForLocale(device.locale),
+    ));
     fireAndForget('Bark notification failed', () => push.sendBarkNotification(
       payload.title, `${message} ${shortCwd}`, payload.url,
     ));
@@ -305,6 +308,7 @@ function createPushRuntime(options) {
     if (!app || typeof app.post !== 'function' || typeof app.delete !== 'function') {
       throw new TypeError('push routes require Express post/delete');
     }
+    if (push.fcmDevices) push.fcmDevices.mountRoutes(app, route);
     if (push.barkDevices) mountBarkDeviceRoutes(app, push.barkDevices, route);
     app.post('/api/push/subscribe', route(async (req, res) => {
       const subscription = req.body;
