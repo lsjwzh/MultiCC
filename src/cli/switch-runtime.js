@@ -2,6 +2,7 @@
 
 const { desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
 const { isChatStateBusy } = require('../session/runtime-busy');
+const { selectionKey } = require('../chat/auto-provider-selection-key');
 const cliUpstream = require('./cli-upstream-version');
 const capability = require('./cli-capability');
 const homebrewTakeover = require('./homebrew-takeover');
@@ -918,11 +919,13 @@ function createCliSwitchRuntime(options) {
     }
     let switched;
     sessionPersistence.mutate('runtime.apply-pending-configuration', () => {
+      const previousSelectionKey = selectionKey(session.providerSelection);
       if (pending.cli !== (session.cli || 'claude') || pending.fresh) {
         // Build the handoff now, so it contains the final output of the old CLI.
         switched = performCliSwitch(session, pending.cli, { fresh: pending.fresh, deferEffects: true });
       }
       Object.assign(session, pending.profile);
+      if (previousSelectionKey !== selectionKey(session.providerSelection)) delete session.autoProviderLastRoute;
       delete session.pendingConfiguration;
       options.rememberActiveCliState(session);
     });

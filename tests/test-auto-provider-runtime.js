@@ -541,6 +541,53 @@ test('a runtime restart restores only a last route whose policy signature still 
   assert.equal(restarted.beginTurn({ session, turnId: 'changed-live' }).initial().providerId, 'third');
 });
 
+test('an unsigned legacy last route restores only an enabled line on its current lane and model', () => {
+  const cases = [
+    { label: 'valid', expected: 'backup' },
+    { label: 'old-model', route: { model: 'removed-model' }, expected: 'empty' },
+    { label: 'wrong-cli', route: { cli: 'codex' }, expected: 'empty' },
+    { label: 'missing-provider', route: { providerId: 'removed' }, expected: 'empty' },
+    { label: 'disabled', disable: true, expected: 'empty' },
+    { label: 'sticky-off', sticky: false, expected: 'empty' },
+  ];
+  for (const item of cases) {
+    const { session, providers } = fixture({ maxAttempts: 2 });
+    session.autoProviderLastRoute = { providerId: 'backup', model: 'backup-model', ...item.route };
+    if (item.disable) session.providerSelection.candidates[1].enabled = false;
+    if (item.sticky === false) session.providerSelection.sticky = false;
+    const runtime = createAutoProviderRuntime({ providers });
+    assert.equal(runtime.beginTurn({ session, turnId: item.label }).initial().providerId,
+      item.expected, item.label);
+  }
+});
+
+test('a legacy auto-model route must match a model currently served by that provider', () => {
+  for (const model of ['backup-alternate', 'removed-model', 'empty-model']) {
+    const { session, providers } = fixture();
+    providers.listProviders().find(provider => provider.id === 'backup').modelOptions.push('backup-alternate');
+    session.providerSelection.candidates = session.providerSelection.candidates.map(candidate => ({
+      ...candidate, tier: candidate.providerId === 'third' ? 'strong' : 'weak',
+      ...(candidate.providerId === 'backup' ? { autoModel: true } : {}),
+    }));
+    session.providerSelection.routing = { provider: 'jev', tiers: ['weak', 'strong'], onUnknown: 'priority' };
+    session.autoProviderLastRoute = { providerId: 'backup', model };
+    const runtime = createAutoProviderRuntime({ providers, priceTable: null });
+    const expected = model === 'backup-alternate' ? 'backup' : 'empty';
+    assert.equal(runtime.beginTurn({ session, turnId: model }).initial().providerId, expected, model);
+  }
+});
+
+test('a present null or wrong signature cannot use legacy route recovery', () => {
+  for (const key of [null, 'another-pool', '']) {
+    const { session, providers } = fixture();
+    session.autoProviderLastRoute = {
+      providerId: 'backup', model: 'backup-model', cli: 'claude', selectionKey: key,
+    };
+    const runtime = createAutoProviderRuntime({ providers });
+    assert.equal(runtime.beginTurn({ session, turnId: `key-${key}` }).initial().providerId, 'empty');
+  }
+});
+
 test('cloning a cross-CLI selection preserves a pending handoff reservation', () => {
   const { runtime, session } = crossFixture();
   const turn = runtime.beginTurn({ session, turnId: 'source' });

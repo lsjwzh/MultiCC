@@ -3,6 +3,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createAutoRouteNotes } = require('../src/chat/auto-route-notes');
+const { selectionKey } = require('../src/chat/auto-provider-selection-key');
+const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
 
 function selected(extra = {}) {
   return {
@@ -20,7 +22,11 @@ function fixture() {
   const broadcasts = [];
   const appended = [];
   const saves = [];
-  const record = { id: 's1', model: 'gpt-5.5', providerSelection: { mode: 'auto' } };
+  const record = { id: 's1', cli: 'codex-exp', model: 'gpt-5.5', providerSelection: {
+    mode: 'auto', protocol: 'openai_responses', candidates: [
+      { providerId: 'deepseek', priority: 1 }, { providerId: 'or', priority: 2 },
+    ],
+  } };
   const emit = createAutoRouteNotes({
     broadcast: (sessionId, event) => broadcasts.push([sessionId, event]),
     append: (sessionId, message) => { appended.push([sessionId, message]); return { message }; },
@@ -47,6 +53,7 @@ test('a routed pick is persisted as a display-only note and remembered on the se
     routing: { source: 'jev', code: 'jev_choice', tierIndex: 0, tierCount: 2, latencyMs: 900, onUnknown: 'strong' },
   });
   assert.deepEqual(f.record.autoProviderLastRoute, {
+    selectionKey: selectionKey(f.record.providerSelection), cli: 'codex-exp',
     providerId: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-v4-flash', tier: 't1', at: 1_790_000_000_000,
   });
   assert.deepEqual(f.saves, ['runtime.auto-provider-route']);
@@ -85,4 +92,35 @@ test('a history write failure never blocks the live event', () => {
   emit('s1', selected());
   assert.equal(broadcasts.length, 1);
   assert.equal(broadcasts[0].noteClientMsgId, undefined);
+});
+
+test('持久化的换线记录让新运行时继续当前线路，额度缓存过期也不回池首', () => {
+  const f = fixture();
+  const providers = {
+    appTypeForCli: () => 'codex',
+    providerSupportsCli: () => true,
+    listProviders: () => [
+      { id: 'deepseek', appType: 'codex', protocol: 'openai_responses' },
+      { id: 'or', appType: 'codex', protocol: 'openai_responses' },
+    ],
+  };
+  const exhausted = 'deepseek';
+  const limitCache = { get: (_type, id) => ({
+    fetchedAt: 1000000, status: 'ok', summary: { usedPercentage: id === exhausted ? 100 : 95 },
+  }) };
+  const firstRuntime = createAutoProviderRuntime({ providers, providerLimitCache: limitCache,
+    now: () => 1000000, emit: f.emit });
+  const first = firstRuntime.beginTurn({ session: f.record, turnId: 'before-restart' });
+  assert.equal(first.initial().providerId, 'or');
+  // 模拟真实持久化和进程重建；旧额度缓存现在全部过期。
+  const restored = JSON.parse(JSON.stringify(f.record));
+  const secondRuntime = createAutoProviderRuntime({ providers, providerLimitCache: limitCache,
+    now: () => 10000000, emit: () => {} });
+  for (let i = 0; i < 3; i += 1) {
+    restored.providerSelection = JSON.parse(JSON.stringify(restored.providerSelection));
+    const turn = secondRuntime.beginTurn({ session: restored, turnId: `after-restart-${i}` });
+    assert.equal(turn.initial().providerId, 'or');
+  }
+  assert.equal(restored.autoProviderLastRoute.cli, 'codex-exp');
+  assert.ok(restored.autoProviderLastRoute.selectionKey);
 });

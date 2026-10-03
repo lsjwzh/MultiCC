@@ -14,6 +14,7 @@
 
 const NOTE_KIND = 'auto_route';
 const ROUTE_PHASES = new Set(['selected', 'switched']);
+const { selectionKey } = require('./auto-provider-selection-key');
 
 function clean(value, max = 256) {
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null;
@@ -60,6 +61,8 @@ function createAutoRouteNotes({ broadcast, append, records, save, now = Date.now
     const record = records?.get?.(sessionId);
     if (!record || !clean(event.providerId)) return;
     record.autoProviderLastRoute = {
+      selectionKey: selectionKey(record.providerSelection),
+      cli: clean(event.cli || record.cli || 'claude', 64),
       providerId: clean(event.providerId),
       providerName: clean(event.providerName),
       model: clean(event.model),
