@@ -20,6 +20,7 @@ const { createAutoProviderRouting } = require('./auto-provider-routing');
 const { expandCandidates, priceLadder } = require('./auto-provider-pricing');
 const { createRoutingAdmissionPhase } = require('./admission-progress');
 const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache');
+const { selectionKey } = require('./auto-provider-selection-key');
 
 const UNSAFE_HANDOFF_REASONS = new Set([
   'unsafe_failure_phase',
@@ -74,7 +75,7 @@ function createAutoProviderRuntime(options = {}) {
   });
   const stickyBySession = new Map();
   const currentBySession = new Map();
-  const selectionRefBySession = new Map();
+  const selectionKeyBySession = new Map();
   const pendingBySession = new Map();
   // Lane switches since the last successful turn. A cross-CLI pool whose every
   // lane is failing would otherwise hand the session back and forth forever.
@@ -179,14 +180,26 @@ function createAutoProviderRuntime(options = {}) {
     };
   }
 
-  // A new selection object (PATCH, re-enable, restart) starts from a clean slate.
-  function syncSelection(sessionId, rawSelection) {
-    if (selectionRefBySession.get(sessionId) === rawSelection) return;
+  // A cloned policy is still the same pool. A changed policy starts afresh;
+  // after a process restart, restore only a route recorded for this exact pool.
+  function syncSelection(session, rawSelection) {
+    const sessionId = session.id;
+    const key = selectionKey(rawSelection);
+    if (selectionKeyBySession.get(sessionId) === key) return;
+    const firstSeen = !selectionKeyBySession.has(sessionId);
     stickyBySession.delete(sessionId);
     currentBySession.delete(sessionId);
     pendingBySession.delete(sessionId);
     hopsBySession.delete(sessionId);
-    selectionRefBySession.set(sessionId, rawSelection);
+    selectionKeyBySession.set(sessionId, key);
+    const last = session.autoProviderLastRoute;
+    if (firstSeen && key && rawSelection.sticky !== false && last?.selectionKey === key
+        && (!last.cli || last.cli === (session.cli || 'claude'))
+        && rawSelection.candidates.some(candidate => candidate.enabled !== false
+          && candidate.providerId === last.providerId
+          && (!candidate.cli || candidate.cli === (session.cli || 'claude')))) {
+      stickyBySession.set(sessionId, last.providerId);
+    }
   }
 
   function priceFields(candidate) {
@@ -207,7 +220,7 @@ function createAutoProviderRuntime(options = {}) {
     const validated = validateProviderSelection(rawSelection, { cli, providers });
     if (!validated.ok || !validated.value.cliSwitch) return null;
     const selection = validated.value;
-    syncSelection(session.id, rawSelection);
+    syncSelection(session, rawSelection);
     if ((hopsBySession.get(session.id) || 0) >= selection.maxAttempts) return null;
     const pending = pendingBySession.get(session.id) || null;
     if (pending && pending.cli && pending.cli !== cli) {
@@ -316,10 +329,7 @@ function createAutoProviderRuntime(options = {}) {
     if (!validated.ok) {
       throw new AutoProviderError(validated.error, validated.code || 'INVALID_AUTO_PROVIDER_CONFIG');
     }
-    // A PATCH installs a new frozen selection object on the session. Reset
-    // in-memory stickiness when that object changes, even if the new JSON is
-    // textually identical after Auto was disabled and re-enabled.
-    syncSelection(session.id, rawSelection);
+    syncSelection(session, rawSelection);
     const selection = validated.value;
     const turnCli = session.cli || 'claude';
     const pool = catalogCandidates(session, selection);
@@ -429,6 +439,9 @@ function createAutoProviderRuntime(options = {}) {
       }
       const previous = current;
       current = picked.candidate;
+      // A long turn can stop or need a continuation without reporting success.
+      // Its selected route remains current until it actually becomes unusable.
+      if (selection.sticky) stickyBySession.set(session.id, current.providerId);
       if (pending) pendingBySession.delete(session.id);
       attempted.add(current.providerId);
       physicalAttempt += 1;
@@ -592,7 +605,7 @@ function createAutoProviderRuntime(options = {}) {
   function clearSession(sessionId) {
     stickyBySession.delete(sessionId);
     currentBySession.delete(sessionId);
-    selectionRefBySession.delete(sessionId);
+    selectionKeyBySession.delete(sessionId);
     pendingBySession.delete(sessionId);
     hopsBySession.delete(sessionId);
     routing.clearSession(sessionId);
