@@ -95,7 +95,7 @@ String autoProviderRouteLabel(String protocol, String? actualProviderName) {
 /// 都没登录时只剩 `<pool>-official` 这一条「选此登录」占位。
 bool isOfficialProviderId(String id, [String? poolKey]) {
   final match = RegExp(
-    r'^(claude|codex)-official(-([a-f0-9]{16}|global))?$',
+    r'^(claude|codex)-official(-[a-f0-9]{16})?$',
   ).firstMatch(id);
   return match != null && (poolKey == null || match.group(1) == poolKey);
 }
