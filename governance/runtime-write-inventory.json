@@ -277,6 +277,19 @@
       ]
     },
     {
+      "id": "annotation-live-relay-config",
+      "classification": "compatibility-read",
+      "owner": "realtime annotation relay (src/annotation-live)",
+      "rationale": "annotation-live.json is a hand-edited routing table (match regex -> local webhook url) the relay hot-reloads by mtime; MultiCC only READS it and never writes it. Installs without MULTICC_DATA_DIR keep the historical ~/.multicc root, configured installs read it from their own data root.",
+      "migrationStrategy": "Keep the file user-owned and read-only from MultiCC; when the data root becomes mandatory, drop the historical-root branch and read only <dataRoot>/annotation-live.json.",
+      "sources": [
+        {
+          "file": "src/annotation-live.js",
+          "anchor": "? path.join(os.homedir(), '.multicc', 'annotation-live.json')"
+        }
+      ]
+    },
+    {
       "id": "claude-native-transcripts",
       "classification": "external-owner",
       "owner": "Claude CLI adapter",

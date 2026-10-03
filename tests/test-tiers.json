@@ -3753,6 +3753,15 @@
       ]
     },
     {
+      "path": "tests/test-remote-screen.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-repo-actor.js",
       "tier": "core",
       "lane": "deterministic",
