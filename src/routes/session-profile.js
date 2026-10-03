@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { readConfiguration, desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
 const { normalizeSubagentInput } = require('../session/subagent');
+const { selectionKey } = require('../chat/auto-provider-selection-key');
 const fs = require('fs');
 const path = require('path');
 
@@ -198,6 +199,7 @@ function createSessionProfileRoutes(rawDeps) {
         return res.status(400).json({ error: 'Auto Provider fallback must be an enabled candidate' });
       }
       const mutation = preview ? { commit() {}, rollback() {} } : sessionPersistence.begin('http.patch-session');
+      const previousSelectionKey = selectionKey(s.providerSelection);
       const rejectMutation = (status, body) => {
         mutation.rollback();
         return res.status(status).json(body);
@@ -401,6 +403,9 @@ function createSessionProfileRoutes(rawDeps) {
           : '默认(随主)';
         appendEvent(s.dirId, 'session_subagent_changed', `${s.label || s.id} 子任务 → ${saName}`, s.id);
       }
+      // Only a changed policy retires its sticky route. Re-saving an equivalent
+      // pool must not send the next turn back to the first (exhausted) provider.
+      if (previousSelectionKey !== selectionKey(s.providerSelection)) delete s.autoProviderLastRoute;
       rememberActiveCliState(s);
       mutation.commit();
       // An immediately-applied route change (provider/model/effort/…) used to be

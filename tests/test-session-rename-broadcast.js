@@ -266,3 +266,45 @@ test('in-process applySessionPatch (provider force-delete) runs the same PATCH p
 
   assert.equal(idle.applySessionPatch('missing', { provider: null }).status, 404);
 });
+
+function stickyAutoSession() {
+  return {
+    id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', provider: 'relay-b',
+    providerSelection: { mode: 'auto', protocol: 'anthropic', candidates: [
+      { providerId: 'relay-a' }, { providerId: 'relay-b' },
+    ] },
+    autoProviderLastRoute: { providerId: 'relay-b', model: 'model-b' },
+  };
+}
+
+test('保存语义相同的自动池保留当前线路，修改池或退出自动才清理', () => {
+  const h = fixture(stickyAutoSession());
+  const lastRoute = h.session.autoProviderLastRoute;
+  const cloned = JSON.parse(JSON.stringify(h.session.providerSelection));
+  const same = h.applySessionPatch('s1', { providerSelection: cloned });
+  assert.equal(same.status, 200);
+  assert.equal(h.session.autoProviderLastRoute, lastRoute);
+  const changed = h.applySessionPatch('s1', { providerSelection: {
+    ...cloned, candidates: [{ providerId: 'relay-c' }, { providerId: 'relay-b' }],
+  } });
+  assert.equal(changed.status, 200);
+  assert.equal(h.session.autoProviderLastRoute, undefined);
+
+  for (const patch of [{ provider: 'manual-provider' }, { providerSelection: null }]) {
+    const manual = fixture(stickyAutoSession());
+    assert.equal(manual.applySessionPatch('s1', patch).status, 200);
+    assert.equal(manual.session.providerSelection, null);
+    assert.equal(manual.session.autoProviderLastRoute, undefined);
+  }
+});
+
+test('运行中修改自动配置只保存待生效设置，不提前清理活跃线路', () => {
+  const h = fixture(stickyAutoSession(), { backgroundActive: true });
+  const lastRoute = h.session.autoProviderLastRoute;
+  const changed = h.applySessionPatch('s1', { provider: 'manual-provider' });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.deferred, true);
+  assert.equal(h.session.autoProviderLastRoute, lastRoute);
+  assert.equal(h.session.providerSelection.mode, 'auto');
+  assert.equal(h.session.pendingConfiguration.profile.providerSelection, null);
+});

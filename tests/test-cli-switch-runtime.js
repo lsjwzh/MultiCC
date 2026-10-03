@@ -719,6 +719,51 @@ test('a pending profile applies once at an idle boundary; live steering retains 
   assert.equal(h.effects.filter(e => e === 'stream-close:s1').length, 1);
 });
 
+test('待生效自动池只在实际变更时清理线路，保存相同配置保留线路', () => {
+  const { stageConfiguration } = require('../src/session/pending-configuration');
+  for (const change of ['same', 'pool', 'manual']) {
+    const h = createHarness();
+    h.session.providerSelection = { mode: 'auto', protocol: 'anthropic', candidates: [
+      { providerId: 'relay-a' }, { providerId: 'relay-b' },
+    ] };
+    h.session.autoProviderLastRoute = { providerId: 'relay-b', model: 'model-b' };
+    const route = h.session.autoProviderLastRoute;
+    const draft = JSON.parse(JSON.stringify(h.session));
+    if (change === 'pool') draft.providerSelection.candidates[0].providerId = 'relay-c';
+    if (change === 'manual') draft.providerSelection = null;
+    stageConfiguration(h.session, draft);
+    assert.equal(h.session.autoProviderLastRoute, route);
+    assert.equal(h.runtime.applyPendingConfiguration('s1', { originContinue: true }), true);
+    assert.equal(h.session.autoProviderLastRoute, route);
+    assert.equal(h.runtime.applyPendingConfiguration('s1'), true);
+    assert.equal(h.session.autoProviderLastRoute, change === 'same' ? route : undefined);
+  }
+});
+
+test('待生效配置持久化失败会恢复自动池当前线路', () => {
+  const { stageConfiguration } = require('../src/session/pending-configuration');
+  const { createSessionPersistence } = require('../src/session/persistence');
+  const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat',
+    providerSelection: { mode: 'auto', protocol: 'anthropic', candidates: [
+      { providerId: 'relay-a' }, { providerId: 'relay-b' },
+    ] }, autoProviderLastRoute: { providerId: 'relay-b', model: 'model-b' } };
+  const records = new Map([['s1', session]]);
+  let fail = true;
+  const persistence = createSessionPersistence({ records, store: {
+    save() { if (fail) throw Error('disk-full'); },
+  } });
+  const h = createHarness({ session, records, sessionPersistence: persistence });
+  stageConfiguration(session, { ...session, providerSelection: null });
+  assert.throws(() => h.runtime.applyPendingConfiguration('s1'), /could not be persisted/);
+  assert.equal(records.get('s1').autoProviderLastRoute.providerId, 'relay-b');
+  assert.equal(records.get('s1').providerSelection.mode, 'auto');
+  assert.ok(records.get('s1').pendingConfiguration);
+  fail = false;
+  assert.equal(h.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(records.get('s1').autoProviderLastRoute, undefined);
+  persistence.stop();
+});
+
 // ── Auto Provider lane switch ─────────────────────────────────────────────
 // A pool whose lines span CLIs moves the session at the turn boundary through
 // the manual switch path; the pool travels with it and the planned line becomes

@@ -988,7 +988,7 @@
     addButton.type = 'button';
     const pickerHost = el(doc, 'div', 'rc-picker-host');
     const more = el(doc, 'details', 'rc-more');
-    const moreSummary = el(doc, 'summary', null, tt('runConfigMore', '更多：最多试几条 / 粘住上次成功'));
+    const moreSummary = el(doc, 'summary', null, tt('runConfigMore', '更多：最多试几条 / 保持当前线路'));
     const moreBody = el(doc, 'div', 'rc-more-body');
     const maxField = el(doc, 'label', 'rc-field');
     maxField.append(el(doc, 'span', null, tt('runConfigMaxAttempts', '最多试几条')));
@@ -997,7 +997,7 @@
     const stickyLabel = el(doc, 'label', 'rc-check');
     const stickyBox = el(doc, 'input');
     stickyBox.type = 'checkbox';
-    stickyLabel.append(stickyBox, el(doc, 'span', null, tt('runConfigSticky', '粘住上次成功的线路')));
+    stickyLabel.append(stickyBox, el(doc, 'span', null, tt('runConfigSticky', '保持当前线路')));
     moreBody.append(maxField, stickyLabel);
     more.append(moreSummary, moreBody);
     autoSection.append(poolHead, poolList, addButton, pickerHost, more);

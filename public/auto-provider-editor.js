@@ -987,7 +987,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     const stickyLabel = make('label');
     const sticky = make('input', 'multicc-auto-editor-sticky');
     sticky.type = 'checkbox';
-    stickyLabel.append(sticky, document.createTextNode(tt('autoEditorStickySuffix', ' 成功后优先沿用这条线路')));
+    stickyLabel.append(sticky, document.createTextNode(tt('autoEditorStickySuffix', ' 优先保持当前线路')));
     const unknownRow = make('label', '', tt('autoEditorJevUnknownLabel', '判断不了难度时（Jev 超时或没连上） '));
     const onUnknownSelect = make('select', 'multicc-auto-editor-jev-unknown');
     for (const [value, key, fallback] of UNKNOWN_CHOICES) {
@@ -1205,7 +1205,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     function renderMore() {
       const parts = [
         tt('autoEditorMoreAttempts', '最多试 {count} 条', { count: maxAttempts.value }),
-        sticky.checked ? tt('autoEditorMoreSticky', '沿用成功的线路') : tt('autoEditorMoreNoSticky', '每次从第 1 条开始'),
+        sticky.checked ? tt('autoEditorMoreSticky', '保持当前线路') : tt('autoEditorMoreNoSticky', '每次从第 1 条开始'),
       ];
       if (routingOn) {
         const choice = UNKNOWN_CHOICES.find(([value]) => value === onUnknownSelect.value) || UNKNOWN_CHOICES[0];

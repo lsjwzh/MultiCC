@@ -17,7 +17,7 @@ const {
   limitState,
 } = require('./auto-provider-policy');
 const { createAutoProviderRouting } = require('./auto-provider-routing');
-const { expandCandidates, priceLadder } = require('./auto-provider-pricing');
+const { expandCandidates, modelChoices, priceLadder } = require('./auto-provider-pricing');
 const { createRoutingAdmissionPhase } = require('./admission-progress');
 const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache');
 const { selectionKey } = require('./auto-provider-selection-key');
@@ -181,8 +181,9 @@ function createAutoProviderRuntime(options = {}) {
   }
 
   // A cloned policy is still the same pool. A changed policy starts afresh;
-  // after a process restart, restore only a route recorded for this exact pool.
-  function syncSelection(session, rawSelection) {
+  // after a process restart, restore a matching route. Legacy records without
+  // a policy signature must also match the current lane and model catalog.
+  function syncSelection(session, rawSelection, selection) {
     const sessionId = session.id;
     const key = selectionKey(rawSelection);
     if (selectionKeyBySession.get(sessionId) === key) return;
@@ -193,13 +194,25 @@ function createAutoProviderRuntime(options = {}) {
     hopsBySession.delete(sessionId);
     selectionKeyBySession.set(sessionId, key);
     const last = session.autoProviderLastRoute;
-    if (firstSeen && key && rawSelection.sticky !== false && last?.selectionKey === key
-        && (!last.cli || last.cli === (session.cli || 'claude'))
-        && rawSelection.candidates.some(candidate => candidate.enabled !== false
-          && candidate.providerId === last.providerId
-          && (!candidate.cli || candidate.cli === (session.cli || 'claude')))) {
-      stickyBySession.set(sessionId, last.providerId);
+    const cli = session.cli || 'claude';
+    if (!firstSeen || !key || !selection.sticky || !last || (last.cli && last.cli !== cli)) return;
+    const candidate = selection.candidates.find(item => item.enabled !== false
+      && item.providerId === last.providerId && (!item.cli || item.cli === cli));
+    if (!candidate) return;
+    if (Object.prototype.hasOwnProperty.call(last, 'selectionKey')) {
+      if (last.selectionKey === key) stickyBySession.set(sessionId, last.providerId);
+      return;
     }
+    // Do not reinterpret a mismatching/null signature as an old record. For an
+    // actual old record, the persisted model must still be one this line runs.
+    const nativeId = cli === 'opencode' ? nativeOpenCodeId(candidate.providerId) : null;
+    const provider = laneCatalog(cli, nativeId === null ? null : new Set([nativeId]))
+      .get(candidate.providerId);
+    if (!provider) return;
+    const model = candidate.model || provider.model || null;
+    const choices = candidate.autoModel ? modelChoices(provider) : [];
+    const matches = choices.length ? choices.includes(last.model) : (last.model || null) === model;
+    if (matches) stickyBySession.set(sessionId, last.providerId);
   }
 
   function priceFields(candidate) {
@@ -220,7 +233,7 @@ function createAutoProviderRuntime(options = {}) {
     const validated = validateProviderSelection(rawSelection, { cli, providers });
     if (!validated.ok || !validated.value.cliSwitch) return null;
     const selection = validated.value;
-    syncSelection(session, rawSelection);
+    syncSelection(session, rawSelection, selection);
     if ((hopsBySession.get(session.id) || 0) >= selection.maxAttempts) return null;
     const pending = pendingBySession.get(session.id) || null;
     if (pending && pending.cli && pending.cli !== cli) {
@@ -329,8 +342,8 @@ function createAutoProviderRuntime(options = {}) {
     if (!validated.ok) {
       throw new AutoProviderError(validated.error, validated.code || 'INVALID_AUTO_PROVIDER_CONFIG');
     }
-    syncSelection(session, rawSelection);
     const selection = validated.value;
+    syncSelection(session, rawSelection, selection);
     const turnCli = session.cli || 'claude';
     const pool = catalogCandidates(session, selection);
     const ladder = pool.ladder;

@@ -883,7 +883,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         value: _sticky,
         contentPadding: EdgeInsets.zero,
         title: const Text(
-          '粘住上一次成功的线路',
+          '保持当前线路',
           style: TextStyle(color: AppColors.text, fontSize: 13),
         ),
         onChanged: (value) => setState(() => _sticky = value),
