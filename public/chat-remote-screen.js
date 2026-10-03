@@ -197,7 +197,7 @@
     try { if (typeof global.multiccWsUrl === 'function') url = await global.multiccWsUrl(url); } catch { return false; }
     if (!s || s.closed) return false;
     const wrap = el('div', 'rs-rfb');
-    s.stage.appendChild(wrap);
+    s.zoomer.appendChild(wrap);
     return await new Promise(resolve => {
       let settled = false;
       let rfb = null;
@@ -333,6 +333,111 @@
     }, { passive: false });
   }
 
+  // ── 双指捏合缩放（手机上小目标点不准）──
+  // 放大态由手势层在捕获阶段独占指针：单指拖动=平移、原地轻点=精确单击
+  // （两种模式最终都走 HTTP input，与 RFB 输入在 Agent 端汇合同一护栏）、
+  // 快速点两下=复位。缩回 1x 后完全交还原有交互（noVNC / wirePointer）。
+  const zoom = { scale: 1, tx: 0, ty: 0 };
+  function applyZoom() {
+    if (!s || !s.zoomer) return;
+    if (zoom.scale <= 1.001) { zoom.scale = 1; zoom.tx = 0; zoom.ty = 0; }
+    s.zoomer.style.transform = zoom.scale === 1
+      ? '' : `translate(${zoom.tx}px, ${zoom.ty}px) scale(${zoom.scale})`;
+    if (s.zoomBadge) {
+      s.zoomBadge.hidden = zoom.scale === 1;
+      s.zoomBadge.textContent = Math.round(zoom.scale * 100) + '%';
+    }
+  }
+  function clampPan() {
+    const st = s && s.stage;
+    if (!st) return;
+    zoom.tx = Math.min(0, Math.max(st.clientWidth * (1 - zoom.scale), zoom.tx));
+    zoom.ty = Math.min(0, Math.max(st.clientHeight * (1 - zoom.scale), zoom.ty));
+  }
+  function resetZoom() { zoom.scale = 1; zoom.tx = 0; zoom.ty = 0; applyZoom(); }
+
+  // 放大态的轻点：noVNC 模式按 canvas 的 width 属性（= framebuffer 尺寸）
+  // 归一化，fallback 模式沿用 toScreen；图上 1px=1 逻辑点，两套坐标同源。
+  function zoomTap(ev, button) {
+    let x = null, y = null;
+    if (s.rfbWrap) {
+      const cv = s.rfbWrap.querySelector('canvas');
+      if (cv) {
+        const r = cv.getBoundingClientRect();
+        if (r.width && r.height) {
+          x = Math.round((ev.clientX - r.left) / r.width * cv.width);
+          y = Math.round((ev.clientY - r.top) / r.height * cv.height);
+        }
+      }
+    } else if (s.img) {
+      const p = toScreen(ev);
+      if (p) { x = p.x; y = p.y; }
+    }
+    if (x == null || y == null || x < 0 || y < 0) return;
+    ripple(ev.clientX, ev.clientY);
+    input({ op: 'click', x, y, button: button === 2 ? 'right' : 'left' });
+  }
+
+  function wireGestures(stage) {
+    const pts = new Map();
+    let pinch = null, pan = null, lastTap = 0;
+    // iOS Safari 的私有手势缩放会和 pointer 捏合叠乘，必须一并关掉。
+    stage.addEventListener('gesturestart', ev => ev.preventDefault());
+    stage.addEventListener('pointerdown', ev => {
+      if (ev.pointerType === 'mouse') return; // 鼠标用户不受影响，走原有交互
+      pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      const two = pts.size >= 2;
+      if (!two && zoom.scale === 1) return;
+      ev.preventDefault();
+      ev.stopPropagation(); // 捏合/放大期间独占，noVNC 与 wirePointer 都不掺和
+      try { stage.setPointerCapture(ev.pointerId); } catch {}
+      if (two) {
+        const [a, b] = [...pts.values()];
+        pinch = {
+          d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2,
+          s: zoom.scale, tx: zoom.tx, ty: zoom.ty,
+        };
+        pan = null;
+      } else {
+        pan = { x: ev.clientX, y: ev.clientY, tx: zoom.tx, ty: zoom.ty, moved: false, at: Date.now(), button: ev.button };
+      }
+    }, true);
+    stage.addEventListener('pointermove', ev => {
+      if (!pts.has(ev.pointerId)) return;
+      pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (pinch && pts.size >= 2) {
+        const [a, b] = [...pts.values()];
+        const d = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+        zoom.scale = Math.min(5, Math.max(1, pinch.s * d / pinch.d));
+        const k = zoom.scale / pinch.s; // 中点锚定：捏合前的中点内容跟随手指
+        zoom.tx = (a.x + b.x) / 2 - (pinch.mx - pinch.tx) * k;
+        zoom.ty = (a.y + b.y) / 2 - (pinch.my - pinch.ty) * k;
+        clampPan(); applyZoom();
+      } else if (pan && zoom.scale > 1) {
+        const dx = ev.clientX - pan.x, dy = ev.clientY - pan.y;
+        if (Math.hypot(dx, dy) > 8) pan.moved = true;
+        zoom.tx = pan.tx + dx; zoom.ty = pan.ty + dy;
+        clampPan(); applyZoom();
+      }
+    }, true);
+    stage.addEventListener('pointerup', ev => {
+      pts.delete(ev.pointerId);
+      if (pinch && pts.size < 2) pinch = null; // 剩一指可接着平移
+      if (pan && pts.size === 0) {
+        const p = pan; pan = null;
+        if (!p.moved && Date.now() - p.at < 600) {
+          const now = Date.now();
+          if (zoom.scale > 1 && now - lastTap < 350) { lastTap = 0; resetZoom(); return; }
+          lastTap = now;
+          if (zoom.scale > 1) zoomTap(ev, p.button);
+        }
+      }
+    }, true);
+    stage.addEventListener('pointercancel', ev => {
+      pts.delete(ev.pointerId); pinch = null; pan = null;
+    }, true);
+  }
+
   function setControl(on) {
     s.control = on;
     s.modeBtn.textContent = on ? '🖱 ' + tr('rsControl', '可操作') : '👁 ' + tr('rsViewOnly', '只看');
@@ -343,14 +448,14 @@
       s.rfb.viewOnly = !on;
       s.keybar.hidden = true;
       s.hint.textContent = on
-        ? tr('rsRfbCtrlHint', '直接在本画面上点击 / 拖动 / 打字；本机按 Esc 可随时急停')
+        ? tr('rsRfbCtrlHint', '直接在本画面上点击 / 拖动 / 打字；双指捏合可放大精确定位，快速点两下复位；本机按 Esc 可随时急停')
         : tr('rsViewHint', '只看模式：不会向本机发送任何操作。「✎ 标注」可冻结画面后标注对话');
       startHaltPoll(on);
       return;
     }
     s.keybar.hidden = !on;
     s.hint.textContent = on
-      ? tr('rsControlHint', '点击=单击，拖动=拖拽，滚轮=滚动，快速点两下=双击；本机按 Esc 可随时急停')
+      ? tr('rsControlHint', '点击=单击，拖动=拖拽，滚轮=滚动，快速点两下=双击；双指捏合可放大精确定位，点两下复位；本机按 Esc 可随时急停')
       : tr('rsViewHint', '只看模式：不会向本机发送任何操作。「✎ 标注」可冻结画面后标注对话');
   }
 
@@ -415,10 +520,19 @@
       btn('✕', tr('rsClose', '关闭'), close, 'rs-close'));
     const stage = el('div', 'rs-stage');
     s.stage = stage;
+    // 缩放内层：img 与流畅模式画布都挂在这里，双指捏合只动它的 transform。
+    // CSS transform 对 rect 归一化换算是透明的（视觉框与坐标同比缩放），
+    // 所以 toScreen / noVNC 的坐标计算一个字都不用改。
+    s.zoomer = el('div', 'rs-zoom');
     s.img = el('img', 'rs-img');
     s.img.alt = '';
     s.img.draggable = false;
-    stage.appendChild(s.img);
+    s.zoomer.appendChild(s.img);
+    stage.appendChild(s.zoomer);
+    s.zoomBadge = btn('', tr('rsZoomReset', '复位缩放'), () => resetZoom(), 'rs-zoombadge');
+    s.zoomBadge.hidden = true;
+    stage.appendChild(s.zoomBadge);
+    resetZoom();
     s.permBar = el('div', 'rs-permbar');
     s.permBar.hidden = true;
     s.hint = el('div', 'rs-hint');
@@ -435,6 +549,7 @@
     ov.append(head, s.permBar, stage, s.hint, s.keybar);
     document.body.appendChild(ov);
     wirePointer(stage);
+    wireGestures(stage);
     setControl(false);
     statusEl.textContent = tr('rsConnecting', '正在取第一帧…');
     // 先过权限门（缺授权时引导，齐了或查不到再开始出帧）。
@@ -477,4 +592,42 @@
   global.MultiCCRemoteScreen = Object.freeze({ open, close });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installButton);
   else installButton();
+
+  // ── 直达链接（multicc-human-assist 求助通道的承接）──
+  // agent 在聊天消息里发 `#rs=control`（hash 链接：不动 query、不重载，
+  // 本任务聊天页里点开即达，无需知道 task id），或跨设备场景发完整
+  // /chat.html?air=1&task=<id>&rs=1|control。两种都自动展开屏幕浮层；
+  // rs=control 同时进入可操作模式（AI 解决不了、需要人上手时用）。
+  // 一次性参数：触发后立刻从地址栏移除，刷新 / 重复点击不再自动弹出。
+  // web 点击直接进；App 内点开走内建浏览器同一页面（原生入口等 App 新版）。
+  function readRsParam() {
+    try {
+      const q = new URLSearchParams(location.search).get('rs');
+      if (q === '1' || q === 'control') return { want: q, where: 'search' };
+      const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+      if (h.get('rs') === '1' || h.get('rs') === 'control') return { want: h.get('rs'), where: 'hash' };
+    } catch {}
+    return null;
+  }
+  function consumeRsParam() {
+    const got = readRsParam();
+    if (!got) return;
+    try {
+      const url = new URL(location.href);
+      if (got.where === 'search') url.searchParams.delete('rs');
+      else url.hash = '';
+      history.replaceState(null, '', url);
+    } catch {}
+    if (!ov) {
+      void open(); // open 的同步段先建好 s，再切操作模式
+      if (got.want === 'control' && s) setControl(true);
+    }
+  }
+  function bootDirectLink() {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', consumeRsParam);
+    else consumeRsParam();
+    // 聊天页是 SPA：hash 链接只改 # 后面，必须监听 hashchange 才能触发。
+    window.addEventListener('hashchange', consumeRsParam);
+  }
+  bootDirectLink();
 })(typeof window !== 'undefined' ? window : globalThis);

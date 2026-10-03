@@ -338,8 +338,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +30 键（rs*）：聊天页「🖥 屏幕」远程协助浮层。
     // +3 键（rsLiveMode/rsFallback/rsRfbCtrlHint）：同一浮层的 RFB 流畅模式。
     // +9 键（rsPerm*/rsErrAx/rsErrSr）：屏幕浮层的权限门引导（web+App 共用）。
-    maxLines: 8626,
-    maxBytes: 543740,
+    // +1 键（rsZoomReset）并改写 2 条提示值：屏幕浮层的双指捏合缩放（手机精确定位）。
+    maxLines: 8628,
+    maxBytes: 544000,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
