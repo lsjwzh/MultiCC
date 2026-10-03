@@ -135,6 +135,16 @@
       overlay = null;
     }
 
+    function decodeImage(blob) {
+      return new Promise((resolve, reject) => {
+        const img = new win.Image();
+        const objectUrl = win.URL.createObjectURL(blob);
+        img.onload = () => { win.URL.revokeObjectURL(objectUrl); resolve(img); };
+        img.onerror = () => { win.URL.revokeObjectURL(objectUrl); reject(new Error('decode failed')); };
+        img.src = objectUrl;
+      }).catch(() => null);
+    }
+
     async function open(url, name) {
       close();
       const src = sourcePathFromUrl(url, win.location && win.location.href);
@@ -149,19 +159,13 @@
         notify(tr('annotLoadFailed', { error: (error && error.message || error) }));
         return false;
       }
-      const image = await new Promise((resolve, reject) => {
-        const img = new win.Image();
-        const objectUrl = win.URL.createObjectURL(blob);
-        img.onload = () => { win.URL.revokeObjectURL(objectUrl); resolve(img); };
-        img.onerror = () => { win.URL.revokeObjectURL(objectUrl); reject(new Error('decode failed')); };
-        img.src = objectUrl;
-      }).catch(() => null);
+      const image = await decodeImage(blob);
       if (!image) { notify(tr('annotDecodeFailed')); return false; }
-      build(image, src, name, lastModified);
+      build(image, src, name, lastModified, url);
       return true;
     }
 
-    function build(image, src, name, lastModified) {
+    function build(image, src, name, lastModified, url) {
       const W = image.naturalWidth;
       const H = image.naturalHeight;
       const marks = [];
@@ -254,24 +258,39 @@
         };
       }
       function render(ctx = g, withDraft = true) {
-        ctx.drawImage(image, 0, 0);
+        ctx.drawImage(image, 0, 0, W, H);
         marks.forEach((m, i) => drawMark(ctx, m, i));
         if (withDraft && draft) drawMark(ctx, draft, null);
       }
       // 实时操作模式：每个标记完成的瞬间 POST /api/annotation-live，服务端按
       // ~/.multicc/annotation-live.json 的 match(session/src 正则)→url 分发到
       // 本地处理器（任意场景可配）。无配置/处理器不在线时服务端静默忽略，
-      // 不影响常规标注流程。
-      function pushLiveMark(m) {
+      // 不影响常规标注流程。处理器回 refresh=true（已把执行后的画面写回同一
+      // 文件）时原地换底图、撤掉已执行的标记，并把回包 text 显示在提示栏。
+      async function pushLiveMark(m) {
+        if (!src) return;
         try {
-          fetchFn(withToken('/api/annotation-live'), {
+          const response = await fetchFn(withToken('/api/annotation-live'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               sessionId: getSessionId() || '', src, width: W, height: H,
               kind: m.kind, a: m.a, b: m.b,
             }),
-          }).catch(() => {});
+          });
+          const data = await response.json().catch(() => ({}));
+          const results = Array.isArray(data.results) ? data.results : [];
+          const text = results.map(r => r && r.text).filter(Boolean).join(' · ');
+          if (text) hint.textContent = text;
+          if (!url || !results.some(r => r && r.refresh)) return;
+          const fresh = await fetchFn(url + (url.includes('?') ? '&' : '?') + '_live=' + Date.now(),
+            { credentials: 'same-origin', cache: 'no-store' });
+          const next = fresh.ok ? await decodeImage(await fresh.blob()) : null;
+          if (!next || !stage.isConnected) return;
+          image = next;
+          const i = marks.indexOf(m);
+          if (i >= 0) marks.splice(i, 1);
+          render(); renderList();
         } catch (_) { /* 静默 */ }
       }
       function renderList() {

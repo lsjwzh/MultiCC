@@ -12,6 +12,8 @@
 //
 // match.session / match.src 是正则（缺省或空串 = 全匹配）。无配置、无命中
 // 或处理器不可达时静默忽略——不落盘、不产生聊天消息、不影响常规标注。
+// 处理器可回 { ok, refresh, text }：refresh=true 表示它已把执行后的画面写回
+// 同一 src 文件，标注器据此原地刷新底图并显示 text（判定/结果）。
 // 与 /api/secrets 同一 localhost-trusted 信任模型（同源 POST，无 token）。
 
 const fs = require('fs');
@@ -73,17 +75,35 @@ function mount(app) {
       b: body.b || null,
     };
     const hits = relayTargets(payload);
-    res.json({ ok: true, relayed: hits.length });
-    if (!hits.length) return;
-    for (const t of hits) {
-      // Fire-and-forget：处理器离线/出错不影响标注器与回复。
-      fetch(t.url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      }).catch(() => {});
-    }
+    if (!hits.length) { res.json({ ok: true, relayed: 0, results: [] }); return; }
+    // 等处理器回包（有上限）再回复：回包里的 { refresh, text } 让标注器原地换上
+    // 执行后的新截图并显示判定——用户不必另找被执行的窗口。离线/超时/非 JSON
+    // 一律记为 { ok:false }，不影响标注器。
+    return Promise.all(hits.map(t => relayOne(t.url, payload))).then(results => {
+      res.json({ ok: true, relayed: hits.length, results });
+    });
   });
+}
+
+const RELAY_TIMEOUT_MS = 8000;
+
+async function relayOne(url, payload) {
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
+    });
+    const data = await response.json().catch(() => ({}));
+    return {
+      ok: response.ok && data.ok !== false,
+      refresh: data.refresh === true,
+      text: typeof data.text === 'string' ? data.text.slice(0, 300) : '',
+    };
+  } catch (error) {
+    return { ok: false, refresh: false, text: '', error: String(error && error.message || error).slice(0, 200) };
+  }
 }
 
 module.exports = {

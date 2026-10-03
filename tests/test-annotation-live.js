@@ -1,8 +1,8 @@
 'use strict';
 // Tests for src/annotation-live.js — the realtime annotation relay route.
 // Config loading/matching against an isolated MULTICC_DATA_DIR plus the route
-// handler through a fake express app (payload normalization + fire-and-forget
-// forwarding via a stubbed global fetch). Real state files are never touched.
+// handler through a fake express app (payload normalization + awaited forwarding
+// whose { refresh, text } reply is surfaced back, via a stubbed global fetch). Real state files are never touched.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -31,14 +31,14 @@ function fakeApp() {
   };
 }
 
-function invoke(handler, body) {
+async function invoke(handler, body) {
   const res = {
     statusCode: 200,
     body: undefined,
     status(c) { this.statusCode = c; return this; },
     json(v) { this.body = v; return this; },
   };
-  handler({ body: body || {} }, res);
+  await handler({ body: body || {} }, res);
   return res;
 }
 
@@ -76,7 +76,7 @@ test('matching: session/src regexes, absent = match-all, bad regex never matches
   assert.ok(!hit('s1', '/a/demo-shot.png').includes('http://h/bad-regex'));
 });
 
-test('route: normalizes payload, relays hits fire-and-forget with sessionId', async () => {
+test('route: normalizes payload, relays hits and surfaces handler replies', async () => {
   writeCfg([{ match: { session: 's1' }, url: 'http://127.0.0.1:8899/annotation' }],
     new Date('2026-10-03T11:00:00Z'));
   const app = fakeApp();
@@ -86,18 +86,20 @@ test('route: normalizes payload, relays hits fire-and-forget with sessionId', as
 
   const sent = [];
   const realFetch = global.fetch;
-  global.fetch = (url, init) => { sent.push({ url, init }); return Promise.resolve({ ok: true }); };
+  global.fetch = (url, init) => {
+    sent.push({ url, init });
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, refresh: true, text: '正中' }) });
+  };
 
   try {
-    const res = invoke(post, {
+    const res = await invoke(post, {
       sessionId: 's1', src: '/a/demo-shot.png', width: '1000', height: '1434',
       kind: 'arrow', a: { x: 1, y: 2 }, b: { x: 3, y: 2 },
     });
-    assert.deepEqual(res.body, { ok: true, relayed: 1 });
-    const res2 = invoke(post, { sessionId: 'other-session' });  // 无命中：只回包，不转发
-    assert.deepEqual(res2.body, { ok: true, relayed: 0 });
+    assert.deepEqual(res.body, { ok: true, relayed: 1, results: [{ ok: true, refresh: true, text: '正中' }] });
+    const res2 = await invoke(post, { sessionId: 'other-session' });  // 无命中：只回包，不转发
+    assert.deepEqual(res2.body, { ok: true, relayed: 0, results: [] });
 
-    await new Promise(r => setImmediate(r));  // 等 fire-and-forget 出队
     assert.equal(sent.length, 1);
     assert.equal(sent[0].url, 'http://127.0.0.1:8899/annotation');
     assert.equal(sent[0].init.method, 'POST');
@@ -111,17 +113,24 @@ test('route: normalizes payload, relays hits fire-and-forget with sessionId', as
   }
 });
 
-test('route: unreachable handler is swallowed, reply stays ok', async () => {
+test('route: unreachable / non-JSON handler is reported per result, reply stays ok', async () => {
   writeCfg([{ url: 'http://127.0.0.1:1/dead' }], new Date('2026-10-03T12:00:00Z'));
   const app = fakeApp();
   live.mount(app);
   const realFetch = global.fetch;
   global.fetch = () => Promise.reject(new Error('ECONNREFUSED'));
   try {
-    const res = invoke(app.handlers['POST /api/annotation-live'], { sessionId: 's1', kind: 'point', a: { x: 0, y: 0 } });
+    const post = app.handlers['POST /api/annotation-live'];
+    const res = await invoke(post, { sessionId: 's1', kind: 'point', a: { x: 0, y: 0 } });
     assert.equal(res.statusCode, 200);
     assert.equal(res.body.relayed, 1);
-    await new Promise(r => setImmediate(r));  // 拒绝的 promise 被 .catch 吃掉，不产生 unhandledRejection
+    assert.equal(res.body.results[0].ok, false);
+    assert.equal(res.body.results[0].refresh, false);
+    assert.match(res.body.results[0].error, /ECONNREFUSED/);
+    // 非 JSON 回包：照样 ok（HTTP 200），但不 refresh、无文案。
+    global.fetch = () => Promise.resolve({ ok: true, json: () => Promise.reject(new SyntaxError('bad')) });
+    const res2 = await invoke(post, { sessionId: 's1', kind: 'arrow' });
+    assert.deepEqual(res2.body.results, [{ ok: true, refresh: false, text: '' }]);
   } finally {
     global.fetch = realFetch;
   }
