@@ -42,6 +42,16 @@
 .rs-rfb { position: absolute; inset: 0; background: #000; }
 .rs-rfb canvas { display: block; }
 
+/* 双指捏合缩放：img 与流畅模式画布共同的内层。transform 只改视觉框，
+   rect 归一化坐标同比换算，两套坐标计算都无需感知缩放。 */
+.rs-zoom { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
+.rs-zoombadge {
+  position: absolute; top: 8px; right: 10px; z-index: 2; min-width: 48px;
+  background: rgba(44, 44, 46, .88); color: #eee; border: 1px solid #666; border-radius: 14px;
+  padding: 3px 10px; font-size: 12px; cursor: pointer;
+}
+.rs-zoombadge[hidden] { display: none; }
+
 /* 权限门引导条：缺屏幕录制/辅助功能时出现在头部下方，勾上开关后自动消失。 */
 .rs-permbar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
