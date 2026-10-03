@@ -130,6 +130,46 @@ class RemoteScreenService {
     _frames.add(null);
   }
 
+  /// 权限门：Agent 的屏幕录制 / 辅助功能授权状态（与 Web Air 全局设置
+  /// 「检查授权」同源的 /api/system/agent-permissions）。`applicable=false`
+  /// 表示非 macOS 或无法判定，调用方应直接放行。
+  Future<Map<String, dynamic>> agentPermissions() async {
+    try {
+      final headers = <String, String>{};
+      if (settings.token.isNotEmpty) {
+        headers['X-Access-Token'] = settings.token;
+      }
+      final res = await _http
+          .get(
+            Uri.parse(settings.buildHttpUrl('/api/system/agent-permissions')),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 10));
+      final decoded = jsonDecode(res.body);
+      return decoded is Map<String, dynamic>
+          ? decoded
+          : {'ok': false, 'applicable': false};
+    } catch (_) {
+      return {'ok': false, 'applicable': false};
+    }
+  }
+
+  /// 打开系统设置里对应权限的面板（服务端只放行本机请求；远程访客会拿到
+  /// 403，UI 据此只显示提示文案不给按钮）。
+  Future<void> openPermission(String permission) async {
+    try {
+      await _http
+          .post(
+            Uri.parse(
+              settings.buildHttpUrl('/api/system/agent-permissions/open'),
+            ),
+            headers: _headers,
+            body: jsonEncode({'permission': permission}),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {}
+  }
+
   /// One guarded input op (click / type / press / status / resume / release).
   Future<Map<String, dynamic>> inputOp(Map<String, dynamic> body) async {
     try {

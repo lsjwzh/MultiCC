@@ -41,3 +41,15 @@
 /* 流畅模式：noVNC 的画布铺满舞台（scaleViewport 负责等比缩放）。 */
 .rs-rfb { position: absolute; inset: 0; background: #000; }
 .rs-rfb canvas { display: block; }
+
+/* 权限门引导条：缺屏幕录制/辅助功能时出现在头部下方，勾上开关后自动消失。 */
+.rs-permbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid #5a3a1a; background: #2c2210; font-size: 12.5px;
+}
+.rs-permbar[hidden] { display: none; }
+.rs-perm-title { font-weight: 600; color: #ffcc00; white-space: nowrap; }
+.rs-perm-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.rs-perm-item .rs-btn { padding: 3px 8px; font-size: 12px; }
+.rs-perm-hint { flex: 1; min-width: 200px; color: #b8a878; font-size: 11.5px; }
+

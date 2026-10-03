@@ -82,7 +82,12 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   bool _halted = false;
   String? _statusErr;
   Timer? _haltTimer;
+  Timer? _permTimer;
   Timer? _longPress;
+
+  /// 权限门：null=已放行（或无需检查）；否则是 /api/system/agent-permissions
+  /// 的快照（accessibility / screenRecording / local），横幅据此渲染。
+  Map<String, dynamic>? _permGate;
   int _lastX = 0;
   int _lastY = 0;
   DateTime _lastMoveSent = DateTime.fromMillisecondsSinceEpoch(0);
@@ -96,12 +101,48 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       if (mounted) setState(() {});
     });
     _frameSub = _svc.onFrame.listen((_) => _renderFrame());
-    _svc.connectLive();
+    _checkPermsThenConnect();
   }
+
+  /// 打开屏幕先过权限门：缺屏幕录制连帧都出不来，缺辅助功能点不动。走过
+  /// 「关盖运行 / 自动解锁」的机器必然已授过。缺就亮引导横幅，用户在系统
+  /// 设置里勾上后每 2s 复查一次，齐了自动开始连流。
+  Future<void> _checkPermsThenConnect() async {
+    final perms = await _svc.agentPermissions();
+    if (!mounted) return;
+    if (_gateCleared(perms)) {
+      _svc.connectLive();
+      return;
+    }
+    setState(() => _permGate = _gateSnapshot(perms));
+    _permTimer?.cancel();
+    _permTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      final again = await _svc.agentPermissions();
+      if (!mounted) return;
+      if (_gateCleared(again)) {
+        _permTimer?.cancel();
+        setState(() => _permGate = null);
+        _svc.connectLive();
+      } else {
+        setState(() => _permGate = _gateSnapshot(again));
+      }
+    });
+  }
+
+  static bool _gateCleared(Map<String, dynamic> perms) =>
+      perms['applicable'] != true ||
+      (perms['accessibility'] == true && perms['screenRecording'] == true);
+
+  static Map<String, dynamic> _gateSnapshot(Map<String, dynamic> perms) => {
+    'accessibility': perms['accessibility'] == true,
+    'screenRecording': perms['screenRecording'] == true,
+    'local': perms['local'] == true,
+  };
 
   @override
   void dispose() {
     _haltTimer?.cancel();
+    _permTimer?.cancel();
     _longPress?.cancel();
     _frameSub?.cancel();
     _modeSub?.cancel();
@@ -205,6 +246,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       'busy': 'rsErrBusy',
       'protected-app': 'rsErrProtected',
       'agent-unreachable': 'rsErrAgent',
+      'accessibility-not-granted': 'rsErrAx',
+      'screen-recording-not-granted': 'rsErrSr',
     };
     final code = res['error']?.toString();
     setState(() {
@@ -360,6 +403,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         child: Column(
           children: [
             _statusRow(),
+            if (_permGate != null) _permBanner(),
             if (_halted) _haltBanner(),
             Expanded(child: _stage()),
             if (_control) _keyBar(),
@@ -400,6 +444,72 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
               ? const Color(0xFF8a9aab)
               : const Color(0xFFe07a7a),
         ),
+      ),
+    );
+  }
+
+  Widget _permBanner() {
+    final gate = _permGate!;
+    final local = gate['local'] == true;
+    Widget row(String key, String label) {
+      final ok = gate[key] == true;
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '$label ${ok ? '✓' : '✗'}',
+            style: const TextStyle(fontSize: 12.5, color: Color(0xFFf0d7a0)),
+          ),
+          if (!ok && local) ...[
+            const SizedBox(width: 6),
+            OutlinedButton(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFFffcc55),
+                side: const BorderSide(color: Color(0xFF7a5a20)),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 30),
+              ),
+              onPressed: () => _svc.openPermission(key),
+              child: Text(
+                t('rsPermOpen'),
+                style: const TextStyle(fontSize: 11.5),
+              ),
+            ),
+          ],
+        ],
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFF2c2210),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Text(
+                t('rsPermTitle'),
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFFffcc55),
+                ),
+              ),
+              const SizedBox(width: 12),
+              row('screenRecording', t('rsPermScreen')),
+              const SizedBox(width: 12),
+              row('accessibility', t('rsPermAx')),
+            ],
+          ),
+          const SizedBox(height: 3),
+          Text(
+            local ? t('rsPermHint') : t('rsPermRemote'),
+            style: const TextStyle(fontSize: 11.5, color: Color(0xFFb8a878)),
+          ),
+        ],
       ),
     );
   }
