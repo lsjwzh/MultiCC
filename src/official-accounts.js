@@ -77,21 +77,21 @@ function jwtExpiryMs(token) {
   return Number.isFinite(seconds) ? seconds * 1000 : null;
 }
 
-// A copy imported from the CLI FOLLOWS the CLI only while it still holds the
-// refresh token the importer wrote. The importer records this fingerprint; any
-// login that rewrites the token (multicc PKCE, `codex login` with CODEX_HOME)
-// breaks the match, so the account becomes independent without every login
-// flow having to remember to clear a flag.
-function refreshFingerprint(refreshToken) {
-  const text = typeof refreshToken === 'string' ? refreshToken.trim() : '';
-  return text ? crypto.createHash('sha256').update(text).digest('hex').slice(0, 16) : '';
+// An account copied from the CLI's login by an earlier build (never released):
+// it shares the CLI's single-use refresh token, so multicc must never rotate it
+// — doing so logs the CLI out, or fails because the CLI already rotated. It is
+// usable until its access token lapses, then needs its own login, which clears
+// the tag. New CLI logins are no longer copied at all.
+function isCliCopy(source) {
+  return source === 'cli-import';
 }
 
-// A copy imported before fingerprints existed carries no hash: it keeps the old
-// meaning (cli-import follows) until the importer backfills one.
-function followsCliImport(source, importedRefreshHash, refreshToken) {
-  if (source !== 'cli-import') return false;
-  return importedRefreshHash == null || importedRefreshHash === refreshFingerprint(refreshToken);
+// A copy's auth.json is never rotated by multicc, so a write after the import
+// can only be the account's own `codex login` (CODEX_HOME=<account dir>).
+function rewrittenSince(file, importedAt) {
+  const at = Date.parse(importedAt || '');
+  if (!Number.isFinite(at)) return false;
+  try { return fs.statSync(file).mtimeMs > at + 2000; } catch (_) { return false; }
 }
 
 function readJsonIfExists(file) {
@@ -139,10 +139,6 @@ function createOfficialAccountStore(options = {}) {
     return { id, dir, authFile: codexAuthFile(id), label: meta.label };
   }
 
-  function readCodexMeta(id) {
-    return readJsonIfExists(codexMetaFile(id)) || {};
-  }
-
   function writeCodexMeta(id, patch) {
     const meta = { ...(readJsonIfExists(codexMetaFile(id)) || {}), ...patch };
     atomicWriteJson(codexMetaFile(id), meta);
@@ -185,7 +181,7 @@ function createOfficialAccountStore(options = {}) {
           label: typeof meta.label === 'string' ? meta.label : '',
           createdAt: Number(meta.createdAt) || null,
           source: typeof meta.source === 'string' ? meta.source : '',
-          followsCli: followsCliImport(meta.source, meta.importedRefreshHash, ((readJsonIfExists(codexAuthFile(id)) || {}).tokens || {}).refresh_token),
+          cliCopy: isCliCopy(meta.source) && !rewrittenSince(codexAuthFile(id), meta.importedAt),
           ...describeCodexAuth(codexAuthFile(id)),
         };
       })
@@ -272,7 +268,7 @@ function createOfficialAccountStore(options = {}) {
           label: typeof data.label === 'string' ? data.label : '',
           createdAt: Number(data.createdAt) || null,
           source: typeof data.source === 'string' ? data.source : '',
-          followsCli: followsCliImport(data.source, data.importedRefreshHash, data.refresh_token),
+          cliCopy: isCliCopy(data.source),
           ...describeClaudeCredential(data),
         };
       })
@@ -290,7 +286,6 @@ function createOfficialAccountStore(options = {}) {
     // codex
     createCodexAccount,
     writeCodexMeta,
-    readCodexMeta,
     listCodexAccounts,
     deleteCodexAccount,
     readCodexCredential,
@@ -359,8 +354,7 @@ module.exports = {
   sanitizeLoginEnv,
   codexAccountAuthFilePath,
   claudeAccountFilePath,
-  refreshFingerprint,
-  followsCliImport,
+  isCliCopy,
   DEFAULT_ROOT,
   ACCOUNT_ID_PATTERN,
 };

@@ -9,7 +9,7 @@
 // (claudeRefreshGroup / claudeRefreshBlock, 5s–5min clamps).
 
 const { refreshTokens, fetchProfile, ClaudeOAuthError, REFRESH_MIN_BACKOFF_MS } = require('./official-oauth');
-const { followsCliImport } = require('../official-accounts');
+const { isCliCopy } = require('../official-accounts');
 
 const EXPIRY_MARGIN_MS = 60 * 1000; // treat tokens expiring within a minute as expired
 
@@ -43,7 +43,7 @@ function createClaudeAccountCredentialService(options = {}) {
       accessToken,
       refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token.trim() : '',
       expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
-      fromCli: followsCliImport(data.source, data.importedRefreshHash, data.refresh_token),
+      cliCopy: isCliCopy(data.source),
     };
   }
 
@@ -79,23 +79,11 @@ function createClaudeAccountCredentialService(options = {}) {
     }
   }
 
-  // A copy imported from the CLI shares the CLI's refresh token: rotating it
-  // here would log the CLI out. Re-sync from the CLI first (the CLI refresher
-  // keeps the CLI fresh); while the copy still shares the CLI's token family it
-  // never rotates on its own. Only once the CLI holds a different login does
-  // the copy refresh itself like any multicc-owned account.
-  async function refreshPreferringCli(id, stored) {
-    if (stored.fromCli && typeof options.refreshFromCli === 'function') {
-      let r = {};
-      try { r = (await options.refreshFromCli('claude', id)) || {}; } catch (_) { /* treat as not shared */ }
-      if (r.synced) {
-        const synced = readStored(id);
-        if (synced.ok && fresh(synced.expiresAt)) {
-          return { ok: true, accessToken: synced.accessToken, expiresAt: synced.expiresAt };
-        }
-      }
-      if (r.shared) return { ok: false, reason: 'waiting_for_cli_refresh' };
-    }
+  // A copy of the CLI's login shares the CLI's single-use refresh token:
+  // rotating it would log the CLI out (or fail, the CLI having rotated first).
+  // It is served until it lapses, then the account needs its own login.
+  function refreshOwn(id, stored) {
+    if (stored.cliCopy) return { ok: false, reason: 'cli_copy_needs_login' };
     return refresh(id, stored.refreshToken);
   }
 
@@ -114,7 +102,7 @@ function createClaudeAccountCredentialService(options = {}) {
         if (current.ok && fresh(current.expiresAt)) {
           return { ok: true, accessToken: current.accessToken, expiresAt: current.expiresAt };
         }
-        return refreshPreferringCli(id, current.ok ? current : stored);
+        return refreshOwn(id, current.ok ? current : stored);
       }).finally(() => inflight.delete(id));
       inflight.set(id, pending);
     }

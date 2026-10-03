@@ -29,14 +29,11 @@ function createCodexAccountRefreshSupervisor(options = {}) {
       });
 
   const refreshers = new Map(); // accountId -> refresher
-  const shouldSkip = (accountId) => {
-    try { return typeof options.sharesCliLogin === 'function' && !!options.sharesCliLogin('codex', accountId); }
-    catch (_) { return false; }
-  };
 
   // Reconcile the refresher set with the accounts on disk. New accounts get a
   // refresher once logged in; deleted accounts are dropped (refreshers hold no
   // timers of their own — the host drives check() — so dropping is enough).
+  const cliCopies = new Set();
   function sync() {
     let list = [];
     try {
@@ -45,8 +42,10 @@ function createCodexAccountRefreshSupervisor(options = {}) {
       return;
     }
     const seen = new Set();
+    cliCopies.clear();
     for (const account of list) {
       seen.add(account.id);
+      if (account.cliCopy) cliCopies.add(account.id);
       if (!account.loggedIn || refreshers.has(account.id)) continue;
       try {
         refreshers.set(account.id, makeRefresher(account));
@@ -63,9 +62,9 @@ function createCodexAccountRefreshSupervisor(options = {}) {
     sync();
     const results = [];
     for (const [accountId, refresher] of refreshers) {
-      // A copy imported from the CLI shares the CLI's single-use refresh token;
-      // the CLI refresher rotates it and the importer copies the result over.
-      if (shouldSkip(accountId)) { results.push({ accountId, outcome: 'follows_cli' }); continue; }
+      // A copy of the CLI's login shares the CLI's single-use refresh token:
+      // rotating it would log the CLI out. It needs its own login instead.
+      if (cliCopies.has(accountId)) { results.push({ accountId, outcome: 'cli_copy' }); continue; }
       try {
         const outcome = await refresher.check(reason);
         results.push({ accountId, outcome: outcome && outcome.outcome || null });

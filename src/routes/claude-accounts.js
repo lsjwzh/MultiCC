@@ -121,7 +121,8 @@ function mountClaudeAccountRoutes(app, deps) {
           throw new Error('state mismatch (possible CSRF) — login discarded');
         }
         const tokenData = await exchangeCode(fetchImpl, { code, state, codeVerifier: pkce.codeVerifier });
-        accounts.writeClaudeCredential(account.id, tokenData);
+        // Its own token family now: no longer a copy of the CLI's login.
+        accounts.writeClaudeCredential(account.id, { ...tokenData, source: 'login', importedRefreshHash: undefined });
         loginStates.set(account.id, { state: 'complete', email: tokenData.email || '' });
         logger.info('claude_account_login_complete', { accountId: account.id, email: tokenData.email || '' });
       })
@@ -137,7 +138,7 @@ function mountClaudeAccountRoutes(app, deps) {
   }
 
   app.get('/api/claude/accounts', (req, res) => {
-    res.json({ ok: true, activeAccountId: activeId(), accounts: [...(unified ? [{ id: 'global', label: '本机 CLI 登录账号', global: true, active: activeId() === 'global' }] : []), ...accounts.listClaudeAccounts().map(accountDto)] });
+    res.json({ ok: true, activeAccountId: activeId(), cliLogin: deps.cliLogin ? deps.cliLogin.status('claude') : null, accounts: [...(unified ? [{ id: 'global', label: '本机 CLI 登录账号', global: true, active: activeId() === 'global' }] : []), ...accounts.listClaudeAccounts().map(accountDto)] });
   });
 
   app.post('/api/claude/accounts', async (req, res) => {

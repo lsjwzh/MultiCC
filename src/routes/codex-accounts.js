@@ -102,7 +102,7 @@ function mountCodexAccountRoutes(app, deps) {
   }
 
   app.get('/api/codex/accounts', (req, res) => {
-    res.json({ ok: true, activeAccountId: activeId(), accounts: [...(unified ? [{ id: 'global', label: '本机 CLI 登录账号', global: true, active: activeId() === 'global' }] : []), ...accounts.listCodexAccounts().map(accountDto)] });
+    res.json({ ok: true, activeAccountId: activeId(), cliLogin: deps.cliLogin ? deps.cliLogin.status('codex') : null, accounts: [...(unified ? [{ id: 'global', label: '本机 CLI 登录账号', global: true, active: activeId() === 'global' }] : []), ...accounts.listCodexAccounts().map(accountDto)] });
   });
 
   app.post('/api/codex/accounts', async (req, res) => {

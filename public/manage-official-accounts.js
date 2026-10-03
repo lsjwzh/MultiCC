@@ -31,6 +31,7 @@
     loading: false,
     quota: {}, // `${vendor}:${id}` → {status:'loading'} | {status:'ok'|'err', html}
     loginWatch: {}, // claude accountId → poll timer
+    cli: {}, // vendor → 本机 CLI 登录状态 {loggedIn, email, inStore}
   };
 
   function bodyEl() { return document.getElementById('official-accounts-body'); }
@@ -159,21 +160,30 @@
     return '<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">'
       + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
       + '<b style="font-size:13px">' + esc(name) + '</b>' + chipsHtml
-      + (a.followsCli ? ' <span title="' + esc(tr('airOfficialAcctFollowsCliTitle')) + '">' + chip(tr('airOfficialAcctFollowsCli'), '#d29922') + '</span>' : '') + provider + (a.active ? chip(tr('airOfficialAcctActive'), '#3fb950') : '')
+      + (a.cliCopy ? ' <span title="' + esc(tr('airOfficialAcctCliCopyTitle')) + '">' + chip(tr('airOfficialAcctCliCopy'), '#d29922') + '</span>' : '') + provider + (a.active ? chip(tr('airOfficialAcctActive'), '#3fb950') : '')
       + '<span style="margin-left:auto;display:flex;gap:6px">'
       + (a.active ? '' : '<button class="btn btn-green" data-act="activate" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctActivate')) + '</button>')
       + (a.global ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="quota" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctRefreshQuota')) + '</button>')
-      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="relogin" data-vendor="' + vendor + '" data-id="' + a.id + '"' + (a.followsCli ? ' title="' + esc(tr('airOfficialAcctFollowsCliTitle')) + '"' : '') + '>' + esc(tr(a.followsCli ? 'airOfficialAcctIndependentLogin' : 'airOfficialAcctRelogin')) + '</button>'
+      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="relogin" data-vendor="' + vendor + '" data-id="' + a.id + '"' + (a.cliCopy ? ' title="' + esc(tr('airOfficialAcctCliCopyTitle')) + '"' : '') + '>' + esc(tr('airOfficialAcctRelogin')) + '</button>'
       + (a.global || a.active ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctDelete')) + '</button>')
       + '</span></div>'
       + (a.global ? '' : '<div style="font-size:12px">' + quotaHtml(vendor, a.id) + '</div>')
       + '</div>';
   }
 
+  // 本机 CLI 已登录、但账号库里没有这个账号：提醒在这里再登录一次（不拷贝 CLI 的登录）。
+  function cliLoginHint(vendor) {
+    const cli = state.cli[vendor];
+    if (!cli || !cli.loggedIn || cli.inStore) return '';
+    return '<div style="font-size:12px;color:#d29922;border:1px dashed #d2992266;border-radius:8px;padding:8px 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+      + '<span style="flex:1;min-width:200px;line-height:1.6">' + esc(tr(vendor === 'codex' ? 'airOfficialAcctCliLoginHintCodex' : 'airOfficialAcctCliLoginHintClaude', { email: cli.email || '' })) + '</span>'
+      + '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="add" data-vendor="' + vendor + '">' + esc(tr('airOfficialAcctCliLoginHintAction')) + '</button></div>';
+  }
+
   function vendorSection(vendor, title, hint, accounts, rowFn) {
-    const rows = accounts.length
+    const rows = cliLoginHint(vendor) + (accounts.length
       ? accounts.map(rowFn).join('')
-      : '<div style="font-size:12px;color:var(--faint)">' + esc(tr('airOfficialAcctEmpty')) + '</div>';
+      : '<div style="font-size:12px;color:var(--faint)">' + esc(tr('airOfficialAcctEmpty')) + '</div>');
     return '<div style="display:flex;flex-direction:column;gap:8px">'
       + '<div style="font-size:12px;color:var(--muted);font-weight:600">' + title
       + ' <span style="font-weight:400;color:var(--faint)">' + hint + '</span></div>'
@@ -200,6 +210,7 @@
       ]);
       state.codex = Array.isArray(codex.accounts) ? codex.accounts : [];
       state.claude = Array.isArray(claude.accounts) ? claude.accounts : [];
+      state.cli = { codex: codex.cliLogin || null, claude: claude.cliLogin || null };
       state.loading = false;
       paint();
       // 自动为已登录账号拉一次余量；失败的行保留可点「刷新余量」重试。

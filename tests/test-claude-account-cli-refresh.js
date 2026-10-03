@@ -24,7 +24,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createOfficialAccountStore } = require('../src/official-accounts');
-const { createCliLoginImporter } = require('../src/official-accounts-cli-import');
+const { createCliLoginDetector } = require('../src/official-accounts-cli-login');
+const { createCodexAccountRefreshSupervisor } = require('../src/codex/accounts-refresh');
 const { createClaudeAccountCredentialService } = require('../src/claude-auth/account-credentials');
 const { createClaudeAccountRefreshSupervisor, createCliCredentialSlot, keychainServiceFor } = require('../src/claude-auth/accounts-refresh');
 const { TOKEN_URL } = require('../src/claude-auth/official-oauth');
@@ -113,7 +114,7 @@ async function setup(opts = {}) {
   const env = { FAKE_OAUTH_URL: server.url, FAKE_CLAUDE_LOG: log, ...(opts.env || {}) };
   const supervisor = createClaudeAccountRefreshSupervisor({
     accounts, platform: 'linux', claudeBin: bin, extraEnv: env, user: 'tester',
-    isEnabled: () => true, sharesCliLogin: opts.sharesCliLogin,
+    isEnabled: () => true,
   });
   // An own-token account, as multicc's PKCE login leaves it.
   const addAccount = (family, expiresInMs) => {
@@ -177,73 +178,69 @@ test('a fresh account spawns nothing and writes no slot', async () => {
 });
 
 // The CLI's own login, imported into the store, shares its token family.
-async function importCliLogin(t, family = 'cli', expiresInMs = 3 * MIN) {
+// A copy of the CLI's login, as an earlier (unreleased) build left it in the
+// store: the CLI's own token family, tagged source:'cli-import'.
+function makeCliCopy(t, family = 'cli', expiresInMs = 3 * MIN) {
   const tok = t.server.issue(family);
-  const cli = { ok: true, accessToken: tok.access_token, refreshToken: tok.refresh_token, expiresAt: Date.now() + expiresInMs };
-  const importer = createCliLoginImporter({
-    accounts: t.accounts,
-    codexAuthFile: path.join(t.dir, 'no-codex', 'auth.json'),
-    readClaudeCli: async () => cli,
-    fetchProfile: async () => ({ email: 'me@example.com', account_uuid: 'uuid-me' }),
+  const { id } = t.accounts.createClaudeAccount({ label: '' });
+  t.accounts.writeClaudeCredential(id, {
+    access_token: tok.access_token, refresh_token: tok.refresh_token,
+    expired: new Date(Date.now() + expiresInMs).toISOString(), email: 'me@example.com', source: 'cli-import',
   });
-  const r = await importer.importOnce();
-  return { importer, cli, id: r.claude.id };
+  return { id, cliRefreshToken: tok.refresh_token };
 }
 
-test('a copy that shares the CLI token family is never rotated by its own CLI run', async () => {
-  const t0 = await setup();
-  const imported = await importCliLogin(t0);
-  const t = { ...t0, supervisor: createClaudeAccountRefreshSupervisor({
-    accounts: t0.accounts, platform: 'linux', claudeBin: t0.bin, extraEnv: t0.env, isEnabled: () => true,
-    sharesCliLogin: imported.importer.sharesCliLogin,
-  }) };
+test('a copy of the CLI login is never rotated: not by the CLI run, not inline — it waits for its own login', async () => {
+  const t = await setup();
   try {
-    assert.equal(t.accounts.listClaudeAccounts()[0].followsCli, true);
-    const [r] = await t.supervisor.checkAll('test');
-    assert.equal(r.outcome, 'follows_cli');
-    assert.equal(t.calls().length, 0);
-    assert.equal(t.server.rotations('cli'), 0, 'the CLI keeps the only live copy of its refresh token');
+    const copy = makeCliCopy(t, 'cli', 30 * 1000);
+    assert.equal(t.accounts.listClaudeAccounts()[0].cliCopy, true);
 
-    // Why it matters: a second holder rotating the same family logs the first out.
-    const stolen = await (await t.server.fetch(TOKEN_URL, { method: 'POST', body: JSON.stringify({ refresh_token: imported.cli.refreshToken }) })).json();
-    assert.ok(stolen.access_token);
-    const cliOwn = await t.server.fetch(TOKEN_URL, { method: 'POST', body: JSON.stringify({ refresh_token: imported.cli.refreshToken }) });
+    const [r] = await t.supervisor.checkAll('test');
+    assert.equal(r.outcome, 'cli_copy');
+    assert.equal(t.calls().length, 0, 'no CLI run for a copy');
+
+    const credentials = createClaudeAccountCredentialService({ accounts: t.accounts, fetch: t.server.fetch, exclusive: t.supervisor.exclusive });
+    const got = await credentials.readAccountToken(copy.id);
+    assert.equal(got.token, null);
+    assert.equal(got.reason, 'cli_copy_needs_login');
+    assert.equal(t.server.rotations('cli'), 0, 'the CLI keeps the only live use of its refresh token');
+
+    // Why: a second holder rotating the same family logs the first one out.
+    const stolen = await t.server.fetch(TOKEN_URL, { method: 'POST', body: JSON.stringify({ refresh_token: copy.cliRefreshToken }) });
+    assert.equal(stolen.status, 200);
+    const cliOwn = await t.server.fetch(TOKEN_URL, { method: 'POST', body: JSON.stringify({ refresh_token: copy.cliRefreshToken }) });
     assert.equal(cliOwn.status, 400, 'the CLI\'s next refresh fails: invalid_grant');
-  } finally { await t0.done(); }
+  } finally { await t.done(); }
 });
 
-test('signing an imported account in separately makes it independent: not clobbered, refreshed by its own CLI run', async () => {
-  const t0 = await setup();
-  const imported = await importCliLogin(t0, 'cli', 50 * MIN);
-  const supervisor = createClaudeAccountRefreshSupervisor({
-    accounts: t0.accounts, platform: 'linux', claudeBin: t0.bin, extraEnv: t0.env, isEnabled: () => true,
-    sharesCliLogin: imported.importer.sharesCliLogin,
-  });
+test('a copy that is still valid keeps serving its access token until it lapses', async () => {
+  const t = await setup();
   try {
-    // What the relogin route's PKCE completion writes: a NEW token family.
-    const own = t0.server.issue('mine');
-    t0.accounts.writeClaudeCredential(imported.id, {
-      access_token: own.access_token, refresh_token: own.refresh_token, expired: new Date(Date.now() + 3 * MIN).toISOString(),
+    const copy = makeCliCopy(t, 'cli', 30 * MIN);
+    const credentials = createClaudeAccountCredentialService({ accounts: t.accounts, fetch: t.server.fetch });
+    assert.equal((await credentials.readAccountToken(copy.id)).token, 'at-cli-0');
+  } finally { await t.done(); }
+});
+
+test('signing the copy in through multicc gives it its own family; from then on it is refreshed like any account', async () => {
+  const t = await setup();
+  try {
+    const copy = makeCliCopy(t, 'cli', 50 * MIN);
+    // What the relogin route's PKCE completion writes (src/routes/claude-accounts.js).
+    const own = t.server.issue('mine');
+    t.accounts.writeClaudeCredential(copy.id, {
+      access_token: own.access_token, refresh_token: own.refresh_token,
+      expired: new Date(Date.now() + 3 * MIN).toISOString(), source: 'login', importedRefreshHash: undefined,
     });
-    const [acct] = t0.accounts.listClaudeAccounts();
-    assert.equal(acct.source, 'cli-import', 'the tag is left as it was');
-    assert.equal(acct.followsCli, false, 'but the fingerprint no longer matches, so it is independent');
-    assert.equal(imported.importer.sharesCliLogin('claude', imported.id), false);
+    assert.equal(t.accounts.listClaudeAccounts()[0].cliCopy, false);
 
-    // The CLI later holds a newer token for the same account: the independent login stays.
-    const cliNext = t0.server.issue('cli');
-    imported.cli.accessToken = cliNext.access_token;
-    imported.cli.refreshToken = cliNext.refresh_token;
-    imported.cli.expiresAt = Date.now() + 55 * MIN;
-    assert.equal((await imported.importer.importOnce()).claude.status, 'already');
-    assert.equal(t0.accounts.readClaudeCredential(imported.id).access_token, own.access_token);
-
-    const [r] = await supervisor.checkAll('test');
+    const [r] = await t.supervisor.checkAll('test');
     assert.equal(r.outcome, 'refreshed');
-    assert.equal(t0.server.rotations('mine'), 1);
-    assert.equal(t0.server.rotations('cli'), 0, 'the CLI login is untouched');
-    assert.equal(t0.server.rejections(), 0);
-  } finally { supervisor.stop(); await t0.done(); }
+    assert.equal(t.server.rotations('mine'), 1);
+    assert.equal(t.server.rotations('cli'), 0, 'the CLI login is untouched');
+    assert.equal(t.server.rejections(), 0);
+  } finally { await t.done(); }
 });
 
 test('a slot left holding a newer token (rotated, never read back) is adopted, not overwritten', async () => {
@@ -355,58 +352,113 @@ test('macOS slot: the CLI\'s service name, $USER account, token via stdin hex on
   assert.equal((await slot.read()).ok, false);
 });
 
-test('codex: an imported copy re-logged in with CODEX_HOME stops following the CLI', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-independent-'));
-  try {
-    const accounts = createOfficialAccountStore({ root: path.join(dir, 'store') });
-    const codexAuthFile = path.join(dir, 'codex-home', 'auth.json');
+// ── the CLI's own login is only detected, never copied ──────────────────────
+
+function detectorSetup({ claudeCli = null, profile = null, codexAuth = null } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-login-detect-'));
+  const accounts = createOfficialAccountStore({ root: path.join(dir, 'store') });
+  const codexAuthFile = path.join(dir, 'codex-home', 'auth.json');
+  if (codexAuth) {
     fs.mkdirSync(path.dirname(codexAuthFile), { recursive: true });
-    const jwt = p => `x.${Buffer.from(JSON.stringify(p)).toString('base64url')}.y`;
-    const auth = (rt, exp) => ({ auth_mode: 'chatgpt', tokens: { id_token: jwt({ email: 'me@example.com' }), access_token: jwt({ exp, n: rt }), refresh_token: rt, account_id: 'acct-1' } });
-    const soon = Math.floor(Date.now() / 1000) + 3600;
-    fs.writeFileSync(codexAuthFile, JSON.stringify(auth('rt-cli-0', soon)));
-    const importer = createCliLoginImporter({ accounts, codexAuthFile, readClaudeCli: async () => null });
-    const id = (await importer.importOnce()).codex.id;
-    assert.equal(accounts.listCodexAccounts()[0].followsCli, true);
-    assert.equal(importer.sharesCliLogin('codex', id), true);
+    fs.writeFileSync(codexAuthFile, JSON.stringify(codexAuth));
+  }
+  let profileCalls = 0;
+  const detector = createCliLoginDetector({
+    accounts, codexAuthFile,
+    readClaudeCli: async () => claudeCli,
+    fetchProfile: async () => { profileCalls += 1; if (!profile) throw new Error('offline'); return profile; },
+  });
+  return { dir, accounts, detector, profileCalls: () => profileCalls, done: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
 
-    // `codex login` with CODEX_HOME=<account dir> rewrites auth.json with its own family.
-    fs.writeFileSync(accounts.codexAuthFile(id), JSON.stringify(auth('rt-own-0', soon)));
-    assert.equal(accounts.listCodexAccounts()[0].followsCli, false);
-    assert.equal(importer.sharesCliLogin('codex', id), false, 'its own CODEX_HOME refresher may now rotate it');
-
-    fs.writeFileSync(codexAuthFile, JSON.stringify(auth('rt-cli-1', soon + 600)));
-    assert.equal((await importer.importOnce()).codex.status, 'already');
-    assert.equal(JSON.parse(fs.readFileSync(accounts.codexAuthFile(id), 'utf8')).tokens.refresh_token, 'rt-own-0', 'not clobbered by the CLI copy');
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+const jwt = p => `x.${Buffer.from(JSON.stringify(p)).toString('base64url')}.y`;
+const codexLogin = (email, accountId, rt = 'rt-x') => ({
+  auth_mode: 'chatgpt',
+  tokens: { id_token: jwt({ email }), access_token: jwt({ exp: Math.floor(Date.now() / 1000) + 3600 }), refresh_token: rt, account_id: accountId },
 });
 
-test('a copy imported before fingerprints existed keeps following the CLI, and an independent login still frees it', async () => {
-  const t0 = await setup();
-  const imported = await importCliLogin(t0, 'cli', 50 * MIN);
+test('claude: a signed-in CLI that the store does not have yields a reminder, and nothing is written', async () => {
+  const t = detectorSetup({
+    claudeCli: { ok: true, accessToken: 'at-cli', refreshToken: 'rt-cli', expiresAt: Date.now() + 3600e3 },
+    profile: { email: 'me@example.com', account_uuid: 'uuid-me' },
+  });
   try {
-    // Downgrade to the pre-fingerprint shape: source tag only.
-    const file = t0.accounts.claudeFile(imported.id);
-    const legacy = JSON.parse(fs.readFileSync(file, 'utf8'));
-    delete legacy.importedRefreshHash;
-    fs.writeFileSync(file, JSON.stringify(legacy));
-    assert.equal(t0.accounts.listClaudeAccounts()[0].followsCli, true, 'no hash: old meaning, still follows');
+    await t.detector.detect();
+    assert.deepEqual(t.detector.status('claude'), { loggedIn: true, email: 'me@example.com', inStore: false });
+    assert.equal(t.accounts.listClaudeAccounts().length, 0, 'the CLI login is never copied into the store');
+    await t.detector.detect();
+    assert.equal(t.profileCalls(), 1, 'one profile lookup per CLI token');
 
-    // The CLI rotates its family; the copy now holds a spent token and must be replaced, not left behind.
-    const next = t0.server.issue('cli');
-    Object.assign(imported.cli, { accessToken: next.access_token, refreshToken: next.refresh_token, expiresAt: Date.now() + 55 * MIN });
-    assert.equal((await imported.importer.importOnce()).claude.status, 'updated');
-    assert.equal(t0.accounts.readClaudeCredential(imported.id).refresh_token, next.refresh_token);
+    // A copy of that login does not count — it still needs its own sign-in.
+    const { id: copyId } = t.accounts.createClaudeAccount({ label: '' });
+    t.accounts.writeClaudeCredential(copyId, { access_token: 'at-cli', refresh_token: 'rt-cli', account_uuid: 'uuid-me', source: 'cli-import' });
+    assert.equal(t.detector.status('claude').inStore, false);
 
-    // Downgrade again, then let a tick with an unchanged CLI token backfill the hash.
-    const again = JSON.parse(fs.readFileSync(file, 'utf8'));
-    delete again.importedRefreshHash;
-    fs.writeFileSync(file, JSON.stringify(again));
-    await imported.importer.importOnce();
-    assert.ok(t0.accounts.readClaudeCredential(imported.id).importedRefreshHash, 'fingerprint backfilled');
+    // The user signs in here: the reminder goes away.
+    const { id } = t.accounts.createClaudeAccount({ label: '' });
+    t.accounts.writeClaudeCredential(id, { access_token: 'at-own', refresh_token: 'rt-own', account_uuid: 'uuid-me', email: 'me@example.com', source: 'login' });
+    assert.equal(t.detector.status('claude').inStore, true);
+  } finally { t.done(); }
+});
 
-    const own = t0.server.issue('mine');
-    t0.accounts.writeClaudeCredential(imported.id, { access_token: own.access_token, refresh_token: own.refresh_token });
-    assert.equal(t0.accounts.listClaudeAccounts()[0].followsCli, false, 'independent once re-logged in');
-  } finally { await t0.done(); }
+test('claude: no CLI login, or an unknown identity with an account already signed in, means no reminder', async () => {
+  const none = detectorSetup({ claudeCli: { ok: false } });
+  try {
+    await none.detector.detect();
+    assert.deepEqual(none.detector.status('claude'), { loggedIn: false });
+  } finally { none.done(); }
+
+  const offline = detectorSetup({ claudeCli: { ok: true, accessToken: 'at-cli', expiresAt: Date.now() + 3600e3 }, profile: null });
+  try {
+    await offline.detector.detect();
+    assert.equal(offline.detector.status('claude').inStore, false, 'nothing signed in: remind');
+    const { id } = offline.accounts.createClaudeAccount({ label: '' });
+    offline.accounts.writeClaudeCredential(id, { access_token: 'at-own', refresh_token: 'rt-own', email: 'other@example.com' });
+    assert.equal(offline.detector.status('claude').inStore, true, 'identity unknown but an account exists: stay quiet');
+  } finally { offline.done(); }
+});
+
+test('codex: the reminder matches on account_id AND email; an API-key auth.json is not a login', async () => {
+  const t = detectorSetup({ codexAuth: codexLogin('me@example.com', 'ws-1') });
+  try {
+    assert.deepEqual(t.detector.status('codex'), { loggedIn: true, email: 'me@example.com', inStore: false });
+    const write = (email, rt) => {
+      const { id } = t.accounts.createCodexAccount({ label: '' });
+      fs.mkdirSync(path.dirname(t.accounts.codexAuthFile(id)), { recursive: true });
+      fs.writeFileSync(t.accounts.codexAuthFile(id), JSON.stringify(codexLogin(email, 'ws-1', rt)));
+    };
+    write('teammate@example.com', 'rt-t');
+    assert.equal(t.detector.status('codex').inStore, false, 'same workspace, different person');
+    write('me@example.com', 'rt-me');
+    assert.equal(t.detector.status('codex').inStore, true);
+  } finally { t.done(); }
+
+  const key = detectorSetup({ codexAuth: { OPENAI_API_KEY: 'sk-x' } });
+  try { assert.deepEqual(key.detector.status('codex'), { loggedIn: false }); } finally { key.done(); }
+});
+
+test('codex: a copy is skipped by the refresher until its own `codex login` rewrites auth.json', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-copy-'));
+  try {
+    const accounts = createOfficialAccountStore({ root: path.join(dir, 'store') });
+    const { id } = accounts.createCodexAccount({ label: '' });
+    const file = accounts.codexAuthFile(id);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(codexLogin('me@example.com', 'ws-1', 'rt-cli')));
+    const importedAt = new Date(Date.now() + 60e3); // the copy's file predates the tag
+    accounts.writeCodexMeta(id, { source: 'cli-import', importedAt: importedAt.toISOString() });
+    let checks = 0;
+    const supervisor = createCodexAccountRefreshSupervisor({ accounts, makeRefresher: () => ({ check: async () => { checks += 1; return { outcome: 'fresh' }; }, status: () => ({}) }) });
+    assert.equal(accounts.listCodexAccounts()[0].cliCopy, true);
+    assert.deepEqual((await supervisor.checkAll('test')).map(r => r.outcome), ['cli_copy']);
+    assert.equal(checks, 0);
+
+    // `codex login` with CODEX_HOME=<account dir> rewrites auth.json later on.
+    fs.writeFileSync(file, JSON.stringify(codexLogin('me@example.com', 'ws-1', 'rt-own')));
+    const later = new Date(importedAt.getTime() + 10e3);
+    fs.utimesSync(file, later, later);
+    assert.equal(accounts.listCodexAccounts()[0].cliCopy, false);
+    assert.deepEqual((await supervisor.checkAll('test')).map(r => r.outcome), ['fresh']);
+    assert.equal(checks, 1);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

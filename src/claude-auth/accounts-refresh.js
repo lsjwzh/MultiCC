@@ -17,10 +17,10 @@
 // The CLI stays the only thing that speaks the refresh protocol, and the
 // default login ("Claude Code-credentials") is never touched.
 //
-// This only works for accounts with their OWN token family. A copy imported
-// from the CLI shares the CLI's single-use refresh token, so rotating it here
-// would log the CLI out — those are skipped (sharesCliLogin) and keep following
-// the CLI until the user signs that account in separately.
+// This only works for accounts with their OWN token family. A copy of the
+// CLI's login (isCliCopy) shares the CLI's single-use refresh token, so
+// rotating it here would log the CLI out — it is skipped, and needs its own
+// login once it lapses.
 //
 // A rotation is the one step that cannot be repeated (the old refresh token is
 // spent), so: one rotation per account at a time (exclusive(), shared with the
@@ -37,6 +37,7 @@ const path = require('node:path');
 const { createClaudeOAuthRefresher, KEYCHAIN_SERVICE } = require('./oauth-refresh');
 const { parseCredentials } = require('../quota/claude-cli-oauth');
 const { atomicWriteJson, ensurePrivateDir, secureFile } = require('../runtime-security');
+const { isCliCopy } = require('../official-accounts');
 
 // Narrower than the shared refresher's 15 min: each attempt seeds and clears a
 // credential slot, and the CLI declines anything outside its own ~5 min window.
@@ -173,11 +174,6 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
     return next;
   }
 
-  const shouldSkip = (id) => {
-    try { return typeof options.sharesCliLogin === 'function' && !!options.sharesCliLogin('claude', id); }
-    catch (_) { return false; }
-  };
-
   function refresherFor(id) {
     if (!refreshers.has(id)) refreshers.set(id, makeRefresher(id));
     return refreshers.get(id);
@@ -195,8 +191,8 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
   }
 
   async function checkAccount(id, reason) {
-    if (shouldSkip(id)) return { outcome: 'follows_cli' };
     const data = accounts.readClaudeCredential(id) || {};
+    if (isCliCopy(data.source)) return { outcome: 'cli_copy' };
     const accessToken = typeof data.access_token === 'string' ? data.access_token.trim() : '';
     const refreshToken = typeof data.refresh_token === 'string' ? data.refresh_token.trim() : '';
     if (!accessToken || !refreshToken) return { outcome: 'needs-login' };
