@@ -10,8 +10,8 @@ const FAILOVER_CATEGORIES = new Set([
 ]);
 const SAFE_PHASES = new Set(['connect', 'request', 'before_first_token']);
 
-// Usage at or above this share of a window counts as "about to run dry": Auto
-// leaves a sticky route for a roomier one before the upstream starts rejecting.
+// Usage at or above this share of a window counts as "about to run dry" when
+// choosing a new route. It does not evict an existing usable sticky route.
 const NEAR_LIMIT_PERCENT = 90;
 // A usage reading stays a useful steering hint for longer than it stays a
 // trustworthy exhaustion verdict (the per-account sweeper runs every ~10 min).
@@ -93,8 +93,8 @@ function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000 } = {})
 //
 // Quota steering uses each candidate's `usedPercent` (fullest live window,
 // 0..100, from the provider-limit cache). A candidate at NEAR_LIMIT_PERCENT or
-// above yields to roomier ones even when it is the sticky route, so a session
-// leaves an account before it gets cut off. Between two official accounts
+// above yields to roomier ones when choosing a new route. The current route
+// stays selected until exhausted or rejected. Between two official accounts
 // (the same vendor behind different logins, trust domain 'official') the one
 // with more headroom wins once stickiness has had its say — compared in 20-point
 // bands so small drifts do not bounce a session between accounts.
@@ -136,10 +136,10 @@ function chooseCandidate({
       const pinOrder = (isPinned(left) ? 0 : 1) - (isPinned(right) ? 0 : 1);
       if (pinOrder !== 0) return pinOrder;
     }
-    const pressure = (nearLimit(left) ? 1 : 0) - (nearLimit(right) ? 1 : 0);
-    if (pressure !== 0) return pressure;
     if (left.providerId === stickyProviderId && right.providerId !== stickyProviderId) return -1;
     if (right.providerId === stickyProviderId && left.providerId !== stickyProviderId) return 1;
+    const pressure = (nearLimit(left) ? 1 : 0) - (nearLimit(right) ? 1 : 0);
+    if (pressure !== 0) return pressure;
     const leftBand = officialBand(left), rightBand = officialBand(right);
     if (leftBand != null && rightBand != null && leftBand !== rightBand) return leftBand - rightBand;
     if (preferCli) {

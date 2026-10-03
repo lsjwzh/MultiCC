@@ -4,11 +4,13 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
 const { createAutoProviderRouting } = require('../src/chat/auto-provider-routing');
+const { selectionKey } = require('../src/chat/auto-provider-selection-key');
 
 function fixture({
   emptyFetchedAt = 0, thirdFetchedAt = null, maxAttempts = 3, backgroundActive = false,
 } = {}) {
   const now = 1_000_000;
+  const clock = { now };
   const catalog = [
     { id: 'empty', name: 'Empty', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'empty-model', modelOptions: ['empty-model'] },
     { id: 'backup', name: 'Backup', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'backup-model', modelOptions: ['backup-model'] },
@@ -40,7 +42,7 @@ function fixture({
     providers,
     providerLimitCache: { get: (_appType, id) => limits.get(id) || null },
     limitCacheStaleMs: 60_000,
-    now: () => now,
+    now: () => clock.now,
     emit: (_sessionId, event) => events.push(event),
     hasLiveBackgroundTasks: () => backgroundActive,
   });
@@ -55,7 +57,7 @@ function fixture({
       ],
     },
   };
-  return { runtime, session, events, limits };
+  return { runtime, session, events, limits, providers, clock };
 }
 
 // A pool that spans two lanes needs a catalog whose answer depends on the lane:
@@ -367,6 +369,7 @@ test('observable output and non-provider failures close the cross-provider repla
 
 test('unsafe replay reserves a different provider for exactly one fresh handoff turn', () => {
   const { runtime, session, events } = fixture({ emptyFetchedAt: 900_000 });
+  session.providerSelection.sticky = false;
   const first = runtime.beginTurn({ session, turnId: 'turn-side-effect' });
   assert.equal(first.initial().providerId, 'empty');
   const attempt = { ...openAttempt(), replayFence: 'side_effect', sideEffectObserved: true };
@@ -484,6 +487,73 @@ test('a successful fallback becomes sticky on the next turn', () => {
   first.recordSuccess({ providerId: next.invocationOptions.providerId });
   const second = runtime.beginTurn({ session, turnId: 'turn-2' });
   assert.equal(second.initial().providerId, 'backup');
+});
+
+test('a fallback remains current across cloned selections and expired quota readings until it is exhausted', () => {
+  const { runtime, session, limits, clock } = fixture({ emptyFetchedAt: 1_000_000 });
+  const first = runtime.beginTurn({ session, turnId: 'initial-backup' });
+  assert.equal(first.initial().providerId, 'backup');
+  first.recordSuccess({ providerId: 'backup' });
+  // The old exhausted reading ages out while the current account nears its
+  // limit. Neither of these is a reason to retry the first account.
+  for (const usedPercent of [89, 93, 99]) {
+    clock.now += 61_000;
+    limits.set('backup', {
+      status: 'ok', fetchedAt: clock.now,
+      summary: { windows: [{ usedPercent }] },
+    });
+    session.providerSelection = JSON.parse(JSON.stringify(session.providerSelection));
+    const turn = runtime.beginTurn({ session, turnId: `usage-${usedPercent}` });
+    assert.equal(turn.initial().providerId, 'backup');
+    turn.recordSuccess({ providerId: 'backup' });
+  }
+  exhaust(limits, ['empty', 'backup'], clock.now);
+  const final = runtime.beginTurn({ session, turnId: 'backup-exhausted' });
+  assert.equal(final.initial().providerId, 'third');
+});
+
+test('a selected fallback survives a continuation without a successful turn outcome', () => {
+  const { runtime, session } = fixture();
+  const first = runtime.beginTurn({ session, turnId: 'partial-turn' });
+  assert.equal(first.initial().providerId, 'empty');
+  assert.equal(first.failover(quotaDecision(), openAttempt()).invocationOptions.providerId, 'backup');
+  session.providerSelection = JSON.parse(JSON.stringify(session.providerSelection));
+  assert.equal(runtime.beginTurn({ session, turnId: 'continuation' }).initial().providerId, 'backup');
+});
+
+test('a runtime restart restores only a last route whose policy signature still matches', () => {
+  const { session, providers } = fixture();
+  session.autoProviderLastRoute = {
+    providerId: 'backup', cli: 'claude', selectionKey: selectionKey(session.providerSelection),
+  };
+  const restarted = createAutoProviderRuntime({ providers });
+  assert.equal(restarted.beginTurn({ session, turnId: 'restored' }).initial().providerId, 'backup');
+
+  session.providerSelection = {
+    ...session.providerSelection,
+    candidates: session.providerSelection.candidates.map(candidate => ({ ...candidate,
+      priority: candidate.providerId === 'third' ? 1 : candidate.priority + 1,
+    })),
+  };
+  const changed = createAutoProviderRuntime({ providers });
+  assert.equal(changed.beginTurn({ session, turnId: 'changed-pool' }).initial().providerId, 'third');
+  // The same policy change also invalidates a live runtime's sticky route.
+  assert.equal(restarted.beginTurn({ session, turnId: 'changed-live' }).initial().providerId, 'third');
+});
+
+test('cloning a cross-CLI selection preserves a pending handoff reservation', () => {
+  const { runtime, session } = crossFixture();
+  const turn = runtime.beginTurn({ session, turnId: 'source' });
+  assert.equal(turn.initial().providerId, 'claude-a');
+  turn.failover(quotaDecision(), openAttempt('claude-a'));
+  const pending = turn.prepareHandoff(quotaDecision(), openAttempt('claude-b'));
+  assert.equal(pending.cli, 'codex');
+  session.providerSelection = JSON.parse(JSON.stringify(session.providerSelection));
+  assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
+  session.cli = 'codex';
+  session.providerSelection = JSON.parse(JSON.stringify(session.providerSelection));
+  const next = runtime.beginTurn({ session, turnId: 'target' });
+  assert.equal(next.initial().providerId, pending.providerId);
 });
 
 test('sticky=false re-enters priority order on every turn and after runtime restart', () => {
@@ -687,9 +757,9 @@ test('the turn after a plan starts on the reserved line of the new lane', () => 
   assert.equal(selected.providerId, 'codex-a');
   assert.equal(selected.cli, 'codex');
   assert.equal('price' in selected, false);
-  // The reservation is one-shot: the next turn is back to priority order.
+  // After the reservation is consumed, the selected route remains current.
   const later = runtime.beginTurn({ session, turnId: 'turn-next', promptText: '继续' });
-  assert.equal(later.initial().providerId, 'codex-b');
+  assert.equal(later.initial().providerId, 'codex-a');
 });
 
 test('a legacy single-lane pool never plans a switch and keeps its event shape', () => {
@@ -1056,15 +1126,16 @@ test('chooseCandidate steers between official accounts by headroom without bounc
   assert.equal(chooseCandidate({ candidates: [line('acct-a', 70, 0), line('acct-b', 15, 1)] }).candidate.providerId, 'acct-b');
   // Within the same 20-point band, pool order stands.
   assert.equal(chooseCandidate({ candidates: [line('acct-a', 30, 0), line('acct-b', 25, 1)] }).candidate.providerId, 'acct-a');
-  // Sticky wins until its account nears the limit…
+  // Sticky wins while the account is usable, including near its limit.
   assert.equal(chooseCandidate({ candidates: [line('acct-a', 70, 0), line('acct-b', 15, 1)], stickyProviderId: 'acct-a' }).candidate.providerId, 'acct-a');
-  // …then the session leaves before the upstream starts rejecting.
-  assert.equal(chooseCandidate({ candidates: [line('acct-a', 93, 0), line('acct-b', 15, 1)], stickyProviderId: 'acct-a' }).candidate.providerId, 'acct-b');
+  assert.equal(chooseCandidate({ candidates: [line('acct-a', 93, 0), line('acct-b', 15, 1)], stickyProviderId: 'acct-a' }).candidate.providerId, 'acct-a');
+  assert.equal(chooseCandidate({ candidates: [line('acct-a', 100, 0, { limitState: 'exhausted' }), line('acct-b', 15, 1)], stickyProviderId: 'acct-a' }).candidate.providerId, 'acct-b');
   // Unknown usage is never treated as headroom or pressure.
   assert.equal(chooseCandidate({ candidates: [line('acct-a', null, 0), line('acct-b', 15, 1)] }).candidate.providerId, 'acct-a');
   // Jev's tier verdict still comes first: quota only orders inside the preferred tier.
   assert.equal(chooseCandidate({
-    candidates: [line('acct-a', 80, 0, { tier: 'strong' }), line('acct-b', 5, 1, { tier: 'weak' })], preferredTier: 'strong',
+    candidates: [line('acct-a', 80, 0, { tier: 'strong' }), line('acct-b', 5, 1, { tier: 'weak' })],
+    preferredTier: 'strong', stickyProviderId: 'acct-b',
   }).candidate.providerId, 'acct-a');
   // Non-official pools keep their legacy order regardless of usage.
   assert.equal(chooseCandidate({ candidates: [line('relay-a', 70, 0, { trustDomain: 'relay' }), line('relay-b', 5, 1, { trustDomain: 'relay' })] }).candidate.providerId, 'relay-a');
