@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 /// Drives the Android foreground "keep-alive" service that holds the app process
 /// — and with it the live WebSocket connections in the UI isolate — awake while
 /// MultiCC is in the background.
+/// Android FCM is a separate optional channel and does not require this service.
 ///
 /// No-op on every non-Android platform: iOS forbids long-lived background
 /// sockets, so there is nothing to start there. Native APNs delivery is not yet

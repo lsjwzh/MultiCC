@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -111,6 +112,7 @@ class SettingsService {
   static const _keyServerHistory = 'multicc_server_history';
   static const _keyChatRuntimePrefix = 'multicc_chat_runtime_';
   static const _keyDispatchModePrefix = 'multicc_dispatch_mode_';
+
   /// 多选项模式之前的布尔开关；只在还没写过新键时读一次做迁移。
   static const _keyNoDispatchPrefix = 'multicc_no_dispatch_';
 
@@ -140,6 +142,23 @@ class SettingsService {
   static SettingsService? get current => _instance;
 
   late SharedPreferences _prefs;
+  final ValueNotifier<int> pushPreferences = ValueNotifier<int>(0);
+  String _pushDeviceId = '';
+  String _pushBinding = '';
+  static String _newPushId() => List.generate(
+    24,
+    (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  String get pushDeviceId => _pushDeviceId;
+  String get pushBinding => host.isEmpty ? '' : _pushBinding;
+  List<String> get pushDisabledSessions => _prefs
+      .getKeys()
+      .where(
+        (key) =>
+            key.startsWith('multicc_notify:') && _prefs.getString(key) == 'off',
+      )
+      .map((key) => key.substring('multicc_notify:'.length))
+      .toList();
 
   /// Live font scale — MaterialApp listens so changes apply immediately.
   final ValueNotifier<double> fontScale = ValueNotifier<double>(1.0);
@@ -164,6 +183,15 @@ class SettingsService {
     if (_instance == null) {
       _instance = SettingsService._();
       _instance!._prefs = await SharedPreferences.getInstance();
+      _instance!._pushDeviceId =
+          _instance!._prefs.getString('fcm_device_id') ?? _newPushId();
+      _instance!._pushBinding =
+          _instance!._prefs.getString('fcm_binding') ?? _newPushId();
+      await _instance!._prefs.setString(
+        'fcm_device_id',
+        _instance!._pushDeviceId,
+      );
+      await _instance!._prefs.setString('fcm_binding', _instance!._pushBinding);
       if (_instance!._prefs.getBool(_keyNotifyForceOnMigration) != true) {
         await _instance!._prefs.setBool(_keyNotify, true);
         await _instance!._prefs.setBool(_keyNotifyForceOnMigration, true);
@@ -243,6 +271,7 @@ class SettingsService {
   /// 以及 public/client.js:344 那段同名的内联实现），App 也只落本地偏好。
   Future<void> setTaskNotifyEnabled(String sessionId, bool enabled) async {
     await _prefs.setString(_taskNotifyKey(sessionId), enabled ? 'on' : 'off');
+    pushPreferences.value++;
   }
 
   /// 翻这个会话的提醒开关 —— Web 点 `#notify-btn` 就是取反后落盘。
@@ -390,6 +419,13 @@ class SettingsService {
     bool? keepAliveEnabled,
     double? fontScale,
   }) async {
+    final connectionChanged =
+        (host != null && host.trim() != this.host) ||
+        (token != null && token.trim() != this.token);
+    if (connectionChanged) {
+      _pushBinding = _newPushId();
+      await _prefs.setString('fcm_binding', _pushBinding);
+    }
     if (host != null) await _prefs.setString(_keyHost, host.trim());
     if (token != null) await _prefs.setString(_keyToken, token.trim());
     if (session != null) await _prefs.setString(_keySession, session);
@@ -406,6 +442,9 @@ class SettingsService {
     if (fontScale != null) {
       await _prefs.setDouble(_keyFontScale, fontScale);
       this.fontScale.value = fontScale;
+    }
+    if (connectionChanged || notificationsEnabled != null) {
+      pushPreferences.value++;
     }
   }
 

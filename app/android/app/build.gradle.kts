@@ -1,9 +1,27 @@
+import groovy.json.JsonSlurper
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// Optional client configuration; never load a service-account key into an APK.
+val firebaseConfigFile = file(System.getenv("MULTICC_FIREBASE_ANDROID_CONFIG") ?: "google-services.json")
+val firebaseConfig = if (firebaseConfigFile.exists()) {
+    JsonSlurper().parse(firebaseConfigFile) as Map<*, *>
+} else emptyMap<String, Any>()
+val firebaseProject = firebaseConfig["project_info"] as? Map<*, *> ?: emptyMap<String, Any>()
+val firebaseClient = (firebaseConfig["client"] as? List<*>)?.mapNotNull { it as? Map<*, *> }?.firstOrNull {
+    val info = it["client_info"] as? Map<*, *>
+    (info?.get("android_client_info") as? Map<*, *>)?.get("package_name") == "com.multicc.multicc_app"
+}
+if (firebaseConfigFile.exists() && firebaseClient == null) {
+    throw GradleException("Firebase Android config does not match com.multicc.multicc_app")
+}
+val firebaseInfo = firebaseClient?.get("client_info") as? Map<*, *>
+val firebaseApiKey = (firebaseClient?.get("api_key") as? List<*>)?.firstOrNull() as? Map<*, *>
 
 // Official Android releases are signed with one long-lived key supplied by the
 // release environment. Never make the debug key an implicit fallback: packages
@@ -45,6 +63,10 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        resValue("string", "multicc_fcm_app_id", firebaseInfo?.get("mobilesdk_app_id")?.toString() ?: "")
+        resValue("string", "multicc_fcm_project_id", firebaseProject["project_id"]?.toString() ?: "")
+        resValue("string", "multicc_fcm_sender_id", firebaseProject["project_number"]?.toString() ?: "")
+        resValue("string", "multicc_fcm_api_key", firebaseApiKey?.get("current_key")?.toString() ?: "")
     }
 
     signingConfigs {
@@ -80,6 +102,9 @@ gradle.taskGraph.whenReady {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    implementation(platform("com.google.firebase:firebase-bom:33.16.0"))
+    implementation("com.google.firebase:firebase-messaging")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 
