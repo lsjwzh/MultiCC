@@ -74,7 +74,7 @@
     if (value && typeof value === 'object') {
       const id = text(value.id, 180).toLowerCase();
       // 每个已登录账号一条：<type>-official-<16 位账号 id>。
-      const account = /^(claude|codex)-official(?:-[a-f0-9]{16})?$/.exec(id);
+      const account = /^(claude|codex)-official(?:-(?:[a-f0-9]{16}|global))?$/.exec(id);
       if (account) return account[1];
       const appType = text(value.appType, 20).toLowerCase();
       if (value.builtinOfficial === true && APP_TYPES.has(appType)) return appType;

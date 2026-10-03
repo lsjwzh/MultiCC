@@ -136,8 +136,20 @@ function mountClaudeAccountRoutes(app, deps) {
     return { ok: true, oauthUrl, reused: false };
   }
 
+  // The CLI's own login is listed like any account: it is its own official
+  // provider (`claude-official-global`), named after the signed-in email.
+  function globalDto() {
+    const providerId = accountProviderId('claude', 'global');
+    const provider = providers.getProvider('claude', providerId);
+    return {
+      id: 'global', label: '本机 CLI 登录账号', global: true, active: activeId() === 'global',
+      loggedIn: !!(provider && !provider.needsLogin), email: (provider && provider.accountEmail) || null,
+      providerId, providerName: provider ? provider.name : null,
+    };
+  }
+
   app.get('/api/claude/accounts', (req, res) => {
-    res.json({ ok: true, activeAccountId: activeId(), accounts: [...(unified ? [{ id: 'global', label: '本机 CLI 登录账号', global: true, active: activeId() === 'global' }] : []), ...accounts.listClaudeAccounts().map(accountDto)] });
+    res.json({ ok: true, activeAccountId: activeId(), accounts: [...(unified ? [globalDto()] : []), ...accounts.listClaudeAccounts().map(accountDto)] });
   });
 
   app.post('/api/claude/accounts', async (req, res) => {
