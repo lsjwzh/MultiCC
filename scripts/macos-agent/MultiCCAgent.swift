@@ -1937,6 +1937,9 @@ func rfbSession(_ fd: Int32) {
 @available(macOS 14.0, *)
 func serveRfb() {
   let rfbPath = "\(agentDir)/rfb.sock"
+  // 清掉上次进程留下的死文件再 bind：launchd 重启后旧 rfb.sock 还在，
+  // bind 会 EADDRINUSE，RFB 监听就静默退出了（agent.log 2026-10-03 实录）。
+  unlink(rfbPath)
   let fd = socket(AF_UNIX, SOCK_STREAM, 0)
   guard fd >= 0 else { return }
   var addr = sockaddr_un()
