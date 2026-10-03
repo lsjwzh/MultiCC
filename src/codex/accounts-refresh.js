@@ -29,6 +29,10 @@ function createCodexAccountRefreshSupervisor(options = {}) {
       });
 
   const refreshers = new Map(); // accountId -> refresher
+  const shouldSkip = (accountId) => {
+    try { return typeof options.sharesCliLogin === 'function' && !!options.sharesCliLogin('codex', accountId); }
+    catch (_) { return false; }
+  };
 
   // Reconcile the refresher set with the accounts on disk. New accounts get a
   // refresher once logged in; deleted accounts are dropped (refreshers hold no
@@ -59,6 +63,9 @@ function createCodexAccountRefreshSupervisor(options = {}) {
     sync();
     const results = [];
     for (const [accountId, refresher] of refreshers) {
+      // A copy imported from the CLI shares the CLI's single-use refresh token;
+      // the CLI refresher rotates it and the importer copies the result over.
+      if (shouldSkip(accountId)) { results.push({ accountId, outcome: 'follows_cli' }); continue; }
       try {
         const outcome = await refresher.check(reason);
         results.push({ accountId, outcome: outcome && outcome.outcome || null });

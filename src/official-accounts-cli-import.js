@@ -12,9 +12,12 @@
 // from the token's own id_token / account_id.
 //
 // The CLI's credential is only read, never refreshed — rotating it here would
-// log the CLI out. An expired CLI token is simply not imported this round.
-// Existing store accounts are only overwritten when they are unusable (signed
-// out / expired), so a healthy store copy is never clobbered.
+// log the CLI out. Keeping it fresh is the CLI refreshers' job (claude-auth/
+// oauth-refresh.js, codex/oauth-refresh.js run the CLI before expiry). A copy
+// imported from the CLI shares the CLI's refresh token, so it must not rotate
+// on its own either: it FOLLOWS the CLI — whenever the CLI holds a newer token
+// for the same account, the copy is replaced. A healthy account the user signed
+// in through multicc itself is never clobbered.
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -22,7 +25,9 @@ const path = require('node:path');
 
 const { atomicWriteJson, secureFile } = require('./runtime-security');
 
-const DEFAULT_INTERVAL_MS = 10 * 60 * 1000;
+// Matches the CLI refreshers' cadence, so a refreshed CLI token reaches the
+// copy long before the copy's own access token lapses (refresh runs 15 min early).
+const DEFAULT_INTERVAL_MS = 2 * 60 * 1000;
 const EXPIRY_SKEW_MS = 60 * 1000;
 const IMPORT_SOURCE = 'cli-import';
 
@@ -74,10 +79,20 @@ function createCliLoginImporter({
 
   const fresh = expiresAt => expiresAt == null || expiresAt > now() + EXPIRY_SKEW_MS;
 
+  const lastCli = {};
+  // vendor → store account id the CLI login last resolved to.
+  const lastMatch = {};
+
   async function importClaude() {
     let cli;
-    try { cli = await readClaudeCli(); } catch (_) { return { status: 'unreadable' }; }
-    if (!cli || !cli.ok || !cli.accessToken) return { status: 'no_login' };
+    try { cli = await readClaudeCli(); } catch (_) { cli = null; }
+    lastCli.claude = cli && cli.ok ? cli : null;
+    if (!cli) return { status: 'unreadable' };
+    if (!cli.ok || !cli.accessToken) return { status: 'no_login' };
+    const stored = accounts.listClaudeAccounts().map(a => ({ a, data: accounts.readClaudeCredential(a.id) || {} }));
+    // Unchanged CLI token: nothing to do, and no profile round trip.
+    const same = stored.find(s => s.data.access_token === cli.accessToken);
+    if (same) return { status: 'already', id: same.a.id };
     if (!fresh(cli.expiresAt)) return { status: 'cli_expired' };
     let profile;
     try { profile = await fetchProfile(fetchImpl, cli.accessToken); } catch (error) {
@@ -95,33 +110,45 @@ function createCliLoginImporter({
       source: IMPORT_SOURCE,
       importedAt: new Date(now()).toISOString(),
     };
-    const existing = accounts.listClaudeAccounts().find((a) => {
-      const data = accounts.readClaudeCredential(a.id) || {};
-      return profile.account_uuid ? sameText(data.account_uuid, profile.account_uuid) : sameText(data.email || a.email, profile.email);
-    });
-    if (existing) {
-      if (existing.loggedIn && fresh(existing.expiresAt)) return { status: 'already', id: existing.id };
-      accounts.writeClaudeCredential(existing.id, tokenData);
-      return { status: 'updated', id: existing.id };
+    const match = stored.find(({ a, data }) => (profile.account_uuid
+      ? sameText(data.account_uuid, profile.account_uuid) : sameText(data.email || a.email, profile.email)));
+    if (match) {
+      const { a } = match;
+      const usable = a.loggedIn && fresh(a.expiresAt);
+      const newer = cli.expiresAt == null || a.expiresAt == null || cli.expiresAt > a.expiresAt;
+      if (usable && !(a.source === IMPORT_SOURCE && newer)) return { status: 'already', id: a.id };
+      accounts.writeClaudeCredential(a.id, tokenData);
+      return { status: 'updated', id: a.id };
     }
     const created = accounts.createClaudeAccount({ label: '' });
     accounts.writeClaudeCredential(created.id, tokenData);
     return { status: 'imported', id: created.id };
   }
 
+  function readCodexTokens(id) {
+    try { return JSON.parse(fs.readFileSync(accounts.codexAuthFile(id), 'utf8')).tokens || {}; } catch (_) { return {}; }
+  }
+
   function importCodex() {
     const cli = readCodexCliLogin(codexAuthFile);
+    lastCli.codex = cli;
     if (!cli) return { status: 'no_login' };
+    const list = accounts.listCodexAccounts();
+    const same = list.find(a => readCodexTokens(a.id).access_token === cli.auth.tokens.access_token);
+    if (same) return { status: 'already', id: same.id };
     if (!fresh(cli.expiresAt)) return { status: 'cli_expired' };
-    const existing = accounts.listCodexAccounts().find(a => sameText(a.accountExternalId, cli.accountId)
+    const existing = list.find(a => sameText(a.accountExternalId, cli.accountId)
       && (!cli.email || !a.email || sameText(a.email, cli.email)));
     const write = (id) => {
       const file = accounts.codexAuthFile(id);
       atomicWriteJson(file, cli.auth);
       secureFile(file);
+      accounts.writeCodexMeta(id, { source: IMPORT_SOURCE, importedAt: new Date(now()).toISOString() });
     };
     if (existing) {
-      if (accounts.readCodexCredential(existing.id, { now }).ok) return { status: 'already', id: existing.id };
+      const usable = accounts.readCodexCredential(existing.id, { now }).ok;
+      const newer = cli.expiresAt == null || existing.expiresAt == null || cli.expiresAt > existing.expiresAt;
+      if (usable && !(existing.source === IMPORT_SOURCE && newer)) return { status: 'already', id: existing.id };
       write(existing.id);
       return { status: 'updated', id: existing.id };
     }
@@ -130,10 +157,31 @@ function createCliLoginImporter({
     return { status: 'imported', id: created.id };
   }
 
+  // Does this store copy still share the CLI's token family? Then rotating it
+  // would consume the CLI's refresh token (or have it consumed under us). True
+  // while the refresh tokens are literally equal, or while an imported copy and
+  // the CLI are the same account (the CLI rotates; the copy follows).
+  function sharesCliLogin(vendor, id) {
+    // Codex is a cheap file read, so it is always current (the supervisor may
+    // ask before the first import tick); Claude uses the last Keychain read.
+    const cli = vendor === 'codex' ? readCodexCliLogin(codexAuthFile) : lastCli.claude;
+    if (!cli) return false;
+    if (vendor === 'claude') {
+      const data = accounts.readClaudeCredential(id) || {};
+      if (cli.refreshToken && data.refresh_token === cli.refreshToken) return true;
+      return data.source === IMPORT_SOURCE && lastMatch.claude === id;
+    }
+    const tokens = readCodexTokens(id);
+    if (cli.auth.tokens.refresh_token && tokens.refresh_token === cli.auth.tokens.refresh_token) return true;
+    const account = accounts.listCodexAccounts().find(a => a.id === id);
+    return !!account && account.source === IMPORT_SOURCE && sameText(tokens.account_id, cli.accountId);
+  }
+
   async function importOnce() {
     const result = {};
     try { result.claude = await importClaude(); } catch (error) { result.claude = { status: 'error', error: error.message }; }
     try { result.codex = importCodex(); } catch (error) { result.codex = { status: 'error', error: error.message }; }
+    for (const vendor of ['claude', 'codex']) if (result[vendor].id) lastMatch[vendor] = result[vendor].id;
     for (const [vendor, r] of Object.entries(result)) {
       if (r.status === 'imported' || r.status === 'updated') logger.info('official_account_cli_import', { vendor, status: r.status, accountId: r.id });
       else if (r.status === 'error') logger.warn('official_account_cli_import_failed', { vendor, error: r.error });
@@ -147,16 +195,20 @@ function createCliLoginImporter({
     return running;
   }
 
-  // Before a store copy that came from the CLI rotates its refresh token (which
-  // would log the CLI out), adopt the CLI's newer token if it holds one.
+  // Called before a store copy that came from the CLI would rotate its token:
+  // re-sync first. {synced} — the copy now holds the CLI's newer token;
+  // {shared} — the copy still shares the CLI's token family and must wait for
+  // the CLI refresher instead of rotating.
   async function refreshFromCli(vendor, id) {
-    const r = await tick();
-    return !!(r && r[vendor] && r[vendor].id === id && r[vendor].status === 'updated');
+    const r = (await tick()) || {};
+    const own = r[vendor] || {};
+    return { synced: own.id === id && own.status === 'updated', shared: sharesCliLogin(vendor, id) };
   }
 
   return Object.freeze({
     importOnce: tick,
     refreshFromCli,
+    sharesCliLogin,
     start() {
       if (timer) return;
       timer = setInterval(tick, intervalMs);
