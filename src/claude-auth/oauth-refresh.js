@@ -110,6 +110,9 @@ function createClaudeOAuthRefresher(options = {}) {
     ? options.readFile
     : (file => fs.promises.readFile(file, 'utf8'));
   const platform = options.platform || process.platform;
+  // Per-account refreshers (accounts-refresh.js) point the CLI at another
+  // CLAUDE_CONFIG_DIR, whose Keychain entry carries a path-hash suffix.
+  const keychainService = options.keychainService || KEYCHAIN_SERVICE;
   const claudeBin = options.claudeBin || process.env.CLAUDE_BIN || 'claude';
   const model = options.model || process.env.CLAUDE_OAUTH_REFRESH_MODEL || 'haiku';
   // A scratch cwd keeps the probe from loading this repo's CLAUDE.md, hooks and
@@ -150,12 +153,16 @@ function createClaudeOAuthRefresher(options = {}) {
     // An externally supplied OAuth token bypasses the credential store entirely,
     // which would make the probe succeed without refreshing anything.
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
+    // extraEnv: a null value removes an inherited variable.
+    for (const [key, value] of Object.entries(options.extraEnv || {})) {
+      if (value == null) delete env[key]; else env[key] = String(value);
+    }
     return env;
   }
 
   async function readCredentials() {
     if (platform === 'darwin') {
-      const result = await run('security', ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'], {
+      const result = await run('security', ['find-generic-password', '-s', keychainService, '-w'], {
         timeoutMs: 10_000,
       });
       if (result.code === 0) {

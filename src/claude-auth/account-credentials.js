@@ -9,6 +9,7 @@
 // (claudeRefreshGroup / claudeRefreshBlock, 5s–5min clamps).
 
 const { refreshTokens, fetchProfile, ClaudeOAuthError, REFRESH_MIN_BACKOFF_MS } = require('./official-oauth');
+const { followsCliImport } = require('../official-accounts');
 
 const EXPIRY_MARGIN_MS = 60 * 1000; // treat tokens expiring within a minute as expired
 
@@ -18,6 +19,10 @@ function createClaudeAccountCredentialService(options = {}) {
   const fetchImpl = options.fetch || globalThis.fetch;
   const logger = options.logger || { info() {}, warn() {}, error() {} };
   const now = options.now || (() => Date.now());
+  // Shared with the per-account CLI refresher (accounts-refresh.js): one
+  // rotation per account at a time, or two holders spend one single-use token.
+  const exclusive = typeof options.exclusive === 'function' ? options.exclusive : (id, fn) => fn();
+  const fresh = expiresAt => expiresAt == null || expiresAt > now() + EXPIRY_MARGIN_MS;
 
   const inflight = new Map();     // accountId -> Promise (singleflight)
   const blockedUntil = new Map(); // accountId -> epoch ms (Retry-After backoff)
@@ -38,7 +43,7 @@ function createClaudeAccountCredentialService(options = {}) {
       accessToken,
       refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token.trim() : '',
       expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
-      fromCli: data.source === 'cli-import',
+      fromCli: followsCliImport(data.source, data.importedRefreshHash, data.refresh_token),
     };
   }
 
@@ -85,7 +90,7 @@ function createClaudeAccountCredentialService(options = {}) {
       try { r = (await options.refreshFromCli('claude', id)) || {}; } catch (_) { /* treat as not shared */ }
       if (r.synced) {
         const synced = readStored(id);
-        if (synced.ok && (synced.expiresAt == null || synced.expiresAt > now() + EXPIRY_MARGIN_MS)) {
+        if (synced.ok && fresh(synced.expiresAt)) {
           return { ok: true, accessToken: synced.accessToken, expiresAt: synced.expiresAt };
         }
       }
@@ -99,13 +104,18 @@ function createClaudeAccountCredentialService(options = {}) {
   async function readAccountToken(id) {
     const stored = readStored(id);
     if (!stored.ok) return { token: null, reason: stored.reason };
-    if (stored.expiresAt == null || stored.expiresAt > now() + EXPIRY_MARGIN_MS) {
-      return { token: stored.accessToken };
-    }
+    if (fresh(stored.expiresAt)) return { token: stored.accessToken };
     // Expired (or nearly): singleflight refresh, then re-read the file.
     let pending = inflight.get(id);
     if (!pending) {
-      pending = refreshPreferringCli(id, stored).finally(() => inflight.delete(id));
+      pending = exclusive(id, () => {
+        // A CLI refresh of this account may have landed while we waited.
+        const current = readStored(id);
+        if (current.ok && fresh(current.expiresAt)) {
+          return { ok: true, accessToken: current.accessToken, expiresAt: current.expiresAt };
+        }
+        return refreshPreferringCli(id, current.ok ? current : stored);
+      }).finally(() => inflight.delete(id));
       inflight.set(id, pending);
     }
     const refreshed = await pending;
