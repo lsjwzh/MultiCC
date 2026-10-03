@@ -47,6 +47,9 @@ import Security
 import IOKit
 import IOKit.pwr_mgt
 import Darwin
+import CoreImage
+import CoreMedia
+import CoreVideo
 #if canImport(ScreenCaptureKit)
 import ScreenCaptureKit
 #endif
@@ -1535,6 +1538,427 @@ func writeJSON(_ fd: Int32, _ obj: [String: Any]) {
   _ = data.withUnsafeBytes { write(fd, $0.baseAddress, data.count) }
 }
 
+// MARK: - RFB streaming server (「🖥 屏幕」流畅模式)
+//
+// A second unix socket (agentDir/rfb.sock) speaks a minimal RFB 3.8 server so
+// the browser can run the stock noVNC client: Raw encoding only, framebuffer
+// at LOGICAL resolution (1 px = 1 pt, client pointer coordinates map 1:1 onto
+// CGEvent points), security type None — the peer is authenticated by the
+// MultiCC server (same-site WS + ticket, exactly like /ws/chat) and checked
+// with getpeereid here, so no TCP port is opened. Frames come from an SCStream
+// that renders each CMSampleBuffer into the logical-size BGRA bitmap; a row
+// diff produces dirty bands, served on the client's FramebufferUpdateRequests
+// (natural backpressure: no request, no bytes). Input (PointerEvent/KeyEvent)
+// is routed through handle() so every existing guard applies unchanged:
+// single lease, Esc halt, lock-screen refusal, protected apps, terminal
+// typing consent. Below macOS 14 (or builds without ScreenCaptureKit) the
+// socket simply does not exist and the web UI falls back to JPEG polling.
+
+#if canImport(ScreenCaptureKit) && compiler(>=5.9)
+
+extension Data {
+  mutating func appendBE(_ v: UInt16) { append(UInt8(v >> 8)); append(UInt8(v & 0xFF)) }
+  mutating func appendBE(_ v: UInt32) {
+    append(UInt8((v >> 24) & 0xFF)); append(UInt8((v >> 16) & 0xFF))
+    append(UInt8((v >> 8) & 0xFF)); append(UInt8(v & 0xFF))
+  }
+}
+
+func readFully(_ fd: Int32, _ n: Int) -> Data? {
+  var out = Data(capacity: n)
+  var tmp = [UInt8](repeating: 0, count: 4096)
+  while out.count < n {
+    let want = min(tmp.count, n - out.count)
+    let r = tmp.withUnsafeMutableBytes { read(fd, $0.baseAddress, want) }
+    if r <= 0 { return nil }
+    out.append(contentsOf: tmp[0..<r])
+  }
+  return out
+}
+
+func writeAll(_ fd: Int32, _ d: Data) -> Bool {
+  var off = 0
+  return d.withUnsafeBytes { raw -> Bool in
+    while off < d.count {
+      let w = write(fd, raw.baseAddress! + off, d.count - off)
+      if w <= 0 { return false }
+      off += w
+    }
+    return true
+  }
+}
+
+@available(macOS 14.0, *)
+final class RfbClient: NSObject {
+  let fd: Int32
+  let cond = NSCondition()
+  var closed = false
+  var pendingRequest = false   // client is owed a FramebufferUpdate (cond)
+  var connectedAt = Date()
+  // dirty band state, guarded by RfbScreen's lock
+  var needsFull = true
+  var dirty: [CGRect] = []
+  // pointer state
+  var lastMask = 0
+  var downPos: CGPoint?
+  var downAt = Date.distantPast
+  var lastClickAt = Date.distantPast
+  var lastClickPos = CGPoint.zero
+  var lastMoveAt = Date.distantPast
+  var lastMovePos = CGPoint.zero
+  var mods: Set<String> = []
+  init(_ fd: Int32) { self.fd = fd }
+  func wake() { cond.lock(); cond.broadcast(); cond.unlock() }
+  func shutdown() { cond.lock(); closed = true; cond.broadcast(); cond.unlock(); close(fd) }
+}
+
+@available(macOS 14.0, *)
+final class RfbScreen: NSObject, SCStreamOutput {
+  static let shared = RfbScreen()
+  private let lock = NSLock()
+  private var stream: SCStream?
+  private let ciCtx = CIContext()
+  private var clients: [RfbClient] = []
+  private var w = 0, h = 0
+  private var fb = [UInt8]()   // BGRA, w*h*4, logical resolution
+  private(set) var hasFrame = false
+
+  var size: (w: Int, h: Int)? { lock.lock(); defer { lock.unlock() }; return w > 0 ? (w, h) : nil }
+
+  private func acquire() -> String? {
+    let sem = DispatchSemaphore(value: 0)
+    var content: SCShareableContent?
+    var errText: String?
+    SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { c, e in
+      content = c; if let e { errText = "shareable content: \(e.localizedDescription)" }; sem.signal()
+    }
+    if sem.wait(timeout: .now() + 5) == .timedOut { return "shareable content timed out" }
+    guard let display = content?.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content?.displays.first else {
+      return errText ?? "no displays"
+    }
+    let cfg = SCStreamConfiguration()
+    cfg.showsCursor = true
+    cfg.width = Int(display.width)    // logical points → 1 px = 1 pt
+    cfg.height = Int(display.height)
+    cfg.minimumFrameInterval = CMTime(value: 1, timescale: 15)
+    cfg.queueDepth = 3
+    let s = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: cfg, delegate: nil)
+    do { try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "multicc.rfb.frames")) }
+    catch { return "addStreamOutput: \(error.localizedDescription)" }
+    var startErr: String?
+    let sem2 = DispatchSemaphore(value: 0)
+    s.startCapture { e in if let e { startErr = e.localizedDescription }; sem2.signal() }
+    if sem2.wait(timeout: .now() + 5) == .timedOut { return "startCapture timed out" }
+    if let startErr { return "startCapture: \(startErr)" }
+    lock.lock(); stream = s; w = Int(display.width); h = Int(display.height); lock.unlock()
+    return nil
+  }
+
+  private func releaseCapture() {
+    lock.lock(); let s = stream; stream = nil; lock.unlock()
+    guard let s else { return }
+    let sem = DispatchSemaphore(value: 0)
+    s.stopCapture { _ in sem.signal() }
+    _ = sem.wait(timeout: .now() + 2)
+  }
+
+  func attach(_ c: RfbClient) {
+    lock.lock(); let wasEmpty = clients.isEmpty; clients.append(c); lock.unlock()
+    if wasEmpty, let err = acquire() { log("rfb: \(err)") }
+  }
+
+  func detach(_ c: RfbClient) {
+    lock.lock(); clients.removeAll { $0 === c }; let nowEmpty = clients.isEmpty; lock.unlock()
+    if nowEmpty { releaseCapture() }
+  }
+
+  func markFull(_ c: RfbClient) {
+    lock.lock(); c.needsFull = true; lock.unlock()
+  }
+
+  func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+    guard type == .screen else { return }
+    let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[AnyHashable: Any]]
+    let status = (attachments?.first?[SCStreamFrameInfo.status] as? NSNumber)?.intValue ?? SCFrameStatus.complete.rawValue
+    guard status == SCFrameStatus.complete.rawValue, let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+    let pw = CVPixelBufferGetWidth(pb), ph = CVPixelBufferGetHeight(pb)
+    guard pw > 0, ph > 0 else { return }
+    var next = [UInt8](repeating: 0, count: pw * ph * 4)
+    let ci = CIImage(cvPixelBuffer: pb)
+    next.withUnsafeMutableBytes { dst in
+      ciCtx.render(ci, toBitmap: dst.baseAddress!, rowBytes: pw * 4,
+                   bounds: CGRect(x: 0, y: 0, width: CGFloat(pw), height: CGFloat(ph)),
+                   format: .BGRA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+    }
+    lock.lock()
+    defer { lock.unlock() }
+    var bands: [CGRect] = []
+    if pw != w || ph != h || fb.count != next.count {
+      w = pw; h = ph; fb = next; hasFrame = true
+      bands = [CGRect(x: 0, y: 0, width: CGFloat(pw), height: CGFloat(ph))]
+    } else {
+      let rowBytes = pw * 4
+      var y = 0
+      while y < ph {
+        let r = y * rowBytes..<(y + 1) * rowBytes
+        if next[r] != fb[r] {
+          let y0 = y
+          repeat { y += 1 } while y < ph && next[(y * rowBytes)..<((y + 1) * rowBytes)] != fb[(y * rowBytes)..<((y + 1) * rowBytes)]
+          bands.append(CGRect(x: 0, y: CGFloat(y0), width: CGFloat(pw), height: CGFloat(y - y0)))
+        } else { y += 1 }
+      }
+      if !bands.isEmpty { fb = next; hasFrame = true }
+    }
+    if bands.isEmpty { return }
+    for c in clients where !c.needsFull { c.dirty += bands }
+    for c in clients { c.wake() }
+  }
+
+  /// Drains the client's dirty bands (or the full screen) as raw rects.
+  func takeRects(_ c: RfbClient) -> [(rect: CGRect, data: Data)]? {
+    lock.lock(); defer { lock.unlock() }
+    guard w > 0, h > 0, fb.count == w * h * 4 else { return nil }
+    let full = CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h))
+    var rects: [CGRect]
+    if c.needsFull {
+      rects = [full]
+    } else if c.dirty.isEmpty {
+      return nil
+    } else {
+      var merged: [CGRect] = []
+      for r in c.dirty.sorted(by: { $0.minY < $1.minY }) {
+        if !merged.isEmpty, let last = merged.last, last.maxY >= r.minY {
+          merged[merged.count - 1].size.height = r.maxY - last.minY
+        } else { merged.append(r) }
+      }
+      let area = merged.reduce(CGFloat(0)) { $0 + $1.width * $1.height }
+      rects = merged.count > 64 || area > full.width * full.height * 0.7 ? [full] : merged
+    }
+    c.needsFull = false
+    c.dirty = []
+    var out: [(CGRect, Data)] = []
+    for r in rects {
+      let x = max(0, Int(r.minX)), y = max(0, Int(r.minY))
+      let rw = min(w - x, Int(r.width)), rh = min(h - y, Int(r.height))
+      guard rw > 0, rh > 0 else { continue }
+      var d = Data(capacity: rw * rh * 4)
+      for line in y..<(y + rh) { d.append(contentsOf: fb[(line * w + x) * 4..<((line * w + x) + rw) * 4]) }
+      out.append((CGRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(rw), height: CGFloat(rh)), d))
+    }
+    return out.isEmpty ? nil : out
+  }
+}
+
+// X11 keysyms → our key names / modifiers (see parseChord for the grammar).
+let RFB_SPECIAL_KEYS: [UInt32: String] = [
+  0xFF08: "delete", 0xFF09: "tab", 0xFF0D: "return", 0xFF1B: "escape", 0xFFFF: "forwarddelete",
+  0xFF50: "home", 0xFF51: "left", 0xFF52: "up", 0xFF53: "right", 0xFF54: "down",
+  0xFF55: "pageup", 0xFF56: "pagedown", 0xFF57: "end", 0x0020: "space",
+]
+let RFB_MOD_KEYS: [UInt32: String] = [
+  0xFFE1: "shift", 0xFFE2: "shift", 0xFFE3: "ctrl", 0xFFE4: "ctrl",
+  0xFFE9: "alt", 0xFFEA: "alt", 0xFE03: "alt",
+  0xFFE7: "cmd", 0xFFE8: "cmd", 0xFFEB: "cmd", 0xFFEC: "cmd",
+]
+// Punctuation keysyms → (US-layout base key, needs shift); only used when a
+// ctrl/cmd/alt chord turns the printable path off.
+let RFB_PUNCT_KEYS: [UInt32: (String, Bool)] = [
+  0x21: ("1", true), 0x40: ("2", true), 0x23: ("3", true), 0x24: ("4", true), 0x25: ("5", true),
+  0x5E: ("6", true), 0x26: ("7", true), 0x2A: ("8", true), 0x28: ("9", true), 0x29: ("0", true),
+  0x3C: ("comma", true), 0x3E: ("period", true), 0x3F: ("slash", true), 0x3A: ("semicolon", true),
+  0x7B: ("leftbracket", true), 0x7D: ("rightbracket", true), 0x7C: ("backslash", true),
+  0x22: ("quote", true), 0x5F: ("minus", true), 0x2B: ("equal", true), 0x7E: ("grave", true),
+  0x2C: ("comma", false), 0x2D: ("minus", false), 0x2E: ("period", false), 0x2F: ("slash", false),
+  0x3B: ("semicolon", false), 0x3D: ("equal", false), 0x5B: ("leftbracket", false),
+  0x5C: ("backslash", false), 0x5D: ("rightbracket", false), 0x27: ("quote", false), 0x60: ("grave", false),
+]
+
+@available(macOS 14.0, *)
+func rfbInput(_ req: [String: Any]) {
+  var req = req
+  req["session"] = "remote-screen"
+  let r = handle(req)
+  if (r["ok"] as? Bool) != true { log("rfb input refused: \(r["reason"] ?? r["error"] ?? "?")") }
+}
+
+@available(macOS 14.0, *)
+func rfbKey(_ c: RfbClient, down: Bool, keysym: UInt32) {
+  if let mod = RFB_MOD_KEYS[keysym] {
+    if down { c.mods.insert(mod) } else { c.mods.remove(mod) }
+    return
+  }
+  guard down else { return }   // chords are posted down+up atomically on key-down
+  let chordMods = c.mods.intersection(["ctrl", "cmd", "alt"])
+  // Plain printable → unicode event, exactly like the type op (any layout/IME).
+  if chordMods.isEmpty, keysym >= 0x20, keysym <= 0x10FFFF, keysym != 0xD,
+     let scalar = Unicode.Scalar(keysym), Unicode.Scalar(keysym)!.properties.generalCategory != .format {
+    rfbInput(["op": "type", "text": String(Character(scalar)), "allowTerminal": true, "allowSystem": true])
+    return
+  }
+  var name = RFB_SPECIAL_KEYS[keysym]
+  var shift = false
+  if name == nil {
+    if keysym >= 0x61 && keysym <= 0x7A { name = String(UnicodeScalar(keysym)!) }
+    else if keysym >= 0x41 && keysym <= 0x5A { name = String(UnicodeScalar(keysym - 0x20)!).lowercased(); shift = true }
+    else if keysym >= 0x30 && keysym <= 0x39 { name = String(UnicodeScalar(keysym)!) }
+    else if keysym >= 0xFFBE && keysym <= 0xFFC9 { name = "f\(keysym - 0xFFBE + 1)" }
+    else if let (base, needsShift) = RFB_PUNCT_KEYS[keysym] { name = base; shift = needsShift }
+  }
+  guard let key = name else { return }
+  var parts: [String] = []
+  for m in ["ctrl", "alt", "cmd"] where c.mods.contains(m) { parts.append(m) }
+  if c.mods.contains("shift") || shift { parts.append("shift") }
+  parts.append(key)
+  rfbInput(["op": "press", "keys": parts.joined(separator: "+"), "allowTerminal": true, "allowSystem": true])
+}
+
+@available(macOS 14.0, *)
+func rfbPointer(_ c: RfbClient, mask: Int, x: Int, y: Int) {
+  let p = CGPoint(x: CGFloat(x), y: CGFloat(y))
+  let prev = c.lastMask
+  c.lastMask = mask
+  // Wheel buttons are transient pulses in RFB.
+  if (mask & 0x08 != 0 && prev & 0x08 == 0) || (mask & 0x10 != 0 && prev & 0x10 == 0) {
+    rfbInput(["op": "scroll", "x": x, "y": y, "amount": mask & 0x08 != 0 ? 3 : -3, "allowSystem": true])
+    return
+  }
+  if mask & 0x04 != 0 && prev & 0x04 == 0 {
+    rfbInput(["op": "click", "x": x, "y": y, "button": "right", "count": 1, "allowSystem": true])
+    return
+  }
+  let left = mask & 0x01 != 0, wasLeft = prev & 0x01 != 0
+  if left && !wasLeft {
+    c.downPos = p; c.downAt = Date()
+  } else if left && wasLeft {
+    if Date().timeIntervalSince(c.lastMoveAt) > 0.05 && hypot(p.x - c.lastMovePos.x, p.y - c.lastMovePos.y) > 1.5 {
+      c.lastMoveAt = Date(); c.lastMovePos = p
+      rfbInput(["op": "move", "x": x, "y": y, "allowSystem": true])
+    }
+  } else if !left && wasLeft, let start = c.downPos {
+    c.downPos = nil
+    if hypot(p.x - start.x, p.y - start.y) > 8 {
+      rfbInput(["op": "drag", "x": Int(start.x), "y": Int(start.y), "x2": x, "y2": y, "ms": 250, "allowSystem": true])
+    } else {
+      let now = Date()
+      let dbl = now.timeIntervalSince(c.lastClickAt) < 0.35 && hypot(start.x - c.lastClickPos.x, start.y - c.lastClickPos.y) < 6
+      c.lastClickAt = now; c.lastClickPos = start
+      rfbInput(["op": "click", "x": Int(start.x), "y": Int(start.y), "count": dbl ? 2 : 1, "allowSystem": true])
+    }
+  }
+}
+
+@available(macOS 14.0, *)
+func rfbSender(_ c: RfbClient) {
+  while true {
+    c.cond.lock()
+    while !c.closed && !c.pendingRequest { c.cond.wait() }
+    if c.closed { c.cond.unlock(); return }
+    c.cond.unlock()
+    // Wait for content; if capture never produces a frame, drop the client so
+    // the browser falls back to JPEG polling instead of hanging.
+    var rects = RfbScreen.shared.takeRects(c)
+    var waitedMs = 0
+    while rects == nil && !c.closed {
+      if waitedMs >= 4000 || Date().timeIntervalSince(c.connectedAt) > 10 { c.shutdown(); return }
+      usleep(20_000); waitedMs += 20
+      rects = RfbScreen.shared.takeRects(c)
+    }
+    if c.closed { return }
+    var msg = Data([0, 0])
+    msg.appendBE(UInt16(rects!.count))
+    for (r, d) in rects! {
+      msg.appendBE(UInt16(Int(r.minX))); msg.appendBE(UInt16(Int(r.minY)))
+      msg.appendBE(UInt16(Int(r.width))); msg.appendBE(UInt16(Int(r.height)))
+      msg.appendBE(UInt32(0))   // Raw
+      msg.append(d)
+    }
+    if !writeAll(c.fd, msg) { c.shutdown(); return }
+    c.cond.lock(); c.pendingRequest = false; c.cond.unlock()
+  }
+}
+
+@available(macOS 14.0, *)
+func rfbSession(_ fd: Int32) {
+  let client = RfbClient(fd)
+  RfbScreen.shared.attach(client)
+  defer { RfbScreen.shared.detach(client); client.shutdown() }
+  guard writeAll(fd, Data("RFB 003.008\n".utf8)),
+        readFully(fd, 12) != nil,
+        writeAll(fd, Data([1, 1])), readFully(fd, 1)?.first == 1,   // security: None
+        writeAll(fd, Data([0, 0, 0, 0])), readFully(fd, 1) != nil,  // SecurityResult ok + ClientInit
+        let size = RfbScreen.shared.size else { return }
+  var si = Data()
+  si.appendBE(UInt16(size.w)); si.appendBE(UInt16(size.h))
+  si.append(contentsOf: [32, 24, 0, 1])                              // bpp, depth, LE, true-colour
+  si.appendBE(UInt16(255)); si.appendBE(UInt16(255)); si.appendBE(UInt16(255))
+  si.append(contentsOf: [16, 8, 0, 0, 0, 0])                         // shifts + padding
+  let name = Data("MultiCC".utf8)
+  si.appendBE(UInt32(name.count)); si.append(name)
+  guard writeAll(fd, si) else { return }
+  let sender = Thread { rfbSender(client) }
+  sender.name = "rfb-sender"
+  sender.start()
+  reader: while true {
+    guard let head = readFully(fd, 1) else { break }
+    switch head[0] {
+    case 0: guard readFully(fd, 19) != nil else { break reader }        // SetPixelFormat: keep canonical
+    case 2:                                                                 // SetEncodings: Raw is all we send
+      guard let b = readFully(fd, 3) else { break reader }
+      let n = Int(b[1]) << 8 | Int(b[2])
+      guard n >= 0, n <= 4096, readFully(fd, n * 4) != nil else { break reader }
+    case 3:
+      guard let b = readFully(fd, 9) else { break reader }
+      if b[0] == 0 { RfbScreen.shared.markFull(client) }
+      client.cond.lock(); client.pendingRequest = true; client.cond.broadcast(); client.cond.unlock()
+    case 4:
+      guard let b = readFully(fd, 7) else { break reader }
+      rfbKey(client, down: b[0] == 1,
+             keysym: UInt32(b[3]) << 24 | UInt32(b[4]) << 16 | UInt32(b[5]) << 8 | UInt32(b[6]))
+    case 5:
+      guard let b = readFully(fd, 5) else { break reader }
+      rfbPointer(client, mask: Int(b[0]), x: Int(b[1]) << 8 | Int(b[2]), y: Int(b[3]) << 8 | Int(b[4]))
+    case 6:                                                                 // ClientCutText: ignored
+      guard let b = readFully(fd, 8) else { break reader }
+      let n = Int(UInt32(b[4]) << 24 | UInt32(b[5]) << 16 | UInt32(b[6]) << 8 | UInt32(b[7]))
+      guard n >= 0, n <= 1_000_000, readFully(fd, n) != nil else { break reader }
+    default: break reader
+    }
+  }
+}
+
+@available(macOS 14.0, *)
+func serveRfb() {
+  let rfbPath = "\(agentDir)/rfb.sock"
+  let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+  guard fd >= 0 else { return }
+  var addr = sockaddr_un()
+  addr.sun_family = sa_family_t(AF_UNIX)
+  let bytes = Array(rfbPath.utf8CString)
+  withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+    for (i, b) in bytes.prefix(raw.count - 1).enumerated() { raw[i] = UInt8(bitPattern: b) }
+  }
+  let bound = withUnsafePointer(to: &addr) {
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+      bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+    }
+  }
+  guard bound, listen(fd, 8) == 0 else { close(fd); log("rfb: cannot listen on \(rfbPath): \(String(cString: strerror(errno)))"); return }
+  chmod(rfbPath, 0o600)
+  log("rfb: serving \(rfbPath)")
+  while true {
+    let c = accept(fd, nil, nil)
+    if c < 0 { continue }
+    DispatchQueue.global().async {
+      defer { close(c) }
+      var uid: uid_t = 0, gid: gid_t = 0
+      guard getpeereid(c, &uid, &gid) == 0, uid == getuid() else { return }
+      rfbSession(c)
+    }
+  }
+}
+
+#endif
+
 func serve() -> Never {
   mkdir(agentDir, 0o700)
   chmod(agentDir, 0o700)
@@ -1552,6 +1976,9 @@ func serve() -> Never {
 
   let interval = Double(ProcessInfo.processInfo.environment["MULTICC_AGENT_CHROME_INTERVAL"] ?? "") ?? 20
   Thread.detachNewThread { while true { chrome.tick(); Thread.sleep(forTimeInterval: interval) } }
+  #if canImport(ScreenCaptureKit) && compiler(>=5.9)
+  if #available(macOS 14.0, *) { Thread.detachNewThread { serveRfb() } }
+  #endif
 
   Thread.detachNewThread {
     while true {

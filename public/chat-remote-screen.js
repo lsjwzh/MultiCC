@@ -115,6 +115,87 @@
   function kick() { if (s) s.wakeAt = Date.now() + 1000; }
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+  // ── 流畅模式：原版 noVNC ← /ws/remote-screen ← Agent 的 rfb.sock ──
+  // Agent 里跑最小 RFB 3.8 服务（Raw 编码、逻辑分辨率、输入走原有护栏），
+  // 浏览器端直接用现成客户端：缩放 / 触屏手势 / 完整键位表都不用自己写。
+  // 连不上（旧 Agent / macOS<14 / vendor 缺失）或中途断开，一律回退 JPEG 轮询。
+  let rfbMod = null;
+  async function startRfb() {
+    if (!s || s.closed) return false;
+    try { rfbMod = rfbMod || await import('/vendor/novnc/core/rfb.js'); } catch { return false; }
+    const RfbClass = rfbMod && (rfbMod.RFB || rfbMod.default);
+    if (!RfbClass) return false;
+    const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    let url = proto + location.host + '/ws/remote-screen';
+    try { if (typeof global.multiccWsUrl === 'function') url = await global.multiccWsUrl(url); } catch { return false; }
+    if (!s || s.closed) return false;
+    const wrap = el('div', 'rs-rfb');
+    s.stage.appendChild(wrap);
+    return await new Promise(resolve => {
+      let settled = false;
+      let rfb = null;
+      const teardown = () => {
+        wrap.remove();
+        if (s) s.img.style.display = '';
+        if (s && s.rfbWrap === wrap) s.rfbWrap = null;
+        if (s && s.rfb === rfb) s.rfb = null;
+      };
+      const fail = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { if (rfb) rfb.disconnect(); } catch {}
+        teardown();
+        resolve(false);
+      };
+      const timer = setTimeout(fail, 6000);
+      try { rfb = new RfbClass(wrap, url, { viewOnly: true, scaleViewport: true }); }
+      catch { fail(); return; }
+      if (s) s.rfb = rfb;
+      s.rfbWrap = wrap;
+      rfb.addEventListener('connect', () => {
+        if (settled || !s) { settled = true; return; }
+        settled = true;
+        clearTimeout(timer);
+        s.img.style.display = 'none';
+        status(tr('rsLiveMode', '流畅模式'));
+        if (s.control) setControl(true);
+        resolve(true);
+      });
+      rfb.addEventListener('disconnect', () => {
+        clearTimeout(timer);
+        const intentional = s && s.rfbIntent;
+        if (s) s.rfbIntent = false;
+        teardown();
+        if (!settled) { settled = true; resolve(false); return; }
+        if (!intentional && s && !s.closed && !s.paused) {
+          status(tr('rsFallback', '流式连接断开，已切回兼容模式'), true);
+          loop();
+        }
+      });
+    });
+  }
+
+  // 流畅模式下 RFB 输入被 Agent 拒绝时页面看不到错误（RFB 无错误通道），
+  // 每 3 秒查一次状态，Esc 急停时亮出「解除急停」。
+  function startHaltPoll(on) {
+    if (!s) return;
+    clearInterval(s.haltTimer);
+    if (!on) return;
+    s.haltTimer = setInterval(async () => {
+      if (!s || !s.rfb || !s.control) { clearInterval(s.haltTimer); return; }
+      try {
+        const res = await fetch(tok('/api/remote-screen/input'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op: 'status' }),
+        });
+        const data = await res.json();
+        const halted = !!(data && data.control && data.control.halted);
+        s.unhalt.hidden = !halted;
+        if (halted) status(tr('rsErrStopped', '本机按了 Esc 急停，点「解除急停」后才能继续操作'), true);
+      } catch {}
+    }, 3000);
+  }
+
   // ── 指针 → 屏幕坐标（图上 1px = 1 逻辑点）──
   function toScreen(ev) {
     const r = s.img.getBoundingClientRect();
@@ -141,7 +222,7 @@
     let lastClick = null;
     stage.addEventListener('contextmenu', ev => ev.preventDefault());
     stage.addEventListener('pointerdown', ev => {
-      if (!s.control) return;
+      if (!s.control || s.rfb) return;
       const p = toScreen(ev);
       if (!p) return;
       ev.preventDefault();
@@ -169,7 +250,7 @@
     stage.addEventListener('pointercancel', () => { down = null; });
     let acc = 0, wheelAt = null, wheelTimer = null;
     stage.addEventListener('wheel', ev => {
-      if (!s.control) return;
+      if (!s.control || s.rfb) return;
       const p = toScreen(ev);
       if (!p) return;
       ev.preventDefault();
@@ -190,6 +271,16 @@
     s.modeBtn.textContent = on ? '🖱 ' + tr('rsControl', '可操作') : '👁 ' + tr('rsViewOnly', '只看');
     s.modeBtn.classList.toggle('on', on);
     ov.classList.toggle('rs-control', on);
+    if (s.rfb) {
+      // 流畅模式：指针 + 键盘都交给 noVNC，自己的 keybar 收起来。
+      s.rfb.viewOnly = !on;
+      s.keybar.hidden = true;
+      s.hint.textContent = on
+        ? tr('rsRfbCtrlHint', '直接在本画面上点击 / 拖动 / 打字；本机按 Esc 可随时急停')
+        : tr('rsViewHint', '只看模式：不会向本机发送任何操作。「✎ 标注」可冻结画面后标注对话');
+      startHaltPoll(on);
+      return;
+    }
     s.keybar.hidden = !on;
     s.hint.textContent = on
       ? tr('rsControlHint', '点击=单击，拖动=拖拽，滚轮=滚动，快速点两下=双击；本机按 Esc 可随时急停')
@@ -206,28 +297,46 @@
       if (!res.ok || !data.url) { status(errText(data), true); return; }
       annotator.open(data.url, tr('rsTitle', '本机屏幕'));
       clearTimeout(s.resumeTimer);
-      s.resumeTimer = setTimeout(loop, 600);
+      // 流畅模式下流还在跑，标注器关了不需要重新起轮询。
+      if (!s.rfb) s.resumeTimer = setTimeout(loop, 600);
     } catch (error) {
       status(String(error.message || error), true);
     }
   }
 
-  function open() {
+  async function open() {
     if (ov) return;
     ov = el('div', 'rs-overlay');
     const head = el('div', 'rs-head');
     const title = el('span', 'rs-title', '🖥 ' + tr('rsTitle', '本机屏幕'));
     const statusEl = el('span', 'rs-status');
-    s = { control: false, paused: false, screenW: 0, screenH: 0, status: statusEl, errAt: 0 };
+    s = { control: false, paused: false, closed: false, screenW: 0, screenH: 0, status: statusEl, errAt: 0, haltTimer: 0 };
     s.modeBtn = btn('', tr('rsModeTitle', '切换只看 / 可操作'), () => setControl(!s.control));
     s.rightBtn = btn(tr('rsRightClick', '右键'), tr('rsRightClickHint', '下一次点击按右键发送（触屏用）'), () => {
       s.rightOnce = !s.rightOnce;
       s.rightBtn.classList.toggle('on', s.rightOnce);
     });
-    const pauseBtn = btn('⏸ ' + tr('rsPause', '暂停'), '', () => {
+    const pauseBtn = btn('⏸ ' + tr('rsPause', '暂停'), '', async () => {
       s.paused = !s.paused;
       pauseBtn.textContent = s.paused ? '▶ ' + tr('rsResume', '继续') : '⏸ ' + tr('rsPause', '暂停');
-      if (!s.paused) loop();
+      if (s.paused) {
+        if (s.rfb) {
+          s.rfbIntent = true;
+          try { s.rfb.disconnect(); } catch {}
+          // 断流后取一帧 JPEG，让画面停在当前状态，而不是流式之前那张旧图。
+          await sleep(150);
+          try {
+            const res = await fetch(tok('/api/remote-screen/frame'), { cache: 'no-store' });
+            if (res.ok && s) {
+              const url = URL.createObjectURL(await res.blob());
+              await new Promise(r2 => { s.img.onload = s.img.onerror = r2; s.img.src = url; });
+              if (s.lastUrl) URL.revokeObjectURL(s.lastUrl);
+              s.lastUrl = url;
+              status(tr('rsPause', '暂停'));
+            }
+          } catch {}
+        }
+      } else if (!(await startRfb())) loop();
     });
     s.unhalt = btn(tr('rsUnhalt', '解除急停'), tr('rsUnhaltTitle', '本机用户按过 Esc：确认可以继续后再解除'), () => input({ op: 'resume' }), 'warn');
     s.unhalt.hidden = true;
@@ -238,6 +347,7 @@
       pauseBtn, s.unhalt, releaseBtn,
       btn('✕', tr('rsClose', '关闭'), close, 'rs-close'));
     const stage = el('div', 'rs-stage');
+    s.stage = stage;
     s.img = el('img', 'rs-img');
     s.img.alt = '';
     s.img.draggable = false;
@@ -258,13 +368,19 @@
     wirePointer(stage);
     setControl(false);
     statusEl.textContent = tr('rsConnecting', '正在取第一帧…');
-    loop();
+    if (!(await startRfb())) loop();
   }
 
   function close() {
     if (!ov) return;
     const wasControl = s && s.control;
-    if (s) { clearTimeout(s.resumeTimer); if (s.lastUrl) URL.revokeObjectURL(s.lastUrl); }
+    if (s) {
+      s.closed = true;
+      clearTimeout(s.resumeTimer);
+      clearInterval(s.haltTimer);
+      if (s.rfb) { s.rfbIntent = true; try { s.rfb.disconnect(); } catch {} }
+      if (s.lastUrl) URL.revokeObjectURL(s.lastUrl);
+    }
     s = null;
     ov.remove();
     ov = null;

@@ -116,6 +116,15 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     maxBytes: 283404,
     reason: 'vendored third-party UMD build of xterm 5.3.0 (upstream ships no minified file)',
   }),
+  // 「🖥 屏幕」流畅模式跑原版 noVNC（RFB over /ws/remote-screen），按 xterm 的先例
+  // 从官方 npm tarball 原样收进 public/vendor/。整包 58 个文件里只有 rfb.js 超过
+  // 3000 行（3412 行 / 122306 字节，其余都在默认预算内）；指纹与来源记录在
+  // public/vendor/novnc/README.md。
+  'public/vendor/novnc/core/rfb.js': Object.freeze({
+    maxLines: ABSOLUTE_EXCEPTION_MAX_LINES,
+    maxBytes: 122306,
+    reason: 'vendored third-party ESM build of noVNC 1.7.0 (file-level MPL-2.0, unmodified)',
+  }),
   // 生成物，不是手写代码：scripts/generate-i18n.js 把 app/assets/i18n/{zh,en}.json
   // 原样拼成这一份双语词典，键数就是产品的文案条数。Air 补齐英文之后它从 2634 行
   // 长到 4988 行，对话帧（chat.html 的 title/aria-label 与运行期文案）补齐后又到 5156
@@ -327,8 +336,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // Includes the shared Bark phone setup, management copy and the official "select to sign in" label.
     // +7 键（annotRecapturing/annotRecaptureSent/annotLive*）：标注器的实时透传开关与原地重拍。
     // +30 键（rs*）：聊天页「🖥 屏幕」远程协助浮层。
-    maxLines: 8602,
-    maxBytes: 541993,
+    // +3 键（rsLiveMode/rsFallback/rsRfbCtrlHint）：同一浮层的 RFB 流畅模式。
+    maxLines: 8608,
+    maxBytes: 542408,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

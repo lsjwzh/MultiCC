@@ -31,10 +31,15 @@ const SESSION = 'remote-screen';
 // 落在已登记的 assistDir 下：随数据根隔离，并由 assist-snapshots 的 7 天清理兜底。
 const DIR = path.join(createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).assistDir, SESSION);
 const SOCK = process.env.MULTICC_AGENT_SOCK || path.join(os.homedir(), '.multicc', 'agent', 'agent.sock');
+// 流式模式：Agent 的第二个 unix socket 上跑最小 RFB 3.8 服务（见 MultiCCAgent.swift
+// 的 RFB streaming server 一节）。浏览器跑原版 noVNC，经 /ws/remote-screen 到这里，
+// 再桥到 rfb.sock；鉴权在 WS 层（同 /ws/chat 的 ws-ticket），Agent 侧 getpeereid
+// 校验同 uid。Agent 未带该 socket（旧版本 / macOS<14）时连接失败，前端回退轮询。
+const RFB_SOCK = process.env.MULTICC_AGENT_RFB_SOCK || path.join(path.dirname(SOCK), 'rfb.sock');
 const INPUT_OPS = new Set(['click', 'move', 'scroll', 'drag', 'type', 'press', 'release', 'resume', 'status']);
 const KEEP_SHOTS = 20;
 
-const deps = { agentCall, execFile, sock: SOCK, dir: DIR };
+const deps = { agentCall, execFile, sock: SOCK, rfbSock: RFB_SOCK, dir: DIR };
 
 function agentCall(req, timeoutMs = 8000) {
   return new Promise(resolve => {
@@ -109,6 +114,25 @@ function frame() {
     .then(size => (lastFrame = { at: Date.now(), size, data: fs.readFileSync(out) }))
     .finally(() => { inflight = null; });
   return inflight;
+}
+
+// WS ↔ RFB unix socket 字节管道。双向直通，任一端断即拆另一端；Agent 侧不可用时
+// 以 1011 关闭让 noVNC 触发 disconnect → 前端回退 JPEG 轮询。
+function attachRfb(ws) {
+  const sock = net.createConnection(deps.rfbSock);
+  const pending = [];
+  let open = false;
+  ws.on('message', data => { if (open) sock.write(data); else pending.push(data); });
+  sock.on('connect', () => { open = true; for (const d of pending) sock.write(d); pending.length = 0; });
+  sock.on('data', d => { if (ws.readyState === 1) ws.send(d); else sock.destroy(); });
+  const die = () => {
+    sock.destroy();
+    if (ws.readyState === 1) { try { ws.close(1011, 'rfb-unavailable'); } catch {} }
+  };
+  sock.on('error', die);
+  sock.on('close', die);
+  ws.on('close', () => sock.destroy());
+  ws.on('error', () => sock.destroy());
 }
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
@@ -237,6 +261,7 @@ function mount(app) {
 
 module.exports = {
   mount,
+  attachRfb,
   handleAnnotation,
   isOwnShot,
   buildInput,

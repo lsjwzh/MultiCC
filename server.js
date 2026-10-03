@@ -2788,6 +2788,7 @@ mountWsConnectionRouter(wss, {
   workspaceRuntime,
   auxQueue,
   auxSessionId: AUX_SESSION_ID,
+  remoteScreenRfb: remoteScreen,
   loadChatHistory,
   sessions,
   persistedSessions,
