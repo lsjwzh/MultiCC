@@ -186,15 +186,29 @@ test('core runner covers every selected path and expands declared variants', () 
   // 经由 Chat composer 证明 onCommit 真的是 send()、以及 air.html/air.js 的静态接线。
   // 完全 hermetic：vm + 注入的假 DOM 对象，不碰网络、端口、真进程或时钟。
   // 296 + 1 = 297，deterministic 255 + 1 = 256，commands 282 + 1 = 283。
-  assert.equal(core.length, 297, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 297);
+  // 2026-10-04 v2.3.0 发版复核：v2.2.3 之后有 7 个测试登记为 core 却没同步这几个
+  // 数字，逐个审过都留在发布 tier：
+  //   - tests/test-bark-devices.js：Bark 设备存储 + 投递。存储走 mkdtemp + assertTestDir；
+  //     投递打的是进程内 127.0.0.1:0 假服务器——与另外 14 个 core deterministic 测试同一
+  //     模式，不碰外网、不碰真 ~/.multicc。
+  //   - tests/test-fcm-push.js：FCM 设备表与 transport，凭据缺失只停 FCM。fetch 注入、
+  //     临时目录，不碰 Google 端点。
+  //   - tests/test-native-session-guard.js：zcode/kimi/codebuddy/qoder/dsh 原生会话超限
+  //     归档（只挪不删）。全部在 mkdtemp 假 home 下，不 spawn。
+  //   - app/test/{fcm_service,notification_foreground,remote_screen_rfb,remote_screen_service}_test.dart：
+  //     plain test()，HTTP 走 MockClient、通知走 mock MethodChannel、RFB 编解码纯字节；
+  //     没有 widget 树、模拟器、真 socket。
+  // 297 + 7 = 304，deterministic 256 + 3 = 259，flutter 17 + 4 = 21，
+  // commands 283 + 3 = 286（Flutter 仍是一条批量命令）。
+  assert.equal(core.length, 304, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 304);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 256);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 259);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
-  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 17,
+  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 21,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
   const expectedPaths = core.flatMap(entry => Array.from(
@@ -202,8 +216,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 283,
-    '280 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 286,
+    '283 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
