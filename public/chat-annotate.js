@@ -135,6 +135,32 @@
       overlay = null;
     }
 
+    // 实时透传开关（标注器工具栏）：开 = 画完即 POST /api/annotation-live 交给
+    // 处理器执行；关 = 只攒标记，点「插入」写进输入框。跨次打开记住选择。
+    const LIVE_KEY = 'multicc.annotate.live';
+    function readLive() {
+      try { return win.localStorage.getItem(LIVE_KEY) !== '0'; } catch (_) { return true; }
+    }
+    function writeLive(on) {
+      try { win.localStorage.setItem(LIVE_KEY, on ? '1' : '0'); } catch (_) { /* 无痕模式 */ }
+    }
+
+    // 直接发出一条消息（不落在输入框等用户点发送）：借 composer.send()，用户
+    // 原有草稿原样放回。有待发附件、或发送失败时退回「写进输入框」。
+    function sendNow(text) {
+      const inputEl = getInputEl();
+      const composer = getComposer();
+      const pending = doc.querySelector('.attach-chip[data-path]');
+      if (!inputEl || pending || !composer || typeof composer.send !== 'function') { putIntoComposer(text, null); return false; }
+      const draft = inputEl.value;
+      inputEl.value = text;
+      const sent = composer.send() === true;
+      inputEl.value = draft;
+      inputEl.dispatchEvent(new win.Event('input', { bubbles: true }));
+      if (!sent) putIntoComposer(text, null);
+      return sent;
+    }
+
     function decodeImage(blob) {
       return new Promise((resolve, reject) => {
         const img = new win.Image();
@@ -174,17 +200,19 @@
       let tx = 0;
       let ty = 0;
       let draft = null;
+      let live = readLive();
 
       overlay = el(doc, 'div', 'annotate-overlay');
       const header = el(doc, 'div', 'annotate-header');
       const title = [tr('annotTitle'), name || src.split('/').pop() || ''].filter(Boolean).join(' · ');
       header.append(el(doc, 'span', 'annotate-title', title));
       const age = ageText(lastModified, Date.now(), translate);
-      const stale = el(doc, 'span', 'annotate-stale', age);
+      const stale = el(doc, 'span', 'annotate-stale');
+      const ageLabel = el(doc, 'span', null, age);
       const refresh = el(doc, 'button', 'annotate-btn', tr('annotRecapture'));
       refresh.type = 'button';
-      refresh.onclick = () => { putIntoComposer(refreshText(src), null); close(); };
-      stale.append(refresh);
+      refresh.onclick = recapture;
+      stale.append(ageLabel, refresh);
       const closeBtn = el(doc, 'button', 'annotate-btn annotate-close', '×');
       closeBtn.type = 'button';
       closeBtn.title = tr('close');
@@ -208,7 +236,19 @@
       const fitBtn = el(doc, 'button', 'annotate-btn', tr('annotResetView'));
       fitBtn.type = 'button';
       fitBtn.onclick = fit;
-      toolbar.append(...toolButtons, el(doc, 'span', 'annotate-sep'), undo, fitBtn);
+      const liveBtn = el(doc, 'button', 'annotate-btn', '');
+      liveBtn.type = 'button';
+      liveBtn.title = tr('annotLiveTitle');
+      const showLive = () => {
+        liveBtn.classList.toggle('on', live);
+        liveBtn.textContent = tr(live ? 'annotLiveOn' : 'annotLiveOff');
+      };
+      liveBtn.onclick = () => {
+        live = !live; writeLive(live); showLive();
+        hint.textContent = tr(live ? 'annotLiveOnHint' : 'annotLiveOffHint');
+      };
+      showLive();
+      toolbar.append(...toolButtons, el(doc, 'span', 'annotate-sep'), undo, fitBtn, el(doc, 'span', 'annotate-sep'), liveBtn);
 
       const stage = el(doc, 'div', 'annotate-stage');
       const cv = el(doc, 'canvas', 'annotate-canvas');
@@ -262,36 +302,66 @@
         marks.forEach((m, i) => drawMark(ctx, m, i));
         if (withDraft && draft) drawMark(ctx, draft, null);
       }
-      // 实时操作模式：每个标记完成的瞬间 POST /api/annotation-live，服务端按
+      // 实时透传：每个标记完成的瞬间 POST /api/annotation-live，服务端按
       // ~/.multicc/annotation-live.json 的 match(session/src 正则)→url 分发到
       // 本地处理器（任意场景可配）。无配置/处理器不在线时服务端静默忽略，
       // 不影响常规标注流程。处理器回 refresh=true（已把执行后的画面写回同一
-      // 文件）时原地换底图、撤掉已执行的标记，并把回包 text 显示在提示栏。
-      async function pushLiveMark(m) {
-        if (!src) return;
+      // 文件）时原地换底图，并把回包 text 显示在提示栏。
+      async function relay(event) {
+        if (!src) return [];
         try {
           const response = await fetchFn(withToken('/api/annotation-live'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              sessionId: getSessionId() || '', src, width: W, height: H,
-              kind: m.kind, a: m.a, b: m.b,
-            }),
+            body: JSON.stringify({ sessionId: getSessionId() || '', src, width: W, height: H, ...event }),
           });
           const data = await response.json().catch(() => ({}));
           const results = Array.isArray(data.results) ? data.results : [];
           const text = results.map(r => r && r.text).filter(Boolean).join(' · ');
           if (text) hint.textContent = text;
-          if (!url || !results.some(r => r && r.refresh)) return;
+          return results;
+        } catch (_) {
+          return [];
+        }
+      }
+      async function reloadImage() {
+        if (!url) return false;
+        try {
           const fresh = await fetchFn(url + (url.includes('?') ? '&' : '?') + '_live=' + Date.now(),
             { credentials: 'same-origin', cache: 'no-store' });
           const next = fresh.ok ? await decodeImage(await fresh.blob()) : null;
-          if (!next || !stage.isConnected) return;
+          if (!next || !stage.isConnected) return false;
           image = next;
-          const i = marks.indexOf(m);
-          if (i >= 0) marks.splice(i, 1);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+      async function pushLiveMark(m) {
+        if (!live) return;
+        const results = await relay({ kind: m.kind, a: m.a, b: m.b });
+        if (!results.some(r => r && r.refresh) || !(await reloadImage())) return;
+        const i = marks.indexOf(m);  // 已执行的标记撤掉，底图就是执行结果
+        if (i >= 0) marks.splice(i, 1);
+        render(); renderList();
+      }
+      // 「重新截」：先发 kind=recapture 给处理器，能原地重拍就换底图（旧标记的
+      // 坐标随之失效，清空）；没有处理器接手时直接发消息请 agent 重拍，不再
+      // 把文案塞进输入框等用户手动发送。
+      async function recapture() {
+        refresh.disabled = true;
+        hint.textContent = tr('annotRecapturing');
+        const results = await relay({ kind: 'recapture' });
+        if (results.some(r => r && r.refresh) && await reloadImage()) {
+          marks.length = 0;
+          ageLabel.textContent = tr('annotAgeJustNow');
+          if (hint.textContent === tr('annotRecapturing')) hint.textContent = tr('annotGestureHint');
           render(); renderList();
-        } catch (_) { /* 静默 */ }
+          refresh.disabled = false;
+          return;
+        }
+        if (sendNow(refreshText(src))) notify(tr('annotRecaptureSent'));
+        close();
       }
       function renderList() {
         list.replaceChildren();
