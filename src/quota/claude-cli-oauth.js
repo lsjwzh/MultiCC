@@ -55,6 +55,7 @@ function parseCredentials(raw) {
     refreshToken: typeof oauth.refreshToken === 'string' ? oauth.refreshToken : '',
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
     subscriptionType: typeof oauth.subscriptionType === 'string' ? oauth.subscriptionType : '',
+    scopes: Array.isArray(oauth.scopes) ? oauth.scopes.filter(x => typeof x === 'string') : null,
   };
 }
 

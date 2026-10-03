@@ -77,6 +77,23 @@ function jwtExpiryMs(token) {
   return Number.isFinite(seconds) ? seconds * 1000 : null;
 }
 
+// A copy imported from the CLI FOLLOWS the CLI only while it still holds the
+// refresh token the importer wrote. The importer records this fingerprint; any
+// login that rewrites the token (multicc PKCE, `codex login` with CODEX_HOME)
+// breaks the match, so the account becomes independent without every login
+// flow having to remember to clear a flag.
+function refreshFingerprint(refreshToken) {
+  const text = typeof refreshToken === 'string' ? refreshToken.trim() : '';
+  return text ? crypto.createHash('sha256').update(text).digest('hex').slice(0, 16) : '';
+}
+
+// A copy imported before fingerprints existed carries no hash: it keeps the old
+// meaning (cli-import follows) until the importer backfills one.
+function followsCliImport(source, importedRefreshHash, refreshToken) {
+  if (source !== 'cli-import') return false;
+  return importedRefreshHash == null || importedRefreshHash === refreshFingerprint(refreshToken);
+}
+
 function readJsonIfExists(file) {
   try {
     return parseJson(fs.readFileSync(file, 'utf8'));
@@ -104,6 +121,13 @@ function createOfficialAccountStore(options = {}) {
     return resolveUnder(root, 'claude', `${assertAccountId(id)}.json`);
   }
 
+  // Per-account CLAUDE_CONFIG_DIR: the claude CLI keys its credential store on
+  // this path (Keychain service suffix / <dir>/.credentials.json), so a CLI run
+  // pointed here refreshes THIS account and nothing else.
+  function claudeHomeDir(id) {
+    return resolveUnder(root, 'claude', `${assertAccountId(id)}.home`);
+  }
+
   // ── Codex ────────────────────────────────────────────────────────────────
 
   function createCodexAccount({ label } = {}) {
@@ -113,6 +137,10 @@ function createOfficialAccountStore(options = {}) {
     const meta = { label: String(label || '').trim().slice(0, 64), createdAt: Date.now() };
     atomicWriteJson(codexMetaFile(id), meta);
     return { id, dir, authFile: codexAuthFile(id), label: meta.label };
+  }
+
+  function readCodexMeta(id) {
+    return readJsonIfExists(codexMetaFile(id)) || {};
   }
 
   function writeCodexMeta(id, patch) {
@@ -157,6 +185,7 @@ function createOfficialAccountStore(options = {}) {
           label: typeof meta.label === 'string' ? meta.label : '',
           createdAt: Number(meta.createdAt) || null,
           source: typeof meta.source === 'string' ? meta.source : '',
+          followsCli: followsCliImport(meta.source, meta.importedRefreshHash, ((readJsonIfExists(codexAuthFile(id)) || {}).tokens || {}).refresh_token),
           ...describeCodexAuth(codexAuthFile(id)),
         };
       })
@@ -243,6 +272,7 @@ function createOfficialAccountStore(options = {}) {
           label: typeof data.label === 'string' ? data.label : '',
           createdAt: Number(data.createdAt) || null,
           source: typeof data.source === 'string' ? data.source : '',
+          followsCli: followsCliImport(data.source, data.importedRefreshHash, data.refresh_token),
           ...describeClaudeCredential(data),
         };
       })
@@ -251,6 +281,7 @@ function createOfficialAccountStore(options = {}) {
 
   function deleteClaudeAccount(id) {
     fs.rmSync(claudeFile(id), { force: true });
+    fs.rmSync(claudeHomeDir(id), { recursive: true, force: true });
   }
 
   return Object.freeze({
@@ -259,6 +290,7 @@ function createOfficialAccountStore(options = {}) {
     // codex
     createCodexAccount,
     writeCodexMeta,
+    readCodexMeta,
     listCodexAccounts,
     deleteCodexAccount,
     readCodexCredential,
@@ -271,6 +303,7 @@ function createOfficialAccountStore(options = {}) {
     listClaudeAccounts,
     deleteClaudeAccount,
     claudeFile,
+    claudeHomeDir,
   });
 }
 
@@ -326,6 +359,8 @@ module.exports = {
   sanitizeLoginEnv,
   codexAccountAuthFilePath,
   claudeAccountFilePath,
+  refreshFingerprint,
+  followsCliImport,
   DEFAULT_ROOT,
   ACCOUNT_ID_PATTERN,
 };

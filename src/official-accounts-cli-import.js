@@ -17,13 +17,16 @@
 // imported from the CLI shares the CLI's refresh token, so it must not rotate
 // on its own either: it FOLLOWS the CLI — whenever the CLI holds a newer token
 // for the same account, the copy is replaced. A healthy account the user signed
-// in through multicc itself is never clobbered.
+// in through multicc itself is never clobbered. "Imported" is judged by the
+// refresh-token fingerprint the importer recorded (followsCli), not the source
+// tag alone: once any login rewrites the token the account is independent.
 
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const { atomicWriteJson, secureFile } = require('./runtime-security');
+const { refreshFingerprint, followsCliImport } = require('./official-accounts');
 
 // Matches the CLI refreshers' cadence, so a refreshed CLI token reaches the
 // copy long before the copy's own access token lapses (refresh runs 15 min early).
@@ -83,6 +86,24 @@ function createCliLoginImporter({
   // vendor → store account id the CLI login last resolved to.
   const lastMatch = {};
 
+  // Copies imported before fingerprints existed: pin the token they hold now,
+  // so a later independent login (which rewrites it) reads as independent.
+  function backfillFingerprints() {
+    for (const a of accounts.listClaudeAccounts()) {
+      const data = accounts.readClaudeCredential(a.id) || {};
+      if (data.source === IMPORT_SOURCE && data.importedRefreshHash == null && data.refresh_token) {
+        accounts.writeClaudeCredential(a.id, { importedRefreshHash: refreshFingerprint(data.refresh_token) });
+      }
+    }
+    for (const a of accounts.listCodexAccounts()) {
+      if (a.source !== IMPORT_SOURCE) continue;
+      const meta = accounts.readCodexMeta(a.id);
+      if (meta.importedRefreshHash == null && readCodexTokens(a.id).refresh_token) {
+        accounts.writeCodexMeta(a.id, { importedRefreshHash: refreshFingerprint(readCodexTokens(a.id).refresh_token) });
+      }
+    }
+  }
+
   async function importClaude() {
     let cli;
     try { cli = await readClaudeCli(); } catch (_) { cli = null; }
@@ -107,7 +128,10 @@ function createCliLoginImporter({
       account_uuid: profile.account_uuid || '',
       organization_uuid: profile.organization_uuid || '',
       organization_name: profile.organization_name || '',
+      ...(cli.scopes ? { scopes: cli.scopes } : {}),
+      ...(cli.subscriptionType ? { subscription_type: cli.subscriptionType } : {}),
       source: IMPORT_SOURCE,
+      importedRefreshHash: refreshFingerprint(cli.refreshToken),
       importedAt: new Date(now()).toISOString(),
     };
     const match = stored.find(({ a, data }) => (profile.account_uuid
@@ -116,7 +140,7 @@ function createCliLoginImporter({
       const { a } = match;
       const usable = a.loggedIn && fresh(a.expiresAt);
       const newer = cli.expiresAt == null || a.expiresAt == null || cli.expiresAt > a.expiresAt;
-      if (usable && !(a.source === IMPORT_SOURCE && newer)) return { status: 'already', id: a.id };
+      if (usable && !(a.followsCli && newer)) return { status: 'already', id: a.id };
       accounts.writeClaudeCredential(a.id, tokenData);
       return { status: 'updated', id: a.id };
     }
@@ -143,12 +167,16 @@ function createCliLoginImporter({
       const file = accounts.codexAuthFile(id);
       atomicWriteJson(file, cli.auth);
       secureFile(file);
-      accounts.writeCodexMeta(id, { source: IMPORT_SOURCE, importedAt: new Date(now()).toISOString() });
+      accounts.writeCodexMeta(id, {
+        source: IMPORT_SOURCE,
+        importedAt: new Date(now()).toISOString(),
+        importedRefreshHash: refreshFingerprint(cli.auth.tokens.refresh_token),
+      });
     };
     if (existing) {
       const usable = accounts.readCodexCredential(existing.id, { now }).ok;
       const newer = cli.expiresAt == null || existing.expiresAt == null || cli.expiresAt > existing.expiresAt;
-      if (usable && !(existing.source === IMPORT_SOURCE && newer)) return { status: 'already', id: existing.id };
+      if (usable && !(existing.followsCli && newer)) return { status: 'already', id: existing.id };
       write(existing.id);
       return { status: 'updated', id: existing.id };
     }
@@ -169,16 +197,17 @@ function createCliLoginImporter({
     if (vendor === 'claude') {
       const data = accounts.readClaudeCredential(id) || {};
       if (cli.refreshToken && data.refresh_token === cli.refreshToken) return true;
-      return data.source === IMPORT_SOURCE && lastMatch.claude === id;
+      return followsCliImport(data.source, data.importedRefreshHash, data.refresh_token) && lastMatch.claude === id;
     }
     const tokens = readCodexTokens(id);
     if (cli.auth.tokens.refresh_token && tokens.refresh_token === cli.auth.tokens.refresh_token) return true;
     const account = accounts.listCodexAccounts().find(a => a.id === id);
-    return !!account && account.source === IMPORT_SOURCE && sameText(tokens.account_id, cli.accountId);
+    return !!account && account.followsCli && sameText(tokens.account_id, cli.accountId);
   }
 
   async function importOnce() {
     const result = {};
+    try { backfillFingerprints(); } catch (_) { /* best effort; followsCliImport covers a missing hash */ }
     try { result.claude = await importClaude(); } catch (error) { result.claude = { status: 'error', error: error.message }; }
     try { result.codex = importCodex(); } catch (error) { result.codex = { status: 'error', error: error.message }; }
     for (const vendor of ['claude', 'codex']) if (result[vendor].id) lastMatch[vendor] = result[vendor].id;

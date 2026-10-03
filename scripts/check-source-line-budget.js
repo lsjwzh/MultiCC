@@ -339,8 +339,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +3 键（rsLiveMode/rsFallback/rsRfbCtrlHint）：同一浮层的 RFB 流畅模式。
     // +9 键（rsPerm*/rsErrAx/rsErrSr）：屏幕浮层的权限门引导（web+App 共用）。
     // +1 键（rsZoomReset）并改写 2 条提示值：屏幕浮层的双指捏合缩放（手机精确定位）。
-    maxLines: 8650,
-    maxBytes: 545563,
+    // +3 键（airOfficialAcctFollowsCli*/IndependentLogin）：CLI 导入账号的「跟随本机 CLI」标记与独立登录。
+    maxLines: 8656,
+    maxBytes: 546365,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

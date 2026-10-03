@@ -158,11 +158,12 @@
       ? '<span style="font-size:11px;color:var(--faint)">⇄ ' + esc(a.providerName) + '</span>' : '';
     return '<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">'
       + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-      + '<b style="font-size:13px">' + esc(name) + '</b>' + chipsHtml + provider + (a.active ? chip(tr('airOfficialAcctActive'), '#3fb950') : '')
+      + '<b style="font-size:13px">' + esc(name) + '</b>' + chipsHtml
+      + (a.followsCli ? ' <span title="' + esc(tr('airOfficialAcctFollowsCliTitle')) + '">' + chip(tr('airOfficialAcctFollowsCli'), '#d29922') + '</span>' : '') + provider + (a.active ? chip(tr('airOfficialAcctActive'), '#3fb950') : '')
       + '<span style="margin-left:auto;display:flex;gap:6px">'
       + (a.active ? '' : '<button class="btn btn-green" data-act="activate" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctActivate')) + '</button>')
       + (a.global ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="quota" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctRefreshQuota')) + '</button>')
-      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="relogin" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctRelogin')) + '</button>'
+      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="relogin" data-vendor="' + vendor + '" data-id="' + a.id + '"' + (a.followsCli ? ' title="' + esc(tr('airOfficialAcctFollowsCliTitle')) + '"' : '') + '>' + esc(tr(a.followsCli ? 'airOfficialAcctIndependentLogin' : 'airOfficialAcctRelogin')) + '</button>'
       + (a.global || a.active ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctDelete')) + '</button>')
       + '</span></div>'
       + (a.global ? '' : '<div style="font-size:12px">' + quotaHtml(vendor, a.id) + '</div>')
