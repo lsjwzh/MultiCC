@@ -8,7 +8,7 @@ const { isInternalExecutionSlot } = require('../session/public-session-access');
 const WS_PING_INTERVAL_MS = 30_000;
 const WS_MAX_MISSED_PONGS = 3;
 const SESSIONLESS_WS_PATHS = new Set([
-  '/ws/voice', '/ws/tts', '/ws/workspace', '/ws/meta', '/ws/aux',
+  '/ws/voice', '/ws/tts', '/ws/workspace', '/ws/meta', '/ws/aux', '/ws/remote-screen',
 ]);
 
 function mountWsConnectionRouter(wss, deps) {
@@ -22,6 +22,7 @@ function mountWsConnectionRouter(wss, deps) {
     authSecurity,
     voiceAsr,
     ttsService,
+    remoteScreenRfb,
     workspaceRuntime,
     auxQueue,
     auxSessionId,
@@ -175,6 +176,10 @@ function mountWsConnectionRouter(wss, deps) {
     }
     if (urlObj.pathname === '/ws/meta') {
       return workspaceRuntime.attachMeta(ws);
+    }
+    if (urlObj.pathname === '/ws/remote-screen') {
+      if (!remoteScreenRfb) { ws.close(1010, 'remote screen unavailable'); return; }
+      return remoteScreenRfb.attachRfb(ws);
     }
     if (urlObj.pathname === '/ws/aux') {
       auxQueue.attachClient(ws);

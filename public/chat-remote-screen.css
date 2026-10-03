@@ -37,3 +37,7 @@
   border: 2px solid #ff3b30; pointer-events: none; z-index: 9991; animation: rs-ripple .6s ease-out forwards;
 }
 @keyframes rs-ripple { from { transform: scale(.4); opacity: 1; } to { transform: scale(1.6); opacity: 0; } }
+
+/* 流畅模式：noVNC 的画布铺满舞台（scaleViewport 负责等比缩放）。 */
+.rs-rfb { position: absolute; inset: 0; background: #000; }
+.rs-rfb canvas { display: block; }

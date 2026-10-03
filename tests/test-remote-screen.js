@@ -148,3 +148,65 @@ test('annotation-live hands remote-screen shots to the built-in handler without 
   assert.deepEqual(res.body, { ok: true, relayed: 1, results: [{ ok: true, refresh: true, text: '已点击 (3, 4)' }] });
   assert.equal(agentLog[0].op, 'click');
 });
+
+// ── RFB 流式模式：/ws/remote-screen ↔ rfb.sock 的字节管道 ──
+const { EventEmitter } = require('events');
+function fakeWs() {
+  const ws = new EventEmitter();
+  ws.readyState = 1;
+  ws.sent = [];
+  ws.closed = null;
+  ws.send = d => ws.sent.push(d);
+  ws.close = (code, reason) => { ws.closed = { code, reason }; ws.readyState = 3; ws.emit('close'); };
+  return ws;
+}
+const tick = ms => new Promise(r => setTimeout(r, ms));
+
+test('attachRfb pipes bytes both ways and queues pre-connect messages', async () => {
+  const sockPath = path.join(tmp, 'rfb.sock');
+  const got = [];
+  const conns = [];
+  const server = net.createServer(c => {
+    conns.push(c);
+    c.write('RFB 003.008\n'); // Agent 的版本串应原样透到浏览器端
+    c.on('data', d => got.push(d));
+  });
+  await new Promise(r => server.listen(sockPath, r));
+  const prev = rs._deps.rfbSock;
+  rs._deps.rfbSock = sockPath;
+  const ws = fakeWs();
+  try {
+    rs.attachRfb(ws);
+    ws.emit('message', Buffer.from('RFB 003.008\n')); // connect 前到达 → 排队，connect 后按序补投
+    await tick(200);
+    assert.deepEqual(ws.sent.map(String), ['RFB 003.008\n']);
+    assert.deepEqual(got.map(String), ['RFB 003.008\n']);
+    ws.emit('message', Buffer.from('\x02\x00\x00\x00')); // ClientInit
+    await tick(100);
+    assert.deepEqual(got.map(String), ['RFB 003.008\n', '\x02\x00\x00\x00']);
+    ws.emit('close'); // 浏览器端断开 → 桥拆掉 unix socket
+    await tick(100);
+    assert.ok(conns[0].destroyed);
+  } finally {
+    rs._deps.rfbSock = prev;
+    server.close();
+  }
+});
+
+test('attachRfb closes the ws with 1011 when rfb.sock is unavailable', async () => {
+  const prev = rs._deps.rfbSock;
+  rs._deps.rfbSock = path.join(tmp, 'missing-rfb.sock');
+  const ws = fakeWs();
+  rs.attachRfb(ws);
+  await tick(150);
+  try {
+    assert.deepEqual(ws.closed, { code: 1011, reason: 'rfb-unavailable' });
+  } finally { rs._deps.rfbSock = prev; }
+});
+
+test('connection-router routes /ws/remote-screen through the rfb bridge behind site auth', () => {
+  const src = fs.readFileSync('src/ws/connection-router.js', 'utf8');
+  // 免 id 的 WS 路径表里带上了 /ws/remote-screen（远程访问仍要 ws-ticket，本地免票）。
+  assert.match(src, /SESSIONLESS_WS_PATHS[\s\S]*?\/ws\/remote-screen/);
+  assert.match(src, /remoteScreenRfb\.attachRfb\(ws\)/);
+});

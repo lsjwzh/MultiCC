@@ -173,7 +173,7 @@
       "id": "macos-agent-runtime",
       "classification": "external-owner",
       "owner": "macOS desktop agent installer",
-      "rationale": "The per-user LaunchAgent owns its IPC socket, preserved user config/log, and stable client symlink outside a replaceable MultiCC checkout; both roots have explicit MULTICC_AGENT_* overrides.",
+      "rationale": "The per-user LaunchAgent owns its IPC sockets (agent.sock for JSON ops, rfb.sock for the RFB live screen), preserved user config/log, and stable client symlink outside a replaceable MultiCC checkout; all roots have explicit MULTICC_AGENT_* overrides.",
       "migrationStrategy": "Keep the agent directory private and the client link derived/idempotent; uninstall removes the socket and link but preserves config/log. If either default ever moves, copy the config forward and retain a compatibility link before changing the LaunchAgent contract.",
       "sources": [
         {
@@ -191,6 +191,10 @@
         {
           "file": "src/routes/macos-privacy.js",
           "anchor": "agentBin = process.env.MULTICC_AGENT_BIN || path.join(homedir(), '.multicc', 'bin', 'multicc-agent'),"
+        },
+        {
+          "file": "src/remote-screen.js",
+          "anchor": "const SOCK = process.env.MULTICC_AGENT_SOCK || path.join(os.homedir(), '.multicc', 'agent', 'agent.sock');"
         }
       ]
     },
