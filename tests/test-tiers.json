@@ -1216,6 +1216,15 @@
       ]
     },
     {
+      "path": "tests/test-annotation-live.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-api-contracts.js",
       "tier": "core",
       "lane": "deterministic",
