@@ -115,6 +115,12 @@ function createOfficialAccountStore(options = {}) {
     return { id, dir, authFile: codexAuthFile(id), label: meta.label };
   }
 
+  function writeCodexMeta(id, patch) {
+    const meta = { ...(readJsonIfExists(codexMetaFile(id)) || {}), ...patch };
+    atomicWriteJson(codexMetaFile(id), meta);
+    return meta;
+  }
+
   function describeCodexAuth(authFile) {
     const auth = readJsonIfExists(authFile);
     if (!auth) return { loggedIn: false, reason: 'credential_unreadable' };
@@ -150,6 +156,7 @@ function createOfficialAccountStore(options = {}) {
           id,
           label: typeof meta.label === 'string' ? meta.label : '',
           createdAt: Number(meta.createdAt) || null,
+          source: typeof meta.source === 'string' ? meta.source : '',
           ...describeCodexAuth(codexAuthFile(id)),
         };
       })
@@ -235,6 +242,7 @@ function createOfficialAccountStore(options = {}) {
           id,
           label: typeof data.label === 'string' ? data.label : '',
           createdAt: Number(data.createdAt) || null,
+          source: typeof data.source === 'string' ? data.source : '',
           ...describeClaudeCredential(data),
         };
       })
@@ -250,6 +258,7 @@ function createOfficialAccountStore(options = {}) {
     assertAccountId,
     // codex
     createCodexAccount,
+    writeCodexMeta,
     listCodexAccounts,
     deleteCodexAccount,
     readCodexCredential,

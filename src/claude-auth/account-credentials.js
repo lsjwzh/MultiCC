@@ -75,18 +75,21 @@ function createClaudeAccountCredentialService(options = {}) {
   }
 
   // A copy imported from the CLI shares the CLI's refresh token: rotating it
-  // here would log the CLI out. Re-sync from the CLI first; rotate only when
-  // the CLI has nothing fresher to give.
+  // here would log the CLI out. Re-sync from the CLI first (the CLI refresher
+  // keeps the CLI fresh); while the copy still shares the CLI's token family it
+  // never rotates on its own. Only once the CLI holds a different login does
+  // the copy refresh itself like any multicc-owned account.
   async function refreshPreferringCli(id, stored) {
     if (stored.fromCli && typeof options.refreshFromCli === 'function') {
-      try {
-        if (await options.refreshFromCli('claude', id)) {
-          const synced = readStored(id);
-          if (synced.ok && (synced.expiresAt == null || synced.expiresAt > now() + EXPIRY_MARGIN_MS)) {
-            return { ok: true, accessToken: synced.accessToken, expiresAt: synced.expiresAt };
-          }
+      let r = {};
+      try { r = (await options.refreshFromCli('claude', id)) || {}; } catch (_) { /* treat as not shared */ }
+      if (r.synced) {
+        const synced = readStored(id);
+        if (synced.ok && (synced.expiresAt == null || synced.expiresAt > now() + EXPIRY_MARGIN_MS)) {
+          return { ok: true, accessToken: synced.accessToken, expiresAt: synced.expiresAt };
         }
-      } catch (_) { /* fall through to our own refresh */ }
+      }
+      if (r.shared) return { ok: false, reason: 'waiting_for_cli_refresh' };
     }
     return refresh(id, stored.refreshToken);
   }
