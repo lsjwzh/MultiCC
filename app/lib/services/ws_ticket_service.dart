@@ -12,6 +12,7 @@ abstract final class MulticcWsPath {
   static const workspace = '/ws/workspace';
   static const meta = '/ws/meta';
   static const aux = '/ws/aux';
+  static const remoteScreen = '/ws/remote-screen';
 }
 
 // Flutter currently consumes Aux through REST + /ws/workspace events, so it

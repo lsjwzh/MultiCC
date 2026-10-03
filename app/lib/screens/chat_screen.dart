@@ -50,6 +50,7 @@ import '../widgets/worktree_status.dart';
 import 'chat_width_dialog.dart';
 import 'memo_screen.dart';
 import 'memory_screen.dart';
+import 'remote_screen_screen.dart';
 import 'terminal_screen.dart';
 
 const double _chatDesktopBreakpoint = 760;
@@ -889,6 +890,15 @@ class _ChatViewState extends State<ChatView> {
                         onDeleteTask: provider.taskBoundTaskId == null
                             ? null
                             : () => unawaited(_deleteBoundTask(provider)),
+                        // 「🖥 屏幕」走 ⋯ 菜单（Web 页头有常驻按钮，App 页头排不下）。
+                        onRemoteScreen: () => Navigator.push(
+                          context,
+                          MaterialPageRoute<void>(
+                            builder: (_) => RemoteScreenScreen(
+                              settings: widget.settings,
+                            ),
+                          ),
+                        ),
                         advancedMode: widget.settings.advancedMode.value,
                       ),
                       // The pending-answer card lives OUTSIDE the scrolling
