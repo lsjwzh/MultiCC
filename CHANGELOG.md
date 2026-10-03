@@ -2,6 +2,16 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.3.0 — See and drive the Mac from the chat (2026-10-04)
+
+### Highlights
+
+- **Remote screen in the chat page and the App** — a new 🖥 Screen overlay shows the Mac's main display and lets you click, drag, scroll and type on it without leaving the conversation. It needs no VNC or RustDesk install: it rides on the screen-capture and input permissions the MultiCC Agent already holds (`src/remote-screen.js`). A JPEG polling path always works, and a smooth mode streams through a minimal RFB server embedded in the Agent plus the bundled noVNC client (`public/vendor/novnc`), falling back to polling if the stream drops. The Flutter App has its own native RFB client with pinch-to-zoom.
+- **Annotate a frozen frame to act on it** — freeze one frame of the remote screen into the annotator and every mark becomes an action the moment you draw it: a point clicks, a box clicks its centre, an arrow drags, and "re-capture" refreshes the picture in place. The same realtime relay (`/api/annotation-live`) can forward marks on any screenshot to a local webhook configured in `~/.multicc/annotation-live.json`, so new automation targets plug in with one config line.
+- **Android push via FCM, iOS push via Bark devices** — the Android App can register for Firebase Cloud Messaging (optional: builds without Firebase config simply skip it), with task notifications rendered natively. Bark devices can be managed from the Air settings panel and the App. FCM credentials stay on the server, and missing credentials disable only FCM, never the other push channels.
+- **Several official accounts per vendor, kept fresh** — signed-in Claude accounts now refresh their OAuth tokens through the claude CLI itself, each with its own config dir, so accounts no longer log each other out. The accounts panel notices the login your CLI already holds and offers to sign in here too, without copying the single-use refresh token. When a vendor has two or more accounts, a slow sweeper records each account's usage windows so Auto can tell which one still has headroom.
+- **Resume guard for every resume-capable CLI lane** — zcode, kimi, codebuddy, qoder and dsh native sessions that grow past 10MB are moved to a MultiCC archive (never deleted) before a resume, the same contract the codex rollout guard already enforced, so an oversized native history can no longer stall startup. Auto Provider also stops resetting a session's current route when a handoff merely clones an unchanged policy.
+
 ## v2.2.3 — One run-config dialog instead of three (2026-10-01)
 
 ### Highlights

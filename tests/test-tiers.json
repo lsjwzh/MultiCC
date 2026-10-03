@@ -2053,6 +2053,15 @@
       ]
     },
     {
+      "path": "tests/test-claude-account-cli-refresh.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
       "path": "tests/test-claude-exp-adapter.js",
       "tier": "core",
       "lane": "deterministic",
