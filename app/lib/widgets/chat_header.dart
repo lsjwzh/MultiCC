@@ -66,6 +66,10 @@ class ChatHeader extends StatelessWidget {
   final VoidCallback onCwd;
   final bool advancedMode;
   final VoidCallback? onDeleteTask;
+
+  /// 「🖥 屏幕」（Web 页头那颗 `#remote-screen-btn`，public/chat-remote-screen.js）。
+  /// null = 宿主不提供（独立页/测试宿主），⋯ 菜单里就不显示这一行。
+  final VoidCallback? onRemoteScreen;
   final Future<Map<String, dynamic>> Function(String taskId, String title)?
   renameTask;
   const ChatHeader({
@@ -94,6 +98,7 @@ class ChatHeader extends StatelessWidget {
     required this.onCwd,
     this.advancedMode = true,
     this.onDeleteTask,
+    this.onRemoteScreen,
     this.renameTask,
   });
 
@@ -381,6 +386,7 @@ class ChatHeader extends StatelessWidget {
               artifactsLabel: artifactsLabel,
               onArtifacts: onArtifacts,
               onDeleteTask: onDeleteTask,
+              onRemoteScreen: onRemoteScreen,
               onShare: onShare,
               onShareMessages: () => Navigator.push(
                 context,
@@ -1025,6 +1031,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
   final String? artifactsLabel;
   final VoidCallback onArtifacts;
   final VoidCallback? onDeleteTask;
+  final VoidCallback? onRemoteScreen;
   const _HeaderOverflowMenu({
     required this.mergeReady,
     required this.cwd,
@@ -1052,6 +1059,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
     this.artifactsLabel,
     required this.onArtifacts,
     this.onDeleteTask,
+    this.onRemoteScreen,
   });
 
   @override
@@ -1146,6 +1154,9 @@ class _HeaderOverflowMenu extends StatelessWidget {
             break;
           case 'delete-task':
             onDeleteTask?.call();
+            break;
+          case 'remote-screen':
+            onRemoteScreen?.call();
             break;
         }
       },
@@ -1243,6 +1254,14 @@ class _HeaderOverflowMenu extends StatelessWidget {
           t('gitLog'),
           const Color(0xFF233249),
         ),
+        // 「🖥 屏幕」：实时看本机主屏并远程操作（Web 页头的 #remote-screen-btn）。
+        if (onRemoteScreen != null)
+          _item(
+            'remote-screen',
+            Icons.monitor_rounded,
+            t('rsButton'),
+            const Color(0xFF233249),
+          ),
         // 强制同步在菜单里也留一份：两个横幅只在「落后」或「卡在冲突」时出现，
         // 而这颗按钮恰恰最常用于「没落后但我要让会话去处理同步」。
         _item(

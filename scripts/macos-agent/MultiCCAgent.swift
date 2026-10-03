@@ -1594,6 +1594,7 @@ final class RfbClient: NSObject {
   let cond = NSCondition()
   var closed = false
   var pendingRequest = false   // client is owed a FramebufferUpdate (cond)
+  var servedAny = false        // has ever sent an update (cond) — idle keepalive vs dead capture
   var connectedAt = Date()
   // dirty band state, guarded by RfbScreen's lock
   var needsFull = true
@@ -1855,11 +1856,18 @@ func rfbSender(_ c: RfbClient) {
     if c.closed { c.cond.unlock(); return }
     c.cond.unlock()
     // Wait for content; if capture never produces a frame, drop the client so
-    // the browser falls back to JPEG polling instead of hanging.
+    // the browser falls back to JPEG polling instead of hanging. Once a frame
+    // HAS been served, a still screen must not kill the connection — answer
+    // the pending incremental request with an empty update (n=0 keepalive):
+    // SCStream only emits on change, so idle requests would otherwise time out.
     var rects = RfbScreen.shared.takeRects(c)
     var waitedMs = 0
     while rects == nil && !c.closed {
-      if waitedMs >= 4000 || Date().timeIntervalSince(c.connectedAt) > 10 { c.shutdown(); return }
+      if Date().timeIntervalSince(c.connectedAt) > 10 && !c.servedAny { c.shutdown(); return }
+      if waitedMs >= 4000 {
+        if c.servedAny { rects = []; break }
+        c.shutdown(); return
+      }
       usleep(20_000); waitedMs += 20
       rects = RfbScreen.shared.takeRects(c)
     }
@@ -1873,7 +1881,7 @@ func rfbSender(_ c: RfbClient) {
       msg.append(d)
     }
     if !writeAll(c.fd, msg) { c.shutdown(); return }
-    c.cond.lock(); c.pendingRequest = false; c.cond.unlock()
+    c.cond.lock(); c.pendingRequest = false; c.servedAny = true; c.cond.unlock()
   }
 }
 
