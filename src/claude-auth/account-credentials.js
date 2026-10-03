@@ -38,6 +38,7 @@ function createClaudeAccountCredentialService(options = {}) {
       accessToken,
       refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token.trim() : '',
       expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
+      fromCli: data.source === 'cli-import',
     };
   }
 
@@ -73,6 +74,23 @@ function createClaudeAccountCredentialService(options = {}) {
     }
   }
 
+  // A copy imported from the CLI shares the CLI's refresh token: rotating it
+  // here would log the CLI out. Re-sync from the CLI first; rotate only when
+  // the CLI has nothing fresher to give.
+  async function refreshPreferringCli(id, stored) {
+    if (stored.fromCli && typeof options.refreshFromCli === 'function') {
+      try {
+        if (await options.refreshFromCli('claude', id)) {
+          const synced = readStored(id);
+          if (synced.ok && (synced.expiresAt == null || synced.expiresAt > now() + EXPIRY_MARGIN_MS)) {
+            return { ok: true, accessToken: synced.accessToken, expiresAt: synced.expiresAt };
+          }
+        }
+      } catch (_) { /* fall through to our own refresh */ }
+    }
+    return refresh(id, stored.refreshToken);
+  }
+
   // The cpr-facing read: {token} on success, {token:null, reason} otherwise.
   // Sync-shape contract (cpr awaits the result, so async is fine).
   async function readAccountToken(id) {
@@ -84,7 +102,7 @@ function createClaudeAccountCredentialService(options = {}) {
     // Expired (or nearly): singleflight refresh, then re-read the file.
     let pending = inflight.get(id);
     if (!pending) {
-      pending = refresh(id, stored.refreshToken).finally(() => inflight.delete(id));
+      pending = refreshPreferringCli(id, stored).finally(() => inflight.delete(id));
       inflight.set(id, pending);
     }
     const refreshed = await pending;

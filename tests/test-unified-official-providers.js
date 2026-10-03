@@ -9,7 +9,7 @@ const { createOfficialCatalog, normalizeOfficialSessionReferences } = require('.
 const { mountCodexAccountRoutes } = require('../src/routes/codex-accounts');
 const { mountClaudeAccountRoutes } = require('../src/routes/claude-accounts');
 const A = 'aaaaaaaaaaaaaaaa', B = 'bbbbbbbbbbbbbbbb';
-function fixture({ accounts = { claude: [A, B], codex: [A, B] }, loggedOut = [], cli = {} } = {}) {
+function fixture({ accounts = { claude: [A, B], codex: [A, B] }, loggedOut = [] } = {}) {
   let selection = {};
   const records = ['claude', 'codex'].flatMap(appType => [A, B].map(id => ({
     id: `${appType}-${id}`, appType, name: id,
@@ -17,8 +17,7 @@ function fixture({ accounts = { claude: [A, B], codex: [A, B] }, loggedOut = [],
   })));
   records.push({ id: 'relay', appType: 'codex', settingsConfig: { auth: { OPENAI_API_KEY: 'test-key' }, config: 'base_url="https://relay.example"' } });
   const listAccounts = type => (accounts[type] || []).map(id => ({ id, label: id === A ? 'work' : '', email: `${id.slice(0, 1)}@example.com`, loggedIn: !loggedOut.includes(id) }));
-  const catalog = createOfficialCatalog({ readRecords: () => records, readSelection: () => selection, writeSelection: s => { selection = s; }, listAccounts,
-    readGlobalLogin: type => cli[type] || null });
+  const catalog = createOfficialCatalog({ readRecords: () => records, readSelection: () => selection, writeSelection: s => { selection = s; }, listAccounts });
   return { catalog, records };
 }
 test('one official provider per signed-in account, named after the account; the alias follows the selection', () => {
@@ -57,42 +56,6 @@ test('no signed-in account lists a single "select to log in" entry backed by the
   assert.equal(kept.settingsConfig.officialAccount.id, A, 'a signed-out selection is kept, never silently swapped');
   assert.equal(kept.name, 'Claude 官方 · 选此登录');
   assert.equal(kept.needsLogin, true);
-});
-test('the CLI\'s own login is a signed-in official account named after its email', () => {
-  // Only the CLI is signed in: no "select to log in", the login is listed by email.
-  const only = fixture({ accounts: { claude: [], codex: [] }, cli: { claude: { loggedIn: true, email: 'me@example.com' } } }).catalog;
-  assert.deepEqual(only.list().filter(p => p.builtinOfficial).map(p => [p.id, p.name, p.needsLogin]), [
-    ['claude-official-global', 'Claude 官方 · me@example.com', false],
-    ['codex-official', 'Codex 官方 · 选此登录', true],
-  ]);
-  assert.equal(only.get('claude', 'claude-official').name, 'Claude 官方 · me@example.com', 'the alias resolves to the CLI login');
-  assert.equal(only.get('claude', 'claude-official-global').settingsConfig.officialAccount, undefined, 'routes through the CLI login');
-  assert.equal(only.normalize('claude', 'claude-official-global'), 'claude-official-global');
-  // CLI login plus multicc accounts: all listed, CLI first, each its own failover candidate.
-  const both = fixture({ loggedOut: [B], cli: { claude: { loggedIn: true, email: 'me@example.com' } } }).catalog;
-  assert.deepEqual(both.list('claude').map(p => [p.id, p.isDefaultOfficial]),
-    [['claude-official-global', true], [`claude-official-${A}`, false]]);
-  both.select('claude', A);
-  assert.equal(both.list('claude').find(p => p.isDefaultOfficial).id, `claude-official-${A}`);
-  both.select('claude', 'global');
-  assert.equal(both.get('claude', 'claude-official').settingsConfig.officialAccount, undefined);
-  // The CLI signs out: its id stays resolvable but asks for login, it is not listed.
-  const out = fixture({ accounts: { claude: [A], codex: [] } }).catalog;
-  assert.equal(out.get('claude', 'claude-official-global').needsLogin, true);
-  assert.deepEqual(out.list('claude').map(p => p.id), [`claude-official-${A}`]);
-});
-test('readCliGlobalLogin reads the CLI identity without touching tokens', () => {
-  const { readCliGlobalLogin } = require('../src/official-accounts');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-login-'));
-  assert.equal(readCliGlobalLogin('claude', { homedir: home, env: {} }).loggedIn, false);
-  fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'me@example.com', accountUuid: 'u' } }));
-  assert.deepEqual(readCliGlobalLogin('claude', { homedir: home, env: {} }), { loggedIn: true, email: 'me@example.com', label: '' });
-  const payload = Buffer.from(JSON.stringify({ email: 'cx@example.com' })).toString('base64url');
-  fs.mkdirSync(path.join(home, '.codex'));
-  fs.writeFileSync(path.join(home, '.codex', 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 't', id_token: `h.${payload}.s` } }));
-  assert.deepEqual(readCliGlobalLogin('codex', { homedir: home, env: {} }), { loggedIn: true, email: 'cx@example.com', label: '' });
-  fs.writeFileSync(path.join(home, '.codex', 'auth.json'), JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'k', tokens: null }) + '   ');
-  assert.equal(readCliGlobalLogin('codex', { homedir: home, env: {} }).loggedIn, false, 'an API-key login is not an official account');
 });
 test('saved invalid selection and persistence failure do not silently change accounts', () => {
   const bad = createOfficialCatalog({ readRecords: () => [], readSelection: () => ({ codex: '../invalid' }), writeSelection() {} });

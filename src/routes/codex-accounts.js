@@ -101,20 +101,8 @@ function mountCodexAccountRoutes(app, deps) {
     return { ok: true, sessionId: result.id, reused: !!result.reused };
   }
 
-  // The CLI's own login is listed like any account: it is its own official
-  // provider (`codex-official-global`), named after the signed-in email.
-  function globalDto() {
-    const providerId = accountProviderId('codex', 'global');
-    const provider = providers.getProvider('codex', providerId);
-    return {
-      id: 'global', label: '本机 CLI 登录账号', global: true, active: activeId() === 'global',
-      loggedIn: !!(provider && !provider.needsLogin), email: (provider && provider.accountEmail) || null,
-      providerId, providerName: provider ? provider.name : null,
-    };
-  }
-
   app.get('/api/codex/accounts', (req, res) => {
-    res.json({ ok: true, activeAccountId: activeId(), accounts: [...(unified ? [globalDto()] : []), ...accounts.listCodexAccounts().map(accountDto)] });
+    res.json({ ok: true, activeAccountId: activeId(), accounts: [...(unified ? [{ id: 'global', label: '本机 CLI 登录账号', global: true, active: activeId() === 'global' }] : []), ...accounts.listCodexAccounts().map(accountDto)] });
   });
 
   app.post('/api/codex/accounts', async (req, res) => {
