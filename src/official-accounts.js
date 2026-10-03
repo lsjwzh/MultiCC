@@ -310,8 +310,43 @@ function sanitizeLoginEnv(loginEnv, loginFlow) {
   return { ok: true, env: Object.keys(env).length ? env : null };
 }
 
+// The CLI's own global login (not owned by multicc): Claude keeps the signed-in
+// identity in <CLAUDE_CONFIG_DIR|~>/.claude.json `oauthAccount` (the token itself
+// lives in the Keychain), Codex in <CODEX_HOME|~/.codex>/auth.json. Read-only;
+// cached by mtime+size because ~/.claude.json is ~100KB and rewritten often.
+const cliLoginCache = new Map();
+function cliGlobalLoginFile(type, env = process.env, homedir = os.homedir()) {
+  if (type === 'codex') return path.join(env.CODEX_HOME || path.join(homedir, '.codex'), 'auth.json');
+  return path.join(env.CLAUDE_CONFIG_DIR || homedir, '.claude.json');
+}
+function readCliGlobalLogin(type, { env = process.env, homedir = os.homedir() } = {}) {
+  const file = cliGlobalLoginFile(type, env, homedir);
+  let stat;
+  try { stat = fs.statSync(file); } catch (_) { return { loggedIn: false, email: '', label: '' }; }
+  const key = `${type}:${file}`;
+  const cached = cliLoginCache.get(key);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.value;
+  const json = readJsonIfExists(file) || {};
+  let value = { loggedIn: false, email: '', label: '' };
+  if (type === 'codex') {
+    const tokens = json.tokens && typeof json.tokens === 'object' ? json.tokens : {};
+    const accessToken = typeof tokens.access_token === 'string' ? tokens.access_token.trim() : '';
+    if (json.auth_mode === 'chatgpt' && accessToken) {
+      const payload = jwtPayload(tokens.id_token || accessToken);
+      value = { loggedIn: true, email: typeof payload.email === 'string' ? payload.email : '', label: '' };
+    }
+  } else {
+    const account = json.oauthAccount && typeof json.oauthAccount === 'object' ? json.oauthAccount : null;
+    const email = account && typeof account.emailAddress === 'string' ? account.emailAddress.trim() : '';
+    if (email || (account && account.accountUuid)) value = { loggedIn: true, email, label: '' };
+  }
+  cliLoginCache.set(key, { mtimeMs: stat.mtimeMs, size: stat.size, value });
+  return value;
+}
+
 module.exports = {
   createOfficialAccountStore,
+  readCliGlobalLogin,
   officialAccountIdFromProvider,
   assertAccountId,
   sanitizeLoginEnv,

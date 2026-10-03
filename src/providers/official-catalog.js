@@ -16,20 +16,20 @@ function isOfficial(record) {
 }
 
 // Keep legacy records on disk for historical references. Every logged-in
-// official account is its own provider (`<type>-official-<accountId>`, named
-// after the account) so Auto pools can fail over between accounts and quota is
-// tracked per account. `<type>-official` stays as a stable alias for "the
-// default official account": it resolves to the selected account (or the first
-// logged-in one), and only when no account is logged in does it fall back to the
-// CLI's own login — that is also the only time it is listed, as the
-// "select to log in" entry.
+// official identity is its own provider, named after the account: the CLI's own
+// global login is `<type>-official-global`, each multicc-owned account is
+// `<type>-official-<accountId>`. Auto pools can fail over between them and quota
+// is tracked per provider id. `<type>-official` stays as a stable alias for "the
+// default official account" (the saved selection while it is signed in, else the
+// first signed-in identity); it is listed only when nothing at all is signed
+// in, as the "select to log in" entry.
 const ACCOUNT_ID_RE = /^[a-f0-9]{16}$/;
 const accountProviderId = (type, accountId) => `${officialId(type)}-${accountId}`;
 function accountIdOfProviderId(type, id) {
   const prefix = `${officialId(type)}-`;
   if (typeof id !== 'string' || !id.startsWith(prefix)) return null;
   const accountId = id.slice(prefix.length);
-  return ACCOUNT_ID_RE.test(accountId) ? accountId : null;
+  return accountId === 'global' || ACCOUNT_ID_RE.test(accountId) ? accountId : null;
 }
 function isOfficialProviderId(type, id) {
   return id === officialId(type) || !!accountIdOfProviderId(type, id);
@@ -40,12 +40,29 @@ function markerOf(record) {
   return ACCOUNT_ID_RE.test(id) ? id : null;
 }
 
-function createOfficialCatalog({ readRecords, readSelection, writeSelection, listAccounts = () => [] }) {
+function createOfficialCatalog({
+  readRecords, readSelection, writeSelection, listAccounts = () => [], readGlobalLogin = () => null,
+}) {
   function accountsOf(type) {
     try {
       const list = listAccounts(type);
       return Array.isArray(list) ? list.filter(a => a && ACCOUNT_ID_RE.test(String(a.id || ''))) : [];
     } catch (_) { return []; }
+  }
+  function globalLogin(type) {
+    try {
+      const login = readGlobalLogin(type);
+      return { id: 'global', loggedIn: !!(login && login.loggedIn), email: (login && login.email) || '', label: (login && login.label) || '' };
+    } catch (_) { return { id: 'global', loggedIn: false, email: '', label: '' }; }
+  }
+  // Every identity that can serve a turn right now: the CLI login first, then
+  // multicc's own accounts in creation order.
+  function signedIn(type) {
+    const cli = globalLogin(type);
+    return [...(cli.loggedIn ? [cli] : []), ...accountsOf(type).filter(a => a.loggedIn)];
+  }
+  function identity(type, accountId) {
+    return accountId === 'global' ? globalLogin(type) : accountsOf(type).find(a => a.id === accountId) || null;
   }
   function active(type) {
     const selected = readSelection()[type];
@@ -54,11 +71,11 @@ function createOfficialCatalog({ readRecords, readSelection, writeSelection, lis
     return selected;
   }
   // The account the alias stands for: the saved selection while it is still
-  // logged in, else the first logged-in account, else the CLI login ('global').
+  // signed in, else the first signed-in identity (CLI login first), else the selection.
   function defaultAccount(type) {
     const selected = active(type);
-    const loggedIn = accountsOf(type).filter(a => a.loggedIn);
-    if (selected !== 'global' && loggedIn.some(a => a.id === selected)) return selected;
+    const loggedIn = signedIn(type);
+    if (loggedIn.some(a => a.id === selected)) return selected;
     return loggedIn.length ? loggedIn[0].id : selected;
   }
   // The synthetic object is rebuilt from scratch on every read (login/account
@@ -72,20 +89,21 @@ function createOfficialCatalog({ readRecords, readSelection, writeSelection, lis
   function accountName(account, accountId) {
     const label = account && String(account.label || '').trim();
     const email = account && String(account.email || '').trim();
-    return label || email || accountId.slice(0, 6);
+    return label || email || (accountId === 'global' ? '本机登录' : accountId.slice(0, 6));
   }
   function provider(type, id = officialId(type), accountId = defaultAccount(type)) {
     const override = overrideOf(type);
-    const account = accountId === 'global' ? null : accountsOf(type).find(a => a.id === accountId) || null;
+    const account = identity(type, accountId);
     const base = type === 'codex' ? 'Codex 官方' : 'Claude 官方';
-    // With nobody signed in, the alias is the single "select to log in" entry —
-    // whatever it routes to (CLI login, or a saved selection that has since
-    // signed out and should fail loudly rather than silently switch accounts).
-    const placeholder = id === officialId(type) && !accountsOf(type).some(a => a.loggedIn);
-    const needsLogin = placeholder || (accountId !== 'global' && !(account && account.loggedIn));
+    // With nobody signed in (neither the CLI nor any multicc account), the alias
+    // is the single "select to log in" entry — whatever it routes to (the CLI
+    // login, or a saved selection that has since signed out and should fail
+    // loudly rather than silently switch accounts).
+    const placeholder = id === officialId(type) && !signedIn(type).length;
+    const needsLogin = placeholder || !(account && account.loggedIn);
     const result = {
       id, appType: type,
-      name: placeholder ? `${base} · 选此登录` : accountId === 'global' ? base : `${base} · ${accountName(account, accountId)}`,
+      name: placeholder ? `${base} · 选此登录` : `${base} · ${accountName(account, accountId)}`,
       source: 'builtin', apiFormat: type === 'codex' ? 'openai_responses' : 'anthropic',
       builtinOfficial: true, activeAccountId: accountId, needsLogin,
       accountEmail: account && account.email ? String(account.email) : null,
@@ -109,14 +127,14 @@ function createOfficialCatalog({ readRecords, readSelection, writeSelection, lis
     if (!TYPES.includes(type)) return id || null;
     if (!id || id === '_default_' || id === officialId(type)) return officialId(type);
     const accountId = accountIdOfProviderId(type, id);
-    if (accountId) return accountsOf(type).some(a => a.id === accountId) ? id : officialId(type);
+    if (accountId) return accountId === 'global' || accountsOf(type).some(a => a.id === accountId) ? id : officialId(type);
     const old = readRecords().find(p => p.id === id && p.appType === type);
     if (!isOfficial(old)) return id;
     const marker = markerOf(old);
     return marker && accountsOf(type).some(a => a.id === marker) ? accountProviderId(type, marker) : officialId(type);
   }
   function listOfficial(type) {
-    const loggedIn = accountsOf(type).filter(a => a.loggedIn);
+    const loggedIn = signedIn(type);
     if (!loggedIn.length) return [provider(type)];
     const fallback = defaultAccount(type);
     return loggedIn.map(a => ({ ...provider(type, accountProviderId(type, a.id), a.id), isDefaultOfficial: a.id === fallback }));
@@ -133,7 +151,8 @@ function createOfficialCatalog({ readRecords, readSelection, writeSelection, lis
       const accountVendor = TYPES.find(t => (!type || type === t) && accountIdOfProviderId(t, id));
       if (accountVendor) {
         const accountId = accountIdOfProviderId(accountVendor, id);
-        return accountsOf(accountVendor).some(a => a.id === accountId) ? provider(accountVendor, id, accountId) : null;
+        return accountId === 'global' || accountsOf(accountVendor).some(a => a.id === accountId)
+          ? provider(accountVendor, id, accountId) : null;
       }
       const old = readRecords().find(p => p.id === id && (!type || p.appType === type));
       if (!isOfficial(old)) return old || null;

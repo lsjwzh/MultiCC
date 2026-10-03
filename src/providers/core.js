@@ -99,6 +99,7 @@ function enableUnifiedOfficialProviders() {
       const store = require('../official-accounts').createOfficialAccountStore();
       return type => (type === 'codex' ? store.listCodexAccounts() : store.listClaudeAccounts());
     })(),
+    readGlobalLogin: type => require('../official-accounts').readCliGlobalLogin(type),
   });
 }
 // Built-in official identities: the vendor alias and every per-account id.
