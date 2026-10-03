@@ -1,0 +1,39 @@
+/* 「🖥 屏幕」远程协助浮层（chat-remote-screen.js）。z-index 低于标注器（10000），冻结标注时盖在上面。 */
+.rs-overlay {
+  position: fixed; inset: 0; z-index: 9990; display: flex; flex-direction: column;
+  background: #0b0b0c; color: #eee; font: 13px/1.4 -apple-system, system-ui, sans-serif;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.rs-overlay.rs-control { box-shadow: inset 0 0 0 3px #ff3b30; }
+.rs-head {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 8px 12px; padding-top: max(8px, env(safe-area-inset-top)); border-bottom: 1px solid #2a2a2c;
+}
+.rs-title { font-weight: 600; white-space: nowrap; }
+.rs-status { flex: 1; min-width: 120px; color: #8e8e93; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-status.err { color: #ffcc00; }
+.rs-btn {
+  background: #2c2c2e; color: #eee; border: 1px solid #444; border-radius: 8px;
+  padding: 5px 10px; font-size: 13px; cursor: pointer; white-space: nowrap;
+}
+.rs-btn.on { background: #ff3b30; border-color: #ff3b30; color: #fff; }
+.rs-btn.primary { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+.rs-btn.warn { background: #ff9f0a; border-color: #ff9f0a; color: #000; }
+.rs-btn[hidden] { display: none; }
+.rs-close { font-size: 16px; line-height: 1; }
+.rs-stage { position: relative; flex: 1; min-height: 0; background: #000; touch-action: none; user-select: none; -webkit-user-select: none; }
+.rs-img { width: 100%; height: 100%; object-fit: contain; display: block; -webkit-user-drag: none; }
+.rs-control .rs-stage { cursor: crosshair; }
+.rs-hint { padding: 4px 12px; color: #8e8e93; font-size: 12px; }
+.rs-keybar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 6px 12px 10px; border-top: 1px solid #2a2a2c; }
+.rs-keybar[hidden] { display: none; }
+.rs-text {
+  flex: 1 1 220px; min-width: 160px; background: #1c1c1e; color: #eee; border: 1px solid #444;
+  border-radius: 8px; padding: 6px 8px; font-size: 16px; /* ≥16px: iOS 不自动放大 */
+}
+.rs-key { min-width: 38px; }
+.rs-ripple {
+  position: fixed; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%;
+  border: 2px solid #ff3b30; pointer-events: none; z-index: 9991; animation: rs-ripple .6s ease-out forwards;
+}
+@keyframes rs-ripple { from { transform: scale(.4); opacity: 1; } to { transform: scale(1.6); opacity: 0; } }

@@ -112,6 +112,23 @@ func click(_ p: CGPoint, right: Bool, count: Int) {
   }
 }
 
+// Press at a, smooth-step through ~60Hz leftMouseDragged events, release at b.
+// Always releases, even when the user hits Esc halfway (no stuck button).
+func drag(_ a: CGPoint, _ b: CGPoint, ms: Int) {
+  post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: a, mouseButton: .left))
+  post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: a, mouseButton: .left))
+  usleep(40_000)
+  let steps = max(4, ms / 16)
+  for i in 1...steps {
+    if control.isHalted { break }
+    let t = Double(i) / Double(steps), e = t * t * (3 - 2 * t)
+    let p = CGPoint(x: a.x + (b.x - a.x) * e, y: a.y + (b.y - a.y) * e)
+    post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: p, mouseButton: .left))
+    usleep(16_000)
+  }
+  post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: b, mouseButton: .left))
+}
+
 extension Array {
   func chunked(_ n: Int) -> [[Element]] {
     stride(from: 0, to: count, by: n).map { Array(self[$0..<Swift.min($0 + n, count)]) }
@@ -1290,6 +1307,15 @@ func handle(_ req: [String: Any]) -> [String: Any] {
         let amount = Int32(max(-200, min(200, num(req["amount"]) ?? -5)))
         post(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0))
       }
+      return dispatched("hid_events")
+    }
+  case "drag":
+    guard let x = num(req["x"]), let y = num(req["y"]), let x2 = num(req["x2"]), let y2 = num(req["y2"]) else {
+      return ["ok": false, "error": "x, y, x2 and y2 are required"]
+    }
+    let a = CGPoint(x: x, y: y), b = CGPoint(x: x2, y: y2)
+    return withMutation(req, session: session, target: pidAt(a), kind: .pointer) {
+      drag(a, b, ms: Int(max(80, min(3000, num(req["ms"]) ?? 300))))
       return dispatched("hid_events")
     }
   case "type":

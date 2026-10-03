@@ -17,6 +17,7 @@
 // kind：point/box/arrow = 用户刚画完的标记（a/b 为自然像素坐标）；
 // recapture = 标注器的「重新截」，处理器应重拍并回 refresh=true，没人接手时
 // 标注器改为直接发消息请 agent 重拍。
+// assist/remote-screen/shot-*.png 由内置的 remote-screen 处理器接手（不需配置）。
 // 与 /api/secrets 同一 localhost-trusted 信任模型（同源 POST，无 token）。
 
 const fs = require('fs');
@@ -77,6 +78,13 @@ function mount(app) {
       a: body.a || null,
       b: body.b || null,
     };
+    // 内置处理器：「🖥 屏幕」浮层冻结的截图直接由 remote-screen 执行，不查配置。
+    const remoteScreen = require('./remote-screen');
+    if (remoteScreen.isOwnShot(payload.src)) {
+      return remoteScreen.handleAnnotation(payload)
+        .catch(error => ({ ok: false, refresh: false, text: String(error && error.message || error).slice(0, 200) }))
+        .then(result => res.json({ ok: true, relayed: 1, results: [result] }));
+    }
     const hits = relayTargets(payload);
     if (!hits.length) { res.json({ ok: true, relayed: 0, results: [] }); return; }
     // 等处理器回包（有上限）再回复：回包里的 { refresh, text } 让标注器原地换上
