@@ -258,15 +258,19 @@
         marks.forEach((m, i) => drawMark(ctx, m, i));
         if (withDraft && draft) drawMark(ctx, draft, null);
       }
-      // 实时操作模式：每个标记完成的瞬间推本地 webhook（如拖动 demo 直通，
-      // 127.0.0.1:8899/annotation）。接收端不在线时静默失败，不影响常规标注流程。
+      // 实时操作模式：每个标记完成的瞬间 POST /api/annotation-live，服务端按
+      // ~/.multicc/annotation-live.json 的 match(session/src 正则)→url 分发到
+      // 本地处理器（任意场景可配）。无配置/处理器不在线时服务端静默忽略，
+      // 不影响常规标注流程。
       function pushLiveMark(m) {
         try {
-          fetchFn('http://127.0.0.1:8899/annotation', {
+          fetchFn(withToken('/api/annotation-live'), {
             method: 'POST',
-            mode: 'cors',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ src, width: W, height: H, kind: m.kind, a: m.a, b: m.b }),
+            body: JSON.stringify({
+              sessionId: getSessionId() || '', src, width: W, height: H,
+              kind: m.kind, a: m.a, b: m.b,
+            }),
           }).catch(() => {});
         } catch (_) { /* 静默 */ }
       }
