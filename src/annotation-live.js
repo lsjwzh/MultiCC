@@ -14,6 +14,9 @@
 // 或处理器不可达时静默忽略——不落盘、不产生聊天消息、不影响常规标注。
 // 处理器可回 { ok, refresh, text }：refresh=true 表示它已把执行后的画面写回
 // 同一 src 文件，标注器据此原地刷新底图并显示 text（判定/结果）。
+// kind：point/box/arrow = 用户刚画完的标记（a/b 为自然像素坐标）；
+// recapture = 标注器的「重新截」，处理器应重拍并回 refresh=true，没人接手时
+// 标注器改为直接发消息请 agent 重拍。
 // 与 /api/secrets 同一 localhost-trusted 信任模型（同源 POST，无 token）。
 
 const fs = require('fs');

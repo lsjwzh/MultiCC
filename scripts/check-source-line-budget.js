@@ -325,8 +325,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   'public/i18n-catalog.js': Object.freeze({
     // 合并前 main 的值：7714 / 489418。合并后按重新生成的真实数字抬到这一格。
     // Includes the shared Bark phone setup, management copy and the official "select to sign in" label.
-    maxLines: 8528,
-    maxBytes: 537419,
+    // +7 键（annotRecapturing/annotRecaptureSent/annotLive*）：标注器的实时透传开关与原地重拍。
+    maxLines: 8542,
+    maxBytes: 538565,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
