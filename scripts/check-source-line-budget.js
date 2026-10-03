@@ -337,8 +337,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +7 键（annotRecapturing/annotRecaptureSent/annotLive*）：标注器的实时透传开关与原地重拍。
     // +30 键（rs*）：聊天页「🖥 屏幕」远程协助浮层。
     // +3 键（rsLiveMode/rsFallback/rsRfbCtrlHint）：同一浮层的 RFB 流畅模式。
-    maxLines: 8608,
-    maxBytes: 542408,
+    // +9 键（rsPerm*/rsErrAx/rsErrSr）：屏幕浮层的权限门引导（web+App 共用）。
+    maxLines: 8626,
+    maxBytes: 543740,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

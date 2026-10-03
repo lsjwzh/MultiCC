@@ -4300,7 +4300,16 @@ window.MULTICC_I18N_CATALOG = {
     "barkNeedName": "请给手机起一个名称（最多 60 个字符）。",
     "barkActionFailed": "操作未完成，请刷新列表后重试。",
     "barkPasteManually": "浏览器无法读取剪贴板，请在地址框中长按或右键粘贴。",
-    "barkReminderLimit": "当前发送普通通知，连续响铃尚未开启。电脑上的 MultiCC 服务需要保持运行并联网。"
+    "barkReminderLimit": "当前发送普通通知，连续响铃尚未开启。电脑上的 MultiCC 服务需要保持运行并联网。",
+    "rsPermTitle": "远程操作权限",
+    "rsPermNeed": "看屏幕需「屏幕录制」，远程操作需「辅助功能」",
+    "rsPermScreen": "屏幕录制",
+    "rsPermAx": "辅助功能",
+    "rsPermOpen": "打开设置",
+    "rsPermHint": "已打开系统设置：请给 MultiCC Agent 勾上开关，完成后这里自动继续",
+    "rsPermRemote": "授权只能在这台 Mac 上完成——请回到 Mac 前操作，或在 Air 全局设置的电源卡里点「检查授权」",
+    "rsErrAx": "MultiCC Agent 未获辅助功能授权，无法远程操作",
+    "rsErrSr": "MultiCC Agent 未获屏幕录制授权，无法看到画面"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -8602,6 +8611,15 @@ window.MULTICC_I18N_CATALOG = {
     "barkNeedName": "Enter a phone name (up to 60 characters).",
     "barkActionFailed": "Operation incomplete. Refresh the list and try again.",
     "barkPasteManually": "Clipboard access is unavailable. Long-press or right-click the address field to paste.",
-    "barkReminderLimit": "These are ordinary notifications; continuous ringing is not enabled. The computer running MultiCC must stay online and running."
+    "barkReminderLimit": "These are ordinary notifications; continuous ringing is not enabled. The computer running MultiCC must stay online and running.",
+    "rsPermTitle": "Remote control permissions",
+    "rsPermNeed": "Viewing needs Screen Recording; remote control needs Accessibility",
+    "rsPermScreen": "Screen Recording",
+    "rsPermAx": "Accessibility",
+    "rsPermOpen": "Open Settings",
+    "rsPermHint": "System Settings opened: enable the switch for MultiCC Agent; this screen continues automatically once granted",
+    "rsPermRemote": "Granting must be done on that Mac — do it at the machine, or use \"Check permissions\" in the Air global power card",
+    "rsErrAx": "MultiCC Agent lacks Accessibility permission; remote control unavailable",
+    "rsErrSr": "MultiCC Agent lacks Screen Recording permission; no picture"
   }
 };

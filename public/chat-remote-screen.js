@@ -18,6 +18,8 @@
     busy: ['rsErrBusy', '另一个会话正在操作电脑'],
     'protected-app': ['rsErrProtected', '目标是受保护的 App（密码 / 系统设置），需本人操作'],
     'agent-unreachable': ['rsErrAgent', 'MultiCC Agent 未运行'],
+    'accessibility-not-granted': ['rsErrAx', 'MultiCC Agent 未获辅助功能授权，无法远程操作'],
+    'screen-recording-not-granted': ['rsErrSr', 'MultiCC Agent 未获屏幕录制授权，无法看到画面'],
   };
   const errText = data => {
     const pair = ERR_KEYS[data && data.error];
@@ -114,6 +116,71 @@
   // 操作后立刻拉下一帧，不等节流间隔。
   function kick() { if (s) s.wakeAt = Date.now() + 1000; }
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // ── 权限门 ──
+  // 远程操作要的是给 MultiCC Agent 的两个系统授权：屏幕录制（看）+ 辅助功能
+  // （输入）。走过「关盖运行 / 自动解锁」的机器必然已授过；没有的话缺屏幕录制
+  // 连帧都出不来。打开屏幕先查一次（GET /api/system/agent-permissions，与
+  // Air 全局设置「检查授权」同源），缺就出引导条，授权勾上后自动开始出帧。
+  // 勾选只能在这台 Mac 上做（/open 仅本地放行），远程访客看到的是提示文案。
+  async function fetchPerms() {
+    try {
+      const res = await fetch(tok('/api/system/agent-permissions'));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false || !data.applicable) return null;
+      return data;
+    } catch { return null; }
+  }
+  function paintPermBar(data) {
+    if (!s || !s.permBar) return;
+    const missing = [];
+    if (!data.screenRecording) missing.push('screenRecording');
+    if (!data.accessibility) missing.push('accessibility');
+    if (!missing.length) { s.permBar.hidden = true; return; }
+    s.permBar.hidden = false;
+    const row = (key, label) => {
+      const li = el('span', 'rs-perm-item');
+      li.append(el('span', null, `${label} ${data[key] ? '✓' : '✗'}`));
+      if (!data[key] && data.local) {
+        li.appendChild(btn(tr('rsPermOpen', '打开设置'), '', async () => {
+          await fetch(tok('/api/system/agent-permissions/open'), {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ permission: key }),
+          }).catch(() => {});
+        }, 'primary'));
+      }
+      return li;
+    };
+    s.permBar.replaceChildren(
+      el('span', 'rs-perm-title', tr('rsPermTitle', '远程操作权限')),
+      row('screenRecording', tr('rsPermScreen', '屏幕录制')),
+      row('accessibility', tr('rsPermAx', '辅助功能')),
+      el('span', 'rs-perm-hint', data.local
+        ? tr('rsPermHint', '已打开系统设置：请给 MultiCC Agent 勾上开关，完成后这里自动继续')
+        : tr('rsPermRemote', '授权只能在这台 Mac 上完成——请回到 Mac 前操作，或在 Air 全局设置的电源卡里点「检查授权」')),
+    );
+  }
+  async function permissionGate(start) {
+    const data = await fetchPerms();
+    if (!s || s.closed) return;
+    if (!data || (data.screenRecording && data.accessibility)) { start(); return; }
+    paintPermBar(data);
+    status(tr('rsPermNeed', '看屏幕需「屏幕录制」，远程操作需「辅助功能」'), true);
+    clearInterval(s.permTimer);
+    s.permTimer = setInterval(async () => {
+      if (!s || s.closed || s.permStarted) { clearInterval(s.permTimer); return; }
+      const again = await fetchPerms();
+      if (!s || s.closed) { clearInterval(s.permTimer); return; }
+      if (!again) { clearInterval(s.permTimer); if (!s.permStarted) { s.permStarted = true; start(); } return; }
+      if (again.screenRecording && again.accessibility) {
+        clearInterval(s.permTimer);
+        s.permBar.hidden = true;
+        if (!s.permStarted) { s.permStarted = true; start(); }
+      } else {
+        paintPermBar(again);
+      }
+    }, 2000);
+  }
 
   // ── 流畅模式：原版 noVNC ← /ws/remote-screen ← Agent 的 rfb.sock ──
   // Agent 里跑最小 RFB 3.8 服务（Raw 编码、逻辑分辨率、输入走原有护栏），
@@ -310,7 +377,7 @@
     const head = el('div', 'rs-head');
     const title = el('span', 'rs-title', '🖥 ' + tr('rsTitle', '本机屏幕'));
     const statusEl = el('span', 'rs-status');
-    s = { control: false, paused: false, closed: false, screenW: 0, screenH: 0, status: statusEl, errAt: 0, haltTimer: 0 };
+    s = { control: false, paused: false, closed: false, screenW: 0, screenH: 0, status: statusEl, errAt: 0, haltTimer: 0, permTimer: 0 };
     s.modeBtn = btn('', tr('rsModeTitle', '切换只看 / 可操作'), () => setControl(!s.control));
     s.rightBtn = btn(tr('rsRightClick', '右键'), tr('rsRightClickHint', '下一次点击按右键发送（触屏用）'), () => {
       s.rightOnce = !s.rightOnce;
@@ -352,6 +419,8 @@
     s.img.alt = '';
     s.img.draggable = false;
     stage.appendChild(s.img);
+    s.permBar = el('div', 'rs-permbar');
+    s.permBar.hidden = true;
     s.hint = el('div', 'rs-hint');
     s.keybar = el('div', 'rs-keybar');
     const text = el('input', 'rs-text');
@@ -363,12 +432,13 @@
     text.addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); send(); } });
     s.keybar.append(text, btn(tr('rsSend', '发送'), '', send, 'primary'));
     for (const [label, keys] of KEYS) s.keybar.appendChild(btn(label, keys, () => input({ op: 'press', keys }), 'rs-key'));
-    ov.append(head, stage, s.hint, s.keybar);
+    ov.append(head, s.permBar, stage, s.hint, s.keybar);
     document.body.appendChild(ov);
     wirePointer(stage);
     setControl(false);
     statusEl.textContent = tr('rsConnecting', '正在取第一帧…');
-    if (!(await startRfb())) loop();
+    // 先过权限门（缺授权时引导，齐了或查不到再开始出帧）。
+    await permissionGate(() => { void startRfb().then(ok => { if (!ok) loop(); }); });
   }
 
   function close() {
@@ -378,6 +448,7 @@
       s.closed = true;
       clearTimeout(s.resumeTimer);
       clearInterval(s.haltTimer);
+      clearInterval(s.permTimer);
       if (s.rfb) { s.rfbIntent = true; try { s.rfb.disconnect(); } catch {} }
       if (s.lastUrl) URL.revokeObjectURL(s.lastUrl);
     }
