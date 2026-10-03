@@ -93,11 +93,27 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   DateTime _lastMoveSent = DateTime.fromMillisecondsSinceEpoch(0);
   final TextEditingController _textCtrl = TextEditingController();
 
+  /// 捏合缩放：InteractiveViewer 的变换只改视觉框，Listener 收到的
+  /// localPosition 已被 hit-test 逆变换回 contain 布局坐标，所以坐标
+  /// 归一化与输入映射零改动（与 Web 版 s.zoomer 同一模型）。
+  final TransformationController _xform = TransformationController();
+  bool _zoomed = false;
+  int _zoomPct = 100;
+  int _pointerCount = 0;
+  Offset _downLocal = Offset.zero;
+  bool _downSent = true; // 未放大态的左键 down 是否已发给远端
+  Timer? _downDefer;
+  bool _longPressFired = false;
+
   @override
   void initState() {
     super.initState();
     _svc = RemoteScreenService(settings: widget.settings);
     _modeSub = _svc.onModeChange.listen((_) {
+      // live↔fallback 切换时画面尺寸会变，缩放矩阵留着只会歪，直接复位。
+      _xform.value = Matrix4.identity();
+      _zoomed = false;
+      _zoomPct = 100;
       if (mounted) setState(() {});
     });
     _frameSub = _svc.onFrame.listen((_) => _renderFrame());
@@ -144,6 +160,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     _haltTimer?.cancel();
     _permTimer?.cancel();
     _longPress?.cancel();
+    _downDefer?.cancel();
+    _xform.dispose();
     _frameSub?.cancel();
     _modeSub?.cancel();
     _textCtrl.dispose();
@@ -268,28 +286,76 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
 
   void _onPointerDown(PointerDownEvent e, double dw, double dh) {
     if (!_control) return;
+    _pointerCount++;
     _longPress?.cancel();
+    _longPressFired = false;
+    if (_pointerCount >= 2) {
+      // 第二指落下 = 捏合开始：撤掉第一指 pending 的 down；已发出的补一个
+      // up 把单指操作干净收尾（Agent 端按位移判 click/drag）。
+      _downDefer?.cancel();
+      _downDefer = null;
+      if (_downSent && !_zoomed) {
+        _sendPointer(0, e.localPosition.dx, e.localPosition.dy, dw, dh);
+      }
+      _downSent = true;
+      return;
+    }
+    _downLocal = e.localPosition;
     // 长按 450ms = 右键（Agent 端 mask 4→0 沿触发 click right）。
     _longPress = Timer(const Duration(milliseconds: 450), () {
+      _longPressFired = true;
       _sendPointer(4, e.localPosition.dx, e.localPosition.dy, dw, dh);
       _sendPointer(0, e.localPosition.dx, e.localPosition.dy, dw, dh);
     });
-    _sendPointer(1, e.localPosition.dx, e.localPosition.dy, dw, dh);
+    if (_zoomed) return; // 放大态：down 不转发，up 按位移决定是否精确单击
+    // 未放大：down 延迟 90ms 再发 —— 两指捏合通常在百毫秒内落齐，这扇窗把
+    // 「第一指的 down」挡在捏合开始之前，远端不会收到幽灵按键。
+    _downSent = false;
+    _downDefer?.cancel();
+    _downDefer = Timer(const Duration(milliseconds: 90), () {
+      _downSent = true;
+      _sendPointer(1, e.localPosition.dx, e.localPosition.dy, dw, dh);
+    });
   }
 
   void _onPointerMove(PointerMoveEvent e, double dw, double dh) {
-    if (!_control || e.buttons == 0) return;
+    if (!_control || _pointerCount >= 2) return;
+    if (_zoomed) return; // 放大态单指拖 = 平移画面，不转发远端
+    if (e.buttons == 0) return;
+    if (!_downSent) {
+      // 拖拽从第一格位移开始：冲掉延迟立即补 down，再走节流 move。
+      _downDefer?.cancel();
+      _downDefer = null;
+      _downSent = true;
+      _sendPointer(1, e.localPosition.dx, e.localPosition.dy, dw, dh);
+    }
     final now = DateTime.now();
     if (now.difference(_lastMoveSent).inMilliseconds < 30) return;
     _lastMoveSent = now;
-    _longPress?.cancel(); // 拖动不是右键
+    _longPress?.cancel(); // 拖动不是右键（任何 move 都取消，抖动手指别当长按）
     _sendPointer(1, e.localPosition.dx, e.localPosition.dy, dw, dh);
   }
 
   void _onPointerUp(PointerEvent e, double dw, double dh) {
-    if (!_control) return;
+    if (_pointerCount > 0) _pointerCount--;
     _longPress?.cancel();
     _longPress = null;
+    if (!_control || _pointerCount >= 1) return; // 捏合中一指抬起，忽略
+    if (_zoomed) {
+      final moved = (e.localPosition - _downLocal).distance;
+      if (!_longPressFired && moved < 10) {
+        _sendPointer(1, e.localPosition.dx, e.localPosition.dy, dw, dh);
+        _sendPointer(0, e.localPosition.dx, e.localPosition.dy, dw, dh);
+      }
+      return;
+    }
+    if (!_downSent) {
+      // 快速轻点（90ms 窗内）：补一对 down+up，Agent 端判一次单击。
+      _downDefer?.cancel();
+      _downDefer = null;
+      _downSent = true;
+      _sendPointer(1, e.localPosition.dx, e.localPosition.dy, dw, dh);
+    }
     _sendPointer(0, e.localPosition.dx, e.localPosition.dy, dw, dh);
   }
 
@@ -549,23 +615,21 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
           final scale = size.width / rfb.width < size.height / rfb.height
               ? size.width / rfb.width
               : size.height / rfb.height;
-          final dw = rfb.width * scale, dh = rfb.height * scale;
-          return Center(
-            child: SizedBox(
-              width: dw,
-              height: dh,
-              child: Listener(
-                onPointerDown: (e) => _onPointerDown(e, dw, dh),
-                onPointerMove: (e) => _onPointerMove(e, dw, dh),
-                onPointerUp: (e) => _onPointerUp(e, dw, dh),
-                onPointerCancel: (e) => _onPointerUp(e, dw, dh),
+          return _zoomStage(size, rfb.width * scale, rfb.height * scale,
+              Listener(
+                onPointerDown: (e) =>
+                    _onPointerDown(e, rfb.width * scale, rfb.height * scale),
+                onPointerMove: (e) =>
+                    _onPointerMove(e, rfb.width * scale, rfb.height * scale),
+                onPointerUp: (e) =>
+                    _onPointerUp(e, rfb.width * scale, rfb.height * scale),
+                onPointerCancel: (e) =>
+                    _onPointerUp(e, rfb.width * scale, rfb.height * scale),
                 child: CustomPaint(
                   painter: _ScreenPainter(img),
                   size: Size.infinite,
                 ),
-              ),
-            ),
-          );
+              ));
         },
       );
     }
@@ -588,23 +652,123 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         final scale = size.width / iw < size.height / ih
             ? size.width / iw
             : size.height / ih;
-        final dw = iw * scale, dh = ih * scale;
-        return Center(
-          child: SizedBox(
-            width: dw,
-            height: dh,
-            child: GestureDetector(
+        return _zoomStage(size, iw * scale, ih * scale,
+            GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTapUp: (e) => _fallbackTap(e.localPosition, dw, dh),
+              onTapUp: (e) => _fallbackTap(e.localPosition, iw * scale, ih * scale),
               child: Image.memory(
                 jpeg,
                 gaplessPlayback: true,
                 fit: BoxFit.fill,
               ),
+            ));
+      },
+    );
+  }
+
+  // ── 捏合缩放容器（live / fallback 共用）──
+  // child 固定为 contain 尺寸（dw×dh），先平移到视口中心再交给
+  // InteractiveViewer；boundaryMargin 无限 + 自己 clamp：放大时内容不许拉出
+  // 视口，未放大时（内容比视口窄的一侧）保持居中 —— 与 Web 版 clampPan 同义。
+  Widget _zoomStage(Size vp, double dw, double dh, Widget child) {
+    final offX = (vp.width - dw) / 2, offY = (vp.height - dh) / 2;
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ClipRect(
+            child: GestureDetector(
+              // 双击：放大↔复位（第一次轻点会照常发出一次单击，与 Web 版一致）。
+              onDoubleTapDown: (d) => _doubleTapZoom(d, vp, offX, offY, dw, dh),
+              child: InteractiveViewer(
+                transformationController: _xform,
+                constrained: false,
+                panEnabled: _zoomed, // 未放大时单指拖不动物画面
+                scaleEnabled: true,
+                minScale: 1.0,
+                maxScale: 6.0,
+                boundaryMargin: const EdgeInsets.all(double.infinity),
+                onInteractionUpdate: (_) =>
+                    _onZoomUpdate(vp, offX, offY, dw, dh),
+                child: Transform.translate(
+                  offset: Offset(offX, offY),
+                  child: SizedBox(width: dw, height: dh, child: child),
+                ),
+              ),
             ),
           ),
-        );
-      },
+        ),
+        if (_zoomed) _zoomBadge(vp, offX, offY, dw, dh),
+      ],
+    );
+  }
+
+  void _onZoomUpdate(Size vp, double offX, double offY, double dw, double dh) {
+    final m = _xform.value;
+    final s = m.getMaxScaleOnAxis();
+    double clampAxis(double t, double off, double len, double vlen) {
+      // 内容盖满视口：边缘不许进视口；没盖满：边缘不许出视口（不露白边）。
+      // 两种情况的上下界正好互换，min/max 排序后同一个 clamp 覆盖。
+      final a = -s * off;
+      final b = vlen - s * (off + len);
+      final lo = a < b ? a : b;
+      final hi = a < b ? b : a;
+      return t.clamp(lo, hi).toDouble();
+    }
+
+    final tx = clampAxis(m.entry(0, 3), offX, dw, vp.width);
+    final ty = clampAxis(m.entry(1, 3), offY, dh, vp.height);
+    _xform.value = Matrix4.identity()..translate(tx, ty)..scale(s);
+    final zoomed = s > 1.01;
+    final pct = (s * 100).round();
+    if (mounted && (zoomed != _zoomed || _zoomPct != pct)) {
+      setState(() {
+        _zoomed = zoomed;
+        _zoomPct = pct;
+      });
+    }
+  }
+
+  void _doubleTapZoom(
+      TapDownDetails d, Size vp, double offX, double offY, double dw, double dh) {
+    // 双击的第二次轻点还挂在 90ms 窗里：撤掉，别让它多出一次幽灵单击。
+    _downDefer?.cancel();
+    _downDefer = null;
+    final f = d.localPosition; // 视口坐标 = 双击锚点
+    final s2 = _zoomed ? 1.0 : 2.5;
+    _xform.value = Matrix4.identity()
+      ..translate(f.dx, f.dy)
+      ..scale(s2)
+      ..translate(-f.dx, -f.dy);
+    _onZoomUpdate(vp, offX, offY, dw, dh);
+  }
+
+  Widget _zoomBadge(Size vp, double offX, double offY, double dw, double dh) {
+    return Positioned(
+      top: 10,
+      right: 10,
+      child: Semantics(
+        label: t('rsZoomReset'),
+        button: true,
+        child: GestureDetector(
+          onTap: () {
+            _xform.value = Matrix4.identity();
+            _onZoomUpdate(vp, offX, offY, dw, dh);
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xCC161b26),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFF2a3242)),
+            ),
+            child: Text(
+              '$_zoomPct%',
+              style:
+                  const TextStyle(fontSize: 11.5, color: Color(0xFFdce6f1)),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
