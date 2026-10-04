@@ -273,7 +273,7 @@
     dock.hidden = items.length === 0;
     // The dock used to be text-only, so a queue frozen on a configuration problem
     // looked exactly like one waiting for a reply. The glyph comes from the shared
-    // registry — ⏸️ for a pause, 🔒 for something the user must go fix — and it is
+    // registry — ⏸ for a pause, ⚿ for something the user must go fix — and it is
     // written as text so this element keeps its textContent-only XSS property.
     const registry = statusRegistry();
     const dockStatus = metadata.state === 'frozen'

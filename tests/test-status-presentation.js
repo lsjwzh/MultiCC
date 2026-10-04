@@ -5,11 +5,11 @@
 // Three things this file defends:
 //   1. the display registry stays a MIRROR of the server vocabularies — if
 //      someone adds a freeze reason or a classify letter on the server and not
-//      here, the status silently degrades to ❔ on every card. That must fail
+//      here, the status silently degrades to ⍰ on every card. That must fail
 //      loudly instead.
 //   2. every canonical status renders an icon plus an accessible name on every
 //      surface, and only `running` may animate — so an errored card always
-//      shows ❌ and always stops spinning.
+//      shows ✖ and always stops spinning.
 //   3. Web and Flutter say the same thing. The Dart file is parsed, not
 //      imported, so this runs in the plain node lane.
 
@@ -115,8 +115,8 @@ test('classify letters mirror src/classify/vocab.js with no divergence left', ()
     if (shown !== fromServer) divergent.push(letter);
     assert.notEqual(shown, 'unknown', `classify ${letter} must resolve to a known status`);
   }
-  // E used to be the one divergence: cardStatus `waiting` (⏸️ on the session
-  // list) against barTint `error` (❌ in the chat bar) — one terminal fact with
+  // E used to be the one divergence: cardStatus `waiting` (⏸ on the session
+  // list) against barTint `error` (✖ in the chat bar) — one terminal fact with
   // two faces, which is what let a cancelled turn read as "still waiting"
   // outside while it was already an abnormal end inside. Both now say `error`,
   // so there is no divergence left to document.
@@ -200,7 +200,7 @@ test('only running animates, and error is a loud non-terminal fault', () => {
   assert.deepEqual(spinning, ['running'], 'exactly one status may animate');
 
   const error = SP.presentation('session', 'error');
-  assert.equal(error.icon, '❌');
+  assert.equal(error.icon, '✖');
   assert.equal(error.tone, 'danger');
   assert.equal(error.spinner, false);
   assert.equal(error.terminal, false, 'error is retryable, never a resting end state');
@@ -328,12 +328,12 @@ test('an errored card always shows the error icon and never a spinner', () => {
     for (const raw of ['error', 'failed', 'errored', 'fail']) {
       const el = makeEl();
       SP.applyStatusBadge(el, domain, raw);
-      assert.equal(el.childrenWithClass('mc-status-ico')[0].textContent, '❌', `${domain}/${raw}`);
+      assert.equal(el.childrenWithClass('mc-status-ico')[0].textContent, '✖', `${domain}/${raw}`);
       assert.equal(el.classList.contains('st-spin'), false, `${domain}/${raw}: no spinner in error`);
       assert.equal(el.classList.contains('st-tone-danger'), true);
       assert.ok(el.getAttribute('aria-label'));
       const html = SP.statusBadgeHtml(domain, raw);
-      assert.ok(html.includes('❌') && !html.includes('st-spin'));
+      assert.ok(html.includes('✖') && !html.includes('st-spin'));
     }
   }
 });
@@ -366,14 +366,14 @@ test('running → error drops the spinner immediately; error → running restore
   SP.applyStatusBadge(el, 'session', 'error');
   assert.equal(el.classList.contains('st-spin'), false, 'spinner stops the moment it turns red');
   assert.equal(el.childrenWithClass('mc-status-ico').length, 1, 'no double icon');
-  assert.equal(el.childrenWithClass('mc-status-ico')[0].textContent, '❌');
+  assert.equal(el.childrenWithClass('mc-status-ico')[0].textContent, '✖');
   assert.equal(el.classList.contains('st-tone-running'), false, 'stale tone is cleared');
 
   SP.applyStatusBadge(el, 'session', 'running');   // user hit retry
   assert.equal(el.classList.contains('st-spin'), true);
   assert.equal(el.classList.contains('st-tone-danger'), false);
   assert.equal(el.childrenWithClass('mc-status-ico').length, 1);
-  assert.equal(el.childrenWithClass('mc-status-ico')[0].textContent, '🔄');
+  assert.equal(el.childrenWithClass('mc-status-ico')[0].textContent, '↻');
 });
 
 test('a full replayed lifecycle leaves no stale icon or tone', () => {

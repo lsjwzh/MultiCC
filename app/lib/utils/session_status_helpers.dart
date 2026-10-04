@@ -40,7 +40,7 @@ Color wbStatusColor(String? status) => wbStatusSpec(status).color;
 
 String wbStatusLabel(String? status) => wbStatusSpec(status).label;
 
-/// 状态图标：颜色之外必须还有一个非颜色通道（WCAG 1.4.1），异常处必为 ❌。
+/// 状态图标：颜色之外必须还有一个非颜色通道（WCAG 1.4.1），异常处必为 ✖。
 String wbStatusIcon(String? status) => wbStatusSpec(status).icon;
 
 /// classify 字母的专用文案（比通用状态名更具体：「等待用户」而非「等待中」）。

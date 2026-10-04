@@ -77,20 +77,25 @@
   // priority  — who wins when several signals coexist. Faults outrank progress so
   //             a failure is never masked by an optimistic parallel signal.
   const STATUS_PRESENTATION = Object.freeze({
+    // Every icon below is picked the same way as `succeeded`'s '✓': a codepoint
+    // with Emoji_Presentation=false (confirmed via `/\p{Emoji_Presentation}/u`),
+    // so no platform ever paints it from a fixed-colour emoji font — every one
+    // of them actually follows the `.st-tone-*` colour, not just the label text
+    // next to it.
     idle: Object.freeze({
-      icon: '⚪', tone: 'neutral', spinner: false, terminal: false, priority: 10,
+      icon: '○', tone: 'neutral', spinner: false, terminal: false, priority: 10,
       labelKey: 'statusIdle', ariaKey: 'statusAriaIdle', airLabelKey: 'airStateIdle',
     }),
     queued: Object.freeze({
-      icon: '📥', tone: 'info', spinner: false, terminal: false, priority: 60,
+      icon: '▣', tone: 'info', spinner: false, terminal: false, priority: 60,
       labelKey: 'statusQueued', ariaKey: 'statusAriaQueued', airLabelKey: 'airStateQueued',
     }),
     running: Object.freeze({
-      icon: '🔄', tone: 'running', spinner: true, terminal: false, priority: 70,
+      icon: '↻', tone: 'running', spinner: true, terminal: false, priority: 70,
       labelKey: 'statusRunning', ariaKey: 'statusAriaRunning', airLabelKey: 'airStateRunning',
     }),
     waiting: Object.freeze({
-      icon: '⏸️', tone: 'waiting', spinner: false, terminal: false, priority: 50,
+      icon: '⏸', tone: 'waiting', spinner: false, terminal: false, priority: 50,
       labelKey: 'statusWaiting', ariaKey: 'statusAriaWaiting', airLabelKey: 'airStateWaiting',
     }),
     // Idling on a background job (classify B): a callback or a dispatched worker
@@ -99,15 +104,15 @@
     // below `waiting` (a real question always outranks it) and above `succeeded`;
     // faults still outrank it, so a background wait never masks a failure.
     background: Object.freeze({
-      icon: '⏳', tone: 'info', spinner: false, terminal: false, priority: 45,
+      icon: '⧗', tone: 'info', spinner: false, terminal: false, priority: 45,
       labelKey: 'statusBackground', ariaKey: 'statusAriaBackground', airLabelKey: 'airStateBackground',
     }),
     blocked: Object.freeze({
-      icon: '🔒', tone: 'blocked', spinner: false, terminal: false, priority: 80,
+      icon: '⚿', tone: 'blocked', spinner: false, terminal: false, priority: 80,
       labelKey: 'statusBlocked', ariaKey: 'statusAriaBlocked', airLabelKey: 'airStateBlocked',
     }),
     error: Object.freeze({
-      icon: '❌', tone: 'danger', spinner: false, terminal: false, priority: 90,
+      icon: '✖', tone: 'danger', spinner: false, terminal: false, priority: 90,
       labelKey: 'statusError', ariaKey: 'statusAriaError', airLabelKey: 'airStateFailed',
     }),
     succeeded: Object.freeze({
@@ -130,7 +135,7 @@
     // but "you stopped this" and "nothing is happening" are different things to a
     // reader, and an interrupted turn must never be dressed up as completed.
     cancelled: Object.freeze({
-      icon: '🚫', tone: 'muted', spinner: false, terminal: true, priority: 25,
+      icon: '⦸', tone: 'muted', spinner: false, terminal: true, priority: 25,
       labelKey: 'statusCancelled', ariaKey: 'statusAriaCancelled', airLabelKey: 'airStateCancelled',
     }),
     archived: Object.freeze({
@@ -145,7 +150,7 @@
     // success or running: an unrecognised status must not read as "finished" or
     // "still going". Every hit is recorded for diagnostics.
     unknown: Object.freeze({
-      icon: '❔', tone: 'neutral', spinner: false, terminal: false, priority: 0,
+      icon: '⍰', tone: 'neutral', spinner: false, terminal: false, priority: 0,
       labelKey: 'statusUnknown', ariaKey: 'statusAriaUnknown', airLabelKey: 'airStateUnknown',
     }),
   });
@@ -385,8 +390,8 @@
    * runStartedAt/leftRunning bookkeeping) and app/lib/utils/status_presentation.dart.
    *
    * `background` is deliberately NOT busy: the turn is parked on a callback or a
-   * dispatched worker, nothing is advancing here, and its own word is ⌛ rather
-   * than 🔄. "A run is still open" is a different question — see
+   * dispatched worker, nothing is advancing here, and its own word is ⧗ rather
+   * than ↻. "A run is still open" is a different question — see
    * canStopRunState() below, where `background` DOES count.
    */
   function isBusyStatus(raw) {

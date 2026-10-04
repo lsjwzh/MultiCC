@@ -84,10 +84,13 @@ class StatusSpec {
   Color get color => statusToneColor(tone);
 }
 
+// 以下每个 icon 都按 `succeeded` 的 '✓' 同一条标准挑选：Emoji_Presentation=false
+// 的码点（用 `/\p{Emoji_Presentation}/u` 逐个验证过），任何平台都不会按自带的
+// emoji 配色去画它——这样每一个都真的跟着 tone 颜色走，不是只有旁边的文字变色。
 const Map<CanonicalStatus, StatusSpec> statusPresentation = {
   CanonicalStatus.idle: StatusSpec(
     status: CanonicalStatus.idle,
-    icon: '⚪',
+    icon: '○',
     tone: 'neutral',
     spinner: false,
     terminal: false,
@@ -98,7 +101,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
   ),
   CanonicalStatus.queued: StatusSpec(
     status: CanonicalStatus.queued,
-    icon: '📥',
+    icon: '▣',
     tone: 'info',
     spinner: false,
     terminal: false,
@@ -109,7 +112,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
   ),
   CanonicalStatus.running: StatusSpec(
     status: CanonicalStatus.running,
-    icon: '🔄',
+    icon: '↻',
     tone: 'running',
     spinner: true,
     terminal: false,
@@ -120,7 +123,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
   ),
   CanonicalStatus.waiting: StatusSpec(
     status: CanonicalStatus.waiting,
-    icon: '⏸️',
+    icon: '⏸',
     tone: 'waiting',
     spinner: false,
     terminal: false,
@@ -135,7 +138,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
   // 故障（error/blocked）稳压它，后台等待永远不盖住故障。
   CanonicalStatus.background: StatusSpec(
     status: CanonicalStatus.background,
-    icon: '⏳',
+    icon: '⧗',
     tone: 'info',
     spinner: false,
     terminal: false,
@@ -146,7 +149,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
   ),
   CanonicalStatus.blocked: StatusSpec(
     status: CanonicalStatus.blocked,
-    icon: '🔒',
+    icon: '⚿',
     tone: 'blocked',
     spinner: false,
     terminal: false,
@@ -157,7 +160,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
   ),
   CanonicalStatus.error: StatusSpec(
     status: CanonicalStatus.error,
-    icon: '❌',
+    icon: '✖',
     tone: 'danger',
     spinner: false,
     terminal: false,
@@ -196,7 +199,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
   // 「什么都没在跑」对读者是两件事，被中断的一轮更不能被打扮成已完成。
   CanonicalStatus.cancelled: StatusSpec(
     status: CanonicalStatus.cancelled,
-    icon: '🚫',
+    icon: '⦸',
     tone: 'muted',
     spinner: false,
     terminal: true,
@@ -231,7 +234,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
   // 或「还在跑」。每次命中都会记进诊断表。
   CanonicalStatus.unknown: StatusSpec(
     status: CanonicalStatus.unknown,
-    icon: '❔',
+    icon: '⍰',
     tone: 'neutral',
     spinner: false,
     terminal: false,
