@@ -218,6 +218,12 @@
       const timer = setTimeout(fail, 6000);
       try { rfb = new RfbClass(wrap, url, { viewOnly: true, scaleViewport: true }); }
       catch { fail(); return; }
+      // noVNC 1.7 的构造 options 只认 credentials/shared/repeaterID/wsProtocols，
+      // viewOnly / scaleViewport 是 setter-only——构造后必须显式赋值，否则
+      // canvas 永远按 framebuffer 原始尺寸显示（桌面宽视口看不出，手机竖屏
+      // 右侧直接被裁），且「只看」初始态会 grab 键盘并转发指针输入。
+      rfb.viewOnly = true;
+      rfb.scaleViewport = true;
       if (s) s.rfb = rfb;
       s.rfbWrap = wrap;
       rfb.addEventListener('connect', () => {
