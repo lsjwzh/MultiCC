@@ -10,7 +10,7 @@ import 'package:multicc_app/providers/session_manager.dart';
 import 'package:multicc_app/services/quota_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/utils/cli_display.dart';
-import 'package:multicc_app/widgets/chat_header.dart';
+import 'package:multicc_app/widgets/input_bar.dart';
 import 'package:multicc_app/widgets/run_config/run_chip.dart';
 
 /// 「下轮生效」口径的回归：**app 上切换 CLI 后，页头还显示旧 CLI、AI 药丸还是
@@ -146,7 +146,10 @@ void main() {
         const SessionCliConfig(cli: SessionCli.codex, model: 'm-old'),
       );
       expect(provider.cli, SessionCli.codex);
-      expect(provider.pendingConfiguration.desiredCli(provider.cli), SessionCli.codex);
+      expect(
+        provider.pendingConfiguration.desiredCli(provider.cli),
+        SessionCli.codex,
+      );
       expect(provider.pendingConfiguration.hasCliSwitch(provider.cli), isFalse);
 
       var notified = 0;
@@ -158,7 +161,10 @@ void main() {
       // 关键分歧：运行时仍是旧车道（不能骗自己说已经切了），但显示口径已经
       // 是用户选的那条 —— 页头角标与 AI 药丸都读 desiredCli。
       expect(provider.cli, SessionCli.codex);
-      expect(provider.pendingConfiguration.desiredCli(provider.cli), SessionCli.claudeExp);
+      expect(
+        provider.pendingConfiguration.desiredCli(provider.cli),
+        SessionCli.claudeExp,
+      );
       expect(provider.pendingConfiguration.isSet, isTrue);
       expect(provider.pendingConfiguration.hasCliSwitch(provider.cli), isTrue);
       expect(provider.pendingConfiguration.value?.provider, 'p-new');
@@ -186,7 +192,10 @@ void main() {
         const SessionCliConfig(cli: SessionCli.claudeExp, model: 'm-new'),
       );
       expect(provider.cli, SessionCli.claudeExp);
-      expect(provider.pendingConfiguration.desiredCli(provider.cli), SessionCli.claudeExp);
+      expect(
+        provider.pendingConfiguration.desiredCli(provider.cli),
+        SessionCli.claudeExp,
+      );
       expect(provider.pendingConfiguration.hasCliSwitch(provider.cli), isFalse);
       expect(provider.pendingConfiguration.isSet, isFalse);
       await Future<void>.delayed(Duration.zero);
@@ -216,8 +225,15 @@ void main() {
       );
 
       expect(provider.pendingConfiguration.isSet, isTrue);
-      expect(provider.pendingConfiguration.hasCliSwitch(provider.cli), isFalse, reason: '车道没变，角标不该挂换道记号');
-      expect(provider.pendingConfiguration.desiredCli(provider.cli), SessionCli.claude);
+      expect(
+        provider.pendingConfiguration.hasCliSwitch(provider.cli),
+        isFalse,
+        reason: '车道没变，角标不该挂换道记号',
+      );
+      expect(
+        provider.pendingConfiguration.desiredCli(provider.cli),
+        SessionCli.claude,
+      );
       await Future<void>.delayed(Duration.zero);
     });
 
@@ -246,16 +262,20 @@ void main() {
 
       provider.applyPendingConfiguration(null);
       expect(provider.pendingConfiguration.isSet, isFalse);
-      expect(provider.pendingConfiguration.desiredCli(provider.cli), provider.cli);
+      expect(
+        provider.pendingConfiguration.desiredCli(provider.cli),
+        provider.cli,
+      );
       expect(notified, 1);
       await Future<void>.delayed(Duration.zero);
     });
   });
 
-  Future<void> pumpHeader(
+  // 运行配置 chip 跟 web 移动端一样骑在输入卡片顶上的配置带里（不再在页头），
+  // 简易模式也照样显示。
+  Future<void> pumpComposer(
     WidgetTester tester,
     SessionManager mgr,
-    SettingsService settings,
     ChatProvider provider,
   ) => tester.pumpWidget(
     MultiProvider(
@@ -263,38 +283,19 @@ void main() {
         ChangeNotifierProvider<SessionManager>.value(value: mgr),
         ChangeNotifierProvider<ChatProvider>.value(value: provider),
       ],
-      child: MaterialApp(
+      child: const MaterialApp(
         home: Scaffold(
           body: Align(
-            alignment: Alignment.topCenter,
-            // 窄屏（<500）：角标是紧凑形态，也是用户手机上真实的那个形态。
-            child: SizedBox(
-              width: 360,
-              child: ChatHeader(
-                settings: settings,
-                mergeReady: false,
-                cwd: '',
-                onCwd: () {},
-                onMerge: () {},
-                onRole: () {},
-                onMemory: () {},
-                onMemo: () {},
-                onShare: () {},
-                onForceSync: () {},
-                onChatWidth: () {},
-                autoCommit: true,
-                onAutoCommit: () {},
-                onDebug: () {},
-                onArtifacts: () {},
-              ),
-            ),
+            alignment: Alignment.bottomCenter,
+            // 手机宽度：用户真实看到的那个形态。
+            child: SizedBox(width: 360, child: InputBar()),
           ),
         ),
       ),
     ),
   );
 
-  testWidgets('窄页头运行配置 chip 读待生效的那条车道，并挂着「下轮生效」', (tester) async {
+  testWidgets('输入卡片配置带上的运行配置 chip 读待生效的那条车道，并挂着「下轮生效」', (tester) async {
     final s = await settings();
     final mgr = SessionManager(settings: s);
     final provider = ChatProvider(
@@ -316,19 +317,17 @@ void main() {
     );
     expect(provider.cli, SessionCli.codex);
 
-    await pumpHeader(tester, mgr, s, provider);
+    await pumpComposer(tester, mgr, provider);
 
-    // 窄页头里 chip 是紧凑形态（只有图标 + tooltip，不写字），所以车道从 chip
-    // 自己的 `cli` 上断言：必须是用户选的那条，而不是会话正跑着的 codex。
+    // 车道从 chip 自己的 `cli` 上断言：必须是用户选的那条，而不是会话正跑着
+    // 的 codex。
     final chip = tester.widget<RunChip>(find.byType(RunChip));
     expect(chip.cli, SessionCli.claudeExp);
     expect(chip.cli, isNot(provider.cli));
     expect(chip.pending, isNotNull);
-    // 窄页头用 tooltip 承载「下轮生效」四个字（文字标记会把这一行顶爆）。
-    expect(
-      find.byTooltip('运行配置（${t('cliSwitchPending')}）'),
-      findsOneWidget,
-    );
+    // 配置带有整行宽度，「下轮生效」直接写在药丸上，tooltip 也照挂。
+    expect(find.byTooltip('运行配置（${t('cliSwitchPending')}）'), findsOneWidget);
+    expect(find.text(t('cliSwitchPending')), findsOneWidget);
 
     provider.dispose();
     mgr.dispose();
