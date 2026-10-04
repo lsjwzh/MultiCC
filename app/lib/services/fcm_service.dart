@@ -23,6 +23,7 @@ class FcmService {
   final Duration timeout;
   final status = ValueNotifier<String>('idle');
   Timer? _timer;
+  final Set<_GuardedTimeout> _pendingTimeouts = {};
   bool _disposed = false;
   bool _busy = false;
   bool _again = false;
@@ -75,7 +76,7 @@ class FcmService {
   Future<void> _sync() async {
     if (!_supported || _disposed) return;
     try {
-      await _invoke('sync', {
+      await _guard(_invoke('sync', {
         'binding': settings.pushBinding,
         'endpoint': settings.host.isEmpty ? '' : _uri(settings.host).toString(),
         'access': settings.host.isEmpty ? '' : settings.token,
@@ -84,7 +85,7 @@ class FcmService {
         'enabled': settings.host.isNotEmpty && settings.notificationsEnabled,
         'disabledSessions': settings.pushDisabledSessions,
         'activeSession': _activeSession,
-      }).timeout(timeout);
+      }));
     } catch (_) {}
   }
 
@@ -97,6 +98,34 @@ class FcmService {
 
   void _state(String value) {
     if (!_disposed) status.value = value;
+  }
+
+  /// Same contract as `future.timeout(timeout)`, but the timer it schedules is
+  /// tracked so [dispose] can cancel it outright instead of leaving it armed
+  /// until the (possibly never-settling, e.g. an unmocked platform channel)
+  /// original future resolves on its own.
+  Future<T> _guard<T>(Future<T> future) {
+    final completer = Completer<T>();
+    late final _GuardedTimeout entry;
+    final timer = Timer(timeout, () {
+      _pendingTimeouts.remove(entry);
+      if (!completer.isCompleted) {
+        completer.completeError(TimeoutException('FcmService timed out', timeout));
+      }
+    });
+    entry = _GuardedTimeout(timer, completer);
+    _pendingTimeouts.add(entry);
+    future.then(
+      (value) {
+        if (_pendingTimeouts.remove(entry)) timer.cancel();
+        if (!completer.isCompleted) completer.complete(value);
+      },
+      onError: (Object error, StackTrace stack) {
+        if (_pendingTimeouts.remove(entry)) timer.cancel();
+        if (!completer.isCompleted) completer.completeError(error, stack);
+      },
+    );
+    return completer.future;
   }
 
   Map<String, String> _headers(String access) => {
@@ -114,13 +143,12 @@ class FcmService {
   Future<void> _remove(String host, String access, String binding) async {
     if (host.isEmpty || binding.isEmpty) return;
     try {
-      await _client
+      await _guard(_client
           .delete(
             _uri(host),
             headers: _headers(access),
             body: jsonEncode({'id': settings.pushDeviceId, 'binding': binding}),
-          )
-          .timeout(timeout);
+          ));
     } catch (_) {}
   }
 
@@ -150,7 +178,7 @@ class FcmService {
         _state('disabled');
         return;
       }
-      final info = await _invoke('token', null).timeout(timeout);
+      final info = await _guard(_invoke('token', null));
       if (_disposed || binding != settings.pushBinding) return;
       if (info is! Map ||
           info['status'] != 'ready' ||
@@ -170,7 +198,7 @@ class FcmService {
         _state('registered');
         return;
       }
-      final response = await _client
+      final response = await _guard(_client
           .post(
             _uri(host),
             headers: _headers(access),
@@ -181,8 +209,7 @@ class FcmService {
               'projectId': info['projectId'],
               'locale': settings.lang,
             }),
-          )
-          .timeout(timeout);
+          ));
       if (_disposed ||
           binding != settings.pushBinding ||
           !settings.notificationsEnabled) {
@@ -213,13 +240,12 @@ class FcmService {
   /// True means Google accepted the test, never a claim of handset delivery.
   Future<bool> test() async {
     try {
-      final response = await _client
+      final response = await _guard(_client
           .post(
             _uri(settings.host, '/test'),
             headers: _headers(settings.token),
             body: jsonEncode({'id': settings.pushDeviceId}),
-          )
-          .timeout(timeout);
+          ));
       return response.statusCode == 200 &&
           jsonDecode(response.body)['ok'] == true;
     } catch (_) {
@@ -230,6 +256,13 @@ class FcmService {
   void dispose() {
     _disposed = true;
     _timer?.cancel();
+    for (final entry in _pendingTimeouts) {
+      entry.timer.cancel();
+      if (!entry.completer.isCompleted) {
+        entry.completer.completeError(StateError('FcmService disposed'));
+      }
+    }
+    _pendingTimeouts.clear();
     settings.pushPreferences.removeListener(_changed);
     if (identical(current, this)) {
       current = null;
@@ -238,4 +271,13 @@ class FcmService {
     _client.close();
     status.dispose();
   }
+}
+
+/// A [_guard]-scheduled timeout [Timer] paired with the [Completer] it would
+/// otherwise fire into, so [FcmService.dispose] can retire both together
+/// instead of leaving the timer armed for a future nobody awaits anymore.
+class _GuardedTimeout {
+  _GuardedTimeout(this.timer, this.completer);
+  final Timer timer;
+  final Completer<dynamic> completer;
 }

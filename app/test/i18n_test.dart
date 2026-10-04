@@ -57,6 +57,6 @@ void main() {
     I18n.switchLang('zh');
     final legacy = classifyBadge('C');
     expect(legacy?.label, '继续中');
-    expect(legacy?.emoji, '🔄');
+    expect(legacy?.emoji, '↻');
   });
 }
