@@ -217,7 +217,7 @@
       mark: '⌘',
       providerless: true,
       update: { package: 'command-code', command: 'npm install -g command-code' },
-      lanes: { chat: [{ id: 'commandcode', engine: 'command-code acp' }], terminal: [{ id: 'commandcode', engine: 'command-code' }] },
+      lanes: { chat: [{ id: 'commandcode', engine: 'command-code -p --output-format json' }], terminal: [{ id: 'commandcode', engine: 'command-code' }] },
     },
     grok: {
       name: 'Grok',

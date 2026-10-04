@@ -1037,7 +1037,7 @@
           else if (!state.currentTextContent) state.currentTextContent = block.text;
           host.renderCurrentText?.();
           host.maybeScrollToBottom?.();
-        } else if (isCodexCli(state.currentCli) && block.type === 'tool_use' && block.id) {
+        } else if ((isCodexCli(state.currentCli) || state.currentCli === 'commandcode') && block.type === 'tool_use' && block.id) {
           if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
           let tool = findCurrentToolCardById(block.id);
           if (!tool) {

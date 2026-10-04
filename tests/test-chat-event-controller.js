@@ -1815,3 +1815,13 @@ test('Auto init frames name the line that last answered, not the first candidate
   assert.deepEqual(fixture.calls.find(call => call[0] === 'system'),
     ['system', 'Session: task-aut... | codex | deepseek-v4-flash']);
 });
+
+test('Command Code 原生工具事件实时显示日志并完成', () => {
+  const fixture = controllerFixture();
+  fixture.state.currentCli = 'commandcode';
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({type:'assistant',message:{content:[{type:'tool_use',id:'command-tool',name:'read_file',input:{file_path:'hosts.fixture'}}]}},generation);
+  assert.equal(fixture.tools.length,1);
+  fixture.controller.handleEvent({type:'user',message:{content:[{type:'tool_result',tool_use_id:'command-tool',content:'127.0.0.1 localhost'}]}},generation);
+  assert.ok(Number.isFinite(fixture.state.currentToolCards.get('id:command-tool').endedAt));
+});

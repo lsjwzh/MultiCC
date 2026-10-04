@@ -1,0 +1,57 @@
+[
+  {
+    "id": "exact-reply",
+    "source": {
+      "database": "~/.local/share/opencode/opencode.db",
+      "sessionId": "ses_f23334aeaffeVqNX4cW1w5Sgg3",
+      "messageId": "msg_0dcccb57f0018Z6rFGKWoQUJr3",
+      "title": "Echo exactly ping-oc-ok",
+      "model": {
+        "id": "deepseek-v4-flash",
+        "providerID": "opencodego",
+        "variant": "default"
+      },
+      "agent": "build"
+    },
+    "originalPrompt": "say exactly and only: ping-oc-ok",
+    "prompt": "say exactly and only: ping-oc-ok",
+    "adaptation": "移除宿主注入的上下文，保留原始用户任务",
+    "expected": "ping-oc-ok"
+  },
+  {
+    "id": "read-file",
+    "source": {
+      "database": "~/.local/share/opencode/opencode.db",
+      "sessionId": "ses_f29186b7dffe1Nz9zsWv9dRTXr",
+      "messageId": "msg_0d6e794b10011Fu2XTU4n6y2jk",
+      "title": "读取并总结 /etc/hosts 前两行",
+      "model": {
+        "id": "big-pickle",
+        "providerID": "opencode"
+      },
+      "agent": "build"
+    },
+    "originalPrompt": "读一下 /etc/hosts 的前两行，然后用一句话总结",
+    "prompt": "读取当前目录 hosts.fixture 的前两行，原样列出这两行，然后用一句中文总结。",
+    "adaptation": "将 /etc/hosts 改为固定 hosts.fixture，消除操作系统内容差异",
+    "expected": "127.0.0.1 localhost"
+  },
+  {
+    "id": "long-command",
+    "source": {
+      "database": "~/.local/share/opencode/opencode.db",
+      "sessionId": "ses_f291cd882ffenLSS5pDNovf61q",
+      "messageId": "msg_0d6e32786001H9jw5gY7GTaVu4",
+      "title": "bash运行sleep 30后输出完成",
+      "model": {
+        "id": "big-pickle",
+        "providerID": "opencode"
+      },
+      "agent": "build"
+    },
+    "originalPrompt": "用 bash 运行 sleep 30 然后说完成",
+    "prompt": "用 bash 运行 sleep 30 然后说完成",
+    "adaptation": "移除宿主注入的上下文，保留原始用户任务",
+    "expected": "完成"
+  }
+]

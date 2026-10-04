@@ -39,19 +39,20 @@ test('端点和模型覆盖有效，拒绝 URL 内嵌凭据', () => {
   }
 });
 
-test('ACP 接入携带默认或显式模型与恢复 ID，认证失败不会变成成功', () => {
+test('原生 JSON 接入携带默认或显式模型与恢复 ID，认证失败不会变成成功', () => {
   const adapter = createCommandCodeAdapter({ cmd: '/opt/bin/command-code', env: {} });
   const envelope = { contextLayers: [], userText: '测试', suffix: '', rolePrompt: '' };
   // 与实际 envelope 一样保留 historyHandle 和 spawnOpts。
   envelope.historyHandle = { isFirstTurn: false, cliSessionId: 'native-id' };
   envelope.spawnOpts = { rawModel: null };
   const invocation = adapter.buildInvocation(envelope);
-  assert.ok(invocation.args.includes('acp'));
+  assert.equal(invocation.cmd, '/opt/bin/command-code');
+  assert.ok(invocation.args.includes('-p'));
   assert.ok(invocation.args.includes('deepseek/deepseek-flash'));
   assert.ok(invocation.args.includes('native-id'));
   envelope.spawnOpts.rawModel = 'deepseek/custom';
   assert.ok(adapter.buildInvocation(envelope).args.includes('deepseek/custom'));
-  const events = adapter.decodeEvent({ method: 'multicc/error', params: { phase: 'session', message: 'Authentication required' } });
+  const events = adapter.decodeEvent({ type: 'error', message: 'Authentication required' });
   assert.equal(events[0].type, 'error');
   assert.ok(!events.some(event => event.type === 'complete'));
   const { decideApiErrorPolicy } = require('../src/chat/api-error-policy');
@@ -64,4 +65,29 @@ test('网页配置给出 DeepSeek 原生模型，不混入 Claude 候选', () =>
   const ai = require('../public/chat-ai-config');
   assert.deepEqual(ai.buildModelChoices('', { cli: 'commandcode', providers: [] }), ['', 'deepseek/deepseek-flash', '__custom__']);
   assert.deepEqual(ai.effortOptions('commandcode'), []);
+});
+
+test('真实事件形状：工具完成、增量不重复、终态不可由退出码伪造', () => {
+  const a = createCommandCodeAdapter({ cmd: 'command-code', env: {} });
+  const wrap = event => ({ type: 'event', event });
+  assert.deepEqual(a.decodeEvent(wrap({ type: 'text_delta', delta: 'ok' })), [{type:'assistant_text',text:'ok',delta:true}]);
+  assert.deepEqual(a.decodeEvent(wrap({ type: 'message_end', content: [{type:'text',text:'ok'}] })), []);
+  assert.equal(a.decodeEvent(wrap({ type: 'tool_completed', toolCallId: 't', toolName: 'read_file', result: [] }))[0].completed, true);
+  const tracker = a.createCompletionTracker();
+  const raw = {type:'result',subtype:'success',stopReason:'end_turn',usage:{inputTokens:12,outputTokens:2}};
+  tracker.observe(raw, a.decodeEvent(raw));
+  assert.equal(tracker.finish({kind:'process',code:0}).state, 'completed');
+  assert.equal(a.createCompletionTracker().finish({kind:'process',code:0}).state, 'unknown');
+  const failed = a.createCompletionTracker();
+  failed.observe({type:'error',message:'failed'});
+  failed.observe(raw);
+  assert.equal(failed.finish({kind:'process',code:0}).state,'failed');
+});
+
+test('思考按完成块记录一次，工具拒绝也必须结束日志卡', () => {
+ const a=createCommandCodeAdapter({cmd:'command-code',env:{}});
+ assert.deepEqual(a.decodeEvent({type:'event',event:{type:'thinking_delta',delta:'x'}}),[]);
+ const thought=a.decodeEvent({type:'event',event:{type:'message_end',content:[{type:'thinking',thinking:'完整思考'}]}});
+ assert.equal(thought.length,1);assert.equal(thought[0].completed,true);
+ for(const type of ['tool_denied','tool_errored']) { const t=a.decodeEvent({type:'event',event:{type,toolCallId:'t',toolName:'shell_command'}})[0];assert.equal(t.completed,true);assert.equal(t.isError,true); }
 });
