@@ -245,6 +245,90 @@ small, .caption { color: var(--muted); font-size: 11px; }
 .cli-update-foot button { padding: 4px 9px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--text); font-size: 12px; cursor: pointer; }
 .cli-update-foot button:hover { border-color: #c7ddf5; background: var(--blue-soft); }
 
+/* ── 通知与播报：品牌行那颗 M 猫入口 + 它的浮层（air-notify-settings.js） ──
+   图标位与 .cli-update-btn 同一形制（30px 透明位、hover 才浮出）；全关时褪色，
+   平时它就是「通知都在岗」的样子。 */
+.notify-entry-btn {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  line-height: 1;
+  cursor: pointer;
+}
+.notify-entry-btn:hover, .notify-entry-btn[aria-expanded="true"] { border-color: #c7ddf5; background: var(--blue-soft); }
+.notify-entry-btn svg { display: block; }
+.notify-entry-btn.is-muted svg { filter: saturate(.35) opacity(.6); }
+.notify-pop {
+  position: fixed;
+  z-index: 60;
+  width: min(300px, calc(100vw - 24px));
+  max-height: min(70vh, 520px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 18px 50px #263f5d2e;
+  color: var(--text);
+  font-size: 13px;
+}
+.notify-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.notify-pop-head strong { font-size: 13.5px; }
+.notify-pop-head button { border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.notify-pop-rows { display: grid; gap: 4px; margin-top: 8px; }
+.notify-row { display: flex; align-items: center; gap: 8px; padding: 8px 6px; border-radius: 12px; }
+.notify-row:hover { background: #f6f9fd; }
+.notify-row-name { min-width: 0; flex: 1 1 auto; }
+.notify-row-name strong { display: block; font-size: 12.5px; }
+.notify-row-hint { display: block; color: var(--muted); font-size: 10.5px; margin-top: 2px; }
+.notify-row-side { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.notify-test {
+  min-height: 0; padding: 3px 7px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--muted); font-size: 10.5px; cursor: pointer;
+}
+.notify-test:hover { background: var(--blue-soft); color: var(--accent); }
+.notify-channel {
+  min-height: 0; padding: 3px 9px; border: 1px solid var(--line); border-radius: 9px;
+  background: #fff; color: var(--text); font-size: 10.5px; cursor: pointer;
+}
+.notify-channel:hover { border-color: #c7ddf5; background: var(--blue-soft); }
+/* 开关：和侧栏设置行的 .row-switch 同一画法，放大到面板里可点的尺寸。 */
+.notify-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 19px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #cdd9e6;
+  transition: background .15s ease;
+  cursor: pointer;
+}
+.notify-switch::after {
+  content: "";
+  position: absolute;
+  top: 2.5px;
+  left: 2.5px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px #27496826;
+  transition: transform .15s ease;
+}
+.notify-switch[aria-checked="true"] { background: var(--accent); }
+.notify-switch[aria-checked="true"]::after { transform: translateX(15px); }
+.notify-switch:disabled { opacity: .45; cursor: not-allowed; }
+
 .space-card {
   overflow: hidden; margin-bottom: 2px; border: 1px solid rgba(196, 216, 237, .95); border-radius: 14px; background: rgba(255, 255, 255, .78); box-shadow: 0 8px 25px #4568870b;
   /* 侧栏是一列 flex，视口不够高时默认会把子项一起压扁。这张卡里有 fixed 内容的

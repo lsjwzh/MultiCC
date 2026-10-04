@@ -224,7 +224,18 @@
       if (timestamp - lastNotificationAt[normalizedType] < NOTIFY_COOLDOWN) return false;
       lastNotificationAt[normalizedType] = timestamp;
 
-      playDing(normalizedType);
+      // 全局档位（shared/notify-prefs.js，Air 品牌行的通知面板在改它）：铃声跟
+      // 提醒开关，朗读跟三档。本会话的 notify 按钮仍然先决 —— 它管的是这个任务。
+      // 老页面没加载 notify-prefs.js 时维持原行为：有铃声、只在离开时念。
+      const prefs = root.MultiCCNotifyPrefs || null;
+      const dingOn = prefs ? prefs.remindEnabled() : true;
+      const narrate = prefs ? prefs.shouldSpeak(isAway()) : isAway();
+
+      if (dingOn) playDing(normalizedType);
+
+      if (narrate && win.speechSynthesis && typeof win.SpeechSynthesisUtterance === 'function') {
+        speakText(text);
+      }
       if (!isAway()) return true;
 
       const hidden = doc.visibilityState !== 'visible';
@@ -240,6 +251,10 @@
         ));
       }
 
+      return true;
+    }
+
+    function speakText(text) {
       if (win.speechSynthesis && typeof win.SpeechSynthesisUtterance === 'function') {
         // speechSynthesis queues utterances itself; an earlier line still
         // waiting on its ding must not be overwritten by this one.

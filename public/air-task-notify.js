@@ -9,9 +9,10 @@
  *   completed / error / waiting, and clears it when anyone opens the task —
  *   from any Air tab, PWA window or the App (see src/task-board/attention.js)
  *        └─► ① sidebar row gets `.unseen` while the snapshot carries the mark
- *        └─► ② sound for marks newer than the ones already rung: ding always;
- *              + 朗读「任务…已完成」 only when the person is away (tab hidden, or
- *              visible but no input for 5 min — see shared/user-presence.js)
+ *        └─► ② sound for marks newer than the ones already rung: 提醒开关开着才有
+ *              铃声；朗读「任务…已完成」按统一的三档（shared/notify-prefs.js：
+ *              off 不念 / away 只在人不在时念 / always 总是念；away 是这之前的
+ *              默认行为 —— 人不在的判定见 shared/user-presence.js）
  *        └─► ③ floating reminder deck, one card per task ([打开][✕]);
  *              several stack up and fan out on click (air-notify-deck.js)
  *   user opens the task (here, or anywhere else)
@@ -71,7 +72,6 @@
   // copies disagreed between tabs (the cause of repeated reminders); dropped.
   const LEGACY_KEYS = ['air:notify-unseen', 'air:notify-prev'];
   const LS_HEARD = 'air:notify-heard';   // newest attention.at already rung, shared by tabs
-  const LS_VOICE = 'air:notify-voice';
   const LS_CLAIM = 'air:notify-claim';
   const VOICE_COOLDOWN = 8000;   // min gap between two sounds, mirrors chat-notifications
   const SPEAK_DELAY_MS = 260;    // let the ding finish before the narration starts
@@ -121,16 +121,19 @@
   }
   function isCompleted(status) { return COMPLETED.has(String(status || '')); }
 
-  // Voice was flagged on by default, but a user can silence it without losing
-  // the sidebar mark or floating prompt (they are "notification", not "voice").
-  function voiceEnabled() {
-    const s = storage();
-    if (!s) return true;
-    return s.getItem(LS_VOICE) !== '0';
-  }
+  // ── 出声档位：统一偏好（shared/notify-prefs.js），品牌行的通知面板在改它 ──
+  // off=不出朗读；away=只在人不在时念（统一偏好之前的默认行为）；always=总是念。
+  // 提醒开关管的是铃声和提醒卡片。老缓存页面没加载 notify-prefs.js 时按默认档
+  // 处理（away + 有铃声），行为与从前一致；那时的写入退回旧 key。
+  function notifyPrefs() { return root.MultiCCNotifyPrefs || null; }
+  function voiceMode() { return notifyPrefs()?.getVoice() || 'away'; }
+  function remindOn() { return notifyPrefs() ? notifyPrefs().remindEnabled() : true; }
+  function voiceEnabled() { return voiceMode() !== 'off'; }
   function setVoiceEnabled(on) {
+    const prefs = notifyPrefs();
+    if (prefs) { prefs.setVoice(on ? 'away' : 'off'); return; }
     const s = storage();
-    if (s) { try { s.setItem(LS_VOICE, on ? '1' : '0'); } catch (_) {} }
+    if (s) { try { s.setItem('air:notify-voice', on ? '1' : '0'); } catch (_) {} }
   }
 
   function createNotifyController(options) {
@@ -286,20 +289,25 @@
       return text;
     }
 
-    // ② One sound per batch: ding always, narration only when away. Presence
-    // is read when the sound actually plays, not when the task finished.
+    // ② One sound per batch: 铃声跟着提醒开关，朗读跟着三档（档位判定读 flush
+    // 那一刻的，不是任务完成那一刻的）。两样全关时连跨标签的响铃声明也不占 ——
+    // 没有要响的东西。Presence 同理，读的是真正出声那一刻的。
     function flushSound() {
       if (flushTimer) { cancelSchedule(flushTimer); flushTimer = null; }
       const items = [...pendingSound.values()]
         .filter(({ task }) => unseen.has(String(task.id)));   // opened meanwhile → drop
       pendingSound.clear();
-      if (!items.length || !voiceEnabled()) return false;
+      if (!items.length) return false;
+      const mode = voiceMode();
+      const remind = remindOn();
+      if (mode === 'off' && !remind) return false;
       const mine = claimSound(items);
       if (!mine.length) return false;
       mine.sort((a, b) => KIND_PRIORITY[b.kind] - KIND_PRIORITY[a.kind]);
       lastVoiceAt = now();
-      playDing(mine[0].kind);
-      if (!isAway()) return true;
+      if (remind) playDing(mine[0].kind);
+      const speakNow = mode === 'always' || (mode === 'away' && isAway());
+      if (!speakNow) return true;
       const text = sentence(mine);
       if (voiceTimer) cancelSchedule(voiceTimer);
       voiceTimer = schedule(() => { voiceTimer = null; speak(text); }, SPEAK_DELAY_MS);
@@ -317,8 +325,10 @@
     function fireAttention(cards, sounds) {
       for (const [task, kind, at] of sounds) queueSound(task, kind, at);   // ② sound (batched)
       if (sounds.length && !flushTimer) flushSound();
-      // ③ every new mark lands on the deck (① is live via isUnseen → CSS class)
-      for (const [task, kind] of cards) getDeck()?.upsert(task, kind);
+      // ③ every new mark lands on the deck (① is live via isUnseen → CSS class);
+      //    提醒开关关掉时新卡片不再上桌（已上桌的不追着撤 —— 撤掉会把「还在等
+      //    人看」的标记藏起来，开关管的是以后的提醒）。
+      if (remindOn()) for (const [task, kind] of cards) getDeck()?.upsert(task, kind);
     }
 
     function markOpened(taskId) {
@@ -390,9 +400,14 @@
     }
 
     // Expose a couple of controls the Air toolbar may want (voice on/off).
+    // 三档轮换 off → away → always；返回新档位（旧调用方只当布尔用的话，
+    // truthy 语义不变：away/always 为真，off 为假）。
     function toggleVoice() {
-      const next = !voiceEnabled();
-      setVoiceEnabled(next);
+      const order = ['off', 'away', 'always'];
+      const next = order[(order.indexOf(voiceMode()) + 1) % order.length];
+      const prefs = notifyPrefs();
+      if (prefs) prefs.setVoice(next);
+      else setVoiceEnabled(next !== 'off');
       return next;
     }
 
