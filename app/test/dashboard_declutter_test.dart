@@ -116,7 +116,7 @@ void main() {
   });
 
   group('SessionCard compact layout', () {
-    // 空闲（idle）会话：状态图标与空闲文案都不渲染——⚪ 摆在行首只是噪音；
+    // 空闲（idle）会话：状态图标与空闲文案都不渲染——○ 摆在行首只是噪音；
     // working 目录不再独占副标题行（fleet 面板本就按目录分组，目录名收进 ⋯ 菜单）。
     testWidgets('idle session renders no status icon and no cwd subtitle line', (
       tester,
@@ -138,8 +138,8 @@ void main() {
       ));
       await tester.pump();
 
-      // No ⚪ glyph — idle is the default state, not news worth an icon.
-      expect(find.text('⚪'), findsNothing);
+      // No ○ glyph — idle is the default state, not news worth an icon.
+      expect(find.text('○'), findsNothing);
       // No 「空闲」 label either (pre-existing behaviour, locked in here).
       expect(find.text('空闲'), findsNothing);
       // The worktree dir name is not shown on the card surface…

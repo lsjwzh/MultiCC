@@ -140,9 +140,9 @@ class SessionCard extends StatelessWidget {
                 Row(
                   children: [
                     // 图标 + 无障碍名，不靠颜色单通道传达状态（WCAG 1.4.1）：
-                    // 出错的会话在这里就是 ❌，而不是一个红色小圆点。
-                    // idle 是默认态，一个 ⚪ 摆在行首只有噪音（空闲文案同样
-                    // 隐藏），不渲染；unknown 的 ❔ 是诊断信号，保留。
+                    // 出错的会话在这里就是 ✖，而不是一个红色小圆点。
+                    // idle 是默认态，一个 ○ 摆在行首只有噪音（空闲文案同样
+                    // 隐藏），不渲染；unknown 的 ⍰ 是诊断信号，保留。
                     if (cardStatus != CanonicalStatus.idle) ...[
                       Semantics(
                         label: statusSpec.semanticLabel,

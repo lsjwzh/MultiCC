@@ -506,7 +506,7 @@
         'st-running', 'st-completed', 'st-succeeded', 'st-waiting', 'st-error', 'st-done', 'st-idle',
         'st-blocked', 'st-cancelled', 'st-unknown');
       if (stateEl) {
-        // Idempotent badge: an E turn drops the spinner and gains ❌ + an
+        // Idempotent badge: an E turn drops the spinner and gains ✖ + an
         // accessible name here exactly as it does on the cards.
         statusRegistry().applyStatusBadge(stateEl, 'session', display.status, {
           translate: global.t, label: statusLabel, document: doc,

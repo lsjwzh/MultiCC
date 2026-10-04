@@ -3,7 +3,7 @@
 // 历史 bug：SessionCard 顶部同时渲染「主状态 icon」（statusSpec.icon）与
 // 「classify 状态徽章」（classifyChip 的 emoji 取自同一张 statusPresentation 表）。
 // 当 session 状态与 classify 字母映射到同一个 canonical 状态（succeeded+D 都是
-// ✅、running+P 都是 🔄、error+E 都是 ❌、waiting+W/B 都是 ⏸️）时，卡片顶部出现
+// ✓、running+P 都是 ↻、error+E 都是 ✖、waiting+W/B 都是 ⏸）时，卡片顶部出现
 // 两个相同的状态 icon。
 //
 // 修复：删掉 classify 徽章在会话卡片顶部的渲染，只保留主状态 icon 这一路——
@@ -60,9 +60,9 @@ void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   group('SessionCard single task-status icon', () {
-    testWidgets('running — 🔄 exactly once', (tester) async {
+    testWidgets('running — ↻ exactly once', (tester) async {
       final mgr = await _pumpCard(tester, status: 'running');
-      expect(find.text('🔄'), findsOneWidget);
+      expect(find.text('↻'), findsOneWidget);
       mgr.dispose();
     });
 
@@ -78,36 +78,36 @@ void main() {
       mgr.dispose();
     });
 
-    testWidgets('error — ❌ exactly once（此前重复的场景）', (tester) async {
+    testWidgets('error — ✖ exactly once（此前重复的场景）', (tester) async {
       final mgr = await _pumpCard(tester, status: 'error');
-      expect(find.text('❌'), findsOneWidget);
+      expect(find.text('✖'), findsOneWidget);
       mgr.dispose();
     });
 
-    testWidgets('waiting — ⏸️ exactly once（此前重复的场景）', (tester) async {
+    testWidgets('waiting — ⏸ exactly once（此前重复的场景）', (tester) async {
       final mgr = await _pumpCard(tester, status: 'waiting');
-      expect(find.text('⏸️'), findsOneWidget);
+      expect(find.text('⏸'), findsOneWidget);
       mgr.dispose();
     });
 
-    testWidgets('blocked — 🔒 exactly once', (tester) async {
+    testWidgets('blocked — ⚿ exactly once', (tester) async {
       final mgr = await _pumpCard(tester, status: 'blocked');
-      expect(find.text('🔒'), findsOneWidget);
+      expect(find.text('⚿'), findsOneWidget);
       mgr.dispose();
     });
 
     testWidgets('idle — 无任何状态 icon（回归 dashboard 声明）', (tester) async {
       final mgr = await _pumpCard(tester, status: 'idle', active: true);
-      expect(find.text('⚪'), findsNothing);
-      expect(find.text('🔄'), findsNothing);
-      expect(find.text('⏸️'), findsNothing);
+      expect(find.text('○'), findsNothing);
+      expect(find.text('↻'), findsNothing);
+      expect(find.text('⏸'), findsNothing);
       expect(find.text('✓'), findsNothing);
       mgr.dispose();
     });
 
     testWidgets('每个状态 icon 唯一 + ⋯ 操作菜单保留', (tester) async {
       final mgr = await _pumpCard(tester, status: 'running');
-      expect(find.text('🔄'), findsOneWidget);
+      expect(find.text('↻'), findsOneWidget);
       // 操作按钮不受影响。
       expect(find.byType(PopupMenuButton<String>), findsOneWidget);
       mgr.dispose();
@@ -118,7 +118,7 @@ void main() {
     testWidgets('running 在窄卡上不抛溢出异常', (tester) async {
       final mgr = await _pumpCard(tester, status: 'running', width: 320);
       expect(tester.takeException(), isNull);
-      expect(find.text('🔄'), findsOneWidget);
+      expect(find.text('↻'), findsOneWidget);
       mgr.dispose();
     });
   });
