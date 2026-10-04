@@ -56,11 +56,11 @@ function invoke(handler, { params = {}, body = {} } = {}) {
   return response;
 }
 
-function fixture(session, activity = {}) {
+function fixture(session, activity = {}, catalog = []) {
   const persistedSessions = new Map([['s1', session]]);
-  const effects = { events: [], closes: 0, workspaceBroadcasts: 0, chatBroadcasts: 0 };
+  const effects = { events: [], closes: 0, workspaceBroadcasts: 0, chatBroadcasts: 0, syncs: 0 };
   const providerRouterRuntime = {
-    getProviderSummary: (_type, id) => (id === 'prov-1' ? MANAGED : null),
+    getProviderSummary: (_type, id) => catalog.find(p => p.id === id) || (id === 'prov-1' ? MANAGED : null),
   };
   const sessionPolicy = createSessionPolicy({
     providerRouter: providerRouterRuntime,
@@ -73,7 +73,13 @@ function fixture(session, activity = {}) {
     persistedSessions,
     directories: new Map([['d1', { id: 'd1', path: '/tmp/d1' }]]),
     sessionPersistence: {
-      begin: () => ({ commit() {}, rollback() {} }),
+      begin: () => {
+        const before = JSON.parse(JSON.stringify(session));
+        return { commit() {}, rollback() {
+          for (const key of Object.keys(session)) delete session[key];
+          Object.assign(session, before);
+        } };
+      },
       mutate: (_reason, fn) => fn(),
     },
     sessionPolicy,
@@ -82,18 +88,19 @@ function fixture(session, activity = {}) {
       listProviders: () => [{ ...MANAGED, apiFormat: 'anthropic', compatibleClis: ['claude', 'opencode'] }, BACKUP],
       providerSupportsCli: (provider, cli) => provider.compatibleClis.includes(cli),
       modelValidForProvider: (_appType, providerId, model) => {
-        const provider = [MANAGED, BACKUP].find(item => item.id === providerId);
+        const provider = [...catalog, MANAGED, BACKUP].find(item => item.id === providerId);
+        if (provider?.appType === 'codex') return providers.modelValidForProvider('codex', providerId, model, provider);
         return !model || !!provider?.modelOptions.includes(model);
       },
       codexProviderProxyable: providers.codexProviderProxyable,
-      synchronizeCodexSessionRoute: providers.synchronizeCodexSessionRoute,
+      synchronizeCodexSessionRoute: () => { effects.syncs++; },
       CODEX_HOMES_DIR: providers.CODEX_HOMES_DIR,
     },
     providerRouterRuntime,
     getChatStream: () => ({ close() { effects.closes += 1; } }),
     getChatState: () => activity,
     hasLiveBackgroundTasks: () => activity.background === true,
-    validProviderId: (_cli, id) => (id === '' || id === 'prov-1' || id === 'prov-2'
+    validProviderId: (_cli, id) => (catalog.some(p => p.id === id) || id === '' || id === 'prov-1' || id === 'prov-2'
       ? { ok: true, value: id || null }
       : { ok: false }),
     asyncHandler: handler => handler,
@@ -113,7 +120,7 @@ function fixture(session, activity = {}) {
     getFolderMemory: () => ({ sessionDir: () => path.join(tmpRoot, 'mem') }),
     getCliSwitchGitSnapshot: () => async () => ({}),
   }).mountRoutes(app);
-  return { session, effects, handler: app.routes.get('PATCH /api/sessions/:id') };
+  return { session, effects, sessionPolicy, handler: app.routes.get('PATCH /api/sessions/:id') };
 }
 
 test('opencode session keeps its native OpenCode Go model when saving the default provider', () => {
@@ -271,4 +278,59 @@ test('provider edits after a queued CLI switch validate against the target CLI a
   assert.equal(session.model, 'old-model'); assert.equal(effects.closes, 0);
   assert.equal(session.pendingConfiguration.cli, 'opencode'); assert.equal(session.pendingConfiguration.fresh, true);
   assert.equal(session.pendingConfiguration.profile.model, 'opencodego/glm-5.2');
+});
+
+const CODEX_OFFICIAL = { id: 'codex-official', appType: 'codex', isOfficial: true,
+  model: '', modelOptions: ['gpt-5.4'], name: 'Codex official' };
+
+test('Codex provider switch with a blank model pins the new default before resuming DeepSeek history', () => {
+  for (const cli of ['codex', 'codex-exp']) {
+    const { session, handler, sessionPolicy } = fixture({ id: 's1', dirId: 'd1', cli, kind: 'chat',
+      provider: 'prov-1', model: 'deepseek-flash', reportedModel: 'deepseek-flash', cliSessionId: 'native-ds' }, {}, [CODEX_OFFICIAL]);
+    const res = invoke(handler, { params: { id: 's1' }, body: { provider: 'codex-official', model: '' } });
+    assert.equal(res.statusCode, 200);
+    assert.equal(session.model, 'gpt-5.4');
+    assert.equal(res.body.effectiveModel, 'gpt-5.4');
+    assert.equal(session.cliSessionId, 'native-ds', 'keep conversation history');
+    const adapter = cli === 'codex'
+      ? require('../src/cli-adapters/codex').createCodexAdapter({ cmd: 'codex', ...sessionPolicy })
+      : require('../src/cli-adapters/codex-exp').createCodexExpAdapter(sessionPolicy);
+    const invocation = adapter.buildInvocation({ spawnOpts: { rawModel: session.model },
+      historyHandle: { isFirstTurn: false, cliSessionId: session.cliSessionId },
+      contextLayers: [], userText: 'continue', suffix: '' });
+    assert.ok(invocation.args.includes('model="gpt-5.4"'));
+    assert.ok(invocation.args.includes('native-ds'));
+    assert.ok(!invocation.args.some(arg => arg.includes('deepseek')));
+
+  }
+});
+
+test('Codex switch preserves an explicitly chosen hidden official model', () => {
+  const { session, handler } = fixture({ id: 's1', dirId: 'd1', cli: 'codex', kind: 'chat',
+    provider: 'prov-1', model: 'deepseek-flash' }, {}, [CODEX_OFFICIAL]);
+  const res = invoke(handler, { params: { id: 's1' }, body: { provider: 'codex-official', model: 'gpt-hidden' } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(session.model, 'gpt-hidden');
+});
+
+test('busy Codex switch stages the new default while retaining the active DeepSeek route', () => {
+  const { session, handler } = fixture({ id: 's1', dirId: 'd1', cli: 'codex-exp', kind: 'chat',
+    provider: 'prov-1', model: 'deepseek-flash', cliSessionId: 'native-ds' }, { isStreaming: true }, [CODEX_OFFICIAL]);
+  const res = invoke(handler, { params: { id: 's1' }, body: { provider: 'codex-official', model: '' } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(session.model, 'deepseek-flash');
+  assert.equal(session.pendingConfiguration.profile.model, 'gpt-5.4');
+});
+
+test('missing official default rejects the switch before migrating native history', () => {
+  for (const provider of ['prov-1', 'codex-official']) {
+    const input = { id: 's1', dirId: 'd1', cli: 'codex', kind: 'chat', provider,
+      model: 'deepseek-flash', cliSessionId: 'native-ds' };
+    const { session, handler, effects } = fixture({ ...input }, {}, [{ ...CODEX_OFFICIAL, modelOptions: [] }]);
+    const res = invoke(handler, { params: { id: 's1' }, body: { provider: 'codex-official', model: '' } });
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body.code, 'codex_official_model_required');
+    assert.deepEqual(session, input);
+    assert.equal(effects.syncs, 0);
+  }
 });

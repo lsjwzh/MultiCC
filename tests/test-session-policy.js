@@ -343,3 +343,16 @@ test('production composition delegates session policy and reported-model ownersh
   assert.doesNotMatch(source, /function\s+noteReportedModel\s*\(/);
   assert.doesNotMatch(source, /function\s+backfillReportedModels\s*\(/);
 });
+
+test('managed Codex defaults never borrow the old DeepSeek local config or reported model', t => {
+  const home = tempHome(t);
+  fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'model = "deepseek-flash"\n');
+  const summary = { isOfficial: true, model: '', modelOptions: ['gpt-5.4'] };
+  const policy = createHarness(home, { providerRouter: { getProviderSummary: () => summary } });
+  const session = { cli: 'codex', provider: 'codex-official', model: null, reportedModel: 'deepseek-flash' };
+  assert.equal(policy.effectiveSessionModel(session), 'gpt-5.4');
+  summary.modelOptions = [];
+  assert.equal(policy.effectiveSessionModel(session), null);
+  assert.equal(policy.effectiveSessionModel({ cli: 'codex' }), 'deepseek-flash', 'native route still uses its own config');
+});
