@@ -22,8 +22,8 @@ class AuxClassifyBar extends StatelessWidget {
   final String classifyState;
 
   /// 「执行成功」的子状态（achieved/interact），D 之外的字母与无目标的 D 为
-  /// null。判定在服务端（goal+phase），这里只借 succeededSubLabel 换词 ——
-  /// 图标/色调不动，与 Air 任务行同源同词。
+  /// null。判定在服务端（goal+phase），这里借 succeededSubLabel 换词、
+  /// succeededGoalTone 换色，与 Air 任务行同源同词同色。
   final String? goalState;
 
   /// True when the classifier behind this bar is unhealthy, so [goal]/[phase]
@@ -69,18 +69,26 @@ class AuxClassifyBar extends StatelessWidget {
   Widget build(BuildContext context) {
     // classify 字母 → canonical 状态 → 图标/色彩，全部走中心 registry：这条
     // bar 曾自带一套色表（E 是 ⚠、卡片却是 ❌），现在与会话卡、任务面板同源。
-    final spec = statusPresentation[classifyStatusOf(classifyState)]!;
-    final phaseColor = spec.color;
+    final status = classifyStatusOf(classifyState);
+    final spec = statusPresentation[status]!;
+    // 颜色与词同源：达成目标绿、需要交互黄、未判定灰，同 Air 任务卡和 web 的
+    // renderAuxClassify（succeededGoalTone）。
+    final goalTone = succeededGoalTone(status, goalState);
+    final phaseColor = goalTone.isEmpty
+        ? spec.color
+        : statusToneColor(goalTone);
     final phaseBg = phaseColor.withValues(alpha: 0.12);
     final phaseBorder = phaseColor.withValues(alpha: 0.34);
     final stateEmoji = spec.icon;
     // D 的三个子状态词（达成目标 / 需要交互 / 无子状态退回原词），与 web 的
     // renderAuxClassify、Air 任务行共用 status_presentation 的 succeededSubLabel。
-    final subLabel = succeededSubLabel(
-      classifyStatusOf(classifyState),
-      goalState,
-    );
-    final phaseLabel = subLabel.isNotEmpty ? subLabel : _phaseLabel(phase);
+    final subLabel = succeededSubLabel(status, goalState);
+    // ✅ 没有子状态时说「执行成功」（同任务卡 airStatusWord），不退回阶段词。
+    final phaseLabel = subLabel.isNotEmpty
+        ? subLabel
+        : status == CanonicalStatus.succeeded
+        ? airStatusWord(status)
+        : _phaseLabel(phase);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: const BoxDecoration(
@@ -117,7 +125,10 @@ class AuxClassifyBar extends StatelessWidget {
           // caveat about both rather than as another state.
           if (stale) ...[
             const SizedBox(width: 6),
-            Tooltip(message: t('auxVerdictPausedHint'), child: verdictStaleChip()),
+            Tooltip(
+              message: t('auxVerdictPausedHint'),
+              child: verdictStaleChip(),
+            ),
           ],
           const SizedBox(width: 8),
           Container(
@@ -172,6 +183,7 @@ class AuxClassifyBar extends StatelessWidget {
           if (onMarkTurnSucceeded != null) ...[
             const SizedBox(width: 6),
             GestureDetector(
+              key: const Key('classify-mark-succeeded'),
               onTap: onMarkTurnSucceeded,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),

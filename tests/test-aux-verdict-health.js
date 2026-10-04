@@ -84,10 +84,13 @@ test('the connect seed carries the judgement and its freshness, or says nothing'
     assert.ok(code, 'the outward task handle must be minted, not omitted');
     assert.deepEqual(rest, {
       type: 'task_state', goal: '排查电量消耗增加原因',
-      phase: 'implementation', classifyState: 'C',
+      phase: 'implementation', classifyState: 'C', goalState: null,
       auxUnhealthy: true, auxUnhealthySince: 1_700_000_000_000,
     });
   });
+  // ✅ 的子状态随种子帧下发，聊天栏才能和任务卡说同一个词；乱值不透传。
+  assert.equal(taskStateSeed({ goal: 'g', classifyState: 'D', goalState: 'interact' }).goalState, 'interact');
+  assert.equal(taskStateSeed({ goal: 'g', classifyState: 'D', goalState: 'bogus' }).goalState, null);
   // No judgement yet: seeding an empty bar would render a goal-less bar.
   assert.equal(taskStateSeed({ phase: 'idle', classifyState: null }), null);
   assert.equal(taskStateSeed(null), null);

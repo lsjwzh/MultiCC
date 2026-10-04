@@ -78,7 +78,7 @@ test('read-only task boot hydrates the original chat renderers without opening a
   assert.deepEqual(rendered.identity, ['Archived task', 'task-old']);
   assert.equal(rendered.plan.value.messages[0].tools[0].name, 'Read');
   assert.equal(rendered.queue[0][0].entryId, 'q1');
-  assert.deepEqual(rendered.classify, ['ship', 'done', 'D']);
+  assert.deepEqual(JSON.parse(JSON.stringify(rendered.classify)), ['ship', 'done', 'D', '', { goalState: null }]);
   assert.equal(rendered.artifacts.taskId, 'task-old');
   assert.equal(context.statusEl.textContent, '只读历史');
 });

@@ -510,6 +510,8 @@
         // accessible name here exactly as it does on the cards.
         statusRegistry().applyStatusBadge(stateEl, 'session', display.status, {
           translate: global.t, label: statusLabel, document: doc,
+          // 颜色与文案同源：达成目标绿、需要交互黄、未判定灰，和任务卡一致。
+          toneOverride: statusRegistry().succeededGoalTone?.(display.status, freshness?.goalState) || '',
           stale: verdictStaleness.auxUnhealthy,
         });
         stateEl.style.display = '';
