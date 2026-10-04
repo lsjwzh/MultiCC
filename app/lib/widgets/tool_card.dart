@@ -269,35 +269,48 @@ class ModelAttributionLabel extends StatelessWidget {
   }
 }
 
-/// 至少两个测量完整（起止都在、结束不早于开始）的工具才会画出轨迹条 ——
-/// 也是那行「⏱ N tools · 时长 wall-clock」文案的成立条件（两者同生共死）。
+/// 测量完整（起止都在、结束不早于开始）的工具段加上服务端时间轴里的模型段
+/// （请求 / 思考 / 输出）合计至少两段，才会画出轨迹条 —— 也是那行
+/// 「⏱ N tools · 时长 wall-clock」文案的成立条件（两者同生共死）。
 /// 模型归属要搭在那一行上，落点判定因此得先问这一句。
-bool hasTrajectoryContent(List<ToolCall> toolCalls) =>
-    _measuredTools(toolCalls).length >= 2;
+bool hasTrajectoryContent(List<ToolCall> toolCalls, [TurnTimeline? timeline]) =>
+    _measuredTools(toolCalls, timeline).length + (timeline?.spans.length ?? 0) >= 2;
 
-List<ToolCall> _measuredTools(List<ToolCall> toolCalls) => toolCalls
+/// 有时间轴时 Thinking 伪工具不再单独画：思考段已经由时间轴给出（与 Web 同规则）。
+List<ToolCall> _measuredTools(List<ToolCall> toolCalls, [TurnTimeline? timeline]) => toolCalls
     .where((tool) {
       final startedAt = tool.startedAt;
       final endedAt = tool.endedAt;
+      if (timeline != null && tool.name == 'Thinking') return false;
       return startedAt != null && endedAt != null && endedAt >= startedAt;
     })
     .toList(growable: false);
 
-/// Turn-internal tool trajectory, matching the Web strip.
+const _timelineColors = <String, Color>{
+  'request': Color(0x8Cd29922),
+  'thinking': Color(0xFFa371f7),
+  'output': Color(0xFF3fb950),
+};
+
+/// Turn-internal trajectory, matching the Web strip.
 ///
-/// Each measured tool is positioned at its real start offset and sized by its
-/// duration inside the wall-clock window. The window is the whole turn when a
-/// [turnDurationMs] is known (it includes the model's request/response time on
-/// both ends), falling back to the earliest-start → latest-end tool window for
-/// legacy history. At least two fully measured tools are required: legacy
-/// history and partially settled turns stay hidden instead of fabricating a
-/// flat or zero-duration timeline.
+/// Each measured span is positioned at its real start offset and sized by its
+/// duration inside the wall-clock window. With a server [timeline] (every
+/// lane) the window starts at the turn submit time and the model's own
+/// stretches — request in flight, thinking, output — are drawn next to the
+/// tools, so no part of the turn is unexplained. Without one (legacy history)
+/// the window runs from the earliest tool start, stretched to
+/// [turnDurationMs] when that is longer. Fewer than two measured spans stay
+/// hidden instead of fabricating a flat or zero-duration timeline.
 class ToolTrajectory extends StatelessWidget {
   final List<ToolCall> toolCalls;
 
   /// 整轮墙钟时长（用户发出 → AI 回复完成），包含大模型请求时间。缺省时退回
   /// 工具自身最早开始 → 最晚结束那段窗口。
   final int? turnDurationMs;
+
+  /// 服务端时间轴（请求 / 思考 / 输出段 + 轮次起点）。老历史为 null。
+  final TurnTimeline? timeline;
 
   /// 这条回复的模型归属，贴在文案行的**最右端**（不额外占一行）。缺省/null
   /// （老历史、服务端没说话、或归属已经贴在别处）时这一块与从前一字不差。
@@ -306,18 +319,29 @@ class ToolTrajectory extends StatelessWidget {
     super.key,
     required this.toolCalls,
     this.turnDurationMs,
+    this.timeline,
     this.attribution,
   });
 
   @override
   Widget build(BuildContext context) {
-    final measured = _measuredTools(toolCalls);
-    if (measured.length < 2) return const SizedBox.shrink();
+    final tl = timeline;
+    final measured = _measuredTools(toolCalls, tl);
+    final modelSpans = tl?.spans ?? const <TimelineSpan>[];
+    if (measured.length + modelSpans.length < 2) return const SizedBox.shrink();
 
-    final firstStartedAt = measured
-        .map((tool) => tool.startedAt!)
-        .reduce(math.min);
-    final lastEndedAt = measured.map((tool) => tool.endedAt!).reduce(math.max);
+    final starts = [
+      ...measured.map((tool) => tool.startedAt!),
+      ...modelSpans.map((span) => span.start),
+    ];
+    final ends = [
+      ...measured.map((tool) => tool.endedAt!),
+      ...modelSpans.map((span) => span.end),
+    ];
+    final firstStartedAt = tl != null
+        ? math.min(tl.origin, starts.reduce(math.min))
+        : starts.reduce(math.min);
+    final lastEndedAt = ends.reduce(math.max);
     final toolSpanMs = lastEndedAt - firstStartedAt;
     final wallClockMs = math.max(
       toolSpanMs,
@@ -327,6 +351,15 @@ class ToolTrajectory extends StatelessWidget {
     );
     final layoutSpanMs = math.max(wallClockMs, 1);
     final duration = humanizeToolDuration(wallClockMs);
+    final totals = <String, int>{};
+    for (final span in modelSpans) {
+      totals[span.kind] = (totals[span.kind] ?? 0) + span.durationMs;
+    }
+    final breakdown = [
+      for (final kind in TurnTimeline.kinds)
+        if ((totals[kind] ?? 0) > 0)
+          '$kind ${humanizeToolDuration(totals[kind]!)}',
+    ];
 
     return Semantics(
       label: '${measured.length} tools, $duration wall-clock',
@@ -352,6 +385,20 @@ class ToolTrajectory extends StatelessWidget {
                   ),
                   child: Stack(
                     children: [
+                      // Model spans first so tool segments paint on top.
+                      for (var index = 0; index < modelSpans.length; index++)
+                        _TrajectoryBar(
+                          key: ValueKey(
+                            'timeline-segment-$index-${modelSpans[index].kind}',
+                          ),
+                          start: modelSpans[index].start,
+                          end: modelSpans[index].end,
+                          label: modelSpans[index].kind,
+                          color: _timelineColors[modelSpans[index].kind]!,
+                          firstStartedAt: firstStartedAt,
+                          layoutSpanMs: layoutSpanMs,
+                          trackWidth: trackWidth,
+                        ),
                       for (var index = 0; index < measured.length; index++)
                         _ToolTrajectorySegment(
                           key: ValueKey(
@@ -369,19 +416,19 @@ class ToolTrajectory extends StatelessWidget {
               },
             ),
             const SizedBox(height: 3),
-            _labelRow(measured.length, duration),
+            _labelRow(measured.length, duration, breakdown),
           ],
         ),
       ),
     );
   }
 
-  /// 「⏱ N tools · Xs wall-clock」那一行。模型归属就搭在这一行的最右端 ——
-  /// 页脚里这一行右边本来就是空的，不必为它多占一行。没有归属时返回的就是
-  /// 从前那个孤零零的 [Text]，一个字都不变。
-  Widget _labelRow(int toolCount, String duration) {
+  /// 「⏱ N tools · Xs wall-clock」那一行（有时间轴时后缀各模型段合计）。模型
+  /// 归属就搭在这一行的最右端 —— 页脚里这一行右边本来就是空的，不必为它多占
+  /// 一行。没有归属时返回的就是从前那个孤零零的 [Text]。
+  Widget _labelRow(int toolCount, String duration, List<String> breakdown) {
     final label = Text(
-      '⏱ $toolCount tools · $duration wall-clock',
+      ['⏱ $toolCount tools · $duration wall-clock', ...breakdown].join(' · '),
       key: const Key('tool-trajectory-label'),
       style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
     );
@@ -397,6 +444,51 @@ class ToolTrajectory extends StatelessWidget {
         const SizedBox(width: 10),
         Flexible(child: ModelAttributionLabel(segments: segments)),
       ],
+    );
+  }
+}
+
+/// One positioned bar of the strip; shared by model spans and tool segments.
+class _TrajectoryBar extends StatelessWidget {
+  final int start;
+  final int end;
+  final String label;
+  final Color color;
+  final int firstStartedAt;
+  final int layoutSpanMs;
+  final double trackWidth;
+
+  const _TrajectoryBar({
+    super.key,
+    required this.start,
+    required this.end,
+    required this.label,
+    required this.color,
+    required this.firstStartedAt,
+    required this.layoutSpanMs,
+    required this.trackWidth,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final left = ((start - firstStartedAt) / layoutSpanMs) * trackWidth;
+    final rawWidth = ((end - start) / layoutSpanMs) * trackWidth;
+    final remainingWidth = math.max(trackWidth - left, 0.0);
+    final width = math.min(math.max(rawWidth, 2.0), remainingWidth);
+    return Positioned(
+      left: left,
+      top: 1,
+      bottom: 1,
+      width: width,
+      child: Tooltip(
+        message: '$label · ${humanizeToolDuration(end - start)}',
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+      ),
     );
   }
 }

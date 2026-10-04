@@ -3,6 +3,7 @@
 const { createChatHostCoordinator } = require('./host-coordinator');
 const { redactProviderRouteCapability } = require('../observability');
 const { protocolFamilyOf } = require('../cli/cli-capability');
+const turnTimeline = require('./turn-timeline');
 
 const REQUIRED_PORTS = Object.freeze([
   'appendMessage',
@@ -157,6 +158,9 @@ function createChatHostRuntime(rawPorts) {
     if (message && message.role === 'assistant') {
       const attribution = modelAttributionField(state, turn, runner);
       if (attribution.modelAttribution) message = { ...message, ...attribution };
+      // Model request/thinking/output spans for the replay trajectory strip;
+      // every lane persists through here, so this is the one stamping point.
+      if (!message.timeline) message = { ...message, ...turnTimeline.field(state) };
     }
     const result = coordinator.appendFinal({
       turn,

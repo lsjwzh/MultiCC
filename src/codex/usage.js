@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const turnTimeline = require('../chat/turn-timeline');
 
 const PRIVATE_USAGE_FIELDS = Object.freeze(['usageCumulative', 'usageEpoch']);
 
@@ -284,6 +285,7 @@ function createCodexUsageHost(deps = {}) {
       num_turns: cs.chatTurnCount,
       ...(contextTrace ? { contextTrace } : {}),
       ...attribution,
+      ...turnTimeline.field(cs, now()),
     });
     // Completion/status belongs to the adapter + runner settlement boundary.
     return normalized;

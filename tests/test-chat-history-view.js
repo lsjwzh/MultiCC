@@ -537,6 +537,62 @@ test('turn trajectory is absent unless two tools are measured', () => {
   assert.equal(view.renderToolTrajectory(content, null), null);
 });
 
+test('turn trajectory draws the server timeline from the turn submit time', () => {
+  const { document, view } = fixture();
+  const content = document.createElement('div');
+  // Submit at 1000. Request in flight 1000-3000, thinking 3000-6000, a Bash
+  // tool 6000-8000, second request 8000-9000, output 9000-11000. The old
+  // strip started at the first tool and left all model time as gray.
+  const strip = view.renderToolTrajectory(content, [
+    { name: 'Thinking', startedAt: 3000, endedAt: 6000 },
+    { name: 'Bash', startedAt: 6000, endedAt: 8000 },
+  ], 10000, {
+    origin: 1000,
+    spans: [
+      { k: 'request', s: 1000, e: 3000 },
+      { k: 'thinking', s: 3000, e: 6000 },
+      { k: 'request', s: 8000, e: 9000 },
+      { k: 'output', s: 9000, e: 11000 },
+      { k: 'bogus', s: 0, e: 1 },
+    ],
+  });
+  assert.ok(strip);
+  const segs = Array.from(strip.querySelectorAll('.tool-trajectory-seg'));
+  // 4 model spans + Bash; the Thinking pseudo-tool is deduped by the timeline.
+  assert.equal(segs.length, 5);
+  assert.ok(segs[0].classList.contains('request'));
+  assert.equal(segs[0].style.left, '0%', 'origin is the submit time, not the first tool');
+  assert.equal(segs[0].style.width, '20%');
+  assert.ok(segs[1].classList.contains('thinking'));
+  assert.ok(segs[3].classList.contains('output'));
+  assert.equal(segs[4].title, 'Bash · 2.0s');
+  assert.equal(segs[4].style.left, '50%');
+  assert.equal(strip.querySelector('.tool-trajectory-label').textContent,
+    '⏱ 1 tools · 10s wall-clock · request 3.0s · thinking 3.0s · output 2.0s');
+
+  // A no-tool turn still gets a strip when the timeline has two spans.
+  const plain = view.renderToolTrajectory(content, [], 4000, {
+    origin: 0, spans: [{ k: 'request', s: 0, e: 1500 }, { k: 'output', s: 1500, e: 4000 }],
+  });
+  assert.ok(plain);
+  assert.equal(plain.querySelectorAll('.tool-trajectory-seg.model').length, 2);
+  // Invalid timeline falls back to the legacy tools-only rule.
+  assert.equal(view.renderToolTrajectory(content, [{ name: 'A', startedAt: 0, endedAt: 1 }], 1, { spans: [] }), null);
+});
+
+test('history replay and live result pass the persisted timeline to the strip', () => {
+  const { view } = fixture();
+  const el = view.renderMessage({
+    id: 'tl1', role: 'assistant', content: 'done', durationMs: 4000,
+    timeline: { origin: 100, spans: [{ k: 'request', s: 100, e: 1100 }, { k: 'output', s: 1100, e: 4100 }] },
+  });
+  const strip = el.querySelector('.tool-trajectory');
+  assert.ok(strip, 'replay renders the timeline strip');
+  assert.equal(strip.querySelectorAll('.tool-trajectory-seg.model').length, 2);
+  assert.match(EVENT_SOURCE, /message\.timeline\);/, 'live result forwards the timeline');
+  assert.match(HTML, /\.tool-trajectory-seg\.model\.thinking/);
+});
+
 test('history replay shows measured durations and a trajectory when the server stamped tools', () => {
   const { view } = fixture();
   // Turn persisted after the server-side stamping: each tool carries

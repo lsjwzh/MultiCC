@@ -158,4 +158,78 @@ void main() {
     expect(find.byType(ToolTrajectory), findsOneWidget);
     expect(find.text('⏱ 2 tools · 8.0s wall-clock'), findsOneWidget);
   });
+
+  testWidgets('server timeline draws request/thinking/output from the turn origin', (tester) async {
+    final timeline = TurnTimeline.fromJson({
+      'origin': 1000,
+      'spans': [
+        {'k': 'request', 's': 1000, 'e': 3000},
+        {'k': 'thinking', 's': 3000, 'e': 6000},
+        {'k': 'request', 's': 8000, 'e': 9000},
+        {'k': 'output', 's': 9000, 'e': 11000},
+        {'k': 'bogus', 's': 0, 'e': 1},
+      ],
+    });
+    expect(timeline!.spans, hasLength(4), reason: 'unknown kinds are dropped');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 200,
+            child: ToolTrajectory(
+              toolCalls: [
+                _tool(id: 'th', name: 'Thinking', startedAt: 3000, endedAt: 6000),
+                _tool(id: 'a', name: 'Bash', startedAt: 6000, endedAt: 8000),
+              ],
+              turnDurationMs: 10000,
+              timeline: timeline,
+            ),
+          ),
+        ),
+      ),
+    ));
+    expect(
+      find.text('⏱ 1 tools · 10s wall-clock · request 3.0s · thinking 3.0s · output 2.0s'),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('timeline-segment-0-request')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline-segment-1-thinking')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline-segment-3-output')), findsOneWidget);
+    // The Thinking pseudo-tool is deduped: only Bash is a tool segment.
+    expect(find.byKey(const ValueKey('tool-trajectory-segment-0-ok')), findsOneWidget);
+    expect(find.byKey(const ValueKey('tool-trajectory-segment-1-ok')), findsNothing);
+    final first = tester.widget<Positioned>(find.descendant(
+      of: find.byKey(const ValueKey('timeline-segment-0-request')),
+      matching: find.byType(Positioned),
+    ).first);
+    expect(first.left, 0, reason: 'origin is the submit time');
+    expect(first.width, closeTo(40, 0.001));
+    final bash = tester.widget<Positioned>(find.descendant(
+      of: find.byKey(const ValueKey('tool-trajectory-segment-0-ok')),
+      matching: find.byType(Positioned),
+    ).first);
+    expect(bash.left, closeTo(100, 0.001));
+  });
+
+  testWidgets('history message with only a timeline still shows the strip', (tester) async {
+    final message = ChatMessage.fromHistory({
+      'role': 'assistant',
+      'content': 'hi',
+      'durationMs': 4000,
+      'timeline': {
+        'origin': 0,
+        'spans': [
+          {'k': 'request', 's': 0, 'e': 1500},
+          {'k': 'output', 's': 1500, 'e': 4000},
+        ],
+      },
+    });
+    expect(message.timeline, isNotNull);
+    expect(hasTrajectoryContent(const [], message.timeline), isTrue);
+    expect(hasTrajectoryContent(const []), isFalse);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: MessageBubble(message: message))));
+    expect(find.byType(ToolTrajectory), findsOneWidget);
+    expect(find.text('⏱ 0 tools · 4.0s wall-clock · request 1.5s · output 2.5s'), findsOneWidget);
+  });
 }

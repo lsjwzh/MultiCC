@@ -139,6 +139,45 @@ class MessageUsage {
 /// `{cli, providerId, providerName, model}`。**四个键都可能缺**（服务端丢掉空值与
 /// `_default_`），整个字段也可能不出现（老历史就是这样）—— 那种情况返回 null，
 /// 整行不渲染，绝不抛。
+/// One model stretch of a turn, from the server timeline: `request` (a model
+/// request is in flight, nothing back yet), `thinking`, or `output`. Epoch ms
+/// on the same clock as the tool stamps.
+class TimelineSpan {
+  final String kind;
+  final int start;
+  final int end;
+  const TimelineSpan(this.kind, this.start, this.end);
+  int get durationMs => end - start;
+}
+
+/// Server-stamped per-turn model timeline (every lane). [origin] is the turn
+/// submit time, so the trajectory strip starts where the turn really started
+/// instead of at the first tool. Mirrors `timeline` in src/chat/turn-timeline.js.
+class TurnTimeline {
+  static const kinds = ['request', 'thinking', 'output'];
+  final int origin;
+  final List<TimelineSpan> spans;
+  const TurnTimeline(this.origin, this.spans);
+
+  /// null when absent or malformed (legacy history); bad spans are dropped.
+  static TurnTimeline? fromJson(dynamic raw) {
+    if (raw is! Map || raw['origin'] is! num) return null;
+    final spans = <TimelineSpan>[];
+    final list = raw['spans'];
+    if (list is List) {
+      for (final item in list) {
+        if (item is! Map) continue;
+        final kind = item['k'];
+        final s = item['s'];
+        final e = item['e'];
+        if (kind is! String || !kinds.contains(kind) || s is! num || e is! num || e < s) continue;
+        spans.add(TimelineSpan(kind, s.toInt(), e.toInt()));
+      }
+    }
+    return TurnTimeline((raw['origin'] as num).toInt(), spans);
+  }
+}
+
 class ModelAttribution {
   final String? cli;
   final String? providerId;
@@ -268,6 +307,10 @@ class ChatMessage {
   /// chat_history; shown under each assistant bubble as "任务耗时".
   int? durationMs;
 
+  /// Server-stamped model timeline (request / thinking / output spans) for
+  /// the trajectory strip. null for legacy history.
+  TurnTimeline? timeline;
+
   /// Client-generated correlation id carried through the durable FIFO. Unlike
   /// [id] this exists before persistence, so delayed chat_msg_meta events can
   /// tag the exact optimistic bubble instead of whichever user bubble is last.
@@ -319,6 +362,7 @@ class ChatMessage {
     this.contextTrace,
     this.id,
     this.durationMs,
+    this.timeline,
     this.clientMsgId,
     this.taskId,
     this.taskName,
@@ -357,6 +401,7 @@ class ChatMessage {
           ? json['id'].toString()
           : null,
       durationMs = (json['durationMs'] as num?)?.toInt(),
+      timeline = TurnTimeline.fromJson(json['timeline']),
       clientMsgId = (json['clientMsgId']?.toString().isNotEmpty ?? false)
           ? json['clientMsgId'].toString()
           : null,
