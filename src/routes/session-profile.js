@@ -304,18 +304,6 @@ function createSessionProfileRoutes(rawDeps) {
         // Per-session cc-switch provider. '' / null clears the override → default login.
         const v = preparedProvider;
         const prevProvider = s.provider;
-        // Providerless Codex retains the real ~/.codex OAuth store. At this
-        // idle route boundary synchronize only the exact native rollout with
-        // the canonical managed-session root before changing its authority.
-        if ((s.cli === 'codex' || s.cli === 'codex-exp') && s.cliSessionId && prevProvider !== v.value) {
-          synchronizeRoute({
-            logicalSessionId: s.id,
-            nativeSessionId: s.cliSessionId,
-            fromProviderId: prevProvider,
-            toProviderId: v.value,
-          });
-        }
-        s.provider = v.value;
         // Old clients only know the concrete provider field. An explicit
         // provider patch leaves Auto mode unless this request also carries the
         // new providerSelection contract.
@@ -347,7 +335,8 @@ function createSessionProfileRoutes(rawDeps) {
         const validationAppType = nativeCliDefault
           ? null
           : (providerSummary?.appType || appType);
-        if ((appType || globalProviderCli) && req.body.model === undefined) {
+        if ((appType || globalProviderCli) && (req.body.model === undefined
+            || (appType === 'codex' && v.value && !s.model))) {
           s.model = nextDefaultModel || null;
         } else if (validationAppType && !providers.modelValidForProvider(
           validationAppType,
@@ -365,6 +354,27 @@ function createSessionProfileRoutes(rawDeps) {
           appendEvent(s.dirId, 'session_model_changed',
             `${s.label || s.id} → ${s.model || '默认'}（${stale} 与新 Provider 不兼容，已自动替换）`, s.id);
         }
+        // A resumed Codex thread can retain the previous provider's model.
+        // A blank picker selection means the NEW route's default, not "reuse
+        // the old thread model". If discovery has no answer, require a model
+        // before switching instead of silently sending DeepSeek to ChatGPT.
+        if (appType === 'codex' && providerSummary?.isOfficial && !s.model
+            && s.cliSessionId) {
+          return rejectMutation(400, { code: 'codex_official_model_required',
+            error: '切换到 Codex 官方线路前，请选择一个官方模型；当前未获取到官方默认模型，不能沿用原会话模型。' });
+        }
+        // Providerless Codex retains the real ~/.codex OAuth store. At this
+        // idle route boundary synchronize only the exact native rollout with
+        // the canonical managed-session root before changing its authority.
+        if ((s.cli === 'codex' || s.cli === 'codex-exp') && s.cliSessionId && prevProvider !== v.value) {
+          synchronizeRoute({
+            logicalSessionId: s.id,
+            nativeSessionId: s.cliSessionId,
+            fromProviderId: prevProvider,
+            toProviderId: v.value,
+          });
+        }
+        s.provider = v.value;
         // Chat sessions pick it up on the next per-turn spawn; a warm streaming
         // process must be torn down so it relaunches with the new env.
         if ((s.cli || 'claude') === 'claude') closeStream();

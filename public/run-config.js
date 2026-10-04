@@ -737,7 +737,7 @@
     let currentCli = config.cli || cliList[0] || (terminalDraft ? 'claude' : 'claude-exp');
     let providers = [];
     let providerValue = '';
-    let customModelValue = '';
+    let modelValue = clean(config.model);
     let effortValue = null;
     let pick = PICK_ORDER;
     let tiering = DEFAULT_TIERING;
@@ -1198,7 +1198,8 @@
     }
 
     function renderModel() {
-      fillModel(modelSelect, modelCustom, providerValue, currentCli, config.model || customModelValue);
+      fillModel(modelSelect, modelCustom, providerValue, currentCli, modelValue);
+      modelValue = currentModelValue();
     }
 
     // The sub-task model keeps an explicit "leave it to the main line" as its
@@ -1741,8 +1742,12 @@
         }
         const base = `/api/sessions/${encodeURIComponent(entry.sessionId)}`;
         if (currentCli !== config.cli) await request(`${base}/switch-cli`, { cli: currentCli });
-        if (!providerless(currentCli)) await request(base, { provider: patch.value.provider, providerSelection: null }, 'PATCH');
-        await request(base, { model: patch.value.model, effort: patch.value.effort, subagent }, 'PATCH');
+        // Provider and model form one choice. Splitting them lets a turn start
+        // between saves, or lets an old model overwrite the new route's default.
+        await request(base, {
+          ...(!providerless(currentCli) ? { provider: patch.value.provider, providerSelection: null } : {}),
+          model: patch.value.model, effort: patch.value.effort, subagent,
+        }, 'PATCH');
         await onSaved();
         dialog.close();
         return;
@@ -1776,7 +1781,7 @@
     function selectCli(cli) {
       currentCli = cli;
       providerValue = '';
-      customModelValue = '';
+      modelValue = '';
       error.textContent = '';
       setBusy(true);
       const current = ++epoch;
@@ -1862,17 +1867,18 @@
     };
     lineSelect.onchange = () => {
       providerValue = lineSelect.value;
-      customModelValue = '';
+      modelValue = '';
       renderModel();
       renderSub();
       renderFooter();
     };
     modelSelect.onchange = () => {
+      modelValue = currentModelValue();
       show(modelCustom, modelSelect.value === '__custom__');
       if (modelSelect.value === '__custom__') modelCustom.focus();
       renderFooter();
     };
-    modelCustom.oninput = () => renderFooter();
+    modelCustom.oninput = () => { modelValue = currentModelValue(); renderFooter(); };
     subProviderSelect.onchange = () => refreshSubLine();
     subModelSelect.onchange = () => {
       show(subModelCustom, subModelSelect.value === '__custom__');

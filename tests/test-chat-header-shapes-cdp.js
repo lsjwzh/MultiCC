@@ -150,3 +150,50 @@ test('standalone Chat opens shared runtime settings and preserves pending subage
     console.log('Runtime save screenshot (390×844 CSS pixels):', await page.screenshot('chat-runtime-config-saved'));
   });
 });
+
+test('switching from DeepSeek to Codex official drops the old model from the actual saved patch', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const json = value => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
+  const pool = [
+    { id: 'ds', name: 'DeepSeek', appType: 'codex', apiFormat: 'openai_responses',
+      compatibleClis: ['codex', 'codex-exp'], model: 'deepseek-flash', modelOptions: ['deepseek-flash'] },
+    { id: 'codex-official', name: 'Codex official', appType: 'codex', apiFormat: 'openai_responses',
+      compatibleClis: ['codex', 'codex-exp'], isOfficial: true, builtinOfficial: true,
+      model: '', modelOptions: ['gpt-5.4', 'gpt-5.4-mini'] },
+  ];
+  let saved;
+  let patches = 0;
+  const fixture = { ...routes,
+    '/api/providers': () => json({ providers: pool, defaults: {} }),
+    '/api/sessions/switch-test': ({ req, body }) => {
+      if (req.method === 'PATCH') { patches++; saved = JSON.parse(body); }
+      return json({ ok: true, cli: 'codex', ...saved });
+    },
+  };
+  await withCdpHarness({ routes: fixture, artifactsDir: path.join(os.tmpdir(), 'multicc-codex-switch-cdp') }, async page => {
+    await page.navigate('/chat.html?session=switch-test');
+    await page.waitFor('window.MultiCCRunConfig && window.MultiCCChatAiConfig');
+    await page.evaluate(`window.MultiCCRunConfig.open({ sessionId: 'switch-test', configuration: {
+      cli: 'codex', provider: 'ds', model: 'deepseek-flash' } }, ['codex'], () => {});`);
+    assert.ok(await page.waitFor(`document.querySelector('.rc-model')?.value === 'deepseek-flash'`));
+    await page.evaluate(`document.querySelector('.rc-line').value = 'codex-official';
+      document.querySelector('.rc-line').dispatchEvent(new Event('change'));`);
+    assert.equal(await page.evaluate(`document.querySelector('.rc-model').value`), 'gpt-5.4');
+    assert.equal(await page.evaluate(`document.querySelector('.rc-model-custom').value`), '');
+    // A second switch must also forget a custom model typed in the draft.
+    await page.evaluate(`document.querySelector('.rc-model').value = '__custom__';
+      document.querySelector('.rc-model').dispatchEvent(new Event('change'));
+      document.querySelector('.rc-model-custom').value = 'gpt-hidden';
+      document.querySelector('.rc-model-custom').dispatchEvent(new Event('input'));
+      document.querySelector('.rc-line').value = 'ds';
+      document.querySelector('.rc-line').dispatchEvent(new Event('change'));`);
+    assert.equal(await page.evaluate(`document.querySelector('.rc-model').value`), 'deepseek-flash');
+    await page.evaluate(`document.querySelector('.rc-line').value = 'codex-official';
+      document.querySelector('.rc-line').dispatchEvent(new Event('change'));
+      document.querySelector('.air-config-form').requestSubmit();`);
+    assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
+    assert.equal(patches, 1, 'provider and model must be saved atomically');
+    assert.equal(saved.provider, 'codex-official');
+    assert.equal(saved.model, 'gpt-5.4');
+  });
+});

@@ -78,6 +78,9 @@ function createSessionPolicy(options) {
       try {
         const provider = providerRouter.getProviderSummary(lookupType, providerId);
         if (provider && provider.model) return provider.model;
+        // Managed Codex routes own their default. Local config / the last
+        // reported model may still belong to the provider we just left.
+        if (appType === 'codex') return provider?.modelOptions?.[0] || null;
         if (appType === 'claude' && provider && provider.baseUrl) return session.reportedModel || null;
       } catch (_) {}
     }
