@@ -27,7 +27,7 @@ import 'pending_configuration.dart';
 // provider (their pre-extraction home); the implementation now lives with the
 // shared folder.
 export '../services/transcript_live_folder.dart'
-    show toolCallById, applyReasoningDelta, applyToolArgsDelta;
+    show toolCallById, applyReasoningDelta, applyToolArgsDelta, settleThinkingCalls;
 export 'admission_notes.dart';
 
 part 'chat_provider_history.dart';

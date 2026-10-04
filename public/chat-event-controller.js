@@ -411,6 +411,7 @@
       // finishStreaming() clears the tool-card registry, so snapshot the
       // measured spans first — the trajectory strip is the turn's tool timing
       // made visible, and it only exists for live turns (replay has no stamps).
+      settleThinkingCards();
       const trajTools = Array.from(state.currentToolCards.values())
         .map(t => ({ name: t.name, startedAt: t.startedAt, endedAt: t.endedAt, isError: t.isError }));
       finishStreaming();
@@ -985,6 +986,9 @@
     function handleToolResult(message) {
       const content = message.message?.content;
       if (!content) return;
+      // A tool result means the model finished reasoning and acted: close the
+      // open Thinking span before the cards are read for the trajectory.
+      settleThinkingCards();
       for (const result of (Array.isArray(content) ? content : [content])) {
         if (result.type !== 'tool_result') continue;
         for (const tool of state.currentToolCards.values()) {
@@ -1062,6 +1066,18 @@
     // mirrors opencode's part-stream model. Deltas are pure UX; the authoritative
     // blocks still arrive via finalizeAssistantMsg, which will overwrite/complete
     // whatever these deltas previewed.
+    // Reasoning is a measured span like any tool: startedAt at the first
+    // reasoning delta, endedAt the moment reasoning stops — the next text/tool
+    // delta, a tool result, or the turn's result. Without the end stamp the
+    // Thinking segment could never enter the wall-clock trajectory, so think
+    // time was missing from every live strip.
+    function settleThinkingCards() {
+      const at = Date.now();
+      for (const tool of state.currentToolCards.values()) {
+        if (tool && tool.name === 'Thinking' && tool.startedAt && !tool.endedAt) tool.endedAt = at;
+      }
+    }
+
     function handlePartDelta(message) {
       if (state.currentCli === 'claude') return;
       const d = message && message.delta;
@@ -1069,6 +1085,7 @@
       if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
       liveUi.hideThinking?.();
       if (d.type === 'text' && d.text) {
+        settleThinkingCards();
         state.currentTextContent = (state.currentTextContent || '') + d.text;
         host.renderCurrentText?.();
         host.maybeScrollToBottom?.();
@@ -1079,7 +1096,7 @@
         let tool = state.currentToolCards.get(`id:${rid}`);
         if (!tool) {
           const card = historyView.createToolCard('Thinking', rid);
-          tool = { card, inputJson: '{}', name: 'Thinking', id: rid, reasoning: '' };
+          tool = { card, inputJson: '{}', name: 'Thinking', id: rid, reasoning: '', startedAt: Date.now() };
           state.currentToolCards.set(`id:${rid}`, tool);
           historyView.appendToolCard(state.currentMsgEl.querySelector('.msg-content'), card);
         }
@@ -1088,6 +1105,7 @@
         historyView.updateToolInput(tool);
         host.maybeScrollToBottom?.();
       } else if (d.type === 'tool' && d.tool && d.toolId) {
+        settleThinkingCards();
         let tool = findCurrentToolCardById(d.toolId);
         if (!tool) {
           const card = historyView.createToolCard(d.tool.name || 'Tool', d.toolId);

@@ -1127,3 +1127,41 @@ test('tool timing stamps ride in the persisted tools array (replay upgrade)', ()
     /tc\.is_error = r\.is_error \|\| false;\s*\n\s*tc\.endedAt = Date\.now\(\);/,
   );
 });
+
+test('reasoning spans are measured so think time reaches the wall-clock', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  // The adapter Thinking card carries a real start stamp. It used to have none
+  // at all, so every persisted Thinking tool was "unknown" and the wall-clock
+  // trajectory could never show the think segment.
+  assert.match(
+    source,
+    /tool = \{ name: 'Thinking', input: \{ text: evt\.text \|\| '' \}, id: evt\.id, startedAt: Date\.now\(\) \}/,
+  );
+
+  const { closeOpenThinkingTool } = require(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'));
+
+  // A lane that never emits the closing frame still gets a measured span when
+  // the turn's result lands — reasoning cannot outlive the turn.
+  const open = { name: 'Thinking', startedAt: 1000 };
+  const cs = { currentToolCalls: [open, { name: 'Bash', startedAt: 5, endedAt: 9 }] };
+  closeOpenThinkingTool(cs);
+  assert.ok(Number.isFinite(open.endedAt) && open.endedAt >= 1000, 'an open Thinking span is closed');
+
+  // An already-settled Thinking tool is left exactly as it was (never re-stamped).
+  const settled = { name: 'Thinking', startedAt: 10, endedAt: 20 };
+  closeOpenThinkingTool({ currentToolCalls: [settled] });
+  assert.equal(settled.endedAt, 20);
+
+  // A Thinking card with no start (legacy history) stays unmeasured — no
+  // fabricated duration, same rule the clients follow.
+  const legacy = { name: 'Thinking' };
+  closeOpenThinkingTool({ currentToolCalls: [legacy] });
+  assert.equal(legacy.endedAt, undefined);
+
+  // Non-reasoning tools are never touched by the thinking settle.
+  const bash = { name: 'Bash', startedAt: 1 };
+  closeOpenThinkingTool({ currentToolCalls: [bash] });
+  assert.equal(bash.endedAt, undefined);
+
+  assert.doesNotThrow(() => closeOpenThinkingTool(undefined));
+});

@@ -26,16 +26,29 @@ ToolCall? toolCallById(ChatMessage msg, String id) {
 
 /// 应用一帧 reasoning 增量：落到会话唯一的 Thinking 卡（id =
 /// `sidecar-reasoning-<sessionId>`，与 web 同键），文本追加进 `{text:…}`。
-/// 无 startedAt —— 推理没有真实的工具计时，不伪造时长也不进轨迹条。
+/// 推理和普通工具一样是有起止的实测区间：首个 reasoning 帧打 startedAt，
+/// 推理停止时由 [settleThinkingCalls] 结算 endedAt。缺了起点它就永远进不了
+/// wall-clock 轨迹条，think 时长也无从显示。
 /// 返回消息是否变化（调用方据此 notifyListeners）。
 @visibleForTesting
-bool applyReasoningDelta(ChatMessage msg, String sessionId, String text) {
+bool applyReasoningDelta(
+  ChatMessage msg,
+  String sessionId,
+  String text, {
+  int now = 0,
+}) {
   if (text.isEmpty) return false;
   final id = 'sidecar-reasoning-$sessionId';
   final existing = toolCallById(msg, id);
   if (existing == null) {
     msg.toolCalls.add(
-      ToolCall(id: id, name: 'Thinking', inputJson: jsonEncode({'text': text})),
+      ToolCall(
+        id: id,
+        name: 'Thinking',
+        inputJson: jsonEncode({'text': text}),
+        // now<=0 表示调用方没给时钟（老测试/无时间源）：宁可不计时，也不写 epoch 0。
+        startedAt: now > 0 ? now : null,
+      ),
     );
     return true;
   }
@@ -47,6 +60,22 @@ bool applyReasoningDelta(ChatMessage msg, String sessionId, String text) {
   }
   existing.inputJson = jsonEncode({'text': buffer});
   return true;
+}
+
+/// 结算本回合里还没结束的 Thinking 卡：推理一旦停止（下一个 text/tool 增量、
+/// 工具结果、或回合结束）就补上 endedAt，让它成为可测量的区间，从而计入
+/// wall-clock 轨迹条。没有起点的卡（老历史）不动 —— 不伪造时长。
+/// 返回消息是否变化。
+@visibleForTesting
+bool settleThinkingCalls(ChatMessage msg, {int now = 0}) {
+  var changed = false;
+  for (final tc in msg.toolCalls) {
+    if (tc.name != 'Thinking') continue;
+    if (tc.startedAt == null || tc.endedAt != null) continue;
+    tc.endedAt = now;
+    changed = true;
+  }
+  return changed;
 }
 
 /// 从卡片当前 inputJson 还原原始参数流缓冲：wrapper 形态
@@ -180,7 +209,13 @@ class TranscriptLiveFolder {
     final inner = msg['message'];
     final content = inner is Map ? inner['content'] : msg['content'];
     if (content is! List) return;
-    var changed = false;
+    // A tool result means the model finished reasoning and acted: close the
+    // open Thinking span before the cards feed the trajectory strip.
+    var changed = currentMsg != null &&
+        settleThinkingCalls(
+          currentMsg!,
+          now: DateTime.now().millisecondsSinceEpoch,
+        );
     for (final raw in content) {
       if (raw is! Map || raw['type'] != 'tool_result') continue;
       final id = raw['tool_use_id']?.toString() ?? '';
@@ -298,16 +333,26 @@ class TranscriptLiveFolder {
       final text = delta['text']?.toString() ?? '';
       if (text.isEmpty) return;
       ensureAssistantMsg();
+      // Text after reasoning means reasoning stopped: close the Thinking span
+      // (web handlePartDelta parity) so it lands in the wall-clock trajectory.
+      settleThinkingCalls(
+        currentMsg!,
+        now: DateTime.now().millisecondsSinceEpoch,
+      );
       currentMsg!.content += text;
       _emit();
     } else if (dType == 'reasoning') {
       // Live reasoning streams into the session's single Thinking sidecar
-      // card (web handlePartDelta parity). No startedAt: reasoning has no
-      // real tool timing — must not fabricate durations or trajectory rows.
+      // card (web handlePartDelta parity), measured from its first frame.
       final text = delta['text']?.toString() ?? '';
       if (text.isEmpty) return;
       ensureAssistantMsg();
-      if (applyReasoningDelta(currentMsg!, _sessionIdOf(), text)) {
+      if (applyReasoningDelta(
+        currentMsg!,
+        _sessionIdOf(),
+        text,
+        now: DateTime.now().millisecondsSinceEpoch,
+      )) {
         _emit();
       }
     } else if (dType == 'tool') {
@@ -318,6 +363,10 @@ class TranscriptLiveFolder {
       final tool = delta['tool'];
       if (toolId.isEmpty || tool is! Map) return;
       ensureAssistantMsg();
+      settleThinkingCalls(
+        currentMsg!,
+        now: DateTime.now().millisecondsSinceEpoch,
+      );
       if (applyToolArgsDelta(
         currentMsg!,
         toolId,
@@ -335,6 +384,12 @@ class TranscriptLiveFolder {
   /// provider-level bars); call this BEFORE [finishStreaming].
   void attachResultUsage(Map<String, dynamic> msg) {
     if (currentMsg == null) return;
+    // Reasoning cannot outlive the turn: close an open Thinking span so its
+    // measured duration reaches the wall-clock trajectory.
+    settleThinkingCalls(
+      currentMsg!,
+      now: DateTime.now().millisecondsSinceEpoch,
+    );
     if (msg['usage'] != null) {
       currentMsg!.usage = MessageUsage.fromJson(
         msg['usage'] as Map<String, dynamic>,

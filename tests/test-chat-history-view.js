@@ -482,6 +482,39 @@ test('turn trajectory spans the whole turn when the server stamped LLM time', ()
   assert.equal(shrunk.querySelectorAll('.tool-trajectory-seg')[1].style.left, '75%');
 });
 
+test('turn trajectory measures the Thinking span like any other tool', () => {
+  const { document, view } = fixture();
+  const content = document.createElement('div');
+
+  // The model reasoned for the first 6s (Thinking) and then ran two tools. The
+  // strip used to place only real tools, so the reasoning time was invisible
+  // even though the label counted it — think time never reached the bar.
+  const strip = view.renderToolTrajectory(content, [
+    { name: 'Thinking', startedAt: 0, endedAt: 6000 },
+    { name: 'Bash', startedAt: 6000, endedAt: 8000 },
+    { name: 'Read', startedAt: 9000, endedAt: 10000 },
+  ], 10000);
+  assert.ok(strip, 'a measured Thinking span counts toward the trajectory');
+  const segs = strip.querySelectorAll('.tool-trajectory-seg');
+  assert.equal(segs.length, 3);
+  assert.equal(segs[0].title, 'Thinking · 6.0s', 'the think segment is labelled');
+  assert.equal(segs[0].style.left, '0%');
+  assert.equal(segs[0].style.width, '60%');
+  assert.equal(strip.querySelector('.tool-trajectory-label').textContent,
+    '⏱ 3 tools · 10s wall-clock');
+
+  // A Thinking card with no measured span (legacy history) is still excluded —
+  // the bar never fabricates reasoning time that was never recorded.
+  const legacy = view.renderToolTrajectory(content, [
+    { name: 'Thinking' },
+    { name: 'Bash', startedAt: 0, endedAt: 5000 },
+    { name: 'Read', startedAt: 6000, endedAt: 8000 },
+  ], 8000);
+  assert.equal(legacy.querySelectorAll('.tool-trajectory-seg').length, 2);
+  assert.equal(legacy.querySelector('.tool-trajectory-label').textContent,
+    '⏱ 2 tools · 8.0s wall-clock');
+});
+
 test('turn trajectory is absent unless two tools are measured', () => {
   const { document, view } = fixture();
   const content = document.createElement('div');

@@ -135,6 +135,21 @@ function normalizeClaudeAssistantSnapshot(event, currentText) {
   };
 }
 
+// Most lanes close their reasoning block explicitly (evt.completed), but one
+// that omits the closing frame would leave the Thinking card unmeasured forever
+// — and the think time out of the wall-clock trajectory with it. Closing any
+// still-open Thinking tool when the turn's result lands keeps the span
+// measured without ever fabricating an end for a block that never started.
+function closeOpenThinkingTool(cs) {
+  const tools = cs && Array.isArray(cs.currentToolCalls) ? cs.currentToolCalls : [];
+  const at = Date.now();
+  for (const tool of tools) {
+    if (!tool || tool.name !== 'Thinking') continue;
+    if (!Number.isFinite(tool.startedAt) || Number.isFinite(tool.endedAt)) continue;
+    tool.endedAt = at;
+  }
+}
+
 function markReplaySafeAssistantEnvelope(event, providerName) {
   if (!event || event.type !== 'assistant' || !Array.isArray(event.message?.content)) return event;
   const blocks = event.message.content;
@@ -563,6 +578,10 @@ function createChatTurnEngine(deps) {
         return;
       }
       turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'finalizing');
+      // Reasoning cannot outlive the turn: close an open Thinking span so its
+      // measured duration survives into the persisted tools array (and thus the
+      // wall-clock trajectory on replay).
+      closeOpenThinkingTool(cs);
       cs.currentCost = evt.total_cost_usd || null;
       const resultCompletion = runner.completionOutcome;
       const resultSucceeded = canPersistAdapterCompletion(resultCompletion, attemptRuntime.proxyFailure?.(runner.providerAttempt));
@@ -826,7 +845,11 @@ function createChatTurnEngine(deps) {
         // Text lives in input only; a copy in result doubled reasoning-heavy turns.
         if (tool && evt.snapshot === true) tool.input = { text: evt.text || '' };
         else {
-          tool = { name: 'Thinking', input: { text: evt.text || '' }, id: evt.id };
+          // startedAt at the first reasoning frame, endedAt when the provider
+          // closes the block (below). Reasoning is a real, measured span like any
+          // tool: without the start stamp it can never enter the wall-clock
+          // trajectory, so think time vanished from every replay.
+          tool = { name: 'Thinking', input: { text: evt.text || '' }, id: evt.id, startedAt: Date.now() };
           cs.currentToolCalls.push(tool);
           getBackgroundTaskRuntime().recordMainToolUseId(sessionName, evt.id);
         }
@@ -2984,6 +3007,7 @@ function createChatTurnEngine(deps) {
 module.exports = {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
+  closeOpenThinkingTool,
   createChatTurnEngine,
   createDeliveryProbeRegistry,
   deliverAfterPendingMemory,

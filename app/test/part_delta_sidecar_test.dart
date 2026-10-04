@@ -8,8 +8,9 @@ import 'package:multicc_app/providers/chat_provider.dart';
 /// Part-delta sidecar semantics for non-claude CLIs (web
 /// chat-event-controller.js handlePartDelta parity):
 ///  · reasoning → one Thinking card per session keyed
-///    `sidecar-reasoning-<sessionId>`, text accumulated into {text:…}, and
-///    NO startedAt (no fabricated durations / trajectory rows);
+///    `sidecar-reasoning-<sessionId>`, text accumulated into {text:…},
+///    startedAt at the first frame and endedAt settled when reasoning stops
+///    (so think time is measured and lands in the wall-clock trajectory);
 ///  · tool → card keyed by toolId, raw argument fragments accumulated and
 ///    normalized (valid JSON when complete, {arguments: raw} mid-stream),
 ///    startedAt stamped at creation;
@@ -27,8 +28,44 @@ void main() {
       expect(tc.id, 'sidecar-reasoning-sess-1');
       expect(tc.name, 'Thinking');
       expect(tc.parsedInput?['text'], '先分析');
-      // No tool timing is fabricated for reasoning.
+      // 没给时钟（now 缺省 0）时不写 epoch 0：宁可不计时，也不伪造。
       expect(tc.startedAt, isNull);
+    });
+
+    test('stamps a real startedAt when the caller supplies a clock', () {
+      final msg = ChatMessage(role: MessageRole.assistant);
+      applyReasoningDelta(msg, 'sess-1', '先分析', now: 1700000000000);
+
+      expect(msg.toolCalls.single.startedAt, 1700000000000);
+      // 只打了起点、还没结算 → 时长仍是未知，不编造。
+      expect(msg.toolCalls.single.durationMs, isNull);
+    });
+  });
+
+  group('settleThinkingCalls', () {
+    test('closes an open Thinking span so think time becomes measurable', () {
+      final msg = ChatMessage(role: MessageRole.assistant);
+      applyReasoningDelta(msg, 'sess-1', '推理中', now: 1000);
+      applyReasoningDelta(msg, 'sess-1', '…继续', now: 2000);
+
+      final settled = settleThinkingCalls(msg, now: 5500);
+
+      expect(settled, isTrue);
+      expect(msg.toolCalls.single.durationMs, 4500);
+    });
+
+    test('is idempotent and never invents a span for an unstarted card', () {
+      final msg = ChatMessage(role: MessageRole.assistant);
+      // 无 startedAt 的老历史卡：不结算、不伪造。
+      applyReasoningDelta(msg, 'sess-1', '老历史');
+      expect(settleThinkingCalls(msg, now: 9000), isFalse);
+      expect(msg.toolCalls.single.durationMs, isNull);
+
+      applyReasoningDelta(msg, 'sess-2', '新推理', now: 10);
+      expect(settleThinkingCalls(msg, now: 20), isTrue);
+      // 再结算一次不动已完成的卡。
+      expect(settleThinkingCalls(msg, now: 99), isFalse);
+      expect(toolCallById(msg, 'sidecar-reasoning-sess-2')?.durationMs, 10);
     });
 
     test('accumulates fragments into the same card, not duplicates', () {

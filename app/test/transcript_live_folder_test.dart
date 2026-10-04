@@ -72,7 +72,8 @@ void main() {
     expect(reasoning.id, 'sidecar-reasoning-sess-1');
     expect(reasoning.name, 'Thinking');
     expect(jsonDecode(reasoning.inputJson)['text'], '先想再想');
-    expect(reasoning.startedAt, isNull);
+    // 实时流给了时钟：第一帧打起点，思考时段可测，不再永远是未知。
+    expect(reasoning.startedAt, isNotNull);
 
     f.partDelta({
       'delta': {
@@ -93,6 +94,8 @@ void main() {
     expect(tool.name, 'Bash');
     expect(jsonDecode(tool.inputJson), {'cmd': 'ls -la'});
     expect(tool.startedAt, isNotNull);
+    // 非思考帧一到就结算思考时段：起点+终点齐了，think 时长可测。
+    expect(reasoning.endedAt, isNotNull);
   });
 
   test('assistant snapshot: claude seeds only an empty bubble; codex appends and owns tool cards', () {
