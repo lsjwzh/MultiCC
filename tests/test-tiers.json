@@ -3283,6 +3283,15 @@
       ]
     },
     {
+      "path": "tests/test-notify-prefs.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-official-accounts.js",
       "tier": "core",
       "lane": "deterministic",
@@ -4962,6 +4971,15 @@
       "owner": "npm:test:contracts",
       "entrypoints": [
         "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-turn-timeline.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
       ]
     },
     {
