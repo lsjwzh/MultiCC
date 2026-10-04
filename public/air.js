@@ -2000,7 +2000,14 @@
   // 文件）以补丁 + 文件复制的方式带走；套用失败时整体回滚、任务留在原处。
   function openMoveDialog() {
     if (!taskId || !data || !entry) return;
-    const targets = data.directories.filter(directory => directory.id !== directoryId);
+    // 排除的是任务自己的目录，不是当前浏览的目录：置顶/最近/⌘K 打开别目录的
+    // 任务时页面并不换台（navigate(directoryId, task.id)），拿页面目录过滤会把
+    // 「任务实际属于的目录」留在列表里、反而把用户想移进去的目录（= 当前页）
+    // 挡在外面。App 端 _moveTask 一直用的就是 task.dirId。
+    const ownDirId = entry.task?.dirId
+      || data.tasks?.find(task => task.id === taskId)?.dirId
+      || directoryId;
+    const targets = data.directories.filter(directory => directory.id !== ownDirId);
     if (!targets.length) { notice(t('airMoveNoTargets')); return; }
     const dialog = node('dialog', null, 'move-task-dialog');
     const form = node('form');
