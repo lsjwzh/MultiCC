@@ -361,6 +361,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     if (_pickedCli == SessionCli.codebuddy) return kCodebuddyModelOptions;
     if (_pickedCli == SessionCli.dsh) return kDshModelOptions;
     if (_pickedCli == SessionCli.gemini) return kGeminiModelOptions;
+    if (_pickedCli == SessionCli.commandcode) return kCommandCodeModelOptions;
     if (_pickedCli == SessionCli.grok) return kGrokModelOptions;
     if (_pickedCli == SessionCli.opencode && _effectiveProviderId.isEmpty) {
       return [

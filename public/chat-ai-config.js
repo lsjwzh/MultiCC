@@ -340,6 +340,7 @@
     }
     if (state && state.cli === 'dsh') return [...DSH_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'gemini') return [...GEMINI_MODEL_OPTIONS, '__custom__'];
+    if (state && state.cli === 'commandcode') return ['', 'deepseek/deepseek-flash', '__custom__'];
     if (state && state.cli === 'grok') return [...GROK_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'zcode') return [...ZCODE_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'opencode') {
@@ -494,6 +495,7 @@
       if (state && state.cli === 'codebuddy') return localized(state, 'aiConfigDefaultFollowWorkBuddy', '默认（跟随 WorkBuddy 设置）');
       if (state && state.cli === 'dsh') return localized(state, 'aiConfigDefaultFollowDsh', '默认（跟随 DSH 配置）');
       if (state && state.cli === 'gemini') return localized(state, 'aiConfigDefaultFollowGemini', '默认（跟随 Gemini 配置）');
+      if (state && state.cli === 'commandcode') return '默认（DeepSeek Flash）';
       if (state && state.cli === 'grok') return localized(state, 'aiConfigDefaultFollowGrok', '默认（跟随 Grok 配置）');
       if (state && state.cli === 'zcode') return localized(state, 'aiConfigDefaultFollowZcode', '默认（跟随 ZCode 设置）');
       return translate(state, 'default');
@@ -792,7 +794,7 @@
       const { overlay, box, body, footer } = modalShell(document, 620);
       body.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
-        <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : (cli === 'codebuddy' ? 'WorkBuddy 使用自身账号与厂商配置。' : cli === 'dsh' ? 'DSH 使用 DeepSeek 自身凭证（DEEPSEEK_API_KEY 或 dsh 内置 credentials）。' : cli === 'gemini' ? 'Gemini 使用 Google 自身凭证（gemini login 或 GEMINI_API_KEY）。' : cli === 'grok' ? 'Grok 使用 xAI 自身凭证（grok login 或 XAI_API_KEY）。' : 'Qoder CN 使用自身账号与厂商配置。')}</div>
+        <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : (cli === 'codebuddy' ? 'WorkBuddy 使用自身账号与厂商配置。' : cli === 'dsh' ? 'DSH 使用 DeepSeek 自身凭证（DEEPSEEK_API_KEY 或 dsh 内置 credentials）。' : cli === 'gemini' ? 'Gemini 使用 Google 自身凭证（gemini login 或 GEMINI_API_KEY）。' : cli === 'commandcode' ? 'Command Code 使用原生 BYOK 配置；DeepSeek 密钥从 DEEPSEEK_API_KEY 环境变量读取。' : cli === 'grok' ? 'Grok 使用 xAI 自身凭证（grok login 或 XAI_API_KEY）。' : 'Qoder CN 使用自身账号与厂商配置。')}</div>
         <div id="ai-provider-section">
           <label style="display:block;font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:5px;">Provider</label>
           <select id="ai-provider" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>

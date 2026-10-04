@@ -36,6 +36,9 @@ List<String> runModelChoices(
   if (cli == SessionCli.gemini) {
     return kGeminiModelOptions.map((option) => option.key).toList();
   }
+  if (cli == SessionCli.commandcode) {
+    return kCommandCodeModelOptions.map((option) => option.key).toList();
+  }
   if (cli == SessionCli.grok) {
     return kGrokModelOptions.map((option) => option.key).toList();
   }

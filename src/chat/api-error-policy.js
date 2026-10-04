@@ -34,6 +34,7 @@ const TRUSTED_TEXT_SOURCES = new Set([
   'dsh_event',
   'gemini_event',
   'grok_event',
+  'commandcode_event',
   'process_stderr',
   'aux_http',
   'host_interruption',
@@ -232,6 +233,7 @@ function envelopeSourceFor(provider) {
   if (name === 'dsh') return 'dsh_event';
   if (name === 'gemini') return 'gemini_event';
   if (name === 'grok') return 'grok_event';
+  if (name === 'commandcode') return 'commandcode_event';
   return 'claude_result';
 }
 

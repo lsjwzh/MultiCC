@@ -2481,6 +2481,15 @@
       ]
     },
     {
+      "path": "tests/test-command-code.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-commander-migration-isolated.js",
       "tier": "flow",
       "lane": "isolated",

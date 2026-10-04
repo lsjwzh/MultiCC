@@ -516,7 +516,7 @@ test('derivatives are a family fact, so a second surface cannot invent one', () 
   // 一个家族只在「同一场景给多条衍生」或「两种场景叫法不同」时才列 lanes。今天的
   // 两类：claude / codex（chat 一条常驻 + 一条退出 chat 的一次性车道，terminal 一条
   // 原生命令），以及 ACP 三家（chat 走桥 `xxx acp`，terminal 跑原生 `xxx`）。
-  const DERIVED = ['claude', 'codex', 'opencode', 'gemini', 'grok'];
+  const DERIVED = ['claude', 'codex', 'opencode', 'gemini', 'grok', 'commandcode'];
   for (const familyId of families) {
     if (DERIVED.includes(familyId)) continue;
     assert.equal(CAP.CLIS[familyId].lanes, undefined, `${familyId} declares lanes it does not need`);

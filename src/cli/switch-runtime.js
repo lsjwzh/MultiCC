@@ -513,7 +513,7 @@ function createCliSwitchRuntime(options) {
     claude: 'CLAUDE_CMD', codex: 'CODEX_CMD', 'codex-exp': 'CODEX_CMD',
     opencode: 'OPENCODE_CMD', zcode: 'ZCODE_CMD', kimi: 'KIMI_CMD',
     qoder: 'QODER_CMD', codebuddy: 'CODEBUDDY_CMD', dsh: 'DSH_CMD',
-    gemini: 'GEMINI_CMD', grok: 'GROK_CMD',
+    gemini: 'GEMINI_CMD', grok: 'GROK_CMD', commandcode: 'COMMAND_CODE_CMD',
   });
 
   // 「命令成功」不等于「multicc 派生的那个二进制升级了」。实测: 同一台机器上 claude

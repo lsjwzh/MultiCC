@@ -211,6 +211,14 @@
       update: { package: '@google/gemini-cli', command: 'npm install -g @google/gemini-cli' },
       lanes: { chat: [{ id: 'gemini', engine: 'gemini acp' }], terminal: [{ id: 'gemini' }] },
     },
+    commandcode: {
+      name: 'Command Code',
+      colour: '#a599e9',
+      mark: '⌘',
+      providerless: true,
+      update: { package: 'command-code', command: 'npm install -g command-code' },
+      lanes: { chat: [{ id: 'commandcode', engine: 'command-code acp' }], terminal: [{ id: 'commandcode', engine: 'command-code' }] },
+    },
     grok: {
       name: 'Grok',
       colour: '#8c8f96',

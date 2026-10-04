@@ -14,6 +14,7 @@ const { createKimiAdapter } = require('./kimi');
 const { createCodebuddyAdapter } = require('./codebuddy');
 const { createDshAdapter } = require('./dsh');
 const { createGeminiAdapter } = require('./gemini');
+const { createCommandCodeAdapter } = require('./command-code');
 const { createGrokAdapter } = require('./grok');
 
 function createCliAdapters(deps) {
@@ -90,6 +91,7 @@ function createCliAdapters(deps) {
     createCodebuddyAdapter({ cmd: commands.codebuddy, routerMcpNode, routerMcpScript }),
     createDshAdapter({ cmd: commands.dsh }),
     createGeminiAdapter({ cmd: commands.gemini, routerMcpNode, routerMcpScript }),
+    createCommandCodeAdapter({ cmd: commands.commandcode, routerMcpNode, routerMcpScript }),
     createGrokAdapter({ cmd: commands.grok, routerMcpNode, routerMcpScript }),
   ]);
 

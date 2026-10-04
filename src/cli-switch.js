@@ -4,7 +4,7 @@
 // Each CLI keeps its own native session and settings; continuity between those
 // independent sessions is provided by a bounded, visible-text checkpoint.
 
-const SUPPORTED_CHAT_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok']);
+const SUPPORTED_CHAT_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok', 'commandcode']);
 const { repairZcodeSessionState } = require('./cli-adapters/zcode-session');
 const { isResidentSession, providerlessClis } = require('./cli/cli-capability');
 

@@ -89,6 +89,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
         dsh_terminal: 0, dsh_chat: 0,
         gemini_terminal: 0, gemini_chat: 0,
         grok_terminal: 0, grok_chat: 0,
+        commandcode_terminal: 0, commandcode_chat: 0,
       };
       for (const s of sessions.listByDir(d.id)) {
         const k = `${s.cli || 'claude'}_${s.kind || 'terminal'}`;
