@@ -2,6 +2,15 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.3.1 — A smoother remote screen (2026-10-04)
+
+### Highlights
+
+- **Smooth mode uses ~30× less bandwidth** — the RFB stream now captures at half resolution and trims each frame to a 32px column band, so cursor-move frames drop from ~247KB to ~3KB; the perceived stutter that looked like a stalled stream was really the old frames saturating the link.
+- **Region zoom instead of squinting** — a new ⛶ button on the remote screen switches to box-select zoom (pick a rectangle to enlarge) on both the chat page and the App, instead of only pinch/full-image scaling.
+- **The "right-click" button works in smooth mode** — it used to be a dead button whenever the RFB stream was live; now the capture layer routes the next tap as a right click, and the App maps a long press to right-click as well.
+- **Zoom taps land where you aimed** — taps in the enlarged view were offset because the HTTP path speaks CSS points while the zoom tap sent framebuffer pixels (2× apart after the half-resolution switch); the tap is now normalized against the logical screen width. The bundled noVNC client also gets its view-only and viewport-scaling flags set the way it actually reads them, so portrait phones no longer show a cropped, input-forwarding "view-only" stream.
+
 ## v2.3.0 — See and drive the Mac from the chat (2026-10-04)
 
 ### Highlights
