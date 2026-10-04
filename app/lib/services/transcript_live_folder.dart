@@ -398,6 +398,9 @@ class TranscriptLiveFolder {
     // Server-stamped wall-clock duration: user submit → AI reply complete.
     final dur = (msg['durationMs'] as num?)?.toInt();
     if (dur != null) currentMsg!.durationMs = dur;
+    // Model request / thinking / output spans, same payload the history keeps.
+    final timeline = TurnTimeline.fromJson(msg['timeline']);
+    if (timeline != null) currentMsg!.timeline = timeline;
     // Which model produced this turn. The SAME payload key the history record
     // carries, so the live bubble and the re-opened transcript say the same
     // thing (see ChatMessage.modelAttribution). Absent = no row, not a blank.

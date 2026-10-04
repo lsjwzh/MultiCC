@@ -1,6 +1,7 @@
 'use strict';
 
 const { planRetryBlockedFinalization, resolveTurnFinalization } = require('./finalize-plan');
+const turnTimeline = require('./turn-timeline');
 
 const REQUIRED_PORTS = Object.freeze([
   'persistAssistant',
@@ -111,6 +112,7 @@ function createTurnFinalizationExecutor(rawPorts) {
           usage: {},
           durationMs: cs.turnStartedAt ? now() - cs.turnStartedAt : undefined,
           num_turns: cs.chatTurnCount,
+          ...turnTimeline.field(cs, now()),
         });
         break;
       case 'capture-final-text':

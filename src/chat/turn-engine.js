@@ -8,6 +8,7 @@
 // by reference. Pure/stateless helpers are required directly from src/*.
 
 const crypto = require('crypto');
+const turnTimeline = require('./turn-timeline');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
 const { DELIVERY_CLASS, deliveryClassForItem } = require('../orchestration/delivery-classes');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
@@ -514,7 +515,7 @@ function createChatTurnEngine(deps) {
   function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner, providerName = 'claude') {
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
     evt = attemptRuntime.scrubAttemptStructure(runner.providerAttempt, evt);
-    turnProgressHeartbeat.touchActivity(sessionName, turn.turnId);
+    turnProgressHeartbeat.touchActivity(sessionName, turn.turnId); turnTimeline.observeClaude(cs, evt);
     if (evt.type === 'assistant' && evt.message?.model) noteReportedModel(sessionName, evt.message.model);
     if (evt.type === 'assistant' && evt.message?.content) {
       for (const block of evt.message.content) {
@@ -637,12 +638,11 @@ function createChatTurnEngine(deps) {
         // error-only envelope remains eligible for a safe bounded retry.
         recordResultEvent(turn, runner, { current: true, persisted: false });
       }
-      // Broadcast per-message timing to Web/App: durationMs runs from
-      // user submit (turnStartedAt) to this result, without client clock guesses.
+      // Per-message timing for Web/App: submit -> result, plus the model timeline.
       const _resultDurationMs = cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined;
       forward({ type: 'result', total_cost_usd: evt.total_cost_usd, usage, durationMs: _resultDurationMs,
         num_turns: cs.chatTurnCount, ...(contextTrace ? { contextTrace } : {}),
-        ...modelAttributionField(cs, turn, runner) });
+        ...modelAttributionField(cs, turn, runner), ...turnTimeline.field(cs) });
       // Final classification and all post-turn effects run from the owned
       // close/finalize boundary. The result event alone is not enough: history
       // persistence may have failed or a retry may still be planned.
@@ -670,7 +670,7 @@ function createChatTurnEngine(deps) {
     runner.completion.observe(rawEvent, Array.isArray(decoded) ? decoded : [decoded]);
     for (let evt of (Array.isArray(decoded) ? decoded : [decoded])) {
       if (!evt) continue;
-      evt = attemptRuntime.scrubAttemptStructure(runner.providerAttempt, evt);
+      evt = attemptRuntime.scrubAttemptStructure(runner.providerAttempt, evt); turnTimeline.observeAdapter(cs, evt);
       if (evt.type === 'claude_event') {
         applyClaudeChatEvent(cs, sessionName, evt.raw, forward, turn, runner, provider.name);
         continue;
@@ -1449,7 +1449,7 @@ function createChatTurnEngine(deps) {
     cs.currentCost = null;
     cs.isStreaming = true;
     preparationStateActivated = true;
-    cs.turnStartedAt = Date.now();  // for per-reply interaction latency (durationMs)
+    cs.turnStartedAt = Date.now(); turnTimeline.startTurn(cs);  // durationMs + trajectory origin
     cs.lastStreamAt = cs.turnStartedAt;  // watchdog baseline: don't inherit prior turn's stale lastStreamAt
     cs.streamReplay = [];
     cs._resultSaved = false;

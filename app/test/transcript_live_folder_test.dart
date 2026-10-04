@@ -217,6 +217,18 @@ void main() {
     });
     expect(f.currentMsg!.usage!.inputTokens, 11);
     expect(f.currentMsg!.durationMs, 1234);
+    expect(f.currentMsg!.timeline, isNull, reason: 'no timeline in the frame');
+    f.attachResultUsage({
+      'durationMs': 1234,
+      'timeline': {
+        'origin': 5,
+        'spans': [
+          {'k': 'request', 's': 5, 'e': 50},
+        ],
+      },
+    });
+    expect(f.currentMsg!.timeline!.origin, 5);
+    expect(f.currentMsg!.timeline!.spans.single.kind, 'request');
 
     f.finishStreaming();
     expect(f.currentMsg, isNull);

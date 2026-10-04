@@ -340,23 +340,41 @@
       }
     }
 
-    // Turn-internal tool trajectory (DSH-style lightweight timeline): one strip
-    // under the finished assistant bubble, each measured tool placed at its
-    // real start offset and sized by its real duration within the turn's
-    // wall-clock window. The window is the whole turn when [turnDurationMs] is
-    // known (it includes the model's request/response time on both ends),
-    // falling back to the earliest-start → latest-end tool window. Only
-    // measured tools participate — replay has no tool timing, and a turn with
-    // no measured tool renders no strip at all (never a fabricated flat bar).
+    // Turn-internal trajectory (DSH-style lightweight timeline): one strip
+    // under the finished assistant bubble, each measured span placed at its
+    // real offset and sized by its real duration within the turn's wall-clock
+    // window. Two generations of input:
+    //   · [timeline] present (server-stamped, every lane): origin is the turn
+    //     submit time and the model's own stretches — request in flight,
+    //     thinking, output — are drawn as segments alongside the tools, so no
+    //     part of the turn is unexplained gray. Thinking pseudo-tools are then
+    //     dropped from [tools]: the timeline already carries that span.
+    //   · legacy (no timeline): tools only, window from the earliest tool
+    //     start, stretched to [turnDurationMs] when that is longer.
+    // Only measured spans participate; never a fabricated flat bar.
     // Everything is textContent/style, no HTML parsing.
-    function renderToolTrajectory(contentEl, tools, turnDurationMs) {
+    const TIMELINE_KINDS = ['request', 'thinking', 'output'];
+    function normalizeTimeline(timeline) {
+      if (!timeline || typeof timeline !== 'object' || !Number.isFinite(timeline.origin)) return null;
+      const spans = (Array.isArray(timeline.spans) ? timeline.spans : []).filter(sp => sp
+        && TIMELINE_KINDS.includes(sp.k) && Number.isFinite(sp.s) && Number.isFinite(sp.e) && sp.e >= sp.s);
+      return { origin: timeline.origin, spans };
+    }
+
+    function renderToolTrajectory(contentEl, tools, turnDurationMs, timeline) {
       if (!contentEl || !contentEl.appendChild) return null;
+      const tl = normalizeTimeline(timeline);
       const measured = (Array.isArray(tools) ? tools : []).filter(t =>
-        t && Number.isFinite(t.startedAt) && Number.isFinite(t.endedAt) && t.endedAt >= t.startedAt);
-      if (measured.length < 2) return null; // one tool adds nothing a duration suffix doesn't
+        t && Number.isFinite(t.startedAt) && Number.isFinite(t.endedAt) && t.endedAt >= t.startedAt
+        && !(tl && t.name === 'Thinking'));
+      const modelSpans = tl ? tl.spans : [];
+      // One lone span adds nothing a duration suffix doesn't.
+      if (measured.length + modelSpans.length < 2) return null;
       for (const old of Array.from(contentEl.querySelectorAll('.tool-trajectory'))) old.remove();
-      const t0 = Math.min(...measured.map(t => t.startedAt));
-      const t1 = Math.max(...measured.map(t => t.endedAt));
+      const starts = measured.map(t => t.startedAt).concat(modelSpans.map(sp => sp.s));
+      const ends = measured.map(t => t.endedAt).concat(modelSpans.map(sp => sp.e));
+      const t0 = tl ? Math.min(tl.origin, ...starts) : Math.min(...starts);
+      const t1 = Math.max(...ends);
       const toolSpan = t1 - t0;
       const wallClock = Math.max(toolSpan,
         Number.isFinite(Number(turnDurationMs)) && Number(turnDurationMs) > toolSpan
@@ -366,22 +384,38 @@
       wrap.className = 'tool-trajectory';
       const track = document.createElement('div');
       track.className = 'tool-trajectory-track';
+      const place = (seg, s, e, title) => {
+        const left = ((s - t0) / span) * 100;
+        const width = Math.max(((e - s) / span) * 100, 0.75);
+        seg.style.left = left + '%';
+        seg.style.width = Math.min(width, 100 - left) + '%';
+        seg.title = title + ' · ' + (humanizeDuration(e - s) || '?');
+        track.appendChild(seg);
+      };
+      const totals = { request: 0, thinking: 0, output: 0 };
+      // Model spans first so tool segments paint on top where they touch.
+      modelSpans.forEach(sp => {
+        const seg = document.createElement('span');
+        seg.className = 'tool-trajectory-seg model ' + sp.k;
+        totals[sp.k] += sp.e - sp.s;
+        place(seg, sp.s, sp.e, sp.k);
+      });
       measured.forEach(t => {
         const seg = document.createElement('span');
         // Live snapshots use isError, persisted tools use is_error — accept both.
         seg.className = 'tool-trajectory-seg' + ((t.isError || t.is_error) ? ' error' : '');
-        const left = ((t.startedAt - t0) / span) * 100;
-        const width = Math.max(((t.endedAt - t.startedAt) / span) * 100, 0.75);
-        seg.style.left = left + '%';
-        seg.style.width = Math.min(width, 100 - left) + '%';
-        seg.title = asText(t.name) + ' · ' + (humanizeDuration(t.endedAt - t.startedAt) || '?');
-        track.appendChild(seg);
+        place(seg, t.startedAt, t.endedAt, asText(t.name));
       });
       wrap.appendChild(track);
       const label = document.createElement('div');
       label.className = 'tool-trajectory-label';
-      label.textContent = '⏱ ' + measured.length + ' tools · '
-        + humanizeDuration(wallClock) + ' wall-clock';
+      let text = '⏱ ' + measured.length + ' tools · ' + humanizeDuration(wallClock) + ' wall-clock';
+      if (tl) {
+        for (const k of TIMELINE_KINDS) {
+          if (totals[k] > 0) text += ' · ' + k + ' ' + (humanizeDuration(totals[k]) || '<1s');
+        }
+      }
+      label.textContent = text;
       wrap.appendChild(label);
       contentEl.appendChild(wrap);
       return wrap;
@@ -529,7 +563,7 @@
       // Trajectory on replay too, whenever the persisted tools carry stamps. The
       // wall-clock window spans the whole turn (LLM request + tools) when the
       // server stamped durationMs; otherwise it falls back to the tool window.
-      renderToolTrajectory(contentEl, message.tools, message.durationMs);
+      renderToolTrajectory(contentEl, message.tools, message.durationMs, message.timeline);
       // 归属贴在时间行最右端，assistant-only：user / system 没有「哪个模型产出」这回事。
       // 必须在轨迹条之后：轨迹文案行就是它的宿主。
       if (message.role === 'assistant') {

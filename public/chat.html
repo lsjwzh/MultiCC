@@ -631,6 +631,11 @@
       border-radius: 2px; background: #2f81f7; opacity: 0.85;
     }
     .tool-trajectory-seg.error { background: var(--chat-danger, #f85149); }
+    /* Model stretches of the turn (server timeline): request in flight,
+       thinking, output. Tools stay blue and paint on top. */
+    .tool-trajectory-seg.model.request { background: #d29922; opacity: 0.55; }
+    .tool-trajectory-seg.model.thinking { background: #a371f7; }
+    .tool-trajectory-seg.model.output { background: #3fb950; }
     /* flex 是为了让模型归属那段字能 margin-left:auto 贴到最右端（见
        .msg-model-attribution）。只有一个文本子节点时，flex 与原来的块级排版看起来
        完全一样。 */

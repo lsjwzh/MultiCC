@@ -571,8 +571,10 @@ class _AssistantBubble extends StatelessWidget {
     // 下面 _TimingLine 那道条件）；两行都没内容（时间戳与耗时都没有的老历史）才
     // 自占一行。前两种情况下这些行的右边本来就是空的，所以既不多占一行，也挤不
     // 掉原有内容 —— 基本模式同样走前两种落点，不再落到自占一行那一档。
-    final trajectoryShown =
-        hasTools && advancedMode && hasTrajectoryContent(message.toolCalls);
+    final hasTimeline = message.timeline != null;
+    final trajectoryShown = (hasTools || hasTimeline) &&
+        advancedMode &&
+        hasTrajectoryContent(message.toolCalls, message.timeline);
     // timingShown 同时管两件事，必须是同一个条件：① 那一行真的画得出来，② 归属
     // 有宿主行可贴。判据的下半截直接问 [_TimingLine.hasContent]（= 那一行自己的
     // 渲染条件，唯一真源）—— 宿主行自己是空的，右边就没有那块空位，归属贴上去等于
@@ -618,10 +620,11 @@ class _AssistantBubble extends StatelessWidget {
                     ),
                   if (hasTools && advancedMode)
                     ToolCallGroup(toolCalls: message.toolCalls),
-                  if (hasTools && advancedMode)
+                  if ((hasTools || hasTimeline) && advancedMode)
                     ToolTrajectory(
                       toolCalls: message.toolCalls,
                       turnDurationMs: message.durationMs,
+                      timeline: message.timeline,
                       attribution: trajectoryShown
                           ? message.modelAttribution
                           : null,
@@ -630,6 +633,7 @@ class _AssistantBubble extends StatelessWidget {
                     _BasicToolSummary(
                       toolCalls: message.toolCalls,
                       durationMs: message.durationMs,
+                      timeline: message.timeline,
                     ),
                   if (!hasText && !hasTools && message.isStreaming)
                     const _StreamingDot(),
@@ -767,9 +771,14 @@ class _TaskAttributionTail extends StatelessWidget {
 }
 
 class _BasicToolSummary extends StatefulWidget {
-  const _BasicToolSummary({required this.toolCalls, this.durationMs});
+  const _BasicToolSummary({
+    required this.toolCalls,
+    this.durationMs,
+    this.timeline,
+  });
   final List<ToolCall> toolCalls;
   final int? durationMs;
+  final TurnTimeline? timeline;
 
   @override
   State<_BasicToolSummary> createState() => _BasicToolSummaryState();
@@ -866,6 +875,7 @@ class _BasicToolSummaryState extends State<_BasicToolSummary> {
                   ToolTrajectory(
                     toolCalls: widget.toolCalls,
                     turnDurationMs: widget.durationMs,
+                    timeline: widget.timeline,
                   ),
                 ],
               ),
