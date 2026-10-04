@@ -10,6 +10,7 @@ const path = require('path');
 const { normalizeManualMemory } = require('../memory/runtime');
 const { taskShortCode } = require('../classify/task-short-code');
 const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
+const { isGoalState } = require('../classify/vocab');
 const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../providers/auto-provider-config');
 
 // Session profile routes: PATCH /api/sessions/:id (label/model/effort/agent/
@@ -379,6 +380,7 @@ function createSessionProfileRoutes(rawDeps) {
             chatBroadcast(s.id, {
               type: 'task_state', goal: ts.goal || '', taskShortCode: taskShortCode(ts.taskId),
               phase: ts.phase || 'idle', classifyState: ts.classifyState || null,
+              goalState: isGoalState(ts.goalState) ? ts.goalState : null,
               ...auxVerdictStaleness(),
             });
           }

@@ -128,6 +128,8 @@ function createTaskShellHost(deps) {
             updatedAt: Number(state.updatedAt) || null },
           classify: { state: shortText(taskState.classifyState || state.classifyState, 8) || null,
             goal: shortText(taskState.goal, 500), phase: shortText(taskState.phase, 80),
+            // ✅ 的子状态（达成目标 / 需要交互），聊天栏和任务卡读同一个值。
+            goalState: shortText(taskState.goalState, 16) || null,
             updatedAt: Number(taskState.classifyUpdatedAt) || null, history: classifyHistory },
           events };
       },

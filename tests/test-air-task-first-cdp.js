@@ -480,7 +480,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // the goal label stretched to fill it and pushed both badges to the far end.
     // The cluster is one tight run now, inside its own box, off the left edge.
     await page.evaluate(`${frame}.defaultView.renderAuxClassify('完善 Air 对话体验','implementing','E','7K2M')`);
-    assert.deepEqual(await page.evaluate(`[${frame}.getElementById('ac-state').textContent,${frame}.getElementById('ac-phase').textContent]`), ['❌API 异常', '实现中'], 'the E turn keeps its ❌ mark and its 实现中 phase');
+    assert.deepEqual(await page.evaluate(`[${frame}.getElementById('ac-state').textContent,${frame}.getElementById('ac-phase').textContent]`), ['✖API 异常', '实现中'], 'the E turn keeps its ✖ mark and its 实现中 phase');
     const classifyRow = await page.evaluate(`(()=>{const d=${frame},box=id=>d.getElementById(id).getBoundingClientRect(),icon=d.querySelector('.ac-icon').getBoundingClientRect();
       const bar=box('aux-classify-bar'),goal=box('ac-goal'),state=box('ac-state'),phase=box('ac-phase');
       const left=Math.min(...['ac-goal','ac-state','ac-phase'].map(id=>box(id).left));

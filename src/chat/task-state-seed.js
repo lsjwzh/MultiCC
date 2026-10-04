@@ -14,6 +14,7 @@
 
 const { taskShortCode } = require('../classify/task-short-code');
 const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
+const { isGoalState } = require('../classify/vocab');
 
 /**
  * The `task_state` frame that seeds a freshly connected chat page, or null when
@@ -31,6 +32,8 @@ function taskStateSeed(task) {
     taskShortCode: taskShortCode(task.taskId),
     phase: task.phase || 'idle',
     classifyState: task.classifyState || null,
+    // ✅ 的子状态：刚连上的聊天页也要说「达成目标 / 需要交互」，不能先闪「执行成功」。
+    goalState: isGoalState(task.goalState) ? task.goalState : null,
     ...auxVerdictStaleness(),
   };
 }

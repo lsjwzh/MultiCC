@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/utils/session_status_helpers.dart';
+import 'package:multicc_app/utils/status_presentation.dart';
 import 'package:multicc_app/widgets/aux_classify_bar.dart';
 
 /// 分类条右侧的两个动作药丸，对齐 web 的 `#aux-classify-bar`：
@@ -11,9 +12,7 @@ import 'package:multicc_app/widgets/aux_classify_bar.dart';
 /// 显隐规则抽在 [classifyBarActions] 里，这里既钉纯函数（规则本身），也钉
 /// widget 的接线（回调传了才渲染、点了真的回调）。
 Widget _host(Widget child) => MaterialApp(
-  home: Scaffold(
-    body: SizedBox(width: 360, child: child),
-  ),
+  home: Scaffold(body: SizedBox(width: 360, child: child)),
 );
 
 void main() {
@@ -101,17 +100,47 @@ void main() {
   testWidgets('D 状态（完成）两个药丸都不渲染', (tester) async {
     await tester.pumpWidget(
       _host(
-        const AuxClassifyBar(
-          goal: '修好登录流程',
-          phase: 'done',
-          classifyState: 'D',
-        ),
+        const AuxClassifyBar(goal: '修好登录流程', phase: 'done', classifyState: 'D'),
       ),
     );
 
     // 目标与状态徽章仍在，只是没有可点的动作。
     expect(find.text('修好登录流程'), findsOneWidget);
     expect(find.byKey(const Key('classify-cancel-turn')), findsNothing);
-    expect(find.text('✓ 执行成功'), findsNothing);
+    expect(find.byKey(const Key('classify-mark-succeeded')), findsNothing);
+    // 状态药丸本身说「执行成功」，与任务卡同词。
+    expect(find.text('✓ 执行成功'), findsOneWidget);
+  });
+
+  testWidgets('D 的子状态与任务卡同词同色（succeededSubLabel + succeededGoalTone）', (
+    tester,
+  ) async {
+    Color colorOf(String text) =>
+        tester.widget<Text>(find.text(text)).style!.color!;
+    for (final (goalState, word, tone) in [
+      ('achieved', '✓ 达成目标', ''),
+      ('interact', '✓ 需要交互', 'interact'),
+      (null, '✓ 执行成功', 'muted'),
+    ]) {
+      await tester.pumpWidget(
+        _host(
+          AuxClassifyBar(
+            goal: 'g',
+            phase: 'done',
+            classifyState: 'D',
+            goalState: goalState,
+          ),
+        ),
+      );
+      expect(find.text(word), findsOneWidget, reason: '$goalState');
+      expect(succeededGoalTone('succeeded', goalState), tone);
+      expect(
+        colorOf(word),
+        tone.isEmpty
+            ? statusPresentation[CanonicalStatus.succeeded]!.color
+            : statusToneColor(tone),
+        reason: '$goalState',
+      );
+    }
   });
 }

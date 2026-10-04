@@ -1441,6 +1441,7 @@
         ...selectedEntry.execution,
         busy: isRunningTask(listedTask),
         status: listedTask.runState || selectedEntry.execution?.status,
+        goalState: listedTask.goalState || null,
       },
     } : selectedEntry;
     const selectedTask = headerEntry?.task || listedTask;
@@ -1492,6 +1493,7 @@
       else if (listedTask) renderStateSummary($('task-state'), taskStateSegments({
         task: listedTask, messages: [], execution: {
           busy: isRunningTask(listedTask), status: listedTask.runState || 'idle',
+          goalState: listedTask.goalState || null,
         },
       }));
       else $('task-state').textContent = t('airHeaderLoadingState');
@@ -1858,8 +1860,11 @@
   function taskStateSegments(value) {
     const unstartedPlan = value.task?.recordType === 'planned' && !value.messages?.length
       && !value.execution?.busy && !value.execution?.pending;
+    const executionStatus = value.execution?.pending ? 'waiting' : value.execution?.status || (value.execution?.busy ? 'running' : 'idle');
+    // 「本轮 …」的词与任务卡同源（succeededSubLabel）：✅ 细分成达成目标 / 需要交互。
     const execution = unstartedPlan ? t('airStatePlanNotStarted')
-      : label(value.execution?.pending ? 'waiting' : value.execution?.status || (value.execution?.busy ? 'running' : 'idle'));
+      : window.MultiCCStatusPresentation?.succeededSubLabel?.(executionStatus, value.execution?.goalState ?? value.task?.goalState, t)
+        || label(executionStatus);
     const lifecycle = label(value.task?.status || value.status);
     return [execution && t('airSegExecution', { state: execution }), lifecycle && t('airSegLifecycle', { state: lifecycle })].filter(Boolean);
   }

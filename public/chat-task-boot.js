@@ -125,7 +125,7 @@ async function bootChatEntry() {
       const queue = snapshot.execution?.queue || {};
       window.MultiCCChatSessionQueue?.render(queue.queued || [], queue, document);
       const classify = snapshot.execution?.classify;
-      if (classify?.state) renderAuxClassify(classify.goal, classify.phase, classify.state);
+      if (classify?.state) renderAuxClassify(classify.goal, classify.phase, classify.state, '', { goalState: classify.goalState || null });
       window.MultiCCTaskArtifacts?.setScope({ taskId: _taskId });
       statusEl.textContent = '只读历史'; statusEl.className = '';
     } catch (error) {

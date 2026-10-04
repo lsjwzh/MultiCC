@@ -899,8 +899,8 @@ function attachQuoteButton(msgEl) {
 // Keyed by classify-state LETTER (D/C/W/B/E/P) — single source of truth for
 // all frontend display: bar badge, voice, ding, toast.
 function _classifyDisp(classifyState) { return chatLiveUi.classifyDisplay(classifyState); }
-function renderAuxClassify(goal, phase, classifyState, code) {
-  return chatLiveUi.renderAuxClassify(goal, phase, classifyState, code);
+function renderAuxClassify(goal, phase, classifyState, code, freshness) {
+  return chatLiveUi.renderAuxClassify(goal, phase, classifyState, code, freshness);
 }
 
 // Manual turn verdict from the classify bar. This changes only the turn outcome

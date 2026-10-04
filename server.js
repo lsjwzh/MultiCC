@@ -176,7 +176,7 @@ const {
   createCodexOAuthRefresher,
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
 } = require('./src/codex/oauth-refresh');
-const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
+const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel, isGoalState } = require('./src/classify/vocab');
 const { taskShortCode, initTaskShortCodeRegistry } = require('./src/classify/task-short-code');
 const { installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness } = require('./src/classify/aux-verdict-health');
 const { recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
@@ -2420,7 +2420,7 @@ function setTaskState(sessionId, patch, opts = {}) {
     type: 'task_state',
     goal: next.goal || '', taskShortCode: taskShortCode(next.taskId),
     phase: next.phase || 'idle',
-    classifyState: next.classifyState || null, apiError: next.apiError || null,
+    classifyState: next.classifyState || null, apiError: next.apiError || null, goalState: isGoalState(next.goalState) ? next.goalState : null,
     // A frozen judgement must not read as a live one: every verdict carries
     // whether Aux is still answering. See src/classify/aux-verdict-health.js.
     ...auxVerdictStaleness(),
