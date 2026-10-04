@@ -48,7 +48,7 @@ const CAPABILITIES = Object.freeze({
   // first CLI on this lane; gemini and grok ride the same bridge (acp.js).
   opencode: Object.freeze({ protocol: 'acp', lifecycle: 'per-turn', cancel: 'process' }),
   gemini: Object.freeze({ protocol: 'acp', lifecycle: 'per-turn', cancel: 'process' }),
-  commandcode: Object.freeze({ protocol: 'acp', lifecycle: 'per-turn', cancel: 'process' }),
+  commandcode: Object.freeze({ protocol: 'command-code-json', lifecycle: 'per-turn', cancel: 'process' }),
   grok: Object.freeze({ protocol: 'acp', lifecycle: 'per-turn', cancel: 'process' }),
 });
 
@@ -64,7 +64,7 @@ const FAMILIES = Object.freeze({
   opencode: 'acp',
   gemini: 'acp',
   grok: 'acp',
-  commandcode: 'acp',
+  commandcode: null,
 });
 
 // ── Display facts: the CLI catalogue ───────────────────────────────────────
@@ -257,7 +257,7 @@ const CLIS = deepFreeze({
     mark: '⌘',
     providerless: true,
     update: { package: 'command-code', command: 'npm install -g command-code' },
-    lanes: { chat: [{ id: 'commandcode', engine: 'command-code acp' }], terminal: [{ id: 'commandcode', engine: 'command-code' }] },
+    lanes: { chat: [{ id: 'commandcode', engine: 'command-code -p --output-format json' }], terminal: [{ id: 'commandcode', engine: 'command-code' }] },
   },
   grok: {
     name: 'Grok',

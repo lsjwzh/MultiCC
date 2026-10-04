@@ -1,0 +1,90 @@
+{
+  "generatedAt": "2026-10-04T23:13:19.058Z",
+  "model": "deepseek-flash",
+  "baseURL": "https://api.deepseek.com/v1",
+  "method": "顺序执行；每项每引擎一次；首响应为首个可见文本事件（非网络首 token）；交互数为 CLI 单次提交，不代表 GUI；OpenCode 宿主与 Command Code Docker 存在环境差异",
+  "results": [
+    {
+      "cli": "opencode",
+      "caseId": "exact-reply",
+      "success": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "firstTextMs": 2610,
+      "totalMs": 2644,
+      "interactionSteps": 1,
+      "errors": 0,
+      "toolCalls": 0,
+      "answer": "ping-oc-ok"
+    },
+    {
+      "cli": "commandcode",
+      "caseId": "exact-reply",
+      "success": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "firstTextMs": 1676,
+      "totalMs": 1744,
+      "interactionSteps": 1,
+      "errors": 0,
+      "toolCalls": 0,
+      "answer": "ping-oc-ok"
+    },
+    {
+      "cli": "opencode",
+      "caseId": "read-file",
+      "success": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "firstTextMs": 4499,
+      "totalMs": 4529,
+      "interactionSteps": 1,
+      "errors": 0,
+      "toolCalls": 1,
+      "answer": "前两行：\n\n```\n127.0.0.1 localhost\n::1 localhost\n```\n\n总结：这两行分别把 IPv4 地址 127.0.0.1 和 IPv6 地址 ::1 映射到主机名 localhost。"
+    },
+    {
+      "cli": "commandcode",
+      "caseId": "read-file",
+      "success": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "firstTextMs": 1982,
+      "totalMs": 2205,
+      "interactionSteps": 1,
+      "errors": 0,
+      "toolCalls": 1,
+      "answer": "前两行：\n\n```\n127.0.0.1 localhost\n::1 localhost\n```\n\n总结：该文件定义 localhost 的 IPv4（127.0.0.1）和 IPv6（::1）回环地址映射。"
+    },
+    {
+      "cli": "opencode",
+      "caseId": "long-command",
+      "success": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "firstTextMs": 34271,
+      "totalMs": 34311,
+      "interactionSteps": 1,
+      "errors": 0,
+      "toolCalls": 1,
+      "answer": "完成"
+    },
+    {
+      "cli": "commandcode",
+      "caseId": "long-command",
+      "success": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "firstTextMs": 4812,
+      "totalMs": 36119,
+      "interactionSteps": 1,
+      "errors": 0,
+      "toolCalls": 2,
+      "answer": "完成。`sleep 30` 已运行完毕，退出码 0。"
+    }
+  ],
+  "versions": {
+    "opencode": "1.18.33",
+    "commandcode": "1.74.1"
+  }
+}
