@@ -1,0 +1,8 @@
+{
+  "name": "multicc-command-code-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "command-code": "1.74.1"
+  }
+}

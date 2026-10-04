@@ -239,6 +239,12 @@ const Map<String, CliFamily> kCliFamilies = <String, CliFamily>{
         'chat': <CliLane>[CliLane('gemini', engine: 'gemini acp')],
         'terminal': <CliLane>[CliLane('gemini')],
       }),
+  'commandcode': CliFamily('Command Code', AppColors.commandcode, mark: '⌘', providerless: true,
+      update: CliUpdate(package: 'command-code', command: 'npm install -g command-code'),
+      lanes: <String, List<CliLane>>{
+        'chat': <CliLane>[CliLane('commandcode', engine: 'command-code acp')],
+        'terminal': <CliLane>[CliLane('commandcode', engine: 'command-code')],
+      }),
   'grok': CliFamily('Grok', AppColors.grok, mark: 'R', providerless: true,
       update: CliUpdate(package: '@xai-official/grok', command: 'npm install -g @xai-official/grok'),
       lanes: <String, List<CliLane>>{

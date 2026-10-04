@@ -482,6 +482,7 @@ enum SessionCli {
   dsh,
   gemini,
   grok,
+  commandcode,
 }
 
 /// Interactive TUI terminal, or stream-json chat.
@@ -509,6 +510,8 @@ SessionCli? tryParseCli(String? s) {
       return SessionCli.dsh;
     case 'gemini':
       return SessionCli.gemini;
+    case 'commandcode':
+      return SessionCli.commandcode;
     case 'grok':
       return SessionCli.grok;
     default:
@@ -535,6 +538,7 @@ extension SessionCliX on SessionCli {
     SessionCli.dsh => 'dsh',
     SessionCli.gemini => 'gemini',
     SessionCli.grok => 'grok',
+    SessionCli.commandcode => 'commandcode',
     SessionCli.claude => 'claude',
   };
 
@@ -586,7 +590,8 @@ extension SessionCliX on SessionCli {
       this != SessionCli.zcode &&
       this != SessionCli.dsh &&
       this != SessionCli.gemini &&
-      this != SessionCli.grok;
+      this != SessionCli.grok &&
+      this != SessionCli.commandcode;
 
   String get effortFieldLabel => switch (this) {
     SessionCli.claude => 'Effort',
@@ -600,6 +605,7 @@ extension SessionCliX on SessionCli {
     SessionCli.dsh => '',
     SessionCli.gemini => '',
     SessionCli.grok => '',
+    SessionCli.commandcode => '',
   };
 
   String get defaultEffort => switch (this) {
@@ -614,6 +620,7 @@ extension SessionCliX on SessionCli {
     SessionCli.dsh => '',
     SessionCli.gemini => '',
     SessionCli.grok => '',
+    SessionCli.commandcode => '',
   };
 
   List<String> get effortOptions => switch (this) {
@@ -671,6 +678,7 @@ extension SessionCliX on SessionCli {
     SessionCli.dsh => const [],
     SessionCli.gemini => const [],
     SessionCli.grok => const [],
+    SessionCli.commandcode => const [],
   };
 }
 
@@ -749,6 +757,11 @@ const kGeminiModelOptions = <MapEntry<String, String>>[
 
 /// Grok Build model suggestions (free text in the CLI); mirrors
 /// GROK_MODEL_OPTIONS in public/chat-ai-config.js.
+const kCommandCodeModelOptions = <MapEntry<String, String>>[
+  MapEntry('', '默认（DeepSeek Flash）'),
+  MapEntry('deepseek/deepseek-flash', 'DeepSeek Flash'),
+];
+
 const kGrokModelOptions = <MapEntry<String, String>>[
   MapEntry('', '默认（跟随 Grok 配置）'),
   MapEntry('grok-code-fast-1', 'grok-code-fast-1'),

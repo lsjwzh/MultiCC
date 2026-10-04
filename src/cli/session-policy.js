@@ -168,7 +168,7 @@ function createSessionPolicy(options) {
     }
     if (cli === 'opencode') return OPENCODE_VARIANTS.has(effort);
     if (cli === 'zcode' || cli === 'kimi' || cli === 'dsh'
-      || cli === 'gemini' || cli === 'grok') return false;
+      || cli === 'gemini' || cli === 'grok' || cli === 'commandcode') return false;
     if (cli === 'qoder') return QODER_REASONING_LEVELS.has(effort);
     if (cli === 'codebuddy') return CODEBUDDY_REASONING_LEVELS.has(effort);
     return EFFORT_LEVELS.has(effort);
@@ -252,7 +252,7 @@ function createSessionPolicy(options) {
       return effort && OPENCODE_VARIANTS.has(effort) ? effort : null;
     }
     if (cli === 'zcode' || cli === 'kimi' || cli === 'dsh'
-      || cli === 'gemini' || cli === 'grok') return null;
+      || cli === 'gemini' || cli === 'grok' || cli === 'commandcode') return null;
     if (cli === 'qoder') return qoderEffortLevel(session);
     if (cli === 'codebuddy') return codebuddyEffortLevel(session);
     const effort = normalizeEffort(session.effort);

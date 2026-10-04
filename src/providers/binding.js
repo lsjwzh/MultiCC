@@ -12,7 +12,7 @@ const ALLOWED_KEYS = new Set([
 // Must track the chat CLI roster (cli-switch.js SUPPORTED_CHAT_CLIS). Providerless
 // CLIs (qoder, codebuddy, dsh, gemini, grok) still cross this boundary; omitting
 // one makes its sessions fail turn preparation with "unsupported cli".
-const SUPPORTED_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok']);
+const SUPPORTED_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok', 'commandcode']);
 const ROLE_KINDS = new Set(['main', 'sub', 'aux']);
 const AGENT_ROLES = new Set(['default', 'worker', 'explorer', 'custom']);
 

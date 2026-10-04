@@ -38,3 +38,19 @@ ENV NODE_ENV=test ASR_LOCAL=off MULTICC_CHROME_BIN=/usr/bin/chromium \
     OPENCODE_CMD=/nonexistent/opencode QODER_CMD=/nonexistent/qoder
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "docker/task-shell/run-tests.js"]
+
+# Command Code 实验实例：独立数据卷，不读取宿主账号、会话或密钥文件。
+FROM tools AS command-code-runtime
+WORKDIR /opt/command-code
+COPY docker/command-code/package.json docker/command-code/package-lock.json ./
+RUN npm ci --legacy-peer-deps --no-audit --no-fund \
+    && /opt/command-code/node_modules/.bin/command-code --version
+
+FROM regression AS command-code
+USER root
+COPY --from=command-code-runtime /opt/command-code /opt/command-code
+ENV COMMAND_CODE_CMD=/opt/command-code/node_modules/.bin/command-code \
+    CMD_LOCAL_ONLY=1 DO_NOT_TRACK=1 CODEX_CMD=/nonexistent/codex
+WORKDIR /opt/multicc
+USER node
+CMD ["node", "docker/command-code/start.js"]
