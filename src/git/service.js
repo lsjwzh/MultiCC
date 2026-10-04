@@ -1034,8 +1034,11 @@ async function gitMergeBack(dir, session, opts = {}) {
     if (await baseBranchWith(execGit, dirPath) !== baseBranch) {
       return { ok: false, blocked: true, reasons: ['base-not-checked-out'], error: `base branch '${baseBranch}' is not checked out` };
     }
-    const mainDirty = (await execGit(dirPath, ['status', '--porcelain'])).length > 0;
-    if (mainDirty) return { ok: false, blocked: true, reasons: ['base-dirty'], error: 'base worktree is dirty' };
+    const mainStatus = await execGit(dirPath, ['status', '--porcelain'], { raw: true });
+    if (mainStatus.trim().length > 0) {
+      const dirtyFiles = mainStatus.split('\n').map(line => line.slice(3).trim()).filter(Boolean);
+      return { ok: false, blocked: true, reasons: ['base-dirty'], dirtyFiles, error: 'base worktree is dirty' };
+    }
 
     progress('commit-session');
     const committed = await commitAllWith(execGit, worktreePath,

@@ -876,6 +876,33 @@ test('autoCommitTurn reports an empty merge and conflicts as chat system message
   assert.equal(failed.calls.chatBroadcasts.at(-1)[1].message, '自动提交失败：spawn git ENOENT');
 });
 
+test('autoCommitTurn tells the chat why a blocked merge did not land', async () => {
+  const dirty = createFixture({
+    implementations: { gitMergeBack: async () => ({ ok: false, blocked: true, reasons: ['base-dirty'],
+      dirtyFiles: ['src/a.js', 'app/b.dart'], error: 'base worktree is dirty' }) },
+  });
+  const result = await dirty.runtime.autoCommitTurn('s1');
+  assert.equal(result.blocked, true);
+  const notice = dirty.calls.chatBroadcasts.at(-1)[1];
+  assert.equal(notice.subtype, 'auto_commit');
+  assert.match(notice.message, /^⚠️ 自动提交未合并：主仓库/);
+  assert.match(notice.message, /src\/a\.js, app\/b\.dart/);
+  assert.equal(dirty.calls.warnings.some(line => /blocked: base-dirty/.test(line)), true);
+
+  const many = createFixture({
+    implementations: { gitMergeBack: async () => ({ ok: false, blocked: true, reasons: ['base-dirty'],
+      dirtyFiles: Array.from({ length: 10 }, (_, i) => `f${i}.js`) }) },
+  });
+  await many.runtime.autoCommitTurn('s1');
+  assert.match(many.calls.chatBroadcasts.at(-1)[1].message, /f7\.js 等 10 个/);
+
+  const detached = createFixture({
+    implementations: { gitMergeBack: async () => ({ ok: false, blocked: true, reasons: ['base-not-checked-out'] }) },
+  });
+  await detached.runtime.autoCommitTurn('s1');
+  assert.match(detached.calls.chatBroadcasts.at(-1)[1].message, /没有切在 .+ 分支上/);
+});
+
 test('autoCommitTurn runs once per session while a merge is in flight', async () => {
   let release;
   const gate = new Promise(resolve => { release = resolve; });

@@ -461,6 +461,26 @@ function createSessionGitRuntime(rawDeps) {
   // the merge runs even when no chat page is connected — the page used to be
   // the trigger, and turns that ended offline were never merged nor caught up.
   const autoCommitInflight = new Set();
+  // A blocked merge used to be dropped silently, which looked exactly like
+  // "the switch is on but nothing happened". Spell the reason out instead.
+  function autoCommitBlockedMessage(result, baseBranch) {
+    const reasons = result.reasons || [];
+    const base = baseBranch || '基分支';
+    if (reasons.includes('base-dirty')) {
+      const files = result.dirtyFiles || [];
+      const shown = files.slice(0, 8).join(', ');
+      const more = files.length > 8 ? ` 等 ${files.length} 个` : '';
+      return `⚠️ 自动提交未合并：主仓库（${base}）工作区有未提交改动，为免覆盖已暂停合并。`
+        + `请先在主仓库提交或清理${files.length ? `：${shown}${more}` : ''}；处理后下一轮结束会自动重试。`;
+    }
+    if (reasons.includes('base-not-checked-out')) {
+      return `⚠️ 自动提交未合并：主仓库当前没有切在 ${base} 分支上。请切回 ${base} 后，下一轮结束会自动重试。`;
+    }
+    if (reasons.includes('busy') || reasons.includes('leased') || reasons.includes('active')) {
+      return '⚠️ 自动提交未合并：工作区正被其他 git 操作占用，下一轮结束会自动重试。';
+    }
+    return `⚠️ 自动提交未合并：${reasons.join(', ') || result.error || '未知原因'}`;
+  }
   async function autoCommitTurn(sessionId) {
     const requested = deps.records.get(sessionId);
     const identity = requested?.workspaceOwnerSessionId
@@ -486,8 +506,14 @@ function createSessionGitRuntime(rawDeps) {
         return { ok: true, merged: false, skipped: true, reason: 'nothing_to_merge' };
       }
       const result = await executeMergeBack(dir, identity, { origin: 'auto' });
-      if (typeof deps.chatBroadcast === 'function' && !result.blocked) {
-        if (result.ok && result.merged) {
+      if (result.blocked) {
+        deps.logger.warn(`[multicc] auto-commit merge ${identity.id} blocked: ${(result.reasons || []).join(', ') || result.error || 'unknown'}`);
+      }
+      if (typeof deps.chatBroadcast === 'function') {
+        if (result.blocked) {
+          deps.chatBroadcast(identity.id, { type: 'system', subtype: 'auto_commit',
+            message: autoCommitBlockedMessage(result, dir.baseBranch) });
+        } else if (result.ok && result.merged) {
           deps.chatBroadcast(identity.id, { type: 'system', subtype: 'auto_commit',
             message: `✓ 自动提交完成：已合并 ${result.commits} 个提交回基分支${result.committed ? '（含本次自动提交）' : ''}` });
         } else if (result.ok) {
