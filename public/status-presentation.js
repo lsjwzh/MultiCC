@@ -111,11 +111,17 @@
       labelKey: 'statusError', ariaKey: 'statusAriaError', airLabelKey: 'airStateFailed',
     }),
     succeeded: Object.freeze({
-      icon: '✅', tone: 'success', spinner: false, terminal: true, priority: 30,
+      // '✓' (U+2713), not '✅' (U+2705): the latter is a colour-emoji glyph —
+      // every platform paints it green from its own font regardless of
+      // `color`/toneOverride, which is exactly why the three ✅ sub-states
+      // (achieved/interact/undetermined) could never actually show three
+      // colours. U+2713 has no emoji presentation, so it always inherits CSS
+      // colour like the label next to it.
+      icon: '✓', tone: 'success', spinner: false, terminal: true, priority: 30,
       labelKey: 'statusSucceeded', ariaKey: 'statusAriaSucceeded', airLabelKey: 'airStateSucceeded',
     }),
     done: Object.freeze({
-      icon: '✅', tone: 'success', spinner: false, terminal: true, priority: 30,
+      icon: '✓', tone: 'success', spinner: false, terminal: true, priority: 30,
       labelKey: 'statusDone', ariaKey: 'statusAriaDone', airLabelKey: 'airStateDone',
       // (`done` answers two questions in Air — task.status and the last workflow
       // stage — and both print this one word.)

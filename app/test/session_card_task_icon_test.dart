@@ -66,15 +66,15 @@ void main() {
       mgr.dispose();
     });
 
-    testWidgets('succeeded — ✅ exactly once（此前重复的场景）', (tester) async {
+    testWidgets('succeeded — ✓ exactly once（此前重复的场景）', (tester) async {
       final mgr = await _pumpCard(tester, status: 'succeeded');
-      expect(find.text('✅'), findsOneWidget);
+      expect(find.text('✓'), findsOneWidget);
       mgr.dispose();
     });
 
-    testWidgets('done — ✅ exactly once', (tester) async {
+    testWidgets('done — ✓ exactly once', (tester) async {
       final mgr = await _pumpCard(tester, status: 'done');
-      expect(find.text('✅'), findsOneWidget);
+      expect(find.text('✓'), findsOneWidget);
       mgr.dispose();
     });
 
@@ -101,7 +101,7 @@ void main() {
       expect(find.text('⚪'), findsNothing);
       expect(find.text('🔄'), findsNothing);
       expect(find.text('⏸️'), findsNothing);
-      expect(find.text('✅'), findsNothing);
+      expect(find.text('✓'), findsNothing);
       mgr.dispose();
     });
 

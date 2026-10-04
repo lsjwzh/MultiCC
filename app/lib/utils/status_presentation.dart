@@ -168,7 +168,11 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
   ),
   CanonicalStatus.succeeded: StatusSpec(
     status: CanonicalStatus.succeeded,
-    icon: '✅',
+    // '✓' (U+2713)，不是 '✅' (U+2705)：后者是彩色 emoji 字形，各平台都直接吃
+    // 自带的绿色，TextStyle.color/toneOverride 完全管不到它——这正是三种
+    // ✅ 子状态（达成目标/需要交互/没判定）始终显示不出三种颜色的原因。
+    // U+2713 没有 emoji 呈现，永远跟着 CSS/TextStyle 的颜色走，和旁边的字一致。
+    icon: '✓',
     tone: 'success',
     spinner: false,
     terminal: true,
@@ -179,7 +183,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
   ),
   CanonicalStatus.done: StatusSpec(
     status: CanonicalStatus.done,
-    icon: '✅',
+    icon: '✓',
     tone: 'success',
     spinner: false,
     terminal: true,

@@ -245,7 +245,7 @@ void main() {
       // 徽标本体：状态没变、颜色没变，只有可见文案换了一个。
       final achieved = _task(runState: 'succeeded', goalState: 'achieved');
       expect(airTaskStatus(achieved), CanonicalStatus.succeeded);
-      expect(airTaskSpec(achieved).icon, '✅');
+      expect(airTaskSpec(achieved).icon, '✓');
     });
 
     testWidgets('徽标画出的是子状态那个词', (tester) async {
