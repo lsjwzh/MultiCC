@@ -179,13 +179,16 @@
    *  而词表只有一份（status-presentation.js 的 succeededSubLabel）。 */
   function statusBadge(task, opts = {}) {
     const spec = taskSpec(task);
-    const label = registry()?.succeededSubLabel?.(spec.status, task?.goalState, t)
+    const api = registry();
+    const label = api?.succeededSubLabel?.(spec.status, task?.goalState, t)
       || STATUS_COPY[spec.status] || spec.status;
     const badge = make('span');
-    const api = registry();
     if (api) {
       // translate 恒等于可见文案：Air 没有词典，ariaKey/labelKey 都该落到同一个词上。
-      api.applyStatusBadge(badge, 'task', spec.status, { label, translate: () => label, ...opts });
+      // toneOverride 把 ✅ 的三个子状态拉开颜色：达成目标留绿，需要交互转黄，没判定
+      // 出来转灰——调用方（opts）如果自己传了 toneOverride 优先用那个。
+      const toneOverride = api.succeededGoalTone?.(spec.status, task?.goalState) || '';
+      api.applyStatusBadge(badge, 'task', spec.status, { label, translate: () => label, toneOverride, ...opts });
     } else {
       badge.className = `mc-status st-tone-${spec.tone}`;
       badge.textContent = `${spec.icon} ${label}`;
@@ -262,10 +265,12 @@
       .filter(task => status === 'all' ? true
         : status === 'archived' ? task.status === 'archived'
           : status === 'succeeded' ? taskStatus(task) === 'succeeded'
-            : status === 'running' ? isRunning(task)
-              : status === 'waiting' ? taskStatus(task) === 'waiting'
-                : status === 'error' ? taskStatus(task) === 'error'
-                  : !['done', 'archived'].includes(task.status))
+            : status === 'achieved' ? taskStatus(task) === 'succeeded' && task.goalState === 'achieved'
+              : status === 'interact' ? taskStatus(task) === 'succeeded' && task.goalState === 'interact'
+                : status === 'running' ? isRunning(task)
+                  : status === 'waiting' ? taskStatus(task) === 'waiting'
+                    : status === 'error' ? taskStatus(task) === 'error'
+                      : !['done', 'archived'].includes(task.status))
       .filter(task => dir === 'all' || task.dirId === dir);
     if (keepOrder) return rows;
     // 本地过滤按标题（和目录名）匹配：它仍是即时反馈，也是全文检索不可用时的退路。

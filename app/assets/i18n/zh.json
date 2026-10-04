@@ -3648,6 +3648,8 @@
   "annotLoadFailed": "图片加载失败：{error}",
   "annotExportFailed": "标注图导出失败，只放入了文字",
   "airStatSucceeded": "执行成功",
+  "airStatGoalAchieved": "完成目标",
+  "airStatGoalInteract": "需要交互",
   "airDirStatSucceededHint": "仍保留在本目录",
   "airAdminTileRunning": "进行中",
   "airAdminTileRunningIdle": "现在没有在跑的任务",

@@ -588,6 +588,23 @@ String succeededSubLabel(Object? status, Object? goalState) {
   return word == labelKey ? '' : word;
 }
 
+/// `succeeded` 的色调覆写：同一枚 ✅，三种子状态要能被一眼分开，不止靠旁边的字。
+///   · 达成目标           → '' （不覆写，留着 success 的绿）
+///   · 需要交互           → 'interact'（黄）
+///   · 没判定出来是哪一种 → 'muted'（灰）
+/// 别的状态一律返回 ''。镜像：public/status-presentation.js 的 succeededGoalTone。
+String succeededGoalTone(Object? status, Object? goalState) {
+  final key = _norm(status);
+  final canonical = statusPresentation.keys.any((s) => s.name == key)
+      ? key
+      : (statusAliases[key]?.name ?? '');
+  if (canonical != CanonicalStatus.succeeded.name) return '';
+  final goal = _norm(goalState);
+  if (goal == 'achieved') return '';
+  if (goal == 'interact') return 'interact';
+  return 'muted';
+}
+
 /// 运行标记的颜色：和 Web 的 status-presentation.js `RING_TINTS` 是同一份，顺序也
 /// 必须一样 —— 颜色按 id 哈希取，同一个 id 在两端要落到同一个色。
 /// tests/test-status-presentation.js 逐项比对这两张表。
@@ -634,6 +651,10 @@ Color statusToneColor(String tone) {
       return AppColors.danger;
     case 'muted':
       return AppColors.faint;
+    // 覆写专用色调：succeededGoalTone 给「执行成功但需要交互」用的黄，数值与
+    // public/air.css 的 --st-interact 一致，两端看着是同一个颜色。
+    case 'interact':
+      return const Color(0xFFb8960c);
     case 'neutral':
     default:
       return AppColors.muted;
@@ -677,6 +698,7 @@ class StatusBadge extends StatelessWidget {
     this.dense = false,
     this.label,
     this.semanticLabel,
+    this.toneOverride,
   });
 
   final StatusDomain domain;
@@ -692,13 +714,19 @@ class StatusBadge extends StatelessWidget {
   final String? label;
   final String? semanticLabel;
 
+  /// 换掉注册表里那个色调，不换图标/文案——`succeededGoalTone` 用它把同一枚
+  /// ✅ 按「达成目标/需要交互/没判定出来」拉开颜色。空值表示不覆写。
+  final String? toneOverride;
+
   @override
   Widget build(BuildContext context) {
     final spec = statusSpecOf(domain, status);
     final word = label ?? spec.label;
     final accessible = semanticLabel ?? spec.semanticLabel;
     final safeReason = sanitizeReason(reason);
-    final color = spec.color;
+    final color = (toneOverride != null && toneOverride!.isNotEmpty)
+        ? statusToneColor(toneOverride!)
+        : spec.color;
     final icon = spec.spinner
         ? _RunningGlyph(glyph: spec.icon, fontSize: fontSize, color: color)
         : Text(spec.icon, style: TextStyle(fontSize: fontSize));

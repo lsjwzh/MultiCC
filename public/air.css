@@ -32,9 +32,11 @@
   --well: #fbfdff;
   --bg-soft: #f4f8fd;
   --faint: #8a9aab;
-  /* 状态徽标（status-badge.css）按 tone 取色，tone 落到这七个变量上。它自带的
+  /* 状态徽标（status-badge.css）按 tone 取色，tone 落到这八个变量上。它自带的
      回退值是暗色主题的，直接拿到浅底上会发灰发白，所以浅色页面在这里交出自己
-     的调色板 —— 交的是像素，不是「哪个状态该是什么颜色」那套语义。 */
+     的调色板 —— 交的是像素，不是「哪个状态该是什么颜色」那套语义。
+     --st-interact 是「执行成功但还要你接着交互」那个 ✅ 的黄——特意跟 waiting/
+     blocked 的琥珀橙拉开，不然三种状态在浅底上会混成一个颜色。 */
   --st-neutral: #6f8096;
   --st-muted: #8a9aab;
   --st-info: #1678e8;
@@ -43,6 +45,7 @@
   --st-blocked: #a8621a;
   --st-success: #1f8f63;
   --st-danger: #b64e43;
+  --st-interact: #b8960c;
   font: 14px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--bg);
