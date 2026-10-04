@@ -3602,7 +3602,7 @@
   "rsViewHint": "只看模式：不会向本机发送任何操作。「✎ 标注」可冻结画面后标注对话",
   "rsControlHint": "点击=单击，拖动=拖拽，滚轮=滚动，快速点两下=双击；双指捏合可放大精确定位，点两下复位；本机按 Esc 可随时急停",
   "rsRightClick": "右键",
-  "rsRightClickHint": "下一次点击按右键发送（触屏用）",
+  "rsRightClickHint": "下一次点击按右键发送",
   "rsPause": "暂停",
   "rsResume": "继续",
   "rsUnhalt": "解除急停",
