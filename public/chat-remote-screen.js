@@ -232,6 +232,7 @@
         clearTimeout(timer);
         s.img.style.display = 'none';
         status(tr('rsLiveMode', '流畅模式'));
+        if (!s.screenW) void ensureScreenSize(); // 轻点精确单击的坐标域要逻辑尺寸
         if (s.control) setControl(true);
         resolve(true);
       });
@@ -390,17 +391,41 @@
     clampPan(); applyZoom();
   }
 
-  // 放大态的轻点：noVNC 模式按 canvas 的 width 属性（= framebuffer 尺寸）
-  // 归一化，fallback 模式沿用 toScreen；图上 1px=1 逻辑点，两套坐标同源。
-  function zoomTap(ev, button) {
+  // RFB 模式下帧循环不跑，X-Screen-Width 头拿不到；轻点走 HTTP input，其
+  // 坐标域是屏幕逻辑点——Agent 只对 RFB PointerEvent 自动乘 RFB_DIV，直
+  // 接用 canvas 的 framebuffer 尺寸会差 RFB_DIV 倍（点到偏左上的位置）。
+  // 连上流畅模式后探一次（HEAD 走同一 GET handler，只收响应头不收图）。
+  let sizeProbe = null;
+  function ensureScreenSize() {
+    if (s && s.screenW) return Promise.resolve(s.screenW);
+    if (!sizeProbe) {
+      sizeProbe = fetch(tok('/api/remote-screen/frame'), { method: 'HEAD' })
+        .then(res => {
+          if (s && res.ok) {
+            s.screenW = Number(res.headers.get('X-Screen-Width')) || s.screenW;
+            s.screenH = Number(res.headers.get('X-Screen-Height')) || s.screenH;
+          }
+        })
+        .catch(() => {})
+        .finally(() => { sizeProbe = null; });
+    }
+    return sizeProbe.then(() => (s ? s.screenW : 0));
+  }
+
+  // 放大态的轻点：noVNC 模式视觉归一化后乘屏幕逻辑尺寸（不是 canvas 的
+  // framebuffer 尺寸），fallback 模式沿用 toScreen；HTTP input 的坐标域
+  // 是屏幕逻辑点。
+  async function zoomTap(ev, button) {
     let x = null, y = null;
     if (s.rfbWrap) {
       const cv = s.rfbWrap.querySelector('canvas');
       if (cv) {
         const r = cv.getBoundingClientRect();
         if (r.width && r.height) {
-          x = Math.round((ev.clientX - r.left) / r.width * cv.width);
-          y = Math.round((ev.clientY - r.top) / r.height * cv.height);
+          const sw = s.screenW || (await ensureScreenSize()) || cv.width;
+          const sh = s.screenH || Math.round(sw * cv.height / cv.width);
+          x = Math.round((ev.clientX - r.left) / r.width * sw);
+          y = Math.round((ev.clientY - r.top) / r.height * sh);
         }
       }
     } else if (s.img) {
@@ -513,7 +538,7 @@
           const now = Date.now();
           if (zoom.scale > 1 && now - lastTap < 350) { lastTap = 0; resetZoom(); return; }
           lastTap = now;
-          if (zoom.scale > 1) zoomTap(ev, p.button);
+          if (zoom.scale > 1) void zoomTap(ev, p.button);
         }
       }
     }, true);
