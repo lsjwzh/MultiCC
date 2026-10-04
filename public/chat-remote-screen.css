@@ -52,6 +52,15 @@
 }
 .rs-zoombadge[hidden] { display: none; }
 
+/* 框选局部放大：拖画矩形 → 选区等比铺满视口（复用 rs-zoom 变换）。 */
+.rs-boxrect {
+  position: absolute; border: 1.5px dashed #4da3ff; background: rgba(77, 163, 255, .14);
+  pointer-events: none; z-index: 3;
+}
+.rs-boxrect[hidden] { display: none; }
+.rs-btn.rs-boxon { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+.rs-stage.rs-boxsel { cursor: crosshair; }
+
 /* 权限门引导条：缺屏幕录制/辅助功能时出现在头部下方，勾上开关后自动消失。 */
 .rs-permbar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;

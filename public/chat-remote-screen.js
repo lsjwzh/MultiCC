@@ -356,6 +356,34 @@
   }
   function resetZoom() { zoom.scale = 1; zoom.tx = 0; zoom.ty = 0; applyZoom(); }
 
+  // ── 框选局部放大 ──
+  // 「⛶」进入框选模式：拖一个矩形，松开把选区等比放大铺满视口——只是给现有
+  // zoom 变换换一种设定方式，之后的平移 / 精确点 / 双击复位全部继承。框先经
+  // 当前变换的逆映射回 zoomer 内容坐标（transform-origin 为 0 0，数学自洽），
+  // 所以放大态里再框选同样成立；只看 / 可操作两态通用（纯显示层变换）。
+  function setBoxSel(on) {
+    if (!s || s.closed) return;
+    s.boxSelOn = on;
+    s.boxBtn.classList.toggle('rs-boxon', on);
+    s.stage.classList.toggle('rs-boxsel', on);
+    if (s.boxRect) s.boxRect.hidden = true;
+    if (on) status(tr('rsBoxSelHint', '在画面上拖动圈选要放大的区域，画完自动退出'));
+  }
+  function applyBoxZoom(a, b) {
+    const st = s.stage;
+    const k = zoom.scale || 1;
+    // 视口框 → zoomer 内容坐标（当前变换的逆）
+    const x0 = (Math.min(a.x, b.x) - zoom.tx) / k, x1 = (Math.max(a.x, b.x) - zoom.tx) / k;
+    const y0 = (Math.min(a.y, b.y) - zoom.ty) / k, y1 = (Math.max(a.y, b.y) - zoom.ty) / k;
+    // 选区等比 fit 铺满视口；框得比视口还大时 min 夹到 1（=复位），上限与捏合一致
+    const k2 = Math.min(5, Math.max(1, Math.min(
+      st.clientWidth / Math.max(1, x1 - x0), st.clientHeight / Math.max(1, y1 - y0))));
+    zoom.scale = k2;
+    zoom.tx = st.clientWidth / 2 - (x0 + x1) / 2 * k2;
+    zoom.ty = st.clientHeight / 2 - (y0 + y1) / 2 * k2;
+    clampPan(); applyZoom();
+  }
+
   // 放大态的轻点：noVNC 模式按 canvas 的 width 属性（= framebuffer 尺寸）
   // 归一化，fallback 模式沿用 toScreen；图上 1px=1 逻辑点，两套坐标同源。
   function zoomTap(ev, button) {
@@ -381,9 +409,38 @@
   function wireGestures(stage) {
     const pts = new Map();
     let pinch = null, pan = null, lastTap = 0;
+    // 框选拖拽中 {id, rect, x0, y0, x1, y1}：rect 是 down 时 stage 的视口位置。
+    let box = null;
+    const paintBox = () => {
+      if (!box || !s || !s.boxRect) return;
+      s.boxRect.hidden = false;
+      s.boxRect.style.left = Math.min(box.x0, box.x1) - box.rect.left + 'px';
+      s.boxRect.style.top = Math.min(box.y0, box.y1) - box.rect.top + 'px';
+      s.boxRect.style.width = Math.abs(box.x1 - box.x0) + 'px';
+      s.boxRect.style.height = Math.abs(box.y1 - box.y0) + 'px';
+    };
     // iOS Safari 的私有手势缩放会和 pointer 捏合叠乘，必须一并关掉。
     stage.addEventListener('gesturestart', ev => ev.preventDefault());
     stage.addEventListener('pointerdown', ev => {
+      if (s && s.boxSelOn) {
+        if (box) { // 拖拽中又落一指：取消本次框选，新指落回常规手势
+          pts.delete(box.id);
+          box = null;
+          if (s.boxRect) s.boxRect.hidden = true;
+          setBoxSel(false);
+        } else { // 鼠标 / 触屏一致：画框期间独占，noVNC 与 wirePointer 都不掺和
+          pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+          ev.preventDefault();
+          ev.stopPropagation();
+          try { stage.setPointerCapture(ev.pointerId); } catch {}
+          box = {
+            id: ev.pointerId, rect: stage.getBoundingClientRect(),
+            x0: ev.clientX, y0: ev.clientY, x1: ev.clientX, y1: ev.clientY,
+          };
+          paintBox();
+          return;
+        }
+      }
       if (ev.pointerType === 'mouse') return; // 鼠标用户不受影响，走原有交互
       pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
       const two = pts.size >= 2;
@@ -405,6 +462,12 @@
     stage.addEventListener('pointermove', ev => {
       if (!pts.has(ev.pointerId)) return;
       pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (box) {
+        if (ev.pointerId !== box.id) return;
+        box.x1 = ev.clientX; box.y1 = ev.clientY;
+        paintBox();
+        return;
+      }
       if (pinch && pts.size >= 2) {
         const [a, b] = [...pts.values()];
         const d = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
@@ -421,6 +484,21 @@
       }
     }, true);
     stage.addEventListener('pointerup', ev => {
+      if (box) {
+        if (ev.pointerId !== box.id) return;
+        pts.delete(ev.pointerId);
+        const b = box;
+        box = null;
+        if (s && s.boxRect) s.boxRect.hidden = true;
+        setBoxSel(false);
+        // 对角线太短视为误触：退出框选但不改缩放
+        if (s && Math.hypot(b.x1 - b.x0, b.y1 - b.y0) >= 24) {
+          applyBoxZoom(
+            { x: b.x0 - b.rect.left, y: b.y0 - b.rect.top },
+            { x: b.x1 - b.rect.left, y: b.y1 - b.rect.top });
+        }
+        return;
+      }
       pts.delete(ev.pointerId);
       if (pinch && pts.size < 2) pinch = null; // 剩一指可接着平移
       if (pan && pts.size === 0) {
@@ -434,6 +512,14 @@
       }
     }, true);
     stage.addEventListener('pointercancel', ev => {
+      if (box) {
+        if (ev.pointerId !== box.id) return;
+        pts.delete(ev.pointerId);
+        box = null;
+        if (s && s.boxRect) s.boxRect.hidden = true;
+        setBoxSel(false);
+        return;
+      }
       pts.delete(ev.pointerId); pinch = null; pan = null;
     }, true);
   }
@@ -482,12 +568,13 @@
     const head = el('div', 'rs-head');
     const title = el('span', 'rs-title', '🖥 ' + tr('rsTitle', '本机屏幕'));
     const statusEl = el('span', 'rs-status');
-    s = { control: false, paused: false, closed: false, screenW: 0, screenH: 0, status: statusEl, errAt: 0, haltTimer: 0, permTimer: 0 };
+    s = { control: false, paused: false, closed: false, boxSelOn: false, screenW: 0, screenH: 0, status: statusEl, errAt: 0, haltTimer: 0, permTimer: 0 };
     s.modeBtn = btn('', tr('rsModeTitle', '切换只看 / 可操作'), () => setControl(!s.control));
     s.rightBtn = btn(tr('rsRightClick', '右键'), tr('rsRightClickHint', '下一次点击按右键发送（触屏用）'), () => {
       s.rightOnce = !s.rightOnce;
       s.rightBtn.classList.toggle('on', s.rightOnce);
     });
+    s.boxBtn = btn('⛶', tr('rsBoxZoomTitle', '圈选一块区域局部放大'), () => setBoxSel(!s.boxSelOn));
     const pauseBtn = btn('⏸ ' + tr('rsPause', '暂停'), '', async () => {
       s.paused = !s.paused;
       pauseBtn.textContent = s.paused ? '▶ ' + tr('rsResume', '继续') : '⏸ ' + tr('rsPause', '暂停');
@@ -514,7 +601,7 @@
     s.unhalt.hidden = true;
     const releaseBtn = btn(tr('rsRelease', '交还'), tr('rsReleaseTitle', '释放操作租约，让其它会话的 agent 立刻可以操作电脑'), () => input({ op: 'release' }));
     head.append(title, statusEl,
-      s.modeBtn, s.rightBtn,
+      s.modeBtn, s.rightBtn, s.boxBtn,
       btn('✎ ' + tr('rsAnnotate', '标注'), tr('rsAnnotateTitle', '冻结当前画面并打开标注器：开「实时透传」则标记直接在本机执行，关则录入输入框与 agent 对话'), annotate, 'primary'),
       pauseBtn, s.unhalt, releaseBtn,
       btn('✕', tr('rsClose', '关闭'), close, 'rs-close'));
@@ -532,6 +619,10 @@
     s.zoomBadge = btn('', tr('rsZoomReset', '复位缩放'), () => resetZoom(), 'rs-zoombadge');
     s.zoomBadge.hidden = true;
     stage.appendChild(s.zoomBadge);
+    // 框选放大时画的矩形（zoomer 之外、不随缩放移动）
+    s.boxRect = el('div', 'rs-boxrect');
+    s.boxRect.hidden = true;
+    stage.appendChild(s.boxRect);
     resetZoom();
     s.permBar = el('div', 'rs-permbar');
     s.permBar.hidden = true;
