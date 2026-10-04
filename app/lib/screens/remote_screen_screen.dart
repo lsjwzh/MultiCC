@@ -105,6 +105,14 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   Timer? _downDefer;
   bool _longPressFired = false;
 
+  /// 框选局部放大（与 Web 版 setBoxSel 同一交互）：开启后拖一个矩形，
+  /// 松开把选区等比 fit 铺满视口——只是给 _xform 换一种设定方式，之后的
+  /// 平移 / 精确点 / 双击复位全部继承。框是视口坐标，应用时经当前矩阵
+  /// 的逆映射回 child 坐标，所以放大态里再框选同样成立。
+  bool _boxSelOn = false;
+  Rect? _boxRect;
+  Offset _boxAnchor = Offset.zero;
+
   @override
   void initState() {
     super.initState();
@@ -463,6 +471,17 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
             color: _control ? const Color(0xFF2ba67a) : null,
             onPressed: () => _setControl(!_control),
           ),
+          IconButton(
+            icon: const Icon(Icons.crop_free),
+            tooltip: t('rsBoxZoomTitle'),
+            color: _boxSelOn ? const Color(0xFF2ba67a) : null,
+            onPressed: () {
+              setState(() {
+                _boxSelOn = !_boxSelOn;
+                _boxRect = null;
+              });
+            },
+          ),
         ],
       ),
       body: SafeArea(
@@ -490,6 +509,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     final bits = <String>[
       if (w > 0 && h > 0) '$w×$h',
       _modeLabel,
+      if (_boxSelOn) t('rsBoxSelHint'),
       if (_svc.mode == RemoteScreenMode.live &&
           _fps != null &&
           _statusErr == null)
@@ -697,9 +717,66 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
             ),
           ),
         ),
+        // 框选放大：opaque 层独占指针（IV / Listener 都不进 hit path），
+        // 画完自动退出，双击与 % 徽标复位照常可用（徽标在本层之上）。
+        if (_boxSelOn)
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanStart: (d) => setState(() {
+                _boxAnchor = d.localPosition;
+                _boxRect = Rect.fromPoints(_boxAnchor, d.localPosition);
+              }),
+              onPanUpdate: (d) => setState(() {
+                _boxRect = Rect.fromPoints(_boxAnchor, d.localPosition);
+              }),
+              onPanEnd: (_) => _finishBoxSel(vp, offX, offY, dw, dh),
+              onPanCancel: () => setState(() {
+                _boxRect = null;
+                _boxSelOn = false;
+              }),
+            ),
+          ),
+        if (_boxSelOn && _boxRect != null && !_boxRect!.isEmpty)
+          Positioned.fromRect(
+            rect: _boxRect!,
+            child: IgnorePointer(
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: const Color(0xFF4da3ff), width: 1.5),
+                  color: const Color(0x244da3ff),
+                ),
+              ),
+            ),
+          ),
         if (_zoomed) _zoomBadge(vp, offX, offY, dw, dh),
       ],
     );
+  }
+
+  // 松手：视口框经当前矩阵的逆映射回 child 坐标，等比 fit 铺满视口后
+  // 走同一套 clamp / 徽标更新。框太小视为误触，退出框选但不改缩放。
+  void _finishBoxSel(Size vp, double offX, double offY, double dw, double dh) {
+    final r = _boxRect;
+    _boxRect = null;
+    _boxSelOn = false;
+    if (r == null || r.width < 24 || r.height < 24) {
+      if (mounted) setState(() {});
+      return;
+    }
+    final inv = Matrix4.inverted(_xform.value);
+    final a = MatrixUtils.transformPoint(inv, r.topLeft);
+    final b = MatrixUtils.transformPoint(inv, r.bottomRight);
+    final bw = (b.dx - a.dx).abs().clamp(1.0, double.infinity);
+    final bh = (b.dy - a.dy).abs().clamp(1.0, double.infinity);
+    final k2 = (vp.width / bw < vp.height / bh ? vp.width / bw : vp.height / bh)
+        .clamp(1.0, 6.0)
+        .toDouble();
+    final tx = vp.width / 2 - (a.dx + b.dx) / 2 * k2;
+    final ty = vp.height / 2 - (a.dy + b.dy) / 2 * k2;
+    _xform.value = Matrix4.identity()..translate(tx, ty)..scale(k2);
+    _onZoomUpdate(vp, offX, offY, dw, dh);
+    if (mounted) setState(() {});
   }
 
   void _onZoomUpdate(Size vp, double offX, double offY, double dw, double dh) {

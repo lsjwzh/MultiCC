@@ -341,8 +341,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +1 键（rsZoomReset）并改写 2 条提示值：屏幕浮层的双指捏合缩放（手机精确定位）。
     // +2 键净增（换掉旧「跟随本机 CLI」3 键，加 airOfficialAcctCliCopy*/CliLoginHint* 5 键）：官方账号面板的
     // 「拷贝自本机 CLI」标记与「本机 CLI 已登录、请在这里再登录一次」提醒。
-    maxLines: 8660,
-    maxBytes: 547408,
+    // +2 键（rsBoxZoomTitle/rsBoxSelHint）：屏幕浮层的框选局部放大（web+App 共用）。
+    maxLines: 8664,
+    maxBytes: 548000,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

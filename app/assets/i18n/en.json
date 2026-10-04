@@ -3625,6 +3625,8 @@
   "rsFallback": "Live stream dropped; switched to the low-fps fallback",
   "rsRfbCtrlHint": "Click / drag / type right on this screen; pinch to zoom in for precise taps, double-tap to reset; press Esc on the Mac to halt anytime",
   "rsZoomReset": "Reset zoom",
+  "rsBoxZoomTitle": "Select an area to zoom in",
+  "rsBoxSelHint": "Drag to select the area to zoom in",
   "annotResetView": "Reset view",
   "annotToolPan": "Pan",
   "annotToolPoint": "Point",
