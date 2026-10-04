@@ -260,6 +260,28 @@
     return word && word !== labelKey ? String(word) : '';
   }
 
+  /**
+   * `succeeded` 的色调覆写：同一枚 ✅，三种子状态要能被一眼分开，不止靠旁边的字。
+   *   · 达成目标           → '' （不覆写，留着 success 的绿）
+   *   · 需要交互           → 'interact'（黄）——这是「做完了但还要你接着做点什么」
+   *   · 没判定出来是哪一种 → 'muted'（灰）——classify 没给目标，或给了个认不出的值
+   * 别的状态一律返回 ''：色调覆写只挂在 ✅ 这一格上。调用方把空串当「不覆写」，
+   * 直接用 applyStatusBadge/statusBadgeHtml 的 opts.toneOverride 接住：
+   *
+   *   const toneOverride = succeededGoalTone(status, task.goalState);
+   *
+   * Dart 端镜像：app/lib/utils/status_presentation.dart 的 succeededGoalTone。
+   */
+  function succeededGoalTone(status, goalState) {
+    const key = normalizeKey(status);
+    const canonical = STATUS_PRESENTATION[key] ? key : STATUS_ALIASES[key];
+    if (canonical !== 'succeeded') return '';
+    const goal = normalizeKey(goalState);
+    if (goal === 'achieved') return '';
+    if (goal === 'interact') return 'interact';
+    return 'muted';
+  }
+
   // ── Air copy: one table for both Air surfaces ───────────────────────────────
   //
   // Air (sidebar task rows + the console) prints a status in ITS OWN words — the
@@ -510,6 +532,13 @@
     [...new Set(Object.values(STATUS_PRESENTATION).map(p => `st-tone-${p.tone}`))],
   );
 
+  // Tones that only ever appear via opts.toneOverride (succeededGoalTone's
+  // 'interact') and so are absent from STATUS_PRESENTATION itself. They still
+  // need to be in the classList cleanup sweep below, or a badge that goes
+  // succeeded+interact → succeeded+achieved keeps a stale yellow class.
+  const OVERRIDE_TONE_CLASSES = Object.freeze(['st-tone-interact']);
+  const ALL_TONE_CLASSES = Object.freeze([...TONE_CLASSES, ...OVERRIDE_TONE_CLASSES]);
+
   /** Direct child carrying `className`, or null. Works on any minimal DOM. */
   function ownChild(el, className) {
     const kids = el.children || [];
@@ -548,13 +577,14 @@
     const spec = presentation(domain, status);
     const { label, accessible, reason, stale } = resolveCopy(spec, opts);
     const showLabel = opts.showLabel !== false;
+    const tone = typeof opts.toneOverride === 'string' && opts.toneOverride ? opts.toneOverride : spec.tone;
     // `opts.document` lets callers that already hold a document reference (the
     // chat modules, and the fake DOM in tests) avoid depending on a global.
     const doc = el.ownerDocument || opts.document || global.document;
 
     el.classList.add('mc-status');
-    for (const tone of TONE_CLASSES) el.classList.remove(tone);
-    el.classList.add(`st-tone-${spec.tone}`);
+    for (const toneClass of ALL_TONE_CLASSES) el.classList.remove(toneClass);
+    el.classList.add(`st-tone-${tone}`);
     el.classList.toggle('st-spin', spec.spinner === true);
     el.classList.toggle('st-terminal', spec.terminal === true);
     el.classList.toggle('st-stale', !!stale);
@@ -601,11 +631,12 @@
     const spec = presentation(domain, status);
     const { label, accessible, reason, stale } = resolveCopy(spec, opts);
     const showLabel = opts.showLabel !== false;
+    const tone = typeof opts.toneOverride === 'string' && opts.toneOverride ? opts.toneOverride : spec.tone;
     const title = [label, stale, reason].filter(Boolean).join(' · ');
     const aria = [accessible, stale, reason].filter(Boolean).join(' · ');
     const classes = [
       'mc-status',
-      `st-tone-${spec.tone}`,
+      `st-tone-${tone}`,
       spec.spinner ? 'st-spin' : '',
       spec.terminal ? 'st-terminal' : '',
       stale ? 'st-stale' : '',
@@ -653,6 +684,7 @@
     FREEZE_REASON_STATUS,
     CLASSIFY_LETTER_STATUS,
     TONE_CLASSES,
+    OVERRIDE_TONE_CLASSES,
     RING_TINTS,
     ringTint,
     coerceStatus,
@@ -660,6 +692,7 @@
     canStopRunState,
     classifyStatus,
     succeededSubLabel,
+    succeededGoalTone,
     GOAL_STATE_LABEL_KEYS,
     airStatusLabel,
     airStatusLabels,

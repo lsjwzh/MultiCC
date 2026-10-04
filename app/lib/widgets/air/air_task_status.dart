@@ -24,6 +24,8 @@ enum AirDirectoryTaskFilter {
   waiting('等待回复'),
   error('异常'),
   succeeded('执行成功'),
+  achieved('完成目标'),
+  interact('需要交互'),
   all('全部记录'),
   archived('已归档');
 
@@ -36,6 +38,12 @@ enum AirDirectoryTaskFilter {
     waiting => airTaskStatus(task) == CanonicalStatus.waiting,
     error => airTaskStatus(task) == CanonicalStatus.error,
     succeeded => airTaskStatus(task) == CanonicalStatus.succeeded,
+    achieved =>
+      airTaskStatus(task) == CanonicalStatus.succeeded &&
+          task.goalState == 'achieved',
+    interact =>
+      airTaskStatus(task) == CanonicalStatus.succeeded &&
+          task.goalState == 'interact',
     all => true,
     archived => task.status == 'archived',
   };
@@ -84,6 +92,9 @@ class AirTaskStatusBadge extends StatelessWidget {
     // 退回「执行成功」。同 Web 的 `statusBadge()`。
     final word = succeededSubLabel(status, task.goalState);
     final shown = word.isEmpty ? airStatusLabel(status) : word;
+    // 色调覆写同 Web 的 `statusBadge()`：达成目标留绿，需要交互转黄，没判定
+    // 出来转灰 —— 三种子状态不止靠旁边的字分开。
+    final toneOverride = succeededGoalTone(status, task.goalState);
     return StatusBadge(
       domain: StatusDomain.task,
       status: status,
@@ -91,6 +102,7 @@ class AirTaskStatusBadge extends StatelessWidget {
       semanticLabel: shown,
       fontSize: fontSize,
       dense: dense,
+      toneOverride: toneOverride.isEmpty ? null : toneOverride,
     );
   }
 }

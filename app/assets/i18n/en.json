@@ -3667,6 +3667,8 @@
   "annotLoadFailed": "Failed to load image: {error}",
   "annotExportFailed": "Could not export the annotated image; only the text was inserted",
   "airStatSucceeded": "Succeeded",
+  "airStatGoalAchieved": "Goal achieved",
+  "airStatGoalInteract": "Needs interaction",
   "airDirStatSucceededHint": "Still kept in this workspace",
   "airAdminTileRunning": "In progress",
   "airAdminTileRunningIdle": "Nothing running right now",
