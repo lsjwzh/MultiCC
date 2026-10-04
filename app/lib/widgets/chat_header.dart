@@ -17,7 +17,6 @@ import '../screens/settings_screen.dart';
 import '../utils/context_level.dart';
 import '../screens/share_messages_screen.dart';
 import 'git_log_sheet.dart';
-import 'run_config/run_chip.dart';
 
 class ChatHeader extends StatelessWidget {
   final SettingsService settings;
@@ -255,8 +254,7 @@ class ChatHeader extends StatelessWidget {
           final dragTitle = onSheetDragUpdate != null && onSheetDragEnd != null
               ? GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onVerticalDragUpdate: (d) =>
-                      onSheetDragUpdate!(d.delta.dy),
+                  onVerticalDragUpdate: (d) => onSheetDragUpdate!(d.delta.dy),
                   onVerticalDragEnd: (d) =>
                       onSheetDragEnd!(d.velocity.pixelsPerSecond.dy),
                   child: titleLine,
@@ -297,10 +295,7 @@ class ChatHeader extends StatelessWidget {
                 ),
               ),
             ),
-            if (advancedMode) ...[
-              const SizedBox(width: 4),
-              brand,
-            ],
+            if (advancedMode) ...[const SizedBox(width: 4), brand],
           ];
           // Connection dot — tap to manually reconnect when disconnected.
           final connectionDot = GestureDetector(
@@ -345,20 +340,8 @@ class ChatHeader extends StatelessWidget {
                 tooltip: t('reconnect'),
                 onTap: () => _forceReconnect(context, provider),
               ),
-              // Provider / Model / Effort unified chip. `desiredCli` + `pending`:
-              // 会话忙时换道是「下轮生效」，药丸要跟着用户选好的那条车道走，
-              // 否则列的还是旧车道的 Provider 池（web 的 modelBtn 同一个口径）。
-              const SizedBox(width: 4),
-              // 运行配置（CLI · 线路 · 模型 · 强度，或自动挑选的池子）。CLI 角标
-              // 与 AI 配置药丸已经并进这一枚 chip，点开只有「运行配置」一个面板。
-              RunChip(
-                sessionId: provider.executionSessionName,
-                cli: provider.pendingConfiguration.desiredCli(provider.cli),
-                pending: provider.pendingConfiguration.value,
-                settings: settings,
-                compact: narrow,
-                maxLabelWidth: narrow ? constraints.maxWidth / 3 : null,
-              ),
+              // 运行配置 chip 不在页头了：它跟 web 移动端一样骑在输入卡片顶上的
+              // 配置带里（input_bar.dart），简易/进阶两种模式都看得到。
               const SizedBox(width: 4),
               if (!provider.historyArchive)
                 _ClearCtxButton(provider: provider, compact: narrow),

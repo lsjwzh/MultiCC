@@ -19,6 +19,7 @@ import 'dispatch_mode_selector.dart';
 import 'scheduled_send_dock.dart';
 import 'scheduled_send_store.dart';
 import 'voice_composer.dart';
+import 'run_config/run_chip.dart';
 
 // Goal precheck dimension keys → short chip labels (web/app kept in sync).
 Map<String, String> get _goalDimShort => {
@@ -989,14 +990,13 @@ class _InputBarState extends State<InputBar> {
     // 语音输入要跟着当前会话的设置走（切会话后 token/host/lang 都会换）。
     _voice.syncSettings(provider.settings);
 
+    // Web 移动端的 composer（public/composer.css + chat-air.css）：一张悬浮在
+    // 对话列上的圆角卡片，四周留水、不贴边；卡片顶上贴一条「配置带」放运行
+    // 配置药丸。外层透明，消息区的底色从卡片四周透出来。
     return SafeArea(
       top: false,
-      child: Container(
-        decoration: const BoxDecoration(
-          color: Color(0xFFffffff),
-          border: Border(top: BorderSide(color: Color(0xFFdce6f1))),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1106,149 +1106,229 @@ class _InputBarState extends State<InputBar> {
                 child: VoiceDictationHud(controller: _voice),
               ),
 
-            // Input row
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                // Attachment button
-                _SmallButton(
-                  onTap: (!_uploading && isConnected) ? _pickAndUpload : null,
-                  icon: _uploading
-                      ? Icons.hourglass_top_rounded
-                      : Icons.attach_file_rounded,
-                  color: const Color(0xFF6f8096),
-                ),
-                const SizedBox(width: 4),
-
-                // Voice button — streaming /ws/voice dictation (falls back to the
-                // legacy m4a → /api/voice/stt flow when the socket is unavailable).
-                VoiceMicButton(
-                  key: const Key('chat-mic-button'),
-                  controller: _voice,
-                  enabled: isConnected,
-                  iconSize: 20,
-                ),
-                const SizedBox(width: 4),
-
-                // Goal-mode button — precheck the task with the aux-AI, then send
-                _SmallButton(
-                  onTap: (isConnected && !isStreaming)
-                      ? () => _showGoalSheet(provider)
-                      : null,
-                  icon: Icons.track_changes_rounded,
-                  color: const Color(0xFF6f8096),
-                ),
-                const SizedBox(width: 4),
-
-                // Realtime voice — opens the one global voice gateway, scoped to
-                // this session. Plain dictation stays on the mic button below.
-                _SmallButton(
-                  onTap: isConnected
-                      ? () {
-                          _openVoiceCall();
-                        }
-                      : null,
-                  icon: Icons.phone_in_talk_rounded,
-                  color: const Color(0xFF0965cf),
-                ),
-                const SizedBox(width: 4),
-
-                // Input textarea
-                Expanded(
-                  child: Container(
-                    constraints: const BoxConstraints(maxHeight: 120),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFf4f8fd),
-                      border: Border.all(
-                        color: _voice.isRecording
-                            ? const Color(0xFFb64e43)
-                            : _focusNode.hasFocus
-                            ? const Color(0xFF1267b5)
-                            : const Color(0xFFdce6f1),
-                      ),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: TextField(
-                      key: const Key('chat-message-input'),
-                      controller: _ctrl,
-                      focusNode: _focusNode,
-                      maxLines: null,
-                      textInputAction: TextInputAction.newline,
-                      // Keep the draft editable through disconnects/reconnects.
-                      // Connection state gates Send (and the adjacent actions),
-                      // not the composer focus or the software keyboard.
-                      style: const TextStyle(
-                        color: Color(0xFF233249),
-                        fontSize: 14,
-                        height: 1.4,
-                      ),
-                      decoration: InputDecoration(
-                        hintText: _voice.isRecording
-                            ? t('recording')
-                            : _voice.isTranscribing
-                            ? t('transcribing')
-                            : t('typeMessage'),
-                        hintStyle: TextStyle(
-                          color: _voice.isRecording
-                              ? const Color(0xFFb64e43)
-                              : const Color(0xFF8b9cae),
-                        ),
-                        border: InputBorder.none,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 10,
-                        ),
-                      ),
-                      onSubmitted: canSend
-                          ? (_) => _send(provider, commander: isCommander)
-                          : null,
-                      // Flutter intentionally keeps focus for touch-device
-                      // outside taps by default. Override that convention on
-                      // iOS so tapping the transcript/header hides the keyboard
-                      // while leaving the draft untouched.
-                      onTapOutside: (_) => _dismissIosKeyboard(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-
-                // 定时发送（Web 的 #schedule-send-btn）：常驻在发送键左侧，
-                // 有待执行的消息时右上角挂一个条数角标。
-                if (widget.scheduledSend != null) ...[
-                  ScheduledSendButton(
-                    store: widget.scheduledSend!,
-                    onDraft: _scheduleDraft,
-                    onTap: () => openScheduledSendSheet(
-                      context,
-                      widget.scheduledSend!,
-                      onDraft: _scheduleDraft,
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                ],
-
-                // Keep both actions available while streaming: Send stages the
-                // message durably; Stop remains an explicit cancellation.
-                if (isStreaming)
-                  _ActionButton(
-                    onTap: provider.cancel,
-                    color: const Color(0xFFb64e43),
-                    icon: Icons.stop_rounded,
-                  ),
-                if (isStreaming) const SizedBox(width: 4),
-                _ActionButton(
-                  onTap: canSend
-                      ? () => _send(provider, commander: isCommander)
-                      : null,
-                  color: canSend
-                      ? const Color(0xFF0965cf)
-                      : const Color(0xFFf8fbff),
-                  icon: Icons.send_rounded,
-                  iconColor: canSend ? Colors.white : const Color(0xFF8b9cae),
-                ),
-              ],
+            _ComposerBand(provider: provider),
+            _composerCard(
+              provider,
+              isCommander,
+              isStreaming,
+              isConnected,
+              canSend,
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// 卡片本体，按 web ≤420px 的 `#input-bar` 排：第一行是输入框 + 发送/停止，
+  /// 第二行是附件 / 语音 / Goal / 通话，定时发送靠右。
+  Widget _composerCard(
+    ChatProvider provider,
+    bool isCommander,
+    bool isStreaming,
+    bool isConnected,
+    bool canSend,
+  ) {
+    final borderColor = _voice.isRecording
+        ? const Color(0xFFb64e43)
+        : _focusNode.hasFocus
+        ? const Color(0xFFc1d8ed)
+        : const Color(0xFFdbe5ef);
+    return Container(
+      key: const Key('chat-composer-card'),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border.all(color: borderColor),
+        // 配置带盖住卡片的上边：两者拼成一个盒子，接缝处不留双线和圆角。
+        borderRadius: const BorderRadius.vertical(
+          top: Radius.zero,
+          bottom: Radius.circular(15),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF315576).withValues(alpha: 0.08),
+            blurRadius: 30,
+            offset: const Offset(0, 10),
+          ),
+          BoxShadow(
+            color: const Color(0xFF23599a).withValues(alpha: 0.03),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 120),
+                  child: TextField(
+                    key: const Key('chat-message-input'),
+                    controller: _ctrl,
+                    focusNode: _focusNode,
+                    maxLines: null,
+                    textInputAction: TextInputAction.newline,
+                    // Keep the draft editable through disconnects/reconnects.
+                    // Connection state gates Send (and the adjacent actions),
+                    // not the composer focus or the software keyboard.
+                    style: const TextStyle(
+                      color: Color(0xFF263b50),
+                      fontSize: 15,
+                      height: 1.4,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: _voice.isRecording
+                          ? t('recording')
+                          : _voice.isTranscribing
+                          ? t('transcribing')
+                          : t('typeMessage'),
+                      hintStyle: TextStyle(
+                        color: _voice.isRecording
+                            ? const Color(0xFFb64e43)
+                            : const Color(0xFF8b9cae),
+                      ),
+                      border: InputBorder.none,
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 10,
+                      ),
+                    ),
+                    onSubmitted: canSend
+                        ? (_) => _send(provider, commander: isCommander)
+                        : null,
+                    // Flutter intentionally keeps focus for touch-device
+                    // outside taps by default. Override that convention on
+                    // iOS so tapping the transcript/header hides the keyboard
+                    // while leaving the draft untouched.
+                    onTapOutside: (_) => _dismissIosKeyboard(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              // Keep both actions available while streaming: Send stages the
+              // message durably; Stop remains an explicit cancellation.
+              if (isStreaming)
+                _ActionButton(
+                  onTap: provider.cancel,
+                  color: const Color(0xFFb64e43),
+                  icon: Icons.stop_rounded,
+                ),
+              if (isStreaming) const SizedBox(width: 4),
+              _ActionButton(
+                onTap: canSend
+                    ? () => _send(provider, commander: isCommander)
+                    : null,
+                color: canSend
+                    ? const Color(0xFF0965cf)
+                    : const Color(0xFFf7faff),
+                icon: Icons.send_rounded,
+                iconColor: canSend ? Colors.white : const Color(0xFF8b9cae),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              // Attachment button
+              _SmallButton(
+                onTap: (!_uploading && isConnected) ? _pickAndUpload : null,
+                icon: _uploading
+                    ? Icons.hourglass_top_rounded
+                    : Icons.attach_file_rounded,
+                color: const Color(0xFF55718c),
+              ),
+              const SizedBox(width: 4),
+              // Voice button — streaming /ws/voice dictation (falls back to the
+              // legacy m4a → /api/voice/stt flow when the socket is unavailable).
+              VoiceMicButton(
+                key: const Key('chat-mic-button'),
+                controller: _voice,
+                enabled: isConnected,
+                iconSize: 20,
+              ),
+              const SizedBox(width: 4),
+              // Goal-mode button — precheck the task with the aux-AI, then send
+              _SmallButton(
+                onTap: (isConnected && !isStreaming)
+                    ? () => _showGoalSheet(provider)
+                    : null,
+                icon: Icons.track_changes_rounded,
+                color: const Color(0xFF55718c),
+              ),
+              const SizedBox(width: 4),
+              // Realtime voice — opens the one global voice gateway, scoped to
+              // this session. Plain dictation stays on the mic button.
+              _SmallButton(
+                onTap: isConnected
+                    ? () {
+                        _openVoiceCall();
+                      }
+                    : null,
+                icon: Icons.phone_in_talk_rounded,
+                color: const Color(0xFF0965cf),
+              ),
+              const Spacer(),
+              // 定时发送（Web 的 #schedule-send-btn）：有待执行的消息时右上角
+              // 挂一个条数角标。
+              if (widget.scheduledSend != null)
+                ScheduledSendButton(
+                  store: widget.scheduledSend!,
+                  onDraft: _scheduleDraft,
+                  onTap: () => openScheduledSendSheet(
+                    context,
+                    widget.scheduledSend!,
+                    onDraft: _scheduleDraft,
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 卡片顶上的「配置带」（web 的 `#air-composer-meta.mc-composer__aux`）：运行
+/// 配置药丸（CLI · 线路 · 模型 · 强度）常驻于此，简易/进阶模式一样可点。
+/// `desiredCli` + `pending`：会话忙时换道是「下轮生效」，药丸跟着用户选好的
+/// 那条车道走，否则列的还是旧车道的 Provider 池。
+class _ComposerBand extends StatelessWidget {
+  const _ComposerBand({required this.provider});
+
+  final ChatProvider provider;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const Key('chat-composer-band'),
+      padding: const EdgeInsets.fromLTRB(10, 7, 10, 7),
+      decoration: const BoxDecoration(
+        color: Color(0xFFf8fbff),
+        border: Border(
+          top: BorderSide(color: Color(0xFFdbe5ef)),
+          left: BorderSide(color: Color(0xFFdbe5ef)),
+          right: BorderSide(color: Color(0xFFdbe5ef)),
+        ),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(15)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) => Align(
+          alignment: Alignment.centerLeft,
+          child: RunChip(
+            sessionId: provider.executionSessionName,
+            cli: provider.pendingConfiguration.desiredCli(provider.cli),
+            pending: provider.pendingConfiguration.value,
+            settings: provider.settings,
+            // web 的 `max-width: min(68%, 320px)`；「下一轮生效」角标另占一截。
+            maxLabelWidth: (constraints.maxWidth * 0.68).clamp(80.0, 320.0),
+          ),
         ),
       ),
     );
