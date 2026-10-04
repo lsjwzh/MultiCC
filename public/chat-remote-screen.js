@@ -437,11 +437,20 @@
     input({ op: 'click', x, y, button: button === 2 ? 'right' : 'left' });
   }
 
+  // 点亮「右键」后的下一次点击按右键发送；用掉即复位（按钮熄灭）。
+  function takeRightOnce() {
+    const on = !!(s && s.rightOnce);
+    if (on) { s.rightOnce = false; s.rightBtn.classList.remove('on'); }
+    return on;
+  }
+
   function wireGestures(stage) {
     const pts = new Map();
     let pinch = null, pan = null, lastTap = 0;
     // 框选拖拽中 {id, rect, x0, y0, x1, y1}：rect 是 down 时 stage 的视口位置。
     let box = null;
+    // 流畅模式「右键」待发的那一次点击 {id, x, y}。
+    let rightTap = null;
     const paintBox = () => {
       if (!box || !s || !s.boxRect) return;
       s.boxRect.hidden = false;
@@ -469,6 +478,21 @@
             x0: ev.clientX, y0: ev.clientY, x1: ev.clientX, y1: ev.clientY,
           };
           paintBox();
+          return;
+        }
+      }
+      if (s && s.rfb && s.rightOnce && !box) {
+        if (rightTap) { // 待发中又落一指：取消右键，第一指留在 pts 里，
+          // 与新指凑成两指照常捏合（别删 pts，删了就单指落空）
+          rightTap = null;
+        } else { // 流畅模式下 noVNC 只认左键：点亮「右键」后的这一次点击
+          // 在这里独占（鼠标 / 触屏一致），按右键经 HTTP 发出，坐标换算与
+          // 放大态归 zoomTap 一条路（屏幕逻辑域）。
+          pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+          ev.preventDefault();
+          ev.stopPropagation();
+          try { stage.setPointerCapture(ev.pointerId); } catch {}
+          rightTap = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
           return;
         }
       }
@@ -530,6 +554,18 @@
         }
         return;
       }
+      if (rightTap) {
+        if (ev.pointerId !== rightTap.id) return;
+        pts.delete(ev.pointerId);
+        const r = rightTap;
+        rightTap = null;
+        // 拖动超过轻点阈值视为取消（不消耗「右键」，与兼容模式同语义）
+        if (Math.hypot(ev.clientX - r.x, ev.clientY - r.y) <= 8) {
+          takeRightOnce();
+          void zoomTap(ev, 2);
+        }
+        return;
+      }
       pts.delete(ev.pointerId);
       if (pinch && pts.size < 2) pinch = null; // 剩一指可接着平移
       if (pan && pts.size === 0) {
@@ -538,7 +574,8 @@
           const now = Date.now();
           if (zoom.scale > 1 && now - lastTap < 350) { lastTap = 0; resetZoom(); return; }
           lastTap = now;
-          if (zoom.scale > 1) void zoomTap(ev, p.button);
+          // 兼容模式的放大态轻点也接「右键」（流畅模式走上面的 rightTap 分支）
+          if (zoom.scale > 1) void zoomTap(ev, takeRightOnce() ? 2 : p.button);
         }
       }
     }, true);
@@ -549,6 +586,12 @@
         box = null;
         if (s && s.boxRect) s.boxRect.hidden = true;
         setBoxSel(false);
+        return;
+      }
+      if (rightTap) {
+        if (ev.pointerId !== rightTap.id) return;
+        pts.delete(ev.pointerId);
+        rightTap = null; // 系统打断：只退出拦截，「右键」留给下一次点击
         return;
       }
       pts.delete(ev.pointerId); pinch = null; pan = null;

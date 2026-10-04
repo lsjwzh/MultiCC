@@ -3602,7 +3602,7 @@
   "rsViewHint": "View only: nothing is sent to this Mac. Use “✎ Annotate” to freeze a frame and discuss it",
   "rsControlHint": "Tap = click, drag = drag, wheel = scroll, quick double-tap = double-click; pinch to zoom in for precise taps, double-tap to reset; press Esc on the Mac to halt anytime",
   "rsRightClick": "Right-click",
-  "rsRightClickHint": "Send the next tap as a right-click (for touch screens)",
+  "rsRightClickHint": "Send the next click as a right-click",
   "rsPause": "Pause",
   "rsResume": "Resume",
   "rsUnhalt": "Clear stop",
