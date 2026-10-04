@@ -1541,20 +1541,28 @@ func writeJSON(_ fd: Int32, _ obj: [String: Any]) {
 // MARK: - RFB streaming server (「🖥 屏幕」流畅模式)
 //
 // A second unix socket (agentDir/rfb.sock) speaks a minimal RFB 3.8 server so
-// the browser can run the stock noVNC client: Raw encoding only, framebuffer
-// at LOGICAL resolution (1 px = 1 pt, client pointer coordinates map 1:1 onto
-// CGEvent points), security type None — the peer is authenticated by the
-// MultiCC server (same-site WS + ticket, exactly like /ws/chat) and checked
-// with getpeereid here, so no TCP port is opened. Frames come from an SCStream
-// that renders each CMSampleBuffer into the logical-size BGRA bitmap; a row
-// diff produces dirty bands, served on the client's FramebufferUpdateRequests
-// (natural backpressure: no request, no bytes). Input (PointerEvent/KeyEvent)
-// is routed through handle() so every existing guard applies unchanged:
-// single lease, Esc halt, lock-screen refusal, protected apps, terminal
-// typing consent. Below macOS 14 (or builds without ScreenCaptureKit) the
-// socket simply does not exist and the web UI falls back to JPEG polling.
+// the browser can run the stock noVNC client: Raw encoding only, security
+// type None — the peer is authenticated by the MultiCC server (same-site WS +
+// ticket, exactly like /ws/chat) and checked with getpeereid here, so no TCP
+// port is opened. Frames come from an SCStream that renders each
+// CMSampleBuffer into a BGRA bitmap at logical/RFB_DIV resolution (full-res
+// Raw is multi-MB per frame; a 2026-10-04 trace measured 247KB for ONE cursor
+// move at 1470-wide row bands — unusable off-LAN), and the diff both finds
+// dirty rows and narrows their column extent to 32px blocks, served on the
+// client's FramebufferUpdateRequests (natural backpressure: no request, no
+// bytes). Pointer coordinates map RFB px → CGEvent points by RFB_DIV. Input
+// (PointerEvent/KeyEvent) is routed through handle() so every existing guard
+// applies unchanged: single lease, Esc halt, lock-screen refusal, protected
+// apps, terminal typing consent. Below macOS 14 (or builds without
+// ScreenCaptureKit) the socket simply does not exist and the web UI falls
+// back to JPEG polling.
 
 #if canImport(ScreenCaptureKit) && compiler(>=5.9)
+
+// RFB framebuffer runs at 1/RFB_DIV of logical resolution (bandwidth tier);
+// pointer coords scale back up by the same factor. 2 keeps text readable on
+// phones while cutting bytes 4x; 1 restores pixel-perfect.
+let RFB_DIV = 2
 
 extension Data {
   mutating func appendBE(_ v: UInt16) { append(UInt8(v >> 8)); append(UInt8(v & 0xFF)) }
@@ -1639,8 +1647,8 @@ final class RfbScreen: NSObject, SCStreamOutput {
     }
     let cfg = SCStreamConfiguration()
     cfg.showsCursor = true
-    cfg.width = Int(display.width)    // logical points → 1 px = 1 pt
-    cfg.height = Int(display.height)
+    cfg.width = max(1, Int(display.width) / RFB_DIV)   // bandwidth tier, see RFB_DIV
+    cfg.height = max(1, Int(display.height) / RFB_DIV)
     cfg.minimumFrameInterval = CMTime(value: 1, timescale: 15)
     cfg.queueDepth = 3
     let s = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: cfg, delegate: nil)
@@ -1651,7 +1659,7 @@ final class RfbScreen: NSObject, SCStreamOutput {
     s.startCapture { e in if let e { startErr = e.localizedDescription }; sem2.signal() }
     if sem2.wait(timeout: .now() + 5) == .timedOut { return "startCapture timed out" }
     if let startErr { return "startCapture: \(startErr)" }
-    lock.lock(); stream = s; w = Int(display.width); h = Int(display.height); lock.unlock()
+    lock.lock(); stream = s; w = max(1, Int(display.width) / RFB_DIV); h = max(1, Int(display.height) / RFB_DIV); lock.unlock()
     return nil
   }
 
@@ -1698,14 +1706,27 @@ final class RfbScreen: NSObject, SCStreamOutput {
       w = pw; h = ph; fb = next; hasFrame = true
       bands = [CGRect(x: 0, y: 0, width: CGFloat(pw), height: CGFloat(ph))]
     } else {
+      // Row diff, but each band also narrows to the changed COLUMNS (32px
+      // block granularity): a cursor move otherwise ships a full-width band
+      // (1470x22 ≈ 130KB) where ~40px actually changed.
       let rowBytes = pw * 4
+      let blk = 32   // px granularity of the column bounds
       var y = 0
       while y < ph {
         let r = y * rowBytes..<(y + 1) * rowBytes
         if next[r] != fb[r] {
           let y0 = y
-          repeat { y += 1 } while y < ph && next[(y * rowBytes)..<((y + 1) * rowBytes)] != fb[(y * rowBytes)..<((y + 1) * rowBytes)]
-          bands.append(CGRect(x: 0, y: CGFloat(y0), width: CGFloat(pw), height: CGFloat(y - y0)))
+          var bx0 = pw, bx1 = 0
+          repeat {
+            var b = 0
+            while b < pw {
+              let s = (y * rowBytes + b * 4)..<(y * rowBytes + min(pw, b + blk) * 4)
+              if next[s] != fb[s] { bx0 = min(bx0, b); bx1 = max(bx1, min(pw, b + blk)) }
+              b += blk
+            }
+            y += 1
+          } while y < ph && next[(y * rowBytes)..<((y + 1) * rowBytes)] != fb[(y * rowBytes)..<((y + 1) * rowBytes)]
+          bands.append(CGRect(x: CGFloat(bx0), y: CGFloat(y0), width: CGFloat(bx1 - bx0), height: CGFloat(y - y0)))
         } else { y += 1 }
       }
       if !bands.isEmpty { fb = next; hasFrame = true }
@@ -1729,7 +1750,8 @@ final class RfbScreen: NSObject, SCStreamOutput {
       var merged: [CGRect] = []
       for r in c.dirty.sorted(by: { $0.minY < $1.minY }) {
         if !merged.isEmpty, let last = merged.last, last.maxY >= r.minY {
-          merged[merged.count - 1].size.height = r.maxY - last.minY
+          let nx0 = min(last.minX, r.minX), nx1 = max(last.maxX, r.maxX)
+          merged[merged.count - 1] = CGRect(x: nx0, y: last.minY, width: nx1 - nx0, height: r.maxY - last.minY)
         } else { merged.append(r) }
       }
       let area = merged.reduce(CGFloat(0)) { $0 + $1.width * $1.height }
@@ -1814,7 +1836,9 @@ func rfbKey(_ c: RfbClient, down: Bool, keysym: UInt32) {
 }
 
 @available(macOS 14.0, *)
-func rfbPointer(_ c: RfbClient, mask: Int, x: Int, y: Int) {
+func rfbPointer(_ c: RfbClient, mask: Int, x rfbX: Int, y rfbY: Int) {
+  // RFB framebuffer px → logical points (framebuffer runs at 1/RFB_DIV)
+  let x = rfbX * RFB_DIV, y = rfbY * RFB_DIV
   let p = CGPoint(x: CGFloat(x), y: CGFloat(y))
   let prev = c.lastMask
   c.lastMask = mask
