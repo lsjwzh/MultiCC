@@ -2,6 +2,15 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.3.2 — Quieter turns, one place for notifications (2026-10-04)
+
+### Highlights
+
+- **One "Notifications & announcements" panel** — voice announcements, task reminders and system push used to live in three different places (an Air boolean, the chat frame's own read-aloud toggle, and the console push page); they are now configured from a single panel on the brand row, and the standalone chat page got a proper task-notification controller to match.
+- **A per-turn model timeline** — chat frames can now show the spans of a turn that are not tool execution (request in flight, thinking, streaming) instead of a flat "running" state, so you can see what the model is actually doing.
+- **Consistent status presentation across surfaces** — the App's dashboard cards, chat header, tool cards and Air task rows now share one status/presentation layer (with decluttering of the dashboard), instead of each widget hard-coding its own wording and colors.
+- **Housekeeping** — notify-preferences, session-git routes, status presentation and turn-timeline all gained their own tests; the human-assist and secrets skills were updated in-tree.
+
 ## v2.3.1 — A smoother remote screen (2026-10-04)
 
 ### Highlights
