@@ -27,7 +27,7 @@ const { createOfficialAccountStore } = require('../src/official-accounts');
 const { createCliLoginDetector } = require('../src/official-accounts-cli-login');
 const { createCodexAccountRefreshSupervisor } = require('../src/codex/accounts-refresh');
 const { createClaudeAccountCredentialService } = require('../src/claude-auth/account-credentials');
-const { createClaudeAccountRefreshSupervisor, createCliCredentialSlot, keychainServiceFor } = require('../src/claude-auth/accounts-refresh');
+const { createClaudeAccountRefreshSupervisor, createCliCredentialSlot, keychainServiceFor, jitteredIntervalMs } = require('../src/claude-auth/accounts-refresh');
 const { TOKEN_URL } = require('../src/claude-auth/official-oauth');
 
 const MIN = 60 * 1000;
@@ -115,6 +115,8 @@ async function setup(opts = {}) {
   const supervisor = createClaudeAccountRefreshSupervisor({
     accounts, platform: 'linux', claudeBin: bin, extraEnv: env, user: 'tester',
     isEnabled: () => true,
+    // Spacing/jitter knobs under test need to reach the supervisor.
+    ...(opts.supervisor || {}),
   });
   // An own-token account, as multicc's PKCE login leaves it.
   const addAccount = (family, expiresInMs) => {
@@ -461,4 +463,99 @@ test('codex: a copy is skipped by the refresher until its own `codex login` rewr
     assert.deepEqual((await supervisor.checkAll('test')).map(r => r.outcome), ['fresh']);
     assert.equal(checks, 1);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── staggering: two triggers, one rotation ───────────────────────────────────
+// Boot, periodic and manual checks all decide independently whether an account is
+// due. Nothing but the refresher's own decline cooldown used to stand between
+// them, and a *successful* rotation cleared that cooldown — so the only thing
+// keeping a second trigger off the same single-use refresh token was the new
+// expiry landing outside the buffer, which is not something multicc controls.
+
+test('an autonomous check inside the gap is staggered, and spawns no CLI', async () => {
+  // A CLI that cannot rotate, so the account stays due and the next check really
+  // would reach the slot again; deferCooldownMs 0 takes the refresher's own
+  // 90s decline cooldown out of the way so the gap is the only thing left.
+  const t = await setup({ env: { FAKE_CLAUDE_MODE: 'fail' }, supervisor: { minCheckGapMs: 5 * MIN, deferCooldownMs: 0 } });
+  try {
+    const due = t.addAccount('alice', 3 * MIN);   // inside the 6 min buffer
+    t.addAccount('bob', 60 * MIN);                // nowhere near it
+    const outcomes = results => new Map(results.map(r => [r.accountId, r.outcome]));
+
+    const first = outcomes(await t.supervisor.checkAll('periodic'));
+    assert.equal(first.get(due), 'deferred');
+    assert.deepEqual([...first.values()].filter(o => o === 'fresh'), ['fresh']);
+    const spawned = t.calls().length;
+    assert.ok(spawned > 0, 'the due account did reach the slot');
+
+    const second = await t.supervisor.checkAll('periodic');
+    assert.equal(outcomes(second).get(due), 'staggered',
+      'the same tick lands again: held back');
+    assert.equal(second.find(r => r.accountId === due).retryInMs > 0, true);
+    assert.equal(outcomes(second).get([...outcomes(second).keys()].find(id => id !== due)), 'fresh',
+      'while the cheap fresh account is unaffected');
+    assert.equal(t.calls().length, spawned, 'the spacing gate is upstream of the CLI');
+
+    // A manual check was never staggered away — an operator asking directly gets
+    // an answer, and leaving the stamp behind is what holds the tick back after.
+    await t.supervisor.checkAccount(due, 'manual');
+    assert.ok(t.calls().length > spawned, 'a manual check still runs');
+    assert.equal(outcomes(await t.supervisor.checkAll('periodic')).get(due), 'staggered',
+      'and the tick behind it is held back by the manual check that just ran');
+    assert.equal(typeof t.supervisor.status(due).lastCheckAt, 'number', 'the gate state is inspectable');
+
+    // Control: with the gap switched off the very same second check reaches the
+    // slot again — so it is the gate that held it back, not the account turning
+    // fresh or the CLI suddenly agreeing to rotate.
+    const unspaced = createClaudeAccountRefreshSupervisor({
+      accounts: t.accounts, platform: 'linux', claudeBin: t.bin, extraEnv: t.env, user: 'tester',
+      isEnabled: () => true, minCheckGapMs: 0, deferCooldownMs: 0,
+    });
+    assert.deepEqual(
+      (await unspaced.checkAll('periodic')).filter(r => r.accountId === due).map(r => r.outcome),
+      ['deferred'],
+    );
+    assert.ok(t.calls().length > spawned + 1, 'and it does spawn the CLI');
+  } finally { await t.done(); }
+});
+
+test('by default one cadence is one attempt: the gap is never below the interval', async () => {
+  // A default gap below the cadence would be inert against the periodic tick —
+  // which is half of what the gate is for — so the two are pinned together here.
+  const t = await setup({ env: { FAKE_CLAUDE_MODE: 'fail' }, supervisor: { deferCooldownMs: 0 } });
+  try {
+    const due = t.addAccount('alice', 3 * MIN);
+    const outcome = results => results.find(r => r.accountId === due).outcome;
+    assert.equal(outcome(await t.supervisor.checkAll('periodic')), 'deferred');
+    const spawned = t.calls().length;
+    assert.equal(outcome(await t.supervisor.checkAll('periodic')), 'staggered',
+      'a second tick inside the 2 min cadence is held back with default options');
+    assert.equal(t.calls().length, spawned);
+  } finally { await t.done(); }
+});
+
+test('the fresh short-circuit never consumes the gap', async () => {
+  // Cheap reads above the gate (fresh / needs-login / no-expiry) must stay free:
+  // a fresh account polled twice must answer `fresh` twice, not `staggered`.
+  const t = await setup({ supervisor: { minCheckGapMs: 5 * MIN } });
+  try {
+    t.addAccount('alice', 60 * MIN);
+    assert.deepEqual((await t.supervisor.checkAll('periodic')).map(r => r.outcome), ['fresh']);
+    assert.deepEqual((await t.supervisor.checkAll('periodic')).map(r => r.outcome), ['fresh']);
+    assert.equal(t.calls().length, 0, 'a fresh account spawns nothing');
+  } finally { await t.done(); }
+});
+
+test('the periodic cadence is jittered inside its bound', () => {
+  const nominal = 120_000;
+  assert.equal(jitteredIntervalMs(nominal, 0.15, 0.5), nominal, 'the middle draw keeps the nominal cadence');
+  assert.equal(jitteredIntervalMs(nominal, 0.15, 0), nominal - 18_000);
+  assert.equal(jitteredIntervalMs(nominal, 0.15, 1), nominal + 18_000);
+  // Never below a second, however short the interval or unlucky the draw.
+  assert.equal(jitteredIntervalMs(1000, 0.15, 0), 1000);
+  // No draw can silently double the cadence.
+  for (let i = 0; i <= 20; i++) {
+    const value = jitteredIntervalMs(nominal, 0.15, i / 20);
+    assert.ok(value >= nominal - 18_000 && value <= nominal + 18_000, `draw ${i} out of band: ${value}`);
+  }
 });
