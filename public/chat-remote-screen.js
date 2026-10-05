@@ -135,11 +135,15 @@
   async function loop() {
     if (!s || s.running) return;
     s.running = true;
-    while (s && !s.paused && !document.querySelector('.annotate-overlay')) {
+    const current = s;
+    while (s === current && !current.closed && !s.paused && !document.querySelector('.annotate-overlay')) {
       const t0 = Date.now();
       try {
-        const res = await fetch(tok('/api/remote-screen/frame?t=' + t0), { cache: 'no-store' });
-        if (!s) break;
+        const epoch = current.regionEpoch || 0;
+        const query = new URLSearchParams({ t: String(t0), ...(current.region || {}) });
+        const res = await fetch(tok('/api/remote-screen/frame?' + query), { cache: 'no-store' });
+        if (s !== current || current.closed) break;
+        if (epoch !== current.regionEpoch) continue;
         if (!res.ok) {
           status(errText(await res.json().catch(() => ({}))), true);
           await sleep(1500);
@@ -147,16 +151,26 @@
         }
         s.screenW = Number(res.headers.get('X-Screen-Width')) || s.screenW;
         s.screenH = Number(res.headers.get('X-Screen-Height')) || s.screenH;
-        const url = URL.createObjectURL(await res.blob());
-        if (!s) { URL.revokeObjectURL(url); break; }
-        await new Promise(resolve => { s.img.onload = s.img.onerror = resolve; s.img.src = url; });
+        const blob = await res.blob();
+        if (s !== current || current.closed) break;
+        if (epoch !== current.regionEpoch) continue;
+        if (current.region && !res.headers.get('X-Region-Width')) throw new Error('服务端尚不支持选区清晰化，请更新并手动重启 MultiCC');
+        const url = URL.createObjectURL(blob);
+        s.viewRegion = res.headers.get('X-Region-Width') ? {
+          x: Number(res.headers.get('X-Region-X')), y: Number(res.headers.get('X-Region-Y')),
+          width: Number(res.headers.get('X-Region-Width')), height: Number(res.headers.get('X-Region-Height')),
+        } : null;
+        await new Promise((resolve, reject) => { s.img.onload = resolve; s.img.onerror = reject; s.img.src = url; });
+        if (s !== current || current.closed) { URL.revokeObjectURL(url); break; }
+        if (epoch !== current.regionEpoch) { URL.revokeObjectURL(url); continue; }
+        s.regionLoading = false;
         if (s.lastUrl) URL.revokeObjectURL(s.lastUrl);
         s.lastUrl = url;
         const dt = Date.now() - t0;
         s.fps = s.fps ? s.fps * 0.7 + (1000 / dt) * 0.3 : 1000 / dt;
         // 错误提示停留 3 秒再被帧率覆盖。
         if (Date.now() - s.errAt > 3000) {
-          status(`${s.screenW}×${s.screenH} · ${tr('rsFps', '{fps} 帧/秒', { fps: s.fps.toFixed(1) })}`);
+          status(`${s.viewRegion ? '局部清晰 · ' : ''}${s.screenW}×${s.screenH} · ${tr('rsFps', '{fps} 帧/秒', { fps: s.fps.toFixed(1) })}`);
         }
       } catch (error) {
         status(String(error.message || error), true);
@@ -165,9 +179,9 @@
       if (s && s.wakeAt > Date.now()) continue;
       await sleep(Math.max(0, 200 - (Date.now() - t0)));
     }
-    if (s) s.running = false;
+    current.running = false;
     // 标注器盖在上面时暂停；它关了自动续上。
-    if (s && !s.paused) s.resumeTimer = setTimeout(loop, 600);
+    if (s === current && !s.closed && !s.paused) s.resumeTimer = setTimeout(loop, 600);
   }
   // 操作后立刻拉下一帧，不等节流间隔。
   function kick() { if (s) s.wakeAt = Date.now() + 1000; }
@@ -292,14 +306,15 @@
   // 连不上（旧 Agent / macOS<14 / vendor 缺失）或中途断开，一律回退 JPEG 轮询。
   let rfbMod = null;
   async function startRfb() {
-    if (!s || s.closed) return false;
+    const current = s;
+    if (!s || s.closed || s.region) return false;
     try { rfbMod = rfbMod || await import('/vendor/novnc/core/rfb.js'); } catch { return false; }
     const RfbClass = rfbMod && (rfbMod.RFB || rfbMod.default);
     if (!RfbClass) return false;
     const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
     let url = proto + location.host + '/ws/remote-screen';
     try { if (typeof global.multiccWsUrl === 'function') url = await global.multiccWsUrl(url); } catch { return false; }
-    if (!s || s.closed) return false;
+    if (s !== current || current.closed || current.region) return false;
     const wrap = el('div', 'rs-rfb');
     s.zoomer.appendChild(wrap);
     return await new Promise(resolve => {
@@ -307,7 +322,7 @@
       let rfb = null;
       const teardown = () => {
         wrap.remove();
-        if (s) s.img.style.display = '';
+        if (s === current) s.img.style.display = '';
         if (s && s.rfbWrap === wrap) s.rfbWrap = null;
         if (s && s.rfb === rfb) s.rfb = null;
       };
@@ -331,10 +346,12 @@
       if (s) s.rfb = rfb;
       s.rfbWrap = wrap;
       rfb.addEventListener('connect', () => {
+        if (s !== current || current.closed || current.region) { fail(); return; }
         if (settled || !s) { settled = true; return; }
         settled = true;
         clearTimeout(timer);
         s.img.style.display = 'none';
+        s.viewRegion = null; s.regionLoading = false;
         status(tr('rsLiveMode', '流畅模式'));
         if (!s.screenW) void ensureScreenSize(); // 轻点精确单击的坐标域要逻辑尺寸
         if (s.control) setControl(true);
@@ -342,11 +359,11 @@
       });
       rfb.addEventListener('disconnect', () => {
         clearTimeout(timer);
-        const intentional = s && s.rfbIntent;
-        if (s) s.rfbIntent = false;
+        const intentional = current.rfbIntent;
+        current.rfbIntent = false;
         teardown();
         if (!settled) { settled = true; resolve(false); return; }
-        if (!intentional && s && !s.closed && !s.paused) {
+        if (!intentional && s === current && !current.closed && !current.paused) {
           status(tr('rsFallback', '流式连接断开，已切回兼容模式'), true);
           loop();
         }
@@ -382,9 +399,10 @@
     const scale = Math.min(r.width / iw, r.height / ih);
     const dw = iw * scale, dh = ih * scale;
     const ox = r.left + (r.width - dw) / 2, oy = r.top + (r.height - dh) / 2;
-    const x = (ev.clientX - ox) / scale * (s.screenW / iw);
-    const y = (ev.clientY - oy) / scale * (s.screenH / ih);
-    if (x < 0 || y < 0 || x > s.screenW || y > s.screenH) return null;
+    const area = s.viewRegion || { x: 0, y: 0, width: s.screenW, height: s.screenH };
+    const u = (ev.clientX - ox) / dw, v = (ev.clientY - oy) / dh;
+    if (u < 0 || v < 0 || u > 1 || v > 1) return null;
+    const x = area.x + u * area.width, y = area.y + v * area.height;
     return { x: Math.round(x), y: Math.round(y), cx: ev.clientX, cy: ev.clientY };
   }
   function ripple(cx, cy) {
@@ -400,7 +418,7 @@
     let lastClick = null;
     stage.addEventListener('contextmenu', ev => ev.preventDefault());
     stage.addEventListener('pointerdown', ev => {
-      if (!s.control || s.rfb) return;
+      if (!s.control || s.rfb || s.regionLoading) return;
       const p = toScreen(ev);
       if (!p) return;
       ev.preventDefault();
@@ -428,7 +446,7 @@
     stage.addEventListener('pointercancel', () => { down = null; });
     let acc = 0, wheelAt = null, wheelTimer = null;
     stage.addEventListener('wheel', ev => {
-      if (!s.control || s.rfb) return;
+      if (!s.control || s.rfb || s.regionLoading) return;
       const p = toScreen(ev);
       if (!p) return;
       ev.preventDefault();
@@ -455,8 +473,8 @@
     s.zoomer.style.transform = zoom.scale === 1
       ? '' : `translate(${zoom.tx}px, ${zoom.ty}px) scale(${zoom.scale})`;
     if (s.zoomBadge) {
-      s.zoomBadge.hidden = zoom.scale === 1;
-      s.zoomBadge.textContent = Math.round(zoom.scale * 100) + '%';
+      s.zoomBadge.hidden = zoom.scale === 1 && !s.region;
+      s.zoomBadge.textContent = s.region ? '全屏 · ' + Math.round(zoom.scale * 100) + '%' : Math.round(zoom.scale * 100) + '%';
     }
   }
   function clampPan() {
@@ -465,34 +483,64 @@
     zoom.tx = Math.min(0, Math.max(st.clientWidth * (1 - zoom.scale), zoom.tx));
     zoom.ty = Math.min(0, Math.max(st.clientHeight * (1 - zoom.scale), zoom.ty));
   }
-  function resetZoom() { zoom.scale = 1; zoom.tx = 0; zoom.ty = 0; applyZoom(); }
+  function clearTransform() { zoom.scale = 1; zoom.tx = 0; zoom.ty = 0; applyZoom(); }
+  function resetZoom() {
+    if (s?.region) {
+      s.region = null; s.regionEpoch++; s.regionLoading = true;
+      s.paused = false; s.pauseBtn.textContent = '⏸ ' + tr('rsPause', '暂停');
+      kick(); void loop();
+    }
+    clearTransform();
+  }
 
-  // ── 框选局部放大 ──
-  // 「⛶」进入框选模式：拖一个矩形，松开把选区等比放大铺满视口——只是给现有
-  // zoom 变换换一种设定方式，之后的平移 / 精确点 / 双击复位全部继承。框先经
-  // 当前变换的逆映射回 zoomer 内容坐标（transform-origin 为 0 0，数学自洽），
-  // 所以放大态里再框选同样成立；只看 / 可操作两态通用（纯显示层变换）。
+  // 框选从当前图/画布的真实绘制区域反算逻辑屏幕矩形；服务端重新
+  // 截原图后裁剪，选区以独立图像 fit 显示，不复用低分辨率全屏像素。
   function setBoxSel(on) {
-    if (!s || s.closed) return;
+    if (!s || s.closed || s.regionLoading) return;
     s.boxSelOn = on;
     s.boxBtn.classList.toggle('rs-boxon', on);
     s.stage.classList.toggle('rs-boxsel', on);
     if (s.boxRect) s.boxRect.hidden = true;
-    if (on) status(tr('rsBoxSelHint', '在画面上拖动圈选要放大的区域，画完自动退出'));
+    if (on) status(tr('rsBoxSelHint', '在画面上拖动圈选要看清的区域，画完自动退出'));
   }
-  function applyBoxZoom(a, b) {
-    const st = s.stage;
-    const k = zoom.scale || 1;
-    // 视口框 → zoomer 内容坐标（当前变换的逆）
-    const x0 = (Math.min(a.x, b.x) - zoom.tx) / k, x1 = (Math.max(a.x, b.x) - zoom.tx) / k;
-    const y0 = (Math.min(a.y, b.y) - zoom.ty) / k, y1 = (Math.max(a.y, b.y) - zoom.ty) / k;
-    // 选区等比 fit 铺满视口；框得比视口还大时 min 夹到 1（=复位），上限与捏合一致
-    const k2 = Math.min(5, Math.max(1, Math.min(
-      st.clientWidth / Math.max(1, x1 - x0), st.clientHeight / Math.max(1, y1 - y0))));
-    zoom.scale = k2;
-    zoom.tx = st.clientWidth / 2 - (x0 + x1) / 2 * k2;
-    zoom.ty = st.clientHeight / 2 - (y0 + y1) / 2 * k2;
-    clampPan(); applyZoom();
+  async function applyBoxZoom(a, b) {
+    const current = s;
+    if (!current || current.regionLoading) return;
+    await ensureScreenSize();
+    if (s !== current || current.closed) return;
+    const cv = current.rfbWrap?.querySelector('canvas');
+    const rect = (cv || current.img).getBoundingClientRect();
+    let left = rect.left, top = rect.top, width = rect.width, height = rect.height;
+    if (!cv) {
+      const iw = current.img.naturalWidth || current.screenW;
+      const ih = current.img.naturalHeight || current.screenH;
+      const k = Math.min(width / iw, height / ih);
+      const dw = iw * k, dh = ih * k;
+      left += (width - dw) / 2; top += (height - dh) / 2; width = dw; height = dh;
+    }
+    if (!(width > 0 && height > 0 && current.screenW > 0)) return;
+    const st = current.stage.getBoundingClientRect();
+    const clamp = v => Math.max(0, Math.min(1, v));
+    const u0 = clamp((Math.min(a.x, b.x) + st.left - left) / width);
+    const u1 = clamp((Math.max(a.x, b.x) + st.left - left) / width);
+    const v0 = clamp((Math.min(a.y, b.y) + st.top - top) / height);
+    const v1 = clamp((Math.max(a.y, b.y) + st.top - top) / height);
+    const area = current.viewRegion || { x: 0, y: 0, width: current.screenW, height: current.screenH };
+    const region = { x: area.x + u0 * area.width, y: area.y + v0 * area.height,
+      width: (u1 - u0) * area.width, height: (v1 - v0) * area.height };
+    if (region.width < 1 || region.height < 1) return;
+    current.region = region; current.regionEpoch++; current.regionLoading = true;
+    if (current.rfb) {
+      current.rfbIntent = true; current.rfb.disconnect(); current.rfb = null;
+      current.rfbWrap?.remove(); current.rfbWrap = null;
+    }
+    current.img.style.display = '';
+    clearTransform(); setControl(current.control);
+    status('正在获取选区原始细节…');
+    // A selection always gets one fresh frame, even when the full screen was paused.
+    current.paused = false;
+    current.pauseBtn.textContent = '⏸ ' + tr('rsPause', '暂停');
+    kick(); void loop();
   }
 
   // RFB 模式下帧循环不跑，X-Screen-Width 头拿不到；轻点走 HTTP input，其
@@ -520,6 +568,7 @@
   // framebuffer 尺寸），fallback 模式沿用 toScreen；HTTP input 的坐标域
   // 是屏幕逻辑点。
   async function zoomTap(ev, button) {
+    if (!s?.control || s.regionLoading) return;
     let x = null, y = null;
     if (s.rfbWrap) {
       const cv = s.rfbWrap.querySelector('canvas');
@@ -536,7 +585,7 @@
       const p = toScreen(ev);
       if (p) { x = p.x; y = p.y; }
     }
-    if (x == null || y == null || x < 0 || y < 0) return;
+    if (x == null || y == null || x < 0 || y < 0 || x >= s.screenW || y >= s.screenH) return;
     ripple(ev.clientX, ev.clientY);
     input({ op: 'click', x, y, button: button === 2 ? 'right' : 'left' });
   }
@@ -566,6 +615,7 @@
     // iOS Safari 的私有手势缩放会和 pointer 捏合叠乘，必须一并关掉。
     stage.addEventListener('gesturestart', ev => ev.preventDefault());
     stage.addEventListener('pointerdown', ev => {
+      if (s?.regionLoading) { ev.preventDefault(); ev.stopPropagation(); return; }
       if (s && s.boxSelOn) {
         if (box) { // 拖拽中又落一指：取消本次框选，新指落回常规手势
           pts.delete(box.id);
@@ -725,10 +775,11 @@
 
   async function annotate() {
     const annotator = global.MultiCCChatAnnotator;
-    if (!annotator) return;
+    if (!annotator || s.regionLoading) return;
     status(tr('rsSnapping', '正在冻结画面…'));
     try {
-      const res = await fetch(tok('/api/remote-screen/snapshot'), { method: 'POST' });
+      const res = await fetch(tok('/api/remote-screen/snapshot'), { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(s.viewRegion || {}) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.url) { status(errText(data), true); return; }
       annotator.open(data.url, tr('rsTitle', '本机屏幕'));
@@ -746,7 +797,7 @@
     const head = el('div', 'rs-head');
     const title = el('span', 'rs-title', '🖥 ' + tr('rsTitle', '本机屏幕'));
     const statusEl = el('span', 'rs-status');
-    s = { control: false, paused: false, closed: false, boxSelOn: false, screenW: 0, screenH: 0, status: statusEl, errAt: 0, haltTimer: 0, permTimer: 0 };
+    s = { control: false, paused: false, closed: false, boxSelOn: false, region: null, viewRegion: null, regionEpoch: 0, regionLoading: false, screenW: 0, screenH: 0, status: statusEl, errAt: 0, haltTimer: 0, permTimer: 0 };
     s.modeBtn = btn('', tr('rsModeTitle', '切换只看 / 可操作'), () => setControl(!s.control));
     s.rightBtn = btn(tr('rsRightClick', '右键'), tr('rsRightClickHint', '下一次点击按右键发送（触屏用）'), () => {
       s.rightOnce = !s.rightOnce;
@@ -773,7 +824,7 @@
             }
           } catch {}
         }
-      } else if (!(await startRfb())) loop();
+      } else if (s.region || !(await startRfb())) loop();
     });
     s.pauseBtn = pauseBtn;
     s.wakeBtn = btn('唤起屏幕', '需先开启自动解锁', wakeScreen, 'primary');

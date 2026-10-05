@@ -18,6 +18,7 @@
 #   mcu.sh set ID VALUE | type-el ID TEXT  write / type into an element
 #   mcu.sh press CHORD [N]                 cmd+shift+g, return, escape, cmd+v ...
 #   mcu.sh snap OUT.png [W H X Y]          screenshot at LOGICAL resolution, optional crop
+#   mcu.sh snap-hires OUT.png W H X Y     native-pixel crop; geometry stays in logical points
 #   mcu.sh click|dclick|rclick|move X Y    logical coordinates, same as the snap
 #   mcu.sh scroll X Y N                    N<0 down, N>0 up
 #   mcu.sh type TEXT                       Unicode text into the focused field
@@ -75,6 +76,18 @@ case "$cmd" in
       esac
       need cliclick; cliclick "kp:$1"
     fi
+    ;;
+
+  snap-hires)
+    OUT="${1:?output path required}"
+    case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
+    W="${2:?logical width}"; H="${3:?logical height}"; X="${4:-0}"; Y="${5:-0}"
+    # Both backends crop at the capture source, before resampling or JPEG.
+    if is_agent; then agent_call snap "$OUT" "$X" "$Y" "$W" "$H" >/dev/null
+    else need screencapture; screencapture -x -R "$X,$Y,$W,$H" "$OUT"; fi
+    PW=$(sips -g pixelWidth "$OUT" | awk '/pixelWidth/{print $2}')
+    PH=$(sips -g pixelHeight "$OUT" | awk '/pixelHeight/{print $2}')
+    echo "snap-hires: logical origin=$X,$Y size=${W}x${H}; pixels=${PW}x${PH} -> $OUT"
     ;;
 
   snap)

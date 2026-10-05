@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 
 import '../i18n.dart';
 import '../services/remote_screen_rfb.dart';
+import '../services/remote_screen_region.dart';
 import '../services/remote_screen_service.dart';
 import '../services/settings_service.dart';
 
@@ -113,8 +114,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   Timer? _downDefer;
   bool _longPressFired = false;
 
-  /// 框选局部放大（与 Web 版 setBoxSel 同一交互）：开启后拖一个矩形，
-  /// 松开把选区等比 fit 铺满视口——只是给 _xform 换一种设定方式，之后的
+  /// 框选源图裁剪（与 Web 版 setBoxSel 同一交互）：开启后拖一个矩形，
+  /// 松开从原生截图裁剪并 fit 铺满视口，之后的
   /// 平移 / 精确点 / 双击复位全部继承。框是视口坐标，应用时经当前矩阵
   /// 的逆映射回 child 坐标，所以放大态里再框选同样成立。
   bool _boxSelOn = false;
@@ -302,7 +303,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   void _startHaltPoll() {
     _haltTimer?.cancel();
     _haltTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
-      if (!_control || _svc.mode != RemoteScreenMode.live) return;
+      if (!_control) return;
       final res = await _svc.inputOp({'op': 'status'});
       final ctl = res['control'];
       final halted = ctl is Map && ctl['halted'] == true;
@@ -423,19 +424,111 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   }
 
   void _wheelPulse(int mask) {
+    if (!_control) return;
     final rfb = _svc.rfb;
-    if (rfb == null || !_control) return;
-    rfb.pointerEvent(mask, _lastX, _lastY);
+    if (rfb != null) {
+      rfb.pointerEvent(mask, _lastX, _lastY);
+      return;
+    }
+    final area = _svc.viewRegion;
+    if (_svc.fallbackJpeg == null || area == null) return;
+    unawaited(
+      _svc.inputOp({
+        'op': 'scroll',
+        'x': (area.x + area.width / 2).round(),
+        'y': (area.y + area.height / 2).round(),
+        'amount': mask == 0x08 ? 3 : -3,
+      }),
+    );
   }
 
-  // ── 兼容模式点按（走 HTTP，坐标按 contain 换算）──
-  Future<void> _fallbackTap(Offset local, double dw, double dh) async {
-    if (!_control) return;
-    final w = _svc.fallbackWidth, h = _svc.fallbackHeight;
-    if (w <= 0 || h <= 0 || dw <= 0 || dh <= 0) return;
-    final x = ((local.dx / dw) * w).round().clamp(0, w - 1);
-    final y = ((local.dy / dh) * h).round().clamp(0, h - 1);
-    final res = await _svc.inputOp({'op': 'click', 'x': x, 'y': y});
+  // Native crop pointers use logical source geometry, including drag/right click.
+  bool _fallbackMulti = false;
+  Offset? _fallbackDown;
+  ScreenRegion? _fallbackArea;
+  void _fallbackDownAt(PointerDownEvent e, double dw, double dh) {
+    if (!_control || _svc.fallbackJpeg == null) return;
+    _pointerCount++;
+    if (_pointerCount > 1) {
+      _fallbackMulti = true;
+      _longPress?.cancel();
+      return;
+    }
+    _fallbackMulti = false;
+    _longPressFired = false;
+    _fallbackDown = e.localPosition;
+    _fallbackArea =
+        _svc.viewRegion ??
+        ScreenRegion(
+          0,
+          0,
+          _svc.fallbackWidth.toDouble(),
+          _svc.fallbackHeight.toDouble(),
+        );
+    _longPress?.cancel();
+    _longPress = Timer(const Duration(milliseconds: 450), () {
+      if (_control && !_fallbackMulti && _svc.fallbackJpeg != null) {
+        _longPressFired = true;
+        unawaited(_fallbackInput(e.localPosition, dw, dh, right: true));
+      }
+    });
+  }
+
+  void _fallbackMoveAt(PointerMoveEvent e) {
+    if (_fallbackDown != null &&
+        (e.localPosition - _fallbackDown!).distance > 8) {
+      _longPress?.cancel();
+    }
+  }
+
+  void _fallbackUpAt(
+    PointerEvent e,
+    double dw,
+    double dh, {
+    bool cancelled = false,
+  }) {
+    if (_pointerCount > 0) _pointerCount--;
+    _longPress?.cancel();
+    if (_pointerCount != 0) return;
+    final start = _fallbackDown;
+    _fallbackDown = null;
+    if (cancelled ||
+        !_control ||
+        _fallbackMulti ||
+        _longPressFired ||
+        start == null ||
+        _svc.fallbackJpeg == null) {
+      return;
+    }
+    final moved = (e.localPosition - start).distance;
+    if (_zoomed && moved > 8) return; // local pan, not a remote drag
+    unawaited(
+      _fallbackInput(e.localPosition, dw, dh, from: moved > 8 ? start : null),
+    );
+  }
+
+  Future<void> _fallbackInput(
+    Offset local,
+    double dw,
+    double dh, {
+    Offset? from,
+    bool right = false,
+  }) async {
+    final area = _fallbackArea;
+    if (area == null || dw <= 0 || dh <= 0) return;
+    final pt = area.point(local, dw, dh);
+    final start = from == null ? null : area.point(from, dw, dh);
+    final res = await _svc.inputOp({
+      'op': start == null ? 'click' : 'drag',
+      'x': (start?.dx ?? pt.dx).round(),
+      'y': (start?.dy ?? pt.dy).round(),
+      if (start != null) ...{
+        'x2': pt.dx.round(),
+        'y2': pt.dy.round(),
+        'ms': 350,
+      },
+      if (right) 'button': 'right',
+    });
     if (mounted && res['ok'] == false) _showErr(res);
   }
 
@@ -492,6 +585,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
 
   // ── UI ──
   String get _modeLabel {
+    if (_svc.error == 'region-unavailable') return '服务端尚不支持局部清晰化，请更新后手动重启';
+    if (_svc.region != null) {
+      return _svc.fallbackJpeg == null ? '正在获取选区原始细节…' : '局部清晰';
+    }
     switch (_svc.mode) {
       case RemoteScreenMode.connecting:
         return t('rsConnecting');
@@ -762,7 +859,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         },
       );
     }
-    // 兼容模式：JPEG 轮询 + 点按（长按右键/拖动只在流畅模式提供）。
+    // 兼容/选区模式：源图 JPEG + HTTP 点击、拖拽、长按右键。
     final jpeg = _svc.fallbackJpeg;
     if (jpeg == null) {
       return Center(
@@ -776,8 +873,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       builder: (context, constraints) {
         final size = constraints.biggest;
         final w = _svc.fallbackWidth, h = _svc.fallbackHeight;
-        final iw = w > 0 ? w.toDouble() : 1470.0;
-        final ih = h > 0 ? h.toDouble() : 956.0;
+        final iw = _svc.viewRegion?.width ?? (w > 0 ? w.toDouble() : 1470.0);
+        final ih = _svc.viewRegion?.height ?? (h > 0 ? h.toDouble() : 956.0);
         final scale = size.width / iw < size.height / ih
             ? size.width / iw
             : size.height / ih;
@@ -785,10 +882,13 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
           size,
           iw * scale,
           ih * scale,
-          GestureDetector(
+          Listener(
             behavior: HitTestBehavior.opaque,
-            onTapUp: (e) =>
-                _fallbackTap(e.localPosition, iw * scale, ih * scale),
+            onPointerDown: (e) => _fallbackDownAt(e, iw * scale, ih * scale),
+            onPointerMove: _fallbackMoveAt,
+            onPointerUp: (e) => _fallbackUpAt(e, iw * scale, ih * scale),
+            onPointerCancel: (e) =>
+                _fallbackUpAt(e, iw * scale, ih * scale, cancelled: true),
             child: Image.memory(jpeg, gaplessPlayback: true, fit: BoxFit.fill),
           ),
         );
@@ -862,35 +962,46 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
               ),
             ),
           ),
-        if (_zoomed) _zoomBadge(vp, offX, offY, dw, dh),
+        if (_zoomed || _svc.region != null) _zoomBadge(vp, offX, offY, dw, dh),
       ],
     );
   }
 
-  // 松手：视口框经当前矩阵的逆映射回 child 坐标，等比 fit 铺满视口后
-  // 走同一套 clamp / 徽标更新。框太小视为误触，退出框选但不改缩放。
-  void _finishBoxSel(Size vp, double offX, double offY, double dw, double dh) {
+  // Undo the view transform and letterboxing before asking the server to
+  // crop the native screenshot. A nested selection adds the current origin.
+  Future<void> _finishBoxSel(
+    Size vp,
+    double offX,
+    double offY,
+    double dw,
+    double dh,
+  ) async {
     final r = _boxRect;
-    _boxRect = null;
-    _boxSelOn = false;
-    if (r == null || r.width < 24 || r.height < 24) {
-      if (mounted) setState(() {});
-      return;
-    }
+    setState(() {
+      _boxRect = null;
+      _boxSelOn = false;
+    });
+    if (r == null || r.width < 24 || r.height < 24) return;
     final inv = Matrix4.inverted(_xform.value);
-    final a = MatrixUtils.transformPoint(inv, r.topLeft);
-    final b = MatrixUtils.transformPoint(inv, r.bottomRight);
-    final bw = (b.dx - a.dx).abs().clamp(1.0, double.infinity);
-    final bh = (b.dy - a.dy).abs().clamp(1.0, double.infinity);
-    final k2 = (vp.width / bw < vp.height / bh ? vp.width / bw : vp.height / bh)
-        .clamp(1.0, 6.0)
-        .toDouble();
-    final tx = vp.width / 2 - (a.dx + b.dx) / 2 * k2;
-    final ty = vp.height / 2 - (a.dy + b.dy) / 2 * k2;
-    _xform.value = Matrix4.identity()
-      ..translate(tx, ty)
-      ..scale(k2);
-    _onZoomUpdate(vp, offX, offY, dw, dh);
+    final a = MatrixUtils.transformPoint(inv, r.topLeft) - Offset(offX, offY);
+    final b =
+        MatrixUtils.transformPoint(inv, r.bottomRight) - Offset(offX, offY);
+    final previous = _svc.viewRegion;
+    if (!await _svc.ensureScreenSize() || !mounted) return;
+    final area =
+        previous ??
+        ScreenRegion(
+          0,
+          0,
+          _svc.fallbackWidth.toDouble(),
+          _svc.fallbackHeight.toDouble(),
+        );
+    final selected = area.select(Rect.fromPoints(a, b), dw, dh);
+    if (selected == null) return;
+    _svc.selectRegion(selected);
+    _zoomed = false;
+    _zoomPct = 100;
+    _xform.value = Matrix4.identity();
     if (mounted) setState(() {});
   }
 
@@ -934,6 +1045,11 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     _downDefer?.cancel();
     _downDefer = null;
     final f = d.localPosition; // 视口坐标 = 双击锚点
+    if (_svc.region != null) {
+      _svc.selectRegion(null);
+      _xform.value = Matrix4.identity();
+      return;
+    }
     final s2 = _zoomed ? 1.0 : 2.5;
     _xform.value = Matrix4.identity()
       ..translate(f.dx, f.dy)
@@ -951,6 +1067,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         button: true,
         child: GestureDetector(
           onTap: () {
+            if (_svc.region != null) _svc.selectRegion(null);
             _xform.value = Matrix4.identity();
             _onZoomUpdate(vp, offX, offY, dw, dh);
           },
@@ -962,7 +1079,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
               border: Border.all(color: const Color(0xFF2a3242)),
             ),
             child: Text(
-              '$_zoomPct%',
+              _svc.region != null ? '全屏 · $_zoomPct%' : '$_zoomPct%',
               style: const TextStyle(fontSize: 11.5, color: Color(0xFFdce6f1)),
             ),
           ),
