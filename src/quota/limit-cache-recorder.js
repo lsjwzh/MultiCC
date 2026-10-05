@@ -23,6 +23,8 @@ const {
   balanceBar,
   renderQuotaBar,
   compactBarText,
+  arkPlanFromBaseUrl,
+  arkWindowLabel,
 } = require('./quota-bar-view');
 
 const PROVIDER_FAILURE_COOLDOWN_MS = 5 * 60_000;
@@ -39,6 +41,75 @@ function resetMs(value) {
   const number = Number(value);
   if (value == null || !Number.isFinite(number) || number <= 0) return null;
   return Math.trunc(number < 10_000_000_000 ? number * 1000 : number);
+}
+
+// Every source names the three usual cycles its own way (5h / session,
+// 7d / 1wk / weekly, 1m / 30d / monthly); one token per cycle lets readings
+// from different sources be matched window for window.
+function cycleToken(window) {
+  const w = String(window || '').trim().toLowerCase();
+  if (['5h', 'five_hour', 'session'].includes(w)) return '5h';
+  if (['7d', '1wk', 'weekly', 'week', 'seven_day'].includes(w)) return '1wk';
+  if (['1m', '30d', 'monthly', 'month'].includes(w)) return '1m';
+  return w || null;
+}
+
+// A structured window row as the cache stores it: { window, label, usedPercent
+// (0..100), resetMs }. Rows without a usable percentage are dropped.
+function windowRow(window, label, usedPercent, reset) {
+  const used = Number(usedPercent);
+  if (usedPercent == null || !Number.isFinite(used)) return null;
+  return {
+    window: window || null,
+    label: label || window || null,
+    usedPercent: Math.max(0, Math.min(100, used)),
+    resetMs: resetMs(reset),
+  };
+}
+
+// A reading carries only the windows its source can see (Claude's response
+// header: 5h; the Codex usage read used to keep only its week). The cycles it
+// does not report keep their last known value — but only while that value's
+// own reset is still ahead, so nothing outlives the window it described.
+function mergeWindows(next, previous, nowMs) {
+  const rows = Array.isArray(next) ? next.filter(Boolean) : [];
+  const seen = new Set(rows.map(row => cycleToken(row.window || row.label)));
+  for (const row of Array.isArray(previous) ? previous : []) {
+    if (!row || seen.has(cycleToken(row.window || row.label))) continue;
+    const reset = Number(row.resetMs);
+    if (!Number.isFinite(reset) || reset <= nowMs) continue;
+    rows.push(row);
+    seen.add(cycleToken(row.window || row.label));
+  }
+  return rows;
+}
+
+// Vendor routes render a bar, but the cycles behind it are what decides
+// whether the line can take a turn. Same plan pick as the bar (arkBar).
+function vendorWindows(kind, result, baseUrl) {
+  if (!result || typeof result !== 'object') return [];
+  if (kind === 'kimi' && Array.isArray(result.summary)) {
+    return result.summary.map(item => item && windowRow(item.window, item.label,
+      item.usedPercent != null ? item.usedPercent : item.percent, item.resetMs)).filter(Boolean);
+  }
+  if (kind === 'zhipu' && Array.isArray(result.sites)) {
+    const site = result.sites.find(s => s && s.ok && Number.isFinite(Number(s.usedPercent)));
+    if (!site) return [];
+    return [
+      windowRow('5h', '5h', site.usedPercent, site.resetsAt),
+      windowRow('1wk', '1wk', site.weeklyUsedPercent, site.weeklyResetsAt),
+    ].filter(Boolean);
+  }
+  if (kind === 'ark' && Array.isArray(result.items)) {
+    const subscribed = result.items.filter(it => it && it.subscribed && !it.error
+      && Array.isArray(it.periods) && it.periods.length);
+    const active = arkPlanFromBaseUrl(baseUrl);
+    const plan = subscribed.find(it => it.product === active) || subscribed[0];
+    if (!plan) return [];
+    return plan.periods.map(p => p && windowRow(arkWindowLabel(p.label), p.label, p.percent, p.resetAt))
+      .filter(Boolean);
+  }
+  return [];
 }
 
 function createLimitRecorder({ cache, persistedSessions, providers, now = Date.now } = {}) {
@@ -82,16 +153,20 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
         resetsAtMs: normalized.resetsAtMs,
         observedAtMs: normalized.observedAtMs,
       };
-      // A plan with a second, longer window (GLM: 5h + weekly) is blocked by
-      // whichever runs out first, so both are kept. Dropping the weekly one
-      // once made a weekly-exhausted plan read as "5h 0% used → available".
-      const weekly = windowPercent(dto.weeklyUtilization);
-      if (weekly !== null) {
-        summary.windows = [
-          { label: '5h', usedPercent: normalized.usedPercentage, resetMs: normalized.resetsAtMs },
-          { label: '1wk', usedPercent: weekly, resetMs: resetMs(dto.weeklyResetsAt) },
+      // A plan is blocked by whichever of its cycles (5h / week / month) runs
+      // out first, so every cycle the reading carries is kept. Dropping GLM's
+      // weekly one once made a weekly-exhausted plan read as "5h 0% → usable".
+      const main = normalized.kind === 'weekly' ? '1wk' : '5h';
+      const reported = Array.isArray(dto.windows)
+        ? dto.windows.map(w => w && windowRow(w.window, w.label, w.usedPercent, w.resetMs))
+        : [
+          windowRow(main, main, normalized.usedPercentage, normalized.resetsAtMs),
+          windowRow('1wk', '1wk', windowPercent(dto.weeklyUtilization), dto.weeklyResetsAt),
         ];
-      }
+      let previous = null;
+      try { previous = cache.get(appType, providerId); } catch (_) { previous = null; }
+      const windows = mergeWindows(reported, previous && previous.summary && previous.summary.windows, at);
+      if (windows.length > 1) summary.windows = windows;
       return cache.record(appType, providerId, {
         kind: 'window',
         summary,
@@ -281,11 +356,17 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     let bar = null;
     try { bar = renderQuotaBar(kind, result, { baseUrl, ...(opts || {}) }); } catch (_) { bar = null; }
     const summaryText = compactBarText(bar ? bar.text : '');
+    const reported = vendorWindows(kind, result, baseUrl);
     let n = 0;
     for (const m of ids) {
+      let previous = null;
+      try { previous = cache.get(m.appType, m.providerId); } catch (_) { previous = null; }
+      const windows = reported.length
+        ? mergeWindows(reported, previous && previous.summary && previous.summary.windows, Number(now()))
+        : [];
       cache.record(m.appType, m.providerId, {
         kind,
-        summary: { kind, status: 'ok', fetchedAt: result.fetchedAt || null },
+        summary: { kind, status: 'ok', fetchedAt: result.fetchedAt || null, ...(windows.length ? { windows } : {}) },
         summaryText,
         barText: bar ? bar.text : null,
         fetchedAt: result.fetchedAt || now(),
@@ -332,7 +413,10 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
   function recordOfficialWindows(appType, providerId, { windows, fetchedAt } = {}) {
     if (!providerId || !Array.isArray(windows)) return null;
     const at = fetchedAt || now();
-    const rows = windows.filter(w => w && Number.isFinite(Number(w.usedPercent)));
+    let previous = null;
+    try { previous = cache.get(appType, providerId); } catch (_) { previous = null; }
+    const rows = mergeWindows(windows.filter(w => w && Number.isFinite(Number(w.usedPercent))),
+      previous && previous.summary && previous.summary.windows, Number(at));
     const text = rows.map(w => `${w.window || '?'} ${Math.round(Number(w.usedPercent))}%`).join(' · ');
     return cache.record(appType, providerId, {
       kind: 'claude',
