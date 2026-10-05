@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../../services/air_ops_service.dart';
+import '../../services/demo/demo_mode.dart';
 import '../../services/settings_service.dart';
 
 /// 侧栏底部那几行字的唯一一份状态（Web `public/air-ops.js`）。
@@ -307,6 +308,8 @@ class AirOpsStore extends ChangeNotifier {
   /// 只清当前那一份是不够的——服务历史里同样存着令牌，列表里点一下就又进去了，
   /// 等于没退。主机上的东西一律不动，忘的只是这台设备。
   Future<void> logout() async {
+    // 演示里「退出登录」只是离开演示：真实的服务器配置和历史都还在。
+    if (settings.isDemo) return DemoMode.exit(settings);
     await settings.save(host: '', token: '');
     await settings.clearServerHistory();
   }

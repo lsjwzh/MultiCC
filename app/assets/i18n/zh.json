@@ -4414,5 +4414,7 @@
   "iosUdidPhoneOnly": "请用 iPhone 的 Safari 打开本页；可以扫描下方二维码。",
   "iosUdidOpenSettings": "下载后请到 iPhone 的“设置 → 已下载描述文件”完成安装，再返回本页。",
   "iosUdidCopied": "已复制",
-  "iosUdidCopyManual": "请长按选中的内容复制。"
+  "iosUdidCopyManual": "请长按选中的内容复制。",
+  "tryDemoNoServer": "体验演示（无需服务器）",
+  "tryDemoHint": "还没有安装 MultiCC 服务端？先用内置示例项目看看主要功能：任务列表、会话记录、发消息和流式回复。"
 }
