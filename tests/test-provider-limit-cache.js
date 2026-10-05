@@ -22,7 +22,7 @@ const {
   DATABASE_SCHEMA_VERSION,
 } = require('../src/quota/provider-limit-cache');
 const {
-  createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_COOLDOWN_MS,
+  createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_BLOCKED_UNTIL_MS,
 } = require('../src/quota/limit-cache-recorder');
 const { compactBarText } = require('../src/quota/quota-bar-view');
 const { writeJsonAtomic } = require('../src/state/store');
@@ -258,14 +258,16 @@ function testRecorder() {
   'provider failure records a bounded availability cooldown');
 
   // Revocation is repaired by a human logging in, not by a window rolling over,
-  // so it parks the account longer than a self-clearing 429 — otherwise Auto
-  // re-selects a dead credential every five minutes.
+  // so it cannot be a timed cooldown: Auto would re-select the dead credential
+  // the moment the timer lapsed. The park is held until the credential is
+  // re-established (see testRevokedParkAndRelease).
   const parked = recorder.recordProviderFailure({ providerId: 'p-ds', category: 'authentication_permission' });
   ok(parked && parked.summary.kind === 'availability'
     && parked.summary.category === 'authentication_permission'
-    && parked.summary.blockedUntilMs === clock.now() + AUTH_REVOKED_COOLDOWN_MS,
-  'a revoked credential parks the provider on the long auth cooldown');
-  ok(AUTH_REVOKED_COOLDOWN_MS > PROVIDER_FAILURE_COOLDOWN_MS,
+    && parked.summary.revoked === true
+    && parked.summary.blockedUntilMs === AUTH_REVOKED_BLOCKED_UNTIL_MS,
+  'a revoked credential parks the provider permanently, and says why');
+  ok(AUTH_REVOKED_BLOCKED_UNTIL_MS > PROVIDER_FAILURE_COOLDOWN_MS,
   'revocation outlasts a self-clearing rate limit');
 
   cache.close();
@@ -275,6 +277,82 @@ function testRecorder() {
     && persistedCooldown.summary.httpStatus === 429,
   'provider availability cooldown survives a cache restart');
   reopened.close();
+}
+
+// ── revocation is a state, not a timer ──────────────────────────────────────
+
+// The blind spot this closes: the credential file looks locally healthy — the
+// access token still has hours on it — while the server has killed the token
+// family. Nothing inside multicc can repair that, so the only correct reaction
+// is to keep the account out of Auto's pool until a human logs in again.
+function testRevokedParkAndRelease() {
+  const { limitState } = require('../src/chat/auto-provider-policy');
+  const file = tmpDb('revoked');
+  const clock = fixedClock(1_700_000_000_000);
+  const cache = createProviderLimitCache({ file, now: clock.now });
+  // `catalog` is live: the end-to-end case below adds the account's provider
+  // to it after the store mints the account id.
+  const catalog = [
+    { id: 'p-ds', appType: 'claude', name: 'Claude 官方 · a' },
+    { id: 'p-glm', appType: 'claude', name: 'GLM' },
+  ];
+  const recorder = createLimitRecorder({
+    cache,
+    persistedSessions: fakeSessions({}),
+    providers: stubProviders({ list: catalog }),
+  });
+
+  recorder.recordProviderFailure({ providerId: 'p-ds', category: 'authentication_permission', httpStatus: 401 });
+  const parked = cache.get('claude', 'p-ds');
+  ok(limitState(parked, { now: clock.now() }).reason === 'provider_credential_revoked',
+    'a revoked account leaves the pool with a reason that names the cause');
+
+  // A year later, and with the timestamp tampered into the past: still out. The
+  // flag is what Auto reads, so the park cannot lapse or be clocked away.
+  ok(limitState(parked, { now: clock.now() + 365 * 24 * 3600_000 }).state === 'exhausted',
+    'a revoked park does not lapse on its own');
+  const backdated = { ...parked, summary: { ...parked.summary, blockedUntilMs: clock.now() - 1 } };
+  ok(limitState(backdated, { now: clock.now() }).state === 'exhausted',
+    'the revoked flag outranks the timestamp');
+
+  // A re-login writes a working credential; that write is what lifts the park.
+  const released = recorder.releaseProviderFailure({ providerId: 'p-ds' });
+  ok(released && released.summary.revoked !== true, 'a re-established credential lifts the park');
+  ok(limitState(cache.get('claude', 'p-ds'), { now: clock.now() }).state !== 'exhausted',
+    'the account is selectable again the moment its login succeeds');
+
+  // The other direction: an ordinary 429 must keep its bounded cooldown, so a
+  // healthy account's stream of refreshes can never release a real rate limit.
+  recorder.recordProviderFailure({ providerId: 'p-glm', category: 'rate_limit', httpStatus: 429 });
+  ok(recorder.releaseProviderFailure({ providerId: 'p-glm' }) === null,
+    'a refresh never lifts a cooldown that is not a revocation');
+  ok(limitState(cache.get('claude', 'p-glm'), { now: clock.now() }).state === 'exhausted',
+    'the 429 is still holding');
+
+  ok(recorder.releaseProviderFailure({ providerId: 'no-such-provider' }) === null,
+    'an unknown provider is not an error');
+  ok(recorder.releaseProviderFailure({}) === null, 'a missing provider id is not an error');
+
+  // End to end, the way server.js wires it: the official-account store's write
+  // hook is the release signal. Pinned here because the two halves live in
+  // different modules — a rename on either side would otherwise leave the
+  // account parked forever with every unit test still green.
+  const { createOfficialAccountStore } = require('../src/official-accounts');
+  const { accountProviderId } = require('../src/providers/official-catalog');
+  const store = createOfficialAccountStore({
+    root: tmpDir('hook'),
+    onCredentialWritten: id => recorder.releaseProviderFailure({ providerId: accountProviderId('claude', id) }),
+  });
+  const account = store.createClaudeAccount({ label: '被吊销' });
+  const accountId = accountProviderId('claude', account.id);
+  catalog.push({ id: accountId, appType: 'claude', name: 'Claude 官方 · 被吊销' });
+  recorder.recordProviderFailure({ providerId: accountId, category: 'authentication_permission', httpStatus: 401 });
+  ok(limitState(cache.get('claude', accountId), { now: clock.now() }).state === 'exhausted',
+    'the revoked account is out of the pool');
+  store.writeClaudeCredential(account.id, { access_token: 'at-new', refresh_token: 'rt-new' });
+  ok(limitState(cache.get('claude', accountId), { now: clock.now() }).state !== 'exhausted',
+    'the login write hook puts the account back into the pool');
+  cache.close();
 }
 
 // ── stale/freshness projection ──────────────────────────────────────────────
@@ -534,6 +612,7 @@ testCompactBarText();
 testSqliteSchema();
 testStore();
 testRecorder();
+testRevokedParkAndRelease();
 testStale();
 testMigration();
 testSchemaGuard();

@@ -53,6 +53,14 @@ function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000 } = {})
   if (!entry || typeof entry !== 'object') return Object.freeze({ state: 'unknown', reason: 'limit_unknown', usedPercent: null });
   const summary = entry.summary && typeof entry.summary === 'object' ? entry.summary : {};
   if (summary.kind === 'availability') {
+    // A revoked credential has no self-recovery path inside multicc: the server
+    // killed the token family and only a fresh login repairs it, which is what
+    // clears this flag (limit-cache-recorder.releaseProviderFailure). Reading
+    // the flag instead of the timestamp keeps the account out of Auto's pool
+    // for as long as the grant is dead, rather than until a timer lapses.
+    if (summary.revoked === true) {
+      return Object.freeze({ state: 'exhausted', reason: 'provider_credential_revoked', usedPercent: null });
+    }
     const blockedUntilMs = Number(summary.blockedUntilMs);
     if (String(summary.status || '').toLowerCase() === 'rejected'
         && Number.isFinite(blockedUntilMs) && blockedUntilMs > now) {

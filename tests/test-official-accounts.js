@@ -103,6 +103,38 @@ test('claude account files round-trip CPA-shaped fields', () => {
   assert.equal(store.listClaudeAccounts().length, 0);
 });
 
+// A written credential is the only evidence the store has that an account is
+// usable again: multicc's own login and both rotators all land on
+// writeClaudeCredential, so this hook is what lets a re-login put a parked
+// account back into Auto's pool (see quota/limit-cache-recorder.js).
+test('a credential write reports the account only when it lands a token', () => {
+  const writes = [];
+  const store = createOfficialAccountStore({
+    root: tmpRoot(),
+    onCredentialWritten: (id, data) => writes.push({ id, token: data.access_token }),
+  });
+  const created = store.createClaudeAccount({ label: '空号' });
+  assert.deepEqual(writes, [], 'a metadata-only write says nothing about the grant');
+
+  store.writeClaudeCredential(created.id, { access_token: 'at-1', refresh_token: 'rt-1' });
+  store.writeClaudeCredential(created.id, { access_token: 'at-2' });
+  assert.deepEqual(writes, [{ id: created.id, token: 'at-1' }, { id: created.id, token: 'at-2' }],
+    'every write that lands a token reports it, a rotation included');
+
+  store.writeClaudeCredential(created.id, { access_token: '   ' });
+  assert.equal(writes.length, 2, 'a blank access token is not a login');
+});
+
+test('a credential-write hook that throws never fails the write itself', () => {
+  const store = createOfficialAccountStore({
+    root: tmpRoot(),
+    onCredentialWritten: () => { throw new Error('limit cache down'); },
+  });
+  const created = store.createClaudeAccount({});
+  assert.doesNotThrow(() => store.writeClaudeCredential(created.id, { access_token: 'at-1' }));
+  assert.equal(store.readClaudeCredential(created.id).access_token, 'at-1', 'the credential still lands');
+});
+
 test('account ids are strict and paths cannot escape the store root', () => {
   assert.throws(() => assertAccountId('../../etc'), /invalid official account id/);
   assert.throws(() => assertAccountId('not-hex'), /invalid official account id/);

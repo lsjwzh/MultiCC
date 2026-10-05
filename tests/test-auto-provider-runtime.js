@@ -244,6 +244,29 @@ test('an active provider cooldown is skipped and expiry permits a fresh probe', 
   });
 });
 
+// Revocation is not a cooldown: it does not lapse, because nothing multicc can
+// do repairs it — only a human logging in does. The flag must therefore outrank
+// the timestamp, or a clock change would quietly hand Auto back an account the
+// server has already killed.
+test('a revoked credential never returns to the pool on a timer', () => {
+  const { limitState } = require('../src/chat/auto-provider-policy');
+  const entry = {
+    status: 'ok', fetchedAt: 990_000,
+    summary: {
+      kind: 'availability', status: 'rejected', category: 'authentication_permission',
+      httpStatus: 401, revoked: true, blockedUntilMs: Number.MAX_SAFE_INTEGER, observedAtMs: 990_000,
+    },
+  };
+  assert.deepEqual(limitState(entry, { now: 1_000_000, staleAfterMs: 60_000 }), {
+    state: 'exhausted', reason: 'provider_credential_revoked', usedPercent: null,
+  });
+  assert.equal(limitState(entry, { now: 4_000_000_000_000, staleAfterMs: 60_000 }).state, 'exhausted',
+    'skipped for as long as the grant is dead, not until a timer lapses');
+  const backdated = { ...entry, summary: { ...entry.summary, blockedUntilMs: 1 } };
+  assert.equal(limitState(backdated, { now: 1_000_000, staleAfterMs: 60_000 }).state, 'exhausted',
+    'the revoked flag outranks the timestamp');
+});
+
 test('an active cooldown overrides a sticky provider selection', () => {
   const { runtime, session, limits } = fixture({ emptyFetchedAt: 900_000 });
   const first = runtime.beginTurn({ session, turnId: 'sticky-source' });

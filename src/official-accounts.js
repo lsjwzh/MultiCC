@@ -104,6 +104,15 @@ function readJsonIfExists(file) {
 
 function createOfficialAccountStore(options = {}) {
   const root = path.resolve(options.root || DEFAULT_ROOT);
+  // Fired after writeClaudeCredential lands a usable access token. Every path
+  // that establishes a credential goes through that one method — multicc's own
+  // PKCE login (routes/claude-accounts.js), the inline rotation
+  // (claude-auth/account-credentials.js) and the CLI rotator
+  // (claude-auth/accounts-refresh.js) — so this single hook is what answers
+  // "is this account alive again?" for whoever parked it. The store does not
+  // know what a park is; it only reports the fact.
+  const onCredentialWritten = typeof options.onCredentialWritten === 'function'
+    ? options.onCredentialWritten : null;
 
   function codexDir(id) {
     return resolveUnder(root, 'codex', assertAccountId(id));
@@ -222,6 +231,12 @@ function createOfficialAccountStore(options = {}) {
     };
     atomicWriteJson(file, merged);
     secureFile(file);
+    // Only a write that carries a token is evidence the account is usable: a
+    // metadata-only write (createClaudeAccount's label/createdAt) says nothing
+    // about the grant and must not be read as a recovery.
+    if (onCredentialWritten && typeof merged.access_token === 'string' && merged.access_token.trim()) {
+      try { onCredentialWritten(id, merged); } catch (_) { /* bookkeeping must never fail the write */ }
+    }
     return merged;
   }
 
