@@ -1,0 +1,110 @@
+name: iOS App Store
+
+# 手动触发：在带 Xcode 26 的云 Mac 上构建 iOS 包并上传 App Store Connect。
+# App Store Connect 现在只收 iOS 26 SDK（Xcode 26+）构建的包，本机 Xcode 16 构建的会被 409 拒掉。
+#
+# 签名走苹果云端签名：归档时不签名，导出时用 App Store Connect API 密钥（Admin 角色）
+# 让 Xcode 拿云端管理的分发证书签名，所以这里不需要证书 p12 和描述文件。
+# App 没有 entitlements，不签名归档不会丢权限。
+#
+# 需要 app-store 环境里的三个 secret：ASC_KEY_ID、ASC_ISSUER_ID、ASC_KEY_P8（.p8 文件原文）。
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: 上传到 App Store Connect（关掉则只导出 IPA 作为构建产物）
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    environment: app-store
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.32.2'
+          cache: true
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          flutter --version
+          grep '^version:' pubspec.yaml
+
+      - name: Flutter build (no codesign)
+        run: |
+          flutter pub get
+          flutter build ios --release --no-codesign
+
+      - name: Archive
+        run: |
+          xcodebuild \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Runner.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            archive | tail -40
+          plist="$RUNNER_TEMP/Runner.xcarchive/Products/Applications/Runner.app/Info.plist"
+          for key in CFBundleShortVersionString CFBundleVersion DTSDKName DTXcode MinimumOSVersion; do
+            echo "$key=$(/usr/libexec/PlistBuddy -c "Print :$key" "$plist")"
+          done
+
+      - name: Sign and export
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          UPLOAD: ${{ inputs.upload }}
+        run: |
+          key="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s\n' "$ASC_KEY_P8" > "$key"
+          chmod 600 "$key"
+          if [ "$UPLOAD" = "true" ]; then destination=upload; else destination=export; fi
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>destination</key><string>${destination}</string>
+            <key>method</key><string>app-store-connect</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>ZLU7927WFP</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>stripSwiftSymbols</key><true/>
+            <key>uploadSymbols</key><true/>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Runner.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$key" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          rm -f "$key"
+          ls -la "$RUNNER_TEMP/export"
+
+      - name: Keep IPA
+        if: ${{ !inputs.upload }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: ${{ runner.temp }}/export/*.ipa
+          retention-days: 7
