@@ -29,17 +29,18 @@ const {
 
 const PROVIDER_FAILURE_COOLDOWN_MS = 5 * 60_000;
 // A 429 clears itself once the window rolls over, so a short cooldown is enough
-// to stop hammering. A revoked credential clears itself only when a human logs
-// in again — there is no self-recovery to wait for — so the five-minute default
-// would let Auto re-select a dead account every five minutes. Long enough to
-// take it out of rotation, short enough that a re-login is not punished by a
-// stale park.
-const AUTH_REVOKED_COOLDOWN_MS = 30 * 60_000;
+// to stop hammering. A revoked credential never clears itself: the server has
+// killed the token family and only a fresh login repairs it. A bounded window
+// would therefore hand the dead account straight back to Auto every time it
+// lapsed — which is exactly the "locally healthy, server-side dead" blind spot
+// this park exists to close. So the park is held until the credential is
+// re-established; releaseProviderFailure() is the only thing that lifts it.
+const AUTH_REVOKED_BLOCKED_UNTIL_MS = Number.MAX_SAFE_INTEGER;
 
-function cooldownForCategory(category) {
-  return String(category || '').toLowerCase() === 'authentication_permission'
-    ? AUTH_REVOKED_COOLDOWN_MS
-    : PROVIDER_FAILURE_COOLDOWN_MS;
+// Only revocation is permanent. Every other category keeps a bounded cooldown,
+// because every other category really does clear itself.
+function isRevokedCategory(category) {
+  return String(category || '').toLowerCase() === 'authentication_permission';
 }
 
 // Poller utilization is a 0..1 fraction; the cache stores percent (0..100).
@@ -275,8 +276,10 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
   function recordCooldown(identity, { category, httpStatus, blockedUntilMs }) {
     const observedAtMs = Number(now());
     const requestedUntil = Number(blockedUntilMs);
-    const safeBlockedUntilMs = Number.isFinite(requestedUntil) && requestedUntil > observedAtMs
-      ? Math.trunc(requestedUntil) : observedAtMs + cooldownForCategory(category);
+    const revoked = isRevokedCategory(category);
+    const safeBlockedUntilMs = revoked ? AUTH_REVOKED_BLOCKED_UNTIL_MS
+      : Number.isFinite(requestedUntil) && requestedUntil > observedAtMs
+        ? Math.trunc(requestedUntil) : observedAtMs + PROVIDER_FAILURE_COOLDOWN_MS;
     const status = Number(httpStatus);
     return cache.record(identity.appType, identity.providerId, {
       kind: 'availability',
@@ -286,11 +289,39 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
         category: String(category || 'provider_transient').slice(0, 80),
         httpStatus: Number.isInteger(status) ? status : null,
         blockedUntilMs: safeBlockedUntilMs,
+        // Auto reads this flag rather than the timestamp, so a revoked park is
+        // skipped for what it is instead of as a cooldown that happens to be
+        // very long — and so no clock change can quietly un-park a dead grant.
+        ...(revoked ? { revoked: true } : {}),
         observedAtMs,
       },
       summaryText: '',
       barText: null,
       fetchedAt: observedAtMs,
+    });
+  }
+
+  // The other half of a revoked park: a credential that works again. A login
+  // (routes/claude-accounts.js) and a successful rotation
+  // (claude-auth/account-credentials.js, accounts-refresh.js) all write through
+  // official-accounts' writeClaudeCredential, whose onCredentialWritten hook
+  // calls this — so the account returns to rotation the moment a human logs in,
+  // with no restart and no manual cache edit. A no-op for anything not parked
+  // as revoked, so a healthy account's stream of refreshes can never lift a
+  // real 429 cooldown.
+  function releaseProviderFailure({ providerId } = {}) {
+    const identity = explicitProviderIdentity(providerId);
+    if (!identity) return null;
+    let entry = null;
+    try { entry = cache.get(identity.appType, identity.providerId); } catch (_) { return null; }
+    if (!entry || !entry.summary || entry.summary.revoked !== true) return null;
+    const at = Number(now());
+    return cache.record(identity.appType, identity.providerId, {
+      kind: 'availability',
+      summary: { kind: 'availability', status: 'available', releasedAtMs: at },
+      summaryText: '',
+      barText: null,
+      fetchedAt: at,
     });
   }
 
@@ -455,6 +486,7 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     recordDto,
     recordProvider,
     recordProviderFailure,
+    releaseProviderFailure,
     setRefresher,
     recordVendor,
     recordClaude,
@@ -465,4 +497,6 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
   });
 }
 
-module.exports = { createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_COOLDOWN_MS };
+module.exports = {
+  createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_BLOCKED_UNTIL_MS, isRevokedCategory,
+};
