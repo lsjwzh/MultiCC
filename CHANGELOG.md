@@ -2,6 +2,15 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.4.0 — Local speech recognition that installs itself (2026-10-05)
+
+### Highlights
+
+- **One-click local ASR models** — the voice settings panel grows a "Local model" group with a live progress bar: one click downloads the SenseVoice weights (~229MB) and the silero VAD, so on-device dictation no longer requires a shell. Progress and failures ride on `GET /api/settings/voice`, and a stuck download can be cancelled or retried in place (`POST /api/settings/voice/asr-model`).
+- **First-boot background download** — on a machine that has never held the weights, the server fetches them in the background eight seconds after boot (unref'd, re-checking every gate), so local ASR is simply ready the first time you reach for the microphone. Set `ASR_LOCAL_AUTO_DOWNLOAD=off` to opt out.
+- **Machines that cannot load the addon are told so up front** — the panel now probes whether the sherpa-onnx native addon can actually load before offering anything; unsupported machines show a plain explanation instead of a download button that would fetch 229MB of weights the process could never use, and the boot hook skips them too.
+- **The offline script ships in the box** — `scripts/setup-local-asr.sh` is now staged into the standalone bundle (`app-server/scripts/`), with a sanity-gate assertion in the bundle builder, so an air-gapped install can still pull the models through a mirror of your choosing.
+
 ## v2.3.2 — Quieter turns, one place for notifications (2026-10-04)
 
 ### Highlights

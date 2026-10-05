@@ -6,12 +6,12 @@
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.3.2/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.4.0/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.3.2/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.4.0/install.ps1 | iex
 ```
 
 The tag in the URL **is** the version. The script downloads that release's
