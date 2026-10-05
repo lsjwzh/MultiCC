@@ -193,6 +193,7 @@ cd multicc-standalone-<版本>-darwin-x64
 
 - **包未签名/未公证**（没有 Apple Developer ID 与公证凭据）。首次打开必须右键→打开，之后正常双击。校验来源请用 Release 里的 `.sha256`。**未签名的直接后果之一是磁盘权限给不上**，见下面「macOS 磁盘权限」一节。
 - **本地语音识别（sherpa-onnx）需要 macOS 15+**：其 `darwin-x64` 二进制最低系统版本为 15.0。macOS 11–14 上会自动回退到云端 ASR（`src/voice/asr-local.js` 懒加载 + 失败回退），语音功能整体仍可用，只是精度/延迟按云端走。
+- **本地语音识别的权重（~229MB）不在包里，首次启动时自动下载**。addon 随包分发，权重太大不能进包：服务启动 8s 后在后台拉一次（可续传、失败不打扰、不阻塞启动），也可以在「语音设置 → 本地语音模型」里手动下载/重试/取消，或离线时跑包内的 `app-server/scripts/setup-local-asr.sh`。不想要自动下载就设 `ASR_LOCAL_AUTO_DOWNLOAD=off`；详见 [local-asr.md](local-asr.md)。
 - **macOS 12 的 Safari 不支持 Web Push**：需要通知时请用 Chrome 打开界面（Web UI 的其它部分在 Monterey 的 Safari 17.6 上可用）。
 - **终端模式需要系统里的 `tmux`**：包不携带 `tmux`，聊天、任务板、文件浏览都不受影响，只有终端页/CLI 登录需要它。
 - **`claude`、`codex` 等编码 CLI 仍需自行安装并登录**。包的运行时会被前置到 `PATH`，因此这些 Node 编写的 CLI 会自动用包内的 Node 22 跑，不需要系统装 Node。老机器上可以用包内 npm 装到用户目录：

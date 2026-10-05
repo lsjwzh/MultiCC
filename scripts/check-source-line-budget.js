@@ -28,10 +28,25 @@ const MIGRATION_DEBT = Object.freeze({
   // 该拆的仍是那笔 ~200 行的 vendor-quota 集群（ark/kimi/qoder fetchers +
   // in-flight/backoff 状态 + *QuotaView getters），拆完降回 <= 3000 就退休。
   'app/lib/providers/chat_provider.dart': Object.freeze({
+    // 2026-10-05 实测 3004 行 / 121606 字节：行数正好压在登记值上，字节比上一格
+    // （121585）多 21 —— 这道闸两项都要对齐，只抬行数不抬字节照样红。多出来的字节
+    // 是限流条那轮的结构调整，不是新代码。
     ceiling: 3004,
-    byteCeiling: 121585,
+    byteCeiling: 121606,
     target: 3000,
     reason: 'voice-dictation voiceRaw passthrough crossed 3000; vendor-quota cluster split retires this',
+  }),
+  // 2026-10-05 补登记：turn-engine.js 从 0f276ebc（2026-09-22，session
+  // multicc-claude-chat-06）起就在 3000 以上，一直没登记 —— 40 多个提交里它都在
+  // 3012~3021 之间，这道闸因此在 main 上一直是红的（flow 级，不挡发布，所以没人被
+  // 拦住）。本次 SDK 控制通道那一轮把 error_during_execution 的 startup_failure_reason
+  // 接进来时顺手压掉 9 行（3021 → 3012），按实测高水位登记到这一格。
+  // 真要退休还是那句：把每轮的 completion/结果收尾那一族拆出去，落回 <= 3000 就删条目。
+  'src/chat/turn-engine.js': Object.freeze({
+    ceiling: 3012,
+    byteCeiling: 148420,
+    target: 3000,
+    reason: 'over 3000 since 0f276ebc (2026-09-22) without a registration; registered at the measured high-water mark',
   }),
 // app/lib/screens/main_shell.dart was registered here (ceiling 3167/122298) after
   // it crossed 3000 in 039c6e43 (跨目录控制台). 2026-09-27 删掉整块任务板 UI（老首页、
@@ -343,8 +358,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 「拷贝自本机 CLI」标记与「本机 CLI 已登录、请在这里再登录一次」提醒。
     // +2 键（rsBoxZoomTitle/rsBoxSelHint）：屏幕浮层的框选局部放大（web+App 共用）。
     // +19 键（airNotify*）：品牌行「通知与播报」面板 —— 语音三档/任务提醒/系统推送/推送通道。
-    maxLines: 8702,
-    maxBytes: 549493,
+    // +27 键（airVoiceLocal* + airVoiceAsrShortLocal）：语音设置面板的「本地模型」组
+    // —— 七种状态徽标与说明、下载/重试/取消三态按钮、进度/速度/剩余时间三行、
+    // 四条结果回执。中英各 27 行 = +54 行，重跑生成器实测 8760/553754。
+    maxLines: 8760,
+    maxBytes: 553754,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

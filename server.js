@@ -1793,7 +1793,7 @@ const voiceHost = createVoiceHost({
   uploadVoice: upload.voice, voiceAsr, ttsService, readEnvFile, writeEnvFile,
   getAuxQueue: () => auxQueue,
   reportFailure: (stage, category) => reportHostControlFailure('voice_settings', stage, category),
-  log: logger,
+  log: logger, autoDownloadAsrModels: true,
 });
 const qwenAudioSupervisor = voiceHost.supervisor;
 const vapidKeys = ensureVapidKeys();

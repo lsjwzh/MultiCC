@@ -81,6 +81,7 @@ function mountVoiceRoutes(app, deps = {}) {
     uploadVoice,
     voice,
     asrLocal,
+    asrModelInstaller,
     voiceAsr,
     ttsService,
     readEnvFile,
@@ -109,6 +110,10 @@ function mountVoiceRoutes(app, deps = {}) {
   requireFunction(getAuxQueue, 'getAuxQueue');
   if (!voice || !voice.cfg) throw new TypeError('voice routes require voice service');
   if (!asrLocal || typeof asrLocal.isAvailable !== 'function') throw new TypeError('voice routes require local ASR service');
+  if (!asrModelInstaller || typeof asrModelInstaller.status !== 'function'
+    || typeof asrModelInstaller.start !== 'function' || typeof asrModelInstaller.cancel !== 'function') {
+    throw new TypeError('voice routes require the local ASR model installer');
+  }
   if (!voiceAsr || typeof voiceAsr.providerStatus !== 'function') throw new TypeError('voice routes require streaming ASR service');
   if (!ttsService || typeof ttsService.providerStatus !== 'function') throw new TypeError('voice routes require TTS service');
 
@@ -365,6 +370,11 @@ ${eventsStr}
       || env.DASHSCOPE_API_KEY
       || runtimeEnv.DASHSCOPE_API_KEY
       || '';
+    // The panel needs one thing the provider summary does not carry: how far the
+    // ~229MB local-model download has got. It hangs off status.local.download so
+    // the whole local-provider picture is read from one place.
+    const asrStatus = voiceAsr.providerStatus();
+    if (asrStatus && asrStatus.local) asrStatus.local.download = asrModelInstaller.status();
     res.json({
       baseUrl: env.OPENROUTER_BASE_URL || runtimeEnv.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
       apiKey: key ? key.slice(0, 8) + '****' + key.slice(-4) : '',
@@ -378,7 +388,7 @@ ${eventsStr}
       whisperPrompt: env.WHISPER_PROMPT || runtimeEnv.WHISPER_PROMPT || '',
       asr: {
         provider: env.ASR_PROVIDER || runtimeEnv.ASR_PROVIDER || 'auto',
-        status: voiceAsr.providerStatus(),
+        status: asrStatus,
         openaiUrl: env.OPENAI_REALTIME_URL || runtimeEnv.OPENAI_REALTIME_URL || 'wss://api.openai.com/v1/realtime',
         openaiModel: env.OPENAI_REALTIME_MODEL || runtimeEnv.OPENAI_REALTIME_MODEL || 'gpt-4o-transcribe',
         hasOpenaiKey: !!(env.OPENAI_REALTIME_API_KEY || runtimeEnv.OPENAI_REALTIME_API_KEY),
@@ -414,6 +424,24 @@ ${eventsStr}
         runtime: getQwenAudioRuntimeStatus(),
       },
     });
+  });
+
+  // Local ASR weights are the one piece of voice setup that is not a settings
+  // value: ~229MB pulled off the network. The panel drives it through here so
+  // the server owns the transfer (resumable, single-flight, mirror fallback)
+  // and the browser only polls the status in GET /api/settings/voice.
+  app.post('/api/settings/voice/asr-model', (req, res) => {
+    const action = String((req.body && req.body.action) || 'download');
+    if (action === 'cancel') {
+      return res.json({ ok: true, cancelled: asrModelInstaller.cancel(), status: asrModelInstaller.status() });
+    }
+    if (action !== 'download') return res.status(400).json({ error: `未知操作: ${action}` });
+    // Never await: the transfer outlives the request, and holding this response
+    // open for 229MB would time the browser out long before it finished. start()
+    // resolves only when the download settles, so the caller gets the state as
+    // of right now — already "downloading" — and follows it with GET.
+    asrModelInstaller.start('manual').catch(() => {});
+    return res.json({ ok: true, status: asrModelInstaller.status() });
   });
 
   app.post('/api/settings/voice', (req, res) => {

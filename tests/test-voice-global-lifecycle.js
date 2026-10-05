@@ -79,7 +79,10 @@ function hostHarness(records = baseRecords(), directories = baseDirectories()) {
     getBaseUrl: () => 'http://127.0.0.1:3000',
     uploadVoice: (req, res, next) => { if (typeof next === 'function') next(); },
     voice: { cfg: {} },
-    asrLocal: { isAvailable: () => false },
+    // modelFilesExist is the installer's one hard dependency (it decides both
+    // "already installed" and the reported state). autoDownloadAsrModels stays
+    // at its false default, so this host never reaches the network.
+    asrLocal: { isAvailable: () => false, modelFilesExist: () => false },
     voiceAsr: { providerStatus: () => ({}) },
     ttsService: { providerStatus: () => ({}) },
     readEnvFile: () => ({}),

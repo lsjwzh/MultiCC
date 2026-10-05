@@ -91,5 +91,11 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // passthrough, 67022e75, +6 lines) without a registration, which turned the
   // v2.2.3 tag CI red; the entry is back at 3005/121819, so the list below
   // carries it again until the vendor-quota cluster split retires it.
-  assert.deepEqual(result.debts.map(entry => entry.file), ['app/lib/providers/chat_provider.dart']);
+  // turn-engine.js joined the list on 2026-10-05: it has actually been over 3000
+  // since 0f276ebc (2026-09-22) — 40-odd commits — but the entry was never
+  // written, so this gate had been failing on main the whole time. Registering it
+  // at the measured watermark (3012) is the fix the file's own policy asks for;
+  // the real retirement is still to split the per-turn completion cluster out.
+  assert.deepEqual(result.debts.map(entry => entry.file),
+    ['app/lib/providers/chat_provider.dart', 'src/chat/turn-engine.js']);
 });

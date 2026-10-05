@@ -430,15 +430,23 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
   assert.equal(res.status, 0, `staging failed: ${res.stderr}`);
   const staged = path.join(out, 'app-server');
   for (const must of ['server.js', 'src/paths.js', 'public/air.html', 'public/chat.html',
-    'scripts/multicc-router-mcp.js', 'plugins/bridges/wechat-ilink.js', 'plugins/cron/cron-tasks.js',
+    'scripts/multicc-router-mcp.js',
+    // The offline fallback the voice panel names when the in-app download keeps
+    // failing. Without it in the bundle, on-device ASR is unreachable on every
+    // standalone install — the exact hole this file exists to close.
+    'scripts/setup-local-asr.sh',
+    'src/voice/asr-model-installer.js',
+    'plugins/bridges/wechat-ilink.js', 'plugins/cron/cron-tasks.js',
     'skills/multicc-artifact/references/registration-rule.md',
     'package.json', ...MACOS_AGENT_FILES, ...POWERD_FILES]) {
     assert.ok(fs.existsSync(path.join(staged, must)), `staged tree missing ${must}`);
   }
-  // The macOS agent installer is run by the server at startup, and the powerd
-  // installer is run inside the one admin prompt 「关盖运行」 raises: both must
-  // stay executable or the prompt would silently do nothing.
-  for (const sh of [...MACOS_AGENT_FILES, ...POWERD_FILES].filter(f => f.endsWith('.sh'))) {
+  // The macOS agent installer is run by the server at startup, the powerd
+  // installer is run inside the one admin prompt 「关盖运行」 raises, and the ASR
+  // fetcher is run by hand: all three must stay executable or they would
+  // silently do nothing.
+  for (const sh of [...MACOS_AGENT_FILES, ...POWERD_FILES, 'scripts/setup-local-asr.sh']
+    .filter(f => f.endsWith('.sh'))) {
     assert.ok(fs.statSync(path.join(staged, sh)).mode & 0o100, `${sh} must stay executable`);
   }
   // server.js requires every plugins/* module unconditionally at boot; a tree
@@ -463,7 +471,8 @@ function stubRepoRoot(dir) {
   fs.writeFileSync(path.join(dir, 'package.json'),
     `${JSON.stringify({ name: 'stub', version: '1.0.0', dependencies: {} }, null, 2)}\n`);
   for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'public/air.html',
-    'scripts/multicc-router-mcp.js', ...MACOS_AGENT_FILES, ...POWERD_FILES,
+    'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh',
+    'src/voice/asr-model-installer.js', ...MACOS_AGENT_FILES, ...POWERD_FILES,
     'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md']) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });

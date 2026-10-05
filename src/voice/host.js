@@ -11,6 +11,7 @@ const { createQwenAudioInstaller } = require('./qwen-audio-installer');
 const { createQwenAudioSupervisor } = require('./qwen-audio-supervisor');
 const { createVoiceLaunchRegistry } = require('./launch');
 const { createVoiceRouterProvisioner } = require('./router');
+const { createAsrModelInstaller } = require('./asr-model-installer');
 const { resolveDirectoryCommander } = require('../task-board/core');
 
 const DEFAULT_MODEL = 'qwen-audio-3.0-realtime-plus';
@@ -33,6 +34,10 @@ function createVoiceHost({
   uploadVoice,
   voice = require('./config'),
   asrLocal = require('./asr-local'),
+  // Local ASR weights are ~229MB fetched off the network, so the host decides
+  // whether it may do that unprompted. Off by default: a host composed inside a
+  // test must never reach HuggingFace. server.js opts in explicitly.
+  autoDownloadAsrModels = false,
   voiceAsr,
   ttsService,
   readEnvFile,
@@ -69,10 +74,13 @@ function createVoiceHost({
     log,
   });
 
+  const asrModelInstaller = createAsrModelInstaller({ asrLocal, log, autoDownload: autoDownloadAsrModels });
+
   mountVoiceRoutes(app, {
     uploadVoice,
     voice,
     asrLocal,
+    asrModelInstaller,
     voiceAsr,
     ttsService,
     readEnvFile,
@@ -149,8 +157,23 @@ function createVoiceHost({
     return { migrated: true, reason: 'migrated', enabled, created: !!(result && result.created) };
   }
 
+  // First boot on a machine that has never held the weights: fetch them in the
+  // background so on-device ASR is ready without anyone opening settings. The
+  // delay keeps 229MB off the critical path of a cold start, and unref() means
+  // the transfer never keeps the process alive on its own. maybeAutoDownload
+  // re-checks every gate (ASR_LOCAL off, ASR_LOCAL_AUTO_DOWNLOAD off, files
+  // already present), so this line only expresses intent, never a promise to
+  // hit the network.
+  if (autoDownloadAsrModels) {
+    const timer = setTimeout(() => {
+      try { asrModelInstaller.maybeAutoDownload(); } catch (_) {}
+    }, 8000);
+    if (timer.unref) timer.unref();
+  }
+
   return Object.freeze({
     installer,
+    asrModelInstaller,
     launchRegistry,
     voiceRouter,
     supervisor,

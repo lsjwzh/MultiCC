@@ -8,6 +8,9 @@ FunASR/FunAudioLLM 家族模型），替代云端 Whisper API 的跨境往返。
 > 因此 macOS 11–14 上本地 ASR 不可用：`isAvailable()` 为 false，语音输入/流式通道
 > 自动回退云端 Whisper，其它功能不受影响。独立版（[standalone.md](standalone.md)）在
 > 这些老机器上就是走这条回退路径。
+>
+> 这类机器**不会**去下那 229MB：addon 探测失败时状态直接是 `unsupported`，自动下载跳过，
+> 面板上也没有下载按钮（下下来也加载不了）。
 
 ## 为什么
 
@@ -22,15 +25,31 @@ RTF ≈ 0.018（M4，2 线程）：1 秒音频约 18ms 推理。
 
 ## 安装（新机器）
 
-```bash
-npm install                      # package.json 已含 sherpa-onnx-node（macOS arm64 预编译）
-bash scripts/setup-local-asr.sh  # 下载模型到 ~/.multicc/asr-models（~240MB，github/ghproxy）
-# 重启 multicc server 即生效
-```
+addon 跟着 `npm install` 一起来（`package.json` 已含 `sherpa-onnx-node`，macOS arm64 有
+预编译），**权重不会**：`~/.multicc/asr-models` 里那 ~229MB 需要单独取一次。三条路都通向
+同一个目录，取一次就够：
 
-验证：`GET /api/settings/voice` → `asr.status.local.ready === true`；
+| 路径 | 什么时候用 | 怎么做 |
+|---|---|---|
+| **① 首次启动自动下载**（默认） | 新机器第一次装完 | 什么都不用做。服务起来 8s 后自己后台拉，拉完自动预热（本机不支持 addon 时自动跳过） |
+| **② 语音设置面板一键下载** | 自动那次失败了，或想手动重来 | Air → 语音设置 → 「本地语音模型」→ 下载（可取消、可重试，带进度/速度/剩余时间） |
+| **③ 命令行脚本** | 完全离线/受限网络，或没有 web 面板 | `bash scripts/setup-local-asr.sh`（独立包里也在 `app-server/scripts/`） |
+
+三者的下载源与落盘位置完全一致（HuggingFace 主源 → hf-mirror 镜像；VAD 走 GitHub
+Release → gh-proxy 镜像），都是**可续传**的：中断后重来会从 `.part` 的断点接着下，不会
+从 0 开始。下载器是 `src/voice/asr-model-installer.js`，服务端单飞 + 跨进程锁
+（`.download.lock`，6 小时视为陈旧可抢占），所以两个 server 共用一个 `~/.multicc` 也不会
+下两份。
+
+关掉自动下载：`ASR_LOCAL_AUTO_DOWNLOAD=off`（`ASR_LOCAL=off` 也会一并关掉，见下表）。
+CI 容器正是靠 `ASR_LOCAL=off` 保证门禁不会去拉这 229MB。
+
+验证：`GET /api/settings/voice` → `asr.status.local.ready === true`，同一条里
+`asr.status.local.download.state` 是 `ready` / `missing` / `downloading` / `failed` /
+`unsupported` / `disabled` 之一；
 `POST /api/voice/stt` 返回 `engine: "local"`。
-测试：`node tests/test-local-asr.js`（可加 `--typeless 8` 跑真实录音对比基准）。
+测试：`node tests/test-local-asr.js`（可加 `--typeless 8` 跑真实录音对比基准）；
+下载器本身是 `node --test tests/test-asr-model-installer.js`（全部走注入的假 fetch，不联网）。
 
 ## 接入点
 
@@ -46,7 +65,8 @@ bash scripts/setup-local-asr.sh  # 下载模型到 ~/.multicc/asr-models（~240M
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `ASR_LOCAL` | `auto` | `auto`=模型存在即用；`off`=禁用（回到纯云端） |
+| `ASR_LOCAL` | `auto` | `auto`=模型存在即用；`off`=禁用（回到纯云端，同时关掉自动下载） |
+| `ASR_LOCAL_AUTO_DOWNLOAD` | `auto` | `off`/`0`/`false`=首次启动不自动下载权重（面板上的手动下载不受影响） |
 | `ASR_LOCAL_MODEL_DIR` | `~/.multicc/asr-models` | 模型目录（各 worktree 共享，不进 git） |
 | `ASR_LOCAL_THREADS` | `2` | 推理线程数 |
 | `ASR_LOCAL_LANGUAGE` | `auto` | `auto` 对中英夹杂最好，可强制 `zh` |
