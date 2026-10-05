@@ -361,8 +361,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +27 键（airVoiceLocal* + airVoiceAsrShortLocal）：语音设置面板的「本地模型」组
     // —— 七种状态徽标与说明、下载/重试/取消三态按钮、进度/速度/剩余时间三行、
     // 四条结果回执。中英各 27 行 = +54 行，重跑生成器实测 8760/553754。
+    // 2026-10-05 纠偏：553754 是改写 airVoiceLocalFailedDesc 之前的实测；
+    // 改写后的失败提示文案更长（+142 字节），24e6e044 实际提交的是 8760/553896，
+    // 与 HEAD 的 zh/en.json 重新生成结果逐字节一致。按真实高水位改登记 553896。
     maxLines: 8760,
-    maxBytes: 553754,
+    maxBytes: 553896,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
