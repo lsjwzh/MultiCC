@@ -4260,7 +4260,7 @@
   "airGlobalPermissionsOpen": "Open System Settings",
   "airGlobalPermissionsRecheck": "Re-check",
   "airGlobalPermissionsClose": "Close",
-  "airGlobalPermissionsGuide": "System Settings is open. Enable MultiCC Agent under “{name}”, then return here and re-check.",
+  "airGlobalPermissionsGuide": "System Settings is open. Enable MultiCC Agent under “{name}”, then return here and choose “Restart Agent and re-check”.",
   "airGlobalPermissionsAccessibility": "Accessibility",
   "airGlobalPermissionsRecording": "Screen Recording",
   "airGlobalPermissionsOpenFailed": "Could not open System Settings: {message}",
@@ -4378,5 +4378,16 @@
   "airGlobalPermissionsRestart": "Restart Agent and re-check",
   "airGlobalPermissionsRestartFailed": "Could not restart Agent: {message}",
   "airGlobalPermissionsTarget": "App to authorize: {path}",
-  "airGlobalPermissionsRecovery": "If the switch is already on, restart Agent to apply the new grant. If this still fails after an update, the old signature grant may be stale: remove MultiCC Agent from the relevant permission list, add the current app and enable it again. Restarting Agent briefly interrupts desktop operations."
+  "airGlobalPermissionsRecovery": "After granting access, the running Agent may still report the old state. Once the system switches are on, choose “Restart Agent and re-check”. If a check still fails, verify the app path first. If an update invalidated the old signature grant, remove the old entry and add the current app again. Restarting Agent briefly interrupts desktop operations.",
+  "airGlobalPermissionsInputMonitoring": "Input Monitoring",
+  "airGlobalPermissionsGranted": "Granted",
+  "airGlobalPermissionsNotDetected": "Grant not detected",
+  "airGlobalPermissionsUnknown": "Unknown",
+  "airGlobalPermissionsDesktopReady": "Screen Recording and Accessibility checks passed. Esc stop status is shown separately below.",
+  "airGlobalPermissionsEscEnabled": "Esc stop listener is enabled on the Mac. Verify it with the physical Esc key during desktop operations.",
+  "airGlobalPermissionsEscNoAccess": "Esc stop is unavailable on the Mac. Enable Input Monitoring for MultiCC Agent, then restart Agent and re-check.",
+  "airGlobalPermissionsEscInactive": "Esc stop listener is not enabled on the Mac. Restart Agent and re-check; an enabled permission switch does not prove the listener is running.",
+  "airGlobalPermissionsEscUnknown": "Esc stop status on the Mac is unknown. Update Agent and re-check; do not rely on Esc to stop operations yet.",
+  "airGlobalPermissionsRestarting": "Restarting Agent and reading its latest status…",
+  "airGlobalPermissionsRestarted": "Agent restarted. The results below are from the restarted Agent."
 }

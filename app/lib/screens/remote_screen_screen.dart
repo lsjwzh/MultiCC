@@ -85,9 +85,14 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   Timer? _permTimer;
   Timer? _longPress;
 
-  /// 权限门：null=已放行（或无需检查）；否则是 /api/system/agent-permissions
-  /// 的快照（accessibility / screenRecording / local），横幅据此渲染。
+  /// 横幅独立于取帧权限门：屏录、辅助功能通过后，急停警告仍须保留。
   Map<String, dynamic>? _permGate;
+  bool _permStarted = false;
+  bool _permChecking = false;
+  bool _permRestarting = false;
+  int _permEpoch = 0;
+  String? _permResult;
+  DateTime? _lastPermCheck;
   int _lastX = 0;
   int _lastY = 0;
   DateTime _lastMoveSent = DateTime.fromMillisecondsSinceEpoch(0);
@@ -128,40 +133,65 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     _checkPermsThenConnect();
   }
 
-  /// 打开屏幕先过权限门：缺屏幕录制连帧都出不来，缺辅助功能点不动。走过
-  /// 「关盖运行 / 自动解锁」的机器必然已授过。缺就亮引导横幅，用户在系统
-  /// 设置里勾上后每 2s 复查一次，齐了自动开始连流。
+  /// 未通过桌面权限时每两秒复查；出帧后每十秒检查急停监听状态。
   Future<void> _checkPermsThenConnect() async {
-    final perms = await _svc.agentPermissions();
+    await _refreshPerms();
     if (!mounted) return;
-    if (_gateCleared(perms)) {
-      _svc.connectLive();
-      return;
-    }
-    setState(() => _permGate = _gateSnapshot(perms));
     _permTimer?.cancel();
-    _permTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
-      final again = await _svc.agentPermissions();
-      if (!mounted) return;
-      if (_gateCleared(again)) {
-        _permTimer?.cancel();
-        setState(() => _permGate = null);
-        _svc.connectLive();
-      } else {
-        setState(() => _permGate = _gateSnapshot(again));
+    _permTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (_permStarted &&
+          _lastPermCheck != null &&
+          DateTime.now().difference(_lastPermCheck!) <
+              const Duration(seconds: 10)) {
+        return;
       }
+      unawaited(_refreshPerms());
     });
   }
 
-  static bool _gateCleared(Map<String, dynamic> perms) =>
-      perms['applicable'] != true ||
-      (perms['accessibility'] == true && perms['screenRecording'] == true);
+  Future<void> _refreshPerms() async {
+    if (_permChecking || _permRestarting) return;
+    _permChecking = true;
+    final epoch = _permEpoch;
+    final perms = await _svc.agentPermissions();
+    _permChecking = false;
+    _lastPermCheck = DateTime.now();
+    if (!mounted || _permRestarting || epoch != _permEpoch) return;
+    _applyPerms(perms);
+  }
 
-  static Map<String, dynamic> _gateSnapshot(Map<String, dynamic> perms) => {
-    'accessibility': perms['accessibility'] == true,
-    'screenRecording': perms['screenRecording'] == true,
-    'local': perms['local'] == true,
-  };
+  void _applyPerms(Map<String, dynamic> perms) {
+    setState(
+      () => _permGate =
+          RemoteScreenService.allPermissionsReady(perms) && _permResult == null
+          ? null
+          : Map<String, dynamic>.from(perms),
+    );
+    if (!_permStarted && RemoteScreenService.desktopPermissionsReady(perms)) {
+      _permStarted = true;
+      _svc.connectLive();
+    }
+  }
+
+  Future<void> _restartAgent() async {
+    if (_permRestarting || _permGate?['local'] != true) return;
+    setState(() {
+      _permRestarting = true;
+      _permEpoch++;
+      _permResult = t('airGlobalPermissionsRestarting');
+    });
+    final reply = await _svc.restartAgentPermissions();
+    if (!mounted) return;
+    setState(() {
+      _permRestarting = false;
+      _permResult = reply['ok'] == true
+          ? t('airGlobalPermissionsRestarted')
+          : t('airGlobalPermissionsRestartFailed', {
+              'message': '${reply['error'] ?? ''}',
+            });
+    });
+    if (reply['ok'] == true) _applyPerms(reply);
+  }
 
   @override
   void dispose() {
@@ -207,7 +237,11 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     _decoding = true;
     final w = rfb.width, h = rfb.height;
     // BGRA → RGBA：32bit 上 R/B 互换，A/G 原位。
-    final src = Uint32List.view(fb.buffer, fb.offsetInBytes, fb.lengthInBytes ~/ 4);
+    final src = Uint32List.view(
+      fb.buffer,
+      fb.offsetInBytes,
+      fb.lengthInBytes ~/ 4,
+    );
     final rgba = Uint8List(src.length * 4);
     final dst = Uint32List.view(rgba.buffer, 0, src.length);
     for (var i = 0; i < src.length; i++) {
@@ -539,14 +573,19 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     final local = gate['local'] == true;
     Widget row(String key, String label) {
       final ok = gate[key] == true;
+      final mark = ok
+          ? '✓'
+          : gate[key] == false
+          ? '✗'
+          : '?';
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            '$label ${ok ? '✓' : '✗'}',
+            '$label $mark',
             style: const TextStyle(fontSize: 12.5, color: Color(0xFFf0d7a0)),
           ),
-          if (!ok && local) ...[
+          if (gate[key] == false && local) ...[
             const SizedBox(width: 6),
             OutlinedButton(
               style: OutlinedButton.styleFrom(
@@ -555,7 +594,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 minimumSize: const Size(0, 30),
               ),
-              onPressed: () => _svc.openPermission(key),
+              onPressed: _permRestarting
+                  ? null
+                  : () => _svc.openPermission(key),
               child: Text(
                 t('rsPermOpen'),
                 style: const TextStyle(fontSize: 11.5),
@@ -574,7 +615,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
+          Wrap(
+            spacing: 12,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               Text(
                 t('rsPermTitle'),
@@ -584,17 +628,36 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
                   color: Color(0xFFffcc55),
                 ),
               ),
-              const SizedBox(width: 12),
               row('screenRecording', t('rsPermScreen')),
-              const SizedBox(width: 12),
               row('accessibility', t('rsPermAx')),
+              row('listenAccess', t('airGlobalPermissionsInputMonitoring')),
             ],
           ),
           const SizedBox(height: 3),
           Text(
-            local ? t('rsPermHint') : t('rsPermRemote'),
-            style: const TextStyle(fontSize: 11.5, color: Color(0xFFb8a878)),
+            t(RemoteScreenService.escStatusKey(gate)),
+            style: const TextStyle(fontSize: 11.5, color: Color(0xFFf0d7a0)),
           ),
+          if (_permResult != null)
+            Text(
+              _permResult!,
+              style: const TextStyle(fontSize: 11.5, color: Color(0xFFf0d7a0)),
+            ),
+          if (local && gate['agentApp'] is String)
+            SelectableText(
+              gate['agentApp'] as String,
+              style: const TextStyle(fontSize: 11.5, color: Color(0xFFb8a878)),
+            ),
+          if (local)
+            TextButton(
+              onPressed: _permRestarting ? null : _restartAgent,
+              child: Text(t('airGlobalPermissionsRestart')),
+            ),
+          if (!RemoteScreenService.allPermissionsReady(gate))
+            Text(
+              local ? t('rsPermHint') : t('rsPermRemote'),
+              style: const TextStyle(fontSize: 11.5, color: Color(0xFFb8a878)),
+            ),
         ],
       ),
     );
@@ -613,10 +676,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
               style: const TextStyle(fontSize: 12, color: Color(0xFFf0d7d7)),
             ),
           ),
-          TextButton(
-            onPressed: _unhalt,
-            child: Text(t('rsUnhalt')),
-          ),
+          TextButton(onPressed: _unhalt, child: Text(t('rsUnhalt'))),
         ],
       ),
     );
@@ -635,21 +695,25 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
           final scale = size.width / rfb.width < size.height / rfb.height
               ? size.width / rfb.width
               : size.height / rfb.height;
-          return _zoomStage(size, rfb.width * scale, rfb.height * scale,
-              Listener(
-                onPointerDown: (e) =>
-                    _onPointerDown(e, rfb.width * scale, rfb.height * scale),
-                onPointerMove: (e) =>
-                    _onPointerMove(e, rfb.width * scale, rfb.height * scale),
-                onPointerUp: (e) =>
-                    _onPointerUp(e, rfb.width * scale, rfb.height * scale),
-                onPointerCancel: (e) =>
-                    _onPointerUp(e, rfb.width * scale, rfb.height * scale),
-                child: CustomPaint(
-                  painter: _ScreenPainter(img),
-                  size: Size.infinite,
-                ),
-              ));
+          return _zoomStage(
+            size,
+            rfb.width * scale,
+            rfb.height * scale,
+            Listener(
+              onPointerDown: (e) =>
+                  _onPointerDown(e, rfb.width * scale, rfb.height * scale),
+              onPointerMove: (e) =>
+                  _onPointerMove(e, rfb.width * scale, rfb.height * scale),
+              onPointerUp: (e) =>
+                  _onPointerUp(e, rfb.width * scale, rfb.height * scale),
+              onPointerCancel: (e) =>
+                  _onPointerUp(e, rfb.width * scale, rfb.height * scale),
+              child: CustomPaint(
+                painter: _ScreenPainter(img),
+                size: Size.infinite,
+              ),
+            ),
+          );
         },
       );
     }
@@ -672,16 +736,17 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         final scale = size.width / iw < size.height / ih
             ? size.width / iw
             : size.height / ih;
-        return _zoomStage(size, iw * scale, ih * scale,
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTapUp: (e) => _fallbackTap(e.localPosition, iw * scale, ih * scale),
-              child: Image.memory(
-                jpeg,
-                gaplessPlayback: true,
-                fit: BoxFit.fill,
-              ),
-            ));
+        return _zoomStage(
+          size,
+          iw * scale,
+          ih * scale,
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapUp: (e) =>
+                _fallbackTap(e.localPosition, iw * scale, ih * scale),
+            child: Image.memory(jpeg, gaplessPlayback: true, fit: BoxFit.fill),
+          ),
+        );
       },
     );
   }
@@ -743,7 +808,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
             child: IgnorePointer(
               child: Container(
                 decoration: BoxDecoration(
-                  border: Border.all(color: const Color(0xFF4da3ff), width: 1.5),
+                  border: Border.all(
+                    color: const Color(0xFF4da3ff),
+                    width: 1.5,
+                  ),
                   color: const Color(0x244da3ff),
                 ),
               ),
@@ -774,7 +842,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         .toDouble();
     final tx = vp.width / 2 - (a.dx + b.dx) / 2 * k2;
     final ty = vp.height / 2 - (a.dy + b.dy) / 2 * k2;
-    _xform.value = Matrix4.identity()..translate(tx, ty)..scale(k2);
+    _xform.value = Matrix4.identity()
+      ..translate(tx, ty)
+      ..scale(k2);
     _onZoomUpdate(vp, offX, offY, dw, dh);
     if (mounted) setState(() {});
   }
@@ -794,7 +864,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
 
     final tx = clampAxis(m.entry(0, 3), offX, dw, vp.width);
     final ty = clampAxis(m.entry(1, 3), offY, dh, vp.height);
-    _xform.value = Matrix4.identity()..translate(tx, ty)..scale(s);
+    _xform.value = Matrix4.identity()
+      ..translate(tx, ty)
+      ..scale(s);
     final zoomed = s > 1.01;
     final pct = (s * 100).round();
     if (mounted && (zoomed != _zoomed || _zoomPct != pct)) {
@@ -806,7 +878,13 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   }
 
   void _doubleTapZoom(
-      TapDownDetails d, Size vp, double offX, double offY, double dw, double dh) {
+    TapDownDetails d,
+    Size vp,
+    double offX,
+    double offY,
+    double dw,
+    double dh,
+  ) {
     // 双击的第二次轻点还挂在 90ms 窗里：撤掉，别让它多出一次幽灵单击。
     _downDefer?.cancel();
     _downDefer = null;
@@ -840,8 +918,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
             ),
             child: Text(
               '$_zoomPct%',
-              style:
-                  const TextStyle(fontSize: 11.5, color: Color(0xFFdce6f1)),
+              style: const TextStyle(fontSize: 11.5, color: Color(0xFFdce6f1)),
             ),
           ),
         ),
@@ -894,7 +971,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
                   minimumSize: const Size(0, 34),
                 ),
                 onPressed: _sendText,
-                child: Text(t('rsSend'), style: const TextStyle(fontSize: 12.5)),
+                child: Text(
+                  t('rsSend'),
+                  style: const TextStyle(fontSize: 12.5),
+                ),
               ),
             ],
           ),

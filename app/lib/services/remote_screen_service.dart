@@ -170,6 +170,50 @@ class RemoteScreenService {
     } catch (_) {}
   }
 
+  /// 仅用户点击时重启桌面 Agent；状态轮询不调用此方法。
+  Future<Map<String, dynamic>> restartAgentPermissions() async {
+    try {
+      final res = await _http
+          .post(
+            Uri.parse(
+              settings.buildHttpUrl('/api/system/agent-permissions/restart'),
+            ),
+            headers: _headers,
+            body: '{}',
+          )
+          .timeout(const Duration(seconds: 20));
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map<String, dynamic>) {
+        return {
+          ...decoded,
+          'ok': res.statusCode == 200 && decoded['ok'] == true,
+        };
+      }
+    } catch (_) {}
+    return {'ok': false, 'error': 'network'};
+  }
+
+  static bool desktopPermissionsReady(Map<String, dynamic> perms) =>
+      perms['ok'] != true ||
+      perms['applicable'] != true ||
+      (perms['accessibility'] == true && perms['screenRecording'] == true);
+
+  static bool allPermissionsReady(Map<String, dynamic> perms) =>
+      perms['ok'] == true &&
+      perms['accessibility'] == true &&
+      perms['screenRecording'] == true &&
+      perms['listenAccess'] == true &&
+      perms['escMonitorEnabled'] == true;
+
+  static String escStatusKey(Map<String, dynamic> perms) =>
+      perms['escMonitorEnabled'] == true
+      ? 'airGlobalPermissionsEscEnabled'
+      : perms['escMonitorEnabled'] == false
+      ? (perms['listenAccess'] == false
+            ? 'airGlobalPermissionsEscNoAccess'
+            : 'airGlobalPermissionsEscInactive')
+      : 'airGlobalPermissionsEscUnknown';
+
   /// One guarded input op (click / type / press / status / resume / release).
   Future<Map<String, dynamic>> inputOp(Map<String, dynamic> body) async {
     try {

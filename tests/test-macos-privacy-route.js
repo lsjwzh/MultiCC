@@ -98,7 +98,7 @@ test('off macOS there is nothing to open', async () => {
   assert.deepEqual(run.calls, [], 'nothing is spawned off macOS');
 });
 
-test('Agent permissions report only the two grants needed for desktop automation', async () => {
+test('Agent permissions whitelist grants and mark legacy Esc status as unknown', async () => {
   const run = fakeRun({ stdout: JSON.stringify({ ok: true, accessibility: false, screenRecording: true,
     unlockPassword: true, platform: { os: '15.3' } }) });
   const routes = createMacosPrivacyRoutes({ platform: 'darwin', run, agentBin: '/agent',
@@ -107,9 +107,30 @@ test('Agent permissions report only the two grants needed for desktop automation
   await routes.agentPermissionsHandler({ socket: { remoteAddress: '127.0.0.1' } }, res);
   assert.deepEqual(res.body, { ok: true, applicable: true, local: true,
     agentApp: '/Users/test/Applications/MultiCC Agent.app',
-    accessibility: false, screenRecording: true });
+    accessibility: false, screenRecording: true, listenAccess: null, escMonitorEnabled: null });
   assert.equal(res.headers['Cache-Control'], 'no-store');
   assert.deepEqual(run.calls, [['/agent', 'status']]);
+});
+
+test('Esc status uses enabled taps, independently of the input monitoring grant', async () => {
+  for (const [fields, expected] of [
+    [{ listenAccess: false, escMonitor: false, escTaps: { hid: { enabled: false }, session: { enabled: false } } }, false],
+    [{ listenAccess: true, escMonitor: true, escTaps: { hid: { enabled: false }, session: { enabled: false } } }, false],
+    [{ listenAccess: true, escTaps: { hid: { enabled: false }, session: { enabled: true } } }, true],
+    [{ listenAccess: false, escTaps: { hid: { enabled: true }, session: { enabled: false } } }, true],
+    [{ listenAccess: true, escMonitor: true }, null],
+    [{ listenAccess: 'true', escTaps: { hid: { enabled: false } } }, null],
+    [{ escTaps: { hid: { enabled: 'true' }, session: { enabled: false } } }, null],
+  ]) {
+    const routes = createMacosPrivacyRoutes({ platform: 'darwin', run: fakeRun({ stdout: JSON.stringify({
+      ok: true, accessibility: true, screenRecording: true, ...fields,
+    }) }) });
+    const res = fakeRes();
+    await routes.agentPermissionsHandler({}, res);
+    assert.equal(res.body.escMonitorEnabled, expected);
+    assert.equal(res.body.listenAccess, typeof fields.listenAccess === 'boolean' ? fields.listenAccess : null);
+    assert.equal(res.body.escTaps, undefined, 'raw event counts stay inside Agent');
+  }
 });
 
 test('missing or malformed Agent fields are unknown, never denied grants', async () => {
@@ -210,13 +231,17 @@ test('opening an Agent permission selects its exact pane and requires a local re
   await routes.openAgentPermissionHandler(local, opened);
   assert.equal(opened.body.status, 'opened');
   assert.deepEqual(run.calls, [['/usr/bin/open', AGENT_PERMISSION_URLS.screenRecording]]);
+  const input = fakeRes();
+  await routes.openAgentPermissionHandler({ ...local, body: { permission: 'listenAccess' } }, input);
+  assert.equal(input.body.status, 'opened');
+  assert.deepEqual(run.calls[1], ['/usr/bin/open', 'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent']);
   const invalid = fakeRes();
   await routes.openAgentPermissionHandler({ ...local, body: { permission: 'other' } }, invalid);
   assert.equal(invalid.statusCode, 400);
   const inherited = fakeRes();
   await routes.openAgentPermissionHandler({ ...local, body: { permission: 'toString' } }, inherited);
   assert.equal(inherited.statusCode, 400);
-  assert.equal(run.calls.length, 1);
+  assert.equal(run.calls.length, 2);
 });
 
 test('the permission-denied failure actually routes to this button', () => {
