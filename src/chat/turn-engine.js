@@ -604,7 +604,7 @@ function createChatTurnEngine(deps) {
         runner.apiErrorRaw = detectedErrorEnvelope || {
           source: envelopeSourceFor(providerName),
           provider: providerName,
-          code: detail.code || evt.subtype || detail.type, errors: evt.errors,
+          code: evt.startup_failure_reason || detail.code || evt.subtype || detail.type, errors: evt.errors,
           httpStatus: detail.http_status || detail.status_code || detail.status || evt.http_status || evt.status_code || evt.status,
           headers: detail.headers || evt.headers, requestId: detail.request_id || evt.request_id,
           message: detail.message || evt.result || evt.subtype || 'api_error',

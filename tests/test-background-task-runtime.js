@@ -137,6 +137,13 @@ async function test(name, fn) {
     assert.match(turnEngine, /getBackgroundTaskRuntime\(\)\.markTaskOutputAwaiting\(/);
     assert.match(server, /backgroundTaskRuntime\.stopSession\(/);
     assert.match(server + lifecycle, /backgroundTaskRuntime\.stopAll\(/);
+    // SDK 0.3.289 control channel: the host must keep wiring both so a lane that
+    // has it gets the authoritative output / precise stop, and every other lane
+    // still falls back (the runtime treats them as optional by design).
+    assert.match(server, /fetchTaskOutput:\s*chatStream\.getTaskOutput/);
+    assert.match(server, /stopTask:\s*chatStream\.stopTask/);
+    assert.match(source, /deps\.fetchTaskOutput/);
+    assert.match(source, /deps\.stopTask/);
     assert.doesNotMatch(server, /function\s+(?:handleBackgroundTaskEvent|startMonitorShadow|stopMonitorShadow)\b/);
     assert.doesNotMatch(source, /require\(['"](?:fs|child_process|(?:\.\.\/)+server)/);
   });
@@ -778,6 +785,79 @@ async function test(name, fn) {
     assert.strictEqual(h.runtime.takeStoppedNote('s1'), '');
     assert.strictEqual(h.runtime.stopForInsert('idle'), 0);
     assert.strictEqual(h.runtime.takeStoppedNote('idle'), '');
+  });
+
+  await test('control-channel task output replaces the file-read snippet before the nudge flushes', async () => {
+    const fetched = [];
+    const h = makeHarness({
+      fetchTaskOutput: async (sessionName, taskId) => {
+        fetched.push({ sessionName, taskId });
+        return { output: `AUTHORITATIVE ${taskId} TAIL`, total_bytes: 9001, truncated: true };
+      },
+    });
+    const state = { cwd: '/repo', currentToolCalls: [{ id: 'bg-tool', name: 'Bash', input: { command: 'build', run_in_background: true } }] };
+    h.runtime.recordMainToolUseId('s1', 'bg-tool');
+    h.runtime.handleEvent('s1', state, { subtype: 'task_started', task_id: 'bg-1', tool_use_id: 'bg-tool', session_id: 'native', description: 'long build' });
+    const decision = h.runtime.handleEvent('s1', { ...state, _activeTurn: null },
+      { subtype: 'task_notification', task_id: 'bg-1', tool_use_id: 'bg-tool', status: 'completed' });
+    assert.strictEqual(decision.decision, 'inject');
+    // The file read missed (no output file): fallback snippet is empty.
+    assert.strictEqual(h.broadcasts.find(b => b.event.type === 'monitor_done').event.output, '');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(fetched, [{ sessionName: 's1', taskId: 'bg-1' }]);
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 1);
+    assert.match(h.injections[0].text, /前面输出过长已截断/);
+    assert.match(h.injections[0].text, /AUTHORITATIVE bg-1 TAIL/);
+  });
+
+  await test('control-channel fetch that misses keeps the file-read snippet, and a task-provided result skips the fetch', async () => {
+    const fetched = [];
+    const fetch = async (sessionName, taskId) => { fetched.push(taskId); return null; };
+    const withFiles = makeHarness({ fetchTaskOutput: fetch });
+    withFiles.files.set('/private/tmp/claude-501/-real-repo/native/tasks/file-1.output', 'FILE FALLBACK\n');
+    const state = { cwd: '/repo', currentToolCalls: [{ id: 'f-tool', name: 'Bash', input: { command: 'x', run_in_background: true } }] };
+    withFiles.runtime.recordMainToolUseId('s1', 'f-tool');
+    withFiles.runtime.handleEvent('s1', state, { subtype: 'task_started', task_id: 'file-1', tool_use_id: 'f-tool', session_id: 'native', description: 'file backed' });
+    withFiles.runtime.handleEvent('s1', { ...state, _activeTurn: null },
+      { subtype: 'task_notification', task_id: 'file-1', tool_use_id: 'f-tool', status: 'completed', session_id: 'native' });
+    await new Promise(resolve => setImmediate(resolve));
+    withFiles.clock.advance(100);
+    assert.deepStrictEqual(fetched, ['file-1']);
+    assert.match(withFiles.injections[0].text, /FILE FALLBACK/);
+
+    // The notification's own result text is authoritative: no control roundtrip.
+    const withResult = makeHarness({ fetchTaskOutput: fetch });
+    const resultState = { cwd: '/repo', currentToolCalls: [{ id: 'r-tool', name: 'Bash', input: { command: 'y', run_in_background: true } }] };
+    withResult.runtime.recordMainToolUseId('s2', 'r-tool');
+    withResult.runtime.handleEvent('s2', resultState, { subtype: 'task_started', task_id: 'res-1', tool_use_id: 'r-tool', session_id: 'native', description: 'self reported' });
+    withResult.runtime.handleEvent('s2', { ...resultState, _activeTurn: null },
+      { subtype: 'task_notification', task_id: 'res-1', tool_use_id: 'r-tool', status: 'completed', result: 'TASK RESULT TEXT' });
+    await new Promise(resolve => setImmediate(resolve));
+    withResult.clock.advance(100);
+    assert.deepStrictEqual(fetched, ['file-1'], 'a task-provided result must not trigger a control fetch');
+    assert.match(withResult.injections[0].text, /TASK RESULT TEXT/);
+  });
+
+  await test('insert-now asks the resident query to stop each active task by id first', async () => {
+    const stopped = [];
+    const h = makeHarness({
+      stopTask: async (sessionName, taskId) => { stopped.push({ sessionName, taskId }); return true; },
+    });
+    const state = { cwd: '/repo', currentToolCalls: [
+      { id: 'a-tool', name: 'Bash', input: { command: 'sleep 60', run_in_background: true } },
+      { id: 'b-tool', name: 'Bash', input: { command: 'sleep 1', run_in_background: true } },
+    ] };
+    h.runtime.recordMainToolUseId('s1', 'a-tool');
+    h.runtime.recordMainToolUseId('s1', 'b-tool');
+    h.runtime.handleEvent('s1', state, { subtype: 'task_started', task_id: 'a', tool_use_id: 'a-tool', session_id: 'native', description: 'long build' });
+    h.runtime.handleEvent('s1', state, { subtype: 'task_started', task_id: 'b', tool_use_id: 'b-tool', session_id: 'native', description: 'short build' });
+    assert.strictEqual(h.runtime.stopForInsert('s1'), 2);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(stopped, [
+      { sessionName: 's1', taskId: 'a' },
+      { sessionName: 's1', taskId: 'b' },
+    ]);
   });
 
   console.log(`\n${passed} background-task runtime tests passed`);

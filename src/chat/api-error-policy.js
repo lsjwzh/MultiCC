@@ -80,6 +80,30 @@ const CONFIG_CODES = new Set([
   'eacces', 'enoent', 'enoexec', 'spawn_eacces', 'spawn_enoent',
   'spawn_enoexec', 'exit_13',
 ]);
+// SDK startup failures (result.startup_failure_reason, surfaced when the host
+// sets CLAUDE_CODE_STARTUP_FAILURE_RESULTS) are machine policy / environment
+// refusals, not upstream faults: never retried, and the label below carries the
+// real remedy instead of the opaque "error_during_execution" subtype.
+const SDK_STARTUP_FAILURE_LABELS = Object.freeze({
+  org_pin_api_key_conflict: '组织策略要求使用网关登录，但环境里配置了 Anthropic API Key/Token；请改用组织要求的登录方式或移除冲突的密钥',
+  provider_not_allowed: '当前 Provider 不在组织 managed settings 的 allowedProviders 允许列表中；请切换到被允许的 Provider，或请管理员调整策略',
+  org_verify_failed: '登录所属组织校验未通过（网络问题或令牌已失效）；请重新登录后重试',
+  org_pin_mismatch: '当前登录所属组织不受策略允许；请切换到组织允许的账号',
+  managed_settings_invalid: '组织 managed settings 策略文件无效；请检查 managed-settings.json 内容',
+  remote_settings_required_unavailable: '策略要求远程设置但当前获取失败；请检查网络后重试',
+  gateway_signin_required: '需要先登录网关；请完成网关登录后再使用该 Provider',
+  gateway_access_denied: '网关拒绝了本次访问；请确认网关账号权限',
+  proxy_invalid: '代理配置无效；请检查代理设置',
+  temp_dir_unusable: '临时目录不可用；请检查 TMPDIR 权限与磁盘空间',
+  cwd_unavailable: '工作目录不可用；请确认会话目录存在且可访问',
+  shell_tool_missing: 'Windows 缺少 Shell 工具（Git Bash 未安装且 PowerShell 缺失或被关闭）；请安装 Git Bash 或启用 PowerShell',
+  session_held_by_background: '要恢复的会话仍在后台运行；请先结束该后台会话或稍后重试',
+  worktree_resume_refused: '会话 worktree 安全检查未通过，恢复被拒绝；请在新目录重开会话',
+  worktree_unverified: '会话 worktree 暂时无法校验；稍后重试可能成功',
+  cli_version_too_old: 'Claude Code 版本过旧，低于 Anthropic 要求的最低版本；请升级 CLI',
+  bypass_root: 'root 用户下不允许使用 bypassPermissions 模式；请改用非 root 用户运行',
+});
+const SDK_STARTUP_FAILURE_CODES = new Set(Object.keys(SDK_STARTUP_FAILURE_LABELS));
 const TOOL_CODES = new Set([
   'invalid_tool_arguments', 'tool_schema_error', 'tool_protocol_error',
   'mcp_error', 'function_call_error',
@@ -399,6 +423,7 @@ function retryAfterOf(raw, now) {
 function structuredCategory(status, code, rawCategory) {
   if (CATEGORY_SET.has(rawCategory)) return rawCategory;
   if (CANCELLATION_CODES.has(code)) return 'cancel_shutdown';
+  if (SDK_STARTUP_FAILURE_CODES.has(code)) return 'adapter_configuration';
   // A provider error code is more specific than a generic HTTP status. In
   // particular, quota_exceeded is commonly transported as HTTP 403.
   if (AUTH_CODES.has(code)) return 'authentication_permission';
@@ -830,6 +855,11 @@ const NON_PROVIDER_SOURCES = new Set(['host_interruption', 'classifier_legacy'])
 function retryNotice(decision) {
   if (!decision || !decision.error) return '上游 API 请求失败，未自动重试。';
   const { error } = decision;
+  // A named startup refusal is actionable on its own; the precise Chinese
+  // remedy outranks both the generic adapter wording and the sanitized
+  // English stderr that otherwise becomes the 「根因」 line.
+  const startupLabel = SDK_STARTUP_FAILURE_LABELS[String(error.code || '').toLowerCase()];
+  if (startupLabel) return `Claude 启动被策略或环境拒绝，未自动重试。${startupLabel}`;
   const cause = String(error.rootCause || error.sanitizedMessage || '').trim();
   const parameter = error.param && !cause.includes(error.param) ? `（参数：${error.param}）` : '';
   const causeNotice = cause

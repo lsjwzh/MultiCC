@@ -38,6 +38,12 @@ function createBackgroundTaskRuntime(deps = {}) {
   const setTimer = requiredFunction(deps, 'setTimer');
   const clearTimer = requiredFunction(deps, 'clearTimer');
   const now = requiredFunction(deps, 'now');
+  // Optional SDK control-channel surface (0.3.289): fetchTaskOutput resolves
+  // { output, totalBytes, truncated } from the resident query, stopTask asks
+  // it to terminate one task by id. Absent (or null/false-returning) for every
+  // non-SDK lane, so both stay enhancement-only on top of the file fallbacks.
+  const fetchTaskOutput = typeof deps.fetchTaskOutput === 'function' ? deps.fetchTaskOutput : null;
+  const stopTaskById = typeof deps.stopTask === 'function' ? deps.stopTask : null;
   const logger = deps.logger || {};
   const progressThrottleMs = positiveNumber(deps.progressThrottleMs, DEFAULT_PROGRESS_THROTTLE_MS);
   const dedupTtlMs = positiveNumber(deps.dedupTtlMs, DEFAULT_DEDUP_TTL_MS);
@@ -444,6 +450,29 @@ function createBackgroundTaskRuntime(deps = {}) {
     }
   }
 
+  // The reconstructed output path is CLI-internal and has missed before
+  // (encoded-cwd layout drift), and the transcript's last record can land
+  // after this event. The resident query's control channel (SDK 0.3.289
+  // get_task_output) is the authoritative source, so when it answers with
+  // text, swap it into the queued item before the coalescer window flushes.
+  // The item keeps the file-read fallback until then, so an unavailable or
+  // slow channel never degrades to worse-than-today behavior.
+  function enrichWithControlOutput(sessionName, item, taskId, hasOwnResult) {
+    if (!fetchTaskOutput || !item || !taskId || hasOwnResult) return;
+    void Promise.resolve()
+      .then(() => fetchTaskOutput(sessionName, String(taskId)))
+      .then(result => {
+        const text = result && typeof result.output === 'string'
+          ? redactProviderRouteCapability(result.output) : '';
+        if (!text.trim()) return;
+        const prefix = result.truncated ? '…（前面输出过长已截断）\n' : '';
+        const full = `${prefix}${text}`;
+        item.snippet = full.length > outputCap * 8
+          ? `${full.slice(0, outputCap * 8)}\n…（输出已截断）` : full;
+      })
+      .catch(() => {});
+  }
+
   function handleStarted(sessionName, chatState, event) {
     const taskId = event.task_id;
     if (!taskId) return { handled: false };
@@ -598,8 +627,10 @@ function createBackgroundTaskRuntime(deps = {}) {
         if (watch && !watch.terminalQueued && chatState?.isStreaming !== true) {
           watch.terminalQueued = true;
           noteBgResultInjected(sessionName);
-          coalescer.add(sessionName, { kind: 'monitor', desc: event.summary || watch.description,
-            status: event.status || 'completed', snippet, taskId, toolUseId: watch.toolUseId });
+          const terminal = { kind: 'monitor', desc: event.summary || watch.description,
+            status: event.status || 'completed', snippet, taskId, toolUseId: watch.toolUseId };
+          coalescer.add(sessionName, terminal);
+          enrichWithControlOutput(sessionName, terminal, taskId, !!event.result);
         }
       }
       return { handled: true, decision: decision.reason };
@@ -623,6 +654,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       noteBgResultInjected(sessionName);
       knownSessions.add(sessionName);
       coalescer.add(sessionName, item);
+      enrichWithControlOutput(sessionName, item, taskId, !!event.result);
       if (owned) owned.delivered = true;
     } catch (error) {
       log('warn', 'background task completion buffering failed', error);
@@ -644,8 +676,10 @@ function createBackgroundTaskRuntime(deps = {}) {
     if (owned.delivered) return { handled: true, monitorOwned: true, decision: 'duplicate' };
     owned.delivered = true;
     noteBgResultInjected(sessionName);
-    coalescer.add(sessionName, { desc: owned.description || safeDescription(event.summary, '后台任务'),
-      status: event.status || 'completed', snippet: outputSnippet(event.output_file, event.result), taskId: event.task_id, toolUseId: event.tool_use_id || null });
+    const prompt = { desc: owned.description || safeDescription(event.summary, '后台任务'),
+      status: event.status || 'completed', snippet: outputSnippet(event.output_file, event.result), taskId: event.task_id, toolUseId: event.tool_use_id || null };
+    coalescer.add(sessionName, prompt);
+    enrichWithControlOutput(sessionName, prompt, event.task_id, !!event.result);
     return { handled: true, monitorOwned: true, decision: 'inject' };
   }
 
@@ -657,6 +691,16 @@ function createBackgroundTaskRuntime(deps = {}) {
   function stopForInsert(sessionName) {
     if (!sessionName) return 0;
     const tasks = listActiveBackgroundTasks(sessionName);
+    // Ask the resident CLI to stop each task by id first (SDK 0.3.289
+    // stop_task): that terminates the task's real child processes and fires
+    // their exit bookends. The process-level teardown below still runs, so a
+    // lane without the control channel — or a stalled request — loses nothing.
+    if (stopTaskById) {
+      for (const task of tasks) {
+        if (!task?.task_id) continue;
+        void Promise.resolve(stopTaskById(sessionName, task.task_id)).catch(() => {});
+      }
+    }
     coalescer.cancel(sessionName);
     for (const owned of nested(ownedTasks, sessionName)?.values() || []) owned.delivered = true;
     if (tasks.length) stoppedNotes.set(sessionName, tasks.map(task => `${task.task_id}: ${task.description}`));

@@ -238,3 +238,90 @@ test('real SDK crash recovery resumes unsuccessful tool history and pruning wait
   assert.equal(f.children.length, 3);
   assert.ok(f.events.filter(e => e.subtype === 'init').every(e => e.session_id === f.cfg.sessionId));
 });
+
+// ── SDK 0.3.289 task control: getTaskOutput / stopTask ─────────────────────
+// The resident query is the authoritative source for a background task's
+// output; both surface null/false whenever they cannot be served so callers
+// keep their file-read / process-kill fallbacks.
+function fakeTaskControlFixture(t, { withControl = true } = {}) {
+  const calls = { getTaskOutput: [], stopTask: [] };
+  const exitListeners = [];
+  const proc = {
+    pid: 4242, exitCode: null, signalCode: null,
+    once(event, fn) { if (event === 'exit') exitListeners.push(fn); },
+    kill() { proc.exitCode = 0; for (const fn of exitListeners.splice(0)) fn(); },
+    stderr: { on() {} },
+  };
+  const runtime = createSdkStream({
+    spawnProcess: () => proc,
+    loadSdk: async () => ({ query(input) {
+      input.options.spawnClaudeCodeProcess({ command: 'fake-claude', args: [] });
+      return {
+        async *[Symbol.asyncIterator]() { await new Promise(() => {}); },
+        close() {},
+        ...(withControl ? {
+          async getTaskOutput(taskId) { calls.getTaskOutput.push(taskId); return { output: `tail:${taskId}`, total_bytes: 8192, truncated: true }; },
+          async stopTask(taskId) { calls.stopTask.push(taskId); },
+        } : {}),
+      };
+    } }),
+  });
+  t.after(() => runtime.closeAndWait('sdk').catch(() => {}));
+  return { runtime, calls };
+}
+
+async function startFakeTurn(runtime, cfg) {
+  runtime.ensure('sdk', cfg);
+  // The fake query never yields a result, so the turn's promise stays pending
+  // by design; only the child's liveness is awaited here.
+  runtime.send('sdk', 'start', () => {}).catch(() => {});
+  for (let i = 0; i < 50 && !runtime.isAlive('sdk'); i += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+}
+
+test('getTaskOutput serves the resident query control channel and degrades to null', async t => {
+  const base = { cwd: '/unused', sessionId: randomUUID(), env: {}, sdkOptions: {} };
+  const f = fakeTaskControlFixture(t);
+  await startFakeTurn(f.runtime, base);
+  assert.equal(f.runtime.isAlive('sdk'), true);
+  const output = await f.runtime.getTaskOutput('sdk', 'task-9');
+  assert.deepEqual(output, { output: 'tail:task-9', totalBytes: 8192, truncated: true });
+  assert.deepEqual(f.calls.getTaskOutput, ['task-9']);
+  // Unknown session, empty id, and a query without the control methods all
+  // answer null instead of throwing — the caller falls back to the file read.
+  assert.equal(await f.runtime.getTaskOutput('missing', 'task-9'), null);
+  assert.equal(await f.runtime.getTaskOutput('sdk', ''), null);
+
+  const legacy = fakeTaskControlFixture(t, { withControl: false });
+  await startFakeTurn(legacy.runtime, { ...base, sessionId: randomUUID() });
+  assert.equal(legacy.runtime.isAlive('sdk'), true);
+  assert.equal(await legacy.runtime.getTaskOutput('sdk', 'task-1'), null);
+});
+
+test('stopTask stops one task precisely and reports false when unavailable', async t => {
+  const base = { cwd: '/unused', sessionId: randomUUID(), env: {}, sdkOptions: {} };
+  const f = fakeTaskControlFixture(t);
+  await startFakeTurn(f.runtime, base);
+  assert.equal(await f.runtime.stopTask('sdk', 'task-7'), true);
+  assert.deepEqual(f.calls.stopTask, ['task-7']);
+  assert.equal(await f.runtime.stopTask('missing', 'task-7'), false);
+  assert.equal(await f.runtime.stopTask('sdk', ''), false);
+
+  const legacy = fakeTaskControlFixture(t, { withControl: false });
+  await startFakeTurn(legacy.runtime, { ...base, sessionId: randomUUID() });
+  assert.equal(await legacy.runtime.stopTask('sdk', 'task-1'), false);
+});
+
+test('stream router forwards task control only to backends that implement it', async () => {
+  const { createStreamRouter } = require('../src/chat/stream-router');
+  const legacy = {};
+  const sdk = {
+    async getTaskOutput(name, taskId) { return { output: `router:${taskId}`, totalBytes: 4, truncated: false }; },
+    async stopTask() { return true; },
+  };
+  const router = createStreamRouter(legacy, sdk);
+  // No ensure() ran, so the name is unknown and resolves to the legacy backend.
+  assert.equal(await router.getTaskOutput('any', 't'), null);
+  assert.equal(await router.stopTask('any', 't'), false);
+});
