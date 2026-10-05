@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../i18n.dart';
 import '../providers/session_manager.dart';
 import '../services/connection_probe_service.dart';
+import '../services/demo/demo_mode.dart';
 import '../services/settings_service.dart';
 import '../widgets/lan_discovery_picker.dart';
 import 'main_shell.dart';
@@ -88,6 +89,35 @@ class _SetupScreenState extends State<SetupScreen> {
     );
   }
 
+  /// 不连任何服务器，起一个进程内的演示主机进主界面。演示不落盘，也不进
+  /// 「最近连接」，首次体验的人退出后看到的仍是干净的连接页。
+  Future<void> _enterDemo() async {
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    FocusManager.instance.primaryFocus?.unfocus();
+    try {
+      await DemoMode.enter(widget.settings);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _error = t('connectErrorUnreachable');
+      });
+      return;
+    }
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => ChangeNotifierProvider(
+          create: (_) => SessionManager(settings: widget.settings),
+          child: MainShell(settings: widget.settings),
+        ),
+      ),
+    );
+  }
+
   String _messageFor(ConnectionProbeFailure failure) => switch (failure) {
     ConnectionProbeFailure.invalidAddress => t('connectErrorInvalidAddress'),
     ConnectionProbeFailure.insecureAddress => t('connectErrorInsecureAddress'),
@@ -156,6 +186,37 @@ class _SetupScreenState extends State<SetupScreen> {
                   selected: {widget.settings.lang},
                   onSelectionChanged: (selection) =>
                       widget.settings.setLanguage(selection.first),
+                ),
+                const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  key: const Key('setup-try-demo'),
+                  onPressed: _saving ? null : _enterDemo,
+                  icon: const Icon(Icons.play_circle_outline, size: 20),
+                  label: Text(
+                    t('tryDemoNoServer'),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF0965cf),
+                    side: const BorderSide(color: Color(0xFF9cc3ee)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  t('tryDemoHint'),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Color(0xFF6f8096),
+                    fontSize: 12,
+                    height: 1.45,
+                  ),
                 ),
                 const SizedBox(height: 16),
 

@@ -214,8 +214,25 @@ class SettingsService {
     return _instance!;
   }
 
-  String get host => _prefs.getString(_keyHost) ?? '';
-  String get token => _prefs.getString(_keyToken) ?? '';
+  /// 演示模式的连接覆盖：只活在内存里，不落盘 —— 已经配好的真服务器地址不会被
+  /// 演示冲掉，App 重启后也回到连接页而不是连一个早已关掉的端口。
+  String? _demoHost;
+  String? _demoToken;
+
+  bool get isDemo => _demoHost != null;
+
+  void enterDemo({required String host, required String token}) {
+    _demoHost = host;
+    _demoToken = token;
+  }
+
+  void exitDemo() {
+    _demoHost = null;
+    _demoToken = null;
+  }
+
+  String get host => _demoHost ?? _prefs.getString(_keyHost) ?? '';
+  String get token => _demoToken ?? _prefs.getString(_keyToken) ?? '';
   String get session => _prefs.getString(_keySession) ?? '';
   String get cwd => _prefs.getString(_keyCwd) ?? '';
   String get lang => language.value;
@@ -419,6 +436,8 @@ class SettingsService {
     bool? keepAliveEnabled,
     double? fontScale,
   }) async {
+    // 演示中改连接 = 先离开演示，后面的比较和落盘都针对真实配置。
+    if (host != null || token != null) exitDemo();
     final connectionChanged =
         (host != null && host.trim() != this.host) ||
         (token != null && token.trim() != this.token);

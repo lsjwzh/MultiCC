@@ -4414,5 +4414,7 @@
   "iosUdidPhoneOnly": "Open this page in Safari on your iPhone, or scan the QR code below.",
   "iosUdidOpenSettings": "After downloading, open Settings → Profile Downloaded on your iPhone to install the profile, then return here.",
   "iosUdidCopied": "Copied",
-  "iosUdidCopyManual": "Touch and hold the selected text to copy."
+  "iosUdidCopyManual": "Touch and hold the selected text to copy.",
+  "tryDemoNoServer": "Try the demo (no server needed)",
+  "tryDemoHint": "Haven't set up a MultiCC server yet? Explore the main features with a built-in sample project: the task list, conversations, sending messages, and streamed replies."
 }
