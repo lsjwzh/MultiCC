@@ -405,7 +405,18 @@ function testWeeklyWindowAndRejectionRefresh() {
   const fiveHourOnly = recorder.recordSession('s1', {
     kind: 'window', provider: 'glm', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.3,
   });
-  ok(!('windows' in fiveHourOnly.summary), 'a single-window reading keeps the old summary shape');
+  ok(fiveHourOnly.summary.windows.length === 2 && fiveHourOnly.summary.windows[0].usedPercent === 30
+    && fiveHourOnly.summary.windows[1].usedPercent === 100,
+  'a 5h-only reading replaces the 5h cycle and keeps the still-running weekly one');
+  ok(limitState(cache.get('claude', 'p-glm'), { now: clock.now() }).state === 'exhausted',
+    'a 5h-only reading cannot hide a spent week');
+
+  // Once that week's reset has passed, it is no longer carried forward.
+  clock.advance(37 * 3600_000);
+  const afterReset = recorder.recordSession('s1', {
+    kind: 'window', provider: 'glm', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.1,
+  });
+  ok(!('windows' in afterReset.summary), 'an expired cycle is dropped, a lone window keeps the old summary shape');
 
   // 429: the cooldown is recorded at once, then the quota runtime re-reads.
   const refreshed = [];
@@ -419,6 +430,93 @@ function testWeeklyWindowAndRejectionRefresh() {
   cache.close();
 }
 
+// ── every source keeps its 5h / week / month cycles ─────────────────────────
+
+function testEverySourceKeepsItsCycles() {
+  const { limitState } = require('../src/chat/auto-provider-policy');
+  const { pollCodexUsage } = require('../src/usage-limit-poller');
+  const file = tmpDb('cycles');
+  const clock = fixedClock(1_700_000_000_000);
+  const cache = createProviderLimitCache({ file, now: clock.now });
+  const providers = stubProviders({
+    list: [
+      { id: 'p-kimi', appType: 'claude', name: 'Kimi', baseUrl: 'https://api.kimi.com/coding' },
+      { id: 'p-ark', appType: 'claude', name: 'Ark', baseUrl: 'https://ark.cn-beijing.volces.com/api/coding' },
+      { id: 'p-zhipu', appType: 'claude', name: 'Zhipu', baseUrl: 'https://open.bigmodel.cn/api/anthropic' },
+      { id: 'claude-official-a', appType: 'claude', name: 'Official' },
+      { id: 'codex-official-a', appType: 'codex', name: 'Codex Official' },
+    ],
+    targets: {
+      'claude:p-kimi': { host: 'api.kimi.com' },
+      'claude:p-zhipu': { host: 'open.bigmodel.cn' },
+    },
+  });
+  const recorder = createLimitRecorder({ cache, persistedSessions: fakeSessions({}), providers, now: clock.now });
+  const later = clock.now() + 3 * 24 * 3600_000;
+
+  // Kimi: the month is spent while 5h and week still have room.
+  recorder.recordVendor({ kind: 'kimi', host: 'api.kimi.com', result: { status: 'ok', fetchedAt: clock.now(), summary: [
+    { window: '5h', label: '5小时用量', usedPercent: 15, resetMs: clock.now() + 3600_000 },
+    { window: '1wk', label: '本周用量', usedPercent: 64, resetMs: later },
+    { window: '1m', label: '本月总用量', usedPercent: 100, resetMs: later },
+  ] } });
+  const kimi = cache.get('claude', 'p-kimi');
+  ok(kimi.summary.windows.map(w => w.window).join(',') === '5h,1wk,1m', 'kimi stores its 5h, week and month cycles');
+  ok(limitState(kimi, { now: clock.now() }).state === 'exhausted', 'a spent kimi month makes the line exhausted');
+
+  // Ark: the plan matching the provider baseUrl, percent is used.
+  recorder.recordVendor({ kind: 'ark', baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3', result: { status: 'ok', fetchedAt: clock.now(), items: [
+    { product: 'agent-plan', subscribed: true, periods: [{ label: 'weekly', percent: 100, resetAt: later }] },
+    { product: 'coding-plan', subscribed: true, periods: [
+      { label: '5h', percent: 20, resetAt: clock.now() + 3600_000 },
+      { label: 'weekly', percent: 40, resetAt: later },
+      { label: 'monthly', percent: 100, resetAt: later },
+    ] },
+  ] } });
+  const ark = cache.get('claude', 'p-ark');
+  ok(ark.summary.windows.map(w => w.window).join(',') === '5h,1wk,1m', 'ark stores the matching plan\'s cycles');
+  ok(limitState(ark, { now: clock.now() }).state === 'exhausted', 'a spent ark month makes the line exhausted');
+
+  // Zhipu vendor route: 5h + week.
+  recorder.recordVendor({ kind: 'zhipu', host: 'open.bigmodel.cn', result: { status: 'ok', fetchedAt: clock.now(), sites: [
+    { host: 'open.bigmodel.cn', ok: true, usedPercent: 10, resetsAt: clock.now() + 3600_000, weeklyUsedPercent: 100, weeklyResetsAt: later },
+  ] } });
+  ok(limitState(cache.get('claude', 'p-zhipu'), { now: clock.now() }).state === 'exhausted',
+    'the zhipu vendor route keeps its weekly cycle');
+
+  // Claude: the official sweep has 5h + 7d; the proxy header only 5h.
+  recorder.recordOfficialWindows('claude', 'claude-official-a', { windows: [
+    { window: '5h', label: 'Current session', usedPercent: 10, resetMs: clock.now() + 3600_000 },
+    { window: '7d', label: 'Weekly', usedPercent: 100, resetMs: later },
+  ] });
+  recorder.recordSession('any', { rateLimitType: 'five_hour', status: 'allowed', utilization: 0.2, resetsAt: Math.trunc((clock.now() + 3600_000) / 1000) }, 'claude-official-a');
+  const claude = cache.get('claude', 'claude-official-a');
+  ok(claude.summary.windows.length === 2 && claude.summary.windows.some(w => w.window === '7d' && w.usedPercent === 100),
+    'a claude 5h header does not erase the swept weekly cycle');
+  ok(limitState(claude, { now: clock.now() }).state === 'exhausted', 'the spent claude week still blocks after a 5h header');
+
+  // Codex: the usage read reports both 5h and week; both are kept.
+  const body = { plan_type: 'plus', rate_limit: { limit_reached: false,
+    primary_window: { used_percent: 100, limit_window_seconds: 18000, reset_at: Math.trunc(clock.now() / 1000) + 1800 },
+    secondary_window: { used_percent: 30, limit_window_seconds: 604800, reset_at: Math.trunc(later / 1000) },
+  } };
+  return withFetch(body, async () => {
+    const dto = await pollCodexUsage({}, clock.now(), 1000, () => ({ accessToken: 't', accountId: 'a' }));
+    ok(dto.rateLimitType === 'weekly' && dto.utilization === 0.3, 'the codex bar still shows the week');
+    recorder.recordProvider('codex', 'codex-official-a', { ok: true, dto });
+    const codex = cache.get('codex', 'codex-official-a');
+    ok(codex.summary.windows.map(w => w.window).join(',') === '5h,1wk', 'codex keeps its 5h cycle next to the week');
+    ok(limitState(codex, { now: clock.now() }).state === 'exhausted', 'a spent codex 5h makes the line exhausted');
+    cache.close();
+  });
+}
+
+async function withFetch(body, fn) {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  try { return await fn(); } finally { globalThis.fetch = original; }
+}
+
 testCompactBarText();
 testSqliteSchema();
 testStore();
@@ -427,6 +525,7 @@ testStale();
 testMigration();
 testSchemaGuard();
 testWeeklyWindowAndRejectionRefresh();
-
-console.log(`\n${pass} passed, ${fail} failed`);
-if (fail > 0) process.exit(1);
+testEverySourceKeepsItsCycles().then(() => {
+  console.log(`\n${pass} passed, ${fail} failed`);
+  if (fail > 0) process.exit(1);
+}, (error) => { console.error(error); process.exit(1); });

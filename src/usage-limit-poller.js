@@ -250,6 +250,17 @@ async function pollCodexUsage(target, nowMs, timeoutMs = POLL_TIMEOUT_MS, readAu
     utilization: Math.max(0, Math.min(1, pct / 100)),
     resetsAt,
     tier: typeof body.plan_type === 'string' ? body.plan_type : null,
+    // The bar shows the week only, but the line is blocked by whichever cycle
+    // runs out first — the quota cache keeps every one (usedPercent 0..100).
+    windows: windows.map((w) => {
+      const seconds = finite(w.limit_window_seconds);
+      let reset = finite(w.reset_at);
+      if (reset === null && finite(w.reset_after_seconds) !== null) {
+        reset = Math.trunc(nowMs / 1000) + finite(w.reset_after_seconds);
+      }
+      const cycle = seconds >= 28 * 24 * 3600 ? '1m' : seconds >= WEEKLY_MIN_WINDOW_SECONDS ? '1wk' : '5h';
+      return { window: cycle, label: cycle, usedPercent: finite(w.used_percent), resetMs: reset !== null ? reset * 1000 : null };
+    }),
   };
 }
 

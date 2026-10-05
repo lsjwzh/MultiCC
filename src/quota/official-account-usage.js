@@ -46,6 +46,15 @@ function claudeUsageWindows(usage) {
 
 function codexDtoWindows(dto) {
   if (!dto || typeof dto !== 'object' || !Number.isFinite(Number(dto.utilization))) return [];
+  // The usage read reports every cycle (5h and week on most plans); keep them all.
+  if (Array.isArray(dto.windows) && dto.windows.length) {
+    return dto.windows.filter(w => w && Number.isFinite(Number(w.usedPercent))).map(w => ({
+      window: w.window === '1wk' ? '7d' : w.window,
+      label: w.window === '5h' ? 'Current session' : w.window === '1wk' ? 'Weekly' : 'Monthly',
+      usedPercent: Math.max(0, Math.min(100, Number(w.usedPercent))),
+      resetMs: Number.isFinite(Number(w.resetMs)) && w.resetMs != null ? Number(w.resetMs) : null,
+    }));
+  }
   const reset = Number(dto.resetsAt);
   return [{
     window: '7d',

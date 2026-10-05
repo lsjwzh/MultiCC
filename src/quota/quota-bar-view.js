@@ -1264,6 +1264,7 @@ module.exports = {
   labelRoutedProvider,
   labelRoutedBalance,
   arkPlanFromBaseUrl,
+  arkWindowLabel,
   compactBarText,
   COLOR,
 };
