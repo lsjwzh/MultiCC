@@ -1313,6 +1313,15 @@
       ]
     },
     {
+      "path": "tests/test-asr-model-installer.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-assist-snapshots.js",
       "tier": "core",
       "lane": "deterministic",

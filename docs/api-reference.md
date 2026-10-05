@@ -190,6 +190,7 @@ in a JSON file next to its config, and never re-alerts history on its first run.
 | `GET` | `/api/voice/vocab` | Learned vocabulary terms |
 | `DELETE` | `/api/voice/vocab/:term` | Remove a term |
 | `GET` / `POST` | `/api/settings/voice` | Get / update voice configuration (hot-reload) |
+| `POST` | `/api/settings/voice/asr-model` | Local ASR weights (~229MB): `{ action: "download" \| "cancel" }`; returns at once, progress rides on `asr.status.local.download` in `GET /api/settings/voice` |
 | `GET` / `POST` | `/api/settings/power` | Read / update macOS lid-sleep prevention (`available`, `enabled`, `lidGuard`, `unlockPassword`) |
 | `POST` | `/api/settings/power/unlock-password` | Store the login password for automatic unlock; replies with the agent's keychain-authorization receipt |
 | `POST` | `/api/settings/power/unlock-password/authorize` | Re-run that receipt probe (no password needed — the entry is already stored) |

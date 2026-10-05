@@ -37,7 +37,17 @@ async function invoke(app, method, routePath, req = {}) {
 
 function createHarness(overrides = {}) {
   const calls = {
-    enqueued: [], examples: [], vocabWrites: [], merged: [], envWrites: [], asrUpdates: [], ttsUpdates: [], voiceUpdates: [], qwenRefreshes: [],
+    enqueued: [], examples: [], vocabWrites: [], merged: [], envWrites: [], asrUpdates: [], ttsUpdates: [], voiceUpdates: [], qwenRefreshes: [], modelDownloads: [],
+  };
+  // Stand-in for src/voice/asr-model-installer.js: routes only ever ask it for a
+  // status snapshot, a start and a cancel. The real one reaches the network; a
+  // route test must never do that, so this one only records the call.
+  const asrModelInstaller = {
+    status: () => ({ state: 'missing', ready: false, percent: 0, totalBytes: 240193589, doneBytes: 0 }),
+    // start() is a promise in the real installer (it resolves when the transfer
+    // settles); the route attaches .catch to it and never awaits.
+    start: reason => { calls.modelDownloads.push(['start', reason]); return Promise.resolve(); },
+    cancel: () => { calls.modelDownloads.push(['cancel']); return true; },
   };
   const runtimeEnv = {};
   const voice = {
@@ -71,6 +81,7 @@ function createHarness(overrides = {}) {
     uploadVoice(req, res, next) { next(); },
     voice,
     asrLocal: { isAvailable: () => false, transcribeBuffer: async () => { throw new Error('not available'); } },
+    asrModelInstaller,
     voiceAsr: { cfg: { provider: 'fake-asr' }, providerStatus: () => ({ provider: 'fake-asr' }), applyConfig: value => calls.asrUpdates.push(value) },
     ttsService: { cfg: { provider: 'fake-tts' }, providerStatus: () => ({ provider: 'fake-tts' }), applyConfig: value => calls.ttsUpdates.push(value) },
     readEnvFile: () => ({}),
@@ -91,7 +102,7 @@ function createHarness(overrides = {}) {
   };
   const app = createApp();
   const controller = mountVoiceRoutes(app, deps);
-  return { app, deps, calls, runtimeEnv: deps.runtimeEnv, voice: deps.voice, controller };
+  return { app, deps, calls, runtimeEnv: deps.runtimeEnv, voice: deps.voice, asrModelInstaller, controller };
 }
 
 test('mounts the complete legacy voice REST surface', () => {
@@ -102,6 +113,7 @@ test('mounts the complete legacy voice REST surface', () => {
     'GET /api/voice/test-sse',
     'GET /api/voice/vocab',
     'POST /api/settings/voice',
+    'POST /api/settings/voice/asr-model',
     'POST /api/voice/confirm',
     'POST /api/voice/feedback',
     'POST /api/voice/progress-summary',
@@ -233,6 +245,60 @@ test('voice settings mask credentials and expose provider status', async () => {
   assert.equal(res.body.qwenAudio.hasApiKey, true);
   assert.equal(res.body.qwenAudio.apiKey, 'dashsc****1234');
   assert.equal(res.body.qwenAudio.runtime.state, 'not_installed');
+});
+
+test('voice settings fold the local-model download into asr.status.local', async () => {
+  const { app } = createHarness({
+    voiceAsr: {
+      providerStatus: () => ({ provider: 'local', local: { available: false, files: false } }),
+      applyConfig: () => {},
+    },
+  });
+  const res = await invoke(app, 'GET', '/api/settings/voice');
+  assert.equal(res.body.asr.status.local.download.state, 'missing');
+  assert.equal(res.body.asr.status.local.download.totalBytes, 240193589);
+
+  // A provider that reports no local block must not grow one: the panel reads
+  // the download from the same place it reads the rest of the local picture.
+  const cloud = createHarness({ voiceAsr: { providerStatus: () => ({ provider: 'whisper' }), applyConfig: () => {} } });
+  const cloudRes = await invoke(cloud.app, 'GET', '/api/settings/voice');
+  assert.equal(Object.hasOwn(cloudRes.body.asr.status, 'local'), false);
+});
+
+test('the asr-model route starts, cancels and rejects unknown actions', async () => {
+  const { app, calls } = createHarness();
+  let res = await invoke(app, 'POST', '/api/settings/voice/asr-model', { body: {} });
+  assert.deepEqual(res.body, {
+    ok: true,
+    status: { state: 'missing', ready: false, percent: 0, totalBytes: 240193589, doneBytes: 0 },
+  });
+  assert.deepEqual(calls.modelDownloads, [['start', 'manual']], 'a bare POST means download');
+
+  res = await invoke(app, 'POST', '/api/settings/voice/asr-model', { body: { action: 'cancel' } });
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.cancelled, true);
+  assert.deepEqual(calls.modelDownloads.at(-1), ['cancel']);
+
+  res = await invoke(app, 'POST', '/api/settings/voice/asr-model', { body: { action: 'nuke' } });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /未知操作: nuke/);
+  assert.equal(calls.modelDownloads.length, 2, 'an unknown action never reaches the installer');
+});
+
+test('a failed asr-model start never turns into a 500', async () => {
+  // start() rejects when the transfer itself fails; the route deliberately does
+  // not await it, so the rejection must be absorbed and surfaced through status.
+  const { app } = createHarness({
+    asrModelInstaller: {
+      status: () => ({ state: 'failed', ready: false, error: 'HTTP 502' }),
+      start: () => Promise.reject(new Error('HTTP 502')),
+      cancel: () => false,
+    },
+  });
+  const res = await invoke(app, 'POST', '/api/settings/voice/asr-model', { body: {} });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.status.state, 'failed');
+  await new Promise(resolve => setImmediate(resolve));
 });
 
 test('Qwen Audio settings persist a scoped key and refresh supervised Fleet processes', async () => {

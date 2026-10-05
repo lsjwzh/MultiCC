@@ -3,9 +3,11 @@
 // with on-device inference (~RTF 0.02 on Apple Silicon, i.e. ~100-300ms for a
 // typical utterance).
 //
-// Model files live OUTSIDE the repo (they are ~240MB) in ~/.multicc/asr-models
-// by default, shared across worktrees. Run scripts/setup-local-asr.sh to
-// download them. When the model dir or the sherpa-onnx-node addon is missing,
+// Model files live OUTSIDE the repo (they are ~229MB) in ~/.multicc/asr-models
+// by default, shared across worktrees. Fetch them from the voice settings panel
+// (src/voice/asr-model-installer.js, which also runs on first boot), or with
+// scripts/setup-local-asr.sh on a Unix host. When the model dir or the
+// sherpa-onnx-node addon is missing,
 // isAvailable() returns false and callers fall back to the cloud path — this
 // module must never take the voice feature down with it.
 //
@@ -36,6 +38,10 @@ function applyEnvUpdates(updates) {
 }
 
 function modelDir() { return path.join(cfg.ASR_LOCAL_MODEL_DIR, SENSE_VOICE_DIR_NAME); }
+// The parent of modelDir(): what asr-model-installer.js writes into, and what
+// the settings panel shows. Read from cfg at call time so a hot-applied
+// ASR_LOCAL_MODEL_DIR takes effect without a restart.
+function modelRoot() { return cfg.ASR_LOCAL_MODEL_DIR; }
 function vadModelPath() { return path.join(cfg.ASR_LOCAL_MODEL_DIR, 'silero_vad.onnx'); }
 
 function modelFilesExist() {
@@ -60,6 +66,12 @@ function sherpa() {
   }
   return _sherpa;
 }
+
+// The addon half of isAvailable(), on its own: a platform whose sherpa-onnx
+// prebuilt is missing (macOS < 15) can never be fixed by downloading weights,
+// and the settings panel has to say so instead of offering a download button
+// that cannot help.
+function addonAvailable() { return !!sherpa(); }
 
 function isAvailable() {
   if (cfg.ASR_LOCAL === 'off' || cfg.ASR_LOCAL === '0' || cfg.ASR_LOCAL === 'false') return false;
@@ -395,6 +407,9 @@ module.exports = {
   cfg,
   applyEnvUpdates,
   isAvailable,
+  modelFilesExist,
+  modelRoot,
+  addonAvailable,
   status,
   warmup,
   transcribeBuffer,

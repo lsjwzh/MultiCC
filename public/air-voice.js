@@ -70,6 +70,11 @@
 .air-voice-error { margin: 0; }
 .air-voice-asr-body { margin-top: 4px; }
 .air-voice-asr-body[hidden] { display: none; }
+/* 本地模型下载条。宽度就是「已下载/总量」，没有百分比文字也一样能读。 */
+.air-voice-bar { height: 6px; margin: 8px 0 0; border-radius: 999px; background: var(--hairline); overflow: hidden; }
+.air-voice-bar[hidden] { display: none; }
+.air-voice-bar-fill { height: 100%; width: 0; border-radius: 999px; background: var(--accent); transition: width .3s ease; }
+.air-voice-bar-fill.err { background: #b34b34; }
 @media (max-width: 620px) {
   .air-voice-row { grid-template-columns: 1fr; }
   .air-voice-hint-block { margin-left: 0; }
@@ -191,6 +196,141 @@
     return group;
   }
 
+  // ── ④-a 本地语音模型 ─────────────────────────────────────────────────
+  // 这块不是「配置」而是「安装」：sherpa-onnx addon 跟着 npm 包一起来，229MB 权重不会
+  // ——它们放在 ~/.multicc/asr-models，独立版装上就是空的。传输在服务端
+  // （src/voice/asr-model-installer.js：可续传、单飞、镜像回退），这里只画状态、发动作、
+  // 下载期间轮询。文案全部走 t()，服务端只回机器状态（state），不回中文。
+  let localPoll = null;
+  let localLastState = '';
+
+  // 每个 state 对应「徽标 + 说明 + 按钮」，一张表列完 —— 加状态时漏画哪一格一眼可见。
+  const LOCAL_STATES = {
+    ready: { badge: 'airVoiceLocalBadgeReady', desc: 'airVoiceLocalReadyDesc', action: null },
+    missing: { badge: 'airVoiceLocalBadgeMissing', desc: 'airVoiceLocalMissingDesc', action: 'download' },
+    downloading: { badge: 'airVoiceLocalBadgeDownloading', desc: 'airVoiceLocalDownloadingDesc', action: 'cancel' },
+    failed: { badge: 'airVoiceLocalBadgeFailed', desc: 'airVoiceLocalFailedDesc', action: 'download' },
+    unsupported: { badge: 'airVoiceLocalBadgeUnsupported', desc: 'airVoiceLocalUnsupportedDesc', action: null },
+    disabled: { badge: 'airVoiceLocalBadgeDisabled', desc: 'airVoiceLocalDisabledDesc', action: null },
+  };
+
+  // 下载中那一行：进度 + 速度 + 剩余时间。速度与 ETA 是服务端算好的（它才知道真实速率），
+  // 这里只做单位与量纲的呈现 —— 数字一律交给 shared/format.js 的 formatBytes（它已由
+  // air.html 在 air-voice.js 之前加载），本文件不自己除 1024。
+  function localProgressText(dl) {
+    const parts = [t('airVoiceLocalProgress', {
+      percent: dl.percent || 0,
+      done: formatBytes(dl.doneBytes),
+      total: formatBytes(dl.totalBytes),
+    })];
+    if (dl.bytesPerSec > 0) parts.push(t('airVoiceLocalSpeed', { value: formatBytes(dl.bytesPerSec) }));
+    if (dl.etaSec > 0) {
+      const m = Math.floor(dl.etaSec / 60);
+      const s = dl.etaSec % 60;
+      parts.push(m ? t('airVoiceLocalEtaMin', { m, s }) : t('airVoiceLocalEtaSec', { n: s }));
+    }
+    return parts.join(' · ');
+  }
+
+  function paintLocalModel(dl) {
+    if (!dl) return;
+    const state = LOCAL_STATES[dl.state] ? dl.state : 'missing';
+    const spec = LOCAL_STATES[state];
+    const badge = el('asr-local-badge');
+    if (badge) {
+      badge.textContent = t(spec.badge);
+      badge.style.color = state === 'ready' ? 'var(--accent)'
+        : (state === 'failed' || state === 'unsupported') ? '#b34b34' : 'var(--faint)';
+    }
+    const desc = el('asr-local-desc');
+    if (desc) {
+      desc.textContent = state === 'failed'
+        ? t(spec.desc, { error: dl.error || t('airVoiceLocalUnknownError') })
+        : t(spec.desc);
+    }
+    const bar = el('asr-local-bar');
+    const fill = el('asr-local-bar-fill');
+    const status = el('asr-local-status');
+    const action = el('asr-local-action');
+    if (bar && fill) {
+      bar.hidden = state !== 'downloading';
+      fill.style.width = `${Math.max(0, Math.min(100, dl.percent || 0))}%`;
+      fill.className = `air-voice-bar-fill${state === 'failed' ? ' err' : ''}`;
+    }
+    if (status) setStatus([status], state === 'downloading' ? localProgressText(dl) : '', '');
+    if (action) {
+      // 同一颗按钮换三种身份：下载 / 取消 / 重试。没有动作的状态（已就绪、平台不支持、
+      // 已关闭）就把按钮收起来，别留一颗点了没反应的按钮。
+      action.hidden = !spec.action;
+      if (spec.action) action.textContent = t(spec.action === 'cancel' ? 'airVoiceLocalCancel' : (state === 'failed' ? 'airVoiceLocalRetry' : 'airVoiceLocalDownload'));
+    }
+    // 下载状态变了就播一条通知；轮询每次都会重画，只有真的跨过状态才说一次。
+    if (state !== localLastState) {
+      if (state === 'ready' && localLastState) context?.notice?.(t('airVoiceLocalReadyNotice'));
+      else if (state === 'failed' && localLastState === 'downloading') context?.notice?.(t('airVoiceLocalFailedNotice'));
+      localLastState = state;
+    }
+    if (state === 'downloading') startLocalPoll(); else stopLocalPoll();
+  }
+
+  // 面板被切走时 DOM 会被 replaceChildren 换掉，没有 destroy 钩子 —— 所以每轮先看状态节点
+  // 还在不在文档里，不在就自己停。下载在服务端照跑，回来时 load() 会重新读到进度。
+  function startLocalPoll() {
+    if (localPoll) return;
+    localPoll = setInterval(async () => {
+      if (!el('asr-local-status') || !document.contains(el('asr-local-status'))) { stopLocalPoll(); return; }
+      try { await load(); } catch (_) { stopLocalPoll(); }
+    }, 1500);
+  }
+
+  function stopLocalPoll() {
+    if (!localPoll) return;
+    clearInterval(localPoll);
+    localPoll = null;
+  }
+
+  async function localModelAction(action) {
+    const button_ = el('asr-local-action');
+    if (button_) button_.disabled = true;
+    try {
+      const result = await context.api('/api/settings/voice/asr-model', { action });
+      if (result && result.status) paintLocalModel(result.status);
+      if (action === 'download') context?.notice?.(t('airVoiceLocalDownloadStarted'));
+      else if (result && result.cancelled) context?.notice?.(t('airVoiceLocalCancelledNotice'));
+    } catch (err) {
+      setStatus([el('asr-local-status')], t('airVoiceLocalActionFailed', { error: err.message || String(err) }), 'err');
+    } finally {
+      if (button_) button_.disabled = false;
+    }
+  }
+
+  function localModelGroup() {
+    const group = make('div', null, 'air-voice-group');
+    const head = make('div', null, 'air-voice-group-head');
+    head.append(make('strong', t('airVoiceLocalTitle')));
+    const badge = make('span');
+    badge.id = 'asr-local-badge';
+    badge.className = 'air-voice-badge';
+    head.append(badge);
+    const desc = make('p', '', 'air-voice-desc');
+    desc.id = 'asr-local-desc';
+    const bar = make('div', null, 'air-voice-bar');
+    bar.id = 'asr-local-bar';
+    bar.hidden = true;
+    const fill = make('div', null, 'air-voice-bar-fill');
+    fill.id = 'asr-local-bar-fill';
+    bar.append(fill);
+    const status = make('span');
+    status.id = 'asr-local-status';
+    status.className = 'air-voice-status';
+    const action = button(t('airVoiceLocalDownload'), () => localModelAction('download'), 'primary');
+    action.id = 'asr-local-action';
+    const footer = make('div', null, 'air-voice-save');
+    footer.append(action, status);
+    group.append(head, desc, bar, footer);
+    return group;
+  }
+
   function asrCard() {
     const toggle = button(asrOpen ? t('airVoiceAsrCollapse') : t('airVoiceAsrExpand'), () => setAsrOpen(!asrOpen), 'air-voice-toggle');
     toggle.id = 'air-voice-asr-toggle';
@@ -217,7 +357,8 @@
       option.value = provider;
       select.append(option);
     }
-    body.append(row(t('airVoiceAsrProviderLabel'), select));
+    // 本地模型排在最前：它是 auto 下的首选 provider，也是唯一需要「安装」的一项。
+    body.append(localModelGroup(), row(t('airVoiceAsrProviderLabel'), select));
     body.append(
       asrGroup(t('airVoiceAsrGroupOpenai'), 'asr-openai-badge', [
         row(t('airVoiceFieldApiKey'), keyInput('asr-openai-key', 'sk-...')),
@@ -343,12 +484,15 @@
       funasr: t('airVoiceAsrNameFunasr'),
     };
     const short = {
+      local: t('airVoiceAsrShortLocal'),
       openai: t('airVoiceAsrShortOpenai'),
       volcano: t('airVoiceAsrShortVolcano'),
       funasr: t('airVoiceAsrShortFunasr'),
     };
     const provider = asr.provider || '';
-    const ready = ASR_PROVIDERS.filter(name => status[name] && status[name].ready).map(name => short[name]);
+    // local 排在云 provider 前面：它是 auto 的首选，能用了就该第一个被看见。
+    const ready = ['local', ...ASR_PROVIDERS]
+      .filter(name => status[name] && status[name].ready).map(name => short[name]);
     node.textContent = t('airVoiceAsrSummary', { provider: full[provider] || provider || '—' })
       + (ready.length
         ? t('airVoiceAsrSummaryReady', { list: ready.join(t('airVoiceAsrListSep')) })
@@ -381,6 +525,7 @@
     setBadge('asr-openai-badge', status.openai && status.openai.ready);
     setBadge('asr-volc-badge', status.volcano && status.volcano.ready);
     setBadge('asr-funasr-badge', status.funasr && status.funasr.ready);
+    paintLocalModel(status.local && status.local.download);
     paintAsrSummary(asr, status);
   }
 

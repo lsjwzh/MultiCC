@@ -134,10 +134,18 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
     if (entry === 'public') copyTree(src, path.join(out, 'public'), { filter: PUBLIC_EXCLUDE });
     else copyTree(src, path.join(out, entry));
   }
-  // 2) the single script src/ spawns out of the repo tree (router MCP child)
+  // 2) the scripts the installed tree still reaches for: the router MCP child
+  //   that src/ spawns, and the manual local-ASR model fetcher. The server
+  //   downloads those weights itself (src/voice/asr-model-installer.js), but
+  //   the shell script is the offline fallback the voice panel names when the
+  //   download keeps failing — and it used to be absent from the bundle
+  //   entirely, which left on-device ASR unreachable for every standalone
+  //   install.
   fs.mkdirSync(path.join(out, 'scripts'), { recursive: true });
-  fs.copyFileSync(path.join(repoRoot, 'scripts', 'multicc-router-mcp.js'),
-    path.join(out, 'scripts', 'multicc-router-mcp.js'));
+  for (const file of ['multicc-router-mcp.js', 'setup-local-asr.sh']) {
+    fs.copyFileSync(path.join(repoRoot, 'scripts', file), path.join(out, 'scripts', file));
+    if (file.endsWith('.sh')) fs.chmodSync(path.join(out, 'scripts', file), 0o755);
+  }
   // …and the macOS desktop agent, which src/macos-agent-provision.js installs
   // at startup (a few KB; ignored on other platforms). The release adds a
   // prebuilt binary next to it (standalone-bundle.js prebuildMacosAgent).
@@ -175,8 +183,10 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   }
 
   // 4) sanity gate — a silent missing file here becomes "app won't start" there
-  for (const must of ['server.js', 'src/paths.js', 'public/air.html', 'public/chat.html',
-    'scripts/multicc-router-mcp.js', 'plugins/bridges/wechat-ilink.js', ...MACOS_AGENT_FILES,
+  for (const must of ['server.js', 'src/paths.js', 'src/voice/asr-model-installer.js',
+    'public/air.html', 'public/chat.html',
+    'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh',
+    'plugins/bridges/wechat-ilink.js', ...MACOS_AGENT_FILES,
     ...POWERD_FILES,
     'skills/multicc-artifact/references/registration-rule.md',
     // Storage needs no compiled addon (src/sqlite/driver.js uses the SQLite
