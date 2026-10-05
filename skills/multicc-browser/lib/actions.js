@@ -515,7 +515,7 @@ function idleWaiter(ctx, quietMs) {
 
 async function open(ctx, args) {
   const url = normalizeUrl(args.url);
-  const target = args.newTab ? await ctx.newTab({ url, background: false }) : null;
+  const target = args.newTab ? await ctx.newTab({ url, background: true }) : null;
   if (!target) {
     const before = await currentUrl(ctx);
     await ctx.send('Page.navigate', { url }, { timeout: 30000 });

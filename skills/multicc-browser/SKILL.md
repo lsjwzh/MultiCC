@@ -14,7 +14,7 @@ description: 当用户需要 browser-use、网页交互或登录时，用 MultiC
 1. 先运行 `mbrowser doctor` 和 `mbrowser profiles`，只读核对现有 profile、浏览器进程及路径。优先使用用户指定的身份/profile，其次本任务已确认的 profile 或 `MBROWSER_PROFILE`。不要每个任务都新建空 profile。
 2. 若 `mbrowser --help` 列出 `sites`，先用 `mbrowser sites <域名或URL>` 查已有站点记录；没有该命令时用 `profiles` 和已有任务信息判断，不要编造命令。站点记录只表示曾访问，不证明仍登录；进入页面后核对账号和登录状态。
 3. 优先复用符合目标账号的运行中 profile/CDP 连接；未运行时启动同一持久目录。多个候选且无法确定账号才请用户选择，不按“最近使用”盲选，也不遍历无关账号。只有确实没有合适的 profile 时才新建；个人 Chrome 的迁移规则见下文。
-4. profile 已运行时直接在本会话后台标签操作，不为切成 headless 重启它。未运行的托管 profile 用 `start NAME --headless`；外部 `attach-only` 连接沿用原模式，不强制重启。不要 `--force`、杀进程或删锁来夺取在用目录。
+4. profile 已运行时直接在本会话后台标签操作，不为切成 headless 重启它。未运行的托管 profile 默认无头启动，即使上次人工登录留下了有头配置；普通 `start NAME` 和页面命令都遵循这一规则。外部 `attach-only` 连接沿用原模式，不强制重启。不要 `--force`、杀进程或删锁来夺取在用目录。
 5. 自动化中不得调用 `Page.bringToFront`、`Target.activateTarget`、`/json/activate`、AppleScript `activate`、`open -a` 或其它置前/聚焦窗口动作。后台 CDP 截图、DOM 与输入不需要前台桌面；页面不响应时先检查加载状态、重取快照，不用抢焦点来“修复”。
 
 ## 快速开始
@@ -23,9 +23,10 @@ description: 当用户需要 browser-use、网页交互或登录时，用 MultiC
 MB=<skill_dir>/bin/mbrowser
 $MB doctor                          # 只读：系统、浏览器、已有 profile
 $MB profiles                        # 先选符合目标账号的已有 profile
+$MB sites example.com               # 站点记录帮助定位，仍需核对账号
 PROFILE=work                        # 替换为上一步确认的名称，不能照抄新建
-# 仅当这个托管 profile 未运行时执行；已运行则跳过启动，直接连接
-$MB start "$PROFILE" --headless
+# 普通 start 复用正在运行的浏览器；未运行则无头启动同一目录
+$MB start "$PROFILE"
 $MB open https://example.com -p "$PROFILE"
 $MB snapshot -p "$PROFILE"          # 核对登录态/账号，再取 [e12] 引用
 $MB click e3 -p "$PROFILE"
@@ -40,25 +41,29 @@ $MB text -p "$PROFILE"
 
 - 引用形如 `[e12]`，**只在下一次快照前有效**；用过期的引用会直接报错并要求重新快照。页面一变就重新快照，不要盲点。
 - 命令退出码 0 不等于操作成功（表单可能被拒、按钮可能没生效）；用 `snapshot` / `text` / `screenshot` 复核结果。
-- 输入是真实 CDP 输入事件，不把窗口拉到前台；不要调用前台激活/聚焦能力。
+- 输入是真实 CDP 输入事件，不把窗口拉到前台；`open --new-tab` 也只创建后台标签，`tab` 只切换操作目标，不激活窗口。
 - 拿不准位置时用快照引用，不要用 `click --xy` 猜坐标。
 
 ## 多账号 / 多会话
 
 1. **一个业务身份 = 一个固定专用 profile**：`-p NAME`（默认 `MBROWSER_PROFILE`，再默认 `default`）。不同浏览器进程绝不同时打开同一 profile 目录。
-2. 每个 MultiCC 会话（`MULTICC_SESSION_ID`）在同一 profile 里有**自己的**后台标签；不要操作、不要 `close` 其他会话的标签，归属不明就先停下确认；自己标签打开的子窗口归自己。
-3. **绝不接管个人 Chrome**：不连它的调试端口、不用它的 user-data-dir。已有专用 profile 的登录态直接复用；若所需身份只在个人 Chrome 中，用户授权迁移后才一次性复制其**已退出**的指定 profile。不要要求用户先退出正在使用的浏览器来满足普通自动化；复制不保证登录有效，须实际复查。
-4. 不删除 profile、不做影响他人会话的清理（如 `stop --all`）；任务结束只 `close` 本次自己开的标签。
-5. 环境里有云端浏览器 key 不等于可以切云端：云端会改变页面、Cookie 与费用边界，须用户明确选择。
+2. **打开一个站点前先查 `mbrowser sites <域名或URL>`**：这会列出曾访问该域名的 profile（及其账号标签，按最近使用排序）。查到与目标账号匹配的记录就 `-p` 复用那个 profile，并在页面核对登录态，不要新建一个空 profile 从头登录——这是避免“明明登录过还要重新登录”的关键。`open` 成功后会自动把 (域名, profile) 记进这张登记表（`~/.multicc/browser/sites.json`），不用手动维护；没有站点记录不代表没有登录态：旧 profile、手工登录、跳转登录可能没有登记，先结合 `profiles` 和已确认的业务身份检查合适的已有目录；确实没有匹配才 `start NAME --create` 新建。
+3. **一个站点有多个候选且任务未明确账号时，让用户选**：`sites` 返回多条候选且无法按本任务的已确认身份消歧时，不要自己猜，把候选（标签优先，没标签就报 profile 名 + 最近使用时间）列给用户用 `wait_for_user_answer` 选，选完按选中的 `-p NAME` 继续操作。
+4. **登录成功后打标签**：新登录完一个账号就跑 `mbrowser tag NAME --domain D --label "账号标识"`，下次 `sites` 才能认出这是哪个账号，而不是只有一串裸 profile 名。
+5. 每个 MultiCC 会话（`MULTICC_SESSION_ID`）在同一 profile 里有**自己的**后台标签；不要操作、不要 `close` 其他会话的标签，归属不明就先停下确认；自己标签打开的子窗口归自己。
+6. **绝不接管个人 Chrome**：不连它的调试端口、不用它的 user-data-dir。已有专用 profile 的登录态直接复用；若所需身份只在个人 Chrome 中，用户授权迁移后才一次性复制其**已退出**的指定 profile。不要要求用户先退出正在使用的浏览器来满足普通自动化；复制不保证登录有效，须实际复查。
+7. 不删除 profile、不做影响他人会话的清理（如 `stop --all`）；任务结束只 `close` 本次自己开的标签。
+8. 环境里有云端浏览器 key 不等于可以切云端：云端会改变页面、Cookie 与费用边界，须用户明确选择。
 
 ## 登录与扫码
 
-先在已有 profile 中核对站点是否已登录；已登录就继续，不默认运行 `login`。确实需要人工登录/扫码时，告知用户要使用可见窗口，并只在其已授权的流程中切换。已有可用窗口直接复用，让用户自行切到窗口，不代为置前。
+先在已有 profile 中核对站点是否已登录；已登录就继续，不默认运行 `login`。扫码等可以通过后台截图完成时，按人工协助流程展示截图，保持当前浏览器模式。确实需要可见窗口时才使用 `login`，并只在已授权的流程中切换。已有可用窗口直接复用，让用户自行切到窗口和登录标签，不代为置前。
 
 ```bash
-$MB login "$PROFILE" https://site.example/login   # 该 profile 切成有头模式并打开登录页
-# 请用户自己切到窗口登录/扫码，不要代为聚焦桌面
-$MB start "$PROFILE" --headless                   # 登录态留在 profile 里，回到后台
+$MB login "$PROFILE" https://site.example/login   # 必须可见窗口时才执行
+# 登录页仍为后台标签，请用户自行切到窗口和该标签
+# 登录后可直接继续后台 CDP 操作，无须重启；只有确认可重启且无其它会话使用时才切无头
+$MB start "$PROFILE" --headless
 ```
 
 切换 headless/有头会重启 Chrome；共享 profile 或有其它会话标签时不要强制切换。人工步骤按 `../multicc-human-assist/SKILL.md` 保存截图并等待用户处理；同一步失败两次就请求协助，不循环开窗口。

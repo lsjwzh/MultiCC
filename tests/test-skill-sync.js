@@ -307,6 +307,30 @@ test('fresh provider conversions carry native crop scripts with executable permi
   }
 });
 
+test('converted browser executors include their runtime modules and run offline', t => {
+  const h = createHarness(t);
+  const homedir = t.mock.method(os, 'homedir', () => h.tempDir);
+  const modulePath = require.resolve('../src/skill-converter');
+  delete require.cache[modulePath];
+  const converter = require(modulePath);
+  homedir.mock.restore();
+  t.after(() => { converter.stop(); delete require.cache[modulePath]; });
+  const source = path.join(__dirname, '../skills/multicc-browser');
+  fs.cpSync(source, path.join(converter.AGENTS_ROOT, 'multicc-browser'), { recursive: true });
+  converter.ensureSkillConverted('multicc-browser');
+  for (const provider of ['codex', 'hermes']) {
+    const installed = converter.getLinkTarget('multicc-browser', provider);
+    const { spawnSync } = require('node:child_process');
+    const result = spawnSync(process.execPath, [path.join(installed, 'bin/mbrowser'), '--help'], {
+      encoding: 'utf8', timeout: 10000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /usage: mbrowser/);
+    assert.equal(fs.readFileSync(path.join(installed, 'lib/daemon.js'), 'utf8'),
+      fs.readFileSync(path.join(source, 'lib/daemon.js'), 'utf8'));
+  }
+});
+
 test('status and route DTOs preserve the never-synced contract', t => {
   const { runtime } = createHarness(t);
   const app = createApp();

@@ -49,8 +49,10 @@ class Daemon {
     this.userDataDir = this.config.userDataDir || P.profileDir(this.name);
     this.browserPath = null;
     this.owned = false;
-    this.headed = Boolean(this.options.headed !== undefined ? this.options.headed : this.config.headed);
     this.attachOnly = Boolean(this.config.attachOnly);
+    // A previous manual login is not permission to pop up a window on the
+    // next cold start. Live browsers recover their actual mode when attached.
+    this.headed = this.attachOnly ? Boolean(this.config.headed) : this.options.headed === true;
     this.cdpUrl = this.config.cdpUrl || null;
     this.targets = new Map();
     this.pages = new Map();
@@ -140,6 +142,7 @@ class Daemon {
         this.port = active.port;
         this.owned = Boolean(this.state.owned) && CH.isOurChrome(savedPid, this.userDataDir);
         this.browserPath = this.state.browser || null;
+        this.headed = typeof this.state.headed === 'boolean' ? this.state.headed : true;
         this.phase = 'ready';
         this.log(`re-attached to chrome pid=${savedPid} port=${active.port}`);
         return;
@@ -172,6 +175,8 @@ class Daemon {
           this.chromePid = holder;
           this.port = active.port;
           this.owned = false;
+          this.headed = Number(this.state.chromePid) === holder && typeof this.state.headed === 'boolean'
+            ? this.state.headed : true;
           this.phase = 'ready';
           this.log(`profile held by pid ${holder}; attached without owning it`);
           return;
@@ -425,6 +430,9 @@ class Daemon {
   async ensureReady() {
     if (this.cdp && !this.cdp.closed && this.phase === 'ready') return;
     if (this.cdp && !this.cdp.closed && this.phase !== 'chrome-down') return;
+    // A normal page command must not reopen a headed window the user closed.
+    // launchChrome still reuses a live lock holder and restores its real mode.
+    if (!this.attachOnly) this.headed = false;
     const launched = await this.relaunch('lazy (next command)');
     if (!launched) {
       throw new MbError('chrome_down',

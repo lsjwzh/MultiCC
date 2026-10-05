@@ -32,8 +32,10 @@
 |---|---|
 | `doctor` | 只读体检：OS 版本/档位、架构、Node 版本、找到的浏览器及其与该系统最低版本和架构的匹配、最终选用的可执行文件、正在运行的 profile |
 | `profiles` | 列出 profile |
-| `start [NAME] [--create] [--headed\|--headless] [--browser PATH] [--mock-keychain] [--startup-timeout S] [--force]` | 启动 profile。`start` 只对**已存在**的 profile 生效，新建必须加 `--create`；页面类命令只会自动启动**已存在**的 profile。`--force` 用于把 Chrome 重启成另一种模式（默认会拒绝） |
-| `login NAME [URL]` | 把该 profile 重启成有头模式并打开 URL，交给用户登录/扫码 |
+| `sites [DOMAIN_OR_URL]` | 查哪些 profile 曾访问某个域名（登录态须在页面核对）（按最近使用排序，带账号标签）；不带参数时列出所有已记录的域名。数据来自站点登记表，`open` 成功后自动写入 |
+| `tag NAME --domain D [--label L]` | 给 profile `NAME` 在域名 `D` 下打一个人类可读的账号标签（如邮箱/用户名），写进站点登记表；重复打标签会更新而不是追加 |
+| `start [NAME] [--create] [--headed\|--headless] [--browser PATH] [--mock-keychain] [--startup-timeout S] [--force]` | 启动或复用 profile。不指定模式时，沿用正在运行的浏览器；已停止的托管 profile 默认无头启动，忽略上次人工登录留下的有头配置。`start` 只对**已存在**的 profile 生效，新建必须加 `--create`；页面类命令只会自动启动**已存在**的 profile。显式 `--headed` / `--headless` 可切换模式并重启 Chrome；其它会话持有标签时默认拒绝，普通自动化不要用 `--force` 绕过 |
+| `login NAME [URL]` | 必要时把该 profile 切成有头模式，在后台标签打开 URL；用户自行切到窗口和标签登录/扫码 |
 | `attach NAME --cdp-url http://127.0.0.1:PORT` | 登记一台外部启动的调试 Chrome；mbrowser 不启动也不杀它。换一个 `--cdp-url` 会先退休旧守护进程（它只为启动时的那个端点服务）：旧守护进程本来就不拥有那台 Chrome，会原样留着；如果旧守护进程自己起过 Chrome，则会把那台停掉（新配置里已经没有它的把手了）。端点连不上就报错，不会拿旧浏览器冒充 |
 | `status [NAME]` | 守护进程/Chrome/端口/标签状态（`--all` 等价于 `profiles`） |
 | `stop [NAME\|--all] [--keep-chrome]` | 停掉 profile 的守护进程和它自己启动的 Chrome（外部 `attach` 的不动）；`--keep-chrome` 只退守护进程、Chrome 留着，下一条命令会**重新接管同一台** Chrome |
@@ -41,13 +43,17 @@
 
 profile 目录：macOS 是 `~/Library/Application Support/MultiCC/browser-use/<name>`（与旧的本地 Browser Use 同一批目录，已有登录态可直接沿用），其它平台是 `~/.multicc/browser/profiles/<name>`。
 
+### 站点登记表（哪个 profile 曾访问哪个站点）
+
+`${MULTICC_DATA_DIR:-~/.multicc}/browser/sites.json`：`{ "<域名>": [{ profile, label, lastUsedAt }] }`。每次 `open` 成功后自动追加/更新当前 profile 在该域名下的记录（不用手动维护）；`tag NAME --domain D --label L` 额外写入人类可读标签。同一域名出现多条记录表示多个候选 profile，不证明账号不同或登录仍有效——用 `sites DOMAIN` 查出来，交给用户选，不要凑合选第一条。这张表只是"域名 → profile 名单"的索引，真正的登录态（cookie/storage）还是在各自的 Chrome `user-data-dir` 里，删这张表不影响登录态，删 profile 目录才会丢登录态。
+
 ## 页面命令
 
 默认作用于**本会话在当前 profile 里的当前标签**。
 
 | 命令 | 说明 |
 |---|---|
-| `open URL [--new-tab]` | 打开/导航；不带 `--new-tab` 时复用当前标签 |
+| `open URL [--new-tab]` | 打开/导航；不带 `--new-tab` 时复用当前标签，带参数时创建后台标签，不激活窗口 |
 | `snapshot [--interactive] [--max-chars N]` | 无障碍树文本 + `[e12]` 引用；`--interactive` 只留可交互元素 |
 | `click REF` / `click --xy X Y [--double\|--right]` | 按引用或坐标点击 |
 | `type REF TEXT [--clear] [--submit]` | 输入文本；`--clear` 先清空，`--submit` 输入后回车 |
@@ -65,6 +71,8 @@ profile 目录：macOS 是 `~/Library/Application Support/MultiCC/browser-use/<n
 | `tab TARGET` | 仅切换本会话的操作目标，不激活窗口或前台标签 |
 | `close [TARGET]` | 关闭本会话的标签（默认当前） |
 | `dialog accept\|dismiss [PROMPT_TEXT]` | 处理 JS 对话框；有待处理对话框时其它命令会先警告 |
+
+后台操作不调用窗口置前或标签激活。已运行的有头浏览器可直接后台操作，无须为了后台执行强制重启。只有人工流程确实需要窗口时才使用 `login`；扫码截图能完成时优先保持无头模式。
 
 ## 快照格式与引用语义
 

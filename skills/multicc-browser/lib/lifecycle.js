@@ -148,13 +148,15 @@ async function start(args) {
     throw new MbError('not_created',
       `profile ${name} does not exist; create it with \`mbrowser start ${name} --create\``);
   }
-  const headed = args.headed === true
-    ? true
-    : (args.headless === true ? false : Boolean(existing && existing.headed));
+  if (args.headed && args.headless) {
+    throw new MbError('usage', '--headed and --headless cannot be used together');
+  }
+  const explicitMode = args.headed === true || args.headless === true;
+  const headed = explicitMode ? args.headed === true : undefined;
   const config = {
     name,
     ...(existing || {}),
-    headed,
+    ...(explicitMode ? { headed } : {}),
     attachOnly: Boolean(existing && existing.attachOnly),
     updatedAt: Date.now(),
   };
@@ -164,19 +166,19 @@ async function start(args) {
   if (args.startupTimeout !== undefined) config.startupTimeout = Number(args.startupTimeout);
   P.writeJson(configPath, config);
   const daemonOptions = {
-    headed,
+    ...(explicitMode ? { headed } : {}),
     browser: config.browser,
     mockKeychain: config.mockKeychain,
     startupTimeout: config.startupTimeout,
   };
   const ping = await client.ensureDaemon(name, { daemonOptions });
   let restarted = null;
-  if (Boolean(ping.headed) !== headed) {
+  if (explicitMode && Boolean(ping.headed) !== headed) {
     restarted = await client.call(name, 'set-mode',
       { headed, force: Boolean(args.force), owner: client.ownerFromEnv() });
   }
   const status = await client.call(name, 'status', {});
-  const mode = `Chrome ${ping.headed ? 'headed' : 'headless'}${restarted ? ' (restarted)' : ''}`;
+  const mode = `Chrome ${status.headed ? 'headed' : 'headless'}${restarted ? ' (restarted)' : ''}`;
   const lines = [
     `profile ${name}: daemon pid ${ping.pid} version ${ping.version}, ${mode}, chrome pid ${status.chromePid || '-'} port ${status.port || '-'}`,
     `user-data-dir: ${status.userDataDir}`,
@@ -187,7 +189,7 @@ async function start(args) {
   return { text: lines.join('\n'), ping, status, restarted, config };
 }
 
-// Interactive login: headed Chrome plus a visible tab the user can drive.
+// Interactive login: headed Chrome; the user switches to its background tab.
 async function login(args) {
   const name = args.name;
   const started = await start({ ...args, headed: true, headless: false });
@@ -198,9 +200,10 @@ async function login(args) {
   const url = args.url || '(no URL given; use `mbrowser open` or the address bar)';
   const lines = [
     started.text,
-    opened ? `opened ${args.url} in a visible tab ${opened.shortId}` : `open this in the window: ${url}`,
+    opened ? `opened ${args.url} in background tab ${opened.shortId}; switch to that browser window and tab to log in`
+      : `switch to the browser window to log in: ${url}`,
     `Log in there, then run \`mbrowser start ${name} --headless\` to continue headless.`,
-    'The daemon keeps this Chrome alive: closing the window only stops your view, not the session.',
+    'The profile keeps its login data; if the browser exits, the next page command starts it headless.',
   ];
   return { text: lines.join('\n'), started, opened };
 }
