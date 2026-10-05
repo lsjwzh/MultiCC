@@ -166,7 +166,9 @@ test('turn-engine wires the opencode rotation at turn admission, before native-s
   // d05f667e widened the codex rollout guard to codex-exp and added the native
   // session guard for the other resume-capable lanes; the order is
   // codex → native lanes → opencode, all before first-vs-resume is decided.
-  const codexHook = source.indexOf("(turnCli === 'codex' || turnCli === 'codex-exp') && persisted.cliSessionId");
+  // 801715ed moved the inline guard block into enforceCodexRolloutForTurn —
+  // same admission point, new literal for the same condition.
+  const codexHook = source.indexOf("['codex', 'codex-exp'].includes(turnCli) && persisted.cliSessionId");
   assert.ok(codexHook > 0 && hook > codexHook, 'the opencode hook sits after the codex guard');
   const nativeHook = source.indexOf('nativeSessionGuard.handles(turnCli) && persisted.cliSessionId');
   assert.ok(nativeHook > codexHook && hook > nativeHook,
