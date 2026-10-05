@@ -506,6 +506,7 @@ test('system route mount owns the app-binary metadata and canonical download rou
     ['GET', '/api/ios-ota-info', 'function'],
     ['GET', '/ios-ota/manifest.plist', 'function'],
     ['GET', '/ios-ota/udid.mobileconfig', 'function'],
+    ['GET', '/ios-ota/udid/result/:token', 'function'],
     ['POST', '/ios-ota/udid/callback/:token', 'function'],
     ['GET', '/api/system/developer-tools', 'function'],
     ['POST', '/api/system/developer-tools/install', 'function'],

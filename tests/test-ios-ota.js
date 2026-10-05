@@ -195,12 +195,13 @@ async function udidHarness(t, options) {
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const base = `http://127.0.0.1:${server.address().port}`;
   return {
-    async profile(secure = true) {
-      const res = await fetch(base + '/ios-ota/udid.mobileconfig', { headers: secure ? { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'phone.example' } : {} });
+    async profile(secure = true, host = 'phone.example') {
+      const res = await fetch(base + '/ios-ota/udid.mobileconfig', { headers: secure ? { 'x-forwarded-proto': 'https', 'x-forwarded-host': host } : {} });
       const xml = await res.text();
       return { res, xml, token: /callback\/([a-f0-9]{64})/.exec(xml)?.[1], challenge: /<key>Challenge<\/key><string>([a-f0-9]{64})/.exec(xml)?.[1] };
     },
-    post(token, body) { return fetch(`${base}/ios-ota/udid/callback/${token}`, { method: 'POST', headers: { 'content-type': 'application/pkcs7-signature' }, body, redirect: 'manual' }); },
+    post(token, body, headers = {}) { return fetch(`${base}/ios-ota/udid/callback/${token}`, { method: 'POST', headers: { 'content-type': 'application/pkcs7-signature', ...headers }, body, redirect: 'manual' }); },
+    get(url) { return fetch(base + new URL(url, base).pathname, { redirect: 'manual' }); },
   };
 }
 
@@ -218,11 +219,19 @@ test('UDID：HTTPS 下载、真实 CMS 回传、单次使用和设备信息不�
   assert.ok(!/SERIAL|IMEI|com.apple.mdm|com.apple.security/.test(p.xml));
   const signed = execFileSync('openssl', ['cms', '-sign', '-signer', cert, '-inkey', key, '-outform', 'DER', '-nodetach', '-binary'], { input: deviceXml(p.challenge), timeout: 5000 });
   const response = await h.post(p.token, signed);
-  assert.equal(response.status, 303);
+  assert.equal(response.status, 301);
   const location = new URL(response.headers.get('location'), 'https://phone.example');
-  assert.equal(location.pathname, '/ios-ota');
+  assert.equal(location.origin, 'https://phone.example');
+  assert.match(location.pathname, /^\/ios-ota\/udid\/result\/[a-f0-9]{64}$/);
   assert.equal(location.search, '');
-  assert.equal(new URLSearchParams(location.hash.slice(1)).get('udid'), DEVICE_ID);
+  assert.equal(location.hash, '');
+  assert.ok(!location.href.includes(DEVICE_ID));
+  assert.ok(!location.href.includes(p.token), '结果与回传不共用令牌');
+  const result = await h.get(location.href);
+  assert.equal(result.status, 200);
+  assert.match(result.headers.get('content-type'), /text\/html/);
+  assert.equal(result.headers.get('cache-control'), 'no-store');
+  assert.ok((await result.text()).includes(DEVICE_ID));
   assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
   assert.equal((await h.post(p.token, signed)).status, 410);
   const invalid = await h.profile();
@@ -238,10 +247,16 @@ test('UDID：未知/过期令牌、错误挑战、超限载荷均拒绝且不泄
   assert.equal((await h.post(p.token, 'body')).status, 400);
   assert.equal((await h.post(p.token, Buffer.alloc(65537))).status, 413);
   decoded = deviceXml(p.challenge);
-  assert.equal((await h.post(p.token, 'body')).status, 303, '无效提交不消耗正确令牌');
+  const response = await h.post(p.token, 'body');
+  assert.equal(response.status, 301, '无效提交不消耗正确令牌');
+  assert.equal((await h.get('/ios-ota/udid/result/' + 'a'.repeat(64))).status, 410);
+  assert.equal((await h.get('/ios-ota/udid/result/' + p.token)).status, 410);
   const expired = await h.profile();
   time += TTL_MS;
   assert.equal((await h.post(expired.token, 'body')).status, 410);
+  const result = await h.get(response.headers.get('location'));
+  assert.equal(result.status, 410);
+  assert.ok(!(await result.text()).includes(DEVICE_ID));
 });
 
 test('UDID：严格解析合法格式，拒绝重复键、实体和伪装的嵌套内容', () => {
@@ -284,4 +299,24 @@ test('UDID：浏览器读取并移除地址中的设备信息，HTTP 禁止下�
   assert.equal(p.elements.get('udid-value').selected, true);
   const insecure = page('http:', '');
   assert.equal(insecure.elements.get('udid-start').attrs['aria-disabled'], 'true');
+});
+
+test('UDID：不同用户的外网和内网入口分别生成地址，回传请求不能改写结果域名', async t => {
+  const h = await udidHarness(t, { decode: async body => body.toString() });
+  for (const host of ['one.example:4443', 'two.example', '192.168.50.20:8443']) {
+    const p = await h.profile(true, host);
+    assert.ok(p.xml.includes(`https://${host}/ios-ota/udid/callback/`));
+    const response = await h.post(p.token, deviceXml(p.challenge), { 'x-forwarded-host': 'unrelated.example', 'x-forwarded-proto': 'http' });
+    assert.equal(response.status, 301);
+    assert.equal(new URL(response.headers.get('location')).origin, `https://${host}`);
+    assert.equal((await h.get(response.headers.get('location'))).status, 200);
+  }
+});
+
+test('UDID：结果页面对设备内容进行 HTML 转义', () => {
+  const { resultPage } = require('../src/ios-udid');
+  const html = resultPage({ udid: DEVICE_ID, product: '<img src=x onerror=alert(1)>', version: '"&' });
+  assert.ok(!html.includes('<img'));
+  assert.ok(html.includes('&lt;img'));
+  assert.ok(!resultPage().includes(DEVICE_ID));
 });

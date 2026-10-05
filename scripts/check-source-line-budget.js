@@ -369,7 +369,7 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +1 双语键：直接重启按钮的本机操作提示。
     // +21 双语键：iOS 设备 UDID 采集、登记引导与复制结果。
     maxLines: 8834,
-    maxBytes: 561698,
+    maxBytes: 561718,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
