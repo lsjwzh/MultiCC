@@ -75,6 +75,62 @@
     }
   }
 
+  async function refreshWake(current = s) {
+    if (!current || current.waking) return;
+    try {
+      const res = await fetch(tok('/api/remote-screen/wake'), { cache: 'no-store' });
+      const data = await res.json();
+      if (s !== current || current.closed || current.waking) return;
+      current.wakeBtn.disabled = !res.ok || data.canWake !== true;
+      current.wakeBtn.title = data.message || '唤醒并使用已保存的密码解锁屏幕';
+      if (Date.now() - (current.wakeResultAt || 0) < 8000) return;
+      current.wakeHint.textContent = data.screenLocked === true
+        ? ('屏幕已锁定。' + (data.canWake ? '点击“唤起屏幕”恢复画面。' : data.message || '请先开启自动解锁。'))
+        : (!res.ok ? '暂时无法检测锁屏状态。' : '');
+    } catch {
+      if (s === current && !current.closed) {
+        current.wakeBtn.disabled = true;
+        current.wakeHint.textContent = '暂时无法检测锁屏状态。';
+      }
+    }
+  }
+
+  async function wakeScreen() {
+    const current = s;
+    if (!current || current.waking || current.wakeBtn.disabled) return;
+    current.waking = true;
+    current.wakeBtn.disabled = true;
+    current.wakeHint.textContent = '正在唤起屏幕，请稍候…';
+    try {
+      const res = await fetch(tok('/api/remote-screen/wake'), { method: 'POST' });
+      const data = await res.json();
+      if (s !== current || current.closed) return;
+      current.wakeResultAt = Date.now();
+      current.wakeHint.textContent = data.message || '唤起失败，请检查本机状态后手动重试。';
+      if (res.ok && data.ok === true) {
+        current.paused = false;
+        current.pauseBtn.textContent = '⏸ ' + tr('rsPause', '暂停');
+        // 旧流可能停在锁屏前：断开后恢复 JPEG 取帧，避免仍停在黑屏。
+        if (current.rfb) {
+          current.rfbIntent = true;
+          current.rfb.disconnect();
+          current.rfb = null;
+          current.rfbWrap?.remove();
+          current.rfbWrap = null;
+          current.img.style.display = '';
+          setControl(current.control);
+        }
+        kick();
+        void loop();
+      }
+    } catch {
+      if (s === current && !current.closed) { current.wakeResultAt = Date.now(); current.wakeHint.textContent = '唤起请求失败，请检查连接后手动重试。'; }
+    } finally {
+      current.waking = false;
+      if (s === current && !current.closed) void refreshWake(current);
+    }
+  }
+
   // ── 帧循环 ──
   async function loop() {
     if (!s || s.running) return;
@@ -719,13 +775,17 @@
         }
       } else if (!(await startRfb())) loop();
     });
+    s.pauseBtn = pauseBtn;
+    s.wakeBtn = btn('唤起屏幕', '需先开启自动解锁', wakeScreen, 'primary');
+    s.wakeBtn.disabled = true;
+    s.wakeHint = el('span', 'rs-wake-hint');
     s.unhalt = btn(tr('rsUnhalt', '解除急停'), tr('rsUnhaltTitle', '本机用户按过 Esc：确认可以继续后再解除'), () => input({ op: 'resume' }), 'warn');
     s.unhalt.hidden = true;
     const releaseBtn = btn(tr('rsRelease', '交还'), tr('rsReleaseTitle', '释放操作租约，让其它会话的 agent 立刻可以操作电脑'), () => input({ op: 'release' }));
     head.append(title, statusEl,
       s.modeBtn, s.rightBtn, s.boxBtn,
       btn('✎ ' + tr('rsAnnotate', '标注'), tr('rsAnnotateTitle', '冻结当前画面并打开标注器：开「实时透传」则标记直接在本机执行，关则录入输入框与 agent 对话'), annotate, 'primary'),
-      pauseBtn, s.unhalt, releaseBtn,
+      pauseBtn, s.wakeBtn, s.unhalt, releaseBtn,
       btn('✕', tr('rsClose', '关闭'), close, 'rs-close'));
     const stage = el('div', 'rs-stage');
     s.stage = stage;
@@ -759,7 +819,10 @@
     text.addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); send(); } });
     s.keybar.append(text, btn(tr('rsSend', '发送'), '', send, 'primary'));
     for (const [label, keys] of KEYS) s.keybar.appendChild(btn(label, keys, () => input({ op: 'press', keys }), 'rs-key'));
-    ov.append(head, s.permBar, stage, s.hint, s.keybar);
+    ov.append(head, s.wakeHint, s.permBar, stage, s.hint, s.keybar);
+    void refreshWake();
+    const current = s;
+    s.wakeTimer = setInterval(() => { void refreshWake(current); }, 5000);
     document.body.appendChild(ov);
     wirePointer(stage);
     wireGestures(stage);
@@ -777,6 +840,7 @@
       clearTimeout(s.resumeTimer);
       clearInterval(s.haltTimer);
       clearInterval(s.permTimer);
+      clearInterval(s.wakeTimer);
       if (s.rfb) { s.rfbIntent = true; try { s.rfb.disconnect(); } catch {} }
       if (s.lastUrl) URL.revokeObjectURL(s.lastUrl);
     }

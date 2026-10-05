@@ -17,7 +17,7 @@
 //
 // 安全边界：与全站同一鉴权（远程访问要 ACCESS_TOKEN）；输入固定挂在
 // 'remote-screen' 会话租约下，Agent 的锁屏拒绝 / Esc 急停 / 受保护 App 护栏
-// 全部照旧生效；不开放 unlock / set / see 等其它 op。
+// 全部照旧生效；普通输入不开放 unlock，唤起屏幕走独立的开关校验接口。
 
 const fs = require('fs');
 const net = require('net');
@@ -239,6 +239,10 @@ function sendError(res, error, status = 502) {
 }
 
 function mount(app) {
+  require('./remote-screen-wake').mountWakeRoutes(app, {
+    call, wakeDisplay: () => run('/usr/bin/caffeinate', ['-u', '-t', '1'], 3000),
+    invalidate: () => { lastFrame = null; },
+  });
   app.get('/api/remote-screen/frame', async (req, res) => {
     try {
       const f = await frame();

@@ -77,6 +77,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   bool _decoding = false;
   double? _fps;
 
+  bool _waking = false;
+  Map<String, dynamic> _wakeState = {};
+  String? _wakeMessage;
   bool _control = false;
   bool _hadControl = false;
   bool _halted = false;
@@ -154,6 +157,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     _permChecking = true;
     final epoch = _permEpoch;
     final perms = await _svc.agentPermissions();
+    final wake = await _svc.wakeScreen();
+    if (mounted && !_waking) setState(() => _wakeState = wake);
     _permChecking = false;
     _lastPermCheck = DateTime.now();
     if (!mounted || _permRestarting || epoch != _permEpoch) return;
@@ -171,6 +176,22 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       _permStarted = true;
       _svc.connectLive();
     }
+  }
+
+  Future<void> _wakeScreen() async {
+    if (_waking || _wakeState['canWake'] != true) return;
+    setState(() {
+      _waking = true;
+      _wakeMessage = '正在唤起屏幕，请稍候…';
+    });
+    final result = await _svc.wakeScreen(request: true);
+    if (!mounted) return;
+    setState(() {
+      _waking = false;
+      _wakeMessage = result['message'] as String? ?? '唤起失败，请手动重试。';
+      if (result['ok'] == true) _wakeState = result;
+    });
+    if (result['ok'] == true) _svc.connectLive();
   }
 
   Future<void> _restartAgent() async {
@@ -522,6 +543,30 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         child: Column(
           children: [
             _statusRow(),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  OutlinedButton(
+                    onPressed: !_waking && _wakeState['canWake'] == true
+                        ? _wakeScreen
+                        : null,
+                    child: Text(_waking ? '正在唤起…' : '唤起屏幕'),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _wakeMessage ??
+                          (_wakeState['screenLocked'] == true &&
+                                  _wakeState['canWake'] == true
+                              ? '屏幕已锁定，点击“唤起屏幕”恢复画面。'
+                              : _wakeState['message'] as String? ??
+                                    '正在检查自动解锁状态…'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             if (_permGate != null) _permBanner(),
             if (_halted) _haltBanner(),
             Expanded(child: _stage()),
