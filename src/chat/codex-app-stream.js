@@ -427,6 +427,11 @@ function ensure(name, cfg) {
     if (cfg.onExit !== undefined) s.onExit = cfg.onExit;
     if (cfg.onDispose !== undefined) s.onDispose = cfg.onDispose;
     if (cfg.beforeSpawn !== undefined) s.beforeSpawn = cfg.beforeSpawn;
+    if (s.protocol === 'codex' && cfg.sessionId === null && s.threadId) {
+      // 宿主确认历史缺失或已归档后，不能继续沿用常驻进程里的旧线程。
+      s.threadId = null;
+      s.recycleRequested = isAlive(name);
+    }
     if (cfg.sessionId) s.threadId = cfg.sessionId;
   }
   return s;

@@ -77,15 +77,17 @@ function createCodexRolloutGuard(deps = {}) {
   // Same discovery walk as server.js livenessRolloutPath: recursive scan for a
   // .jsonl whose name embeds the native thread id.
   function findRollouts(sessionsDir, id) {
-    let entriesExist = false;
-    try { entriesExist = fsImpl.existsSync(sessionsDir); } catch (_) { entriesExist = false; }
+    const entriesExist = fsImpl.existsSync(sessionsDir);
     if (!entriesExist) return [];
     const found = [];
     const stack = [sessionsDir];
     while (stack.length) {
       const dir = stack.pop();
       let entries;
-      try { entries = fsImpl.readdirSync(dir, { withFileTypes: true }); } catch (_) { continue; }
+      try { entries = fsImpl.readdirSync(dir, { withFileTypes: true }); } catch (error) {
+        if (error.code === 'ENOENT') continue;
+        throw error;
+      }
       for (const entry of entries) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) stack.push(full);
@@ -169,7 +171,8 @@ function createCodexRolloutGuard(deps = {}) {
   // Inspect the rollout backing record.cliSessionId and archive it. Returns a
   // frozen summary for logging/notification:
   //   action: 'skipped'  — not a codex record / no cliSessionId
-  //   action: 'ok'       — rollout within budget (or none found: 'not_found')
+  //   action: 'ok'       — rollout within budget
+  //   action: 'not_found' — 历史已缺失；调用方清除旧线程引用并重建上下文
   //   action: 'archived' — rollout(s) moved; caller must clear
   //                        record.cliSessionId so the next spawn starts fresh
   //   action: 'error'    — guard failed; turn must proceed unchanged
@@ -209,6 +212,9 @@ function createCodexRolloutGuard(deps = {}) {
         cliSessionId: String(record.cliSessionId), archived,
       });
     } catch (error) {
+      if (error && error.code === 'CODEX_SESSION_ROLLOUT_NOT_FOUND') {
+        return Object.freeze({ action: 'not_found', maxBytes });
+      }
       if (error && /^CODEX_SESSION_/.test(String(error.code || ''))) {
         try { logger.warn?.('codex_rollout_guard_blocked', { sessionId: record.id, code: error.code }); } catch (_) {}
         return Object.freeze({
@@ -224,7 +230,42 @@ function createCodexRolloutGuard(deps = {}) {
   return Object.freeze({ enforce, sweepExpiredArchives, maxBytes, archiveTtlMs });
 }
 
+
+// 准入检查与重建通知集中在守卫模块，避免回合引擎继续增长。
+function enforceCodexRolloutForTurn({ guard, persisted, sessionName, logger,
+  rememberActiveCliState, savePersistedSessionsBestEffort, chatBroadcast, appendEvent }) {
+  const guardResult = guard.enforce(persisted);
+  if (guardResult.action === 'blocked') {
+    logger.error('codex_rollout_guard_blocked', { sessionId: sessionName, code: guardResult.code });
+    chatBroadcast(sessionName, { type: 'error', code: guardResult.code,
+      error: 'Codex 原生会话历史无法唯一定位；为避免恢复到错误上下文，本轮已阻止。请检查重复的 rollout 文件。' });
+    return guardResult;
+  }
+  if (guardResult.action === 'not_found') {
+    persisted.cliSessionId = null;
+    persisted._streamSessionId = null;
+    rememberActiveCliState(persisted);
+    savePersistedSessionsBestEffort('runtime.codex-history-missing');
+    logger.warn('codex_rollout_missing_recovered', { sessionId: sessionName });
+    chatBroadcast(sessionName, { type: 'system', subtype: 'warning',
+      message: 'Codex 原生历史文件已缺失，已自动新建会话上下文并继续本条消息。' });
+  }
+  if (guardResult.action === 'archived') {
+    persisted.cliSessionId = null;
+    savePersistedSessionsBestEffort();
+    logger.warn('codex_rollout_archived', { sessionId: sessionName,
+      archivedCliSessionId: guardResult.cliSessionId, maxBytes: guardResult.maxBytes,
+      archived: guardResult.archived.map(item => ({ file: item.file, sizeBytes: item.sizeBytes, archivedTo: item.archivedTo })) });
+    appendEvent(persisted.dirId, 'codex_rollout_archived',
+      `codex rollout 超过 ${(guardResult.maxBytes / 1048576).toFixed(0)}MB 已归档，本轮将重建上下文`, sessionName);
+    chatBroadcast(sessionName, { type: 'system', subtype: 'rollout_archived',
+      message: `codex 原生会话历史过大（rollout > ${Math.round(guardResult.maxBytes / 1048576)}MB），已归档并重建上下文；旧历史文件保留在归档目录，未删除。` });
+  }
+  return guardResult;
+}
+
 module.exports = {
+  enforceCodexRolloutForTurn,
   createCodexRolloutGuard,
   DEFAULT_MAX_ROLLOUT_BYTES,
   DEFAULT_ARCHIVE_TTL_DAYS,

@@ -166,3 +166,10 @@ setInterval(()=>{},1000);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('历史缺失恢复通知携带旧线程身份', () => {
+  assert.deepEqual(createCodexExpAdapter().decodeEvent({
+    method: 'multicc/native_session_missing', params: { threadId: 'old-thread' },
+  }), [{ type: 'native_session_missing', sessionId: 'old-thread' }]);
+});
