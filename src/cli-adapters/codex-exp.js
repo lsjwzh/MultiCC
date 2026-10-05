@@ -138,6 +138,9 @@ function createCodexExpAdapter(deps = {}) {
           message: 'Codex v1 does not support interactive approvals; the request was cancelled.',
         }];
       }
+      if (method === 'multicc/native_session_missing') {
+        return [{ type: 'native_session_missing', sessionId: params.threadId }];
+      }
       if (method === 'thread/started') {
         const thread = params.thread || {};
         return [{ type: 'session_started', sessionId: thread.id || thread.sessionId }];

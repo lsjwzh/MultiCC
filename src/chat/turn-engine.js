@@ -73,7 +73,7 @@ const providers = require('../providers/core');
 const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
 const { createTurnTimingRecorder } = require('./turn-timing');
 const { deriveOpenTasks } = require('./turn-event-replay');
-const { createCodexRolloutGuard } = require('./codex-rollout-guard');
+const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex-rollout-guard');
 const { captureNativeSessionId } = require('./native-session-state');
 const { hasNativeHistory } = require('../cli-adapters/claude-exp-history');
 const { createOpencodeContextGuard } = require('./opencode-context-guard');
@@ -679,6 +679,16 @@ function createChatTurnEngine(deps) {
         if (evt.model) noteReportedModel(sessionName, evt.model);
         continue;
       }
+      if (evt.type === 'native_session_missing' && evt.sessionId === persisted.cliSessionId) {
+        persisted.cliSessionId = null;
+        persisted._streamSessionId = null;
+        runner.freshNativeSession = true;
+        rememberActiveCliState(persisted);
+        savePersistedSessionsBestEffort('runtime.codex-resume-missing');
+        forward({ type: 'system', subtype: 'warning',
+          message: 'Codex 原生历史文件已缺失，已自动新建会话上下文并继续本条消息。' });
+        continue;
+      }
       if (evt.type === 'session_started') {
         const handoff = persisted.pendingCliHandoff;
         const resumeMismatch = !!(
@@ -1042,29 +1052,10 @@ function createChatTurnEngine(deps) {
       ? existingCs.chatTurnCount
       : (initialHistory = loadChatHistory(sessionName)).filter(message => message.role === 'assistant').length;
     const turnCli = (existingCs && existingCs.cli) || persisted.cli || 'claude';
-    // Pre-resume rollout size guard (codex lanes): oversized rollouts hang
-    // `codex exec resume`, and codex-exp's app-server re-scans them during
-    // startup state-DB backfill. Archiving + clearing cliSessionId makes THIS
-    // turn a fresh thread; context layers are recomposed by composeMessage.
-    if ((turnCli === 'codex' || turnCli === 'codex-exp') && persisted.cliSessionId) {
-      const guardResult = codexRolloutGuard.enforce(persisted);
-      if (guardResult.action === 'blocked') {
-        logger.error('codex_rollout_guard_blocked', { sessionId: sessionName, code: guardResult.code });
-        chatBroadcast(sessionName, { type: 'error', code: guardResult.code,
-          error: 'Codex 原生会话历史无法唯一定位；为避免恢复到错误上下文，本轮已阻止。请检查重复的 rollout 文件。' });
-        return { blocked: true, code: guardResult.code };
-      }
-      if (guardResult.action === 'archived') {
-        persisted.cliSessionId = null;
-        savePersistedSessionsBestEffort();
-        logger.warn('codex_rollout_archived', { sessionId: sessionName,
-          archivedCliSessionId: guardResult.cliSessionId, maxBytes: guardResult.maxBytes,
-          archived: guardResult.archived.map(item => ({ file: item.file, sizeBytes: item.sizeBytes, archivedTo: item.archivedTo })) });
-        appendEvent(persisted.dirId, 'codex_rollout_archived',
-          `codex rollout 超过 ${(guardResult.maxBytes / 1048576).toFixed(0)}MB 已归档，本轮将重建上下文`, sessionName);
-        chatBroadcast(sessionName, { type: 'system', subtype: 'rollout_archived',
-          message: `codex 原生会话历史过大（rollout > ${Math.round(guardResult.maxBytes / 1048576)}MB），已归档并重建上下文；旧历史文件保留在归档目录，未删除。` });
-      }
+    if (['codex', 'codex-exp'].includes(turnCli) && persisted.cliSessionId) {
+      const result = enforceCodexRolloutForTurn({ guard: codexRolloutGuard, persisted, sessionName,
+        logger, rememberActiveCliState, savePersistedSessionsBestEffort, chatBroadcast, appendEvent });
+      if (result.action === 'blocked') return { blocked: true, code: result.code };
     }
     // Same archive-don't-delete size guard for the other resume-capable lanes
     // (zcode/kimi/codebuddy/qoder/dsh) — see ./native-session-guard.js.

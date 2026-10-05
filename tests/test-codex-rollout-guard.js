@@ -309,3 +309,20 @@ test('a successful archive opportunistically sweeps expired entries', () => {
   assert.equal(result.action, 'archived');
   assert.equal(fs.existsSync(old), false, 'enforce piggybacks the TTL sweep');
 });
+
+
+test('托管历史确认缺失时允许宿主重建，权限错误不冒充缺失', () => {
+  for (const cli of ['codex', 'codex-exp']) {
+    const missing = createCodexRolloutGuard({
+      prepareCodexSessionHome() {
+        throw Object.assign(new Error('历史缺失'), { code: 'CODEX_SESSION_ROLLOUT_NOT_FOUND' });
+      },
+    });
+    assert.equal(missing.enforce({ cli, id: 'logical', provider: 'managed', cliSessionId: 'old' }).action, 'not_found');
+  }
+  const denied = createCodexRolloutGuard({
+    fsImpl: { existsSync: () => true, readdirSync() { throw Object.assign(new Error('无法读取'), { code: 'EACCES' }); } },
+    logger: { warn() {} },
+  });
+  assert.equal(denied.enforce({ cli: 'codex-exp', cliSessionId: 'old' }).action, 'error');
+});

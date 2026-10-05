@@ -246,3 +246,42 @@ test('a close deadline cannot erase the old child or permit an early workspace h
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
   } finally { await router.closeAndWait('join-timeout'); await router.closeAndWait('next-owner'); fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test('历史缺失时新建线程，后续消息复用新线程', async (t) => {
+  const name = 'missing-rollout-recovery';
+  const f = createFixture(name, {
+    FAKE_CODEX_REJECT: 'thread/resume',
+    FAKE_CODEX_REJECT_MESSAGE: 'no rollout found for thread id old-thread',
+  }, { sessionId: 'old-thread' });
+  t.after(() => f.stream.closeAndWait(name));
+  const events = [];
+  await f.stream.send(name, '继续当前任务', event => events.push(event));
+  await f.stream.send(name, '下一条消息');
+  assert.deepEqual(f.methods(), ['initialize', 'thread/resume', 'thread/start', 'turn/start', 'turn/start']);
+  const reset = events.findIndex(event => event.method === 'multicc/native_session_missing');
+  const started = events.findIndex(event => event.method === 'thread/started');
+  assert.ok(reset >= 0 && started > reset);
+  assert.equal(events[reset].params.threadId, 'old-thread');
+  assert.deepEqual(f.requests().filter(r => r.method === 'turn/start').map(r => r.params.threadId),
+    ['thread-resident', 'thread-resident']);
+});
+
+test('其他恢复错误不能擅自新建线程', async (t) => {
+  const name = 'resume-other-error';
+  const f = createFixture(name, { FAKE_CODEX_REJECT: 'thread/resume' }, { sessionId: 'old-thread' });
+  t.after(() => f.stream.closeAndWait(name));
+  await assert.rejects(f.stream.send(name, '继续'), /fixture request rejected/);
+  assert.deepEqual(f.methods(), ['initialize', 'thread/resume']);
+});
+
+test('清空宿主线程引用会替换常驻进程，不再恢复旧线程', async (t) => {
+  const name = 'reset-missing-native-id';
+  const f = createFixture(name);
+  t.after(() => f.stream.closeAndWait(name));
+  await f.stream.send(name, '第一条');
+  f.stream.ensure(name, { sessionId: null });
+  await f.stream.send(name, '历史删除后继续');
+  assert.equal(f.methods().filter(method => method === 'thread/start').length, 2);
+  assert.equal(f.methods().includes('thread/resume'), false);
+});

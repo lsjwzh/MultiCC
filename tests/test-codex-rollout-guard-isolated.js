@@ -204,6 +204,16 @@ async function main() {
       'the fresh thread id was never captured back',
     ).catch(() => null);
     check('the fresh thread id was captured back', recaptured === true);
+
+    // 上一轮的文件已归档，当前线程没有 rollout；本轮必须自动重建。
+    ws.send(JSON.stringify({ type: 'user_message', text: '历史缺失后继续', taskShell: true, clientMsgId: randomUUID() }));
+    await waitFor(() => serverOut.includes('codex_rollout_missing_recovered'), '缺失历史未触发重建');
+    await waitIdle(base, sid);
+    const afterMissing = serverOut.slice(serverOut.indexOf('codex_rollout_missing_recovered'));
+    check('历史缺失后按首轮启动', /Spawning codex \(turn \d+, first=true/.test(afterMissing));
+    check('历史缺失后不再恢复旧线程', !afterMissing.includes(`resume ${THREAD_ID}`));
+    check('新线程身份已重新保存', persistedCliSessionId(sid) === THREAD_ID);
+
   } finally {
     try { if (ws) ws.close(); } catch (_) {}
     child.kill('SIGKILL');

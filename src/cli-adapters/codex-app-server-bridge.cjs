@@ -188,8 +188,14 @@ function commonParams(model) {
 // Returns the thread id the app-server will accept turns against.
 async function openThread(threadId, model) {
   if (threadId) {
-    await request('thread/resume', { threadId, excludeTurns: true, ...commonParams(model) });
-    return threadId;
+    try {
+      await request('thread/resume', { threadId, excludeTurns: true, ...commonParams(model) });
+      return threadId;
+    } catch (error) {
+      // 只在恢复请求明确报告历史缺失时重建，其他错误仍按原路径处理。
+      if (!/\bno rollout found for thread id\b/i.test(String(error.message))) throw error;
+      process.stdout.write(`${JSON.stringify({ method: 'multicc/native_session_missing', params: { threadId } })}\n`);
+    }
   }
   const started = await request('thread/start', {
     ...commonParams(model),
