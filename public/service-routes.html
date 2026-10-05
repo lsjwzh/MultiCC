@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>服务路由 · MultiCC</title>
+<style>body{font:16px system-ui;margin:32px auto;padding:0 20px;max-width:900px;background:#111827;color:#e5e7eb}a{color:#93c5fd}label{display:block;margin:14px 0}input,select,button{font:inherit;padding:9px;border-radius:6px}input[type=text],input[type=url]{box-sizing:border-box;width:100%}button{cursor:pointer;margin:5px}article,form,aside{border:1px solid #475569;padding:16px;border-radius:10px;margin:18px 0}aside{background:#422006}small{display:block;color:#cbd5e1}#status{white-space:pre-wrap}article{overflow-wrap:anywhere}</style></head>
+<body><a href="/manage">← 返回管理中心</a><h1>服务路由</h1>
+<p>统一入口：<code>/services/名称/</code>。支持 HTTP、流式响应和 WebSocket，保存后立即生效。</p>
+<aside>仅接入你信任的服务。路由页面与 MultiCC 同域，其脚本可使用当前登录身份访问 MultiCC。鉴权只保护路由入口，上游原始端口仍需自行限制访问。</aside>
+<form id="route-form"><h2 id="form-title">添加路由</h2>
+<label>路由名称<input name="name" required pattern="[a-z0-9][a-z0-9-]{0,47}" maxlength="48" placeholder="my-app"></label>
+<label>上游地址<input name="target" type="url" required placeholder="http://127.0.0.1:8080"></label>
+<label>访问模式<select name="access"><option value="private">MultiCC 鉴权（默认）</option><option value="public">免密码公开转发</option></select></label>
+<div id="public-risk" hidden><aside>任何能访问 MultiCC 入口的人，都能访问此服务的全部页面、接口及 WebSocket，包括写入和删除操作。不要公开管理后台或含隐私数据的服务。</aside><label><input name="ack" type="checkbox">我理解风险，允许此服务免密码公开访问</label></div>
+<label><input name="enabled" type="checkbox" checked>启用路由</label>
+<small>上游需要支持子路径部署或使用相对资源地址。请将上游的 base URL 设置为 /services/名称/；不会自动改写 HTML/JS 中写死的根路径。</small>
+<button type="submit">保存</button><button type="reset">取消编辑</button></form>
+<p id="status" role="status"></p><h2>已配置路由</h2><div id="routes"></div>
+<script src="/service-routes.js"></script></body></html>

@@ -947,6 +947,7 @@
 
   function renderDocs(context) {
     setActions([
+      action('服务路由', () => { window.location.href = '/service-routes.html'; }),
       action(t('airAdminRefresh'), () => loadDocs(), '', keepsGlyph('↻')),
       action(t('airAdminRegisterService'), () => el('service-dialog').showModal(), 'primary', keepsGlyph('＋')),
     ]);

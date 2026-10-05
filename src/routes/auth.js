@@ -36,6 +36,7 @@ function createAuthRuntime(rawDeps) {
     isRequestPeerAllowed = () => true,
     authorizeScopedRequest = () => false,
     allowLegacyTokenQuery = false,
+    handleServiceRequest = () => false,
   } = deps;
 
   if (!express || typeof express.urlencoded !== 'function' || typeof express.json !== 'function') {
@@ -207,6 +208,7 @@ function createAuthRuntime(rawDeps) {
 
     // Auth middleware
     app.use((req, res, next) => {
+      if (handleServiceRequest(req, res)) return;
       // Allow login page, static assets
       if (req.path === '/login' || req.path === '/logout') return next();
       if (req.path === '/healthz' || req.path === '/readyz') return next();

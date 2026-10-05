@@ -376,7 +376,8 @@ routerToolHost.mount(app);
 // ACCESS_TOKEN and shutdown state are read lazily on each request.
 // Provider relay shares are independently scoped and usage-accounted.
 // Legacy global relay credentials remain inside auth during migration.
-const authRuntime = createAuthRuntime({
+const serviceRoutes = require('./src/service-routes').createServiceRoutes({ authenticate: req => authRuntime.isAuthenticated(req), peerAllowed: req => !networkPolicy.lanOnly || isPrivateRequestPeer(req) });
+const authRuntime = createAuthRuntime({ handleServiceRequest: serviceRoutes.handleHttp,
   express,
   authSecurity,
   isLocalRequest, isRequestPeerAllowed: req => !networkPolicy.lanOnly || isPrivateRequestPeer(req),
@@ -392,7 +393,6 @@ const authRuntime = createAuthRuntime({
   allowLegacyTokenQuery: ALLOW_LEGACY_TOKEN_QUERY,
 });
 authRuntime.mountRoutes(app);
-
 // 借道余量查询端点（出借方）：/claude-proxy/:id/remote/quota 与
 // /codex-proxy/:id/quota。鉴权复用 auth 中间件上面的借道凭据（mcr1.*）。
 // 必须在下方 mountProtocolProxies 之前注册——协议代理同样挂在这两个路径
@@ -1345,7 +1345,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   // Token-level delta + Claude 5h rate-limit sidecars: see src/chat/proxy-broadcast.js.
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '50mb' })); serviceRoutes.mountManagement(app);
 // Codex 协议代理端点：官方 relay 与 responses-compat（XFYun 流稳定化）。
 // Responses↔Chat 转换桥已退役——主流国产服务商均已原生支持 /responses。
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
@@ -1786,7 +1786,7 @@ if (readEnvFile().DEFAULT_CLI !== undefined) writeEnvFile({ DEFAULT_CLI: null })
 delete process.env.DEFAULT_CLI;
 
 // Voice settings and per-Fleet Qwen sidecars share one host-owned lifecycle.
-const voiceHost = createVoiceHost({
+const voiceHost = createVoiceHost({ serviceRoutes,
   app, server, wss, records: persistedSessions, directories, sessionPersistence,
   runtimeRoot: MULTICC_PATHS.voiceRuntimesDir,
   getBaseUrl: () => `http://127.0.0.1:${PORT}`,
