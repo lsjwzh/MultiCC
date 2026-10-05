@@ -1825,11 +1825,11 @@ const sessionDelivery = require('./src/session/delivery').createSessionDelivery(
 const claudeOAuthRefresh = createClaudeOAuthRefresher({ logger });
 const codexOAuthRefresh = createCodexOAuthRefresher({ logger }); const officialAccounts = createOfficialAccountStore(); const cliLogin = require('./src/official-accounts-cli-login').createCliLoginDetector({ accounts: officialAccounts }); const codexAccountRefresh = createCodexAccountRefreshSupervisor({ accounts: officialAccounts, logger }); const claudeAccountRefresh = require('./src/claude-auth/accounts-refresh').createClaudeAccountRefreshSupervisor({ accounts: officialAccounts, logger }); const claudeAccountCredentials = createClaudeAccountCredentialService({ accounts: officialAccounts, logger, exclusive: claudeAccountRefresh.exclusive }); cliLogin.start(); claudeAccountRefresh.start(); // each own-token account is refreshed by the claude CLI under its own CLAUDE_CONFIG_DIR // the CLI's own login is only detected (panel reminder), never copied: a copy would share its single-use refresh token // multi-account: per-account credentials (the shared refreshers only watch ~/.codex + the Keychain)
 const apiErrorHost = createApiErrorHost({
-  policy: apiErrorPolicy, logger, persistedSessions, setTaskState,
-  chatBroadcast,
+  policy: apiErrorPolicy, logger, persistedSessions, setTaskState, chatBroadcast,
   setSessionStatus, isShuttingDown: () => _shuttingDown,
   clearIncrementalSave: sessionId => chatHistoryRuntime?.clearIncrementalSave(sessionId),
   isCurrentTurnRunner: (...args) => isCurrentTurnRunner(...args),
+  recordProviderFailure: limitRecorder.recordProviderFailure, // revoked OAuth → park it so Auto stops re-selecting
 });
 const {
   recordApiError, recordApiSuccess, evaluateTurnApiError, meaningfulTurnOutput,

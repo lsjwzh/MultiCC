@@ -28,6 +28,19 @@ const {
 } = require('./quota-bar-view');
 
 const PROVIDER_FAILURE_COOLDOWN_MS = 5 * 60_000;
+// A 429 clears itself once the window rolls over, so a short cooldown is enough
+// to stop hammering. A revoked credential clears itself only when a human logs
+// in again — there is no self-recovery to wait for — so the five-minute default
+// would let Auto re-select a dead account every five minutes. Long enough to
+// take it out of rotation, short enough that a re-login is not punished by a
+// stale park.
+const AUTH_REVOKED_COOLDOWN_MS = 30 * 60_000;
+
+function cooldownForCategory(category) {
+  return String(category || '').toLowerCase() === 'authentication_permission'
+    ? AUTH_REVOKED_COOLDOWN_MS
+    : PROVIDER_FAILURE_COOLDOWN_MS;
+}
 
 // Poller utilization is a 0..1 fraction; the cache stores percent (0..100).
 function windowPercent(utilization) {
@@ -263,7 +276,7 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     const observedAtMs = Number(now());
     const requestedUntil = Number(blockedUntilMs);
     const safeBlockedUntilMs = Number.isFinite(requestedUntil) && requestedUntil > observedAtMs
-      ? Math.trunc(requestedUntil) : observedAtMs + PROVIDER_FAILURE_COOLDOWN_MS;
+      ? Math.trunc(requestedUntil) : observedAtMs + cooldownForCategory(category);
     const status = Number(httpStatus);
     return cache.record(identity.appType, identity.providerId, {
       kind: 'availability',
@@ -452,4 +465,4 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
   });
 }
 
-module.exports = { createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS };
+module.exports = { createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_COOLDOWN_MS };

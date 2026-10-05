@@ -777,3 +777,51 @@ test('the canonical API-error signature list stays in sync with the actual match
     assert.equal(apiErrorSignaturesQuoted().includes(sig), true);
   }
 });
+
+// A revoked OAuth credential used to fall through every pattern and land in
+// 'unknown' — which is retryable, so the turn was replayed against an account
+// the server had already rejected, and Auto kept offering it. Naming the
+// wording is what makes it a permanent auth verdict instead.
+test('a revoked OAuth credential is an auth failure, not an unknown one', () => {
+  const revoked = decide({
+    source: 'claude-exp_event',
+    message: 'Failed to authenticate: OAuth token revoked. '
+      + 'Please log in again or contact your administrator.',
+  }, { provider: 'claude-exp' });
+  assert.equal(revoked.error.category, 'authentication_permission');
+  assert.equal(revoked.error.retryable, false, 'a dead credential must not be retried');
+  assert.equal(revoked.error.safeToRetry, false);
+});
+
+test('the redacted form still classifies, since the sanitizer eats the verb', () => {
+  const revoked = decide({
+    source: 'claude-exp_event',
+    message: 'Failed to [REDACTED]: OAuth token revoked. Please log in again or contact your administrator.',
+  }, { provider: 'claude-exp' });
+  assert.equal(revoked.error.category, 'authentication_permission');
+});
+
+test('the inverted wording and the re-login prose both read as auth failures', () => {
+  for (const message of [
+    'Failed to authenticate',
+    'Please log in again to continue',
+    'the credentials were revoked',
+    'OAuth token revoked',
+  ]) {
+    const decision = decide({ source: 'claude-exp_event', message }, { provider: 'claude-exp' });
+    assert.equal(decision.error.category, 'authentication_permission', message);
+  }
+});
+
+test('widening the auth wording did not swallow neighbouring diagnoses', () => {
+  const cases = [
+    ['rate limit exceeded, please try again later', 'rate_limit'],
+    ['You have exceeded the 5-hour usage quota', 'billing_quota'],
+    ['context window exceeded', 'context_token_limit'],
+    ['502 bad gateway', 'provider_transient'],
+  ];
+  for (const [message, expected] of cases) {
+    const decision = decide({ source: 'claude-exp_event', message }, { provider: 'claude-exp' });
+    assert.equal(decision.error.category, expected, message);
+  }
+});

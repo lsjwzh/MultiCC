@@ -451,7 +451,12 @@ function textFallbackCategory(message) {
   // re-login — or retrying in three seconds — would be the wrong remedy.
   // Mirrors structuredCategory's status refinements below.
   if (QUOTA_EXHAUSTION_RES.some(re => re.test(text))) return 'billing_quota';
-  if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication (?:failed|required)|authorization failed|invalid api key|insufficient scope|please (?:use|run)\s*\/login|not logged in|login required|未登录|请先登录|尚未登录/.test(text)) return 'authentication_permission';
+  // "Failed to authenticate" is the inverted form of the "authentication
+  // failed" wording above, and a revoked OAuth token is the one auth failure
+  // whose remedy is a fresh login rather than a retry. Both are named
+  // explicitly: an unclassified revoked credential fell through to 'unknown',
+  // which made it retryable and silently re-eligible for the same dead account.
+  if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication (?:failed|required)|failed to authenticate|authorization failed|invalid api key|insufficient scope|please (?:use|run)\s*\/login|please log\s*in again|oauth token revoked|token (?:has been |was )?revoked|credentials? (?:have been |were )?revoked|not logged in|login required|未登录|请先登录|尚未登录/.test(text)) return 'authentication_permission';
   if (/\b429\b|rate limit|too many requests/.test(text)) return 'rate_limit';
   if (/context (?:window|length)|too many tokens|maximum context|max(?:imum)? output tokens?|token limit/.test(text)) return 'context_token_limit';
   if (/invalid tool|tool (?:schema|arguments?|protocol)|mcp (?:error|failed)|function (?:arguments?|call) error/.test(text)) return 'tool_protocol';

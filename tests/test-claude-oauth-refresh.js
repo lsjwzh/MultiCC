@@ -14,6 +14,7 @@ const test = require('node:test');
 const {
   createClaudeOAuthRefresher,
   looksLikeExpiredOAuth,
+  looksLikeRevokedOAuth,
   parseCredentials,
 } = require('../src/claude-auth/oauth-refresh');
 
@@ -239,4 +240,46 @@ test('a malformed credential store never reads as a usable token', () => {
   assert.equal(parseCredentials('{}').ok, false);
   assert.equal(parseCredentials('{"claudeAiOauth":{}}').ok, false);
   assert.equal(parseCredentials(JSON.stringify(credential())).ok, true);
+});
+
+// Revocation and expiry read alike to a careless matcher and demand opposite
+// reactions: expiry is this module's whole job, revocation is a dead end that
+// only a fresh login repairs. The predicate is what keeps the second from
+// being handed to the first.
+const REVOKED_TEXT = 'Failed to authenticate: OAuth token revoked. '
+  + 'Please log in again or contact your administrator.';
+
+test('the revoked-credential predicate is narrow and disjoint from expiry', () => {
+  assert.equal(looksLikeRevokedOAuth(REVOKED_TEXT), true);
+  // The sanitizer redacts the verb, so the pattern must not depend on it.
+  assert.equal(looksLikeRevokedOAuth('Failed to [REDACTED]: OAuth token revoked. Please log in again'), true);
+  assert.equal(looksLikeRevokedOAuth('the credentials were revoked'), true);
+  assert.equal(looksLikeRevokedOAuth('cpr: official OAuth unavailable — OAuth token expired'), false);
+  assert.equal(looksLikeRevokedOAuth('401 invalid x-api-key'), false);
+  assert.equal(looksLikeRevokedOAuth('rate_limit_error'), false);
+  assert.equal(looksLikeRevokedOAuth(''), false);
+});
+
+test('a revoked credential is reported for re-login without ever running the CLI', async () => {
+  const h = fixture({ stored: credential({ expiresIn: 8 * HOUR }) });
+  const result = await h.refresher.onApiError({ error: { sanitizedMessage: REVOKED_TEXT } });
+  assert.equal(result.outcome, 'needs-login');
+  assert.equal(result.detail, 'token_revoked');
+  assert.equal(h.cliCalls().length, 0,
+    'spawning here would spend a rotation on a credential the server already rejected');
+});
+
+test('revocation is answered even while the token still looks locally fresh', async () => {
+  // The whole point: expiresAt says eight hours, the server says never again.
+  const h = fixture({ stored: credential({ expiresIn: 8 * HOUR }) });
+  assert.equal((await h.refresher.check()).outcome, 'fresh');
+  const result = await h.refresher.onApiError({ error: { sanitizedMessage: REVOKED_TEXT } });
+  assert.equal(result.outcome, 'needs-login');
+});
+
+test('the reactive hook ignores a missing decision instead of throwing', async () => {
+  const h = fixture();
+  assert.equal(await h.refresher.onApiError(null), null);
+  assert.equal(await h.refresher.onApiError({}), null);
+  assert.equal(h.cliCalls().length, 0);
 });

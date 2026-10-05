@@ -21,7 +21,9 @@ const {
   STALE_MS_DEFAULT,
   DATABASE_SCHEMA_VERSION,
 } = require('../src/quota/provider-limit-cache');
-const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
+const {
+  createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_COOLDOWN_MS,
+} = require('../src/quota/limit-cache-recorder');
 const { compactBarText } = require('../src/quota/quota-bar-view');
 const { writeJsonAtomic } = require('../src/state/store');
 
@@ -254,6 +256,17 @@ function testRecorder() {
   ok(cooldown && cooldown.kind === 'availability'
     && cooldown.summary.blockedUntilMs === clock.now() + 5 * 60_000,
   'provider failure records a bounded availability cooldown');
+
+  // Revocation is repaired by a human logging in, not by a window rolling over,
+  // so it parks the account longer than a self-clearing 429 — otherwise Auto
+  // re-selects a dead credential every five minutes.
+  const parked = recorder.recordProviderFailure({ providerId: 'p-ds', category: 'authentication_permission' });
+  ok(parked && parked.summary.kind === 'availability'
+    && parked.summary.category === 'authentication_permission'
+    && parked.summary.blockedUntilMs === clock.now() + AUTH_REVOKED_COOLDOWN_MS,
+  'a revoked credential parks the provider on the long auth cooldown');
+  ok(AUTH_REVOKED_COOLDOWN_MS > PROVIDER_FAILURE_COOLDOWN_MS,
+  'revocation outlasts a self-clearing rate limit');
 
   cache.close();
   const reopened = createProviderLimitCache({ file, now: clock.now });
