@@ -585,6 +585,7 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
   getBaseTitle: () => _baseTitle,
   debug: dbg,
   onMarkTurnSucceeded: markTurnSucceeded,
+  onMarkGoalAchieved: markGoalAchieved,
   onCancelTask: cancelTaskFromBar,
   // A stalled verdict is deliberately user-actionable only. The click sends
   // the same canonical cancel control as the normal Stop button; the next
@@ -916,6 +917,19 @@ async function markTurnSucceeded() {
     addSystemMsg(`⚠️ 标记执行成功失败：${chatApi.errorText(e)}`);
   } finally {
     const b = document.getElementById('ac-mark-done');
+    if (b) b.disabled = false;
+  }
+}
+// Manual D sub-state: 「需要交互」 → 「达成目标」, so the turn leaves the
+// 需要交互 filter. Only goalState moves; the TaskBoard lifecycle is untouched.
+async function markGoalAchieved() {
+  if (!_sessionName) { addSystemMsg('无 session id，无法标记达成目标'); return; }
+  try {
+    const data = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/mark-goal-achieved`), { method: 'POST' });
+    addSystemMsg(data.alreadyAchieved ? '✓ 本轮已是达成目标状态' : '✓ 已手动标记本轮达成目标');
+  } catch (e) {
+    addSystemMsg(`⚠️ 标记达成目标失败：${chatApi.errorText(e)}`);
+    const b = document.getElementById('ac-mark-goal');
     if (b) b.disabled = false;
   }
 }

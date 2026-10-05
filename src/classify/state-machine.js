@@ -609,9 +609,13 @@ function createClassifyStateMachine(rawDeps) {
     // refine the live taskState and the matching D history rows with it. Only a
     // still-D verdict may be refined; the anchor/superseded guards above already
     // prove this answer belongs to the turn that verdict judged.
-    const refineGoalState = isTerminalLetter(currentState.classifyState)
-      ? resolveGoalState('D', result.goalState, { state: 'D', goal: taskName, phase })
-      : null;
+    // A user who already marked this turn 「达成目标」 by hand (mark-goal-achieved)
+    // outranks the model: the refine must not paint 「需要交互」 back over it.
+    const manualAchieved = currentState.goalState === 'achieved'
+      && Number(currentState.goalStateManualAt || 0) >= taskStartedAt;
+    const refineGoalState = !isTerminalLetter(currentState.classifyState) ? null
+      : manualAchieved ? 'achieved'
+        : resolveGoalState('D', result.goalState, { state: 'D', goal: taskName, phase });
     const historyTaskIds = new Set([
       previousTaskId,
       context.admittedTaskId || null,

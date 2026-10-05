@@ -195,7 +195,17 @@
     // Optional host hook: manually declare this waiting turn succeeded. This is
     // a turn outcome, not a TaskBoard lifecycle mutation.
     const onMarkTurnSucceeded = opts.onMarkTurnSucceeded || null;
+    // Optional host hook: declare a 「需要交互」 succeeded turn 「达成目标」 by hand
+    // (goalState only; the letter stays D, the TaskBoard lifecycle untouched).
+    const onMarkGoalAchieved = opts.onMarkGoalAchieved || null;
     const onCancelTask = opts.onCancelTask || null;
+    const _markGoalBtn = doc.getElementById('ac-mark-goal');
+    if (_markGoalBtn) {
+      _markGoalBtn.addEventListener('click', () => {
+        _markGoalBtn.disabled = true;
+        try { if (onMarkGoalAchieved) onMarkGoalAchieved(); } catch (_) {}
+      });
+    }
     const _markDoneBtn = doc.getElementById('ac-mark-done');
     if (_markDoneBtn) {
       _markDoneBtn.addEventListener('click', () => {
@@ -479,7 +489,7 @@
       if (!bar) return;
       const normalizedGoal = String(goal || '').trim();
       if (!normalizedGoal) {
-        bar.classList.remove('show', 'can-mark-done', 'can-cancel-task', 'aux-stale');
+        bar.classList.remove('show', 'can-mark-done', 'can-mark-goal', 'can-cancel-task', 'aux-stale');
         return;
       }
       const goalEl = doc.getElementById('ac-goal');
@@ -530,6 +540,10 @@
           : '';
       }
       bar.classList.toggle('can-mark-done', (classifyState || 'P') === 'W');
+      // 「需要交互」那一格才给手动「达成目标」：同源判定，按钮与黄色 ✅ 同时出现。
+      const canMarkGoal = statusRegistry().succeededGoalTone?.(display.status, freshness?.goalState) === 'interact';
+      bar.classList.toggle('can-mark-goal', canMarkGoal);
+      if (canMarkGoal && _markGoalBtn) _markGoalBtn.disabled = false;
       bar.classList.toggle('can-cancel-task', (classifyState || 'P') === 'P');
       if ((classifyState || 'P') !== 'P' && _cancelTaskBtn) _cancelTaskBtn.disabled = false;
       bar.classList.add('show');

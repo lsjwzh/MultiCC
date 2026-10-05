@@ -463,6 +463,8 @@
   "classifySucceeded": "Execution succeeded",
   "markTurnSucceeded": "✓ Execution succeeded",
   "markTurnSucceededTitle": "Mark the waiting turn as succeeded; this does not complete the TaskBoard task",
+  "markGoalAchieved": "✓ Goal achieved",
+  "markGoalAchievedTitle": "Mark this turn from Needs input to Goal achieved; this does not complete the TaskBoard task",
   "cancelTurnFromBar": "✕ Cancel",
   "cancelTurnFromBarTitle": "Cancel the running task right now",
   "classifyContinuing": "Continuing",

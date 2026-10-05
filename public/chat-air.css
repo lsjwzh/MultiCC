@@ -188,6 +188,7 @@ body.air-chat {
 .air-chat #aux-classify-bar.st-waiting .ac-state { color: #9a671e; border-color: #eed9ae; background: #fff7e8; }
 .air-chat #aux-classify-bar.st-error .ac-state { color: #b1463c; border-color: #f0cfc9; background: #fdf0ee; }
 .air-chat #aux-classify-bar .ac-mark-done,
+.air-chat #aux-classify-bar .ac-mark-goal,
 .air-chat #aux-classify-bar .ac-cancel-task {
   display: none;
   align-items: center;
@@ -198,9 +199,12 @@ body.air-chat {
   border-radius: 999px;
 }
 .air-chat #aux-classify-bar.can-mark-done .ac-mark-done { display: inline-flex; }
+.air-chat #aux-classify-bar.can-mark-goal .ac-mark-goal { display: inline-flex; }
 .air-chat #aux-classify-bar.can-cancel-task .ac-cancel-task { display: inline-flex; }
 .air-chat #aux-classify-bar .ac-mark-done { color: #267557; background: #eaf8f1; border: 1px solid #c5e7d9; }
 .air-chat #aux-classify-bar .ac-mark-done:hover { background: #dcf2e6; }
+.air-chat #aux-classify-bar .ac-mark-goal { color: #267557; background: #eaf8f1; border: 1px solid #c5e7d9; }
+.air-chat #aux-classify-bar .ac-mark-goal:hover { background: #dcf2e6; }
 .air-chat #aux-classify-bar .ac-cancel-task { color: #b1463c; background: #fdf0ee; border: 1px solid #f0cfc9; }
 .air-chat #aux-classify-bar .ac-cancel-task:hover { background: #fbe3df; }
 
@@ -223,7 +227,8 @@ body.air-chat {
 }
 .air-chat #messages > .chat-placeholder { display: none; }
 .air-chat.chat-read-only #ac-cancel-task,
-.air-chat.chat-read-only #ac-mark-done { display: none !important; }
+.air-chat.chat-read-only #ac-mark-done,
+.air-chat.chat-read-only #ac-mark-goal { display: none !important; }
 .air-chat .msg {
   width: fit-content;
   max-width: min(780px, 88%);

@@ -1,7 +1,7 @@
 'use strict';
 
 const { createSessionQueryService, createWorkspaceService } = require('../session');
-const { isTerminalLetter, isSettledLetter, classifyDisplay } = require('../classify/vocab');
+const { isTerminalLetter, isSettledLetter, classifyDisplay, GOAL_STATES } = require('../classify/vocab');
 const { taskShortCode } = require('../classify/task-short-code');
 const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
@@ -464,6 +464,34 @@ function createSessionAdminRuntime(rawDeps) {
         { sessionName: id, sessionId: id, cs: cs || null, isTerminal: record.kind !== 'chat' },
       );
       return res.json({ ok: true, classifyState: 'D', turnOutcome: 'succeeded' });
+    });
+
+    // Manual D sub-state: the user declares a 「需要交互」 turn 「达成目标」. Only
+    // the display/filter sub-state moves (goalState → achieved); the letter stays
+    // D and the TaskBoard lifecycle is untouched. goalStateManualAt keeps the
+    // late attribution refine (state-machine) from painting interact back.
+    app.post('/api/sessions/:id/mark-goal-achieved', (req, res) => {
+      const id = req.params.id;
+      const record = deps.records.get(id);
+      if (!record) return res.status(404).json({ error: 'session not found' });
+      if (record.type === 'aux' || record.type === 'gateway') {
+        return res.status(400).json({ error: 'not a chat session' });
+      }
+      if (typeof deps.setTaskState !== 'function') {
+        return res.status(501).json({ error: 'task state writes unavailable' });
+      }
+      const task = deps.getTaskState(record);
+      if (!isTerminalLetter(task.classifyState)) {
+        return res.status(409).json({
+          error: 'turn not succeeded', classifyState: task.classifyState || null,
+          note: '只有执行成功的一轮才能标记为达成目标',
+        });
+      }
+      if (task.goalState === GOAL_STATES.achieved) {
+        return res.json({ ok: true, alreadyAchieved: true, classifyState: 'D', goalState: GOAL_STATES.achieved });
+      }
+      deps.setTaskState(id, { goalState: GOAL_STATES.achieved, goalStateManualAt: Date.now() });
+      return res.json({ ok: true, classifyState: 'D', goalState: GOAL_STATES.achieved });
     });
 
     app.post('/api/reclassify-all', (req, res) => {

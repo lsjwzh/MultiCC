@@ -1459,7 +1459,7 @@ const sessionAdmin = createSessionAdminRuntime({
   resolveStateTarget: id => taskShellHost.stateTarget(id),
   getWorkspaceStatus: id => workspaceStatus.get(id),
   getSessionSummary: id => sessionSummaries.get(id),
-  getTaskState,
+  getTaskState, setTaskState,
   pendingNotesFor,
   getAuxRuntime: () => ({ id: AUX_SESSION_ID, queue: auxQueue }),
   loadChatHistory,

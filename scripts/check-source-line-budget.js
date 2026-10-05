@@ -368,8 +368,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +11 双语键：输入监控、Esc 实际监听状态与重启复查结果。
     // +1 双语键：直接重启按钮的本机操作提示。
     // +21 双语键：iOS 设备 UDID 采集、登记引导与复制结果。
-    maxLines: 8834,
-    maxBytes: 561718,
+    // +2 双语键：聊天状态条「需要交互」→ 手动标记达成目标。
+    maxLines: 8838,
+    maxBytes: 562054,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
