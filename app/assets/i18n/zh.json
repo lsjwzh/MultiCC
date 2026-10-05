@@ -463,7 +463,7 @@
   "classifySucceeded": "执行成功",
   "markTurnSucceeded": "✓ 执行成功",
   "markTurnSucceededTitle": "把当前等待中的一轮手动标记为执行成功；不会完成任务板任务",
-  "markGoalAchieved": "✓ 达成目标",
+  "markGoalAchieved": "标记为达成目标",
   "markGoalAchievedTitle": "把这一轮从「需要交互」手动标记为达成目标；不会完成任务板任务",
   "cancelTurnFromBar": "✕ 取消",
   "cancelTurnFromBarTitle": "立即取消正在执行的任务",

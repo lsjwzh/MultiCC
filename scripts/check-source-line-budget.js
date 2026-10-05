@@ -370,7 +370,7 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +21 双语键：iOS 设备 UDID 采集、登记引导与复制结果。
     // +2 双语键：聊天状态条「需要交互」→ 手动标记达成目标。
     maxLines: 8838,
-    maxBytes: 562054,
+    maxBytes: 562060,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

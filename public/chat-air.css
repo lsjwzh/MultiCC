@@ -203,8 +203,8 @@ body.air-chat {
 .air-chat #aux-classify-bar.can-cancel-task .ac-cancel-task { display: inline-flex; }
 .air-chat #aux-classify-bar .ac-mark-done { color: #267557; background: #eaf8f1; border: 1px solid #c5e7d9; }
 .air-chat #aux-classify-bar .ac-mark-done:hover { background: #dcf2e6; }
-.air-chat #aux-classify-bar .ac-mark-goal { color: #267557; background: #eaf8f1; border: 1px solid #c5e7d9; }
-.air-chat #aux-classify-bar .ac-mark-goal:hover { background: #dcf2e6; }
+.air-chat #aux-classify-bar .ac-mark-goal { color: #6b7280; background: transparent; border: 1px dashed #b8bec8; border-radius: 6px; }
+.air-chat #aux-classify-bar .ac-mark-goal:hover { color: #267557; background: #eaf8f1; border: 1px solid #c5e7d9; }
 .air-chat #aux-classify-bar .ac-cancel-task { color: #b1463c; background: #fdf0ee; border: 1px solid #f0cfc9; }
 .air-chat #aux-classify-bar .ac-cancel-task:hover { background: #fbe3df; }
 
