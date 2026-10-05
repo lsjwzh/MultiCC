@@ -1139,15 +1139,23 @@
     #aux-classify-bar .ac-mark-done:hover { background: var(--chat-success-hover, #1c4529); border-color: #2ea04388; }
     #aux-classify-bar .ac-mark-done:disabled { opacity: .6; cursor: default; }
     #aux-classify-bar.can-mark-done .ac-mark-done { display: inline-flex; }
-    /* 这是一个「动作」而不是状态：虚线框 + 透明底 + 灰字 + 方角，和旁边实心的
-     * 状态胶囊（✓ 需要交互）一眼分开；悬停才转绿，提示点了会变成「达成目标」。 */
-    #aux-classify-bar .ac-mark-goal {
-      display: none; flex: none; padding: 1px 8px; border-radius: 4px; font-size: 10px; font-weight: 500;
-      background: transparent; color: var(--chat-muted, #8b949e); border: 1px dashed #8b949e88; cursor: pointer; line-height: 1.5;
+    /* 「需要交互」可改状态：标签本身不加按钮，只给手型 + 悬停描边；悬停/长按浮出
+     * #ac-goal-pop 确认小窗。 */
+    #aux-classify-bar .ac-state.ac-state-editable { cursor: pointer; -webkit-touch-callout: none; user-select: none; }
+    #aux-classify-bar .ac-state.ac-state-editable:hover,
+    #aux-classify-bar .ac-state.ac-state-editable:focus-visible { border-color: #e3b341aa; outline: none; }
+    #ac-goal-pop {
+      position: fixed; z-index: 1200; display: flex; align-items: center; gap: 10px;
+      padding: 7px 8px 7px 12px; font-size: 12px; color: var(--chat-text, #adbac7);
+      background: var(--chat-panel, #161b22); border: 1px solid #30363d; border-radius: 8px;
+      box-shadow: 0 8px 24px #0008; white-space: nowrap;
     }
-    #aux-classify-bar .ac-mark-goal:hover { color: var(--chat-success, #56d364); border-style: solid; border-color: #2ea04388; background: var(--chat-success-soft, #14331f); }
-    #aux-classify-bar .ac-mark-goal:disabled { opacity: .6; cursor: default; }
-    #aux-classify-bar.can-mark-goal .ac-mark-goal { display: inline-flex; }
+    #ac-goal-pop[hidden] { display: none; }
+    #ac-goal-pop button {
+      padding: 2px 10px; font-size: 12px; font-weight: 600; border-radius: 6px; cursor: pointer;
+      color: #fff; background: var(--chat-success-strong, #238636); border: 1px solid #2ea043;
+    }
+    #ac-goal-pop button:disabled { opacity: .6; cursor: default; }
     #aux-classify-bar .ac-cancel-task {
       display: none; flex: none; padding: 1px 9px; border-radius: 9px; font-size: 10px; font-weight: 700;
       background: var(--chat-danger-soft, #351314); color: var(--chat-danger, #ff7b72); border: 1px solid #da363355; cursor: pointer; line-height: 1.5;
@@ -1749,7 +1757,7 @@
       #claude-rate-limit-bar,
       .usage-summary-bar,
       #aux-classify-bar .ac-mark-done,
-      #aux-classify-bar .ac-mark-goal,
+      #ac-goal-pop button,
       #aux-classify-bar .ac-cancel-task,
       .aux-cls-more { min-height: 32px; }
       /* 13×13 is the UA default and unhittable; 20px is as large as these go
@@ -2494,8 +2502,13 @@
     <span class="ac-state" id="ac-state"></span>
     <span class="ac-phase" id="ac-phase"></span>
     <button type="button" class="ac-cancel-task" id="ac-cancel-task" data-i18n-title="cancelTurnFromBarTitle" data-i18n="cancelTurnFromBar" title="立即取消正在执行的任务">✕ 取消</button>
-    <button type="button" class="ac-mark-goal" id="ac-mark-goal" data-i18n="markGoalAchieved" data-i18n-title="markGoalAchievedTitle" title="把这一轮从「需要交互」手动标记为达成目标；不会完成任务板任务">标记为达成目标</button>
     <button type="button" class="ac-mark-done" id="ac-mark-done" data-i18n="markTurnSucceeded" data-i18n-title="markTurnSucceededTitle" title="把当前等待中的一轮手动标记为执行成功；不会完成任务板任务">✓ 执行成功</button>
+  </div>
+
+  <!-- 「需要交互」→「达成目标」确认小窗：悬停（桌面）/长按（触屏）状态标签时浮出。 -->
+  <div id="ac-goal-pop" role="dialog" hidden>
+    <span data-i18n="markGoalPopText">将状态改为「达成目标」？</span>
+    <button type="button" id="ac-goal-pop-ok" data-i18n="markGoalPopConfirm">确认</button>
   </div>
 
   <!-- Top answer card for a structured request_user_input signal. It stays
