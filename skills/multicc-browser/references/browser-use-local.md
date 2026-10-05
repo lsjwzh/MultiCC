@@ -35,7 +35,13 @@ python3.12 skills/multicc-browser/scripts/local_browser_use.py smoke \
 
 脚本为验收创建**临时** Profile，启动浏览器、访问内置 `data:` 页面、读取并核对标题、截图，然后关闭它启动的浏览器；成功输出 `PASS title=... screenshot=... log=...`。保留的输出目录含浏览器启动日志、Browser Harness 完整输出和 PNG，可供复核。失败会输出 `FAIL` 和日志路径。不能用单纯的 `--version` 或 wheel 标签代替这一验收。若启动一直等不到 CDP，先看下文「启动被 macOS 钥匙串挡住」。
 
-## 首选：一次性复制个人 Profile，再使用专用浏览器
+## 首选复用已有专用 Profile
+
+先用 `mbrowser profiles` 核对已有专用目录与账号。已有合适 Profile 时直接沿用其 `--name`，不要重新 seed 或另建空目录；已有运行中的专用浏览器时复用其已确认的 CDP 端点和 daemon，不再启动第二个进程。`BU_CDP_URL` / `BU_NAME` 应来自实际启动输出，不猜端口、不接管无关浏览器。
+
+`start` 和 `smoke` 现在默认 `--headless`；仅用户已授权人工登录/扫码等可见步骤时用 `--headed`，两个开关互斥。不能因后台失败就自动切有头，也不调用 `bringToFront`、`activateTarget` 或桌面激活命令。人工步骤由用户自行切窗。
+
+## 可选：所需登录态只在个人 Profile 时，一次性复制
 
 这条路径兼顾现有登录态与免逐次 CDP 授权：**专用 `--user-data-dir` 和专用 Chrome 进程**避免接管个人 Chrome 的授权弹窗，复制 Profile 只用于初始化登录态，不是免授权的技术原因。Browser Harness 已按 `BU_NAME` 复用后台 daemon；不需要另写常驻点击授权的 helper。
 
@@ -52,17 +58,17 @@ python3.12 skills/multicc-browser/scripts/local_browser_use.py seed \
 
 ## 多账号持久登录
 
-每个账号在各自终端以不同 `--name` 和 `--port` 运行 `start`（若需人工检查登录，不要使用 `--headless`）：
+每个账号在各自终端以不同 `--name` 和 `--port` 运行 `start`（默认后台；若需已授权的人工登录检查，显式加 `--headed`）：
 
 ```bash
 python3.12 skills/multicc-browser/scripts/local_browser_use.py start \
   --browser '/Applications/Chromium.app/Contents/MacOS/Chromium' \
-  --name account-one --port 9331
+  --name account-one --port 9331 --headless
 ```
 
 另一个终端使用启动输出中的端点，例如 `BU_CDP_URL=http://127.0.0.1:9331 BU_NAME=account-one browser-harness`。第二个账号用 `--name account-two --port 9332`；对应的 Profile 固定存放在 `~/Library/Application Support/MultiCC/browser-use/<name>`，不在会被回收的 worktree。关闭启动终端只停止它创建的浏览器进程，Profile 不删除。不要让两个浏览器进程共享同一 Profile；同账号的多个页面应复用同一浏览器和 Harness daemon。CDP 仅绑定 loopback，不能转发到公网。
 
-如果刻意改成接管个人 Chrome，Harness 的 `mac-approve` 可在弹窗出现时定向点击一次，但首次启用远程调试和授予 macOS 辅助功能权限仍需人工完成。不要运行常驻自动点击授权脚本；它可能批准不属于本次任务的连接。
+不要通过接管个人 Chrome 或自动点击授权弹窗来绕过专用 Profile 流程；需要人工应答的登录、验证码或系统授权由用户自行处理。
 
 ## 启动被 macOS 钥匙串挡住（`--mock-keychain`、`--cdp-timeout`）
 

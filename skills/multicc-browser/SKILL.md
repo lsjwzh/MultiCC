@@ -1,6 +1,6 @@
 ---
 name: multicc-browser
-description: 用 MultiCC 自带的执行层 mbrowser 操作需要交互或登录的网页（专用 Chrome + 常驻 CDP 守护进程，多账号多会话隔离）；探测系统档位后可退到 BrowserAct/OpenClaw/Browser Harness 等只在用户明确点名时才用的备选。
+description: 当用户需要 browser-use、网页交互或登录时，用 MultiCC 自带的 mbrowser 优先后台操作，复用已有 profile 和登录态，不抢前台焦点（专用 Chrome + 常驻 CDP 守护进程，多账号多会话隔离）；探测系统档位后可退到 BrowserAct/OpenClaw/Browser Harness 等只在用户明确点名时才用的备选。
 ---
 
 # MultiCC 浏览器操控（mbrowser）
@@ -9,19 +9,30 @@ description: 用 MultiCC 自带的执行层 mbrowser 操作需要交互或登录
 
 `<skill_dir>` 指安装目录（通常是 `~/.agents/skills/multicc-browser`）。
 
+## 先选已有 profile，再后台操作
+
+1. 先运行 `mbrowser doctor` 和 `mbrowser profiles`，只读核对现有 profile、浏览器进程及路径。优先使用用户指定的身份/profile，其次本任务已确认的 profile 或 `MBROWSER_PROFILE`。不要每个任务都新建空 profile。
+2. 若 `mbrowser --help` 列出 `sites`，先用 `mbrowser sites <域名或URL>` 查已有站点记录；没有该命令时用 `profiles` 和已有任务信息判断，不要编造命令。站点记录只表示曾访问，不证明仍登录；进入页面后核对账号和登录状态。
+3. 优先复用符合目标账号的运行中 profile/CDP 连接；未运行时启动同一持久目录。多个候选且无法确定账号才请用户选择，不按“最近使用”盲选，也不遍历无关账号。只有确实没有合适的 profile 时才新建；个人 Chrome 的迁移规则见下文。
+4. profile 已运行时直接在本会话后台标签操作，不为切成 headless 重启它。未运行的托管 profile 用 `start NAME --headless`；外部 `attach-only` 连接沿用原模式，不强制重启。不要 `--force`、杀进程或删锁来夺取在用目录。
+5. 自动化中不得调用 `Page.bringToFront`、`Target.activateTarget`、`/json/activate`、AppleScript `activate`、`open -a` 或其它置前/聚焦窗口动作。后台 CDP 截图、DOM 与输入不需要前台桌面；页面不响应时先检查加载状态、重取快照，不用抢焦点来“修复”。
+
 ## 快速开始
 
 ```bash
 MB=<skill_dir>/bin/mbrowser
-$MB doctor                    # 只读：系统档位、Node 版本、可用浏览器、正在运行的 profile
-$MB start work --create       # 新建并后台启动专用 profile（默认 headless）
-$MB open https://example.com  # 打开（复用本会话的标签）
-$MB snapshot                  # 无障碍树 + [e12] 引用
-$MB click e3                  # 按引用点击
-$MB text                      # 读页面文本
+$MB doctor                          # 只读：系统、浏览器、已有 profile
+$MB profiles                        # 先选符合目标账号的已有 profile
+PROFILE=work                        # 替换为上一步确认的名称，不能照抄新建
+# 仅当这个托管 profile 未运行时执行；已运行则跳过启动，直接连接
+$MB start "$PROFILE" --headless
+$MB open https://example.com -p "$PROFILE"
+$MB snapshot -p "$PROFILE"          # 核对登录态/账号，再取 [e12] 引用
+$MB click e3 -p "$PROFILE"
+$MB text -p "$PROFILE"
 ```
 
-`start` 只对**已存在**的 profile 生效，新建必须显式 `--create`（属创建动作，先取得用户确认）。`doctor` 报缺 Node/浏览器时，按它的输出停下来说明缺什么——`command -v` 命中不等于浏览器可用。
+所有后续命令显式带同一个 `-p "$PROFILE"`。`start` 只对**已存在**的 profile 生效，新建必须显式 `--create`；只有缺少可复用的 profile 且任务已授权创建时才执行，否则先取得用户确认。`doctor` 报缺 Node/浏览器时，按它的输出说明缺什么——`command -v` 命中不等于浏览器可用。
 
 ## 操作循环
 
@@ -36,17 +47,21 @@ $MB text                      # 读页面文本
 
 1. **一个业务身份 = 一个固定专用 profile**：`-p NAME`（默认 `MBROWSER_PROFILE`，再默认 `default`）。不同浏览器进程绝不同时打开同一 profile 目录。
 2. 每个 MultiCC 会话（`MULTICC_SESSION_ID`）在同一 profile 里有**自己的**后台标签；不要操作、不要 `close` 其他会话的标签，归属不明就先停下确认；自己标签打开的子窗口归自己。
-3. **绝不接管个人 Chrome**：不连它的调试端口、不用它的 user-data-dir。要沿用已有登录态只能一次性复制一个**已退出**的个人 profile，不保证成功，须实际重启验证。
+3. **绝不接管个人 Chrome**：不连它的调试端口、不用它的 user-data-dir。已有专用 profile 的登录态直接复用；若所需身份只在个人 Chrome 中，用户授权迁移后才一次性复制其**已退出**的指定 profile。不要要求用户先退出正在使用的浏览器来满足普通自动化；复制不保证登录有效，须实际复查。
 4. 不删除 profile、不做影响他人会话的清理（如 `stop --all`）；任务结束只 `close` 本次自己开的标签。
 5. 环境里有云端浏览器 key 不等于可以切云端：云端会改变页面、Cookie 与费用边界，须用户明确选择。
 
 ## 登录与扫码
 
+先在已有 profile 中核对站点是否已登录；已登录就继续，不默认运行 `login`。确实需要人工登录/扫码时，告知用户要使用可见窗口，并只在其已授权的流程中切换。已有可用窗口直接复用，让用户自行切到窗口，不代为置前。
+
 ```bash
-$MB login shop https://site.example/login   # 该 profile 切成有头模式并打开登录页
+$MB login "$PROFILE" https://site.example/login   # 该 profile 切成有头模式并打开登录页
 # 请用户自己切到窗口登录/扫码，不要代为聚焦桌面
-$MB start shop --headless                   # 登录态留在 profile 里，回到后台
+$MB start "$PROFILE" --headless                   # 登录态留在 profile 里，回到后台
 ```
+
+切换 headless/有头会重启 Chrome；共享 profile 或有其它会话标签时不要强制切换。人工步骤按 `../multicc-human-assist/SKILL.md` 保存截图并等待用户处理；同一步失败两次就请求协助，不循环开窗口。
 
 登录态保存在 profile 目录（macOS：`~/Library/Application Support/MultiCC/browser-use/<name>`，与旧的本地 Browser Use 同一批目录），重启 MultiCC、守护进程升级都不丢。登录、导入登录态、提交表单、上传文件、购买、对外发布前，都要按具体动作取得用户确认。
 
