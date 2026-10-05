@@ -2514,6 +2514,9 @@ const backgroundTaskRuntime = createBackgroundTaskRuntime({
   setTimer: setTimeout,
   clearTimer: clearTimeout,
   now: Date.now,
+  // SDK 0.3.289 控制通道（router 上无 this 依赖的箭头方法）；非 SDK 车道 null/false，runtime 回退。
+  fetchTaskOutput: chatStream.getTaskOutput,
+  stopTask: chatStream.stopTask,
   logger,
 });
 

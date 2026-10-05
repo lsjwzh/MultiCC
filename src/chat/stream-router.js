@@ -118,6 +118,17 @@ function createStreamRouter(legacy, sdk, appServer) {
     },
   };
   for (const method of ['cancel', 'status', 'isAlive', 'recycle']) api[method] = (name, ...args) => backend(name)[method](name, ...args);
+  // Task control (SDK 0.3.289) is optional per backend: only the sdk lane
+  // implements it, so absence degrades to "not available" — null / false —
+  // and callers fall back to their file-read / process-kill paths.
+  api.getTaskOutput = (name, taskId) => {
+    const impl = backend(name).getTaskOutput;
+    return typeof impl === 'function' ? impl(name, taskId) : Promise.resolve(null);
+  };
+  api.stopTask = (name, taskId) => {
+    const impl = backend(name).stopTask;
+    return typeof impl === 'function' ? impl(name, taskId) : Promise.resolve(false);
+  };
   api.inject = api.send;
   return api;
 }

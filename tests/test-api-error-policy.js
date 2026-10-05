@@ -181,6 +181,38 @@ test('missing Claude native history never repeats a doomed resume as an API retr
   assert.equal(normalizeApiError({ source: 'user_text', message }).category, 'unknown');
 });
 
+test('SDK startup failure reasons map to adapter configuration with their precise Chinese remedy', () => {
+  // provider_not_allowed: managed settings 的 allowedProviders 不含当前 Provider。
+  const raw = {
+    source: 'claude_result', provider: 'claude',
+    code: 'provider_not_allowed', subtype: 'error_during_execution',
+    message: 'Provider "deepseek" is not in allowedProviders',
+  };
+  const result = decide(raw);
+  assert.equal(result.error.category, 'adapter_configuration');
+  assert.equal(result.error.retryable, false);
+  assert.equal(result.action, 'fail_fast');
+  const notice = retryNotice(result);
+  assert.match(notice, /Claude 启动被策略或环境拒绝，未自动重试/);
+  assert.match(notice, /allowedProviders 允许列表/);
+  assert.doesNotMatch(notice, /上游 API/);
+  // Every documented SDKStartupFailureReason (sdk.d.ts) classifies the same
+  // way: a machine-level refusal is never a retryable provider fault.
+  const reasons = [
+    'org_pin_api_key_conflict', 'provider_not_allowed', 'org_verify_failed', 'org_pin_mismatch',
+    'managed_settings_invalid', 'remote_settings_required_unavailable', 'gateway_signin_required',
+    'gateway_access_denied', 'proxy_invalid', 'temp_dir_unusable', 'cwd_unavailable',
+    'shell_tool_missing', 'session_held_by_background', 'worktree_resume_refused',
+    'worktree_unverified', 'cli_version_too_old', 'bypass_root',
+  ];
+  for (const reason of reasons) {
+    const verdict = decide({ source: 'claude-exp_event', provider: 'claude-exp', code: reason, message: 'startup refused' });
+    assert.equal(verdict.error.category, 'adapter_configuration', reason);
+    assert.equal(verdict.action, 'fail_fast', reason);
+    assert.match(retryNotice(verdict), /启动被策略或环境拒绝/);
+  }
+});
+
 test('vendor CLI login-required text classifies as auth and never auto-retries', () => {
   // WorkBuddy (codebuddy) with no /login session answers every turn with a
   // stream-json result whose only detail lives in errors[] — the message field

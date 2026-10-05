@@ -319,6 +319,30 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     close(name);
     return waitForClose(name, opts);
   }
+  // SDK 0.3.289 control requests: the resident query is the authoritative
+  // source for a background task's output and can stop one task precisely.
+  // Both surface null/false when they cannot be served — stream closed, child
+  // gone, or an SDK older than the control subtype — so every caller keeps its
+  // file-read / process-kill fallback instead of guessing.
+  async function getTaskOutput(name, taskId) {
+    const run = sessions.get(name)?.run;
+    const id = String(taskId || '');
+    if (!run || !alive(run) || !id || typeof run.query?.getTaskOutput !== 'function') return null;
+    try {
+      const response = await run.query.getTaskOutput(id);
+      if (!response || typeof response !== 'object') return null;
+      return { output: String(response.output ?? ''),
+        totalBytes: Number(response.total_bytes) || 0,
+        truncated: response.truncated === true };
+    } catch (_) { return null; }
+  }
+  async function stopTask(name, taskId) {
+    const run = sessions.get(name)?.run;
+    const id = String(taskId || '');
+    if (!run || !alive(run) || !id || typeof run.query?.stopTask !== 'function') return false;
+    try { await run.query.stopTask(id); return true; } catch (_) { return false; }
+  }
+
   function status(name) {
     const s = sessions.get(name);
     if (!s) return null;
@@ -338,6 +362,7 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     return { ok: true, applied: 'now' };
   }
   return { ensure, send, inject: send, cancel, close, closeAndWait, waitForClose, status, recycle,
+    getTaskOutput, stopTask,
     isAlive: name => alive(sessions.get(name)?.run), isClosing: name => closing.has(name) };
 }
 
