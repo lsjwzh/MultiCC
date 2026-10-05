@@ -151,6 +151,7 @@ function createHarness(overrides = {}) {
     reportFailure: (stage, category) => state.events.push(['failure', { stage, category }]),
   };
   Object.assign(deps, overrides);
+  deps.unlockProbe = { desktopPermissions: async () => ({ state: 'authorized' }), ...deps.unlockProbe };
   mountHostWriteRoutes(app, deps);
   return { routes, deps, state };
 }
@@ -1066,4 +1067,22 @@ test('tunnel config reports persistence and runtime rollback failures by safe st
     else process.env.MULTICC_DATA_DIR = previousDataDir;
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+test('missing desktop permissions reject both power switches without writing settings', async () => {
+  let writes = 0;
+  const authorization = { state: 'permissions-required', permissions: { accessibility: false, screenRecording: true }, message: '请先开启辅助功能和屏幕录制权限' };
+  const { routes } = createHarness({
+    macosPower: { isAvailable: () => true, getLidModeSettings: async () => ({ available: true, enabled: false }),
+      setLidSleepPrevention: async () => { writes++; } },
+    powerPreferences: { read: () => false, write: () => { writes++; } },
+    unlockProbe: { probe: async () => authorization },
+  });
+  for (const path of ['/api/settings/power', '/api/settings/power/auto-unlock']) {
+    const result = await invoke(routes, path, { local: true, body: { enabled: true } });
+    assert.equal(result.statusCode, 409);
+    assert.equal(result.body.code, 'unlock_permissions_required');
+    assert.equal(result.body.error, authorization.message);
+  }
+  assert.equal(writes, 0);
 });

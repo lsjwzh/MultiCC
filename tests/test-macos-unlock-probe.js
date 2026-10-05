@@ -7,10 +7,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createUnlockProbe, PROBE_SECONDS, PROBE_TIMEOUT_MS } = require('../src/macos-unlock-probe');
 
-function harness(reply) {
+function harness(reply, status = { ok: true, accessibility: true, screenRecording: true }) {
   const calls = [];
   const execFileFn = (file, args, options, cb) => {
     calls.push({ file, args, options });
+    if (args[0] === 'status') return cb(null, JSON.stringify(status), '');
     if (reply instanceof Error) return cb(reply, '', '');
     return cb(null, typeof reply === 'string' ? reply : JSON.stringify(reply), '');
   };
@@ -23,12 +24,12 @@ function harness(reply) {
 test('unlock probe maps the agent reply onto the four states the panel paints', async () => {
   const h = harness({ ok: true, authorized: true, powerProtocol: 1 });
   assert.deepEqual(await h.make().probe(), { state: 'authorized' });
-  assert.equal(h.calls[0].file, '/tmp/fake-agent');
-  assert.deepEqual(h.calls[0].args, ['probe-unlock', String(PROBE_SECONDS)]);
+  assert.equal(h.calls[1].file, '/tmp/fake-agent');
+  assert.deepEqual(h.calls[1].args, ['probe-unlock', String(PROBE_SECONDS)]);
   // 整个请求必须落在 api-client 的 15 秒默认超时之内，否则界面会把「密码已保存、只是没
   // 等到授权确认」误报成一次网络超时。
-  assert.ok(h.calls[0].options.timeout > PROBE_SECONDS * 1000);
-  assert.ok(h.calls[0].options.timeout < 15000);
+  assert.ok(h.calls[1].options.timeout > PROBE_SECONDS * 1000);
+  assert.ok(h.calls[1].options.timeout < 15000);
 
   assert.deepEqual(
     await harness({ ok: true, authorized: false, reason: 'waiting-for-user' }).make().probe(),
@@ -72,5 +73,21 @@ test('outdated Agent never claims it can enforce the new switch', async () => {
   assert.equal(await harness({ ok: true, powerProtocol: 1 }).make().runtimeReady(), true);
   const h = harness({ ok: true, authorized: true, powerProtocol: 1 });
   await h.make().probe({ allowUI: true });
-  assert.equal(h.calls[0].args.at(-1), '--allow-ui');
+  assert.equal(h.calls.at(-1).args.at(-1), '--allow-ui');
+});
+
+ test('desktop permissions are mandatory even when keychain access is authorized', async () => {
+  for (const permissions of [
+    { accessibility: false, screenRecording: true },
+    { accessibility: true, screenRecording: false },
+    { accessibility: false, screenRecording: false },
+  ]) {
+    const h = harness({ ok: true, authorized: true, powerProtocol: 1 }, { ok: true, ...permissions });
+    const result = await h.make().probe({ allowUI: true });
+    assert.equal(result.state, 'permissions-required');
+    assert.deepEqual(result.permissions, permissions);
+    assert.equal(h.calls.length, 1, 'do not ask for keychain access until TCC is ready');
+  }
+  assert.equal((await harness({}, { ok: false }).make().probe()).state, 'unavailable');
+  assert.equal((await harness({}, { ok: true }).make().probe()).state, 'permissions-required');
 });

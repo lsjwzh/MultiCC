@@ -26,8 +26,8 @@ async function requireUnlockReady(deps, res) {
   }
   const authorization = await probeAuthorization(deps);
   if (authorization.state !== 'authorized') {
-    res.status(409).json({ code: 'unlock_authorization_required', authorization,
-      error: AGENT_BROKEN_ERROR[authorization.detail]
+    res.status(409).json({ code: authorization.state === 'permissions-required' ? 'unlock_permissions_required' : 'unlock_authorization_required', authorization,
+      error: authorization.message || AGENT_BROKEN_ERROR[authorization.detail]
         || '自动解锁尚未准备好，请在这台 Mac 的全局设置中点击「检查授权」。' });
     return false;
   }

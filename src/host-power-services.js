@@ -48,6 +48,13 @@ async function readPowerSettings(deps, req) {
     const requested = preferences.read(set); // Preserve existing users' consent.
     status.unlockPassword = { available: password.isAvailable(), set, canEdit,
       requested, enabled: set && (requested || status.enabled), requiredByLid: status.enabled };
+    if (status.unlockPassword.enabled) {
+      const authorization = await (deps.unlockProbe || getUnlockProbe()).desktopPermissions();
+      if (authorization.state !== 'authorized') {
+        status.unlockPassword.enabled = false;
+        status.unlockPassword.authorization = authorization;
+      }
+    }
   } catch {
     status.unlockPassword = { available: password.isAvailable(), set: false, canEdit, error: 'read-failed' };
   }

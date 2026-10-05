@@ -60,10 +60,14 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     power = { available: true, enabled };
     return json({ ok: true, ...powerReply() });
   };
+  let rejectUnlockPermissions = false;
   const unlockToggles = [];
   routes['POST /api/settings/power/auto-unlock'] = req => {
     const body = JSON.parse(req.body);
     unlockToggles.push(body);
+    if (rejectUnlockPermissions && body.enabled) return { status: 409,
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        code: 'unlock_permissions_required', error: '请先开启辅助功能和屏幕录制权限' }) };
     unlockPassword.requested = body.enabled;
     return json({ ok: true, ...powerReply() });
   };
@@ -360,5 +364,21 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     await page.evaluate(`document.getElementById('air-lid-sleep').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-global-permission-dialog')?.open === true`));
     assert.deepEqual(permissionOpens, ['accessibility', 'screenRecording', 'accessibility']);
+
+    // Missing desktop grants must guide BOTH unlock entry points without
+    // turning the switch on, including direct API rejection on the web panel.
+    await page.evaluate(`document.getElementById('air-global-permission-dialog').close()`);
+    power = { available: true, enabled: false };
+    unlockPassword = { available: true, set: true, canEdit: true, requested: false };
+    rejectUnlockPermissions = true;
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    await page.evaluate(`document.getElementById('air-auto-unlock').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-dialog')?.open === true`));
+    assert.equal(await checked('unlock-toggle'), false);
+    await page.evaluate(`document.getElementById('air-global-permission-dialog').close()`);
+    await click('unlock-toggle');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-dialog')?.open === true`));
+    assert.equal(await checked('unlock-toggle'), false);
+
   });
 });

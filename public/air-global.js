@@ -256,7 +256,7 @@
     status.textContent = data.error ? t('airGlobalPowerReadFailed', { message: data.error }) : t(data.enabled ? 'airGlobalPowerOn' : 'airGlobalPowerOff');
     if (!data.error && !data.enabled && data.systemSleepDisabled) status.textContent = t('airGlobalPowerExternal');
     status.className = 'air-global-status' + (data.error ? ' err' : data.enabled ? ' ok' : '');
-    el('air-global-permissions-button').hidden = !data.enabled;
+    el('air-global-permissions-button').hidden = !data.unlockPassword?.available;
     paintUnlock(data.unlockPassword);
   }
 
@@ -289,7 +289,7 @@
     const state = authorization?.state || 'unavailable';
     const restartFixesIt = !!RESTART_FIXES[authorization?.detail];
     const status = el('air-global-unlock-status');
-    status.textContent = t(RESTART_FIXES[authorization?.detail]
+    status.textContent = authorization?.message || t(RESTART_FIXES[authorization?.detail]
       || AUTHORIZATION_TEXT[state] || AUTHORIZATION_TEXT.unavailable);
     status.className = 'air-global-status' + (state === 'authorized' ? ' ok' : ' err');
     el('air-global-unlock-authorize').hidden = state === 'authorized' || restartFixesIt
@@ -307,6 +307,7 @@
       status.textContent = t(value?.error ? 'airGlobalUnlockUnreadable' : required && !value?.set ? 'airGlobalUnlockNeedPassword' : required ? 'airGlobalUnlockIncluded' : value?.enabled ? 'airGlobalUnlockSaved' : 'airGlobalUnlockOff');
       el('air-global-unlock-block').hidden = true;
     }
+    if (value?.authorization) paintAuthorization(value.authorization);
     const local = value?.canEdit !== false;
     el('air-global-unlock-change').hidden = !local || (!value?.set && !required);
     el('air-global-unlock-forget').hidden = !local || !value?.set || required || !!value?.enabled;
@@ -356,6 +357,7 @@
       el('air-global-power-status').textContent = t('airGlobalPowerFailed', { message: failure.message });
       el('air-global-power-status').className = 'air-global-status err';
       el('air-global-unlock-authorize').hidden = !pendingPowerAction || powerState?.unlockPassword?.canEdit === false;
+      if (failure.code === 'unlock_permissions_required') await checkAgentPermissions(true);
     } else if (action === 'lid' && enabled && powerState?.enabled) {
       await checkAgentPermissions(true);
     }
@@ -371,6 +373,7 @@
   async function finishPasswordSetup(data) {
     if (data?.authorization?.state !== 'authorized') {
       paintAuthorization(data?.authorization);
+      if (data?.authorization?.state === 'permissions-required') await checkAgentPermissions(true);
       return;
     }
     const action = pendingPowerAction;
