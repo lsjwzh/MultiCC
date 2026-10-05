@@ -11,3 +11,5 @@ curl -s "$MULTICC_BASE_URL/api/docs-registry" -H 'Content-Type: application/json
 ```
 
 Once the service is up, GET /api/docs-registry and confirm the entry shows status=up. If registration failed or the service is not ready yet, say so plainly; do not claim it is registered or available.
+
+Once a user-facing web service is up and registered, ask the user once (wait_for_user_answer) whether to publish it through MultiCC so it is reachable from phones and outside the network at /services/<name>/; follow the multicc-service-publish skill for the question, the publishing steps, and verification. Skip internal-only ports, and never choose password-free public access unless the user explicitly picks it.
