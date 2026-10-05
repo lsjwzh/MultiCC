@@ -156,21 +156,42 @@
       row('screenRecording', tr('rsPermScreen', '屏幕录制')),
       row('accessibility', tr('rsPermAx', '辅助功能')),
       el('span', 'rs-perm-hint', data.local
-        ? tr('rsPermHint', '已打开系统设置：请给 MultiCC Agent 勾上开关，完成后这里自动继续')
+        ? tr('rsPermHint', '请给 MultiCC Agent 开启权限；已开启仍未通过时，先重启 Agent，再重新检测')
         : tr('rsPermRemote', '授权只能在这台 Mac 上完成——请回到 Mac 前操作，或在 Air 全局设置的电源卡里点「检查授权」')),
+      el('span', 'rs-perm-hint', tr('airGlobalPermissionsRecovery', '授权后可能需要重启 Agent；更新后仍不生效，请移除旧条目并重新添加当前 App。重启会短暂中断桌面操作。')),
     );
+    if (data.local) {
+      if (data.agentApp) s.permBar.append(el('span', 'rs-perm-hint', data.agentApp));
+      s.permBar.append(btn(tr('airGlobalPermissionsRestart', '重启 Agent 并重新检测'), '', async event => {
+        const current = s;
+        if (!current || current.permRestarting) return;
+        current.permRestarting = true;
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const res = await fetch(tok('/api/system/agent-permissions/restart'), { method: 'POST' });
+          const reply = await res.json();
+          if (!res.ok || !reply.ok) throw new Error(reply.error || 'Agent restart failed');
+        } catch (error) {
+          if (s === current && !current.closed) status(error.message, true);
+        } finally { current.permRestarting = false; button.disabled = false; }
+      }));
+    }
   }
   async function permissionGate(start) {
+    const current = s;
     const data = await fetchPerms();
-    if (!s || s.closed) return;
+    if (!current || s !== current || current.closed) return;
     if (!data || (data.screenRecording && data.accessibility)) { start(); return; }
     paintPermBar(data);
     status(tr('rsPermNeed', '看屏幕需「屏幕录制」，远程操作需「辅助功能」'), true);
     clearInterval(s.permTimer);
     s.permTimer = setInterval(async () => {
-      if (!s || s.closed || s.permStarted) { clearInterval(s.permTimer); return; }
+      if (s !== current || current.closed || current.permStarted) { clearInterval(current.permTimer); return; }
+      if (s.permRestarting) return;
       const again = await fetchPerms();
-      if (!s || s.closed) { clearInterval(s.permTimer); return; }
+      if (s !== current || current.closed) { clearInterval(current.permTimer); return; }
+      if (current.permRestarting) return;
       if (!again) { clearInterval(s.permTimer); if (!s.permStarted) { s.permStarted = true; start(); } return; }
       if (again.screenRecording && again.accessibility) {
         clearInterval(s.permTimer);
