@@ -76,6 +76,7 @@ function createFixture(overrides = {}) {
   ]);
   const enqueued = [];
   const dispatched = [];
+  const taskStateWrites = [];
   let classifyNow = 0;
   let mergeStateReads = 0;
   const queue = {
@@ -112,6 +113,12 @@ function createFixture(overrides = {}) {
       : null,
     getSessionSummary: id => id === 's1' ? { summary: 'summary', ts: 2800 } : null,
     getTaskState: record => record?.taskState || {},
+    setTaskState: (id, patch) => {
+      const record = records.get(id);
+      record.taskState = { ...(record.taskState || {}), ...patch };
+      taskStateWrites.push({ id, patch });
+      return record.taskState;
+    },
     pendingNotesFor: id => id === 's1' ? [{ id: 'note' }] : [],
     getAuxRuntime: () => ({ id: '__aux__', queue }),
     loadChatHistory: overrides.loadChatHistory || (id => history.get(id) || []),
@@ -129,7 +136,7 @@ function createFixture(overrides = {}) {
   runtime.mountRoutes(app);
   return {
     app, runtime, records, chatSessions, queue, history,
-    enqueued, dispatched, getClassifyNow: () => classifyNow,
+    enqueued, dispatched, taskStateWrites, getClassifyNow: () => classifyNow,
     getMergeStateReads: () => mergeStateReads,
   };
 }
@@ -164,6 +171,7 @@ test('session admin mounts the complete bounded route set once', () => {
     'GET /api/sessions',
     'POST /api/sessions/:id/reclassify',
     'POST /api/sessions/:id/mark-task-done',
+    'POST /api/sessions/:id/mark-goal-achieved',
     'POST /api/reclassify-all',
     'GET /api/directories/:id/sessions',
     'GET /api/directories/:id/workspace',
@@ -305,6 +313,34 @@ test('manual mark-task-done compatibility route flips only the waiting turn outc
   const term = invoke(handler, { params: { id: 't1' } });
   assert.equal(term.statusCode, 200);
   assert.equal(fixture.dispatched[1].context.isTerminal, true);
+});
+
+test('manual mark-goal-achieved moves only the D sub-state out of 需要交互', () => {
+  const fixture = createFixture();
+  const handler = fixture.app.routes.get('POST /api/sessions/:id/mark-goal-achieved');
+
+  assert.equal(invoke(handler, { params: { id: 'nope' } }).statusCode, 404);
+  assert.equal(invoke(handler, { params: { id: '__aux__' } }).statusCode, 400);
+
+  // Not a succeeded turn -> refuse, nothing written.
+  fixture.records.get('s1').taskState = { classifyState: 'W', goal: 'g', phase: 'verifying' };
+  assert.equal(invoke(handler, { params: { id: 's1' } }).statusCode, 409);
+  assert.equal(fixture.taskStateWrites.length, 0);
+
+  // 需要交互 -> 达成目标: goalState flips, the letter and lifecycle stay put.
+  fixture.records.get('s1').taskState = { classifyState: 'D', goal: 'g', phase: 'verifying', goalState: 'interact' };
+  const ok = invoke(handler, { params: { id: 's1' } });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ok.body.goalState, 'achieved');
+  assert.equal(fixture.records.get('s1').taskState.goalState, 'achieved');
+  assert.equal(fixture.records.get('s1').taskState.classifyState, 'D');
+  assert.ok(fixture.records.get('s1').taskState.goalStateManualAt > 0);
+  assert.equal(fixture.dispatched.length, 0);
+
+  // Idempotent.
+  const again = invoke(handler, { params: { id: 's1' } });
+  assert.equal(again.body.alreadyAchieved, true);
+  assert.equal(fixture.taskStateWrites.length, 1);
 });
 
 test('history read failures degrade per session and never abort bulk reclassify', () => {
