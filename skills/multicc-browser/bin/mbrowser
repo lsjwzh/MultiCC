@@ -13,12 +13,13 @@ const path = require('path');
 const LIB = path.join(__dirname, '..', 'lib');
 const P = require(path.join(LIB, 'paths'));
 const client = require(path.join(LIB, 'client'));
+const registry = require(path.join(LIB, 'registry'));
 const lifecycle = require(path.join(LIB, 'lifecycle'));
 const { COMMANDS } = require(path.join(LIB, 'actions'));
 const { VERSION } = require(path.join(LIB, 'version'));
 
 const PAGE_COMMANDS = Object.keys(COMMANDS);
-const LIFECYCLE_COMMANDS = ['doctor', 'profiles', 'start', 'login', 'attach', 'status', 'stop', 'ping'];
+const LIFECYCLE_COMMANDS = ['doctor', 'profiles', 'sites', 'tag', 'start', 'login', 'attach', 'status', 'stop', 'ping'];
 
 const BOOLEAN_FLAGS = new Set([
   'json', 'create', 'force', 'all', 'headed', 'headless', 'mockKeychain', 'keepChrome', 'newTab',
@@ -30,7 +31,7 @@ const BOOLEAN_FLAGS = new Set([
 // like `--headlesss` must never be swallowed while the browser runs headed.
 const VALUE_FLAGS = new Set([
   'profile', 'browser', 'startupTimeout', 'cdpUrl', 'out', 'ref', 'text', 'selector',
-  'ms', 'maxChars', 'timeout', 'px', 'direction', 'tab', 'quietMs',
+  'ms', 'maxChars', 'timeout', 'px', 'direction', 'tab', 'quietMs', 'domain', 'label',
 ]);
 
 const USAGE = `usage: mbrowser <command> [args] [-p NAME] [--json] [--tab TARGET]
@@ -56,6 +57,8 @@ page commands:
 lifecycle:
   doctor                               what this machine can run
   profiles                             known profiles and their state
+  sites [DOMAIN_OR_URL]                查询站点的已有 Profile（不自动选择账号）
+  tag NAME --domain D [--label L]       为已有 Profile 登记站点和账号标签
   start [NAME] [--create] [--headed|--headless] [--browser PATH] [--mock-keychain]
         [--startup-timeout S] [--force]
   login NAME [URL]                     headed browser for a manual login
@@ -232,6 +235,30 @@ async function main(argv) {
   if (LIFECYCLE_COMMANDS.includes(command)) {
     if (command === 'doctor') return report(flags, await lifecycle.doctor({ browser: flags.browser }));
     if (command === 'profiles') return report(flags, lifecycle.profiles());
+    if (command === 'sites') {
+      const target = positional[1];
+      if (target) {
+        const domain = registry.domainFromUrl(target);
+        if (!domain) throw new P.MbError('usage', 'sites 需要有效的 HTTP(S) 域名或地址。');
+        const candidates = registry.candidatesFor(domain);
+        const lines = candidates.length
+          ? candidates.map(entry => entry.profile + (entry.label ? ' (' + entry.label + ')' : ''))
+          : ['该站点暂无已有 Profile 记录。'];
+        return report(flags, { text: lines.join('\n'), domain, candidates });
+      }
+      const sites = registry.allSites();
+      const lines = Object.keys(sites).sort().map(domain => domain + ': ' + sites[domain]
+        .map(entry => entry.profile + (entry.label ? ' (' + entry.label + ')' : '')).join(', '));
+      return report(flags, { text: lines.join('\n') || '暂无站点记录；成功打开页面后会自动登记。', sites });
+    }
+    if (command === 'tag') {
+      const name = profileNameFrom(flags, positional, { index: 1, required: true });
+      assertProfileExists(name);
+      const domain = registry.domainFromUrl(flags.domain);
+      if (!domain) throw new P.MbError('usage', 'tag 需要 --domain 指定有效的 HTTP(S) 域名或地址。');
+      const candidates = await registry.tag(domain, name, flags.label);
+      return report(flags, { text: '已登记 ' + name + ' → ' + domain, domain, candidates });
+    }
     if (command === 'start') {
       return report(flags, await lifecycle.start({
         name: profileNameFrom(flags, positional, { index: 1 }),
@@ -284,7 +311,7 @@ async function main(argv) {
     return 2;
   }
 
-  const name = profileNameFrom(flags, positional);
+  const name = profileNameFrom(flags, []);
   assertProfileExists(name);
   args.newTab = flags.newTab === true;
   args.double = flags.double === true;
@@ -309,6 +336,9 @@ async function main(argv) {
   if (flags.quietMs !== undefined) args.quietMs = flags.quietMs;
 
   const result = await client.call(name, command, args, { tab: flags.tab, owner: undefined });
+  if (command === 'open' && args.url) {
+    await registry.recordUse(registry.domainFromUrl(args.url), name);
+  }
   return report(flags, result);
 }
 

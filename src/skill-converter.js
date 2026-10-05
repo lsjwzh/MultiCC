@@ -171,9 +171,9 @@ function isConverted(skillName, provider) {
 }
 
 // Carry command helpers into each provider's cache. SKILL.md may invoke
-// scripts/ as well as bin/; source crops must work after a fresh installation.
+// scripts/ as well as bin/; executors also need their sibling lib/ modules.
 function copyBinHelpers(sourceDir, cacheDir) {
-  for (const name of ['bin', 'scripts']) {
+  for (const name of ['bin', 'scripts', 'lib']) {
     const source = path.join(sourceDir, name);
     if (!fs.existsSync(source)) continue;
     const destination = path.join(cacheDir, name);

@@ -373,3 +373,86 @@ test('--json emits a single machine-readable document', () => {
   assert.match(text.stdout, new RegExp(`state: ${CHILD_ENV.MULTICC_DATA_DIR.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   assert.match(text.stdout, new RegExp(`profiles-root: ${CHILD_ENV.MBROWSER_PROFILES_DIR.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
 });
+
+// Registry commands are deliberately read-only with respect to browser state:
+// looking for a saved account must not launch Chrome or create another profile.
+test('站点索引仅保留域名、过滤失效 Profile，标签重复更新且查询不会启动浏览器', () => {
+  const env = { MULTICC_DATA_DIR: path.join(TEMP, 'registry-state'), MBROWSER_PROFILES_DIR: path.join(TEMP, 'registry-profiles') };
+  fs.mkdirSync(path.join(env.MBROWSER_PROFILES_DIR, 'work'), { recursive: true });
+  fs.mkdirSync(path.join(env.MBROWSER_PROFILES_DIR, 'personal'), { recursive: true });
+  assert.equal(run(['sites', '--json'], env).status, 0);
+  assert.equal(fs.existsSync(path.join(env.MULTICC_DATA_DIR, 'browser', 'run')), false);
+  const result = run(['tag', 'work', '--domain', 'https://user:secret@www.Example.com/private?token=hidden#secret', '--label', '工作账号', '--json'], env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).domain, 'www.example.com');
+  assert.equal(run(['tag', 'work', '--domain', 'www.example.com', '--label', '新标签'], env).status, 0);
+  assert.equal(run(['tag', 'personal', '--domain', 'www.example.com'], env).status, 0);
+  let sites = JSON.parse(run(['sites', 'www.example.com', '--json'], env).stdout);
+  assert.equal(sites.candidates.length, 2);
+  assert.equal(sites.candidates.find(entry => entry.profile === 'work').label, '新标签');
+  assert.equal(JSON.parse(run(['sites', 'example.com', '--json'], env).stdout).candidates.length, 0, '不同子域名不可混用账号');
+  const file = path.join(env.MULTICC_DATA_DIR, 'browser', 'sites.json');
+  const raw = fs.readFileSync(file, 'utf8');
+  assert.equal(/private|token|secret|hidden|user:/.test(raw), false, raw);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  fs.rmSync(path.join(env.MBROWSER_PROFILES_DIR, 'personal'), { recursive: true });
+  sites = JSON.parse(run(['sites', 'www.example.com', '--json'], env).stdout);
+  assert.deepEqual(sites.candidates.map(entry => entry.profile), ['work']);
+  assert.equal(run(['tag', 'ghost', '--domain', 'example.com'], env).status, 1);
+  assert.equal(run(['tag', 'work', '--domain', 'file:///tmp/secret'], env).status, 2);
+  assert.equal(run(['sites', 'data:text/plain,secret'], env).status, 2);
+  assert.equal(fs.existsSync(path.join(env.MBROWSER_PROFILES_DIR, 'ghost')), false);
+  assert.equal(fs.existsSync(path.join(env.MULTICC_DATA_DIR, 'browser', 'run')), false);
+});
+
+test('站点登记并发写入保留所有账号，损坏文件不会被覆盖', async () => {
+  const { spawn } = require('node:child_process');
+  const env = { ...CHILD_ENV, MULTICC_DATA_DIR: path.join(TEMP, 'parallel-state'), MBROWSER_PROFILES_DIR: path.join(TEMP, 'parallel-profiles') };
+  const names = Array.from({ length: 12 }, (_, i) => `account-${i}`);
+  for (const name of names) fs.mkdirSync(path.join(env.MBROWSER_PROFILES_DIR, name), { recursive: true });
+  await Promise.all(names.map(name => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [MBROWSER, 'tag', name, '--domain', 'same.example', '--label', name], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+    let error = '';
+    child.stderr.on('data', chunk => { error += chunk; });
+    child.on('error', reject);
+    child.on('exit', code => code === 0 ? resolve() : reject(new Error(error)));
+  })));
+  const sites = JSON.parse(run(['sites', 'same.example', '--json'], env).stdout);
+  assert.deepEqual(sites.candidates.map(entry => entry.profile).sort(), names.sort());
+  const file = path.join(env.MULTICC_DATA_DIR, 'browser', 'sites.json');
+  assert.equal(fs.existsSync(`${file}.lock`), false);
+  fs.writeFileSync(file, '{broken');
+  assert.equal(run(['tag', names[0], '--domain', 'same.example'], env).status, 1);
+  assert.equal(fs.readFileSync(file, 'utf8'), '{broken');
+  assert.equal(fs.existsSync(`${file}.lock`), false);
+});
+
+test('成功导航记录实际指定 Profile，失败导航不记录，也不按历史账号自动选择', () => {
+  const env = { MULTICC_DATA_DIR: path.join(TEMP, 'navigation-state'), MBROWSER_PROFILES_DIR: path.join(TEMP, 'navigation-profiles'), MBROWSER_PROFILE: 'work' };
+  fs.mkdirSync(path.join(env.MBROWSER_PROFILES_DIR, 'work'), { recursive: true });
+  fs.mkdirSync(path.join(env.MBROWSER_PROFILES_DIR, 'personal'), { recursive: true });
+  const preload = path.join(TEMP, 'registry-navigation-preload.cjs');
+  const clientPath = path.join(ROOT, 'skills/multicc-browser/lib/client.js');
+  fs.writeFileSync(preload, `require(${JSON.stringify(clientPath)}).call = async (name, command, args) => {
+    if (args.url.includes('fail.example')) throw new Error('导航失败');
+    return { profile: name, command, url: args.url };
+  };\n`);
+  const open = (args, overrides = {}) => spawnSync(process.execPath, ['--require', preload, MBROWSER, ...args], {
+    encoding: 'utf8', timeout: 10000, env: { ...CHILD_ENV, ...env, ...overrides },
+  });
+  assert.equal(run(['tag', 'personal', '--domain', 'existing.example'], env).status, 0);
+  assert.equal(run(['tag', 'work', '--domain', 'existing.example', '--label', '业务账号'], env).status, 0);
+  const success = open(['open', 'https://existing.example/path?token=secret', '--json']);
+  assert.equal(success.status, 0, success.stderr);
+  assert.equal(JSON.parse(success.stdout).profile, 'work', 'MBROWSER_PROFILE 优先且不依历史记录切换账号');
+  const candidates = JSON.parse(run(['sites', 'existing.example', '--json'], env).stdout).candidates;
+  assert.equal(candidates.length, 2);
+  assert.equal(candidates.find(entry => entry.profile === 'work').label, '业务账号', '自动访问登记保留手工账号标签');
+  assert.equal(open(['open', 'https://fail.example', '--json']).status, 1);
+  assert.equal(JSON.parse(run(['sites', 'fail.example', '--json'], env).stdout).candidates.length, 0);
+  assert.equal(open(['open', 'https://default.example', '--json'], { MBROWSER_PROFILE: '' }).status, 1, '默认 Profile 不存在时不能凑合选择其他账号');
+  fs.mkdirSync(path.join(env.MBROWSER_PROFILES_DIR, 'default'), { recursive: true });
+  const defaultOpen = open(['open', 'https://default.example', '--json'], { MBROWSER_PROFILE: '' });
+  assert.equal(defaultOpen.status, 0, defaultOpen.stderr);
+  assert.equal(JSON.parse(defaultOpen.stdout).profile, 'default');
+});

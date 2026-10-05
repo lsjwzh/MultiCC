@@ -67,6 +67,7 @@ async function createFakeChrome() {
       { nodeId: 5, role: 'link', name: 'Popup', parentId: 1, backendDOMNodeId: 104 },
     ],
     calls: [],
+    createdTabs: [],
     input: [],
     sessions: [],
     sockets: new Set(),
@@ -151,6 +152,7 @@ async function createFakeChrome() {
       case 'Target.setAutoAttach': return {};
       case 'Target.getTargets': return { targetInfos: [...targets.values()] };
       case 'Target.createTarget': {
+        state.createdTabs.push({ ...params });
         const targetId = `T${nextTargetId}`;
         nextTargetId += 1;
         const info = { targetId, type: 'page', url: params.url || 'about:blank', title: params.url || 'about:blank', attached: false };
@@ -321,8 +323,7 @@ function leftoverProcesses() {
   return output.split('\n')
     .map(line => line.trim())
     .filter(line => line && (line.includes(TEMP)
-      || line.includes(DAEMON)
-      || line.includes(`daemon.js ${PROFILE}`)));
+      || line.includes(`${DAEMON} ${PROFILE}`)));
 }
 
 async function waitForGone(pids, timeoutMs = 8000) {
@@ -422,6 +423,7 @@ test('the daemon drives a browser over the socket and shuts down cleanly', async
   assert.equal(opened.loaded, true);
   assert.equal(chrome.state.calls.includes('Target.createTarget'), true);
   assert.equal(chrome.state.sessions[0].targetId, 'T2');
+  assert.equal(chrome.state.createdTabs[0].background, true);
 
   const firstTabs = await json(['tabs', '-p', PROFILE]);
   const mine = firstTabs.tabs.filter(tab => tab.owner === OWNER);
@@ -555,6 +557,14 @@ test('the daemon drives a browser over the socket and shuts down cleanly', async
   assert.match((await run(['click', 'e999', '-p', PROFILE])).stderr, /stale_ref/);
   assert.match((await run(['tab', 'nosuchtab', '-p', PROFILE])).stderr, /no_target/);
   assert.match((await run(['close', 'nosuchtab', '-p', PROFILE])).stderr, /no_target/);
+
+  // Explicit new tabs and target selection must also leave the desktop alone.
+  const extraTab = await json(['open', 'https://example.test/background', '--new-tab', '-p', PROFILE]);
+  assert.equal(extraTab.newTab, true);
+  assert.equal(chrome.state.createdTabs.at(-1).background, true);
+  await json(['tab', 'T2', '-p', PROFILE]);
+  assert.equal(chrome.state.calls.includes('Target.activateTarget'), false);
+  assert.equal(chrome.state.calls.includes('Page.bringToFront'), false);
 
   // ---- close: a session closes its own tabs.
   const closed = await json(['close', 'T9', '-p', PROFILE]);
