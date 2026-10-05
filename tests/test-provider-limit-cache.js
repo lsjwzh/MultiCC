@@ -373,6 +373,52 @@ function testSchemaGuard() {
   ok(threw, 'opening a DB with an unsupported schema version fails closed');
 }
 
+// ── a second window and the 429 → quota re-read hand-off ────────────────────
+
+function testWeeklyWindowAndRejectionRefresh() {
+  const { limitState } = require('../src/chat/auto-provider-policy');
+  const file = tmpDb('weekly');
+  const clock = fixedClock(1_700_000_000_000);
+  const cache = createProviderLimitCache({ file, now: clock.now });
+  const providers = stubProviders({
+    list: [{ id: 'p-glm', appType: 'claude', name: 'GLM', baseUrl: 'https://open.bigmodel.cn/api/anthropic' }],
+  });
+  const sessions = fakeSessions({ s1: { cli: 'claude', provider: 'p-glm' } });
+  const recorder = createLimitRecorder({ cache, persistedSessions: sessions, providers, now: clock.now });
+
+  // GLM: the 5h window is empty but the weekly one is spent until its reset.
+  const weeklyReset = clock.now() + 36 * 3600_000;
+  const entry = recorder.recordSession('s1', {
+    kind: 'window', provider: 'glm', rateLimitType: 'five_hour', status: 'allowed',
+    utilization: 0, resetsAt: null, weeklyUtilization: 1, weeklyResetsAt: weeklyReset,
+  });
+  ok(Array.isArray(entry.summary.windows) && entry.summary.windows.length === 2
+    && entry.summary.windows[1].usedPercent === 100 && entry.summary.windows[1].resetMs === weeklyReset,
+  'a GLM reading keeps its weekly window next to the 5h one');
+  const stored = cache.get('claude', 'p-glm');
+  ok(limitState(stored, { now: clock.now() }).state === 'exhausted',
+    'a full weekly window makes the line exhausted although 5h is empty');
+  ok(limitState(stored, { now: clock.now() + 3600_000, staleAfterMs: 600_000 }).state === 'exhausted',
+    'an aged reading still blocks until the reset it published');
+  ok(limitState(stored, { now: weeklyReset + 1, staleAfterMs: 600_000 }).state === 'stale',
+    'after the published reset the aged reading no longer blocks');
+  const fiveHourOnly = recorder.recordSession('s1', {
+    kind: 'window', provider: 'glm', rateLimitType: 'five_hour', status: 'allowed', utilization: 0.3,
+  });
+  ok(!('windows' in fiveHourOnly.summary), 'a single-window reading keeps the old summary shape');
+
+  // 429: the cooldown is recorded at once, then the quota runtime re-reads.
+  const refreshed = [];
+  recorder.setRefresher((appType, id) => { refreshed.push(`${appType}:${id}`); return Promise.resolve(); });
+  const cooldown = recorder.recordProviderFailure({ providerId: 'p-glm', category: 'rate_limit', httpStatus: 429 });
+  ok(cooldown && cooldown.kind === 'availability', 'a rejection still records its availability cooldown');
+  ok(refreshed.length === 1 && refreshed[0] === 'claude:p-glm', 'a rejection asks the quota runtime to re-read that provider');
+  recorder.setRefresher(() => { throw new Error('boom'); });
+  ok(recorder.recordProviderFailure({ providerId: 'p-glm', httpStatus: 429 })?.kind === 'availability',
+    'a throwing refresher never breaks the rejection record');
+  cache.close();
+}
+
 testCompactBarText();
 testSqliteSchema();
 testStore();
@@ -380,6 +426,7 @@ testRecorder();
 testStale();
 testMigration();
 testSchemaGuard();
+testWeeklyWindowAndRejectionRefresh();
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

@@ -53,6 +53,12 @@ function createAutoProviderRuntime(options = {}) {
   // Only a cross-CLI pool ever asks.
   const isCliAvailable = typeof options.isCliAvailable === 'function'
     ? options.isCliAvailable : () => true;
+  // (selectionKey, sessionId) => the line another session of this same pool
+  // last finished a turn on, or null. Lets a fresh session of a preset start on
+  // what is known to work instead of re-probing from priority #1.
+  // The route notes emitter owns those records, so it carries the lookup too.
+  const lastGoodRoute = [options.lastGoodRoute, options.emit && options.emit.lastGoodRoute]
+    .find(fn => typeof fn === 'function') || null;
   // The shared price table is only touched by a pool that prices its lines, so
   // a legacy pool never starts its refresh timer. `null` disables pricing.
   let priceTable = options.priceTable;
@@ -77,6 +83,8 @@ function createAutoProviderRuntime(options = {}) {
   const currentBySession = new Map();
   const selectionKeyBySession = new Map();
   const pendingBySession = new Map();
+  // A remembered pool line on another lane, waiting for planTurn to move there.
+  const seedLaneBySession = new Map();
   // Lane switches since the last successful turn. A cross-CLI pool whose every
   // lane is failing would otherwise hand the session back and forth forever.
   const hopsBySession = new Map();
@@ -191,11 +199,16 @@ function createAutoProviderRuntime(options = {}) {
     stickyBySession.delete(sessionId);
     currentBySession.delete(sessionId);
     pendingBySession.delete(sessionId);
+    seedLaneBySession.delete(sessionId);
     hopsBySession.delete(sessionId);
     selectionKeyBySession.set(sessionId, key);
     const last = session.autoProviderLastRoute;
     const cli = session.cli || 'claude';
-    if (!firstSeen || !key || !selection.sticky || !last || (last.cli && last.cli !== cli)) return;
+    if (!last) {
+      seedFromPool(session, selection, key, cli);
+      return;
+    }
+    if (!firstSeen || !key || !selection.sticky || (last.cli && last.cli !== cli)) return;
     const candidate = selection.candidates.find(item => item.enabled !== false
       && item.providerId === last.providerId && (!item.cli || item.cli === cli));
     if (!candidate) return;
@@ -213,6 +226,30 @@ function createAutoProviderRuntime(options = {}) {
     const choices = candidate.autoModel ? modelChoices(provider) : [];
     const matches = choices.length ? choices.includes(last.model) : (last.model || null) === model;
     if (matches) stickyBySession.set(sessionId, last.providerId);
+  }
+
+  // A session that has no line of its own under this pool yet starts from the
+  // line the pool last finished a turn on, in any session. It is only a sticky
+  // preference: a line the quota cache marks exhausted is still skipped, and a
+  // failure fails over exactly as from any other first pick.
+  function seedFromPool(session, selection, key, cli) {
+    if (!lastGoodRoute || !key || !selection.sticky) return;
+    let seed = null;
+    try { seed = lastGoodRoute(key, session.id); } catch (_) { seed = null; }
+    if (!seed || !seed.providerId) return;
+    const seedCli = seed.cli || cli;
+    const known = selection.candidates.some(item => item.enabled !== false
+      && item.providerId === seed.providerId && (item.cli || cli) === seedCli);
+    if (!known) return;
+    if (seedCli === cli) stickyBySession.set(session.id, seed.providerId);
+    // Another lane is reached through planTurn's lane switch; a difficulty
+    // router owns the lane choice itself, so it is not overridden.
+    else if (selection.cliSwitch && !selection.routing) {
+      seedLaneBySession.set(session.id, { cli: seedCli, providerId: seed.providerId });
+    } else return;
+    logger.info?.('auto_provider_pool_memory_seed', {
+      sessionId: session.id, cli: seedCli, providerId: seed.providerId, succeededAt: seed.succeededAt || null,
+    });
   }
 
   function priceFields(candidate) {
@@ -246,6 +283,30 @@ function createAutoProviderRuntime(options = {}) {
     // A continuation stays on its lane unless a handoff reserved another one.
     if (pending || (turnOptions.originContinue && !turnOptions.directUserInput)) return null;
     const { candidates, ladder } = catalogCandidates(session, selection);
+    const seedLane = seedLaneBySession.get(session.id);
+    if (seedLane) {
+      seedLaneBySession.delete(session.id);
+      const remembered = candidates.find(candidate => candidate.cli === seedLane.cli
+        && candidate.providerId === seedLane.providerId && candidate.enabled !== false
+        && candidate.limitState !== 'exhausted');
+      if (remembered && isCliAvailable(remembered.cli)) {
+        const reservation = Object.freeze({
+          sessionId: session.id,
+          originTurnId: null,
+          fromCli: cli,
+          cli: remembered.cli,
+          fromProviderId: null,
+          fromProviderName: null,
+          providerId: remembered.providerId,
+          providerName: remembered.providerName,
+          model: remembered.model,
+          reasonCode: 'auto_pool_memory',
+          planned: true,
+        });
+        pendingBySession.set(session.id, reservation);
+        return plan(session, reservation, remembered);
+      }
+    }
     const reachable = candidates.filter(candidate => candidate.cli === cli || isCliAvailable(candidate.cli));
     const decision = selection.routing ? routing.resolveTier({
       selection,
@@ -620,6 +681,7 @@ function createAutoProviderRuntime(options = {}) {
     currentBySession.delete(sessionId);
     selectionKeyBySession.delete(sessionId);
     pendingBySession.delete(sessionId);
+    seedLaneBySession.delete(sessionId);
     hopsBySession.delete(sessionId);
     routing.clearSession(sessionId);
   }

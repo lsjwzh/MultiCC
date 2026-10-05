@@ -27,6 +27,20 @@ const {
 
 const PROVIDER_FAILURE_COOLDOWN_MS = 5 * 60_000;
 
+// Poller utilization is a 0..1 fraction; the cache stores percent (0..100).
+function windowPercent(utilization) {
+  const value = Number(utilization);
+  if (utilization == null || !Number.isFinite(value)) return null;
+  return Math.round(Math.max(0, Math.min(100, value * 100)) * 1000) / 1000;
+}
+
+// Same epoch-seconds-or-ms tolerance as the window bar's resetsAtMs.
+function resetMs(value) {
+  const number = Number(value);
+  if (value == null || !Number.isFinite(number) || number <= 0) return null;
+  return Math.trunc(number < 10_000_000_000 ? number * 1000 : number);
+}
+
 function createLimitRecorder({ cache, persistedSessions, providers, now = Date.now } = {}) {
   if (!cache || !persistedSessions || !providers) {
     throw new TypeError('[limit-cache-recorder] requires { cache, persistedSessions, providers }');
@@ -68,6 +82,16 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
         resetsAtMs: normalized.resetsAtMs,
         observedAtMs: normalized.observedAtMs,
       };
+      // A plan with a second, longer window (GLM: 5h + weekly) is blocked by
+      // whichever runs out first, so both are kept. Dropping the weekly one
+      // once made a weekly-exhausted plan read as "5h 0% used → available".
+      const weekly = windowPercent(dto.weeklyUtilization);
+      if (weekly !== null) {
+        summary.windows = [
+          { label: '5h', usedPercent: normalized.usedPercentage, resetMs: normalized.resetsAtMs },
+          { label: '1wk', usedPercent: weekly, resetMs: resetMs(dto.weeklyResetsAt) },
+        ];
+      }
       return cache.record(appType, providerId, {
         kind: 'window',
         summary,
@@ -133,8 +157,17 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     return null;
   }
 
+  // The quota runtime's real per-provider re-read, (appType, id) => Promise.
+  // Wired after the balance routes exist; until then a rejection only records.
+  let refreshProvider = null;
+  function setRefresher(fn) {
+    refreshProvider = typeof fn === 'function' ? fn : null;
+  }
+
   // Store only a bounded availability cooldown. Response bodies and
   // credentials are intentionally excluded from this durable record.
+  // The cooldown is a placeholder: a 429 also triggers a real quota re-read,
+  // and whatever that reading says replaces it (the latest reading wins).
   function recordProviderFailure({
     sessionId, providerId, category, httpStatus, blockedUntilMs,
   } = {}) {
@@ -142,6 +175,16 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
       ? explicitProviderIdentity(providerId)
       : appTypeForSession(sessionId);
     if (!identity) return null;
+    const recorded = recordCooldown(identity, { category, httpStatus, blockedUntilMs });
+    if (refreshProvider) {
+      try {
+        Promise.resolve(refreshProvider(identity.appType, identity.providerId)).catch(() => {});
+      } catch (_) { /* a refresh must never break the proxy outcome path */ }
+    }
+    return recorded;
+  }
+
+  function recordCooldown(identity, { category, httpStatus, blockedUntilMs }) {
     const observedAtMs = Number(now());
     const requestedUntil = Number(blockedUntilMs);
     const safeBlockedUntilMs = Number.isFinite(requestedUntil) && requestedUntil > observedAtMs
@@ -315,6 +358,7 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     recordDto,
     recordProvider,
     recordProviderFailure,
+    setRefresher,
     recordVendor,
     recordClaude,
     recordOfficialWindows,

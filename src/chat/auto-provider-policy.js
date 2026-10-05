@@ -37,6 +37,18 @@ function usedPercentOf(summary, now) {
   return values.length ? Math.max(0, Math.min(100, Math.max(...values))) : null;
 }
 
+// A window the last quota reading saw full stays full until the reset time it
+// published, however old that reading is: a weekly cap does not come back just
+// because nobody re-polled it in the last ten minutes.
+function fullUntilReset(summary, now) {
+  const windows = Array.isArray(summary.windows) ? summary.windows.map(w => w && {
+    used: w.usedPercent, reset: w.resetMs,
+  }) : [];
+  windows.push({ used: summary.usedPercentage, reset: summary.resetsAtMs });
+  return windows.some(w => w && w.used != null && Number(w.used) >= 100
+    && Number.isFinite(Number(w.reset)) && Number(w.reset) > now);
+}
+
 function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000 } = {}) {
   if (!entry || typeof entry !== 'object') return Object.freeze({ state: 'unknown', reason: 'limit_unknown', usedPercent: null });
   const summary = entry.summary && typeof entry.summary === 'object' ? entry.summary : {};
@@ -53,6 +65,9 @@ function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000 } = {})
   const usedPercent = Number.isFinite(fetchedAt) && age <= Math.max(staleAfterMs, USAGE_HINT_MS)
     ? usedPercentOf(summary, now) : null;
   if (!Number.isFinite(fetchedAt) || age > staleAfterMs) {
+    if (fullUntilReset(summary, now)) {
+      return Object.freeze({ state: 'exhausted', reason: 'limit_window_full_until_reset', usedPercent });
+    }
     return Object.freeze({ state: 'stale', reason: 'limit_stale', usedPercent });
   }
   const status = String(entry.status || '').toLowerCase();

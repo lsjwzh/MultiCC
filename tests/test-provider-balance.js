@@ -477,3 +477,17 @@ test('relay quota dedups concurrent queries for the same provider', async () => 
   assert.equal(c.body.ok, true);
   assert.equal(d.body.ok, true);
 });
+
+test('a burst of 429 re-reads shares one real quota query per provider', async () => {
+  const { runtime, seen, recorded } = harness();
+  const [a, b] = await Promise.all([runtime.refreshOne('claude', 'glm-1'), runtime.refreshOne('claude', 'glm-1')]);
+  assert.equal(seen.filter(id => id === 'glm-1').length, 1);
+  assert.equal(a, b);
+  assert.equal(a.ok, true);
+  assert.equal(recorded.length, 1);
+  // Once settled, the next rejection re-reads again.
+  await runtime.refreshOne('claude', 'glm-1');
+  assert.equal(seen.filter(id => id === 'glm-1').length, 2);
+  // A provider without a quota surface answers, it never throws.
+  assert.equal((await runtime.refreshOne('claude', 'plain-1')).reason, 'unsupported');
+});
