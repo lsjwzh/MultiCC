@@ -173,3 +173,6 @@ __pycache__/
 # Android FCM local configuration and private device tokens
 fcm-devices.json
 app/android/app/google-services.json
+
+# Unified service route configuration (runtime state)
+service-routes.json

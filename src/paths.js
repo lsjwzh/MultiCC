@@ -51,6 +51,7 @@ function createPaths({ dataDir } = {}) {
   const root = resolveDataDir(dataDir);
   return {
     root,
+    serviceRoutesFile: path.join(root, 'service-routes.json'),
     fcmDevicesFile: path.join(root, 'fcm-devices.json'),
     barkDevicesFile: path.join(root, 'bark-devices.json'),
     pkgRoot: PKG_ROOT,

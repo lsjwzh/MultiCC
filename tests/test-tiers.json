@@ -4079,6 +4079,15 @@
       ]
     },
     {
+      "path": "tests/test-service-routes.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-session-admin-routes.js",
       "tier": "core",
       "lane": "deterministic",
