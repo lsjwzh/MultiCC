@@ -2,6 +2,7 @@
 <html lang="zh" data-i18n-doc-title="iosOtaDocTitle">
 <head>
 <meta charset="UTF-8">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>MultiCC — iOS OTA 安装</title>
 <script src="i18n-catalog.js"></script>
@@ -9,7 +10,7 @@
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:#0d1117;color:#e6edf3;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
-  .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:28px 24px;max-width:420px;width:100%;text-align:center}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:28px 24px;max-width:520px;width:100%;text-align:center}
   .logo{font-size:40px;line-height:1;margin-bottom:8px}
   h1{font-size:18px;font-weight:600;margin-bottom:4px}
   .sub{font-size:12px;color:#8b949e;margin-bottom:20px}
@@ -26,6 +27,17 @@
   .links{margin-top:18px;font-size:12px;line-height:2}
   .links a{color:#58a6ff;text-decoration:none;word-break:break-all}
   .notes{margin-top:20px;padding-top:16px;border-top:1px solid #21262d;font-size:11px;color:#6e7681;line-height:1.8;text-align:left}
+  .step{text-align:left;border-top:1px solid #30363d;padding-top:18px;margin-top:18px}
+  .step h2{font-size:15px;margin-bottom:10px}
+  .step p,.step ol{font-size:13px;line-height:1.8;color:#b1bac4;margin:10px 0}
+  .step ol{padding-left:20px}
+  .step a{color:#58a6ff}
+  .action{display:block;width:100%;padding:12px;border:1px solid #388bfd;border-radius:8px;background:#1f6feb;color:#fff!important;font:inherit;font-size:14px;text-align:center;text-decoration:none;cursor:pointer}
+  .action:disabled,.action[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
+  .device-result{margin-top:14px;padding:12px;border:1px solid #3fb950;border-radius:8px}
+  .device-result input{width:100%;margin:8px 0;padding:10px;background:#0d1117;color:#e6edf3;border:1px solid #484f58;border-radius:6px;font:13px monospace}
+  .device-result button,.refresh{padding:8px 12px;border:1px solid #484f58;border-radius:6px;background:#21262d;color:#e6edf3;cursor:pointer}
+  #udid-status{font-size:12px;color:#b1bac4;line-height:1.7}
   #lang-toggle{position:fixed;top:10px;right:12px;z-index:50;padding:5px 10px;border:1px solid #30363d;border-radius:8px;background:#161b22;color:#8b949e;font-size:12px;cursor:pointer}
   #lang-toggle:hover{color:#e6edf3}
 </style>
@@ -40,9 +52,40 @@
   <div class="banner" id="https-banner"><span data-i18n="iosOtaHttpsWarnA">⚠️ iOS 只接受</span> <b>HTTPS</b><span data-i18n="iosOtaHttpsWarnB"> 的 OTA 安装。当前页面是 HTTP，请改用 Tailscale Funnel 等 HTTPS 地址访问本页后再安装。</span></div>
   <div class="banner" id="error-banner"></div>
 
+  <section class="step">
+    <h2 data-i18n="iosUdidStep1">1. 获取这台 iPhone 的 UDID</h2>
+    <p data-i18n="iosUdidIntro">首次安装先登记设备；已经登记过的设备可直接到第 3 步更新。</p>
+    <a class="action" id="udid-start" href="/ios-ota/udid.mobileconfig" data-i18n="iosUdidStart">获取本机 UDID</a>
+    <ol>
+      <li data-i18n="iosUdidInstruction1">在 iPhone 的 Safari 打开本页，点击上方按钮并允许下载描述文件。</li>
+      <li data-i18n="iosUdidInstruction2">打开“设置 → 已下载描述文件”（或“通用 → VPN 与设备管理”），选择“MultiCC 获取设备 UDID”并安装。</li>
+      <li data-i18n="iosUdidInstruction3">完成后会返回本页显示 UDID；描述文件下载后请尽快安装，获取请求 30 分钟内有效。</li>
+    </ol>
+    <p data-i18n="iosUdidPrivacy">仅向当前 MultiCC 服务器回传 UDID、机型和系统版本，不安装远程管理、VPN 或根证书。描述文件可能显示“未签名”，安装前请确认来源为你自己的服务器。</p>
+    <div id="udid-status" role="status" aria-live="polite"></div>
+    <div class="device-result" id="udid-result" hidden>
+      <b data-i18n="iosUdidReceived">已获取 UDID（尚未登记到苹果账号）</b>
+      <input id="udid-value" aria-label="UDID" readonly autocomplete="off" spellcheck="false">
+      <div id="udid-device"></div>
+      <button id="udid-copy" type="button" data-i18n="iosUdidCopy">复制 UDID</button>
+      <span id="udid-copy-status" role="status" aria-live="polite"></span>
+    </div>
+  </section>
+  <section class="step">
+    <h2 data-i18n="iosUdidStep2">2. 登记设备并重新打包</h2>
+    <p data-i18n="iosUdidRegister">把 UDID 交给 App 发布者。发布者需使用付费苹果开发者账号登记设备，更新 Ad Hoc 描述文件，再重新签名并发布 IPA。</p>
+    <p data-i18n="iosUdidNotAutomatic">获取 UDID 不会自动登记设备，旧 IPA 也不会自动支持这台手机。请等待发布者确认新安装包已包含你的 UDID。</p>
+    <a href="https://developer.apple.com/account/resources/devices/list" target="_blank" rel="noopener noreferrer" data-i18n="iosUdidPortal">打开苹果开发者设备管理</a>
+  </section>
+  <section class="step">
+    <h2 data-i18n="iosUdidStep3">3. 安装 / 更新 App</h2>
+    <p data-i18n="iosUdidInstallHint">确认发布者已加入这台设备后，刷新版本信息并安装。此页面无法判断当前 IPA 是否包含你的 UDID。</p>
+    <button class="refresh" type="button" onclick="location.reload()" data-i18n="iosUdidRefresh">已重新发布，刷新版本</button>
   <div class="meta" id="meta" data-i18n="iosOtaReadingVersion">读取版本信息…</div>
 
   <a id="install-btn" class="disabled" href="#" data-i18n="iosOtaInstallBtn">⬇️ 安装 / 更新到本机</a>
+
+  </section>
 
   <div id="qr-wrap"></div>
   <div class="qr-hint" id="qr-hint" data-i18n="iosOtaQrHint">用 iPhone 相机扫码，在本机打开本页</div>
@@ -53,11 +96,12 @@
   </div>
 
   <div class="notes">
-    <b data-i18n="iosOtaNotesPrereqLabel">前提：</b><span data-i18n="iosOtaNotesPrereq">IPA 的签名描述文件必须包含这台设备的 UDID（Xcode 连过一次即自动登记）；同 bundle id + 更高 build 号 = 原地升级，数据保留。免费开发者账号签名 7 天过期。</span><br>
-    <b data-i18n="iosOtaNotesPublishLabel">发布：</b><span data-i18n="iosOtaNotesPublishBefore">在服务器 Mac 上运行 </span><code>./scripts/publish-ipa.sh path/to.ipa</code><span data-i18n="iosOtaNotesPublishAfter">，本页立即出现新版本（无需重启服务）。</span>
+    <b data-i18n="iosOtaNotesPrereqLabel">前提：</b><span data-i18n="iosOtaNotesPrereq">Ad Hoc 安装需要有效的分发签名，且安装包内的描述文件包含本机 UDID。获取 UDID 不代表已获安装授权。</span><br>
+
   </div>
 </div>
 
+<script src="ios-udid.js"></script>
 <script src="qrcode.min.js"></script>
 <script src="shared/format.js"></script>
 <script src="shared/dom-helpers.js"></script>
@@ -119,6 +163,8 @@
     } catch (_) { /* QR is a convenience, never a blocker */ }
   }
 
+  renderQr();
+
   fetch('/api/ios-ota-info', { headers: { 'Accept': 'application/json' } })
     .then(function (res) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -142,7 +188,7 @@
       if (isHttps) installBtn.classList.remove('disabled');
       document.getElementById('links').style.display = 'block';
       document.getElementById('manifest-link').textContent = manifestUrl;
-      renderQr();
+
     })
     .catch(function (err) {
       metaEl.textContent = t('iosOtaInfoFailed', { message: err.message });

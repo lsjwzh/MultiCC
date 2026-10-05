@@ -176,3 +176,112 @@ test('wiring: manifest + IPA bypass auth, strangers’ binaries stay hidden, rou
   assert.ok(serverSource.includes("require('./src/ios-ota').createIosOta"));
   assert.ok(serverSource.includes('apkDistribution, iosOta,'));
 });
+
+// 使用真实 HTTP 和 CMS 签名回传覆盖设备采集协议，不依赖真机或苹果账号。
+const express = require('express');
+const { execFileSync } = require('node:child_process');
+const { createIosUdid, parseDevicePlist, TTL_MS } = require('../src/ios-udid');
+const DEVICE_ID = '00008110-0012345678901234';
+function deviceXml(challenge, udid = DEVICE_ID) {
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>UDID</key><string>${udid}</string><key>CHALLENGE</key><string>${challenge}</string><key>PRODUCT</key><string>iPhone14,7</string><key>VERSION</key><string>18.0</string></dict></plist>`;
+}
+async function udidHarness(t, options) {
+  const app = express();
+  // 与宿主相同：通用 JSON parser 在功能路由前，iOS 回传使用专用 MIME。
+  app.use(express.json());
+  createIosUdid(options).mountRoutes(app);
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  return {
+    async profile(secure = true) {
+      const res = await fetch(base + '/ios-ota/udid.mobileconfig', { headers: secure ? { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'phone.example' } : {} });
+      const xml = await res.text();
+      return { res, xml, token: /callback\/([a-f0-9]{64})/.exec(xml)?.[1], challenge: /<key>Challenge<\/key><string>([a-f0-9]{64})/.exec(xml)?.[1] };
+    },
+    post(token, body) { return fetch(`${base}/ios-ota/udid/callback/${token}`, { method: 'POST', headers: { 'content-type': 'application/pkcs7-signature' }, body, redirect: 'manual' }); },
+  };
+}
+
+test('UDID：HTTPS 下载、真实 CMS 回传、单次使用和设备信息不进入查询参数', async t => {
+  const root = makeRoot(t, { withIpa: false });
+  const key = path.join(root, 'test.key'), cert = path.join(root, 'test.crt');
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=UDID-Test'], { stdio: 'ignore', timeout: 10000 });
+  const h = await udidHarness(t);
+  assert.equal((await h.profile(false)).res.status, 400);
+  const p = await h.profile();
+  assert.equal(p.res.status, 200);
+  assert.match(p.res.headers.get('content-type'), /application\/x-apple-aspen-config/);
+  assert.equal(p.res.headers.get('cache-control'), 'no-store');
+  assert.ok(p.xml.includes('https://phone.example/ios-ota/udid/callback/'));
+  assert.ok(!/SERIAL|IMEI|com.apple.mdm|com.apple.security/.test(p.xml));
+  const signed = execFileSync('openssl', ['cms', '-sign', '-signer', cert, '-inkey', key, '-outform', 'DER', '-nodetach', '-binary'], { input: deviceXml(p.challenge), timeout: 5000 });
+  const response = await h.post(p.token, signed);
+  assert.equal(response.status, 303);
+  const location = new URL(response.headers.get('location'), 'https://phone.example');
+  assert.equal(location.pathname, '/ios-ota');
+  assert.equal(location.search, '');
+  assert.equal(new URLSearchParams(location.hash.slice(1)).get('udid'), DEVICE_ID);
+  assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal((await h.post(p.token, signed)).status, 410);
+  const invalid = await h.profile();
+  assert.equal((await h.post(invalid.token, Buffer.from('invalid CMS'))).status, 400);
+});
+
+test('UDID：未知/过期令牌、错误挑战、超限载荷均拒绝且不泄漏信息', async t => {
+  let time = 1000, decoded = '';
+  const h = await udidHarness(t, { now: () => time, decode: async () => decoded });
+  assert.equal((await h.post('a'.repeat(64), 'body')).status, 410);
+  const p = await h.profile();
+  decoded = deviceXml('b'.repeat(64));
+  assert.equal((await h.post(p.token, 'body')).status, 400);
+  assert.equal((await h.post(p.token, Buffer.alloc(65537))).status, 413);
+  decoded = deviceXml(p.challenge);
+  assert.equal((await h.post(p.token, 'body')).status, 303, '无效提交不消耗正确令牌');
+  const expired = await h.profile();
+  time += TTL_MS;
+  assert.equal((await h.post(expired.token, 'body')).status, 410);
+});
+
+test('UDID：严格解析合法格式，拒绝重复键、实体和伪装的嵌套内容', () => {
+  const xml = deviceXml('a'.repeat(64));
+  assert.equal(parseDevicePlist(xml).udid, DEVICE_ID);
+  assert.equal(parseDevicePlist(deviceXml('a'.repeat(64), 'b'.repeat(40))).udid, 'b'.repeat(40));
+  assert.throws(() => parseDevicePlist(deviceXml('a'.repeat(64), 'not-a-udid')));
+  assert.throws(() => parseDevicePlist(xml.replace('</dict>', '<key>UDID</key><string>x</string></dict>')));
+  assert.throws(() => parseDevicePlist(xml.replace('iPhone14,7', '&entity;')));
+  assert.throws(() => parseDevicePlist(xml.replace('<dict>', '<dict><array>')));
+  assert.throws(() => parseDevicePlist(xml.replace('<plist', '<!DOCTYPE x [<!ENTITY x SYSTEM "file:///etc/passwd">]><plist')));
+});
+
+test('UDID：浏览器读取并移除地址中的设备信息，HTTP 禁止下载且复制失败可手动复制', async () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../public/ios-udid.js'), 'utf8');
+  function page(protocol, hash) {
+    const elements = new Map();
+    const removed = [];
+    const sandbox = { URLSearchParams, location: { protocol, hash, pathname: '/ios-ota', search: '' },
+      navigator: { userAgent: 'iPhone', clipboard: { writeText: async () => { throw new Error('denied'); } } },
+      history: { replaceState: (...args) => removed.push(args) }, t: key => key,
+      document: { getElementById(id) {
+        if (!elements.has(id)) elements.set(id, { hidden: true, attrs: {}, handlers: {},
+          removeAttribute(key) { delete this.attrs[key]; }, setAttribute(key, value) { this.attrs[key] = value; },
+          getAttribute(key) { return this.attrs[key]; }, addEventListener(key, fn) { this.handlers[key] = fn; },
+          focus() {}, select() { this.selected = true; }, setSelectionRange() {},
+        });
+        return elements.get(id);
+      } },
+    };
+    vm.runInNewContext(source, sandbox);
+    return { elements, removed };
+  }
+  const p = page('https:', '#udid=' + DEVICE_ID + '&product=iPhone14%2C7');
+  assert.equal(p.elements.get('udid-result').hidden, false);
+  assert.equal(p.elements.get('udid-value').value, DEVICE_ID);
+  assert.equal(p.removed[0][2], '/ios-ota');
+  await p.elements.get('udid-copy').handlers.click();
+  assert.equal(p.elements.get('udid-value').selected, true);
+  const insecure = page('http:', '');
+  assert.equal(insecure.elements.get('udid-start').attrs['aria-disabled'], 'true');
+});

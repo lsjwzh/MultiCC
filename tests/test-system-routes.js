@@ -505,6 +505,8 @@ test('system route mount owns the app-binary metadata and canonical download rou
     ['GET', '/multicc.apk', 'function'],
     ['GET', '/api/ios-ota-info', 'function'],
     ['GET', '/ios-ota/manifest.plist', 'function'],
+    ['GET', '/ios-ota/udid.mobileconfig', 'function'],
+    ['POST', '/ios-ota/udid/callback/:token', 'function'],
     ['GET', '/api/system/developer-tools', 'function'],
     ['POST', '/api/system/developer-tools/install', 'function'],
     // Host-repair surfaces, all mounted here rather than from server.js because
@@ -520,6 +522,7 @@ test('system route mount owns the app-binary metadata and canonical download rou
     // pane. Same reviewed family as disk-access/open above.
     ['GET', '/api/system/agent-permissions', 'function'],
     ['POST', '/api/system/agent-permissions/open', 'function'],
+    ['POST', '/api/system/agent-permissions/restart', 'function'],
   ]);
 
   const response = { json(value) { this.body = value; } };

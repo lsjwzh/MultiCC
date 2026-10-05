@@ -274,6 +274,7 @@ function mountSystemRoutes(app, rawDeps) {
   // src/routes/auth.js); the asset URL inside is rendered per request so the
   // same IPA installs over loopback, LAN or Tailscale Funnel HTTPS.
   app.get('/ios-ota/manifest.plist', deps.iosOta.manifestHandler);
+  require('../ios-udid').createIosUdid().mountRoutes(app);
   // Host toolchain repair. Mounted here rather than from server.js because it
   // needs no host state — only the platform and xcode-select — and server.js
   // sits against its source-line budget.
