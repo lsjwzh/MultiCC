@@ -64,11 +64,34 @@ function parseDevicePlist(xml) {
   return { udid: values.UDID, product: values.PRODUCT || '', version: values.VERSION || '', challenge: values.CHALLENGE };
 }
 
+function resultPage(device) {
+  const content = device ? `<h1>已获取设备 UDID</h1>
+<p>设备信息已读取成功。这不代表设备已登记，也不代表 App 已安装。</p>
+<label for="udid-value">设备 UDID</label>
+<input id="udid-value" readonly autocomplete="off" spellcheck="false" value="${xmlEscape(device.udid)}">
+<p>${xmlEscape([device.product, device.version].filter(Boolean).join(' · '))}</p>
+<button id="udid-copy" type="button">复制 UDID</button><p id="udid-copy-status" role="status" aria-live="polite"></p>
+<p>请把 UDID 交给 App 发布者，在苹果开发者账号登记后，重新签名并发布包含本机 UDID 的 Ad Hoc 安装包。</p>
+<p>此结果链接 30 分钟内有效，仅用于查看本次设备信息，请勿转发。服务器重启后结果会失效。</p>`
+    : '<h1>设备信息已过期</h1><p>请返回安装页重新获取 UDID，并安装新下载的描述文件。</p>';
+  return `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
+<title>MultiCC — 设备 UDID</title><style>
+*{box-sizing:border-box}body{margin:0;padding:24px;background:#0d1117;color:#e6edf3;font:15px/1.8 -apple-system,BlinkMacSystemFont,sans-serif}
+main{max-width:520px;margin:24px auto;padding:24px;background:#161b22;border:1px solid #30363d;border-radius:12px}
+h1{font-size:21px}p{color:#b1bac4}input{width:100%;margin-top:8px;padding:12px;background:#0d1117;color:#e6edf3;border:1px solid #484f58;border-radius:6px;font:13px monospace}
+button{padding:12px 20px;border:0;border-radius:8px;background:#238636;color:white;font:inherit;cursor:pointer}a{color:#58a6ff}
+</style></head><body><main>${content}<a href="/ios-ota">返回安装页</a></main>
+<script src="/ios-udid-result.js"></script></body></html>`;
+}
+
 function createIosUdid({ now = Date.now, decode = decodeSignedResponse } = {}) {
   const pending = new Map();
+  const results = new Map();
   let active = 0;
   function cleanup() {
     for (const [token, item] of pending) if (item.expires <= now()) pending.delete(token);
+    for (const [token, item] of results) if (item.expires <= now()) results.delete(token);
   }
   function privateResponse(res) {
     res.set('Cache-Control', 'no-store');
@@ -81,10 +104,10 @@ function createIosUdid({ now = Date.now, decode = decodeSignedResponse } = {}) {
     if (!base.startsWith('https://')) return res.status(400).type('text').send('请使用 HTTPS 地址获取 UDID。');
     if (req.get('Sec-Fetch-Site') === 'cross-site') return res.sendStatus(403);
     cleanup();
-    if (pending.size >= 128) return res.status(429).type('text').send('获取请求过多，请稍后重试。');
+    if (pending.size + results.size >= 128) return res.status(429).type('text').send('获取请求过多，请稍后重试。');
     const token = randomBytes(32).toString('hex');
     const challenge = randomBytes(32).toString('hex');
-    pending.set(token, { challenge, expires: now() + TTL_MS, busy: false });
+    pending.set(token, { challenge, base, expires: now() + TTL_MS, busy: false });
     res.set('Content-Disposition', 'attachment; filename="multicc-udid.mobileconfig"');
     return res.type('application/x-apple-aspen-config').send(buildProfile(base, token, challenge));
   }
@@ -107,9 +130,12 @@ function createIosUdid({ now = Date.now, decode = decodeSignedResponse } = {}) {
       const device = parseDevicePlist(await decode(req.body));
       if (device.challenge !== item.challenge) return res.status(400).type('text').send('设备信息校验失败，请重新获取。');
       pending.delete(req.params.token);
-      // fragment 不会发送给 Web 服务器或随 Referer 泄漏；页面读取后立即清除。
-      const fragment = new URLSearchParams({ udid: device.udid, product: device.product, version: device.version });
-      return res.redirect(303, `/ios-ota#${fragment}`);
+      const resultToken = randomBytes(32).toString('hex');
+      results.set(resultToken, { device, expires: now() + TTL_MS });
+      // Profile Service 用 301 交回浏览器；目标必须不依赖 Safari cookie。
+      // 基址取本次描述文件的下载入口，不取回传头，更不能写死某台机器的域名。
+      // URL 只携带短期结果能力令牌，不含 UDID；no-store 防止缓存 301。
+      return res.status(301).set('Location', `${item.base}/ios-ota/udid/result/${resultToken}`).end();
     } catch (error) {
       const unavailable = error.code === 'ENOENT';
       return res.status(unavailable ? 503 : 400).type('text').send(unavailable
@@ -120,8 +146,17 @@ function createIosUdid({ now = Date.now, decode = decodeSignedResponse } = {}) {
       active--;
     }
   }
+  function result(req, res) {
+    privateResponse(res);
+    res.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    res.set('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+    cleanup();
+    const item = TOKEN_PATTERN.test(req.params.token) && results.get(req.params.token);
+    return res.status(item ? 200 : 410).type('html').send(resultPage(item?.device));
+  }
   function mountRoutes(app) {
     app.get('/ios-ota/udid.mobileconfig', profile);
+    app.get('/ios-ota/udid/result/:token', result);
     app.post('/ios-ota/udid/callback/:token', validateCallback,
       (req, res, next) => express.raw({ type: () => true, limit: MAX_BYTES, inflate: false })(req, res, error => {
         if (error) return res.status(error.status === 413 ? 413 : 400).type('text').send('设备信息格式无效或超过大小限制。');
@@ -131,4 +166,4 @@ function createIosUdid({ now = Date.now, decode = decodeSignedResponse } = {}) {
   return { mountRoutes };
 }
 
-module.exports = { createIosUdid, buildProfile, parseDevicePlist, decodeSignedResponse, UDID_PATTERN, TTL_MS };
+module.exports = { createIosUdid, buildProfile, parseDevicePlist, decodeSignedResponse, resultPage, UDID_PATTERN, TTL_MS };

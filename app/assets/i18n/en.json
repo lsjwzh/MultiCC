@@ -4396,7 +4396,7 @@
   "iosUdidStart": "Get this device’s UDID",
   "iosUdidInstruction1": "Open this page in Safari on your iPhone, tap the button above, and allow the profile download.",
   "iosUdidInstruction2": "Open Settings → Profile Downloaded (or General → VPN & Device Management), select the MultiCC UDID profile, and install it.",
-  "iosUdidInstruction3": "After completion, you will return here to see your UDID. Install the downloaded profile promptly; the request expires after 30 minutes.",
+  "iosUdidInstruction3": "After completion, a device information page will display your UDID. Install the downloaded profile promptly; the request expires after 30 minutes.",
   "iosUdidPrivacy": "Only the UDID, device model, and system version are sent to this MultiCC server. No remote management, VPN, or root certificate is installed. The profile may appear unsigned; confirm it comes from your own server.",
   "iosUdidReceived": "UDID received (not yet registered with Apple)",
   "iosUdidCopy": "Copy UDID",

@@ -76,6 +76,7 @@ function buildHarness(overrides = {}) {
     allowLegacyTokenQuery: !!state.allowLegacyTokenQuery,
   });
   runtime.mountRoutes(app);
+  if (state.mountProtectedRoutes) state.mountProtectedRoutes(app);
   // Terminal "protected resource": only reached when the gate calls next().
   app.use((req, res) => res.status(200).json({ ok: true, path: req.path }));
 
@@ -523,5 +524,35 @@ test('UDID 只有带能力令牌的 POST 回传可绕过登录，页面和描述
       if (method === 'GET') assert.ok(blocked.headers.get('location').startsWith('/login?'));
     }
     assert.equal((await raw(h.base, '/ios-ota/udid.mobileconfig', { headers: { cookie: 'multicc_auth=GOODCOOKIE' } })).status, 200);
+  } finally { await h.close(); }
+});
+
+test('UDID 真认证链路：设置无 cookie 回传后可读取结果，不会被重定向到登录页', async () => {
+  const { createIosUdid } = require('../src/ios-udid');
+  const runtime = createIosUdid({ decode: async body => body.toString() });
+  const h = await buildHarness({ accessToken: 'sekret', local: false, mountProtectedRoutes: app => runtime.mountRoutes(app) });
+  try {
+    const profile = await raw(h.base, '/ios-ota/udid.mobileconfig', { headers: {
+      cookie: 'multicc_auth=GOODCOOKIE', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'my-server.example:8443',
+    } });
+    assert.equal(profile.status, 200);
+    const xml = await profile.text();
+    const token = /callback\/([a-f0-9]{64})/.exec(xml)[1];
+    const challenge = /<key>Challenge<\/key><string>([a-f0-9]{64})/.exec(xml)[1];
+    const body = `<plist version="1.0"><dict><key>UDID</key><string>00008110-0012345678901234</string><key>CHALLENGE</key><string>${challenge}</string></dict></plist>`;
+    const callback = await raw(h.base, '/ios-ota/udid/callback/' + token, { method: 'POST', headers: { 'content-type': 'application/pkcs7-signature' }, body });
+    assert.equal(callback.status, 301);
+    assert.equal(callback.headers.get('cache-control'), 'no-store');
+    const location = new URL(callback.headers.get('location'));
+    assert.equal(location.origin, 'https://my-server.example:8443');
+    const result = await raw(h.base, location.pathname);
+    assert.equal(result.status, 200);
+    assert.equal(result.headers.get('location'), null);
+    assert.ok((await result.text()).includes('00008110-0012345678901234'));
+    assert.equal((await raw(h.base, '/ios-ota/udid/result/' + '0'.repeat(64))).status, 410);
+    assert.equal((await raw(h.base, location.pathname, { method: 'POST' })).status, 403);
+    assert.equal((await raw(h.base, '/ios-ota/udid/result/invalid')).status, 302);
+    assert.equal((await raw(h.base, '/ios-ota')).status, 302, '安装页依旧受登录保护');
+    assert.equal((await raw(h.base, '/ios-ota/udid.mobileconfig')).status, 302, '新请求依旧受登录保护');
   } finally { await h.close(); }
 });

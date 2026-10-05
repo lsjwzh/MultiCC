@@ -220,6 +220,8 @@ function createAuthRuntime(rawDeps) {
       // iOS 设置回传不携带 Safari 登录 cookie；仅这一 POST 由短期单次令牌保护。
       if (req.method === 'POST' && /^\/ios-ota\/udid\/callback\/[a-f0-9]{64}$/.test(req.path)
         && /^(?:application\/pkcs7-signature|application\/x-apple-aspen-deviceinfo)(?:;|$)/i.test(req.headers['content-type'] || '')) return next();
+      // 结果仅由独立短期能力令牌开放，安装页和新描述文件下载仍要求登录。
+      if (req.method === 'GET' && /^\/ios-ota\/udid\/result\/[a-f0-9]{64}$/.test(req.path)) return next();
       // Wait-callback endpoint is secured by its own per-wait token so external
       // (off-box) systems can deliver results without the ACCESS_TOKEN cookie.
       if (req.method === 'POST' && /^\/api\/wait\/[^/]+\/resolve$/.test(req.path)) return next();
