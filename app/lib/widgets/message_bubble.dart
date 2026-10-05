@@ -18,6 +18,7 @@ import '../services/message_quote.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../utils/code_highlight.dart';
+import '../screens/remote_screen_screen.dart';
 import 'image_annotate_screen.dart';
 import 'tool_card.dart';
 
@@ -35,6 +36,22 @@ Future<void> _handleLinkTap(BuildContext context, String? href) async {
   if (href == null || href.trim().isEmpty) return;
   var target = href.trim();
   final settings = SettingsService.current;
+
+  // 远程屏幕直达链接（multicc-human-assist 求助通道）：Web 在聊天页原地展开
+  // 「🖥 屏幕」浮层，App 这里同一条链接路由到原生屏幕页，不走浏览器。
+  final rsMode = remoteScreenLinkMode(target, settings);
+  if (rsMode != null && settings != null) {
+    await Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => RemoteScreenScreen(
+          settings: settings,
+          initialControl: rsMode == 'control',
+        ),
+      ),
+    );
+    return;
+  }
 
   // 本地文件链接：agent 可能写裸绝对路径，也可能因为知道 `MULTICC_BASE_URL`
   // 而写 `http://<server>/Users/...`。两者都要打开**文件**本身，而不是在服务器上
@@ -70,6 +87,52 @@ Future<void> _handleLinkTap(BuildContext context, String? href) async {
   }
 }
 
+/// 识别远程屏幕直达链接，返回 `'1'`（只看）/ `'control'`（可操作）/ null。
+///
+/// 与 Web `consumeRsParam` 同一套参数：`#rs=control` 这类 hash 链接，或跨设备
+/// 形态 `/chat.html?air=1&task=<id>&rs=control`（root-relative 或 origin 与当前
+/// 服务器一致）；rs 可在 query 也可在 hash。外站链接里的 rs 不认。
+@visibleForTesting
+String? remoteScreenLinkMode(String target, SettingsService? settings) {
+  final uri = Uri.tryParse(target.trim());
+  if (uri == null) return null;
+  String? rs = uri.queryParameters['rs'];
+  if (rs != '1' && rs != 'control' && uri.fragment.isNotEmpty) {
+    try {
+      rs = Uri.splitQueryString(uri.fragment)['rs'];
+    } catch (_) {
+      rs = null;
+    }
+  }
+  if (rs != '1' && rs != 'control') return null;
+  if (target.trim().startsWith('#')) return rs;
+  final ownPage = uri.path == '/chat.html' || uri.path == '/air';
+  if (!ownPage) return null;
+  if (!uri.hasScheme) return rs;
+  return _isServerOrigin(uri, settings) ? rs : null;
+}
+
+/// origin（scheme/host/port）是否就是当前配置的 multicc 服务器。
+bool _isServerOrigin(Uri uri, SettingsService? settings) {
+  if (uri.scheme != 'http' && uri.scheme != 'https') return false;
+  final serverHost = settings?.host ?? '';
+  if (serverHost.isEmpty) return false;
+  final server = Uri.tryParse(
+    serverHost.startsWith('http') ? serverHost : 'http://$serverHost',
+  );
+  if (server == null) return false;
+  if (uri.scheme != server.scheme ||
+      uri.host.toLowerCase() != server.host.toLowerCase()) {
+    return false;
+  }
+  if ((uri.hasPort && !server.hasPort) ||
+      (!uri.hasPort && server.hasPort) ||
+      (uri.hasPort && uri.port != server.port)) {
+    return false;
+  }
+  return true;
+}
+
 /// 把聊天里的本地文件链接解析成本机绝对路径；不是本地文件就返回 null。
 ///
 /// 接受两种形态（与 Web `fixupLocalFileLinks` 同一条判定）：
@@ -88,21 +151,7 @@ String? localFileLinkPath(String target, SettingsService? settings) {
       (uri.scheme != 'http' && uri.scheme != 'https')) {
     return null;
   }
-  final serverHost = settings?.host ?? '';
-  if (serverHost.isEmpty) return null;
-  final server = Uri.tryParse(
-    serverHost.startsWith('http') ? serverHost : 'http://$serverHost',
-  );
-  if (server == null) return null;
-  if (uri.scheme != server.scheme ||
-      uri.host.toLowerCase() != server.host.toLowerCase()) {
-    return null;
-  }
-  if ((uri.hasPort && !server.hasPort) ||
-      (!uri.hasPort && server.hasPort) ||
-      (uri.hasPort && uri.port != server.port)) {
-    return null;
-  }
+  if (!_isServerOrigin(uri, settings)) return null;
   final p = uri.path;
   return _localImgRe.hasMatch(p) ? p : null;
 }

@@ -187,4 +187,21 @@ void main() {
     expect(localFileLinkPath('/artifacts/abc/index.html', settings), isNull);
     expect(localFileLinkPath('https://127.0.0.1:3000/Users/z.dart', settings), isNull);
   });
+  // multicc-human-assist 直达链接：Web 原地展开屏幕浮层，App 路由到原生屏幕页。
+  test('remoteScreenLinkMode routes #rs links to the native screen page', () async {
+    SharedPreferences.setMockInitialValues({
+      'multicc_host': '127.0.0.1:3000',
+    });
+    final settings = await SettingsService.getInstance();
+    expect(remoteScreenLinkMode('#rs=control', settings), 'control');
+    expect(remoteScreenLinkMode('#rs=1', settings), '1');
+    expect(remoteScreenLinkMode('/chat.html?air=1&task=t1&rs=control', settings), 'control');
+    expect(remoteScreenLinkMode('/chat.html?air=1&task=t1#rs=1', settings), '1');
+    expect(remoteScreenLinkMode('http://127.0.0.1:3000/chat.html?air=1&task=t1&rs=control', settings), 'control');
+    // 非法值 / 外站 / 别的页面 / 普通锚点一律不拦，照常走浏览器。
+    expect(remoteScreenLinkMode('#rs=2', settings), isNull);
+    expect(remoteScreenLinkMode('#section-1', settings), isNull);
+    expect(remoteScreenLinkMode('http://example.com/chat.html?rs=control', settings), isNull);
+    expect(remoteScreenLinkMode('/artifacts/abc/index.html?rs=control', settings), isNull);
+  });
 }
