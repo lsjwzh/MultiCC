@@ -1564,6 +1564,21 @@ func writeJSON(_ fd: Int32, _ obj: [String: Any]) {
 // phones while cutting bytes 4x; 1 restores pixel-perfect.
 let RFB_DIV = 2
 
+// Coalescing must cover EVERY accumulated change, including nested bands.
+// Bounding-union (not the incoming band's bottom edge) avoids leaving pixels
+// from an older frame permanently visible when a wide update is followed by
+// a smaller cursor/animation update before the client asks for its next frame.
+func mergeRfbDirtyRects(_ dirty: [CGRect], full: CGRect) -> [CGRect] {
+  var merged: [CGRect] = []
+  for r in dirty.sorted(by: { $0.minY < $1.minY }) {
+    if let last = merged.last, last.maxY >= r.minY {
+      merged[merged.count - 1] = last.union(r)
+    } else { merged.append(r) }
+  }
+  let area = merged.reduce(CGFloat(0)) { $0 + $1.width * $1.height }
+  return merged.count > 64 || area > full.width * full.height * 0.7 ? [full] : merged
+}
+
 extension Data {
   mutating func appendBE(_ v: UInt16) { append(UInt8(v >> 8)); append(UInt8(v & 0xFF)) }
   mutating func appendBE(_ v: UInt32) {
@@ -1578,6 +1593,7 @@ func readFully(_ fd: Int32, _ n: Int) -> Data? {
   while out.count < n {
     let want = min(tmp.count, n - out.count)
     let r = tmp.withUnsafeMutableBytes { read(fd, $0.baseAddress, want) }
+    if r < 0 && errno == EINTR { continue }
     if r <= 0 { return nil }
     out.append(contentsOf: tmp[0..<r])
   }
@@ -1589,6 +1605,7 @@ func writeAll(_ fd: Int32, _ d: Data) -> Bool {
   return d.withUnsafeBytes { raw -> Bool in
     while off < d.count {
       let w = write(fd, raw.baseAddress! + off, d.count - off)
+      if w < 0 && errno == EINTR { continue }
       if w <= 0 { return false }
       off += w
     }
@@ -1606,6 +1623,7 @@ final class RfbClient: NSObject {
   var connectedAt = Date()
   // dirty band state, guarded by RfbScreen's lock
   var needsFull = true
+  var framebufferSize: (w: Int, h: Int)?
   var dirty: [CGRect] = []
   // pointer state
   var lastMask = 0
@@ -1618,7 +1636,26 @@ final class RfbClient: NSObject {
   var mods: Set<String> = []
   init(_ fd: Int32) { self.fd = fd }
   func wake() { cond.lock(); cond.broadcast(); cond.unlock() }
-  func shutdown() { cond.lock(); closed = true; cond.broadcast(); cond.unlock(); close(fd) }
+  var isClosed: Bool { cond.lock(); defer { cond.unlock() }; return closed }
+  func requestUpdate() { cond.lock(); pendingRequest = true; cond.broadcast(); cond.unlock() }
+  func beginUpdate() -> Bool {
+    cond.lock(); defer { cond.unlock() }
+    while !closed && !pendingRequest { cond.wait() }
+    if closed { return false }
+    // Consume BEFORE writing. A fast client can request the next update as
+    // soon as the last byte is sent; never erase that new request afterwards.
+    pendingRequest = false
+    return true
+  }
+  func didServeUpdate() { cond.lock(); servedAny = true; cond.unlock() }
+  func shutdown() {
+    cond.lock()
+    if closed { cond.unlock(); return }
+    closed = true; cond.broadcast(); cond.unlock()
+    // Unblock both threads, but only serveRfb owns close(fd). Multiple closes
+    // could close a descriptor already reused by an unrelated connection.
+    _ = Darwin.shutdown(fd, SHUT_RDWR)
+  }
 }
 
 @available(macOS 14.0, *)
@@ -1732,7 +1769,10 @@ final class RfbScreen: NSObject, SCStreamOutput {
       if !bands.isEmpty { fb = next; hasFrame = true }
     }
     if bands.isEmpty { return }
-    for c in clients where !c.needsFull { c.dirty += bands }
+    let full = CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h))
+    for c in clients where !c.needsFull {
+      c.dirty = mergeRfbDirtyRects(c.dirty + bands, full: full)
+    }
     for c in clients { c.wake() }
   }
 
@@ -1740,6 +1780,11 @@ final class RfbScreen: NSObject, SCStreamOutput {
   func takeRects(_ c: RfbClient) -> [(rect: CGRect, data: Data)]? {
     lock.lock(); defer { lock.unlock() }
     guard w > 0, h > 0, fb.count == w * h * 4 else { return nil }
+    if let size = c.framebufferSize, size.w != w || size.h != h {
+      // This minimal server doesn't negotiate DesktopSize. Reconnect rather
+      // than patching new-resolution pixels into the old client framebuffer.
+      c.shutdown(); return nil
+    }
     let full = CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h))
     var rects: [CGRect]
     if c.needsFull {
@@ -1747,15 +1792,7 @@ final class RfbScreen: NSObject, SCStreamOutput {
     } else if c.dirty.isEmpty {
       return nil
     } else {
-      var merged: [CGRect] = []
-      for r in c.dirty.sorted(by: { $0.minY < $1.minY }) {
-        if !merged.isEmpty, let last = merged.last, last.maxY >= r.minY {
-          let nx0 = min(last.minX, r.minX), nx1 = max(last.maxX, r.maxX)
-          merged[merged.count - 1] = CGRect(x: nx0, y: last.minY, width: nx1 - nx0, height: r.maxY - last.minY)
-        } else { merged.append(r) }
-      }
-      let area = merged.reduce(CGFloat(0)) { $0 + $1.width * $1.height }
-      rects = merged.count > 64 || area > full.width * full.height * 0.7 ? [full] : merged
+      rects = mergeRfbDirtyRects(c.dirty, full: full)
     }
     c.needsFull = false
     c.dirty = []
@@ -1875,10 +1912,7 @@ func rfbPointer(_ c: RfbClient, mask: Int, x rfbX: Int, y rfbY: Int) {
 @available(macOS 14.0, *)
 func rfbSender(_ c: RfbClient) {
   while true {
-    c.cond.lock()
-    while !c.closed && !c.pendingRequest { c.cond.wait() }
-    if c.closed { c.cond.unlock(); return }
-    c.cond.unlock()
+    if !c.beginUpdate() { return }
     // Wait for content; if capture never produces a frame, drop the client so
     // the browser falls back to JPEG polling instead of hanging. Once a frame
     // HAS been served, a still screen must not kill the connection — answer
@@ -1886,7 +1920,7 @@ func rfbSender(_ c: RfbClient) {
     // SCStream only emits on change, so idle requests would otherwise time out.
     var rects = RfbScreen.shared.takeRects(c)
     var waitedMs = 0
-    while rects == nil && !c.closed {
+    while rects == nil && !c.isClosed {
       if Date().timeIntervalSince(c.connectedAt) > 10 && !c.servedAny { c.shutdown(); return }
       if waitedMs >= 4000 {
         if c.servedAny { rects = []; break }
@@ -1895,7 +1929,7 @@ func rfbSender(_ c: RfbClient) {
       usleep(20_000); waitedMs += 20
       rects = RfbScreen.shared.takeRects(c)
     }
-    if c.closed { return }
+    if c.isClosed { return }
     var msg = Data([0, 0])
     msg.appendBE(UInt16(rects!.count))
     for (r, d) in rects! {
@@ -1905,20 +1939,32 @@ func rfbSender(_ c: RfbClient) {
       msg.append(d)
     }
     if !writeAll(c.fd, msg) { c.shutdown(); return }
-    c.cond.lock(); c.pendingRequest = false; c.servedAny = true; c.cond.unlock()
+    c.didServeUpdate()
   }
 }
 
 @available(macOS 14.0, *)
 func rfbSession(_ fd: Int32) {
+  // A wedged receiver must not keep a write blocked forever.
+  var sendTimeout = timeval(tv_sec: 8, tv_usec: 0)
+  _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
+  var noSigPipe: Int32 = 1
+  _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
   let client = RfbClient(fd)
+  let senderDone = DispatchSemaphore(value: 0)
+  var senderStarted = false
   RfbScreen.shared.attach(client)
-  defer { RfbScreen.shared.detach(client); client.shutdown() }
+  defer {
+    client.shutdown()
+    if senderStarted { senderDone.wait() }
+    RfbScreen.shared.detach(client)
+  }
   guard writeAll(fd, Data("RFB 003.008\n".utf8)),
         readFully(fd, 12) != nil,
         writeAll(fd, Data([1, 1])), readFully(fd, 1)?.first == 1,   // security: None
         writeAll(fd, Data([0, 0, 0, 0])), readFully(fd, 1) != nil,  // SecurityResult ok + ClientInit
         let size = RfbScreen.shared.size else { return }
+  client.framebufferSize = size
   var si = Data()
   si.appendBE(UInt16(size.w)); si.appendBE(UInt16(size.h))
   si.append(contentsOf: [32, 24, 0, 1])                              // bpp, depth, LE, true-colour
@@ -1927,8 +1973,9 @@ func rfbSession(_ fd: Int32) {
   let name = Data("MultiCC".utf8)
   si.appendBE(UInt32(name.count)); si.append(name)
   guard writeAll(fd, si) else { return }
-  let sender = Thread { rfbSender(client) }
+  let sender = Thread { defer { senderDone.signal() }; rfbSender(client) }
   sender.name = "rfb-sender"
+  senderStarted = true
   sender.start()
   reader: while true {
     guard let head = readFully(fd, 1) else { break }
@@ -1941,7 +1988,7 @@ func rfbSession(_ fd: Int32) {
     case 3:
       guard let b = readFully(fd, 9) else { break reader }
       if b[0] == 0 { RfbScreen.shared.markFull(client) }
-      client.cond.lock(); client.pendingRequest = true; client.cond.broadcast(); client.cond.unlock()
+      client.requestUpdate()
     case 4:
       guard let b = readFully(fd, 7) else { break reader }
       rfbKey(client, down: b[0] == 1,

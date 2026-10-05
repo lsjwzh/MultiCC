@@ -158,7 +158,8 @@ function fakeWs() {
   ws.readyState = 1;
   ws.sent = [];
   ws.closed = null;
-  ws.send = d => ws.sent.push(d);
+  ws.bufferedAmount = 0;
+  ws.send = (d, options, callback) => { ws.sent.push(d); if (callback) setImmediate(callback); };
   ws.close = (code, reason) => { ws.closed = { code, reason }; ws.readyState = 3; ws.emit('close'); };
   return ws;
 }
@@ -411,4 +412,53 @@ case "$2" in pixelWidth) echo 'pixelWidth: 800';; pixelHeight) echo 'pixelHeight
   });
   assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['snap', out, '100', '80', '400', '240']);
   assert.match(result, /logical origin=100,80 size=400x240; pixels=800x480/);
+});
+
+
+test('RFB bridge applies backpressure without dropping or reordering rectangle bytes', async () => {
+  const { attachRfbBridge } = require('../src/remote-screen-rfb-bridge');
+  const sock = new EventEmitter();
+  let paused = 0, resumed = 0, destroyed = 0, ack;
+  const writes = [];
+  sock.writableLength = 0;
+  sock.pause = () => { paused++; };
+  sock.resume = () => { resumed++; };
+  sock.destroy = () => { destroyed++; };
+  sock.write = data => { writes.push(data); return false; };
+  const ws = fakeWs(); let wsPaused = 0, wsResumed = 0;
+  ws.pause = () => { wsPaused++; }; ws.resume = () => { wsResumed++; };
+  ws.send = (data, options, callback) => { ws.sent.push(data); ack = callback; };
+  attachRfbBridge(ws, { socketPath: 'fixture', connect: () => sock });
+  sock.emit('connect');
+  ws.emit('message', Buffer.from('request'));
+  assert.equal(wsPaused, 1); sock.emit('drain'); assert.equal(wsResumed, 1);
+  sock.emit('data', Buffer.from([0, 0, 0, 1, 5]));
+  assert.equal(paused, 1); assert.equal(resumed, 0, 'wait for the send callback before reading more');
+  ack(); assert.equal(resumed, 1);
+  sock.emit('data', Buffer.from([6, 7, 8])); ack();
+  assert.deepEqual([...Buffer.concat(ws.sent)], [0, 0, 0, 1, 5, 6, 7, 8]);
+  ws.emit('close'); ack();
+  assert.equal(destroyed, 1); assert.equal(resumed, 2, 'late callbacks cannot revive a closed source');
+});
+
+test('RFB stall watchdog counts incoming screen data, never outgoing input; overflow closes the whole stream', async () => {
+  const { attachRfbBridge } = require('../src/remote-screen-rfb-bridge');
+  function socket() {
+    const s = new EventEmitter();
+    s.writableLength = 0; s.pause = () => {}; s.resume = () => {};
+    s.write = () => true; s.destroy = () => {};
+    return s;
+  }
+  const sock = socket(), ws = fakeWs();
+  attachRfbBridge(ws, { connect: () => sock, timeoutMs: 60 });
+  sock.emit('connect');
+  const interval = setInterval(() => ws.emit('message', Buffer.from('mouse')), 10);
+  try { await tick(100); assert.deepEqual(ws.closed, { code: 1011, reason: 'rfb-stalled' }); }
+  finally { clearInterval(interval); ws.emit('close'); }
+  const slow = socket(), blocked = fakeWs();
+  blocked.bufferedAmount = 20;
+  attachRfbBridge(blocked, { connect: () => slow, maxBufferedBytes: 24 });
+  slow.emit('connect'); slow.emit('data', Buffer.alloc(8));
+  assert.deepEqual(blocked.closed, { code: 1011, reason: 'rfb-backpressure' });
+  assert.equal(blocked.sent.length, 0, 'do not skip a fragment and keep an invalid RFB connection open');
 });
