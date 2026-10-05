@@ -46,6 +46,34 @@ const DEFAULT_INTERVAL_MS = 2 * 60 * 1000;
 // Probe while the inline refresh (1 min before expiry) is still a few minutes
 // away, so the CLI normally wins and the inline path stays a fallback.
 const DEFAULT_PROBE_THRESHOLD_MS = 5 * 60 * 1000;
+// The triggers do not know about each other: the boot check, the periodic tick
+// and any manual call can all decide the same account is due seconds apart. The
+// refresher's own retryAfter covers a *declined* attempt (90s) but not a
+// successful one, and every attempt that gets this far spends a seed/clear of
+// the credential slot plus, near expiry, a real CLI turn against one single-use
+// refresh token family. So attempts are spaced: a second trigger inside the gap
+// is answered as `staggered` instead of running, and since the slot is only
+// entered while the token is inside the 6 minute buffer anyway, being a cadence
+// late costs nothing — the CLI declines until the token is nearly dead.
+//
+// The default is one slot-entering check per cadence (never faster than 90s): a
+// gap below the cadence would be inert against the periodic tick, which is half
+// the point, and the cadence is already how often this account is meant to be
+// looked at. The floor keeps a deliberately short interval from becoming a
+// hammer. Note this is not what stops a double spend — exclusive() does that —
+// it stops a second ladder from spending a refresh on a token the first one just
+// handled, which the refresher's own retryAfter misses whenever the first
+// attempt succeeded and left the account still due.
+const DEFAULT_MIN_CHECK_GAP_MS = 90 * 1000;
+// The periodic cadence is otherwise anchored to process start, so every restart
+// re-aligns it, and both the 10 minute usage sweep (also process-anchored) and
+// any second instance watching the same accounts drift into step with it. A
+// per-process jitter breaks those alignments without changing the cadence in any
+// way an operator would notice.
+const DEFAULT_JITTER_RATIO = 0.15;
+// Autonomous checks are the periodic tick and the boot check. A manual call is
+// an operator asking a direct question, so it is never staggered away.
+const AUTONOMOUS_REASONS = Object.freeze(['periodic', 'boot']);
 const SECURITY_TIMEOUT_MS = 10_000;
 // `security -i` reads one command line; the CLI falls back to argv beyond this.
 const SECURITY_STDIN_LIMIT = 4000;
@@ -123,6 +151,15 @@ function createCliCredentialSlot({ configDir, platform = process.platform, run =
   };
 }
 
+// Exported so the jitter is pinnable without a timer: the delay is a decision,
+// not an implementation detail. One draw per process start, not per tick, so the
+// cadence stays recognisable in the logs.
+function jitteredIntervalMs(intervalMs, ratio = DEFAULT_JITTER_RATIO, randomValue = Math.random()) {
+  const spread = Math.round(intervalMs * ratio);
+  const offset = Math.round((Number(randomValue) * 2 - 1) * spread);
+  return Math.max(1000, intervalMs + offset);
+}
+
 function createClaudeAccountRefreshSupervisor(options = {}) {
   const accounts = options.accounts;
   if (!accounts) throw new TypeError('[claude-accounts-refresh] accounts store is required');
@@ -132,6 +169,13 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
   const run = typeof options.run === 'function' ? options.run : defaultRun;
   const bufferMs = Number(options.bufferMs) > 0 ? Number(options.bufferMs) : DEFAULT_BUFFER_MS;
   const intervalMs = Number(options.intervalMs) > 0 ? Number(options.intervalMs) : DEFAULT_INTERVAL_MS;
+  // A zero gap is a legitimate choice for a caller that wants every trigger to
+  // land, so 0 is honoured rather than treated as "unset".
+  const minCheckGapMs = Number(options.minCheckGapMs) >= 0
+    ? Number(options.minCheckGapMs)
+    : Math.max(DEFAULT_MIN_CHECK_GAP_MS, intervalMs);
+  const jitterRatio = Number(options.jitterRatio) >= 0 ? Number(options.jitterRatio) : DEFAULT_JITTER_RATIO;
+  const random = typeof options.random === 'function' ? options.random : Math.random;
   const isEnabled = typeof options.isEnabled === 'function'
     ? options.isEnabled
     : (() => process.env.CLAUDE_ACCOUNT_CLI_REFRESH !== '0' && process.env.CLAUDE_OAUTH_AUTO_REFRESH !== '0');
@@ -163,6 +207,7 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
 
   const refreshers = new Map(); // accountId -> refresher
   const locks = new Map();      // accountId -> tail promise
+  const lastSlotAt = new Map(); // accountId -> epoch ms of the last slot-entering check
   let timer = null;
 
   function exclusive(id, fn) {
@@ -203,6 +248,15 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
     const refresher = refresherFor(id);
     const retryAfter = refresher.status().retryAfter;
     if (retryAfter && retryAfter > now()) return { outcome: 'cooldown', retryInMs: retryAfter - now() };
+    // Spacing gate (see DEFAULT_MIN_CHECK_GAP_MS). Only the autonomous triggers
+    // are held back; a manual call always runs. The stamp is left by *every*
+    // check that reached this point — a rotation someone asked for by hand is
+    // still a rotation, and the periodic tick right behind it must not repeat it.
+    const sinceMs = now() - (lastSlotAt.get(id) || 0);
+    if (AUTONOMOUS_REASONS.includes(reason) && sinceMs < minCheckGapMs) {
+      return { outcome: 'staggered', retryInMs: minCheckGapMs - sinceMs };
+    }
+    lastSlotAt.set(id, now());
 
     ensurePrivateDir(accounts.claudeHomeDir(id));
     const slot = slotFor(id);
@@ -268,13 +322,16 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
       }
     }
     for (const id of [...refreshers.keys()]) if (!list.some(a => a.id === id)) refreshers.delete(id);
+    for (const id of [...lastSlotAt.keys()]) if (!list.some(a => a.id === id)) lastSlotAt.delete(id);
     try { await sweepOrphans(); } catch (_) {}
     return results;
   }
 
   function status(id) {
     const refresher = refreshers.get(id);
-    return refresher ? refresher.status() : null;
+    // lastCheckAt is the spacing gate's own state, surfaced so "why was this
+    // account skipped?" is answerable without reading the logs.
+    return refresher ? { ...refresher.status(), lastCheckAt: lastSlotAt.get(id) || null } : null;
   }
 
   const tick = reason => checkAll(reason).catch(error => logger.warn('claude_account_cli_refresh_failed', { error: error.message }));
@@ -286,7 +343,10 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
     status,
     start() {
       if (timer) return;
-      timer = setInterval(() => tick('periodic'), intervalMs);
+      // Jittered once per process start: see DEFAULT_JITTER_RATIO. setInterval is
+      // kept rather than a self-rescheduling timeout so a slow sweep cannot stack
+      // ticks — per-account overlaps are already impossible via exclusive().
+      timer = setInterval(() => tick('periodic'), jitteredIntervalMs(intervalMs, jitterRatio, random()));
       if (timer.unref) timer.unref();
       setTimeout(() => tick('boot'), 10_000).unref?.();
     },
@@ -297,7 +357,10 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
 module.exports = {
   createClaudeAccountRefreshSupervisor,
   createCliCredentialSlot,
+  jitteredIntervalMs,
   keychainServiceFor,
   keychainAccount,
   DEFAULT_SCOPES,
+  DEFAULT_MIN_CHECK_GAP_MS,
+  DEFAULT_JITTER_RATIO,
 };
