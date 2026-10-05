@@ -929,8 +929,6 @@ async function markGoalAchieved() {
     addSystemMsg(data.alreadyAchieved ? '✓ 本轮已是达成目标状态' : '✓ 已手动标记本轮达成目标');
   } catch (e) {
     addSystemMsg(`⚠️ 标记达成目标失败：${chatApi.errorText(e)}`);
-    const b = document.getElementById('ac-mark-goal');
-    if (b) b.disabled = false;
   }
 }
 function cancelTaskFromBar() {

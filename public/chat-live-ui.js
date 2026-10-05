@@ -199,13 +199,86 @@
     // (goalState only; the letter stays D, the TaskBoard lifecycle untouched).
     const onMarkGoalAchieved = opts.onMarkGoalAchieved || null;
     const onCancelTask = opts.onCancelTask || null;
-    const _markGoalBtn = doc.getElementById('ac-mark-goal');
-    if (_markGoalBtn) {
-      _markGoalBtn.addEventListener('click', () => {
-        _markGoalBtn.disabled = true;
+    // 「需要交互」→「达成目标」不占状态条位置：桌面悬停、触屏长按状态标签，
+    // 浮出一个确认小窗（#ac-goal-pop，position:fixed 挂在 body 下，不被状态条
+    // 的 overflow 裁掉），点「确认」才改。只在 bar 带 can-mark-goal 时生效。
+    const goalPop = (() => {
+      const stateEl = doc.getElementById('ac-state');
+      const pop = doc.getElementById('ac-goal-pop');
+      const okBtn = doc.getElementById('ac-goal-pop-ok');
+      if (!stateEl || !pop || !okBtn) return { sync() {} };
+      const bar = () => doc.getElementById('aux-classify-bar');
+      const enabled = () => !!bar()?.classList.contains('can-mark-goal')
+        && !doc.body?.classList.contains('chat-read-only');
+      let showTimer = null, hideTimer = null, pressTimer = null, pressed = false;
+      const clear = () => { clearTimeout(showTimer); clearTimeout(hideTimer); };
+      function place() {
+        const r = stateEl.getBoundingClientRect();
+        const vw = global.innerWidth || doc.documentElement.clientWidth || 0;
+        pop.style.top = `${Math.round(r.bottom + 6)}px`;
+        const w = pop.offsetWidth || 0;
+        pop.style.left = `${Math.max(8, Math.min(Math.round(r.left), vw - w - 8))}px`;
+      }
+      function show() {
+        clear();
+        if (!enabled()) return;
+        okBtn.disabled = false;
+        pop.hidden = false;
+        place();
+      }
+      function hide() { clear(); pop.hidden = true; }
+      const hideSoon = () => { clearTimeout(hideTimer); hideTimer = setTimeout(hide, 220); };
+      // 桌面：鼠标悬停（只认 mouse，触屏的模拟 hover 交给长按分支）。
+      stateEl.addEventListener('pointerenter', e => {
+        if (e.pointerType !== 'mouse' || !enabled()) return;
+        clearTimeout(hideTimer); clearTimeout(showTimer); showTimer = setTimeout(show, 250);
+      });
+      stateEl.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') { clearTimeout(showTimer); hideSoon(); } });
+      pop.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') clearTimeout(hideTimer); });
+      pop.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') hideSoon(); });
+      // 触屏：长按 500ms 浮出；移动/松手提前则取消。长按不能顺带弹系统菜单或选中文字。
+      stateEl.addEventListener('touchstart', () => {
+        if (!enabled()) return;
+        pressed = false; clearTimeout(pressTimer);
+        pressTimer = setTimeout(() => { pressed = true; show(); }, 500);
+      }, { passive: true });
+      for (const type of ['touchend', 'touchmove', 'touchcancel']) {
+        stateEl.addEventListener(type, e => {
+          clearTimeout(pressTimer);
+          if (type === 'touchend' && pressed && e.cancelable) e.preventDefault();
+        });
+      }
+      stateEl.addEventListener('contextmenu', e => { if (enabled()) e.preventDefault(); });
+      // 键盘：可聚焦的标签上按 Enter/空格同样浮出。
+      stateEl.addEventListener('keydown', e => {
+        if (!enabled() || (e.key !== 'Enter' && e.key !== ' ')) return;
+        e.preventDefault(); show(); okBtn.focus?.();
+      });
+      // 点浮窗外 / Esc / 滚动：收起。
+      doc.addEventListener('pointerdown', e => {
+        if (!pop.hidden && !pop.contains(e.target) && !stateEl.contains(e.target)) hide();
+      }, true);
+      doc.addEventListener('keydown', e => { if (e.key === 'Escape' && !pop.hidden) hide(); });
+      global.addEventListener?.('scroll', () => { if (!pop.hidden) hide(); }, true);
+      okBtn.addEventListener('click', () => {
+        okBtn.disabled = true;
+        hide();
         try { if (onMarkGoalAchieved) onMarkGoalAchieved(); } catch (_) {}
       });
-    }
+      return {
+        sync(can) {
+          stateEl.classList.toggle('ac-state-editable', can);
+          if (can) {
+            stateEl.tabIndex = 0;
+            stateEl.title = translate('markGoalAchievedHint');
+          } else {
+            stateEl.removeAttribute('tabindex');
+            stateEl.removeAttribute('title');
+            hide();
+          }
+        },
+      };
+    })();
     const _markDoneBtn = doc.getElementById('ac-mark-done');
     if (_markDoneBtn) {
       _markDoneBtn.addEventListener('click', () => {
@@ -540,10 +613,10 @@
           : '';
       }
       bar.classList.toggle('can-mark-done', (classifyState || 'P') === 'W');
-      // 「需要交互」那一格才给手动「达成目标」：同源判定，按钮与黄色 ✅ 同时出现。
+      // 「需要交互」那一格才给手动「达成目标」：同源判定，与黄色 ✅ 同时出现。
       const canMarkGoal = statusRegistry().succeededGoalTone?.(display.status, freshness?.goalState) === 'interact';
       bar.classList.toggle('can-mark-goal', canMarkGoal);
-      if (canMarkGoal && _markGoalBtn) _markGoalBtn.disabled = false;
+      goalPop.sync(canMarkGoal);
       bar.classList.toggle('can-cancel-task', (classifyState || 'P') === 'P');
       if ((classifyState || 'P') !== 'P' && _cancelTaskBtn) _cancelTaskBtn.disabled = false;
       bar.classList.add('show');
