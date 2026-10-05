@@ -99,6 +99,22 @@
     return NATIVE_PREFIX + clean(id);
   }
 
+  // OpenCode 自己的线路（Zen / Go / `opencode auth login` 过的）不是 multicc 的
+  // provider：会话里存成 provider 空 + `<线路id>/<模型>`（见 buildFixedPatch），
+  // provider 表里查不到任何名字。药丸要摆「OpenCode Go」而不是「默认线路」，只能
+  // 从这个前缀翻回来 —— boot() 认 nativeFromModel 是同一件事，名字表仍只有
+  // chat-ai-config.js 那一份。
+  function openCodeRouteName(cli, provider, model) {
+    if (clean(cli) !== 'opencode' || clean(provider)) return '';
+    const text = clean(model);
+    const slash = text.indexOf('/');
+    if (slash <= 0) return '';
+    const id = text.slice(0, slash);
+    const api = scope() && scope().MultiCCChatAiConfig;
+    return api && typeof api.openCodeNativeProviderLabel === 'function'
+      ? clean(api.openCodeNativeProviderLabel(id)) : '';
+  }
+
   // 一条线路的规范化形状：固定模式从线路下拉里选出来的值（可能是 opencode-native:
   // 前缀、也可能是一个 Provider id）折成这个形状，后面的兼容判定只看它。
   function lineShape(value, provider) {
@@ -329,7 +345,8 @@
     const pending = input.pending === true;
     // 「下一轮生效」这句由调用方给（air.js 有 i18n 键 airTaskAiPending），缺了就用中文默认。
     const pendingLabel = clean(input.pendingLabel) || '下一轮生效';
-    const native = catalog && catalog.nativeRouteLabel ? catalog.nativeRouteLabel(next.cli) : '';
+    const native = (catalog && catalog.nativeRouteLabel ? catalog.nativeRouteLabel(next.cli) : '')
+      || openCodeRouteName(next.cli, next.provider, next.model);
     if (auto) {
       const pickLabel = selection.cliSwitch === 'routing' ? PICK_DIFFICULTY : PICK_ORDER;
       const count = (selection.candidates || []).filter(candidate => candidate && candidate.enabled !== false).length;
@@ -1982,6 +1999,7 @@
     lineShape,
     nativeLineId,
     nativeLineValue,
+    openCodeRouteName,
     open,
     pillModel,
     pillText,

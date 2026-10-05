@@ -621,6 +621,17 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await reloadConversation();
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('WorkBuddy · 默认模型 · 下轮生效')`));
     assert.equal(await page.evaluate(`${composerPill('air-ai-pill')}.textContent.includes('Lab Responses')`), false);
+    // OpenCode 自己的线路（Zen / Go / `opencode auth login` 过的）不是 multicc 的
+    // provider：会话里存成 provider 空 + `<线路id>/<模型>`，provider 表里没有它的
+    // 名字。药丸得从模型前缀把线路名翻回来（名字表只有 chat-ai-config.js 一份），
+    // 而不是写「默认线路」—— 更不能留着上一条车道的线路名：换车道的 pending 里没有
+    // providerName 这个键，整份展开就会把旧名字继承下来（屏幕上就是
+    // 「OpenCode · Claude 官方 · 账号」）。
+    entry.configuration.pendingConfiguration = { cli: 'opencode', providerName: null,
+      profile: { provider: null, model: 'opencodego/deepseek-v4-flash', effort: 'medium' } };
+    await reloadConversation();
+    assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('OpenCode Go')`));
+    assert.equal(await page.evaluate(`(()=>{const s=${composerPill('air-ai-pill')}.textContent;return s.includes('opencodego/deepseek-v4-flash') && s.includes('下轮生效') && !s.includes('Lab Responses') && !s.includes('默认线路')})()`), true);
     entry.configuration.pendingConfiguration = null;
     await page.evaluate(`${frame}.defaultView.MultiCCTaskArtifacts.setScope({shellId:'shell-a'})`);
     assert.ok(await page.waitFor(`${frame}?.getElementById('task-artifacts-toggle')?.textContent==='产物 2'`));

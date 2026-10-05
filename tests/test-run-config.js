@@ -17,6 +17,10 @@ function withCatalog(fn) {
       cliShortMark: cli => ({ codex: 'E', 'codex-exp': 'X', opencode: 'O', codebuddy: 'W', zcode: 'Z' }[cli] || cli.slice(0, 1).toUpperCase()),
       nativeRouteLabel: cli => (cli === 'codebuddy' ? 'WorkBuddy' : ''),
     },
+    // 原生线路名表在 chat-ai-config.js（OPENCODE_NATIVE_NAMES），这里给同一份。
+    MultiCCChatAiConfig: {
+      openCodeNativeProviderLabel: id => ({ opencode: 'OpenCode Zen', opencodego: 'OpenCode Go' }[id] || id),
+    },
   };
   try { return fn(); } finally { delete global.window; }
 }
@@ -311,6 +315,38 @@ test('pillModel（固定一条）：CLI · 线路 · 模型，跑线路名不重
     });
     assert.equal(buddy.text, 'WorkBuddy · 默认模型');
     assert.equal(buddy.mark, 'W');
+  });
+});
+
+test('openCodeRouteName：OpenCode 自持线路从模型前缀翻回线路名', () => {
+  withCatalog(() => {
+    assert.equal(run.openCodeRouteName('opencode', null, 'opencodego/deepseek-v4-flash'), 'OpenCode Go');
+    assert.equal(run.openCodeRouteName('opencode', '', 'opencode/glm-4.6'), 'OpenCode Zen');
+    // 名字表不认识的线路写原 id，绝不借另一家的名字。
+    assert.equal(run.openCodeRouteName('opencode', null, 'acme/x'), 'acme');
+    // 有 multicc 线路、别的 CLI、模型没有 `<id>/` 前缀的都不算原生线路。
+    assert.equal(run.openCodeRouteName('opencode', 'zhipu', 'opencodego/x'), '');
+    assert.equal(run.openCodeRouteName('claude', null, 'opencodego/x'), '');
+    assert.equal(run.openCodeRouteName('opencode', null, 'deepseek-v4-flash'), '');
+    // 页面上没挂 ai-config（名字表）时什么都不猜，回落交给调用方。
+    delete global.window.MultiCCChatAiConfig;
+    assert.equal(run.openCodeRouteName('opencode', null, 'opencodego/x'), '');
+  });
+});
+
+test('pillModel：OpenCode 自持线路写线路名，不念上一条车道的线路名', () => {
+  withCatalog(() => {
+    // 换车道那一刻：live 还是 Claude 官方，pending 已经落在 OpenCode 的自持线路上。
+    const model = run.pillModel({
+      current: { cli: 'claude-exp', provider: 'claude-official-464959f21ba40447', model: 'claude-opus-5-5' },
+      next: { cli: 'opencode', provider: null, providerName: null, model: 'opencodego/deepseek-v4-flash' },
+      currentRoute: 'Claude 官方 · rxoeiymaphaug@wearehackerone.com',
+      currentModel: 'opencodego/deepseek-v4-flash',
+      pending: true,
+      pendingLabel: '下轮生效',
+    });
+    assert.equal(model.text, 'OpenCode · OpenCode Go · opencodego/deepseek-v4-flash · 下轮生效');
+    assert.equal(model.mark, 'O');
   });
 });
 
