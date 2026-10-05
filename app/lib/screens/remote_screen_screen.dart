@@ -61,9 +61,16 @@ const Map<String, int> _modifierKeysyms = {
 };
 
 class RemoteScreenScreen extends StatefulWidget {
-  const RemoteScreenScreen({super.key, required this.settings});
+  const RemoteScreenScreen({
+    super.key,
+    required this.settings,
+    this.initialControl = false,
+  });
 
   final SettingsService settings;
+
+  /// 聊天里点 `#rs=control` 直达链接进来时直接处于可操作模式（与 Web 一致）。
+  final bool initialControl;
 
   @override
   State<RemoteScreenScreen> createState() => _RemoteScreenScreenState();
@@ -134,6 +141,11 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       if (mounted) setState(() {});
     });
     _frameSub = _svc.onFrame.listen((_) => _renderFrame());
+    if (widget.initialControl) {
+      _control = true;
+      _hadControl = true;
+      _startHaltPoll();
+    }
     _checkPermsThenConnect();
   }
 
