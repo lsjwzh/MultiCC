@@ -27,7 +27,7 @@ const { createOfficialAccountStore } = require('../src/official-accounts');
 const { createCliLoginDetector } = require('../src/official-accounts-cli-login');
 const { createCodexAccountRefreshSupervisor } = require('../src/codex/accounts-refresh');
 const { createClaudeAccountCredentialService } = require('../src/claude-auth/account-credentials');
-const { createClaudeAccountRefreshSupervisor, createCliCredentialSlot, keychainServiceFor, jitteredIntervalMs } = require('../src/claude-auth/accounts-refresh');
+const { createClaudeAccountRefreshSupervisor, createCliCredentialSlot, keychainServiceFor, jitteredIntervalMs, accountPhaseMs } = require('../src/claude-auth/accounts-refresh');
 const { TOKEN_URL } = require('../src/claude-auth/official-oauth');
 
 const MIN = 60 * 1000;
@@ -476,11 +476,23 @@ test('an autonomous check inside the gap is staggered, and spawns no CLI', async
   // A CLI that cannot rotate, so the account stays due and the next check really
   // would reach the slot again; deferCooldownMs 0 takes the refresher's own
   // 90s decline cooldown out of the way so the gap is the only thing left.
-  const t = await setup({ env: { FAKE_CLAUDE_MODE: 'fail' }, supervisor: { minCheckGapMs: 5 * MIN, deferCooldownMs: 0 } });
+  // The clock is driven by hand: a due account's *first* check is already spread
+  // by its cadence phase, which has to be stepped over before the gate itself is
+  // what is on trial.
+  const GAP = MIN;
+  let clock = Date.now();
+  const t = await setup({ env: { FAKE_CLAUDE_MODE: 'fail' }, supervisor: { now: () => clock, minCheckGapMs: GAP, deferCooldownMs: 0 } });
   try {
     const due = t.addAccount('alice', 3 * MIN);   // inside the 6 min buffer
     t.addAccount('bob', 60 * MIN);                // nowhere near it
     const outcomes = results => new Map(results.map(r => [r.accountId, r.outcome]));
+    const phase = accountPhaseMs(due, GAP);
+
+    // First sight only takes the account's place in the cadence; the ladder waits
+    // for that slice, then runs.
+    assert.equal(outcomes(await t.supervisor.checkAll('periodic')).get(due),
+      phase === 0 ? 'deferred' : 'staggered', 'first sight is spaced');
+    clock += phase + 1;                           // its slice arrives
 
     const first = outcomes(await t.supervisor.checkAll('periodic'));
     assert.equal(first.get(due), 'deferred');
@@ -509,7 +521,7 @@ test('an autonomous check inside the gap is staggered, and spawns no CLI', async
     // fresh or the CLI suddenly agreeing to rotate.
     const unspaced = createClaudeAccountRefreshSupervisor({
       accounts: t.accounts, platform: 'linux', claudeBin: t.bin, extraEnv: t.env, user: 'tester',
-      isEnabled: () => true, minCheckGapMs: 0, deferCooldownMs: 0,
+      isEnabled: () => true, now: () => clock, minCheckGapMs: 0, deferCooldownMs: 0,
     });
     assert.deepEqual(
       (await unspaced.checkAll('periodic')).filter(r => r.accountId === due).map(r => r.outcome),
@@ -522,15 +534,59 @@ test('an autonomous check inside the gap is staggered, and spawns no CLI', async
 test('by default one cadence is one attempt: the gap is never below the interval', async () => {
   // A default gap below the cadence would be inert against the periodic tick —
   // which is half of what the gate is for — so the two are pinned together here.
-  const t = await setup({ env: { FAKE_CLAUDE_MODE: 'fail' }, supervisor: { deferCooldownMs: 0 } });
+  let clock = Date.now();
+  const t = await setup({ env: { FAKE_CLAUDE_MODE: 'fail' }, supervisor: { now: () => clock, deferCooldownMs: 0 } });
   try {
     const due = t.addAccount('alice', 3 * MIN);
     const outcome = results => results.find(r => r.accountId === due).outcome;
+    const phase = accountPhaseMs(due, 2 * MIN);
+    await t.supervisor.checkAll('periodic');      // first sight, spaced
+    clock += phase + 1;                           // past that slice
     assert.equal(outcome(await t.supervisor.checkAll('periodic')), 'deferred');
     const spawned = t.calls().length;
     assert.equal(outcome(await t.supervisor.checkAll('periodic')), 'staggered',
       'a second tick inside the 2 min cadence is held back with default options');
     assert.equal(t.calls().length, spawned);
+  } finally { await t.done(); }
+});
+
+test('each account occupies its own slice of the cadence, and always the same one', () => {
+  const W = 2 * MIN;
+  const ids = ['0f1e2d3c4b5a6978', 'aabbccddeeff0011', '1234567890abcdef', 'ffffffffffffffff', '9c8b7a6f5e4d3c2b'];
+  const phases = ids.map(id => accountPhaseMs(id, W));
+  for (const phase of phases) assert.ok(phase >= 0 && phase < W, `outside the cadence: ${phase}`);
+  assert.equal(new Set(phases).size, ids.length, 'distinct accounts land on distinct slices');
+  assert.deepEqual(phases, ids.map(id => accountPhaseMs(id, W)), 'and always on the same slice');
+  assert.equal(accountPhaseMs(ids[0], 0), 0, 'no window, no offset');
+  assert.equal(accountPhaseMs(ids[0], -5), 0);
+});
+
+test('accounts that lapse together do not fan their ladders out in one burst', async () => {
+  // The restart case: the in-memory stamps are gone and every account is due at
+  // once, so without a phase they would each seed a slot and run a CLI ladder in
+  // the same second. The clock is driven by hand, so what the sweep may touch is
+  // decided by each account's own phase rather than by the wall clock.
+  const GAP = 2 * MIN;
+  let clock = Date.now();
+  const t = await setup({ env: { FAKE_CLAUDE_MODE: 'fail' }, supervisor: { now: () => clock, minCheckGapMs: GAP, deferCooldownMs: 0 } });
+  try {
+    const ids = [t.addAccount('alice', 4 * MIN), t.addAccount('bob', 4 * MIN), t.addAccount('carol', 4 * MIN)];
+    const phases = new Map(ids.map(id => [id, accountPhaseMs(id, GAP)]));
+    const outcome = (results, id) => results.find(r => r.accountId === id).outcome;
+    const launcher = id => phases.get(id) === 0;   // its slice is the head of the cadence
+    assert.ok(Math.max(...phases.values()) > 0, 'the phases really are spread');
+
+    const first = await t.supervisor.checkAll('periodic');
+    for (const id of ids) {
+      assert.equal(outcome(first, id), launcher(id) ? 'deferred' : 'staggered', `account ${id}`);
+    }
+    assert.ok(ids.some(id => outcome(first, id) === 'staggered'), 'the burst is broken up');
+    assert.ok(t.calls().length <= 2, 'at most the one account whose slice arrived spawned a CLI');
+
+    // A cadence later every slice has arrived, and each account runs once.
+    clock += GAP + 1;
+    const later = await t.supervisor.checkAll('periodic');
+    for (const id of ids) assert.equal(outcome(later, id), 'deferred', `account ${id} by the next cadence`);
   } finally { await t.done(); }
 });
 

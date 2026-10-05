@@ -151,6 +151,24 @@ function createCliCredentialSlot({ configDir, platform = process.platform, run =
   };
 }
 
+// Everything spreads accounts over the cadence, so the tick has to be finer than
+// the cadence: the spacing gate already holds each account to one slot-entering
+// check per cadence, so ticking more often costs a file read per account and
+// buys those checks somewhere to land.
+const TICKS_PER_CADENCE = 8;
+
+// One account's slice of the cadence, derived from its id, so an account always
+// occupies the same slot: two runs over the same store spread the same way, and
+// a test can pin it. Deliberately not a counter over the account list — the
+// order the store happens to list accounts in must not decide who refreshes
+// first, and a deleted account must not shift everyone else's slot.
+function accountPhaseMs(id, windowMs) {
+  const window = Math.trunc(Number(windowMs));
+  if (!(window > 0)) return 0;
+  const hash = crypto.createHash('sha256').update(String(id)).digest();
+  return hash.readUInt32BE(0) % window;
+}
+
 // Exported so the jitter is pinnable without a timer: the delay is a decision,
 // not an implementation detail. One draw per process start, not per tick, so the
 // cadence stays recognisable in the logs.
@@ -252,7 +270,16 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
     // are held back; a manual call always runs. The stamp is left by *every*
     // check that reached this point — a rotation someone asked for by hand is
     // still a rotation, and the periodic tick right behind it must not repeat it.
-    const sinceMs = now() - (lastSlotAt.get(id) || 0);
+    //
+    // First sight of a due account is where its place in the cadence is decided,
+    // by seeding the stamp *backwards* rather than leaving the account eligible
+    // at once. Accounts whose tokens lapse together — logged in together, or a
+    // restart that emptied this map — would otherwise run their ladders in one
+    // burst; the phase (accountPhaseMs) spreads them over the cadence that
+    // follows. A manual call is not gated, so it still runs immediately and moves
+    // the account to the present.
+    if (!lastSlotAt.has(id)) lastSlotAt.set(id, now() - minCheckGapMs + accountPhaseMs(id, minCheckGapMs));
+    const sinceMs = now() - lastSlotAt.get(id);
     if (AUTONOMOUS_REASONS.includes(reason) && sinceMs < minCheckGapMs) {
       return { outcome: 'staggered', retryInMs: minCheckGapMs - sinceMs };
     }
@@ -261,6 +288,16 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
     ensurePrivateDir(accounts.claudeHomeDir(id));
     const slot = slotFor(id);
     const left = await slot.read();
+    // "Newer" is judged by the expiry, not by the token merely differing, and
+    // that is deliberate — do not relax it to `accessToken !== accessToken`.
+    // A leftover slot can hold an *older* credential than the account file (the
+    // account was re-logged in through multicc's PKCE flow, which starts a new
+    // token family, while a slot from the previous family was never cleared);
+    // adopting that would overwrite a healthy login with a dead one. The
+    // rotation case this branch exists for is not lost by the comparison: the
+    // CLI only rotates inside its own ~5 minute window, so a rotation it did
+    // perform always lands an expiry well beyond the one it replaced — which is
+    // what tests/test-claude-account-cli-refresh.js pins.
     if (left.ok && left.accessToken !== accessToken && left.expiresAt != null && left.expiresAt > expiresAt) {
       adopt(id, left);
       await slot.remove();
@@ -281,6 +318,10 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
     let result;
     try { result = (await refresher.check(reason)) || {}; } catch (error) { result = { outcome: 'failed', error: error.message }; }
     const after = await slot.read();
+    // Same expiry-based "newer" test as above, and safe here for a stronger
+    // reason: this slot was seeded with the account's own token moments ago, so
+    // anything else in it is this run's rotation, and a rotation the CLI agreed
+    // to always carries a longer expiry (it waits for its own window).
     if (after.ok && after.accessToken !== accessToken && after.expiresAt != null && after.expiresAt > expiresAt) {
       adopt(id, after);
       await slot.remove();
@@ -343,10 +384,12 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
     status,
     start() {
       if (timer) return;
-      // Jittered once per process start: see DEFAULT_JITTER_RATIO. setInterval is
-      // kept rather than a self-rescheduling timeout so a slow sweep cannot stack
-      // ticks — per-account overlaps are already impossible via exclusive().
-      timer = setInterval(() => tick('periodic'), jitteredIntervalMs(intervalMs, jitterRatio, random()));
+      // The tick is a sub-step of the cadence, not the cadence itself — see
+      // TICKS_PER_CADENCE. Jittered once per process start (DEFAULT_JITTER_RATIO)
+      // so a restart cannot restore a fixed phase, for this loop or for anything
+      // else watching the same accounts.
+      const step = Math.max(5_000, Math.round(intervalMs / TICKS_PER_CADENCE));
+      timer = setInterval(() => tick('periodic'), jitteredIntervalMs(step, jitterRatio, random()));
       if (timer.unref) timer.unref();
       setTimeout(() => tick('boot'), 10_000).unref?.();
     },
@@ -358,6 +401,7 @@ module.exports = {
   createClaudeAccountRefreshSupervisor,
   createCliCredentialSlot,
   jitteredIntervalMs,
+  accountPhaseMs,
   keychainServiceFor,
   keychainAccount,
   DEFAULT_SCOPES,
