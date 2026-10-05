@@ -493,5 +493,22 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     assert.ok(await page.waitFor(`document.getElementById('air-global-permission-dialog')?.open === true`));
     assert.equal(await checked('unlock-toggle'), false);
 
+    // The direct restart entry must remain visible even without auto-unlock.
+    await page.evaluate(`document.getElementById('air-global-permission-dialog').close()`);
+    unlockPassword = { available: false };
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-restart-direct').checkVisibility()`));
+    assert.equal(await page.evaluate(`document.getElementById('air-global-permissions-button').checkVisibility()`), true);
+    const beforeRestart = permissionRestarts;
+    await click('permission-restart-direct');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-result').textContent === t('airGlobalPermissionsRestarted')`));
+    assert.equal(permissionRestarts, beforeRestart + 1, 'one direct click restarts and displays the fresh result');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-permission-dialog').open`), true);
+    await page.evaluate(`document.getElementById('air-global-permission-dialog').close()`);
+    agentPermissions = { ...agentPermissions, local: false };
+    await click('permission-restart-direct');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-result').textContent === t('airGlobalPermissionsRestartLocal')`));
+    assert.equal(permissionRestarts, beforeRestart + 1, 'a remote request gets guidance without attempting a restart');
+
   });
 });

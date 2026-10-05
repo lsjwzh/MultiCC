@@ -366,8 +366,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 与 HEAD 的 zh/en.json 重新生成结果逐字节一致。按真实高水位改登记 553896。
     // +4 bilingual keys: Agent restart, failure, exact app path and stale-grant recovery.
     // +11 双语键：输入监控、Esc 实际监听状态与重启复查结果。
-    maxLines: 8790,
-    maxBytes: 557305,
+    // +1 双语键：直接重启按钮的本机操作提示。
+    maxLines: 8792,
+    maxBytes: 557541,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

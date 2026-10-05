@@ -4389,5 +4389,6 @@
   "airGlobalPermissionsEscInactive": "Esc stop listener is not enabled on the Mac. Restart Agent and re-check; an enabled permission switch does not prove the listener is running.",
   "airGlobalPermissionsEscUnknown": "Esc stop status on the Mac is unknown. Update Agent and re-check; do not rely on Esc to stop operations yet.",
   "airGlobalPermissionsRestarting": "Restarting Agent and reading its latest status…",
-  "airGlobalPermissionsRestarted": "Agent restarted. The results below are from the restarted Agent."
+  "airGlobalPermissionsRestarted": "Agent restarted. The results below are from the restarted Agent.",
+  "airGlobalPermissionsRestartLocal": "Open this page on the Mac running MultiCC Agent, then click restart."
 }

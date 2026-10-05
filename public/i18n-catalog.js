@@ -4391,7 +4391,8 @@ window.MULTICC_I18N_CATALOG = {
     "airGlobalPermissionsEscInactive": "本机 Esc 急停监听未启用：请重启 Agent 并复查。权限开关已开启不代表监听正在工作。",
     "airGlobalPermissionsEscUnknown": "无法确认本机 Esc 急停状态；请更新 Agent 后复查，暂勿依赖 Esc 叫停。",
     "airGlobalPermissionsRestarting": "正在重启 Agent 并读取最新状态…",
-    "airGlobalPermissionsRestarted": "Agent 已重启，以下为重启后的检测结果。"
+    "airGlobalPermissionsRestarted": "Agent 已重启，以下为重启后的检测结果。",
+    "airGlobalPermissionsRestartLocal": "请在运行 MultiCC Agent 的那台 Mac 上打开本页面，再点击重启。"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -8784,6 +8785,7 @@ window.MULTICC_I18N_CATALOG = {
     "airGlobalPermissionsEscInactive": "Esc stop listener is not enabled on the Mac. Restart Agent and re-check; an enabled permission switch does not prove the listener is running.",
     "airGlobalPermissionsEscUnknown": "Esc stop status on the Mac is unknown. Update Agent and re-check; do not rely on Esc to stop operations yet.",
     "airGlobalPermissionsRestarting": "Restarting Agent and reading its latest status…",
-    "airGlobalPermissionsRestarted": "Agent restarted. The results below are from the restarted Agent."
+    "airGlobalPermissionsRestarted": "Agent restarted. The results below are from the restarted Agent.",
+    "airGlobalPermissionsRestartLocal": "Open this page on the Mac running MultiCC Agent, then click restart."
   }
 };

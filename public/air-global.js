@@ -99,8 +99,13 @@
     const permissionButton = make('button', t('airGlobalPermissionsButton'));
     permissionButton.type = 'button';
     permissionButton.id = 'air-global-permissions-button';
-    permissionButton.hidden = true;
     permissionButton.onclick = () => { void checkAgentPermissions(false); };
+    const permissionRestartDirect = make('button', t('airGlobalPermissionsRestart'));
+    permissionRestartDirect.type = 'button';
+    permissionRestartDirect.id = 'air-global-permission-restart-direct';
+    permissionRestartDirect.onclick = () => { void restartAgentFromCard(); };
+    const permissionTools = make('div', null, 'air-global-foot');
+    permissionTools.append(permissionButton, permissionRestartDirect);
     const permissionDialog = make('dialog', null, 'air-global-permission-dialog');
     permissionDialog.id = 'air-global-permission-dialog';
     const permissionTitle = make('h3', t('airGlobalPermissionsTitle'));
@@ -192,7 +197,7 @@
       label,
       make('p', t('airGlobalPowerDesc'), 'air-global-desc'),
       foot,
-      permissionButton,
+      permissionTools,
       permissionDialog,
       make('div', null, 'air-global-sep'),
       unlockLabel,
@@ -216,12 +221,25 @@
     listenAccess: 'airGlobalPermissionsInputMonitoring',
   };
 
+  async function restartAgentFromCard() {
+    const button = el('air-global-permission-restart-direct');
+    if (!button || button.disabled || permissionRestarting) return;
+    button.disabled = true;
+    try {
+      const data = await checkAgentPermissions(false);
+      if (data?.local === true) await restartAgentPermissions();
+      else if (data?.local === false) {
+        el('air-global-permission-result').textContent = t('airGlobalPermissionsRestartLocal');
+      }
+    } finally { button.disabled = false; }
+  }
+
   async function restartAgentPermissions() {
     if (!permissionLocal || permissionRestarting) return;
     permissionRestarting = true;
     permissionReadEpoch++;
     const dialog = el('air-global-permission-dialog');
-    const buttons = ['restart', 'check', 'open'].map(name => el('air-global-permission-' + name));
+    const buttons = ['restart', 'restart-direct', 'check', 'open'].map(name => el('air-global-permission-' + name));
     buttons.forEach(button => { button.disabled = true; });
     el('air-global-permission-result').textContent = t('airGlobalPermissionsRestarting');
     try {
@@ -262,9 +280,11 @@
     el('air-global-permission-esc').textContent = '';
     el('air-global-permission-target').textContent = '';
     el('air-global-permission-recovery').hidden = false;
+    let checked = null;
     try {
       const data = snapshot || await context.api('/api/system/agent-permissions');
       if (epoch !== permissionReadEpoch || dialog !== el('air-global-permission-dialog')) return;
+      checked = data;
       permissionLocal = data.local === true;
       el('air-global-permission-restart').hidden = !permissionLocal || data.applicable === false;
       el('air-global-permission-target').textContent = data.agentApp
@@ -306,6 +326,7 @@
     }
     el('air-global-permission-open').hidden = !nextPermission || !permissionLocal;
     if (!dialog.open) dialog.showModal();
+    return checked;
   }
 
   function setPowerBusy(busy) {
@@ -329,7 +350,6 @@
     status.textContent = data.error ? t('airGlobalPowerReadFailed', { message: data.error }) : t(data.enabled ? 'airGlobalPowerOn' : 'airGlobalPowerOff');
     if (!data.error && !data.enabled && data.systemSleepDisabled) status.textContent = t('airGlobalPowerExternal');
     status.className = 'air-global-status' + (data.error ? ' err' : data.enabled ? ' ok' : '');
-    el('air-global-permissions-button').hidden = !data.unlockPassword?.available;
     paintUnlock(data.unlockPassword);
   }
 
