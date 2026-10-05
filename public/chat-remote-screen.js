@@ -119,8 +119,8 @@
 
   // ── 权限门 ──
   // 远程操作要的是给 MultiCC Agent 的两个系统授权：屏幕录制（看）+ 辅助功能
-  // （输入）。走过「关盖运行 / 自动解锁」的机器必然已授过；没有的话缺屏幕录制
-  // 连帧都出不来。打开屏幕先查一次（GET /api/system/agent-permissions，与
+  // （输入）。输入监控与 Esc 监听另行显示，不阻止已授权的画面继续出帧。
+  // 打开屏幕先查一次（GET /api/system/agent-permissions，与
   // Air 全局设置「检查授权」同源），缺就出引导条，授权勾上后自动开始出帧。
   // 勾选只能在这台 Mac 上做（/open 仅本地放行），远程访客看到的是提示文案。
   async function fetchPerms() {
@@ -133,15 +133,16 @@
   }
   function paintPermBar(data) {
     if (!s || !s.permBar) return;
-    const missing = [];
-    if (!data.screenRecording) missing.push('screenRecording');
-    if (!data.accessibility) missing.push('accessibility');
-    if (!missing.length) { s.permBar.hidden = true; return; }
+    s.permSnapshot = data;
+    const ready = data.screenRecording === true && data.accessibility === true
+      && data.listenAccess === true && data.escMonitorEnabled === true;
+    if (ready && !s.permResult) { s.permBar.hidden = true; return; }
     s.permBar.hidden = false;
     const row = (key, label) => {
       const li = el('span', 'rs-perm-item');
-      li.append(el('span', null, `${label} ${data[key] ? '✓' : '✗'}`));
-      if (!data[key] && data.local) {
+      li.dataset.permission = key;
+      li.append(el('span', null, `${label} ${data[key] === true ? '✓' : data[key] === false ? '✗' : '?'}`));
+      if (data[key] === false && data.local) {
         li.appendChild(btn(tr('rsPermOpen', '打开设置'), '', async () => {
           await fetch(tok('/api/system/agent-permissions/open'), {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -155,10 +156,19 @@
       el('span', 'rs-perm-title', tr('rsPermTitle', '远程操作权限')),
       row('screenRecording', tr('rsPermScreen', '屏幕录制')),
       row('accessibility', tr('rsPermAx', '辅助功能')),
-      el('span', 'rs-perm-hint', data.local
+      row('listenAccess', tr('airGlobalPermissionsInputMonitoring', '输入监控')),
+      el('span', 'rs-perm-hint rs-perm-esc', data.escMonitorEnabled === true
+        ? tr('airGlobalPermissionsEscEnabled', '本机 Esc 急停监听已启用；可在桌面操作期间按实体 Esc 键验证。')
+        : data.escMonitorEnabled === false
+          ? (data.listenAccess === false
+            ? tr('airGlobalPermissionsEscNoAccess', '本机 Esc 急停不可用：请给 MultiCC Agent 开启输入监控，再重启 Agent 并复查。')
+            : tr('airGlobalPermissionsEscInactive', '本机 Esc 急停监听未启用：请重启 Agent 并复查。'))
+          : tr('airGlobalPermissionsEscUnknown', '无法确认本机 Esc 急停状态；请更新 Agent 后复查，暂勿依赖 Esc 叫停。')),
+      el('span', 'rs-perm-result', s.permResult || ''),
+      ...(!ready ? [el('span', 'rs-perm-hint', data.local
         ? tr('rsPermHint', '请给 MultiCC Agent 开启权限；已开启仍未通过时，先重启 Agent，再重新检测')
         : tr('rsPermRemote', '授权只能在这台 Mac 上完成——请回到 Mac 前操作，或在 Air 全局设置的电源卡里点「检查授权」')),
-      el('span', 'rs-perm-hint', tr('airGlobalPermissionsRecovery', '授权后可能需要重启 Agent；更新后仍不生效，请移除旧条目并重新添加当前 App。重启会短暂中断桌面操作。')),
+      el('span', 'rs-perm-hint', tr('airGlobalPermissionsRecovery', '授权后可能需要重启 Agent；仍未通过时先核对 App 路径。旧签名授权失效时，需移除旧条目并重新添加当前 App。重启会短暂中断桌面操作。'))] : []),
     );
     if (data.local) {
       if (data.agentApp) s.permBar.append(el('span', 'rs-perm-hint', data.agentApp));
@@ -166,40 +176,57 @@
         const current = s;
         if (!current || current.permRestarting) return;
         current.permRestarting = true;
+        current.permEpoch++;
         const button = event.currentTarget;
         button.disabled = true;
+        current.permResult = tr('airGlobalPermissionsRestarting', '正在重启 Agent 并读取最新状态…');
+        current.permBar.querySelector('.rs-perm-result').textContent = current.permResult;
         try {
           const res = await fetch(tok('/api/system/agent-permissions/restart'), { method: 'POST' });
           const reply = await res.json();
           if (!res.ok || !reply.ok) throw new Error(reply.error || 'Agent restart failed');
+          if (s === current && !current.closed) {
+            current.permResult = tr('airGlobalPermissionsRestarted', 'Agent 已重启，以下为重启后的检测结果。');
+            current.permApply(reply);
+          }
         } catch (error) {
-          if (s === current && !current.closed) status(error.message, true);
+          if (s === current && !current.closed) {
+            current.permResult = tr('airGlobalPermissionsRestartFailed', '重启 Agent 失败：{message}', { message: error.message });
+            paintPermBar(current.permSnapshot);
+          }
         } finally { current.permRestarting = false; button.disabled = false; }
       }));
     }
   }
   async function permissionGate(start) {
     const current = s;
-    const data = await fetchPerms();
-    if (!current || s !== current || current.closed) return;
-    if (!data || (data.screenRecording && data.accessibility)) { start(); return; }
-    paintPermBar(data);
-    status(tr('rsPermNeed', '看屏幕需「屏幕录制」，远程操作需「辅助功能」'), true);
-    clearInterval(s.permTimer);
-    s.permTimer = setInterval(async () => {
-      if (s !== current || current.closed || current.permStarted) { clearInterval(current.permTimer); return; }
-      if (s.permRestarting) return;
-      const again = await fetchPerms();
-      if (s !== current || current.closed) { clearInterval(current.permTimer); return; }
-      if (current.permRestarting) return;
-      if (!again) { clearInterval(s.permTimer); if (!s.permStarted) { s.permStarted = true; start(); } return; }
-      if (again.screenRecording && again.accessibility) {
-        clearInterval(s.permTimer);
-        s.permBar.hidden = true;
-        if (!s.permStarted) { s.permStarted = true; start(); }
-      } else {
-        paintPermBar(again);
+    if (!current) return;
+    current.permEpoch = 0;
+    const apply = data => {
+      if (s !== current || current.closed) return;
+      paintPermBar(data || {});
+      // An Esc warning is independent of the capture/input permission gate.
+      if (!data || (data.screenRecording && data.accessibility)) {
+        if (!current.permStarted) { current.permStarted = true; start(); }
+      } else if (!current.permStarted) {
+        status(tr('rsPermNeed', '看屏幕需「屏幕录制」，远程操作需「辅助功能」'), true);
       }
+    };
+    current.permApply = apply;
+    apply(await fetchPerms());
+    if (s !== current || current.closed) return;
+    let checking = false, lastCheck = Date.now();
+    clearInterval(current.permTimer);
+    current.permTimer = setInterval(async () => {
+      if (s !== current || current.closed) { clearInterval(current.permTimer); return; }
+      if (checking || current.permRestarting) return;
+      if (current.permStarted && Date.now() - lastCheck < 10000) return;
+      checking = true;
+      const epoch = current.permEpoch;
+      const again = await fetchPerms();
+      checking = false;
+      lastCheck = Date.now();
+      if (!current.permRestarting && epoch === current.permEpoch) apply(again);
     }, 2000);
   }
 

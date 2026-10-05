@@ -4260,7 +4260,7 @@
   "airGlobalPermissionsOpen": "打开系统设置",
   "airGlobalPermissionsRecheck": "重新检测",
   "airGlobalPermissionsClose": "关闭",
-  "airGlobalPermissionsGuide": "已打开系统设置。请在「{name}」里为 MultiCC Agent 开启权限，然后回到这里重新检测。",
+  "airGlobalPermissionsGuide": "已打开系统设置。请在「{name}」里为 MultiCC Agent 开启权限，然后回到这里点击「重启 Agent 并重新检测」。",
   "airGlobalPermissionsAccessibility": "辅助功能",
   "airGlobalPermissionsRecording": "屏幕录制",
   "airGlobalPermissionsOpenFailed": "打开系统设置失败：{message}",
@@ -4378,5 +4378,16 @@
   "airGlobalPermissionsRestart": "重启 Agent 并重新检测",
   "airGlobalPermissionsRestartFailed": "重启 Agent 失败：{message}",
   "airGlobalPermissionsTarget": "需授权的 App：{path}",
-  "airGlobalPermissionsRecovery": "如果开关已开启仍未通过，请先重启 Agent，让新授权生效。若更新后仍失败，旧签名授权可能已失效：在对应权限列表中移除 MultiCC Agent，再添加当前 App 并开启权限。重启 Agent 会短暂中断桌面操作。"
+  "airGlobalPermissionsRecovery": "首次授权后，常驻 Agent 可能仍返回旧状态。确认系统开关已开启后，点击「重启 Agent 并重新检测」。若仍未通过，先核对授权的 App 路径；更新导致旧签名授权失效时，再移除旧条目并重新添加当前 App。重启 Agent 会短暂中断桌面操作。",
+  "airGlobalPermissionsInputMonitoring": "输入监控",
+  "airGlobalPermissionsGranted": "已授权",
+  "airGlobalPermissionsNotDetected": "未检测到授权",
+  "airGlobalPermissionsUnknown": "状态未知",
+  "airGlobalPermissionsDesktopReady": "屏幕录制、辅助功能已通过检测；Esc 急停状态单独显示如下。",
+  "airGlobalPermissionsEscEnabled": "本机 Esc 急停监听已启用；可在桌面操作期间按实体 Esc 键验证。",
+  "airGlobalPermissionsEscNoAccess": "本机 Esc 急停不可用：请给 MultiCC Agent 开启输入监控，再重启 Agent 并复查。",
+  "airGlobalPermissionsEscInactive": "本机 Esc 急停监听未启用：请重启 Agent 并复查。权限开关已开启不代表监听正在工作。",
+  "airGlobalPermissionsEscUnknown": "无法确认本机 Esc 急停状态；请更新 Agent 后复查，暂勿依赖 Esc 叫停。",
+  "airGlobalPermissionsRestarting": "正在重启 Agent 并读取最新状态…",
+  "airGlobalPermissionsRestarted": "Agent 已重启，以下为重启后的检测结果。"
 }

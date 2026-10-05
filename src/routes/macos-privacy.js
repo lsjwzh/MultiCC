@@ -20,6 +20,7 @@ const FULL_DISK_ACCESS_URL = 'x-apple.systempreferences:com.apple.preference.sec
 const AGENT_PERMISSION_URLS = Object.freeze({
   accessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
   screenRecording: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+  listenAccess: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent',
 });
 
 function isLocal(req) {
@@ -62,8 +63,15 @@ function createMacosPrivacyRoutes({
     // name is not necessarily the app holding this Agent's TCC identity.
     if (base.local) base.agentApp = resolveAgentApp();
     if (!result) return { ok: false, ...base, error: 'agent-unavailable' };
+    // installed != enabled: a created tap may be disabled. Either of the
+    // Agent's two taps can receive Esc; missing/partial legacy data is unknown.
+    const taps = ['hid', 'session'].map(name => result.escTaps?.[name]?.enabled);
+    const escMonitorEnabled = taps.some(value => value === true) ? true
+      : taps.every(value => value === false) ? false : null;
     return { ok: true, ...base,
-      accessibility: result.accessibility, screenRecording: result.screenRecording };
+      accessibility: result.accessibility, screenRecording: result.screenRecording,
+      listenAccess: typeof result.listenAccess === 'boolean' ? result.listenAccess : null,
+      escMonitorEnabled };
   }
 
   async function agentPermissionsHandler(req, res) {

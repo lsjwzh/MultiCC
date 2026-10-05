@@ -17,17 +17,21 @@ test('remote screen permission recovery restarts on click and resumes after a fr
   if (!findChromeBinary()) return t.skip('Chrome required');
   const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   let granted = false, local = true, restartFails = true, restarts = 0, frames = 0;
+  let listenAccess = true, escMonitorEnabled = true;
+  const opens = [];
+  const snapshot = () => ({ ok: true, applicable: true, local, listenAccess, escMonitorEnabled,
+    accessibility: granted, screenRecording: granted, agentApp: local ? '/Applications/MultiCC Agent.app' : null });
   const routes = {
     '/': { headers: { 'content-type': 'text/html; charset=utf-8' }, body: '<!doctype html><script src="/chat-remote-screen.js"></script>' },
     '/chat-remote-screen.js': { headers: { 'content-type': 'text/javascript' },
       body: fs.readFileSync(path.resolve(__dirname, '../public/chat-remote-screen.js')) },
-    'GET /api/system/agent-permissions': () => json({ ok: true, applicable: true, local,
-      accessibility: granted, screenRecording: granted, agentApp: local ? '/Applications/MultiCC Agent.app' : null }),
+    'GET /api/system/agent-permissions': () => json(snapshot()),
+    'POST /api/system/agent-permissions/open': req => { opens.push(JSON.parse(req.body).permission); return json({ ok: true }); },
     'POST /api/system/agent-permissions/restart': () => {
       restarts++;
       if (restartFails) return { status: 503, ...json({ ok: false, error: 'fixture: restart failed' }) };
       granted = true;
-      return json({ ok: true });
+      return json(snapshot());
     },
     'GET /api/remote-screen/frame': () => { frames++; return { status: 503, ...json({ error: 'fixture: no screen capture' }) }; },
   };
@@ -44,10 +48,31 @@ test('remote screen permission recovery restarts on click and resumes after a fr
     assert.equal(frames, 0);
     restartFails = false;
     await page.evaluate(restartClick);
-    assert.ok(await page.waitFor(`document.querySelector('.rs-permbar')?.hidden === true`));
+    assert.ok(await page.waitFor(`document.querySelector('.rs-perm-result')?.textContent.includes('Agent 已重启')`));
     assert.ok(await page.waitFor(`document.body.textContent.includes('fixture: no screen capture')`));
     assert.equal(restarts, 2);
     assert.ok(frames > 0);
+    await page.evaluate('MultiCCRemoteScreen.close()');
+    listenAccess = false; escMonitorEnabled = false;
+    await page.evaluate('MultiCCRemoteScreen.open()');
+    assert.ok(await page.waitFor(`document.querySelector('.rs-perm-esc')?.textContent.includes('急停不可用')`));
+    assert.ok(await page.waitFor(`document.body.textContent.includes('fixture: no screen capture')`), 'Esc warning does not block capture');
+    await page.evaluate(`document.querySelector('[data-permission="listenAccess"] button').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('[data-permission="listenAccess"]') !== null`));
+    // Wait for the settings request to finish before inspecting the captured call.
+    await page.evaluate(`new Promise(resolve => setTimeout(resolve, 100))`);
+    assert.deepEqual(opens, ['listenAccess']);
+    listenAccess = true;
+    await page.evaluate(restartClick);
+    assert.ok(await page.waitFor(`document.querySelector('.rs-perm-esc')?.textContent.includes('监听未启用')`));
+    escMonitorEnabled = true;
+    await page.evaluate(restartClick);
+    assert.ok(await page.waitFor(`document.querySelector('.rs-perm-esc')?.textContent.includes('监听已启用')`));
+    await page.evaluate('MultiCCRemoteScreen.close()');
+    listenAccess = null; escMonitorEnabled = null;
+    await page.evaluate('MultiCCRemoteScreen.open()');
+    assert.ok(await page.waitFor(`document.querySelector('.rs-perm-esc')?.textContent.includes('无法确认')`));
+    assert.match(await page.evaluate(`document.querySelector('[data-permission="listenAccess"]').textContent`), /\?/);
     await page.evaluate('MultiCCRemoteScreen.close()');
     granted = false; local = false;
     await page.evaluate('MultiCCRemoteScreen.open()');
@@ -79,7 +104,8 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
   // 授权被取消」三条路都能在测试里确定性地走一遍。
   let powerDelay = 0, powerNegate = false, powerError = '';
   const powerPosts = [];
-  let agentPermissions = { ok: true, applicable: true, local: true, accessibility: true, screenRecording: true };
+  let agentPermissions = { ok: true, applicable: true, local: true, accessibility: true, screenRecording: true,
+    listenAccess: true, escMonitorEnabled: true };
   const permissionOpens = [];
   let permissionRestarts = 0;
   let permissionRestartError = '';
@@ -408,12 +434,31 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     assert.deepEqual(permissionOpens, ['accessibility', 'screenRecording']);
     permissionRestartError = 'fixture: launch agent unavailable';
     await click('permission-restart');
-    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-body').textContent.includes('fixture: launch agent unavailable')`));
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-result').textContent.includes('fixture: launch agent unavailable')`));
     assert.equal(await page.evaluate(`document.getElementById('air-global-permission-dialog').open`), true);
     permissionRestartError = '';
     await click('permission-restart');
-    assert.ok(await page.waitFor(`!document.getElementById('air-global-permission-dialog').open`));
+    assert.ok(await page.waitFor(`document.getElementById('air-global-permission-result').textContent === t('airGlobalPermissionsRestarted')`));
+    assert.equal(await page.evaluate(`document.getElementById('air-global-permission-dialog').open`), true);
+    assert.equal(await text('#air-global-permission-body'), await t('airGlobalPermissionsDesktopReady'));
     assert.equal(permissionRestarts, 2);
+    for (const [listenAccess, escMonitorEnabled, key] of [
+      [false, false, 'airGlobalPermissionsEscNoAccess'],
+      [true, false, 'airGlobalPermissionsEscInactive'],
+      [undefined, undefined, 'airGlobalPermissionsEscUnknown'],
+      [true, true, 'airGlobalPermissionsEscEnabled'],
+    ]) {
+      agentPermissions = { ...agentPermissions, listenAccess, escMonitorEnabled };
+      await click('permission-check');
+      assert.ok(await page.waitFor(`document.getElementById('air-global-permission-esc').textContent === t(${JSON.stringify(key)})`));
+      assert.equal(await page.evaluate(`document.getElementById('air-global-permission-dialog').open`), true);
+      if (listenAccess === false) {
+        await click('permission-open');
+        assert.ok(await page.waitFor(`!document.getElementById('air-global-permission-open').disabled`));
+        assert.equal(permissionOpens.at(-1), 'listenAccess');
+      }
+    }
+    await page.evaluate(`document.getElementById('air-global-permission-dialog').close()`);
 
     agentPermissions = { ...agentPermissions, accessibility: false, local: false, agentApp: undefined };
     await click('permissions-button');
@@ -431,7 +476,7 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     assert.ok(await page.waitFor(`document.getElementById('air-lid-sleep') && !document.getElementById('air-lid-sleep').classList.contains('on')`));
     await page.evaluate(`document.getElementById('air-lid-sleep').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-global-permission-dialog')?.open === true`));
-    assert.deepEqual(permissionOpens, ['accessibility', 'screenRecording', 'accessibility']);
+    assert.deepEqual(permissionOpens, ['accessibility', 'screenRecording', 'listenAccess', 'accessibility']);
 
     // Missing desktop grants must guide BOTH unlock entry points without
     // turning the switch on, including direct API rejection on the web panel.

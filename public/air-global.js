@@ -52,7 +52,8 @@
           border-radius: 14px; padding: 22px; color: #25445e; box-shadow: 0 16px 50px rgba(18,45,70,.22); }
         .air-global-permission-dialog::backdrop { background: rgba(14,32,48,.48); }
         .air-global-permission-dialog h3 { margin: 0 0 8px; }
-        .air-global-permission-dialog p { line-height: 1.6; }
+        .air-global-permission-dialog p { line-height: 1.6; overflow-wrap: anywhere; }
+        .air-global-permission-status { display: grid; gap: 6px; }
         .air-global-permission-dialog .air-global-foot { margin-top: 15px; }
       `;
     }
@@ -99,13 +100,21 @@
     permissionButton.type = 'button';
     permissionButton.id = 'air-global-permissions-button';
     permissionButton.hidden = true;
-    permissionButton.onclick = () => { void checkAgentPermissions(true); };
+    permissionButton.onclick = () => { void checkAgentPermissions(false); };
     const permissionDialog = make('dialog', null, 'air-global-permission-dialog');
     permissionDialog.id = 'air-global-permission-dialog';
     const permissionTitle = make('h3', t('airGlobalPermissionsTitle'));
     const permissionBody = make('p', '', 'air-global-permission-body');
     permissionBody.id = 'air-global-permission-body';
     const permissionRecovery = make('p', t('airGlobalPermissionsRecovery'));
+    permissionRecovery.id = 'air-global-permission-recovery';
+    const permissionResult = make('p');
+    permissionResult.id = 'air-global-permission-result';
+    permissionResult.setAttribute('role', 'status');
+    const permissionStatus = make('div', null, 'air-global-permission-status');
+    permissionStatus.id = 'air-global-permission-status';
+    const permissionEsc = make('p');
+    permissionEsc.id = 'air-global-permission-esc';
     const permissionTarget = make('p');
     permissionTarget.id = 'air-global-permission-target';
     const permissionActions = make('div', null, 'air-global-foot');
@@ -126,7 +135,8 @@
     permissionClose.type = 'button';
     permissionClose.onclick = () => permissionDialog.close();
     permissionActions.append(permissionOpen, permissionCheck, permissionRestart, permissionClose);
-    permissionDialog.append(permissionTitle, permissionBody, permissionTarget, permissionRecovery, permissionActions);
+    permissionDialog.append(permissionTitle, permissionResult, permissionStatus, permissionBody,
+      permissionEsc, permissionTarget, permissionRecovery, permissionActions);
 
     // Password setup is shared by both switches; saved credentials survive disabling.
     const unlockToggle = make('input');
@@ -199,17 +209,30 @@
   let nextPermission = null;
   let permissionLocal = false;
   let permissionRestarting = false;
+  let permissionReadEpoch = 0;
+  const permissionNames = {
+    accessibility: 'airGlobalPermissionsAccessibility',
+    screenRecording: 'airGlobalPermissionsRecording',
+    listenAccess: 'airGlobalPermissionsInputMonitoring',
+  };
 
   async function restartAgentPermissions() {
     if (!permissionLocal || permissionRestarting) return;
     permissionRestarting = true;
+    permissionReadEpoch++;
+    const dialog = el('air-global-permission-dialog');
     const buttons = ['restart', 'check', 'open'].map(name => el('air-global-permission-' + name));
     buttons.forEach(button => { button.disabled = true; });
+    el('air-global-permission-result').textContent = t('airGlobalPermissionsRestarting');
     try {
-      await context.api('/api/system/agent-permissions/restart', {}, 'POST');
-      await checkAgentPermissions(false);
+      const data = await context.api('/api/system/agent-permissions/restart', {}, 'POST');
+      if (dialog !== el('air-global-permission-dialog')) return;
+      if (!data.ok) throw new Error(data.error || t('airGlobalPermissionsAgentUnavailable'));
+      await checkAgentPermissions(false, data);
+      el('air-global-permission-result').textContent = t('airGlobalPermissionsRestarted');
     } catch (error) {
-      el('air-global-permission-body').textContent = t('airGlobalPermissionsRestartFailed', { message: error.message });
+      if (dialog !== el('air-global-permission-dialog')) return;
+      el('air-global-permission-result').textContent = t('airGlobalPermissionsRestartFailed', { message: error.message });
     } finally {
       permissionRestarting = false;
       buttons.forEach(button => { button.disabled = false; });
@@ -223,18 +246,25 @@
     try {
       await context.api('/api/system/agent-permissions/open', { permission: nextPermission }, 'POST');
       el('air-global-permission-body').textContent = t('airGlobalPermissionsGuide', {
-        name: nextPermission === 'accessibility' ? t('airGlobalPermissionsAccessibility') : t('airGlobalPermissionsRecording'),
+        name: t(permissionNames[nextPermission]),
       });
     } catch (error) {
       el('air-global-permission-body').textContent = t('airGlobalPermissionsOpenFailed', { message: error.message });
     } finally { button.disabled = false; }
   }
 
-  async function checkAgentPermissions(autoOpen) {
+  async function checkAgentPermissions(autoOpen, snapshot) {
     const dialog = el('air-global-permission-dialog');
     if (!dialog) return;
+    const epoch = ++permissionReadEpoch;
+    el('air-global-permission-result').textContent = '';
+    el('air-global-permission-status').replaceChildren();
+    el('air-global-permission-esc').textContent = '';
+    el('air-global-permission-target').textContent = '';
+    el('air-global-permission-recovery').hidden = false;
     try {
-      const data = await context.api('/api/system/agent-permissions');
+      const data = snapshot || await context.api('/api/system/agent-permissions');
+      if (epoch !== permissionReadEpoch || dialog !== el('air-global-permission-dialog')) return;
       permissionLocal = data.local === true;
       el('air-global-permission-restart').hidden = !permissionLocal || data.applicable === false;
       el('air-global-permission-target').textContent = data.agentApp
@@ -242,19 +272,33 @@
       if (!data.ok) {
         nextPermission = null;
         el('air-global-permission-body').textContent = t('airGlobalPermissionsAgentUnavailable');
-      } else if (data.applicable === false || (data.accessibility && data.screenRecording)) {
+      } else if (data.applicable === false) {
         nextPermission = null;
         if (dialog.open) dialog.close();
         return;
       } else {
-        nextPermission = !data.accessibility ? 'accessibility' : 'screenRecording';
-        const name = nextPermission === 'accessibility'
-          ? t('airGlobalPermissionsAccessibility') : t('airGlobalPermissionsRecording');
-        el('air-global-permission-body').textContent = data.local
-          ? t('airGlobalPermissionsMissing', { name }) : t('airGlobalPermissionsLocal', { name });
-        if (autoOpen && data.local) await openAgentPermission();
+        for (const [key, label] of Object.entries(permissionNames)) {
+          const row = make('span', `${t(label)}：${t(data[key] === true ? 'airGlobalPermissionsGranted'
+            : data[key] === false ? 'airGlobalPermissionsNotDetected' : 'airGlobalPermissionsUnknown')}`);
+          row.dataset.permission = key;
+          el('air-global-permission-status').append(row);
+        }
+        el('air-global-permission-esc').textContent = t(data.escMonitorEnabled === true
+          ? 'airGlobalPermissionsEscEnabled' : data.escMonitorEnabled === false
+            ? (data.listenAccess === false ? 'airGlobalPermissionsEscNoAccess' : 'airGlobalPermissionsEscInactive')
+            : 'airGlobalPermissionsEscUnknown');
+        nextPermission = !data.accessibility ? 'accessibility' : !data.screenRecording
+          ? 'screenRecording' : data.listenAccess === false ? 'listenAccess' : null;
+        const ready = !nextPermission && data.listenAccess === true && data.escMonitorEnabled === true;
+        el('air-global-permission-recovery').hidden = ready;
+        el('air-global-permission-body').textContent = nextPermission
+          ? t(data.local ? 'airGlobalPermissionsMissing' : 'airGlobalPermissionsLocal', { name: t(permissionNames[nextPermission]) })
+          : t('airGlobalPermissionsDesktopReady');
+        if (autoOpen && ready) { if (dialog.open) dialog.close(); return; }
+        if (autoOpen && data.local && nextPermission) await openAgentPermission();
       }
     } catch (error) {
+      if (epoch !== permissionReadEpoch || dialog !== el('air-global-permission-dialog')) return;
       nextPermission = null;
       permissionLocal = false;
       el('air-global-permission-restart').hidden = true;

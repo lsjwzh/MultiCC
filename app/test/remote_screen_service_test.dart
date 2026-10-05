@@ -107,6 +107,84 @@ Future<void> _pumpUntil(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('急停缺失和未知状态保留提示，但不阻止已有桌面权限取帧', () {
+    final base = <String, dynamic>{
+      'ok': true,
+      'applicable': true,
+      'accessibility': true,
+      'screenRecording': true,
+    };
+    for (final entry in [
+      [false, false, 'airGlobalPermissionsEscNoAccess'],
+      [true, false, 'airGlobalPermissionsEscInactive'],
+      [null, null, 'airGlobalPermissionsEscUnknown'],
+      [true, true, 'airGlobalPermissionsEscEnabled'],
+    ]) {
+      final perms = {
+        ...base,
+        'listenAccess': entry[0],
+        'escMonitorEnabled': entry[1],
+      };
+      expect(RemoteScreenService.desktopPermissionsReady(perms), isTrue);
+      expect(
+        RemoteScreenService.allPermissionsReady(perms),
+        entry[0] == true && entry[1] == true,
+      );
+      expect(RemoteScreenService.escStatusKey(perms), entry[2]);
+    }
+    expect(
+      RemoteScreenService.desktopPermissionsReady({
+        ...base,
+        'screenRecording': false,
+      }),
+      isFalse,
+    );
+    expect(RemoteScreenService.allPermissionsReady({'ok': false}), isFalse);
+  });
+
+  test('复查不重启；手动重启保留真实监听状态和失败回执', () async {
+    final incoming = StreamController<dynamic>.broadcast();
+    addTearDown(incoming.close);
+    final calls = <String>[];
+    var failRestart = false;
+    final payload = {
+      'ok': true,
+      'applicable': true,
+      'accessibility': true,
+      'screenRecording': true,
+      'listenAccess': true,
+      'escMonitorEnabled': false,
+    };
+    final service = await _make(
+      incoming: incoming,
+      sent: [],
+      httpStub: MockClient((req) async {
+        calls.add('${req.method} ${req.url.path}');
+        if (req.url.path.endsWith('/open')) {
+          expect(jsonDecode(req.body)['permission'], 'listenAccess');
+          return http.Response('{"ok":true}', 200);
+        }
+        if (req.method == 'POST' && failRestart) {
+          return http.Response('{"ok":false,"error":"fixture"}', 503);
+        }
+        return http.Response(jsonEncode(payload), 200);
+      }),
+    );
+    addTearDown(service.dispose);
+    final before = await service.agentPermissions();
+    expect(before['escMonitorEnabled'], isFalse);
+    expect(calls, ['GET /api/system/agent-permissions']);
+    await service.openPermission('listenAccess');
+    final after = await service.restartAgentPermissions();
+    expect(after['escMonitorEnabled'], isFalse, reason: '重启成功不等于监听已启用');
+    expect(calls.last, 'POST /api/system/agent-permissions/restart');
+    failRestart = true;
+    expect(await service.restartAgentPermissions(), {
+      'ok': false,
+      'error': 'fixture',
+    });
+  });
+
   test('换票 → RFB 握手 → live，帧应用进 framebuffer', () async {
     final incoming = StreamController<dynamic>();
     final sent = <Uint8List>[];
@@ -171,11 +249,13 @@ void main() {
     final service = await _make(
       incoming: incoming,
       sent: sent,
-      httpStub: MockClient((request) async => http.Response.bytes(
-        Uint8List.fromList([1, 2, 3]),
-        200,
-        headers: const {'X-Screen-Width': '4', 'X-Screen-Height': '2'},
-      )),
+      httpStub: MockClient(
+        (request) async => http.Response.bytes(
+          Uint8List.fromList([1, 2, 3]),
+          200,
+          headers: const {'X-Screen-Width': '4', 'X-Screen-Height': '2'},
+        ),
+      ),
     );
     addTearDown(service.dispose);
 
