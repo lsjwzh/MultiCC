@@ -68,6 +68,7 @@ function harness(options = {}) {
     isCurrentTurnRunner: (state, turn, runner) => state._activeRunner === runner
       && state._activeTurn === turn,
     isShuttingDown: () => false,
+    recordProviderFailure: options.recordProviderFailure,
     now: typeof options.now === 'function' ? options.now : () => 1_000,
     setTimeout: (callback, delay) => {
       const timer = { callback, delay, unref() {} };
@@ -477,4 +478,116 @@ test('API failures remain request-local and never install recovery gates', () =>
   assert.equal(h.host.isHeld, undefined);
   assert.equal(h.host.auxHealthProbe, undefined);
   assert.equal(h.host.stopNetworkProbe, undefined);
+});
+
+// A revoked OAuth credential, exactly as Claude's API words it — the sanitizer
+// redacts the verb, so the pattern must survive "Failed to [REDACTED]:" too.
+const REVOKED_TEXT = 'Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.';
+
+function revokedDecision(overrides = {}) {
+  return decision({
+    action: 'fail',
+    error: {
+      category: 'authentication_permission',
+      provider: 'claude-exp',
+      httpStatus: null,
+      retryable: false,
+      safeToRetry: false,
+      rootCause: REVOKED_TEXT,
+      sanitizedMessage: REVOKED_TEXT,
+    },
+    ...overrides,
+  });
+}
+
+function revokedTurn(h, persisted = { cli: 'claude-exp', provider: 'claude-official-abc' }) {
+  return h.host.evaluateTurnApiError({
+    sessionName: 'session-1', cs: {}, persisted,
+    turn: { turnId: 'turn-1' }, runner: {},
+    raw: { source: 'process_stderr' }, phase: 'before_first_token',
+  });
+}
+
+test('a revoked OAuth credential parks its provider so Auto stops re-selecting it', () => {
+  const parks = [];
+  const h = harness({ recordProviderFailure: input => parks.push(input) });
+  h.decideWith(() => revokedDecision());
+  revokedTurn(h);
+  assert.deepEqual(parks, [{
+    providerId: 'claude-official-abc',
+    category: 'authentication_permission',
+  }], 'the dead account is written to the limit cache that Auto reads');
+});
+
+test('an ordinary auth failure is not a revocation and never parks the provider', () => {
+  const parks = [];
+  const h = harness({ recordProviderFailure: input => parks.push(input) });
+  h.decideWith(() => decision({
+    error: {
+      category: 'authentication_permission',
+      rootCause: '401 invalid x-api-key',
+      sanitizedMessage: '401 invalid x-api-key',
+    },
+  }));
+  revokedTurn(h);
+  assert.deepEqual(parks, [], 'a plain 401 is retried by the user, not evicted');
+});
+
+test('an expired credential is refreshed, not parked', () => {
+  const parks = [];
+  const h = harness({ recordProviderFailure: input => parks.push(input) });
+  h.decideWith(() => decision({
+    error: {
+      category: 'authentication_permission',
+      rootCause: 'cpr: official OAuth unavailable — OAuth token expired',
+      sanitizedMessage: 'cpr: official OAuth unavailable — OAuth token expired',
+    },
+  }));
+  revokedTurn(h);
+  assert.deepEqual(parks, [], 'expiry has a repair path and must not evict the account');
+});
+
+test('a vendor-auth CLI owns its account, so its revocation never parks the provider', () => {
+  const parks = [];
+  const h = harness({ recordProviderFailure: input => parks.push(input) });
+  h.decideWith(() => revokedDecision({
+    error: { category: 'authentication_permission', rootCause: REVOKED_TEXT, sanitizedMessage: REVOKED_TEXT },
+  }));
+  revokedTurn(h, { cli: 'qoder', provider: 'qoder-account-1' });
+  assert.deepEqual(parks, [], 'the vendor TUI owns that account; eviction would be wrong');
+});
+
+test('a providerless default route is never parked', () => {
+  const parks = [];
+  const h = harness({ recordProviderFailure: input => parks.push(input) });
+  h.decideWith(() => revokedDecision());
+  revokedTurn(h, { cli: 'claude' });
+  assert.deepEqual(parks, [], 'there is no provider id to park');
+});
+
+test('a failing park never masks the turn failure it observes', () => {
+  const h = harness({ recordProviderFailure: () => { throw new Error('limit cache down'); } });
+  h.decideWith(() => revokedDecision());
+  const result = revokedTurn(h);
+  assert.equal(result.error.category, 'authentication_permission');
+  assert.ok(h.broadcasts.some(b => b.payload.type === 'api_error_policy'),
+    'the user still learns why the turn failed');
+});
+
+test('a host without a provider-limit cache keeps the previous behaviour', () => {
+  const h = harness();
+  h.decideWith(() => revokedDecision());
+  const result = revokedTurn(h);
+  assert.equal(result.error.category, 'authentication_permission');
+  assert.ok(h.taskWrites.length > 0, 'the decision path is unchanged when nothing is injected');
+});
+
+test('a duplicate delivery does not park the provider twice', () => {
+  const parks = [];
+  const h = harness({ recordProviderFailure: input => parks.push(input) });
+  h.decideWith(() => revokedDecision());
+  revokedTurn(h);
+  h.decideWith(() => revokedDecision({ duplicate: true }));
+  revokedTurn(h);
+  assert.equal(parks.length, 1, 'idempotent duplicate deliveries stay idempotent');
 });

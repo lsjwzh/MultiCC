@@ -2,6 +2,7 @@
 
 const { isErrorOnlyText, retryNotice } = require('./api-error-policy');
 const { vendorLoginForCli } = require('../cli-adapters/vendor-login');
+const { looksLikeRevokedOAuth } = require('../claude-auth/oauth-refresh');
 
 function cleanIdentity(value) {
   return value == null ? '' : String(value).trim();
@@ -93,6 +94,34 @@ function createApiErrorHost(options = {}) {
   const now = typeof options.now === 'function' ? options.now : Date.now;
   const setTimeoutFn = typeof options.setTimeout === 'function' ? options.setTimeout : setTimeout;
   const clearTimeoutFn = typeof options.clearTimeout === 'function' ? options.clearTimeout : clearTimeout;
+  // Optional: parking a dead credential is bookkeeping around the error, not a
+  // reason to refuse construction. Hosts without a provider-limit cache (and
+  // every existing test) keep the previous behaviour untouched.
+  const recordProviderFailure = typeof options.recordProviderFailure === 'function'
+    ? options.recordProviderFailure : null;
+
+  // A revoked OAuth credential is a dead account, not an expired one: no refresh
+  // can revive it (see claude-auth/oauth-refresh.js), so the only useful
+  // reaction is to stop routing there. In-turn failover covers this turn;
+  // parking the provider in the limit cache is what makes Auto skip it on the
+  // turns after this one too — without it a sticky or re-chosen route keeps
+  // handing turns to an account that is locally "fresh" but server-side dead.
+  function parkRevokedCredential(decision, identity, vendorLogin) {
+    if (!recordProviderFailure) return;
+    const error = decision && decision.error;
+    if (!error || error.category !== 'authentication_permission') return;
+    const providerId = identity && identity.providerId;
+    if (!providerId || providerId === '_default_') return;
+    // Vendor-auth CLIs own their account store: an auth failure there is normal
+    // operation fixed inside the vendor TUI, not a reason to evict the provider.
+    if (vendorLogin) return;
+    // Matched against the same sanitized text the user sees, so a provider's
+    // generic 401 is never mistaken for a revocation.
+    if (!looksLikeRevokedOAuth(error.rootCause || error.sanitizedMessage)) return;
+    try {
+      recordProviderFailure({ providerId, category: 'authentication_permission' });
+    } catch (_) { /* bookkeeping must never mask the turn failure it observes */ }
+  }
 
   function recordApiSuccess(provider, context = {}) {
     policy.recordSuccess(provider || 'unknown', context);
@@ -200,6 +229,7 @@ function createApiErrorHost(options = {}) {
       // terminal" button instead of a dead-end text notice.
       const vendorLogin = decision.error.category === 'authentication_permission'
         ? vendorLoginForCli(identity.cli) : null;
+      parkRevokedCredential(decision, identity, vendorLogin);
       const authAction = vendorLogin ? {
         kind: 'vendor_login_terminal',
         cli: identity.cli,

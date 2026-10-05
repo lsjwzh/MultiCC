@@ -56,8 +56,21 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const EXPIRED_OAUTH_PATTERN =
   /official OAuth unavailable|OAuth token expired|refresh the Keychain|no OAuth credentials/i;
 
+// Revocation is the opposite problem to expiry, and demands the opposite
+// reaction. An expired access token is repaired by running the CLI — that is
+// the whole point of this module. A revoked token family is already dead
+// server-side, so every invocation fails identically and a refresh attempt can
+// only burn a cooldown and hide the fact that a human must log in. Named
+// separately so callers can park the account instead of retrying it.
+const REVOKED_OAUTH_PATTERN =
+  /oauth token revoked|token (?:has been |was )?revoked|credentials? (?:have been |were )?revoked/i;
+
 function looksLikeExpiredOAuth(message) {
   return EXPIRED_OAUTH_PATTERN.test(String(message || ''));
+}
+
+function looksLikeRevokedOAuth(message) {
+  return REVOKED_OAUTH_PATTERN.test(String(message || ''));
 }
 
 function parseCredentials(text) {
@@ -337,7 +350,15 @@ function createClaudeOAuthRefresher(options = {}) {
   // the buffer is moot — but the message must actually be about that credential.
   function onApiError(decision) {
     const error = decision && decision.error;
-    if (!error || !looksLikeExpiredOAuth(error.sanitizedMessage)) return null;
+    if (!error) return null;
+    // Answer revocation before expiry: the two patterns cannot both match, but
+    // ordering makes the intent explicit. A revoked token is reported, never
+    // refreshed — running the CLI here would spend a rotation on a credential
+    // the server has already rejected.
+    if (looksLikeRevokedOAuth(error.sanitizedMessage)) {
+      return Promise.resolve({ outcome: 'needs-login', detail: 'token_revoked', reason: 'api-error' });
+    }
+    if (!looksLikeExpiredOAuth(error.sanitizedMessage)) return null;
     return refresh({ reason: 'api-error' });
   }
 
@@ -360,6 +381,7 @@ function createClaudeOAuthRefresher(options = {}) {
 module.exports = {
   createClaudeOAuthRefresher,
   looksLikeExpiredOAuth,
+  looksLikeRevokedOAuth,
   parseCredentials,
   KEYCHAIN_SERVICE,
   DEFAULT_CHECK_INTERVAL_MS,
