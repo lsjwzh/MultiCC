@@ -512,3 +512,51 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
 
   });
 });
+
+
+test('屏幕入口在锁屏时提供受开关约束的唤起按钮，成功后继续取帧', async t => {
+  if (!findChromeBinary()) return t.skip('需要浏览器');
+  const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  let enabled = false, locked = true, posts = 0, frames = 0, fail = false;
+  const routes = {
+    '/': { headers: { 'content-type': 'text/html; charset=utf-8' }, body: '<script src="/chat-remote-screen.js"></script>' },
+    '/chat-remote-screen.js': { headers: { 'content-type': 'text/javascript' }, body: fs.readFileSync(path.resolve(__dirname, '../public/chat-remote-screen.js')) },
+    'GET /api/system/agent-permissions': () => json({ ok: true, applicable: true, accessibility: true, screenRecording: true, listenAccess: true, escMonitorEnabled: true }),
+    'GET /api/remote-screen/wake': () => json({ ok: true, screenLocked: locked, canWake: enabled,
+      message: enabled ? '' : '请先开启自动解锁' }),
+    'POST /api/remote-screen/wake': () => {
+      posts++;
+      if (fail) return { status: 409, ...json({ ok: false, message: '请先完成钥匙串授权' }) };
+      locked = false;
+      return json({ ok: true, screenLocked: false, canWake: true, message: '屏幕已唤起，正在恢复画面。' });
+    },
+    'GET /api/remote-screen/frame': () => { frames++; return { status: 503, ...json({ error: '测试占位帧' }) }; },
+  };
+  await withCdpHarness({ routes }, async page => {
+    await page.navigate('/');
+    await page.evaluate('MultiCCRemoteScreen.open()');
+    const button = `Array.from(document.querySelectorAll('.rs-head button')).find(b => b.textContent === '唤起屏幕')`;
+    assert.ok(await page.waitFor(`document.querySelector('.rs-wake-hint').textContent.includes('请先开启自动解锁')`));
+    assert.equal(await page.evaluate(`${button}.disabled`), true);
+    await page.evaluate(`${button}.click()`);
+    assert.equal(posts, 0, '打开页面或轮询不会自动解锁');
+    enabled = true;
+    await page.evaluate('MultiCCRemoteScreen.close(); MultiCCRemoteScreen.open()');
+    assert.ok(await page.waitFor(`${button}.disabled === false`));
+    assert.match(await page.evaluate(`document.querySelector('.rs-wake-hint').textContent`), /屏幕已锁定/);
+    fail = true;
+    await page.evaluate(`${button}.click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.rs-wake-hint').textContent.includes('钥匙串授权')`));
+    assert.equal(locked, true);
+    fail = false;
+    assert.ok(await page.waitFor(`${button}.disabled === false`));
+    const before = frames;
+    await page.evaluate(`${button}.click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.rs-wake-hint').textContent.includes('屏幕已唤起')`));
+    assert.ok(await page.waitFor(`document.querySelector('.rs-status').textContent.includes('测试占位帧')`));
+    await page.evaluate('new Promise(resolve => setTimeout(resolve, 1700))');
+    assert.ok(frames > before, '解锁后继续请求画面');
+    assert.equal(posts, 2);
+    await page.evaluate('MultiCCRemoteScreen.close()');
+  });
+});

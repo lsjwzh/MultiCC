@@ -210,3 +210,61 @@ test('connection-router routes /ws/remote-screen through the rfb bridge behind s
   assert.match(src, /SESSIONLESS_WS_PATHS[\s\S]*?\/ws\/remote-screen/);
   assert.match(src, /remoteScreenRfb\.attachRfb\(ws\)/);
 });
+
+test('唤起屏幕只允许已开启自动解锁的用户，并核对真实解锁结果', async () => {
+  const { mountWakeRoutes } = require('../src/remote-screen-wake');
+  let enabled = false, locked = true, permissions = true, halted = false, unlockOk = true, staysLocked = false;
+  let wakes = 0, unlocks = 0, invalidations = 0;
+  const app = fakeApp();
+  mountWakeRoutes(app, {
+    consent: async () => enabled,
+    wakeDisplay: async () => { wakes++; }, invalidate: () => { invalidations++; },
+    call: async req => {
+      if (req.op === 'status') return { ok: true, screenLocked: locked,
+        accessibility: permissions, screenRecording: permissions, control: { halted } };
+      assert.deepEqual(req, { op: 'unlock', session: 'remote-screen' });
+      unlocks++;
+      if (!unlockOk) return { ok: false, reason: 'password-needs-authorization' };
+      if (!staysLocked) locked = false;
+      return { ok: true };
+    },
+  });
+  const get = () => invoke(app.handlers['GET /api/remote-screen/wake']);
+  const post = () => invoke(app.handlers['POST /api/remote-screen/wake']);
+  assert.equal((await get()).body.canWake, false);
+  assert.equal(unlocks, 0);
+  assert.equal((await post()).body.error, 'auto-unlock-disabled');
+  enabled = true; permissions = false;
+  assert.equal((await post()).body.error, 'permissions-required');
+  permissions = true; halted = true;
+  assert.equal((await post()).body.error, 'user-stopped');
+  assert.equal(wakes, 0);
+  halted = false; unlockOk = false;
+  assert.equal((await post()).body.error, 'password-needs-authorization');
+  unlockOk = true; staysLocked = true;
+  assert.equal((await post()).body.error, 'still-locked');
+  assert.equal(invalidations, 0);
+  staysLocked = false;
+  assert.equal((await post()).body.screenLocked, false);
+  assert.equal(invalidations, 1);
+  const count = unlocks;
+  assert.equal((await post()).body.ok, true);
+  assert.equal(unlocks, count, '未锁屏时只唤醒，不提交密码');
+});
+
+test('并发点击不会重复提交解锁密码', async () => {
+  const { mountWakeRoutes } = require('../src/remote-screen-wake');
+  const app = fakeApp();
+  let finish, calls = 0;
+  mountWakeRoutes(app, {
+    consent: async () => true, invalidate: () => {},
+    wakeDisplay: () => new Promise(resolve => { finish = resolve; }),
+    call: async () => { calls++; return { ok: true, screenLocked: false, accessibility: true, screenRecording: true }; },
+  });
+  const first = invoke(app.handlers['POST /api/remote-screen/wake']);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await invoke(app.handlers['POST /api/remote-screen/wake'])).body.error, 'busy');
+  finish();
+  assert.equal((await first).body.ok, true);
+  assert.equal(calls, 2);
+});

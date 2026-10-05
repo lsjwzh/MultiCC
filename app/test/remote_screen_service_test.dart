@@ -107,6 +107,31 @@ Future<void> _pumpUntil(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('唤起状态只读，点击才提交；服务端拒绝不能当成功', () async {
+    final incoming = StreamController<dynamic>();
+    incoming.stream.listen((_) {});
+    addTearDown(incoming.close);
+    final methods = <String>[];
+    final service = await _make(
+      incoming: incoming,
+      sent: [],
+      httpStub: MockClient((request) async {
+        expect(request.url.path, '/api/remote-screen/wake');
+        methods.add(request.method);
+        return http.Response(
+          jsonEncode({'ok': true, 'canWake': false, 'message': '请先开启自动解锁'}),
+          request.method == 'POST' ? 409 : 200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+    addTearDown(service.dispose);
+    expect((await service.wakeScreen())['canWake'], false);
+    expect(methods, ['GET']);
+    expect((await service.wakeScreen(request: true))['ok'], false);
+    expect(methods, ['GET', 'POST']);
+  });
+
   test('急停缺失和未知状态保留提示，但不阻止已有桌面权限取帧', () {
     final base = <String, dynamic>{
       'ok': true,

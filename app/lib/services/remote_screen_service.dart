@@ -193,6 +193,26 @@ class RemoteScreenService {
     return {'ok': false, 'error': 'network'};
   }
 
+  /// 只在用户点击时提交唤起；普通状态检查不会尝试解锁。
+  Future<Map<String, dynamic>> wakeScreen({bool request = false}) async {
+    try {
+      final uri = Uri.parse(settings.buildHttpUrl('/api/remote-screen/wake'));
+      final res =
+          await (request
+                  ? _http.post(uri, headers: _headers, body: '{}')
+                  : _http.get(uri, headers: _headers))
+              .timeout(Duration(seconds: request ? 35 : 10));
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map<String, dynamic>) {
+        return {
+          ...decoded,
+          'ok': res.statusCode == 200 && decoded['ok'] == true,
+        };
+      }
+    } catch (_) {}
+    return {'ok': false, 'message': '无法连接本机，请检查连接后手动重试。'};
+  }
+
   static bool desktopPermissionsReady(Map<String, dynamic> perms) =>
       perms['ok'] != true ||
       perms['applicable'] != true ||
