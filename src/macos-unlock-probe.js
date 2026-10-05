@@ -43,8 +43,27 @@ function createUnlockProbe({
     return platform === 'darwin';
   }
 
+  // Read TCC from the resident Agent, never from the server's own identity.
+  async function desktopPermissions() {
+    if (!isAvailable()) return { state: 'unavailable', detail: 'not-macos' };
+    return new Promise(resolve => {
+      execFileFn(agentBin, ['status'], { timeout: 3000 }, (error, stdout) => {
+        let obj;
+        try { obj = JSON.parse(String(stdout)); } catch { /* fail closed */ }
+        if (error || obj?.ok !== true) return resolve({ state: 'unavailable', detail: spawnDetail(error) });
+        const permissions = { accessibility: obj.accessibility === true, screenRecording: obj.screenRecording === true };
+        resolve(permissions.accessibility && permissions.screenRecording
+          ? { state: 'authorized' }
+          : { state: 'permissions-required', permissions,
+            message: '请先在这台 Mac 的系统设置中，为 MultiCC Agent 开启辅助功能和屏幕录制权限；这两项是自动解锁的前置条件。' });
+      });
+    });
+  }
+
   async function probe({ allowUI = false } = {}) {
     if (!isAvailable()) return { state: 'unavailable', detail: 'not-macos' };
+    const desktop = await desktopPermissions();
+    if (desktop.state !== 'authorized') return desktop;
     const reply = await new Promise((resolve) => {
       execFileFn(agentBin, ['probe-unlock', String(PROBE_SECONDS), ...(allowUI ? ['--allow-ui'] : [])], { timeout: PROBE_TIMEOUT_MS }, (error, stdout) => {
         resolve({ error, stdout: String(stdout || '') });
@@ -71,7 +90,7 @@ function createUnlockProbe({
       });
     });
   }
-  return { isAvailable, probe, runtimeReady };
+  return { isAvailable, probe, runtimeReady, desktopPermissions };
 }
 
 module.exports = { createUnlockProbe, PROBE_SECONDS, PROBE_TIMEOUT_MS };

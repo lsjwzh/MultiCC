@@ -54,6 +54,7 @@ function createHarness(overrides = {}) {
       isAvailable: () => false,
       getLidModeSettings: async () => ({ available: true, enabled: true }),
     },
+    unlockProbe: { desktopPermissions: async () => ({ state: 'authorized' }) },
     powerPreferences: { read: () => false },
     unlockPassword: {
       isAvailable: () => true,
@@ -409,4 +410,20 @@ test('server delegates every migrated GET without retaining inline duplicates', 
   for (const routePath of EXPECTED_PATHS) {
     assert.equal(source.includes(`app.get('${routePath}'`), false, routePath);
   }
+});
+
+test('saved unlock consent is not reported ready after desktop permissions are revoked', async () => {
+  let ready = false;
+  const { routes } = createHarness({
+    macosPower: { isAvailable: () => true, getLidModeSettings: async () => ({ available: true, enabled: false }) },
+    powerPreferences: { read: () => true },
+    unlockPassword: { isAvailable: () => true, hasPassword: async () => true },
+    unlockProbe: { desktopPermissions: async () => ({ state: ready ? 'authorized' : 'permissions-required' }) },
+  });
+  const revoked = (await invoke(routes, '/api/settings/power')).body.unlockPassword;
+  assert.equal(revoked.requested, true);
+  assert.equal(revoked.enabled, false);
+  assert.equal(revoked.authorization.state, 'permissions-required');
+  ready = true;
+  assert.equal((await invoke(routes, '/api/settings/power')).body.unlockPassword.enabled, true);
 });

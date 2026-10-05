@@ -48,7 +48,7 @@
         }
       } catch (error) {
         notice(t('airGlobalPowerFailed', { message: error.message }));
-        if (error.code === 'unlock_setup_required' || error.code === 'unlock_authorization_required') { root.MultiCCAirMore?.close(); openSetup(action); }
+        if (error.code === 'unlock_setup_required' || error.code === 'unlock_authorization_required' || error.code === 'unlock_permissions_required') { root.MultiCCAirMore?.close(); openSetup(error.code === 'unlock_permissions_required' ? 'permissions' : action); }
       } finally {
         busy = false;
         paint(state);
