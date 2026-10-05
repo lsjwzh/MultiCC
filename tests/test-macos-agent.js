@@ -50,6 +50,89 @@ test('agent + scroll sources: ungated code stays Swift 5.5 compatible (macOS 11 
   }
 });
 
+test('RFB native regressions: nested dirty regions cover latest pixels and fast requests are never lost', { skip: !hasSwift, timeout: 90000 }, t => {
+  const root = fs.mkdtempSync('/tmp/multicc-rfb-native-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/MultiCCAgent.swift'), 'utf8');
+  const merge = source.slice(source.indexOf('func mergeRfbDirtyRects('), source.indexOf('extension Data {'));
+  const data = source.slice(source.indexOf('extension Data {'), source.indexOf('func readFully('));
+  const clientStart = source.indexOf('final class RfbClient: NSObject');
+  const client = source.slice(clientStart, source.indexOf('\n@available(', clientStart));
+  const senderStart = source.indexOf('func rfbSender(');
+  const sender = source.slice(senderStart, source.indexOf('\n@available(', senderStart));
+  const file = path.join(root, 'main.swift');
+  fs.writeFileSync(file, `import Foundation
+import CoreGraphics
+import Darwin
+${merge}
+${data}
+${client}
+final class RfbScreen {
+  static let shared = RfbScreen()
+  func takeRects(_ client: RfbClient) -> [(rect: CGRect, data: Data)]? { return [] }
+}
+var sent = 0
+var active: RfbClient!
+func writeAll(_ fd: Int32, _ data: Data) -> Bool {
+  sent += 1
+  if sent == 1 { active.requestUpdate() } // request arrives before writeAll returns
+  else { active.shutdown() }
+  return true
+}
+${sender}
+let full = CGRect(x: 0, y: 0, width: 64, height: 48)
+let large = CGRect(x: 4, y: 4, width: 16, height: 24)
+let small = CGRect(x: 8, y: 8, width: 2, height: 2)
+let merged = mergeRfbDirtyRects([large, small], full: full)
+precondition(merged.count == 1 && merged[0] == large, "nested change shrank the earlier dirty region")
+// Apply the emitted rects from the latest framebuffer to an old client image.
+var latest = [Int](repeating: 0, count: 64 * 48)
+for y in 4..<28 { for x in 4..<20 { latest[y * 64 + x] = 3 } }
+for y in 8..<10 { for x in 8..<10 { latest[y * 64 + x] = 9 } }
+var displayed = [Int](repeating: 0, count: 64 * 48)
+for r in merged {
+  for y in Int(r.minY)..<Int(r.maxY) {
+    for x in Int(r.minX)..<Int(r.maxX) { displayed[y * 64 + x] = latest[y * 64 + x] }
+  }
+}
+precondition(displayed == latest, "old/new frame pixels remain mixed")
+// Every source pixel must still be covered after repeated coalescing, and the
+// queue stays bounded even when a slow client misses hundreds of captures.
+var state: UInt64 = 17
+func next(_ limit: Int) -> Int { state = state &* 6364136223846793005 &+ 1; return Int((state >> 32) % UInt64(limit)) }
+var dirty: [CGRect] = []
+var original: [CGRect] = []
+for _ in 0..<180 {
+  let x = next(60), y = next(44)
+  let r = CGRect(x: x, y: y, width: 1 + next(64 - x), height: 1 + next(48 - y))
+  original.append(r)
+  dirty = mergeRfbDirtyRects(dirty + [r], full: full)
+  precondition(dirty.count <= 64)
+  for y in 0..<48 { for x in 0..<64 {
+    let p = CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5)
+    if original.contains(where: { $0.contains(p) }) {
+      precondition(dirty.contains(where: { $0.contains(p) }), "a pending source pixel was dropped")
+    }
+  } }
+}
+active = RfbClient(-1)
+active.requestUpdate()
+rfbSender(active)
+precondition(sent == 2, "fast next-frame request was erased")
+// Multiple shutdown callers must never close a descriptor owned by serveRfb.
+var fds: [Int32] = [-1, -1]
+precondition(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+let connection = RfbClient(fds[0])
+connection.shutdown(); connection.shutdown()
+precondition(fcntl(fds[0], F_GETFD) >= 0, "shutdown closed the shared descriptor")
+close(fds[0]); close(fds[1])
+print("RFB regression OK: coherent latest frame, 180 accumulated updates, fast next request, single fd owner")
+`);
+  const binary = path.join(root, 'rfb-tests');
+  execFileSync('xcrun', ['swiftc', '-O', file, '-o', binary], { timeout: 60000 });
+  assert.match(execFileSync(binary, [], { encoding: 'utf8', timeout: 5000 }), /RFB regression OK/);
+});
+
 test('agent: installer build, client/server protocol and chrome watchdog', { skip: !hasSwift, timeout: 240000 }, async (t) => {
   const root = fs.mkdtempSync(path.join('/tmp', 'mcagent-'));
   const env = {

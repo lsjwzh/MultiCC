@@ -134,23 +134,9 @@ function frame(region = null) {
   return pending;
 }
 
-// WS ↔ RFB unix socket 字节管道。双向直通，任一端断即拆另一端；Agent 侧不可用时
-// 以 1011 关闭让 noVNC 触发 disconnect → 前端回退 JPEG 轮询。
+// Byte-preserving bridge with bounded queues and stalled-stream recovery.
 function attachRfb(ws) {
-  const sock = net.createConnection(deps.rfbSock);
-  const pending = [];
-  let open = false;
-  ws.on('message', data => { if (open) sock.write(data); else pending.push(data); });
-  sock.on('connect', () => { open = true; for (const d of pending) sock.write(d); pending.length = 0; });
-  sock.on('data', d => { if (ws.readyState === 1) ws.send(d); else sock.destroy(); });
-  const die = () => {
-    sock.destroy();
-    if (ws.readyState === 1) { try { ws.close(1011, 'rfb-unavailable'); } catch {} }
-  };
-  sock.on('error', die);
-  sock.on('close', die);
-  ws.on('close', () => sock.destroy());
-  ws.on('error', () => sock.destroy());
+  require('./remote-screen-rfb-bridge').attachRfbBridge(ws, { socketPath: deps.rfbSock });
 }
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
