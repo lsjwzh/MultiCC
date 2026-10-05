@@ -2969,8 +2969,12 @@
     },
     {
       "path": "tests/test-ios-ota.js",
-      "tier": "flow",
-      "lane": "deterministic"
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
     },
     {
       "path": "tests/test-jev-client.js",

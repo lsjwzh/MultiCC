@@ -508,3 +508,20 @@ test('creation and message APIs retain the normal local, remote and Fleet authen
   h.state.scopedRequest = true;
   assert.equal((await raw(h.base, '/api/air/tasks', { method: 'POST' })).status, 200);
 });
+
+test('UDID 只有带能力令牌的 POST 回传可绕过登录，页面和描述文件始终受保护', async () => {
+  const h = await buildHarness({ accessToken: 'sekret', local: false });
+  try {
+    const callback = '/ios-ota/udid/callback/' + 'a'.repeat(64);
+    assert.equal((await raw(h.base, callback, { method: 'POST', headers: { 'content-type': 'application/pkcs7-signature' } })).status, 200);
+    for (const [method, pathname] of [
+      ['GET', callback], ['POST', callback], ['POST', '/ios-ota/udid/callback/invalid'],
+      ['GET', '/ios-ota/udid.mobileconfig'], ['GET', '/ios-ota'],
+    ]) {
+      const blocked = await raw(h.base, pathname, { method, headers: { accept: 'application/json' } });
+      assert.equal(blocked.status, method === 'GET' ? 302 : 403);
+      if (method === 'GET') assert.ok(blocked.headers.get('location').startsWith('/login?'));
+    }
+    assert.equal((await raw(h.base, '/ios-ota/udid.mobileconfig', { headers: { cookie: 'multicc_auth=GOODCOOKIE' } })).status, 200);
+  } finally { await h.close(); }
+});

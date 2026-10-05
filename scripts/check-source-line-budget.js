@@ -367,8 +367,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +4 bilingual keys: Agent restart, failure, exact app path and stale-grant recovery.
     // +11 双语键：输入监控、Esc 实际监听状态与重启复查结果。
     // +1 双语键：直接重启按钮的本机操作提示。
-    maxLines: 8792,
-    maxBytes: 557541,
+    // +21 双语键：iOS 设备 UDID 采集、登记引导与复制结果。
+    maxLines: 8834,
+    maxBytes: 561698,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

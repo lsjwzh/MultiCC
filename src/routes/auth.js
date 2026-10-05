@@ -217,6 +217,9 @@ function createAuthRuntime(rawDeps) {
       // without the login cookie — same capability-by-name model as the public
       // /multicc.apk download above. The /ios-ota page itself stays gated.
       if (req.path === '/ios-ota/manifest.plist') return next();
+      // iOS 设置回传不携带 Safari 登录 cookie；仅这一 POST 由短期单次令牌保护。
+      if (req.method === 'POST' && /^\/ios-ota\/udid\/callback\/[a-f0-9]{64}$/.test(req.path)
+        && /^(?:application\/pkcs7-signature|application\/x-apple-aspen-deviceinfo)(?:;|$)/i.test(req.headers['content-type'] || '')) return next();
       // Wait-callback endpoint is secured by its own per-wait token so external
       // (off-box) systems can deliver results without the ACCESS_TOKEN cookie.
       if (req.method === 'POST' && /^\/api\/wait\/[^/]+\/resolve$/.test(req.path)) return next();
