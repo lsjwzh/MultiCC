@@ -368,9 +368,16 @@
     const text = String(value || '');
     return text.startsWith(OPENCODE_NATIVE_PREFIX) ? text.slice(OPENCODE_NATIVE_PREFIX.length) : '';
   }
+  // 线路名只有一个来源（这张表）。模型缓存是冷的也答得出来：药丸只有
+  // `<线路id>/<模型>` 这一条线索（见 run-config.js 的 openCodeRouteName）。
+  function openCodeNativeProviderLabel(id) {
+    const key = String(id || '');
+    if (!key) return '';
+    return OPENCODE_NATIVE_NAMES[key] || key;
+  }
   function openCodeNativeProviders() {
     const ids = [...new Set(readOpenCodeModelsSync().map(m => m.provider).filter(Boolean))];
-    return ids.map(id => ({ value: OPENCODE_NATIVE_PREFIX + id, label: `OpenCode 原生 · ${OPENCODE_NATIVE_NAMES[id] || id}` }));
+    return ids.map(id => ({ value: OPENCODE_NATIVE_PREFIX + id, label: `OpenCode 原生 · ${openCodeNativeProviderLabel(id)}` }));
   }
 
   // Synchronous read of a CLI model cache populated by shared/models.js
@@ -1212,6 +1219,7 @@
     buildModelChoices,
     openCodeNativeProviders,
     openCodeNativeProviderOf,
+    openCodeNativeProviderLabel,
     stripModelSuffix,
     defaultModelChoice,
     modelChoiceLabel,

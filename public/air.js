@@ -2421,8 +2421,13 @@
     }
     const configEntry = entry?.task?.id === taskId && entry.configuration ? entry : window.__multiccAirTaskOpen?.taskId === taskId ? window.__multiccAirTaskOpen : null;
     const pending = configEntry?.configuration?.pendingConfiguration;
+    // providerName 只挂在 configuration 上（profile 里没有这个键），展开时会被整份
+    // 继承下来 —— 换车道的那一刻它还写着**旧 CLI** 的线路名，药丸上就成了
+    // 「OpenCode · Claude 官方」。待生效的线路名以服务端随 pending 解析的那份为准，
+    // 解析不出来（OpenCode 自己的线路）就让它空着，别拿旧车道的名字顶上。
     const shown = pending
-      ? { ...configEntry.configuration, ...(pending.profile || {}), cli: pending.cli || configEntry.configuration.cli }
+      ? { ...configEntry.configuration, ...(pending.profile || {}), cli: pending.cli || configEntry.configuration.cli,
+        providerName: pending.providerName || null }
       : configEntry?.configuration;
     // `shown` may be undefined — every
     // read goes through `?., so a missing

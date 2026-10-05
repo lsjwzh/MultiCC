@@ -1579,8 +1579,14 @@ function runtimeConfiguration() {
 function updateModelBtn() {
   if (!modelBtn || !window.MultiCCRunConfig) return;
   const current = runtimeConfiguration();
+  // 换车道后的那一段名字：pending 的 profile 里没有 providerName 这个键，直接展开
+  // 会把**旧 CLI** 的线路名继承下来（药丸上就是「OpenCode · Claude 官方」）。车道
+  // 变了就不认旧名字 —— 解析得出来由 pillModel 那边的原生线路名顶上。
+  const laneChanged = !!_pendingConfiguration
+    && (_pendingConfiguration.cli || current.cli) !== current.cli;
   const next = _pendingConfiguration
-    ? { ...current, ...(_pendingConfiguration.profile || {}), cli: _pendingConfiguration.cli || current.cli }
+    ? { ...current, ...(_pendingConfiguration.profile || {}), cli: _pendingConfiguration.cli || current.cli,
+      providerName: laneChanged ? null : current.providerName }
     : current;
   const pill = window.MultiCCRunConfig.pillModel({ current, next,
     currentRoute: providerShortName(next.provider) || next.providerName,
