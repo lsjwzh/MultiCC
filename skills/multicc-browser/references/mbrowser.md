@@ -12,7 +12,7 @@
 - CLI 通过 **0600 的 unix socket** 连接守护进程；状态在 `${MULTICC_DATA_DIR:-~/.multicc}/browser/` 下。
 - 多个 profile（多账号）可同时运行，各自一台 Chrome + 一个守护进程。
 - 每个 MultiCC 会话（`MULTICC_SESSION_ID`）在同一 profile 的 Chrome 里拥有自己的后台标签，会话之间互不可见。
-- 默认 headless；`login` 会把该 profile 切成有头模式，`start NAME --headless` 再切回后台。
+- 先用 `profiles` 选已有账号目录，运行中直接后台复用；停止的托管 profile 用 `start NAME --headless`。未指定模式的 `start` 会沿用保存的有头设置，不能假定它始终无头。新建默认 headless；`login` 会把该 profile 切成有头模式，`start NAME --headless` 再切回后台。
 - 输入是真实 CDP 输入（元素中心 `Input.dispatchMouseEvent`，文本/按键走 `Input.insertText` / `dispatchKeyEvent`，带 JS 回退）；**不聚焦窗口**，需要焦点时用 `Emulation.setFocusEmulationEnabled`，不会把窗口拉到前台。
 
 ## 全局参数
@@ -62,7 +62,7 @@ profile 目录：macOS 是 `~/Library/Application Support/MultiCC/browser-use/<n
 | `wait (--text T \| --selector CSS \| --load \| --idle \| --ms N) [--timeout SEC] [--quiet-ms N]` | 等待文本/选择器/加载完成/网络空闲/固定时长（`--quiet-ms` 是 `--idle` 的静默窗口，默认 500ms） |
 | `back` / `forward` / `reload [--hard]` | 历史与刷新（`--hard` 带 `ignoreCache`，绕过缓存） |
 | `tabs` | 列出本会话拥有的标签 |
-| `tab TARGET` | 切换本会话的当前标签 |
+| `tab TARGET` | 仅切换本会话的操作目标，不激活窗口或前台标签 |
 | `close [TARGET]` | 关闭本会话的标签（默认当前） |
 | `dialog accept\|dismiss [PROMPT_TEXT]` | 处理 JS 对话框；有待处理对话框时其它命令会先警告 |
 
@@ -107,7 +107,7 @@ page: Sign in — https://example.com/login
 - **命令超时 / CDP 一直不就绪**：先看钥匙串——新 profile 首次启动可能被 “Chrome Safe Storage” 授权对话框挡住（headless 下没人应答）。请在 GUI 里应答后重试；仅 smoke/全新 profile 可用 `--mock-keychain`（按 profile 记在 `.multicc-mock-keychain`，带 `.multicc-seeded` 的 profile 拒绝）。其次是首次 Rosetta 启动慢：本机实测（headless、全新 profile、`--mock-keychain`）系统 Chrome 153 冷启 0.5–1.1s，Chrome for Testing 138 约 5.4–6.8s、150 约 5.1–5.7s；首次从 Rosetta 走的 138 可能到 28s。之后每条命令都复用常驻连接，不要靠反复重启掩盖。
 - **`--browser` 指错了**：守护进程启动失败时日志尾部的原因会被直接报出来（如 `browser_missing: --browser points at …, which does not exist`），不用再自己翻日志。
 - **profile 不存在**：所有会起 Chrome 的命令（页面命令、`ping`）都只对**已存在**的 profile 生效并报 `not_created`；只有 `start NAME --create` / `login NAME --create` 会新建，避免打错的 `-p` 静默生成一个空 profile。
-- **profile 被另一个 Chrome 占用**：说明同一个人数据目录已被别的进程打开（可能是旧的 Browser Harness/`local_browser_use.py` 或你自己的另一次启动）。换一个 profile，或先正常停掉那个进程；**不要删目录**（登录态在里面）。
+- **profile 被另一个 Chrome 占用**：先核对进程归属，优先复用已授权的专用浏览器连接。切换执行层须确认没有其它会话使用后正常停止原进程；不要为绕过锁新建空 profile、强杀进程或删锁/目录（登录态在里面）。
 - **守护进程/Chrome 卡住**：`stop NAME` 再 `start NAME`。Chrome 是 detached 的，守护进程重启会重新接管它，标签和登录态都不丢。
 - **引用报 “take a new snapshot”**：正常现象，页面变了；重新 `snapshot` 拿新引用。
 - **日志**：`${MULTICC_DATA_DIR:-~/.multicc}/browser/run/<name>.log`（含 Chrome 启动输出与守护进程日志）。

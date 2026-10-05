@@ -86,6 +86,32 @@ class LocalBrowserUseTests(unittest.TestCase):
             with self.subTest(port=port), self.assertRaises(ValueError):
                 browser_use.chrome_args("chrome", "/tmp/profile", port, False)
 
+    def test_default_and_explicit_headless_reuse_the_existing_profile(self):
+        for flags in ([], ["--headless"]):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                profile = self.profile(root, "existing-account")
+                (profile / "Default").mkdir(parents=True)
+                cookies = profile / "Default" / "Cookies"
+                cookies.write_bytes(b"existing-session-fixture")
+                code, launched, _, _ = self.launch_start(root, "existing-account", flags)
+                self.assertEqual(code, 0)
+                self.assertIn("--headless", launched[0])
+                self.assertIn(f"--user-data-dir={profile}", launched[0])
+                self.assertEqual(cookies.read_bytes(), b"existing-session-fixture")
+                self.assertEqual({p for p in profile.parent.iterdir() if p.is_dir()}, {profile})
+
+    def test_headed_requires_explicit_flag_and_conflicting_modes_fail_before_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            code, launched, _, _ = self.launch_start(Path(directory), "manual-login", ["--headed"])
+            self.assertEqual(code, 0)
+            self.assertNotIn("--headless", launched[0])
+        with patch.object(browser_use.subprocess, "Popen") as launch, \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as rejected:
+            browser_use.main(["start", "--headed", "--headless"])
+        self.assertEqual(rejected.exception.code, 2)
+        launch.assert_not_called()
+
     def test_smoke_proves_real_browser_action_and_screenshot(self):
         with tempfile.TemporaryDirectory() as directory:
             screenshot = Path(directory) / "smoke.png"

@@ -239,7 +239,11 @@ def main(argv=None):
                         help="confirm the source browser is fully closed before seed")
     parser.add_argument("--name", default="default", help="stable business/account profile name")
     parser.add_argument("--port", type=int, default=9331, help="unique loopback CDP port (9222 is the Agent watchdog, 9229 Node inspector)")
-    parser.add_argument("--headless", action="store_true", help="do not show a window")
+    display = parser.add_mutually_exclusive_group()
+    display.add_argument("--headless", dest="headless", action="store_true", default=True,
+                         help="do not show a window (default; reuse the named persistent profile)")
+    display.add_argument("--headed", dest="headless", action="store_false",
+                         help="show a window for an explicitly requested manual login")
     parser.add_argument("--cdp-timeout", type=positive_seconds, default=DEFAULT_CDP_TIMEOUT,
                         help="seconds to wait for the CDP endpoint (default: 45; a first Rosetta run can be slow)")
     parser.add_argument("--mock-keychain", action="store_true",
