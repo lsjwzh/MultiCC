@@ -1139,11 +1139,13 @@
     #aux-classify-bar .ac-mark-done:hover { background: var(--chat-success-hover, #1c4529); border-color: #2ea04388; }
     #aux-classify-bar .ac-mark-done:disabled { opacity: .6; cursor: default; }
     #aux-classify-bar.can-mark-done .ac-mark-done { display: inline-flex; }
+    /* 这是一个「动作」而不是状态：虚线框 + 透明底 + 灰字 + 方角，和旁边实心的
+     * 状态胶囊（✓ 需要交互）一眼分开；悬停才转绿，提示点了会变成「达成目标」。 */
     #aux-classify-bar .ac-mark-goal {
-      display: none; flex: none; padding: 1px 9px; border-radius: 9px; font-size: 10px; font-weight: 700;
-      background: var(--chat-success-soft, #14331f); color: var(--chat-success, #56d364); border: 1px solid #23863655; cursor: pointer; line-height: 1.5;
+      display: none; flex: none; padding: 1px 8px; border-radius: 4px; font-size: 10px; font-weight: 500;
+      background: transparent; color: var(--chat-muted, #8b949e); border: 1px dashed #8b949e88; cursor: pointer; line-height: 1.5;
     }
-    #aux-classify-bar .ac-mark-goal:hover { background: var(--chat-success-hover, #1c4529); border-color: #2ea04388; }
+    #aux-classify-bar .ac-mark-goal:hover { color: var(--chat-success, #56d364); border-style: solid; border-color: #2ea04388; background: var(--chat-success-soft, #14331f); }
     #aux-classify-bar .ac-mark-goal:disabled { opacity: .6; cursor: default; }
     #aux-classify-bar.can-mark-goal .ac-mark-goal { display: inline-flex; }
     #aux-classify-bar .ac-cancel-task {
@@ -2492,7 +2494,7 @@
     <span class="ac-state" id="ac-state"></span>
     <span class="ac-phase" id="ac-phase"></span>
     <button type="button" class="ac-cancel-task" id="ac-cancel-task" data-i18n-title="cancelTurnFromBarTitle" data-i18n="cancelTurnFromBar" title="立即取消正在执行的任务">✕ 取消</button>
-    <button type="button" class="ac-mark-goal" id="ac-mark-goal" data-i18n="markGoalAchieved" data-i18n-title="markGoalAchievedTitle" title="把这一轮从「需要交互」手动标记为达成目标；不会完成任务板任务">✓ 达成目标</button>
+    <button type="button" class="ac-mark-goal" id="ac-mark-goal" data-i18n="markGoalAchieved" data-i18n-title="markGoalAchievedTitle" title="把这一轮从「需要交互」手动标记为达成目标；不会完成任务板任务">标记为达成目标</button>
     <button type="button" class="ac-mark-done" id="ac-mark-done" data-i18n="markTurnSucceeded" data-i18n-title="markTurnSucceededTitle" title="把当前等待中的一轮手动标记为执行成功；不会完成任务板任务">✓ 执行成功</button>
   </div>
 
