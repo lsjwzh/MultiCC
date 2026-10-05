@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'remote_screen_rfb.dart';
+import 'remote_screen_region.dart';
 import 'settings_service.dart';
 import 'ws_ticket_service.dart';
 
@@ -40,6 +41,9 @@ class RemoteScreenService {
   Timer? _pollTimer;
   bool _polling = false;
   bool _disposed = false;
+  int _regionEpoch = 0;
+  ScreenRegion? region;
+  ScreenRegion? viewRegion;
 
   RemoteScreenMode mode = RemoteScreenMode.connecting;
   String? error;
@@ -64,6 +68,8 @@ class RemoteScreenService {
   /// Connects the live RFB stream; on any failure settles into fallback.
   void connectLive() {
     if (_disposed) return;
+    _regionEpoch++;
+    region = viewRegion = null;
     _setMode(RemoteScreenMode.connecting, null);
     _stopFallback();
     _handshakeTimeout?.cancel();
@@ -251,6 +257,40 @@ class RemoteScreenService {
     }
   }
 
+  /// Probe logical screen dimensions; RFB dimensions can be reduced.
+  Future<bool> ensureScreenSize() async {
+    if (fallbackWidth > 0 && fallbackHeight > 0) return true;
+    try {
+      final res = await _http
+          .head(
+            Uri.parse(settings.buildHttpUrl('/api/remote-screen/frame')),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 12));
+      if (_disposed || res.statusCode != 200) return false;
+      fallbackWidth =
+          int.tryParse(_header(res.headers, 'x-screen-width') ?? '') ?? 0;
+      fallbackHeight =
+          int.tryParse(_header(res.headers, 'x-screen-height') ?? '') ?? 0;
+      return fallbackWidth > 0 && fallbackHeight > 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Switch to native-pixel source crops. Invalidate both late RFB callbacks
+  /// and late JPEG requests before allowing any input in the new geometry.
+  void selectRegion(ScreenRegion? next) {
+    if (_disposed) return;
+    _regionEpoch++;
+    region = next;
+    viewRegion = null;
+    fallbackJpeg = null;
+    _wsAuth.invalidate();
+    _enterFallback();
+    _frames.add(null);
+  }
+
   void _enterFallback() {
     if (_disposed) return;
     _handshakeTimeout?.cancel();
@@ -268,6 +308,8 @@ class RemoteScreenService {
   Future<void> _pollFrame() async {
     if (_polling || _disposed) return;
     _polling = true;
+    final epoch = _regionEpoch;
+    final selected = region;
     try {
       final headers = <String, String>{};
       if (settings.token.isNotEmpty) {
@@ -275,11 +317,35 @@ class RemoteScreenService {
       }
       final res = await _http
           .get(
-            Uri.parse(settings.buildHttpUrl('/api/remote-screen/frame')),
+            Uri.parse(
+              settings.buildHttpUrl('/api/remote-screen/frame'),
+            ).replace(
+              queryParameters: selected?.toMap().map(
+                (k, v) => MapEntry(k, '$v'),
+              ),
+            ),
             headers: headers,
           )
           .timeout(const Duration(seconds: 10));
+      if (_disposed || epoch != _regionEpoch) return;
       if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+        double? headerNumber(String name) =>
+            double.tryParse(_header(res.headers, name) ?? '');
+        final rw = headerNumber('x-region-width');
+        viewRegion = rw == null
+            ? null
+            : ScreenRegion(
+                headerNumber('x-region-x') ?? 0,
+                headerNumber('x-region-y') ?? 0,
+                rw,
+                headerNumber('x-region-height') ?? 0,
+              );
+        if (selected != null &&
+            (viewRegion == null || viewRegion!.height <= 0)) {
+          error = 'region-unavailable';
+          _modeCtrl.add(null);
+          return;
+        }
         fallbackJpeg = res.bodyBytes;
         // dart:io 与 MockClient 对响应头大小写的保留不一致，按名查找必须
         // 大小写不敏感（X-Screen-Width / x-screen-width 都要能命中）。
@@ -295,6 +361,11 @@ class RemoteScreenService {
       // Keep polling; the UI shows the last frame plus a status line.
     } finally {
       _polling = false;
+      if (!_disposed &&
+          epoch != _regionEpoch &&
+          mode == RemoteScreenMode.fallback) {
+        unawaited(_pollFrame());
+      }
     }
   }
 

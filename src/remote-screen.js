@@ -26,6 +26,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 
 const { createPaths } = require('./paths');
+const { parseRegion, cropGeometry } = require('./remote-screen-region');
 
 const SESSION = 'remote-screen';
 // 落在已登记的 assistDir 下：随数据根隔离，并由 assist-snapshots 的 7 天清理兜底。
@@ -88,32 +89,49 @@ async function pngSize(file) {
   return { w, h };
 }
 
-// 截主屏 → 缩到逻辑宽，写到 out（png / jpeg 由扩展名决定）。
-async function capture(out) {
+// Crop the lossless native screenshot FIRST; only full-screen frames are
+// downsampled to logical size. Each capture owns its files (frame/snapshot
+// requests may overlap), and region frames keep Retina pixels at JPEG 85.
+async function capture(out, region = null) {
   fs.mkdirSync(deps.dir, { recursive: true });
-  const raw = path.join(deps.dir, 'raw.png');
-  const r = await call({ op: 'snap', path: raw, session: SESSION }, 10000);
-  if (!r || r.ok === false) throw Object.assign(new Error(r?.error || 'snap-failed'), { agent: r });
-  const phys = await pngSize(raw);
-  const size = await logicalSize(phys.w, phys.h);
-  const jpeg = /\.jpe?g$/i.test(out);
-  const args = ['-s', 'format', jpeg ? 'jpeg' : 'png'];
-  if (jpeg) args.push('-s', 'formatOptions', '60');
-  if (size.width && size.width < phys.w) args.push('--resampleWidth', String(size.width));
-  await run('sips', [...args, raw, '--out', out]);
-  return { width: size.width || phys.w, height: size.height || phys.h };
+  const work = fs.mkdtempSync(path.join(deps.dir, '.capture-'));
+  try {
+    const raw = path.join(work, 'raw.png');
+    const r = await call({ op: 'snap', path: raw, session: SESSION }, 10000);
+    if (!r || r.ok === false) throw Object.assign(new Error(r?.error || 'snap-failed'), { agent: r });
+    const phys = await pngSize(raw);
+    const size = await logicalSize(phys.w, phys.h);
+    let source = raw, area = null;
+    if (region) {
+      area = cropGeometry(region, size, phys);
+      source = path.join(work, 'crop.png');
+      await run('sips', [raw, '--cropToHeightWidth', String(area.pixelHeight), String(area.pixelWidth),
+        '--cropOffset', String(area.pixelY), String(area.pixelX), '--out', source]);
+    }
+    const jpeg = /\.jpe?g$/i.test(out);
+    const args = ['-s', 'format', jpeg ? 'jpeg' : 'png'];
+    if (jpeg) args.push('-s', 'formatOptions', region ? '85' : '60');
+    if (!region && size.width && size.width < phys.w) args.push('--resampleWidth', String(size.width));
+    await run('sips', [...args, source, '--out', out]);
+    return { width: size.width || phys.w, height: size.height || phys.h, region: area };
+  } finally { fs.rmSync(work, { recursive: true, force: true }); }
 }
 
-let inflight = null;
+const inflight = new Map();
 let lastFrame = null;
-function frame() {
-  if (lastFrame && Date.now() - lastFrame.at < 120) return Promise.resolve(lastFrame);
-  if (inflight) return inflight;
-  const out = path.join(deps.dir, 'live.jpg');
-  inflight = capture(out)
-    .then(size => (lastFrame = { at: Date.now(), size, data: fs.readFileSync(out) }))
-    .finally(() => { inflight = null; });
-  return inflight;
+function frame(region = null) {
+  const key = JSON.stringify(region);
+  if (lastFrame?.key === key && Date.now() - lastFrame.at < 120) return Promise.resolve(lastFrame);
+  if (inflight.has(key)) return inflight.get(key);
+  // Output files cannot be shared across different selections or snapshots.
+  fs.mkdirSync(deps.dir, { recursive: true });
+  const work = fs.mkdtempSync(path.join(deps.dir, '.frame-'));
+  const out = path.join(work, 'live.jpg');
+  const pending = capture(out, region)
+    .then(size => (lastFrame = { key, at: Date.now(), size, data: fs.readFileSync(out) }))
+    .finally(() => { inflight.delete(key); fs.rmSync(work, { recursive: true, force: true }); });
+  inflight.set(key, pending);
+  return pending;
 }
 
 // WS ↔ RFB unix socket 字节管道。双向直通，任一端断即拆另一端；Agent 侧不可用时
@@ -173,13 +191,17 @@ function buildInput(body = {}) {
 function pruneShots() {
   try {
     const shots = fs.readdirSync(deps.dir).filter(f => /^shot-\d+\.png$/.test(f)).sort();
-    for (const f of shots.slice(0, Math.max(0, shots.length - KEEP_SHOTS))) fs.rmSync(path.join(deps.dir, f), { force: true });
+    for (const f of shots.slice(0, Math.max(0, shots.length - KEEP_SHOTS))) {
+      fs.rmSync(path.join(deps.dir, f), { force: true });
+      fs.rmSync(path.join(deps.dir, f + '.json'), { force: true });
+    }
   } catch {}
 }
 
-async function snapshot() {
-  const file = path.join(deps.dir, `shot-${Date.now()}.png`);
-  const size = await capture(file);
+async function snapshot(region = null) {
+  const file = path.join(deps.dir, `shot-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}.png`);
+  const size = await capture(file, region);
+  if (size.region) fs.writeFileSync(file + '.json', JSON.stringify(size.region));
   pruneShots();
   return { ok: true, path: file, ...size, url: `/api/download?path=${encodeURIComponent(file)}&inline=1` };
 }
@@ -191,13 +213,19 @@ function isOwnShot(src) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// 标注 → 动作。a/b 是标注图自然像素；截图本就按逻辑宽保存，scale 通常为 1。
+// 标注 → 动作。a/b 是图内像素；选区使用持久化的逻辑范围与偏移。
 async function handleAnnotation(payload = {}) {
   const src = path.resolve(String(payload.src || ''));
   if (!isOwnShot(src)) return { ok: false, refresh: false, text: '不是远程屏幕截图' };
-  const size = logical || { width: Number(payload.width) || 0 };
-  const scale = payload.width > 0 && size.width > 0 ? size.width / payload.width : 1;
-  const pt = p => p && { x: Math.round(Number(p.x) * scale), y: Math.round(Number(p.y) * scale) };
+  let region = null;
+  try { region = parseRegion(JSON.parse(fs.readFileSync(src + '.json', 'utf8'))); } catch (error) {
+    if (error.code !== 'ENOENT') return { ok: false, refresh: false, text: '选区坐标记录无效，请重新截取' };
+  }
+  const size = region || logical || { width: Number(payload.width) || 0, height: Number(payload.height) || 0 };
+  const scaleX = payload.width > 0 ? size.width / payload.width : 1;
+  const scaleY = payload.height > 0 ? size.height / payload.height : scaleX;
+  const pt = p => p && { x: Math.round((region?.x || 0) + Number(p.x) * scaleX),
+    y: Math.round((region?.y || 0) + Number(p.y) * scaleY) };
   const a = pt(payload.a), b = pt(payload.b);
   let req = null;
   let text = '';
@@ -215,7 +243,7 @@ async function handleAnnotation(payload = {}) {
     if (!r || r.ok === false) return { ok: false, refresh: false, text: `未执行：${describe(r)}` };
     await sleep(350);
   }
-  try { await capture(src); } catch (error) { return { ok: !!req, refresh: false, text: `${text || '重拍'}；重拍失败：${error.message}` }; }
+  try { await capture(src, region); } catch (error) { return { ok: !!req, refresh: false, text: `${text || '重拍'}；重拍失败：${error.message}` }; }
   return { ok: true, refresh: true, text: text || '已重新截取' };
 }
 
@@ -235,7 +263,7 @@ function describe(r) {
 
 function sendError(res, error, status = 502) {
   const agent = error.agent || {};
-  res.status(status).json({ ok: false, error: agent.reason || agent.error || error.message, message: describe(agent.error || agent.reason ? agent : { error: error.message }) });
+  res.status(error.status || status).json({ ok: false, error: agent.reason || agent.error || error.message, message: describe(agent.error || agent.reason ? agent : { error: error.message }) });
 }
 
 function mount(app) {
@@ -245,8 +273,13 @@ function mount(app) {
   });
   app.get('/api/remote-screen/frame', async (req, res) => {
     try {
-      const f = await frame();
+      const f = await frame(parseRegion(req.query));
       res.set({ 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store', 'X-Screen-Width': String(f.size.width), 'X-Screen-Height': String(f.size.height) });
+      if (f.size.region) {
+        const r = f.size.region;
+        res.set({ 'X-Region-X': String(r.x), 'X-Region-Y': String(r.y),
+          'X-Region-Width': String(r.width), 'X-Region-Height': String(r.height) });
+      }
       res.end(f.data);
     } catch (error) { sendError(res, error); }
   });
@@ -259,7 +292,7 @@ function mount(app) {
     res.json(r);
   });
   app.post('/api/remote-screen/snapshot', async (req, res) => {
-    try { res.json(await snapshot()); } catch (error) { sendError(res, error); }
+    try { res.json(await snapshot(parseRegion(req.body))); } catch (error) { sendError(res, error); }
   });
 }
 
@@ -272,5 +305,5 @@ module.exports = {
   agentCall,
   DIR,
   _deps: deps,
-  _resetForTests() { logical = null; inflight = null; lastFrame = null; },
+  _resetForTests() { logical = null; inflight.clear(); lastFrame = null; },
 };

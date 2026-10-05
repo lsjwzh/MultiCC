@@ -78,9 +78,25 @@ $MCU press cmd+shift+g    # 组合键；press return 3 = 连按 3 次
 |------|------|
 | `$MCU snap /tmp/s.png` | 截主屏，**已缩到逻辑分辨率**，图上坐标可直接点击 |
 | `$MCU snap /tmp/s.png W H x y` | 截图后裁剪（省 token）；点击坐标 = 图内坐标 + (x, y) |
+| `$MCU snap-hires /absolute/detail.png W H X Y` | 在源头截取逻辑选区，保留原生像素；图内坐标需按下方公式换算 |
 | `$MCU click X Y` / `dclick` / `rclick` / `move` | 鼠标操作（逻辑坐标） |
 | `$MCU scroll X Y N` | 滚动，N<0 向下、N>0 向上；聊天类 App 必须用它，别用键盘 |
 | `$MCU type 文本` | 输入到当前焦点，中文直接可用 |
+
+### 局部清晰化（AI 看不清小字 / 小按钮时）
+
+先用全屏 `snap` 或 `see` 确定选区，再从源头重新获取：
+
+```bash
+$MCU snap-hires /absolute/assist/detail.png 400 240 100 80
+# logical origin=100,80 size=400x240; pixels=800x480（Retina 示例）
+```
+
+`W H X Y` 均为主屏逻辑点；Agent 的 ScreenCaptureKit sourceRect / legacy 的 screencapture -R 会在原图缩小或有损压缩之前截取。保留原生像素，绝不从全屏 JPEG 或聊天缩略图放大推算细节。
+
+图上像素 `(px,py)` 映射为 `X + px×W/PW, Y + py×H/PH`；归一化标注 `(u,v)` 映射为 `X + u×W, Y + v×H`。PW/PH 取命令打印的实际像素尺寸。不要把 Retina 图像像素直接当点击坐标。截图求助保存在 `~/.multicc/assist/$MULTICC_SESSION_ID/`，记录起点和逻辑范围；执行前重拍确认界面没有变化。
+
+需要人动手时，按 `../multicc-human-assist/SKILL.md` 使用屏幕入口的「⛶」框选清晰化；它会重新从源图裁剪并实时更新，坐标映射由产品处理。
 
 **backend 不是 agent 时**：
 - `not installed`：MultiCC 每次启动会自动安装/更新 agent（发行包自带预编译程序；源码运行时需要 Xcode 命令行工具）。原因看 MultiCC 日志里的 `[multicc-agent]` 行；用户卸载过（`install-agent.sh uninstall`）则不会自动装回，需在 MultiCC 目录手动跑 `scripts/install-agent.sh install`。

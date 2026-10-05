@@ -4,11 +4,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:multicc_app/services/remote_screen_service.dart';
+import 'package:multicc_app/services/remote_screen_region.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/services/ws_ticket_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -106,6 +108,91 @@ Future<void> _pumpUntil(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'native crop geometry adds the source origin and clips nested selections',
+    () {
+      const area = ScreenRegion(100, 80, 400, 240);
+      expect(
+        area.point(const Offset(200, 100), 800, 480),
+        const Offset(200, 130),
+      );
+      expect(
+        area.select(const Rect.fromLTWH(200, 100, 400, 200), 800, 480)!.toMap(),
+        {'x': 200.0, 'y': 130.0, 'width': 200.0, 'height': 100.0},
+      );
+      expect(
+        area.select(const Rect.fromLTWH(-20, -20, 220, 120), 800, 480)!.toMap(),
+        {'x': 100.0, 'y': 80.0, 'width': 100.0, 'height': 50.0},
+      );
+      expect(
+        area.select(const Rect.fromLTWH(900, 500, 20, 20), 800, 480),
+        isNull,
+      );
+    },
+  );
+
+  test(
+    'source-region polling discards late crops and reset returns full-screen geometry',
+    () async {
+      final incoming = StreamController<dynamic>.broadcast();
+      addTearDown(incoming.close);
+      final first = Completer<http.Response>();
+      final requests = <Uri>[];
+      final service = await _make(
+        incoming: incoming,
+        sent: [],
+        httpStub: MockClient((req) async {
+          requests.add(req.url);
+          if (requests.length == 1) return first.future;
+          final cropped = req.url.queryParameters.containsKey('x');
+          return http.Response.bytes(
+            [cropped ? 2 : 3],
+            200,
+            headers: {
+              'X-Screen-Width': '1000',
+              'X-Screen-Height': '500',
+              if (cropped) ...{
+                'X-Region-X': '200',
+                'X-Region-Y': '100',
+                'X-Region-Width': '400',
+                'X-Region-Height': '200',
+              },
+            },
+          );
+        }),
+      );
+      addTearDown(service.dispose);
+      service.selectRegion(const ScreenRegion(100, 50, 200, 100));
+      await _pumpUntil(() => requests.length == 1);
+      service.selectRegion(const ScreenRegion(200, 100, 400, 200));
+      expect(
+        service.fallbackJpeg,
+        isNull,
+        reason: 'no input against the previous geometry',
+      );
+      first.complete(
+        http.Response.bytes(
+          [1],
+          200,
+          headers: {'X-Screen-Width': '1000', 'X-Screen-Height': '500'},
+        ),
+      );
+      await _pumpUntil(() => service.fallbackJpeg != null);
+      expect(service.fallbackJpeg, [2]);
+      expect(requests.last.queryParameters['x'], '200.0');
+      expect(
+        service.viewRegion!.point(const Offset(400, 200), 800, 400),
+        const Offset(400, 200),
+      );
+      service.selectRegion(null);
+      expect(service.fallbackJpeg, isNull);
+      await _pumpUntil(() => service.fallbackJpeg != null);
+      expect(service.fallbackJpeg, [3]);
+      expect(service.viewRegion, isNull);
+      expect(requests.last.queryParameters, isEmpty);
+    },
+  );
 
   test('唤起状态只读，点击才提交；服务端拒绝不能当成功', () async {
     final incoming = StreamController<dynamic>();

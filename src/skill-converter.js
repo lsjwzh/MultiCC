@@ -170,17 +170,25 @@ function isConverted(skillName, provider) {
   return fs.existsSync(path.join(cacheDir, 'SKILL.md'));
 }
 
-// Recursively copy a skill's bin/ helpers into the converted cache dir so the
-// target provider can still run helper scripts (e.g. multicc-artifact's bin/artifact).
+// Carry command helpers into each provider's cache. SKILL.md may invoke
+// scripts/ as well as bin/; source crops must work after a fresh installation.
 function copyBinHelpers(sourceDir, cacheDir) {
-  const srcBin = path.join(sourceDir, 'bin');
-  if (!fs.existsSync(srcBin)) return;
-  const destBin = path.join(cacheDir, 'bin');
-  try {
-    fs.cpSync(srcBin, destBin, { recursive: true });
-    for (const f of fs.readdirSync(destBin)) fs.chmodSync(path.join(destBin, f), 0o755);
-  } catch (e) {
-    console.warn(`[multicc/skills] copyBinHelpers ${srcBin} -> ${destBin}: ${e.message}`);
+  for (const name of ['bin', 'scripts']) {
+    const source = path.join(sourceDir, name);
+    if (!fs.existsSync(source)) continue;
+    const destination = path.join(cacheDir, name);
+    try {
+      fs.cpSync(source, destination, { recursive: true });
+      for (const file of fs.readdirSync(destination)) {
+        const helper = path.join(destination, file);
+        if (!fs.statSync(helper).isFile()) continue;
+        if (name === 'bin' || fs.readFileSync(helper).subarray(0, 2).toString() === '#!') {
+          fs.chmodSync(helper, 0o755);
+        }
+      }
+    } catch (error) {
+      console.warn(`[multicc/skills] copyBinHelpers ${source} -> ${destination}: ${error.message}`);
+    }
   }
 }
 

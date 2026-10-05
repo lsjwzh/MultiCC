@@ -286,6 +286,27 @@ test('real Codex and Hermes conversion copies the shared registration rule', t =
   }
 });
 
+test('fresh provider conversions carry native crop scripts with executable permissions', t => {
+  const h = createHarness(t);
+  const homedir = t.mock.method(os, 'homedir', () => h.tempDir);
+  const modulePath = require.resolve('../src/skill-converter');
+  delete require.cache[modulePath];
+  const converter = require(modulePath);
+  homedir.mock.restore();
+  t.after(() => { converter.stop(); delete require.cache[modulePath]; });
+  const source = path.join(__dirname, '../skills/multicc-computer-use');
+  const installed = path.join(converter.AGENTS_ROOT, 'multicc-computer-use');
+  fs.cpSync(source, installed, { recursive: true });
+  fs.chmodSync(path.join(installed, 'scripts/mcu.sh'), 0o644);
+  converter.ensureSkillConverted('multicc-computer-use');
+  for (const provider of ['codex', 'hermes']) {
+    const script = path.join(converter.getLinkTarget('multicc-computer-use', provider), 'scripts/mcu.sh');
+    assert.equal(fs.readFileSync(script, 'utf8'), fs.readFileSync(path.join(source, 'scripts/mcu.sh'), 'utf8'));
+    assert.match(fs.readFileSync(script, 'utf8'), /snap-hires\)/);
+    assert.equal(fs.statSync(script).mode & 0o777, 0o755);
+  }
+});
+
 test('status and route DTOs preserve the never-synced contract', t => {
   const { runtime } = createHarness(t);
   const app = createApp();
