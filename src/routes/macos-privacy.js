@@ -33,21 +33,67 @@ function createMacosPrivacyRoutes({
   log = console,
   permissionTargets = require('../directories').macPermissionTargets,
   agentBin = process.env.MULTICC_AGENT_BIN || path.join(homedir(), '.multicc', 'bin', 'multicc-agent'),
+  uid = process.getuid?.(),
+  delay = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  resolveAgentApp = () => {
+    try {
+      const binary = require('node:fs').realpathSync(agentBin);
+      return binary.endsWith('.app/Contents/MacOS/MultiCCAgent') ? path.resolve(binary, '../../..') : null;
+    } catch { return null; }
+  },
 } = {}) {
-  async function agentPermissionsHandler(req, res) {
-    if (platform !== 'darwin') return res.json({ ok: true, applicable: false });
-    const result = await new Promise(resolve => {
-      run(agentBin, ['status'], { timeout: 3000, encoding: 'utf8' }, (error, stdout) => {
+  let restarting = null;
+  function readAgentStatus(timeout = 3000) {
+    return new Promise(resolve => {
+      run(agentBin, ['status'], { timeout, encoding: 'utf8' }, (error, stdout) => {
         if (error) return resolve(null);
-        try { resolve(JSON.parse(stdout)); } catch { resolve(null); }
+        try {
+          const result = JSON.parse(stdout);
+          resolve(result?.ok === true && typeof result.accessibility === 'boolean'
+            && typeof result.screenRecording === 'boolean' ? result : null);
+        } catch { resolve(null); }
       });
     });
-    if (!result || result.ok !== true) return res.json({ ok: false, applicable: true,
-      local: isLocal(req), error: 'agent-unavailable' });
-    // Only these two booleans cross the API; Agent status contains more detail
-    // that the permission setup page has no reason to expose.
-    return res.json({ ok: true, applicable: true, local: isLocal(req),
-      accessibility: result.accessibility === true, screenRecording: result.screenRecording === true });
+  }
+
+  function permissionReply(req, result) {
+    const base = { applicable: true, local: isLocal(req) };
+    // Resolve the client symlink: another installation with the same display
+    // name is not necessarily the app holding this Agent's TCC identity.
+    if (base.local) base.agentApp = resolveAgentApp();
+    if (!result) return { ok: false, ...base, error: 'agent-unavailable' };
+    return { ok: true, ...base,
+      accessibility: result.accessibility, screenRecording: result.screenRecording };
+  }
+
+  async function agentPermissionsHandler(req, res) {
+    res.set('Cache-Control', 'no-store');
+    if (platform !== 'darwin') return res.json({ ok: true, applicable: false });
+    return res.json(permissionReply(req, await readAgentStatus()));
+  }
+
+  async function restartAgentPermissionHandler(req, res) {
+    if (platform !== 'darwin') return res.status(400).json({ ok: false, error: 'macOS only' });
+    if (!isLocal(req)) return res.status(403).json({ ok: false, error: '请在这台 Mac 上重启 Agent。' });
+    if (!Number.isInteger(uid) || uid < 0) return res.status(503).json({ ok: false, error: 'Agent user unavailable' });
+    // Explicit user action only. Restart the desktop helper, never MultiCC;
+    // GET/polling must not interrupt captures or input in other sessions.
+    if (!restarting) restarting = (async () => {
+      const error = await new Promise(resolve => {
+        run('/bin/launchctl', ['kickstart', '-k', `gui/${uid}/com.multicc.agent`],
+          { timeout: 5000, encoding: 'utf8' }, error => resolve(error));
+      });
+      if (error) return { error: error.message };
+      for (let i = 0; i < 6; i++) {
+        const result = await readAgentStatus(1000);
+        if (result) return { result };
+        if (i < 5) await delay(250);
+      }
+      return { error: 'Agent restarted but is not responding yet; re-check shortly.' };
+    })().finally(() => { restarting = null; });
+    const outcome = await restarting;
+    if (outcome.error) return res.status(503).json({ ok: false, error: outcome.error });
+    return res.json(permissionReply(req, outcome.result));
   }
 
   async function openAgentPermissionHandler(req, res) {
@@ -109,9 +155,10 @@ function createMacosPrivacyRoutes({
     app.post('/api/system/disk-access/open', openHandler);
     app.get('/api/system/agent-permissions', agentPermissionsHandler);
     app.post('/api/system/agent-permissions/open', openAgentPermissionHandler);
+    app.post('/api/system/agent-permissions/restart', restartAgentPermissionHandler);
   }
 
-  return { mountRoutes, targetHandler, openHandler, agentPermissionsHandler, openAgentPermissionHandler };
+  return { mountRoutes, targetHandler, openHandler, agentPermissionsHandler, openAgentPermissionHandler, restartAgentPermissionHandler };
 }
 
 module.exports = { createMacosPrivacyRoutes, FULL_DISK_ACCESS_URL, AGENT_PERMISSION_URLS };
