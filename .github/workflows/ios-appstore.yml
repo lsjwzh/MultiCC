@@ -3,16 +3,16 @@ name: iOS App Store
 # 手动触发：在带 Xcode 26 的云 Mac 上构建 iOS 包并上传 App Store Connect。
 # App Store Connect 现在只收 iOS 26 SDK（Xcode 26+）构建的包，本机 Xcode 16 构建的会被 409 拒掉。
 #
-# 签名走苹果云端签名：归档时不签名，导出时用 App Store Connect API 密钥（Admin 角色）
-# 让 Xcode 拿云端管理的分发证书签名，所以这里不需要证书 p12 和描述文件。
-# App 没有 entitlements，不签名归档不会丢权限。
-#
-# 需要 app-store 环境里的三个 secret：ASC_KEY_ID、ASC_ISSUER_ID、ASC_KEY_P8（.p8 文件原文）。
+# 归档时不签名（App 没有 entitlements，不会丢权限），之后有两种走法：
+# - 配了 ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8（Admin 角色 API 密钥，.p8 原文）这三个 secret：
+#   在云端用苹果云端签名导出并直接上传。
+# - 没配：把未签名的 Runner.xcarchive 作为构建产物，下载到本机用 Xcode Organizer
+#   签名上传。SDK 版本写在二进制里，本机重签不会改。
 on:
   workflow_dispatch:
     inputs:
       upload:
-        description: 上传到 App Store Connect（关掉则只导出 IPA 作为构建产物）
+        description: 配了 API 密钥时直接上传（关掉则只导出 IPA 作为构建产物）
         type: boolean
         default: true
 
@@ -22,8 +22,9 @@ permissions:
 jobs:
   build:
     runs-on: macos-26
-    environment: app-store
     timeout-minutes: 60
+    env:
+      HAS_ASC_KEY: ${{ secrets.ASC_KEY_ID != '' }}
     defaults:
       run:
         working-directory: app
@@ -64,7 +65,15 @@ jobs:
             echo "$key=$(/usr/libexec/PlistBuddy -c "Print :$key" "$plist")"
           done
 
+      - name: Keep unsigned archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcarchive
+          path: ${{ runner.temp }}/Runner.xcarchive
+          retention-days: 7
+
       - name: Sign and export
+        if: ${{ env.HAS_ASC_KEY == 'true' }}
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -102,7 +111,7 @@ jobs:
           ls -la "$RUNNER_TEMP/export"
 
       - name: Keep IPA
-        if: ${{ !inputs.upload }}
+        if: ${{ env.HAS_ASC_KEY == 'true' && !inputs.upload }}
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
