@@ -223,7 +223,21 @@ function createProviderBalanceRuntime(options = {}) {
     return { ok: true, results };
   }
 
-  return Object.freeze({ queryOne, queryAll, adapters });
+  // A route rejection (429) asks for one real re-read of that provider's quota
+  // so the cache, not the rejected caller, says when the line is usable again.
+  // A burst of rejections (retries, parallel sessions) shares one query.
+  const refreshing = new Map();
+  function refreshOne(appType, id) {
+    const key = `${appType}:${id}`;
+    if (refreshing.has(key)) return refreshing.get(key);
+    const pending = queryOne(appType, id)
+      .catch(() => null)
+      .finally(() => refreshing.delete(key));
+    refreshing.set(key, pending);
+    return pending;
+  }
+
+  return Object.freeze({ queryOne, queryAll, refreshOne, adapters });
 }
 
 function mountProviderBalanceRoutes(app, deps = {}) {

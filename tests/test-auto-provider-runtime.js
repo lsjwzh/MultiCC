@@ -1215,3 +1215,94 @@ test('official account usage sweeper records every signed-in account under its o
   await sweeper.sweepOnce();
   assert.deepEqual(recorded, [['claude', `claude-official-${A}`, 12]], 'a throttled account is backed off, not hammered');
 });
+
+// ── pool memory: a fresh session starts on the line the pool last finished on ──
+
+function poolMemoryFixture({ remembered, exhausted = [], ownRoute = null } = {}) {
+  const base = fixture({ emptyFetchedAt: 1_000_000 });
+  exhaust(base.limits, exhausted);
+  const key = selectionKey(base.session.providerSelection);
+  const asked = [];
+  const runtime = createAutoProviderRuntime({
+    providers: base.providers,
+    providerLimitCache: { get: (_appType, id) => base.limits.get(id) || null },
+    limitCacheStaleMs: 60_000,
+    now: () => base.clock.now,
+    emit: Object.assign((_sessionId, event) => base.events.push(event), {
+      lastGoodRoute: (askedKey, sessionId) => {
+        asked.push([askedKey, sessionId]);
+        return askedKey === key ? remembered : null;
+      },
+    }),
+  });
+  if (ownRoute) base.session.autoProviderLastRoute = { ...ownRoute, selectionKey: key };
+  return { ...base, runtime, asked, key };
+}
+
+test('a fresh session of the same pool starts on the line the pool last finished a turn on', () => {
+  // Priority order would pick backup (empty is out of balance); the pool last
+  // finished on third, so a new session starts there instead.
+  const { runtime, session, asked, key } = poolMemoryFixture({
+    remembered: { cli: 'claude', providerId: 'third', model: 'third-model', succeededAt: 900_000 },
+  });
+  assert.equal(runtime.beginTurn({ session, turnId: 'fresh' }).initial().providerId, 'third');
+  assert.deepEqual(asked, [[key, 's1']]);
+});
+
+test('the remembered line is only a preference: exhausted it is skipped, a failure fails over', () => {
+  const spent = poolMemoryFixture({
+    remembered: { cli: 'claude', providerId: 'third', succeededAt: 900_000 }, exhausted: ['third'],
+  });
+  assert.equal(spent.runtime.beginTurn({ session: spent.session, turnId: 'spent' }).initial().providerId, 'backup');
+
+  const failing = poolMemoryFixture({ remembered: { cli: 'claude', providerId: 'third', succeededAt: 900_000 } });
+  const turn = failing.runtime.beginTurn({ session: failing.session, turnId: 'failing' });
+  assert.equal(turn.initial().providerId, 'third');
+  assert.equal(turn.failover(quotaDecision(), openAttempt()).invocationOptions.providerId, 'backup');
+});
+
+test('a session with its own line, an unknown line, or a different pool ignores the pool memory', () => {
+  const own = poolMemoryFixture({
+    remembered: { cli: 'claude', providerId: 'third', succeededAt: 900_000 },
+    ownRoute: { cli: 'claude', providerId: 'backup' },
+  });
+  assert.equal(own.runtime.beginTurn({ session: own.session, turnId: 'own' }).initial().providerId, 'backup');
+  assert.deepEqual(own.asked, []);
+
+  const unknown = poolMemoryFixture({ remembered: { cli: 'claude', providerId: 'gone', succeededAt: 900_000 } });
+  assert.equal(unknown.runtime.beginTurn({ session: unknown.session, turnId: 'gone' }).initial().providerId, 'backup');
+
+  const other = poolMemoryFixture({ remembered: { cli: 'claude', providerId: 'third', succeededAt: 900_000 } });
+  other.session.providerSelection = { ...other.session.providerSelection, maxAttempts: 2 };
+  assert.equal(other.runtime.beginTurn({ session: other.session, turnId: 'other' }).initial().providerId, 'backup');
+});
+
+test('a remembered line on another lane moves a fresh failover session there before its first turn', () => {
+  const { providers } = laneProviders();
+  const limits = new Map();
+  const events = [];
+  const remembered = { cli: 'codex', providerId: 'codex-a', succeededAt: 900_000 };
+  const make = () => createAutoProviderRuntime({
+    providers,
+    providerLimitCache: { get: (_appType, id) => limits.get(id) || null },
+    limitCacheStaleMs: 60_000,
+    now: () => 1_000_000,
+    emit: Object.assign((_sessionId, event) => events.push(event), { lastGoodRoute: () => remembered }),
+    isCliAvailable: () => true,
+  });
+  const { session } = crossFixture();
+  const runtime = make();
+  // claude-a is usable, so without the memory a failover pool would stay put.
+  const planned = runtime.planTurn({ session, text: '你好' });
+  assert.deepEqual(planned, {
+    cli: 'codex', fromCli: 'claude', providerId: 'codex-a', providerName: 'Codex A',
+    model: 'codex-a-model', reasonCode: 'auto_pool_memory',
+  });
+  session.cli = 'codex';
+  assert.equal(runtime.beginTurn({ session, turnId: 'moved', promptText: '你好' }).initial().providerId, 'codex-a');
+
+  // A remembered line the quota cache now marks spent is not moved to.
+  exhaust(limits, ['codex-a']);
+  const fresh = crossFixture().session;
+  assert.equal(make().planTurn({ session: fresh, text: '你好' }), null);
+});

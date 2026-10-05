@@ -124,3 +124,44 @@ test('持久化的换线记录让新运行时继续当前线路，额度缓存�
   assert.equal(restored.autoProviderLastRoute.cli, 'codex-exp');
   assert.ok(restored.autoProviderLastRoute.selectionKey);
 });
+
+test('a line that finishes a turn is stamped, and the pool lookup returns the latest such line', () => {
+  const pool = {
+    mode: 'auto', protocol: 'openai_responses', candidates: [
+      { providerId: 'deepseek', priority: 1 }, { providerId: 'or', priority: 2 },
+    ],
+  };
+  const records = new Map([
+    ['s1', { id: 's1', cli: 'codex-exp', providerSelection: pool }],
+    ['s2', { id: 's2', cli: 'codex-exp', providerSelection: JSON.parse(JSON.stringify(pool)) }],
+    ['s3', { id: 's3', cli: 'codex-exp', providerSelection: { ...pool, maxAttempts: 4 } }],
+  ]);
+  let clock = 1_000;
+  const saves = [];
+  const emit = createAutoRouteNotes({
+    broadcast: () => {}, records, save: source => saves.push(source), now: () => clock,
+  });
+  const key = selectionKey(pool);
+  const lookup = emit.lastGoodRoute;
+  assert.equal(typeof lookup, 'function');
+
+  // Selected alone is not a success.
+  emit('s1', selected({ sessionId: 's1', routing: null, providerId: 'deepseek' }));
+  assert.equal(lookup(key), null);
+  emit('s1', selected({ sessionId: 's1', routing: null, routePhase: 'succeeded', providerId: 'deepseek' }));
+  assert.equal(records.get('s1').autoProviderLastRoute.succeededAt, 1_000);
+  assert.deepEqual(lookup(key), { cli: 'codex-exp', providerId: 'deepseek', model: 'deepseek-v4-flash', succeededAt: 1_000 });
+
+  // A later success in another session of the same pool wins; another pool never counts.
+  clock = 2_000;
+  emit('s2', selected({ sessionId: 's2', routing: null, routePhase: 'switched', providerId: 'or', providerName: 'OR', model: null }));
+  emit('s2', selected({ sessionId: 's2', routing: null, routePhase: 'succeeded', providerId: 'or', providerName: 'OR', model: null }));
+  clock = 3_000;
+  emit('s3', selected({ sessionId: 's3', routing: null, providerId: 'deepseek' }));
+  emit('s3', selected({ sessionId: 's3', routing: null, routePhase: 'succeeded', providerId: 'deepseek' }));
+  assert.equal(lookup(key).providerId, 'or');
+  assert.equal(lookup(key, 's2').providerId, 'deepseek');
+  // A success for a line that is no longer the session's current one is ignored.
+  emit('s1', selected({ sessionId: 's1', routing: null, routePhase: 'succeeded', providerId: 'or' }));
+  assert.equal(records.get('s1').autoProviderLastRoute.succeededAt, 1_000);
+});

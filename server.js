@@ -2164,7 +2164,7 @@ providerRoutes.mountManagementRoutes(app);
 // the usage-limit poller's adapters. Outcomes mirror into the provider-limit cache
 // (onResult); lookupCached reads it back so a transient failure answers last-known-
 // good cached+stale — never for a 借道 lender (relay routes pass no lookupCached).
-mountProviderBalanceRoutes(app, { ...providers, onResult: limitRecorder.recordProvider, lookupCached: (appType, id) => providerLimitCache.get(appType, id) });
+limitRecorder.setRefresher(mountProviderBalanceRoutes(app, { ...providers, onResult: limitRecorder.recordProvider, lookupCached: (appType, id) => providerLimitCache.get(appType, id) })?.refreshOne); // 429 → 额度管理实时重查该 provider
 
 // ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,
 // pre-turn auth check). Mounted after provider routes for logical grouping.

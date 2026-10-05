@@ -72,6 +72,17 @@ function createAutoRouteNotes({ broadcast, append, records, save, now = Date.now
     try { save?.('runtime.auto-provider-route'); } catch (_) {}
   }
 
+  // A line that finished a turn is the one a new session with the same pool
+  // should start on (see lastGoodRoute). Selection alone proves nothing.
+  function rememberSuccess(sessionId, event) {
+    const record = records?.get?.(sessionId);
+    const last = record && record.autoProviderLastRoute;
+    if (!last || last.providerId !== clean(event.providerId)
+        || last.selectionKey !== selectionKey(record.providerSelection)) return;
+    last.succeededAt = Number(now());
+    try { save?.('runtime.auto-provider-route'); } catch (_) {}
+  }
+
   function persistNote(sessionId, event) {
     if (typeof append !== 'function' || !wantsNote(event)) return null;
     const route = noteRoute(event);
@@ -92,7 +103,10 @@ function createAutoRouteNotes({ broadcast, append, records, save, now = Date.now
     }
   }
 
-  return function emit(sessionId, event) {
+  function emit(sessionId, event) {
+    if (event && event.type === 'provider_auto_route' && event.routePhase === 'succeeded') {
+      rememberSuccess(sessionId, event);
+    }
     if (!event || event.type !== 'provider_auto_route' || !ROUTE_PHASES.has(event.routePhase)) {
       return broadcast(sessionId, event);
     }
@@ -101,7 +115,30 @@ function createAutoRouteNotes({ broadcast, append, records, save, now = Date.now
     // The live note adopts the persisted record's clientMsgId so a history
     // replay (reconnect) reconciles onto it instead of drawing a second line.
     return broadcast(sessionId, noteId ? { ...event, noteClientMsgId: noteId } : event);
+  }
+  // The records these notes write are also what answers "which line did this
+  // pool last finish a turn on"; the auto runtime reads it off its emitter.
+  emit.lastGoodRoute = createLastGoodRouteLookup(records);
+  return emit;
+}
+
+// The most recent line, across every session, that finished a turn under this
+// exact pool (same selectionKey) — what a fresh session of that pool (e.g. one
+// more session from the same preset) starts on instead of priority #1.
+function createLastGoodRouteLookup(records) {
+  return function lastGoodRoute(key, excludeSessionId = null) {
+    if (!key || !records || typeof records.entries !== 'function') return null;
+    let best = null;
+    for (const [id, record] of records.entries()) {
+      if (id === excludeSessionId) continue;
+      const route = record && record.autoProviderLastRoute;
+      if (!route || route.selectionKey !== key || !route.providerId) continue;
+      const at = Number(route.succeededAt);
+      if (!Number.isFinite(at) || (best && at <= best.succeededAt)) continue;
+      best = { cli: route.cli || null, providerId: route.providerId, model: route.model || null, succeededAt: at };
+    }
+    return best;
   };
 }
 
-module.exports = { createAutoRouteNotes, NOTE_KIND, noteRoute, wantsNote };
+module.exports = { createAutoRouteNotes, createLastGoodRouteLookup, NOTE_KIND, noteRoute, wantsNote };
