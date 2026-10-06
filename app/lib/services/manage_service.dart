@@ -890,6 +890,21 @@ class ManageService {
         .cast<String, dynamic>();
   }
 
+  /// 「需要交互」→「达成目标」：只改 D 的子状态 goalState，不动任务板生命周期。
+  /// Returns {ok, classifyState, goalState} or {alreadyAchieved: true}.
+  /// 409 = 这一轮不是执行成功；404 = session not found.
+  Future<Map<String, dynamic>> markGoalAchieved(String sessionId) async {
+    final res = await http
+        .post(
+          Uri.parse(_url('/api/sessions/$sessionId/mark-goal-achieved')),
+          headers: _headers,
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) _throwWrite(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
   // ── Docs & web-services registry (服务与文档) ───────────────────────────────
   // Mirrors /api/docs-registry (src/docs-registry.js) — the /manage panel's
   // registry of agent-published pages/files and user-registered local web

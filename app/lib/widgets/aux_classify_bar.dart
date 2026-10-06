@@ -4,6 +4,7 @@
 // 体的 widget（只依赖 registry、i18n 与状态条的共享渲染）。
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../i18n.dart';
 import '../utils/session_status_helpers.dart';
@@ -40,6 +41,11 @@ class AuxClassifyBar extends StatelessWidget {
   /// button on `can-cancel-task` and wires it to cancelStreaming().
   final VoidCallback? onCancelTurn;
 
+  /// 「需要交互」→「达成目标」的手动改标。不占状态条位置：只有状态药丸处于
+  /// 「需要交互」（succeededGoalTone == 'interact'）时，长按药丸浮出确认小窗，
+  /// 点「确认」才调用。对齐 web 的 #ac-goal-pop（桌面悬停 / 触屏长按）。
+  final VoidCallback? onMarkGoalAchieved;
+
   const AuxClassifyBar({
     super.key,
     required this.goal,
@@ -49,7 +55,63 @@ class AuxClassifyBar extends StatelessWidget {
     this.stale = false,
     this.onMarkTurnSucceeded,
     this.onCancelTurn,
+    this.onMarkGoalAchieved,
   });
+
+  /// 长按「需要交互」药丸后的确认小窗，贴在药丸下方。返回 true 才算确认。
+  static Future<bool> _confirmGoalAchieved(BuildContext pillContext) async {
+    final box = pillContext.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(pillContext).context.findRenderObject() as RenderBox?;
+    if (box == null || overlay == null) return false;
+    final topLeft = box.localToGlobal(
+      Offset(0, box.size.height + 6),
+      ancestor: overlay,
+    );
+    final picked = await showMenu<bool>(
+      context: pillContext,
+      position: RelativeRect.fromLTRB(
+        topLeft.dx,
+        topLeft.dy,
+        overlay.size.width - topLeft.dx,
+        0,
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      items: [
+        PopupMenuItem<bool>(
+          enabled: false,
+          padding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
+          child: Builder(
+            builder: (menuContext) => Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  t('markGoalPopText'),
+                  style: const TextStyle(
+                    color: Color(0xFF3f4a5a),
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                FilledButton(
+                  key: const Key('classify-goal-pop-confirm'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF2f8a63),
+                    minimumSize: const Size(56, 32),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    textStyle: const TextStyle(fontSize: 13),
+                  ),
+                  onPressed: () => Navigator.of(menuContext).pop(true),
+                  child: Text(t('markGoalPopConfirm')),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+    return picked == true;
+  }
 
   String _phaseLabel(String value) => switch (value) {
     'idle' => t('activityIdle'),
@@ -131,21 +193,36 @@ class AuxClassifyBar extends StatelessWidget {
             ),
           ],
           const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            decoration: BoxDecoration(
-              color: phaseBg,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: phaseBorder),
-            ),
-            child: Text(
-              '$stateEmoji $phaseLabel',
-              style: TextStyle(
-                color: phaseColor,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+          Builder(
+            builder: (pillContext) {
+              final pill = Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: phaseBg,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: phaseBorder),
+                ),
+                child: Text(
+                  '$stateEmoji $phaseLabel',
+                  style: TextStyle(
+                    color: phaseColor,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              );
+              final onMark = onMarkGoalAchieved;
+              if (goalTone != 'interact' || onMark == null) return pill;
+              return GestureDetector(
+                key: const Key('classify-goal-pill'),
+                behavior: HitTestBehavior.opaque,
+                onLongPress: () async {
+                  HapticFeedback.selectionClick();
+                  if (await _confirmGoalAchieved(pillContext)) onMark();
+                },
+                child: pill,
+              );
+            },
           ),
           // Cancel button: visible only when state is P (processing). Same slot
           // and same red tint as the web's ac-cancel-task pill; the action is
