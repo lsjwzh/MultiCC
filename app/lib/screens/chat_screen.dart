@@ -242,6 +242,19 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  /// 长按「需要交互」药丸确认后：改为「达成目标」（web 的 #ac-goal-pop）。
+  /// 服务端随后经 WS 推 task_state，药丸自己会换词换色。
+  Future<void> _markGoalAchieved(ChatProvider provider) async {
+    try {
+      await ManageService(
+        settings: widget.settings,
+      ).markGoalAchieved(provider.executionSessionName);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    }
+  }
+
   /// 待答卡的「已解决 / 忽略」：手动了结这条提问，不发回答、不继续原任务
   /// （web 的 `#pending-user-input-dismiss`，同一个接口）。成功时 provider 已经
   /// 把卡片收起，服务端随后广播的 user_input_resolved 才是最终权威；失败要把
@@ -981,6 +994,8 @@ class _ChatViewState extends State<ChatView> {
                                       onCancelTurn: actions.canCancelTask
                                           ? provider.cancel
                                           : null,
+                                      onMarkGoalAchieved: () =>
+                                          _markGoalAchieved(provider),
                                     );
                                   },
                                 ),

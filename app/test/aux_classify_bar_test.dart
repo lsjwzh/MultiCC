@@ -143,4 +143,40 @@ void main() {
       );
     }
   });
+
+  testWidgets('「需要交互」长按药丸浮出确认小窗，点确认才改标', (tester) async {
+    var marks = 0;
+    Widget bar(String goalState) => _host(
+      AuxClassifyBar(
+        goal: 'g',
+        phase: 'verifying',
+        classifyState: 'D',
+        goalState: goalState,
+        onMarkGoalAchieved: () => marks++,
+      ),
+    );
+    await tester.pumpWidget(bar('interact'));
+    // 轻点不弹。
+    await tester.tap(find.byKey(const Key('classify-goal-pill')));
+    await tester.pumpAndSettle();
+    expect(find.text('将状态改为「达成目标」？'), findsNothing);
+    // 长按弹出；点小窗外关闭，不改标。
+    await tester.longPress(find.byKey(const Key('classify-goal-pill')));
+    await tester.pumpAndSettle();
+    expect(find.text('将状态改为「达成目标」？'), findsOneWidget);
+    await tester.tapAt(const Offset(5, 500));
+    await tester.pumpAndSettle();
+    expect(find.text('将状态改为「达成目标」？'), findsNothing);
+    expect(marks, 0);
+    // 再长按，点确认 → 回调一次，小窗收起。
+    await tester.longPress(find.byKey(const Key('classify-goal-pill')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('classify-goal-pop-confirm')));
+    await tester.pumpAndSettle();
+    expect(marks, 1);
+    expect(find.text('将状态改为「达成目标」？'), findsNothing);
+    // 已是「达成目标」：药丸不再可长按。
+    await tester.pumpWidget(bar('achieved'));
+    expect(find.byKey(const Key('classify-goal-pill')), findsNothing);
+  });
 }
