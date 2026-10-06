@@ -125,6 +125,10 @@
       ? settings.fixupLocalImages : function noop() {};
     const fixupLocalFileLinks = typeof settings.fixupLocalFileLinks === 'function'
       ? settings.fixupLocalFileLinks : function noop() {};
+    // 远控直达链接（#rs=control）的 href 修正：chat.html 的 `<base href="/">` 会把
+    // 纯 fragment 解析到站点根，见 chat-remote-links.js。
+    const fixupRemoteScreenLinks = typeof settings.fixupRemoteScreenLinks === 'function'
+      ? settings.fixupRemoteScreenLinks : function noop() {};
     const highlightCodeBlocks = typeof settings.highlightCodeBlocks === 'function'
       ? settings.highlightCodeBlocks : function noop() {};
     const buildUsageLine = typeof settings.buildUsageLine === 'function'
@@ -212,6 +216,7 @@
       else contentEl.insertBefore(markdownRoot, contentEl.firstElementChild || null);
       fixupLocalImages(markdownRoot);
       fixupLocalFileLinks(markdownRoot);
+      fixupRemoteScreenLinks(markdownRoot);
       if (final) highlightCodeBlocks(markdownRoot);
       return markdownRoot;
     }

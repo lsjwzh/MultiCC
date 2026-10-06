@@ -595,6 +595,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/remote_screen_link_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/remote_screen_rfb_test.dart",
       "tier": "core",
       "lane": "flutter"
@@ -1809,6 +1814,24 @@
     },
     {
       "path": "tests/test-chat-recovery-service.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-remote-link-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-chat-remote-links.js",
       "tier": "flow",
       "lane": "deterministic",
       "owner": "npm:test:security",

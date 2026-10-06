@@ -917,7 +917,7 @@
     anchor.before(b);
   }
 
-  global.MultiCCRemoteScreen = Object.freeze({ open, close });
+  global.MultiCCRemoteScreen = Object.freeze({ open, close, openMode });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installButton);
   else installButton();
 
@@ -927,7 +927,17 @@
   // /chat.html?air=1&task=<id>&rs=1|control。两种都自动展开屏幕浮层；
   // rs=control 同时进入可操作模式（AI 解决不了、需要人上手时用）。
   // 一次性参数：触发后立刻从地址栏移除，刷新 / 重复点击不再自动弹出。
-  // web 点击直接进；App 内点开走内建浏览器同一页面（原生入口等 App 新版）。
+  // 消息里**点中**的远控链接不走这里（`<base href="/">` 会把纯 fragment 解析到站点
+  // 根）：两条路共用一个 openMode，见 chat-remote-links.js。
+  function openMode(want) {
+    if (!ov) {
+      void open(); // open 的同步段先建好 s，再切操作模式
+      if (want === 'control' && s) setControl(true);
+      return true;
+    }
+    if (want === 'control' && s) setControl(true);
+    return true;
+  }
   function readRsParam() {
     try {
       const q = new URLSearchParams(location.search).get('rs');
@@ -946,10 +956,7 @@
       else url.hash = '';
       history.replaceState(null, '', url);
     } catch {}
-    if (!ov) {
-      void open(); // open 的同步段先建好 s，再切操作模式
-      if (got.want === 'control' && s) setControl(true);
-    }
+    openMode(got.want);
   }
   function bootDirectLink() {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', consumeRsParam);
