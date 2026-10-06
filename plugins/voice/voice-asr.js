@@ -339,6 +339,7 @@ function handleVoiceWs(ws, req, urlObj) {
   let provider = '';
   let aggregate = '';   // accumulated finalized text
   let partial = '';     // current (not-yet-final) hypothesis
+  let pendingPcmByte = null; // PCM16 samples may be split across WebSocket frames.
 
   const send = (obj) => { try { ws.send(JSON.stringify(obj)); } catch (_) {} };
 
@@ -354,8 +355,30 @@ function handleVoiceWs(ws, req, urlObj) {
     if (isBinary) {
       // Raw PCM16LE mono audio chunk from the browser.
       if (upstream) {
-        const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
-        upstream.pushAudio(new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 2)));
+        try {
+          const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+          const hasPendingByte = pendingPcmByte !== null;
+          const combined = new Uint8Array(buf.byteLength + (hasPendingByte ? 1 : 0));
+          if (hasPendingByte) combined[0] = pendingPcmByte;
+          combined.set(buf, hasPendingByte ? 1 : 0);
+
+          const completeByteLength = combined.byteLength & ~1;
+          pendingPcmByte = completeByteLength < combined.byteLength
+            ? combined[combined.byteLength - 1]
+            : null;
+          if (completeByteLength > 0) {
+            // Copy into an aligned Int16Array instead of viewing Buffer's backing
+            // store, whose byteOffset can be odd when it comes from a pooled slice.
+            const samples = new Int16Array(completeByteLength / 2);
+            new Uint8Array(samples.buffer).set(combined.subarray(0, completeByteLength));
+            upstream.pushAudio(samples);
+          }
+        } catch (err) {
+          cb.onError(`Invalid audio frame: ${err.message}`);
+          try { upstream.close(); } catch (_) {}
+          upstream = null;
+          pendingPcmByte = null;
+        }
       }
       return;
     }
@@ -363,17 +386,19 @@ function handleVoiceWs(ws, req, urlObj) {
     if (msg.type === 'start') {
       const requested = (msg.provider && msg.provider !== 'auto') ? msg.provider : cfg.defaultProvider;
       provider = resolveProvider(requested);
+      pendingPcmByte = null;
       try {
         upstream = createAsrSession(provider, { lang: msg.lang }, cb);
       } catch (e) { cb.onError(e.message); }
       if (!upstream) { /* createAsrSession already reported the error */ }
     } else if (msg.type === 'stop') {
+      pendingPcmByte = null;
       if (upstream) upstream.finish();
     }
   });
 
-  ws.on('close', () => { if (upstream) upstream.close(); upstream = null; });
-  ws.on('error', () => { if (upstream) upstream.close(); upstream = null; });
+  ws.on('close', () => { if (upstream) upstream.close(); upstream = null; pendingPcmByte = null; });
+  ws.on('error', () => { if (upstream) upstream.close(); upstream = null; pendingPcmByte = null; });
 }
 
 module.exports = { handleVoiceWs, applyConfig, providerStatus, targetSampleRate, cfg };
