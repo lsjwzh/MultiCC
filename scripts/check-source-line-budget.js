@@ -370,8 +370,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +21 双语键：iOS 设备 UDID 采集、登记引导与复制结果。
     // +3 双语键：聊天状态条「需要交互」→ 悬停/长按确认改为达成目标。
     // 权限总提示补全三项用途；重新生成时同步源词典已有的 2 个 tryDemo 键。
-    maxLines: 8844,
-    maxBytes: 562953,
+    // +1 双语键（rsErrPlatform）：桌面 agent 的能力画像（src/desktop-host.js）落地后，
+    // macOS 之外的机器上🖥不再显示，深链接进来要说清「这台机器还不支持」。中英各 1 行
+    // = +2 行，重跑生成器实测 8846/563130，按真实高水位抬一格。
+    maxLines: 8846,
+    maxBytes: 563130,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

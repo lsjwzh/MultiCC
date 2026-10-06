@@ -104,6 +104,11 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   int _permEpoch = 0;
   String? _permResult;
   DateTime? _lastPermCheck;
+
+  /// 服务端明说本平台不支持时的整页收敛态（见 RemoteScreenService
+  /// .supportsRemoteScreen）。为真时不去查权限、不连 agent，只显示原因。
+  bool _unsupported = false;
+
   int _lastX = 0;
   int _lastY = 0;
   DateTime _lastMoveSent = DateTime.fromMillisecondsSinceEpoch(0);
@@ -151,6 +156,15 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
 
   /// 未通过桌面权限时每两秒复查；出帧后每十秒检查急停监听状态。
   Future<void> _checkPermsThenConnect() async {
+    // 先问「这台机器能不能做」。不支持的平台（现在的 Windows / Linux）连
+    // agent socket 都不存在：去查权限只会拿到一堆假红，去 connectLive()
+    // 只会空转重连。直接在源头收敛，把原因写在页面上。
+    final supported = await _svc.supportsRemoteScreen();
+    if (!mounted) return;
+    if (supported == false) {
+      setState(() => _unsupported = true);
+      return;
+    }
     await _refreshPerms();
     if (!mounted) return;
     _permTimer?.cancel();
@@ -611,8 +625,39 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     }
   }
 
+  /// 本平台做不了远程屏幕时的整页。只留标题栏 + 一句原因：这页原本的
+  /// 控件（流畅模式 / 控制 / 框选 / 唤起屏幕）在没有 agent 的平台上全是
+  /// 死按钮，不如整页说清楚，而不是让用户对着空视口猜。
+  Widget _unsupportedScaffold() {
+    return Scaffold(
+      backgroundColor: const Color(0xFF10141c),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF161b26),
+        foregroundColor: const Color(0xFFdce6f1),
+        title: Text('🖥 ${t('rsTitle')}'),
+      ),
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Text(
+              t('rsErrPlatform'),
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Color(0xFF9fb0c6),
+                fontSize: 15,
+                height: 1.6,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_unsupported) return _unsupportedScaffold();
     return Scaffold(
       backgroundColor: const Color(0xFF10141c),
       appBar: AppBar(

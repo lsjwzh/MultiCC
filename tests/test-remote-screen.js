@@ -151,6 +151,82 @@ test('annotation-live hands remote-screen shots to the built-in handler without 
   assert.equal(agentLog[0].op, 'click');
 });
 
+// ── 跨平台：本机 desktop agent 的画像、能力接口、非 macOS 的干净拒绝 ──
+const { createDesktopHost, profileFor } = require('../src/desktop-host');
+
+test('desktop-host 画像：现在只有 macOS 有 agent，win32/linux 如实报不支持', () => {
+  const mac = profileFor('darwin', { home: '/Users/x' });
+  assert.equal(mac.supported, true);
+  assert.equal(mac.transport, 'unix');
+  assert.equal(mac.modifier, 'cmd');
+  assert.equal(mac.features.control, true);
+  assert.equal(mac.agentSock, '/Users/x/.multicc/agent/agent.sock');
+  assert.equal(mac.rfbSock, '/Users/x/.multicc/agent/rfb.sock');
+
+  const win = profileFor('win32', { home: 'C:\\Users\\x' });
+  assert.equal(win.supported, false);
+  assert.equal(win.transport, 'named-pipe');
+  assert.equal(win.modifier, 'ctrl');
+  assert.equal(win.rfbSock, null);
+  assert.deepEqual(Object.values(win.features), [false, false, false, false, false, false, false, false]);
+
+  const linux = profileFor('linux', { home: '/home/x', env: { XDG_RUNTIME_DIR: '/run/user/7' } });
+  assert.equal(linux.supported, false);
+  assert.equal(linux.modifier, 'ctrl');
+  assert.equal(linux.agentSock, '/run/user/7/multicc-agent/agent.sock');
+});
+
+test('能力接口回答「本机能做什么」；非 macOS 上三条路由干净拒绝，不碰 agent 也不碰 shell', async () => {
+  assert.deepEqual(rs.capabilities(), { ok: true, platform: 'darwin', label: 'macOS', supported: true,
+    transport: 'unix', modifier: 'cmd', reason: null,
+    features: { view: true, control: true, snapshot: true, annotate: true, stream: true, wake: true, unlock: true, elementTree: true } });
+
+  const app = fakeApp();
+  rs.mount(app);
+  const caps = await invoke(app.handlers['GET /api/remote-screen/capabilities']);
+  assert.equal(caps.headers['Cache-Control'], 'no-store');
+  assert.equal(caps.body.platform, 'darwin');
+  assert.equal(caps.body.supported, true);
+
+  const prevHost = rs._deps.host, prevSock = rs._deps.sock, prevCall = rs._deps.agentCall;
+  let calls = 0;
+  try {
+    rs._resetForTests();
+    rs._deps.host = createDesktopHost({ platform: 'win32', exec: () => { throw new Error('off-macOS must not shell out'); } });
+    rs._deps.sock = path.join(tmp, 'never-created.sock');
+    rs._deps.agentCall = async () => { calls++; return { ok: true }; };
+    assert.equal((await invoke(app.handlers['GET /api/remote-screen/frame'])).statusCode, 503);
+    assert.equal((await invoke(app.handlers['POST /api/remote-screen/snapshot'])).statusCode, 503);
+    const input = await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'click', x: 1, y: 2 });
+    assert.equal(input.statusCode, 503);
+    assert.equal(input.body.error, 'platform-unsupported');
+    assert.match(input.body.message, /还不支持远程屏幕/);
+    assert.equal((await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'unlock' })).statusCode, 400,
+      '白名单仍然先于平台判断');
+    assert.equal(calls, 0);
+  } finally {
+    rs._deps.host = prevHost; rs._deps.sock = prevSock; rs._deps.agentCall = prevCall;
+  }
+});
+
+test('非 macOS 上唤屏路由直接说明不支持，未获授权与 agent 都不查询', async () => {
+  const { mountWakeRoutes } = require('../src/remote-screen-wake');
+  const app = fakeApp();
+  let calls = 0;
+  mountWakeRoutes(app, {
+    call: async () => { calls++; return { ok: true }; }, wakeDisplay: async () => { calls++; },
+    invalidate: () => {}, supported: () => false,
+  });
+  const get = await invoke(app.handlers['GET /api/remote-screen/wake']);
+  assert.equal(get.body.canWake, false);
+  assert.equal(get.body.error, 'platform-unsupported');
+  assert.match(get.body.message, /还不支持远程屏幕/);
+  const post = await invoke(app.handlers['POST /api/remote-screen/wake']);
+  assert.equal(post.statusCode, 409);
+  assert.equal(post.body.error, 'platform-unsupported');
+  assert.equal(calls, 0);
+});
+
 // ── RFB 流式模式：/ws/remote-screen ↔ rfb.sock 的字节管道 ──
 const { EventEmitter } = require('events');
 function fakeWs() {

@@ -160,6 +160,33 @@ class RemoteScreenService {
     }
   }
 
+  /// 这台机器上的桌面 Agent 到底能不能做远程屏幕
+  /// （`GET /api/remote-screen/capabilities`，画像见 `src/desktop-host.js`）。
+  ///
+  /// 返回 `false` = 服务端明确说本平台不支持（Windows / Linux 还没写 agent）；
+  /// 返回 `null` = 问不到（老 server 没有这条路由、或这一次请求失败）。
+  /// 调用方只在拿到**明确的 false** 时才收敛入口：探测失败不该把功能藏掉，
+  /// 宁可让用户点进去看到 `platform-unsupported` 的真实文案。
+  /// 与 Web 端 `public/chat-remote-screen.js` 的 `loadCaps()` 同一策略。
+  Future<bool?> supportsRemoteScreen() async {
+    try {
+      final res = await _http
+          .get(
+            Uri.parse(settings.buildHttpUrl('/api/remote-screen/capabilities')),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode != 200) return null;
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map<String, dynamic> && decoded['supported'] is bool) {
+        return decoded['supported'] as bool;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// 打开系统设置里对应权限的面板（服务端只放行本机请求；远程访客会拿到
   /// 403，UI 据此只显示提示文案不给按钮）。
   Future<void> openPermission(String permission) async {
