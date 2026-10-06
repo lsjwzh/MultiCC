@@ -45,6 +45,31 @@ class AirMacLidSleep {
   );
 }
 
+/// 运行 MultiCC 的那台主机的电量（`GET /api/host/battery`）。
+///
+/// 是主机的电量，不是这台手机的：远程看到的永远是被控电脑还剩多少。
+/// [available]=false 表示主机没有电池（台式机/非 macOS·Linux），这一行不出现。
+class AirHostBattery {
+  const AirHostBattery({required this.available, this.percent = 0, this.charging = false});
+
+  final bool available;
+  final int percent;
+  final bool charging;
+
+  /// 放电且不高于 20%：和 Web `air-battery.js` 的 LOW_PERCENT 同一个口径。
+  bool get low => available && !charging && percent <= 20;
+
+  factory AirHostBattery.fromJson(Map<String, dynamic> data) {
+    final percent = data['percent'];
+    if (data['available'] != true || percent is! num) return const AirHostBattery(available: false);
+    return AirHostBattery(
+      available: true,
+      percent: percent.round().clamp(0, 100),
+      charging: data['charging'] == true,
+    );
+  }
+}
+
 class AirVersionInfo {
   const AirVersionInfo({
     required this.current,
@@ -284,6 +309,9 @@ class AirOpsService {
   /// 没这个能力」（available=false）是两件事，只有后者能让这一行永远消失。
   Future<AirMacLidSleep> fetchMacLidSleep() async =>
       AirMacLidSleep.fromJson(_decode(await _send('GET', '/api/settings/power')));
+
+  Future<AirHostBattery> fetchHostBattery() async =>
+      AirHostBattery.fromJson(_decode(await _send('GET', '/api/host/battery')));
 
   /// 切这个开关要在 Mac 上完成一次管理员授权（服务端跑 osascript），所以这条请求
   /// 可能停很久：超时按服务端那 120s 给，否则 App 会在用户还没按下授权框时自己

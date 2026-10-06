@@ -834,6 +834,15 @@
       ]
     },
     {
+      "path": "tests/test-host-battery.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
       "path": "tests/test-air-cli-update.js",
       "tier": "other",
       "lane": "deterministic",

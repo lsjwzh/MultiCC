@@ -393,6 +393,42 @@ class _OpsButton extends StatelessWidget {
   }
 }
 
+/// 侧栏底部的主机电量（Web `public/air-battery.js`）。读不到或主机没电池时整行不占位。
+class AirBatteryRow extends StatelessWidget {
+  const AirBatteryRow({super.key, required this.store});
+
+  final AirOpsStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: store,
+      builder: (context, _) {
+        final battery = store.battery;
+        if (battery == null || !battery.available) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(18, 2, 18, 4),
+          child: Row(
+            key: const ValueKey('air-battery'),
+            children: [
+              Text(battery.charging ? '⚡' : battery.low ? '🪫' : '🔋', style: const TextStyle(fontSize: 12)),
+              const SizedBox(width: 6),
+              Text(
+                '${battery.percent}%',
+                style: TextStyle(
+                  color: battery.low ? AppColors.danger : AppColors.muted,
+                  fontSize: 11.5,
+                  fontWeight: battery.low ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// 折叠区外的回执行：运维动作的结果要看得见，折起来会连回执一起藏掉。
 class AirOpsReceipt extends StatelessWidget {
   const AirOpsReceipt({super.key, required this.store});

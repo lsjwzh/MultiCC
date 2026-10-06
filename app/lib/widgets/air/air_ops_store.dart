@@ -68,6 +68,8 @@ class AirOpsStore extends ChangeNotifier {
   bool? lidSleepAvailable;
   bool lidSleepOn = false;
   bool lidSleepBusy = false;
+  /// 主机电量：null = 还没读到（或读不到），available=false = 主机没有电池。
+  AirHostBattery? battery;
   bool autoUnlockAvailable = false;
   bool autoUnlockOn = false;
 
@@ -79,6 +81,7 @@ class AirOpsStore extends ChangeNotifier {
   Timer? _receiptTimer;
   Timer? _repaintTimer;
   Timer? _versionTimer;
+  Timer? _batteryTimer;
   bool _disposed = false;
 
   /// 开机多久了（毫秒）。服务端读数 + 本地流逝，主机表不准也不会显示未来的时间。
@@ -100,8 +103,11 @@ class AirOpsStore extends ChangeNotifier {
     _versionTimer ??= Timer.periodic(_versionInterval, (_) {
       if (!updating) unawaited(checkVersion());
     });
+    // 电量一分钟一读：服务端自己还有 5 秒缓存，多端同时开也只会探一次 pmset。
+    _batteryTimer ??= Timer.periodic(const Duration(minutes: 1), (_) => unawaited(loadBattery()));
     unawaited(loadBootTime());
     unawaited(loadLidSleep());
+    unawaited(loadBattery());
     unawaited(checkVersion());
   }
 
@@ -111,6 +117,7 @@ class AirOpsStore extends ChangeNotifier {
     _receiptTimer?.cancel();
     _repaintTimer?.cancel();
     _versionTimer?.cancel();
+    _batteryTimer?.cancel();
     super.dispose();
   }
 
@@ -215,6 +222,16 @@ class AirOpsStore extends ChangeNotifier {
       await Future<void>.delayed(_pollInterval);
       if (_disposed) return;
     }
+  }
+
+  /// 读不到就保留上一次的读数：电量这种东西「刚才是 7%」比「不知道」有用。
+  Future<void> loadBattery() async {
+    try {
+      battery = await service.fetchHostBattery();
+    } catch (_) {
+      return;
+    }
+    _notify();
   }
 
   /// 关盖运行的当前状态（Web `air.js` 的 loadLidSleepRow）。

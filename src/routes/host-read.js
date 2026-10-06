@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { readPowerSettings } = require('../host-power-services');
+const { createBatteryReader } = require('../host-battery');
 
 const EMPTY_HEALTH = Object.freeze({
   successCount: 0,
@@ -214,6 +215,17 @@ function createPowerSettingsHandler(deps) {
   };
 }
 
+function createBatteryHandler(deps) {
+  const readBattery = deps.readBattery || createBatteryReader();
+  return async function batteryHandler(req, res, next) {
+    try {
+      return res.json(await readBattery());
+    } catch (error) {
+      return next(error);
+    }
+  };
+}
+
 function assertHostReadDeps(deps) {
   if (!deps || typeof deps !== 'object') throw new TypeError('host read route dependencies are required');
   for (const name of [
@@ -241,6 +253,7 @@ function mountHostReadRoutes(app, rawDeps) {
   app.get('/api/tunnel/sakurafrp', createTunnelSakurafrpHandler(deps));
   app.get('/api/settings/access-token', createAccessTokenSettingsHandler(deps));
   app.get('/api/settings/power', createPowerSettingsHandler(deps));
+  app.get('/api/host/battery', createBatteryHandler(deps));
 }
 
 module.exports = {
@@ -262,5 +275,6 @@ module.exports = {
   createTunnelSakurafrpHandler,
   createAccessTokenSettingsHandler,
   createPowerSettingsHandler,
+  createBatteryHandler,
   mountHostReadRoutes,
 };

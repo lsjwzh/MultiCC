@@ -22,6 +22,7 @@ const EXPECTED_PATHS = [
   '/api/tunnel/sakurafrp',
   '/api/settings/access-token',
   '/api/settings/power',
+  '/api/host/battery',
 ];
 
 function createHarness(overrides = {}) {

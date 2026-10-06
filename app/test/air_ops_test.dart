@@ -478,6 +478,63 @@ void main() {
 
   // ── store ───────────────────────────────────────────────────────────────
 
+  group('主机电量', () {
+    test('读到的电量原样进 store，低电量只在放电时成立', () async {
+      final settings = await _settings();
+      var body = const {'available': true, 'percent': 7, 'charging': false};
+      final client = MockClient((request) async {
+        expect(request.url.path, '/api/host/battery');
+        return _json(body);
+      });
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      addTearDown(store.dispose);
+      addTearDown(client.close);
+
+      expect(store.battery, isNull);
+      await store.loadBattery();
+      expect(store.battery!.percent, 7);
+      expect(store.battery!.low, isTrue);
+
+      body = const {'available': true, 'percent': 7, 'charging': true};
+      await store.loadBattery();
+      expect(store.battery!.low, isFalse, reason: '充电中不算低电量');
+    });
+
+    test('主机没有电池时 available=false；读不到时保留上一次读数', () async {
+      final settings = await _settings();
+      var fail = false;
+      final client = MockClient((_) async => fail
+          ? _json(const {'error': 'down'}, 500)
+          : _json(const {'available': false}));
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      addTearDown(store.dispose);
+      addTearDown(client.close);
+
+      await store.loadBattery();
+      expect(store.battery!.available, isFalse);
+      fail = true;
+      await store.loadBattery();
+      expect(store.battery!.available, isFalse, reason: '失败不覆盖已有读数');
+    });
+
+    testWidgets('侧栏底部行显示百分比，没有电池时不占位', (tester) async {
+      final settings = await _settings();
+      final client = MockClient((_) async => _json(const {'available': true, 'percent': 27, 'charging': true}));
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      await tester.runAsync(store.loadBattery);
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: AirBatteryRow(store: store))));
+      expect(find.text('27%'), findsOneWidget);
+      expect(find.text('⚡'), findsOneWidget);
+
+      store.battery = const AirHostBattery(available: false);
+      store.notifyListeners();
+      await tester.pump();
+      expect(find.text('27%'), findsNothing);
+      store.dispose();
+      client.close();
+    });
+  });
+
   group('AirOpsStore', () {
     test('还没读到读数之前，开机那两行不写假时间', () async {
       final settings = await _settings();
