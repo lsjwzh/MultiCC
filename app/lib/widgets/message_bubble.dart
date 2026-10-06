@@ -89,9 +89,9 @@ Future<void> _handleLinkTap(BuildContext context, String? href) async {
 
 /// 识别远程屏幕直达链接，返回 `'1'`（只看）/ `'control'`（可操作）/ null。
 ///
-/// 与 Web `consumeRsParam` 同一套参数：`#rs=control` 这类 hash 链接，或跨设备
-/// 形态 `/chat.html?air=1&task=<id>&rs=control`（root-relative 或 origin 与当前
-/// 服务器一致）；rs 可在 query 也可在 hash。外站链接里的 rs 不认。
+/// 与 Web `chat-remote-links.js` 的 `linkMode` 是同一套判定：`#rs=control` 这类 hash
+/// 链接，或跨设备形态 `/chat.html?air=1&task=<id>&rs=control`（root-relative、同源，
+/// 或环回地址）；rs 可在 query 也可在 hash。外站链接里的 rs 不认。
 @visibleForTesting
 String? remoteScreenLinkMode(String target, SettingsService? settings) {
   final uri = Uri.tryParse(target.trim());
@@ -109,11 +109,47 @@ String? remoteScreenLinkMode(String target, SettingsService? settings) {
   final ownPage = uri.path == '/chat.html' || uri.path == '/air';
   if (!ownPage) return null;
   if (!uri.hasScheme) return rs;
-  return _isServerOrigin(uri, settings) ? rs : null;
+  return _isRemoteScreenOrigin(uri, settings) ? rs : null;
+}
+
+/// 远控链接的 origin 判定，比 [_isServerOrigin] 宽两条 —— 这两条都是实机上踩到的：
+///
+///   1. **环回地址**：agent 就在服务器那台机器上跑，`MULTICC_BASE_URL` 常是
+///      `http://127.0.0.1:3000`，于是它发出去的跨设备链接写的就是 127.0.0.1。
+///      手机上的回环是手机自己，交给浏览器只会白屏；这类链接一律回原生屏幕页
+///      （用 App 自己配置的服务器取画面，与 agent 指的是同一台机器）。端口不比。
+///   2. **配置里没写 scheme**（`1.2.3.4:3000`，`buildHttpUrl` 会按 http 补）时不再
+///      要求 scheme 一致：同一个 host:port 的 https 链接同样是这台服务器（穿透域名
+///      常见）。配置里写明了 scheme 就照旧按它比。
+///
+/// 外站（example.com 之类）依旧不认 —— 本页浮层只能看本机屏幕。
+bool _isRemoteScreenOrigin(Uri uri, SettingsService? settings) {
+  if (uri.scheme != 'http' && uri.scheme != 'https') return false;
+  // Dart 的 Uri.host 对 IPv6 不带方括号（`http://[::1]:3000` → `::1`）。
+  final host = uri.host.toLowerCase();
+  if (host == '127.0.0.1' || host == 'localhost' || host == '::1' ||
+      host.endsWith('.localhost')) {
+    return true;
+  }
+  final serverHost = settings?.host ?? '';
+  if (serverHost.isEmpty) return false;
+  // 配置里写了 scheme 才把 scheme 当约束。
+  return _isServerOrigin(
+    uri,
+    settings,
+    schemeAgnostic: !serverHost.startsWith('http'),
+  );
 }
 
 /// origin（scheme/host/port）是否就是当前配置的 multicc 服务器。
-bool _isServerOrigin(Uri uri, SettingsService? settings) {
+///
+/// [schemeAgnostic]：配置里没写 scheme 时不再要求 scheme 一致（见
+/// [_isRemoteScreenOrigin]）。默认为 false，本地文件链接照旧按严格口径判。
+bool _isServerOrigin(
+  Uri uri,
+  SettingsService? settings, {
+  bool schemeAgnostic = false,
+}) {
   if (uri.scheme != 'http' && uri.scheme != 'https') return false;
   final serverHost = settings?.host ?? '';
   if (serverHost.isEmpty) return false;
@@ -121,10 +157,8 @@ bool _isServerOrigin(Uri uri, SettingsService? settings) {
     serverHost.startsWith('http') ? serverHost : 'http://$serverHost',
   );
   if (server == null) return false;
-  if (uri.scheme != server.scheme ||
-      uri.host.toLowerCase() != server.host.toLowerCase()) {
-    return false;
-  }
+  if (uri.host.toLowerCase() != server.host.toLowerCase()) return false;
+  if (!schemeAgnostic && uri.scheme != server.scheme) return false;
   if ((uri.hasPort && !server.hasPort) ||
       (!uri.hasPort && server.hasPort) ||
       (uri.hasPort && uri.port != server.port)) {

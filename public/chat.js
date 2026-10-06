@@ -513,6 +513,7 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   safeMarkdown: window.MultiCCSafeMarkdown,
   fixupLocalImages,
   fixupLocalFileLinks: (window.MultiCCChatLocalLinks && window.MultiCCChatLocalLinks.fixupLocalFileLinks) || (() => {}),
+  fixupRemoteScreenLinks: (window.MultiCCChatRemoteLinks && window.MultiCCChatRemoteLinks.fixupRemoteScreenLinks) || (() => {}),
   highlightCodeBlocks,
   buildUsageLine,
   buildTimingLine,

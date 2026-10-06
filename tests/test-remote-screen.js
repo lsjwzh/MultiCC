@@ -341,7 +341,9 @@ function webHarness() {
   const document = { readyState: 'loading', addEventListener() {}, querySelector() { return null; } };
   const context = { window, document, URL, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval, fetch: null };
   let source = fs.readFileSync('public/chat-remote-screen.js', 'utf8');
-  source = source.replace('global.MultiCCRemoteScreen = Object.freeze({ open, close });',
+  // 钩子按源码文本改这一行：导出表一变，这里就得跟着变（少了它就是 probe 未定义，
+  // 两个用例一起红 —— 这正是「让测试自己告诉你它被改坏了」的那条线）。
+  source = source.replace('global.MultiCCRemoteScreen = Object.freeze({ open, close, openMode });',
     'global.probe = { toScreen, applyBoxZoom, zoomTap, loop, resetZoom, set: value => { s = value; ov = { classList: { toggle() {} } }; }, zoom };');
   vm.runInNewContext(source, context);
   return { context, probe: window.probe };
