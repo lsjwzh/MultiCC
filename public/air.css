@@ -528,6 +528,9 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
 .ops-actions button:hover, .ops-actions a:hover { color: #0f63c6; background: rgba(255, 255, 255, .78); }
 .ops-actions button.on { color: var(--green); font-weight: 600; }
 .ops-status { margin: 2px 0 0; color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+.side-battery { display: flex; align-items: center; gap: 6px; margin-top: 2px; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.side-battery[hidden] { display: none; }
+.side-battery.low { color: var(--danger); font-weight: 600; }
 .ops-status.warn { color: var(--warning); }
 .ops-status.err { color: var(--danger); }
 

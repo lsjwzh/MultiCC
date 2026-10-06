@@ -304,6 +304,8 @@ class AirSidebar extends StatelessWidget {
             const Divider(height: 1, color: AppColors.line),
             // 回执也留在折叠区外：运维动作的结果要看得见。
             AirOpsReceipt(store: ops),
+            // 主机电量放在侧栏最底部，Web 同位置（public/air-battery.js）。
+            AirBatteryRow(store: ops),
             Padding(
               padding: const EdgeInsets.fromLTRB(18, 10, 18, 6),
               child: Text(
