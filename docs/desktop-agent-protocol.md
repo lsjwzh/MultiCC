@@ -81,7 +81,7 @@ Windows 与 Linux 还没有，`src/desktop-host.js` 里如实登记成 `supporte
 
 | op | 参数 | 语义 |
 |---|---|---|
-| `snap` | `path` | 把主屏截到 `path`（PNG，**原生物理像素**，不要缩放）。服务端自己裁切与压缩 |
+| `snap` | `path`, `crop?`, `jpeg?`, `quality?` | 把主屏（或 `crop` 指定的区域）截到 `path`。默认 PNG，**原生物理像素**，不要缩放 |
 | `status` | — | 返回 `{ ok, screenLocked, accessibility, screenRecording, control: { leaseHolder, halted } }` |
 | `click` | `x, y, button?('right'), count?(1-3)` | 在逻辑点上点击 |
 | `move` | `x, y` | 移动指针 |
@@ -92,6 +92,28 @@ Windows 与 Linux 还没有，`src/desktop-host.js` 里如实登记成 `supporte
 | `release` | — | 释放操作租约 |
 | `resume` | — | 解除 Esc 急停 |
 | `unlock` | — | 提交已保存的密码解锁（**只能由服务端唤屏路由触发**，见 §5） |
+
+#### `snap` 的可选字段
+
+`crop` / `jpeg` / `quality` 都是**后加的**，macOS 那份实现不认识它们 —— 这不重要，
+因为服务端只在 `host.captureDirect` 存在时才发（也就是只在 Linux 上）。多出来的字段
+是纯增量：新 agent 对老服务端、老 agent 对新服务端都仍然只走 `path`。
+
+| 字段 | 语义 |
+|---|---|
+| `crop: {x, y, width, height}` | 只截这个矩形（逻辑点）。**顺序是先裁后编码**，不要先整屏编码再裁 |
+| `jpeg: true` | 输出 JPEG 而不是 PNG。也可以只把 `path` 以 `.jpg`/`.jpeg` 结尾来表示 |
+| `quality: 1..100` | JPEG 质量，缺省 60 |
+
+响应相应扩展为 `{ ok, path, width, height, crop \| null, ms }`：`width`/`height` 是
+**整屏**尺寸（裁剪前），`crop` 是实际生效的裁剪框 —— 前端要靠整屏尺寸把图上的点
+映射回逻辑点，报成裁剪后的尺寸会让坐标整体偏移。
+
+为什么把这个能力做成 op 的可选字段，而不是让服务端自己去裁：macOS 有 `sips`，Linux 没有
+任何一个「一定在」的命令行图像工具，让服务端裁就等于要求用户装 ImageMagick。而 agent
+手里本来就攥着帧缓冲，顺手裁切 + 编码还能少两次全屏拷贝。**能力跟着平台走**：
+`desktop-host.js` 只在非 macOS 上挂 `captureDirect`，`remote-screen.js` 的 `capture()`
+用它的有无来选路。
 
 ### 4.2 可选（`features` 里声明）
 
@@ -110,6 +132,11 @@ Windows 与 Linux 还没有，`src/desktop-host.js` 里如实登记成 `supporte
 macOS agent 同时是 CLI：`multicc-agent click 10 20`、`multicc-agent status`，
 被 `skills/multicc-computer-use/scripts/mcu.sh` 直接调用。新平台为保持技能可用应提供同名
 CLI，但**服务端只走 socket**。CLI 的成功输出是一行 JSON（同 §3 的响应）。
+
+新平台还应提供一个原样透传模式（Linux 是 `multicc-agent --raw '<json>'`，缺省从 stdin
+读一行）。它不是给用户用的，而是让一致性脚本能发**正常客户端永远不会发**的请求 ——
+畸形 JSON、未知 op、缺字段、越权 —— 否则那些分支就只能靠读代码相信它们是对的。
+CLI 与 socket 走的是同一个 socket、同一段解析，所以 CLI 上的断言对服务端等价。
 
 ## 5. 护栏——不是可选项
 
@@ -169,15 +196,61 @@ ScreenCaptureKit / CGWindowList 截图，CGEvent 注入，AX 元素树，`caffei
   `features.unlock = false`。真要做，需要一个 SYSTEM 级服务（SendSAS / 凭据提供程序）。
 - 修饰键是 **Ctrl** → 画像 `modifier: 'ctrl'`，前端快捷键行据此把 `cmd+x` 换成 `ctrl+x`。
 
-### Linux（计划）
+### Linux X11（已实现：`scripts/linux-agent/`）
 
-必须分成两件完全不同的事：
+C，零第三方依赖（只用系统库 `X11 Xext Xtst Xss z jpeg`），五个源文件：`agent.c`（op 与
+护栏）、`x11.c`（截图/注入/锁屏判定/Esc 观察）、`json.c`、`image.c`（PNG+JPEG 编码）、
+`agent.h`。编译、验证、一致性测试各一条命令：
 
-- **X11**：截图 `XShm`/`XGetImage`，输入扩展 `XTEST`（`xdotool` 用的就是它）。
-  注意 X11 **没有权限模型**——任何能连上 display 的客户端都能看能点，所以安全边界只剩
-  MultiCC 自己的 token + 租约，和 macOS「一次性授权」不是一回事，要在文档里对用户说清。
-  多屏与 DPI 比较乱，先只支持主屏、逻辑尺寸取 XRandR 报的值。
-- **Wayland**：macOS 那套做法**不可能**。没有全局截图、没有全局注入，唯一正路是 portal：
+```sh
+scripts/linux-agent/build.sh              # 编 agent 与测试靶子
+scripts/linux-agent/verify.sh             # 容器里起 Xvfb 跑探针 + conformance.sh（不需要 Linux 主机）
+DISPLAY=:0 scripts/linux-agent/conformance.sh   # 在真桌面上跑同一套
+```
+
+设计要点（每条都是踩过或差点踩到的坑，改之前先读）：
+
+- **截图判据是像素，不是返回值**。容器/无头环境里 MIT-SHM 会「调用成功但整帧全黑」，
+  只判 `Status` 会把黑屏当成功。`conformance.sh` 里那条「截图里真的有这个颜色」就是为此
+  存在的：已知颜色画在已知位置，解码 PNG 去找它。
+- **逻辑点 == 像素**。GNOME/KDE 在 X11 下的缩放是切 XRandR 模式，不是把更大的帧缩下来，
+  所以 `logicalSize()` 直接返回物理尺寸，任何换算系数都会让坐标整体偏移。
+- **中文输入靠临时改键映射**（`xdotool` 同款）。XTEST 只能发键码，发不出字符。还原动作
+  **推到整串输完之后**：按一次还原一次的话，接收方收到 KeyPress 去反查 keysym 时映射
+  已经变回去了——症状是「字打进去了但对方认不出」，最难查的一类。用轮换的一小撮空闲键码，
+  避免给所有客户端反复刷 MappingNotify。
+- **滚轮方向反着记**：`amount > 0` 是**向上**（契约跟 macOS 对齐），而 X11 的 button 4 才是上。
+- **锁屏判定是尽力而为且偏保守**：焦点窗口的 `WM_CLASS` 命中已知锁屏程序，或 XScreenSaver
+  报 `state=On` 且 `kind != ScreenSaverBlanked`（单纯熄屏不算锁）。判错的代价不对称：
+  把「锁着」误判成「没锁」会把注入打到锁屏窗口上（绝不能发生），反过来只是多点一次不动。
+  判据写进 `status.lockCheck` 便于现场排查。
+- **敏感窗口只挡打字，不挡点击**（`type`/`press` 回 `protected-app`，`click` 照旧）。
+  两件事混在一起会让「点一下控制中心」收到「屏幕已锁」这种把人带偏的错。
+- **Esc 观察用 `XQueryKeymap` 轮询**，且间隔分两档：**有人持租约时 8ms，空闲时 150ms**。
+  快档是为了不漏掉一次很轻的点按——人按 Esc 可以只按住 30~50ms，固定慢采样有实打实的
+  概率整段跳过，而这是这套护栏里唯一不该有概率性失效的一条（漏掉的后果是「用户想停，
+  我们没停」）；慢档是因为 agent 是长驻进程，空闲时每秒上百次定时唤醒没道理，而没人持
+  租约时本来也没有东西可停。
+  不用 XRecord：要额外扩展、要单独一条控制连接、没有干净的超时退出。不用 `XGrabKey`：
+  会把 Esc 从用户正在用的程序手里抢走（`owner_events` 也救不了——被动抓取激活期间事件是
+  报到抓取窗口的）。
+  **两档切换必须即时**：空闲档一觉 150ms 比人按住 Esc 的 120ms 还长，睡姿不对就整次漏判，
+  所以睡眠放在条件变量上，开始注入或拿到租约都要立刻叫醒观察线程。
+  **注入期间照常采样，只排除「我们自己刚发的那个 Escape」**：早期写法是注入窗口内一律
+  把「上次采样」置为按下，代价是紧接着的一次真按下不成边沿——现场表现为「点一下之后
+  第一次按 Esc 停不下来」，且时灵时不灵。两个方向都有断言守着（`conformance.sh` 第 6 节）。
+- **`unlock` 一律回 `{ ok:false, reason:'unlock-unsupported' }`**（契约 §5 第 5 条）：
+  锁屏是另一个会话的窗口，够不到也不该够到。`features.unlock = false`。
+- **没有 stream**：RFB 未做，前端自动回退 JPEG 轮询。`features.stream = false`。
+- **没有 elementTree**：X11 没有可访问性树 API，要 AT-SPI2 得另起一个总线会话，v1 不背。
+- **安全边界比 macOS 少一层**：X11 没有权限模型——任何能连上 display 的客户端都能看能点。
+  所以剩下的全部边界是：`0700` 目录 + `0600` socket + `SO_PEERCRED` 同 uid + 封闭的 op 集合
+  + `snap` 路径必须是绝对路径且不含 `..`。**这一点必须在用户文档里明说**，它和 macOS
+  「一次性授权」不是一回事。
+
+### Wayland（不做，这是产品差异不是实现细节）
+
+macOS 那套做法**不可能**。没有全局截图、没有全局注入，唯一正路是 portal：
   - 截图 `org.freedesktop.portal.ScreenCast` → PipeWire 流；
   - 输入 `org.freedesktop.portal.RemoteDesktop`（底层 libei/EIS，GNOME 45+/KDE 6 可用）；
   - 两者都**带用户同意弹窗**（可记住授权）。因此「无感 agent」的模型不成立，
@@ -186,6 +259,16 @@ ScreenCaptureKit / CGWindowList 截图，CGEvent 注入，AX 元素树，`caffei
   - 附带影响：portal 给的是**视频流**而非静止帧，JPEG 轮询那条路要改成「从 PipeWire 拉一帧
     再编码」，这反而更贴 RFB 那条链路。
 - 修饰键是 **Ctrl**。
+- **XWayland 是假成功陷阱**：Wayland 会话里确实存在一个 X server，`DISPLAY=:0` 连得上、
+  `x11_open` 成功、`status` 回 ok —— 但它只是一个兼容层，看不到原生 Wayland 窗口
+  （截图出来是空的或只有 XWayland 应用），注入也只对 XWayland 应用有效。所以
+  **判断「这套能不能用」不能只看连接成功**，要看真实截图里的内容（`conformance.sh` 的
+  像素断言正是为此）。v1 的选择是：能连上就工作，用户发现原生窗口截不到时，文档里已经
+  写明「Linux 请用 X11 会话」。
+
+> Linux 画像的 `supported` 是 **true**，Wayland 会话里也照报 true：此时 agent 会因为
+> 连不上 X server 而在 `status` 里明说（`no-display` + `DISPLAY` 的实际值），比笼统的
+> 「整个平台不支持」好排查得多。
 
 ## 8. 服务端如何判断「这台机器能做什么」
 
@@ -193,7 +276,14 @@ ScreenCaptureKit / CGWindowList 截图，CGEvent 注入，AX 元素树，`caffei
 把它原样吐给前端。`supported: false` 时三条路由（frame/input/snapshot）与唤屏路由都干净地回
 `503 / 409 platform-unsupported`，**不会去连一个不存在的 socket**；前端据此不显示 🖥。
 
+判断「能不能做某件事」要按 **feature 名**判，不要按平台名判——平台名会把「Linux 支持远程屏幕」
+错读成「Linux 支持唤屏」。唤屏路由的 `supported` 用的是 `features.wake`（Linux 为 false）：
+判成 `profile.supported` 的话，前端会显示一个「唤起屏幕」按钮，点下去永远报
+`auto-unlock-disabled`，而从按钮文字上完全看不出原因。
+
 新增一个平台 = 在那个文件里补一份画像 + 写一个说这套协议的 agent。**路由不用改。**
+平台专有的壳外调用（`sips` / `osascript` / `caffeinate`）在 Linux 上一律抛
+`wrong-platform-helper` 而不是去 exec 一个不存在的命令——静默 ENOENT 比明说难查得多。
 
 能力矩阵（`features`）与 op 的对应关系：`view` → `snap`；`control` → `click/move/scroll/drag/type/press`；
 `snapshot` + `annotate` → 服务端自己完成（截图 + 标注→动作）；`stream` → §6；`wake` → `caffeinate` 等价物；
