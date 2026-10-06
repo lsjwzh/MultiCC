@@ -279,7 +279,7 @@
       if (!data || (data.screenRecording && data.accessibility)) {
         if (!current.permStarted) { current.permStarted = true; start(); }
       } else if (!current.permStarted) {
-        status(tr('rsPermNeed', '看屏幕需「屏幕录制」，远程操作需「辅助功能」'), true);
+        status(tr('rsPermNeed', '请为 MultiCC Agent 授权：屏幕录制用于看画面，辅助功能用于鼠标键盘控制，输入监控用于监听本机 Esc 急停。'), true);
       }
     };
     current.permApply = apply;
