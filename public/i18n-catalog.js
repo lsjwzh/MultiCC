@@ -4270,7 +4270,7 @@ window.MULTICC_I18N_CATALOG = {
     "airGlobalPermissionsRecording": "屏幕录制",
     "airGlobalPermissionsOpenFailed": "打开系统设置失败：{message}",
     "airGlobalPermissionsAgentUnavailable": "无法连接这台 Mac 的 Agent，暂时不能判断权限状态。",
-    "airGlobalPermissionsMissing": "当前 Agent 尚未检测到「{name}」权限，桌面操作可能失败。",
+    "airGlobalPermissionsMissing": "当前 Agent 尚未检测到「{name}」权限。屏幕录制用于看画面，辅助功能用于鼠标键盘控制，输入监控用于监听本机 Esc 急停。",
     "airGlobalPermissionsLocal": "请在运行 MultiCC Agent 的那台 Mac 的系统设置里开启「{name}」权限。",
     "airGlobalPermissionsCheckFailed": "权限检测失败：{message}",
     "autoEditorCliSwitchLabel": "换道时机",
@@ -4334,7 +4334,7 @@ window.MULTICC_I18N_CATALOG = {
     "barkPasteManually": "浏览器无法读取剪贴板，请在地址框中长按或右键粘贴。",
     "barkReminderLimit": "当前发送普通通知，连续响铃尚未开启。电脑上的 MultiCC 服务需要保持运行并联网。",
     "rsPermTitle": "远程操作权限",
-    "rsPermNeed": "看屏幕需「屏幕录制」，远程操作需「辅助功能」",
+    "rsPermNeed": "请为 MultiCC Agent 授权：屏幕录制用于看画面，辅助功能用于鼠标键盘控制，输入监控用于监听本机 Esc 急停。",
     "rsPermScreen": "屏幕录制",
     "rsPermAx": "辅助功能",
     "rsPermOpen": "打开设置",
@@ -4416,7 +4416,9 @@ window.MULTICC_I18N_CATALOG = {
     "iosUdidPhoneOnly": "请用 iPhone 的 Safari 打开本页；可以扫描下方二维码。",
     "iosUdidOpenSettings": "下载后请到 iPhone 的“设置 → 已下载描述文件”完成安装，再返回本页。",
     "iosUdidCopied": "已复制",
-    "iosUdidCopyManual": "请长按选中的内容复制。"
+    "iosUdidCopyManual": "请长按选中的内容复制。",
+    "tryDemoNoServer": "体验演示（无需服务器）",
+    "tryDemoHint": "还没有安装 MultiCC 服务端？先用内置示例项目看看主要功能：任务列表、会话记录、发消息和流式回复。"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -8688,7 +8690,7 @@ window.MULTICC_I18N_CATALOG = {
     "airGlobalPermissionsRecording": "Screen Recording",
     "airGlobalPermissionsOpenFailed": "Could not open System Settings: {message}",
     "airGlobalPermissionsAgentUnavailable": "Cannot connect to the Agent on this Mac; its permission status is unknown.",
-    "airGlobalPermissionsMissing": "The running Agent does not currently detect “{name}” permission, so desktop actions may fail.",
+    "airGlobalPermissionsMissing": "The running Agent does not currently detect “{name}” permission. Screen Recording enables viewing, Accessibility enables mouse and keyboard control, and Input Monitoring enables listening for the local Esc stop key.",
     "airGlobalPermissionsLocal": "Enable “{name}” in System Settings on the Mac running MultiCC Agent.",
     "airGlobalPermissionsCheckFailed": "Permission check failed: {message}",
     "autoEditorCliSwitchLabel": "Lane switch",
@@ -8752,7 +8754,7 @@ window.MULTICC_I18N_CATALOG = {
     "barkPasteManually": "Clipboard access is unavailable. Long-press or right-click the address field to paste.",
     "barkReminderLimit": "These are ordinary notifications; continuous ringing is not enabled. The computer running MultiCC must stay online and running.",
     "rsPermTitle": "Remote control permissions",
-    "rsPermNeed": "Viewing needs Screen Recording; remote control needs Accessibility",
+    "rsPermNeed": "Grant MultiCC Agent permissions: Screen Recording for viewing, Accessibility for mouse and keyboard control, and Input Monitoring for listening for the local Esc stop key.",
     "rsPermScreen": "Screen Recording",
     "rsPermAx": "Accessibility",
     "rsPermOpen": "Open Settings",
@@ -8834,6 +8836,8 @@ window.MULTICC_I18N_CATALOG = {
     "iosUdidPhoneOnly": "Open this page in Safari on your iPhone, or scan the QR code below.",
     "iosUdidOpenSettings": "After downloading, open Settings → Profile Downloaded on your iPhone to install the profile, then return here.",
     "iosUdidCopied": "Copied",
-    "iosUdidCopyManual": "Touch and hold the selected text to copy."
+    "iosUdidCopyManual": "Touch and hold the selected text to copy.",
+    "tryDemoNoServer": "Try the demo (no server needed)",
+    "tryDemoHint": "Haven't set up a MultiCC server yet? Explore the main features with a built-in sample project: the task list, conversations, sending messages, and streamed replies."
   }
 };

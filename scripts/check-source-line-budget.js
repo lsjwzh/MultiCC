@@ -369,8 +369,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +1 双语键：直接重启按钮的本机操作提示。
     // +21 双语键：iOS 设备 UDID 采集、登记引导与复制结果。
     // +3 双语键：聊天状态条「需要交互」→ 悬停/长按确认改为达成目标。
-    maxLines: 8840,
-    maxBytes: 562097,
+    // 权限总提示补全三项用途；重新生成时同步源词典已有的 2 个 tryDemo 键。
+    maxLines: 8844,
+    maxBytes: 562953,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
