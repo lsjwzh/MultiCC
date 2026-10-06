@@ -193,8 +193,12 @@
           "anchor": "agentBin = process.env.MULTICC_AGENT_BIN || path.join(homedir(), '.multicc', 'bin', 'multicc-agent'),"
         },
         {
-          "file": "src/remote-screen.js",
-          "anchor": "const SOCK = process.env.MULTICC_AGENT_SOCK || path.join(os.homedir(), '.multicc', 'agent', 'agent.sock');"
+          "file": "src/desktop-host.js",
+          "anchor": "agentSock: env.MULTICC_AGENT_SOCK || path.join(dir, 'agent.sock'),"
+        },
+        {
+          "file": "src/desktop-host.js",
+          "anchor": "rfbSock: env.MULTICC_AGENT_RFB_SOCK || path.join(dir, 'rfb.sock'),"
         }
       ]
     },

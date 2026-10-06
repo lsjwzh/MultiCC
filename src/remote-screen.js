@@ -21,26 +21,25 @@
 
 const fs = require('fs');
 const net = require('net');
-const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 
 const { createPaths } = require('./paths');
 const { parseRegion, cropGeometry } = require('./remote-screen-region');
+const { createDesktopHost } = require('./desktop-host');
 
 const SESSION = 'remote-screen';
 // 落在已登记的 assistDir 下：随数据根隔离，并由 assist-snapshots 的 7 天清理兜底。
 const DIR = path.join(createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).assistDir, SESSION);
-const SOCK = process.env.MULTICC_AGENT_SOCK || path.join(os.homedir(), '.multicc', 'agent', 'agent.sock');
-// 流式模式：Agent 的第二个 unix socket 上跑最小 RFB 3.8 服务（见 MultiCCAgent.swift
-// 的 RFB streaming server 一节）。浏览器跑原版 noVNC，经 /ws/remote-screen 到这里，
+// 「这台机器上的 agent 是谁、能做什么」全在 desktop-host 里；socket 路径也从画像来。
+// 流式模式：Agent 的第二个 socket 上跑最小 RFB 3.8 服务（见 MultiCCAgent.swift 的
+// RFB streaming server 一节）。浏览器跑原版 noVNC，经 /ws/remote-screen 到这里，
 // 再桥到 rfb.sock；鉴权在 WS 层（同 /ws/chat 的 ws-ticket），Agent 侧 getpeereid
 // 校验同 uid。Agent 未带该 socket（旧版本 / macOS<14）时连接失败，前端回退轮询。
-const RFB_SOCK = process.env.MULTICC_AGENT_RFB_SOCK || path.join(path.dirname(SOCK), 'rfb.sock');
 const INPUT_OPS = new Set(['click', 'move', 'scroll', 'drag', 'type', 'press', 'release', 'resume', 'status']);
 const KEEP_SHOTS = 20;
 
-const deps = { agentCall, execFile, sock: SOCK, rfbSock: RFB_SOCK, dir: DIR };
+const deps = { agentCall, execFile, sock: null, rfbSock: null, dir: DIR };
 
 function agentCall(req, timeoutMs = 8000) {
   return new Promise(resolve => {
@@ -69,50 +68,37 @@ function run(cmd, args, timeout = 8000) {
 
 function call(req, timeoutMs) { return deps.agentCall(req, timeoutMs); }
 
-// 逻辑点尺寸：Finder 桌面 bounds（与 mcu.sh 同法），失败按 Retina 物理宽 / 2。
-let logical = null;
-async function logicalSize(physW, physH) {
-  if (logical) return logical;
-  try {
-    const out = await run('osascript', ['-e', 'tell application "Finder" to get bounds of window of desktop'], 4000);
-    const [, , w, h] = out.split(',').map(s => parseInt(s, 10));
-    if (w > 0 && h > 0) return (logical = { width: w, height: h });
-  } catch {}
-  if (physW > 0) return (logical = { width: Math.round(physW / 2), height: Math.round(physH / 2) });
-  return { width: 0, height: 0 };
-}
-
-async function pngSize(file) {
-  const out = await run('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', file]);
-  const w = Number(/pixelWidth:\s*(\d+)/.exec(out)?.[1]) || 0;
-  const h = Number(/pixelHeight:\s*(\d+)/.exec(out)?.[1]) || 0;
-  return { w, h };
-}
+// 本机 desktop agent 的画像 + 平台相关的壳外调用（逻辑尺寸 / 图像处理 / 唤屏）全在
+// desktop-host.js：以后加 Windows/Linux agent 改的是那里，不是这里。挂在 deps 上，
+// 单测可以整体换掉一个假 host。
+deps.host = createDesktopHost({ exec: run });
+deps.sock = deps.host.profile.agentSock;
+deps.rfbSock = deps.host.profile.rfbSock;
 
 // Crop the lossless native screenshot FIRST; only full-screen frames are
 // downsampled to logical size. Each capture owns its files (frame/snapshot
 // requests may overlap), and region frames keep Retina pixels at JPEG 85.
 async function capture(out, region = null) {
+  deps.host.assertSupported();
   fs.mkdirSync(deps.dir, { recursive: true });
   const work = fs.mkdtempSync(path.join(deps.dir, '.capture-'));
   try {
     const raw = path.join(work, 'raw.png');
     const r = await call({ op: 'snap', path: raw, session: SESSION }, 10000);
     if (!r || r.ok === false) throw Object.assign(new Error(r?.error || 'snap-failed'), { agent: r });
-    const phys = await pngSize(raw);
-    const size = await logicalSize(phys.w, phys.h);
+    const phys = await deps.host.imageSize(raw);
+    const size = await deps.host.logicalSize(phys.w, phys.h);
     let source = raw, area = null;
     if (region) {
       area = cropGeometry(region, size, phys);
       source = path.join(work, 'crop.png');
-      await run('sips', [raw, '--cropToHeightWidth', String(area.pixelHeight), String(area.pixelWidth),
-        '--cropOffset', String(area.pixelY), String(area.pixelX), '--out', source]);
+      await deps.host.cropImage(raw, area, source);
     }
-    const jpeg = /\.jpe?g$/i.test(out);
-    const args = ['-s', 'format', jpeg ? 'jpeg' : 'png'];
-    if (jpeg) args.push('-s', 'formatOptions', region ? '85' : '60');
-    if (!region && size.width && size.width < phys.w) args.push('--resampleWidth', String(size.width));
-    await run('sips', [...args, source, '--out', out]);
+    await deps.host.convertImage(source, out, {
+      jpeg: /\.jpe?g$/i.test(out),
+      quality: region ? 85 : 60,
+      resampleWidth: !region && size.width && size.width < phys.w ? size.width : null,
+    });
     return { width: size.width || phys.w, height: size.height || phys.h, region: area };
   } finally { fs.rmSync(work, { recursive: true, force: true }); }
 }
@@ -207,7 +193,7 @@ async function handleAnnotation(payload = {}) {
   try { region = parseRegion(JSON.parse(fs.readFileSync(src + '.json', 'utf8'))); } catch (error) {
     if (error.code !== 'ENOENT') return { ok: false, refresh: false, text: '选区坐标记录无效，请重新截取' };
   }
-  const size = region || logical || { width: Number(payload.width) || 0, height: Number(payload.height) || 0 };
+  const size = region || deps.host.cachedLogicalSize() || { width: Number(payload.width) || 0, height: Number(payload.height) || 0 };
   const scaleX = payload.width > 0 ? size.width / payload.width : 1;
   const scaleY = payload.height > 0 ? size.height / payload.height : scaleX;
   const pt = p => p && { x: Math.round((region?.x || 0) + Number(p.x) * scaleX),
@@ -241,6 +227,7 @@ const REASONS = {
   'accessibility-not-granted': 'MultiCC Agent 未获辅助功能授权',
   'screen-recording-not-granted': 'MultiCC Agent 未获屏幕录制授权',
   'agent-unreachable': 'MultiCC Agent 未运行',
+  'platform-unsupported': '这台机器上的桌面 Agent 还不支持远程屏幕',
 };
 function describe(r) {
   const code = r?.reason || r?.error || 'unknown';
@@ -254,8 +241,15 @@ function sendError(res, error, status = 502) {
 
 function mount(app) {
   require('./remote-screen-wake').mountWakeRoutes(app, {
-    call, wakeDisplay: () => run('/usr/bin/caffeinate', ['-u', '-t', '1'], 3000),
+    call, wakeDisplay: () => deps.host.wakeDisplay(),
+    supported: () => deps.host.profile.supported,
     invalidate: () => { lastFrame = null; },
+  });
+  // 前端据此决定显不显示 🖥、快捷键行出 ⌘ 还是 Ctrl。平台画像进程内不变，所以这是个
+  // 常量回答；agent 装没装不在这里判断——那由各路由真实失败时回各自的 reason。
+  app.get('/api/remote-screen/capabilities', (_req, res) => {
+    res.set({ 'Cache-Control': 'no-store' });
+    res.json(deps.host.info());
   });
   app.get('/api/remote-screen/frame', async (req, res) => {
     try {
@@ -272,6 +266,7 @@ function mount(app) {
   app.post('/api/remote-screen/input', async (req, res) => {
     const built = buildInput(req.body || {});
     if (built.error) { res.status(400).json({ ok: false, error: built.error }); return; }
+    if (!deps.host.profile.supported) { sendError(res, deps.host.unsupported()); return; }
     const r = await call(built.req);
     if (!r || r.ok === false) { res.json({ ok: false, error: r?.reason || r?.error, message: describe(r) }); return; }
     lastFrame = null;
@@ -290,6 +285,7 @@ module.exports = {
   buildInput,
   agentCall,
   DIR,
+  capabilities: () => deps.host.info(),
   _deps: deps,
-  _resetForTests() { logical = null; inflight.clear(); lastFrame = null; },
+  _resetForTests() { deps.host.reset(); inflight.clear(); lastFrame = null; },
 };

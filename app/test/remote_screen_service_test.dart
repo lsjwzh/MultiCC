@@ -194,6 +194,51 @@ void main() {
     },
   );
 
+  // 「这台机器能不能做远程屏幕」：只有服务端**明确**说不支持才收敛入口。
+  // 老 server 没有这条路由、或这一次请求失败，都必须返回 null（= 不拦），
+  // 否则一次网络抖动就会把 macOS 上的功能藏掉。
+  test('能力探测：supported=false 明确返回，其余一律 null 不拦', () async {
+    final incoming = StreamController<dynamic>();
+    incoming.stream.listen((_) {});
+    addTearDown(incoming.close);
+
+    Future<bool?> probe(http.Client stub) async {
+      final s = await _make(incoming: incoming, sent: [], httpStub: stub);
+      addTearDown(s.dispose);
+      return s.supportsRemoteScreen();
+    }
+
+    Future<http.Client> json(Object body, [int code = 200]) async =>
+        MockClient((_) async => http.Response(jsonEncode(body), code));
+
+    expect(
+      await probe(
+        await json({
+          'ok': true,
+          'platform': 'win32',
+          'supported': false,
+          'reason': 'platform-unsupported',
+        }),
+      ),
+      isFalse,
+    );
+    expect(
+      await probe(await json({'ok': true, 'platform': 'darwin', 'supported': true})),
+      isTrue,
+    );
+    // 老 server：404 → 不拦。
+    expect(await probe(await json({'error': 'not found'}, 404)), isNull);
+    // 200 但没有 supported 字段（结构变了）→ 不拦。
+    expect(await probe(await json({'ok': true})), isNull);
+    // 网络层直接抛 → 不拦。
+    expect(
+      await probe(
+        MockClient((_) async => throw http.ClientException('unreachable')),
+      ),
+      isNull,
+    );
+  });
+
   test('唤起状态只读，点击才提交；服务端拒绝不能当成功', () async {
     final incoming = StreamController<dynamic>();
     incoming.stream.listen((_) {});

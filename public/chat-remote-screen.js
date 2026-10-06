@@ -20,11 +20,14 @@
     'agent-unreachable': ['rsErrAgent', 'MultiCC Agent 未运行'],
     'accessibility-not-granted': ['rsErrAx', 'MultiCC Agent 未获辅助功能授权，无法远程操作'],
     'screen-recording-not-granted': ['rsErrSr', 'MultiCC Agent 未获屏幕录制授权，无法看到画面'],
+    'platform-unsupported': ['rsErrPlatform', '这台机器上的桌面 Agent 还不支持远程屏幕'],
   };
   const errText = data => {
     const pair = ERR_KEYS[data && data.error];
     return pair ? tr(pair[0], pair[1]) : (data && (data.message || data.error)) || tr('rsErrUnknown', '操作失败');
   };
+  // ⌘ 只是 Mac 的写法：按键串要跟本机 desktop agent 所在平台一致（见 desktop-host.js），
+  // 所以先按 ⌘ 写一遍，出这一行时再按能力画像换成 Ctrl。
   const KEYS = [
     ['⏎', 'return'], ['Esc', 'escape'], ['Tab', 'tab'], ['⌫', 'delete'], ['Space', 'space'],
     ['←', 'left'], ['↑', 'up'], ['↓', 'down'], ['→', 'right'],
@@ -33,6 +36,23 @@
 
   let ov = null;
   let s = null;
+  // 本机桌面 Agent 的能力画像。取不到（老 server / 一次请求失败）时按 Mac 处理：宁可把
+  // 入口显出来（点开自然报错），也不要因为一次探测失败就把功能藏了。
+  let caps = null;
+  async function loadCaps() {
+    if (caps) return caps;
+    try {
+      const res = await fetch(tok('/api/remote-screen/capabilities'), { cache: 'no-store' });
+      if (res.ok) caps = await res.json();
+    } catch {}
+    return caps;
+  }
+  const unsupported = () => !!caps && caps.supported === false;
+  const ctrlMod = () => !!caps && caps.modifier === 'ctrl';
+  function keyRow() {
+    return KEYS.map(([label, keys]) => [ctrlMod() ? label.replace('⌘', 'Ctrl') : label,
+      ctrlMod() && keys.startsWith('cmd+') ? 'ctrl+' + keys.slice(4) : keys]);
+  }
 
   function el(tag, cls, text) {
     const node = document.createElement(tag);
@@ -76,7 +96,7 @@
   }
 
   async function refreshWake(current = s) {
-    if (!current || current.waking) return;
+    if (!current || current.waking || unsupported()) return;
     try {
       const res = await fetch(tok('/api/remote-screen/wake'), { cache: 'no-store' });
       const data = await res.json();
@@ -869,7 +889,7 @@
     };
     text.addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); send(); } });
     s.keybar.append(text, btn(tr('rsSend', '发送'), '', send, 'primary'));
-    for (const [label, keys] of KEYS) s.keybar.appendChild(btn(label, keys, () => input({ op: 'press', keys }), 'rs-key'));
+    for (const [label, keys] of keyRow()) s.keybar.appendChild(btn(label, keys, () => input({ op: 'press', keys }), 'rs-key'));
     ov.append(head, s.wakeHint, s.permBar, stage, s.hint, s.keybar);
     void refreshWake();
     const current = s;
@@ -878,6 +898,15 @@
     wirePointer(stage);
     wireGestures(stage);
     setControl(false);
+    // 深链接（#rs=control）可能跑在 installButton 之前，这里再确认一次能力：本机 agent
+    // 还做不了就摆明说，不去连一连不上的 agent、也不去问唤醒状态。
+    await loadCaps();
+    if (unsupported()) {
+      s.wakeBtn.hidden = true;
+      s.keybar.hidden = true;
+      status(errText({ error: 'platform-unsupported' }), true);
+      return;
+    }
     statusEl.textContent = tr('rsConnecting', '正在取第一帧…');
     // 先过权限门（缺授权时引导，齐了或查不到再开始出帧）。
     await permissionGate(() => { void startRfb().then(ok => { if (!ok) loop(); }); });
@@ -915,6 +944,9 @@
     b.title = tr('rsButtonTitle', '实时查看本机屏幕：可标注对话，也可远程操作');
     b.addEventListener('click', open);
     anchor.before(b);
+    // 本机 agent 做不了就把它收起来（往同一个 server 发一次本地请求，Mac 上无感），
+    // 而不是留一个点开就报错的按钮。探测失败时保留按钮，交给点开后的真实报错说话。
+    void loadCaps().then(() => { if (unsupported()) b.remove(); });
   }
 
   global.MultiCCRemoteScreen = Object.freeze({ open, close, openMode });

@@ -18,9 +18,13 @@ const messages = {
   'no-password-field': '暂未找到锁屏密码框，请稍后手动重试。',
   'desktop-busy': '另一个会话正在操作电脑，请稍后再试。',
   busy: '正在唤起屏幕，请等待当前操作结束。',
+  'platform-unsupported': '这台机器上的桌面 Agent 还不支持远程屏幕。',
 };
 
-function mountWakeRoutes(app, { call, wakeDisplay, invalidate, consent = readConsent }) {
+// supported: 本机 desktop agent 是否已能看屏/操作（见 src/desktop-host.js）。win32/linux
+// 的 agent 落地前这里是 false，唤屏路由因此干净拒绝，而不是去连一个不存在的 socket。
+function mountWakeRoutes(app, { call, wakeDisplay, invalidate, consent = readConsent, supported = () => true }) {
+  const offPlatform = { ok: false, canWake: false, error: 'platform-unsupported', reason: 'platform-unsupported' };
   let waking = false;
   async function state() {
     const status = await call({ op: 'status', session: 'remote-screen' }, 3000);
@@ -37,10 +41,12 @@ function mountWakeRoutes(app, { call, wakeDisplay, invalidate, consent = readCon
     message: messages[code] || '未能确认屏幕已解锁，请检查本机状态后手动重试。' });
   app.get('/api/remote-screen/wake', async (_req, res) => {
     res.set({ 'Cache-Control': 'no-store' });
+    if (!supported()) { res.json({ ...offPlatform, message: messages['platform-unsupported'] }); return; }
     try { const value = await state(); res.json({ ...value, message: messages[value.reason] || '' }); }
     catch { fail(res, 'agent-unavailable', 503); }
   });
   app.post('/api/remote-screen/wake', async (_req, res) => {
+    if (!supported()) return fail(res, 'platform-unsupported');
     if (waking) return fail(res, 'busy');
     waking = true;
     try {

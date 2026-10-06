@@ -19,6 +19,7 @@ import '../services/chat_debug_log.dart';
 import '../services/chat_service.dart';
 import '../services/manage_service.dart';
 import '../services/message_quote.dart';
+import '../services/remote_screen_service.dart';
 import '../services/scheduled_send_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
@@ -194,6 +195,10 @@ class _ChatViewState extends State<ChatView> {
   /// —— 登记与摘除靠它比对，见 [_syncQuoteInserter]。
   late final void Function(String) _quoteInserter = _insertQuote;
   ChatProvider? _quoteInserterHost;
+
+  /// null = 还没问 / 问不到（入口照常显示）；false = 服务端明说本平台不支持
+  /// 远程屏幕，⋯ 菜单里那一项撤掉。见 [_probeRemoteScreen]。
+  bool? _remoteScreenSupported;
 
   // ── Deep-link focus (task-board "jump to message") ───────────────────────
   // Resolved at most once, after the initial history page is applied. The fade
@@ -518,6 +523,20 @@ class _ChatViewState extends State<ChatView> {
     // 调试面板的第一行（Web `chat.js:2802` 的 `dbg('state', 'page loaded…')`）：
     // 有了它，面板里第一行永远是这个会话「什么时候开的」，后面的时间戳才有参照。
     dbg('state', 'page loaded — 开始连接');
+    unawaited(_probeRemoteScreen());
+  }
+
+  /// 「🖥 屏幕」入口按本机能力显示：Windows / Linux 还没有 desktop agent，
+  /// 服务端 `capabilities` 会明说 `supported:false`，菜单项就不出现（与 Web
+  /// 页头同一个判断）。**只有明确的 false 才撤**：老 server 没这条路由、
+  /// 或这一次探测失败都保持入口可见 —— 进去了页面自己会说原因，比一次抖动
+  /// 就把功能藏掉强。
+  Future<void> _probeRemoteScreen() async {
+    final svc = RemoteScreenService(settings: widget.settings);
+    final supported = await svc.supportsRemoteScreen();
+    svc.dispose();
+    if (!mounted || supported != false) return;
+    setState(() => _remoteScreenSupported = false);
   }
 
   void _onChatWidthChanged() {
@@ -904,7 +923,11 @@ class _ChatViewState extends State<ChatView> {
                             ? null
                             : () => unawaited(_deleteBoundTask(provider)),
                         // 「🖥 屏幕」走 ⋯ 菜单（Web 页头有常驻按钮，App 页头排不下）。
-                        onRemoteScreen: () => Navigator.push(
+                        // 传 null 时 chat_header 会整项不渲染 —— 本平台做不了
+                        // 远程屏幕时这就够了，不用进去再看到一句抱歉。
+                        onRemoteScreen: _remoteScreenSupported == false
+                            ? null
+                            : () => Navigator.push(
                           context,
                           MaterialPageRoute<void>(
                             builder: (_) => RemoteScreenScreen(
