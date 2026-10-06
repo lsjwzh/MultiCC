@@ -1,0 +1,35 @@
+name: Linux desktop agent
+
+# scripts/linux-agent 里那套（探针 + 一致性套件）是 shell + C，跑不进 npm 的测试脚本，
+# 所以单开一条：在 ubuntu 上建镜像、在 Xvfb 里跑。不登记就等于永远不跑——
+# 这个仓库已经吃过一次「tests/*.js 没写进 package.json 就没人跑」的亏。
+#
+# 只在动了这一块时才跑：构建里要 apt 装 X11 开发包，几分钟，不该给每次提交都加上。
+
+on:
+  push:
+    paths:
+      - 'scripts/linux-agent/**'
+      - '.github/workflows/linux-agent.yml'
+  pull_request:
+    paths:
+      - 'scripts/linux-agent/**'
+      - '.github/workflows/linux-agent.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: Probe + conformance in Xvfb
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      # 断言里有一处依赖「人按住 Esc 120ms 能被看到」，跑在忙的 runner 上时
+      # 采样线程可能被拖慢；两个分辨率各跑一遍，顺带证明它不是只在 1280x800 下成立。
+      - name: Build verification image and run probe + conformance
+        run: ./scripts/linux-agent/verify.sh
+      - name: Same suite at another screen size
+        run: SCREEN=1920x1080x24 ./scripts/linux-agent/verify.sh

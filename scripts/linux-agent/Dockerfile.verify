@@ -1,0 +1,60 @@
+# MultiCC Linux agent 验证台
+#
+# 目的：把「Linux 上能不能做远程屏幕」从「本机是什么发行版」里摘出来，在一个干净、
+# 可重复、无头的 X11 环境里验证三个原语（截图 / 注入 / 按键观察）。见 probe.c 的头注释。
+#
+# 底镜像用 ubuntu:22.04 —— 本机已有，不必再拉一个新的底。Xvfb 提供 X11 server，
+# 这里**没有窗口管理器、没有真实硬件、屏幕内容是空的**：这恰好是最坏情况。
+# 如果三个原语在这个环境里都成立，真实桌面只会更容易（只多出合成器与缩放这些变量）。
+#
+# 构建：docker build -f Dockerfile.verify -t multicc-linux-agent-probe .
+# 运行：见 verify.sh
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# APT_MIRROR 只在「国内网直连 archive.ubuntu.com 拉不动」时才需要设：
+#   docker build --build-arg APT_MIRROR=mirrors.aliyun.com/ubuntu-ports ...
+# 注意 arm64 主机（Apple Silicon）走的是 *-ports 镜像，x86_64 是 ubuntu 而不是 ubuntu-ports。
+# 默认留空 = 官方源，CI（在美区）就该用默认。
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s|http://ports.ubuntu.com/ubuntu-ports|http://$APT_MIRROR|g; s|http://archive.ubuntu.com/ubuntu|http://$APT_MIRROR|g" \
+        /etc/apt/sources.list; \
+    fi \
+    && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\n' > /etc/apt/apt.conf.d/99-retry \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libx11-dev libxext-dev libxtst-dev libxss-dev \
+        zlib1g-dev libjpeg-turbo8-dev \
+        xvfb x11-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# xauth 单独放一层，不并进上面：xvfb-run 要用它建授权文件，而往上面那层加一个
+# 包就会让整层缓存失效 —— 重下两百多个包要六分钟，纯粹白等。
+RUN apt-get update && apt-get install -y --no-install-recommends xauth \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY probe.c agent.h json.c x11.c image.c agent.c test-target.c build.sh conformance.sh /src/
+
+# -Wall -Wextra 当门禁：探针自己要能零警告编过。agent 那些源文件则由 build.sh
+# 用同一个标准编（MULTICC_STRICT=1 把警告升级成错误）。
+RUN gcc -O2 -Wall -Wextra -Werror -o /usr/local/bin/multicc-linux-probe /src/probe.c \
+        -lX11 -lXext -lXtst
+
+# OUT 给 /usr/local/bin，所以靶子会落在同一个目录（build.sh 的行为）。
+RUN MULTICC_STRICT=1 sh /src/build.sh /usr/local/bin/multicc-agent-linux
+
+ENV MULTICC_AGENT_BIN=/usr/local/bin/multicc-agent-linux
+ENV MULTICC_TARGET_BIN=/usr/local/bin/multicc-linux-target
+
+# SCREEN 可换分辨率（例如 1920x1080x24 或 3840x2160x24 测高分屏路径）。
+# 先跑探针（三个 X11 原语），再跑一致性套件（产品的 op 与护栏）。
+# conformance.sh 显式走 sh，不靠执行位：COPY 保不住的东西别当契约
+# （tar/换平台 checkout 丢执行位 → 126 Permission denied，报错完全指不到文件模式上）。
+CMD sh -c 'set -e; \
+    xvfb-run -a --server-args="-screen 0 ${SCREEN:-1280x800x24}" /usr/local/bin/multicc-linux-probe; \
+    echo; echo "══════════════════════════════════════"; echo; \
+    xvfb-run -a --server-args="-screen 0 ${SCREEN:-1280x800x24}" sh /src/conformance.sh'

@@ -71,7 +71,9 @@ function call(req, timeoutMs) { return deps.agentCall(req, timeoutMs); }
 // 本机 desktop agent 的画像 + 平台相关的壳外调用（逻辑尺寸 / 图像处理 / 唤屏）全在
 // desktop-host.js：以后加 Windows/Linux agent 改的是那里，不是这里。挂在 deps 上，
 // 单测可以整体换掉一个假 host。
-deps.host = createDesktopHost({ exec: run });
+// call 也注入进去：Linux 的截图要走 agent 的 snap（抓屏 + 裁剪 + 编码一次做完），
+// 而 agentCall 就在这里 —— 不注入的话 desktop-host 得自己再实现一遍 socket 客户端。
+deps.host = createDesktopHost({ exec: run, call });
 deps.sock = deps.host.profile.agentSock;
 deps.rfbSock = deps.host.profile.rfbSock;
 
@@ -80,6 +82,12 @@ deps.rfbSock = deps.host.profile.rfbSock;
 // requests may overlap), and region frames keep Retina pixels at JPEG 85.
 async function capture(out, region = null) {
   deps.host.assertSupported();
+  const wantJpeg = /\.jpe?g$/i.test(out);
+  // Linux：agent 一次做完抓屏 + 裁剪 + 编码。macOS 那条路要分四步（snap → sips 量
+  // 尺寸 → sips 裁 → sips 转），因为 macOS 的 agent 只给无损原始 PNG。
+  if (deps.host.captureDirect) {
+    return deps.host.captureDirect(out, region, { session: SESSION, jpeg: wantJpeg, quality: region ? 85 : 60 });
+  }
   fs.mkdirSync(deps.dir, { recursive: true });
   const work = fs.mkdtempSync(path.join(deps.dir, '.capture-'));
   try {
@@ -95,7 +103,7 @@ async function capture(out, region = null) {
       await deps.host.cropImage(raw, area, source);
     }
     await deps.host.convertImage(source, out, {
-      jpeg: /\.jpe?g$/i.test(out),
+      jpeg: wantJpeg,
       quality: region ? 85 : 60,
       resampleWidth: !region && size.width && size.width < phys.w ? size.width : null,
     });
@@ -242,7 +250,11 @@ function sendError(res, error, status = 502) {
 function mount(app) {
   require('./remote-screen-wake').mountWakeRoutes(app, {
     call, wakeDisplay: () => deps.host.wakeDisplay(),
-    supported: () => deps.host.profile.supported,
+    // 用 features.wake，不是 profile.supported：唤屏是 macOS 专有的系统动作
+    // （caffeinate -u），Linux 上 supported 是 true 但根本没有这件事可做。
+    // 判成 supported 的话，前端会显示一个「唤起屏幕」按钮，点下去永远报
+    // auto-unlock-disabled —— 一个从按钮文字上完全看不出原因的失败。
+    supported: () => deps.host.profile.features.wake,
     invalidate: () => { lastFrame = null; },
   });
   // 前端据此决定显不显示 🖥、快捷键行出 ⌘ 还是 Ctrl。平台画像进程内不变，所以这是个

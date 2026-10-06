@@ -154,7 +154,7 @@ test('annotation-live hands remote-screen shots to the built-in handler without 
 // ── 跨平台：本机 desktop agent 的画像、能力接口、非 macOS 的干净拒绝 ──
 const { createDesktopHost, profileFor } = require('../src/desktop-host');
 
-test('desktop-host 画像：现在只有 macOS 有 agent，win32/linux 如实报不支持', () => {
+test('desktop-host 画像：macOS 与 Linux X11 有 agent，win32 如实报不支持', () => {
   const mac = profileFor('darwin', { home: '/Users/x' });
   assert.equal(mac.supported, true);
   assert.equal(mac.transport, 'unix');
@@ -171,9 +171,80 @@ test('desktop-host 画像：现在只有 macOS 有 agent，win32/linux 如实报
   assert.deepEqual(Object.values(win.features), [false, false, false, false, false, false, false, false]);
 
   const linux = profileFor('linux', { home: '/home/x', env: { XDG_RUNTIME_DIR: '/run/user/7' } });
-  assert.equal(linux.supported, false);
+  assert.equal(linux.supported, true);
+  assert.equal(linux.transport, 'unix');
   assert.equal(linux.modifier, 'ctrl');
   assert.equal(linux.agentSock, '/run/user/7/multicc-agent/agent.sock');
+  // v1 的 Linux：能看、能点、能截图、能标注；但没有串流(RFB)、没有唤屏(那是 caffeinate
+  // 的语义)、不能解锁(锁屏是另一个会话的窗口)、没有元素树(X11 没有可访问性树 API)。
+  assert.deepEqual(linux.features, { view: true, control: true, snapshot: true, annotate: true,
+    stream: false, wake: false, unlock: false, elementTree: false });
+  assert.equal(linux.rfbSock, null);
+});
+
+test('Linux 截图走 agent 的 snap（裁剪编码一次做完），macOS 的壳外工具在 Linux 上响亮地失败', async () => {
+  const sent = [];
+  let logical = null;
+  const linux = createDesktopHost({
+    platform: 'linux', home: '/home/x', env: { XDG_RUNTIME_DIR: '/run/user/7' },
+    exec: () => { throw new Error('Linux 不该 shell out'); },
+    call: async (req, timeoutMs) => {
+      sent.push({ req, timeoutMs });
+      return { ok: true, path: req.path, width: 1920, height: 1080, crop: req.crop || null, ms: 12 };
+    },
+  });
+
+  // captureDirect 的**有无**就是选路依据，所以 macOS 上必须真的没有。
+  const macHost = createDesktopHost({ platform: 'darwin', home: '/Users/x', exec: () => { throw new Error('unused'); } });
+  assert.equal(macHost.captureDirect, undefined, 'macOS 上不该挂 captureDirect');
+  assert.equal(typeof linux.captureDirect, 'function');
+
+  // 整屏：不带 crop，JPEG + quality 照传。
+  const full = await linux.captureDirect('/tmp/x/live.jpg', null, { session: 'remote-screen', jpeg: true, quality: 60 });
+  assert.deepEqual(sent[0].req, { op: 'snap', path: '/tmp/x/live.jpg', session: 'remote-screen', jpeg: true, quality: 60 });
+  assert.deepEqual(full, { width: 1920, height: 1080, region: null });
+
+  // 区域：crop 直接跟着 snap 发下去（macOS 那条路是自己拿 sips 裁）。
+  const region = { x: 10, y: 20, width: 100, height: 50 };
+  const cropped = await linux.captureDirect('/tmp/x/crop.jpg', region, { session: 'remote-screen', jpeg: true, quality: 85 });
+  assert.deepEqual(sent[1].req.crop, region);
+  assert.equal(sent[1].req.quality, 85);
+  assert.deepEqual(cropped.region, region);
+
+  // 标注换算要的是「整屏逻辑尺寸」，不能是裁剪后的小图尺寸。
+  logical = linux.cachedLogicalSize();
+  assert.deepEqual(logical, { width: 1920, height: 1080 });
+  // X11 上逻辑点 == 像素，不能有 Retina 那样的 /2。
+  assert.deepEqual(await linux.logicalSize(1920, 1080), { width: 1920, height: 1080 });
+
+  // 裁到屏幕外是调用方的错 → 400，不该当成 agent 故障。
+  const outside = createDesktopHost({
+    platform: 'linux', home: '/home/x', env: {}, call: async () => ({ ok: false, error: 'region-outside-screen' }),
+  });
+  await assert.rejects(() => outside.captureDirect('/tmp/x/o.jpg', region, {}),
+    e => e.status === 400 && e.message === 'region-outside-screen');
+
+  // 平台专有的壳外调用要明说走错了路，而不是去 exec 一个不存在的命令。
+  for (const name of ['imageSize', 'cropImage', 'convertImage', 'wakeDisplay']) {
+    await assert.rejects(() => linux[name]('/tmp/x/raw.png', 'unused', 'unused'),
+      e => e.reason === 'wrong-platform-helper', `${name} 在 Linux 上应抛 wrong-platform-helper`);
+  }
+});
+
+test('Linux 上唤屏路由按 features.wake 收起，而不是看平台是否 supported', async () => {
+  const prevHost = rs._deps.host;
+  try {
+    rs._deps.host = createDesktopHost({ platform: 'linux', home: '/home/x', env: {}, call: async () => ({ ok: true }) });
+    const app = fakeApp();
+    rs.mount(app);
+    const get = await invoke(app.handlers['GET /api/remote-screen/wake']);
+    // Linux 的 supported 是 true，但 wake 是 false：判错的话前端会显示一个
+    // 点下去永远 auto-unlock-disabled 的按钮。
+    assert.equal(get.body.canWake, false);
+    const caps = await invoke(app.handlers['GET /api/remote-screen/capabilities']);
+    assert.equal(caps.body.supported, true);
+    assert.equal(caps.body.features.wake, false);
+  } finally { rs._deps.host = prevHost; }
 });
 
 test('能力接口回答「本机能做什么」；非 macOS 上三条路由干净拒绝，不碰 agent 也不碰 shell', async () => {
