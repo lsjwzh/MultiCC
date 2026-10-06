@@ -954,6 +954,9 @@ test('upgrade runs the official command even though the cli is already installed
   };
   const harness = createHarness({
     spawnProcess: fakeSpawn,
+    // 钉住一个非 native 的路径: 真机解析(默认)在这台机器上会命中 native 安装,
+    // 而这条用例断言的是 npm 形态下的官方命令。
+    cliCommands: { claude: '/usr/local/bin/claude' },
     // claude 是可用的 -> /install 会短路, /upgrade 不能短路
     availability: { claude: { available: true } },
   });
@@ -970,6 +973,68 @@ test('upgrade runs the official command even though the cli is already installed
 
   const status = await harness.invokeStatus(res.body.jobId);
   assert.equal(status.body.job.status, 'running');
+});
+
+test('upgrade of a native-installer claude runs its own updater, not npm', async () => {
+  // 复刻真机布局: ~/.local/bin/claude 是指向 versions/<ver> 真身的软链。
+  // 这正是「npm 升级升错地方」的形态 —— 升级必须作用到 multicc 派生的那个二进制。
+  const os = require('node:os');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-native-'));
+  const versionsDir = path.join(home, '.local', 'share', 'claude', 'versions');
+  fs.mkdirSync(versionsDir, { recursive: true });
+  const realBin = path.join(versionsDir, '2.1.285');
+  fs.writeFileSync(realBin, '#!/bin/sh\n');
+  fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
+  const shim = path.join(home, '.local', 'bin', 'claude');
+  fs.symlinkSync(realBin, shim);
+
+  let brewProbed = false;
+  let proc = null;
+  const fakeSpawn = () => {
+    proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    return proc;
+  };
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    cliCommands: { claude: shim },
+    homebrewOwnerOf: () => { brewProbed = true; return null; },
+    availability: { claude: { available: true } },
+  });
+  const res = await harness.invokeUpgrade('claude');
+  assert.equal(res.statusCode, 202);
+  assert.equal(res.body.command, `"${shim}" update`);
+  assert.equal(brewProbed, false, 'native 安装不归 Homebrew 管, 不该探测 brew 归属');
+  assert.ok(proc, '升级必须真的起了安装进程');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('upgrade treats legacy ~/.claude/local and dangling shim as native installs', async () => {
+  const os = require('node:os');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-legacy-'));
+  for (const cmd of [
+    path.join(home, '.claude', 'local', 'claude'),       // 旧版 native 安装器
+    path.join(home, '.local', 'bin', 'claude'),          // 官方 shim(realpath 失败兜底)
+  ]) {
+    // 两个路径都不存在于磁盘: 靠 cmd 字面标记识别, realpath 抛错也不误判成 npm。
+    const harness = createHarness({
+      spawnProcess: () => {
+        const ee = new EventEmitter();
+        ee.stdout = new EventEmitter();
+        ee.stderr = new EventEmitter();
+        ee.kill = () => {};
+        return ee;
+      },
+      cliCommands: { claude: cmd },
+      availability: { claude: { available: true } },
+    });
+    const res = await harness.invokeUpgrade('claude');
+    assert.equal(res.statusCode, 202);
+    assert.equal(res.body.command, `"${cmd}" update`);
+  }
+  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test('upgrade refuses unsupported clis and manual-only installs', async () => {
@@ -1223,7 +1288,12 @@ test('codex install job declares non-interactive env; npm lanes are untouched', 
     calls.push({ cmd, command: args[1], env: (opts && opts.env) || {} });
     return ee;
   };
-  const harness = createHarness({ spawnProcess: fakeSpawn });
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    // 钉住 npm 形态的 claude: 真机解析在这台机器上命中 native 安装, 命令会变成
+    // `claude update`, 而这条用例断言的是 npm 车道不受 CODEX_NON_INTERACTIVE 波及。
+    cliCommands: { claude: '/usr/local/bin/claude' },
+  });
 
   await harness.invokeUpgrade('codex');
   // codex-exp 与 codex 派生同一个二进制、跑同一条命令: 必须仍被判成同一个安装目标,

@@ -8,6 +8,7 @@ const capability = require('./cli-capability');
 const homebrewTakeover = require('./homebrew-takeover');
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -516,6 +517,28 @@ function createCliSwitchRuntime(options) {
     gemini: 'GEMINI_CMD', grok: 'GROK_CMD', commandcode: 'COMMAND_CODE_CMD',
   });
 
+  // claude 有 npm 全局与 native 安装器两种官方形态, 且 multicc 优先派生 native 那份
+  // (~/.local/bin/claude 是指向 ~/.local/share/claude/versions/<ver> 的软链; 旧安装器
+  // 放 ~/.claude/local/claude)。此时若仍跑 spec 里的 `npm install -g`, 升的是另一份
+  // 没人派生的副本 —— 面板角标永不消失(见 verifyInstallReachedBinary 的实测注释)。
+  // 「升级就要升 multicc 控制的那个版本」: 派生二进制是 native 安装时, 升级命令改用
+  // 它自带的 `claude update` —— 与派生会话是同一个二进制, 升级必然作用到真身。
+  function claudeNativeUpgradeCommand(cmd) {
+    if (!cmd) return null;
+    let real = cmd;
+    try { real = fs.realpathSync(cmd); } catch (_) {}
+    const sep = path.sep;
+    const markers = [
+      `${sep}.local${sep}share${sep}claude${sep}versions${sep}`, // native 安装器真身
+      `${sep}.claude${sep}local${sep}`,                          // 旧版 native 安装器
+      `${sep}.local${sep}bin${sep}claude`,                       // 官方 shim(realpath 失败时兜底)
+    ];
+    if (markers.some(m => real.includes(m) || cmd.includes(m))) {
+      return `"${cmd}" update`;
+    }
+    return null;
+  }
+
   // 「命令成功」不等于「multicc 派生的那个二进制升级了」。实测: 同一台机器上 claude
   // 既有原生安装(~/.local/bin/claude, 也是 multicc 优先派生的那个)又有 npm 全局安装,
   // `npm install -g` 把新版装进 /opt/homebrew, 派生路径纹丝不动 —— 面板上「有新版」的
@@ -546,11 +569,16 @@ function createCliSwitchRuntime(options) {
     const env = buildInstallEnv(cli);
     // 派生二进制归 Homebrew 管时先卸掉它再 npm 装(见 homebrew-takeover.js)。
     // 探测失败按「不归 brew 管」处理, 照旧只跑 npm。
+    // 但 claude 的 native 安装优先于这两者: 它不归 brew 管、也不走 npm,
+    // 升级命令是它自己的 `claude update`(见 claudeNativeUpgradeCommand)。
+    const nativeUpgrade = target === 'claude'
+      ? claudeNativeUpgradeCommand(resolveCliCommandMap()[cli])
+      : null;
     let brewOwner = null;
-    if (homebrewTakeover.isNpmGlobalInstall(spec.command)) {
+    if (!nativeUpgrade && homebrewTakeover.isNpmGlobalInstall(spec.command)) {
       try { brewOwner = homebrewOwnerOf(resolveCliCommandMap()[cli], { envPath: env.PATH }); } catch (_) {}
     }
-    const command = homebrewTakeover.takeoverCommand(brewOwner, spec.command);
+    const command = nativeUpgrade || homebrewTakeover.takeoverCommand(brewOwner, spec.command);
     const jobId = makeInstallJobId();
     const startedAt = new Date(clock()).toISOString();
     const log = createLogRing();
