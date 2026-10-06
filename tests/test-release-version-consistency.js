@@ -223,13 +223,19 @@ test('core runner covers every selected path and expands declared variants', () 
   //     进程内假上游 + mkdtemp 临时目录，不碰外网。
   // 306 + 3 = 309，deterministic 261 + 2 = 263，isolated 24 + 1 = 25，
   // commands 288 + 3 = 291。
-  assert.equal(core.length, 309, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 309);
+  // 2026-10-06 v2.4.1 发版复核：+1 core deterministic。
+  //   - tests/test-ios-ota.js：iOS OTA 分发通道（src/ios-ota.js）的契约——本地
+  //     IPA + sidecar 发现、按请求 scheme/host 渲染 manifest（一次投放 loopback/
+  //     局域网/Tailscale Funnel 同装）、itms-services 抓取器免登走通。打的是
+  //     127.0.0.1:0 进程内服务 + mkdtemp 临时目录，不碰外网——留在发布 tier。
+  // 309 + 1 = 310，deterministic 263 + 1 = 264，commands 291 + 1 = 292。
+  assert.equal(core.length, 310, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 310);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 263);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 264);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 25);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 21,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -239,8 +245,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 291,
-    '288 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 292,
+    '289 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

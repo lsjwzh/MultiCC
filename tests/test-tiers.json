@@ -340,6 +340,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/demo_server_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/directory_card_test.dart",
       "tier": "other",
       "lane": "flutter"

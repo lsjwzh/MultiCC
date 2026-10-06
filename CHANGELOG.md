@@ -2,6 +2,15 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.4.1 — A crash fix and a sharper remote screen (2026-10-06)
+
+### Highlights
+
+- **Voice PCM alignment crash fixed** — a frame that was not a whole number of samples could crash the voice path; frames are now aligned before processing (5465d88e).
+- **Region zoom stays sharp on the remote screen** — a box-zoomed area is now cropped from the source capture before compression instead of enlarging the already-compressed stream, so the enlarged region keeps its original detail (`src/remote-screen-rfb-bridge.js`, agent-side capture changes).
+- **#rs deep links land in the App** — human-assist remote-screen links now route natively in the App (skill v1.3.0), and the browser keeps running in the background while reusing the account profile you already signed into.
+- **iOS keeps moving toward the store** — a new demo mode (an in-process loopback server with demo data) lets the App pass review without any real host, and the App Store workflow produces an unsigned archive when signing secrets are not configured.
+
 ## v2.4.0 — Local speech recognition that installs itself (2026-10-05)
 
 ### Highlights
