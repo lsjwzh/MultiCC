@@ -502,13 +502,19 @@
     refreshClaudeUsage(true);
   }
 
+  // `force` is the user's own refresh (the ⟳ / a tap): the scrape behind this bar
+  // is a 30-40s browser drive, so the server treats `force=1` as permission to
+  // start one and answers a plain request from that account's cache instead. The
+  // only callers are the bar tap and the post-login follow-up, so every request
+  // here is a user refresh — but the flag is still sent explicitly, because the
+  // server must not infer it.
   async function refreshClaudeUsage(force) {
     if (claudeUsageFetchInFlight) return currentClaudeUsage;
     if (!force && claudeLastErrorAt && (Date.now() - claudeLastErrorAt) < CLAUDE_BACKOFF) return currentClaudeUsage;
     const requestRevision = providerRevision;
     claudeUsageFetchInFlight = true; claudeLoginPending = false; renderCurrent();
     try {
-      const res = await fetch(`/api/quota/bars/refresh${quotaBarParams({ kind: 'claude' })}`, { method: 'POST', credentials: 'same-origin' });
+      const res = await fetch(`/api/quota/bars/refresh${quotaBarParams({ kind: 'claude', force: force ? '1' : '' })}`, { method: 'POST', credentials: 'same-origin' });
       let data = null; try { data = await res.json(); } catch (_) {}
       if (requestRevision !== providerRevision) return currentClaudeUsage;
       if (!data) data = { status: 'unavailable', error: 'invalid response' };

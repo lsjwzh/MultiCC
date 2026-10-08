@@ -14,14 +14,22 @@
 // state rather than being duplicated into each client as a hardcoded default.
 //
 // One request, at load, no vendor work: this handler renders from constants.
+//
+// `force=1` is the user's own refresh on a bar that has one, and only claude
+// reads it: its refresh is the expensive one, so a caller that does not ask for
+// it is answered from that account's cache instead of a browser (see
+// ../quota/claude-usage-queue.js).
 
 const { idleQuotaBars } = require('../quota/quota-bar-view');
-const { rememberClaudeScrape, renderClaudeBar } = require('../quota/claude-bar-state');
+const { renderClaudeBar } = require('../quota/claude-bar-state');
+const { claudeUsageKey, readClaudeUsage, enqueueClaudeUsage } = require('../quota/claude-usage-queue');
 
 const REFRESH_KINDS = new Set(['opencode', 'qoder', 'codex', 'claude', 'ark', 'kimi']);
 
 function statusCodeFor(status) {
-  if (status === 'ok') return 200;
+  // 'idle' is the claude cache having no reading for this account yet — not an
+  // error, and not a fetch either (nothing was asked of any upstream).
+  if (status === 'ok' || status === 'idle') return 200;
   if (status === 'needs_login' || status === 'no_auth' || status === 'needs_auth') return 401;
   if (status === 'chrome_unavailable' || status === 'needs_install') return 503;
   return 500;
@@ -33,11 +41,17 @@ function text(value, max = 400) {
 }
 
 function requestInput(req) {
+  const force = String(req.body?.force || req.query?.force || '');
   return {
     kind: text(req.body?.kind || req.query?.kind, 40).toLowerCase(),
     session: text(req.body?.session || req.query?.session, 180),
     baseUrl: text(req.body?.baseUrl || req.query?.baseUrl, 2048),
     host: text(req.body?.host || req.query?.host, 160).toLowerCase(),
+    // The user's own refresh (the bar's ⟳). Only claude reads it: every other
+    // kind's endpoint is a cheap query, but claude's is a 30-40s browser drive
+    // that must not be started by a page merely opening — see
+    // ../quota/claude-usage-queue.js.
+    force: force === '1' || force === 'true',
   };
 }
 
@@ -47,15 +61,16 @@ function defaultDeps() {
   const { fetchCodexUsage } = require('./codex-quota');
   const { fetchArkUsage } = require('./ark-quota');
   const { fetchKimiUsage } = require('./kimi-quota');
-  const { fetchClaudeUsage } = require('./claude-usage-quota');
   const { renderQuotaBar } = require('../quota/quota-bar-view');
+  // No fetchClaudeUsage here: claude's fetcher is the cache's, not this route's
+  // (see the claude branch of refresh below). Requiring it would also drag
+  // chrome-cdp into every quota bar kind.
   return {
     fetchOpenCodeUsage,
     fetchQoderUsage,
     fetchCodexUsage,
     fetchArkUsage,
     fetchKimiUsage,
-    fetchClaudeUsage,
     renderQuotaBar,
   };
 }
@@ -75,9 +90,14 @@ function createQuotaBarRuntime(options = {}) {
       baseUrl: text(input && input.baseUrl, 2048),
       host: text(input && input.host, 160).toLowerCase(),
     };
+    const force = !!(input && input.force);
     let result;
     let bar;
     let opts = {};
+    // A miss is not a result: it must not be recorded as one (that would park a
+    // healthy provider in the shared cache) and must not overwrite the last
+    // known bar in the client-facing snapshot below.
+    let missing = false;
     if (kind === 'opencode') {
       result = await deps.fetchOpenCodeUsage();
       bar = renderQuotaBar('opencode', result);
@@ -101,14 +121,19 @@ function createQuotaBarRuntime(options = {}) {
       }
       bar = renderQuotaBar('kimi', result);
     } else if (kind === 'claude') {
-      result = await deps.fetchClaudeUsage();
-      rememberClaudeScrape(result);
+      // The scrape is cached and rate-limited per account, and only this
+      // request's `force` (the user's ⟳) or a task boundary starts one — a read
+      // never drives a browser. See ../quota/claude-usage-queue.js.
+      const key = claudeUsageKey(selector.session);
+      const entry = force ? await enqueueClaudeUsage(key) : readClaudeUsage(key);
+      missing = !entry;
+      result = entry ? entry.result : { status: 'idle' };
       bar = renderClaudeBar(selector.session);
-      if (typeof deps.recordClaude === 'function') {
+      if (entry && typeof deps.recordClaude === 'function') {
         try { deps.recordClaude(selector.session, result, bar && bar.text); } catch (_) {}
       }
     }
-    if (cache && bar) cache.record(kind, result, bar, selector);
+    if (cache && bar && !missing) cache.record(kind, result, bar, selector);
     return {
       httpStatus: statusCodeFor(result && result.status),
       body: {

@@ -98,9 +98,29 @@ class QuotaService {
   /// Claude subscription usage windows (5h / weekly / monthly) scraped from
   /// claude.ai/settings/usage via CDP — the same route the web claude bar
   /// reads. `status` in the body may be needs_login / chrome_unavailable /
-  /// unavailable / ok; the body is parsed regardless of HTTP status, so the
-  /// actionable states surface to the caller just like the vendor ones.
-  Future<Map<String, dynamic>?> fetchClaudeUsage() => _get('/api/claude/quota');
+  /// unavailable / idle / ok; the body is parsed regardless of HTTP status, so
+  /// the actionable states surface to the caller just like the vendor ones.
+  ///
+  /// [session] names the session whose account's reading is wanted — the
+  /// server caches one entry per account and every session on that account
+  /// shares it, so this is what keeps two signed-in accounts apart.
+  ///
+  /// [force] is the user's own refresh. Without it the route only REPORTS what
+  /// that account already has cached and never drives the browser, so a plain
+  /// call is cheap enough for a connect hook; with it the server may start a
+  /// 30-40s scrape, still rate-limited to one per account per minute (a scrape
+  /// another session or a task boundary just started is reused).
+  Future<Map<String, dynamic>?> fetchClaudeUsage({
+    String? session,
+    bool force = false,
+  }) {
+    final name = (session ?? '').trim();
+    final query = <String>[
+      if (name.isNotEmpty) 'session=${Uri.encodeComponent(name)}',
+      if (force) 'force=1',
+    ];
+    return _get('/api/claude/quota${query.isEmpty ? '' : '?${query.join('&')}'}');
+  }
 
   /// Open a visible login window for claude.ai on the server's managed Chrome
   /// profile. Used when the usage scrape reports no session (needs_login /

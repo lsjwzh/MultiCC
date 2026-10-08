@@ -834,15 +834,6 @@
       ]
     },
     {
-      "path": "tests/test-host-battery.js",
-      "tier": "other",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:task-first"
-      ]
-    },
-    {
       "path": "tests/test-air-cli-update.js",
       "tier": "other",
       "lane": "deterministic",
@@ -2237,6 +2228,15 @@
       ]
     },
     {
+      "path": "tests/test-claude-usage-queue.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
       "path": "tests/test-claude-usage-quota.js",
       "tier": "other",
       "lane": "deterministic",
@@ -2958,6 +2958,15 @@
       "owner": "npm:test:security",
       "entrypoints": [
         "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-host-battery.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
       ]
     },
     {

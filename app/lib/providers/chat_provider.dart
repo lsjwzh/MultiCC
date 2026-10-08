@@ -2241,30 +2241,25 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  /// Fetch the Claude subscription usage scrape. No-op off the claude CLI;
-  /// skips while one is in flight, after a recent error (vendor backoff) or
-  /// when the cached result is under 24h old (mirrors the web localStorage
-  /// staleness) unless [force]. Callers: connect / cli-switch hooks and the
-  /// bar's tap handler.
+  /// Read (with [force], refresh) this session's account Claude usage. A plain
+  /// call only READS the server's per-account cache — the 30-40s scrape runs for
+  /// `force` or at a task boundary — so the connect hook can always ask, and the
+  /// old "under 24h, don't ask" gate only hid what the account already had.
   Future<void> refreshClaudeUsage({bool force = false}) async {
     if (!_cli.isClaudeFamily) return;
     if (_claudeUsageFetching) return;
-    if (!force) {
-      final fetchedAt = (_claudeUsage?['fetchedAt'] as num?)?.toInt();
-      if (fetchedAt != null && _nowMs() - fetchedAt < _claudeUsageFreshMs) {
-        return;
-      }
-      if (_claudeUsageErrorAt != 0 &&
-          _nowMs() - _claudeUsageErrorAt < _vendorQuotaBackoffMs) {
-        return;
-      }
+    if (!force && _claudeUsageErrorAt != 0 &&
+        _nowMs() - _claudeUsageErrorAt < _vendorQuotaBackoffMs) {
+      return;
     }
     _claudeUsageFetching = true;
     notifyListeners();
-    final data = await _quota.fetchClaudeUsage();
+    final data = await _quota.fetchClaudeUsage(session: sessionName, force: force);
     _claudeUsageFetching = false;
     if (data == null) {
       _claudeUsageErrorAt = _nowMs();
+    } else if (data['status'] == 'idle') {
+      _claudeUsageErrorAt = 0; // nothing cached yet: not a failure, no bar
     } else {
       _claudeUsageErrorAt = 0;
       _claudeUsage = data;

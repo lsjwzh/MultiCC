@@ -402,6 +402,48 @@ test('fetchClaudeUsageViaOAuth skips a dead account and uses the next one', asyn
   }
 });
 
+// Which account a reading belongs to is the session's business: the queue keys
+// its cache by account, so the scrape has to be told which one the asking
+// session borrows. It is a PREFERENCE, not a filter — a stale binding or a dead
+// credential on the bound account must fall through to the others, because the
+// alternative is reporting "no usage" for an account that is perfectly readable.
+test('fetchClaudeUsageViaOAuth prefers the asking session account, without filtering', async () => {
+  const body = { seven_day: { utilization: 40 } };
+  const { fetch, calls } = fakeUsageFetch(() => okJson(body));
+  claude.configureClaudeOAuthSource(fakeSource({
+    accounts: [{ id: 'a1' }, { id: 'a2' }],
+    tokens: { a1: 'tok-1', a2: 'tok-2' },
+    fetch,
+  }));
+  try {
+    const preferred = await claude.fetchClaudeUsageViaOAuth('a2');
+    assert.equal(preferred.account.id, 'a2');
+    assert.equal(calls.length, 1, 'the bound account is tried first and answers');
+    assert.equal(calls[0].init.headers.Authorization, 'Bearer tok-2');
+  } finally {
+    claude.configureClaudeOAuthSource(null);
+  }
+
+  // Bound account dead: the other account still answers, on the second try.
+  const { fetch: f2, calls: c2 } = fakeUsageFetch((url, init) => (
+    init.headers.Authorization === 'Bearer dead-2' ? errResp(401, 'invalid_token') : okJson(body)
+  ));
+  claude.configureClaudeOAuthSource(fakeSource({
+    accounts: [{ id: 'a1' }, { id: 'a2' }],
+    tokens: { a1: 'tok-1', a2: 'dead-2' },
+    fetch: f2,
+  }));
+  try {
+    assert.equal((await claude.fetchClaudeUsageViaOAuth('a2')).account.id, 'a1');
+    assert.equal(c2.length, 2);
+    // An id nobody signed in as is simply no preference, not an error.
+    assert.equal((await claude.fetchClaudeUsageViaOAuth('gone')).account.id, 'a1');
+    assert.equal(c2.length, 3);
+  } finally {
+    claude.configureClaudeOAuthSource(null);
+  }
+});
+
 test('fetchClaudeUsageViaOAuth returns null when no account can be used', async () => {
   // No accounts at all.
   claude.configureClaudeOAuthSource(fakeSource({ accounts: [], tokens: {}, fetch: fakeUsageFetch(() => okJson({})).fetch }));
@@ -659,5 +701,65 @@ test('fetchClaudeUsage falls to the CLI store when no managed account answers', 
   } finally {
     claude.configureClaudeOAuthSource(null);
     claude.configureClaudeCliUsageSource(null);
+  }
+});
+
+// ── the route's read-or-scrape contract ─────────────────────────────────────
+// GET /api/claude/quota used to scrape on every call, which meant every page
+// load and session switch drove a 30-40s browser. A plain request now only
+// REPORTS what the session's account already has (src/quota/claude-usage-queue
+// owns that cache); `force=1` — the user's own ⟳ — is the one thing allowed to
+// start a scrape, and an account nobody has read yet answers `idle`, which is a
+// state, not a failure.
+test('GET /api/claude/quota reads the queue and only scrapes for force=1', async () => {
+  const handlers = new Map();
+  const app = {
+    get: (route, handler) => handlers.set(`GET ${route}`, handler),
+    post: (route, handler) => handlers.set(`POST ${route}`, handler),
+  };
+  claude.mountClaudeUsageQuotaRoutes(app);
+  const request = async (query) => {
+    const res = {
+      statusCode: 200, body: null,
+      status(code) { this.statusCode = code; return this; },
+      json(body) { this.body = body; return this; },
+    };
+    await handlers.get('GET /api/claude/quota')({ query }, res);
+    return res;
+  };
+
+  const Queue = require('../src/quota/claude-usage-queue');
+  const BarState = require('../src/quota/claude-bar-state');
+  Queue.resetClaudeUsageQueue();
+  BarState.resetClaudeBarState();
+  const scrapes = [];
+  Queue.configureClaudeUsageQueue({
+    now: () => 1_700_000_000_000,
+    fetchUsage: async () => {
+      scrapes.push('scrape');
+      return { status: 'ok', fetchedAt: 1_700_000_000_000, summary: [{ window: '1wk', usedPercent: 6 }] };
+    },
+  });
+  try {
+    let res = await request({ session: 's1' });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.status, 'idle', 'never read this account: idle, not an error');
+    assert.deepEqual(scrapes, [], 'and no browser was opened for a read');
+    assert.ok(res.body.bar, 'the bar is rendered either way, so the client has something to paint');
+
+    res = await request({ session: 's1', force: '1' });
+    assert.deepEqual(scrapes, ['scrape']);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.status, 'ok');
+    assert.match(res.body.bar.text, /1wk 94%/, 'the reading is rendered into the bar server-side');
+
+    // The reading now answers reads — from any session — without a second scrape.
+    res = await request({ session: 's2' });
+    assert.equal(res.body.status, 'ok');
+    assert.deepEqual(scrapes, ['scrape'], 'the minute floor holds across sessions');
+  } finally {
+    Queue.resetClaudeUsageQueue();
+    BarState.resetClaudeBarState();
+    Queue.configureClaudeUsageQueue({ fetchUsage: claude.fetchClaudeUsage });
   }
 });

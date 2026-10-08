@@ -816,22 +816,59 @@ test('chat provider selection forwards default, explicit, and active Auto identi
   } finally { f.cleanup(); }
 });
 
+// The one bar whose refresh is expensive: the server treats `force=1` as
+// permission to spend 30-40s on a browser, and answers anything else from that
+// account's cache. Nothing on this side may imply that permission — the only
+// callers are the bar's tap and the post-login follow-up.
+test('the claude refresh carries force=1, because nothing else licenses a scrape', async () => {
+  const f = freshClient();
+  try {
+    const posts = [];
+    global.fetch = async (url, init = {}) => {
+      if (init.method === 'POST') posts.push(String(url));
+      return { json: async () => ({ status: 'ok', bar: { text: 'weekly 94%' } }) };
+    };
+    await f.C.refreshClaudeUsage(true);
+    assert.equal(posts.length, 1, 'exactly one request');
+    assert.ok(posts[0].includes('kind=claude'), posts[0]);
+    assert.ok(posts[0].includes('force=1'), `the user's own refresh is the licence: ${posts[0]}`);
+
+    // Without force the same call is a cache read: still one request, but it
+    // must not claim a human pressed anything — the server would then be free
+    // to open a browser on a page load.
+    posts.length = 0;
+    await f.C.refreshClaudeUsage(false);
+    assert.equal(posts.length, 1);
+    assert.ok(!posts[0].includes('force=1'), posts[0]);
+  } finally { f.cleanup(); }
+});
+
 // ── The Claude bar's two sources, and when the live one stops counting ──────
 // The 5h row arrives two ways: a seconds-old per-session rate_limit_event and a
 // minutes-old account-wide scrape. The live event wins — until its own reset
 // passes, after which it describes a window that no longer exists.
-test('a live 5h window stops answering the moment its own reset passes', () => {
+test('a live 5h window stops answering the moment its own reset passes', async () => {
   const BarState = require('../src/quota/claude-bar-state');
+  const Queue = require('../src/quota/claude-usage-queue');
   BarState.resetClaudeBarState();
+  Queue.resetClaudeUsageQueue();
   try {
-    BarState.rememberClaudeScrape({
-      status: 'ok',
-      fetchedAt: NOW - 60_000,
-      summary: [
-        { window: '5h', usedPercent: 0 },
-        { window: '1wk', usedPercent: 6, resetMs: NOW + 5 * 86_400_000 },
-      ],
+    // Seed the account's reading the way a scrape does — through the queue, which
+    // is now the only owner of that cache (the bar holds nothing but the live 5h
+    // window). No key resolver is configured, so every session shares the default
+    // key, which is also what renderClaudeBar('s1') below looks up.
+    Queue.configureClaudeUsageQueue({
+      now: () => NOW,
+      fetchUsage: async () => ({
+        status: 'ok',
+        fetchedAt: NOW - 60_000,
+        summary: [
+          { window: '5h', usedPercent: 0 },
+          { window: '1wk', usedPercent: 6, resetMs: NOW + 5 * 86_400_000 },
+        ],
+      }),
     });
+    await Queue.enqueueClaudeUsage(Queue.DEFAULT_KEY);
     BarState.rememberClaudeLive('s1', {
       provider: 'claude', status: 'allowed', usedPercentage: 44,
       resetsAtMs: NOW + 10 * 60_000, observedAtMs: NOW,
@@ -854,16 +891,23 @@ test('a live 5h window stops answering the moment its own reset passes', () => {
     assert.doesNotMatch(closed.text, /已重置/, 'and never leaves a word where a time belongs');
   } finally {
     BarState.resetClaudeBarState();
+    Queue.resetClaudeUsageQueue();
   }
 });
 
-test('a live 5h window older than its own TTL is forgotten too', () => {
+test('a live 5h window older than its own TTL is forgotten too', async () => {
   const BarState = require('../src/quota/claude-bar-state');
+  const Queue = require('../src/quota/claude-usage-queue');
   BarState.resetClaudeBarState();
+  Queue.resetClaudeUsageQueue();
   try {
-    BarState.rememberClaudeScrape({
-      status: 'ok', fetchedAt: NOW, summary: [{ window: '5h', usedPercent: 12 }],
+    Queue.configureClaudeUsageQueue({
+      now: () => NOW,
+      fetchUsage: async () => ({
+        status: 'ok', fetchedAt: NOW, summary: [{ window: '5h', usedPercent: 12 }],
+      }),
     });
+    await Queue.enqueueClaudeUsage(Queue.DEFAULT_KEY);
     // Deadline still ahead, but observed five hours ago: outside the TTL a 5h
     // window says nothing about now.
     BarState.rememberClaudeLive('s1', {
@@ -874,5 +918,6 @@ test('a live 5h window older than its own TTL is forgotten too', () => {
     assert.match(stale.text, /^5h 88% · /, 'the TTL drops an event older than its window');
   } finally {
     BarState.resetClaudeBarState();
+    Queue.resetClaudeUsageQueue();
   }
 });

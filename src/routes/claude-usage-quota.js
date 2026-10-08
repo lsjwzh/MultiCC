@@ -1,7 +1,15 @@
 'use strict';
 
-// GET /api/claude/quota — fetch the Claude subscription's usage windows
+// GET /api/claude/quota — the Claude subscription's usage windows
 // (5h session / weekly / monthly).
+//
+// ?session=<name>&force=1. The session decides WHICH cache entry is read (its
+// provider is resolved to the official account it borrows, see
+// ../quota/claude-usage-queue.js), and `force=1` is the user's own refresh.
+// Without `force` the route never scrapes: it answers with what that account's
+// cache already holds, or `status:'idle'` when it has never been read. The one
+// automatic scrape is a task boundary (a turn ending, see
+// ../chat/usage-limit-wiring.js).
 //
 // Two sources, tried in order:
 //
@@ -34,7 +42,10 @@
 
 const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome-cdp');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
-const { rememberClaudeScrape, renderClaudeBar } = require('../quota/claude-bar-state');
+const { renderClaudeBar } = require('../quota/claude-bar-state');
+const {
+  configureClaudeUsageQueue, claudeUsageKey, readClaudeUsage, enqueueClaudeUsage,
+} = require('../quota/claude-usage-queue');
 const { fetchUsage, USAGE_URL } = require('../claude-auth/official-oauth');
 const { fetchCliUsage } = require('../quota/claude-cli-oauth');
 
@@ -353,7 +364,13 @@ function defaultOAuthSource() {
 // Returns a scrape-shaped ok result from the first account whose token yields
 // a readable usage body, or null when no account can (none exist, tokens dead,
 // endpoint down) — null means "let the CDP fallback own the status".
-async function fetchClaudeUsageViaOAuth() {
+//
+// `preferAccountId` is the account the asking session's provider borrows (see
+// claude-usage-queue): it is tried FIRST so two signed-in accounts report their
+// own numbers instead of whoever happens to answer. It is a preference, not a
+// filter — a dead token still falls through to the next account, exactly as it
+// did when the order was whatever the store happened to list.
+async function fetchClaudeUsageViaOAuth(preferAccountId = '') {
   let source = oauthSource;
   if (!source) {
     try {
@@ -368,6 +385,12 @@ async function fetchClaudeUsageViaOAuth() {
     accounts = source.accounts.listClaudeAccounts();
   } catch (_) {
     return null;
+  }
+  if (preferAccountId) {
+    const bound = accounts.filter(a => a && a.id === preferAccountId);
+    if (bound.length) {
+      accounts = bound.concat(accounts.filter(a => !a || a.id !== preferAccountId));
+    }
   }
   const fetchImpl = source.fetch || globalThis.fetch;
   for (const account of accounts) {
@@ -435,8 +458,8 @@ async function fetchClaudeUsageViaCli() {
 
 // ── source 2: CDP scrape of claude.ai/settings/usage ───────────────────────
 
-async function fetchClaudeUsage() {
-  const viaOAuth = await fetchClaudeUsageViaOAuth();
+async function fetchClaudeUsage({ accountId = '' } = {}) {
+  const viaOAuth = await fetchClaudeUsageViaOAuth(accountId);
   if (viaOAuth) return viaOAuth;
   const viaCli = await fetchClaudeUsageViaCli();
   if (viaCli) return viaCli;
@@ -483,32 +506,46 @@ async function fetchClaudeUsage() {
   return lastUnavailable || { status: 'unavailable', error: '所有浏览器来源都未能取得用量' };
 }
 
+function quotaHttpStatus(status) {
+  if (status === 'ok' || status === 'idle') return 200;
+  if (status === 'needs_login') return 401;
+  if (status === 'chrome_unavailable') return 503;
+  return 500;
+}
+
 function mountClaudeUsageQuotaRoutes(app, recordClaude) {
   if (!app || typeof app.get !== 'function') return;
   app.get('/api/claude/quota', async (req, res) => {
     const session = typeof req.query?.session === 'string' ? req.query.session : '';
+    // `force=1` is the user's own refresh (the bar's ⟳ / tap, and the scrapes
+    // that follow a completed login). Without it this route only REPORTS what
+    // the session's account already has cached: loading a page or switching a
+    // session must not drive a browser for 30-40s over a number that has not
+    // moved. The cache, its one-minute floor and the in-flight join live in
+    // ../quota/claude-usage-queue.js.
+    const force = req.query?.force === '1' || req.query?.force === 'true';
+    const key = claudeUsageKey(session);
     try {
-      const result = await fetchClaudeUsage();
-      const status = (result && result.status) || 'unavailable';
-      const httpStatus = status === 'ok' ? 200
-        : (status === 'needs_login' ? 401
-          : (status === 'chrome_unavailable' ? 503 : 500));
+      const entry = force ? await enqueueClaudeUsage(key) : readClaudeUsage(key);
+      const result = entry ? entry.result : null;
       // The bar is rendered here, once, merged with whatever 5h window this
-      // session's turns have already reported — so the web and the app get the
+      // session's account has already reported — so the web and the app get the
       // combined bar instead of each merging the two sources themselves.
-      rememberClaudeScrape(result);
       const bar = renderClaudeBar(session);
-      if (recordClaude) {
+      // Only a real reading is recorded. A miss means we have never read this
+      // account, and writing that as a failure would park a perfectly healthy
+      // provider in the shared cache (see recordClaude in limit-cache-recorder).
+      if (entry && recordClaude) {
         try { recordClaude(session, result, bar && bar.text); } catch (_) {}
       }
-      res.status(httpStatus).json({ ...result, bar });
+      const status = (result && result.status) || 'idle';
+      res.status(quotaHttpStatus(status)).json({ ...(result || {}), status, bar });
     } catch (err) {
-      const result = { status: 'unavailable', error: 'claude quota fetch failed' };
-      rememberClaudeScrape(result);
-      if (recordClaude) {
-        try { recordClaude(session, result); } catch (_) {}
-      }
-      res.status(500).json({ ...result, bar: renderClaudeBar(session) });
+      res.status(500).json({
+        status: 'unavailable',
+        error: 'claude quota fetch failed',
+        bar: renderClaudeBar(session),
+      });
     }
   });
 
@@ -525,6 +562,13 @@ function mountClaudeUsageQuotaRoutes(app, recordClaude) {
     }
   });
 }
+
+// The queue's scrape is this module's own, so the two are wired together here
+// rather than in server.js: the route above, the unified quota-bar refresh
+// (routes/quota-bars.js) and the turn-boundary warm-up (chat/usage-limit-wiring)
+// all reach the same cache through the module, and none of them can start a
+// second browser for an account that was read inside the last minute.
+configureClaudeUsageQueue({ fetchUsage: fetchClaudeUsage });
 
 module.exports = {
   mountClaudeUsageQuotaRoutes,
