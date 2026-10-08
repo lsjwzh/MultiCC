@@ -5,8 +5,11 @@
 /// clients. Only the parts that change while nobody is fetching anything have
 /// to be resolved at paint time:
 ///
-///   `{cd:<epochMs>}`   a deadline  → "42m" · "3.5h" · "3d 5h"
-///   `{ago:<epochMs>}`  a timestamp → "刚刚" · "57s 前" · "3 分钟前"
+///   `{cd:<epochMs>}`            a deadline  → "42m" · "3.5h" · "3d 5h"
+///   `{cd:<epochMs>|<window>}`   a deadline whose window the server knew, so a
+///                               deadline that has already passed resolves to
+///                               the NEXT reset of that window instead
+///   `{ago:<epochMs>}`           a timestamp → "刚刚" · "57s 前" · "3 分钟前"
 ///
 /// A bar is cached and redisplayed for as long as the app stays open, so baking
 /// these in would make a bar quietly lie about how old it is.
@@ -62,8 +65,9 @@ class QuotaBar {
 /// Time left, coarsening as it grows: minutes under an hour, one decimal of an
 /// hour under a day, then days. Never returns '' for a real deadline, so a
 /// segment's separators are safe to bake into the server-rendered string; a
-/// deadline that has already passed is handled by [resolveQuotaText] (已重置),
-/// which is the only caller.
+/// deadline that has already passed never reaches here, because
+/// [resolveQuotaText] re-anchors it to the next reset (or falls back to
+/// [rolledWindowText]) first.
 String humanizeCountdown(num? ms) {
   if (ms == null || !ms.isFinite || ms < 0) return '';
   final totalH = ms / 3600000;
@@ -94,16 +98,59 @@ String relativeAgo(num? tsMs, int nowMs) {
   return formatRelativeTime(tsMs.toInt(), nowMs: nowMs, compact: true);
 }
 
-final RegExp _token = RegExp(r'\{(cd|ago):(-?\d+)\}');
+/// `{cd:<at>}` or, when the server knew which window the deadline belongs to,
+/// `{cd:<at>|<window>}`. `{ago:<at>}` never carries a window.
+final RegExp _token = RegExp(r'\{(cd|ago):(-?\d+)(?:\|([0-9a-z]+))?\}');
+
+/// How long each window this bar meters is, keyed by the token the server
+/// appends to a deadline it knows the window of. `1m` is a calendar month
+/// rather than 30 days, so its entry is null and the arithmetic below goes
+/// through the date instead of a fixed span. Mirrors `WINDOW_PERIOD_MS` in
+/// public/quota-bar-view.js.
+const Map<String, int?> _windowPeriodMs = {
+  '5h': 5 * 3600000,
+  '1wk': 7 * 86400000,
+  '1m': null,
+};
+const int _maxRollSteps = 400;
+
+/// The month step walks the UTC calendar, not the local one — see the comment
+/// on the same step in public/quota-bar-view.js. In short: a local month would
+/// make the answer depend on the reader's machine (one hour off across a DST
+/// change) and give every time zone its own golden fixture.
+DateTime _advanceWindow(int atMs, String token, int steps) {
+  final span = _windowPeriodMs[token];
+  if (token != '1m' && span != null) {
+    return DateTime.fromMillisecondsSinceEpoch(atMs + span * steps);
+  }
+  final d = DateTime.fromMillisecondsSinceEpoch(atMs, isUtc: true);
+  return DateTime.utc(d.year, d.month + steps, d.day, d.hour, d.minute, d.second, d.millisecond);
+}
+
+/// The reset after a deadline that is already behind us: advance by whole
+/// periods until the result is ahead of now. For every periodic window this bar
+/// meters that is exactly when the next window ends. Null when the token names
+/// no window this bar meters.
+int? _nextResetAfter(int atMs, String token, int nowMs) {
+  if (!_windowPeriodMs.containsKey(token)) return null;
+  for (var steps = 1; steps <= _maxRollSteps; steps++) {
+    final next = _advanceWindow(atMs, token, steps).millisecondsSinceEpoch;
+    if (next > nowMs) return next;
+  }
+  return null;
+}
 
 /// A deadline that is already past is NOT "one minute left". The window has
 /// rolled, and the percentage printed next to it belongs to the window that
 /// just ended — a bar restored from cache hours later would otherwise read
 /// "5h 93% 1m", i.e. 93% used with a minute to go, which is the most misleading
-/// thing this bar can say. Say what happened instead. The segment stays
-/// non-empty, which is what keeps the separators the server baked in (see
-/// [humanizeCountdown]) safe to expand. Mirrors `ROLLED_WINDOW` in
-/// public/quota-bar-view.js.
+/// thing this bar can say. So a countdown is never allowed to go negative: the
+/// deadline becomes the NEXT reset instead, whenever the token says which window
+/// it belonged to (see [resolveQuotaText]). Only a token that does not say falls
+/// back to naming the state rather than numbering it — which is where this word
+/// comes from, and why it is rare. Either way the segment stays non-empty, which
+/// is what keeps the separators the server baked in (see [humanizeCountdown])
+/// safe to expand. Mirrors `ROLLED_WINDOW` in public/quota-bar-view.js.
 const String rolledWindowText = '已重置';
 
 String resolveQuotaText(String? text, int nowMs) {
@@ -112,7 +159,17 @@ String resolveQuotaText(String? text, int nowMs) {
     final at = int.tryParse(m.group(2) ?? '') ?? 0;
     if (m.group(1) != 'cd') return relativeAgo(at, nowMs);
     final left = at - nowMs;
-    return left > 0 ? humanizeCountdown(left) : rolledWindowText;
+    if (left > 0) return humanizeCountdown(left);
+    // The deadline is behind us, so the window it named has rolled. When the
+    // token carries the window, the next reset is that deadline plus whole
+    // periods, and saying when it is answers what the reader actually asked
+    // ("how long until it resets"). Without the window - a bar cached before the
+    // server carried it, a window this bar does not meter - [rolledWindowText]
+    // is the honest remainder, and it is still non-empty, which is what keeps
+    // the separators baked into the server string safe to expand.
+    final window = m.group(3);
+    final next = window == null ? null : _nextResetAfter(at, window, nowMs);
+    return next == null ? rolledWindowText : humanizeCountdown(next - nowMs);
   });
 }
 

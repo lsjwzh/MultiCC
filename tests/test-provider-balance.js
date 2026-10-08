@@ -265,7 +265,9 @@ test('queryAll reports one row per provider, including unpollable ones', async (
   assert.equal(byId['ds-1'].name, 'DeepSeek');
   assert.equal(byId['glm-1'].dto.utilization, 0.42);
   assert.equal(byId['codex-official'].dto.rateLimitType, 'weekly');
-  assert.match(byId['codex-official'].bar.text, /\{cd:1700003600000\}/,
+  // The deadline also names its window (`|1wk`) so a client can roll a passed
+  // deadline to the next reset; the assertion is about the number, not the tag.
+  assert.match(byId['codex-official'].bar.text, /\{cd:1700003600000\|1wk\}/,
     'epoch seconds are converted to milliseconds exactly once');
   assert.match(byId['codex-official'].bar.title, /套餐: pro/);
   assert.match(byId['codex-official'].bar.title, /剩余 23%/);

@@ -515,6 +515,86 @@
       }
     },
     {
+      "name": "cd-past-5h-rolls-one-period",
+      "bar": {
+        "text": "5h 93% {cd:1699999999000|5h}",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "5h 93% 5h",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-past-5h-rolls-many-periods",
+      "bar": {
+        "text": "5h 93% {cd:1699956799000|5h}",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "5h 93% 3h",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-past-week-rolls-one-period",
+      "bar": {
+        "text": "1wk 94% {cd:1699000000000|1wk}",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "1wk 94% 2d 10h",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-past-month-rolls-one-month",
+      "bar": {
+        "text": "{cd:1696000000000|1m}",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "14d 16h",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-past-unknown-window-reads-rolled",
+      "bar": {
+        "text": "x {cd:1699999999000|9x}",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "x 已重置",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
       "name": "cd-30m",
       "bar": {
         "text": "{cd:1700001800000}",

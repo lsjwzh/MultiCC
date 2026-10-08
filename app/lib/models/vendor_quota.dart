@@ -4,8 +4,10 @@
 // ordering rule lives in the single server renderer (src/quota/quota-bar-view.js),
 // which bakes a bar with only two time-relative tokens left for the client:
 //
-//   {cd:<epochMs>}   a deadline  → "42m" · "3.5h" · "3d 5h"
-//   {ago:<epochMs>}  a timestamp → "刚刚" · "57s 前" · "3 分钟前"
+//   {cd:<epochMs>}            a deadline  → "42m" · "3.5h" · "3d 5h"
+//   {cd:<epochMs>|<window>}   a deadline whose window the server knew, so one
+//                             that has already passed → "5h" (the next reset)
+//   {ago:<epochMs>}           a timestamp → "刚刚" · "57s 前" · "3 分钟前"
 //
 // [vendorViewFromBar] is the only bridge: it resolves those tokens (via
 // quota_bar_view.dart, the Dart mirror of public/quota-bar-view.js) and hands

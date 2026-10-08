@@ -11,6 +11,9 @@
   // expanding the two time-relative tokens the server bakes into a bar —
   //   {cd:<epochMs>}  a deadline  → "42m" · "3.5h" · "3d 5h"
   //   {ago:<epochMs>} a timestamp → "刚刚" · "57s 前" · "3 分钟前"
+  // and rolling a deadline that has already passed to its window's next reset
+  // (`{cd:<epochMs>|<window>}` — see public/quota-bar-view.js) so the bar answers
+  // "还有多久重置" instead of printing a stale percentage next to a bare word.
   // — because a bar is cached (localStorage) and redisplayed for up to 24h, so
   // baking those in would make it quietly lie about how old it is. That resolver
   // is public/quota-bar-view.js, a mirror of app/lib/models/quota_bar_view.dart,
