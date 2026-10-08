@@ -278,6 +278,24 @@ test('an inherited ANTHROPIC_CUSTOM_HEADERS cannot ride into a claude child', ()
   assert.equal(env.KEEP, '1', 'unrelated vars are untouched');
 });
 
+test('a claude child gets a bounded retry budget so a revoked grant cannot spin', () => {
+  // Claude Code's own retry policy treats HTTP 401 as retryable, so a revoked
+  // OAuth grant spends its whole default budget (~10 retries, two dials each,
+  // ~22 requests over minutes) before the turn gives up. Those retries live
+  // inside the CLI process and only surface once exhausted, so the host cannot
+  // interrupt them — the retry budget is the only lever it has.
+  assert.equal(providers.buildChildEnv({}, { cli: 'claude' }, {}).env.CLAUDE_CODE_MAX_RETRIES, '3');
+  assert.equal(providers.buildChildEnv({}, { cli: 'claude-exp' }, {}).env.CLAUDE_CODE_MAX_RETRIES, '3');
+  // An operator- or provider-supplied value always wins.
+  assert.equal(
+    providers.buildChildEnv({ CLAUDE_CODE_MAX_RETRIES: '7' }, { cli: 'claude' }, {}).env.CLAUDE_CODE_MAX_RETRIES,
+    '7',
+    'an explicit budget is never overridden',
+  );
+  // Codex has its own retry handling and must not be touched by this.
+  assert.equal(providers.buildChildEnv({}, { cli: 'codex' }, {}).env.CLAUDE_CODE_MAX_RETRIES, undefined);
+});
+
 test('routing is unconditional: no option, env var or provider-less session can turn it off', () => {
   // CLAUDE_PROXY_ENABLED used to be a host-wide "run claude direct" switch
   // (.env + settings UI + app). It is gone from the server, the routes, the web

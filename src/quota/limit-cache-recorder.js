@@ -26,6 +26,7 @@ const {
   arkPlanFromBaseUrl,
   arkWindowLabel,
 } = require('./quota-bar-view');
+const { accountProviderId, accountIdOfProviderId } = require('../providers/official-catalog');
 
 const PROVIDER_FAILURE_COOLDOWN_MS = 5 * 60_000;
 // A 429 clears itself once the window rolls over, so a short cooldown is enough
@@ -147,7 +148,19 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     let provider;
     try { provider = providers.getProvider(undefined, String(providerId)); } catch (_) { return null; }
     if (!provider || !provider.id || !provider.appType) return null;
-    return { appType: String(provider.appType), providerId: String(provider.id) };
+    const appType = String(provider.appType);
+    const id = String(provider.id);
+    // A bare official alias ("claude-official") is a moving target: the session
+    // pins the alias and the account it resolves to is chosen at spawn time.
+    // Auto's candidate pool is keyed on the concrete account id, so a park
+    // written against the alias is read back by nobody — the dead account stays
+    // eligible and keeps being re-selected. Resolve the alias to the account it
+    // currently means before recording the failure.
+    const accountId = provider.activeAccountId;
+    if (accountId && accountId !== 'global' && !accountIdOfProviderId(appType, id)) {
+      return { appType, providerId: accountProviderId(appType, String(accountId)) };
+    }
+    return { appType, providerId: id };
   }
 
   // A window/balance DTO → full structured summary. This is the primary path:

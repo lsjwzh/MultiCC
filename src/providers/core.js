@@ -1126,6 +1126,18 @@ function buildChildEnv(base, session, extra = {}) {
   if (session && session.cli === 'opencode') delete env.OPENCODE_CONFIG_CONTENT;
   const spawn = resolveSpawnEnv(session);
   Object.assign(env, extra, spawn.env);
+  // Claude Code's own retry policy treats HTTP 401 as retryable, so a revoked
+  // OAuth grant spends its whole default budget (~10 retries, two dials each)
+  // before the turn gives up — ~22 requests over several minutes. Those retries
+  // happen inside the CLI process and only surface here once they are already
+  // exhausted, so the host cannot interrupt them; the only lever is the budget.
+  // Cap it: a dead credential now stops in seconds, while a genuinely transient
+  // failure (429 / 5xx) still gets its few retries. An operator- or
+  // provider-supplied value always wins.
+  if (session && (session.cli === 'claude' || session.cli === 'claude-exp')
+      && env.CLAUDE_CODE_MAX_RETRIES === undefined) {
+    env.CLAUDE_CODE_MAX_RETRIES = '3';
+  }
   if (spawn.codexOfficialRelay) {
     // Official OAuth belongs exclusively to the host relay. A shell-level or
     // caller-supplied OPENAI_* override would otherwise let the child bypass

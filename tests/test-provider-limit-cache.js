@@ -321,6 +321,25 @@ function testRevokedParkAndRelease() {
   ok(limitState(cache.get('claude', 'p-ds'), { now: clock.now() }).state !== 'exhausted',
     'the account is selectable again the moment its login succeeds');
 
+  // A session may pin the bare official alias ("claude-official") instead of a
+  // per-account id, and the alias follows whichever account is the default at
+  // spawn time. Auto's candidate pool is keyed on the concrete account id, so a
+  // park recorded against the alias is read back by nobody — the dead account
+  // stays eligible and keeps being re-selected. The alias must resolve to the
+  // account it currently means before the failure is recorded.
+  catalog.push({
+    id: 'claude-official', appType: 'claude', name: 'Claude 官方 · b',
+    activeAccountId: 'cb120a4b1e0ca3c2',
+  });
+  recorder.recordProviderFailure({ providerId: 'claude-official', category: 'authentication_permission', httpStatus: 401 });
+  const concrete = cache.get('claude', 'claude-official-cb120a4b1e0ca3c2');
+  ok(concrete && concrete.summary && concrete.summary.revoked === true,
+    'a bare official alias parks the concrete account Auto actually pools on');
+  ok(limitState(concrete, { now: clock.now() }).reason === 'provider_credential_revoked',
+    'and that parked account is what Auto reads as revoked');
+  ok(cache.get('claude', 'claude-official') === null,
+    'the alias itself is never parked, since nothing reads it');
+
   // The other direction: an ordinary 429 must keep its bounded cooldown, so a
   // healthy account's stream of refreshes can never release a real rate limit.
   recorder.recordProviderFailure({ providerId: 'p-glm', category: 'rate_limit', httpStatus: 429 });
