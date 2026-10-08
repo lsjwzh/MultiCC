@@ -3892,6 +3892,7 @@
   "queueEntryPlaceholder": "(Queued message)",
   "queueEditHintTitle": "Double-click to edit this message",
   "queueInsertNow": "Insert now",
+  "queueRetrying": "⚠️ Retry #{n}: {error}",
   "queueInsertAria": "Run queued message {n} now",
   "queueInserting": "Inserting…",
   "queueRemoveAria": "Remove queued message {n}",

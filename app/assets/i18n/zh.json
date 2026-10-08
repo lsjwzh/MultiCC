@@ -3892,6 +3892,7 @@
   "queueEntryPlaceholder": "（暂存消息）",
   "queueEditHintTitle": "双击修改这条消息",
   "queueInsertNow": "立刻插入",
+  "queueRetrying": "⚠️ 第 {n} 次重试中：{error}",
   "queueInsertAria": "立即执行第 {n} 条消息",
   "queueInserting": "插入中…",
   "queueRemoveAria": "移除第 {n} 条暂存消息",

@@ -259,8 +259,23 @@ test('a stuck delivery names the busy reason and the way out', () => {
   assert.match(appended[0].content, /2 分钟/, 'the wait is in the units the user experiences');
   assert.match(appended[0].content, /立刻插入/, 'the remedy is the button that exists in the queue');
   assert.deepEqual(broadcasts, [{ type: 'system', subtype: 'notice', message: appended[0].content }]);
-  // An empty reason list still has to say something true rather than nothing.
+  // An empty reason list still has to say something true rather than nothing —
+  // the skip reason itself, now that it is carried alongside the reasons.
   appended.length = 0;
   notice.notifyStuckDelivery({ sessionId: 's1', reasons: [], waitedMs: 60_000 });
-  assert.match(appended[0].content, /workspace_occupied/);
+  assert.match(appended[0].content, /session_busy/);
+});
+
+test('a stuck delivery behind an unsettled previous delivery is not called a busy workspace', () => {
+  // `delivery_locked` is the other silent skip shape: the session's previous
+  // delivery never settled, so nothing new can start, yet no workspace is
+  // held and no turn is running. Calling that 「工作区被占用」 would be a lie.
+  const appended = [];
+  const notice = createSessionNotices({
+    appendChatMessage: (sessionId, message) => { appended.push(message); return true; },
+  });
+  notice.notifyStuckDelivery({ sessionId: 's1', reason: 'delivery_locked', reasons: [], waitedMs: 120_000 });
+  assert.match(appended[0].content, /上一条投递尚未结算（delivery_locked）/);
+  assert.doesNotMatch(appended[0].content, /工作区被占用/);
+  assert.match(appended[0].content, /立刻插入/, 'the escape hatch is the same button either way');
 });

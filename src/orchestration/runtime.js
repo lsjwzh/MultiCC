@@ -1061,10 +1061,14 @@ function createOrchestrationRuntime({
   // parameter binding — the port would then never be called at all.
   function reportWedgedDelivery(item, reason, reasons, at) {
     const sessionId = item.sessionId;
-    const wedged = reason === 'session_busy'
+    // `delivery_locked` means the session's previous delivery never settled;
+    // with no run active that is the same experience as a busy hold — the
+    // queue does not move and nothing on screen says why — so it starts the
+    // same 60s clock and gets the same one notice per wedge. A running turn
+    // is excluded either way: it explains the wait by itself.
+    const wedged = (reason === 'session_busy' || reason === 'delivery_locked')
       && isUserTypedWork(item.payload)
-      && Array.isArray(reasons) && reasons.length > 0
-      && !reasons.includes('run_active');
+      && !(Array.isArray(reasons) && reasons.includes('run_active'));
     if (!wedged) { blockedDelivery.delete(sessionId); return; }
     let state = blockedDelivery.get(sessionId);
     if (!state) {
@@ -1077,7 +1081,7 @@ function createOrchestrationRuntime({
     if (state.notified || at - state.since < stuckDeliveryNoticeMs) return;
     state.notified = true;
     try {
-      notifyStuckDelivery?.({ sessionId, item, reasons, waitedMs: at - state.since });
+      notifyStuckDelivery?.({ sessionId, item, reason, reasons, waitedMs: at - state.since });
     } catch (error) {
       log(`[orchestration] stuck-delivery notice failed: ${error.message}`);
     }
@@ -1085,7 +1089,8 @@ function createOrchestrationRuntime({
   function noteDeliverySkip(item, reason, detail) {
     const at = Number(now());
     let reasons = null;
-    if (reason === 'session_busy' && typeof busyReasons === 'function') {
+    if ((reason === 'session_busy' || reason === 'delivery_locked')
+        && typeof busyReasons === 'function') {
       try { reasons = busyReasons(item.sessionId, detail) || null; } catch (_) { reasons = null; }
     }
     reportWedgedDelivery(item, reason, reasons, at);
@@ -1123,15 +1128,17 @@ function createOrchestrationRuntime({
         }
         return null;
       }
-      // The hold is gone, so the wedge this session may have been told about is
-      // over: forget it before the item is even delivered, or a later, unrelated
-      // wait would be silenced by the previous one's notice.
-      blockedDelivery.delete(item.sessionId);
       if (inFlightDeliveries.has(item.id)) return null;
       if (isDeliveryLocked(item.sessionId, projected)) {
         noteDeliverySkip(item, 'delivery_locked');
         return null;
       }
+      // Both holds are gone (busy and locked alike), so the wedge this session
+      // may have been told about is over: forget it before the item is even
+      // delivered, or a later, unrelated wait would be silenced by the previous
+      // one's notice. Clearing any earlier — right after the busy check — would
+      // rebuild the state on every locked skip and re-announce the same wedge.
+      blockedDelivery.delete(item.sessionId);
       return item;
     };
     const claimed = await outbox.claim({

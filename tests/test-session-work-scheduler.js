@@ -171,6 +171,32 @@ test('idle starts one item and running work keeps later messages in strict FIFO 
   assert.equal(thirdClaim.id, third.entry.id);
 });
 
+test('a queued entry in retry backoff carries its failure into the queue view', async t => {
+  // The blind spot the report hit: a queue that looked healthy while every
+  // attempt failed in private. attempts/lastError already live on the outbox
+  // entry — this only has to project them so the card can say "failing, why".
+  const h = fixture(t);
+  const failing = await h.scheduler.admit({
+    sessionId: 's1', text: 'retry me', idempotencyKey: 'retry-1',
+  });
+  await h.store.mutate(draft => {
+    const item = draft.outbox[failing.entry.id];
+    item.attempts = 3;
+    item.lastError = 'workspace_directory_missing: 该目录不存在\n第二行与完整补救属于死信通知，不进卡片';
+  });
+  const healthy = await h.scheduler.admit({
+    sessionId: 's1', text: 'healthy', idempotencyKey: 'retry-2',
+  });
+  const queued = (await h.scheduler.status('s1')).queued;
+  assert.equal(queued.length, 2);
+  assert.equal(queued[0].attempts, 3);
+  assert.equal(queued[0].lastError, 'workspace_directory_missing: 该目录不存在',
+    'one line, first line — the card is a badge, not a log viewer');
+  assert.equal(queued[1].attempts, 0);
+  assert.equal(queued[1].lastError, null, 'a healthy entry carries no failure noise');
+  assert.equal(healthy.ok, true);
+});
+
 test('a claimed but not started typed message stays renderable on the active snapshot', async t => {
   const h = fixture(t);
   await h.scheduler.admit({

@@ -271,14 +271,8 @@ test('a typed message held behind a busy workspace is announced once per wedge',
   // messages with nothing on screen.
   const stuck = [];
   let busy = true;
-  let locked = false;
   const h = fixture(t, {
     isBusy: () => busy,
-    // The lock sits after the busy check in the same function, so it lets the
-    // item stay queued while the wedge state is still cleared — otherwise the
-    // first delivery would leave the session in P and the queue would never
-    // reach the busy check again.
-    isDeliveryLocked: () => locked,
     busyReasons: () => ['workspace_occupied'],
     stuckDeliveryNoticeMs: 60_000,
     notifyStuckDelivery: notice => { stuck.push(notice); },
@@ -299,18 +293,28 @@ test('a typed message held behind a busy workspace is announced once per wedge',
   assert.equal((await h.runtime.outbox.get(typed.entry.id)).state, 'pending',
     'a held message is not a lost one: it stays queued');
 
-  // The hold clears: the wedge is over, so a later one is a new event that gets
-  // its own notice rather than being silenced by this one.
+  // The hold clears and the message is really delivered, then the session is
+  // closed out — that pass through both holds is what forgets the wedge. (A
+  // fake pass via isDeliveryLocked no longer works, and must not: a locked
+  // skip is itself a wedge now, so it keeps the state alive on purpose. And
+  // the new busy must be raised *before* the second admit: admission itself
+  // delivers when it can, so a message admitted while free never queues.)
   busy = false;
-  locked = true;
   await h.runtime.tick();
-  assert.equal((await h.runtime.outbox.get(typed.entry.id)).state, 'pending');
-  locked = false;
+  assert.equal((await h.runtime.outbox.get(typed.entry.id)).state, 'delivered');
+  assert.equal((await h.runtime.sessionScheduler.complete('held')).ok, true);
   busy = true;
+  const second = await h.runtime.admitSessionWork({
+    sessionId: 'held', text: 'again', idempotencyKey: 'held-2',
+  });
+  assert.equal((await h.runtime.outbox.get(second.entry.id)).state, 'pending',
+    'admitted behind a busy workspace, so it queues instead of running');
   await h.runtime.tick();
   h.clock.value += 61_000;
   await h.runtime.tick();
   assert.equal(stuck.length, 2, 'the second wedge is not the first one');
+  assert.equal(stuck[1].sessionId, 'held');
+  assert.notEqual(second.entry.id, typed.entry.id);
   await h.runtime.stop();
 });
 
@@ -326,6 +330,46 @@ test('a running turn is never reported as a wedge', async t => {
   await h.runtime.tick();
   await h.runtime.tick();
   assert.deepEqual(stuck, [], 'a turn in flight explains the wait by itself');
+  await h.runtime.stop();
+});
+
+test('a typed message behind an unsettled previous delivery is announced as a locked wedge', async t => {
+  // The other silent skip shape: no workspace is held, no turn is running,
+  // but the session's previous delivery never settled so nothing new may
+  // start. Same 60s clock, same single notice — and the notice has to name
+  // the real reason instead of claiming a busy workspace.
+  const stuck = [];
+  const h = fixture(t, {
+    isBusy: () => false,
+    isDeliveryLocked: () => true,
+    busyReasons: () => [],
+    stuckDeliveryNoticeMs: 0,
+    notifyStuckDelivery: notice => { stuck.push(notice); },
+  });
+  await h.runtime.admitSessionWork({ sessionId: 'locked', text: 'hi', idempotencyKey: 'lock-1' });
+  await h.runtime.tick();
+  await h.runtime.tick();
+  assert.equal(stuck.length, 1, 'an unsettled delivery is as stuck as a held workspace');
+  assert.equal(stuck[0].reason, 'delivery_locked');
+  assert.deepEqual(stuck[0].reasons, []);
+  await h.runtime.stop();
+});
+
+test('a locked session whose turn is still running stays quiet', async t => {
+  // Locked *because* a delivery is in flight and its turn is alive: the user
+  // can watch that turn, so the wait explains itself.
+  const stuck = [];
+  const h = fixture(t, {
+    isBusy: () => false,
+    isDeliveryLocked: () => true,
+    busyReasons: () => ['run_active'],
+    stuckDeliveryNoticeMs: 0,
+    notifyStuckDelivery: notice => { stuck.push(notice); },
+  });
+  await h.runtime.admitSessionWork({ sessionId: 'locked-run', text: 'hi', idempotencyKey: 'lock-2' });
+  await h.runtime.tick();
+  await h.runtime.tick();
+  assert.deepEqual(stuck, [], 'a live turn behind the lock explains the wait');
   await h.runtime.stop();
 });
 
