@@ -165,7 +165,7 @@
       + (a.active ? '' : '<button class="btn btn-green" data-act="activate" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctActivate')) + '</button>')
       + (a.global ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="quota" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctRefreshQuota')) + '</button>')
       + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="relogin" data-vendor="' + vendor + '" data-id="' + a.id + '"' + (a.cliCopy ? ' title="' + esc(tr('airOfficialAcctCliCopyTitle')) + '"' : '') + '>' + esc(tr('airOfficialAcctRelogin')) + '</button>'
-      + (a.global || a.active ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctDelete')) + '</button>')
+      + (a.global ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctDelete')) + '</button>')
       + '</span></div>'
       + (a.global ? '' : '<div style="font-size:12px">' + quotaHtml(vendor, a.id) + '</div>')
       + '</div>';
@@ -224,7 +224,10 @@
     }
   }
 
-  function refreshProviders() { if (typeof loadProviders === 'function') loadProviders(); }
+  function refreshProviders() {
+    if (typeof loadProviders === 'function') loadProviders();
+    else window.MultiCCAirProvider?.refresh();
+  }
 
   // ── add / relogin / delete ─────────────────────────────────────────────────
 
@@ -262,6 +265,7 @@
           if (data.loginSessionId) {
             toast(tr('airOfficialAcctCreatedOpeningTerminal'));
             window.open('index.html?id=' + encodeURIComponent(data.loginSessionId), '_blank');
+            watchCodexLogin(data.accountId);
           } else { toast(tr('airOfficialAcctTerminalOpenFailed', { message: data.error || '' }), true); }
         } else {
           toast(tr('airOfficialAcctCreatedFinishInBrowser'));
@@ -286,6 +290,7 @@
       } else if (vendor === 'codex') {
         if (data.loginSessionId) window.open('index.html?id=' + encodeURIComponent(data.loginSessionId), '_blank');
         toast(data.loginSessionId ? tr('airOfficialAcctTerminalOpened') : tr('airOfficialAcctTerminalOpenFailed', { message: data.error || '' }), !data.loginSessionId);
+        if (data.loginSessionId) watchCodexLogin(id);
       } else {
         if (data.oauthUrl) { window.open(data.oauthUrl, '_blank'); watchClaudeLogin(id); }
         toast(tr('airOfficialAcctFinishInBrowser'));
@@ -335,8 +340,27 @@
           toast(tr('airOfficialAcctClaudeLoginFailed', { message: s.error || '' }), true);
         }
         loadOfficialAccounts();
+        refreshProviders();
       } catch (_) { /* transient — keep polling until the timeout */ }
     }, 2000);
+    state.loginWatch[accountId].unref?.();
+  }
+
+  function watchCodexLogin(accountId) {
+    if (!accountId || state.loginWatch[accountId]) return;
+    const startedAt = Date.now();
+    state.loginWatch[accountId] = setInterval(async () => {
+      if (Date.now() - startedAt > 10 * 60 * 1000) { stopWatch(accountId); return; }
+      try {
+        const data = await api().json('/api/codex/accounts');
+        const account = (data.accounts || []).find(item => item.id === accountId);
+        if (!account || !account.loggedIn) return;
+        stopWatch(accountId);
+        toast(tr('airOfficialAcctCodexLoginDone'));
+        refreshProviders();
+      } catch (_) { /* transient — keep polling until the timeout */ }
+    }, 2000);
+    state.loginWatch[accountId].unref?.();
   }
 
   function stopWatch(accountId) {
@@ -365,5 +389,11 @@
     if (document.body.dataset.view === 'provider') loadOfficialAccounts();
   }
 
-  window.MultiCCOfficialAccounts = { load: loadOfficialAccounts, renderCodexQuota, renderClaudeQuota };
+  window.MultiCCOfficialAccounts = {
+    load: loadOfficialAccounts,
+    add: addOfficialAccount,
+    relogin,
+    renderCodexQuota,
+    renderClaudeQuota,
+  };
 })();

@@ -95,9 +95,12 @@ function enableUnifiedOfficialProviders() {
       catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
     },
     writeSelection: selection => atomicWriteJson(selectionFile, selection),
-    listAccounts: (() => {
+    ...(() => {
       const store = require('../official-accounts').createOfficialAccountStore();
-      return type => (type === 'codex' ? store.listCodexAccounts() : store.listClaudeAccounts());
+      return {
+        listAccounts: type => (type === 'codex' ? store.listCodexAccounts() : store.listClaudeAccounts()),
+        deleteAccount: (type, id) => (type === 'codex' ? store.deleteCodexAccount(id) : store.deleteClaudeAccount(id)),
+      };
     })(),
   });
 }
@@ -941,7 +944,8 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
 }
 
 function deleteProvider(appType, id) {
-  if (officialCatalog && (isOfficialProviderId(appType, id) || isOfficialProviderId(appType, officialCatalog.normalize(appType, id)))) throw new Error('官方 Provider 为内置入口，请在官方账号中管理账号');
+  if (officialCatalog && id === `${appType}-official`) throw new Error(`“同 ${appType === 'codex' ? 'Codex' : 'Claude'} 终端”为内置线路，不能删除`);
+  if (officialCatalog && isOfficialProviderId(appType, id)) return officialCatalog.delete(appType, id);
   const list = loadStore();
   const next = list.filter(p => !(p.appType === appType && p.id === id));
   if (next.length === list.length) return false;

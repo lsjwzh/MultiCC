@@ -570,10 +570,13 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       q('.rc-effort-high').click();
       q('.air-config-form').requestSubmit()})()`);
     assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
-    assert.equal(configPatches.length, 2);
-    assert.deepEqual(configPatches[0], { provider: 'codex-backup', providerSelection: null });
-    // 子任务跟着同一笔 PATCH 落库（模型为空就等于没设 → null，随主）。
-    assert.deepEqual(configPatches[1], { model: 'gpt-5.6-sol', effort: 'high', subagent: { providerId: 'codex-lab', model: 'gpt-5.5' } });
+    assert.equal(configPatches.length, 1, JSON.stringify(configPatches));
+    // 主线路、模型和子任务现在由同一笔 PATCH 原子落库。
+    assert.deepEqual(configPatches[0], {
+      provider: 'codex-backup', providerSelection: null,
+      model: 'gpt-5.6-sol', effort: 'high',
+      subagent: { providerId: 'codex-lab', model: 'gpt-5.5' },
+    });
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('Backup Responses') && ${composerPill('air-ai-pill')}.textContent.includes('gpt-5.6-sol')`));
     // 待生效的那份配置由服务端补上 providerName（src/workspace/air-routes.js 从
     // provider store 解析）。药丸说的是下一轮真正要跑的那条线路，所以它必须写名字
@@ -869,7 +872,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       q('.air-config-form').requestSubmit()})()`);
     assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'Codex · Backup Responses · gpt-5.6-sol');
-    assert.equal(configPatches.length, 2, 'a task that does not exist yet is never PATCHed');
+    assert.equal(configPatches.length, 1, 'a task that does not exist yet is never PATCHed');
     await page.evaluate(`document.getElementById('quick-role-pill').click()`);
     assert.ok(await page.waitFor(`document.querySelector('dialog[open] select option[value=designer]')`));
     await page.evaluate(`const p=document.querySelector('dialog[open] select');p.value='designer';p.dispatchEvent(new Event('change'))`);
@@ -1070,6 +1073,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('air-provider-count').textContent.includes('3 条线路')`), true);
     await page.evaluate(`document.querySelector('#admin-actions .primary').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-provider-dialog').open===true`));
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.air-provider-create-choice strong')].map(node=>node.textContent)`), ['使用 API Key', '添加登录账号']);
+    await page.evaluate(`document.querySelector('[data-provider-key="claude"]').click()`);
     assert.equal(await page.evaluate(`document.getElementById('air-provider-form').elements.apiFormat.value`), 'anthropic');
     await page.evaluate(`document.getElementById('air-provider-close').click()`);
     // 移动端那一段要看到「本轮 … · 任务 …」两段都在：页头在手机上只显示前一段，
@@ -1292,6 +1297,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(settingsTools.h <= 64, JSON.stringify(settingsTools));
     await page.evaluate(`document.querySelector('#admin-actions .primary').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-provider-dialog').open===true`));
+    assert.equal(await page.evaluate(`document.querySelectorAll('.air-provider-create-choice section').length`), 2);
     assert.equal(await page.evaluate(`document.getElementById('air-provider-dialog').scrollWidth<=document.getElementById('air-provider-dialog').clientWidth`), true);
     screenshots.push(await page.screenshot('air-provider-mobile-320'));
     await page.evaluate(`document.getElementById('air-provider-close').click()`);

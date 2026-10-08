@@ -306,11 +306,11 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
       const pill = document.getElementById('quick-ai-pill');
       return {
         label: pill.textContent.trim(), title: pill.title,
-        codex: window.t('providerOfficialCodex'), model: window.t('airQuickDefaultModel'),
-        zhCodex: window.I18N.zh.providerOfficialCodex,
+        codex: window.t('providerTerminalCodex'), model: window.t('airQuickDefaultModel'),
+        zhCodex: window.I18N.zh.providerTerminalCodex,
       };
     })()`);
-    assert.equal(quickRoute.zhCodex, OFFICIAL_NAME_ZH, 'the catalog still holds the server-side name in Chinese');
+    assert.equal(quickRoute.zhCodex, '同 Codex 终端');
     // 第一段是车道的产品名（服务端 DISPLAY 的 displayName），不是内部 id。扶正之后
     // 它是家族名 Codex：一次性 `codex exec` 车道与常驻的 Codex App Server 同名。
     assert.equal(quickRoute.label, ['Codex', quickRoute.codex, quickRoute.model].join(' · '),
@@ -323,10 +323,10 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
     const identity = await page.evaluate(`(() => {
       const api = window.MultiCCProviderCatalog;
       const cases = [
-        [{ id: 'codex-official', name: '${OFFICIAL_NAME_ZH}' }, 'providerOfficialCodex'],
-        [{ id: 'p1', builtinOfficial: true, appType: 'codex', name: '${OFFICIAL_NAME_ZH}' }, 'providerOfficialCodex'],
-        [{ id: 'p1', name: '${OFFICIAL_NAME_ZH}' }, 'providerOfficialCodex'],
-        [{ id: 'claude-official', name: 'Claude 官方' }, 'providerOfficialClaude'],
+        [{ id: 'codex-official', name: '${OFFICIAL_NAME_ZH}' }, 'providerTerminalCodex'],
+        [{ id: 'p1', builtinOfficial: true, appType: 'codex', name: '${OFFICIAL_NAME_ZH}' }, 'providerTerminalCodex'],
+        [{ id: 'p1', name: '${OFFICIAL_NAME_ZH}' }, 'providerTerminalCodex'],
+        [{ id: 'claude-official', name: 'Claude 官方' }, 'providerTerminalClaude'],
       ];
       return cases.map(([value, key]) => ({
         shown: api.providerDisplayName(value), expected: window.t(key), zh: window.I18N.zh[key],
@@ -338,7 +338,7 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
     }
     // 历史记录的 '官方 · <账号 label>'：后缀是数据（用户的账号名），前缀照翻。
     assert.equal(await page.evaluate(`window.MultiCCProviderCatalog.providerDisplayName('${OFFICIAL_NAME_ZH} · work')`),
-      `${quickRoute.codex} · work`, 'the legacy "官方 · <label>" records keep their label and translate the prefix');
+      `${await page.evaluate(`window.t('providerAccountCodex')`)} · work`, 'the legacy account records keep their label and use the account prefix');
 
     // 任务配置弹窗里的 Auto 候选池同样是共享模块（auto-provider-editor.js）现画的，
     // 静态 DOM 里一个字都没有 —— 但它确实渲染在 Air 里（选 ⚡ Auto 线路时才挂上来）。
@@ -471,11 +471,11 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
     // 把名字擦掉了，而不是翻译了。
     const quickZh = await page.evaluate(`(() => ({
       label: document.getElementById('quick-ai-pill').textContent.trim(),
-      codex: window.I18N.zh.providerOfficialCodex, model: window.I18N.zh.airQuickDefaultModel,
+      codex: window.I18N.zh.providerTerminalCodex, model: window.I18N.zh.airQuickDefaultModel,
     }))()`);
     assert.equal(quickZh.label, ['Codex', quickZh.codex, quickZh.model].join(' · '),
       'the official route is Chinese again — the mapping translates the name, it does not scrub it');
-    assert.equal(quickZh.codex, OFFICIAL_NAME_ZH, 'Chinese mode still shows the stored name');
+    assert.equal(quickZh.codex, '同 Codex 终端');
     assert.ok((await page.evaluate(SCAN)).length > 5, 'the Chinese shell must be back');
     // 同一个候选池，中文模式下必须是中文：否则上面那条「英文模式无汉字」可能只是
     // 因为这块面板压根没画出文案来。
@@ -570,7 +570,7 @@ test('the embedded chat document is English too, including the composer band Air
       const doc = ${FRAME};
       const pill = doc.getElementById('air-ai-pill');
       return { hidden: pill.hidden, text: pill.textContent.trim(), title: pill.title,
-        codex: window.t('providerOfficialCodex'), model: window.t('airQuickDefaultModel'),
+        codex: window.t('providerTerminalCodex'), model: window.t('airQuickDefaultModel'),
         aiTitle: window.t('airTaskAiTitle') };
     })()`);
     assert.equal(band.hidden, false, 'the band must be showing — a hidden pill would make the next assertion vacuous');
@@ -581,6 +581,6 @@ test('the embedded chat document is English too, including the composer band Air
       'the official route in the composer band must be the English name');
     assert.ok(!/[㐀-鿿]/.test(band.text), `the composer band still renders Chinese: ${band.text}`);
     assert.equal(band.title, band.aiTitle, 'the pill talks through the dictionary too');
-    assert.equal(band.codex, 'Codex Official', 'the catalog holds the English name for the builtin official route');
+    assert.equal(band.codex, 'Same as Codex terminal', 'the catalog uses the terminal-following name for the fixed route');
   });
 });

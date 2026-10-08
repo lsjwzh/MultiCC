@@ -239,23 +239,23 @@ test('air.html loads the relay module before the panel that mounts its buttons',
   assert.match(panel, /root\.importRelayProvider\?\.\(\)/);
 });
 
-test('official providers expose the relay-share action too; only delete stays local-only', () => {
+test('all providers can be shared; only the two terminal-following routes hide delete', () => {
   const source = fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8');
   const start = source.indexOf('function renderProviderCard(provider)');
   assert.ok(start >= 0, 'renderProviderCard must exist');
   const body = source.slice(start, source.indexOf('\n  }', start));
   const relay = body.indexOf("t('airProviderRelayShare')");
-  const guard = body.indexOf('if (!provider.isOfficial)');
+  const guard = body.indexOf('if (!terminal)');
   const del = body.indexOf("t('airProviderDelete')");
   // 官方 Provider 也能借道：服务端 relay-share 与代理链路都支持，接收方只拿
   // provider 范围凭据。把分享按钮关进 !isOfficial 分支就是「官方账号无法对外借道」
   // 的那个 bug，这里守住它不能再回去。
   assert.ok(relay >= 0, 'relay-share action must render');
   assert.ok(guard >= 0 && relay < guard,
-    'relay-share must not be gated behind !provider.isOfficial — official accounts can relay too');
-  // 删除仍然只给非官方线路：内置官方入口不可删。
+    'relay-share must not be gated behind terminal/account identity');
+  // 独立账号和 API Key 都能删；只有“同终端”两条内置线路不可删。
   assert.ok(del > guard,
-    'delete must stay inside the non-official branch (built-in official entries are not deletable)');
+    'delete must be shown for every route except the fixed terminal route');
 });
 
 test('new device sharing generates a per-link credential and exposes inventory/revocation controls', () => {
@@ -273,7 +273,7 @@ test('new device sharing generates a per-link credential and exposes inventory/r
 test('advanced provider options use goal-based choices instead of advanced-account jargon', () => {
   const panel = fs.readFileSync(path.join(ROOT, 'public', 'air-provider-advanced.js'), 'utf8');
   const zh = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'assets', 'i18n', 'zh.json'), 'utf8'));
-  assert.match(panel, /choice\('official'/);
+  assert.doesNotMatch(panel, /choice\('official'/);
   assert.match(panel, /choice\('device'/);
   assert.match(panel, /choice\('native'/);
   assert.match(panel, /panel\.hidden = panel\.dataset\.section !== key/);
@@ -286,15 +286,18 @@ test('advanced provider options use goal-based choices instead of advanced-accou
   }
 });
 
-test('Flutter Provider settings mirror the plain-language choices and deep-link to the selected task', () => {
+test('Flutter Provider settings put accounts in New Provider and keep only low-frequency deep links', () => {
   const app = fs.readFileSync(path.join(ROOT, 'app', 'lib', 'screens', 'provider_screen.dart'), 'utf8');
   for (const text of [
     '更多连接方式',
-    '切换 Claude / Codex 登录账号',
+    '使用 API Key',
+    '添加登录账号',
     '连接或共享另一台设备',
     '单独登录 ZCode / Kimi',
   ]) assert.ok(app.includes(text), `Flutter Provider screen should include: ${text}`);
+  assert.ok(!app.includes('切换 Claude / Codex 登录账号'));
   assert.doesNotMatch(app, /高级账号与借道|借道分享|打开完整 Provider 控制器/);
+  assert.match(app, /createProviderAccount\(vendor/);
   assert.match(app, /'providerConnection': section/);
   assert.match(app, /buildHttpUrl\('\/air'\)/);
 });

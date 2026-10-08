@@ -14,14 +14,12 @@
     ['openai_responses', 'OpenAI Responses'],
   ];
   const presets = {
-    'claude-subscription': { appType: 'claude', name: t('airProviderPresetClaudeSubscription'), baseUrl: '', model: '', apiFormat: 'anthropic' },
     'claude-api': { appType: 'claude', name: t('airProviderPresetClaudeApi'), baseUrl: 'https://api.anthropic.com', model: '', apiFormat: 'anthropic' },
     'claude-glm': { appType: 'claude', name: t('airProviderPresetGlm'), baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-5.2', apiFormat: 'anthropic', aliasMap: { fable: { model: 'glm-5.3', name: 'GLM5.3' } } },
     'claude-deepseek': { appType: 'claude', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/anthropic', model: 'deepseek-chat', apiFormat: 'anthropic' },
     'claude-minimax': { appType: 'claude', name: 'MiniMax', baseUrl: 'https://api.minimaxi.com/anthropic', model: 'MiniMax-M2', apiFormat: 'anthropic' },
     'claude-qwen': { appType: 'claude', name: t('airProviderPresetQwen'), baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus', apiFormat: 'anthropic' },
     'claude-openrouter': { appType: 'claude', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', apiFormat: 'anthropic' },
-    'codex-official': { appType: 'codex', name: t('airProviderPresetCodexOfficial'), baseUrl: '', model: '', apiFormat: 'openai_responses' },
     'codex-xf-maas': { appType: 'codex', name: t('airProviderPresetXfMaas'), baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopglm52', apiFormat: 'openai_responses' },
   };
   let context = null;
@@ -30,7 +28,7 @@
   const requestedConnection = (() => {
     try {
       const value = new URLSearchParams(root.location?.search || '').get('providerConnection') || '';
-      return ['official', 'device', 'native'].includes(value) ? value : '';
+      return ['device', 'native'].includes(value) ? value : '';
     } catch (_) { return ''; }
   })();
   let advancedOpen = !!requestedConnection;
@@ -62,9 +60,14 @@
       <form id="air-provider-form">
         <div class="section-heading"><div><span class="eyebrow">AIR PROVIDER</span><h2 id="air-provider-form-title">${t('airProviderFormTitleNew')}</h2></div><button type="button" id="air-provider-close" aria-label="${t('airProviderClose')}">×</button></div>
         <p>${t('airProviderFormIntro')}</p>
+        <div id="air-provider-create-choice" class="air-provider-create-choice">
+          <section><strong>${t('airProviderAddByKey')}</strong><span>${t('airProviderAddByKeyDesc')}</span><div><button type="button" data-provider-key="claude">Claude</button><button type="button" data-provider-key="codex">Codex</button></div></section>
+          <section><strong>${t('airProviderAddAccount')}</strong><span>${t('airProviderAddAccountDesc')}</span><div><button type="button" data-provider-account="claude">Claude</button><button type="button" data-provider-account="codex">Codex</button></div></section>
+        </div>
+        <div id="air-provider-api-fields">
         <p id="air-provider-official-hint" class="air-migration-note" hidden>${t('airProviderOfficialLockedHint')}</p>
         <input type="hidden" name="providerId">
-        <label>${t('airProviderPresetLabel')}<select name="preset"><option value="">${t('airProviderPresetCustom')}</option><optgroup label="Claude"><option value="claude-subscription">${t('airProviderPresetClaudeSubscription')}</option><option value="claude-api">${t('airProviderPresetClaudeApi')}</option><option value="claude-glm">${t('airProviderPresetGlm')}</option><option value="claude-deepseek">DeepSeek</option><option value="claude-minimax">MiniMax</option><option value="claude-qwen">${t('airProviderPresetQwen')}</option><option value="claude-openrouter">OpenRouter</option></optgroup><optgroup label="Codex"><option value="codex-official">${t('airProviderPresetCodexOfficial')}</option><option value="codex-xf-maas">${t('airProviderPresetXfMaas')}</option></optgroup></select></label>
+        <label>${t('airProviderPresetLabel')}<select name="preset"><option value="">${t('airProviderPresetCustom')}</option><optgroup label="Claude"><option value="claude-api">${t('airProviderPresetClaudeApi')}</option><option value="claude-glm">${t('airProviderPresetGlm')}</option><option value="claude-deepseek">DeepSeek</option><option value="claude-minimax">MiniMax</option><option value="claude-qwen">${t('airProviderPresetQwen')}</option><option value="claude-openrouter">OpenRouter</option></optgroup><optgroup label="Codex"><option value="codex-xf-maas">${t('airProviderPresetXfMaas')}</option></optgroup></select></label>
         <div class="form-row"><label>CLI<select name="appType"><option value="claude">Claude</option><option value="codex">Codex</option></select></label><label>${t('airProviderUpstreamProtocol')}<select name="apiFormat"><option value="anthropic">Anthropic Messages</option><option value="openai_responses">OpenAI Responses</option></select></label></div>
         <label>${t('airProviderName')}<input name="name" required maxlength="240" placeholder="${t('airProviderNamePlaceholder')}"></label>
         <label>Base URL<input name="baseUrl" maxlength="2048" placeholder="${t('airProviderBaseUrlPlaceholder')}"></label>
@@ -75,6 +78,7 @@
         <details id="air-provider-egress-ip"><summary>${t('airProviderEgressIpSummary')}</summary><p>${t('airProviderEgressIpBody')}</p><textarea name="egressIpAllowlist" rows="3" placeholder="${t('airProviderEgressIpPlaceholder')}"></textarea></details>
         <p id="air-provider-form-error" role="alert"></p>
         <div class="schedule-form-actions"><button type="button" id="air-provider-cancel">${t('airProviderCancel')}</button><button type="submit" id="air-provider-save" class="primary">${t('airProviderCreate')}</button></div>
+        </div>
       </form>`;
     const aliases = dialog.querySelector('#air-provider-aliases');
     for (const tier of ['opus', 'sonnet', 'haiku', 'fable']) {
@@ -91,6 +95,21 @@
     form.elements.preset.onchange = () => applyPreset(form.elements.preset.value);
     form.elements.appType.onchange = syncDialogProtocol;
     form.onsubmit = saveEditor;
+    dialog.querySelectorAll('[data-provider-key]').forEach(control => {
+      control.onclick = () => {
+        form.elements.appType.value = control.dataset.providerKey;
+        el('air-provider-create-choice').hidden = true;
+        el('air-provider-api-fields').hidden = false;
+        syncDialogProtocol();
+        form.elements.preset.focus();
+      };
+    });
+    dialog.querySelectorAll('[data-provider-account]').forEach(control => {
+      control.onclick = () => {
+        dialog.close();
+        root.MultiCCOfficialAccounts?.add(control.dataset.providerAccount);
+      };
+    });
     return dialog;
   }
 
@@ -135,6 +154,8 @@
     const dialog = ensureDialog();
     const form = el('air-provider-form');
     form.reset();
+    el('air-provider-create-choice').hidden = !!provider;
+    el('air-provider-api-fields').hidden = !provider;
     const locked = !!provider?.isOfficial;
     form.elements.providerId.value = provider?.id || '';
     form.elements.appType.value = provider?.appType || 'claude';
@@ -222,6 +243,8 @@
   }
 
   function renderProviderCard(provider) {
+    const terminal = provider.id === `${provider.appType}-official` && !provider.officialAccountId;
+    const account = !!provider.officialAccountId;
     const card = make('article', null, 'air-provider-card');
     const head = make('div', null, 'air-provider-card-head');
     const title = make('div');
@@ -230,10 +253,13 @@
     title.append(copy);
     const tags = make('div', null, 'air-provider-tags');
     if (data.defaults[provider.appType] === provider.id) tags.append(make('span', t('airProviderGlobalDefault'), 'default'));
-    if (provider.isOfficial) tags.append(make('span', t('airProviderOfficial')));
+    if (terminal) tags.append(make('span', t('airProviderTerminalTag')));
+    else if (account) tags.append(make('span', t('airProviderAccountTag')));
     if (provider.hasToken) tags.append(make('span', t('airProviderKeyConfigured')));
     head.append(title, tags);
-    const endpoint = make('p', provider.baseUrl || t('airProviderNativeRoute'), 'air-provider-endpoint');
+    const endpoint = make('p', provider.baseUrl || (terminal
+      ? t('airProviderTerminalRoute', { cli: cliName(provider.appType) })
+      : t('airProviderAccountRoute')), 'air-provider-endpoint');
     const facts = make('div', null, 'air-provider-facts');
     facts.append(
       fact(t('airProviderDefaultModel'), provider.model || t('airProviderModelFollowCatalog')),
@@ -250,7 +276,8 @@
     // 每个会话走的仍是 AI 配置弹窗那条 PATCH（src/provider-reassign.js），所以
     // 模型替换 / Auto 会话跳过 / 忙会话下一轮生效这些口径都一致。
     actions.append(button(t('airProviderReassignAction'), () => openReassign(provider)));
-    actions.append(button(t('airProviderEdit'), () => openEditor(provider)));
+    if (!provider.isOfficial) actions.append(button(t('airProviderEdit'), () => openEditor(provider)));
+    else if (account) actions.append(button(t('airProviderRelogin'), () => root.MultiCCOfficialAccounts?.relogin(provider.appType, provider.officialAccountId)));
     // 生成一份带独立令牌的借道分享码（manage-provider-relay.js，弹层自带样式）。
     // 官方 Provider 同样可借道：出借方在本机用官方登录 / OAuth 凭证代发请求，
     // 接收方只拿到分享码里的 provider 范围凭据，永远看不到上游 key 或 OAuth token
@@ -260,10 +287,8 @@
       root.MultiCCAirProviderAdvanced?.prepare(context);
       root.shareRelayProvider?.(provider.appType, provider.id);
     }));
-    if (!provider.isOfficial) {
+    if (!terminal) {
       actions.append(button(t('airProviderDelete'), () => removeProvider(provider), 'danger'));
-    } else {
-      actions.append(make('span', t('airProviderOfficialSwitchHint')));
     }
     card.append(actions);
     return card;
@@ -283,12 +308,11 @@
       const label = make('label');
       label.append(make('span', t('airProviderDefaultRoute', { cli: cliName(cli) })));
       const select = make('select'); select.dataset.cli = cli;
-      const native = make('option', t('airProviderDefaultNative', { cli: cliName(cli) })); native.value = ''; select.append(native);
       for (const provider of data.providers.filter(item => item.appType === cli)) {
         const option = make('option', `${displayName(provider)} · ${protocolName(provider.apiFormat)}${provider.model ? ` · ${provider.model}` : ''}`);
         option.value = provider.id; select.append(option);
       }
-      select.value = data.defaults[cli] || '';
+      select.value = data.defaults[cli] || `${cli}-official`;
       label.append(select); panel.append(label);
     }
     panel.append(button(t('airProviderSaveDefaults'), saveDefaults, 'primary'));

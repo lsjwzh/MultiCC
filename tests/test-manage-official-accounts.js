@@ -40,15 +40,13 @@ function loadModule() {
   return context;
 }
 
-test('Air draws the official-accounts card the module expects, and loads it in order', () => {
+test('Air loads account actions before the Provider add flow and keeps accounts out of More connections', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public', 'air.html'), 'utf8');
   const panel = fs.readFileSync(path.join(ROOT, 'public', 'air-provider-advanced.js'), 'utf8');
-  assert.ok(panel.includes("'official-accounts-card'"), 'card container must exist');
-  assert.ok(panel.includes("body.id = 'official-accounts-body'"), 'list body must exist');
-  // 模块只认 data-act="add" + data-vendor 的事件委托，骨架用 dataset 把这两颗按钮标出来。
-  assert.match(panel, /control\.dataset\.act = 'add'/, 'the add buttons must carry data-act="add"');
-  assert.match(panel, /control\.dataset\.vendor = vendor/, 'the add buttons must carry data-vendor');
-  assert.match(panel, /\['codex', [^\]]*\], \['claude', /, 'both vendors must get an add button');
+  const provider = fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8');
+  assert.doesNotMatch(panel, /official-accounts-card|data-section = 'official'/);
+  assert.match(provider, /data-provider-account="claude"/);
+  assert.match(provider, /data-provider-account="codex"/);
   const quotaView = html.indexOf('<script src="quota-bar-view.js"></script>');
   const mod = html.indexOf('<script src="manage-official-accounts.js"></script>');
   const advanced = html.indexOf('<script src="air-provider-advanced.js"></script>');
@@ -96,6 +94,8 @@ test('Codex add and relogin open the terminal client with its id parameter', asy
 test('the module evaluates cleanly and exposes its surface', () => {
   const ctx = loadModule();
   assert.equal(typeof ctx.window.MultiCCOfficialAccounts.load, 'function');
+  assert.equal(typeof ctx.window.MultiCCOfficialAccounts.add, 'function');
+  assert.equal(typeof ctx.window.MultiCCOfficialAccounts.relogin, 'function');
   assert.equal(typeof ctx.window.MultiCCOfficialAccounts.renderCodexQuota, 'function');
   assert.equal(typeof ctx.window.MultiCCOfficialAccounts.renderClaudeQuota, 'function');
 });
@@ -181,6 +181,6 @@ test('global account controls switch via account API and retain the singleton pr
   click({ target: { closest: () => ({ dataset: { act: 'activate', vendor: 'codex', id } }) } });
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(calls.some(c => c.url === `/api/codex/accounts/${id}/activate` && c.method === 'POST'));
-  assert.doesNotMatch(body.innerHTML, new RegExp(`data-act="delete"[^>]*data-id="${id}"`));
+  assert.match(body.innerHTML, new RegExp(`data-act="delete"[^>]*data-id="${id}"`));
   assert.match(status.textContent, /已全局切换/);
 });

@@ -180,7 +180,8 @@ function mountClaudeAccountRoutes(app, deps) {
 
   app.delete('/api/claude/accounts/:id', (req, res) => {
     const accountId = String(req.params.id || '');
-    if (unified && (accountId === 'global' || activeId() === accountId)) return res.status(409).json({ ok: false, error: '请先切换到其他账号再删除；本机登录入口不可删除' });
+    if (unified && accountId === 'global') return res.status(409).json({ ok: false, error: '“同 Claude 终端”为内置线路，不能删除' });
+    if (unified && activeId() === accountId) providers.selectOfficialAccount('claude', 'global');
     if (pending && pending.accountId === accountId) {
       pending.listener.cancel();
       pending = null;

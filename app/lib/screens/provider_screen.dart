@@ -32,7 +32,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
   bool _loading = true;
   bool _importing = false;
 
-  /// 「更多连接方式」展开没展开。App 用三个任务入口说明用途，具体配置外开 Web。
+  /// 「更多连接方式」只保留跨设备和 ZCode/Kimi 这两类低频入口。
   bool _advancedOpen = false;
   String? _error;
 
@@ -248,16 +248,145 @@ class _ProviderScreenState extends State<ProviderScreen> {
     );
   }
 
-  Future<void> _openEditor({Map<String, dynamic>? provider}) async {
+  Future<void> _openEditor({Map<String, dynamic>? provider, String? initialAppType}) async {
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: AppColors.panel,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (_) => _ProviderEditor(manage: _manage, provider: provider),
+      builder: (_) => _ProviderEditor(manage: _manage, provider: provider, initialAppType: initialAppType),
     );
     if (saved == true) await _refresh();
+  }
+
+  Future<void> _openAddProvider() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppColors.panel,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('新增 Provider',
+                  style: TextStyle(color: AppColors.textBright, fontSize: 17, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              const Text('先选择连接方式', style: TextStyle(color: AppColors.faint, fontSize: 12)),
+              const SizedBox(height: 16),
+              _addChoiceGroup(
+                title: '使用 API Key',
+                description: '适合第三方平台、兼容接口或厂商 API。',
+                icon: Icons.key_rounded,
+                actions: const [('api-claude', 'Claude'), ('api-codex', 'Codex')],
+                onChoose: (value) => Navigator.pop(sheetContext, value),
+              ),
+              const SizedBox(height: 10),
+              _addChoiceGroup(
+                title: '添加登录账号',
+                description: '添加一个独立的 Claude 或 Codex 登录账号。',
+                icon: Icons.person_add_alt_1_rounded,
+                actions: const [('account-claude', 'Claude'), ('account-codex', 'Codex')],
+                onChoose: (value) => Navigator.pop(sheetContext, value),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    if (choice.startsWith('api-')) {
+      await _openEditor(initialAppType: choice.substring(4));
+    } else if (choice.startsWith('account-')) {
+      await _addProviderAccount(choice.substring(8));
+    }
+  }
+
+  Widget _addChoiceGroup({
+    required String title,
+    required String description,
+    required IconData icon,
+    required List<(String, String)> actions,
+    required ValueChanged<String> onChoose,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: AppColors.panel2,
+        border: Border.all(color: AppColors.line),
+        borderRadius: BorderRadius.circular(13),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(icon, size: 19, color: AppColors.accent),
+          const SizedBox(width: 8),
+          Text(title,
+              style: const TextStyle(color: AppColors.textBright, fontSize: 14, fontWeight: FontWeight.w700)),
+        ]),
+        const SizedBox(height: 5),
+        Text(description, style: const TextStyle(color: AppColors.faint, fontSize: 11.5)),
+        const SizedBox(height: 10),
+        Row(children: [
+          for (var i = 0; i < actions.length; i++) ...[
+            if (i > 0) const SizedBox(width: 8),
+            Expanded(child: OutlinedButton(
+              onPressed: () => onChoose(actions[i].$1),
+              child: Text(actions[i].$2),
+            )),
+          ],
+        ]),
+      ]),
+    );
+  }
+
+  Future<void> _addProviderAccount(String vendor) async {
+    final controller = TextEditingController();
+    final label = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('添加 ${vendor == 'claude' ? 'Claude' : 'Codex'} 账号'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 64,
+          decoration: const InputDecoration(labelText: '备注名称（可选）', hintText: '例如 工作 / 个人'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, controller.text.trim()),
+              child: const Text('创建并登录')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (label == null || !mounted) return;
+    try {
+      final result = await _manage.createProviderAccount(vendor, label: label);
+      if (vendor == 'claude') {
+        final url = result['oauthUrl']?.toString() ?? '';
+        if (url.isNotEmpty) {
+          await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+        }
+      } else {
+        final id = result['loginSessionId']?.toString() ?? '';
+        if (id.isNotEmpty) {
+          final uri = Uri.parse(widget.settings.buildHttpUrl('/index.html')).replace(queryParameters: {
+            'id': id,
+            if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
+          });
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      }
+      _snack('账号已创建，请在打开的页面完成登录');
+      await _refresh();
+    } catch (e) {
+      _snack('添加账号失败：$e');
+    }
   }
 
   @override
@@ -274,7 +403,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openEditor(),
+        onPressed: _openAddProvider,
         backgroundColor: AppColors.accentDark,
         foregroundColor: const Color(0xFFffffff),
         icon: const Icon(Icons.add_rounded),
@@ -307,8 +436,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
                         const SizedBox(height: 16),
                         _providerGroup('⚡ Codex', _byType('codex')),
                       ],
-                      // 低频连接方式永远在最后；默认只显示一个入口，不把账号、跨设备
-                      // 与原生登录同时摊在日常线路列表里。
+                      // 低频连接方式永远在最后；账号已经进入右下角「新建」流程。
                       const SizedBox(height: 16),
                       _advancedCard(),
                     ],
@@ -347,8 +475,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
     );
   }
 
-  /// Web 的三项任务入口在 App 的对应入口。App 不复制账号/OAuth 状态机，点选后
-  /// 外开同一台 MultiCC 的 Web 设置，并用 providerConnection 直接展开对应一项。
+  /// 账号已并入「新建 Provider」；这里只有跨设备和原生 CLI 两个低频入口。
   Widget _advancedCard() {
     return Container(
       decoration: BoxDecoration(
@@ -404,13 +531,6 @@ class _ProviderScreenState extends State<ProviderScreen> {
                   const Text('你想做什么？',
                       style: TextStyle(color: AppColors.text, fontSize: 13, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 9),
-                  _connectionChoice(
-                    section: 'official',
-                    icon: Icons.person_outline_rounded,
-                    title: '切换 Claude / Codex 登录账号',
-                    description: '添加多个官方账号，并选择接下来使用哪一个。',
-                  ),
-                  const SizedBox(height: 8),
                   _connectionChoice(
                     section: 'device',
                     icon: Icons.devices_other_rounded,
@@ -546,7 +666,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
           const Text('新任务默认线路',
               style: TextStyle(color: AppColors.textBright, fontSize: 14, fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
-          const Text('新建会话自动套用。「默认登录」= 走本机订阅 / OAuth。',
+          const Text('新建会话自动套用；“同终端”表示跟随本机 Claude / Codex 终端的登录状态。',
               style: TextStyle(color: AppColors.faint, fontSize: 12)),
           const SizedBox(height: 12),
           _defaultRow('claude', 'Claude'),
@@ -559,9 +679,11 @@ class _ProviderScreenState extends State<ProviderScreen> {
 
   Widget _defaultRow(String cli, String label) {
     final list = _byType(cli);
-    final cur = _defaults[cli] as String?;
-    // Guard: only offer a value the dropdown actually has.
-    final value = list.any((p) => p['id'] == cur) ? cur : null;
+    final cur = _defaults[cli] as String? ?? '$cli-official';
+    // Guard: the fixed terminal route is always present on current servers.
+    final value = list.any((p) => p['id'] == cur)
+        ? cur
+        : (list.any((p) => p['id'] == '$cli-official') ? '$cli-official' : null);
     return Row(
       children: [
         SizedBox(width: 64, child: Text(label, style: const TextStyle(color: AppColors.text, fontSize: 14))),
@@ -580,7 +702,6 @@ class _ProviderScreenState extends State<ProviderScreen> {
                 dropdownColor: AppColors.panel2,
                 style: const TextStyle(color: AppColors.text, fontSize: 13.5),
                 items: [
-                  const DropdownMenuItem<String?>(value: null, child: Text('默认登录 / 订阅')),
                   ...list.map((p) => DropdownMenuItem<String?>(
                         value: p['id'] as String,
                         child: ProviderOption(
@@ -601,13 +722,14 @@ class _ProviderScreenState extends State<ProviderScreen> {
 
 String _providerLabel(Map<String, dynamic> p) {
   final bits = <String>[p['name'] as String? ?? ''];
-  if (p['isOfficial'] == true) {
-    bits.add('· 订阅');
-  } else if ((p['baseUrl'] as String? ?? '').isNotEmpty) {
+  if (p['isOfficial'] != true && (p['baseUrl'] as String? ?? '').isNotEmpty) {
     bits.add('· ${(p['baseUrl'] as String).replaceFirst(RegExp(r'^https?://'), '')}');
   }
   return bits.join(' ');
 }
+
+bool _isTerminalProvider(Map<String, dynamic> p) =>
+    p['id'] == '${p['appType']}-official' && p['officialAccountId'] == null;
 
 // ── Provider card ────────────────────────────────────────────────────────────
 
@@ -691,6 +813,8 @@ class _ProviderCardState extends State<_ProviderCard> {
   Widget build(BuildContext context) {
     final p = widget.p;
     final official = p['isOfficial'] == true;
+    final terminal = _isTerminalProvider(p);
+    final account = p['officialAccountId'] != null;
     final baseUrl = p['baseUrl'] as String? ?? '';
     final model = p['model'] as String? ?? '';
     final models = (p['modelOptions'] as List? ?? [])
@@ -723,7 +847,11 @@ class _ProviderCardState extends State<_ProviderCard> {
           ),
           const SizedBox(height: 8),
           Text(
-            official ? '默认登录 / 订阅' : baseUrl,
+            terminal
+                ? '跟随本机 ${p['appType'] == 'codex' ? 'Codex' : 'Claude'} 终端登录'
+                : account
+                    ? '独立登录账号'
+                    : baseUrl,
             style: const TextStyle(color: AppColors.muted, fontSize: 12.5),
             overflow: TextOverflow.ellipsis,
           ),
@@ -763,16 +891,18 @@ class _ProviderCardState extends State<_ProviderCard> {
                 label: Text(t('airProviderReassignAction'),
                     style: const TextStyle(color: AppColors.muted, fontSize: 13)),
               ),
-              TextButton.icon(
-                onPressed: widget.onEdit,
-                icon: const Icon(Icons.edit_outlined, size: 17, color: AppColors.blue),
-                label: const Text('编辑', style: TextStyle(color: AppColors.blue, fontSize: 13)),
-              ),
-              IconButton(
-                onPressed: widget.onDelete,
-                icon: const Icon(Icons.delete_outline_rounded, size: 19, color: AppColors.danger),
-                tooltip: '删除',
-              ),
+              if (!official)
+                TextButton.icon(
+                  onPressed: widget.onEdit,
+                  icon: const Icon(Icons.edit_outlined, size: 17, color: AppColors.blue),
+                  label: const Text('编辑', style: TextStyle(color: AppColors.blue, fontSize: 13)),
+                ),
+              if (!terminal)
+                IconButton(
+                  onPressed: widget.onDelete,
+                  icon: const Icon(Icons.delete_outline_rounded, size: 19, color: AppColors.danger),
+                  tooltip: '删除',
+                ),
             ],
           ),
         ],
@@ -786,7 +916,8 @@ class _ProviderCardState extends State<_ProviderCard> {
 class _ProviderEditor extends StatefulWidget {
   final ManageService manage;
   final Map<String, dynamic>? provider;
-  const _ProviderEditor({required this.manage, this.provider});
+  final String? initialAppType;
+  const _ProviderEditor({required this.manage, this.provider, this.initialAppType});
 
   @override
   State<_ProviderEditor> createState() => _ProviderEditorState();
@@ -815,7 +946,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
   void initState() {
     super.initState();
     final p = widget.provider;
-    _appType = (p?['appType'] as String?) ?? 'claude';
+    _appType = (p?['appType'] as String?) ?? widget.initialAppType ?? 'claude';
     _name = TextEditingController(text: p?['name'] as String? ?? '');
     _baseUrl = TextEditingController(text: p?['baseUrl'] as String? ?? '');
     _token = TextEditingController();
@@ -948,7 +1079,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
             _input(_name, hint: '如 DeepSeek / OpenRouter'),
             const SizedBox(height: 14),
             const _FieldLabel('Base URL'),
-            _input(_baseUrl, hint: 'https://api.deepseek.com/anthropic（留空=官方/订阅）', mono: true),
+            _input(_baseUrl, hint: 'https://api.deepseek.com/anthropic', mono: true),
             const SizedBox(height: 14),
             const _FieldLabel('API Key'),
             _input(_token,
