@@ -20,12 +20,59 @@ const {
   labelRoutedProvider, labelRoutedBalance,
 } = require('../quota/quota-bar-view');
 const { rememberClaudeLive, renderClaudeBar } = require('../quota/claude-bar-state');
+const {
+  DEFAULT_KEY, configureClaudeKeyResolver, claudeProviderKey, enqueueClaudeUsage,
+} = require('../quota/claude-usage-queue');
+
+// A task boundary is the one automatic moment a Claude scrape is allowed (the
+// other is the user's own ⟳): a turn ending is when the account's numbers have
+// just moved, and the reading is then there for every session on that account.
+// The queue enforces the one-a-minute floor and joins an open scrape, so a
+// boundary costs nothing when someone else already read the account.
+function warmClaudeUsage(sessionName) {
+  try {
+    const key = claudeProviderKey(sessionName);
+    if (!key) return;
+    enqueueClaudeUsage(key).catch(() => {});
+  } catch (_) {
+    // best-effort: never disturb the chat flow
+  }
+}
 
 function createUsageLimitWiring({ persistedSessions, providers, chatBroadcast, createPoller, recordLimit }) {
   if (!persistedSessions || !providers || typeof chatBroadcast !== 'function' || typeof createPoller !== 'function') {
     throw new Error('createUsageLimitWiring requires persistedSessions, providers, chatBroadcast, createPoller');
   }
-  return createPoller({
+  // Which account's Claude reading a session reads and writes: the official
+  // account its provider borrows (claude-usage-queue keys its cache by account),
+  // DEFAULT_KEY for the shared CLI login, and '' for a session whose Claude
+  // traffic never reaches the subscription — another CLI, or a provider routed
+  // to some other vendor, which has no business warming that cache at all.
+  //
+  // The queue has to ask this about a bare session name, and only this closure
+  // holds both halves at once (a session knows its provider, and the provider
+  // knows its account), so it is configured from here and used everywhere: the
+  // claude quota routes, the unified bar refresh and the live-window store.
+  function claudeSubscriptionKey(sessionName) {
+    const rec = persistedSessions.get(sessionName);
+    if (!rec) return '';
+    const cli = String(rec.cli || 'claude');
+    if (cli !== 'claude' && cli !== 'claude-exp') return '';
+    const appType = providers.appTypeForCli(cli);
+    if (appType !== 'claude') return '';
+    let summary = null;
+    try {
+      summary = rec.provider ? providers.getProviderSummary(appType, rec.provider) : null;
+    } catch (_) { summary = null; }
+    // A baseUrl means the Claude CLI is pointed at someone else's endpoint
+    // (Zhipu, a 借道 relay): the subscription bar is hidden for those, so there
+    // is nothing to warm.
+    if (summary && summary.baseUrl) return '';
+    const accountId = String((summary && summary.officialAccountId) || '');
+    return accountId ? `claude:${accountId}` : DEFAULT_KEY;
+  }
+  configureClaudeKeyResolver(claudeSubscriptionKey);
+  const poller = createPoller({
     resolveTarget(sessionName) {
       const rec = persistedSessions.get(sessionName);
       if (!rec || !rec.provider) return null;
@@ -72,6 +119,18 @@ function createUsageLimitWiring({ persistedSessions, providers, chatBroadcast, c
       }
     },
   });
+  // The task boundary is where an automatic Claude reading is allowed, and a
+  // turn ending is the one hook every session passes through — so it is warmed
+  // here rather than at a new call site (turn-engine is at its line budget, and
+  // a poller wrapper costs it nothing). Everything else the poller exposes
+  // (`_refresh`, `_cache`, the turn-start hook) is passed through untouched.
+  return {
+    ...poller,
+    onTurnComplete(sessionName) {
+      warmClaudeUsage(sessionName);
+      return poller.onTurnComplete(sessionName);
+    },
+  };
 }
 
 module.exports = { createUsageLimitWiring };

@@ -1452,7 +1452,7 @@ class _NullQuotaService extends QuotaService {
   @override
   Future<Map<String, dynamic>?> fetchQoderQuota() async => null;
   @override
-  Future<Map<String, dynamic>?> fetchClaudeUsage() async => null;
+  Future<Map<String, dynamic>?> fetchClaudeUsage({String? session, bool force = false}) async => null;
   @override
   Future<Map<String, dynamic>?> fetchIdleBars() async => null;
   @override

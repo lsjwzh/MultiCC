@@ -21,21 +21,14 @@ const SOURCE_EXTENSIONS = new Set([
 // migration. Keep this map for explicit, reviewed debt only; ordinary feature
 // work must satisfy the default budget.
 const MIGRATION_DEBT = Object.freeze({
-  // app/lib/providers/chat_provider.dart 曾在 2963 行退休（见下方历史注释）。
-  // 2026-10-01 语音听写原始转写透传（67022e75，sendMessage 增加 voiceRaw
-  // 参数，+6 行其中 5 行是 dartdoc）把它从 2999 抬过 3000 又没回来登记，
-  // v2.2.3 tag 的 CI 因此红了一次 —— 按实测高水位登记 3005/121819。
-  // 该拆的仍是那笔 ~200 行的 vendor-quota 集群（ark/kimi/qoder fetchers +
-  // in-flight/backoff 状态 + *QuotaView getters），拆完降回 <= 3000 就退休。
-  'app/lib/providers/chat_provider.dart': Object.freeze({
-    // 2026-10-05 实测 3004 行 / 121606 字节：行数正好压在登记值上，字节比上一格
-    // （121585）多 21 —— 这道闸两项都要对齐，只抬行数不抬字节照样红。多出来的字节
-    // 是限流条那轮的结构调整，不是新代码。
-    ceiling: 3004,
-    byteCeiling: 121606,
-    target: 3000,
-    reason: 'voice-dictation voiceRaw passthrough crossed 3000; vendor-quota cluster split retires this',
-  }),
+  // app/lib/providers/chat_provider.dart 又退休了（第二次）。上一次是 2963 行；
+  // 2026-10-01 语音听写原始转写透传（67022e75，sendMessage 增加 voiceRaw 参数，
+  // +6 行其中 5 行是 dartdoc）把它从 2999 抬过 3000 又没回来登记，v2.2.3 tag 的
+  // CI 因此红过一次，遂按实测高水位登记到 3004/121606。2026-10-08 Claude 用量
+  // 拉取队列那一轮：refreshClaudeUsage 的「24h 内不重问」闸门随服务端改成「读缓存
+  // 不抓取」而整块删掉（plain 调用只是读服务端按账号的缓存，抓取只发生在用户的
+  // ⟳ 与任务边界），实测降到 2999/121559（<= 3000），于是这条登记按闸的要求退休
+  // —— 别再把它加回来。该拆的仍是那笔 ~200 行的 vendor-quota 集群。
   // 2026-10-05 补登记：turn-engine.js 从 0f276ebc（2026-09-22，session
   // multicc-claude-chat-06）起就在 3000 以上，一直没登记 —— 40 多个提交里它都在
   // 3012~3021 之间，这道闸因此在 main 上一直是红的（flow 级，不挡发布，所以没人被
