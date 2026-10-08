@@ -797,6 +797,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-stat.green::before { background: #43b88a; }
 .directory-stat.amber::before { background: #e3b341; }
 .directory-stat.red::before { background: #da3633; }
+.directory-stat.purple::before { background: #8f82df; }
 .directory-stat span, .directory-stat small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .directory-stat span { color: #6d8094; font-size: 10px; }
 .directory-stat strong { display: block; margin: 2px 0; color: #2d4d68; font-size: 19px; line-height: 1.1; }

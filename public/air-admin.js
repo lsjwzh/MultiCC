@@ -258,19 +258,20 @@
     const dir = filter.dir || 'all';
     const needle = String(filter.query || '').trim().toLowerCase();
     // 状态口径与目录概览的统计卡同源：taskStatus 是权威判定（archived/done 生命周期
-    // 优先），所以「运行中/等待回复/异常/执行成功」四张卡与这里的筛选永远不会分叉。
+    // 优先），所以「运行中/等待回复/异常/今日完成」四张卡与这里的筛选永远不会分叉。
     // 成功那档问的是这一轮的结局（succeeded），不是生命周期 done —— 后者只剩旧看板
     // 时代的少量记录，拿它当「跑成功了吗」会筛出一个几乎空、且越用越旧的清单。
     const rows = (tasks || [])
       .filter(task => status === 'all' ? true
         : status === 'archived' ? task.status === 'archived'
-          : status === 'succeeded' ? taskStatus(task) === 'succeeded'
-            : status === 'achieved' ? taskStatus(task) === 'succeeded' && task.goalState === 'achieved'
-              : status === 'interact' ? taskStatus(task) === 'succeeded' && task.goalState === 'interact'
-                : status === 'running' ? isRunning(task)
-                  : status === 'waiting' ? taskStatus(task) === 'waiting'
-                    : status === 'error' ? taskStatus(task) === 'error'
-                      : !['done', 'archived'].includes(task.status))
+          : status === 'today' ? doneToday(task)
+            : status === 'succeeded' ? taskStatus(task) === 'succeeded'
+              : status === 'achieved' ? taskStatus(task) === 'succeeded' && task.goalState === 'achieved'
+                : status === 'interact' ? taskStatus(task) === 'succeeded' && task.goalState === 'interact'
+                  : status === 'running' ? isRunning(task)
+                    : status === 'waiting' ? taskStatus(task) === 'waiting'
+                      : status === 'error' ? taskStatus(task) === 'error'
+                        : !['done', 'archived'].includes(task.status))
       .filter(task => dir === 'all' || task.dirId === dir);
     if (keepOrder) return rows;
     // 本地过滤按标题（和目录名）匹配：它仍是即时反馈，也是全文检索不可用时的退路。
@@ -1410,6 +1411,7 @@
     taskStatus,
     isRunning,
     runningDirectories,
+    doneToday,
     statusBadge,
     worktreeChangeLabel,
     worktreeChangeBadge,
