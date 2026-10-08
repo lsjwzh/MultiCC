@@ -517,18 +517,22 @@ void main() {
       expect(store.battery!.available, isFalse, reason: '失败不覆盖已有读数');
     });
 
-    testWidgets('侧栏底部行显示百分比，没有电池时不占位', (tester) async {
+    testWidgets('电量角标挂在版本行里：显示百分比，没有电池时不出现', (tester) async {
       final settings = await _settings();
       final client = MockClient((_) async => _json(const {'available': true, 'percent': 27, 'charging': true}));
       final store = AirOpsStore(settings: settings, httpClient: client);
       await tester.runAsync(store.loadBattery);
-      await tester.pumpWidget(MaterialApp(home: Scaffold(body: AirBatteryRow(store: store))));
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: AirVersionRow(store: store, language: 'zh', onLanguage: () {}))));
+      expect(find.byKey(const ValueKey('air-battery')), findsOneWidget);
       expect(find.text('27%'), findsOneWidget);
       expect(find.text('⚡'), findsOneWidget);
+      // 角标和语言按钮同在版本行里，没有额外占一行。
+      expect(find.byKey(const ValueKey('air-sidebar-language')), findsOneWidget);
 
       store.battery = const AirHostBattery(available: false);
       store.notifyListeners();
       await tester.pump();
+      expect(find.byKey(const ValueKey('air-battery')), findsNothing);
       expect(find.text('27%'), findsNothing);
       store.dispose();
       client.close();

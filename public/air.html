@@ -154,6 +154,10 @@
           </span>
           <span id="air-ver-badge" class="ops-badge" hidden>NEW</span>
         </div>
+        <!-- 本机（运行 MultiCC 的那台电脑）的电量角标，由 air-battery.js 填；读不到电量（台式机）时保持 hidden，不占位。 -->
+        <span id="air-battery" class="side-battery" role="status" hidden>
+          <span id="air-battery-icon" aria-hidden="true">🔋</span><span id="air-battery-text"></span>
+        </span>
         <!-- 语言是整套 Air 的全局偏好，跟版本检查同属侧栏底部工具；压成右侧一颗
              小按钮，不再为两个字母独占整行。stopPropagation 防止点语言时误触更新。 -->
         <button id="air-lang-btn" class="lang-toggle side-lang" type="button"
@@ -165,10 +169,6 @@
       </button>
       <!-- 关闭抽屉后仍可见的运维回执；打开时同步到抽屉内。 -->
       <p id="air-ops-status" class="ops-status" role="status"></p>
-      <!-- 本机（运行 MultiCC 的那台电脑）的电量，由 air-battery.js 填；读不到电量（台式机）时保持 hidden。 -->
-      <div id="air-battery" class="side-battery" role="status" hidden>
-        <span id="air-battery-icon" aria-hidden="true">🔋</span><span id="air-battery-text"></span>
-      </div>
       <small data-i18n="airTagline">让每一次对话，都有清晰的目标。</small>
     </div>
   </aside>

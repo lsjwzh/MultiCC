@@ -45,8 +45,9 @@ const DESKTOP = `Now drawing from 'AC Power'\n`;
   // Web：模块在 air.html 里加载，且电量行在 .side-bottom 内；低电量/充电/不可用三态。
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'air.html'), 'utf8');
   assert.ok(html.includes('<script src="air-battery.js"></script>'));
-  const bottom = html.slice(html.indexOf('class="side-bottom"'), html.indexOf('</aside>'));
-  assert.ok(bottom.includes('id="air-battery"'), '电量行必须在侧栏底部 .side-bottom 里');
+  const line = html.slice(html.indexOf('class="side-version-line"'), html.indexOf('id="side-more"'));
+  assert.ok(line.includes('id="air-battery"'), '电量角标必须挤在版本行 .side-version-line 里，不单独占一行');
+  assert.ok(line.indexOf('id="air-battery"') < line.indexOf('id="air-lang-btn"'), '角标在语言按钮左边');
   const nodes = {};
   const mk = id => (nodes[id] = { id, hidden: true, textContent: '', title: '', classList: { toggle(n, on) { (this.set ||= new Set())[on ? 'add' : 'delete'](n); } } });
   ['air-battery', 'air-battery-icon', 'air-battery-text'].forEach(mk);
