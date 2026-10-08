@@ -816,7 +816,7 @@ test('GET /api/providers attaches the persisted limit summary and freshness', as
   assert.equal(cache.get('claude', 'claude-one') !== null, true);
 });
 
-test('relay-share issues a recorded provider-scoped credential and requires a manual token', async () => {
+test('relay-share issues a recorded provider-scoped credential from a supplied per-link token', async () => {
   let harness = createHarness();
   let response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
     params: { appType: 'claude', id: 'claude-one' },
@@ -841,7 +841,7 @@ test('relay-share issues a recorded provider-scoped credential and requires a ma
     v: 2,
     kind: 'multicc-relay',
     // The harness provider stub has no name; the share falls back to the id.
-    name: 'claude-one · 借道',
+    name: 'claude-one · 远程共享',
     appType: 'claude',
     baseUrl: 'https://relay.example/claude-proxy/claude-one/remote',
     relayShareId: 'abcdefghijklmnop',

@@ -27,7 +27,13 @@
   let context = null;
   let data = null;
   let activeProtocol = 'all';
-  let advancedOpen = false;
+  const requestedConnection = (() => {
+    try {
+      const value = new URLSearchParams(root.location?.search || '').get('providerConnection') || '';
+      return ['official', 'device', 'native'].includes(value) ? value : '';
+    } catch (_) { return ''; }
+  })();
+  let advancedOpen = !!requestedConnection;
   const latency = new Map();
   const el = id => document.getElementById(id);
   const make = (tag, text, className) => {
@@ -604,6 +610,10 @@
     page.append(intro, defaults, toolbar, cards, advanced);
     el('admin-content').replaceChildren(page);
     setProtocol(activeProtocol);
+    if (advancedOpen) {
+      root.MultiCCAirProviderAdvanced?.render(advancedBody, context);
+      if (requestedConnection) root.MultiCCAirProviderAdvanced?.select(requestedConnection);
+    }
     // 用量统计挂在线路下面：它说的是「这台机器的 CLI 到底烧了多少」，和上面
     // 那些线路卡是两回事，但同属 Provider 页（旧页里也是 Provider 的一个子页）。
     void root.MultiCCAirUsage?.render(page, context);

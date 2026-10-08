@@ -258,12 +258,43 @@ test('official providers expose the relay-share action too; only delete stays lo
     'delete must stay inside the non-official branch (built-in official entries are not deletable)');
 });
 
-test('new relay creation requires a per-link token and exposes inventory/revocation controls', () => {
+test('new device sharing generates a per-link credential and exposes inventory/revocation controls', () => {
   const source = fs.readFileSync(SOURCE_PATH, 'utf8');
-  assert.match(source, /data-k="token" type="password"/);
-  assert.match(source, /json: \{ publicBaseUrl:[^}]+token: tokenInput\.value/);
+  assert.match(source, /function _newRelayCredential\(\)/);
+  assert.match(source, /json: \{ publicBaseUrl:[^}]+token: shareCredential/);
+  assert.doesNotMatch(source, /data-k="token"|data-act="tokengen"/,
+    'the UI generates an independent credential without asking the user to understand or type one');
   assert.match(source, /\/api\/provider-relay-shares\?/);
   assert.match(source, /method: 'DELETE'/);
   assert.doesNotMatch(source, /\/api\/settings\/proxy-token/);
   assert.doesNotMatch(source, /RELAY_TOKEN_UNSET/);
+});
+
+test('advanced provider options use goal-based choices instead of advanced-account jargon', () => {
+  const panel = fs.readFileSync(path.join(ROOT, 'public', 'air-provider-advanced.js'), 'utf8');
+  const zh = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'assets', 'i18n', 'zh.json'), 'utf8'));
+  assert.match(panel, /choice\('official'/);
+  assert.match(panel, /choice\('device'/);
+  assert.match(panel, /choice\('native'/);
+  assert.match(panel, /panel\.hidden = panel\.dataset\.section !== key/);
+  assert.equal(zh.airAdminAdvancedAccounts, '更多连接方式');
+  assert.equal(zh.airProviderAdvRelayTitle, '跨设备共享线路');
+  assert.equal(zh.airProviderRelayShare, '共享到其他设备');
+  for (const key of ['airAdminAdvancedAccounts', 'airProviderAdvancedTitle', 'airProviderAdvRelayTitle',
+    'airProviderAdvRelayImport', 'airProviderAdvRelayRecords', 'airProviderRelayShare']) {
+    assert.doesNotMatch(zh[key], /高级账号|借道/, `${key} should use plain, task-oriented language`);
+  }
+});
+
+test('Flutter Provider settings mirror the plain-language choices and deep-link to the selected task', () => {
+  const app = fs.readFileSync(path.join(ROOT, 'app', 'lib', 'screens', 'provider_screen.dart'), 'utf8');
+  for (const text of [
+    '更多连接方式',
+    '切换 Claude / Codex 登录账号',
+    '连接或共享另一台设备',
+    '单独登录 ZCode / Kimi',
+  ]) assert.ok(app.includes(text), `Flutter Provider screen should include: ${text}`);
+  assert.doesNotMatch(app, /高级账号与借道|借道分享|打开完整 Provider 控制器/);
+  assert.match(app, /'providerConnection': section/);
+  assert.match(app, /buildHttpUrl\('\/air'\)/);
 });

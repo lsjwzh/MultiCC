@@ -1316,7 +1316,7 @@
     const provider = root.MultiCCAirProvider;
     setActions([
       action(t('airAdminBackToSettings'), () => context.setMode('settings'), '', panelIcon('←')),
-      action(t('airAdminAdvancedAccounts'), () => provider?.toggleAdvanced(), '', panelIcon('⇄')),
+      action(t('airAdminAdvancedAccounts'), () => provider?.toggleAdvanced(), '', panelIcon('⋯')),
       action(t('airAdminRefresh'), () => provider?.refresh(), '', keepsGlyph('↻')),
       action(t('airAdminAddProvider'), () => provider?.openEditor(), 'primary', keepsGlyph('＋')),
     ]);
