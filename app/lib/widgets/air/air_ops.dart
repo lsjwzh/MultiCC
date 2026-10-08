@@ -216,12 +216,17 @@ class AirVersionRow extends StatelessWidget {
             ),
           ),
         );
-        if (onLanguage == null) return version;
+        final battery = store.battery;
+        final showBattery = battery != null && battery.available;
+        if (onLanguage == null && !showBattery) return version;
         final english = language == 'en';
         return Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Expanded(child: version),
+            // 主机电量角标：挤在版本行里，不单独占一行（Web 同位置）。
+            if (showBattery) AirBatteryChip(battery: battery),
+            if (onLanguage != null) ...[
             const SizedBox(width: 5),
             Tooltip(
               message: english
@@ -245,6 +250,7 @@ class AirVersionRow extends StatelessWidget {
                 ),
               ),
             ),
+            ],
           ],
         );
       },
@@ -393,38 +399,33 @@ class _OpsButton extends StatelessWidget {
   }
 }
 
-/// 侧栏底部的主机电量（Web `public/air-battery.js`）。读不到或主机没电池时整行不占位。
-class AirBatteryRow extends StatelessWidget {
-  const AirBatteryRow({super.key, required this.store});
+/// 主机电量角标（Web `public/air-battery.js`）：一颗图标加百分比，挂在版本行右侧。
+/// 调用方只在主机有电池且读到电量时才放它，所以这里不处理「没有」。
+class AirBatteryChip extends StatelessWidget {
+  const AirBatteryChip({super.key, required this.battery});
 
-  final AirOpsStore store;
+  final AirHostBattery battery;
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: store,
-      builder: (context, _) {
-        final battery = store.battery;
-        if (battery == null || !battery.available) return const SizedBox.shrink();
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(18, 2, 18, 4),
-          child: Row(
-            key: const ValueKey('air-battery'),
-            children: [
-              Text(battery.charging ? '⚡' : battery.low ? '🪫' : '🔋', style: const TextStyle(fontSize: 12)),
-              const SizedBox(width: 6),
-              Text(
-                '${battery.percent}%',
-                style: TextStyle(
-                  color: battery.low ? AppColors.danger : AppColors.muted,
-                  fontSize: 11.5,
-                  fontWeight: battery.low ? FontWeight.w600 : FontWeight.w400,
-                ),
-              ),
-            ],
+    return Padding(
+      key: const ValueKey('air-battery'),
+      padding: const EdgeInsets.only(left: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(battery.charging ? '⚡' : battery.low ? '🪫' : '🔋', style: const TextStyle(fontSize: 11)),
+          const SizedBox(width: 2),
+          Text(
+            '${battery.percent}%',
+            style: TextStyle(
+              color: battery.low ? AppColors.danger : AppColors.muted,
+              fontSize: 11,
+              fontWeight: battery.low ? FontWeight.w600 : FontWeight.w400,
+            ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 }
