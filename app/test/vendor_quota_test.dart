@@ -136,8 +136,27 @@ void main() {
       // The window rolled, so the segment says so: a countdown here would read
       // as "0% used, resets in 1m" next to a percentage from the window that
       // just ended. The segment stays non-empty so the bar's separators remain
-      // well-formed rather than going blank.
+      // well-formed rather than going blank. This is the token with no window on
+      // it — the fallback; the case below is the one users normally see.
       expect(v.text, '1m 0% 已重置');
+      expect(v.color, VendorQuotaColor.red);
+    });
+
+    test('a past deadline that names its window reads as time to the next reset', () {
+      const now = 1_700_000_000_000;
+      final v = vendorViewFromBar(
+        const {
+          // One second past the deadline of a monthly window: the answer the
+          // reader actually wants is when the next one ends, not that this one
+          // ended. Mirrors tests/fixtures/quota-bar-golden.json.
+          'text': '1m 0% {cd:1699999999000|1m}',
+          'color': '#f85149',
+          'title': '',
+          'action': null,
+        },
+        now: now,
+      )!;
+      expect(v.text, '1m 0% 29d 23h');
       expect(v.color, VendorQuotaColor.red);
     });
 

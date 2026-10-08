@@ -275,7 +275,7 @@ test('every piece carries a key both catalogs know, and every param is spelled o
         const rendered = renderQuotaParts(view[which], sep, enT);
         // A template that names a param the renderer never passed would survive
         // as a literal `{name}`; the two time tokens are the only braces left.
-        assert.doesNotMatch(rendered.replace(/\{(cd|ago):-?\d+\}/g, ''), /\{[a-zA-Z]\w*\}/,
+        assert.doesNotMatch(rendered.replace(/\{(cd|ago):-?\d+(?:\|[0-9a-z]+)?\}/g, ''), /\{[a-zA-Z]\w*\}/,
           `${name}: ${which} kept an unfilled placeholder`);
       }
     }

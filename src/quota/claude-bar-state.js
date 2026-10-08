@@ -49,11 +49,28 @@ function rememberClaudeLive(sessionName, normalized) {
   }
 }
 
+// The live window is only live while its own deadline is ahead of us. The
+// header event names the window it was read in; once that window's reset has
+// passed, the event describes a window that no longer exists — its percentage
+// belongs to the window that just ended and its deadline is already gone. The
+// TTL alone does not catch this: an event observed an hour before its window
+// ended is well inside the five hours and still prints as current.
+//
+// Keeping it is not harmless. The merge below prefers the live window over the
+// scrape's 5h row, so a closed event overrides the account-wide reading that is
+// actually current (the OAuth endpoint reports utilization 0 and no reset time
+// while no window is running) and the bar reads `5h 44% 已重置` — a stale number
+// next to a word with no time in it. Auto's limit policy already refuses to let
+// a window whose reset has passed bind anything (see usedPercentOf in
+// ../chat/auto-provider-policy.js); the bar is the only place that still showed
+// one. Drop it and the scrape's own 5h row answers instead.
 function liveFor(sessionName, nowMs) {
   const live = liveBySession.get(sessionName);
   if (!live) return null;
   const observed = Number(live.observedAtMs) || 0;
-  if (nowMs - observed > LIVE_TTL_MS) {
+  const reset = Number(live.resetsAtMs);
+  const windowClosed = Number.isFinite(reset) && reset > 0 && reset <= nowMs;
+  if (windowClosed || nowMs - observed > LIVE_TTL_MS) {
     liveBySession.delete(sessionName);
     return null;
   }

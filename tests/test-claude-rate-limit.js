@@ -815,3 +815,64 @@ test('chat provider selection forwards default, explicit, and active Auto identi
     await flushClient();
   } finally { f.cleanup(); }
 });
+
+// ── The Claude bar's two sources, and when the live one stops counting ──────
+// The 5h row arrives two ways: a seconds-old per-session rate_limit_event and a
+// minutes-old account-wide scrape. The live event wins — until its own reset
+// passes, after which it describes a window that no longer exists.
+test('a live 5h window stops answering the moment its own reset passes', () => {
+  const BarState = require('../src/quota/claude-bar-state');
+  BarState.resetClaudeBarState();
+  try {
+    BarState.rememberClaudeScrape({
+      status: 'ok',
+      fetchedAt: NOW - 60_000,
+      summary: [
+        { window: '5h', usedPercent: 0 },
+        { window: '1wk', usedPercent: 6, resetMs: NOW + 5 * 86_400_000 },
+      ],
+    });
+    BarState.rememberClaudeLive('s1', {
+      provider: 'claude', status: 'allowed', usedPercentage: 44,
+      resetsAtMs: NOW + 10 * 60_000, observedAtMs: NOW,
+    });
+
+    // Inside its window the live event is the freshest truth for this session,
+    // so it replaces the scrape's 5h row rather than stacking next to it.
+    const open = resolveQuotaBar(BarState.renderClaudeBar('s1', NOW), { now: NOW });
+    assert.match(open.text, /^5h 56% 10m · /, 'the live percentage wins while its window is open');
+
+    // A minute past that deadline the window has rolled. Its 44% belongs to the
+    // window that just ended and its reset time is gone, so the bar must go back
+    // to the scrape — which is the account-wide truth and says the new window is
+    // untouched. Keeping the live event instead is what printed a stale
+    // percentage next to a word with no time in it.
+    const closed = resolveQuotaBar(BarState.renderClaudeBar('s1', NOW + 10 * 60_000 + 60_000), {
+      now: NOW + 10 * 60_000 + 60_000,
+    });
+    assert.match(closed.text, /^5h 100% · /, 'a closed window hands the row back to the scrape');
+    assert.doesNotMatch(closed.text, /已重置/, 'and never leaves a word where a time belongs');
+  } finally {
+    BarState.resetClaudeBarState();
+  }
+});
+
+test('a live 5h window older than its own TTL is forgotten too', () => {
+  const BarState = require('../src/quota/claude-bar-state');
+  BarState.resetClaudeBarState();
+  try {
+    BarState.rememberClaudeScrape({
+      status: 'ok', fetchedAt: NOW, summary: [{ window: '5h', usedPercent: 12 }],
+    });
+    // Deadline still ahead, but observed five hours ago: outside the TTL a 5h
+    // window says nothing about now.
+    BarState.rememberClaudeLive('s1', {
+      provider: 'claude', status: 'allowed', usedPercentage: 44,
+      resetsAtMs: NOW + 20 * 60_000, observedAtMs: NOW - 5 * 3_600_000 - 1,
+    });
+    const stale = resolveQuotaBar(BarState.renderClaudeBar('s1', NOW), { now: NOW });
+    assert.match(stale.text, /^5h 88% · /, 'the TTL drops an event older than its window');
+  } finally {
+    BarState.resetClaudeBarState();
+  }
+});

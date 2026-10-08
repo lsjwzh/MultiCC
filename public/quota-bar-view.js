@@ -6,8 +6,11 @@
  * clients. Only the parts that change while nobody is fetching anything have to
  * be resolved at paint time:
  *
- *   {cd:<epochMs>}   a deadline  → "42m" · "3.5h" · "3d 5h"
- *   {ago:<epochMs>}  a timestamp → "刚刚" · "57s 前" · "3 分钟前"
+ *   {cd:<epochMs>}            a deadline → "42m" · "3.5h" · "3d 5h"
+ *   {cd:<epochMs>|<window>}   a deadline whose window the server knew, so a
+ *                             deadline that has already passed resolves to the
+ *                             NEXT reset of that window instead
+ *   {ago:<epochMs>}           a timestamp → "刚刚" · "57s 前" · "3 分钟前"
  *
  * A bar is cached (localStorage here, memory in the app) and redisplayed for up
  * to 24h, so baking these in would make a bar quietly lie about how old it is.
@@ -48,8 +51,8 @@
   // Time left, coarsening as it grows: minutes under an hour, one decimal of an
   // hour under a day, then days. Never returns '' for a real deadline, so a
   // segment's separators are safe to bake into the server-rendered string; a
-  // deadline that has already passed is handled by resolveText (已重置), which
-  // is the only caller.
+  // deadline that has already passed never reaches here, because resolveText
+  // re-anchors it to the next reset (or falls back to 已重置) first.
   function humanizeCountdown(ms) {
     const total = finiteNumber(ms);
     if (total === null || total < 0) return '';
@@ -73,13 +76,54 @@
     return FMT.formatRelativeTime(tsMs, { now: nowMs, compact: true });
   }
 
-  const TOKEN = /\{(cd|ago):(-?\d+)\}/g;
+  // `{cd:<at>}` or, when the server knew which window the deadline belongs to,
+  // `{cd:<at>|<window>}`. `{ago:<at>}` never carries a window.
+  const TOKEN = /\{(cd|ago):(-?\d+)(?:\|([0-9a-z]+))?\}/g;
+
+  // How long each window this bar meters is, keyed by the token the server
+  // appends to a deadline it knows the window of. `1m` is a calendar month
+  // rather than 30 days, so its entry is null and the arithmetic below goes
+  // through the date instead of a fixed span.
+  const WINDOW_PERIOD_MS = Object.freeze({ '5h': 5 * 3_600_000, '1wk': 7 * 86_400_000, '1m': null });
+  // Enough periods for any bar that can still be on screen: the longest-lived
+  // cached bar is a day old and the shortest window here is five hours.
+  const MAX_ROLL_STEPS = 400;
+
+  // The month step walks the UTC calendar, not the local one. A vendor's monthly
+  // window resets on a day-of-month we do not know the zone of, and a LOCAL
+  // month would additionally make the answer depend on the reader's machine: one
+  // month past a date that straddles a DST change is an hour earlier or later in
+  // local time, which is one hour of difference in the rendered "Xd Yh" and one
+  // different golden fixture per time zone. UTC keeps the same day and time of
+  // day as the deadline we were handed and answers the same everywhere.
+  function advanceWindow(atMs, token, steps) {
+    if (token !== '1m') return atMs + WINDOW_PERIOD_MS[token] * steps;
+    const d = new Date(atMs);
+    d.setUTCMonth(d.getUTCMonth() + steps);
+    return d.getTime();
+  }
+
+  // The reset after a deadline that is already behind us: advance by whole
+  // periods until the result is ahead of now. For every periodic window this
+  // bar meters that is exactly when the next window ends.
+  function nextResetAfter(atMs, token, nowMs) {
+    if (WINDOW_PERIOD_MS[token] === undefined) return null;
+    for (let steps = 1; steps <= MAX_ROLL_STEPS; steps++) {
+      const next = advanceWindow(atMs, token, steps);
+      if (next > nowMs) return next;
+    }
+    return null;
+  }
 
   // A deadline that is already past is NOT "one minute left". The window has
   // rolled, and the percentage printed next to it belongs to the window that
   // just ended — a bar redisplayed from cache four hours later would otherwise
   // read "5h 93% 1m", i.e. 93% used with a minute to go, which is the most
-  // misleading thing this bar can say. Say what happened instead. The segment
+  // misleading thing this bar can say. So a countdown is never allowed to go
+  // negative: the deadline becomes the NEXT reset instead, whenever the token
+  // says which window it belonged to (see resolveText). Only a token that does
+  // not say falls back to naming the state rather than numbering it — which is
+  // where the bare word comes from, and why it is rare. Either way the segment
   // stays non-empty, which is what keeps the separators the server baked in
   // (see humanizeCountdown) safe to expand.
   const ROLLED_WINDOW = '已重置';
@@ -88,11 +132,20 @@
   // server's own bytes, which is what the app and the golden fixtures pin.
   function resolveText(text, nowMs, rolledLabel) {
     if (typeof text !== 'string' || text.indexOf('{') < 0) return text || '';
-    return text.replace(TOKEN, (_, kind, raw) => {
+    return text.replace(TOKEN, (_, kind, raw, window) => {
       const at = Number(raw);
       if (kind !== 'cd') return relativeAgo(at, nowMs);
       const left = at - nowMs;
-      return left > 0 ? humanizeCountdown(left) : (rolledLabel || ROLLED_WINDOW);
+      if (left > 0) return humanizeCountdown(left);
+      // The deadline is behind us, so the window it named has rolled. When the
+      // token carries the window, the next reset is that deadline plus whole
+      // periods, and saying when it is answers what the reader actually asked
+      // ("how long until it resets"). Without the window - a bar cached before
+      // the server carried it, a window this bar does not meter - "已重置" is
+      // the honest remainder, and it is still non-empty, which is what keeps
+      // the separators baked into the server string safe to expand.
+      const next = window ? nextResetAfter(at, window, nowMs) : null;
+      return next === null ? (rolledLabel || ROLLED_WINDOW) : humanizeCountdown(next - nowMs);
     });
   }
 

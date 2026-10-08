@@ -89,9 +89,11 @@ test('renders Ark Coding compact bar as remaining quota in canonical window orde
     ],
   }, { baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3' });
 
+  // Each deadline names its own window (`|5h` / `|1wk` / `|1m`) so a client that
+  // paints the bar after the deadline has passed can show the next reset instead.
   assert.equal(
     bar.text,
-    `Coding · 5h 80% {cd:${now + 5 * 3600 * 1000}} · 1wk 60% {cd:${now + (5 * 24 + 1) * 3600 * 1000}} · 1m 30% {cd:${now + 22 * 24 * 3600 * 1000}} · {ago:${now}} ⟳`,
+    `Coding · 5h 80% {cd:${now + 5 * 3600 * 1000}|5h} · 1wk 60% {cd:${now + (5 * 24 + 1) * 3600 * 1000}|1wk} · 1m 30% {cd:${now + 22 * 24 * 3600 * 1000}|1m} · {ago:${now}} ⟳`,
   );
   assert.match(bar.title, /Coding · pro（当前 provider）/);
   assert.match(bar.title, /5h: 余量 80% · 已用 20% \(20\/100\)/);

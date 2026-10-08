@@ -29,6 +29,11 @@
 //   {cd:<epochMs>}   → humanizeCountdown(epochMs - now)   "42m" · "3d 5h"
 //   {ago:<epochMs>}  → relativeAgo(epochMs)               "刚刚" · "57s 前"
 //
+// A countdown may also name the window it belongs to — `{cd:<epochMs>|<window>}`,
+// e.g. `{cd:1700003600000|5h}` — which lets the client answer a deadline that has
+// already passed with the window's NEXT reset ("还有多久重置") instead of a word
+// with no time in it. See cdTag below and resolveText in public/quota-bar-view.js.
+//
 // A placeholder is only emitted when its anchor exists, so neither ever expands
 // to the empty string — the surrounding separators are safe to bake in. The
 // expansion rule is the ONLY quota logic that still exists twice (see
@@ -75,9 +80,30 @@ function unifiedBalanceText(amount, currency) {
   return `${sym}${a.toFixed(2)}`;
 }
 
-function cdTag(resetsAtMs) {
+// The window a deadline belongs to, normalized to the token the client reads a
+// period out of: `1wk-ALL` (Claude meters its weekly limit more than one way)
+// reads as a week, because the suffix names what the row meters, not how long
+// the window is. Null when the caller does not know which window it is
+// describing, or the label is not a window this bar meters.
+const WINDOW_TOKENS = Object.freeze(['5h', '1wk', '1m']);
+function windowTokenOf(label) {
+  const token = String(label || '').trim().split('-')[0];
+  return WINDOW_TOKENS.includes(token) ? token : null;
+}
+
+// `{cd:<at>}` reads "count down to this deadline"; `{cd:<at>|<window>}` also
+// says which window the deadline belongs to. That second half is what lets a
+// client painting the bar after the deadline has passed still answer the
+// question the deadline was there to answer - how long until the next reset -
+// instead of printing 已重置, which names the state and withholds the number.
+// The arithmetic stays on the client because the client is the one that knows
+// what "now" is when the pixels are painted; the token stays an absolute
+// timestamp, so it does not go stale between render and paint.
+function cdTag(resetsAtMs, label) {
   const at = finiteNumber(resetsAtMs);
-  return at === null || at <= 0 ? '' : `{cd:${Math.trunc(at)}}`;
+  if (at === null || at <= 0) return '';
+  const token = windowTokenOf(label);
+  return `{cd:${Math.trunc(at)}${token ? `|${token}` : ''}}`;
 }
 
 function agoTag(tsMs) {
@@ -89,7 +115,7 @@ function agoTag(tsMs) {
 function windowSeg(label, usedPercent, resetsAtMs) {
   const rem = unifiedRemaining(usedPercent);
   if (rem === null) return '';
-  const cd = cdTag(resetsAtMs);
+  const cd = cdTag(resetsAtMs, label);
   return cd ? `${label} ${rem}% ${cd}` : `${label} ${rem}%`;
 }
 
@@ -276,17 +302,17 @@ function openCodeBar(value) {
   const lines = [viaZenApi
     ? part('quotaOpenCodeUsageTitleZen', null, 'OpenCode Go 订阅用量（Zen API /zen/go/v1/usage）')
     : part('quotaOpenCodeUsageTitleCdp', null, 'OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）')];
-  for (const [key, zh, lineKey, nameKey] of [
-    ['rolling', '5h', 'quotaOpenCodeWindow5h', null],
-    ['weekly', '周', 'quotaOpenCodeWindowWeekly', 'quotaPeriodWeekly'],
-    ['monthly', '月', 'quotaOpenCodeWindowMonthly', 'quotaPeriodMonthly'],
+  for (const [key, zh, lineKey, nameKey, windowToken] of [
+    ['rolling', '5h', 'quotaOpenCodeWindow5h', null, '5h'],
+    ['weekly', '周', 'quotaOpenCodeWindowWeekly', 'quotaPeriodWeekly', '1wk'],
+    ['monthly', '月', 'quotaOpenCodeWindowMonthly', 'quotaPeriodMonthly', '1m'],
   ]) {
     const w = u[key];
     if (!w) continue;
     const at = resetAt(w.resetInSec);
     // An exhausted window reports status:"rate-limited" — say so, because a
     // segment sitting at "0% 余量" alone reads like a glitch.
-    const reset = at ? part('quotaResetAfterSuffix', { at: cdTag(at) }, ` · 重置 ${cdTag(at)} 后`) : null;
+    const reset = at ? part('quotaResetAfterSuffix', { at: cdTag(at, windowToken) }, ` · 重置 ${cdTag(at, windowToken)} 后`) : null;
     const limited = w.status === 'rate-limited' ? part('quotaRateLimited', null, ' · 已限流') : null;
     // The window's own name goes through the dictionary too: "周"/"月" need
     // translating. "5h" already reads the same in both, so it stays the literal
@@ -378,7 +404,7 @@ function qoderBar(value) {
       `加油包: ${pkg.used_value}/${pkg.limit_value} (剩 ${pkg.remaining_value})`));
   }
   title.push(resetAt !== null
-    ? part('quotaResetAfterLine', { at: cdTag(resetAt) }, `重置: ${cdTag(resetAt)} 后`)
+    ? part('quotaResetAfterLine', { at: cdTag(resetAt, '1m') }, `重置: ${cdTag(resetAt, '1m')} 后`)
     : part('quotaExpiryUnknown', null, '到期时间未知（API 未返回 nextResetAt/套餐到期日）'));
   title.push(syncLine(ago), refreshLine());
   return partsView(
@@ -425,7 +451,7 @@ function codexBar(value) {
       `套餐: ${value.planType || '?'}${value.email ? ' · ' + value.email : ''}`),
     part('quotaUsedRemainingLine', { used, remaining }, `已用 ${used}% · 剩余 ${remaining}%`),
   ];
-  if (resetAt) title.push(part('quotaResetAfterLine', { at: cdTag(resetAt) }, `重置: ${cdTag(resetAt)} 后`));
+  if (resetAt) title.push(part('quotaResetAfterLine', { at: cdTag(resetAt, '1wk') }, `重置: ${cdTag(resetAt, '1wk')} 后`));
   for (const a of (value.additional || [])) {
     title.push(part('quotaAdditionalWindowLine', { name: a.name, used: a.usedPercent }, `${a.name}: ${a.usedPercent}% 已用`));
   }
@@ -563,12 +589,13 @@ function arkBar(value, baseUrl) {
       current: isCurrent ? part('quotaArkCurrentProvider', null, '（当前 provider）') : null,
     }, `${arkProductLabel(it.product)}${it.tier ? ' · ' + it.tier : ''}${isCurrent ? '（当前 provider）' : ''}`));
     for (const p of it.periods) {
+      const windowToken = arkWindowLabel(p.label);
       const usedPct = finiteNumber(p.percent);
       const remainingPct = unifiedRemaining(usedPct);
       const remainingText = remainingPct === null ? '余量未知' : `余量 ${fmtNum(remainingPct)}%`;
       const usedPctText = usedPct === null ? '已用未知' : `已用 ${fmtNum(usedPct)}%`;
       const totals = (p.used != null && p.total != null) ? ` (${fmtNum(p.used)}/${fmtNum(p.total)})` : '';
-      const reset = p.resetAt ? part('quotaResetSuffix', { at: cdTag(p.resetAt) }, ` · ${cdTag(p.resetAt)} 后重置`) : null;
+      const reset = p.resetAt ? part('quotaResetSuffix', { at: cdTag(p.resetAt, windowToken) }, ` · ${cdTag(p.resetAt, windowToken)} 后重置`) : null;
       titleLines.push(part('quotaArkPeriodLine', {
         period: arkPeriodPart(p.label),
         remaining: remainingPct === null
@@ -579,7 +606,7 @@ function arkBar(value, baseUrl) {
           : part('quotaUsedPct', { pct: fmtNum(usedPct) }, `已用 ${fmtNum(usedPct)}%`),
         total: totals,
         reset,
-      }, `  ${arkPeriodLabel(p.label)}: ${remainingText} · ${usedPctText}${totals}${p.resetAt ? ` · ${cdTag(p.resetAt)} 后重置` : ''}`));
+      }, `  ${arkPeriodLabel(p.label)}: ${remainingText} · ${usedPctText}${totals}${p.resetAt ? ` · ${cdTag(p.resetAt, windowToken)} 后重置` : ''}`));
     }
   }
   const ago = agoTag(value.fetchedAt);
@@ -650,13 +677,13 @@ function zhipuBar(value) {
   }
   const titleLines = [];
   for (const site of okSites) {
-    const reset = site.resetsAt ? part('quotaResetSuffix', { at: cdTag(site.resetsAt) }, ` · ${cdTag(site.resetsAt)} 后重置`) : null;
+    const reset = site.resetsAt ? part('quotaResetSuffix', { at: cdTag(site.resetsAt, '5h') }, ` · ${cdTag(site.resetsAt, '5h')} 后重置`) : null;
     const weekly = Number.isFinite(site.weeklyUsedPercent) ? part('quotaZhipuWeeklySegment', {
       pct: fmtNum(site.weeklyUsedPercent),
       reset: site.weeklyResetsAt
-        ? part('quotaZhipuWeeklyReset', { at: cdTag(site.weeklyResetsAt) }, `（${cdTag(site.weeklyResetsAt)} 后重置）`)
+        ? part('quotaZhipuWeeklyReset', { at: cdTag(site.weeklyResetsAt, '1wk') }, `（${cdTag(site.weeklyResetsAt, '1wk')} 后重置）`)
         : null,
-    }, ` · 周 ${fmtNum(site.weeklyUsedPercent)}% 已用${site.weeklyResetsAt ? `（${cdTag(site.weeklyResetsAt)} 后重置）` : ''}`) : null;
+    }, ` · 周 ${fmtNum(site.weeklyUsedPercent)}% 已用${site.weeklyResetsAt ? `（${cdTag(site.weeklyResetsAt, '1wk')} 后重置）` : ''}`) : null;
     titleLines.push(part('quotaZhipuSiteLine', {
       site: site.site,
       host: site.host,
@@ -664,7 +691,7 @@ function zhipuBar(value) {
       reset,
       weekly,
       tier: site.tier ? ` · ${site.tier}` : '',
-    }, `${site.site} (${site.host}): 5h ${fmtNum(site.usedPercent)}% 已用${site.resetsAt ? ` · ${cdTag(site.resetsAt)} 后重置` : ''}${Number.isFinite(site.weeklyUsedPercent) ? ` · 周 ${fmtNum(site.weeklyUsedPercent)}% 已用${site.weeklyResetsAt ? `（${cdTag(site.weeklyResetsAt)} 后重置）` : ''}` : ''}${site.tier ? ` · ${site.tier}` : ''}`));
+    }, `${site.site} (${site.host}): 5h ${fmtNum(site.usedPercent)}% 已用${site.resetsAt ? ` · ${cdTag(site.resetsAt, '5h')} 后重置` : ''}${Number.isFinite(site.weeklyUsedPercent) ? ` · 周 ${fmtNum(site.weeklyUsedPercent)}% 已用${site.weeklyResetsAt ? `（${cdTag(site.weeklyResetsAt, '1wk')} 后重置）` : ''}` : ''}${site.tier ? ` · ${site.tier}` : ''}`));
   }
   const ago = agoTag(value.fetchedAt);
   const segs = sortSegs(entries).join(' · ') || '—';
@@ -1084,7 +1111,7 @@ function claudeBarForState(usage, live, state) {
       const fromPiece = r.label && !claudeLabelNamesWindow(r.label)
         ? part('quotaClaudeRowFrom', { label: r.label }, `（${r.label}）`)
         : null;
-      const cd = cdTag(r.resetAt);
+      const cd = cdTag(r.resetAt, r.window);
       return {
         window: r.window,
         seg: windowSeg(r.name, r.used, r.resetAt),
@@ -1246,7 +1273,10 @@ function idleQuotaBars() {
 function compactBarText(text) {
   if (!text) return '';
   return String(text)
-    .replace(/\{[a-z]+:\d+\}/g, '')
+    // Both placeholders, with or without the `|<window>` a countdown may carry
+    // (see cdTag): a stripped cell is a cell the picker does not need to show,
+    // and leaving `{cd:…|5h}` behind would print raw braces into the summary.
+    .replace(/\{[a-z]+:-?\d+(?:\|[0-9a-z]+)?\}/g, '')
     .replace(/\s*⟳.*$/g, '')
     // Split on '·' and drop empty cells so a stripped placeholder or the
     // refresh action never leaves a doubled / dangling separator behind.
