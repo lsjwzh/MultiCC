@@ -696,6 +696,8 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .pin-panel-open { align-self: flex-start; min-height: 24px; margin-top: 2px; padding: 3px 10px;
   border: 1px solid #cfe3f8; border-radius: 8px; background: var(--blue-soft); color: #146dcc; font-size: 11px; }
 .pin-panel-open:hover { border-color: #b7d6f5; background: #dceaff; }
+#add-directory { flex-shrink: 0; white-space: nowrap; }
+#add-directory .add-directory-compact { display: none; }
 .task-tools { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
 /* 手机上工具收进「⋯」浮层，浮层里每一行都是「图标 + 名字」两列（见 760px 块）。
    所以图标和名字各占一个 span：.air-tool-icon 是这个按钮桌面也显示的符号（「＋
@@ -1522,6 +1524,21 @@ dialog form > h2 { margin-bottom: 8px; }
 dialog form > p { color: var(--muted); font-size: 12px; }
 dialog label { display: block; margin-top: 17px; font-size: 12px; }
 dialog input, dialog select, dialog textarea { margin-top: 6px; }
+.air-path-row { display: flex; align-items: flex-end; gap: 8px; }
+.air-path-row input { min-width: 0; flex: 1; }
+.air-path-row button { flex: none; margin-top: 6px; white-space: nowrap; }
+.air-folder-picker { margin-top: 10px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #f8fbfe; }
+.air-folder-picker[hidden] { display: none; }
+.air-folder-bar { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-bottom: 1px solid var(--line); background: #f0f6fc; }
+.air-folder-location { min-width: 0; flex: 1; overflow: hidden; color: #35536f; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.air-folder-actions { display: flex; flex: none; gap: 6px; }
+.air-folder-actions button { min-height: 30px; padding: 4px 9px; font-size: 11px; }
+.air-folder-list { max-height: 220px; overflow: auto; padding: 5px; }
+.air-folder-entry { display: flex; width: 100%; align-items: center; gap: 8px; padding: 8px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--text); text-align: left; }
+.air-folder-entry:hover, .air-folder-entry:focus-visible { background: var(--blue-soft); }
+.air-folder-icon { flex: none; }
+.air-folder-empty, .air-folder-error { margin: 0; padding: 13px 10px; color: var(--muted); font-size: 12px; text-align: center; }
+.air-folder-error { color: #b34128; }
 dialog fieldset { margin: 14px 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
 dialog fieldset button { margin-top: 9px; color: #a04936; }
 dialog summary { cursor: pointer; padding: 10px 0; color: #526d88; font-size: 12px; }
@@ -1862,8 +1879,11 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #task-state .ts-attr { display: none; }
   /* 详情就是点状态那一条（两处都调 toggleDetails），手机上留一个入口。 */
   #details-toggle { display: none; }
-  /* 工具不再占页头的第二行：它们收进「⋯」打开的一层浮层，按钮一行也没少。那一行
-     原来值 32px 加一行间距，现在整条还给了对话 —— 手机上一行消息值 23px。 */
+  /* 次要工具不再占页头的第二行：它们收进「⋯」打开的一层浮层；添加目录是新手
+     高频入口，所以留在标题行，并在窄屏缩成「＋ 目录」。 */
+  #add-directory { min-height: 34px; padding: 6px 9px; font-size: 12px; }
+  #add-directory .add-directory-full { display: none; }
+  #add-directory .add-directory-compact { display: inline; }
   #task-options { display: block; flex: none; min-width: 34px; min-height: 32px; padding: 4px 6px; font-size: 17px; line-height: 1; }
   #task-options[aria-expanded="true"] { color: #176bc0; border-color: #cfe3f8; background: var(--blue-soft); }
   /* 浮层挂在页头下面，不占位、不改布局：开着的时候页头还是那一行高。样子跟对话帧

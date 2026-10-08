@@ -94,6 +94,11 @@ function createPaths({ dataDir } = {}) {
     sampleWorkspacesDir: root === PKG_ROOT
       ? path.join(os.homedir(), '.multicc', 'samples')
       : path.join(root, 'samples'),
+    // A real, user-owned workspace created on the very first launch. It lives
+    // outside the replaceable application bundle so upgrades cannot remove it.
+    defaultWorkspacePath: root === PKG_ROOT
+      ? path.join(os.homedir(), '.multicc', 'workspaces', 'default')
+      : path.join(root, 'workspaces', 'default'),
     // Gitless cwd for official-account login terminals (codex login / claude auth
     // login). It must never live under a TCC-protected location: that directory is
     // where the terminal opens, and the only reason login ever failed before.

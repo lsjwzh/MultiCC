@@ -95,11 +95,14 @@ function bootstrapState(options) {
       logger.error(`[multicc] directories.json unreadable and no backup usable: ${error.message}`);
       throw error;
     }
-    if (!result.present) return new Map();
+    if (!result.present) return { directories: new Map(), present: false };
     if (result.recovered) {
       logger.warn(`[multicc] directories.json recovered from backup ${result.recoveredFrom}`);
     }
-    return new Map(result.data.map(directory => [directory.id, directory]));
+    return {
+      directories: new Map(result.data.map(directory => [directory.id, directory])),
+      present: true,
+    };
   }
 
   let sessionResult;
@@ -113,7 +116,8 @@ function bootstrapState(options) {
   if (sessionResult.present && sessionResult.recovered) {
     logger.warn(`[multicc] sessions.json recovered from backup ${sessionResult.recoveredFrom}`);
   }
-  const directories = loadDirectories();
+  const directoryResult = loadDirectories();
+  const directories = directoryResult.directories;
 
   let state;
   if (rawSessions.length > 0
@@ -135,11 +139,22 @@ function bootstrapState(options) {
       directories: migrated.directories,
       persistedSessions: migrated.sessions,
       needsSave: true,
+      needsDefaultDirectory: false,
     };
   } else {
     const persistedSessions = new Map(rawSessions.map(session => [session.id, session]));
     logger.log(`[multicc] Loaded ${directories.size} directories, ${persistedSessions.size} session(s)`);
-    state = { directories, persistedSessions, needsSave: false };
+    // A missing directories.json means this installation has never completed
+    // directory setup. An existing empty array means the user deliberately
+    // removed the last directory, so it must stay empty across restarts.
+    const hasOnlyAuxSessions = rawSessions.every(session =>
+      session.id === '__aux__' || session.type === 'aux');
+    state = {
+      directories,
+      persistedSessions,
+      needsSave: false,
+      needsDefaultDirectory: !directoryResult.present && hasOnlyAuxSessions,
+    };
   }
 
   return Object.freeze({ sessionsStore, directoriesStore, state });

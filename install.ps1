@@ -13,6 +13,7 @@ param(
     [switch]$Yes,
     [switch]$NoData,
     [switch]$NoService,
+    [switch]$NoShortcut,
     [switch]$NoStart,
     [switch]$NoOpen
 )
@@ -34,6 +35,24 @@ function Write-Step([string]$Text) { Write-Host "`n>> $Text" -ForegroundColor Cy
 function Write-Ok([string]$Text) { Write-Host "[OK] $Text" -ForegroundColor Green }
 function Write-Info([string]$Text) { Write-Host "[i] $Text" -ForegroundColor Blue }
 function Write-Warn([string]$Text) { Write-Host "[!] $Text" -ForegroundColor Yellow }
+
+function Install-DesktopShortcut([string]$Root) {
+    $desktop = if ($env:MULTICC_DESKTOP_DIR) {
+        $env:MULTICC_DESKTOP_DIR
+    } else {
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+    }
+    if ([string]::IsNullOrWhiteSpace($desktop)) { throw 'Desktop folder is unavailable.' }
+    New-Item -ItemType Directory -Path $desktop -Force | Out-Null
+    $shortcutPath = Join-Path $desktop 'MultiCC.lnk'
+    $target = Join-Path $Root 'multicc.cmd'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $target
+    $shortcut.WorkingDirectory = $Root
+    $shortcut.Description = 'Start MultiCC'
+    $shortcut.Save()
+}
 
 function Get-RandomToken {
     $bytes = New-Object byte[] 24
@@ -661,6 +680,16 @@ try {
     $legacyDataDest = (& $MultiCCCommand config path 2>$null | Out-String).Trim()
     if (-not [string]::IsNullOrWhiteSpace($legacyDataDest)) {
         $legacyDataDest = Join-Path (Split-Path -Parent $legacyDataDest) 'data'
+    }
+
+    if (-not $NoShortcut) {
+        Write-Step 'Creating desktop shortcut'
+        try {
+            Install-DesktopShortcut $InstallDir
+            Write-Ok 'Desktop shortcut created'
+        } catch {
+            Write-Warn "Could not create a desktop shortcut: $($_.Exception.Message)"
+        }
     }
 
     if ($NoStart) { $NoService = $true }

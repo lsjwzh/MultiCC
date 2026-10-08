@@ -90,11 +90,17 @@ function archiveFixture({ scratch, name, root }, { corrupt = false } = {}) {
 // would hang instead of failing. Detached, those reads fail immediately, which is
 // exactly the no-terminal path a `curl … | bash` install takes.
 function runInstaller(args, { cwd, env = {} } = {}) {
+  const standaloneHome = env.MULTICC_STANDALONE_HOME || tmpdir('multicc-installer-data-');
   return spawnSync('bash', [INSTALLER, ...args], {
     encoding: 'utf8',
     cwd: cwd || ROOT,
     detached: true,
-    env: { ...process.env, ...env, MULTICC_STANDALONE_HOME: env.MULTICC_STANDALONE_HOME || '' },
+    env: {
+      ...process.env,
+      ...env,
+      MULTICC_STANDALONE_HOME: standaloneHome,
+      MULTICC_DESKTOP_DIR: env.MULTICC_DESKTOP_DIR || path.join(standaloneHome, 'Desktop'),
+    },
   });
 }
 
@@ -152,6 +158,10 @@ test('install.sh unpacks, configures, starts, and safely replaces a previous ins
     'the bundled runtime must be installed');
   assert.equal(fs.existsSync(path.join(installDir, fixture.name)), false,
     'the archive directory level must be stripped, not nested');
+  const shortcutName = PLATFORM === 'darwin' ? 'MultiCC.app'
+    : PLATFORM === 'win32' ? 'MultiCC.lnk' : 'MultiCC.desktop';
+  assert.equal(fs.existsSync(path.join(home, 'Desktop', shortcutName)), true,
+    'a normal install must leave a one-click launcher on the desktop');
 
   // The config must be written through the bundle's own CLI, into the data
   // directory — never into the package, which is what makes a swap safe.
@@ -613,6 +623,9 @@ test('install.ps1 is the native Windows path over the same standalone contract',
     'the upgrade prompt needs a headless escape hatch, like the POSIX --yes');
   assert.match(source, /\[switch\]\$NoData/,
     'Windows needs the POSIX --no-data escape hatch too');
+  assert.match(source, /\[switch\]\$NoShortcut/);
+  assert.match(source, /CreateShortcut\(\$shortcutPath\)/,
+    'the native Windows installer must create a desktop launcher');
   assert.match(source, /function Copy-LegacyDataAcross/,
     "the old installation's data must be brought across, or a Windows upgrade looks empty");
   assert.match(source, /Split-Path -Parent \$envFile\) 'data'/,
@@ -675,6 +688,7 @@ test('install.sh defaults to a stable home install and exposes headless switches
   const help = runInstaller(['--help']);
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /--no-start/);
+  assert.match(help.stdout, /--no-shortcut/);
   assert.match(help.stdout, /--no-open/);
   assert.match(help.stdout, /starts MultiCC and opens the browser/);
 });

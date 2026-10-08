@@ -77,13 +77,16 @@ fs.mkdirSync(projA, { recursive: true });
 
   // ── GET /api/fs/list ──
   let r = await api('GET', '/api/fs/list');
-  ok(r.status === 200 && r.j.base === os.homedir() && Array.isArray(r.j.entries), 'fs/list no path → home dir listing');
+  ok(r.status === 200 && r.j.base === os.homedir() && r.j.selectable === false && Array.isArray(r.j.entries),
+    'fs/list no path → home dir listing that cannot select HOME itself');
   r = await api('GET', `/api/fs/list?path=${encodeURIComponent(tmpRoot)}`);
-  ok(r.status === 200 && r.j.base === tmpRoot && r.j.entries.some(e => e.name === 'proj-a'), 'fs/list exact dir → subdirs');
+  ok(r.status === 200 && r.j.base === tmpRoot && r.j.selectable === true && r.j.entries.some(e => e.name === 'proj-a'),
+    'fs/list exact safe dir → selectable subdirs');
   r = await api('GET', `/api/fs/list?path=${encodeURIComponent(path.join(tmpRoot, 'proj-'))}`);
   ok(r.status === 200 && r.j.base === tmpRoot && r.j.entries.length === 1 && r.j.entries[0].name === 'proj-a', 'fs/list partial → prefix completion');
   r = await api('GET', `/api/fs/list?path=${encodeURIComponent('/nonexistent-xyz/abc')}`);
-  ok(r.status === 200 && r.j.entries.length === 0, 'fs/list missing parent → empty entries');
+  ok(r.status === 200 && r.j.selectable === false && r.j.entries.length === 0,
+    'fs/list missing parent → empty unselectable result');
   r = await api('GET', `/api/fs/list?path=${encodeURIComponent('~')}`);
   ok(r.status === 200 && r.j.base === os.homedir(), 'fs/list tilde expansion');
 

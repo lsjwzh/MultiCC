@@ -121,6 +121,20 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     tasks: airTasks, sessions: [] });
   routes['/api/cron'] = () => json([]);
   routes['/api/docs-registry'] = () => json([]);
+  routes['/api/fs/list'] = ({ url }) => {
+    const requested = url.searchParams.get('path') || '';
+    if (requested === '/Users/test/Projects') {
+      return json({ base: requested, parent: '/Users/test', selectable: true, entries: [
+        { name: 'Demo', path: '/Users/test/Projects/Demo' },
+      ] });
+    }
+    if (requested === '/Users/test/Projects/Demo') {
+      return json({ base: requested, parent: '/Users/test/Projects', selectable: true, entries: [] });
+    }
+    return json({ base: '/Users/test', parent: '/Users', selectable: false, entries: [
+      { name: 'Projects', path: '/Users/test/Projects' },
+    ] });
+  };
   routes['/api/air/tasks/tsk_here'] = routes['/api/task-shell-tasks/tsk_here'] = () => json({ ok: true,
     task: airTasks[0], sessionId: 'task-here', ownerShellId: 'shell-a', readOnly: false,
     execution: { busy: false, status: 'idle' }, resource: airTasks[0].resource, attribution: {}, roleBindings: { version: 0, bindings: [] }, messages: [] });
@@ -287,6 +301,30 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     await page.evaluate(`document.getElementById('side-more').click(); document.getElementById('overview').click()`);
     assert.equal(await page.evaluate(`document.getElementById('more-panel').open`), false, 'More 不会和控制台叠着');
     assert.ok(await consoleShown(page), '侧栏那行把控制台开在主区域里');
+    assert.deepEqual(await page.evaluate(`(() => {
+      const button = document.getElementById('add-directory');
+      const rect = button.getBoundingClientRect();
+      const header = document.getElementById('task-header').getBoundingClientRect();
+      return { visible: !button.hidden && rect.width > 0, inHeader: rect.top >= header.top && rect.bottom <= header.bottom };
+    })()`), { visible: true, inHeader: true }, '控制台顶部直接显示添加工作目录入口');
+    await page.evaluate(`document.getElementById('add-directory').click()`);
+    assert.equal(await page.evaluate(`!!document.querySelector('body > dialog[open] form input[required]')`), true,
+      '控制台顶部入口直接打开添加目录表单');
+    await page.evaluate(`document.querySelector('body > dialog[open] .air-path-row button').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-folder-location').textContent==='/Users/test'`));
+    assert.equal(await page.evaluate(`document.querySelector('.air-folder-actions .primary').disabled`), true,
+      '文件夹选择器禁止直接选择 HOME 或更高层目录');
+    await page.evaluate(`document.querySelector('.air-folder-entry').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-folder-location').textContent==='/Users/test/Projects'`));
+    await page.evaluate(`document.querySelector('.air-folder-entry').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-folder-location').textContent==='/Users/test/Projects/Demo'`));
+    await page.evaluate(`document.querySelector('.air-folder-actions .primary').click()`);
+    assert.deepEqual(await page.evaluate(`(() => {
+      const inputs = document.querySelectorAll('body > dialog[open] form input[required]');
+      return { name: inputs[0].value, path: inputs[1].value, pickerClosed: document.querySelector('.air-folder-picker').hidden };
+    })()`), { name: 'Demo', path: '/Users/test/Projects/Demo', pickerClosed: true },
+      '文件夹选择器逐级浏览主机目录，并把选中路径和默认名称写回表单');
+    await page.evaluate(`document.querySelector('body > dialog[open] form > button[type="button"]').click()`);
 
     // ── 控制台：主区域里的一页，地址写 view=overview ─────────────────────
     // 一页就是「地址说得清、刷新回得来、后退回得去」：点它不是叠一层浮层，而是换地址。
@@ -539,6 +577,14 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     const mobile = await page.evaluate(`(() => { const box=document.getElementById('console-center');
       return { right: Math.round(box.getBoundingClientRect().right), width: Math.round(box.getBoundingClientRect().width), innerWidth }; })()`);
     assert.ok(mobile.right <= mobile.innerWidth + 1, JSON.stringify(mobile));
+    assert.deepEqual(await page.evaluate(`(() => {
+      const button = document.getElementById('add-directory');
+      return {
+        visible: !button.hidden && button.getBoundingClientRect().width > 0,
+        compact: getComputedStyle(button.querySelector('.add-directory-compact')).display !== 'none',
+        headerFits: document.getElementById('task-header').scrollWidth <= document.getElementById('task-header').clientWidth + 1,
+      };
+    })()`), { visible: true, compact: true, headerFits: true }, '窄屏页头保留紧凑的添加目录入口且不横向溢出');
     assert.equal(await page.evaluate(`document.getElementById('console-center').scrollWidth<=document.getElementById('console-center').clientWidth+1`), true, '正文不横向溢出');
     assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
     await page.screenshot('04-mobile-console');
