@@ -311,6 +311,26 @@ class ManageService {
     if (res.statusCode >= 400) _throw(res);
   }
 
+  /// Add an independent Claude/Codex sign-in account. The returned payload
+  /// contains either `oauthUrl` (Claude) or `loginSessionId` (Codex).
+  Future<Map<String, dynamic>> createProviderAccount(
+    String vendor, {
+    String label = '',
+  }) async {
+    if (vendor != 'claude' && vendor != 'codex') {
+      throw ArgumentError.value(vendor, 'vendor', '必须是 claude 或 codex');
+    }
+    final res = await _send(
+      'POST',
+      '/api/$vendor/accounts',
+      body: jsonEncode({'label': label}),
+      timeout: const Duration(seconds: 20),
+    );
+    if (res.statusCode >= 400) _throwWrite(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
   Future<void> updateProvider(
     String appType,
     String id, {

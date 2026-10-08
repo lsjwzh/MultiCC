@@ -363,8 +363,8 @@ test('providerDisplayName keeps the official identity translatable', () => {
   const claudeBuiltin = { id: 'claude-official', appType: 'claude', name: 'Claude 官方' };
 
   // zh 是回落路径（没有 window.t），必须与改动前逐字一致，否则中文界面会被改坏。
-  assert.equal(catalog.providerDisplayName(codexBuiltin), 'Codex 官方');
-  assert.equal(catalog.providerDisplayName(claudeBuiltin), 'Claude 官方');
+  assert.equal(catalog.providerDisplayName(codexBuiltin), '同 Codex 终端');
+  assert.equal(catalog.providerDisplayName(claudeBuiltin), '同 Claude 终端');
 
   // 认身份的四个信号：id、builtinOfficial、裸名字串、老记录的前缀 + 后缀。
   assert.equal(catalog.officialProviderKind(codexBuiltin), 'codex');
@@ -374,8 +374,8 @@ test('providerDisplayName keeps the official identity translatable', () => {
 
   // 老记录（src/routes/*-accounts.js 建的）只换前缀，账号别名/后缀原样留着。
   assert.equal(catalog.providerDisplayName({ id: 'p1', appType: 'codex', name: 'Codex 官方 · ab12cd' }),
-    'Codex 官方 · ab12cd');
-  assert.equal(catalog.providerDisplayName('Claude 官方 · 工作号'), 'Claude 官方 · 工作号');
+    'Codex 账号 · ab12cd');
+  assert.equal(catalog.providerDisplayName('Claude 官方 · 工作号'), 'Claude 账号 · 工作号');
 
   // 普通供应商一个字符都不动。
   assert.equal(catalog.providerDisplayName({ id: 'p2', appType: 'codex', name: 'Lab Responses' }), 'Lab Responses');
@@ -389,8 +389,8 @@ test('providerDisplayName keeps the official identity translatable', () => {
   assert.equal(normalized.builtinOfficial, true);
   assert.equal(catalog.officialProviderKind({ id: 'claude-official-0123456789abcdef', appType: 'claude', name: 'x' }), 'claude');
   assert.equal(catalog.providerDisplayName({ id: 'claude-official', appType: 'claude', name: 'Claude 官方 · 选此登录', needsLogin: true }),
-    'Claude 官方 · 选此登录');
-  assert.equal(catalog.providerDisplayName(normalized), 'Codex 官方');
+    '同 Claude 终端');
+  assert.equal(catalog.providerDisplayName(normalized), '同 Codex 终端');
   assert.equal(catalog.officialProviderKind(normalized), 'codex');
 });
 
@@ -402,19 +402,23 @@ test('providerDisplayName translates the builtin identity in English', () => {
       const en = {
         providerOfficialCodex: 'Codex Official',
         providerOfficialClaude: 'Claude Official',
+        providerTerminalCodex: 'Same as Codex terminal',
+        providerTerminalClaude: 'Same as Claude terminal',
+        providerAccountCodex: 'Codex account',
+        providerAccountClaude: 'Claude account',
       };
       return en[key] || key;
     },
   };
   try {
     assert.equal(catalog.providerDisplayName({ id: 'codex-official', appType: 'codex', name: 'Codex 官方' }),
-      'Codex Official');
+      'Same as Codex terminal');
     assert.equal(catalog.providerDisplayName({ id: 'claude-official', appType: 'claude', name: 'Claude 官方' }),
-      'Claude Official');
+      'Same as Claude terminal');
     // 历史记录：前缀翻，后缀（用户别名）留着。
     assert.equal(catalog.providerDisplayName({ id: 'p1', appType: 'codex', name: 'Codex 官方 · ab12cd' }),
-      'Codex Official · ab12cd');
-    assert.equal(catalog.providerDisplayName('Codex 官方'), 'Codex Official');
+      'Codex account · ab12cd');
+    assert.equal(catalog.providerDisplayName('Codex 官方'), 'Same as Codex terminal');
     // 普通供应商不受影响，也不该被翻译。
     assert.equal(catalog.providerDisplayName({ id: 'p2', appType: 'codex', name: 'Lab Responses' }), 'Lab Responses');
   } finally {

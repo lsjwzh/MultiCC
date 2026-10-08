@@ -52,8 +52,8 @@
   // 字面量只能影响之后新建的记录，历史记录里的中文会一直漏出来，所以这里按「身份」在
   // 渲染时翻译一遍：zh 仍是中文原样，en 变英文，一条历史数据都不动。
   const OFFICIAL_NAME_LITERALS = Object.freeze({
-    codex: Object.freeze(['Codex 官方', 'Codex Official']),
-    claude: Object.freeze(['Claude 官方', 'Claude Official']),
+    codex: Object.freeze(['Codex 官方', 'Codex Official', '同 Codex 终端', 'Same as Codex terminal']),
+    claude: Object.freeze(['Claude 官方', 'Claude Official', '同 Claude 终端', 'Same as Claude terminal']),
   });
   const OFFICIAL_SUFFIX_SEPARATOR = ' · ';
 
@@ -95,13 +95,17 @@
     const name = text(value && typeof value === 'object' ? value.name : value, 240);
     const kind = officialProviderKind(value);
     if (!kind) return name;
+    const id = value && typeof value === 'object' ? text(value.id, 180).toLowerCase() : '';
+    const bareTerminalName = OFFICIAL_NAME_LITERALS[kind].includes(name);
+    if ((id === `${kind}-official` && !(value && value.officialAccountId)) || bareTerminalName) {
+      return kind === 'codex'
+        ? tt('providerTerminalCodex', '同 Codex 终端')
+        : tt('providerTerminalClaude', '同 Claude 终端');
+    }
     const base = kind === 'codex'
-      ? tt('providerOfficialCodex', 'Codex 官方')
-      : tt('providerOfficialClaude', 'Claude 官方');
-    // 一个账号都没登录时只剩一条占位，后缀是可翻译的「选此登录」。
-    const suffix = value && typeof value === 'object' && value.needsLogin === true
-      ? tt('providerOfficialSignIn', '选此登录')
-      : officialNameSuffix(value);
+      ? tt('providerAccountCodex', 'Codex 账号')
+      : tt('providerAccountClaude', 'Claude 账号');
+    const suffix = officialNameSuffix(value);
     return suffix ? base + OFFICIAL_SUFFIX_SEPARATOR + suffix : base;
   }
 

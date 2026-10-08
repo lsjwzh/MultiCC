@@ -20,10 +20,10 @@ function fixture({ accounts = { claude: [A, B], codex: [A, B] }, loggedOut = [] 
   const catalog = createOfficialCatalog({ readRecords: () => records, readSelection: () => selection, writeSelection: s => { selection = s; }, listAccounts });
   return { catalog, records };
 }
-test('one official provider per signed-in account, named after the account; the alias follows the selection', () => {
+test('terminal routes stay fixed while every signed-in account is its own provider', () => {
   const { catalog, records } = fixture();
-  assert.deepEqual(catalog.list().map(p => p.id), [`claude-official-${A}`, `claude-official-${B}`, `codex-official-${A}`, `codex-official-${B}`, 'relay']);
-  assert.deepEqual(catalog.list('claude').map(p => p.name), ['Claude 官方 · work', 'Claude 官方 · b@example.com']);
+  assert.deepEqual(catalog.list().map(p => p.id), ['claude-official', `claude-official-${A}`, `claude-official-${B}`, 'codex-official', `codex-official-${A}`, `codex-official-${B}`, 'relay']);
+  assert.deepEqual(catalog.list('claude').map(p => p.name), ['同 Claude 终端', 'Claude 账号 · work', 'Claude 账号 · b@example.com']);
   assert.ok(catalog.list().filter(p => p.builtinOfficial).every(p => p.needsLogin === false));
   for (const type of ['claude', 'codex']) {
     assert.equal(catalog.normalize(type, null), `${type}-official`, 'the alias stays an alias');
@@ -31,10 +31,10 @@ test('one official provider per signed-in account, named after the account; the 
     assert.equal(catalog.normalize(type, `${type}-${A}`), `${type}-official-${A}`, 'legacy record → its account');
     assert.equal(catalog.normalize(type, `${type}-official-${B}`), `${type}-official-${B}`);
     assert.equal(catalog.normalize(type, `${type}-official-cccccccccccccccc`), `${type}-official`, 'deleted account → alias');
-    assert.equal(catalog.get(type, `${type}-official`).settingsConfig.officialAccount.id, A, 'no selection → first signed-in account');
+    assert.equal(catalog.get(type, `${type}-official`).settingsConfig.officialAccount, undefined, 'terminal route never borrows a managed account');
     assert.equal(catalog.list(type).find(p => p.isDefaultOfficial).id, `${type}-official-${A}`);
     catalog.select(type, B);
-    assert.equal(catalog.get(type, `${type}-official`).settingsConfig.officialAccount.id, B);
+    assert.equal(catalog.get(type, `${type}-official`).settingsConfig.officialAccount, undefined);
     assert.equal(catalog.list(type).find(p => p.isDefaultOfficial).id, `${type}-official-${B}`);
     assert.equal(catalog.get(type, `${type}-official-${A}`).settingsConfig.officialAccount.id, A, 'per-account ids never follow the selection');
     assert.equal(catalog.get(type, `${type}-official-cccccccccccccccc`), null);
@@ -43,23 +43,23 @@ test('one official provider per signed-in account, named after the account; the 
   assert.equal(catalog.get('codex', 'relay'), records[4]);
   assert.equal(catalog.normalize('qoder', null), null);
 });
-test('no signed-in account lists a single "select to log in" entry backed by the CLI login', () => {
+test('terminal routes remain visible and usable even when no managed account is signed in', () => {
   const { catalog } = fixture({ accounts: { claude: [A], codex: [] }, loggedOut: [A] });
   const official = catalog.list().filter(p => p.builtinOfficial);
   assert.deepEqual(official.map(p => [p.id, p.name, p.needsLogin]), [
-    ['claude-official', 'Claude 官方 · 选此登录', true],
-    ['codex-official', 'Codex 官方 · 选此登录', true],
+    ['claude-official', '同 Claude 终端', false],
+    ['codex-official', '同 Codex 终端', false],
   ]);
   assert.equal(official[0].settingsConfig.officialAccount, undefined, 'routes through the CLI login');
   catalog.select('claude', A);
   const kept = catalog.get('claude', 'claude-official');
-  assert.equal(kept.settingsConfig.officialAccount.id, A, 'a signed-out selection is kept, never silently swapped');
-  assert.equal(kept.name, 'Claude 官方 · 选此登录');
-  assert.equal(kept.needsLogin, true);
+  assert.equal(kept.settingsConfig.officialAccount, undefined);
+  assert.equal(kept.name, '同 Claude 终端');
+  assert.equal(kept.needsLogin, false);
 });
 test('saved invalid selection and persistence failure do not silently change accounts', () => {
   const bad = createOfficialCatalog({ readRecords: () => [], readSelection: () => ({ codex: '../invalid' }), writeSelection() {} });
-  assert.throws(() => bad.get('codex', 'codex-official'), /invalid saved/);
+  assert.throws(() => bad.list('codex'), /invalid saved/);
   const catalog = createOfficialCatalog({ readRecords: () => [], readSelection: () => ({ codex: A }), writeSelection() { throw new Error('disk full'); } });
   assert.throws(() => catalog.select('codex', B), /disk full/);
   assert.equal(catalog.active('codex'), A);
@@ -88,7 +88,7 @@ test('migration covers main, per-CLI, subagent and auto references, preserves lo
   assert.equal(normalizeOfficialSessionReferences(login, catalog.normalize), false);
   assert.equal(login.provider, null);
 });
-for (const vendor of ['codex', 'claude']) test(`${vendor} account activation validates login, changes singleton and protects current account deletion`, async () => {
+for (const vendor of ['codex', 'claude']) test(`${vendor} account activation validates login and every managed account remains deletable`, async () => {
   const { catalog } = fixture({ loggedOut: [B] });
   const handlers = new Map();
   const app = Object.fromEntries(['get', 'post', 'delete'].map(method => [method, (url, fn) => handlers.set(`${method} ${url}`, fn)]));
@@ -114,15 +114,16 @@ for (const vendor of ['codex', 'claude']) test(`${vendor} account activation val
   assert.equal((await call('post', '/:id/activate', 'missing')).statusCode, 404);
   assert.equal(catalog.active(vendor), 'global');
   assert.equal((await call('post', '/:id/activate', A)).statusCode, 200);
-  assert.equal(catalog.get(vendor, `${vendor}-official`).settingsConfig.officialAccount.id, A);
-  assert.equal((await call('delete', '/:id', A)).statusCode, 409);
+  assert.equal(catalog.get(vendor, `${vendor}-official`).settingsConfig.officialAccount, undefined);
+  assert.equal((await call('delete', '/:id', A)).statusCode, 200);
+  assert.equal(catalog.active(vendor), 'global', 'deleting the selected account falls back to the terminal route');
   assert.equal((await call('delete', '/:id', 'global')).statusCode, 409);
   const created = await call('post', '');
   assert.equal(created.body.providerId, `${vendor}-official-${B}`);
   assert.equal(createdProviders, 0);
-  assert.equal(catalog.active(vendor), A, 'adding an account does not switch the current account');
+  assert.equal(catalog.active(vendor), 'global', 'adding an account does not switch away from the terminal route');
   await call('delete', '/:id', B);
-  assert.equal(deletedAccounts, 1);
+  assert.equal(deletedAccounts, 2);
   assert.equal(deletedProviders, 0);
   await call('post', '/:id/activate', 'global');
   assert.equal(catalog.active(vendor), 'global');
@@ -158,7 +159,7 @@ test('production core initializes from prior default account, persists switches 
       fs.mkdirSync(path.join(fakeHome, '.multicc', 'official-accounts', 'claude'), { recursive: true });
       fs.writeFileSync(path.join(fakeHome, '.multicc', 'official-accounts', 'claude', `${id}.json`), JSON.stringify({ label: id === A ? 'work' : 'home', email: `${id.slice(0, 1)}@example.com`, access_token: 'x', refresh_token: 'y', expired: new Date(Date.now() + 3600e3).toISOString() }));
     }
-    run(`const a=require('node:assert/strict');const ids=p.listProviders('claude').filter(x=>x.builtinOfficial).map(x=>x.id);a.deepEqual(ids.sort(),['claude-official-${A}','claude-official-${B}']);a.equal(p.getProvider('claude','claude-official-${B}').settingsConfig.officialAccount.id,'${B}');a.equal(p.normalizeOfficialProviderId('claude','claude-official'),'claude-official');a.throws(()=>p.deleteProvider('claude','claude-official-${A}'));const e={};a.equal(p.applyClaudeProxyEnv(e,{providerId:'claude-official-${B}',sessionId:'test',port:9111,enabled:false,officialOAuth:false}),true);a.match(e.ANTHROPIC_BASE_URL,/claude-proxy/);`);
+    run(`const a=require('node:assert/strict');const ids=p.listProviders('claude').filter(x=>x.builtinOfficial).map(x=>x.id);a.deepEqual(ids.sort(),['claude-official','claude-official-${A}','claude-official-${B}']);a.equal(p.getProvider('claude','claude-official-${B}').settingsConfig.officialAccount.id,'${B}');a.equal(p.normalizeOfficialProviderId('claude','claude-official'),'claude-official');a.throws(()=>p.deleteProvider('claude','claude-official'));a.equal(p.deleteProvider('claude','claude-official-${A}'),true);const e={};a.equal(p.applyClaudeProxyEnv(e,{providerId:'claude-official-${B}',sessionId:'test',port:9111,enabled:false,officialOAuth:false}),true);a.match(e.ANTHROPIC_BASE_URL,/claude-proxy/);`);
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'providers.json'))).length, records.length);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

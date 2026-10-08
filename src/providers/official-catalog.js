@@ -40,7 +40,7 @@ function markerOf(record) {
   return ACCOUNT_ID_RE.test(id) ? id : null;
 }
 
-function createOfficialCatalog({ readRecords, readSelection, writeSelection, listAccounts = () => [] }) {
+function createOfficialCatalog({ readRecords, readSelection, writeSelection, listAccounts = () => [], deleteAccount = null }) {
   function accountsOf(type) {
     try {
       const list = listAccounts(type);
@@ -74,18 +74,15 @@ function createOfficialCatalog({ readRecords, readSelection, writeSelection, lis
     const email = account && String(account.email || '').trim();
     return label || email || accountId.slice(0, 6);
   }
-  function provider(type, id = officialId(type), accountId = defaultAccount(type)) {
+  function provider(type, id = officialId(type), accountId = 'global') {
     const override = overrideOf(type);
     const account = accountId === 'global' ? null : accountsOf(type).find(a => a.id === accountId) || null;
-    const base = type === 'codex' ? 'Codex 官方' : 'Claude 官方';
-    // With nobody signed in, the alias is the single "select to log in" entry —
-    // whatever it routes to (CLI login, or a saved selection that has since
-    // signed out and should fail loudly rather than silently switch accounts).
-    const placeholder = id === officialId(type) && !accountsOf(type).some(a => a.loggedIn);
-    const needsLogin = placeholder || (accountId !== 'global' && !(account && account.loggedIn));
+    const cliName = type === 'codex' ? 'Codex' : 'Claude';
+    const terminal = id === officialId(type);
+    const needsLogin = !terminal && !(account && account.loggedIn);
     const result = {
       id, appType: type,
-      name: placeholder ? `${base} · 选此登录` : accountId === 'global' ? base : `${base} · ${accountName(account, accountId)}`,
+      name: terminal ? `同 ${cliName} 终端` : `${cliName} 账号 · ${accountName(account, accountId)}`,
       source: 'builtin', apiFormat: type === 'codex' ? 'openai_responses' : 'anthropic',
       builtinOfficial: true, activeAccountId: accountId, needsLogin,
       accountEmail: account && account.email ? String(account.email) : null,
@@ -117,9 +114,11 @@ function createOfficialCatalog({ readRecords, readSelection, writeSelection, lis
   }
   function listOfficial(type) {
     const loggedIn = accountsOf(type).filter(a => a.loggedIn);
-    if (!loggedIn.length) return [provider(type)];
     const fallback = defaultAccount(type);
-    return loggedIn.map(a => ({ ...provider(type, accountProviderId(type, a.id), a.id), isDefaultOfficial: a.id === fallback }));
+    return [
+      provider(type),
+      ...loggedIn.map(a => ({ ...provider(type, accountProviderId(type, a.id), a.id), isDefaultOfficial: a.id === fallback })),
+    ];
   }
   return {
     active, provider, normalize, defaultAccount, isOfficialId: isOfficialProviderId,
@@ -129,7 +128,7 @@ function createOfficialCatalog({ readRecords, readSelection, writeSelection, lis
     },
     get(type, id) {
       const vendor = TYPES.find(t => (!type || type === t) && id === officialId(t));
-      if (vendor) return provider(vendor);
+      if (vendor) return provider(vendor, officialId(vendor), 'global');
       const accountVendor = TYPES.find(t => (!type || type === t) && accountIdOfProviderId(t, id));
       if (accountVendor) {
         const accountId = accountIdOfProviderId(accountVendor, id);
@@ -147,7 +146,18 @@ function createOfficialCatalog({ readRecords, readSelection, writeSelection, lis
         throw new Error('invalid official account selection');
       }
       writeSelection({ ...readSelection(), [type]: accountId });
-      return provider(type);
+      return accountId === 'global'
+        ? provider(type, officialId(type), 'global')
+        : provider(type, accountProviderId(type, accountId), accountId);
+    },
+    delete(type, id) {
+      if (!TYPES.includes(type) || id === officialId(type)) return false;
+      const accountId = accountIdOfProviderId(type, id);
+      if (!accountId || typeof deleteAccount !== 'function') return false;
+      if (!accountsOf(type).some(account => account.id === accountId)) return false;
+      if (active(type) === accountId) writeSelection({ ...readSelection(), [type]: 'global' });
+      deleteAccount(type, accountId);
+      return true;
     },
   };
 }

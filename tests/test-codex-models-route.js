@@ -248,7 +248,9 @@ test('Web and App consume the same endpoint and contain no production Astra gues
     assert.equal(sources[index].includes('gpt-6-astra'), false, files[index]);
   }
   const air = fs.readFileSync(path.join(__dirname, '..', 'public', 'air-provider.js'), 'utf8');
-  assert.match(air, /'codex-official': \{[^\n]+model: ''/);
+  assert.doesNotMatch(air, /'codex-official': \{/,
+    'Codex sign-in accounts belong to the account branch, not the API-key preset list');
+  assert.match(air, /data-provider-account="codex"/);
 });
 
 test('picker sync nudges one background refresh per hour and skips a fresh catalog', async () => {

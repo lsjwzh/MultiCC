@@ -1,23 +1,7 @@
 'use strict';
 
-// Air 原生「Provider · 高级」区块 —— 旧 manage 页 Provider 视图里、Air 线路卡覆盖不到的
-// 那四块：官方账号多账号切换、借道分享/导入、ZCode 原生连接、Kimi Code 原生连接。
-// 这块以前是 air-provider.js 里一个惰性 iframe（/manage.html?view=provider&embed=air）；
-// 旧页删掉之后它们必须自己站住，否则这四件事在界面上就没有入口了。
-//
-// 三块复用、一块重写：
-//   ① 官方账号 —— manage-official-accounts.js 原样复用。它全程按 id 取元素
-//      （official-accounts-body / official-accounts-status）、按
-//      `#official-accounts-card [data-act]` 做事件委托，所以下面那套骨架的 id 和
-//      data-act/data-vendor 必须和 public/manage.html 里逐字一致；改一个字，那块就静默
-//      变哑（查询拿到 null，`if (!el) return` 直接返回）。它自己还挂了一个盯
-//      body[data-view] 的 MutationObserver —— Air 的 body 上没有这个属性，所以永远不触发，
-//      刷新由本模块显式调 MultiCCOfficialAccounts.load()。
-//   ② 借道 —— manage-provider-relay.js 原样复用（importRelayProvider / manageRelayShares /
-//      shareRelayProvider 三个全局函数）。它的弹层是自带深色内联样式的独立浮层，
-//      挂在 document.body 上，不吃 Air 的皮肤，只用到 .btn / .status-text 两个类名。
-//   ③ ZCode / Kimi 原生连接 —— 逻辑原本写在 manage.js（2536-2729 行）里，随旧页一起删，
-//      所以这里按同样的接口重写一遍，文案全部走 t()。
+// Air 原生「Provider · 更多连接方式」区块。账号已并入“新增 Provider”，这里仅保留
+// 跨设备共享、ZCode 与 Kimi 的低频连接设置。
 //
 // ── 旧模块要的全局在这里补齐 ────────────────────────────────────────────────────
 // 两个复用模块直接引用 manage.js 的裸全局（providerApi / escapeHtml / showToast /
@@ -45,7 +29,7 @@
       root.showToast = message => { if (context) context.notice(String(message == null ? '' : message)); };
     }
     // 旧页的 loadProviders 重画整张 Provider 列表；Air 这边对应的是线路面板自己的刷新
-    // （官方账号切换后卡片上的「当前使用」要跟着变，所以这一步不能省）。
+    // （导入其他设备线路后卡片要跟着变，所以这一步不能省）。
     if (typeof root.loadProviders !== 'function') {
       root.loadProviders = () => { void root.MultiCCAirProvider?.refresh(); };
     }
@@ -95,7 +79,7 @@
       .air-prov-adv-status { font-size: 12px; color: var(--muted); word-break: break-word; }
       .air-prov-adv-picker { display: grid; gap: 8px; }
       .air-prov-adv-picker > strong { color: #294760; font-size: 12px; }
-      .air-prov-adv-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+      .air-prov-adv-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
       .air-prov-adv-choice { min-width: 0; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 9px; align-items: start; padding: 12px; text-align: left; border: 1px solid #d8e5f2; border-radius: 13px; background: #fff; color: #2f536f; cursor: pointer; }
       .air-prov-adv-choice:hover { border-color: #acd0f3; background: #f7fbff; }
       .air-prov-adv-choice.active { border-color: #8fc0ed; background: #edf7ff; box-shadow: 0 0 0 2px #dceeff inset; }
@@ -105,7 +89,6 @@
       .air-prov-adv-choice small { margin-top: 3px; color: var(--faint); font-size: 9px; line-height: 1.5; }
       .air-prov-adv-panel { display: grid; gap: 10px; margin-top: 2px; }
       .air-prov-adv-panel[hidden] { display: none; }
-      #official-accounts-body { display: flex; flex-direction: column; gap: 8px; }
       @media (max-width: 720px) { .air-prov-adv-choices { grid-template-columns: 1fr; } }
     `;
     document.head.append(styleNode);
@@ -119,27 +102,6 @@
     panel.append(head, bodyNode);
     if (footNode) panel.append(footNode);
     return panel;
-  }
-
-  // ── 官方账号（复用 manage-official-accounts.js 的骨架）────────────────────────
-  function officialCard() {
-    const body = make('div', null, 'air-prov-adv-body');
-    body.id = 'official-accounts-body';
-    body.append(make('p', t('airProviderAdvOfficialDesc')), make('span', t('airProviderAdvLoading'), 'status-text'));
-    const foot = make('div', null, 'air-prov-adv-foot');
-    for (const [vendor, label] of [['codex', t('airProviderAdvAddCodex')], ['claude', t('airProviderAdvAddClaude')]]) {
-      // 这两个按钮不自己接 onclick：manage-official-accounts.js 在 document 上做委托，
-      // 只认 data-act="add" + data-vendor，接了反而会点一次跑两遍。
-      const control = make('button', label, 'btn btn-green');
-      control.type = 'button';
-      control.dataset.act = 'add';
-      control.dataset.vendor = vendor;
-      foot.append(control);
-    }
-    const officialStatus = make('span', '', 'status-text');
-    officialStatus.id = 'official-accounts-status';
-    foot.append(officialStatus);
-    return card(t('airProviderAdvOfficialTitle'), body, foot, 'official-accounts-card');
   }
 
   // ── 借道分享 / 导入（复用 manage-provider-relay.js 的三个全局）────────────────
@@ -166,7 +128,7 @@
   }
 
   function showSection(key) {
-    if (!['official', 'device', 'native'].includes(key)) return;
+    if (!['device', 'native'].includes(key)) return;
     activeSection = key;
     document.querySelectorAll('.air-prov-adv-choice').forEach(control => {
       const selected = control.dataset.section === key;
@@ -176,7 +138,6 @@
     document.querySelectorAll('.air-prov-adv-panel').forEach(panel => {
       panel.hidden = panel.dataset.section !== key;
     });
-    if (key === 'official') root.MultiCCOfficialAccounts?.load();
     if (key === 'native') { void loadZcodeAuth(); void loadKimiAuth(); }
   }
 
@@ -396,20 +357,17 @@
     picker.append(make('strong', t('airProviderAdvancedPrompt')));
     const choices = make('div', null, 'air-prov-adv-choices');
     choices.append(
-      choice('official', '👤', 'airProviderAdvancedOfficialChoice', 'airProviderAdvancedOfficialChoiceDesc'),
       choice('device', '↔', 'airProviderAdvancedDeviceChoice', 'airProviderAdvancedDeviceChoiceDesc'),
       choice('native', '⌘', 'airProviderAdvancedNativeChoice', 'airProviderAdvancedNativeChoiceDesc'),
     );
     picker.append(choices);
-    const official = make('div', null, 'air-prov-adv-panel'); official.dataset.section = 'official'; official.hidden = activeSection !== 'official'; official.append(officialCard());
     const device = make('div', null, 'air-prov-adv-panel'); device.dataset.section = 'device'; device.hidden = activeSection !== 'device'; device.append(relayCard());
     const native = make('div', null, 'air-prov-adv-panel'); native.dataset.section = 'native'; native.hidden = activeSection !== 'native'; native.append(zcodeCard(), kimiCard());
-    host.replaceChildren(picker, official, device, native);
+    host.replaceChildren(picker, device, native);
     if (activeSection) showSection(activeSection);
   }
 
   function refresh() {
-    if (activeSection === 'official') root.MultiCCOfficialAccounts?.load();
     if (activeSection === 'native') { void loadZcodeAuth(); void loadKimiAuth(); }
   }
 
