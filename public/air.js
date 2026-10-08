@@ -561,10 +561,9 @@
     const running = tasks.filter(isRunningTask);
     const waiting = tasks.filter(task => taskStatusOf(task) === 'waiting');
     const errored = tasks.filter(task => taskStatusOf(task) === 'error');
-    // 「执行成功」量的是这一轮的结局（runState 折出来的 succeeded），不是生命周期那个
-    // done —— 后者只剩计划看板时代留下的少量记录，卡片常年是个位数，而真正跑成功的
-    // 任务全在 succeeded 上，却一档也筛不出来。
-    const succeededCount = tasks.filter(task => taskStatusOf(task) === 'succeeded').length;
+    // 与控制台共用同一份「今日完成」判定：本轮成功或旧生命周期 done，并且更新时间
+    // 落在本地今天。判定导出自 air-admin，避免两处各算一次后在零点/旧记录上分叉。
+    const finishedToday = tasks.filter(task => window.MultiCCAirAdmin?.doneToday?.(task));
     // A stat card is a quick filter: clicking it jumps the list to that
     // category instead of leaving the numbers as dead digits.
     function quickFilter(status) {
@@ -586,14 +585,14 @@
       return card;
     };
     $('directory-stats').replaceChildren(
-      stat(t('airStatRunning'), running.length, '', 'blue', 'running'),
-      stat(t('airStatWaiting'), waiting.length, '', 'amber', 'waiting'),
-      stat(t('airStatError'), errored.length, '', 'red', 'error'),
-      stat(t('airStatSucceeded'), succeededCount, t('airDirStatSucceededHint'), 'green', 'succeeded'),
-      stat(t('airStatusAllRecords'), tasks.length, t('airDirArchiveWorktrees', {
+      stat(t('airAdminTileRunning'), running.length, '', 'green', 'running'),
+      stat(t('airAdminTileWaiting'), waiting.length, '', 'amber', 'waiting'),
+      stat(t('airAdminTileError'), errored.length, '', 'red', 'error'),
+      stat(t('airAdminTileToday'), finishedToday.length, t('airAdminTileTodayDetail'), 'blue', 'today'),
+      stat(t('airAdminTileAll'), tasks.length, t('airDirArchiveWorktrees', {
         archived: tasks.filter(task => task.status === 'archived').length,
         worktrees: dir?.worktreeCount || 0,
-      }), '', 'all'),
+      }), 'purple', 'all'),
     );
     // 全文命中时保持相关度顺序，没有命中照旧按时间排；两条路的状态/目录筛选同属
     // filterTasks。「框里现在有没有词」是前提：面板被导航重置成空查询时，上一轮的
