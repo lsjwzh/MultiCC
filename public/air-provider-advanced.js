@@ -35,6 +35,7 @@
     .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 
   let context = null;
+  let activeSection = '';
 
   // 补全局要等到渲染时：api-client.js（window.MultiCCApi）在 air.html 里排在本脚本之后，
   // 加载期就读它只会把 providerApi 钉成 undefined，之后每次点击都是 TypeError。
@@ -92,7 +93,20 @@
       .air-prov-adv-row input, .air-prov-adv-row select { flex: 1; min-width: 200px; padding: 6px 9px; border: 1px solid #cfe0f1; border-radius: 8px; font-size: 12px; }
       .air-prov-adv-form { display: none; flex-direction: column; gap: 6px; padding: 6px 0; }
       .air-prov-adv-status { font-size: 12px; color: var(--muted); word-break: break-word; }
+      .air-prov-adv-picker { display: grid; gap: 8px; }
+      .air-prov-adv-picker > strong { color: #294760; font-size: 12px; }
+      .air-prov-adv-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+      .air-prov-adv-choice { min-width: 0; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 9px; align-items: start; padding: 12px; text-align: left; border: 1px solid #d8e5f2; border-radius: 13px; background: #fff; color: #2f536f; cursor: pointer; }
+      .air-prov-adv-choice:hover { border-color: #acd0f3; background: #f7fbff; }
+      .air-prov-adv-choice.active { border-color: #8fc0ed; background: #edf7ff; box-shadow: 0 0 0 2px #dceeff inset; }
+      .air-prov-adv-choice-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 10px; background: #edf5fc; font-size: 16px; }
+      .air-prov-adv-choice strong, .air-prov-adv-choice small { display: block; }
+      .air-prov-adv-choice strong { font-size: 11px; line-height: 1.4; }
+      .air-prov-adv-choice small { margin-top: 3px; color: var(--faint); font-size: 9px; line-height: 1.5; }
+      .air-prov-adv-panel { display: grid; gap: 10px; margin-top: 2px; }
+      .air-prov-adv-panel[hidden] { display: none; }
       #official-accounts-body { display: flex; flex-direction: column; gap: 8px; }
+      @media (max-width: 720px) { .air-prov-adv-choices { grid-template-columns: 1fr; } }
     `;
     document.head.append(styleNode);
   }
@@ -137,6 +151,33 @@
     importButton.title = t('airProviderAdvRelayImportHint');
     foot.append(importButton, button(t('airProviderAdvRelayRecords'), () => root.manageRelayShares?.()));
     return card(t('airProviderAdvRelayTitle'), body, foot);
+  }
+
+  function choice(key, icon, titleKey, descKey) {
+    const control = make('button', null, 'air-prov-adv-choice');
+    control.type = 'button';
+    control.dataset.section = key;
+    control.setAttribute('aria-expanded', String(activeSection === key));
+    const copy = make('span');
+    copy.append(make('strong', t(titleKey)), make('small', t(descKey)));
+    control.append(make('span', icon, 'air-prov-adv-choice-icon'), copy);
+    control.onclick = () => showSection(key);
+    return control;
+  }
+
+  function showSection(key) {
+    if (!['official', 'device', 'native'].includes(key)) return;
+    activeSection = key;
+    document.querySelectorAll('.air-prov-adv-choice').forEach(control => {
+      const selected = control.dataset.section === key;
+      control.classList.toggle('active', selected);
+      control.setAttribute('aria-expanded', String(selected));
+    });
+    document.querySelectorAll('.air-prov-adv-panel').forEach(panel => {
+      panel.hidden = panel.dataset.section !== key;
+    });
+    if (key === 'official') root.MultiCCOfficialAccounts?.load();
+    if (key === 'native') { void loadZcodeAuth(); void loadKimiAuth(); }
   }
 
   // ── ZCode 原生连接 ───────────────────────────────────────────────────────────
@@ -351,19 +392,30 @@
     context = nextContext || context;
     ensureGlobals();
     injectStyle();
-    host.replaceChildren(officialCard(), relayCard(), zcodeCard(), kimiCard());
-    void refresh();
+    const picker = make('div', null, 'air-prov-adv-picker');
+    picker.append(make('strong', t('airProviderAdvancedPrompt')));
+    const choices = make('div', null, 'air-prov-adv-choices');
+    choices.append(
+      choice('official', '👤', 'airProviderAdvancedOfficialChoice', 'airProviderAdvancedOfficialChoiceDesc'),
+      choice('device', '↔', 'airProviderAdvancedDeviceChoice', 'airProviderAdvancedDeviceChoiceDesc'),
+      choice('native', '⌘', 'airProviderAdvancedNativeChoice', 'airProviderAdvancedNativeChoiceDesc'),
+    );
+    picker.append(choices);
+    const official = make('div', null, 'air-prov-adv-panel'); official.dataset.section = 'official'; official.hidden = activeSection !== 'official'; official.append(officialCard());
+    const device = make('div', null, 'air-prov-adv-panel'); device.dataset.section = 'device'; device.hidden = activeSection !== 'device'; device.append(relayCard());
+    const native = make('div', null, 'air-prov-adv-panel'); native.dataset.section = 'native'; native.hidden = activeSection !== 'native'; native.append(zcodeCard(), kimiCard());
+    host.replaceChildren(picker, official, device, native);
+    if (activeSection) showSection(activeSection);
   }
 
   function refresh() {
-    root.MultiCCOfficialAccounts?.load();
-    void loadZcodeAuth();
-    void loadKimiAuth();
+    if (activeSection === 'official') root.MultiCCOfficialAccounts?.load();
+    if (activeSection === 'native') { void loadZcodeAuth(); void loadKimiAuth(); }
   }
 
   // prepare 单独露出来：线路卡上的「借道分享」不经过这一格，但那个弹层同样吃
   // escapeHtml / providerApi 这几个裸全局，没补就是点一下抛 ReferenceError。
   function prepare(nextContext) { context = nextContext || context; ensureGlobals(); }
 
-  root.MultiCCAirProviderAdvanced = Object.freeze({ render, refresh, prepare });
+  root.MultiCCAirProviderAdvanced = Object.freeze({ render, refresh, prepare, select: showSection });
 })(typeof window !== 'undefined' ? window : null);

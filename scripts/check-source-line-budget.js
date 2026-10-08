@@ -367,8 +367,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +1 双语键（rsErrPlatform）：桌面 agent 的能力画像（src/desktop-host.js）落地后，
     // macOS 之外的机器上🖥不再显示，深链接进来要说清「这台机器还不支持」。中英各 1 行
     // = +2 行，重跑生成器实测 8846/563130，按真实高水位抬一格。
-    maxLines: 8846,
-    maxBytes: 563130,
+    // +7 双语键（airProviderAdvanced*Choice*）：Provider 的低频连接能力改为三个
+    // “我要做什么”入口；同时吸收 main 新增的 3 个双语任务设置键。生成器实测
+    // 8864/563939，仍只是词典数据增长。
+    maxLines: 8864,
+    maxBytes: 563939,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

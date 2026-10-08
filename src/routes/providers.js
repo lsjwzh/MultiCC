@@ -586,7 +586,7 @@ function createProviderRoutes(rawDeps) {
       const payload = {
         v: 2,
         kind: 'multicc-relay',
-        name: `${provider.name || req.params.id} · 借道`,
+        name: `${provider.name || req.params.id} · 远程共享`,
         appType: req.params.appType,
         baseUrl: relayBaseUrl,
         ...(relayModels[0] ? { model: relayModels[0], models: relayModels } : {}),
@@ -610,7 +610,7 @@ function createProviderRoutes(rawDeps) {
       } catch (error) {
         if (error && error.code === 'RELAY_TOKEN_INVALID') {
           return res.status(400).json({
-            error: '借道令牌必须为 8–128 位无空格 ASCII 字符',
+            error: '共享凭据必须为 8–128 位无空格 ASCII 字符',
             code: 'RELAY_TOKEN_INVALID',
           });
         }

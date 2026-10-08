@@ -1286,8 +1286,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
           return (i?i.textContent:'')+' '+b.textContent.replace(i?i.textContent:'' ,'').trim()}),
         widths:[...new Set([...t.querySelectorAll('button')].filter(b=>!b.hidden).map(b=>Math.round(b.getBoundingClientRect().width)))]}})()`);
     // 页面自己那几件动作也是「图标 + 名字」：图标说的是这件事是什么性质 ——
-    // ← 回去、⇄ 借道、↻ 重新读、＋ 新增。
-    assert.deepEqual(settingsTools.rows, ['← 返回设置中心', '⇄ 高级账号与借道', '↻ 刷新', '＋ 新增 Provider'], JSON.stringify(settingsTools));
+    // ← 回去、⋯ 更多连接、↻ 重新读、＋ 新增。
+    assert.deepEqual(settingsTools.rows, ['← 返回设置中心', '⋯ 更多连接方式', '↻ 刷新', '＋ 新增 Provider'], JSON.stringify(settingsTools));
     assert.equal(settingsTools.widths.length, 1, '设置页的工具也铺成一列：' + JSON.stringify(settingsTools));
     assert.ok(settingsTools.h <= 64, JSON.stringify(settingsTools));
     await page.evaluate(`document.querySelector('#admin-actions .primary').click()`);

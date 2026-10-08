@@ -32,8 +32,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
   bool _loading = true;
   bool _importing = false;
 
-  /// 「高级账号与借道」那一组展开没展开（Web 的 `toggleAdvanced`，默认收起；
-  /// 里面那截控制台第一次展开才加载 —— 这边是外开浏览器，不存在懒加载）。
+  /// 「更多连接方式」展开没展开。App 用三个任务入口说明用途，具体配置外开 Web。
   bool _advancedOpen = false;
   String? _error;
 
@@ -103,7 +102,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
         codex: cli == 'codex' ? (id ?? '') : null,
       );
       setState(() => _defaults[cli] = id);
-      _snack('已设置 $cli 默认 provider');
+      _snack('已设置 $cli 默认线路');
     } catch (e) {
       _snack('设置失败：$e');
     }
@@ -299,7 +298,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
                       if (_providers.isEmpty)
                         const Padding(
                           padding: EdgeInsets.symmetric(vertical: 24),
-                          child: Text('还没有 provider。点上方「从 cc-switch 导入」或右下角「新建」。',
+                          child: Text('还没有 AI 线路。可以导入以前的线路，或点右下角「新建」。',
                               textAlign: TextAlign.center,
                               style: TextStyle(color: AppColors.faint, fontSize: 13)),
                         )
@@ -308,8 +307,8 @@ class _ProviderScreenState extends State<ProviderScreen> {
                         const SizedBox(height: 16),
                         _providerGroup('⚡ Codex', _byType('codex')),
                       ],
-                      // 高级那一组永远在最后（Web 也是 `page.append(…, advanced)`），
-                      // 而且没有 provider 时也要在：它说的正是「这些还归老控制器」。
+                      // 低频连接方式永远在最后；默认只显示一个入口，不把账号、跨设备
+                      // 与原生登录同时摊在日常线路列表里。
                       const SizedBox(height: 16),
                       _advancedCard(),
                     ],
@@ -348,12 +347,8 @@ class _ProviderScreenState extends State<ProviderScreen> {
     );
   }
 
-  /// 「高级账号与借道」（Web `air-provider.js` 的 `#air-provider-advanced`）。
-  ///
-  /// Web 那边展开的是一个指向 `/manage.html?view=provider&embed=air` 的 iframe
-  /// —— 官方多账号、借道分享、ZCode / Kimi 原生登录这些还在老控制器里，Air 只
-  /// 在自己页面上留一个入口。Flutter 侧没有内嵌 WebView，所以这里保留那句
-  /// 说明，把「打开」做成外开浏览器：同一个页面，换个容器。
+  /// Web 的三项任务入口在 App 的对应入口。App 不复制账号/OAuth 状态机，点选后
+  /// 外开同一台 MultiCC 的 Web 设置，并用 providerConnection 直接展开对应一项。
   Widget _advancedCard() {
     return Container(
       decoration: BoxDecoration(
@@ -373,14 +368,14 @@ class _ProviderScreenState extends State<ProviderScreen> {
               child: Row(
                 children: [
                   const Icon(
-                    Icons.swap_horiz_rounded,
+                    Icons.more_horiz_rounded,
                     size: 18,
                     color: AppColors.muted,
                   ),
                   const SizedBox(width: 9),
                   const Expanded(
                     child: Text(
-                      '高级账号与借道',
+                      '更多连接方式',
                       style: TextStyle(
                         color: AppColors.textBright,
                         fontSize: 14,
@@ -403,49 +398,31 @@ class _ProviderScreenState extends State<ProviderScreen> {
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
               child: Column(
+                key: const ValueKey('provider-advanced-open'),
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text.rich(
-                    TextSpan(
-                      children: [
-                        const TextSpan(
-                          text: '高级连接\n',
-                          style: TextStyle(
-                            color: AppColors.text,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const TextSpan(
-                          text: '官方多账号、借道分享、ZCode / Kimi 原生登录与完整用量统计暂沿用原控制器。',
-                          style: TextStyle(
-                            color: AppColors.faint,
-                            fontSize: 12,
-                            height: 1.5,
-                          ),
-                        ),
-                      ],
-                    ),
+                  const Text('你想做什么？',
+                      style: TextStyle(color: AppColors.text, fontSize: 13, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 9),
+                  _connectionChoice(
+                    section: 'official',
+                    icon: Icons.person_outline_rounded,
+                    title: '切换 Claude / Codex 登录账号',
+                    description: '添加多个官方账号，并选择接下来使用哪一个。',
                   ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    height: 42,
-                    child: OutlinedButton.icon(
-                      key: const ValueKey('provider-advanced-open'),
-                      onPressed: _openLegacyController,
-                      icon: const Icon(
-                        Icons.open_in_new_rounded,
-                        size: 17,
-                        color: AppColors.accent,
-                      ),
-                      label: const Text(
-                        '打开完整 Provider 控制器',
-                        style: TextStyle(color: AppColors.accent),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: AppColors.lineStrong),
-                      ),
-                    ),
+                  const SizedBox(height: 8),
+                  _connectionChoice(
+                    section: 'device',
+                    icon: Icons.devices_other_rounded,
+                    title: '连接或共享另一台设备',
+                    description: '使用其他设备的 AI 线路，或把本机线路分享出去。',
+                  ),
+                  const SizedBox(height: 8),
+                  _connectionChoice(
+                    section: 'native',
+                    icon: Icons.terminal_rounded,
+                    title: '单独登录 ZCode / Kimi',
+                    description: '仅在会话直接使用 ZCode 或 Kimi Code 时需要。',
                   ),
                 ],
               ),
@@ -455,13 +432,50 @@ class _ProviderScreenState extends State<ProviderScreen> {
     );
   }
 
-  /// 老控制器那一页（`/manage.html?view=provider&embed=air`）。带 token 是因为
-  /// 浏览器侧要凭它过鉴权 —— 和聊天页外开控制台是同一个约定。
-  void _openLegacyController() {
-    final uri = Uri.parse(widget.settings.buildHttpUrl('/manage')).replace(
+  Widget _connectionChoice({
+    required String section,
+    required IconData icon,
+    required String title,
+    required String description,
+  }) {
+    return Material(
+      color: AppColors.bgSoft,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        key: ValueKey('provider-connection-$section'),
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _openConnection(section),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+          child: Row(
+            children: [
+              Icon(icon, size: 20, color: AppColors.accent),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: const TextStyle(color: AppColors.textBright, fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 3),
+                    Text(description, style: const TextStyle(color: AppColors.faint, fontSize: 11.5, height: 1.35)),
+                  ],
+                ),
+              ),
+              const Icon(Icons.open_in_new_rounded, size: 16, color: AppColors.faint),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 带着用户选中的任务外开 Web 设置页；token 仍按聊天页外开控制台的约定传递。
+  void _openConnection(String section) {
+    final uri = Uri.parse(widget.settings.buildHttpUrl('/air')).replace(
       queryParameters: {
         'view': 'provider',
-        'embed': 'air',
+        'providerConnection': section,
         if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
       },
     );
@@ -479,7 +493,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('从 cc-switch 导入 / 同步',
+          const Text('导入已有线路',
               style: TextStyle(color: AppColors.textBright, fontSize: 14, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
           Text(
@@ -494,7 +508,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
               icon: _importing
                   ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accent))
                   : const Icon(Icons.download_rounded, size: 18, color: AppColors.accent),
-              label: Text(_importing ? '导入中…' : '从 cc-switch 导入', style: const TextStyle(color: AppColors.accent)),
+              label: Text(_importing ? '导入中…' : '从 CC-Switch 导入', style: const TextStyle(color: AppColors.accent)),
               style: OutlinedButton.styleFrom(side: const BorderSide(color: AppColors.lineStrong)),
             ),
           ),
@@ -505,7 +519,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
 
   String get _ccSwitchDescription {
     if (_ccSwitchAvailable) {
-      return '把 cc-switch 里的 provider 同步进 multicc 自己的存储（按来源去重，可重复同步）。导入后可自由编辑/删除，不影响 cc-switch。';
+      return '如果你以前用 CC-Switch 配过 AI 线路，可以一键复制到 MultiCC；没有用过可忽略。';
     }
     final reason = _ccSwitchStatus['reason']?.toString();
     final dbFound = _ccSwitchStatus['dbFound'] == true;
@@ -529,7 +543,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('全局默认 Provider',
+          const Text('新任务默认线路',
               style: TextStyle(color: AppColors.textBright, fontSize: 14, fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
           const Text('新建会话自动套用。「默认登录」= 走本机订阅 / OAuth。',
