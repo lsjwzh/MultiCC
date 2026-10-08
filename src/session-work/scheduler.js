@@ -306,6 +306,17 @@ function publicSchedule(schedule, queue = [], draft = null) {
       admittedAt: item.createdAt,
       clientMsgId: clientMsgIdForItem(item),
       text: queuedText(item),
+      // A pending item with attempts > 0 is mid-failure (retry backoff), not
+      // merely waiting its turn. The queue card is the only place that state is
+      // visible — the report's complaint was a queue that looked healthy while
+      // every attempt failed in private. The data lives on the outbox entry
+      // itself (draft.outbox), so this is a projection, not a new source.
+      // lastError stays one short line: the full multi-line remedy belongs to
+      // the dead-letter notice, the card only has to say "failing, and why".
+      attempts: Number(item.attempts) || 0,
+      lastError: item.lastError
+        ? String(item.lastError).split('\n')[0].trim().slice(0, 160)
+        : null,
     })),
     lastDecision: schedule.lastDecision ? clone(schedule.lastDecision) : null,
     updatedAt: schedule.updatedAt,

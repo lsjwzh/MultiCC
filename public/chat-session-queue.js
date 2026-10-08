@@ -333,6 +333,19 @@
       }
       if (handle) row.appendChild(handle);
       row.append(position, text);
+      // Mid-failure, not merely waiting: the entry has already failed at least
+      // once and is sitting in retry backoff. This is the one surface where a
+      // retrying message looks different from a healthy one — without it the
+      // card reads as "queued" while every attempt fails in private.
+      if (Number(item?.attempts) > 0 && item?.lastError) {
+        const retry = documentRef.createElement('div');
+        retry.className = 'session-queue-retry';
+        retry.textContent = tr('queueRetrying', {
+          n: Number(item.attempts),
+          error: String(item.lastError),
+        });
+        row.appendChild(retry);
+      }
       if (item?.entryId && item?.state === 'pending'
           && (typeof onCancel === 'function' || typeof onInsert === 'function')) {
         const actions = documentRef.createElement('div');

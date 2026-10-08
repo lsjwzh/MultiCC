@@ -36,9 +36,12 @@ function formatWait(ms) {
 // it is the manual escape the workspace layer deliberately refuses to take on
 // its own. `reasons` is the busy-reason vocabulary, so it stays a code here
 // rather than prose — the same codes the log and the insert-now response carry.
-function stuckDeliveryText({ reasons = [], waitedMs = 0 } = {}) {
-  const list = reasons.length ? reasons.join('、') : 'workspace_occupied';
-  return `⏳ 这条消息等了 ${formatWait(waitedMs)}还没能开始：工作区被占用（${list}），`
+function stuckDeliveryText({ reason = 'session_busy', reasons = [], waitedMs = 0 } = {}) {
+  const list = reasons.length ? reasons.join('、') : reason;
+  const cause = reason === 'delivery_locked'
+    ? `上一条投递尚未结算（${list}）`
+    : `工作区被占用（${list}）`;
+  return `⏳ 这条消息等了 ${formatWait(waitedMs)}还没能开始：${cause}，`
     + '而且当前没有轮次在跑。在聊天队列里点「立刻插入」可以强制释放并马上执行这条；'
     + '不想等也可以先取消占用它的后台任务。';
 }
@@ -53,8 +56,8 @@ function createSessionNotices({ appendChatMessage, chatBroadcast, now = Date.now
   }
   return {
     notifyLostMessage({ sessionId, error }) { say(sessionId, lostMessageText(error)); },
-    notifyStuckDelivery({ sessionId, reasons, waitedMs }) {
-      say(sessionId, stuckDeliveryText({ reasons, waitedMs }));
+    notifyStuckDelivery({ sessionId, reason, reasons, waitedMs }) {
+      say(sessionId, stuckDeliveryText({ reason, reasons, waitedMs }));
     },
   };
 }
