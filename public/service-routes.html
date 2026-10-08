@@ -1,16 +1,112 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>服务路由 · MultiCC</title>
-<style>body{font:16px system-ui;margin:32px auto;padding:0 20px;max-width:900px;background:#111827;color:#e5e7eb}a{color:#93c5fd}label{display:block;margin:14px 0}input,select,button{font:inherit;padding:9px;border-radius:6px}input[type=text],input[type=url]{box-sizing:border-box;width:100%}button{cursor:pointer;margin:5px}article,form,aside{border:1px solid #475569;padding:16px;border-radius:10px;margin:18px 0}aside{background:#422006}small{display:block;color:#cbd5e1}#status{white-space:pre-wrap}article{overflow-wrap:anywhere}</style></head>
-<body><a href="/manage">← 返回管理中心</a><h1>服务路由</h1>
-<p>统一入口：<code>/services/名称/</code>。支持 HTTP、流式响应和 WebSocket，保存后立即生效。</p>
-<aside>仅接入你信任的服务。路由页面与 MultiCC 同域，其脚本可使用当前登录身份访问 MultiCC。鉴权只保护路由入口，上游原始端口仍需自行限制访问。</aside>
-<form id="route-form"><h2 id="form-title">添加路由</h2>
-<label>路由名称<input name="name" required pattern="[a-z0-9][a-z0-9-]{0,47}" maxlength="48" placeholder="my-app"></label>
-<label>上游地址<input name="target" type="url" required placeholder="http://127.0.0.1:8080"></label>
-<label>访问模式<select name="access"><option value="private">MultiCC 鉴权（默认）</option><option value="public">免密码公开转发</option></select></label>
-<div id="public-risk" hidden><aside>任何能访问 MultiCC 入口的人，都能访问此服务的全部页面、接口及 WebSocket，包括写入和删除操作。不要公开管理后台或含隐私数据的服务。</aside><label><input name="ack" type="checkbox">我理解风险，允许此服务免密码公开访问</label></div>
-<label><input name="enabled" type="checkbox" checked>启用路由</label>
-<small>上游需要支持子路径部署或使用相对资源地址。请将上游的 base URL 设置为 /services/名称/；不会自动改写 HTML/JS 中写死的根路径。</small>
-<button type="submit">保存</button><button type="reset">取消编辑</button></form>
-<p id="status" role="status"></p><h2>已配置路由</h2><div id="routes"></div>
-<script src="/service-routes.js"></script></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a0a0c">
+  <title>服务路由 · MultiCC</title>
+  <link rel="stylesheet" href="/service-routes.css">
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="back-link" href="/manage" aria-label="返回管理中心">
+      <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m12.5 15-5-5 5-5"/></svg>
+      <span>管理中心</span>
+    </a>
+    <div class="brand" aria-label="MultiCC">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>MultiCC</span>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="hero" aria-labelledby="page-title">
+      <div class="eyebrow"><span class="live-dot"></span>服务网关</div>
+      <div class="hero-row">
+        <div>
+          <h1 id="page-title">服务路由</h1>
+          <p>通过一个安全、稳定的入口访问本机服务，并统一转发 HTTP、流式响应与 WebSocket。</p>
+        </div>
+        <button class="button button-primary hero-action" id="add-route-btn" type="button">
+          <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg>
+          新建路由
+        </button>
+      </div>
+    </section>
+
+    <section class="stats" aria-label="路由概览">
+      <article class="stat-card"><span class="stat-label">全部路由</span><strong id="stat-total">—</strong><span class="stat-note">统一入口管理</span></article>
+      <article class="stat-card"><span class="stat-label">正在运行</span><strong id="stat-active">—</strong><span class="stat-note"><i class="status-pip active"></i>可立即访问</span></article>
+      <article class="stat-card"><span class="stat-label">鉴权保护</span><strong id="stat-private">—</strong><span class="stat-note"><i class="status-pip private"></i>使用 MultiCC 身份</span></article>
+    </section>
+
+    <section class="security-note" aria-label="安全提示">
+      <span class="security-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2.5 16 5v4.3c0 3.8-2.5 6.8-6 8.2-3.5-1.4-6-4.4-6-8.2V5l6-2.5Z"/><path d="m7.5 10 1.6 1.6 3.5-3.7"/></svg></span>
+      <div><strong>只接入你信任的服务</strong><p>路由页面与 MultiCC 同域，其脚本可使用当前登录身份访问 MultiCC。鉴权仅保护路由入口，上游原始端口仍需自行限制访问。</p></div>
+    </section>
+
+    <div class="workspace">
+      <section class="route-panel" aria-labelledby="routes-title">
+        <div class="section-heading">
+          <div><h2 id="routes-title">已配置路由</h2><p>入口格式为 <code>/services/名称/</code>，配置保存后立即生效。</p></div>
+          <span class="route-count" id="route-count" aria-live="polite">载入中</span>
+        </div>
+        <div id="routes" class="route-list" aria-live="polite" aria-busy="true">
+          <div class="route-skeleton" aria-hidden="true"><span></span><span></span><span></span></div>
+          <div class="route-skeleton" aria-hidden="true"><span></span><span></span><span></span></div>
+        </div>
+      </section>
+
+      <aside class="editor-panel" id="editor-panel">
+        <form id="route-form">
+          <div class="editor-heading">
+            <span class="editor-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 3v14M3 10h14"/></svg></span>
+            <div><p id="form-kicker">创建配置</p><h2 id="form-title">添加新路由</h2></div>
+          </div>
+
+          <label class="field">
+            <span>路由名称</span>
+            <span class="input-shell input-prefix"><span aria-hidden="true">/</span><input name="name" required pattern="[a-z0-9][a-z0-9-]{0,47}" maxlength="48" placeholder="my-app" autocomplete="off" spellcheck="false"></span>
+            <small>小写字母、数字或连字符，最长 48 位。</small>
+          </label>
+
+          <label class="field">
+            <span>上游地址</span>
+            <span class="input-shell"><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M3 10h14M10 3c2.2 2.3 3.1 4.6 3.1 7s-.9 4.7-3.1 7M10 3C7.8 5.3 6.9 7.6 6.9 10s.9 4.7 3.1 7"/></svg><input name="target" type="url" required placeholder="http://127.0.0.1:8080" autocomplete="url" spellcheck="false"></span>
+          </label>
+
+          <label class="field">
+            <span>访问模式</span>
+            <span class="select-shell"><select name="access"><option value="private">MultiCC 鉴权（推荐）</option><option value="public">免密码公开转发</option></select><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m6 8 4 4 4-4"/></svg></span>
+          </label>
+
+          <div id="public-risk" class="public-risk" hidden>
+            <div class="risk-title"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 2.5 18 17H2L10 2.5Z"/><path d="M10 7v4.5M10 14.5h.01"/></svg><strong>公开访问风险</strong></div>
+            <p>任何能访问 MultiCC 入口的人，都能使用该服务的页面、接口和 WebSocket，包括写入与删除操作。</p>
+            <label class="check-row"><input name="ack" type="checkbox"><span>我理解风险，允许免密码访问</span></label>
+          </div>
+
+          <div class="toggle-row">
+            <div><strong>启用路由</strong><small>关闭后保留配置，但入口不可访问。</small></div>
+            <label class="switch"><input name="enabled" type="checkbox" checked><span aria-hidden="true"></span><span class="sr-only">启用路由</span></label>
+          </div>
+
+          <div class="path-preview"><span>访问入口</span><code id="path-preview">/services/my-app/</code></div>
+          <details class="deploy-note"><summary>上游部署提示</summary><p>上游需支持子路径部署或使用相对资源地址。请将 base URL 设置为对应的 <code>/services/名称/</code>；系统不会改写 HTML/JS 中写死的根路径。</p></details>
+
+          <div class="form-actions">
+            <button class="button button-primary" id="save-button" type="submit"><span>保存路由</span><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m7 4 6 6-6 6"/></svg></button>
+            <button class="button button-ghost" id="cancel-button" type="reset" hidden>取消编辑</button>
+          </div>
+        </form>
+      </aside>
+    </div>
+  </main>
+
+  <div id="status" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/service-routes.js"></script>
+</body>
+</html>
