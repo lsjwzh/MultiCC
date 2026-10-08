@@ -94,6 +94,17 @@ function createPaths({ dataDir } = {}) {
     sampleWorkspacesDir: root === PKG_ROOT
       ? path.join(os.homedir(), '.multicc', 'samples')
       : path.join(root, 'samples'),
+    // Gitless cwd for official-account login terminals (codex login / claude auth
+    // login). It must never live under a TCC-protected location: that directory is
+    // where the terminal opens, and the only reason login ever failed before.
+    loginWorkspacePath: sid => {
+      const safeId = String(sid || 'login').replace(/[^A-Za-z0-9._-]/g, '-');
+      const dir = path.join(root === PKG_ROOT
+        ? path.join(os.homedir(), '.multicc', 'login-workspaces')
+        : path.join(root, 'login-workspaces'), safeId);
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+      return dir;
+    },
     // Meta files still owned by server.js modules — export the paths so future
     // consolidation can move them onto the store without another rename.
     notesFile: path.join(root, 'notes.json'),

@@ -209,7 +209,7 @@
 
   // ── 权限门 ──
   // 远程操作要的是给 MultiCC Agent 的两个系统授权：屏幕录制（看）+ 辅助功能
-  // （输入）。输入监控与 Esc 监听另行显示，不阻止已授权的画面继续出帧。
+  // （输入）。输入监控只影响可选的 Esc 急停，不是必需权限，不再引导。
   // 打开屏幕先查一次（GET /api/system/agent-permissions，与
   // Air 全局设置「检查授权」同源），缺就出引导条，授权勾上后自动开始出帧。
   // 勾选只能在这台 Mac 上做（/open 仅本地放行），远程访客看到的是提示文案。
@@ -224,8 +224,7 @@
   function paintPermBar(data) {
     if (!s || !s.permBar) return;
     s.permSnapshot = data;
-    const ready = data.screenRecording === true && data.accessibility === true
-      && data.listenAccess === true && data.escMonitorEnabled === true;
+    const ready = data.screenRecording === true && data.accessibility === true;
     if (ready && !s.permResult) { s.permBar.hidden = true; return; }
     s.permBar.hidden = false;
     const row = (key, label) => {
@@ -246,14 +245,6 @@
       el('span', 'rs-perm-title', tr('rsPermTitle', '远程操作权限')),
       row('screenRecording', tr('rsPermScreen', '屏幕录制')),
       row('accessibility', tr('rsPermAx', '辅助功能')),
-      row('listenAccess', tr('airGlobalPermissionsInputMonitoring', '输入监控')),
-      el('span', 'rs-perm-hint rs-perm-esc', data.escMonitorEnabled === true
-        ? tr('airGlobalPermissionsEscEnabled', '本机 Esc 急停监听已启用；可在桌面操作期间按实体 Esc 键验证。')
-        : data.escMonitorEnabled === false
-          ? (data.listenAccess === false
-            ? tr('airGlobalPermissionsEscNoAccess', '本机 Esc 急停不可用：请给 MultiCC Agent 开启输入监控，再重启 Agent 并复查。')
-            : tr('airGlobalPermissionsEscInactive', '本机 Esc 急停监听未启用：请重启 Agent 并复查。'))
-          : tr('airGlobalPermissionsEscUnknown', '无法确认本机 Esc 急停状态；请更新 Agent 后复查，暂勿依赖 Esc 叫停。')),
       el('span', 'rs-perm-result', s.permResult || ''),
       ...(!ready ? [el('span', 'rs-perm-hint', data.local
         ? tr('rsPermHint', '请给 MultiCC Agent 开启权限；已开启仍未通过时，先重启 Agent，再重新检测')
@@ -299,7 +290,7 @@
       if (!data || (data.screenRecording && data.accessibility)) {
         if (!current.permStarted) { current.permStarted = true; start(); }
       } else if (!current.permStarted) {
-        status(tr('rsPermNeed', '请为 MultiCC Agent 授权：屏幕录制用于看画面，辅助功能用于鼠标键盘控制，输入监控用于监听本机 Esc 急停。'), true);
+        status(tr('rsPermNeed', '请为 MultiCC Agent 授权：屏幕录制用于看画面，辅助功能用于鼠标键盘控制。'), true);
       }
     };
     current.permApply = apply;
@@ -782,14 +773,14 @@
       s.rfb.viewOnly = !on;
       s.keybar.hidden = true;
       s.hint.textContent = on
-        ? tr('rsRfbCtrlHint', '直接在本画面上点击 / 拖动 / 打字；双指捏合可放大精确定位，快速点两下复位；本机按 Esc 可随时急停')
+        ? tr('rsRfbCtrlHint', '直接在本画面上点击 / 拖动 / 打字；双指捏合可放大精确定位，快速点两下复位；想停止操作，点聊天输入框旁的 ■ 停止按钮')
         : tr('rsViewHint', '只看模式：不会向本机发送任何操作。「✎ 标注」可冻结画面后标注对话');
       startHaltPoll(on);
       return;
     }
     s.keybar.hidden = !on;
     s.hint.textContent = on
-      ? tr('rsControlHint', '点击=单击，拖动=拖拽，滚轮=滚动，快速点两下=双击；双指捏合可放大精确定位，点两下复位；本机按 Esc 可随时急停')
+      ? tr('rsControlHint', '点击=单击，拖动=拖拽，滚轮=滚动，快速点两下=双击；双指捏合可放大精确定位，点两下复位；想停止操作，点聊天输入框旁的 ■ 停止按钮')
       : tr('rsViewHint', '只看模式：不会向本机发送任何操作。「✎ 标注」可冻结画面后标注对话');
   }
 

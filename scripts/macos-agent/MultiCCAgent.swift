@@ -1281,10 +1281,12 @@ func handle(_ req: [String: Any]) -> [String: Any] {
   case "request-permissions":
     // Adds this app to the lists in System Settings with the switch off; the
     // user still has to flip them. Nothing here can grant itself anything.
+    // Input Monitoring is deliberately NOT requested: it exists only for the
+    // optional Esc stop, and desktop computer use can always be cancelled with
+    // the chat's stop button instead.
     let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
     let ax = AXIsProcessTrustedWithOptions(opts)
     let sr = CGRequestScreenCaptureAccess()
-    if !escMonitorInstalled { _ = CGRequestListenEventAccess() }
     return ["ok": true, "accessibility": ax, "screenRecording": sr]
   case "resume":
     control.resume(session)
@@ -1393,7 +1395,7 @@ func handle(_ req: [String: Any]) -> [String: Any] {
   }
 }
 
-// MARK: - Esc monitor (Claude Code's global stop; Peekaboo has none)
+// MARK: - Esc monitor (opportunistic bonus; the chat stop button is the primary stop)
 // Listen-only: the key still reaches the app, we only raise the stop flag.
 
 // Two listen-only taps watch for the user's Escape: HID level (first in line,
@@ -1443,7 +1445,10 @@ final class EscTap {
 }
 let escTaps = [EscTap("hid", .cghidEventTap), EscTap("session", .cgSessionEventTap)]
 var escMonitorInstalled: Bool { escTaps.contains { $0.port != nil } }
-func installEscMonitor() { escTaps.forEach { $0.install() } }
+// Opportunistic only: install the taps when the user has already granted Input
+// Monitoring (a leftover from an older MultiCC), and never ask for it. Stopping
+// computer use is the chat's stop button's job; Esc is a nice extra when present.
+func installEscMonitor() { guard CGPreflightListenEventAccess() else { return }; escTaps.forEach { $0.install() } }
 
 // MARK: - Chrome keep-alive
 

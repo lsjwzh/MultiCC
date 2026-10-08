@@ -85,7 +85,7 @@ python3.12 skills/multicc-browser/scripts/local_browser_use.py start \
 
 仓库的 `scripts/macos-agent/MultiCCAgent.swift` 是登录用户会话内的独立 LaunchAgent。新版 Agent v2 能截图、观察 macOS AX 元素并按元素点击/输入，也能按配置守护**一个**本机 Chrome CDP 端口；`multicc-computer-use` 技能的 `scripts/mcu.sh` 提供统一入口。它读到的是桌面可访问性树，**不是网页 DOM、Browser Harness 快照或页面标题**，也不包含浏览器内核，因此不能代替本路径的专用 Profile + Harness。
 
-MultiCC 在 macOS 启动时会按需安装/更新 Agent（用户卸载并禁用自动安装或设置 `MULTICC_AGENT_AUTO_INSTALL=0` 时除外）；辅助功能、输入监控和屏幕录制权限仍须用户在系统里开启。Agent 的 macOS 11+ 分层实现、权限状态和安全限制以 `multicc-computer-use` 技能及其 `status.platform` 为准。**Browser Use/CDP 失败时不得静默改用 Agent**：桌面 AX/坐标操作会接触用户当前前台窗口，与本技能的后台浏览器边界不同。只有用户明确同意切换到前台桌面工作流，才按 `multicc-computer-use` 的规则操作，并重新验证操作结果；这不是“Browser Use 已兼容旧 Mac”的验收。
+MultiCC 在 macOS 启动时会按需安装/更新 Agent（用户卸载并禁用自动安装或设置 `MULTICC_AGENT_AUTO_INSTALL=0` 时除外）；辅助功能和屏幕录制权限仍须用户在系统里开启（输入监控不再需要）。Agent 的 macOS 11+ 分层实现、权限状态和安全限制以 `multicc-computer-use` 技能及其 `status.platform` 为准。**Browser Use/CDP 失败时不得静默改用 Agent**：桌面 AX/坐标操作会接触用户当前前台窗口，与本技能的后台浏览器边界不同。只有用户明确同意切换到前台桌面工作流，才按 `multicc-computer-use` 的规则操作，并重新验证操作结果；这不是“Browser Use 已兼容旧 Mac”的验收。
 
 如果另行选择使用 Agent 的 Chrome watchdog，先核对端口、Profile 和浏览器进程归属；默认 `9222` 不得直接占用其它业务已有的端口。Agent 同步等待其 `--chrome-launch` 脚本退出，而本脚本的 `start` 模式会一直等待浏览器退出，所以**不能直接将 `start` 命令写进 `--chrome-launch` 脚本**。需要单独的短时、幂等、启动浏览器后立即返回的脚本；后台浏览器也必须把 stdout/stderr 重定向，避免继承 Agent 的等待管道，并在同一端口上完成探活。本仓库尚未为 Browser Use 配置这条接线。
 

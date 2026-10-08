@@ -5,7 +5,7 @@ description: "通过截图、鼠标和键盘操作 macOS 原生应用（MultiCC 
 compatibility:
   os: "macOS 11 (Big Sur) 及以上，Apple 芯片与 Intel 均可；新系统自动启用更好的实现（见「系统支持」）"
   preferred:
-    - "MultiCC Agent：MultiCC 安装/更新后启动时自动安装或更新（无需手动步骤）；用户只需在系统设置给「MultiCC Agent」开辅助功能 + 输入监控 + 屏幕与系统录音"
+    - "MultiCC Agent：MultiCC 安装/更新后启动时自动安装或更新（无需手动步骤）；用户只需在系统设置给「MultiCC Agent」开辅助功能 + 屏幕与系统录音（输入监控不是必需权限）"
   fallback:
     - "cliclick: brew install cliclick，并给调用链授权（见 computer-use-permissions）"
 ---
@@ -68,7 +68,7 @@ $MCU press cmd+shift+g    # 组合键；press return 3 = 连按 3 次
 - `"outcome":"indeterminate"`：可能已执行也可能没有，先看屏幕再决定。
 
 ### 安全机制（agent 自带）
-- **Esc 急停**：操作进行中或刚操作完 20 秒内，用户按 Esc，agent 立即停止并拒绝后续所有输入，直到 resume。`status` 里 `escMonitor:false` 表示急停没装上（缺输入监控授权），要告诉用户。
+- **停止本机操作**：用户想停时，在聊天点输入框旁的 ■ 停止按钮即可（等价于以前的 Esc 急停，不需要任何额外权限）。**Esc 急停是可选加分项**：只有在用户已经给 Agent 授权过输入监控（老版本留下的）时才生效；agent 不再请求也不提醒这个权限。操作中或刚操作完 20 秒内按 Esc，agent 立即停止并拒绝后续输入，直到 resume。`status` 里 `escMonitor:false` 表示 Esc 没装上——不要引导用户去开输入监控。
 - **一次一个会话**：同一时间只有一个 MultiCC 会话能操作键鼠（最后操作后保持 2 分钟，`$MCU release` 可提前释放）。
 - 锁屏下普通操作一律拒绝，但 `$MCU unlock` 是唯一特例（用钥匙串密码自动解锁，走原生验证）；系统设置、密码弹窗、钥匙串仍拒绝；终端里打字需要用户同意。
 
@@ -100,7 +100,7 @@ $MCU snap-hires /absolute/assist/detail.png 400 240 100 80
 
 **backend 不是 agent 时**：
 - `not installed`：MultiCC 每次启动会自动安装/更新 agent（发行包自带预编译程序；源码运行时需要 Xcode 命令行工具）。原因看 MultiCC 日志里的 `[multicc-agent]` 行；用户卸载过（`install-agent.sh uninstall`）则不会自动装回，需在 MultiCC 目录手动跑 `scripts/install-agent.sh install`。
-- `lacks ... grant`：让用户按 `status.platform.settingsApp` 所说的设置页给 **MultiCC Agent** 开辅助功能、输入监控（Esc 急停用）和屏幕录制（首次安装时系统已弹过提示、App 已在列表里，只需打开开关；若列表里没有，点 + 添加 `~/Applications/MultiCC Agent.app`），授权后 `launchctl kickstart -k gui/$(id -u)/com.multicc.agent`。
+- `lacks ... grant`：让用户按 `status.platform.settingsApp` 所说的设置页给 **MultiCC Agent** 开辅助功能 + 屏幕录制（首次安装时系统已弹过提示、App 已在列表里，只需打开开关；若列表里没有，点 + 添加 `~/Applications/MultiCC Agent.app`），授权后 `launchctl kickstart -k gui/$(id -u)/com.multicc.agent`。输入监控现在既不需要也不提醒。
 - 报 `not installed` / `not running`，但 `~/Applications/MultiCC Agent.app` 明明在：多半是二进制丢了执行位（老版安装脚本复制预编译程序的现场），每一次调用都会失败。**别手工 chmod**，让用户重启一次 MultiCC —— 启动时会自己重跑安装脚本修好（`[multicc-agent] install (not-executable)`）；不方便重启就在 MultiCC 目录跑 `scripts/install-agent.sh install`。修完 `$MCU status` 应当能回话。
 - 当下仍可用 legacy：先跑 `bash <skill_dir>/scripts/init.sh`（检查依赖、打印进程名），授权问题用 **computer-use-permissions** 技能。legacy 没有 see/元素操作，也没有上面的安全机制。
 

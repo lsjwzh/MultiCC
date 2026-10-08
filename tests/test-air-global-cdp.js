@@ -53,26 +53,14 @@ test('remote screen permission recovery restarts on click and resumes after a fr
     assert.equal(restarts, 2);
     assert.ok(frames > 0);
     await page.evaluate('MultiCCRemoteScreen.close()');
+    // 输入监控/Esc 不再是必需权限：屏幕录制 + 辅助功能就绪即隐藏权限条；listen/esc
+    // 缺失既不警示也不拦取帧，更没有「打开输入监控」入口。
     listenAccess = false; escMonitorEnabled = false;
     await page.evaluate('MultiCCRemoteScreen.open()');
-    assert.ok(await page.waitFor(`document.querySelector('.rs-perm-esc')?.textContent.includes('急停不可用')`));
-    assert.ok(await page.waitFor(`document.body.textContent.includes('fixture: no screen capture')`), 'Esc warning does not block capture');
-    await page.evaluate(`document.querySelector('[data-permission="listenAccess"] button').click()`);
-    assert.ok(await page.waitFor(`document.querySelector('[data-permission="listenAccess"]') !== null`));
-    // Wait for the settings request to finish before inspecting the captured call.
-    await page.evaluate(`new Promise(resolve => setTimeout(resolve, 100))`);
-    assert.deepEqual(opens, ['listenAccess']);
-    listenAccess = true;
-    await page.evaluate(restartClick);
-    assert.ok(await page.waitFor(`document.querySelector('.rs-perm-esc')?.textContent.includes('监听未启用')`));
-    escMonitorEnabled = true;
-    await page.evaluate(restartClick);
-    assert.ok(await page.waitFor(`document.querySelector('.rs-perm-esc')?.textContent.includes('监听已启用')`));
-    await page.evaluate('MultiCCRemoteScreen.close()');
-    listenAccess = null; escMonitorEnabled = null;
-    await page.evaluate('MultiCCRemoteScreen.open()');
-    assert.ok(await page.waitFor(`document.querySelector('.rs-perm-esc')?.textContent.includes('无法确认')`));
-    assert.match(await page.evaluate(`document.querySelector('[data-permission="listenAccess"]').textContent`), /\?/);
+    assert.ok(await page.waitFor(`document.querySelector('.rs-permbar')?.hidden === true`), 'listen/esc missing no longer shows the permission bar');
+    assert.ok(await page.waitFor(`document.body.textContent.includes('fixture: no screen capture')`), 'capture unaffected by listen/esc');
+    assert.equal(await page.evaluate(`document.querySelectorAll('[data-permission="listenAccess"]').length`), 0, 'no input-monitoring row or open button');
+    assert.deepEqual(opens, [], 'never opens the Input Monitoring pane');
     await page.evaluate('MultiCCRemoteScreen.close()');
     granted = false; local = false;
     await page.evaluate('MultiCCRemoteScreen.open()');
@@ -442,22 +430,17 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     assert.equal(await page.evaluate(`document.getElementById('air-global-permission-dialog').open`), true);
     assert.equal(await text('#air-global-permission-body'), await t('airGlobalPermissionsDesktopReady'));
     assert.equal(permissionRestarts, 2);
-    for (const [listenAccess, escMonitorEnabled, key] of [
-      [false, false, 'airGlobalPermissionsEscNoAccess'],
-      [true, false, 'airGlobalPermissionsEscInactive'],
-      [undefined, undefined, 'airGlobalPermissionsEscUnknown'],
-      [true, true, 'airGlobalPermissionsEscEnabled'],
+    // 输入监控/Esc 不影响权限就绪：A/Esc 怎么变，正文都停在 DesktopReady，也不开输入监控。
+    for (const [listenAccess, escMonitorEnabled] of [
+      [false, false], [undefined, undefined], [true, false],
     ]) {
       agentPermissions = { ...agentPermissions, listenAccess, escMonitorEnabled };
       await click('permission-check');
-      assert.ok(await page.waitFor(`document.getElementById('air-global-permission-esc').textContent === t(${JSON.stringify(key)})`));
+      assert.ok(await page.waitFor(`document.getElementById('air-global-permission-body').textContent === t('airGlobalPermissionsDesktopReady')`));
       assert.equal(await page.evaluate(`document.getElementById('air-global-permission-dialog').open`), true);
-      if (listenAccess === false) {
-        await click('permission-open');
-        assert.ok(await page.waitFor(`!document.getElementById('air-global-permission-open').disabled`));
-        assert.equal(permissionOpens.at(-1), 'listenAccess');
-      }
+      assert.equal(await page.evaluate(`document.querySelectorAll('[data-permission="listenAccess"]').length`), 0);
     }
+    assert.deepEqual(permissionOpens, ['accessibility', 'screenRecording'], 'listen/esc 永不触发打开设置');
     await page.evaluate(`document.getElementById('air-global-permission-dialog').close()`);
 
     agentPermissions = { ...agentPermissions, accessibility: false, local: false, agentApp: undefined };
@@ -476,7 +459,7 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     assert.ok(await page.waitFor(`document.getElementById('air-lid-sleep') && !document.getElementById('air-lid-sleep').classList.contains('on')`));
     await page.evaluate(`document.getElementById('air-lid-sleep').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-global-permission-dialog')?.open === true`));
-    assert.deepEqual(permissionOpens, ['accessibility', 'screenRecording', 'listenAccess', 'accessibility']);
+    assert.deepEqual(permissionOpens, ['accessibility', 'screenRecording', 'accessibility']);
 
     // Missing desktop grants must guide BOTH unlock entry points without
     // turning the switch on, including direct API rejection on the web panel.

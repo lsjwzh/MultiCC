@@ -118,8 +118,6 @@
     permissionResult.setAttribute('role', 'status');
     const permissionStatus = make('div', null, 'air-global-permission-status');
     permissionStatus.id = 'air-global-permission-status';
-    const permissionEsc = make('p');
-    permissionEsc.id = 'air-global-permission-esc';
     const permissionTarget = make('p');
     permissionTarget.id = 'air-global-permission-target';
     const permissionActions = make('div', null, 'air-global-foot');
@@ -141,7 +139,7 @@
     permissionClose.onclick = () => permissionDialog.close();
     permissionActions.append(permissionOpen, permissionCheck, permissionRestart, permissionClose);
     permissionDialog.append(permissionTitle, permissionResult, permissionStatus, permissionBody,
-      permissionEsc, permissionTarget, permissionRecovery, permissionActions);
+      permissionTarget, permissionRecovery, permissionActions);
 
     // Password setup is shared by both switches; saved credentials survive disabling.
     const unlockToggle = make('input');
@@ -218,7 +216,6 @@
   const permissionNames = {
     accessibility: 'airGlobalPermissionsAccessibility',
     screenRecording: 'airGlobalPermissionsRecording',
-    listenAccess: 'airGlobalPermissionsInputMonitoring',
   };
 
   async function restartAgentFromCard() {
@@ -277,7 +274,6 @@
     const epoch = ++permissionReadEpoch;
     el('air-global-permission-result').textContent = '';
     el('air-global-permission-status').replaceChildren();
-    el('air-global-permission-esc').textContent = '';
     el('air-global-permission-target').textContent = '';
     el('air-global-permission-recovery').hidden = false;
     let checked = null;
@@ -303,13 +299,9 @@
           row.dataset.permission = key;
           el('air-global-permission-status').append(row);
         }
-        el('air-global-permission-esc').textContent = t(data.escMonitorEnabled === true
-          ? 'airGlobalPermissionsEscEnabled' : data.escMonitorEnabled === false
-            ? (data.listenAccess === false ? 'airGlobalPermissionsEscNoAccess' : 'airGlobalPermissionsEscInactive')
-            : 'airGlobalPermissionsEscUnknown');
         nextPermission = !data.accessibility ? 'accessibility' : !data.screenRecording
-          ? 'screenRecording' : data.listenAccess === false ? 'listenAccess' : null;
-        const ready = !nextPermission && data.listenAccess === true && data.escMonitorEnabled === true;
+          ? 'screenRecording' : null;
+        const ready = !nextPermission;
         el('air-global-permission-recovery').hidden = ready;
         el('air-global-permission-body').textContent = nextPermission
           ? t(data.local ? 'airGlobalPermissionsMissing' : 'airGlobalPermissionsLocal', { name: t(permissionNames[nextPermission]) })

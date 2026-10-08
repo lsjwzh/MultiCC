@@ -264,35 +264,33 @@ void main() {
     expect(methods, ['GET', 'POST']);
   });
 
-  test('急停缺失和未知状态保留提示，但不阻止已有桌面权限取帧', () {
+  test('权限门只依赖屏幕录制 + 辅助功能；输入监控/Esc 状态不影响就绪', () {
     final base = <String, dynamic>{
       'ok': true,
       'applicable': true,
       'accessibility': true,
       'screenRecording': true,
     };
-    for (final entry in [
-      [false, false, 'airGlobalPermissionsEscNoAccess'],
-      [true, false, 'airGlobalPermissionsEscInactive'],
-      [null, null, 'airGlobalPermissionsEscUnknown'],
-      [true, true, 'airGlobalPermissionsEscEnabled'],
-    ]) {
-      final perms = {
-        ...base,
-        'listenAccess': entry[0],
-        'escMonitorEnabled': entry[1],
-      };
+    for (final esc in [false, true, null]) {
+      final perms = {...base, 'listenAccess': esc, 'escMonitorEnabled': esc};
       expect(RemoteScreenService.desktopPermissionsReady(perms), isTrue);
       expect(
         RemoteScreenService.allPermissionsReady(perms),
-        entry[0] == true && entry[1] == true,
+        isTrue,
+        reason: '听监控/Esc 急停不再是必需权限',
       );
-      expect(RemoteScreenService.escStatusKey(perms), entry[2]);
     }
     expect(
       RemoteScreenService.desktopPermissionsReady({
         ...base,
         'screenRecording': false,
+      }),
+      isFalse,
+    );
+    expect(
+      RemoteScreenService.allPermissionsReady({
+        ...base,
+        'accessibility': false,
       }),
       isFalse,
     );

@@ -63,6 +63,53 @@ test('a new session defaults to auto-commit ON, and only an explicit false turns
   assert.equal(optedIn.session.autoCommit, true);
 });
 
+// 官方账号登录终端（codex login / claude auth login）不需要 git：它只是跑一次交互式
+// 登录命令。给它在用户目录里建 worktree 会让登录在 macOS 受保护目录（桌面/文档/
+// 下载/iCloud）上直接失败（git 报 Operation not permitted）——登录是 gitless 的，
+// cwd 指向专用目录。
+test('loginFlow terminals are gitless: no git-ready check, no worktree, dedicated cwd', async () => {
+  let gitReadyCalls = 0, worktreeCalls = 0;
+  const workspacePaths = [];
+  const factory = createSessionRecordFactory({
+    isResidentSession,
+    sharedWorkspace: () => ({ worktreePath: '/wt/shared', branch: 'multicc/shared' }),
+    SUPPORTED_CHAT_CLIS: ['claude', 'codex'],
+    validateExperimentalSession: () => ({ ok: true }),
+    tuiChatMirrorEnabled: () => false,
+    normalizeEffort: value => (value == null ? null : String(value)),
+    validEffortForCli: () => true,
+    codexDefaultReasoningLevel: () => null,
+    normalizeCliAgent: () => null,
+    validateProviderSelection: () => ({ ok: true, value: null }),
+    providers: { normalizeOfficialProviderId: (_cli, id) => (id === undefined ? null : id) },
+    primaryProviderCandidate: () => null,
+    providerDefaults: {},
+    validProviderId: () => ({ ok: true, value: null }),
+    allocateSessionId: () => 'sess-login',
+    persistedSessions: new Map(),
+    ensureDirGitReady: async () => { gitReadyCalls++; return { ok: true }; },
+    friendlyDirReason: reason => String(reason),
+    WORKTREE_SUBDIR: '.multicc-worktrees',
+    gitWorktreeAdd: async () => { worktreeCalls++; return {}; },
+    gitWorktreeRollbackCreate: async () => {},
+    sanitizeLoginEnv: () => ({ ok: true }),
+    ensureCliStates: () => {},
+    sessionPersistence: { mutate: () => {} },
+    savePersistedSessionsBestEffort: () => {},
+    appendEvent: () => {},
+    cliForLoginFlow: () => null,
+    loginWorkspacePath: sid => { workspacePaths.push(sid); return `/login-workspaces/${sid}`; },
+  });
+  const created = await factory({ dir: { id: 'd', path: '/Users/u/Desktop/project', baseBranch: 'main' }, cli: 'codex', kind: 'terminal', loginFlow: 'codex-login', persistence: 'required' });
+  assert.equal(created.ok, true, created.error);
+  assert.equal(gitReadyCalls, 0, 'login terminal must not require the directory to be a git repo');
+  assert.equal(worktreeCalls, 0, 'login terminal must not create a git worktree');
+  assert.equal(created.session.worktreePath, null);
+  assert.equal(created.session.branch, null);
+  assert.equal(created.session.cwd, '/login-workspaces/sess-login');
+  assert.deepEqual(workspacePaths, ['sess-login']);
+});
+
 // Air 里新建的任务走任务壳（src/task-shell/host.js 的 createExecution），它曾经写死
 // `autoCommit: false`：会话开关显示「开」是缺省口径，新任务却一律是关。任务壳必须
 // 吃同一个缺省，不能自己再传 false。
