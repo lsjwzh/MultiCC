@@ -337,11 +337,26 @@ test('cwd resolution is fail-closed and never falls back to the base repository'
   assert.notEqual(cwd, '/home/user');
 });
 
+test('resolveSessionCwd gives login terminals their dedicated gitless cwd', () => {
+  const directories = new Map([['dir-1', { id: 'dir-1', path: '/Users/u/Desktop/project' }]]);
+  const cwd = resolveSessionCwd({
+    id: 'codex-acct-login-a', dirId: 'dir-1', kind: 'terminal', loginFlow: 'codex-login',
+    cwd: '/data/login-workspaces/codex-acct-login-a',
+  }, {
+    directories, dataRoot: '/private/data',
+    existsSync: p => p === '/data/login-workspaces/codex-acct-login-a',
+    homeDir: () => '/home/user',
+  });
+  assert.equal(cwd, '/data/login-workspaces/codex-acct-login-a');
+  assert.notEqual(cwd, '/Users/u/Desktop/project');
+});
+
 test('startup worktree initialization skips sleeping records and requires retained task branches', async () => {
   const records = new Map([
     ['sleeping', bound('sleeping', iso(DAY), { workspaceState: 'hibernated' })],
     ['bound-awake', bound('bound-awake', iso(DAY))],
     ['ordinary', { id: 'ordinary', dirId: 'dir-1', kind: 'chat', createdAt: iso(DAY) }],
+    ['login', { id: 'login', dirId: 'dir-1', kind: 'terminal', loginFlow: 'codex-login', cwd: '/data/login-workspaces/login', createdAt: iso(DAY) }],
   ]);
   const calls = [];
   const invalidSessions = new Map();
@@ -365,7 +380,7 @@ test('startup worktree initialization skips sleeping records and requires retain
     log: { log() {} },
   });
   assert.equal(result.built, 2);
-  assert.deepEqual(calls.map(call => call.id), ['bound-awake', 'ordinary']);
+  assert.deepEqual(calls.map(call => call.id), ['bound-awake', 'ordinary'], 'login terminals never get a worktree rebuilt');
   assert.equal(calls[0].options.requireExistingBranch, true);
   assert.equal(calls[1].options.requireExistingBranch, undefined);
   assert.equal(records.get('sleeping').worktreePath.includes('sleeping'), true);

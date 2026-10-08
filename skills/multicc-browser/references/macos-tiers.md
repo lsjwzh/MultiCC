@@ -34,7 +34,7 @@ MultiCC Agent 在所有档位都只作**前台桌面**后备（14+ 用 ScreenCap
 | BrowserAct | 仅后台操作、禁止激活窗口；每个浏览器独立 Profile；登录/验证码交给用户；敏感动作逐项确认 | `chrome-direct` 接管个人 Chrome 作为默认；把 `which` 命中当作“已验证本地执行层” |
 | OpenClaw 托管浏览器 | 显式命名的托管 Profile；页面变化后重新快照、旧引用作废 | 默认 `chrome` 扩展接管档案 |
 | Hermes | 只在运行时真的暴露 `browser_*` 工具时使用 | 为浏览器再嵌套一个模型 Agent |
-| MultiCC Agent / computer-use | 运行时探测平台并分层实现；拒绝原因明确；Esc 急停；一次一个会话 | 作为 CDP 失败的静默回退 |
+| MultiCC Agent / computer-use | 运行时探测平台并分层实现；拒绝原因明确；Esc 急停（可选，输入监控非必需）；一次一个会话 | 作为 CDP 失败的静默回退 |
 | Harness `mac-approve` 等授权点击器 | — | 常驻自动点授权弹窗（可能批准不属于本任务的连接） |
 
 ## 版本依据

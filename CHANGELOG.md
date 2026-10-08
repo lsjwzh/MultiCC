@@ -2,6 +2,13 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## Unreleased
+
+### Fixes
+
+- **登录不再要求用户目录是可用的 git 仓库** — Codex/Claude 官方账号「重新登录」会为 `codex login` / `claude auth login` 开一个交互登录终端；旧逻辑会在用户的会话目录里建 git worktree，导致目录位于 macOS 受保护位置（桌面/文档/下载/iCloud）时，登录直接报「git 无权访问该目录」。登录终端现在是 gitless 的，工作在 MultiCC 自己的 `~/.multicc/login-workspaces/` 下，与用户目录无关。
+- **输入监控不再是必需权限** — macOS Agent 不再请求也不再引导「输入监控」授权（它只为可选的 Esc 急停服务，与打字无关；打字走的是辅助功能）。停止本机操作改用聊天里现成的 ■ 停止按钮。Esc 在用户之前已授权时仍然作为加分项可用。
+
 ## v2.4.1 — A crash fix and a sharper remote screen (2026-10-06)
 
 ### Highlights

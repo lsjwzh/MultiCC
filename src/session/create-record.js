@@ -5,7 +5,7 @@ function createSessionRecordFactory(deps) {
   // Injected by the composition root. src/session is a bounded context and must
   // not reach into src/cli for the lane table (tests/test-architecture-boundaries.js).
   if (typeof deps?.isResidentSession !== 'function') throw new TypeError('[session/create-record] isResidentSession port is required');
-  const { isResidentSession, sharedWorkspace, SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow } = deps;
+  const { isResidentSession, sharedWorkspace, SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow, loginWorkspacePath = () => null } = deps;
 async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, subagent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null, autoCommit = true, workspaceOwnerSessionId = null, workspaceBaseCommit = null, validateOnly = false }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
@@ -56,19 +56,26 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (persistedSessions.has(sid)) return { ok: true, id: sid, session: persistedSessions.get(sid), reused: true };
 
   // Every session is isolated — make sure the directory is a git repo, then give the
-  // session its own worktree + branch.
+  // session its own worktree + branch. Login terminals (codex login / claude auth
+  // login) are the exception: they only need a writable cwd, and creating a git
+  // worktree inside the user's project directory is what breaks login on macOS when
+  // that directory sits in a TCC-protected location (Desktop / Documents /
+  // Downloads / iCloud — git fails with "Operation not permitted").
   const deferred = kind === 'chat' && !!taskBoundTaskId && !workspaceOwnerSessionId;
-  const ready = deferred ? { ok: true } : await ensureDirGitReady(dir);
+  const loginTerminal = Boolean(loginFlow);
+  const gitless = deferred || loginTerminal;
+  const ready = gitless ? { ok: true } : await ensureDirGitReady(dir);
   if (!ready.ok) return { ok: false, error: friendlyDirReason(ready.reason) };
   let worktreePath = path.join(dir.path, WORKTREE_SUBDIR, sid);
   let branch = `multicc/${sid}`;
   const rollbackOptions = { sessionId: sid, baseBranch: dir.baseBranch };
   try {
-    if (!deferred) ({ worktreePath, branch } = workspaceOwnerSessionId
+    if (!gitless) ({ worktreePath, branch } = workspaceOwnerSessionId
       ? sharedWorkspace(persistedSessions, workspaceOwnerSessionId, dir.id)
       : await gitWorktreeAdd(dir.path, sid, workspaceBaseCommit || dir.baseBranch));
+    else if (loginTerminal) { worktreePath = null; branch = null; }
   } catch (e) {
-    if (!deferred && !workspaceOwnerSessionId) await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
+    if (!gitless && !workspaceOwnerSessionId) await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
     return { ok: false, error: 'worktree 创建失败: ' + e.message };
   }
 
@@ -105,7 +112,8 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (subagentChecked.value) session.subagent = subagentChecked.value;
   if (rolePresetId) session.rolePresetId = String(rolePresetId).trim();
   if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
-  if (loginFlow) session.loginFlow = loginFlow; if (loginEnvChecked.env) session.loginEnv = loginEnvChecked.env; // whitelisted interactive login terminal (codex-login) + allowlisted env pins
+  if (loginFlow) { session.loginFlow = loginFlow; session.cwd = loginWorkspacePath(sid); }
+  if (loginEnvChecked.env) session.loginEnv = loginEnvChecked.env; // whitelisted interactive login terminal (codex-login) + allowlisted env pins
   if (type === 'worker' && taskExecutionSlot) session.taskExecutionSlot = true;
   if (ephemeral) session.ephemeral = true; if (experiment.mode) session.experimentalMode = experiment.mode; if (taskBoundTaskId) session.taskBoundTaskId = String(taskBoundTaskId).slice(0, 120);
   if (kind === 'chat') ensureCliStates(session);

@@ -40,8 +40,7 @@
         if (action === 'lid' && wanted && result.enabled) {
           try {
             const permissions = await api('/api/system/agent-permissions');
-            if (permissions.ok && permissions.applicable === true && (!permissions.accessibility || !permissions.screenRecording
-              || permissions.listenAccess !== true || permissions.escMonitorEnabled !== true)) {
+            if (permissions.ok && permissions.applicable === true && (!permissions.accessibility || !permissions.screenRecording)) {
               root.MultiCCAirMore?.close();
               openSetup('permissions');
             }

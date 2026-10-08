@@ -251,21 +251,11 @@ class RemoteScreenService {
       perms['applicable'] != true ||
       (perms['accessibility'] == true && perms['screenRecording'] == true);
 
+  // 权限门只关心屏幕录制 + 辅助功能：输入监控只影响可选的 Esc 急停，不再是必需权限。
   static bool allPermissionsReady(Map<String, dynamic> perms) =>
       perms['ok'] == true &&
       perms['accessibility'] == true &&
-      perms['screenRecording'] == true &&
-      perms['listenAccess'] == true &&
-      perms['escMonitorEnabled'] == true;
-
-  static String escStatusKey(Map<String, dynamic> perms) =>
-      perms['escMonitorEnabled'] == true
-      ? 'airGlobalPermissionsEscEnabled'
-      : perms['escMonitorEnabled'] == false
-      ? (perms['listenAccess'] == false
-            ? 'airGlobalPermissionsEscNoAccess'
-            : 'airGlobalPermissionsEscInactive')
-      : 'airGlobalPermissionsEscUnknown';
+      perms['screenRecording'] == true;
 
   /// One guarded input op (click / type / press / status / resume / release).
   Future<Map<String, dynamic>> inputOp(Map<String, dynamic> body) async {

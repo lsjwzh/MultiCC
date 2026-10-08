@@ -126,8 +126,10 @@ function createMacosAgentProvisioner(deps = {}) {
     }
     logger.log(`[multicc-agent] ${decided.action} done`);
     if (decided.action === 'install') {
-      // Put the app into the Accessibility / Screen Recording / Input
-      // Monitoring lists once, so the user only has to flip the switches.
+      // Put the app into the Accessibility / Screen Recording lists once, so
+      // the user only has to flip the switches. Input Monitoring is not
+      // requested: it only backs the optional Esc stop, and stopping computer
+      // use now uses the chat's stop button instead.
       const asked = await run(bin, ['request-permissions']);
       if (asked.code !== 0) logger.warn(`[multicc-agent] permission request failed: ${asked.output.trim().slice(-200)}`);
     }

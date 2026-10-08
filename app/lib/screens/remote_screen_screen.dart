@@ -1,6 +1,6 @@
 // 「🖥 屏幕」App 端：直连 /ws/remote-screen 讲最小 RFB 3.8（RemoteScreenRfb），
 // 断流/旧 Agent 自动回退 JPEG 轮询（RemoteScreenService）。只看/可操作、
-// 长按右键、滚轮脉冲、键盘条（文字 + 功能键/快捷键和弦）与 Esc 急停的
+// 长按右键、滚轮脉冲、键盘条（文字 + 功能键/快捷键和弦）与可选 Esc 急停的
 // 「解除急停」都对着 Web 版 public/chat-remote-screen.js 的语义。
 import 'dart:async';
 import 'dart:typed_data';
@@ -325,7 +325,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     }
   }
 
-  // RFB 无错误通道：可操作时每 3s 查一次状态，Esc 急停就亮「解除急停」。
+  // RFB 无错误通道：可操作时每 3s 查一次状态，用户按了 Esc（可选急停）就亮「解除急停」。
   void _startHaltPoll() {
     _haltTimer?.cancel();
     _haltTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
@@ -829,14 +829,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
               ),
               row('screenRecording', t('rsPermScreen')),
               row('accessibility', t('rsPermAx')),
-              row('listenAccess', t('airGlobalPermissionsInputMonitoring')),
             ],
           ),
           const SizedBox(height: 3),
-          Text(
-            t(RemoteScreenService.escStatusKey(gate)),
-            style: const TextStyle(fontSize: 11.5, color: Color(0xFFf0d7a0)),
-          ),
           if (_permResult != null)
             Text(
               _permResult!,
@@ -852,7 +847,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
               onPressed: _permRestarting ? null : _restartAgent,
               child: Text(t('airGlobalPermissionsRestart')),
             ),
-          if (!RemoteScreenService.allPermissionsReady(gate))
+          if (!RemoteScreenService.desktopPermissionsReady(gate))
             Text(
               local ? t('rsPermHint') : t('rsPermRemote'),
               style: const TextStyle(fontSize: 11.5, color: Color(0xFFb8a878)),

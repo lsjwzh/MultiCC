@@ -584,6 +584,9 @@ function resolveSessionCwd(session, {
   if (!session) return homeDir();
   if (session.type === 'aux') return session.cwd || moduleDir;
   if (session.type === 'gateway') return session.cwd || path.join(homeDir(), '.multicc', 'gateway');
+  // Login terminals are gitless by design (they run `codex login` / `claude auth
+  // login`, never a git worktree); their cwd is a dedicated, non-TCC-protected dir.
+  if (session.loginFlow && session.cwd && existsSync(session.cwd)) return session.cwd;
   if (stateOf(session) === 'awake' && session.worktreePath && existsSync(session.worktreePath)) return session.worktreePath;
   const safeId = String(session.id || 'unknown').replace(/[^A-Za-z0-9._-]/g, '-');
   return path.join(dataRoot, 'unavailable-workspaces', safeId);
@@ -606,6 +609,7 @@ async function initializeSessionWorktrees(options = {}) {
   let built = 0;
   for (const session of records.values()) {
     if (session.type === 'aux' || session.id === auxSessionId || session.type === 'gateway') continue;
+    if (session.loginFlow) continue; // gitless login terminals: no worktree to rebuild
     if (session.workspaceOwnerSessionId) continue;
     if (['planned', 'hibernated', 'hibernating'].includes(stateOf(session))) continue;
     const directory = directories.get(session.dirId);
