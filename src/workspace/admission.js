@@ -162,12 +162,44 @@ function createWorkspaceAdmission(deps) {
       return registry.acquire(workspace.id, sessionId, requestId);
     }
   }
+  // A delivery whose directory cannot be prepared used to travel as a bare
+  // workspace_repository_not_ready: retryable by default, so it spent the whole
+  // outbox retry budget re-scanning the directory that was refused, then
+  // dead-lettered the user's message with nothing but lastError to explain it.
+  // The directory layer owns the vocabulary (its reason codes, their prose and
+  // their fix codes); this layer carries the verdict, names the reason in the
+  // error the human eventually reads, and stops retrying a verdict only a human
+  // can change.
+  function directoryNotReady(sessionId, dir, reason) {
+    const describe = typeof deps.describeDirFailure === 'function'
+      ? deps.describeDirFailure(reason) : null;
+    deps.log('workspace_directory_not_ready', {
+      sessionId,
+      dirId: dir?.id || null,
+      dirPath: dir?.path || null,
+      reason,
+      fix: describe?.fix || null,
+      permanent: describe?.permanent === true,
+    });
+    const error = failure('workspace_repository_not_ready');
+    if (!describe) return error;
+    return Object.assign(error, {
+      reason,
+      // First line only: this string is what lastError / the queue API return
+      // verbatim, while the full multi-line guidance (macOS privacy steps,
+      // Command Line Tools) stays in `detail` and in the log line above.
+      message: String(describe.detail || '').split('\n')[0] || error.message,
+      detail: describe.detail || null,
+      fix: describe.fix || null,
+      retryable: describe.permanent !== true,
+    });
+  }
   async function materialize(id, lease) {
     const source = owner(id), dir = deps.directories.get(source.dirId);
     if (source.workspaceState === 'planned') {
       registry.transition(lease, 'materializing');
       const ready = await deps.ensureDir(dir);
-      if (!ready.ok) throw failure('workspace_repository_not_ready');
+      if (!ready.ok) throw directoryNotReady(id, dir, ready.reason);
       // gitWorktreeAdd resumes the same branch/path after an interrupted create;
       // it never rotates a fixed slot or overwrites another task's directory.
       const result = await deps.addWorktree(dir.path, source.id, source.workspaceBaseCommit || dir.baseBranch);

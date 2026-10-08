@@ -52,6 +52,11 @@ function fixture(t, overrides = {}) {
     beforeFirstTick: overrides.beforeFirstTick,
     beforeDeliver: overrides.beforeDeliver,
     deliverOutbox: overrides.deliverOutbox,
+    ...(overrides.notifyLostMessage ? { notifyLostMessage: overrides.notifyLostMessage } : {}),
+    ...(overrides.busyReasons ? { busyReasons: overrides.busyReasons } : {}),
+    ...(overrides.notifyStuckDelivery ? { notifyStuckDelivery: overrides.notifyStuckDelivery } : {}),
+    ...(overrides.stuckDeliveryNoticeMs !== undefined
+      ? { stuckDeliveryNoticeMs: overrides.stuckDeliveryNoticeMs } : {}),
     setIntervalFn(fn) {
       scheduled = fn;
       return { unref() {} };
@@ -223,6 +228,153 @@ test('a non-backpressure workspace failure cannot cycle in FIFO forever', async 
   assert.equal((await h.runtime.outbox.get(admitted.entry.id)).state, 'dead-letter');
   assert.equal((await h.runtime.stats()).pendingDeliveries, 0);
   assert.equal((await h.runtime.sessionScheduler.status('broken-workspace')).queued.length, 0);
+  await h.runtime.stop();
+});
+
+test('a message the human typed is announced when it dead-letters; machine work is not', async t => {
+  const lost = [];
+  const h = fixture(t, {
+    outboxOptions: { maxAttempts: 1, backoff: () => 0 },
+    notifyLostMessage: notice => { lost.push(notice); },
+    beforeDeliver: async descriptor => {
+      throw descriptor.sessionId === 'typed'
+        ? Object.assign(new Error('该目录体积过大（超过 2GB），不适合作为 session 目录'), {
+          code: 'workspace_repository_not_ready',
+          reason: 'unsuitable: 该目录体积过大（超过 2GB）',
+          retryable: false,
+          backpressure: false,
+        })
+        : Object.assign(new Error('machine work failed'), {
+          code: 'workspace_materialization_unverified', backpressure: false,
+        });
+    },
+  });
+  const typed = await h.runtime.admitSessionWork({
+    sessionId: 'typed', text: 'hi', idempotencyKey: 'typed-1',
+  });
+  const machine = await h.runtime.admitSessionWork({
+    sessionId: 'typed', text: 'machine work', source: 'operation', idempotencyKey: 'machine-1',
+  });
+  await h.runtime.tick();
+  assert.equal((await h.runtime.outbox.get(typed.entry.id)).state, 'dead-letter');
+  assert.equal((await h.runtime.outbox.get(machine.entry.id)).state, 'dead-letter');
+  assert.equal(lost.length, 1, 'only the human message is worth a notice');
+  assert.equal(lost[0].sessionId, 'typed');
+  assert.equal(lost[0].error.code, 'workspace_repository_not_ready');
+  assert.ok(h.logs.some(message => /dead-lettered: workspace_repository_not_ready/.test(message)));
+  await h.runtime.stop();
+});
+
+test('a typed message held behind a busy workspace is announced once per wedge', async t => {
+  // The report's shape, one step before the dead letter: `{"reason":"session_busy",
+  // "reasons":["workspace_occupied"]}` — no `run_active` — repeated for thirteen
+  // messages with nothing on screen.
+  const stuck = [];
+  let busy = true;
+  let locked = false;
+  const h = fixture(t, {
+    isBusy: () => busy,
+    // The lock sits after the busy check in the same function, so it lets the
+    // item stay queued while the wedge state is still cleared — otherwise the
+    // first delivery would leave the session in P and the queue would never
+    // reach the busy check again.
+    isDeliveryLocked: () => locked,
+    busyReasons: () => ['workspace_occupied'],
+    stuckDeliveryNoticeMs: 60_000,
+    notifyStuckDelivery: notice => { stuck.push(notice); },
+  });
+  const typed = await h.runtime.admitSessionWork({
+    sessionId: 'held', text: 'hi', idempotencyKey: 'held-1',
+  });
+  await h.runtime.tick();
+  assert.equal(stuck.length, 0, 'a few seconds of waiting is not a wedge');
+  h.clock.value += 61_000;
+  await h.runtime.tick();
+  assert.equal(stuck.length, 1, 'a minute with nothing running has to be said out loud');
+  assert.equal(stuck[0].sessionId, 'held');
+  assert.deepEqual(stuck[0].reasons, ['workspace_occupied']);
+  assert.ok(stuck[0].waitedMs >= 60_000, 'and it says how long');
+  await h.runtime.tick();
+  assert.equal(stuck.length, 1, 'said once, not on every tick');
+  assert.equal((await h.runtime.outbox.get(typed.entry.id)).state, 'pending',
+    'a held message is not a lost one: it stays queued');
+
+  // The hold clears: the wedge is over, so a later one is a new event that gets
+  // its own notice rather than being silenced by this one.
+  busy = false;
+  locked = true;
+  await h.runtime.tick();
+  assert.equal((await h.runtime.outbox.get(typed.entry.id)).state, 'pending');
+  locked = false;
+  busy = true;
+  await h.runtime.tick();
+  h.clock.value += 61_000;
+  await h.runtime.tick();
+  assert.equal(stuck.length, 2, 'the second wedge is not the first one');
+  await h.runtime.stop();
+});
+
+test('a running turn is never reported as a wedge', async t => {
+  const stuck = [];
+  const h = fixture(t, {
+    isBusy: () => true,
+    busyReasons: () => ['workspace_occupied', 'run_active'],
+    stuckDeliveryNoticeMs: 0,
+    notifyStuckDelivery: notice => { stuck.push(notice); },
+  });
+  await h.runtime.admitSessionWork({ sessionId: 'running', text: 'hi', idempotencyKey: 'run-1' });
+  await h.runtime.tick();
+  await h.runtime.tick();
+  assert.deepEqual(stuck, [], 'a turn in flight explains the wait by itself');
+  await h.runtime.stop();
+});
+
+test('machine work held behind a busy workspace stays quiet', async t => {
+  const stuck = [];
+  const h = fixture(t, {
+    isBusy: () => true,
+    busyReasons: () => ['workspace_occupied'],
+    stuckDeliveryNoticeMs: 0,
+    notifyStuckDelivery: notice => { stuck.push(notice); },
+  });
+  await h.runtime.admitSessionWork({
+    sessionId: 'machine', text: 'dispatch', source: 'operation', idempotencyKey: 'op-1',
+  });
+  await h.runtime.tick();
+  await h.runtime.tick();
+  assert.deepEqual(stuck, [], 'only a human is waiting on a human message');
+  await h.runtime.stop();
+});
+
+test('a stuck-delivery notice that throws cannot fail the tick', async t => {
+  const h = fixture(t, {
+    isBusy: () => true,
+    busyReasons: () => ['workspace_occupied'],
+    stuckDeliveryNoticeMs: 0,
+    notifyStuckDelivery: () => { throw new Error('notice transport down'); },
+  });
+  await h.runtime.admitSessionWork({ sessionId: 'held', text: 'hi', idempotencyKey: 'held-3' });
+  await h.runtime.tick();
+  assert.ok(h.logs.some(message => /stuck-delivery notice failed/.test(message)));
+  await h.runtime.stop();
+});
+
+test('a lost-message notice that throws cannot fail the delivery settle', async t => {
+  const h = fixture(t, {
+    outboxOptions: { maxAttempts: 1, backoff: () => 0 },
+    notifyLostMessage: () => { throw new Error('notice transport down'); },
+    beforeDeliver: async () => {
+      throw Object.assign(new Error('workspace directory missing'), {
+        code: 'workspace_directory_missing', backpressure: false,
+      });
+    },
+  });
+  const admitted = await h.runtime.admitSessionWork({
+    sessionId: 'quiet', text: 'must still settle', idempotencyKey: 'quiet-1',
+  });
+  await h.runtime.tick();
+  assert.equal((await h.runtime.outbox.get(admitted.entry.id)).state, 'dead-letter');
+  assert.ok(h.logs.some(message => /lost-message notice failed: notice transport down/.test(message)));
   await h.runtime.stop();
 });
 

@@ -1494,6 +1494,45 @@ test('direct input typed at E-at-rest runs like any later request', async t => {
   assert.equal(item.payload.message, 'next instruction typed after the error');
 });
 
+// The Air task page is a place a human types, but it admits with
+// source 'task-shell' rather than 'direct'. Reading only 'direct' as typed made
+// the task page's messages selectable in no state but D, so one E verdict parked
+// them forever: the user's next instruction sat in the FIFO behind a turn that
+// had already failed, with nothing in the UI able to release it. See
+// src/session-work/user-input.js.
+test('a message typed on the task page is selectable at E-at-rest, unlike machine work', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'the turn that fails',
+    idempotencyKey: 's1-active',
+    options: { taskId: 'task-1' },
+  });
+  await startClaim(h, await claimOne(h, 's1'));
+  const typed = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'typed on the task page while that turn was still running',
+    source: 'task-shell',
+    options: { taskId: 'task-1', taskShellReceiptId: 'receipt-1' },
+    idempotencyKey: 's1-shell',
+  });
+  assert.equal(typed.queued, true, 'classify P stages it behind the owned turn');
+  const machine = await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'machine work admitted in the same window',
+    source: 'operation',
+    idempotencyKey: 's1-machine',
+  });
+  assert.equal(machine.queued, true);
+  await h.scheduler.complete('s1', { expectedTaskId: 'task-1', classifyState: 'E' });
+  const claim = await claimOne(h, 's1');
+  assert.ok(claim, 'the task page message starts a fresh turn after the E verdict');
+  assert.equal(claim.id, typed.entry.id);
+  const staged = await h.outbox.list({ sessionId: 's1', states: 'pending' });
+  assert.deepEqual(staged.map(item => item.id), [machine.entry.id],
+    'machine work admitted the same way is still staged behind the E verdict');
+});
+
 test('insert-now can still prioritize an entry after an E verdict', async t => {
   const h = fixture(t);
   await h.scheduler.admit({

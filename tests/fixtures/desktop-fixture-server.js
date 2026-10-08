@@ -7,7 +7,8 @@
 //
 //   PORT                    port to bind on 127.0.0.1 (required)
 //   READY_DELAY_MS          serve 503 on /readyz until this long after listen
-//   EXIT_AFTER_READY_MS     exit with EXIT_CODE once ready and delayed
+//   EXIT_AFTER_READY_MS     exit with EXIT_CODE once ready and delayed (a crash:
+//                           it does not consume the graceful-drain path)
 //   EXIT_CODE               exit code for the exits above (default 1)
 //   PRINT_ADDRINUSE         print a fake EADDRINUSE stack to stderr, exit 3
 //   SPAWN_CHILD_PIDFILE     spawn a sleep grandchild (simulates CLI children)
@@ -83,7 +84,16 @@ server.on('error', error => {
 server.listen(PORT, '127.0.0.1', () => {
   readyAt = Date.now();
   process.stdout.write(`fixture: listening on ${PORT}\n`);
-  if (EXIT_AFTER_READY_MS) exitSoon(EXIT_CODE, EXIT_AFTER_READY_MS);
+  // A delayed self-exit models a server that dies on its own (a crash), which is
+  // NOT a shutdown request: it must not make the fixture deaf to
+  // /api/desktop-shutdown. It used to go through exitSoon() and set the
+  // shutting-down flag, so a test that combined the two had its graceful drain
+  // silently refused and the supervisor burned the entire drain grace waiting
+  // for an exit that had been asked for and ignored. Whoever gets there first
+  // still wins; the graceful path just exits 0.
+  if (EXIT_AFTER_READY_MS) {
+    setTimeout(() => { killChild(); process.exit(EXIT_CODE); }, EXIT_AFTER_READY_MS).unref();
+  }
 });
 
 process.on('SIGINT', () => exitSoon(0));

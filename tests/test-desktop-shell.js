@@ -25,6 +25,7 @@ const { spawn, spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const DESKTOP = path.join(ROOT, 'desktop');
 const FIXTURE = path.join(ROOT, 'tests', 'fixtures', 'desktop-fixture-server.js');
+const FOREGROUND_SUPERVISOR = path.join(ROOT, 'tests', 'fixtures', 'desktop-foreground-supervisor.js');
 
 const { findFreePort, probePort } = require(path.join(DESKTOP, 'lib', 'port-chooser.js'));
 const { waitForReadiness } = require(path.join(DESKTOP, 'lib', 'health-probe.js'));
@@ -297,6 +298,43 @@ test('supervisor: respawns once after an abnormal exit and recovers', async () =
   assert.ok(phases.some(p => p.phase === 'respawning'));
   await sup.stop();
   assert.equal(sup.getState().state, 'stopped');
+});
+
+// The respawn above passes even when the restart timer is unref'd, because
+// node:test's own handles keep this process's loop alive. MultiCC.app has no
+// such luck: it runs the standalone launcher in the foreground, where the
+// server child is the only live handle and `await new Promise(() => {})` holds
+// nothing. An unref'd restart timer therefore ended the *process* — and with
+// it the app — during the backoff window, so an exited server never came back
+// (every /api/restart, every crash). Only a child process with an empty loop
+// can see that, which is what the fixture is for.
+test('supervisor: still respawns when the process holds nothing else', { timeout: 90_000 }, async () => {
+  const dir = tmpdir('desktop-foreground-respawn-');
+  const port = await reservePort();
+  const run = spawnSync(process.execPath, [FOREGROUND_SUPERVISOR], {
+    encoding: 'utf8',
+    timeout: 60_000,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      LOGS_DIR: dir,
+      RUNTIME_INFO_FILE: path.join(dir, 'desktop-runtime.json'),
+      READY_DELAY_MS: '50',
+      // The server must die well after its own readiness probe, not right
+      // after it: for a few seconds the probe's pooling socket and its
+      // keep-alive timer are still ref'd, and that accident is enough to carry
+      // an unref'd restart timer across a short backoff — the same masking that
+      // let this ship. A real server runs for hours before it exits.
+      EXIT_AFTER_READY_MS: '6000',
+      EXIT_CODE: '1',
+      READY_TARGET: '2',
+      BACKOFF_MS: '200',
+    },
+  });
+  const output = `${run.stdout || ''}${run.stderr || ''}`;
+  assert.equal(run.status, 0, `foreground supervisor exited ${run.status} signal ${run.signal}:\n${output}`);
+  assert.match(output, /RESPAWNED 2/, output);
+  assert.equal((output.match(/^phase ready /gm) || []).length, 2, output);
 });
 
 test('supervisor: never-ready child is killed, failure reported with tail', async () => {

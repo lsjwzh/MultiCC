@@ -209,6 +209,21 @@ function dirReasonFix(reason) {
   return null;
 }
 
+// Which verdicts can heal on their own. A directory that is refused for its
+// size, its file count or a TCC denial is refused for a fact about what the user
+// chose or what macOS granted; no amount of retrying changes it, and every
+// attempt costs a walk over the very directory that got too big (a 623-file /
+// 5 GB directory spent the outbox's whole retry budget and dead-lettered the
+// user's message with the reason visible only in lastError). `path-missing` and
+// `git-error:` stay retryable on purpose: an unmounted volume or a transient git
+// failure can be gone by the next tick.
+function isPermanentDirReason(reason) {
+  if (!reason) return false;
+  return reason === 'home-or-above'
+    || reason.startsWith('unsuitable: ')
+    || reason.startsWith('permission-denied: ');
+}
+
 // Turn an ensureDirGitReady reason code into a user-facing message.
 function friendlyDirReason(reason) {
   if (!reason) return '目录初始化失败';
@@ -232,6 +247,19 @@ function friendlyDirReason(reason) {
   return '无法将目录初始化为 git 仓库: ' + reason;
 }
 
+// The port shape src/workspace/admission.js takes as `describeDirFailure`: it
+// must not require this module (this one reads the shared state container, which
+// is assembled by server.js and would point back at it), so the vocabulary
+// travels in as data — the prose the human reads, the fix code the UI can offer,
+// and whether a retry could ever succeed.
+function describeDirFailure(reason) {
+  return {
+    detail: friendlyDirReason(reason),
+    fix: dirReasonFix(reason),
+    permanent: isPermanentDirReason(reason),
+  };
+}
+
 module.exports = {
   isHomeOrAbove,
   realPathOf,
@@ -240,6 +268,8 @@ module.exports = {
   dirSuitabilityViaGit,
   dirSuitability,
   friendlyDirReason,
+  isPermanentDirReason,
+  describeDirFailure,
   developerToolsGuidance,
   dirReasonFix,
   macPermissionTargets,

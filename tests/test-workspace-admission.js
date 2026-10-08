@@ -455,6 +455,54 @@ test('reclaim never takes a workspace that holds a live lease', t => {
   assert.equal(f.registry.workspace(busy.id).residency, 'resident');
 });
 
+test('a refused directory names its reason, its fix and whether retrying can help', async t => {
+  const f = await hostFixture(t);
+  // The same wiring server.js installs: the directory vocabulary (prose, fix
+  // code, permanence) stays in src/directories.js.
+  const { friendlyDirReason, dirReasonFix, isPermanentDirReason } = require('../src/directories');
+  f.deps.describeDirFailure = reason => ({
+    detail: friendlyDirReason(reason),
+    fix: dirReasonFix(reason),
+    permanent: isPermanentDirReason(reason),
+  });
+  const logged = [];
+  f.deps.log = (event, data) => logged.push({ event, data });
+  const cases = [
+    { reason: 'unsuitable: 该目录体积过大（超过 2GB），不适合作为 session 目录，请选择具体的项目目录',
+      says: '体积过大', fix: null, permanent: true },
+    { reason: 'permission-denied: /Users/someone/Downloads/working',
+      says: '无权访问', fix: 'open-disk-access', permanent: true },
+    { reason: 'home-or-above',
+      says: '$HOME', fix: null, permanent: true },
+    { reason: 'git-error: fatal: not a git repository',
+      says: '无法将目录初始化为 git 仓库', fix: null, permanent: false },
+  ];
+  for (const [index, expected] of cases.entries()) {
+    f.deps.ensureDir = async () => ({ ok: false, reason: expected.reason });
+    f.record.workspaceState = 'planned';
+    const error = await f.host.beforeDeliver(f.descriptor(`refused-${index}`))
+      .then(() => null, cause => cause);
+    assert.equal(error.code, 'workspace_repository_not_ready');
+    assert.equal(error.reason, expected.reason, 'the raw verdict stays on the error for the log');
+    assert.ok(error.message.includes(expected.says), `lastError becomes readable prose: ${error.message}`);
+    assert.equal(error.fix, expected.fix);
+    assert.equal(error.retryable, !expected.permanent,
+      'a verdict only a human can change must not spend the outbox retry budget');
+  }
+  assert.deepEqual(logged.map(line => line.event), cases.map(() => 'workspace_directory_not_ready'));
+  assert.equal(logged[0].data.reason, cases[0].reason);
+  assert.equal(logged[1].data.fix, 'open-disk-access');
+  assert.equal(logged[3].data.permanent, false);
+});
+
+test('without a directory vocabulary the refusal keeps its old bare shape', async t => {
+  const f = await hostFixture(t);
+  f.deps.ensureDir = async () => ({ ok: false, reason: 'unsuitable: anything' });
+  const error = await f.host.beforeDeliver(f.descriptor('bare')).then(() => null, cause => cause);
+  assert.equal(error.code, 'workspace_repository_not_ready');
+  assert.equal(error.retryable, undefined, 'the default retry path is unchanged for other hosts');
+});
+
 test('a worktree that disappears stops spending the resident budget', async t => {
   const f = await hostFixture(t), d = f.descriptor('m'), guard = await f.host.beforeDeliver(d);
   await guard.complete({ accepted: true });
