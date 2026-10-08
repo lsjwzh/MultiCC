@@ -14,6 +14,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createChatTurnEngine, deliverAfterPendingMemory } = require('../src/chat/turn-engine');
+const { createSessionNotices } = require('../src/chat/session-notices');
 
 const noop = () => {};
 
@@ -181,4 +182,85 @@ test('a rejected admission result also replaces loading with a terminal state', 
   assert.deepEqual(progress.at(-1), {
     state: 'failed', reason: 'message_delivery_rejected', code: 'session_not_found',
   });
+});
+
+// The same feedback duty, one layer later: once the message is in the outbox
+// there is no client waiting on a progress frame any more, so a delivery that
+// becomes terminal has to be written into the transcript instead. This is the
+// half of the same class of bug that used to leave a task "卡在 queued" with
+// nothing but lastError in the logs.
+test('a lost message is written into the transcript and broadcast, once', () => {
+  const appended = [], broadcasts = [];
+  const notice = createSessionNotices({
+    appendChatMessage: (sessionId, message) => { appended.push({ sessionId, message }); return true; },
+    chatBroadcast: (sessionId, payload) => broadcasts.push({ sessionId, payload }),
+    now: () => 1234,
+  });
+  notice.notifyLostMessage({ sessionId: 's1', error: Object.assign(new Error('该目录体积过大（超过 2GB）\n多行细节不进这一行'), { code: 'workspace_repository_not_ready' }) });
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].sessionId, 's1');
+  assert.equal(appended[0].message.role, 'system');
+  assert.equal(appended[0].message.ts, 1234);
+  assert.match(appended[0].message.content, /workspace_repository_not_ready/);
+  assert.match(appended[0].message.content, /该目录体积过大/);
+  assert.doesNotMatch(appended[0].message.content, /多行细节/, 'lastError prose stays one line');
+  assert.deepEqual(broadcasts.at(-1), {
+    sessionId: 's1',
+    payload: { type: 'system', subtype: 'notice', message: appended[0].message.content },
+  });
+});
+
+test('a history append that fails is not broadcast as if it had been saved', () => {
+  const broadcasts = [];
+  const notice = createSessionNotices({
+    appendChatMessage: () => false,
+    chatBroadcast: (sessionId, payload) => broadcasts.push({ sessionId, payload }),
+  });
+  notice.notifyLostMessage({ sessionId: 's1', error: new Error('boom') });
+  assert.deepEqual(broadcasts, [], 'a live line with no durable record would be gone on reload');
+});
+
+test('the notice carries the whole remedy, not just the first line of it', () => {
+  // The report's last ask was a stuck task that names its cause *and* its fix.
+  // `message` is deliberately one line (it is also what lastError returns), so
+  // anything read by a human has to come from `detail`.
+  const appended = [];
+  const notice = createSessionNotices({
+    appendChatMessage: (sessionId, message) => { appended.push(message); return true; },
+  });
+  notice.notifyLostMessage({
+    sessionId: 's1',
+    error: Object.assign(new Error('git 无权访问该目录：macOS 的隐私保护会拦截…'), {
+      code: 'workspace_repository_not_ready',
+      detail: 'git 无权访问该目录：macOS 的隐私保护会拦截…\n要授权的对象取决于你现在的启动方式：\n· 双击 MultiCC.app 启动：给这个 App 授权',
+    }),
+  });
+  assert.match(appended[0].content, /要授权的对象取决于你现在的启动方式/,
+    'the steps the user has to take survive into the transcript');
+  assert.match(appended[0].content, /修好后请重新发送/);
+});
+
+// The same complaint one step earlier than a dead letter: the message is not
+// lost, it simply never starts. Nothing on screen said so — only a repeated
+// `delivery_skipped` line in the log — which is what the report saw for thirteen
+// messages in a row.
+test('a stuck delivery names the busy reason and the way out', () => {
+  const appended = [], broadcasts = [];
+  const notice = createSessionNotices({
+    appendChatMessage: (sessionId, message) => { appended.push(message); return true; },
+    chatBroadcast: (sessionId, payload) => broadcasts.push(payload),
+    now: () => 4242,
+  });
+  notice.notifyStuckDelivery({ sessionId: 's1', reasons: ['workspace_occupied'], waitedMs: 90_000 });
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].role, 'system');
+  assert.equal(appended[0].ts, 4242);
+  assert.match(appended[0].content, /workspace_occupied/, 'the machine reason survives verbatim');
+  assert.match(appended[0].content, /2 分钟/, 'the wait is in the units the user experiences');
+  assert.match(appended[0].content, /立刻插入/, 'the remedy is the button that exists in the queue');
+  assert.deepEqual(broadcasts, [{ type: 'system', subtype: 'notice', message: appended[0].content }]);
+  // An empty reason list still has to say something true rather than nothing.
+  appended.length = 0;
+  notice.notifyStuckDelivery({ sessionId: 's1', reasons: [], waitedMs: 60_000 });
+  assert.match(appended[0].content, /workspace_occupied/);
 });

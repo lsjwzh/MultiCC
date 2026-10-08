@@ -232,6 +232,9 @@ function createBackendSupervisor(rawDeps) {
   }
 
   function handleExit(code, signal) {
+    // Read before anything may overwrite it: an exit from a server that had
+    // already served /readyz is a different event from one that never booted.
+    const wasReady = state === 'ready';
     resolveExitWaiters();
     closeLogStream();
     clearRuntimeInfo();
@@ -240,9 +243,18 @@ function createBackendSupervisor(rawDeps) {
       onPhase('stopped', { code, signal });
       return;
     }
-    // Abnormal exit (never became ready, or died after being ready).
-    crashTimes.push(now());
-    while (crashTimes.length && now() - crashTimes[0] > opts.crashLoopWindowMs) crashTimes.shift();
+    // A clean exit from a server that was ready is a *requested* restart, not a
+    // crash: /api/restart in desktop mode is documented as "exit gracefully and
+    // let the supervisor respawn us", and gracefulShutdown always exits 0. It
+    // must not spend crash-loop budget — three restarts inside the window (exactly
+    // what a user does when the app looks wedged) used to trip the guard and
+    // leave the app permanently down. Exits before readiness still count, so a
+    // server that cannot boot keeps its guard.
+    const requestedRestart = code === 0 && wasReady && signal === null;
+    if (!requestedRestart) {
+      crashTimes.push(now());
+      while (crashTimes.length && now() - crashTimes[0] > opts.crashLoopWindowMs) crashTimes.shift();
+    }
     const tail = getLogTail(1200);
     const portBusy = /EADDRINUSE/.test(tail);
     if (portBusy) {
@@ -254,13 +266,25 @@ function createBackendSupervisor(rawDeps) {
       return;
     }
     state = 'respawning';
-    onPhase('respawning', { code, signal, nextAttempt: attempts + 1 });
-    const backoff = Math.min(opts.restartBackoffMs * 2 ** (crashTimes.length - 1), opts.maxRestartBackoffMs);
-    respawnTimer = unrefTimer(setTimeout(() => {
+    onPhase('respawning', { code, signal, nextAttempt: attempts + 1, requested: requestedRestart });
+    const backoff = requestedRestart
+      ? opts.restartBackoffMs
+      : Math.min(opts.restartBackoffMs * 2 ** (crashTimes.length - 1), opts.maxRestartBackoffMs);
+    // Deliberately NOT unref'd — same rule as waitForExit below, and it was
+    // learned the hard way there. A pending respawn is work this process must
+    // stay alive to finish. In the Electron shell the app holds the loop either
+    // way, so unref'ing looked harmless; but MultiCC.app runs the standalone
+    // launcher in the foreground, and its `await new Promise(() => {})` holds
+    // nothing — the server child's own handle was the only ref'd thing left.
+    // Unref'ing this timer therefore let the launcher exit inside the backoff
+    // window (1s after the first exit), so the server simply never came back:
+    // every /api/restart left the app dead with nothing but
+    // "server exited (code=0); restarting" in standalone.log.
+    respawnTimer = setTimeout(() => {
       respawnTimer = null;
       if (stopRequested || state === 'stopping') return;
       spawnChild({ respawn: true });
-    }, backoff));
+    }, backoff);
   }
 
   async function start({ port: chosenPort }) {

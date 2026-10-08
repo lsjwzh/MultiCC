@@ -29,7 +29,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 
 // Lifecycle logic is shared with the desktop shell and must never fork into a
 // second copy: the bundle ships desktop/lib as <Resources>/launcher/lib, while
@@ -205,6 +205,18 @@ async function probeReady(origin, { fetchImpl = fetch, timeoutMs = 1_500 } = {})
   } catch (_) { return false; }
 }
 
+// Command line of a live process, or null when it cannot be read (the process
+// is gone, or this platform cannot be asked cheaply). `ps -ww` defeats the
+// width truncation that would otherwise cut the script path off long argv.
+function defaultReadProcessCommandLine(pid) {
+  if (process.platform === 'win32') return null;
+  try {
+    return execFileSync('ps', ['-ww', '-o', 'args=', '-p', String(pid)], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000,
+    });
+  } catch (_) { return null; }
+}
+
 function createLauncher({
   paths = resolveStandalonePaths(),
   env = process.env,
@@ -217,6 +229,10 @@ function createLauncher({
   findFreePortImpl = findFreePort,
   reclaimImpl = reclaimOrphan,
   createSupervisor = createBackendSupervisor,
+  // Reading another process's command line is the only way to tell a real
+  // launcher from a recycled pid (see otherLauncher). Injected so tests never
+  // shell out.
+  readProcessCommandLine = defaultReadProcessCommandLine,
 } = {}) {
   const desktopEnv = paths.desktopEnv;
   const runtimeNode = paths.runtimeNode;
@@ -231,11 +247,6 @@ function createLauncher({
   if (!openUrl) openUrl = origin => openBrowser(origin, { spawnImpl, platform, logger });
   const killTree = (pid, options) => killProcessTree(pid, options);
 
-  function writePidFile() {
-    try { fs.writeFileSync(pidFile, `${process.pid}\n`); } catch (error) {
-      logger.error(`could not write ${pidFile}: ${error.message}`);
-    }
-  }
   function clearPidFile() {
     try { fs.unlinkSync(pidFile); } catch (_) {}
   }
@@ -244,6 +255,110 @@ function createLauncher({
       const pid = Number.parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
       return Number.isInteger(pid) && pid > 0 ? pid : null;
     } catch (_) { return null; }
+  }
+
+  // Who else owns this data directory? The pid file is per directory, so a live
+  // pid in it is either this process or a duplicate — but liveness alone cannot
+  // justify turning a start away: SIGKILL and power loss leave the file behind,
+  // and pids get recycled, so an innocent process can be wearing the number. Ask
+  // the process what it is. When it cannot be asked (Windows, or `ps` missing)
+  // the answer is "not a launcher", never "probably a launcher": the refusal
+  // tells the user to run `multicc stop`, and that signals whatever holds the
+  // number — an innocent process, on a pid we could not even read. Unverified
+  // therefore keeps the old behaviour (the stale file is replaced, the start
+  // proceeds) rather than blocking on a guess.
+  function otherLauncher(pid = launcherPid()) {
+    if (!pid || pid === process.pid || !pidAlive(pid)) return null;
+    const commandLine = readProcessCommandLine(pid);
+    if (commandLine === null) return null;
+    return /standalone-launcher\.js/.test(commandLine) ? { pid, verified: true } : null;
+  }
+
+  // Take the data directory. The pid file *is* the single-instance lock, and it
+  // is created with O_EXCL rather than written over, so two launchers that
+  // start at the same moment cannot both end up supervising a server here. A
+  // file left by a launcher that was killed outright is taken over: its pid is
+  // dead, or belongs to something that is not a launcher any more.
+  function claimPidFile() {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        fs.writeFileSync(pidFile, `${process.pid}\n`, { flag: 'wx' });
+        return { claimed: true };
+      } catch (error) {
+        if (error.code !== 'EEXIST') {
+          logger.error(`could not write ${pidFile}: ${error.message}`);
+          return { claimed: false, error };
+        }
+      }
+      const owner = otherLauncher();
+      if (owner) return { claimed: false, owner };
+      try { fs.unlinkSync(pidFile); } catch (error) {
+        if (error.code !== 'ENOENT') {
+          logger.error(`could not replace the stale ${pidFile}: ${error.message}`);
+          return { claimed: false, error };
+        }
+      }
+    }
+    return { claimed: false };
+  }
+
+  function refuseSecondLauncher(owner) {
+    logger.error(`another launcher (pid ${owner.pid}) already owns ${desktopEnv.dataRoot}`);
+    logger.error('refusing to start a second server on the same data directory: both would write');
+    logger.error('the same session files and workspace leases, which wedges the tasks in it.');
+    logger.error('run "multicc stop" first (it drains that launcher and its server), then start again.');
+    return { started: false, refused: 'launcher-owned', pid: owner.pid, verified: owner.verified === true };
+  }
+
+  // Become the supervising launcher: hold this process open and route every way
+  // it can be asked to stop into one graceful shutdown. `await new Promise(() =>
+  // {})` in main() holds nothing at all — a pending promise is not a handle — so
+  // without the interval below the process rests entirely on the server child,
+  // and the moment that child exits during a restart backoff the launcher (which
+  // IS MultiCC.app, run in the foreground) vanishes with it and the server never
+  // comes back. One explicit interval makes "the launcher outlives the server it
+  // supervises" true by construction instead of by luck.
+  function holdProcess({ supervisor, clearPidFile: clear }) {
+    const keepAlive = setInterval(() => {}, 60_000);
+    // POSIX signals cannot reach a Windows process, so `--stop` also writes a
+    // marker file this launcher polls (see stop()). Unref'd: the marker is not
+    // work that has to keep anything alive, keepAlive already does that.
+    const stopWatcher = setInterval(() => {
+      if (!pendingStopRequest()) return;
+      clearStopRequest();
+      shutdown('stop request');
+    }, 500);
+    if (typeof stopWatcher.unref === 'function') stopWatcher.unref();
+    const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+    const onSignal = signal => { shutdown(signal); };
+    let stopping = false;
+    const detach = () => {
+      clearInterval(keepAlive);
+      clearInterval(stopWatcher);
+      for (const signal of signals) {
+        try { process.removeListener(signal, onSignal); } catch (_) {}
+      }
+    };
+    async function shutdown(signal) {
+      if (stopping) return;
+      stopping = true;
+      logger.log(`received ${signal} — stopping the server`);
+      try { await supervisor.stop(); } catch (error) { logger.error(`stop failed: ${error.message}`); }
+      clearStopRequest();
+      clear();
+      detach();
+      process.exit(0);
+    }
+    for (const signal of signals) {
+      try { process.on(signal, onSignal); } catch (_) {}
+    }
+    return {
+      shutdown,
+      // Hand the process back: used when a start fails, so a caller inside a
+      // longer-lived process (tests, the smoke harness) does not keep signal
+      // handlers and a keep-alive timer from a launcher that never ran.
+      release: detach,
+    };
   }
 
   async function status() {
@@ -346,12 +461,31 @@ function createLauncher({
       if (args.open) openUrl(current.origin);
       return { started: false, origin: current.origin, pid: current.pid };
     }
+    // A launcher that is still booting is not "running" yet, and that window is
+    // where a second instance used to walk in. /readyz is not answering and the
+    // runtime-info file does not exist yet, so the check above reports "nothing
+    // to start", reclaim finds no orphan to reclaim, and the newcomer picks the
+    // next free port (3001) for a second server on the same data directory.
+    // Both then write the same SQLite files and the same lease registry, and the
+    // newcomer's recovery pass rewrites the first server's live lease to
+    // `uncertain` — every task in that directory stops until the lease expires.
+    // The owner's pid file is the one piece of evidence that exists for the
+    // whole window, so a duplicate is turned away here, before it detaches.
+    const owner = otherLauncher();
+    if (owner) return refuseSecondLauncher(owner);
     if (args.detach && env.MULTICC_STANDALONE_DETACHED !== '1' && !args.detachedChild) {
       const child = detachSelf(args);
       logger.log(`starting in the background (pid ${child.pid}); logs: ${desktopEnv.logsDir}`);
       return { started: true, detached: true, pid: child.pid, origin: null };
     }
-    writePidFile();
+    // The check above cannot decide a race between two starts that arrive in the
+    // same instant (neither pid file exists yet). Claiming the file atomically
+    // can, and this is the last point before a server exists.
+    const claim = claimPidFile();
+    if (!claim.claimed) {
+      if (claim.owner) return refuseSecondLauncher(claim.owner);
+      throw new Error(`could not take ${pidFile} for this launcher`);
+    }
     // A stale or unknown server on this data directory must not fight us for
     // the SQLite files or the port — the same rule the desktop shell applies.
     await reclaimImpl({ infoFile, fetchImpl, spawn: spawnImpl, logger });
@@ -390,12 +524,24 @@ function createLauncher({
         }
       },
     });
+    // The supervisor exists from here, so the server can be spawned at any
+    // moment — ready or not. Everything that has to hold for the whole life of
+    // this launcher is therefore installed now rather than after readiness,
+    // because the boot window is a real window: a stop arriving inside it used
+    // to kill this process through default signal handling, leaving the server
+    // it had already spawned behind. That orphan has no desktop-runtime.json to
+    // be found by (it is written only on ready), so nothing could ever reclaim
+    // it — and the next start walked to another port and produced two servers on
+    // one data directory, the very state the ownership guard above exists to
+    // prevent.
+    const hold = holdProcess({ supervisor, clearPidFile });
     let ready;
     try {
       await supervisor.start({ port });
       ready = await readyPromise;
     } catch (error) {
       clearPidFile();
+      hold.release();
       throw error;
     }
     logger.log(`MultiCC is running at ${ready.origin}`);
@@ -407,24 +553,14 @@ function createLauncher({
       origin: ready.origin,
       pid: ready.pid || supervisor.getState().childPid,
       supervisor,
+      hold,
       pidFile,
       clearPidFile,
       clearStopRequest,
-      // Polled rather than signalled: see the Windows note in stop(). Returns a
-      // timer so the caller can keep it from holding the event loop open.
-      watchStopRequest: onRequest => {
-        let fired = false;
-        return setInterval(() => {
-          if (fired || !pendingStopRequest()) return;
-          fired = true;
-          clearStopRequest();
-          onRequest();
-        }, 500);
-      },
     };
   }
 
-  return { start, stop, status, detachSelf, paths, desktopEnv, logger, pidFile, launcherPid };
+  return { start, stop, status, detachSelf, paths, desktopEnv, logger, pidFile, launcherPid, otherLauncher };
 }
 
 function usage() {
@@ -464,7 +600,14 @@ async function main(argv = process.argv.slice(2)) {
     const state = await launcher.status();
     if (state.running) logger.log(`running at ${state.origin} (pid ${state.pid})`);
     else if (state.starting) logger.log(`starting (pid ${state.pid}, not ready yet)`);
-    else logger.log('not running');
+    else {
+      // "not running" is not the whole truth while a launcher holds the data
+      // directory: it may be between spawn attempts, or waiting to restart a
+      // server that just exited.
+      const owner = launcher.otherLauncher();
+      if (owner) logger.log(`server not running; launcher pid ${owner.pid} owns this data directory`);
+      else logger.log('not running');
+    }
     return 0;
   }
   if (args.mode === 'stop') {
@@ -482,31 +625,19 @@ async function main(argv = process.argv.slice(2)) {
     logger.error(error.message);
     return 1;
   }
+  // A refusal is a real failure, not a no-op like "already running": the caller
+  // asked for a server here and did not get one. `multicc start` propagates this
+  // code, so a duplicate launch is visible on the terminal instead of only in the
+  // log.
+  if (result.refused) return 1;
   if (result.detached || !result.started || !result.supervisor) return 0;
 
   // Foreground: the launcher owns the child, so closing the terminal window
-  // (SIGHUP) stops the server instead of orphaning it. SIGINT/SIGTERM are the
-  // POSIX path; on Windows only SIGHUP and SIGINT are ever delivered (Ctrl+C,
-  // console close), and `--stop` arrives as the marker file below.
-  const supervisor = result.supervisor;
-  const clearPidFile = result.clearPidFile || (() => {});
-  let stopping = false;
-  const shutdown = async signal => {
-    if (stopping) return;
-    stopping = true;
-    logger.log(`received ${signal} — stopping the server`);
-    try { await supervisor.stop(); } catch (error) { logger.error(`stop failed: ${error.message}`); }
-    result.clearStopRequest?.();
-    clearPidFile();
-    process.exit(0);
-  };
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    try { process.on(signal, () => { shutdown(signal); }); } catch (_) {}
-  }
-  const stopWatcher = result.watchStopRequest
-    ? result.watchStopRequest(() => shutdown('stop request'))
-    : null;
-  if (stopWatcher && typeof stopWatcher.unref === 'function') stopWatcher.unref();
+  // (SIGHUP) stops the server instead of orphaning it, and `--stop` reaches it
+  // through the signal/marker handling start() has already installed — installed
+  // there, not here, because the boot window needs it too (see holdProcess).
+  // This call is what keeps the process alive from now on: a pending promise
+  // holds nothing at all.
   await new Promise(() => {});
   return 0;
 }

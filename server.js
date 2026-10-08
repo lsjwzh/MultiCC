@@ -647,11 +647,10 @@ app.get('/api/repo-operations/:operationId', (req, res) => {
 const gitReadyDirs = new Set();          // dir.id once its repo is verified/initialised
 const invalidSessions = new Map();       // sessionId → reason; recovery is skipped for these
 
-// Directory suitability + path helpers extracted to src/directories.js.
-// Destructured so existing call sites are unchanged. ensureDirGitReady() and
-// the loadDirectories/saveDirectories persistence stay below in server.js.
+// Directory suitability + path helpers extracted to src/directories.js, destructured
+// so existing call sites are unchanged; ensureDirGitReady() stays below in server.js.
 const {
-  isHomeOrAbove, realPathOf, dirSuitability, friendlyDirReason, dirReasonFix, directoryWriteDenied,
+  isHomeOrAbove, realPathOf, dirSuitability, friendlyDirReason, dirReasonFix, directoryWriteDenied, describeDirFailure,
 } = require('./src/directories');
 
 // Make sure a directory is a usable git repo; refuses $HOME and missing paths.
@@ -2529,7 +2528,7 @@ sessionHibernationRuntime = require('./src/session/hibernation-composition').cre
 });
 workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmission({
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, persistence: sessionPersistence,
-  ensureDir: ensureDirGitReady, addWorktree: gitWorktreeAdd, validate: gitWorktreeValidate,
+  ensureDir: ensureDirGitReady, addWorktree: gitWorktreeAdd, validate: gitWorktreeValidate, describeDirFailure,
   getState: id => chatSessions.get(id), hibernation: () => sessionHibernationRuntime,
   hasBackground: id => backgroundTaskRuntime.hasProcessBackgroundTasks(id), streamBusy: id => !!chatStream.status(id)?.busy,
   closePersistent: id => chatStream.closeAndWait(id),
@@ -2692,7 +2691,8 @@ orchestrationRuntime = createOrchestrationRuntime({
   isBusy: dispatchTargetBusy, busyReasons: dispatchTargetBusyReasons, noteBlockedDelivery: id => workspaceAdmission?.noteBlockedDelivery(id), deliveryGroup: id => taskShellHost.workspaceGroup(id),
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,
   runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
-  deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox,
+  // A typed message that dead-letters — or that cannot even start — must not vanish silently (src/chat/session-notices.js).
+  deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox, ...require('./src/chat/session-notices').createSessionNotices({ appendChatMessage, chatBroadcast }),
   probe: chatTurnEngine.probeExplicitWait,
   detachedAdapter: detached,
   recoverDispatchResult: chatTurnEngine.recoverDispatchOperation,

@@ -337,6 +337,193 @@ test('launcher supervises the server end to end and --stop leaves nothing behind
   }
 });
 
+// The app's own configuration: MultiCC.app execs the launcher in the
+// FOREGROUND (no --detach), so the launcher process *is* the app — if it exits,
+// the app is gone, and with it any chance of bringing the server back. A server
+// that exits on its own (a crash, or the graceful exit /api/restart performs in
+// desktop mode) must therefore be respawned by a launcher that is still there,
+// long after its readiness probe's sockets are gone. It was not: the app
+// vanished inside the restart backoff and standalone.log ended at
+// "server exited (code=0); restarting", which is exactly what the reporting
+// user saw. Six seconds past readiness is the point of the test — a short delay
+// hides the bug behind leftover probe handles.
+test('a foreground launcher outlives a dead server and brings it back', { timeout: 180_000 }, async () => {
+  const scratch = tmpdir('multicc-standalone-respawn-');
+  const resources = path.join(scratch, 'Resources');
+  const dataDir = path.join(scratch, 'userdata');
+  stageFakeServer(resources);
+  const port = await reservePort();
+  const launcherArgs = ['--resources', resources, '--data', dataDir, '--port', String(port), '--no-open'];
+  const child = spawn(process.execPath, [LAUNCHER, '--start', ...launcherArgs], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, READY_DELAY_MS: '50', EXIT_AFTER_READY_MS: '6000', EXIT_CODE: '1' },
+  });
+  let output = '';
+  child.stdout.on('data', chunk => { output += chunk; });
+  child.stderr.on('data', chunk => { output += chunk; });
+  try {
+    await waitFor(() => (output.match(/server ready at/g) || []).length >= 2, {
+      timeoutMs: 90_000,
+      what: 'the supervised server to be brought back after it exited',
+    });
+    assert.equal(child.exitCode, null,
+      `the foreground launcher (the app itself) must still be running\n${output}`);
+
+    // And it is still a well-behaved supervisor: --stop is how the app quits.
+    // Note the async spawn: spawnSync would block this process's event loop for
+    // the whole call, so the launcher's exit could not be reaped here and
+    // pidAlive() would keep reporting a zombie as alive — --stop then waits out
+    // its full 20s window and tree-kills a process that already exited.
+    const stopChild = spawn(process.execPath, [LAUNCHER, '--stop', ...launcherArgs.slice(0, 4)]);
+    let stopOutput = '';
+    stopChild.stdout.on('data', chunk => { stopOutput += chunk; });
+    stopChild.stderr.on('data', chunk => { stopOutput += chunk; });
+    await waitFor(() => stopChild.exitCode !== null, { timeoutMs: 60_000, what: '--stop to return' });
+    assert.match(stopOutput, /stopped \(launcher signal\)/,
+      'a launcher that just respawned still has to drain on --stop');
+    await waitFor(() => child.exitCode !== null, { timeoutMs: 30_000, what: 'the launcher to exit' });
+    assert.equal(child.exitCode, 0, `launcher exited ${child.exitCode}\n${output}`);
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL');
+  }
+});
+
+// One data directory, one launcher. Two launchers there is the state that wedged
+// the reporting user's tasks: the second one starts because the first is still
+// booting (/readyz is not 200 yet and desktop-runtime.json does not exist yet, so
+// "is anything running?" answers no), reclaim finds no orphan, and it walks to
+// the next free port — after which two servers write the same SQLite files and
+// the same workspace lease registry, and the newcomer's recovery pass rewrites
+// the first one's live lease to `uncertain` until it expires.
+test('a second launcher refuses to start while the first is still booting', { timeout: 180_000 }, async () => {
+  const scratch = tmpdir('multicc-standalone-single-instance-');
+  const resources = path.join(scratch, 'Resources');
+  const dataDir = path.join(scratch, 'userdata');
+  stageFakeServer(resources);
+  const port = await reservePort();
+  const launcherArgs = ['--resources', resources, '--data', dataDir, '--port', String(port), '--no-open'];
+  const pidFile = path.join(dataDir, 'standalone-launcher.pid');
+
+  // Hold the first launcher inside its boot window: the fixture answers 503 on
+  // /readyz for this long, so nothing about the running server is discoverable.
+  const first = spawn(process.execPath, [LAUNCHER, '--start', ...launcherArgs], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, READY_DELAY_MS: '8000' },
+  });
+  let firstOutput = '';
+  first.stdout.on('data', chunk => { firstOutput += chunk; });
+  first.stderr.on('data', chunk => { firstOutput += chunk; });
+  try {
+    await waitFor(() => {
+      try { return Number(fs.readFileSync(pidFile, 'utf8').trim()) === first.pid; } catch (_) { return false; }
+    }, { timeoutMs: 20_000, what: 'the first launcher to record itself' });
+    assert.equal(fs.existsSync(path.join(dataDir, 'desktop-runtime.json')), false,
+      'the boot window is the point: the server is spawned but nothing is ready yet');
+
+    const second = spawnSync(process.execPath, [LAUNCHER, '--start', ...launcherArgs], { encoding: 'utf8' });
+    const secondOutput = `${second.stdout}${second.stderr}`;
+    assert.equal(second.status, 1, `a duplicate start must fail, not start a second server\n${secondOutput}`);
+    assert.match(secondOutput, /another launcher \(pid \d+\) already owns/);
+    assert.match(secondOutput, /multicc stop/, 'and say how to get out of it');
+    assert.doesNotMatch(secondOutput, /server ready at/, 'no second server may have been started');
+    assert.equal(Number(fs.readFileSync(pidFile, 'utf8').trim()), first.pid,
+      'the refusal must leave the owner and its pid file untouched');
+    assert.equal(await httpStatus(`http://127.0.0.1:${port + 1}/readyz`), 0,
+      'and must not have walked on to the next port');
+  } finally {
+    // Async, never spawnSync: this process is the launcher's parent, so blocking
+    // its loop would leave the launcher unreaped (a zombie answers pidAlive) and
+    // --stop would spend its whole 20s window before tree-killing a dead process.
+    // A launcher killed in the boot window dies by signal, so `exitCode` stays
+    // null — the exit is visible as `signalCode`.
+    const stopChild = spawn(process.execPath, [LAUNCHER, '--stop', ...launcherArgs.slice(0, 4)]);
+    let stopOutput = '';
+    stopChild.stdout.on('data', chunk => { stopOutput += chunk; });
+    stopChild.stderr.on('data', chunk => { stopOutput += chunk; });
+    await waitFor(() => stopChild.exitCode !== null, { timeoutMs: 60_000, what: '--stop to return' });
+    assert.match(stopOutput, /stopped/, `--stop must drain the booting launcher\n${stopOutput}`);
+    await waitFor(() => first.exitCode !== null || first.signalCode !== null,
+      { timeoutMs: 30_000, what: 'the first launcher to exit' });
+    // And the server it had already spawned is not left behind: nothing answers on
+    // its port, and the data directory holds no claim on it any more.
+    await waitFor(async () => (await httpStatus(`http://127.0.0.1:${port}/readyz`)) === 0,
+      { timeoutMs: 30_000, what: 'the boot-window server to go away' });
+    assert.equal(fs.existsSync(pidFile), false, 'the pid file must not outlive the launcher');
+    if (first.exitCode === null && first.signalCode === null) first.kill('SIGKILL');
+  }
+});
+
+// The pid file is the single-instance lock, but it is also what a launcher that
+// was SIGKILLed or lost power leaves behind. Pids get recycled, so liveness alone
+// cannot mean ownership: refusing a start on a stranger's pid would send the user
+// to `multicc stop`, which signals whatever wears the number. Ownership is
+// decided by asking the process what it is, and a file nobody owns is taken over.
+test('ownership of the data directory is proved, and a stale pid file is taken over', async () => {
+  const scratch = tmpdir('multicc-standalone-stale-pid-');
+  const resources = path.join(scratch, 'Resources');
+  const dataDir = path.join(scratch, 'userdata');
+  stageFakeServer(resources);
+  fs.mkdirSync(dataDir, { recursive: true });
+  const pidFile = path.join(dataDir, 'standalone-launcher.pid');
+  const paths = launcherScript.resolveStandalonePaths({
+    resources, env: { ...process.env, MULTICC_STANDALONE_HOME: dataDir },
+  });
+  const silent = { log() {}, error() {} };
+  // Alive, and never us: the pid file's number can belong to anyone.
+  const recycled = process.ppid;
+  const LAUNCHER_CMD = `${process.execPath} /opt/MultiCC/Resources/launcher/standalone-launcher.js --start\n`;
+  const build = (readProcessCommandLine, extra = {}) => launcherScript.createLauncher({
+    paths,
+    logger: silent,
+    readProcessCommandLine,
+    reclaimImpl: async () => ({ reclaimed: false }),
+    findFreePortImpl: async () => 45678,
+    ...extra,
+  });
+
+  const stranger = build(() => '/usr/bin/some-unrelated-daemon --foo\n');
+  fs.writeFileSync(pidFile, `${recycled}\n`);
+  assert.equal(stranger.otherLauncher(), null, 'a recycled pid is not an owner');
+  // Unidentifiable is not ownership either: this is the Windows shape (and `ps`
+  // missing elsewhere). Treating it as an owner would refuse the start and point
+  // the user at `multicc stop`, which signals whatever holds the number.
+  assert.equal(build(() => null).otherLauncher(), null,
+    'a pid whose process cannot be asked is not an owner');
+
+  const real = build(() => LAUNCHER_CMD);
+  assert.equal(real.otherLauncher()?.pid, recycled, 'a launcher command line is');
+  assert.equal(real.otherLauncher(process.pid), null, 'and a launcher never counts itself');
+  assert.equal(real.otherLauncher(999_999), null, 'a dead pid neither');
+
+  // Ownership is taken, not assumed: the lock is created with O_EXCL, so two
+  // starts arriving in the same instant cannot both win.
+  let pidFileWhenSpawning = null;
+  const claiming = build(() => '/usr/bin/some-unrelated-daemon --foo\n', {
+    createSupervisor: ({ onPhase }) => ({
+      async start() {
+        pidFileWhenSpawning = fs.readFileSync(pidFile, 'utf8').trim();
+        onPhase('failed', { reason: 'test-only' });
+      },
+      getState: () => ({ childPid: null }),
+      async stop() {},
+    }),
+  });
+  await assert.rejects(claiming.start({}), /server failed: test-only/);
+  assert.equal(pidFileWhenSpawning, String(process.pid),
+    'the stale file is replaced by ours before anything is spawned');
+  assert.equal(fs.existsSync(pidFile), false, 'and a launcher that failed clears its own claim');
+
+  // A live launcher, on the other hand, is left alone.
+  fs.writeFileSync(pidFile, `${recycled}\n`);
+  const refused = await real.start({});
+  assert.equal(refused.refused, 'launcher-owned');
+  assert.equal(refused.started, false);
+  assert.equal(refused.pid, recycled);
+  assert.equal(Number(fs.readFileSync(pidFile, 'utf8').trim()), recycled,
+    'a refusal never rewrites the owner pid');
+  fs.rmSync(pidFile, { force: true });
+});
+
 test('--detach hands off to a background launcher that --stop can still drain', { timeout: 180_000 }, async () => {
   const scratch = tmpdir('multicc-standalone-detach-');
   const resources = path.join(scratch, 'Resources');

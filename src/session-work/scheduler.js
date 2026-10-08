@@ -10,6 +10,7 @@ const {
   isProcessingLetter, isWaitForUserLetter, isTerminalLetter, isAbnormalLetter,
   isOutcomeLetter,
 } = require('../classify/vocab');
+const { isUserTypedWork } = require('./user-input');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
@@ -627,8 +628,12 @@ function createSessionWorkScheduler({
       // Typed/control inputs carry directRun across the P boundary. Selection
       // still blocks them while classify is P, then starts the oldest one as
       // soon as classify leaves P. The tag does not rewrite FIFO sequence.
-      const directMessage = payload.type === 'session.work'
-        && (payload.source === 'direct' || CONTROL_KINDS.has(inferredKind));
+      //
+      // "Typed" has to mean every surface a human types on, not just the chat
+      // box: the Air task page admits with source 'task-shell', and while it was
+      // excluded here its user's messages were selectable in no state but D —
+      // an E verdict parked them forever. See session-work/user-input.js.
+      const directMessage = isUserTypedWork(payload) || CONTROL_KINDS.has(inferredKind);
       if (draft.outbox[admitted.item.id]
           && directMessage) {
         draft.outbox[admitted.item.id].directRun = true;

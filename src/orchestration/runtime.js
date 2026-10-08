@@ -13,6 +13,7 @@ const { createWaitService } = require('../wait/service');
 const { deliveryClassForItem } = require('./delivery-classes');
 const { createSessionWorkScheduler } = require('../session-work/scheduler');
 const { isWaitForUserLetter } = require('../classify/vocab');
+const { isUserTypedWork } = require('../session-work/user-input');
 const {
   TERMINAL_OPERATION_STATES,
   TERMINAL_TASK_STATES,
@@ -101,6 +102,21 @@ function createOrchestrationRuntime({
   runnerDeliveryProbe = null,
   beforeDeliver = async () => {},
   deliverOutbox = null,
+  // Optional: ({ sessionId, item, error }) → void. Called when a message a human
+  // typed is dead-lettered, i.e. when it will never reach its session. The
+  // transport is terminal by then, so the only remaining duty is to say so
+  // somewhere the human is looking instead of leaving it in lastError and the
+  // logs. Wired by the host to a chat notice; absent keeps the old silence.
+  notifyLostMessage = null,
+  // Optional: ({ sessionId, item, reasons, waitedMs }) → void. The same duty one
+  // step earlier: a message that cannot *start* has not been lost, but a queue
+  // that never moves is the user's complaint just as much as a dead letter — it
+  // used to be silent in the UI and visible only as `delivery_skipped` in the
+  // log. See reportWedgedDelivery.
+  notifyStuckDelivery = null,
+  // How long a typed message may wait behind a held workspace with nothing
+  // running before the transcript says so. A slow turn is not a wedge.
+  stuckDeliveryNoticeMs = 60_000,
   probe = async () => { throw new Error('poll probe is not configured'); },
   detachedAdapter = null,
   recoverDispatchResult = async () => null,
@@ -787,8 +803,10 @@ function createOrchestrationRuntime({
         clientMsgId: payload.options?.clientMsgId || item.id,
         schedulerEntryId: lineage.activeEntryId || payload.activeEntryId || item.id,
         schedulerWorkKind: effectiveWorkKind,
-        directUserInput: payload.source === 'direct'
-          || (payload.source === 'task-shell' && !!payload.options?.taskShellReceiptId),
+        // The scheduler's admission rule and this flag must agree on who typed
+        // the message; they used to answer it separately and drifted (the task
+        // page's messages reached a turn here, but were never selectable at E).
+        directUserInput: isUserTypedWork(payload),
         userInputRequestId: payload.requestId || undefined,
       };
     }
@@ -964,6 +982,18 @@ function createOrchestrationRuntime({
           status: 'failed', error: error.code || 'delivery_failed', retryable: false,
         });
       }
+      if (settled?.deadLetter && isUserTypedWork(item.payload)) {
+        // A message the human typed has just become undeliverable for good. The
+        // claim release above already dropped its queue card, so from here the
+        // only trace left would be lastError and the log line below — say it in
+        // the transcript instead.
+        log(`[orchestration] delivery ${item.id} dead-lettered: ${error.code || error.message}`);
+        try {
+          await notifyLostMessage?.({ sessionId: item.sessionId, item, error });
+        } catch (notifyError) {
+          log(`[orchestration] lost-message notice failed: ${notifyError.message}`);
+        }
+      }
       if (settled) return settled;
       throw error;
     } finally {
@@ -1019,15 +1049,49 @@ function createOrchestrationRuntime({
   // workspace lease looked exactly like an idle queue, and a user's explicit
   // "insert now" vanished without a trace. Log them, throttled per session.
   const deliverySkipLogAt = new Map();
+  // sessionId → { since, notified } for the *user-facing* half of the same
+  // problem. A wedge is not the same thing as being busy: a turn that is running
+  // explains the wait by itself and the user can watch it, so only a held
+  // workspace with no run active counts — which is exactly the shape the report
+  // logged (`{"reason":"session_busy","reasons":["workspace_occupied"]}`, no
+  // `run_active`), where thirteen messages waited with nothing on screen.
+  const blockedDelivery = new Map();
+  // Deliberately NOT named noteBlockedDelivery: that is already a host port in
+  // this scope, and a function declaration would silently overwrite the
+  // parameter binding — the port would then never be called at all.
+  function reportWedgedDelivery(item, reason, reasons, at) {
+    const sessionId = item.sessionId;
+    const wedged = reason === 'session_busy'
+      && isUserTypedWork(item.payload)
+      && Array.isArray(reasons) && reasons.length > 0
+      && !reasons.includes('run_active');
+    if (!wedged) { blockedDelivery.delete(sessionId); return; }
+    let state = blockedDelivery.get(sessionId);
+    if (!state) {
+      // Bounded like deliverySkipLogAt: dropping the oldest tracking can at
+      // worst repeat one notice, never lose a session's queue.
+      if (blockedDelivery.size > 1000) blockedDelivery.clear();
+      state = { since: at, notified: false };
+      blockedDelivery.set(sessionId, state);
+    }
+    if (state.notified || at - state.since < stuckDeliveryNoticeMs) return;
+    state.notified = true;
+    try {
+      notifyStuckDelivery?.({ sessionId, item, reasons, waitedMs: at - state.since });
+    } catch (error) {
+      log(`[orchestration] stuck-delivery notice failed: ${error.message}`);
+    }
+  }
   function noteDeliverySkip(item, reason, detail) {
     const at = Number(now());
-    if (at - (deliverySkipLogAt.get(item.sessionId) || 0) < 15_000) return;
-    if (deliverySkipLogAt.size > 1000) deliverySkipLogAt.clear();
-    deliverySkipLogAt.set(item.sessionId, at);
     let reasons = null;
     if (reason === 'session_busy' && typeof busyReasons === 'function') {
       try { reasons = busyReasons(item.sessionId, detail) || null; } catch (_) { reasons = null; }
     }
+    reportWedgedDelivery(item, reason, reasons, at);
+    if (at - (deliverySkipLogAt.get(item.sessionId) || 0) < 15_000) return;
+    if (deliverySkipLogAt.size > 1000) deliverySkipLogAt.clear();
+    deliverySkipLogAt.set(item.sessionId, at);
     log(`[orchestration] delivery_skipped ${JSON.stringify({
       sessionId: item.sessionId,
       entryId: item.id,
@@ -1059,6 +1123,10 @@ function createOrchestrationRuntime({
         }
         return null;
       }
+      // The hold is gone, so the wedge this session may have been told about is
+      // over: forget it before the item is even delivered, or a later, unrelated
+      // wait would be silenced by the previous one's notice.
+      blockedDelivery.delete(item.sessionId);
       if (inFlightDeliveries.has(item.id)) return null;
       if (isDeliveryLocked(item.sessionId, projected)) {
         noteDeliverySkip(item, 'delivery_locked');
