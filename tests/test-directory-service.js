@@ -11,7 +11,7 @@ let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log('✅', m); } else { fail++; console.log('❌', m); } };
 
 // ── fakes ──────────────────────────────────────────────────────────────
-function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new Set() } = {}) {
+function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new Set(), mkdirError = null } = {}) {
   const repoMap = new Map(dirs.map(d => [d.id, d]));
   const calls = { saved: 0, seeded: [], destroyed: [], persisted: 0, events: [], gitReady: [], unmarked: [], writes: [] };
   const realPathOf = (p) => p;   // identity: no symlinks in fake fs
@@ -43,7 +43,7 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     sampleRoot: () => '/data/samples',
     exists: (p) => fsDirs.has(p) || fsFiles.has(p),
     isDirectory: (p) => fsDirs.has(p),
-    mkdirp: (p) => { fsDirs.add(p); },
+    mkdirp: (p) => { if (mkdirError) throw mkdirError; fsDirs.add(p); },
     readDirents: (p) => {
       if (!fsDirs.has(p)) { const e = new Error(`ENOENT: ${p}`); throw e; }
       const kids = [...fsDirs].filter(d => path.dirname(d) === p && d !== p);
@@ -90,6 +90,16 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     r = await svc.register({ name: 'y', path: '/p/missing' });
     ok(!r.ok && r.message === '该路径已被目录 "x" 登记，不允许重复', 'register: duplicate path rejected');
     ok(repo.get('id-1'), 'register: record present in repository');
+
+    const denied = makeFakes({
+      fsDirs: new Set(['/p']),
+      mkdirError: new Error('EACCES: permission denied'),
+    });
+    r = await denied.svc.register({ name: 'denied', path: '/p/denied', create: true });
+    ok(!r.ok && r.message === '无法创建目录: EACCES: permission denied',
+      'register: permission failure is reported instead of creating a broken record');
+    ok(denied.calls.saved === 0 && denied.calls.gitReady.length === 0,
+      'register: permission failure does not persist or initialize git');
   }
 
   // ── register rollback when git init fails ──
@@ -168,15 +178,20 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
   {
     const { svc } = makeFakes({ fsDirs: new Set(['/home/u', '/home/u/proj', '/home/u/prox', '/home/u/.hidden']) });
     let r = svc.browseFs('');
-    ok(r.ok && r.data.base === '/home/u' && r.data.entries.length === 2, 'browseFs: empty → home, hidden dirs filtered');
+    ok(r.ok && r.data.base === '/home/u' && r.data.entries.length === 2 && r.data.selectable === false,
+      'browseFs: empty → home, hidden dirs filtered, unsafe home cannot be selected');
     r = svc.browseFs('~');
     ok(r.ok && r.data.base === '/home/u', 'browseFs: tilde → home');
     r = svc.browseFs('/home/u/pro');
-    ok(r.ok && r.data.entries.map(e => e.name).join() === 'proj,prox', 'browseFs: prefix completion');
+    ok(r.ok && r.data.selectable === false && r.data.entries.map(e => e.name).join() === 'proj,prox',
+      'browseFs: prefix completion keeps its home parent unselectable');
+    r = svc.browseFs('/home/u/proj');
+    ok(r.ok && r.data.selectable === true, 'browseFs: a project below home can be selected');
     r = svc.browseFs('/home/u/.hi');
     ok(r.ok && r.data.entries.map(e => e.name).join() === '.hidden', 'browseFs: dot-prefix reveals hidden');
     r = svc.browseFs('/nope/deeper/x');
-    ok(r.ok && r.data.entries.length === 0 && r.data.parent === null, 'browseFs: missing parent → empty result');
+    ok(r.ok && r.data.entries.length === 0 && r.data.parent === null && r.data.selectable === false,
+      'browseFs: missing parent → empty, unselectable result');
   }
 
   // ── listAnnotated ──

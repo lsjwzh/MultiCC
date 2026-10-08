@@ -127,6 +127,7 @@ test('bootstrap replays journals, constructs stores and loads the current schema
   assert.equal(result.state.persistedSessions.get('s1').kind, 'chat');
   assert.equal(result.state.directories.get('d1').name, 'One');
   assert.equal(result.state.needsSave, false);
+  assert.equal(result.state.needsDefaultDirectory, false);
   assert.deepEqual(harness.calls.slice(0, 3).map(call => call.type), ['store', 'store', 'replay']);
   assert.deepEqual(harness.calls[0].spec, {
     file: harness.paths.sessionsFile, kind: 'sessions', schemaVersion: 1, legacyIsArray: true,
@@ -134,6 +135,28 @@ test('bootstrap replays journals, constructs stores and loads the current schema
   assert.equal(harness.logs.includes('log:journal detail'), true);
   assert.equal(harness.logs.some(line => /1 replayed, 2 skipped/.test(line)), true);
   assert.equal(harness.logs.some(line => /Loaded 1 directories, 1 session/.test(line)), true);
+});
+
+test('only a never-configured installation requests the default directory', t => {
+  let harness = createHarness(t, {
+    loadSessions: () => ({ present: false, data: [] }),
+    loadDirectories: () => ({ present: false, data: [] }),
+  });
+  assert.equal(harness.run().state.needsDefaultDirectory, true);
+
+  harness = createHarness(t, {
+    loadSessions: () => ({ present: true, data: [] }),
+    loadDirectories: () => ({ present: true, data: [] }),
+  });
+  assert.equal(harness.run().state.needsDefaultDirectory, false,
+    'an explicitly empty registry means the user removed every directory');
+
+  harness = createHarness(t, {
+    loadSessions: () => ({ present: true, data: [{ id: '__aux__', type: 'aux' }] }),
+    loadDirectories: () => ({ present: false, data: [] }),
+  });
+  assert.equal(harness.run().state.needsDefaultDirectory, true,
+    'an interrupted first launch retries even if the aux record was persisted');
 });
 
 test('bootstrap migrates old state, renames history and writes a rollback copy', t => {
@@ -205,4 +228,8 @@ test('production composition delegates state loading and removes legacy host hel
   assert.doesNotMatch(source, /function\s+migrateOldSchema\s*\(/);
   assert.doesNotMatch(source, /function\s+loadPersistedState\s*\(/);
   assert.doesNotMatch(source, /function\s+ensureUltracodeWorkers\s*\(/);
+  assert.match(source, /const ensureFirstRunDirectory\s*=\s*async/);
+  assert.match(source, /name:\s*'我的工作区'[\s\S]{0,120}path:\s*MULTICC_PATHS\.defaultWorkspacePath[\s\S]{0,80}create:\s*true/);
+  assert.match(source, /then\(ensureFirstRunDirectory\)\.then\(initWorktrees\)/,
+    'readiness must create the default directory before worktrees are initialized');
 });

@@ -1820,7 +1820,7 @@
     $('schedule-center').hidden = mode !== 'schedules';
     $('task-layout').hidden = mode === 'library' || mode === 'schedules' || adminMode;
     // Page actions ride in the header (see air.html): one heading band per view.
-    $('add-directory').hidden = mode !== 'library';
+    $('add-directory').hidden = !consoleMode && mode !== 'library';
     $('schedule-create').hidden = mode !== 'schedules';
     $('admin-actions').hidden = !adminMode;
     // 保险箱常驻在控制台那一页的工具栏上（见 air.html 的 #console-secrets）。

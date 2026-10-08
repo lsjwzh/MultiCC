@@ -111,11 +111,99 @@
     }
     return result;
   }
+
+  // Browses directories on the machine running MultiCC. A browser-native
+  // directory picker would browse the phone/laptop viewing this page instead,
+  // which is the wrong filesystem whenever Air is opened remotely.
+  function attachFolderPicker(pathInput, nameInput) {
+    const label = pathInput.closest('label');
+    const row = node('div', null, 'air-path-row');
+    const choose = node('button', t('airTaskSettingsBrowseFolders'));
+    choose.type = 'button'; choose.setAttribute('aria-expanded', 'false');
+    pathInput.replaceWith(row); row.append(pathInput, choose);
+
+    const panel = node('div', null, 'air-folder-picker');
+    panel.hidden = true;
+    panel.setAttribute('role', 'group');
+    panel.setAttribute('aria-label', t('airTaskSettingsBrowseFolders'));
+    const location = node('code', '', 'air-folder-location');
+    const up = node('button', t('airTaskSettingsFolderUp'));
+    const use = node('button', t('airTaskSettingsUseFolder'), 'primary');
+    up.type = use.type = 'button';
+    const actions = node('div', null, 'air-folder-actions');
+    actions.append(up, use);
+    const bar = node('div', null, 'air-folder-bar');
+    bar.append(location, actions);
+    const list = node('div', null, 'air-folder-list');
+    panel.append(bar, list);
+    label.after(panel);
+
+    let generation = 0;
+    let currentBase = '';
+    let currentParent = null;
+    const close = () => {
+      panel.hidden = true;
+      choose.setAttribute('aria-expanded', 'false');
+    };
+    const browse = async (target, syncInput) => {
+      const mine = ++generation;
+      list.replaceChildren(node('p', t('airTaskSettingsFoldersLoading'), 'air-folder-empty'));
+      try {
+        const result = await request(`/api/fs/list?path=${encodeURIComponent(target || '')}`, undefined, 'GET');
+        if (mine !== generation) return;
+        currentBase = result.base || '';
+        currentParent = result.parent || null;
+        location.textContent = currentBase;
+        location.title = currentBase;
+        up.disabled = !currentParent;
+        use.disabled = !currentBase || result.selectable === false;
+        if (syncInput && currentBase) pathInput.value = currentBase;
+        list.replaceChildren();
+        for (const entry of result.entries || []) {
+          const button = node('button');
+          button.type = 'button'; button.className = 'air-folder-entry';
+          button.title = entry.path;
+          button.append(node('span', '📁', 'air-folder-icon'), node('span', entry.name));
+          button.onclick = () => browse(entry.path, true);
+          list.append(button);
+        }
+        if (!list.children.length) {
+          list.append(node('p', t('airTaskSettingsNoSubfolders'), 'air-folder-empty'));
+        }
+      } catch (error) {
+        if (mine !== generation) return;
+        currentBase = ''; currentParent = null;
+        location.textContent = '';
+        up.disabled = use.disabled = true;
+        list.replaceChildren(node('p', t('airTaskSettingsFolderLoadFailed', { message: error.message }), 'air-folder-error'));
+      }
+    };
+
+    choose.onclick = () => {
+      if (!panel.hidden) { close(); return; }
+      panel.hidden = false;
+      choose.setAttribute('aria-expanded', 'true');
+      browse(pathInput.value.trim(), false);
+    };
+    up.onclick = () => { if (currentParent) browse(currentParent, true); };
+    use.onclick = () => {
+      if (!currentBase) return;
+      pathInput.value = currentBase;
+      if (!nameInput.value.trim()) {
+        const leaf = currentBase.split(/[\\/]/).filter(Boolean).pop();
+        if (leaf) nameInput.value = leaf;
+      }
+      close();
+      pathInput.focus();
+    };
+  }
+
   window.MultiCCAirSettings = {
     directory(onSaved) {
       dialog(t('airTaskSettingsAddDirectory'), form => {
         const name = field(form, t('airTaskSettingsName')), path = field(form, t('airTaskSettingsAbsolutePath')); name.required = path.required = true;
         name.maxLength = 100; path.placeholder = '/Users/you/projects/example';
+        attachFolderPicker(path, name);
         const create = node('input'); create.type = 'checkbox'; create.checked = true;
         const createLabel = node('label', t('airTaskSettingsCreateIfMissing')); createLabel.prepend(create);
         form.append(createLabel);

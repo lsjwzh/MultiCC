@@ -29,6 +29,7 @@
 #   --from <path|url>   Install from a local archive/directory or URL instead
 #                       of GitHub Releases (offline / air-gapped installs)
 #   --no-service        Skip the start-on-login setup
+#   --no-shortcut       Skip creating a desktop shortcut
 #   --no-start          Install and configure only; do not start MultiCC
 #   --no-open           Start MultiCC but do not open a browser
 #   --help              Show this help
@@ -100,6 +101,7 @@ PORT="3000"
 PORT_GIVEN=false
 ASSUME_YES=false
 NO_SERVICE=false
+NO_SHORTCUT=false
 NO_START=false
 NO_OPEN=false
 COPY_LEGACY_DATA=true
@@ -120,6 +122,7 @@ while [ $# -gt 0 ]; do
     --from)      need_val "$1" "$#"; FROM="$2"; shift 2 ;;
     --yes|-y)     ASSUME_YES=true; shift ;;
     --no-service) NO_SERVICE=true; shift ;;
+    --no-shortcut) NO_SHORTCUT=true; shift ;;
     --no-start)   NO_START=true; NO_SERVICE=true; shift ;;
     --no-open)    NO_OPEN=true; shift ;;
     --no-data)    COPY_LEGACY_DATA=false; shift ;;
@@ -159,6 +162,7 @@ Options:
   --adopt-data <path> Bring the data of an older installation at <path> across
                       (see "Upgrading from an older installation" below)
   --no-service        Skip the start-on-login setup
+  --no-shortcut       Skip creating a desktop shortcut
   --no-start          Install and configure only; do not start MultiCC
   --no-open           Start MultiCC but do not open a browser
   --help              Show this help
@@ -1260,6 +1264,66 @@ fi
 # Resolved for the summary whatever the answer was: a "no" is only useful if the
 # user leaves knowing where their history is and where it would have to go.
 LEGACY_DATA_DEST="$(legacy_data_target 2>/dev/null || true)"
+
+# ── Desktop shortcut ─────────────────────────────────────────────────────
+# Keep the entry outside the replaceable install directory. Re-running the
+# installer refreshes it, while an unusual desktop environment may opt out.
+create_desktop_shortcut() {
+  local desktop="${MULTICC_DESKTOP_DIR:-}"
+  case "$PLATFORM" in
+    darwin)
+      desktop="${desktop:-${HOME:-}/Desktop}"
+      [ -n "$desktop" ] || return 1
+      mkdir -p "$desktop" 2>/dev/null || return 1
+      [ -d "$INSTALL_DIR/MultiCC.app" ] || return 1
+      if [ -e "$desktop/MultiCC.app" ] && [ ! -L "$desktop/MultiCC.app" ]; then
+        return 1
+      fi
+      ln -sfn "$INSTALL_DIR/MultiCC.app" "$desktop/MultiCC.app"
+      ;;
+    linux)
+      desktop="${desktop:-${HOME:-}/Desktop}"
+      [ -n "$desktop" ] || return 1
+      if command -v xdg-user-dir >/dev/null 2>&1 && [ -z "${MULTICC_DESKTOP_DIR:-}" ]; then
+        local xdg_desktop
+        xdg_desktop="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+        [ -n "$xdg_desktop" ] && desktop="$xdg_desktop" && mkdir -p "$desktop" 2>/dev/null
+      fi
+      mkdir -p "$desktop" 2>/dev/null || return 1
+      local escaped_install="${INSTALL_DIR//\\/\\\\}"
+      escaped_install="${escaped_install//\"/\\\"}"
+      escaped_install="${escaped_install//%/%%}"
+      cat > "$desktop/MultiCC.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=MultiCC
+Comment=Start MultiCC
+Exec="$escaped_install/multicc" start
+Terminal=false
+Categories=Development;
+EOF
+      chmod +x "$desktop/MultiCC.desktop"
+      ;;
+    win32)
+      command -v powershell.exe >/dev/null 2>&1 || return 1
+      MULTICC_SHORTCUT_DIR="$desktop" \
+      MULTICC_SHORTCUT_TARGET="$INSTALL_DIR/multicc.cmd" \
+      powershell.exe -NoProfile -NonInteractive -Command \
+        '$d=$env:MULTICC_SHORTCUT_DIR; if([string]::IsNullOrWhiteSpace($d)){$d=[Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)}; New-Item -ItemType Directory -Path $d -Force|Out-Null; $w=New-Object -ComObject WScript.Shell; $s=$w.CreateShortcut((Join-Path $d "MultiCC.lnk")); $s.TargetPath=$env:MULTICC_SHORTCUT_TARGET; $s.WorkingDirectory=(Split-Path $env:MULTICC_SHORTCUT_TARGET); $s.Save()' \
+        >/dev/null 2>&1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+if [ "$NO_SHORTCUT" = false ]; then
+  step "Creating desktop shortcut"
+  if create_desktop_shortcut; then
+    ok "Desktop shortcut created"
+  else
+    warn "Could not create a desktop shortcut — start MultiCC with: ${START_CMD}"
+  fi
+fi
 
 # ── Start on login (optional) ─────────────────────────────────────────────
 if [ "$NO_SERVICE" = false ]; then

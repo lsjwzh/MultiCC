@@ -118,6 +118,12 @@ try {
   check('assertTestDir refuses non-string input', () => {
     assert.throws(() => paths.assertTestDir(null), /non-empty string/);
   });
+  check('default workspace stays below the writable data root', () => {
+    const isolated = paths.createPaths({ dataDir: scratch });
+    assert.strictEqual(isolated.defaultWorkspacePath, path.join(scratch, 'workspaces', 'default'));
+    assert.ok(isolated.defaultWorkspacePath.startsWith(scratch + path.sep));
+    assert.ok(!/(?:Desktop|Documents|Downloads)(?:[\\/]|$)/.test(isolated.defaultWorkspacePath));
+  });
 } finally {
   fs.rmSync(scratch, { recursive: true, force: true });
 }

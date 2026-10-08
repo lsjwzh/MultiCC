@@ -51,7 +51,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
       baseDir = path.dirname(raw);
       prefix = path.basename(raw).toLowerCase();
       if (!fsPort.isDirectory(baseDir)) {
-        return ok({ base: baseDir, parent: null, entries: [] });
+        return ok({ base: baseDir, parent: null, selectable: false, entries: [] });
       }
     }
     let dirents;
@@ -70,7 +70,12 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
       .sort((a, b) => a.name.localeCompare(b.name))
       .slice(0, 200);
     const root = path.parse(baseDir).root;
-    return ok({ base: baseDir, parent: baseDir === root ? null : path.dirname(baseDir), entries });
+    return ok({
+      base: baseDir,
+      parent: baseDir === root ? null : path.dirname(baseDir),
+      selectable: !helpers.isHomeOrAbove(baseDir),
+      entries,
+    });
   }
 
   // Every directory annotated with per-(cli,kind) session counts + git push

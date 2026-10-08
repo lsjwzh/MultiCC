@@ -188,9 +188,10 @@
            一行都嫌贵，那边这些任务直接置顶在侧栏「最近任务」的最上面（air.js 的
            sidebarTasks）。最多 5 个，清单在服务端，Web 和 App 读的是同一份。 -->
       <nav id="task-pins" aria-label="Pin 住的任务" data-i18n-aria-label="airPinnedTasks" hidden></nav>
-      <!-- 手机上工具收进这一层浮层（air.css 的 760px 块），标题那一行就只剩
-           ☰ / 标题 / 状态 / ⋯，页头整条少一行 —— 手机上一行消息值 23px，这一行
-           是整屏里最贵的几行之一。桌面上它不出现，工具本来就摆得下。 -->
+      <!-- 添加目录直接放在页头，手机端也不收进更多菜单。 -->
+      <button id="add-directory" class="primary" type="button" aria-label="添加工作目录" data-i18n-aria-label="airAddDirectory" hidden><span aria-hidden="true">＋</span> <span class="add-directory-full" data-i18n="airAddDirectory">添加工作目录</span><span class="add-directory-compact" data-i18n="airKindDirectory">目录</span></button>
+      <!-- 手机上次要工具收进这一层浮层（air.css 的 760px 块），标题行保留高频的
+           添加目录入口，其余动作仍由 ⋯ 展开。桌面上它不出现，工具本来就摆得下。 -->
       <button id="task-options" type="button" aria-label="更多操作" data-i18n-aria-label="airMoreActions" aria-expanded="false" aria-controls="task-tools">⋯</button>
       <div class="task-tools" id="task-tools" role="group" aria-label="任务操作" data-i18n-aria-label="airTaskActions">
         <!-- Each view's own actions sit next to the title they belong to, so the
@@ -201,7 +202,6 @@
              浮层里的每一行摆成「图标 + 名字」两列）。桌面上这几个按钮本来就带符号，
              图标沿用原来那一个（.air-tool-icon）；原来只有文字的按钮，图标平时不
              显示（.air-tool-icon-panel），只有浮层里需要它站到第一列。 -->
-        <button id="add-directory" type="button" hidden><span class="air-tool-icon" aria-hidden="true">＋</span> <span data-i18n="airAddDirectory">添加工作目录</span></button>
         <button id="schedule-create" class="primary" type="button" hidden><span class="air-tool-icon" aria-hidden="true">＋</span> <span data-i18n="airNewScheduledTask">新建定时任务</span></button>
         <div id="admin-actions" hidden></div>
         <!-- 敏感信息跟着控制台那一页的工具走（air.js 按 mode 显隐），不折进控制台
