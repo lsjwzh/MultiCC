@@ -244,19 +244,20 @@
     // 每个会话走的仍是 AI 配置弹窗那条 PATCH（src/provider-reassign.js），所以
     // 模型替换 / Auto 会话跳过 / 忙会话下一轮生效这些口径都一致。
     actions.append(button(t('airProviderReassignAction'), () => openReassign(provider)));
+    actions.append(button(t('airProviderEdit'), () => openEditor(provider)));
+    // 生成一份带独立令牌的借道分享码（manage-provider-relay.js，弹层自带样式）。
+    // 官方 Provider 同样可借道：出借方在本机用官方登录 / OAuth 凭证代发请求，
+    // 接收方只拿到分享码里的 provider 范围凭据，永远看不到上游 key 或 OAuth token
+    // （服务端 relay-share 与代理链路都支持，见 docs/configuration.md 的
+    // Remote provider relay）。删除仍是官方入口的禁区（内置线路不可删）。
+    actions.append(button(t('airProviderRelayShare'), () => {
+      root.MultiCCAirProviderAdvanced?.prepare(context);
+      root.shareRelayProvider?.(provider.appType, provider.id);
+    }));
     if (!provider.isOfficial) {
-      actions.append(
-        button(t('airProviderEdit'), () => openEditor(provider)),
-        // 生成一份带独立令牌的借道分享码（manage-provider-relay.js，弹层自带样式）。
-        button(t('airProviderRelayShare'), () => {
-          root.MultiCCAirProviderAdvanced?.prepare(context);
-          root.shareRelayProvider?.(provider.appType, provider.id);
-        }),
-        button(t('airProviderDelete'), () => removeProvider(provider), 'danger'));
+      actions.append(button(t('airProviderDelete'), () => removeProvider(provider), 'danger'));
     } else {
-      actions.append(
-        button(t('airProviderEdit'), () => openEditor(provider)),
-        make('span', t('airProviderOfficialSwitchHint')));
+      actions.append(make('span', t('airProviderOfficialSwitchHint')));
     }
     card.append(actions);
     return card;

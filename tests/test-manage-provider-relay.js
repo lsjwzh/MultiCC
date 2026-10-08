@@ -239,6 +239,25 @@ test('air.html loads the relay module before the panel that mounts its buttons',
   assert.match(panel, /root\.importRelayProvider\?\.\(\)/);
 });
 
+test('official providers expose the relay-share action too; only delete stays local-only', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8');
+  const start = source.indexOf('function renderProviderCard(provider)');
+  assert.ok(start >= 0, 'renderProviderCard must exist');
+  const body = source.slice(start, source.indexOf('\n  }', start));
+  const relay = body.indexOf("t('airProviderRelayShare')");
+  const guard = body.indexOf('if (!provider.isOfficial)');
+  const del = body.indexOf("t('airProviderDelete')");
+  // 官方 Provider 也能借道：服务端 relay-share 与代理链路都支持，接收方只拿
+  // provider 范围凭据。把分享按钮关进 !isOfficial 分支就是「官方账号无法对外借道」
+  // 的那个 bug，这里守住它不能再回去。
+  assert.ok(relay >= 0, 'relay-share action must render');
+  assert.ok(guard >= 0 && relay < guard,
+    'relay-share must not be gated behind !provider.isOfficial — official accounts can relay too');
+  // 删除仍然只给非官方线路：内置官方入口不可删。
+  assert.ok(del > guard,
+    'delete must stay inside the non-official branch (built-in official entries are not deletable)');
+});
+
 test('new relay creation requires a per-link token and exposes inventory/revocation controls', () => {
   const source = fs.readFileSync(SOURCE_PATH, 'utf8');
   assert.match(source, /data-k="token" type="password"/);
