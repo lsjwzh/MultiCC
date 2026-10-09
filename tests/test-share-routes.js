@@ -72,6 +72,9 @@ function createFakeShare() {
     calls,
     create(sessionId, options) {
       calls.push(['create', sessionId, options]);
+      if (options.access === 'operate' && !options.password) {
+        throw new Error('operate share requires a password');
+      }
       const record = {
         token: `token-${next++}`,
         sessionId,
@@ -216,8 +219,8 @@ test('admin create keeps the legacy DTO, label fallback, URL, and system-session
     params: { id: 's1' },
     body: { access: 'operate' },
   });
-  // 可对话不再要求独立密码：接收方用主程序密码。
-  assert.equal(res.statusCode, 200);
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.body, { error: 'operate share requires a password' });
 });
 
 test('link protocol follows X-Forwarded-Proto behind a TLS proxy', () => {

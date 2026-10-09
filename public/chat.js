@@ -2243,9 +2243,6 @@ async function openShareDialog() {
   const listEl = box.querySelector('#sh-list');
   const baseSel = box.querySelector('#sh-base');
   multiccMountBaseUrlSelect(baseSel);
-  const accessSel = box.querySelector('#sh-access');
-  const pwInput = box.querySelector('#sh-pw');
-  accessSel.addEventListener('change', () => { const op = accessSel.value === 'operate'; pwInput.disabled = op; if (op) pwInput.value = ''; });
 
   async function refresh() {
     try { const d = await shareApi('GET', '/shares'); listEl.innerHTML = d.shares.length ? d.shares.map(shareRow).join('') : `<div style="color:var(--chat-muted, #8b949e);font-size:12px;">${tt('none')}</div>`; }
@@ -2277,9 +2274,9 @@ async function openShareDialog() {
     const access = box.querySelector('#sh-access').value;
     const password = box.querySelector('#sh-pw').value.trim();
     const hrs = parseInt(box.querySelector('#sh-exp').value, 10);
-    // 可对话用主程序密码校验，不再单独设临时密码。
+    if (access === 'operate' && !password) { msg.textContent = tt('sharePasswordRequired'); msg.style.color = 'var(--chat-danger, #f85149)'; return; }
     const body = { access };
-    if (password && access !== 'operate') body.password = password;
+    if (password) body.password = password;
     if (hrs > 0) body.expiresAt = Date.now() + hrs * 3600 * 1000;
     if (baseSel.value) body.publicBaseUrl = baseSel.value;
     try {

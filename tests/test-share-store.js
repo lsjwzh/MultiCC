@@ -84,30 +84,3 @@ test('share create and revoke publish memory only after the durable write', () =
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
-
-test('operate shares are gated by the main app password, not a per-share one', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-share-main-'));
-  const previousDataDir = process.env.MULTICC_DATA_DIR;
-  process.env.MULTICC_DATA_DIR = root;
-  const modulePath = require.resolve('../src/share');
-  delete require.cache[modulePath];
-  try {
-    const share = require('../src/share');
-    const created = share.create('s1', { access: 'operate', password: 'temp-ignored' });
-    assert.equal(created.mainAuth, true);
-    assert.equal(created.hasPassword, true);
-    // 未注入校验函数时一律拒绝，不能因为没设密码就放行。
-    assert.equal(share.verifyPassword(created.token, 'main-pw'), false);
-    assert.equal(share.access(created.token, {}), null);
-    share.setMainPasswordVerifier((pw) => pw === 'main-pw');
-    assert.equal(share.verifyPassword(created.token, 'main-pw'), true);
-    assert.equal(share.verifyPassword(created.token, 'temp-ignored'), false);
-    assert.equal(share.access(created.token, { password: 'main-pw' }).access, 'operate');
-    assert.equal(share.access(created.token, {}), null);
-  } finally {
-    delete require.cache[modulePath];
-    if (previousDataDir === undefined) delete process.env.MULTICC_DATA_DIR;
-    else process.env.MULTICC_DATA_DIR = previousDataDir;
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
