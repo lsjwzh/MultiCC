@@ -20,7 +20,6 @@ const SHARE_COOKIE_MAX_AGE_SECONDS = 7 * 86400;
 const CREATE_ERRORS = new Set([
   'invalid share expiry',
   'invalid share base url',
-  'operate share requires a password',
   'no messages to share',
   'share password is too long',
 ]);
@@ -89,8 +88,12 @@ function isCreateInputError(error) {
   return CREATE_ERRORS.has(message);
 }
 
+// Behind a TLS-terminating tunnel/proxy req.protocol is "http" (no `trust
+// proxy`), which would hand out http:// links to an https:// server.
 function requestBaseUrl(req) {
-  return `${req.protocol}://${req.get('host')}`;
+  const forwarded = String(req.get('x-forwarded-proto') || '').split(',')[0].trim().toLowerCase();
+  const protocol = forwarded === 'https' || forwarded === 'http' ? forwarded : req.protocol;
+  return `${protocol}://${req.get('host')}`;
 }
 
 // The root the link is built on. Falling back to the request's own Host is

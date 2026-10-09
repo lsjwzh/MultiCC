@@ -837,7 +837,11 @@ class SessionService {
     String? password,
     int? expiresAt,
   }) async {
-    final body = <String, dynamic>{'access': access};
+    // 链接根域用 App 当前连接的服务器地址（含 https），与服务器保持一致。
+    final body = <String, dynamic>{
+      'access': access,
+      'publicBaseUrl': _url(''),
+    };
     if (password != null && password.isNotEmpty) body['password'] = password;
     if (expiresAt != null) body['expiresAt'] = expiresAt;
     final res = await http

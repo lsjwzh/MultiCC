@@ -37,7 +37,10 @@ function invoke(handler, options = {}) {
     query: options.query || {},
     headers: options.headers || {},
     protocol: options.protocol || 'https',
-    get(name) { return String(name).toLowerCase() === 'host' ? (options.host || 'chat.example.test') : undefined; },
+    get(name) {
+      const key = String(name).toLowerCase();
+      return key === 'host' ? (options.host || 'chat.example.test') : (options.headers || {})[key];
+    },
   };
   const res = makeResponse();
   handler(req, res);
@@ -69,9 +72,6 @@ function createFakeShare() {
     calls,
     create(sessionId, options) {
       calls.push(['create', sessionId, options]);
-      if (options.access === 'operate' && !options.password) {
-        throw new Error('operate share requires a password');
-      }
       const record = {
         token: `token-${next++}`,
         sessionId,
@@ -216,8 +216,21 @@ test('admin create keeps the legacy DTO, label fallback, URL, and system-session
     params: { id: 's1' },
     body: { access: 'operate' },
   });
-  assert.equal(res.statusCode, 400);
-  assert.deepEqual(res.body, { error: 'operate share requires a password' });
+  // 可对话不再要求独立密码：接收方用主程序密码。
+  assert.equal(res.statusCode, 200);
+});
+
+test('link protocol follows X-Forwarded-Proto behind a TLS proxy', () => {
+  const { deps } = createHarness();
+  const routes = createShareRoutes(deps);
+  const res = invoke(routes.createSessionShare, {
+    params: { id: 's1' },
+    protocol: 'http',
+    host: 'chat.example.test',
+    headers: { 'x-forwarded-proto': 'https' },
+    body: { access: 'view' },
+  });
+  assert.equal(res.body.url, `https://chat.example.test/share/${res.body.token}`);
 });
 
 test('create builds the link on the named root instead of the caller Host', () => {
