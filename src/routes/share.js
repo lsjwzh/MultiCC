@@ -20,6 +20,7 @@ const SHARE_COOKIE_MAX_AGE_SECONDS = 7 * 86400;
 const CREATE_ERRORS = new Set([
   'invalid share expiry',
   'invalid share base url',
+  'operate share requires a password',
   'no messages to share',
   'share password is too long',
 ]);

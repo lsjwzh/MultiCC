@@ -285,6 +285,9 @@ test('bypass paths: static assets, wait-resolve, share, artifacts skip auth', as
       ['GET', '/share/deadbeef'],
       ['POST', '/api/share/deadbeef/auth'],
       ['GET', '/api/share/deadbeef/session'],
+      // 分享页自己的启动请求：缺了它们，远程接收方输对密码后仍被主程序鉴权拦下。
+      ['GET', '/api/share/deadbeef/entry'],
+      ['GET', '/api/share/deadbeef/history'],
       ['GET', `/fleet-share/fleet_share_${'a'.repeat(32)}`],
       ['POST', `/api/fleet-shares/fleet_share_${'b'.repeat(32)}/import`],
       ['POST', `/api/fleet-shares/fleet_share_${'c'.repeat(32)}/ws-ticket`],
@@ -302,6 +305,9 @@ test('bypass paths: static assets, wait-resolve, share, artifacts skip auth', as
     // stays behind the normal gate (non-api GET → login redirect).
     const gatedIosPage = await raw(h.base, '/ios-ota', { headers: { accept: 'text/html' } });
     assert.equal(gatedIosPage.status, 302);
+    // Only the exact recipient endpoints bypass; neighbours stay gated.
+    const gatedSibling = await raw(h.base, '/api/share/deadbeef/other', { headers: { accept: 'application/json' } });
+    assert.equal(gatedSibling.status, 403);
     // A gated admin share route must NOT bypass.
     const gated = await raw(h.base, '/api/sessions/s1/share', { headers: { accept: 'application/json' } });
     assert.equal(gated.status, 403);

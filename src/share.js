@@ -96,29 +96,21 @@ function publicRec(r) {
     token: r.token, sessionId: r.sessionId, access: r.access,
     type: r.type || 'session',
     messageCount: r.type === 'messages' ? (r.messages ? r.messages.length : 0) : undefined,
-    hasPassword: !!r.pwHash || !!r.mainAuth, mainAuth: !!r.mainAuth, expiresAt: r.expiresAt || null,
+    hasPassword: !!r.pwHash, expiresAt: r.expiresAt || null,
     createdAt: r.createdAt, label: r.label || null,
     publicBaseUrl: r.publicBaseUrl || null,
   };
 }
 
-// 「可对话」分享不再有独立的临时密码：接收方输入的就是主程序的访问密码。
-// 校验函数由 server.js 注入（authSecurity.verifyAccessToken），这里不碰密钥本身；
-// 没注入或主程序没设密码时一律拒绝，绝不放行。
-let mainPasswordVerifier = () => false;
-function setMainPasswordVerifier(fn) {
-  mainPasswordVerifier = typeof fn === 'function' ? fn : () => false;
-}
-
 function isExpired(r) { return !!(r && r.expiresAt && Date.now() > r.expiresAt); }
 
-// Create a share. access: 'view'|'operate'. operate is gated by the MAIN app
-// password (rec.mainAuth), never by a per-share temporary one; a `password`
-// passed alongside operate is ignored.
+// Create a share. access: 'view'|'operate'. operate requires a password.
 function create(sessionId, { access, password, expiresAt, label, publicBaseUrl } = {}) {
   const lvl = access === 'operate' ? 'operate' : 'view';
-  const mainAuth = lvl === 'operate';
-  const safePassword = mainAuth ? '' : normalizePassword(password);
+  const safePassword = normalizePassword(password);
+  if (lvl === 'operate' && !safePassword) {
+    throw new Error('operate share requires a password');
+  }
   const token = crypto.randomBytes(18).toString('base64url');
   const rec = {
     token, sessionId, access: lvl,
@@ -126,7 +118,6 @@ function create(sessionId, { access, password, expiresAt, label, publicBaseUrl }
     expiresAt: normalizeExpiresAt(expiresAt),
     label: label || null,
     publicBaseUrl: normalizePublicBaseUrl(publicBaseUrl),
-    mainAuth,
     salt: null, pwHash: null, secret: crypto.randomBytes(16).toString('hex'),
   };
   if (safePassword) {
@@ -219,10 +210,6 @@ function removeForSession(sessionId) {
 function verifyPassword(token, pw) {
   const r = get(token);
   if (!r) return false;
-  if (r.mainAuth) {
-    try { return mainPasswordVerifier(typeof pw === 'string' ? pw : '') === true; }
-    catch (_) { return false; }
-  }
   if (!r.pwHash) return true; // public
   let safePassword;
   try { safePassword = normalizePassword(pw); }
@@ -244,7 +231,7 @@ function authCookieValue(r) {
 function access(token, { cookies = {}, password } = {}) {
   const r = get(token);
   if (!r) return null;
-  if (!r.pwHash && !r.mainAuth) return { access: r.access, sessionId: r.sessionId }; // public link
+  if (!r.pwHash) return { access: r.access, sessionId: r.sessionId }; // public link
   // Password-gated: accept a valid auth cookie or a correct inline password.
   const cookieName = `multicc_share_${token}`;
   if (cookies[cookieName] && timingSafeEqualText(cookies[cookieName], authCookieValue(r))) return { access: r.access, sessionId: r.sessionId };
@@ -254,7 +241,6 @@ function access(token, { cookies = {}, password } = {}) {
 
 module.exports = {
   MAX_SHARE_PASSWORD_BYTES, MAX_PUBLIC_BASE_URL_LENGTH,
-  setMainPasswordVerifier,
   create, createMessageShare, get, publicRec, listForSession, remove, removeForSession,
   verifyPassword, authCookieValue, access,
   normalizeExpiresAt, normalizePassword, normalizePublicBaseUrl,

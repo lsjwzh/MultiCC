@@ -229,7 +229,10 @@ function createAuthRuntime(rawDeps) {
       // share token (and per-share password), so they bypass ACCESS_TOKEN. NOTE:
       // admin share management lives under /api/sessions/* and stays gated.
       if (/^\/share\/[^/]+$/.test(req.path)) return next();
-      if (/^\/api\/share\/[^/]+\/(auth|session)$/.test(req.path)) return next();
+      // entry/history are what the share page itself boots from: without them a
+      // remote recipient clears the password gate (/auth) and is then refused by
+      // this very gate on the next request, looping on "wrong password".
+      if (/^\/api\/share\/[^/]+\/(auth|session|entry|history)$/.test(req.path)) return next();
       // Fleet import capabilities mirror session shares: only the landing page
       // and the single password-gated capability import endpoint bypass ACCESS_TOKEN.
       // Fleet creation/list/revoke and imported-Fleet management stay gated.
