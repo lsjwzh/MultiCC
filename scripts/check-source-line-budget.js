@@ -39,10 +39,11 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-10-09 实测又越线到 3013/154980。v2.4.1 之后的增量来自官方账号/额度与
   // 主机电源那一族（revoked 别名 park、claude usage 队列接线、host-battery 路由）。
   // 按棘轮规则登记实测高水位；下一次动 server.js 该拆的仍是账号/额度路由那一族，
-  // 落回 <= 3000 就删条目。
+  // 落回 <= 3000 就删条目。2026-10-10 接 /api JSON gzip（src/http/json-compression.js）时
+  // 同行挂载、压注释抵偿字节，实测 3012/154975，按棘轮下调。
   'server.js': Object.freeze({
-    ceiling: 3013,
-    byteCeiling: 154980,
+    ceiling: 3012,
+    byteCeiling: 154975,
     target: 3000,
     reason: 'over 3000 again after v2.4.1 (official-account and host-battery route additions); registered at the measured high-water mark',
   }),

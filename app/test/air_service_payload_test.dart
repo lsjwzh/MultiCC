@@ -45,6 +45,44 @@ AirService _service(
 );
 
 void main() {
+  test('快照轮询带 If-None-Match，304 复用上一份正文、不重新下载', () async {
+    final settings = await _settings();
+    final seen = <String?>[];
+    var round = 0;
+    final service = AirService(
+      settings: settings,
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/api/external-fleets') {
+          return http.Response(jsonEncode({'ok': true, 'fleets': []}), 200);
+        }
+        seen.add(request.headers['If-None-Match']);
+        round += 1;
+        if (round == 2) return http.Response('', 304);
+        return http.Response(
+          jsonEncode({
+            'tasks': [
+              {'id': round == 1 ? 't1' : 't3', 'title': '任务'},
+            ],
+          }),
+          200,
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            'etag': round == 1 ? 'W/"v1"' : 'W/"v3"',
+          },
+        );
+      }),
+    );
+    final first = await service.load();
+    final second = await service.load();
+    final third = await service.load();
+    final fourth = await service.load();
+    expect(seen, [null, 'W/"v1"', 'W/"v1"', 'W/"v3"']);
+    expect(first.tasks.single.id, 't1');
+    expect(second.tasks.single.id, 't1');
+    expect(third.tasks.single.id, 't3');
+    expect(fourth.tasks.single.id, 't3');
+  });
+
   test('第 1025 个任务的机器错误码变成明确容量提示', () async {
     final settings = await _settings();
     final service = AirService(settings: settings, httpClient: MockClient((_) async =>
