@@ -1483,8 +1483,8 @@ Future<void> _shareFromSession(
                     ],
                   ),
                   const SizedBox(height: 10),
-                  // ── Password ──
-                  TextField(
+                  // ── Password（只读可选；可对话用主程序密码，不设临时密码）──
+                  if (access != 'operate') TextField(
                     controller: pwCtrl,
                     style: const TextStyle(
                       color: Color(0xFF233249),
@@ -1556,12 +1556,6 @@ Future<void> _shareFromSession(
                           ? null
                           : () async {
                               final pw = pwCtrl.text.trim();
-                              if (access == 'operate' && pw.isEmpty) {
-                                setState(
-                                  () => error = t('sharePasswordRequired'),
-                                );
-                                return;
-                              }
                               setState(() {
                                 busy = true;
                                 error = null;
@@ -1570,7 +1564,7 @@ Future<void> _shareFromSession(
                                 final r = await svc.createShare(
                                   sessionId,
                                   access: access,
-                                  password: pw.isEmpty ? null : pw,
+                                  password: (access == 'operate' || pw.isEmpty) ? null : pw,
                                   expiresAt: expiryHrs > 0
                                       ? (DateTime.now().millisecondsSinceEpoch +
                                             expiryHrs * 3600 * 1000)

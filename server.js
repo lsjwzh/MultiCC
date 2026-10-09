@@ -1839,6 +1839,7 @@ const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
 const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname }); const iosOta = require('./src/ios-ota').createIosOta({ fs, path, rootDir: __dirname });
 const share = require('./src/share');
+share.setMainPasswordVerifier((pw) => authSecurity.verifyAccessToken(pw));
 // Created here — the factory is a pure closure until mounted — so the share
 // route below can serve a recipient the same chat document through the same
 // cache-busting writer. Mounting still happens at its original point below.
