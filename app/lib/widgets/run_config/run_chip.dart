@@ -311,6 +311,7 @@ class _RunChipState extends State<RunChip> {
       context,
       settings: widget.settings,
       sessionId: widget.sessionId,
+      cli: _runtime?.cli ?? widget.cli,
     );
     if (mounted) await _load();
   }

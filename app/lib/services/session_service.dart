@@ -599,13 +599,15 @@ class SessionService {
       clearSubagent: clearSubagent,
       agent: agent,
     );
+    // 服务端本身几十毫秒就回；放宽到 30s 是给慢隧道/弱网留余量 —— 超时只代表
+    // 「没等到回执」，不代表没改成，调用方会按幂等重发一次。
     final res = await http
         .patch(
           Uri.parse(_url('/api/sessions/$id')),
           headers: _headers,
           body: jsonEncode(body),
         )
-        .timeout(const Duration(seconds: 10));
+        .timeout(const Duration(seconds: 30));
     if (res.statusCode >= 400) {
       final err = _tryParseError(res.body);
       throw Exception(err ?? '${res.statusCode}');

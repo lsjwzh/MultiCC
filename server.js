@@ -368,7 +368,7 @@ function parseCookies(header) {
   return cookies;
 }
 
-app.use(requestIdMiddleware);
+app.use(requestIdMiddleware, require('./src/http/json-compression').jsonCompression);
 routerToolHost.mount(app);
 // Auth owns shutdown, login, scoped grants and the global request gate.
 // It stays mounted before every API/relay route so mutable credentials apply
@@ -394,11 +394,10 @@ const authRuntime = createAuthRuntime({ handleServiceRequest: serviceRoutes.hand
 });
 authRuntime.mountRoutes(app);
 // 借道余量查询端点（出借方）：/claude-proxy/:id/remote/quota 与
-// /codex-proxy/:id/quota。鉴权复用 auth 中间件上面的借道凭据（mcr1.*）。
+// /codex-proxy/:id/quota。鉴权复用 auth 中间件的借道凭据（mcr1.*）。
 // 必须在下方 mountProtocolProxies 之前注册——协议代理同样挂在这两个路径
 // 前缀下，后注册的精确路由会被遮蔽。每次请求触发真实余量查询（异步等待，
-// 不走 TTL 缓存），结果同时喂 provider-limit 缓存（limitRecorder 在后面
-// 定义，这里闭包惰性引用，请求到达时早已初始化）。
+// 不走 TTL 缓存），结果同时喂 provider-limit 缓存（limitRecorder 后定义，惰性引用）。
 mountProviderRelayQuotaRoutes(app, {
   ...providers,
   onResult: (appType, id, result) => limitRecorder.recordProvider(appType, id, result),

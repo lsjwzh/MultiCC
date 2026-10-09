@@ -706,7 +706,8 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
         provider.applyCliConfig(config);
       }
     }
-    await loadDashboard();
+    // 列表刷新自己吞错，放后台：保存回执一到就算完成，不再多等一趟隧道往返。
+    unawaited(loadDashboard());
     return config;
   }
 
@@ -808,8 +809,11 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       clearSubagent: clearSubagent,
       agent: agent,
     );
-    await _syncChatProviderAfterProviderChange(id);
-    await loadDashboard();
+    // 配额条对齐（再读一次会话配置）与列表刷新都自己吞错，放后台并行跑：保存
+    // 回执一到就算完成，不再串行多等两趟隧道往返。
+    unawaited(
+      Future.wait([_syncChatProviderAfterProviderChange(id), loadDashboard()]),
+    );
   }
 
   Future<void> updateSessionProvider(String id, String provider) async {

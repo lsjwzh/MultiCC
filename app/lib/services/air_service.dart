@@ -723,8 +723,29 @@ class AirService {
     String method,
     String path, [
     Map<String, dynamic>? body,
-  ]) async {
-    final response = await _request(method, path, body);
+  ]) async => _checked(await _request(method, path, body));
+
+  /// 上一份 `/api/air` 快照的 ETag 与正文。快照每 15 秒轮询一次，绝大多数轮次
+  /// 内容没变：带上 If-None-Match，服务端回 304（`src/workspace/air-routes.js`
+  /// 的 conditionalBody，Web air.js 同一约定），就不必经隧道再搬一遍 ~900KB。
+  String? _snapshotEtag;
+  Map<String, dynamic>? _snapshotBody;
+
+  Future<Map<String, dynamic>> _getSnapshot() async {
+    final etag = _snapshotEtag;
+    final cached = _snapshotBody;
+    final response = await _request('GET', '/api/air', null, {
+      if (etag != null && cached != null) 'If-None-Match': etag,
+    });
+    if (response.statusCode == 304 && cached != null) return cached;
+    final result = _checked(response);
+    final fresh = response.headers['etag'];
+    _snapshotEtag = fresh != null && fresh.isNotEmpty ? fresh : null;
+    _snapshotBody = _snapshotEtag == null ? null : result;
+    return result;
+  }
+
+  Map<String, dynamic> _checked(http.Response response) {
     final result = _decode(response);
     if (response.statusCode >= 400 || result['ok'] == false) {
       if (result['code'] == 'task_shell_task_limit' || result['error'] == 'task_shell_task_limit') {
@@ -741,11 +762,13 @@ class AirService {
     String method,
     String path, [
     Map<String, dynamic>? body,
+    Map<String, String> extraHeaders = const {},
   ]) {
     final uri = Uri.parse(settings.buildHttpUrl(path));
     final headers = {
       'Content-Type': 'application/json',
       'X-Access-Token': settings.token,
+      ...extraHeaders,
     };
     final request = switch (method) {
       'GET' => _http.get(uri, headers: headers),
@@ -850,7 +873,7 @@ class AirService {
   }
 
   Future<AirSnapshot> load() async {
-    final data = await _get('/api/air');
+    final data = await _getSnapshot();
     // 远端工作区是第二个请求。它不该拖垮整个快照：这台服务要是还没有这条路由
     // （或者网络正抖），本机的工作区照样得列出来，不该一起变成一片空白。
     List<ExternalFleet> externalFleets = const [];

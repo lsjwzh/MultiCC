@@ -1517,13 +1517,24 @@ Future<_RunConfigInputBundle> _loadRunConfigInputs(
   SettingsService settings,
   String sessionId, {
   http.Client? httpClient,
+  SessionCli? cliHint,
 }) async {
-  final runtime = await manager.fetchSessionCliConfig(sessionId);
-  final providers = await prepareAIConfigInputs(
-    settings,
-    runtime.cli,
-    httpClient: httpClient,
-  );
+  // 车道已知时（页头的运行配置胶囊就知道）两个请求并行：会话运行时与该车道的
+  // Provider 池互不依赖，经隧道各走一趟往返的话打开就要多等一倍。猜错了（会话
+  // 刚在别处换了车道）再按真实车道补取一次。prepareAIConfigInputs 自己吞错，
+  // 运行时那一路失败时它不会变成无人接的异常。
+  final runtimeFuture = manager.fetchSessionCliConfig(sessionId);
+  final hinted = cliHint == null
+      ? null
+      : prepareAIConfigInputs(settings, cliHint, httpClient: httpClient);
+  final runtime = await runtimeFuture;
+  final providers = hinted != null && cliHint == runtime.cli
+      ? await hinted
+      : await prepareAIConfigInputs(
+          settings,
+          runtime.cli,
+          httpClient: httpClient,
+        );
   return _RunConfigInputBundle(
     runtime,
     RunConfigInputs(
@@ -1644,10 +1655,13 @@ class RunConfigSheetDeferred extends StatelessWidget {
 
 /// 打开某个会话的「运行配置」面板。保存时先按需换车道（固定一条换了 CLI，或自动
 /// 挑选的池子里没有会话现在这条车道），再 PATCH provider/model/effort/...
+///
+/// [cli] 是调用方已知的会话车道（可选），给了就能让打开时的两个请求并行。
 Future<void> openRunConfigSheet(
   BuildContext context, {
   required SettingsService settings,
   required String sessionId,
+  SessionCli? cli,
   http.Client? httpClient,
 }) async {
   final mgr = context.read<SessionManager>();
@@ -1657,6 +1671,7 @@ Future<void> openRunConfigSheet(
     settings,
     sessionId,
     httpClient: httpClient,
+    cliHint: cli,
   );
   final picked = await showModalBottomSheet<RunConfigOutcome>(
     context: context,
@@ -1672,30 +1687,63 @@ Future<void> openRunConfigSheet(
     ),
   );
   if (picked == null) return;
+  final summary = [picked.providerLabel, picked.modelLabel];
+  if (picked.effortLabel.isNotEmpty) summary.add(picked.effortLabel);
   try {
-    final lane = picked.switchToCli;
-    if (lane != null) {
-      final target = tryParseCli(lane);
-      if (target != null) {
-        await mgr.switchSessionCli(sessionId, target);
-      }
+    try {
+      await _applyRunConfig(mgr, sessionId, picked);
+    } catch (e) {
+      // 隧道/移动网络在响应回来之前断开时，服务端多半已经改好了，只是回执丢了。
+      // 换车道（同车道是 noop）与 PATCH（整份期望值）都是幂等的，原样再发一次
+      // 就能拿到确定结果，不必去猜。
+      if (!isTransientNetworkError(e)) rethrow;
+      await _applyRunConfig(mgr, sessionId, picked);
     }
-    await mgr.updateSessionAIConfig(
-      sessionId,
-      provider: picked.provider,
-      providerSelection: picked.providerSelection,
-      model: picked.model,
-      effort: picked.effort,
-      subagent: picked.subagent,
-      agent: picked.agent,
-      clearSubagent: picked.subagent == null,
-    );
-    final summary = [picked.providerLabel, picked.modelLabel];
-    if (picked.effortLabel.isNotEmpty) summary.add(picked.effortLabel);
     messenger.showSnackBar(
       SnackBar(content: Text('✓ 运行配置已保存：${summary.join(' | ')}，下一轮对话生效')),
     );
   } catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text('运行配置保存失败：$e')));
+    messenger.showSnackBar(SnackBar(content: Text(runConfigSaveFailureText(e))));
   }
+}
+
+Future<void> _applyRunConfig(
+  SessionManager mgr,
+  String sessionId,
+  RunConfigOutcome picked,
+) async {
+  final lane = picked.switchToCli;
+  if (lane != null) {
+    final target = tryParseCli(lane);
+    if (target != null) {
+      await mgr.switchSessionCli(sessionId, target);
+    }
+  }
+  await mgr.updateSessionAIConfig(
+    sessionId,
+    provider: picked.provider,
+    providerSelection: picked.providerSelection,
+    model: picked.model,
+    effort: picked.effort,
+    subagent: picked.subagent,
+    agent: picked.agent,
+    clearSubagent: picked.subagent == null,
+  );
+}
+
+/// 连接被中途掐断或等不到响应：请求本身可能已经生效，值得原样重发一次。
+/// package:http 把 SocketException/HttpException 都包成 [http.ClientException]。
+@visibleForTesting
+bool isTransientNetworkError(Object error) =>
+    error is TimeoutException || error is http.ClientException;
+
+/// 保存失败时给人看的那一句：不把 `ClientException: Connection closed before
+/// full header was received` 这种传输层原文甩给用户。
+@visibleForTesting
+String runConfigSaveFailureText(Object error) {
+  if (isTransientNetworkError(error)) {
+    return '运行配置保存失败：网络连接中断，未能确认是否已保存。请稍后重新打开运行配置查看';
+  }
+  final text = error.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
+  return '运行配置保存失败：$text';
 }

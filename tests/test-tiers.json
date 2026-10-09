@@ -3041,6 +3041,15 @@
       ]
     },
     {
+      "path": "tests/test-json-compression.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-kimi-code.js",
       "tier": "core",
       "lane": "deterministic",
