@@ -2,12 +2,16 @@
 
 All notable changes to MultiCC are documented in this file.
 
-## Unreleased
+## v2.4.2 — A Linux agent and quieter permissions (2026-10-09)
 
-### Fixes
+### Highlights
 
-- **登录不再要求用户目录是可用的 git 仓库** — Codex/Claude 官方账号「重新登录」会为 `codex login` / `claude auth login` 开一个交互登录终端；旧逻辑会在用户的会话目录里建 git worktree，导致目录位于 macOS 受保护位置（桌面/文档/下载/iCloud）时，登录直接报「git 无权访问该目录」。登录终端现在是 gitless 的，工作在 MultiCC 自己的 `~/.multicc/login-workspaces/` 下，与用户目录无关。
-- **输入监控不再是必需权限** — macOS Agent 不再请求也不再引导「输入监控」授权（它只为可选的 Esc 急停服务，与打字无关；打字走的是辅助功能）。停止本机操作改用聊天里现成的 ■ 停止按钮。Esc 在用户之前已授权时仍然作为加分项可用。
+- **Remote control reaches Linux** — a first Linux desktop agent (`scripts/linux-agent`, a small C program over X11/XTest) drives the same human-assist remote screen on Linux hosts, with an Xvfb conformance suite in CI that runs whenever the agent source changes. The cross-platform contract is now written down in `docs/desktop-agent-protocol.md`.
+- **Login terminals no longer need a git-friendly directory** — the interactive `codex login` / `claude auth login` terminal used to create a git worktree inside your session directory, which failed outright when that directory lives in a macOS protected location (Desktop/Documents/Downloads/iCloud) with a confusing "git cannot access this directory" error. Login terminals are now gitless and work under MultiCC's own `~/.multicc/login-workspaces/`, independent of where your sessions live.
+- **Input monitoring is no longer a required permission** — the macOS agent no longer requests "Input Monitoring" (it only ever served the optional Esc halt; typing goes through Accessibility). Stopping local automation now uses the chat's existing ■ stop button, and Esc remains available as a bonus when you had already granted it.
+- **Revoked official credentials stop burning retries** — when an official Claude account's credentials are revoked, the lane no longer retries the 401 forever; it parks the alias onto the specific dead account so the failure is visible and other accounts keep serving (f20888c6).
+- **Remote-screen links open in place** — `#rs=control` links in chat no longer navigate away from the conversation (a `<base href="/">` quirk); they open the remote screen overlay in place, with right-click/⌘-click as the escape hatch to a real tab (`public/chat-remote-links.js`).
+- **Battery and host power, visible in Air** — lid state, power source and battery telemetry from the host land in a dedicated Air panel (`public/air-battery.js`, `src/host-battery.js`), alongside the service-routes management page gaining its own UI.
 
 ## v2.4.1 — A crash fix and a sharper remote screen (2026-10-06)
 

@@ -1060,6 +1060,15 @@
       ]
     },
     {
+      "path": "tests/test-air-provider-simple-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
       "path": "tests/test-air-push-cdp.js",
       "tier": "flow",
       "lane": "cdp",

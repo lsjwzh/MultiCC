@@ -35,6 +35,17 @@ const MIGRATION_DEBT = Object.freeze({
   // 拦住）。本次 SDK 控制通道那一轮把 error_during_execution 的 startup_failure_reason
   // 接进来时顺手压掉 9 行（3021 → 3012），按实测高水位登记到这一格。
   // 真要退休还是那句：把每轮的 completion/结果收尾那一族拆出去，落回 <= 3000 就删条目。
+  // server.js 曾在 typed continuation/wait 迁移后回到默认 3k 以内（见上方注释）；
+  // 2026-10-09 实测又越线到 3013/154980。v2.4.1 之后的增量来自官方账号/额度与
+  // 主机电源那一族（revoked 别名 park、claude usage 队列接线、host-battery 路由）。
+  // 按棘轮规则登记实测高水位；下一次动 server.js 该拆的仍是账号/额度路由那一族，
+  // 落回 <= 3000 就删条目。
+  'server.js': Object.freeze({
+    ceiling: 3013,
+    byteCeiling: 154980,
+    target: 3000,
+    reason: 'over 3000 again after v2.4.1 (official-account and host-battery route additions); registered at the measured high-water mark',
+  }),
   'src/chat/turn-engine.js': Object.freeze({
     ceiling: 3012,
     byteCeiling: 148420,
@@ -370,8 +381,16 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +7 双语键（airProviderAdvanced*Choice*）：Provider 的低频连接能力改为三个
     // “我要做什么”入口；同时吸收 main 新增的 3 个双语任务设置键。生成器实测
     // 8864/563939，仍只是词典数据增长。
-    maxLines: 8864,
-    maxBytes: 563939,
+    // 2026-10-09 v2.4.2 发版对账：8864 那格登记之后 main 又落了三轮键——
+    // 官方账号「重新登录」与终端/账号路由标签（airProviderRelogin、
+    // airProviderTerminalRoute/AccountRoute/TerminalTag/AccountTag、
+    // providerTerminal*/providerAccount*、airOfficialAcctCodexLoginDone，11 键）、
+    // 按密钥/按账号添加 Provider 的三个入口（airProviderAddByKey/AddAccount 及
+    // Desc，4 键）、任务设置的文件夹浏览（airTaskSettingsBrowseFolders 等 6 键）、
+    // 队列重试回执（queueRetrying）与桌面 agent 平台提示（rsErrPlatform）。
+    // 净 +29 键 −5 键（Esc/输入监控退役），生成器实测 8892/565523，按真实高水位抬一格。
+    maxLines: 8892,
+    maxBytes: 565523,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

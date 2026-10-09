@@ -15,9 +15,20 @@ async function serve(t, handler) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-test('Aux invokes its own official provider through the relay and follows global account switching', async t => {
-  let selection = { codex: 'aaaaaaaaaaaaaaaa' };
-  const catalog = createOfficialCatalog({ readRecords: () => [], readSelection: () => selection, writeSelection: value => { selection = value; } });
+test('Aux invokes its own official provider through the relay and keeps the pinned account', async t => {
+  // 2026-10-08 官方目录重构后：codex-official 是「同 Codex 终端」（CLI 登录），
+  // 每个已登录账号是独立 provider（codex-official-<accountId>），按账号 id 不跟随
+  // 全局选择（语义钉在 tests/test-unified-official-providers.js）。
+  let selection = {};
+  const catalog = createOfficialCatalog({
+    readRecords: () => [],
+    readSelection: () => selection,
+    writeSelection: value => { selection = value; },
+    listAccounts: () => [
+      { id: 'aaaaaaaaaaaaaaaa', loggedIn: true },
+      { id: 'bbbbbbbbbbbbbbbb', loggedIn: true },
+    ],
+  });
   const observed = [];
   const relay = createCodexOfficialRelayHandler({
     getProvider: catalog.get,
@@ -30,10 +41,10 @@ test('Aux invokes its own official provider through the relay and follows global
   const base = await serve(t, async (req, res) => {
     let data = ''; for await (const chunk of req) data += chunk;
     req.body = JSON.parse(data);
-    req.params = { providerId: 'codex-official' };
+    req.params = { providerId: 'codex-official-aaaaaaaaaaaaaaaa' };
     await relay(req, res, () => { throw new Error('must use official relay'); });
   });
-  const target = { url: `${base}/codex-proxy/codex-official/responses`, apiKey: 'multicc-aux', wireApi: 'responses' };
+  const target = { url: `${base}/codex-proxy/codex-official-aaaaaaaaaaaaaaaa/responses`, apiKey: 'multicc-aux', wireApi: 'responses' };
   const input = { target, model: 'my-model', prompt: '请摘要', systemPrompt: '简短', timeoutMs: 1000 };
   assert.equal(await executeAuxHttp(input), '自己的模型摘要');
   catalog.select('codex', 'bbbbbbbbbbbbbbbb');
@@ -43,7 +54,8 @@ test('Aux invokes its own official provider through the relay and follows global
   assert.equal(observed[0].body.stream, true);
   assert.equal(observed[0].body.store, false);
   assert.match(observed[0].headers.Authorization || observed[0].headers.authorization, /aaaaaaaaaaaaaaaa/);
-  assert.match(observed[1].headers.Authorization || observed[1].headers.authorization, /bbbbbbbbbbbbbbbb/);
+  // 按账号 id 固定的 provider 不跟随全局选择：切到 bbbb 后同一目标仍用 aaaa 的凭证。
+  assert.match(observed[1].headers.Authorization || observed[1].headers.authorization, /aaaaaaaaaaaaaaaa/);
 });
 
 test('Responses SSE requires completed output and reports failure instead of returning partial summaries', () => {
