@@ -437,7 +437,7 @@ void main() {
       find.byKey(const ValueKey('air-directory-schedules')),
       findsOneWidget,
     );
-    for (final status in ['running', 'waiting', 'error', 'succeeded']) {
+    for (final status in ['running', 'waiting', 'error', 'today']) {
       await tester.tap(find.byKey(ValueKey('air-stat-$status')));
       await tester.pumpAndSettle();
       expect(
@@ -745,8 +745,7 @@ void main() {
     expect(find.text('第 1 / 2 页'), findsOneWidget);
 
     final viewport = find.byKey(const ValueKey('air-directory-page-scroll'));
-    final pageScroll =
-        tester.widget<CustomScrollView>(viewport).controller!;
+    final pageScroll = tester.widget<CustomScrollView>(viewport).controller!;
     final head = find.byKey(const ValueKey('air-directory-task-panel-head'));
     // 第 1 页是最近的那 20 条（lastMessageAt 倒序），第一条是任务 25。
     final firstRow = find.byKey(const ValueKey('air-directory-task-t25'));
@@ -805,7 +804,10 @@ void main() {
     // 没有分页就没有钉住的那一条（同 Web：`.is-paged` 不生效就没有 sticky 表头）。
     expect(find.byType(SliverPersistentHeader), findsNothing);
     expect(find.byKey(const ValueKey('air-tasks-page-prev')), findsNothing);
-    expect(find.byKey(const ValueKey('air-directory-task-panel-head')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-directory-task-panel-head')),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
