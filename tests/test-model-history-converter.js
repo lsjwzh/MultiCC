@@ -178,6 +178,46 @@ test('the official rule runs before the reference pass, so an emptied item canno
   assert.deepEqual(normalizeResponsesHistory(untouched).changes, []);
 });
 
+// DeepSeek's Responses endpoint deserializes replayed `input` into a type where
+// web_search_call.action.queries is required: a thread recorded on another
+// upstream (the older shape has only `query`) 422s on EVERY turn with
+// "missing field `queries`". Pinned from a real session whose 18 of 19 search
+// items lacked the field.
+test('a search web_search_call without queries gets it filled from the single query', () => {
+  const body = () => ({ input: [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'find it' }] },
+    { type: 'web_search_call', status: 'completed', action: { type: 'search', query: 'cat litter box 1688' } },
+    { type: 'web_search_call', status: 'completed', action: { type: 'search', query: 'q1', queries: ['q1', 'q2'] } },
+    { type: 'web_search_call', status: 'completed', action: { type: 'search' } },
+    { type: 'web_search_call', status: 'completed', action: { type: 'open_page', url: 'https://example.com' } },
+  ] });
+  const original = body();
+  const result = normalizeResponsesHistory(structuredClone(original));
+  assert.deepEqual(result.body.input[1].action, { type: 'search', query: 'cat litter box 1688', queries: ['cat litter box 1688'] });
+  assert.deepEqual(result.body.input[2].action.queries, ['q1', 'q2'], 'an existing list is never rewritten');
+  assert.deepEqual(result.body.input[3].action, { type: 'search', queries: [] }, 'no query to copy: an empty list still satisfies the schema');
+  assert.deepEqual(result.body.input[4], original.input[4], 'only search actions carry the field');
+  assert.deepEqual(result.changes.map(c => c.path), ['input[1].action.queries', 'input[3].action.queries']);
+  assert.equal(result.changes[0].rule, 'web_search_queries_required');
+  assert.equal(normalizeResponsesHistory(result.body).body, result.body, 'idempotent: a second pass changes nothing');
+  assert.deepEqual(normalizeResponsesHistory(result.body).changes, []);
+  // The official dial runs the same pass; the field is optional in Codex's own type.
+  assert.deepEqual(normalizeResponsesHistory(structuredClone(original), { omitReasoningContent: true }).body.input[1].action.queries, ['cat litter box 1688']);
+  assert.equal(Object.hasOwn(original.input[1].action, 'queries'), false, 'the input body is never mutated');
+});
+
+test('the request hook that serves every third-party route repairs the search items', () => {
+  const { createCodexHistoryHooks } = require('../src/providers/codex-history-hooks');
+  const hooks = createCodexHistoryHooks();
+  const body = { model: 'deepseek-v4-flash', input: [
+    { type: 'web_search_call', status: 'completed', action: { type: 'search', query: 'wb 961296912' } },
+  ] };
+  const out = hooks.onRequest({ protocol: 'openai-responses', body, providerId: 'p', sessionId: 's', role: 'main' });
+  assert.deepEqual(out.body.input[0].action.queries, ['wb 961296912']);
+  const clean = { input: [{ type: 'web_search_call', action: { type: 'search', query: 'a', queries: ['a'] } }] };
+  assert.equal(hooks.onRequest({ protocol: 'openai-responses', body: clean }), undefined, 'a clean thread is forwarded byte-identical');
+});
+
 test('an encrypted-content verification rejection strips every reasoning blob at once', () => {
   const body = { input: [
     { type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: '944aa366-6fab-4f1e-8a03-3dfb22f964ef-0' },
