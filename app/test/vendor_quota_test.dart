@@ -122,11 +122,15 @@ void main() {
       expect(v.text, '5h 100% 39m · 30s 前 ⟳');
     });
 
-    test('a past deadline reads as rolled, never an empty segment', () {
+    test('a past deadline with no window anywhere near it reads as rolled', () {
       const now = 1_700_000_000_000;
       final v = vendorViewFromBar(
         const {
-          'text': '1m 0% {cd:1699999999000}',
+          // Nothing in front of the token to read a window out of, so there is
+          // no next reset to name. The segment stays non-empty so the bar's
+          // separators remain well-formed rather than going blank. Mirrors
+          // `cd-past-deadline-reads-rolled` in tests/fixtures/quota-bar-golden.json.
+          'text': 'x {cd:1699999999000}',
           'color': '#f85149',
           'title': '',
           'action': null,
@@ -134,12 +138,30 @@ void main() {
         now: now,
       )!;
       // The window rolled, so the segment says so: a countdown here would read
-      // as "0% used, resets in 1m" next to a percentage from the window that
-      // just ended. The segment stays non-empty so the bar's separators remain
-      // well-formed rather than going blank. This is the token with no window on
-      // it — the fallback; the case below is the one users normally see.
-      expect(v.text, '1m 0% 已重置');
+      // as "0% used, resets in 1m" next to a percentage from the window that just
+      // ended. This is the last-resort fallback; the two cases below are what
+      // users normally see.
+      expect(v.text, 'x 已重置');
       expect(v.color, VendorQuotaColor.red);
+    });
+
+    test('a past deadline reads its window back out of the cell in front of it', () {
+      const now = 1_700_000_000_000;
+      // A bar the server rendered and cached BEFORE cdTag learned to append
+      // `|<window>`: the token carries no window, but windowSeg always wrote the
+      // label right in front of it, so an old cached bar rolls like a fresh one
+      // instead of getting stuck on the bare word (this is the codex bar a user
+      // actually saw do that). Mirrors `cd-past-legacy-codex-weekly-rolls`.
+      final v = vendorViewFromBar(
+        const {
+          'text': '1wk 38% {cd:1699000000000} · {ago:1698999000000} ⟳',
+          'color': '#58a6ff',
+          'title': '',
+          'action': null,
+        },
+        now: now,
+      )!;
+      expect(v.text, '1wk 38% 2d 10h · 11 天前 ⟳');
     });
 
     test('a past deadline that names its window reads as time to the next reset', () {

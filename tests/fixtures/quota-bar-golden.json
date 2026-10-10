@@ -595,6 +595,70 @@
       }
     },
     {
+      "name": "cd-past-legacy-codex-weekly-rolls",
+      "bar": {
+        "text": "1wk 38% {cd:1699000000000} · {ago:1698999000000} ⟳",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "1wk 38% 2d 10h · 11 天前 ⟳",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-past-legacy-opencode-5h-rolls",
+      "bar": {
+        "text": "OpenCode Go · 5h 83% {cd:1699950000000} · 1wk 74% {cd:1700511170000|1wk} · {ago:1699999970000} ⟳",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "OpenCode Go · 5h 83% 1.1h · 1wk 74% 5d 21h · 30s 前 ⟳",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-past-legacy-suffixed-label-rolls",
+      "bar": {
+        "text": "1wk-ALL 60% {cd:1699000000000}",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "1wk-ALL 60% 2d 10h",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
+      "name": "cd-past-tooltip-shape-keeps-the-word",
+      "bar": {
+        "text": "重置: {cd:1699999999000} 后",
+        "color": "#58a6ff",
+        "title": "",
+        "action": null
+      },
+      "state": null,
+      "expected": {
+        "text": "重置: 已重置 后",
+        "colorHex": "#58a6ff",
+        "title": "",
+        "action": null
+      }
+    },
+    {
       "name": "cd-30m",
       "bar": {
         "text": "{cd:1700001800000}",
