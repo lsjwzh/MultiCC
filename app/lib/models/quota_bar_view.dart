@@ -5,7 +5,11 @@
 /// clients. Only the parts that change while nobody is fetching anything have
 /// to be resolved at paint time:
 ///
-///   `{cd:<epochMs>}`            a deadline  → "42m" · "3.5h" · "3d 5h"
+///   `{cd:<epochMs>}`            a deadline  → "42m" · "3.5h" · "3d 5h". A bar
+///                               cached before the window half below existed
+///                               reads its window back out of the segment in
+///                               front of the token, so it rolls too (see
+///                               [_windowBefore])
 ///   `{cd:<epochMs>|<window>}`   a deadline whose window the server knew, so a
 ///                               deadline that has already passed resolves to
 ///                               the NEXT reset of that window instead
@@ -153,6 +157,37 @@ int? _nextResetAfter(int atMs, String token, int nowMs) {
 /// safe to expand. Mirrors `ROLLED_WINDOW` in public/quota-bar-view.js.
 const String rolledWindowText = '已重置';
 
+/// The window of a deadline whose token does not carry one — because the bar was
+/// rendered and cached by a server that predates the `|<window>` half. Those are
+/// real: a bar is persisted by the server-side quota-bar cache and in this app's
+/// memory, and one whose weekly deadline has since passed reads
+/// `1wk 38% {cd:…}` — the exact shape that got stuck on the bare word.
+///
+/// The window is still in the string. Every countdown the server puts in a bar's
+/// TEXT comes from its windowSeg, which writes `<label> <remaining>% <cd>`, so
+/// the cell the token directly follows names the window it belongs to. Reading
+/// it back is what lets an old cached bar answer with a time like a fresh one.
+///
+/// Anchored to the end of everything before the token, so it only fires on a
+/// label the token actually follows: a tooltip's `重置: {cd:…} 后` has words
+/// there, not a percentage, and keeps the bare word (a tooltip is not worth
+/// guessing a window for — the labels in one are not always even the token's,
+/// e.g. the Chinese 周/月).
+final RegExp _segLabel = RegExp(r'([A-Za-z0-9][A-Za-z0-9-]*)\s+\d+(?:\.\d+)?%\s*$');
+
+/// A window token this bar meters, or null. `1wk-ALL`-style labels (Claude
+/// meters its weekly limit more than one way) read as the window their first
+/// segment names. Mirrors `windowOfLabel` in public/quota-bar-view.js.
+String? _windowOfLabel(String? label) {
+  final token = (label ?? '').trim().split('-').first;
+  return _windowPeriodMs.containsKey(token) ? token : null;
+}
+
+String? _windowBefore(String text, int offset) {
+  final m = _segLabel.firstMatch(text.substring(0, offset));
+  return m == null ? null : _windowOfLabel(m.group(1));
+}
+
 String resolveQuotaText(String? text, int nowMs) {
   if (text == null || text.isEmpty || !text.contains('{')) return text ?? '';
   return text.replaceAllMapped(_token, (m) {
@@ -163,11 +198,14 @@ String resolveQuotaText(String? text, int nowMs) {
     // The deadline is behind us, so the window it named has rolled. When the
     // token carries the window, the next reset is that deadline plus whole
     // periods, and saying when it is answers what the reader actually asked
-    // ("how long until it resets"). Without the window - a bar cached before the
-    // server carried it, a window this bar does not meter - [rolledWindowText]
-    // is the honest remainder, and it is still non-empty, which is what keeps
-    // the separators baked into the server string safe to expand.
-    final window = m.group(3);
+    // ("how long until it resets"). A token that does not carry one is read back
+    // out of the segment in front of it (see [_windowBefore]), so a bar cached
+    // before the server learned to name the window answers the same way. Only a
+    // deadline with no window anywhere near it - a window this bar does not
+    // meter - falls back to [rolledWindowText], the honest remainder, which is
+    // still non-empty and keeps the separators baked into the server string safe
+    // to expand.
+    final window = m.group(3) ?? _windowBefore(text, m.start);
     final next = window == null ? null : _nextResetAfter(at, window, nowMs);
     return next == null ? rolledWindowText : humanizeCountdown(next - nowMs);
   });

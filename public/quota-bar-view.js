@@ -6,7 +6,10 @@
  * clients. Only the parts that change while nobody is fetching anything have to
  * be resolved at paint time:
  *
- *   {cd:<epochMs>}            a deadline → "42m" · "3.5h" · "3d 5h"
+ *   {cd:<epochMs>}            a deadline → "42m" · "3.5h" · "3d 5h". A bar
+ *                             cached before the window half below existed reads
+ *                             its window back out of the segment in front of the
+ *                             token, so it rolls too (see windowBefore)
  *   {cd:<epochMs>|<window>}   a deadline whose window the server knew, so a
  *                             deadline that has already passed resolves to the
  *                             NEXT reset of that window instead
@@ -128,11 +131,44 @@
   // (see humanizeCountdown) safe to expand.
   const ROLLED_WINDOW = '已重置';
 
+  // The window of a deadline whose token does not carry one — because the bar
+  // was rendered and cached by a server that predates the `|<window>` half (see
+  // cdTag in src/quota/quota-bar-view.js). Those are real: a bar is persisted by
+  // the server-side quota-bar cache and by localStorage, and one whose weekly
+  // deadline has since passed reads `1wk 38% {cd:…}` — the exact shape that got
+  // stuck on the bare word.
+  //
+  // The window is still in the string. Every countdown this renderer puts in a
+  // bar's TEXT comes from windowSeg, which writes `<label> <remaining>% <cd>`,
+  // so the cell the token directly follows names the window it belongs to.
+  // Reading it back is what lets an old cached bar answer with a time like a
+  // fresh one.
+  //
+  // Anchored to the end of everything before the token, so it only fires on a
+  // label the token actually follows: a tooltip's `重置: {cd:…} 后` has words
+  // there, not a percentage, and keeps the bare word (a tooltip is not worth
+  // guessing a window for — the labels in one are not always even the token's,
+  // e.g. the Chinese 周/月).
+  const SEG_LABEL = /([A-Za-z0-9][A-Za-z0-9-]*)\s+\d+(?:\.\d+)?%\s*$/;
+
+  // A window token this bar meters, or null. `1wk-ALL`-style labels (Claude
+  // meters its weekly limit more than one way) read as the window their first
+  // segment names; mirrors windowTokenOf in src/quota/quota-bar-view.js.
+  function windowOfLabel(label) {
+    const token = String(label || '').trim().split('-')[0];
+    return Object.prototype.hasOwnProperty.call(WINDOW_PERIOD_MS, token) ? token : null;
+  }
+
+  function windowBefore(text, offset) {
+    const label = SEG_LABEL.exec(text.slice(0, offset));
+    return label ? windowOfLabel(label[1]) : null;
+  }
+
   // `rolledLabel` is the localized spelling of that sentence; the default is the
   // server's own bytes, which is what the app and the golden fixtures pin.
   function resolveText(text, nowMs, rolledLabel) {
     if (typeof text !== 'string' || text.indexOf('{') < 0) return text || '';
-    return text.replace(TOKEN, (_, kind, raw, window) => {
+    return text.replace(TOKEN, (_, kind, raw, window, offset) => {
       const at = Number(raw);
       if (kind !== 'cd') return relativeAgo(at, nowMs);
       const left = at - nowMs;
@@ -140,11 +176,15 @@
       // The deadline is behind us, so the window it named has rolled. When the
       // token carries the window, the next reset is that deadline plus whole
       // periods, and saying when it is answers what the reader actually asked
-      // ("how long until it resets"). Without the window - a bar cached before
-      // the server carried it, a window this bar does not meter - "已重置" is
-      // the honest remainder, and it is still non-empty, which is what keeps
-      // the separators baked into the server string safe to expand.
-      const next = window ? nextResetAfter(at, window, nowMs) : null;
+      // ("how long until it resets"). A token that does not carry one is read
+      // back out of the segment in front of it (see windowBefore), so a bar
+      // cached before the server learned to name the window answers the same
+      // way. Only a deadline with no window anywhere near it - a window this bar
+      // does not meter - falls back to "已重置", the honest remainder, which is
+      // still non-empty and keeps the separators baked into the server string
+      // safe to expand.
+      const win = window || windowBefore(text, offset);
+      const next = win ? nextResetAfter(at, win, nowMs) : null;
       return next === null ? (rolledLabel || ROLLED_WINDOW) : humanizeCountdown(next - nowMs);
     });
   }
