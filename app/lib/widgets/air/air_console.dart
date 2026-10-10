@@ -10,7 +10,6 @@ import '../../services/manage_service.dart';
 import '../../services/session_service.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
-import '../../utils/status_presentation.dart';
 import '../workspace_navigation_drawer.dart';
 import 'air_attention_screen.dart';
 import 'air_directory_search.dart';
@@ -107,19 +106,6 @@ extension on _ConsoleTile {
     _ConsoleTile.today => 'airAdminNoDoneToday',
     _ConsoleTile.all => 'airAdminNoMatchingTasks',
   };
-}
-
-/// 「今日完成」：这一轮跑成功（succeeded）或生命周期 done、且最后一次更新落在
-/// 今天本地零点之后。任务没有单独的完成时间戳，[AirTask.updatedAt] 就是它结束的
-/// 那一刻。（同 Web `air-admin.js` 的 `doneToday`。）
-bool _doneToday(AirTask task, [DateTime? now]) {
-  if (airTaskStatus(task) != CanonicalStatus.succeeded &&
-      task.status != 'done') {
-    return false;
-  }
-  final at = now ?? DateTime.now();
-  final midnight = DateTime(at.year, at.month, at.day);
-  return task.updatedAt >= midnight.millisecondsSinceEpoch;
 }
 
 class _AirConsoleBodyState extends State<AirConsoleBody> {
@@ -424,7 +410,7 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
     final waitingMe = urgent
         .where((task) => airTaskUrgency(task) != 1)
         .toList();
-    final finished = tasks.where((task) => _doneToday(task)).toList()
+    final finished = tasks.where(airTaskDoneToday).toList()
       ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     final running = airRunningDirectories(tasks);
     final enabledSchedules = (_schedules ?? const <CronTask>[])

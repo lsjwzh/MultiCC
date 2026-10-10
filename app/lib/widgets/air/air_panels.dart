@@ -516,26 +516,34 @@ class AirDirectoryStats extends StatelessWidget {
       AirDirectoryTaskFilter.running,
       AirDirectoryTaskFilter.waiting,
       AirDirectoryTaskFilter.error,
-      AirDirectoryTaskFilter.succeeded,
+      AirDirectoryTaskFilter.today,
       AirDirectoryTaskFilter.all,
     ];
     final tiles = [
       for (final filter in filters)
         _StatTile(
           key: ValueKey('air-stat-${filter.name}'),
-          label: filter.label,
+          label: switch (filter) {
+            AirDirectoryTaskFilter.running => '进行中',
+            AirDirectoryTaskFilter.waiting => '等我回复',
+            AirDirectoryTaskFilter.error => '异常',
+            AirDirectoryTaskFilter.today => '今日完成',
+            AirDirectoryTaskFilter.all => '全部',
+            _ => filter.label,
+          },
           value: '${tasks.where(filter.matches).length}',
           detail: switch (filter) {
-            AirDirectoryTaskFilter.succeeded => '仍保留在本目录',
+            AirDirectoryTaskFilter.today => '今天跑完的任务',
             AirDirectoryTaskFilter.all =>
               '$archived 个已归档 · $worktreeCount 个 WT',
             _ => '',
           },
           tone: switch (filter) {
-            AirDirectoryTaskFilter.running => _StatTone.blue,
+            AirDirectoryTaskFilter.running => _StatTone.green,
             AirDirectoryTaskFilter.waiting => _StatTone.amber,
             AirDirectoryTaskFilter.error => _StatTone.red,
-            AirDirectoryTaskFilter.succeeded => _StatTone.green,
+            AirDirectoryTaskFilter.today => _StatTone.blue,
+            AirDirectoryTaskFilter.all => _StatTone.purple,
             _ => _StatTone.plain,
           },
           onTap: onFilter == null ? null : () => onFilter!(filter),
@@ -562,7 +570,7 @@ class AirDirectoryStats extends StatelessWidget {
   }
 }
 
-enum _StatTone { plain, blue, green, amber, red }
+enum _StatTone { plain, blue, green, amber, red, purple }
 
 class _StatTile extends StatelessWidget {
   const _StatTile({
@@ -605,6 +613,7 @@ class _StatTile extends StatelessWidget {
                 _StatTone.plain => const Color(0xFFAEBFD0),
                 _StatTone.amber => const Color(0xFFE3B341),
                 _StatTone.red => const Color(0xFFDA3633),
+                _StatTone.purple => const Color(0xFF8F82DF),
               },
               borderRadius: BorderRadius.circular(4),
             ),

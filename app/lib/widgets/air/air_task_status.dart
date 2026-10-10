@@ -17,12 +17,25 @@ import '../../utils/status_presentation.dart';
 CanonicalStatus airTaskStatus(AirTask task) =>
     taskStatusOf(status: task.status, runState: task.runState);
 
+/// 本轮成功或旧生命周期 done，且最后更新时间落在本地今天。
+/// Web 对应 `public/air-admin.js` 的 `doneToday`；目录首页和控制台共用这一份。
+bool airTaskDoneToday(AirTask task, [DateTime? now]) {
+  if (airTaskStatus(task) != CanonicalStatus.succeeded &&
+      task.status != 'done') {
+    return false;
+  }
+  final at = now ?? DateTime.now();
+  final midnight = DateTime(at.year, at.month, at.day);
+  return task.updatedAt >= midnight.millisecondsSinceEpoch;
+}
+
 /// Shared by directory counters and their result list (same rules as Web).
 enum AirDirectoryTaskFilter {
   open('进行中与待处理'),
   running('运行中'),
   waiting('等待回复'),
   error('异常'),
+  today('今日完成'),
   succeeded('执行成功'),
   achieved('完成目标'),
   interact('需要交互'),
@@ -37,6 +50,7 @@ enum AirDirectoryTaskFilter {
     running => airTaskRunning(task),
     waiting => airTaskStatus(task) == CanonicalStatus.waiting,
     error => airTaskStatus(task) == CanonicalStatus.error,
+    today => airTaskDoneToday(task),
     succeeded => airTaskStatus(task) == CanonicalStatus.succeeded,
     achieved =>
       airTaskStatus(task) == CanonicalStatus.succeeded &&
