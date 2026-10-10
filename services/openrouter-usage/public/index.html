@@ -39,6 +39,9 @@ body { margin:0; background:var(--page); color:var(--text-primary);
 h1 { font-size: 22px; margin: 8px 0 4px; }
 .sub { color: var(--text-secondary); font-size: 13px; margin-bottom: 16px; }
 header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+#refreshBtn { background:var(--surface-1); color:var(--text-secondary); border:1px solid var(--border);
+  border-radius:8px; padding:6px 12px; font-size:13px; cursor:pointer; }
+#refreshBtn:disabled { opacity:0.6; cursor:wait; }
 #themeToggle { background:var(--surface-1); color:var(--text-secondary); border:1px solid var(--border);
   border-radius:8px; padding:6px 12px; font-size:13px; cursor:pointer; }
 .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin:16px 0; }
@@ -78,6 +81,7 @@ td.name { color:var(--text-primary); }
       <h1>OpenRouter 全球 Token 使用量</h1>
       <div class="sub" id="subtitle">各模型供应商日 token 用量 · 单位：十亿 token/日 (b)</div>
     </div>
+    <button id="refreshBtn" title="从 MacroMicro 重新抓取最新数据（6 小时内重复点击会直接用缓存）">⟳ 刷新数据</button>
     <button id="themeToggle" aria-label="切换深浅色">🌗 深色</button>
   </header>
 
@@ -290,6 +294,19 @@ function onHover(ev) {
 function hideTip() { document.getElementById('tooltip').style.display = 'none'; }
 
 // 主题切换
+document.getElementById('refreshBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('refreshBtn');
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳ 抓取中…';
+  try {
+    const r = await fetch('refresh', { method: 'POST' });
+    const j = await r.json();
+    if (!j.ok) throw new Error((j.log || []).join(' ') || '抓取失败');
+    if (j.skipped === 'fresh') { btn.textContent = '✓ 数据新鲜(' + (j.ageHours || 0) + 'h)'; }
+    else { location.reload(); return; }
+  } catch (e) { btn.textContent = '✗ ' + e.message; }
+  setTimeout(() => { btn.disabled = false; btn.textContent = old; }, 3000);
+});
 document.getElementById('themeToggle').addEventListener('click', () => {
   const root = document.documentElement;
   const cur = root.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
