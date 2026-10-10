@@ -132,6 +132,28 @@ function stripUnverifiableEncryptedContent(body) {
   return changes.length ? { body: { ...body, input }, changes } : { body, changes };
 }
 
+// A search-type web_search_call records the query as `action.query`; the newer
+// Codex shape adds `action.queries` (the list of queries). Strict third-party
+// Responses upstreams (DeepSeek) deserialize the replayed `input` into a type
+// where `queries` is required, so one old item without it makes the WHOLE
+// request fail with a deterministic 422 "missing field `queries`" — every turn
+// after the first replay, for the rest of the thread. The field is optional in
+// Codex's own type, so adding it is harmless for every other upstream. Fill it
+// from the single query rather than dropping the item: the call is part of what
+// the thread did, and it has no paired output item to orphan either way.
+function fillWebSearchQueries(body) {
+  if (!Array.isArray(body?.input)) return { body, changes: [] };
+  const changes = [];
+  const input = body.input.map((item, index) => {
+    if (item?.type !== 'web_search_call' || !object(item.action) || item.action.type !== 'search') return item;
+    if (Array.isArray(item.action.queries)) return item;
+    const query = typeof item.action.query === 'string' && item.action.query ? item.action.query : null;
+    changes.push(change(index, item, 'action.queries', 'convert', 'web_search_queries_required'));
+    return { ...item, action: { ...item.action, queries: query ? [query] : [] } };
+  });
+  return changes.length ? { body: { ...body, input }, changes } : { body, changes };
+}
+
 // Cross-upstream resume, third stop. A rollout recorded on another Responses
 // upstream replays ids THAT upstream minted. The official ChatGPT hop runs with
 // store:false (nothing is persisted server-side), so any id the backend cannot
@@ -258,9 +280,10 @@ function normalizeResponsesHistory(body, { omitReasoningContent = false } = {}) 
     ? stripReasoningContent(prepared.body)
     : { body: prepared.body, changes: [] };
   const references = stripUnresolvedItemReferences(content.body);
+  const searches = fillWebSearchQueries(references.body);
   return {
-    body: references.body,
-    changes: [...prepared.changes, ...content.changes, ...references.changes],
+    body: searches.body,
+    changes: [...prepared.changes, ...content.changes, ...references.changes, ...searches.changes],
   };
 }
 
@@ -344,6 +367,7 @@ function repairRejectedResponsesHistory(body, error) {
 }
 
 module.exports = {
+  fillWebSearchQueries,
   normalizeResponsesHistory,
   preprocessResponsesHistory,
   repairRejectedResponsesHistory,
