@@ -64,19 +64,32 @@ function createFilesHandler(deps) {
   };
 }
 
+// Markdown renderers percent-encode non-ASCII / space characters in `![](/Users/…/中文.png)`
+// before the front end sees the src, and the front end encodes it again for the query
+// string, so the server receives `%E7%A4%BE…` literally. The literal path always wins;
+// only when it does not exist do we retry once with the percent-escapes decoded.
+function decodedPathCandidate(filePath) {
+  if (!/%[0-9a-fA-F]{2}/.test(filePath)) return null;
+  try {
+    const decoded = decodeURIComponent(filePath);
+    return decoded !== filePath ? decoded : null;
+  } catch (_) { return null; }
+}
+
 function createDownloadHandler(deps) {
   return function downloadHandler(req, res) {
     const filePath = ((req.query && req.query.path) || '').trim();
     const inline = req.query && req.query.inline === '1';
     if (!filePath) return res.status(400).json({ error: 'path required' });
-    const resolved = deps.path.resolve(filePath);
-    try {
-      const stat = deps.fs.statSync(resolved);
+    const candidates = [filePath, decodedPathCandidate(filePath)].filter(Boolean);
+    for (const candidate of candidates) {
+      const resolved = deps.path.resolve(candidate);
+      let stat;
+      try { stat = deps.fs.statSync(resolved); } catch (_) { continue; }
       if (stat.isDirectory()) return res.status(400).json({ error: '不能下载目录' });
       return inline ? res.sendFile(resolved) : res.download(resolved);
-    } catch (_) {
-      return res.status(404).json({ error: '文件不存在' });
     }
+    return res.status(404).json({ error: '文件不存在' });
   };
 }
 
