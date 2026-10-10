@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenRouter 全球 Token 使用量</title>
+<style>
+.viz-root {
+  color-scheme: light;
+  --page:#f9f9f7; --surface-1:#fcfcfb;
+  --text-primary:#0b0b0b; --text-secondary:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --baseline:#c3c2b7; --border:rgba(11,11,11,0.10);
+  --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a; --series-4:#eda100;
+  --series-5:#e87ba4; --series-6:#008300; --series-7:#4a3aa7; --series-8:#e34948;
+  --series-other:#898781; --up:#006300;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --page:#0d0d0d; --surface-1:#1a1a19;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,0.10);
+    --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#c98500;
+    --series-5:#d55181; --series-6:#008300; --series-7:#9085e9; --series-8:#e66767;
+    --series-other:#898781; --up:#0ca30c;
+  }
+}
+:root[data-theme="dark"] .viz-root { color-scheme: dark;
+  --page:#0d0d0d; --surface-1:#1a1a19; --text-primary:#ffffff; --text-secondary:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,0.10);
+  --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#c98500;
+  --series-5:#d55181; --series-6:#008300; --series-7:#9085e9; --series-8:#e66767;
+  --series-other:#898781; --up:#0ca30c;
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--page); color:var(--text-primary);
+  font-family: system-ui,-apple-system,"Segoe UI",sans-serif; }
+.wrap { max-width: 1060px; margin: 0 auto; padding: 20px 16px 48px; }
+h1 { font-size: 22px; margin: 8px 0 4px; }
+.sub { color: var(--text-secondary); font-size: 13px; margin-bottom: 16px; }
+header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+#themeToggle { background:var(--surface-1); color:var(--text-secondary); border:1px solid var(--border);
+  border-radius:8px; padding:6px 12px; font-size:13px; cursor:pointer; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin:16px 0; }
+.tile { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+.tile .k { font-size:12px; color:var(--muted); margin-bottom:6px; }
+.tile .v { font-size:26px; font-weight:650; }
+.tile .d { font-size:12px; color:var(--text-secondary); margin-top:4px; }
+.controls { display:flex; flex-wrap:wrap; gap:14px; align-items:center; margin:10px 0 8px; }
+.ranges button, .legend label { background:none; border:none; cursor:pointer; font-size:13px;
+  color:var(--text-secondary); padding:4px 2px; }
+.ranges button[aria-pressed="true"] { color:var(--text-primary); font-weight:650; }
+.legend { display:flex; flex-wrap:wrap; gap:4px 14px; }
+.legend label { display:inline-flex; align-items:center; gap:6px; }
+.legend input { accent-color: var(--text-secondary); }
+.legend .swatch { width:14px; height:3px; border-radius:2px; display:inline-block; }
+.chart-card { background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:12px 8px 4px; }
+#tooltip { position:fixed; pointer-events:none; background:var(--surface-1); border:1px solid var(--border);
+  border-radius:10px; padding:10px 12px; font-size:12.5px; box-shadow:0 6px 24px rgba(0,0,0,0.14);
+  display:none; z-index:10; min-width:180px; }
+#tooltip .tt-date { color:var(--muted); margin-bottom:6px; }
+#tooltip .tt-row { display:flex; justify-content:space-between; gap:16px; padding:1.5px 0; }
+#tooltip .tt-row .n { display:flex; align-items:center; gap:6px; color:var(--text-secondary); }
+#tooltip .tt-row .val { font-variant-numeric: tabular-nums; color:var(--text-primary); }
+table { width:100%; border-collapse:collapse; font-size:13.5px; margin-top:22px; }
+th,td { padding:7px 10px; text-align:right; border-bottom:1px solid var(--grid); font-variant-numeric:tabular-nums; }
+th:first-child, td:first-child { text-align:left; }
+th { color:var(--muted); font-weight:500; font-size:12px; }
+td.name { color:var(--text-primary); }
+.note { color:var(--muted); font-size:12px; margin-top:18px; line-height:1.7; }
+@media (max-width:640px){ .tile .v{font-size:20px} h1{font-size:18px} }
+</style>
+</head>
+<body class="viz-root">
+<div class="wrap">
+  <header>
+    <div>
+      <h1>OpenRouter 全球 Token 使用量</h1>
+      <div class="sub" id="subtitle">各模型供应商日 token 用量 · 单位：十亿 token/日 (b)</div>
+    </div>
+    <button id="themeToggle" aria-label="切换深浅色">🌗 深色</button>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="controls">
+    <div class="ranges" id="ranges" role="group" aria-label="时间范围"></div>
+  </div>
+  <div class="controls legend" id="legend"></div>
+
+  <div class="chart-card">
+    <svg id="chart" width="100%" height="420" role="img" aria-label="各供应商每日 token 用量折线图"></svg>
+  </div>
+
+  <table id="table">
+    <thead><tr><th>供应商</th><th>最新值 (b)</th><th>7日均值</th><th>历史峰值 (b)</th><th>峰值日</th><th>数据截至</th><th>份额*</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="note" id="note"></div>
+</div>
+<div id="tooltip"></div>
+
+<script>
+'use strict';
+const SLOT_VARS = ['--series-1','--series-2','--series-3','--series-4','--series-5','--series-6','--series-7','--series-8'];
+const state = { data:null, top8:[], otherNames:[], visible:new Set(), range:'all', hoverIdx:-1 };
+
+const css = v => getComputedStyle(document.body).getPropertyValue(v).trim();
+const fmt = n => n==null ? '—' : n >= 1000 ? (n/1000).toFixed(2)+'k' : n.toFixed(n>=100?0:1);
+
+async function boot() {
+  const d = await (await fetch('data.json')).json();
+  state.data = d;
+  // Top8 按最新值排序；其余归并为「其他」
+  const latest = s => { for (let i = s.values.length-1; i >= 0; i--) if (s.values[i] != null) return s.values[i]; return 0; };
+  const sorted = [...d.series].sort((a,b) => latest(b) - latest(a));
+  state.top8 = sorted.slice(0,8).map((s,i) => ({ name:s.name, colorVar:SLOT_VARS[i], values:s.values }));
+  state.otherNames = sorted.slice(8).map(s => s.name);
+  const otherVals = d.dates.map((_,i) => {
+    let sum = 0, any = false;
+    for (const s of sorted.slice(8)) if (s.values[i] != null) { sum += s.values[i]; any = true; }
+    return any ? sum : null;
+  });
+  state.top8.push({ name:'其他 (' + state.otherNames.length + '家)', colorVar:'--series-other', values:otherVals, isOther:true });
+  state.top8.forEach(s => state.visible.add(s.name));
+
+  buildTiles(d, sorted, latest);
+  buildRanges();
+  buildLegend();
+  buildTable(d, sorted, latest);
+  document.getElementById('note').innerHTML =
+    '* 份额 = 各家最新值 ÷ 17 家最新值合计（各家数据截至日不同：主体 11 家至 ' + d.dates[d.dates.length-1] +
+    '，Tencent/Xiaomi/Meta/Nvidia/Poolside/Stepfun 滞后 3 天）。<br>数据来源：MacroMicro 图表 148532（' +
+    'OpenRouter 平台统计），经其数据接口 <code>/charts/data/148532</code> 抓取，抓取时间 ' + d.updated +
+    '。单位 b = 十亿 token/日。';
+
+  const svg = document.getElementById('chart');
+  svg.addEventListener('mousemove', onHover);
+  svg.addEventListener('mouseleave', () => { state.hoverIdx = -1; hideTip(); draw(); });
+  window.addEventListener('resize', draw);
+  draw();
+}
+
+function buildTiles(d, sorted, latest) {
+  const tot = sorted.reduce((s,x) => s + latest(x), 0);
+  const top = sorted[0];
+  const lastDate = d.dates[d.dates.length-1];
+  document.getElementById('tiles').innerHTML = `
+    <div class="tile"><div class="k">全平台最新一日合计</div><div class="v">${tot.toFixed(0)} b</div>
+      <div class="d">≈ ${(tot/1000).toFixed(1)} 万亿 token/日 · 截至 ${lastDate}</div></div>
+    <div class="tile"><div class="k">用量第一</div><div class="v">${top.name}</div>
+      <div class="d">${latest(top).toFixed(0)} b/日 · 份额 ${(100*latest(top)/tot).toFixed(1)}%</div></div>
+    <div class="tile"><div class="k">序列家数 / 天数</div><div class="v">${sorted.length} 家</div>
+      <div class="d">${d.dates[0]} ~ ${lastDate} · 共 ${d.dates.length} 天</div></div>`;
+}
+
+function buildRanges() {
+  const defs = [['all','全部'],['180','近180天'],['90','近90天'],['30','近30天']];
+  const el = document.getElementById('ranges');
+  el.innerHTML = defs.map(([k,l]) => `<button data-r="${k}" aria-pressed="${k==='all'}">${l}</button>`).join('');
+  el.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.range = b.dataset.r;
+    el.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+    draw();
+  });
+}
+
+function buildLegend() {
+  const el = document.getElementById('legend');
+  el.innerHTML = state.top8.map(s =>
+    `<label><input type="checkbox" checked data-n="${s.name}"><span class="swatch" style="background:var(${s.colorVar})"></span>${s.name}</label>`).join('');
+  el.addEventListener('change', e => {
+    const n = e.target.dataset.n; if (!n) return;
+    e.target.checked ? state.visible.add(n) : state.visible.delete(n);
+    draw();
+  });
+}
+
+function buildTable(d, sorted, latest) {
+  const tot = sorted.reduce((s,x) => s + latest(x), 0);
+  const stats = sorted.map(s => {
+    const vals = []; s.values.forEach(v => v != null && vals.push(v));
+    const lastIdx = (() => { for (let i = s.values.length-1; i>=0; i--) if (s.values[i]!=null) return i; })();
+    const win = vals.slice(-7); const avg7 = win.reduce((a,b)=>a+b,0)/win.length;
+    let mi = 0; vals.forEach((v,i) => v > vals[mi] && (mi = i));
+    const firstIdx = s.values.findIndex(v => v != null);
+    return { name:s.name, last:vals[vals.length-1], lastDate:d.dates[lastIdx], avg7,
+      max:vals[mi], maxDate:d.dates[firstIdx+mi], from:d.dates[firstIdx] };
+  });
+  document.querySelector('#table tbody').innerHTML = stats.map(r =>
+    `<tr><td class="name">${r.name}</td><td>${r.last.toFixed(1)}</td><td>${r.avg7.toFixed(1)}</td>` +
+    `<td>${r.max.toFixed(1)}</td><td>${r.maxDate}</td><td>${r.lastDate}</td><td>${(100*r.last/tot).toFixed(1)}%</td></tr>`).join('');
+}
+
+// ---- 图表绘制（vanilla SVG）----
+function draw() {
+  const svg = document.getElementById('chart');
+  const W = svg.clientWidth || 1000, H = 420;
+  const M = { t:16, r:96, b:30, l:56 };
+  const d = state.data;
+  let i0 = 0;
+  if (state.range !== 'all') i0 = Math.max(0, d.dates.length - Number(state.range));
+  const dates = d.dates.slice(i0);
+  const series = state.top8.filter(s => state.visible.has(s.name));
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  let g = '';
+  if (!series.length) { g = `<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="${css('--muted')}" font-size="13">请至少选择一个系列</text>`; svg.innerHTML = g; return; }
+
+  let ymax = 0;
+  series.forEach(s => s.values.slice(i0).forEach(v => { if (v != null && v > ymax) ymax = v; }));
+  ymax = Math.ceil(ymax / 2000) * 2000 || 100;
+  const x = i => M.l + (W - M.l - M.r) * (i / Math.max(1, dates.length - 1));
+  const y = v => H - M.b - (H - M.t - M.b) * (v / ymax);
+
+  // 网格与 Y 轴刻度
+  const steps = 5;
+  for (let i = 0; i <= steps; i++) {
+    const v = ymax * i / steps, yy = y(v);
+    g += `<line x1="${M.l}" y1="${yy}" x2="${W-M.r}" y2="${yy}" stroke="${css('--grid')}" stroke-width="1"/>`;
+    g += `<text x="${M.l-8}" y="${yy+4}" text-anchor="end" font-size="11" fill="${css('--muted')}" font-variant-numeric="tabular-nums">${fmt(v)}</text>`;
+  }
+  // X 轴刻度（约 6 个）
+  const tickN = 6;
+  for (let i = 0; i <= tickN; i++) {
+    const di = Math.round((dates.length-1) * i / tickN);
+    g += `<text x="${x(di)}" y="${H-8}" text-anchor="middle" font-size="11" fill="${css('--muted')}">${dates[di]}</text>`;
+  }
+  g += `<line x1="${M.l}" y1="${H-M.b}" x2="${W-M.r}" y2="${H-M.b}" stroke="${css('--baseline')}" stroke-width="1"/>`;
+  g += `<text x="${W-M.r}" y="${M.t-2}" text-anchor="end" font-size="11" fill="${css('--muted')}">b（十亿 token/日）</text>`;
+
+  // 折线（2px；跳过 null 断点）
+  for (const s of series) {
+    let path = '', pen = false;
+    for (let i = 0; i < dates.length; i++) {
+      const v = s.values[i0 + i];
+      if (v == null) { pen = false; continue; }
+      path += (pen ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1);
+      pen = true;
+    }
+    g += `<path d="${path}" fill="none" stroke="${css(s.colorVar)}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  }
+  // 直接标签：非「其他」且当前可见的前 4 条，标注在末端；纵向防重叠（最小间距 13px）
+  const labels = series.filter(s => !s.isOther).slice(0,4).map(s => {
+    let li = -1;
+    for (let i = dates.length-1; i >= 0; i--) if (s.values[i0+i] != null) { li = i; break; }
+    return li < 0 ? null : { s, tx: Math.min(x(li) + 6, W - M.r + 4), ty: y(s.values[i0+li]) + 3.5 };
+  }).filter(Boolean).sort((a,b) => a.ty - b.ty);
+  for (let i = 1; i < labels.length; i++) if (labels[i].ty - labels[i-1].ty < 13) labels[i].ty = labels[i-1].ty + 13;
+  for (const L of labels) {
+    g += `<text x="${L.tx}" y="${L.ty}" font-size="11" font-weight="600" fill="${css('--text-secondary')}">${L.s.name}</text>`;
+  }
+  // 悬停十字线
+  if (state.hoverIdx >= 0) {
+    const hx = x(state.hoverIdx);
+    g += `<line x1="${hx}" y1="${M.t}" x2="${hx}" y2="${H-M.b}" stroke="${css('--baseline')}" stroke-width="1"/>`;
+    series.forEach(s => {
+      const v = s.values[i0 + state.hoverIdx];
+      if (v != null) g += `<circle cx="${hx}" cy="${y(v)}" r="4" fill="${css(s.colorVar)}" stroke="${css('--surface-1')}" stroke-width="2"/>`;
+    });
+  }
+  svg.innerHTML = g;
+}
+
+function onHover(ev) {
+  const svg = document.getElementById('chart');
+  const r = svg.getBoundingClientRect();
+  const W = svg.clientWidth || 1000, H = 420;
+  const M = { t:16, r:96, b:30, l:56 };
+  const d = state.data;
+  let i0 = 0;
+  if (state.range !== 'all') i0 = Math.max(0, d.dates.length - Number(state.range));
+  const dates = d.dates.slice(i0);
+  const px = (ev.clientX - r.left) * (W / r.width);
+  let idx = Math.round((px - M.l) / (W - M.l - M.r) * (dates.length - 1));
+  idx = Math.max(0, Math.min(dates.length - 1, idx));
+  state.hoverIdx = idx; draw();
+  const rows = state.top8.filter(s => state.visible.has(s.name))
+    .map(s => ({ s, v: s.values[i0+idx] })).filter(o => o.v != null)
+    .sort((a,b) => b.v - a.v);
+  const tip = document.getElementById('tooltip');
+  tip.innerHTML = `<div class="tt-date">${dates[idx]}</div>` + rows.map(o =>
+    `<div class="tt-row"><span class="n"><span class="swatch" style="background:var(${o.s.colorVar})"></span>${o.s.name}</span>` +
+    `<span class="val">${o.v.toFixed(1)} b</span></div>`).join('');
+  tip.style.display = 'block';
+  const tw = tip.offsetWidth;
+  tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tw - 8) + 'px';
+  tip.style.top = Math.max(8, ev.clientY - 20) + 'px';
+}
+function hideTip() { document.getElementById('tooltip').style.display = 'none'; }
+
+// 主题切换
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const root = document.documentElement;
+  const cur = root.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  root.dataset.theme = next;
+  document.getElementById('themeToggle').textContent = next === 'dark' ? '☀️ 浅色' : '🌗 深色';
+  draw();
+});
+
+boot();
+// #dark / #light 直达主题（用于分享固定外观）
+if (location.hash === '#dark' || location.hash === '#light') {
+  document.documentElement.dataset.theme = location.hash.slice(1);
+  document.getElementById('themeToggle').textContent = location.hash === '#dark' ? '☀️ 浅色' : '🌗 深色';
+}
+</script>
+</body>
+</html>
