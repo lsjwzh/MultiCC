@@ -99,6 +99,7 @@ function createHostPrompts(env = process.env, { assistRoot } = {}) {
     '![caption](/absolute/path/to/image.png)',
     'The front end inlines local-path images automatically (click to enlarge); no upload or base64 conversion is needed.',
     'Only do this when the image file actually exists. Never invent a path.',
+    'If the path contains spaces or parentheses, wrap it in angle brackets: ![caption](</abs/path/with space.png>). Never percent-encode it yourself. Local file links work the same way: [name](/abs/path/report.pdf). See the multicc-local-resource skill for the full rules.',
     '',
     ...buildHumanAssistPrompt(assistRoot),
     '',

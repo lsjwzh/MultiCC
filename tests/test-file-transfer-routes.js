@@ -136,6 +136,29 @@ test('download preserves required, directory, inline, attachment and missing res
   assert.deepEqual(response.body, { error: '文件不存在' });
 });
 
+test('download retries percent-encoded paths (markdown-encoded CJK/space names) but literal paths win', async () => {
+  const { app, home } = createHarness();
+  const cjk = path.join(home, '社媒触达 照片墙.png');
+  fs.writeFileSync(cjk, 'png');
+  const encoded = path.join(home, encodeURIComponent('社媒触达 照片墙.png'));
+
+  let response = await invoke(app, 'GET', '/api/download', { query: { path: encoded, inline: '1' } });
+  assert.equal(response.sentFile, cjk);
+
+  // A file whose real name literally contains %XX is served as-is, never decoded.
+  const literal = path.join(home, 'a%20b.png');
+  fs.writeFileSync(literal, 'x');
+  fs.writeFileSync(path.join(home, 'a b.png'), 'y');
+  response = await invoke(app, 'GET', '/api/download', { query: { path: literal, inline: '1' } });
+  assert.equal(response.sentFile, literal);
+
+  // Malformed escapes and still-missing targets stay a plain 404.
+  response = await invoke(app, 'GET', '/api/download', { query: { path: path.join(home, '100%.png') } });
+  assert.equal(response.statusCode, 404);
+  response = await invoke(app, 'GET', '/api/download', { query: { path: path.join(home, '%E7%A4%BE.png') } });
+  assert.equal(response.statusCode, 404);
+});
+
 test('chat upload keeps response shape, releases buffer and delegates policy failures', async () => {
   let harness = createHarness();
   let response = await invoke(harness.app, 'POST', '/api/upload');
