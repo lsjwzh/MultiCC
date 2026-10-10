@@ -229,13 +229,22 @@ test('core runner covers every selected path and expands declared variants', () 
   //     局域网/Tailscale Funnel 同装）、itms-services 抓取器免登走通。打的是
   //     127.0.0.1:0 进程内服务 + mkdtemp 临时目录，不碰外网——留在发布 tier。
   // 309 + 1 = 310，deterministic 263 + 1 = 264，commands 291 + 1 = 292。
-  assert.equal(core.length, 310, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 310);
+  // 2026-10-11 v2.4.3 发版复核：+1 core deterministic。
+  //   - tests/test-json-compression.js：/api/* JSON gzip（src/http/json-compression.js）
+  //     的契约——按 Accept-Encoding 压缩一次性整包 JSON、流式/SSE/已编码放行。进程内
+  //     http 服务 + 注入压缩流，不碰外网，注册为 core。
+  //   - tests/test-model-history-converter.js 补进 core：web_search_call 的 queries
+  //     回填（严格第三方 Responses 上游的确定性 422 修复），纯转换函数测试。
+  //   - tests/test-file-transfer-routes.js 挂 owner npm:test:core（tier 仍 flow），
+  //     不改 core.length。
+  // 310 + 1 = 311，deterministic 264 + 1 = 265，commands 292 + 1 = 293。
+  assert.equal(core.length, 311, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 311);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 264);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 265);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 25);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 21,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -245,7 +254,7 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 292,
+  assert.equal(plan.commands.length, 293,
     '289 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([

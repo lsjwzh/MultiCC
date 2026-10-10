@@ -2,6 +2,17 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.4.3 — Compressed snapshots and fewer dead ends (2026-10-11)
+
+### Highlights
+
+- **API responses are gzipped** — `/api/*` JSON now honors `Accept-Encoding`, shrinking the payloads that hurt most on a tunneled phone connection: an `/api/air` snapshot drops from ~900KB to ~115KB and `/api/providers` from ~33KB to ~6KB, so one snapshot no longer saturates the tunnel while the run-config read/save queues behind it (`src/http/json-compression.js`). Streaming, SSE and already-encoded pass-throughs are untouched.
+- **Local images with non-ASCII names render again** — markdown image paths are percent-encoded twice (renderer + query string), which made `![](/Users/…/中文.png)` 404. The download route now retries once with the escapes decoded when the literal path misses (`src/routes/file-transfer.js`), and the bundled `multicc-local-resource` skill documents the workaround for older servers.
+- **Old Codex threads stop failing on strict upstreams** — a `web_search_call` recorded before the `queries` field existed made every replayed turn fail with a deterministic 422 ("missing field `queries`") on strict third-party Responses upstreams such as DeepSeek. The converter now fills `queries` from the recorded single query (`src/model-history-converter.js`).
+- **Cached quota bars keep counting down** — a bar persisted by a server that predates the `|<window>` countdown half used to stick on the bare word "已重置" after its deadline passed; the renderer now reads the window back out of the label the token follows, and the same fix ships in the App with a frozen golden fixture (`public/quota-bar-view.js`, `app/lib/models/quota_bar_view.dart`).
+- **The App's run-config sheet opens faster** — when the lane is already known, the session-runtime and provider-pool requests run in parallel instead of serially, halving the round trips a tunneled open used to pay (`app/lib/widgets/run_config/run_config_sheet.dart`).
+- **CI stops tripping over its own scripts** — the Linux-agent workflow invokes `verify.sh` via `bash` so a lost exec bit can't red a release again (7db80b08), and the service-routes skeleton shimmer now animates `transform` instead of `background-position`, keeping every perpetual animation on compositor-only properties (`public/service-routes.css`).
+
 ## v2.4.2 — A Linux agent and quieter permissions (2026-10-09)
 
 ### Highlights
