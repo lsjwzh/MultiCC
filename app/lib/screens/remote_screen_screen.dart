@@ -95,7 +95,11 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         return;
       }
       final previous = _image;
-      setState(() => _image = image);
+      setState(() {
+        _image = image;
+        _frameAge = 0;
+        _inputSinceFrame = false;
+      });
       // The old painter can still be in the current layer tree until paint.
       if (previous != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
@@ -114,6 +118,15 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     return result;
   });
   double? _fps;
+
+  // 「最近一帧 N 秒前」：画面冻住时 fps 读数停在最后一个值，看着像「点击没传过去」。
+  // 按 1s 计时器数秒（不读 DateTime.now，widget 测试可推进）；静止屏幕上 H.264 看门狗
+  // 每 ≤8s 会补一个关键帧，所以健康时不会出现，发了输入还没新帧则 5s 就提示。
+  int _frameAge = 0;
+  bool _inputSinceFrame = false;
+  Timer? _ageTimer;
+  bool get _frameAgeShown =>
+      _frameAge >= 10 || (_inputSinceFrame && _frameAge >= 5);
 
   bool _waking = false;
   Map<String, dynamic> _wakeState = {};
@@ -158,6 +171,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   late final RemoteTouchController _touch = RemoteTouchController(
     onPointer: (mask, x, y) {
       final source = _svc.source;
+      _inputSinceFrame = true;
       _lastX = x;
       _lastY = y;
       if (source != null) {
@@ -214,6 +228,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     _modeSub = _svc.onModeChange.listen((_) {
       _touch.reset();
       _decoder.clear();
+      _frameAge = 0;
+      _inputSinceFrame = false;
+      _fps = null;
+      _lastFrameAt = null;
       // live↔fallback 切换时画面尺寸会变，缩放矩阵留着只会歪，直接复位。
       _xform.value = Matrix4.identity();
       _zoomed = false;
@@ -221,6 +239,11 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       if (mounted) setState(() {});
     });
     _frameSub = _svc.onFrame.listen((_) => _renderFrame());
+    _ageTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_svc.mode != RemoteScreenMode.live || _image == null) return;
+      _frameAge++;
+      if (mounted && _frameAgeShown) setState(() {});
+    });
     _xform.addListener(_keepViewInBounds);
     SharedPreferences.getInstance()
         .then((prefs) {
@@ -327,6 +350,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   void dispose() {
     _haltTimer?.cancel();
     _permTimer?.cancel();
+    _ageTimer?.cancel();
     _touch.reset();
     _decoder.dispose();
     _cursorMark.dispose();
@@ -590,6 +614,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       }
     }
     if (keysym < 0) return;
+    _inputSinceFrame = true;
     if (mods.isEmpty) {
       source.keyEvent(true, keysym);
       source.keyEvent(false, keysym);
@@ -750,10 +775,11 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       _modeLabel,
       if (_boxSelOn) t('rsBoxSelHint'),
       if (_trackpadActive) '触控板',
-      if (_svc.mode == RemoteScreenMode.live &&
-          _fps != null &&
-          _statusErr == null)
-        t('rsFps', {'fps': _fps!.toStringAsFixed(1)}),
+      if (_svc.mode == RemoteScreenMode.live && _statusErr == null)
+        if (_frameAgeShown)
+          t('rsFrameAge', {'s': '$_frameAge'})
+        else if (_fps != null)
+          t('rsFps', {'fps': _fps!.toStringAsFixed(1)}),
       if (_statusErr != null) _statusErr!,
     ];
     return Container(
@@ -766,9 +792,12 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
           fontSize: 11.5,
-          color: _statusErr == null
-              ? const Color(0xFF8a9aab)
-              : const Color(0xFFe07a7a),
+          color: _statusErr != null
+              ? const Color(0xFFe07a7a)
+              // 发了输入、画面却没跟上：琥珀色，一眼区分「卡住」与「静止」。
+              : _frameAgeShown && _inputSinceFrame
+              ? const Color(0xFFe0b45a)
+              : const Color(0xFF8a9aab),
         ),
       ),
     );

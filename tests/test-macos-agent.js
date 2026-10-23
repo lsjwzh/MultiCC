@@ -164,6 +164,83 @@ print("HTTP pointer native OK")
   assert.match(execFileSync(binary, [], { encoding: 'utf8', timeout: 10000 }), /HTTP pointer native OK/);
 });
 
+// Wire golden (tests/fixtures/remote-screen-wire.json), the Agent half: the real
+// h264Session reader (real readFully over a socketpair) must decode the bytes the
+// App sends — and the real h264Message must frame what the App parses — exactly
+// as the shared table says. The App and bridge halves assert the same table.
+test('H.264 wire golden: the agent decodes client input and frames output exactly as the shared table', { skip: !hasSwift, timeout: 60000 }, t => {
+  const wire = require('./fixtures/remote-screen-wire.json');
+  const root = fs.mkdtempSync('/tmp/multicc-h264-wire-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const agent = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/MultiCCAgent.swift'), 'utf8');
+  const h264 = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/MultiCCAgentH264.swift'), 'utf8');
+  const fn = (source, name) => {
+    const start = source.indexOf(`func ${name}(`);
+    assert.ok(start > 0, `func ${name} not found`);
+    let end = source.indexOf('{', start), depth = 1;
+    while (depth && ++end < source.length) {
+      if (source[end] === '{') depth++;
+      if (source[end] === '}') depth--;
+    }
+    return source.slice(start, end + 1);
+  };
+  const consts = h264.match(/^let H264_(CONFIG|KEY|DELTA|REQ_KEY): UInt8 = .*$/gm);
+  assert.equal(consts.length, 4);
+  const be = agent.slice(agent.indexOf('extension Data {'), agent.indexOf('func readFully('));
+  const bytes = hex => `[${Buffer.from(hex, 'hex').join(', ')}]`;
+  const expectCalls = c => c.kind === 'pointer' ? [`pointer ${c.mask} ${c.x} ${c.y}`]
+    : c.kind === 'key' ? [`key ${c.down ? 1 : 0} ${c.keysym}`] : ['key-request'];
+  const streams = [
+    ...wire.clientToAgent.map(c => ({ name: c.name, hex: c.hex, calls: expectCalls(c) })),
+    { name: 'all input back to back', hex: wire.clientToAgent.map(c => c.hex).join(''), calls: wire.clientToAgent.flatMap(expectCalls) },
+    ...wire.rejectedByBridge.map(c => ({ name: c.name, hex: c.hex, calls: c.agentCalls })),
+  ];
+  const file = path.join(root, 'main.swift');
+  fs.writeFileSync(file, `import Foundation
+import Darwin
+${consts.join('\n')}
+final class RfbClient { var div = 1; var hoverMoves = false; init(_ fd: Int32) {} }
+final class H264Client {
+  let fd: Int32; let input: RfbClient; var isClosed = false
+  init(_ fd: Int32) { self.fd = fd; input = RfbClient(fd) }
+  func shutdown() { isClosed = true }
+}
+var calls: [String] = []
+final class H264Screen {
+  static let shared = H264Screen()
+  func attach(_ c: H264Client) -> Bool { true }
+  func detach(_ c: H264Client) {}
+  func requestKey() { calls.append("key-request") }
+}
+func rfbPointer(_ c: RfbClient, mask: Int, x: Int, y: Int) { calls.append("pointer \\(mask) \\(x) \\(y)") }
+func rfbKey(_ c: RfbClient, down: Bool, keysym: UInt32) { calls.append("key \\(down ? 1 : 0) \\(keysym)") }
+func rfbDragAbort(_ c: RfbClient) {}
+${be}
+${fn(agent, 'readFully')}
+${fn(h264, 'h264Message')}
+${fn(h264, 'h264Session')}
+func decode(_ input: [UInt8]) -> [String] {
+  var fds: [Int32] = [0, 0]
+  precondition(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+  _ = input.withUnsafeBytes { write(fds[1], $0.baseAddress, input.count) }
+  close(fds[1])
+  calls = []
+  h264Session(fds[0])
+  close(fds[0])
+  return calls
+}
+${streams.map(s => `print("in\\t" + decode(${bytes(s.hex)}).joined(separator: ","))`).join('\n')}
+${wire.agentToClient.map(f => `print("out\\t" + h264Message(${f.type}, Data(${bytes(f.hex.slice(10))})).map { String(format: "%02x", $0) }.joined())`).join('\n')}
+`);
+  const binary = path.join(root, 'wire');
+  execFileSync('xcrun', ['swiftc', file, '-o', binary], { timeout: 60000 });
+  const lines = execFileSync(binary, [], { encoding: 'utf8', timeout: 10000 }).trim().split('\n').map(l => l.split('\t'));
+  const got = lines.filter(l => l[0] === 'in').map(l => (l[1] ? l[1].split(',') : []));
+  streams.forEach((s, i) => assert.deepEqual(got[i], s.calls, s.name));
+  const framed = lines.filter(l => l[0] === 'out').map(l => l[1]);
+  assert.deepEqual(framed, wire.agentToClient.map(f => f.hex));
+});
+
 test('computer use: input dispatch clears inherited modifiers and preserves explicit chords', { skip: !hasSwift, timeout: 60000 }, t => {
   const root = fs.mkdtempSync('/tmp/multicc-input-flags-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

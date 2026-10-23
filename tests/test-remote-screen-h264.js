@@ -184,3 +184,50 @@ test('p2p ice servers: public STUN by default, env overrides, empty = LAN only, 
   assert.deepEqual(iceServersFromEnv({ MULTICC_REMOTE_STUN: 'stun:a.example:3478, turn:relay.example, http://x, stuns:b.example' }),
     [{ urls: ['stun:a.example:3478', 'stuns:b.example'] }], 'only stun:/stuns: — never a TURN relay');
 });
+
+// Wire golden (tests/fixtures/remote-screen-wire.json): the App, this bridge and
+// the Agent each assert the same byte table, so no end can drift alone.
+const wire = require('./fixtures/remote-screen-wire.json');
+const hex = h => Buffer.from(h, 'hex');
+
+test('wire golden: fixture bytes are the encoding of their own fields', () => {
+  const be16 = v => [v >> 8, v & 0xff];
+  for (const c of wire.clientToAgent) {
+    const want = c.kind === 'pointer' ? [5, c.mask, ...be16(c.x), ...be16(c.y)]
+      : c.kind === 'key' ? [4, c.down ? 1 : 0, 0, 0, ...[24, 16, 8, 0].map(s => (c.keysym >>> s) & 0xff)]
+        : [REQ_KEY];
+    assert.equal(c.hex, Buffer.from(want).toString('hex'), c.name);
+  }
+  for (const f of wire.agentToClient) {
+    const payload = f.type === T_CONFIG ? hex(f.payloadHex)
+      : Buffer.concat([(() => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(f.pts)); return b; })(), hex(f.annexBHex)]);
+    assert.equal(f.hex, frame(f.type, payload).toString('hex'), f.name);
+    if (f.type === T_CONFIG) assert.deepEqual(JSON.parse(payload.toString()), f.json);
+  }
+  assert.deepEqual(wire.agentToClient.map(f => f.type), [T_CONFIG, T_KEY, T_DELTA]);
+});
+
+test('wire golden: bridge forwards every client message byte-for-byte and nothing else', t => {
+  const { sock, ws, bridge } = harness();
+  t.after(() => bridge.close());
+  for (const c of wire.clientToAgent) {
+    sock.written.length = 0;
+    ws.emit('message', hex(c.hex), true);
+    assert.deepEqual(sock.written.map(b => b.toString('hex')), [c.hex], c.name);
+  }
+  for (const c of wire.rejectedByBridge) {
+    sock.written.length = 0;
+    ws.emit('message', hex(c.hex), true);
+    assert.deepEqual(sock.written, [], `${c.name}: ${c.why}`);
+  }
+});
+
+test('wire golden: agent frames reach the client one message each, whatever the read boundaries', t => {
+  for (const cut of [1, 3, 7, 64]) {
+    const { sock, ws, bridge } = harness();
+    t.after(() => bridge.close());
+    const stream = Buffer.concat(wire.agentToClient.map(f => hex(f.hex)));
+    for (let i = 0; i < stream.length; i += cut) sock.emit('data', stream.subarray(i, i + cut));
+    assert.deepEqual(ws.sent.map(b => b.toString('hex')), wire.agentToClient.map(f => f.hex), `cut ${cut}`);
+  }
+});
