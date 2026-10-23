@@ -755,6 +755,11 @@ test('extraResources preserves server dependencies with the real electron-builde
   try {
     const source = path.join(root, '.staging/resources');
     dependencyFixture(source);
+    const pluginCore = 'app-server/plugins/chrome-proxy-launcher/bin/darwin-arm64/meow';
+    const archive = fs.readFileSync(path.join(ROOT, 'plugins/chrome-proxy-launcher/bin/darwin-arm64/meow.gz'));
+    writeBundleFile(source, `${pluginCore}.gz`, archive);
+    const compressedData = require('node:zlib').gzipSync('plugin data, not an executable');
+    writeBundleFile(source, 'app-server/plugins/chrome-proxy-launcher/bin/data.gz', compressedData);
     writeBundleFile(source, 'must-not-ship.txt', 'outside the declared resource trees');
     const options = { defaultSrc: root, globalOutDir: path.join(root, 'dist'),
       customBuildOptions: {}, macroExpander: value => value };
@@ -776,6 +781,19 @@ test('extraResources preserves server dependencies with the real electron-builde
       packager: { getResourcesDir: dir => dir,
         platform: { nodeName: process.platform === 'win32' ? 'linux' : 'win32' } } };
     assert.equal(hook(context).dependencies.length, 2, 'local packaging runs the gate too');
+    assert.ok(fs.existsSync(path.join(packaged, `${pluginCore}.gz`)), 'other platforms keep compressed resources');
+    hook({ ...context, arch: -1, packager: { ...context.packager, platform: { nodeName: 'darwin' } } });
+    const plainCore = path.join(packaged, pluginCore);
+    assert.deepEqual(fs.readFileSync(plainCore), require('node:zlib').gunzipSync(archive));
+    assert.equal(fs.existsSync(`${plainCore}.gz`), false, 'notarization must not find an unsigned archived executable');
+    assert.deepEqual(fs.readFileSync(path.join(source, `${pluginCore}.gz`)), archive,
+      'only the packaged copy is expanded; standalone staging and source remain intact');
+    assert.deepEqual(fs.readFileSync(path.join(packaged, 'app-server/plugins/chrome-proxy-launcher/bin/data.gz')), compressedData);
+    if (process.platform !== 'win32') assert.ok(fs.statSync(plainCore).mode & 0o111);
+    const { walkAsync } = require(require.resolve('@electron/osx-sign', { paths: [DESKTOP] }));
+    assert.ok((await walkAsync(packaged)).includes(plainCore), 'the real macOS signer must discover the expanded executable');
+    hook({ ...context, arch: -1, packager: { ...context.packager, platform: { nodeName: 'darwin' } } });
+    assert.deepEqual(fs.readFileSync(plainCore), require('node:zlib').gunzipSync(archive), 'repeated preparation is safe');
     assert.throws(() => hook({ ...context, appOutDir: broken }), /missing/);
     assert.equal(fs.existsSync(path.join(packaged, 'must-not-ship.txt')), false);
     assert.equal(fs.existsSync(path.join(packaged, 'app-server/app-server')), false);

@@ -5,8 +5,13 @@
 module.exports = context => {
   const { Arch } = require('builder-util');
   const { verifyDesktopResources } = require('../scripts/desktop-verify-resources');
+  const resourcesDir = context.packager.getResourcesDir(context.appOutDir);
+  if (context.packager.platform.nodeName === 'darwin') {
+    const { prepareMacOSPluginBinaries } = require('../scripts/desktop-prepare-macos');
+    prepareMacOSPluginBinaries(resourcesDir);
+  }
   return verifyDesktopResources({
-    resourcesDir: context.packager.getResourcesDir(context.appOutDir),
+    resourcesDir,
     execute: context.packager.platform.nodeName === process.platform
       && Arch[context.arch] === process.arch,
   });
