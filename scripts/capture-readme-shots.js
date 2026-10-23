@@ -1,28 +1,24 @@
 'use strict';
 
-// Regenerate the English-UI screenshots the top-level README.md references.
-//
-//   node scripts/capture-readme-shots.js            # all six
-//   node scripts/capture-readme-shots.js air-tasks  # one, by name
-//
-// The README.zh.md keeps the Chinese captures under docs/images/; the English
-// ones live under docs/images/en/. Both are the same screens, so this script
-// renders the Air console against a fixture server (tests/helpers/cdp-harness)
-// that mocks every API the page reads, forces the English dictionary, seeds
-// English demo data, and captures at 1280x840 @2x (a little taller than the Chinese originals so the sticky composer does not cover the task stats) (or 390x844 @2x for the
-// phone shot) — the same geometry as the Chinese originals.
-//
-// Nothing here talks to a live MultiCC host: no token, no real path, no
-// private data. Every value below is invented for the shot.
+// Capture the current, unmodified web UI with isolated, synthetic API data.
+// This is a UI illustration, never evidence of an agent run or account activity.
+//   node scripts/capture-readme-shots.js                     # both languages
+//   node scripts/capture-readme-shots.js --lang=en air-tasks # one capture
+// No live host, credentials, model requests or personal browser profile are used.
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { createCdpHarness, findChromeBinary } = require('../tests/helpers/cdp-harness');
 
-const OUT_DIR = path.resolve(__dirname, '..', 'docs', 'images', 'en');
+const IMAGE_DIR = path.resolve(__dirname, '..', 'docs', 'images');
+let language = 'en';
+const outputDir = () => language === 'en' ? path.join(IMAGE_DIR, 'en') : IMAGE_DIR;
+const demoText = (en, zh) => language === 'en' ? en : zh;
+const CLIS = ['claude', 'codex', 'opencode', 'zcode', 'kimi', 'qoder', 'codebuddy', 'dsh', 'gemini', 'commandcode', 'grok', 'pi'];
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
 
-const DESKTOP = { width: 1280, height: 840, deviceScaleFactor: 2, mobile: false };
+const DESKTOP = { width: 1440, height: 960, deviceScaleFactor: 2, mobile: false };
 const PHONE = { width: 390, height: 844, deviceScaleFactor: 2, mobile: true };
 
 // ── fixture plumbing ──────────────────────────────────────────────────────
@@ -71,15 +67,14 @@ function staticRoutes() {
 
 // ── demo data ─────────────────────────────────────────────────────────────
 //
-// One workspace with three running tasks. The titles are the same three the
-// Chinese captures show, in English.
+// Synthetic workspace and tasks, shared by both language variants.
 
-const DEMO_DIR = { id: 'dir-demo', name: 'demo-project', path: '/tmp/demo/demo-project' };
+const DEMO_DIR = { id: 'dir-demo', name: 'demo-project', path: '/projects/demo-project' };
 
 const DEMO_TASKS = [
-  { id: 'task-onboarding-docs', title: 'Write onboarding docs for new users', at: '2026-09-16T10:28:00Z' },
-  { id: 'task-mobile-history', title: 'Fix mobile chat history failing to load', at: '2026-09-16T10:21:00Z' },
-  { id: 'task-login-refactor', title: 'Refactor login module and add integration tests', at: '2026-09-16T10:14:00Z' },
+  { id: 'task-onboarding-docs', title: 'Write onboarding docs for new users', zh: '编写新用户上手文档', state: 'running', at: '2026-10-24T08:28:00Z' },
+  { id: 'task-mobile-history', title: 'Fix mobile chat history failing to load', zh: '修复手机端聊天历史加载', state: 'waiting', at: '2026-10-24T08:21:00Z' },
+  { id: 'task-login-refactor', title: 'Refactor login module and add integration tests', zh: '重构登录模块并补充集成测试', state: 'idle', at: '2026-10-24T08:14:00Z' },
 ];
 
 function airTask(entry, index) {
@@ -87,14 +82,14 @@ function airTask(entry, index) {
   return {
     id: entry.id,
     dirId: DEMO_DIR.id,
-    title: entry.title,
+    title: demoText(entry.title, entry.zh),
     status: 'active',
     recordType: null,
     workflowStage: null,
     updatedAt: at,
     lastMessageAt: at,
     sessionId: `session-${index + 1}`,
-    runState: 'running',
+    runState: entry.state,
     resource: {
       id: `ws-${index + 1}`,
       residency: 'resident',
@@ -123,10 +118,10 @@ function airSnapshot(overrides = {}) {
     tasks: DEMO_TASKS.map(airTask),
     taskPins: [],
     budgets: {},
-    clis: ['claude', 'codex'],
+    clis: CLIS,
     migration: { errors: [] },
     // "The last configuration actually used" — what the new-task pill shows.
-    lastRuntime: { cli: 'claude', provider: 'claude-official', providerName: 'Claude 官方', model: null, effort: null, subagent: null, providerSelection: null },
+    lastRuntime: { cli: 'claude', provider: 'claude-official', providerName: demoText('Claude terminal login', '同 Claude 终端'), model: null, effort: null, subagent: null, providerSelection: null },
     worktreePolicy: null,
     sessions: [],
     ...overrides,
@@ -141,14 +136,21 @@ function providerCatalog() {
     ccSwitchStatus: { available: true },
     providers: [
       {
-        id: 'claude-official', appType: 'claude', name: 'Claude 官方', source: 'builtin',
+        id: 'claude-official', appType: 'claude', name: demoText('Claude terminal login', '同 Claude 终端'), source: 'builtin',
         apiFormat: 'anthropic', isOfficial: true, hasToken: false, model: '',
         modelOptions: [], compatibleClis: ['claude', 'claude-exp', 'opencode'], limit: null,
       },
       {
-        id: 'codex-official', appType: 'codex', name: 'Codex 官方', source: 'builtin',
+        id: 'codex-official', appType: 'codex', name: demoText('Codex terminal login', '同 Codex 终端'), source: 'builtin',
         apiFormat: 'openai_responses', isOfficial: true, hasToken: false, model: '',
         modelOptions: [], compatibleClis: ['codex', 'codex-exp', 'opencode'], limit: null,
+      },
+      {
+        id: 'claude-official-demo-work', appType: 'claude', name: demoText('Claude · Work account', 'Claude · 工作账号'),
+        source: 'builtin', apiFormat: 'anthropic', isOfficial: true, builtinOfficial: true,
+        officialAccountId: 'demo-work', hasToken: false, model: '', modelOptions: [],
+        compatibleClis: ['claude', 'claude-exp'], limit: null,
+        egressBinding: { pluginId: 'chrome-proxy-launcher', profileId: 'demo-work-egress' },
       },
     ],
     defaults: { claude: 'claude-official', codex: 'codex-official' },
@@ -163,14 +165,14 @@ function auxConfig(configured) {
     protocol: 'anthropic',
     providerId: configured ? 'claude-official' : null,
     model: configured ? 'haiku' : null,
-    cliAvailability: { claude: true, codex: false },
+    cliAvailability: { claude: true, codex: true },
     protocols: [
       { id: 'anthropic', name: 'Anthropic Messages' },
       { id: 'openai', name: 'OpenAI Responses / Chat Completions' },
     ],
     providersByProtocol: {
       anthropic: configured ? [{
-        id: 'claude-official', name: 'Claude Official', modelOptions: ['haiku', 'sonnet', 'opus'],
+        id: 'claude-official', name: demoText('Claude terminal login', '同 Claude 终端'), modelOptions: ['haiku', 'sonnet', 'opus'],
         wireApi: 'messages', available: true, unavailableReason: null, limit: null,
       }] : [],
       openai: [],
@@ -198,7 +200,7 @@ const AUX_STATUS = {
 function apiRoutes(options = {}) {
   const snapshot = options.snapshot || airSnapshot();
   return {
-    'GET /api/air': json(snapshot),
+    '/api/air': json(snapshot),
     'GET /api/air/pins': json({ ok: true, taskIds: [] }),
     'GET /api/cron': json([]),
     'GET /api/docs-registry': json([]),
@@ -212,27 +214,43 @@ function apiRoutes(options = {}) {
         codex: { command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh', display: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' },
       },
     }),
-    'GET /api/cli/versions': json({ ok: true, clis: {} }),
+    'GET /api/cli/versions': json({ ok: true, clis: { claude: { installed: true }, codex: { installed: true } } }),
     'GET /api/providers': json(options.providers || providerCatalog()),
     'GET /api/provider-defaults': json({ claude: 'claude-official', codex: 'codex-official' }),
     'GET /api/token-usage/global': json({ ok: true, usage: null, stats: [] }),
     'GET /api/token-usage/by-role': json({ ok: true, roles: [] }),
-    'GET /api/version-check': json({ current: '2.1.2', channel: 'release', latest: 'v2.1.2', latestVersion: '2.1.2', updateAvailable: false }),
+    'GET /api/version-check': json({ current: require('../package.json').version, channel: 'release', latest: 'v' + require('../package.json').version, latestVersion: require('../package.json').version, updateAvailable: false }),
     'GET /api/server-info': json({ url: 'http://127.0.0.1:3000', uptimeMs: 3 * 3600 * 1000 + 25 * 60 * 1000 }),
     'GET /api/apk-info': json({ exists: false }),
     'GET /api/ios-ota-info': json({ exists: false }),
     'GET /api/settings/notify': json({ ok: true }),
     'GET /api/push/health': json({ ok: true }),
-    'GET /api/settings/power': json({ ok: true }),
+    'GET /api/settings/power': json({ ok: true, available: true, enabled: true,
+      unlockPassword: { available: true, set: true, canEdit: true, enabled: true, requiredByLid: true, authorization: { state: 'authorized' } } }),
     'GET /api/settings/goal': json({ ok: true }),
     'GET /api/settings/voice': json({ ok: true }),
     'GET /api/settings/tunnel': json({ ok: true }),
     'GET /api/agent-presets': json({ ok: true, presets: [] }),
-    'GET /api/git/directory-status': json({ ok: true, status: null }),
+    'GET /api/git/directory-status': json({ branch: 'main', baseBranch: 'main', upstream: 'origin/main', ahead: 0, behind: 0, dirtyFiles: [] }),
     'GET /api/workspaces/overview': json({ ok: true, workspaces: [] }),
     'GET /api/uploads/stats': json({ ok: true, total: 0 }),
     'GET /api/skill-sync/status': json({ ok: true, skills: [] }),
     'GET /api/settings/official-oauth': json({ ok: true }),
+    'GET /api/settings/cpr-backend': json({ ok: true, currentBackend: 'node', configuredBackend: 'node', rustAvailable: true, restartRequired: false }),
+    'GET /api/system/agent-permissions': json({ ok: true, applicable: true, local: true, accessibility: true, screenRecording: true }),
+    'GET /api/claude/accounts': json({ accounts: [], cliLogin: null }),
+    'GET /api/codex/accounts': json({ accounts: [], cliLogin: null }),
+    'GET /api/claude/subscription': json({ status: 'ok', subscription: null }),
+    'GET /api/codex/subscription': json({ status: 'ok', subscription: null }),
+    'GET /api/claude/models': json({ models: [{ id: 'sonnet', name: 'Sonnet' }, { id: 'haiku', name: 'Haiku' }] }),
+    'GET /api/codex/models': json({ models: [] }),
+    'GET /api/ui-layout': json({ ok: true, layout: { dirOrder: [], sessionOrder: {} } }),
+    'GET /api/git/log': json({ commits: [] }),
+    'GET /api/plugins': json({ plugins: [{ id: 'chrome-proxy-launcher', engine: { available: true } }] }),
+    'POST /api/plugins/chrome-proxy-launcher/run': json({ profiles: [
+      { id: 'demo-work-egress', name: demoText('Work account proxy', '工作账号代理'), egressText: 'HTTP · 127.0.0.1:7890' },
+      { id: 'demo-personal-egress', name: demoText('Personal account proxy', '个人账号代理'), egressText: 'HTTP · 127.0.0.1:7891' },
+    ] }),
   };
 }
 
@@ -260,18 +278,19 @@ const BROWSER_STATE = {
   'air:recent-tasks': DEMO_TASKS.map(task => task.id),
 };
 
-async function openEnglish(page, query = '', metrics = DESKTOP) {
+async function openPage(page, query = '', metrics = DESKTOP) {
   await page.send('Emulation.setDeviceMetricsOverride', metrics);
+  await page.send('Emulation.setTimezoneOverride', { timezoneId: 'UTC' });
   await page.navigate('/__lang');
   await page.evaluate(`(() => {
-    ${Object.entries(BROWSER_STATE).map(([key, value]) => `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(typeof value === 'string' ? value : JSON.stringify(value))});`).join('\n    ')}
+    ${Object.entries({ ...BROWSER_STATE, multicc_lang: language }).map(([key, value]) => `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(typeof value === 'string' ? value : JSON.stringify(value))});`).join('\n    ')}
     return document.documentElement.lang;
   })()`);
   await page.navigate(`/air${query}`);
-  await page.waitFor('window.t && getLang() === "en" && document.body.innerText.length > 0');
-  // The shell paints from the first /api/air snapshot; wait for the task rows it
-  // builds rather than for a fixed delay.
-  await page.waitFor(`document.querySelectorAll('#tasks button').length > 0`, { timeoutMs: 10000 });
+  await page.waitFor(`window.t && getLang() === ${JSON.stringify(language)} && document.body.innerText.length > 0`);
+  // The title is populated after the Air sync snapshot loads. Each scene below
+  // also waits for the specific control it intends to capture.
+  await page.waitFor(`document.querySelector('#task-title').textContent.trim().length > 0`, { timeoutMs: 10000 });
   await sleep(400);
 }
 
@@ -290,23 +309,20 @@ async function settle(page) {
 
 async function shoot(page, file) {
   const captured = await page.screenshot(file);
-  fs.mkdirSync(OUT_DIR, { recursive: true });
-  fs.copyFileSync(captured, path.join(OUT_DIR, file));
-  return path.join(OUT_DIR, file);
+  fs.mkdirSync(outputDir(), { recursive: true });
+  fs.copyFileSync(captured, path.join(outputDir(), file));
+  return path.join(outputDir(), file);
 }
 
-// ── the six shots ─────────────────────────────────────────────────────────
+// ── current UI shots ─────────────────────────────────────────────────────────
 
 const SHOTS = {
-  // The workspace home: directory card, three running tasks, task stats and the
-  // new-task composer. Same screen as the Chinese air-tasks.png.
-  // The AI Assistant is configured here, so the first-run card is gone and the
-  // shot is about the tasks (air-first-run.png is the unconfigured twin).
+  // A configured workspace with running, waiting, and idle example tasks.
   'air-tasks': {
     routes: () => ({ ...staticRoutes(), ...apiRoutes({ auxConfig: auxConfig(true) }) }),
     async capture(page) {
       await page.send('Emulation.setDeviceMetricsOverride', DESKTOP);
-      await openEnglish(page, `?dir=${DEMO_DIR.id}`);
+      await openPage(page, `?dir=${DEMO_DIR.id}`);
       await page.waitFor(`document.querySelector('#task-title').textContent === 'demo-project'`);
       await settle(page);
       return shoot(page, 'air-tasks.png');
@@ -317,11 +333,10 @@ const SHOTS = {
   // provider configured, so this scene answers /api/aux/config with a null
   // providerId — which is exactly the state the card is for.
   'air-first-run': {
-    routes: () => ({ ...staticRoutes(), ...apiRoutes() }),
+    routes: () => ({ ...staticRoutes(), ...apiRoutes({ snapshot: airSnapshot({ directories: [], tasks: [] }) }) }),
     async capture(page) {
-      await page.send('Emulation.setDeviceMetricsOverride', DESKTOP);
-      await openEnglish(page, `?dir=${DEMO_DIR.id}`);
-      await page.waitFor(`!document.getElementById('setup-card').hidden`);
+      await openPage(page, '?view=overview');
+      await page.waitFor(`document.getElementById('setup-card').getBoundingClientRect().width > 0`);
       await settle(page);
       return shoot(page, 'air-first-run.png');
     },
@@ -330,33 +345,35 @@ const SHOTS = {
   // The new-task composer with its AI configuration pill, and the dialog the
   // pill opens (CLI / Provider / model / reasoning effort).
   'air-new-task': {
-    routes: () => ({ ...staticRoutes(), ...apiRoutes() }),
+    routes: () => ({ ...staticRoutes(), ...apiRoutes({ auxConfig: auxConfig(true) }) }),
     async capture(page) {
       await page.send('Emulation.setDeviceMetricsOverride', DESKTOP);
-      await openEnglish(page, `?dir=${DEMO_DIR.id}`);
+      await openPage(page, `?dir=${DEMO_DIR.id}`);
       await page.waitFor(`document.querySelector('#quick-ai-pill').textContent.trim().length > 0`);
       await page.evaluate(`document.getElementById('quick-ai-pill').click()`);
       await page.waitFor(`[...document.querySelectorAll('dialog')].some(d => d.open)`);
+      await page.waitFor(`document.querySelector('dialog[open] .rc-sub-guide-dismiss')`);
+      await page.evaluate(`document.querySelector('dialog[open] .rc-sub-guide-dismiss').click()`);
+      await sleep(200);
+      await page.evaluate(`document.querySelector('dialog[open]').scrollTop = 0`);
       await settle(page);
       return shoot(page, 'air-new-task.png');
     },
   },
 
-  // The same three things on a phone-width screen, where the sidebar is a
-  // drawer and the composer folds to a bar at the foot of the page.
+  // Responsive web UI at phone width (not a native Flutter screenshot).
   'air-mobile': {
-    routes: () => ({ ...staticRoutes(), ...apiRoutes() }),
+    routes: () => ({ ...staticRoutes(), ...apiRoutes({ auxConfig: auxConfig(true) }) }),
     async capture(page) {
       await page.send('Emulation.setDeviceMetricsOverride', PHONE);
-      await openEnglish(page, `?dir=${DEMO_DIR.id}`, PHONE);
+      await openPage(page, `?dir=${DEMO_DIR.id}`, PHONE);
       await page.waitFor(`document.querySelector('#task-title').textContent === 'demo-project'`);
       await settle(page);
-      // Scroll past the header so the setup card, the task stats and the recent
-      // tasks all sit in one screen — the composition the Chinese shot uses.
+      // Show the actual task list at phone width, using its normal scroll area.
       await page.evaluate(`(() => {
-        const main = document.querySelector('main');
-        const card = document.getElementById('setup-card');
-        main.scrollTop = card.getBoundingClientRect().top - 8;
+        const panel = document.getElementById('directory-task-panel-head');
+        const main = document.getElementById('empty');
+        main.scrollTop += panel.getBoundingClientRect().top - main.getBoundingClientRect().top;
       })()`);
       await sleep(300);
       return shoot(page, 'air-mobile.png');
@@ -366,33 +383,56 @@ const SHOTS = {
   // CLI & provider settings: the routing catalog, the per-CLI default route
   // selects and the provider cards.
   'air-provider': {
-    routes: () => ({ ...staticRoutes(), ...apiRoutes() }),
+    routes: () => ({ ...staticRoutes(), ...apiRoutes({ auxConfig: auxConfig(true) }) }),
     async capture(page) {
       await page.send('Emulation.setDeviceMetricsOverride', DESKTOP);
-      await openEnglish(page, `?dir=${DEMO_DIR.id}&view=provider`);
-      await page.waitFor(`document.querySelector('#task-title').textContent === 'CLIs & Providers'`);
-      await page.waitFor(`document.querySelectorAll('#air-provider-cards .air-provider-card').length === 2`);
+      await openPage(page, `?dir=${DEMO_DIR.id}&view=provider`);
+      await page.waitFor(`document.querySelector('#air-provider-cards .air-provider-card')`);
+      await page.waitFor(`document.querySelectorAll('#air-provider-cards .air-provider-card').length === 3`);
+      await page.evaluate(`document.querySelector('#air-provider-cards').scrollIntoView({block:'start'})`);
       await settle(page);
       return shoot(page, 'air-provider.png');
     },
   },
 
-  // The AI Assistant page: run status, model settings, run history. The history
-  // is empty on purpose — a configured-but-idle host, which is also the only
-  // state whose heading does not print a missing dictionary key.
+  // Configured, idle AI Assistant; no invented execution history.
   'aux-console': {
     routes: () => ({ ...staticRoutes(), ...apiRoutes({ auxConfig: auxConfig(true) }) }),
     async capture(page) {
       await page.send('Emulation.setDeviceMetricsOverride', DESKTOP);
-      await openEnglish(page, `?dir=${DEMO_DIR.id}&view=aux`);
-      await page.waitFor(`document.querySelector('#task-title').textContent === 'AI Assistant'`);
+      await openPage(page, `?dir=${DEMO_DIR.id}&view=aux`);
+      await page.waitFor(`document.querySelector('#air-aux-status')`);
       await page.waitFor(`document.querySelector('#air-aux-status .air-aux-row')`);
       await page.waitFor(`document.querySelector('#air-aux-records')`);
       await settle(page);
       return shoot(page, 'aux-console.png');
     },
   },
+  'air-power': {
+    routes: () => ({ ...staticRoutes(), ...apiRoutes({ auxConfig: auxConfig(true) }) }),
+    async capture(page) {
+      await openPage(page, `?dir=${DEMO_DIR.id}&view=global`);
+      await page.waitFor(`document.querySelector('#air-global-power-card:not([hidden])')`);
+      await page.waitFor(`!document.querySelector('#air-global-power-toggle').disabled`);
+      await page.evaluate(`document.querySelector('#air-global-power-card').scrollIntoView({block:'center'})`);
+      await settle(page);
+      return shoot(page, 'air-power.png');
+    },
+  },
+  'air-account-proxy': {
+    routes: () => ({ ...staticRoutes(), ...apiRoutes({ auxConfig: auxConfig(true) }) }),
+    async capture(page) {
+      await openPage(page, `?dir=${DEMO_DIR.id}&view=provider`);
+      await page.waitFor(`document.querySelector('[data-provider-id="claude-official-demo-work"]')`);
+      await page.evaluate(`[...document.querySelectorAll('[data-provider-id="claude-official-demo-work"] button')].find(b=>b.textContent===t('airProviderEdit')).click()`);
+      await page.waitFor(`document.querySelector('#air-provider-form').dataset.egressBindingState === 'ready'`);
+      await page.evaluate(`document.querySelector('#air-provider-egress-binding').scrollIntoView({block:'center'})`);
+      await settle(page);
+      return shoot(page, 'air-account-proxy.png');
+    },
+  },
 };
+
 
 // ── entry point ───────────────────────────────────────────────────────────
 
@@ -401,9 +441,28 @@ async function main() {
     console.error('Chrome/Chromium not found; set MULTICC_CHROME_BIN to capture the shots.');
     process.exit(1);
   }
-  const wanted = process.argv.slice(2).filter(arg => !arg.startsWith('-'));
+  const args = process.argv.slice(2);
+  const requestedLanguage = args.find(arg => arg.startsWith('--lang='))?.split('=')[1] || 'all';
+  if (!['all', 'en', 'zh'].includes(requestedLanguage)) throw new Error('Use --lang=all, en or zh');
+  const languages = requestedLanguage === 'all' ? ['en', 'zh'] : [requestedLanguage];
+  const wanted = args.filter(arg => !arg.startsWith('-'));
   const names = wanted.length ? wanted.map(name => name.replace(/\.png$/, '')) : Object.keys(SHOTS);
-  for (const name of names) {
+  const manifestPath = path.join(IMAGE_DIR, 'capture-manifest.json');
+  const manifest = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : { captures: {} };
+  const digest = input => crypto.createHash('sha256').update(input).digest('hex');
+  const sourceDigest = crypto.createHash('sha256');
+  const fingerprint = dir => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) fingerprint(full);
+      else { sourceDigest.update(path.relative(PUBLIC_DIR, full)); sourceDigest.update(fs.readFileSync(full)); }
+    }
+  };
+  fingerprint(PUBLIC_DIR);
+  const source = { version: require('../package.json').version, publicSha256: sourceDigest.digest('hex'),
+    captureScriptSha256: digest(fs.readFileSync(__filename)) };
+
+  for (language of languages) for (const name of names) {
     const shot = SHOTS[name];
     if (!shot) {
       console.error(`unknown shot: ${name} (known: ${Object.keys(SHOTS).join(', ')})`);
@@ -416,11 +475,18 @@ async function main() {
     });
     try {
       const file = await shot.capture(strict(harness));
-      console.log(`${name}: ${file}`);
+      manifest.captures[`${language}/${name}`] = { ...source,
+        file: path.relative(IMAGE_DIR, file).split(path.sep).join('/'),
+        language, viewport: name === 'air-mobile' ? PHONE : DESKTOP,
+        capturedAt: new Date().toISOString(), sha256: digest(fs.readFileSync(file)),
+        dataSource: 'isolated synthetic API fixture; current unmodified web UI',
+      };
+      console.log(`${language}/${name}: ${file}`);
     } finally {
       await harness.close();
     }
   }
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 }
 
 if (require.main === module) {
@@ -435,13 +501,13 @@ module.exports = {
   DEMO_DIR,
   DEMO_TASKS,
   DESKTOP,
-  OUT_DIR,
+  outputDir,
   PHONE,
   SHOTS,
   airSnapshot,
   apiRoutes,
   auxConfig,
-  openEnglish,
+  openPage,
   settle,
   shoot,
   staticRoutes,

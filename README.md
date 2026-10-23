@@ -25,7 +25,7 @@
 <p align="center">
   <img src="https://img.shields.io/github/v/release/lsjwzh/MultiCC?label=latest%20release" alt="Latest Release" />
   <img src="https://img.shields.io/badge/node-%3E%3D22.16-brightgreen" alt="Node.js >=22.16" />
-  <img src="https://img.shields.io/badge/CLIs-claude%20%7C%20codex%20%7C%20opencode%20%7C%20zcode%20%7C%20kimi%20%7C%20qoder%20%7C%20workbuddy%20%7C%20dsh-8A2BE2" alt="Supported CLIs" />
+  <img src="https://img.shields.io/badge/CLIs-claude%20%7C%20codex%20%7C%20opencode%20%7C%20zcode%20%7C%20kimi%20%7C%20qoder%20%7C%20workbuddy%20%7C%20dsh%20%7C%20gemini%20%7C%20commandcode%20%7C%20grok%20%7C%20pi-8A2BE2" alt="Supported CLIs" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/flutter-Android%20%7C%20iOS-02569B" alt="Flutter app" />
   <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-47848F" alt="Desktop app (Electron)" />
@@ -58,7 +58,7 @@ Remote desktop control requires a desktop agent on the host and its OS permissio
 | Ask another coding agent to continue | In-place engine switching, with the same task and worktree plus a visible handoff checkpoint |
 | Wait for a build or external result | Background commands, scheduled tasks, and registered waits that return results to the conversation |
 
-Supported engines include **Claude Code, Codex, OpenCode, ZCode, Kimi Code, Qoder, WorkBuddy, and DSH**. Provider and model controls, subagent routing, memory, voice, and IM bridges support these workflows; see the [feature catalogue](docs/features.md).
+Supported engines include **Claude Code, Codex, OpenCode, ZCode, Kimi Code, Qoder, WorkBuddy, DSH, Gemini CLI, Command Code, Grok, and pi**. Provider and model controls, subagent routing, memory, voice, and IM bridges support these workflows; see the [feature catalogue](docs/features.md).
 
 <a id="the-headline-one-chat-eight-clis"></a>
 
@@ -70,16 +70,14 @@ Normally that means a new terminal, a new session, and re-explaining everything.
 
 In MultiCC it is one click. The **conversation** is yours; the CLI is just the engine currently driving it.
 
-```
-                 ┌────────────────────────────────────────────────┐
-   your chat ───▶│  goal · phase · recent messages · git state     │
-                 └───────────────┬────────────────────────────────┘
-                                 │  bounded checkpoint
-      ┌──────────┬───────────────┼───────────────┬──────────┬─────────┬──────────┬──────┐
-      ▼          ▼               ▼               ▼          ▼         ▼          ▼      ▼
-   claude      codex         opencode          zcode      kimi      qoder   workbuddy   dsh
-      └──────────┴───────────────┴───────────────┴──────────┴─────────┴──────────┴──────┘
-        each keeps its own native session — switch back and it resumes
+```text
+Task + conversation + Git worktree
+                 │
+     visible handoff checkpoint
+                 │
+     choose a supported CLI engine
+                 │
+     continue in the same task
 ```
 
 <details>
@@ -87,7 +85,7 @@ In MultiCC it is one click. The **conversation** is yours; the CLI is just the e
 
 ### What actually carries over
 
-MultiCC does **not** try to translate one vendor's transcript into another's format. That is lossy in ways you cannot audit. Instead every CLI keeps **its own native session**, and continuity between them is an explicit, bounded, **visible-text checkpoint**:
+MultiCC does **not** try to translate one vendor's transcript into another's format. That is lossy in ways you cannot audit. Instead it preserves **native sessions where the CLI supports them**. Continuity between engines is an explicit, bounded, **visible-text checkpoint**:
 
 | ✅ Carried over | ❌ Not carried over |
 |---|---|
@@ -108,7 +106,7 @@ Clearing a chat invalidates **all** native sessions, so a switch can never resur
 
 ### Missing a CLI? Install it from the switcher
 
-The picker shows which CLIs are installed, which already hold a saved session, and offers one-click installation for the ones that are missing (`claude`, `codex`, `opencode`, `kimi`, `qoder`, `codebuddy`, `dsh`; ZCode ships inside its desktop app).
+The picker shows installed engines and saved sessions, with installation actions where available. ZCode ships inside its desktop app. Engine-specific login, model, and provider support varies; use the options shown for the selected CLI.
 
 **→ Full details: [Multi-CLI switching](docs/cli-switching.md)**
 
@@ -120,6 +118,8 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 
 ## The Air console
 
+The screenshots below were refreshed from the v2.9.3 source on 2026-10-24. They show the current web UI with isolated example data, not live task results or real account activity. The phone image is responsive web UI, not the Flutter app. See [capture details](docs/images/README.md).
+
 `/air` is MultiCC's home screen — both `/` and the old `/manage` now redirect there. Tasks, not roles, are the unit of work: you describe what you want done, and each task carries its own bound session, worktree, and transcript.
 
 ![The Air console: directories and tasks at a glance](docs/images/en/air-tasks.png)
@@ -127,9 +127,10 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 - **Directory home** — every registered repo with its tasks and sessions in one list
 - **New-task composer** — describe a goal, pick a CLI / line / model (it remembers your last choice), and the task spins up a bound session
 - **Full-history search** — search task titles and excerpts, or include complete conversation history with ranked, highlighted matches
-- **Fast directory switching** — hover the directory card to switch instantly, and drag directories into a persistent order
+- **Fast directory switching** — use the workspace selector or ⌘K / Ctrl+K, and drag directories into a persistent order
 - **Native control center** — providers, official accounts, relay connections, workspace reclamation, schedules, AI Assistant, and host operations all live in Air
 - **Delivery state at a glance** — task rows show worktrees with uncommitted changes or commits still waiting to merge
+- **Code and worktrees** — one directory card shows Git status and workspace lifecycle; task filters, ordering, and pagination stay beside the list
 - **Scheduled tasks** — cron-style recurring work bound to fixed Air tasks
 - **Task pins** — pin up to five tasks to the header tab row (sidebar top on mobile and in the app)
 - **Input target** — see and switch which task your next message lands in from the full-history index (the ◎ marker); in-flight turns stay durably queued
@@ -279,14 +280,14 @@ Open **<http://localhost:3000>** — you land on the **Air console** (`/air`). I
 
 ### 3. Run your first task
 
-1. On `/air`, **add a directory** — point it at any git repo.
-2. First run: the **setup card** walks you through preparing a model (import a provider from `cc-switch`, or just use a CLI's own login) and configuring the **AI Assistant** — a lightweight flash-tier model is enough.
+1. Open **Console** on `/air`. Its first-run guide has three stages: configure models and the AI Assistant, add a project, and start a task. Prepare a provider or a CLI login, then configure the **AI Assistant**; a lightweight flash-tier model is enough.
+2. **Add a workspace** pointing to your Git repo, or choose the sample project from the guide to try a read-only first task.
 
    ![The first-run setup card on /air](docs/images/en/air-first-run.png)
-3. Describe a goal in the **new-task composer** — *"summarise what this project does and list the three riskiest files."* — and create the task. The composer remembers your most recent CLI, line, and model.
+3. Open **New task** or expand the composer, describe a goal — *"summarise what this project does and list the three riskiest files; do not change any files yet."* — and create the task. **Run config** selects the CLI, line, model, reasoning effort, and supported subagent routing. It remembers your recent choices.
 
-   ![The new-task composer with the AI configuration pill](docs/images/en/air-new-task.png)
-4. The task binds a chat session and gets to work. Open it to watch the transcript; when it answers, click the **CLI badge in the chat header** and pick a different CLI, then send a follow-up: *"you're a different model now — do you agree with the previous assessment?"*
+   ![Run config: engine, provider, model and subagent controls](docs/images/en/air-new-task.png)
+4. The task binds a chat session and gets to work. Open it to watch the transcript; when it answers, open **Run config** from the chat header and pick a different CLI, then send a follow-up: *"you're a different model now — do you agree with the previous assessment?"*
 
 The second CLI receives a bounded checkpoint of recent visible conversation, task and Git state, on the same branch and worktree. Switch back and the first CLI resumes its own session.
 
@@ -330,7 +331,7 @@ on the stable channel `--force` still only acts when a newer release exists; at 
 newest tag it stops and prints the `git checkout -f` to run by hand.
 
 From the browser: click the **version number at the bottom of the Air console
-sidebar** → a dialog shows current vs. latest and a *强制更新* checkbox → confirm, and
+sidebar** → a dialog shows current vs. latest and a *Force update* checkbox → confirm, and
 MultiCC runs the same update in the background, streams the log into the dialog,
 restarts itself, and reloads the page once it's back. If the update fails, the dialog
 keeps the full output and offers a force retry.
@@ -349,7 +350,7 @@ keeps the full output and offers a force retry.
 **Sessions & orchestration**
 - Two modes: full `tmux` **terminal** and a **chat** UI with tool cards and inline images
 - Per-session **git worktree** on `multicc/<sessionId>`
-- Merge back with **syntax-gated** validation; sibling worktrees auto-sync after a merge
+- Merge back with **syntax-gated** validation; safe sibling worktrees sync after a merge, while dirty or conflicting worktrees need attention
 - **Cross-session dispatch** — one agent hands work to another
 - **Task-first MCP dispatch** — route work to an existing task or atomically create a new independent task with durable, idempotent receipts
 - **Resident Claude and Codex lanes** — bounded warm processes reduce turn startup overhead while preserving each CLI's native resumable session
@@ -357,7 +358,7 @@ keeps the full output and offers a force retry.
 - Shared **task board** with a **unified task chat view** — every task owns a bound chat session with live transcript, cancel/cleanup, and stable short codes
 - **Task attribution ladder** — each incoming message is matched to a task through escalating evidence, with every decision written to a durable journal you can audit and override
 - Native **task graph** and **memory graph** views in the Air console
-- **Scheduled message dock** — queue and review messages before they are sent
+- **Scheduled message dock** — persist one-time messages across service restarts; overdue messages send when the service returns
 - **Hibernate idle task worktrees** — auto-suspend idle task sessions to free resources
 - **run-detached** tasks, **cron** schedules, post-turn / file-change **triggers**
 - Inter-agent **notes**
@@ -369,7 +370,9 @@ keeps the full output and offers a force retry.
 - **Auto Provider routing & failover** — use ordered failover, or let Jev route simple and complex requests to different provider/model tiers before the first byte or tool side effect; evaluation failures follow a configurable safe fallback
 - **AI Assistant (aux)** — intent classification, task attribution, and auto-advance; configured from its own console page (a lightweight flash-tier model is enough)
 - Read-only import from **cc-switch**
-- **Subagent routing** — cheap models for the grunt work, via a local provider router
+- **Official account management** — sign in to separate Claude/Codex accounts and discover account-specific models
+- **Account egress and private relays** — bind supported account model requests to a dedicated proxy, or share a provider from your own VPS; see [network setup](#proxies-accounts-and-a-private-relay)
+- **Subagent routing** — choose a separate line/model in Run config, save presets, and optionally apply defaults to matching Claude/Codex tasks
 - Per-provider `CODEX_HOME` isolation
 - **Token accounting** — global, per-session, per-role, daily windows
 
@@ -387,7 +390,7 @@ keeps the full output and offers a force retry.
 - **Relay-token remote sharing** — grant access and share provider configs securely from the console
 - Public tunnels built in: **Tailscale Funnel**, **花生壳**, and **SakuraFrp** with live monitoring
 - Web Push / Bark / webhook **notifications**
-- Chinese + English UI — starts in English outside Chinese locales, switch in every page header
+- Chinese + English UI — starts in English outside Chinese locales; switch with EN/中 in the sidebar
 
 </td><td width="50%" valign="top">
 
@@ -410,6 +413,24 @@ keeps the full output and offers a force retry.
 **→ Every feature in detail: [Features](docs/features.md)**
 
 ---
+
+## Proxies, accounts, and a private relay
+
+- **Host proxy:** MultiCC follows configured proxy environment variables and, on macOS, system proxy settings when explicit variables are absent. Loopback traffic stays local.
+- **Separate accounts and exits:** manage official logins from **Settings → Model routes**. For Claude official model traffic, create proxy identities in the **Chrome isolated-egress launcher** plugin, then edit each account's **Dedicated egress** binding. Different identities need different upstream exits to obtain different public IPs. This does not guarantee that every login, refresh, or quota request is isolated; see the [plugin's scope](plugins/chrome-proxy-launcher/README.md).
+- **Your own VPS relay:** install MultiCC on a VPS, configure providers there, and use **Share with another device** on a provider card. Import the share code on your local instance through **More connection options → Connect or share another device**. The receiver gets a revocable provider-scoped credential, not the upstream API key or OAuth token. Use an authenticated HTTPS or private-network address for off-host access. See [remote provider relay](docs/configuration.md#remote-provider-relay).
+
+![A Claude account bound to its own proxy identity](docs/images/en/air-account-proxy.png)
+
+## Keep working with the Mac lid closed
+
+On a supported Mac, open **Settings → General → Mac power and unlock** and enable **Run with lid closed**. Complete first-time setup on that Mac: save the login password in its local keychain, grant the agent permissions and confirm read access. macOS may also request administrator approval. This setting includes automatic unlock when computer tools need the desktop.
+
+Keep the Mac and MultiCC service running, connected to the network, and adequately powered and ventilated. Your phone opens the same task through an authenticated reachable address. Closing the browser does not stop the task; shutting down, losing host connectivity, or a battery-guard sleep stops remote availability.
+
+![Current Mac power and automatic-unlock settings](docs/images/en/air-power.png)
+
+[Watch the 38-second lid-closed scenario video](https://x.com/multicc_ai/status/2113283616532996247). This is an illustrated demo with AI-generated people and interface animation, not a continuous live recording.
 
 ## Documentation
 
@@ -466,7 +487,7 @@ Projects that **harness** the official CLIs — spawning and managing the real `
 
 - **Human handoff within a task** — remote desktop controls and screenshot annotations, followed by the agent continuing after your reply
 
-- **In-place cross-CLI switching** across eight coding CLIs with a bounded handoff checkpoint
+- **In-place cross-CLI switching** across the supported engines with a bounded handoff checkpoint
 - **Task board with bound chat sessions** — every task gets a private chat transcript, short codes, and lifecycle controls
 - **Scheduled messages** and **relay-token remote sharing**
 - **Speech-to-speech** voice conversation with an agent, plus hands-free task announcements
@@ -501,14 +522,14 @@ The linked survey is historical, not evidence that individual features remain ex
     │  │ (terminal mode)    │  │ (chat mode)   │  │ + handoff        │  │
     │  └─────────┬──────────┘  └───────┬───────┘  └────────┬─────────┘  │
     │            ▼                     ▼                   ▼            │
-    │      claude / codex …    8 CLI adapters      per-CLI native       │
+    │      claude / codex …    CLI adapters        per-CLI native       │
     │                          (stream-json, exec) session state        │
     └───────────────────────────────────────────────────────────────────┘
                                      │
                     per-session git worktree: multicc/<sessionId>
 ```
 
-Key decisions: vendor transcripts are never translated; authoritative conversation and provider records remain inspectable local files, while orchestration and rebuildable search indexes use `node:sqlite`; each session owns a branch and worktree; the network bind is fail-closed. The desktop app adds one more client without adding a second UI — it embeds this same server and serves this same web page from a loopback port.
+Key decisions: vendor transcripts are never translated; authoritative conversation and provider records remain inspectable local files, while orchestration and rebuildable search indexes use SQLite through the bundled Rust driver (`node:sqlite` remains an explicit rollback option); each session owns a branch and worktree; the network bind is fail-closed. The desktop app adds one more client without adding a second UI — it embeds this same server and serves this same web page from a loopback port.
 
 **Built with:** Node.js · Express · ws · Rust SQLite (bundled through napi-rs) · sherpa-onnx (on-device ASR) · cli-provider-router · chokidar · tmux · Flutter · Electron (desktop shell). No frontend build step — the web client is plain JavaScript.
 
@@ -536,9 +557,9 @@ A few of the most common questions:
 
 - **Is there a desktop app?** Yes — macOS (dmg), Windows (exe), and Linux (AppImage/deb) installers ship on the Releases page. Double-click and everything (backend + UI) starts locally; no Node, no terminal. See [Desktop app](docs/desktop.md).
 - **Does MultiCC serve HTTPS?** No — direct LAN access is plain HTTP. Use `http://localhost` for microphone and PWA features, or a tunnel that terminates real TLS.
-- **Can I use it without Claude Code?** Yes. Any one of the eight supported CLIs is enough.
+- **Can I use it without Claude Code?** Yes. Any one supported CLI is enough.
 - **Does switching CLIs cost tokens immediately?** No. The checkpoint is queued and delivered with your *next* message.
-- **Port already in use?** Set a different `PORT` in `.env` — automatic rollover only happens in development mode.
+- **Port already in use?** Use `./multicc config set PORT 3001` for a package install, or set `PORT` in the checkout's `.env`. Automatic rollover only happens in development mode.
 - **`./multicc update` stopped, or says "nothing to update" while I'm behind?** `./multicc update --force` puts you on the remote's code. Local changes are stashed as `multicc-force-update-<ts>` and not restored — see [Keep it up to date](#4-keep-it-up-to-date).
 
 **→ [Full FAQ](docs/faq.md)**
@@ -548,7 +569,7 @@ A few of the most common questions:
 ## 中文用户
 
 **让智能体持续推进任务；需要你时，在手机接手一步，再让它继续。** MultiCC 将任务、工作区、跨引擎接续与人机协作放在同一个工作台。
-安装、首次任务与常见问题的中文说明见 **[README.zh.md](README.zh.md)**。界面支持中英文切换，非中文系统默认英文，页头右上角的开关随时可切。
+安装、首次任务与常见问题的中文说明见 **[README.zh.md](README.zh.md)**。界面支持中英文切换，非中文系统默认英文，可通过侧栏的 EN/中 切换。
 
 ---
 
@@ -559,5 +580,5 @@ MIT.
 ---
 
 <p align="center">
-  <sub>Built for Claude Code, Codex, OpenCode, ZCode, Kimi Code, Qoder, WorkBuddy, and DSH · <a href="https://github.com/lsjwzh/MultiCC">github.com/lsjwzh/MultiCC</a></sub>
+  <sub>Built for Claude Code, Codex, OpenCode, ZCode, Kimi Code, Qoder, WorkBuddy, DSH, Gemini CLI, Command Code, Grok, and pi · <a href="https://github.com/lsjwzh/MultiCC">github.com/lsjwzh/MultiCC</a></sub>
 </p>

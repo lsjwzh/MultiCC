@@ -47,7 +47,7 @@ MultiCC 把任务、智能体执行、代码工作区和人的介入组织在一
 | 换个智能体接着做 | 同一任务与工作区中的引擎切换，通过可见摘要交接 |
 | 等构建或外部结果 | 后台命令、定时任务、条件等待和结果回流 |
 
-支持的引擎包括 **Claude Code、Codex、OpenCode、ZCode、Kimi Code、Qoder、WorkBuddy 和 DSH**。模型与线路、子代理路由、记忆、语音和 IM 桥接服务于这些工作流程，详见[完整功能目录](docs/features.md)。
+支持的引擎包括 **Claude Code、Codex、OpenCode、ZCode、Kimi Code、Qoder、WorkBuddy、DSH、Gemini CLI、Command Code、Grok 和 pi**。模型与线路、子代理路由、记忆、语音和 IM 桥接服务于这些工作流程，详见[完整功能目录](docs/features.md)。
 
 <a id="核心卖点多-cli-同上下文切换"></a>
 
@@ -64,7 +64,7 @@ MultiCC 把任务、智能体执行、代码工作区和人的介入组织在一
 
 ### 切过去时，什么会带走
 
-MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式——那种做法的信息损失无法审计。它的做法是：每个 CLI 保留**自己的原生会话**，会话之间的连续性由一份**有界的、纯可见文本的 checkpoint** 提供。
+MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式——那种做法的信息损失无法审计。它的做法是：在 CLI 支持的情况下保留**各自的原生会话**，会话之间的连续性由一份**有界的、纯可见文本的 checkpoint** 提供。
 
 | ✅ 会带走 | ❌ 不会带走 |
 |---|---|
@@ -83,7 +83,7 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 
 ### 缺哪个 CLI，切换弹窗里一键装
 
-切换弹窗会显示：哪些 CLI 已安装、哪些已有会话，并为缺失的提供一键安装（`claude`、`codex`、`opencode`、`kimi`、`qoder`、`codebuddy`、`dsh`；ZCode 的 CLI 内置在其桌面版里，需要手动装）。
+切换弹窗显示已安装的引擎和已保存的会话，并在支持时提供安装入口。ZCode 的 CLI 内置在其桌面版里。各引擎的登录、模型和线路能力不同，以选中引擎后显示的选项为准。
 
 **→ 完整说明：[Multi-CLI switching](docs/cli-switching.md)**
 
@@ -95,14 +95,19 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 
 ## Air 控制台
 
+以下截图于 2026-10-24 使用 v2.9.3 当前源码更新，展示真实 Web 界面与隔离的示例数据，不代表真实任务执行或账号活动。手机图是响应式网页，不是 Flutter App 截图。[素材与重拍说明](docs/images/README.md)。
+
 `/air` 是 MultiCC 的主界面——`/` 和旧的 `/manage` 现在都重定向到这里。**任务，而不是角色，才是干活的单位**：你描述要做成的事，每个任务自带绑定的会话、worktree 和对话记录。
 
 ![Air 控制台：目录与任务一览](docs/images/air-tasks.png)
 
 - **目录首页** —— 所有登记过的仓库、它们的任务和会话一屏可见
 - **新任务输入框** —— 描述目标，选 CLI / 线路 / 模型（会记住你上次的选择），任务即建即跑
-- **⌘K 搜索** —— 一个命令面板同时搜目录、任务、会话
-- **内置控制台** —— Provider、定时任务、AI Assistant、主机操作，不用离开页面
+- **全文历史搜索** —— 搜任务标题、摘要或完整聊天记录，结果按相关性排序并高亮
+- **工作区切换** —— 用工作区选择器或 ⌘K / Ctrl+K 切换，拖动目录保存顺序
+- **代码与 Worktree** —— 同一张卡查看 Git 状态与工作区生命周期；任务清单支持筛选、排序与分页
+- **交付状态** —— 直接看到未提交文件和等待合并的提交
+- **内置设置** —— 模型线路、官方账号、跨设备共享、工作区回收、AI Assistant 与电脑设置，不用离开 Air
 - **定时任务** —— cron 式循环工作，绑定固定的 Air 任务
 - **任务置顶** —— 最多置顶五个任务到顶部标签栏（移动端与 App 里在侧栏顶部）
 - **输入目标** —— 在全量历史索引里用 ◎ 查看并切换下一条消息落到哪个任务；进行中的轮次会持久排队不丢
@@ -121,12 +126,14 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 | 🕸️ **任务图谱与记忆图谱** | Air 控制台原生视图：任务父子 / 分组 / 合并关系的关联网络，以及跨任务的记忆网络。 |
 | 🤖 **AI Assistant (aux)** | 意图分类、任务归属、自动推进的核心服务，控制台里有独立的设置页和运行记录（轻量 flash 级模型即可）。 |
 | 🪜 **任务归属阶梯** | 每条来信按递进的证据链匹配到对应任务，每个判定都写入可审计、可覆写的持久日志。 |
-| ♻️ **Auto Provider 故障切换** | 上游失败时自动切到下一个健康候选线路，额度条随线路切换即时更新。 |
+| ♻️ **Auto Provider 与 Jev** | 支持顺序故障切换，或按请求难度选择不同线路与模型档位；在首字节或工具副作用前判定，评估失败按设定回退。 |
 | 👨‍✈️ **Agent Commander** | 每个新目录自动播种一个「舰队指挥官」会话，协调专职兄弟会话，附带常用角色预设。 |
-| ⏰ **定时消息浮窗** | 把消息排队进会话 FIFO，发送前在浮窗里复核，避免手滑。 |
+| ⏰ **持久定时消息** | 单次定时消息跨服务重启保留；重启时已过期的消息会继续发送。循环任务在定时任务页配置。 |
 | 💤 **空闲任务 worktree 休眠** | 长时间空闲的任务绑定会话自动休眠，释放系统资源。 |
-| 💸 **子 agent 省钱** | 主 agent 用前沿模型，子 agent 通过本地 provider router 路由到 DeepSeek / GLM / Qwen。同一个仓库、并行跑、成本只有零头。 |
-| 📱 **会话比客户端活得久** | 合上笔记本，手机上接着看。终端会话跑在 `tmux` 里，聊天会话是有状态的轮次。 |
+| 💸 **子代理独立线路** | 在运行配置中为支持的 Claude/Codex 子代理选择独立线路与模型，保存预设，也可同步为同类任务的默认值；实际费用取决于选用的服务商。 |
+| 📱 **会话比客户端活得久** | 主机和服务持续运行时，关掉浏览器后仍能用手机接着聊；Mac 合盖运行需先完成本机设置，并持续联网。 |
+| 🔀 **多账号与专用出口** | 管理 Claude/Codex 官方账号；支持的 Claude 模型转发可为各账号绑定不同代理身份。 |
+| ☁️ **VPS 私人中转** | 在自己的 VPS 部署 MultiCC，再通过可撤销的 Provider 范围分享码给其他设备使用线路，不把上游凭据发给接收方。 |
 | 🔋 **进程内电量守护** | 可选：靠电池且低于阈值时让主机休眠，配合「合盖继续运行」设置，休眠后锁定直到接电或手动重新布防。 |
 | 🗣️ **语音，包括全双工** | 可以口述 prompt，也可以像打电话一样和 agent 实时语音对话（支持插话打断）。本地 ASR 用 sherpa-onnx SenseVoice，不走云端。 |
 | 🔊 **语音播报任务完成** | 全双工语音模式下会播报已完成任务的身份，全程免手操作。 |
@@ -244,14 +251,14 @@ cd ~/MultiCC        # 安装脚本的默认目录（--dir 可以改）
 
 ### 3. 跑一个真实任务
 
-1. 在 `/air` 里**添加一个目录**，指向任意 git 仓库。
-2. 首次启动会弹出**首启配置卡**：先准备模型（从 `cc-switch` 导入 Provider，或直接用 CLI 自带登录），再配置 **AI Assistant**——它是意图分类和任务归属的核心服务，轻量 flash 级模型就够了。
+1. 打开 `/air` 的**控制台**。首启引导分三步：配置模型与 AI Assistant、添加项目、开始任务。先准备 Provider 或 CLI 登录，再配置 **AI Assistant**；轻量 flash 级模型即可。
+2. **添加工作区**，指向你的 Git 仓库；也可以从引导创建示例项目，先试一条只读任务。
 
    ![Air 首启配置卡](docs/images/air-first-run.png)
-3. 在**新任务输入框**里描述目标：*「总结这个项目是干什么的，并列出三个风险最高的文件。」*——创建任务。输入框会记住你最近用的 CLI、线路和模型。
+3. 点**新建任务**或展开底部输入框，描述目标：*「总结这个项目是干什么的，并列出三个风险最高的文件；先不要修改任何文件。」* **运行配置**里可选 CLI、线路、模型、思考强度及支持的子代理路由，并记住最近的选择。
 
-   ![新任务输入框与 AI 配置胶囊](docs/images/air-new-task.png)
-4. 任务绑定一个聊天会话开始干活。打开它看实时记录；回答完点聊天头部的 **CLI 徽标** 换一个 CLI，再追问：*「你现在是另一个模型了——你同意刚才那个判断吗？」*
+   ![运行配置：引擎、线路、模型与子代理选项](docs/images/air-new-task.png)
+4. 任务绑定一个聊天会话开始干活。打开它看实时记录；回答完从聊天头部打开**运行配置**换一个 CLI，再追问：*「你现在是另一个模型了——你同意刚才那个判断吗？」*
 
 第二个 CLI 会收到有上限的近期可见对话、任务与 Git 状态摘要，仍在同一个分支和 worktree 上。切回去，第一个 CLI 会接着它自己的会话继续。
 
@@ -322,16 +329,16 @@ Provider、子 agent 路由、语音、TTS/ASR、通知都在 Air 控制台里�
     │  │ （终端模式）        │  │ （聊天模式）    │  │ + 交接 checkpoint │  │
     │  └─────────┬──────────┘  └───────┬───────┘  └────────┬─────────┘  │
     │            ▼                     ▼                   ▼            │
-    │      claude / codex …    8 个 CLI 适配器         各 CLI 原生        │
+    │      claude / codex …    CLI 适配器             各 CLI 原生        │
     │                          （stream-json、exec）   会话状态          │
     └───────────────────────────────────────────────────────────────────┘
                                      │
                     每会话独立 git worktree：multicc/<会话id>
 ```
 
-关键决策：厂商对话记录永不互相翻译；状态是扁平 JSON 而非数据库；每个会话独占一个分支和 worktree；网络绑定默认 fail-closed。桌面版只是多了一个客户端，没有第二套 UI——它内嵌同一个服务端，从本机回环端口提供同一个网页。
+关键决策：厂商对话记录永不互相翻译；权威对话与线路记录保留为可检查的本地文件，编排状态和可重建检索索引使用 SQLite，经打包的 Rust 驱动访问（`node:sqlite` 仅作为显式回退选项）；每个会话独占一个分支和 worktree；网络绑定默认 fail-closed。桌面版只是多了一个客户端，没有第二套 UI——它内嵌同一个服务端，从本机回环端口提供同一个网页。
 
-**技术栈：** Node.js · Express · ws · node:sqlite（Node 22.16+ 内置，无需编译 SQLite 原生模块）· sherpa-onnx（本地 ASR）· cli-provider-router · chokidar · tmux · Flutter · Electron（桌面壳）。没有前端构建步骤——Web 客户端是纯 JavaScript。
+**技术栈：** Node.js · Express · ws · Rust SQLite（通过 napi-rs 打包）· sherpa-onnx（本地 ASR）· cli-provider-router · chokidar · tmux · Flutter · Electron（桌面壳）。没有前端构建步骤——Web 客户端是纯 JavaScript。
 
 **→ [Architecture](docs/architecture.md)**
 
@@ -359,7 +366,7 @@ curl -X POST "http://localhost:3000/api/sessions/$SESSION_ID/switch-cli" \
 
 - **同一任务内的人机接手**——远程桌面、截图标注，以及回复后继续执行
 
-- 跨**八个**编程 CLI 的原位切换，附带有界交接 checkpoint
+- 跨支持的编程 CLI 的原位切换，附带有界交接 checkpoint
 - **任务板绑定聊天会话**——每个任务自带私有聊天记录、短码和生命周期控制
 - **定时消息**与**中继令牌远程分享**
 - 与 agent 的**语音对语音**实时对话，外加免手操作的任务播报
@@ -393,13 +400,13 @@ curl -X POST "http://localhost:3000/api/sessions/$SESSION_ID/switch-cli" \
 `MediaRecorder` 需要安全上下文。本机用 `http://localhost:3000`，远程用 Tailscale Funnel / ngrok。直接用 `http://<局域网IP>:3000` 在任何现代浏览器里都拿不到麦克风权限。
 
 **不用 Claude Code 行不行？**
-行。八个支持的 CLI 里有任意一个就够了。
+行。安装并登录任意一个支持的 CLI 即可。
 
 **切换 CLI 会立刻消耗 token 吗？**
 不会。checkpoint 是排队等待的，随你的**下一条消息**一起送出。所以切完又反悔，一分钱不花。
 
 **端口被占用了？**
-在 `.env` 里换一个 `PORT`。自动顺延到下一个空闲端口只在开发模式（`NODE_ENV=development` / `MULTICC_DEV=true`）下发生。
+独立包用 `./multicc config set PORT 3001`，源码检出则在 `.env` 里换 `PORT`。自动顺延到下一个空闲端口只在开发模式（`NODE_ENV=development` / `MULTICC_DEV=true`）下发生。
 
 **怎么更新？`update` 停下了 / 明明落后却说没得更新怎么办？**
 `cd MultiCC && ./multicc update`；它停下来（stash pop 冲突、stable 渠道 checkout 被拒），或者你本地有提交、它只回一句「nothing to update」时，加 `--force`（`-f` 亦可）：
@@ -413,6 +420,24 @@ cd MultiCC && ./multicc update --force
 **→ 完整 FAQ（英文）：[docs/faq.md](docs/faq.md)**
 
 ---
+
+## 代理、多账号与 VPS 私人中转
+
+- **主机代理**：优先使用明确配置的代理环境变量；macOS 没有显式变量时读取系统代理。本机回环通信保持直连。
+- **多账号与不同出口**：在**设置 → 模型线路**管理官方账号。Claude 官方模型转发可绑定「Chrome 隔离出口启动器」插件里的身份：先在插件中为身份设置代理，再到各账号的**编辑 → 专用出口**绑定。不同身份需要不同的上游出口，才会得到不同公网 IP；不能据此承诺登录、续期、额度查询等全部网络活动都已隔离，详见[插件能力边界](plugins/chrome-proxy-launcher/README.md)。
+- **自己的 VPS 中转**：在 VPS 安装 MultiCC、配置线路后，点 Provider 卡片的**共享到其他设备**。本地 MultiCC 从**更多连接方式 → 连接或共享另一台设备**导入分享码。接收方只拿到可撤销的 Provider 范围凭据，不会拿到上游 API Key 或 OAuth 令牌。跨主机使用需准备已鉴权的 HTTPS 或私有网络入口，详见[远程线路共享](docs/configuration.md#remote-provider-relay)。
+
+![Claude 账号的独立代理身份绑定](docs/images/air-account-proxy.png)
+
+## Mac 关盖后继续运行
+
+在支持的 Mac 上进入**设置 → 全局配置 → Mac 运行与解锁**，开启**关盖运行**。首次需在这台 Mac 上完成设置：把登录密码保存到本机钥匙串，授予 Agent 权限并确认读取授权；macOS 也可能要求一次管理员批准。关盖运行包含电脑工具需要桌面时的自动解锁。
+
+Mac 与 MultiCC 服务须保持运行、联网，并有足够电量和散热；手机通过可达且已鉴权的地址进入同一任务。关闭浏览器不会结束任务，但关机、主机断网或电量守护触发休眠后，手机便无法继续访问。
+
+![当前 Mac 电源、关盖运行与自动解锁设置](docs/images/air-power.png)
+
+[观看 38 秒关盖运行场景视频](https://x.com/multicc_ai/status/2113283616532996247)。该片为 AI 人物镜头与界面动画的示意演示，不是连续实录，视频文案为英文。
 
 ## 文档索引
 
@@ -432,7 +457,7 @@ cd MultiCC && ./multicc update --force
 
 完整的文档索引（50+ 篇，含设计契约、语音、provider 路由、治理评审、模块化历史）在 **[docs/README.md](docs/README.md)**。
 
-界面支持中英文切换，非中文系统默认英文，页头右上角的开关随时可切。
+界面支持中英文切换，非中文系统默认英文，通过侧栏的 EN/中 切换。
 
 ---
 
@@ -443,5 +468,5 @@ MIT。
 ---
 
 <p align="center">
-  <sub>为 Claude Code、Codex、OpenCode、ZCode、Kimi Code、Qoder、WorkBuddy、DSH 打造 · <a href="https://github.com/lsjwzh/MultiCC">github.com/lsjwzh/MultiCC</a></sub>
+  <sub>为 Claude Code、Codex、OpenCode、ZCode、Kimi Code、Qoder、WorkBuddy、DSH、Gemini CLI、Command Code、Grok、pi 打造 · <a href="https://github.com/lsjwzh/MultiCC">github.com/lsjwzh/MultiCC</a></sub>
 </p>
