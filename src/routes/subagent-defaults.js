@@ -1,8 +1,10 @@
 'use strict';
 
-// 迁移桥接：子任务默认线路（每个 CLI 家族一条 `{providerId, model}`）与「一键同步到
-// 同家族全部会话」。Rust（native/core/src/subagent_defaults.rs）负责归一化存储值、
-// 校验目标线路并生成整批计划；Node 只提供宿主事实（会话表、provider 是否可用/可代理/
+// 迁移桥接：子任务全局默认线路（每个 CLI 家族一条 `{providerId, model}`）的设置与清除。
+// 同步只改同家族里没有单独设置子 agent 的会话（随主线路的、或线路来自全局默认的），
+// 改过去的线路带 `inherited: true`；单独设置过的会话原样保留（kept）。清除 = 目标为空：
+// 撤掉全局默认，跟随全局的会话回到随主线路。Rust（native/core/src/subagent_defaults.rs）
+// 负责归一化存储值、校验目标线路并生成整批计划；Node 只提供宿主事实（会话表、provider 是否可用/可代理/
 // 是否官方）并通过现有端口执行：默认值走 providers.js 的原子配置文件写入，会话逐个走
 // session-profile.js 的 applySessionPatch / previewSessionPatch（与单会话 AI 配置同一个
 // 校验、暂存与广播路径）。Rust 接管会话存储与 provider 默认值后本模块即可删除。
@@ -166,6 +168,7 @@ function mountSubagentDefaultsRoutes(app, options = {}) {
     };
     const groups = { applied: [], deferred: [], skipped: [] };
     const unchanged = [];
+    const kept = [];
 
     // Persist first: a failed write must leave the file and every session
     // exactly as they were, so the defaults land before the first PATCH.
@@ -195,7 +198,7 @@ function mountSubagentDefaultsRoutes(app, options = {}) {
       const sessionId = String(entry?.sessionId || '');
       if (!sessionId) continue;
       const base = { sessionId, sessionName: entry.sessionName, cli: entry.cli };
-      const patch = { subagent: targetRoute };
+      const patch = targetRoute ? { subagent: targetRoute, subagentInherited: true } : { subagent: null };
       let outcome = 'applied';
       let reason = null;
       let detail = null;
@@ -229,13 +232,15 @@ function mountSubagentDefaultsRoutes(app, options = {}) {
         reason: entry?.reason || 'patch_rejected',
       });
     }
-    for (const entry of Array.isArray(plan.unchanged) ? plan.unchanged : []) {
-      unchanged.push({
-        sessionId: String(entry?.sessionId || ''),
-        sessionName: entry?.sessionName,
-        cli: entry?.cli,
-        outcome: 'unchanged',
-      });
+    for (const [list, outcome] of [[plan.unchanged, 'unchanged'], [plan.kept, 'kept']]) {
+      for (const entry of Array.isArray(list) ? list : []) {
+        (outcome === 'kept' ? kept : unchanged).push({
+          sessionId: String(entry?.sessionId || ''),
+          sessionName: entry?.sessionName,
+          cli: entry?.cli,
+          outcome,
+        });
+      }
     }
 
     const counts = {
@@ -243,8 +248,9 @@ function mountSubagentDefaultsRoutes(app, options = {}) {
       deferred: groups.deferred.length,
       unchanged: unchanged.length,
       skipped: groups.skipped.length,
+      kept: kept.length,
     };
-    const listed = [...groups.applied, ...groups.deferred, ...groups.skipped, ...unchanged];
+    const listed = [...groups.applied, ...groups.deferred, ...groups.skipped, ...unchanged, ...kept];
     return res.json({
       ok: true,
       dryRun,

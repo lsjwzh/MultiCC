@@ -1185,9 +1185,11 @@
     // The pill's runtime is pinned onto the task at creation; the route it names
     // takes effect immediately, exactly as it does on the chat's own composer.
     const runtime = { cli: quickRuntime.cli || firstChatCli() };
-    for (const key of ['provider', 'providerSelection', 'model', 'effort', 'subagent']) {
-      if (quickRuntime[key] || (key === 'subagent' && quickRuntimeDirty)) runtime[key] = quickRuntime[key];
+    for (const key of ['provider', 'providerSelection', 'model', 'effort']) {
+      if (quickRuntime[key]) runtime[key] = quickRuntime[key];
     }
+    // 子 agent 只跟着全局默认走（线路带 inherited / 对话框说没动过）就不传，由服务端按当前默认建并记成跟随全局；亲手改过的才写（null = 随主）。
+    if (!quickRuntime.subagentInherited && !quickRuntime.subagent?.inherited && (quickRuntime.subagent || quickRuntimeDirty)) runtime.subagent = quickRuntime.subagent || null;
     const goal = $('quick-task-goal').checked;
     const goalLimits = goal ? goalLimitsFromForm() : null;
     const fingerprint = JSON.stringify([targetDirectoryId, text, runtime, quickRoles, goalLimits]);

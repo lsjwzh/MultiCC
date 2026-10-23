@@ -37,4 +37,16 @@ function normalizeSubagentInput({ cli, provider = null, subagent = null, validPr
   return { ok: true, value: { providerId: v.value, model }, cleared: false };
 }
 
-module.exports = { normalizeSubagentInput };
+// Provenance of a stored route: `inherited: true` marks a route that came from
+// the family default (applied by the sync or at task creation), which is what
+// a later sync may replace and a clear may withdraw. Only those two callers ask
+// for the mark; saving the same route again (a dialog that only changed the
+// main line) keeps whatever the route was; picking another route or the main
+// line makes it the task's own setting.
+function withSubagentSource(next, previous, inherited = false) {
+  if (!next) return null;
+  const same = !!previous && previous.providerId === next.providerId && previous.model === next.model;
+  return inherited || (same && previous.inherited === true) ? { ...next, inherited: true } : next;
+}
+
+module.exports = { normalizeSubagentInput, withSubagentSource };

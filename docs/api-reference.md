@@ -49,7 +49,7 @@
 | `DELETE` | `/api/providers/:appType/:id` | Delete a local provider and clear matching defaults |
 | `GET` / `PUT` | `/api/provider-defaults` | Read / set default provider per CLI |
 | `GET` | `/api/subagent-defaults` | Read the sub-agent default per CLI family (`{ claude, codex }`, each `{ providerId, model }` or `null`) |
-| `POST` | `/api/subagent-defaults/sync` | Apply one sub-agent route to every chat task of the same CLI family and make it the default for new tasks (`{ cli, subagent, dryRun? }`; `subagent: null` clears both). Busy tasks pick it up on their next turn |
+| `POST` | `/api/subagent-defaults/sync` | Set the CLI family's global sub-agent default and apply it to that family's chat tasks without their own sub-agent setup (`{ cli, subagent, dryRun? }`). Applied routes carry `inherited: true`; tasks with their own route are counted as `kept` and left alone. `subagent: null` clears the default and returns inherited tasks to the main line. Busy tasks pick it up on their next turn |
 
 ## Orchestration
 

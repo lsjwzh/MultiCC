@@ -51,6 +51,34 @@ function sourcePaths(repoRoot, env = process.env) {
     targetDir: env.CARGO_TARGET_DIR || path.join(os.tmpdir(), 'multicc-rust-source-target', checkout) };
 }
 
+// Which source produced an addon: `<addon>.source.json` holds the source
+// fingerprint and the sha256 of the exact bytes. A shared output directory can
+// be overwritten by a build from another checkout, so a reader must check both
+// that the record describes the file on disk and that it names today's source.
+function provenancePath(file) {
+  return `${file}.source.json`;
+}
+
+function fileSha256(file) {
+  return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+function writeProvenance(file, fingerprint) {
+  const record = provenancePath(file);
+  const temporary = `${record}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify({ fingerprint, sha256: fileSha256(file) })}\n`);
+  fs.renameSync(temporary, record);
+}
+
+function builtFromSource(file, fingerprint) {
+  try {
+    const record = JSON.parse(fs.readFileSync(provenancePath(file), 'utf8'));
+    return !!record && record.fingerprint === fingerprint && record.sha256 === fileSha256(file);
+  } catch (_) {
+    return false;
+  }
+}
+
 function probeAddon(file, node = process.execPath) {
   if (!fs.existsSync(file)) return false;
   // A separate process avoids require() caching and contains invalid binaries.
@@ -67,4 +95,4 @@ function probeAddon(file, node = process.execPath) {
   return result.status === 0;
 }
 
-module.exports = { cacheRoot, sourceFingerprint, sourcePaths, probeAddon };
+module.exports = { cacheRoot, sourceFingerprint, sourcePaths, probeAddon, provenancePath, writeProvenance, builtFromSource };

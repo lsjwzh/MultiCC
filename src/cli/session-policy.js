@@ -107,6 +107,7 @@ function createSessionPolicy(options) {
       providerId: subagent.providerId,
       model: subagent.model,
       effectiveModel: effectiveSubagentModel(subagent),
+      ...(subagent.inherited === true ? { inherited: true } : {}),
     };
   }
 

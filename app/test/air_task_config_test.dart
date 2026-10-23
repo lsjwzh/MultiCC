@@ -706,7 +706,7 @@ void main() {
     expect(body(explicitNone: true)['subagent'], isNull);
   });
 
-  testWidgets('草稿预填：家族默认先选上，建任务请求带着它', (tester) async {
+  testWidgets('草稿预填：家族默认先选上（跟随全局默认），建任务请求省略 subagent', (tester) async {
     final settings = await _settings();
     AirTaskRuntime? picked;
     tester.view.devicePixelRatio = 1;
@@ -777,6 +777,8 @@ void main() {
       findsOneWidget,
     );
 
+    expect(find.text('跟随全局默认'), findsOneWidget);
+
     final save = find.text('保存');
     await tester.ensureVisible(save);
     await tester.tap(save);
@@ -784,11 +786,99 @@ void main() {
 
     expect(picked!.subagent?.providerId, 'p2');
     expect(picked!.subagent?.model, 'm2');
-    expect(picked!.toCreateBody()['subagent'], {
+    expect(picked!.subagent?.inherited, isTrue);
+    // 没动过的全局默认不写进建任务请求：服务端按它当时的默认套用并标 inherited，
+    // 之后清除全局默认时这个任务也能一起恢复随主。
+    expect(picked!.toCreateBody().containsKey('subagent'), isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  // 最近一次带来的线路本身就跟着（旧的）全局默认：草稿按现在的全局默认重新预填，
+  // 建任务时整个不发 subagent，由服务端按当时的默认套用。
+  Future<AirTaskRuntime?> pickWithStaleInherited(
+    WidgetTester tester,
+    Map<String, dynamic>? claudeDefault,
+  ) async {
+    final settings = await _settings();
+    AirTaskRuntime? picked;
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(800, 1400);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const providers = [
+      {
+        'id': 'p1',
+        'name': 'A 家',
+        'protocol': 'anthropic',
+        'model': 'm1',
+        'modelOptions': ['m1'],
+      },
+      {
+        'id': 'p2',
+        'name': 'B 家',
+        'protocol': 'anthropic',
+        'model': 'm2',
+        'modelOptions': ['m2'],
+      },
+    ];
+    final client = MockClient((request) async {
+      final body = request.url.path == '/api/subagent-defaults'
+          ? {
+              'ok': true,
+              'defaults': {'claude': claudeDefault, 'codex': null},
+            }
+          : request.url.path.startsWith('/api/providers')
+          ? {'ok': true, 'providers': providers}
+          : {'ok': true};
+      return http.Response(
+        jsonEncode(body),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+    await tester.pumpWidget(
+      _editorHost(
+        settings: settings,
+        initial: const AirTaskRuntime(
+          cli: 'claude',
+          provider: 'p1',
+          model: 'm1',
+          subagent: SessionSubagent(
+            providerId: 'p1',
+            model: 'm1',
+            inherited: true,
+          ),
+        ),
+        httpClient: client,
+        onPicked: (value) => picked = value,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('open')));
+    await tester.pumpAndSettle();
+    final save = find.text('保存');
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    return picked;
+  }
+
+  testWidgets('草稿带来过时的全局线路：换成现在的全局默认，建任务请求省略 subagent', (tester) async {
+    final picked = await pickWithStaleInherited(tester, {
       'providerId': 'p2',
       'model': 'm2',
     });
-    expect(tester.takeException(), isNull);
+    expect(picked!.subagent?.providerId, 'p2');
+    expect(picked.subagent?.model, 'm2');
+    expect(picked.subagent?.inherited, isTrue);
+    expect(picked.toCreateBody().containsKey('subagent'), isFalse);
+  });
+
+  testWidgets('草稿带来的全局线路已被清除：回随主，建任务请求省略 subagent', (tester) async {
+    final picked = await pickWithStaleInherited(tester, null);
+    expect(picked!.subagent, isNull);
+    expect(picked.toCreateBody().containsKey('subagent'), isFalse);
   });
 
   testWidgets('草稿明确「随主」：创建请求发显式 null 顶掉家族默认', (tester) async {

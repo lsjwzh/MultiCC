@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const { readConfiguration, desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
-const { normalizeSubagentInput } = require('../session/subagent');
+const { normalizeSubagentInput, withSubagentSource } = require('../session/subagent');
 const { forkConfiguration } = require('../session/fork-configuration');
 const { selectionKey } = require('../chat/auto-provider-selection-key');
 const fs = require('fs');
@@ -420,7 +420,7 @@ function createSessionProfileRoutes(rawDeps) {
           cli: s.cli || 'claude', provider: s.provider, subagent: req.body.subagent, validProviderId, providers,
         });
         if (!checked.ok) return rejectMutation(400, { error: checked.error });
-        s.subagent = checked.value;
+        s.subagent = withSubagentSource(checked.value, s.subagent, req.body.subagentInherited === true);
         // A warm streaming process must relaunch to pick up CLAUDE_CODE_SUBAGENT_MODEL.
         if ((s.cli || 'claude') === 'claude') closeStream();
         const subApp2 = (s.cli === 'codex' || s.cli === 'codex-exp') ? 'codex' : 'claude';

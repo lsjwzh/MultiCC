@@ -483,12 +483,26 @@ test('syncSummary：预览 → 状态行文案（含跳过与 503）', () => {
   assert.equal(run.syncSummary({ state: 'ready', family: 'claude', counts: { applied: 0, deferred: 1 } }).text, '将更新 1 个任务');
   assert.equal(run.syncSummary({ state: 'ready', family: 'codex', counts: { applied: 2, skipped: 3 } }).text, '将更新 2 个任务，3 个跳过');
   assert.equal(run.syncSummary({ state: 'ready', family: 'codex', counts: { applied: 0, deferred: 0, unchanged: 5, skipped: 0 } }).text,
-    '所有 Codex 任务已经是这套设置');
-  assert.equal(run.syncSummary({ state: 'ready', family: 'codex', counts: {} }).text, '所有 Codex 任务已经是这套设置');
+    '没有需要更新的 Codex 任务');
+  assert.equal(run.syncSummary({ state: 'ready', family: 'codex', counts: {} }).text, '没有需要更新的 Codex 任务');
+  // 单独设置过子 agent 的任务同步不碰，预览里要说出来。
+  assert.equal(run.syncSummary({ state: 'ready', family: 'claude', counts: { applied: 2, kept: 3, skipped: 1 } }).text,
+    '将更新 2 个任务，3 个单独设置过的保持不变，1 个跳过');
+  assert.equal(run.syncSummary({ state: 'ready', family: 'claude', counts: { applied: 0, kept: 4 } }).text,
+    '没有需要更新的 Claude Code 任务，4 个单独设置过的保持不变');
   assert.equal(run.syncSummary({ state: 'error', error: '500 boom' }).tone, 'error');
   assert.match(run.syncSummary({ state: 'error', error: '500 boom' }).text, /500 boom/);
-  assert.match(run.syncSummary({ state: 'unavailable' }).text, /重启/);
+  // 503 要说清原因（原生模块是旧的），并说明只需重启一次，不是每次改设置都要重启。
+  assert.match(run.syncSummary({ state: 'unavailable' }).text, /原生模块是旧版本.*重启一次.*不需要再重启/);
   assert.equal(run.syncSummary({ state: 'unavailable' }).tone, 'error');
+});
+
+test('clearSummary：清除全局默认前说清恢复几个、几个不受影响', () => {
+  assert.equal(run.clearSummary({ family: 'claude', counts: { applied: 2, deferred: 1, unchanged: 4, kept: 5 } }),
+    '清除后 3 个跟随全局的 Claude Code 任务恢复随主，新建任务也不再默认使用；单独设置过的 5 个不受影响。');
+  assert.equal(run.clearSummary({ family: 'codex', counts: {} }),
+    '清除后 0 个跟随全局的 Codex 任务恢复随主，新建任务也不再默认使用；单独设置过的 0 个不受影响。');
+  assert.match(run.clearSummary(null), /^清除后 0 个/);
 });
 
 test('guideSeen / markGuideSeen：注入的存储，读不到或抛错都不炸', () => {

@@ -1,5 +1,9 @@
 //! 子任务（子 agent）默认线路：每个 CLI 家族（claude / codex）至多一条
-//! `{ providerId, model }` 默认，外加「一键同步到该家族的所有会话」的计划。
+//! `{ providerId, model }` 全局默认，外加「同步 / 清除全局默认」的计划。
+//!
+//! 会话上的线路分三种：没有（随主线路）、来自全局默认（`inherited: true`）、
+//! 任务自己单独设置的。同步只改前两种 —— 单独设置过的任务一律不动（kept）；
+//! 清除（目标为空）把全局默认撤掉，并让跟随全局的任务回到随主线路。
 //!
 //! 纯 JSON 进、JSON 出：这里只做判断，不碰磁盘和会话存储。宿主（Node 迁移桥）
 //! 提供会话表与 provider 能力事实，并把通过的结论落到 provider-defaults.json 与
@@ -78,6 +82,12 @@ fn same_route(a: Option<&Value>, b: Option<&Value>) -> bool {
 
 fn session_route(value: Option<&Value>) -> Option<Value> {
     value.filter(|value| !value.is_null()).and_then(route_from)
+}
+
+// The route a session got from the family default carries `inherited: true`;
+// a route without it is the task's own choice.
+fn session_inherited(value: Option<&Value>) -> bool {
+    value.and_then(|value| value.get("inherited")).and_then(Value::as_bool) == Some(true)
 }
 
 fn has_text(value: Option<&Value>) -> bool {
@@ -167,8 +177,9 @@ pub fn normalize(input: &str) -> Result<String, String> {
     Ok(Value::Object(normalized_defaults(stored)).to_string())
 }
 
-/// Plan one family's sync: validate the target, pick the eligible sessions,
-/// and say which stay unchanged or are skipped. The caller applies the plan.
+/// Plan one family's sync (target route) or clear (target null): validate the
+/// target, pick the sessions without an own route, and say which are kept,
+/// unchanged or skipped. The caller applies the plan.
 pub fn plan_sync(input: &str) -> Result<String, String> {
     let parsed: Value =
         serde_json::from_str(input).map_err(|error| format!("invalid subagent sync input: {error}"))?;
@@ -216,6 +227,7 @@ pub fn plan_sync(input: &str) -> Result<String, String> {
     let mut targets = Vec::new();
     let mut unchanged = Vec::new();
     let mut skipped = Vec::new();
+    let mut kept = Vec::new();
     for session in sessions {
         let id = session.get("id").and_then(Value::as_str).unwrap_or("");
         if id.is_empty() {
@@ -249,6 +261,10 @@ pub fn plan_sync(input: &str) -> Result<String, String> {
             "pending": session.get("pending").and_then(Value::as_bool).unwrap_or(false),
         });
         let desired = session_route(session.get("subagent"));
+        if desired.is_some() && !session_inherited(session.get("subagent")) {
+            kept.push(entry);
+            continue;
+        }
         if same_route(desired.as_ref(), target.as_ref()) {
             unchanged.push(entry);
             continue;
@@ -270,6 +286,7 @@ pub fn plan_sync(input: &str) -> Result<String, String> {
         "targets": targets,
         "unchanged": unchanged,
         "skipped": skipped,
+        "kept": kept,
     })
     .to_string())
 }
@@ -388,12 +405,12 @@ mod tests {
             "providerOfficial": false,
             "sessions": [
                 json!({ "id": "same", "cli": "codex", "kind": "chat", "provider": "main",
-                    "subagent": { "providerId": "p", "model": "m" } }),
+                    "subagent": { "providerId": "p", "model": "m", "inherited": true } }),
                 json!({ "id": "same-exp", "cli": "codex-exp", "kind": "chat", "provider": "main",
-                    "subagent": { "providerId": "p", "model": "m" }, "pending": true }),
+                    "subagent": { "providerId": "p", "model": "m", "inherited": true }, "pending": true }),
                 json!({ "id": "no-main", "cli": "codex", "kind": "chat", "provider": null }),
                 json!({ "id": "move", "cli": "codex", "kind": "chat", "provider": "main",
-                    "subagent": { "providerId": "old", "model": "old" } }),
+                    "subagent": { "providerId": "old", "model": "old", "inherited": true } }),
             ],
         }));
         let unchanged: Vec<_> = out["unchanged"].as_array().unwrap().iter()
@@ -416,8 +433,10 @@ mod tests {
             "defaults": { "claude": { "providerId": "p", "model": "m" }, "codex": null },
             "sessions": [
                 json!({ "id": "clear", "cli": "claude", "kind": "chat", "provider": "main",
-                    "subagent": { "providerId": "p", "model": "m" } }),
+                    "subagent": { "providerId": "p", "model": "m", "inherited": true } }),
                 json!({ "id": "already", "cli": "claude", "kind": "chat", "provider": "main" }),
+                json!({ "id": "own", "cli": "claude", "kind": "chat", "provider": "main",
+                    "subagent": { "providerId": "p", "model": "m" } }),
             ],
         }));
         assert_eq!(out["subagent"], Value::Null);
@@ -426,6 +445,39 @@ mod tests {
             .map(|s| s["sessionId"].clone()).collect();
         assert_eq!(targets, vec![json!("clear")]);
         assert_eq!(out["unchanged"][0]["sessionId"], json!("already"));
+        assert_eq!(out["kept"][0]["sessionId"], json!("own"));
+    }
+
+    // 单独设置过的任务（线路上没有 inherited）在设置和清除全局默认时都原样保留，
+    // 哪怕它恰好和目标是同一条线路；inherited: false 也算单独设置。
+    #[test]
+    fn own_routes_are_kept_by_sync_and_clear() {
+        let sessions = json!([
+            { "id": "own-same", "cli": "claude", "kind": "chat", "provider": "main",
+                "subagent": { "providerId": "p", "model": "m" } },
+            { "id": "own-other", "cli": "claude-exp", "kind": "chat", "provider": "main",
+                "subagent": { "providerId": "x", "model": "y", "inherited": false } },
+            { "id": "follow", "cli": "claude", "kind": "chat", "provider": "main" },
+            { "id": "global-old", "cli": "claude", "kind": "chat", "provider": "main",
+                "subagent": { "providerId": "old", "model": "old", "inherited": true } },
+        ]);
+        let ids = |out: &Value, key: &str| -> Vec<Value> {
+            out[key].as_array().unwrap().iter().map(|s| s["sessionId"].clone()).collect()
+        };
+        let set = plan(json!({
+            "cli": "claude",
+            "subagent": { "providerId": "p", "model": "m" },
+            "providerValid": true,
+            "sessions": sessions.clone(),
+        }));
+        assert_eq!(ids(&set, "targets"), vec![json!("follow"), json!("global-old")]);
+        assert_eq!(ids(&set, "kept"), vec![json!("own-same"), json!("own-other")]);
+        assert_eq!(set["unchanged"].as_array().unwrap().len(), 0);
+
+        let clear = plan(json!({ "cli": "claude", "subagent": null, "sessions": sessions }));
+        assert_eq!(ids(&clear, "targets"), vec![json!("global-old")]);
+        assert_eq!(ids(&clear, "unchanged"), vec![json!("follow")]);
+        assert_eq!(ids(&clear, "kept"), vec![json!("own-same"), json!("own-other")]);
     }
 
     #[test]

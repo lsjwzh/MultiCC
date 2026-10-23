@@ -1,6 +1,6 @@
 'use strict';
 const path = require('node:path');
-const { normalizeSubagentInput } = require('./subagent');
+const { normalizeSubagentInput, withSubagentSource } = require('./subagent');
 function createSessionRecordFactory(deps) {
   // Injected by the composition root. src/session is a bounded context and must
   // not reach into src/cli for the lane table (tests/test-architecture-boundaries.js).
@@ -127,7 +127,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     branch,
   };
   if (rp) session.rolePrompt = rp;
-  if (subagentChecked.value) session.subagent = subagentChecked.value;
+  if (subagentChecked.value) session.subagent = withSubagentSource(subagentChecked.value, null, usesDefaultSubagent);
   // Per-lane API-key account picks, already validated by the caller against the
   // account store (src/cli-key-accounts.js) — this context only copies them.
   if (cliAccounts && typeof cliAccounts === 'object' && !Array.isArray(cliAccounts)) {

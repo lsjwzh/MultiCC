@@ -3,14 +3,18 @@
 // 服务端契约：
 //   GET  /api/subagent-defaults            → { ok, defaults: { claude, codex } }
 //   POST /api/subagent-defaults/sync       → { ok, dryRun, family, subagent, defaults,
-//                                             counts: { applied, deferred, unchanged, skipped },
+//                                             counts: { applied, deferred, unchanged,
+//                                                       skipped, kept },
 //                                             sessions: [...], truncated }
 //
-// 家族只有 claude / codex 两族。`subagent: null` = 跟随主线路：清掉该家族每个任务
-// 的覆盖，也清掉家族默认。忙碌的任务下轮生效（deferred）。
+// 家族只有 claude / codex 两族（claude + claude-exp / codex + codex-exp）。
+// `subagent: route` 只写给该家族「没单独设置过」的任务（subagent 为 null 或
+// inherited=true），并写成之后新建任务的家族默认；单独设置过的任务不动（kept）。
+// `subagent: null` = 清除：家族默认清空，继承默认的任务恢复随主，任务自己的设置
+// 不动。忙碌的任务下轮生效（deferred）。
 //
-// 503 + code=rust_backend_unavailable 表示服务端还没重启到带 native 模块的版本 ——
-// 这不是用户能自己修的错误，面板要收起开关并明说「需要手动重启服务端」。
+// 503 + code=rust_backend_unavailable 表示服务端进程里加载的原生模块还是旧版本 ——
+// 重启一次 MultiCC 就会按当前代码重新编译加载。
 library;
 
 import 'dart:convert';
@@ -58,12 +62,15 @@ Map<String, SessionSubagent?> parseSubagentDefaults(Object? raw) {
   return out;
 }
 
-/// 同步接口还没在这个服务端上生效（native 模块要重启才加载）。调用方据此收起
-/// 开关并提示「手动重启」，而不是无限重试。
+/// 服务端进程里的原生模块还是旧版本（503 rust_backend_unavailable）。这不是用户
+/// 能自己修的错误：重启一次 MultiCC 就会按当前代码重新编译加载。面板据此收起
+/// 开关并原样显示这句话，而不是无限重试。
+const String subagentSyncUnavailableText =
+    '服务端加载的原生模块是旧版本，暂不支持同步。'
+    '重启一次 MultiCC 会自动按当前代码重新编译加载，之后改这个设置不需要再重启。';
+
 class SubagentSyncUnavailable implements Exception {
-  const SubagentSyncUnavailable([
-    this.message = '子 agent 同步需要重启 MultiCC 服务端后才能启用',
-  ]);
+  const SubagentSyncUnavailable([this.message = subagentSyncUnavailableText]);
 
   final String message;
 
@@ -82,6 +89,7 @@ class SubagentSyncResult {
     required this.deferred,
     required this.unchanged,
     required this.skipped,
+    required this.kept,
     required this.sessionCount,
     required this.truncated,
   });
@@ -89,7 +97,7 @@ class SubagentSyncResult {
   final bool dryRun;
   final String? family;
 
-  /// 这次同步写下去的那套设置；null = 随主线路。
+  /// 这次同步写下去的那套设置；null = 清除（随主线路）。
   final SessionSubagent? subagent;
 
   /// 同步之后的家族默认（同一次回执里带回来，面板直接换掉本地那份）。
@@ -99,6 +107,9 @@ class SubagentSyncResult {
   final int deferred;
   final int unchanged;
   final int skipped;
+
+  /// 自己单独设过子 agent 的任务数：同步/清除都不会动它们。
+  final int kept;
   final int sessionCount;
   final bool truncated;
 
@@ -123,6 +134,7 @@ class SubagentSyncResult {
       deferred: count('deferred'),
       unchanged: count('unchanged'),
       skipped: count('skipped'),
+      kept: count('kept'),
       sessionCount: sessions is List ? sessions.length : 0,
       truncated: json['truncated'] == true,
     );
@@ -170,8 +182,9 @@ class SubagentDefaultsService {
     return parseSubagentDefaults(body is Map ? body['defaults'] : null);
   }
 
-  /// 把一套设置同步到该家族的全部任务，并写成之后新建任务的家族默认。
-  /// [dryRun] 只统计不落盘（勾选「同步」时先跑一次）。
+  /// 把一套设置同步到该家族「没单独设置过」的任务，并写成之后新建任务的家族
+  /// 默认。单独设置过的任务不动（回执里的 kept）。[dryRun] 只统计不落盘（勾选
+  /// 「同步」时先跑一次）。
   Future<SubagentSyncResult> sync({
     required String cli,
     required SessionSubagent? subagent,
@@ -196,6 +209,13 @@ class SubagentDefaultsService {
     if (body is! Map) throw Exception('子 agent 同步返回了无法识别的响应');
     return SubagentSyncResult.fromJson(body.cast<String, dynamic>());
   }
+
+  /// 清除该家族的全局默认：`subagent: null` 的同步。跟随全局的任务恢复随主，
+  /// 单独设置过的任务不动（kept）。[dryRun] 用来在确认框里先报数。
+  Future<SubagentSyncResult> clear({
+    required String cli,
+    bool dryRun = false,
+  }) => sync(cli: cli, subagent: null, dryRun: dryRun);
 
   Never _throw(http.Response res) {
     String? error;
