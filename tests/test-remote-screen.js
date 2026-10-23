@@ -14,6 +14,16 @@ const { createDesktopHost, profileFor } = require('../src/desktop-host');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-screen-test-'));
 process.env.MULTICC_DATA_DIR = tmp;
 const rs = require('../src/remote-screen');
+test('HTTP pointer samples retain logical coordinates and viewer identity', () => {
+  assert.deepEqual(rs.buildInput({ op: 'pointer', viewer: 'viewer-1', mask: 1, x: 123, y: 45 }).req,
+    { op: 'pointer', session: 'remote-screen', viewer: 'viewer-1', mask: 1, x: 123, y: 45, allowSystem: true });
+  for (const body of [
+    { viewer: '', mask: 1, x: 1, y: 2 },
+    { viewer: '../invalid', mask: 1, x: 1, y: 2 },
+    { viewer: 'valid', mask: 4, x: 1, y: 2 },
+    { viewer: 'valid', mask: 0, x: NaN, y: 2 },
+  ]) assert.ok(rs.buildInput({ op: 'pointer', ...body }).error);
+});
 const live = require('../src/annotation-live');
 
 const realAgentCall = rs._deps.agentCall;
@@ -499,16 +509,71 @@ test('cropped snapshots persist coordinate offsets through point/arrow/recapture
 function webHarness() {
   const vm = require('node:vm');
   const window = { addEventListener() {} };
-  const document = { readyState: 'loading', addEventListener() {}, querySelector() { return null; } };
+  const document = { readyState: 'loading', addEventListener() {}, querySelector() { return null; },
+    createElement() { return { style: {}, remove() {} }; } };
   const context = { window, document, URL, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval, fetch: null };
   let source = fs.readFileSync('public/chat-remote-screen.js', 'utf8');
   // 钩子按源码文本改这一行：导出表一变，这里就得跟着变（少了它就是 probe 未定义，
   // 两个用例一起红 —— 这正是「让测试自己告诉你它被改坏了」的那条线）。
   source = source.replace('global.MultiCCRemoteScreen = Object.freeze({ open, close, openMode });',
-    'global.probe = { toScreen, applyBoxZoom, zoomTap, loop, resetZoom, set: value => { s = value; ov = { classList: { toggle() {} } }; }, zoom };');
+    'global.probe = { toScreen, applyBoxZoom, zoomTap, loop, resetZoom, wirePointer, set: value => { s = value; ov = { appendChild() {}, classList: { toggle() {} } }; }, zoom };');
   vm.runInNewContext(source, context);
   return { context, probe: window.probe };
 }
+
+test('web fallback streams before lift and coalesces motion behind a slow request', async () => {
+  const { context, probe } = webHarness();
+  const handlers = {};
+  const stage = { addEventListener: (name, fn) => { handlers[name] = fn; }, setPointerCapture() {} };
+  const state = {
+    control: true, screenW: 400, screenH: 200, stage, unhalt: {},
+    img: { naturalWidth: 400, naturalHeight: 200, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 200 }) },
+  };
+  probe.set(state);
+  const sent = [];
+  let finish;
+  context.fetch = async (_url, options) => {
+    sent.push(JSON.parse(options.body));
+    if (sent.length === 1) await new Promise(resolve => { finish = resolve; });
+    return { ok: true, json: async () => ({ ok: true }) };
+  };
+  probe.wirePointer(stage);
+  const event = x => ({ pointerId: 1, button: 0, clientX: x, clientY: 50, preventDefault() {} });
+  handlers.pointerdown(event(50));
+  handlers.pointermove(event(80));
+  assert.equal(sent.length, 1, 'press has left the browser before pointerup');
+  assert.deepEqual([sent[0].op, sent[0].mask, sent[0].x], ['pointer', 1, 50]);
+  handlers.pointermove(event(100));
+  handlers.pointermove(event(120));
+  handlers.pointerup(event(130));
+  finish();
+  await state.cancelFallback();
+  assert.deepEqual(sent.map(sample => [sample.mask, sample.x]), [[1, 50], [1, 130], [0, 130]]);
+  assert.ok(sent.every(sample => sample.op === 'pointer'));
+});
+
+test('web fallback retains dragging when an older Agent lacks the pointer protocol', async () => {
+  const { context, probe } = webHarness();
+  const handlers = {};
+  const stage = { addEventListener: (name, fn) => { handlers[name] = fn; }, setPointerCapture() {} };
+  const state = { control: true, screenW: 400, screenH: 200, stage, unhalt: {},
+    img: { naturalWidth: 400, naturalHeight: 200, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 200 }) } };
+  probe.set(state);
+  const sent = [];
+  context.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body); sent.push(body);
+    return { ok: true, json: async () => body.op === 'pointer'
+      ? { ok: false, error: 'unknown op: pointer' } : { ok: true } };
+  };
+  probe.wirePointer(stage);
+  const event = x => ({ pointerId: 1, button: 0, clientX: x, clientY: 50, preventDefault() {} });
+  handlers.pointerdown(event(50));
+  handlers.pointermove(event(100));
+  handlers.pointerup(event(120));
+  await state.cancelFallback();
+  assert.deepEqual(sent.map(body => body.op), ['pointer', 'drag']);
+  assert.deepEqual([sent[1].x, sent[1].x2], [50, 120]);
+});
 
 test('web crops use image letterboxing and nested origins; view-only zoom taps send no input', async () => {
   const { context, probe } = webHarness();

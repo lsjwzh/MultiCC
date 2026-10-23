@@ -1527,7 +1527,20 @@ func handle(_ req: [String: Any]) -> [String: Any] {
     control.resume(session)
     return ["ok": true, "halted": false]
   case "release":
+    #if canImport(ScreenCaptureKit) && compiler(>=5.9)
+    if session == "remote-screen", #available(macOS 14.0, *) { HttpScreenPointers.shared.releaseAll() }
+    #endif
     return ["ok": control.release(session)]
+  case "pointer":
+    #if canImport(ScreenCaptureKit) && compiler(>=5.9)
+    guard session == "remote-screen", #available(macOS 14.0, *) else { return refused("unsupported", "pointer is reserved for the remote screen viewer", retrySafe: false) }
+    guard let viewer = req["viewer"] as? String, !viewer.isEmpty, viewer.count <= 64,
+          let mask = num(req["mask"]), mask == 0 || mask == 1,
+          let x = num(req["x"]), let y = num(req["y"]) else { return ["ok": false, "error": "viewer, mask, x and y are required"] }
+    return HttpScreenPointers.shared.pointer(viewer, mask: Int(mask), x: Int(x), y: Int(y))
+    #else
+    return refused("unsupported", "live pointers require macOS 14 or newer", retrySafe: false)
+    #endif
   case "see":
     return see(req, session: session)
   case "set":
@@ -2591,6 +2604,39 @@ func rfbPointer(_ c: RfbClient, mask: Int, x rfbX: Int, y rfbY: Int) {
       c.lastClickAt = now; c.lastClickPos = start
       rfbInput(["op": "click", "x": Int(start.x), "y": Int(start.y), "count": dbl ? 2 : 1, "allowSystem": true])
     }
+  }
+}
+
+// JPEG/crop viewers use ordered HTTP samples but the same native drag state,
+// policy gate and idle-release watchdog as an RFB connection. No socket is owned.
+@available(macOS 14.0, *)
+final class HttpScreenPointers {
+  static let shared = HttpScreenPointers()
+  private let lock = NSLock()
+  private var clients: [String: RfbClient] = [:]
+
+  func pointer(_ viewer: String, mask: Int, x: Int, y: Int) -> [String: Any] {
+    lock.lock(); defer { lock.unlock() }
+    for key in Array(clients.keys) {
+      if let c = clients[key], Date().timeIntervalSince(c.lastPointerAt) > 15 {
+        rfbDragAbort(c); clients.removeValue(forKey: key)
+      }
+    }
+    if clients[viewer] == nil {
+      guard clients.count < 16 else { return ["ok": false, "error": "busy"] }
+      let c = RfbClient(-1); c.div = 1; c.hoverMoves = true
+      clients[viewer] = c
+    }
+    let c = clients[viewer]!
+    rfbPointer(c, mask: mask, x: x, y: y)
+    c.dragLock.lock(); let dead = c.dragDead; c.dragLock.unlock()
+    return dead ? ["ok": false, "error": "drag-refused"] : ["ok": true]
+  }
+
+  func releaseAll() {
+    lock.lock(); defer { lock.unlock() }
+    for c in clients.values { rfbDragAbort(c) }
+    clients.removeAll()
   }
 }
 

@@ -75,13 +75,17 @@
     if (isError) s.errAt = Date.now();
   }
 
-  async function input(body) {
+  async function input(body, onUnsupported) {
     try {
       const res = await fetch(tok('/api/remote-screen/input'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) {
+        if (onUnsupported && (data.error === 'unsupported' || /^(unknown op|op not allowed)/.test(data.error || ''))) {
+          onUnsupported();
+          return false;
+        }
         status(errText(data), true);
         if (s) s.unhalt.hidden = data.error !== 'user-stopped';
         return false;
@@ -487,6 +491,41 @@
   function wirePointer(stage) {
     let down = null;
     let lastClick = null;
+    const viewer = global.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2);
+    const pending = [];
+    let sending = false, queuedMask = 0, drained = Promise.resolve();
+    let legacy = false, legacyDown = null;
+    const legacyPointer = async body => {
+      if (body.mask === 1) { legacyDown ||= body; return; }
+      const start = legacyDown; legacyDown = null;
+      if (!start) return;
+      const drag = Math.hypot(body.x - start.x, body.y - start.y) > 8;
+      await input({ op: drag ? 'drag' : 'click', x: start.x, y: start.y,
+        ...(drag ? { x2: body.x, y2: body.y, ms: 350 } : {}) });
+    };
+    const pointer = (mask, p) => {
+      const edge = mask !== queuedMask;
+      queuedMask = mask;
+      const sample = { op: 'pointer', viewer, mask, x: p.x, y: p.y, edge };
+      if (!edge && pending.length && !pending[pending.length - 1].edge) pending[pending.length - 1] = sample;
+      else pending.push(sample);
+      if (sending) return;
+      sending = true;
+      drained = (async () => {
+        try {
+          while (pending.length) {
+            const { edge: _, ...body } = pending.shift();
+            if (!legacy) await input(body, () => { legacy = true; });
+            if (legacy) await legacyPointer(body);
+          }
+        } finally { sending = false; }
+      })();
+    };
+    s.cancelFallback = () => {
+      if (down?.dragging) pointer(0, down.last);
+      down = null;
+      return drained;
+    };
     stage.addEventListener('contextmenu', ev => ev.preventDefault());
     stage.addEventListener('pointerdown', ev => {
       if (!s.control || s.rfb || s.regionLoading) return;
@@ -494,16 +533,29 @@
       if (!p) return;
       ev.preventDefault();
       stage.setPointerCapture(ev.pointerId);
-      down = { p, button: ev.button };
+      down = { p, last: p, id: ev.pointerId, button: ev.button, dragging: false };
+    });
+    stage.addEventListener('pointermove', ev => {
+      if (!down || ev.pointerId !== down.id) return;
+      const p = toScreen(ev);
+      if (!p) return;
+      if (!down.dragging && Math.hypot(p.cx - down.p.cx, p.cy - down.p.cy) <= 8) return;
+      if (!down.dragging) {
+        down.dragging = true;
+        pointer(1, down.p);
+      }
+      down.last = p;
+      pointer(1, p);
     });
     stage.addEventListener('pointerup', ev => {
-      if (!down) return;
+      if (!down || ev.pointerId !== down.id) return;
       const start = down;
       down = null;
       const p = toScreen(ev) || start.p;
-      if (Math.hypot(p.cx - start.p.cx, p.cy - start.p.cy) > 8) {
+      if (start.dragging) {
         ripple(p.cx, p.cy);
-        input({ op: 'drag', x: start.p.x, y: start.p.y, x2: p.x, y2: p.y, ms: 350 });
+        pointer(1, p);
+        pointer(0, p);
         return;
       }
       const right = start.button === 2 || s.rightOnce;
@@ -514,7 +566,8 @@
       ripple(start.p.cx, start.p.cy);
       input({ op: 'click', x: start.p.x, y: start.p.y, button: right ? 'right' : 'left', count: dbl ? 2 : 1 });
     });
-    stage.addEventListener('pointercancel', () => { down = null; });
+    stage.addEventListener('pointercancel', () => s?.cancelFallback?.());
+    stage.addEventListener('lostpointercapture', () => s?.cancelFallback?.());
     let acc = 0, wheelAt = null, wheelTimer = null;
     stage.addEventListener('wheel', ev => {
       if (!s.control || s.rfb || s.regionLoading) return;
@@ -730,6 +783,7 @@
       ev.stopPropagation(); // 捏合/放大期间独占，noVNC 与 wirePointer 都不掺和
       try { stage.setPointerCapture(ev.pointerId); } catch {}
       if (two) {
+        s?.cancelFallback?.();
         const [a, b] = [...pts.values()];
         pinch = {
           d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2,
@@ -825,6 +879,7 @@
   }
 
   function setControl(on) {
+    if (!on) s.cancelFallback?.();
     s.control = on;
     s.modeBtn.textContent = on ? '🖱 ' + tr('rsControl', '可操作') : '👁 ' + tr('rsViewOnly', '只看');
     s.modeBtn.classList.toggle('on', on);
@@ -969,6 +1024,7 @@
   function close() {
     if (!ov) return;
     const wasControl = s && s.control;
+    const released = s?.cancelFallback?.() || Promise.resolve();
     if (s) {
       s.closed = true;
       clearTimeout(s.resumeTimer);
@@ -982,7 +1038,7 @@
     ov.remove();
     ov = null;
     // 关掉浮层即交还租约，不让 agent 再等 120 秒。
-    if (wasControl) fetch(tok('/api/remote-screen/input'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op: 'release' }) }).catch(() => {});
+    if (wasControl) void released.then(() => fetch(tok('/api/remote-screen/input'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op: 'release' }) })).catch(() => {});
   }
 
   function installButton() {

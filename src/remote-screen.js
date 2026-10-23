@@ -36,7 +36,7 @@ const DIR = path.join(createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).ass
 // RFB streaming server 一节）。浏览器跑原版 noVNC，经 /ws/remote-screen 到这里，
 // 再桥到 rfb.sock；鉴权在 WS 层（同 /ws/chat 的 ws-ticket），Agent 侧 getpeereid
 // 校验同 uid。Agent 未带该 socket（旧版本 / macOS<14）时连接失败，前端回退轮询。
-const INPUT_OPS = new Set(['click', 'move', 'scroll', 'drag', 'type', 'press', 'release', 'resume', 'status']);
+const INPUT_OPS = new Set(['click', 'move', 'scroll', 'drag', 'pointer', 'type', 'press', 'release', 'resume', 'status']);
 const KEEP_SHOTS = 20;
 
 const deps = { agentCall, execFile, sock: null, rfbSock: null, h264Sock: null, dir: DIR };
@@ -163,10 +163,16 @@ function buildInput(body = {}) {
   const op = String(body.op || '');
   if (!INPUT_OPS.has(op)) return { error: `op not allowed: ${op || '(empty)'}` };
   const req = { op, session: SESSION };
-  if (['click', 'move', 'scroll', 'drag'].includes(op)) {
+  if (['click', 'move', 'scroll', 'drag', 'pointer'].includes(op)) {
     const x = num(body.x), y = num(body.y);
     if (x == null || y == null) return { error: 'x and y are required' };
     Object.assign(req, { x, y, allowSystem: true });
+  }
+  // Compatibility transport only: retain the Agent's existing RFB drag policy.
+  if (op === 'pointer') {
+    if (typeof body.viewer !== 'string' || !/^[a-zA-Z0-9-]{1,64}$/.test(body.viewer)) return { error: 'viewer is required' };
+    if (body.mask !== 0 && body.mask !== 1) return { error: 'mask must be 0 or 1' };
+    Object.assign(req, { viewer: body.viewer, mask: body.mask });
   }
   if (op === 'click') {
     if (body.button === 'right') req.button = 'right';

@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:multicc_app/services/remote_screen_h264.dart';
 
@@ -77,6 +78,47 @@ Uint8List _config(int w, int h) =>
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'stalled decoding requests a key frame then falls back if recovery fails',
+    () {
+      fakeAsync((clock) {
+        final incoming = StreamController<Uint8List>();
+        final decoder = _RecordingDecoder();
+        final sent = <Uint8List>[];
+        var closed = 0;
+        final session = RemoteScreenH264(
+          incoming: incoming.stream,
+          send: sent.add,
+          decoder: decoder,
+          onClosed: () => closed++,
+          now: () => DateTime(2026).add(clock.elapsed),
+        );
+        unawaited(session.run());
+        decoder.emit(Uint8List(4), 1, 1);
+        clock.flushMicrotasks();
+        sent.clear();
+        clock.elapse(const Duration(seconds: 4));
+        expect(sent, [
+          [h264ReqKey],
+        ]);
+        expect(closed, 0);
+        decoder.emit(Uint8List(4), 1, 1);
+        clock.flushMicrotasks();
+        clock.elapse(const Duration(seconds: 8));
+        expect(
+          closed,
+          0,
+          reason: 'a recovered frame resets the stall deadline',
+        );
+        clock.elapse(const Duration(seconds: 4));
+        expect(closed, 1);
+        expect(decoder.closed, isTrue);
+        unawaited(incoming.close());
+        clock.flushMicrotasks();
+      });
+    },
+  );
 
   test('按 5 字节头切帧：跨 WS 消息的帧能拼回，delta 先到不送解码器', () async {
     final incoming = StreamController<Uint8List>();

@@ -77,12 +77,18 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
     void Function()? onClosed,
     void Function()? onFrame,
     Duration firstFrameTimeout = const Duration(seconds: 10),
+    Duration stallTimeout = const Duration(seconds: 4),
+    Duration recoveryTimeout = const Duration(seconds: 12),
+    DateTime Function()? now,
   }) : _incoming = incoming,
        _send = send,
        _decoder = decoder,
        _onClosed = onClosed,
        _onFrame = onFrame,
-       _firstFrameTimeout = firstFrameTimeout;
+       _firstFrameTimeout = firstFrameTimeout,
+       _stallTimeout = stallTimeout,
+       _recoveryTimeout = recoveryTimeout,
+       _now = now ?? DateTime.now;
 
   final Stream<Uint8List> _incoming;
   final void Function(Uint8List bytes) _send;
@@ -90,12 +96,17 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   final void Function()? _onClosed;
   final void Function()? _onFrame;
   final Duration _firstFrameTimeout;
+  final Duration _stallTimeout;
+  final Duration _recoveryTimeout;
+  final DateTime Function() _now;
 
   final _Buffer _buf = _Buffer();
   StreamSubscription<Uint8List>? _sub;
   StreamSubscription<H264Frame>? _frameSub;
   StreamSubscription<String>? _errSub;
   Timer? _firstTimer;
+  Timer? _watchdog;
+  DateTime? _lastDecodedAt;
 
   bool _closed = false;
   bool _gotFrame = false;
@@ -130,6 +141,18 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
     // Agent 接到新客户端会重放 config 并马上编一个关键帧；这里再要一次，
     // 兼顾「config 之后 Gop 内没有关键帧」的边角情况（节流会合并）。
     requestKeyFrame(force: true);
+    _watchdog = Timer.periodic(_stallTimeout, (_) {
+      final last = _lastDecodedAt;
+      if (last == null || _closed) return;
+      final idle = _now().difference(last);
+      if (idle >= _recoveryTimeout) {
+        _fail();
+      } else if (idle >= _stallTimeout) {
+        // Capture is change-driven: requesting a key also refreshes a still
+        // image, and recovers a decoder that stopped producing output.
+        requestKeyFrame();
+      }
+    });
   }
 
   @override
@@ -143,7 +166,11 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   @override
   void pointerEvent(int mask, int x, int y) {
     final ew = _encodedWidth, eh = _encodedHeight;
-    if (ew > 0 && eh > 0 && width > 0 && height > 0 && (ew != width || eh != height)) {
+    if (ew > 0 &&
+        eh > 0 &&
+        width > 0 &&
+        height > 0 &&
+        (ew != width || eh != height)) {
       x = (x * ew / width).round().clamp(0, ew - 1);
       y = (y * eh / height).round().clamp(0, eh - 1);
     }
@@ -153,7 +180,7 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   /// 向 Agent 要一个关键帧（断流恢复、解码器重置后都从这里续上）。
   void requestKeyFrame({bool force = false}) {
     if (_closed) return;
-    final now = DateTime.now();
+    final now = _now();
     if (!force && now.difference(_lastKeyRequest).inMilliseconds < 500) {
       return;
     }
@@ -215,6 +242,7 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   void _onDecoded(H264Frame frame) {
     if (_closed || frame.width <= 0 || frame.height <= 0) return;
     _gotFrame = true;
+    _lastDecodedAt = _now();
     _firstTimer?.cancel();
     _firstTimer = null;
     width = frame.width;
@@ -228,6 +256,7 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   void _fail() {
     if (_closed) return;
     _closed = true;
+    _watchdog?.cancel();
     _firstTimer?.cancel();
     _firstTimer = null;
     _sub?.cancel();
@@ -243,6 +272,7 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   void dispose() {
     if (_closed) return;
     _closed = true;
+    _watchdog?.cancel();
     _firstTimer?.cancel();
     _firstTimer = null;
     _sub?.cancel();

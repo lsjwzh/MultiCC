@@ -3,7 +3,6 @@
 // 显式「右键」一次性按钮（长按保持为按住拖动）、滚轮脉冲、键盘条（文字 + 功能键/快捷键和弦）与可选 Esc 急停的
 // 「解除急停」都对着 Web 版 public/chat-remote-screen.js 的语义。
 import 'dart:async';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -12,6 +11,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../i18n.dart';
 import '../services/remote_screen_rfb.dart';
+import '../services/remote_frame_decoder.dart';
+import '../services/remote_pointer_queue.dart';
 import '../services/remote_screen_region.dart';
 import '../services/remote_screen_service.dart';
 import '../services/remote_touch_controller.dart';
@@ -68,9 +69,11 @@ class RemoteScreenScreen extends StatefulWidget {
     super.key,
     required this.settings,
     this.initialControl = false,
+    this.service,
   });
 
   final SettingsService settings;
+  final RemoteScreenService? service;
 
   /// 聊天里点 `#rs=control` 直达链接进来时直接处于可操作模式（与 Web 一致）。
   final bool initialControl;
@@ -85,7 +88,31 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   StreamSubscription<void>? _modeSub;
 
   ui.Image? _image;
-  bool _decoding = false;
+  late final RemoteFrameDecoder _decoder = RemoteFrameDecoder(
+    onImage: (image) {
+      if (!mounted) {
+        image.dispose();
+        return;
+      }
+      final previous = _image;
+      setState(() => _image = image);
+      // The old painter can still be in the current layer tree until paint.
+      if (previous != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
+      }
+    },
+  );
+  late final RemotePointerQueue _pointerQueue = RemotePointerQueue((
+    body,
+  ) async {
+    final result = await _svc.inputOp(body);
+    if (mounted &&
+        result['ok'] == false &&
+        !RemotePointerQueue.unsupported(result)) {
+      _showErr(result);
+    }
+    return result;
+  });
   double? _fps;
 
   bool _waking = false;
@@ -124,16 +151,35 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   final TransformationController _xform = TransformationController();
   bool _zoomed = false;
   int _zoomPct = 100;
-  int _pointerCount = 0; // 兼容（JPEG）模式用；流畅模式的手势全在 _touch 里
+  final Set<int> _viewPointers = {};
+  bool _viewMulti = false;
 
   /// 触摸手势识别（直接触摸 / 触控板两档），见 RemoteTouchController。
   late final RemoteTouchController _touch = RemoteTouchController(
     onPointer: (mask, x, y) {
       final source = _svc.source;
-      if (source == null) return;
       _lastX = x;
       _lastY = y;
-      source.pointerEvent(mask, x, y);
+      if (source != null) {
+        source.pointerEvent(mask, x, y);
+      } else {
+        final area = _fallbackArea;
+        if (area == null) return;
+        if (mask == 0 || mask == 1) {
+          _pointerQueue.add(mask, (area.x + x).round(), (area.y + y).round());
+        } else if (mask == 4) {
+          unawaited(
+            _pointerQueue.drained.then(
+              (_) => _svc.inputOp({
+                'op': 'click',
+                'x': (area.x + x).round(),
+                'y': (area.y + y).round(),
+                'button': 'right',
+              }),
+            ),
+          );
+        }
+      }
     },
     onCursor: (s, pressed) =>
         _cursorMark.value = s == null ? null : _CursorMark(s, pressed),
@@ -164,8 +210,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   @override
   void initState() {
     super.initState();
-    _svc = RemoteScreenService(settings: widget.settings);
+    _svc = widget.service ?? RemoteScreenService(settings: widget.settings);
     _modeSub = _svc.onModeChange.listen((_) {
+      _touch.reset();
+      _decoder.clear();
       // live↔fallback 切换时画面尺寸会变，缩放矩阵留着只会歪，直接复位。
       _xform.value = Matrix4.identity();
       _zoomed = false;
@@ -173,10 +221,12 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       if (mounted) setState(() {});
     });
     _frameSub = _svc.onFrame.listen((_) => _renderFrame());
-    SharedPreferences.getInstance().then((prefs) {
-      final on = prefs.getBool(_trackpadPref) ?? false;
-      if (mounted && on != _trackpad) setState(() => _trackpad = on);
-    }).catchError((Object _) {});
+    SharedPreferences.getInstance()
+        .then((prefs) {
+          final on = prefs.getBool(_trackpadPref) ?? false;
+          if (mounted && on != _trackpad) setState(() => _trackpad = on);
+        })
+        .catchError((Object _) {});
     if (widget.initialControl) {
       _control = true;
       _hadControl = true;
@@ -277,6 +327,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     _haltTimer?.cancel();
     _permTimer?.cancel();
     _touch.reset();
+    _decoder.dispose();
     _cursorMark.dispose();
     _xform.dispose();
     _frameSub?.cancel();
@@ -287,7 +338,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     // 曾经拿过操作租约就先交还再拆传输（inputOp 自带超时，dispose 终会落地）。
     if (_hadControl) {
       unawaited(
-        _svc.inputOp({'op': 'release'}).whenComplete(() => _svc.dispose()),
+        _pointerQueue.drained
+            .then((_) => _svc.inputOp({'op': 'release'}))
+            .whenComplete(() => _svc.dispose()),
       );
     } else {
       _svc.dispose();
@@ -312,25 +365,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       }
     }
     _lastFrameAt = now;
-    if (_decoding) return; // 上一帧还在解码，跳过；下个 update 会再触发
-    final w = source.width, h = source.height;
-    // 引擎直接吃 BGRA：不再逐像素在 Dart 里换 R/B（一帧上百万次循环会把 UI 线程
-    // 吃满、压低帧率）。framebuffer 会被后续 update 原地改写，而解码是异步读的，
-    // 所以必须先拷一份 —— memcpy 比 Dart 循环快一个数量级，也顺带绕开了
-    // 来源未 4 字节对齐的问题。
-    final pixels = Uint8List.fromList(fb);
-    _decoding = true;
-    ui.decodeImageFromPixels(pixels, w, h, ui.PixelFormat.bgra8888, (img) {
-      _decoding = false;
-      if (!mounted) {
-        img.dispose();
-        return;
-      }
-      setState(() {
-        _image?.dispose();
-        _image = img;
-      });
-    });
+    _decoder.add(fb, source.width, source.height);
   }
 
   DateTime? _lastFrameAt;
@@ -389,19 +424,21 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     });
   }
 
-  // ── 指针（仅流畅模式）──
+  // ── 指针（流式 / JPEG 共用手势控制器）──
   // 手势识别全在 RemoteTouchController（纯 Dart，单测覆盖）；这里只做装配。
   bool get _trackpadActive =>
       _trackpad && _control && _svc.mode == RemoteScreenMode.live;
 
   void _syncTouch(double dw, double dh) {
     final source = _svc.source;
-    if (source == null) return;
+    final area = _fallbackArea;
+    if (source == null && area == null) return;
     _touch
       ..display = Size(dw, dh)
-      ..source = Size(source.width.toDouble(), source.height.toDouble())
+      ..source = source != null
+          ? Size(source.width.toDouble(), source.height.toDouble())
+          : Size(area!.width, area.height)
       ..viewScale = _xform.value.getMaxScaleOnAxis()
-      ..zoomed = _zoomed
       ..mode = _trackpadActive
           ? RemoteTouchMode.trackpad
           : RemoteTouchMode.direct
@@ -410,6 +447,17 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
 
   void _onPointerDown(PointerDownEvent e, double dw, double dh) {
     if (!_control) return;
+    if (_svc.source == null) {
+      if (_svc.fallbackJpeg == null) return;
+      _fallbackArea =
+          _svc.viewRegion ??
+          ScreenRegion(
+            0,
+            0,
+            _svc.fallbackWidth.toDouble(),
+            _svc.fallbackHeight.toDouble(),
+          );
+    }
     _syncTouch(dw, dh);
     _touch.down(e.pointer, e.localPosition, e.position, e.timeStamp);
   }
@@ -494,82 +542,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     );
   }
 
-  // Native crop pointers use logical source geometry, including drag/right click.
-  bool _fallbackMulti = false;
-  Offset? _fallbackDown;
+  // Fixed logical source geometry for the current fallback gesture.
   ScreenRegion? _fallbackArea;
-  void _fallbackDownAt(PointerDownEvent e, double dw, double dh) {
-    if (!_control || _svc.fallbackJpeg == null) return;
-    _pointerCount++;
-    if (_pointerCount > 1) {
-      _fallbackMulti = true;
-      return;
-    }
-    _fallbackMulti = false;
-    _fallbackDown = e.localPosition;
-    _fallbackArea =
-        _svc.viewRegion ??
-        ScreenRegion(
-          0,
-          0,
-          _svc.fallbackWidth.toDouble(),
-          _svc.fallbackHeight.toDouble(),
-        );
-  }
-
-  void _fallbackUpAt(
-    PointerEvent e,
-    double dw,
-    double dh, {
-    bool cancelled = false,
-  }) {
-    if (_pointerCount > 0) _pointerCount--;
-    if (_pointerCount != 0) return;
-    final start = _fallbackDown;
-    _fallbackDown = null;
-    if (cancelled ||
-        !_control ||
-        _fallbackMulti ||
-        start == null ||
-        _svc.fallbackJpeg == null) {
-      return;
-    }
-    final moved = (e.localPosition - start).distance;
-    if (_zoomed && moved > 8) return; // local pan, not a remote drag
-    if (_rightOnce && moved <= 8) {
-      setState(() => _rightOnce = false);
-      unawaited(_fallbackInput(e.localPosition, dw, dh, right: true));
-      return;
-    }
-    unawaited(
-      _fallbackInput(e.localPosition, dw, dh, from: moved > 8 ? start : null),
-    );
-  }
-
-  Future<void> _fallbackInput(
-    Offset local,
-    double dw,
-    double dh, {
-    Offset? from,
-    bool right = false,
-  }) async {
-    final area = _fallbackArea;
-    if (area == null || dw <= 0 || dh <= 0) return;
-    final pt = area.point(local, dw, dh);
-    final start = from == null ? null : area.point(from, dw, dh);
-    final res = await _svc.inputOp({
-      'op': start == null ? 'click' : 'drag',
-      'x': (start?.dx ?? pt.dx).round(),
-      'y': (start?.dy ?? pt.dy).round(),
-      if (start != null) ...{
-        'x2': pt.dx.round(),
-        'y2': pt.dy.round(),
-        'ms': 350,
-      },
-      if (right) 'button': 'right',
-    });
-    if (mounted && res['ok'] == false) _showErr(res);
-  }
 
   // ── 键盘条 ──
   Future<void> _sendText() async {
@@ -714,6 +688,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
             tooltip: t('rsBoxZoomTitle'),
             color: _boxSelOn ? const Color(0xFF2ba67a) : null,
             onPressed: () {
+              _touch.reset();
               setState(() {
                 _boxSelOn = !_boxSelOn;
                 _boxRect = null;
@@ -925,10 +900,16 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
             source.height * scale,
             Listener(
               behavior: HitTestBehavior.opaque,
-              onPointerDown: (e) =>
-                  _onPointerDown(e, source.width * scale, source.height * scale),
-              onPointerMove: (e) =>
-                  _onPointerMove(e, source.width * scale, source.height * scale),
+              onPointerDown: (e) => _onPointerDown(
+                e,
+                source.width * scale,
+                source.height * scale,
+              ),
+              onPointerMove: (e) => _onPointerMove(
+                e,
+                source.width * scale,
+                source.height * scale,
+              ),
               onPointerUp: (e) =>
                   _onPointerUp(e, source.width * scale, source.height * scale),
               onPointerCancel: (e) =>
@@ -987,10 +968,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
           ih * scale,
           Listener(
             behavior: HitTestBehavior.opaque,
-            onPointerDown: (e) => _fallbackDownAt(e, iw * scale, ih * scale),
-            onPointerUp: (e) => _fallbackUpAt(e, iw * scale, ih * scale),
-            onPointerCancel: (e) =>
-                _fallbackUpAt(e, iw * scale, ih * scale, cancelled: true),
+            onPointerDown: (e) => _onPointerDown(e, iw * scale, ih * scale),
+            onPointerMove: (e) => _onPointerMove(e, iw * scale, ih * scale),
+            onPointerUp: (e) => _onPointerUp(e, iw * scale, ih * scale),
+            onPointerCancel: (e) => _onPointerUp(e, iw * scale, ih * scale),
             child: Image.memory(jpeg, gaplessPlayback: true, fit: BoxFit.fill),
           ),
         );
@@ -1010,32 +991,54 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       children: [
         Positioned.fill(
           child: ClipRect(
-            child: GestureDetector(
-              // 双击：放大↔复位（第一次轻点会照常发出一次单击，与 Web 版一致）。
-              onDoubleTapDown: pad
-                  ? null // 触控板里连点两下是双击，不是缩放
-                  : (d) => _doubleTapZoom(d, vp, offX, offY, dw, dh),
-              child: InteractiveViewer(
-                transformationController: _xform,
-                constrained: false,
-                // 触控板：单指/双指平行滑动归手势控制器（光标 / 滚轮），视角靠跟随光标
-                panEnabled: _zoomed && !pad,
-                scaleEnabled: true,
-                minScale: 1.0,
-                maxScale: 6.0,
-                boundaryMargin: const EdgeInsets.all(double.infinity),
-                onInteractionStart: (_) => _xformAtStart = _xform.value.clone(),
-                onInteractionUpdate: (_) {
-                  // 双指在「滚动」远端：InteractiveViewer 看到的微小比例抖动不许动画面
-                  final start = _xformAtStart;
-                  if (pad && _touch.scrolling && start != null) {
-                    _xform.value = start.clone();
-                  }
-                  _onZoomUpdate(vp, offX, offY, dw, dh);
-                },
-                child: Transform.translate(
-                  offset: Offset(offX, offY),
-                  child: SizedBox(width: dw, height: dh, child: child),
+            child: Listener(
+              onPointerDown: (e) {
+                _viewPointers.add(e.pointer);
+                if (_viewPointers.length >= 2) _viewMulti = true;
+              },
+              onPointerUp: (e) {
+                _viewPointers.remove(e.pointer);
+                if (_viewPointers.isEmpty) _viewMulti = false;
+              },
+              onPointerCancel: (e) {
+                _viewPointers.remove(e.pointer);
+                if (_viewPointers.isEmpty) _viewMulti = false;
+              },
+              child: GestureDetector(
+                // 只看模式允许双击缩放；可操作模式的连点留给远端。
+                onDoubleTapDown: _control || pad
+                    ? null // 触控板里连点两下是双击，不是缩放
+                    : (d) => _doubleTapZoom(d, vp, offX, offY, dw, dh),
+                child: InteractiveViewer(
+                  transformationController: _xform,
+                  constrained: false,
+                  // 触控板：单指/双指平行滑动归手势控制器（光标 / 滚轮），视角靠跟随光标
+                  panEnabled: !pad && (!_control || _zoomed),
+                  scaleEnabled: true,
+                  minScale: 1.0,
+                  maxScale: 6.0,
+                  boundaryMargin: const EdgeInsets.all(double.infinity),
+                  onInteractionStart: (_) =>
+                      _xformAtStart = _xform.value.clone(),
+                  onInteractionUpdate: (_) {
+                    // One finger operates the remote at every zoom level.
+                    // After a pinch, keep the remaining finger local until lift.
+                    if (_control && !pad && !_viewMulti) {
+                      final start = _xformAtStart;
+                      if (start != null) _xform.value = start.clone();
+                      return;
+                    }
+                    // 双指在「滚动」远端：InteractiveViewer 看到的微小比例抖动不许动画面
+                    final start = _xformAtStart;
+                    if (pad && _touch.scrolling && start != null) {
+                      _xform.value = start.clone();
+                    }
+                    _onZoomUpdate(vp, offX, offY, dw, dh);
+                  },
+                  child: Transform.translate(
+                    offset: Offset(offX, offY),
+                    child: SizedBox(width: dw, height: dh, child: child),
+                  ),
                 ),
               ),
             ),
@@ -1305,7 +1308,6 @@ class _ScreenPainter extends CustomPainter {
       !identical(oldDelegate.image, image);
 }
 
-
 /// 本地光标 / 落点标记（源画面像素）。
 class _CursorMark {
   const _CursorMark(this.pos, this.pressed);
@@ -1332,7 +1334,10 @@ class _CursorPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final m = mark;
     if (m == null || srcW <= 0 || srcH <= 0) return;
-    final p = Offset(m.pos.dx / srcW * size.width, m.pos.dy / srcH * size.height);
+    final p = Offset(
+      m.pos.dx / srcW * size.width,
+      m.pos.dy / srcH * size.height,
+    );
     const accent = Color(0xFF4da3ff);
     if (trackpad) {
       final path = Path()
