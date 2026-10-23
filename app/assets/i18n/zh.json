@@ -3765,6 +3765,7 @@
   "rsTitle": "本机屏幕",
   "rsConnecting": "正在取第一帧…",
   "rsFps": "{fps} 帧/秒",
+  "rsFrameAge": "最近一帧 {s} 秒前",
   "rsViewOnly": "只看",
   "rsControl": "可操作",
   "rsModeTitle": "切换只看 / 可操作",

@@ -1,0 +1,136 @@
+{
+  "description": "「🖥 屏幕」H.264 通道线协议金样：App（Dart）、服务端桥（Node）、Agent（Swift）三端逐字节对同一份表。任何一端改了编码/切帧/放行规则，三处测试至少一处会指名红。",
+  "spec": "scripts/macos-agent/MultiCCAgentH264.swift 文件头注释",
+  "ends": {
+    "app": "app/lib/services/remote_screen_source.dart (ScreenInputMixin) + remote_screen_h264.dart — app/test/remote_screen_wire_golden_test.dart",
+    "bridge": "src/remote-screen-h264-bridge.js — tests/test-remote-screen-h264.js",
+    "agent": "scripts/macos-agent/MultiCCAgentH264.swift h264Session/h264Message — tests/test-macos-agent.js"
+  },
+  "clientToAgent": [
+    {
+      "name": "request a key frame",
+      "kind": "keyRequest",
+      "hex": "4b"
+    },
+    {
+      "name": "hover, no button",
+      "kind": "pointer",
+      "mask": 0,
+      "x": 700,
+      "y": 300,
+      "hex": "050002bc012c"
+    },
+    {
+      "name": "left press at the far corner of a 1470×956 screen",
+      "kind": "pointer",
+      "mask": 1,
+      "x": 1469,
+      "y": 955,
+      "hex": "050105bd03bb"
+    },
+    {
+      "name": "right press at the origin",
+      "kind": "pointer",
+      "mask": 4,
+      "x": 0,
+      "y": 0,
+      "hex": "050400000000"
+    },
+    {
+      "name": "wheel-up pulse straddling a byte boundary",
+      "kind": "pointer",
+      "mask": 8,
+      "x": 256,
+      "y": 255,
+      "hex": "0508010000ff"
+    },
+    {
+      "name": "key down 'a'",
+      "kind": "key",
+      "down": true,
+      "keysym": 97,
+      "hex": "0401000000000061"
+    },
+    {
+      "name": "key up Return",
+      "kind": "key",
+      "down": false,
+      "keysym": 65293,
+      "hex": "040000000000ff0d"
+    }
+  ],
+  "rejectedByBridge": [
+    {
+      "name": "truncated pointer",
+      "hex": "0501000a",
+      "why": "定长消息少一个字节：转发出去 Agent 会把下一条消息的头当坐标读",
+      "agentCalls": []
+    },
+    {
+      "name": "two pointers in one message",
+      "hex": "050100010001050000020002",
+      "why": "桥只认单条定长消息；拼包的客户端必须拆开发（Agent 是流式读取，会照单全收成两条 —— 消息边界只有桥这一道闸）",
+      "agentCalls": [
+        "pointer 1 1 1",
+        "pointer 0 2 2"
+      ]
+    },
+    {
+      "name": "RFB FramebufferUpdateRequest",
+      "hex": "03000000000000000000",
+      "why": "H.264 通道没有 RFB 帧请求",
+      "agentCalls": []
+    },
+    {
+      "name": "unknown type",
+      "hex": "09",
+      "why": "未知类型一律丢弃",
+      "agentCalls": []
+    }
+  ],
+  "decodedScaling": [
+    {
+      "name": "native decoder downscaled 1470×956 → 1280×832",
+      "encoded": [
+        1470,
+        956
+      ],
+      "decoded": [
+        1280,
+        832
+      ],
+      "mask": 1,
+      "x": 640,
+      "y": 416,
+      "hex": "050102df01de",
+      "why": "App 按解码帧坐标算点，Agent 按编码尺寸（逻辑点）理解；不放大回去光标就落在左上方"
+    }
+  ],
+  "agentToClient": [
+    {
+      "name": "config",
+      "type": 1,
+      "json": {
+        "codec": "avc1.640028",
+        "width": 1470,
+        "height": 956
+      },
+      "payloadHex": "7b22636f646563223a22617663312e363430303238222c227769647468223a313437302c22686569676874223a3935367d",
+      "hex": "01000000317b22636f646563223a22617663312e363430303238222c227769647468223a313437302c22686569676874223a3935367d"
+    },
+    {
+      "name": "key frame (SPS/PPS first)",
+      "type": 2,
+      "pts": 1000,
+      "annexBHex": "0000000167640028ac0000000168ee3c80000000016588840033",
+      "hex": "020000002200000000000003e80000000167640028ac0000000168ee3c80000000016588840033"
+    },
+    {
+      "name": "delta frame",
+      "type": 3,
+      "pts": 34333,
+      "annexBHex": "00000001419a216c",
+      "hex": "0300000010000000000000861d00000001419a216c"
+    }
+  ]
+}

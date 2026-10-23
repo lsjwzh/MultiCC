@@ -3765,6 +3765,7 @@
   "rsTitle": "This Mac",
   "rsConnecting": "Fetching the first frame…",
   "rsFps": "{fps} fps",
+  "rsFrameAge": "Last frame {s}s ago",
   "rsViewOnly": "View only",
   "rsControl": "Control",
   "rsModeTitle": "Switch between view only and control",

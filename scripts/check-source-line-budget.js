@@ -114,9 +114,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 3015/143469，越过 3k。这次只按实测高水位登记，不动 Swift（同文件还要在 macOS CI
   // 里真编译）；下一次动它该拆的是「屏幕采集 / 输入注入 / 权限探测」那三族，落回
   // <= 3000 就把这条删掉。
+  // 2026-10-24 补登记：远控拖动修复（d541971d，HTTP 指针 HttpScreenPointers +46 行）合入时
+  // 没回来抬这一格，main 上这道闸已红；本轮再 +3 行（status 带回真实光标位置，给
+  // scripts/remote-screen-probe.js 判定「悬停到达系统」）。按实测高水位登记，拆分条件不变。
   'scripts/macos-agent/MultiCCAgent.swift': Object.freeze({
-    ceiling: 3015,
-    byteCeiling: 143469,
+    ceiling: 3064,
+    byteCeiling: 145861,
     target: 3000,
     reason: 'macOS desktop agent single-file implementation; split screen capture / input injection / permission probing next',
   }),
@@ -464,8 +467,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 更新，中英各 6 行 = +12 行；与上一批合并后重跑生成器实测 9592/614156。
     // +10 双语键（airGlobalCpr*）：全局配置中的 CPR 版本选择与待重启状态。
     // 与主线词典合并后重新生成，实测 9612 行、615336 字节。
-    maxLines: 9612,
-    maxBytes: 615336,
+    // +1 键（rsFrameAge）：App「🖥 屏幕」状态栏「最近一帧 N 秒前」—— 画面冻住时不再显示过时的帧率。
+    maxLines: 9614,
+    maxBytes: 615422,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

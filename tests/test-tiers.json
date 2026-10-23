@@ -695,6 +695,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/remote_screen_wire_golden_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/remote_touch_controller_test.dart",
       "tier": "core",
       "lane": "flutter"
@@ -4382,6 +4387,15 @@
       "path": "tests/test-remote-screen-h264.js",
       "tier": "other",
       "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-remote-screen-probe.js",
+      "tier": "flow",
+      "lane": "isolated",
       "owner": "npm:test:security",
       "entrypoints": [
         "npm:test:security"

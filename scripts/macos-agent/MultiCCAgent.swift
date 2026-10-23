@@ -1508,6 +1508,9 @@ func handle(_ req: [String: Any]) -> [String: Any] {
             "listenAccess": CGPreflightListenEventAccess(),
             "escTaps": Dictionary(uniqueKeysWithValues: escTaps.map { ($0.name, $0.snapshot) }),
             "screenLocked": screenLocked(),
+            // Global top-left points, same domain as remote-screen pointer input:
+            // lets scripts/remote-screen-probe.js prove a hover reached the OS.
+            "cursor": (CGEvent(source: nil)?.location).map { [Int($0.x.rounded()), Int($0.y.rounded())] } ?? [],
             "unlockPassword": hasUnlockPassword(),
             "lidGuard": lidDisplayGuard.snapshot(),
             "control": control.snapshot(),
