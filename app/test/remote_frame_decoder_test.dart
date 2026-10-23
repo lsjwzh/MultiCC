@@ -75,4 +75,35 @@ void main() {
       painted.single.dispose();
     },
   );
+
+  test('a decode that never answers does not freeze later frames', () async {
+    final painted = <ui.Image>[];
+    final done = Completer<void>();
+    var calls = 0;
+    final decoder = RemoteFrameDecoder(
+      decodeTimeout: const Duration(milliseconds: 20),
+      decode: (_, w, h) =>
+          ++calls == 1 ? Completer<ui.Image>().future : image(),
+      onImage: (frame) {
+        painted.add(frame);
+        done.complete();
+      },
+    );
+    decoder.add(Uint8List(4), 1, 1);
+    decoder.add(Uint8List(4), 1, 1);
+    await done.future.timeout(const Duration(seconds: 2));
+    expect(calls, 2);
+    decoder.dispose();
+    painted.single.dispose();
+  });
+
+  test('the default decoder turns BGRA pixels into an image', () async {
+    final done = Completer<ui.Image>();
+    final decoder = RemoteFrameDecoder(onImage: done.complete);
+    decoder.add(Uint8List.fromList([0x56, 0x34, 0x12, 0xff]), 1, 1);
+    final img = await done.future.timeout(const Duration(seconds: 5));
+    expect([img.width, img.height], [1, 1]);
+    decoder.dispose();
+    img.dispose();
+  });
 }

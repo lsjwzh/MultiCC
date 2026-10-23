@@ -18,10 +18,16 @@ import 'remote_screen_h264.dart';
 class PlatformH264Decoder implements H264Decoder {
   PlatformH264Decoder({MethodChannel? channel})
     : _channel = channel ?? const MethodChannel(platformH264Channel) {
+    _owner = this;
     _channel.setMethodCallHandler(_onCall);
   }
 
   static const String platformH264Channel = 'com.multicc.multicc_app/h264';
+
+  /// 通道与原生解码器都是全局唯一的：重连时新实例先建、旧实例后关，
+  /// 旧实例不能再去 dispose 原生解码器或清掉通道回调 —— 否则新会话
+  /// 收不到任何帧（输入照常送达，画面却停在最后一帧）。
+  static PlatformH264Decoder? _owner;
 
   /// 只有移动端有解码插件；桌面/Web 端一律回落到 RFB。
   static H264Decoder? create() {
@@ -105,10 +111,16 @@ class PlatformH264Decoder implements H264Decoder {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
-    try {
-      await _channel.invokeMethod<void>('dispose');
-    } catch (_) {}
-    _channel.setMethodCallHandler(null);
+    if (identical(_owner, this)) {
+      try {
+        await _channel.invokeMethod<void>('dispose');
+      } catch (_) {}
+      // 等 dispose 往返期间可能已有新实例接手。
+      if (identical(_owner, this)) {
+        _owner = null;
+        _channel.setMethodCallHandler(null);
+      }
+    }
     await _frames.close();
     await _errors.close();
   }

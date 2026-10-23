@@ -62,4 +62,36 @@ void main() {
     await sub.cancel();
     await decoder.close();
   });
+
+  // 重连：新解码器先建、旧解码器后关。旧实例关闭不能清掉新实例的通道回调，
+  // 也不能 dispose 原生解码器 —— 否则新会话一帧都收不到，画面停在最后一帧。
+  test('closing a superseded decoder keeps the new one receiving frames', () async {
+    const channel = MethodChannel(PlatformH264Decoder.platformH264Channel);
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      return true;
+    });
+    final old = PlatformH264Decoder(channel: channel);
+    final fresh = PlatformH264Decoder(channel: channel);
+    final frames = <H264Frame>[];
+    final sub = fresh.frames.listen(frames.add);
+    await old.close();
+    expect(calls, isNot(contains('dispose')));
+
+    const codec = StandardMethodCodec();
+    final raw = codec.encodeMethodCall(
+      MethodCall('frame', {'bytes': Uint8List(8 * 2 * 4), 'width': 8, 'height': 2}),
+    );
+    await messenger.handlePlatformMessage(channel.name, raw, (_) {});
+    await Future<void>.delayed(Duration.zero);
+    expect(frames, hasLength(1));
+
+    await sub.cancel();
+    await fresh.close();
+    expect(calls, contains('dispose'));
+    messenger.setMockMethodCallHandler(channel, null);
+  });
 }

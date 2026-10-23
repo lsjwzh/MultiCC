@@ -221,6 +221,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       if (mounted) setState(() {});
     });
     _frameSub = _svc.onFrame.listen((_) => _renderFrame());
+    _xform.addListener(_keepViewInBounds);
     SharedPreferences.getInstance()
         .then((prefs) {
           final on = prefs.getBool(_trackpadPref) ?? false;
@@ -329,6 +330,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     _touch.reset();
     _decoder.dispose();
     _cursorMark.dispose();
+    _xform.removeListener(_keepViewInBounds);
     _xform.dispose();
     _frameSub?.cancel();
     _modeSub?.cancel();
@@ -994,15 +996,15 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
             child: Listener(
               onPointerDown: (e) {
                 _viewPointers.add(e.pointer);
-                if (_viewPointers.length >= 2) _viewMulti = true;
+                if (_viewPointers.length >= 2) _setViewMulti(true);
               },
               onPointerUp: (e) {
                 _viewPointers.remove(e.pointer);
-                if (_viewPointers.isEmpty) _viewMulti = false;
+                if (_viewPointers.isEmpty) _setViewMulti(false);
               },
               onPointerCancel: (e) {
                 _viewPointers.remove(e.pointer);
-                if (_viewPointers.isEmpty) _viewMulti = false;
+                if (_viewPointers.isEmpty) _setViewMulti(false);
               },
               child: GestureDetector(
                 // 只看模式允许双击缩放；可操作模式的连点留给远端。
@@ -1012,8 +1014,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
                 child: InteractiveViewer(
                   transformationController: _xform,
                   constrained: false,
-                  // 触控板：单指/双指平行滑动归手势控制器（光标 / 滚轮），视角靠跟随光标
-                  panEnabled: !pad && (!_control || _zoomed),
+                  // 触控板：单指/双指平行滑动归手势控制器（光标 / 滚轮），视角靠跟随光标。
+                  // 可操作的触摸模式：单指只操作远端，平移视角要双指 —— 单指开着
+                  // 平移的话，松手时的惯性会把画面甩走。
+                  panEnabled: !pad && (!_control || _viewMulti),
                   scaleEnabled: true,
                   minScale: 1.0,
                   maxScale: 6.0,
@@ -1084,6 +1088,12 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     );
   }
 
+  void _setViewMulti(bool on) {
+    if (_viewMulti == on) return;
+    _viewMulti = on;
+    if (mounted) setState(() {});
+  }
+
   // Undo the view transform and letterboxing before asking the server to
   // crop the native screenshot. A nested selection adds the current origin.
   Future<void> _finishBoxSel(
@@ -1126,20 +1136,23 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     final m = _xform.value;
     final s = m.getMaxScaleOnAxis();
     double clampAxis(double t, double off, double len, double vlen) {
-      // 内容盖满视口：边缘不许进视口；没盖满：边缘不许出视口（不露白边）。
-      // 两种情况的上下界正好互换，min/max 排序后同一个 clamp 覆盖。
-      final a = -s * off;
-      final b = vlen - s * (off + len);
-      final lo = a < b ? a : b;
-      final hi = a < b ? b : a;
-      return t.clamp(lo, hi).toDouble();
+      // 内容盖满视口：边缘不许进视口；没盖满：居中（不放大时画面永远在正中）。
+      // 不能用 `a < b ? a : b` 排上下界：铺满一轴时 a 是 -0.0、b 是 0.0，
+      // double.clamp(0.0, -0.0) 会抛 ArgumentError，钳制整段失效、画面漂走。
+      if (s * len <= vlen) return (vlen - s * len) / 2 - s * off;
+      return t.clamp(vlen - s * (off + len), -s * off).toDouble();
     }
 
     final tx = clampAxis(m.entry(0, 3), offX, dw, vp.width);
     final ty = clampAxis(m.entry(1, 3), offY, dh, vp.height);
-    _xform.value = Matrix4.identity()
-      ..translate(tx, ty)
-      ..scale(s);
+    _clampingView = true;
+    try {
+      _xform.value = Matrix4.identity()
+        ..translate(tx, ty)
+        ..scale(s);
+    } finally {
+      _clampingView = false;
+    }
     final zoomed = s > 1.01;
     final pct = (s * 100).round();
     if (mounted && (zoomed != _zoomed || _zoomPct != pct)) {
@@ -1148,6 +1161,15 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         _zoomPct = pct;
       });
     }
+  }
+
+  // InteractiveViewer 松手后的惯性平移 / 缩放回弹直接改矩阵、不走 onInteractionUpdate，
+  // 边界又是无限的 —— 不在这里兜住，松手后画面会滑出视口。
+  bool _clampingView = false;
+  void _keepViewInBounds() {
+    final g = _stageGeo;
+    if (g == null || _clampingView) return;
+    _onZoomUpdate(g.vp, g.offX, g.offY, g.dw, g.dh);
   }
 
   void _doubleTapZoom(
