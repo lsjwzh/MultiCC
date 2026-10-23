@@ -2,6 +2,17 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.9.0 — Subagent routing, account sign-in, and remote control (2026-10-23)
+
+- Configure subagent providers and models directly in the run configuration panel on Web and App, with first-use guidance, saved presets, and optional synchronization across matching tasks.
+- Sign in to official Claude and Codex accounts from the management interface, including pasted callback support; discover Codex models per account and keep account credentials and model catalogs isolated.
+- Improve Claude credential refresh recovery and account-specific network egress, and add the Chrome Proxy Launcher plugin for managed browser and proxy profiles.
+- Add an opt-in Rust provider-router backend with comparison tools while retaining the default Node backend; move task-context access, subagent defaults, publication policy, and model-catalog decisions into Rust.
+- Update provider presets and model selection, and prevent transient upstream failures from exhausting the chat host retry budget.
+- Reduce remote-control drag latency, keep pointer transitions ordered, resolve pinch and drag gesture conflicts, and display the latest frame after asynchronous decoding.
+- Standardize new commit identity and validate English commit messages and release notes; keep core and clean-install checks running alongside release builds.
+- Update the mobile app to 2.37.0 (build 173). Publish desktop and standalone packages first, then mobile OTA, with App Store submission last.
+
 ## v2.8.5 — Restore desktop release startup (2026-10-22)
 
 This release carries the v2.8.4 changes below. The v2.8.4 desktop workflow was
