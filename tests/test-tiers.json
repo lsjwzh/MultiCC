@@ -2349,6 +2349,12 @@
       ]
     },
     {
+      "path": "tests/test-claude-expired-refresh-native.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:rust"
+    },
+    {
       "path": "tests/test-claude-models-route.js",
       "tier": "core",
       "lane": "deterministic",
