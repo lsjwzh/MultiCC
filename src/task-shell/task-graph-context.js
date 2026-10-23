@@ -14,6 +14,7 @@
 
 const { estimateTokens, hash } = require('./context');
 const { relevance, selectContext } = require('../context/selection');
+const { getNative } = require('../native/runtime');
 
 const DEFAULT_TOKEN_BUDGET = 1200;
 const PARENT_MEMORY_CHARS = 700;
@@ -134,20 +135,21 @@ function buildTaskGraphContextDetail(ports, { taskId, tokenBudget = DEFAULT_TOKE
   if (!sections.length) return { text: '', sources: [] };
 
   const seen = new Set([taskId]);
-  const allowed = id => {
-    const other = ports.task(id) || ports.boardTask(id);
-    return other && (!other.dirId || !dirId || other.dirId === dirId);
-  };
-  const candidates = sections.flatMap(section => section.sources).filter(source => {
-    if (!allowed(source.taskId)) return false;
+  const related = sections.flatMap(section => section.sources).filter(source => {
+    if (!ports.task(source.taskId) && !ports.boardTask(source.taskId)) return false;
     if (source.kind !== 'memory' && seen.has(source.taskId)) return false;
     if (source.kind !== 'memory') seen.add(source.taskId);
     return true;
   }).map(source => ({ ...source, atomic: true,
+    sourceDirId: (ports.task(source.taskId) || ports.boardTask(source.taskId))?.dirId || null,
     priority: ({ parent: 500, memory: 450, grandparent: 300, group: 200, shell: 100 }[source.kind] || 0)
       + Math.min(15, relevance(query, source.excerpt)) * 10,
     reason: relevance(query, source.excerpt) ? 'query_and_relation' : 'relation',
   }));
+  // Project affinity is a ranking hint; it does not exclude related history.
+  const ranked = JSON.parse(getNative('task_context', 'rust').rankTaskContextCandidates(
+    JSON.stringify({ dirId, candidates: related.map(({ sourceDirId, priority }, index) => ({ index, sourceDirId, priority })) })));
+  const candidates = ranked.map(({ index, priority }) => ({ ...related[index], priority }));
   const selected = selectContext(candidates, { budget: tokenBudget,
     header: `[任务图谱上下文｜相关历史资料，请核验状态] 当前任务 ${titleOf(taskId)}\n`,
     footer: '[任务图谱上下文结束]\n' });

@@ -1,41 +1,31 @@
 'use strict';
-const { verifySnapshot } = require('./context');
 const { shellRecords } = require('./history-context');
+const { getNative } = require('../native/runtime');
 const fail = (code, status = 403) => Object.assign(new Error(code), { code, status });
 
-// Related-history reads confer no ownership/link and never move a shell cursor.
-function relatedHistory({ store, task, targetId, getTask, getRecord, getHistory, getLiveState, graph, taskDirectory, isDeletedTask }) {
+// Compatibility bridge: task-shell storage and history ports are still Node-owned.
+// Keep only port I/O and result reattachment here until Rust owns those stores;
+// Rust already plans and selects every explicit read.
+// Reading history never grants task ownership or changes a shell cursor.
+function relatedHistory({ store, targetId, getTask, getRecord, getHistory, getLiveState, isDeletedTask }) {
   if (isDeletedTask?.(targetId)) throw fail('task_not_found', 404);
   const target = store.get('task', targetId) || getTask(targetId);
-  const dirId = target?.dirId || (target && taskDirectory?.(target));
-  if (!target || dirId !== task.dirId) throw fail('project_mismatch');
-  const snapshots = (task.snapshotIds || []).map(id => {
-    const snapshot = store.get('snapshot', id);
-    if (!verifySnapshot(snapshot, id)) throw fail('snapshot_unverified');
-    return snapshot;
-  });
-  if (task.separatedFromTaskId === targetId) {
-    // Separation imported only the judged exchange, not the source task's archive.
-    return snapshots.flatMap(snapshot => snapshot.messages).flatMap(m => {
-      const record = getRecord(m.sourceSessionId);
-      if (record?.dirId !== task.dirId || !m.sourceMessageId) return [];
-      const original = getHistory(m.sourceSessionId).find(row => row.id === m.sourceMessageId);
-      return original ? [{ ...original, taskId: targetId, sourceSessionId: m.sourceSessionId,
-        sourceMessageId: original.id, contextMessageId: `${m.sourceSessionId}:${original.id}` }] : [];
-    });
-  }
-  const allowed = targetId === task.parentTaskId || targetId === task.forkedFromTaskId
-    || snapshots.some(s => s.taskId === targetId)
-    || (graph?.candidates || graph?.sources || []).some(s => s.taskId === targetId && ['parent', 'grandparent', 'group', 'shell'].includes(s.kind));
-  if (!allowed) throw fail('task_not_linked');
-  const links = store.list('link'), ownerIds = new Set(links.filter(l => l.taskId === targetId).map(l => l.shellId));
-  const scopeTaskIds = new Set(links.filter(l => ownerIds.has(l.shellId)).map(l => l.taskId));
-  const sessionIds = [...new Set([target.sessionId, target.chatSessionId, ...(target.historySessionIds || []),
-    ...(target.refs || []).map(r => r.sessionId),
-    ...store.list('shell').filter(s => ownerIds.has(s.id)).map(s => s.sourceSessionId),
-    ...store.list('task').filter(t => scopeTaskIds.has(t.id)).map(t => t.sessionId),
-  ])].filter(id => id && getRecord(id)?.dirId === task.dirId);
-  return shellRecords({ sessionIds }, getHistory, getLiveState).filter(m => m.taskId === targetId
-    || (!m.taskId && getRecord(m.sourceSessionId)?.taskBoundTaskId === targetId));
+  if (!target) throw fail('task_not_found', 404);
+  const addon = getNative('task_context', 'rust');
+  const plan = JSON.parse(addon.planTaskContextRead(JSON.stringify({
+    target: { id: target.id, sessionId: target.sessionId, chatSessionId: target.chatSessionId,
+      historySessionIds: target.historySessionIds, refs: target.refs?.map(ref => ({ sessionId: ref.sessionId })) },
+    links: store.list('link').map(({ shellId, taskId }) => ({ shellId, taskId })),
+    shells: store.list('shell').map(({ id, sourceSessionId }) => ({ id, sourceSessionId })),
+    tasks: store.list('task').map(({ id, sessionId }) => ({ id, sessionId })),
+  })));
+  const sessionIds = plan.sessionIds.filter(id => getRecord(id));
+  const records = shellRecords({ sessionIds }, getHistory, getLiveState);
+  const bindings = sessionIds.map(sessionId => ({ sessionId, taskBoundTaskId: getRecord(sessionId).taskBoundTaskId }));
+  // Send only ownership metadata across NAPI, not potentially large transcripts.
+  const selected = JSON.parse(addon.selectTaskContextRecords(JSON.stringify({ targetId, bindings,
+    records: records.map(({ taskId, sourceSessionId }, index) => ({ index, taskId, sourceSessionId })),
+  })));
+  return selected.map(({ index, taskId }) => ({ ...records[index], taskId }));
 }
 module.exports = { relatedHistory };

@@ -729,12 +729,10 @@ function createTaskShellRuntime(ports) {
     }
     if (!receipt || receipt.taskId !== task.id) throw failure('task_shell_context_unavailable', 'No active task-shell delivery was found', 409);
     const s = shell(receipt.shellId);
-    let records = shellRecords(chatScope(s.id), getHistory, ports.getLiveState);
-    if (query.task_id && !store.get('link', `${s.id}:${query.task_id}`)) {
-      records = require('./context-access').relatedHistory({ store, task, targetId: query.task_id,
-        getTask, getRecord, getHistory, getLiveState: ports.getLiveState, graph: graphContextOf(task.id),
-        taskDirectory: ports.taskDirectory, isDeletedTask: ports.isDeletedTask });
-    } else if (query.task_id) taskFor(s, query.task_id);
+    const records = query.task_id
+      ? require('./context-access').relatedHistory({ store, targetId: query.task_id,
+        getTask, getRecord, getHistory, getLiveState: ports.getLiveState, isDeletedTask: ports.isDeletedTask })
+      : shellRecords(chatScope(s.id), getHistory, ports.getLiveState);
     const page = Object.keys(query).length ? contextPage(records, query) : null;
     const snapshots = page ? pageSnapshots(page) : contextSnapshots(s, task.id);
     const rendered = renderSnapshots(snapshots);
