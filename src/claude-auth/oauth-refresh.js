@@ -30,6 +30,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { buildChildEnv } = require('../providers/core');
+const { planClaudeExpiredRefresh } = require('./expired-refresh-policy');
 
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 // Start trying well before the token dies, because the CLI keeps its own idea
@@ -58,7 +59,9 @@ const DEFAULT_MAX_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_PARK_AFTER_FAILURES = 6;
 // Both rungs of the ladder cost a process; the second costs an actual API turn.
 // One expired token is one event, so it gets one small, fixed budget: a couple
-// of "is it due yet" questions, and at most two real turns. Without a budget
+// of "is it due yet" questions, and two normal turns. Rust separately reserves
+// one post-expiry opportunity if both were spent while the token was live.
+// Without a budget
 // the ladder re-asked every cooldown with the same answer and, over three days,
 // issued 413 identical `claude -p ok` turns — the pattern a human would never
 // produce, and the reason this module must never be allowed to behave like a
@@ -250,13 +253,16 @@ function createClaudeOAuthRefresher(options = {}) {
     refreshCount: 0,
     failureClass: null,
     lastFailure: null,
-    // parked = no ladder until the credential changes. Resuming is a fact
-    // about the credential (a new login wrote a new expiry), not a timer.
+    // A credential change releases a park; Rust may also admit one durable
+    // post-expiry attempt for an old non-terminal park.
     parked: null,
+    // Reserved durably before a real post-expiry CLI probe starts. Rust uses
+    // this receipt to keep the recovery opportunity bounded across restarts.
+    postExpiryAttempt: null,
+    lastProbeFailure: null,
     // Spend ledger for the token currently on disk. Keyed by its expiry, so a
-    // refresh (which moves the expiry) opens a fresh budget while retrying the
-    // same dead token cannot. Deliberately in-memory: a restart grants at most
-    // one more pair, and a restart is a human action.
+    // refresh opens a fresh budget. Reserve each probe durably before spawning
+    // it, so a restart cannot spend the same credential's budget again.
     window: null,
   };
 
@@ -278,6 +284,33 @@ function createClaudeOAuthRefresher(options = {}) {
       state.refreshCount = Number(persisted.refreshCount) || 0;
       state.failureClass = persisted.failureClass || null;
       state.lastFailure = persisted.lastFailure || null;
+      if (persisted.postExpiryAttempt && typeof persisted.postExpiryAttempt === 'object') {
+        state.postExpiryAttempt = {
+          credentialExpiresAt: Number(persisted.postExpiryAttempt.credentialExpiresAt) || null,
+          reservedAt: Number(persisted.postExpiryAttempt.reservedAt) || null,
+        };
+      }
+      if (persisted.lastProbeFailure && typeof persisted.lastProbeFailure === 'object') {
+        const failure = persisted.lastProbeFailure;
+        if (Number.isFinite(Number(failure.credentialExpiresAt)) && failure.step && typeof failure.step === 'object') {
+          state.lastProbeFailure = {
+            credentialExpiresAt: Number(failure.credentialExpiresAt),
+            step: {
+              step: 'authenticated-probe', code: failure.step.code,
+              timedOut: failure.step.timedOut === true, refreshed: false,
+              stderr: redactCliOutput(failure.step.stderr), stdout: redactCliOutput(failure.step.stdout),
+            },
+          };
+        }
+      }
+      if (persisted.probeWindow && typeof persisted.probeWindow === 'object'
+          && Number.isFinite(Number(persisted.probeWindow.expiresAt))) {
+        state.window = {
+          expiresAt: Number(persisted.probeWindow.expiresAt),
+          declines: Math.max(0, Number(persisted.probeWindow.declines) || 0),
+          probes: Math.max(0, Number(persisted.probeWindow.probes) || 0),
+        };
+      }
       if (persisted.parked && typeof persisted.parked === 'object') {
         state.parked = {
           at: Number(persisted.parked.at) || null,
@@ -292,16 +325,38 @@ function createClaudeOAuthRefresher(options = {}) {
   }
 
   function persist(fields) {
-    if (!health || !healthKey) return;
-    health.write(healthKey, {
+    if (!health || !healthKey) return true;
+    return health.write(healthKey, {
       consecutiveFailures: state.consecutiveFailures,
       refreshCount: state.refreshCount,
       failureClass: state.failureClass,
       lastFailure: state.lastFailure,
       lastSuccessAt: state.lastSuccessAt,
       parked: state.parked,
+      postExpiryAttempt: state.postExpiryAttempt,
+      lastProbeFailure: state.lastProbeFailure,
+      probeWindow: state.window ? { ...state.window } : null,
       ...fields,
-    });
+    }) === true;
+  }
+
+  function expiredPlan(credentials, force = false) {
+    const probeFailureClass = state.lastProbeFailure?.credentialExpiresAt === credentials.expiresAt
+      ? classifyFailure([state.lastProbeFailure.step]) : null;
+    return planClaudeExpiredRefresh({
+      now: now(),
+      expiresAt: credentials.expiresAt,
+      hasRefreshToken: credentials.hasRefreshToken === true,
+      refreshExpiresAt: credentials.refreshExpiresAt || null,
+      postExpiryAttemptedFor: state.postExpiryAttempt?.credentialExpiresAt || null,
+      parked: !!state.parked,
+      // A terminal response is evidence about this credential even before the
+      // old decline path creates a park. Rust owns whether it forbids a probe.
+      parkedFailureClass: state.parked ? state.parked.failureClass || null : probeFailureClass,
+      probes: state.window?.expiresAt === credentials.expiresAt ? state.window.probes : 0,
+      maxProbes: maxProbesPerWindow,
+      force,
+    }, logger);
   }
 
   function unpark(credentials, why) {
@@ -407,25 +462,30 @@ function createClaudeOAuthRefresher(options = {}) {
     const startedAt = now();
     state.lastAttemptAt = startedAt;
     const before = await readCredentials();
-    // A park is released by a new credential, not by time passing. Reading it
-    // is cheap and already happens on every tick, so a re-login is noticed
-    // within one check while a dead account spawns nothing at all.
+    // Reading notices a replacement credential. For unchanged credentials,
+    // Rust decides whether the durable post-expiry opportunity is available.
     if (state.parked) {
       const fingerprint = credentialFingerprint(before);
       if (before.ok && fingerprint && fingerprint !== state.parked.credentialFingerprint) {
         unpark(before, 'credential_replaced');
-      } else if (!force) {
-        state.lastOutcome = {
-          // A park caused by a missing login keeps reporting needs-login: the
-          // banner is the whole point, and it must not disappear on the next
-          // tick just because the ladder is suppressed.
-          outcome: state.parked.failureClass === 'needs-login' ? 'needs-login' : 'parked',
-          detail: state.parked.failureClass,
-          parkedAt: state.parked.at,
-          reason,
-          at: startedAt,
-        };
-        return state.lastOutcome;
+      } else {
+        const plan = expiredPlan(before, force);
+        if (plan?.recoverParked) {
+          const spend = windowFor(before.expiresAt);
+          spend.probes = Math.max(spend.probes, plan.budgetFloor);
+          // Keep the durable park until the post-expiry reservation lands.
+          // A crash during auth status must not reopen a fresh probe budget.
+        } else {
+          state.lastOutcome = {
+            // A missing login must keep its actionable banner on later ticks.
+            outcome: state.parked.failureClass === 'needs-login' ? 'needs-login' : 'parked',
+            detail: state.parked.failureClass,
+            parkedAt: state.parked.at,
+            reason,
+            at: startedAt,
+          };
+          return state.lastOutcome;
+        }
       }
     }
     const decision = assess(before, startedAt);
@@ -453,15 +513,30 @@ function createClaudeOAuthRefresher(options = {}) {
         steps.push({ step: rung.step, skipped: 'not_due_yet' });
         continue;
       }
-      // A probe is a real API turn on the user's account. Two per token is
-      // already more than the situation warrants; past that the answer cannot
-      // change, and repeating the identical request is what makes this look
-      // like a bot.
-      if (rung.step === 'authenticated-probe' && !force && spend.probes >= maxProbesPerWindow) {
-        steps.push({ step: rung.step, skipped: 'budget_spent' });
-        continue;
+      // A probe is a real API turn. Rust admits the normal budget and the one
+      // post-expiry opportunity; the bridge reserves both before spawning.
+      if (rung.step === 'authenticated-probe') {
+        const previousSpend = { ...spend };
+        const previousAttempt = state.postExpiryAttempt;
+        const plan = expiredPlan(before, force);
+        if (plan) spend.probes = Math.max(spend.probes, plan.budgetFloor);
+        if (plan ? !plan.allowProbe : (!force && spend.probes >= maxProbesPerWindow)) {
+          steps.push({ step: rung.step, skipped: 'budget_spent' });
+          continue;
+        }
+        if (plan?.reservePostExpiry) {
+          state.postExpiryAttempt = { credentialExpiresAt: before.expiresAt, reservedAt: now() };
+        }
+        spend.probes += 1;
+        if (!persist()) {
+          Object.assign(spend, previousSpend);
+          state.postExpiryAttempt = previousAttempt;
+          state.lastOutcome = { outcome: 'failed', detail: 'refresh_health_write_failed', reason, at: now(), steps };
+          logger.warn('claude_oauth_refresh_reservation_failed', { reason, action: 'CLI probe was not started' });
+          return state.lastOutcome;
+        }
+        if (plan?.recoverParked) unpark(before, 'post_expiry_retry');
       }
-      if (rung.step === 'authenticated-probe') spend.probes += 1;
       const result = await run(claudeBin, rung.args(), { timeoutMs: commandTimeoutMs, cwd, env });
       const after = await readCredentials();
       const ok = refreshed(before, after, now());
@@ -474,12 +549,17 @@ function createClaudeOAuthRefresher(options = {}) {
         if (!step.stderr && result.stdout) step.stdout = redactCliOutput(result.stdout);
       }
       steps.push(step);
+      if (rung.step === 'authenticated-probe' && !ok && (step.timedOut || step.code !== 0)) {
+        state.lastProbeFailure = { credentialExpiresAt: before.expiresAt, step: { ...step } };
+        persist();
+      }
       if (ok) {
         state.lastSuccessAt = now();
         state.consecutiveFailures = 0;
         state.retryAfter = 0;
         state.failureClass = null;
         state.lastFailure = null;
+        state.lastProbeFailure = null;
         state.parked = null;
         state.refreshCount += 1;
         state.lastOutcome = {
@@ -586,14 +666,22 @@ function createClaudeOAuthRefresher(options = {}) {
     // explicit rejection cannot be fixed by running the CLI again, and a
     // repeating generic failure stops being worth a spawn after a few tries.
     state.consecutiveFailures += 1;
-    const failureClass = classifyFailure(steps);
+    // A skipped probe supplies no new diagnosis. Carry the last real probe's
+    // already-redacted evidence into the existing classifier, labelled as
+    // historical so logs never claim that another CLI turn was performed.
+    const failureSteps = [...steps];
+    if (steps.some(step => step.step === 'authenticated-probe' && step.skipped === 'budget_spent')
+        && state.lastProbeFailure?.credentialExpiresAt === before.expiresAt) {
+      failureSteps.push({ ...state.lastProbeFailure.step, step: 'previous-authenticated-probe' });
+    }
+    const failureClass = classifyFailure(failureSteps);
     state.failureClass = failureClass;
     state.lastFailure = {
       at: new Date(ts).toISOString(),
       failureClass,
       reason,
       expiresInMs: before.expiresAt - ts,
-      steps: steps.filter(step => step.stderr || step.stdout || step.timedOut),
+      steps: failureSteps.filter(step => step.stderr || step.stdout || step.timedOut),
     };
     // Budget spent while the token stayed dead: nothing left in the ladder can
     // produce a different answer, so the remaining retries would be the exact
@@ -753,6 +841,8 @@ function createClaudeOAuthRefresher(options = {}) {
       failureClass: state.failureClass,
       lastFailure: state.lastFailure,
       parked: state.parked || null,
+      postExpiryAttempt: state.postExpiryAttempt || null,
+      maxProbesPerWindow,
       // How much of this token's budget is already spent — the number that
       // explains why a check spawned nothing.
       window: state.window ? { ...state.window } : null,
@@ -776,4 +866,5 @@ module.exports = {
   DEFAULT_CHECK_INTERVAL_MS,
   DEFAULT_MAX_COOLDOWN_MS,
   DEFAULT_PARK_AFTER_FAILURES,
+  DEFAULT_MAX_PROBES_PER_WINDOW,
 };

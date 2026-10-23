@@ -72,7 +72,7 @@
     "command-code:down": "docker compose -f docker/command-code/compose.yaml down",
     "test:network": "node --test tests/test-global-proxy.js tests/test-official-fetch.js tests/test-outbound-network.js tests/test-outbound-websocket-wiring.js tests/test-quota-outbound-requests.js tests/test-tts-child-proxy.js",
     "build:rust": "node scripts/build-rust-kernels.js",
-    "test:rust": "node --test tests/test-codex-model-catalog-native.js tests/test-rust-cpr.js tests/test-rust-kernels.js tests/test-rust-sqlite.js tests/test-source-rust.js",
+    "test:rust": "node --test tests/test-claude-expired-refresh-native.js tests/test-codex-model-catalog-native.js tests/test-rust-cpr.js tests/test-rust-kernels.js tests/test-rust-sqlite.js tests/test-source-rust.js",
     "benchmark:rust": "node scripts/benchmark-rust-kernels.js"
   },
   "dependencies": {

@@ -34,10 +34,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createClaudeOAuthRefresher, KEYCHAIN_SERVICE } = require('./oauth-refresh');
+const { createClaudeOAuthRefresher, KEYCHAIN_SERVICE, DEFAULT_MAX_PROBES_PER_WINDOW } = require('./oauth-refresh');
 const { parseCredentials } = require('../quota/claude-cli-oauth');
 const { atomicWriteJson, ensurePrivateDir, secureFile } = require('../runtime-security');
 const { isCliCopy } = require('../official-accounts');
+const { planClaudeExpiredRefresh } = require('./expired-refresh-policy');
 
 // Narrower than the shared refresher's 15 min: each attempt seeds and clears a
 // credential slot, and the CLI declines anything outside its own ~5 min window.
@@ -277,20 +278,30 @@ function createClaudeAccountRefreshSupervisor(options = {}) {
     if (expiresAt - now() > bufferMs) return { outcome: 'fresh' };
     const refresher = refresherFor(id);
     const status = refresher.status();
-    // A parked credential has already been rejected or has failed repeatedly.
-    // Seeding the slot and running the ladder again cannot change that — the
-    // refresher releases the park itself when the credential is replaced — so
-    // the cheapest possible answer is the correct one, and no CLI process or
-    // Keychain write happens in the meantime.
+    // Keep rejected credentials out of the CLI slot. A newer credential or a
+    // Rust-approved post-expiry recovery may reopen the ladder.
     if (status.parked) {
       // The slot the refresher reads is only seeded inside the ladder, so a
       // parked account has to be tested against its own file: a later expiry
-      // than the one that was parked means someone logged in again, and only
-      // then does seeding the slot make sense again.
+      // than the one that was parked means someone logged in again. Otherwise
+      // consult the same Rust policy that guards the actual probe below.
       const parkedExpiry = Number(status.parked.credentialExpiresAt) || 0;
       const renewed = parkedExpiry > 0 && expiresAt > parkedExpiry;
-      if (!renewed) return { outcome: 'parked', detail: status.parked.failureClass || null };
-      logger.info('claude_account_cli_refresh_renewed', { accountId: id, parkedExpiry, expiresAt });
+      if (!renewed) {
+        const plan = planClaudeExpiredRefresh({
+          now: now(), expiresAt, hasRefreshToken: !!refreshToken,
+          refreshExpiresAt: Number(data.refreshTokenExpiresAt) || null,
+          postExpiryAttemptedFor: status.postExpiryAttempt?.credentialExpiresAt || null,
+          parked: true,
+          parkedFailureClass: status.parked.failureClass || null,
+          probes: status.window?.expiresAt === expiresAt ? status.window.probes : 0,
+          maxProbes: status.maxProbesPerWindow || DEFAULT_MAX_PROBES_PER_WINDOW,
+          force: false,
+        }, logger);
+        if (!plan?.recoverParked) return { outcome: 'parked', detail: status.parked.failureClass || null };
+      } else {
+        logger.info('claude_account_cli_refresh_renewed', { accountId: id, parkedExpiry, expiresAt });
+      }
     }
     const retryAfter = status.retryAfter;
     if (retryAfter && retryAfter > now()) return { outcome: 'cooldown', retryInMs: retryAfter - now() };
