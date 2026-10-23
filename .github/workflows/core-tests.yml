@@ -46,6 +46,11 @@ jobs:
           MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
       - name: Configure Rust module
         run: echo "MULTICC_RUST_PREBUILT_DIR=${{ runner.temp }}/multicc-rust-prebuilt" >> "$GITHUB_ENV"
+      - name: Configure Git identity for isolated repositories
+        shell: bash
+        run: |
+          git config --global user.name "$(node -p "require('./commit-policy.json').name")"
+          git config --global user.email "$(node -p "require('./commit-policy.json').email")"
 
       # scripts/run-test-tier.js reads tests/test-tiers.json directly. Its
       # command log is the auditable list of every selected path and variant.

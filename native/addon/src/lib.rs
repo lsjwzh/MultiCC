@@ -3,10 +3,10 @@ use napi::{bindgen_prelude::AsyncTask, Env, Result, Task};
 use napi_derive::napi;
 use std::{sync::Arc, time::Instant};
 pub mod cpr;
-pub mod sqlite;
 pub mod publication;
-pub mod task_context;
+pub mod sqlite;
 pub mod subagent_defaults;
+pub mod task_context;
 
 #[napi(object)]
 pub struct NativeResult {
@@ -109,5 +109,5 @@ pub fn compute_usage(input: String) -> AsyncTask<Usage> {
     AsyncTask::new(Usage { input })
 }
 
-pub mod codex_models;
 pub mod claude_refresh;
+pub mod codex_models;

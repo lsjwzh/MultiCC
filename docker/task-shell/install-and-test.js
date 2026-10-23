@@ -41,6 +41,14 @@ async function run(command, args, cwd, env = process.env) {
   console.log('Candidate:', JSON.stringify(manifest));
   const version = require(`${candidate}/package.json`).version;
 
+  // Repository creation needs an explicit Git identity. Keep the disposable
+  // user's configuration tied to the candidate policy instead of a bot or an
+  // inherited host identity; no credentials or host Git files enter the gate.
+  const identity = JSON.parse(fs.readFileSync(`${candidate}/commit-policy.json`, 'utf8'));
+  assert.ok(identity.name && identity.email, 'the candidate must declare its Git identity');
+  await run('git', ['config', '--global', 'user.name', identity.name], '/home/node');
+  await run('git', ['config', '--global', 'user.email', identity.email], '/home/node');
+
   // 1) Build the release artifact from this source. This is the same script the
   // release workflow runs, so a package that cannot be built here cannot be
   // published either.

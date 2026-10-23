@@ -87,7 +87,10 @@ fn session_route(value: Option<&Value>) -> Option<Value> {
 // The route a session got from the family default carries `inherited: true`;
 // a route without it is the task's own choice.
 fn session_inherited(value: Option<&Value>) -> bool {
-    value.and_then(|value| value.get("inherited")).and_then(Value::as_bool) == Some(true)
+    value
+        .and_then(|value| value.get("inherited"))
+        .and_then(Value::as_bool)
+        == Some(true)
 }
 
 fn has_text(value: Option<&Value>) -> bool {
@@ -121,7 +124,10 @@ struct PlanError {
 }
 
 fn invalid_subagent(error: &'static str) -> PlanError {
-    PlanError { code: "invalid_subagent", error }
+    PlanError {
+        code: "invalid_subagent",
+        error,
+    }
 }
 
 impl PlanError {
@@ -171,8 +177,8 @@ fn flag(input: &Value, key: &str) -> bool {
 /// Normalize a stored `subagent` value (any shape) into `{claude, codex}` with
 /// both keys always present. Malformed entries become null.
 pub fn normalize(input: &str) -> Result<String, String> {
-    let parsed: Value =
-        serde_json::from_str(input).map_err(|error| format!("invalid subagent defaults input: {error}"))?;
+    let parsed: Value = serde_json::from_str(input)
+        .map_err(|error| format!("invalid subagent defaults input: {error}"))?;
     let stored = parsed.get("stored");
     Ok(Value::Object(normalized_defaults(stored)).to_string())
 }
@@ -181,9 +187,13 @@ pub fn normalize(input: &str) -> Result<String, String> {
 /// target, pick the sessions without an own route, and say which are kept,
 /// unchanged or skipped. The caller applies the plan.
 pub fn plan_sync(input: &str) -> Result<String, String> {
-    let parsed: Value =
-        serde_json::from_str(input).map_err(|error| format!("invalid subagent sync input: {error}"))?;
-    let cli = parsed.get("cli").and_then(Value::as_str).unwrap_or("").trim();
+    let parsed: Value = serde_json::from_str(input)
+        .map_err(|error| format!("invalid subagent sync input: {error}"))?;
+    let cli = parsed
+        .get("cli")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     let Some(family) = family_for_cli(cli) else {
         return Ok(json!({
             "status": 400,
@@ -207,7 +217,9 @@ pub fn plan_sync(input: &str) -> Result<String, String> {
         // The run-config UI hides the official Codex entry for sub-task routes:
         // it materializes a second model_provider, and the official relay is not
         // a plain HTTP endpoint the second provider could point at.
-        if family == "codex" && (!flag(&parsed, "providerProxyable") || flag(&parsed, "providerOfficial")) {
+        if family == "codex"
+            && (!flag(&parsed, "providerProxyable") || flag(&parsed, "providerOfficial"))
+        {
             return Ok(PlanError {
                 code: "provider_not_proxyable",
                 error: "Codex subagent provider has no callable HTTP endpoint",
@@ -253,7 +265,11 @@ pub fn plan_sync(input: &str) -> Result<String, String> {
             continue;
         }
         let cleaned = clean_session_name(session.get("name"));
-        let name = if cleaned.is_empty() { id.to_owned() } else { cleaned };
+        let name = if cleaned.is_empty() {
+            id.to_owned()
+        } else {
+            cleaned
+        };
         let entry = json!({
             "sessionId": id,
             "sessionName": name,
@@ -327,9 +343,15 @@ mod tests {
 
     #[test]
     fn normalize_accepts_missing_and_hostile_shapes() {
-        for stored in [json!(null), json!("oops"), json!([1, 2]), json!({ "claude": 7 })] {
+        for stored in [
+            json!(null),
+            json!("oops"),
+            json!([1, 2]),
+            json!({ "claude": 7 }),
+        ] {
             let out: Value =
-                serde_json::from_str(&normalize(&json!({ "stored": stored }).to_string()).unwrap()).unwrap();
+                serde_json::from_str(&normalize(&json!({ "stored": stored }).to_string()).unwrap())
+                    .unwrap();
             assert_eq!(out, json!({ "claude": null, "codex": null }));
         }
         let missing: Value = serde_json::from_str(&normalize("{}").unwrap()).unwrap();
@@ -338,28 +360,40 @@ mod tests {
 
     #[test]
     fn unsupported_cli_and_invalid_targets_are_400() {
-        assert_eq!(plan(json!({ "cli": "opencode" }))["code"], "unsupported_cli");
         assert_eq!(
-            plan(json!({ "cli": "claude", "subagent": { "providerId": "p", "model": "bad model" } }))["code"],
+            plan(json!({ "cli": "opencode" }))["code"],
+            "unsupported_cli"
+        );
+        assert_eq!(
+            plan(
+                json!({ "cli": "claude", "subagent": { "providerId": "p", "model": "bad model" } })
+            )["code"],
             "invalid_subagent"
         );
         assert_eq!(
-            plan(json!({ "cli": "claude", "subagent": { "providerId": "", "model": "m" } }))["code"],
+            plan(json!({ "cli": "claude", "subagent": { "providerId": "", "model": "m" } }))
+                ["code"],
             "invalid_provider"
         );
         assert_eq!(
-            plan(json!({ "cli": "claude", "subagent": { "providerId": "p", "model": "m" },
-                "providerValid": false }))["code"],
+            plan(
+                json!({ "cli": "claude", "subagent": { "providerId": "p", "model": "m" },
+                "providerValid": false })
+            )["code"],
             "invalid_provider"
         );
         assert_eq!(
-            plan(json!({ "cli": "codex", "subagent": { "providerId": "p", "model": "m" },
-                "providerValid": true, "providerProxyable": false }))["code"],
+            plan(
+                json!({ "cli": "codex", "subagent": { "providerId": "p", "model": "m" },
+                "providerValid": true, "providerProxyable": false })
+            )["code"],
             "provider_not_proxyable"
         );
         assert_eq!(
-            plan(json!({ "cli": "codex", "subagent": { "providerId": "p", "model": "m" },
-                "providerValid": true, "providerProxyable": true, "providerOfficial": true }))["code"],
+            plan(
+                json!({ "cli": "codex", "subagent": { "providerId": "p", "model": "m" },
+                "providerValid": true, "providerProxyable": true, "providerOfficial": true })
+            )["code"],
             "provider_not_proxyable"
         );
         assert_eq!(
@@ -388,11 +422,22 @@ mod tests {
         }));
         assert_eq!(out["status"], 200);
         assert_eq!(out["family"], "claude");
-        let ids: Vec<_> = out["targets"].as_array().unwrap().iter().map(|s| s["sessionId"].clone()).collect();
+        let ids: Vec<_> = out["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["sessionId"].clone())
+            .collect();
         assert_eq!(ids, vec![json!("keep"), json!("exp")]);
         assert_eq!(out["unchanged"].as_array().unwrap().len(), 0);
-        assert_eq!(out["defaults"]["claude"], json!({ "providerId": "p", "model": "m" }));
-        assert_eq!(out["defaults"]["codex"], json!({ "providerId": "x", "model": "y" }));
+        assert_eq!(
+            out["defaults"]["claude"],
+            json!({ "providerId": "p", "model": "m" })
+        );
+        assert_eq!(
+            out["defaults"]["codex"],
+            json!({ "providerId": "x", "model": "y" })
+        );
     }
 
     #[test]
@@ -413,15 +458,30 @@ mod tests {
                     "subagent": { "providerId": "old", "model": "old", "inherited": true } }),
             ],
         }));
-        let unchanged: Vec<_> = out["unchanged"].as_array().unwrap().iter()
-            .map(|s| s["sessionId"].clone()).collect();
+        let unchanged: Vec<_> = out["unchanged"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["sessionId"].clone())
+            .collect();
         assert_eq!(unchanged, vec![json!("same"), json!("same-exp")]);
         assert_eq!(out["unchanged"][1]["pending"], true);
-        let skipped: Vec<_> = out["skipped"].as_array().unwrap().iter()
-            .map(|s| (s["sessionId"].clone(), s["reason"].clone())).collect();
-        assert_eq!(skipped, vec![(json!("no-main"), json!("codex_requires_main_provider"))]);
-        let targets: Vec<_> = out["targets"].as_array().unwrap().iter()
-            .map(|s| s["sessionId"].clone()).collect();
+        let skipped: Vec<_> = out["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["sessionId"].clone(), s["reason"].clone()))
+            .collect();
+        assert_eq!(
+            skipped,
+            vec![(json!("no-main"), json!("codex_requires_main_provider"))]
+        );
+        let targets: Vec<_> = out["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["sessionId"].clone())
+            .collect();
         assert_eq!(targets, vec![json!("move")]);
     }
 
@@ -441,8 +501,12 @@ mod tests {
         }));
         assert_eq!(out["subagent"], Value::Null);
         assert_eq!(out["defaults"]["claude"], Value::Null);
-        let targets: Vec<_> = out["targets"].as_array().unwrap().iter()
-            .map(|s| s["sessionId"].clone()).collect();
+        let targets: Vec<_> = out["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["sessionId"].clone())
+            .collect();
         assert_eq!(targets, vec![json!("clear")]);
         assert_eq!(out["unchanged"][0]["sessionId"], json!("already"));
         assert_eq!(out["kept"][0]["sessionId"], json!("own"));
@@ -462,7 +526,12 @@ mod tests {
                 "subagent": { "providerId": "old", "model": "old", "inherited": true } },
         ]);
         let ids = |out: &Value, key: &str| -> Vec<Value> {
-            out[key].as_array().unwrap().iter().map(|s| s["sessionId"].clone()).collect()
+            out[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["sessionId"].clone())
+                .collect()
         };
         let set = plan(json!({
             "cli": "claude",
@@ -470,14 +539,23 @@ mod tests {
             "providerValid": true,
             "sessions": sessions.clone(),
         }));
-        assert_eq!(ids(&set, "targets"), vec![json!("follow"), json!("global-old")]);
-        assert_eq!(ids(&set, "kept"), vec![json!("own-same"), json!("own-other")]);
+        assert_eq!(
+            ids(&set, "targets"),
+            vec![json!("follow"), json!("global-old")]
+        );
+        assert_eq!(
+            ids(&set, "kept"),
+            vec![json!("own-same"), json!("own-other")]
+        );
         assert_eq!(set["unchanged"].as_array().unwrap().len(), 0);
 
         let clear = plan(json!({ "cli": "claude", "subagent": null, "sessions": sessions }));
         assert_eq!(ids(&clear, "targets"), vec![json!("global-old")]);
         assert_eq!(ids(&clear, "unchanged"), vec![json!("follow")]);
-        assert_eq!(ids(&clear, "kept"), vec![json!("own-same"), json!("own-other")]);
+        assert_eq!(
+            ids(&clear, "kept"),
+            vec![json!("own-same"), json!("own-other")]
+        );
     }
 
     #[test]
