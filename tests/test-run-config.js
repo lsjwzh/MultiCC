@@ -436,3 +436,71 @@ test('pillModel（自动挑选）：线路池与本机某个预设一致时，�
     assert.equal(run.pillText(miss), '⚡ 自动 · 按顺序 · 1 条');
   } finally { delete global.window; }
 });
+
+// ── 子 agent：家族 / 默认值 / 同步摘要 / 首次引导 ───────────────────────────
+test('subagentFamily：claude 与 claude-exp 同族，codex 与 codex-exp 同族', () => {
+  assert.equal(run.subagentFamily('claude'), 'claude');
+  assert.equal(run.subagentFamily('claude-exp'), 'claude');
+  assert.equal(run.subagentFamily('codex'), 'codex');
+  assert.equal(run.subagentFamily('codex-exp'), 'codex');
+  for (const cli of ['opencode', 'zcode', 'kimi', '', null, undefined, 'nope']) {
+    assert.equal(run.subagentFamily(cli), '', `${cli} 不该有子 agent 家族`);
+  }
+  assert.equal(run.subagentFamilyLabel('claude'), 'Claude Code');
+  assert.equal(run.subagentFamilyLabel('codex'), 'Codex');
+  assert.equal(run.subagentFamilyLabel(''), '');
+});
+
+test('subagentDefaultFor：整份目录或 defaults 对象都能查，畸形条目当没有', () => {
+  const defaults = {
+    claude: 'main-claude',
+    subagent: {
+      claude: { providerId: 'relay', model: 'claude-sonnet-4-6' },
+      codex: { providerId: '', model: 'gpt-5' },
+    },
+  };
+  assert.deepEqual(run.subagentDefaultFor({ defaults }, 'claude-exp'), { providerId: 'relay', model: 'claude-sonnet-4-6' });
+  assert.deepEqual(run.subagentDefaultFor(defaults, 'claude'), { providerId: 'relay', model: 'claude-sonnet-4-6' });
+  assert.equal(run.subagentDefaultFor(defaults, 'codex-exp'), null, '只有模型没有线路 = 没设置');
+  assert.equal(run.subagentDefaultFor(defaults, 'opencode'), null);
+  assert.equal(run.subagentDefaultFor(null, 'claude'), null);
+  assert.equal(run.subagentDefaultFor({ defaults: {} }, 'claude'), null);
+  // 主线路默认（裸 id）不能被误当成子 agent 默认。
+  assert.equal(run.subagentDefaultFor({ defaults: { claude: 'relay' } }, 'claude'), null);
+  assert.equal(run.normalizeSubagentRoute({ providerId: '  relay ', model: ' sonnet ' }).providerId, 'relay');
+  assert.equal(run.normalizeSubagentRoute({ providerId: 'p'.repeat(400), model: 'm'.repeat(400) }).model.length, 100);
+  assert.equal(run.normalizeSubagentRoute({ providerId: 'p' }), null);
+  assert.equal(run.sameSubagentRoute(null, null), true);
+  assert.equal(run.sameSubagentRoute({ providerId: 'a', model: 'm' }, { providerId: 'a', model: 'm' }), true);
+  assert.equal(run.sameSubagentRoute({ providerId: 'a', model: 'm' }, { providerId: 'a', model: 'x' }), false);
+});
+
+test('syncSummary：预览 → 状态行文案（含跳过与 503）', () => {
+  assert.equal(run.syncSummary(null).text, '');
+  assert.equal(run.syncSummary({ state: 'loading' }).text, '正在检查要更新的任务…');
+  assert.deepEqual(run.syncSummary({ state: 'ready', family: 'claude', counts: { applied: 3, deferred: 1, unchanged: 9, skipped: 0 } }),
+    { tone: 'ready', text: '将更新 4 个任务' });
+  assert.equal(run.syncSummary({ state: 'ready', family: 'claude', counts: { applied: 0, deferred: 1 } }).text, '将更新 1 个任务');
+  assert.equal(run.syncSummary({ state: 'ready', family: 'codex', counts: { applied: 2, skipped: 3 } }).text, '将更新 2 个任务，3 个跳过');
+  assert.equal(run.syncSummary({ state: 'ready', family: 'codex', counts: { applied: 0, deferred: 0, unchanged: 5, skipped: 0 } }).text,
+    '所有 Codex 任务已经是这套设置');
+  assert.equal(run.syncSummary({ state: 'ready', family: 'codex', counts: {} }).text, '所有 Codex 任务已经是这套设置');
+  assert.equal(run.syncSummary({ state: 'error', error: '500 boom' }).tone, 'error');
+  assert.match(run.syncSummary({ state: 'error', error: '500 boom' }).text, /500 boom/);
+  assert.match(run.syncSummary({ state: 'unavailable' }).text, /重启/);
+  assert.equal(run.syncSummary({ state: 'unavailable' }).tone, 'error');
+});
+
+test('guideSeen / markGuideSeen：注入的存储，读不到或抛错都不炸', () => {
+  const store = new Map();
+  const storage = { getItem: key => (store.has(key) ? store.get(key) : null), setItem: (key, value) => store.set(key, value) };
+  assert.equal(run.guideSeen(storage), false);
+  assert.equal(run.markGuideSeen(storage), true);
+  assert.equal(store.get(run.SUBAGENT_GUIDE_KEY), '1');
+  assert.equal(run.guideSeen(storage), true);
+  // 存储不可用（私密窗口 / 配额满）：永远当没看过，写失败返回 false，绝不抛。
+  assert.equal(run.guideSeen(null), false);
+  assert.equal(run.guideSeen({ getItem() { throw new Error('blocked'); } }), false);
+  assert.equal(run.markGuideSeen(null), false);
+  assert.equal(run.markGuideSeen({ setItem() { throw new Error('quota'); } }), false);
+});

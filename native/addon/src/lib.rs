@@ -6,6 +6,7 @@ pub mod cpr;
 pub mod sqlite;
 pub mod publication;
 pub mod task_context;
+pub mod subagent_defaults;
 
 #[napi(object)]
 pub struct NativeResult {

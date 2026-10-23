@@ -4511,6 +4511,15 @@
       ]
     },
     {
+      "path": "tests/test-run-config-subagent-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
       "path": "tests/test-run-config.js",
       "tier": "flow",
       "lane": "deterministic",
@@ -5046,6 +5055,12 @@
       "path": "tests/test-stream-integration.js",
       "tier": "other",
       "lane": "live"
+    },
+    {
+      "path": "tests/test-subagent-defaults.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:rust"
     },
     {
       "path": "tests/test-system-routes.js",

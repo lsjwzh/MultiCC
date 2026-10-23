@@ -39,6 +39,16 @@ function/text stream back to Responses events, but it cannot be the parent that
 discovers and invokes `spawn_agent`. This is a protocol capability boundary,
 not a CLI/provider-name restriction.
 
+## Family defaults and one-click sync
+
+`POST /api/subagent-defaults/sync` applies one subagent route to every Codex
+(`codex` + `codex-exp`) chat task and stores it as the family default for new
+tasks; see the "同 CLI 默认与一键同步" section of
+[claude-subagent-provider-routing.md](claude-subagent-provider-routing.md).
+Codex tasks without a selected main provider are reported as skipped
+(`codex_requires_main_provider`) instead of being changed, and a new Codex task
+in that state is created without a subagent route rather than failing.
+
 ## Tests
 
 ```sh

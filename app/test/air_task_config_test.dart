@@ -10,6 +10,7 @@ import 'package:multicc_app/services/air_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air/air_panels.dart';
 import 'package:multicc_app/widgets/air/air_task_config.dart';
+import 'package:multicc_app/widgets/run_config/run_config_sheet.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 线路面板要的那一份 Provider 池。其余请求（模型清单那些预热）给一个空壳就行
@@ -33,9 +34,12 @@ MockClient _providerClient(
   );
 });
 
-Future<SettingsService> _settings() async {
+Future<SettingsService> _settings({bool guideSeen = true}) async {
   SharedPreferences.setMockInitialValues({
     'multicc_host': 'http://localhost:3000',
+    // 这些用例看的是线路/子任务控件本身，把「首次引导已经看过」当成前提；
+    // 引导会把面板滚到子 agent 那一块，和它们要点的东西无关。
+    if (guideSeen) runConfigSubagentGuideKey: true,
   });
   return SettingsService.getInstance();
 }
@@ -687,6 +691,228 @@ void main() {
     );
   });
 
+  test('子任务尾巴：草稿明确「随主」才发显式 null，没决定就不发字段', () {
+    Map<String, dynamic> body({required bool explicitNone}) => AirTaskRuntime(
+      cli: 'claude',
+      provider: 'p1',
+      model: 'm1',
+      subagentExplicitNone: explicitNone,
+    ).toCreateBody();
+
+    // 没决定：字段整个不出现，服务端才会套用它自己的家族默认。
+    expect(body(explicitNone: false).containsKey('subagent'), isFalse);
+    // 明确「随主」：显式 null 才能把家族默认顶掉。
+    expect(body(explicitNone: true).containsKey('subagent'), isTrue);
+    expect(body(explicitNone: true)['subagent'], isNull);
+  });
+
+  testWidgets('草稿预填：家族默认先选上，建任务请求带着它', (tester) async {
+    final settings = await _settings();
+    AirTaskRuntime? picked;
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(800, 1400);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    const providers = [
+      {'id': 'p1', 'name': 'A 家', 'protocol': 'anthropic'},
+      {
+        'id': 'p2',
+        'name': 'B 家',
+        'protocol': 'anthropic',
+        'model': 'm2',
+        'modelOptions': ['m2'],
+      },
+    ];
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/subagent-defaults') {
+        return http.Response(
+          jsonEncode({
+            'ok': true,
+            'defaults': {
+              'claude': {'providerId': 'p2', 'model': 'm2'},
+              'codex': null,
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      if (request.url.path.startsWith('/api/providers')) {
+        return http.Response(
+          jsonEncode({'ok': true, 'providers': providers}),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      return http.Response(
+        jsonEncode({'ok': true}),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+
+    await tester.pumpWidget(
+      _editorHost(
+        settings: settings,
+        initial: const AirTaskRuntime(
+          cli: 'claude',
+          provider: 'p1',
+          model: 'm1',
+        ),
+        httpClient: client,
+        onPicked: (value) => picked = value,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('open')));
+    await tester.pumpAndSettle();
+
+    // 家族默认（B 家 · m2）已经在面板上，不用用户自己再选一遍。
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('run-subagent-provider')),
+        matching: find.textContaining('B 家'),
+      ),
+      findsOneWidget,
+    );
+
+    final save = find.text('保存');
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+
+    expect(picked!.subagent?.providerId, 'p2');
+    expect(picked!.subagent?.model, 'm2');
+    expect(picked!.toCreateBody()['subagent'], {
+      'providerId': 'p2',
+      'model': 'm2',
+    });
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('草稿明确「随主」：创建请求发显式 null 顶掉家族默认', (tester) async {
+    final settings = await _settings();
+    AirTaskRuntime? picked;
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(800, 1400);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    const providers = [
+      {'id': 'p1', 'name': 'A 家', 'protocol': 'anthropic'},
+      {
+        'id': 'p2',
+        'name': 'B 家',
+        'protocol': 'anthropic',
+        'model': 'm2',
+        'modelOptions': ['m2'],
+      },
+    ];
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/subagent-defaults') {
+        return http.Response(
+          jsonEncode({
+            'ok': true,
+            'defaults': {
+              'claude': {'providerId': 'p2', 'model': 'm2'},
+              'codex': null,
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      if (request.url.path.startsWith('/api/providers')) {
+        return http.Response(
+          jsonEncode({'ok': true, 'providers': providers}),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      return http.Response(
+        jsonEncode({'ok': true}),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+
+    await tester.pumpWidget(
+      _editorHost(
+        settings: settings,
+        initial: const AirTaskRuntime(
+          cli: 'claude',
+          provider: 'p1',
+          model: 'm1',
+        ),
+        httpClient: client,
+        onPicked: (value) => picked = value,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('open')));
+    await tester.pumpAndSettle();
+
+    // 预填的是 B 家 · m2；把它改回「随主」。
+    await tester.ensureVisible(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('随主').last);
+    await tester.pumpAndSettle();
+
+    final save = find.text('保存');
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+
+    expect(picked!.subagent, isNull);
+    expect(picked!.subagentExplicitNone, isTrue);
+    expect(picked!.toCreateBody().containsKey('subagent'), isTrue);
+    expect(picked!.toCreateBody()['subagent'], isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('草稿没动子 agent：建任务请求不带 subagent 字段', (tester) async {
+    final settings = await _settings();
+    final requests = <String>[];
+    AirTaskRuntime? picked;
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(800, 1400);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      _editorHost(
+        settings: settings,
+        initial: const AirTaskRuntime(
+          cli: 'claude',
+          provider: 'p1',
+          model: 'm1',
+        ),
+        httpClient: _providerClient(requests, const [
+          {'id': 'p1', 'name': 'A 家', 'protocol': 'anthropic'},
+        ]),
+        onPicked: (value) => picked = value,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('open')));
+    await tester.pumpAndSettle();
+
+    // 不碰子 agent 直接保存：服务端会套用它自己的家族默认，面板不该替它决定。
+    final save = find.text('保存');
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+
+    expect(requests, contains('GET /api/subagent-defaults'));
+    expect(picked!.subagent, isNull);
+    expect(picked!.subagentExplicitNone, isFalse);
+    expect(picked!.toCreateBody().containsKey('subagent'), isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('子任务尾巴：面板上读得回来，也交得回去', (tester) async {
     final settings = await _settings();
     final requests = <String>[];
@@ -722,12 +948,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('open')));
     await tester.pumpAndSettle();
 
-    // 子任务线路在「高级」里，展开才看得见。
-    final advanced = find.byKey(const ValueKey('run-advanced-toggle'));
-    await tester.ensureVisible(advanced);
-    await tester.tap(advanced);
-    await tester.pumpAndSettle();
-
+    // 子任务常驻在面板上（不再折进「高级」）。
     // 存过的子任务线路要显示回来，否则再打开面板存一次就把它清掉了。
     expect(
       find.descendant(

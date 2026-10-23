@@ -6,10 +6,12 @@
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../i18n.dart';
 import '../../models/message.dart';
@@ -23,6 +25,7 @@ import '../../services/opencode_models_service.dart';
 import '../../services/qoder_models_service.dart';
 import '../../services/run_pool_service.dart';
 import '../../services/settings_service.dart';
+import '../../services/subagent_defaults_service.dart';
 import '../../theme.dart';
 import '../../utils/cli_display.dart';
 import '../../utils/session_status_helpers.dart';
@@ -37,6 +40,10 @@ import 'run_config_wire.dart';
 import 'run_labels.dart';
 
 part 'run_config_sheet_auto.dart';
+
+/// 首次打开面板时那张「子 agent 可以单独选线路」强引导的持久化标记。关掉之后
+/// 不再出现；没有这个 key = 还没看过。
+const String runConfigSubagentGuideKey = 'run_config_subagent_guide_v1';
 
 /// 面板打开前要备好的东西：会话现在这条车道的 Provider 池 + 车道可用性。
 class RunConfigInputs {
@@ -68,6 +75,7 @@ class RunConfigSheet extends StatefulWidget {
     this.cliAvailability = const {},
     this.specs,
     this.sessionId,
+    this.draft = false,
   });
 
   final SessionCli cli;
@@ -85,13 +93,19 @@ class RunConfigSheet extends StatefulWidget {
   final Map<String, dynamic>? specs;
   final String? sessionId;
 
+  /// 新任务 / 草稿（任务还没创建）。这类面板没有服务端会话可写，所以：
+  /// ① 家里有「子 agent 家族默认」时先把它选上；② 用户明确选「随主」要记下来，
+  /// 创建请求得发 `subagent: null` 顶掉默认。会话面板不看这个标记。
+  final bool draft;
+
   @override
   State<RunConfigSheet> createState() => RunConfigSheetState();
 }
 
 /// 面板的全部状态与「固定一条」那半张界面。抽象是为了让 part 里的
 /// `RunConfigAutoSection` mixin 能 `on` 它（mixin 不能约束在被混入的类自身上）。
-abstract class RunConfigSheetBase extends State<RunConfigSheet> {
+abstract class RunConfigSheetBase extends State<RunConfigSheet>
+    with SingleTickerProviderStateMixin {
   /// 「自动挑选」那半张面板由 part 里的 `RunConfigAutoSection` mixin 提供。
   List<Widget> buildAutoSection();
 
@@ -112,6 +126,34 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
   late final TextEditingController _subCustomCtrl;
   late final TextEditingController _agentCtrl;
   bool _advanced = false;
+
+  // ── 子 agent：强引导 / 家族默认 / 同步 ─────────────────────────────────
+  //
+  // 这一块以前折在「▸ 高级」里，等于没有。现在是一张常驻卡片（见 _subagentSection）：
+  // 用户点过任何子 agent 控件之后 [_subagentTouched] 置位（草稿据此发显式 null，
+  // 首次引导也就此收起）；[_guideReady]/[_guideDismissed] 是 SharedPreferences 里
+  // `run_config_subagent_guide_v1` 的缓存；[_subagentDefaults] 是服务端那份
+  // 家族默认（同步状态那行与草稿预填都读它）。
+  bool _subagentTouched = false;
+  bool _guideReady = false;
+  bool _guideDismissed = true;
+  bool _guideRevealed = false;
+  late final AnimationController _guidePulse;
+  final GlobalKey _subagentSectionKey = GlobalKey();
+  final GlobalKey _subagentLineKey = GlobalKey();
+  Map<String, SessionSubagent?> _subagentDefaults = const {};
+  bool _defaultsLoaded = false;
+  bool _defaultsApplied = false;
+
+  /// 「同步到全部同 CLI 任务」开关。每次打开面板都是关的（它是一次性动作，不该
+  /// 跟着面板状态留下来）。
+  bool _syncChecked = false;
+  bool _syncLoading = false;
+  bool _syncUnavailable = false;
+  String _syncError = '';
+  String _syncSummary = '';
+  Timer? _syncDebounce;
+  int _syncEpoch = 0;
 
   /// 未安装/用不了的车道默认折在「▸ 未安装的 N 个」底下，点开才铺出来 —— 六条
   /// 装不了的 CLI 不该把一整屏占满。
@@ -160,14 +202,278 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     _presetStore.load().then((presets) {
       if (mounted) setState(() => _presets = presets);
     });
+    _guidePulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    );
+    _initSubagentGuide();
+    _loadSubagentDefaults();
   }
 
   @override
   void dispose() {
+    _syncDebounce?.cancel();
+    _guidePulse.dispose();
     _customCtrl.dispose();
     _subCustomCtrl.dispose();
     _agentCtrl.dispose();
     super.dispose();
+  }
+
+  // ── 子 agent：强引导 / 家族默认 / 同步 ─────────────────────────────────
+
+  /// 首次强引导：没关过就显示，并把整块卡片滚进视野（面板一打开可能只看到 CLI
+  /// 那一屏，新功能就藏没了）。
+  Future<void> _initSubagentGuide() async {
+    var dismissed = false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      dismissed = prefs.getBool(runConfigSubagentGuideKey) ?? false;
+    } catch (_) {
+      dismissed = false;
+    }
+    if (!mounted) return;
+    setState(() {
+      _guideDismissed = dismissed;
+      _guideReady = true;
+    });
+    if (dismissed) return;
+    _guidePulse.forward(from: 0);
+    _revealSubagentSection();
+  }
+
+  void _revealSubagentSection() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _guideRevealed) return;
+      final ctx = _subagentSectionKey.currentContext;
+      if (ctx == null) return;
+      _guideRevealed = true;
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 280),
+        alignment: 0.05,
+      );
+    });
+  }
+
+  void _dismissGuide() {
+    if (_guideDismissed) return;
+    setState(() => _guideDismissed = true);
+    unawaited(_persistGuideDismissed());
+  }
+
+  Future<void> _persistGuideDismissed() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(runConfigSubagentGuideKey, true);
+    } catch (_) {
+      // 存不下只是下次还会再弹一次，不值得打断保存。
+    }
+  }
+
+  void _onGuideGo() {
+    final ctx = _subagentLineKey.currentContext;
+    if (ctx == null) return;
+    Scrollable.ensureVisible(
+      ctx,
+      duration: const Duration(milliseconds: 260),
+      alignment: 0.1,
+    );
+  }
+
+  /// 家族默认（claude / codex）。取不到（没 settings / 请求失败）就是空表 =
+  /// 「随主线路」；403/404 的老服务端也走这条路，不该挡住面板。
+  Future<void> _loadSubagentDefaults() async {
+    final settings = widget.settings;
+    if (settings == null) {
+      if (mounted) setState(() => _defaultsLoaded = true);
+      return;
+    }
+    try {
+      final defaults = await SubagentDefaultsService(
+        settings: settings,
+        httpClient: widget.httpClient,
+      ).fetchDefaults();
+      if (!mounted) return;
+      setState(() {
+        _subagentDefaults = defaults;
+        _defaultsLoaded = true;
+      });
+      _maybePrefillSubagent();
+    } catch (_) {
+      if (mounted) setState(() => _defaultsLoaded = true);
+    }
+  }
+
+  SessionSubagent? _defaultForCli(SessionCli cli) {
+    final family = subagentFamilyOf(cli.name);
+    if (family == null) return null;
+    return _subagentDefaults[family];
+  }
+
+  /// 新任务草稿：用户还没碰过子 agent、也没有传进来的子任务，就把家族默认选上
+  /// （和 web 草稿预填同一条规则）。线路在池子里不存在就不预填 —— 摆一个选不中
+  /// 的值只会让下拉回落成「随主」却把值偷偷存下去。
+  void _maybePrefillSubagent() {
+    if (!widget.draft || _subagentTouched || _defaultsApplied) return;
+    _defaultsApplied = true;
+    if ((widget.subProviderId ?? '').isNotEmpty) return;
+    if ((widget.subModel ?? '').isNotEmpty) return;
+    final target = _currentSubagentTarget();
+    if (target == null) return;
+    final def = _defaultForCli(target.cli);
+    final model = def?.model ?? '';
+    final providerId = def?.providerId ?? '';
+    if (model.isEmpty) return;
+    final pool = _poolFor(target.cli.name);
+    if (providerId.isNotEmpty &&
+        !pool.any((p) => p['id']?.toString() == providerId)) {
+      return;
+    }
+    final choices = runModelChoices(
+      target.cli,
+      providerId.isEmpty ? target.mainProviderId : providerId,
+      pool,
+    ).where((m) => m.isNotEmpty).toList();
+    setState(() {
+      _subProvider = providerId;
+      _subModel = model;
+      _customSubModel = !choices.contains(model);
+      _subCustomCtrl.text = _customSubModel ? model : '';
+    });
+  }
+
+  /// 当前模式下的子 agent 目标（车道 + 保存值），同步与默认展示都读它。
+  _SubagentTarget? _currentSubagentTarget() => _mode == RunConfigMode.auto
+      ? _autoSubagentTarget()
+      : _fixedSubagentTarget();
+
+  /// 自动挑选那半张由 mixin 覆写；固定一条模式不会走到这个空实现。
+  _SubagentTarget? _autoSubagentTarget() => null;
+
+  _SubagentTarget? _fixedSubagentTarget() {
+    if (!_cli.supportsSubagent) return null;
+    final subModel = _customSubModel ? _subCustomCtrl.text.trim() : _subModel;
+    return _SubagentTarget(
+      cli: _cli,
+      mainProviderId: _provider,
+      subagent: buildSubagent(
+        subProviderId: _subProvider,
+        subModel: subModel,
+        mainProvider: _provider,
+      ),
+    );
+  }
+
+  void _noteSubagentChanged() {
+    _subagentTouched = true;
+    _dismissGuide();
+    if (_syncChecked) _scheduleSyncDryRun();
+  }
+
+  void _onSyncChanged(bool value) {
+    _syncDebounce?.cancel();
+    _syncEpoch += 1;
+    setState(() {
+      _syncChecked = value;
+      _syncLoading = false;
+      _syncError = '';
+      _syncSummary = '';
+    });
+    if (value) _scheduleSyncDryRun();
+  }
+
+  /// 勾上之后先做一次 dry run 统计（防抖，换线路/模型时重算）。真正的写入在
+  /// 保存成功之后由调用方发（见 openRunConfigSheet / 建任务那条路）。
+  void _scheduleSyncDryRun() {
+    if (!_syncChecked) return;
+    _syncDebounce?.cancel();
+    final epoch = ++_syncEpoch;
+    _syncDebounce = Timer(
+      const Duration(milliseconds: 350),
+      () => _runSyncDryRun(epoch),
+    );
+  }
+
+  Future<void> _runSyncDryRun(int epoch) async {
+    final settings = widget.settings;
+    final target = _currentSubagentTarget();
+    if (settings == null || target == null) return;
+    setState(() {
+      _syncLoading = true;
+      _syncError = '';
+    });
+    try {
+      final res = await SubagentDefaultsService(
+        settings: settings,
+        httpClient: widget.httpClient,
+      ).sync(cli: target.cli.name, subagent: target.subagent, dryRun: true);
+      if (!mounted || epoch != _syncEpoch) return;
+      setState(() {
+        _syncLoading = false;
+        _syncUnavailable = false;
+        _subagentDefaults = res.defaults;
+        _defaultsLoaded = true;
+        _syncSummary = _describeSyncDryRun(res, target.cli);
+      });
+    } on SubagentSyncUnavailable {
+      if (!mounted || epoch != _syncEpoch) return;
+      setState(() {
+        _syncLoading = false;
+        _syncUnavailable = true;
+        _syncChecked = false;
+        _syncSummary = '';
+        _syncError = '';
+      });
+    } catch (error) {
+      if (!mounted || epoch != _syncEpoch) return;
+      setState(() {
+        _syncLoading = false;
+        _syncError = '统计失败：${_cleanSyncError(error)}';
+        _syncSummary = '';
+      });
+    }
+  }
+
+  String _describeSyncDryRun(SubagentSyncResult res, SessionCli cli) {
+    final family = subagentFamilyLabel(cli.name) ?? cli.displayName;
+    final changes = res.changes;
+    if (changes == 0) {
+      final skipped = res.skipped > 0 ? '，${res.skipped} 个跳过' : '';
+      return '所有 $family 任务已经是这套设置$skipped';
+    }
+    final skipped = res.skipped > 0 ? '，${res.skipped} 个跳过' : '';
+    return '将更新 $changes 个任务$skipped';
+  }
+
+  String _cleanSyncError(Object error) =>
+      error.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
+
+  String _defaultLineText(SessionCli cli, List<Map<String, dynamic>> pool) {
+    if (!_defaultsLoaded) return '新任务默认：读取中…';
+    final def = _defaultForCli(cli);
+    final providerId = def?.providerId ?? '';
+    final model = def?.model ?? '';
+    if (providerId.isEmpty || model.isEmpty) return '新任务默认：随主线路';
+    if (!pool.any((p) => p['id']?.toString() == providerId)) {
+      final label = providerId.length > 8
+          ? providerId.substring(0, 8)
+          : providerId;
+      return '新任务默认：$label（线路已不可用）';
+    }
+    return '新任务默认：${runLineName(providerId, pool)} · $model';
+  }
+
+  String _syncStatusText(SessionCli cli, List<Map<String, dynamic>> pool) {
+    if (_syncUnavailable) {
+      return '同步暂不可用：请手动重启 MultiCC 服务端后再试';
+    }
+    if (_syncError.isNotEmpty) return _syncError;
+    final base = _defaultLineText(cli, pool);
+    if (!_syncChecked) return base;
+    if (_syncLoading) return '$base · 正在统计…';
+    if (_syncSummary.isNotEmpty) return '$base · $_syncSummary';
+    return base;
   }
 
   // ── 播种 ──────────────────────────────────────────────────────────────
@@ -517,6 +823,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
       subModel: subModel,
       includeAgent: _cli.supportsAgent,
       agent: _agentCtrl.text,
+      subagentCli: _cli.name,
+      syncSubagent: _syncChecked && !_syncUnavailable,
+      subagentCleared:
+          widget.draft && _subagentTouched && subModel.trim().isEmpty,
     );
     if (!result.ok) {
       setState(() => _autoError = result.error ?? '');
@@ -534,6 +844,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     final native = isOpenCodeNativeProvider(result.firstProviderId);
     final provider = native ? '' : result.firstProviderId;
     final firstName = _lineName(result.firstProviderId);
+    final subCli = _autoSubCli();
+    final subagent = _collectAutoSubagent(provider);
     Navigator.pop(
       context,
       RunConfigOutcome(
@@ -545,8 +857,11 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
         modelLabel: result.firstModel.isEmpty ? '默认' : result.firstModel,
         effortLabel: effortShortNameForCli(widget.cli, widget.effort),
         providerSelection: result.selection,
-        subagent: _collectAutoSubagent(provider),
+        subagent: subagent,
         switchToCli: result.switchToCli,
+        subagentCli: subCli?.name,
+        syncSubagent: _syncChecked && !_syncUnavailable,
+        subagentCleared: widget.draft && _subagentTouched && subagent == null,
       ),
     );
   }
@@ -794,8 +1109,28 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
         const SizedBox(height: 12),
         _effortPicker(),
       ],
-      _advancedToggle(),
-      if (_advanced) ..._advancedSection(),
+      // 子 agent 常驻（不再折在「高级」里）：这是一项会花/省额度的日常设置。
+      if (_cli.supportsSubagent) ...[
+        const SizedBox(height: 14),
+        _subagentSection(
+          cli: _cli,
+          pool: _providers,
+          providerId: _fixedSubProviderId(),
+          mainProviderId: _provider,
+          choices: _subagentChoicesFor(
+            _cli,
+            _providers,
+            _fixedSubProviderId(),
+            _provider,
+          ),
+          model: _effectiveSubModel(),
+        ),
+      ],
+      // 「高级」只剩 CLI Agent 一项；这条车道没有 agent 就不画这枚开关。
+      if (_cli.supportsAgent) ...[
+        _advancedToggle(),
+        if (_advanced) ..._advancedSection(),
+      ],
       const SizedBox(height: 12),
     ];
   }
@@ -1158,14 +1493,125 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     );
   }
 
-  /// 子任务的「线路 + 模型」两个下拉。固定一条与自动挑选共用同一份 state 和
-  /// 同一对控件键，差别只在主线路是谁（固定一条 = 选中的车道；自动挑选 = 池子
-  /// 第一条），所以这里都当参数收。
+  String _fixedSubProviderId() =>
+      _providers.any((p) => p['id']?.toString() == _subProvider)
+      ? _subProvider
+      : '';
+
+  String _effectiveSubModel() =>
+      _customSubModel ? _subCustomCtrl.text.trim() : _subModel;
+
+  List<String> _subagentChoicesFor(
+    SessionCli cli,
+    List<Map<String, dynamic>> pool,
+    String providerId,
+    String mainProviderId,
+  ) => runModelChoices(
+    cli,
+    providerId.isEmpty ? mainProviderId : providerId,
+    pool,
+  ).where((m) => m.isNotEmpty).toList();
+
+  /// 引导卡片上那圈强调色边框的呼吸量（0 = 静止）。只在引导还在时跑一次有限
+  /// 动画 —— 无限循环会让所有 pumpAndSettle 永远等下去。
+  double _guidePulseAmount() {
+    final value = _guidePulse.value;
+    if (value <= 0 || value >= 1) return 1;
+    final wave = math.sin(value * math.pi * 6).clamp(0.0, 1.0);
+    return 0.4 + 0.6 * wave;
+  }
+
+  Widget _subagentStateChip(bool hasSubagent) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+    decoration: BoxDecoration(
+      color: hasSubagent
+          ? AppColors.accent.withValues(alpha: 0.14)
+          : const Color(0xFFe8eef5),
+      borderRadius: BorderRadius.circular(20),
+    ),
+    child: Text(
+      hasSubagent ? '已单独设置' : '跟随主线路',
+      style: TextStyle(
+        color: hasSubagent ? AppColors.accentDark : AppColors.muted,
+        fontSize: 10.5,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+
+  /// 首次强引导。它长在卡片里（不是一次性弹窗）：用户还没看的时候，一打开
+  /// 面板就能看到「子 agent 能单独选线路」这件事。
+  Widget _subagentGuideCard() => Container(
+    key: const ValueKey('run-subagent-guide'),
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: AppColors.panel,
+      border: Border.all(color: AppColors.accent.withValues(alpha: 0.45)),
+      borderRadius: BorderRadius.circular(12),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          '新功能：子 agent 可以单独选线路和模型',
+          style: TextStyle(
+            color: AppColors.text,
+            fontSize: 12.5,
+            fontWeight: FontWeight.w700,
+            height: 1.35,
+          ),
+        ),
+        const SizedBox(height: 5),
+        const Text(
+          'CLI 派出去的子任务默认跟主线路走；换一条更便宜或更快的线路，主任务'
+          '不受影响，能省额度；勾选下面的「同步」能一键套用到所有同 CLI 的任务，'
+          '以后新建的也默认这样',
+          style: TextStyle(
+            color: AppColors.muted,
+            fontSize: 11.5,
+            height: 1.45,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          children: [
+            FilledButton(
+              key: const ValueKey('run-subagent-guide-go'),
+              onPressed: _onGuideGo,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(0, 34),
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                textStyle: const TextStyle(fontSize: 12),
+              ),
+              child: const Text('现在设置'),
+            ),
+            TextButton(
+              key: const ValueKey('run-subagent-guide-dismiss'),
+              onPressed: _dismissGuide,
+              style: TextButton.styleFrom(
+                minimumSize: const Size(0, 34),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                textStyle: const TextStyle(fontSize: 12),
+              ),
+              child: const Text('知道了'),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  /// 子 agent 整块卡片：标题 + 状态 + 说明 + 首次引导 + 线路/模型 + 同步开关。
+  /// 固定一条与自动挑选共用同一份 state 与同一对控件键，差别只在主线路是谁。
   ///
   /// [providerId] 是折算后认得的子任务线路（空 = 跟随主线路），[choices] 是它
   /// 名下的模型候选，[model] 是折算后可显示也可保存的模型值（候选里没有的按
   /// 「不设置」处理 —— 摆不进下拉的值不该偷偷上 wire）。
-  List<Widget> _subagentFields({
+  Widget _subagentSection({
     required SessionCli cli,
     required List<Map<String, dynamic>> pool,
     required String providerId,
@@ -1174,132 +1620,250 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
     required String model,
   }) {
     final labelProvider = providerId.isEmpty ? mainProviderId : providerId;
-    final out = <Widget>[
-      Row(
-        children: [
-          const Text(
-            '子任务',
-            style: TextStyle(
-              color: AppColors.text,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: DropdownButtonFormField<String>(
-              key: const Key('run-subagent-provider'),
-              value: providerId,
-              isExpanded: true,
-              dropdownColor: AppColors.panel,
-              decoration: runConfigInputDecoration(),
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: AppColors.text,
-                fontSize: 13,
+    final hasSubagent = model.trim().isNotEmpty;
+    final showGuide = _guideReady && !_guideDismissed;
+    final family = subagentFamilyLabel(cli.name) ?? cli.displayName;
+    final statusColor = _syncUnavailable || _syncError.isNotEmpty
+        ? AppColors.danger
+        : AppColors.muted;
+    return KeyedSubtree(
+      key: _subagentSectionKey,
+      child: AnimatedBuilder(
+        animation: _guidePulse,
+        builder: (context, _) {
+          final pulse = showGuide ? _guidePulseAmount() : 1.0;
+          return Container(
+            key: const ValueKey('run-subagent-section'),
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            decoration: BoxDecoration(
+              color: AppColors.blueSoft,
+              border: Border.all(
+                color: AppColors.accent.withValues(
+                  alpha: showGuide ? 0.3 + 0.5 * pulse : 0.32,
+                ),
+                width: showGuide ? 1.6 : 1.0,
               ),
-              items: [
-                const DropdownMenuItem(value: '', child: Text('随主')),
-                ...pool
-                    .where(
-                      (p) => !(cli.isCodexFamily && p['isOfficial'] == true),
-                    )
-                    .map(
-                      (p) => DropdownMenuItem(
-                        value: p['id']?.toString() ?? '',
-                        child: ProviderOption(
-                          main:
-                              '${p['name'] ?? p['id']}'
-                              '${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
-                          detail: providerLimitDetail(p),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.account_tree_outlined,
+                      size: 17,
+                      color: AppColors.accent,
+                    ),
+                    const SizedBox(width: 6),
+                    const Text(
+                      '子 agent',
+                      style: TextStyle(
+                        color: AppColors.text,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _subagentStateChip(hasSubagent),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Task / 子 agent 派出去的子任务用哪条线路和模型',
+                  style: TextStyle(
+                    color: AppColors.muted,
+                    fontSize: 11.5,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                const Text(
+                  '主任务用强模型，子 agent 换更便宜或更快的线路，能省不少额度',
+                  style: TextStyle(
+                    color: AppColors.faint,
+                    fontSize: 11,
+                    height: 1.4,
+                  ),
+                ),
+                if (showGuide) ...[
+                  const SizedBox(height: 10),
+                  _subagentGuideCard(),
+                ],
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '线路',
+                        style: TextStyle(
+                          color: AppColors.faint,
+                          fontSize: 11.5,
                         ),
                       ),
                     ),
-              ],
-              onChanged: (v) => setState(() {
-                _subProvider = v ?? '';
-                _customSubModel = false;
-                _subCustomCtrl.text = '';
-                _subModel = '';
-              }),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: DropdownButtonFormField<String>(
-              key: const Key('run-subagent-model'),
-              value: _customSubModel
-                  ? '__custom__'
-                  : (choices.contains(model) ? model : ''),
-              isExpanded: true,
-              dropdownColor: AppColors.panel,
-              decoration: runConfigInputDecoration(),
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: AppColors.text,
-                fontSize: 13,
-              ),
-              items: [
-                const DropdownMenuItem(value: '', child: Text('不设置')),
-                ...choices.map(
-                  (m) => DropdownMenuItem(
-                    value: m,
-                    child: Text(
-                      runModelOptionLabel(cli, labelProvider, m, pool),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        '模型',
+                        style: TextStyle(
+                          color: AppColors.faint,
+                          fontSize: 11.5,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 5),
+                KeyedSubtree(
+                  key: _subagentLineKey,
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          key: const Key('run-subagent-provider'),
+                          value: providerId,
+                          isExpanded: true,
+                          dropdownColor: AppColors.panel,
+                          decoration: runConfigInputDecoration(),
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(color: AppColors.text, fontSize: 13),
+                          items: [
+                            const DropdownMenuItem(
+                              value: '',
+                              child: Text('随主'),
+                            ),
+                            ...pool
+                                .where(
+                                  (p) =>
+                                      !(cli.isCodexFamily &&
+                                          p['isOfficial'] == true),
+                                )
+                                .map(
+                                  (p) => DropdownMenuItem(
+                                    value: p['id']?.toString() ?? '',
+                                    child: ProviderOption(
+                                      main:
+                                          '${p['name'] ?? p['id']}'
+                                          '${p['model'] != null && p['model'].toString().isNotEmpty ? ' · ${p['model']}' : ''}',
+                                      detail: providerLimitDetail(p),
+                                    ),
+                                  ),
+                                ),
+                          ],
+                          onChanged: (v) {
+                            setState(() {
+                              _subProvider = v ?? '';
+                              _customSubModel = false;
+                              _subCustomCtrl.text = '';
+                              _subModel = '';
+                            });
+                            _noteSubagentChanged();
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          key: const Key('run-subagent-model'),
+                          value: _customSubModel
+                              ? '__custom__'
+                              : (choices.contains(model) ? model : ''),
+                          isExpanded: true,
+                          dropdownColor: AppColors.panel,
+                          decoration: runConfigInputDecoration(),
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(color: AppColors.text, fontSize: 13),
+                          items: [
+                            const DropdownMenuItem(
+                              value: '',
+                              child: Text('不设置'),
+                            ),
+                            ...choices.map(
+                              (m) => DropdownMenuItem(
+                                value: m,
+                                child: Text(
+                                  runModelOptionLabel(
+                                    cli,
+                                    labelProvider,
+                                    m,
+                                    pool,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ),
+                            const DropdownMenuItem(
+                              value: '__custom__',
+                              child: Text('自定义…'),
+                            ),
+                          ],
+                          onChanged: (v) {
+                            setState(() {
+                              _customSubModel = v == '__custom__';
+                              if (!_customSubModel) _subModel = v ?? '';
+                            });
+                            _noteSubagentChanged();
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (_customSubModel) ...[
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: _subCustomCtrl,
+                    style: const TextStyle(
+                      color: AppColors.text,
+                      fontSize: 13,
+                      fontFamily: 'monospace',
+                    ),
+                    onChanged: (_) => _noteSubagentChanged(),
+                    decoration: runConfigInputDecoration(hint: '模型 ID'),
+                  ),
+                ],
+                const SizedBox(height: 4),
+                CheckboxListTile(
+                  key: const ValueKey('run-subagent-sync'),
+                  value: _syncChecked,
+                  onChanged: _syncUnavailable
+                      ? null
+                      : (value) => _onSyncChanged(value == true),
+                  dense: true,
+                  visualDensity: VisualDensity.compact,
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: Text(
+                    '同步到全部 $family 任务，之后新建的也默认用这套',
+                    style: const TextStyle(
+                      color: AppColors.text,
+                      fontSize: 12,
+                      height: 1.35,
                     ),
                   ),
                 ),
-                const DropdownMenuItem(
-                  value: '__custom__',
-                  child: Text('自定义…'),
+                Text(
+                  _syncStatusText(cli, pool),
+                  key: const ValueKey('run-subagent-sync-status'),
+                  style: TextStyle(
+                    color: statusColor,
+                    fontSize: 11,
+                    height: 1.4,
+                  ),
                 ),
               ],
-              onChanged: (v) => setState(() {
-                _customSubModel = v == '__custom__';
-                if (!_customSubModel) _subModel = v ?? '';
-              }),
             ),
-          ),
-        ],
+          );
+        },
       ),
-    ];
-    if (_customSubModel) {
-      out.add(const SizedBox(height: 6));
-      out.add(
-        TextField(
-          controller: _subCustomCtrl,
-          style: const TextStyle(
-            color: AppColors.text,
-            fontSize: 13,
-            fontFamily: 'monospace',
-          ),
-          decoration: runConfigInputDecoration(hint: '模型 ID'),
-        ),
-      );
-    }
-    return out;
+    );
   }
 
+  /// 「高级」现在只剩 CLI Agent 一项 —— 子 agent 已经常驻在面板上。
   List<Widget> _advancedSection() {
     final out = <Widget>[];
-    if (_cli.supportsSubagent) {
-      final subProviderId =
-          _providers.any((p) => p['id']?.toString() == _subProvider)
-          ? _subProvider
-          : '';
-      out.addAll(
-        _subagentFields(
-          cli: _cli,
-          pool: _providers,
-          providerId: subProviderId,
-          mainProviderId: _provider,
-          choices: _choicesFor(
-            subProviderId.isEmpty ? _provider : subProviderId,
-          ).where((m) => m.isNotEmpty).toList(),
-          model: _subModel,
-        ),
-      );
-    }
     if (_cli.supportsAgent) {
       out.add(const SizedBox(height: 12));
       out.add(
@@ -1511,6 +2075,23 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet> {
 class RunConfigSheetState extends RunConfigSheetBase with RunConfigAutoSection {
   @override
   Widget build(BuildContext context) => buildSheet(context);
+}
+
+/// 当前模式下的子 agent 目标：同步与家族默认展示都读它。
+class _SubagentTarget {
+  const _SubagentTarget({
+    required this.cli,
+    required this.mainProviderId,
+    required this.subagent,
+  });
+
+  final SessionCli cli;
+
+  /// 主线路的 Provider id（子 agent 线路留空时，保存的 providerId 认它）。
+  final String mainProviderId;
+
+  /// 要保存 / 同步的那套设置；null = 跟随主线路。
+  final SessionSubagent? subagent;
 }
 
 /// 每张车道卡上的安装进度。`phase` 是 installing / done / error。
@@ -1766,7 +2347,71 @@ Future<void> openRunConfigSheet(
     );
   } catch (e) {
     messenger.showSnackBar(SnackBar(content: Text(runConfigSaveFailureText(e))));
+    return;
   }
+  // 同步是保存之后的第二步：任务自己那份配置已经落盘，这一步失败只提示、不回滚
+  // （面板上勾的正是「顺便套用到其它任务」，不该因为它把这次保存也吞掉）。
+  if (picked.syncSubagent) {
+    await runSubagentSyncAfterSave(
+      messenger: messenger,
+      settings: settings,
+      httpClient: httpClient,
+      cli: picked.subagentCli ?? picked.switchToCli ?? '',
+      subagent: picked.subagent,
+    );
+  }
+}
+
+/// 「同步到全部同 CLI 任务」的第二步：保存成功之后发。失败只弹提示，不能让调用
+/// 方以为保存失败（此时配置已经落盘）。
+Future<void> runSubagentSyncAfterSave({
+  required ScaffoldMessengerState messenger,
+  required SettingsService settings,
+  required http.Client? httpClient,
+  required String cli,
+  required SessionSubagent? subagent,
+}) async {
+  if (cli.isEmpty) return;
+  try {
+    final res = await SubagentDefaultsService(
+      settings: settings,
+      httpClient: httpClient,
+    ).sync(cli: cli, subagent: subagent);
+    messenger.showSnackBar(
+      SnackBar(content: Text(subagentSyncSuccessText(res))),
+    );
+  } catch (error) {
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          '子 agent 设置已保存，但同步到其它任务失败：'
+          '${subagentSyncFailureText(error)}',
+        ),
+      ),
+    );
+  }
+}
+
+@visibleForTesting
+String subagentSyncSuccessText(SubagentSyncResult res) {
+  final applied = res.applied > 0 ? '更新 ${res.applied} 个任务' : '';
+  final deferred = res.deferred > 0 ? '${res.deferred} 个下轮生效' : '';
+  final skipped = res.skipped > 0 ? '${res.skipped} 个跳过' : '';
+  final parts = [
+    if (applied.isNotEmpty) applied,
+    if (deferred.isNotEmpty) deferred,
+    if (skipped.isNotEmpty) skipped,
+  ];
+  if (parts.isEmpty) return '✓ 子 agent 同步完成：所有同 CLI 任务已经是这套设置';
+  return '✓ 子 agent 同步完成：${parts.join('，')}';
+}
+
+@visibleForTesting
+String subagentSyncFailureText(Object error) {
+  if (error is SubagentSyncUnavailable) {
+    return '需要手动重启 MultiCC 服务端后才能启用';
+  }
+  return error.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
 }
 
 Future<void> _applyRunConfig(

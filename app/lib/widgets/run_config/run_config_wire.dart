@@ -71,6 +71,9 @@ class RunConfigOutcome {
     this.subagent,
     this.agent,
     this.switchToCli,
+    this.subagentCli,
+    this.syncSubagent = false,
+    this.subagentCleared = false,
   });
 
   final String provider;
@@ -82,6 +85,18 @@ class RunConfigOutcome {
   final SessionProviderSelection? providerSelection;
   final SessionSubagent? subagent;
   final String? agent;
+
+  /// 子任务设置挂在哪条车道上（固定一条 = 选中的车道，自动挑选 = 池子第一条）。
+  /// 保存之后要按这条车道找家族做「同步到全部任务」，所以单独带回来。
+  final String? subagentCli;
+
+  /// 勾了「同步到全部同 CLI 任务，之后新建的也默认用这套」：调用方在保存成功后
+  /// 再发一次真正的同步。勾选与否不改变任务自己那份配置。
+  final bool syncSubagent;
+
+  /// 新任务草稿里用户**明确选了「随主」**：创建请求要发 `subagent: null`，把家族
+  /// 默认顶掉；没点过就是「没决定」，创建请求不带这个字段（服务端默认生效）。
+  final bool subagentCleared;
 
   /// 保存前要先切过去的车道（固定一条换了 CLI，或自动挑选的池子里没有会话现在
   /// 这条车道）。null = 车道不动。切换响应里的 pending 由 SessionManager 处理。
@@ -134,6 +149,9 @@ RunWireResult buildFixedOutcome({
   required String? subModel,
   required bool includeAgent,
   required String? agent,
+  String? subagentCli,
+  bool syncSubagent = false,
+  bool subagentCleared = false,
 }) {
   final native = isOpenCodeNativeProvider(providerId);
   var provider = native ? '' : providerId;
@@ -155,6 +173,9 @@ RunWireResult buildFixedOutcome({
       subagent: subagent,
       agent: includeAgent ? (agent ?? '').trim() : null,
       switchToCli: cli.name == currentCli ? null : cli.name,
+      subagentCli: subagentCli,
+      syncSubagent: syncSubagent,
+      subagentCleared: subagentCleared,
     ),
   );
 }

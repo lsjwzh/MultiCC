@@ -91,10 +91,18 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() => I18n.init('zh'));
 
+  // 这些用例点的是面板上别的控件，把「首次引导已经看过」当成默认前提：引导
+  // 卡片会把面板顺手滚到子 agent 那一块，和它们要点的顶部控件无关。引导本身
+  // 由下面专问专测（那里会重新清掉这个 key）。
+  setUp(() {
+    SharedPreferences.setMockInitialValues({runConfigSubagentGuideKey: true});
+  });
+
   Future<SettingsService> settings({String host = 'http://127.0.0.1:1'}) async {
     SharedPreferences.setMockInitialValues({
       'multicc_host': host,
       'multicc_token': '',
+      runConfigSubagentGuideKey: true,
     });
     return SettingsService.getInstance();
   }
@@ -645,13 +653,9 @@ void main() {
       out,
     );
 
-    // 子任务在「高级」里，默认折着 —— 和固定一条是同一条设置。
-    expect(find.byKey(const Key('run-subagent-provider')), findsNothing);
-    final advanced = find.byKey(const ValueKey('run-advanced-toggle'));
-    await tester.ensureVisible(advanced);
-    await tester.tap(advanced);
-    await tester.pumpAndSettle();
-
+    // 子任务常驻在面板上，不再折在「高级」里 —— 和固定一条是同一条设置。
+    expect(find.byKey(const ValueKey('run-subagent-section')), findsOneWidget);
+    expect(find.byKey(const ValueKey('run-advanced-toggle')), findsNothing);
     await tester.ensureVisible(find.byKey(const Key('run-subagent-provider')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('run-subagent-provider')));
@@ -1253,11 +1257,7 @@ void main() {
       out,
     );
 
-    // 先挂一条子任务线路 + 模型。
-    final advanced = find.byKey(const ValueKey('run-advanced-toggle'));
-    await tester.ensureVisible(advanced);
-    await tester.tap(advanced);
-    await tester.pumpAndSettle();
+    // 先挂一条子任务线路 + 模型（子任务常驻，不用先展开「高级」）。
     await tester.ensureVisible(find.byKey(const Key('run-subagent-provider')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('run-subagent-provider')));
@@ -1544,6 +1544,388 @@ void main() {
     expect(find.text('Kimi Code'), findsOneWidget);
     expect(find.text('OpenCode'), findsOneWidget);
   });
+
+  // ── 子 agent：常驻卡片 / 首次引导 / 同步 ────────────────────────────────
+
+  testWidgets('子 agent 常驻卡片：不展开「高级」也能选线路和模型', (tester) async {
+    final out = _Captured();
+    await _open(
+      tester,
+      const RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: _claudeProviders,
+        provider: 'relay',
+        model: '',
+        effort: 'medium',
+      ),
+      out,
+    );
+
+    expect(find.byKey(const ValueKey('run-subagent-section')), findsOneWidget);
+    expect(find.text('子 agent'), findsOneWidget);
+    expect(find.text('跟随主线路'), findsOneWidget);
+    expect(find.byKey(const Key('run-subagent-provider')), findsOneWidget);
+    expect(find.byKey(const Key('run-subagent-model')), findsOneWidget);
+    expect(find.byKey(const ValueKey('run-subagent-sync')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('run-subagent-sync-status')),
+      findsOneWidget,
+    );
+
+    // 「高级」还在（claude 支持 CLI Agent），但子 agent 已经不在里面了。
+    expect(find.byKey(const ValueKey('run-advanced-toggle')), findsOneWidget);
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('run-advanced-toggle')),
+    );
+    await tester.tap(find.byKey(const ValueKey('run-advanced-toggle')));
+    await tester.pumpAndSettle();
+    expect(find.text('Claude Agent'), findsOneWidget);
+    expect(find.byKey(const Key('run-subagent-provider')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('首次引导：第一次打开显示，点「知道了」后记住不再出现', (tester) async {
+    // 这个用例专测「没看过」的形态，把 setUp 里那份「已看过」清掉。
+    SharedPreferences.setMockInitialValues({
+      'multicc_host': 'http://127.0.0.1:1',
+      'multicc_token': '',
+    });
+    const sheet = RunConfigSheet(
+      cli: SessionCli.claude,
+      providers: _claudeProviders,
+      provider: 'relay',
+      model: '',
+      effort: 'medium',
+    );
+    final out = _Captured();
+    await _open(tester, sheet, out);
+
+    expect(find.byKey(const ValueKey('run-subagent-section')), findsOneWidget);
+    expect(find.byKey(const ValueKey('run-subagent-guide')), findsOneWidget);
+    expect(find.text('新功能：子 agent 可以单独选线路和模型'), findsOneWidget);
+
+    final dismiss = find.byKey(const ValueKey('run-subagent-guide-dismiss'));
+    await tester.ensureVisible(dismiss);
+    await tester.tap(dismiss);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('run-subagent-guide')), findsNothing);
+
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getBool(runConfigSubagentGuideKey), isTrue);
+
+    // 关掉面板再打开：同一个 key 已经记住，引导不再出现。
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    await _open(tester, sheet, out);
+    expect(find.byKey(const ValueKey('run-subagent-guide')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('首次引导：动手改子 agent 线路也算看过，收起并记住', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'multicc_host': 'http://127.0.0.1:1',
+      'multicc_token': '',
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      const RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: _claudeProviders,
+        provider: 'relay',
+        model: '',
+        effort: 'medium',
+      ),
+      out,
+    );
+    expect(find.byKey(const ValueKey('run-subagent-guide')), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Zhipu').last);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('run-subagent-guide')), findsNothing);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getBool(runConfigSubagentGuideKey), isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('同步开关：勾选后先 dry run，统计写在状态行', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    final requests = <http.Request>[];
+    final client = MockClient((request) async {
+      requests.add(request);
+      if (request.url.path == '/api/subagent-defaults') {
+        return _json(200, {
+          'ok': true,
+          'defaults': {'claude': null, 'codex': null},
+        });
+      }
+      if (request.url.path == '/api/subagent-defaults/sync') {
+        return _json(200, {
+          'ok': true,
+          'dryRun': true,
+          'family': 'claude',
+          'subagent': {'providerId': 'relay', 'model': 'glm-5.2'},
+          'defaults': {
+            'claude': {'providerId': 'relay', 'model': 'glm-5.2'},
+            'codex': null,
+          },
+          'counts': {
+            'applied': 2,
+            'deferred': 1,
+            'unchanged': 0,
+            'skipped': 3,
+          },
+          'sessions': [],
+          'truncated': false,
+        });
+      }
+      return _json(404, {'error': 'not found'});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: _claudeProviders,
+        provider: 'relay',
+        model: '',
+        effort: 'medium',
+        settings: s,
+        httpClient: client,
+      ),
+      out,
+    );
+
+    // 先选一套子任务配置，勾同步时带的就是这一套。
+    await tester.ensureVisible(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Zhipu').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-model')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('glm-5.2').last);
+    await tester.pumpAndSettle();
+
+    final sync = find.byKey(const ValueKey('run-subagent-sync'));
+    await tester.ensureVisible(sync);
+    await tester.tap(sync);
+    await tester.pump();
+    // 防抖 350ms；再 settle 掉 mock 的异步回执。
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+
+    final posts = requests
+        .where((request) => request.url.path == '/api/subagent-defaults/sync')
+        .toList();
+    expect(posts, hasLength(1));
+    final body = jsonDecode(posts.single.body) as Map<String, dynamic>;
+    expect(body['cli'], 'claude');
+    expect(body['dryRun'], isTrue);
+    expect(body['subagent'], {'providerId': 'relay', 'model': 'glm-5.2'});
+
+    expect(find.textContaining('将更新 3 个任务'), findsOneWidget);
+    expect(find.textContaining('3 个跳过'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('同步开关：服务端 503 时收起开关并提示手动重启', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/subagent-defaults') {
+        return _json(200, {
+          'ok': true,
+          'defaults': {'claude': null, 'codex': null},
+        });
+      }
+      if (request.url.path == '/api/subagent-defaults/sync') {
+        return _json(503, {
+          'error': 'rust backend unavailable',
+          'code': 'rust_backend_unavailable',
+        });
+      }
+      return _json(404, {'error': 'not found'});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: _claudeProviders,
+        provider: 'relay',
+        model: '',
+        effort: 'medium',
+        settings: s,
+        httpClient: client,
+      ),
+      out,
+    );
+
+    final sync = find.byKey(const ValueKey('run-subagent-sync'));
+    await tester.ensureVisible(sync);
+    await tester.tap(sync);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('请手动重启 MultiCC 服务端'), findsOneWidget);
+    final tile = tester.widget<CheckboxListTile>(sync);
+    expect(tile.value, isFalse);
+    expect(tile.onChanged, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('保存成功后再发真正的同步：带刚保存的子任务设置，不带 dryRun', (
+    tester,
+  ) async {
+    final s = await settings(host: 'http://server.example');
+    final requests = <http.Request>[];
+    final client = MockClient((request) async {
+      requests.add(request);
+      if (request.url.path == '/api/providers') {
+        return _json(200, {'providers': _claudeProviders});
+      }
+      if (request.url.path == '/api/subagent-defaults') {
+        return _json(200, {
+          'ok': true,
+          'defaults': {'claude': null, 'codex': null},
+        });
+      }
+      if (request.url.path == '/api/subagent-defaults/sync') {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        return _json(200, {
+          'ok': true,
+          'dryRun': body['dryRun'] == true,
+          'family': 'claude',
+          'subagent': {'providerId': 'relay', 'model': 'glm-5.2'},
+          'defaults': {
+            'claude': {'providerId': 'relay', 'model': 'glm-5.2'},
+            'codex': null,
+          },
+          'counts': {
+            'applied': 2,
+            'deferred': 0,
+            'unchanged': 1,
+            'skipped': 0,
+          },
+          'sessions': [],
+          'truncated': false,
+        });
+      }
+      return _json(404, {'error': 'not found'});
+    });
+    final manager = _RecordingRunConfigManager(s);
+    try {
+      await tester.pumpWidget(
+        ChangeNotifierProvider<SessionManager>.value(
+          value: manager,
+          child: MaterialApp(
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => TextButton(
+                  key: const Key('open-run-config'),
+                  onPressed: () => openRunConfigSheet(
+                    context,
+                    settings: s,
+                    sessionId: 'task-sync',
+                    cli: SessionCli.claude,
+                    httpClient: client,
+                  ),
+                  child: const Text('配置'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const Key('open-run-config')));
+      await tester.pumpAndSettle();
+
+      // 子任务：换到 Zhipu · glm-5.2，勾上同步。
+      await tester.ensureVisible(find.byKey(const Key('run-subagent-provider')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('run-subagent-provider')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Zhipu').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('run-subagent-model')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('glm-5.2').last);
+      await tester.pumpAndSettle();
+      final sync = find.byKey(const ValueKey('run-subagent-sync'));
+      await tester.ensureVisible(sync);
+      await tester.tap(sync);
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+
+      await _save(tester);
+
+      // 保存先落盘（这次会话自己的配置）……
+      expect(manager.saves, hasLength(1));
+      expect(manager.saves.single['subagentProvider'], 'relay');
+      expect(manager.saves.single['subagentModel'], 'glm-5.2');
+
+      // ……然后才补发真正的同步（第二次 POST，这次没有 dryRun）。
+      final posts = requests
+          .where((request) => request.url.path == '/api/subagent-defaults/sync')
+          .toList();
+      expect(posts, hasLength(2));
+      final real = jsonDecode(posts.last.body) as Map<String, dynamic>;
+      expect(real['cli'], 'claude');
+      expect(real.containsKey('dryRun'), isFalse);
+      expect(real['subagent'], {'providerId': 'relay', 'model': 'glm-5.2'});
+
+      // 第一颗「已保存」SnackBar 让位之后，同步结果的那一颗会接着显示。
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('子 agent 同步完成'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      manager.dispose();
+    }
+  });
+}
+
+/// 走 openRunConfigSheet 那条真保存流程：只记录写下来的配置，不发网络。
+class _RecordingRunConfigManager extends SessionManager {
+  _RecordingRunConfigManager(SettingsService settings) : super(settings: settings);
+
+  final saves = <Map<String, Object?>>[];
+
+  @override
+  Future<void> loadDashboard() async {}
+
+  @override
+  Future<SessionCliConfig> fetchSessionCliConfig(String id) async =>
+      const SessionCliConfig(cli: SessionCli.claude);
+
+  @override
+  Future<void> updateSessionAIConfig(
+    String id, {
+    required String provider,
+    required String model,
+    required String effort,
+    SessionProviderSelection? providerSelection,
+    SessionSubagent? subagent,
+    bool clearSubagent = false,
+    String? agent,
+  }) async {
+    saves.add({
+      'provider': provider,
+      'model': model,
+      'effort': effort,
+      'subagentProvider': subagent?.providerId,
+      'subagentModel': subagent?.model,
+      'clearSubagent': clearSubagent,
+    });
+  }
 }
 
 /// 额度查询全部同步回 null：真实现会打网络，收尾的 notifyListeners() 可能落在

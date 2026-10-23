@@ -271,7 +271,8 @@ test('provider and session transport use MultiCCApi with token-free relative URL
   const loaded = await ai.loadProviderList('claude', { api, providerCatalog });
   assert.deepEqual(loaded.providers.map(item => item.id), ['safe']);
   assert.equal(loaded.providers[0].authToken, undefined);
-  assert.deepEqual(loaded.defaults, { claude: 'safe', codex: null });
+  // The catalog always carries the sub-agent family defaults (none stored here).
+  assert.deepEqual(loaded.defaults, { claude: 'safe', codex: null, subagent: { claude: null, codex: null } });
   assert.equal(calls[0].url, '/api/providers?cli=claude');
 
   const session = await ai.loadSession('s/1', { api });
