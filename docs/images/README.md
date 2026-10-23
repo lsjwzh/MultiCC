@@ -1,48 +1,64 @@
-# README demo assets
+# README screenshots
 
-Screenshots and GIFs referenced by the top-level `README.md` / `README.zh.md`
-live here.
+The top-level [English README](../../README.md) and [Chinese README](../../README.zh.md)
+use the current web client under `public/`. The set was refreshed on **2026-10-24**
+from **v2.9.3**. English captures live in `en/`; Chinese captures live here.
 
-## Registered (v2.0 README revision)
+These are **UI illustrations with synthetic example data**, rendered by the real
+web frontend against isolated API fixtures. They are not live production sessions,
+real account activity, proof of an agent completing a task, or native Flutter
+screenshots. The fixtures never access the running MultiCC host or personal Chrome
+profiles, call a model, or contain credentials. Power and proxy settings illustrate
+the controls; taking these screenshots does not change the host's configuration.
 
-The following screenshots are already referenced by the READMEs. Capture them in
-the docker test environment (or any clean instance), redact secrets, and commit
-them under these exact paths:
+## Current set
 
-| File | What it should show | Referenced from |
+Each filename below exists in both language directories.
+
+| File | Visible screen | README placement |
 |---|---|---|
-| `air-first-run.png` | The `/air` first-run setup card (prepare a model + configure AI Assistant). | Quick Start, step 2 |
-| `air-tasks.png` | The `/air` directory home — the task-first main surface (formerly the `manage-dashboard.png` wishlist item; `/manage` now redirects to `/air`). | "The Air console" section |
-| `air-new-task.png` | The new-task composer with the AI configuration pill (CLI / line / model). | Quick Start, step 3 |
-| `air-provider.png` | CLI and provider settings in the Air console. | Models & cost / features |
-| `aux-console.png` | The AI Assistant (aux) console page. | Features |
-| `air-mobile.png` | MultiCC on a phone-width screen (the `/air` directory home in a 390px viewport). | Quick Start, mobile step |
+| `air-tasks.png` | Workspace home with running, waiting, and idle example tasks; filters and the code/worktree card | Air console |
+| `air-first-run.png` | Console's three-step first-run guide, before models or a workspace are configured | Quick Start |
+| `air-new-task.png` | Run config with the current engine picker, route/model controls, and subagent section | Quick Start |
+| `air-mobile.png` | The responsive web task list at a 390 CSS-pixel phone viewport | Phone access |
+| `air-provider.png` | Model routes with terminal-login and separate-account cards, including cross-device sharing actions | Features |
+| `aux-console.png` | AI Assistant model settings, idle status, and empty run history | Features |
+| `air-account-proxy.png` | A Claude official account's dedicated proxy-identity binding | Proxies and accounts |
+| `air-power.png` | Mac lid-closed operation, automatic unlock, and keychain authorization state | Lid-closed workflow |
 
-## English captures (`docs/images/en/`)
+Desktop captures use **1440 × 960 CSS pixels at 2×**. The phone capture uses
+**390 × 844 CSS pixels at 2×**, scrolled to the task list. Dialog and list scrolling
+uses normal UI scroll containers; the script does not rewrite product labels,
+styles, or controls. It only freezes animation for capture. Some current English
+controls still have untranslated labels; the screenshots retain those as shipped.
 
-`README.md` (English) references the English copies in `docs/images/en/`;
-`README.zh.md` keeps the Chinese captures above. The English set is generated
-deterministically against a mocked fixture — no live server, no secrets:
+The linked 38-second lid-closed video in the READMEs is a separate, explicitly
+labelled **illustrated scenario** (AI-generated people and interface animation).
+It is not a live recording and is not part of this screenshot set.
+
+## Re-capture
+
+From the project root, with Node dependencies installed and local Chrome/Chromium
+available:
 
 ```bash
-node scripts/capture-readme-shots.js            # all six
-node scripts/capture-readme-shots.js air-mobile # a single shot
+node scripts/capture-readme-shots.js                         # all 16 images
+node scripts/capture-readme-shots.js --lang=en               # English only
+node scripts/capture-readme-shots.js --lang=zh air-first-run # one screen
 ```
 
-## Still wanted
+Set `MULTICC_CHROME_BIN` if Chrome is outside the usual locations. The capture
+harness uses temporary browser profiles and a loopback fixture server, closing
+both after each capture. It serves the current `public/` files and the real Air
+sync/read-index protocol, with example API responses. Missing required UI elements
+fail the run instead of silently capturing the wrong page.
 
-| File | What it should show | Suggested capture |
-|---|---|---|
-| `cli-switch.gif` | The headline feature: a live chat mid-task, opening the CLI badge in the chat header, switching `claude` → `codex`, sending a follow-up that the new CLI answers with full context, then switching back. Keep it under ~15 s and ~3 MB. | 1280×720 browser window, `/chat` page, light or dark theme (be consistent across assets). |
+[`capture-manifest.json`](capture-manifest.json) records each image's language,
+viewport, package version, capture time, PNG SHA-256, frontend-tree SHA-256 and
+capture-script SHA-256. Partial regeneration updates only the requested entries,
+so remaining older captures keep their original provenance. Re-capture the full
+set whenever shared navigation or UI contracts change, then visually review each
+image before replacing the README assets.
 
-## Conventions
-
-- Redact any real access token, provider API key, or private repository path
-  before committing — the console displays tokens in the connection panel.
-- Prefer GIF over video so it plays inline on GitHub.
-- Reference assets from the README as `docs/images/<file>`, and uncomment the
-  corresponding block once the file exists.
-
----
-
-[← Back to the README](../../README.md)
+Older images in this directory may still be used by other documentation. They are
+not members of this refreshed set; do not delete them without checking references.
