@@ -1655,7 +1655,7 @@
   "airCheckoutSeparateSession": "Check out into a separate session",
   "airCliUpdateAllCurrent": "All CLIs are up to date",
   "airCliUpdateBundled": "Bundled {engine} — only upgrades with MultiCC itself; the upgrade button above leaves it untouched",
-  "airCliUpdateBundledBehind": "Bundled {engine} — upstream v{latest} is out; upgrade MultiCC itself to get it",
+  "airCliUpdateBundledWithCli": "Bundled {engine} (built-in Claude Code {cliVersion}) — only upgrades with MultiCC itself; the upgrade button above leaves it untouched",
   "airCliUpdateCheckFailed": "Check failed",
   "airCliUpdateCheckedAt": "Checked at {time}",
   "airCliUpdateChecking": "Checking…",

@@ -1655,7 +1655,7 @@
   "airCheckoutSeparateSession": "签出到独立会话",
   "airCliUpdateAllCurrent": "所有 CLI 都是最新",
   "airCliUpdateBundled": "内置 {engine}，只能随 MultiCC 本体升级，上面的升级按钮不会改动它",
-  "airCliUpdateBundledBehind": "内置 {engine}，上游已有 v{latest}，需升级 MultiCC 本体才能拿到",
+  "airCliUpdateBundledWithCli": "内置 {engine}（含 Claude Code {cliVersion}），只能随 MultiCC 本体升级，上面的升级按钮不会改动它",
   "airCliUpdateCheckFailed": "检测失败",
   "airCliUpdateCheckedAt": "上次检测 {time}",
   "airCliUpdateChecking": "检测中…",
