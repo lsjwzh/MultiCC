@@ -22,6 +22,8 @@ class AirTaskRuntime {
     this.effort = '',
     this.providerSelection,
     this.subagent,
+    this.syncSubagentDefaults = false,
+    this.subagentExplicitNone = false,
   });
 
   final String cli;
@@ -39,6 +41,14 @@ class AirTaskRuntime {
   /// 子任务（子 agent）线路 —— Provider 配置后面那条尾巴。模型为空就是没设，
   /// 和主线路一起写进任务 runtime，第一条消息执行时就带上。
   final SessionSubagent? subagent;
+
+  /// 面板上勾了「同步到全部同 CLI 任务」：建出任务、runtime 落盘之后再发真正的
+  /// 同步（不是建任务的一部分，失败不回滚任务）。
+  final bool syncSubagentDefaults;
+
+  /// 用户在草稿里**明确选了「随主」**：创建请求要发 `subagent: null`，把家族
+  /// 默认顶掉。没点过就是「没决定」，请求里不带这个字段，服务端默认生效。
+  final bool subagentExplicitNone;
 
   bool get isAuto => providerSelection != null;
 
@@ -84,6 +94,9 @@ class AirTaskRuntime {
         ? null
         : (providerSelection ?? this.providerSelection),
     subagent: subagent,
+    // 改主线路不该把「同步」和「显式随主」这两个决定悄悄带丢；但 copyWith 是
+    // 主线路字段的微调，同步是一次性动作，不在这里续命。
+    subagentExplicitNone: subagentExplicitNone,
   );
 
   /// 走哪条线路：Auto 池子报协议名，手选报 Provider 名字，都没选就是目录默认。
@@ -106,6 +119,10 @@ class AirTaskRuntime {
   /// 传一个空字符串反而会把默认值顶掉。
   Map<String, dynamic> toCreateBody() {
     final child = subagent;
+    final hasChild =
+        child != null &&
+        (child.providerId ?? '').isNotEmpty &&
+        (child.model ?? '').isNotEmpty;
     return {
       if (cli.isNotEmpty) 'cli': cli,
       if (provider.isNotEmpty) 'provider': provider,
@@ -115,10 +132,11 @@ class AirTaskRuntime {
       if (effort.isNotEmpty) 'effort': effort,
       // 子任务尾巴跟着主线路一起走：模型为空就是没设（只挑线路不挑模型 = 随主），
       // 不发 —— 半截配置服务端会当非法拒掉。
-      if (child != null &&
-          (child.providerId ?? '').isNotEmpty &&
-          (child.model ?? '').isNotEmpty)
+      if (hasChild)
         'subagent': {'providerId': child.providerId, 'model': child.model},
+      // 用户明确选了「随主」：显式 null 才能把家族默认顶掉。没决定（没点过）时
+      // 上面两行都不命中，字段整个不出现 —— 服务端才会套用它自己的默认。
+      if (!hasChild && subagentExplicitNone) 'subagent': null,
     };
   }
 }
@@ -163,6 +181,8 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
         subModel: initial.subagent?.model,
         settings: settings,
         httpClient: httpClient,
+        // 新任务 / 草稿：家族默认要先选上；用户明确「随主」时创建请求发显式 null。
+        draft: true,
         cliAvailability: {
           for (final candidate in SessionCli.values)
             candidate:
@@ -199,6 +219,10 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
     // 子任务尾巴和主线路一起交回来。面板已经在模型为空时折成 null（只挑线路
     // 不挑模型 = 没设），这里不再二次判断。
     subagent: picked.subagent,
+    // 勾了「同步」：建任务成功之后由建任务那条路补发真正的同步。
+    syncSubagentDefaults: picked.syncSubagent,
+    // 草稿里明确点了「随主」：创建请求要发显式 null 顶掉家族默认。
+    subagentExplicitNone: picked.subagentCleared && picked.subagent == null,
   );
 }
 

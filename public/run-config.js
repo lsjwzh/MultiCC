@@ -138,6 +138,111 @@
     };
   }
 
+  // ── 子 agent（子任务）线路：家族、默认值、同步摘要 ────────────────────────
+  // 服务端按「家族」存子 agent 默认（src 那份是 claude / codex）：claude 与
+  // claude-exp 是同一族，codex 与 codex-exp 是同一族。这里只做这条映射，别处
+  // （同步按钮文案、默认值查找、测试）都用它，不要再各写一张表。
+  const SUBAGENT_GUIDE_KEY = 'multicc.runConfig.subagentGuide.v1';
+
+  function subagentFamily(cli) {
+    const value = clean(cli);
+    if (value === 'claude' || value === 'claude-exp') return 'claude';
+    if (value === 'codex' || value === 'codex-exp') return 'codex';
+    return '';
+  }
+
+  // 家族在按钮文案里的名字是产品名（不翻译）；不认识就退回空串，调用方自己兜底。
+  function subagentFamilyLabel(family) {
+    return family === 'claude' ? 'Claude Code' : family === 'codex' ? 'Codex' : '';
+  }
+
+  // 家族对应的目录 CLI：/api/providers?cli=… 与默认线路的 provider 名字都按它查。
+  function subagentFamilyCli(family) {
+    return family === 'claude' ? 'claude' : family === 'codex' ? 'codex' : '';
+  }
+
+  // 一条 {providerId, model} 要么两半都在，要么根本不算设置 —— 与
+  // chat-ai-config.js resolveSubagent()、服务端 subagent.js 同一条规矩。
+  function normalizeSubagentRoute(value) {
+    if (!value || typeof value !== 'object') return null;
+    const providerId = clean(value.providerId).slice(0, 180);
+    const model = clean(value.model).slice(0, 100);
+    return providerId && model ? Object.freeze({ providerId, model }) : null;
+  }
+
+  function sameSubagentRoute(a, b) {
+    const left = normalizeSubagentRoute(a);
+    const right = normalizeSubagentRoute(b);
+    if (!left || !right) return !left && !right;
+    return left.providerId === right.providerId && left.model === right.model;
+  }
+
+  // defaults 既可以是 /api/providers 回来的整份目录（catalog.defaults），也可以
+  // 只是那份 defaults 对象；两处都能查，调用方不用先剥一层。
+  function subagentDefaultFor(defaults, cli) {
+    const family = subagentFamily(cli);
+    if (!family) return null;
+    const source = defaults && typeof defaults === 'object' ? defaults : {};
+    const table = source.defaults && typeof source.defaults === 'object' ? source.defaults : source;
+    const routes = table.subagent && typeof table.subagent === 'object' ? table.subagent : {};
+    return normalizeSubagentRoute(routes[family]);
+  }
+
+  // 同步预览（dry run）→ 状态行文案。preview 的形状：
+  //   { state:'loading' }
+  //   { state:'ready', family, counts:{applied,deferred,unchanged,skipped} }
+  //   { state:'error', error }
+  //   { state:'unavailable' }   ← 503：服务端还没换成带同步接口的原生模块
+  // 只产出 {tone, text}，不碰 DOM —— tests/test-run-config.js 直接调。
+  function syncSummary(preview) {
+    if (!preview || typeof preview !== 'object') return { tone: 'idle', text: '' };
+    if (preview.state === 'loading') {
+      return { tone: 'loading', text: tt('runConfigSyncChecking', '正在检查要更新的任务…') };
+    }
+    if (preview.state === 'error') {
+      return { tone: 'error', text: tt('runConfigSyncPreviewFailed', '无法读取同步预览：{error}', { error: clean(preview.error) }) };
+    }
+    if (preview.state === 'unavailable') {
+      return { tone: 'error', text: tt('runConfigSyncUnavailable', '需要重启 MultiCC 服务后才能使用同步。请手动重启服务，然后重新打开这个对话框。') };
+    }
+    const counts = preview.counts && typeof preview.counts === 'object' ? preview.counts : {};
+    const applied = Number(counts.applied) || 0;
+    const deferred = Number(counts.deferred) || 0;
+    const skipped = Number(counts.skipped) || 0;
+    const total = applied + deferred;
+    const suffix = skipped > 0 ? tt('runConfigSyncSkippedSuffix', '，{k} 个跳过', { k: skipped }) : '';
+    if (total > 0) {
+      return {
+        tone: 'ready',
+        text: (total === 1
+          ? tt('runConfigSyncPreviewOne', '将更新 1 个任务')
+          : tt('runConfigSyncPreview', '将更新 {n} 个任务', { n: total })) + suffix,
+      };
+    }
+    return {
+      tone: 'ready',
+      text: tt('runConfigSyncNothing', '所有 {cli} 任务已经是这套设置',
+        { cli: subagentFamilyLabel(preview.family) || '' }) + suffix,
+    };
+  }
+
+  // 首次引导只记「看过了」这一个事实；存储被禁（Safari 私密窗口等）时读不到
+  // 就当作没看过，写失败也不抛 —— 引导只是提示，不能拦住对话框。
+  function guideSeen(storage) {
+    try {
+      if (!storage || typeof storage.getItem !== 'function') return false;
+      return !!storage.getItem(SUBAGENT_GUIDE_KEY);
+    } catch (_) { return false; }
+  }
+
+  function markGuideSeen(storage) {
+    try {
+      if (!storage || typeof storage.setItem !== 'function') return false;
+      storage.setItem(SUBAGENT_GUIDE_KEY, '1');
+      return true;
+    } catch (_) { return false; }
+  }
+
   // ── 兼容矩阵（纯）────────────────────────────────────────────────────────
   // 返回值永远是 { ok } 或 { ok:false, code, reason, short }。reason 是可以直接
   // 摆在界面上的一句长话（行里的黄色告警用），short 是同一条理由的短标签 ——
@@ -505,7 +610,13 @@
       let result = {};
       try { result = raw ? JSON.parse(raw) : {}; } catch (_) { result = {}; }
       if (!response.ok || result.ok === false) {
-        throw new Error(result.message || result.error || result.code || `请求失败（${response.status}）`);
+        // 大多数调用方只读 message；子 agent 同步要认出 503（服务端还没重启到
+        // 带这个接口的原生模块），所以把状态码与错误码一并挂在 Error 上，其余
+        // 行为一个字没变。
+        const failure = new Error(result.message || result.error || result.code || `请求失败（${response.status}）`);
+        failure.status = response.status;
+        failure.code = result.code || null;
+        throw failure;
       }
       return result;
     }));
@@ -810,6 +921,27 @@
     // 换成预设里的那份。renderSub 只在「主 CLI + 种子」变化时重铺下拉，其余时候保留
     // 界面上的改动（拖排序、换主线路不该把子任务选择打回去）。
     let subagentSeed = config.subagent && typeof config.subagent === 'object' ? config.subagent : null;
+    // 子 agent 默认（家族级，服务端存）：来自目录的 defaults.subagent，同步成功后
+    // 用响应里的那份覆盖。subDefaultsSynced = 已经拿到比目录更新的服务端结果。
+    let subDefaults = { claude: null, codex: null };
+    let subDefaultsSynced = false;
+    let subFamilyCatalogPending = false;
+    // 用户在这一次打开里动过子 agent 下拉（草稿模式下别再拿默认值盖回去）。
+    let subagentTouched = false;
+    // 当前的 subagentSeed 是不是「家族默认」自动铺的：换家族时可以整份替换。
+    let subagentSeedAuto = false;
+    let subagentSeedFamily = subagentSeed ? subagentFamily(config.cli || currentCli) : '';
+    // 首次强提示：读过一次 localStorage 就记住；本次打开内 dismissed 也是终态。
+    let subGuideSeenOnOpen = guideSeen(scope() && scope().localStorage);
+    let subGuideShown = false;
+    let subGuideDismissed = false;
+    // 同步预览（dry run）的状态机：loading / ready / error / unavailable。
+    let subPreview = null;
+    let subPreviewSeq = 0;
+    let subPreviewTimer = null;
+    let subPreviewKey = '';
+    // 任务本身已经保存、只剩同步没成功：再次提交只重试同步（见 save()）。
+    let savedPending = false;
     // 账户：accountPicks 是「车道 → 账户 id」，打开时从会话现值读（运行配置的几个入口
     // 都不带这个字段，所以已有会话要自己拉一次详情）。保存只写用户动过的那条车道 ——
     // 服务端按车道合并，读不到现值时也不会把别处选好的账户清掉。
@@ -827,6 +959,7 @@
       return request(`/api/providers?cli=${encodeURIComponent(cli)}`, undefined, 'GET').then(raw => {
         const catalog = catalogApi.normalizeCatalog(raw);
         catalogs.set(cli, catalog);
+        absorbCatalogDefaults(catalog);
         return catalog;
       }, error => { catalogErrors.set(cli, error); throw error; });
     }
@@ -1059,25 +1192,60 @@
     effortField.append(effortSeg);
     const fixedStatus = el(doc, 'p', 'air-config-status');
     fixedStatus.setAttribute('role', 'status');
-    const advanced = el(doc, 'details', 'rc-advanced');
-    const advancedSummary = el(doc, 'summary', null, tt('runConfigAdvanced', '高级：子任务线路 / 模型'));
-    const advancedBody = el(doc, 'div', 'rc-advanced-body');
+    // 子 agent 不再是藏在「高级」里的 details：它是和「CLI」「怎么挑」平级的一节，
+    // 常显 + 左侧强调条 + 状态芯片，第一眼就看得到自己有没有单独设置。显示/隐藏
+    // 仍由 renderSub 按主线路的 CLI 决定（终端草稿不摆）。
+    const subSection = el(doc, 'section', 'air-config-section rc-sub');
+    const subHead = el(doc, 'div', 'air-config-section-head rc-sub-head');
+    const subHeading = el(doc, 'div', 'rc-sub-heading');
+    const subTitleRow = el(doc, 'div', 'rc-sub-title-row');
+    const subNewBadge = el(doc, 'span', 'rc-sub-new', tt('runConfigGuideNew', 'NEW'));
+    show(subNewBadge, false);
+    const subState = el(doc, 'span', 'rc-sub-state');
+    subTitleRow.append(el(doc, 'h3', null, tt('runConfigSubTitle', '子 agent')), subNewBadge, subState);
+    subHeading.append(subTitleRow,
+      el(doc, 'p', 'rc-sub-subtitle', tt('runConfigSubSubtitle', '子 agent 派出去的子任务用哪条线路和模型')));
+    subHead.append(subHeading);
+    const subWhy = el(doc, 'p', 'rc-sub-why',
+      tt('runConfigSubWhy', '主任务用强模型，子 agent 换更便宜或更快的线路，主任务不受影响，能省不少额度'));
+    const subGuide = el(doc, 'div', 'rc-sub-guide');
+    subGuide.append(
+      el(doc, 'h4', null, tt('runConfigGuideTitle', '新功能：子 agent 可以单独选线路和模型')),
+      el(doc, 'p', null, tt('runConfigGuideBody',
+        'CLI 派出去的子任务默认跟主线路走；换一条更便宜或更快的线路，主任务不受影响，能省额度；下面勾选「同步」可以一键套用到所有同 CLI 的任务，以后新建的也默认这样')),
+    );
+    const subGuideActions = el(doc, 'div', 'rc-sub-guide-actions');
+    const subGuideApply = el(doc, 'button', 'rc-sub-guide-apply primary', tt('runConfigGuideApply', '现在设置'));
+    const subGuideDismiss = el(doc, 'button', 'rc-sub-guide-dismiss', tt('runConfigGuideDismiss', '知道了'));
+    subGuideApply.type = subGuideDismiss.type = 'button';
+    subGuideActions.append(subGuideApply, subGuideDismiss);
+    subGuide.append(subGuideActions);
+    show(subGuide, false);
     const subRow = el(doc, 'div', 'rc-two');
     const subProviderField = el(doc, 'label', 'rc-field');
-    subProviderField.append(el(doc, 'span', null, tt('runConfigSubProvider', '子任务线路')));
+    subProviderField.append(el(doc, 'span', null, tt('runConfigSubProvider', '子 agent 线路')));
     const subProviderSelect = el(doc, 'select', 'rc-sub-provider');
-    subProviderSelect.setAttribute('aria-label', tt('runConfigSubProvider', '子任务线路'));
+    subProviderSelect.setAttribute('aria-label', tt('runConfigSubProvider', '子 agent 线路'));
     subProviderField.append(subProviderSelect);
     const subModelField = el(doc, 'label', 'rc-field');
-    subModelField.append(el(doc, 'span', null, tt('runConfigSubModel', '子任务模型')));
+    subModelField.append(el(doc, 'span', null, tt('runConfigSubModel', '子 agent 模型')));
     const subModelSelect = el(doc, 'select', 'rc-sub-model');
-    subModelSelect.setAttribute('aria-label', tt('runConfigSubModel', '子任务模型'));
+    subModelSelect.setAttribute('aria-label', tt('runConfigSubModel', '子 agent 模型'));
     const subModelCustom = el(doc, 'input', 'rc-sub-model-custom');
     subModelCustom.maxLength = 100;
     subModelField.append(subModelSelect, subModelCustom);
     subRow.append(subProviderField, subModelField);
-    advancedBody.append(subRow, el(doc, 'p', 'rc-note', tt('runConfigSubHint', '子任务留空就是跟随主线路。')));
-    advanced.append(advancedSummary, advancedBody);
+    const subHint = el(doc, 'p', 'rc-note rc-sub-hint', tt('runConfigSubHint', '选「随主（默认）」就是子 agent 和主线路用同一条线路、同一个模型。'));
+    // 「同步」默认不勾：勾上才在保存时把这一套推给同家族的全部任务；每次打开都
+    // 重新从不勾开始，免得一次批量改动被悄悄带进下一次保存。
+    const subSyncLabel = el(doc, 'label', 'rc-check rc-sub-sync');
+    const subSyncBox = el(doc, 'input');
+    subSyncBox.type = 'checkbox';
+    const subSyncText = el(doc, 'span', null, tt('runConfigSyncLabel', '同步到全部任务，之后新建的也默认用这套'));
+    subSyncLabel.append(subSyncBox, subSyncText);
+    const subSyncStatus = el(doc, 'p', 'rc-sub-sync-status');
+    subSyncStatus.setAttribute('role', 'status');
+    subSection.append(subHead, subWhy, subGuide, subRow, subHint, subSyncLabel, subSyncStatus);
     fixedSection.append(fixedHead, cliGrid, lineRow, accountField, effortField, fixedStatus);
     form.append(fixedSection);
 
@@ -1150,10 +1318,10 @@
     more.append(moreSummary, moreBody);
     autoSection.append(poolHead, poolList, addButton, pickerHost, more);
     form.append(autoSection);
-    // 子任务线路/模型是「固定一条」和「自动挑选」共用的同一个高级块 —— 两种模式下
-    // 都只有这一处，摆在当前模式内容的下面（固定模式下 autoSection 是隐藏的，这块
-    // 自然跟在固定段后面）。显示/隐藏由 renderSub 按主线路的 CLI 决定。
-    form.append(advanced);
+    // 子 agent 线路/模型是「固定一条」和「自动挑选」共用的一节 —— 两种模式下
+    // 都只有这一处，摆在当前模式内容的下面（固定模式下 autoSection 是隐藏的，这
+    // 块自然跟在固定段后面）。显示/隐藏由 renderSub 按主线路的 CLI 决定。
+    form.append(subSection);
 
     const error = el(doc, 'p', 'air-config-error');
     error.setAttribute('role', 'alert');
@@ -1696,12 +1864,236 @@
       return currentCli;
     }
 
+    // ── 子 agent：默认值 / 首次引导 / 同步 ──────────────────────────────────
+    // 一条家族默认 = 服务端的 {providerId, model}。目录里带回来的默认是「当前值」，
+    // 同步成功后响应里的那一份更新 —— 两者都收进 subDefaults，界面只读这里。
+    function absorbCatalogDefaults(catalog) {
+      if (subDefaultsSynced) return;
+      const defaults = catalog && catalog.defaults;
+      const routes = defaults && defaults.subagent;
+      if (!routes || typeof routes !== 'object') return;
+      subDefaults = { claude: normalizeSubagentRoute(routes.claude), codex: normalizeSubagentRoute(routes.codex) };
+    }
+
+    function applySyncedDefaults(value) {
+      const source = value && typeof value === 'object' ? value : {};
+      const routes = source.subagent && typeof source.subagent === 'object' ? source.subagent : source;
+      subDefaults = { claude: normalizeSubagentRoute(routes.claude), codex: normalizeSubagentRoute(routes.codex) };
+      subDefaultsSynced = true;
+    }
+
+    function findProviderAnywhere(id) {
+      const wanted = clean(id);
+      if (!wanted) return null;
+      return allProviders().find(item => String(item.id) === wanted) || null;
+    }
+
+    // 默认线路的名字要在目录里查；当前 CLI 的目录不一定含这个家族的线路，缺了就
+    // 背景补拉一次（失败就算了，状态行会按「线路已不可用」说）。
+    function ensureFamilyCatalog(family) {
+      const cli = subagentFamilyCli(family);
+      if (!cli || catalogs.has(cli) || catalogErrors.has(cli) || subFamilyCatalogPending) return;
+      subFamilyCatalogPending = true;
+      loadCatalog(cli).then(() => {
+        subFamilyCatalogPending = false;
+        if (!closed) paintSubMeta();
+      }, () => { subFamilyCatalogPending = false; });
+    }
+
+    function reduceMotion() {
+      try {
+        const api = scope();
+        return !!(api && typeof api.matchMedia === 'function'
+          && api.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      } catch (_) { return false; }
+    }
+
+    function maybeShowSubGuide() {
+      if (terminalDraft || subGuideShown || subGuideDismissed || subGuideSeenOnOpen) return;
+      subGuideShown = true;
+      show(subGuide, true);
+      show(subNewBadge, true);
+      subSection.classList.add('is-guide');
+      const smooth = !reduceMotion();
+      const scroll = () => {
+        if (closed || subGuideDismissed) return;
+        try { subSection.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center' }); } catch (_) {}
+      };
+      const raf = scope() && scope().requestAnimationFrame;
+      if (typeof raf === 'function') raf(() => raf(scroll));
+      else setTimeout(scroll, 0);
+    }
+
+    function dismissSubGuide() {
+      if (!subGuideShown || subGuideDismissed) return;
+      subGuideDismissed = true;
+      subGuideSeenOnOpen = true;
+      show(subGuide, false);
+      show(subNewBadge, false);
+      subSection.classList.remove('is-guide');
+      markGuideSeen(scope() && scope().localStorage);
+    }
+
+    // 用户动过子 agent 的下拉：此后默认值不再自动回填。
+    function markSubagentTouched() {
+      subagentTouched = true;
+      subagentSeedAuto = false;
+      subagentSeedFamily = subagentFamily(subCli());
+    }
+
+    // 草稿：会话配置里没带子 agent 时，按家族默认把下拉预填一次；切换 CLI 换了
+    // 家族也照办。用户动过下拉就不碰。返回 true = 种子变了，调用方要重铺。
+    function seedDraftSubagent() {
+      if (!draft || terminalDraft || subagentTouched) return false;
+      const cli = subCli();
+      const family = subagentFamily(cli);
+      if (!family) return false;
+      const catalog = catalogs.get(cli);
+      if (!catalog) return false;
+      const def = subagentDefaultFor(catalog.defaults, cli);
+      const sameFamily = subagentSeedFamily === family;
+      if (sameFamily && (subagentSeed || subagentSeedAuto)) return false;
+      if (!def) { subagentSeedFamily = family; return false; }
+      if (sameSubagentRoute(def, subagentSeed)) { subagentSeedFamily = family; return false; }
+      subagentSeed = def;
+      subagentSeedAuto = true;
+      subagentSeedFamily = family;
+      return true;
+    }
+
+    // 状态芯片 + 同步行文案平时也走这里：每次重铺下拉后都要重新说一遍「现在是
+    // 跟随主线路还是单独设置」「新任务默认是什么」。
+    function paintSubMeta() {
+      const cli = subCli();
+      if (terminalDraft || !cli || !aiApi.supportsSubagentCli(cli)) return;
+      const family = subagentFamily(cli);
+      const set = collectSubagent();
+      subState.textContent = set
+        ? tt('runConfigSubStateSet', '已单独设置')
+        : tt('runConfigSubStateFollow', '跟随主线路');
+      subState.classList.toggle('is-set', !!set);
+      subSyncText.textContent = tt('runConfigSyncLabel', '同步到全部 {cli} 任务，之后新建的也默认用这套',
+        { cli: subagentFamilyLabel(family) || cliLabel(cli) });
+      paintSyncStatus(family);
+      queueSyncPreview();
+      maybeShowSubGuide();
+    }
+
+    function paintSyncStatus(family) {
+      const lane = family || subagentFamily(subCli());
+      subSyncStatus.classList.remove('is-ready', 'is-error');
+      if (subPreview && subPreview.state === 'unavailable') {
+        subSyncStatus.textContent = syncSummary(subPreview).text;
+        subSyncStatus.classList.add('is-error');
+        return;
+      }
+      if (subSyncBox.checked && subPreview) {
+        const summary = syncSummary(subPreview);
+        subSyncStatus.textContent = summary.text;
+        subSyncStatus.classList.toggle('is-ready', summary.tone === 'ready');
+        subSyncStatus.classList.toggle('is-error', summary.tone === 'error');
+        return;
+      }
+      const route = lane ? subDefaults[lane] : null;
+      if (!route) {
+        subSyncStatus.textContent = tt('runConfigSyncDefaultFollow', '新任务默认：随主线路');
+        return;
+      }
+      const provider = findProviderAnywhere(route.providerId);
+      if (!provider) {
+        ensureFamilyCatalog(lane);
+        subSyncStatus.textContent = tt('runConfigSyncDefaultMissing', '新任务默认：{id} · {model}（线路已不可用）',
+          { id: route.providerId, model: route.model });
+        return;
+      }
+      subSyncStatus.textContent = tt('runConfigSyncDefaultRoute', '新任务默认：{line} · {model}',
+        { line: provider.name || provider.id, model: route.model });
+    }
+
+    // 勾上「同步」后 300ms 的 dry run：同一个选择只问一次；选择/主线路变了才重问。
+    function queueSyncPreview() {
+      if (!subSyncBox.checked || subSyncBox.disabled || closed || terminalDraft) return;
+      const cli = subCli();
+      if (!cli || !aiApi.supportsSubagentCli(cli)) return;
+      const key = JSON.stringify([cli, collectSubagent()]);
+      if (key === subPreviewKey) return;
+      // 旧响应立刻作废：新请求还要等 debounce，不能让它在这段空窗里落地。
+      ++subPreviewSeq;
+      if (subPreviewTimer) clearTimeout(subPreviewTimer);
+      subPreviewTimer = setTimeout(() => {
+        subPreviewTimer = null;
+        if (closed || key === subPreviewKey) return;
+        if (!subSyncBox.checked || subSyncBox.disabled) return;
+        const nowCli = subCli();
+        if (!nowCli || !aiApi.supportsSubagentCli(nowCli)) return;
+        subPreviewKey = key;
+        runSyncPreview(nowCli, key);
+      }, 300);
+    }
+
+    async function runSyncPreview(cli, key) {
+      const seq = ++subPreviewSeq;
+      subPreview = { state: 'loading' };
+      paintSyncStatus(subagentFamily(cli));
+      try {
+        const result = await request('/api/subagent-defaults/sync',
+          { cli, subagent: collectSubagent(), dryRun: true });
+        if (closed || seq !== subPreviewSeq || key !== subPreviewKey) return;
+        if (result && result.defaults) applySyncedDefaults(result.defaults);
+        subPreview = { state: 'ready', family: (result && result.family) || subagentFamily(cli), counts: (result && result.counts) || {} };
+        paintSyncStatus(subagentFamily(cli));
+      } catch (cause) {
+        if (closed || seq !== subPreviewSeq || key !== subPreviewKey) return;
+        if (cause && cause.status === 503) {
+          // 服务端还是旧的（没换到带同步接口的原生模块）：勾选框锁上，把「要重启」
+          // 说清楚，别让用户以为是自己选错了。
+          subSyncBox.checked = false;
+          subSyncBox.disabled = true;
+          subPreview = { state: 'unavailable' };
+        } else {
+          subPreview = { state: 'error', error: (cause && cause.message) || String(cause) };
+        }
+        paintSyncStatus(subagentFamily(cli));
+      }
+    }
+
+    // 保存已经落地的收尾：勾了「同步」就先发真的同步请求，再关对话框。同步失败
+    // = 任务本身已经保存，只把同步留作重试（savedPending）—— 再点一次提交走的是
+    // save() 开头那条分支，只重发同步，不会把同一次保存做两遍；反过来说，失败之后
+    // 又改的子 agent 设置不会在这次重试里再保存一遍，重试只负责同步。
+    async function finishSubagentSync() {
+      if (!subSyncBox.checked || subSyncBox.disabled) { dialog.close(); return; }
+      const cli = subCli();
+      if (!cli || !aiApi.supportsSubagentCli(cli)) { dialog.close(); return; }
+      try {
+        const result = await request('/api/subagent-defaults/sync', { cli, subagent: collectSubagent() });
+        if (result && result.defaults) applySyncedDefaults(result.defaults);
+        savedPending = false;
+        dialog.close();
+      } catch (cause) {
+        savedPending = true;
+        error.textContent = tt('runConfigSyncSaveFailed', '本任务已保存，但同步失败：{error}',
+          { error: (cause && cause.message) || String(cause) });
+        submit.textContent = tt('runConfigSyncRetry', '重试同步');
+        submit.disabled = false;
+        if (cause && cause.status === 503) {
+          subSyncBox.checked = false;
+          subSyncBox.disabled = true;
+          subPreview = { state: 'unavailable' };
+          ++subPreviewSeq;
+        } else {
+          subPreview = null;
+        }
+        paintSyncStatus();
+      }
+    }
+
     // force=true 只在套用预设这类「种子真的换了」的场合用；平时由 dataset.seedKey
     // 判断要不要重铺下拉，好让用户在界面上的改动活下来。
     function renderSub(force) {
       const cli = subCli();
       const supported = !!cli && aiApi.supportsSubagentCli(cli) && !terminalDraft;
-      show(advanced, supported);
+      show(subSection, supported);
       if (!supported) { delete subProviderSelect.dataset.seedKey; return; }
       const prevProvider = subProviderSelect.value;
       const prevModel = subModelSelect.value === '__custom__' ? subModelCustom.value.trim() : subModelSelect.value;
@@ -1720,6 +2112,7 @@
         fillSubModel(subModelSelect, subModelCustom, cli,
           subProviderSelect.value || primaryProviderId(), seed ? seed.model || '' : '');
         subProviderSelect.dataset.seedKey = seedKey;
+        paintSubMeta();
         return;
       }
       // 主 CLI 没变：保住用户在子任务上做的选择，只按新目录把下拉重铺一遍。
@@ -1727,6 +2120,7 @@
       fillSubModel(subModelSelect, subModelCustom, cli,
         subProviderSelect.value || primaryProviderId(), prevModel);
       if (prevCustom) { subModelSelect.value = '__custom__'; show(subModelCustom, true); }
+      paintSubMeta();
     }
 
     // Switching the sub-task 线路 only reshuffles the model list for that line —
@@ -1738,6 +2132,7 @@
         ? subModelCustom.value.trim() : subModelSelect.value;
       fillSubModel(subModelSelect, subModelCustom, cli,
         subProviderSelect.value || primaryProviderId(), current);
+      paintSubMeta();
     }
 
     // ── 渲染：自动挑选 ───────────────────────────────────────────────────────
@@ -2150,6 +2545,10 @@
       if (preset.sticky != null) sticky = preset.sticky !== false;
       // 预设里的子任务设置（老预设没有这一段 = 跟随主线路）。
       subagentSeed = preset.subagent && preset.subagent.model ? preset.subagent : null;
+      // 套用预设是用户明确的一次选择：之后切 CLI 别再拿家族默认盖掉它。
+      subagentTouched = true;
+      subagentSeedAuto = false;
+      subagentSeedFamily = subagentFamily(subCli());
       activePresetId = id;
       renderAuto();
       renderSub(true);
@@ -2176,6 +2575,8 @@
           m: new Set(rows.map(row => chatChoiceCli(row.cli))).size,
         });
       }
+      // 主线路换了（模式切换不重铺子任务块时也走这里）：同步预览按新组合重问。
+      queueSyncPreview();
     }
 
     function setBusy(value) {
@@ -2198,6 +2599,8 @@
 
     // ── 保存 ────────────────────────────────────────────────────────────────
     async function save() {
+      // 上一次提交已经把任务/草稿保存好了，只剩同步失败：这一次只重试同步。
+      if (savedPending) { await finishSubagentSync(); return; }
       if (mode === MODE_FIXED) {
         const patch = buildFixedPatch({ cli: currentCli, providerId: providerValue,
           model: currentModelValue(), effort: effortValue });
@@ -2209,7 +2612,7 @@
           await onSaved({ cli: currentCli, provider: patch.value.provider, providerSelection: null,
             model: patch.value.model, effort: patch.value.effort, providerName, subagent,
             cliAccounts: Object.keys(picks).length ? picks : null });
-          dialog.close();
+          await finishSubagentSync();
           return;
         }
         const base = `/api/sessions/${encodeURIComponent(entry.sessionId)}`;
@@ -2222,7 +2625,7 @@
           ...(accountPatch() ? { cliAccounts: accountPatch() } : {}),
         }, 'PATCH');
         await onSaved();
-        dialog.close();
+        await finishSubagentSync();
         return;
       }
       const built = buildAutoSelection({
@@ -2237,7 +2640,7 @@
       if (draft) {
         await onSaved({ cli: primary.cli, provider: primary.providerId, providerSelection: selection,
           model: primary.model || null, effort: null, subagent });
-        dialog.close();
+        await finishSubagentSync();
         return;
       }
       const base = `/api/sessions/${encodeURIComponent(entry.sessionId)}`;
@@ -2247,7 +2650,7 @@
       await request(base, { provider: primary.providerId, providerSelection: selection }, 'PATCH');
       await request(base, { model: primary.model || null, subagent }, 'PATCH');
       await onSaved();
-      dialog.close();
+      await finishSubagentSync();
     }
 
     // ── 交互 ────────────────────────────────────────────────────────────────
@@ -2281,6 +2684,8 @@
         providers = providersOf(cli);
         setBusy(false);
         renderFixed();
+        // 草稿里换了 CLI（可能换了家族）：没动过子 agent 就按新家族的默认预填。
+        if (seedDraftSubagent()) renderSub(true);
         renderFooter();
       }, () => {
         if (current !== epoch) return;
@@ -2367,10 +2772,39 @@
       renderFooter();
     };
     modelCustom.oninput = () => { modelValue = currentModelValue(); renderFooter(); };
-    subProviderSelect.onchange = () => refreshSubLine();
+    subProviderSelect.onchange = () => {
+      markSubagentTouched();
+      dismissSubGuide();
+      refreshSubLine();
+    };
     subModelSelect.onchange = () => {
+      markSubagentTouched();
+      dismissSubGuide();
       show(subModelCustom, subModelSelect.value === '__custom__');
       if (subModelSelect.value === '__custom__') subModelCustom.focus();
+      paintSubMeta();
+    };
+    subModelCustom.oninput = () => { markSubagentTouched(); paintSubMeta(); };
+    // 首次强提示的两颗按钮：一个直接把人送到线路下拉，一个只是收掉提示。
+    subGuideApply.onclick = () => {
+      dismissSubGuide();
+      subProviderSelect.focus();
+    };
+    subGuideDismiss.onclick = () => dismissSubGuide();
+    // 「同步」每次打开都是不勾的；勾上先跑 dry run 说清楚会改几个任务。
+    subSyncBox.onchange = () => {
+      if (subSyncBox.checked) {
+        subPreviewKey = '';
+        subPreview = { state: 'loading' };
+        paintSyncStatus();
+        queueSyncPreview();
+      } else {
+        ++subPreviewSeq;
+        if (subPreviewTimer) { clearTimeout(subPreviewTimer); subPreviewTimer = null; }
+        subPreviewKey = '';
+        subPreview = null;
+        paintSyncStatus();
+      }
     };
     form.onsubmit = async event => {
       event.preventDefault();
@@ -2414,6 +2848,8 @@
       setBusy(false);
       renderModes();
       renderFixed();
+      // 草稿没带子 agent：这一族有默认就预填一次（用户动过下拉则不碰）。
+      if (seedDraftSubagent()) renderSub(true);
       renderAuto();
       renderFooter();
       warmOtherClis();
@@ -2464,16 +2900,20 @@
     PICK_ORDER,
     PRESET_KEY,
     PRICE_TIERING,
+    SUBAGENT_GUIDE_KEY,
     TIERS,
     TIER_KEYS,
     buildAutoSelection,
     buildFixedPatch,
     cliChoicesForLine,
     cliLineVerdict,
+    guideSeen,
     isNativeLine,
     lineShape,
+    markGuideSeen,
     nativeLineId,
     nativeLineValue,
+    normalizeSubagentRoute,
     openCodeRouteName,
     open,
     pillModel,
@@ -2481,5 +2921,10 @@
     protocolOf,
     reorder,
     rowIssue,
+    sameSubagentRoute,
+    subagentDefaultFor,
+    subagentFamily,
+    subagentFamilyLabel,
+    syncSummary,
   });
 });

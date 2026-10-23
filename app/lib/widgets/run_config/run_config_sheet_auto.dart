@@ -35,35 +35,45 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       _autoAddLine(),
       _autoMoreToggle(),
       if (_autoMore) ..._autoMoreSection(),
-      // 子任务（高级）：和固定一条同一项设置、同一份 state，只是主线路换成池子
-      // 第一条。它那条车道的 CLI 不支持子任务（和固定一条同一张表）就整块不画。
+      // 子 agent：和固定一条同一项设置、同一份 state，只是主线路换成池子第一
+      // 条。那条车道的 CLI 不支持子 agent（和固定一条同一张表）就整块不画。
       if (_autoSubCli() != null) ...[
-        _advancedToggle(),
-        if (_advanced) ..._autoSubagentSection(),
+        const SizedBox(height: 14),
+        _autoSubagentSection(),
       ],
       const SizedBox(height: 6),
     ];
   }
 
-  /// 自动挑选的「子任务」：线路候选从主线路那条车道的池子里取，模型候选挂在
-  /// 选中的子任务线路上（随主时跟主线路的线路走）。留空 = 跟随主线路。
-  List<Widget> _autoSubagentSection() {
+  /// 自动挑选的「子 agent」卡片：线路候选从主线路那条车道的池子里取，模型候选
+  /// 挂在选中的子任务线路上（随主时跟主线路的线路走）。留空 = 跟随主线路。
+  Widget _autoSubagentSection() {
     final cli = _autoSubCli();
-    if (cli == null) return const [];
+    if (cli == null) return const SizedBox.shrink();
     final pool = _autoSubPool();
     final providerId = _autoSubProviderId(pool);
     final choices = _autoSubChoices(cli, pool, providerId);
-    return [
-      const SizedBox(height: 6),
-      ..._subagentFields(
-        cli: cli,
-        pool: pool,
-        providerId: providerId,
-        mainProviderId: _autoPrimaryProviderId,
-        choices: choices,
-        model: _autoSubModel(choices),
-      ),
-    ];
+    return _subagentSection(
+      cli: cli,
+      pool: pool,
+      providerId: providerId,
+      mainProviderId: _autoPrimaryProviderId,
+      choices: choices,
+      model: _autoSubModel(choices),
+    );
+  }
+
+  /// 同步 / 默认展示要的那份「当前子 agent 设置」—— 自动挑选下是池子第一条
+  /// 那条车道上的那份（和保存时上 wire 的是同一套折算）。
+  @override
+  _SubagentTarget? _autoSubagentTarget() {
+    final cli = _autoSubCli();
+    if (cli == null) return null;
+    return _SubagentTarget(
+      cli: cli,
+      mainProviderId: _autoPrimaryProviderId,
+      subagent: _collectAutoSubagent(_autoPrimaryProviderId),
+    );
   }
 
   Widget _autoPresetBar() => Column(
@@ -339,6 +349,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         }
         _autoError = '';
       });
+      _noteSubagentChanged();
       _presetMessage('已套用草稿；检查线路后点击底部“保存”。');
     } finally {
       if (mounted) setState(() => _presetBusy = false);

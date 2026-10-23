@@ -153,10 +153,35 @@ function createProviderRoutes(rawDeps) {
   const log = deps.logger || console;
   const providerDefaults = { ...DEFAULT_PROVIDER_IDS };
 
+  // 子任务默认线路的归一化只由 Rust 决定；原生模块缺失/过旧时保持磁盘上的原值不动，
+  // 这样以后有了新模块再保存也不会把用户已存的键丢掉（透传）。
+  const subagentNative = () => {
+    try {
+      return typeof deps.getNative === 'function'
+        ? deps.getNative()
+        : require('../native/runtime').getNative('subagent_defaults');
+    } catch (_) { return null; }
+  };
+  function normalizeStoredSubagent(value) {
+    const native = subagentNative();
+    if (!native || typeof native.normalizeSubagentDefaults !== 'function') return undefined;
+    try {
+      const parsed = JSON.parse(native.normalizeSubagentDefaults(JSON.stringify({ stored: value })));
+      if (!parsed || typeof parsed !== 'object') return undefined;
+      return { claude: parsed.claude ?? null, codex: parsed.codex ?? null };
+    } catch (_) { return undefined; }
+  }
+
   try {
     const stored = JSON.parse(deps.fs.readFileSync(deps.providerDefaultsFile, 'utf8'));
     providerDefaults.claude = stored.claude || null;
     providerDefaults.codex = stored.codex || null;
+    // Only users who already used the feature see the key; everybody else keeps
+    // the exact response shapes existing clients and tests deepEqual.
+    if (Object.prototype.hasOwnProperty.call(stored, 'subagent')) {
+      const normalized = normalizeStoredSubagent(stored.subagent);
+      providerDefaults.subagent = normalized === undefined ? stored.subagent : normalized;
+    }
   } catch (_) {
     // Missing or invalid legacy defaults keep the established null defaults.
   }
@@ -165,12 +190,20 @@ function createProviderRoutes(rawDeps) {
     for (const cli of ['claude', 'codex']) providerDefaults[cli] = deps.providers.normalizeOfficialProviderId(cli, providerDefaults[cli]);
   }
 
+  // Throws so callers that must answer "saved or not" (the subagent-defaults
+  // sync) can defer every session mutation until the file write succeeded.
+  function persistProviderDefaults(value = providerDefaults) {
+    deps.atomicWriteJson(deps.providerDefaultsFile, value);
+  }
+
   function saveProviderDefaults() {
     try {
-      deps.atomicWriteJson(deps.providerDefaultsFile, providerDefaults);
+      persistProviderDefaults();
     } catch (error) {
       log.error('[multicc] save provider-defaults failed:', publicError(error, 'save failed'));
+      return false;
     }
+    return true;
   }
 
   function validProviderId(cli, id) {
@@ -287,6 +320,17 @@ function createProviderRoutes(rawDeps) {
   function mountManagementRoutes(app) {
     for (const method of ['get', 'post', 'patch', 'delete', 'put']) assertAppMethod(app, method);
     require('./cpr-backend-settings').mountCprBackendSettingsRoutes(app, { runtime: deps.providerRouterRuntime });
+    // 子任务默认线路 + 一键同步（迁移桥接：Rust 决策，Node 落盘/逐会话 PATCH）。
+    require('./subagent-defaults').mountSubagentDefaultsRoutes(app, {
+      providerDefaults,
+      sessions: deps.persistedSessions,
+      validProviderId,
+      providers: deps.providers,
+      applySessionPatch: deps.applySessionPatch,
+      previewSessionPatch: deps.previewSessionPatch,
+      persistDefaults: persistProviderDefaults,
+      ...(typeof deps.getNative === 'function' ? { getNative: deps.getNative } : {}),
+    });
 
     app.post('/api/providers/import', (req, res) => {
       try {

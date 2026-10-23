@@ -739,11 +739,27 @@
     });
   }
 
+  // 子 agent 的家族默认（POST /api/subagent-defaults/sync 写的那一份）：
+  // { claude: {providerId, model}|null, codex: … }。这是一条线路名 + 一个模型，
+  // 不是主线路默认那种裸 id —— 两半缺一不可，畸形条目整条丢掉（= 没有默认）。
+  function normalizeSubagentRoute(value) {
+    if (!value || typeof value !== 'object') return null;
+    const providerId = text(value.providerId, 180);
+    const model = text(value.model, 100);
+    if (!providerId || !model) return null;
+    return Object.freeze({ providerId, model });
+  }
+
   function normalizeDefaults(value) {
     const source = value && typeof value === 'object' ? value : {};
+    const subagent = source.subagent && typeof source.subagent === 'object' ? source.subagent : {};
     return Object.freeze({
       claude: text(source.claude, 180) || null,
       codex: text(source.codex, 180) || null,
+      subagent: Object.freeze({
+        claude: normalizeSubagentRoute(subagent.claude),
+        codex: normalizeSubagentRoute(subagent.codex),
+      }),
     });
   }
 

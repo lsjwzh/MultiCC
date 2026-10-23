@@ -111,12 +111,46 @@ dialog .air-config-field input { margin-top: 7px; }
 .rc-account-form button.primary { color: #146dcc; background: #eaf4ff; border-color: #b9d9f8; }
 .rc-account-form[hidden], .rc-account-delete[hidden], .rc-account-field[hidden] { display: none; }
 .rc-faint { margin: 6px 2px; color: #93a4b5; font-size: 11px; }
-.rc-advanced { margin-top: 12px; padding-top: 12px; border-top: 1px solid #edf3f9; }
-.rc-advanced > summary { color: #4c7daa; font-size: 11px; cursor: pointer; list-style: none; }
-.rc-advanced > summary::-webkit-details-marker { display: none; }
-.rc-advanced > summary::before { content: '▸ '; }
-.rc-advanced[open] > summary::before { content: '▾ '; }
-.rc-advanced-body { margin-top: 11px; }
+/* ── 子 agent（run-config.js）────────────────────────────────────────────────
+   不再是折叠的 details：常显的一节，左侧强调条 + 状态芯片把「有没有单独设置」
+   摆在第一眼。首次打开时 .is-guide 加一圈脉冲环，提示里的两颗按钮都能收掉。 */
+.rc-sub { position: relative; border-color: #cfe3f7; background: linear-gradient(180deg, #f8fbff, #fff 46%); box-shadow: inset 3px 0 0 #4d9bea, var(--shadow-1); }
+.rc-sub-head { align-items: flex-start; margin-bottom: 10px; }
+.rc-sub-heading { min-width: 0; }
+.rc-sub-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.rc-sub-title-row h3 { margin: 0; color: #2c5d8c; font-size: 13px; }
+.rc-sub-subtitle { margin: 3px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.rc-sub-new { padding: 1px 7px; color: #0d63c4; border-radius: 999px; background: #dbeafe; font-size: 9px; font-weight: 750; letter-spacing: .07em; }
+.rc-sub-state { margin-left: auto; padding: 2px 9px; color: #5d7a97; border-radius: 999px; background: #eef3f8; font-size: 10px; font-weight: 620; white-space: nowrap; }
+.rc-sub-state.is-set { color: #1a7a55; background: #e3f6ec; }
+.rc-sub-why { margin: 0 0 12px; padding: 8px 11px; color: #47688a; border-radius: 10px; background: #f1f7fe; font-size: 11px; line-height: 1.55; }
+.rc-sub-guide { margin: 0 0 13px; padding: 11px 12px; border: 1px solid #b9d9f8; border-radius: 12px; background: linear-gradient(180deg, #eef6ff, #f8fbff); }
+.rc-sub-guide[hidden] { display: none; }
+.rc-sub-guide h4 { margin: 0 0 4px; color: #0d63c4; font-size: 12px; line-height: 1.4; }
+.rc-sub-guide p { margin: 0 0 9px; color: #47688a; font-size: 11px; line-height: 1.6; }
+.rc-sub-guide-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.rc-sub-guide-actions button { min-height: 30px; padding: 4px 12px; font-size: 11px; }
+.rc-sub-guide-actions .primary { padding: 4px 14px; border-radius: 9px; box-shadow: none; }
+/* 引导期间常驻一圈静态高亮环；外面那圈光环只扩散三次就停 —— 只动 opacity /
+   transform（合成器接管，tests/test-air-paint-budget.js），也不让屏幕一直在出帧。 */
+.rc-sub.is-guide { box-shadow: inset 3px 0 0 #4d9bea, 0 0 0 3px #1678e838, var(--shadow-1); }
+.rc-sub.is-guide::after { position: absolute; inset: -6px; border: 2px solid #1678e8; border-radius: 28px; opacity: 0; pointer-events: none; content: ''; animation: rc-sub-pulse 1.6s ease-out 3; }
+@keyframes rc-sub-pulse {
+  0% { opacity: .5; transform: scale(.985); }
+  100% { opacity: 0; transform: scale(1.015); }
+}
+.rc-sub-sync { margin-top: 12px; padding-top: 11px; border-top: 1px dashed #e0eaf4; align-items: flex-start; line-height: 1.5; }
+.rc-sub-sync span { padding-top: 1px; }
+.rc-sub-sync-status { margin: 6px 0 0; color: #6f8096; font-size: 10px; line-height: 1.5; }
+.rc-sub-sync-status.is-ready { color: #1a7a55; }
+.rc-sub-sync-status.is-error { color: #b34128; }
+@media (prefers-reduced-motion: reduce) {
+.rc-sub.is-guide::after { animation: none; }
+}
+@media (max-width: 760px) {
+.rc-sub-title-row h3 { font-size: 12.5px; }
+.rc-sub-guide-actions { display: grid; grid-template-columns: 1fr 1fr; }
+}
 .rc-effort-field { margin-bottom: 12px; }
 .rc-efforts { display: flex; width: 100%; }
 .rc-efforts .rc-seg-btn { flex: 1 1 0; text-align: center; }

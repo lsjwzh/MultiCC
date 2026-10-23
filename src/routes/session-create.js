@@ -75,11 +75,15 @@ function mountSessionCreateRoutes(app, rawDeps) {
     const providerSelection = req.body.providerSelection;
     const rolePrompt = (req.body.rolePrompt || '').trim() || null;
     const experimentalMode = (req.body.experimentalMode || '').trim() || null;
+    // undefined = 未指定 → 新 chat 会话吃该 CLI 家族的子任务默认线路；
+    // null/''/{} = 明确不要子任务线路。两者必须保持可区分。
+    const subagent = req.body.subagent;
     if (kind === 'chat' && !experimentalMode && deps.createTask) {
       const result = await deps.createTask({ dirId: dir.id, title: label || '新任务', cli: cli || 'claude',
         ...(model ? { model } : {}), ...(provider === undefined ? {} : { provider }),
         ...(providerSelection === undefined ? {} : { providerSelection }),
         effort, agent, ...(rolePrompt ? { rolePrompt } : {}),
+        ...(subagent === undefined ? {} : { subagent }),
         clientMsgId: req.body.clientMsgId || require('node:crypto').randomUUID() });
       return res.json({ ...deps.getRecord(result.sessionId), taskId: result.taskId, url: result.url });
     }
@@ -87,6 +91,8 @@ function mountSessionCreateRoutes(app, rawDeps) {
       dir, cli, kind, label, model, provider,
       ...(providerSelection === undefined ? {} : { providerSelection }),
       effort, agent, rolePrompt, experimentalMode,
+      // 省略键 = 未指定（吃家族默认）；显式 null 必须作为 null 传下去。
+      ...(subagent === undefined ? {} : { subagent }),
       persistence: 'required', persistenceSource: 'http.create-session',
     });
     if (!result.ok) return res.status(400).json({ error: result.error });

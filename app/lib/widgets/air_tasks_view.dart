@@ -43,6 +43,7 @@ import 'hook_list_view.dart';
 import 'air/air_sidebar.dart';
 import 'air/air_task_config.dart';
 import 'air/air_task_details.dart';
+import 'run_config/run_config_sheet.dart' show runSubagentSyncAfterSave;
 import 'air/air_task_status.dart';
 import 'air/air_task_actions.dart';
 import 'air/air_workspace_card.dart';
@@ -710,6 +711,9 @@ class _AirTasksViewState extends State<AirTasksView>
       _capacityError = false;
     });
     String? created;
+    // 建任务成功之后可能还要补一次「同步到全部同 CLI 任务」；那一刻这一层可能
+    // 已经切走 / 关闭，先把 messenger 捏在手上。
+    final messenger = ScaffoldMessenger.maybeOf(context);
     try {
       created = await _service.createTask(
         dirId: dirId,
@@ -720,6 +724,19 @@ class _AirTasksViewState extends State<AirTasksView>
         // 线路发出去了。
         runtime: runtime.toCreateBody(),
       );
+      // 任务这套设置已经落盘，同步才有意义；不挡第一条消息，失败也只弹一句，
+      // 任务和它自己的配置都留着。
+      if (runtime.syncSubagentDefaults && messenger != null) {
+        unawaited(
+          runSubagentSyncAfterSave(
+            messenger: messenger,
+            settings: widget.settings,
+            httpClient: widget.httpClient,
+            cli: cli,
+            subagent: runtime.subagent,
+          ),
+        );
+      }
       // 角色要在第一条消息之前写下去：绑定说的是「下一条消息」，而下一条正是
       // 紧接着要发的那条（同 Web Air 的顺序）。
       if (roles.isNotEmpty) {

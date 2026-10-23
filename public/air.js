@@ -1186,7 +1186,7 @@
     // takes effect immediately, exactly as it does on the chat's own composer.
     const runtime = { cli: quickRuntime.cli || firstChatCli() };
     for (const key of ['provider', 'providerSelection', 'model', 'effort', 'subagent']) {
-      if (quickRuntime[key]) runtime[key] = quickRuntime[key];
+      if (quickRuntime[key] || (key === 'subagent' && quickRuntimeDirty)) runtime[key] = quickRuntime[key];
     }
     const goal = $('quick-task-goal').checked;
     const goalLimits = goal ? goalLimitsFromForm() : null;

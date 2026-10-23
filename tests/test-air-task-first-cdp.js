@@ -559,15 +559,15 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"]').options.length`), 3);
     assert.equal(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="线路"]');return [...s.options].every(o=>!o.value.startsWith('__auto__'))})()`), true);
     assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"] option[value=""]') === null`), true);
-    // 子任务尾巴藏在「高级」里：线路 + 模型两个下拉，Codex 排掉官方账号
+    // 子 agent 那一节常显：线路 + 模型两个下拉，Codex 排掉官方账号
     // （它没有可调用的 HTTP 端点，服务端也会拒）。
-    assert.deepEqual(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="子任务线路"]');return [s.options.length, s.options[0].textContent, [...s.options].some(o=>o.value==='codex-official')]})()`), [3, '随主（默认）', false]);
-    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="子任务模型"]').options[0].textContent`), '不设置');
+    assert.deepEqual(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="子 agent 线路"]');return [s.options.length, s.options[0].textContent, [...s.options].some(o=>o.value==='codex-official')]})()`), [3, '随主（默认）', false]);
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="子 agent 模型"]').options[0].textContent`), '不设置');
     await page.evaluate(String.raw`(()=>{const q=s=>document.querySelector('.air-config-dialog[open] '+s);
       const provider=q('select[aria-label="线路"]'); provider.value='codex-backup'; provider.dispatchEvent(new Event('change',{bubbles:true}));
       const model=q('select[aria-label="模型"]'); model.value='gpt-5.6-sol';
-      const line=q('select[aria-label="子任务线路"]'); line.value='codex-lab'; line.dispatchEvent(new Event('change',{bubbles:true}));
-      q('select[aria-label="子任务模型"]').value='gpt-5.5';
+      const line=q('select[aria-label="子 agent 线路"]'); line.value='codex-lab'; line.dispatchEvent(new Event('change',{bubbles:true}));
+      q('select[aria-label="子 agent 模型"]').value='gpt-5.5';
       q('.rc-effort-high').click();
       q('.air-config-form').requestSubmit()})()`);
     assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
@@ -614,8 +614,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // 推理强度不再是下拉，是一排按钮，选中的那颗 aria-checked=true。
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] .rc-effort-low[aria-checked="true"]')!==null`), true);
     // 存过的子任务线路要能读回来，否则再打开面板一次就会把它清掉。
-    assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务线路"]').value`), 'codex-lab');
-    assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务模型"]').value`), 'gpt-5.5');
+    assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子 agent 线路"]').value`), 'codex-lab');
+    assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子 agent 模型"]').value`), 'gpt-5.5');
     await page.evaluate(`document.querySelector('dialog[open] .air-config-close').click()`);
     // WorkBuddy 的待生效配置不能沿用当前 Codex 的线路名。车道那段现在是产品名
     // （codebuddy -> WorkBuddy），而自持账号车道的路由名与它是同一个 —— 两段合成
@@ -870,12 +870,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="线路"]')`), JSON.stringify({ pill: await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), selected: await page.evaluate(`document.querySelector('.air-cli-option.selected strong')?.textContent`), requests: page.requests.slice(-6).map(r => r.method + ' ' + r.path) }));
     screenshots.push(await page.screenshot('directory-composer-config-desktop'));
     assert.equal(await page.evaluate(`!!document.querySelector('.air-config-dialog[open] .rc-field select[aria-label="模型"]')`), true, 'model selection survives on the panel');
-    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="子任务线路"]').options.length`), 3, 'the tail rides the panel for a task that does not exist yet');
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="子 agent 线路"]').options.length`), 3, 'the tail rides the panel for a task that does not exist yet');
     await page.evaluate(String.raw`(()=>{const q=s=>document.querySelector('.air-config-dialog[open] '+s);
       const provider=q('select[aria-label="线路"]'); provider.value='codex-backup'; provider.dispatchEvent(new Event('change',{bubbles:true}));
       const model=q('select[aria-label="模型"]'); model.value='gpt-5.6-sol';
-      const line=q('select[aria-label="子任务线路"]'); line.value='codex-lab'; line.dispatchEvent(new Event('change',{bubbles:true}));
-      q('select[aria-label="子任务模型"]').value='gpt-5.5';
+      const line=q('select[aria-label="子 agent 线路"]'); line.value='codex-lab'; line.dispatchEvent(new Event('change',{bubbles:true}));
+      q('select[aria-label="子 agent 模型"]').value='gpt-5.5';
       q('.air-config-form').requestSubmit()})()`);
     assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'Codex · Backup Responses · gpt-5.6-sol');
@@ -1352,11 +1352,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     const mixedResult = await page.waitFor(`(window.__mixedSaved?{ok:true}:null)||(${D('.air-config-error')}.textContent?{error:${D('.air-config-error')}.textContent}:null)`);
     assert.ok(mixedResult && mixedResult.ok, `混池直接保存，不用先勾确认：${JSON.stringify(mixedResult)}`);
     assert.equal(await page.evaluate(`window.__mixedSaved.providerSelection.allowCrossTrust`), true);
-    // 自动挑选也有「子任务线路/模型」这一处高级块（和固定一条共用），设置随保存交回，
+    // 自动挑选也有「子 agent 线路/模型」这一节（和固定一条共用），设置随保存交回，
     // 也随预设落盘/回填：留空 = 跟随主线路。
     await page.evaluate(`window.MultiCCRunConfig.open({configuration:{cli:'codex-exp',provider:'codex-lab',providerSelection:{mode:'auto',cliSwitch:'failover',protocol:'openai_responses',candidates:[{cli:'codex-exp',providerId:'codex-lab',model:'gpt-5.5'},{cli:'codex-exp',providerId:'codex-backup',model:'gpt-5.6-sol'}]}}},['codex-exp'],value=>{window.__autoSubSaved=value})`);
     assert.ok(await page.waitFor(`${D('.rc-preset-open')}&&document.querySelectorAll('.air-config-dialog[open] .rc-row').length===2`));
-    assert.equal(await page.evaluate(`getComputedStyle(${D('.rc-advanced')}).display!=='none'`), true, '自动模式下子任务高级块可见');
+    assert.equal(await page.evaluate(`getComputedStyle(${D('.rc-sub')}).display!=='none'`), true, '自动模式下子任务高级块可见');
     await page.evaluate(`(()=>{const p=${D('.rc-sub-provider')};p.value='codex-lab';p.dispatchEvent(new Event('change'));const m=${D('.rc-sub-model')};m.value='__custom__';m.dispatchEvent(new Event('change'));${D('.rc-sub-model-custom')}.value='gpt-5.5';})()`);
     await page.evaluate(`${D('.rc-preset-open')}.click();${D('.rc-preset-name')}.value='带子任务';${D('.rc-preset-save')}.click()`);
     assert.ok(await page.waitFor(`JSON.parse(localStorage.getItem('multicc.autoProvider.presets.v1')||'[]').some(p=>p.name==='带子任务')`));
