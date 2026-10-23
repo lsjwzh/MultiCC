@@ -660,6 +660,21 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/remote_frame_decoder_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/remote_pointer_queue_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/remote_screen_gestures_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/remote_screen_h264_test.dart",
       "tier": "other",
       "lane": "flutter"

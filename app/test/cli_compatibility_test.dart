@@ -168,10 +168,11 @@ void main() {
       expect(SessionCli.qoder.effortFieldLabel, 'Reasoning Effort');
       expect(SessionCli.qoder.effortOptions, contains('xhigh'));
 
-      // Gemini / Grok ride the ACP lane like opencode and sign in with their own
-      // vendor account: no MultiCC pool, no effort knob, their own model list.
+      // Both ACP lanes have their own model lists and no effort knob. Grok
+      // also supports the MultiCC provider pool; Gemini owns its credentials.
+      expect(SessionCli.gemini.supportsProvider, isFalse);
+      expect(SessionCli.grok.supportsProvider, isTrue);
       for (final cli in [SessionCli.gemini, SessionCli.grok]) {
-        expect(cli.supportsProvider, isFalse);
         expect(cli.supportsSubagent, isFalse);
         expect(cli.supportsEffort, isFalse);
         expect(cli.effortOptions, isEmpty);
@@ -183,7 +184,7 @@ void main() {
       expect(SessionCli.grok.displayName, 'Grok');
       expect(SessionCli.grok.name, 'grok');
       expect(kGeminiModelOptions.map((e) => e.key), contains('gemini-2.5-pro'));
-      expect(kGrokModelOptions.map((e) => e.key), contains('grok-4'));
+      expect(kGrokModelOptions.map((e) => e.key), containsAll(['grok-4.6', 'grok-4.5']));
       expect(modelShortNameForCli(SessionCli.gemini, 'gemini-2.5-flash'),
         'gemini-2.5-flash');
       expect(modelShortNameForCli(SessionCli.grok, ''), '默认（跟随 Grok 配置）');
@@ -419,8 +420,8 @@ void main() {
   testWidgets(
     '固定一条：chat 能跑的车道才在表里，缺的车道灰着不能点',
     (tester) async {
-      // 表里画的是能跑 chat 的衍生车道（服务端 `kinds` 那一列）加上会话自己现在
-      // 这条；cliAvailability 里没有的车道一律当不可用，除非它就是当前车道。
+      // The selector offers one modern chat lane per product. A legacy
+      // session remains selected through its product family.
       // 从枚举推这张表，「正好一行灰着」在新增 CLI 之后也还成立；手写子集会把
       // 漏掉的 CLI 全标成不可用。
       final availability = <SessionCli, bool>{
@@ -440,15 +441,22 @@ void main() {
         ),
       );
 
-      // 一次性车道（`claude -p` / `codex exec`）退出 chat：codex 不是当前车道，
-      // 就不该出现在这张表里；claude 是当前车道，所以留着 —— 跑在旧线路上的
-      // 会话要能找到自己在哪。
+      // Legacy one-shot lanes stay hidden even for an existing session;
+      // its modern Claude card shows the selection without changing the ID.
       expect(find.byKey(const Key('run-cli-option-codex')), findsNothing);
-      expect(find.byKey(const Key('run-cli-option-claude')), findsOneWidget);
+      expect(find.byKey(const Key('run-cli-option-claude')), findsNothing);
+      final claudeCard = find.byKey(const Key('run-cli-option-claude-exp'));
+      expect(claudeCard, findsOneWidget);
+      final claudeRadio = tester.widget<Radio<SessionCli>>(
+        find.descendant(of: claudeCard, matching: find.byType(Radio<SessionCli>)),
+      );
+      expect(claudeRadio.value, SessionCli.claudeExp);
+      expect(claudeRadio.groupValue, SessionCli.claudeExp);
       expect(find.byKey(const Key('run-cli-option-codex-exp')), findsOneWidget);
 
       // 用不了的车道默认折在「未安装的 N 个」底下，先点开。
       expect(find.byKey(const Key('run-cli-option-zcode')), findsNothing);
+      await tester.ensureVisible(find.byKey(const Key('run-cli-unavailable-toggle')));
       await tester.tap(find.byKey(const Key('run-cli-unavailable-toggle')));
       await tester.pumpAndSettle();
 
