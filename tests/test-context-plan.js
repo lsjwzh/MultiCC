@@ -102,7 +102,7 @@ test('strict budget includes metadata, clips text honestly, never slices atomic 
   }
 });
 
-test('explicit imports inject once, remain available for authorized expansion, and cannot expose unrelated project', async t => {
+test('explicit imports inject once and history reads do not create extra links or imports', async t => {
   const f = fixture(t), a = await delivery(f, 'parent');
   f.histories.set(a.sessionId, [{ id: 'u', role: 'user', taskId: a.taskId, content: 'requirement' },
     { id: 'a', role: 'assistant', taskId: a.taskId, content: 'verified imported history' }]);
@@ -117,8 +117,90 @@ test('explicit imports inject once, remain available for authorized expansion, a
   assert.equal(page.page.messages.length, 2);
   assert.equal(f.store.get('link', `${f.a.id}:${a.taskId}`), null);
   f.store.set('task', 'foreign', { id: 'foreign', dirId: 'd2', sessionId: 'other' });
-  assert.throws(() => f.runtime.refillContext(child.sessionId, { task_id: 'foreign' }), { code: 'project_mismatch' });
+  f.histories.set('other', [{ id: 'foreign-a', role: 'assistant', taskId: 'foreign', content: 'other project evidence' }]);
+  const foreign = f.runtime.refillContext(child.sessionId, { task_id: 'foreign' });
+  assert.equal(foreign.page.messages[0].content, 'other project evidence');
+  assert.equal(f.store.get('link', `${f.a.id}:foreign`), null);
   assert.deepEqual(f.store.get('task', child.taskId).snapshotIds, task.snapshotIds);
+});
+
+test('explicit reads reach unrelated projects and tasks while default context stays in the shell', async t => {
+  const f = fixture(t), current = await delivery(f, 'current task');
+  f.store.set('task', 'same-project', { id: 'same-project', dirId: 'd1', sessionId: 'b', title: 'Same project' });
+  f.store.set('task', 'foreign', { id: 'foreign', dirId: 'd2', sessionId: 'other', title: 'Other project' });
+  f.histories.set('b', [{ id: 'same-a', role: 'assistant', taskId: 'same-project', content: 'unrelated same project' }]);
+  f.histories.set('other', [
+    { id: 'foreign-a', role: 'assistant', taskId: 'foreign', content: 'unrelated other project' },
+    { id: 'another-a', role: 'assistant', taskId: 'different-task', content: 'different task in the same transcript' },
+  ]);
+  const before = { shell: f.store.get('shell', f.a.id), links: f.store.list('link'), tasks: f.store.list('task') };
+  const same = f.runtime.refillContext(current.sessionId, { task_id: 'same-project' });
+  assert.deepEqual(same.page.messages.map(m => m.id), ['same-a']);
+  const foreign = f.runtime.refillContext(current.sessionId, { task_id: 'foreign' });
+  assert.deepEqual(foreign.page.messages.map(m => m.id), ['foreign-a']);
+  assert.equal(foreign.page.messages[0].sourceSessionId, 'other');
+  assert.equal(foreign.page.messages[0].contextMessageId, 'other:foreign-a');
+  const defaults = f.runtime.refillContext(current.sessionId);
+  assert.doesNotMatch(defaults.context, /unrelated (same|other) project/);
+  const shellPage = f.runtime.refillContext(current.sessionId, { limit: 50 });
+  assert.ok(!shellPage.page.messages.some(m => ['b', 'other'].includes(m.sourceSessionId)));
+  assert.deepEqual(f.store.get('shell', f.a.id), before.shell);
+  assert.deepEqual(f.store.list('link'), before.links);
+  assert.deepEqual(f.store.list('task'), before.tasks);
+});
+
+test('explicit reads reject unknown and deleted tasks without borrowing another task history', async t => {
+  const f = fixture(t, { isDeletedTask: id => id === 'deleted' }), current = await delivery(f, 'current task');
+  f.store.set('task', 'deleted', { id: 'deleted', dirId: 'd2', sessionId: 'other' });
+  f.histories.set('other', [{ id: 'old', role: 'assistant', taskId: 'deleted', content: 'deleted task history' }]);
+  for (const task_id of ['unknown', 'deleted']) {
+    assert.throws(() => f.runtime.refillContext(current.sessionId, { task_id }), { code: 'task_not_found', status: 404 });
+  }
+});
+
+test('board task reads normalize bound legacy records and preserve pagination, status and source', async t => {
+  const boardTask = { id: 'board-only', dirId: 'd2', chatSessionId: 'other', historySessionIds: ['legacy', 'missing'] };
+  const f = fixture(t, {
+    getTask: id => id === boardTask.id ? boardTask : null,
+    getLiveState: id => ({ isStreaming: id === 'other' }),
+  }), current = await delivery(f, 'current task');
+  f.records.set('other', { ...f.records.get('other'), taskBoundTaskId: boardTask.id });
+  f.records.set('legacy', { id: 'legacy', dirId: 'd2', taskBoundTaskId: boardTask.id });
+  f.histories.set('legacy', [
+    { id: 'old-a', role: 'assistant', content: 'legacy bound answer', ts: 1, cancelled: true },
+    { id: 'unrelated-a', role: 'assistant', taskId: 'another-task', content: 'do not relabel explicit ownership', ts: 2 },
+  ]);
+  const long = 'long evidence '.repeat(2500) + '\ud800'; // preserve legacy malformed UTF-16 too
+  f.histories.set('other', [
+    { id: 'live-u', role: 'user', content: 'live request', ts: 3 },
+    { id: 'live-a', role: 'assistant', content: long, ts: 4, partial: true, error: true },
+  ]);
+  const latest = f.runtime.refillContext(current.sessionId, { task_id: boardTask.id, limit: 1 }).page;
+  assert.equal(latest.messages[0].id, 'live-a');
+  assert.equal(latest.messages[0].taskId, boardTask.id);
+  assert.equal(latest.messages[0].sourceSessionId, 'other');
+  assert.equal(latest.messages[0].sourceMessageId, 'live-a');
+  assert.equal(latest.messages[0].contextMessageId, 'other:live-a');
+  assert.equal(latest.messages[0].partial, true);
+  assert.equal(latest.messages[0].error, true);
+  assert.equal(latest.messages[0].inProgress, true);
+  assert.equal(latest.hasMore, true);
+  const older = f.runtime.refillContext(current.sessionId, { task_id: boardTask.id, before: latest.before, limit: 5 }).page;
+  assert.deepEqual(older.messages.map(m => m.id), ['old-a', 'live-u']);
+  assert.equal(older.messages[0].cancelled, true);
+  assert.equal(older.messages[1].inProgress, true);
+  let offset = 0, restored = '';
+  do {
+    const chunk = f.runtime.refillContext(current.sessionId, { task_id: boardTask.id, message_id: 'other:live-a', offset }).page;
+    assert.equal(chunk.found, true);
+    assert.equal(chunk.message.partial, true);
+    restored += chunk.message.evidenceExcerpt;
+    offset = chunk.message.nextOffset;
+  } while (offset !== null);
+  assert.equal(JSON.parse(restored).content, long);
+  assert.equal(f.runtime.refillContext(current.sessionId, {
+    task_id: boardTask.id, message_id: 'legacy:unrelated-a',
+  }).page.found, false);
 });
 
 test('managed execution helper prepares at actual turn, commits only successful finalization and refreshes a cold retry', async t => {
@@ -140,7 +222,7 @@ test('managed execution helper prepares at actual turn, commits only successful 
   assert.match(retry.bareText, /本轮托管上下文/);
 });
 
-test('separation expands only the imported exchange, with no full archive grant or extra links', async t => {
+test('separation injects only the imported exchange but explicit reads reach the source archive', async t => {
   const { handoffSnapshot } = require('../src/task-shell/history-context');
   const f = fixture(t), source = await delivery(f, 'source');
   f.histories.set(source.sessionId, [
@@ -159,10 +241,13 @@ test('separation expands only the imported exchange, with no full archive grant 
   const context = prepare(f, child, null, { isFirstTurn: true });
   assert.match(context.text, /new partial evidence/); assert.doesNotMatch(context.text, /PRIVATE/); commit(f, child);
   const expanded = f.runtime.refillContext(child.sessionId, { receiptId: child.receiptId, task_id: source.taskId });
-  assert.deepEqual(expanded.page.messages.map(m => m.id), ['u-new', 'a-new']);
-  assert.equal(expanded.page.messages[1].partial, true);
-  const denied = f.runtime.refillContext(child.sessionId, { task_id: source.taskId, message_id: `${source.sessionId}:a-old` });
-  assert.equal(denied.page.found, false);
+  assert.deepEqual(expanded.page.messages.map(m => m.id), ['u-old', 'a-old', 'u-new', 'a-new']);
+  assert.equal(expanded.page.messages[3].partial, true);
+  const original = f.runtime.refillContext(child.sessionId, { task_id: source.taskId, message_id: `${source.sessionId}:a-old` });
+  assert.equal(original.page.found, true);
+  assert.equal(JSON.parse(original.page.message.evidenceExcerpt).content, 'PRIVATE old answer');
+  assert.equal(f.store.get('link', `${f.a.id}:${source.taskId}`), null);
+  assert.deepEqual(f.store.get('task', child.taskId).snapshotIds, [snapshot.hash]);
   assert.equal(f.runtime.view(f.a.id).currentTaskId, child.taskId);
 });
 

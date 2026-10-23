@@ -117,6 +117,8 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   const contextTool = listed.result.tools.find(tool => tool.name === 'get_task_context');
   assert.deepEqual(Object.keys(contextTool.inputSchema.properties), ['task_id', 'before', 'message_id', 'offset', 'limit']);
   assert.equal(contextTool.annotations.readOnlyHint, true);
+  assert.match(contextTool.description, /across projects without a relationship requirement/);
+  assert.match(contextTool.inputSchema.properties.task_id.description, /another project or an unrelated task/);
   const questionTool = listed.result.tools.find(tool => tool.name === 'wait_for_user_answer');
   assert.deepEqual(questionTool.inputSchema.required, ['question']);
   assert.equal(questionTool.inputSchema.properties.options.maxItems, 12);

@@ -5,6 +5,7 @@ use std::{sync::Arc, time::Instant};
 pub mod cpr;
 pub mod sqlite;
 pub mod publication;
+pub mod task_context;
 
 #[napi(object)]
 pub struct NativeResult {

@@ -222,12 +222,12 @@ test('runtime-style degradation: absent or throwing port yields empty context', 
   assert.equal(contextOf(null).text, '');
 });;
 
-test('query ranks matching neighbors, deduplicates relations, and excludes failed conclusions and foreign projects', () => {
+test('query ranks matching neighbors, deduplicates relations, and retains foreign projects without failed conclusions', () => {
   const ports = basePorts({
     tasks: {
       tsk_a: { id: 'tsk_a', dirId: 'd1', title: '园艺' },
       tsk_b: { id: 'tsk_b', dirId: 'd1', title: '数据库优化', snapshotIds: ['bad'] },
-      tsk_foreign: { id: 'tsk_foreign', dirId: 'd2', title: 'SECRET' },
+      tsk_foreign: { id: 'tsk_foreign', dirId: 'd2', title: 'External reference' },
     },
     groups: { tsk_self: { taskIds: ['tsk_self', 'tsk_a', 'tsk_b', 'tsk_foreign'] } },
     links: { tsk_self: ['tsk_b', 'tsk_foreign'] },
@@ -236,6 +236,11 @@ test('query ranks matching neighbors, deduplicates relations, and excludes faile
   const detail = buildTaskGraphContextDetail(ports, { taskId: 'tsk_self', query: '数据库' });
   assert.equal(detail.sources[0].taskId, 'tsk_b');
   assert.equal(detail.sources.filter(s => s.taskId === 'tsk_b').length, 1);
-  assert.doesNotMatch(detail.text, /SECRET|FAILED/);
+  assert.match(detail.text, /External reference/);
+  assert.doesNotMatch(detail.text, /FAILED/);
+  const local = detail.candidates.find(s => s.taskId === 'tsk_a');
+  const foreign = detail.candidates.find(s => s.taskId === 'tsk_foreign');
+  assert.equal(local.priority, foreign.priority + 100, 'same-project affinity is a soft ranking bonus');
+  assert.equal(detail.sources.filter(s => s.taskId === 'tsk_foreign').length, 1);
   assert.equal(lastAssistantText({ messages: [{ role: 'assistant', partial: true, content: 'partial' }] }), '');
 });

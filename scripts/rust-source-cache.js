@@ -60,7 +60,9 @@ function probeAddon(file, node = process.execPath) {
     const db=new a.RustDatabase(':memory:',false,false,5000);
     db.exec('CREATE TABLE smoke(x); CREATE VIRTUAL TABLE f USING fts5(x)');db.close();
     if(typeof a.validatePublicationText!=='function' || typeof a.quickCommitMessage!=='function'
-      || typeof a.gitCommitEnvironment!=='function' || typeof a.validatePublicationRecords!=='function') process.exit(1);`;
+      || typeof a.gitCommitEnvironment!=='function' || typeof a.validatePublicationRecords!=='function'
+      || typeof a.planTaskContextRead!=='function' || typeof a.selectTaskContextRecords!=='function'
+      || typeof a.rankTaskContextCandidates!=='function') process.exit(1);`;
   const result = spawnSync(node, ['-e', script, path.resolve(file)], { stdio: 'ignore', timeout: 15_000 });
   return result.status === 0;
 }
