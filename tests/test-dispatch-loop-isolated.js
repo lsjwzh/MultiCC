@@ -6,7 +6,7 @@
 // in the slave prompt) through the process-scoped Router MCP.
 
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
@@ -26,6 +26,12 @@ const project = path.join(testRoot, 'project');
 const fakeCli = path.join(testRoot, 'fake-cli.js');
 const homeRoot = path.join(testRoot, 'home');
 fs.mkdirSync(homeRoot, { recursive: true });
+// HOME is isolated below, so the runner's global identity is not visible here.
+const gitConfig = path.join(homeRoot, '.gitconfig');
+const commitPolicy = require('../commit-policy.json');
+for (const field of ['name', 'email']) {
+  execFileSync('git', ['config', '--file', gitConfig, `user.${field}`, commitPolicy[field]]);
+}
 const slaveLog = path.join(testRoot, 'slave-prompts.jsonl');
 const invocationLog = path.join(testRoot, 'cli-invocations.jsonl');
 fs.mkdirSync(dataRoot, { recursive: true });
@@ -217,6 +223,8 @@ function sendWsMessage(port, sessionId, text) {
       MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100',
       // The codex rollout guard walks $HOME/.codex; keep it inside the test root.
       HOME: path.join(testRoot, 'home'),
+      GIT_CONFIG_GLOBAL: gitConfig,
+      GIT_CONFIG_SYSTEM: os.devNull,
       CLAUDE_CMD: fakeCli,
       CODEX_CMD: fakeCli,
       OPENCODE_CMD: path.join(testRoot, 'missing-opencode'),
