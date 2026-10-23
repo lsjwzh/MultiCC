@@ -188,3 +188,15 @@ services/openrouter-usage/
 # Rust 产物由构建脚本写到外部目录，源码与锁文件保留在仓库。
 /native/target/
 /native/prebuilt/
+
+# plugins/ 只跟踪内置项：插件是「复制进来即安装」的目录，本机自己装的插件属于
+# 本地数据，默认忽略 —— 不忽略会让主检出一直显示「有未提交文件」，挡住会话合并。
+# 白名单必须留在文件末尾：上面的 bridges/（IM 运行时数据）等规则会顺带命中
+# plugins/bridges/，最后一条匹配才算数。新增内置插件时在这里放行一行。
+/plugins/*
+!/plugins/README.md
+!/plugins/bridges/
+!/plugins/chrome-proxy-launcher/
+!/plugins/cron/
+!/plugins/utils/
+!/plugins/voice/
