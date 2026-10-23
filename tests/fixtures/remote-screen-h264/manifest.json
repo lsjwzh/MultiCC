@@ -1,0 +1,319 @@
+{
+  "description": "Agent-to-server h264.sock bytes for a 1470x956 quadrant scene, encoded by the real VideoToolbox code (H264Screen.makeSession + emit): scene A frames 0-5 (red/green/blue/white), scene B frames 6-11 (top-left turns yellow). Each frame entry spans one complete [type u8][len u32 BE][payload] message.",
+  "generator": "scripts/generate-remote-screen-h264-fixture.js",
+  "encoder": "scripts/macos-agent/MultiCCAgentH264.swift H264Screen.makeSession + emit (verbatim)",
+  "consumers": [
+    "tests/test-remote-screen-h264-fixture.js",
+    "tests/helpers/remote-screen-e2e-harness.js",
+    "app/test/remote_screen_e2e_test.dart",
+    "app/integration_test/h264_decoder_test.dart"
+  ],
+  "width": 1470,
+  "height": 956,
+  "codec": "avc1.640C28",
+  "split": {
+    "x": 735,
+    "y": 478
+  },
+  "frames": [
+    {
+      "index": 0,
+      "type": 1,
+      "offset": 0,
+      "length": 54,
+      "sha256": "217c634934bd8ebfadfc543d50fdd90a1ba30bed4a20e268b8570169cbc090a3",
+      "pts": null,
+      "scene": null
+    },
+    {
+      "index": 1,
+      "type": 2,
+      "offset": 54,
+      "length": 429,
+      "sha256": "ff30250e9af86a8affb728ef8174aa3036e15a11d00501847bd4af7818f192bc",
+      "pts": 0,
+      "scene": "A"
+    },
+    {
+      "index": 2,
+      "type": 3,
+      "offset": 483,
+      "length": 500,
+      "sha256": "78b30663bb94a0cd9ba20131109ba791fc5434904632631faaf82d0e8237ed38",
+      "pts": 33333,
+      "scene": "A"
+    },
+    {
+      "index": 3,
+      "type": 3,
+      "offset": 983,
+      "length": 257,
+      "sha256": "c5880f36ccc1734be51616d8e21d8c74b1c81c22d9b3c77c33fac4d60d3a75c6",
+      "pts": 66666,
+      "scene": "A"
+    },
+    {
+      "index": 4,
+      "type": 3,
+      "offset": 1240,
+      "length": 154,
+      "sha256": "be450bd9a1c8e1b2515d2ad557de7e14da985cb8e16a0bea5db77b6dfa70c20d",
+      "pts": 99999,
+      "scene": "A"
+    },
+    {
+      "index": 5,
+      "type": 3,
+      "offset": 1394,
+      "length": 98,
+      "sha256": "4d65adb9281422740e35bde24122ce73cfa041ab921b2de2069e3efdab96f5a8",
+      "pts": 133332,
+      "scene": "A"
+    },
+    {
+      "index": 6,
+      "type": 3,
+      "offset": 1492,
+      "length": 93,
+      "sha256": "621ea95f952a2ff48d7d22c6b921ad90f605766fc351cb9f0e7e9104eaeb42b1",
+      "pts": 166665,
+      "scene": "A"
+    },
+    {
+      "index": 7,
+      "type": 3,
+      "offset": 1585,
+      "length": 294,
+      "sha256": "66a69b0e839d1b5c53c20addceb8837456b5795eb68d5fc23fe939bceddae306",
+      "pts": 199998,
+      "scene": "B"
+    },
+    {
+      "index": 8,
+      "type": 3,
+      "offset": 1879,
+      "length": 138,
+      "sha256": "7a4db84cfcb975ee2d7c2f69a0216212a6b970dd56461e9ef99c55a73afc68d1",
+      "pts": 233331,
+      "scene": "B"
+    },
+    {
+      "index": 9,
+      "type": 3,
+      "offset": 2017,
+      "length": 91,
+      "sha256": "4ee7d5053b0f70463b04932563d765cff20ea52d7c6fe0716df200053620054b",
+      "pts": 266664,
+      "scene": "B"
+    },
+    {
+      "index": 10,
+      "type": 3,
+      "offset": 2108,
+      "length": 91,
+      "sha256": "5e4ba11167ce7f0c7673861a15811aeaec6a03f39b7775fd52bdbb411436f7aa",
+      "pts": 299997,
+      "scene": "B"
+    },
+    {
+      "index": 11,
+      "type": 3,
+      "offset": 2199,
+      "length": 91,
+      "sha256": "2cb5948eb41e0136c1c71e0e8fb5cef175158c2346f3954b27c6ae5024f0bf60",
+      "pts": 333330,
+      "scene": "B"
+    },
+    {
+      "index": 12,
+      "type": 3,
+      "offset": 2290,
+      "length": 91,
+      "sha256": "ffe5479a8002c16faa30a0fd09db9d0ebb87f9eec48b87cf8ff9ae40af7129f5",
+      "pts": 366663,
+      "scene": "B"
+    }
+  ],
+  "probes": {
+    "A": [
+      {
+        "name": "top-left",
+        "x": 0.25,
+        "y": 0.25,
+        "rgb": [
+          255,
+          0,
+          0
+        ],
+        "tol": 48
+      },
+      {
+        "name": "top-right",
+        "x": 0.75,
+        "y": 0.25,
+        "rgb": [
+          0,
+          255,
+          0
+        ],
+        "tol": 48
+      },
+      {
+        "name": "bottom-left",
+        "x": 0.25,
+        "y": 0.75,
+        "rgb": [
+          0,
+          0,
+          255
+        ],
+        "tol": 48
+      },
+      {
+        "name": "bottom-right",
+        "x": 0.75,
+        "y": 0.75,
+        "rgb": [
+          255,
+          255,
+          255
+        ],
+        "tol": 48
+      },
+      {
+        "name": "corner-top-left",
+        "x": 0.03,
+        "y": 0.03,
+        "rgb": [
+          255,
+          0,
+          0
+        ],
+        "tol": 48
+      },
+      {
+        "name": "corner-top-right",
+        "x": 0.97,
+        "y": 0.03,
+        "rgb": [
+          0,
+          255,
+          0
+        ],
+        "tol": 48
+      },
+      {
+        "name": "corner-bottom-left",
+        "x": 0.03,
+        "y": 0.97,
+        "rgb": [
+          0,
+          0,
+          255
+        ],
+        "tol": 48
+      },
+      {
+        "name": "corner-bottom-right",
+        "x": 0.97,
+        "y": 0.97,
+        "rgb": [
+          255,
+          255,
+          255
+        ],
+        "tol": 48
+      }
+    ],
+    "B": [
+      {
+        "name": "top-left",
+        "x": 0.25,
+        "y": 0.25,
+        "rgb": [
+          255,
+          255,
+          0
+        ],
+        "tol": 48
+      },
+      {
+        "name": "top-right",
+        "x": 0.75,
+        "y": 0.25,
+        "rgb": [
+          0,
+          255,
+          0
+        ],
+        "tol": 48
+      },
+      {
+        "name": "bottom-left",
+        "x": 0.25,
+        "y": 0.75,
+        "rgb": [
+          0,
+          0,
+          255
+        ],
+        "tol": 48
+      },
+      {
+        "name": "bottom-right",
+        "x": 0.75,
+        "y": 0.75,
+        "rgb": [
+          255,
+          255,
+          255
+        ],
+        "tol": 48
+      },
+      {
+        "name": "corner-top-left",
+        "x": 0.03,
+        "y": 0.03,
+        "rgb": [
+          255,
+          255,
+          0
+        ],
+        "tol": 48
+      },
+      {
+        "name": "corner-top-right",
+        "x": 0.97,
+        "y": 0.03,
+        "rgb": [
+          0,
+          255,
+          0
+        ],
+        "tol": 48
+      },
+      {
+        "name": "corner-bottom-left",
+        "x": 0.03,
+        "y": 0.97,
+        "rgb": [
+          0,
+          0,
+          255
+        ],
+        "tol": 48
+      },
+      {
+        "name": "corner-bottom-right",
+        "x": 0.97,
+        "y": 0.97,
+        "rgb": [
+          255,
+          255,
+          255
+        ],
+        "tol": 48
+      }
+    ]
+  }
+}

@@ -670,6 +670,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/remote_screen_e2e_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/remote_screen_gestures_test.dart",
       "tier": "flow",
       "lane": "flutter"
@@ -4375,12 +4380,30 @@
       ]
     },
     {
+      "path": "tests/test-remote-screen-e2e-harness.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-remote-screen-h264-cdp.js",
       "tier": "flow",
       "lane": "cdp",
       "owner": "npm:test:cdp",
       "entrypoints": [
         "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-remote-screen-h264-fixture.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
       ]
     },
     {
