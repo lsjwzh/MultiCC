@@ -25,11 +25,12 @@ test('真实 HTTP/WS：1277 张卡、20 客户端、重连补齐、健康检查�
     else ws.on('message', data => ws.send(data)); // 内部消息心跳探针，与摘要使用同一事件循环。
   }));
   await new Promise(r => server.listen(0, '127.0.0.1', r));
-  t.after(async () => { runtime.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); for (const s of sockets) s.destroy(); await new Promise(r => server.close(r)); });
+  t.after(async () => { await runtime.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); for (const s of sockets) s.destroy(); await new Promise(r => server.close(r)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   async function get(path) { const start = performance.now(); const r = await fetch(base + path); const body = await r.text();
     assert.equal(r.status, 200, body); requests.push({ path, ms: performance.now() - start, bytes: Buffer.byteLength(body) }); return JSON.parse(body); }
   const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable(); t.after(() => loop.disable());
+  assert.equal(runtime.index.backend, 'rust');
   const bootstrap = await get('/api/air/sync'); assert.equal(bootstrap.taskStats.all.total, 1277);
   assert.ok(bootstrap.tasks.length <= 30); assert.equal(reads, 1277);
   const clients = await Promise.all(Array.from({ length: 20 }, async () => {

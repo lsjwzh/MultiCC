@@ -90,7 +90,16 @@ function probeAddon(file, node = process.execPath) {
     if(typeof a.validatePublicationText!=='function' || typeof a.quickCommitMessage!=='function'
       || typeof a.gitCommitEnvironment!=='function' || typeof a.validatePublicationRecords!=='function'
       || typeof a.planTaskContextRead!=='function' || typeof a.selectTaskContextRecords!=='function'
-      || typeof a.rankTaskContextCandidates!=='function') process.exit(1);`;
+      || typeof a.rankTaskContextCandidates!=='function' || typeof a.RustTaskReadModel!=='function' || a.taskReadModelProtocolVersion?.()!==1) process.exit(1);
+    (async()=>{ const model=new a.RustTaskReadModel();
+      const run=async command=>JSON.parse((await model.run(JSON.stringify({op:'air',command}))).result);
+      await run({op:'open',epoch:'preflight'});
+      const published=await run({op:'publish',snapshot:{tasks:[]},dayStarts:[0]});
+      if(!published.ready || !Array.isArray(published.stats)) throw Error('air_protocol_mismatch');
+      const encoded=await run({op:'serialized'});
+      if(typeof encoded.etag!=='string' || JSON.parse(encoded.body).tasks.length!==0) throw Error('air_protocol_mismatch');
+      await model.run('{"op":"close"}');
+    })().catch(()=>process.exit(1));`;
   const result = spawnSync(node, ['-e', script, path.resolve(file)], { stdio: 'ignore', timeout: 15_000 });
   return result.status === 0;
 }

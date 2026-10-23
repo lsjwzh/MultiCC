@@ -136,6 +136,8 @@ multicc/
 
 Database connections, SQL execution, statement caching and transactions use the Rust module through `src/sqlite/driver.js`. Packaged installations must include the matching native module. Existing synchronous business callbacks remain behind a compatibility bridge; `MULTICC_SQLITE_BACKEND=node` is an explicit emergency rollback. See [migration scope, validation and measurements](rust-sqlite-migration-2026-10-22.md).
 
+The [Air summary read model](rust-air-read-model-2026-10-24.md) defaults to Rust for paging, statistics, bootstrap, replay and serialized snapshots/ETags. Async HTTP/WS calls share a bounded handoff barrier so commits cannot fall between replay and live subscription. Host visibility, permission and runtime authorities still supply cards through migration ports; only explicit `MULTICC_AIR_READ_BACKEND=node` selects the legacy index. The [direct SQLite read pilot](rust-task-read-model-pilot-2026-10-24.md) and [hot-path comparison](rust-task-read-model-hot-air-2026-10-24.md) remain experiment records; their cold-read timings are not production Air latency claims.
+
 ## How a message flows
 
 **Terminal mode:**

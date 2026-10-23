@@ -10,3 +10,6 @@ serde_json = { version = "1", features = ["raw_value"] }
 chrono = "0.4"
 chrono-tz = "0.10"
 rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }
+ryu-js = "1"
+sha1 = "0.10"
+base64 = "0.22"

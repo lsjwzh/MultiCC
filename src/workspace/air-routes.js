@@ -546,7 +546,7 @@ function mountAirRoutes(app, deps) {
       const timing = createPhaseTimer();
       const snapshot = await airSnapshot(timing, { ids, cooperative: true });
       reportPhases(timing, deps.logger); return snapshot;
-    }, subscribe: deps.subscribe, logger: deps.logger, send: deps.send,
+    }, index: deps.airReadIndex, subscribe: deps.subscribe, logger: deps.logger, send: deps.send,
     // 会话记录在广播 session_created 之前就写好了 taskBoundTaskId（create-record），
     // 先走它：新任务的首轮事件不会再因为板册尚未回填 linkage 而解析成空集合。
     taskIdsForSession: id => {
@@ -563,7 +563,7 @@ function mountAirRoutes(app, deps) {
     airBuildsInFlight += 1;
     try {
       if (liveSync) await liveSync.ensureReady();
-      return conditionalBody(req, res, liveSync ? null : await airSnapshot(timing), timing, liveSync?.index.serialized());
+      return conditionalBody(req, res, liveSync ? null : await airSnapshot(timing), timing, liveSync ? await liveSync.serialized() : undefined);
     } finally {
       airBuildsInFlight -= 1;
       timing.set('inFlight', airBuildsInFlight);
