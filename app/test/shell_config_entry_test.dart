@@ -107,6 +107,8 @@ void main() {
     (tester) async {
       SharedPreferences.setMockInitialValues({
         'multicc_host': 'http://127.0.0.1:1',
+        // 这些用例看的是打开/保存链路，引导卡片（会顺手滚到子 agent）不该掺进来。
+        runConfigSubagentGuideKey: true,
       });
       final settings = await SettingsService.getInstance();
       final manager = HiddenExecutionManager(settings);
@@ -148,6 +150,8 @@ void main() {
     (tester) async {
       SharedPreferences.setMockInitialValues({
         'multicc_host': 'http://127.0.0.1:1',
+        // 这些用例看的是打开/保存链路，引导卡片（会顺手滚到子 agent）不该掺进来。
+        runConfigSubagentGuideKey: true,
       });
       final settings = await SettingsService.getInstance();
       final manager = SlowExecutionManager(settings);
@@ -207,7 +211,10 @@ void main() {
     final manager = FlakySaveManager(settings);
     final providerRequests = <String>[];
     final client = MockClient((request) async {
-      providerRequests.add(request.url.query);
+      // 面板还会顺手取一次子 agent 家族默认，不要把那条算进 Provider 池的账里。
+      if (request.url.path == '/api/providers') {
+        providerRequests.add(request.url.query);
+      }
       return http.Response('{"providers":[]}', 200);
     });
     try {

@@ -83,6 +83,18 @@ MULTICC_LIVE_SESSION=<session-id> npm run test:subagent-live
 
 该测试会产生真实模型调用和一条 session 历史记录，不应放入默认 `npm test`。
 
+## 同 CLI 默认与一键同步
+
+运行配置对话框里的「子 agent」区块可以勾选「同步到全部 {CLI} 任务，之后新建的也默认用这套」：
+
+- `POST /api/subagent-defaults/sync` 把同一条子 agent 线路逐个写进同一 CLI 家族
+  （`claude` 与 `claude-exp` 一族，`codex` 与 `codex-exp` 一族）的全部对话任务。每个任务
+  走的仍是单任务 PATCH 那一条路径：正在跑的任务下一轮生效，系统会话、终端和登录会话不动。
+- 同一次操作把它记成该家族的默认值（`provider-defaults.json` 的 `subagent` 键）。新建
+  对话任务时请求里没写 `subagent` 就套用默认；明确写 `null` 表示这个任务不要子 agent
+  覆盖。默认值失效（线路被删、Codex 任务没选主线路）时按「随主」创建，不会让建任务失败。
+- 选「随主」再同步 = 清掉同家族所有任务的子 agent 覆盖，并清掉默认值。
+
 ## 边界
 
 - 子 provider 必须支持 Anthropic Messages 协议；不能直接选择 OpenAI Responses

@@ -85,7 +85,14 @@ test('catalog grouping, lookup and model options are deterministic', () => {
       dbPath: '/private/home/.cc-switch/cc-switch.db',
       message: '',
     },
-    defaults: { claude: 'c1', codex: 'x1', secret: 'drop' },
+    defaults: {
+      claude: 'c1', codex: 'x1', secret: 'drop',
+      subagent: {
+        claude: { providerId: 'c1', model: 'sonnet' },
+        codex: { providerId: 'x1', model: 'gpt-5' },
+        secret: { providerId: 'nope' },
+      },
+    },
     providers: [
       { id: 'x1', appType: 'codex', name: 'Codex', model: 'gpt-a', models: ['gpt-b'] },
       { id: 'c1', appType: 'claude', name: 'Claude', modelOptions: ['sonnet', 'opus'] },
@@ -119,7 +126,10 @@ test('catalog grouping, lookup and model options are deterministic', () => {
   assert.equal(catalog.findProvider(normalized, 'claude', 'c1').name, 'Claude');
   assert.equal(catalog.findProvider(normalized, 'codex', 'c1'), null);
   assert.deepEqual(catalog.modelsFor(catalog.findProvider(normalized, 'codex', 'x1')), ['gpt-a', 'gpt-b']);
-  assert.deepEqual(normalized.defaults, { claude: 'c1', codex: 'x1' });
+  assert.deepEqual(normalized.defaults, {
+    claude: 'c1', codex: 'x1',
+    subagent: { claude: { providerId: 'c1', model: 'sonnet' }, codex: { providerId: 'x1', model: 'gpt-5' } },
+  });
   assert.equal(normalized.ccSwitchStatus.dbPath, undefined);
   assert.equal(normalized.authToken, undefined);
   assert.equal(normalized.stats[0].today.inputTokens, 10);
@@ -128,6 +138,26 @@ test('catalog grouping, lookup and model options are deterministic', () => {
   assert.equal(catalog.formatUsageWindow(normalized.stats[0].today), '新:2/缓读:8/缓写:0/出:2');
   assert.equal(catalog.formatUsageCumulative(normalized.stats[0]), '新 2 / 缓读 6 / 缓写 0 / 未分 2');
   assert.equal(catalog.formatUsageWindow({ inputTokens: 1200, outputTokens: 4 }), '入(含缓存):1.2K/出:4');
+});
+
+test('normalizeDefaults carries sanitized sub-agent defaults per family', () => {
+  // 缺省整段 = 两个家族都没有默认；不是「undefined」，界面靠 null 说「随主线路」。
+  assert.deepEqual(catalog.normalizeDefaults(undefined), { claude: null, codex: null, subagent: { claude: null, codex: null } });
+  // 畸形条目（缺一半、非对象、超长）整条丢掉，不让半条线路流进对话框。
+  const defaults = catalog.normalizeDefaults({
+    subagent: {
+      claude: { providerId: '  relay  ', model: 'sonnet', extra: 'drop' },
+      codex: { providerId: 'x1' },
+      secret: { providerId: 's', model: 'm' },
+    },
+  });
+  assert.deepEqual(defaults.subagent, { claude: { providerId: 'relay', model: 'sonnet' }, codex: null });
+  assert.equal(defaults.subagent.secret, undefined);
+  assert.deepEqual(catalog.normalizeDefaults({ subagent: { claude: 'relay', codex: { providerId: 'x', model: '' } } }).subagent,
+    { claude: null, codex: null });
+  const long = catalog.normalizeDefaults({ subagent: { claude: { providerId: 'p'.repeat(400), model: 'm'.repeat(400) } } });
+  assert.equal(long.subagent.claude.providerId.length, 180);
+  assert.equal(long.subagent.claude.model.length, 100);
 });
 
 test('provider-in-use references become bounded display data', () => {

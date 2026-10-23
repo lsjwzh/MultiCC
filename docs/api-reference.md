@@ -48,6 +48,8 @@
 | `PATCH` | `/api/providers/:appType/:id` | Update provider metadata or settings |
 | `DELETE` | `/api/providers/:appType/:id` | Delete a local provider and clear matching defaults |
 | `GET` / `PUT` | `/api/provider-defaults` | Read / set default provider per CLI |
+| `GET` | `/api/subagent-defaults` | Read the sub-agent default per CLI family (`{ claude, codex }`, each `{ providerId, model }` or `null`) |
+| `POST` | `/api/subagent-defaults/sync` | Apply one sub-agent route to every chat task of the same CLI family and make it the default for new tasks (`{ cli, subagent, dryRun? }`; `subagent: null` clears both). Busy tasks pick it up on their next turn |
 
 ## Orchestration
 

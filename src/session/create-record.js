@@ -6,7 +6,7 @@ function createSessionRecordFactory(deps) {
   // not reach into src/cli for the lane table (tests/test-architecture-boundaries.js).
   if (typeof deps?.isResidentSession !== 'function') throw new TypeError('[session/create-record] isResidentSession port is required');
   const { isResidentSession, sharedWorkspace, SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow, loginWorkspacePath = () => null } = deps;
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, subagent = null, cliAccounts = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null, autoCommit = true, workspaceOwnerSessionId = null, workspaceBaseCommit = null, validateOnly = false }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, subagent = undefined, cliAccounts = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null, autoCommit = true, workspaceOwnerSessionId = null, workspaceBaseCommit = null, validateOnly = false }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -49,7 +49,25 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   // Sub-task route (Claude/Codex only), pinned at creation. Air tasks choose their
   // line before they exist, so this cannot wait for the profile PATCH — same rules,
   // same module as that path.
-  const subagentChecked = normalizeSubagentInput({ cli, provider: providerId, subagent, validProviderId, providers });
+  //
+  // `undefined` means "the caller did not choose": a fresh chat session then picks
+  // up the CLI family's default (AI 配置 → 子任务默认线路). Explicit null/''/{}
+  // still means "no sub-task route", so a picker that says "follow the main line"
+  // is never overridden. A default that no longer validates (provider deleted, a
+  // Codex session with no main line…) must never make creation fail — it silently
+  // falls back to no route, including in validateOnly mode. Ephemeral helper
+  // chats (gateway/ultra workers) are not tasks and stay out, as in the sync.
+  const subagentFamily = cli === 'claude' || cli === 'claude-exp' ? 'claude'
+    : cli === 'codex' || cli === 'codex-exp' ? 'codex' : null;
+  const usesDefaultSubagent = subagent === undefined;
+  const requestedSubagent = usesDefaultSubagent
+    ? ((kind === 'chat' && !loginFlow && !ephemeral && subagentFamily)
+      ? (providerDefaults?.subagent?.[subagentFamily] ?? null) : null)
+    : subagent;
+  let subagentChecked = normalizeSubagentInput({ cli, provider: providerId, subagent: requestedSubagent ?? null, validProviderId, providers });
+  if (!subagentChecked.ok && usesDefaultSubagent) {
+    subagentChecked = normalizeSubagentInput({ cli, provider: providerId, subagent: null, validProviderId, providers });
+  }
   if (!subagentChecked.ok) return { ok: false, error: subagentChecked.error };
   if (validateOnly) return { ok: true };
   const sid = id || allocateSessionId(dir, cli, kind);

@@ -33,7 +33,8 @@ const List<Map<String, dynamic>> _subProviders = [
   },
 ];
 
-/// 开面板 → 展开「▸ 高级」（子任务那一行在里面）→ 点保存 → 把结果交回来。
+/// 开面板 → 展开「▸ 高级」（Claude 的原生 Agent；子 agent 卡片常驻在它上面）→
+/// 点保存 → 把结果交回来。
 Future<RunConfigOutcome?> _saveSheet(
   WidgetTester tester, {
   List<Map<String, dynamic>> providers = _subProviders,
@@ -249,12 +250,12 @@ void main() {
       expect(find.text('运行配置'), findsOneWidget);
       expect(find.text('推理强度'), findsOneWidget);
       expect(find.byKey(const Key('run-effort-medium')), findsOneWidget);
-      // 子任务与原生 Agent 都在「▸ 高级」底下。
-      expect(find.text('子任务'), findsNothing);
-      await openAdvanced(tester);
-      expect(find.text('子任务'), findsOneWidget);
-      expect(find.text('Claude Agent'), findsOneWidget);
+      // 子 agent 是常驻的一块卡片，不用先展开；「▸ 高级」底下只剩原生 Agent。
+      expect(find.byKey(const Key('run-subagent-section')), findsOneWidget);
       expect(find.byKey(const Key('run-subagent-provider')), findsOneWidget);
+      expect(find.text('Claude Agent'), findsNothing);
+      await openAdvanced(tester);
+      expect(find.text('Claude Agent'), findsOneWidget);
     });
 
     testWidgets('Codex shows subagent routing without native agent', (
@@ -262,24 +263,26 @@ void main() {
     ) async {
       await tester.pumpWidget(_host(_configSheet(SessionCli.codexExp)));
       expect(find.text('推理强度'), findsOneWidget);
-      await openAdvanced(tester);
-      expect(find.text('子任务'), findsOneWidget);
+      expect(find.byKey(const Key('run-subagent-section')), findsOneWidget);
+      // 没有原生 Agent，「▸ 高级」里就什么都不剩了 —— 开关也不画。
+      expect(find.byKey(const Key('run-advanced-toggle')), findsNothing);
       expect(find.text('Codex Agent'), findsNothing);
     });
 
     testWidgets('OpenCode shows native agent and Variant only', (tester) async {
       await tester.pumpWidget(_host(_configSheet(SessionCli.opencode)));
       expect(find.text('推理强度'), findsOneWidget);
+      expect(find.byKey(const Key('run-subagent-section')), findsNothing);
       await openAdvanced(tester);
-      expect(find.text('子任务'), findsNothing);
       expect(find.text('OpenCode Agent'), findsOneWidget);
     });
 
     testWidgets('ZCode hides unsupported controls', (tester) async {
       await tester.pumpWidget(_host(_configSheet(SessionCli.zcode)));
       expect(find.text('推理强度'), findsNothing);
-      await openAdvanced(tester);
-      expect(find.text('子任务'), findsNothing);
+      // 既不支持子 agent 也没有原生 Agent：卡片和「▸ 高级」都不画。
+      expect(find.byKey(const Key('run-subagent-section')), findsNothing);
+      expect(find.byKey(const Key('run-advanced-toggle')), findsNothing);
       // 面板上别的车道的卡片会写「Claude Agent SDK」，所以这里钉的是自己那几行。
       expect(find.text('ZCode Agent'), findsNothing);
       expect(find.text('OpenCode Agent'), findsNothing);
@@ -309,9 +312,9 @@ void main() {
         expect(find.byKey(const Key('run-providerless-note')), findsOneWidget);
         expect(find.text('使用 Qoder CN 自己的账号'), findsNWidgets(2));
         expect(find.text('推理强度'), findsOneWidget);
+        expect(find.byKey(const Key('run-subagent-section')), findsNothing);
         await openAdvanced(tester);
         expect(find.text('Qoder CN Agent'), findsOneWidget);
-        expect(find.text('子任务'), findsNothing);
       },
     );
   });
@@ -372,7 +375,7 @@ void main() {
       // 「自定义 ID」—— 别名折算和候选判定都按生效线路走才对得上。
       expect(_dropdownValue(tester, const Key('run-subagent-model')), 'model-b');
       expect(_dropdownValue(tester, const Key('run-subagent-provider')), '');
-      // 顺序：模型 → 强度 → ▸ 高级（尾巴在这里面）。
+      // 顺序：模型 → 强度 → 子 agent 卡片（尾巴在卡片里）。
       final tailY = tester
           .getTopLeft(find.byKey(const Key('run-subagent-model')))
           .dy;

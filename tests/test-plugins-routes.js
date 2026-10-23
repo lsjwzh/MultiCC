@@ -5,10 +5,12 @@
 //   • command 必须在 manifest.commands 白名单里
 //   • spawn 不走 shell、stdin 喂 JSON、stdout 收一行 JSON（{ok,data} / {ok,error}）
 //   • 静态树只放行 manifest.ui 所在子树，防目录穿越
+//   • git 只跟踪 plugins/ 的内置项：复制进来的插件默认被 .gitignore 忽略
 // 桩插件用 node 脚本充当二进制 —— 真正的 Rust 插件（chrome-proxy-launcher）
 // 由自己的 cargo test 与端到端验证覆盖，CI 无需 Rust 工具链也能跑这套契约。
 
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -169,4 +171,29 @@ test('run rejects malformed command and plugin ids', async () => {
   assert.equal(badId.status, 404);
   const badCommand = await runtime.runPluginCommand('stub-demo', 'ECHO;rm', {});
   assert.equal(badCommand.status, 400);
+});
+
+// 用户装的插件是本机数据，必须被忽略，否则主检出常年「有未提交文件」挡住会话
+// 合并；反过来已跟踪的内置项一个都不能命中忽略规则 —— 否则往里新加的文件会被
+// 自动提交静默漏掉（根目录的 bridges/ 运行时规则就曾顺带挡住 plugins/bridges/）。
+test('git ignores user-installed plugins but none of the tracked built-ins', (t) => {
+  const root = path.join(__dirname, '..');
+  const git = (args, input) => spawnSync('git', args, { cwd: root, input, encoding: 'utf8' });
+  const listed = git(['ls-files', '-z', 'plugins']);
+  if (listed.status !== 0) return t.skip('not a git checkout');
+  const tracked = listed.stdout.split('\0').filter(Boolean);
+  assert.ok(tracked.includes('plugins/README.md'));
+  // --no-index：只按忽略规则判定，不因为「已跟踪」而豁免。
+  const ignored = (paths) => {
+    const res = git(['check-ignore', '--no-index', '--stdin', '-z'], paths.join('\0'));
+    assert.notEqual(res.status, 128, res.stderr);
+    return res.stdout.split('\0').filter(Boolean);
+  };
+
+  const builtinDirs = [...new Set(tracked.filter(p => p.split('/').length > 2).map(p => p.split('/')[1]))];
+  assert.deepEqual(ignored(tracked), []);
+  assert.deepEqual(ignored(builtinDirs.map(dir => `plugins/${dir}/added-later.js`)), []);
+
+  const userPlugin = ['plugins/user-installed-demo/plugin.json', 'plugins/user-installed-demo/bin/tool', 'plugins/stray.txt'];
+  assert.deepEqual(ignored(userPlugin), userPlugin);
 });
