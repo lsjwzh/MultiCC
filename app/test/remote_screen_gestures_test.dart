@@ -72,6 +72,27 @@ class _Service extends RemoteScreenService {
   }
 }
 
+Future<_Service> _openLive(WidgetTester tester, {bool trackpad = false}) async {
+  SharedPreferences.setMockInitialValues({'remote_screen_trackpad': trackpad});
+  final settings = await SettingsService.getInstance();
+  final service = _Service(settings);
+  await tester.pumpWidget(
+    MaterialApp(
+      home: RemoteScreenScreen(
+        settings: settings,
+        service: service,
+        initialControl: true,
+      ),
+    ),
+  );
+  await tester.pump();
+  await tester.runAsync(
+    () => Future<void>.delayed(const Duration(milliseconds: 30)),
+  );
+  await tester.pump();
+  return service;
+}
+
 void main() {
   testWidgets(
     'JPEG crop drag sends logical input continuously before finger lift',
@@ -180,6 +201,94 @@ void main() {
       await next.up();
       await tester.pumpWidget(const SizedBox());
       await tester.pump();
+    },
+  );
+
+  testWidgets(
+    'trackpad swipe at 100% keeps the view centred and moves the cursor',
+    (tester) async {
+      final service = await _openLive(tester, trackpad: true);
+      final stage = find.byType(InteractiveViewer);
+      final transform = tester
+          .widget<InteractiveViewer>(stage)
+          .transformationController!;
+      final g = await tester.startGesture(tester.getCenter(stage));
+      for (var i = 0; i < 5; i++) {
+        await g.moveBy(const Offset(10, 4));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await g.up();
+      await tester.pumpAndSettle();
+      // The content fills the width exactly: the clamp used to throw on -0.0.
+      expect(tester.takeException(), isNull);
+      expect(transform.value, Matrix4.identity());
+      final hovers = service.input.events.where((e) => e[0] == 5 && e[1] == 0);
+      expect(hovers.length, greaterThanOrEqualTo(3));
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
+
+  testWidgets(
+    'a view moved outside the gesture callbacks is re-centred at 100%',
+    (tester) async {
+      await _openLive(tester);
+      final transform = tester
+          .widget<InteractiveViewer>(find.byType(InteractiveViewer))
+          .transformationController!;
+      // What InteractiveViewer's post-release inertia does: write the matrix directly.
+      transform.value = Matrix4.translationValues(31, 68, 0);
+      await tester.pump();
+      expect(transform.value, Matrix4.identity());
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
+
+  testWidgets(
+    'a fast single-finger remote drag on a zoomed view does not fling it',
+    (tester) async {
+      final service = await _openLive(tester);
+      final stage = find.byType(InteractiveViewer);
+      final transform = tester
+          .widget<InteractiveViewer>(stage)
+          .transformationController!;
+      // Zoom with a real pinch, the way a user gets into the zoomed state.
+      final center = tester.getCenter(stage);
+      final a = await tester.startGesture(
+        center - const Offset(20, 0),
+        pointer: 7,
+      );
+      final b = await tester.startGesture(
+        center + const Offset(20, 0),
+        pointer: 8,
+      );
+      for (var i = 0; i < 6; i++) {
+        await a.moveBy(const Offset(-10, 0));
+        await b.moveBy(const Offset(10, 0));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await tester.pump(const Duration(milliseconds: 200));
+      await a.up();
+      await b.up();
+      await tester.pumpAndSettle();
+      expect(transform.value.getMaxScaleOnAxis(), greaterThan(1.5));
+      service.input.events.clear();
+      final before = transform.value.clone();
+      await tester.flingFrom(
+        tester.getCenter(stage),
+        const Offset(-120, 0),
+        2000,
+      );
+      await tester.pumpAndSettle();
+      expect(transform.value, before);
+      expect(
+        service.input.events.where((e) => e[0] == 5 && e[1] == 1),
+        isNotEmpty,
+      );
+      expect(service.input.events.last[1], 0);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
     },
   );
 }
