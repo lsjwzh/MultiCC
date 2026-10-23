@@ -84,6 +84,86 @@ test('remote screen live drag: every exit path releases the button, dragdown is 
   assert.match(body('rfbLeftHeldMove'), /c\.dragDead = true/);
 });
 
+test('HTTP fallback native pointer: held moves dispatch live; release, refusal and viewer teardown are safe', { skip: !hasSwift, timeout: 60000 }, t => {
+  const root = fs.mkdtempSync('/tmp/multicc-http-pointer-native-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/MultiCCAgent.swift'), 'utf8');
+  const body = name => {
+    const start = source.indexOf(`func ${name}(`);
+    assert.ok(start > 0);
+    let end = source.indexOf('{', start), depth = 1;
+    while (depth && ++end < source.length) {
+      if (source[end] === '{') depth++;
+      if (source[end] === '}') depth--;
+    }
+    return source.slice(start, end + 1);
+  };
+  const client = source.slice(source.indexOf('final class RfbClient:'), source.indexOf('/// One persistent deflate stream'));
+  const http = source.slice(source.indexOf('final class HttpScreenPointers {'), source.indexOf('// Live touch drag.'));
+  const file = path.join(root, 'main.swift');
+  fs.writeFileSync(file, `import Foundation
+import CoreGraphics
+import Darwin
+let RFB_DIV = 2
+let RFB_DRAG_SLOP: CGFloat = 8
+let automationEventSource = CGEventSource(stateID: .privateState)
+let mutationLane = NSLock()
+var events: [CGEventType] = []
+var refused = false
+func post(_ event: CGEvent?) { if let event = event { events.append(event.type) } }
+func log(_ text: String) {}
+func AXIsProcessTrusted() -> Bool { true }
+func screenLocked() -> Bool { false }
+final class Control {
+  var isHalted = false
+  func clearIdleHalt() -> Bool { false }
+  func holderConflict(_ session: String) -> String? { nil }
+}
+let control = Control()
+final class RfbScreen {
+  static let shared = RfbScreen()
+  func notePointer(_ c: RfbClient) -> Int { c.lastPointerAt = Date(); return c.div }
+}
+func handle(_ request: [String: Any]) -> [String: Any] {
+  if !refused { events.append(.leftMouseDown) }
+  return ["ok": !refused]
+}
+func rfbInput(_ request: [String: Any]) { events.append(.otherMouseDown) }
+func rfbHover(_ c: RfbClient, _ p: CGPoint) {}
+func rfbDragWatchdog(_ c: RfbClient) {}
+${client}
+${body('rfbPointer')}
+${body('rfbDragEnd')}
+${body('rfbDragAbort')}
+${body('rfbLeftHeldMove')}
+${body('rfbDragStep')}
+${http}
+let pointers = HttpScreenPointers.shared
+_ = pointers.pointer("a", mask: 1, x: 100, y: 100)
+precondition(events.isEmpty)
+_ = pointers.pointer("a", mask: 1, x: 140, y: 100)
+precondition(events == [.leftMouseDown, .leftMouseDragged], "drag must dispatch before lift")
+_ = pointers.pointer("a", mask: 0, x: 150, y: 100)
+precondition(events.last == .leftMouseUp)
+events.removeAll()
+_ = pointers.pointer("b", mask: 1, x: 10, y: 10)
+_ = pointers.pointer("b", mask: 1, x: 50, y: 10)
+pointers.releaseAll()
+precondition(events == [.leftMouseDown, .leftMouseDragged, .leftMouseUp])
+events.removeAll(); refused = true
+_ = pointers.pointer("c", mask: 1, x: 10, y: 10)
+let result = pointers.pointer("c", mask: 1, x: 50, y: 10)
+precondition(result["ok"] as? Bool == false)
+_ = pointers.pointer("c", mask: 1, x: 70, y: 10)
+_ = pointers.pointer("c", mask: 0, x: 70, y: 10)
+precondition(events.isEmpty, "refused input must not retry or click on release")
+print("HTTP pointer native OK")
+`);
+  const binary = path.join(root, 'pointer-tests');
+  execFileSync('xcrun', ['swiftc', file, '-o', binary], { timeout: 30000 });
+  assert.match(execFileSync(binary, [], { encoding: 'utf8', timeout: 10000 }), /HTTP pointer native OK/);
+});
+
 test('computer use: input dispatch clears inherited modifiers and preserves explicit chords', { skip: !hasSwift, timeout: 60000 }, t => {
   const root = fs.mkdtempSync('/tmp/multicc-input-flags-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

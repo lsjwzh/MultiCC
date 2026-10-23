@@ -105,16 +105,25 @@ void main() {
       expect(r.events, ['0@280,100']); // 之后什么都不再发
     });
 
-    test('放大态：单指不转发拖动，只有轻点才单击', () {
-      final r = _Rig()..c.zoomed = true;
+    test('放大态：单指持续操作远端，不切换为本地平移', () {
+      final r = _Rig()..c.viewScale = 3;
       r.down(1, 100, 50);
+      r.move(1, 140, 50);
+      expect(r.events, ['0@200,100', '1@200,100', '1@280,100']);
+      r.up(1, 140, 50);
+      expect(r.events.last, '0@280,100');
+    });
+
+    test('捏合后剩下的一指不恢复拖动或误发点击', () {
+      final r = _Rig();
+      r.down(1, 100, 50);
+      r.down(2, 200, 50);
+      r.events.clear();
+      r.move(2, 240, 50);
+      r.up(2, 240, 50);
+      r.move(1, 160, 50);
+      r.up(1, 160, 50);
       expect(r.events, isEmpty);
-      r.move(1, 200, 50);
-      r.up(1, 200, 50);
-      expect(r.events, isEmpty); // 位移大 = 平移画面
-      r.down(1, 100, 50);
-      r.up(1, 102, 50);
-      expect(r.events, ['1@204,100', '0@204,100']);
     });
 
     test('系统打断（cancel）时松开已按下的左键', () {

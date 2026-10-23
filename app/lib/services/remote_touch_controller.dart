@@ -58,9 +58,6 @@ class RemoteTouchController {
   /// 点亮后的下一次点击按右键发送；用掉后由本类复位并回调 [onRightUsed]。
   bool rightOnce = false;
 
-  /// 直接模式放大态：单指交给 InteractiveViewer 平移，这里只认「轻点 = 单击」。
-  bool zoomed = false;
-
   /// 当前显示尺寸（contain 后的内容框）、源画面尺寸、视图缩放倍数。
   Size display = Size.zero;
   Size source = Size.zero;
@@ -131,7 +128,6 @@ class RemoteTouchController {
     _pending = null;
     if (!_ready) return;
     if (mode == RemoteTouchMode.direct) {
-      if (zoomed) return; // 放大态一指多半是在平移画面，别把远端光标带着跳
       final s = _toSource(local);
       _lastSrc = s;
       onPointer(0, s.dx.round(), s.dy.round()); // 光标先跳过来：H.264 画面里立刻可见
@@ -158,7 +154,7 @@ class RemoteTouchController {
     }
     if (id != _primary) return;
     if (mode == RemoteTouchMode.direct) {
-      _directMove(local, t);
+      _directMove(local, global, t);
     } else {
       _padMove(global, t);
     }
@@ -173,6 +169,9 @@ class RemoteTouchController {
     }
     if (!_ready || id != _primary) return;
     _holdTimer?.cancel();
+    // Deliver the last held-position sample before the release. The Agent
+    // needs a held move to start a live drag, including very short gestures.
+    _flush(t);
     _cancelFlush();
     if (mode == RemoteTouchMode.direct) {
       _directUp(local);
@@ -210,10 +209,9 @@ class RemoteTouchController {
 
   // ── 直接模式 ──
 
-  void _directMove(Offset local, Duration t) {
-    if (zoomed) return; // 放大态单指 = 平移画面
+  void _directMove(Offset local, Offset global, Duration t) {
     if (!_dragging) {
-      if ((local - _downLocal).distance <= slop) return;
+      if ((global - _downGlobal).distance <= slop) return;
       _moved = true;
       _dragging = true;
       final s = _toSource(_downLocal); // 按在最初落点上，不是越过死区后的位置
@@ -226,11 +224,6 @@ class RemoteTouchController {
   }
 
   void _directUp(Offset local) {
-    if (zoomed) {
-      if ((local - _downLocal).distance < 10) _click(_toSource(local));
-      _hide();
-      return;
-    }
     if (_dragging) {
       final s = _toSource(local);
       onPointer(0, s.dx.round(), s.dy.round());
