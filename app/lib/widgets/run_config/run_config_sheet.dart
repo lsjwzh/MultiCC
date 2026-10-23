@@ -69,6 +69,7 @@ class RunConfigSheet extends StatefulWidget {
     this.providerSelection,
     this.subProviderId,
     this.subModel,
+    this.subInherited = false,
     this.agent,
     this.settings,
     this.httpClient,
@@ -86,6 +87,10 @@ class RunConfigSheet extends StatefulWidget {
   final SessionProviderSelection? providerSelection;
   final String? subProviderId;
   final String? subModel;
+
+  /// [subProviderId] / [subModel] 那条线路是「家族全局默认」自动套上的（服务端
+  /// session.subagent.inherited），不是任务自己单独设的。
+  final bool subInherited;
   final String? agent;
   final SettingsService? settings;
   final http.Client? httpClient;
@@ -145,13 +150,22 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   bool _defaultsLoaded = false;
   bool _defaultsApplied = false;
 
-  /// 「同步到全部同 CLI 任务」开关。每次打开面板都是关的（它是一次性动作，不该
-  /// 跟着面板状态留下来）。
+  /// 打开面板时那份「来自全局默认」的线路（session.subagent.inherited，或草稿
+  /// 自动预填的家族默认）。用户没动过选择器、且值仍是这一条时，徽标显示
+  /// 「跟随全局默认」；清除全局默认后置空，把选择器重置回随主。
+  SessionSubagent? _inheritedSeed;
+
+  /// 「同步给所有没单独设置子 agent 的同 CLI 任务」开关。每次打开面板都是关的
+  /// （它是一次性动作，不该跟着面板状态留下来）。随主（没有路由）时不可勾。
   bool _syncChecked = false;
   bool _syncLoading = false;
   bool _syncUnavailable = false;
   String _syncError = '';
   String _syncSummary = '';
+
+  /// 清除全局默认之后留在状态行上的一句话；下一次同步/出错会让位。
+  String _defaultNotice = '';
+  bool _clearBusy = false;
   Timer? _syncDebounce;
   int _syncEpoch = 0;
 
@@ -196,6 +210,16 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       }
     }
     _seedFixed();
+    // 会话面板：打开时那条本来就是「跟随全局默认」的线路记下来，作为徽标与
+    // 「用户到底动没动过」的对照。草稿的预填在 _maybePrefillSubagent 里补记。
+    if (widget.subInherited) {
+      _inheritedSeed = buildSubagent(
+        subProviderId: widget.subProviderId ?? '',
+        subModel: widget.subModel ?? '',
+        mainProvider: _provider,
+        inherited: true,
+      );
+    }
     _agentCtrl = TextEditingController(text: widget.agent ?? '');
     _seedAuto();
     if (widget.providerSelection != null) _mode = RunConfigMode.auto;
@@ -300,6 +324,15 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
         _defaultsLoaded = true;
       });
       _maybePrefillSubagent();
+    } on SubagentSyncUnavailable {
+      // 原生模块是旧版本：默认值读不到，同步也做不了。面板照常打开，只把开关
+      // 收起并原样说明「重启一次 MultiCC 就好」。
+      if (mounted) {
+        setState(() {
+          _defaultsLoaded = true;
+          _syncUnavailable = true;
+        });
+      }
     } catch (_) {
       if (mounted) setState(() => _defaultsLoaded = true);
     }
@@ -317,17 +350,32 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   void _maybePrefillSubagent() {
     if (!widget.draft || _subagentTouched || _defaultsApplied) return;
     _defaultsApplied = true;
-    if ((widget.subProviderId ?? '').isNotEmpty) return;
-    if ((widget.subModel ?? '').isNotEmpty) return;
+    // 带进来的是单独设置的线路就不碰；跟着全局默认的（最近一次那套，可能已经
+    // 过时）换成现在的全局默认，全局默认没了就回随主。
+    final carried =
+        (widget.subProviderId ?? '').isNotEmpty ||
+        (widget.subModel ?? '').isNotEmpty;
+    if (carried && !widget.subInherited) return;
     final target = _currentSubagentTarget();
     if (target == null) return;
     final def = _defaultForCli(target.cli);
     final model = def?.model ?? '';
     final providerId = def?.providerId ?? '';
-    if (model.isEmpty) return;
     final pool = _poolFor(target.cli.name);
-    if (providerId.isNotEmpty &&
-        !pool.any((p) => p['id']?.toString() == providerId)) {
+    final usable =
+        model.isNotEmpty &&
+        (providerId.isEmpty ||
+            pool.any((p) => p['id']?.toString() == providerId));
+    if (!usable) {
+      if (carried) {
+        setState(() {
+          _subProvider = '';
+          _subModel = '';
+          _customSubModel = false;
+          _subCustomCtrl.text = '';
+          _inheritedSeed = null;
+        });
+      }
       return;
     }
     final choices = runModelChoices(
@@ -340,6 +388,13 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       _subModel = model;
       _customSubModel = !choices.contains(model);
       _subCustomCtrl.text = _customSubModel ? model : '';
+      // 预填的是家族默认：用户没动过就还是「跟随全局默认」，建任务时整个不发
+      // subagent，让服务端按它当时的默认套用并标 inherited。
+      _inheritedSeed = SessionSubagent(
+        providerId: providerId.isEmpty ? target.mainProviderId : providerId,
+        model: model,
+        inherited: true,
+      );
     });
   }
 
@@ -368,10 +423,40 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   void _noteSubagentChanged() {
     _subagentTouched = true;
     _dismissGuide();
-    if (_syncChecked) _scheduleSyncDryRun();
+    final target = _currentSubagentTarget();
+    if (target?.subagent == null) {
+      // 随主（默认）没有可同步的路由：勾选自动收起，统计作废。
+      _cancelSync();
+    } else if (_syncChecked) {
+      _scheduleSyncDryRun();
+    }
+  }
+
+  /// 清掉「同步」这次一次性动作（勾选、统计、错误）。路由变成随主时调用。
+  void _cancelSync() {
+    _syncDebounce?.cancel();
+    _syncEpoch += 1;
+    if (!_syncChecked &&
+        !_syncLoading &&
+        _syncSummary.isEmpty &&
+        _syncError.isEmpty) {
+      return;
+    }
+    if (!mounted) {
+      _syncChecked = false;
+      return;
+    }
+    setState(() {
+      _syncChecked = false;
+      _syncLoading = false;
+      _syncError = '';
+      _syncSummary = '';
+    });
   }
 
   void _onSyncChanged(bool value) {
+    // 随主（默认）只能靠「清除」处理，同步开关只负责「设一套路由」。
+    if (value && _currentSubagentTarget()?.subagent == null) return;
     _syncDebounce?.cancel();
     _syncEpoch += 1;
     setState(() {
@@ -381,6 +466,22 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       _syncSummary = '';
     });
     if (value) _scheduleSyncDryRun();
+  }
+
+  /// 当前路由是否就是「打开面板/自动预填时那条来自全局默认的线路」，且用户
+  /// 没动过选择器。是的话徽标说「跟随全局默认」。
+  bool _followsGlobalRoute(SessionSubagent? route) {
+    if (route == null || route.isEmpty || _subagentTouched) return false;
+    final seed = _inheritedSeed;
+    if (seed == null) return false;
+    return route.providerId == seed.providerId && route.model == seed.model;
+  }
+
+  _SubagentState _subagentStateOf(SessionSubagent? route) {
+    if (route == null || route.isEmpty) return _SubagentState.followMain;
+    return _followsGlobalRoute(route)
+        ? _SubagentState.followGlobal
+        : _SubagentState.own;
   }
 
   /// 勾上之后先做一次 dry run 统计（防抖，换线路/模型时重算）。真正的写入在
@@ -414,7 +515,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
         _syncUnavailable = false;
         _subagentDefaults = res.defaults;
         _defaultsLoaded = true;
-        _syncSummary = _describeSyncDryRun(res, target.cli);
+        _defaultNotice = '';
+        _syncSummary = _describeSyncDryRun(res);
       });
     } on SubagentSyncUnavailable {
       if (!mounted || epoch != _syncEpoch) return;
@@ -435,45 +537,138 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     }
   }
 
-  String _describeSyncDryRun(SubagentSyncResult res, SessionCli cli) {
-    final family = subagentFamilyLabel(cli.name) ?? cli.displayName;
+  String _describeSyncDryRun(SubagentSyncResult res) {
     final changes = res.changes;
-    if (changes == 0) {
-      final skipped = res.skipped > 0 ? '，${res.skipped} 个跳过' : '';
-      return '所有 $family 任务已经是这套设置$skipped';
-    }
+    // 单独设置过的任务不会被同步改掉 —— 统计里必须说清楚，否则用户会以为
+    // 「全部任务」又被覆盖了一遍。
+    final kept = res.kept > 0 ? '，${res.kept} 个单独设置过的保持不变' : '';
     final skipped = res.skipped > 0 ? '，${res.skipped} 个跳过' : '';
-    return '将更新 $changes 个任务$skipped';
+    if (changes == 0) return '没有需要更新的任务$kept$skipped';
+    return '将更新 $changes 个任务$kept$skipped';
   }
 
   String _cleanSyncError(Object error) =>
       error.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
 
-  String _defaultLineText(SessionCli cli, List<Map<String, dynamic>> pool) {
-    if (!_defaultsLoaded) return '新任务默认：读取中…';
+  /// 全局默认那一行：当前家族「之后新建任务默认用哪套」。
+  String _globalDefaultText(SessionCli cli, List<Map<String, dynamic>> pool) {
+    if (!_defaultsLoaded) return '全局默认：读取中…';
     final def = _defaultForCli(cli);
     final providerId = def?.providerId ?? '';
     final model = def?.model ?? '';
-    if (providerId.isEmpty || model.isEmpty) return '新任务默认：随主线路';
+    if (providerId.isEmpty || model.isEmpty) {
+      return '全局默认：未设置（新任务随主线路）';
+    }
     if (!pool.any((p) => p['id']?.toString() == providerId)) {
       final label = providerId.length > 8
           ? providerId.substring(0, 8)
           : providerId;
-      return '新任务默认：$label（线路已不可用）';
+      return '全局默认：$label（线路已不可用）';
     }
-    return '新任务默认：${runLineName(providerId, pool)} · $model';
+    return '全局默认：${runLineName(providerId, pool)} · $model';
   }
 
-  String _syncStatusText(SessionCli cli, List<Map<String, dynamic>> pool) {
-    if (_syncUnavailable) {
-      return '同步暂不可用：请手动重启 MultiCC 服务端后再试';
-    }
+  String _syncStatusText() {
+    if (_syncUnavailable) return subagentSyncUnavailableText;
     if (_syncError.isNotEmpty) return _syncError;
-    final base = _defaultLineText(cli, pool);
-    if (!_syncChecked) return base;
-    if (_syncLoading) return '$base · 正在统计…';
-    if (_syncSummary.isNotEmpty) return '$base · $_syncSummary';
-    return base;
+    if (_syncChecked) return _syncLoading ? '正在统计…' : _syncSummary;
+    return _defaultNotice;
+  }
+
+  /// 清除当前家族的全局默认：先 dry run 报数，用户确认后才真清。跟随全局的
+  /// 任务恢复随主，单独设置过的任务不动。
+  Future<void> _clearGlobalDefault(SessionCli cli) async {
+    final settings = widget.settings;
+    if (settings == null || _clearBusy) return;
+    final family = subagentFamilyLabel(cli.name) ?? cli.displayName;
+    final service = SubagentDefaultsService(
+      settings: settings,
+      httpClient: widget.httpClient,
+    );
+    setState(() {
+      _clearBusy = true;
+      _syncError = '';
+      _defaultNotice = '';
+    });
+    SubagentSyncResult dry;
+    try {
+      dry = await service.clear(cli: cli.name, dryRun: true);
+    } on SubagentSyncUnavailable {
+      if (!mounted) return;
+      setState(() {
+        _clearBusy = false;
+        _syncUnavailable = true;
+      });
+      return;
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _clearBusy = false;
+        _syncError = '清除失败：${_cleanSyncError(error)}';
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _clearBusy = false);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('清除 $family 的全局子 agent？'),
+        content: Text(
+          '${dry.changes} 个跟随全局的任务会恢复随主，之后新建的任务也不再默认使用；'
+          '单独设置过的 ${dry.kept} 个任务不受影响。',
+        ),
+        actions: [
+          TextButton(
+            key: const ValueKey('run-subagent-clear-cancel'),
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('run-subagent-clear-confirm'),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('清除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _clearBusy = true);
+    try {
+      final res = await service.clear(cli: cli.name);
+      if (!mounted) return;
+      final inheritedEditing = _inheritedSeed != null && !_subagentTouched;
+      setState(() {
+        _clearBusy = false;
+        _subagentDefaults = res.defaults;
+        _defaultsLoaded = true;
+        _syncChecked = false;
+        _syncLoading = false;
+        _syncSummary = '';
+        _defaultNotice = '已清除全局子 agent，${res.changes} 个任务恢复随主';
+        if (inheritedEditing) {
+          // 正在编辑的这个任务原来跟着全局默认：选择器回随主，免得用户再点
+          // 「保存」时把同一条路由当自己的设置存回去。
+          _inheritedSeed = null;
+          _subProvider = '';
+          _subModel = '';
+          _customSubModel = false;
+          _subCustomCtrl.text = '';
+        }
+      });
+    } on SubagentSyncUnavailable {
+      if (!mounted) return;
+      setState(() {
+        _clearBusy = false;
+        _syncUnavailable = true;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _clearBusy = false;
+        _syncError = '清除失败：${_cleanSyncError(error)}';
+      });
+    }
   }
 
   // ── 播种 ──────────────────────────────────────────────────────────────
@@ -710,7 +905,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       _subModel = '';
       _customSubModel = false;
       _subCustomCtrl.text = '';
+      // 换了主车道，旧车道那条「继承来的」路由不再适用。
+      _inheritedSeed = null;
     });
+    _cancelSync();
     if (!cli.supportsProvider) {
       // 自持账号车道没有线路池，但模型目录是活的（Qoder / WorkBuddy 各自的
       // 宿主 CLI 目录）：开面板时只暖了入口那条车道，面板里切过来要在这里补暖，
@@ -809,6 +1007,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
                   model: model,
                 ));
     final subModel = _customSubModel ? _subCustomCtrl.text.trim() : _subModel;
+    final subTarget = _currentSubagentTarget();
     final result = buildFixedOutcome(
       cli: _cli,
       currentCli: widget.cli.name,
@@ -827,6 +1026,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       syncSubagent: _syncChecked && !_syncUnavailable,
       subagentCleared:
           widget.draft && _subagentTouched && subModel.trim().isEmpty,
+      subagentInherited: _followsGlobalRoute(subTarget?.subagent),
     );
     if (!result.ok) {
       setState(() => _autoError = result.error ?? '');
@@ -845,7 +1045,12 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     final provider = native ? '' : result.firstProviderId;
     final firstName = _lineName(result.firstProviderId);
     final subCli = _autoSubCli();
-    final subagent = _collectAutoSubagent(provider);
+    final collected = _collectAutoSubagent(provider);
+    // 没动过的家族默认：带上 inherited 标记 —— 会话保存时服务端按同一路由保留
+    // 继承，建任务时调用方整个省略 subagent 字段。
+    final subagent = _followsGlobalRoute(collected)
+        ? collected?.copyWith(inherited: true)
+        : collected;
     Navigator.pop(
       context,
       RunConfigOutcome(
@@ -1521,23 +1726,43 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     return 0.4 + 0.6 * wave;
   }
 
-  Widget _subagentStateChip(bool hasSubagent) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-    decoration: BoxDecoration(
-      color: hasSubagent
-          ? AppColors.accent.withValues(alpha: 0.14)
-          : const Color(0xFFe8eef5),
-      borderRadius: BorderRadius.circular(20),
-    ),
-    child: Text(
-      hasSubagent ? '已单独设置' : '跟随主线路',
-      style: TextStyle(
-        color: hasSubagent ? AppColors.accentDark : AppColors.muted,
-        fontSize: 10.5,
-        fontWeight: FontWeight.w700,
+  /// 三态徽标：随主 / 跟随全局默认（打开时那条来自家族默认的线路，用户没动）
+  /// / 已单独设置。同步语义就靠它区分：只有「已单独设置」的任务会被同步跳过。
+  Widget _subagentStateChip(_SubagentState state) {
+    final (label, fg, bg) = switch (state) {
+      _SubagentState.followMain => (
+        '跟随主线路',
+        AppColors.muted,
+        const Color(0xFFe8eef5),
       ),
-    ),
-  );
+      _SubagentState.followGlobal => (
+        '跟随全局默认',
+        AppColors.accent,
+        AppColors.accent.withValues(alpha: 0.10),
+      ),
+      _SubagentState.own => (
+        '已单独设置',
+        AppColors.accentDark,
+        AppColors.accent.withValues(alpha: 0.14),
+      ),
+    };
+    return Container(
+      key: const ValueKey('run-subagent-badge'),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: fg,
+          fontSize: 10.5,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
 
   /// 首次强引导。它长在卡片里（不是一次性弹窗）：用户还没看的时候，一打开
   /// 面板就能看到「子 agent 能单独选线路」这件事。
@@ -1564,8 +1789,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
         const SizedBox(height: 5),
         const Text(
           'CLI 派出去的子任务默认跟主线路走；换一条更便宜或更快的线路，主任务'
-          '不受影响，能省额度；勾选下面的「同步」能一键套用到所有同 CLI 的任务，'
-          '以后新建的也默认这样',
+          '不受影响，能省额度；勾选下面的「同步」能套用到所有还没单独设置过的'
+          '同 CLI 任务，以后新建的也默认这样',
           style: TextStyle(
             color: AppColors.muted,
             fontSize: 11.5,
@@ -1620,7 +1845,15 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     required String model,
   }) {
     final labelProvider = providerId.isEmpty ? mainProviderId : providerId;
-    final hasSubagent = model.trim().isNotEmpty;
+    // 徽标与开关看的是「保存时会交回去的那条路由」——固定一条与自动挑选各自
+    // 的折算口径不同，统一从 _currentSubagentTarget 取。
+    final state = _subagentStateOf(_currentSubagentTarget()?.subagent);
+    final hasRoute = state != _SubagentState.followMain;
+    final defaultRoute = _defaultForCli(cli);
+    final hasDefault =
+        (defaultRoute?.providerId ?? '').isNotEmpty &&
+        (defaultRoute?.model ?? '').isNotEmpty;
+    final syncEnabled = !_syncUnavailable && hasRoute;
     final showGuide = _guideReady && !_guideDismissed;
     final family = subagentFamilyLabel(cli.name) ?? cli.displayName;
     final statusColor = _syncUnavailable || _syncError.isNotEmpty
@@ -1665,7 +1898,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
                       ),
                     ),
                     const SizedBox(width: 8),
-                    _subagentStateChip(hasSubagent),
+                    _subagentStateChip(state),
                   ],
                 ),
                 const SizedBox(height: 4),
@@ -1824,19 +2057,51 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
                     decoration: runConfigInputDecoration(hint: '模型 ID'),
                   ),
                 ],
+                const SizedBox(height: 8),
+                // 全局默认那一行：改/清它只影响「之后新建的」和跟随它的任务。
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _globalDefaultText(cli, pool),
+                        key: const ValueKey('run-subagent-default-line'),
+                        style: const TextStyle(
+                          color: AppColors.muted,
+                          fontSize: 11,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                    if (hasDefault)
+                      TextButton(
+                        key: const ValueKey('run-subagent-clear-default'),
+                        onPressed: _clearBusy || _syncUnavailable
+                            ? null
+                            : () => _clearGlobalDefault(cli),
+                        style: TextButton.styleFrom(
+                          minimumSize: const Size(0, 28),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          textStyle: const TextStyle(fontSize: 11.5),
+                        ),
+                        child: const Text('清除'),
+                      ),
+                  ],
+                ),
                 const SizedBox(height: 4),
                 CheckboxListTile(
                   key: const ValueKey('run-subagent-sync'),
-                  value: _syncChecked,
-                  onChanged: _syncUnavailable
-                      ? null
-                      : (value) => _onSyncChanged(value == true),
+                  value: syncEnabled && _syncChecked,
+                  onChanged: syncEnabled
+                      ? (value) => _onSyncChanged(value == true)
+                      : null,
                   dense: true,
                   visualDensity: VisualDensity.compact,
                   contentPadding: EdgeInsets.zero,
                   controlAffinity: ListTileControlAffinity.leading,
                   title: Text(
-                    '同步到全部 $family 任务，之后新建的也默认用这套',
+                    '同步给所有没单独设置子 agent 的 $family 任务，'
+                    '之后新建的也默认用这套',
                     style: const TextStyle(
                       color: AppColors.text,
                       fontSize: 12,
@@ -1845,7 +2110,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
                   ),
                 ),
                 Text(
-                  _syncStatusText(cli, pool),
+                  _syncStatusText(),
                   key: const ValueKey('run-subagent-sync-status'),
                   style: TextStyle(
                     color: statusColor,
@@ -2077,6 +2342,9 @@ class RunConfigSheetState extends RunConfigSheetBase with RunConfigAutoSection {
   Widget build(BuildContext context) => buildSheet(context);
 }
 
+/// 子 agent 卡片上的三态：随主 / 跟随全局默认 / 自己单独设过。
+enum _SubagentState { followMain, followGlobal, own }
+
 /// 当前模式下的子 agent 目标：同步与家族默认展示都读它。
 class _SubagentTarget {
   const _SubagentTarget({
@@ -2256,6 +2524,7 @@ class _RunConfigSheetLoader extends StatelessWidget {
               runtime.cli.defaultEffort,
           subProviderId: runtime.subagent?.providerId,
           subModel: runtime.subagent?.model,
+          subInherited: runtime.subagent?.inherited ?? false,
           agent: runtime.agent,
           settings: settings,
           httpClient: httpClient,
@@ -2396,21 +2665,21 @@ Future<void> runSubagentSyncAfterSave({
 String subagentSyncSuccessText(SubagentSyncResult res) {
   final applied = res.applied > 0 ? '更新 ${res.applied} 个任务' : '';
   final deferred = res.deferred > 0 ? '${res.deferred} 个下轮生效' : '';
+  final kept = res.kept > 0 ? '${res.kept} 个单独设置过的保持不变' : '';
   final skipped = res.skipped > 0 ? '${res.skipped} 个跳过' : '';
   final parts = [
     if (applied.isNotEmpty) applied,
     if (deferred.isNotEmpty) deferred,
+    if (kept.isNotEmpty) kept,
     if (skipped.isNotEmpty) skipped,
   ];
-  if (parts.isEmpty) return '✓ 子 agent 同步完成：所有同 CLI 任务已经是这套设置';
+  if (parts.isEmpty) return '✓ 子 agent 同步完成：没有需要更新的任务';
   return '✓ 子 agent 同步完成：${parts.join('，')}';
 }
 
 @visibleForTesting
 String subagentSyncFailureText(Object error) {
-  if (error is SubagentSyncUnavailable) {
-    return '需要手动重启 MultiCC 服务端后才能启用';
-  }
+  if (error is SubagentSyncUnavailable) return subagentSyncUnavailableText;
   return error.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
 }
 

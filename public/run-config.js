@@ -190,9 +190,9 @@
 
   // 同步预览（dry run）→ 状态行文案。preview 的形状：
   //   { state:'loading' }
-  //   { state:'ready', family, counts:{applied,deferred,unchanged,skipped} }
+  //   { state:'ready', family, counts:{applied,deferred,unchanged,skipped,kept} }
   //   { state:'error', error }
-  //   { state:'unavailable' }   ← 503：服务端还没换成带同步接口的原生模块
+  //   { state:'unavailable' }   ← 503：服务端加载的原生模块还是旧的，没有同步接口
   // 只产出 {tone, text}，不碰 DOM —— tests/test-run-config.js 直接调。
   function syncSummary(preview) {
     if (!preview || typeof preview !== 'object') return { tone: 'idle', text: '' };
@@ -203,14 +203,17 @@
       return { tone: 'error', text: tt('runConfigSyncPreviewFailed', '无法读取同步预览：{error}', { error: clean(preview.error) }) };
     }
     if (preview.state === 'unavailable') {
-      return { tone: 'error', text: tt('runConfigSyncUnavailable', '需要重启 MultiCC 服务后才能使用同步。请手动重启服务，然后重新打开这个对话框。') };
+      return { tone: 'error', text: tt('runConfigSyncUnavailable', '服务端加载的原生模块是旧版本，暂不支持同步。重启一次 MultiCC 会自动按当前代码重新编译加载，之后改这个设置不需要再重启。') };
     }
     const counts = preview.counts && typeof preview.counts === 'object' ? preview.counts : {};
     const applied = Number(counts.applied) || 0;
     const deferred = Number(counts.deferred) || 0;
     const skipped = Number(counts.skipped) || 0;
+    const kept = Number(counts.kept) || 0;
     const total = applied + deferred;
-    const suffix = skipped > 0 ? tt('runConfigSyncSkippedSuffix', '，{k} 个跳过', { k: skipped }) : '';
+    // 单独设置过子 agent 的任务同步不碰：单独说一句，免得以为漏了。
+    const suffix = (kept > 0 ? tt('runConfigSyncKeptSuffix', '，{k} 个单独设置过的保持不变', { k: kept }) : '')
+      + (skipped > 0 ? tt('runConfigSyncSkippedSuffix', '，{k} 个跳过', { k: skipped }) : '');
     if (total > 0) {
       return {
         tone: 'ready',
@@ -221,9 +224,17 @@
     }
     return {
       tone: 'ready',
-      text: tt('runConfigSyncNothing', '所有 {cli} 任务已经是这套设置',
+      text: tt('runConfigSyncNothing', '没有需要更新的 {cli} 任务',
         { cli: subagentFamilyLabel(preview.family) || '' }) + suffix,
     };
+  }
+
+  // 清除全局默认前的确认文案（清除的 dry run 计数）：恢复随主的是跟随全局的任务。
+  function clearSummary(preview) {
+    const counts = preview && preview.counts && typeof preview.counts === 'object' ? preview.counts : {};
+    return tt('runConfigClearPreview', '清除后 {n} 个跟随全局的 {cli} 任务恢复随主，新建任务也不再默认使用；单独设置过的 {k} 个不受影响。', {
+      n: (Number(counts.applied) || 0) + (Number(counts.deferred) || 0), k: Number(counts.kept) || 0,
+      cli: subagentFamilyLabel(preview && preview.family) || '' });
   }
 
   // 首次引导只记「看过了」这一个事实；存储被禁（Safari 私密窗口等）时读不到
@@ -928,8 +939,9 @@
     let subFamilyCatalogPending = false;
     // 用户在这一次打开里动过子 agent 下拉（草稿模式下别再拿默认值盖回去）。
     let subagentTouched = false;
-    // 当前的 subagentSeed 是不是「家族默认」自动铺的：换家族时可以整份替换。
-    let subagentSeedAuto = false;
+    // 当前的 subagentSeed 是不是跟着「家族全局默认」走的：草稿里自动铺的，或打开时读到的
+    // 线路本身带 inherited。换家族时可以整份替换；原样保存仍算跟随全局（服务端保留标记）。
+    let subagentSeedAuto = !!(subagentSeed && (subagentSeed.inherited === true || config.subagentInherited === true));
     let subagentSeedFamily = subagentSeed ? subagentFamily(config.cli || currentCli) : '';
     // 首次强提示：读过一次 localStorage 就记住；本次打开内 dismissed 也是终态。
     let subGuideSeenOnOpen = guideSeen(scope() && scope().localStorage);
@@ -942,6 +954,12 @@
     let subPreviewKey = '';
     // 任务本身已经保存、只剩同步没成功：再次提交只重试同步（见 save()）。
     let savedPending = false;
+    // 503 = 服务端加载的原生模块里还没有同步接口：同步与清除都锁上，只说原因。
+    let subSyncUnavailable = false;
+    // 清除全局默认：subClearPlan 是等用户确认的 dry run；subNotice 是最近一次结果 {tone, text}。
+    let subClearPlan = null;
+    let subClearBusy = false;
+    let subNotice = null;
     // 账户：accountPicks 是「车道 → 账户 id」，打开时从会话现值读（运行配置的几个入口
     // 都不带这个字段，所以已有会话要自己拉一次详情）。保存只写用户动过的那条车道 ——
     // 服务端按车道合并，读不到现值时也不会把别处选好的账户清掉。
@@ -1212,7 +1230,7 @@
     subGuide.append(
       el(doc, 'h4', null, tt('runConfigGuideTitle', '新功能：子 agent 可以单独选线路和模型')),
       el(doc, 'p', null, tt('runConfigGuideBody',
-        'CLI 派出去的子任务默认跟主线路走；换一条更便宜或更快的线路，主任务不受影响，能省额度；下面勾选「同步」可以一键套用到所有同 CLI 的任务，以后新建的也默认这样')),
+        'CLI 派出去的子任务默认跟主线路走；换一条更便宜或更快的线路，主任务不受影响，能省额度；下面勾选「同步」可以一键套用到所有没单独设置的同 CLI 任务，以后新建的也默认这样')),
     );
     const subGuideActions = el(doc, 'div', 'rc-sub-guide-actions');
     const subGuideApply = el(doc, 'button', 'rc-sub-guide-apply primary', tt('runConfigGuideApply', '现在设置'));
@@ -1241,11 +1259,19 @@
     const subSyncLabel = el(doc, 'label', 'rc-check rc-sub-sync');
     const subSyncBox = el(doc, 'input');
     subSyncBox.type = 'checkbox';
-    const subSyncText = el(doc, 'span', null, tt('runConfigSyncLabel', '同步到全部任务，之后新建的也默认用这套'));
+    const subSyncText = el(doc, 'span', null, tt('runConfigSyncLabel', '同步给所有没单独设置子 agent 的 {cli} 任务，之后新建的也默认用这套', { cli: '' }));
     subSyncLabel.append(subSyncBox, subSyncText);
     const subSyncStatus = el(doc, 'p', 'rc-sub-sync-status');
     subSyncStatus.setAttribute('role', 'status');
-    subSection.append(subHead, subWhy, subGuide, subRow, subHint, subSyncLabel, subSyncStatus);
+    // 全局默认一行：现值 +「清除」（显隐由 paintGlobal 管）。清除先 dry run 说清会恢复几个任务，再二次确认。
+    const subGlobal = el(doc, 'div', 'rc-sub-global');
+    const subGlobalText = el(doc, 'span', 'rc-sub-global-text');
+    const subClear = el(doc, 'button', 'rc-sub-clear', tt('runConfigClearGlobal', '清除'));
+    const subClearConfirm = el(doc, 'button', 'rc-sub-clear-confirm', tt('runConfigClearConfirm', '确认清除'));
+    const subClearCancel = el(doc, 'button', 'rc-sub-clear-cancel', tt('runConfigCancel', '取消'));
+    subClear.type = subClearConfirm.type = subClearCancel.type = 'button';
+    subGlobal.append(subGlobalText, subClear, subClearConfirm, subClearCancel);
+    subSection.append(subHead, subWhy, subGuide, subRow, subHint, subSyncLabel, subSyncStatus, subGlobal);
     fixedSection.append(fixedHead, cliGrid, lineRow, accountField, effortField, fixedStatus);
     form.append(fixedSection);
 
@@ -1941,73 +1967,85 @@
       subagentSeedFamily = subagentFamily(subCli());
     }
 
-    // 草稿：会话配置里没带子 agent 时，按家族默认把下拉预填一次；切换 CLI 换了
-    // 家族也照办。用户动过下拉就不碰。返回 true = 种子变了，调用方要重铺。
+    // 草稿：子 agent 没设过或只跟着全局默认走时，按这一族当前的全局默认（subDefaults，比目录那份新）
+    // 预填，换家族也照办；动过下拉或带来的是单独设置的线路就不碰。返回 true = 种子变了，要重铺。
     function seedDraftSubagent() {
       if (!draft || terminalDraft || subagentTouched) return false;
       const cli = subCli();
       const family = subagentFamily(cli);
-      if (!family) return false;
-      const catalog = catalogs.get(cli);
-      if (!catalog) return false;
-      const def = subagentDefaultFor(catalog.defaults, cli);
-      const sameFamily = subagentSeedFamily === family;
-      if (sameFamily && (subagentSeed || subagentSeedAuto)) return false;
-      if (!def) { subagentSeedFamily = family; return false; }
-      if (sameSubagentRoute(def, subagentSeed)) { subagentSeedFamily = family; return false; }
-      subagentSeed = def;
-      subagentSeedAuto = true;
+      if (!family || !catalogs.get(cli)) return false;
+      if (subagentSeedFamily === family && subagentSeed && !subagentSeedAuto) return false;
+      const def = subDefaults[family] || null;
       subagentSeedFamily = family;
+      if (sameSubagentRoute(def, subagentSeed)) { subagentSeedAuto = !!def; return false; }
+      subagentSeed = def;
+      subagentSeedAuto = !!def;
       return true;
     }
 
-    // 状态芯片 + 同步行文案平时也走这里：每次重铺下拉后都要重新说一遍「现在是
-    // 跟随主线路还是单独设置」「新任务默认是什么」。
+    // 子 agent 的三种状态：没有线路 = 跟随主线路；打开时就跟着全局默认走、这次也没动过
+    // = 跟随全局默认；其余 = 单独设置（之后的同步、清除都不会碰它）。
+    function subagentFollowsGlobal(route = collectSubagent()) {
+      return !!route && subagentSeedAuto && !subagentTouched && sameSubagentRoute(route, subagentSeed);
+    }
+
+    function resetSyncPreview() {
+      subSyncBox.checked = false;
+      ++subPreviewSeq;
+      if (subPreviewTimer) { clearTimeout(subPreviewTimer); subPreviewTimer = null; }
+      subPreviewKey = '';
+      subPreview = null;
+    }
+
+    // 状态芯片、同步行、全局默认行：每次重铺下拉后都重新说一遍。
     function paintSubMeta() {
       const cli = subCli();
       if (terminalDraft || !cli || !aiApi.supportsSubagentCli(cli)) return;
       const family = subagentFamily(cli);
       const set = collectSubagent();
-      subState.textContent = set
-        ? tt('runConfigSubStateSet', '已单独设置')
-        : tt('runConfigSubStateFollow', '跟随主线路');
-      subState.classList.toggle('is-set', !!set);
-      subSyncText.textContent = tt('runConfigSyncLabel', '同步到全部 {cli} 任务，之后新建的也默认用这套',
+      const global = subagentFollowsGlobal(set);
+      subState.textContent = !set ? tt('runConfigSubStateFollow', '跟随主线路')
+        : global ? tt('runConfigSubStateGlobal', '跟随全局默认') : tt('runConfigSubStateSet', '已单独设置');
+      subState.classList.toggle('is-set', !!set && !global);
+      subState.classList.toggle('is-global', global);
+      subSyncText.textContent = tt('runConfigSyncLabel', '同步给所有没单独设置子 agent 的 {cli} 任务，之后新建的也默认用这套',
         { cli: subagentFamilyLabel(family) || cliLabel(cli) });
-      paintSyncStatus(family);
+      // 同步只用来「设」全局默认：选随主时没有可同步的线路，撤掉全局默认走下面的「清除」。
+      if (!set && subSyncBox.checked) resetSyncPreview();
+      subSyncBox.disabled = subSyncUnavailable || !set;
+      paintSyncStatus();
+      paintGlobal(family);
       queueSyncPreview();
       maybeShowSubGuide();
     }
 
-    function paintSyncStatus(family) {
+    // 状态行：503 原因 > 勾选同步时的预览 > 最近一次清除的结果。
+    function paintSyncStatus() {
+      const summary = subSyncUnavailable ? syncSummary({ state: 'unavailable' })
+        : subSyncBox.checked && subPreview ? syncSummary(subPreview) : subNotice;
+      subSyncStatus.textContent = summary ? summary.text : '';
+      subSyncStatus.classList.toggle('is-ready', !!summary && summary.tone === 'ready');
+      subSyncStatus.classList.toggle('is-error', !!summary && summary.tone === 'error');
+    }
+
+    // 「全局默认」一行：现值 +「清除」；确认态换成 dry run 的说明 +「确认清除 / 取消」。
+    // 线路名要在目录里查，当前 CLI 的目录里没有就背景补拉一次。
+    function paintGlobal(family) {
       const lane = family || subagentFamily(subCli());
-      subSyncStatus.classList.remove('is-ready', 'is-error');
-      if (subPreview && subPreview.state === 'unavailable') {
-        subSyncStatus.textContent = syncSummary(subPreview).text;
-        subSyncStatus.classList.add('is-error');
-        return;
-      }
-      if (subSyncBox.checked && subPreview) {
-        const summary = syncSummary(subPreview);
-        subSyncStatus.textContent = summary.text;
-        subSyncStatus.classList.toggle('is-ready', summary.tone === 'ready');
-        subSyncStatus.classList.toggle('is-error', summary.tone === 'error');
-        return;
-      }
       const route = lane ? subDefaults[lane] : null;
-      if (!route) {
-        subSyncStatus.textContent = tt('runConfigSyncDefaultFollow', '新任务默认：随主线路');
-        return;
-      }
-      const provider = findProviderAnywhere(route.providerId);
-      if (!provider) {
-        ensureFamilyCatalog(lane);
-        subSyncStatus.textContent = tt('runConfigSyncDefaultMissing', '新任务默认：{id} · {model}（线路已不可用）',
-          { id: route.providerId, model: route.model });
-        return;
-      }
-      subSyncStatus.textContent = tt('runConfigSyncDefaultRoute', '新任务默认：{line} · {model}',
-        { line: provider.name || provider.id, model: route.model });
+      const provider = route && findProviderAnywhere(route.providerId);
+      if (route && !provider) ensureFamilyCatalog(lane);
+      const confirming = !!subClearPlan;
+      subGlobal.classList.toggle('is-confirm', confirming);
+      show(subClear, !confirming && !!route);
+      show(subClearConfirm, confirming);
+      show(subClearCancel, confirming);
+      subClear.disabled = subClearBusy || subSyncUnavailable;
+      subClearConfirm.disabled = subClearCancel.disabled = subClearBusy;
+      subGlobalText.textContent = confirming ? clearSummary(subClearPlan)
+        : !route ? tt('runConfigGlobalNone', '全局默认：未设置（新任务随主线路）')
+          : provider ? tt('runConfigGlobalRoute', '全局默认：{line} · {model}', { line: provider.name || provider.id, model: route.model })
+            : tt('runConfigGlobalMissing', '全局默认：{id} · {model}（线路已不可用）', { id: route.providerId, model: route.model });
     }
 
     // 勾上「同步」后 300ms 的 dry run：同一个选择只问一次；选择/主线路变了才重问。
@@ -2034,33 +2072,65 @@
     async function runSyncPreview(cli, key) {
       const seq = ++subPreviewSeq;
       subPreview = { state: 'loading' };
-      paintSyncStatus(subagentFamily(cli));
+      paintSyncStatus();
       try {
         const result = await request('/api/subagent-defaults/sync',
           { cli, subagent: collectSubagent(), dryRun: true });
         if (closed || seq !== subPreviewSeq || key !== subPreviewKey) return;
         if (result && result.defaults) applySyncedDefaults(result.defaults);
         subPreview = { state: 'ready', family: (result && result.family) || subagentFamily(cli), counts: (result && result.counts) || {} };
-        paintSyncStatus(subagentFamily(cli));
+        paintSyncStatus();
       } catch (cause) {
         if (closed || seq !== subPreviewSeq || key !== subPreviewKey) return;
-        if (cause && cause.status === 503) {
-          // 服务端还是旧的（没换到带同步接口的原生模块）：勾选框锁上，把「要重启」
-          // 说清楚，别让用户以为是自己选错了。
-          subSyncBox.checked = false;
-          subSyncBox.disabled = true;
-          subPreview = { state: 'unavailable' };
-        } else {
-          subPreview = { state: 'error', error: (cause && cause.message) || String(cause) };
-        }
-        paintSyncStatus(subagentFamily(cli));
+        // 503：原生模块是旧的，同步和清除都锁上并说清原因，别让用户以为是自己选错了。
+        if (cause && cause.status === 503) noteSubagentFailure(cause);
+        else subPreview = { state: 'error', error: (cause && cause.message) || String(cause) };
+        paintSyncStatus();
+        paintGlobal();
       }
     }
 
-    // 保存已经落地的收尾：勾了「同步」就先发真的同步请求，再关对话框。同步失败
-    // = 任务本身已经保存，只把同步留作重试（savedPending）—— 再点一次提交走的是
-    // save() 开头那条分支，只重发同步，不会把同一次保存做两遍；反过来说，失败之后
-    // 又改的子 agent 设置不会在这次重试里再保存一遍，重试只负责同步。
+    // 同步 / 清除共用：503 = 原生模块是旧的，锁上同步和清除；其余错误留在状态行。
+    function noteSubagentFailure(cause) {
+      subSyncUnavailable = subSyncUnavailable || !!(cause && cause.status === 503);
+      if (subSyncUnavailable) { resetSyncPreview(); subSyncBox.disabled = true; subNotice = null; return; }
+      subNotice = { tone: 'error', text: tt('runConfigClearFailed', '清除失败：{error}', { error: (cause && cause.message) || String(cause) }) };
+    }
+
+    // 清除全局默认分两步：先 dry run 说清会恢复几个、几个不受影响（subClearPlan），确认后才真的清 ——
+    // 跟随全局的任务由服务端恢复随主，单独设置的不动。
+    async function clearGlobal(confirmed) {
+      const cli = subCli();
+      const family = subagentFamily(cli);
+      if (!family || subClearBusy || subSyncUnavailable || closed) return;
+      subClearBusy = true;
+      subNotice = null;
+      paintGlobal(family);
+      try {
+        const result = await request('/api/subagent-defaults/sync', { cli, subagent: null, dryRun: !confirmed });
+        if (closed) return;
+        const counts = (result && result.counts) || {};
+        subClearPlan = confirmed ? null : { family: (result && result.family) || family, counts };
+        if (confirmed) {
+          if (result && result.defaults) applySyncedDefaults(result.defaults);
+          subNotice = { tone: 'ready', text: tt('runConfigClearDone', '已清除全局子 agent，{n} 个任务恢复随主',
+            { n: (Number(counts.applied) || 0) + (Number(counts.deferred) || 0) }) };
+          // 这个任务（或草稿）本来跟着全局默认走、这次也没动过下拉：服务端已把它恢复随主，界面跟上，
+          // 免得之后点保存又把旧线路当成单独设置存回去。
+          if (subagentFollowsGlobal()) { subagentSeed = null; subagentSeedAuto = false; renderSub(true); }
+        }
+      } catch (cause) {
+        if (closed) return;
+        subClearPlan = null;
+        noteSubagentFailure(cause);
+      } finally {
+        subClearBusy = false;
+        if (!closed) { paintSyncStatus(); paintGlobal(family); }
+      }
+    }
+
+    // 保存落地后的收尾：勾了「同步」就先发真的同步再关对话框。同步失败 = 任务已经保存，只把同步
+    // 留作重试（savedPending）：再点提交走 save() 开头那条分支，只重发同步，不会把保存做两遍。
     async function finishSubagentSync() {
       if (!subSyncBox.checked || subSyncBox.disabled) { dialog.close(); return; }
       const cli = subCli();
@@ -2076,15 +2146,10 @@
           { error: (cause && cause.message) || String(cause) });
         submit.textContent = tt('runConfigSyncRetry', '重试同步');
         submit.disabled = false;
-        if (cause && cause.status === 503) {
-          subSyncBox.checked = false;
-          subSyncBox.disabled = true;
-          subPreview = { state: 'unavailable' };
-          ++subPreviewSeq;
-        } else {
-          subPreview = null;
-        }
+        if (cause && cause.status === 503) noteSubagentFailure(cause);
+        else subPreview = null;
         paintSyncStatus();
+        paintGlobal();
       }
     }
 
@@ -2611,6 +2676,7 @@
           const picks = Object.fromEntries(Object.entries(accountPicks).filter(([, id]) => id));
           await onSaved({ cli: currentCli, provider: patch.value.provider, providerSelection: null,
             model: patch.value.model, effort: patch.value.effort, providerName, subagent,
+            ...(subagentFollowsGlobal(subagent) ? { subagentInherited: true } : {}),
             cliAccounts: Object.keys(picks).length ? picks : null });
           await finishSubagentSync();
           return;
@@ -2639,7 +2705,8 @@
       const subagent = collectSubagent();
       if (draft) {
         await onSaved({ cli: primary.cli, provider: primary.providerId, providerSelection: selection,
-          model: primary.model || null, effort: null, subagent });
+          model: primary.model || null, effort: null, subagent,
+          ...(subagentFollowsGlobal(subagent) ? { subagentInherited: true } : {}) });
         await finishSubagentSync();
         return;
       }
@@ -2793,19 +2860,20 @@
     subGuideDismiss.onclick = () => dismissSubGuide();
     // 「同步」每次打开都是不勾的；勾上先跑 dry run 说清楚会改几个任务。
     subSyncBox.onchange = () => {
+      subNotice = null;
       if (subSyncBox.checked) {
         subPreviewKey = '';
         subPreview = { state: 'loading' };
         paintSyncStatus();
         queueSyncPreview();
       } else {
-        ++subPreviewSeq;
-        if (subPreviewTimer) { clearTimeout(subPreviewTimer); subPreviewTimer = null; }
-        subPreviewKey = '';
-        subPreview = null;
+        resetSyncPreview();
         paintSyncStatus();
       }
     };
+    subClear.onclick = () => { clearGlobal(false); };
+    subClearConfirm.onclick = () => { clearGlobal(true); };
+    subClearCancel.onclick = () => { subClearPlan = null; paintGlobal(); };
     form.onsubmit = async event => {
       event.preventDefault();
       if (loading) return;
@@ -2905,6 +2973,7 @@
     TIER_KEYS,
     buildAutoSelection,
     buildFixedPatch,
+    clearSummary,
     cliChoicesForLine,
     cliLineVerdict,
     guideSeen,

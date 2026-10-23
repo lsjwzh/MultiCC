@@ -1679,6 +1679,7 @@ void main() {
             'deferred': 1,
             'unchanged': 0,
             'skipped': 3,
+            'kept': 4,
           },
           'sessions': [],
           'truncated': false,
@@ -1730,12 +1731,83 @@ void main() {
     expect(body['dryRun'], isTrue);
     expect(body['subagent'], {'providerId': 'relay', 'model': 'glm-5.2'});
 
+    // 单独设置过的任务不会被同步改掉：预览里必须把它们和「跳过」一起说清楚。
     expect(find.textContaining('将更新 3 个任务'), findsOneWidget);
+    expect(find.textContaining('4 个单独设置过的保持不变'), findsOneWidget);
     expect(find.textContaining('3 个跳过'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('同步开关：服务端 503 时收起开关并提示手动重启', (tester) async {
+  testWidgets('同步开关：没有需要更新的任务时说清楚，仍带上 kept/skipped', (
+    tester,
+  ) async {
+    final s = await settings(host: 'http://server.example');
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/subagent-defaults') {
+        return _json(200, {
+          'ok': true,
+          'defaults': {'claude': null, 'codex': null},
+        });
+      }
+      if (request.url.path == '/api/subagent-defaults/sync') {
+        return _json(200, {
+          'ok': true,
+          'dryRun': true,
+          'family': 'claude',
+          'subagent': {'providerId': 'relay', 'model': 'glm-5.2'},
+          'defaults': {'claude': null, 'codex': null},
+          'counts': {
+            'applied': 0,
+            'deferred': 0,
+            'unchanged': 2,
+            'skipped': 1,
+            'kept': 3,
+          },
+          'sessions': [],
+          'truncated': false,
+        });
+      }
+      return _json(404, {'error': 'not found'});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: _claudeProviders,
+        provider: 'relay',
+        model: '',
+        effort: 'medium',
+        settings: s,
+        httpClient: client,
+      ),
+      out,
+    );
+
+    await tester.ensureVisible(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Zhipu').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-model')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('glm-5.2').last);
+    await tester.pumpAndSettle();
+
+    final sync = find.byKey(const ValueKey('run-subagent-sync'));
+    await tester.ensureVisible(sync);
+    await tester.tap(sync);
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('没有需要更新的任务'), findsOneWidget);
+    expect(find.textContaining('3 个单独设置过的保持不变'), findsOneWidget);
+    expect(find.textContaining('1 个跳过'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('同步开关：服务端 503 时收起开关并说明旧原生模块重启即可', (tester) async {
     final s = await settings(host: 'http://server.example');
     final client = MockClient((request) async {
       if (request.url.path == '/api/subagent-defaults') {
@@ -1767,6 +1839,18 @@ void main() {
       out,
     );
 
+    // 先选一套子任务配置：随主时同步开关本来就不可勾，只有设了路由才会发请求。
+    await tester.ensureVisible(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-provider')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Zhipu').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('run-subagent-model')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('glm-5.2').last);
+    await tester.pumpAndSettle();
+
     final sync = find.byKey(const ValueKey('run-subagent-sync'));
     await tester.ensureVisible(sync);
     await tester.tap(sync);
@@ -1774,10 +1858,195 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('请手动重启 MultiCC 服务端'), findsOneWidget);
+    expect(
+      find.text(
+        '服务端加载的原生模块是旧版本，暂不支持同步。'
+        '重启一次 MultiCC 会自动按当前代码重新编译加载，之后改这个设置不需要再重启。',
+      ),
+      findsOneWidget,
+    );
     final tile = tester.widget<CheckboxListTile>(sync);
     expect(tile.value, isFalse);
     expect(tile.onChanged, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('子 agent 三态：跟着全局默认的显示「跟随全局默认」，并给出「清除」', (
+    tester,
+  ) async {
+    final s = await settings(host: 'http://server.example');
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/subagent-defaults') {
+        return _json(200, {
+          'ok': true,
+          'defaults': {
+            'claude': {'providerId': 'relay', 'model': 'glm-5.2'},
+            'codex': null,
+          },
+        });
+      }
+      return _json(404, {'error': 'not found'});
+    });
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: _claudeProviders,
+        provider: 'relay',
+        model: '',
+        effort: 'medium',
+        subProviderId: 'relay',
+        subModel: 'glm-5.2',
+        subInherited: true,
+        settings: s,
+        httpClient: client,
+      ),
+      _Captured(),
+    );
+    expect(find.text('跟随全局默认'), findsOneWidget);
+    final line = tester.widget<Text>(
+      find.byKey(const ValueKey('run-subagent-default-line')),
+    );
+    expect(line.data, '全局默认：Zhipu · glm-5.2');
+    expect(
+      find.byKey(const ValueKey('run-subagent-clear-default')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('子 agent 随主：同步只用来「设」全局默认，开关不可勾', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/subagent-defaults') {
+        return _json(200, {
+          'ok': true,
+          'defaults': {
+            'claude': {'providerId': 'relay', 'model': 'glm-5.2'},
+            'codex': null,
+          },
+        });
+      }
+      return _json(404, {'error': 'not found'});
+    });
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: _claudeProviders,
+        provider: 'relay',
+        model: '',
+        effort: 'medium',
+        settings: s,
+        httpClient: client,
+      ),
+      _Captured(),
+    );
+    expect(find.text('跟随主线路'), findsOneWidget);
+    final tile = tester.widget<CheckboxListTile>(
+      find.byKey(const ValueKey('run-subagent-sync')),
+    );
+    expect(tile.value, isFalse);
+    expect(tile.onChanged, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('清除全局默认：先 dry run 报数并确认，确认后真清；跟着全局的选择器回随主', (
+    tester,
+  ) async {
+    final s = await settings(host: 'http://server.example');
+    final posts = <Map<String, dynamic>>[];
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/subagent-defaults') {
+        return _json(200, {
+          'ok': true,
+          'defaults': {
+            'claude': {'providerId': 'relay', 'model': 'glm-5.2'},
+            'codex': null,
+          },
+        });
+      }
+      if (request.url.path == '/api/subagent-defaults/sync') {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        posts.add(body);
+        final dry = body['dryRun'] == true;
+        return _json(200, {
+          'ok': true,
+          'dryRun': dry,
+          'family': 'claude',
+          'subagent': null,
+          'defaults': dry
+              ? {
+                  'claude': {'providerId': 'relay', 'model': 'glm-5.2'},
+                  'codex': null,
+                }
+              : {'claude': null, 'codex': null},
+          'counts': {
+            'applied': 2,
+            'deferred': 1,
+            'unchanged': 4,
+            'skipped': 0,
+            'kept': 5,
+          },
+          'sessions': [],
+          'truncated': false,
+        });
+      }
+      return _json(404, {'error': 'not found'});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: _claudeProviders,
+        provider: 'relay',
+        model: '',
+        effort: 'medium',
+        subProviderId: 'relay',
+        subModel: 'glm-5.2',
+        subInherited: true,
+        settings: s,
+        httpClient: client,
+      ),
+      out,
+    );
+
+    final clear = find.byKey(const ValueKey('run-subagent-clear-default'));
+    await tester.ensureVisible(clear);
+    await tester.tap(clear);
+    await tester.pumpAndSettle();
+    expect(find.text('清除 Claude Code 的全局子 agent？'), findsOneWidget);
+    expect(find.textContaining('3 个跟随全局的任务会恢复随主'), findsOneWidget);
+    expect(find.textContaining('单独设置过的 5 个任务不受影响'), findsOneWidget);
+
+    // 取消：只做过 dry run，什么都没改。
+    await tester.tap(find.byKey(const ValueKey('run-subagent-clear-cancel')));
+    await tester.pumpAndSettle();
+    expect(posts, hasLength(1));
+    expect(posts.single['dryRun'], isTrue);
+    expect(posts.single['subagent'], isNull);
+    expect(find.text('跟随全局默认'), findsOneWidget);
+
+    await tester.ensureVisible(clear);
+    await tester.tap(clear);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('run-subagent-clear-confirm')));
+    await tester.pumpAndSettle();
+    expect(posts, hasLength(3));
+    expect(posts.last['dryRun'], isNot(true));
+    expect(posts.last['subagent'], isNull);
+    expect(find.textContaining('已清除全局子 agent，3 个任务恢复随主'), findsOneWidget);
+    final line = tester.widget<Text>(
+      find.byKey(const ValueKey('run-subagent-default-line')),
+    );
+    expect(line.data, '全局默认：未设置（新任务随主线路）');
+    expect(find.byKey(const ValueKey('run-subagent-clear-default')), findsNothing);
+    // 这个任务原来跟着全局默认：选择器回随主，保存时不会把旧线路当成自己的设置存回去。
+    expect(find.text('跟随主线路'), findsOneWidget);
+    await _save(tester);
+    expect(out.value, isNotNull);
+    expect(out.value!.subagent, isNull);
     expect(tester.takeException(), isNull);
   });
 

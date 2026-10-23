@@ -41,6 +41,7 @@ function subagentDto(value) {
     providerId,
     model,
     effectiveModel: nullableString(value.effectiveModel, 160),
+    ...(value.inherited === true ? { inherited: true } : {}),
   };
 }
 

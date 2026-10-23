@@ -83,17 +83,24 @@ MULTICC_LIVE_SESSION=<session-id> npm run test:subagent-live
 
 该测试会产生真实模型调用和一条 session 历史记录，不应放入默认 `npm test`。
 
-## 同 CLI 默认与一键同步
+## 同 CLI 全局默认：同步与清除
 
-运行配置对话框里的「子 agent」区块可以勾选「同步到全部 {CLI} 任务，之后新建的也默认用这套」：
+每个 CLI 家族（`claude` 与 `claude-exp` 一族，`codex` 与 `codex-exp` 一族）至多一条子 agent
+全局默认，存在 `provider-defaults.json` 的 `subagent` 键。任务上的子 agent 线路分三种：没有
+（跟随主线路）、来自全局默认（线路对象带 `inherited: true`）、任务自己单独设置的。
 
-- `POST /api/subagent-defaults/sync` 把同一条子 agent 线路逐个写进同一 CLI 家族
-  （`claude` 与 `claude-exp` 一族，`codex` 与 `codex-exp` 一族）的全部对话任务。每个任务
-  走的仍是单任务 PATCH 那一条路径：正在跑的任务下一轮生效，系统会话、终端和登录会话不动。
-- 同一次操作把它记成该家族的默认值（`provider-defaults.json` 的 `subagent` 键）。新建
-  对话任务时请求里没写 `subagent` 就套用默认；明确写 `null` 表示这个任务不要子 agent
-  覆盖。默认值失效（线路被删、Codex 任务没选主线路）时按「随主」创建，不会让建任务失败。
-- 选「随主」再同步 = 清掉同家族所有任务的子 agent 覆盖，并清掉默认值。
+- 运行配置里勾「同步给所有没单独设置子 agent 的 {CLI} 任务，之后新建的也默认用这套」=
+  `POST /api/subagent-defaults/sync`（`subagent` 为一条线路）：记成该家族的全局默认，并只写进
+  没单独设置的任务（随主的、或线路来自全局默认的），写进去的带 `inherited`。单独设置过的任务
+  一律不动，回执里计为 `kept`。每个任务走的仍是单任务 PATCH 那一条路径：正在跑的任务下一轮
+  生效，系统会话、终端和登录会话不动。
+- 「全局默认」一行的「清除」= 同一个接口的 `subagent: null`：先 dry run 报数，确认后撤掉全局
+  默认，带 `inherited` 的任务恢复随主，单独设置的不动。
+- 新建对话任务时请求里没写 `subagent` 就套用当时的全局默认并标 `inherited`；明确写一条线路
+  是这个任务自己的设置，写 `null` 表示随主。默认值失效（线路被删、Codex 任务没选主线路）时
+  按「随主」创建，不会让建任务失败。
+- 单任务 PATCH 原样回存同一条线路（对话框只改了主线路）保留 `inherited`；换成别的线路或随主
+  就成了任务自己的设置。
 
 ## 边界
 

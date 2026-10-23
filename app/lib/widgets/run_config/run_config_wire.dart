@@ -123,17 +123,26 @@ String protocolLabelOf(String protocol) => switch (protocol) {
 
 /// 子任务尾巴的折算：模型有值才算数（只挑线路不挑模型 = 没设）。线路留空时用
 /// 这一轮实际生效的主 Provider —— Auto 档下就是排第一的那个有效候选。
+///
+/// [inherited] = 这套设置来自家族全局默认、用户没动过：会话保存时服务端按同一条
+/// 路由保留继承标记，建任务时调用方则整个省略 `subagent` 字段（见
+/// air_task_config.dart 的 toCreateBody）。
 SessionSubagent? buildSubagent({
   required String subProviderId,
   required String subModel,
   required String mainProvider,
+  bool inherited = false,
 }) {
   final model = subModel.trim();
   if (model.isEmpty) return null;
   final provider = subProviderId.trim().isEmpty
       ? mainProvider
       : subProviderId.trim();
-  return SessionSubagent(providerId: provider, model: model);
+  return SessionSubagent(
+    providerId: provider,
+    model: model,
+    inherited: inherited,
+  );
 }
 
 /// 固定一条。`providerId` 空串 = 用这条车道自己的官方/原生配置。
@@ -152,6 +161,7 @@ RunWireResult buildFixedOutcome({
   String? subagentCli,
   bool syncSubagent = false,
   bool subagentCleared = false,
+  bool subagentInherited = false,
 }) {
   final native = isOpenCodeNativeProvider(providerId);
   var provider = native ? '' : providerId;
@@ -161,6 +171,7 @@ RunWireResult buildFixedOutcome({
     subProviderId: subProviderId ?? '',
     subModel: subModel ?? '',
     mainProvider: provider,
+    inherited: subagentInherited,
   );
   return RunWireResult.success(
     RunConfigOutcome(

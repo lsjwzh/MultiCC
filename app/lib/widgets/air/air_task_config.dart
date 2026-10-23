@@ -132,7 +132,10 @@ class AirTaskRuntime {
       if (effort.isNotEmpty) 'effort': effort,
       // 子任务尾巴跟着主线路一起走：模型为空就是没设（只挑线路不挑模型 = 随主），
       // 不发 —— 半截配置服务端会当非法拒掉。
-      if (hasChild)
+      // 未动过的家族默认（inherited）：整个不出现，由服务端按它**当时**的默认
+      // 套用并标记 inherited —— 从 lastRuntime 带过来的旧默认不能固化成本任务
+      // 自己的设置。
+      if (hasChild && child.inherited != true)
         'subagent': {'providerId': child.providerId, 'model': child.model},
       // 用户明确选了「随主」：显式 null 才能把家族默认顶掉。没决定（没点过）时
       // 上面两行都不命中，字段整个不出现 —— 服务端才会套用它自己的默认。
@@ -179,6 +182,9 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
         effort: initial.effort.isEmpty ? cli.defaultEffort : initial.effort,
         subProviderId: initial.subagent?.providerId,
         subModel: initial.subagent?.model,
+        // lastRuntime 里带来的那套就是全局默认：没动过时保持「跟随全局默认」，
+        // 创建请求不发 subagent（服务端按当前默认套用）。
+        subInherited: initial.subagent?.inherited ?? false,
         settings: settings,
         httpClient: httpClient,
         // 新任务 / 草稿：家族默认要先选上；用户明确「随主」时创建请求发显式 null。

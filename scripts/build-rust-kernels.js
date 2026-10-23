@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { nativeBinaryArch, nativeBinaryPlatform } = require('./native-arch');
-const { sourcePaths, probeAddon } = require('./rust-source-cache');
+const { sourcePaths, sourceFingerprint, probeAddon, provenancePath, writeProvenance } = require('./rust-source-cache');
 
 function targetFor(platform, arch) {
   const targets = { 'darwin-arm64': 'aarch64-apple-darwin', 'darwin-x64': 'x86_64-apple-darwin',
@@ -23,6 +23,7 @@ function build({ platform = process.platform, arch = process.arch,
   out = process.env.MULTICC_RUST_PREBUILT_DIR,
   targetDir = process.env.CARGO_TARGET_DIR } = {}) {
   const repo = path.resolve(__dirname, '..'), target = targetFor(platform, arch);
+  const fingerprint = sourceFingerprint(repo, process.env);
   const defaults = !out || !targetDir ? sourcePaths(repo) : null;
   out ||= defaults.prebuiltDir;
   targetDir ||= defaults.targetDir;
@@ -45,6 +46,10 @@ function build({ platform = process.platform, arch = process.arch,
   } finally {
     fs.rmSync(temporary, { force: true });
   }
+  // Record the source this file was built from (see rust-source-cache.js). An edit
+  // during the build leaves no record, so nothing can vouch for mixed output.
+  if (sourceFingerprint(repo, process.env) === fingerprint) writeProvenance(file, fingerprint);
+  else fs.rmSync(provenancePath(file), { force: true });
   console.log(`Rust 模块已构建：${file}`);
   return file;
 }

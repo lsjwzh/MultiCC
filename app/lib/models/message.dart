@@ -888,16 +888,41 @@ class SessionSubagent {
   // Real wire model id the proxy forwards upstream (tier alias resolved, e.g.
   // opus → glm-5.2). Server-computed; display-only, so not sent back on save.
   final String? effectiveModel;
-  const SessionSubagent({this.providerId, this.model, this.effectiveModel});
+
+  /// 这条线路来自「家族全局默认」（同步写下来的，或建任务时服务端按默认套上的），
+  /// 不是任务自己单独设的。见 subagent_defaults_service.dart 的契约。
+  final bool inherited;
+
+  const SessionSubagent({
+    this.providerId,
+    this.model,
+    this.effectiveModel,
+    this.inherited = false,
+  });
 
   factory SessionSubagent.fromJson(dynamic j) => j is Map
       ? SessionSubagent(
           providerId: j['providerId']?.toString(),
           model: j['model']?.toString(),
           effectiveModel: j['effectiveModel']?.toString(),
+          inherited: j['inherited'] == true,
         )
       : const SessionSubagent();
 
+  SessionSubagent copyWith({
+    String? providerId,
+    String? model,
+    String? effectiveModel,
+    bool? inherited,
+  }) => SessionSubagent(
+    providerId: providerId ?? this.providerId,
+    model: model ?? this.model,
+    effectiveModel: effectiveModel ?? this.effectiveModel,
+    inherited: inherited ?? this.inherited,
+  );
+
+  /// `inherited` 不回传：服务端按「与现路由是否同一条」判定继承标记，客户端把
+  /// 它原样发回去反而可能把一条用户自己改过的路由也标成继承。
   Map<String, dynamic> toJson() => {
     'providerId': providerId ?? '',
     'model': model ?? '',

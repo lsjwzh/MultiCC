@@ -30,9 +30,12 @@ const { mountSubagentDefaultsRoutes } = require('../src/routes/subagent-defaults
 const { createProviderRoutes } = require('../src/routes/providers');
 const { createSessionRecordFactory } = require('../src/session/create-record');
 const { isResidentSession } = require('../src/cli/cli-capability');
+const { withSubagentSource } = require('../src/session/subagent');
 
 const CLAUDE_ROUTE = Object.freeze({ providerId: 'sub-claude', model: 'claude-haiku-4-5' });
 const CODEX_ROUTE = Object.freeze({ providerId: 'sub-codex', model: 'gpt-5-codex' });
+// 来自全局默认的线路带 inherited；不带的是任务自己单独设置的。
+const inherited = route => ({ ...route, inherited: true });
 const SENSITIVE = '/Users/alice/private token=abc';
 
 function createApp() {
@@ -100,8 +103,9 @@ function bridgeHarness(options = {}) {
       if (throwing.has(sessionId)) throw new Error(SENSITIVE);
       if (rejected.has(sessionId)) return { status: 400, body: { error: SENSITIVE } };
       if (deferred.has(sessionId)) return { status: 200, body: { deferred: true } };
-      if (body.subagent) session.subagent = clone(body.subagent);
-      else delete session.subagent;
+      if (body.subagent) {
+        session.subagent = withSubagentSource(clone(body.subagent), session.subagent, body.subagentInherited === true);
+      } else delete session.subagent;
       return { status: 200, body: { subagent: clone(body.subagent) } };
     },
     previewSessionPatch(sessionId, body) {
@@ -127,8 +131,9 @@ rustTest('dry run plans without writing defaults or sessions', async () => {
   const harness = bridgeHarness({
     sessions: [
       claudeSession('apply-me'),
-      claudeSession('same', { subagent: clone(CLAUDE_ROUTE) }),
+      claudeSession('same', { subagent: inherited(CLAUDE_ROUTE) }),
       claudeSession('pending', { pendingConfiguration: { cli: 'claude', profile: { subagent: null } } }),
+      claudeSession('own', { subagent: clone(CLAUDE_ROUTE) }),
     ],
   });
   const response = await invoke(harness.app, 'POST', '/api/subagent-defaults/sync', {
@@ -141,11 +146,12 @@ rustTest('dry run plans without writing defaults or sessions', async () => {
     family: 'claude',
     subagent: CLAUDE_ROUTE,
     defaults: { claude: CLAUDE_ROUTE, codex: null },
-    counts: { applied: 1, deferred: 1, unchanged: 1, skipped: 0 },
+    counts: { applied: 1, deferred: 1, unchanged: 1, skipped: 0, kept: 1 },
     sessions: [
       { sessionId: 'apply-me', sessionName: 'apply-me', cli: 'claude', outcome: 'applied' },
       { sessionId: 'pending', sessionName: 'pending', cli: 'claude', outcome: 'deferred' },
       { sessionId: 'same', sessionName: 'same', cli: 'claude', outcome: 'unchanged' },
+      { sessionId: 'own', sessionName: 'own', cli: 'claude', outcome: 'kept' },
     ],
     truncated: false,
   });
@@ -156,12 +162,14 @@ rustTest('dry run plans without writing defaults or sessions', async () => {
   assert.equal(harness.providerDefaults.subagent, undefined);
 });
 
-rustTest('apply persists defaults first and moves every target session', async () => {
+rustTest('apply persists defaults first and moves only sessions without an own route', async () => {
   const harness = bridgeHarness({
     sessions: [
       claudeSession('apply-me'),
-      claudeSession('same', { subagent: clone(CLAUDE_ROUTE) }),
+      claudeSession('same', { subagent: inherited(CLAUDE_ROUTE) }),
       claudeSession('busy', { provider: 'main', pendingConfiguration: { cli: 'claude', profile: {} } }),
+      claudeSession('old-global', { subagent: inherited({ providerId: 'main', model: 'old-model' }) }),
+      claudeSession('own', { subagent: { providerId: 'main', model: 'own-model' } }),
     ],
     deferred: ['busy'],
   });
@@ -170,24 +178,28 @@ rustTest('apply persists defaults first and moves every target session', async (
   });
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.dryRun, false);
-  assert.deepEqual(response.body.counts, { applied: 1, deferred: 1, unchanged: 1, skipped: 0 });
+  assert.deepEqual(response.body.counts, { applied: 2, deferred: 1, unchanged: 1, skipped: 0, kept: 1 });
   assert.deepEqual(response.body.sessions.map(entry => [entry.sessionId, entry.outcome]), [
-    ['apply-me', 'applied'], ['busy', 'deferred'], ['same', 'unchanged'],
+    ['apply-me', 'applied'], ['old-global', 'applied'], ['busy', 'deferred'], ['same', 'unchanged'], ['own', 'kept'],
   ]);
   assert.deepEqual(harness.writes, [{ subagent: { claude: CLAUDE_ROUTE, codex: null } }]);
   assert.deepEqual(harness.providerDefaults.subagent, { claude: CLAUDE_ROUTE, codex: null });
-  assert.deepEqual(harness.sessions.get('apply-me').subagent, CLAUDE_ROUTE);
-  assert.deepEqual(harness.applied.map(entry => entry.body), [
-    { subagent: CLAUDE_ROUTE }, { subagent: CLAUDE_ROUTE },
-  ]);
+  assert.deepEqual(harness.sessions.get('apply-me').subagent, inherited(CLAUDE_ROUTE));
+  assert.deepEqual(harness.sessions.get('old-global').subagent, inherited(CLAUDE_ROUTE));
+  assert.deepEqual(harness.sessions.get('own').subagent, { providerId: 'main', model: 'own-model' });
+  assert.deepEqual(harness.applied.map(entry => entry.sessionId), ['apply-me', 'busy', 'old-global']);
+  for (const entry of harness.applied) {
+    assert.deepEqual(entry.body, { subagent: CLAUDE_ROUTE, subagentInherited: true });
+  }
 });
 
-rustTest('null / empty string / empty object clears the family default and every override', async () => {
+rustTest('null / empty string / empty object clears the default and only the routes that followed it', async () => {
   for (const target of [null, '', {}]) {
     const harness = bridgeHarness({
       sessions: [
-        claudeSession('has-route', { subagent: clone(CLAUDE_ROUTE) }),
+        claudeSession('has-route', { subagent: inherited(CLAUDE_ROUTE) }),
         claudeSession('plain'),
+        claudeSession('own', { subagent: clone(CLAUDE_ROUTE) }),
       ],
       defaults: { claude: CLAUDE_ROUTE, codex: null },
     });
@@ -197,9 +209,10 @@ rustTest('null / empty string / empty object clears the family default and every
     assert.equal(response.statusCode, 200, JSON.stringify(target));
     assert.equal(response.body.subagent, null);
     assert.deepEqual(response.body.defaults, { claude: null, codex: null });
-    assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 1, skipped: 0 });
+    assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 1, skipped: 0, kept: 1 });
     assert.deepEqual(harness.applied, [{ sessionId: 'has-route', body: { subagent: null } }]);
     assert.equal(harness.sessions.get('has-route').subagent, undefined);
+    assert.deepEqual(harness.sessions.get('own').subagent, CLAUDE_ROUTE, 'own routes survive a clear');
     assert.deepEqual(harness.writes, [{
       claude: CLAUDE_ROUTE,
       codex: null,
@@ -213,7 +226,7 @@ rustTest('codex: sessions without a main provider are skipped, not failed', asyn
     sessions: [
       { id: 'with-main', cli: 'codex', kind: 'chat', provider: 'main' },
       { id: 'no-main', cli: 'codex', kind: 'chat', provider: null },
-      { id: 'same', cli: 'codex-exp', kind: 'chat', provider: 'main', subagent: clone(CODEX_ROUTE) },
+      { id: 'same', cli: 'codex-exp', kind: 'chat', provider: 'main', subagent: inherited(CODEX_ROUTE) },
       { id: 'claude-other', cli: 'claude', kind: 'chat', provider: 'main' },
     ],
   });
@@ -222,7 +235,7 @@ rustTest('codex: sessions without a main provider are skipped, not failed', asyn
   });
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.family, 'codex');
-  assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 1, skipped: 1 });
+  assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 1, skipped: 1, kept: 0 });
   assert.deepEqual(response.body.sessions, [
     { sessionId: 'with-main', sessionName: 'with-main', cli: 'codex', outcome: 'applied' },
     { sessionId: 'no-main', sessionName: 'no-main', cli: 'codex', outcome: 'skipped',
@@ -241,7 +254,7 @@ rustTest('a rejected patch is reported as skipped with a sanitized detail', asyn
     body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE) },
   });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 0, skipped: 1 });
+  assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 0, skipped: 1, kept: 0 });
   const skipped = response.body.sessions.at(-1);
   assert.deepEqual(skipped, {
     sessionId: 'rejected', sessionName: 'rejected', cli: 'claude',
@@ -259,9 +272,9 @@ rustTest('a patch that throws is reported for that session; the others still mov
     body: { cli: 'claude', subagent: clone(CLAUDE_ROUTE) },
   });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body.counts, { applied: 2, deferred: 0, unchanged: 0, skipped: 1 });
+  assert.deepEqual(response.body.counts, { applied: 2, deferred: 0, unchanged: 0, skipped: 1, kept: 0 });
   assert.deepEqual(harness.applied.map(entry => entry.sessionId), ['first', 'boom', 'last']);
-  assert.deepEqual(harness.sessions.get('last').subagent, CLAUDE_ROUTE);
+  assert.deepEqual(harness.sessions.get('last').subagent, inherited(CLAUDE_ROUTE));
   const skipped = response.body.sessions.find(entry => entry.sessionId === 'boom');
   assert.deepEqual(skipped, {
     sessionId: 'boom', sessionName: 'boom', cli: 'claude',
@@ -303,7 +316,7 @@ rustTest('system, terminal, ephemeral, login and foreign-CLI sessions are silent
   });
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.body.sessions.map(entry => entry.sessionId), ['keep']);
-  assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 0, skipped: 0 });
+  assert.deepEqual(response.body.counts, { applied: 1, deferred: 0, unchanged: 0, skipped: 0, kept: 0 });
 });
 
 rustTest('pending configuration decides the desired CLI and subagent', async () => {
@@ -490,7 +503,7 @@ rustTest('a never-used feature keeps the exact legacy defaults shape; a sync add
     file: '/runtime/provider-defaults.json',
     value: { claude: 'claude-one', codex: null, subagent: { claude: CLAUDE_ROUTE, codex: null } },
   }]);
-  assert.deepEqual(harness.applied, [{ sessionId: 'a', body: { subagent: CLAUDE_ROUTE } }]);
+  assert.deepEqual(harness.applied, [{ sessionId: 'a', body: { subagent: CLAUDE_ROUTE, subagentInherited: true } }]);
 
   response = await invoke(harness.app, 'GET', '/api/provider-defaults');
   assert.deepEqual(response.body, { claude: 'claude-one', codex: null, subagent: { claude: CLAUDE_ROUTE, codex: null } });
@@ -600,15 +613,33 @@ test('an omitted subagent picks up the CLI family default', async () => {
   const { factory, dir } = createHarness({ providerDefaults: clone(DEFAULT_DEFAULTS) });
   const claude = await factory({ dir, cli: 'claude', kind: 'chat' });
   assert.equal(claude.ok, true, claude.error);
-  assert.deepEqual(claude.session.subagent, CLAUDE_ROUTE);
+  assert.deepEqual(claude.session.subagent, inherited(CLAUDE_ROUTE));
 
   const claudeExp = await factory({ dir, cli: 'claude-exp', kind: 'chat' });
   assert.equal(claudeExp.ok, true, claudeExp.error);
-  assert.deepEqual(claudeExp.session.subagent, CLAUDE_ROUTE);
+  assert.deepEqual(claudeExp.session.subagent, inherited(CLAUDE_ROUTE));
 
   const codex = await factory({ dir, cli: 'codex', kind: 'chat', provider: 'main' });
   assert.equal(codex.ok, true, codex.error);
-  assert.deepEqual(codex.session.subagent, CODEX_ROUTE);
+  assert.deepEqual(codex.session.subagent, inherited(CODEX_ROUTE));
+
+  // 显式给的线路（哪怕和默认一样）是这个任务自己的设置，不带 inherited。
+  const own = await factory({ dir, cli: 'claude', kind: 'chat', subagent: clone(CLAUDE_ROUTE) });
+  assert.equal(own.ok, true, own.error);
+  assert.deepEqual(own.session.subagent, CLAUDE_ROUTE);
+});
+
+test('route provenance: only the default sets inherited; re-saving the same route keeps it', () => {
+  const other = { providerId: 'main', model: 'other' };
+  assert.deepEqual(withSubagentSource(clone(CLAUDE_ROUTE), null, true), inherited(CLAUDE_ROUTE));
+  assert.deepEqual(withSubagentSource(clone(CLAUDE_ROUTE), null), CLAUDE_ROUTE);
+  // 对话框只改了主线路、子 agent 原样回存：仍然跟随全局。
+  assert.deepEqual(withSubagentSource(clone(CLAUDE_ROUTE), inherited(CLAUDE_ROUTE)), inherited(CLAUDE_ROUTE));
+  // 换成别的线路 = 单独设置；选随主 = 没有线路。
+  assert.deepEqual(withSubagentSource(clone(other), inherited(CLAUDE_ROUTE)), other);
+  assert.equal(withSubagentSource(null, inherited(CLAUDE_ROUTE)), null);
+  // 单独设置过的同一条线路不会被「回存」悄悄变成跟随全局。
+  assert.deepEqual(withSubagentSource(clone(CLAUDE_ROUTE), clone(CLAUDE_ROUTE)), CLAUDE_ROUTE);
 });
 
 test('explicit null / empty string / empty object keeps "no sub-task route"', async () => {
