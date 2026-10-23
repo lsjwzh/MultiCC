@@ -4,6 +4,7 @@ pub mod search;
 pub mod sqlite;
 pub mod subagent_defaults;
 pub mod task_context;
+pub mod task_read_model;
 pub mod usage;
 
 pub mod claude_refresh;

@@ -76,7 +76,7 @@ test('摘要索引：缓存与原地修改隔离，单卡删除、忽略和今�
 test('多客户端共享一个生产者；请求、重连和分页都不触发额外构建', async t => {
   let builds = 0, observer; const listeners = new EventEmitter();
   let data = snapshot([task(1), task(2)]);
-  const runtime = createAirSyncRuntime({
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(),
     build: async ids => { builds++; await tick(); return ids ? { ...data, tasks: data.tasks.filter(t => ids.includes(t.id)) } : data; },
     subscribe: fn => { observer = fn; listeners.on('change', fn); return () => listeners.off('change', fn); },
     taskIdsForSession: () => ['1'], send: (socket, event) => socket.frames.push(event),
@@ -101,7 +101,7 @@ test('多客户端共享一个生产者；请求、重连和分页都不触发�
 
 test('失败保留旧索引，恢复后继续推进', async t => {
   let fail = false, data = snapshot([task(1)]);
-  const runtime = createAirSyncRuntime({ build: async () => {
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(), build: async () => {
     if (fail) throw new Error('失败'); return data;
   }, logger: { warn() {} }, send() {} });
   t.after(() => runtime.close());
@@ -114,7 +114,7 @@ test('失败保留旧索引，恢复后继续推进', async t => {
 test('事件提前唤醒周期核对；构建中再次变化会保留到下一轮', async t => {
   let observer, finish, builds = 0;
   let data = snapshot([task(1)]);
-  const runtime = createAirSyncRuntime({ debounceMs: 5, reconcileMs: 60_000,
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(), debounceMs: 5, reconcileMs: 60_000,
     subscribe: fn => { observer = fn; }, send() {}, build: async () => {
       builds++; const captured = structuredClone(data);
       if (builds === 2) await new Promise(done => { finish = done; });
@@ -152,7 +152,7 @@ test('重连合并最终摘要，HTTP 补齐与同时到达的 WS 变化可以�
 
 test('关闭等待已开始的后台构建，不在关闭后再发布或安排核对', async () => {
   let finish, unsubscribe = 0, sends = 0;
-  const runtime = createAirSyncRuntime({ build: () => new Promise(done => { finish = done; }),
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(), build: () => new Promise(done => { finish = done; }),
     subscribe: () => () => unsubscribe++, send: () => sends++ });
   const building = runtime.flush(); const draining = runtime.close();
   let drained = false; draining.then(() => { drained = true; }); await tick(); assert.equal(drained, false);
@@ -248,7 +248,7 @@ test('waitingReply 只筛等待回复，兼容 waiting 继续代表待处理集�
 test('未挂到任务板的会话事件只重算元数据；工作区级事件仍走全量', async t => {
   let observer; const builtIds = [];
   let data = snapshot([task(1)]);
-  const runtime = createAirSyncRuntime({
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(),
     build: async ids => { builtIds.push(ids); return ids ? { ...data, tasks: data.tasks.filter(x => ids.includes(x.id)) } : data; },
     subscribe: fn => { observer = fn; }, send() {},
     taskIdsForSession: () => [], // 会话尚未挂到任何任务板任务（新任务首轮/aux）

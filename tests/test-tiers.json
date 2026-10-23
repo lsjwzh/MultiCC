@@ -1229,6 +1229,15 @@
       ]
     },
     {
+      "path": "tests/test-air-rust-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
       "path": "tests/test-air-search-scope-cdp.js",
       "tier": "flow",
       "lane": "cdp",
@@ -5305,6 +5314,24 @@
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-read-air.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
+      "path": "tests/test-task-read-model.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
       ]
     },
     {
