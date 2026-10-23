@@ -106,6 +106,9 @@ function createHarness(overrides = {}) {
     // 默认桩: 不打真实 npm registry。想断言「有新版」的用例自己注入一个。
     fetchLatestVersion: overrides.fetchLatestVersion || (async () => null),
     fetchLatestVersionWithSource: overrides.fetchLatestVersionWithSource,
+    // 默认桩: 不去 spawn 内置引擎那个两百多 MB 的原生二进制。基线未知时 claude
+    // 退回 npm 口径 —— 想断言「跟内置版本比」的用例自己注入。
+    bundledClaudeCodeVersion: overrides.bundledClaudeCodeVersion || (async () => null),
     registryBase: overrides.registryBase,
     env: overrides.env,
     envFile: overrides.envFile,
@@ -621,15 +624,14 @@ test('cli/versions reports the spawned binary version and parses noisy output', 
   assert.equal(res.body.versions.qoder.available, true);
   assert.equal(res.body.versions.claude.version, '2.0.1');
   // claude-exp 的引擎随 MultiCC 走, 不在升级范围里: 所以它没有自己的一行, 而是挂在
-  // 家族的 bundled 上(面板把这一行写成副标题, 不给装不了的按钮)。版本来自
-  // package.json 里的 SDK 依赖, 跟着真实依赖走, 升级 SDK 不需要改这里。
+  // 家族的 bundled 上(面板把这一行写成副标题, 不给装不了的按钮)。版本优先读实际
+  // 装着的 SDK(读不到才退回 package.json 的声明值) —— 两条路径都以真实依赖为准。
   const sdkDep = require('../package.json').dependencies['@anthropic-ai/claude-agent-sdk'];
   assert.deepEqual(res.body.versions.claude.bundled, [{
     lane: 'claude-exp', engine: 'Claude Agent SDK', kind: 'chat',
     available: true, version: String(sdkDep).replace(/^[~^]/, ''),
-    // 这个用例没有注入上游源: 版本照报, 但「有没有更新」必须是 null/false,
-    // 不能把「查不到」说成「已是最新」。
-    latest: null, updateAvailable: false,
+    // 这个用例没有注入内置引擎的 Claude Code 版本: 基线照实报 null, 不编一个。
+    cliVersion: null,
   }]);
   assert.equal(res.body.versions['claude-exp'], undefined);
   assert.equal(res.body.versions.codex.version, '0.20.0');
@@ -639,37 +641,55 @@ test('cli/versions reports the spawned binary version and parses noisy output', 
   assert.equal(exec.calls.some(c => c.cmd === process.execPath), false);
 });
 
-test('a bundled engine reports its own upstream version without becoming an upgrade', async () => {
-  const exec = fakeExecFile({ '/bin/claude': '2.0.1' });
-  const published = {
-    '@anthropic-ai/claude-code': '2.0.1',
-    '@anthropic-ai/claude-agent-sdk': '99.0.0',
-  };
+test('claude 的升级基线是 MultiCC 内置的 Claude Code，不是 npm 上的最新版', async () => {
+  const exec = fakeExecFile({ '/bin/claude': 'claude v2.1.305' });
+  const asked = [];
   const harness = createHarness({
-    cliCommands: VERSION_CMDS,
+    cliCommands: { claude: '/bin/claude' },
     execFileVersion: exec,
-    fetchLatestVersion: async pkg => published[pkg] || null,
-    availability: { claude: { available: true }, 'claude-exp': { available: true } },
+    bundledClaudeCodeVersion: async () => '2.1.307',
+    fetchLatestVersion: async pkg => { asked.push(pkg); return '2.1.309'; },
+    availability: { claude: { available: true } },
   });
   const res = await harness.invokeVersions();
-  const engine = res.body.versions.claude.bundled[0];
-  // 落后上游要说出来 —— 否则「随 MultiCC 一起升级」只是一句无处可查的空话。
-  assert.equal(engine.latest, '99.0.0');
-  assert.equal(engine.updateAvailable, true);
-  // 但它是「升级 MultiCC 本体」的事: 面板没有可点的东西, 不计入待更新、不进角标。
+  // 目标就是内置引擎那一版: 升到 2.1.307 之后 chat 与终端已经是同一代。
+  assert.equal(res.body.versions.claude.latest, '2.1.307');
+  assert.equal(res.body.versions.claude.updateAvailable, true);
+  assert.equal(res.body.versions.claude.updateSource, 'multiCC');
+  assert.equal(res.body.versions.claude.bundled[0].cliVersion, '2.1.307');
+  assert.equal(asked.includes('@anthropic-ai/claude-code'), false, 'claude 不再问 npm');
+});
+
+test('不比 MultiCC 内置引擎旧时，claude 不提示升级', async () => {
+  const exec = fakeExecFile({ '/bin/claude': 'claude v2.1.305' });
+  const harness = createHarness({
+    cliCommands: { claude: '/bin/claude' },
+    execFileVersion: exec,
+    bundledClaudeCodeVersion: async () => '2.1.301',
+    // npm 上有 9.9.9 也不该催: 那装不到 chat 车道去
+    fetchLatestVersion: async () => '9.9.9',
+    availability: { claude: { available: true } },
+  });
+  const res = await harness.invokeVersions();
+  assert.equal(res.body.versions.claude.version, '2.1.305');
   assert.equal(res.body.versions.claude.updateAvailable, false);
   assert.equal(res.body.updateCount, 0);
 });
 
-test('an absent bundled engine is not probed upstream', async () => {
-  const asked = [];
+test('探不到内置基线时退回 npm 口径，不会因此彻底失去检测', async () => {
+  const exec = fakeExecFile({ '/bin/claude': 'claude v2.0.1' });
   const harness = createHarness({
-    fetchLatestVersion: async pkg => { asked.push(pkg); return '99.0.0'; },
-    availability: { claude: { available: true }, 'claude-exp': { available: false } },
+    cliCommands: { claude: '/bin/claude' },
+    execFileVersion: exec,
+    bundledClaudeCodeVersion: async () => null,
+    fetchLatestVersion: async () => '2.0.2',
+    availability: { claude: { available: true } },
   });
   const res = await harness.invokeVersions();
-  assert.equal(res.body.versions.claude.bundled[0].latest, null);
-  assert.equal(asked.includes('@anthropic-ai/claude-agent-sdk'), false, '没装的内置引擎不该去打网络');
+  assert.equal(res.body.versions.claude.latest, '2.0.2');
+  assert.equal(res.body.versions.claude.updateAvailable, true);
+  assert.equal(res.body.versions.claude.updateSource, 'npm');
+  assert.equal(res.body.versions.claude.bundled[0].cliVersion, null);
 });
 
 test('cli/versions skips unavailable clis without spawning them', async () => {

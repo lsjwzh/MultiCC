@@ -378,31 +378,32 @@ test('随 MultiCC 走的引擎挂在家族行下面，不是一行卖不出去�
   assert.equal(rowButtons(context.registry).length, 1);
 });
 
-test('内置引擎落后上游时说要升 MultiCC 本体，而不是把它算成一条待更新', async () => {
+test('内置引擎那行报出它自带的 Claude Code 版本，升级目标与该基线对得上', async () => {
   const context = buildContext({
     fetchImpl: createFetch({
       '/api/cli/versions': versionsBody({
         claude: entry({
-          version: '2.0.1', latest: '2.0.1',
-          // CLI 制品已是最新, 落后的是随 MultiCC 走的那颗引擎
+          version: '2.1.305', latest: '2.1.307', updateAvailable: true,
+          // 服务端的 bundled: 引擎版本 + 引擎自带的 Claude Code 版本(升级基线)
           bundled: [{
             lane: 'claude-exp', engine: 'Claude Agent SDK', kind: 'chat',
-            available: true, version: '0.3.307', latest: '0.3.309', updateAvailable: true,
+            available: true, version: '0.3.307', cliVersion: '2.1.307',
           }],
         }),
         codex: entry({ version: '0.20.0', latest: '0.20.0' }),
-      }, 0),
+      }, 1),
     }),
   });
   await settle();
   openPopover(context.registry);
   const claudeRow = rowTexts(context.registry).find(text => text.startsWith('Claude'));
+  // 目标不是 npm 上的最新版, 而是 MultiCC 内置引擎那一代 —— 两个数字必须对得上,
+  // 否则用户会问「为什么只到 2.1.307, 明明上游有 2.1.309」。
+  assert.match(claudeRow, /v2\.1\.305 → v2\.1\.307/);
   assert.match(claudeRow, /Claude Agent SDK v0\.3\.307/);
-  assert.match(claudeRow, /0\.3\.309/, '上游有新版本就要说出来');
-  assert.match(claudeRow, /MultiCC/);
-  // 角标与摘要只看可点的升级: 引擎落后不是面板能解决的事
-  assert.equal(context.registry['cli-update-badge'].hidden, true);
-  assert.equal(rowButtons(context.registry).length, 0);
+  assert.match(claudeRow, /Claude Code 2\.1\.307/);
+  assert.match(claudeRow, /不会改动它/);
+  assert.equal(rowButtons(context.registry).length, 1);
 });
 
 test('确认后跑官方升级、轮询到完成，并用 ?refresh=1 让角标清零', async () => {

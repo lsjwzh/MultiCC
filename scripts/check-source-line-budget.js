@@ -456,16 +456,16 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // CodexLoginFailed、LoginUnavailable）：Codex 账号登录不再委托交互式
     // `codex login` 终端，改为和 Claude 一样的面板 —— 授权链接 + 粘贴回调，
     // 中英各 6 行 = +12 行，重跑生成器实测 9578/613035。
-    // +1 双语键（airCliUpdateBundledBehind）：内置引擎（Claude Agent SDK）落后上游时
-    // 要如实说「上游已有 vX，需升级 MultiCC 本体」，并把 airCliUpdateBundled 改成明说
-    // 「上面的升级按钮不会改动它」—— 旧文案和可升级的 CLI 行并排，读起来像在催一件
-    // 点下去没反应的事。中英各 1 行 = +2 行，重跑生成器实测 9580/613354。
+    // 内置引擎那行同时报出引擎自带的 Claude Code 版本（airCliUpdateBundledWithCli）：
+    // claude 的升级基线就是这一版，两个数字放在一起才读得懂为什么有时提示、有时不。
+    // 上一版的 airCliUpdateBundledBehind（跟 npm 上游比 SDK）随之删除 —— 键数不变，
+    // 中英各 1 行；值更长，重跑生成器实测 9612/615336。
     // +6 双语键（airProviderPresetRefresh*/Source*）：Provider 模板可从 GitHub
     // 更新，中英各 6 行 = +12 行；与上一批合并后重跑生成器实测 9592/614156。
     // +10 双语键（airGlobalCpr*）：全局配置中的 CPR 版本选择与待重启状态。
-    // 与主线词典合并后重新生成，实测 9612 行、615236 字节。
+    // 与主线词典合并后重新生成，实测 9612 行、615336 字节。
     maxLines: 9612,
-    maxBytes: 615236,
+    maxBytes: 615336,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

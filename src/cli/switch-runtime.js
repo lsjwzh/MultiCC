@@ -56,6 +56,14 @@ const CLI_VERSION_MAX_BUFFER = 64 * 1024;
 // 按钮 —— 旧表按车道铺开时, claude-exp 就是这么挤出一行假动作的。
 const BUNDLED_ENGINE_VERSIONS = Object.freeze({
   'claude-exp': (() => {
+    // 面板上写的「内置版本」必须是**实际装着的**那一份: 只读 package.json 会报声明值,
+    // 而 node_modules 落后一个版本时(改过依赖却没重装), 用户看到的数字与真正在跑的
+    // 引擎对不上 —— 这个面板最不该骗人的地方正是这里。装了读不到才退回声明值。
+    try {
+      const entry = require.resolve('@anthropic-ai/claude-agent-sdk/sdk.mjs');
+      const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(entry), 'package.json'), 'utf8'));
+      if (typeof pkg.version === 'string' && pkg.version) return pkg.version.replace(/^v/, '');
+    } catch (_) { /* 退回声明值 */ }
     try {
       const value = require('../../package.json').dependencies?.['@anthropic-ai/claude-agent-sdk'];
       return typeof value === 'string' ? value.replace(/^[~^]/, '') : null;
@@ -63,12 +71,11 @@ const BUNDLED_ENGINE_VERSIONS = Object.freeze({
   })(),
 });
 
-// 内置引擎虽然装不了、只能随 MultiCC 走, 但它在 npm 上有真实的发布源。查一下上游
-// 版本, 面板才能区分「已是最新」与「MultiCC 里钉的这一版落后了, 要升级 MultiCC 本体」
-// —— 只写「随 MultiCC 升级」而不说落不落后, 用户会以为自己看到的是一句催升级的空话。
-const BUNDLED_ENGINE_PACKAGES = Object.freeze({
-  'claude-exp': '@anthropic-ai/claude-agent-sdk',
-});
+// claude 的升级基线是 **MultiCC 内置引擎自带的 Claude Code**，不是 npm 上的最新版。
+// chat 车道跑的是 SDK, npm 装得再新也影响不到它; 终端那份 `claude` 二进制只要不比
+// 内置引擎旧, 升级就没有实际收益。内置引擎本身只能随 MultiCC 升级，所以这里比的是
+// 「你手上这份 vs MultiCC 现在能给的这份」—— 落后了才提示，领先了就闭嘴。
+const BUNDLED_BASELINE_FAMILIES = new Set(['claude']);
 
 // 最新版探测与本地版本探测分开缓存: 上游 registry 会超时/限流, 本地 `--version`
 // 不会。两者共用一个 TTL, 但互不覆盖 —— 上游挂了不该让「当前版本」这一栏也空掉。
@@ -148,13 +155,19 @@ function createCliSwitchRuntime(options) {
   const fetchLatestVersionOverride = options.fetchLatestVersion;
   const fetchLatestSourceOverride = options.fetchLatestVersionWithSource;
   const registryBaseOverride = options.registryBase;
+  // 测试注入: 内置引擎自带的 Claude Code 版本。单测不该为了一个版本号去 spawn 一个
+  // 两百多 MB 的原生二进制, 也不该让结果取决于跑测试的这台机器装了什么。
+  const bundledClaudeCodeVersionOverride = options.bundledClaudeCodeVersion;
   // 被 *_CMD 钉死的路径来自哪个环境、写在哪个 .env(测试可注入, 缺省与 server.js 同一份)。
   const pinEnv = options.env || process.env;
   const envFilePath = options.envFile || path.join(__dirname, '..', '..', '.env');
   const versionCache = { at: 0, versions: null };
   // registry 与 latest 一起缓: 记下「这个新版是从哪个源读到的」, 安装时把同一个源
   // 交给 npm, 保证报得出的新版一定装得到(见 buildInstallEnv)。
-  const latestCache = { at: 0, latest: null, registry: null, bundled: null };
+  const latestCache = { at: 0, latest: null, registry: null };
+  // 内置引擎自带的 Claude Code 版本。它是本机一次 `--version`, 只有重装依赖或升级
+  // MultiCC 才会变, 所以和 npm 探测分开缓存 —— 上游超时不该把它一起作废。
+  const bundledCliCache = { at: 0, version: null, known: false };
   let updateWatchStarted = false;
 
   function resolveCliCommandMap() {
@@ -339,6 +352,42 @@ function createCliSwitchRuntime(options) {
     });
   }
 
+  // 内置引擎自带的 Claude Code 二进制: SDK 按「每个平台一个 optionalDependency」
+  // 发布(@anthropic-ai/claude-agent-sdk-<platform>-<arch>/claude), 那份可执行文件
+  // 就是 chat 车道实际跑的引擎 —— 它的 `--version` 才是「MultiCC 现在能给的版本」。
+  // 解析不到(依赖被裁剪 / 平台包没装)就当未知, 绝不抛。
+  function bundledClaudeCodeBinary() {
+    const platform = process.platform;
+    const arch = process.arch;
+    const names = [`@anthropic-ai/claude-agent-sdk-${platform}-${arch}`];
+    if (platform === 'linux') names.push(`@anthropic-ai/claude-agent-sdk-${platform}-${arch}-musl`);
+    for (const name of names) {
+      try {
+        const dir = path.dirname(require.resolve(`${name}/package.json`));
+        const binary = path.join(dir, platform === 'win32' ? 'claude.exe' : 'claude');
+        if (fs.existsSync(binary)) return binary;
+      } catch (_) { /* 试下一个布局 */ }
+    }
+    return null;
+  }
+
+  // 探测一次并缓存。探不到就如实回 null —— 上层据此回退到 npm 口径, 而不是凭空造
+  // 一个基线出来。
+  async function bundledClaudeCodeVersion({ force } = {}) {
+    if (typeof bundledClaudeCodeVersionOverride === 'function') return await bundledClaudeCodeVersionOverride();
+    if (bundledClaudeCodeVersionOverride !== undefined) return bundledClaudeCodeVersionOverride;
+    const now = clock();
+    if (!force && bundledCliCache.known && (now - bundledCliCache.at) < CLI_VERSION_TTL_MS) {
+      return bundledCliCache.version;
+    }
+    const binary = bundledClaudeCodeBinary();
+    const probed = binary ? await probeCliVersion(binary) : null;
+    bundledCliCache.at = now;
+    bundledCliCache.known = true;
+    bundledCliCache.version = probed && probed.version ? probed.version : null;
+    return bundledCliCache.version;
+  }
+
   // 「哪些 CLI 现在有会话在用」。升级是就地替换二进制: 正在跑的进程持有旧 inode,
   // 本身不受影响, 但升级瞬间新起的 turn 可能读到半写状态。前端拿这个数字把确认框
   // 的文案说准 —— 只提示, 不阻断。计数按家族: 升级换的是家族的制品, 用着这个家族
@@ -392,14 +441,11 @@ function createCliSwitchRuntime(options) {
   // zcode(手动装桌面版)没有可比对的发布源, 一律 latest:null —— 前端据此显示
   // 「无法检测最新版」, 而不是把它当成「已是最新」。整体 best-effort: 解析不到就是
   // null, 永不 reject。
-  async function probeLatestVersions({ force, versions }) {
+  async function probeLatestVersions({ force, versions, bundledBaseline }) {
     const now = clock();
     const fresh = !force && latestCache.latest && (now - latestCache.at) < CLI_LATEST_TTL_MS;
     if (fresh) {
-      return {
-        latest: latestCache.latest, registry: latestCache.registry,
-        bundled: latestCache.bundled || {}, at: latestCache.at, cached: true,
-      };
+      return { latest: latestCache.latest, registry: latestCache.registry, at: latestCache.at, cached: true };
     }
     const fetchLatest = resolveFetchLatestVersionWithSource();
     const next = {};
@@ -407,7 +453,11 @@ function createCliSwitchRuntime(options) {
     await Promise.all([...familyTargets().keys()].map(async (family) => {
       const pkg = cliUpstream.npmPackageFor(family);
       const entry = versions[family];
-      if (!pkg || !entry || !entry.available) { next[family] = null; usedRegistry[family] = null; return; }
+      // claude 在有内置基线时不问 npm: chat 跑的是内置 SDK, 上游装得再新也影响不到它,
+      // 提示与否只由「是否落后 MultiCC 自带的 Claude Code」决定(见 decorateVersions)。
+      // 基线探不到(依赖被裁剪)才退回 npm 口径, 至少不会因此彻底失去检测。
+      const baselineRules = BUNDLED_BASELINE_FAMILIES.has(family) && bundledBaseline;
+      if (!pkg || !entry || !entry.available || baselineRules) { next[family] = null; usedRegistry[family] = null; return; }
       try {
         const result = await fetchLatest(pkg);
         // 兼容两种注入: 老接口回版本号, 新接口回 {version, registry}。
@@ -418,28 +468,10 @@ function createCliSwitchRuntime(options) {
         usedRegistry[family] = null;
       }
     }));
-    // 随 MultiCC 走的引擎只比版本、不参与升级计数: 面板装不了它, 报出来的只是
-    // 「MultiCC 这一版钉的引擎落后上游多少」。没装的引擎不去打网络。
-    const fetchBundled = resolveFetchLatestVersion();
-    const bundledNext = {};
-    await Promise.all(Object.entries(BUNDLED_ENGINE_PACKAGES).map(async ([lane, pkg]) => {
-      if (!bundledEngineAvailable(versions, lane)) return;
-      try { bundledNext[lane] = await fetchBundled(pkg); } catch (_) { bundledNext[lane] = null; }
-    }));
     latestCache.at = now;
     latestCache.latest = next;
     latestCache.registry = usedRegistry;
-    latestCache.bundled = bundledNext;
-    return { latest: next, registry: usedRegistry, bundled: bundledNext, at: now, cached: false };
-  }
-
-  function bundledEngineAvailable(versions, lane) {
-    for (const entry of Object.values(versions || {})) {
-      for (const engine of (entry && entry.bundled) || []) {
-        if (engine.lane === lane) return !!engine.available;
-      }
-    }
-    return false;
+    return { latest: next, registry: usedRegistry, at: now, cached: false };
   }
 
   // 合并成对外契约。原有字段(cmd/available/version/error)一个不动, 只新增
@@ -456,24 +488,30 @@ function createCliSwitchRuntime(options) {
     return { env: name, path: value };
   }
 
-  function decorateVersions(versions, latest, inUse = {}, registry = {}, bundledLatest = {}) {
+  function decorateVersions(versions, latest, inUse = {}, registry = {}, bundledBaseline = null) {
     const out = {};
     for (const family of familyTargets().keys()) {
       const entry = versions[family] || { cmd: null, available: false, version: null, error: null, bundled: [] };
       const pkg = cliUpstream.npmPackageFor(family);
-      const verdict = cliUpstream.classifyUpdate(entry.version, latest ? latest[family] : null);
-      // 内置引擎只加「上游有没有新版」这一个事实, 不加可升级性: 它没有能单独安装的
-      // 制品, updateCount 也不数它 —— 面板最多用一句话告诉用户「要升级的是 MultiCC」。
-      const bundled = (entry.bundled || []).map(engine => {
-        const engineVerdict = cliUpstream.classifyUpdate(engine.version, bundledLatest[engine.lane] || null);
-        return { ...engine, latest: engineVerdict.latest, updateAvailable: engineVerdict.updateAvailable };
-      });
+      let verdict = cliUpstream.classifyUpdate(entry.version, latest ? latest[family] : null);
+      let updateSource = pkg ? 'npm' : null;
+      // 有内置基线时, 「有没有新版」问的是「要不要升级 MultiCC」而不是 npm:
+      // 装着的那份比内置引擎旧才提示, 持平或更新都不提示 —— 升级对 chat 车道没有收益。
+      if (BUNDLED_BASELINE_FAMILIES.has(family) && bundledBaseline) {
+        verdict = cliUpstream.classifyUpdate(entry.version, bundledBaseline);
+        updateSource = 'multiCC';
+      }
+      // bundled 行只报「内置引擎是哪一版、里面带的 Claude Code 是哪一版」; 它永远不会
+      // 变成一条可升级的行, 所以这里不给 updateAvailable, 也不进 updateCount。
+      const bundled = (entry.bundled || []).map(engine => (
+        BUNDLED_BASELINE_FAMILIES.has(family) ? { ...engine, cliVersion: bundledBaseline } : engine
+      ));
       out[family] = {
         ...entry,
         bundled,
         latest: verdict.latest,
         updateAvailable: verdict.updateAvailable,
-        updateSource: pkg ? 'npm' : null,
+        updateSource,
         // 这个 latest 是从哪个 registry 读到的(null = 没读到)。面板拿它解释「为什么
         // 走的是镜像」, 升级则用同一个源去装。
         latestRegistry: (registry && registry[family]) || null,
@@ -487,8 +525,10 @@ function createCliSwitchRuntime(options) {
 
   async function collectCliVersions({ force = false } = {}) {
     const local = await probeLocalVersions({ force });
-    const upstream = await probeLatestVersions({ force, versions: local.versions });
-    const versions = decorateVersions(local.versions, upstream.latest, cliInUseCounts(), upstream.registry, upstream.bundled);
+    // 基线要先探: npm 那一轮得知道「claude 这次要不要问上游」。
+    const baseline = await bundledClaudeCodeVersion({ force });
+    const upstream = await probeLatestVersions({ force, versions: local.versions, bundledBaseline: baseline });
+    const versions = decorateVersions(local.versions, upstream.latest, cliInUseCounts(), upstream.registry, baseline);
     const updateCount = Object.values(versions).filter(entry => entry.updateAvailable).length;
     return {
       versions,
@@ -507,7 +547,9 @@ function createCliSwitchRuntime(options) {
     latestCache.at = 0;
     latestCache.latest = null;
     latestCache.registry = null;
-    latestCache.bundled = null;
+    bundledCliCache.at = 0;
+    bundledCliCache.known = false;
+    bundledCliCache.version = null;
   }
 
   // 启动后探一次, 之后每 24h 一次。两个 timer 都 unref: 检测永远不该把一个进程

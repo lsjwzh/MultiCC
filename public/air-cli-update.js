@@ -131,12 +131,13 @@
   // 随 MultiCC 走的引擎（服务端 bundled 列）的说明行。它不是一条可升级的车道：
   // 面板装不了、也升不了它，点上面的按钮不会改动它 —— 这句话必须把这一点说破，
   // 否则同一个浮层里一句「有新版」加一句「随 MultiCC 升级」，读起来就是在催一件
-  // 点下去没反应的事。上游有新版时再补一句「上游已有 vX」，并指明要动的是 MultiCC。
+  // 点下去没反应的事。这里同时报出引擎**自带**的 Claude Code 版本：上面那行的
+  // 升级基线就是它（落后才提示），两个数字放在一起才读得懂为什么有时提示有时不。
   // 版本可能读不到（依赖被裁剪/包结构变了），那就只说引擎，不编一个号。
   function bundledLine(engine) {
     const label = `${engine.engine}${engine.version ? ` v${engine.version}` : ''}`;
-    if (engine.updateAvailable && engine.latest) {
-      return t('airCliUpdateBundledBehind', { engine: label, latest: engine.latest });
+    if (engine.cliVersion) {
+      return t('airCliUpdateBundledWithCli', { engine: label, cliVersion: engine.cliVersion });
     }
     return t('airCliUpdateBundled', { engine: label });
   }
