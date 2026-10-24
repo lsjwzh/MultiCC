@@ -306,13 +306,18 @@ test('core runner covers every selected path and expands declared variants', () 
   // CLIs for expired refresh/model discovery. No real accounts are required.
   // Remote frame decoding and pointer queues add two non-Widget Flutter
   // suites; the gesture Widget suite stays in flow. 357 entries, 332 commands.
-  assert.equal(core.length, 357, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 357);
+  // App build 174 review: three deterministic Rust/Air read-model suites
+  // compare synthetic snapshots and temporary SQLite fixtures with the Node
+  // oracle. No real accounts, user data, devices or external services are used.
+  // Remote-screen Widget, wire and live-device suites remain outside core.
+  // 360 entries, 335 commands; the non-UI Flutter core remains 28 files.
+  assert.equal(core.length, 360, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 360);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 300);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 303);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 29);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 28,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -322,8 +327,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 332,
-    '329 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 335,
+    '332 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
