@@ -387,6 +387,21 @@ for (const backend of ['node', 'rust']) rustTest(`${backend} 周额度单独返�
   assert.equal(h.requests.length, 3);
 });
 
+rustTest('429 额度墙带 x-should-retry: false，普通限流保持可重试', async t => {
+  let count = 0;
+  const h = await harness(t, 'rust', { upstream: (_req, res) => {
+    count++;
+    res.writeHead(429, { 'content-type': 'application/json' });
+    res.end(count === 1
+      ? '{"error":{"type":"rate_limit_error","message":"You have exceeded the 5-hour usage quota."}}'
+      : '{"error":{"type":"rate_limit_error","message":"rate limit exceeded, please retry after 2s"}}');
+  } });
+  let res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+  assert.equal(res.status, 429); assert.equal(res.headers.get('x-should-retry'), 'false'); await res.text();
+  res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+  assert.equal(res.status, 429); assert.equal(res.headers.get('x-should-retry'), null); await res.text();
+});
+
 rustTest('首包等待有上限，错误回调不会包含上游地址或能力令牌', async t => {
   const h = await harness(t, 'rust', { proxy: () => ({ headersTimeoutMs: 25 }), upstream: () => {} });
   const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);

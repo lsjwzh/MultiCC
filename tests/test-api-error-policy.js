@@ -92,20 +92,47 @@ test('a subscription quota wall is never retried, however it is transported', ()
   assert.equal(noReset.action, 'fail_fast');
   assert.equal(noReset.reason, 'billing_quota_not_retryable');
 
-  // A provider-owned rate-limit code, and plain rate-limit prose, keep the
-  // bounded retry they are entitled to.
+  // A provider-owned rate-limit code, and plain rate-limit prose, stay a rate
+  // limit rather than a quota wall. The CLI lane already retried them in-process,
+  // so the host does not replay the turn on the same route either.
   const coded = decideAt({
     source: 'codex_event', provider: 'codex', httpStatus: 429,
     code: 'rate_limit_error', message: 'rate limit',
   });
   assert.equal(coded.error.category, 'rate_limit');
-  assert.equal(coded.action, 'retry');
+  assert.equal(coded.action, 'fail_fast');
+  assert.equal(coded.reason, 'rate_limit_retried_by_cli');
   const prose = decideAt({
     source: 'codex_event', provider: 'codex', httpStatus: 429,
     message: "This request would exceed your account's rate limit. Please try again later.",
   });
   assert.equal(prose.error.category, 'rate_limit');
-  assert.equal(prose.action, 'retry');
+  assert.equal(prose.action, 'fail_fast');
+  assert.equal(prose.reason, 'rate_limit_retried_by_cli');
+});
+
+test('a CLI-lane 429 is not replayed by the host; host-owned aux HTTP keeps its bounded retry', () => {
+  // Production turn (2026-10-25): Claude Code had already spent its own
+  // CLAUDE_CODE_MAX_RETRIES on this 429 before reporting it, and the host then
+  // replayed the turn twice more on the same account (3 x 4 upstream requests).
+  const envelope = detectErrorEnvelope('claude', "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.");
+  for (const attempt of [0, 1]) {
+    const decision = decide({ ...envelope }, { attempt });
+    assert.equal(decision.error.category, 'rate_limit');
+    assert.equal(decision.error.httpStatus, 429);
+    assert.equal(decision.action, 'fail_fast', `attempt ${attempt}`);
+    assert.equal(decision.reason, 'rate_limit_retried_by_cli');
+    assert.equal(decision.error.maxAttempts, 0);
+    assert.match(retryNotice(decision), /不再整轮重放/);
+    assert.doesNotMatch(retryNotice(decision), /受控重试/);
+  }
+  const aux = decide({ httpStatus: 429, message: 'Too Many Requests', source: 'aux_http', provider: 'aux-openai' });
+  assert.equal(aux.error.category, 'rate_limit');
+  assert.equal(aux.action, 'retry');
+  assert.equal(aux.error.maxAttempts, 2);
+  const auxLast = decide({ httpStatus: 429, message: 'Too Many Requests', source: 'aux_http', provider: 'aux-openai' }, { attempt: 2 });
+  assert.equal(auxLast.action, 'fail_fast');
+  assert.equal(auxLast.reason, 'retry_budget_exhausted');
 });
 
 test('reset guidance is read from provider prose only when it is unambiguous', () => {
@@ -336,11 +363,18 @@ test('429 honors Retry-After without jitter and long reset windows do not short-
   assert.equal(parseRetryAfter('7', 0), 7_000);
   const short = decide({
     httpStatus: 429, headers: { 'Retry-After': '7' },
-    source: 'claude_result', provider: 'claude',
+    source: 'aux_http', provider: 'aux-openai',
   });
   assert.equal(short.action, 'retry');
   assert.equal(short.delayMs, 7_000);
   assert.equal(short.reason, 'server_retry_after');
+  // The CLI already waited out a short Retry-After itself before reporting it.
+  const cliShort = decide({
+    httpStatus: 429, headers: { 'Retry-After': '7' },
+    source: 'claude_result', provider: 'claude',
+  });
+  assert.equal(cliShort.action, 'fail_fast');
+  assert.equal(cliShort.reason, 'rate_limit_retried_by_cli');
   const long = decide({
     httpStatus: 429, retryAfterMs: 600_000,
     source: 'codex_event', provider: 'codex',

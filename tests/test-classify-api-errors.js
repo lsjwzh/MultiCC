@@ -278,7 +278,7 @@ function readServerCode() {
   console.log('    provider boundary → evaluateTurnApiError()');
   console.log('      → canonical taxonomy + safe replay/side-effect gate');
   console.log('      → retry: scheduleOwnedRetry() retains the current turn owner');
-  console.log('      → category budget: transient/network/rate-limit ≤2; timeout/unknown ≤1');
+  console.log('      → category budget: transient/network ≤2; timeout/unknown ≤1; CLI-lane 429 0 (the CLI already retried)');
   console.log('      → fail_fast / wait_reset: no automatic replay');
   console.log('      → classify E only projects the policy decision; it opens no retry loop');
   console.log('');
