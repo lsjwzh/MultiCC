@@ -141,7 +141,10 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
             const detail = errorBody.data.toString('utf8');
             await exchange.close(); exchanges.delete(exchange);
             if (!heldAuth && !gone && await stage.repair({ status: head.status, message: detail, attempt, errorCode: 'UPSTREAM_HTTP_ERROR' })) continue;
-            if (!heldAuth && !gone) res.writeHead(head.status, head.headers);
+            // 额度墙（订阅窗口/余额耗尽）在 CLI 的秒级重试里不可能成功：带 x-should-retry: false
+            // 让它立刻停手；普通 429 限流仍然交给 CLI 自己退避。
+            const headers = errorBody.noRetry === true ? { ...head.headers, 'x-should-retry': 'false' } : head.headers;
+            if (!heldAuth && !gone) res.writeHead(head.status, headers);
             settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status);
             if (!gone) res.end(errorBody.data);
             return;

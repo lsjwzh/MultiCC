@@ -662,8 +662,22 @@ function withMaxAttempts(error, maxAttempts) {
   return Object.freeze({ ...error, maxAttempts });
 }
 
-function maxAttemptsFor(category) {
-  if (category === 'provider_transient' || category === 'network' || category === 'rate_limit') return 2;
+// A 429 that reaches the host from a CLI lane has already been retried inside
+// that CLI process: Claude Code backs off and honours Retry-After across its own
+// CLAUDE_CODE_MAX_RETRIES before it ever reports the error. Replaying the whole
+// turn on the same route seconds later only multiplies requests against a
+// limiter that has just refused them (3 host attempts x 4 CLI requests for one
+// prompt). Auto failover keys on the category, not on this action, so it still
+// moves the turn to another line. Only the host's own HTTP calls (aux_http) have
+// no inner retry layer and keep the bounded host retry.
+function cliRetriedRateLimit(error) {
+  return error.category === 'rate_limit' && error.source !== 'aux_http';
+}
+
+function maxAttemptsFor(error) {
+  const { category } = error;
+  if (category === 'rate_limit') return cliRetriedRateLimit(error) ? 0 : 2;
+  if (category === 'provider_transient' || category === 'network') return 2;
   if (category === 'timeout' || category === 'unknown') return 1;
   return 0;
 }
@@ -675,7 +689,7 @@ function decideApiErrorPolicy(rawError, context = {}, deps = {}) {
     ? Object.freeze({ ...rawError })
     : normalizeApiError(rawError, context, { now: () => now });
   const maxAttempts = context.maxAttempts == null
-    ? maxAttemptsFor(error.category) : Math.max(0, Number(context.maxAttempts) || 0);
+    ? maxAttemptsFor(error) : Math.max(0, Number(context.maxAttempts) || 0);
   error = withMaxAttempts(error, maxAttempts);
   const nextAttempt = error.attempt + 1;
 
@@ -700,13 +714,6 @@ function decideApiErrorPolicy(rawError, context = {}, deps = {}) {
       ? 'unsafe_replay_boundary' : `${error.category}_not_retryable`;
     return Object.freeze({ action: 'fail_fast', reason, error, attempt: error.attempt, delayMs: 0 });
   }
-  if (nextAttempt > maxAttempts) {
-    return Object.freeze({
-      action: 'fail_fast', reason: 'retry_budget_exhausted', budgetExhaustedBy: 'attempts',
-      error, attempt: error.attempt, delayMs: 0,
-    });
-  }
-
   if (error.category === 'rate_limit'
       && error.retryAfterMs != null && error.retryAfterMs > 5 * 60_000) {
     return Object.freeze({
@@ -716,6 +723,15 @@ function decideApiErrorPolicy(rawError, context = {}, deps = {}) {
       attempt: error.attempt,
       delayMs: error.retryAfterMs,
       retryAt: now + error.retryAfterMs,
+    });
+  }
+  if (cliRetriedRateLimit(error)) {
+    return Object.freeze({ action: 'fail_fast', reason: 'rate_limit_retried_by_cli', error, attempt: error.attempt, delayMs: 0 });
+  }
+  if (nextAttempt > maxAttempts) {
+    return Object.freeze({
+      action: 'fail_fast', reason: 'retry_budget_exhausted', budgetExhaustedBy: 'attempts',
+      error, attempt: error.attempt, delayMs: 0,
     });
   }
 
@@ -908,6 +924,9 @@ function retryNotice(decision) {
     const fromProvider = !!error.code && !NON_PROVIDER_SOURCES.has(error.source);
     const lead = fromProvider ? '上游 API 中断，但本轮' : '本轮未正常结束（非上游 API 故障）。';
     return `${lead}已有部分输出或工具执行；为避免重复副作用，未自动重放。${causeNotice}${error.userAction}`;
+  }
+  if (decision.reason === 'rate_limit_retried_by_cli') {
+    return `上游限流（HTTP 429）：CLI 进程内已按退避重试仍被拒绝，系统不再整轮重放。${causeNotice}${error.userAction}`;
   }
   if (decision.reason === 'retry_budget_exhausted') {
     const budget = decision.budgetExhaustedBy === 'attempts'

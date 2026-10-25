@@ -1,4 +1,5 @@
 use crate::{
+    error_policy::quota_wall,
     observer::Observer,
     plan::{rate_limit, Plan},
 };
@@ -64,6 +65,7 @@ struct State {
     pending: Vec<u8>,
     attempt: usize,
     status: u16,
+    headers: serde_json::Map<String, Value>,
 }
 pub struct Chunk {
     pub data: Vec<u8>,
@@ -72,6 +74,8 @@ pub struct Chunk {
 pub struct ErrorBody {
     pub data: Vec<u8>,
     pub complete: bool,
+    /// 完整错误正文已确认是额度墙时，宿主据此让 CLI 停止重试。
+    pub no_retry: bool,
 }
 
 impl Exchange {
@@ -91,6 +95,7 @@ impl Exchange {
                 pending: vec![],
                 attempt: 1,
                 status: 0,
+                headers: serde_json::Map::new(),
             }),
         })
     }
@@ -157,6 +162,7 @@ impl Exchange {
             headers.insert("cache-control".into(), "no-cache".into());
         }
         let rate = rate_limit(&headers);
+        state.headers = headers.clone();
         state.response = Some(response);
         Ok(json!({"status":state.status,"headers":headers,"isStream":sse,"rateLimit":rate}))
     }
@@ -186,14 +192,17 @@ impl Exchange {
                 return Ok(ErrorBody {
                     data: out,
                     complete: false,
+                    no_retry: false,
                 });
             }
         }
         state.response = None;
         state.done = true;
+        let no_retry = quota_wall(state.status, &state.headers, &out);
         Ok(ErrorBody {
             data: out,
             complete: true,
+            no_retry,
         })
     }
     pub async fn read(&self) -> Result<Chunk, String> {

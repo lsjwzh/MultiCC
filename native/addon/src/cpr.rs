@@ -71,6 +71,7 @@ pub struct CprChunk {
 pub struct CprErrorBody {
     pub data: Buffer,
     pub complete: bool,
+    pub no_retry: bool,
 }
 
 #[napi]
@@ -97,6 +98,7 @@ impl RustCprExchange {
         Ok(CprErrorBody {
             data: result.data.into(),
             complete: result.complete,
+            no_retry: result.no_retry,
         })
     }
     #[napi]
