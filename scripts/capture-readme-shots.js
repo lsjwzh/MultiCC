@@ -236,7 +236,7 @@ function apiRoutes(options = {}) {
     'GET /api/uploads/stats': json({ ok: true, total: 0 }),
     'GET /api/skill-sync/status': json({ ok: true, skills: [] }),
     'GET /api/settings/official-oauth': json({ ok: true }),
-    'GET /api/settings/cpr-backend': json({ ok: true, currentBackend: 'node', configuredBackend: 'node', rustAvailable: true, restartRequired: false }),
+    'GET /api/settings/cpr-backend': json({ ok: true, currentBackend: 'rust', configuredBackend: 'rust', rustAvailable: true, restartRequired: false }),
     'GET /api/system/agent-permissions': json({ ok: true, applicable: true, local: true, accessibility: true, screenRecording: true }),
     'GET /api/claude/accounts': json({ accounts: [], cliLogin: null }),
     'GET /api/codex/accounts': json({ accounts: [], cliLogin: null }),

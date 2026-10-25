@@ -121,6 +121,8 @@ fn token_totals_are_not_double_counted_and_interleaved_tools_keep_identity() {
         json!({"type":"message_start","message":{"usage":{"input_tokens":10,"cache_creation_input_tokens":3,"cache_read_input_tokens":4}}}),
         json!({"type":"message_delta","usage":{"output_tokens":1}}),
         json!({"type":"message_delta","usage":{"output_tokens":5}}),
+        json!({"type":"message_delta","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":3,"cache_read_input_tokens":4}}),
+        json!({"type":"message_delta","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}),
         json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"one","name":"read"}}),
         json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"two","name":"write"}}),
         json!({"type":"content_block_delta","index":1,"delta":{"partial_json":"中文"}}),

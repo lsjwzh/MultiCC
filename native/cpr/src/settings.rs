@@ -7,7 +7,7 @@ fn backend(value: &Value) -> Option<String> {
 
 /// 宿主提供现有配置与运行时快照；这里只返回允许保存的单个配置项。
 pub fn plan(input: &Value) -> Value {
-    let current = backend(&input["currentBackend"]).unwrap_or_else(|| "node".into());
+    let current = backend(&input["currentBackend"]).unwrap_or_else(|| "rust".into());
     let available = input["rustAvailable"] == true;
     let save = input["action"] == "save";
     let configured = if save {
@@ -19,7 +19,7 @@ pub fn plan(input: &Value) -> Value {
         }
         requested
     } else {
-        backend(&input["configuredBackend"]).unwrap_or_else(|| current.clone())
+        backend(&input["configuredBackend"]).unwrap_or_else(|| "rust".into())
     };
     let mut result = json!({"status":200,"currentBackend":current,"configuredBackend":configured,
         "restartRequired":current != configured,"rustAvailable":available});
@@ -36,12 +36,18 @@ mod tests {
     #[test]
     fn default_and_pending_state_are_separate() {
         let view = plan(&json!({}));
-        assert_eq!(view["currentBackend"], "node");
-        assert_eq!(view["configuredBackend"], "node");
+        assert_eq!(view["currentBackend"], "rust");
+        assert_eq!(view["configuredBackend"], "rust");
         assert_eq!(view["restartRequired"], false);
         let pending = plan(&json!({"currentBackend":"node","configuredBackend":"rust"}));
         assert_eq!(pending["restartRequired"], true);
         assert!(pending.get("updates").is_none());
+        let upgrade = plan(&json!({"currentBackend":"node"}));
+        assert_eq!(upgrade["configuredBackend"], "rust");
+        assert_eq!(upgrade["restartRequired"], true);
+        let pinned = plan(&json!({"currentBackend":"node","configuredBackend":"node"}));
+        assert_eq!(pinned["configuredBackend"], "node");
+        assert_eq!(pinned["restartRequired"], false);
     }
 
     #[test]

@@ -64,8 +64,9 @@ async function harness(t, backend, options = {}) {
     post: (url, body, headers = {}) => fetch(base + url, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json', ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) }) };
 }
 
-test('隐藏开关默认 Node，非法值失败，旧原生模块不能冒充 Rust CPR', () => {
-  assert.equal(resolveCprBackend({}), 'node'); assert.equal(resolveCprBackend({ MULTICC_CPR_BACKEND: ' Rust ' }), 'rust');
+test('默认 Rust，显式 Node 可回退，非法值失败，旧原生模块不能冒充 Rust CPR', () => {
+  assert.equal(resolveCprBackend({}), 'rust'); assert.equal(resolveCprBackend({ MULTICC_CPR_BACKEND: ' Rust ' }), 'rust');
+  assert.equal(resolveCprBackend({ MULTICC_CPR_BACKEND: 'node' }), 'node');
   assert.throws(() => resolveCprBackend({ MULTICC_CPR_BACKEND: 'auto' }), /只支持/);
   assert.throws(() => createRustCprRouter(nodeRouter, { native: {} }), /版本不匹配/);
 });
@@ -74,7 +75,7 @@ async function settingsHarness(t, overrides = {}) {
   let config = {}, writes = [];
   const runtime = { proxyBackend: 'node' };
   const app = express(); app.use(express.json());
-  mountCprBackendSettingsRoutes(app, { runtime, getNative: () => native,
+  mountCprBackendSettingsRoutes(app, { runtime, env: {}, getNative: () => native,
     readEnvFile: () => ({ UNRELATED: 'fixture-other-value', ...config }),
     writeEnvFile: updates => { writes.push(updates); config = { ...config, ...updates }; }, ...overrides });
   const server = http.createServer(app), base = await listen(server);
@@ -88,8 +89,8 @@ async function settingsHarness(t, overrides = {}) {
 rustTest('设置入口保存和撤回待重启选择，当前运行版本保持不变', async t => {
   const h = await settingsHarness(t);
   let view = await (await h.read()).json();
-  assert.equal(view.currentBackend, 'node'); assert.equal(view.configuredBackend, 'node');
-  assert.equal(view.restartRequired, false); assert.equal(view.rustAvailable, true);
+  assert.equal(view.currentBackend, 'node'); assert.equal(view.configuredBackend, 'rust');
+  assert.equal(view.restartRequired, true); assert.equal(view.rustAvailable, true);
   view = await (await h.save({ backend: 'rust', UNRELATED: 'must-not-save' })).json();
   assert.equal(view.currentBackend, 'node'); assert.equal(view.configuredBackend, 'rust');
   assert.equal(view.restartRequired, true); assert.equal(h.runtime.proxyBackend, 'node');
@@ -112,12 +113,25 @@ rustTest('设置入口拒绝非法值和不可用 Rust，同时允许回退 Node
   assert.equal(response.status, 200); await response.text(); assert.equal(h.writes.length, 1);
 });
 
+rustTest('设置入口保留外部显式 Node 配置，持久化选择优先，缺省运行状态为 Rust', async t => {
+  const h = await settingsHarness(t, { env: { MULTICC_CPR_BACKEND: 'node' } });
+  let view = await (await h.read()).json();
+  assert.equal(view.configuredBackend, 'node'); assert.equal(view.restartRequired, false);
+  await (await h.save({ backend: 'rust' })).text();
+  view = await (await h.read()).json();
+  assert.equal(view.configuredBackend, 'rust'); assert.equal(view.restartRequired, true);
+  const defaults = await settingsHarness(t, { runtime: undefined });
+  view = await (await defaults.read()).json();
+  assert.equal(view.currentBackend, 'rust'); assert.equal(view.configuredBackend, 'rust');
+  assert.equal(view.restartRequired, false);
+});
+
 rustTest('设置写入失败不会伪报已保存，也不会公开配置路径或敏感正文', async t => {
   const h = await settingsHarness(t, { writeEnvFile: () => { throw Error('/private/fixture/config fixture-sensitive-text'); } });
   const response = await h.save({ backend: 'rust' });
   assert.equal(response.status, 503);
   assert.doesNotMatch(await response.text(), /private|fixture-sensitive-text/);
-  assert.equal((await (await h.read()).json()).configuredBackend, 'node');
+  assert.equal((await (await h.read()).json()).configuredBackend, 'rust');
 });
 
 rustTest('Node 与 Rust 差分：Claude 模型改写、请求路径、凭据、SSE 原文和用量一致', async t => {
@@ -136,6 +150,19 @@ rustTest('Node 与 Rust 差分：Claude 模型改写、请求路径、凭据、S
     results.push({ tokens: h.usage[0].tokens, status: h.usage[0].status, phases: h.activity.map(e => e.phase), deltas: h.deltas.map(d => d.e) });
   }
   assert.deepEqual(results[1], results[0]);
+});
+
+rustTest('Claude 流尾重复输入和缓存累计快照不会重复计量，原文透传', async t => {
+  const stream = sse({ type: 'message_start', message: { usage: { input_tokens: 38, cache_read_input_tokens: 2, cache_creation_input_tokens: 3 } } })
+    + sse({ type: 'message_delta', usage: { input_tokens: 38, output_tokens: 21, cache_read_input_tokens: 2, cache_creation_input_tokens: 3 } })
+    + sse({ type: 'message_stop' });
+  const h = await harness(t, 'rust', { upstream: (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(stream);
+  } });
+  const response = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+  assert.equal(response.status, 200); assert.equal(await response.text(), stream);
+  assert.equal(h.usage.length, 1);
+  assert.deepEqual(h.usage[0].tokens, { input: 38, output: 21, cacheRead: 2, cacheWrite: 3, total: 59 });
 });
 
 rustTest('Claude 未改写请求保留字节和缓存前缀；API_KEY 不转发虚拟 Bearer', async t => {

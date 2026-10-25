@@ -103,7 +103,8 @@ function fakeRouter(calls = [], overrides = {}) {
   };
 }
 
-const HOST = Object.freeze({ dataRoot: '/multicc/data', codexHomesDir: '/multicc/codex-homes' });
+// These fake-router tests exercise the Node host contract; Rust has its own real-transport suite.
+const HOST = Object.freeze({ dataRoot: '/multicc/data', codexHomesDir: '/multicc/codex-homes', env: { MULTICC_CPR_BACKEND: 'node' } });
 
 function listenLocal(handler) {
   return new Promise((resolve, reject) => {
