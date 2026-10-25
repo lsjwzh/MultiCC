@@ -2,6 +2,16 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.10.0 — Reliable remote control and precise quota recovery (2026-10-25)
+
+- Add a per-user Linux X11 desktop-agent installer and login autostart. Serialize input, interrupt active operations with Escape, release held keys on cancellation, and report unsupported Wayland sessions clearly.
+- Improve mobile remote-screen frame updates, H.264 recovery, RFB framebuffer handling, and touch-to-pointer delivery. Show frame age and clearer display and agent errors.
+- Read Claude five-hour and weekly quota windows from conversation response headers without automatic usage-page queries. Keep account data isolated and expire each window at its own reset.
+- Classify provider rejections in Rust as temporary throttling, exhausted quota windows, model entitlement limits, or billing failures. Preserve account-wide restrictions while applying model-specific cooldowns and retry deadlines.
+- Use Rust task summary reads with atomic asynchronous replay for Air, and refresh the bilingual guides and interface screenshots.
+- Audit the exact release core plan at 361 suites and 336 commands, including deterministic passive-quota coverage, while keeping UI and device suites outside the core gate.
+- Update the mobile app to 2.38.0 (build 180).
+
 ## v2.9.3 — Subagent routing, account sign-in, and remote control (2026-10-23)
 
 The v2.9.0 and v2.9.1 candidates stopped at release checks. The v2.9.2
