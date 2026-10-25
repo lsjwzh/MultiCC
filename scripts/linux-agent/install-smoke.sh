@@ -10,6 +10,10 @@ set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 [ -n "${DISPLAY:-}" ] || { echo "需要 DISPLAY" >&2; exit 2; }
 
+# The verification image supplies a prebuilt agent for conformance tests.
+# This suite verifies source installation and rebuild caching instead.
+unset MULTICC_AGENT_BIN
+
 T=$(mktemp -d "${TMPDIR:-/tmp}/multicc-install-smoke.XXXXXX")
 export HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config" XDG_RUNTIME_DIR="$T/run"
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR"; chmod 0700 "$XDG_RUNTIME_DIR"
