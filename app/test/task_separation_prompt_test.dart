@@ -79,10 +79,7 @@ void main() {
       expect(find.byType(AlertDialog), findsOneWidget);
       await tester.tap(find.text(t('taskSeparationAccept')));
       await tester.pumpAndSettle();
-      expect(
-        find.textContaining('Commit source changes first'),
-        findsOneWidget,
-      );
+      expect(find.text(t('taskSeparationErrDirty')), findsOneWidget);
       expect(find.byType(AlertDialog), findsOneWidget);
       await tester.tap(find.text(t('taskSeparationKeep')));
       await tester.pumpAndSettle();
@@ -96,6 +93,21 @@ void main() {
       client.close();
     },
   );
+  test('separation error codes render as readable text', () {
+    expect(
+      taskSeparationErrorText('code_index_unsupported', 'x'),
+      t('taskSeparationErrIndex'),
+    );
+    expect(
+      taskSeparationErrorText('task_shell_failed', 'code_observation_limit'),
+      t('taskSeparationErrTooLarge'),
+    );
+    expect(
+      taskSeparationErrorText('weird_code', ''),
+      t('taskSeparationErrFailed', {'code': 'weird_code'}),
+    );
+    expect(taskSeparationErrorText('weird_code', ''), contains('weird_code'));
+  });
   testWidgets('classification updates remove an expired suggestion', (
     tester,
   ) async {

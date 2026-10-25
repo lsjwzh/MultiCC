@@ -473,8 +473,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +4 双语键（rsErrNoDisplay/rsErrWayland/rsErrInterrupted/rsErrAgentInstall）：Linux 桌面 agent
     //   的三个新 reason（连不上 X / Wayland 会话 / 注入半路被停）与「未运行时怎么装」的提示，
     //   中英各 4 行 = +8 行，重跑生成器实测 9622/616360。
-    maxLines: 9622,
-    maxBytes: 616360,
+    // +10 双语键（taskSeparationErr*）：签出独立会话被拒时的可读错误文案（code_* 快照拒绝、
+    //   容量/已处理/通用兜底），中英各 10 行 = +20 行，重跑生成器实测 9642/619539。
+    maxLines: 9642,
+    maxBytes: 619539,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

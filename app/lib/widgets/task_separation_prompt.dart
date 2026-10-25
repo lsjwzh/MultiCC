@@ -9,6 +9,78 @@ import '../providers/session_manager.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 
+/// A refusal from the separation endpoint, keeping the server's stable code.
+class TaskSeparationError implements Exception {
+  final String code;
+  final String message;
+  const TaskSeparationError(this.code, this.message);
+  @override
+  String toString() => taskSeparationErrorText(code, message);
+}
+
+// Same code → i18n key table as public/chat-task-separation.js.
+const _errKeys = <String, List<String>>{
+  'taskSeparationErrBusy': [
+    'fork_source_busy',
+    'task_busy',
+    'workspace_lease_unavailable',
+    'workspace_busy',
+    'barrier_code_changed',
+  ],
+  'taskSeparationErrStale': ['separation_stale'],
+  'taskSeparationErrDirty': ['fork_source_dirty'],
+  'taskSeparationErrDelivery': [
+    'integration_receipt_required',
+    'baseline_revalidation_required',
+    'final_run_result_required',
+    'run_not_succeeded',
+    'code_observation_required',
+    'barrier_run_mismatch',
+  ],
+  'taskSeparationErrIndex': ['code_index_unsupported'],
+  'taskSeparationErrTooLarge': ['code_observation_limit'],
+  'taskSeparationErrGitOp': ['code_git_operation'],
+  'taskSeparationErrChanging': ['code_changed_during_observation'],
+  'taskSeparationErrPath': [
+    'code_path_unsupported',
+    'code_parent_unsupported',
+    'code_file_unsupported',
+  ],
+  'taskSeparationErrResolved': [
+    'separation_already_resolved',
+    'separation_not_found',
+  ],
+  'taskSeparationErrConfirmed': ['separation_already_confirmed'],
+  'taskSeparationErrTaskLimit': ['task_shell_task_limit'],
+  'taskSeparationErrCapacity': [
+    'workspace_resident_capacity',
+    'workspace_execution_capacity',
+    'workspace_restore_capacity',
+  ],
+};
+
+/// Readable text for a separation refusal: known codes are translated,
+/// unknown ones get a generic sentence carrying the code for diagnosis.
+String taskSeparationErrorText(String code, String message) {
+  String? keyOf(String c) {
+    for (final e in _errKeys.entries) {
+      if (e.value.contains(c)) return e.key;
+    }
+    return null;
+  }
+
+  // Older servers carry the stable code only in the message.
+  if (keyOf(code) == null &&
+      RegExp(r'^[a-z][a-z0-9_]{2,99}$').hasMatch(message)) {
+    code = message;
+  }
+  final key = keyOf(code);
+  if (key != null) return t(key);
+  if (code.isEmpty) code = 'separation_failed';
+  final generic = t('taskSeparationErrFailed', {'code': code});
+  return message.isNotEmpty && message != code ? '$generic $message' : generic;
+}
+
 /// Watches classification/reconnect events; no polling or model invocation.
 class TaskSeparationPrompt extends StatefulWidget {
   final Stream<ChatEvent> events;
@@ -100,8 +172,9 @@ class _TaskSeparationPromptState extends State<TaskSeparationPrompt> {
     final data = (jsonDecode(utf8.decode(response.bodyBytes)) as Map)
         .cast<String, dynamic>();
     if (response.statusCode != 200 || data['ok'] != true) {
-      throw Exception(
-        data['message'] ?? data['code'] ?? 'HTTP ${response.statusCode}',
+      throw TaskSeparationError(
+        '${data['code'] ?? ''}',
+        '${data['message'] ?? 'HTTP ${response.statusCode}'}',
       );
     }
     return data;
@@ -150,7 +223,7 @@ class _TaskSeparationPromptState extends State<TaskSeparationPrompt> {
               });
               try {
                 if (session != widget.sessionId) {
-                  throw Exception('separation_stale');
+                  throw const TaskSeparationError('separation_stale', '');
                 }
                 final result = await _request(
                   session,
@@ -177,7 +250,9 @@ class _TaskSeparationPromptState extends State<TaskSeparationPrompt> {
                 if (dialogContext.mounted) {
                   update(() {
                     saving = false;
-                    error = '$e';
+                    error = e is TaskSeparationError
+                        ? '$e'
+                        : taskSeparationErrorText('', '$e');
                   });
                 }
               }

@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createController, showDialog, showPill } = require('../public/chat-task-separation');
+const { createController, showDialog, showPill, errorText, keyByCode } = require('../public/chat-task-separation');
 
 function fakeDocument() {
   const elements = [];
@@ -188,4 +188,18 @@ test('escape collapses the card without choosing an answer', () => {
     assert.equal(collapses, 1);
     assert.equal(decisions, 0);
   } finally { global.document = old; }
+});
+
+test('separation errors render readable text for every known code and a coded generic fallback', () => {
+  const zh = require('../app/assets/i18n/zh.json'), en = require('../app/assets/i18n/en.json');
+  const t = (key, params) => String(zh[key] || key).replace(/\{(\w+)\}/g, (_, n) => params?.[n] ?? '');
+  for (const [code, key] of Object.entries(keyByCode)) {
+    assert.ok(zh[key] && en[key], `${key} missing for ${code}`);
+    assert.equal(errorText(t, { code, message: 'raw' }), zh[key]);
+  }
+  // A code that only reached the message (older servers) is still translated.
+  assert.equal(errorText(t, { code: 'task_shell_failed', message: 'code_index_unsupported' }), zh.taskSeparationErrIndex);
+  assert.equal(errorText(t, { code: 'weird_code' }), '签出独立会话失败（错误码：weird_code），请稍后重试。');
+  assert.match(errorText(t, { code: 'execution_create_failed', message: 'Execution creation failed' }), /execution_create_failed.*Execution creation failed/);
+  assert.equal(errorText(key => key, { code: 'x_y', message: 'Plain' }), 'Plain');
 });

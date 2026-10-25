@@ -70,28 +70,41 @@
     return { refresh, onEvent };
   }
   function text(value) { return typeof value === 'string' ? value : value == null ? '' : String(value); }
-  // 服务端拒绝带稳定 code（fork_source_busy 等），裸英文 message 可读性差；
-  // 按码翻译，翻译缺失时回落原文。
-  function errorText(t, error) {
-    const code = text(error && error.code);
-    const keyByCode = {
-      fork_source_busy: 'taskSeparationErrBusy',
+  // 服务端拒绝带稳定 code（fork_source_busy 等），裸英文 message / 裸错误码可读性差；
+  // 按码翻译，未知码给通用句并附错误码便于诊断。
+  const ERR_KEYS = {
+    taskSeparationErrBusy: ['fork_source_busy', 'task_busy', 'workspace_lease_unavailable',
       // The writer barrier could not freeze the source checkout: another
       // writer holds it, or it moved after the turn ended. Both are retryable
       // once that work stops, and the split itself is unaffected.
-      workspace_busy: 'taskSeparationErrBusy',
-      barrier_code_changed: 'taskSeparationErrBusy',
-      separation_stale: 'taskSeparationErrStale',
-      fork_source_dirty: 'taskSeparationErrDirty',
-      integration_receipt_required: 'taskSeparationErrDelivery',
-      baseline_revalidation_required: 'taskSeparationErrDelivery',
-      final_run_result_required: 'taskSeparationErrDelivery',
-      run_not_succeeded: 'taskSeparationErrDelivery',
-      code_observation_required: 'taskSeparationErrDelivery',
-    };
+      'workspace_busy', 'barrier_code_changed'],
+    taskSeparationErrStale: ['separation_stale'],
+    taskSeparationErrDirty: ['fork_source_dirty'],
+    taskSeparationErrDelivery: ['integration_receipt_required', 'baseline_revalidation_required',
+      'final_run_result_required', 'run_not_succeeded', 'code_observation_required', 'barrier_run_mismatch'],
+    // captureCodeRevision refusals (src/task-routing/code-revision.js).
+    taskSeparationErrIndex: ['code_index_unsupported'],
+    taskSeparationErrTooLarge: ['code_observation_limit'],
+    taskSeparationErrGitOp: ['code_git_operation'],
+    taskSeparationErrChanging: ['code_changed_during_observation'],
+    taskSeparationErrPath: ['code_path_unsupported', 'code_parent_unsupported', 'code_file_unsupported'],
+    taskSeparationErrResolved: ['separation_already_resolved', 'separation_not_found'],
+    taskSeparationErrConfirmed: ['separation_already_confirmed'],
+    taskSeparationErrTaskLimit: ['task_shell_task_limit'],
+    taskSeparationErrCapacity: ['workspace_resident_capacity', 'workspace_execution_capacity', 'workspace_restore_capacity'],
+  };
+  const keyByCode = Object.fromEntries(Object.entries(ERR_KEYS).flatMap(([key, codes]) => codes.map(code => [code, key])));
+  function errorText(t, error) {
+    const message = text(error && error.message);
+    let code = text(error && error.code);
+    // Older servers and local guards carry the stable code only in the message.
+    if (!keyByCode[code] && /^[a-z][a-z0-9_]{2,99}$/.test(message)) code = message;
     const key = keyByCode[code];
     const translated = key ? t(key) : '';
-    return (translated && translated !== key) ? translated : (text(error && error.message) || code || 'separation_failed');
+    if (translated && translated !== key) return translated;
+    const generic = t('taskSeparationErrFailed', { code: code || 'separation_failed' });
+    if (!generic || generic === 'taskSeparationErrFailed') return message || code || 'separation_failed';
+    return message && message !== code ? `${generic} ${message}` : generic;
   }
   function showDialog(suggestion, decide, collapse) {
     const t = root.t || (key => key), doc = root.document;
@@ -151,6 +164,6 @@
     doc.body.append(pill);
     return { close() { pill.remove(); }, expand: onExpand };
   }
-  root.MultiCCTaskSeparation = { createController, showDialog, showPill };
+  root.MultiCCTaskSeparation = { createController, showDialog, showPill, errorText, keyByCode };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.MultiCCTaskSeparation;
 })(typeof window !== 'undefined' ? window : globalThis);
