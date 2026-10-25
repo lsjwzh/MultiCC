@@ -148,9 +148,9 @@ fn current(row: &Value, now: f64) -> bool {
         return false;
     }
     let ttl = if row["window"] == "5h" {
-        5.0 * 3600_000.0
+        5.0 * 3_600_000.0
     } else {
-        7.0 * 86400_000.0
+        7.0 * 86_400_000.0
     };
     now - number(&row["observedAtMs"]).unwrap_or(0.0) <= ttl
 }
