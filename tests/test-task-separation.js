@@ -344,6 +344,11 @@ test('blocked separation persists only a bounded safe error code', async t => {
   assert.deepEqual(saved.lastError, { code: 'separation_failed' });
   assert.doesNotMatch(JSON.stringify(saved), /Users|secret|token/);
 });
+test('a code-snapshot refusal carried only in the message surfaces as its stable code', async t => {
+  const f = await setup(t, { withSeparationBarrier: async () => { throw new Error('code_index_unsupported'); } }), p = await f.propose();
+  await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'code_index_unsupported', status: 409 });
+  assert.deepEqual(f.store.get('task-separation', p.id).lastError, { code: 'code_index_unsupported' });
+});
 test('an anchor changed during code capture prevents shell checkout', async t => {
   const f = await setup(t);
   f.ports.withSeparationBarrier = async (input, work) => {
