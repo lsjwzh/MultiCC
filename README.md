@@ -159,12 +159,12 @@ The screenshots below were refreshed from the v2.9.3 source on 2026-10-24. They 
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.9.3/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.10.0/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.9.3/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.10.0/install.ps1 | iex
 ```
 
 One line, no flags: the tag in the URL *is* the version. The script downloads that
@@ -189,7 +189,7 @@ curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # From a package you already downloaded
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.9.3-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.10.0-darwin-arm64.tar.gz
 
 # Server/automation installs: install without starting, or start without a browser
 curl -sSL .../install.sh | bash -s -- --no-start

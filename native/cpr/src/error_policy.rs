@@ -117,13 +117,19 @@ fn unified_rejected(headers: &Map<String, Value>) -> bool {
         let name = name.to_ascii_lowercase();
         let unified = name == "anthropic-ratelimit-unified-status"
             || (name.starts_with("anthropic-ratelimit-unified-") && name.ends_with("-status"));
-        unified && value.as_str().is_some_and(|v| v.eq_ignore_ascii_case("rejected"))
+        unified
+            && value
+                .as_str()
+                .is_some_and(|v| v.eq_ignore_ascii_case("rejected"))
     })
 }
 
 // 小写并把换行/多空白压成单个空格，让跨行措辞也能整句匹配。
 fn flat(raw: &str) -> String {
-    raw.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+    raw.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn head(text: &str, max: usize) -> &str {
@@ -222,11 +228,8 @@ fn unified(headers: &Map<String, Value>) -> Option<Value> {
     if !unified_rejected(headers) {
         return None;
     }
-    let claim = header_text(
-        headers,
-        "anthropic-ratelimit-unified-representative-claim",
-    )
-    .map(|claim| claim.trim().to_ascii_lowercase());
+    let claim = header_text(headers, "anthropic-ratelimit-unified-representative-claim")
+        .map(|claim| claim.trim().to_ascii_lowercase());
     let claim = claim.as_deref().unwrap_or("");
     let (kind, scope, window, resets) = match claim {
         "five_hour" => (
@@ -284,14 +287,28 @@ fn unified(headers: &Map<String, Value>) -> Option<Value> {
 fn by_code(body: &Value, now: f64) -> Option<Value> {
     for code in structured_codes(body) {
         if BILLING_CODES.contains(&code.as_str()) {
-            return Some(reject("billing", "account", None, None, Some(&code), "code"));
+            return Some(reject(
+                "billing",
+                "account",
+                None,
+                None,
+                Some(&code),
+                "code",
+            ));
         }
         if let Some((name, window)) = WINDOW_CODES.iter().find(|(name, _)| code == *name) {
             // OpenAI/Codex 用相对或绝对 reset 字段携带窗口结束时间。
             let reset = (code == "usage_limit_reached")
                 .then(|| limit_reset(body, now))
                 .flatten();
-            return Some(reject("window", "account", *window, reset, Some(*name), "code"));
+            return Some(reject(
+                "window",
+                "account",
+                *window,
+                reset,
+                Some(*name),
+                "code",
+            ));
         }
     }
     None
@@ -325,13 +342,27 @@ fn wording(text: &str) -> Option<Value> {
         || near(
             text,
             &["quota"],
-            &["exceeded", "exhausted", "reached", "depleted", "used up", "reset"],
+            &[
+                "exceeded",
+                "exhausted",
+                "reached",
+                "depleted",
+                "used up",
+                "reset",
+            ],
             40,
         )
         || near(
             text,
             &[
-                "weekly", "daily", "monthly", "hourly", "5-hour", "five-hour", "7-day", "24-hour",
+                "weekly",
+                "daily",
+                "monthly",
+                "hourly",
+                "5-hour",
+                "five-hour",
+                "7-day",
+                "24-hour",
             ],
             &["quota", "limit"],
             40,
@@ -342,7 +373,14 @@ fn wording(text: &str) -> Option<Value> {
 // 规则 5：真正的瞬时限流，保留任何结构化业务码便于宿主排查。
 fn transient(body: Option<&Value>) -> Value {
     let code = body.and_then(|value| structured_codes(value).into_iter().next());
-    reject("transient", "request", None, None, code.as_deref(), "status")
+    reject(
+        "transient",
+        "request",
+        None,
+        None,
+        code.as_deref(),
+        "status",
+    )
 }
 
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
@@ -377,10 +415,8 @@ fn http_date_ms(raw: &str) -> Option<f64> {
     if clock.len() != 3 {
         return None;
     }
-    let seconds = days_from_civil(year, month, day) * 86400
-        + clock[0] * 3600
-        + clock[1] * 60
-        + clock[2];
+    let seconds =
+        days_from_civil(year, month, day) * 86400 + clock[0] * 3600 + clock[1] * 60 + clock[2];
     Some((seconds * 1000) as f64)
 }
 
