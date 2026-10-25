@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'platform_h264_decoder.dart';
@@ -30,16 +31,40 @@ class RemoteScreenService {
     WebSocketChannel Function(Uri)? channelFactory,
     http.Client? httpClient,
     H264Decoder? Function()? h264DecoderFactory,
+    List<Duration> liveRetryDelays = const [
+      Duration(milliseconds: 300),
+      Duration(seconds: 1),
+      Duration(seconds: 2),
+      Duration(seconds: 4),
+    ],
+    Duration liveRecoverWindow = const Duration(seconds: 30),
+    Duration stableLive = const Duration(seconds: 20),
   }) : _wsAuth = WsTicketConnectionGate(wsTicketClient ?? WsTicketClient()),
-       _connectChannel = channelFactory ?? WebSocketChannel.connect,
+       _connectChannel = channelFactory ?? _pingingChannel,
        _http = httpClient ?? http.Client(),
-       _h264Factory = h264DecoderFactory ?? PlatformH264Decoder.create;
+       _h264Factory = h264DecoderFactory ?? PlatformH264Decoder.create,
+       _retryDelays = liveRetryDelays,
+       _recoverWindow = liveRecoverWindow,
+       _stableLive = stableLive;
+
+  /// 远控 WS 带协议层心跳：手机切后台、移动网络换基站、隧道重连后，TCP 常常
+  /// 半开 —— 服务端早已 pong 超时断开，手机这边却一直等不来 onDone，画面停在
+  /// 几十秒前、输入也石沉大海。5s 一次 ping，丢一个 pong 就判死、触发重连。
+  static WebSocketChannel _pingingChannel(Uri uri) =>
+      IOWebSocketChannel.connect(
+        uri,
+        pingInterval: const Duration(seconds: 5),
+        connectTimeout: const Duration(seconds: 8),
+      );
 
   final SettingsService settings;
   final WsTicketConnectionGate _wsAuth;
   final WebSocketChannel Function(Uri) _connectChannel;
   final http.Client _http;
   final H264Decoder? Function() _h264Factory;
+  final List<Duration> _retryDelays;
+  final Duration _recoverWindow;
+  final Duration _stableLive;
 
   WebSocketChannel? _channel;
   RemoteScreenRfb? _rfb;
@@ -52,6 +77,13 @@ class RemoteScreenService {
   Timer? _pollTimer;
   bool _polling = false;
   bool _disposed = false;
+
+  // 活流断线自动重连（见 [_recoverLive]）。
+  Timer? _retryTimer;
+  DateTime? _liveSince;
+  DateTime? _recoverSince; // 本轮重连从哪一刻开始；null = 没在重连
+  int _retryAttempt = 0;
+  int _quickDrops = 0;
   int _regionEpoch = 0;
   ScreenRegion? region;
   ScreenRegion? viewRegion;
@@ -86,6 +118,8 @@ class RemoteScreenService {
   /// h264.sock 时），失败自动退回 RFB，再失败落到 JPEG 轮询。
   void connectLive() {
     if (_disposed) return;
+    _cancelRecover();
+    _quickDrops = 0;
     _regionEpoch++;
     region = viewRegion = null;
     _setMode(RemoteScreenMode.connecting, null);
@@ -160,7 +194,9 @@ class RemoteScreenService {
         accessToken: settings.token,
       );
       final url = await attempt.authorizedUri;
-      if (_disposed || !attempt.isCurrent || mode != RemoteScreenMode.connecting) {
+      if (_disposed ||
+          !attempt.isCurrent ||
+          mode != RemoteScreenMode.connecting) {
         return;
       }
       decoder = _pendingDecoder ?? _h264Factory();
@@ -170,7 +206,9 @@ class RemoteScreenService {
         decoder = null;
         throw StateError('h264-decoder-unavailable');
       }
-      if (_disposed || !attempt.isCurrent || mode != RemoteScreenMode.connecting) {
+      if (_disposed ||
+          !attempt.isCurrent ||
+          mode != RemoteScreenMode.connecting) {
         await decoder.close();
         return;
       }
@@ -261,7 +299,7 @@ class RemoteScreenService {
   void _onRfbFrame() {
     final r = _rfb;
     if (r != null && r.width > 0 && mode != RemoteScreenMode.live) {
-      _setMode(RemoteScreenMode.live, null);
+      _becomeLive();
     }
     _frames.add(null);
   }
@@ -269,16 +307,39 @@ class RemoteScreenService {
   void _onLiveFrame() {
     final h = _h264;
     if (h != null && h.width > 0 && mode != RemoteScreenMode.live) {
-      _setMode(RemoteScreenMode.live, null);
+      _becomeLive();
     }
     _frames.add(null);
   }
 
-  /// 活流断了/超时：H.264 先退 RFB，RFB 再退 JPEG 轮询。
+  void _becomeLive() {
+    _liveSince = DateTime.now();
+    _recoverSince = null;
+    _retryAttempt = 0;
+    _setMode(RemoteScreenMode.live, null);
+  }
+
+  /// App 从后台回到前台：切后台期间连接多半已被服务端 pong 超时断掉、iOS 的
+  /// 硬件解码会话也已失效，直接按「高清优先」重连，比等心跳 / 看门狗判死快。
+  /// 框选裁剪（JPEG 轮询）是 HTTP，回来自己就续上，不打断。
+  void resumeLive() {
+    if (_disposed || region != null) return;
+    connectLive();
+  }
+
+  /// 活流断了/超时。跑起来过的流先自动重连（仍是高清优先）；起不来才降级：
+  /// H.264 退 RFB，RFB 退 JPEG 轮询。
   void _failLive() {
     if (_disposed) return;
+    final wasLive = mode == RemoteScreenMode.live;
     _stopLive();
     if (mode == RemoteScreenMode.fallback) return;
+    if (region == null &&
+        (wasLive || _recoverSince != null) &&
+        _recoverLive(wasLive)) {
+      return;
+    }
+    _recoverSince = null;
     if (!_rfbTried) {
       // 已经在 live 的 H.264 断了：先退回「连接中」，重新走 RFB。
       _setMode(RemoteScreenMode.connecting, null);
@@ -286,6 +347,50 @@ class RemoteScreenService {
       return;
     }
     _enterFallback();
+  }
+
+  /// 跑起来过的活流断了（App 切后台回来、移动网络抖一下、隧道换线、Agent
+  /// 重启）：退避后重新走一遍高清优先的连接，而不是一断就降到 RFB / 轮询、
+  /// 再也回不来。重连在 [_recoverWindow] 内一直起不来，或者连着几次都是刚连上
+  /// 就断（[_stableLive] 内），才交给原来的降级链。
+  bool _recoverLive(bool wasLive) {
+    final now = DateTime.now();
+    if (wasLive) {
+      final since = _liveSince;
+      final lived = since == null ? Duration.zero : now.difference(since);
+      _quickDrops = lived < _stableLive ? _quickDrops + 1 : 1;
+      if (_quickDrops > 3) return false;
+      _recoverSince = now;
+      _retryAttempt = 0;
+    } else if (now.difference(_recoverSince!) >= _recoverWindow) {
+      return false;
+    }
+    final delay =
+        _retryDelays[_retryAttempt < _retryDelays.length
+            ? _retryAttempt
+            : _retryDelays.length - 1];
+    _retryAttempt++;
+    // 一条连接断开会同时报 onClosed 和 run() 的错误：作废它，第二次回报
+    // 不许被当成「重连也失败了」。
+    _wsAuth.invalidate();
+    _handshakeTimeout?.cancel();
+    _setMode(RemoteScreenMode.connecting, null);
+    _retryTimer?.cancel();
+    _retryTimer = Timer(delay, () {
+      _retryTimer = null;
+      if (_disposed || mode != RemoteScreenMode.connecting) return;
+      _rfbTried = false;
+      _armHandshake();
+      unawaited(_connectPreferred());
+    });
+    return true;
+  }
+
+  void _cancelRecover() {
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _recoverSince = null;
+    _retryAttempt = 0;
   }
 
   /// 权限门：Agent 的屏幕录制 / 辅助功能授权状态（与 Web Air 全局设置
@@ -467,6 +572,7 @@ class RemoteScreenService {
 
   void _enterFallback() {
     if (_disposed) return;
+    _cancelRecover();
     _handshakeTimeout?.cancel();
     _handshakeTimeout = null;
     _stopLive();
@@ -574,6 +680,7 @@ class RemoteScreenService {
   void dispose() {
     _disposed = true;
     _wsAuth.invalidate();
+    _cancelRecover();
     _handshakeTimeout?.cancel();
     _stopLive();
     _stopFallback();

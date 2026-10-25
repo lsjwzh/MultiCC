@@ -38,10 +38,14 @@ class _Service extends RemoteScreenService {
   final requests = <Map<String, dynamic>>[];
   final _Source input;
   final frames = StreamController<void>.broadcast();
+  final modes = StreamController<void>.broadcast();
+  int connects = 0;
   @override
   ScreenSource? get source => fallback ? null : input;
   @override
   Stream<void> get onFrame => frames.stream;
+  @override
+  Stream<void> get onModeChange => modes.stream;
   @override
   Future<bool?> supportsRemoteScreen() async => true;
   @override
@@ -61,6 +65,7 @@ class _Service extends RemoteScreenService {
 
   @override
   void connectLive() {
+    connects++;
     mode = fallback ? RemoteScreenMode.fallback : RemoteScreenMode.live;
     if (fallback) {
       fallbackWidth = 1000;
@@ -76,6 +81,7 @@ class _Service extends RemoteScreenService {
   @override
   void dispose() {
     unawaited(frames.close());
+    unawaited(modes.close());
     super.dispose();
   }
 }
@@ -457,6 +463,71 @@ void main() {
       );
       await tester.pump();
       expect(ageShown(tester), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
+
+  testWidgets(
+    'back from another app the stream reconnects; a notification-shade glance does not',
+    (tester) async {
+      final service = await _openLive(tester);
+      final before = service.connects;
+      expect(before, greaterThan(0));
+      final binding = tester.binding;
+      // A glance at the notification shade: inactive only, never paused.
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(service.connects, before);
+      // Off to GitHub Mobile to approve a sign-in, then back.
+      for (final s in [
+        AppLifecycleState.inactive,
+        AppLifecycleState.hidden,
+        AppLifecycleState.paused,
+      ]) {
+        binding.handleAppLifecycleStateChanged(s);
+      }
+      await tester.pump();
+      expect(service.connects, before, reason: 'nothing happens while away');
+      for (final s in [
+        AppLifecycleState.hidden,
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]) {
+        binding.handleAppLifecycleStateChanged(s);
+      }
+      await tester.pump();
+      expect(service.connects, before + 1);
+      // The reconnect pushes a frame; let its real image decode finish.
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
+
+  testWidgets(
+    'an automatic reconnect keeps the zoom; switching to the JPEG fallback resets it',
+    (tester) async {
+      final service = await _openLive(tester);
+      final transform = tester
+          .widget<InteractiveViewer>(find.byType(InteractiveViewer))
+          .transformationController!;
+      transform.value = Matrix4.identity()..scale(2.0);
+      await tester.pump();
+      for (final m in [RemoteScreenMode.connecting, RemoteScreenMode.live]) {
+        service.mode = m;
+        service.modes.add(null);
+        await tester.pump();
+      }
+      expect(transform.value.getMaxScaleOnAxis(), closeTo(2.0, 1e-9));
+      service.mode = RemoteScreenMode.fallback;
+      service.modes.add(null);
+      await tester.pump();
+      expect(transform.value.getMaxScaleOnAxis(), closeTo(1.0, 1e-9));
       await tester.pumpWidget(const SizedBox());
       await tester.pump(const Duration(seconds: 1));
     },

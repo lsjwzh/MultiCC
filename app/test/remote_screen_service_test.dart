@@ -101,12 +101,7 @@ class _RecordingH264Decoder implements H264Decoder {
 
   void emit(int w, int h) {
     _frames.add(
-      H264Frame(
-        bytes: Uint8List(w * h * 4),
-        width: w,
-        height: h,
-        key: true,
-      ),
+      H264Frame(bytes: Uint8List(w * h * 4), width: w, height: h, key: true),
     );
   }
 }
@@ -119,21 +114,12 @@ Uint8List _h264Frame(int type, List<int> payload) {
   return out;
 }
 
-Uint8List _h264Config(int w, int h) => _h264Frame(
-  h264Config,
-  utf8.encode(jsonEncode({'width': w, 'height': h})),
-);
+Uint8List _h264Config(int w, int h) =>
+    _h264Frame(h264Config, utf8.encode(jsonEncode({'width': w, 'height': h})));
 
 Uint8List _h264Key() {
   final pts = ByteData(8)..setUint64(0, 7, Endian.big);
-  return _h264Frame(h264Key, [
-    ...pts.buffer.asUint8List(),
-    0,
-    0,
-    0,
-    1,
-    0x65,
-  ]);
+  return _h264Frame(h264Key, [...pts.buffer.asUint8List(), 0, 0, 0, 1, 0x65]);
 }
 
 Future<RemoteScreenService> _make({
@@ -171,6 +157,89 @@ Future<void> _pumpUntil(
     if (DateTime.now().isAfter(deadline)) fail('condition not met in time');
     await Future<void>.delayed(const Duration(milliseconds: 5));
   }
+}
+
+/// 每次建连都给一条新的假 WS（channels[i] 推数据、sent[i] 收客户端字节），
+/// 每次要 H.264 解码器都给一个新的，方便断线重连的用例逐条驱动。
+class _LiveRig {
+  late final RemoteScreenService service;
+  final urls = <Uri>[];
+  final channels = <StreamController<dynamic>>[];
+  final sent = <List<Uint8List>>[];
+  final decoders = <_RecordingH264Decoder>[];
+
+  /// 第 [i] 条连接送上 config + 关键帧，并让对应解码器吐出一帧。
+  Future<void> serveH264(int i) async {
+    channels[i].add(_h264Config(4, 2));
+    channels[i].add(_h264Key());
+    await _pumpUntil(() => decoders.last.decoded.isNotEmpty);
+    decoders.last.emit(4, 2);
+  }
+
+  Future<void> close() async {
+    service.dispose();
+    for (final c in channels) {
+      if (!c.isClosed) await c.close();
+    }
+  }
+}
+
+Future<_LiveRig> _liveRig({
+  required bool h264,
+  List<Duration> retryDelays = const [Duration.zero],
+  Duration recoverWindow = const Duration(seconds: 30),
+}) async {
+  SharedPreferences.setMockInitialValues({
+    'multicc_host': 'http://localhost:3000',
+    'multicc_token': '',
+  });
+  final settings = await SettingsService.getInstance();
+  final rig = _LiveRig();
+  rig.service = RemoteScreenService(
+    settings: settings,
+    wsTicketClient: WsTicketClient(
+      post: (endpoint, {required headers, required body}) async {
+        final requested = (jsonDecode(body) as Map<String, dynamic>)['path'];
+        return http.Response(
+          jsonEncode({'ok': true, 'ticket': 'fixture', 'path': requested}),
+          200,
+        );
+      },
+    ),
+    channelFactory: (uri) {
+      rig.urls.add(uri);
+      final c = StreamController<dynamic>();
+      final out = <Uint8List>[];
+      rig.channels.add(c);
+      rig.sent.add(out);
+      return _FakeChannel(c, out);
+    },
+    httpClient: MockClient((request) async {
+      if (request.url.path == '/api/remote-screen/capabilities') {
+        return http.Response(
+          jsonEncode({
+            'ok': true,
+            'supported': true,
+            'streams': {'h264': h264, 'rfb': true},
+          }),
+          200,
+        );
+      }
+      return http.Response.bytes(
+        Uint8List.fromList([1, 2, 3]),
+        200,
+        headers: const {'X-Screen-Width': '4', 'X-Screen-Height': '2'},
+      );
+    }),
+    h264DecoderFactory: () {
+      final d = _RecordingH264Decoder();
+      rig.decoders.add(d);
+      return d;
+    },
+    liveRetryDelays: retryDelays,
+    liveRecoverWindow: recoverWindow,
+  );
+  return rig;
 }
 
 void main() {
@@ -290,7 +359,9 @@ void main() {
       isFalse,
     );
     expect(
-      await probe(await json({'ok': true, 'platform': 'darwin', 'supported': true})),
+      await probe(
+        await json({'ok': true, 'platform': 'darwin', 'supported': true}),
+      ),
       isTrue,
     );
     // 老 server：404 → 不拦。
@@ -464,114 +535,111 @@ void main() {
     expect(service.fallbackHeight, 2);
   });
 
-  test('live 中途断流 → 回退轮询（旧 Agent 升级窗口期的行为）', () async {
-    final incoming = StreamController<dynamic>();
-    final sent = <Uint8List>[];
-    addTearDown(incoming.close);
-    final service = await _make(
-      incoming: incoming,
-      sent: sent,
-      httpStub: MockClient(
-        (request) async => http.Response.bytes(
-          Uint8List.fromList([1, 2, 3]),
-          200,
-          headers: const {'X-Screen-Width': '4', 'X-Screen-Height': '2'},
-        ),
-      ),
+  test('live 中途断流 → 先自动重连；重连也起不来才回退轮询（旧 Agent 升级窗口期）', () async {
+    final rig = await _liveRig(
+      h264: false,
+      retryDelays: const [Duration.zero],
+      recoverWindow: Duration.zero,
     );
-    addTearDown(service.dispose);
+    addTearDown(rig.close);
+    final service = rig.service;
 
     service.connectLive();
-    incoming.add(_rfbHello);
+    await _pumpUntil(() => rig.channels.isNotEmpty);
+    rig.channels[0].add(_rfbHello);
     await _pumpUntil(() => service.mode == RemoteScreenMode.live);
     expect(service.rfb, isNotNull);
 
-    await incoming.close(); // 传输断开
+    await rig.channels[0].close(); // 传输断开
+    await _pumpUntil(() => rig.channels.length >= 2);
+    expect(
+      service.mode,
+      RemoteScreenMode.connecting,
+      reason: '跑起来过的流断了先重连，不直接降级',
+    );
+    // 重连上的不是 RFB（比如 Agent 正在升级）：这才回退轮询。
+    rig.channels[1].add(Uint8List.fromList('HTTP/1.1 502'.codeUnits));
     await _pumpUntil(() => service.mode == RemoteScreenMode.fallback);
-    expect(service.fallbackJpeg, isNotNull);
+    await _pumpUntil(() => service.fallbackJpeg != null);
   });
 
-  test('h264 可用时先连高清模式，断流后退回 RFB 而不是直接轮询', () async {
-    SharedPreferences.setMockInitialValues({
-      'multicc_host': 'http://localhost:3000',
-      'multicc_token': '',
-    });
-    final settings = await SettingsService.getInstance();
-    final h264Incoming = StreamController<dynamic>();
-    final rfbIncoming = StreamController<dynamic>();
-    final h264Sent = <Uint8List>[];
-    final rfbSent = <Uint8List>[];
-    final urls = <Uri>[];
-    addTearDown(() {
-      h264Incoming.close();
-      rfbIncoming.close();
-    });
-    final decoder = _RecordingH264Decoder();
-    final service = RemoteScreenService(
-      settings: settings,
-      wsTicketClient: WsTicketClient(
-        post: (endpoint, {required headers, required body}) async {
-          final requested = (jsonDecode(body) as Map<String, dynamic>)['path'];
-          return http.Response(
-            jsonEncode({'ok': true, 'ticket': 'fixture', 'path': requested}),
-            200,
-          );
-        },
-      ),
-      channelFactory: (uri) {
-        urls.add(uri);
-        return uri.queryParameters['mode'] == 'h264'
-            ? _FakeChannel(h264Incoming, h264Sent)
-            : _FakeChannel(rfbIncoming, rfbSent);
-      },
-      httpClient: MockClient(
-        (request) async {
-          if (request.url.path == '/api/remote-screen/capabilities') {
-            return http.Response(
-              jsonEncode({
-                'ok': true,
-                'supported': true,
-                'streams': {'h264': true, 'rfb': true},
-              }),
-              200,
-            );
-          }
-          return http.Response.bytes(
-            Uint8List.fromList([1, 2, 3]),
-            200,
-            headers: const {'X-Screen-Width': '4', 'X-Screen-Height': '2'},
-          );
-        },
-      ),
-      h264DecoderFactory: () => decoder,
-    );
-    addTearDown(service.dispose);
+  test('h264 可用时先连高清模式；跑起来后断流 → 重连的仍是高清，不降级到 RFB', () async {
+    final rig = await _liveRig(h264: true);
+    addTearDown(rig.close);
+    final service = rig.service;
 
     service.connectLive();
-    await _pumpUntil(() => urls.isNotEmpty);
-    expect(urls.first.queryParameters['mode'], 'h264');
-
-    await _pumpUntil(() => h264Sent.isNotEmpty); // 建连后先要关键帧
-    expect(h264Sent.first, [h264ReqKey]);
-    h264Incoming.add(_h264Config(4, 2));
-    h264Incoming.add(_h264Key());
-    await Future<void>.delayed(Duration.zero);
-    expect(decoder.decoded.length, 1);
-    decoder.emit(4, 2);
-
+    await _pumpUntil(() => rig.urls.isNotEmpty);
+    expect(rig.urls.first.queryParameters['mode'], 'h264');
+    await _pumpUntil(() => rig.sent[0].isNotEmpty); // 建连后先要关键帧
+    expect(rig.sent[0].first, [h264ReqKey]);
+    await rig.serveH264(0);
     await _pumpUntil(() => service.mode == RemoteScreenMode.live);
     expect(service.h264Active, isTrue);
     expect(service.source, isNotNull);
 
-    await h264Incoming.close(); // 直连断流 → 服务自动退 RFB
-    await _pumpUntil(() => urls.length >= 2);
-    expect(urls[1].queryParameters.containsKey('mode'), isFalse);
+    // 切后台 / 移动网络抖动：连接没了。
+    await rig.channels[0].close();
+    await _pumpUntil(() => service.mode == RemoteScreenMode.connecting);
+    await _pumpUntil(() => rig.urls.length >= 2);
+    expect(
+      rig.urls[1].queryParameters['mode'],
+      'h264',
+      reason: '重连仍走高清，不是一断就永久降到流畅模式',
+    );
+    await _pumpUntil(() => rig.sent[1].isNotEmpty);
+    await rig.serveH264(1);
+    await _pumpUntil(() => service.mode == RemoteScreenMode.live);
+    expect(service.h264Active, isTrue);
+    expect(rig.decoders.length, 2, reason: '每次重连换一个新解码器');
+  });
 
-    rfbIncoming.add(_rfbHello);
+  test('高清流反复重连都起不来（超过恢复窗口）→ 交给降级链退 RFB', () async {
+    final rig = await _liveRig(
+      h264: true,
+      retryDelays: const [Duration.zero],
+      recoverWindow: Duration.zero,
+    );
+    addTearDown(rig.close);
+    final service = rig.service;
+
+    service.connectLive();
+    await _pumpUntil(() => rig.sent.isNotEmpty && rig.sent[0].isNotEmpty);
+    await rig.serveH264(0);
+    await _pumpUntil(() => service.mode == RemoteScreenMode.live);
+
+    await rig.channels[0].close();
+    await _pumpUntil(() => rig.urls.length >= 2);
+    expect(rig.urls[1].queryParameters['mode'], 'h264');
+    await rig.channels[1].close(); // 重连上就断、一帧没出
+    await _pumpUntil(() => rig.urls.length >= 3);
+    expect(rig.urls[2].queryParameters.containsKey('mode'), isFalse);
+    rig.channels[2].add(_rfbHello);
     await _pumpUntil(
       () => service.mode == RemoteScreenMode.live && service.rfb != null,
     );
     expect(service.h264Active, isFalse);
-    expect(service.source, same(service.rfb));
+  });
+
+  test('回到前台 resumeLive：重新按高清优先建连；框选裁剪（HTTP 轮询）不打断', () async {
+    final rig = await _liveRig(h264: true);
+    addTearDown(rig.close);
+    final service = rig.service;
+
+    service.connectLive();
+    await _pumpUntil(() => rig.sent.isNotEmpty && rig.sent[0].isNotEmpty);
+    await rig.serveH264(0);
+    await _pumpUntil(() => service.mode == RemoteScreenMode.live);
+
+    service.resumeLive();
+    await _pumpUntil(() => rig.urls.length >= 2);
+    expect(rig.urls[1].queryParameters['mode'], 'h264');
+
+    service.region = const ScreenRegion(0, 0, 10, 10);
+    final before = rig.urls.length;
+    service.resumeLive();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(rig.urls.length, before);
+    expect(service.region, isNotNull);
   });
 }

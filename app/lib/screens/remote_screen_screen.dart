@@ -82,7 +82,8 @@ class RemoteScreenScreen extends StatefulWidget {
   State<RemoteScreenScreen> createState() => _RemoteScreenScreenState();
 }
 
-class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
+class _RemoteScreenScreenState extends State<RemoteScreenScreen>
+    with WidgetsBindingObserver {
   late final RemoteScreenService _svc;
   StreamSubscription<void>? _frameSub;
   StreamSubscription<void>? _modeSub;
@@ -221,9 +222,14 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   Rect? _boxRect;
   Offset _boxAnchor = Offset.zero;
 
+  /// 切到过后台：回前台时重连（见 [didChangeAppLifecycleState]）。
+  bool _backgrounded = false;
+  bool _wasFallback = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _svc = widget.service ?? RemoteScreenService(settings: widget.settings);
     _modeSub = _svc.onModeChange.listen((_) {
       _touch.reset();
@@ -232,10 +238,15 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       _inputSinceFrame = false;
       _fps = null;
       _lastFrameAt = null;
-      // live↔fallback 切换时画面尺寸会变，缩放矩阵留着只会歪，直接复位。
-      _xform.value = Matrix4.identity();
-      _zoomed = false;
-      _zoomPct = 100;
+      // live↔fallback 切换时画面尺寸会变，缩放矩阵留着只会歪，直接复位；
+      // 断线自动重连（live → 连接中 → live）还是同一块屏幕，保留放大位置。
+      final fallback = _svc.mode == RemoteScreenMode.fallback;
+      if (fallback != _wasFallback) {
+        _xform.value = Matrix4.identity();
+        _zoomed = false;
+        _zoomPct = 100;
+      }
+      _wasFallback = fallback;
       if (mounted) setState(() {});
     });
     _frameSub = _svc.onFrame.listen((_) => _renderFrame());
@@ -347,7 +358,22 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _backgrounded = true;
+    } else if (state == AppLifecycleState.resumed && _backgrounded) {
+      // 切去别的 App（比如去 GitHub Mobile 点批准）再回来：连接和 iOS 硬件
+      // 解码会话多半已经死了，立刻按高清优先重连，不让画面停在几十秒前。
+      _backgrounded = false;
+      _touch.reset();
+      _cursorMark.value = null;
+      if (_permStarted && !_unsupported) _svc.resumeLive();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _haltTimer?.cancel();
     _permTimer?.cancel();
     _ageTimer?.cancel();
