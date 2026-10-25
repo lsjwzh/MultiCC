@@ -69,14 +69,16 @@ test('source cache lives in the primary worktree and fingerprints source/config 
   assert.equal(cacheRoot(worktree), path.join(root, 'data/rust-source'));
 });
 
-test('explicit emergency Node mode never builds Rust', () => {
-  assert.equal(ensureSourceRust({ env: { MULTICC_SQLITE_BACKEND: 'node' },
+test('explicit emergency Node mode for both SQLite and CPR never builds Rust', () => {
+  assert.equal(ensureSourceRust({ env: { MULTICC_SQLITE_BACKEND: 'node', MULTICC_CPR_BACKEND: 'node' },
     paths() { throw Error('unexpected cache access'); } }), null);
 });
 
 test('Rust CPR still requires the source addon when SQLite uses emergency Node mode', () => {
-  assert.throws(() => ensureSourceRust({ env: { MULTICC_SQLITE_BACKEND: 'node', MULTICC_CPR_BACKEND: 'rust' },
-    paths() { throw Error('CPR requires addon'); } }), /CPR requires addon/);
+  for (const backend of [undefined, 'rust']) {
+    assert.throws(() => ensureSourceRust({ env: { MULTICC_SQLITE_BACKEND: 'node', MULTICC_CPR_BACKEND: backend },
+      paths() { throw Error('CPR requires addon'); } }), /CPR requires addon/);
+  }
 });
 
 const nativeTest = (name, fn) => test(name, { skip: process.platform === 'win32' && 'source manager uses a POSIX shell' }, fn);

@@ -11,7 +11,7 @@ const { sourcePaths, sourceFingerprint, probeAddon, builtFromSource } = require(
 function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = process.env,
   probe = probeAddon, paths = sourcePaths, builtFrom = builtFromSource, run = spawnSync,
   log = console.error } = {}) {
-  if (env.MULTICC_SQLITE_BACKEND === 'node' && String(env.MULTICC_CPR_BACKEND || 'node').trim().toLowerCase() !== 'rust') return null;
+  if (env.MULTICC_SQLITE_BACKEND === 'node' && String(env.MULTICC_CPR_BACKEND || 'rust').trim().toLowerCase() === 'node') return null;
   const cache = paths(repoRoot, env);
   const target = `${process.platform}-${process.arch}`;
   const file = path.join(cache.prebuiltDir, target, 'multicc_core.node');

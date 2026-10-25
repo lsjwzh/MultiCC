@@ -7,7 +7,7 @@ const { randomUUID } = require('node:crypto');
 const { getNative } = require('../native/runtime');
 
 function resolveCprBackend(env = process.env) {
-  const backend = String(env.MULTICC_CPR_BACKEND || 'node').trim().toLowerCase();
+  const backend = String(env.MULTICC_CPR_BACKEND || 'rust').trim().toLowerCase();
   if (!['node', 'rust'].includes(backend)) throw new Error('MULTICC_CPR_BACKEND 只支持 node 或 rust');
   return backend;
 }

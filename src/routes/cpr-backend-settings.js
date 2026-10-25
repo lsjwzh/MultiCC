@@ -7,7 +7,8 @@ function mountCprBackendSettingsRoutes(app, options = {}) {
   const readEnvFile = options.readEnvFile || host.readEnvFile;
   const writeEnvFile = options.writeEnvFile || host.writeEnvFile;
   const nativeModule = options.getNative || (() => require('../native/runtime').getNative('cpr'));
-  const currentBackend = options.runtime?.proxyBackend || 'node';
+  const currentBackend = options.runtime?.proxyBackend || 'rust';
+  const env = options.env || process.env;
 
   function handler(save) {
     return (req, res) => {
@@ -18,7 +19,7 @@ function mountCprBackendSettingsRoutes(app, options = {}) {
         }
         const result = JSON.parse(native.cprBackendSettings(JSON.stringify({
           action: save ? 'save' : 'read', currentBackend,
-          configuredBackend: readEnvFile().MULTICC_CPR_BACKEND,
+          configuredBackend: readEnvFile().MULTICC_CPR_BACKEND ?? env.MULTICC_CPR_BACKEND,
           requestedBackend: req.body?.backend,
           rustAvailable: native.cprProtocolVersion?.() === 1
             && ['cprRoute', 'cprPrepare', 'cprCreateExchange'].every(name => typeof native[name] === 'function'),

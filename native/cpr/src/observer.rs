@@ -154,8 +154,9 @@ impl Observer {
                 ("cache_read_input_tokens", "cacheRead"),
             ] {
                 if let Some(n) = u[raw].as_u64() {
-                    current[normalized] =
-                        json!(current[normalized].as_u64().unwrap_or(0).saturating_add(n));
+                    // Compatible upstreams repeat these cumulative totals in
+                    // message_delta after message_start. Count each snapshot once.
+                    current[normalized] = json!(n.max(current[normalized].as_u64().unwrap_or(0)));
                 }
             }
             if let Some(n) = u["output_tokens"].as_u64() {
