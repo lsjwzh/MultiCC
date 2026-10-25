@@ -128,7 +128,9 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   Future<void> run() async {
     if (_closed) return;
     _frameSub = _decoder.frames.listen(_onDecoded, onError: (Object _) {});
-    _errSub = _decoder.errors.listen((_) => requestKeyFrame(force: true));
+    // 走节流：一串坏帧会连着报错，每次都强要关键帧的话，服务端每收到一个 'K'
+    // 就丢掉其后所有帧直到关键帧，弱链路被一个接一个的大关键帧堵死。
+    _errSub = _decoder.errors.listen((_) => requestKeyFrame());
     _sub = _incoming.listen(
       _onChunk,
       onError: (Object _) => _fail(),

@@ -120,6 +120,38 @@ void main() {
     },
   );
 
+  test('一串解码错误只要一个关键帧：错误也走 500ms 节流，不连发 K 堵死弱链路', () {
+    fakeAsync((clock) {
+      final incoming = StreamController<Uint8List>();
+      final decoder = _RecordingDecoder();
+      final sent = <Uint8List>[];
+      final session = RemoteScreenH264(
+        incoming: incoming.stream,
+        send: sent.add,
+        decoder: decoder,
+        now: () => DateTime(2026).add(clock.elapsed),
+      );
+      unawaited(session.run());
+      clock.flushMicrotasks();
+      clock.elapse(const Duration(seconds: 1));
+      sent.clear(); // 启动时的 'K'
+      for (var i = 0; i < 5; i++) {
+        decoder._errors.add('bad frame');
+        clock.elapse(const Duration(milliseconds: 20));
+      }
+      expect(sent, [
+        [h264ReqKey],
+      ]);
+      clock.elapse(const Duration(milliseconds: 500));
+      decoder._errors.add('bad frame');
+      clock.flushMicrotasks();
+      expect(sent.length, 2, reason: 'a later error may ask again');
+      session.dispose();
+      unawaited(incoming.close());
+      clock.flushMicrotasks();
+    });
+  });
+
   test('按 5 字节头切帧：跨 WS 消息的帧能拼回，delta 先到不送解码器', () async {
     final incoming = StreamController<Uint8List>();
     final sent = <Uint8List>[];

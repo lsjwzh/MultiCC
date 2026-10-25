@@ -31,7 +31,9 @@ function harness(opts = {}) {
   ws.send = (msg, _opts, cb) => { ws.sent.push(Buffer.from(msg)); cb?.(); };
   ws.close = (code, reason) => { ws.closedWith = { code, reason }; ws.readyState = 3; };
   let t = 0;
-  const bridge = attachH264Bridge(ws, { socketPath: '/nope', connect: () => sock, now: () => t, ...opts });
+  const { beforeAttach, ...bridgeOpts } = opts;
+  beforeAttach?.(ws);
+  const bridge = attachH264Bridge(ws, { socketPath: '/nope', connect: () => sock, now: () => t, ...bridgeOpts });
   sock.emit('connect');
   return { sock, ws, bridge, advance: ms => { t += ms; } };
 }
@@ -58,6 +60,31 @@ test('h264 bridge: delta frames before the first key frame are dropped', t => {
   sock.emit('data', frame(T_KEY, 'k'));
   sock.emit('data', frame(T_DELTA, 'd'));
   assert.deepEqual(ws.sent.map(b => b[0]), [T_KEY, T_DELTA]);
+});
+
+test('h264 bridge: frames parked in the WS backpressure queue count as backlog', t => {
+  // The connection router wraps every WS (ws-backpressure): frames wait in its
+  // queue while bufferedAmount sits at its high-water mark. The bridge must see
+  // that queue, or a slow link queues seconds of stale video instead of dropping.
+  const { installWsBackpressure } = require('../src/ws-backpressure');
+  const timers = [];
+  const { sock, ws, bridge } = harness({
+    highWater: 1000,
+    lowWater: 100,
+    beforeAttach: w => installWsBackpressure(w, {
+      limits: { highWaterBytes: 100 },
+      schedule: fn => { timers.push(fn); return timers.length; },
+      cancelSchedule: () => {},
+    }),
+  });
+  t.after(() => { bridge.close(); ws.emit('close'); });
+  sock.emit('data', frame(T_KEY, 'k1'));
+  assert.equal(ws.sent.length, 1);
+  ws.bufferedAmount = 150; // above the queue's 100, below the bridge's 1000
+  for (let i = 0; i < 40; i++) sock.emit('data', frame(T_DELTA, 'd'.repeat(100)));
+  const queued = ws._multiccBackpressure.stats().queueBytes;
+  assert.ok(queued <= 1000 + 105, `the bridge stops feeding the queue at its high-water mark (queued ${queued})`);
+  assert.ok(bridge.stats.dropped > 0, 'deltas beyond the backlog are dropped, not queued');
 });
 
 test('h264 bridge: backlog drops deltas (never the stream), then asks for a key frame once drained', t => {

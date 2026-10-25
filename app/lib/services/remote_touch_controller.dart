@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' show Offset, Size;
+import 'dart:ui' show Offset, Rect, Size;
 
 /// 「🖥 屏幕」触摸手势 → RFB 指针事件。纯 Dart，不碰 Widget，方便单测。
 ///
@@ -9,13 +9,16 @@ import 'dart:ui' show Offset, Size;
 ///    推动超过 [slop] 才按下左键（按在最初落点上）并逐点跟随；轻点才是单击。
 ///    没有任何延迟计时器，也没有长按右键 —— 右键走显式「右键」按钮。
 ///  · [RemoteTouchMode.trackpad] 触控板：一指滑动带着虚拟光标走（带加速度），
-///    轻点 = 点击，按住不动 [holdDelay] 后再拖 = 拖拽，双指平行滑动 = 滚动，
-///    双指轻点 = 右键，放大后手指位移按缩放比例变细（精确定位），
-///    光标位置通过 [onFollow] 交给界面让视角跟随。
+///    轻点 = 点击，按住不动 [holdDelay] 后再拖 = 拖拽，未放大时双指平行滑动 = 滚动，
+///    双指轻点 = 右键，放大后手指位移按缩放比例变细（精确定位）。
+///
+/// 单指只做鼠标、从不移动画面；画面的缩放与平移只归双指（放大后双指一律交给
+/// 缩放手势，同时缩放和拖动）。所以触控板光标被限制在 [visible] 里，不会走到
+/// 看不见的地方。
 ///
 /// 坐标约定：输出一律是**源画面像素**（RFB 帧缓冲坐标）；输入 `local` 是
 /// 内容局部坐标（直接模式的绝对映射），`global` 是视口坐标（触控板的相对位移
-/// 用它 —— 视角跟随光标平移时 local 会被带着动，会算出幽灵位移）。
+/// 用它 —— 双指挪动画面时 local 会被带着动，会算出幽灵位移）。
 enum RemoteTouchMode { direct, trackpad }
 
 class RemoteTouchController {
@@ -24,7 +27,6 @@ class RemoteTouchController {
     this.onCursor,
     this.onHold,
     this.onRightUsed,
-    this.onFollow,
     this.holdDelay = const Duration(milliseconds: 350),
     this.moveInterval = const Duration(milliseconds: 8),
     this.tapMax = const Duration(milliseconds: 300),
@@ -44,9 +46,6 @@ class RemoteTouchController {
   /// 「右键」一次性开关被这次点击用掉（界面据此熄灯）。
   final void Function()? onRightUsed;
 
-  /// 触控板光标移动后回调（界面在放大态下让视角跟随）。
-  final void Function(Offset source)? onFollow;
-
   final Duration holdDelay;
   final Duration moveInterval;
   final Duration tapMax;
@@ -62,6 +61,9 @@ class RemoteTouchController {
   Size display = Size.zero;
   Size source = Size.zero;
   double viewScale = 1;
+
+  /// 视口里看得见的那块源画面（源像素）；`null` = 整个源画面。触控板光标不出这块。
+  Rect? visible;
 
   /// 触控板虚拟光标（源画面像素）；界面可读它画光标。
   Offset cursor = Offset.zero;
@@ -135,6 +137,13 @@ class RemoteTouchController {
     } else {
       if (cursor == Offset.zero) {
         cursor = Offset(source.width / 2, source.height / 2);
+      }
+      // 双指把画面挪走后光标可能留在视口外：先拉回看得见的地方，
+      // 免得接下来的轻点点在看不见的位置。
+      final seen = _keepVisible(cursor);
+      if (seen != cursor) {
+        cursor = seen;
+        onPointer(0, cursor.dx.round(), cursor.dy.round());
       }
       _holdTimer?.cancel();
       _holdTimer = Timer(holdDelay, _fireHold);
@@ -258,15 +267,13 @@ class RemoteTouchController {
         (source.width / display.width) /
         math.max(0.1, viewScale) *
         (1 + math.min(_accelMax, speed / _accelSpeed));
-    cursor = Offset(
-      (cursor.dx + d.dx * gain).clamp(0.0, source.width - 1),
-      (cursor.dy + d.dy * gain).clamp(0.0, source.height - 1),
+    cursor = _keepVisible(
+      Offset(cursor.dx + d.dx * gain, cursor.dy + d.dy * gain),
     );
     _lastGlobal = global;
     _lastT = t;
     _queue(_holding ? 1 : 0, cursor, t);
     onCursor?.call(cursor, _holding);
-    onFollow?.call(cursor);
   }
 
   void _padUp(Duration t) {
@@ -311,7 +318,8 @@ class RemoteTouchController {
       final dc = (c - _c0).distance;
       if (math.max(dd, dc) < 10) return;
       _tapCandidate = false;
-      if (mode == RemoteTouchMode.direct || dd > dc * 0.8) {
+      // 放大后双指只管画面（缩放 + 拖动），没放大时画面无处可挪，平行滑动才是滚轮。
+      if (mode == RemoteTouchMode.direct || viewScale > 1.01 || dd > dc * 0.8) {
         _pinching = true; // 捏合缩放交给 InteractiveViewer
       } else {
         _scrolling = true;
@@ -426,6 +434,28 @@ class RemoteTouchController {
 
   void _hide() {
     if (mode == RemoteTouchMode.direct) onCursor?.call(null, false);
+  }
+
+  // 手写夹取：double.clamp(0.0, -0.0) 会抛 ArgumentError。
+  Offset _keepVisible(Offset c) {
+    double within(double v, double lo, double hi) =>
+        v < lo ? lo : (v > hi ? hi : v);
+    var left = 0.0, top = 0.0;
+    var right = source.width - 1, bottom = source.height - 1;
+    final v = visible;
+    if (v != null) {
+      left = math.max(left, v.left);
+      top = math.max(top, v.top);
+      right = math.min(right, v.right - 1);
+      bottom = math.min(bottom, v.bottom - 1);
+    }
+    if (right < left || bottom < top) {
+      // 可见块与源画面不相交（几何还没就绪）：退回整个源画面。
+      left = top = 0;
+      right = source.width - 1;
+      bottom = source.height - 1;
+    }
+    return Offset(within(c.dx, left, right), within(c.dy, top, bottom));
   }
 
   Offset _toSource(Offset local) => Offset(
