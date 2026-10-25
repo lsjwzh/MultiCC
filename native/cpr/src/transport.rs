@@ -1,5 +1,5 @@
 use crate::{
-    error_policy::quota_wall,
+    error_policy::classify,
     observer::Observer,
     plan::{rate_limit, Plan},
 };
@@ -76,6 +76,8 @@ pub struct ErrorBody {
     pub complete: bool,
     /// 完整错误正文已确认是额度墙时，宿主据此让 CLI 停止重试。
     pub no_retry: bool,
+    /// 429 的结构化归因（瞬时限流/额度窗口/模型权益/账单），供宿主向用户解释。
+    pub rejection: Option<Value>,
 }
 
 impl Exchange {
@@ -193,16 +195,26 @@ impl Exchange {
                     data: out,
                     complete: false,
                     no_retry: false,
+                    rejection: None,
                 });
             }
         }
         state.response = None;
         state.done = true;
-        let no_retry = quota_wall(state.status, &state.headers, &out);
+        let rejection = classify(
+            state.status,
+            &state.headers,
+            &out,
+            Some(&state.plan.route.model),
+        );
+        let no_retry = rejection
+            .as_ref()
+            .is_some_and(|result| result["kind"].as_str() != Some("transient"));
         Ok(ErrorBody {
             data: out,
             complete: true,
             no_retry,
+            rejection,
         })
     }
     pub async fn read(&self) -> Result<Chunk, String> {

@@ -132,9 +132,11 @@ const MIGRATION_DEBT = Object.freeze({
   // 不认钩子时的失败兜底，实测 3025/159170。
   // 按账号模型目录接线复用同一运行时，字节预算降至 159142。
   // 统一提交身份后移除内联 Git bot 参数，按实测收紧至 3020/158992。
+  // 2026-10-25 结构化 429 拒绝透传：429 冷却记录同一行追加 rejection，
+  // api-error-host 同一行接 proxyFailureForAttempt（行数不变），实测 3020/159086。
   'server.js': Object.freeze({
     ceiling: 3020,
-    byteCeiling: 158992,
+    byteCeiling: 159086,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),

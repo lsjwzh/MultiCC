@@ -156,7 +156,10 @@ function createAutoProviderRuntime(options = {}) {
       if (limitCache && provider) {
         try { entry = limitCache.get(provider.appType, provider.id); } catch (_) { entry = null; }
       }
-      const limit = limitState(entry, { now: Number(now()), staleAfterMs });
+      // The model this candidate would actually request: a model-scoped park
+      // only binds that model, so the candidate's own model must decide.
+      const model = candidate.model || provider && provider.model || null;
+      const limit = limitState(entry, { now: Number(now()), staleAfterMs, model });
       let guard = null;
       if (quotaGuard && provider) {
         try { guard = quotaGuard.check({ appType: provider.appType, providerId: provider.id }); }
@@ -170,7 +173,7 @@ function createAutoProviderRuntime(options = {}) {
         providerName: provider && provider.name || candidate.providerId,
         protocol: protocolOf(provider),
         trustDomain: trustDomainOf(provider),
-        model: candidate.model || provider && provider.model || null,
+        model,
         limitState: guarded ? 'exhausted' : limit.state,
         limitReason: guarded ? `quota_guard_${guard.kind}` : limit.reason,
         usedPercent: limit.usedPercent == null ? null : limit.usedPercent,

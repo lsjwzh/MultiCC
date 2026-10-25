@@ -1,6 +1,6 @@
 'use strict';
 
-const { isErrorOnlyText, retryNotice } = require('./api-error-policy');
+const { isErrorOnlyText, normalizeRejection, retryNotice } = require('./api-error-policy');
 const { vendorLoginForCli } = require('../cli-adapters/vendor-login');
 const { looksLikeRevokedOAuth } = require('../claude-auth/oauth-refresh');
 
@@ -99,6 +99,36 @@ function createApiErrorHost(options = {}) {
   // every existing test) keep the previous behaviour untouched.
   const recordProviderFailure = typeof options.recordProviderFailure === 'function'
     ? options.recordProviderFailure : null;
+  // The turn engine hands this host the CLI's own text envelope as `raw`, and
+  // that object outranks the attempt's proxy failure. So a structured rejection
+  // the Rust proxy produced would be dropped exactly when it is most useful.
+  // Optional: a host without the provider attempt runtime keeps text-only
+  // classification, and a host that has it merges only same-attempt, 429-bound
+  // evidence.
+  const proxyFailureForAttempt = typeof options.proxyFailureForAttempt === 'function'
+    ? options.proxyFailureForAttempt : null;
+
+  function proxyRejectionFor(runner) {
+    if (!proxyFailureForAttempt) return null;
+    const providerAttempt = runner?.providerAttempt;
+    if (!providerAttempt || typeof providerAttempt !== 'object') return null;
+    let failure;
+    try { failure = proxyFailureForAttempt(providerAttempt); } catch (_) { return null; }
+    // The runtime's proxyFailure() is attempt-scoped already; the status gate
+    // is repeated here because a rejection only ever describes a 429.
+    if (!failure || failure.httpStatus !== 429) return null;
+    return normalizeRejection(failure.rejection);
+  }
+
+  function rawWithProxyRejection(raw, runner) {
+    if (!raw || typeof raw !== 'object' || raw.rejection != null) return raw;
+    const rejection = proxyRejectionFor(runner);
+    if (!rejection) return raw;
+    const nested = raw.error && typeof raw.error === 'object' ? raw.error : {};
+    const hasStatus = [raw.httpStatus, raw.statusCode, raw.status,
+      nested.httpStatus, nested.statusCode, nested.status].some(value => value != null);
+    return Object.freeze({ ...raw, rejection, ...(hasStatus ? {} : { httpStatus: 429 }) });
+  }
 
   // A revoked OAuth credential is a dead account, not an expired one: no refresh
   // can revive it (see claude-auth/oauth-refresh.js), so the only useful
@@ -148,7 +178,8 @@ function createApiErrorHost(options = {}) {
     const turnElapsedMs = Number.isFinite(Number(cs?.turnStartedAt))
       ? Math.max(0, observedAt - Number(cs.turnStartedAt)) : 0;
     const identity = turnProviderIdentity({ runner, persisted, cs, raw });
-    const decision = recordApiError(raw, {
+    const effectiveRaw = rawWithProxyRejection(raw, runner);
+    const decision = recordApiError(effectiveRaw, {
       // `provider` is the legacy public field and intentionally remains the
       // CLI. providerId is additive route diagnostics for this request only.
       provider: identity.cli,
@@ -176,7 +207,7 @@ function createApiErrorHost(options = {}) {
     });
     if (runner) {
       runner.apiErrorDecision = decision;
-      runner.apiErrorRaw = raw;
+      runner.apiErrorRaw = effectiveRaw;
     }
     if (cs) cs._lastApiErrorDecision = decision;
     const routeIdentity = identity.runtimeEpoch && identity.decisionId && identity.routeAttemptId

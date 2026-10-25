@@ -139,6 +139,62 @@ test('an exact main proxy 429 is retained as immutable attempt failure evidence'
   assert.equal(Object.isFrozen(runtime.proxyFailure(attempt)), true);
 });
 
+test('a 429 outcome carries only the validated structured rejection onto proxyFailure()', () => {
+  const { runtime } = harness();
+  const attempt = runtime.beginAttempt(route());
+  const observe = rejection => runtime.observeProxyOutcome({
+    ...attempt, roleKind: 'main', routeAttribution: 'exact',
+    status: 'error', statusCode: 429, errorCode: 'UPSTREAM_HTTP_ERROR', rejection,
+  });
+
+  observe({
+    kind: 'entitlement',
+    scope: 'model',
+    window: null,
+    resetMs: null,
+    code: 'usage_credits_required',
+    model: 'fable-1',
+    source: 'text',
+    // Anything outside the contract must not survive into persisted state.
+    injected: { secret: 'nope' },
+    extra: 'nope',
+  });
+  const failure = runtime.proxyFailure(attempt);
+  assert.deepEqual(failure.rejection, {
+    kind: 'entitlement', scope: 'model', window: null, resetMs: null,
+    code: 'usage_credits_required', model: 'fable-1', source: 'text',
+  });
+  assert.equal(Object.isFrozen(failure.rejection), true);
+  assert.equal('injected' in failure.rejection, false);
+
+  // Unknown enum values degrade to null instead of rejecting the verdict, and
+  // free text is capped rather than trusted at whatever length it arrives.
+  observe({
+    kind: 'window', scope: 'galaxy', window: '5y', resetMs: -1,
+    code: 'x'.repeat(200), model: 'm'.repeat(200), source: 'psychic',
+  });
+  assert.deepEqual(runtime.proxyFailure(attempt).rejection, {
+    kind: 'window', scope: null, window: null, resetMs: null,
+    code: 'x'.repeat(80), model: 'm'.repeat(80), source: null,
+  });
+
+  // A rejection without a valid kind cannot steer classification at all.
+  observe({ kind: 'totally-unknown', scope: 'model' });
+  assert.equal('rejection' in runtime.proxyFailure(attempt), false);
+});
+
+test('a non-429 outcome never stores a structured rejection', () => {
+  const { runtime } = harness();
+  const attempt = runtime.beginAttempt(route());
+  runtime.observeProxyOutcome({
+    ...attempt, roleKind: 'main', routeAttribution: 'exact',
+    status: 'error', statusCode: 503, errorCode: 'UPSTREAM_HTTP_ERROR',
+    rejection: { kind: 'transient', scope: 'request', window: null, resetMs: null, code: null, model: null, source: 'headers' },
+  });
+  assert.equal(runtime.proxyFailure(attempt).httpStatus, 503);
+  assert.equal('rejection' in runtime.proxyFailure(attempt), false);
+});
+
 function downstreamOutcome() {
   return Object.freeze({ version: 1, requestId: 'request-1', requestKind: 'inference',
     termination: 'downstream_disconnect', httpStatus: null });

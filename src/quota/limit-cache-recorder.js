@@ -46,6 +46,106 @@ function isRevokedCategory(category) {
   return String(category || '').toLowerCase() === 'authentication_permission';
 }
 
+// A structured upstream rejection (attached by the Rust proxy) says *what* ran
+// out, not merely "the provider answered 429". It is untrusted input: every
+// field is validated here before it is allowed to steer a park. Contract:
+//   { kind: transient|window|entitlement|billing,
+//     scope: request|model|account, window: 5h|1d|1wk|1m|null,
+//     resetMs: epoch ms|null, code: string|null, model: wire model|null,
+//     source: headers|code|text|status }
+const REJECTION_KINDS = new Set(['transient', 'window', 'entitlement', 'billing']);
+const REJECTION_SCOPES = new Set(['request', 'model', 'account']);
+const REJECTION_WINDOWS = new Set(['5h', '1d', '1wk', '1m']);
+const REJECTION_SOURCES = new Set(['headers', 'code', 'text', 'status']);
+// A month is the longest window a plan really rolls over on; anything a source
+// claims beyond that is bounded, so a bad number cannot park an account forever.
+const MAX_REJECTION_BLOCK_MS = 8 * 24 * 3600_000;
+// Credits / plan entitlement for one model does not come back on a window
+// boundary; it needs a plan change or a top-up, so a longer fallback is honest.
+const MODEL_ENTITLEMENT_BLOCK_MS = 3600_000;
+
+function cleanToken(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function cleanLabel(value, max) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : null;
+}
+
+// Returns null for anything that is not a usable structured rejection. An
+// unrecognized scope falls back to 'account', which is exactly today's
+// behaviour (park the whole provider), never a narrower one.
+function normalizeRejection(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const kind = cleanToken(raw.kind);
+  if (!REJECTION_KINDS.has(kind)) return null;
+  const scopeRaw = cleanToken(raw.scope);
+  const scope = REJECTION_SCOPES.has(scopeRaw) ? scopeRaw : 'account';
+  const window = REJECTION_WINDOWS.has(cleanToken(raw.window)) ? cleanToken(raw.window) : null;
+  return {
+    kind,
+    scope,
+    window,
+    resetMs: resetMs(raw.resetMs),
+    code: cleanLabel(raw.code, 80),
+    model: cleanLabel(raw.model, 120),
+    source: REJECTION_SOURCES.has(cleanToken(raw.source)) ? cleanToken(raw.source) : null,
+  };
+}
+
+// What a validated rejection means for the availability entry, or null when it
+// changes nothing (transient / request-scoped → today's 5-minute cooldown).
+// `blockedUntilMs: null` means "no reset was given": the caller then keeps
+// today's default, including the exhausted-live-window preserve rule.
+function rejectionPark(rejection, nowMs) {
+  if (!rejection || rejection.kind === 'transient' || rejection.scope === 'request') return null;
+  const future = Number.isFinite(rejection.resetMs) && rejection.resetMs > nowMs;
+  const blockedUntilMs = future
+    ? Math.min(Math.trunc(rejection.resetMs), nowMs + MAX_REJECTION_BLOCK_MS)
+    : null;
+  const modelScoped = rejection.scope === 'model' && !!rejection.model;
+  if (modelScoped) {
+    const fallback = rejection.kind === 'window'
+      ? nowMs + PROVIDER_FAILURE_COOLDOWN_MS : nowMs + MODEL_ENTITLEMENT_BLOCK_MS;
+    return {
+      scope: 'model', model: rejection.model, kind: rejection.kind,
+      window: rejection.window, code: rejection.code,
+      blockedUntilMs: blockedUntilMs || fallback,
+    };
+  }
+  // Account-wide: explicitly said so, or a model-scoped rejection that failed
+  // to name the model. Naming no model is not a licence to narrow anything.
+  return {
+    scope: 'account', model: null, kind: rejection.kind,
+    window: rejection.window, code: rejection.code,
+    blockedUntilMs,
+    billable: rejection.kind === 'window' || rejection.kind === 'billing',
+  };
+}
+
+function compactRejection(park) {
+  const out = { kind: park.kind, scope: park.scope };
+  if (park.window) out.window = park.window;
+  if (park.code) out.code = park.code;
+  return out;
+}
+
+// A model-scoped park only narrows eligibility. An account-wide park that is
+// still running and reaches at least as far must survive: replacing it with the
+// narrower entry would hand the account back for every other model, which is
+// exactly what made a per-model 429 hide the account. A revoked park qualifies
+// (blockedUntilMs is MAX_SAFE_INTEGER), so revocation stays untouched.
+function keepsAccountPark(previous, nowMs, modelUntilMs) {
+  const summary = previous && previous.summary;
+  if (!summary || summary.kind !== 'availability') return false;
+  if (String(summary.status || '').toLowerCase() !== 'rejected') return false;
+  if (String(summary.scope || '').toLowerCase() === 'model') return false;
+  const until = Number(summary.blockedUntilMs);
+  return Number.isFinite(until) && until > nowMs && until >= modelUntilMs;
+}
+
 // Poller utilization is a 0..1 fraction; the cache stores percent (0..100).
 function windowPercent(utilization) {
   const value = Number(utilization);
@@ -300,7 +400,7 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
   // Other vendors may re-read quota after a 429. Official Claude relies on its
   // passive headers instead; an exhausted live window keeps its real deadline.
   function recordProviderFailure({
-    sessionId, providerId, category, httpStatus, blockedUntilMs,
+    sessionId, providerId, category, httpStatus, blockedUntilMs, rejection,
   } = {}) {
     const identity = providerId
       ? explicitProviderIdentity(providerId)
@@ -310,8 +410,16 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     const target = providers.getProviderLimitTarget?.(identity.appType, identity.providerId);
     const policy = claudeQuota('failure', { httpStatus, targetKind: target?.strategy,
       previous: previous?.summary, nowMs: Number(now()) });
-    if (policy?.preserve) return previous;
-    const recorded = recordCooldown(identity, { category, httpStatus, blockedUntilMs });
+    // A revoked credential is a state, not a 429: nothing a rejection says may
+    // replace that park (only releaseProviderFailure lifts it).
+    const park = isRevokedCategory(category)
+      ? null : rejectionPark(normalizeRejection(rejection), Number(now()));
+    // Non-structured 429s, and a structured one that carries no reset, keep the
+    // legacy preserve rule: a live exhausted window already holds the truer
+    // deadline than a bare cooldown would. A rejection that names a real reset
+    // wins over it, because that reset is the more precise deadline.
+    if (policy?.preserve && (!park || !park.blockedUntilMs)) return previous;
+    const recorded = recordCooldown(identity, { category, httpStatus, blockedUntilMs, park });
     if (refreshProvider && policy?.refresh !== false) {
       try {
         Promise.resolve(refreshProvider(identity.appType, identity.providerId)).catch(() => {});
@@ -320,26 +428,59 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     return recorded;
   }
 
-  function recordCooldown(identity, { category, httpStatus, blockedUntilMs }) {
+  function recordCooldown(identity, { category, httpStatus, blockedUntilMs, park = null }) {
     const observedAtMs = Number(now());
     const requestedUntil = Number(blockedUntilMs);
     const revoked = isRevokedCategory(category);
-    const safeBlockedUntilMs = revoked ? AUTH_REVOKED_BLOCKED_UNTIL_MS
-      : Number.isFinite(requestedUntil) && requestedUntil > observedAtMs
-        ? Math.trunc(requestedUntil) : observedAtMs + PROVIDER_FAILURE_COOLDOWN_MS;
+    const defaultUntilMs = observedAtMs + PROVIDER_FAILURE_COOLDOWN_MS;
     const status = Number(httpStatus);
+    const httpStatusValue = Number.isInteger(status) ? status : null;
+    if (park && park.scope === 'model' && !revoked) {
+      const until = Number.isFinite(park.blockedUntilMs) && park.blockedUntilMs > observedAtMs
+        ? Math.trunc(park.blockedUntilMs) : defaultUntilMs;
+      const previous = cache.get(identity.appType, identity.providerId);
+      if (keepsAccountPark(previous, observedAtMs, until)) return previous;
+      // One entry per provider: a newer model-scoped park replaces an older one
+      // (including for a different model). The account-wide case above is the
+      // only one that must survive, because losing it widens eligibility.
+      return cache.record(identity.appType, identity.providerId, {
+        kind: 'availability',
+        summary: {
+          kind: 'availability',
+          status: 'rejected',
+          scope: 'model',
+          model: park.model,
+          category: String(category || 'provider_transient').slice(0, 80),
+          httpStatus: httpStatusValue,
+          blockedUntilMs: until,
+          rejection: compactRejection(park),
+          observedAtMs,
+        },
+        summaryText: '',
+        barText: null,
+        fetchedAt: observedAtMs,
+      });
+    }
+    const safeBlockedUntilMs = revoked ? AUTH_REVOKED_BLOCKED_UNTIL_MS
+      : Number.isFinite(park?.blockedUntilMs) && park.blockedUntilMs > observedAtMs
+        ? Math.trunc(park.blockedUntilMs)
+        : Number.isFinite(requestedUntil) && requestedUntil > observedAtMs
+          ? Math.trunc(requestedUntil) : defaultUntilMs;
     return cache.record(identity.appType, identity.providerId, {
       kind: 'availability',
       summary: {
         kind: 'availability',
         status: 'rejected',
-        category: String(category || 'provider_transient').slice(0, 80),
-        httpStatus: Number.isInteger(status) ? status : null,
+        // A structured window/billing rejection is a quota verdict, not a
+        // transient hiccup: name it so the record and its log line agree.
+        category: park?.billable ? 'billing_quota' : String(category || 'provider_transient').slice(0, 80),
+        httpStatus: httpStatusValue,
         blockedUntilMs: safeBlockedUntilMs,
         // Auto reads this flag rather than the timestamp, so a revoked park is
         // skipped for what it is instead of as a cooldown that happens to be
         // very long — and so no clock change can quietly un-park a dead grant.
         ...(revoked ? { revoked: true } : {}),
+        ...(park ? { rejection: compactRejection(park) } : {}),
         observedAtMs,
       },
       summaryText: '',

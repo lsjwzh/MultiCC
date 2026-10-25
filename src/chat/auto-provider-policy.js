@@ -49,7 +49,32 @@ function fullUntilReset(summary, now) {
     && Number.isFinite(Number(w.reset)) && Number(w.reset) > now);
 }
 
-function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000 } = {}) {
+// Model ids arrive as wire ids ("claude-fable-5-1[1m]"), bare aliases
+// ("fable") or differently-versioned ids of one family. Exact (case-insensitive)
+// match wins; otherwise the family token decides. A pair of unrelated families
+// never matches, so a Fable-only block leaves Sonnet/Opus available.
+const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
+const MODEL_FAMILY_STOPWORDS = new Set(['claude', 'anthropic', 'model', 'models']);
+
+function modelFamily(value) {
+  const text = String(value || '').toLowerCase();
+  const known = MODEL_FAMILIES.find(family => new RegExp(`(^|[^a-z])${family}([^a-z]|$)`).test(text));
+  if (known) return known;
+  // Unknown family: the first alphabetic token that is not the vendor name.
+  return text.split(/[^a-z]+/).find(token => token && !MODEL_FAMILY_STOPWORDS.has(token)) || null;
+}
+
+function modelsMatch(candidateModel, blockedModel) {
+  const candidate = String(candidateModel || '').trim().toLowerCase();
+  const blocked = String(blockedModel || '').trim().toLowerCase();
+  if (!candidate || !blocked) return false;
+  if (candidate === blocked) return true;
+  const left = modelFamily(candidate);
+  const right = modelFamily(blocked);
+  return !!(left && right && left === right);
+}
+
+function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000, model = null } = {}) {
   if (!entry || typeof entry !== 'object') return Object.freeze({ state: 'unknown', reason: 'limit_unknown', usedPercent: null });
   const summary = entry.summary && typeof entry.summary === 'object' ? entry.summary : {};
   if (summary.kind === 'availability') {
@@ -64,6 +89,14 @@ function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000 } = {})
     const blockedUntilMs = Number(summary.blockedUntilMs);
     if (String(summary.status || '').toLowerCase() === 'rejected'
         && Number.isFinite(blockedUntilMs) && blockedUntilMs > now) {
+      // A model-scoped park only removes that model. Without a name on either
+      // side we cannot prove the line avoids it, so it is skipped conservatively.
+      if (String(summary.scope || '').toLowerCase() === 'model') {
+        if (!model || !summary.model || modelsMatch(model, summary.model)) {
+          return Object.freeze({ state: 'exhausted', reason: 'provider_model_cooldown_active', usedPercent: null });
+        }
+        return Object.freeze({ state: 'stale', reason: 'provider_model_cooldown_other_model', usedPercent: null });
+      }
       return Object.freeze({ state: 'exhausted', reason: 'provider_cooldown_active', usedPercent: null });
     }
     return Object.freeze({ state: 'stale', reason: 'provider_cooldown_expired', usedPercent: null });
