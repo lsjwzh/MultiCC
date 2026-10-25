@@ -38,6 +38,8 @@ function profileFor(platform, { home, env = {} } = {}) {
       rfbSock: env.MULTICC_AGENT_RFB_SOCK || path.join(dir, 'rfb.sock'),
       h264Sock: env.MULTICC_AGENT_H264_SOCK || path.join(dir, 'h264.sock'),
       features: MAC_FEATURES, modifier: 'cmd',
+      // macOS 的 agent 由 src/macos-agent-provision.js 随服务端启动自动装，不需要提示。
+      installHint: null,
     };
   }
   if (platform === 'win32') {
@@ -47,17 +49,23 @@ function profileFor(platform, { home, env = {} } = {}) {
       platform, label: 'Windows', supported: false, transport: 'named-pipe',
       agentSock: env.MULTICC_AGENT_PIPE || '\\\\.\\pipe\\multicc-agent',
       rfbSock: null, h264Sock: null, features: NO_FEATURES, modifier: 'ctrl',
+      installHint: null,
     };
   }
   // Linux agent：X11 走 XShm + XTEST。Wayland 只能走 portal（每次截图/注入都要
   // 用户同意弹窗，而且只给视频流不给帧），v1 不做 —— 但 supported 依然报 true：
-  // Wayland 会话里 agent 会因为连不上 X server 而在 status 上明说
-  // （no-display + DISPLAY 的值），这比「整个平台不支持」更好排查。
+  // Wayland 会话里 XWayland 其实**连得上**（DISPLAY 照样有），所以不是「连不上 X」，
+  // 而是 agent 自己认出 XWayland 后一律回 wayland-session，前端据此提示换 X11 会话。
+  // 这比「整个平台不支持」更好排查，也不会在 XWayland 上假成功。
+  //
+  // installHint：Linux 的 agent 不随服务端自动装（要本机编译，且自启方式因桌面而异），
+  // 连不上 agent 时前端把这条命令原样给用户。路径相对服务端目录（发行包里同样存在）。
   return {
     platform: 'linux', label: 'Linux', supported: true, transport: 'unix',
     agentSock: env.MULTICC_AGENT_SOCK
       || path.join(env.XDG_RUNTIME_DIR || `/run/user/${uid()}`, 'multicc-agent', 'agent.sock'),
     rfbSock: null, h264Sock: null, features: LINUX_FEATURES, modifier: 'ctrl',
+    installHint: 'sh scripts/linux-agent/install.sh install',
   };
 }
 
@@ -168,6 +176,7 @@ function createDesktopHost({ platform = process.platform, home = os.homedir(), e
     return {
       ok: true, platform: profile.platform, label: profile.label, supported: profile.supported,
       transport: profile.transport, features: { ...profile.features }, modifier: profile.modifier,
+      installHint: profile.installHint || null,
       reason: profile.supported ? null : 'platform-unsupported',
     };
   }

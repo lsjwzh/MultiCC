@@ -468,8 +468,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +10 双语键（airGlobalCpr*）：全局配置中的 CPR 版本选择与待重启状态。
     // 与主线词典合并后重新生成，实测 9612 行、615336 字节。
     // +1 键（rsFrameAge）：App「🖥 屏幕」状态栏「最近一帧 N 秒前」—— 画面冻住时不再显示过时的帧率。
-    maxLines: 9614,
-    maxBytes: 615422,
+    // +4 双语键（rsErrNoDisplay/rsErrWayland/rsErrInterrupted/rsErrAgentInstall）：Linux 桌面 agent
+    //   的三个新 reason（连不上 X / Wayland 会话 / 注入半路被停）与「未运行时怎么装」的提示，
+    //   中英各 4 行 = +8 行，重跑生成器实测 9622/616360。
+    maxLines: 9622,
+    maxBytes: 616360,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

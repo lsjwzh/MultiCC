@@ -265,10 +265,24 @@ const REASONS = {
   'screen-recording-not-granted': 'MultiCC Agent 未获屏幕录制授权',
   'agent-unreachable': 'MultiCC Agent 未运行',
   'platform-unsupported': '这台机器上的桌面 Agent 还不支持远程屏幕',
+  'no-display': '桌面 Agent 连不上这台机器的图形界面（X server）',
+  'wayland-session': '这台 Linux 正在用 Wayland 会话，远程屏幕只支持 X11：注销后选「Xorg / X11」会话',
+  interrupted: '操作被中途停下，可能已执行了一部分，先看一眼画面',
 };
 function describe(r) {
   const code = r?.reason || r?.error || 'unknown';
+  const hint = deps.host.profile.installHint;
+  if (code === 'agent-unreachable' && hint) return `${REASONS[code]}：在这台机器上执行 ${hint}`;
   return REASONS[code] || r?.hint || r?.message || code;
+}
+
+// type 的耗时跟字数成正比（Linux agent 逐字注入，中文每个新字还要改一次键映射，
+// 最坏约 30ms/字），固定 8s 会在长文本打到一半时超时。超时不只是报错：agent 看到
+// 请求方断开会立刻停手（防止「报了超时、字却还在打」引发的重复输入），所以超时
+// 必须盖得住整段输入。其余 op 都是毫秒级，沿用默认。
+function inputTimeout(req) {
+  if (req.op !== 'type') return undefined;
+  return Math.min(130000, 8000 + 30 * req.text.length);
 }
 
 function sendError(res, error, status = 502) {
@@ -308,7 +322,7 @@ function mount(app) {
     const built = buildInput(req.body || {});
     if (built.error) { res.status(400).json({ ok: false, error: built.error }); return; }
     if (!deps.host.profile.supported) { sendError(res, deps.host.unsupported()); return; }
-    const r = await call(built.req);
+    const r = await call(built.req, inputTimeout(built.req));
     if (!r || r.ok === false) { res.json({ ok: false, error: r?.reason || r?.error, message: describe(r) }); return; }
     lastFrame = null;
     res.json(r);

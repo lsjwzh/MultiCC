@@ -16,6 +16,14 @@
  *   multicc-linux-target --png-has-color FILE RRGGBB
  *     PNG 解码后找这个颜色，找到退出 0，否则 1。
  *
+ *   multicc-linux-target --churn MS
+ *     MS 毫秒内不停地「建窗口 → 抢焦点 → 立刻销毁」。用来制造 agent 查焦点窗口时
+ *     撞上 BadWindow 的那个竞态（真实场景：用户关掉弹出菜单的同一刻远程点了一下）。
+ *
+ *   multicc-linux-target --can-connect
+ *     开一条新的 X 连接再关掉，能开退出 0。用来断言 agent 没把 X server 的客户端
+ *     名额耗光 —— 耗光时受害的是用户桌面上的**每一个**新程序，不只是 agent。
+ *
  * 为什么要有真窗口：agent 回 ok:true 只证明「事件发出去了」，证明不了「落在了
  * 该落的地方」—— 坐标域搞错（物理像素 vs 逻辑点）、键码算错、事件发给了没人
  * 聚焦的窗口，这几种错都会一路 ok 到底，直到用户发现鼠标在乱点。
@@ -32,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <zlib.h>
 
@@ -262,6 +271,44 @@ static int send_key(const char *name, int hold_ms) {
   return 0;
 }
 
+/* 自己这边撞上的 BadWindow/BadMatch（焦点给了一个刚销毁的窗口）是预期内的，忽略。 */
+static int ignore_x_error(Display *d, XErrorEvent *e) { (void)d; (void)e; return 0; }
+
+static long elapsed_ms(const struct timespec *t0) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (t.tv_sec - t0->tv_sec) * 1000L + (t.tv_nsec - t0->tv_nsec) / 1000000L;
+}
+
+static int churn(int ms) {
+  Display *d = XOpenDisplay(NULL);
+  if (!d) { fprintf(stderr, "打不开 DISPLAY\n"); return 2; }
+  XSetErrorHandler(ignore_x_error);
+  Window root = DefaultRootWindow(d);
+  struct timespec t0;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  long rounds = 0;
+  while (elapsed_ms(&t0) < ms) {
+    Window w = XCreateSimpleWindow(d, root, 5, 5, 20, 20, 0, 0, 0);
+    XMapWindow(d, w);
+    XSetInputFocus(d, w, RevertToParent, CurrentTime);
+    XSync(d, False);
+    XDestroyWindow(d, w);
+    XSync(d, False);
+    rounds++;
+  }
+  printf("CHURN %ld\n", rounds);
+  XCloseDisplay(d);
+  return 0;
+}
+
+static int can_connect(void) {
+  Display *d = XOpenDisplay(NULL);
+  if (!d) return 1;
+  XCloseDisplay(d);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc >= 2 && strcmp(argv[1], "--png-has-color") == 0) {
     if (argc < 4) { fprintf(stderr, "用法: --png-has-color FILE RRGGBB\n"); return 2; }
@@ -272,5 +319,7 @@ int main(int argc, char **argv) {
     if (hold <= 0) hold = 120;
     return send_key(argv[2], hold);
   }
+  if (argc >= 3 && strcmp(argv[1], "--churn") == 0) return churn(atoi(argv[2]));
+  if (argc >= 2 && strcmp(argv[1], "--can-connect") == 0) return can_connect();
   return run_target(argc, argv);
 }

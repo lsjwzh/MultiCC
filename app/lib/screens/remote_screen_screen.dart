@@ -441,6 +441,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
       'agent-unreachable': 'rsErrAgent',
       'accessibility-not-granted': 'rsErrAx',
       'screen-recording-not-granted': 'rsErrSr',
+      'no-display': 'rsErrNoDisplay',
+      'wayland-session': 'rsErrWayland',
+      'interrupted': 'rsErrInterrupted',
     };
     final code = res['error']?.toString();
     setState(() {
