@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io' show RawZLibFilter;
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -10,7 +12,42 @@ import 'package:multicc_app/services/remote_screen_rfb.dart';
 /// 2) WS 帧不与 RFB 消息对齐时 _ChunkedReader 的流重组（任意切段结果一致）；
 /// 3) 空保活 update（n=0）之后继续 re-arm incremental request（静止画面
 ///    不断流的客户端侧前提，见 Swift 端 servedAny 修复）。
+/// 16×8，左半红右半蓝，sips 以质量 90 编出来的真 JPEG。
+const _redBlueJpeg =
+    '/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAEKADAAQAAAABAAAACAAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgACAAQAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAQEBAQEBAgEBAgMCAgIDBAMDAwMEBQQEBAQEBQYFBQUFBQUGBgYGBgYGBgcHBwcHBwgICAgICQkJCQkJCQkJCf/bAEMBAQEBAgICBAICBAkGBQYJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCf/dAAQAAf/aAAwDAQACEQMRAD8A/F+vyHr9eK/Iev8AVD/Rl/8Amtv+6f8A+7x/tR/pDP8AzSH/AHPf+6Z//9k=';
+
+Uint8List _rect(int x, int y, int w, int h, int enc) {
+  final b = ByteData(12)
+    ..setUint16(0, x)
+    ..setUint16(2, y)
+    ..setUint16(4, w)
+    ..setUint16(6, h)
+    ..setInt32(8, enc);
+  return b.buffer.asUint8List();
+}
+
+/// Tight compact length（与 Agent 的 tightLength 同一编码）。
+List<int> _tightLength(int n) => n <= 0x7F
+    ? [n]
+    : n <= 0x3FFF
+    ? [0x80 | (n & 0x7F), n >> 7]
+    : [0x80 | (n & 0x7F), 0x80 | ((n >> 7) & 0x7F), n >> 14];
+
+/// 和 Agent 一样：一条持续的 deflate 流，每个矩形 sync flush 一次。
+List<int> _deflateRect(RawZLibFilter z, List<int> rgb) {
+  z.process(rgb, 0, rgb.length);
+  final out = <int>[];
+  List<int>? c;
+  while ((c = z.processed(flush: true)) != null) {
+    out.addAll(c!);
+  }
+  return out;
+}
+
 void main() {
+  // 真 JPEG 解码要用引擎的 codec。
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   // ── 假 Agent 的完整字节流 ──
   final serverBytes = Uint8List.fromList([
     // "RFB 003.008\n"
@@ -150,22 +187,29 @@ void main() {
     expect(fb[frameAt(fb, 0, 0, 4)], 0x00);
     expect(fb[frameAt(fb, 3, 0, 4) + 3], 0x00);
 
-    // 客户端侧字节：版本串 → None → ClientInit → 全量请求 → 每个 update（含
-    // 空保活）之后一个 incremental 请求，共 3 个 request。
+    // 客户端侧字节：版本串 → None → ClientInit → SetEncodings → 全量请求 →
+    // 每个 update（含空保活）之后一个 incremental 请求，共 3 个 request。
     final flat = Uint8List.fromList(sent.expand((b) => b).toList());
     final hello = Uint8List.fromList('RFB 003.008\n'.codeUnits);
     expect(Uint8List.sublistView(flat, 0, 12), hello);
     expect(flat[12], 0x01); // security type None
     expect(flat[13], 0x00); // ClientInit
+    // SetEncodings: Tight(7) + JPEG 质量 6（-32+6=-26）。不声明 DesktopSize
+    // （留在 logical/2，坐标映射不变）也不声明 Cursor（指针留在画面里）。
+    expect(Uint8List.sublistView(flat, 14, 26), [
+      2, 0, 0, 2,
+      0, 0, 0, 7,
+      0xFF, 0xFF, 0xFF, 0xE6,
+    ]);
     // request #1（全量）: [3,0,pad4,be16(4),be16(2)]
-    final req1 = Uint8List.sublistView(flat, 14, 24);
+    final req1 = Uint8List.sublistView(flat, 26, 36);
     expect(req1, [3, 0, 0, 0, 0, 0, 0x00, 0x04, 0x00, 0x02]);
     // request #2/#3（incremental）与 #1 只差 incremental 位。
-    final req2 = Uint8List.sublistView(flat, 24, 34);
-    final req3 = Uint8List.sublistView(flat, 34, 44);
+    final req2 = Uint8List.sublistView(flat, 36, 46);
+    final req3 = Uint8List.sublistView(flat, 46, 56);
     expect(req2, [3, 1, 0, 0, 0, 0, 0x00, 0x04, 0x00, 0x02]);
     expect(req3, req2);
-    expect(flat.length, 44);
+    expect(flat.length, 56);
 
     made.incoming.close(); // 关流 → run() 以 rfb-connection-closed 收场
     await done;
@@ -219,7 +263,7 @@ void main() {
     expect(sent[7], [4, 0, 0, 0, 0x00, 0x00, 0xFF, 0xE7]);
   });
 
-  test('非 RFB 服务端 / 非 Raw 编码都会切断', () async {
+  test('非 RFB 服务端 / 不支持的编码（Hextile）都会切断', () async {
     final made1 = makeRfb(<Uint8List>[], () {});
     made1.incoming.add(Uint8List.fromList('HTTP/1.1 200'.codeUnits));
     await expectLater(made1.rfb.run(), throwsStateError);
@@ -238,5 +282,122 @@ void main() {
     ]));
     await done;
     await made2.incoming.close();
+  });
+  test('jpegQuality: null → 不发 SetEncodings，只走 Raw（兼容旧行为）', () async {
+    final sent = <Uint8List>[];
+    final incoming = StreamController<Uint8List>();
+    addTearDown(incoming.close);
+    final rfb = RemoteScreenRfb(
+      incoming: incoming.stream,
+      send: sent.add,
+      jpegQuality: null,
+    );
+    unawaited(rfb.run().catchError((Object _) {}));
+    incoming.add(Uint8List.sublistView(serverBytes, 0, 49));
+    await pumpUntil(() => sent.length >= 4);
+    expect(sent[3][0], 3, reason: 'ClientInit 之后直接是 FramebufferUpdateRequest');
+  });
+
+  test('Tight：fill / 不足 12 字节原样 RGB / zlib 跨矩形共用一条流', () async {
+    final made = makeRfb(<Uint8List>[], () {});
+    unawaited(made.rfb.run().catchError((Object _) {}));
+    made.incoming.add(Uint8List.sublistView(serverBytes, 0, 49));
+    await pumpUntil(() => made.rfb.width == 4);
+
+    // update 1：整行 fill + 一个像素的原样 RGB（3 字节 < 12，不进 zlib）。
+    made.incoming.add(Uint8List.fromList([
+      0, 0, 0, 2,
+      ..._rect(0, 0, 4, 1, 7), 0x80, 0x10, 0x20, 0x30,
+      ..._rect(3, 1, 1, 1, 7), 0x00, 0x40, 0x50, 0x60,
+    ]));
+    await pumpUntil(() => made.rfb.frameVersion >= 1);
+    final fb = made.rfb.framebuffer!;
+    for (var x = 0; x < 4; x++) {
+      final at = frameAt(fb, x, 0, 4);
+      expect(fb.sublist(at, at + 4), [0x30, 0x20, 0x10, 0xFF],
+          reason: 'fill 是 R,G,B → BGRA，x=$x');
+    }
+    final one = frameAt(fb, 3, 1, 4);
+    expect(fb.sublist(one, one + 4), [0x60, 0x50, 0x40, 0xFF]);
+
+    // update 2/3：两个 zlib 矩形，同一条持续 deflate 流。第二个内容相同，
+    // 只有靠前一块的字典才解得出来 —— 每块新建解压器会在这里失败。
+    final deflater = RawZLibFilter.deflateFilter(level: 6);
+    final row = [for (var i = 0; i < 4; i++) ...[0xA0 + i, 0xB0 + i, 0xC0 + i]];
+    final z1 = _deflateRect(deflater, row);
+    final z2 = _deflateRect(deflater, row);
+    made.incoming.add(Uint8List.fromList([
+      0, 0, 0, 1,
+      ..._rect(0, 1, 4, 1, 7), 0x00, ..._tightLength(z1.length), ...z1,
+    ]));
+    await pumpUntil(() => made.rfb.frameVersion >= 2);
+    made.incoming.add(Uint8List.fromList([
+      0, 0, 0, 1,
+      ..._rect(0, 0, 4, 1, 7), 0x00, ..._tightLength(z2.length), ...z2,
+    ]));
+    await pumpUntil(() => made.rfb.frameVersion >= 3);
+    for (final y in [0, 1]) {
+      for (var x = 0; x < 4; x++) {
+        final at = frameAt(fb, x, y, 4);
+        expect(fb.sublist(at, at + 4), [0xC0 + x, 0xB0 + x, 0xA0 + x, 0xFF],
+            reason: 'zlib 行 y=$y x=$x');
+      }
+    }
+  });
+
+  test('Tight JPEG：真 JPEG 经引擎解码后按 BGRA 写进帧缓冲', () async {
+    final hello = BytesBuilder()
+      ..add(Uint8List.sublistView(serverBytes, 0, 18))
+      ..add([0x00, 0x10, 0x00, 0x08]) // ServerInit 宽高 → 16×8
+      ..add(Uint8List.sublistView(serverBytes, 22, 49));
+    final jpeg = base64Decode(_redBlueJpeg);
+    final made = makeRfb(<Uint8List>[], () {});
+    unawaited(made.rfb.run().catchError((Object _) {}));
+    made.incoming.add(hello.takeBytes());
+    await pumpUntil(() => made.rfb.width == 16);
+    made.incoming.add(Uint8List.fromList([
+      0, 0, 0, 1,
+      ..._rect(0, 0, 16, 8, 7), 0x90, ..._tightLength(jpeg.length), ...jpeg,
+    ]));
+    await pumpUntil(
+      () => made.rfb.frameVersion >= 1,
+      const Duration(seconds: 5),
+    );
+    final fb = made.rfb.framebuffer!;
+    void near(int x, int y, List<int> bgr) {
+      final at = frameAt(fb, x, y, 16);
+      for (var i = 0; i < 3; i++) {
+        expect((fb[at + i] - bgr[i]).abs(), lessThan(40),
+            reason: '($x,$y) 通道 $i = ${fb[at + i]}，应接近 ${bgr[i]}');
+      }
+      expect(fb[at + 3], 0xFF);
+    }
+
+    near(2, 4, [0, 0, 255]); // 左半红：BGRA 里 R 在第 3 个字节
+    near(13, 4, [255, 0, 0]); // 右半蓝
+  });
+
+  test('Tight JPEG 解不出来 → 会话切断交给上层，而不是卡住', () async {
+    var closed = false;
+    final incoming = StreamController<Uint8List>();
+    addTearDown(incoming.close);
+    final rfb = RemoteScreenRfb(
+      incoming: incoming.stream,
+      send: (_) {},
+      onClosed: () => closed = true,
+    );
+    final done = rfb.run().then((_) => 'ok', onError: (Object _) => 'error');
+    incoming.add(Uint8List.sublistView(serverBytes, 0, 49));
+    await pumpUntil(() => rfb.width == 4);
+    incoming.add(Uint8List.fromList([
+      0, 0, 0, 1,
+      ..._rect(0, 0, 4, 2, 7), 0x90, 5, 1, 2, 3, 4, 5, // 不是 JPEG
+    ]));
+    // 要当场报错，不能靠 12 秒的静默判死来兜底。
+    expect(
+      await done.timeout(const Duration(seconds: 2), onTimeout: () => 'hung'),
+      'error',
+    );
+    expect(closed, isTrue);
   });
 }
