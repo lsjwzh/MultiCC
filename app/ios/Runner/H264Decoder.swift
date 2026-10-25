@@ -187,6 +187,10 @@ final class IosH264Decoder {
     let status = VTDecompressionSessionDecodeFrame(
       vt, sampleBuffer: sample, flags: [], frameRefcon: nil, infoFlagsOut: &infoFlags)
     if status != noErr {
+      // App 切后台再回来，硬件解码会话会失效（kVTInvalidSessionErr），之后每一帧
+      // 都失败、画面停住。丢掉会话，下一个关键帧带着 SPS/PPS 重建 —— 与 Android
+      // 端出错即 resetCodec 同一策略。
+      invalidateSession()
       notifyError("decode-status-\(status)")
     }
   }
@@ -235,6 +239,9 @@ final class IosH264Decoder {
     lock.unlock()
     if isClosed { return }
     if status != noErr || imageBuffer == nil {
+      if status == kVTInvalidSessionErr {
+        queue.async { [weak self] in self?.invalidateSession() }
+      }
       notifyError("decode-output")
       return
     }
