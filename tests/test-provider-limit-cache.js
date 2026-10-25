@@ -680,6 +680,111 @@ function testSharedSnapshots() {
   cache.close();
 }
 
+// ── structured rejection: the *scope* of a 429 decides what is parked ───────
+
+function testStructuredRejectionPark() {
+  const { limitState } = require('../src/chat/auto-provider-policy');
+  const file = tmpDb('rejection');
+  const clock = fixedClock(1_700_000_000_000);
+  const now = clock.now();
+  const cache = createProviderLimitCache({ file, now: clock.now });
+  const recorder = createLimitRecorder({
+    cache,
+    persistedSessions: fakeSessions({}),
+    providers: stubProviders({ list: [{ id: 'p-glm', appType: 'claude', name: 'GLM' }] }),
+    now: clock.now,
+  });
+  const fail = rejection => recorder.recordProviderFailure({
+    providerId: 'p-glm', category: 'rate_limit', httpStatus: 429, rejection,
+  });
+  const fiveMinutes = now + PROVIDER_FAILURE_COOLDOWN_MS;
+  const hour = now + 3600_000;
+
+  // No rejection, a transient one, or a request-scoped one: today's 5-minute
+  // cooldown, no structured fields.
+  const plain = recorder.recordProviderFailure({ providerId: 'p-glm', category: 'rate_limit', httpStatus: 429 });
+  ok(plain.summary.blockedUntilMs === fiveMinutes && !plain.summary.rejection && !plain.summary.scope,
+    'no rejection keeps the legacy 5-minute cooldown');
+  const transient = fail({ kind: 'transient', scope: 'account', window: null, resetMs: now + 3600_000 });
+  ok(transient.summary.blockedUntilMs === fiveMinutes && !transient.summary.rejection,
+    'a transient rejection keeps the legacy 5-minute cooldown');
+  const requestScoped = fail({ kind: 'entitlement', scope: 'request', resetMs: now + 3600_000, model: 'claude-fable-5-1' });
+  ok(requestScoped.summary.blockedUntilMs === fiveMinutes && !requestScoped.summary.scope,
+    'a request-scoped rejection parks nothing narrower than today');
+
+  // Account window with a known reset: park until it, not for five minutes.
+  const resetAt = now + 47 * 3600_000;
+  const windowed = fail({ kind: 'window', scope: 'account', window: '5h', resetMs: resetAt, code: 'rate_limit_exceeded', source: 'headers' });
+  ok(windowed.summary.blockedUntilMs === resetAt, 'a window rejection parks the account until its real reset');
+  ok(windowed.summary.category === 'billing_quota'
+    && windowed.summary.rejection.kind === 'window'
+    && windowed.summary.rejection.window === '5h'
+    && windowed.summary.rejection.code === 'rate_limit_exceeded'
+    && windowed.summary.rejection.scope === 'account',
+  'a window rejection records billing_quota and a compact rejection');
+
+  const capped = fail({ kind: 'window', scope: 'account', window: '1m', resetMs: now + 40 * 24 * 3600_000 });
+  ok(capped.summary.blockedUntilMs === now + 8 * 24 * 3600_000,
+    'a reset beyond eight days is capped');
+  const pastReset = fail({ kind: 'window', scope: 'account', window: '5h', resetMs: now - 1 });
+  ok(pastReset.summary.blockedUntilMs === fiveMinutes,
+    'a reset already in the past falls back to the legacy default');
+
+  // Model-scoped entitlement: the one-model 429 that used to park the account.
+  const modelPark = fail({ kind: 'entitlement', scope: 'model', window: null, resetMs: null, code: 'usage_credits_required', model: 'claude-fable-5-1', source: 'text' });
+  ok(modelPark.summary.scope === 'model' && modelPark.summary.model === 'claude-fable-5-1',
+    'a model-scoped rejection records the model, not just the account');
+  ok(modelPark.summary.blockedUntilMs === hour && modelPark.summary.rejection.scope === 'model',
+    'an entitlement without a reset blocks that model for an hour');
+
+  const stateFor = model => limitState(modelPark, { now, model });
+  ok(stateFor('claude-fable-5-1').reason === 'provider_model_cooldown_active', 'the blocked wire model is exhausted');
+  ok(stateFor('fable').state === 'exhausted', 'a bare family alias matches the blocked model');
+  ok(stateFor('claude-fable-5-1[1m]').state === 'exhausted', 'a variant tag matches the blocked model');
+  ok(stateFor('sonnet').state === 'stale' && stateFor('sonnet').reason === 'provider_model_cooldown_other_model',
+    'another family stays eligible and says why');
+  ok(stateFor('claude-opus-5-5').state === 'stale', 'another Claude family stays eligible');
+  ok(limitState(modelPark, { now }).state === 'exhausted', 'no candidate model stays conservative');
+  ok(limitState(modelPark, { now, model: null }).state === 'exhausted', 'an unknown candidate model stays conservative');
+
+  // A per-model window with a published reset uses it.
+  const modelWindow = fail({ kind: 'window', scope: 'model', window: '1wk', resetMs: now + 6 * 24 * 3600_000, model: 'claude-opus-5-5' });
+  ok(modelWindow.summary.scope === 'model' && modelWindow.summary.blockedUntilMs === now + 6 * 24 * 3600_000,
+    'a model-scoped window parks that model until its reset');
+
+  // A longer account park that is still running must not be replaced by the
+  // narrower entry: that would hand the account back for every other model.
+  const accountUntil = now + 2 * 3600_000;
+  const accountPark = fail({ kind: 'window', scope: 'account', window: '5h', resetMs: accountUntil });
+  ok(accountPark.summary.blockedUntilMs === accountUntil && !accountPark.summary.scope, 'the account park is active');
+  const narrow = fail({ kind: 'entitlement', scope: 'model', model: 'claude-fable-5-1' });
+  ok(narrow.summary.blockedUntilMs === accountUntil && !narrow.summary.scope
+    && narrow.summary.rejection?.kind === 'window',
+  'a shorter model park does not replace a longer active account park');
+  const replaced = fail({ kind: 'window', scope: 'account', window: '5h', resetMs: now + 60_000 });
+  const longerModel = fail({ kind: 'entitlement', scope: 'model', model: 'claude-fable-5-1' });
+  ok(longerModel.summary.scope === 'model' && longerModel.summary.blockedUntilMs === hour,
+    'a longer model park replaces a shorter account park');
+
+  // Model scope that cannot name the model, and a rejection whose fields do not
+  // validate, both fall back to the account-wide rule.
+  const nameless = fail({ kind: 'window', scope: 'model', window: '5h', resetMs: now + 2 * 3600_000, model: '   ' });
+  ok(!nameless.summary.scope && nameless.summary.blockedUntilMs === now + 2 * 3600_000,
+    'a model scope without a model parks the whole account');
+  const unknownKind = fail({ kind: 'mystery', scope: 'account', resetMs: now + 3600_000 });
+  ok(unknownKind.summary.blockedUntilMs === fiveMinutes && !unknownKind.summary.rejection,
+    'an unrecognized rejection kind is ignored');
+
+  // Revocation stays a state, not a 429.
+  const revoked = recorder.recordProviderFailure({
+    providerId: 'p-glm', category: 'authentication_permission', httpStatus: 401,
+    rejection: { kind: 'billing', scope: 'account', resetMs: now + 3600_000 },
+  });
+  ok(revoked.summary.revoked === true && revoked.summary.blockedUntilMs === AUTH_REVOKED_BLOCKED_UNTIL_MS,
+    'a rejection never narrows a revoked-credential park');
+  cache.close();
+}
+
 testSharedSnapshots();
 testCompactBarText();
 testSqliteSchema();
@@ -690,6 +795,7 @@ testStale();
 testMigration();
 testSchemaGuard();
 testWeeklyWindowAndRejectionRefresh();
+testStructuredRejectionPark();
 testEverySourceKeepsItsCycles().then(() => {
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);

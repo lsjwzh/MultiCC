@@ -16,6 +16,7 @@ const {
   splitTrailingErrorEnvelope,
   detectErrorEnvelope,
   isKnownHarmlessStderrLine,
+  normalizeRejection,
   API_ERROR_SIGNATURES,
   apiErrorSignaturesQuoted,
 } = require('../src/chat/api-error-policy');
@@ -879,5 +880,151 @@ test('widening the auth wording did not swallow neighbouring diagnoses', () => {
   for (const [message, expected] of cases) {
     const decision = decide({ source: 'claude-exp_event', message }, { provider: 'claude-exp' });
     assert.equal(decision.error.category, expected, message);
+  }
+});
+
+// ── Structured upstream rejections (Rust proxy usage/outcome event) ─────────
+// A bare 429 cannot say WHY the request was refused. The proxy sees the
+// upstream response, so it reports the verdict structurally; the policy must
+// let that verdict choose the category and the remedy.
+
+function proxyRejection(kind, extra = {}) {
+  return {
+    source: 'proxy_response',
+    provider: 'claude',
+    httpStatus: 429,
+    code: 'UPSTREAM_HTTP_ERROR',
+    message: 'upstream HTTP 429',
+    rejection: {
+      kind, scope: 'account', window: null, resetMs: null,
+      code: null, model: null, source: 'headers', ...extra,
+    },
+  };
+}
+
+test('a structured transient rejection stays a rate limit with the CLI-lane fail-fast', () => {
+  const decision = decide(proxyRejection('transient', { scope: 'request' }));
+  assert.equal(decision.error.category, 'rate_limit');
+  assert.equal(decision.error.rejection.kind, 'transient');
+  assert.equal(decision.action, 'fail_fast', 'the CLI already backed off inside its own process');
+  assert.equal(decision.reason, 'rate_limit_retried_by_cli');
+  assert.equal(decision.error.maxAttempts, 0);
+});
+
+test('a structured account window waits for its exact reset', () => {
+  const decision = decide(proxyRejection('window', {
+    scope: 'account', window: '5h', resetMs: 1_600_000,
+  }));
+  assert.equal(decision.error.category, 'billing_quota');
+  assert.equal(decision.error.httpStatus, 429);
+  assert.equal(decision.error.retryAfterMs, 600_000);
+  assert.equal(decision.action, 'wait_reset');
+  assert.equal(decision.reason, 'quota_reset_required');
+  assert.equal(decision.delayMs, 600_000, 'the reset instant is exact, not a backoff guess');
+  assert.equal(decision.retryAt, 1_600_000);
+  assert.equal(decision.error.userAction, '等待额度重置后重试');
+  assert.match(retryNotice(decision), /约 10 分钟后重置/);
+});
+
+test('a model-scoped window names the model switch, not a wait-only remedy', () => {
+  const decision = decide(proxyRejection('window', { scope: 'model', window: '1d' }));
+  assert.equal(decision.error.category, 'billing_quota');
+  assert.equal(decision.action, 'fail_fast');
+  assert.equal(decision.reason, 'billing_quota_not_retryable');
+  assert.match(decision.error.userAction, /换其他模型/);
+  assert.doesNotMatch(retryNotice(decision), /不再整轮重放|限流窗口/);
+
+  // With a reset instant the policy may wait, but the remedy still names the
+  // model switch first.
+  const waited = decide(proxyRejection('window', { scope: 'model', window: '5h', resetMs: 1_300_000 }));
+  assert.equal(waited.action, 'wait_reset');
+  assert.equal(waited.delayMs, 300_000);
+  assert.match(waited.error.userAction, /换其他模型/);
+});
+
+test('a structured entitlement refusal is never replayed and points at the model', () => {
+  const decision = decide(proxyRejection('entitlement', { scope: 'model', code: 'usage_credits_required' }));
+  assert.equal(decision.error.category, 'billing_quota');
+  assert.equal(decision.error.rejection.kind, 'entitlement');
+  assert.equal(decision.error.rejection.source, 'headers');
+  assert.equal(decision.action, 'fail_fast');
+  assert.equal(decision.reason, 'billing_quota_not_retryable');
+  assert.match(decision.error.userAction, /换一个模型/);
+  const notice = retryNotice(decision);
+  assert.match(notice, /换一个模型/);
+  assert.doesNotMatch(notice, /不再整轮重放|限流窗口|受控重试/);
+});
+
+test('a structured billing rejection names the billing remedy', () => {
+  const decision = decide(proxyRejection('billing', { scope: 'account' }));
+  assert.equal(decision.error.category, 'billing_quota');
+  assert.equal(decision.action, 'fail_fast');
+  assert.match(decision.error.userAction, /充值、调整花费上限或换用其他线路/);
+});
+
+test('a structured rejection is ignored unless a 429 (or proxy_response) carried it', () => {
+  const notA429 = {
+    source: 'proxy_response', provider: 'claude', httpStatus: 500,
+    message: 'upstream HTTP 500',
+    rejection: { kind: 'entitlement', scope: 'model', window: null, resetMs: null, code: null, model: null, source: 'status' },
+  };
+  const decision = decide(notA429);
+  assert.equal(decision.error.category, 'provider_transient');
+  assert.equal(decision.error.rejection, null);
+});
+
+test('rejection validation keeps only the contract and treats every field as untrusted', () => {
+  assert.equal(normalizeRejection(null), null);
+  assert.equal(normalizeRejection('entitlement'), null);
+  assert.equal(normalizeRejection({ kind: 'quota' }), null, 'unknown kinds have no meaning');
+  const normalized = normalizeRejection({
+    kind: 'window', scope: 'galaxy', window: '9y', resetMs: Number.NaN,
+    code: 'c'.repeat(120), model: 'm'.repeat(120), source: 'psychic', injected: 'nope',
+  });
+  assert.deepEqual(normalized, {
+    kind: 'window', scope: null, window: null, resetMs: null,
+    code: 'c'.repeat(80), model: 'm'.repeat(80), source: null,
+  });
+  assert.equal(Object.isFrozen(normalized), true);
+  assert.equal('injected' in normalized, false);
+  assert.equal(normalizeRejection({ kind: 'window', scope: 'account', window: '5h', resetMs: 1_600_000.4 }).resetMs, 1_600_000);
+});
+
+// The production case (2026-10-23 11:21): Claude Pro + a Fable model, where the
+// CLI printed the refusal as text and the only structured hint left was "429".
+// Waiting can never fix an entitlement wall, so it must not read as a rate
+// limit — the remedy is another model or another account.
+test('the credits-required CLI envelope is an entitlement refusal, not a rate limit', () => {
+  const envelope = detectErrorEnvelope('claude',
+    'API Error: Request rejected (429) · Usage credits are required for this model.');
+  assert.equal(envelope.source, 'claude_result');
+  assert.equal(envelope.httpStatus, 429);
+  const decision = decide(envelope);
+  assert.equal(decision.error.category, 'billing_quota');
+  assert.equal(decision.action, 'fail_fast');
+  assert.equal(decision.reason, 'billing_quota_not_retryable');
+  assert.equal(decision.error.rejection.kind, 'entitlement');
+  assert.equal(decision.error.rejection.scope, 'model');
+  assert.equal(decision.error.rejection.source, 'text');
+  assert.equal(Object.isFrozen(decision.error.rejection), true);
+  const notice = retryNotice(decision);
+  assert.match(notice, /换一个模型/);
+  assert.doesNotMatch(notice, /不再整轮重放|限流窗口/);
+});
+
+test('every not-entitled wording lands in billing_quota with a model remedy', () => {
+  for (const message of [
+    'API Error: Request rejected (429) · Usage credits are required for this model.',
+    'extra usage is required to use this model',
+    'This model is not available on your plan.',
+    'this model is not included in your plan',
+    '该模型暂未开放',
+    '当前套餐不支持该模型',
+  ]) {
+    const decision = decide({ source: 'claude_result', provider: 'claude', httpStatus: 429, message });
+    assert.equal(decision.error.category, 'billing_quota', message);
+    assert.equal(decision.error.rejection.kind, 'entitlement', message);
+    assert.equal(decision.action, 'fail_fast', message);
+    assert.doesNotMatch(retryNotice(decision), /限流窗口/, message);
   }
 });

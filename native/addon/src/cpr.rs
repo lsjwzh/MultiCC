@@ -72,6 +72,7 @@ pub struct CprErrorBody {
     pub data: Buffer,
     pub complete: bool,
     pub no_retry: bool,
+    pub rejection: Option<String>,
 }
 
 #[napi]
@@ -99,6 +100,7 @@ impl RustCprExchange {
             data: result.data.into(),
             complete: result.complete,
             no_retry: result.no_retry,
+            rejection: result.rejection.map(|value| value.to_string()),
         })
     }
     #[napi]

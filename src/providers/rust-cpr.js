@@ -42,11 +42,12 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
         if (context?.sessionId) safeCall(options.onActivity, { sessionId: context.sessionId, role: context.role,
           providerId: context.providerId, providerName: context.providerName, phase, at: Date.now(), ...extra });
       };
-      function settle(status, errorCode, usage = null, statusCode) {
+      function settle(status, errorCode, usage = null, statusCode, rejection) {
         if (terminal || !context) return;
         terminal = true;
         if (context.sessionId) {
           const event = { ...context, eventId: randomUUID(), usage, status, statusCode, errorCode,
+            ...(rejection ? { rejection } : {}),
             latencyMs: Date.now() - started, coverage: usage ? 'observed' : 'unobservable', source: 'exact' };
           safeCall(options.onUsageEvent, event);
           if (usage) safeCall(options.onUsage || options.usageSink, event);
@@ -144,8 +145,10 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
             // 额度墙（订阅窗口/余额耗尽）在 CLI 的秒级重试里不可能成功：带 x-should-retry: false
             // 让它立刻停手；普通 429 限流仍然交给 CLI 自己退避。
             const headers = errorBody.noRetry === true ? { ...head.headers, 'x-should-retry': 'false' } : head.headers;
+            let rejection;
+            try { if (typeof errorBody.rejection === 'string') rejection = JSON.parse(errorBody.rejection); } catch (_) { /* 旧原生模块或损坏 JSON：不带归因。 */ }
             if (!heldAuth && !gone) res.writeHead(head.status, headers);
-            settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status);
+            settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status, rejection);
             if (!gone) res.end(errorBody.data);
             return;
           }

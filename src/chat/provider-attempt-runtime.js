@@ -5,6 +5,7 @@ const { isCompleted } = require('../cli-adapters/completion');
 const { isResident } = require('../cli/cli-capability');
 const { isProxyFailureCompatibleWithCompletion } = require('./adapter-completion');
 const { isProxyStallCode } = require('../providers/proxy-stall-watch');
+const { normalizeRejection } = require('./api-error-policy');
 const {
   createExactSecretStreamRedactor, redactExactSecretFragments, redactProviderRouteCapability,
 } = require('../observability');
@@ -1298,6 +1299,10 @@ function createProviderAttemptRuntime(options = {}) {
     // 静默）和绝对截止时间耗尽；瞬时错误交给 api-error-policy 的 maxAttempts 与
     // auto-provider failover 处理。
     const stallFailure = isProxyStallCode(failureCode);
+    // A structured rejection only ever rides a 429. It is untrusted input from
+    // another process, so normalizeRejection keeps only the contract's keys and
+    // caps free text; anything malformed degrades to "no structured verdict".
+    const rejection = httpStatus === 429 ? normalizeRejection(event.rejection) : null;
     record.proxyFailure = Object.freeze({
       source: 'proxy_response',
       ...(budgeted ? { requestDeadlineAt: record.requestDeadlineAt,
@@ -1308,6 +1313,7 @@ function createProviderAttemptRuntime(options = {}) {
       providerId: record.providerId,
       providerName: record.providerName,
       httpStatus,
+      ...(rejection ? { rejection } : {}),
       code: failureCode,
       message: httpStatus ? `upstream HTTP ${httpStatus}`
         : proxyOutcome?.termination === 'downstream_disconnect'

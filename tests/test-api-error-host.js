@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createApiErrorHost } = require('../src/chat/api-error-host');
+const { createApiErrorPolicyRuntime, detectErrorEnvelope } = require('../src/chat/api-error-policy');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 
@@ -69,6 +70,7 @@ function harness(options = {}) {
       && state._activeTurn === turn,
     isShuttingDown: () => false,
     recordProviderFailure: options.recordProviderFailure,
+    proxyFailureForAttempt: options.proxyFailureForAttempt,
     now: typeof options.now === 'function' ? options.now : () => 1_000,
     setTimeout: (callback, delay) => {
       const timer = { callback, delay, unref() {} };
@@ -607,4 +609,118 @@ test('a duplicate delivery does not park the provider twice', () => {
   h.decideWith(() => revokedDecision({ duplicate: true }));
   revokedTurn(h);
   assert.equal(parks.length, 1, 'idempotent duplicate deliveries stay idempotent');
+});
+
+// ── Structured proxy rejection merged into the CLI text envelope ────────────
+// The turn engine passes the CLI's own envelope as `raw`, which outranks the
+// attempt's proxy failure. Without a merge, a structured refusal from the Rust
+// proxy would be invisible exactly when the CLI text had already lost the
+// distinction (a 429 that is really a model-entitlement wall).
+function rejectionHost(proxyFailureForAttempt, now = 1_000_000) {
+  const policy = createApiErrorPolicyRuntime({ now: () => now, random: () => 0 });
+  return createApiErrorHost({
+    policy,
+    logger: { info() {}, warn() {}, error() {} },
+    persistedSessions: new Map(),
+    setTaskState() {},
+    chatBroadcast() {},
+    setSessionStatus() {},
+    clearIncrementalSave() {},
+    isCurrentTurnRunner: () => true,
+    isShuttingDown: () => false,
+    now: () => now,
+    proxyFailureForAttempt,
+  });
+}
+
+function entitlementFailure(overrides = {}) {
+  return {
+    source: 'proxy_response', providerId: 'provider-a', providerName: 'Provider A',
+    httpStatus: 429, code: 'UPSTREAM_HTTP_ERROR', message: 'upstream HTTP 429',
+    rejection: {
+      kind: 'entitlement', scope: 'model', window: null, resetMs: null,
+      code: 'usage_credits_required', model: 'fable-1', source: 'text',
+    },
+    ...overrides,
+  };
+}
+
+test('a same-attempt proxy rejection outranks the CLI 429 envelope that hid it', () => {
+  const envelope = detectErrorEnvelope('claude',
+    "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.");
+  const args = attempt => ({
+    sessionName: 'session-1', cs: {}, persisted: { cli: 'claude' }, turn: { turnId: 'turn-1' },
+    runner: { providerAttempt: attempt }, raw: envelope, attempt: 0,
+  });
+  const attempt = { sessionId: 'session-1', routeAttemptId: 'attempt-1' };
+
+  // Baseline: text alone reads as a transient rate limit.
+  const textOnly = rejectionHost(() => null).evaluateTurnApiError(args(attempt));
+  assert.equal(textOnly.error.category, 'rate_limit');
+  assert.equal(textOnly.reason, 'rate_limit_retried_by_cli');
+  assert.equal(textOnly.error.rejection, null);
+
+  const seen = [];
+  const merged = rejectionHost(candidate => { seen.push(candidate); return entitlementFailure(); })
+    .evaluateTurnApiError(args(attempt));
+  assert.deepEqual(seen, [attempt], 'the merge must ask the runtime about this attempt');
+  assert.equal(merged.error.category, 'billing_quota');
+  assert.equal(merged.action, 'fail_fast');
+  assert.equal(merged.error.rejection.kind, 'entitlement');
+  assert.equal(merged.error.rejection.source, 'text');
+  assert.match(merged.error.userAction, /换一个模型/);
+});
+
+test('the merge refuses evidence that is not a same-attempt 429', () => {
+  const envelope = detectErrorEnvelope('claude',
+    "API Error: Request rejected (429) · This request would exceed your account's rate limit.");
+  const run = (proxyFailureForAttempt, raw = envelope) => rejectionHost(proxyFailureForAttempt)
+    .evaluateTurnApiError({
+      sessionName: 'session-1', cs: {}, persisted: { cli: 'claude' }, turn: { turnId: 'turn-1' },
+      runner: { providerAttempt: { sessionId: 'session-1', routeAttemptId: 'attempt-1' } },
+      raw, attempt: 0,
+    });
+
+  // A non-429 failure never carries a rejection verdict.
+  const notA429 = run(() => entitlementFailure({ httpStatus: 503 }));
+  assert.equal(notA429.error.category, 'rate_limit');
+  assert.equal(notA429.error.rejection, null);
+
+  // A failure the runtime cannot bind to this attempt (null) adds nothing.
+  assert.equal(run(() => null).error.category, 'rate_limit');
+
+  // A caller that already supplied a rejection keeps it; the proxy is not consulted.
+  const explicit = { ...envelope, rejection: { kind: 'billing', scope: 'account', window: null, resetMs: null, code: null, model: null, source: 'status' } };
+  const kept = run(() => entitlementFailure(), explicit);
+  assert.equal(kept.error.rejection.kind, 'billing');
+});
+
+test('the runtime itself scopes the merge to the live attempt', () => {
+  const runtime = createProviderAttemptRuntime({ now: () => 1_000 });
+  const attempt = runtime.beginAttempt({
+    sessionId: 'session-1', turnId: 'turn-1', cli: 'claude', providerId: 'provider-a',
+    providerName: 'Provider A', protocol: 'claude', model: 'model-a',
+    providerRevision: 'revision-a', attemptNo: 1,
+  });
+  runtime.observeProxyOutcome({
+    ...attempt, roleKind: 'main', routeAttribution: 'exact',
+    status: 'error', statusCode: 429, errorCode: 'UPSTREAM_HTTP_ERROR',
+    rejection: entitlementFailure().rejection,
+  });
+  const host = rejectionHost(candidate => runtime.proxyFailure(candidate));
+  const decide = raw => host.evaluateTurnApiError({
+    sessionName: 'session-1', cs: {}, persisted: { cli: 'claude' }, turn: { turnId: 'turn-1' },
+    runner: { providerAttempt: attempt }, raw, attempt: 0,
+  });
+  const live = decide({ source: 'claude_result', provider: 'claude', message: 'API Error: 429 Request rejected' });
+  assert.equal(live.error.category, 'billing_quota');
+  assert.equal(live.error.rejection.kind, 'entitlement');
+  // An attempt that is no longer the live one gets no merged verdict.
+  const staleRunner = host.evaluateTurnApiError({
+    sessionName: 'session-1', cs: {}, persisted: { cli: 'claude' }, turn: { turnId: 'turn-1' },
+    runner: { providerAttempt: { ...attempt, routeAttemptId: 'other-attempt' } },
+    raw: { source: 'claude_result', provider: 'claude', message: 'API Error: 429 Request rejected' }, attempt: 0,
+  });
+  assert.equal(staleRunner.error.category, 'rate_limit');
+  assert.equal(staleRunner.error.rejection, null);
 });

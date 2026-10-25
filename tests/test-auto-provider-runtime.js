@@ -282,6 +282,98 @@ test('an active cooldown overrides a sticky provider selection', () => {
   assert.equal(runtime.beginTurn({ session, turnId: 'sticky-cooled' }).initial().providerId, 'backup');
 });
 
+// A per-model 429 ("usage credits are required for this model", a model's own
+// weekly bucket) is not an account-wide park. Auto must keep the account for
+// every other model, and only skip it when the candidate would request the
+// blocked one.
+function modelScopedFixture({ blockedModel = 'claude-fable-5-1', proModel = 'claude-sonnet-4-5' } = {}) {
+  const now = 1_000_000;
+  const catalog = [
+    { id: 'pro', name: 'Pro', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'claude-sonnet-4-5', modelOptions: ['claude-sonnet-4-5', 'claude-fable-5-1', 'fable'] },
+    { id: 'backup', name: 'Backup', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'claude-sonnet-4-5', modelOptions: ['claude-sonnet-4-5'] },
+  ];
+  const parked = {
+    status: 'ok', kind: 'availability', fetchedAt: now - 1_000,
+    summary: {
+      kind: 'availability', status: 'rejected', scope: 'model', model: blockedModel,
+      category: 'rate_limit', httpStatus: 429, blockedUntilMs: now + 3600_000, observedAtMs: now - 1_000,
+    },
+  };
+  const runtime = createAutoProviderRuntime({
+    providers: {
+      appTypeForCli: () => 'claude',
+      listProviders: () => catalog,
+      providerSupportsCli: (provider, cli) => provider.compatibleClis.includes(cli),
+      modelValidForProvider: (_appType, providerId, model) => catalog.some(item => (
+        item.id === providerId && item.modelOptions.includes(model))),
+    },
+    providerLimitCache: { get: (_appType, id) => (id === 'pro' ? parked : null) },
+    limitCacheStaleMs: 60_000,
+    now: () => now,
+    isCliAvailable: () => true,
+  });
+  const session = {
+    id: 's1', cli: 'claude', provider: 'legacy',
+    providerSelection: {
+      version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: true,
+      candidates: [
+        { providerId: 'pro', priority: 1, model: proModel },
+        { providerId: 'backup', priority: 2 },
+      ],
+    },
+  };
+  return { runtime, session };
+}
+
+test('a model-scoped cooldown skips the line for that model only', () => {
+  const blocked = modelScopedFixture({ proModel: 'fable' });
+  const turn = blocked.runtime.beginTurn({ session: blocked.session, turnId: 'alias' });
+  assert.equal(turn.initial().providerId, 'backup', 'a bare alias matches the blocked wire model');
+
+  const other = modelScopedFixture({ proModel: 'claude-sonnet-4-5' });
+  assert.equal(other.runtime.beginTurn({ session: other.session, turnId: 'other' }).initial().providerId, 'pro',
+    'the same account stays eligible for a different model');
+});
+
+test('a model-scoped cooldown with an unknown candidate model stays conservative', () => {
+  // Neither the candidate nor its provider names a model, so the candidate
+  // cannot prove it avoids the blocked one and must be skipped.
+  const catalog = [
+    { id: 'pro', name: 'Pro', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: null },
+    { id: 'backup', name: 'Backup', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'backup-model' },
+  ];
+  const runtime = createAutoProviderRuntime({
+    providers: {
+      appTypeForCli: () => 'claude',
+      listProviders: () => catalog,
+      providerSupportsCli: () => true,
+      modelValidForProvider: () => true,
+    },
+    providerLimitCache: { get: (_appType, id) => (id === 'pro' ? {
+      status: 'ok', kind: 'availability', fetchedAt: 999_000,
+      summary: {
+        kind: 'availability', status: 'rejected', scope: 'model', model: 'claude-fable-5-1',
+        category: 'rate_limit', httpStatus: 429, blockedUntilMs: 1_360_000, observedAtMs: 999_000,
+      },
+    } : null) },
+    limitCacheStaleMs: 60_000,
+    now: () => 1_000_000,
+    isCliAvailable: () => true,
+  });
+  const session = {
+    id: 's-unknown-model', cli: 'claude', provider: 'legacy',
+    providerSelection: {
+      version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: true,
+      candidates: [
+        { providerId: 'pro', priority: 1 },
+        { providerId: 'backup', priority: 2 },
+      ],
+    },
+  };
+  assert.equal(runtime.beginTurn({ session, turnId: 'unknown-model' }).initial().providerId, 'backup',
+    'no model on either side means the candidate stays conservatively skipped');
+});
+
 test('OpenCode runtime discovers Codex-pool candidates and reads their own quota namespace', () => {
   const now = 1_000_000;
   const getCalls = [];

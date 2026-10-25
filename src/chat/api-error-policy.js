@@ -134,6 +134,61 @@ const QUOTA_EXHAUSTION_RES = Object.freeze([
   /\b(?:hit|reached)\s+your\s+limit\b/,
   /额度不足|余额不足|剩余额度|额度已用尽|额度用尽|配额不足|配额已用尽|超出配额|用量上限/,
 ]);
+// A model the account is not entitled to. Production case (2026-10-23): a
+// Claude Pro account asked for a model that needs usage credits and the CLI
+// reported "API Error: Request rejected (429) · Usage credits are required for
+// this model." Waiting cannot fix this — the remedy is another model or an
+// account that owns this one — so the wording must never settle in the
+// rate-limit bucket just because it arrived with HTTP 429.
+const MODEL_ENTITLEMENT_RES = Object.freeze([
+  /usage credits? (?:are|is) required/,
+  /extra usage (?:is|are) required/,
+  /not available on (?:your|this) plan/,
+  /not included in (?:your|this) plan/,
+  /暂未开放/,
+  /套餐不支持/,
+]);
+// The structured counterpart of the wording above, synthesized when only the
+// provider's text survives (the CLI owns the response and swallows headers).
+const TEXT_ENTITLEMENT_REJECTION = Object.freeze({
+  kind: 'entitlement', scope: 'model', window: null, resetMs: null,
+  code: null, model: null, source: 'text',
+});
+// The host's Rust proxy reports the rejection as a structured object. It
+// crosses a process boundary, so it is untrusted input: only the contract's
+// own keys, only known enum values, and free text capped so a malformed event
+// can never inflate the attempt record or a client frame.
+const REJECTION_KINDS = new Set(['transient', 'window', 'entitlement', 'billing']);
+const REJECTION_SCOPES = new Set(['request', 'model', 'account']);
+const REJECTION_WINDOWS = new Set(['5h', '1d', '1wk', '1m']);
+const REJECTION_SOURCES = new Set(['headers', 'code', 'text', 'status']);
+const REJECTION_TEXT_MAX = 80;
+
+function rejectionText(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text ? text.slice(0, REJECTION_TEXT_MAX) : null;
+}
+
+function normalizeRejection(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const kind = String(value.kind || '').trim().toLowerCase();
+  if (!REJECTION_KINDS.has(kind)) return null;
+  const scope = String(value.scope || '').trim().toLowerCase();
+  const window = value.window == null ? null : String(value.window).trim().toLowerCase();
+  const source = String(value.source || '').trim().toLowerCase();
+  const resetMs = Number(value.resetMs);
+  return Object.freeze({
+    kind,
+    scope: REJECTION_SCOPES.has(scope) ? scope : null,
+    window: window != null && REJECTION_WINDOWS.has(window) ? window : null,
+    resetMs: Number.isFinite(resetMs) && resetMs > 0 && resetMs <= Number.MAX_SAFE_INTEGER
+      ? Math.round(resetMs) : null,
+    code: rejectionText(value.code),
+    model: rejectionText(value.model),
+    source: REJECTION_SOURCES.has(source) ? source : null,
+  });
+}
 // Reset guidance embedded in the provider's error text, e.g. Codex's
 // "It will reset at 2026-09-20 18:11:35 +0800 CST." Some CLIs only state the
 // restart point in prose, so it can never arrive as a Retry-After header.
@@ -447,6 +502,9 @@ function structuredCategory(status, code, rawCategory) {
 
 function textFallbackCategory(message) {
   const text = String(message || '').toLowerCase();
+  // Not-entitled wording outranks everything else, including the 429 that
+  // carried it: there is no window to wait out, only another model or account.
+  if (MODEL_ENTITLEMENT_RES.some(re => re.test(text))) return 'billing_quota';
   // Billing/quota wording outranks a bare 401/403/429: providers transport
   // quota exhaustion as HTTP 402/403/429 ("用户额度不足", "usage limit",
   // "You have exceeded the 5-hour usage quota"), and telling the user to
@@ -474,7 +532,20 @@ function textFallbackCategory(message) {
   return 'unknown';
 }
 
-function userAction(category, retryAfterMs) {
+function userAction(category, retryAfterMs, rejection = null) {
+  // A structured rejection names which billing_quota wall this is, and each one
+  // has a different remedy. Waiting is only correct for an exhausted window on
+  // the whole account; a model-scoped window invites a model switch, and a
+  // refusal or a billing fault never clears by waiting at all.
+  if (category === 'billing_quota' && rejection) {
+    if (rejection.kind === 'entitlement') {
+      return '当前账号的套餐不包含这个模型（需开通 usage credits / extra usage）：请换一个模型，或换用有该模型权限的账号';
+    }
+    if (rejection.kind === 'window' && rejection.scope === 'model') {
+      return '该账号这个模型的额度窗口已满：可以先换其他模型继续，或等待重置';
+    }
+    if (rejection.kind === 'billing') return '充值、调整花费上限或换用其他线路';
+  }
   switch (category) {
     case 'authentication_permission': return '重新登录、更新 API 凭据或补足权限后重试（官方账号可在「模型线路」面板点「重新登录」）';
     case 'billing_quota': return retryAfterMs != null ? '等待额度重置后重试' : '检查账单、额度或用量上限';
@@ -602,6 +673,27 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
       category = trustedTextCategory;
     }
   }
+  // The host's Rust proxy sees the upstream response itself and reports the
+  // rejection structurally. A bare 429 cannot tell a transient limiter from an
+  // exhausted window, a model-entitlement refusal or a billing fault, and each
+  // has a different remedy — so the structured verdict outranks any category
+  // derived from the status or from whatever text the CLI chose to print.
+  const structuredRejection = normalizeRejection(
+    context.rejection ?? raw.rejection ?? nested.rejection,
+  );
+  const rejectionApplies = !!structuredRejection
+    && (httpStatus === 429 || (httpStatus == null && source === 'proxy_response'));
+  let rejection = rejectionApplies ? structuredRejection : null;
+  if (rejectionApplies) {
+    category = rejection.kind === 'transient' ? 'rate_limit' : 'billing_quota';
+  }
+  // Text-only fallback: a refusal of this shape is not a rate limit even when
+  // it arrived as one. Only trusted provider text may claim it, so a relay's
+  // echoed prose cannot smuggle a permanent tag onto a real 429.
+  if (!rejection && category === 'billing_quota' && trustedTextCategory === 'billing_quota'
+      && MODEL_ENTITLEMENT_RES.some(re => re.test(String(message || '').toLowerCase()))) {
+    rejection = TEXT_ENTITLEMENT_REJECTION;
+  }
   const partialOutput = context.partialOutput === true || raw.partialOutput === true;
   const sideEffects = context.sideEffects === true || raw.sideEffects === true;
   const phase = String(context.phase || raw.phase || (partialOutput ? 'stream' : 'before_first_token'));
@@ -611,6 +703,13 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
   // unresettable quota wall. Only trusted provider-owned text is read.
   if (retryAfterMs == null && category === 'billing_quota' && TRUSTED_TEXT_SOURCES.has(source)) {
     retryAfterMs = resetAfterFromText(message, now);
+  }
+  // A structured window reset is exact — it is the instant the upstream itself
+  // reported — so it outranks a Retry-After or prose guess when it is still in
+  // the future. A past reset carries no waiting information.
+  if (rejection && rejection.kind === 'window'
+      && rejection.resetMs != null && rejection.resetMs > now) {
+    retryAfterMs = rejection.resetMs - now;
   }
   const retryable = RETRYABLE.has(category);
   const replaySafePhase = phase === 'connect' || phase === 'before_first_token' || phase === 'request';
@@ -645,7 +744,8 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
     sideEffects,
     attempt: Math.max(0, Number(context.attempt || raw.attempt || 0) || 0),
     maxAttempts: null,
-    userAction: userAction(category, retryAfterMs),
+    userAction: userAction(category, retryAfterMs, rejection),
+    rejection,
     sanitizedMessage,
     // Keep a longer redacted root cause than the compact summary. Extracting
     // an embedded upstream envelope first prevents its wrapper/URL from
@@ -958,6 +1058,7 @@ module.exports = {
   detectErrorEnvelope,
   claudeErrorEnvelope,
   envelopeSourceFor,
+  normalizeRejection,
   isKnownHarmlessStderrLine,
   API_ERROR_SIGNATURES,
   apiErrorSignaturesQuoted,

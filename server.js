@@ -1335,7 +1335,7 @@ function handleProxyOutcome(event) {
       sessionId: event.sessionId,
       providerId: outcome.failure.providerId,
       category: 'rate_limit',
-      httpStatus: 429,
+      httpStatus: 429, rejection: outcome.failure.rejection,
     });
   }
 }
@@ -1839,7 +1839,7 @@ const apiErrorHost = createApiErrorHost({
   setSessionStatus, isShuttingDown: () => _shuttingDown,
   clearIncrementalSave: sessionId => chatHistoryRuntime?.clearIncrementalSave(sessionId),
   isCurrentTurnRunner: (...args) => isCurrentTurnRunner(...args),
-  recordProviderFailure: limitRecorder.recordProviderFailure, // revoked OAuth → park it so Auto stops re-selecting
+  recordProviderFailure: limitRecorder.recordProviderFailure, proxyFailureForAttempt: providerAttemptRuntime.proxyFailure, // revoked OAuth → park; 429 → proxy rejection
 });
 const {
   recordApiError, recordApiSuccess, evaluateTurnApiError, meaningfulTurnOutput,

@@ -393,3 +393,59 @@ test('socket events outside async context retain admission identity without cons
   assert.ok(runtime.proxyFailure(attempt));
   assert.equal(runtime.proxyFailure(attempt, { resultDurable: true, completion: { version: 1, state: 'completed', settled: true } }), null);
 });
+
+test('an upstream 429 carries its structured rejection to the attempt outcome', async () => {
+  const runtime = createProviderAttemptRuntime();
+  const attempt = runtime.beginAttempt({ sessionId: 's2', turnId: 't2', cli: 'claude',
+    providerId: 'p2', providerName: 'P2', model: 'm2', protocol: 'anthropic', providerRevision: 'r2', attemptNo: 1 });
+  const capability = runtime.proxySessionId(attempt);
+  const outcomes = [];
+  let handler;
+  const admission = createProviderProxyAdmission({ protocol: 'claude',
+    app: { use(_path, fn) { handler = fn; } },
+    authorizeProxyRequest: runtime.authorizeProxyRequest, getProvider: () => ({}),
+    onOutcome: event => { outcomes.push(event); runtime.observeProxyOutcome(event); },
+  });
+  const rejection = {
+    kind: 'entitlement', scope: 'model', window: null, resetMs: null,
+    code: 'usage_credits_required', model: 'fable-1', source: 'text',
+  };
+  admission.app.use('/claude-proxy', (req, res) => {
+    admission.getProvider('claude', 'p2');
+    admission.onActivity({ sessionId: capability, providerId: 'p2', role: 'main', phase: 'request' });
+    admission.onUsageEvent({ status: 'error', statusCode: 429, errorCode: 'UPSTREAM_HTTP_ERROR', rejection });
+    res.statusCode = 429;
+  });
+  const req = Object.assign(new EventEmitter(), { method: 'POST', url: `/p2/${capability}/v1/messages` });
+  const res = Object.assign(new EventEmitter(), { statusCode: 200 });
+  await handler(req, res, error => { throw error; });
+  assert.equal(outcomes.length, 1);
+  assert.deepEqual(outcomes[0].rejection, rejection);
+  assert.equal(runtime.proxyFailure(attempt).rejection.kind, 'entitlement');
+
+  // A usage event without a rejection adds no field at all — the outcome shape
+  // stays exactly what it was before structured verdicts existed.
+  const clean = createProviderAttemptRuntime();
+  const next = clean.beginAttempt({ sessionId: 's3', turnId: 't3', cli: 'claude',
+    providerId: 'p3', providerName: 'P3', model: 'm3', protocol: 'anthropic', providerRevision: 'r3', attemptNo: 1 });
+  const nextCapability = clean.proxySessionId(next);
+  let nextHandler;
+  const cleanOutcomes = [];
+  const cleanAdmission = createProviderProxyAdmission({ protocol: 'claude',
+    app: { use(_path, fn) { nextHandler = fn; } },
+    authorizeProxyRequest: clean.authorizeProxyRequest, getProvider: () => ({}),
+    onOutcome: event => { cleanOutcomes.push(event); clean.observeProxyOutcome(event); },
+  });
+  cleanAdmission.app.use('/claude-proxy', () => {
+    cleanAdmission.getProvider('claude', 'p3');
+    cleanAdmission.onActivity({ sessionId: nextCapability, providerId: 'p3', role: 'main', phase: 'request' });
+    cleanAdmission.onUsageEvent({ status: 'error', statusCode: 429, errorCode: 'UPSTREAM_HTTP_ERROR' });
+  });
+  await nextHandler(
+    Object.assign(new EventEmitter(), { method: 'POST', url: `/p3/${nextCapability}/v1/messages` }),
+    Object.assign(new EventEmitter(), { statusCode: 200 }),
+    error => { throw error; },
+  );
+  assert.equal('rejection' in cleanOutcomes[0], false);
+  assert.equal('rejection' in clean.proxyFailure(next), false);
+});

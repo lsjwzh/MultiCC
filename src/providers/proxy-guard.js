@@ -262,6 +262,10 @@ function createProviderProxyAdmission(options = {}) {
         ...context.attempt, roleKind: context.role, routeAttribution: 'exact',
         providerId: context.providerId || context.mainProviderId,
         status: event.status, statusCode: event.statusCode, errorCode: event.errorCode,
+        // CPR reports the upstream rejection structurally (transient / window /
+        // entitlement / billing). It is only advisory evidence here; the
+        // attempt runtime validates and freezes it before anything persists it.
+        ...(event.rejection != null ? { rejection: event.rejection } : {}),
         proxyOutcome,
         requestDeadlineAt: context.stall?.deadlineAt(),
         modelProgress: context.stall?.progressed(),

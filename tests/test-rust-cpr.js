@@ -402,6 +402,49 @@ rustTest('429 额度墙带 x-should-retry: false，普通限流保持可重试',
   assert.equal(res.status, 429); assert.equal(res.headers.get('x-should-retry'), null); await res.text();
 });
 
+rustTest('429 结算事件透传结构化 rejection，旧原生模块不新增字段', async t => {
+  const rejection = { kind: 'window', scope: 'account', window: '5h', resetMs: 1790000000000,
+    code: 'five_hour', model: 'wire-model', source: 'headers' };
+  // 假原生交换让错误正文路径可控：只需要 open/errorBody/close/abort。
+  const fakeNative = extra => ({
+    cprProtocolVersion: () => 1,
+    cprRoute: async () => JSON.stringify({ protocol: 'claude', providerId: 'main', mainProviderId: 'main',
+      sessionId: 'fixture-session', role: 'main', agentRole: '', routeName: 'main', model: 'wire-model',
+      apiPath: '/v1/messages', query: '', isStream: false }),
+    // proxyUrl 非空即跳过宿主出口解析；连接不会被真正拨号。
+    cprPrepare: async () => JSON.stringify({ plan: { route: { model: 'wire-model', isStream: false, protocol: 'claude' },
+      providerName: '主线路', url: 'http://rejection-fixture.invalid/v1/messages', method: 'POST', headers: {}, body: '{}',
+      mode: 'raw', proxyUrl: 'http://rejection-fixture.invalid:9' } }),
+    cprCreateExchange: async () => ({
+      open: async () => JSON.stringify({ status: 429, headers: {}, isStream: false, rateLimit: null }),
+      errorBody: async () => ({ data: Buffer.from('{"error":{"type":"rate_limit_error"}}'), complete: true, noRetry: true, ...extra }),
+      read: async () => { throw new Error('unreachable'); }, close: async () => {}, abort: () => {},
+    }),
+  });
+  for (const [label, extra, expected] of [
+    ['新原生模块', { rejection: JSON.stringify(rejection) }, rejection],
+    ['旧原生模块', {}, undefined],
+  ]) {
+    const events = [];
+    const router = createRustCprRouter(nodeRouter, { native: fakeNative(extra), env: {} });
+    const app = express();
+    const mounted = router.mountClaudeProxy(app, { claudeProxyPath: '/cpr-rejection',
+      hopCredentials: { verify: () => ({ ok: true, managed: false }) },
+      getProvider: () => ({ id: 'main', name: '主线路', settingsConfig: { env: {} } }),
+      onUsageEvent: event => events.push(event) });
+    const server = http.createServer(app), base = await listen(server);
+    t.after(async () => { await mounted.close(); await close(server); });
+    const res = await fetch(`${base}/cpr-rejection/main/fixture/v1/messages`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify(claudeBody) });
+    assert.equal(res.status, 429, label);
+    assert.equal(await res.text(), '{"error":{"type":"rate_limit_error"}}', label);
+    assert.equal(res.headers.get('x-should-retry'), 'false', label);
+    assert.equal(events.length, 1, label);
+    if (expected) assert.deepEqual(events[0].rejection, expected, label);
+    else assert.equal('rejection' in events[0], false, label);
+  }
+});
+
 rustTest('首包等待有上限，错误回调不会包含上游地址或能力令牌', async t => {
   const h = await harness(t, 'rust', { proxy: () => ({ headersTimeoutMs: 25 }), upstream: () => {} });
   const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
