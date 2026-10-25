@@ -40,20 +40,21 @@ class RemoteScreenService {
     Duration liveRecoverWindow = const Duration(seconds: 30),
     Duration stableLive = const Duration(seconds: 20),
   }) : _wsAuth = WsTicketConnectionGate(wsTicketClient ?? WsTicketClient()),
-       _connectChannel = channelFactory ?? _pingingChannel,
+       _connectChannel = channelFactory ?? _connectWithTimeout,
        _http = httpClient ?? http.Client(),
        _h264Factory = h264DecoderFactory ?? PlatformH264Decoder.create,
        _retryDelays = liveRetryDelays,
        _recoverWindow = liveRecoverWindow,
        _stableLive = stableLive;
 
-  /// 远控 WS 带协议层心跳：手机切后台、移动网络换基站、隧道重连后，TCP 常常
-  /// 半开 —— 服务端早已 pong 超时断开，手机这边却一直等不来 onDone，画面停在
-  /// 几十秒前、输入也石沉大海。5s 一次 ping，丢一个 pong 就判死、触发重连。
-  static WebSocketChannel _pingingChannel(Uri uri) =>
+  /// 半开连接（手机切后台、换网络后服务端早已断开，这边却等不来 onDone）
+  /// 不靠 WS ping 判：弱隧道上 pong 排在整屏像素后面，实测要 3～10 秒才回，
+  /// 定死的 ping 超时会把慢而活着的连接误杀。改由两条流各自按「多久没收到
+  /// 字节/帧」判死（RFB 见 [RemoteScreenRfb] 的 stallTimeout，H.264 见
+  /// [RemoteScreenH264] 的 recoveryTimeout）；这里只给建连加个超时。
+  static WebSocketChannel _connectWithTimeout(Uri uri) =>
       IOWebSocketChannel.connect(
         uri,
-        pingInterval: const Duration(seconds: 5),
         connectTimeout: const Duration(seconds: 8),
       );
 
@@ -118,6 +119,8 @@ class RemoteScreenService {
   /// h264.sock 时），失败自动退回 RFB，再失败落到 JPEG 轮询。
   void connectLive() {
     if (_disposed) return;
+    // 旧连接的关闭回调晚到时不许再触发降级/重连（它已不是当前这次）。
+    _wsAuth.invalidate();
     _cancelRecover();
     _quickDrops = 0;
     _regionEpoch++;
