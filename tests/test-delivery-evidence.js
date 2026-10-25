@@ -60,6 +60,27 @@ test('hidden tracked changes under assume-unchanged or skip-worktree never mint 
   }
 });
 
+test('gitlinks (submodule pointers) are observed, not rejected, and nested repo edits change the revision', async t => {
+  const f = fixture(t), sub = path.join(f.root, 'sub'); fs.mkdirSync(sub);
+  f.git(sub, 'init', '-b', 'main'); f.git(sub, 'config', 'user.name', 'Test'); f.git(sub, 'config', 'user.email', 'test@example.invalid');
+  fs.writeFileSync(path.join(sub, 'inner.txt'), 'inner\n'); f.git(sub, 'add', '.'); f.git(sub, 'commit', '-m', 'inner');
+  const oid = f.git(sub, 'rev-parse', 'HEAD');
+  f.git(f.wt, 'update-index', '--add', '--cacheinfo', `160000,${oid},vendor/sub`); f.git(f.wt, 'commit', '-m', 'gitlink');
+  // A fresh worktree never checks the gitlink out: the path is absent.
+  const absent = await captureCodeRevision(f.wt);
+  assert.equal((await captureCodeRevision(f.wt)).revision, absent.revision);
+  fs.mkdirSync(path.join(f.wt, 'vendor/sub'), { recursive: true });
+  const empty = await captureCodeRevision(f.wt); assert.notEqual(empty.revision, absent.revision);
+  fs.rmSync(path.join(f.wt, 'vendor/sub'), { recursive: true });
+  f.git(path.join(f.wt, 'vendor'), 'clone', '-q', sub, 'sub');
+  const cloned = await captureCodeRevision(f.wt);
+  fs.writeFileSync(path.join(f.wt, 'vendor/sub/inner.txt'), 'edited\n');
+  assert.notEqual((await captureCodeRevision(f.wt)).revision, cloned.revision);
+  fs.rmSync(path.join(f.wt, 'vendor/sub'), { recursive: true }); fs.mkdirSync(path.join(f.wt, 'vendor/sub'));
+  fs.writeFileSync(path.join(f.wt, 'vendor/sub/plain.txt'), 'not a repository\n');
+  await assert.rejects(captureCodeRevision(f.wt), /code_index_unsupported/);
+});
+
 test('dirty final code can be integrated later, with matching immutable receipt after reopen', async t => {
   const f = fixture(t); f.begin(); fs.writeFileSync(path.join(f.wt, 'delivery.txt'), 'result');
   const run = await f.finish(); assert.equal(run.outcome, 'succeeded'); assert.equal(run.endDirty, true);
