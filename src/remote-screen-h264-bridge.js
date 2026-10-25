@@ -47,7 +47,11 @@ function attachH264Bridge(ws, {
   const stats = { forwarded: 0, dropped: 0, keyRequests: 0, p2pOpened: 0, transport: 'relay' };
   const wsSink = {
     kind: 'relay',
-    buffered: () => ws.bufferedAmount,
+    // 连接路由给每条 WS 装了背压层（ws-backpressure）：帧先进它的队列，
+    // bufferedAmount 过了它的高水位就停着不往下送。只看 bufferedAmount 会漏掉
+    // 队列里的几 MB —— 慢链路上帧只排队不丢，画面和光标越拖越旧。
+    buffered: () => (ws.bufferedAmount || 0)
+      + (ws._multiccBackpressure?.stats().queueBytes || 0),
     send: msg => ws.send(msg, { binary: true }, error => { if (error) die(); }),
   };
   let sink = wsSink;

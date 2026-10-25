@@ -197,7 +197,14 @@ void main() {
       await second.moveBy(const Offset(35, 0));
       await tester.pump();
       await second.up();
+      final pinched = transform.value.clone();
       await first.moveBy(const Offset(20, 0));
+      await tester.pump();
+      expect(
+        transform.value,
+        pinched,
+        reason: 'the finger left after a pinch must not drag the view',
+      );
       await first.up();
       await tester.pump();
       expect(service.input.events.length, count);
@@ -303,6 +310,118 @@ void main() {
         isNotEmpty,
       );
       expect(service.input.events.last[1], 0);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
+
+  for (final trackpad in [false, true]) {
+    testWidgets(
+      'two fingers on a zoomed view drag it with them (${trackpad ? 'trackpad' : 'touch'})',
+      (tester) async {
+        final service = await _openLive(tester, trackpad: trackpad);
+        final stage = find.byType(InteractiveViewer);
+        final transform = tester
+            .widget<InteractiveViewer>(stage)
+            .transformationController!;
+        transform.value = Matrix4.identity()..scale(2.0);
+        await tester.pump();
+        final before = transform.value.clone();
+        service.input.events.clear();
+        final center = tester.getCenter(stage);
+        final a = await tester.startGesture(
+          center - const Offset(40, 0),
+          pointer: 11,
+        );
+        final b = await tester.startGesture(
+          center + const Offset(40, 0),
+          pointer: 12,
+        );
+        // Small alternating steps, like real touch reports: a 15px first step
+        // would read as a pinch and never reach the scroll decision.
+        for (var i = 0; i < 30; i++) {
+          await a.moveBy(const Offset(-3, 0));
+          await b.moveBy(const Offset(-3, 0));
+          await tester.pump(const Duration(milliseconds: 8));
+        }
+        await a.up();
+        await b.up();
+        await tester.pumpAndSettle();
+        expect(
+          transform.value.getTranslation().x,
+          lessThan(before.getTranslation().x - 50),
+          reason: 'the picture follows two fingers to the left',
+        );
+        expect(transform.value.getMaxScaleOnAxis(), closeTo(2.0, 0.05));
+        final buttons = service.input.events.where(
+          (e) => e[0] == 5 && e[1] != 0,
+        );
+        expect(buttons, isEmpty, reason: 'no wheel, click or drag: $buttons');
+        await tester.pumpWidget(const SizedBox());
+        await tester.pump(const Duration(seconds: 1));
+      },
+    );
+  }
+
+  testWidgets(
+    'zoomed trackpad: one finger moves the cursor to the visible edge, never the view',
+    (tester) async {
+      final service = await _openLive(tester, trackpad: true);
+      final stage = find.byType(InteractiveViewer);
+      final transform = tester
+          .widget<InteractiveViewer>(stage)
+          .transformationController!;
+      transform.value = Matrix4.identity()..scale(2.0);
+      await tester.pump();
+      final before = transform.value.clone();
+      // The part of the 400×300 source the viewport shows at this zoom.
+      final vp = tester.getSize(stage);
+      final fit = vp.width / 400 < vp.height / 300
+          ? vp.width / 400
+          : vp.height / 300;
+      final off = Offset(
+        (vp.width - 400 * fit) / 2,
+        (vp.height - 300 * fit) / 2,
+      );
+      final inv = Matrix4.inverted(before);
+      final lo = (MatrixUtils.transformPoint(inv, Offset.zero) - off) / fit;
+      final hi =
+          (MatrixUtils.transformPoint(inv, vp.bottomRight(Offset.zero)) - off) /
+          fit;
+      final right = (hi.dx < 400 ? hi.dx : 400) - 1;
+      expect(
+        right,
+        lessThan(398),
+        reason: 'the zoomed view must hide the right side',
+      );
+      service.input.events.clear();
+      final g = await tester.startGesture(tester.getCenter(stage));
+      for (var i = 0; i < 12; i++) {
+        await g.moveBy(const Offset(30, 0));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await g.up();
+      await tester.pumpAndSettle();
+      expect(
+        transform.value,
+        before,
+        reason: 'one finger never moves the view',
+      );
+      final moves = _pointers(service.input);
+      expect(moves, isNotEmpty);
+      expect(moves.every((p) => p.$1 == 0), isTrue, reason: '$moves');
+      expect(
+        moves.last.$2,
+        closeTo(right, 1),
+        reason: 'stopped at the visible right edge',
+      );
+      expect(
+        moves.every(
+          (p) => p.$2 >= lo.dx - 1 && p.$2 <= right + 1 && p.$3 <= hi.dy,
+        ),
+        isTrue,
+        reason: 'the cursor never leaves the visible part: $moves',
+      );
       await tester.pumpWidget(const SizedBox());
       await tester.pump(const Duration(seconds: 1));
     },
@@ -531,9 +650,7 @@ Future<void> _geometryCase(
     reason: 'motion follows the finger: $moved',
   );
   expect(moved.last.$1, 0, reason: 'nothing may stay pressed after lift');
-  if (!trackpad) {
-    expect(transform.value, m, reason: 'one finger never moves the view');
-  }
+  expect(transform.value, m, reason: 'one finger never moves the view');
   expectInBounds('after swipe');
 
   await tester.pumpWidget(const SizedBox());

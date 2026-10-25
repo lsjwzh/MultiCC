@@ -164,8 +164,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   final TransformationController _xform = TransformationController();
   bool _zoomed = false;
   int _zoomPct = 100;
+
+  /// 当前按在画面上的手指；不足两指时画面不许动（单指只做鼠标）。
   final Set<int> _viewPointers = {};
-  bool _viewMulti = false;
 
   /// 触摸手势识别（直接触摸 / 触控板两档），见 RemoteTouchController。
   late final RemoteTouchController _touch = RemoteTouchController(
@@ -201,7 +202,6 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     onRightUsed: () {
       if (mounted) setState(() => _rightOnce = false);
     },
-    onFollow: _followCursor,
   );
   final ValueNotifier<_CursorMark?> _cursorMark = ValueNotifier(null);
 
@@ -209,7 +209,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
   bool _trackpad = false;
   static const _trackpadPref = 'remote_screen_trackpad';
 
-  /// 最近一次舞台几何（视口 / 内容框偏移 / 内容框尺寸），放大态下视角跟随光标用。
+  /// 最近一次舞台几何（视口 / 内容框偏移 / 内容框尺寸），算可见源画面与钳制视角用。
   ({Size vp, double offX, double offY, double dw, double dh})? _stageGeo;
   Matrix4? _xformAtStart;
 
@@ -462,11 +462,13 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
     final source = _svc.source;
     final area = _fallbackArea;
     if (source == null && area == null) return;
+    final src = source != null
+        ? Size(source.width.toDouble(), source.height.toDouble())
+        : Size(area!.width, area.height);
     _touch
       ..display = Size(dw, dh)
-      ..source = source != null
-          ? Size(source.width.toDouble(), source.height.toDouble())
-          : Size(area!.width, area.height)
+      ..source = src
+      ..visible = _visibleSource(src)
       ..viewScale = _xform.value.getMaxScaleOnAxis()
       ..mode = _trackpadActive
           ? RemoteTouchMode.trackpad
@@ -521,35 +523,26 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
           duration: const Duration(seconds: 4),
           content: Text(
             on
-                ? '触控板模式：滑动移动光标 · 轻点单击 · 按住后再拖 = 拖拽 · 双指滑动 = 滚动 · 双指轻点 = 右键 · 双指捏合缩放'
-                : '触摸模式：手指点哪、拖到哪',
+                ? '触控板模式：单指只动光标 · 轻点单击 · 按住后再拖 = 拖拽 · 双指捏合缩放、同时拖动画面 · 未放大时双指上下滑 = 滚动 · 双指轻点 = 右键'
+                : '触摸模式：手指点哪、拖到哪 · 双指捏合缩放、同时拖动画面',
           ),
         ),
       );
   }
 
-  /// 触控板放大态：光标靠近视口边缘时把视角推过去，光标始终在可见区域内。
-  void _followCursor(Offset src) {
+  /// 视口里看得见的那块源画面（源像素）。单指不推画面，触控板光标就限制在这里。
+  Rect? _visibleSource(Size src) {
     final g = _stageGeo;
-    final source = _svc.source;
-    if (g == null || source == null || !_zoomed || source.width <= 0) return;
-    final m = _xform.value;
-    final s = m.getMaxScaleOnAxis();
-    final vx = (src.dx / source.width * g.dw + g.offX) * s + m.entry(0, 3);
-    final vy = (src.dy / source.height * g.dh + g.offY) * s + m.entry(1, 3);
-    const margin = 56.0;
-    double push(double v, double len) {
-      if (v < margin) return margin - v;
-      if (v > len - margin) return len - margin - v;
-      return 0;
-    }
-
-    final dx = push(vx, g.vp.width), dy = push(vy, g.vp.height);
-    if (dx == 0 && dy == 0) return;
-    _xform.value = Matrix4.identity()
-      ..translate(m.entry(0, 3) + dx, m.entry(1, 3) + dy)
-      ..scale(s);
-    _onZoomUpdate(g.vp, g.offX, g.offY, g.dw, g.dh);
+    if (g == null || g.dw <= 0 || g.dh <= 0) return null;
+    final inv = Matrix4.inverted(_xform.value);
+    final off = Offset(g.offX, g.offY);
+    final a = MatrixUtils.transformPoint(inv, Offset.zero) - off;
+    final b =
+        MatrixUtils.transformPoint(inv, g.vp.bottomRight(Offset.zero)) - off;
+    return Rect.fromPoints(
+      Offset(a.dx / g.dw * src.width, a.dy / g.dh * src.height),
+      Offset(b.dx / g.dw * src.width, b.dy / g.dh * src.height),
+    );
   }
 
   void _wheelPulse(int mask) {
@@ -1026,18 +1019,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         Positioned.fill(
           child: ClipRect(
             child: Listener(
-              onPointerDown: (e) {
-                _viewPointers.add(e.pointer);
-                if (_viewPointers.length >= 2) _setViewMulti(true);
-              },
-              onPointerUp: (e) {
-                _viewPointers.remove(e.pointer);
-                if (_viewPointers.isEmpty) _setViewMulti(false);
-              },
-              onPointerCancel: (e) {
-                _viewPointers.remove(e.pointer);
-                if (_viewPointers.isEmpty) _setViewMulti(false);
-              },
+              onPointerDown: (e) => _viewPointers.add(e.pointer),
+              onPointerUp: (e) => _viewPointers.remove(e.pointer),
+              onPointerCancel: (e) => _viewPointers.remove(e.pointer),
               child: GestureDetector(
                 // 只看模式允许双击缩放；可操作模式的连点留给远端。
                 onDoubleTapDown: _control || pad
@@ -1046,10 +1030,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
                 child: InteractiveViewer(
                   transformationController: _xform,
                   constrained: false,
-                  // 触控板：单指/双指平行滑动归手势控制器（光标 / 滚轮），视角靠跟随光标。
-                  // 可操作的触摸模式：单指只操作远端，平移视角要双指 —— 单指开着
-                  // 平移的话，松手时的惯性会把画面甩走。
-                  panEnabled: !pad && (!_control || _viewMulti),
+                  // 单指永远不动画面（任何模式、放不放大都一样），只做鼠标。
+                  // 双指走 scale 手势：InteractiveViewer 在缩放时让画面跟着两指
+                  // 中点走，缩放与拖动同时进行，不依赖 panEnabled。
+                  panEnabled: false,
                   scaleEnabled: true,
                   minScale: 1.0,
                   maxScale: 6.0,
@@ -1057,17 +1041,14 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
                   onInteractionStart: (_) =>
                       _xformAtStart = _xform.value.clone(),
                   onInteractionUpdate: (_) {
-                    // One finger operates the remote at every zoom level.
-                    // After a pinch, keep the remaining finger local until lift.
-                    if (_control && !pad && !_viewMulti) {
-                      final start = _xformAtStart;
-                      if (start != null) _xform.value = start.clone();
-                      return;
-                    }
-                    // 双指在「滚动」远端：InteractiveViewer 看到的微小比例抖动不许动画面
                     final start = _xformAtStart;
-                    if (pad && _touch.scrolling && start != null) {
+                    // 不足两指（含捏合后剩下的那一指）不动画面；双指在「滚动」远端
+                    // 时，InteractiveViewer 看到的微小比例抖动也不许动画面。
+                    if (start != null &&
+                        (_viewPointers.length < 2 ||
+                            (pad && _touch.scrolling))) {
                       _xform.value = start.clone();
+                      return;
                     }
                     _onZoomUpdate(vp, offX, offY, dw, dh);
                   },
@@ -1118,12 +1099,6 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen> {
         if (_zoomed || _svc.region != null) _zoomBadge(vp, offX, offY, dw, dh),
       ],
     );
-  }
-
-  void _setViewMulti(bool on) {
-    if (_viewMulti == on) return;
-    _viewMulti = on;
-    if (mounted) setState(() {});
   }
 
   // Undo the view transform and letterboxing before asking the server to

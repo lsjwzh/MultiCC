@@ -1,4 +1,4 @@
-import 'dart:ui' show Offset, Size;
+import 'dart:ui' show Offset, Rect, Size;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:multicc_app/services/remote_touch_controller.dart';
@@ -14,7 +14,6 @@ class _Rig {
             ),
             onHold: () => holds++,
             onRightUsed: () => rightUsed++,
-            onFollow: (s) => follows.add(s),
             holdDelay: const Duration(milliseconds: 40),
             moveInterval: Duration.zero,
           )
@@ -26,7 +25,6 @@ class _Rig {
   late final RemoteTouchController c;
   final events = <String>[];
   final cursors = <String>[];
-  final follows = <Offset>[];
   int holds = 0;
   int rightUsed = 0;
   int _t = 0;
@@ -150,7 +148,6 @@ void main() {
       z.down(1, 10, 10);
       z.move(1, 20, 10);
       expect(z.c.cursor.dx - 400, closeTo(slow / 4, 0.51));
-      expect(z.follows, isNotEmpty); // 放大态视角据此跟随
     });
 
     test('快速划动有加速度', () {
@@ -247,6 +244,47 @@ void main() {
         r.move(2, 140 + d * 8.0, 100);
       }
       expect(r.c.scrolling, isFalse);
+      expect(r.events, isEmpty);
+    });
+
+    test('光标不出看得见的那块：放大后一指划到边上，光标停在可见区域边缘', () {
+      // 单指不推画面，所以光标必须留在视口里看得见的地方。
+      final r = _Rig(mode: RemoteTouchMode.trackpad)
+        ..c.viewScale = 2
+        ..c.visible = const Rect.fromLTWH(200, 100, 400, 200);
+      r.down(1, 10, 10);
+      expect(r.events, isEmpty, reason: '画面中心本来就在可见块里');
+      for (var x = 20; x <= 400; x += 20) {
+        r.move(1, x.toDouble(), 10);
+      }
+      expect(r.c.cursor, const Offset(599, 200));
+      expect(r.events.last, '0@599,200');
+      expect(r.events.every((e) => e.startsWith('0@')), isTrue);
+    });
+
+    test('画面被双指挪开后再按下：光标先拉回可见区域并悬停过去，轻点点在看得见的位置', () {
+      final r = _Rig(mode: RemoteTouchMode.trackpad)
+        ..c.cursor = const Offset(100, 50)
+        ..c.visible = const Rect.fromLTWH(400, 200, 400, 200);
+      r.down(1, 10, 10);
+      expect(r.events, ['0@400,200']);
+      r.up(1, 10, 10);
+      expect(r.events, ['0@400,200', '1@400,200', '0@400,200']);
+    });
+
+    test('放大后双指平行滑动交给画面（缩放 + 拖动），不发滚轮也不算右键', () {
+      final r = _Rig(mode: RemoteTouchMode.trackpad)..c.viewScale = 2;
+      r.down(1, 100, 50);
+      r.down(2, 140, 50);
+      r.events.clear();
+      // 真手指每个事件只挪几像素、两指交替上报：小步走才会进到「滚动」那条判定。
+      for (var x = 98; x >= 30; x -= 2) {
+        r.move(1, x.toDouble(), 50);
+        r.move(2, x + 40.0, 50);
+      }
+      expect(r.c.scrolling, isFalse);
+      r.up(1, 30, 50);
+      r.up(2, 70, 50);
       expect(r.events, isEmpty);
     });
 
