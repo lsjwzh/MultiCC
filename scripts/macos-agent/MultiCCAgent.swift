@@ -1835,9 +1835,9 @@ func writeJSON(_ fd: Int32, _ obj: [String: Any]) {
 //     once IT has been still for 300ms (a spinner elsewhere must not keep
 //     the whole screen blurry), so text ends up sharp. Cursor pseudo-encoding lets
 //     the viewer draw the pointer locally while it is driving.
-//   - Clients that announce nothing (the Flutter App) keep Raw at
-//     logical/RFB_DIV — full-res Raw is multi-MB per frame (a 2026-10-04
-//     trace measured 247KB for ONE cursor move at 1470-wide bands).
+//   - Tight without DesktopSize (the Flutter App) stays at logical/RFB_DIV
+//     with the same JPEG/zlib/refine path; clients that announce nothing
+//     keep Raw there — full-res Raw is multi-MB per frame.
 // Pointer coordinates map RFB px → CGEvent points by the client's divisor. Input
 // (PointerEvent/KeyEvent) is routed through handle() so every existing guard
 // applies unchanged: single lease, Esc halt, lock-screen refusal, protected
@@ -1864,9 +1864,9 @@ func mergeRfbDirtyRects(_ dirty: [CGRect], full: CGRect) -> [CGRect] {
   return merged.count > 64 || area > full.width * full.height * 0.7 ? [full] : merged
 }
 
-// Raw-only clients get 1/RFB_DIV of logical resolution (bandwidth tier: 2
-// keeps text readable on phones while cutting bytes 4x). Tight clients run at
-// divisor 1. Pointer coords scale back up by the client's own divisor.
+// Clients start at 1/RFB_DIV of logical resolution (bandwidth tier: 2 keeps
+// text readable on phones while cutting bytes 4x); Tight+DesktopSize clients
+// move to divisor 1. Pointer coords scale back up by the client's own divisor.
 let RFB_DIV = 2
 let RFB_ENC_RAW: Int32 = 0
 let RFB_ENC_TIGHT: Int32 = 7
