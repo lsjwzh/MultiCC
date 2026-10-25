@@ -11,6 +11,7 @@ const { mountCodexOfficialRelay } = require('../codex/official-relay');
 const { codexProxyTrace } = require('../codex/proxy-trace');
 const { createCodexHistoryHooks } = require('./codex-history-hooks');
 const { createClaudeOAuthProxyRecovery } = require('../claude-auth/proxy-recovery');
+const { createClaudeQuotaBridge } = require('./claude-quota-bridge');
 const {
   createProviderProxyAdmission,
   createProviderProxyGuard,
@@ -461,11 +462,9 @@ function createProviderRouterPort(options = {}) {
       // the matching chat session so codex turns render incrementally (opencode-
       // style) instead of waiting for each item.completed boundary.
       ...(typeof mountOptions.onDelta === 'function' ? { onDelta: mountOptions.onDelta } : {}),
-      // Claude subscription 5h rate-limit sidecar: the claude proxy reads the
-      // anthropic-ratelimit-unified-5h-* response headers off official-OAuth turns
-      // and forwards a whitewashed {rateLimitType,status,utilization,resetsAt} DTO
-      // here with routing context. The host broadcasts it to the matching chat
-      // session so the 5h usage bar updates live. Best-effort, never breaks stream.
+      // Claude subscription sidecar. The quota bridge extracts 5h and weekly
+      // response headers in Rust and preserves routing context for the host's
+      // account cache and live bar. Best-effort, never breaks the stream.
       ...(typeof mountOptions.onRateLimit === 'function' ? { onRateLimit: mountOptions.onRateLimit } : {}),
     };
     const mounted = {};
@@ -479,8 +478,9 @@ function createProviderRouterPort(options = {}) {
         `/${String(mountOptions.claudeProxyPath || '/claude-proxy').replace(/^\/+|\/+$/g, '')}`,
         createProviderProxyGuard({ protocol: 'claude', authorizeProxyRequest, ...(onRejected ? { onRejected } : {}) }),
       );
-      const recovery = createClaudeOAuthProxyRecovery(admission ? admission.app : app,
+      const quota = createClaudeQuotaBridge(admission ? admission.app : app,
         { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent, onDelta: admission.onDelta } : {}), ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}), ...(mountOptions.claudeProxy || {}) });
+      const recovery = createClaudeOAuthProxyRecovery(quota.app, quota.options);
       mounted.claude = requireMethod(backend, 'mountClaudeProxy', mode === 'cpr' ? 'router' : 'legacy')(recovery.app, recovery.options);
     }
     if (protocols.includes('codex')) {

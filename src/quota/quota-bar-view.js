@@ -47,6 +47,7 @@ const COLOR = Object.freeze({
   yellow: '#d29922',
   blue: '#58a6ff',
 });
+const { claudeQuota } = require('./claude-header-quota');
 
 function finiteNumber(value) {
   if (value === null || value === '' || typeof value === 'boolean') return null;
@@ -938,6 +939,10 @@ function balanceBar(value) {
  */
 function normalizeWindowEvent(info, nowMs) {
   if (!info || typeof info !== 'object' || Array.isArray(info)) return null;
+  if (!info.provider || info.provider === 'claude') {
+    const normalized = claudeQuota('normalize', { info, nowMs: finiteNumber(nowMs) ?? Date.now() });
+    if (normalized !== undefined) return normalized ? Object.freeze(normalized) : null;
+  }
   // A window limit is either a rolling 5h window (Claude, GLM) or a weekly one
   // (Codex — its binding, and on some plans only, window). Same DTO shape; the
   // provider drives the label (5h vs 1wk) so no extra field is needed here.
@@ -952,12 +957,10 @@ function normalizeWindowEvent(info, nowMs) {
   const provider = info.provider === 'glm' ? 'glm'
     : info.provider === 'codex' ? 'codex'
       : info.provider === 'opencode' ? 'opencode' : 'claude';
-  // Claude's weekly limit comes exclusively from the usage-page scrape, and the
-  // poller always tags weekly with provider:'codex' — so a weekly event that
-  // resolves to Claude is malformed. Reject it rather than mislabel it.
+  // Compatibility path for installations without the new Rust quota entrypoint:
+  // retain the old single-5h contract until their addon has been rebuilt.
   if (info.rateLimitType === 'weekly' && provider === 'claude') return null;
-  // Every cycle a multi-window reading carries (Codex Plus: 5h + weekly).
-  // Claude merges its own windows from the scrape, so it never takes these.
+  // Claude multi-window events were already normalized by Rust above.
   const windows = provider === 'claude' ? [] : normalizeEventWindows(info.windows);
   return Object.freeze({
     schemaVersion: 1,
@@ -1054,10 +1057,9 @@ function windowEventBar(info) {
 // with the data and a missing number is visibly missing. The 刷新 affordance is
 // always the last segment.
 //
-// Two sources merge here: the 5h rolling window arrives as a passive
-// rate_limit_event (seconds old), the weekly rows come from the
-// claude.ai/settings/usage scrape (minutes old). Both reach this function
-// server-side, which is why neither client has to know how they combine.
+// Rust merges passive 5h/weekly headers with optional manual usage readings
+// before rendering. Neither client needs to combine sources or call usage
+// endpoints to display the windows a conversation response has supplied.
 
 const CLAUDE_PLACEHOLDER_WINDOWS = Object.freeze(['5h', '1wk']);
 const CLAUDE_WINDOW_ZH = Object.freeze({ '5h': '5小时', '1wk': '周', '1m': '月' });
@@ -1131,7 +1133,7 @@ const CLAUDE_SCRAPE_UNAVAILABLE = Object.freeze({
 });
 const CLAUDE_SCRAPE_IDLE = Object.freeze({
   note: part('quotaClaudeScrapeIdleNote', null, '尚未抓取'),
-  title: part('quotaClaudeScrapeIdleTitle', null, 'Claude 订阅窗口用量。点击从 claude.ai/settings/usage 抓取周余量；5h 由 Claude Code 上报的 rate_limit_event 实时更新。'),
+  title: part('quotaClaudeScrapeIdleTitle', null, 'Claude 订阅窗口用量。5h 和周额度随对话响应头更新；点击刷新可查询完整用量。'),
 });
 const CLAUDE_SCRAPE_FETCHING = Object.freeze({
   note: part('quotaClaudeScrapeFetchingNote', null, '抓取中…'),
@@ -1195,7 +1197,7 @@ function claudeBarForState(usage, live, state) {
   // The scrape's own status is worth a line only when it explains something — a
   // missing window, a failure, or a fetch in flight. With every window in hand
   // and nothing happening it is noise.
-  const titleParts = [part('quotaClaudeTitle', null, 'Claude 订阅窗口用量（5h 来自 Claude Code 上报的 rate_limit_event，周来自 claude.ai/settings/usage 抓取）')]
+  const titleParts = [part('quotaClaudeTitle', null, 'Claude 订阅窗口用量（5h 和周额度来自对话响应头；手动刷新补充完整用量）')]
     .concat(entries.map((e) => e.detail), ago ? [part('quotaSyncAt', { ago }, `同步于 ${ago}`)] : [],
       missing.length || state.action === 'fetching' || state.action === 'login_pending' ? [state.title] : []);
   return partsView(textParts,
@@ -1203,7 +1205,11 @@ function claudeBarForState(usage, live, state) {
     titleParts, state.action);
 }
 
-function claudeBar(usage, live) {
+function claudeBar(usage, live, nowMs = Date.now()) {
+  if (Array.isArray(live?.windows)) {
+    const merged = claudeQuota('compose', { usage, live, nowMs });
+    if (merged) ({ usage, live } = merged);
+  }
   const base = claudeBarForState(usage, live,
     !usage ? CLAUDE_SCRAPE_IDLE : (CLAUDE_SCRAPE_STATES[usage.status] || CLAUDE_SCRAPE_UNAVAILABLE));
   return withStates(base, {

@@ -323,10 +323,11 @@ rustTest('统一网络策略决定 Rust 出口，策略失败不能静默直连'
   assert.equal(seen.length, 1); assert.equal(h.requests.length, 0);
 });
 
-rustTest('限流响应头产生现有额度事件；探测 HEAD 不拨号、不记账', async t => {
-  const h = await harness(t, 'rust', { upstream: (req, res) => {
+for (const backend of ['node', 'rust']) rustTest(`${backend} 限流响应头同时传递 5h 和周额度；HEAD 不拨号、不记账`, async t => {
+  const h = await harness(t, backend, { upstream: (req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'anthropic-ratelimit-unified-5h-utilization': '0.8',
-      'anthropic-ratelimit-unified-5h-status': 'allowed_warning', 'anthropic-ratelimit-unified-5h-reset': '1900000000' });
+      'anthropic-ratelimit-unified-5h-status': 'allowed_warning', 'anthropic-ratelimit-unified-5h-reset': '1900000000',
+      'anthropic-ratelimit-unified-7d-utilization': '0.65', 'anthropic-ratelimit-unified-7d-reset': '1900500000' });
     res.end(claudeStream);
   } });
   let res = await fetch(h.base + '/claude-proxy/main/fixture', { method: 'HEAD' });
@@ -334,6 +335,29 @@ rustTest('限流响应头产生现有额度事件；探测 HEAD 不拨号、不�
   res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody); await res.text();
   assert.equal(h.rates.length, 1); assert.equal(h.rates[0].rateLimitInfo.utilization, 0.8);
   assert.equal(h.rates[0].rateLimitInfo.resetsAt, 1900000000);
+  assert.deepEqual(h.rates[0].rateLimitInfo.windows.map(w => [w.window, w.usedPercent]), [['5h', 80], ['1wk', 65]]);
+  assert.equal(h.requests.length, 1, 'only the conversation request reaches the upstream');
+  assert.equal(h.requests[0].url, '/v1/messages');
+});
+
+for (const backend of ['node', 'rust']) rustTest(`${backend} 周额度单独返回或耗尽时仍上报，响应头缺失时不伪造`, async t => {
+  let count = 0;
+  const h = await harness(t, backend, { upstream: (_req, res) => {
+    count++;
+    const headers = count === 3 ? {} : { 'anthropic-ratelimit-unified-7d-utilization': count === 1 ? '0.65' : '1',
+      'anthropic-ratelimit-unified-7d-reset': '1900500000' };
+    res.writeHead(count === 2 ? 429 : 200, { 'content-type': 'application/json', ...headers });
+    res.end(count === 2 ? '{"error":{"type":"rate_limit_error"}}' : '{}');
+  } });
+  for (let i = 0; i < 3; i++) {
+    const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+    assert.equal(res.status, i === 1 ? 429 : 200);
+    await res.text();
+  }
+  assert.equal(h.rates.length, 2);
+  assert.equal(h.rates[0].rateLimitInfo.rateLimitType, 'weekly');
+  assert.equal(h.rates[1].rateLimitInfo.windows[0].usedPercent, 100);
+  assert.equal(h.requests.length, 3);
 });
 
 rustTest('首包等待有上限，错误回调不会包含上游地址或能力令牌', async t => {

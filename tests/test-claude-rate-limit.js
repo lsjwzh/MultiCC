@@ -46,11 +46,9 @@ test('normalizes a Claude five-hour event into a privacy-minimal DTO', () => {
 });
 
 test('rejects unrelated or malformed limit events', () => {
-  assert.equal(normalizeFiveHourRateLimit({ status: 'allowed_warning', rateLimitType: 'seven_day', utilization: 0.8 }, NOW), null);
+  assert.equal(normalizeFiveHourRateLimit({ status: 'allowed_warning', rateLimitType: 'unknown_window', utilization: 0.8 }, NOW), null);
   assert.equal(normalizeFiveHourRateLimit({ status: 'unknown', rateLimitType: 'five_hour', utilization: 0.8 }, NOW), null);
-  // A weekly window that would resolve to Claude is malformed (Claude's weekly
-  // comes only from the usage-page scrape, and the poller tags weekly 'codex').
-  assert.equal(normalizeFiveHourRateLimit({ status: 'allowed', rateLimitType: 'weekly', utilization: 0.5 }, NOW), null);
+  assert.equal(normalizeFiveHourRateLimit({ status: 'allowed', rateLimitType: 'unknown_window', utilization: 0.5 }, NOW), null);
 });
 
 test('tags the provider from the event and resolves resetsAt seconds→ms', () => {
@@ -97,8 +95,8 @@ test('a Codex Plus event carries 5h + weekly and renders both, coloured by the t
   assert.equal(view.color, '#f85149', '8% left on the 5h window → red, despite 97% weekly');
   assert.match(view.title, /5小时: 已用 92%/);
   assert.match(view.title, /周: 已用 3%/);
-  // A Claude event never takes windows: its bar is merged from the scrape.
-  const claude = Renderer.normalizeWindowEvent({ status: 'allowed', rateLimitType: 'five_hour', utilization: 0.1, windows: [{ window: '5h', usedPercent: 10 }] }, NOW);
+  // Invalid windows do not replace the legacy single-window event.
+  const claude = Renderer.normalizeWindowEvent({ status: 'allowed', rateLimitType: 'five_hour', utilization: 0.1, windows: [{ window: 'bogus', usedPercent: 10 }] }, NOW);
   assert.equal(claude.windows, undefined);
 });
 

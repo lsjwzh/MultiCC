@@ -3,11 +3,11 @@
 // The Claude bar is the only one built from two sources that arrive on
 // different paths, at different rates, for different reasons:
 //
-//   · the 5h rolling window — a passive rate_limit_event, read off response
-//     headers on every official-OAuth turn, seconds old;
-//   · the weekly and monthly windows — the usage cache, whose readings come
-//     from claude.ai/settings/usage or the OAuth control plane, minutes to hours
-//     old, only on a user refresh or at a task boundary (see
+//   · 5h and weekly windows — passive rate_limit_event observations read from
+//     conversation response headers whenever the upstream provides them;
+//   · optional complete/model-specific windows — the usage cache, whose readings
+//     come from claude.ai/settings/usage or the OAuth control plane, only on
+//     a user refresh (see
 //     ./claude-usage-queue.js, which owns both the cache and that policy).
 //
 // Merging them used to be each client's job, which is why the app never did it
@@ -19,12 +19,13 @@
 // and a usage reading describe the ACCOUNT, so two sessions on one account
 // genuinely share them, and two accounts must never share either. Everything is
 // in-process and lost on restart — a stale quota reading is worse than no
-// reading, and the first turn end or click after a restart refills it. (The
+// reading, and the first response headers or click after a restart refill it. (The
 // durable copy the clients restore from is the provider-limit cache, written
 // per account by limit-cache-recorder.)
 
 const { claudeBar } = require('./quota-bar-view');
 const { claudeUsageKey, readClaudeUsage } = require('./claude-usage-queue');
+const { claudeQuota } = require('./claude-header-quota');
 
 const liveByKey = new Map();
 
@@ -39,7 +40,8 @@ const MAX_LIVE_KEYS = 50;
 function rememberClaudeLive(sessionName, normalized) {
   if (!sessionName || !normalized || normalized.provider !== 'claude') return;
   const key = claudeUsageKey(sessionName);
-  liveByKey.set(key, normalized);
+  const merged = claudeQuota('merge', { previous: liveByKey.get(key), next: normalized, nowMs: normalized.observedAtMs });
+  liveByKey.set(key, merged === undefined ? normalized : merged);
   if (liveByKey.size > MAX_LIVE_KEYS) {
     let oldestKey = null;
     let oldestAt = Infinity;
@@ -69,6 +71,11 @@ function rememberClaudeLive(sessionName, normalized) {
 function liveFor(key, nowMs) {
   const live = liveByKey.get(key);
   if (!live) return null;
+  const current = claudeQuota('merge', { previous: live, nowMs });
+  if (current !== undefined) {
+    if (!current) liveByKey.delete(key);
+    return current;
+  }
   const observed = Number(live.observedAtMs) || 0;
   const reset = Number(live.resetsAtMs);
   const windowClosed = Number.isFinite(reset) && reset > 0 && reset <= nowMs;
@@ -81,12 +88,12 @@ function liveFor(key, nowMs) {
 
 /**
  * The Claude bar as of right now, for one session: that session's account's
- * newest usage reading, merged with the same account's newest live 5h window.
+ * newest manual reading, merged with that account's live 5h and weekly windows.
  */
 function renderClaudeBar(sessionName, nowMs = Date.now()) {
   const key = claudeUsageKey(sessionName);
   const entry = readClaudeUsage(key);
-  return claudeBar(entry && entry.result, liveFor(key, nowMs));
+  return claudeBar(entry && entry.result, liveFor(key, nowMs), nowMs);
 }
 
 // Test seam: the module holds process-wide state, so a test that asserts on one

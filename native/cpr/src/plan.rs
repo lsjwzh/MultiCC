@@ -416,32 +416,5 @@ pub fn prepare(input: Value) -> Result<Value, String> {
 }
 
 pub fn rate_limit(headers: &Map<String, Value>) -> Option<Value> {
-    let get = |key: &str| {
-        headers
-            .get(key)
-            .and_then(Value::as_str)
-            .and_then(|v| v.parse::<f64>().ok())
-            .filter(|v| v.is_finite())
-    };
-    let utilization = get("anthropic-ratelimit-unified-5h-utilization")?;
-    let raw = headers
-        .get("anthropic-ratelimit-unified-5h-status")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let status = if raw == "rejected" {
-        "rejected"
-    } else if ["warn", "close", "limit"]
-        .iter()
-        .any(|s| raw.to_lowercase().contains(s))
-    {
-        "allowed_warning"
-    } else {
-        "allowed"
-    };
-    let mut result =
-        json!({"rateLimitType":"five_hour", "status":status, "utilization":utilization});
-    if let Some(reset) = get("anthropic-ratelimit-unified-5h-reset") {
-        result["resetsAt"] = json!(reset);
-    }
-    Some(result)
+    crate::claude_quota::extract(headers)
 }

@@ -90,8 +90,8 @@ function createUsageLimitWiring({ persistedSessions, providers, chatBroadcast, c
         const normalized = normalizeWindowEvent(info, Date.now());
         let bar = null;
         if (normalized && normalized.provider === 'claude') {
-          // Claude's 5h is only half its bar; the weekly windows come from the
-          // usage-page scrape, so the merge happens server-side.
+          // Claude merges passive 5h/weekly windows and manual usage readings
+          // server-side so every client receives the same bar.
           rememberClaudeLive(sessionName, normalized);
           bar = renderClaudeBar(sessionName);
         } else if (normalized) {
