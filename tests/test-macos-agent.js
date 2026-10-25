@@ -184,15 +184,20 @@ test('H.264 wire golden: the agent decodes client input and frames output exactl
     }
     return source.slice(start, end + 1);
   };
-  const consts = h264.match(/^let H264_(CONFIG|KEY|DELTA|REQ_KEY): UInt8 = .*$/gm);
-  assert.equal(consts.length, 4);
+  const consts = h264.match(/^let H264_(CONFIG|KEY|DELTA|PONG|REQ_KEY|CAP|PING): UInt8 = .*$/gm);
+  assert.equal(consts.length, 7);
   const be = agent.slice(agent.indexOf('extension Data {'), agent.indexOf('func readFully('));
   const bytes = hex => `[${Buffer.from(hex, 'hex').join(', ')}]`;
   const expectCalls = c => c.kind === 'pointer' ? [`pointer ${c.mask} ${c.x} ${c.y}`]
-    : c.kind === 'key' ? [`key ${c.down ? 1 : 0} ${c.keysym}`] : ['key-request'];
+    : c.kind === 'key' ? [`key ${c.down ? 1 : 0} ${c.keysym}`]
+      : c.kind === 'cap' ? [`cap ${c.kbps}`]
+        : c.kind === 'ping' ? [`ping ${c.token}`] : ['key-request'];
+  const rateControl = wire.clientRateControlToAgent;
   const streams = [
     ...wire.clientToAgent.map(c => ({ name: c.name, hex: c.hex, calls: expectCalls(c) })),
+    ...rateControl.map(c => ({ name: c.name, hex: c.hex, calls: expectCalls(c) })),
     { name: 'all input back to back', hex: wire.clientToAgent.map(c => c.hex).join(''), calls: wire.clientToAgent.flatMap(expectCalls) },
+    { name: 'rate control back to back', hex: rateControl.map(c => c.hex).join(''), calls: rateControl.flatMap(expectCalls) },
     ...wire.rejectedByBridge.map(c => ({ name: c.name, hex: c.hex, calls: c.agentCalls })),
   ];
   const file = path.join(root, 'main.swift');
@@ -211,6 +216,8 @@ final class H264Screen {
   func attach(_ c: H264Client) -> Bool { true }
   func detach(_ c: H264Client) {}
   func requestKey() { calls.append("key-request") }
+  func setCapability(_ c: H264Client, kbps: Int) { calls.append("cap \\(kbps)") }
+  func ping(_ c: H264Client, token: UInt32) { calls.append("ping \\(token)") }
 }
 func rfbPointer(_ c: RfbClient, mask: Int, x: Int, y: Int) { calls.append("pointer \\(mask) \\(x) \\(y)") }
 func rfbKey(_ c: RfbClient, down: Bool, keysym: UInt32) { calls.append("key \\(down ? 1 : 0) \\(keysym)") }

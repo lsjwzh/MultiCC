@@ -83,6 +83,9 @@ dependencies:
   # App version / build number (for the in-app version display + update check)
   package_info_plus: ^8.0.0
 
+  # 「🖥 屏幕」WebRTC P2P 直连（DataChannel only; falls back to the WS relay).
+  flutter_webrtc: ^1.6.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

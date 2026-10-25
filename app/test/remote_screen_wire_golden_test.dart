@@ -12,6 +12,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:multicc_app/services/remote_screen_h264.dart';
 import 'package:multicc_app/services/remote_screen_source.dart';
@@ -86,6 +87,8 @@ void main() {
       .cast<Map<String, dynamic>>();
   final scaling = (fixture['decodedScaling'] as List)
       .cast<Map<String, dynamic>>();
+  final rateControl = (fixture['clientRateControlToAgent'] as List)
+      .cast<Map<String, dynamic>>();
 
   test('every input message encodes to the golden bytes', () {
     for (final c in clientToAgent.where((c) => c['kind'] != 'keyRequest')) {
@@ -97,6 +100,43 @@ void main() {
       }
       expect(input.sent, [c['hex']], reason: c['name'] as String);
     }
+  });
+
+  test('rate-control messages encode to the golden bytes', () {
+    for (final c in rateControl.where((c) => c['kind'] == 'cap')) {
+      final sent = <Uint8List>[];
+      final incoming = StreamController<Uint8List>();
+      final session = RemoteScreenH264(
+        incoming: incoming.stream,
+        send: sent.add,
+        decoder: _Decoder(),
+      );
+      session.sendRateCap(c['kbps'] as int);
+      expect(sent, [_bytes(c['hex'] as String)], reason: c['name'] as String);
+      session.dispose();
+      unawaited(incoming.close());
+    }
+    final ping = rateControl.singleWhere((c) => c['kind'] == 'ping');
+    fakeAsync((clock) {
+      final sent = <Uint8List>[];
+      final incoming = StreamController<Uint8List>();
+      final session = RemoteScreenH264(
+        incoming: incoming.stream,
+        send: sent.add,
+        decoder: _Decoder(),
+        now: () => DateTime(2026).add(clock.elapsed),
+      );
+      unawaited(session.run());
+      clock.flushMicrotasks();
+      // 令牌从 0 起，每秒一个；金样用的是 token 7。
+      clock.elapse(const Duration(seconds: 8));
+      final pings = sent.where((m) => m[0] == h264Ping).toList();
+      expect(pings.length, 8);
+      expect(_hex(pings.last), ping['hex'], reason: ping['name'] as String);
+      session.dispose();
+      unawaited(incoming.close());
+      clock.flushMicrotasks();
+    });
   });
 
   test('key-frame request and decoded→encoded pointer scaling match', () async {
@@ -116,11 +156,14 @@ void main() {
       expect(sent, [keyRequest['hex']], reason: 'run() asks for a key frame');
       final encoded = (c['encoded'] as List).cast<int>();
       final decoded = (c['decoded'] as List).cast<int>();
+      final input = (c['input'] as List?)?.cast<int>();
       final config = utf8.encode(
         jsonEncode({
           'codec': 'avc1.640028',
           'width': encoded[0],
           'height': encoded[1],
+          if (input != null) 'inputWidth': input[0],
+          if (input != null) 'inputHeight': input[1],
         }),
       );
       incoming.add(
@@ -153,12 +196,15 @@ void main() {
     ];
     final config = agentToClient.singleWhere((f) => f['type'] == 1);
     final json = config['json'] as Map<String, dynamic>;
+    final pong = agentToClient.singleWhere((f) => f['type'] == h264Pong);
     final want = [
-      for (final f in agentToClient.where((f) => f['type'] != 1))
+      for (final f in agentToClient.where(
+        (f) => f['type'] == h264Key || f['type'] == h264Delta,
+      ))
         {
           'annexB': f['annexBHex'],
           'pts': f['pts'],
-          'key': f['type'] == 2,
+          'key': f['type'] == h264Key,
           'size': '${json['width']}x${json['height']}',
         },
     ];
@@ -177,6 +223,9 @@ void main() {
       }
       await Future<void>.delayed(Duration.zero);
       expect(decoder.calls, want, reason: 'cut $cut');
+      // pong 只喂码率控制，不是视频帧：解码器一次都不能收到它。
+      final stats = session.rateStats.value;
+      expect(stats.appliedKbps, pong['appliedKbps'], reason: 'cut $cut');
       session.dispose();
       await incoming.close();
     }

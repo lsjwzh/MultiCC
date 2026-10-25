@@ -8,15 +8,31 @@
 //
 // Agent → server, one message per frame:
 //   [type u8][len u32 BE][payload]
-//     type 1  config  payload = JSON {"codec":"avc1.PPCCLL","width":W,"height":H}
+//     type 1  config  payload = JSON {"codec":"avc1.PPCCLL","width":W,"height":H,
+//                                     "inputWidth":IW,"inputHeight":IH}
+//                     width/height = encode size (shrinks when the rate controller
+//                     picks a smaller scale); inputWidth/inputHeight = the main
+//                     display in logical points, which is the pointer domain and
+//                     never changes.
 //     type 2  key     payload = [pts µs u64 BE][Annex B, SPS/PPS first]
 //     type 3  delta   payload = [pts µs u64 BE][Annex B]
+//     type 4  pong    payload = [token u32 BE][applied kbps u32 BE]
 // Server → agent:
 //     0x4B 'K'                 request a key frame (after drops / decoder reset)
+//     0x42 'B' + kbps u32 BE   cap the shared encoder at this client's link budget
+//                              (0 = revoke). The encoder runs at the smallest cap
+//                              of all clients; with no cap it keeps the default.
+//     0x50 'P' + token u32 BE  ping; answered at once with type 4 pong so the
+//                              client measures RTT and reads the applied rate.
 //     4 + 7 bytes              RFB KeyEvent     ┐ coordinates are logical points;
 //     5 + 5 bytes              RFB PointerEvent ┘ routed through rfbKey/rfbPointer,
 //                                                 so every input guard applies; no-button
 //                                                 motion moves the cursor (rfbHover).
+//
+// The H.264 encoder is one global singleton shared by every viewer, so the rate
+// cap is a minimum over clients. A cap also picks the capture scale (1.0 / 0.75 /
+// 0.5) from bits per logical pixel, because shrinking the wrong-resolution buffer
+// queues just as badly as overshooting the bitrate.
 // Frames are produced only on change (SCStream idles on a still screen); a
 // still screen gets two delayed "refine" re-encodes of the last image so text
 // sharpens after motion, and a key request on a still screen re-encodes the
@@ -30,9 +46,16 @@ import VideoToolbox
 let H264_CONFIG: UInt8 = 1
 let H264_KEY: UInt8 = 2
 let H264_DELTA: UInt8 = 3
+let H264_PONG: UInt8 = 4
 let H264_REQ_KEY: UInt8 = 0x4B
+let H264_CAP: UInt8 = 0x42
+let H264_PING: UInt8 = 0x50
 let H264_MAX_PENDING = 4            // queued frames per client before deltas are dropped
 let H264_REFINE_DELAYS = [0.35, 1.2]  // seconds after the last change
+let H264_MIN_KBPS = 300             // floor of the adaptive range: below this text turns to mush
+let H264_SCALE_MIN_INTERVAL = 2.0   // seconds between two scale changes
+let H264_SCALE_UP_HOLD = 5.0        // seconds the upscale condition must hold
+let H264_SCALES: [Double] = [1.0, 0.75, 0.5]
 
 func h264Message(_ type: UInt8, _ payload: Data) -> Data {
   var d = Data([type])
@@ -50,9 +73,17 @@ final class H264Client {
   private var pending = 0
   private var needKey = true
   private var closed = false
+  private var cap = 0   // kbps this client wants the shared encoder capped at; 0 = no cap
   init(_ fd: Int32) { self.fd = fd; input = RfbClient(fd); input.div = 1; input.hoverMoves = true }
 
   var isClosed: Bool { lock.lock(); defer { lock.unlock() }; return closed }
+
+  /// This client's requested ceiling in kbps (0 = none).
+  var capKbps: Int { lock.lock(); defer { lock.unlock() }; return cap }
+
+  func setCapKbps(_ kbps: Int) {
+    lock.lock(); cap = max(0, kbps); lock.unlock()
+  }
 
   func shutdown() {
     lock.lock(); let was = closed; closed = true; lock.unlock()
@@ -87,14 +118,34 @@ final class H264Screen: NSObject, SCStreamOutput {
   private let lock = NSLock()
   private let encodeQueue = DispatchQueue(label: "multicc.h264.encode")
   private var stream: SCStream?
+  private var display: SCDisplay?    // kept for updateConfiguration (scale changes)
   private var session: VTCompressionSession?
   private var clients: [H264Client] = []
   private var config: Data?          // last config message, replayed to new clients
   private var last: CVPixelBuffer?   // encodeQueue only
   private var forceKey = true        // encodeQueue only
   private var generation = 0         // encodeQueue only: invalidates pending refines
+  // Geometry and applied rate are read from h264Session threads (ping) and the
+  // encode queue, so they live under `lock`.
+  private var inputW = 0             // main display in logical points = pointer domain
+  private var inputH = 0
+  private var encodedW = 0           // current capture/encode size (after the scale)
+  private var encodedH = 0
+  private var appliedKbps = 0        // rate actually set on the encoder
+  // Rate-controller state: encodeQueue only.
+  private var scale = 1.0
+  private var lastScaleAt = Date.distantPast
+  private var upscaleSince: Date?
+  private var rateCheckScheduled = false
 
-  private func makeSession(_ w: Int, _ h: Int) -> VTCompressionSession? {
+  /// Default rate when nobody caps: ~3 bits/pixel/s at logical resolution keeps
+  /// text legible while scrolling; still frames are sharpened by refine passes.
+  /// Caller must not hold `lock`.
+  private func defaultKbps(_ w: Int, _ h: Int) -> Int {
+    max(1500, min(12000, w * h * 3 / 1000))
+  }
+
+  private func makeSession(_ w: Int, _ h: Int, kbps: Int) -> VTCompressionSession? {
     var s: VTCompressionSession?
     let lowLatency = [kVTVideoEncoderSpecification_EnableLowLatencyRateControl: kCFBooleanTrue] as CFDictionary
     if VTCompressionSessionCreate(allocator: nil, width: Int32(w), height: Int32(h), codecType: kCMVideoCodecType_H264,
@@ -106,21 +157,62 @@ final class H264Screen: NSObject, SCStreamOutput {
                                        outputCallback: nil, refcon: nil, compressionSessionOut: &s) == noErr else { return nil }
     }
     guard let s else { return nil }
-    // Screen content at logical resolution: ~3 bits/pixel/s keeps text legible
-    // while scrolling; still frames are sharpened by the refine passes.
-    let bitrate = max(1_500_000, min(12_000_000, w * h * 3))
     let props: [CFString: Any] = [
       kVTCompressionPropertyKey_RealTime: true,
       kVTCompressionPropertyKey_AllowFrameReordering: false,
       kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_ConstrainedHigh_AutoLevel,
-      kVTCompressionPropertyKey_AverageBitRate: bitrate,
       kVTCompressionPropertyKey_ExpectedFrameRate: 30,
       kVTCompressionPropertyKey_MaxKeyFrameInterval: 1800,
       kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: 60,
     ]
     for (k, v) in props { VTSessionSetProperty(s, key: k, value: v as CFTypeRef) }
+    applyRate(s, kbps: kbps)
     VTCompressionSessionPrepareToEncodeFrames(s)
     return s
+  }
+
+  /// AverageBitRate plus a 1-second DataRateLimits window (1.5× the budget in
+  /// bytes) so a key frame cannot burst far past the cap the link negotiated.
+  private func applyRate(_ s: VTCompressionSession, kbps: Int) {
+    let rate = max(H264_MIN_KBPS, kbps)
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: (rate * 1000) as CFTypeRef)
+    let limits: [CFNumber] = [NSNumber(value: Double(rate) * 1000.0 / 8.0 * 1.5), NSNumber(value: 1.0)]
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_DataRateLimits, value: limits as CFArray)
+  }
+
+  /// Smallest cap among clients, clamped into [H264_MIN_KBPS, default]; no caps
+  /// means the default formula. 0 = capture is not running.
+  private func effectiveKbps() -> Int {
+    lock.lock()
+    let w = inputW, h = inputH
+    let caps = clients.map { $0.capKbps }.filter { $0 > 0 }
+    lock.unlock()
+    guard w > 0, h > 0 else { return 0 }
+    let fallback = defaultKbps(w, h)
+    guard let cap = caps.min() else { return fallback }
+    return min(fallback, max(H264_MIN_KBPS, cap))
+  }
+
+  /// Encode scale for a rate: bits per logical pixel per second. Below ~0.6 the
+  /// encoder spends everything on motion, so drop resolution instead.
+  private func scaleFor(_ kbps: Int) -> Double {
+    lock.lock(); let area = max(1, inputW * inputH); lock.unlock()
+    let bpp = Double(kbps) * 1000.0 / Double(area)
+    if bpp >= 1.2 { return 1.0 }
+    if bpp >= 0.6 { return 0.75 }
+    return 0.5
+  }
+
+  private func streamConfiguration(_ w: Int, _ h: Int) -> SCStreamConfiguration {
+    let cfg = SCStreamConfiguration()
+    cfg.showsCursor = true
+    cfg.width = w
+    cfg.height = h
+    cfg.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    cfg.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
+    cfg.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+    cfg.queueDepth = 4
+    return cfg
   }
 
   private func acquire() -> String? {
@@ -135,16 +227,12 @@ final class H264Screen: NSObject, SCStreamOutput {
       return errText ?? "no displays"
     }
     // 4:2:0 needs even dimensions; logical points, like the RFB Tight tier.
-    let w = max(2, Int(display.width) & ~1), h = max(2, Int(display.height) & ~1)
-    guard let vt = makeSession(w, h) else { return "VTCompressionSessionCreate failed" }
-    let cfg = SCStreamConfiguration()
-    cfg.showsCursor = true
-    cfg.width = w
-    cfg.height = h
-    cfg.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-    cfg.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
-    cfg.minimumFrameInterval = CMTime(value: 1, timescale: 30)
-    cfg.queueDepth = 4
+    let logicalW = max(2, Int(display.width)), logicalH = max(2, Int(display.height))
+    let w = logicalW & ~1, h = logicalH & ~1
+    lock.lock(); inputW = logicalW; inputH = logicalH; encodedW = w; encodedH = h; lock.unlock()
+    let kbps = effectiveKbps()
+    guard let vt = makeSession(w, h, kbps: kbps) else { return "VTCompressionSessionCreate failed" }
+    let cfg = streamConfiguration(w, h)
     let s = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: cfg, delegate: nil)
     do { try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: encodeQueue) }
     catch { VTCompressionSessionInvalidate(vt); return "addStreamOutput: \(error.localizedDescription)" }
@@ -153,12 +241,13 @@ final class H264Screen: NSObject, SCStreamOutput {
     s.startCapture { e in if let e { startErr = e.localizedDescription }; sem2.signal() }
     if sem2.wait(timeout: .now() + 5) == .timedOut { VTCompressionSessionInvalidate(vt); return "startCapture timed out" }
     if let startErr { VTCompressionSessionInvalidate(vt); return "startCapture: \(startErr)" }
-    lock.lock(); stream = s; session = vt; lock.unlock()
+    lock.lock(); stream = s; session = vt; self.display = display; appliedKbps = kbps; lock.unlock()
+    encodeQueue.async { [self] in scale = 1.0; lastScaleAt = Date() }
     return nil
   }
 
   private func releaseCapture() {
-    lock.lock(); let s = stream, vt = session; stream = nil; session = nil; config = nil; lock.unlock()
+    lock.lock(); let s = stream, vt = session; stream = nil; session = nil; display = nil; config = nil; lock.unlock()
     if let s {
       let sem = DispatchSemaphore(value: 0)
       s.stopCapture { _ in sem.signal() }
@@ -166,8 +255,16 @@ final class H264Screen: NSObject, SCStreamOutput {
     }
     encodeQueue.sync {
       last = nil; forceKey = true; generation += 1
+      resetScaleState()
       if let vt { VTCompressionSessionCompleteFrames(vt, untilPresentationTimeStamp: .invalid); VTCompressionSessionInvalidate(vt) }
     }
+  }
+
+  /// encodeQueue only.
+  private func resetScaleState() {
+    scale = 1.0
+    upscaleSince = nil
+    lastScaleAt = Date.distantPast
   }
 
   func attach(_ c: H264Client) -> Bool {
@@ -178,13 +275,116 @@ final class H264Screen: NSObject, SCStreamOutput {
       return false
     }
     if let cfg { _ = c.send(cfg, kind: H264_CONFIG) }
+    recomputeRate()
     requestKey()
     return true
   }
 
   func detach(_ c: H264Client) {
     lock.lock(); clients.removeAll { $0 === c }; let nowEmpty = clients.isEmpty; lock.unlock()
-    if nowEmpty { releaseCapture() }
+    if nowEmpty { releaseCapture() } else { recomputeRate() }
+  }
+
+  /// A client set/revoked its rate cap (0x42 'B'): re-derive the shared rate and
+  /// possibly the capture scale for everyone.
+  func setCapability(_ c: H264Client, kbps: Int) {
+    c.setCapKbps(kbps)
+    recomputeRate()
+  }
+
+  /// 0x50 'P': answer on this client's connection at once with the rate actually
+  /// on the encoder, so the client can measure RTT against a known send time.
+  func ping(_ c: H264Client, token: UInt32) {
+    lock.lock(); let kbps = appliedKbps; lock.unlock()
+    var payload = Data()
+    payload.appendBE(token)
+    payload.appendBE(UInt32(max(0, kbps)))
+    // Not a delta: the delta drop rules must never swallow a pong.
+    _ = c.send(h264Message(H264_PONG, payload), kind: H264_PONG)
+  }
+
+  /// Re-derives the shared bitrate (and scale) after a cap / client change.
+  private func recomputeRate() {
+    lock.lock(); let running = session != nil; lock.unlock()
+    guard running else { return }
+    encodeQueue.async { [self] in rateTick() }
+  }
+
+  /// encodeQueue only.
+  private func rateTick() {
+    rateCheckScheduled = false
+    let kbps = effectiveKbps()
+    guard kbps > 0 else { return }
+    lock.lock(); let vt = session; appliedKbps = kbps; lock.unlock()
+    if let vt { applyRate(vt, kbps: kbps) }
+    let want = scaleFor(kbps)
+    considerScale(want)
+  }
+
+  /// encodeQueue only. Downscale at once (a stuck queue cannot wait), upscale
+  /// only after the nicer rate has held for H264_SCALE_UP_HOLD, never more often
+  /// than H264_SCALE_MIN_INTERVAL.
+  private func considerScale(_ want: Double) {
+    let now = Date()
+    if want < scale - 0.001 {
+      upscaleSince = nil
+      guard now.timeIntervalSince(lastScaleAt) >= H264_SCALE_MIN_INTERVAL else { scheduleRateCheck(); return }
+      applyScale(want)
+    } else if want > scale + 0.001 {
+      guard now.timeIntervalSince(lastScaleAt) >= H264_SCALE_MIN_INTERVAL else { scheduleRateCheck(); return }
+      let since = upscaleSince ?? now
+      upscaleSince = since
+      guard now.timeIntervalSince(since) >= H264_SCALE_UP_HOLD else { scheduleRateCheck(); return }
+      applyScale(want)
+    } else {
+      upscaleSince = nil
+    }
+  }
+
+  /// encodeQueue only. Re-evaluate later while a change is still pending.
+  private func scheduleRateCheck() {
+    guard !rateCheckScheduled else { return }
+    rateCheckScheduled = true
+    encodeQueue.asyncAfter(deadline: .now() + 0.5) { [self] in rateTick() }
+  }
+
+  /// encodeQueue only. Rescale SCK (it resizes the pixel buffers for us), then
+  /// rebuild the encoder at the new size: a VTCompressionSession is bound to the
+  /// dimensions it was created with.
+  private func applyScale(_ next: Double) {
+    // Read geometry/state under the lock: releaseCapture can run from a client
+    // thread (it sets stream/session to nil before draining this queue).
+    lock.lock()
+    let stream = self.stream
+    let old = session
+    let lw = inputW, lh = inputH
+    lock.unlock()
+    guard let stream else { return }
+    let w = max(2, Int(Double(lw) * next)) & ~1
+    let h = max(2, Int(Double(lh) * next)) & ~1
+    scale = next
+    lastScaleAt = Date()
+    upscaleSince = nil
+    stream.updateConfiguration(streamConfiguration(w, h)) { _ in }
+    // Drop the old-size image: it cannot be fed to the new session, and letting
+    // clients keep the previous resolution until the next frame beats tearing.
+    last = nil
+    forceKey = true
+    generation += 1
+    let kbps = effectiveKbps()
+    if let old {
+      VTCompressionSessionCompleteFrames(old, untilPresentationTimeStamp: .invalid)
+      VTCompressionSessionInvalidate(old)
+    }
+    guard let vt = makeSession(w, h, kbps: kbps) else { log("h264: cannot rebuild encoder at \(w)x\(h)"); return }
+    // Capture may have been released while the session was being rebuilt: keep
+    // the old (nil) state and throw the new session away instead of leaking it.
+    lock.lock()
+    let running = stream == self.stream
+    if running { session = vt; encodedW = w; encodedH = h; appliedKbps = kbps }
+    lock.unlock()
+    guard running else { VTCompressionSessionInvalidate(vt); return }
+    requestKey()
   }
 
   /// Next frame is a key frame; on a still screen, re-encode the last image now.
@@ -250,7 +450,11 @@ final class H264Screen: NSObject, SCStreamOutput {
       let dims = CMVideoFormatDescriptionGetDimensions(fmt)
       if let sps, sps.count >= 4 {
         let codec = String(format: "avc1.%02X%02X%02X", sps[sps.startIndex + 1], sps[sps.startIndex + 2], sps[sps.startIndex + 3])
-        let json = try? JSONSerialization.data(withJSONObject: ["codec": codec, "width": Int(dims.width), "height": Int(dims.height)])
+        lock.lock(); let iw = inputW, ih = inputH; lock.unlock()
+        let json = try? JSONSerialization.data(withJSONObject: [
+          "codec": codec, "width": Int(dims.width), "height": Int(dims.height),
+          "inputWidth": iw, "inputHeight": ih,
+        ])
         if let json {
           let msg = h264Message(H264_CONFIG, json)
           lock.lock(); let changed = config != msg; config = msg; let cs = clients; lock.unlock()
@@ -302,6 +506,14 @@ func h264Session(_ fd: Int32) {
     switch head[0] {
     case H264_REQ_KEY:
       H264Screen.shared.requestKey()
+    case H264_CAP:
+      // [kbps u32 BE] — this client's link budget; 0 revokes it.
+      guard let b = readFully(fd, 4) else { break reader }
+      H264Screen.shared.setCapability(client, kbps: Int(UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3])))
+    case H264_PING:
+      // [token u32 BE] — echoed at once in a type 4 pong with the applied rate.
+      guard let b = readFully(fd, 4) else { break reader }
+      H264Screen.shared.ping(client, token: UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3]))
     case 4:
       guard let b = readFully(fd, 7) else { break reader }
       rfbKey(client.input, down: b[0] == 1,

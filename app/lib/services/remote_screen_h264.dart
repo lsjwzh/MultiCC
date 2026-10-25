@@ -1,17 +1,28 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
+
+import 'remote_rate_controller.dart';
 import 'remote_screen_source.dart';
 
 // 「🖥 屏幕」高清流畅模式（App 端）：/ws/remote-screen?mode=h264 上的字节流。
 //
 // 帧格式与 Agent/Web 端完全一致（见 scripts/macos-agent/MultiCCAgentH264.swift）：
 //   [type u8][len u32 BE][payload]
-//     type 1 config  payload = JSON {"codec":"avc1.PPCCLL","width":W,"height":H}
+//     type 1 config  payload = JSON {"codec":"avc1.PPCCLL","width":W,"height":H,
+//                                    "inputWidth":IW,"inputHeight":IH}
 //     type 2 key     payload = [pts µs u64 BE][Annex B，SPS/PPS 在前]
 //     type 3 delta   payload = [pts µs u64 BE][Annex B]
-// App → 服务端：'K'（1 字节，要关键帧）、RFB KeyEvent、RFB PointerEvent。
+//     type 4 pong    payload = [token u32 BE][applied kbps u32 BE]
+// App → 服务端：'K'（1 字节，要关键帧）、'B' + kbps u32（本客户端码率上限，
+// 0 = 撤销）、'P' + token u32（ping）、RFB KeyEvent、RFB PointerEvent。
+//
+// 码率自适应：隧道容量只有几十 KB/s，而 Agent 默认按屏幕像素给码率（约 4.2 Mbps），
+// 数据在各级缓冲排队越积越卡。RemoteRateController 用「到达时刻 − pts」的排队增量
+// 和 ping/pong 的 RTT 判断过载，每秒算一次目标码率并用 'B' 发给 Agent；Agent 在所有
+// 客户端之间取最小值。降码率同时可能降编码分辨率，所以指针坐标域改用 config 的
+// inputWidth/inputHeight（主屏逻辑点），缺省回落到编码尺寸。
 //
 // 解码交给平台（iOS VideoToolbox / Android MediaCodec，见 platform_h264_decoder
 // .dart 与原生实现）。解出来的 BGRA 帧与 RFB 的 framebuffer 一样是 4 字节/像素，
@@ -23,7 +34,10 @@ import 'remote_screen_source.dart';
 const int h264Config = 1;
 const int h264Key = 2;
 const int h264Delta = 3;
+const int h264Pong = 4;
 const int h264ReqKey = 0x4B;
+const int h264Cap = 0x42;
+const int h264Ping = 0x50;
 
 /// 单帧上限与桥一致（remote-screen-h264-bridge.js 的 maxFrameBytes）。
 const int _maxFrameBytes = 8 * 1024 * 1024;
@@ -79,6 +93,9 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
     Duration firstFrameTimeout = const Duration(seconds: 10),
     Duration stallTimeout = const Duration(seconds: 4),
     Duration recoveryTimeout = const Duration(seconds: 12),
+    Duration pingInterval = const Duration(seconds: 1),
+    Duration rateInterval = const Duration(seconds: 1),
+    RemoteRateController? rateController,
     DateTime Function()? now,
   }) : _incoming = incoming,
        _send = send,
@@ -88,7 +105,12 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
        _firstFrameTimeout = firstFrameTimeout,
        _stallTimeout = stallTimeout,
        _recoveryTimeout = recoveryTimeout,
-       _now = now ?? DateTime.now;
+       _pingInterval = pingInterval,
+       _rateInterval = rateInterval,
+       _now = now ?? DateTime.now {
+    _rate = rateController ?? RemoteRateController(clock: _clockMs);
+    _ownsRate = rateController == null;
+  }
 
   final Stream<Uint8List> _incoming;
   final void Function(Uint8List bytes) _send;
@@ -98,7 +120,16 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   final Duration _firstFrameTimeout;
   final Duration _stallTimeout;
   final Duration _recoveryTimeout;
+  final Duration _pingInterval;
+  final Duration _rateInterval;
   final DateTime Function() _now;
+  late final RemoteRateController _rate;
+  late final bool _ownsRate;
+
+  int _clockMs() => _now().millisecondsSinceEpoch;
+
+  /// 当前会话的码率/延迟统计（页面状态栏用）。
+  ValueListenable<RemoteRateStats> get rateStats => _rate.stats;
 
   final _Buffer _buf = _Buffer();
   StreamSubscription<Uint8List>? _sub;
@@ -106,6 +137,10 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   StreamSubscription<String>? _errSub;
   Timer? _firstTimer;
   Timer? _watchdog;
+  Timer? _pingTimer;
+  Timer? _rateTimer;
+  int _pingToken = 0;
+  final Map<int, int> _pings = <int, int>{}; // token → 发出时刻 ms
   DateTime? _lastDecodedAt;
 
   bool _closed = false;
@@ -113,6 +148,8 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   bool _sawKey = false;
   int _encodedWidth = 0;
   int _encodedHeight = 0;
+  int _inputWidth = 0; // 指针坐标域（主屏逻辑点），来自 config.inputWidth
+  int _inputHeight = 0;
   DateTime _lastKeyRequest = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
@@ -143,6 +180,14 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
     // Agent 接到新客户端会重放 config 并马上编一个关键帧；这里再要一次，
     // 兼顾「config 之后 Gop 内没有关键帧」的边角情况（节流会合并）。
     requestKeyFrame(force: true);
+    // 心跳：每秒一个 'P'，Agent 立刻回 pong，用它量 RTT 并读回实际生效码率。
+    _pingTimer = Timer.periodic(_pingInterval, (_) => _sendPing());
+    // 码率控制：每秒评估一次，需要变才发 'B'（另有 10 秒重发兜底）。
+    _rateTimer = Timer.periodic(_rateInterval, (_) {
+      if (_closed) return;
+      final kbps = _rate.tick(_clockMs());
+      if (kbps != null) _sendCap(kbps);
+    });
     _watchdog = Timer.periodic(_stallTimeout, (_) {
       final last = _lastDecodedAt;
       if (last == null || _closed) return;
@@ -162,22 +207,50 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
     if (!_closed) _send(bytes);
   }
 
-  /// 页面按 [width]×[height]（解码后的帧缓冲）归一化出 x/y，而 Agent 对 H.264
-  /// 通道的指针坐标按编码尺寸（= 屏幕逻辑点）理解。原生解码器会把宽度压到 ≤1280
-  /// （1470×956 → 1280×832），两域不等时必须放大回去，否则光标总落在点击处的左上方。
+  /// 页面按 [width]×[height]（解码后的帧缓冲）归一化出 x/y；Agent 对 H.264
+  /// 通道的指针坐标按主屏逻辑点理解（config.inputWidth/inputHeight）。原生解码器
+  /// 会把宽度压到 ≤1280，码率自适应还会让 Agent 主动降编码分辨率，两域都不等。
+  /// 旧 Agent 不发 input*，回落到编码尺寸（以前的行为）。
   @override
   void pointerEvent(int mask, int x, int y) {
-    final ew = _encodedWidth, eh = _encodedHeight;
-    if (ew > 0 &&
-        eh > 0 &&
+    final tw = _inputWidth > 0 ? _inputWidth : _encodedWidth;
+    final th = _inputHeight > 0 ? _inputHeight : _encodedHeight;
+    if (tw > 0 &&
+        th > 0 &&
         width > 0 &&
         height > 0 &&
-        (ew != width || eh != height)) {
-      x = (x * ew / width).round().clamp(0, ew - 1);
-      y = (y * eh / height).round().clamp(0, eh - 1);
+        (tw != width || th != height)) {
+      x = (x * tw / width).round().clamp(0, tw - 1);
+      y = (y * th / height).round().clamp(0, th - 1);
     }
     super.pointerEvent(mask, x, y);
   }
+
+  /// 'P' + token：Agent 立刻回 pong（type 4，回带同一 token 与实际生效码率）。
+  void _sendPing() {
+    if (_closed) return;
+    final token = _pingToken;
+    _pingToken = (_pingToken + 1) & 0xFFFFFFFF;
+    _pings[token] = _clockMs();
+    // 只留最近几个令牌：pong 丢了也不会让表无限长。
+    if (_pings.length > 8) _pings.remove(_pings.keys.first);
+    final m = Uint8List(5);
+    m[0] = h264Ping;
+    _be32(m, 1, token);
+    _send(m);
+  }
+
+  /// 'B' + kbps：本客户端的码率上限（0 = 撤销）。Agent 在共享编码器上取最小值。
+  void _sendCap(int kbps) {
+    if (_closed) return;
+    final m = Uint8List(5);
+    m[0] = h264Cap;
+    _be32(m, 1, kbps < 0 ? 0 : kbps);
+    _send(m);
+  }
+
+  /// 主动发一次当前目标码率（测试与「Agent 重启后恢复」用）。
+  void sendRateCap([int? kbps]) => _sendCap(kbps ?? _rate.targetKbps);
 
   /// 向 Agent 要一个关键帧（断流恢复、解码器重置后都从这里续上）。
   void requestKeyFrame({bool force = false}) {
@@ -214,9 +287,30 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
         if (cfg is Map) {
           _encodedWidth = (cfg['width'] as num?)?.toInt() ?? 0;
           _encodedHeight = (cfg['height'] as num?)?.toInt() ?? 0;
+          // 旧 Agent 不发 input*：它们就是编码尺寸（以前的行为）。
+          _inputWidth = (cfg['inputWidth'] as num?)?.toInt() ?? 0;
+          _inputHeight = (cfg['inputHeight'] as num?)?.toInt() ?? 0;
+          _rate.onConfig(_encodedWidth, _encodedHeight);
         }
       } catch (_) {
         // 坏 config 只是拿不到编码尺寸，关键帧里还有 SPS/PPS。
+      }
+      return;
+    }
+    if (type == h264Pong) {
+      if (payload.length < 8) return;
+      final token = ByteData.sublistView(payload, 0, 4).getUint32(0, Endian.big);
+      final applied = ByteData.sublistView(
+        payload,
+        4,
+        8,
+      ).getUint32(0, Endian.big);
+      final sentAt = _pings.remove(token);
+      if (sentAt != null) {
+        final rtt = _clockMs() - sentAt;
+        _rate.onPong(rtt < 0 ? 0 : rtt, applied);
+      } else {
+        _rate.onPong(0, applied); // 对不上令牌：只更新实际码率
       }
       return;
     }
@@ -231,6 +325,8 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
       return;
     }
     final pts = ByteData.sublistView(payload, 0, 8).getUint64(0, Endian.big);
+    // 编码字节数与本帧到达时刻：排队延迟和实收速率的原始输入。
+    _rate.onFrame(_clockMs(), pts, payload.length);
     final annexB = Uint8List.sublistView(payload, 8);
     _decoder.decode(
       annexB,
@@ -258,15 +354,14 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   void _fail() {
     if (_closed) return;
     _closed = true;
-    _watchdog?.cancel();
-    _firstTimer?.cancel();
-    _firstTimer = null;
+    _stopTimers();
     _sub?.cancel();
     _sub = null;
     _frameSub?.cancel();
     _frameSub = null;
     _errSub?.cancel();
     _errSub = null;
+    if (_ownsRate) _rate.dispose();
     unawaited(_decoder.close());
     _onClosed?.call();
   }
@@ -274,17 +369,34 @@ class RemoteScreenH264 with ScreenInputMixin implements ScreenSource {
   void dispose() {
     if (_closed) return;
     _closed = true;
-    _watchdog?.cancel();
-    _firstTimer?.cancel();
-    _firstTimer = null;
+    _stopTimers();
     _sub?.cancel();
     _sub = null;
     _frameSub?.cancel();
     _frameSub = null;
     _errSub?.cancel();
     _errSub = null;
+    if (_ownsRate) _rate.dispose();
     unawaited(_decoder.close());
   }
+
+  void _stopTimers() {
+    _watchdog?.cancel();
+    _watchdog = null;
+    _firstTimer?.cancel();
+    _firstTimer = null;
+    _pingTimer?.cancel();
+    _pingTimer = null;
+    _rateTimer?.cancel();
+    _rateTimer = null;
+  }
+}
+
+void _be32(Uint8List m, int at, int v) {
+  m[at] = (v >> 24) & 0xFF;
+  m[at + 1] = (v >> 16) & 0xFF;
+  m[at + 2] = (v >> 8) & 0xFF;
+  m[at + 3] = v & 0xFF;
 }
 
 /// 切帧缓冲：WS 消息边界与帧边界无关（浏览器端也一样），按 5 字节头切。

@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { attachH264Bridge, T_CONFIG, T_KEY, T_DELTA, REQ_KEY } = require('../src/remote-screen-h264-bridge');
+const { attachH264Bridge, T_CONFIG, T_KEY, T_DELTA, T_PONG, REQ_KEY, CAP_KBPS, PING } = require('../src/remote-screen-h264-bridge');
 
 function frame(type, body) {
   const payload = Buffer.from(body);
@@ -112,16 +112,37 @@ test('h264 bridge: backlog drops deltas (never the stream), then asks for a key 
   assert.ok(bridge.stats.dropped >= 4);
 });
 
-test('h264 bridge: browser → agent passes only key requests and RFB key/pointer events', t => {
+test('h264 bridge: browser → agent passes only key requests, rate control and RFB key/pointer events', t => {
   const { sock, ws, bridge } = harness();
   t.after(() => bridge.close());
   ws.emit('message', Buffer.from([REQ_KEY]), true);
   ws.emit('message', Buffer.from([4, 1, 0, 0, 0, 0, 0, 0x61]), true);
   ws.emit('message', Buffer.from([5, 1, 0, 10, 0, 20]), true);
+  ws.emit('message', Buffer.from([CAP_KBPS, 0, 0, 5, 0xdc]), true);    // 'B' 1500 kbps
+  ws.emit('message', Buffer.from([CAP_KBPS, 0, 0, 0, 0]), true);       // 'B' revoke
+  ws.emit('message', Buffer.from([PING, 0, 0, 0, 7]), true);           // 'P' token 7
+  ws.emit('message', Buffer.from([CAP_KBPS, 0, 5, 0xdc]), true);        // wrong length
+  ws.emit('message', Buffer.from([PING, 0, 0, 7]), true);              // wrong length
   ws.emit('message', Buffer.from([5, 1, 0, 10]), true);                 // wrong length
   ws.emit('message', Buffer.from([3, 0, 0, 0, 0, 0, 0, 0, 0, 0]), true); // RFB FramebufferUpdateRequest: not ours
   ws.emit('message', Buffer.from('K'), false);                           // text frame
-  assert.deepEqual(sock.written.map(b => b.toString('hex')), ['4b', '0401000000000061', '050100'+'0a0014']);
+  assert.deepEqual(sock.written.map(b => b.toString('hex')),
+    ['4b', '0401000000000061', '050100'+'0a0014', '42000005dc', '4200000000', '5000000007']);
+});
+
+test('h264 bridge: pong is forwarded at once, never dropped and never counts as a frame', async t => {
+  const { sock, ws, bridge } = harness({ firstFrameTimeoutMs: 20, highWater: 0 });
+  t.after(() => bridge.close());
+  // 积压超过水位、且还没见过关键帧：pong 依旧直通，但绝不能顶替视频帧。
+  ws.bufferedAmount = 10_000;
+  const pong = frame(T_PONG, Buffer.concat([Buffer.from([0, 0, 0, 7]), Buffer.from([0, 0, 5, 0xdc])]));
+  sock.emit('data', pong);
+  assert.deepEqual(ws.sent.map(b => b.toString('hex')), [pong.toString('hex')]);
+  assert.equal(bridge.stats.dropped, 0);
+  assert.equal(bridge.stats.forwarded, 1);
+  await new Promise(r => setTimeout(r, 40));
+  assert.deepEqual(ws.closedWith, { code: 1011, reason: 'h264-no-frames' },
+    'a pong is not a frame: the no-frame timeout must still fire');
 });
 
 test('h264 bridge: no frame from the agent → close so the page falls back to noVNC', async () => {
@@ -225,19 +246,31 @@ test('wire golden: fixture bytes are the encoding of their own fields', () => {
         : [REQ_KEY];
     assert.equal(c.hex, Buffer.from(want).toString('hex'), c.name);
   }
+  for (const c of wire.clientRateControlToAgent) {
+    const want = c.kind === 'cap' ? [CAP_KBPS, ...[24, 16, 8, 0].map(s => (c.kbps >>> s) & 0xff)]
+      : c.kind === 'ping' ? [PING, ...[24, 16, 8, 0].map(s => (c.token >>> s) & 0xff)]
+        : null;
+    assert.ok(want, `${c.name}: unknown kind ${c.kind}`);
+    assert.equal(c.hex, Buffer.from(want).toString('hex'), c.name);
+  }
   for (const f of wire.agentToClient) {
-    const payload = f.type === T_CONFIG ? hex(f.payloadHex)
+    const payload = f.type === T_CONFIG || f.type === T_PONG ? hex(f.payloadHex)
       : Buffer.concat([(() => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(f.pts)); return b; })(), hex(f.annexBHex)]);
     assert.equal(f.hex, frame(f.type, payload).toString('hex'), f.name);
     if (f.type === T_CONFIG) assert.deepEqual(JSON.parse(payload.toString()), f.json);
+    if (f.type === T_PONG) {
+      assert.equal(payload.length, 8, f.name);
+      assert.equal(payload.readUInt32BE(0), f.token, f.name);
+      assert.equal(payload.readUInt32BE(4), f.appliedKbps, f.name);
+    }
   }
-  assert.deepEqual(wire.agentToClient.map(f => f.type), [T_CONFIG, T_KEY, T_DELTA]);
+  assert.deepEqual(wire.agentToClient.map(f => f.type), [T_CONFIG, T_KEY, T_DELTA, T_PONG]);
 });
 
 test('wire golden: bridge forwards every client message byte-for-byte and nothing else', t => {
   const { sock, ws, bridge } = harness();
   t.after(() => bridge.close());
-  for (const c of wire.clientToAgent) {
+  for (const c of [...wire.clientToAgent, ...wire.clientRateControlToAgent]) {
     sock.written.length = 0;
     ws.emit('message', hex(c.hex), true);
     assert.deepEqual(sock.written.map(b => b.toString('hex')), [c.hex], c.name);

@@ -10,6 +10,9 @@ import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../i18n.dart';
+import '../services/remote_link.dart';
+import '../services/remote_rate_controller.dart';
+import '../services/remote_screen_h264.dart';
 import '../services/remote_screen_rfb.dart';
 import '../services/remote_frame_decoder.dart';
 import '../services/remote_pointer_queue.dart';
@@ -785,6 +788,49 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   }
 
   Widget _statusRow() {
+    // H.264 活流时多一格网络读数（延迟 · 实收/目标 Mbps · 走哪条路）。统计对象
+    // 归会话所有，会话被替换后页面跟着重挂 ValueListenableBuilder。
+    final source = _svc.source;
+    final h264 = source is RemoteScreenH264 ? source : null;
+    if (_svc.mode != RemoteScreenMode.live || h264 == null) {
+      return _statusRowBody(null, null);
+    }
+    return ValueListenableBuilder<RemoteRateStats>(
+      valueListenable: h264.rateStats,
+      builder: (_, stats, __) => ValueListenableBuilder<RemoteLinkPath>(
+        valueListenable: _svc.linkPath,
+        builder: (_, path, __) => _statusRowBody(stats, path),
+      ),
+    );
+  }
+
+  /// 「延迟 120ms · 1.8 / 2.0 Mbps · 中继」；RTT 还没回来时省掉延迟一格。
+  String? _netLabel(RemoteRateStats? stats, RemoteLinkPath? path) {
+    if (stats == null) return null;
+    final recv = (stats.recvKbps / 1000).toStringAsFixed(1);
+    final target = (stats.targetKbps / 1000).toStringAsFixed(1);
+    final via = switch (path) {
+      RemoteLinkPath.lan => t('rsViaLan'),
+      RemoteLinkPath.p2p => t('rsViaP2P'),
+      _ => t('rsViaRelay'),
+    };
+    final rtt = stats.rttMs;
+    if (rtt == null) {
+      return t('rsNetStatsNoRtt', {
+        'recv': recv,
+        'target': target,
+        'path': via,
+      });
+    }
+    return t('rsNetStats', {
+      'ms': '$rtt',
+      'recv': recv,
+      'target': target,
+      'path': via,
+    });
+  }
+
+  Widget _statusRowBody(RemoteRateStats? net, RemoteLinkPath? path) {
     final source = _svc.source;
     final w = _svc.mode == RemoteScreenMode.live
         ? source?.width ?? 0
@@ -792,9 +838,11 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     final h = _svc.mode == RemoteScreenMode.live
         ? source?.height ?? 0
         : _svc.fallbackHeight;
+    final netLabel = _netLabel(net, path);
     final bits = <String>[
       if (w > 0 && h > 0) '$w×$h',
       _modeLabel,
+      if (netLabel != null) netLabel,
       if (_boxSelOn) t('rsBoxSelHint'),
       if (_trackpadActive) '触控板',
       if (_svc.mode == RemoteScreenMode.live && _statusErr == null)

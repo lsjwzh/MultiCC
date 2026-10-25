@@ -35,6 +35,11 @@
       "lane": "device"
     },
     {
+      "path": "app/integration_test/remote_screen_p2p_interop_test.dart",
+      "tier": "other",
+      "lane": "device"
+    },
+    {
       "path": "app/integration_test/ui_tour_test.dart",
       "tier": "flow",
       "lane": "device"
@@ -665,7 +670,17 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/remote_lan_resolver_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/remote_pointer_queue_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/remote_rate_controller_test.dart",
       "tier": "core",
       "lane": "flutter"
     },
@@ -687,6 +702,11 @@
     {
       "path": "app/test/remote_screen_link_test.dart",
       "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/remote_screen_p2p_test.dart",
+      "tier": "core",
       "lane": "flutter"
     },
     {

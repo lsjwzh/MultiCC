@@ -1,13 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'platform_h264_decoder.dart';
+import 'remote_lan_resolver.dart';
+import 'remote_link.dart';
 import 'remote_screen_h264.dart';
+import 'remote_screen_p2p.dart';
+import 'remote_screen_p2p_webrtc.dart';
 import 'remote_screen_rfb.dart';
 import 'remote_screen_region.dart';
 import 'remote_screen_source.dart';
@@ -31,6 +35,8 @@ class RemoteScreenService {
     WebSocketChannel Function(Uri)? channelFactory,
     http.Client? httpClient,
     H264Decoder? Function()? h264DecoderFactory,
+    RemoteLanResolver? lanResolver,
+    RtcPeerFactory? rtcPeerFactory,
     List<Duration> liveRetryDelays = const [
       Duration(milliseconds: 300),
       Duration(seconds: 1),
@@ -43,6 +49,8 @@ class RemoteScreenService {
        _connectChannel = channelFactory ?? _connectWithTimeout,
        _http = httpClient ?? http.Client(),
        _h264Factory = h264DecoderFactory ?? PlatformH264Decoder.create,
+       _lanResolver = lanResolver ?? RemoteLanResolver(),
+       _rtcPeerFactory = rtcPeerFactory ?? FlutterRtcPeer.create,
        _retryDelays = liveRetryDelays,
        _recoverWindow = liveRecoverWindow,
        _stableLive = stableLive;
@@ -63,11 +71,15 @@ class RemoteScreenService {
   final WebSocketChannel Function(Uri) _connectChannel;
   final http.Client _http;
   final H264Decoder? Function() _h264Factory;
+  final RemoteLanResolver _lanResolver;
+  final RtcPeerFactory _rtcPeerFactory;
   final List<Duration> _retryDelays;
   final Duration _recoverWindow;
   final Duration _stableLive;
 
   WebSocketChannel? _channel;
+  StreamSubscription<dynamic>? _channelSub;
+  RemoteScreenP2pMux? _mux;
   RemoteScreenRfb? _rfb;
   RemoteScreenH264? _h264;
   H264Decoder? _pendingDecoder;
@@ -78,6 +90,13 @@ class RemoteScreenService {
   Timer? _pollTimer;
   bool _polling = false;
   bool _disposed = false;
+
+  // 同一 Wi‑Fi 直连：_lanOrigin 非空 = 远控请求都改走这个局域网 origin。
+  String? _lanOrigin;
+  // 局域网刚断过一次：这一次重连直接用配置地址，不再等探测（见 _failoverFromLan）。
+  bool _skipLanProbeOnce = false;
+  RemoteLinkPath _basePath = RemoteLinkPath.relay;
+  bool _p2pActive = false;
 
   // 活流断线自动重连（见 [_recoverLive]）。
   Timer? _retryTimer;
@@ -91,6 +110,11 @@ class RemoteScreenService {
 
   RemoteScreenMode mode = RemoteScreenMode.connecting;
   String? error;
+
+  /// 画面当前走哪条路（状态栏显示用）。
+  final ValueNotifier<RemoteLinkPath> linkPath = ValueNotifier(
+    RemoteLinkPath.relay,
+  );
 
   /// RFB 会话（兼容旧调用方/测试；页面请用 [source]）。
   RemoteScreenRfb? get rfb => _rfb;
@@ -113,6 +137,87 @@ class RemoteScreenService {
     final h = <String, String>{'Content-Type': 'application/json'};
     if (settings.token.isNotEmpty) h['X-Access-Token'] = settings.token;
     return h;
+  }
+
+  /// 远控请求的 origin：走局域网直连后一律用它，否则就是配置地址。
+  ///
+  /// 只在本 service 里用 —— 页面/其它功能的请求仍各自走 SettingsService。
+  String _httpUrl(String path) {
+    var base = (_lanOrigin ?? settings.host).replaceAll(RegExp(r'/$'), '');
+    if (!base.startsWith('http')) base = 'http://$base';
+    return '$base$path';
+  }
+
+  /// 活流 WebSocket 的主机部分（局域网直连时是服务端自报的私网地址）。
+  String get _wsHost => _lanOrigin ?? settings.host;
+
+  /// 画面这一层走哪条路：p2p 由 P2P 复用器实时上报，其余看是否采用了
+  /// 局域网地址（配置地址本身就是私网地址时也算局域网）。
+  void _publishLinkPath() {
+    if (_disposed) return;
+    final next = _p2pActive ? RemoteLinkPath.p2p : _basePath;
+    if (linkPath.value != next) linkPath.value = next;
+  }
+
+  void _setBasePath(RemoteLinkPath path) {
+    _basePath = path;
+    _publishLinkPath();
+  }
+
+  /// 建连前解析走哪条路（见 [RemoteLanResolver]）：采用局域网 origin 后，
+  /// capabilities / 换票 / WS / input / 轮询帧全都改走它。
+  Future<void> _prepareLink() async {
+    if (_disposed) return;
+    _p2pActive = false;
+    final configured = settings.host.trim();
+    if (configured.isEmpty) {
+      _lanOrigin = null;
+      return;
+    }
+    if (RemoteLanResolver.isLocalOrigin(configured)) {
+      // 配置地址本身就在局域网/回环（模拟器连 localhost 也走这里）。
+      _lanOrigin = null;
+      _setBasePath(RemoteLinkPath.lan);
+      return;
+    }
+    if (_skipLanProbeOnce) {
+      _skipLanProbeOnce = false;
+      _setBasePath(RemoteLinkPath.relay);
+      return;
+    }
+    String? origin;
+    try {
+      origin = await _lanResolver.resolve(
+        configuredHost: configured,
+        token: settings.token,
+      );
+    } catch (_) {
+      origin = null;
+    }
+    if (_disposed) return;
+    _lanOrigin = origin;
+    _setBasePath(origin == null ? RemoteLinkPath.relay : RemoteLinkPath.lan);
+  }
+
+  /// 局域网这条路断了（最常见：手机离开 Wi‑Fi）。立刻改回配置地址重连，
+  /// 并且这次失败不计入「快速掉线」计数 —— 它不是链路质量差，是换网了。
+  /// 再下一次重连会重新探测局域网。
+  void _failoverFromLan() {
+    _lanOrigin = null;
+    _lanResolver.invalidate();
+    _skipLanProbeOnce = true;
+    _quickDrops = 0;
+    _wsAuth.invalidate();
+    _handshakeTimeout?.cancel();
+    _cancelRecover();
+    _stopLive();
+    _rfbTried = false;
+    _recoverSince = DateTime.now();
+    _retryAttempt = 0;
+    _setMode(RemoteScreenMode.connecting, null);
+    _setBasePath(RemoteLinkPath.relay);
+    _armHandshake();
+    unawaited(_connectPreferred());
   }
 
   /// 连接活流：H.264 高清流畅模式优先（本机有平台解码器且 Agent 提供了
@@ -141,6 +246,11 @@ class RemoteScreenService {
   }
 
   Future<void> _connectPreferred() async {
+    // 能力查询与选路互不依赖：并行发出，首次开屏不用在慢隧道上多等一个往返。
+    if (region == null && _serverH264 == null) _h264Fetch ??= _fetchH264();
+    await _prepareLink();
+    if (_disposed || mode != RemoteScreenMode.connecting) return;
+    _armHandshake();
     final h264 = await _canUseH264();
     if (_disposed || mode != RemoteScreenMode.connecting) return;
     if (!h264) {
@@ -170,7 +280,7 @@ class RemoteScreenService {
     try {
       final res = await _http
           .get(
-            Uri.parse(settings.buildHttpUrl('/api/remote-screen/capabilities')),
+            Uri.parse(_httpUrl('/api/remote-screen/capabilities')),
             headers: _headers,
           )
           .timeout(const Duration(seconds: 3));
@@ -186,14 +296,15 @@ class RemoteScreenService {
 
   Future<void> _startH264() async {
     H264Decoder? decoder;
+    RemoteScreenP2pMux? mux;
     try {
       final attempt = _wsAuth.begin(
         socketUri: buildMulticcWebSocketUri(
-          host: settings.host,
+          host: _wsHost,
           path: MulticcWsPath.remoteScreen,
           query: const {'mode': 'h264'},
         ),
-        ticketEndpoint: Uri.parse(settings.buildHttpUrl('/api/auth/ws-ticket')),
+        ticketEndpoint: Uri.parse(_httpUrl('/api/auth/ws-ticket')),
         accessToken: settings.token,
       );
       final url = await attempt.authorizedUri;
@@ -217,27 +328,61 @@ class RemoteScreenService {
       }
       final channel = _connectChannel(url);
       _channel = channel;
-      final session = RemoteScreenH264(
-        incoming: channel.stream
-            .where((dynamic d) => d is Uint8List)
-            .cast<Uint8List>(),
-        send: (Uint8List bytes) {
+      // WS 既是中继也是 P2P 信令；复用器决定帧从哪条通道交给解码器。
+      // 一条连接断开可能同时报 onError / onDone / onClosed，只算一次。
+      var transportClosed = false;
+      void handleClosed() {
+        if (transportClosed) return;
+        transportClosed = true;
+        if (!_disposed && attempt.isCurrent) _failLive();
+      }
+
+      final activeMux = RemoteScreenP2pMux(
+        peerFactory: _rtcPeerFactory,
+        sendWs: (Uint8List bytes) {
           if (attempt.isCurrent) channel.sink.add(bytes);
         },
-        decoder: decoder,
-        onClosed: () {
-          if (!_disposed && attempt.isCurrent) _failLive();
+        sendSignal: (Map<String, dynamic> signal) {
+          if (attempt.isCurrent) channel.sink.add(jsonEncode(signal));
         },
+        onDirectChanged: (bool direct) {
+          if (_disposed || !attempt.isCurrent) return;
+          _p2pActive = direct;
+          _publishLinkPath();
+        },
+      );
+      mux = activeMux;
+      _mux = activeMux;
+      _channelSub = channel.stream.listen(
+        (dynamic data) {
+          if (_disposed || !attempt.isCurrent) return;
+          if (data is String) {
+            activeMux.onWsText(data);
+          } else if (data is Uint8List) {
+            activeMux.onWsBinary(data);
+          } else if (data is List<int>) {
+            activeMux.onWsBinary(Uint8List.fromList(data));
+          }
+        },
+        onError: (Object _) => handleClosed(),
+        onDone: handleClosed,
+      );
+      final session = RemoteScreenH264(
+        incoming: activeMux.frames,
+        send: activeMux.send,
+        decoder: decoder,
+        onClosed: handleClosed,
         onFrame: _onLiveFrame,
       );
       _h264 = session;
-      unawaited(
-        session.run().catchError((Object _) {
-          if (!_disposed && attempt.isCurrent) _failLive();
-        }),
-      );
+      unawaited(session.run().catchError((Object _) => handleClosed()));
     } catch (_) {
       unawaited(decoder?.close());
+      final started = mux;
+      if (started != null) {
+        if (_mux == started) _mux = null;
+        unawaited(started.dispose());
+      }
       if (!_disposed && mode == RemoteScreenMode.connecting) _startRfb();
     }
   }
@@ -252,10 +397,10 @@ class RemoteScreenService {
     try {
       attempt = _wsAuth.begin(
         socketUri: buildMulticcWebSocketUri(
-          host: settings.host,
+          host: _wsHost,
           path: MulticcWsPath.remoteScreen,
         ),
-        ticketEndpoint: Uri.parse(settings.buildHttpUrl('/api/auth/ws-ticket')),
+        ticketEndpoint: Uri.parse(_httpUrl('/api/auth/ws-ticket')),
         accessToken: settings.token,
       );
     } catch (_) {
@@ -335,6 +480,17 @@ class RemoteScreenService {
   void _failLive() {
     if (_disposed) return;
     final wasLive = mode == RemoteScreenMode.live;
+    // 局域网这条路连不通/断了：直接改回配置地址重连，不在这里走
+    // H.264→RFB→轮询的降级链（那条链每一步都还要再撞一次同一个坏地址）。
+    //
+    // 例外：还没试过 RFB 的首次 H.264 失败 —— 那可能是编码/解码问题而非网络，
+    // 先让 RFB 在同一个局域网地址上试一次，再决定要不要换回中继。
+    if (mode != RemoteScreenMode.fallback &&
+        _lanOrigin != null &&
+        (wasLive || _rfbTried || _recoverSince != null)) {
+      _failoverFromLan();
+      return;
+    }
     _stopLive();
     if (mode == RemoteScreenMode.fallback) return;
     if (region == null &&
@@ -407,7 +563,7 @@ class RemoteScreenService {
       }
       final res = await _http
           .get(
-            Uri.parse(settings.buildHttpUrl('/api/system/agent-permissions')),
+            Uri.parse(_httpUrl('/api/system/agent-permissions')),
             headers: headers,
           )
           .timeout(const Duration(seconds: 10));
@@ -432,7 +588,7 @@ class RemoteScreenService {
     try {
       final res = await _http
           .get(
-            Uri.parse(settings.buildHttpUrl('/api/remote-screen/capabilities')),
+            Uri.parse(_httpUrl('/api/remote-screen/capabilities')),
             headers: _headers,
           )
           .timeout(const Duration(seconds: 10));
@@ -459,7 +615,7 @@ class RemoteScreenService {
       await _http
           .post(
             Uri.parse(
-              settings.buildHttpUrl('/api/system/agent-permissions/open'),
+              _httpUrl('/api/system/agent-permissions/open'),
             ),
             headers: _headers,
             body: jsonEncode({'permission': permission}),
@@ -474,7 +630,7 @@ class RemoteScreenService {
       final res = await _http
           .post(
             Uri.parse(
-              settings.buildHttpUrl('/api/system/agent-permissions/restart'),
+              _httpUrl('/api/system/agent-permissions/restart'),
             ),
             headers: _headers,
             body: '{}',
@@ -494,7 +650,7 @@ class RemoteScreenService {
   /// 只在用户点击时提交唤起；普通状态检查不会尝试解锁。
   Future<Map<String, dynamic>> wakeScreen({bool request = false}) async {
     try {
-      final uri = Uri.parse(settings.buildHttpUrl('/api/remote-screen/wake'));
+      final uri = Uri.parse(_httpUrl('/api/remote-screen/wake'));
       final res =
           await (request
                   ? _http.post(uri, headers: _headers, body: '{}')
@@ -527,7 +683,7 @@ class RemoteScreenService {
     try {
       final res = await _http
           .post(
-            Uri.parse(settings.buildHttpUrl('/api/remote-screen/input')),
+            Uri.parse(_httpUrl('/api/remote-screen/input')),
             headers: _headers,
             body: jsonEncode(body),
           )
@@ -545,7 +701,7 @@ class RemoteScreenService {
     try {
       final res = await _http
           .head(
-            Uri.parse(settings.buildHttpUrl('/api/remote-screen/frame')),
+            Uri.parse(_httpUrl('/api/remote-screen/frame')),
             headers: _headers,
           )
           .timeout(const Duration(seconds: 12));
@@ -601,7 +757,7 @@ class RemoteScreenService {
       final res = await _http
           .get(
             Uri.parse(
-              settings.buildHttpUrl('/api/remote-screen/frame'),
+              _httpUrl('/api/remote-screen/frame'),
             ).replace(
               queryParameters: selected?.toMap().map(
                 (k, v) => MapEntry(k, '$v'),
@@ -668,11 +824,20 @@ class RemoteScreenService {
   void _stopLive() {
     _h264?.dispose();
     _h264 = null;
+    _channelSub?.cancel();
+    _channelSub = null;
+    final mux = _mux;
+    _mux = null;
+    if (mux != null) unawaited(mux.dispose());
     unawaited(_pendingDecoder?.close() ?? Future<void>.value());
     _pendingDecoder = null;
     _channel?.sink.close().catchError((Object _) {});
     _channel = null;
     _rfb = null;
+    if (_p2pActive) {
+      _p2pActive = false;
+      _publishLinkPath();
+    }
   }
 
   void _stopFallback() {
@@ -687,8 +852,10 @@ class RemoteScreenService {
     _handshakeTimeout?.cancel();
     _stopLive();
     _stopFallback();
+    _lanResolver.close();
     unawaited(_frames.close());
     unawaited(_modeCtrl.close());
+    linkPath.dispose();
     _http.close();
   }
 }
