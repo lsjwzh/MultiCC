@@ -1,3 +1,4 @@
 "NSMicrophoneUsageDescription" = "MultiCC uses the microphone for voice input and real-time voice calls.";
 "NSSpeechRecognitionUsageDescription" = "MultiCC uses speech recognition to convert voice commands into text.";
 "NSLocalNetworkUsageDescription" = "MultiCC uses your local network to find a nearby MultiCC server and fill in its address.";
+"NSCameraUsageDescription" = "MultiCC's screen sharing uses the WebRTC library, which declares camera access. The camera is never turned on for screen sharing.";

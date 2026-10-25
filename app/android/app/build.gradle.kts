@@ -41,7 +41,8 @@ if (officialSigningPartiallyConfigured && !officialSigningConfigured) {
 
 android {
     namespace = "com.multicc.multicc_app"
-    compileSdk = flutter.compileSdkVersion
+    // flutter_webrtc（远控 P2P 直连）的 AAR 按 SDK 36 编译；compileSdk 向下兼容。
+    compileSdk = maxOf(flutter.compileSdkVersion, 36)
     ndkVersion = "27.0.12077973"
 
     compileOptions {

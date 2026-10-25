@@ -82,8 +82,13 @@ function buildSwift() {
   const h264 = fs.readFileSync(H264_SOURCE, 'utf8');
   const agent = fs.readFileSync(AGENT_SOURCE, 'utf8');
 
-  const consts = h264.match(/^let H264_(CONFIG|KEY|DELTA|REQ_KEY): UInt8 = .*$/gm);
-  if (!consts || consts.length !== 4) throw new Error('H264_* type constants not found in MultiCCAgentH264.swift');
+  const consts = h264.match(/^let H264_[A-Z_]+(?:: (?:UInt8|Int))? = .*$/gm) || [];
+  for (const name of ['CONFIG', 'KEY', 'DELTA', 'REQ_KEY', 'MIN_KBPS']) {
+    const declared = new RegExp(`^let H264_${name}(?:: | = )`);
+    if (!consts.some(line => declared.test(line))) {
+      throw new Error(`H264_${name} constant not found in MultiCCAgentH264.swift`);
+    }
+  }
 
   const extStart = agent.indexOf('extension Data {');
   const extEnd = agent.indexOf('func readFully(', extStart);
@@ -92,6 +97,7 @@ function buildSwift() {
 
   const message = extractFunc(h264, 'h264Message');
   const makeSession = extractFunc(h264, 'makeSession');
+  const applyRate = extractFunc(h264, 'applyRate');
   const emit = extractFunc(h264, 'emit');
 
   return String.raw`import Foundation
@@ -120,7 +126,11 @@ final class FixtureEncoder {
   var session: VTCompressionSession?
   var clients: [H264Client] = []
   var config: Data?
+  var inputW = ${WIDTH}
+  var inputH = ${HEIGHT}
   func requestKey() {}
+
+  ${applyRate}
 
   ${makeSession}
 
@@ -218,7 +228,8 @@ guard CommandLine.arguments.count > 1 else {
 let outPath = CommandLine.arguments[1]
 
 let encoder = FixtureEncoder()
-guard let vt = encoder.makeSession(W, H) else {
+// Fixture bytes stay on the default rate (no client cap): ~3 bits/pixel/s.
+guard let vt = encoder.makeSession(W, H, kbps: max(1500, min(12000, W * H * 3 / 1000))) else {
   FileHandle.standardError.write(Data("makeSession failed\n".utf8))
   exit(1)
 }

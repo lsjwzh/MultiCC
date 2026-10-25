@@ -5,15 +5,24 @@ const net = require('node:net');
 // 「🖥 屏幕」高清流畅模式：Agent 的 h264.sock ⇄ /ws/remote-screen?mode=h264。
 //
 // 帧格式见 scripts/macos-agent/MultiCCAgentH264.swift 开头：[type u8][len u32 BE][payload]，
-// type 1 = config(JSON) / 2 = 关键帧 / 3 = 普通帧。这里按帧切分后每帧一条 WS 二进制消息
-// 原样转发（浏览器用同一份解析），同一套帧以后也走 WebRTC DataChannel。
+// type 1 = config(JSON) / 2 = 关键帧 / 3 = 普通帧 / 4 = pong(令牌 + 实际生效码率)。
+// 这里按帧切分后每帧一条 WS 二进制消息原样转发（浏览器用同一份解析），同一套帧
+// 以后也走 WebRTC DataChannel。
 //
 // 与 RFB 桥的区别：RFB 是不可丢的字节流，堵了只能断开重连；视频帧可以丢——
 // 浏览器那头积压超过水位就丢普通帧、记下「欠关键帧」，等积压回落再向 Agent 要一个
-// 关键帧（节流），画面从下一个关键帧继续，连接不断。
+// 关键帧（节流），画面从下一个关键帧继续，连接不断。pong 是控制消息，不走丢帧
+// 规则，也不算「出过帧」：只有真正的视频帧才解除无首帧超时。
 //
-// 浏览器 → Agent 只放行三种定长消息：'K'（要关键帧）、RFB KeyEvent、RFB PointerEvent；
-// 输入在 Agent 侧走 rfbKey/rfbPointer，原有护栏（租约 / Esc 急停 / 锁屏 / 受保护 App）照旧。
+// 浏览器 → Agent 只放行五种定长消息：'K'（要关键帧）、'B' + kbps（该客户端的
+// 码率上限，0 = 撤销）、'P' + token（ping，Agent 立刻回 pong）、RFB KeyEvent、
+// RFB PointerEvent；输入在 Agent 侧走 rfbKey/rfbPointer，原有护栏（租约 / Esc 急停 /
+// 锁屏 / 受保护 App）照旧。码率上限由 Agent 在所有客户端之间取最小值，这里只是
+// 字节转发的白名单。
+//
+// 后端 Rust 规则（AGENTS.md）的例外说明：码率控制的逻辑全在 Swift Agent 与客户端，
+// 这个 Node 桥只多放行 'B'/'P' 两种定长消息、直通 pong，不承载任何策略。远控桥整体
+// 迁到 Rust 时，这两种消息和 pong 直通一并迁走。
 //
 // 传 p2p（见 remote-screen-p2p.js）时，这条 WS 同时是直连的信令通道：DataChannel 打通后
 // 帧改走直连（先发 rtc-active 再切，浏览器据此丢弃 WS 上残余的帧），直连断了退回 WS。
@@ -22,8 +31,11 @@ const net = require('node:net');
 const T_CONFIG = 1;
 const T_KEY = 2;
 const T_DELTA = 3;
+const T_PONG = 4;
 const REQ_KEY = 0x4b;
-const CLIENT_LENGTHS = new Map([[REQ_KEY, 1], [4, 8], [5, 6]]);
+const CAP_KBPS = 0x42;          // 'B' + kbps u32 BE
+const PING = 0x50;              // 'P' + token u32 BE
+const CLIENT_LENGTHS = new Map([[REQ_KEY, 1], [4, 8], [5, 6], [CAP_KBPS, 5], [PING, 5]]);
 
 function attachH264Bridge(ws, {
   socketPath,
@@ -81,6 +93,8 @@ function attachH264Bridge(ws, {
 
   const forward = (type, msg) => {
     if (type === T_CONFIG) { send(msg); return; }
+    // pong 是控制消息：永远直通，不参与丢帧/关键帧状态，也不算「已经出过帧」。
+    if (type === T_PONG) { send(msg); return; }
     if (type !== T_KEY && type !== T_DELTA) return; // 未知类型：向前兼容，忽略
     sawFrame = true;
     const backlog = sink.buffered();
@@ -179,4 +193,4 @@ function attachH264Bridge(ws, {
   return { stats, close: () => die() };
 }
 
-module.exports = { attachH264Bridge, T_CONFIG, T_KEY, T_DELTA, REQ_KEY };
+module.exports = { attachH264Bridge, T_CONFIG, T_KEY, T_DELTA, T_PONG, REQ_KEY, CAP_KBPS, PING };

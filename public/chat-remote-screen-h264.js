@@ -2,13 +2,19 @@
 //
 // 帧格式与 Agent / 服务端桥一致（scripts/macos-agent/MultiCCAgentH264.swift）：
 // 每条 WS 二进制消息一帧 [type u8][len u32 BE][payload]；1=config JSON、2=关键帧、
-// 3=普通帧（payload 前 8 字节是 µs 时间戳，后面是 Annex B）。
+// 3=普通帧（payload 前 8 字节是 µs 时间戳，后面是 Annex B）、4=pong（别的客户端的
+// 心跳应答，这里不发起码率控制，直接忽略）。
 //
 // 对外只模仿 chat-remote-screen.js 用到的那一小截 noVNC RFB 接口：
 // new View(target, url)、viewOnly / scaleViewport、disconnect()、'connect' / 'disconnect'
 // 事件、target 里放一个 canvas（宽高 = 屏幕逻辑点），所以宿主的放大、轻点、
 // 右键、框选逻辑一行都不用分支。输入按 RFB PointerEvent / KeyEvent 的字节格式发回，
 // Agent 侧与 noVNC 输入走同一个 rfbPointer / rfbKey。
+//
+// 指针坐标永远是「逻辑点」：canvas 是解码尺寸，App 设了码率上限后共享编码器会降分辨率
+// （config.width/height 变小），而 config.inputWidth/inputHeight 始终是主屏逻辑尺寸。
+// 所以 _point() 先落到 canvas 再映射到 inputWidth/inputHeight（缺省回落到 width/height），
+// 否则多个观看者同时看、或 App 正在限速时，网页这端的点击会落在左上角。
 //
 // P2P：服务端在这条 WS 上发 rtc-hello 时，这里建 RTCPeerConnection + DataChannel
 // 试直连（信令仍走这条 WS，见 src/remote-screen-p2p.js）。服务端发 rtc-active 后帧改
@@ -18,7 +24,7 @@
 (function (global) {
   'use strict';
 
-  const T_CONFIG = 1, T_KEY = 2, T_DELTA = 3, REQ_KEY = 0x4b;
+  const T_CONFIG = 1, T_KEY = 2, T_DELTA = 3, T_PONG = 4, REQ_KEY = 0x4b;
   const KEYSYMS = {
     Backspace: 0xff08, Tab: 0xff09, Enter: 0xff0d, Escape: 0xff1b, Delete: 0xffff,
     Home: 0xff50, ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54,
@@ -53,6 +59,8 @@
       this._connected = false;
       this._decoder = null;
       this._config = null;
+      this._inputW = 0;   // 指针坐标域（主屏逻辑点），来自 config.inputWidth
+      this._inputH = 0;
       this._waitKey = true;
       this._lastKeyReq = 0;
       this._errors = [];
@@ -252,6 +260,7 @@
       if (5 + len > buf.byteLength) return;
       const payload = new Uint8Array(buf, 5, len);
       this.stats.bytes += buf.byteLength;
+      if (type === T_PONG) return;   // 心跳应答只服务于 App 的测速，网页端不看
       if (type === T_CONFIG) { this._configure(payload); return; }
       if (type !== T_KEY && type !== T_DELTA) return;
       const dec = this._decoder;
@@ -275,6 +284,9 @@
       let cfg;
       try { cfg = JSON.parse(new TextDecoder().decode(payload)); } catch { return; }
       if (!cfg || !cfg.codec || !(cfg.width > 0) || !(cfg.height > 0)) return;
+      // 指针域始终是逻辑点；旧 Agent 不发 input* 时它们就等于编码尺寸。
+      this._inputW = cfg.inputWidth > 0 ? Math.round(cfg.inputWidth) : Math.round(cfg.width);
+      this._inputH = cfg.inputHeight > 0 ? Math.round(cfg.inputHeight) : Math.round(cfg.height);
       const same = this._config && this._config.codec === cfg.codec
         && this._config.width === cfg.width && this._config.height === cfg.height;
       if (same && this._decoder && this._decoder.state === 'configured') return;
@@ -339,12 +351,15 @@
       c.style.top = (this._scale ? Math.max(0, Math.round((th - h) / 2)) : 0) + 'px';
     }
 
-    // 指针 → canvas 像素（= 屏幕逻辑点）。getBoundingClientRect 含宿主捏合放大的 transform。
+    // 指针 → 逻辑点。canvas 是解码（编码）尺寸，getBoundingClientRect 含宿主捏合放大的
+    // transform；Agent 的 H.264 指针域是主屏逻辑点 = config.inputWidth/inputHeight。
     _point(ev) {
       const r = this._canvas.getBoundingClientRect();
-      const x = Math.round((ev.clientX - r.left) / r.width * this._canvas.width);
-      const y = Math.round((ev.clientY - r.top) / r.height * this._canvas.height);
-      return [Math.max(0, Math.min(this._canvas.width - 1, x)), Math.max(0, Math.min(this._canvas.height - 1, y))];
+      const jw = this._inputW || this._canvas.width;
+      const jh = this._inputH || this._canvas.height;
+      const x = Math.round((ev.clientX - r.left) / r.width * jw);
+      const y = Math.round((ev.clientY - r.top) / r.height * jh);
+      return [Math.max(0, Math.min(jw - 1, x)), Math.max(0, Math.min(jh - 1, y))];
     }
 
     _pointer(mask, x, y) {

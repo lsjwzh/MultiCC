@@ -21,6 +21,9 @@
 //       POST /agent/reset           清空记录
 //       POST /agent/drop            断开当前所有 h264 连接（模拟 Agent 崩溃 / 采集停止）
 //       GET  /fixture/<file>        tests/fixtures/remote-screen-h264 下的文件（模拟器取码流用）
+//       GET  /p2p                   仅 --p2p-stats 时有内容：桥的 stats（transport/p2pOpened）
+//                                   与这条 WS 收到的客户端二进制帧数（见 remote-screen-p2p-stats-observer.js）
+//   直连互通测试还要 MULTICC_REMOTE_STUN= 空串（只用本机/局域网候选，不连外部 STUN）。
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -34,6 +37,8 @@ const { ensureSourceRust } = require('../../scripts/ensure-source-rust');
 
 const ROOT = path.join(__dirname, '..', '..');
 const FIXTURE_DIR = path.join(ROOT, 'tests', 'fixtures', 'remote-screen-h264');
+// 只读观测：把 h264 桥的 stats / 客户端 WS 二进制帧数写文件（生产代码不加载）。
+const P2P_OBSERVER = path.join(__dirname, 'remote-screen-p2p-stats-observer.js');
 const TUNNEL_PEER = '203.0.113.9'; // TEST-NET-3：服务端只看「有没有转发头」，值无所谓
 
 function freePort() {
@@ -109,27 +114,47 @@ async function startFakeAgent(dir, messages) {
   const stream = net.createServer(sock => {
     sockets.add(sock);
     h264.add(sock);
+    // raw 只记「输入」字节（K / 键 / 指针）——App 的码率控制（'B'）和心跳（'P'）
+    // 是自主发的控制消息，数量取决于运行时长，放在 events 里单独看。
     const conn = { sock, raw: [], events: [] };
+    let capKbps = 0;
     connections.push(conn);
     sock.on('close', () => { sockets.delete(sock); h264.delete(sock); });
     sock.on('error', () => {});
     let pending = Buffer.alloc(0);
     sock.on('data', chunk => {
-      conn.raw.push(chunk.toString('hex'));
       pending = Buffer.concat([pending, chunk]);
       while (pending.length) {
-        const need = pending[0] === 5 ? 6 : pending[0] === 4 ? 8 : 1;
+        const type = pending[0];
+        const need = type === 5 ? 6 : type === 4 ? 8 : type === 0x42 || type === 0x50 ? 5 : 1;
         if (pending.length < need) break;
         const msg = pending.subarray(0, need);
         pending = pending.subarray(need);
         if (msg[0] === 0x4b) {
+          conn.raw.push(msg.toString('hex'));
           conn.events.push(['key-request']);
           // 静止屏幕上 Agent 收到关键帧请求会重编最后一帧；这里重放整段，末帧状态不变。
           replay(sock, false);
         } else if (msg[0] === 5) {
+          conn.raw.push(msg.toString('hex'));
           conn.events.push(['pointer', msg[1], msg.readUInt16BE(2), msg.readUInt16BE(4)]);
         } else if (msg[0] === 4) {
+          conn.raw.push(msg.toString('hex'));
           conn.events.push(['key', msg[1], msg.readUInt32BE(4)]);
+        } else if (msg[0] === 0x42) {
+          // 'B' kbps：真 Agent 取所有客户端的最小上限；这里记下并当作 applied 回报。
+          capKbps = msg.readUInt32BE(1);
+          conn.events.push(['cap', capKbps]);
+        } else if (msg[0] === 0x50) {
+          // 'P' token：真 Agent 立刻回 type 4 pong（令牌 + 实际生效码率）。
+          const token = msg.readUInt32BE(1);
+          conn.events.push(['ping', token]);
+          if (!sock.destroyed) {
+            const payload = Buffer.alloc(8);
+            payload.writeUInt32BE(token, 0);
+            payload.writeUInt32BE(capKbps, 4);
+            sock.write(Buffer.concat([Buffer.from([4, 0, 0, 0, 8]), payload]));
+          }
         } else {
           conn.events.push(['unknown', msg.toString('hex')]);
         }
@@ -206,7 +231,7 @@ async function waitReady(base, child, output) {
   throw new Error(`server.js not ready after 30s:\n${output()}`);
 }
 
-async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platform } = {}) {
+async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platform, p2pStats = false } = {}) {
   if (platform !== 'darwin') throw new Error('the server only exposes h264.sock on macOS (desktop-host profile)');
   const messages = loadStream(fixtureDir);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rs-e2e-'));
@@ -230,9 +255,11 @@ async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platf
 
     // 首次可能要现编（约 1 分钟），之后按指纹复用缓存。
     const rustAddon = ensureSourceRust({ log: () => {} });
+    // 观测口：只读文件由 server.js 里的 -r 钩子写（见 remote-screen-p2p-stats-observer.js）。
+    const statsFile = path.join(root, 'p2p-stats.json');
     const port = await freePort();
     let log = '';
-    const child = spawn(process.execPath, ['server.js'], {
+    const child = spawn(process.execPath, [...(p2pStats ? ['-r', P2P_OBSERVER] : []), 'server.js'], {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -242,6 +269,7 @@ async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platf
         MULTICC_DATA_DIR: dataDir,
         MULTICC_AGENT_DIR: agentDir,
         MULTICC_AGENT_AUTO_INSTALL: '0',
+        ...(p2pStats ? { MULTICC_TEST_P2P_STATS_FILE: statsFile } : {}),
         ...(rustAddon ? { MULTICC_RUST_ADDON: rustAddon } : {}),
         MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '60000',
       },
@@ -270,6 +298,13 @@ async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platf
       const json = (body, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
       const url = new URL(req.url, 'http://x');
       if (req.method === 'GET' && url.pathname === '/agent') return json(agent.snapshot());
+      if (req.method === 'GET' && url.pathname === '/p2p') {
+        let stats = {};
+        if (p2pStats) {
+          try { stats = JSON.parse(fs.readFileSync(statsFile, 'utf8')); } catch {}
+        }
+        return json(stats);
+      }
       if (req.method === 'POST' && url.pathname === '/agent/reset') { agent.reset(); return json({ ok: true }); }
       if (req.method === 'POST' && url.pathname === '/agent/drop') return json({ ok: true, dropped: agent.drop() });
       const file = url.pathname.startsWith('/fixture/') && path.basename(url.pathname);
@@ -302,10 +337,11 @@ module.exports = { startHarness, loadStream, FIXTURE_DIR, TUNNEL_PEER };
 
 if (require.main === module) {
   (async () => {
-    const h = await startHarness();
+    const h = await startHarness({ p2pStats: process.argv.includes('--p2p-stats') });
     const direct = process.argv.includes('--direct');
     process.stdout.write(JSON.stringify({
       ready: true, server: direct ? h.direct : h.server, direct: h.direct, control: h.control, token: h.token,
+      p2p: `${h.control}/p2p`,
     }) + '\n');
     let closing = false;
     const shutdown = async () => {

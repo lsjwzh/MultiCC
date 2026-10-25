@@ -59,6 +59,26 @@
       "hex": "040000000000ff0d"
     }
   ],
+  "clientRateControlToAgent": [
+    {
+      "name": "cap the shared encoder at 1500 kbps",
+      "kind": "cap",
+      "kbps": 1500,
+      "hex": "42000005dc"
+    },
+    {
+      "name": "revoke the cap (0 = no ceiling)",
+      "kind": "cap",
+      "kbps": 0,
+      "hex": "4200000000"
+    },
+    {
+      "name": "ping with token 7",
+      "kind": "ping",
+      "token": 7,
+      "hex": "5000000007"
+    }
+  ],
   "rejectedByBridge": [
     {
       "name": "truncated pointer",
@@ -86,6 +106,21 @@
       "hex": "09",
       "why": "未知类型一律丢弃",
       "agentCalls": []
+    },
+    {
+      "name": "truncated cap",
+      "hex": "42000005",
+      "why": "定长消息少一个字节：Agent 会把后面那条消息的头当 kbps 读",
+      "agentCalls": []
+    },
+    {
+      "name": "cap and pointer in one message",
+      "hex": "42000005dc050100010002",
+      "why": "桥只认单条定长消息；Agent 是流式读取，会照单全收成 cap + pointer",
+      "agentCalls": [
+        "cap 1500",
+        "pointer 1 1 2"
+      ]
     }
   ],
   "decodedScaling": [
@@ -104,6 +139,26 @@
       "y": 416,
       "hex": "050102df01de",
       "why": "App 按解码帧坐标算点，Agent 按编码尺寸（逻辑点）理解；不放大回去光标就落在左上方"
+    },
+    {
+      "name": "rate-capped encoder at 0.75 on a 1470×956 screen: encode 1102×716, input stays 1470×956",
+      "encoded": [
+        1102,
+        716
+      ],
+      "input": [
+        1470,
+        956
+      ],
+      "decoded": [
+        1102,
+        716
+      ],
+      "mask": 1,
+      "x": 100,
+      "y": 200,
+      "hex": "05010085010b",
+      "why": "App 按解码帧坐标算点，再映射到 config 的 inputWidth/inputHeight（逻辑点）；用编码尺寸映射会偏小，用解码尺寸直接发会落在左上"
     }
   ],
   "agentToClient": [
@@ -113,10 +168,12 @@
       "json": {
         "codec": "avc1.640028",
         "width": 1470,
-        "height": 956
+        "height": 956,
+        "inputWidth": 1470,
+        "inputHeight": 956
       },
-      "payloadHex": "7b22636f646563223a22617663312e363430303238222c227769647468223a313437302c22686569676874223a3935367d",
-      "hex": "01000000317b22636f646563223a22617663312e363430303238222c227769647468223a313437302c22686569676874223a3935367d"
+      "payloadHex": "7b22636f646563223a22617663312e363430303238222c227769647468223a313437302c22686569676874223a3935362c22696e7075745769647468223a313437302c22696e707574486569676874223a3935367d",
+      "hex": "01000000557b22636f646563223a22617663312e363430303238222c227769647468223a313437302c22686569676874223a3935362c22696e7075745769647468223a313437302c22696e707574486569676874223a3935367d"
     },
     {
       "name": "key frame (SPS/PPS first)",
@@ -131,6 +188,14 @@
       "pts": 34333,
       "annexBHex": "00000001419a216c",
       "hex": "0300000010000000000000861d00000001419a216c"
+    },
+    {
+      "name": "pong token 7, applied 1500 kbps",
+      "type": 4,
+      "token": 7,
+      "appliedKbps": 1500,
+      "payloadHex": "00000007000005dc",
+      "hex": "040000000800000007000005dc"
     }
   ]
 }
