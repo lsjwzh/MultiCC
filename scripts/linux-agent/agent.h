@@ -59,17 +59,31 @@ int image_write_png(const char *path, const unsigned char *rgb, int w, int h, ch
 int image_write_jpeg(const char *path, const unsigned char *rgb, int w, int h, int quality, char *err, size_t errsz);
 
 /* ── X11（x11.c）──
- * 每次请求自己开一条 Display —— 服务端本来就是一次 op 一条 unix socket，
- * 这里跟着一条 X 连接，于是不需要 XInitThreads、也不需要给 Xlib 加锁。
- * 唯一的例外是按键观察线程，它有自己那条。 */
+ * 每个连接线程自己开一条 Display（线程本地），**线程收尾时必须 x11_close()**：
+ * X server 的客户端名额是全桌面共用的，漏关会把用户的整个桌面拖到「打不开新程序」。
+ * 按键观察线程有自己那条。 */
 typedef struct { int w, h; unsigned char *rgb; } shot;
 
-int  x11_open(char *err, size_t errsz);      /* 线程本地：给当前线程开连接 */
+/* x11_open 的返回值。WAYLAND 单列：XWayland 能连上，但截不到原生窗口、注入不进
+ * 原生应用（假成功），所以连上了也要当作不可用，并告诉用户换 X11 会话。 */
+#define X11_OK 1
+#define X11_NO_DISPLAY 0
+#define X11_WAYLAND (-1)
+/* 多步注入半路被叫停（急停 / 租约被收回 / 请求方走了）。已按下的键与鼠标键已松开。 */
+#define X11_INTERRUPTED (-2)
+
+void x11_init(void);                         /* main 里、起任何线程之前调一次 */
+int  x11_open(char *err, size_t errsz);      /* 线程本地：给当前线程开连接；见 X11_* */
+void x11_close(void);                        /* 线程本地：关掉当前线程那条 */
 int  x11_screen_size(int *w, int *h);
 shot *x11_capture(char *err, size_t errsz);
 void shot_free(shot *s);
 shot *shot_crop(const shot *src, int x, int y, int w, int h, char *err, size_t errsz);
 
+/* 注入：成功 1，失败 0，半路被叫停 X11_INTERRUPTED（此时 x11_progress() 是已经
+ * 发出去的步数：字数 / 击数 / 格数；0 = 什么都没发生，调用方据此报 dispatched）。 */
+void x11_set_interrupt(int (*fn)(void));     /* 每一步之前问它「该停了吗」 */
+int  x11_progress(void);
 int x11_move(int x, int y);
 int x11_click(int x, int y, int button, int count);
 int x11_scroll(int x, int y, int amount);
@@ -96,4 +110,5 @@ int x11_focus_is_sensitive(void);
  * 空闲时慢采样（长驻进程，空闲时每秒上百次定时唤醒没有道理，且没人持租约时
  * 本来也没有东西可停）。两个回调都由 agent.c 提供。 */
 void x11_watch_start(int (*on_esc_edge)(void), int (*lease_active)(void));
+int  x11_watch_alive(void);                  /* 观察线程连上了 X（= Esc 急停可用） */
 #endif

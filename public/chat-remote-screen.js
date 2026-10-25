@@ -21,8 +21,15 @@
     'accessibility-not-granted': ['rsErrAx', 'MultiCC Agent 未获辅助功能授权，无法远程操作'],
     'screen-recording-not-granted': ['rsErrSr', 'MultiCC Agent 未获屏幕录制授权，无法看到画面'],
     'platform-unsupported': ['rsErrPlatform', '这台机器上的桌面 Agent 还不支持远程屏幕'],
+    'no-display': ['rsErrNoDisplay', '桌面 Agent 连不上这台机器的图形界面（X server）：它需要在已登录的桌面会话里运行'],
+    'wayland-session': ['rsErrWayland', '这台 Linux 正在用 Wayland 会话，远程屏幕只支持 X11：注销后在登录界面选「Xorg / X11」会话'],
+    interrupted: ['rsErrInterrupted', '操作被中途停下，可能已执行了一部分：先看一眼画面再继续'],
   };
   const errText = data => {
+    // 没装 agent 的平台（Linux 不像 macOS 会随服务端自动装）要说清怎么装，而不只是「未运行」。
+    if (data && data.error === 'agent-unreachable' && caps && caps.installHint) {
+      return tr('rsErrAgentInstall', '桌面 Agent 未运行：在这台机器上执行 {cmd}', { cmd: caps.installHint });
+    }
     const pair = ERR_KEYS[data && data.error];
     return pair ? tr(pair[0], pair[1]) : (data && (data.message || data.error)) || tr('rsErrUnknown', '操作失败');
   };

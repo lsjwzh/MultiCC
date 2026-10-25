@@ -15,8 +15,10 @@
  * 所以这里的边界只有两条，都必须真的成立：
  *   1. socket 落在 $XDG_RUNTIME_DIR（0700 目录 + 0600 文件），并且每次连接都
  *      用 SO_PEERCRED 校验同 uid；同机其他用户连不上。
- *   2. op 集合是封闭的，且服务端那侧还有一层白名单。agent 不执行命令、不任意
- *      读写路径（snap 的 path 必须是绝对路径且不含 ..）。
+ *   2. op 集合是封闭的，且服务端那侧还有一层白名单。agent 不执行命令；唯一会写
+ *      文件的是 snap，path 必须是绝对路径、不含 ..、以 .png/.jpg/.jpeg 结尾，且
+ *      已存在时必须是普通文件（不跟符号链接）—— 同 uid 本来就能写这些文件，这条
+ *      不是提权边界，是「一个坏请求别把用户的 ~/.bashrc 覆盖成一张 PNG」。
  * 另外三道「对人的护栏」（锁屏拒绝 / Esc 急停 / 敏感窗口）在 §handle 里，不是
  * 可选项：远程的人在操作，机器前的人必须随时能喊停。
  */
@@ -25,6 +27,8 @@
 #include "agent.h"
 
 #include <errno.h>
+#include <math.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
@@ -40,9 +44,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <X11/Xlib.h>
-
-#define AGENT_VERSION "1.0.0"
+#define AGENT_VERSION "1.1.0"
 #define MAX_LINE (64 * 1024)
 #define RESP_CAP 8192
 #define MAX_CONNS 16
@@ -51,11 +53,22 @@
 /* 租约空闲这么久没再有输入就自动失效：远程的人关掉页面后不该把桌面永远锁住。 */
 #define LEASE_IDLE_SEC 120
 
+/* 输入串行：同一时刻只有一个线程在往 X 里注入。等前一个最多这么久，等不到回 busy。
+ * 为什么要串：服务端一次 op 一条连接，两段 type 并发时 XTEST 事件会逐字交错（审查时
+ * 实测 a/b 来回切 40 次），交错进来的若是 ctrl+w 这类组合键，就是误关标签页。
+ * 为什么不无限排队：排在后面的请求，发起方多半已经超时走了（服务端 8s）—— 让它
+ * 在十几秒后突然打出来，比明确拒绝更糟。 */
+#define INPUT_WAIT_MS 3000
+
+/* 坐标的合理范围：再大就不是「屏幕上的一个点」了，(int) 转换会溢出成任意值。 */
+#define COORD_MAX 100000.0
+
 static int g_verbose = 0;
 
 /* ── 租约 / 急停 ──────────────────────────────────────────────────────── */
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_input_mu = PTHREAD_MUTEX_INITIALIZER;  /* 见 INPUT_WAIT_MS */
 static char g_lease[64] = "";
 static time_t g_lease_at = 0;
 static int g_halted = 0;
@@ -63,13 +76,22 @@ static int g_conns = 0;
 
 static time_t now_s(void) { return time(NULL); }
 
+/* 租约还算不算数 —— 唯一的判据，调用方须持 g_mu。早先各处各写一份，有的用 <
+ * 有的用 <=，在第 120 秒那一刻 status 说「没人持有」、急停却仍按「有人持有」处理。 */
+static int lease_live_locked(time_t t) { return g_lease[0] != '\0' && (t - g_lease_at) < LEASE_IDLE_SEC; }
+
+/* 当前这条连接线程正在服务的请求：哪条 socket、哪个会话。注入每一步之前的「该停了
+ * 吗」要用到（见 should_stop）。 */
+static __thread int t_fd = -1;
+static __thread char t_session[64] = "";
+
 /* Esc 边沿回调，跑在观察线程里。**在按下的那一刻**判断算不算急停：放到
  * 「下一次请求到达时」再判断，会漏掉「拿着租约但一直没操作」那种情况。
- * 返回 1 = 这次算急停（x11.c 那边会顺手松开可能卡住的修饰键）。 */
+ * 返回 1 = 这次算急停。正在进行的注入由注入线程自己在下一步之前看到（should_stop），
+ * 并由它松开自己按住的键 —— 不在这里松：观察线程不知道对方按住了什么。 */
 static int on_esc_edge(void) {
   pthread_mutex_lock(&g_mu);
-  time_t t = now_s();
-  int active = g_lease[0] != '\0' && (t - g_lease_at) <= LEASE_IDLE_SEC;
+  int active = lease_live_locked(now_s());
   int counted = 0;
   if (active && !g_halted) {
     g_halted = 1;
@@ -86,7 +108,7 @@ static int lease_take(const char *session) {
   pthread_mutex_lock(&g_mu);
   time_t t = now_s();
   int ok = 1;
-  if (g_lease[0] && strcmp(g_lease, session) != 0 && (t - g_lease_at) < LEASE_IDLE_SEC) ok = 0;
+  if (lease_live_locked(t) && strcmp(g_lease, session) != 0) ok = 0;
   if (ok) {
     snprintf(g_lease, sizeof(g_lease), "%s", session);
     g_lease_at = t;
@@ -111,17 +133,71 @@ static void lease_release(const char *session) {
  * 那句必须一致 —— 不然会出现「快采样期间按 Esc 不算数」这种最坏组合。 */
 static int lease_held(void) {
   pthread_mutex_lock(&g_mu);
-  int active = g_lease[0] != '\0' && (now_s() - g_lease_at) <= LEASE_IDLE_SEC;
+  int active = lease_live_locked(now_s());
   pthread_mutex_unlock(&g_mu);
   return active;
 }
 
+/* 请求方还在不在。服务端超时（8s）后会直接 destroy 这条 socket；那之后还在打的字
+ * 没人等，用户看到「超时」很可能再发一遍 —— 两遍叠在一起就是重复输入。所以对端
+ * 一挂就停。只看挂断，不看可读：请求方可以在同一条连接上排下一条请求。 */
+static int requester_gone(void) {
+  if (t_fd < 0) return 0;
+  struct pollfd p = { .fd = t_fd, .events = POLLRDHUP, .revents = 0 };
+  if (poll(&p, 1, 0) <= 0) return 0;
+  return (p.revents & (POLLHUP | POLLRDHUP | POLLERR | POLLNVAL)) != 0;
+}
+
+/* 注入每一步之前由 x11.c 调：该停了吗。三种情况停——
+ *   · 本机按了 Esc（急停）；
+ *   · 租约已不归这个会话（被 release 收回，或急停时撤销）；
+ *   · 请求方已经走了。
+ * 还在继续就顺手续租：一段 4000 字的中文要打一分多钟，不续的话会在半路过期。 */
+typedef enum { GO = 0, STOP_HALTED, STOP_LEASE, STOP_GONE } stop_why;
+static __thread stop_why t_stop = GO;
+
+static int should_stop(void) {
+  stop_why why = GO;
+  pthread_mutex_lock(&g_mu);
+  if (g_halted) why = STOP_HALTED;
+  else if (!g_lease[0] || strcmp(g_lease, t_session) != 0) why = STOP_LEASE;
+  else g_lease_at = now_s();
+  pthread_mutex_unlock(&g_mu);
+  if (why == GO && requester_gone()) why = STOP_GONE;
+  t_stop = why;
+  return why != GO;
+}
+
 /* ── 响应小工具 ───────────────────────────────────────────────────────── */
 
+/* reason 与 error 同值：契约 §3 说失败用 reason 表达（macOS 那份如此），老服务端只看
+ * error。两个都给，哪边都不用猜。 */
 static void fail_with(jout *out, const char *error, const char *hint) {
   jo_bool(out, "ok", 0);
+  jo_str(out, "reason", error);
   jo_str(out, "error", error);
   if (hint && *hint) jo_str(out, "hint", hint);
+}
+
+/* 给当前线程开 X 连接；失败时写好拒绝响应并返回 0。Wayland 单独报，因为它的处理
+ * 办法（注销后选 X11 会话）和「X 没起来」完全不同。 */
+static int open_display(jout *out) {
+  char err[192] = "";
+  int r = x11_open(err, sizeof(err));
+  if (r == X11_OK) return 1;
+  if (out) fail_with(out, r == X11_WAYLAND ? "wayland-session" : "no-display", err);
+  return 0;
+}
+
+/* snap 只写图片文件：后缀对、已存在时是普通文件（lstat，不跟符号链接）。 */
+static int snap_path_ok(const char *path) {
+  size_t n = strlen(path);
+  int img = (n > 4 && (!strcasecmp(path + n - 4, ".png") || !strcasecmp(path + n - 4, ".jpg")))
+         || (n > 5 && !strcasecmp(path + n - 5, ".jpeg"));
+  if (!img) return 0;
+  struct stat st;
+  if (lstat(path, &st) == 0 && !S_ISREG(st.st_mode)) return 0;
+  return 1;
 }
 
 /* ── op 实现 ──────────────────────────────────────────────────────────── */
@@ -138,7 +214,8 @@ static void do_snap(const jobject *req, jout *out) {
   if (!path || !*path) { fail_with(out, "path-required", NULL); return; }
   /* 不任意读写路径：绝对路径 + 不含 ..。服务端给的一定是 assistDir 下的文件。 */
   if (path[0] != '/' || strstr(path, "..")) { fail_with(out, "bad-path", "path must be absolute, without .."); return; }
-  if (!x11_open(err, sizeof(err))) { fail_with(out, "no-display", err); return; }
+  if (!snap_path_ok(path)) { fail_with(out, "bad-path", "path must be a .png/.jpg/.jpeg regular file"); return; }
+  if (!open_display(out)) return;
 
   int jpeg = 0;
   jbool(req, "jpeg", &jpeg);
@@ -212,11 +289,7 @@ static void do_snap(const jobject *req, jout *out) {
 }
 
 static void do_status(jout *out) {
-  char err[192] = "";
-  if (!x11_open(err, sizeof(err))) {
-    fail_with(out, "no-display", err);
-    return;
-  }
+  if (!open_display(out)) return;
   const char *how = "none";
   int locked = x11_screen_locked(&how);
   int sw = 0, sh = 0;
@@ -224,8 +297,9 @@ static void do_status(jout *out) {
 
   const char *holder = NULL;
   int halted = 0;
+  char held[64] = "";
   pthread_mutex_lock(&g_mu);
-  if (g_lease[0] && (now_s() - g_lease_at) < LEASE_IDLE_SEC) holder = g_lease;
+  if (lease_live_locked(now_s())) { snprintf(held, sizeof(held), "%s", g_lease); holder = held; }
   halted = g_halted;
   pthread_mutex_unlock(&g_mu);
 
@@ -240,6 +314,8 @@ static void do_status(jout *out) {
   if (holder) jo_str(out, "leaseHolder", holder);
   else jo_null(out, "leaseHolder");
   jo_bool(out, "halted", halted);
+  /* Esc 观察线程在不在。不在时所有输入都会被拒（no-display），这里让现场看得见为什么。 */
+  jo_bool(out, "escWatch", x11_watch_alive());
   jo_end(out);
   jo_nest(out, "screen");
   jo_int(out, "width", sw);
@@ -252,9 +328,9 @@ static void do_status(jout *out) {
 
 /* 输入 op 的公共前置：护栏三道 + 拿租约。返回 0 表示已经写好了拒绝响应。 */
 static int gate(jobject *req, const char *op, jout *out, int needs_system) {
-  char err[192] = "";
-
-  if (!x11_open(err, sizeof(err))) { fail_with(out, "no-display", err); return 0; }
+  if (!open_display(out)) return 0;
+  /* 没有 Esc 观察就没有急停：机器前的人失去了否决权，这时宁可不注入。 */
+  if (!x11_watch_alive()) { fail_with(out, "no-display", "esc watcher is not connected to the X server"); return 0; }
 
   int halted = 0;
   pthread_mutex_lock(&g_mu);
@@ -280,6 +356,7 @@ static int gate(jobject *req, const char *op, jout *out, int needs_system) {
   if (!session || !*session) { fail_with(out, "session-required", NULL); return 0; }
   if (!lease_take(session)) { fail_with(out, "busy", "another session holds the lease"); return 0; }
   lease_touch(session);
+  snprintf(t_session, sizeof(t_session), "%s", session);
   /* 拿到租约 = 有人开始操作了：立刻把 Esc 观察线程从空闲档叫醒。
    * 少了这一步，「拿到租约之后的第一次 Esc」要等最长 150ms 才被采样到，
    * 而人按 Esc 只按住 120ms —— 会整次漏判。 */
@@ -288,6 +365,13 @@ static int gate(jobject *req, const char *op, jout *out, int needs_system) {
 }
 
 /* 注入期间告诉观察线程「别把我自己发的键当成用户的急停」。 */
+static int coord_ok(double v) { return isfinite(v) && fabs(v) <= COORD_MAX; }
+
+/* 读坐标：缺了或不是一个合理的数都算缺。 */
+static int read_xy(const jobject *req, const char *kx, const char *ky, double *x, double *y) {
+  return jnum(req, kx, x) && jnum(req, ky, y) && coord_ok(*x) && coord_ok(*y);
+}
+
 static void do_input(const jobject *req, const char *op, jout *out) {
   double x = 0, y = 0, x2 = 0, y2 = 0, amount = 0, ms = 300, count = 1;
   int ok = 0;
@@ -295,10 +379,10 @@ static void do_input(const jobject *req, const char *op, jout *out) {
 
   x11_injecting(1);
   if (strcmp(op, "move") == 0) {
-    if (!jnum(req, "x", &x) || !jnum(req, "y", &y)) { x11_injecting(0); fail_with(out, "x-and-y-required", NULL); return; }
+    if (!read_xy(req, "x", "y", &x, &y)) { x11_injecting(0); fail_with(out, "x-and-y-required", NULL); return; }
     ok = x11_move((int)x, (int)y);
   } else if (strcmp(op, "click") == 0) {
-    if (!jnum(req, "x", &x) || !jnum(req, "y", &y)) { x11_injecting(0); fail_with(out, "x-and-y-required", NULL); return; }
+    if (!read_xy(req, "x", "y", &x, &y)) { x11_injecting(0); fail_with(out, "x-and-y-required", NULL); return; }
     jnum(req, "count", &count);
     if (count < 1) count = 1;
     if (count > 3) count = 3;
@@ -308,16 +392,18 @@ static void do_input(const jobject *req, const char *op, jout *out) {
     else if (btn && !strcmp(btn, "middle")) b = 2;
     ok = x11_click((int)x, (int)y, b, (int)count);
   } else if (strcmp(op, "scroll") == 0) {
-    if (!jnum(req, "x", &x) || !jnum(req, "y", &y)) { x11_injecting(0); fail_with(out, "x-and-y-required", NULL); return; }
+    if (!read_xy(req, "x", "y", &x, &y)) { x11_injecting(0); fail_with(out, "x-and-y-required", NULL); return; }
     jnum(req, "amount", &amount);
+    if (!isfinite(amount)) amount = 0;
     ok = x11_scroll((int)x, (int)y, (int)amount);
   } else if (strcmp(op, "drag") == 0) {
-    if (!jnum(req, "x", &x) || !jnum(req, "y", &y) || !jnum(req, "x2", &x2) || !jnum(req, "y2", &y2)) {
+    if (!read_xy(req, "x", "y", &x, &y) || !read_xy(req, "x2", "y2", &x2, &y2)) {
       x11_injecting(0);
       fail_with(out, "x-y-x2-y2-required", NULL);
       return;
     }
     jnum(req, "ms", &ms);
+    if (!isfinite(ms)) ms = 300;
     ok = x11_drag((int)x, (int)y, (int)x2, (int)y2, (int)ms);
   } else if (strcmp(op, "type") == 0) {
     const char *text = jstr(req, "text");
@@ -330,7 +416,24 @@ static void do_input(const jobject *req, const char *op, jout *out) {
   }
   x11_injecting(0);
 
-  if (ok) {
+  if (ok == X11_INTERRUPTED) {
+    /* 半路停下：形状跟 macOS 那份一致（outcome:partial + dispatched + retrySafe）。
+     * 发出去一部分就**不能**让上层自动重试 —— 重试会把前半段再打一遍。 */
+    stop_why why = t_stop;
+    int sent = x11_progress();
+    x11_release_all(); /* 兜底：x11.c 已松开它按下的；这里防「上一次断在半路」的残留 */
+    const char *reason = why == STOP_HALTED ? "user-stopped" : "interrupted";
+    jo_bool(out, "ok", 0);
+    jo_str(out, "reason", reason);
+    jo_str(out, "error", reason);
+    jo_str(out, "outcome", "partial");
+    jo_str(out, "dispatched", sent > 0 ? "dispatched" : "none");
+    jo_int(out, "sent", sent);
+    jo_bool(out, "retrySafe", sent == 0);
+    jo_str(out, "hint", why == STOP_HALTED ? "stopped by Esc on this machine; part of the input may have been sent"
+                      : why == STOP_LEASE ? "lease released while input was running"
+                      : "requester went away; input stopped");
+  } else if (ok) {
     jo_bool(out, "ok", 1);
     jo_str(out, "op", op);
   } else {
@@ -355,7 +458,7 @@ static void dispatch(jobject *req, jout *out) {
   if (strcmp(op, "release") == 0) {
     const char *session = jstr(req, "session");
     lease_release(session);
-    if (x11_open(NULL, 0)) x11_release_all();
+    if (open_display(NULL)) x11_release_all();
     jo_bool(out, "ok", 1);
     return;
   }
@@ -363,7 +466,7 @@ static void dispatch(jobject *req, jout *out) {
     pthread_mutex_lock(&g_mu);
     g_halted = 0;
     pthread_mutex_unlock(&g_mu);
-    if (x11_open(NULL, 0)) x11_release_all();
+    if (open_display(NULL)) x11_release_all();
     jo_bool(out, "ok", 1);
     return;
   }
@@ -376,8 +479,19 @@ static void dispatch(jobject *req, jout *out) {
 
   if (is_input_op(op)) {
     int needs_system = 1;
-    if (!gate(req, op, out, needs_system)) return;
-    do_input(req, op, out);
+    /* 先排队再过护栏：护栏判的是「注入那一刻」的状态（急停、锁屏、租约），排在别人
+     * 后面等了几秒，等到的时候世界可能已经变了。 */
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_sec += INPUT_WAIT_MS / 1000;
+    until.tv_nsec += (long)(INPUT_WAIT_MS % 1000) * 1000000L;
+    if (until.tv_nsec >= 1000000000L) { until.tv_sec++; until.tv_nsec -= 1000000000L; }
+    if (pthread_mutex_timedlock(&g_input_mu, &until) != 0) {
+      fail_with(out, "busy", "another input is still running");
+      return;
+    }
+    if (gate(req, op, out, needs_system)) do_input(req, op, out);
+    pthread_mutex_unlock(&g_input_mu);
     return;
   }
 
@@ -412,6 +526,7 @@ static void *conn_main(void *arg) {
   size_t len = 0;
   int served = 0;
 
+  t_fd = fd;
   if (buf && resp) {
     for (;;) {
       if (len >= MAX_LINE - 1) break;
@@ -435,6 +550,9 @@ static void *conn_main(void *arg) {
   }
   free(buf);
   free(resp);
+  /* 这条线程的 X 连接跟着线程走。不关就漏一个 X 客户端名额 —— 见 x11.c 头注释。 */
+  x11_close();
+  t_fd = -1;
   close(fd);
 
   pthread_mutex_lock(&g_mu);
@@ -606,8 +724,9 @@ int main(int argc, char **argv) {
   const char *sockpath = NULL;
   int i = 1;
 
-  /* Xlib 内部有点全局状态；每个线程自己一条连接本身是安全的，这一句是买保险。 */
-  XInitThreads();
+  /* XInitThreads + 不退出的协议错误处理器：都必须在起任何线程之前。 */
+  x11_init();
+  x11_set_interrupt(should_stop);
   /* 对端关掉连接后 write 会变成 SIGPIPE —— 默认动作是弄死整个 agent。 */
   signal(SIGPIPE, SIG_IGN);
 

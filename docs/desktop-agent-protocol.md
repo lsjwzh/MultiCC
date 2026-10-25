@@ -1,8 +1,9 @@
 # Desktop agent 协议（跨平台契约）
 
 「🖥 屏幕」的能力不来自 MultiCC 服务端，而来自**跑在用户图形会话里的那个 desktop agent**。
-macOS 的实现是 `scripts/macos-agent/MultiCCAgent.swift`（Swift，`MultiCC Agent.app`）；
-Windows 与 Linux 还没有，`src/desktop-host.js` 里如实登记成 `supported: false`。
+macOS 的实现是 `scripts/macos-agent/MultiCCAgent.swift`（Swift，`MultiCC Agent.app`），
+Linux X11 的实现是 `scripts/linux-agent/`（C）；Windows 还没有，`src/desktop-host.js` 里如实登记成
+`supported: false`。
 
 这份文档是**给下一个平台实现看的契约**：照它实现，服务端、Web 前端、Flutter App、
 标注→动作链路、坐标换算一个字都不用改——它们只认下面这些 op 和 reason，不认平台名。
@@ -25,7 +26,7 @@ Windows 与 Linux 还没有，`src/desktop-host.js` 里如实登记成 `supporte
 | 平台 | 传输 | 地址 | 对端校验 |
 |---|---|---|---|
 | macOS | unix socket | `~/.multicc/agent/agent.sock`（`MULTICC_AGENT_SOCK` 可覆盖） | `getpeereid`，必须同 uid |
-| Linux (计划) | unix socket | `$XDG_RUNTIME_DIR/multicc-agent/agent.sock` | `SO_PEERCRED`，必须同 uid |
+| Linux X11 | unix socket | `$XDG_RUNTIME_DIR/multicc-agent/agent.sock` | `SO_PEERCRED`，必须同 uid |
 | Windows (计划) | 命名管道 | `\\.\pipe\multicc-agent` | 管道 ACL 只给当前用户 |
 
 - 目录 `0700`，socket `0600`（Windows：管道 ACL 等价）。
@@ -69,6 +70,14 @@ Windows 与 Linux 还没有，`src/desktop-host.js` 里如实登记成 `supporte
 | `screen-recording-not-granted` | 缺屏幕捕获授权（macOS：屏幕录制） | — |
 | `agent-unreachable` | 由**服务端**在连不上时产生，agent 不用回 | MultiCC Agent 未运行 |
 | `platform-unsupported` | 由**服务端**在 `supported:false` 时产生 | 这台机器上的桌面 Agent 还不支持远程屏幕 |
+| `no-display` | agent 连不上图形会话（Linux：X server；或 Esc 观察线程没连上） | 桌面 Agent 连不上这台机器的图形界面 |
+| `wayland-session` | Linux 是 Wayland 会话（XWayland 连得上但会假成功，见 §7 Wayland） | 远程屏幕只支持 X11，请换 Xorg 会话 |
+| `interrupted` | 多步注入半路被停（租约被 `release` 收回 / 请求方断开）；Esc 打断回的是 `user-stopped` | 操作被中途停下，可能已执行了一部分 |
+
+半路被停的响应带 `outcome: "partial"`、`dispatched: "dispatched" \| "none"`、`retrySafe`
+（只有一步都没发出去才为 true）——发出去一部分的输入**不能**被上层自动重试，否则前半段
+会再打一遍。macOS 与 Linux 形状一致。失败响应里 `reason` 与 `error` 同值（老服务端只看
+`error`）。
 
 新增 reason 必须同时改这三处（服务端 `REASONS`、Web `ERR_KEYS`、本文档），否则用户看到裸 code。
 
@@ -88,7 +97,7 @@ Windows 与 Linux 还没有，`src/desktop-host.js` 里如实登记成 `supporte
 | `scroll` | `x, y, amount`（-50..50） | 在 `(x,y)` 处滚动 |
 | `drag` | `x, y, x2, y2, ms`（80..3000） | 从 a 拖到 b |
 | `type` | `text`（≤4000 字符） | 向当前焦点输入文本 |
-| `press` | `keys`（如 `cmd+c` / `ctrl+c`，≤40 字符） | 按组合键 |
+| `press` | `keys`（如 `cmd+c` / `ctrl+c`，≤40 字符） | 按组合键。**键名是契约词表，跟 macOS 一致**：`delete` = 退格（Web 的 ⌫ 发的就是它），向前删除是 `forwarddelete` |
 | `release` | — | 释放操作租约 |
 | `resume` | — | 解除 Esc 急停 |
 | `unlock` | — | 提交已保存的密码解锁（**只能由服务端唤屏路由触发**，见 §5） |
@@ -285,9 +294,30 @@ DISPLAY=:0 scripts/linux-agent/conformance.sh   # 在真桌面上跑同一套
   锁屏是另一个会话的窗口，够不到也不该够到。`features.unlock = false`。
 - **没有 stream**：RFB 未做，前端自动回退 JPEG 轮询。`features.stream = false`。
 - **没有 elementTree**：X11 没有可访问性树 API，要 AT-SPI2 得另起一个总线会话，v1 不背。
+- **每个连接线程一条 X 连接，线程收尾必须关**。X server 的客户端名额全桌面共用（约 256），
+  漏关时第 255 次请求后不只是 agent 回 `no-display`，**用户桌面上任何新程序都打不开**。
+  `conformance.sh` 第 8 节连发 300 次请求再断言「别的程序仍能连上 X」。
+- **协议错误不退出**：Xlib 默认的错误处理器会 `exit()`，而「焦点窗口在我们 `XQueryTree`
+  的那一刻被关掉」（BadWindow）是日常竞态。`x11_init()` 装一个只记录、不退出的处理器。
+  I/O 错误（X server 没了）仍然退出 —— 会话都没了，agent 跟着走，下次登录由自启拉起。
+- **Esc 要打断进行中的注入，而不只是挡住下一次**：逐字 `type`、逐步 `drag`、逐格 `scroll`、
+  多击 `click`、逐键 `press` 每一步之前都问一次「该停了吗」（急停 / 租约被收回 / 请求方
+  断开），停下时由**注入线程自己**松开它按住的键与鼠标键、还原临时键位。请求方断开也算：
+  服务端超时后断开 socket，之后还在打的字没人等，用户再发一遍就是重复输入（所以服务端给
+  `type` 的超时按字数放大）。
+- **输入串行**：同一时刻只有一个线程注入，后来的最多排 3 秒，等不到回 `busy`。不串的话两段
+  `type` 会逐字交错，交错进来的若是 `ctrl+w` 就是误关标签页。不无限排队：排在后面的请求，
+  发起方多半已经超时走了。
+- **Esc 观察线程不在 = 拒绝一切输入**（`no-display`）。agent 可能比 X 先起来，所以观察线程
+  连不上会每秒重试，`status.control.escWatch` 报它在不在。
+- **安装与自启**：`sh scripts/linux-agent/install.sh install`（编译 → `~/.multicc/agent/` →
+  XDG autostart → 立即拉起；`uninstall` / `status` 同理）。用 XDG autostart 而不是
+  systemd 用户单元，是因为后者只有在桌面环境主动 import 时才有 `DISPLAY`/`XAUTHORITY`。
+  与 macOS 不同，**服务端不会自动安装**（要本机编译）；连不上 agent 时前端会把这条命令
+  （画像里的 `installHint`）给用户。`install-smoke.sh` 在容器里验「装好了却用不了」那类半安装。
 - **安全边界比 macOS 少一层**：X11 没有权限模型——任何能连上 display 的客户端都能看能点。
   所以剩下的全部边界是：`0700` 目录 + `0600` socket + `SO_PEERCRED` 同 uid + 封闭的 op 集合
-  + `snap` 路径必须是绝对路径且不含 `..`。**这一点必须在用户文档里明说**，它和 macOS
+  + `snap` 路径必须是绝对路径、不含 `..`、是 `.png/.jpg/.jpeg` 且已存在时是普通文件（不跟符号链接）。**这一点必须在用户文档里明说**，它和 macOS
   「一次性授权」不是一回事。
 
 ### Wayland（不做，这是产品差异不是实现细节）
@@ -302,15 +332,15 @@ macOS 那套做法**不可能**。没有全局截图、没有全局注入，唯�
     再编码」，这反而更贴 RFB 那条链路。
 - 修饰键是 **Ctrl**。
 - **XWayland 是假成功陷阱**：Wayland 会话里确实存在一个 X server，`DISPLAY=:0` 连得上、
-  `x11_open` 成功、`status` 回 ok —— 但它只是一个兼容层，看不到原生 Wayland 窗口
-  （截图出来是空的或只有 XWayland 应用），注入也只对 XWayland 应用有效。所以
-  **判断「这套能不能用」不能只看连接成功**，要看真实截图里的内容（`conformance.sh` 的
-  像素断言正是为此）。v1 的选择是：能连上就工作，用户发现原生窗口截不到时，文档里已经
-  写明「Linux 请用 X11 会话」。
+  `XOpenDisplay` 成功 —— 但它只是一个兼容层，看不到原生 Wayland 窗口（截图出来是空的或
+  只有 XWayland 应用），注入也只对 XWayland 应用有效。所以**不能只看连接成功**：agent
+  连上之后先认 XWayland（X server 报 `XWAYLAND` 扩展，或环境里 `XDG_SESSION_TYPE=wayland` /
+  `WAYLAND_DISPLAY`），认出来就把所有 op 回 `wayland-session`，前端提示换 Xorg 会话。
+  扩展名那条是主判据：从自启拉起时环境变量不一定在。
 
-> Linux 画像的 `supported` 是 **true**，Wayland 会话里也照报 true：此时 agent 会因为
-> 连不上 X server 而在 `status` 里明说（`no-display` + `DISPLAY` 的实际值），比笼统的
-> 「整个平台不支持」好排查得多。
+> Linux 画像的 `supported` 是 **true**，Wayland 会话里也照报 true：此时 agent 在 `status`
+> 与每个 op 上明说 `wayland-session`（附命中的是哪条判据），比笼统的「整个平台不支持」好
+> 排查得多，也不会假成功。
 
 ## 8. 服务端如何判断「这台机器能做什么」
 

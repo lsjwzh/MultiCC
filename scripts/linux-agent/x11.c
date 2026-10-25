@@ -3,10 +3,17 @@
  *
  * 三条设计决定：
  *
- * 1. **每个线程自己一条 Display 连接**。服务端本来就是「一次 op 一条 unix
- *    socket」，这里跟着一条 X 连接，于是不需要给 Xlib 加锁，也不需要担心两条
- *    连接共享状态。（main 里仍会调一次 XInitThreads：它让 Xlib 自己那点全局
- *    状态变安全，代价是零。）
+ * 1. **每个线程自己一条 Display 连接，线程退出前必须关掉**。服务端本来就是
+ *    「一次 op 一条 unix socket」，这里跟着一条 X 连接，于是不需要给 Xlib 加锁。
+ *    关连接不是洁癖：X server 的客户端名额只有 256 个左右，漏一条就少一个名额，
+ *    前端每 600ms 拉一帧，一两分钟就能把**整个桌面**拖到「Maximum number of
+ *    clients reached」—— 用户再打不开任何程序（容器里实测，第 255 次请求后）。
+ *    所以 x11_close() 由 agent.c 在连接线程收尾时调，一致性套件第 8 节有 300 次
+ *    请求的回归断言。
+ *
+ *    协议错误（BadWindow 之类）由 x11_init() 装的处理器记下来、**不退出**：Xlib
+ *    默认的处理器会 exit()，而「焦点窗口在我们查 QueryTree 的那一刻被关掉」是
+ *    日常竞态，不该让 agent 整个死掉。
  *
  * 2. **截图判据是像素，不是返回值**。容器 / 无头环境里 MIT-SHM 会「调用成功但
  *    整帧全黑」，只判 Status 会把黑屏当成功。见 probe.c 的同名结论。
@@ -51,16 +58,76 @@ const char *x11_last_error(void) { return terr; }
 
 static void fail(const char *msg) { snprintf(terr, sizeof(terr), "%s", msg); }
 
+/* 协议错误：记下来，返回 0 = 「处理过了，别 exit」。处理器跑在触发它的那个线程里
+ * （每个线程一条自己的连接，回复只会在本线程里被读到），所以写线程本地的 terr
+ * 是安全的。不能在这里发任何协议请求；XGetErrorText 只查本地表，不发请求。 */
+static int on_x_error(Display *d, XErrorEvent *e) {
+  char text[96] = "";
+  XGetErrorText(d, e->error_code, text, sizeof(text));
+  snprintf(terr, sizeof(terr), "x-error: %s (request %d)", text, (int)e->request_code);
+  return 0;
+}
+
+void x11_init(void) {
+  /* Xlib 内部有点全局状态；每个线程自己一条连接本身是安全的，这一句是买保险。 */
+  XInitThreads();
+  XSetErrorHandler(on_x_error);
+  /* I/O 错误（X server 没了 / 会话注销）没有「继续」这个选项：Xlib 在处理器返回后
+   * 一定 exit。那就让它退 —— 会话都没了，agent 也该跟着走，由 autostart 在下次
+   * 登录时重新拉起（见 install.sh）。这里只换成一行看得懂的日志。默认处理器不装。 */
+}
+
+/* Wayland 会话里的 XWayland 是**假成功**：DISPLAY 连得上、截图回 ok，但截到的只是
+ * XWayland 那半个世界（原生 Wayland 窗口是黑的），XTEST 也注入不进原生应用。
+ * 所以连上之后要先问清楚「这是不是 XWayland」，是就当作没有可用的 display。
+ *
+ * 判据两条，任一命中即是：
+ *   · X server 自己报 XWAYLAND 扩展 —— 最可靠，不依赖 agent 继承到的环境变量
+ *     （从 systemd/autostart 拉起时 XDG_SESSION_TYPE 不一定在）；
+ *   · 环境里 XDG_SESSION_TYPE=wayland 或有 WAYLAND_DISPLAY —— 老版本 XWayland
+ *     不一定带那个扩展名。
+ * 结果写进 how，status 上原样报出来。 */
+/* 环境变量这条先判、而且**不连 X 就判**：GNOME 的 XWayland 是按需启动的，第一个
+ * X 客户端连上来它才起 —— 一个明知是 Wayland 会话还去连的 agent，等于替用户把
+ * XWayland 一直拉着。 */
+static const char *wayland_env_reason(void) {
+  const char *st = getenv("XDG_SESSION_TYPE");
+  if (st && !strcmp(st, "wayland")) return "XDG_SESSION_TYPE=wayland";
+  const char *wd = getenv("WAYLAND_DISPLAY");
+  if (wd && *wd) return "WAYLAND_DISPLAY";
+  return NULL;
+}
+
+static const char *wayland_reason(Display *d) {
+  int op = 0, ev = 0, er = 0;
+  if (d && XQueryExtension(d, "XWAYLAND", &op, &ev, &er)) return "xwayland-extension";
+  return wayland_env_reason();
+}
+
 int x11_open(char *err, size_t errsz) {
   if (tdpy) return 1;
   const char *disp = getenv("DISPLAY");
+  const char *early = wayland_env_reason();
+  if (early) {
+    snprintf(terr, sizeof(terr), "wayland session (%s); log in with an X11 session", early);
+    if (err) snprintf(err, errsz, "%s", terr);
+    return X11_WAYLAND;
+  }
   tdpy = XOpenDisplay(NULL);
   if (!tdpy) {
     snprintf(terr, sizeof(terr), "x11-open-failed: DISPLAY=%s", disp && *disp ? disp : "(unset)");
     if (err) snprintf(err, errsz, "%s", terr);
-    return 0;
+    return X11_NO_DISPLAY;
   }
-  return 1;
+  const char *why = wayland_reason(tdpy);
+  if (why) {
+    XCloseDisplay(tdpy);
+    tdpy = NULL;
+    snprintf(terr, sizeof(terr), "wayland session (%s); log in with an X11 session", why);
+    if (err) snprintf(err, errsz, "%s", terr);
+    return X11_WAYLAND;
+  }
+  return X11_OK;
 }
 
 void x11_close(void) {
@@ -227,8 +294,27 @@ static void nap_ms(int ms) {
   if (ms > 0) usleep((useconds_t)ms * 1000);
 }
 
+/* 「现在该停了吗」：急停、租约被收回、请求方已经走了，都由 agent.c 判断。
+ * 每个多步注入（逐字 type、逐步 drag、逐格 scroll、多击 click、逐键 press）每一步
+ * 之前都问一次 —— 契约要求 Esc「立刻停掉一切注入」，而一段 1200 字的 type 要打
+ * 十几秒，只在开头判一次等于这十几秒里急停无效（审查时实测：halted 已生效，字照打）。
+ *
+ * 停下时由**发起注入的这个线程**收拾残局（松开它按下的键和鼠标键、还原临时键位），
+ * 不是观察线程：只有这里知道自己按住了什么，换个线程去松会和这里的下一步撞车。 */
+static int (*g_interrupt)(void) = NULL;
+static __thread int t_progress = 0;   /* 本次注入已经真正发出去的步数 */
+
+void x11_set_interrupt(int (*fn)(void)) { g_interrupt = fn; }
+int x11_progress(void) { return t_progress; }
+
+static int interrupted(void) {
+  if (g_interrupt && g_interrupt()) { fail("interrupted"); return 1; }
+  return 0;
+}
+
 int x11_move(int x, int y) {
   if (!tdpy) { fail("no-display"); return 0; }
+  t_progress = 0;
   XTestFakeMotionEvent(tdpy, -1, x, y, CurrentTime);
   XSync(tdpy, False);
   return 1;
@@ -239,11 +325,13 @@ int x11_click(int x, int y, int button, int count) {
   if (!x11_move(x, y)) return 0;
   nap_ms(20);
   for (int i = 0; i < count; i++) {
+    if (interrupted()) return X11_INTERRUPTED;
     XTestFakeButtonEvent(tdpy, (unsigned)button, True, CurrentTime);
     XSync(tdpy, False);
     nap_ms(12);
     XTestFakeButtonEvent(tdpy, (unsigned)button, False, CurrentTime);
     XSync(tdpy, False);
+    t_progress++;
     if (i + 1 < count) nap_ms(60); /* 双击间隔 */
   }
   return 1;
@@ -263,9 +351,11 @@ int x11_scroll(int x, int y, int amount) {
   if (n > 20) n = 20;
   unsigned btn = amount < 0 ? 5u : 4u;
   for (int i = 0; i < n; i++) {
+    if (interrupted()) return X11_INTERRUPTED;
     XTestFakeButtonEvent(tdpy, btn, True, CurrentTime);
     XTestFakeButtonEvent(tdpy, btn, False, CurrentTime);
     XSync(tdpy, False);
+    t_progress++;
     nap_ms(14);
   }
   return 1;
@@ -275,14 +365,24 @@ int x11_drag(int x, int y, int x2, int y2, int ms) {
   if (!tdpy) { fail("no-display"); return 0; }
   if (ms < 80) ms = 80;
   if (ms > 3000) ms = 3000;
+  t_progress = 0;
   XTestFakeMotionEvent(tdpy, -1, x, y, CurrentTime);
   XSync(tdpy, False);
   nap_ms(30);
+  if (interrupted()) return X11_INTERRUPTED;
   XTestFakeButtonEvent(tdpy, 1, True, CurrentTime);
   XSync(tdpy, False);
+  t_progress++;
   int steps = ms / 16;
   if (steps < 4) steps = 4;
   for (int i = 1; i <= steps; i++) {
+    /* 半路停下：按住的左键必须松开，否则用户的桌面会停在「一直在拖」的状态。
+     * 松在原地，不补完到终点 —— 停就是停。 */
+    if (interrupted()) {
+      XTestFakeButtonEvent(tdpy, 1, False, CurrentTime);
+      XSync(tdpy, False);
+      return X11_INTERRUPTED;
+    }
     int cx = x + (x2 - x) * i / steps;
     int cy = y + (y2 - y) * i / steps;
     XTestFakeMotionEvent(tdpy, -1, cx, cy, CurrentTime);
@@ -330,7 +430,11 @@ static int tap_keycode(Display *d, KeyCode kc, int need_shift) {
  *     这种最难查的故障）。代价是这几十毫秒里那个键位的映射是临时的 —— 用本来
  *     就没人映射的键码，影响面最小。
  *   · **轮换一小撮空闲键码**，而不是每按一次来回改同一个。同一个键码反复改会
- *     给所有客户端刷 MappingNotify，中文长句能把别的程序刷到卡。 */
+ *     给所有客户端刷 MappingNotify，中文长句能把别的程序刷到卡。
+ *     轮换是**按顺序**的（下一个位置 = 上一次用的 + 1），不是按码点取模：取模会让
+ *     「刚按过的那个键位」紧接着就被下一个字改掉 —— 正是上面那条要避免的时序
+ *     （接收方还没来得及反查）。顺序轮换保证同一个键位至少隔 SPARE_SLOTS-1 个字
+ *     才被复用。 */
 #define SPARE_SLOTS 4
 
 typedef struct {
@@ -338,6 +442,7 @@ typedef struct {
   unsigned cp[SPARE_SLOTS];   /* 当前映射成哪个码点，0 = 空位 */
   KeySym orig[SPARE_SLOTS][2];
   int used;
+  int next;                   /* 下一次要改的键位（顺序轮换） */
 } keymap_pool;
 
 static void pool_init(Display *d, keymap_pool *pool) {
@@ -373,7 +478,8 @@ static int pool_type(Display *d, keymap_pool *pool, unsigned cp) {
     if (pool->cp[i] == cp) { slot = i; break; }          /* 同一个字复用它 */
   }
   if (slot < 0) {
-    slot = pool->used > 0 ? (int)(cp % (unsigned)pool->used) : 0;  /* 轮换，别老改同一个 */
+    slot = pool->next;                                     /* 顺序轮换，见上 */
+    pool->next = (pool->next + 1) % pool->used;
     KeySym tmp[2] = { (KeySym)(0x01000000u | cp), (KeySym)(0x01000000u | cp) };
     if (pool->cp[slot]) { XChangeKeyboardMapping(d, pool->kc[slot], 2, pool->orig[slot], 1); }
     XChangeKeyboardMapping(d, pool->kc[slot], 2, tmp, 1);
@@ -396,8 +502,14 @@ int x11_type(const char *utf8) {
   int bad = 0;
 
   pool_init(d, &pool);
+  t_progress = 0;
 
   while (*p) {
+    /* 每个字之前问一次：急停要在**这一个字**之后生效，而不是整段打完。 */
+    if (interrupted()) {
+      pool_restore(d, &pool);
+      return X11_INTERRUPTED;
+    }
     unsigned cp = 0;
     int extra = 0;
     if (p[0] < 0x80) { cp = p[0]; }
@@ -425,6 +537,7 @@ int x11_type(const char *utf8) {
     } else if (!pool_type(d, &pool, cp)) {
       bad = 1;
     }
+    t_progress++;
     nap_ms(10);
   }
 
@@ -457,8 +570,19 @@ static KeySym named_keysym(const char *tok, size_t len) {
     { "shift", XK_Shift_L }, { "cmd", XK_Super_L }, { "super", XK_Super_L },
     { "meta", XK_Super_L }, { "win", XK_Super_L }, { "return", XK_Return },
     { "enter", XK_Return }, { "esc", XK_Escape }, { "escape", XK_Escape },
-    { "tab", XK_Tab }, { "space", XK_space }, { "backspace", XK_BackSpace },
-    { "delete", XK_Delete }, { "del", XK_Delete }, { "up", XK_Up }, { "down", XK_Down },
+    { "tab", XK_Tab }, { "space", XK_space }, { "spacebar", XK_space },
+    /* 键名是**契约的词表**，跟 macOS 那份对齐，不是 X11 的词表：契约里 `delete` 是
+     * 退格（Mac 键盘上那个键就叫 delete，Web 的 ⌫ 按钮发的正是 "delete"），向前删除
+     * 叫 `forwarddelete`。照 X11 的直觉把 delete 映射成 XK_Delete，⌫ 按钮在 Linux 上
+     * 就会变成「删光标后面的字」—— 不报错，只是删反了。 */
+    { "backspace", XK_BackSpace }, { "delete", XK_BackSpace }, { "del", XK_BackSpace },
+    { "forwarddelete", XK_Delete }, { "forward_delete", XK_Delete },
+    { "option", XK_Alt_L }, { "opt", XK_Alt_L }, { "command", XK_Super_L },
+    { "capslock", XK_Caps_Lock }, { "caps_lock", XK_Caps_Lock },
+    { "page_up", XK_Page_Up }, { "page_down", XK_Page_Down },
+    { "arrow_up", XK_Up }, { "arrow_down", XK_Down }, { "arrow_left", XK_Left }, { "arrow_right", XK_Right },
+    { "quote", XK_apostrophe }, { "leftbracket", XK_bracketleft }, { "rightbracket", XK_bracketright },
+    { "up", XK_Up }, { "down", XK_Down },
     { "left", XK_Left }, { "right", XK_Right }, { "home", XK_Home }, { "end", XK_End },
     { "pageup", XK_Page_Up }, { "pagedown", XK_Page_Down }, { "insert", XK_Insert },
     { "minus", XK_minus }, { "plus", XK_plus }, { "equal", XK_equal },
@@ -529,20 +653,28 @@ int x11_press(const char *keys) {
   if (!n) { fail("empty-keys"); return 0; }
 
   /* 修饰键先按下（数组里靠前的就是修饰键：服务端拼的是 "ctrl+c" 这种顺序），
-   * 主键最后按、最先松。倒序释放，避免组合键半路失效。 */
+   * 主键最后按、最先松。倒序释放，避免组合键半路失效。
+   * 半路被叫停时只松开**已经按下**的那几个 —— 绝不能把 Ctrl 留在按下状态
+   * （那样用户整个桌面都是「一直按着 Ctrl」）。主键没按下去，组合键就没生效。 */
+  t_progress = 0;
+  int down = 0;
   for (int i = 0; i < n; i++) {
+    if (interrupted()) break;
     if (shifts[i]) XTestFakeKeyEvent(d, XKeysymToKeycode(d, XK_Shift_L), True, CurrentTime);
     XTestFakeKeyEvent(d, codes[i], True, CurrentTime);
     XSync(d, False);
+    down++;
     nap_ms(12);
   }
-  for (int i = n - 1; i >= 0; i--) {
+  int stopped = down < n;
+  if (!stopped) t_progress = 1;
+  for (int i = down - 1; i >= 0; i--) {
     XTestFakeKeyEvent(d, codes[i], False, CurrentTime);
     if (shifts[i]) XTestFakeKeyEvent(d, XKeysymToKeycode(d, XK_Shift_L), False, CurrentTime);
     XSync(d, False);
     nap_ms(8);
   }
-  return 1;
+  return stopped ? X11_INTERRUPTED : 1;
 }
 
 /* 兜底。注入中途出错 / 连接断掉时，修饰键可能还按着 —— 那种状态下用户整个
@@ -746,10 +878,27 @@ static void watch_sleep(long us) {
   pthread_mutex_unlock(&g_sleep_mu);
 }
 
+/* 观察线程连没连上 X。连不上就**没有急停**，而急停是对人的护栏 —— 所以 agent.c
+ * 在它不在时拒绝一切输入，而不是「照常注入，只是 Esc 不灵」。 */
+static volatile int g_watch_alive = 0;
+int x11_watch_alive(void) { return g_watch_alive; }
+
 static void *watch_main(void *arg) {
   (void)arg;
-  Display *d = XOpenDisplay(NULL);
+  /* agent 可能比 X 先起来（autostart 的顺序不保证），所以连不上就每秒再试，
+   * 而不是像早先那样一次失败就悄悄退出线程 —— 那样整个进程寿命里 Esc 都不灵，
+   * 且没有任何地方看得出来。XWayland 不算连上（理由见 wayland_reason）。 */
+  Display *d = NULL;
+  while (g_watch_run && !d) {
+    /* Wayland 会话里不连（理由见 wayland_env_reason），也不每秒重试：会话类型不会
+     * 在会话中途变，30 秒看一次只是为了「环境判错了」时还有机会恢复。 */
+    if (wayland_env_reason()) { watch_sleep(30000000L); continue; }
+    d = XOpenDisplay(NULL);
+    if (d && wayland_reason(d)) { XCloseDisplay(d); d = NULL; watch_sleep(30000000L); continue; }
+    if (!d) watch_sleep(1000000L);
+  }
   if (!d) return NULL;
+  g_watch_alive = 1;
   KeyCode esc = XKeysymToKeycode(d, XK_Escape);
   char keys[32];
   int prev = 0;
@@ -761,10 +910,13 @@ static void *watch_main(void *arg) {
     memset(keys, 0, sizeof(keys));
     XQueryKeymap(d, keys);
     int down = (keys[esc / 8] >> (esc % 8)) & 1;
+    /* 回调的返回值（算不算急停）这里不用：注入线程会在下一步之前通过
+     * x11_set_interrupt 的回调看到急停，并自己松开它按住的东西。 */
     if (down && !prev && g_on_esc && !(g_injecting && g_self_esc)) g_on_esc();
     prev = down;
     watch_sleep((active || g_injecting) ? ESC_POLL_ACTIVE_US : ESC_POLL_IDLE_US);
   }
+  g_watch_alive = 0;
   XCloseDisplay(d);
   return NULL;
 }

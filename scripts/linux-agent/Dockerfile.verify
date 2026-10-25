@@ -36,8 +36,12 @@ RUN if [ -n "$APT_MIRROR" ]; then \
 RUN apt-get update && apt-get install -y --no-install-recommends xauth \
     && rm -rf /var/lib/apt/lists/*
 
+# procps（pgrep/pkill）给 install.sh 用：真桌面上一定有，最小镜像里没有。同样单放一层。
+RUN apt-get update && apt-get install -y --no-install-recommends procps \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /src
-COPY probe.c agent.h json.c x11.c image.c agent.c test-target.c build.sh conformance.sh /src/
+COPY probe.c agent.h json.c x11.c image.c agent.c test-target.c build.sh conformance.sh install.sh install-smoke.sh /src/
 
 # -Wall -Wextra 当门禁：探针自己要能零警告编过。agent 那些源文件则由 build.sh
 # 用同一个标准编（MULTICC_STRICT=1 把警告升级成错误）。
@@ -51,10 +55,12 @@ ENV MULTICC_AGENT_BIN=/usr/local/bin/multicc-agent-linux
 ENV MULTICC_TARGET_BIN=/usr/local/bin/multicc-linux-target
 
 # SCREEN 可换分辨率（例如 1920x1080x24 或 3840x2160x24 测高分屏路径）。
-# 先跑探针（三个 X11 原语），再跑一致性套件（产品的 op 与护栏）。
+# 先跑探针（三个 X11 原语），再跑一致性套件（产品的 op 与护栏），最后是安装链路冒烟。
 # conformance.sh 显式走 sh，不靠执行位：COPY 保不住的东西别当契约
 # （tar/换平台 checkout 丢执行位 → 126 Permission denied，报错完全指不到文件模式上）。
 CMD sh -c 'set -e; \
     xvfb-run -a --server-args="-screen 0 ${SCREEN:-1280x800x24}" /usr/local/bin/multicc-linux-probe; \
     echo; echo "══════════════════════════════════════"; echo; \
-    xvfb-run -a --server-args="-screen 0 ${SCREEN:-1280x800x24}" sh /src/conformance.sh'
+    xvfb-run -a --server-args="-screen 0 ${SCREEN:-1280x800x24}" sh /src/conformance.sh; \
+    echo; echo "══════════════════════════════════════"; echo; \
+    xvfb-run -a --server-args="-screen 0 ${SCREEN:-1280x800x24}" sh /src/install-smoke.sh'

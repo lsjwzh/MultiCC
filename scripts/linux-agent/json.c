@@ -115,6 +115,9 @@ static int parse_string(cur *c, char *out, size_t cap, char *err, size_t errsz) 
             *c = save; /* 不是合法低位代理：当独立码点处理 */
           }
         }
+        /* \u0000 会在 C 字符串里把后半段截掉，而 type 照样回 ok —— 「打了一半却说
+         * 成功」。契约里没有任何字段需要 NUL，直接当坏请求。 */
+        if (cp == 0) { snprintf(err, errsz, "\\u0000 is not allowed"); return 0; }
         /* 唯一会一次写超过 1 字节的地方：一个码点最多 4 字节 + 结尾 NUL。 */
         if (n + 5 > cap) { snprintf(err, errsz, "string too long"); return 0; }
         utf8_put(out, &n, cp);

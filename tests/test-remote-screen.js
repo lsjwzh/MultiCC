@@ -271,9 +271,42 @@ test('Linux 上唤屏路由按 features.wake 收起，而不是看平台是否 s
   } finally { rs._deps.host = prevHost; }
 });
 
+test('Linux：agent 没装时告诉用户怎么装；新 reason 有文案；type 的超时按字数放大', async () => {
+  const prevHost = rs._deps.host, prevCall = rs._deps.agentCall;
+  const seen = [];
+  let reply = { ok: false, error: 'agent-unreachable' };
+  try {
+    rs._resetForTests();
+    rs._deps.host = createDesktopHost({ platform: 'linux', home: '/home/x', env: { XDG_RUNTIME_DIR: '/run/user/7' } });
+    rs._deps.agentCall = async (req, timeoutMs) => { seen.push({ op: req.op, timeoutMs }); return reply; };
+    // Linux 的 agent 不随服务端自动装：画像带安装命令，能力接口原样给前端。
+    assert.equal(rs.capabilities().installHint, 'sh scripts/linux-agent/install.sh install');
+    const app = fakeApp();
+    rs.mount(app);
+    let r = await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'click', x: 1, y: 2 });
+    assert.equal(r.body.error, 'agent-unreachable');
+    assert.match(r.body.message, /install\.sh install/, '连不上 agent 时要说清怎么装');
+    for (const [code, re] of [['wayland-session', /X11/], ['no-display', /X server/], ['interrupted', /中途/]]) {
+      reply = { ok: false, reason: code, error: code };
+      r = await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'click', x: 1, y: 2 });
+      assert.equal(r.body.error, code);
+      assert.match(r.body.message, re, `${code} 要有文案，不能露裸 code`);
+    }
+    // 超时不能比打字本身短：agent 看到请求方断开会立刻停手，固定 8s 等于把长文本截断。
+    seen.length = 0;
+    reply = { ok: true };
+    await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'type', text: 'x'.repeat(4000) });
+    await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'click', x: 1, y: 2 });
+    assert.ok(seen[0].timeoutMs >= 4000 * 25, `4000 字的 type 超时应按字数放大，实得 ${seen[0].timeoutMs}`);
+    assert.equal(seen[1].timeoutMs, undefined, '其余 op 沿用默认超时');
+  } finally {
+    rs._deps.host = prevHost; rs._deps.agentCall = prevCall;
+  }
+});
+
 test('能力接口回答「本机能做什么」；非 macOS 上三条路由干净拒绝，不碰 agent 也不碰 shell', async () => {
   assert.deepEqual(rs.capabilities(), { ok: true, platform: 'darwin', label: 'macOS', supported: true,
-    transport: 'unix', modifier: 'cmd', reason: null,
+    transport: 'unix', modifier: 'cmd', reason: null, installHint: null,
     features: { view: true, control: true, snapshot: true, annotate: true, stream: true, wake: true, unlock: true, elementTree: true } });
 
   const app = fakeApp();

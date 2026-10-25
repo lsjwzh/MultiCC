@@ -27,6 +27,7 @@ TLOG="$WORK/target.log"
 ALOG="$WORK/agent.log"
 PASS=0; FAIL=0
 cleanup() {
+  [ -n "${A2PID:-}" ] && kill "$A2PID" 2>/dev/null || true
   [ -n "${T2PID:-}" ] && kill "$T2PID" 2>/dev/null || true
   [ -n "${TPID:-}" ] && kill "$TPID" 2>/dev/null || true
   [ -n "${APID:-}" ] && kill "$APID" 2>/dev/null || true
@@ -303,6 +304,122 @@ seen "恢复后的点击落到靶子上" "BTN 1 press 90,90"
 
 has "unlock 明确回不支持" "$(req '{"op":"unlock","session":"cli"}')" '"error":"unlock-unsupported"'
 has "release 收尾" "$(req '{"op":"release","session":"other"}')" '"ok":true'
+
+# ── 8. 审查出的阻断项：每一条一个回归断言 ────────────────────────────────
+
+sect "8. 回归（连接泄漏 / 协议错误 / 急停打断 / 输入串行 / Wayland / 小细节）"
+
+# 数某个片段在靶子日志里出现了几次（grep -c 没命中时退出码是 1，set -e 下要兜住）。
+count() { grep -cF "$1" "$TLOG" 2>/dev/null || true; }
+
+has "status 报 Esc 观察线程在线" "$(req '{"op":"status","session":"cli"}')" '"escWatch":true'
+
+# 8.1 X 连接泄漏：每条 socket 连接一条 X 连接，用完必须关。X server 的客户端名额
+# 只有 256 个左右，早先第 255 次请求后 agent 只回 no-display，且整个桌面开不了新程序。
+i=0; LEAKFAIL=0
+while [ "$i" -lt 300 ]; do
+  case "$(req '{"op":"status","session":"cli"}')" in *'"ok":true'*) ;; *) LEAKFAIL=$((LEAKFAIL + 1)) ;; esac
+  i=$((i + 1))
+done
+[ "$LEAKFAIL" -eq 0 ] && ok "连续 300 次请求全部成功（没漏 X 连接）" || no "连续 300 次请求全部成功" "失败 ${LEAKFAIL} 次"
+if "$TARGET" --can-connect; then ok "300 次请求之后别的程序仍能连上 X server"; else no "300 次请求之后别的程序仍能连上 X server" "XOpenDisplay 失败"; fi
+
+# 8.2 Esc 打断进行中的 type：契约要求「立刻停掉一切注入」。早先只在开头判一次，
+# 一段长文本里按 Esc，halted 生效了字却照打。300 个 x 约 3 秒，0.6 秒时按 Esc。
+LONG=$(printf '%0300d' 0 | tr 0 x)
+req "{\"op\":\"type\",\"session\":\"reg\",\"allowSystem\":true,\"allowTerminal\":true,\"text\":\"$LONG\"}" >"$WORK/long.out" &
+LP=$!
+sleep 0.6
+"$TARGET" --key Escape
+wait "$LP" || true
+R=$(cat "$WORK/long.out")
+has "Esc 打断进行中的 type（回 user-stopped）" "$R" '"reason":"user-stopped"'
+has "被打断的 type 报 partial 且不可自动重试" "$R" '"retrySafe":false'
+N1=$(count "KEY U+0078"); sleep 0.5; N2=$(count "KEY U+0078")
+if [ "$N1" -gt 0 ] && [ "$N1" -lt 300 ] && [ "$N1" -eq "$N2" ]; then
+  ok "Esc 之后不再出字（停在第 ${N1} 个）"
+else
+  no "Esc 之后不再出字" "Esc 后 ${N1} 个，再等 0.5s 变成 ${N2} 个（共 300）"
+fi
+has "resume 解除急停" "$(req '{"op":"resume","session":"reg"}')" '"ok":true'
+
+# 8.3 请求方走了就停：服务端 8s 超时后会直接断开 socket，后面还在打的字没人等，
+# 用户看到「超时」再发一遍就是重复输入。客户端 0.5s 后被杀掉，模拟这种断开。
+LONG=$(printf '%0300d' 0 | tr 0 y)
+timeout 0.5 "$AGENT" --socket "$SOCK" --raw \
+  "{\"op\":\"type\",\"session\":\"reg\",\"allowSystem\":true,\"allowTerminal\":true,\"text\":\"$LONG\"}" >/dev/null 2>&1 || true
+sleep 0.2
+N1=$(count "KEY U+0079"); sleep 0.5; N2=$(count "KEY U+0079")
+if [ "$N1" -gt 0 ] && [ "$N1" -lt 300 ] && [ "$N1" -eq "$N2" ]; then
+  ok "请求方断开后 type 停下（停在第 ${N1} 个）"
+else
+  no "请求方断开后 type 停下" "断开后 ${N1} 个，再等 0.5s 变成 ${N2} 个（共 300）"
+fi
+
+# 8.4 输入串行：两段 type 并发，早先靶子收到的是 q/z 来回切。现在后来的那段要排队，
+# 收到的应当是一整段 q 再一整段 z（或反过来）—— 只换一次手。
+QS=$(printf '%030d' 0 | tr 0 q); ZS=$(printf '%030d' 0 | tr 0 z)
+req "{\"op\":\"type\",\"session\":\"reg\",\"allowSystem\":true,\"allowTerminal\":true,\"text\":\"$QS\"}" >"$WORK/q.out" &
+QP=$!
+req "{\"op\":\"type\",\"session\":\"reg\",\"allowSystem\":true,\"allowTerminal\":true,\"text\":\"$ZS\"}" >"$WORK/z.out" &
+ZP=$!
+wait "$QP" || true; wait "$ZP" || true
+has "并发的第一段 type 成功" "$(cat "$WORK/q.out")" '"ok":true'
+has "并发的第二段 type 排队后成功" "$(cat "$WORK/z.out")" '"ok":true'
+RUNS=$(grep -E 'KEY U\+(0071|007A)$' "$TLOG" | uniq | wc -l | tr -d ' ')
+[ "$RUNS" -eq 2 ] && ok "两段并发输入没有交错（只换手一次）" || no "两段并发输入没有交错" "q/z 交替了 ${RUNS} 段"
+[ "$(count "KEY U+0071")" -eq 30 ] && [ "$(count "KEY U+007A")" -eq 30 ] \
+  && ok "两段都完整打出（各 30 个）" || no "两段都完整打出" "q=$(count "KEY U+0071") z=$(count "KEY U+007A")"
+
+# 8.5 键名是契约词表（与 macOS 一致）：delete = 退格（Web 的 ⌫ 发的就是它），
+# forwarddelete 才是向前删除。照 X11 直觉映射会「删反」而不报错。
+has "press delete 回 ok" \
+  "$(req '{"op":"press","session":"reg","allowSystem":true,"allowTerminal":true,"keys":"delete"}')" '"ok":true'
+seen "delete 落成 BackSpace" "KEYSYM 0xff08"
+has "press forwarddelete 回 ok" \
+  "$(req '{"op":"press","session":"reg","allowSystem":true,"allowTerminal":true,"keys":"forwarddelete"}')" '"ok":true'
+seen "forwarddelete 落成 Delete" "KEYSYM 0xffff"
+
+# 8.6 小细节：\u0000 会把 C 字符串截断却回 ok；坐标溢出 int；snap 能写任意文件。
+has "文本里的 \\u0000 被拒" \
+  "$(req '{"op":"type","session":"reg","allowSystem":true,"allowTerminal":true,"text":"a\u0000b"}')" '"error":"bad-json"'
+has "超大坐标被拒" \
+  "$(req '{"op":"click","session":"reg","allowSystem":true,"x":1e12,"y":10}')" '"error":"x-and-y-required"'
+has "snap 不写非图片后缀" "$(req "{\"op\":\"snap\",\"session\":\"cli\",\"path\":\"$WORK/x.txt\"}")" '"error":"bad-path"'
+: >"$WORK/real.txt"; ln -s "$WORK/real.txt" "$WORK/link.png"
+has "snap 不跟符号链接" "$(req "{\"op\":\"snap\",\"session\":\"cli\",\"path\":\"$WORK/link.png\"}")" '"error":"bad-path"'
+[ -s "$WORK/real.txt" ] && no "符号链接指向的文件没被覆盖" "real.txt 被写了" || ok "符号链接指向的文件没被覆盖"
+has "失败响应同时带 reason（契约 §3）" "$(req '{"op":"nonsense"}')" '"reason":"unknown-op"'
+has "release 收尾" "$(req '{"op":"release","session":"reg"}')" '"ok":true'
+
+# 8.7 Wayland：XWayland 能连上但截不到原生窗口、注入不进原生应用。agent 必须明说，
+# 而不是假成功。Xvfb 不是 XWayland，所以用会话类型这条判据来演。
+SOCK2="$WORK/agent2/agent.sock"
+XDG_SESSION_TYPE=wayland "$AGENT" --socket "$SOCK2" serve >"$WORK/agent2.log" 2>&1 &
+A2PID=$!
+i=0; while [ "$i" -lt 50 ] && [ ! -S "$SOCK2" ]; do sleep 0.1; i=$((i + 1)); done
+R=$("$AGENT" --socket "$SOCK2" --raw '{"op":"status","session":"cli"}' 2>&1 || true)
+has "Wayland 会话里 status 明说 wayland-session" "$R" '"error":"wayland-session"'
+R=$("$AGENT" --socket "$SOCK2" --raw '{"op":"click","session":"w","allowSystem":true,"x":450,"y":350}' 2>&1 || true)
+has "Wayland 会话里拒绝注入" "$R" '"error":"wayland-session"'
+R=$("$AGENT" --socket "$SOCK2" --raw "{\"op\":\"snap\",\"session\":\"cli\",\"path\":\"$WORK/w.png\"}" 2>&1 || true)
+has "Wayland 会话里拒绝截图" "$R" '"error":"wayland-session"'
+kill "$A2PID" 2>/dev/null || true
+
+# 8.8 协议错误不能弄死进程：一边疯狂建/销毁窗口抢焦点，一边查焦点窗口。早先第一次
+# status 就因为 BadWindow (X_QueryTree) 让 Xlib 默认处理器 exit 了。放在本节最后：
+# 抢完焦点后靶子一号拿不回来，后面只剩不依赖它焦点的第 7 节。
+"$TARGET" --churn 2500 >/dev/null 2>&1 &
+CPID=$!
+i=0; CHURNFAIL=0
+while [ "$i" -lt 60 ]; do
+  case "$(req '{"op":"status","session":"cli"}')" in *'"ok":'*) ;; *) CHURNFAIL=$((CHURNFAIL + 1)) ;; esac
+  i=$((i + 1))
+done
+wait "$CPID" || true
+has "窗口狂换之后 agent 还活着" "$(req '{"op":"ping"}')" '"pong":true'
+[ "$CHURNFAIL" -eq 0 ] && ok "窗口狂换期间每次 status 都有回应" || no "窗口狂换期间每次 status 都有回应" "无响应 ${CHURNFAIL} 次"
+if kill -0 "$APID" 2>/dev/null; then ok "agent 进程没有因为 BadWindow 退出"; else no "agent 进程没有因为 BadWindow 退出" "进程已退出"; fi
 
 # ── 7. 敏感窗口：只挡打字，不挡点击 ──────────────────────────────────────
 
