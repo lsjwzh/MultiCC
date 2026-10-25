@@ -4,8 +4,8 @@
 //
 // Both the claude (Anthropic content_block_delta) and codex (item delta) proxies
 // forward per-turn deltas here for incremental rendering; the claude proxy
-// additionally forwards the subscription 5h rate-limit DTO that it reads from
-// the anthropic-ratelimit-unified-5h-* response headers on official-OAuth turns.
+// additionally forwards subscription 5h/weekly DTOs extracted by Rust from
+// the anthropic-ratelimit-unified-{5h,7d}-* response headers.
 //
 // Each callback is best-effort: a broadcast failure must never break the proxy
 // stream (same contract as onUsage/onActivity), so every path is try/catch'd.
@@ -130,10 +130,9 @@ function createProxyBroadcasters(chatBroadcast, {
         try { recordLimit(sessionId, info.rateLimitInfo, providerId); } catch (_) {}
       }
       if (role !== 'main' && attemptRuntime) return;
-      // The event carries the rendered bar alongside the raw DTO. Claude's 5h
-      // is only half its bar — the weekly windows come from the usage-page
-      // scrape — so the merge happens here, server-side, and both clients paint
-      // the result rather than each recombining the two sources.
+      // The event carries the rendered bar alongside the raw DTO. Rust merges
+      // partial 5h/weekly headers and any manual usage reading server-side;
+      // both clients paint that result without independently merging sources.
       const normalized = normalizeWindowEvent(info.rateLimitInfo, Date.now());
       let bar = null;
       if (normalized && normalized.provider === 'claude') {

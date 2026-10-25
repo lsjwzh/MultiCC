@@ -28,6 +28,7 @@ const {
   arkWindowLabel,
 } = require('./quota-bar-view');
 const { accountProviderId, accountIdOfProviderId } = require('../providers/official-catalog');
+const { claudeQuota } = require('./claude-header-quota');
 
 const PROVIDER_FAILURE_COOLDOWN_MS = 5 * 60_000;
 // A 429 clears itself once the window rolls over, so a short cooldown is enough
@@ -174,6 +175,13 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     if (!dto || typeof dto !== 'object') return null;
     const at = now();
     if (dto.kind === 'window') {
+      if (dto.provider === 'claude' && dto.source === 'response_headers') {
+        const summary = claudeQuota('cache', { dto, previous: cache.get(appType, providerId)?.summary, nowMs: at });
+        if (!summary) return null;
+        const bar = providerLimitBar({ kind: 'window', summary, fetchedAt: at });
+        return cache.record(appType, providerId, { kind: 'window', summary,
+          summaryText: compactBarText(bar?.text || ''), barText: bar?.text || null, fetchedAt: at });
+      }
       // A borrowed Claude reading is a full account snapshot, unlike the
       // passive 5h event. Keep every model/window and its label in the cache.
       if (dto.provider === 'claude' && Array.isArray(dto.windows)) {
@@ -289,8 +297,8 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
 
   // Store only a bounded availability cooldown. Response bodies and
   // credentials are intentionally excluded from this durable record.
-  // The cooldown is a placeholder: a 429 also triggers a real quota re-read,
-  // and whatever that reading says replaces it (the latest reading wins).
+  // Other vendors may re-read quota after a 429. Official Claude relies on its
+  // passive headers instead; an exhausted live window keeps its real deadline.
   function recordProviderFailure({
     sessionId, providerId, category, httpStatus, blockedUntilMs,
   } = {}) {
@@ -298,8 +306,13 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
       ? explicitProviderIdentity(providerId)
       : appTypeForSession(sessionId);
     if (!identity) return null;
+    const previous = cache.get(identity.appType, identity.providerId);
+    const target = providers.getProviderLimitTarget?.(identity.appType, identity.providerId);
+    const policy = claudeQuota('failure', { httpStatus, targetKind: target?.strategy,
+      previous: previous?.summary, nowMs: Number(now()) });
+    if (policy?.preserve) return previous;
     const recorded = recordCooldown(identity, { category, httpStatus, blockedUntilMs });
-    if (refreshProvider) {
+    if (refreshProvider && policy?.refresh !== false) {
       try {
         Promise.resolve(refreshProvider(identity.appType, identity.providerId)).catch(() => {});
       } catch (_) { /* a refresh must never break the proxy outcome path */ }

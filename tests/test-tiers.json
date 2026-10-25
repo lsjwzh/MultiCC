@@ -2389,6 +2389,12 @@
       "owner": "npm:test:rust"
     },
     {
+      "path": "tests/test-claude-header-quota.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust"
+    },
+    {
       "path": "tests/test-claude-models-route.js",
       "tier": "core",
       "lane": "deterministic",

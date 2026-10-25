@@ -12,6 +12,14 @@ pub fn cpr_protocol_version() -> u32 {
     1
 }
 
+// Only bounded quota metadata crosses this synchronous compatibility bridge.
+#[napi]
+pub fn cpr_claude_quota(input: String) -> Result<String> {
+    let input =
+        serde_json::from_str(&input).map_err(|_| error("Invalid Claude quota metadata".into()))?;
+    Ok(multicc_cpr::claude_quota::run(&input).to_string())
+}
+
 #[napi]
 pub fn cpr_backend_settings(input: String) -> Result<String> {
     let input = serde_json::from_str(&input).map_err(|_| error("CPR 设置输入无效".into()))?;
