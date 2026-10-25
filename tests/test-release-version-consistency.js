@@ -311,13 +311,17 @@ test('core runner covers every selected path and expands declared variants', () 
   // oracle. No real accounts, user data, devices or external services are used.
   // Remote-screen Widget, wire and live-device suites remain outside core.
   // 360 entries, 335 commands; the non-UI Flutter core remains 28 files.
-  assert.equal(core.length, 360, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 360);
+  // v2.10.0 review: passive Claude quota headers use synthetic response data,
+  // injected services and a temporary cache. No account, browser or live API
+  // is required. Keep this mechanism regression in deterministic core.
+  // 361 entries, 336 commands; non-UI Flutter core remains 28 files.
+  assert.equal(core.length, 361, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 361);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 303);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 304);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 29);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 28,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -327,8 +331,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 335,
-    '332 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 336,
+    '333 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

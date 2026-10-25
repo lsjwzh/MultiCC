@@ -13,9 +13,21 @@ fn classify_one(status: u16, headers: Value, body: &str, model: Option<&str>) ->
 
 #[test]
 fn unified_rejected_window_is_a_quota_wall() {
-    assert!(check(429, json!({"anthropic-ratelimit-unified-status":"rejected"}), ""));
-    assert!(check(429, json!({"Anthropic-Ratelimit-Unified-5h-Status":"REJECTED"}), ""));
-    assert!(check(429, json!({"anthropic-ratelimit-unified-7d-status":"rejected"}), "{}"));
+    assert!(check(
+        429,
+        json!({"anthropic-ratelimit-unified-status":"rejected"}),
+        ""
+    ));
+    assert!(check(
+        429,
+        json!({"Anthropic-Ratelimit-Unified-5h-Status":"REJECTED"}),
+        ""
+    ));
+    assert!(check(
+        429,
+        json!({"anthropic-ratelimit-unified-7d-status":"rejected"}),
+        "{}"
+    ));
 }
 
 #[test]
@@ -30,7 +42,10 @@ fn quota_exhaustion_wording_is_a_quota_wall() {
         r#"{"error":{"code":"insufficient_quota","message":"no balance"}}"#,
         r#"{"type":"error","error":{"type":"quota_exceeded"}}"#,
     ] {
-        assert!(check(429, json!({}), body), "should be a quota wall: {body}");
+        assert!(
+            check(429, json!({}), body),
+            "should be a quota wall: {body}"
+        );
     }
 }
 
@@ -81,7 +96,12 @@ fn credits_required_is_a_model_entitlement() {
     assert_eq!(result["model"], "claude-fable-5");
 
     // 同样的措辞没有业务码时也要认出来，只是 code 为空、来源变成正文。
-    let result = classify_one(429, json!({}), "Usage credits are required for this model.", None);
+    let result = classify_one(
+        429,
+        json!({}),
+        "Usage credits are required for this model.",
+        None,
+    );
     assert_eq!(result["kind"], "entitlement");
     assert_eq!(result["scope"], "model");
     assert_eq!(result["code"], Value::Null);
@@ -170,7 +190,12 @@ fn structured_vendor_codes_classify_kind_and_window() {
     assert_eq!(result["code"], "1113");
 
     // 智谱的并发/频率限流必须留在瞬时限流一侧。
-    let result = classify_one(429, json!({}), r#"{"error":{"code":"1302","message":"并发数过高"}}"#, None);
+    let result = classify_one(
+        429,
+        json!({}),
+        r#"{"error":{"code":"1302","message":"并发数过高"}}"#,
+        None,
+    );
     assert_eq!(result["kind"], "transient");
     assert_eq!(result["scope"], "request");
     assert_eq!(result["code"], "1302");
@@ -215,7 +240,13 @@ fn only_429_is_classified_at_all() {
     for status in [0, 400, 402, 403, 500, 503] {
         let headers = json!({"anthropic-ratelimit-unified-status": "rejected"});
         let map = headers.as_object().cloned().unwrap();
-        assert!(classify(status, &map, b"You have exceeded the 5-hour usage quota.", None).is_none());
+        assert!(classify(
+            status,
+            &map,
+            b"You have exceeded the 5-hour usage quota.",
+            None
+        )
+        .is_none());
     }
     assert!(classify(429, &Default::default(), b"Too many requests", None).is_some());
 }
