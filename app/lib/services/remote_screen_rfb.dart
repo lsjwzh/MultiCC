@@ -12,6 +12,11 @@ import 'remote_screen_source.dart';
 /// FramebufferUpdate out. A still screen answers with an empty n=0 update as
 /// a keepalive (SCStream only emits on change), so this loop must keep
 /// re-arming after empty updates instead of treating them as end-of-stream.
+/// Because of that keepalive, silence is a verdict: no byte at all for
+/// [stallTimeout] means the transport is dead (a half-open socket after the
+/// phone slept or switched networks never reports onDone), and the session
+/// closes so the caller reconnects. A slow link is not silence — a big update
+/// crawling through a weak tunnel still delivers bytes and is left alone.
 ///
 /// Transport-agnostic on purpose: the caller passes any byte stream (a
 /// WebSocket in production, an in-memory controller in tests). Socket frames
@@ -23,11 +28,16 @@ class RemoteScreenRfb with ScreenInputMixin implements ScreenSource {
     required void Function(Uint8List bytes) send,
     void Function()? onClosed,
     void Function()? onFrame,
+    Duration stallTimeout = const Duration(seconds: 12),
   }) : _send = send,
        _onClosed = onClosed,
-       _onFrame = onFrame {
+       _onFrame = onFrame,
+       _stallTimeout = stallTimeout {
     _sub = incoming.listen(
-      _reader.add,
+      (bytes) {
+        _lastBytesAt = DateTime.now();
+        _reader.add(bytes);
+      },
       onError: (Object _) => _reader.close(),
       onDone: _reader.close,
       cancelOnError: true,
@@ -37,8 +47,11 @@ class RemoteScreenRfb with ScreenInputMixin implements ScreenSource {
   final void Function(Uint8List bytes) _send;
   final void Function()? _onClosed;
   final void Function()? _onFrame;
+  final Duration _stallTimeout;
   final _ChunkedReader _reader = _ChunkedReader();
   StreamSubscription<Uint8List>? _sub;
+  Timer? _watchdog;
+  DateTime _lastBytesAt = DateTime.now();
   bool _closed = false;
 
   /// Framebuffer geometry, valid after [run] completes its handshake.
@@ -58,6 +71,12 @@ class RemoteScreenRfb with ScreenInputMixin implements ScreenSource {
   /// Handshake, then the update loop. Completes with an error when the
   /// transport closes or the server violates the expected protocol.
   Future<void> run() async {
+    _lastBytesAt = DateTime.now();
+    _watchdog = Timer.periodic(_stallTimeout ~/ 4, (_) {
+      if (DateTime.now().difference(_lastBytesAt) >= _stallTimeout) {
+        _reader.close(); // pending read throws → run() ends → onClosed
+      }
+    });
     try {
       await _handshake();
       _onFrame?.call();
@@ -163,6 +182,7 @@ class RemoteScreenRfb with ScreenInputMixin implements ScreenSource {
   void _dispose() {
     if (_closed) return;
     _closed = true;
+    _watchdog?.cancel();
     _sub?.cancel();
     _reader.close();
     _onClosed?.call();

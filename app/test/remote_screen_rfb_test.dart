@@ -58,6 +58,74 @@ void main() {
     return (rfb: rfb, incoming: incoming);
   }
 
+  test('静默判死：握手后一个字节都不来 → 会话关闭交给上层重连（半开连接）', () async {
+    final incoming = StreamController<Uint8List>();
+    addTearDown(incoming.close);
+    var closed = false;
+    final rfb = RemoteScreenRfb(
+      incoming: incoming.stream,
+      send: (_) {},
+      onClosed: () => closed = true,
+      stallTimeout: const Duration(milliseconds: 120),
+    );
+    final done = rfb.run().then((_) => 'ok', onError: (Object _) => 'error');
+    incoming.add(Uint8List.sublistView(serverBytes, 0, 49)); // 只有握手
+    await pumpUntil(() => rfb.width == 4);
+    expect(closed, isFalse);
+    await pumpUntil(() => closed);
+    expect(await done, 'error');
+  });
+
+  test('慢而活着不误杀：大更新在弱隧道上爬了好几个阈值也照常收完', () async {
+    final incoming = StreamController<Uint8List>();
+    addTearDown(incoming.close);
+    var closed = false;
+    final rfb = RemoteScreenRfb(
+      incoming: incoming.stream,
+      send: (_) {},
+      onClosed: () => closed = true,
+      stallTimeout: const Duration(milliseconds: 150),
+    );
+    unawaited(rfb.run().catchError((Object _) {}));
+    incoming.add(Uint8List.sublistView(serverBytes, 0, 49));
+    await pumpUntil(() => rfb.width == 4);
+    final before = rfb.frameVersion;
+    // 4×2 整屏 Raw：4 + 12 + 32 字节，每 60ms 只到 4 字节，总共约 720ms。
+    final update = Uint8List.fromList([
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      4,
+      0,
+      2,
+      0,
+      0,
+      0,
+      0,
+      ...List<int>.filled(32, 0x5A),
+    ]);
+    final started = DateTime.now();
+    for (var i = 0; i < update.length; i += 4) {
+      incoming.add(Uint8List.sublistView(update, i, i + 4));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+    }
+    expect(
+      DateTime.now().difference(started),
+      greaterThan(const Duration(milliseconds: 600)),
+    );
+    expect(closed, isFalse, reason: '一直有字节在到，不是静默');
+    await pumpUntil(() => rfb.frameVersion > before);
+    expect(rfb.framebuffer![0], 0x5A);
+    // 收完之后真静默了，照样判死。
+    await pumpUntil(() => closed);
+  });
+
   test('握手 + 矩形应用 + 空保活后继续请求', () async {
     final sent = <Uint8List>[];
     var frames = 0;
