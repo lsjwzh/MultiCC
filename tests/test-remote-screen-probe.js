@@ -1,18 +1,32 @@
 'use strict';
 
 // scripts/remote-screen-probe.js against a fake Agent (real unix sockets) and a
-// fake server that relays through the REAL H.264 bridge. Each scenario breaks one
-// hop and the probe must name exactly that hop — the point of the tool is telling
-// "input lost" from "picture frozen" without a human in the loop.
+// fake server whose WS hop goes through the REAL Node forwarding layer
+// (src/remote-screen.js → a fake multicast-remote process that pipes to h264.sock).
+// Each scenario breaks one hop and the probe must name exactly that hop — the
+// point of the tool is telling "input lost" from "picture frozen" without a
+// human in the loop.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
+const path = require('node:path');
+const os = require('node:os');
 const { WebSocketServer } = require('ws');
-const { attachH264Bridge } = require('../src/remote-screen-h264-bridge');
+const rs = require('../src/remote-screen-rust');
+const { installFakeRemote } = require('./helpers/remote-screen-node-harness');
 const { runProbe, format } = require('../scripts/remote-screen-probe');
+
+process.env.MULTICC_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsp-data-'));
+
+// 转发层连的是假上游进程：它把每条 WS 消息写进 Agent 的 h264.sock，反向字节按
+// 二进制帧发回。这样 probe 仍然走 "真 server 的 WS → 真转发层 → Agent" 这条链。
+function useForwarder(t, agentDir) {
+  const fake = installFakeRemote({ FAKE_REMOTE_PIPE_SOCK: path.join(agentDir, 'h264.sock') });
+  t.after(async () => { await rs._resetForTests(); fake.cleanup(); });
+}
 
 const W = 1470, H = 956;
 const TIMING = { firstFrameMs: 1500, quietMs: 120, quietMaxMs: 1500, stepMs: 5, settleMs: 200, requestMs: 1500 };
@@ -75,7 +89,7 @@ async function fakeAgent(t, { moves = true, reacts = true, streams = true, curso
   return { dir, state };
 }
 
-async function fakeServer(t, agentDir, { pointerOp = true } = {}) {
+async function fakeServer(t, { pointerOp = true } = {}) {
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', c => { body += c; });
@@ -97,7 +111,7 @@ async function fakeServer(t, agentDir, { pointerOp = true } = {}) {
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://x');
     if (url.searchParams.get('ticket') !== 'tkt') return socket.destroy();
-    wss.handleUpgrade(req, socket, head, ws => attachH264Bridge(ws, { socketPath: `${agentDir}/h264.sock` }));
+    wss.handleUpgrade(req, socket, head, ws => rs.attachH264(ws, req));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { for (const c of wss.clients) c.terminate(); server.close(); });
@@ -108,17 +122,23 @@ const byId = report => Object.fromEntries(report.segments.map(s => [s.id, s]));
 
 test('healthy pipeline: every hop passes and the cursor is put back', async t => {
   const { dir, state } = await fakeAgent(t);
-  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t, dir), timing: TIMING });
+  useForwarder(t, dir);
+  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t), timing: TIMING });
   const s = byId(report);
   assert.equal(report.ok, true, format(report));
   for (const id of ['agent', 'capture', 'input', 'server', 'relay', 'relay-input', 'http-input']) assert.equal(s[id].status, 'ok', `${id}: ${s[id].detail}`);
+  // 收尾那次「把光标放回去」是探针发完就返回的，要经 multicc-remote 才落到假 Agent；
+  // 多一跳后不能同步断言，给它最多 2s。
+  const deadline = Date.now() + 2000;
+  while (state.cursor[0] !== 300 && Date.now() < deadline) await new Promise(r => setTimeout(r, 20));
   assert.deepEqual(state.cursor, [300, 200], 'the probe restores the cursor');
   assert.ok(state.hovers >= 10, 'both direct and relayed input were exercised');
 });
 
 test('input lost at the Agent: the first failing hop is input, not the picture', async t => {
   const { dir } = await fakeAgent(t, { moves: false, reacts: false });
-  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t, dir), timing: TIMING });
+  useForwarder(t, dir);
+  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t), timing: TIMING });
   assert.equal(report.firstFailure, 'input', format(report));
   assert.match(byId(report).input.hint, /no event was posted/);
   assert.equal(byId(report).capture.status, 'ok');
@@ -126,14 +146,16 @@ test('input lost at the Agent: the first failing hop is input, not the picture',
 
 test('capture stalled: input lands but no frames — reported as a frozen picture', async t => {
   const { dir } = await fakeAgent(t, { reacts: false });
-  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t, dir), timing: TIMING });
+  useForwarder(t, dir);
+  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t), timing: TIMING });
   assert.equal(report.firstFailure, 'input', format(report));
   assert.match(byId(report).input.hint, /picture does not update/);
 });
 
 test('older Agent without a cursor report: the picture reaction still proves input', async t => {
   const { dir, state } = await fakeAgent(t, { cursor: false });
-  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t, dir), timing: TIMING });
+  useForwarder(t, dir);
+  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t), timing: TIMING });
   assert.equal(report.ok, true, format(report));
   assert.match(byId(report).input.detail, /does not report the cursor/);
   assert.ok(Math.abs(state.cursor[0] - W / 2) < 60, 'hovers around the screen centre');
@@ -141,7 +163,8 @@ test('older Agent without a cursor report: the picture reaction still proves inp
 
 test('running server predates the pointer op: a warning, not a failure', async t => {
   const { dir } = await fakeAgent(t);
-  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t, dir, { pointerOp: false }), timing: TIMING });
+  useForwarder(t, dir);
+  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t, { pointerOp: false }), timing: TIMING });
   assert.equal(report.ok, true, format(report));
   assert.equal(byId(report)['http-input'].status, 'warn');
   assert.match(byId(report)['http-input'].hint, /restart the server/);
@@ -149,7 +172,8 @@ test('running server predates the pointer op: a warning, not a failure', async t
 
 test('Agent down: agent fails first and the hops that depend on it are skipped', async t => {
   const { dir } = await fakeAgent(t, { agent: false });
-  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t, dir), timing: TIMING, move: true });
+  useForwarder(t, dir);
+  const report = await runProbe({ agentDir: dir, baseUrl: await fakeServer(t), timing: TIMING, move: true });
   const s = byId(report);
   assert.equal(report.firstFailure, 'agent', format(report));
   assert.equal(s.capture.status, 'skip');

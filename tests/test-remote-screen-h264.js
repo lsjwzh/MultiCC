@@ -1,293 +1,112 @@
 'use strict';
 
-// 「🖥 屏幕」高清流畅模式的服务端桥：Agent h264.sock ⇄ /ws/remote-screen?mode=h264。
-// 用假 socket / 假 WS 钉住四件事：按帧切分转发、积压时只丢普通帧并补要关键帧、
-// 浏览器→Agent 只放行三种定长消息、出不了首帧就断开让前端回退。
+// 「🖥 屏幕」H.264 / RFB WS 转发：Node 只搬字节，不解析远控协议。
+//
+// 迁移前这个文件钉的是 JS 桥的分帧、丢帧与关键帧请求逻辑；那些行为已经随业务
+// 进 Rust（native/remote/）并由 Rust 测试覆盖。这里改钉 Node 这一跳最容易出错的
+// 地方：线协议金样逐字节透明、上游 URL 不夹带鉴权票据、上游未就绪时的排队上限。
 
-const test = require('node:test');
+const fs = require('fs');
+const http = require('http');
+const os = require('os');
+const path = require('path');
 const assert = require('node:assert/strict');
-const { EventEmitter } = require('node:events');
-const { attachH264Bridge, T_CONFIG, T_KEY, T_DELTA, T_PONG, REQ_KEY, CAP_KBPS, PING } = require('../src/remote-screen-h264-bridge');
+const test = require('node:test');
+const { WebSocketServer, WebSocket } = require('ws');
 
-function frame(type, body) {
-  const payload = Buffer.from(body);
-  const head = Buffer.alloc(5);
-  head[0] = type;
-  head.writeUInt32BE(payload.length, 1);
-  return Buffer.concat([head, payload]);
-}
-
-function harness(opts = {}) {
-  const sock = new EventEmitter();
-  sock.written = [];
-  sock.destroyed = false;
-  sock.write = data => { sock.written.push(Buffer.from(data)); return true; };
-  sock.destroy = () => { sock.destroyed = true; };
-  const ws = new EventEmitter();
-  ws.readyState = 1;
-  ws.bufferedAmount = 0;
-  ws.sent = [];
-  ws.closedWith = null;
-  ws.send = (msg, _opts, cb) => { ws.sent.push(Buffer.from(msg)); cb?.(); };
-  ws.close = (code, reason) => { ws.closedWith = { code, reason }; ws.readyState = 3; };
-  let t = 0;
-  const { beforeAttach, ...bridgeOpts } = opts;
-  beforeAttach?.(ws);
-  const bridge = attachH264Bridge(ws, { socketPath: '/nope', connect: () => sock, now: () => t, ...bridgeOpts });
-  sock.emit('connect');
-  return { sock, ws, bridge, advance: ms => { t += ms; } };
-}
-
-test('h264 bridge: reassembles frames split across reads, one WS message per frame', t => {
-  const { sock, ws, bridge } = harness();
-  t.after(() => bridge.close());
-  const cfg = frame(T_CONFIG, JSON.stringify({ codec: 'avc1.64001F', width: 1470, height: 956 }));
-  const key = frame(T_KEY, 'KEYFRAME');
-  const delta = frame(T_DELTA, 'delta');
-  const all = Buffer.concat([cfg, key, delta]);
-  // 故意切在帧头中间、帧体中间
-  sock.emit('data', all.subarray(0, 3));
-  sock.emit('data', all.subarray(3, cfg.length + 7));
-  sock.emit('data', all.subarray(cfg.length + 7));
-  assert.deepEqual(ws.sent.map(b => b.toString('hex')), [cfg, key, delta].map(b => b.toString('hex')));
-});
-
-test('h264 bridge: delta frames before the first key frame are dropped', t => {
-  const { sock, ws, bridge } = harness();
-  t.after(() => bridge.close());
-  sock.emit('data', frame(T_DELTA, 'early'));
-  assert.equal(ws.sent.length, 0);
-  sock.emit('data', frame(T_KEY, 'k'));
-  sock.emit('data', frame(T_DELTA, 'd'));
-  assert.deepEqual(ws.sent.map(b => b[0]), [T_KEY, T_DELTA]);
-});
-
-test('h264 bridge: frames parked in the WS backpressure queue count as backlog', t => {
-  // The connection router wraps every WS (ws-backpressure): frames wait in its
-  // queue while bufferedAmount sits at its high-water mark. The bridge must see
-  // that queue, or a slow link queues seconds of stale video instead of dropping.
-  const { installWsBackpressure } = require('../src/ws-backpressure');
-  const timers = [];
-  const { sock, ws, bridge } = harness({
-    highWater: 1000,
-    lowWater: 100,
-    beforeAttach: w => installWsBackpressure(w, {
-      limits: { highWaterBytes: 100 },
-      schedule: fn => { timers.push(fn); return timers.length; },
-      cancelSchedule: () => {},
-    }),
-  });
-  t.after(() => { bridge.close(); ws.emit('close'); });
-  sock.emit('data', frame(T_KEY, 'k1'));
-  assert.equal(ws.sent.length, 1);
-  ws.bufferedAmount = 150; // above the queue's 100, below the bridge's 1000
-  for (let i = 0; i < 40; i++) sock.emit('data', frame(T_DELTA, 'd'.repeat(100)));
-  const queued = ws._multiccBackpressure.stats().queueBytes;
-  assert.ok(queued <= 1000 + 105, `the bridge stops feeding the queue at its high-water mark (queued ${queued})`);
-  assert.ok(bridge.stats.dropped > 0, 'deltas beyond the backlog are dropped, not queued');
-});
-
-test('h264 bridge: backlog drops deltas (never the stream), then asks for a key frame once drained', t => {
-  const { sock, ws, bridge, advance } = harness({ highWater: 1000, lowWater: 100, keyRequestIntervalMs: 500 });
-  t.after(() => bridge.close());
-  sock.emit('data', frame(T_KEY, 'k1'));
-  ws.bufferedAmount = 5000;
-  sock.emit('data', frame(T_DELTA, 'd1'));
-  sock.emit('data', frame(T_DELTA, 'd2'));
-  assert.equal(ws.sent.length, 1, 'deltas over the high-water mark are dropped');
-  assert.equal(sock.written.length, 0, 'no key request while the link is still backed up');
-  assert.equal(ws.closedWith, null, 'a slow link must not close the stream');
-
-  ws.bufferedAmount = 0;
-  advance(1000);
-  sock.emit('data', frame(T_DELTA, 'd3'));
-  assert.equal(ws.sent.length, 1, 'still waiting for a key frame: deltas cannot be decoded');
-  assert.deepEqual(sock.written.map(b => b[0]), [REQ_KEY]);
-  sock.emit('data', frame(T_DELTA, 'd4'));
-  assert.equal(sock.written.length, 1, 'key requests are throttled');
-
-  sock.emit('data', frame(T_KEY, 'k2'));
-  sock.emit('data', frame(T_DELTA, 'd5'));
-  assert.deepEqual(ws.sent.slice(1).map(b => b.subarray(5).toString()), ['k2', 'd5']);
-  assert.ok(bridge.stats.dropped >= 4);
-});
-
-test('h264 bridge: browser → agent passes only key requests, rate control and RFB key/pointer events', t => {
-  const { sock, ws, bridge } = harness();
-  t.after(() => bridge.close());
-  ws.emit('message', Buffer.from([REQ_KEY]), true);
-  ws.emit('message', Buffer.from([4, 1, 0, 0, 0, 0, 0, 0x61]), true);
-  ws.emit('message', Buffer.from([5, 1, 0, 10, 0, 20]), true);
-  ws.emit('message', Buffer.from([CAP_KBPS, 0, 0, 5, 0xdc]), true);    // 'B' 1500 kbps
-  ws.emit('message', Buffer.from([CAP_KBPS, 0, 0, 0, 0]), true);       // 'B' revoke
-  ws.emit('message', Buffer.from([PING, 0, 0, 0, 7]), true);           // 'P' token 7
-  ws.emit('message', Buffer.from([CAP_KBPS, 0, 5, 0xdc]), true);        // wrong length
-  ws.emit('message', Buffer.from([PING, 0, 0, 7]), true);              // wrong length
-  ws.emit('message', Buffer.from([5, 1, 0, 10]), true);                 // wrong length
-  ws.emit('message', Buffer.from([3, 0, 0, 0, 0, 0, 0, 0, 0, 0]), true); // RFB FramebufferUpdateRequest: not ours
-  ws.emit('message', Buffer.from('K'), false);                           // text frame
-  assert.deepEqual(sock.written.map(b => b.toString('hex')),
-    ['4b', '0401000000000061', '050100'+'0a0014', '42000005dc', '4200000000', '5000000007']);
-});
-
-test('h264 bridge: pong is forwarded at once, never dropped and never counts as a frame', async t => {
-  const { sock, ws, bridge } = harness({ firstFrameTimeoutMs: 20, highWater: 0 });
-  t.after(() => bridge.close());
-  // 积压超过水位、且还没见过关键帧：pong 依旧直通，但绝不能顶替视频帧。
-  ws.bufferedAmount = 10_000;
-  const pong = frame(T_PONG, Buffer.concat([Buffer.from([0, 0, 0, 7]), Buffer.from([0, 0, 5, 0xdc])]));
-  sock.emit('data', pong);
-  assert.deepEqual(ws.sent.map(b => b.toString('hex')), [pong.toString('hex')]);
-  assert.equal(bridge.stats.dropped, 0);
-  assert.equal(bridge.stats.forwarded, 1);
-  await new Promise(r => setTimeout(r, 40));
-  assert.deepEqual(ws.closedWith, { code: 1011, reason: 'h264-no-frames' },
-    'a pong is not a frame: the no-frame timeout must still fire');
-});
-
-test('h264 bridge: no frame from the agent → close so the page falls back to noVNC', async () => {
-  const { ws } = harness({ firstFrameTimeoutMs: 20 });
-  await new Promise(r => setTimeout(r, 40));
-  assert.deepEqual(ws.closedWith, { code: 1011, reason: 'h264-no-frames' });
-});
-
-test('h264 bridge: oversized frame header is rejected, socket close ends the WS', t => {
-  const a = harness({ maxFrameBytes: 16 });
-  t.after(() => a.bridge.close());
-  const head = Buffer.alloc(5); head[0] = T_KEY; head.writeUInt32BE(1 << 20, 1);
-  a.sock.emit('data', head);
-  assert.equal(a.ws.closedWith.reason, 'h264-bad-frame');
-  assert.ok(a.sock.destroyed);
-
-  const b = harness();
-  b.sock.emit('close');
-  assert.equal(b.ws.closedWith.reason, 'h264-unavailable');
-});
-
-// ── 直连（P2P）切换：用假 session 钉住 bridge 侧的通道选择 ──
-function p2pHarness(opts = {}) {
-  let hooks = null;
-  const signals = [];
-  const session = { handled: [], closed: false, handleSignal(m) { this.handled.push(m); }, close() { this.closed = true; } };
-  const h = harness({ p2p: x => { hooks = x; return session; }, p2pHello: { iceServers: [] }, ...opts });
-  // 构造时发出的 rtc-hello 落在默认假 ws 的 sent 里：取出来单独核对
-  const hello = JSON.parse(h.ws.sent.shift().toString());
-  h.ws.send = (msg, _o, cb) => {
-    if (typeof msg === 'string') signals.push(JSON.parse(msg));
-    else h.ws.sent.push(Buffer.from(msg));
-    cb?.();
-  };
-  const p2pSent = [];
-  const sink = { kind: 'p2p', backlog: 0, buffered() { return this.backlog; }, send: m => p2pSent.push(Buffer.from(m)) };
-  return { ...h, hooks: () => hooks, hello, session, signals, sink, p2pSent };
-}
-
-test('h264 bridge p2p: hello on attach, text frames are signalling, frames follow the active channel', t => {
-  const { sock, ws, bridge, hooks, hello, session, signals, sink, p2pSent } = p2pHarness();
-  t.after(() => bridge.close());
-  assert.deepEqual(hello, { t: 'rtc-hello', iceServers: [] });
-  ws.emit('message', Buffer.from(JSON.stringify({ t: 'rtc-offer', sdp: 'v=0' })), false);
-  assert.deepEqual(session.handled, [{ t: 'rtc-offer', sdp: 'v=0' }]);
-
-  sock.emit('data', frame(T_KEY, 'k1'));
-  assert.equal(ws.sent.length, 1, 'relay before the channel opens');
-
-  hooks().onOpen(sink);
-  assert.deepEqual(signals.at(-1), { t: 'rtc-active', on: true }, 'browser told before frames move');
-  assert.equal(sock.written.at(-1)[0], REQ_KEY, 'switching asks for a key frame');
-  assert.equal(bridge.stats.transport, 'p2p');
-  sock.emit('data', frame(T_DELTA, 'd-before-key'));
-  sock.emit('data', frame(T_KEY, 'k2'));
-  sock.emit('data', frame(T_DELTA, 'd2'));
-  assert.deepEqual(p2pSent.map(b => b.subarray(5).toString()), ['k2', 'd2'], 'new channel starts at a key frame');
-  assert.equal(ws.sent.length, 1, 'nothing more on the relay');
-
-  // 直连上的输入同样按白名单转给 Agent
-  hooks().onMessage(Buffer.from([5, 1, 0, 1, 0, 2]));
-  hooks().onMessage(Buffer.from([3, 0]));
-  assert.equal(sock.written.at(-1).toString('hex'), '050100010002');
-
-  hooks().onClose();
-  assert.deepEqual(signals.at(-1), { t: 'rtc-active', on: false });
-  sock.emit('data', frame(T_KEY, 'k3'));
-  assert.equal(ws.sent.at(-1).subarray(5).toString(), 'k3', 'back on the relay');
-  assert.equal(bridge.stats.transport, 'relay');
-});
-
-test('h264 bridge p2p: backlog on the direct channel drops deltas; closing the WS closes the session', () => {
-  const { sock, ws, hooks, session, sink, p2pSent } = p2pHarness({ highWater: 1000, lowWater: 100 });
-  hooks().onOpen(sink);
-  sock.emit('data', frame(T_KEY, 'k'));
-  sink.backlog = 5000;
-  sock.emit('data', frame(T_DELTA, 'd'));
-  assert.equal(p2pSent.length, 1);
-  ws.emit('close');
-  assert.ok(session.closed);
-});
-
-test('p2p ice servers: public STUN by default, env overrides, empty = LAN only, junk ignored', () => {
-  const { iceServersFromEnv, DEFAULT_STUN } = require('../src/remote-screen-p2p');
-  assert.deepEqual(iceServersFromEnv({}), [{ urls: DEFAULT_STUN }]);
-  assert.deepEqual(iceServersFromEnv({ MULTICC_REMOTE_STUN: '' }), []);
-  assert.deepEqual(iceServersFromEnv({ MULTICC_REMOTE_STUN: 'stun:a.example:3478, turn:relay.example, http://x, stuns:b.example' }),
-    [{ urls: ['stun:a.example:3478', 'stuns:b.example'] }], 'only stun:/stuns: — never a TURN relay');
-});
-
-// Wire golden (tests/fixtures/remote-screen-wire.json): the App, this bridge and
-// the Agent each assert the same byte table, so no end can drift alone.
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-screen-h264-'));
+process.env.MULTICC_DATA_DIR = tmp;
+const rs = require('../src/remote-screen-rust');
+const { installFakeRemote, waitFor, fakeClientWs, fakeUpstreamWs } = require('./helpers/remote-screen-node-harness');
 const wire = require('./fixtures/remote-screen-wire.json');
-const hex = h => Buffer.from(h, 'hex');
 
-test('wire golden: fixture bytes are the encoding of their own fields', () => {
-  const be16 = v => [v >> 8, v & 0xff];
-  for (const c of wire.clientToAgent) {
-    const want = c.kind === 'pointer' ? [5, c.mask, ...be16(c.x), ...be16(c.y)]
-      : c.kind === 'key' ? [4, c.down ? 1 : 0, 0, 0, ...[24, 16, 8, 0].map(s => (c.keysym >>> s) & 0xff)]
-        : [REQ_KEY];
-    assert.equal(c.hex, Buffer.from(want).toString('hex'), c.name);
+const hex = value => Buffer.from(value, 'hex');
+
+function withFake(t, env) {
+  const fake = installFakeRemote(env);
+  t.after(async () => { await rs._resetForTests(); fake.cleanup(); });
+  return fake;
+}
+
+function listen(server) {
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
+}
+
+test('the wire golden passes through byte-for-byte in both directions', async t => {
+  withFake(t);
+  const previous = rs._deps.connectUpstream;
+  t.after(() => { rs._deps.connectUpstream = previous; });
+  await rs.capabilities();
+
+  const upstream = fakeUpstreamWs();
+  let created = false;
+  rs._deps.connectUpstream = () => { created = true; return upstream; };
+  const client = fakeClientWs();
+  rs.attachH264(client, { url: '/ws/remote-screen?mode=h264' });
+  await waitFor(() => created, 2000, 'upstream connect');
+  upstream.emit('open');
+
+  // 客户端 → 上游：App 的输入与码率控制原样过，不重组、不丢弃。
+  for (const item of [...wire.clientToAgent, ...wire.clientRateControlToAgent]) {
+    client.emit('message', hex(item.hex), true);
+    assert.equal(upstream.sent.at(-1).data.toString('hex'), item.hex, item.name);
+    assert.equal(upstream.sent.at(-1).binary, true, item.name);
   }
-  for (const c of wire.clientRateControlToAgent) {
-    const want = c.kind === 'cap' ? [CAP_KBPS, ...[24, 16, 8, 0].map(s => (c.kbps >>> s) & 0xff)]
-      : c.kind === 'ping' ? [PING, ...[24, 16, 8, 0].map(s => (c.token >>> s) & 0xff)]
-        : null;
-    assert.ok(want, `${c.name}: unknown kind ${c.kind}`);
-    assert.equal(c.hex, Buffer.from(want).toString('hex'), c.name);
+
+  // 上游 → 客户端：Agent 的 config / 关键帧 / 普通帧 / pong 一条一条到达。
+  for (const frame of wire.agentToClient) {
+    upstream.emit('message', hex(frame.hex), true);
+    assert.equal(client.sent.at(-1).data.toString('hex'), frame.hex, frame.name);
+    assert.equal(client.sent.at(-1).binary, true, frame.name);
   }
-  for (const f of wire.agentToClient) {
-    const payload = f.type === T_CONFIG || f.type === T_PONG ? hex(f.payloadHex)
-      : Buffer.concat([(() => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(f.pts)); return b; })(), hex(f.annexBHex)]);
-    assert.equal(f.hex, frame(f.type, payload).toString('hex'), f.name);
-    if (f.type === T_CONFIG) assert.deepEqual(JSON.parse(payload.toString()), f.json);
-    if (f.type === T_PONG) {
-      assert.equal(payload.length, 8, f.name);
-      assert.equal(payload.readUInt32BE(0), f.token, f.name);
-      assert.equal(payload.readUInt32BE(4), f.appliedKbps, f.name);
-    }
-  }
-  assert.deepEqual(wire.agentToClient.map(f => f.type), [T_CONFIG, T_KEY, T_DELTA, T_PONG]);
+
+  // 文本信令保持文本：P2P 握手就走这条通道，不能变成二进制帧。
+  upstream.emit('message', JSON.stringify({ t: 'rtc-hello', iceServers: [] }), false);
+  assert.equal(client.sent.at(-1).binary, false);
+  assert.equal(JSON.parse(client.sent.at(-1).data).t, 'rtc-hello');
+  client.emit('close', 1000, 'done');
 });
 
-test('wire golden: bridge forwards every client message byte-for-byte and nothing else', t => {
-  const { sock, ws, bridge } = harness();
-  t.after(() => bridge.close());
-  for (const c of [...wire.clientToAgent, ...wire.clientRateControlToAgent]) {
-    sock.written.length = 0;
-    ws.emit('message', hex(c.hex), true);
-    assert.deepEqual(sock.written.map(b => b.toString('hex')), [c.hex], c.name);
-  }
-  for (const c of wire.rejectedByBridge) {
-    sock.written.length = 0;
-    ws.emit('message', hex(c.hex), true);
-    assert.deepEqual(sock.written, [], `${c.name}: ${c.why}`);
-  }
+test('H.264 attaches ask for mode=h264; RFB keeps its own query', async t => {
+  withFake(t);
+  const previous = rs._deps.connectUpstream;
+  t.after(() => { rs._deps.connectUpstream = previous; });
+  await rs.capabilities();
+
+  const urls = [];
+  rs._deps.connectUpstream = ({ url }) => { urls.push(url); return fakeUpstreamWs(); };
+  const h264 = fakeClientWs();
+  rs.attachH264(h264, { url: '/ws/remote-screen?ticket=T&token=X&lang=zh' });
+  const rfb = fakeClientWs();
+  rs.attachRfb(rfb, { url: '/ws/remote-screen?mode=rfb&ticket=T' });
+  await waitFor(() => urls.length === 2, 2000, 'both upstreams');
+
+  assert.match(urls[0], /\/ws\/remote-screen\?(?=.*mode=h264)(?=.*lang=zh)[^?]*$/);
+  assert.match(urls[1], /\/ws\/remote-screen\?mode=rfb$/);
+  assert.ok(urls.every(url => !/ticket|token/.test(url)), `auth tickets stay on the Node hop: ${urls}`);
+  h264.emit('close', 1000, '');
+  rfb.emit('close', 1000, '');
 });
 
-test('wire golden: agent frames reach the client one message each, whatever the read boundaries', t => {
-  for (const cut of [1, 3, 7, 64]) {
-    const { sock, ws, bridge } = harness();
-    t.after(() => bridge.close());
-    const stream = Buffer.concat(wire.agentToClient.map(f => hex(f.hex)));
-    for (let i = 0; i < stream.length; i += cut) sock.emit('data', stream.subarray(i, i + cut));
-    assert.deepEqual(ws.sent.map(b => b.toString('hex')), wire.agentToClient.map(f => f.hex), `cut ${cut}`);
-  }
+test('a real WS client queues while the upstream handshake is delayed and overflows with 1013', async t => {
+  withFake(t, { FAKE_REMOTE_WS_DELAY_MS: '400' });
+  const server = http.createServer();
+  const wss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    wss.handleUpgrade(req, socket, head, ws => rs.attachH264(ws, req));
+  });
+  const port = await listen(server);
+  t.after(() => new Promise(resolve => {
+    for (const client of wss.clients) client.terminate();
+    wss.close();
+    server.closeAllConnections?.();
+    server.close(() => resolve());
+  }));
+
+  const client = new WebSocket(`ws://127.0.0.1:${port}/ws/remote-screen?mode=h264`);
+  client.on('error', () => {});
+  const closed = new Promise(resolve => client.on('close', (code, reason) => resolve({ code, reason: String(reason) })));
+  await new Promise((resolve, reject) => { client.once('open', resolve); client.once('error', reject); });
+  client.send(Buffer.alloc(1024 * 1024 + 1));
+  assert.deepEqual(await closed, { code: 1013, reason: 'queue-overflow' });
 });

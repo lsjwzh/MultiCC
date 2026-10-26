@@ -31,12 +31,13 @@ if (out) {
     } catch {}
   };
 
+  const OWNER_FILES = new Set(['remote-screen.js', 'remote-screen-node.js']);
   Module._load = function (request, parent, isMain) {
     const exported = load.call(this, request, parent, isMain);
     if (
       wrapped ||
       !parent ||
-      path.basename(parent.filename) !== 'remote-screen.js' ||
+      !OWNER_FILES.has(path.basename(parent.filename)) ||
       !/(^|[\\/])remote-screen-h264-bridge$/.test(request)
     ) {
       return exported;

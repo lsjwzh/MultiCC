@@ -1,0 +1,32 @@
+[package]
+name = "multicc-remote"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "multicc-remote"
+path = "src/main.rs"
+
+[lib]
+name = "multicc_remote"
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = "0.1.92"
+axum = { version = "0.8", features = ["ws"] }
+bytes = "1"
+futures-util = "0.3"
+getrandom = "0.2"
+ryu-js = "1"
+# P2P 直连（p2p.rs）。webrtc 默认 features 走 ring：只有一个 C 依赖，
+# 不开 crypto-aws-lc-rs（那会拉进 cmake + 一份 C 构建）。
+webrtc = "0.21.1"
+# p2p.rs 直接引用 rtc 的 RTCDtlsRole（webrtc 转发的那个 crate）。
+rtc = "0.21.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "process", "fs"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

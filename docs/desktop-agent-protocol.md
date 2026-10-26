@@ -2,14 +2,15 @@
 
 「🖥 屏幕」的能力不来自 MultiCC 服务端，而来自**跑在用户图形会话里的那个 desktop agent**。
 macOS 的实现是 `scripts/macos-agent/MultiCCAgent.swift`（Swift，`MultiCC Agent.app`），
-Linux X11 的实现是 `scripts/linux-agent/`（C）；Windows 还没有，`src/desktop-host.js` 里如实登记成
-`supported: false`。
+Linux X11 的实现是 `scripts/linux-agent/`（C）；Windows 还没有，`native/remote/`（Rust 进程
+`multicc-remote`）的画像表里如实登记成 `supported: false`。
 
 这份文档是**给下一个平台实现看的契约**：照它实现，服务端、Web 前端、Flutter App、
 标注→动作链路、坐标换算一个字都不用改——它们只认下面这些 op 和 reason，不认平台名。
 
-配套阅读：`src/desktop-host.js`（画像与能力矩阵）、`src/remote-screen.js`（服务端）、
-`src/remote-screen-wake.js`（唤屏）、`src/remote-screen-rfb-bridge.js`（串流桥）。
+配套阅读：`docs/remote-screen-process.md`（Node ⇄ `multicc-remote` 进程契约）、
+`native/remote/`（画像与能力矩阵、唤屏、RFB/H.264 串流桥；业务都在这里）、
+`src/remote-screen.js`（Node 转发层：只管惰性启动、看护和鉴权后原样转发）。
 
 ---
 
@@ -57,7 +58,7 @@ Linux X11 的实现是 `scripts/linux-agent/`（C）；Windows 还没有，`src/
 { "ok": false, "reason": "screen-locked" }
 ```
 
-`reason` 的取值集合是**契约的一部分**，服务端直接拿它查文案（见 `src/remote-screen.js`
+`reason` 的取值集合是**契约的一部分**，服务端直接拿它查文案（见 `native/remote/src/describe.rs`
 的 `REASONS` 与 `public/chat-remote-screen.js` 的 `ERR_KEYS`）：
 
 | reason | 含义 | 前端文案 |
@@ -121,8 +122,7 @@ Linux X11 的实现是 `scripts/linux-agent/`（C）；Windows 还没有，`src/
 为什么把这个能力做成 op 的可选字段，而不是让服务端自己去裁：macOS 有 `sips`，Linux 没有
 任何一个「一定在」的命令行图像工具，让服务端裁就等于要求用户装 ImageMagick。而 agent
 手里本来就攥着帧缓冲，顺手裁切 + 编码还能少两次全屏拷贝。**能力跟着平台走**：
-`desktop-host.js` 只在非 macOS 上挂 `captureDirect`，`remote-screen.js` 的 `capture()`
-用它的有无来选路。
+`native/remote/` 的画像只在非 macOS 上挂 `captureDirect`，抓帧路径按它的有无来选。
 
 ### 4.2 可选（`features` 里声明）
 
@@ -162,7 +162,7 @@ CLI 与 socket 走的是同一个 socket、同一段解析，所以 CLI 上的�
    悄悄落到登录窗口上。**
 4. **受保护 App**：密码框、系统设置/安全中心一类目标回 `protected-app`，拒绝自动操作。
 5. **`unlock` 不是普通输入 op**：服务端 `buildInput` 的白名单里根本没有它
-   （`src/remote-screen.js` 的 `INPUT_OPS`），只有唤屏路由能发，且要用户显式开了
+   （`native/remote/src/annotation.rs` 的输入白名单），只有唤屏路由能发，且要用户显式开了
    「自动解锁」并已保存密码。新平台即使不能解锁，也必须**接受这个 op 并回 `ok:false` +
    合适的 reason**，而不是断连。
 6. **不执行命令、不任意读写路径**：op 集合是封闭的。`snap` 的 `path` 必须落在调用方给的
@@ -186,7 +186,8 @@ CLI 与 socket 走的是同一个 socket、同一段解析，所以 CLI 上的�
 
 ### 6.1 H.264 串流（可选，优先于 RFB）
 
-第三个 socket 推硬件编码的 H.264，服务端按帧转发到 `/ws/remote-screen?mode=h264`，
+第三个 socket 推硬件编码的 H.264，`multicc-remote` 按帧转发到 `/ws/remote-screen?mode=h264`
+（Node 只做鉴权后的字节搬运，见 `docs/remote-screen-process.md`），
 浏览器用 WebCodecs 解码（`public/chat-remote-screen-h264.js`）。同一套帧格式以后也走
 WebRTC DataChannel（P2P）；打洞失败时就走这条 WS——中继只用现有外网通道。
 
@@ -212,7 +213,8 @@ WebRTC DataChannel（P2P）；打洞失败时就走这条 WS——中继只用�
 
 ### 6.2 P2P 直连（服务端可选，与 Agent 无关）
 
-`/ws/remote-screen?mode=h264` 同时是 WebRTC 的信令通道（`src/remote-screen-p2p.js`，werift）：
+`/ws/remote-screen?mode=h264` 同时是 WebRTC 的信令通道（`native/remote/src/p2p.rs`；
+迁移前是 Node + werift）：
 服务端发 `{t:'rtc-hello', iceServers}`，浏览器建 DataChannel 并 `rtc-offer`，双方 trickle
 `rtc-ice`；通道打开后服务端先发 `{t:'rtc-active', on:true}` 再把帧改走直连（并要一个关键帧），
 直连断开发 `on:false` 退回这条 WS。浏览器在直连期间丢弃 WS 上残余的帧，输入也改走直连。
@@ -344,9 +346,13 @@ macOS 那套做法**不可能**。没有全局截图、没有全局注入，唯�
 
 ## 8. 服务端如何判断「这台机器能做什么」
 
-`src/desktop-host.js` 的 `profileFor(platform)` 是唯一出处，`GET /api/remote-screen/capabilities`
+`native/remote/src/host.rs` 的画像表是唯一出处（Node 只把它转发出来），`GET /api/remote-screen/capabilities`
 把它原样吐给前端。`supported: false` 时三条路由（frame/input/snapshot）与唤屏路由都干净地回
 `503 / 409 platform-unsupported`，**不会去连一个不存在的 socket**；前端据此不显示 🖥。
+
+> Node 回退后端（`MULTICC_REMOTE_SCREEN_BACKEND=node`，见 remote-screen-process.md §7）不经过
+> `host.rs`，而是用迁移前留在 `src/desktop-host.js` 的同一张画像表；回退存在期间两边改动要同步，
+> 回退删除后以 `host.rs` 为准。
 
 判断「能不能做某件事」要按 **feature 名**判，不要按平台名判——平台名会把「Linux 支持远程屏幕」
 错读成「Linux 支持唤屏」。唤屏路由的 `supported` 用的是 `features.wake`（Linux 为 false）：

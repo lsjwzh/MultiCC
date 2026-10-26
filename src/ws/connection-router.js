@@ -179,8 +179,8 @@ function mountWsConnectionRouter(wss, deps) {
     }
     if (urlObj.pathname === '/ws/remote-screen') {
       if (!remoteScreenRfb) { ws.close(1010, 'remote screen unavailable'); return; }
-      if (urlObj.searchParams.get('mode') === 'h264' && remoteScreenRfb.attachH264) return remoteScreenRfb.attachH264(ws);
-      return remoteScreenRfb.attachRfb(ws);
+      if (urlObj.searchParams.get('mode') === 'h264' && remoteScreenRfb.attachH264) return remoteScreenRfb.attachH264(ws, req);
+      return remoteScreenRfb.attachRfb(ws, req);
     }
     if (urlObj.pathname === '/ws/aux') {
       auxQueue.attachClient(ws);

@@ -320,6 +320,9 @@ function createProviderRoutes(rawDeps) {
   function mountManagementRoutes(app) {
     for (const method of ['get', 'post', 'patch', 'delete', 'put']) assertAppMethod(app, method);
     require('./cpr-backend-settings').mountCprBackendSettingsRoutes(app, { runtime: deps.providerRouterRuntime });
+    // 「🖥 屏幕」后端开关：rust 独立进程（默认）/ node 回退，只写配置、重启生效。
+    require('./remote-screen-backend-settings').mountRemoteScreenBackendSettingsRoutes(app,
+      typeof deps.getNative === 'function' ? { getNative: deps.getNative } : {});
     // 子任务默认线路 + 一键同步（迁移桥接：Rust 决策，Node 落盘/逐会话 PATCH）。
     require('./subagent-defaults').mountSubagentDefaultsRoutes(app, {
       providerDefaults,

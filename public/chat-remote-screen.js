@@ -33,7 +33,7 @@
     const pair = ERR_KEYS[data && data.error];
     return pair ? tr(pair[0], pair[1]) : (data && (data.message || data.error)) || tr('rsErrUnknown', '操作失败');
   };
-  // ⌘ 只是 Mac 的写法：按键串要跟本机 desktop agent 所在平台一致（见 desktop-host.js），
+  // ⌘ 只是 Mac 的写法：按键串要跟本机 desktop agent 所在平台一致（画像见 native/remote/src/host.rs），
   // 所以先按 ⌘ 写一遍，出这一行时再按能力画像换成 Ctrl。
   const KEYS = [
     ['⏎', 'return'], ['Esc', 'escape'], ['Tab', 'tab'], ['⌫', 'delete'], ['Space', 'space'],

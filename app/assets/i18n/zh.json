@@ -4818,5 +4818,16 @@
   "airGlobalCprCurrent": "当前：{current}",
   "airGlobalCprPending": "当前：{current} · 重启后：{next}",
   "airGlobalCprUnavailable": "Rust 模块未就绪",
-  "airGlobalCprFailed": "设置失败：{message}"
+  "airGlobalCprFailed": "设置失败：{message}",
+  "airGlobalRemoteBackendEyebrow": "远程屏幕",
+  "airGlobalRemoteBackendTitle": "远程屏幕后端",
+  "airGlobalRemoteBackendUseNode": "切回 Node 版",
+  "airGlobalRemoteBackendUseRust": "使用 Rust 版",
+  "airGlobalRemoteBackendLoading": "读取中…",
+  "airGlobalRemoteBackendDesc": "默认使用 Rust 独立进程；Node 版只是兼容回退。更改后需手动重启服务。",
+  "airGlobalRemoteBackendCurrent": "当前：{current}",
+  "airGlobalRemoteBackendPending": "当前：{current} · 重启后：{next}",
+  "airGlobalRemoteBackendRustUnavailable": "Rust 远控进程未就绪",
+  "airGlobalRemoteBackendNodeUnavailable": "Node 回退依赖缺失",
+  "airGlobalRemoteBackendFailed": "设置失败：{message}"
 }

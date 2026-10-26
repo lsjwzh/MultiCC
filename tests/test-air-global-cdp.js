@@ -125,6 +125,19 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     cpr = { ...cpr, configuredBackend: body.backend, restartRequired: body.backend !== cpr.currentBackend };
     return json({ ok: true, ...cpr });
   };
+  // 「🖥 屏幕」后端：默认 rust，可切 node 回退；两边可用性都由服务端报。
+  let remoteBackend = { currentBackend: 'rust', configuredBackend: 'rust', restartRequired: false,
+    rustAvailable: true, nodeAvailable: true };
+  let remoteSaveError = '';
+  const remotePosts = [];
+  routes['GET /api/settings/remote-screen-backend'] = () => json({ ok: true, ...remoteBackend });
+  routes['POST /api/settings/remote-screen-backend'] = req => {
+    const body = JSON.parse(req.body); remotePosts.push(body);
+    if (remoteSaveError) return { status: 503, ...json({ error: remoteSaveError }) };
+    remoteBackend = { ...remoteBackend, configuredBackend: body.backend,
+      restartRequired: body.backend !== remoteBackend.currentBackend };
+    return json({ ok: true, ...remoteBackend });
+  };
   routes['POST /api/settings/power'] = async req => {
     const body = JSON.parse(req.body);
     powerPosts.push(body);
@@ -258,6 +271,38 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     assert.equal(cpr.configuredBackend, 'node');
     assert.equal(restartCalls(), restartBase, '保存、回退和失败均不自动重启');
     cprSaveError = '';
+
+    // 「🖥 屏幕」后端同样是「只保存下一次启动的选择」：默认 Rust，Node 只是回退。
+    assert.ok(await page.waitFor(`document.getElementById('air-global-remote-backend-toggle')?.disabled === false`));
+    assert.equal(await text('#air-global-remote-backend-status'), await tParams('airGlobalRemoteBackendCurrent', { current: 'Rust' }));
+    assert.equal(await text('#air-global-remote-backend-toggle'), await t('airGlobalRemoteBackendUseNode'));
+    const remoteRestartBase = restartCalls();
+    await page.evaluate(`document.getElementById('air-global-remote-backend-toggle').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-remote-backend-status').textContent.includes('Node') && !document.getElementById('air-global-remote-backend-toggle').disabled`));
+    assert.equal(await text('#air-global-remote-backend-status'), await tParams('airGlobalRemoteBackendPending', { current: 'Rust', next: 'Node' }));
+    assert.equal(await text('#air-global-remote-backend-toggle'), await t('airGlobalRemoteBackendUseRust'));
+    assert.deepEqual(remotePosts, [{ backend: 'node' }]);
+    await page.screenshot('02b-remote-screen-node-saved');
+    await page.evaluate(`document.getElementById('air-global-remote-backend-toggle').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-remote-backend-status').textContent === t('airGlobalRemoteBackendCurrent', { current: 'Rust' })`));
+    assert.deepEqual(remotePosts[1], { backend: 'rust' });
+    remoteSaveError = 'fixture: remote save failed';
+    await page.evaluate(`document.getElementById('air-global-remote-backend-toggle').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-remote-backend-status').textContent.includes('fixture: remote save failed') && !document.getElementById('air-global-remote-backend-toggle').disabled`));
+    assert.equal(remoteBackend.configuredBackend, 'rust');
+    assert.equal(restartCalls(), remoteRestartBase, '远程屏幕后端切换同样不自动重启');
+    remoteSaveError = '';
+
+    // 回退不可用（缺依赖）时按钮灰掉，并把原因写在状态行里。
+    remoteBackend = { currentBackend: 'rust', configuredBackend: 'rust', restartRequired: false,
+      rustAvailable: true, nodeAvailable: false };
+    await page.navigate('/air?dir=d1&view=settings');
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent === ${JSON.stringify(settingsLabel)}`));
+    await page.evaluate(`[...document.querySelectorAll('.air-setting-card')].find(card => card.querySelector('strong')?.textContent === ${JSON.stringify(globalLabel)}).click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-remote-backend-status')?.textContent.includes(t('airGlobalRemoteBackendNodeUnavailable'))`));
+    assert.equal(await page.evaluate(`document.getElementById('air-global-remote-backend-toggle').disabled`), true);
+    remoteBackend = { ...remoteBackend, nodeAvailable: true };
+    assert.ok(await page.waitFor(`document.getElementById('air-global-power-card')?.hidden === false`), '重进面板后电源卡也读回状态');
 
     // ── ③ 关盖运行：可见性、错误、以及勾选态到底谁说了算 ───────────────────
     assert.equal(await page.evaluate(`document.getElementById('air-global-power-card').checkVisibility()`), true, 'available:true 时整卡可见');

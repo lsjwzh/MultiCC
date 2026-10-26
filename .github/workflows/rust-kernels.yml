@@ -27,6 +27,17 @@ jobs:
           cargo fmt --all --manifest-path native/Cargo.toml --check
           cargo clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings
           cargo test --locked --manifest-path native/Cargo.toml -p multicc-cpr
+      # 远控进程的 Rust 测试必须进 CI。crate 还没落进 workspace 时明确略过，
+      # 一旦 native/remote/Cargo.toml 出现就必须编过、测过。
+      - name: 测试远控进程
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f native/remote/Cargo.toml ]; then
+            cargo test --locked --manifest-path native/Cargo.toml -p multicc-remote
+          else
+            echo "::notice::native/remote 尚未加入 cargo workspace，跳过 multicc-remote 测试"
+          fi
       - name: 构建并强制执行原生差分测试
         shell: bash
         env:
@@ -34,8 +45,20 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/multicc-rust-target
           MULTICC_RUST_BACKEND: rust
           MULTICC_REQUIRE_RUST_TESTS: '1'
+          MULTICC_REQUIRE_RUST_BUNDLE: '1'
         run: |
           set -euo pipefail
           node scripts/build-rust-kernels.js
           export MULTICC_RUST_ADDON="$(node -p 'require("node:path").join(process.env.MULTICC_RUST_PREBUILT_DIR,`${process.platform}-${process.arch}`,"multicc_core.node")')"
+          # 发布链路必须两个产物齐全：模块能 require，远控进程能跑并说出协议版本。
+          if [ -f native/remote/Cargo.toml ]; then
+            remote_bin=multicc-remote
+            if [ "$RUNNER_OS" = "Windows" ]; then remote_bin=multicc-remote.exe; fi
+            remote="$MULTICC_RUST_PREBUILT_DIR/$(node -p 'process.platform+"-"+process.arch')/$remote_bin"
+            [ -f "$remote" ] || { echo "::error::missing $remote"; exit 1; }
+            if [ "$RUNNER_OS" != "Windows" ]; then
+              [ -x "$remote" ] || { echo "::error::$remote is not executable"; exit 1; }
+            fi
+            "$remote" --version | grep -q '^multicc-remote 1 ' || { echo "::error::$remote --version is not multicc-remote 1"; exit 1; }
+          fi
           node --test tests/test-rust-cpr.js tests/test-rust-kernels.js tests/test-rust-sqlite.js tests/test-sqlite-driver.js tests/test-orchestration-sqlite-store.js tests/test-provider-limit-cache.js tests/test-task-shells.js tests/test-search-index.js tests/test-task-search.js tests/test-token-global.js

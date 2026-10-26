@@ -82,6 +82,11 @@ function nativeBinaryPlatform(file, { readBytes = 4096 } = {}) {
 
 // Every compiled addon under a staged tree. Sources and downloaded prebuild
 // archives are skipped: only what the loader can actually require() counts.
+// The remote-screen process (multicc-remote) is an extensionless executable, so
+// it is matched by name — an arch/OS mismatch there fails at spawn time just as
+// silently as a wrong addon does at require() time.
+const NATIVE_BINARIES = new Set(['multicc-remote', 'multicc-remote.exe']);
+
 function collectNativeBinaries(root, { skipDirs = new Set(['src', 'deps', 'prebuilds']) } = {}) {
   const found = [];
   if (!fs.existsSync(root)) return found;
@@ -93,7 +98,7 @@ function collectNativeBinaries(root, { skipDirs = new Set(['src', 'deps', 'prebu
       if (entry.isDirectory()) {
         if (skipDirs.has(entry.name)) continue;
         walk(full);
-      } else if (/\.(node|so|dylib|dll)$/i.test(entry.name)) {
+      } else if (/\.(node|so|dylib|dll)$/i.test(entry.name) || NATIVE_BINARIES.has(entry.name)) {
         found.push(full);
       }
     }

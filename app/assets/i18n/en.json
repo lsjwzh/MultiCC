@@ -4818,5 +4818,16 @@
   "airGlobalCprCurrent": "Current: {current}",
   "airGlobalCprPending": "Current: {current} · After restart: {next}",
   "airGlobalCprUnavailable": "Rust module is unavailable",
-  "airGlobalCprFailed": "Could not update setting: {message}"
+  "airGlobalCprFailed": "Could not update setting: {message}",
+  "airGlobalRemoteBackendEyebrow": "Remote screen",
+  "airGlobalRemoteBackendTitle": "Remote screen backend",
+  "airGlobalRemoteBackendUseNode": "Switch to Node",
+  "airGlobalRemoteBackendUseRust": "Use Rust",
+  "airGlobalRemoteBackendLoading": "Loading…",
+  "airGlobalRemoteBackendDesc": "Rust runs in a separate process and is the default. Node is a compatibility fallback only. Restart the service manually after changing this setting.",
+  "airGlobalRemoteBackendCurrent": "Current: {current}",
+  "airGlobalRemoteBackendPending": "Current: {current} · After restart: {next}",
+  "airGlobalRemoteBackendRustUnavailable": "The Rust remote process is unavailable",
+  "airGlobalRemoteBackendNodeUnavailable": "Node fallback dependencies are missing",
+  "airGlobalRemoteBackendFailed": "Could not update setting: {message}"
 }

@@ -3807,6 +3807,9 @@ window.MULTICC_I18N_CATALOG = {
     "rsLiveModeH264": "高清流畅模式",
     "rsViaP2P": "直连",
     "rsViaRelay": "中继",
+    "rsViaLan": "局域网",
+    "rsNetStats": "延迟 {ms}ms · {recv} / {target} Mbps · {path}",
+    "rsNetStatsNoRtt": "{recv} / {target} Mbps · {path}",
     "chatSessionGone": "这个任务已被删除，对话无法继续",
     "chatSessionGoneClose": "关闭",
     "rsStreamHd": "高清",
@@ -4817,7 +4820,18 @@ window.MULTICC_I18N_CATALOG = {
     "airGlobalCprCurrent": "当前：{current}",
     "airGlobalCprPending": "当前：{current} · 重启后：{next}",
     "airGlobalCprUnavailable": "Rust 模块未就绪",
-    "airGlobalCprFailed": "设置失败：{message}"
+    "airGlobalCprFailed": "设置失败：{message}",
+    "airGlobalRemoteBackendEyebrow": "远程屏幕",
+    "airGlobalRemoteBackendTitle": "远程屏幕后端",
+    "airGlobalRemoteBackendUseNode": "切回 Node 版",
+    "airGlobalRemoteBackendUseRust": "使用 Rust 版",
+    "airGlobalRemoteBackendLoading": "读取中…",
+    "airGlobalRemoteBackendDesc": "默认使用 Rust 独立进程；Node 版只是兼容回退。更改后需手动重启服务。",
+    "airGlobalRemoteBackendCurrent": "当前：{current}",
+    "airGlobalRemoteBackendPending": "当前：{current} · 重启后：{next}",
+    "airGlobalRemoteBackendRustUnavailable": "Rust 远控进程未就绪",
+    "airGlobalRemoteBackendNodeUnavailable": "Node 回退依赖缺失",
+    "airGlobalRemoteBackendFailed": "设置失败：{message}"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -8626,6 +8640,9 @@ window.MULTICC_I18N_CATALOG = {
     "rsLiveModeH264": "HD live stream",
     "rsViaP2P": "direct",
     "rsViaRelay": "relay",
+    "rsViaLan": "LAN",
+    "rsNetStats": "Latency {ms}ms · {recv} / {target} Mbps · {path}",
+    "rsNetStatsNoRtt": "{recv} / {target} Mbps · {path}",
     "chatSessionGone": "This task was deleted; the conversation can no longer continue",
     "chatSessionGoneClose": "Close",
     "rsStreamHd": "HD",
@@ -9636,6 +9653,17 @@ window.MULTICC_I18N_CATALOG = {
     "airGlobalCprCurrent": "Current: {current}",
     "airGlobalCprPending": "Current: {current} · After restart: {next}",
     "airGlobalCprUnavailable": "Rust module is unavailable",
-    "airGlobalCprFailed": "Could not update setting: {message}"
+    "airGlobalCprFailed": "Could not update setting: {message}",
+    "airGlobalRemoteBackendEyebrow": "Remote screen",
+    "airGlobalRemoteBackendTitle": "Remote screen backend",
+    "airGlobalRemoteBackendUseNode": "Switch to Node",
+    "airGlobalRemoteBackendUseRust": "Use Rust",
+    "airGlobalRemoteBackendLoading": "Loading…",
+    "airGlobalRemoteBackendDesc": "Rust runs in a separate process and is the default. Node is a compatibility fallback only. Restart the service manually after changing this setting.",
+    "airGlobalRemoteBackendCurrent": "Current: {current}",
+    "airGlobalRemoteBackendPending": "Current: {current} · After restart: {next}",
+    "airGlobalRemoteBackendRustUnavailable": "The Rust remote process is unavailable",
+    "airGlobalRemoteBackendNodeUnavailable": "Node fallback dependencies are missing",
+    "airGlobalRemoteBackendFailed": "Could not update setting: {message}"
   }
 };

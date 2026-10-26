@@ -216,6 +216,22 @@
         {
           "file": "src/desktop-host.js",
           "anchor": "rfbSock: env.MULTICC_AGENT_RFB_SOCK || path.join(dir, 'rfb.sock'),"
+        },
+        {
+          "file": "native/remote/src/host.rs",
+          "anchor": "env_value(env, \"MULTICC_AGENT_SOCK\").unwrap_or_else(|| join(&dir, \"agent.sock\")),"
+        },
+        {
+          "file": "native/remote/src/host.rs",
+          "anchor": "env_value(env, \"MULTICC_AGENT_RFB_SOCK\").unwrap_or_else(|| join(&dir, \"rfb.sock\")),"
+        },
+        {
+          "file": "native/remote/src/host.rs",
+          "anchor": "env_value(env, \"MULTICC_AGENT_H264_SOCK\").unwrap_or_else(|| join(&dir, \"h264.sock\")),"
+        },
+        {
+          "file": "native/remote/src/host.rs",
+          "anchor": "env_value(env, \"MULTICC_AGENT_PIPE\").unwrap_or_else(|| \"\\\\\\\\.\\\\pipe\\\\multicc-agent\".into()),"
         }
       ]
     },
