@@ -27,8 +27,14 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
   // The controller spreads `extra` into the HTTP body, so a failure with no
   // one-command remedy must yield undefined rather than a null field every
   // client would have to special-case.
+  // Any other git failure while adding a directory still gets the ops terminal
+  // (public/air-ops-terminal.js) as a way in: the add-directory dialog is the
+  // one place it is reachable from a host with no directories. Added here, not
+  // in dirReasonFix, because that shared vocabulary also travels on queued
+  // deliveries, where a generic "open a terminal" is not a remedy.
   const fixExtra = (reason) => {
-    const fix = helpers.dirReasonFix(reason);
+    const fix = helpers.dirReasonFix(reason)
+      || (String(reason || '').startsWith('git-error: ') ? 'open-ops-terminal' : null);
     return fix ? { fix } : undefined;
   };
 

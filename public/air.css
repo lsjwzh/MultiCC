@@ -2510,18 +2510,27 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
 .air-ops-k { color: var(--muted); min-width: 5.5em; }
 .air-ops-status-ok { color: var(--green); }
 .air-ops-status-bad { color: #b34128; }
+.air-ops-muted { color: var(--muted); }
+.air-ops-needs-root { margin: 10px 0 4px; color: var(--warning); font-size: 12px; line-height: 1.6; }
+.air-ops-copy { display: block; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); font-size: 12px; word-break: break-all; user-select: all; }
 .air-ops-chips, .air-ops-history { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
-.air-ops-chips:empty, .air-ops-history:empty { margin-top: 0; }
+.air-ops-history:empty { margin-top: 0; }
 .air-ops-chips-label { color: var(--muted); font-size: 12px; }
 .air-ops-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-soft); color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; cursor: pointer; }
 .air-ops-chip:hover { border-color: var(--accent); }
-.air-ops-cmdline { display: flex; gap: 8px; margin-top: 14px; }
-.air-ops-input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
-.air-ops-output { margin: 12px 0 0; min-height: 44px; max-height: 220px; overflow: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+/* 全局 dialog input 带 6px margin-top，不清掉输入框会比按钮低半截。 */
+.air-ops-cmdline { display: flex; align-items: stretch; gap: 8px; margin-top: 14px; }
+.air-ops-cmdline .air-ops-input { flex: 1; min-width: 0; margin-top: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.air-ops-cmdline button { flex: none; }
+.air-ops-output { margin: 12px 0 0; max-height: 260px; overflow: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+.air-ops-output:empty { display: none; }
+.air-ops-entry + .air-ops-entry { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
 .air-ops-cmd-head { color: var(--muted); font-weight: 600; }
-.air-ops-cmd-body { display: block; margin: 4px 0 12px; }
-.air-ops-cmd-body:only-child, .air-ops-cmd-body:last-child { margin-bottom: 0; }
-.air-ops-out-err { color: #b34128; }
 .air-ops-out-meta { display: block; margin-top: 4px; color: var(--muted); }
-.air-ops-cmd-bad .air-ops-out-meta { color: #b34128; }
-.air-ops-ready:not(:empty) { margin: 12px 0 0; color: var(--green); font-size: 13px; }
+.air-ops-entry-bad .air-ops-out-meta { color: #b34128; }
+.air-ops-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.air-ops-ready { flex: 1 1 200px; color: var(--green); font-size: 13px; }
+/* iOS 对聚焦时字号 < 16px 的输入框会整页放大，手机上命令框按 16px 排。 */
+@media (max-width: 640px) {
+  .air-ops-cmdline .air-ops-input { font-size: 16px; }
+}

@@ -357,7 +357,9 @@ const NO_TOOLS = 'Command failed: git init\n'
       'wiring: the task-settings dialog offers the repair as a button');
     ok(/if \(result\.fix\) failure\.fix = result\.fix;/.test(read('public/air-task-settings.js')),
       'wiring: the Air client keeps the fix code off the error body');
-    ok(/renderFix\(fixBox, e\.fix\)/.test(read('public/air-task-settings.js')),
+    // A trailing retry callback is allowed: the ops terminal re-submits the
+    // dialog once the environment is repaired.
+    ok(/renderFix\(fixBox, e\.fix[,)]/.test(read('public/air-task-settings.js')),
       'wiring: the dialog has somewhere to render the button');
   }
 

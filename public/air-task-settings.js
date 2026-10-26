@@ -37,28 +37,24 @@
         return info && info.target ? t('airTaskSettingsOpenDiskAccessTarget') + info.target : null;
       },
     },
-    // Neither has a one-shot endpoint: installing git depends on the host's
-    // package manager and may need privileges the service lacks, and the
-    // identity is two config writes. The button opens the ops terminal panel
-    // (air-ops-terminal.js) with the repair for the named failure pre-filled.
-    'fix-git-missing': {
-      label: () => t('airTaskSettingsFixGitMissing'),
-      open: 'git-missing',
-    },
-    'fix-git-identity': {
-      label: () => t('airTaskSettingsFixGitIdentity'),
-      open: 'git-identity',
-    },
+    // None has a one-shot endpoint: installing git depends on the host's
+    // package manager and on privileges the service may lack, and an unknown
+    // git failure needs a look first. The button opens the ops terminal panel
+    // (air-ops-terminal.js), which probes the host, pre-fills the next repair
+    // and offers to retry this dialog once the environment is ready.
+    'fix-git-missing': { label: () => t('airTaskSettingsFixGitMissing'), opensTerminal: true },
+    'fix-git-identity': { label: () => t('airTaskSettingsFixGitIdentity'), opensTerminal: true },
+    'open-ops-terminal': { label: () => t('airTaskSettingsOpenOpsTerminal'), opensTerminal: true },
   };
 
-  function renderFix(container, fix) {
+  function renderFix(container, fix, retry) {
     const action = FIX_ACTIONS[fix];
     if (!action) return;
-    if (action.open) {
+    if (action.opensTerminal) {
       const wrap = node('p', null, 'air-fix-action');
       const button = node('button', action.label());
       button.type = 'button';
-      button.onclick = () => window.MultiCCAirOps?.open(action.open);
+      button.onclick = () => window.MultiCCAirOps?.open({ retry });
       wrap.append(button);
       container.append(wrap);
       return;
@@ -101,7 +97,7 @@
     form.onsubmit = async event => {
       event.preventDefault(); submit.disabled = true; error.textContent = ''; fixBox.replaceChildren();
       try { await save(); d.close(); }
-      catch (e) { error.textContent = e.message; if (e.fix) renderFix(fixBox, e.fix); }
+      catch (e) { error.textContent = e.message; if (e.fix) renderFix(fixBox, e.fix, () => form.requestSubmit()); }
       finally { submit.disabled = false; }
     };
     d.onclose = () => d.remove(); d.append(form); document.body.append(d); d.showModal();

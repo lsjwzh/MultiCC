@@ -122,6 +122,14 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
     const rf = await repairable.svc.register({ name: 'x', path: '/p/a' });
     ok(!rf.ok && rf.extra && rf.extra.fix === 'install-developer-tools',
       'register: missing developer tools → fix code for the UI');
+
+    // Any other git failure while adding still opens the ops terminal: on a
+    // host with no directories the dialog is the only way to reach a shell.
+    const unknownGit = makeFakes({ fsDirs: new Set(['/p', '/p/a']) });
+    unknownGit.git.ensureReady = () => ({ ok: false, reason: 'git-error: fatal: bad config line 3' });
+    const ru = await unknownGit.svc.register({ name: 'x', path: '/p/a' });
+    ok(!ru.ok && ru.extra && ru.extra.fix === 'open-ops-terminal',
+      'register: unknown git failure → generic ops terminal entry');
     void svc; void repo;
   }
 

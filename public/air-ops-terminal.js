@@ -3,12 +3,15 @@
 
   // Ops terminal: a repair shell for hosts that cannot create their first
   // directory — no git on a bare VPS, no commit identity on a fresh service
-  // account. Such a host has no session terminal yet, so the directory dialog
-  // opens this panel with the repair pre-filled (FIX_ACTIONS in
-  // air-task-settings.js maps the server's fix code to a preset here).
-  // Commands run through POST /api/system/ops-run with the authority of the
-  // MultiCC process itself; privileged repairs still need the service account
-  // to have those rights.
+  // account. Such a host has no session terminal yet, so the add-directory
+  // dialog opens this panel (FIX_ACTIONS in air-task-settings.js) and hands it
+  // a retry callback. Commands run as background jobs on the host
+  // (src/routes/ops-terminal.js) that this panel polls: an install can take
+  // minutes, and a panel closed mid-run re-attaches to the job when reopened.
+
+  const POLL_MS = 600;
+  const MAX_POLL_FAILURES = 5;
+  const ERROR_KEYS = { OPS_BUSY: 'airOpsTerminalBusy', INVALID_COMMAND: 'airOpsTerminalInvalid' };
 
   const node = (tag, text, className) => {
     const element = document.createElement(tag);
@@ -16,6 +19,7 @@
     if (className) element.className = className;
     return element;
   };
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   async function request(url, body, method = 'POST') {
     const options = { method, headers: { Accept: 'application/json' } };
@@ -29,8 +33,11 @@
     try { result = raw ? JSON.parse(raw) : {}; }
     catch (_) { throw new Error(t('airOpsTerminalBadResponse', { status: response.status })); }
     if (!response.ok || result.ok === false) {
-      throw new Error(result.message || result.error || result.code
-        || t('airOpsTerminalBadResponse', { status: response.status }));
+      const error = new Error(ERROR_KEYS[result.code] ? t(ERROR_KEYS[result.code])
+        : result.message || result.error || result.code || t('airOpsTerminalBadResponse', { status: response.status }));
+      error.code = result.code;
+      error.job = result.job || null;
+      throw error;
     }
     return result;
   }
@@ -39,92 +46,125 @@
   // should not have to retype them after peeking at the directory dialog.
   const history = [];
 
-  function open(preset) {
-    const d = node('dialog');
+  function open(options = {}) {
+    const retry = typeof options.retry === 'function' ? options.retry : null;
+    const d = node('dialog', null, 'air-ops-dialog');
     const form = node('form');
-    form.append(node('h2', t('airOpsTerminalTitle')));
-    form.append(node('p', t('airOpsTerminalHint')));
+    form.append(node('h2', t('airOpsTerminalTitle')), node('p', t('airOpsTerminalHint')));
 
     const envBox = node('div', '', 'air-ops-env');
-    const chips = node('div', null, 'air-ops-chips');
+    const advice = node('div', '', 'air-ops-advice');
     const cmdline = node('div', null, 'air-ops-cmdline');
     const input = node('input', null, 'air-ops-input');
     input.type = 'text';
     input.autocomplete = 'off';
+    input.autocapitalize = 'off';
     input.spellcheck = false;
     input.placeholder = t('airOpsTerminalCommandPlaceholder');
     const runButton = node('button', t('airOpsTerminalRun'), 'primary');
-    runButton.type = 'button';
-    cmdline.append(input, runButton);
+    runButton.type = 'submit';
+    const stopButton = node('button', t('airOpsTerminalStop'), 'danger');
+    stopButton.type = 'button';
+    stopButton.hidden = true;
+    cmdline.append(input, runButton, stopButton);
 
     const output = node('pre', '', 'air-ops-output');
     output.setAttribute('aria-live', 'polite');
     const historyRow = node('div', '', 'air-ops-history');
-    const ready = node('p', '', 'air-ops-ready');
+    const footer = node('div', null, 'air-ops-footer');
+    const ready = node('span', '', 'air-ops-ready');
+    const retryButton = node('button', t('airOpsTerminalRetry'), 'primary');
+    retryButton.type = 'button';
+    retryButton.hidden = true;
     const close = node('button', t('airOpsTerminalClose'));
     close.type = 'button';
-    close.onclick = () => d.close();
+    footer.append(ready, retryButton, close);
 
-    form.append(envBox, chips, cmdline, output, historyRow, ready, close);
-    form.onsubmit = event => { event.preventDefault(); void runCommand(); };
-    d.onclose = () => d.remove();
+    form.append(envBox, advice, cmdline, output, historyRow, footer);
     d.append(form);
     document.body.append(d);
     d.showModal();
 
     let env = null;
-    let running = false;
+    let closed = false;
+    let view = null; // the job this panel is showing: { id, command, from, out, meta }
+    let lastRun = null;
 
-    function suggestionChips() {
+    close.onclick = () => d.close();
+    d.onclose = () => { closed = true; d.remove(); };
+    retryButton.onclick = () => { d.close(); retry(); };
+    form.onsubmit = event => { event.preventDefault(); void runCommand(); };
+    stopButton.onclick = () => {
+      stopButton.disabled = true;
+      request('/api/system/ops-run/stop', {}).catch(() => { stopButton.disabled = false; });
+    };
+
+    const envReady = () => !!(env && env.git && env.git.available && env.identity && env.identity.valid);
+
+    // The next repair the user can actually run from here, in dependency order:
+    // identity cannot be set before git exists.
+    function nextSuggestion() {
       const suggestions = (env && env.suggestions) || {};
-      const wantInstall = !(env && env.git && env.git.available);
-      const wantName = !(env && env.identity && env.identity.name);
-      const wantEmail = !(env && env.identity && env.identity.email);
-      return [
-        wantInstall ? suggestions.gitInstall : null,
-        wantName ? suggestions.identityName : null,
-        wantEmail ? suggestions.identityEmail : null,
-      ].filter(Boolean);
+      if (!(env && env.git && env.git.available)) return suggestions.gitInstallRunnable ? suggestions.gitInstall : null;
+      return env.identity && env.identity.valid ? null : suggestions.identity || null;
+    }
+
+    function chip(command, parent) {
+      const button = node('button', command, 'air-ops-chip');
+      button.type = 'button';
+      button.title = command;
+      button.onclick = () => { input.value = command; input.focus(); };
+      parent.append(button);
+    }
+
+    function row(label, value, className) {
+      const line = node('p');
+      line.append(node('span', label, 'air-ops-k'), node('span', value, className || ''));
+      envBox.append(line);
     }
 
     function paintEnv() {
-      if (!env) return;
       envBox.replaceChildren();
-      const gitOk = !!(env.git && env.git.available);
-      const gitLine = node('p');
-      gitLine.append(
-        node('span', t('airOpsTerminalGitLabel'), 'air-ops-k'),
-        gitOk
-          ? node('span', `✓ ${env.git.version || ''}`, 'air-ops-status-ok')
-          : node('span', t('airOpsTerminalGitMissing'), 'air-ops-status-bad'),
-      );
-      const idOk = !!(env.identity && env.identity.name && env.identity.email);
-      const idLine = node('p');
-      idLine.append(
-        node('span', t('airOpsTerminalIdentityLabel'), 'air-ops-k'),
-        idOk
-          ? node('span', `✓ ${env.identity.name} <${env.identity.email}>`, 'air-ops-status-ok')
-          : node('span', t('airOpsTerminalIdentityMissing'), 'air-ops-status-bad'),
-      );
-      const pmLine = node('p');
-      pmLine.append(
-        node('span', t('airOpsTerminalPackageLabel'), 'air-ops-k'),
-        node('span', env.packageManager || t('airOpsTerminalPackageNone')),
-      );
-      envBox.append(gitLine, idLine, pmLine);
-
-      chips.replaceChildren();
-      const list = suggestionChips();
-      if (list.length) chips.append(node('span', t('airOpsTerminalSuggestions'), 'air-ops-chips-label'));
-      for (const command of list) {
-        const chip = node('button', command, 'air-ops-chip');
-        chip.type = 'button';
-        chip.title = command;
-        chip.onclick = () => { input.value = command; input.focus(); };
-        chips.append(chip);
+      advice.replaceChildren();
+      if (!env) return;
+      const git = env.git || {};
+      const identity = env.identity || {};
+      const account = env.account;
+      row(t('airOpsTerminalGitLabel'), git.available ? `✓ ${git.version || ''}` : t('airOpsTerminalGitMissing'),
+        git.available ? 'air-ops-status-ok' : 'air-ops-status-bad');
+      if (!git.available) row(t('airOpsTerminalIdentityLabel'), t('airOpsTerminalIdentityNeedsGit'), 'air-ops-muted');
+      else if (identity.valid) row(t('airOpsTerminalIdentityLabel'), `✓ ${identity.name} <${identity.email}>`, 'air-ops-status-ok');
+      else if (identity.name || identity.email) row(t('airOpsTerminalIdentityLabel'), t('airOpsTerminalIdentityInvalid'), 'air-ops-status-bad');
+      else row(t('airOpsTerminalIdentityLabel'), t('airOpsTerminalIdentityMissing'), 'air-ops-status-bad');
+      if (account && account.user) {
+        const key = account.uid === 0 ? 'airOpsTerminalAccountRoot'
+          : account.sudo ? 'airOpsTerminalAccountSudo' : 'airOpsTerminalAccountPlain';
+        row(t('airOpsTerminalAccountLabel'), t(key, { user: account.user }));
       }
+      row(t('airOpsTerminalPackageLabel'), env.packageManager || t('airOpsTerminalPackageNone'));
 
-      ready.textContent = gitOk && idOk ? t('airOpsTerminalEnvReady') : '';
+      const suggestions = env.suggestions || {};
+      if (!git.available && suggestions.gitInstall && !suggestions.gitInstallRunnable) {
+        // Offering a one-click run here could only end in "must be root".
+        const note = node('p', t('airOpsTerminalNeedsRoot', { user: (account && account.user) || '' }), 'air-ops-needs-root');
+        advice.append(note, node('code', suggestions.gitInstall, 'air-ops-copy'));
+      }
+      const next = nextSuggestion();
+      if (next) {
+        const chips = node('div', null, 'air-ops-chips');
+        chips.append(node('span', t('airOpsTerminalSuggestions'), 'air-ops-chips-label'));
+        chip(next, chips);
+        advice.append(chips);
+      }
+      ready.textContent = envReady() ? (retry ? t('airOpsTerminalEnvReadyRetry') : t('airOpsTerminalEnvReady')) : '';
+      retryButton.hidden = !(envReady() && retry);
+    }
+
+    function prefill() {
+      // Never clobber something the user typed; only an empty box or the
+      // command that just succeeded is replaced by the next repair.
+      if (input.value.trim() && input.value.trim() !== lastRun) return;
+      input.value = nextSuggestion() || '';
     }
 
     async function probe() {
@@ -132,18 +172,11 @@
         env = await request('/api/system/ops-env', undefined, 'GET');
       } catch (error) {
         env = null;
-        envBox.replaceChildren(node('p', t('airOpsTerminalProbeFailed', { message: error.message }), 'air-ops-status-bad'));
+        paintEnv();
+        envBox.append(node('p', t('airOpsTerminalProbeFailed', { message: error.message }), 'air-ops-status-bad'));
         return;
       }
-      paintEnv();
-      // One-shot pre-fill from the failure that opened the panel: the dialog
-      // already named the problem, so the first command should be its remedy.
-      if (preset && !input.value) {
-        const suggestions = env.suggestions || {};
-        if (preset === 'git-missing' && suggestions.gitInstall) input.value = suggestions.gitInstall;
-        if (preset === 'git-identity' && suggestions.identityName) input.value = suggestions.identityName;
-        preset = null;
-      }
+      if (!closed) paintEnv();
     }
 
     function remember(command) {
@@ -158,51 +191,123 @@
       historyRow.replaceChildren();
       if (!history.length) return;
       historyRow.append(node('span', t('airOpsTerminalHistoryLabel'), 'air-ops-chips-label'));
-      for (const command of history) {
-        const chip = node('button', command, 'air-ops-chip');
-        chip.type = 'button';
-        chip.title = command;
-        chip.onclick = () => { input.value = command; input.focus(); };
-        historyRow.append(chip);
+      for (const command of history) chip(command, historyRow);
+    }
+
+    function setRunning(running) {
+      runButton.hidden = running;
+      stopButton.hidden = !running;
+      stopButton.disabled = false;
+    }
+
+    function append(text) {
+      if (!text || !view) return;
+      // Follow the tail only when the user has not scrolled up to read.
+      const stick = output.scrollTop + output.clientHeight >= output.scrollHeight - 8;
+      view.out.append(document.createTextNode(text));
+      if (stick) output.scrollTop = output.scrollHeight;
+    }
+
+    function apply(job) {
+      if (job.skipped) append(t('airOpsTerminalOutputSkipped', { count: job.skipped }) + '\n');
+      append(job.chunk);
+      view.from = job.total;
+      const seconds = Math.floor(job.durationMs / 1000);
+      if (job.running) view.meta.textContent = seconds ? t('airOpsTerminalRunningFor', { seconds }) : t('airOpsTerminalRunning');
+    }
+
+    function attach(job) {
+      const entry = node('div', null, 'air-ops-entry');
+      const out = node('span', '', 'air-ops-out');
+      const meta = node('span', t('airOpsTerminalRunning'), 'air-ops-out-meta');
+      entry.append(node('div', `$ ${job.command}`, 'air-ops-cmd-head'), out, meta);
+      output.append(entry);
+      view = { id: job.id, command: job.command, from: 0, out, meta, entry };
+      setRunning(true);
+      apply(job);
+      output.scrollTop = output.scrollHeight;
+      if (job.running) void follow(view);
+      else void settle(view, job);
+    }
+
+    async function follow(mine) {
+      let failures = 0;
+      while (!closed && view === mine) {
+        await sleep(POLL_MS);
+        if (closed || view !== mine) return;
+        let job;
+        try {
+          job = (await request(`/api/system/ops-run?from=${mine.from}`, undefined, 'GET')).job;
+          failures = 0;
+        } catch (error) {
+          if (++failures < MAX_POLL_FAILURES) continue;
+          mine.meta.textContent = t('airOpsTerminalPollFailed', { message: error.message });
+          mine.entry.classList.add('air-ops-entry-bad');
+          setRunning(false);
+          view = null;
+          return;
+        }
+        if (!job || job.id !== mine.id) { await settle(mine, null); return; }
+        apply(job);
+        if (!job.running) { await settle(mine, job); return; }
       }
+    }
+
+    async function settle(mine, job) {
+      if (view === mine) view = null;
+      setRunning(false);
+      const parts = [];
+      if (job && job.stopped) parts.push(t('airOpsTerminalStopped'));
+      else if (job && job.timedOut) parts.push(t('airOpsTerminalTimedOut'));
+      if (job) {
+        parts.push(t('airOpsTerminalExitCode', { code: job.exitCode == null ? '—' : String(job.exitCode) }));
+        parts.push(`${(job.durationMs / 1000).toFixed(1)}s`);
+      }
+      mine.meta.textContent = parts.join(' · ');
+      const failed = !job || job.exitCode !== 0 || job.timedOut || job.stopped;
+      if (failed) mine.entry.classList.add('air-ops-entry-bad');
+      remember(mine.command);
+      if (closed) return;
+      await probe();
+      // A failed command stays in the box to be edited; a successful one
+      // makes way for the next repair.
+      if (!failed) { lastRun = mine.command; prefill(); }
+      input.focus();
     }
 
     async function runCommand() {
       const command = input.value.trim();
-      if (!command || running) return;
-      running = true;
+      if (!command || view) return;
       runButton.disabled = true;
-      const head = node('div', `$ ${command}`, 'air-ops-cmd-head');
-      const body = node('div', t('airOpsTerminalRunning'), 'air-ops-cmd-body');
-      output.append(head, body);
-      output.scrollTop = output.scrollHeight;
       try {
         const result = await request('/api/system/ops-run', { command });
-        body.replaceChildren();
-        if (result.stdout) body.append(node('span', result.stdout, 'air-ops-out-out'));
-        if (result.stderr) body.append(node('span', result.stderr, 'air-ops-out-err'));
-        const meta = [];
-        if (result.timedOut) meta.push(t('airOpsTerminalTimedOut'));
-        meta.push(t('airOpsTerminalExitCode', { code: result.exitCode == null ? '—' : String(result.exitCode) }));
-        meta.push(`${result.durationMs}ms`);
-        body.append(node('span', meta.join(' · '), 'air-ops-out-meta'));
-        if (result.timedOut || result.exitCode !== 0) body.classList.add('air-ops-cmd-bad');
-        remember(command);
-        await probe();
+        if (!closed) attach(result.job);
       } catch (error) {
-        body.replaceChildren(node('span', error.message, 'air-ops-out-err'));
-        body.classList.add('air-ops-cmd-bad');
+        // Another tab (or this panel before it was closed) is mid-run: show
+        // that job instead of an error, since it is what the host is doing.
+        if (error.code === 'OPS_BUSY' && error.job && !closed) attach(error.job);
+        else if (!closed) {
+          const entry = node('div', null, 'air-ops-entry air-ops-entry-bad');
+          entry.append(node('div', `$ ${command}`, 'air-ops-cmd-head'), node('span', error.message, 'air-ops-out-meta'));
+          output.append(entry);
+          output.scrollTop = output.scrollHeight;
+        }
       } finally {
-        running = false;
         runButton.disabled = false;
       }
-      output.scrollTop = output.scrollHeight;
     }
 
-    runButton.onclick = () => { void runCommand(); };
     paintHistory();
-    void probe();
     input.focus();
+    void (async () => {
+      const [, running] = await Promise.all([
+        probe(),
+        request('/api/system/ops-run', undefined, 'GET').then(r => r.job).catch(() => null),
+      ]);
+      if (closed) return;
+      if (running && running.running && !view) attach(running);
+      else prefill();
+    })();
   }
 
   window.MultiCCAirOps = { open };

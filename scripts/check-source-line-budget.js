@@ -485,8 +485,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   失败时的「环境修复终端」面板（air-ops-terminal.js）与目录弹窗里两条
     //   修复按钮（安装 Git / 设置提交身份），中英各 21 行 = +42 行，
     //   重跑生成器实测 9712/624249（行数按检查器的换行口径计）。
-    maxLines: 9712,
-    maxBytes: 624249,
+    // +17 双语键：修复终端改为后台作业（停止/接续/耗时/省略提示）、服务账号与免密 sudo
+    //   探测、身份无效态、「重试添加项目」与通用「打开修复终端」入口，中英各 17 行
+    //   = +34 行，重跑生成器实测 9746/626732。
+    maxLines: 9746,
+    maxBytes: 626732,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
