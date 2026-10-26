@@ -3,6 +3,7 @@
 const net = require('node:net');
 const { createDeveloperToolsRoutes } = require('./developer-tools');
 const { createMacosPrivacyRoutes } = require('./macos-privacy');
+const { createOpsTerminalRoutes } = require('./ops-terminal');
 
 const DEFAULT_VERSION_RESULT = Object.freeze({
   current: '0.0.0',
@@ -280,6 +281,11 @@ function mountSystemRoutes(app, rawDeps) {
   // sits against its source-line budget.
   createDeveloperToolsRoutes().mountRoutes(app);
   createMacosPrivacyRoutes().mountRoutes(app);
+  // Ops terminal: shell-level environment repair (git install / commit
+  // identity) for hosts that cannot create their first directory. Same mount
+  // rationale as developer-tools above — no host state, and server.js sits
+  // against its source-line budget.
+  createOpsTerminalRoutes().mountRoutes(app);
   // A CLI that reports `404 …/codex-proxy/…` cannot say which stage answered,
   // and an intermediary answers without this process ever seeing the request.
   // The prefix trace keeps the last requests that did reach the app; an empty

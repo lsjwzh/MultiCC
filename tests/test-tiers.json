@@ -3894,6 +3894,15 @@
       ]
     },
     {
+      "path": "tests/test-ops-terminal.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
       "path": "tests/test-orchestration-routes.js",
       "tier": "core",
       "lane": "deterministic",

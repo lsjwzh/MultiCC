@@ -210,6 +210,14 @@ function dirReasonFix(reason) {
     // the button opens the former and the UI names the latter.
     return 'open-disk-access';
   }
+  // Cross-platform, not just macOS: a bare cloud VM ships without git, and a
+  // fresh service account has no commit identity — both fail the very first
+  // directory, when there is not yet a session terminal to repair from. The
+  // button opens the ops terminal panel (public/air-ops-terminal.js) with the
+  // matching command pre-filled instead of a one-shot endpoint, because the
+  // install command depends on the host's package manager.
+  if (reason.includes('spawn git ENOENT')) return 'fix-git-missing';
+  if (reason.includes('无法读取 Git 提交身份配置')) return 'fix-git-identity';
   return null;
 }
 
