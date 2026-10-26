@@ -139,7 +139,7 @@ pub fn terminate_pid(pid: i32) -> Result<(), String> {
     }
 }
 
-pub fn build_args(profile: &Profile, url: Option<&str>, proxy_arg: &str) -> Vec<String> {
+pub fn build_args(profile: &Profile, url: Option<&str>, proxy_arg: &str, geo: Option<&crate::geo::ExitGeo>) -> Vec<String> {
     let data_dir = store::user_data_dir(&profile.id);
     let mut args = vec![
         format!("--user-data-dir={}", data_dir.display()),
@@ -147,6 +147,9 @@ pub fn build_args(profile: &Profile, url: Option<&str>, proxy_arg: &str) -> Vec<
         "--proxy-bypass-list=<-loopback>".to_string(),
         "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string(),
         "--disable-quic".to_string(),
+        // 压掉 navigator.webdriver 等自动控制暴露面：本插件从不用
+        // --enable-automation，但这条是最便宜的「像机器人」判据，统一关死。
+        "--disable-blink-features=AutomationControlled".to_string(),
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         "--disable-features=ChromeWhatsNewUI".to_string(),
@@ -163,12 +166,48 @@ pub fn build_args(profile: &Profile, url: Option<&str>, proxy_arg: &str) -> Vec<
         .map(|(host, _)| host.trim_matches(['[', ']']))
         .unwrap_or("127.0.0.1");
     args.push(format!("--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE {proxy_host}"));
+    // 出口地理一致性的语言半边（时区半边走进程 TZ 环境，见 launch）：界面
+    // 语言与 Accept-Language 跟着出口国家走，避免「中文界面 + 美国 IP」
+    // 这种一眼可疑的组合。geo 缺失时不动，保持本机语言。
+    // --lang 只管界面语言（macOS 上甚至被系统 locale 压住）；请求头与
+    // navigator.language 依赖 --accept-lang + Preferences 里的
+    // intl.accept_languages（见 seed_language_prefs），两条都上。
+    if let Some(geo) = geo {
+        if !geo.locale.is_empty() {
+            args.push(format!("--lang={}", geo.locale));
+            args.push(format!(
+                "--accept-lang={}",
+                crate::geo::accept_languages(&geo.locale)
+            ));
+        }
+    }
     if let Some(target) = url {
         if !target.trim().is_empty() {
             args.push(target.trim().to_string());
         }
     }
     args
+}
+
+/// Accept-Language 的持久半边：--accept-lang 覆盖本次会话的请求头与
+/// navigator.language，但 chrome://settings/languages 的语言列表仍来自
+/// profile 的 Preferences；首次启动前预写一份让两边一致。只在文件不存在
+/// 时写，绝不覆盖 Chrome 或用户后来写入的选择。
+fn seed_language_prefs(data_dir: &std::path::Path, accept: &str) {
+    let prefs = data_dir.join("Default").join("Preferences");
+    if prefs.exists() || accept.is_empty() {
+        return;
+    }
+    if std::fs::create_dir_all(prefs.parent().unwrap()).is_err() {
+        return;
+    }
+    let seeded = serde_json::json!({
+        "intl": {
+            "accept_languages": accept,
+            "selected_languages": accept,
+        }
+    });
+    let _ = std::fs::write(&prefs, seeded.to_string());
 }
 
 /// 拉起带凭据代理的本地中继并等它就绪，返回本地端口。
@@ -237,7 +276,9 @@ pub fn ensure_not_running(id: &str) -> Result<(), String> {
 /// 则经刚起的本地内核取一次出口 IP。
 /// 带凭据的直连代理会先拉起本地中继；订阅出口会先拉起身份专属 meow 内核。
 pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic_fingerprint: bool) -> Result<serde_json::Value, String> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(18);
+    // 出口准备（内核/中继/geo 识别/可用性验证）与浏览器启动共享这个总预算；
+    // 监督进程内部的 CDP 上限另见 browser_session（18s）。
+    let deadline = std::time::Instant::now() + Duration::from_secs(25);
     let _lock = crate::browser_session::launch_lock(&profile.id)?;
     ensure_not_running(&profile.id)?;
     if url.is_some_and(|u| u.trim_start().starts_with('-')) { return Err("网页地址不能是启动参数".into()); }
@@ -247,6 +288,9 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
     std::fs::create_dir_all(&data_dir).map_err(|err| format!("创建隔离 profile 目录失败：{err}"))?;
 
     let mut extras = serde_json::Map::new();
+    // 出口地理识别结果：成功则时区（TZ 环境）+ 语言（--lang）套到这个实例上；
+    // 失败只降级，不影响出口验证与启动。
+    let mut geo: Option<crate::geo::ExitGeo> = None;
     let proxy_arg = if let Some(egress) = &profile.subscription {
         let subscriptions = store::load_subscriptions()?;
         let subscription = subscriptions
@@ -279,12 +323,19 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
             )
         };
         if check_proxy {
-            if let Err(err) = crate::core::verify_exit(listen_port, Duration::from_secs(12)) {
-                stop_relay_if_any(&profile.id);
-                crate::core::stop_if_any(&profile.id);
-                return Err(format!(
-                    "订阅出口不可用，已拒绝启动（未改用直连）：{err}"
-                ));
+            // geo 识别成功即视为出口验证通过（请求已完整走过这条出口）；
+            // 失败再走纯 IP 验证，区分「geo 服务问题」与「出口真的不通」。
+            match crate::geo::detect(&crate::geo::via_local_http(listen_port), Duration::from_secs(5)) {
+                Ok(found) => geo = Some(found),
+                Err(_) => {
+                    if let Err(err) = crate::core::verify_exit(listen_port, Duration::from_secs(12)) {
+                        stop_relay_if_any(&profile.id);
+                        crate::core::stop_if_any(&profile.id);
+                        return Err(format!(
+                            "订阅出口不可用，已拒绝启动（未改用直连）：{err}"
+                        ));
+                    }
+                }
             }
         }
         extras.insert("corePort".into(), json!(run.mixed_port));
@@ -303,12 +354,25 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
     } else if let Some(proxy) = &profile.proxy {
         if check_proxy {
             if proxy.has_credentials() {
-                crate::proxy::exit_ip(proxy, Duration::from_secs(6))?;
-            } else if !crate::proxy::tcp_reachable(&proxy.host, proxy.port, Duration::from_millis(1500)) {
-                return Err(format!(
-                    "代理 {}://{}:{} 不可达，已拒绝启动（未改用直连）",
-                    proxy.scheme, proxy.host, proxy.port
-                ));
+                // 有凭据时 geo 直接对上游做（http Basic / socks5 RFC1929 都
+                // 带认证），此刻中继还没起；成功即认证与出口一并验证过。
+                match crate::geo::detect(proxy, Duration::from_secs(5)) {
+                    Ok(found) => geo = Some(found),
+                    Err(_) => {
+                        crate::proxy::exit_ip(proxy, Duration::from_secs(6))?;
+                    }
+                }
+            } else {
+                if !crate::proxy::tcp_reachable(&proxy.host, proxy.port, Duration::from_millis(1500)) {
+                    return Err(format!(
+                        "代理 {}://{}:{} 不可达，已拒绝启动（未改用直连）",
+                        proxy.scheme, proxy.host, proxy.port
+                    ));
+                }
+                // 无凭据出口原本只做 TCP 探测，geo 只算顺手加分项，失败忽略。
+                if let Ok(found) = crate::geo::detect(proxy, Duration::from_secs(5)) {
+                    geo = Some(found);
+                }
             }
         }
         let relay_port = if proxy.has_credentials() {
@@ -326,15 +390,42 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
         return Err("这个身份还没有配置出口".into());
     };
 
-    let args = build_args(profile, url, &proxy_arg);
+    extras.insert("geo".into(), match &geo {
+        Some(found) => {
+            let mut value = serde_json::to_value(found).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(map) = value.as_object_mut() {
+                map.insert("applied".into(), json!(true));
+            }
+            value
+        }
+        None => json!({
+            "applied": false,
+            "reason": if check_proxy {
+                "出口地理识别失败或该出口类型不支持，未套用时区/语言（不影响启动与出口验证）"
+            } else {
+                "checkProxy=false 跳过出口探测，未套用时区/语言"
+            },
+        }),
+    });
+    // 时区半边走进程 TZ：Chrome 的 Intl / Date 读这个环境变量，随实例不随系统。
+    let tz = geo.as_ref().map(|found| found.timezone.as_str()).filter(|zone| !zone.is_empty());
+    let args = build_args(profile, url, &proxy_arg, geo.as_ref());
+    if let Some(found) = geo.as_ref().filter(|g| !g.locale.is_empty()) {
+        seed_language_prefs(
+            &store::user_data_dir(&profile.id),
+            &crate::geo::accept_languages(&found.locale),
+        );
+    }
     let session = (if let Some(extension) = extension {
         match deadline.checked_duration_since(std::time::Instant::now()) {
-            Some(budget) => crate::browser_session::launch(&profile.id, &browser, &args, &extension, budget),
+            Some(budget) => crate::browser_session::launch(&profile.id, &browser, &args, &extension, budget, tz),
             None => Err("出口准备耗时过长，请重新启动浏览器".into()),
         }
     } else {
-        Command::new(&browser).args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-            .spawn().map(|child| json!({"pid":child.id(),"fingerprint":{"status":"notRequested","installationVerified":false}}))
+        let mut command = Command::new(&browser);
+        command.args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        if let Some(zone) = tz { command.env("TZ", zone); }
+        command.spawn().map(|child| json!({"pid":child.id(),"fingerprint":{"status":"notRequested","installationVerified":false}}))
             .map_err(|e| format!("启动浏览器失败：{e}"))
     }).map_err(|err| {
         stop_relay_if_any(&profile.id);
@@ -389,23 +480,58 @@ mod tests {
             &profile("http"),
             Some("https://example.com"),
             "--proxy-server=http://127.0.0.1:7897",
+            None,
         );
         assert!(args.iter().any(|a| a == "--proxy-server=http://127.0.0.1:7897"));
         assert!(args.iter().any(|a| a.starts_with("--user-data-dir=")));
         assert!(args.iter().any(|a| a == "--restore-last-session"));
+        assert!(args.iter().any(|a| a == "--disable-blink-features=AutomationControlled"));
         assert!(args.iter().any(|a| a == "https://example.com"));
         assert!(args.iter().any(|a| a == "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"));
+        // geo 未识别时不强加语言，保持本机语言。
+        assert!(!args.iter().any(|a| a.starts_with("--lang=")));
+        assert!(!args.iter().any(|a| a.starts_with("--accept-lang=")));
+    }
+
+    #[test]
+    fn geo_adds_locale_and_never_without_it() {
+        let geo = crate::geo::ExitGeo {
+            ip: "203.160.113.175".into(),
+            country_code: "US".into(),
+            country_name: "United States".into(),
+            timezone: "America/Los_Angeles".into(),
+            locale: "en-US".into(),
+        };
+        let args = build_args(&profile("http"), None, "--proxy-server=http://127.0.0.1:7897", Some(&geo));
+        assert!(args.iter().any(|a| a == "--lang=en-US"));
+        assert!(args.iter().any(|a| a == "--accept-lang=en-US,en"));
+    }
+
+    #[test]
+    fn seed_language_prefs_writes_once_and_never_overwrites() {
+        let dir = std::env::temp_dir().join(format!("cpl-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        seed_language_prefs(&dir, "en-US,en");
+        let prefs = dir.join("Default").join("Preferences");
+        let first = std::fs::read_to_string(&prefs).unwrap();
+        assert!(first.contains("\"accept_languages\":\"en-US,en\""));
+        // 已存在（等同 Chrome/用户写过）时不再覆盖。
+        std::fs::write(&prefs, "{}").unwrap();
+        seed_language_prefs(&dir, "ja-JP,ja");
+        assert_eq!(std::fs::read_to_string(&prefs).unwrap(), "{}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn all_proxy_types_disable_bypasses_without_blocking_proxy_dns() {
         for scheme in ["http", "https", "socks5"] {
             let proxy = format!("--proxy-server={scheme}://proxy.example:8080");
-            let args = build_args(&profile(scheme), None, &proxy);
+            let args = build_args(&profile(scheme), None, &proxy, None);
             for flag in [
                 "--proxy-bypass-list=<-loopback>",
                 "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
                 "--disable-quic",
+                "--disable-blink-features=AutomationControlled",
                 "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE proxy.example",
             ] {
                 assert!(args.iter().any(|a| a == flag), "{scheme}: {flag}");
@@ -416,7 +542,7 @@ mod tests {
 
     #[test]
     fn socks5_pins_dns_too() {
-        let args = build_args(&profile("socks5"), None, "--proxy-server=socks5://127.0.0.1:7897");
+        let args = build_args(&profile("socks5"), None, "--proxy-server=socks5://127.0.0.1:7897", None);
         assert!(args.iter().any(|a| a.starts_with("--host-resolver-rules")));
     }
 
@@ -427,7 +553,7 @@ mod tests {
             proxy.username = Some("u".into());
             proxy.password = Some("p".into());
         }
-        let args = build_args(&with_creds, None, "--proxy-server=http://127.0.0.1:41000");
+        let args = build_args(&with_creds, None, "--proxy-server=http://127.0.0.1:41000", None);
         assert!(args.iter().any(|a| a == "--proxy-server=http://127.0.0.1:41000"));
         // 目标 DNS 交给中继/上游，Chrome 本地只允许解析代理地址。
         assert!(args.iter().any(|a| a == "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"));

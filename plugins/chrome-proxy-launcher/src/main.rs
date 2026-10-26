@@ -14,6 +14,7 @@ mod chrome;
 mod browser_session;
 mod core;
 mod fingerprint;
+mod geo;
 mod proxy;
 mod relay;
 mod store;
@@ -336,9 +337,26 @@ fn command_stop(input: &Value) -> Result<Value, String> {
     Ok(json!({ "stopped": true, "pid": pid }))
 }
 
-/// 经订阅节点取一次出口 IP。身份已在跑就复用它内核的端口，否则临时起一个
-/// 测完收掉（allow_running=false 时总是临时起，用于保存前的试连）。
-fn probe_via_core(profile_id: &str, egress: &SubscriptionEgress, allow_running: bool) -> Result<String, String> {
+/// geo 识别优先、纯 IP 探测兜底的统一出口探测：成功时一并带回地理信息
+/// （国家/时区/locale，供 UI 核对与 launch 套用），geo 服务不可用时至少
+/// 验证出口可用并返回 IP。
+fn probe_egress(config: &ProxyConfig, timeout: Duration) -> Result<(String, Option<geo::ExitGeo>), String> {
+    match geo::detect(config, timeout) {
+        Ok(found) => Ok((found.ip.clone(), Some(found))),
+        Err(_) => proxy::exit_ip(config, timeout).map(|ip| (ip, None)),
+    }
+}
+
+fn geo_field(found: &Option<geo::ExitGeo>) -> Value {
+    match found {
+        Some(geo) => serde_json::to_value(geo).unwrap_or_else(|_| json!({})),
+        None => json!({ "identified": false }),
+    }
+}
+
+/// 经订阅节点取一次出口 IP（geo 识别优先）。身份已在跑就复用它内核的端口，
+/// 否则临时起一个测完收掉（allow_running=false 时总是临时起，用于保存前的试连）。
+fn probe_via_core(profile_id: &str, egress: &SubscriptionEgress, allow_running: bool) -> Result<(String, Option<geo::ExitGeo>), String> {
     let subscriptions = store::load_subscriptions()?;
     let subscription = subscriptions
         .iter()
@@ -379,7 +397,7 @@ fn probe_via_core(profile_id: &str, egress: &SubscriptionEgress, allow_running: 
     } else {
         core_port
     };
-    let outcome = core::verify_exit(test_port, Duration::from_secs(10));
+    let outcome = probe_egress(&geo::via_local_http(test_port), Duration::from_secs(10));
     if temporary_relay {
         chrome::stop_relay_if_any(profile_id);
     }
@@ -396,18 +414,20 @@ fn command_probe(input: &Value) -> Result<Value, String> {
     let started = Instant::now();
     if let Some(profile) = profile {
         if let Some(egress) = profile.subscription.clone() {
-            let ip = probe_via_core(&profile.id, &egress, true)?;
+            let (ip, found) = probe_via_core(&profile.id, &egress, true)?;
             let subscriptions = store::load_subscriptions()?;
             return Ok(json!({
                 "exitIp": ip,
+                "geo": geo_field(&found),
                 "via": egress_text(&profile, &subscriptions),
                 "latencyMs": started.elapsed().as_millis() as u64,
             }));
         }
         let config = profile.proxy.ok_or_else(|| "这个身份还没有配置出口".to_string())?;
-        let ip = proxy::exit_ip(&config, Duration::from_secs(6))?;
+        let (ip, found) = probe_egress(&config, Duration::from_secs(6))?;
         return Ok(json!({
             "exitIp": ip,
+            "geo": geo_field(&found),
             "via": format!("{}://{}:{}", config.scheme, config.host, config.port),
             "latencyMs": started.elapsed().as_millis() as u64,
         }));
@@ -415,17 +435,19 @@ fn command_probe(input: &Value) -> Result<Value, String> {
     // 新建前的试连：订阅出口，或显式传 proxy。
     if input.get("subscription").is_some() {
         let egress = parse_subscription_egress(input)?;
-        let ip = probe_via_core("__probe__", &egress, false)?;
+        let (ip, found) = probe_via_core("__probe__", &egress, false)?;
         return Ok(json!({
             "exitIp": ip,
+            "geo": geo_field(&found),
             "via": "订阅节点（临时内核）",
             "latencyMs": started.elapsed().as_millis() as u64,
         }));
     }
     let config = parse_proxy_input(input)?;
-    let ip = proxy::exit_ip(&config, Duration::from_secs(6))?;
+    let (ip, found) = probe_egress(&config, Duration::from_secs(6))?;
     Ok(json!({
         "exitIp": ip,
+        "geo": geo_field(&found),
         "via": format!("{}://{}:{}", config.scheme, config.host, config.port),
         "latencyMs": started.elapsed().as_millis() as u64,
     }))
@@ -530,8 +552,9 @@ fn command_egress(input: &Value) -> Result<Value, String> {
     if get_bool(input, "check", false) {
         // 显式要判据时才测：解析本身要快，不能每次都替调用方多跑一趟外网。
         let config = parse_proxy_url(&proxy_url)?;
-        let ip = proxy::exit_ip(&config, Duration::from_secs(8))?;
+        let (ip, found) = probe_egress(&config, Duration::from_secs(8))?;
         result["exitIp"] = json!(ip);
+        result["geo"] = geo_field(&found);
     }
     Ok(result)
 }

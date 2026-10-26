@@ -235,7 +235,16 @@ async function run(command, input) {
 
 let subscriptions = [];   // 最近一次 list 的结果
 let editingSubId = '';    // 正在编辑的订阅 id（空 = 新增）
-const probeResults = new Map(); // id -> {exitIp, via, latencyMs}
+const probeResults = new Map(); // id -> probe 返回（exitIp/via/latencyMs/geo）
+
+// probe 返回 {countryCode,countryName,timezone,locale}，launch 返回同结构
+// 加 applied；识别失败时分别是 {identified:false} / {applied:false}。
+const geoNote = geo => {
+  if (!geo || geo.identified === false || geo.applied === false) return '';
+  const place = [geo.countryName, geo.timezone].filter(Boolean).join(' ');
+  if (!place) return '';
+  return `（${place}${geo.locale ? ` · ${geo.locale}` : ''}）`;
+};
 const editingId = () => $('btn-save').dataset.editing || '';
 
 function currentEgressType() {
@@ -476,8 +485,9 @@ async function refresh() {
     if (probe) {
       const badge = document.createElement('span');
       badge.className = 'badge ip';
-      badge.title = `${probe.via || ''} · ${probe.latencyMs}ms`;
-      badge.textContent = `出口 ${probe.exitIp}`;
+      badge.title = `${probe.via || ''} · ${probe.latencyMs}ms${geoNote(probe.geo)}`;
+      const place = probe.geo?.timezone ? ` · ${probe.geo.timezone}` : '';
+      badge.textContent = `出口 ${probe.exitIp}${place}`;
       head.append(badge);
     }
 
@@ -492,7 +502,10 @@ async function refresh() {
           const result = await run('launch', { id: profile.id, url, automaticFingerprint: $('f-fingerprint').checked });
           let detail = result.node ? `节点 ${result.node}` : (profile.egressText || '');
           if (result.upstream) detail += ` → 上游 ${result.upstream}`;
-          notice(`已启动「${profile.name}」，${result.fingerprint?.installationVerified ? '指纹扩展已自动加载，' : ''}出口：${detail}`);
+          const geoBit = result.geo?.applied
+            ? `，环境已对齐出口：${[result.geo.countryName, result.geo.timezone, result.geo.locale].filter(Boolean).join(' · ')}`
+            : '';
+          notice(`已启动「${profile.name}」，${result.fingerprint?.installationVerified ? '指纹扩展已自动加载，' : ''}出口：${detail}${geoBit}`);
         } catch (error) {
           notice(error.message, 'bad');
         } finally {
@@ -505,7 +518,7 @@ async function refresh() {
         try {
           const result = await run('probe', { id: profile.id });
           probeResults.set(profile.id, result);
-          notice(`「${profile.name}」当前出口 IP：${result.exitIp}`);
+          notice(`「${profile.name}」当前出口 IP：${result.exitIp}${geoNote(result.geo)}`);
         } catch (error) {
           notice(error.message, 'bad');
         } finally {
@@ -610,7 +623,7 @@ $('btn-test').onclick = async event => {
     } else {
       result = await run('probe', { proxy: readDirectProxy() });
     }
-    notice(`这个出口的 IP 是 ${result.exitIp}（${result.latencyMs}ms）`);
+    notice(`这个出口的 IP 是 ${result.exitIp}（${result.latencyMs}ms）${geoNote(result.geo)}`);
   } catch (error) {
     notice(error.message, 'bad');
   } finally {

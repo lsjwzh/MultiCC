@@ -11,6 +11,7 @@ pub fn launch(
     args: &[String],
     extension: &Value,
     budget: Duration,
+    tz: Option<&str>,
 ) -> Result<Value, String> {
     #[cfg(not(unix))]
     return Err("此平台尚不支持私有管道自动加载扩展，已拒绝无保护启动".into());
@@ -34,7 +35,7 @@ pub fn launch(
         let mut child = command
             .spawn()
             .map_err(|e| format!("启动浏览器监督进程失败：{e}"))?;
-        let input = json!({"browser":browser,"args":args,"extensionPath":extension["extensionPath"],"id":id,"timeoutMs":budget.as_millis()});
+        let input = json!({"browser":browser,"args":args,"extensionPath":extension["extensionPath"],"id":id,"timeoutMs":budget.as_millis(),"tz":tz});
         let sent = child
             .stdin
             .take()
@@ -176,6 +177,9 @@ mod unix {
         let args: Vec<String> =
             serde_json::from_value(input["args"].clone()).map_err(|_| "启动参数无效")?;
         let extension = input["extensionPath"].as_str().ok_or("缺少扩展目录")?;
+        // 出口地理一致性的时区半边：TZ 环境跟着实例走（Chrome 的 Intl/Date
+        // 读它），两个阶段（无窗口的扩展加载 + 身份窗口）都要带上。
+        let tz = input["tz"].as_str().filter(|zone| !zone.is_empty());
         let (write, child_read) = UnixStream::pair().map_err(|e| e.to_string())?;
         let (child_write, read) = UnixStream::pair().map_err(|e| e.to_string())?;
         write
@@ -185,6 +189,9 @@ mod unix {
         let output_fd = child_fd(&child_write)?;
         let mut command = Command::new(browser);
         // 原 args 最后一个非开关参数是用户 URL；第一阶段绝不传给 Chrome。
+        if let Some(zone) = tz {
+            command.env("TZ", zone);
+        }
         command
             .args(args.iter().filter(|a| a.starts_with("--")))
             .args([
@@ -232,8 +239,12 @@ mod unix {
             .as_str()
             .filter(|id| !id.is_empty())
             .ok_or("浏览器未确认扩展加载成功")?;
+        let mut opener_command = Command::new(browser);
+        if let Some(zone) = tz {
+            opener_command.env("TZ", zone);
+        }
         let mut opener = Browser(
-            Command::new(browser)
+            opener_command
                 .args(&args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())

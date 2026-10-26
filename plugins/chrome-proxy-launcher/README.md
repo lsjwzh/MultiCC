@@ -120,6 +120,34 @@ meow v0.26.1，MIT，许可与校验值见 `THIRD_PARTY.md`）。首次使用时
 
 订阅原文与解析结果都只留在本机；订阅 URL 通常含 token，**不要提交进仓库**。
 
+## 出口地理一致性（时区 / 语言自动跟随）
+
+「中文系统 + Asia/Shanghai 时区 + 美国 IP」是风控触发人机验证最廉价的判据
+之一。launch / probe 会经该出口请求一次 ip-api.com（明文 HTTP，限
+45 次/分钟，每次启动只用 1 次），拿到出口的国家与时区后**只对这个实例**做
+针对性配置：
+
+- **时区**：以进程环境 `TZ` 注入（Chrome 的 `Intl` / `Date` 立即跟随），
+  覆盖扩展加载与身份窗口两个阶段；
+- **界面语言 / Accept-Language**：按国家码映射 Chrome locale（约 50 个
+  常用国家，见 `src/geo.rs` 的 `locale_for_country`；未知国家一律
+  `en-US`）。三条一起上：`--lang`（界面语言）、`--accept-lang`（请求头
+  与 `navigator.language`；实测 macOS 上单靠 `--lang` 改不动它）、
+  以及首次启动前预写 profile 的 `Default/Preferences`
+  （`intl.accept_languages`，只在文件不存在时写，不覆盖用户选择）；
+- **`--disable-blink-features=AutomationControlled`**：所有启动（含
+  `automaticFingerprint: false`）统一追加，压掉 `navigator.webdriver`
+  这个最显眼的「是机器人」标记。**不影响 CDP 控制**——私有管道
+  （`--remote-debugging-pipe`）照常工作。
+
+失败降级语义：geo 服务不可用时退回原有出口可用性验证（`exit_ip`），
+只是**不套用时区/语言**，不阻塞启动；`checkProxy: false` 时跳过探测。
+launch 返回的 `geo` 字段记录套用结果（`applied: true` + 国家/时区/locale，
+或 `applied: false` + 原因），probe / egress(check) 同样返回 `geo`。
+
+注意这是「时区/语言一致性」，不是完整的反指纹伪装：Canvas、字体、WebGL
+等指纹面仍由轻量指纹扩展负责。
+
 ## 数据落盘
 
 全部在 `~/.multicc/plugins-data/chrome-proxy-launcher/`：
@@ -174,9 +202,9 @@ node --test --test-concurrency=1 plugins/chrome-proxy-launcher/tests/isolation.c
 | `save` | `{id?, name, egressType:"direct"\|"subscription", proxy:{…}` 或 `subscription:{id,node,via?}, note?, chromePath?}` | 新建 / 更新 |
 | `remove` | `{id}` | 删除（运行中先停；磁盘 profile 保留） |
 | `fingerprint-prepare` | `{id}` | 仅准备该身份扩展文件；正常启动会自动准备和加载 |
-| `launch` | `{id, url?, checkProxy?=true, automaticFingerprint?=true}` | 自动加载扩展后打开隔离实例；传 false 使用普通启动 |
+| `launch` | `{id, url?, checkProxy?=true, automaticFingerprint?=true}` | 自动加载扩展后打开隔离实例（时区/语言自动跟随出口，见上节）；传 false 使用普通启动 |
 | `stop` | `{id}` | 停止实例（连带收割本地中继 / 内核） |
-| `probe` | `{id}` 或 `{proxy:{…}}` 或 `{subscription:{…}}` | 经该出口取外网 IP + 延迟 |
+| `probe` | `{id}` 或 `{proxy:{…}}` 或 `{subscription:{…}}` | 经该出口取外网 IP + 延迟 + 地理信息（`geo`：国家/时区/locale） |
 | `egress` | `{id, check?=false}` | 确保该身份的出口**现在**可用，返回标准代理 URL（`proxyUrl`）。订阅出口会复用/拉起内核，带凭据出口会复用/拉起中继；幂等，可被外部程序按需调用 |
 | `egress-stop` | `{id}` | 收割该身份的内核与中继（不动 Chrome），出口配置变化时插件自己也会调 |
 | `subscription-save` | `{id?, name?, url}` | 拉取并保存订阅（刷新节点缓存） |
@@ -227,6 +255,7 @@ Chrome --proxy-server=http://127.0.0.1:<随机端口>  →  中继  →  真实�
 | `relay` | `http://127.0.0.1:<中继端口>` | 带凭据直连，或订阅节点 + 上游住宅代理 |
 
 要在 UI 之外核对这个身份此刻的出口 IP，加 `"check": true`，返回里会带 `exitIp`
+与 `geo`（国家/时区/locale；geo 服务不可用时 `geo.identified` 为 `false`）
 （多一次外网探测，默认不做）。不想让它继续常驻就调 `egress-stop`。
 
 出口配置（代理地址/订阅节点/上游）一改，插件会立刻收割旧内核与中继：内核没有
