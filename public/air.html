@@ -715,6 +715,9 @@
   <script src="shared/models.js"></script>
   <script src="chat-ai-config.js"></script>
   <script src="air-task-settings.js"></script>
+  <!-- 目录初始化失败时的修复终端：air-task-settings.js 的 FIX_ACTIONS 经
+       window.MultiCCAirOps.open() 打开（调用发生在用户点击时，故顺序无依赖）。 -->
+  <script src="air-ops-terminal.js"></script>
   <!-- 运行配置（CLI / 线路 / 模型 / 推理强度 + 自动线路池）的唯一对话框。air.js 那颗
        「运行」胶囊开的就是它；依赖 provider-catalog / auto-provider-editor / chat-ai-config
        的全局，所以排在它们后面、air.js 前面。 -->

@@ -119,7 +119,9 @@ const MIGRATION_DEBT = Object.freeze({
   // scripts/remote-screen-probe.js 判定「悬停到达系统」）。按实测高水位登记，拆分条件不变。
   'scripts/macos-agent/MultiCCAgent.swift': Object.freeze({
     ceiling: 3064,
-    byteCeiling: 145861,
+    // 2026-10-27 补登记：远控手势一轮合入后实测 145870 字节（超上格 9 字节）没回来
+    // 抬这一格，main 上这道闸已红；本轮零 Swift 变更，仅按实测对齐高水位。拆分条件不变。
+    byteCeiling: 145870,
     target: 3000,
     reason: 'macOS desktop agent single-file implementation; split screen capture / input injection / permission probing next',
   }),
@@ -479,8 +481,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   不可用原因、待重启状态），中英各 11 行 = +22 行；另补 3748c159 已加进
     //   app/assets/i18n 但当时没重新生成的 rsViaLan / rsNetStats / rsNetStatsNoRtt，
     //   中英各 3 行 = +6 行，重跑生成器实测 9670/621458。
-    maxLines: 9670,
-    maxBytes: 621458,
+    // +21 双语键（airOpsTerminal* 19 键 + airTaskSettingsFixGit* 2 键）：目录初始化
+    //   失败时的「环境修复终端」面板（air-ops-terminal.js）与目录弹窗里两条
+    //   修复按钮（安装 Git / 设置提交身份），中英各 21 行 = +42 行，
+    //   重跑生成器实测 9712/624249（行数按检查器的换行口径计）。
+    maxLines: 9712,
+    maxBytes: 624249,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

@@ -37,11 +37,32 @@
         return info && info.target ? t('airTaskSettingsOpenDiskAccessTarget') + info.target : null;
       },
     },
+    // Neither has a one-shot endpoint: installing git depends on the host's
+    // package manager and may need privileges the service lacks, and the
+    // identity is two config writes. The button opens the ops terminal panel
+    // (air-ops-terminal.js) with the repair for the named failure pre-filled.
+    'fix-git-missing': {
+      label: () => t('airTaskSettingsFixGitMissing'),
+      open: 'git-missing',
+    },
+    'fix-git-identity': {
+      label: () => t('airTaskSettingsFixGitIdentity'),
+      open: 'git-identity',
+    },
   };
 
   function renderFix(container, fix) {
     const action = FIX_ACTIONS[fix];
     if (!action) return;
+    if (action.open) {
+      const wrap = node('p', null, 'air-fix-action');
+      const button = node('button', action.label());
+      button.type = 'button';
+      button.onclick = () => window.MultiCCAirOps?.open(action.open);
+      wrap.append(button);
+      container.append(wrap);
+      return;
+    }
     const wrap = node('p', null, 'air-fix-action');
     const button = node('button', action.label());
     button.type = 'button';
