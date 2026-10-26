@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub fn candidate_paths() -> Vec<PathBuf> {
     if cfg!(target_os = "macos") {
@@ -155,6 +155,8 @@ pub fn build_args(profile: &Profile, url: Option<&str>, proxy_arg: &str, geo: Op
         "--disable-features=ChromeWhatsNewUI".to_string(),
         // 每次都接着上次的会话打开：恢复标签页，也保住没勾「记住我」的会话
         // cookie（不加它 Chrome 启动时会清掉会话 cookie，等于又要重新登录）。
+        // 两阶段启动（主进程 --no-startup-window）只保住 cookie、不恢复
+        // 标签页：恢复只在主进程自己建首个窗口时发生。
         // 「启动时继续浏览」那个设置项写进 Preferences 不管用：它受 Secure
         // Preferences 校验，外部改写会被 Chrome 当作篡改重置。
         "--restore-last-session".to_string(),
@@ -187,6 +189,102 @@ pub fn build_args(profile: &Profile, url: Option<&str>, proxy_arg: &str, geo: Op
         }
     }
     args
+}
+
+/// 界面 locale 覆盖参数。macOS 版 Chrome 忽略 --lang，界面 locale 只认 Cocoa
+/// 的 AppleLanguages，而渲染进程 Intl 的默认 locale、Date 字符串里的时区名
+/// （「北美太平洋夏令时间」）都跟着界面 locale 走——不覆盖就会出现
+/// navigator.language=en-US 而 Intl=zh-CN 的自相矛盾。命令行参数域
+/// `-AppleLanguages (xx-YY)` 只作用于这一个进程；但 Chrome 会把单独的
+/// `(xx-YY)` 当 URL 打开，所以这组参数只能交给 --no-startup-window 的主进程，
+/// 网页由第二次调用转发（见 spawn_plain 与 browser_session 的两阶段）。
+pub fn ui_locale_args(locale: &str) -> Vec<String> {
+    if cfg!(target_os = "macos") && !locale.is_empty() {
+        vec!["-AppleLanguages".into(), format!("({locale})")]
+    } else {
+        Vec::new()
+    }
+}
+
+/// 出口地理识别的时长上限：它只是加分项，不能挤占出口验证与浏览器启动。
+const GEO_BUDGET: Duration = Duration::from_secs(4);
+/// launch 总预算里留给浏览器启动（含自动加载扩展）的部分。
+const BROWSER_RESERVE: Duration = Duration::from_secs(5);
+
+/// 距总 deadline 还剩多少，先扣掉留给浏览器启动的部分。
+fn budget_left(deadline: Instant, reserve: Duration) -> Duration {
+    deadline.saturating_duration_since(Instant::now()).saturating_sub(reserve)
+}
+
+/// 普通启动（不自动加载扩展）。需要覆盖界面 locale 时与 browser_session 同样
+/// 走两阶段：主进程只带开关 + --no-startup-window + locale 参数，等它的
+/// 单实例 socket 就绪后，再由第二次调用把网页 / 会话恢复转发给它。
+fn spawn_plain(
+    browser: &std::path::Path,
+    args: &[String],
+    tz: Option<&str>,
+    ui_args: &[String],
+    data_dir: &std::path::Path,
+    deadline: Instant,
+) -> Result<u32, String> {
+    let mut command = Command::new(browser);
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    if let Some(zone) = tz {
+        command.env("TZ", zone);
+    }
+    if ui_args.is_empty() {
+        let child = command.args(args).spawn().map_err(|e| format!("启动浏览器失败：{e}"))?;
+        return Ok(child.id());
+    }
+    let mut main = command
+        .args(args.iter().filter(|a| a.starts_with("--")))
+        .arg("--no-startup-window")
+        .args(ui_args)
+        .spawn()
+        .map_err(|e| format!("启动浏览器失败：{e}"))?;
+    let abort = |main: &mut std::process::Child, message: &str| -> String {
+        let _ = main.kill();
+        let _ = main.wait();
+        message.to_string()
+    };
+    let socket = data_dir.join("SingletonSocket");
+    while socket.symlink_metadata().is_err() {
+        if main.try_wait().map_err(|e| e.to_string())?.is_some() {
+            return Err("浏览器启动后立即退出".into());
+        }
+        if Instant::now() > deadline {
+            return Err(abort(&mut main, "等待浏览器就绪超时"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let mut opener_command = Command::new(browser);
+    if let Some(zone) = tz {
+        opener_command.env("TZ", zone);
+    }
+    let mut opener = match opener_command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(opener) => opener,
+        Err(e) => return Err(abort(&mut main, &format!("打开身份窗口失败：{e}"))),
+    };
+    loop {
+        if let Some(status) = opener.try_wait().map_err(|e| e.to_string())? {
+            if !status.success() {
+                return Err(abort(&mut main, "打开身份窗口失败"));
+            }
+            return Ok(main.id());
+        }
+        if Instant::now() > deadline {
+            let _ = opener.kill();
+            let _ = opener.wait();
+            return Err(abort(&mut main, "等待身份窗口打开超时"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Accept-Language 的持久半边：--accept-lang 覆盖本次会话的请求头与
@@ -276,9 +374,11 @@ pub fn ensure_not_running(id: &str) -> Result<(), String> {
 /// 则经刚起的本地内核取一次出口 IP。
 /// 带凭据的直连代理会先拉起本地中继；订阅出口会先拉起身份专属 meow 内核。
 pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic_fingerprint: bool) -> Result<serde_json::Value, String> {
-    // 出口准备（内核/中继/geo 识别/可用性验证）与浏览器启动共享这个总预算；
-    // 监督进程内部的 CDP 上限另见 browser_session（18s）。
-    let deadline = std::time::Instant::now() + Duration::from_secs(25);
+    // 出口准备（内核/中继/geo 识别/可用性验证）与浏览器启动共享这个总预算。
+    // 宿主（src/routes/plugins.js RUN_TIMEOUT_MS=20s）到点直接 SIGKILL 插件，
+    // 跳过下面所有清理分支、留下孤儿内核/中继，所以必须给它留出余量；
+    // geo 与出口验证都从剩余预算里切，不各自独立计时。
+    let deadline = Instant::now() + Duration::from_secs(18);
     let _lock = crate::browser_session::launch_lock(&profile.id)?;
     ensure_not_running(&profile.id)?;
     if url.is_some_and(|u| u.trim_start().starts_with('-')) { return Err("网页地址不能是启动参数".into()); }
@@ -325,10 +425,18 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
         if check_proxy {
             // geo 识别成功即视为出口验证通过（请求已完整走过这条出口）；
             // 失败再走纯 IP 验证，区分「geo 服务问题」与「出口真的不通」。
-            match crate::geo::detect(&crate::geo::via_local_http(listen_port), Duration::from_secs(5)) {
+            let geo_budget = budget_left(deadline, BROWSER_RESERVE).min(GEO_BUDGET);
+            match crate::geo::detect(&crate::geo::via_local_http(listen_port), geo_budget) {
                 Ok(found) => geo = Some(found),
                 Err(_) => {
-                    if let Err(err) = crate::core::verify_exit(listen_port, Duration::from_secs(12)) {
+                    // 本地端口连接是瞬时的，超时基本只花在读应答上。
+                    let verify_budget = budget_left(deadline, BROWSER_RESERVE).min(Duration::from_secs(12));
+                    let verified = if verify_budget < Duration::from_secs(1) {
+                        Err("出口准备耗时过长".to_string())
+                    } else {
+                        crate::core::verify_exit(listen_port, verify_budget)
+                    };
+                    if let Err(err) = verified {
                         stop_relay_if_any(&profile.id);
                         crate::core::stop_if_any(&profile.id);
                         return Err(format!(
@@ -356,10 +464,17 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
             if proxy.has_credentials() {
                 // 有凭据时 geo 直接对上游做（http Basic / socks5 RFC1929 都
                 // 带认证），此刻中继还没起；成功即认证与出口一并验证过。
-                match crate::geo::detect(proxy, Duration::from_secs(5)) {
+                let geo_budget = budget_left(deadline, BROWSER_RESERVE).min(GEO_BUDGET);
+                match crate::geo::detect(proxy, geo_budget) {
                     Ok(found) => geo = Some(found),
                     Err(_) => {
-                        crate::proxy::exit_ip(proxy, Duration::from_secs(6))?;
+                        // exit_ip 的超时是按段（连接、读应答各一次）算的，
+                        // 远端代理两段都可能吃满，所以只给剩余预算的一半。
+                        let verify_budget = budget_left(deadline, BROWSER_RESERVE).min(Duration::from_secs(12)) / 2;
+                        if verify_budget < Duration::from_millis(500) {
+                            return Err("出口准备耗时过长，请重新启动浏览器".into());
+                        }
+                        crate::proxy::exit_ip(proxy, verify_budget)?;
                     }
                 }
             } else {
@@ -370,7 +485,8 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
                     ));
                 }
                 // 无凭据出口原本只做 TCP 探测，geo 只算顺手加分项，失败忽略。
-                if let Ok(found) = crate::geo::detect(proxy, Duration::from_secs(5)) {
+                let geo_budget = budget_left(deadline, BROWSER_RESERVE).min(GEO_BUDGET);
+                if let Ok(found) = crate::geo::detect(proxy, geo_budget) {
                     geo = Some(found);
                 }
             }
@@ -410,23 +526,23 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
     // 时区半边走进程 TZ：Chrome 的 Intl / Date 读这个环境变量，随实例不随系统。
     let tz = geo.as_ref().map(|found| found.timezone.as_str()).filter(|zone| !zone.is_empty());
     let args = build_args(profile, url, &proxy_arg, geo.as_ref());
+    let ui_args = geo.as_ref().map(|found| ui_locale_args(&found.locale)).unwrap_or_default();
     if let Some(found) = geo.as_ref().filter(|g| !g.locale.is_empty()) {
         seed_language_prefs(
             &store::user_data_dir(&profile.id),
             &crate::geo::accept_languages(&found.locale),
         );
     }
-    let session = (if let Some(extension) = extension {
-        match deadline.checked_duration_since(std::time::Instant::now()) {
-            Some(budget) => crate::browser_session::launch(&profile.id, &browser, &args, &extension, budget, tz),
-            None => Err("出口准备耗时过长，请重新启动浏览器".into()),
-        }
-    } else {
-        let mut command = Command::new(&browser);
-        command.args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        if let Some(zone) = tz { command.env("TZ", zone); }
-        command.spawn().map(|child| json!({"pid":child.id(),"fingerprint":{"status":"notRequested","installationVerified":false}}))
-            .map_err(|e| format!("启动浏览器失败：{e}"))
+    let session = (match deadline.checked_duration_since(Instant::now()) {
+        None => Err("出口准备耗时过长，请重新启动浏览器".into()),
+        Some(budget) => match extension {
+            Some(extension) => crate::browser_session::launch(
+                &profile.id, &browser, &args, &extension, budget, tz, &ui_args,
+            ),
+            None => spawn_plain(&browser, &args, tz, &ui_args, &data_dir, deadline).map(
+                |pid| json!({"pid":pid,"fingerprint":{"status":"notRequested","installationVerified":false}}),
+            ),
+        },
     }).map_err(|err| {
         stop_relay_if_any(&profile.id);
         crate::core::stop_if_any(&profile.id);
@@ -505,6 +621,27 @@ mod tests {
         let args = build_args(&profile("http"), None, "--proxy-server=http://127.0.0.1:7897", Some(&geo));
         assert!(args.iter().any(|a| a == "--lang=en-US"));
         assert!(args.iter().any(|a| a == "--accept-lang=en-US,en"));
+    }
+
+    #[test]
+    fn ui_locale_args_only_on_macos_and_never_empty_locale() {
+        assert!(ui_locale_args("").is_empty());
+        let args = ui_locale_args("en-US");
+        if cfg!(target_os = "macos") {
+            assert_eq!(args, ["-AppleLanguages", "(en-US)"]);
+        } else {
+            assert!(args.is_empty());
+        }
+        // 绝不能混进 build_args：值 `(en-US)` 不以 -- 开头，会被当网页打开。
+        let geo = crate::geo::ExitGeo {
+            ip: "1.2.3.4".into(),
+            country_code: "US".into(),
+            country_name: "United States".into(),
+            timezone: "America/Los_Angeles".into(),
+            locale: "en-US".into(),
+        };
+        let built = build_args(&profile("http"), None, "--proxy-server=http://127.0.0.1:7897", Some(&geo));
+        assert!(!built.iter().any(|a| a.contains("AppleLanguages") || a.starts_with('(')));
     }
 
     #[test]

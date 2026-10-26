@@ -340,10 +340,20 @@ fn command_stop(input: &Value) -> Result<Value, String> {
 /// geo 识别优先、纯 IP 探测兜底的统一出口探测：成功时一并带回地理信息
 /// （国家/时区/locale，供 UI 核对与 launch 套用），geo 服务不可用时至少
 /// 验证出口可用并返回 IP。
-fn probe_egress(config: &ProxyConfig, timeout: Duration) -> Result<(String, Option<geo::ExitGeo>), String> {
-    match geo::detect(config, timeout) {
+///
+/// budget 是两段合计的上限：宿主 20s 到点 SIGKILL，不能让 geo 与兜底各吃一份。
+fn probe_egress(config: &ProxyConfig, budget: Duration) -> Result<(String, Option<geo::ExitGeo>), String> {
+    let deadline = std::time::Instant::now() + budget;
+    match geo::detect(config, (budget / 2).min(Duration::from_secs(4))) {
         Ok(found) => Ok((found.ip.clone(), Some(found))),
-        Err(_) => proxy::exit_ip(config, timeout).map(|ip| (ip, None)),
+        Err(_) => {
+            // exit_ip 的超时按段（连接、读应答）各算一次，所以再折半。
+            let left = deadline.saturating_duration_since(std::time::Instant::now()) / 2;
+            if left < Duration::from_millis(500) {
+                return Err("测出口超时".into());
+            }
+            proxy::exit_ip(config, left).map(|ip| (ip, None))
+        }
     }
 }
 
@@ -391,13 +401,23 @@ fn probe_via_core(profile_id: &str, egress: &SubscriptionEgress, allow_running: 
                     username: None,
                     password: None,
                 };
-                chrome::spawn_relay(profile_id, via, Some(hop))?
+                match chrome::spawn_relay(profile_id, via, Some(hop)) {
+                    Ok(port) => port,
+                    Err(err) => {
+                        // 中继没起来也要收掉刚为这次探测临时起的内核。
+                        if temporary_core {
+                            core::stop_if_any(profile_id);
+                        }
+                        return Err(err);
+                    }
+                }
             }
         }
     } else {
         core_port
     };
-    let outcome = probe_egress(&geo::via_local_http(test_port), Duration::from_secs(10));
+    // 内核冷启（≤6s）+ 中继（≤3s）+ 这 8s 仍在宿主 20s 的 SIGKILL 线以内。
+    let outcome = probe_egress(&geo::via_local_http(test_port), Duration::from_secs(8));
     if temporary_relay {
         chrome::stop_relay_if_any(profile_id);
     }
