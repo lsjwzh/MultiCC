@@ -34,7 +34,7 @@ pub fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream
     Ok(stream)
 }
 
-fn looks_like_ip(text: &str) -> bool {
+pub fn looks_like_ip(text: &str) -> bool {
     let text = text.trim();
     if text.is_empty() || text.len() > 45 {
         return false;

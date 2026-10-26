@@ -125,28 +125,49 @@ meow v0.26.1，MIT，许可与校验值见 `THIRD_PARTY.md`）。首次使用时
 「中文系统 + Asia/Shanghai 时区 + 美国 IP」是风控触发人机验证最廉价的判据
 之一。launch / probe 会经该出口请求一次 ip-api.com（明文 HTTP，限
 45 次/分钟，每次启动只用 1 次），拿到出口的国家与时区后**只对这个实例**做
-针对性配置：
+针对性配置。时区与语言全部来自这次实时识别，代码里不写死任何地区：
 
 - **时区**：以进程环境 `TZ` 注入（Chrome 的 `Intl` / `Date` 立即跟随），
-  覆盖扩展加载与身份窗口两个阶段；
-- **界面语言 / Accept-Language**：按国家码映射 Chrome locale（约 50 个
-  常用国家，见 `src/geo.rs` 的 `locale_for_country`；未知国家一律
-  `en-US`）。三条一起上：`--lang`（界面语言）、`--accept-lang`（请求头
-  与 `navigator.language`；实测 macOS 上单靠 `--lang` 改不动它）、
-  以及首次启动前预写 profile 的 `Default/Preferences`
-  （`intl.accept_languages`，只在文件不存在时写，不覆盖用户选择）；
+  覆盖扩展加载与身份窗口两个阶段。应答走明文、经代理转手，时区名先过
+  白名单（只放行 `Region/City` 形态的字符，拒绝 `:` 开头、`..` 等会被
+  libc 当成文件路径的写法），不合法就只放弃时区、语言照常套用；
+- **语言**：按国家码映射 Chrome locale（约 50 个常用国家，见 `src/geo.rs`
+  的 `locale_for_country`；出口在中国大陆时保持 `zh-CN`，表外国家一律
+  `en-US`）。四处一起改：
+  - `--accept-lang`：请求头 `Accept-Language` 与 `navigator.language(s)`，
+    已用过的老 profile 同样生效；
+  - 界面 locale：决定 `Intl` 默认 locale 与 `new Date().toString()` 里的
+    时区名。macOS 版 Chrome 忽略 `--lang`，只认 Cocoa 的
+    `-AppleLanguages (xx-YY)`（只作用于这个进程）；不改它会出现
+    `navigator.language=en-US` 而 `Intl=zh-CN`、Date 里带「北美太平洋
+    夏令时间」的自相矛盾。其他平台用 `--lang`；
+  - 首次启动前预写 profile 的 `Default/Preferences`
+    （`intl.accept_languages`，只在文件不存在时写，不覆盖用户选择）；
 - **`--disable-blink-features=AutomationControlled`**：所有启动（含
   `automaticFingerprint: false`）统一追加，压掉 `navigator.webdriver`
   这个最显眼的「是机器人」标记。**不影响 CDP 控制**——私有管道
   （`--remote-debugging-pipe`）照常工作。
+
+`-AppleLanguages` 的值 `(xx-YY)` 不以 `--` 开头，Chrome 会把它当网页打开
+（实测多出一个 `http://(en-us)/` 标签页），所以它只交给带
+`--no-startup-window` 的主进程，网页由第二次调用转发打开。自动指纹路径本来
+就是这样的两阶段；普通启动只在 macOS 且套用了语言时才改走两阶段。两阶段
+启动不会恢复上次的标签页（登录态 cookie 仍保留，`--restore-last-session`
+在主进程上），自动指纹路径从 1.5.0 起即如此。
 
 失败降级语义：geo 服务不可用时退回原有出口可用性验证（`exit_ip`），
 只是**不套用时区/语言**，不阻塞启动；`checkProxy: false` 时跳过探测。
 launch 返回的 `geo` 字段记录套用结果（`applied: true` + 国家/时区/locale，
 或 `applied: false` + 原因），probe / egress(check) 同样返回 `geo`。
 
+时长预算：宿主（`src/routes/plugins.js`）对每条插件命令有 20 秒硬超时，到点
+直接 SIGKILL，会跳过插件里的所有清理、留下孤儿内核/中继。所以 launch 总预算
+固定 18 秒，geo（≤4 秒）与出口验证都从剩余预算里切、并给浏览器启动预留
+5 秒；geo 的读取同时受总时限与 64KB 上限约束，挡住慢速灌数据的应答。
+
 注意这是「时区/语言一致性」，不是完整的反指纹伪装：Canvas、字体、WebGL
-等指纹面仍由轻量指纹扩展负责。
+等指纹面仍由轻量指纹扩展负责；出口 IP 本身的类型（住宅 / 机房 / 商用）
+也不在插件能改的范围内。
 
 ## 数据落盘
 

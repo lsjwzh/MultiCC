@@ -12,6 +12,7 @@ pub fn launch(
     extension: &Value,
     budget: Duration,
     tz: Option<&str>,
+    ui_args: &[String],
 ) -> Result<Value, String> {
     #[cfg(not(unix))]
     return Err("此平台尚不支持私有管道自动加载扩展，已拒绝无保护启动".into());
@@ -35,7 +36,7 @@ pub fn launch(
         let mut child = command
             .spawn()
             .map_err(|e| format!("启动浏览器监督进程失败：{e}"))?;
-        let input = json!({"browser":browser,"args":args,"extensionPath":extension["extensionPath"],"id":id,"timeoutMs":budget.as_millis(),"tz":tz});
+        let input = json!({"browser":browser,"args":args,"extensionPath":extension["extensionPath"],"id":id,"timeoutMs":budget.as_millis(),"tz":tz,"uiArgs":ui_args});
         let sent = child
             .stdin
             .take()
@@ -180,6 +181,10 @@ mod unix {
         // 出口地理一致性的时区半边：TZ 环境跟着实例走（Chrome 的 Intl/Date
         // 读它），两个阶段（无窗口的扩展加载 + 身份窗口）都要带上。
         let tz = input["tz"].as_str().filter(|zone| !zone.is_empty());
+        // 界面 locale 覆盖（macOS 的 -AppleLanguages，见 chrome::ui_locale_args）
+        // 只给阶段一的主进程：它带 --no-startup-window，不会把参数值当网页打开。
+        let ui_args: Vec<String> =
+            serde_json::from_value(input["uiArgs"].clone()).unwrap_or_default();
         let (write, child_read) = UnixStream::pair().map_err(|e| e.to_string())?;
         let (child_write, read) = UnixStream::pair().map_err(|e| e.to_string())?;
         write
@@ -199,6 +204,7 @@ mod unix {
                 "--remote-debugging-pipe",
                 "--enable-unsafe-extension-debugging",
             ])
+            .args(&ui_args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
