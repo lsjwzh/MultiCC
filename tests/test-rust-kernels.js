@@ -169,6 +169,7 @@ rustTest('打包后的 Rust 模块可加载，错误架构不能进入安装包'
     for (const arch of [process.arch, 'ia32']) {
       const dir = path.join(process.env.MULTICC_RUST_PREBUILT_DIR, `${process.platform}-${arch}`);
       fs.mkdirSync(dir, { recursive: true }); fs.copyFileSync(source, path.join(dir, 'multicc_core.node'));
+      fs.writeFileSync(path.join(dir, remoteName()), binaryHeader(process.platform, arch));
     }
     const options = { repoRoot: '.', out: path.join(root, 'app-server'), logger: { log() {} } };
     const staged = stageRustKernels(options);
@@ -184,9 +185,188 @@ rustTest('打包后的 Rust 模块可加载，错误架构不能进入安装包'
       })().catch(error => { console.error(error); process.exitCode = 1; });
     `, staged], { encoding: 'utf8', timeout: 15000 });
     assert.equal(probe.status, 0, probe.stderr);
+    if (hasRemoteCrate('.')) {
+      const stagedRemote = path.join(path.dirname(staged), remoteName());
+      assert.equal(fs.existsSync(stagedRemote), true, '远控二进制必须和模块同目录打包');
+      if (process.platform !== 'win32') assert.equal(fs.statSync(stagedRemote).mode & 0o111, 0o111);
+    }
     assert.throws(() => stageRustKernels({ ...options, npmEnv: { npm_config_arch: 'ia32' } }), /架构不匹配/);
   } finally {
     if (beforeDir === undefined) delete process.env.MULTICC_RUST_PREBUILT_DIR; else process.env.MULTICC_RUST_PREBUILT_DIR = beforeDir;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- multicc-remote：分步编译、缺件策略、可执行位、--version ----
+
+const { build, hasRemoteCrate, remoteBinaryName, remoteBinaryPath } = require('../scripts/build-rust-kernels');
+const { builtFromSource: fromSource, sourceFingerprint: fingerprintOf } = require('../scripts/rust-source-cache');
+const { stageRustKernels: stageKernels } = require('../scripts/stage-rust-kernels');
+
+function remoteName(platform = process.platform) {
+  return remoteBinaryName(platform);
+}
+
+// 只给 verify() 读魔数的平台/架构头；远控二进制的执行结果由注入的 run 模拟。
+function binaryHeader(platform = process.platform, arch = process.arch) {
+  if (platform === 'darwin') {
+    const buffer = Buffer.alloc(16);
+    buffer.writeUInt32LE(0xfeedfacf, 0);
+    buffer.writeUInt32LE(arch === 'arm64' ? 0x0100000c : 0x01000007, 4);
+    return buffer;
+  }
+  if (platform === 'linux') {
+    const buffer = Buffer.alloc(64);
+    Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]).copy(buffer, 0);
+    buffer.writeUInt16LE(arch === 'arm64' ? 0xb7 : 0x3e, 18);
+    return buffer;
+  }
+  const buffer = Buffer.alloc(0x48);
+  buffer.write('MZ', 0);
+  buffer.writeUInt32LE(0x40, 0x3c);
+  buffer.writeUInt32LE(0x00004550, 0x40);
+  buffer.writeUInt16LE(arch === 'arm64' ? 0xaa64 : 0x8664, 0x44);
+  return buffer;
+}
+
+// 一个只读写文件、不真跑编译器的 cargo：按 -p 写出对应产物，记录调用顺序。
+function fakeCargo({ failRemote = false, omitRemote = false, version = 'multicc-remote 1 0.1.0\n' } = {}) {
+  const calls = [];
+  const run = (command, args, options = {}) => {
+    if (command !== 'cargo') return { status: 0, stdout: version, stderr: '' };
+    calls.push(args.join(' '));
+    const crate = args[args.indexOf('-p') + 1];
+    if (crate === 'multicc-remote' && failRemote) return { status: 2, stdout: '', stderr: 'compile error' };
+    const target = args[args.indexOf('--target') + 1];
+    const release = path.join(options.env.CARGO_TARGET_DIR, target, 'release');
+    fs.mkdirSync(release, { recursive: true });
+    if (crate === 'multicc-addon') {
+      const library = process.platform === 'win32' ? 'multicc_addon.dll'
+        : process.platform === 'darwin' ? 'libmulticc_addon.dylib' : 'libmulticc_addon.so';
+      fs.writeFileSync(path.join(release, library), Buffer.concat([binaryHeader(), Buffer.alloc(300)]));
+    } else if (!omitRemote) {
+      fs.writeFileSync(path.join(release, remoteName()), Buffer.concat([binaryHeader(), Buffer.alloc(300)]));
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+  return { calls, run };
+}
+
+function rustBuildFixture(t, { members = ['core', 'addon', 'remote'] } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rust-remote-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  for (const name of ['build-rust-kernels.js', 'rust-source-cache.js']) {
+    fs.writeFileSync(path.join(root, 'scripts', name), fs.readFileSync(path.join(__dirname, '..', 'scripts', name)));
+  }
+  fs.mkdirSync(path.join(root, 'native'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'native/Cargo.toml'),
+    `[workspace]\nmembers = [${members.map(name => `"${name}"`).join(', ')}]\n`);
+  fs.writeFileSync(path.join(root, 'native/Cargo.lock'), 'version = 4\n');
+  return { root, out: path.join(root, 'prebuilt'), targetDir: path.join(root, 'cargo-target') };
+}
+
+// 打包只认 MULTICC_RUST_PREBUILT_DIR（CI 会设），测试自己的 fixture 必须独占它。
+function ownPrebuiltRoot(t) {
+  const before = process.env.MULTICC_RUST_PREBUILT_DIR;
+  delete process.env.MULTICC_RUST_PREBUILT_DIR;
+  t.after(() => { if (before !== undefined) process.env.MULTICC_RUST_PREBUILT_DIR = before; });
+}
+
+const quiet = { log() {}, error() {} };
+
+test('远控二进制分步编译：先模块后进程，可执行位保留并过 --version 校验', t => {
+  const fixture = rustBuildFixture(t);
+  const { calls, run } = fakeCargo();
+  const result = build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
+    requireRemote: false, run, logger: quiet });
+  assert.equal(calls.length, 2);
+  assert.match(calls[0], /-p multicc-addon$/);
+  assert.match(calls[1], /-p multicc-remote$/);
+  assert.equal(result.addon, path.join(fixture.out, `${process.platform}-${process.arch}`, 'multicc_core.node'));
+  assert.equal(result.remote, remoteBinaryPath(result.addon));
+  assert.equal(fs.existsSync(result.remote), true);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(result.remote).mode & 0o111, 0o111);
+  // 两个产物都要能证明是当前源码编的（指纹目录之外还给 /tmp 输出用）。
+  assert.equal(fromSource(result.remote, fingerprintOf(fixture.root, process.env)), true);
+  assert.equal(fromSource(result.addon, fingerprintOf(fixture.root, process.env)), true);
+});
+
+test('远控编不出来：源码路径只警告并保留模块，发布路径必须报错', t => {
+  const fixture = rustBuildFixture(t);
+  const warnings = [];
+  const logger = { log() {}, error(message) { warnings.push(message); } };
+  const source = fakeCargo({ failRemote: true });
+  const result = build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
+    requireRemote: false, run: source.run, logger });
+  assert.equal(result.remote, null);
+  assert.equal(fs.existsSync(result.addon), true, '模块仍然可用，服务照常启动');
+  assert.match(warnings.join('\n'), /「🖥 屏幕」本次不可用/);
+  assert.match(warnings.join('\n'), /MULTICC_REMOTE_BIN/);
+
+  const release = fakeCargo({ failRemote: true });
+  assert.throws(() => build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
+    requireRemote: true, run: release.run, logger: quiet }), /远控二进制构建失败/);
+  assert.equal(fs.existsSync(remoteBinaryPath(path.join(fixture.out, `${process.platform}-${process.arch}`,
+    'multicc_core.node'))), false, '失败不能留下半成品');
+});
+
+test('发布路径要求二进制真的存在：编译器成功但没产物也要失败', t => {
+  const fixture = rustBuildFixture(t);
+  const { run } = fakeCargo({ omitRemote: true });
+  assert.throws(() => build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
+    requireRemote: true, run, logger: quiet }), /远控二进制构建失败/);
+});
+
+test('--version 不是 multicc-remote 1 时拒绝发布，源码路径只警告', t => {
+  const fixture = rustBuildFixture(t);
+  const wrong = fakeCargo({ version: 'multicc-remote 2 0.1.0\n' });
+  assert.throws(() => build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
+    requireRemote: true, run: wrong.run, logger: quiet }), /--version 校验失败/);
+  const warnings = [];
+  const source = fakeCargo({ version: 'multicc-remote 2 0.1.0\n' });
+  const result = build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
+    requireRemote: false, run: source.run, logger: { log() {}, error(message) { warnings.push(message); } } });
+  assert.equal(result.remote, null);
+  assert.match(warnings.join('\n'), /--version 校验失败/);
+});
+
+test('native/remote 不在 workspace 时跳过远控，两个产物规则都不报错', t => {
+  ownPrebuiltRoot(t);
+  const fixture = rustBuildFixture(t, { members: ['core', 'addon'] });
+  const { calls, run } = fakeCargo();
+  const result = build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
+    requireRemote: true, run, logger: quiet });
+  assert.deepEqual(calls.map(call => call.split(' ').pop()), ['multicc-addon']);
+  assert.equal(result.remote, null);
+  assert.equal(fs.existsSync(remoteBinaryPath(result.addon)), false);
+  const prebuilt = path.join(fixture.root, 'native/prebuilt', `${process.platform}-${process.arch}`);
+  fs.mkdirSync(prebuilt, { recursive: true });
+  fs.writeFileSync(path.join(prebuilt, 'multicc_core.node'), fs.readFileSync(result.addon));
+  const staged = stageKernels({ repoRoot: fixture.root, out: path.join(fixture.root, 'stage'), logger: quiet });
+  assert.equal(path.basename(staged), 'multicc_core.node');
+  assert.equal(fs.existsSync(remoteBinaryPath(staged)), false);
+});
+
+test('打包：远控二进制同目录复制且保留可执行位，workspace 声明了却缺件必须报错', t => {
+  ownPrebuiltRoot(t);
+  const fixture = rustBuildFixture(t);
+  const prebuilt = path.join(fixture.root, 'native/prebuilt', `${process.platform}-${process.arch}`);
+  fs.mkdirSync(prebuilt, { recursive: true });
+  fs.writeFileSync(path.join(prebuilt, 'multicc_core.node'), Buffer.concat([binaryHeader(), Buffer.alloc(300)]));
+  const missing = path.join(fixture.root, 'stage-missing');
+  assert.throws(() => stageKernels({ repoRoot: fixture.root, out: missing, logger: quiet }), /打包缺少远控二进制/);
+  fs.writeFileSync(path.join(prebuilt, remoteName()), binaryHeader(process.platform));
+  const out = path.join(fixture.root, 'stage');
+  const staged = stageKernels({ repoRoot: fixture.root, out, logger: quiet });
+  const remote = path.join(path.dirname(staged), remoteName());
+  assert.equal(fs.existsSync(remote), true);
+  assert.deepEqual(fs.readFileSync(remote), binaryHeader(process.platform));
+  if (process.platform !== 'win32') assert.equal(fs.statSync(remote).mode & 0o111, 0o111);
+  // 平台/架构不符的远控二进制不能混进安装包。
+  const wrongArch = process.arch === 'arm64' ? 'x64' : 'arm64';
+  fs.writeFileSync(path.join(prebuilt, remoteName()), binaryHeader(process.platform, wrongArch));
+  assert.throws(() => stageKernels({ repoRoot: fixture.root, out: path.join(fixture.root, 'stage-bad'), logger: quiet }),
+    /平台或架构不匹配|架构/);
+});
+

@@ -314,16 +314,20 @@ test('core runner covers every selected path and expands declared variants', () 
   // v2.10.0 review: passive Claude quota headers use synthetic response data,
   // injected services and a temporary cache. No account, browser or live API
   // is required. Keep this mechanism regression in deterministic core.
-  // 361 entries, 336 commands; non-UI Flutter core remains 28 files.
-  assert.equal(core.length, 361, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 361);
+  // 364 entries, 336 commands; non-UI Flutter core is 31 files. The remote
+  // screen P2P, LAN resolver and rate controller suites joined core: they drive
+  // pure Dart state machines through injected callbacks, MockClient and an
+  // injected clock, with no widget tree, simulator or real socket. Flutter is
+  // still one batched command, so the command count is unchanged.
+  assert.equal(core.length, 364, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 364);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
   assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 304);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 29);
-  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 28,
+  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
   const expectedPaths = core.flatMap(entry => Array.from(

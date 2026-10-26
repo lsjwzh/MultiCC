@@ -1,9 +1,12 @@
 'use strict';
 
 // 「🖥 屏幕」高清流畅模式端到端：假 Agent（h264.sock 帧格式，内容是 ffmpeg 编的真实
-// H.264）→ 服务端桥 → 真 Chrome 里的 chat-remote-screen-h264.js（WebCodecs 解码）。
-// 验证：能解码出画面、canvas = 屏幕逻辑尺寸、首个关键帧请求、指针/键盘按 RFB 字节
-// 格式回到 Agent。需要 ffmpeg 与 Chrome，缺任何一个就跳过。
+// H.264）→ 假 multicc-remote 进程 → Node 转发层 → 真 Chrome 里的
+// chat-remote-screen-h264.js（WebCodecs 解码）。验证：能解码出画面、canvas = 屏幕
+// 逻辑尺寸、首个关键帧请求、指针/键盘按 RFB 字节格式回到 Agent。
+//
+// 分帧 / 关键帧节流那些逻辑已经属于 Rust（native/remote/），这里只钉 Node 搬字节的
+// 这一跳不吞不改协议。需要 ffmpeg 与 Chrome，缺任何一个就跳过。
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -13,7 +16,12 @@ const net = require('node:net');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
-const { attachH264Bridge, REQ_KEY } = require('../src/remote-screen-h264-bridge');
+
+process.env.MULTICC_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-h264-cdp-data-'));
+const rs = require('../src/remote-screen-rust');
+const { installFakeRemote } = require('./helpers/remote-screen-node-harness');
+
+const REQ_KEY = 0x4b;   // 网页播放端请求关键帧的单字节（线协议，跟 Rust 侧一致）
 
 const hasFfmpeg = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0;
 const W = 320, H = 240;
@@ -70,8 +78,8 @@ function viewerRoutes() {
   };
 }
 
-// 假 Agent（h264.sock 帧格式，循环播 ffmpeg 编的片段）+ 服务端桥（WS）。
-async function fakeAgentAndRelay(t, WebSocketServer, bridgeOptions) {
+// 假 Agent（h264.sock 帧格式，循环播 ffmpeg 编的片段）+ 假上游进程 + Node 转发层。
+async function fakeAgentAndRelay(t, WebSocketServer) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-h264-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const { codec, units } = accessUnits(encodeClip(dir));
@@ -99,20 +107,23 @@ async function fakeAgentAndRelay(t, WebSocketServer, bridgeOptions) {
   await new Promise(r => agent.listen(sockPath, r));
   t.after(() => { timers.forEach(clearInterval); agent.close(); });
 
+  // 假进程一收到 WS 消息就写进这个 socket，反向数据按二进制帧发回。
+  const fake = installFakeRemote({ FAKE_REMOTE_PIPE_SOCK: sockPath });
+  t.after(async () => { await rs._resetForTests(); fake.cleanup(); });
+
   const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await new Promise(r => wss.once('listening', r));
-  const bridges = [];
-  wss.on('connection', ws => bridges.push(attachH264Bridge(ws, { socketPath: sockPath, ...bridgeOptions })));
+  wss.on('connection', ws => rs.attachH264(ws, { url: '/ws/remote-screen?mode=h264' }));
   t.after(() => { for (const c of wss.clients) c.terminate(); wss.close(); });
   const wsUrl = `ws://127.0.0.1:${wss.address().port}/ws/remote-screen?mode=h264`;
-  return { wsUrl, received, bridges };
+  return { wsUrl, received };
 }
 
-test('h264 stream: fake agent → bridge → Chrome WebCodecs decodes frames and sends RFB input back',
+test('h264 stream: fake agent → multicc-remote → Node forwarder → Chrome decodes frames and sends RFB input back',
   { skip: !hasFfmpeg || !findChromeBinary() ? 'needs ffmpeg and Chrome' : false, timeout: 60000 }, async t => {
     let WebSocketServer;
     try { ({ WebSocketServer } = require('ws')); } catch { t.skip('ws module not installed'); return; }
-    const { wsUrl, received } = await fakeAgentAndRelay(t, WebSocketServer, {});
+    const { wsUrl, received } = await fakeAgentAndRelay(t, WebSocketServer);
 
     await withCdpHarness({ routes: viewerRoutes() }, async page => {
       await page.navigate(page.baseUrl + '/');
@@ -177,19 +188,37 @@ test('h264 stream: fake agent → bridge → Chrome WebCodecs decodes frames and
     });
   });
 
-// 直连：同一个假 Agent + 桥，但桥带上真实的 werift 会话。Chrome 与 werift 在本机回环上
-// 打洞（不用 STUN），验证：帧改走 DataChannel 仍能解码、输入经直连回到 Agent、
-// 浏览器一侧断开直连后自动退回 WS 中继且画面不断。
-test('h264 p2p: Chrome ⇄ werift DataChannel carries frames and input, falls back to the relay when it drops',
-  { skip: !hasFfmpeg || !findChromeBinary() ? 'needs ffmpeg and Chrome' : false, timeout: 90000 }, async t => {
-    let WebSocketServer;
-    try { ({ WebSocketServer } = require('ws')); } catch { t.skip('ws module not installed'); return; }
-    const p2p = require('../src/remote-screen-p2p');
-    if (!p2p.loadWerift()) { t.skip('werift not installed'); return; }
-    const { wsUrl, received, bridges } = await fakeAgentAndRelay(t, WebSocketServer, {
-      p2p: hooks => p2p.createP2pSession({ ...hooks, iceServers: [] }),
-      p2pHello: { iceServers: [] },
+// ── 直连（P2P）──
+//
+// 同一个网页客户端，但这次对面是真 Rust 进程（multicc-remote），经测试台
+// （真 server.js + 假 Agent，见 tests/helpers/remote-screen-e2e-harness.js）连进去：
+// 隧道 → Node 转发层 → multicc-remote 的 H.264 桥。桥发 rtc-hello，Chrome 出 offer，
+// DataChannel 打开后帧改走直连。验：transport 变 p2p、直连后仍解出新帧、画面亮。
+// MULTICC_REMOTE_STUN 置空 = 只用本机候选，不连外部 STUN。
+test('h264 p2p cdp: Chrome ⇄ real multicc-remote over the test harness decodes frames on the DataChannel',
+  { skip: !hasFfmpeg || !findChromeBinary() ? 'needs ffmpeg and Chrome' : false, timeout: 180000 }, async t => {
+    const { startHarness } = require('./helpers/remote-screen-e2e-harness');
+    const saved = { stun: process.env.MULTICC_REMOTE_STUN, bin: process.env.MULTICC_REMOTE_BIN };
+    // 前一个用例可能留下假进程的 MULTICC_REMOTE_BIN；测试台必须用自己编的真二进制。
+    delete process.env.MULTICC_REMOTE_BIN;
+    process.env.MULTICC_REMOTE_STUN = '';
+    const h = await startHarness({ p2pStats: true });
+    t.after(async () => {
+      for (const [key, value] of [['MULTICC_REMOTE_STUN', saved.stun], ['MULTICC_REMOTE_BIN', saved.bin]]) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await h.close();
     });
+
+    const issued = await (await fetch(`${h.server}/api/auth/ws-ticket`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Access-Token': h.token },
+      body: JSON.stringify({ path: '/ws/remote-screen' }),
+    })).json();
+    assert.ok(issued.ticket, `ws ticket: ${JSON.stringify(issued)}`);
+    const wsUrl = `${h.server.replace(/^http/, 'ws')}/ws/remote-screen?mode=h264&ticket=${encodeURIComponent(issued.ticket)}`;
+    const screen = JSON.parse(h.messages[0].bytes.subarray(5).toString());
 
     await withCdpHarness({ routes: viewerRoutes() }, async page => {
       await page.navigate(page.baseUrl + '/');
@@ -199,37 +228,38 @@ test('h264 p2p: Chrome ⇄ werift DataChannel carries frames and input, falls ba
         window.transports = [];
         v.addEventListener('transport', () => window.transports.push(v.transport));
         v.addEventListener('disconnect', () => { window.disconnected = true; });
+        v.addEventListener('connect', () => { window.connected = true; });
         return true;
       })()`);
-      assert.ok(await page.waitFor("window.v.transport === 'p2p'", { timeoutMs: 6000 }), 'direct channel opened within a few seconds');
+      assert.ok(await page.waitFor('window.connected === true', { timeoutMs: 20000 }), 'first frame decoded over the relay');
+      assert.ok(await page.waitFor("window.v.transport === 'p2p'", { timeoutMs: 20000 }), 'the DataChannel opened');
+
+      // 切直连后桥会补要关键帧；帧从 DataChannel 来，照样解出新帧。
       const before = await page.evaluate('window.v.stats.frames');
-      assert.ok(await page.waitFor(`window.v.stats.frames >= ${before + 20}`, { timeoutMs: 10000 }), 'frames decode over the DataChannel');
-      assert.equal(bridges[0].stats.transport, 'p2p');
-      const relayed = bridges[0].stats.forwarded;
-
-      received.length = 0;
-      await page.evaluate(`(() => {
+      assert.ok(await page.waitFor(`window.v.stats.frames >= ${before + 5}`, { timeoutMs: 15000 }),
+        `frames keep decoding over the DataChannel (was ${before})`);
+      const view = await page.evaluate(`(() => {
         const c = document.querySelector('#t canvas');
-        window.v.viewOnly = false;
-        c.dispatchEvent(new PointerEvent('pointerdown', { clientX: 320, clientY: 240, buttons: 1, bubbles: true }));
-        c.dispatchEvent(new PointerEvent('pointerup', { clientX: 320, clientY: 240, buttons: 0, bubbles: true }));
-        return true;
+        const px = c.getContext('2d').getImageData(Math.floor(c.width / 2), Math.floor(c.height / 2), 1, 1).data;
+        return { w: c.width, h: c.height, lit: px[0] + px[1] + px[2] > 30, transport: window.v.transport,
+                 frames: window.v.stats.frames, dropped: window.v.stats.dropped, disconnected: !!window.disconnected };
       })()`);
-      const deadline = Date.now() + 3000;
-      while (received.length < 12 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50));
-      assert.ok(Buffer.from(received).toString('hex').includes('050100a00078'), 'pointer arrives over the direct channel');
+      assert.equal(view.transport, 'p2p');
+      assert.equal(view.disconnected, false, `the session stayed up across the switch: ${JSON.stringify(view)}`);
+      assert.equal(view.w, screen.width, 'canvas runs at the fixture screen width');
+      assert.ok(view.lit, 'decoded pixels were drawn after switching to the direct channel');
+      assert.deepEqual(await page.evaluate('window.transports'), ['p2p']);
 
-      // 浏览器侧断开直连：退回中继，画面继续
-      await page.evaluate('window.v._p2pFail(), true');
-      assert.ok(await page.waitFor("window.v.transport === 'relay'", { timeoutMs: 5000 }));
-      const deadline2 = Date.now() + 5000;
-      while (bridges[0].stats.transport !== 'relay' && Date.now() < deadline2) await new Promise(r => setTimeout(r, 50));
-      assert.equal(bridges[0].stats.transport, 'relay', 'server switched back to the relay');
-      const afterFallback = await page.evaluate('window.v.stats.frames');
-      assert.ok(await page.waitFor(`window.v.stats.frames >= ${afterFallback + 20}`, { timeoutMs: 10000 }), 'frames keep decoding over the relay');
-      assert.ok(bridges[0].stats.forwarded > relayed);
-      assert.deepEqual(await page.evaluate('window.transports.slice(0, 2)'), ['p2p', 'relay']);
-      assert.equal(await page.evaluate('!!window.disconnected'), false, 'the session never dropped');
+      // 服务端视角：桥的出口确实是 p2p。观测文件 200ms 一笔，要等切换那一笔落盘。
+      let stats = {};
+      for (let i = 0; i < 50; i += 1) {
+        stats = await (await fetch(`${h.control}/p2p`)).json();
+        if (stats.stats?.transport === 'p2p') break;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      assert.equal(stats.stats?.transport, 'p2p', `bridge stats: ${JSON.stringify(stats)}`);
+      assert.ok((stats.stats?.p2pOpened ?? 0) >= 1);
       await page.evaluate('window.v.disconnect(), true');
+      assert.ok(await page.waitFor('window.disconnected === true', { timeoutMs: 5000 }));
     });
   });

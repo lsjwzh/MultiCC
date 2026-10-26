@@ -83,7 +83,7 @@ function probeAddon(file, node = process.execPath) {
   if (!fs.existsSync(file)) return false;
   // A separate process avoids require() caching and contains invalid binaries.
   const script = `const a=require(process.argv[1]);
-    if(a.protocolVersion?.()!==1 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprBackendSettings!=='function' || typeof a.cprCreateExchange!=='function' || typeof a.RustDatabase!=='function'
+    if(a.protocolVersion?.()!==1 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprBackendSettings!=='function' || typeof a.cprCreateExchange!=='function' || typeof a.RustDatabase!=='function' || typeof a.remoteScreenBackendSettings!=='function'
       || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function') process.exit(1);
     const db=new a.RustDatabase(':memory:',false,false,5000);
     db.exec('CREATE TABLE smoke(x); CREATE VIRTUAL TABLE f USING fts5(x)');db.close();

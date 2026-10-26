@@ -1,5 +1,6 @@
 // 「🖥 屏幕」WebRTC P2P 直连互通（真协议栈）：模拟器里的真 flutter_webrtc
-// ⇄ 真 server.js 里的 werift（src/remote-screen-p2p.js + remote-screen-h264-bridge.js）。
+// ⇄ 真 server.js 转发到的 Rust 进程 multicc-remote（native/remote/src/p2p.rs +
+// h264.rs，契约见 docs/remote-screen-process.md）。
 //
 // 这条测试证明的是「直连真的能通」，不是假对端的单元测试（那个在
 // app/test/remote_screen_p2p_test.dart）：App 用真的 RemoteScreenService（真
@@ -8,7 +9,7 @@
 // 码流（tests/fixtures/remote-screen-h264/agent-stream.bin）。
 //
 // 断言：
-//   1. 收到 rtc-hello → 真 flutter_webrtc 出 offer → werift 回 answer，DataChannel
+//   1. 收到 rtc-hello → 真 flutter_webrtc 出 offer → Rust 进程（webrtc-rs）回 answer，DataChannel
 //      打开、服务端发 rtc-active，App 的 linkPath 从 lan 变成 p2p；
 //   2. 切直连后服务端补关键帧，仍有新帧解出来；
 //   3. 悬停 PointerEvent（mask 0）逐字节到达假 Agent，且同一时间窗内中继 WS 上

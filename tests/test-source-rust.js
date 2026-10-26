@@ -224,3 +224,80 @@ nativeTest('source start boots an isolated server with the built addon and a rep
   const repeated = run();
   assert.notEqual(repeated.status, 0); assert.match(repeated.stdout, /already running/); assert.equal(count(), 1);
 });
+
+// ---- 远控二进制：原型开发的补编路径（可选件，失败不阻断启动） ----
+
+function remoteFixture(t, { members = ['core', 'addon', 'remote'] } = {}) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-source-remote-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'native'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'native/Cargo.toml'),
+    `[workspace]\nmembers = [${members.map(name => `"${name}"`).join(', ')}]\n`);
+  const prebuiltDir = path.join(root, 'prebuilt');
+  const targetDir = path.join(root, 'cargo-target');
+  const addonFile = path.join(prebuiltDir, `${process.platform}-${process.arch}`, 'multicc_core.node');
+  fs.mkdirSync(path.dirname(addonFile), { recursive: true });
+  fs.writeFileSync(addonFile, 'fixture addon');
+  const cache = { fingerprint: 'fixture-fingerprint', prebuiltDir, targetDir };
+  return { root, cache, addonFile, prebuiltDir, targetDir };
+}
+
+test('同目录缺远控二进制时只补编它，成功即可用', t => {
+  const fixture = remoteFixture(t);
+  const logs = [], builds = [];
+  const run = (command, args) => {
+    builds.push(args);
+    const out = args[args.indexOf('--out') + 1];
+    const file = path.join(out, process.platform === 'win32' ? 'multicc-remote.exe' : 'multicc-remote');
+    fs.writeFileSync(file, 'fixture remote');
+    if (process.platform !== 'win32') fs.chmodSync(file, 0o755);
+    return { status: 0 };
+  };
+  const file = ensureSourceRust({ repoRoot: fixture.root, env: {}, probe: () => true,
+    paths: () => fixture.cache, builtFrom: () => true, run, remoteVersion: () => ({ ok: true }),
+    log: message => logs.push(message) });
+  assert.equal(file, fixture.addonFile);
+  assert.equal(builds.length, 1);
+  assert.ok(builds[0].includes('--remote-only'), '模块已可用时只编远控，不重编模块');
+  const remote = path.join(path.dirname(fixture.addonFile), process.platform === 'win32' ? 'multicc-remote.exe' : 'multicc-remote');
+  assert.equal(fs.existsSync(remote), true);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(remote).mode & 0o111, 0o111);
+  assert.match(logs.join('\n'), /只编译 multicc-remote/);
+});
+
+test('远控补编失败只打一行提示，服务路径照常返回模块', t => {
+  const fixture = remoteFixture(t);
+  const logs = [];
+  const file = ensureSourceRust({ repoRoot: fixture.root, env: {}, probe: () => true,
+    paths: () => fixture.cache, builtFrom: () => true, remoteVersion: () => ({ ok: true }),
+    run: () => ({ status: 1 }), log: message => logs.push(message) });
+  assert.equal(file, fixture.addonFile);
+  const message = logs.find(line => line.includes('远控「🖥 屏幕」不可用'));
+  assert.ok(message, logs.join('\n'));
+  assert.match(message, /编译失败（退出码 1）/);
+  assert.match(message, /MULTICC_REMOTE_BIN/);
+  assert.match(message, /服务照常启动/);
+});
+
+test('已存在的远控二进制版本不对会重编；显式 MULTICC_REMOTE_BIN 缺失只警告', t => {
+  const fixture = remoteFixture(t);
+  const remote = path.join(path.dirname(fixture.addonFile), process.platform === 'win32' ? 'multicc-remote.exe' : 'multicc-remote');
+  fs.writeFileSync(remote, 'stale');
+  if (process.platform !== 'win32') fs.chmodSync(remote, 0o755);
+  let builds = 0;
+  const file = ensureSourceRust({ repoRoot: fixture.root, env: {}, probe: () => true,
+    paths: () => fixture.cache, builtFrom: () => true, remoteVersion: () => ({ ok: false }),
+    run: () => { builds += 1; return { status: 1 }; }, log() {} });
+  assert.equal(file, fixture.addonFile);
+  assert.equal(builds, 1, '无法运行的旧二进制必须触发补编');
+
+  const logs = [];
+  let calls = 0;
+  const explicit = ensureSourceRust({ repoRoot: fixture.root,
+    env: { MULTICC_REMOTE_BIN: path.join(fixture.root, 'absent', 'multicc-remote') },
+    probe: () => true, paths: () => fixture.cache, builtFrom: () => true,
+    run: () => { calls += 1; return { status: 0 }; }, log: message => logs.push(message) });
+  assert.equal(explicit, fixture.addonFile);
+  assert.equal(calls, 0, '显式指定时不同目录里再编一份只会让人以为生效了');
+  assert.match(logs.join('\n'), /MULTICC_REMOTE_BIN.*不存在/);
+});

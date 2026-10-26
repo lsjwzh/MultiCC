@@ -51,6 +51,8 @@ jobs:
         run: node scripts/build-rust-kernels.js
         env:
           MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
+          # 远控进程和模块一起编译：测试会从这棵树打包，缺件就该在这一步报出来。
+          MULTICC_REQUIRE_RUST_BUNDLE: '1'
       - name: Configure Rust module
         run: echo "MULTICC_RUST_PREBUILT_DIR=${{ runner.temp }}/multicc-rust-prebuilt" >> "$GITHUB_ENV"
       - name: Run deterministic, architecture, and repository governance suites
@@ -75,6 +77,8 @@ jobs:
         run: node scripts/build-rust-kernels.js
         env:
           MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
+          # 远控进程和模块一起编译：测试会从这棵树打包，缺件就该在这一步报出来。
+          MULTICC_REQUIRE_RUST_BUNDLE: '1'
       - name: Configure Rust module
         run: echo "MULTICC_RUST_PREBUILT_DIR=${{ runner.temp }}/multicc-rust-prebuilt" >> "$GITHUB_ENV"
       - name: Configure Git identity for isolated repositories

@@ -1,542 +1,459 @@
 'use strict';
-// Tests for src/remote-screen.js — the 「🖥 屏幕」 remote-assist routes.
-// The Agent socket is a fake unix-socket server (one JSON line in, one out);
-// sips/osascript are stubbed through _deps.execFile, and the capture dir is a
-// tmp dir. The real Agent, screen and ~/.multicc are never touched.
+
+// Tests for src/remote-screen.js — the Node side of 「🖥 屏幕」.
+//
+// The service logic now lives in the Rust process multicc-remote; this file only
+// starts and supervises it and forwards authenticated HTTP/WS traffic. The fake
+// upstream (tests/helpers/remote-screen-fake-bin.js) implements the process
+// protocol from docs/remote-screen-process.md, so every case here pins the Node
+// hop — lazy start, ready timeout, secret header, transparent HTTP and WS
+// relay, back-off restart, stdin EOF, and annotation forwarding.
+//
+// The browser-side cases at the bottom exercise public/chat-remote-screen.js in
+// a VM; they are not Rust behaviour and stay here.
+
 const fs = require('fs');
-const net = require('net');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createDesktopHost, profileFor } = require('../src/desktop-host');
+const { spawn } = require('node:child_process');
+const express = require('express');
+const { WebSocketServer, WebSocket } = require('ws');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-screen-test-'));
 process.env.MULTICC_DATA_DIR = tmp;
-const rs = require('../src/remote-screen');
-test('HTTP pointer samples retain logical coordinates and viewer identity', () => {
-  assert.deepEqual(rs.buildInput({ op: 'pointer', viewer: 'viewer-1', mask: 1, x: 123, y: 45 }).req,
-    { op: 'pointer', session: 'remote-screen', viewer: 'viewer-1', mask: 1, x: 123, y: 45, allowSystem: true });
-  for (const body of [
-    { viewer: '', mask: 1, x: 1, y: 2 },
-    { viewer: '../invalid', mask: 1, x: 1, y: 2 },
-    { viewer: 'valid', mask: 4, x: 1, y: 2 },
-    { viewer: 'valid', mask: 0, x: NaN, y: 2 },
-  ]) assert.ok(rs.buildInput({ op: 'pointer', ...body }).error);
-});
-const live = require('../src/annotation-live');
+process.env.MULTICC_AGENT_DIR = path.join(tmp, 'agent');
+const rs = require('../src/remote-screen-rust');
+const {
+  installFakeRemote, waitFor, fakeClientWs, fakeUpstreamWs, JPEG, CAPABILITIES,
+} = require('./helpers/remote-screen-node-harness');
 
-const realAgentCall = rs._deps.agentCall;
-rs._deps.dir = path.join(tmp, 'remote-screen');
-fs.mkdirSync(rs._deps.dir, { recursive: true });
-
-// sips -g → 2940x1912 physical; osascript → 1470x956 logical; conversions touch the --out file.
-rs._deps.execFile = (cmd, args, opts, cb) => {
-  commandLog.push({ cmd, args });
-  if (cmd === 'osascript') return cb(null, '0, 0, 1470, 956\n');
-  if (cmd === 'sips' && args[0] === '-g') return cb(null, 'pixelWidth: 2940\npixelHeight: 1912\n');
-  if (cmd === 'sips') { fs.writeFileSync(args[args.indexOf('--out') + 1], 'img'); return cb(null, ''); }
-  cb(new Error('unexpected ' + cmd));
-};
-
-let commandLog = [];
-let agentLog = [];
-let agentReply = () => ({ ok: true });
-rs._deps.agentCall = async req => { agentLog.push(req); return agentReply(req); };
-
-// These fixtures model macOS Retina capture, even when CI runs on Linux.
-// Pin the host as well as its commands; platform-specific tests replace it
-// explicitly below, so Linux capture and unsupported platforms remain covered.
-rs._deps.host = createDesktopHost({
-  platform: 'darwin', home: tmp, env: {},
-  call: (req, timeoutMs) => rs._deps.agentCall(req, timeoutMs),
-  exec: (cmd, args, timeout) => new Promise((resolve, reject) => {
-    rs._deps.execFile(cmd, args, { timeout, encoding: 'utf8' },
-      (error, stdout) => error ? reject(error) : resolve(stdout));
-  }),
-});
-rs._deps.sock = rs._deps.host.profile.agentSock;
-rs._deps.rfbSock = rs._deps.host.profile.rfbSock;
-
-function fakeApp() {
-  const handlers = {};
-  return { handlers, get: (p, h) => { handlers['GET ' + p] = h; }, post: (p, h) => { handlers['POST ' + p] = h; } };
-}
-async function invoke(handler, body, query) {
-  const res = {
-    statusCode: 200, body: undefined, headers: {},
-    status(c) { this.statusCode = c; return this; },
-    json(v) { this.body = v; return this; },
-    set(h) { Object.assign(this.headers, h); return this; },
-    end(v) { this.body = v; return this; },
-  };
-  await handler({ body: body || {}, query: query || {} }, res);
-  return res;
+function listen(server) {
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 }
 
-test('agentCall speaks one JSON line over the unix socket', async () => {
-  const sock = path.join(tmp, 'a.sock');
-  const server = net.createServer(c => {
-    c.on('data', d => {
-      const req = JSON.parse(String(d).trim());
-      c.write(JSON.stringify({ ok: true, echo: req.op, session: req.session }) + '\n');
+async function mountHttp(t) {
+  const app = express();
+  app.use(express.json());
+  rs.mount(app);
+  const server = http.createServer(app);
+  const port = await listen(server);
+  t.after(() => new Promise(resolve => {
+    server.closeAllConnections?.();
+    server.close(() => resolve());
+  }));
+  return `http://127.0.0.1:${port}`;
+}
+
+async function mountWs(t) {
+  const server = http.createServer();
+  const wss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    wss.handleUpgrade(req, socket, head, ws => {
+      if (new URL(req.url, 'http://x').searchParams.get('mode') === 'h264') rs.attachH264(ws, req);
+      else rs.attachRfb(ws, req);
     });
   });
-  await new Promise(r => server.listen(sock, r));
-  const prev = rs._deps.sock;
-  rs._deps.sock = sock;
-  try {
-    assert.deepEqual(await realAgentCall({ op: 'status', session: 'remote-screen' }), { ok: true, echo: 'status', session: 'remote-screen' });
-    rs._deps.sock = path.join(tmp, 'missing.sock');
-    assert.equal((await realAgentCall({ op: 'status' })).error, 'agent-unreachable');
-  } finally {
-    rs._deps.sock = prev;
-    server.close();
-  }
-});
-
-test('input whitelist: unlock/see/set refused, fields coerced and clamped, session pinned', () => {
-  for (const op of ['unlock', 'see', 'set', 'snap', 'probe-unlock', '']) assert.ok(rs.buildInput({ op }).error, op);
-  const click = rs.buildInput({ op: 'click', x: '10.5', y: 20, button: 'right', count: 9, session: 'evil', allowTerminal: true }).req;
-  assert.deepEqual(click, { op: 'click', session: 'remote-screen', x: 10.5, y: 20, allowSystem: true, button: 'right', count: 3 });
-  assert.equal(rs.buildInput({ op: 'scroll', x: 1, y: 1, amount: -999 }).req.amount, -50);
-  assert.ok(rs.buildInput({ op: 'drag', x: 1, y: 1 }).error);
-  assert.equal(rs.buildInput({ op: 'drag', x: 1, y: 1, x2: 5, y2: 5, ms: 1 }).req.ms, 80);
-  assert.ok(rs.buildInput({ op: 'type', text: 'x'.repeat(4001) }).error);
-  assert.ok(rs.buildInput({ op: 'press', keys: '' }).error);
-  assert.equal(rs.buildInput({ op: 'press', keys: ' cmd+c ' }).req.keys, 'cmd+c');
-  assert.deepEqual(rs.buildInput({ op: 'release' }).req, { op: 'release', session: 'remote-screen' });
-});
-
-test('routes: frame is a logical-width jpeg, snapshot returns a download url, refusals are explained', async () => {
-  rs._resetForTests();
-  agentLog = [];
-  const app = fakeApp();
-  rs.mount(app);
-  const frame = await invoke(app.handlers['GET /api/remote-screen/frame']);
-  assert.equal(frame.headers['Content-Type'], 'image/jpeg');
-  assert.equal(frame.headers['X-Screen-Width'], '1470');
-  assert.equal(agentLog[0].op, 'snap');
-
-  const snap = await invoke(app.handlers['POST /api/remote-screen/snapshot']);
-  assert.equal(snap.body.width, 1470);
-  assert.ok(rs.isOwnShot(snap.body.path));
-  assert.match(snap.body.url, /^\/api\/download\?path=.*shot-\d+\.png&inline=1$/);
-
-  const bad = await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'unlock' });
-  assert.equal(bad.statusCode, 400);
-  agentReply = () => ({ ok: false, reason: 'user-stopped' });
-  const halted = await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'click', x: 1, y: 2 });
-  assert.equal(halted.body.error, 'user-stopped');
-  assert.match(halted.body.message, /Esc/);
-  agentReply = () => ({ ok: true });
-});
-
-test('annotations on remote-screen shots run as input and refresh the same file', async () => {
-  const shot = path.join(rs._deps.dir, 'shot-1.png');
-  fs.writeFileSync(shot, 'old');
-  agentLog = [];
-  const point = await rs.handleAnnotation({ src: shot, width: 1470, height: 956, kind: 'point', a: { x: 100, y: 50 } });
-  assert.deepEqual(point, { ok: true, refresh: true, text: '已点击 (100, 50)' });
-  assert.deepEqual(agentLog.map(r => r.op), ['click', 'snap']);
-  assert.equal(fs.readFileSync(shot, 'utf8'), 'img');
-
-  agentLog = [];
-  // 标注图若被缩小到一半，坐标按逻辑宽放大回去。
-  await rs.handleAnnotation({ src: shot, width: 735, kind: 'arrow', a: { x: 10, y: 10 }, b: { x: 20, y: 30 } });
-  assert.deepEqual(agentLog[0], { op: 'drag', session: 'remote-screen', x: 20, y: 20, allowSystem: true, x2: 40, y2: 60, ms: 400 });
-
-  agentLog = [];
-  await rs.handleAnnotation({ src: shot, width: 1470, kind: 'box', a: { x: 0, y: 0 }, b: { x: 10, y: 20 } });
-  assert.deepEqual([agentLog[0].x, agentLog[0].y], [5, 10]);
-
-  agentLog = [];
-  assert.equal((await rs.handleAnnotation({ src: shot, width: 1470, kind: 'recapture' })).refresh, true);
-  assert.deepEqual(agentLog.map(r => r.op), ['snap']);
-
-  agentReply = req => (req.op === 'click' ? { ok: false, reason: 'screen-locked' } : { ok: true });
-  const locked = await rs.handleAnnotation({ src: shot, width: 1470, kind: 'point', a: { x: 1, y: 1 } });
-  assert.equal(locked.ok, false);
-  assert.match(locked.text, /锁定/);
-  agentReply = () => ({ ok: true });
-
-  assert.equal((await rs.handleAnnotation({ src: path.join(tmp, 'shot-1.png'), kind: 'point', a: { x: 1, y: 1 } })).ok, false);
-  assert.equal(rs.isOwnShot(path.join(rs._deps.dir, '..', 'remote-screen', 'live.jpg')), false);
-  assert.equal(rs.isOwnShot(path.join(rs._deps.dir, 'sub', 'shot-1.png')), false);
-});
-
-test('annotation-live hands remote-screen shots to the built-in handler without config', async () => {
-  const shot = path.join(rs._deps.dir, 'shot-2.png');
-  fs.writeFileSync(shot, 'old');
-  const app = fakeApp();
-  live.mount(app);
-  agentLog = [];
-  const res = await invoke(app.handlers['POST /api/annotation-live'], { sessionId: 's', src: shot, width: 1470, height: 956, kind: 'point', a: { x: 3, y: 4 } });
-  assert.deepEqual(res.body, { ok: true, relayed: 1, results: [{ ok: true, refresh: true, text: '已点击 (3, 4)' }] });
-  assert.equal(agentLog[0].op, 'click');
-});
-
-// ── 跨平台：本机 desktop agent 的画像、能力接口、非 macOS 的干净拒绝 ──
-
-test('desktop-host 画像：macOS 与 Linux X11 有 agent，win32 如实报不支持', () => {
-  const mac = profileFor('darwin', { home: '/Users/x' });
-  assert.equal(mac.supported, true);
-  assert.equal(mac.transport, 'unix');
-  assert.equal(mac.modifier, 'cmd');
-  assert.equal(mac.features.control, true);
-  assert.equal(mac.agentSock, '/Users/x/.multicc/agent/agent.sock');
-  assert.equal(mac.rfbSock, '/Users/x/.multicc/agent/rfb.sock');
-
-  const win = profileFor('win32', { home: 'C:\\Users\\x' });
-  assert.equal(win.supported, false);
-  assert.equal(win.transport, 'named-pipe');
-  assert.equal(win.modifier, 'ctrl');
-  assert.equal(win.rfbSock, null);
-  assert.deepEqual(Object.values(win.features), [false, false, false, false, false, false, false, false]);
-
-  const linux = profileFor('linux', { home: '/home/x', env: { XDG_RUNTIME_DIR: '/run/user/7' } });
-  assert.equal(linux.supported, true);
-  assert.equal(linux.transport, 'unix');
-  assert.equal(linux.modifier, 'ctrl');
-  assert.equal(linux.agentSock, '/run/user/7/multicc-agent/agent.sock');
-  // v1 的 Linux：能看、能点、能截图、能标注；但没有串流(RFB)、没有唤屏(那是 caffeinate
-  // 的语义)、不能解锁(锁屏是另一个会话的窗口)、没有元素树(X11 没有可访问性树 API)。
-  assert.deepEqual(linux.features, { view: true, control: true, snapshot: true, annotate: true,
-    stream: false, wake: false, unlock: false, elementTree: false });
-  assert.equal(linux.rfbSock, null);
-});
-
-test('Linux 截图走 agent 的 snap（裁剪编码一次做完），macOS 的壳外工具在 Linux 上响亮地失败', async () => {
-  const sent = [];
-  let logical = null;
-  const linux = createDesktopHost({
-    platform: 'linux', home: '/home/x', env: { XDG_RUNTIME_DIR: '/run/user/7' },
-    exec: () => { throw new Error('Linux 不该 shell out'); },
-    call: async (req, timeoutMs) => {
-      sent.push({ req, timeoutMs });
-      return { ok: true, path: req.path, width: 1920, height: 1080, crop: req.crop || null, ms: 12 };
-    },
-  });
-
-  // captureDirect 的**有无**就是选路依据，所以 macOS 上必须真的没有。
-  const macHost = createDesktopHost({ platform: 'darwin', home: '/Users/x', exec: () => { throw new Error('unused'); } });
-  assert.equal(macHost.captureDirect, undefined, 'macOS 上不该挂 captureDirect');
-  assert.equal(typeof linux.captureDirect, 'function');
-
-  // 整屏：不带 crop，JPEG + quality 照传。
-  const full = await linux.captureDirect('/tmp/x/live.jpg', null, { session: 'remote-screen', jpeg: true, quality: 60 });
-  assert.deepEqual(sent[0].req, { op: 'snap', path: '/tmp/x/live.jpg', session: 'remote-screen', jpeg: true, quality: 60 });
-  assert.deepEqual(full, { width: 1920, height: 1080, region: null });
-
-  // 区域：crop 直接跟着 snap 发下去（macOS 那条路是自己拿 sips 裁）。
-  const region = { x: 10, y: 20, width: 100, height: 50 };
-  const cropped = await linux.captureDirect('/tmp/x/crop.jpg', region, { session: 'remote-screen', jpeg: true, quality: 85 });
-  assert.deepEqual(sent[1].req.crop, region);
-  assert.equal(sent[1].req.quality, 85);
-  assert.deepEqual(cropped.region, region);
-
-  // 标注换算要的是「整屏逻辑尺寸」，不能是裁剪后的小图尺寸。
-  logical = linux.cachedLogicalSize();
-  assert.deepEqual(logical, { width: 1920, height: 1080 });
-  // X11 上逻辑点 == 像素，不能有 Retina 那样的 /2。
-  assert.deepEqual(await linux.logicalSize(1920, 1080), { width: 1920, height: 1080 });
-
-  // 裁到屏幕外是调用方的错 → 400，不该当成 agent 故障。
-  const outside = createDesktopHost({
-    platform: 'linux', home: '/home/x', env: {}, call: async () => ({ ok: false, error: 'region-outside-screen' }),
-  });
-  await assert.rejects(() => outside.captureDirect('/tmp/x/o.jpg', region, {}),
-    e => e.status === 400 && e.message === 'region-outside-screen');
-
-  // 平台专有的壳外调用要明说走错了路，而不是去 exec 一个不存在的命令。
-  for (const name of ['imageSize', 'cropImage', 'convertImage', 'wakeDisplay']) {
-    await assert.rejects(() => linux[name]('/tmp/x/raw.png', 'unused', 'unused'),
-      e => e.reason === 'wrong-platform-helper', `${name} 在 Linux 上应抛 wrong-platform-helper`);
-  }
-});
-
-test('Linux 上唤屏路由按 features.wake 收起，而不是看平台是否 supported', async () => {
-  const prevHost = rs._deps.host;
-  try {
-    rs._deps.host = createDesktopHost({ platform: 'linux', home: '/home/x', env: {}, call: async () => ({ ok: true }) });
-    const app = fakeApp();
-    rs.mount(app);
-    const get = await invoke(app.handlers['GET /api/remote-screen/wake']);
-    // Linux 的 supported 是 true，但 wake 是 false：判错的话前端会显示一个
-    // 点下去永远 auto-unlock-disabled 的按钮。
-    assert.equal(get.body.canWake, false);
-    const caps = await invoke(app.handlers['GET /api/remote-screen/capabilities']);
-    assert.equal(caps.body.supported, true);
-    assert.equal(caps.body.features.wake, false);
-  } finally { rs._deps.host = prevHost; }
-});
-
-test('Linux：agent 没装时告诉用户怎么装；新 reason 有文案；type 的超时按字数放大', async () => {
-  const prevHost = rs._deps.host, prevCall = rs._deps.agentCall;
-  const seen = [];
-  let reply = { ok: false, error: 'agent-unreachable' };
-  try {
-    rs._resetForTests();
-    rs._deps.host = createDesktopHost({ platform: 'linux', home: '/home/x', env: { XDG_RUNTIME_DIR: '/run/user/7' } });
-    rs._deps.agentCall = async (req, timeoutMs) => { seen.push({ op: req.op, timeoutMs }); return reply; };
-    // Linux 的 agent 不随服务端自动装：画像带安装命令，能力接口原样给前端。
-    assert.equal(rs.capabilities().installHint, 'sh scripts/linux-agent/install.sh install');
-    const app = fakeApp();
-    rs.mount(app);
-    let r = await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'click', x: 1, y: 2 });
-    assert.equal(r.body.error, 'agent-unreachable');
-    assert.match(r.body.message, /install\.sh install/, '连不上 agent 时要说清怎么装');
-    for (const [code, re] of [['wayland-session', /X11/], ['no-display', /X server/], ['interrupted', /中途/]]) {
-      reply = { ok: false, reason: code, error: code };
-      r = await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'click', x: 1, y: 2 });
-      assert.equal(r.body.error, code);
-      assert.match(r.body.message, re, `${code} 要有文案，不能露裸 code`);
-    }
-    // 超时不能比打字本身短：agent 看到请求方断开会立刻停手，固定 8s 等于把长文本截断。
-    seen.length = 0;
-    reply = { ok: true };
-    await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'type', text: 'x'.repeat(4000) });
-    await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'click', x: 1, y: 2 });
-    assert.ok(seen[0].timeoutMs >= 4000 * 25, `4000 字的 type 超时应按字数放大，实得 ${seen[0].timeoutMs}`);
-    assert.equal(seen[1].timeoutMs, undefined, '其余 op 沿用默认超时');
-  } finally {
-    rs._deps.host = prevHost; rs._deps.agentCall = prevCall;
-  }
-});
-
-test('能力接口回答「本机能做什么」；非 macOS 上三条路由干净拒绝，不碰 agent 也不碰 shell', async () => {
-  assert.deepEqual(rs.capabilities(), { ok: true, platform: 'darwin', label: 'macOS', supported: true,
-    transport: 'unix', modifier: 'cmd', reason: null, installHint: null,
-    features: { view: true, control: true, snapshot: true, annotate: true, stream: true, wake: true, unlock: true, elementTree: true } });
-
-  const app = fakeApp();
-  rs.mount(app);
-  const caps = await invoke(app.handlers['GET /api/remote-screen/capabilities']);
-  assert.equal(caps.headers['Cache-Control'], 'no-store');
-  assert.equal(caps.body.platform, 'darwin');
-  assert.equal(caps.body.supported, true);
-
-  const prevHost = rs._deps.host, prevSock = rs._deps.sock, prevCall = rs._deps.agentCall;
-  let calls = 0;
-  try {
-    rs._resetForTests();
-    rs._deps.host = createDesktopHost({ platform: 'win32', exec: () => { throw new Error('off-macOS must not shell out'); } });
-    rs._deps.sock = path.join(tmp, 'never-created.sock');
-    rs._deps.agentCall = async () => { calls++; return { ok: true }; };
-    assert.equal((await invoke(app.handlers['GET /api/remote-screen/frame'])).statusCode, 503);
-    assert.equal((await invoke(app.handlers['POST /api/remote-screen/snapshot'])).statusCode, 503);
-    const input = await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'click', x: 1, y: 2 });
-    assert.equal(input.statusCode, 503);
-    assert.equal(input.body.error, 'platform-unsupported');
-    assert.match(input.body.message, /还不支持远程屏幕/);
-    assert.equal((await invoke(app.handlers['POST /api/remote-screen/input'], { op: 'unlock' })).statusCode, 400,
-      '白名单仍然先于平台判断');
-    assert.equal(calls, 0);
-  } finally {
-    rs._deps.host = prevHost; rs._deps.sock = prevSock; rs._deps.agentCall = prevCall;
-  }
-});
-
-test('非 macOS 上唤屏路由直接说明不支持，未获授权与 agent 都不查询', async () => {
-  const { mountWakeRoutes } = require('../src/remote-screen-wake');
-  const app = fakeApp();
-  let calls = 0;
-  mountWakeRoutes(app, {
-    call: async () => { calls++; return { ok: true }; }, wakeDisplay: async () => { calls++; },
-    invalidate: () => {}, supported: () => false,
-  });
-  const get = await invoke(app.handlers['GET /api/remote-screen/wake']);
-  assert.equal(get.body.canWake, false);
-  assert.equal(get.body.error, 'platform-unsupported');
-  assert.match(get.body.message, /还不支持远程屏幕/);
-  const post = await invoke(app.handlers['POST /api/remote-screen/wake']);
-  assert.equal(post.statusCode, 409);
-  assert.equal(post.body.error, 'platform-unsupported');
-  assert.equal(calls, 0);
-});
-
-// ── RFB 流式模式：/ws/remote-screen ↔ rfb.sock 的字节管道 ──
-const { EventEmitter } = require('events');
-function fakeWs() {
-  const ws = new EventEmitter();
-  ws.readyState = 1;
-  ws.sent = [];
-  ws.closed = null;
-  ws.bufferedAmount = 0;
-  ws.send = (d, options, callback) => { ws.sent.push(d); if (callback) setImmediate(callback); };
-  ws.close = (code, reason) => { ws.closed = { code, reason }; ws.readyState = 3; ws.emit('close'); };
-  return ws;
+  const port = await listen(server);
+  t.after(() => new Promise(resolve => {
+    for (const client of wss.clients) client.terminate();
+    wss.close();
+    server.closeAllConnections?.();
+    server.close(() => resolve());
+  }));
+  return `ws://127.0.0.1:${port}/ws/remote-screen`;
 }
-const tick = ms => new Promise(r => setTimeout(r, ms));
 
-test('attachRfb pipes bytes both ways and queues pre-connect messages', async () => {
-  const sockPath = path.join(tmp, 'rfb.sock');
-  const got = [];
-  const conns = [];
-  const server = net.createServer(c => {
-    conns.push(c);
-    c.write('RFB 003.008\n'); // Agent 的版本串应原样透到浏览器端
-    c.on('data', d => got.push(d));
+function openClient(url) {
+  const ws = new WebSocket(url);
+  const text = [];
+  const binary = [];
+  const closed = new Promise(resolve => ws.on('close', (code, reason) => resolve({ code, reason: String(reason) })));
+  ws.on('message', (data, isBinary) => (isBinary ? binary : text).push(isBinary ? Buffer.from(data) : String(data)));
+  ws.on('error', () => {});
+  const opened = new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('close', () => reject(new Error('closed before open'))); });
+  opened.catch(() => {});
+  return { ws, text, binary, closed, opened };
+}
+
+function withFake(t, env) {
+  const fake = installFakeRemote(env);
+  t.after(async () => { await rs._resetForTests(); fake.cleanup(); });
+  return fake;
+}
+
+test('lazily starts the process once, sends the dir config and the internal secret', async t => {
+  const fake = withFake(t);
+  const [first, second] = await Promise.all([rs.capabilities(), rs.capabilities()]);
+  assert.deepEqual(first, CAPABILITIES);
+  assert.deepEqual(second, CAPABILITIES);
+
+  const state = rs._state();
+  assert.equal(state.attempts, 1, 'concurrent requests share one start');
+  assert.ok(state.ready?.secret, 'ready line carried a secret');
+  const events = fake.events();
+  assert.equal(events.filter(e => e.type === 'config').length, 1);
+  assert.deepEqual(events.find(e => e.type === 'config').config, { v: 1, dir: rs.DIR });
+  const requests = events.filter(e => e.type === 'http');
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every(e => e.authorized), 'every request carried the negotiated secret');
+});
+
+test('a process that never prints the ready line is killed and reported unavailable', async t => {
+  const previous = rs._deps.readyTimeoutMs;
+  rs._deps.readyTimeoutMs = 150;
+  t.after(() => { rs._deps.readyTimeoutMs = previous; });
+  const fake = withFake(t, { FAKE_REMOTE_NO_READY: '1' });
+
+  assert.deepEqual(await rs.capabilities(), rs._unavailableCapabilities());
+  assert.equal(rs._state().attempts, 1);
+  assert.equal(rs._state().ready, null);
+  const pid = Number(fs.readFileSync(fake.pidFile, 'utf8'));
+  await waitFor(() => { try { process.kill(pid, 0); return false; } catch { return true; } }, 3000, 'the stuck process is killed');
+});
+
+test('HTTP forwarding keeps status, headers and body, including JPEG bytes and HEAD', async t => {
+  withFake(t);
+  const base = await mountHttp(t);
+
+  const frame = await fetch(`${base}/api/remote-screen/frame`);
+  assert.equal(frame.status, 200);
+  assert.equal(frame.headers.get('content-type'), 'image/jpeg');
+  assert.equal(frame.headers.get('cache-control'), 'no-store');
+  assert.equal(frame.headers.get('x-screen-width'), '1470');
+  assert.deepEqual(Buffer.from(await frame.arrayBuffer()), JPEG, 'the JPEG body is byte-identical');
+
+  const head = await fetch(`${base}/api/remote-screen/frame`, { method: 'HEAD' });
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get('x-screen-height'), '956');
+  assert.equal((await head.arrayBuffer()).byteLength, 0, 'HEAD has no body');
+
+  const region = await fetch(`${base}/api/remote-screen/frame?x=100&y=80&width=400&height=240`);
+  assert.equal(region.headers.get('x-region-x'), '100');
+  assert.equal(region.headers.get('x-region-width'), '400');
+  await region.arrayBuffer();
+
+  const input = await fetch(`${base}/api/remote-screen/input?slot=7`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'click', x: 1, y: 2 }),
   });
-  await new Promise(r => server.listen(sockPath, r));
-  const prev = rs._deps.rfbSock;
-  rs._deps.rfbSock = sockPath;
-  const ws = fakeWs();
-  try {
-    rs.attachRfb(ws);
-    ws.emit('message', Buffer.from('RFB 003.008\n')); // connect 前到达 → 排队，connect 后按序补投
-    await tick(200);
-    assert.deepEqual(ws.sent.map(String), ['RFB 003.008\n']);
-    assert.deepEqual(got.map(String), ['RFB 003.008\n']);
-    ws.emit('message', Buffer.from('\x02\x00\x00\x00')); // ClientInit
-    await tick(100);
-    assert.deepEqual(got.map(String), ['RFB 003.008\n', '\x02\x00\x00\x00']);
-    ws.emit('close'); // 浏览器端断开 → 桥拆掉 unix socket
-    await tick(100);
-    assert.ok(conns[0].destroyed);
-  } finally {
-    rs._deps.rfbSock = prev;
-    server.close();
+  assert.equal(input.status, 202, 'upstream status is preserved');
+  assert.equal(input.headers.get('x-screen-echo'), '1', 'upstream x-screen-* header is preserved');
+  const echoed = await input.json();
+  assert.deepEqual(echoed.received, { op: 'click', x: 1, y: 2 });
+  assert.equal(echoed.url, '/api/remote-screen/input?slot=7', 'path and query are unchanged');
+  assert.equal(echoed.secret, rs._state().ready.secret);
+});
+
+test('wake requests carry the Node-computed power consent; other routes do not', async t => {
+  withFake(t);
+  const base = await mountHttp(t);
+  const previous = rs._deps.powerConsent;
+  t.after(() => { rs._deps.powerConsent = previous; });
+
+  rs._deps.powerConsent = () => '1';
+  const on = await (await fetch(`${base}/api/remote-screen/wake`)).json();
+  assert.equal(on.consent, '1');
+  rs._deps.powerConsent = () => '0';
+  const off = await (await fetch(`${base}/api/remote-screen/wake`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
+  assert.equal(off.consent, '0');
+  assert.equal(off.method, 'POST');
+
+  // 第三态：读电源设置失败。迁移前那是 readConsent 抛错 → 503 agent-unavailable；
+  // 折成 '0' 会让前端看到「自动解锁未开启」，把用户引去改一个没问题的开关。
+  rs._deps.powerConsent = () => 'error';
+  const failed = await (await fetch(`${base}/api/remote-screen/wake`)).json();
+  assert.equal(failed.consent, 'error');
+  rs._deps.powerConsent = () => { throw new Error('power settings unreadable'); };
+  const threw = await (await fetch(`${base}/api/remote-screen/wake`)).json();
+  assert.equal(threw.consent, 'error', 'deps 抛异常也要落到 error 三态，不能静默变 0');
+
+  await (await fetch(`${base}/api/remote-screen/frame`)).arrayBuffer();
+});
+
+test('without a binary every surface degrades: capabilities 200 false, HTTP 503, WS 1011', async t => {
+  t.after(async () => { await rs._resetForTests(); });
+  process.env.MULTICC_REMOTE_BIN = path.join(tmp, 'missing-multicc-remote');
+  const base = await mountHttp(t);
+
+  const caps = await fetch(`${base}/api/remote-screen/capabilities`);
+  assert.equal(caps.status, 200);
+  const unavailable = await caps.json();
+  assert.equal(unavailable.supported, false);
+  assert.equal(unavailable.reason, 'remote-unavailable');
+  assert.deepEqual(unavailable.streams, { h264: false, rfb: false });
+  assert.ok(Object.values(unavailable.features).every(value => value === false));
+
+  for (const route of ['/api/remote-screen/frame', '/api/remote-screen/snapshot']) {
+    const res = await fetch(`${base}${route}`, { method: route.endsWith('snapshot') ? 'POST' : 'GET',
+      ...(route.endsWith('snapshot') ? { headers: { 'content-type': 'application/json' }, body: '{}' } : {}) });
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), { ok: false, error: 'remote-unavailable' });
+  }
+
+  const wsBase = await mountWs(t);
+  const client = openClient(`${wsBase}?mode=h264`);
+  assert.deepEqual(await client.closed, { code: 1011, reason: 'remote-unavailable' });
+});
+
+test('WS forwarding passes text and binary frames unchanged and strips ticket/token', async t => {
+  const fake = withFake(t);
+  const wsBase = await mountWs(t);
+  const client = openClient(`${wsBase}?mode=h264&ticket=T&token=X&lang=zh`);
+  await client.opened;
+  t.after(() => client.ws.terminate());
+
+  await waitFor(() => client.text.length >= 1, 3000, 'upstream greeting');
+  const hello = JSON.parse(client.text[0]);
+  assert.equal(hello.url, '/ws/remote-screen?mode=h264&lang=zh',
+    'ticket and token never reach the upstream; other query params survive');
+
+  client.ws.send('ping-1');
+  client.ws.send(Buffer.from([1, 0, 2, 255]));
+  await waitFor(() => client.text.length >= 2 && client.binary.length >= 1, 3000, 'echoed frames');
+  assert.equal(client.text[1], 'ping-1', 'text stays text');
+  assert.deepEqual(client.binary[0], Buffer.from([1, 0, 2, 255]), 'binary stays binary');
+
+  const upgrade = fake.events().find(e => e.type === 'ws-upgrade');
+  assert.equal(upgrade.authorized, true, 'the internal secret authenticated the upgrade');
+});
+
+test('client messages queue before the upstream is ready, and overflow closes with 1013', async t => {
+  withFake(t);
+  const previous = rs._deps.connectUpstream;
+  t.after(() => { rs._deps.connectUpstream = previous; });
+  await rs.capabilities(); // 先把进程拉起来，免得排队计时被启动时间占掉
+
+  let upstream = null;
+  const downstream = fakeUpstreamWs();
+  downstream.readyState = 0; // CONNECTING：消息只能排队
+  rs._deps.connectUpstream = () => { upstream = downstream; return downstream; };
+
+  const client = fakeClientWs();
+  rs.attachH264(client, { url: '/ws/remote-screen?mode=h264' });
+  await waitFor(() => upstream !== null, 2000, 'upstream connect');
+
+  client.emit('message', Buffer.alloc(1024 * 1024 + 1), true);
+  assert.equal(client.closed?.code, 1013);
+  assert.match(String(client.closed?.reason || ''), /queue-overflow/);
+});
+
+test('queued messages flush in order once the upstream opens', async t => {
+  withFake(t);
+  const previous = rs._deps.connectUpstream;
+  t.after(() => { rs._deps.connectUpstream = previous; });
+  await rs.capabilities();
+
+  let upstream = null;
+  const downstream = fakeUpstreamWs();
+  downstream.readyState = 0;
+  rs._deps.connectUpstream = () => { upstream = downstream; return downstream; };
+
+  const client = fakeClientWs();
+  rs.attachRfb(client, { url: '/ws/remote-screen' });
+  await waitFor(() => upstream !== null, 2000, 'upstream connect');
+  client.emit('message', Buffer.from('first'), false);
+  client.emit('message', Buffer.from([2, 3]), true);
+  assert.equal(downstream.sent.length, 0, 'nothing is written while connecting');
+  upstream.readyState = 1;
+  upstream.emit('open');
+  assert.deepEqual(downstream.sent.map(item => [item.data.toString(), item.binary]), [['first', false], ['\x02\x03', true]]);
+  client.emit('close', 1000, 'bye');
+});
+
+test('close codes travel both ways; 1005/1006 become 1011', async t => {
+  withFake(t);
+  const previous = rs._deps.connectUpstream;
+  t.after(() => { rs._deps.connectUpstream = previous; });
+  await rs.capabilities();
+
+  const attach = async () => {
+    const downstream = fakeUpstreamWs();
+    let created = false;
+    rs._deps.connectUpstream = () => { created = true; return downstream; };
+    const client = fakeClientWs();
+    rs.attachH264(client, { url: '/ws/remote-screen?mode=h264' });
+    await waitFor(() => created, 2000, 'upstream connect');
+    return { client, downstream };
+  };
+
+  const clientToUpstream = await attach();
+  clientToUpstream.client.close(4001, 'bye');
+  assert.deepEqual(clientToUpstream.downstream.closed, { code: 4001, reason: 'bye' });
+
+  for (const [code, want] of [[1000, 1000], [1013, 1013], [1006, 1011], [1005, 1011]]) {
+    const { client, downstream } = await attach();
+    downstream.emit('close', code, '');
+    assert.equal(client.closed?.code, want, `upstream ${code} → client ${want}`);
   }
 });
 
-test('attachRfb closes the ws with 1011 when rfb.sock is unavailable', async () => {
-  const prev = rs._deps.rfbSock;
-  rs._deps.rfbSock = path.join(tmp, 'missing-rfb.sock');
-  const ws = fakeWs();
-  rs.attachRfb(ws);
-  await tick(150);
-  try {
-    assert.deepEqual(ws.closed, { code: 1011, reason: 'rfb-unavailable' });
-  } finally { rs._deps.rfbSock = prev; }
+test('a slow client pauses the upstream between 64 KB and 16 KB', async t => {
+  withFake(t);
+  const previous = rs._deps.connectUpstream;
+  t.after(() => { rs._deps.connectUpstream = previous; });
+  await rs.capabilities();
+
+  const downstream = fakeUpstreamWs();
+  let created = false;
+  rs._deps.connectUpstream = () => { created = true; return downstream; };
+  const client = fakeClientWs();
+  rs.attachH264(client, { url: '/ws/remote-screen?mode=h264' });
+  await waitFor(() => created, 2000, 'upstream connect');
+
+  client.bufferedAmount = 100 * 1024;
+  downstream.emit('message', Buffer.from([1]), true);
+  assert.equal(client.sent.length, 1);
+  assert.equal(downstream.pauses, 1, 'reading the upstream stops above the high-water mark');
+
+  downstream.emit('message', Buffer.from([2]), true);
+  assert.equal(downstream.pauses, 1, 'one pause until the queue drains');
+
+  client.bufferedAmount = 8 * 1024;
+  await waitFor(() => downstream.resumes === 1, 1000, 'resume below the low-water mark');
+  client.emit('close', 1000, '');
 });
 
-test('connection-router routes /ws/remote-screen through the rfb bridge behind site auth', () => {
-  const src = fs.readFileSync('src/ws/connection-router.js', 'utf8');
-  // 免 id 的 WS 路径表里带上了 /ws/remote-screen（远程访问仍要 ws-ticket，本地免票）。
-  assert.match(src, /SESSIONLESS_WS_PATHS[\s\S]*?\/ws\/remote-screen/);
-  assert.match(src, /remoteScreenRfb\.attachRfb\(ws\)/);
+test('backpressure also counts the ws-backpressure queue, not only bufferedAmount', async t => {
+  withFake(t);
+  const previous = rs._deps.connectUpstream;
+  t.after(() => { rs._deps.connectUpstream = previous; });
+  await rs.capabilities();
+
+  const downstream = fakeUpstreamWs();
+  let created = false;
+  rs._deps.connectUpstream = () => { created = true; return downstream; };
+  const client = fakeClientWs();
+  // connection-router 给每条 WS 都装了背压层：ws.send 先把字节攒在这里，
+  // 没写进 socket 的那部分不计入 bufferedAmount。只看 bufferedAmount 会漏掉它。
+  let queueBytes = 100 * 1024;
+  client.bufferedAmount = 0;
+  client._multiccBackpressure = { stats: () => ({ queueBytes, queueMessages: 3, sending: false, congestedAt: 0, closed: false }) };
+  rs.attachH264(client, { url: '/ws/remote-screen?mode=h264' });
+  await waitFor(() => created, 2000, 'upstream connect');
+
+  downstream.emit('message', Buffer.from([1]), true);
+  assert.equal(downstream.pauses, 1, 'queueBytes 超过高水位也要暂停上游');
+
+  queueBytes = 8 * 1024;
+  await waitFor(() => downstream.resumes === 1, 1000, 'queueBytes 回落到低水位以下才恢复');
+
+  // 两处相加：bufferedAmount 和 queueBytes 任何一个单独低于水位都不能提前放行。
+  client.bufferedAmount = 60 * 1024;
+  queueBytes = 10 * 1024;
+  downstream.emit('message', Buffer.from([2]), true);
+  assert.equal(downstream.pauses, 2, '两段积压要合起来判断');
+  client.bufferedAmount = 8 * 1024;
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(downstream.resumes, 1, '单独的 bufferedAmount 低了，合起来仍高于低水位就不该恢复');
+  queueBytes = 0;
+  await waitFor(() => downstream.resumes === 2, 1000, '合并积压降到低水位以下才恢复');
+  client.emit('close', 1000, '');
 });
 
-test('唤起屏幕只允许已开启自动解锁的用户，并核对真实解锁结果', async () => {
-  const { mountWakeRoutes } = require('../src/remote-screen-wake');
-  let enabled = false, locked = true, permissions = true, halted = false, unlockOk = true, staysLocked = false;
-  let wakes = 0, unlocks = 0, invalidations = 0;
-  const app = fakeApp();
-  mountWakeRoutes(app, {
-    consent: async () => enabled,
-    wakeDisplay: async () => { wakes++; }, invalidate: () => { invalidations++; },
-    call: async req => {
-      if (req.op === 'status') return { ok: true, screenLocked: locked,
-        accessibility: permissions, screenRecording: permissions, control: { halted } };
-      assert.deepEqual(req, { op: 'unlock', session: 'remote-screen' });
-      unlocks++;
-      if (!unlockOk) return { ok: false, reason: 'password-needs-authorization' };
-      if (!staysLocked) locked = false;
-      return { ok: true };
-    },
+test('a crash closes live WS with 1011, backs off, and restarts on demand', async t => {
+  const fake = withFake(t, { FAKE_REMOTE_EXIT_AFTER_MS: '150' });
+  const previous = { base: rs._deps.restartBaseMs, max: rs._deps.restartMaxMs };
+  rs._deps.restartBaseMs = 300;
+  rs._deps.restartMaxMs = 5000;
+  t.after(() => { rs._deps.restartBaseMs = previous.base; rs._deps.restartMaxMs = previous.max; });
+
+  const previousConnect = rs._deps.connectUpstream;
+  t.after(() => { rs._deps.connectUpstream = previousConnect; });
+  const downstream = fakeUpstreamWs();
+  rs._deps.connectUpstream = () => downstream;
+  const client = fakeClientWs();
+  rs.attachH264(client, { url: '/ws/remote-screen?mode=h264' });
+  await waitFor(() => rs._state().ready !== null, 3000, 'first ready');
+
+  await waitFor(() => client.closed !== null, 3000, 'the live WS is closed when the process exits');
+  assert.equal(client.closed.code, 1011);
+  assert.match(String(client.closed.reason), /remote-unavailable/);
+  assert.equal(rs._state().attempts, 1);
+  assert.equal(rs._state().restartPending, true, 'the back-off window is armed');
+  const firstBackoff = rs._state().backoffMs;
+  assert.ok(firstBackoff >= 600, `back-off grows (${firstBackoff})`);
+
+  // 退避窗口内的请求照样拿到 503，但会记下「有人要」，窗口到期自动重启。
+  assert.deepEqual(await rs.capabilities(), rs._unavailableCapabilities());
+  await waitFor(() => rs._state().attempts === 2, 3000, 'automatic restart after the back-off');
+  await waitFor(() => rs._state().ready !== null, 3000, 'the restarted process is ready');
+  assert.ok(fake.events().some(e => e.type === 'exit-after'));
+});
+
+test('stdin EOF alone stops the child when the Node process exits', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-remote-eof-'));
+  const binary = path.join(dir, 'multicc-remote');
+  const fakeBin = path.join(__dirname, 'helpers', 'remote-screen-fake-bin.js');
+  fs.writeFileSync(binary, `#!/bin/sh\nexec "${process.execPath}" "${fakeBin}" "$@"\n`, { mode: 0o755 });
+  const pidFile = path.join(dir, 'remote.pid');
+  const script = `const rs = require(${JSON.stringify(path.join(__dirname, '..', 'src', 'remote-screen-rust.js'))});`
+    + 'rs.capabilities().then(r => process.exit(r.supported ? 0 : 1), () => process.exit(1));';
+  const child = spawn(process.execPath, ['-e', script], {
+    env: { ...process.env, MULTICC_DATA_DIR: dir, MULTICC_REMOTE_BIN: binary,
+      FAKE_REMOTE_PID_FILE: pidFile, FAKE_REMOTE_EVENTS_FILE: path.join(dir, 'events.jsonl') },
+    stdio: 'ignore',
   });
-  const get = () => invoke(app.handlers['GET /api/remote-screen/wake']);
-  const post = () => invoke(app.handlers['POST /api/remote-screen/wake']);
-  assert.equal((await get()).body.canWake, false);
-  assert.equal(unlocks, 0);
-  assert.equal((await post()).body.error, 'auto-unlock-disabled');
-  enabled = true; permissions = false;
-  assert.equal((await post()).body.error, 'permissions-required');
-  permissions = true; halted = true;
-  assert.equal((await post()).body.error, 'user-stopped');
-  assert.equal(wakes, 0);
-  halted = false; unlockOk = false;
-  assert.equal((await post()).body.error, 'password-needs-authorization');
-  unlockOk = true; staysLocked = true;
-  assert.equal((await post()).body.error, 'still-locked');
-  assert.equal(invalidations, 0);
-  staysLocked = false;
-  assert.equal((await post()).body.screenLocked, false);
-  assert.equal(invalidations, 1);
-  const count = unlocks;
-  assert.equal((await post()).body.ok, true);
-  assert.equal(unlocks, count, '未锁屏时只唤醒，不提交密码');
+  t.after(() => { try { child.kill('SIGKILL'); } catch {} });
+  const code = await new Promise(resolve => child.once('exit', resolve));
+  assert.equal(code, 0);
+  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  await waitFor(() => { try { process.kill(pid, 0); return false; } catch { return true; } }, 3000,
+    'the child exits on stdin EOF');
 });
 
-test('并发点击不会重复提交解锁密码', async () => {
-  const { mountWakeRoutes } = require('../src/remote-screen-wake');
-  const app = fakeApp();
-  let finish, calls = 0;
-  mountWakeRoutes(app, {
-    consent: async () => true, invalidate: () => {},
-    wakeDisplay: () => new Promise(resolve => { finish = resolve; }),
-    call: async () => { calls++; return { ok: true, screenLocked: false, accessibility: true, screenRecording: true }; },
+test('annotations on own shots are forwarded to /internal/annotation; others never leave Node', async t => {
+  const fake = withFake(t);
+  fs.mkdirSync(rs.DIR, { recursive: true });
+  const shot = path.join(rs.DIR, 'shot-1.png');
+  fs.writeFileSync(shot, 'old');
+  assert.equal(rs.isOwnShot(shot), true);
+  assert.equal(rs.isOwnShot(path.join(rs.DIR, 'live.jpg')), false);
+  assert.equal(rs.isOwnShot(path.join(rs.DIR, 'sub', 'shot-1.png')), false);
+
+  const result = await rs.handleAnnotation({ src: shot, width: 1470, height: 956, kind: 'point', a: { x: 1, y: 2 } });
+  assert.equal(result.ok, true);
+  assert.equal(result.refresh, true);
+  assert.match(result.text, /已执行：point/);
+  assert.deepEqual(result.received.a, { x: 1, y: 2 });
+
+  const forwards = fake.events().filter(e => e.type === 'http' && e.url.startsWith('/internal/annotation'));
+  assert.equal(forwards.length, 1);
+
+  const foreign = path.join(tmp, 'shot-1.png');
+  fs.writeFileSync(foreign, 'x');
+  const refused = await rs.handleAnnotation({ src: foreign, kind: 'point' });
+  assert.deepEqual(refused, { ok: false, refresh: false, text: '不是远程屏幕截图' });
+  assert.equal(fake.events().filter(e => e.type === 'http' && e.url.startsWith('/internal/annotation')).length, 1,
+    'foreign shots are never forwarded');
+});
+
+test('annotation-live hands remote-screen shots to the forwarding layer without config', async t => {
+  withFake(t);
+  fs.mkdirSync(rs.DIR, { recursive: true });
+  const shot = path.join(rs.DIR, 'shot-2.png');
+  fs.writeFileSync(shot, 'old');
+  const live = require('../src/annotation-live');
+  const app = express();
+  app.use(express.json());
+  live.mount(app);
+  const server = http.createServer(app);
+  const port = await listen(server);
+  t.after(() => new Promise(resolve => { server.closeAllConnections?.(); server.close(() => resolve()); }));
+
+  const response = await fetch(`http://127.0.0.1:${port}/api/annotation-live`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionId: 's', src: shot, width: 1470, height: 956, kind: 'point', a: { x: 3, y: 4 } }),
   });
-  const first = invoke(app.handlers['POST /api/remote-screen/wake']);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal((await invoke(app.handlers['POST /api/remote-screen/wake'])).body.error, 'busy');
-  finish();
-  assert.equal((await first).body.ok, true);
-  assert.equal(calls, 2);
+  const body = await response.json();
+  assert.deepEqual(body, { ok: true, relayed: 1, results: [{ ok: true, refresh: true, text: '已执行：point', received: {
+    sessionId: 's', src: shot, width: 1470, height: 956, kind: 'point', a: { x: 3, y: 4 }, b: null } }] });
 });
 
-
-test('source crop preserves native pixels, crops before encoding, and distinguishes cache keys', async () => {
-  rs._resetForTests();
-  const app = fakeApp(); rs.mount(app);
-  commandLog = []; agentLog = [];
-  const query = { x: '100', y: '80', width: '400', height: '240' };
-  const first = await invoke(app.handlers['GET /api/remote-screen/frame'], {}, query);
-  assert.equal(first.headers['X-Screen-Width'], '1470');
-  assert.equal(first.headers['X-Region-X'], '100');
-  assert.equal(first.headers['X-Region-Width'], '400');
-  const commands = commandLog.filter(c => c.cmd === 'sips' && c.args[0] !== '-g');
-  assert.equal(commands.length, 2);
-  assert.deepEqual(commands[0].args.slice(1, 6), ['--cropToHeightWidth', '480', '800', '--cropOffset', '160']);
-  assert.equal(commands[0].args[6], '200');
-  assert.ok(commands[1].args.includes('85'));
-  assert.ok(!commands[1].args.includes('--resampleWidth'));
-  assert.equal(commands[1].args[commands[1].args.indexOf('--out') - 1], commands[0].args.at(-1), 'JPEG reads the native crop, not the full-screen JPEG');
-  const count = agentLog.length;
-  await invoke(app.handlers['GET /api/remote-screen/frame'], {}, query);
-  assert.equal(agentLog.length, count, 'same region reuses its frame');
-  await invoke(app.handlers['GET /api/remote-screen/frame'], {}, { ...query, x: '120' });
-  assert.equal(agentLog.length, count + 1, 'another region does not receive the previous crop');
-  await invoke(app.handlers['GET /api/remote-screen/frame']);
-  assert.equal(agentLog.length, count + 2, 'reset returns the full screen');
-});
-
-test('invalid/outside regions are rejected; edge crops and concurrent requests stay bounded', async () => {
-  rs._resetForTests();
-  const app = fakeApp(); rs.mount(app);
-  for (const query of [{ x: -1, y: 0, width: 5, height: 5 }, { x: 1 },
-    { x: 0, y: 0, width: Infinity, height: 5 }, { x: [], y: 0, width: 5, height: 5 },
-    { x: ' ', y: 0, width: 5, height: 5 }, { x: 2000, y: 0, width: 10, height: 10 }]) {
-    assert.equal((await invoke(app.handlers['GET /api/remote-screen/frame'], {}, query)).statusCode, 400);
-  }
-  agentLog = [];
-  const edge = await invoke(app.handlers['GET /api/remote-screen/frame'], {}, { x: 1460, y: 950, width: 100, height: 100 });
-  assert.equal(edge.headers['X-Region-Width'], '10');
-  assert.equal(edge.headers['X-Region-Height'], '6');
-  agentLog = [];
-  const requests = [{ x: 10, y: 10, width: 50, height: 50 }, { x: 20, y: 20, width: 50, height: 50 }];
-  await Promise.all(requests.map(q => invoke(app.handlers['GET /api/remote-screen/frame'], {}, q)));
-  assert.equal(new Set(agentLog.map(r => r.path)).size, 2, 'each capture has its own raw source file');
-  assert.ok(!fs.readdirSync(rs._deps.dir).some(n => /^\.(capture|frame)-/.test(n)), 'temporary source files are cleaned');
-});
-
-test('cropped snapshots persist coordinate offsets through point/arrow/recapture', async () => {
-  rs._resetForTests();
-  const app = fakeApp(); rs.mount(app);
-  const snap = await invoke(app.handlers['POST /api/remote-screen/snapshot'], { x: 100, y: 80, width: 400, height: 240 });
-  assert.equal(snap.body.region.pixelWidth, 800);
-  assert.ok(fs.existsSync(snap.body.path + '.json'));
-  agentLog = [];
-  await rs.handleAnnotation({ src: snap.body.path, width: 800, height: 480, kind: 'point', a: { x: 200, y: 100 } });
-  assert.deepEqual([agentLog[0].x, agentLog[0].y], [200, 130]);
-  agentLog = [];
-  await rs.handleAnnotation({ src: snap.body.path, width: 800, height: 480, kind: 'arrow', a: { x: 0, y: 0 }, b: { x: 600, y: 400 } });
-  assert.deepEqual([agentLog[0].x, agentLog[0].y, agentLog[0].x2, agentLog[0].y2], [100, 80, 400, 280]);
-  commandLog = [];
-  await rs.handleAnnotation({ src: snap.body.path, kind: 'recapture' });
-  assert.ok(commandLog.some(c => c.args.includes('--cropToHeightWidth')), 'refresh retains the original crop');
-});
+// ── 浏览器侧（public/chat-remote-screen.js）：与 Rust 迁移无关，原样保留 ──
 
 // Execute the actual browser functions with controlled geometry and transport.
 function webHarness() {
@@ -655,7 +572,6 @@ test('web discards late full-screen frames after a selection and uses returned r
   URL.revokeObjectURL(state.lastUrl);
 });
 
-
 test('AI snap-hires requests source coordinates without resizing the result', () => {
   const { execFileSync } = require('node:child_process');
   const dir = fs.mkdtempSync(path.join(tmp, 'mcu-'));
@@ -673,53 +589,4 @@ case "$2" in pixelWidth) echo 'pixelWidth: 800';; pixelHeight) echo 'pixelHeight
   });
   assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['snap', out, '100', '80', '400', '240']);
   assert.match(result, /logical origin=100,80 size=400x240; pixels=800x480/);
-});
-
-
-test('RFB bridge applies backpressure without dropping or reordering rectangle bytes', async () => {
-  const { attachRfbBridge } = require('../src/remote-screen-rfb-bridge');
-  const sock = new EventEmitter();
-  let paused = 0, resumed = 0, destroyed = 0, ack;
-  const writes = [];
-  sock.writableLength = 0;
-  sock.pause = () => { paused++; };
-  sock.resume = () => { resumed++; };
-  sock.destroy = () => { destroyed++; };
-  sock.write = data => { writes.push(data); return false; };
-  const ws = fakeWs(); let wsPaused = 0, wsResumed = 0;
-  ws.pause = () => { wsPaused++; }; ws.resume = () => { wsResumed++; };
-  ws.send = (data, options, callback) => { ws.sent.push(data); ack = callback; };
-  attachRfbBridge(ws, { socketPath: 'fixture', connect: () => sock });
-  sock.emit('connect');
-  ws.emit('message', Buffer.from('request'));
-  assert.equal(wsPaused, 1); sock.emit('drain'); assert.equal(wsResumed, 1);
-  sock.emit('data', Buffer.from([0, 0, 0, 1, 5]));
-  assert.equal(paused, 1); assert.equal(resumed, 0, 'wait for the send callback before reading more');
-  ack(); assert.equal(resumed, 1);
-  sock.emit('data', Buffer.from([6, 7, 8])); ack();
-  assert.deepEqual([...Buffer.concat(ws.sent)], [0, 0, 0, 1, 5, 6, 7, 8]);
-  ws.emit('close'); ack();
-  assert.equal(destroyed, 1); assert.equal(resumed, 2, 'late callbacks cannot revive a closed source');
-});
-
-test('RFB stall watchdog counts incoming screen data, never outgoing input; overflow closes the whole stream', async () => {
-  const { attachRfbBridge } = require('../src/remote-screen-rfb-bridge');
-  function socket() {
-    const s = new EventEmitter();
-    s.writableLength = 0; s.pause = () => {}; s.resume = () => {};
-    s.write = () => true; s.destroy = () => {};
-    return s;
-  }
-  const sock = socket(), ws = fakeWs();
-  attachRfbBridge(ws, { connect: () => sock, timeoutMs: 60 });
-  sock.emit('connect');
-  const interval = setInterval(() => ws.emit('message', Buffer.from('mouse')), 10);
-  try { await tick(100); assert.deepEqual(ws.closed, { code: 1011, reason: 'rfb-stalled' }); }
-  finally { clearInterval(interval); ws.emit('close'); }
-  const slow = socket(), blocked = fakeWs();
-  blocked.bufferedAmount = 20;
-  attachRfbBridge(blocked, { connect: () => slow, maxBufferedBytes: 24 });
-  slow.emit('connect'); slow.emit('data', Buffer.alloc(8));
-  assert.deepEqual(blocked.closed, { code: 1011, reason: 'rfb-backpressure' });
-  assert.equal(blocked.sent.length, 0, 'do not skip a fragment and keep an invalid RFB connection open');
 });
