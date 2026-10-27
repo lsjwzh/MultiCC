@@ -28,7 +28,7 @@ const COMMANDS_MAX = 6;
 const COMMAND_MAX = 2000;
 const ROOT_PACKAGE_MANAGER = /^(?:dnf|yum|apt|apt-get|apk|pacman|zypper)\b/;
 
-const SYSTEM_PROMPT = `You are the MultiCC environment doctor. The user tried to add a project directory in MultiCC and the server refused it. MultiCC runs coding-agent CLIs inside project directories; every project directory must be a git repository the server can initialize and commit in, which needs: git installed, a commit identity (user.name and an email containing "@", no "<" or ">"), and read/write access to the directory for the account the server runs as.
+const SYSTEM_PROMPT = `You are the MultiCC environment doctor. The user tried to add a project directory in MultiCC and the server refused it. MultiCC runs coding-agent CLIs inside project directories; every project directory must be a git repository the server can initialize and commit in, which needs: git installed, a commit identity (user.name and an email containing "@", no "<" or ">"; when unset, MultiCC commits as multicc <multicc@local>, so only an invalid configured value is a problem), and read/write access to the directory for the account the server runs as.
 
 The user sees a web "repair terminal" that runs shell commands as that same account, non-interactively: stdin is closed (no password or confirmation prompts), 10 minutes per command.
 

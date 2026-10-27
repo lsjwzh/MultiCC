@@ -511,6 +511,8 @@ test('system route mount owns the app-binary metadata and canonical download rou
     ['POST', '/ios-ota/udid/callback/:token', 'function'],
     ['GET', '/api/system/developer-tools', 'function'],
     ['POST', '/api/system/developer-tools/install', 'function'],
+    ['GET', '/api/system/developer-tools/install-git', 'function'],
+    ['POST', '/api/system/developer-tools/install-git', 'function'],
     // Host-repair surfaces, all mounted here rather than from server.js because
     // they need no host state. Listing them exactly is the point: a new route
     // that grants privileges or opens a settings pane should not slip in

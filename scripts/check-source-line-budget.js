@@ -491,8 +491,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +21 双语键：添加目录失败的「🩺 AI 诊断」——修复终端里的诊断区（进度/停止/
     //   原因/建议命令的填入与复制/需 root 提示/依据/未配 AI 助手的引导）与弹窗按钮，
     //   中英各 21 行 = +42 行，重跑生成器实测 9788/629361。
-    maxLines: 9788,
-    maxBytes: 629361,
+    // main 随后未登记涨到 9795；+4 双语键（airTaskSettingsInstallPortableGit*）：
+    //   缺命令行工具时「免 CLT 安装 Git」按钮（install-git.sh 后台任务）的标签/进度/
+    //   完成/失败，中英各 4 行，重跑生成器实测 9804/631565。
+    maxLines: 9804,
+    maxBytes: 631565,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

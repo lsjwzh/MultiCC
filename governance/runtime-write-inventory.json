@@ -322,6 +322,19 @@
       ]
     },
     {
+      "id": "portable-git",
+      "classification": "external-owner",
+      "owner": "install-git.sh (portable git for macOS without Command Line Tools)",
+      "rationale": "A machine-level tool install, not MultiCC data: the unpacked GitHub Desktop git plus a wrapper, shared by every MultiCC install on the account and by the user's own shell once added to PATH; the server only reads it to extend PATH.",
+      "migrationStrategy": "Owned by install-git.sh: a newer pinned release replaces the directory through a staged rename, and deleting the directory only means the next install or the one-click fix downloads it again.",
+      "sources": [
+        {
+          "file": "src/portable-git.js",
+          "anchor": "return env.MULTICC_PORTABLE_GIT_DIR || path.join(os.homedir(), '.multicc', 'git');"
+        }
+      ]
+    },
+    {
       "id": "official-login-workspaces",
       "classification": "ephemeral",
       "owner": "official-account login terminals",

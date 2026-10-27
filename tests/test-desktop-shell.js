@@ -515,6 +515,9 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
     // failing. Without it in the bundle, on-device ASR is unreachable on every
     // standalone install — the exact hole this file exists to close.
     'scripts/setup-local-asr.sh',
+    // The portable-git installer the one-click fix and install.sh run on a Mac
+    // without the Command Line Tools (src/portable-git.js looks for it here).
+    'install-git.sh',
     'src/voice/asr-model-installer.js',
     'plugins/bridges/wechat-ilink.js', 'plugins/cron/cron-tasks.js',
     'skills/multicc-artifact/references/registration-rule.md',
@@ -525,7 +528,7 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
   // installer is run inside the one admin prompt 「关盖运行」 raises, and the ASR
   // fetcher is run by hand: all three must stay executable or they would
   // silently do nothing.
-  for (const sh of [...MACOS_AGENT_FILES, ...POWERD_FILES, 'scripts/setup-local-asr.sh']
+  for (const sh of [...MACOS_AGENT_FILES, ...POWERD_FILES, 'scripts/setup-local-asr.sh', 'install-git.sh']
     .filter(f => f.endsWith('.sh'))) {
     assert.ok(fs.statSync(path.join(staged, sh)).mode & 0o100, `${sh} must stay executable`);
   }
@@ -552,7 +555,7 @@ function stubRepoRoot(dir) {
   fs.writeFileSync(path.join(dir, 'package.json'),
     `${JSON.stringify({ name: 'stub', version: '1.0.0', dependencies: {} }, null, 2)}\n`);
   for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'public/air.html',
-    'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh',
+    'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
     'src/voice/asr-model-installer.js', ...MACOS_AGENT_FILES, ...POWERD_FILES,
     'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md']) {
     const file = path.join(dir, rel);

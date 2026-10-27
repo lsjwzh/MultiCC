@@ -14,10 +14,20 @@
 //
 // Probing uses `xcode-select -p`, never `git --version`: the latter would pop
 // that dialog as a side effect of merely asking a question.
-const { execFile } = require('node:child_process');
+//
+// The tools are not the only way out, though: MultiCC ships its own Node, so git
+// is all it needs, and install-git.sh fetches a portable git (≈65 MB, no sudo,
+// no dialog) into ~/.multicc/git. That one runs as a background job here —
+// the ops terminal cannot host it, because on a Mac without the tools there is
+// no Homebrew and therefore no tmux. The work itself lives in the shell script
+// the installer shares; this is only the HTTP handle and the job's progress.
+const { execFile, spawn } = require('node:child_process');
+const defaultPortableGit = require('../portable-git');
 
 const PROBE_TIMEOUT_MS = 5000;
 const INSTALL_TIMEOUT_MS = 20000;
+const PORTABLE_GIT_TIMEOUT_MS = 15 * 60 * 1000;
+const LOG_TAIL_BYTES = 4000;
 
 // The shim itself. A git resolved anywhere else (Homebrew, MacPorts, the
 // git-scm.com installer, a git bundled with Xcode.app) is a real binary, and
@@ -35,6 +45,9 @@ function createDeveloperToolsRoutes({
   platform = process.platform,
   run = execFile,
   log = console,
+  spawnProcess = spawn,
+  portableGit = defaultPortableGit,
+  childEnv = () => require('../network/outbound').getChildProxyEnv(process.env),
 } = {}) {
   const exec = (file, args, timeout) => new Promise((resolve) => {
     run(file, args, { timeout }, (error, stdout, stderr) => {
@@ -84,7 +97,70 @@ function createDeveloperToolsRoutes({
       applicable: platform === 'darwin' && !git,
       gitWorks: git,
       installed: platform === 'darwin' ? await toolsInstalled() : true,
+      portableGit: platform === 'darwin' ? portableGit.isInstalled() : false,
     });
+  }
+
+  // One job per process: the script is idempotent, but two concurrent runs
+  // would race on the same staging rename. A finished job stays readable so a
+  // client that reconnects mid-way still learns how it ended.
+  let gitJob = null;
+  const jobView = () => (gitJob
+    ? { ok: true, state: gitJob.state, error: gitJob.error || null, logTail: gitJob.log.slice(-LOG_TAIL_BYTES) }
+    : { ok: true, state: 'idle', error: null, logTail: '' });
+
+  // POST — start the portable-git install, answering at once; GET polls it.
+  async function installGitHandler(req, res) {
+    if (platform !== 'darwin') {
+      return res.status(400).json({
+        ok: false,
+        code: 'NOT_APPLICABLE',
+        error: 'The portable git is for macOS; install git with your package manager.',
+      });
+    }
+    if (gitJob && gitJob.state === 'running') return res.json({ ...jobView(), status: 'running' });
+    if (portableGit.isInstalled() && await gitWorks()) {
+      portableGit.addToPath();
+      return res.json({ ok: true, status: 'already-installed', state: 'done' });
+    }
+    const job = { state: 'running', log: '', error: null };
+    gitJob = job;
+    const append = chunk => { job.log = (job.log + chunk).slice(-LOG_TAIL_BYTES * 4); };
+    const finish = (error) => {
+      if (job.state !== 'running') return;
+      if (error) {
+        job.state = 'failed';
+        job.error = error;
+        log.warn(`[multicc] developer-tools: portable git install failed: ${error}`);
+        return;
+      }
+      // The running server picks the new git up now; restarting is not needed.
+      portableGit.addToPath();
+      job.state = 'done';
+      log.log('[multicc] developer-tools: portable git installed');
+    };
+    try {
+      const env = await childEnv();
+      const child = spawnProcess('/bin/sh', [portableGit.installScriptPath()], {
+        env, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const timer = setTimeout(() => { child.kill('SIGKILL'); finish('timed out'); }, PORTABLE_GIT_TIMEOUT_MS);
+      timer.unref?.();
+      child.stdout?.on('data', d => append(String(d)));
+      child.stderr?.on('data', d => append(String(d)));
+      child.on('error', e => { clearTimeout(timer); finish(e.message); });
+      child.on('close', code => {
+        clearTimeout(timer);
+        finish(code === 0 ? null : (job.log.trim().split('\n').pop() || `exit ${code}`));
+      });
+    } catch (error) {
+      finish(error.message);
+    }
+    return res.status(202).json({ ...jobView(), status: 'started' });
+  }
+
+  function installGitStatusHandler(req, res) {
+    return res.json(jobView());
   }
 
   // POST — raise the system installer dialog. Idempotent from the caller's point
@@ -126,9 +202,11 @@ function createDeveloperToolsRoutes({
   function mountRoutes(app) {
     app.get('/api/system/developer-tools', statusHandler);
     app.post('/api/system/developer-tools/install', installHandler);
+    app.get('/api/system/developer-tools/install-git', installGitStatusHandler);
+    app.post('/api/system/developer-tools/install-git', installGitHandler);
   }
 
-  return { mountRoutes, statusHandler, installHandler };
+  return { mountRoutes, statusHandler, installHandler, installGitHandler, installGitStatusHandler };
 }
 
 module.exports = { createDeveloperToolsRoutes };

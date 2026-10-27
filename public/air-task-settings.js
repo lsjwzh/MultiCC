@@ -23,6 +23,19 @@
           : t('airTaskSettingsInstallDevToolsRequested')),
       failure: () => t('airTaskSettingsInstallDevToolsFailed'),
     },
+    // The faster way out of the same failure: MultiCC only needs git from the
+    // tools, and install-git.sh fetches a portable one (no dialog, no sudo).
+    // It is a background job on the server, so the button polls it and retries
+    // the dialog once git works.
+    'install-portable-git': {
+      label: () => t('airTaskSettingsInstallPortableGit'),
+      url: '/api/system/developer-tools/install-git',
+      working: () => t('airTaskSettingsInstallPortableGitWorking'),
+      poll: true,
+      retryOnSuccess: true,
+      message: () => t('airTaskSettingsInstallPortableGitDone'),
+      failure: () => t('airTaskSettingsInstallPortableGitFailed'),
+    },
     // macOS privacy cannot be granted programmatically — only the user, in
     // System Settings, can do it. The button opens the right pane and then
     // names the exact program to add, which is the part people get wrong.
@@ -47,7 +60,24 @@
     'open-ops-terminal': { label: () => t('airTaskSettingsOpenOpsTerminal'), opensTerminal: true },
   };
 
+  // Remedies offered ahead of the named one, cheapest first.
+  const FIX_ALTERNATIVES = { 'install-developer-tools': ['install-portable-git'] };
+
+  // Follows a server job until it leaves "running", showing its last log line
+  // (curl's progress bar included) so a 65 MB download does not look stuck.
+  async function followJob(url, result, status, working) {
+    while (result && result.state === 'running') {
+      const line = String(result.logTail || '').split(/[\r\n]+/).map(l => l.trim()).filter(Boolean).pop();
+      status.textContent = line ? `${working} ${line}` : working;
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      result = await request(url, undefined, 'GET');
+    }
+    if (result && result.state === 'failed') throw new Error(result.error || '');
+    return result;
+  }
+
   function renderFix(container, fix, retry, context) {
+    for (const alternative of FIX_ALTERNATIVES[fix] || []) renderFix(container, alternative, retry, context);
     const action = FIX_ACTIONS[fix];
     if (!action) return;
     if (action.opensTerminal) {
@@ -68,8 +98,10 @@
       button.disabled = true;
       status.textContent = (action.working || (() => t('airTaskSettingsInstallDevToolsWorking')))();
       try {
-        const result = await request(action.url, {});
+        let result = await request(action.url, {});
+        if (action.poll) result = await followJob(action.url, result, status, action.working());
         status.textContent = action.message(result);
+        if (action.retryOnSuccess && retry) retry();
         // Best-effort: the action already succeeded, so a detail lookup that
         // fails must not turn it into a reported failure.
         if (action.detail) {
@@ -80,7 +112,9 @@
         // dialog, and the user may want to retry after starting MultiCC from a
         // logged-in session.
         button.disabled = false;
-        status.textContent = cause.message || action.failure();
+        status.textContent = action.poll
+          ? [action.failure(), cause.message].filter(Boolean).join(' — ')
+          : cause.message || action.failure();
       }
     };
     wrap.append(button, status, detail);

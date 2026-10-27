@@ -22,6 +22,42 @@ fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|_| "Git 身份配置不是有效的 UTF-8".into())
 }
 
+// Used when the user never configured an identity. Asking a first-time user to
+// run `git config --global user.name …` before MultiCC can create a single
+// worktree is a chore with no upside: these commits live in their own
+// repositories, and a configured identity (or commit-policy.json) always wins.
+pub const FALLBACK_NAME: &str = "multicc";
+pub const FALLBACK_EMAIL: &str = "multicc@local";
+
+// `git config --get` exits 1 for "not set" — the one case that falls back. Any
+// other failure (a corrupt config file, git not runnable) stays an error, since
+// silently committing as someone else would hide it.
+fn git_config(cwd: &Path, key: &str, env: &[(&str, &Path)]) -> Result<Option<String>, String> {
+    let output = Command::new("git")
+        .current_dir(cwd)
+        .args(["config", "--get", key])
+        .envs(env.iter().copied())
+        .output()
+        .map_err(|_| "无法读取 Git 提交身份配置".to_owned())?;
+    match output.status.code() {
+        Some(0) => {
+            let value = String::from_utf8(output.stdout)
+                .map_err(|_| "Git 身份配置不是有效的 UTF-8".to_owned())?;
+            let value = value.trim();
+            Ok((!value.is_empty()).then(|| value.to_owned()))
+        }
+        Some(1) => Ok(None),
+        _ => Err("无法读取 Git 提交身份配置，请检查 Git 配置文件".into()),
+    }
+}
+
+fn with_fallback(name: Option<String>, email: Option<String>) -> Identity {
+    Identity {
+        name: name.unwrap_or_else(|| FALLBACK_NAME.into()),
+        email: email.unwrap_or_else(|| FALLBACK_EMAIL.into()),
+    }
+}
+
 fn validate(identity: Identity) -> Result<Identity, String> {
     if identity.name.trim().is_empty()
         || identity.email.trim().is_empty()
@@ -56,10 +92,14 @@ pub fn configured_identity(cwd: &Path) -> Result<Identity, String> {
     if let Some(identity) = repository_policy(cwd)? {
         return Ok(identity);
     }
-    validate(Identity {
-        name: git(cwd, &["config", "--get", "user.name"])?.trim().into(),
-        email: git(cwd, &["config", "--get", "user.email"])?.trim().into(),
-    })
+    config_identity(cwd, &[])
+}
+
+fn config_identity(cwd: &Path, env: &[(&str, &Path)]) -> Result<Identity, String> {
+    validate(with_fallback(
+        git_config(cwd, "user.name", env)?,
+        git_config(cwd, "user.email", env)?,
+    ))
 }
 
 fn creates_commit(args: &[String]) -> bool {
@@ -154,6 +194,48 @@ mod tests {
         )
         .is_err());
         assert!(validate_records("hash\0account\0", Some(&expected)).is_err());
+    }
+
+    #[test]
+    fn publication_identity_falls_back_per_field_when_unset() {
+        assert_eq!(
+            with_fallback(None, None),
+            Identity { name: "multicc".into(), email: "multicc@local".into() }
+        );
+        assert_eq!(
+            with_fallback(Some("Ada".into()), None),
+            Identity { name: "Ada".into(), email: "multicc@local".into() }
+        );
+        assert!(validate(with_fallback(None, None)).is_ok());
+    }
+
+    #[test]
+    fn publication_identity_unset_config_commits_as_multicc() {
+        let dir = std::env::temp_dir().join(format!("multicc-identity-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let empty = dir.join("empty-gitconfig");
+        fs::write(&empty, "").unwrap();
+        // Isolated from the developer's own ~/.gitconfig and /etc/gitconfig.
+        let isolated: [(&str, &Path); 2] = [
+            ("GIT_CONFIG_GLOBAL", &empty),
+            ("GIT_CONFIG_SYSTEM", &empty),
+        ];
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .envs(isolated.iter().copied())
+                .output()
+                .unwrap()
+        };
+        assert!(run(&["init", "-q"]).status.success());
+        let unset = config_identity(&dir, &isolated);
+        assert!(run(&["config", "user.name", "Ada"]).status.success());
+        let partial = config_identity(&dir, &isolated);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(unset.unwrap(), with_fallback(None, None));
+        assert_eq!(partial.unwrap(), with_fallback(Some("Ada".into()), None));
     }
 
     #[test]
