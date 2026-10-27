@@ -14,6 +14,8 @@ const { createRoutingTest } = require('./auto-provider-routing-test');
 const { detachProviderReferences } = require('../providers/force-detach');
 const { isValidIp } = require('../providers/egress-ip');
 const { reassignProviderSessions } = require('../provider-reassign');
+const { encodeRelayShareCode, relayModelsOf } = require('../providers/relay-share-code');
+const { parseCredential, relayRouteFromBaseUrl } = require('../providers/relay-share-store');
 
 // req.body.egressIpAllowlist arrives as an array (or is absent — leave the
 // stored value untouched on PATCH, that's the `undefined` case) or `null`/`[]`
@@ -124,6 +126,7 @@ function assertProviderRouteDeps(deps) {
       || !deps.providerRelayShares
       || typeof deps.providerRelayShares.create !== 'function'
       || typeof deps.providerRelayShares.list !== 'function'
+      || typeof deps.providerRelayShares.getCredential !== 'function'
       || typeof deps.providerRelayShares.revoke !== 'function'
       || typeof deps.providerRelayShares.revokeProvider !== 'function') {
     throw new TypeError('provider route runtime dependencies are required');
@@ -654,27 +657,12 @@ function createProviderRoutes(rawDeps) {
       const relayBaseUrl = req.params.appType === 'codex'
         ? `${base}/codex-proxy/${encodeURIComponent(req.params.id)}`
         : `${base}/claude-proxy/${encodeURIComponent(req.params.id)}/remote`;
-      // Carry only public model metadata so the imported relay starts on a
-      // model the source provider actually serves. This matters especially for
-      // Codex Official: it has no model in config.toml, so without its cached
-      // catalog the importer would fall back to the unrelated gpt-4o-mini.
       const summary = deps.providerRouterRuntime.getProviderSummary(
         req.params.appType,
         req.params.id,
       ) || {};
-      const relayModels = [...new Set([
-        summary.model,
-        ...(Array.isArray(summary.modelOptions) ? summary.modelOptions : []),
-      ].map(value => String(value || '').trim())
-        .filter(value => value && value.length <= 256))].slice(0, 100);
-      const payload = {
-        v: 2,
-        kind: 'multicc-relay',
-        name: `${provider.name || req.params.id} · 远程共享`,
-        appType: req.params.appType,
-        baseUrl: relayBaseUrl,
-        ...(relayModels[0] ? { model: relayModels[0], models: relayModels } : {}),
-      };
+      const relayModels = relayModelsOf(summary);
+      const relayName = `${provider.name || req.params.id} · 远程共享`;
       try {
         const created = deps.providerRelayShares.create({
           appType: req.params.appType,
@@ -685,11 +673,14 @@ function createProviderRoutes(rawDeps) {
           token: req.body && req.body.token,
           label: req.body && req.body.label,
         });
-        const code = 'mcrelay1.' + Buffer.from(JSON.stringify({
-          ...payload,
+        const code = encodeRelayShareCode({
+          name: relayName,
+          appType: req.params.appType,
+          baseUrl: relayBaseUrl,
+          models: relayModels,
           relayShareId: created.share.id,
           authToken: created.credential,
-        }), 'utf8').toString('base64url');
+        });
         res.json({ ok: true, code, baseUrl: relayBaseUrl, share: created.share });
       } catch (error) {
         if (error && error.code === 'RELAY_TOKEN_INVALID') {
@@ -735,6 +726,62 @@ function createProviderRoutes(rawDeps) {
       } catch (error) {
         return res.status(500).json({ error: publicError(error, 'relay share revoke failed') });
       }
+    });
+
+    // Re-copy a recorded share. The credential comes back from the sealed copy
+    // kept at creation time, so the owner never has to mint a new code (and
+    // re-distribute it) just to hand the same link to one more person. Revoked
+    // shares and ones created before sealing existed answer 410 / 409.
+    app.get('/api/provider-relay-shares/:id/code', (req, res) => {
+      try {
+        const found = deps.providerRelayShares.getCredential(req.params.id);
+        if (!found.ok) {
+          if (found.code === 'not_found') return res.status(404).json({ error: 'relay share not found', code: found.code });
+          if (found.code === 'revoked') return res.status(410).json({ error: '这条分享已撤销，无法再复制', code: found.code });
+          return res.status(409).json({ error: '这条分享创建于旧版本，凭据未留存，无法再复制；请新建一条', code: found.code });
+        }
+        const { share } = found;
+        const provider = deps.providers.getProvider(share.appType, share.providerId);
+        if (!provider) return res.status(404).json({ error: 'provider not found' });
+        const summary = deps.providerRouterRuntime.getProviderSummary(share.appType, share.providerId) || {};
+        const code = encodeRelayShareCode({
+          name: `${provider.name || share.providerId} · 远程共享`,
+          appType: share.appType,
+          baseUrl: share.relayBaseUrl,
+          models: relayModelsOf(summary),
+          relayShareId: share.id,
+          authToken: found.credential,
+        });
+        return res.json({ ok: true, code, baseUrl: share.relayBaseUrl, share });
+      } catch (error) {
+        return res.status(500).json({ error: publicError(error, 'relay share copy failed') });
+      }
+    });
+
+    // Re-copy the original import info of a provider that was itself imported
+    // through a share code (its base URL points at another instance's relay
+    // endpoint). Works for any provider that holds a relay credential, so an
+    // importer can pass the same line on without going back to the lender.
+    app.get('/api/providers/:appType/:id/relay-import-code', (req, res) => {
+      const provider = deps.providers.getProvider(req.params.appType, req.params.id);
+      if (!provider) return res.status(404).json({ error: 'provider not found' });
+      const summary = deps.providerRouterRuntime.getProviderSummary(req.params.appType, req.params.id) || {};
+      const route = relayRouteFromBaseUrl(summary.baseUrl);
+      const token = typeof deps.providers.getRelayImportToken === 'function'
+        ? deps.providers.getRelayImportToken(req.params.appType, req.params.id) : '';
+      const credential = parseCredential(token);
+      if (!route || route.appType !== req.params.appType || !credential) {
+        return res.status(400).json({ error: '这不是通过分享码导入的借道线路', code: 'not_relay_import' });
+      }
+      const code = encodeRelayShareCode({
+        name: provider.name || summary.name || req.params.id,
+        appType: req.params.appType,
+        baseUrl: route.url,
+        models: relayModelsOf(summary),
+        relayShareId: credential.id,
+        authToken: token,
+      });
+      return res.json({ ok: true, code, baseUrl: route.url });
     });
 
     app.get('/api/provider-defaults', (req, res) => res.json(providerDefaults));

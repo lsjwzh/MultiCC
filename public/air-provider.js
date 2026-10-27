@@ -636,6 +636,10 @@
       root.MultiCCAirProviderAdvanced?.prepare(context);
       root.shareRelayProvider?.(provider.appType, provider.id);
     }));
+    // 通过分享码导入的线路：把原始导入信息再复制出来，转给别人时不必回到出借方重新生成。
+    if (root.isRelayImportProvider?.(provider)) {
+      actions.append(button(t('airProviderRelayCopyImport'), () => root.copyRelayImportInfo?.(provider.appType, provider.id)));
+    }
     if (!terminal) {
       actions.append(button(t('airProviderDelete'), () => removeProvider(provider), 'danger'));
     }

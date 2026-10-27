@@ -1,11 +1,20 @@
 'use strict';
 
 // Durable, provider-scoped credentials for cross-instance Provider relays.
-// A relay credential is disclosed once inside the share code; disk keeps only
-// a salted scrypt hash plus a short fingerprint for administrative inventory.
+// Verification uses only a salted scrypt hash plus a short fingerprint. So the
+// owner can copy an existing share code again, each new record also keeps the
+// credential sealed with AES-256-GCM under a 0600 key file next to the store;
+// the plaintext never reaches disk and list() never returns it.
+//
+// Rust-first exception (AGENTS.md): this store, its authorize path and the
+// routes are Node-only today with no Rust counterpart, so this stays a minimal
+// addition to the existing module. Migrate it with the rest of the relay-share
+// store when the provider routes move to Rust.
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const { createStore } = require('../state/store');
+const { atomicWriteText } = require('../runtime-security');
 
 const APP_TYPES = new Set(['claude', 'codex']);
 const TOKEN_PREFIX = 'mcr1';
@@ -126,6 +135,8 @@ function publicRecord(record) {
     relayBaseUrl: record.relayBaseUrl,
     tokenFingerprint: record.tokenFingerprint,
     status: record.revokedAt ? 'revoked' : 'active',
+    // True when the credential can be copied again (sealed at creation time).
+    recoverable: !record.revokedAt && !!record.credentialSealed,
     createdAt: record.createdAt,
     revokedAt: record.revokedAt,
     accessCount: record.accessCount,
@@ -151,6 +162,45 @@ function createProviderRelayShareStore(options = {}) {
   function commit(next) {
     store.save(next);
     records = next;
+  }
+
+  const keyFile = options.keyFile || `${options.file}.key`;
+  let sealKey = null;
+  // Lazily load (or create) the sealing key. Any failure returns null so a
+  // share can still be created and used; it just cannot be copied again.
+  function loadSealKey(create) {
+    if (sealKey) return sealKey;
+    try {
+      const hex = fs.readFileSync(keyFile, 'utf8').trim();
+      if (/^[0-9a-f]{64}$/.test(hex)) return (sealKey = Buffer.from(hex, 'hex'));
+    } catch (_) { /* missing key file */ }
+    if (!create) return null;
+    try {
+      const fresh = randomBytes(32);
+      atomicWriteText(keyFile, fresh.toString('hex'));
+      return (sealKey = fresh);
+    } catch (_) { return null; }
+  }
+
+  function seal(credential, id) {
+    const key = loadSealKey(true);
+    if (!key) return null;
+    const iv = randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    cipher.setAAD(Buffer.from(id));
+    const data = Buffer.concat([cipher.update(credential, 'utf8'), cipher.final()]);
+    return { v: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') };
+  }
+
+  function unseal(sealed, id) {
+    const key = loadSealKey(false);
+    if (!key || !sealed || sealed.v !== 1) return null;
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(sealed.iv, 'base64'));
+      decipher.setAAD(Buffer.from(id));
+      decipher.setAuthTag(Buffer.from(sealed.tag, 'base64'));
+      return Buffer.concat([decipher.update(Buffer.from(sealed.data, 'base64')), decipher.final()]).toString('utf8');
+    } catch (_) { return null; }
   }
 
   function uniqueId() {
@@ -185,6 +235,7 @@ function createProviderRelayShareStore(options = {}) {
       tokenSalt: salt,
       tokenHash: crypto.scryptSync(secret, salt, 32).toString('hex'),
       tokenFingerprint: crypto.createHash('sha256').update(credential).digest('hex').slice(0, 12),
+      credentialSealed: seal(credential, id),
       createdAt: Number(now()),
       revokedAt: null,
       accessCount: 0,
@@ -202,6 +253,24 @@ function createProviderRelayShareStore(options = {}) {
         && (!providerId || record.providerId === providerId))
       .sort((a, b) => b.createdAt - a.createdAt)
       .map(publicRecord);
+  }
+
+  // Re-disclose an active share's credential to the owner. The unsealed value
+  // is re-verified against the stored scrypt hash, so a tampered or mismatched
+  // record is refused instead of handing out a credential that cannot work.
+  function getCredential(id) {
+    const record = records.find(item => item.id === clean(id));
+    if (!record) return Object.freeze({ ok: false, code: 'not_found' });
+    if (record.revokedAt) return Object.freeze({ ok: false, code: 'revoked' });
+    const credential = unseal(record.credentialSealed, record.id);
+    const parsed = credential ? parseCredential(credential) : null;
+    if (!parsed || parsed.id !== record.id) return Object.freeze({ ok: false, code: 'not_recoverable' });
+    const actual = crypto.scryptSync(parsed.secret, record.tokenSalt, 32);
+    const expected = Buffer.from(record.tokenHash, 'hex');
+    if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+      return Object.freeze({ ok: false, code: 'not_recoverable' });
+    }
+    return Object.freeze({ ok: true, credential, share: publicRecord(record) });
   }
 
   function authorize(input = {}) {
@@ -256,7 +325,7 @@ function createProviderRelayShareStore(options = {}) {
     return count;
   }
 
-  return Object.freeze({ create, list, authorize, revoke, revokeProvider });
+  return Object.freeze({ create, list, getCredential, authorize, revoke, revokeProvider });
 }
 
 module.exports = {

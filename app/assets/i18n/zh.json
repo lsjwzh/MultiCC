@@ -2134,6 +2134,7 @@
   "airProviderAdvRelayImport": "使用其他设备的线路",
   "airProviderAdvRelayImportHint": "粘贴另一台 MultiCC 生成的分享码",
   "airProviderAdvRelayRecords": "查看共享记录",
+  "airProviderRelayCopyImport": "复制原始导入信息",
   "airProviderRelayShare": "共享到其他设备",
   "airProviderAdvZcodeTitle": "ZCode 原生连接 / Coding Plan",
   "airProviderAdvZcodeDesc": "这里管理会话选择「ZCode 原生 / Coding Plan」时使用的官方配置。普通 API Provider 请在上方创建，ZCode 会按会话生成隔离配置，不改动此原生连接。",

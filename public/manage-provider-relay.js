@@ -4,7 +4,8 @@
    Provider 范围凭据；服务端仅保存哈希，明文只在创建响应的分享码中出现一次。
    导入端粘贴后走普通 POST /api/providers。依赖 manage.js 的全局 helper（escapeHtml、
    providerApi、showToast、loadProviders、_providerData、providerCatalog），
-   点击时才解析，因此脚本顺序只要求在 air.html 里、画按钮的 air-provider-advanced.js 之前加载即可。 */
+   点击时才解析，因此脚本顺序只要求在 air.html 里、画按钮的 air-provider-advanced.js 之前加载即可。
+   已创建的分享（服务端留有加密副本）和已导入的线路都能再次取出同一份分享码，不必重新生成。 */
 
 function parseRelayShareCode(raw) {
   const text = String(raw || '').trim();
@@ -73,6 +74,55 @@ function _newRelayCredential() {
   return 'relay_' + Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
+// 取出的分享码弹层：先尝试写剪贴板，失败（无权限/非安全上下文）时用户仍可在文本框里手动全选复制。
+function _relayShowCode(title, hint, code) {
+  const { overlay } = _relayOverlay(`
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:92vw;">
+      <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">${escapeHtml(title)}</div>
+      <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:10px">${escapeHtml(hint)}</div>
+      <textarea data-k="code" rows="5" readonly style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:8px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"></textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+        <button class="btn" data-act="close" style="font-size:13px">关闭</button>
+        <button class="btn btn-green" data-act="copy" style="font-size:13px">复制分享码</button>
+      </div>
+    </div>`);
+  const codeEl = overlay.querySelector('[data-k="code"]');
+  codeEl.value = code;
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(code); }
+    catch (_) { codeEl.select(); document.execCommand('copy'); }
+    showToast('分享码已复制');
+  };
+  overlay.querySelector('[data-act="copy"]').onclick = copy;
+  copy();
+}
+
+// 已导入的借道线路：地址指向另一台 MultiCC 的中转端点（…/claude-proxy/<id>/remote 或 …/codex-proxy/<id>）
+// 且本机存有凭据。回环地址是本机自己的 CPR 管线，不算导入线路（与服务端 relayRouteFromBaseUrl 同口径）。
+function isRelayImportProvider(provider) {
+  if (!provider || !provider.hasToken) return false;
+  let url;
+  try { url = new URL(String(provider.baseUrl || '')); } catch (_) { return false; }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  if (['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase())) return false;
+  const seg = url.pathname.split('/').filter(Boolean);
+  if (provider.appType === 'claude') return seg[0] === 'claude-proxy' && !!seg[1] && seg[2] === 'remote';
+  if (provider.appType === 'codex') return seg[0] === 'codex-proxy' && !!seg[1];
+  return false;
+}
+
+async function copyRelayImportInfo(appType, id) {
+  try {
+    const d = await providerApi.json(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}/relay-import-code`);
+    _relayShowCode('复制原始导入信息', '这是导入这条线路时用的分享码。把它发给别人，对方导入后会和你共用同一份凭据与额度。', d.code);
+  } catch (err) { showToast('Failed: ' + err.message); }
+}
+
+async function copyRelayShareCode(shareId) {
+  const d = await providerApi.json(`/api/provider-relay-shares/${encodeURIComponent(shareId)}/code`);
+  _relayShowCode('复制分享码', '与创建时相同的分享码。拿到的人共用这条分享的凭据，撤销这条分享会让他们一起失效。', d.code);
+}
+
 function manageRelayShares(appType = '', providerId = '') {
   const { overlay } = _relayOverlay(`
     <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:720px;max-width:94vw;max-height:86vh;overflow:auto">
@@ -104,8 +154,16 @@ function manageRelayShares(appType = '', providerId = '') {
             指纹：${escapeHtml(share.tokenFingerprint)} · 创建：${escapeHtml(_relayDate(share.createdAt))}<br>
             访问：${Number(share.accessCount) || 0} 次 · 最后使用：${escapeHtml(_relayDate(share.lastUsedAt))}
           </div>
-          ${share.status === 'active' ? `<div style="text-align:right;margin-top:7px"><button class="btn" data-revoke="${escapeHtml(share.id)}" style="font-size:11px;color:#f85149">撤销</button></div>` : ''}
+          ${share.status === 'active' ? `<div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:7px">${share.recoverable
+            ? `<button class="btn" data-copy="${escapeHtml(share.id)}" style="font-size:11px">复制分享码</button>`
+            : '<span style="font-size:11px;color:var(--faint)">旧版创建，无法再复制</span>'}<button class="btn" data-revoke="${escapeHtml(share.id)}" style="font-size:11px;color:#f85149">撤销</button></div>` : ''}
         </div>`).join('') : '<div class="status-text">尚未分享给其他设备</div>';
+      listEl.querySelectorAll('[data-copy]').forEach(button => {
+        button.onclick = async () => {
+          try { await copyRelayShareCode(button.dataset.copy); }
+          catch (err) { statusEl.textContent = 'Failed: ' + err.message; statusEl.className = 'status-text err'; }
+        };
+      });
       listEl.querySelectorAll('[data-revoke]').forEach(button => {
         button.onclick = async () => {
           if (!confirm('撤销后，其他设备将立即无法继续使用这条 AI 线路。继续吗？')) return;

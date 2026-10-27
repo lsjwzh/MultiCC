@@ -494,8 +494,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // main 随后未登记涨到 9795；+4 双语键（airTaskSettingsInstallPortableGit*）：
     //   缺命令行工具时「免 CLT 安装 Git」按钮（install-git.sh 后台任务）的标签/进度/
     //   完成/失败，中英各 4 行，重跑生成器实测 9804/631565。
-    maxLines: 9804,
-    maxBytes: 631565,
+    // +1 双语键（airProviderRelayCopyImport）：已导入借道线路的「复制原始导入信息」
+    //   按钮，中英各 1 行 = +2 行，重跑生成器实测 9806/631690。
+    maxLines: 9806,
+    maxBytes: 631690,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

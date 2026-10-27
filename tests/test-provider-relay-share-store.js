@@ -115,6 +115,70 @@ test('relay credentials cannot cross protocol or host-route boundaries', () => {
   }), /relay token/);
 });
 
+test('an active share can be copied again from its sealed copy, never from plaintext on disk', () => {
+  const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-relay-seal-')));
+  const file = path.join(root, 'provider-relay-shares.json');
+  const make = () => createProviderRelayShareStore({ file });
+  const store = make();
+  const created = store.create({
+    appType: 'claude', providerId: 'glm-provider', providerName: 'GLM',
+    publicBaseUrl: 'https://relay.example',
+    relayBaseUrl: 'https://relay.example/claude-proxy/glm-provider/remote',
+    token: 'sealed-manual-secret',
+  });
+  assert.equal(created.share.recoverable, true);
+  const disk = fs.readFileSync(file, 'utf8');
+  assert.equal(disk.includes('sealed-manual-secret'), false, 'no plaintext secret on disk');
+  assert.equal(disk.includes(created.credential), false, 'no plaintext credential on disk');
+  assert.equal(JSON.stringify(store.list()).includes('credentialSealed'), false, 'list() never exposes the sealed copy');
+  assert.equal(fs.statSync(`${file}.key`).mode & 0o077, 0, 'key file is owner-only');
+
+  // A reloaded store (restart) still returns the exact same credential.
+  const again = make().getCredential(created.share.id);
+  assert.equal(again.ok, true);
+  assert.equal(again.credential, created.credential);
+  assert.equal(make().authorize({
+    credential: again.credential, pathname: '/claude-proxy/glm-provider/remote/v1/messages',
+  }).ok, true, 'the copied credential is the working one');
+
+  assert.deepEqual({ ...store.getCredential('missing') }, { ok: false, code: 'not_found' });
+  store.revoke(created.share.id);
+  assert.deepEqual({ ...store.getCredential(created.share.id) }, { ok: false, code: 'revoked' });
+  assert.equal(store.list()[0].recoverable, false);
+});
+
+test('shares created before sealing existed, or with a lost key, report not_recoverable', () => {
+  const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-relay-legacy-')));
+  const file = path.join(root, 'provider-relay-shares.json');
+  const store = createProviderRelayShareStore({ file });
+  const created = store.create({
+    appType: 'codex', providerId: 'official', providerName: 'Official',
+    publicBaseUrl: 'https://relay.example', relayBaseUrl: 'https://relay.example/codex-proxy/official',
+    token: 'legacy-manual-secret',
+  });
+  // Legacy record: strip the sealed copy as pre-feature versions never wrote it.
+  const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const rows = Array.isArray(parsed) ? parsed : parsed.data;
+  for (const row of rows) delete row.credentialSealed;
+  fs.writeFileSync(file, JSON.stringify(parsed));
+  const legacy = createProviderRelayShareStore({ file });
+  assert.equal(legacy.list()[0].recoverable, false);
+  assert.equal(legacy.getCredential(created.share.id).code, 'not_recoverable');
+  assert.equal(legacy.authorize({ credential: created.credential, pathname: '/codex-proxy/official/responses' }).ok, true,
+    'a legacy share keeps working; it just cannot be copied again');
+
+  // Lost/rotated key: sealed data cannot be opened, and the store never guesses.
+  const sealed = createProviderRelayShareStore({ file: path.join(root, 'b.json') });
+  const second = sealed.create({
+    appType: 'codex', providerId: 'official', providerName: 'Official',
+    publicBaseUrl: 'https://relay.example', relayBaseUrl: 'https://relay.example/codex-proxy/official',
+    token: 'rotated-manual-secret',
+  });
+  fs.writeFileSync(path.join(root, 'b.json.key'), 'ab'.repeat(32));
+  const rotated = createProviderRelayShareStore({ file: path.join(root, 'b.json') });
+  assert.equal(rotated.getCredential(second.share.id).code, 'not_recoverable');
+});
+
 // ── relayRouteFromBaseUrl：导入方识别借道链接 ────────────────────────────────
 
 test('relayRouteFromBaseUrl recognizes lender relay endpoints on both protocols', () => {

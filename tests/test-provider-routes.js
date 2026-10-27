@@ -154,6 +154,13 @@ function createHarness(overrides = {}) {
       return relayShares.filter(share => (!filter.appType || share.appType === filter.appType)
         && (!filter.providerId || share.providerId === filter.providerId));
     },
+    getCredential(id) {
+      const share = relayShares.find(item => item.id === id);
+      if (!share) return { ok: false, code: 'not_found' };
+      if (share.status === 'revoked') return { ok: false, code: 'revoked' };
+      if (share.legacy) return { ok: false, code: 'not_recoverable' };
+      return { ok: true, share, credential: `mcr1.${share.id}.${share.secret || 'manual-secret'}` };
+    },
     revoke(id) {
       const share = relayShares.find(item => item.id === id);
       if (!share) return null;
@@ -227,6 +234,8 @@ test('provider route extraction preserves the mounted surface and response DTOs'
     'POST /api/providers/:appType/:id/relay-models/sync',
     'GET /api/provider-relay-shares',
     'DELETE /api/provider-relay-shares/:id',
+    'GET /api/provider-relay-shares/:id/code',
+    'GET /api/providers/:appType/:id/relay-import-code',
     'GET /api/provider-defaults',
     'PUT /api/provider-defaults',
     'POST /api/auto-provider/routing/test',
@@ -966,6 +975,69 @@ test('relay-share inventory lists and revokes durable records without returning 
     params: { id: 'missing-relay-share' },
   });
   assert.equal(response.statusCode, 404);
+});
+
+test('relay shares can be copied again and imported lines re-export their original share code', async () => {
+  const decode = code => JSON.parse(Buffer.from(code.slice('mcrelay1.'.length), 'base64url').toString('utf8'));
+  const harness = createHarness();
+  await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
+    params: { appType: 'claude', id: 'claude-one' },
+    body: { publicBaseUrl: 'https://relay.example', token: 'manual-secret' },
+  });
+  let response = await invoke(harness.app, 'GET', '/api/provider-relay-shares/:id/code', {
+    params: { id: 'abcdefghijklmnop' },
+  });
+  assert.equal(response.body.ok, true);
+  const payload = decode(response.body.code);
+  assert.equal(payload.kind, 'multicc-relay');
+  assert.equal(payload.relayShareId, 'abcdefghijklmnop');
+  assert.equal(payload.authToken, 'mcr1.abcdefghijklmnop.manual-secret');
+  assert.equal(payload.baseUrl, 'https://relay.example/claude-proxy/claude-one/remote');
+
+  harness.relayShares[0].legacy = true;
+  response = await invoke(harness.app, 'GET', '/api/provider-relay-shares/:id/code', { params: { id: 'abcdefghijklmnop' } });
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.code, 'not_recoverable');
+  assert.equal(JSON.stringify(response.body).includes('manual-secret'), false);
+  response = await invoke(harness.app, 'GET', '/api/provider-relay-shares/:id/code', { params: { id: 'missing' } });
+  assert.equal(response.statusCode, 404);
+  harness.relayShares[0].legacy = false;
+  harness.relayShares[0].status = 'revoked';
+  response = await invoke(harness.app, 'GET', '/api/provider-relay-shares/:id/code', { params: { id: 'abcdefghijklmnop' } });
+  assert.equal(response.statusCode, 410);
+
+  // Imported relay line: the original import info is rebuilt from the stored credential.
+  const imported = createHarness({
+    providers: { getRelayImportToken: () => 'mcr1.fkcxUoqLAyIIVHvF.secret-value' },
+    providerRouterRuntime: {
+      getProviderSummary: () => ({
+        id: 'imp', appType: 'claude', name: 'Claude 账号 · x · 远程共享', model: 'm1', modelOptions: ['m1', 'm2'],
+        baseUrl: 'https://lender.example:3000/claude-proxy/claude-official-6dae/remote/v1',
+      }),
+    },
+  });
+  response = await invoke(imported.app, 'GET', '/api/providers/:appType/:id/relay-import-code', {
+    params: { appType: 'claude', id: 'imp' },
+  });
+  assert.equal(response.body.ok, true);
+  const importedPayload = decode(response.body.code);
+  assert.equal(importedPayload.relayShareId, 'fkcxUoqLAyIIVHvF');
+  assert.equal(importedPayload.authToken, 'mcr1.fkcxUoqLAyIIVHvF.secret-value');
+  assert.equal(importedPayload.baseUrl, 'https://lender.example:3000/claude-proxy/claude-official-6dae/remote');
+  assert.deepEqual(importedPayload.models, ['m1', 'm2']);
+
+  // A normal API-key provider (or a loopback CPR line) is not an import.
+  for (const baseUrl of ['https://api.deepseek.com/anthropic', 'http://127.0.0.1:3000/claude-proxy/x/remote']) {
+    const plain = createHarness({
+      providers: { getRelayImportToken: () => 'sk-plain-key' },
+      providerRouterRuntime: { getProviderSummary: () => ({ id: 'p', appType: 'claude', baseUrl }) },
+    });
+    response = await invoke(plain.app, 'GET', '/api/providers/:appType/:id/relay-import-code', {
+      params: { appType: 'claude', id: 'p' },
+    });
+    assert.equal(response.statusCode, 400, baseUrl);
+    assert.equal(JSON.stringify(response.body).includes('sk-plain-key'), false);
+  }
 });
 
 // A dedicated-egress binding is official-account-only and rides the same PATCH
