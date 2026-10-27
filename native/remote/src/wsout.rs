@@ -176,9 +176,20 @@ fn enqueue(
 /// 写端只减自己那条消息的字节数。按入队顺序这本该永远不会多减，但 AtomicUsize
 /// 一旦下溢就是回绕成 usize::MAX（见 `enqueue` 的注释），宁可少报也不能回绕。
 fn sub_queued(queued: &AtomicUsize, len: usize) {
-    let _ = queued.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-        Some(value.saturating_sub(len))
-    });
+    // Keep the saturating update compatible with both older toolchains and
+    // newer Rust releases that deprecate fetch_update in favor of try_update.
+    let mut value = queued.load(Ordering::SeqCst);
+    loop {
+        match queued.compare_exchange_weak(
+            value,
+            value.saturating_sub(len),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => break,
+            Err(current) => value = current,
+        }
+    }
 }
 
 impl WsOut for WsChannel {
