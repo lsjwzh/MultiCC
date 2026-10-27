@@ -638,7 +638,12 @@
     }));
     // 通过分享码导入的线路：把原始导入信息再复制出来，转给别人时不必回到出借方重新生成。
     if (root.isRelayImportProvider?.(provider)) {
-      actions.append(button(t('airProviderRelayCopyImport'), () => root.copyRelayImportInfo?.(provider.appType, provider.id)));
+      // 与「共享到其他设备」同一前置：Air 不加载 manage.js，弹层要的 providerApi / showToast
+      // 等裸全局靠 prepare 补。漏掉它，点下去就是静默的 ReferenceError（无弹层、无剪贴板）。
+      actions.append(button(t('airProviderRelayCopyImport'), () => {
+        root.MultiCCAirProviderAdvanced?.prepare(context);
+        root.copyRelayImportInfo?.(provider.appType, provider.id);
+      }));
     }
     if (!terminal) {
       actions.append(button(t('airProviderDelete'), () => removeProvider(provider), 'danger'));
