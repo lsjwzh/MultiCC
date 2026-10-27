@@ -74,6 +74,28 @@ function _newRelayCredential() {
   return 'relay_' + Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
+// 写剪贴板并返回是否真的成功。navigator.clipboard 只在 https/localhost 下存在，
+// 局域网 http 访问时退回 execCommand；两条都失败就如实返回 false，由调用方提示手动复制。
+async function _relayCopyText(text, el) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (_) { /* fall through to execCommand */ }
+  try {
+    el.focus(); el.select(); el.setSelectionRange(0, text.length);
+    return !!document.execCommand('copy');
+  } catch (_) { return false; }
+}
+
+function _relayCopyResult(statusEl, ok) {
+  statusEl.textContent = ok
+    ? '✓ 已复制到剪贴板，可以直接粘贴发给对方'
+    : '没能自动写入剪贴板（浏览器限制）。文本已全选，请按 ⌘C / Ctrl+C 手动复制';
+  statusEl.className = ok ? 'status-text ok' : 'status-text err';
+}
+
 // 取出的分享码弹层：先尝试写剪贴板，失败（无权限/非安全上下文）时用户仍可在文本框里手动全选复制。
 function _relayShowCode(title, hint, code) {
   const { overlay } = _relayOverlay(`
@@ -85,16 +107,18 @@ function _relayShowCode(title, hint, code) {
         <button class="btn" data-act="close" style="font-size:13px">关闭</button>
         <button class="btn btn-green" data-act="copy" style="font-size:13px">复制分享码</button>
       </div>
+      <div data-k="status" class="status-text" style="margin-top:8px"></div>
     </div>`);
   const codeEl = overlay.querySelector('[data-k="code"]');
+  const statusEl = overlay.querySelector('[data-k="status"]');
   codeEl.value = code;
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(code); }
-    catch (_) { codeEl.select(); document.execCommand('copy'); }
-    showToast('分享码已复制');
-  };
+  // 弹层盖在页面提示之上，showToast 的反馈会被挡住，所以结果直接写在弹层里。
+  const copy = async () => _relayCopyResult(statusEl, await _relayCopyText(code, codeEl));
   overlay.querySelector('[data-act="copy"]').onclick = copy;
-  copy();
+  codeEl.onclick = () => codeEl.select();
+  codeEl.focus(); codeEl.select();
+  // 打开时顺手尝试一次；这次不在点击手势内，失败是常态，不报错，等用户点按钮。
+  _relayCopyText(code, codeEl).then(ok => { if (ok) _relayCopyResult(statusEl, true); });
 }
 
 // 已导入的借道线路：地址指向另一台 MultiCC 的中转端点（…/claude-proxy/<id>/remote 或 …/codex-proxy/<id>）
@@ -226,9 +250,7 @@ function shareRelayProvider(appType, id) {
   customEl.oninput = updateHint;
   overlay.querySelector('[data-act="records"]').onclick = () => manageRelayShares(appType, id);
   overlay.querySelector('[data-act="copy"]').onclick = async () => {
-    try { await navigator.clipboard.writeText(codeEl.value); }
-    catch (_) { codeEl.select(); document.execCommand('copy'); }
-    showToast('分享码已复制');
+    _relayCopyResult(st, await _relayCopyText(codeEl.value, codeEl));
   };
   overlay.querySelector('[data-act="gen"]').onclick = async () => {
     st.textContent = ''; st.className = 'status-text';
