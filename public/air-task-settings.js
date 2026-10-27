@@ -47,14 +47,14 @@
     'open-ops-terminal': { label: () => t('airTaskSettingsOpenOpsTerminal'), opensTerminal: true },
   };
 
-  function renderFix(container, fix, retry) {
+  function renderFix(container, fix, retry, context) {
     const action = FIX_ACTIONS[fix];
     if (!action) return;
     if (action.opensTerminal) {
       const wrap = node('p', null, 'air-fix-action');
       const button = node('button', action.label());
       button.type = 'button';
-      button.onclick = () => window.MultiCCAirOps?.open({ retry });
+      button.onclick = () => window.MultiCCAirOps?.open({ retry, context });
       wrap.append(button);
       container.append(wrap);
       return;
@@ -87,6 +87,23 @@
     container.append(wrap);
   }
 
+  // Any refusal the server explains can go to the AI Assistant's model, which
+  // reads the host the way someone on SSH would and answers with commands for
+  // the repair terminal (src/doctor/environment.js) — the fixed buttons above
+  // only cover the failures that have one known remedy.
+  function renderDiagnose(container, context, retry) {
+    if (!window.MultiCCAirOps) return;
+    const button = node('button', t('airTaskSettingsAiDiagnose'));
+    button.type = 'button';
+    button.title = t('airOpsDoctorPrivacy');
+    button.onclick = () => window.MultiCCAirOps.open({ retry, context, diagnose: true });
+    const row = container.querySelector('.air-fix-action');
+    if (row) { row.firstElementChild.after(button); return; }
+    const wrap = node('p', null, 'air-fix-action');
+    wrap.append(button);
+    container.append(wrap);
+  }
+
   function dialog(title, build) {
     const d = node('dialog'), form = node('form'), error = node('p'), fixBox = node('div');
     error.setAttribute('role', 'alert');
@@ -97,7 +114,12 @@
     form.onsubmit = async event => {
       event.preventDefault(); submit.disabled = true; error.textContent = ''; fixBox.replaceChildren();
       try { await save(); d.close(); }
-      catch (e) { error.textContent = e.message; if (e.fix) renderFix(fixBox, e.fix, () => form.requestSubmit()); }
+      catch (e) {
+        error.textContent = e.message;
+        const retry = () => form.requestSubmit();
+        if (e.fix) renderFix(fixBox, e.fix, retry, e.diagnose);
+        if (e.diagnose) renderDiagnose(fixBox, e.diagnose, retry);
+      }
       finally { submit.disabled = false; }
     };
     d.onclose = () => d.remove(); d.append(form); document.body.append(d); d.showModal();
@@ -124,6 +146,7 @@
       // Server-named remedy (see src/directory/service.js). Carried on the Error
       // so the dialog can offer a button instead of prose the user must retype.
       if (result.fix) failure.fix = result.fix;
+      failure.status = response.status;
       throw failure;
     }
     return result;
@@ -231,7 +254,17 @@
         const createLabel = node('label', t('airTaskSettingsCreateIfMissing')); createLabel.prepend(create);
         form.append(createLabel);
         form.append(node('p', t('airTaskSettingsAddDirectoryNote')));
-        return async () => { const result = await request('/api/directories', { name: name.value, path: path.value, create: create.checked }); await onSaved(result); };
+        return async () => {
+          let result;
+          try { result = await request('/api/directories', { name: name.value, path: path.value, create: create.checked }); }
+          catch (e) {
+            // Only a refusal the server explained is worth diagnosing; a lost
+            // connection has no failure text to reason about.
+            if (e.status) e.diagnose = { error: e.message, path: path.value.trim(), fix: e.fix || '' };
+            throw e;
+          }
+          await onSaved(result);
+        };
       });
     },
   };

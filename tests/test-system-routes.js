@@ -525,6 +525,15 @@ test('system route mount owns the app-binary metadata and canonical download rou
     ['GET', '/api/system/agent-permissions', 'function'],
     ['POST', '/api/system/agent-permissions/open', 'function'],
     ['POST', '/api/system/agent-permissions/restart', 'function'],
+    // Repair terminal (src/routes/ops-terminal.js): runs a shell command as
+    // the service account for a host that cannot add its first directory.
+    // The widest grant in this family, so it is listed one route at a time:
+    // probe, job status, start, stop. It adds no privilege an authenticated
+    // user lacks (the session terminal runs the same account).
+    ['GET', '/api/system/ops-env', 'function'],
+    ['GET', '/api/system/ops-run', 'function'],
+    ['POST', '/api/system/ops-run', 'function'],
+    ['POST', '/api/system/ops-run/stop', 'function'],
     // Read-only diagnostics: the last /codex-proxy requests this process
     // actually served, so a CLI-reported 404 can be matched to a stage or
     // shown to have never reached the host (src/codex/proxy-trace.js).

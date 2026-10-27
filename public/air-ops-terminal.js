@@ -8,8 +8,13 @@
   // a retry callback. Commands run as background jobs on the host
   // (src/routes/ops-terminal.js) that this panel polls: an install can take
   // minutes, and a panel closed mid-run re-attaches to the job when reopened.
+  // Opened with the failure that brought the user here, the panel can also
+  // hand it to the AI Assistant's model (src/doctor/environment.js), which
+  // explains it and suggests commands; nothing it suggests runs until the
+  // user puts it in the box and presses Run.
 
   const POLL_MS = 600;
+  const AI_POLL_MS = 1000;
   const MAX_POLL_FAILURES = 5;
   const ERROR_KEYS = { OPS_BUSY: 'airOpsTerminalBusy', INVALID_COMMAND: 'airOpsTerminalInvalid' };
 
@@ -45,12 +50,29 @@
   // Survives closing the panel: a repair is usually 2–3 commands and the user
   // should not have to retype them after peeking at the directory dialog.
   const history = [];
+  // The last few finished jobs, newest first: a repeated diagnosis sends them
+  // so the model sees what the user already tried and how it ended.
+  const recentJobs = [];
+
+  // Leaves the panel for the AI Assistant settings without a reload when Air
+  // is the page (air.js routes on popstate), so the user lands on the form.
+  function openAuxSettings() {
+    for (const open of document.querySelectorAll('dialog[open]')) open.close();
+    if (!location.pathname.startsWith('/air')) { location.href = '/air?view=aux'; return; }
+    // window.history: `history` in this file is the command history above.
+    window.history.pushState({}, '', '/air?view=aux');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }
 
   function open(options = {}) {
     const retry = typeof options.retry === 'function' ? options.retry : null;
+    const context = options.context && typeof options.context.error === 'string' && options.context.error.trim()
+      ? options.context : null;
     const d = node('dialog', null, 'air-ops-dialog');
     const form = node('form');
-    form.append(node('h2', t('airOpsTerminalTitle')), node('p', t('airOpsTerminalHint')));
+    const aiBox = node('section', null, 'air-ops-ai');
+    aiBox.hidden = !context;
+    form.append(node('h2', t('airOpsTerminalTitle')), aiBox, node('p', t('airOpsTerminalHint')));
 
     const envBox = node('div', '', 'air-ops-env');
     const advice = node('div', '', 'air-ops-advice');
@@ -89,9 +111,15 @@
     let closed = false;
     let view = null; // the job this panel is showing: { id, command, from, out, meta }
     let lastRun = null;
+    let aiRun = null; // the diagnosis this panel is following
 
     close.onclick = () => d.close();
-    d.onclose = () => { closed = true; d.remove(); };
+    d.onclose = () => {
+      closed = true;
+      // Nobody is left to read the answer: stop spending the user's quota on it.
+      if (aiRun) request(`/api/system/env-doctor/${encodeURIComponent(aiRun)}/cancel`, {}).catch(() => {});
+      d.remove();
+    };
     retryButton.onclick = () => { d.close(); retry(); };
     form.onsubmit = event => { event.preventDefault(); void runCommand(); };
     stopButton.onclick = () => {
@@ -267,12 +295,151 @@
       const failed = !job || job.exitCode !== 0 || job.timedOut || job.stopped;
       if (failed) mine.entry.classList.add('air-ops-entry-bad');
       remember(mine.command);
+      recentJobs.unshift({ command: mine.command, exitCode: job ? job.exitCode : null, output: mine.out.textContent.slice(-1500) });
+      if (recentJobs.length > 3) recentJobs.pop();
       if (closed) return;
       await probe();
       // A failed command stays in the box to be edited; a successful one
       // makes way for the next repair.
       if (!failed) { lastRun = mine.command; prefill(); }
       input.focus();
+    }
+
+    function aiActions(...buttons) {
+      const row = node('div', null, 'air-ops-ai-actions');
+      row.append(...buttons);
+      aiBox.append(row);
+    }
+
+    function aiButton(label, onclick, className) {
+      const button = node('button', label, className);
+      button.type = 'button';
+      button.onclick = onclick;
+      return button;
+    }
+
+    async function copyCommand(command, button, code) {
+      try {
+        await navigator.clipboard.writeText(command);
+        button.textContent = t('airOpsDoctorCopied');
+      } catch (_) {
+        // Plain-http pages have no clipboard API: select it for a manual copy.
+        const range = document.createRange();
+        range.selectNodeContents(code);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+
+    function paintCommands(commands) {
+      aiBox.append(node('p', t('airOpsDoctorCommands'), 'air-ops-ai-label'));
+      const list = node('ol', null, 'air-ops-ai-commands');
+      for (const item of commands) {
+        const li = node('li');
+        const head = node('div', null, 'air-ops-ai-cmd');
+        const code = node('code', item.command, 'air-ops-ai-code');
+        // runHere=false means the service account cannot run it (needs root
+        // over SSH): offering it in the box could only end in "must be root".
+        const action = item.runHere
+          ? aiButton(t('airOpsDoctorFill'), () => { input.value = item.command; input.focus(); })
+          : aiButton(t('airOpsDoctorCopy'), () => { void copyCommand(item.command, action, code); });
+        head.append(code, action);
+        li.append(head);
+        if (item.purpose) li.append(node('span', item.purpose, 'air-ops-ai-purpose'));
+        if (!item.runHere) li.append(node('span', t('airOpsDoctorNeedsRoot'), 'air-ops-ai-root'));
+        list.append(li);
+      }
+      aiBox.append(list);
+    }
+
+    function paintList(label, items, className) {
+      aiBox.append(node('p', label, 'air-ops-ai-label'));
+      const list = node('ul', null, className);
+      for (const item of items) list.append(node('li', item));
+      aiBox.append(list);
+    }
+
+    function paintAi(run) {
+      aiBox.replaceChildren(node('h3', t('airOpsDoctorTitle'), 'air-ops-ai-title'));
+      const status = run ? run.status : 'idle';
+      if (status === 'idle') {
+        aiBox.append(node('p', t('airOpsDoctorPrivacy'), 'air-ops-ai-note'));
+        aiActions(aiButton(t('airOpsDoctorStart'), () => { void diagnose(); }, 'primary'));
+        return;
+      }
+      if (status === 'starting' || status === 'running') {
+        const steps = (run.steps || []).length;
+        aiBox.append(node('p', steps ? t('airOpsDoctorRunningSteps', { count: steps }) : t('airOpsDoctorRunning'), 'air-ops-ai-progress'));
+        if (run.id) {
+          const cancel = aiButton(t('airOpsDoctorCancel'), () => {
+            cancel.disabled = true;
+            request(`/api/system/env-doctor/${encodeURIComponent(run.id)}/cancel`, {}).catch(() => { cancel.disabled = false; });
+          });
+          aiActions(cancel);
+        }
+        return;
+      }
+      if (status === 'error') {
+        if (run.code === 'AUX_UNAVAILABLE') {
+          aiBox.append(node('p', t('airOpsDoctorNoAux'), 'air-ops-status-bad'));
+          aiActions(aiButton(t('airOpsDoctorSetupAux'), openAuxSettings, 'primary'), aiButton(t('airOpsDoctorRerun'), () => { void diagnose(); }));
+          return;
+        }
+        aiBox.append(node('p', t('airOpsDoctorFailed', { message: run.error || '' }), 'air-ops-status-bad'));
+      } else if (status === 'cancelled') {
+        aiBox.append(node('p', t('airOpsDoctorCancelled'), 'air-ops-muted'));
+      } else {
+        const report = run.report || { summary: '', rootCause: '', evidence: [], nextSteps: [], commands: [] };
+        if (report.summary) aiBox.append(node('p', report.summary, 'air-ops-ai-summary'));
+        if (report.rootCause) aiBox.append(node('p', t('airOpsDoctorRootCause', { cause: report.rootCause }), 'air-ops-ai-cause'));
+        if (report.commands.length) paintCommands(report.commands);
+        if (report.nextSteps.length) paintList(t('airOpsDoctorNextSteps'), report.nextSteps, 'air-ops-ai-steps');
+        if (report.evidence.length) {
+          const details = node('details', null, 'air-ops-ai-evidence');
+          const list = node('ul');
+          for (const item of report.evidence) list.append(node('li', item));
+          details.append(node('summary', t('airOpsDoctorEvidence', { count: report.evidence.length })), list);
+          aiBox.append(details);
+        }
+        if (status !== 'done') aiBox.append(node('p', t('airOpsDoctorIncomplete'), 'air-ops-muted'));
+      }
+      aiActions(aiButton(t('airOpsDoctorRerun'), () => { void diagnose(); }));
+    }
+
+    async function diagnose() {
+      if (!context || aiRun) return;
+      paintAi({ status: 'starting' });
+      const lang = String((typeof window.getLang === 'function' && window.getLang()) || document.documentElement.lang || '');
+      let runId;
+      try {
+        runId = (await request('/api/system/env-doctor', {
+          error: context.error, path: context.path || '', fix: context.fix || '',
+          recent: recentJobs.slice(), lang: lang.startsWith('zh') ? 'zh' : 'en',
+        })).runId;
+      } catch (error) {
+        if (!closed) paintAi({ status: 'error', error: error.message, code: error.code });
+        return;
+      }
+      aiRun = runId;
+      let failures = 0;
+      while (!closed && aiRun === runId) {
+        let run;
+        try {
+          run = (await request(`/api/system/env-doctor/${encodeURIComponent(runId)}`, undefined, 'GET')).run;
+          failures = 0;
+        } catch (error) {
+          if (++failures < MAX_POLL_FAILURES) { await sleep(AI_POLL_MS); continue; }
+          aiRun = null;
+          if (!closed) paintAi({ status: 'error', error: error.message });
+          return;
+        }
+        if (closed) return;
+        if (run.status !== 'running') aiRun = null;
+        paintAi(run);
+        if (!aiRun) return;
+        await sleep(AI_POLL_MS);
+      }
     }
 
     async function runCommand() {
@@ -299,6 +466,8 @@
 
     paintHistory();
     input.focus();
+    if (context && options.diagnose) void diagnose();
+    else if (context) paintAi(null);
     void (async () => {
       const [, running] = await Promise.all([
         probe(),

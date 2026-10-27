@@ -488,8 +488,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +17 双语键：修复终端改为后台作业（停止/接续/耗时/省略提示）、服务账号与免密 sudo
     //   探测、身份无效态、「重试添加项目」与通用「打开修复终端」入口，中英各 17 行
     //   = +34 行，重跑生成器实测 9746/626732。
-    maxLines: 9746,
-    maxBytes: 626732,
+    // +21 双语键：添加目录失败的「🩺 AI 诊断」——修复终端里的诊断区（进度/停止/
+    //   原因/建议命令的填入与复制/需 root 提示/依据/未配 AI 助手的引导）与弹窗按钮，
+    //   中英各 21 行 = +42 行，重跑生成器实测 9788/629361。
+    maxLines: 9788,
+    maxBytes: 629361,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

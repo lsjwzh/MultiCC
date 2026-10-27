@@ -2530,6 +2530,22 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
 .air-ops-entry-bad .air-ops-out-meta { color: #b34128; }
 .air-ops-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
 .air-ops-ready { flex: 1 1 200px; color: var(--green); font-size: 13px; }
+/* AI 诊断区（src/doctor/environment.js）：只解释和建议，命令由用户填进下方终端再运行。 */
+.air-ops-ai { margin: 2px 0 12px; padding: 12px 14px; border: 1px solid #cfe0f5; border-radius: 12px; background: #f5f9ff; }
+.air-ops-ai-title { margin: 0 0 6px; color: #254562; font-size: 14px; }
+.air-ops-ai-note, .air-ops-ai-progress { margin: 4px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.air-ops-ai-summary { margin: 4px 0; font-weight: 600; line-height: 1.6; }
+.air-ops-ai-cause { margin: 4px 0; font-size: 13px; line-height: 1.6; }
+.air-ops-ai-label { margin: 10px 0 4px; color: var(--muted); font-size: 12px; }
+.air-ops-ai-commands, .air-ops-ai-steps { display: grid; gap: 8px; margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; }
+.air-ops-ai-cmd { display: flex; align-items: flex-start; gap: 8px; }
+.air-ops-ai-code { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font-size: 12px; word-break: break-all; }
+.air-ops-ai-cmd button { flex: none; padding: 4px 12px; font-size: 12px; }
+.air-ops-ai-purpose, .air-ops-ai-root { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+.air-ops-ai-root { color: var(--warning); }
+.air-ops-ai-evidence { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.air-ops-ai-evidence ul { margin: 4px 0 0; padding-left: 20px; line-height: 1.6; }
+.air-ops-ai-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
 /* iOS 对聚焦时字号 < 16px 的输入框会整页放大，手机上命令框按 16px 排。 */
 @media (max-width: 640px) {
   .air-ops-cmdline .air-ops-input { font-size: 16px; }
