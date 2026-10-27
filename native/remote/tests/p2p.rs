@@ -400,15 +400,17 @@ async fn peer_close_emits_closed() {
 async fn open_timeout_drops_peer_without_open() {
     let factory = p2p::factory().expect("p2p available");
     let (tx, mut rx) = unbounded_channel();
-    // 1.5 s 超时，且故意不把 answer 交给 offerer（等价于打不通）。
-    let ctl = factory(options(1_500), tx);
+    // Use the production 10-second budget: the retry performs real ICE/DTLS
+    // negotiation and must not inherit a CI-sensitive 1.5-second deadline.
+    // Withhold the first answer so that the same timeout still has to expire.
+    let ctl = factory(options(10_000), tx);
     let mut off = new_offerer().await;
     ctl.handle_signal(&json!({"t":"rtc-offer","sdp": off.offer_sdp}));
     let events = pump(
         ctl.as_ref(),
         &mut rx,
         &mut off,
-        Duration::from_millis(2_200),
+        Duration::from_secs(11),
         false,
         false,
     )
@@ -427,7 +429,7 @@ async fn open_timeout_drops_peer_without_open() {
         ctl.as_ref(),
         &mut rx,
         &mut off2,
-        Duration::from_secs(8),
+        Duration::from_secs(12),
         true,
         true,
     )

@@ -860,12 +860,12 @@ async fn rfb_stall_watchdog_counts_screen_data_never_outgoing_input() {
 #[tokio::test]
 async fn unavailable_unix_transports_close_with_explicit_fallbacks() {
     let ws = FakeWs::new();
-    let (_tx, rx) = mpsc::unbounded_channel();
+    let (_tx, rx) = mpsc::unbounded_channel::<Incoming>();
     rfb::run(ws.clone(), rx, RfbOptions::default()).await;
     assert_eq!(ws.close_reason(), Some((1011, "rfb-unavailable".into())));
 
     let ws = FakeWs::new();
-    let (_tx, rx) = mpsc::unbounded_channel();
+    let (_tx, rx) = mpsc::unbounded_channel::<Incoming>();
     multicc_remote::h264::run(
         ws.clone(),
         rx,
