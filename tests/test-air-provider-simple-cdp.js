@@ -75,6 +75,21 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     }],
     stats: [],
   });
+  // 余量走势：三张有 limit 的卡片各有一组采样，p1 没有余量数据。
+  const trendSeries = remaining => ({
+    '5h': { label: '5h', unit: 'percent', resetAt: now + 7200000,
+      points: [[now - 6 * 3600000, remaining + 12], [now - 3 * 3600000, remaining + 6], [now - 600000, remaining]] },
+    '1wk': { label: '1wk', unit: 'percent', resetAt: now + 3 * 86400000,
+      points: [[now - 12 * 3600000, 82], [now - 4 * 3600000, 76], [now - 600000, 71]] },
+  });
+  routes['/api/providers/limit-history'] = () => json({
+    available: true, generatedAt: now, sinceMs: now - 86400000, points: 40,
+    providers: {
+      'claude:claude-official': { updatedAt: now, series: trendSeries(55) },
+      'codex:codex-official': { updatedAt: now, series: { '1wk': trendSeries(28)['1wk'] } },
+      'claude:claude-official-aaaaaaaaaaaaaaaa': { updatedAt: now, series: trendSeries(21) },
+    },
+  });
   routes['/api/token-usage/global'] = () => json({ windows: { today: {}, week: {}, month: {}, all: {} }, byDay: {}, byDayFresh: {} });
   routes['/api/token-usage/by-role'] = () => json({});
   routes['/api/codex/accounts'] = () => json({ accounts: [], cliLogin: null });
@@ -112,6 +127,18 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     assert.equal(quotaCards[2].text, '5h 21% 30m · 更新于 1 分钟前');
     assert.match(quotaCards[0].title, /2h 后重置/);
     assert.equal(quotaCards[2].color, 'rgb(210, 153, 34)');
+    // 余量走势：有采样的三张卡片内联迷你曲线，没有余量的 p1 不画。
+    assert.ok(await page.waitFor(`document.querySelectorAll('.air-provider-trend').length===3`));
+    assert.equal(await page.evaluate(`document.querySelector('[data-provider-id="p1"] .air-provider-trend') === null`), true);
+    assert.equal(await page.evaluate(`document.querySelector('[data-provider-id="claude-official"] .air-provider-trend svg path') !== null`), true);
+    await page.evaluate(`document.querySelector('[data-provider-id="claude-official"] .air-provider-trend').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-provider-trend-dialog') !== null`));
+    assert.match(await page.evaluate(`document.querySelector('.air-provider-trend-dialog').innerText`), /余量走势/);
+    assert.equal(await page.evaluate(`document.querySelector('.air-provider-trend-dialog .air-provider-trend-chart') !== null`), true);
+    assert.ok(await page.waitFor(`document.querySelector('.air-provider-trend-dialog h2').textContent.includes('7 天')`),
+      'the detail view replaces the 24h answer with the 7d one');
+    await page.evaluate(`document.querySelector('.air-provider-trend-dialog button').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-provider-trend-dialog') === null`));
     subscriptionUnavailable = true;
     await page.evaluate(`document.querySelector('[data-provider-id="claude-official-aaaaaaaaaaaaaaaa"] .air-provider-subscription button').click()`);
     assert.ok(await page.waitFor(`document.querySelector('[data-provider-id="claude-official-aaaaaaaaaaaaaaaa"] .air-provider-subscription').textContent.includes('暂时无法更新')`));

@@ -319,13 +319,16 @@ test('core runner covers every selected path and expands declared variants', () 
   // pure Dart state machines through injected callbacks, MockClient and an
   // injected clock, with no widget tree, simulator or real socket. Flutter is
   // still one batched command, so the command count is unchanged.
-  assert.equal(core.length, 364, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 364);
+  // v2.11 provider trend review: the quota-history adapter suite uses temporary
+  // SQLite files and skips explicitly when the native kernel is absent; no
+  // account, browser or live API is involved. 365 entries, 337 commands.
+  assert.equal(core.length, 365, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 365);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 304);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 305);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 29);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -335,8 +338,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 336,
-    '333 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 337,
+    '334 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

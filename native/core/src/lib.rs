@@ -1,5 +1,6 @@
 pub mod publication;
 pub mod publication_identity;
+pub mod quota_history;
 pub mod search;
 pub mod sqlite;
 pub mod subagent_defaults;

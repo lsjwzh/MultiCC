@@ -728,8 +728,8 @@ const _state = stateBootstrap.state;
 const persistedSessions = _state.persistedSessions; mountPublicSessionAccessGuard(app, { records: persistedSessions, logger, v1NotFound: (req, res) => v1Error(req, res, 404, 'session not found', 'session_not_found') });
 
 // 供应商余量共享缓存：写入成功后向使用该线路的会话同步展示快照。
-const { createProviderLimitCache } = require('./src/quota/provider-limit-cache'); const { createLimitRecorder } = require('./src/quota/limit-cache-recorder'); const { createQuotaBarCache } = require('./src/quota/quota-bar-cache'); const { createQuotaGuard } = require('./src/quota/quota-guard');
-const providerLimitCache = createProviderLimitCache({ file: MULTICC_PATHS.providerLimitDbFile, legacyJsonFile: MULTICC_PATHS.providerLimitCacheFile });
+const { createProviderLimitCache } = require('./src/quota/provider-limit-cache'); const { createProviderQuotaHistory } = require('./src/quota/provider-quota-history'); const { mountProviderLimitHistoryRoutes } = require('./src/routes/provider-limit-history'); const { createLimitRecorder } = require('./src/quota/limit-cache-recorder'); const { createQuotaBarCache } = require('./src/quota/quota-bar-cache'); const { createQuotaGuard } = require('./src/quota/quota-guard');
+const providerQuotaHistory = createProviderQuotaHistory({ file: MULTICC_PATHS.providerQuotaHistoryDbFile }); const providerLimitCache = createProviderLimitCache({ file: MULTICC_PATHS.providerLimitDbFile, legacyJsonFile: MULTICC_PATHS.providerLimitCacheFile, onRecord: entry => providerQuotaHistory.recordEntry(entry) });
 const limitRecorder = createLimitRecorder({ cache: providerLimitCache, persistedSessions, providers }); require('./src/quota/provider-limit-sync').connectProviderLimitSync({ cache: providerLimitCache, persistedSessions, providers, broadcast: (id, data) => chatBroadcast(id, data) });
 const quotaBarCache = createQuotaBarCache({ file: MULTICC_PATHS.quotaBarCacheFile }); const quotaGuard = createQuotaGuard({ cache: providerLimitCache, configFile: MULTICC_PATHS.quotaGuardFile, logger }); // 官方账号额度保护：任一窗口到达阈值即停发请求直到重置；阈值/开关见 src/quota/quota-guard.js（quota-guard.json 或 MULTICC_QUOTA_GUARD_*）
 // Host-injected store port. Production delegates directly to StateStore's
@@ -2184,6 +2184,7 @@ providerRoutes.mountManagementRoutes(app);
 // (onResult); lookupCached reads it back so a transient failure answers last-known-
 // good cached+stale — never for a 借道 lender (relay routes pass no lookupCached).
 limitRecorder.setRefresher(mountProviderBalanceRoutes(app, { ...providers, onResult: limitRecorder.recordProvider, lookupCached: (appType, id) => providerLimitCache.get(appType, id) })?.refreshOne); // 429 → 额度管理实时重查该 provider
+mountProviderLimitHistoryRoutes(app, { history: providerQuotaHistory, providers }); // GET /api/providers/limit-history — 卡片余量走势（采样由 Rust 内核持有）
 
 // ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,
 // pre-turn auth check). Mounted after provider routes for logical grouping.
@@ -2940,7 +2941,7 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   qwenAudioSupervisor,
   sessionHibernationRuntime,
 });
-shutdownCoordinator.onClose(async () => { await workspaceRuntime.close(); taskShellHost.close(); workspaceAdmission.close(); }); shutdownCoordinator.onClose(() => codexProxyMounts.codex?.close?.());
+shutdownCoordinator.onClose(async () => { await workspaceRuntime.close(); taskShellHost.close(); workspaceAdmission.close(); }); shutdownCoordinator.onClose(() => codexProxyMounts.codex?.close?.()); shutdownCoordinator.onClose(() => providerQuotaHistory.close());
 // Terminal error handler: redacts next(err)/asyncHandler failures so clients cannot
 // fingerprint the filesystem. Registered LAST so everything falls here.
 app.use(safeErrorHandler(logger));

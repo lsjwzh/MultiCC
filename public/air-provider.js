@@ -51,6 +51,9 @@
   let presetLastAttemptAt = 0;
   let context = null;
   let data = null;
+  // 余量走势（GET /api/providers/limit-history，Map<appType:id, entry>）。
+  // 它是可选增强：接口不可用时保持 null，卡片照常渲染，只是不画曲线。
+  let trend = null;
   let activeProtocol = 'all';
   // 官方账号的「专用出口」来自这个插件里的身份（每个身份一套隔离的代理出口）。
   const EGRESS_PLUGIN_ID = 'chrome-proxy-launcher';
@@ -607,6 +610,13 @@
       limit.style.color = limitView.color;
       card.append(limit);
     }
+    // 余量走势：服务端采样点画成迷你曲线；点卡片展开详情（弹层里画大图）。
+    const trendEntry = trend ? root.MultiCCProviderTrend?.entryFor(trend, provider) : null;
+    const openTrendDetail = () => openTrend(provider, trendEntry);
+    const trendBlock = trendEntry
+      ? root.MultiCCProviderTrend?.renderInline(provider, trendEntry, { onOpen: openTrendDetail })
+      : null;
+    if (trendBlock) card.append(trendBlock);
     const actions = make('div', null, 'air-provider-card-actions');
     if (account || terminal) {
       const subscription = make('div', null, 'air-provider-subscription');
@@ -649,7 +659,25 @@
       actions.append(button(t('airProviderDelete'), () => removeProvider(provider), 'danger'));
     }
     card.append(actions);
+    // 点卡片展开余量详情。卡片里有测速/编辑/删除等按钮，点到它们不能顺带弹层；
+    // 趋势块自己接管点击（并 stopPropagation），键盘焦点也落在趋势块上。
+    if (provider.limit || trendEntry) {
+      card.classList.add('air-provider-card-expandable');
+      card.onclick = event => {
+        const target = event.target;
+        if (target && typeof target.closest === 'function'
+          && target.closest('button, a, input, select, textarea, label, dialog')) return;
+        openTrendDetail();
+      };
+    }
     return card;
+  }
+
+  function openTrend(provider, entry) {
+    root.MultiCCProviderTrend?.openDetail(provider, entry, {
+      api: path => context.api(path),
+      name: displayName(provider),
+    });
   }
 
   function fact(label, value) {
@@ -1123,6 +1151,7 @@
       data = catalogApi.normalizeCatalog(await context.api('/api/providers'));
       root._providerData = data; // manage-provider-relay.js 的 shareRelayProvider 只认这个裸全局
       renderDefaults(); renderCards();
+      void loadTrend();
       const control = el('air-provider-import');
       if (control) {
         control.disabled = !data.ccSwitchStatus.available;
@@ -1131,6 +1160,17 @@
     } catch (error) {
       if (grid) grid.replaceChildren(make('p', t('airProviderLoadFailed', { message: error.message }), 'admin-empty error'));
     }
+  }
+
+  // 余量走势与线路列表分开拉：趋势接口不可用（旧服务端 / 无原生内核）时
+  // 只是没有曲线，线路页照常显示。
+  async function loadTrend() {
+    try {
+      trend = root.MultiCCProviderTrend?.normalizeResponse(
+        await context.api('/api/providers/limit-history?range=24h&points=40'),
+      ) || null;
+      if (data && trend) renderCards();
+    } catch (_) { trend = null; }
   }
 
   function render(nextContext) {
@@ -1158,6 +1198,7 @@
   // 顶栏的「刷新」两处一起刷：线路和用量都会变，只刷一半会让人以为没生效。
   function refresh() {
     void load();
+    void loadTrend();
     return root.MultiCCAirUsage?.reload();
   }
 

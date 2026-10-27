@@ -430,6 +430,7 @@ function createProviderLimitCache({
   Database: DatabaseOverride = null,
   fsImpl = fs,
   pathImpl = path,
+  onRecord = null,
 } = {}) {
   if (!file || typeof file !== 'string') {
     throw new TypeError('[provider-limit-cache] createProviderLimitCache requires { file }');
@@ -519,6 +520,11 @@ function createProviderLimitCache({
     const tx = db.transaction(() => statements.upsert.run(toRowParams(next)));
     tx.immediate();
     notify(next);
+    // Trend sampling is best-effort: a failed history append must never fail
+    // the cache write every quota surface depends on.
+    if (typeof onRecord === 'function') {
+      try { onRecord(next); } catch (_) { /* history is optional */ }
+    }
     return next;
   }
 

@@ -137,6 +137,10 @@ function createPaths({ dataDir } = {}) {
     // src/quota/provider-limit-cache.js.
     providerLimitDbFile: path.join(root, 'provider-limit-cache.db'),
     providerLimitCacheFile: path.join(root, 'provider-limit-cache.json'),
+    // Append-only per-provider quota samples that power the provider-card
+    // trend charts (native/core/src/quota_history.rs). A separate file keeps a
+    // history write from ever locking the last-known-good cache.
+    providerQuotaHistoryDbFile: path.join(root, 'provider-quota-history.db'),
     // Account-protection threshold for subscription windows (see
     // src/quota/quota-guard.js). Optional: absent means "defaults + env".
     quotaGuardFile: path.join(root, 'quota-guard.json'),

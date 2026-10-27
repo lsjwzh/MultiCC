@@ -725,6 +725,8 @@
   <script src="air-role-editor.js"></script>
   <!-- 用量统计要先于线路页那个模块加载：Provider 页渲染时会把它挂上去。 -->
   <script src="air-usage.js"></script>
+  <!-- 余量走势：卡片内联迷你曲线 + 点击展开详情。要早于 air-provider.js，后者渲染时会用。 -->
+  <script src="air-provider-trend.js"></script>
   <script src="air-provider.js"></script>
   <!-- Provider 页「高级」那四块（官方多账号 / 借道 / ZCode / Kimi 原生连接）。前两块直接
        复用旧 manage 页那两个模块，它们按 id 找元素、按 document 委托点击，所以要和骨架
