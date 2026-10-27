@@ -157,6 +157,11 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
     fs.copyFileSync(path.join(repoRoot, file), path.join(out, file));
     if (file.endsWith('.sh')) fs.chmodSync(path.join(out, file), 0o755);
   }
+  // …and the portable-git installer, which both the one-click fix
+  // (src/routes/developer-tools.js) and install.sh run on a Mac without the
+  // Command Line Tools — at the server root, where src/portable-git.js looks.
+  fs.copyFileSync(path.join(repoRoot, 'install-git.sh'), path.join(out, 'install-git.sh'));
+  fs.chmodSync(path.join(out, 'install-git.sh'), 0o755);
   stageRustKernels({ repoRoot, out, npmEnv, logger });
   // 3) transformed manifest, then production deps
   fs.writeFileSync(path.join(out, 'package.json'),
@@ -189,7 +194,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   // 4) sanity gate — a silent missing file here becomes "app won't start" there
   for (const must of ['server.js', 'src/paths.js', 'src/voice/asr-model-installer.js',
     'public/air.html', 'public/chat.html',
-    'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh',
+    'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
     'plugins/bridges/wechat-ilink.js', ...MACOS_AGENT_FILES,
     ...POWERD_FILES,
     'skills/multicc-artifact/references/registration-rule.md',

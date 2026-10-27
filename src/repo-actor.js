@@ -6,6 +6,12 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { gitCommitEnvironment } = require('./git/publication-policy');
+const portableGit = require('./portable-git');
+
+// Everything that runs git in this process resolves a bare `git` through PATH,
+// and this module is loaded before any of it — so this is where MultiCC's own
+// git (install-git.sh, for Macs without the Command Line Tools) joins PATH.
+portableGit.addToPath();
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 120000;
@@ -144,7 +150,8 @@ class RepoActor {
             timeout: execOptions.timeout || DEFAULT_TIMEOUT_MS,
             maxBuffer: execOptions.maxBuffer || DEFAULT_MAX_BUFFER,
             killSignal: 'SIGKILL',
-            env: { ...NONINTERACTIVE_ENV, ...(execOptions.env || {}), ...identityEnv },
+            // PATH is read per call: the one-click git install extends it at runtime.
+            env: { ...NONINTERACTIVE_ENV, PATH: process.env.PATH, ...(execOptions.env || {}), ...identityEnv },
           });
           return execOptions.raw === true ? String(result.stdout || '') : String(result.stdout || '').trim();
         } catch (error) {

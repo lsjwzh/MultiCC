@@ -189,8 +189,9 @@ function developerToolsGuidance() {
     '    xcode-select --install',
     '装完后用 git --version 验证：能打印版本号就好了，然后回 MultiCC 重新添加这个目录（不用重启服务）。',
     '如果你已经装了 Xcode，那只是没选中它：sudo xcode-select --switch /Applications/Xcode.app',
-    '不想装命令行工具也行：MultiCC 要的只是一个能用的 git，用 Homebrew（brew install git）或 git-scm.com 装一个同样可以，'
-      + '命令行工具只是 macOS 上最省事的那条路。',
+    '不想装命令行工具也行：MultiCC 要的只是一个能用的 git。点「免 CLT 安装 Git」，或在终端执行'
+      + '（约 65 MB，不弹窗、不要 sudo，装到 ~/.multicc/git，MultiCC 自动使用）：',
+    '    curl -fsSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install-git.sh | sh',
   ].join('\n');
 }
 

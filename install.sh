@@ -33,6 +33,7 @@
 #   --no-shortcut       Skip creating a desktop shortcut
 #   --no-start          Install and configure only; do not start MultiCC
 #   --no-open           Start MultiCC but do not open a browser
+#   --no-git-install    On macOS without git, do not install the portable git
 #   --help              Show this help
 #
 # The normal path starts MultiCC and opens the browser before this script exits.
@@ -118,6 +119,7 @@ NO_SERVICE=false
 NO_SHORTCUT=false
 NO_START=false
 NO_OPEN=false
+GIT_INSTALL=true
 COPY_LEGACY_DATA=true
 ADOPT_DATA_FROM=""
 VERSION=""
@@ -140,6 +142,7 @@ while [ $# -gt 0 ]; do
     --no-shortcut) NO_SHORTCUT=true; shift ;;
     --no-start)   NO_START=true; NO_SERVICE=true; shift ;;
     --no-open)    NO_OPEN=true; shift ;;
+    --no-git-install) GIT_INSTALL=false; shift ;;
     --no-data)    COPY_LEGACY_DATA=false; shift ;;
     --adopt-data) need_val "$1" "$#"; ADOPT_DATA_FROM="$2"; shift 2 ;;
     --no-apk)     warn "--no-apk is no longer needed; APK builds are always on demand"; shift ;;
@@ -182,6 +185,8 @@ Options:
   --no-shortcut       Skip creating a desktop shortcut
   --no-start          Install and configure only; do not start MultiCC
   --no-open           Start MultiCC but do not open a browser
+  --no-git-install    On macOS without git, only explain instead of installing
+                      the portable git (~65 MB) into ~/.multicc/git
   --help              Show this help
 
 The normal path starts MultiCC and opens the browser before this script exits.
@@ -1420,7 +1425,13 @@ step "Checking git"
 GIT_MISSING=false
 GIT_NEEDS_CLT=false
 GIT_PATH="$(command -v git 2>/dev/null || true)"
-if [ -z "$GIT_PATH" ]; then
+# MultiCC's own portable git (install-git.sh) is not on the shell's PATH — the
+# server adds it to its own (src/portable-git.js) — so look for it explicitly,
+# or every upgrade would treat a Mac that already has it as git-less.
+PORTABLE_GIT="${HOME}/.multicc/git/bin/git"
+if [ "$PLATFORM" = "darwin" ] && [ -x "$PORTABLE_GIT" ] && "$PORTABLE_GIT" --version >/dev/null 2>&1; then
+  GIT_PATH="$PORTABLE_GIT"
+elif [ -z "$GIT_PATH" ]; then
   GIT_MISSING=true
   # Written as a full `if`, not `[ ... ] && ...`: under `set -e` the && form
   # exits non-zero on every non-macOS host and would abort the installer.
@@ -1433,11 +1444,31 @@ elif [ "$PLATFORM" = "darwin" ] && [ "$GIT_PATH" = "/usr/bin/git" ] && ! xcode-s
 elif ! "$GIT_PATH" --version >/dev/null 2>&1; then
   GIT_MISSING=true
 fi
+# Without the tools, the cheapest working git is the portable one: MultiCC brings
+# its own Node, so git is all it needs from them — no ~1-2 GB download, no
+# system dialog, no sudo. The script ships in the package; the GitHub copy of
+# the same release is the fallback for packages that predate it.
+if [ "$GIT_MISSING" = true ] && [ "$GIT_NEEDS_CLT" = true ] && [ "$GIT_INSTALL" = true ]; then
+  info "No usable git — installing MultiCC's portable git (~65 MB, no Command Line Tools needed)"
+  GIT_SCRIPT="$INSTALL_DIR/MultiCC.app/Contents/Resources/app-server/install-git.sh"
+  if [ ! -f "$GIT_SCRIPT" ]; then
+    GIT_SCRIPT="$(mktemp "${TMPDIR:-/tmp}/multicc-install-git.XXXXXX")"
+    download "https://raw.githubusercontent.com/lsjwzh/MultiCC/v${INSTALLER_VERSION}/install-git.sh" "$GIT_SCRIPT" || GIT_SCRIPT=""
+  fi
+  if [ -n "$GIT_SCRIPT" ] && sh "$GIT_SCRIPT" && "$PORTABLE_GIT" --version >/dev/null 2>&1; then
+    GIT_MISSING=false
+    GIT_PATH="$PORTABLE_GIT"
+  else
+    warn "The portable git could not be installed; see the options below."
+  fi
+fi
 if [ "$GIT_MISSING" = true ]; then
   if [ "$GIT_NEEDS_CLT" = true ]; then
     warn "git does not work yet — macOS Command Line Tools are not installed."
     echo "       MultiCC needs a working git (every session gets its own worktree)."
-    echo "       Fix it with one command, then confirm in the dialog it opens:"
+    echo "       Quickest fix — a portable git, no Command Line Tools (~65 MB):"
+    echo "         ${C_CYAN}curl -fsSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install-git.sh | sh${C_RESET}"
+    echo "       Or install the tools, then confirm in the dialog it opens:"
     echo "         ${C_CYAN}xcode-select --install${C_RESET}"
     echo "       Already have Xcode? Point the tools at it instead:"
     echo "         ${C_CYAN}sudo xcode-select --switch /Applications/Xcode.app${C_RESET}"
@@ -1454,6 +1485,8 @@ if [ "$GIT_MISSING" = true ]; then
   fi
   echo "       Installation continues — MultiCC starts fine, but adding a"
   echo "       directory will fail until git works."
+elif [ "$GIT_PATH" = "$PORTABLE_GIT" ]; then
+  ok "git is available (MultiCC portable git, ${HOME}/.multicc/git)"
 else
   ok "git is available"
 fi
