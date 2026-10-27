@@ -382,7 +382,8 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
     let _lock = crate::browser_session::launch_lock(&profile.id)?;
     ensure_not_running(&profile.id)?;
     if url.is_some_and(|u| u.trim_start().starts_with('-')) { return Err("网页地址不能是启动参数".into()); }
-    let browser = find_browser(profile.chrome_path.as_deref())?;
+    let source_browser = find_browser(profile.chrome_path.as_deref())?;
+    let (browser, dock_badge) = crate::dock_badge::prepare(profile, &source_browser);
     let extension = if automatic_fingerprint { Some(crate::fingerprint::prepare(profile)?) } else { None };
     let data_dir = store::user_data_dir(&profile.id);
     std::fs::create_dir_all(&data_dir).map_err(|err| format!("创建隔离 profile 目录失败：{err}"))?;
@@ -558,7 +559,8 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
     }
     let mut result = json!({
         "pid": pid,
-        "browser": browser.display().to_string(),
+        "browser": source_browser.display().to_string(),
+        "dockBadge": dock_badge,
         "userDataDir": data_dir.display().to_string(),
         "args": args,
         "fingerprint": session["fingerprint"],

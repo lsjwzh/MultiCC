@@ -11,6 +11,7 @@
 //!   成功：{"ok":true,"data":{...}}    失败：{"ok":false,"error":"中文原因"}，退出码 1
 
 mod chrome;
+mod dock_badge;
 mod browser_session;
 mod core;
 mod fingerprint;
@@ -150,6 +151,7 @@ fn profile_with_runtime(profile: Profile, subscriptions: &[Subscription]) -> Val
         map.insert("egressText".into(), json!(egress));
         map.insert("egressType".into(), json!(if profile.subscription.is_some() { "subscription" } else { "direct" }));
         map.insert("running".into(), json!(running));
+        if cfg!(target_os = "macos") { map.insert("dockBadge".into(), dock_badge::appearance(&profile)); }
         let core_port = core::running_port(&profile.id);
         if core_port.is_some() {
             map.insert("corePort".into(), json!(core_port));
@@ -299,6 +301,7 @@ fn command_remove(input: &Value) -> Result<Value, String> {
     // 的目录不可逆，这里宁可少做一步。
     profiles.retain(|p| p.id != id);
     store::save_profiles(&profiles)?;
+    dock_badge::clear_cache(&id);
     Ok(json!({ "removed": id }))
 }
 
