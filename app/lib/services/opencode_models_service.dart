@@ -100,7 +100,10 @@ List<String> openCodeNativeModelOptions(List<Map<String, dynamic>> providers) {
 /// Account/config-scoped OpenCode catalog shared by App create/edit pickers.
 /// The host endpoint is the same one that warms the Web picker's cache.
 class OpenCodeModelsService {
-  static const Duration _ttl = Duration(hours: 24);
+  // One hour, matching the host's cache and opencode's own cadence: the CLI
+  // re-checks models.dev on a 60-minute timer, so an upstream rename should not
+  // survive a whole day in a long-running app either.
+  static const Duration _ttl = Duration(hours: 1);
   static const Duration _timeout = Duration(seconds: 20);
 
   static List<OpenCodeModel>? _cache;

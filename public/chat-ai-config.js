@@ -350,7 +350,7 @@
     if (state && state.cli === 'zcode') return [...ZCODE_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'opencode') {
       // No multicc-managed provider chosen: list the local opencode CLI's
-      // available provider/model pairs. Sync-read the 1-day localStorage cache
+      // available provider/model pairs. Sync-read the 1-hour localStorage cache
       // populated by loadOpenCodeModels() (see public/shared/models.js); the
       // first picker open may return [] here, then refreshOpenCodeModels()
       // fires a rebuild once the fetch resolves.
@@ -420,19 +420,25 @@
     return readModelCacheSync('multicc.codebuddy.models.v1', 60 * 60 * 1000);
   }
 
-  // Background-refresh the OpenCode model list (1-day cache, shared with
+  // Background-refresh the OpenCode model list (1-hour cache, shared with
   // shared/models.js via the same localStorage key). The chat page should call
   // this once on init when `cli === 'opencode'`; on completion it triggers a
   // UI re-resolve so the picker shows the freshly fetched entries.
-  async function refreshOpenCodeModels(rebuildCallback) {
+  // `options.force` is the user pressing 刷新模型: skip both caches and rebuild
+  // even though a list is already on screen (that list may name models
+  // opencode has since retired). The fetched entries are returned so the
+  // caller can report how many it got.
+  async function refreshOpenCodeModels(rebuildCallback, options) {
+    const force = !!(options && options.force);
     try {
-      if (typeof loadOpenCodeModels !== 'function') return;
+      if (typeof loadOpenCodeModels !== 'function') return [];
       const prev = readOpenCodeModelsSync();
-      await loadOpenCodeModels();
-      if (typeof rebuildCallback === 'function' && prev.length === 0) {
+      const models = await loadOpenCodeModels({ force });
+      if (typeof rebuildCallback === 'function' && (force || prev.length === 0)) {
         try { rebuildCallback(); } catch (_) { /* noop */ }
       }
-    } catch (_) { /* swallow — picker keeps the placeholder */ }
+      return Array.isArray(models) ? models : [];
+    } catch (_) { return []; /* swallow — picker keeps the placeholder */ }
   }
 
   // Same contract as refreshOpenCodeModels, for the Qoder CN catalog. The chat

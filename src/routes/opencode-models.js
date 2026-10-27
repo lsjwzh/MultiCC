@@ -9,15 +9,17 @@
 //
 // The CLI is authoritative (it knows built-in + user config + secret-store
 // expansions); the opencode.json file-read is only a fallback when the binary
-// is missing or refuses to list. The result is cached in-process for 1 day so
-// repeated picker opens do not spawn the CLI.
+// is missing or refuses to list. The result is cached in-process so repeated
+// picker opens do not spawn the CLI. The TTL matches the CLI's own cadence:
+// opencode re-checks models.dev on a 60-minute timer, so an upstream model
+// rename becomes visible here within the same hour instead of a day later.
 
 const { execFile } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const OPENCODE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
+const OPENCODE_TTL_MS = 60 * 60 * 1000; // 1 hour — opencode's own refresh cadence
 const OPENCODE_TIMEOUT_MS = 2000;
 const MAX_MODELS = 1000;
 
@@ -183,7 +185,7 @@ function listOpenCodeModels(callback, opts = {}) {
   });
 }
 
-// Synchronous read of whatever the 1-day cache already holds. It never spawns
+// Synchronous read of whatever the 1-hour cache already holds. It never spawns
 // the CLI and never blocks: a cold cache reports no models, which is exactly how
 // a native OpenCode line survives a cold boot without the live list. The Auto
 // Provider runtime uses it to give such a line its `<id>/<model>` choices.
@@ -193,7 +195,7 @@ function peekOpenCodeModels() {
 
 function mountOpenCodeModelRoutes(app) {
   if (!app || typeof app.get !== 'function') return;
-  // ?refresh=1 skips the 1-day cache (e.g. after adding a key to opencode.json unlocks paid models).
+  // ?refresh=1 skips the 1-hour cache (the picker 刷新模型 button, or a paid model unlocked by a new key).
   app.get('/api/opencode/models', (req, res) => {
     const refresh = String((req.query && req.query.refresh) || '') === '1';
     listOpenCodeModels((err, models, source) => {
