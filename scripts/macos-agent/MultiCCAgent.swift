@@ -1517,15 +1517,7 @@ func handle(_ req: [String: Any]) -> [String: Any] {
             "snapshots": snapshots.count,
             "chrome": chrome.snapshot()]
   case "request-permissions":
-    // Adds this app to the lists in System Settings with the switch off; the
-    // user still has to flip them. Nothing here can grant itself anything.
-    // Input Monitoring is deliberately NOT requested: it exists only for the
-    // optional Esc stop, and desktop computer use can always be cancelled with
-    // the chat's stop button instead.
-    let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-    let ax = AXIsProcessTrustedWithOptions(opts)
-    let sr = CGRequestScreenCaptureAccess()
-    return ["ok": true, "accessibility": ax, "screenRecording": sr]
+    return requestAgentPermissions(req)
   case "resume":
     control.resume(session)
     return ["ok": true, "halted": false]

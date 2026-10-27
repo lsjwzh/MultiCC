@@ -111,6 +111,20 @@ function createMacosPrivacyRoutes({
     const url = Object.prototype.hasOwnProperty.call(AGENT_PERMISSION_URLS, permission)
       ? AGENT_PERMISSION_URLS[permission] : null;
     if (!url) return res.status(400).json({ ok: false, error: 'unknown permission' });
+    // macOS adapter only: the native Agent owns the TCC request. Opening the
+    // pane alone does not register an installed App in its permission list.
+    // Migration exception: Node keeps only existing execFile plumbing until
+    // the Rust host exposes Agent IPC; authorization stays in native macOS APIs.
+    if (permission !== 'listenAccess') {
+      const requested = await new Promise(resolve => {
+        run(agentBin, ['call', JSON.stringify({ op: 'request-permissions', permission })],
+          { timeout: OPEN_TIMEOUT_MS, encoding: 'utf8' }, (error, stdout) => {
+            if (error) return resolve(false);
+            try { resolve(JSON.parse(stdout)?.ok === true); } catch { resolve(false); }
+          });
+      });
+      if (!requested) return res.status(503).json({ ok: false, error: 'Agent permission request failed; check that Agent is running and up to date.' });
+    }
     const result = await new Promise(resolve => {
       run('/usr/bin/open', [url], { timeout: OPEN_TIMEOUT_MS, encoding: 'utf8' }, error => resolve(error));
     });

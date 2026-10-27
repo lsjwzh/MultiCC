@@ -220,8 +220,8 @@ test('restart failures and readiness timeouts are bounded and remain unknown', a
 });
 
 test('opening an Agent permission selects its exact pane and requires a local request', async () => {
-  const run = fakeRun({});
-  const routes = createMacosPrivacyRoutes({ platform: 'darwin', run });
+  const run = fakeRun({ stdout: '{"ok":true,"status":"requested"}' });
+  const routes = createMacosPrivacyRoutes({ platform: 'darwin', run, agentBin: '/agent' });
   const remote = fakeRes();
   await routes.openAgentPermissionHandler({ socket: { remoteAddress: '192.168.1.2' },
     body: { permission: 'accessibility' } }, remote);
@@ -230,18 +230,44 @@ test('opening an Agent permission selects its exact pane and requires a local re
   const opened = fakeRes();
   await routes.openAgentPermissionHandler(local, opened);
   assert.equal(opened.body.status, 'opened');
-  assert.deepEqual(run.calls, [['/usr/bin/open', AGENT_PERMISSION_URLS.screenRecording]]);
+  assert.deepEqual(run.calls, [
+    ['/agent', 'call', JSON.stringify({ op: 'request-permissions', permission: 'screenRecording' })],
+    ['/usr/bin/open', AGENT_PERMISSION_URLS.screenRecording],
+  ]);
+  const accessibility = fakeRes();
+  await routes.openAgentPermissionHandler({ ...local, body: { permission: 'accessibility' } }, accessibility);
+  assert.deepEqual(run.calls.slice(2), [
+    ['/agent', 'call', JSON.stringify({ op: 'request-permissions', permission: 'accessibility' })],
+    ['/usr/bin/open', AGENT_PERMISSION_URLS.accessibility],
+  ]);
   const input = fakeRes();
   await routes.openAgentPermissionHandler({ ...local, body: { permission: 'listenAccess' } }, input);
   assert.equal(input.body.status, 'opened');
-  assert.deepEqual(run.calls[1], ['/usr/bin/open', 'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent']);
+  assert.deepEqual(run.calls[4], ['/usr/bin/open', 'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent']);
   const invalid = fakeRes();
   await routes.openAgentPermissionHandler({ ...local, body: { permission: 'other' } }, invalid);
   assert.equal(invalid.statusCode, 400);
   const inherited = fakeRes();
   await routes.openAgentPermissionHandler({ ...local, body: { permission: 'toString' } }, inherited);
   assert.equal(inherited.statusCode, 400);
-  assert.equal(run.calls.length, 2);
+  assert.equal(run.calls.length, 5);
+});
+
+test('permission request failures never claim the Agent was added or settings opened', async () => {
+  for (const reply of [{ error: new Error('unreachable') }, { stdout: 'bad JSON' }, { stdout: '{"ok":false}' }]) {
+    const run = fakeRun(reply);
+    const routes = createMacosPrivacyRoutes({ platform: 'darwin', run, agentBin: '/agent' });
+    const res = fakeRes();
+    await routes.openAgentPermissionHandler({ socket: { remoteAddress: '::1' }, body: { permission: 'screenRecording' } }, res);
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.ok, false);
+    assert.equal(run.calls.length, 1, 'no misleading pane-only success');
+  }
+  const run = (file, args, options, cb) => cb(file === '/usr/bin/open' ? new Error('cannot open settings') : null, '{"ok":true}');
+  const routes = createMacosPrivacyRoutes({ platform: 'darwin', run });
+  const res = fakeRes();
+  await routes.openAgentPermissionHandler({ socket: { remoteAddress: '::1' }, body: { permission: 'accessibility' } }, res);
+  assert.equal(res.statusCode, 500);
 });
 
 test('the permission-denied failure actually routes to this button', () => {

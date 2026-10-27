@@ -637,7 +637,7 @@ function prebuildMacosAgent({ serverDir, logger = console, hostPlatform = proces
     [path.join(agentDir, 'build.sh'), binary, 'arm64', 'x86_64'], { stdio: 'inherit' });
   if (built.status !== 0) throw new Error(`macOS agent prebuild failed (exit ${built.status}); pass --no-agent to ship without it`);
   const hash = crypto.createHash('sha256');
-  for (const file of ['MultiCCAgent.swift', 'LidBrightnessBridge.h', 'LidBrightnessBridge.m', 'MultiCCAgentH264.swift'])
+  for (const file of ['MultiCCAgent.swift', 'LidBrightnessBridge.h', 'LidBrightnessBridge.m', 'MultiCCAgentH264.swift', 'AgentPermissions.swift'])
     hash.update(fs.readFileSync(path.join(agentDir, file)));
   const sum = hash.digest('hex');
   fs.writeFileSync(path.join(outDir, 'source.sha256'), `${sum}\n`);

@@ -22,6 +22,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 test('agent + scroll sources: ungated code stays Swift 5.5 compatible (macOS 11 floor)', () => {
   const sources = [
     path.join(__dirname, '..', 'scripts', 'macos-agent', 'MultiCCAgent.swift'),
+    path.join(__dirname, '..', 'scripts', 'macos-agent', 'AgentPermissions.swift'),
     path.join(__dirname, '..', 'skills', 'multicc-computer-use', 'scripts', 'scroll.swift'),
   ];
   const rules = [
@@ -48,6 +49,53 @@ test('agent + scroll sources: ungated code stays Swift 5.5 compatible (macOS 11 
       }
     });
   }
+});
+
+test('Agent permission prompts are targeted, queued and never fabricate grants', { skip: !hasSwift, timeout: 60000 }, t => {
+  const root = fs.mkdtempSync(path.join('/tmp', 'mcagent-permissions-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let source = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/AgentPermissions.swift'), 'utf8');
+  // Execute production scheduling with only OS authorization APIs replaced.
+  // Tests must never show real TCC dialogs or alter the developer's grants.
+  for (const name of ['AXIsProcessTrusted', 'AXIsProcessTrustedWithOptions', 'CGPreflightScreenCaptureAccess', 'CGRequestScreenCaptureAccess']) {
+    source = source.replace(new RegExp(`\\b${name}\\b`, 'g'), `fake${name}`);
+  }
+  source += `
+var axGranted = false, screenGranted = false
+var prompts: [String] = []
+func fakeAXIsProcessTrusted() -> Bool { axGranted }
+func fakeCGPreflightScreenCaptureAccess() -> Bool { screenGranted }
+func fakeAXIsProcessTrustedWithOptions(_ options: CFDictionary) -> Bool { prompts.append("accessibility"); return true }
+func fakeCGRequestScreenCaptureAccess() -> Bool { prompts.append("screenRecording"); return true }
+func drain() { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05)) }
+let screen = requestAgentPermissions(["permission": "screenRecording"])
+precondition(screen["ok"] as? Bool == true && screen["screenRecording"] as? Bool == false)
+precondition(prompts.isEmpty, "socket response must precede a potentially modal prompt")
+drain()
+precondition(prompts == ["screenRecording"], "must not request unrelated Accessibility")
+prompts = []
+_ = requestAgentPermissions(["permission": "accessibility"])
+drain()
+precondition(prompts == ["accessibility"])
+prompts = []
+for value: Any in ["listenAccess", "toString", 1] {
+  precondition(requestAgentPermissions(["permission": value])["ok"] as? Bool == false)
+}
+drain()
+precondition(prompts.isEmpty, "invalid permission must not prompt")
+_ = requestAgentPermissions([:])
+drain()
+precondition(prompts == ["accessibility", "screenRecording"], "legacy first-install client must still work")
+prompts = []; axGranted = true; screenGranted = true
+let ready = requestAgentPermissions([:])
+drain()
+precondition(prompts.isEmpty && ready["screenRecording"] as? Bool == true, "existing grants must not prompt")
+print("Permission request regression OK")
+`;
+  const file = path.join(root, 'main.swift'), binary = path.join(root, 'permissions-tests');
+  fs.writeFileSync(file, source);
+  execFileSync('xcrun', ['swiftc', file, '-o', binary], { timeout: 60000 });
+  assert.match(execFileSync(binary, [], { encoding: 'utf8', timeout: 5000 }), /Permission request regression OK/);
 });
 
 // Live touch drag holds the real left button down while a finger is on the phone.
@@ -545,6 +593,13 @@ test('agent: installer build, client/server protocol and chrome watchdog', { ski
 
   execFileSync('/bin/sh', [INSTALLER, 'install'], { env });
   const firstBuild = fs.statSync(bin).mtimeMs;
+  const firstUUID = execFileSync('xcrun', ['dwarfdump', '--uuid', bin], { encoding: 'utf8' });
+  const infoPath = path.join(env.MULTICC_AGENT_APP, 'Contents/Info.plist');
+  const info = JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', infoPath], { encoding: 'utf8' }));
+  assert.equal(info.CFBundleIconFile, 'AgentIcon.icns');
+  const iconPath = path.join(env.MULTICC_AGENT_APP, 'Contents/Resources/AgentIcon.icns');
+  assert.equal(fs.readFileSync(iconPath).subarray(0, 4).toString(), 'icns');
+  const firstIcon = fs.statSync(iconPath).mtimeMs;
   assert.match(execFileSync('/usr/bin/vtool', ['-show-build', bin], { encoding: 'utf8' }), /minos 11\.0/);
   assert.equal(fs.statSync(env.MULTICC_AGENT_DIR).mode & 0o777, 0o700);
   assert.match(spawnSync('/usr/bin/codesign', ['-dv', env.MULTICC_AGENT_APP], { encoding: 'utf8' }).stderr, /Identifier=com\.multicc\.agent/);
@@ -552,6 +607,16 @@ test('agent: installer build, client/server protocol and chrome watchdog', { ski
   assert.match(out, /binary up to date/);
   assert.match(out, /requirement cdhash/);
   assert.equal(fs.statSync(bin).mtimeMs, firstBuild, 'reinstall must not rebuild (would revoke grants)');
+  assert.equal(fs.statSync(iconPath).mtimeMs, firstIcon, 'no-op install must preserve sealed resources');
+  fs.rmSync(iconPath);
+  execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Delete :CFBundleIconFile', infoPath]);
+  const repaired = execFileSync('/bin/sh', [INSTALLER, 'install'], { env, encoding: 'utf8' });
+  assert.match(repaired, /binary up to date/);
+  assert.equal(execFileSync('xcrun', ['dwarfdump', '--uuid', bin], { encoding: 'utf8' }), firstUUID,
+    'resource re-signing may touch Mach-O, but icon repair must not recompile it');
+  assert.equal(execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIconFile', infoPath], { encoding: 'utf8' }).trim(), 'AgentIcon.icns');
+  assert.ok(fs.existsSync(iconPath));
+  execFileSync('/usr/bin/codesign', ['--verify', '--strict', env.MULTICC_AGENT_APP]);
   const plist = JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', env.MULTICC_AGENT_PLIST], { encoding: 'utf8' }));
   assert.deepEqual(plist.LimitLoadToSessionType, ['Aqua']);
   assert.equal(plist.AbandonProcessGroup, true);
@@ -664,6 +729,8 @@ function provisionFixture() {
   fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'LidBrightnessBridge.h'), '// header\n');
   fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'LidBrightnessBridge.m'), '// bridge\n');
   fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'MultiCCAgentH264.swift'), '// h264\n');
+  fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'AgentPermissions.swift'), '// permissions\n');
+  fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'AgentIcon.icns'), 'icns-fixture');
   const env = {
     MULTICC_AGENT_APP: path.join(tmp, 'MultiCC Agent.app'),
     MULTICC_AGENT_PLIST: path.join(tmp, 'agent.plist'),
@@ -680,9 +747,10 @@ function provisionFixture() {
     fs.mkdirSync(path.dirname(env.MULTICC_AGENT_LINK), { recursive: true });
     try { fs.symlinkSync(bin, env.MULTICC_AGENT_LINK); } catch (_) { /* already linked */ }
     const hash = crypto.createHash('sha256').update(source);
-    for (const file of ['LidBrightnessBridge.h', 'LidBrightnessBridge.m', 'MultiCCAgentH264.swift'])
+    for (const file of ['LidBrightnessBridge.h', 'LidBrightnessBridge.m', 'MultiCCAgentH264.swift', 'AgentPermissions.swift'])
       hash.update(fs.readFileSync(path.join(root, 'scripts', 'macos-agent', file)));
     fs.writeFileSync(path.join(res, 'source.sha256'), `${hash.digest('hex')}\n`);
+    fs.copyFileSync(path.join(root, 'scripts', 'macos-agent', 'AgentIcon.icns'), path.join(res, 'AgentIcon.icns'));
     fs.writeFileSync(env.MULTICC_AGENT_PLIST, '');
   };
   const calls = [];
@@ -712,6 +780,12 @@ test('agent provisioning: decides install / update / skip from what is on disk',
   assert.deepEqual(f.make().plan(), { action: 'install', reason: 'not-installed' });
   f.installed('// v1\n');
   assert.deepEqual(f.make().plan(), { action: 'skip', reason: 'up-to-date' });
+  fs.rmSync(path.join(f.env.MULTICC_AGENT_APP, 'Contents/Resources/AgentIcon.icns'));
+  assert.deepEqual(f.make().plan(), { action: 'update', reason: 'icon-changed' });
+  f.installed('// v1\n');
+  fs.writeFileSync(path.join(f.env.MULTICC_AGENT_APP, 'Contents/Resources/AgentIcon.icns'), 'old-icon');
+  assert.deepEqual(f.make().plan(), { action: 'update', reason: 'icon-changed' });
+  f.installed('// v1\n');
   // 装上了但跑不起来（预编译二进制丢过 0755：mktemp 建 0600、cp 保留目标权限）：
   // 时间戳与哈希都对得上，只有执行位能揭穿它，所以必须由这里判成「要修」。
   fs.chmodSync(path.join(f.env.MULTICC_AGENT_APP, 'Contents', 'MacOS', 'MultiCCAgent'), 0o644);
@@ -782,7 +856,7 @@ test('agent provisioning: packages ship the installer, and the installer prefers
   fs.copyFileSync('/usr/bin/true', path.join(prebuilt, 'MultiCCAgent'));
   const sourceDir = path.join(__dirname, '..', 'scripts', 'macos-agent');
   const hash = crypto.createHash('sha256');
-  for (const file of ['MultiCCAgent.swift', 'LidBrightnessBridge.h', 'LidBrightnessBridge.m', 'MultiCCAgentH264.swift'])
+  for (const file of ['MultiCCAgent.swift', 'LidBrightnessBridge.h', 'LidBrightnessBridge.m', 'MultiCCAgentH264.swift', 'AgentPermissions.swift'])
     hash.update(fs.readFileSync(path.join(sourceDir, file)));
   fs.writeFileSync(path.join(prebuilt, 'source.sha256'), `${hash.digest('hex')}\n`);
   const env = {

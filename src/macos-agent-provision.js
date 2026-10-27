@@ -39,6 +39,8 @@ function createMacosAgentProvisioner(deps = {}) {
   const bridgeHeader = path.join(rootDir, 'scripts', 'macos-agent', 'LidBrightnessBridge.h');
   const bridgeSource = path.join(rootDir, 'scripts', 'macos-agent', 'LidBrightnessBridge.m');
   const h264Source = path.join(rootDir, 'scripts', 'macos-agent', 'MultiCCAgentH264.swift');
+  const permissionSource = path.join(rootDir, 'scripts', 'macos-agent', 'AgentPermissions.swift');
+  const icon = path.join(rootDir, 'scripts', 'macos-agent', 'AgentIcon.icns');
   const app = env.MULTICC_AGENT_APP || path.join(home, 'Applications', 'MultiCC Agent.app');
   const bin = path.join(app, 'Contents', 'MacOS', 'MultiCCAgent');
   const stamp = path.join(app, 'Contents', 'Resources', 'source.sha256');
@@ -58,7 +60,7 @@ function createMacosAgentProvisioner(deps = {}) {
   function plan() {
     if (platform !== 'darwin') return { action: 'skip', reason: 'not-macos' };
     if (env.MULTICC_AGENT_AUTO_INSTALL === '0') return { action: 'skip', reason: 'disabled-by-env' };
-    if (!exists(script) || !exists(source) || !exists(bridgeHeader) || !exists(bridgeSource) || !exists(h264Source)) return { action: 'skip', reason: 'installer-not-shipped' };
+    if (![script, source, bridgeHeader, bridgeSource, h264Source, permissionSource, icon].every(exists)) return { action: 'skip', reason: 'installer-not-shipped' };
     if (exists(path.join(agentDir, 'auto-install-disabled'))) return { action: 'skip', reason: 'uninstalled-by-user' };
     if (!exists(bin)) return { action: 'install', reason: 'not-installed' };
     // Installed but unrunnable: what a copy that lost its executable bit leaves
@@ -69,9 +71,11 @@ function createMacosAgentProvisioner(deps = {}) {
     // same kind of half-install.
     if (!isExec(link)) return { action: 'install', reason: 'client-link-missing' };
     const hash = crypto.createHash('sha256');
-    for (const file of [source, bridgeHeader, bridgeSource, h264Source]) hash.update(fs.readFileSync(file));
+    for (const file of [source, bridgeHeader, bridgeSource, h264Source, permissionSource]) hash.update(fs.readFileSync(file));
     const sum = hash.digest('hex');
     if (readTrim(stamp) !== sum) return { action: 'update', reason: 'source-changed' };
+    const installedIcon = path.join(app, 'Contents', 'Resources', 'AgentIcon.icns');
+    if (!exists(installedIcon) || !fs.readFileSync(icon).equals(fs.readFileSync(installedIcon))) return { action: 'update', reason: 'icon-changed' };
     if (!exists(plist)) return { action: 'update', reason: 'launch-agent-missing' };
     return { action: 'skip', reason: 'up-to-date' };
   }
