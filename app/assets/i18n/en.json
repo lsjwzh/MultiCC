@@ -758,6 +758,7 @@
   "errorOccurred": "Error",
   "notificationErrorTitle": "Error",
   "connectionLostRetry": "⚠️ Connection lost. Reconnecting; retry after it reconnects.",
+  "messageUnconfirmedWait": "⚠️ The previous message is still awaiting server confirmation; send again in a moment.",
   "cancelled": "Cancelled",
   "taskNotifications": "Execution Notifications",
   "taskNotificationsDescription": "MultiCC turn outcomes and status notifications",

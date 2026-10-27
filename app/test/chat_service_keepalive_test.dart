@@ -61,13 +61,14 @@ void main() {
   /// Builds a ChatService whose sockets are [_FakeChannel]s — one per connect,
   /// so a reconnect lands on a fresh live transport (mirroring the real app).
   /// Returns the service plus the list of channels in creation order.
-  (ChatService, List<_FakeChannel>) makeService({bool historyArchive = false, http.Client? httpClient, List<Uri>? urls}) {
+  (ChatService, List<_FakeChannel>) makeService({bool historyArchive = false, http.Client? httpClient, List<Uri>? urls, Duration? shellInputConfirmTimeout}) {
     final channels = <_FakeChannel>[];
     final service = ChatService(
       settings: settings,
       sessionName: 'chat one',
       sessionCwd: '/tmp/work',
       historyArchive: historyArchive,
+      shellInputConfirmTimeout: shellInputConfirmTimeout ?? const Duration(seconds: 12),
       httpClient: httpClient ?? MockClient((_) async => http.Response(
         '{"code":"unsupported_source"}', 400)),
       wsTicketClient: WsTicketClient(
@@ -464,6 +465,43 @@ void main() {
       });
     },
   );
+
+  test('a lost shell delivery receipt cannot lock sending forever', () async {
+    await setupSettings();
+    fakeAsync((async) {
+      Map<String, dynamic> initFrame() => {
+        'type': 'system',
+        'subtype': 'init',
+        'is_streaming': false,
+        'session': 'chat one',
+        'taskShell': true,
+      };
+
+      // ① 窗口内重复发送被挡住 —— 这是节流，不是故障。
+      final blocked = makeService();
+      blocked.$1.connect();
+      async.flushMicrotasks();
+      blocked.$2.last.incoming.add(jsonEncode(initFrame()));
+      expect(blocked.$1.send('one'), isNotNull);
+      expect(blocked.$1.shellInputAwaitingConfirm, isTrue);
+      expect(blocked.$1.send('two'), isNull);
+      blocked.$1.dispose();
+
+      // ② 确认帧永远不来且窗口已过：上一条按丢失处理，新消息照发。
+      // 现场就是这里卡死 —— socket 明明连着，之后每条消息都被本地状态丢掉，
+      // 服务端一条 queued 都收不到，客户端还报「连接中断」。
+      final recovered = makeService(shellInputConfirmTimeout: Duration.zero);
+      recovered.$1.connect();
+      async.flushMicrotasks();
+      recovered.$2.last.incoming.add(jsonEncode(initFrame()));
+      expect(recovered.$1.send('one'), isNotNull);
+      final before = recovered.$2.last.sent.length;
+      expect(recovered.$1.send('two'), isNotNull);
+      expect(jsonDecode(recovered.$2.last.sent.last)['text'], 'two');
+      expect(recovered.$2.last.sent.length, before + 1);
+      recovered.$1.dispose();
+    });
+  });
 
   test('voice dictation flags the user_message frame with inputSource/voiceRaw', () async {
     await setupSettings();
