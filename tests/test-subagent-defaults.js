@@ -450,7 +450,7 @@ function providerHarness(options = {}) {
     providerRouterRuntime,
     findProviderReferences: () => [],
     persistedSessions: sessions,
-    providerRelayShares: { create() {}, list: () => [], revoke: () => null, revokeProvider: () => 0 },
+    providerRelayShares: { create() {}, list: () => [], getCredential: () => null, revoke: () => null, revokeProvider: () => 0 },
     getAuxConfig: () => ({ protocol: 'anthropic', providerId: null }),
     clearAuxProvider: () => {},
     applySessionPatch(sessionId, body) {

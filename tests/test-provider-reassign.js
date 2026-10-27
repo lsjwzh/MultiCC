@@ -337,7 +337,7 @@ function harness({ sessions = [], chatState = null, backgroundActive = false } =
     providerRouterRuntime,
     findProviderReferences,
     persistedSessions,
-    providerRelayShares: { create() {}, list: () => [], revoke: () => null, revokeProvider: () => 0 },
+    providerRelayShares: { create() {}, list: () => [], getCredential: () => null, revoke: () => null, revokeProvider: () => 0 },
     getAuxConfig: () => ({ protocol: 'anthropic', providerId: null }),
     clearAuxProvider: () => {},
     applySessionPatch: profile.applySessionPatch,

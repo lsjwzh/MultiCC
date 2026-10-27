@@ -11,10 +11,12 @@
 //! 悄悄丢一条 RFB 消息的代价比断线重连大得多。
 
 use crate::wsout::{Incoming, WsOut};
+#[cfg(unix)]
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use std::io;
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,6 +34,7 @@ pub type RfbConnector =
 pub type RfbConnector = Arc<dyn Fn(PathBuf) -> BoxFuture<'static, io::Result<()>> + Send + Sync>;
 
 /// 连上后写端积压超过它就暂停读浏览器（Node 的 socket 高水位是 16 KiB）。
+#[cfg(unix)]
 const PAUSE_BYTES: usize = 16 * 1024;
 
 #[derive(Clone)]
@@ -62,12 +65,14 @@ impl Default for RfbOptions {
     }
 }
 
+#[cfg(unix)]
 fn die(ws: &Arc<dyn WsOut>, reason: &str, close_ws: bool) {
     if close_ws && ws.is_open() {
         ws.close(1011, reason);
     }
 }
 
+#[cfg(unix)]
 fn as_bytes(message: Incoming) -> Bytes {
     match message {
         Incoming::Bin(data) => data,
@@ -77,6 +82,7 @@ fn as_bytes(message: Incoming) -> Bytes {
 }
 
 /// 入队给写端，并在队列太大时拒绝（Node 的 `sock.writableLength + len > max`）。
+#[cfg(unix)]
 fn queue_write(
     tx: &mpsc::UnboundedSender<Bytes>,
     queued: &AtomicUsize,

@@ -8,6 +8,8 @@ The v2.11.0 candidate stopped at the Rust compatibility gate and was not
 published. This release preserves its tag and replaces a deprecated atomic
 update with an equivalent compare-and-exchange loop, retaining compatibility
 with older Rust toolchains and strict checks on the latest stable compiler.
+Compile Unix-only transport helpers and socket tests only on supported hosts,
+verify explicit Windows fallbacks, and refresh provider test dependencies.
 
 - Add prominent desktop downloads to both READMEs, grouped by operating system and CPU architecture, with separate mobile app and standalone server links.
 - Run remote desktop capture, input, annotations, wake handling, and video forwarding in a supervised Rust process. Keep the existing Node backend as a migration fallback; Node remains responsible for process supervision and Electron or SDK integration until the Rust path is validated across supported release platforms.
