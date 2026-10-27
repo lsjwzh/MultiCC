@@ -38,6 +38,21 @@ test('unlock password is mac-only and probes presence without asking for the sec
   assert.equal(await missing.make().hasPassword(), false);
 });
 
+test('default keychain ACL authorizes the global Applications bundle and honors an explicit override', async t => {
+  const previous = process.env.MULTICC_AGENT_APP;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MULTICC_AGENT_APP;
+    else process.env.MULTICC_AGENT_APP = previous;
+  });
+  const h = harness();
+  delete process.env.MULTICC_AGENT_APP;
+  await createUnlockPassword({ platform: 'darwin', execFileFn: h.execFileFn, account: 'test' }).setPassword('fixture-value');
+  assert.equal(h.calls[0].args[h.calls[0].args.indexOf('-T') + 1], AGENT_APP);
+  process.env.MULTICC_AGENT_APP = '/custom/MultiCC Agent.app';
+  await createUnlockPassword({ platform: 'darwin', execFileFn: h.execFileFn, account: 'test' }).setPassword('fixture-value');
+  assert.equal(h.calls[1].args[h.calls[1].args.indexOf('-T') + 1], process.env.MULTICC_AGENT_APP);
+});
+
 test('unlock password stores with add-generic-password -U and rejects invalid input', async () => {
   const h = harness();
   const up = h.make();

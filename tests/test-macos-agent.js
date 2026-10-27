@@ -789,6 +789,15 @@ test('agent provisioning: decides install / update / skip from what is on disk',
   assert.deepEqual(f.make().plan(), { action: 'install', reason: 'not-installed' });
   f.installed('// v1\n');
   assert.deepEqual(f.make().plan(), { action: 'skip', reason: 'up-to-date' });
+  const oldBin = path.join(f.tmp, 'User Applications', 'MultiCC Agent.app/Contents/MacOS/MultiCCAgent');
+  fs.mkdirSync(path.dirname(oldBin), { recursive: true });
+  fs.writeFileSync(oldBin, '');
+  fs.chmodSync(oldBin, 0o755);
+  fs.rmSync(f.env.MULTICC_AGENT_LINK);
+  fs.symlinkSync(oldBin, f.env.MULTICC_AGENT_LINK);
+  assert.deepEqual(f.make().plan(), { action: 'update', reason: 'client-location-changed' });
+  fs.rmSync(f.env.MULTICC_AGENT_LINK);
+  f.installed('// v1\n');
   fs.rmSync(path.join(f.env.MULTICC_AGENT_APP, 'Contents/Resources/AgentIcon.icns'));
   assert.deepEqual(f.make().plan(), { action: 'update', reason: 'icon-changed' });
   f.installed('// v1\n');
@@ -855,6 +864,22 @@ test('agent provisioning: runs the installer in the background, asks for grants 
   fs.rmSync(f.tmp, { recursive: true, force: true });
 });
 
+test('agent provisioning: the default installation probe uses global Applications', t => {
+  const f = provisionFixture();
+  t.after(() => fs.rmSync(f.tmp, { recursive: true, force: true }));
+  const accesses = [];
+  const fixtureFs = Object.create(fs);
+  fixtureFs.accessSync = (file, mode) => {
+    accesses.push(file);
+    if (file.startsWith('/Applications/MultiCC Agent.app/')) throw new Error('fixture: not installed');
+    return fs.accessSync(file, mode);
+  };
+  const env = { ...f.env };
+  delete env.MULTICC_AGENT_APP;
+  assert.deepEqual(f.make({ fs: fixtureFs, env }).plan(), { action: 'install', reason: 'not-installed' });
+  assert.ok(accesses.includes('/Applications/MultiCC Agent.app/Contents/MacOS/MultiCCAgent'));
+});
+
 test('agent provisioning: packages ship the installer, and the installer prefers a matching prebuilt binary', { skip: process.platform !== 'darwin', timeout: 60000 }, () => {
   for (const file of MACOS_AGENT_FILES) assert.ok(fs.existsSync(path.join(__dirname, '..', file)), file);
 
@@ -887,6 +912,46 @@ test('agent provisioning: packages ship the installer, and the installer prefers
   assert.equal(fs.statSync(bin).mode & 0o777, 0o755, 'the copied binary must be executable');
   assert.equal(fs.readFileSync(path.join(env.MULTICC_AGENT_APP, 'Contents', 'Resources', 'source.sha256'), 'utf8').trim(),
     fs.readFileSync(path.join(prebuilt, 'source.sha256'), 'utf8').trim());
+
+  // Simulate the old per-user location and the new shared Applications folder.
+  // Never touch /Applications or the real user's launchd/keychain in a test.
+  const globalApp = path.join(tmp, 'Applications', 'MultiCC Agent.app');
+  const config = path.join(env.MULTICC_AGENT_DIR, 'config.json');
+  const settings = '{"chrome":{"enabled":false},"userChoice":"keep"}\n';
+  fs.writeFileSync(config, settings);
+  const requirement = spawnSync('/usr/bin/codesign', ['-d', '--verbose=4', env.MULTICC_AGENT_APP], { encoding: 'utf8' }).stderr.match(/CDHash=(\w+)/)[1];
+  const migrated = execFileSync('/bin/sh', [INSTALLER, 'install'], { env: {
+    ...env, MULTICC_AGENT_APP: globalApp, MULTICC_AGENT_LEGACY_APP: env.MULTICC_AGENT_APP,
+  }, encoding: 'utf8' });
+  assert.match(migrated, /binary up to date/);
+  assert.match(migrated, /migrated to/);
+  assert.equal(fs.existsSync(env.MULTICC_AGENT_APP), false, 'the old Applications folder must no longer show a duplicate App');
+  assert.ok(fs.existsSync(globalApp));
+  assert.equal(fs.realpathSync(env.MULTICC_AGENT_LINK), fs.realpathSync(path.join(globalApp, 'Contents/MacOS/MultiCCAgent')));
+  const migratedPlist = JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', env.MULTICC_AGENT_PLIST], { encoding: 'utf8' }));
+  assert.equal(migratedPlist.ProgramArguments[0], path.join(globalApp, 'Contents/MacOS/MultiCCAgent'));
+  assert.equal(fs.readFileSync(config, 'utf8'), settings);
+  const backups = fs.readdirSync(env.MULTICC_AGENT_DIR).filter(name => name.startsWith('legacy-app-backup.'));
+  assert.equal(backups.length, 1);
+  assert.ok(fs.existsSync(path.join(env.MULTICC_AGENT_DIR, backups[0], 'MultiCC Agent.app')));
+  const migratedRequirement = spawnSync('/usr/bin/codesign', ['-d', '--verbose=4', globalApp], { encoding: 'utf8' }).stderr.match(/CDHash=(\w+)/)[1];
+  assert.equal(migratedRequirement, requirement, 'moving a current App must preserve its signed identity');
+  fs.rmSync(globalApp, { recursive: true });
+
+  // A failed destination copy must keep the old launcher and bundle usable.
+  execFileSync('/bin/sh', [INSTALLER, 'install'], { env });
+  const oldPlist = fs.readFileSync(env.MULTICC_AGENT_PLIST, 'utf8');
+  const oldLink = fs.realpathSync(env.MULTICC_AGENT_LINK);
+  const blockedApp = path.join(tmp, 'not-a-directory.app');
+  fs.writeFileSync(blockedApp, 'fixture: occupied destination');
+  const failedMigration = spawnSync('/bin/sh', [INSTALLER, 'install'], { env: {
+    ...env, MULTICC_AGENT_APP: blockedApp, MULTICC_AGENT_LEGACY_APP: env.MULTICC_AGENT_APP,
+  }, encoding: 'utf8' });
+  assert.notEqual(failedMigration.status, 0);
+  assert.equal(fs.realpathSync(env.MULTICC_AGENT_LINK), oldLink);
+  assert.equal(fs.readFileSync(env.MULTICC_AGENT_PLIST, 'utf8'), oldPlist);
+  assert.equal(fs.readFileSync(config, 'utf8'), settings);
+  assert.ok(fs.existsSync(env.MULTICC_AGENT_APP));
 
   // 包在路上丢了执行位（zip 不带 unix 模式）也要能用预编译那份，而不是退回本地编译
   // ——用户机器上通常没有 Xcode 命令行工具，那条路只会失败。
