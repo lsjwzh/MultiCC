@@ -475,6 +475,15 @@ async function refresh() {
     egress.className = 'p-proxy';
     egress.textContent = profile.egressText || '';
     head.append(name, egress);
+    if (profile.dockBadge) {
+      const dock = document.createElement('span');
+      dock.className = 'badge';
+      dock.textContent = `Dock · ${profile.dockBadge.label}`;
+      dock.style.backgroundColor = profile.dockBadge.color;
+      dock.style.color = '#fff';
+      dock.title = '下次启动时，运行栏 Chrome 图标右下角显示此身份角标';
+      head.append(dock);
+    }
     if (profile.running) {
       const badge = document.createElement('span');
       badge.className = 'badge run';
@@ -505,7 +514,10 @@ async function refresh() {
           const geoBit = result.geo?.applied
             ? `，环境已对齐出口：${[result.geo.countryName, result.geo.timezone, result.geo.locale].filter(Boolean).join(' · ')}`
             : '';
-          notice(`已启动「${profile.name}」，${result.fingerprint?.installationVerified ? '指纹扩展已自动加载，' : ''}出口：${detail}${geoBit}`);
+          const dockBit = result.dockBadge?.status === 'applied'
+            ? `，Dock 角标：${result.dockBadge.label}`
+            : result.dockBadge?.reason ? `，角标未启用：${result.dockBadge.reason}` : '';
+          notice(`已启动「${profile.name}」，${result.fingerprint?.installationVerified ? '指纹扩展已自动加载，' : ''}出口：${detail}${geoBit}${dockBit}`);
         } catch (error) {
           notice(error.message, 'bad');
         } finally {
