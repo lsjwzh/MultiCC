@@ -1857,7 +1857,9 @@ class ChatProvider extends ChangeNotifier {
       _balanceBar = null;
       // An explicit switch means the user is looking at a different vendor —
       // drop any error backoff so the new bar fetches immediately (web
-      // setProviderBaseUrl clears backoff the same way).
+      // setProviderBaseUrl clears backoff the same way). The last turn's API
+      // error belongs to the old provider and must not outlive the switch.
+      _apiErrorPolicy = null;
       _arkErrorAt = 0;
       _kimiErrorAt = 0;
       // The vendor bars too: they are per-host, and web setProviderBaseUrl
@@ -2726,8 +2728,8 @@ class ChatProvider extends ChangeNotifier {
       voiceRaw: voiceRaw,
     );
     if (sentMsgId == null) {
-      // Half-open / dead socket — don't pretend the message was sent.
-      _addSystemMsg(t('connectionLostRetry'));
+      _addSystemMsg(t(_service.shellInputAwaitingConfirm
+          ? 'messageUnconfirmedWait' : 'connectionLostRetry'));
       notifyListeners();
       return null;
     }

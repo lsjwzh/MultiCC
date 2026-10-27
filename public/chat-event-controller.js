@@ -577,10 +577,14 @@
           break;
         case 'session_configuration_pending':
         case 'session_configuration_applied':
+          // The bar still on screen describes the OLD lane's 429; keeping it
+          // after the user switched makes the new lane look broken too.
+          liveUi.clearApiError?.();
           host.loadSessionModel?.();
           break;
         case 'cli_switched':
           host.applyCliSwitchState?.(message);
+          liveUi.clearApiError?.();
           // Same keys the App renders (chat_provider.dart) — one wording, two
           // clients. The lane labels themselves are catalog data, not text.
           host.addSystemMsg?.('⇄ ' + tr('cliSwitched', {

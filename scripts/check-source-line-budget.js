@@ -497,9 +497,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   完成/失败，中英各 4 行，重跑生成器实测 9804/631565。
     // +1 双语键（airProviderRelayCopyImport）：已导入借道线路的「复制原始导入信息」
     //   按钮，中英各 1 行 = +2 行，重跑生成器实测 9806/631690。
-    maxLines: 9806,
-    // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 632590,
+    // +1 双语键（messageUnconfirmedWait）：App 上一条任务投递仍在等服务端确认时的
+    //   提示（不再谎报「连接已断开」），中英各 1 行 = +2 行，实测 9808/632824。
+    maxLines: 9808,
+    maxBytes: 632824,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
