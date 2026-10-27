@@ -57,10 +57,12 @@
 
   // ── OpenCode live model list ────────────────────────────────────────────
   // GET /api/opencode/models enumerates the local opencode CLI's available
-  // provider/model pairs (cached server-side for 1 day). We mirror that in the
-  // browser for 1 day too, so repeated picker opens stay snappy. Returns an
-  // array of {provider, model, label} entries; see routes/opencode-models.js.
-  const OPENCODE_MODELS_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
+  // provider/model pairs (cached server-side for 1 hour — opencode refreshes
+  // its own models.dev cache on a 60-minute timer). We mirror that in the
+  // browser for the same hour, so repeated picker opens stay snappy while an
+  // upstream rename still lands the same day. Returns an array of
+  // {provider, model, label} entries; see routes/opencode-models.js.
+  const OPENCODE_MODELS_TTL_MS = 60 * 60 * 1000; // 1 hour
   const OPENCODE_MODELS_KEY = 'multicc.opencode.models.v2';
   let opencodeModelsPromise = null;
 
@@ -86,13 +88,18 @@
     } catch (_) { /* ignore quota / disabled storage */ }
   }
 
-  async function loadOpenCodeModels() {
-    const cached = readOpenCodeCache();
+  // `force` is the user asking for a fresh list (the picker's 刷新模型 button):
+  // it ignores the localStorage copy and asks the server to skip its own cache.
+  // Without it this is a cache read plus, at worst, one fetch per hour.
+  async function loadOpenCodeModels(options) {
+    const force = !!(options && options.force);
+    const cached = force ? null : readOpenCodeCache();
     if (cached) return cached.models;
-    if (opencodeModelsPromise) return opencodeModelsPromise;
+    if (!force && opencodeModelsPromise) return opencodeModelsPromise;
     opencodeModelsPromise = (async () => {
       try {
-        const data = await window.fetch('/api/opencode/models', { credentials: 'same-origin' })
+        const url = force ? '/api/opencode/models?refresh=1' : '/api/opencode/models';
+        const data = await window.fetch(url, { credentials: 'same-origin' })
           .then(r => (r && r.ok ? r.json() : null));
         const models = data && Array.isArray(data.models) ? data.models : [];
         if (models.length) writeOpenCodeCache(models);

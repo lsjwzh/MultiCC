@@ -96,7 +96,7 @@ function createAutoProviderRuntime(options = {}) {
   const hopsBySession = new Map();
 
   // The `<id>/<model>` wire ids OpenCode's own providers serve, read straight
-  // from the 1-day model cache the /api/opencode/models route keeps. A cold
+  // from the 1-hour model cache the /api/opencode/models route keeps. A cold
   // cache is not a failure: the native line simply keeps no model list and the
   // CLI falls back to its own default.
   function nativeModelOptions(id) {

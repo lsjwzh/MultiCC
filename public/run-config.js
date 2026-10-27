@@ -1145,7 +1145,15 @@
     const lineNote = el(doc, 'p', 'rc-note');
     lineField.append(lineSelect, lineNote);
     const modelField = el(doc, 'label', 'rc-field rc-model-field');
-    modelField.append(el(doc, 'span', null, tt('runConfigModelLabel', '模型')));
+    // 标题行带「刷新模型」：opencode 的模型 id 跟着上游走，面板再打开时列表可能
+    // 还是上次缓存里的旧 id（含已被下架的）。这个按钮跳过服务端与浏览器两层缓存。
+    const modelHead = el(doc, 'div', 'rc-field-head');
+    const modelRefresh = el(doc, 'button', 'rc-model-refresh', tt('runConfigModelRefresh', '刷新模型'));
+    modelRefresh.type = 'button';
+    modelRefresh.title = tt('runConfigModelRefreshHint', '重新读取本机 opencode 的模型列表');
+    show(modelRefresh, false);
+    modelHead.append(el(doc, 'span', null, tt('runConfigModelLabel', '模型')), modelRefresh);
+    modelField.append(modelHead);
     const modelSelect = el(doc, 'select', 'rc-model');
     modelSelect.setAttribute('aria-label', tt('runConfigModelLabel', '模型'));
     const modelCustom = el(doc, 'input', 'rc-model-custom');
@@ -1578,6 +1586,9 @@
     }
 
     function renderModel() {
+      // 只有 opencode 的模型表是从本机 CLI 实时拉的，其余 CLI 的清单要么在
+      // provider 目录里、要么是固定档位，没有可刷的东西。
+      show(modelRefresh, currentCli === 'opencode');
       fillModel(modelSelect, modelCustom, providerValue, currentCli, modelValue);
       modelValue = currentModelValue();
       watchSelectedModels();
@@ -2839,6 +2850,28 @@
       renderFooter();
     };
     modelCustom.oninput = () => { modelValue = currentModelValue(); renderFooter(); };
+    // 手动刷新 opencode 模型表：绕过两层缓存重新读本机 CLI。当前选中的模型原样
+    // 保留 —— 即使它已经下架，换不换、换成哪个得由用户决定，这里只把真实列表摆出来。
+    modelRefresh.onclick = async event => {
+      if (event) { event.preventDefault(); event.stopPropagation(); }
+      if (modelRefresh.disabled) return;
+      const selected = currentModelValue();
+      modelRefresh.disabled = true;
+      modelRefresh.textContent = tt('runConfigModelRefreshing', '刷新中…');
+      let models = [];
+      try { models = await aiApi.refreshOpenCodeModels(null, { force: true }); } catch (_) { models = []; }
+      if (!closed) {
+        fillModel(modelSelect, modelCustom, providerValue, currentCli, selected);
+        modelValue = currentModelValue();
+        modelStatus.textContent = models.length
+          ? tt('runConfigModelRefreshed', '模型列表已刷新：{count} 个', { count: models.length })
+          : tt('runConfigModelRefreshFailed', '刷新失败，请稍后重试');
+        modelStatus.hidden = false;
+        renderFooter();
+      }
+      modelRefresh.disabled = false;
+      modelRefresh.textContent = tt('runConfigModelRefresh', '刷新模型');
+    };
     subProviderSelect.onchange = () => {
       markSubagentTouched();
       dismissSubGuide();

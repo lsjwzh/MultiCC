@@ -89,6 +89,12 @@ dialog .air-config-field input { margin-top: 7px; }
 .rc-two { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; margin-bottom: 12px; }
 .rc-field { display: block; min-width: 0; color: #5f7286; font-size: 10px; }
 .rc-field > span { display: block; margin-bottom: 5px; }
+.rc-field-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+.rc-field-head > span { margin-bottom: 0; }
+/* 模型标题行右侧的「刷新模型」：只出现在 opencode（模型表来自本机 CLI）。 */
+.rc-model-refresh { flex: none; padding: 2px 8px; color: #4c7daa; border: 1px solid #d5e2ef; border-radius: 8px; background: #fff; font-size: 10px; cursor: pointer; }
+.rc-model-refresh[hidden] { display: none; }
+.rc-model-refresh:disabled { opacity: .55; cursor: default; }
 .rc-field select, .rc-field input {
   width: 100%; min-width: 0; margin: 0; padding: 7px 9px; color: #24425e; border: 1px solid #dbe6f1;
   border-radius: 9px; background: #fbfdff; font-size: 12px;
