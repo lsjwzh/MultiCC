@@ -9,7 +9,7 @@ use axum::http::HeaderMap;
 use axum::{Json, Router};
 #[cfg(unix)]
 use multicc_remote::agent::{AgentClient, UnixAgentClient};
-use multicc_remote::annotation::handle_annotation;
+use multicc_remote::annotation::{handle_annotation, resolve_path};
 use multicc_remote::host::{self, Host};
 use multicc_remote::region::crop_geometry;
 use multicc_remote::routes::{self, AppState};
@@ -166,6 +166,31 @@ async fn agent_call_speaks_one_json_line_over_the_unix_socket() {
 }
 
 // ── 路由 ───────────────────────────────────────────────────────────────
+#[test]
+fn annotation_paths_preserve_the_native_root_and_resolve_parent_segments() {
+    let dir = temp_dir("annotation-path");
+    let shot = dir.join("shot-1.png");
+    std::fs::write(&shot, "original").unwrap();
+    let resolved = resolve_path(&dir.join("sub/../shot-1.png").to_string_lossy());
+    assert_eq!(resolved, shot);
+    assert_eq!(std::fs::read_to_string(&resolved).unwrap(), "original");
+    assert!(multicc_remote::annotation::is_own_shot(&dir, &resolved));
+    let outside = resolve_path(&dir.join("../shot-1.png").to_string_lossy());
+    assert!(!multicc_remote::annotation::is_own_shot(&dir, &outside));
+
+    #[cfg(windows)]
+    for (src, expected) in [
+        (r"C:\shots\sub\..\shot-1.png", r"C:\shots\shot-1.png"),
+        (
+            r"\\server\share\shots\..\shot-1.png",
+            r"\\server\share\shot-1.png",
+        ),
+        (r"C:\..\shot-1.png", r"C:\shot-1.png"),
+    ] {
+        assert_eq!(resolve_path(src), std::path::Path::new(expected));
+    }
+}
+
 #[tokio::test]
 async fn frame_is_a_logical_width_jpeg_and_snapshot_returns_a_download_url() {
     let env = mac_env("routes");
@@ -308,12 +333,12 @@ fn desktop_host_profiles_match_the_js_table() {
     assert_eq!(mac.modifier, "cmd");
     assert!(mac.features.control);
     assert_eq!(
-        mac.agent_sock.as_deref(),
-        Some("/Users/x/.multicc/agent/agent.sock")
+        mac.agent_sock.as_deref().map(std::path::Path::new),
+        Some(std::path::Path::new("/Users/x/.multicc/agent/agent.sock"))
     );
     assert_eq!(
-        mac.rfb_sock.as_deref(),
-        Some("/Users/x/.multicc/agent/rfb.sock")
+        mac.rfb_sock.as_deref().map(std::path::Path::new),
+        Some(std::path::Path::new("/Users/x/.multicc/agent/rfb.sock"))
     );
 
     let win = host::profile_for("win32", "C:\\Users\\x", &HashMap::new());
@@ -331,8 +356,8 @@ fn desktop_host_profiles_match_the_js_table() {
     assert_eq!(linux.transport, "unix");
     assert_eq!(linux.modifier, "ctrl");
     assert_eq!(
-        linux.agent_sock.as_deref(),
-        Some("/run/user/7/multicc-agent/agent.sock")
+        linux.agent_sock.as_deref().map(std::path::Path::new),
+        Some(std::path::Path::new("/run/user/7/multicc-agent/agent.sock"))
     );
     assert_eq!(linux.features, host::Features::LINUX);
     assert_eq!(linux.rfb_sock, None);

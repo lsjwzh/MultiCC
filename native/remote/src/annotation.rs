@@ -31,9 +31,10 @@ pub fn resolve_path(src: &str) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("/"))
             .join(raw)
     };
-    let mut out = PathBuf::from("/");
+    let mut out = PathBuf::new();
     for part in absolute.components() {
         match part {
+            Component::Prefix(_) | Component::RootDir => out.push(part.as_os_str()),
             Component::Normal(name) => out.push(name),
             Component::ParentDir => {
                 out.pop();

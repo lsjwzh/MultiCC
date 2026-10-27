@@ -2,6 +2,28 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.11.3 — Rust remote desktop, direct mobile connections, and easier setup (2026-10-27)
+
+The v2.11.0, v2.11.1, and v2.11.2 candidates stopped at release checks and
+were not published. Preserve their tags and retain the Rust compatibility,
+Unix transport isolation, production WebRTC negotiation budget, and staged
+plugin build fixes. Preserve Windows drive and UNC roots when resolving
+annotation paths, so recaptures and cropped-coordinate sidecars use the same
+file. Make host-profile path assertions platform-aware and refresh the
+runtime-directory ownership inventory without weakening its checks.
+Align macOS cancellation regressions with the existing one-shot behavior:
+cancel stops in-flight dispatch and clears after the operation ends.
+
+- Add prominent desktop downloads to both READMEs, grouped by operating system and CPU architecture, with separate mobile app and standalone server links.
+- Run remote desktop capture, input, annotations, wake handling, and video forwarding in a supervised Rust process. Keep the existing Node backend as a migration fallback; Node remains responsible for process supervision and Electron or SDK integration until the Rust path is validated across supported release platforms.
+- Improve mobile remote control with WebRTC P2P negotiation, local-network host discovery, adaptive video rates, and H.264 frame recovery. Preserve the server connection as a fallback when a direct connection is unavailable.
+- Add a host repair terminal and guided environment diagnosis for missing Git, invalid commit identities, and project-directory access failures. Offer a user-space Git installer on macOS without requiring Command Line Tools.
+- Simplify provider setup and shared relay connections, including protocol selection, readable share codes, and grouped copy actions.
+- Build and stage Chrome Proxy Launcher binaries for supported desktop release targets, and improve browser sessions and location-aware proxy settings. Show profile-specific badges on macOS Chrome Dock icons.
+- Add a recognizable macOS agent icon and an explicit privacy-settings entry point, and include its icon resources in desktop and standalone bundles.
+- Clarify task separation controls and preserve code-delivery evidence across follow-up turns.
+- Update the mobile app to 2.39.0 (build 181).
+
 ## v2.11.2 — Rust remote desktop, direct mobile connections, and easier setup (2026-10-27)
 
 The v2.11.0 and v2.11.1 candidates stopped at Rust release checks and were not
