@@ -62,4 +62,13 @@ jobs:
             fi
             "$remote" --version | grep -q '^multicc-remote 1 ' || { echo "::error::$remote --version is not multicc-remote 1"; exit 1; }
           fi
+          # The SQLite bundle test stages the complete server, including its
+          # platform plugins. Build those inputs before invoking the real copier.
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            rustup target add x86_64-unknown-linux-musl
+            python3 -m venv "$RUNNER_TEMP/zigbuild"
+            "$RUNNER_TEMP/zigbuild/bin/pip" install --quiet cargo-zigbuild ziglang
+            export PATH="$RUNNER_TEMP/zigbuild/bin:$PATH"
+          fi
+          node scripts/build-plugin-binaries.js
           node --test tests/test-rust-cpr.js tests/test-rust-kernels.js tests/test-rust-sqlite.js tests/test-sqlite-driver.js tests/test-orchestration-sqlite-store.js tests/test-provider-limit-cache.js tests/test-task-shells.js tests/test-search-index.js tests/test-task-search.js tests/test-token-global.js
