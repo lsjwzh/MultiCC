@@ -227,11 +227,11 @@
         },
         {
           "file": "native/remote/src/host.rs",
-          "anchor": "env_value(env, \"MULTICC_AGENT_H264_SOCK\").unwrap_or_else(|| join(&dir, \"h264.sock\")),"
+          "anchor": "env_value(env, \"MULTICC_AGENT_H264_SOCK\")"
         },
         {
           "file": "native/remote/src/host.rs",
-          "anchor": "env_value(env, \"MULTICC_AGENT_PIPE\").unwrap_or_else(|| \"\\\\\\\\.\\\\pipe\\\\multicc-agent\".into()),"
+          "anchor": "env_value(env, \"MULTICC_AGENT_PIPE\")"
         }
       ]
     },
@@ -577,6 +577,27 @@
         {
           "file": "plugins/chrome-proxy-launcher/src/store.rs",
           "anchor": "home_dir().join(\".multicc\").join(\"plugins-data\").join(\"chrome-proxy-launcher\")"
+        }
+      ]
+    },
+    {
+      "id": "linux-agent-install-smoke",
+      "classification": "ephemeral",
+      "owner": "Linux agent installation tests",
+      "rationale": "The installation smoke test overrides HOME and XDG directories inside a unique mktemp directory; its binary and client link never use the real user home.",
+      "migrationStrategy": "Keep all installation state beneath the isolated temporary HOME and remove it through the EXIT trap; retain source-build and reinstall assertions.",
+      "sources": [
+        {
+          "file": "scripts/linux-agent/install-smoke.sh",
+          "anchor": "export HOME=\"$T/home\" XDG_CONFIG_HOME=\"$T/home/.config\" XDG_RUNTIME_DIR=\"$T/run\""
+        },
+        {
+          "file": "scripts/linux-agent/install-smoke.sh",
+          "anchor": "BIN=\"$HOME/.multicc/agent/multicc-agent-linux\""
+        },
+        {
+          "file": "scripts/linux-agent/install-smoke.sh",
+          "anchor": "LINK=\"$HOME/.multicc/bin/multicc-agent\""
         }
       ]
     }

@@ -446,25 +446,34 @@ DispatchQueue.global().async {
   precondition(cancelled["reason"] as? String == "user-stopped")
   precondition(cancelled["retrySafe"] as? Bool == false)
   precondition(!humanInput.isPaused)
-  // Cancel is announced and then the bar leaves: the halt (and the session's
-  // lease) outlive the notice, but the notice itself must not.
+  // A stop notice is bounded while an operation is active. The cancellation
+  // marker clears once that operation ends; the next call needs no resume.
+  let notice = Control()
+  notice.begin("notice-test")
+  notice.userStop()
   let stoppedAt = Date()
-  precondition(control.isHalted)
-  precondition(control.stopNoticeActive(at: stoppedAt))
-  precondition(!control.stopNoticeActive(at: stoppedAt.addingTimeInterval(Control.stopNoticeSeconds + 0.1)))
-  control.resume("test")
+  precondition(notice.isHalted && notice.stopNoticeActive(at: stoppedAt))
+  precondition(!notice.stopNoticeActive(at: stoppedAt.addingTimeInterval(Control.stopNoticeSeconds + 0.1)))
+  notice.end()
+  precondition(!notice.isHalted && !notice.stopNoticeActive(at: Date()))
   precondition(!control.isHalted && !control.stopNoticeActive(at: Date()))
+  let afterCancel = withMutation(["pid": 42], session: "test", target: 42, kind: .keyboard) { ["ok": true] }
+  precondition(afterCancel["ok"] as? Bool == true, "one-shot cancel must not latch across operations")
   precondition(control.release("test"))
   // 4. Esc (optional tap) still stops while driving.
   DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { control.userEsc() }
   let escaped = withMutation(["pid": 42], session: "test", target: 42, kind: .keyboard) {
     usleep(300_000)
+    precondition(control.isHalted, "Esc must stop the operation in flight")
+    let whileHalted = withMutation(["pid": 42], session: "test", target: 42, kind: .keyboard) { fatalError("Esc did not prevent dispatch") }
+    precondition(whileHalted["reason"] as? String == "user-stopped")
+    precondition(whileHalted["retrySafe"] as? Bool == false)
     return ["ok": true]
   }
   _ = escaped
-  let afterEsc = withMutation(["pid": 42], session: "test", target: 42, kind: .keyboard) { fatalError("Esc did not prevent dispatch") }
-  precondition(afterEsc["reason"] as? String == "user-stopped")
-  control.resume("test")
+  precondition(!control.isHalted, "Esc cancellation must clear when the operation ends")
+  let afterEsc = withMutation(["pid": 42], session: "test", target: 42, kind: .keyboard) { ["ok": true] }
+  precondition(afterEsc["ok"] as? Bool == true)
   precondition(control.release("test"))
   // 5. Manual remote control is never delayed by a pause.
   humanInput.setPaused(true)
