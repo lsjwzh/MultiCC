@@ -27,7 +27,9 @@ pub fn resolve_path(src: &str) -> PathBuf {
     let absolute = if raw.is_absolute() {
         raw.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")).join(raw)
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("/"))
+            .join(raw)
     };
     let mut out = PathBuf::from("/");
     for part in absolute.components() {
@@ -45,11 +47,20 @@ pub fn resolve_path(src: &str) -> PathBuf {
 pub fn is_own_shot(dir: &Path, src: &Path) -> bool {
     let parent = src.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     parent == resolve_path(&dir.to_string_lossy())
-        && src.file_name().and_then(|n| n.to_str()).map(crate::capture::is_shot_name).unwrap_or(false)
+        && src
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(crate::capture::is_shot_name)
+            .unwrap_or(false)
 }
 
 /// 标注图上的一个点 → 主屏逻辑点。非对象输入在 JS 里会算出 NaN，这里用 None 表示。
-fn to_screen(point: Option<&Value>, region: Option<Region>, scale_x: f64, scale_y: f64) -> Option<(f64, f64)> {
+fn to_screen(
+    point: Option<&Value>,
+    region: Option<Region>,
+    scale_x: f64,
+    scale_y: f64,
+) -> Option<(f64, f64)> {
     let point = point?;
     if !truthy(Some(point)) {
         return None;
@@ -58,7 +69,10 @@ fn to_screen(point: Option<&Value>, region: Option<Region>, scale_x: f64, scale_
     let y = point.get("y").and_then(js_number).unwrap_or(f64::NAN);
     let offset_x = region.map(|r| r.x).unwrap_or(0.0);
     let offset_y = region.map(|r| r.y).unwrap_or(0.0);
-    Some(((offset_x + x * scale_x).round(), (offset_y + y * scale_y).round()))
+    Some((
+        (offset_x + x * scale_x).round(),
+        (offset_y + y * scale_y).round(),
+    ))
 }
 
 pub async fn handle_annotation(st: &AppState, payload: &Value) -> Value {
@@ -92,19 +106,38 @@ pub async fn handle_annotation(st: &AppState, payload: &Value) -> Value {
         }
     }
     let payload_width = payload.get("width").and_then(js_number).unwrap_or(f64::NAN);
-    let payload_height = payload.get("height").and_then(js_number).unwrap_or(f64::NAN);
+    let payload_height = payload
+        .get("height")
+        .and_then(js_number)
+        .unwrap_or(f64::NAN);
     let (size_width, size_height) = match region {
         Some(r) => (r.width, r.height),
         None => match st.host.cached_logical_size() {
             Some(size) => (size.width, size.height),
             None => (
-                payload.get("width").and_then(js_number).filter(|v| *v != 0.0).unwrap_or(0.0),
-                payload.get("height").and_then(js_number).filter(|v| *v != 0.0).unwrap_or(0.0),
+                payload
+                    .get("width")
+                    .and_then(js_number)
+                    .filter(|v| *v != 0.0)
+                    .unwrap_or(0.0),
+                payload
+                    .get("height")
+                    .and_then(js_number)
+                    .filter(|v| *v != 0.0)
+                    .unwrap_or(0.0),
             ),
         },
     };
-    let scale_x = if payload_width > 0.0 { size_width / payload_width } else { 1.0 };
-    let scale_y = if payload_height > 0.0 { size_height / payload_height } else { scale_x };
+    let scale_x = if payload_width > 0.0 {
+        size_width / payload_width
+    } else {
+        1.0
+    };
+    let scale_y = if payload_height > 0.0 {
+        size_height / payload_height
+    } else {
+        scale_x
+    };
 
     let a = to_screen(payload.get("a"), region, scale_x, scale_y);
     let b = to_screen(payload.get("b"), region, scale_x, scale_y);
@@ -165,9 +198,21 @@ pub async fn handle_annotation(st: &AppState, payload: &Value) -> Value {
         tokio::time::sleep(Duration::from_millis(350)).await;
     }
     if let Err(error) = st.screen.capture(&src, region).await {
-        let label = if text.is_empty() { "重拍" } else { text.as_str() };
-        return result(has_request, false, format!("{label}；重拍失败：{}", error.message));
+        let label = if text.is_empty() {
+            "重拍"
+        } else {
+            text.as_str()
+        };
+        return result(
+            has_request,
+            false,
+            format!("{label}；重拍失败：{}", error.message),
+        );
     }
-    let text = if text.is_empty() { "已重新截取".to_string() } else { text };
+    let text = if text.is_empty() {
+        "已重新截取".to_string()
+    } else {
+        text
+    };
     result(true, true, text)
 }

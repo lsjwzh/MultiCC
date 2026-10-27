@@ -40,7 +40,8 @@ pub fn plan(input: &Value) -> Value {
 
 #[napi]
 pub fn remote_screen_backend_settings(input: String) -> Result<String> {
-    let input = serde_json::from_str(&input).map_err(|_| napi::Error::from_reason("远程屏幕设置输入无效"))?;
+    let input = serde_json::from_str(&input)
+        .map_err(|_| napi::Error::from_reason("远程屏幕设置输入无效"))?;
     Ok(plan(&input).to_string())
 }
 
@@ -76,7 +77,10 @@ mod tests {
         assert_eq!(view["currentBackend"], "rust");
         assert_eq!(view["configuredBackend"], "node");
         assert_eq!(view["restartRequired"], true);
-        assert_eq!(view["updates"], json!({"MULTICC_REMOTE_SCREEN_BACKEND":"node"}));
+        assert_eq!(
+            view["updates"],
+            json!({"MULTICC_REMOTE_SCREEN_BACKEND":"node"})
+        );
         assert!(!view.to_string().contains("never-return-this"));
     }
 

@@ -9,16 +9,16 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::UnboundedSender;
 
 pub struct P2pOptions {
-    pub stun_urls: Vec<String>,   // 空 = 不用 STUN，只有本机/局域网候选
-    pub open_timeout: Duration,   // 默认 10 s
-    pub chunk_bytes: usize,       // 默认 16 KiB
+    pub stun_urls: Vec<String>, // 空 = 不用 STUN，只有本机/局域网候选
+    pub open_timeout: Duration, // 默认 10 s
+    pub chunk_bytes: usize,     // 默认 16 KiB
 }
 
 pub enum P2pEvent {
-    Signal(Value),            // 经 WS 文本发给客户端：rtc-answer / rtc-ice
-    Open(Arc<dyn P2pSink>),   // DataChannel 已可用
-    Closed,                   // 当前直连断开（只在 Open 过之后才发）
-    Input(Bytes),             // 客户端经 DataChannel 发来的二进制
+    Signal(Value),          // 经 WS 文本发给客户端：rtc-answer / rtc-ice
+    Open(Arc<dyn P2pSink>), // DataChannel 已可用
+    Closed,                 // 当前直连断开（只在 Open 过之后才发）
+    Input(Bytes),           // 客户端经 DataChannel 发来的二进制
 }
 
 pub trait P2pSink: Send + Sync {
@@ -32,7 +32,8 @@ pub trait P2pControl: Send + Sync {
     fn close(&self);
 }
 
-pub type P2pFactory = Arc<dyn Fn(P2pOptions, UnboundedSender<P2pEvent>) -> Box<dyn P2pControl> + Send + Sync>;
+pub type P2pFactory =
+    Arc<dyn Fn(P2pOptions, UnboundedSender<P2pEvent>) -> Box<dyn P2pControl> + Send + Sync>;
 
 /// 公共 STUN（只探测地址，不转发数据）。MULTICC_REMOTE_STUN 可覆盖。
 pub const DEFAULT_STUN: [&str; 2] = ["stun:stun.miwifi.com:3478", "stun:stun.l.google.com:19302"];
@@ -59,7 +60,9 @@ pub fn stun_urls_from(raw: Option<String>) -> Vec<String> {
 
 /// `^stuns?:\S+$`：前缀之后必须有非空白字符，整串不能有空白。
 pub fn is_stun_url(text: &str) -> bool {
-    let rest = text.strip_prefix("stun:").or_else(|| text.strip_prefix("stuns:"));
+    let rest = text
+        .strip_prefix("stun:")
+        .or_else(|| text.strip_prefix("stuns:"));
     match rest {
         Some(rest) => !rest.is_empty() && !rest.chars().any(|c| c.is_whitespace()),
         None => false,
@@ -87,7 +90,9 @@ mod tests {
         );
         assert!(stun_urls_from(Some(String::new())).is_empty());
         assert_eq!(
-            stun_urls_from(Some("stun:a.example:3478, turn:relay.example, http://x, stuns:b.example".into())),
+            stun_urls_from(Some(
+                "stun:a.example:3478, turn:relay.example, http://x, stuns:b.example".into()
+            )),
             vec!["stun:a.example:3478", "stuns:b.example"]
         );
     }

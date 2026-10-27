@@ -44,7 +44,13 @@ pub struct Screen {
 
 impl Screen {
     pub fn new(dir: PathBuf, host: Arc<Host>, agent: Arc<dyn AgentClient>) -> Self {
-        Self { dir, host, agent, last_frame: Mutex::new(None), inflight: Mutex::new(HashMap::new()) }
+        Self {
+            dir,
+            host,
+            agent,
+            last_frame: Mutex::new(None),
+            inflight: Mutex::new(HashMap::new()),
+        }
     }
 
     /// 输入事件之后画面一定变了：清缓存，下一次请求立刻重拍。
@@ -60,10 +66,15 @@ impl Screen {
         let _ = std::fs::create_dir_all(&self.dir);
         // Linux：agent 一次做完抓屏 + 裁剪 + 编码。
         if self.host.has_capture_direct() {
-            return self.host.capture_direct(&out_str, region, SESSION, want_jpeg, quality).await;
+            return self
+                .host
+                .capture_direct(&out_str, region, SESSION, want_jpeg, quality)
+                .await;
         }
         let work = mkdtemp(&self.dir, ".capture-")?;
-        let result = self.capture_mac(&work, &out_str, region, want_jpeg, quality).await;
+        let result = self
+            .capture_mac(&work, &out_str, region, want_jpeg, quality)
+            .await;
         let _ = std::fs::remove_dir_all(&work);
         result
     }
@@ -80,10 +91,17 @@ impl Screen {
         let raw_str = raw.to_string_lossy().into_owned();
         let reply = self
             .agent
-            .call(json!({ "op": "snap", "path": raw_str, "session": SESSION }), Some(Duration::from_millis(10000)))
+            .call(
+                json!({ "op": "snap", "path": raw_str, "session": SESSION }),
+                Some(Duration::from_millis(10000)),
+            )
             .await;
         if agent_failed(&reply) {
-            let message = reply.get("error").and_then(|v| v.as_str()).unwrap_or("snap-failed").to_string();
+            let message = reply
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("snap-failed")
+                .to_string();
             return Err(AppError::from_agent(502, message, reply));
         }
         let phys = self.host.image_size(&raw_str).await?;
@@ -92,7 +110,8 @@ impl Screen {
         let mut source = raw_str.clone();
         let mut area: Option<Value> = None;
         if let Some(region) = region {
-            let geometry = crop_geometry(region, (size.width, size.height), (phys.width, phys.height))?;
+            let geometry =
+                crop_geometry(region, (size.width, size.height), (phys.width, phys.height))?;
             let crop = work.join("crop.png").to_string_lossy().into_owned();
             self.host.crop_image(&raw_str, geometry, &crop).await?;
             source = crop;
@@ -103,10 +122,20 @@ impl Screen {
         } else {
             None
         };
-        self.host.convert_image(&source, out, want_jpeg, Some(quality), resample).await?;
+        self.host
+            .convert_image(&source, out, want_jpeg, Some(quality), resample)
+            .await?;
         Ok(CaptureInfo {
-            width: if size.width > 0.0 { size.width } else { phys.width },
-            height: if size.height > 0.0 { size.height } else { phys.height },
+            width: if size.width > 0.0 {
+                size.width
+            } else {
+                phys.width
+            },
+            height: if size.height > 0.0 {
+                size.height
+            } else {
+                phys.height
+            },
             region: area,
         })
     }
@@ -121,11 +150,21 @@ impl Screen {
         }
         let cell = {
             let mut inflight = self.inflight.lock().unwrap();
-            inflight.entry(key.clone()).or_insert_with(|| Arc::new(OnceCell::new())).clone()
+            inflight
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
         };
-        let result = cell.get_or_init(|| self.capture_frame(key.clone(), region)).await.clone();
+        let result = cell
+            .get_or_init(|| self.capture_frame(key.clone(), region))
+            .await
+            .clone();
         let mut inflight = self.inflight.lock().unwrap();
-        if inflight.get(&key).map(|existing| Arc::ptr_eq(existing, &cell)).unwrap_or(false) {
+        if inflight
+            .get(&key)
+            .map(|existing| Arc::ptr_eq(existing, &cell))
+            .unwrap_or(false)
+        {
             inflight.remove(&key);
         }
         result
@@ -137,8 +176,15 @@ impl Screen {
         let out = work.join("live.jpg");
         let result = async {
             let size = self.capture(&out, region).await?;
-            let data = tokio::fs::read(&out).await.map_err(|error| AppError::new(502, error.to_string()))?;
-            Ok(Frame { key, at: Instant::now(), size, data: Bytes::from(data) })
+            let data = tokio::fs::read(&out)
+                .await
+                .map_err(|error| AppError::new(502, error.to_string()))?;
+            Ok(Frame {
+                key,
+                at: Instant::now(),
+                size,
+                data: Bytes::from(data),
+            })
         }
         .await;
         let _ = std::fs::remove_dir_all(&work);
@@ -148,10 +194,15 @@ impl Screen {
     }
 
     pub async fn snapshot(&self, region: Option<Region>) -> AppResult<Value> {
-        let file = self.dir.join(format!("shot-{}{:03}.png", now_ms(), random_below(1000)));
+        let file = self
+            .dir
+            .join(format!("shot-{}{:03}.png", now_ms(), random_below(1000)));
         let size = self.capture(&file, region).await?;
         if let Some(region_json) = &size.region {
-            let _ = std::fs::write(format!("{}.json", file.display()), serde_json::to_string(region_json).unwrap_or_default());
+            let _ = std::fs::write(
+                format!("{}.json", file.display()),
+                serde_json::to_string(region_json).unwrap_or_default(),
+            );
         }
         self.prune_shots();
         let mut map = Map::new();
@@ -166,7 +217,9 @@ impl Screen {
 
     /// 只留最近 KEEP_SHOTS 张：文件名排序即时间序，连 `.json` 一起删。
     pub fn prune_shots(&self) {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
         let mut shots: Vec<String> = entries
             .flatten()
             .filter_map(|entry| entry.file_name().to_str().map(|s| s.to_string()))
@@ -182,8 +235,12 @@ impl Screen {
 }
 
 pub fn is_shot_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix("shot-") else { return false };
-    let Some(digits) = rest.strip_suffix(".png") else { return false };
+    let Some(rest) = name.strip_prefix("shot-") else {
+        return false;
+    };
+    let Some(digits) = rest.strip_suffix(".png") else {
+        return false;
+    };
     !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
@@ -199,7 +256,10 @@ pub fn encode_uri_component(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for byte in text.as_bytes() {
         let keep = byte.is_ascii_alphanumeric()
-            || matches!(*byte, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')');
+            || matches!(
+                *byte,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            );
         if keep {
             out.push(*byte as char);
         } else {
@@ -215,7 +275,10 @@ fn is_jpeg_path(path: &str) -> bool {
 }
 
 pub fn now_ms() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 fn random_below(limit: u32) -> u32 {
@@ -234,7 +297,9 @@ fn mkdtemp(dir: &Path, prefix: &str) -> AppResult<PathBuf> {
             const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
             let mut buf = [0u8; 6];
             let _ = getrandom::getrandom(&mut buf);
-            buf.iter().map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char).collect()
+            buf.iter()
+                .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
+                .collect()
         };
         let path = dir.join(format!("{prefix}{suffix}"));
         match std::fs::create_dir(&path) {

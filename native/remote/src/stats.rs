@@ -41,12 +41,27 @@ impl Counters {
     pub fn snapshot(&self, mode: &str) -> Value {
         let mut map = Map::new();
         map.insert("mode".into(), json!(mode));
-        map.insert("forwarded".into(), json!(self.forwarded.load(Ordering::Relaxed)));
-        map.insert("dropped".into(), json!(self.dropped.load(Ordering::Relaxed)));
-        map.insert("keyRequests".into(), json!(self.key_requests.load(Ordering::Relaxed)));
-        map.insert("p2pOpened".into(), json!(self.p2p_opened.load(Ordering::Relaxed)));
+        map.insert(
+            "forwarded".into(),
+            json!(self.forwarded.load(Ordering::Relaxed)),
+        );
+        map.insert(
+            "dropped".into(),
+            json!(self.dropped.load(Ordering::Relaxed)),
+        );
+        map.insert(
+            "keyRequests".into(),
+            json!(self.key_requests.load(Ordering::Relaxed)),
+        );
+        map.insert(
+            "p2pOpened".into(),
+            json!(self.p2p_opened.load(Ordering::Relaxed)),
+        );
         map.insert("transport".into(), json!(*self.transport.lock().unwrap()));
-        map.insert("clientBinary".into(), json!(self.client_binary.load(Ordering::Relaxed)));
+        map.insert(
+            "clientBinary".into(),
+            json!(self.client_binary.load(Ordering::Relaxed)),
+        );
         Value::Object(map)
     }
 }
@@ -72,8 +87,15 @@ impl Registry {
     pub fn register(self: &Arc<Self>, mode: &'static str) -> Registration {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let counters = Arc::new(Counters::new());
-        self.conns.lock().unwrap().push((id, mode, counters.clone()));
-        Registration { registry: self.clone(), id, counters }
+        self.conns
+            .lock()
+            .unwrap()
+            .push((id, mode, counters.clone()));
+        Registration {
+            registry: self.clone(),
+            id,
+            counters,
+        }
     }
 
     pub fn to_json(&self) -> Value {
@@ -90,7 +112,11 @@ pub struct Registration {
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        self.registry.conns.lock().unwrap().retain(|(id, _, _)| *id != self.id);
+        self.registry
+            .conns
+            .lock()
+            .unwrap()
+            .retain(|(id, _, _)| *id != self.id);
     }
 }
 
@@ -111,8 +137,7 @@ pub fn stats_file_from_env() -> Option<PathBuf> {
 
 /// 后台写手：不设环境变量时什么都不做。
 pub async fn run_writer(registry: Arc<Registry>, path: PathBuf) {
-    let mut ticker =
-        tokio::time::interval(std::time::Duration::from_millis(WRITE_INTERVAL_MS));
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(WRITE_INTERVAL_MS));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;

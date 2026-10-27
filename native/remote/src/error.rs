@@ -19,16 +19,31 @@ pub struct AppError {
 
 impl AppError {
     pub fn new(status: u16, message: impl Into<String>) -> Self {
-        Self { status, message: message.into(), reason: None, agent: None }
+        Self {
+            status,
+            message: message.into(),
+            reason: None,
+            agent: None,
+        }
     }
 
     pub fn with_reason(status: u16, message: impl Into<String>, reason: &str) -> Self {
-        Self { status, message: message.into(), reason: Some(reason.to_string()), agent: None }
+        Self {
+            status,
+            message: message.into(),
+            reason: Some(reason.to_string()),
+            agent: None,
+        }
     }
 
     /// Agent 回了 `ok:false`：原始回复整个带上，文案从它的 reason/hint 推。
     pub fn from_agent(status: u16, message: impl Into<String>, agent: Value) -> Self {
-        Self { status, message: message.into(), reason: None, agent: Some(Box::new(agent)) }
+        Self {
+            status,
+            message: message.into(),
+            reason: None,
+            agent: Some(Box::new(agent)),
+        }
     }
 
     /// 平台不支持（win32）：三条路由与唤屏都干净地回 503，不去连不存在的 socket。
@@ -75,7 +90,9 @@ pub fn error_field(err: &AppError) -> Value {
 /// JS `sendError` 喂给 `describe` 的对象（条件同样是 `agent.error || agent.reason`）。
 pub fn describe_source(err: &AppError) -> Value {
     match &err.agent {
-        Some(agent) if truthy(agent.get("error")) || truthy(agent.get("reason")) => (**agent).clone(),
+        Some(agent) if truthy(agent.get("error")) || truthy(agent.get("reason")) => {
+            (**agent).clone()
+        }
         _ => json!({ "error": err.message }),
     }
 }
@@ -89,12 +106,20 @@ mod tests {
     #[test]
     fn empty_or_falsy_agent_fields_fall_through_like_js_or() {
         // reason 是空串 → JS 的 || 继续看 error。
-        let err = AppError::from_agent(502, "boom", json!({ "ok": false, "reason": "", "error": "user-stopped" }));
+        let err = AppError::from_agent(
+            502,
+            "boom",
+            json!({ "ok": false, "reason": "", "error": "user-stopped" }),
+        );
         assert_eq!(error_field(&err), json!("user-stopped"));
         assert_eq!(describe_source(&err)["error"], json!("user-stopped"));
 
         // 两个都假 → 回落到 error.message。
-        let err = AppError::from_agent(502, "boom", json!({ "ok": false, "reason": null, "error": "" }));
+        let err = AppError::from_agent(
+            502,
+            "boom",
+            json!({ "ok": false, "reason": null, "error": "" }),
+        );
         assert_eq!(error_field(&err), json!("boom"));
         assert_eq!(describe_source(&err), json!({ "error": "boom" }));
 
@@ -105,7 +130,11 @@ mod tests {
 
     #[test]
     fn truthy_agent_fields_win_in_reason_error_order() {
-        let err = AppError::from_agent(502, "boom", json!({ "ok": false, "reason": "screen-locked", "error": "other" }));
+        let err = AppError::from_agent(
+            502,
+            "boom",
+            json!({ "ok": false, "reason": "screen-locked", "error": "other" }),
+        );
         assert_eq!(error_field(&err), json!("screen-locked"));
     }
 }

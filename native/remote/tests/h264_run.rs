@@ -36,7 +36,10 @@ fn socket_path(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    PathBuf::from(format!("/tmp/mrh264-{tag}-{}-{nanos}.sock", std::process::id()))
+    PathBuf::from(format!(
+        "/tmp/mrh264-{tag}-{}-{nanos}.sock",
+        std::process::id()
+    ))
 }
 
 /// 假 Agent 的 h264.sock：连上后第一件事可选的写一帧，然后一直挂着，直到测试放行。
@@ -46,7 +49,10 @@ struct FakeH264Agent {
     task: tokio::task::JoinHandle<()>,
 }
 
-async fn fake_agent(tag: &str, first_write: Option<Vec<u8>>) -> (FakeH264Agent, oneshot::Receiver<()>) {
+async fn fake_agent(
+    tag: &str,
+    first_write: Option<Vec<u8>>,
+) -> (FakeH264Agent, oneshot::Receiver<()>) {
     let path = socket_path(tag);
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).unwrap();
@@ -64,7 +70,14 @@ async fn fake_agent(tag: &str, first_write: Option<Vec<u8>>) -> (FakeH264Agent, 
         drop(stream);
         let _ = std::fs::remove_file(&task_path);
     });
-    (FakeH264Agent { path, release: release_tx, task }, accepted_rx)
+    (
+        FakeH264Agent {
+            path,
+            release: release_tx,
+            task,
+        },
+        accepted_rx,
+    )
 }
 
 /// 直连工厂替身：唯一的职责是**把事件发送端活着留住**，让 p2p_rx.recv() 一直
@@ -82,9 +95,11 @@ impl P2pControl for HeldEvents {
 }
 
 fn holding_factory() -> P2pFactory {
-    Arc::new(|_opts: P2pOptions, events: mpsc::UnboundedSender<P2pEvent>| {
-        Box::new(HeldEvents { _events: events }) as Box<dyn P2pControl>
-    })
+    Arc::new(
+        |_opts: P2pOptions, events: mpsc::UnboundedSender<P2pEvent>| {
+            Box::new(HeldEvents { _events: events }) as Box<dyn P2pControl>
+        },
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -106,7 +121,10 @@ async fn run_does_not_spin_when_p2p_and_first_frame_timers_are_done() {
     let before = cpu_ms();
     tokio::time::sleep(Duration::from_millis(350)).await;
     let used = cpu_ms() - before;
-    assert!(used < 100.0, "p2p=None 时 run 在忙轮询：350ms 烧了 {used:.1}ms CPU");
+    assert!(
+        used < 100.0,
+        "p2p=None 时 run 在忙轮询：350ms 烧了 {used:.1}ms CPU"
+    );
     assert!(!task.is_finished(), "不该自己退出");
 
     // Agent 断开 → 读端 EOF → 桥关闭 WS、任务干净收尾。
@@ -144,7 +162,10 @@ async fn run_does_not_spin_when_p2p_and_first_frame_timers_are_done() {
     let before = cpu_ms();
     tokio::time::sleep(Duration::from_millis(400)).await;
     let used = cpu_ms() - before;
-    assert!(used < 120.0, "首帧超时 Sleep 到期后 run 在忙轮询：400ms 烧了 {used:.1}ms CPU");
+    assert!(
+        used < 120.0,
+        "首帧超时 Sleep 到期后 run 在忙轮询：400ms 烧了 {used:.1}ms CPU"
+    );
     assert!(!task.is_finished(), "出过帧就不该被首帧超时关掉");
 
     agent.release.send(()).unwrap();

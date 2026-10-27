@@ -2,6 +2,17 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.11.0 — Rust remote desktop, direct mobile connections, and easier setup (2026-10-27)
+
+- Add prominent desktop downloads to both READMEs, grouped by operating system and CPU architecture, with separate mobile app and standalone server links.
+- Run remote desktop capture, input, annotations, wake handling, and video forwarding in a supervised Rust process. Keep the existing Node backend as a migration fallback; Node remains responsible for process supervision and Electron or SDK integration until the Rust path is validated across supported release platforms.
+- Improve mobile remote control with WebRTC P2P negotiation, local-network host discovery, adaptive video rates, and H.264 frame recovery. Preserve the server connection as a fallback when a direct connection is unavailable.
+- Add a host repair terminal and guided environment diagnosis for missing Git, invalid commit identities, and project-directory access failures. Offer a user-space Git installer on macOS without requiring Command Line Tools.
+- Simplify provider setup and shared relay connections, including protocol selection, readable share codes, and grouped copy actions.
+- Build and stage Chrome Proxy Launcher binaries for supported desktop release targets, and improve browser sessions and location-aware proxy settings.
+- Clarify task separation controls and preserve code-delivery evidence across follow-up turns.
+- Update the mobile app to 2.39.0 (build 181).
+
 ## v2.10.0 — Reliable remote control and precise quota recovery (2026-10-25)
 
 - Add a per-user Linux X11 desktop-agent installer and login autostart. Serialize input, interrupt active operations with Escape, release held keys on cancellation, and report unsupported Wayland sessions clearly.

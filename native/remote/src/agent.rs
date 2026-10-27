@@ -34,7 +34,11 @@ impl UnixAgentClient {
 impl AgentClient for UnixAgentClient {
     fn call(&self, req: Value, timeout: Option<Duration>) -> BoxFuture<'static, Value> {
         let socket = self.socket.clone();
-        Box::pin(call_over_unix(socket, req, timeout.unwrap_or(DEFAULT_TIMEOUT)))
+        Box::pin(call_over_unix(
+            socket,
+            req,
+            timeout.unwrap_or(DEFAULT_TIMEOUT),
+        ))
     }
 }
 
@@ -65,14 +69,17 @@ async fn call_over_unix(socket: Option<PathBuf>, req: Value, timeout: Duration) 
             }
             buf.extend_from_slice(&chunk[..n]);
             if let Some(nl) = buf.iter().position(|b| *b == b'\n') {
-                return Ok(serde_json::from_slice::<Value>(&buf[..nl])
-                    .map_err(|_| "agent-bad-response"));
+                return Ok(
+                    serde_json::from_slice::<Value>(&buf[..nl]).map_err(|_| "agent-bad-response")
+                );
             }
         }
     };
     match tokio::time::timeout(timeout, exchange).await {
         Err(_) => json!({ "ok": false, "error": "agent-timeout" }),
-        Ok(Err(error)) => json!({ "ok": false, "error": "agent-unreachable", "detail": error_code(&error) }),
+        Ok(Err(error)) => {
+            json!({ "ok": false, "error": "agent-unreachable", "detail": error_code(&error) })
+        }
         Ok(Ok(Err(code))) => json!({ "ok": false, "error": code }),
         Ok(Ok(Ok(value))) => value,
     }
@@ -98,9 +105,8 @@ fn error_code(error: &std::io::Error) -> String {
 }
 
 /// 把 `Arc<dyn AgentClient>` 适配成 host 需要的可注入 call。
-pub type HostCall = std::sync::Arc<
-    dyn Fn(Value, Option<Duration>) -> BoxFuture<'static, Value> + Send + Sync,
->;
+pub type HostCall =
+    std::sync::Arc<dyn Fn(Value, Option<Duration>) -> BoxFuture<'static, Value> + Send + Sync>;
 
 pub fn host_call(agent: std::sync::Arc<dyn AgentClient>) -> HostCall {
     std::sync::Arc::new(move |req, timeout| agent.call(req, timeout))

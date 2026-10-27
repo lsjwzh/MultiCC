@@ -119,11 +119,20 @@ pub fn parse_region(map: &Map<String, Value>) -> AppResult<Option<Region>> {
     let [x, y, width, height] = values;
     // 显式的有限性兜底：NaN 与任何数比较都是 false，只用范围判断会漏过去。
     if values.iter().any(|v| !v.is_finite())
-        || x < 0.0 || y < 0.0 || width < 1.0 || height < 1.0 || values.iter().any(|v| *v > 100000.0)
+        || x < 0.0
+        || y < 0.0
+        || width < 1.0
+        || height < 1.0
+        || values.iter().any(|v| *v > 100000.0)
     {
         return Err(AppError::invalid_region());
     }
-    Ok(Some(Region { x, y, width, height }))
+    Ok(Some(Region {
+        x,
+        y,
+        width,
+        height,
+    }))
 }
 
 /// 逻辑点上的裁剪框在物理像素里的落点，四舍五入到像素后再换算回逻辑点。
@@ -152,7 +161,11 @@ impl CropArea {
     }
 }
 
-pub fn crop_geometry(region: Region, screen: (f64, f64), pixels: (f64, f64)) -> AppResult<CropArea> {
+pub fn crop_geometry(
+    region: Region,
+    screen: (f64, f64),
+    pixels: (f64, f64),
+) -> AppResult<CropArea> {
     let x = region.x.floor();
     let y = region.y.floor();
     let right = screen.0.min((region.x + region.width).ceil());
@@ -169,7 +182,12 @@ pub fn crop_geometry(region: Region, screen: (f64, f64), pixels: (f64, f64)) -> 
     let ph = pixels.1.min((bottom * sy).ceil()) - py;
     // Return the actual covered area after physical-pixel rounding.
     Ok(CropArea {
-        region: Region { x: px / sx, y: py / sy, width: pw / sx, height: ph / sy },
+        region: Region {
+            x: px / sx,
+            y: py / sy,
+            width: pw / sx,
+            height: ph / sy,
+        },
         pixel_x: px,
         pixel_y: py,
         pixel_width: pw,
@@ -210,18 +228,33 @@ mod tests {
 
     #[test]
     fn strings_are_coerced_like_js() {
-        let r = parse_region(&map(json!({"x": "100", "y": " 80 ", "width": "400", "height": 240})))
-            .unwrap()
-            .unwrap();
-        assert_eq!(r, Region { x: 100.0, y: 80.0, width: 400.0, height: 240.0 });
+        let r = parse_region(&map(
+            json!({"x": "100", "y": " 80 ", "width": "400", "height": 240}),
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            r,
+            Region {
+                x: 100.0,
+                y: 80.0,
+                width: 400.0,
+                height: 240.0
+            }
+        );
     }
 
     #[test]
     fn non_finite_numbers_are_not_numbers_like_js() {
         // Rust 的 f64 解析认 "nan"/"inf"；JS 的 Number.isFinite 不认，必须回 400。
         for bad in ["nan", "NaN", "inf", "-inf", "infinity", "1e999", "  nan  "] {
-            let err = parse_region(&map(json!({"x": bad, "y": 0, "width": 5, "height": 5}))).unwrap_err();
-            assert_eq!((err.status, err.message.as_str()), (400, "invalid-region"), "{bad}");
+            let err =
+                parse_region(&map(json!({"x": bad, "y": 0, "width": 5, "height": 5}))).unwrap_err();
+            assert_eq!(
+                (err.status, err.message.as_str()),
+                (400, "invalid-region"),
+                "{bad}"
+            );
         }
         assert_eq!(js_number(&json!("nan")), None);
         assert_eq!(js_number(&json!("Infinity")), None);
@@ -230,8 +263,15 @@ mod tests {
     #[test]
     fn null_booleans_and_containers_are_rejected_by_the_type_whitelist() {
         // JS：typeof null = 'object'、typeof false = 'boolean' —— 都不是 number/string。
-        for bad in [json!(null), json!(true), json!(false), json!([1]), json!({"n": 1})] {
-            let err = parse_region(&map(json!({"x": bad, "y": 0, "width": 5, "height": 5}))).unwrap_err();
+        for bad in [
+            json!(null),
+            json!(true),
+            json!(false),
+            json!([1]),
+            json!({"n": 1}),
+        ] {
+            let err =
+                parse_region(&map(json!({"x": bad, "y": 0, "width": 5, "height": 5}))).unwrap_err();
             assert_eq!((err.status, err.message.as_str()), (400, "invalid-region"));
         }
         // 但 buildInput 用的 Number(v) 语义不变：null 就是 0。
@@ -241,21 +281,70 @@ mod tests {
 
     #[test]
     fn crop_geometry_rounds_to_physical_pixels() {
-        let area = crop_geometry(Region { x: 100.0, y: 80.0, width: 400.0, height: 240.0 }, (1470.0, 956.0), (2940.0, 1912.0)).unwrap();
-        assert_eq!((area.pixel_x, area.pixel_y, area.pixel_width, area.pixel_height), (200.0, 160.0, 800.0, 480.0));
-        assert_eq!(area.region, Region { x: 100.0, y: 80.0, width: 400.0, height: 240.0 });
+        let area = crop_geometry(
+            Region {
+                x: 100.0,
+                y: 80.0,
+                width: 400.0,
+                height: 240.0,
+            },
+            (1470.0, 956.0),
+            (2940.0, 1912.0),
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                area.pixel_x,
+                area.pixel_y,
+                area.pixel_width,
+                area.pixel_height
+            ),
+            (200.0, 160.0, 800.0, 480.0)
+        );
+        assert_eq!(
+            area.region,
+            Region {
+                x: 100.0,
+                y: 80.0,
+                width: 400.0,
+                height: 240.0
+            }
+        );
     }
 
     #[test]
     fn crop_geometry_clamps_to_the_screen_edge() {
-        let area = crop_geometry(Region { x: 1460.0, y: 950.0, width: 100.0, height: 100.0 }, (1470.0, 956.0), (2940.0, 1912.0)).unwrap();
+        let area = crop_geometry(
+            Region {
+                x: 1460.0,
+                y: 950.0,
+                width: 100.0,
+                height: 100.0,
+            },
+            (1470.0, 956.0),
+            (2940.0, 1912.0),
+        )
+        .unwrap();
         assert_eq!((area.region.width, area.region.height), (10.0, 6.0));
     }
 
     #[test]
     fn crop_geometry_rejects_regions_off_the_screen() {
-        let err = crop_geometry(Region { x: 2000.0, y: 0.0, width: 10.0, height: 10.0 }, (1470.0, 956.0), (2940.0, 1912.0)).unwrap_err();
-        assert_eq!((err.status, err.message.as_str()), (400, "region-outside-screen"));
+        let err = crop_geometry(
+            Region {
+                x: 2000.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            (1470.0, 956.0),
+            (2940.0, 1912.0),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (err.status, err.message.as_str()),
+            (400, "region-outside-screen")
+        );
     }
 
     #[test]
@@ -264,7 +353,16 @@ mod tests {
         assert_eq!(js_num_str(100.5), "100.5");
         assert_eq!(js_num_str(80.0), "80");
         assert_eq!(Region::cache_key(None), "null");
-        assert_eq!(Region { x: 1.0, y: 2.0, width: 3.0, height: 4.0 }.to_json().to_string(),
-            "{\"x\":1,\"y\":2,\"width\":3,\"height\":4}");
+        assert_eq!(
+            Region {
+                x: 1.0,
+                y: 2.0,
+                width: 3.0,
+                height: 4.0
+            }
+            .to_json()
+            .to_string(),
+            "{\"x\":1,\"y\":2,\"width\":3,\"height\":4}"
+        );
     }
 }

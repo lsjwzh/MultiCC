@@ -6,9 +6,7 @@ use multicc_remote::p2p_api::{P2pControl, P2pEvent, P2pOptions, P2pSink};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::{
-    unbounded_channel, UnboundedReceiver, UnboundedSender,
-};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::{sleep, Instant};
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::peer_connection::{
@@ -101,9 +99,7 @@ async fn new_offerer() -> Offerer {
                         Some(DcEv::Msg(m.data.to_vec()))
                     }
                 }
-                DataChannelEvent::OnClose | DataChannelEvent::OnClosing => {
-                    Some(DcEv::Closed)
-                }
+                DataChannelEvent::OnClose | DataChannelEvent::OnClosing => Some(DcEv::Closed),
                 _ => None,
             };
             if let Some(ev) = mapped {
@@ -115,11 +111,7 @@ async fn new_offerer() -> Offerer {
     });
     let offer = pc.create_offer(None).await.expect("create_offer");
     pc.set_local_description(offer).await.expect("set_local");
-    let offer_sdp = pc
-        .local_description()
-        .await
-        .expect("local description")
-        .sdp;
+    let offer_sdp = pc.local_description().await.expect("local description").sdp;
     Offerer {
         pc,
         dc,
@@ -257,11 +249,15 @@ async fn answer_trickle_connects_and_opens() {
     .await;
 
     assert!(
-        events.iter().any(|e| matches!(e, P2pEvent::Signal(v) if v["t"] == "rtc-answer")),
+        events
+            .iter()
+            .any(|e| matches!(e, P2pEvent::Signal(v) if v["t"] == "rtc-answer")),
         "should emit an answer"
     );
     assert!(
-        events.iter().any(|e| matches!(e, P2pEvent::Signal(v) if v["t"] == "rtc-ice")),
+        events
+            .iter()
+            .any(|e| matches!(e, P2pEvent::Signal(v) if v["t"] == "rtc-ice")),
         "should trickle at least one local candidate"
     );
     assert!(take_sink(&mut events).is_some(), "DataChannel should open");
@@ -470,7 +466,11 @@ async fn new_offer_replaces_old_peer() {
         false,
     )
     .await;
-    assert_eq!(count_closed(&events), 1, "old opened peer → exactly one Closed");
+    assert_eq!(
+        count_closed(&events),
+        1,
+        "old opened peer → exactly one Closed"
+    );
     let new_sink = take_sink(&mut events).expect("second open");
     assert!(!old_sink.send(&[1, 2, 3]), "old sink must be dead");
     assert!(new_sink.send(&[1, 2, 3]), "new sink should accept");
@@ -513,7 +513,10 @@ async fn oversized_sdp_and_candidate_are_ignored() {
         "candidate": { "candidate": "candidate:".to_string() + &"1".repeat(2000), "sdpMLineIndex": 0 }
     }));
     sleep(Duration::from_millis(200)).await;
-    assert!(ctl.active(), "oversized candidate must not break the connection");
+    assert!(
+        ctl.active(),
+        "oversized candidate must not break the connection"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -548,5 +551,9 @@ async fn no_events_after_close() {
         false,
     )
     .await;
-    assert!(events.is_empty(), "no events after close(), got {}", events.len());
+    assert!(
+        events.is_empty(),
+        "no events after close(), got {}",
+        events.len()
+    );
 }

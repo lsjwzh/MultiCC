@@ -5,7 +5,9 @@
 mod support;
 
 use bytes::Bytes;
-use multicc_remote::h264::{H264Bridge, H264Options, CAP_KBPS, PING, REQ_KEY, T_CONFIG, T_DELTA, T_KEY, T_PONG};
+use multicc_remote::h264::{
+    H264Bridge, H264Options, CAP_KBPS, PING, REQ_KEY, T_CONFIG, T_DELTA, T_KEY, T_PONG,
+};
 use multicc_remote::p2p_api::{P2pControl, P2pEvent, P2pFactory, P2pSink};
 use multicc_remote::rfb::{self, RfbConnector, RfbOptions};
 use multicc_remote::stats::Counters;
@@ -45,7 +47,12 @@ fn h264_harness(mut opts: H264Options) -> H264Env {
     let ws = FakeWs::new();
     let (tx, rx) = mpsc::unbounded_channel();
     let bridge = H264Bridge::new(ws.clone(), tx, opts, Arc::new(Counters::new()), None);
-    H264Env { ws, agent: rx, clock, bridge }
+    H264Env {
+        ws,
+        agent: rx,
+        clock,
+        bridge,
+    }
 }
 
 fn agent_writes(env: &mut H264Env) -> Vec<Vec<u8>> {
@@ -59,7 +66,10 @@ fn agent_writes(env: &mut H264Env) -> Vec<Vec<u8>> {
 #[test]
 fn reassembles_frames_split_across_reads_one_message_per_frame() {
     let mut env = h264_harness(h264_opts());
-    let cfg = frame(T_CONFIG, br#"{"codec":"avc1.64001F","width":1470,"height":956}"#);
+    let cfg = frame(
+        T_CONFIG,
+        br#"{"codec":"avc1.64001F","width":1470,"height":956}"#,
+    );
     let key = frame(T_KEY, b"KEYFRAME");
     let delta = frame(T_DELTA, b"delta");
     let mut all = Vec::new();
@@ -70,7 +80,13 @@ fn reassembles_frames_split_across_reads_one_message_per_frame() {
     env.bridge.feed(&all[..3]);
     env.bridge.feed(&all[3..cfg.len() + 7]);
     env.bridge.feed(&all[cfg.len() + 7..]);
-    assert_eq!(env.ws.frame_hexes(), [&cfg, &key, &delta].iter().map(|f| hex(f)).collect::<Vec<_>>());
+    assert_eq!(
+        env.ws.frame_hexes(),
+        [&cfg, &key, &delta]
+            .iter()
+            .map(|f| hex(f))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -87,7 +103,11 @@ fn delta_frames_before_the_first_key_frame_are_dropped() {
 #[test]
 fn frames_parked_in_the_ws_backpressure_queue_count_as_backlog() {
     // 写端把帧攒在队列里时，只看 bufferedAmount 会漏掉几 MB —— 桥必须看到全部积压。
-    let mut env = h264_harness(H264Options { high_water: 1000, low_water: 100, ..h264_opts() });
+    let mut env = h264_harness(H264Options {
+        high_water: 1000,
+        low_water: 100,
+        ..h264_opts()
+    });
     env.ws.accumulate.store(true, Ordering::SeqCst);
     env.bridge.feed(&frame(T_KEY, b"k1"));
     assert_eq!(env.ws.frames().len(), 1);
@@ -96,13 +116,23 @@ fn frames_parked_in_the_ws_backpressure_queue_count_as_backlog() {
         env.bridge.feed(&frame(T_DELTA, &body));
     }
     let queued = env.ws.buffered();
-    assert!(queued <= 1000 + 105, "桥在高水位就停止喂队列（queued {queued}）");
-    assert!(env.bridge.stats().dropped.load(Ordering::SeqCst) > 0, "超出积压的普通帧被丢弃，而不是排队");
+    assert!(
+        queued <= 1000 + 105,
+        "桥在高水位就停止喂队列（queued {queued}）"
+    );
+    assert!(
+        env.bridge.stats().dropped.load(Ordering::SeqCst) > 0,
+        "超出积压的普通帧被丢弃，而不是排队"
+    );
 }
 
 #[test]
 fn backlog_drops_deltas_never_the_stream_then_asks_for_a_key_frame_once_drained() {
-    let mut env = h264_harness(H264Options { high_water: 1000, low_water: 100, ..h264_opts() });
+    let mut env = h264_harness(H264Options {
+        high_water: 1000,
+        low_water: 100,
+        ..h264_opts()
+    });
     env.bridge.feed(&frame(T_KEY, b"k1"));
     env.ws.set_buffered(5000);
     env.bridge.feed(&frame(T_DELTA, b"d1"));
@@ -139,21 +169,34 @@ fn browser_to_agent_passes_only_key_requests_rate_control_and_rfb_events() {
         vec![CAP_KBPS, 0, 0, 5, 0xdc],
         vec![CAP_KBPS, 0, 0, 0, 0],
         vec![PING, 0, 0, 0, 7],
-        vec![CAP_KBPS, 0, 5, 0xdc],           // 长度不对
-        vec![PING, 0, 0, 7],                  // 长度不对
-        vec![5, 1, 0, 10],                    // 长度不对
-        vec![3, 0, 0, 0, 0, 0, 0, 0, 0, 0],   // RFB FramebufferUpdateRequest：不是这座桥的
+        vec![CAP_KBPS, 0, 5, 0xdc],         // 长度不对
+        vec![PING, 0, 0, 7],                // 长度不对
+        vec![5, 1, 0, 10],                  // 长度不对
+        vec![3, 0, 0, 0, 0, 0, 0, 0, 0, 0], // RFB FramebufferUpdateRequest：不是这座桥的
     ] {
         env.bridge.on_binary(&message);
     }
     env.bridge.on_text("K"); // 文本帧不是输入
     let writes: Vec<String> = agent_writes(&mut env).iter().map(|w| hex(w)).collect();
-    assert_eq!(writes, vec!["4b", "0401000000000061", "0501000a0014", "42000005dc", "4200000000", "5000000007"]);
+    assert_eq!(
+        writes,
+        vec![
+            "4b",
+            "0401000000000061",
+            "0501000a0014",
+            "42000005dc",
+            "4200000000",
+            "5000000007"
+        ]
+    );
 }
 
 #[test]
 fn pong_is_forwarded_at_once_never_dropped_and_never_counts_as_a_frame() {
-    let mut env = h264_harness(H264Options { high_water: 0, ..h264_opts() });
+    let mut env = h264_harness(H264Options {
+        high_water: 0,
+        ..h264_opts()
+    });
     // 积压超过水位、且还没见过关键帧：pong 依旧直通，但绝不能顶替视频帧。
     env.ws.set_buffered(10_000);
     let payload = vec![0, 0, 0, 7, 0, 0, 5, 0xdc];
@@ -163,27 +206,42 @@ fn pong_is_forwarded_at_once_never_dropped_and_never_counts_as_a_frame() {
     assert_eq!(env.bridge.stats().dropped.load(Ordering::SeqCst), 0);
     assert_eq!(env.bridge.stats().forwarded.load(Ordering::SeqCst), 1);
     env.bridge.on_first_frame_timeout();
-    assert_eq!(env.ws.close_reason(), Some((1011, "h264-no-frames".to_string())));
+    assert_eq!(
+        env.ws.close_reason(),
+        Some((1011, "h264-no-frames".to_string()))
+    );
 }
 
 #[test]
 fn no_frame_from_the_agent_closes_so_the_page_falls_back_to_novnc() {
     let mut env = h264_harness(h264_opts());
     env.bridge.on_first_frame_timeout();
-    assert_eq!(env.ws.close_reason(), Some((1011, "h264-no-frames".to_string())));
+    assert_eq!(
+        env.ws.close_reason(),
+        Some((1011, "h264-no-frames".to_string()))
+    );
 }
 
 #[test]
 fn oversized_frame_header_is_rejected_and_a_socket_close_ends_the_ws() {
-    let mut env = h264_harness(H264Options { max_frame_bytes: 16, ..h264_opts() });
+    let mut env = h264_harness(H264Options {
+        max_frame_bytes: 16,
+        ..h264_opts()
+    });
     let mut head = vec![T_KEY];
     head.extend_from_slice(&(1u32 << 20).to_be_bytes());
     env.bridge.feed(&head);
-    assert_eq!(env.ws.close_reason(), Some((1011, "h264-bad-frame".to_string())));
+    assert_eq!(
+        env.ws.close_reason(),
+        Some((1011, "h264-bad-frame".to_string()))
+    );
 
     let mut other = h264_harness(h264_opts());
     other.bridge.on_agent_closed();
-    assert_eq!(other.ws.close_reason(), Some((1011, "h264-unavailable".to_string())));
+    assert_eq!(
+        other.ws.close_reason(),
+        Some((1011, "h264-unavailable".to_string()))
+    );
 }
 
 // ── P2P 切换 ───────────────────────────────────────────────────────────
@@ -243,7 +301,10 @@ fn p2p_harness(opts: H264Options) -> P2pEnv {
         let factory_calls = factory_calls.clone();
         Arc::new(move |_opts, _tx| {
             factory_calls.fetch_add(1, Ordering::SeqCst);
-            Box::new(FakeControl { handled: handled.clone(), closed: session_closed.clone() })
+            Box::new(FakeControl {
+                handled: handled.clone(),
+                closed: session_closed.clone(),
+            })
         })
     };
     let stats = Arc::new(Counters::new());
@@ -255,7 +316,12 @@ fn p2p_harness(opts: H264Options) -> P2pEnv {
         Some((factory, events_tx.clone())),
     );
     P2pEnv {
-        env: H264Env { ws, agent: agent_rx, clock: Arc::new(AtomicU64::new(0)), bridge },
+        env: H264Env {
+            ws,
+            agent: agent_rx,
+            clock: Arc::new(AtomicU64::new(0)),
+            bridge,
+        },
         events: events_rx,
         sender: events_tx,
         handled,
@@ -274,26 +340,51 @@ fn deliver(env: &mut P2pEnv, event: P2pEvent) {
 }
 
 fn sink(env: &P2pEnv) -> Arc<dyn P2pSink> {
-    Arc::new(FakeSink { sent: env.sink_sent.clone(), backlog: env.sink_backlog.clone() })
+    Arc::new(FakeSink {
+        sent: env.sink_sent.clone(),
+        backlog: env.sink_backlog.clone(),
+    })
 }
 
 #[test]
 fn p2p_hello_on_attach_text_frames_are_signalling_and_frames_follow_the_active_channel() {
     let mut env = p2p_harness(h264_opts());
     assert_eq!(env.factory_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(env.env.ws.signals(), vec![json!({ "t": "rtc-hello", "iceServers": [] })]);
+    assert_eq!(
+        env.env.ws.signals(),
+        vec![json!({ "t": "rtc-hello", "iceServers": [] })]
+    );
 
     env.env.bridge.on_text(r#"{"t":"rtc-offer","sdp":"v=0"}"#);
-    assert_eq!(env.handled.lock().unwrap().clone(), vec![json!({ "t": "rtc-offer", "sdp": "v=0" })]);
+    assert_eq!(
+        env.handled.lock().unwrap().clone(),
+        vec![json!({ "t": "rtc-offer", "sdp": "v=0" })]
+    );
 
     env.env.bridge.feed(&frame(T_KEY, b"k1"));
     assert_eq!(env.env.ws.frames().len(), 1, "直连打开前走中继");
 
     let direct = sink(&env);
     deliver(&mut env, P2pEvent::Open(direct));
-    assert_eq!(env.env.ws.signals().last(), Some(&json!({ "t": "rtc-active", "on": true })), "先告诉浏览器再切帧");
-    assert_eq!(agent_writes(&mut env.env), vec![vec![REQ_KEY]], "切换后要关键帧");
-    assert_eq!(*env.env.bridge.stats().snapshot("h264").get("transport").unwrap(), json!("p2p"));
+    assert_eq!(
+        env.env.ws.signals().last(),
+        Some(&json!({ "t": "rtc-active", "on": true })),
+        "先告诉浏览器再切帧"
+    );
+    assert_eq!(
+        agent_writes(&mut env.env),
+        vec![vec![REQ_KEY]],
+        "切换后要关键帧"
+    );
+    assert_eq!(
+        *env.env
+            .bridge
+            .stats()
+            .snapshot("h264")
+            .get("transport")
+            .unwrap(),
+        json!("p2p")
+    );
 
     env.env.bridge.feed(&frame(T_DELTA, b"d-before-key"));
     env.env.bridge.feed(&frame(T_KEY, b"k2"));
@@ -302,24 +393,46 @@ fn p2p_hello_on_attach_text_frames_are_signalling_and_frames_follow_the_active_c
         .iter()
         .map(|f| String::from_utf8_lossy(&f[5..]).to_string())
         .collect();
-    assert_eq!(bodies, vec!["k2".to_string(), "d2".to_string()], "新通道从关键帧开始");
+    assert_eq!(
+        bodies,
+        vec!["k2".to_string(), "d2".to_string()],
+        "新通道从关键帧开始"
+    );
     assert_eq!(env.env.ws.frames().len(), 1, "中继上不再有帧");
 
     // 直连上的输入同样按白名单转给 Agent
-    deliver(&mut env, P2pEvent::Input(Bytes::from_static(&[5, 1, 0, 1, 0, 2])));
+    deliver(
+        &mut env,
+        P2pEvent::Input(Bytes::from_static(&[5, 1, 0, 1, 0, 2])),
+    );
     deliver(&mut env, P2pEvent::Input(Bytes::from_static(&[3, 0])));
     assert_eq!(agent_writes(&mut env.env), vec![vec![5, 1, 0, 1, 0, 2]]);
 
     deliver(&mut env, P2pEvent::Closed);
-    assert_eq!(env.env.ws.signals().last(), Some(&json!({ "t": "rtc-active", "on": false })));
+    assert_eq!(
+        env.env.ws.signals().last(),
+        Some(&json!({ "t": "rtc-active", "on": false }))
+    );
     env.env.bridge.feed(&frame(T_KEY, b"k3"));
     assert_eq!(&env.env.ws.frames().last().unwrap()[5..], b"k3", "回到中继");
-    assert_eq!(*env.env.bridge.stats().snapshot("h264").get("transport").unwrap(), json!("relay"));
+    assert_eq!(
+        *env.env
+            .bridge
+            .stats()
+            .snapshot("h264")
+            .get("transport")
+            .unwrap(),
+        json!("relay")
+    );
 }
 
 #[test]
 fn p2p_backlog_drops_deltas_and_closing_the_ws_closes_the_session() {
-    let mut env = p2p_harness(H264Options { high_water: 1000, low_water: 100, ..h264_opts() });
+    let mut env = p2p_harness(H264Options {
+        high_water: 1000,
+        low_water: 100,
+        ..h264_opts()
+    });
     let direct = sink(&env);
     deliver(&mut env, P2pEvent::Open(direct));
     env.sink_backlog.store(0, Ordering::SeqCst);
@@ -348,13 +461,27 @@ fn wire_golden_fixture_bytes_are_the_encoding_of_their_own_fields() {
             }
             "key" => {
                 let keysym = case["keysym"].as_u64().unwrap();
-                let mut out = vec![4, if case["down"].as_bool().unwrap() { 1 } else { 0 }, 0, 0];
+                let mut out = vec![
+                    4,
+                    if case["down"].as_bool().unwrap() {
+                        1
+                    } else {
+                        0
+                    },
+                    0,
+                    0,
+                ];
                 out.extend_from_slice(&be(keysym));
                 out
             }
             _ => vec![REQ_KEY],
         };
-        assert_eq!(hex(&want), case["hex"].as_str().unwrap(), "{}", case["name"]);
+        assert_eq!(
+            hex(&want),
+            case["hex"].as_str().unwrap(),
+            "{}",
+            case["name"]
+        );
     }
     for case in wire["clientRateControlToAgent"].as_array().unwrap() {
         let value = if case["kind"] == json!("cap") {
@@ -366,7 +493,12 @@ fn wire_golden_fixture_bytes_are_the_encoding_of_their_own_fields() {
             out.extend_from_slice(&be(case["token"].as_u64().unwrap()));
             out
         };
-        assert_eq!(hex(&value), case["hex"].as_str().unwrap(), "{}", case["name"]);
+        assert_eq!(
+            hex(&value),
+            case["hex"].as_str().unwrap(),
+            "{}",
+            case["name"]
+        );
     }
     for case in wire["agentToClient"].as_array().unwrap() {
         let ty = case["type"].as_u64().unwrap() as u8;
@@ -377,17 +509,36 @@ fn wire_golden_fixture_bytes_are_the_encoding_of_their_own_fields() {
             out.extend_from_slice(&unhex(case["annexBHex"].as_str().unwrap()));
             out
         };
-        assert_eq!(hex(&frame(ty, &payload)), case["hex"].as_str().unwrap(), "{}", case["name"]);
+        assert_eq!(
+            hex(&frame(ty, &payload)),
+            case["hex"].as_str().unwrap(),
+            "{}",
+            case["name"]
+        );
         if ty == T_CONFIG {
-            assert_eq!(serde_json::from_slice::<Value>(&payload).unwrap(), case["json"]);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&payload).unwrap(),
+                case["json"]
+            );
         }
         if ty == T_PONG {
             assert_eq!(payload.len(), 8);
-            assert_eq!(u32::from_be_bytes(payload[0..4].try_into().unwrap()) as u64, case["token"].as_u64().unwrap());
-            assert_eq!(u32::from_be_bytes(payload[4..8].try_into().unwrap()) as u64, case["appliedKbps"].as_u64().unwrap());
+            assert_eq!(
+                u32::from_be_bytes(payload[0..4].try_into().unwrap()) as u64,
+                case["token"].as_u64().unwrap()
+            );
+            assert_eq!(
+                u32::from_be_bytes(payload[4..8].try_into().unwrap()) as u64,
+                case["appliedKbps"].as_u64().unwrap()
+            );
         }
     }
-    let types: Vec<u64> = wire["agentToClient"].as_array().unwrap().iter().map(|f| f["type"].as_u64().unwrap()).collect();
+    let types: Vec<u64> = wire["agentToClient"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["type"].as_u64().unwrap())
+        .collect();
     assert_eq!(types, vec![1, 2, 3, 4]);
 }
 
@@ -402,13 +553,23 @@ fn wire_golden_bridge_forwards_every_client_message_byte_for_byte_and_nothing_el
             agent_writes(&mut env);
             env.bridge.on_binary(&bytes);
             let writes: Vec<String> = agent_writes(&mut env).iter().map(|w| hex(w)).collect();
-            assert_eq!(writes, vec![case["hex"].as_str().unwrap()], "{}", case["name"]);
+            assert_eq!(
+                writes,
+                vec![case["hex"].as_str().unwrap()],
+                "{}",
+                case["name"]
+            );
         }
     }
     for case in wire["rejectedByBridge"].as_array().unwrap() {
         agent_writes(&mut env);
         env.bridge.on_binary(&unhex(case["hex"].as_str().unwrap()));
-        assert!(agent_writes(&mut env).is_empty(), "{}: {}", case["name"], case["why"]);
+        assert!(
+            agent_writes(&mut env).is_empty(),
+            "{}: {}",
+            case["name"],
+            case["why"]
+        );
     }
 }
 
@@ -477,10 +638,14 @@ async fn rfb_pipes_bytes_both_ways_and_queues_pre_connect_messages() {
             })
         })
     };
-    let opts = RfbOptions { socket_path: Some(sock_path.clone()), ..Default::default() };
+    let opts = RfbOptions {
+        socket_path: Some(sock_path.clone()),
+        ..Default::default()
+    };
     let ws = FakeWs::new();
     let (tx, rx) = mpsc::unbounded_channel();
-    tx.send(Incoming::Bin(Bytes::from_static(b"RFB 003.008\n"))).unwrap();
+    tx.send(Incoming::Bin(Bytes::from_static(b"RFB 003.008\n")))
+        .unwrap();
     let connecting = (connect)(sock_path.clone());
     let task = tokio::spawn(rfb::drive(ws.clone(), rx, connecting, opts));
 
@@ -489,12 +654,22 @@ async fn rfb_pipes_bytes_both_ways_and_queues_pre_connect_messages() {
     gate.notify_one();
 
     wait_until(|| !ws.frames().is_empty() && !got.lock().unwrap().is_empty()).await;
-    assert_eq!(String::from_utf8(ws.frames()[0].clone()).unwrap(), "RFB 003.008\n");
-    assert_eq!(String::from_utf8(got.lock().unwrap().clone()).unwrap(), "RFB 003.008\n");
+    assert_eq!(
+        String::from_utf8(ws.frames()[0].clone()).unwrap(),
+        "RFB 003.008\n"
+    );
+    assert_eq!(
+        String::from_utf8(got.lock().unwrap().clone()).unwrap(),
+        "RFB 003.008\n"
+    );
 
-    tx.send(Incoming::Bin(Bytes::from_static(b"\x02\x00\x00\x00"))).unwrap();
+    tx.send(Incoming::Bin(Bytes::from_static(b"\x02\x00\x00\x00")))
+        .unwrap();
     wait_until(|| got.lock().unwrap().len() >= 16).await;
-    assert_eq!(String::from_utf8_lossy(&got.lock().unwrap().clone()).to_string(), "RFB 003.008\n\u{2}\u{0}\u{0}\u{0}");
+    assert_eq!(
+        String::from_utf8_lossy(&got.lock().unwrap().clone()).to_string(),
+        "RFB 003.008\n\u{2}\u{0}\u{0}\u{0}"
+    );
 
     // 浏览器端断开 → 桥拆掉 unix socket（server 读到 EOF 退出）。
     drop(tx);
@@ -514,13 +689,25 @@ async fn rfb_closes_the_ws_with_1011_when_the_socket_is_unavailable() {
             })
         })
     };
-    let opts = RfbOptions { socket_path: Some("/missing".into()), connect: connect.clone(), ..Default::default() };
+    let opts = RfbOptions {
+        socket_path: Some("/missing".into()),
+        connect: connect.clone(),
+        ..Default::default()
+    };
     let ws = FakeWs::new();
     let (_tx, rx) = mpsc::unbounded_channel();
-    let task = tokio::spawn(rfb::drive(ws.clone(), rx, (connect)("/missing".into()), opts));
+    let task = tokio::spawn(rfb::drive(
+        ws.clone(),
+        rx,
+        (connect)("/missing".into()),
+        opts,
+    ));
     gate.notify_one();
     wait_until(|| ws.close_reason().is_some()).await;
-    assert_eq!(ws.close_reason(), Some((1011, "rfb-unavailable".to_string())));
+    assert_eq!(
+        ws.close_reason(),
+        Some((1011, "rfb-unavailable".to_string()))
+    );
     let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
 }
 
@@ -543,15 +730,24 @@ async fn rfb_applies_backpressure_without_dropping_or_reordering_bytes() {
             }
         }
     });
-    let opts = RfbOptions { socket_path: Some(sock_path.clone()), ..Default::default() };
+    let opts = RfbOptions {
+        socket_path: Some(sock_path.clone()),
+        ..Default::default()
+    };
     let ws = FakeWs::new();
     let (tx, rx) = mpsc::unbounded_channel();
-    let task = tokio::spawn(rfb::drive(ws.clone(), rx, (opts.connect)(sock_path.clone()), opts));
+    let task = tokio::spawn(rfb::drive(
+        ws.clone(),
+        rx,
+        (opts.connect)(sock_path.clone()),
+        opts,
+    ));
     ready_rx.await.unwrap();
 
     // 浏览器的每条消息都必须按序到 Agent，一条不丢。
     for i in 0..50u8 {
-        tx.send(Incoming::Bin(Bytes::from(vec![i, 0, 0, 1, 5]))).unwrap();
+        tx.send(Incoming::Bin(Bytes::from(vec![i, 0, 0, 1, 5])))
+            .unwrap();
     }
     wait_until(|| got.lock().unwrap().len() >= 250).await;
     let seen = got.lock().unwrap().clone();
@@ -569,12 +765,27 @@ async fn rfb_applies_backpressure_without_dropping_or_reordering_bytes() {
         stream.write_all(&[0u8; 8]).await.unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
     });
-    let opts = RfbOptions { socket_path: Some(sock2.clone()), max_buffered: 24, ..Default::default() };
+    let opts = RfbOptions {
+        socket_path: Some(sock2.clone()),
+        max_buffered: 24,
+        ..Default::default()
+    };
     let (_tx2, rx2) = mpsc::unbounded_channel();
-    let task2 = tokio::spawn(rfb::drive(blocked.clone(), rx2, (opts.connect)(sock2), opts));
+    let task2 = tokio::spawn(rfb::drive(
+        blocked.clone(),
+        rx2,
+        (opts.connect)(sock2),
+        opts,
+    ));
     wait_until(|| blocked.close_reason().is_some()).await;
-    assert_eq!(blocked.close_reason(), Some((1011, "rfb-backpressure".to_string())));
-    assert!(blocked.frames().is_empty(), "不跳过片段、也不留一条坏掉的 RFB 连接");
+    assert_eq!(
+        blocked.close_reason(),
+        Some((1011, "rfb-backpressure".to_string()))
+    );
+    assert!(
+        blocked.frames().is_empty(),
+        "不跳过片段、也不留一条坏掉的 RFB 连接"
+    );
     let _ = tokio::time::timeout(Duration::from_secs(2), task2).await;
     let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
 }
@@ -601,7 +812,10 @@ async fn rfb_stall_watchdog_counts_screen_data_never_outgoing_input() {
     let pokes = tokio::spawn(async move {
         for _ in 0..20 {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            if tx.send(Incoming::Bin(Bytes::from_static(b"mouse"))).is_err() {
+            if tx
+                .send(Incoming::Bin(Bytes::from_static(b"mouse")))
+                .is_err()
+            {
                 break;
             }
         }
@@ -623,7 +837,11 @@ async fn rfb_stall_watchdog_counts_screen_data_never_outgoing_input() {
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     });
-    let opts = RfbOptions { socket_path: Some(sock_path.clone()), timeout: Duration::from_millis(150), ..Default::default() };
+    let opts = RfbOptions {
+        socket_path: Some(sock_path.clone()),
+        timeout: Duration::from_millis(150),
+        ..Default::default()
+    };
     let ws = FakeWs::new();
     let (_tx, rx) = mpsc::unbounded_channel();
     let task = tokio::spawn(rfb::drive(ws.clone(), rx, (opts.connect)(sock_path), opts));

@@ -26,7 +26,10 @@ fn main() {
     };
     // stdin 之后保持打开：读到 EOF 说明 Node 没了，立刻退出。
     watch_stdin();
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("multicc-remote: runtime: {error}");
@@ -79,9 +82,14 @@ async fn serve(config: config::Config) -> std::io::Result<()> {
     // 平台画像由进程自己按编译目标与环境推导；Agent socket 也从画像来。
     let env = host::process_env();
     let profile = host::profile_for(&host::target_platform(), &host::home_dir(&env), &env);
-    let agent: Arc<dyn AgentClient> =
-        Arc::new(UnixAgentClient::new(profile.agent_sock.as_ref().map(PathBuf::from)));
-    let host = Arc::new(Host::new(profile, host::default_exec(), Some(agent::host_call(agent.clone()))));
+    let agent: Arc<dyn AgentClient> = Arc::new(UnixAgentClient::new(
+        profile.agent_sock.as_ref().map(PathBuf::from),
+    ));
+    let host = Arc::new(Host::new(
+        profile,
+        host::default_exec(),
+        Some(agent::host_call(agent.clone())),
+    ));
     let secret = config::random_secret();
     let state = AppState::new(config.dir, host, agent, secret.clone());
     if let Some(path) = stats::stats_file_from_env() {

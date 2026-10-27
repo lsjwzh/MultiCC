@@ -17,8 +17,8 @@ pub struct Config {
 }
 
 pub fn parse_config_line(line: &str) -> AppResult<Config> {
-    let value: serde_json::Value = serde_json::from_str(line)
-        .map_err(|_| AppError::new(2, "config-line-not-json"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|_| AppError::new(2, "config-line-not-json"))?;
     if value.get("v").and_then(|v| v.as_u64()) != Some(PROTOCOL_VERSION as u64) {
         return Err(AppError::new(2, "config-bad-version"));
     }
@@ -27,7 +27,9 @@ pub fn parse_config_line(line: &str) -> AppResult<Config> {
         .and_then(|d| d.as_str())
         .filter(|d| !d.is_empty())
         .ok_or_else(|| AppError::new(2, "config-missing-dir"))?;
-    Ok(Config { dir: PathBuf::from(dir) })
+    Ok(Config {
+        dir: PathBuf::from(dir),
+    })
 }
 
 /// 经 stdin 交给 Node 的一行就绪 JSON。
@@ -36,7 +38,11 @@ pub fn ready_line(port: u16, secret: &str) -> String {
 }
 
 pub fn version_line() -> String {
-    format!("multicc-remote {} {}", PROTOCOL_VERSION, env!("CARGO_PKG_VERSION"))
+    format!(
+        "multicc-remote {} {}",
+        PROTOCOL_VERSION,
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// secret 每次启动随机生成、不经 argv 和环境变量：32 字节 → 64 位十六进制。
@@ -59,12 +65,19 @@ mod tests {
     fn secret_is_64_hex_chars() {
         let s = random_secret();
         assert_eq!(s.len(), 64);
-        assert!(s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(s
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     #[test]
     fn config_line_requires_v1_and_dir() {
-        assert_eq!(parse_config_line("{\"v\":1,\"dir\":\"/tmp/x\"}").unwrap().dir, PathBuf::from("/tmp/x"));
+        assert_eq!(
+            parse_config_line("{\"v\":1,\"dir\":\"/tmp/x\"}")
+                .unwrap()
+                .dir,
+            PathBuf::from("/tmp/x")
+        );
         assert!(parse_config_line("{\"v\":2,\"dir\":\"/tmp/x\"}").is_err());
         assert!(parse_config_line("{\"v\":1}").is_err());
         assert!(parse_config_line("not json").is_err());
@@ -72,6 +85,9 @@ mod tests {
 
     #[test]
     fn version_line_carries_protocol_and_crate_version() {
-        assert_eq!(version_line(), format!("multicc-remote 1 {}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            version_line(),
+            format!("multicc-remote 1 {}", env!("CARGO_PKG_VERSION"))
+        );
     }
 }

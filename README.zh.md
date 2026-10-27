@@ -14,10 +14,51 @@
 </p>
 
 <p align="center">
+  <a href="#下载-multicc"><strong>下载安装</strong></a> &bull;
   <a href="README.md">English README</a>
 </p>
 
 ---
+
+## 下载 MultiCC
+
+**不想使用命令行？下载桌面版，安装后打开应用即可启动 MultiCC。** 桌面版包含服务端和界面，无需另装 Node.js。
+
+### 桌面版
+
+| 系统 | 适用设备 | 安装包 |
+|---|---|---|
+| macOS 13+ | Apple 芯片（M1／M2／M3／M4 等） | [下载 DMG](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/multicc-desktop-2.11.0-macos-arm64.dmg) |
+| macOS 13+ | Intel 芯片 | [下载 DMG](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/multicc-desktop-2.11.0-macos-x64.dmg) |
+| Windows | 64 位 Intel／AMD | [下载安装程序](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/multicc-desktop-2.11.0-windows-x64.exe) |
+| Linux | 64 位 Intel／AMD，通用发行版 | [下载 AppImage](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/multicc-desktop-2.11.0-linux-x64.AppImage) |
+| Linux | 64 位 Intel／AMD，Debian／Ubuntu | [下载 DEB](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/multicc-desktop-2.11.0-linux-x64.deb) |
+
+### 手机 App
+
+手机 App 用来连接你自己的 MultiCC 服务端；请先在电脑或服务器上安装桌面版或独立版。
+
+| 系统 | 下载入口 |
+|---|---|
+| Android | [下载官方签名 APK](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/multicc.apk) |
+| iPhone／iPad | [前往 App Store](https://apps.apple.com/app/id6807642727)（商店版本以 Apple 审核进度为准） |
+
+<details>
+<summary>独立服务端下载（服务器、命令行用户、macOS 11–12）</summary>
+
+独立版自带 Node.js，可通过[一行命令安装](#快速上手)，也可手动下载：
+
+| 系统 | 架构 | 独立包 |
+|---|---|---|
+| macOS 11+ | Apple 芯片 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/multicc-standalone-2.11.0-darwin-arm64.tar.gz) |
+| macOS 11+ | Intel | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/multicc-standalone-2.11.0-darwin-x64.tar.gz) |
+| Linux | x64 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/multicc-standalone-2.11.0-linux-x64.tar.gz) |
+| Linux | ARM64 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/multicc-standalone-2.11.0-linux-arm64.tar.gz) |
+| Windows | x64 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/multicc-standalone-2.11.0-win32-x64.zip) |
+
+</details>
+
+当前桌面版与独立版：**v2.11.0**。校验文件、历史版本和签名说明见 [Releases](https://github.com/lsjwzh/MultiCC/releases)；[下载 SHA-256 清单](https://github.com/lsjwzh/MultiCC/releases/download/v2.11.0/SHA256SUMS.txt)。[桌面版安装说明](docs/desktop.md)。
 
 > 这是一份**中文导引**，不是英文 README 的逐句翻译。完整的技术细节都在 [`docs/`](docs/) 下的分主题文档里（中英混合，逐步补全）。
 
@@ -154,12 +195,12 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.10.0/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.11.0/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.10.0/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.11.0/install.ps1 | iex
 ```
 
 一行命令，没有任何参数：URL 里的 tag **就是**版本。脚本下载该版本的**独立包**——服务端 + 固定版本的 Node 运行时 + 全部生产依赖，一个压缩包；校验 SHA-256、解压到稳定的 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`）、移除 macOS 下载隔离标记、生成 `ACCESS_TOKEN`、启动服务并自动打开浏览器，同时可选注册为登录自启（macOS `launchd` / Linux systemd user / Windows Startup）。命令结束时界面已经可用；全程不编译任何东西，**目标机器不需要 Node、npm、Homebrew、Visual Studio 或 Xcode**。MultiCC 运行时需要可用的 `git`（每个会话都有独立 worktree）；安装器会检查并在缺失时给出对应平台的最短修复方法。
@@ -175,7 +216,7 @@ curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # 用已经下载好的包安装
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.10.0-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.11.0-darwin-arm64.tar.gz
 
 # 服务器/自动化环境：装好但不启动，或启动但不打开浏览器
 curl -sSL .../install.sh | bash -s -- --no-start
@@ -210,7 +251,7 @@ cd MultiCC && npm install && node server.js
 MultiCC 同时是一个普通的桌面应用——双击图标，后端和界面就在本机自动起来。
 不需要 Node、不需要命令行、不需要记住端口。
 
-1. 到 **[Releases](https://github.com/lsjwzh/MultiCC/releases)** 页下载对应平台的安装包：
+1. 在上方 **[桌面版下载列表](#桌面版)** 选择对应系统与芯片的安装包：
    `multicc-desktop-<版本>-macos-arm64/x64.dmg`、`-windows-x64.exe`、或
    `-linux-x64.AppImage` / `.deb`（每个包旁有 `.sha256` 校验文件，`SHA256SUMS.txt` 汇总全部）。
 2. 打开应用：先显示启动页，后端在本机回环端口就绪后自动进入主界面。
@@ -221,8 +262,7 @@ bottle），用上面那行安装命令即可——桌面版和安装脚本发�
 窗口。它支持 macOS 11+（含 Intel 的 Mac Pro 2013 等），文件名
 `multicc-standalone-<版本>-darwin-x64.tar.gz`。
 
-桌面安装包从这个功能合入后的第一个 tag 发布起出现在 Releases 页；在那之前可以用
-`npm run desktop:dev` 从源码运行。
+稳定版已提供桌面安装包；开发者也可以用 `npm run desktop:dev` 从源码运行。
 
 **→ 安装、首次启动、启动失败处理、数据与日志位置、安全模型、签名状态：[桌面版文档](docs/desktop.md)**
 **→ 老机器 / 没有 Node 的机器：[独立版文档](docs/standalone.md)**

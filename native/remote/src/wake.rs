@@ -21,22 +21,43 @@ pub const CONSENT_HEADER: &str = "x-multicc-power-consent";
 pub const SESSION: &str = "remote-screen";
 
 pub const MESSAGES: &[(&str, &str)] = &[
-    ("auto-unlock-disabled", "请先在全局设置中开启“允许自动解锁”。"),
-    ("permissions-required", "请先在这台 Mac 上为 MultiCC Agent 开启辅助功能和屏幕录制权限。"),
+    (
+        "auto-unlock-disabled",
+        "请先在全局设置中开启“允许自动解锁”。",
+    ),
+    (
+        "permissions-required",
+        "请先在这台 Mac 上为 MultiCC Agent 开启辅助功能和屏幕录制权限。",
+    ),
     ("user-stopped", "本机已按 Esc 急停，请先确认并解除急停。"),
-    ("no-password", "尚未保存登录密码，请在这台 Mac 的全局设置中完成自动解锁配置。"),
-    ("password-needs-authorization", "请先在这台 Mac 的全局设置中完成钥匙串授权。"),
-    ("password-unreadable", "无法读取已保存的登录密码，请在本机检查自动解锁配置。"),
+    (
+        "no-password",
+        "尚未保存登录密码，请在这台 Mac 的全局设置中完成自动解锁配置。",
+    ),
+    (
+        "password-needs-authorization",
+        "请先在这台 Mac 的全局设置中完成钥匙串授权。",
+    ),
+    (
+        "password-unreadable",
+        "无法读取已保存的登录密码，请在本机检查自动解锁配置。",
+    ),
     ("no-password-field", "暂未找到锁屏密码框，请稍后手动重试。"),
     ("desktop-busy", "另一个会话正在操作电脑，请稍后再试。"),
     ("busy", "正在唤起屏幕，请等待当前操作结束。"),
-    ("platform-unsupported", "这台机器上的桌面 Agent 还不支持远程屏幕。"),
+    (
+        "platform-unsupported",
+        "这台机器上的桌面 Agent 还不支持远程屏幕。",
+    ),
 ];
 
 const DEFAULT_FAIL_MESSAGE: &str = "未能确认屏幕已解锁，请检查本机状态后手动重试。";
 
 pub fn message_for(code: &str) -> Option<&'static str> {
-    MESSAGES.iter().find(|(key, _)| *key == code).map(|(_, text)| *text)
+    MESSAGES
+        .iter()
+        .find(|(key, _)| *key == code)
+        .map(|(_, text)| *text)
 }
 
 #[derive(Default)]
@@ -48,7 +69,9 @@ pub struct WakeState {
 /// Node 读失败（头是 "error" 或压根没带）—— 迁移前 readConsent 在那种情况下会抛，
 /// 整个 state() 变 503 agent-unavailable，不能折成「用户没同意」的 200。
 pub fn read_consent(headers: &HeaderMap, status: &Value) -> Option<bool> {
-    let header = headers.get(CONSENT_HEADER).and_then(|value| value.to_str().ok());
+    let header = headers
+        .get(CONSENT_HEADER)
+        .and_then(|value| value.to_str().ok());
     match header {
         Some("1") => Some(status.get("unlockPassword") == Some(&Value::Bool(true))),
         Some("0") => Some(false),
@@ -80,19 +103,28 @@ struct State5 {
 async fn read_state(st: &AppState, headers: &HeaderMap) -> AppResult<State5> {
     let status = st
         .agent
-        .call(json!({ "op": "status", "session": SESSION }), Some(Duration::from_millis(3000)))
+        .call(
+            json!({ "op": "status", "session": SESSION }),
+            Some(Duration::from_millis(3000)),
+        )
         .await;
     if status.get("ok") != Some(&Value::Bool(true))
-        || !status.get("screenLocked").map(|v| v.is_boolean()).unwrap_or(false)
+        || !status
+            .get("screenLocked")
+            .map(|v| v.is_boolean())
+            .unwrap_or(false)
     {
         return Err(crate::error::AppError::new(503, "agent-unavailable"));
     }
-    let enabled = read_consent(headers, &status).ok_or_else(|| crate::error::AppError::new(503, "agent-unavailable"))?;
+    let enabled = read_consent(headers, &status)
+        .ok_or_else(|| crate::error::AppError::new(503, "agent-unavailable"))?;
     let lease_holder = status
         .pointer("/control/leaseHolder")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
-    let busy = lease_holder.map(|holder| holder != SESSION).unwrap_or(false);
+    let busy = lease_holder
+        .map(|holder| holder != SESSION)
+        .unwrap_or(false);
     let permissions = status.get("accessibility") == Some(&Value::Bool(true))
         && status.get("screenRecording") == Some(&Value::Bool(true));
     let halted = status.pointer("/control/halted") == Some(&Value::Bool(true));
@@ -110,10 +142,16 @@ async fn read_state(st: &AppState, headers: &HeaderMap) -> AppResult<State5> {
     };
     let mut body = Map::new();
     body.insert("ok".into(), json!(true));
-    body.insert("screenLocked".into(), status.get("screenLocked").cloned().unwrap_or(json!(false)));
+    body.insert(
+        "screenLocked".into(),
+        status.get("screenLocked").cloned().unwrap_or(json!(false)),
+    );
     body.insert("autoUnlockEnabled".into(), json!(enabled));
     body.insert("canWake".into(), json!(can_wake));
-    body.insert("reason".into(), reason.map(|r| json!(r)).unwrap_or(Value::Null));
+    body.insert(
+        "reason".into(),
+        reason.map(|r| json!(r)).unwrap_or(Value::Null),
+    );
     Ok(State5 { body, reason })
 }
 
@@ -156,7 +194,12 @@ async fn post_inner(st: &AppState, headers: &HeaderMap) -> Response {
         Ok(state) => state,
         Err(_) => return fail(503, "agent-unavailable"),
     };
-    if !before.body.get("canWake").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if !before
+        .body
+        .get("canWake")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return fail(409, before.reason.unwrap_or("auto-unlock-disabled"));
     }
     if st.host.wake_display().await.is_err() {
@@ -165,7 +208,10 @@ async fn post_inner(st: &AppState, headers: &HeaderMap) -> Response {
     if before.body.get("screenLocked") == Some(&Value::Bool(true)) {
         let unlock = st
             .agent
-            .call(json!({ "op": "unlock", "session": SESSION }), Some(Duration::from_millis(20000)))
+            .call(
+                json!({ "op": "unlock", "session": SESSION }),
+                Some(Duration::from_millis(20000)),
+            )
             .await;
         if unlock.get("ok") != Some(&Value::Bool(true)) {
             let code = unlock

@@ -37,10 +37,14 @@ pub const CAP_KBPS: u8 = 0x42; // 'B' + kbps u32 BE
 pub const PING: u8 = 0x50; // 'P' + token u32 BE
 
 /// 客户端 → Agent 的定长消息表（RFB KeyEvent 8 字节、PointerEvent 6 字节）。
-pub const CLIENT_LENGTHS: &[(u8, usize)] = &[(REQ_KEY, 1), (4, 8), (5, 6), (CAP_KBPS, 5), (PING, 5)];
+pub const CLIENT_LENGTHS: &[(u8, usize)] =
+    &[(REQ_KEY, 1), (4, 8), (5, 6), (CAP_KBPS, 5), (PING, 5)];
 
 pub fn client_length(first: u8) -> Option<usize> {
-    CLIENT_LENGTHS.iter().find(|(t, _)| *t == first).map(|(_, len)| *len)
+    CLIENT_LENGTHS
+        .iter()
+        .find(|(t, _)| *t == first)
+        .map(|(_, len)| *len)
 }
 
 #[derive(Clone)]
@@ -139,7 +143,9 @@ impl H264Bridge {
             );
             bridge.session = Some(control);
             // 这条 WS 同时是信令通道：先告诉浏览器可以试直连。
-            bridge.signal(json!({ "t": "rtc-hello", "iceServers": ice_servers_json(&opts.stun_urls) }));
+            bridge.signal(
+                json!({ "t": "rtc-hello", "iceServers": ice_servers_json(&opts.stun_urls) }),
+            );
         }
         bridge
     }
@@ -161,7 +167,11 @@ impl H264Bridge {
     }
 
     fn transport(&self) -> &'static str {
-        if self.active.is_relay() { "relay" } else { "p2p" }
+        if self.active.is_relay() {
+            "relay"
+        } else {
+            "p2p"
+        }
     }
 
     fn buffered(&self) -> usize {
@@ -276,7 +286,9 @@ impl H264Bridge {
         if text.len() > 80 * 1024 {
             return;
         }
-        let Ok(message) = serde_json::from_str::<Value>(text) else { return };
+        let Ok(message) = serde_json::from_str::<Value>(text) else {
+            return;
+        };
         session.handle_signal(&message);
     }
 
@@ -320,7 +332,8 @@ impl H264Bridge {
         self.buf.extend_from_slice(chunk);
         while self.buf.len() >= 5 {
             let ty = self.buf[0];
-            let len = u32::from_be_bytes([self.buf[1], self.buf[2], self.buf[3], self.buf[4]]) as usize;
+            let len =
+                u32::from_be_bytes([self.buf[1], self.buf[2], self.buf[3], self.buf[4]]) as usize;
             if len > self.opts.max_frame_bytes {
                 self.die("h264-bad-frame", true);
                 return;
@@ -420,7 +433,13 @@ pub async fn run(
     // 这个分支要是留在 select 里，整个循环就变成忙轮询，一个核直接烧满。
     // 先用标志位把分支关掉，等真有事件（或有人主动关掉通道）再退出。
     let mut p2p_alive = p2p.is_some();
-    let mut bridge = H264Bridge::new(ws, agent_tx, opts, registration.counters.clone(), p2p.map(|f| (f, p2p_tx)));
+    let mut bridge = H264Bridge::new(
+        ws,
+        agent_tx,
+        opts,
+        registration.counters.clone(),
+        p2p.map(|f| (f, p2p_tx)),
+    );
     let first_frame = tokio::time::sleep(bridge.first_frame_timeout());
     tokio::pin!(first_frame);
     // Sleep 到期一次后就永远 ready；不摘掉的话每轮 select 都会被它立刻唤醒。

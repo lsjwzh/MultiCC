@@ -200,11 +200,17 @@ mod tests {
     fn publication_identity_falls_back_per_field_when_unset() {
         assert_eq!(
             with_fallback(None, None),
-            Identity { name: "multicc".into(), email: "multicc@local".into() }
+            Identity {
+                name: "multicc".into(),
+                email: "multicc@local".into()
+            }
         );
         assert_eq!(
             with_fallback(Some("Ada".into()), None),
-            Identity { name: "Ada".into(), email: "multicc@local".into() }
+            Identity {
+                name: "Ada".into(),
+                email: "multicc@local".into()
+            }
         );
         assert!(validate(with_fallback(None, None)).is_ok());
     }
@@ -217,10 +223,8 @@ mod tests {
         let empty = dir.join("empty-gitconfig");
         fs::write(&empty, "").unwrap();
         // Isolated from the developer's own ~/.gitconfig and /etc/gitconfig.
-        let isolated: [(&str, &Path); 2] = [
-            ("GIT_CONFIG_GLOBAL", &empty),
-            ("GIT_CONFIG_SYSTEM", &empty),
-        ];
+        let isolated: [(&str, &Path); 2] =
+            [("GIT_CONFIG_GLOBAL", &empty), ("GIT_CONFIG_SYSTEM", &empty)];
         let run = |args: &[&str]| {
             Command::new("git")
                 .current_dir(&dir)
