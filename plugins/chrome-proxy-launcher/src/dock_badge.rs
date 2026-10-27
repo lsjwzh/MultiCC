@@ -5,20 +5,22 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 pub fn appearance(profile: &Profile) -> Value {
-    let label: String = profile
-        .name
-        .chars()
-        .filter(|c| !c.is_whitespace() && !c.is_control())
-        .take(2)
-        .collect();
+    let name: String = profile.name.trim().chars().filter(|c| !c.is_control()).collect();
+    let label = if name.chars().count() > 8 {
+        format!("{}…", name.chars().take(7).collect::<String>())
+    } else if name.is_empty() {
+        "隔离".to_string()
+    } else {
+        name
+    };
     let hash = profile
         .id
         .bytes()
         .fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
     let colors = [
-        "#2563eb", "#7c3aed", "#0f766e", "#b45309", "#be185d", "#4338ca",
+        "#64ed18", "#38d9fa", "#ffd43b", "#ffad42", "#f78fb3", "#b9a0ff",
     ];
-    json!({"label": if label.is_empty() { "隔离" } else { &label }, "color": colors[hash as usize % colors.len()]})
+    json!({"label": label, "color": colors[hash as usize % colors.len()], "textColor":"#101510"})
 }
 
 /// Derived application bundles can be reclaimed without touching login data.
@@ -123,7 +125,7 @@ mod macos {
         // Cache follows executable/plist changes (including browser updates) and identity renames.
         let info = contents.join("Info.plist");
         let executable_meta = fs::metadata(&browser).map_err(|e| e.to_string())?;
-        let stamp = json!({"schema":1,"source":source,"info":fs::read(&info).map_err(|e| e.to_string())?,
+        let stamp = json!({"schema":2,"source":source,"info":fs::read(&info).map_err(|e| e.to_string())?,
             "modified":format!("{:?}", executable_meta.modified()),"size":executable_meta.len(),"badge":badge});
         fs::create_dir_all(root).map_err(|e| e.to_string())?;
         let app = root.join("Isolated Chrome.app");
@@ -243,10 +245,12 @@ mod macos {
             if(ObjC.unwrap(app.bundleURL.path)!==a[1])throw Error('Wrong application bundle');
             var rep=$.NSBitmapImageRep.imageRepWithData(app.icon.TIFFRepresentation);
             rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG,$.NSDictionary.dictionary).writeToFileAtomically($(a[2]),true);
-            var sample=rep.colorAtXY(Math.floor(rep.pixelsWide*0.79),Math.floor(rep.pixelsHigh*0.92)).colorUsingColorSpace($.NSColorSpace.sRGBColorSpace);
+            for (var x of [0.15, 0.85]) {
+            var sample=rep.colorAtXY(Math.floor(rep.pixelsWide*x),Math.floor(rep.pixelsHigh*0.88)).colorUsingColorSpace($.NSColorSpace.sRGBColorSpace);
             // AppKit color conversion and small icon representations blend nearby white pixels.
             var hex=a[3].slice(1);
-            if(Math.abs(sample.redComponent-parseInt(hex.slice(0,2),16)/255)>0.18 || Math.abs(sample.greenComponent-parseInt(hex.slice(2,4),16)/255)>0.18 || Math.abs(sample.blueComponent-parseInt(hex.slice(4,6),16)/255)>0.18)throw Error('Badge color missing: '+sample.redComponent+','+sample.greenComponent+','+sample.blueComponent+' vs '+a[3]);
+            if(Math.abs(sample.redComponent-parseInt(hex.slice(0,2),16)/255)>0.18 || Math.abs(sample.greenComponent-parseInt(hex.slice(2,4),16)/255)>0.18 || Math.abs(sample.blueComponent-parseInt(hex.slice(4,6),16)/255)>0.18)throw Error('底部名牌未覆盖图标两侧');
+            }
         }"#;
         let verified = Command::new("/usr/bin/osascript")
             .args(["-l", "JavaScript", "-e", verify])
@@ -265,7 +269,7 @@ mod macos {
             String::from_utf8_lossy(&verified.stderr)
         );
         eprintln!(
-            "Verified runtime identity icon: {}",
+            "已验证运行图标： {}",
             root.join("runtime-icon.png").display()
         );
         // Keep only the small preview; remove browser data and cloned bundle.
@@ -290,10 +294,14 @@ mod tests {
             updated_at: 0,
         };
         let first = appearance(&p);
-        assert_eq!(first["label"], "美区");
+        assert_eq!(first["label"], "美区店铺");
         p.name = "运营 B".into();
         assert_eq!(appearance(&p)["color"], first["color"]);
-        assert_eq!(appearance(&p)["label"], "运营");
+        assert_eq!(appearance(&p)["label"], "运营 B");
+        p.name = "很长的隔离身份名称测试".into();
+        assert_eq!(appearance(&p)["label"], "很长的隔离身份…");
+        p.name = "Gapaw".into();
+        assert_eq!(appearance(&p)["label"], "Gapaw");
         p.name = " \n".into();
         assert_eq!(appearance(&p)["label"], "隔离");
     }
