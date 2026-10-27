@@ -11,13 +11,14 @@ on supported hosts. Update the Windows fallback test to use its shared input
 type and give the real WebRTC timeout-and-retry test the production 10-second
 negotiation budget. Preserve the timeout, failed-open, and successful-retry
 assertions while avoiding a CI-sensitive 1.5-second connection deadline.
+Build platform plugin binaries before the real staged-bundle parity checks.
 
 - Add prominent desktop downloads to both READMEs, grouped by operating system and CPU architecture, with separate mobile app and standalone server links.
 - Run remote desktop capture, input, annotations, wake handling, and video forwarding in a supervised Rust process. Keep the existing Node backend as a migration fallback; Node remains responsible for process supervision and Electron or SDK integration until the Rust path is validated across supported release platforms.
 - Improve mobile remote control with WebRTC P2P negotiation, local-network host discovery, adaptive video rates, and H.264 frame recovery. Preserve the server connection as a fallback when a direct connection is unavailable.
 - Add a host repair terminal and guided environment diagnosis for missing Git, invalid commit identities, and project-directory access failures. Offer a user-space Git installer on macOS without requiring Command Line Tools.
 - Simplify provider setup and shared relay connections, including protocol selection, readable share codes, and grouped copy actions.
-- Build and stage Chrome Proxy Launcher binaries for supported desktop release targets, and improve browser sessions and location-aware proxy settings.
+- Build and stage Chrome Proxy Launcher binaries for supported desktop release targets, and improve browser sessions and location-aware proxy settings. Show profile-specific badges on macOS Chrome Dock icons.
 - Clarify task separation controls and preserve code-delivery evidence across follow-up turns.
 - Update the mobile app to 2.39.0 (build 181).
 
