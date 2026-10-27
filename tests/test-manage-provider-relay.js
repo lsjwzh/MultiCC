@@ -293,6 +293,24 @@ test('imported relay lines and recorded shares expose a copy-again action', () =
   assert.ok(en.airProviderRelayCopyImport);
 });
 
+test('the copy-import button primes the Air globals the dialog depends on', () => {
+  // Air never loads manage.js; providerApi/showToast exist only after prepare().
+  // Skipping it made the click a silent ReferenceError (no dialog, empty clipboard).
+  const card = fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8');
+  const at = card.indexOf("t('airProviderRelayCopyImport')");
+  assert.ok(at >= 0);
+  const handler = card.slice(at, card.indexOf('}));', at));
+  const prepare = handler.indexOf('MultiCCAirProviderAdvanced?.prepare(context)');
+  const copy = handler.indexOf('copyRelayImportInfo');
+  assert.ok(prepare >= 0 && copy > prepare, 'prepare(context) must run before copyRelayImportInfo');
+
+  // And the failure path must render inside the overlay, not depend on showToast.
+  const src = fs.readFileSync(SOURCE_PATH, 'utf8');
+  const fn = src.slice(src.indexOf('async function copyRelayImportInfo'), src.indexOf('async function copyRelayShareCode'));
+  assert.doesNotMatch(fn, /showToast/);
+  assert.match(fn, /无法复制原始导入信息/);
+});
+
 test('copy reports the real clipboard outcome instead of always claiming success', async () => {
   const ctx = loadModule();
   const el = () => ({ focus() {}, select() {}, setSelectionRange() {} });

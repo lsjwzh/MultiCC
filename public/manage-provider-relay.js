@@ -139,7 +139,16 @@ async function copyRelayImportInfo(appType, id) {
   try {
     const d = await providerApi.json(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}/relay-import-code`);
     _relayShowCode('复制原始导入信息', '这是导入这条线路时用的分享码。把它发给别人，对方导入后会和你共用同一份凭据与额度。', d.code);
-  } catch (err) { showToast('Failed: ' + err.message); }
+  } catch (err) {
+    // 失败也要看得见：弹层里给出原因，而不是只靠页面底层的提示（会被挡住，甚至缺失）。
+    const { overlay } = _relayOverlay(`
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:420px;max-width:92vw;">
+        <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">无法复制原始导入信息</div>
+        <div data-k="why" class="status-text err" style="line-height:1.6"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn" data-act="close" style="font-size:13px">关闭</button></div>
+      </div>`);
+    overlay.querySelector('[data-k="why"]').textContent = (err && err.message) || String(err);
+  }
 }
 
 async function copyRelayShareCode(shareId) {
