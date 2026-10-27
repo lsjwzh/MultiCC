@@ -86,6 +86,12 @@ jobs:
         run: |
           if [ "${{ matrix.native_platform }}" = darwin ]; then
             rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          elif [ "${{ matrix.native_platform }}" = linux ]; then
+            # 插件二进制是 musl 静态链接（见 scripts/build-plugin-binaries.js）。
+            rustup target add x86_64-unknown-linux-musl
+            python3 -m venv "$RUNNER_TEMP/zigbuild"
+            "$RUNNER_TEMP/zigbuild/bin/pip" install --quiet cargo-zigbuild ziglang
+            echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
           fi
 
       - name: Preflight — desktop version matches root package.json
@@ -162,6 +168,7 @@ jobs:
 
           for arch in ${{ matrix.archs }}; do
             node ../scripts/build-rust-kernels.js --platform "${{ matrix.native_platform }}" --arch "$arch"
+            node ../scripts/build-plugin-binaries.js --platform "${{ matrix.native_platform }}" --arch "$arch"
             # The app is a shell around the standalone tree: this stages exactly
             # what a multicc-standalone-* package carries (server + production
             # deps + the pinned Node runtime + launcher). Cross-arch targets skip
@@ -350,6 +357,26 @@ jobs:
           fi
           node scripts/build-rust-kernels.js --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"
 
+      # 内置插件（chrome-proxy-launcher 等）的二进制和第三方内核按目标平台现编现下，
+      # 打包时只留这一份（scripts/stage-plugin-binaries.js）。Linux 产物是 musl 静态
+      # 链接，交叉链接靠 cargo-zigbuild，免得 runner 的新 glibc 被带到用户机器上。
+      - name: 构建目标平台插件二进制
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.platform }}" = linux ]; then
+            case "${{ matrix.arch }}" in
+              x64) rustup target add x86_64-unknown-linux-musl ;;
+              arm64) rustup target add aarch64-unknown-linux-musl ;;
+            esac
+            # 系统 Python 受 PEP 668 保护，装进独立 venv；cargo-zigbuild 找不到 zig
+            # 时会用 venv 里的 python3 -m ziglang。
+            python3 -m venv "$RUNNER_TEMP/zigbuild"
+            "$RUNNER_TEMP/zigbuild/bin/pip" install --quiet cargo-zigbuild ziglang
+            export PATH="$RUNNER_TEMP/zigbuild/bin:$PATH"
+          fi
+          node scripts/build-plugin-binaries.js --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"
+
       - name: Build standalone package
         shell: bash
         run: |
@@ -405,6 +432,32 @@ jobs:
           else
             echo "cross-arch build: skipping the remote --version smoke"
           fi
+
+      # 插件面板里的「插件二进制缺失」就是这一步漏掉的样子：每个平台的包都必须
+      # 带上自己那份插件二进制和内核，且不夹带别的平台。
+      - name: 校验插件二进制随包发布
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          bundle="dist-standalone/multicc-standalone-$version-${{ matrix.platform }}-${{ matrix.arch }}"
+          if [ "${{ matrix.platform }}" = darwin ]; then
+            resources="$bundle/MultiCC.app/Contents/Resources"
+          else
+            resources="$bundle/Resources"
+          fi
+          suffix=""; kernel=meow.gz
+          if [ "${{ matrix.platform }}" = win32 ]; then suffix=.exe; kernel=meow.exe.gz; fi
+          dir="$resources/app-server/plugins/chrome-proxy-launcher/bin"
+          plugin="$dir/${{ matrix.platform }}-${{ matrix.arch }}/chrome-proxy-launcher$suffix"
+          [ -f "$plugin" ] || { echo "::error::standalone bundle is missing $plugin"; exit 1; }
+          [ -f "$dir/${{ matrix.platform }}-${{ matrix.arch }}/$kernel" ] || { echo "::error::standalone bundle is missing $kernel"; exit 1; }
+          if [ "${{ matrix.platform }}" != win32 ] && [ ! -x "$plugin" ]; then
+            echo "::error::$plugin lost its executable bit before archiving"
+            exit 1
+          fi
+          extra=$(ls "$dir" | grep -vx "${{ matrix.platform }}-${{ matrix.arch }}" || true)
+          [ -z "$extra" ] || { echo "::error::standalone bundle carries other platforms' plugin binaries: $extra"; exit 1; }
 
 
       # The bundle is only "built" until someone boots it. This runs the real

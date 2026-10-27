@@ -1,2 +1,6 @@
 # 本机构建产物（约 90MB）；发布的二进制在 bin/<platform>-<arch>/ 下随仓库提交。
 target/
+# 其他平台的二进制是发版产物（scripts/build-plugin-binaries.js 生成），不进源码树。
+bin/darwin-x64/
+bin/linux-*/
+bin/win32-*/

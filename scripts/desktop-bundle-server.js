@@ -21,6 +21,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { verifyServerDependencies } = require('./desktop-verify-resources');
 const { stageRustKernels } = require('./stage-rust-kernels');
+const { stagePluginBinaries } = require('./stage-plugin-binaries');
 
 const OPTIONAL_AT_RUNTIME = ['sherpa-onnx-node'];
 const PUBLIC_EXCLUDE = [/^multicc\.apk(\..*)?$/];
@@ -158,6 +159,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
     if (file.endsWith('.sh')) fs.chmodSync(path.join(out, file), 0o755);
   }
   stageRustKernels({ repoRoot, out, npmEnv, logger });
+  stagePluginBinaries({ repoRoot, out, npmEnv, logger });
   // 3) transformed manifest, then production deps
   fs.writeFileSync(path.join(out, 'package.json'),
     `${JSON.stringify(transformPackageJson(rootPkg), null, 2)}\n`);
