@@ -447,6 +447,36 @@ test('the update child is detached so the restart it performs cannot kill it', a
   assert.equal(child.unrefCount, 1);
 });
 
+test('the update child never inherits the old standalone launcher background marker', async () => {
+  // A server started by `multicc start` under a launcher <= 2.10.0 carries
+  // MULTICC_STANDALONE_DETACHED=1. Handed on, install.sh's final `multicc start`
+  // stayed in the foreground forever: the new version ran, but the update never
+  // finished and the old directory was never removed.
+  const root = createFixture();
+  const calls = [];
+  await startDetachedUpdate({
+    getChildProxyEnv: async env => env,
+    spawn(command, args, options) { calls.push(options); return createChild(); },
+    rootDir: root,
+    env: { MARKER: 'yes', MULTICC_STANDALONE_DETACHED: '1' },
+    log: { log() {}, error() {} },
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].env, { MARKER: 'yes' });
+});
+
+test('install.sh drops the leaked launcher marker before it runs anything', () => {
+  const script = fs.readFileSync(path.join(__dirname, '..', 'install.sh'), 'utf8');
+  const unset = script.indexOf('unset MULTICC_STANDALONE_DETACHED');
+  assert.ok(unset > 0, 'install.sh must unset MULTICC_STANDALONE_DETACHED');
+  // Older servers fetch the installer of the target release and run it with
+  // their own environment, so the unset has to precede every start/stop call.
+  assert.ok(unset < script.indexOf('MULTICC_CMD='), 'the unset must come before the launcher is resolved');
+  const cli = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'standalone-cli.js'), 'utf8');
+  assert.match(cli, /function runLauncher[\s\S]{0,600}delete env\.MULTICC_STANDALONE_DETACHED/,
+    'the CLI must not hand an inherited marker to the launcher it starts');
+});
+
 test('a synchronous spawn failure reaches the HTTP boundary as 503 with a code, and frees the flag', async () => {
   const root = createFixture();
   const route = createUpdateRoute({

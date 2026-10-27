@@ -153,8 +153,13 @@ function configGet(file, key) {
 // ── Launcher delegation ─────────────────────────────────────────────────────
 
 function runLauncher(layout, args, { stdio = 'inherit' } = {}) {
+  // The CLI is never the launcher's background child, so a marker inherited
+  // from a server started by an older launcher (it leaked into every session
+  // terminal and update run) must not reach the launcher it starts.
+  const env = { ...process.env };
+  delete env.MULTICC_STANDALONE_DETACHED;
   const res = spawnSync(layout.runtimeNode, [layout.launcherPath, ...args], {
-    stdio, encoding: 'utf8',
+    stdio, encoding: 'utf8', env,
   });
   if (res.error) {
     process.stderr.write(`[multicc] could not run the bundle launcher: ${res.error.message}\n`);

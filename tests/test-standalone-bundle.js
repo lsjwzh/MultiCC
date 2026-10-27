@@ -658,6 +658,43 @@ test('--detach hands off to a background launcher that --stop can still drain', 
   }
 });
 
+test('--detach still goes to the background with an inherited legacy detach marker', { timeout: 180_000 }, async () => {
+  // Launchers up to 2.10.0 marked their background child with
+  // MULTICC_STANDALONE_DETACHED=1 and the marker leaked into the server and
+  // everything it spawned. A `multicc start` run from there (the web UI's
+  // update, a session terminal) then stayed in the foreground forever.
+  const scratch = tmpdir('multicc-standalone-detach-legacy-');
+  const resources = path.join(scratch, 'Resources');
+  const dataDir = path.join(scratch, 'userdata');
+  stageFakeServer(resources);
+  const port = await reservePort();
+  const launcherArgs = ['--resources', resources, '--data', dataDir, '--port', String(port), '--no-open'];
+  const pidFile = path.join(dataDir, 'standalone-launcher.pid');
+  const serverPidFromDisk = () => {
+    try { return JSON.parse(fs.readFileSync(path.join(dataDir, 'desktop-runtime.json'), 'utf8')).pid || null; }
+    catch (_) { return null; }
+  };
+  const ownerFromDisk = () => {
+    try { return Number(fs.readFileSync(pidFile, 'utf8').trim()) || null; } catch (_) { return null; }
+  };
+  try {
+    const parent = spawnSync(process.execPath, [LAUNCHER, '--start', '--detach', ...launcherArgs], {
+      encoding: 'utf8', timeout: 30_000, env: { ...process.env, MULTICC_STANDALONE_DETACHED: '1' },
+    });
+    assert.equal(parent.error, undefined, 'the detaching launcher must return instead of running in the foreground');
+    assert.match(`${parent.stdout}${parent.stderr}`, /starting in the background/);
+    await waitFor(async () => (await httpStatus(`http://127.0.0.1:${port}/readyz`)) === 200,
+      { timeoutMs: 60_000, what: 'the detached launcher to bring the server up' });
+    assert.notEqual(ownerFromDisk(), process.pid);
+    const stopRun = spawnSync(process.execPath, [LAUNCHER, '--stop', ...launcherArgs.slice(0, 4)], { encoding: 'utf8' });
+    assert.match(`${stopRun.stdout}${stopRun.stderr}`, /stopped/);
+  } finally {
+    for (const pid of [serverPidFromDisk(), ownerFromDisk()]) {
+      if (pid && readPidAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch (_) {} }
+    }
+  }
+});
+
 // Windows has no signals: `process.kill(pid, 'SIGTERM')` there terminates the
 // supervising launcher outright and leaves the server it was supervising
 // orphaned — the supervisor only drains on request. So the stop request goes
