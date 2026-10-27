@@ -53,6 +53,15 @@ const APP_DIRNAME = 'MultiCCStandalone';
 const LEGACY_APP_DIRNAME = 'MultiCCPortable';
 const DEFAULT_START_PORT = 3000;
 const DETACH_FLAG = '--detached-child';
+// Older launchers marked their background child with this variable instead of
+// DETACH_FLAG; it must never reach anything this launcher starts.
+const LEGACY_DETACH_ENV = 'MULTICC_STANDALONE_DETACHED';
+
+function withoutLegacyDetachMarker(env) {
+  const copy = { ...env };
+  delete copy[LEGACY_DETACH_ENV];
+  return copy;
+}
 // Node prints "SQLite is an experimental feature" the first time node:sqlite
 // loads. Every launch would otherwise log it.
 const SQLITE_WARNING = 'ExperimentalWarning';
@@ -450,8 +459,12 @@ function createLauncher({
       ...(args.resources ? ['--resources', args.resources] : []),
       args.open ? '--open' : '--no-open',
     ];
+    // The child is recognised by DETACH_FLAG on its argv alone. An environment
+    // marker (MULTICC_STANDALONE_DETACHED, up to 2.10.0) leaked into the server
+    // and everything it spawned, so a later `multicc start` from the update run
+    // or a session terminal refused to detach and never returned.
     const child = spawnImpl(process.execPath, argv, {
-      detached: true, stdio: 'ignore', env: { ...env, MULTICC_STANDALONE_DETACHED: '1' },
+      detached: true, stdio: 'ignore', env: withoutLegacyDetachMarker(env),
     });
     if (child && typeof child.unref === 'function') child.unref();
     return child;
@@ -488,7 +501,7 @@ function createLauncher({
     // whole window, so a duplicate is turned away here, before it detaches.
     const owner = otherLauncher();
     if (owner) return refuseSecondLauncher(owner);
-    if (args.detach && env.MULTICC_STANDALONE_DETACHED !== '1' && !args.detachedChild) {
+    if (args.detach && !args.detachedChild) {
       // Check a pinned port before going into the background: the detached
       // child's stderr is the log file, so a taken port would otherwise surface
       // only as a silent 60-second "not ready" in the calling terminal.

@@ -57,6 +57,15 @@ fi
 
 set -euo pipefail
 
+# Launchers up to 2.10.0 marked their background child with this variable and
+# never removed it again, so a server started with `multicc start` handed it to
+# everything it spawned, including the web UI's update run. Inherited here, it
+# made the final `multicc start` refuse to go to the background: the new server
+# came up, but the start command never returned, the run never finished and the
+# old directory stayed behind. It describes the launcher that set it, never
+# this script.
+unset MULTICC_STANDALONE_DETACHED
+
 # ── Color helpers ─────────────────────────────────────────────────────────
 if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   C_BOLD="$(tput bold)"

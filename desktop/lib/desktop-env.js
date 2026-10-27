@@ -143,6 +143,10 @@ function buildChildEnv({ port, desktopEnv, baseEnv = {}, dotenv = {}, runtimeNod
   else delete env.MULTICC_DESKTOP_SHELL;
   if (desktopEnv.electronRuntime) env.ELECTRON_RUN_AS_NODE = '1';
   else delete env.ELECTRON_RUN_AS_NODE;
+  // The standalone launcher's background marker (up to 2.10.0) describes the
+  // launcher process, not the server. Inherited by the server, it reached the
+  // web UI's update run and made its `multicc start` hang in the foreground.
+  delete env.MULTICC_STANDALONE_DETACHED;
   // Put the runtime the child will actually run on first on PATH:
   // `claude`/`codex`/every other Node-based CLI the server spawns for a session
   // would otherwise fall back to whatever (too old) Node the host happens to

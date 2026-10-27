@@ -452,7 +452,11 @@ async function startDetachedUpdate(options = {}) {
     preflightUpdate({ rootDir, fsImpl, pathImpl });
     command = buildUpdateShellCommand({ rootDir, force });
   }
-  const childEnv = await (options.getChildProxyEnv || getChildProxyEnv)(env);
+  const childEnv = { ...await (options.getChildProxyEnv || getChildProxyEnv)(env) };
+  // A server started by an older standalone launcher (<= 2.10.0) still carries
+  // that launcher's background marker; the update's final `multicc start`
+  // would inherit it and stay in the foreground forever. See install.sh.
+  delete childEnv.MULTICC_STANDALONE_DETACHED;
   const child = spawn('/bin/sh', ['-c', command], {
     cwd: standalone ? standalone.bundleRoot : rootDir,
     // Detached is load-bearing, not hygiene: the update stops and restarts the

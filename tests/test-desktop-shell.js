@@ -213,6 +213,13 @@ test('buildChildEnv: dotenv fills gaps, desktop knobs always win, bundled runtim
     port: 3457, desktopEnv: layout, baseEnv: { MULTICC_DESKTOP_SHELL: 'stale' }, dotenv: {}, desktopShell: true,
   });
   assert.equal(shellEnv.MULTICC_DESKTOP_SHELL, '1');
+  // Launchers up to 2.10.0 marked their background child with an env var that
+  // then leaked into the server and the web UI's update run, whose final
+  // `multicc start` refused to detach and never returned.
+  const leaked = desktopEnv.buildChildEnv({
+    port: 3457, desktopEnv: layout, baseEnv: { MULTICC_STANDALONE_DETACHED: '1' }, dotenv: {},
+  });
+  assert.equal(leaked.MULTICC_STANDALONE_DETACHED, undefined, 'the launcher background marker never reaches the server');
   // The child is the staged Node runtime, not the Electron binary: the flag
   // that turns Electron into Node must not leak into a real Node process.
   assert.equal(env.ELECTRON_RUN_AS_NODE, undefined, 'packaged children run the bundled runtime');
