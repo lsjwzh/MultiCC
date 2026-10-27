@@ -145,6 +145,17 @@ const MIGRATION_DEBT = Object.freeze({
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),
+  // public/run-config.js 停在 2997 行，opencode「刷新模型」按钮（模型标题行 +
+  // 强制刷新回调，见 routes/opencode-models.js 的 ?refresh=1）把它抬过 3k，实测
+  // 3032/153881。登记实测高水位；下一次动它该拆的是模型字段那一族 —— 模型下拉 +
+  // 搜索框 + 自定义输入 + 状态行 + 刷新按钮整块搬进独立模块，run-config 只留挂载，
+  // 落回 <= 3000 就删掉这条。
+  'public/run-config.js': Object.freeze({
+    ceiling: 3033,
+    byteCeiling: 153881,
+    target: 3000,
+    reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
+  }),
 });
 
 // Reviewed third-party/generated assets are not first-party maintainability
@@ -499,11 +510,15 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   完成/失败，中英各 4 行，重跑生成器实测 9804/631565。
     // +1 双语键（airProviderRelayCopyImport）：已导入借道线路的「复制原始导入信息」
     //   按钮，中英各 1 行 = +2 行，重跑生成器实测 9806/631690。
+    // +1 双语键（messageUnconfirmedWait）：App 上一条任务投递仍在等服务端确认时的
+    //   提示（不再谎报「连接已断开」），中英各 1 行 = +2 行，实测 9808/632824。
+    // +5 双语键（runConfigModelRefresh*）：opencode 模型表的「刷新模型」按钮与
+    //   刷新中/成功（含条数）/失败三条回执，生成器实测 9817/633464。
     // +16 双语键（airProviderTrend*）：Provider 卡片余量走势（迷你曲线/详情弹层/
-    //   预计用完时间/采样说明），中英各 16 行；重跑生成器实测 9840/634513。
-    maxLines: 9840,
+    //   预计用完时间/采样说明），中英各 16 行；与主线词典合并后重跑生成器实测 9852/635387。
+    maxLines: 9852,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 634513,
+    maxBytes: 635387,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

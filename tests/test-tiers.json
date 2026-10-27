@@ -4706,6 +4706,15 @@
       ]
     },
     {
+      "path": "tests/test-run-config-opencode-refresh-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
       "path": "tests/test-run-config-quota-cdp.js",
       "tier": "flow",
       "lane": "cdp",

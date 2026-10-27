@@ -71,6 +71,15 @@ class ChatService {
   bool _usesTaskShell = false;
   String? _controlTurnId;
   Map<String, dynamic>? _pendingShellInput;
+  // 投递确认（task_shell_routed）丢失时 _pendingShellInput 会永远非空，之后每次
+  // send() 都在下面直接 return null —— socket 明明是通的，用户却只看到「连接中断，
+  // 请重试」，且重试多少次都发不出去（服务端一条 queued 都没有）。确认帧正常几秒
+  // 就到，等不到就当上一条丢了，不能让本地状态把发送通道永久锁死。
+  DateTime? _pendingShellInputAt;
+  /// 上一条「已发出、等投递确认」的消息最多等这么久，超过即认定确认帧丢了
+  /// 并允许新消息照发。测试注入 [Duration.zero] 覆盖这条自愈路径。
+  final Duration shellInputConfirmTimeout;
+  bool get shellInputAwaitingConfirm => _pendingShellInput != null;
   final Map<String, String> _shellClientIds = {};
   final List<Map<String, dynamic>> _shellAdmissionEvents = [];
   String get executionSessionName => _executionSessionName ?? sessionName;
@@ -111,6 +120,7 @@ class ChatService {
     this.initialSessionId,
     String? initialExecutionSessionName,
     this.historyArchive = false,
+    this.shellInputConfirmTimeout = const Duration(seconds: 12),
     WsTicketClient? wsTicketClient,
     WebSocketChannel Function(Uri)? channelFactory,
     http.Client? httpClient,
@@ -231,8 +241,12 @@ class ChatService {
             _startHeartbeat();
             // Web 的 `dbg('ws', 'onopen — 连接已建立')`。
             dbg('ws', 'onopen — 连接已建立');
-            if (_pendingShellInput != null) {
-              channel.sink.add(jsonEncode(_pendingShellInput));
+            final pendingShellInput = _pendingShellInput;
+            if (pendingShellInput != null) {
+              // 重连后重发一次：投递确认很可能就是在断线窗口里丢的。时间戳跟着
+              // 刷新，否则刚重发出去就会被 send() 判成「等了很久」而立刻丢弃。
+              _pendingShellInputAt = DateTime.now();
+              channel.sink.add(jsonEncode(pendingShellInput));
             }
             // Flush a cancel that was requested while disconnected — the server
             // never saw it, so the CLI process is still running.
@@ -351,7 +365,7 @@ class ChatService {
         if (clientId != null && receiptId != null) {
           _shellClientIds[receiptId] = clientId;
         }
-        _pendingShellInput = null;
+        _setPendingShellInput(null);
         final next = msg['sessionId']?.toString();
         final buffered = List<Map<String, dynamic>>.from(_shellAdmissionEvents);
         _shellAdmissionEvents.clear();
@@ -473,7 +487,7 @@ class ChatService {
         }
         if (msg['notDelivered'] == true &&
             msg['clientMsgId'] == _pendingShellInput?['clientMsgId']) {
-          _pendingShellInput = null;
+          _setPendingShellInput(null);
           _shellAdmissionEvents.clear();
         }
         isStreaming = false;
@@ -730,8 +744,16 @@ class ChatService {
         payload['goal'] = true;
         payload['goalLimits'] = goalLimits ?? <String, dynamic>{};
       }
-      if (_pendingShellInput != null) return null;
-      if (_usesTaskShell) _pendingShellInput = payload;
+      if (_pendingShellInput != null) {
+        final waiting = DateTime.now().difference(
+          _pendingShellInputAt ?? DateTime.now(),
+        );
+        if (waiting < shellInputConfirmTimeout) return null;
+        _setPendingShellInput(null);
+        _shellAdmissionEvents.clear();
+        dbg('ws', 'stale shell delivery dropped — sending again');
+      }
+      if (_usesTaskShell) _setPendingShellInput(payload);
       _channel!.sink.add(jsonEncode(payload));
       if (pendingRequestId != null) _pendingUserInputRequestId = null;
       _cancelRequested = false; // New turn — clear any stale cancel guard
@@ -757,7 +779,7 @@ class ChatService {
         return;
       }
       final message = _cancelMessage();
-      _pendingShellInput = message;
+      _setPendingShellInput(message);
       if (_channel != null && _state == ChatConnectionState.connected) {
         _channel!.sink.add(jsonEncode(message));
       }
@@ -868,6 +890,13 @@ class ChatService {
     _reconnectTimer = Timer(delay, () {
       if (!_disposed) connect();
     });
+  }
+
+  /// 记住/清掉「已发出、等服务端投递确认」的那一条。时间戳与内容一起走，
+  /// 否则 [send] 没法判断这条到底是刚发出的还是在等一个永远不来的确认帧。
+  void _setPendingShellInput(Map<String, dynamic>? value) {
+    _pendingShellInput = value;
+    _pendingShellInputAt = value == null ? null : DateTime.now();
   }
 
   void _emit(String type, dynamic payload) {

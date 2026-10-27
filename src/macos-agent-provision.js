@@ -41,7 +41,8 @@ function createMacosAgentProvisioner(deps = {}) {
   const h264Source = path.join(rootDir, 'scripts', 'macos-agent', 'MultiCCAgentH264.swift');
   const permissionSource = path.join(rootDir, 'scripts', 'macos-agent', 'AgentPermissions.swift');
   const icon = path.join(rootDir, 'scripts', 'macos-agent', 'AgentIcon.icns');
-  const app = env.MULTICC_AGENT_APP || path.join(home, 'Applications', 'MultiCC Agent.app');
+  // macOS installation adapter: keep this default aligned with install-agent.sh.
+  const app = env.MULTICC_AGENT_APP || '/Applications/MultiCC Agent.app';
   const bin = path.join(app, 'Contents', 'MacOS', 'MultiCCAgent');
   const stamp = path.join(app, 'Contents', 'Resources', 'source.sha256');
   const plist = env.MULTICC_AGENT_PLIST || path.join(home, 'Library', 'LaunchAgents', `${LABEL}.plist`);
@@ -70,6 +71,9 @@ function createMacosAgentProvisioner(deps = {}) {
     // The client symlink is what the probe and mcu.sh call; a missing one is the
     // same kind of half-install.
     if (!isExec(link)) return { action: 'install', reason: 'client-link-missing' };
+    // A global copy may already exist while this user's launcher still points
+    // at the old ~/Applications bundle. Let the installer switch both paths.
+    if (fs.realpathSync(link) !== fs.realpathSync(bin)) return { action: 'update', reason: 'client-location-changed' };
     const hash = crypto.createHash('sha256');
     for (const file of [source, bridgeHeader, bridgeSource, h264Source, permissionSource]) hash.update(fs.readFileSync(file));
     const sum = hash.digest('hex');
