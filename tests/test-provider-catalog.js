@@ -524,19 +524,47 @@ test('the published provider-template catalog is valid and DeepSeek is current',
   assert.ok(deepseek, 'claude-deepseek must stay in the catalog');
   assert.equal(deepseek.baseUrl, 'https://api.deepseek.com/anthropic');
   assert.equal(deepseek.model, 'deepseek-v4-pro');
-  assert.deepEqual(deepseek.models, ['deepseek-v4-pro', 'deepseek-v4-flash']);
+  // DeepSeek's /models lists deepseek-flash; deepseek-v4-flash is the legacy alias.
+  assert.deepEqual(deepseek.models, ['deepseek-v4-pro', 'deepseek-flash']);
   assert.equal(JSON.stringify(bundled).includes('deepseek-chat'), false,
     'deepseek-chat is the retired id; templates must not fill it any more');
 
   const codexDeepseek = bundled.presets.find(preset => preset.id === 'codex-deepseek');
   assert.ok(codexDeepseek, 'DeepSeek is also reachable through the Codex template');
   assert.equal(codexDeepseek.apiFormat, 'openai_responses');
+  assert.equal(codexDeepseek.baseUrl, 'https://api.deepseek.com');
+
+  // Every template's protocol is the one its pool speaks, and a Claude template's
+  // Base URL is never an OpenAI /v1 root (nor the other way round).
+  for (const preset of bundled.presets) {
+    assert.equal(preset.apiFormat, preset.appType === 'claude' ? 'anthropic' : 'openai_responses', preset.id);
+    assert.ok(preset.id.startsWith(`${preset.appType}-`), `${preset.id} follows the <appType>-<vendor> id convention`);
+    if (preset.appType === 'codex') assert.equal(/\/anthropic\/?$/.test(preset.baseUrl), false, preset.id);
+  }
+  // Vendors offering both protocols ship as a pair, so switching CLI in the
+  // dialog can swap to the sibling template instead of keeping a wrong URL.
+  for (const vendor of ['deepseek', 'glm', 'kimi', 'qwen']) {
+    assert.ok(bundled.presets.some(preset => preset.id === `claude-${vendor}`), `claude-${vendor}`);
+    assert.ok(bundled.presets.some(preset => preset.id === `codex-${vendor}`), `codex-${vendor}`);
+  }
 
   // The page keeps a synchronous copy so the picker is never empty; it must not
   // drift back to the retired model while the JSON moves on.
   const page = fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8');
   assert.match(page, /id: 'claude-deepseek'[\s\S]{0,220}deepseek-v4-pro/);
   assert.equal(/deepseek-chat|deepseek-reasoner/.test(page), false);
+  // The synchronous copy carries the same version and the same entries.
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.ok(page.includes(`const BUNDLED_PRESET_VERSION = '${raw.version}';`), 'bundled version matches the JSON');
+  for (const preset of raw.presets) {
+    const line = page.split('\n').find(row => row.includes(`{ id: '${preset.id}',`));
+    assert.ok(line, `${preset.id} is in the page copy`);
+    assert.ok(line.includes(`baseUrl: '${preset.baseUrl}'`), `${preset.id} baseUrl`);
+    assert.ok(line.includes(`model: '${preset.model}'`), `${preset.id} model`);
+    for (const model of preset.models || []) assert.ok(line.includes(`'${model}'`), `${preset.id} lists ${model}`);
+  }
+  assert.equal(page.split('\n').filter(row => /^ {4}\{ id: '[a-z]+-/.test(row)).length, raw.presets.length,
+    'no page-only template');
 });
 
 test('provider-template entries are whitelisted; one bad field drops that template only', () => {
@@ -577,4 +605,38 @@ test('a GitHub catalog overrides by id, appends new templates and keeps local-on
   assert.equal(merged.presets[0].baseUrl, 'https://remote.test', 'the remote copy wins on the same id');
   assert.equal(merged.presets[1].model, 'keep', 'a local-only template survives the merge');
   assert.equal(catalog.mergePresetCatalogs(null, null), null);
+});
+
+test('an older GitHub catalog can add templates but never roll a newer bundled one back', () => {
+  const local = catalog.normalizePresetCatalog({
+    version: '2026-10-27',
+    presets: [{ id: 'a', appType: 'claude', baseUrl: 'https://fixed.test', model: 'new' }],
+  });
+  const stale = catalog.normalizePresetCatalog({
+    version: '2026-10-23',
+    presets: [
+      { id: 'a', appType: 'claude', baseUrl: 'https://stale.test', model: 'old' },
+      { id: 'z', appType: 'codex', baseUrl: 'https://remote.test/v1', model: 'z' },
+    ],
+  });
+  const merged = catalog.mergePresetCatalogs(local, stale);
+  assert.deepEqual(merged.presets.map(preset => preset.id), ['a', 'z']);
+  assert.equal(merged.presets[0].baseUrl, 'https://fixed.test');
+  assert.equal(merged.version, '2026-10-27');
+
+  const newer = catalog.normalizePresetCatalog({
+    version: '2026-11-01',
+    presets: [{ id: 'a', appType: 'claude', baseUrl: 'https://newer.test', model: 'newer' }],
+  });
+  assert.equal(catalog.mergePresetCatalogs(local, newer).presets[0].baseUrl, 'https://newer.test');
+});
+
+test('a provider row is always read with its pool protocol, whatever label it carries', () => {
+  const mislabelled = catalog.normalizeProvider({
+    id: 'codex-mislabelled', appType: 'codex', name: 'Old form row', apiFormat: 'anthropic',
+    baseUrl: 'https://relay.test/v1', hasToken: true,
+  });
+  assert.equal(mislabelled.apiFormat, 'openai_responses');
+  assert.equal(mislabelled.compatibleClis.includes('claude'), false);
+  assert.equal(catalog.normalizeProvider({ id: 'c', appType: 'claude', name: 'C', apiFormat: 'openai_responses' }).apiFormat, 'anthropic');
 });

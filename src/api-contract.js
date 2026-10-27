@@ -83,12 +83,20 @@ function createErrorDto({
   return withApiMeta(body, { requestId, correlationId });
 }
 
+// Every CLI that can run a pooled provider (see compatibleClisForFormat in
+// src/providers/core.js); anything else in compatibleClis is dropped.
+const PROVIDER_DTO_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi', 'dsh', 'grok']);
+
 function toProviderDto(source = {}) {
+  const appType = source.appType === 'codex' ? 'codex' : 'claude';
+  // The pool fixes the wire format (claude = Anthropic Messages, codex = OpenAI
+  // Responses); a missing or contradictory label never leaks out as the other one.
+  const protocol = appType === 'codex' ? 'openai_responses' : 'anthropic';
   const dto = {
     id: String(source.id || ''),
-    appType: source.appType === 'codex' ? 'codex' : 'claude',
-    protocol: ['anthropic', 'openai_responses'].includes(source.protocol) ? source.protocol : 'anthropic',
-    apiFormat: ['anthropic', 'openai_responses'].includes(source.apiFormat) ? source.apiFormat : 'anthropic',
+    appType,
+    protocol,
+    apiFormat: protocol,
     wireApi: ['messages', 'responses'].includes(source.wireApi) ? source.wireApi : null,
     name: String(source.name || '').slice(0, 160),
     source: source.source === 'ccswitch' ? 'ccswitch' : 'local',
@@ -97,7 +105,7 @@ function toProviderDto(source = {}) {
       ? [...new Set(source.modelOptions.filter(item => typeof item === 'string').map(item => item.slice(0, 160)))].slice(0, 100)
       : [],
     aliasOnly: !!source.aliasOnly,
-    compatibleClis: Array.isArray(source.compatibleClis) ? source.compatibleClis.filter(item => ['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode'].includes(item)) : [],
+    compatibleClis: Array.isArray(source.compatibleClis) ? source.compatibleClis.filter(item => PROVIDER_DTO_CLIS.includes(item)) : [],
     hasCredentials: !!source.hasToken,
     isOfficial: !!source.isOfficial,
   };

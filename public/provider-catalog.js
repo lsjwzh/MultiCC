@@ -568,9 +568,10 @@
     const appType = text(value.appType, 20).toLowerCase();
     if (!id || !APP_TYPES.has(appType)) return null;
     const model = text(value.model, 240);
-    const apiFormat = API_FORMATS.has(value.apiFormat)
-      ? value.apiFormat
-      : (appType === 'claude' ? 'anthropic' : 'openai_responses');
+    // 协议由线路池决定（claude 池存 ANTHROPIC_* env、codex 池存 wire_api=responses
+    // 的 config.toml），与 src/providers/core.js 的 apiFormatForAppType 一致；
+    // 记录上自带的 apiFormat 标签不可信（老表单曾允许 Codex + Anthropic）。
+    const apiFormat = appType === 'claude' ? 'anthropic' : 'openai_responses';
     // zcode / dsh / grok 这些车道自己不带上游：一条线路要同时有 baseUrl 和 token
     // 才跑得动。dsh 只认 anthropic；grok 两种协议都吃；kimi 只认 openai_responses。
     // 服务端会显式下发 compatibleClis（含 dsh / grok）；下面的 fallback 只服务缺少
@@ -718,14 +719,23 @@
   // Remote catalog on top of the bundled one: same id = the remote wins (that is
   // the update), a new id is appended, a local-only id stays. Nothing is ever
   // removed, so a partial or experimental remote file cannot empty the picker.
+  // A remote copy whose dated version is OLDER than the bundled one (GitHub main
+  // not yet carrying this release's fixes, or a stale localStorage cache) may
+  // only add ids — it must not roll a corrected template back.
+  const PRESET_VERSION_RE = /^\d{4}-\d{2}-\d{2}$/;
   function mergePresetCatalogs(base, extra) {
     const out = [];
     const index = new Map();
+    const baseVersion = base && base.version;
+    const extraVersion = extra && extra.version;
+    const extraIsOlder = PRESET_VERSION_RE.test(baseVersion || '') && PRESET_VERSION_RE.test(extraVersion || '')
+      && extraVersion < baseVersion;
     for (const catalog of [base, extra]) {
       if (!catalog || !Array.isArray(catalog.presets)) continue;
       for (const preset of catalog.presets) {
-        if (index.has(preset.id)) out[index.get(preset.id)] = preset;
-        else if (out.length < MAX_PRESETS) {
+        if (index.has(preset.id)) {
+          if (!(catalog === extra && extraIsOlder)) out[index.get(preset.id)] = preset;
+        } else if (out.length < MAX_PRESETS) {
           index.set(preset.id, out.length);
           out.push(preset);
         }
@@ -733,7 +743,7 @@
     }
     if (!out.length) return null;
     return Object.freeze({
-      version: text((extra && extra.version) || (base && base.version), 40),
+      version: text((!extraIsOlder && extraVersion) || baseVersion || extraVersion, 40),
       updatedAt: text((extra && extra.updatedAt) || (base && base.updatedAt), 40),
       presets: Object.freeze(out),
     });

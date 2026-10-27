@@ -1,6 +1,6 @@
 {
-  "version": "2026-10-23",
-  "updatedAt": "2026-10-23",
+  "version": "2026-10-27",
+  "updatedAt": "2026-10-27",
   "presets": [
     {
       "id": "claude-api",
@@ -18,7 +18,8 @@
       "name": "智谱 GLM",
       "baseUrl": "https://open.bigmodel.cn/api/anthropic",
       "apiFormat": "anthropic",
-      "model": "glm-5.2",
+      "model": "glm-5.3",
+      "models": ["glm-5.3", "glm-5.2"],
       "aliasMap": {
         "fable": { "model": "glm-5.3", "name": "GLM5.3" }
       }
@@ -30,15 +31,25 @@
       "baseUrl": "https://api.deepseek.com/anthropic",
       "apiFormat": "anthropic",
       "model": "deepseek-v4-pro",
-      "models": ["deepseek-v4-pro", "deepseek-v4-flash"]
+      "models": ["deepseek-v4-pro", "deepseek-flash"]
+    },
+    {
+      "id": "claude-kimi",
+      "appType": "claude",
+      "name": "Kimi (Moonshot)",
+      "baseUrl": "https://api.moonshot.cn/anthropic",
+      "apiFormat": "anthropic",
+      "model": "kimi-k3.1-pro",
+      "models": ["kimi-k3.1-pro", "kimi-k3", "kimi-k2.7-code"]
     },
     {
       "id": "claude-minimax",
       "appType": "claude",
       "name": "MiniMax",
-      "baseUrl": "https://api.minimaxi.com/anthropic",
+      "baseUrl": "https://api.minimax.cn/anthropic",
       "apiFormat": "anthropic",
-      "model": "MiniMax-M2"
+      "model": "MiniMax-M3",
+      "models": ["MiniMax-M3", "MiniMax-M3.1-Flash"]
     },
     {
       "id": "claude-qwen",
@@ -47,7 +58,8 @@
       "name": "Qwen 通义千问",
       "baseUrl": "https://dashscope.aliyuncs.com/apps/anthropic",
       "apiFormat": "anthropic",
-      "model": "qwen3-coder-plus"
+      "model": "qwen3.7-plus",
+      "models": ["qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash"]
     },
     {
       "id": "claude-openrouter",
@@ -55,7 +67,46 @@
       "name": "OpenRouter",
       "baseUrl": "https://openrouter.ai/api",
       "apiFormat": "anthropic",
-      "model": "anthropic/claude-sonnet-4.5"
+      "model": "anthropic/claude-sonnet-5.5",
+      "models": ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5", "anthropic/claude-haiku-5.5"]
+    },
+    {
+      "id": "codex-deepseek",
+      "appType": "codex",
+      "name": "DeepSeek",
+      "baseUrl": "https://api.deepseek.com",
+      "apiFormat": "openai_responses",
+      "model": "deepseek-v4-pro",
+      "models": ["deepseek-v4-pro", "deepseek-flash"]
+    },
+    {
+      "id": "codex-glm",
+      "appType": "codex",
+      "nameKey": "airProviderPresetGlm",
+      "name": "智谱 GLM",
+      "baseUrl": "https://open.bigmodel.cn/api/v1",
+      "apiFormat": "openai_responses",
+      "model": "glm-5.3",
+      "models": ["glm-5.3", "glm-5.2"]
+    },
+    {
+      "id": "codex-kimi",
+      "appType": "codex",
+      "name": "Kimi (Moonshot)",
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "apiFormat": "openai_responses",
+      "model": "kimi-k3.1-pro",
+      "models": ["kimi-k3.1-pro", "kimi-k3", "kimi-k2.7-code"]
+    },
+    {
+      "id": "codex-qwen",
+      "appType": "codex",
+      "nameKey": "airProviderPresetQwen",
+      "name": "Qwen 通义千问",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "apiFormat": "openai_responses",
+      "model": "qwen3.7-plus",
+      "models": ["qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash"]
     },
     {
       "id": "codex-xf-maas",
@@ -65,15 +116,6 @@
       "baseUrl": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v1",
       "apiFormat": "openai_responses",
       "model": "xopglm52"
-    },
-    {
-      "id": "codex-deepseek",
-      "appType": "codex",
-      "name": "DeepSeek",
-      "baseUrl": "https://api.deepseek.com/v1",
-      "apiFormat": "openai_responses",
-      "model": "deepseek-v4-pro",
-      "models": ["deepseek-v4-pro", "deepseek-v4-flash"]
     }
   ]
 }

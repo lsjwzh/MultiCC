@@ -287,3 +287,40 @@ test('DSH route injects DEEPSEEK_* env only; Grok materializes a private GROK_HO
   assert.equal(grokResponsesToml.includes('chat-secret'), false);
   assert.notEqual(grokResponses.env.GROK_HOME, grokAnthropic.env.GROK_HOME, 'each session gets an isolated GROK_HOME');
 });
+
+test('the pool fixes the protocol: contradictory apiFormat is rejected, legacy mislabels are repaired', () => {
+  assert.throws(() => providers.createProvider({
+    appType: 'codex', name: 'Codex Anthropic', baseUrl: 'https://api.deepseek.com/anthropic',
+    authToken: 'k', model: 'deepseek-v4-pro', apiFormat: 'anthropic',
+  }), /Codex 线路只能用 OpenAI Responses/);
+  assert.throws(() => providers.createProvider({
+    appType: 'claude', name: 'Claude Responses', baseUrl: 'https://api.deepseek.com',
+    authToken: 'k', model: 'deepseek-v4-pro', apiFormat: 'openai_responses',
+  }), /Claude 线路只能用 Anthropic Messages/);
+  // Legacy spellings that mean the pool's own format stay accepted.
+  const legacyId = providers.createProvider({
+    appType: 'codex', name: 'Legacy chat label', baseUrl: 'https://legacy.example/v1',
+    authToken: 'k', model: 'm', apiFormat: 'openai_chat',
+  }).id;
+  assert.equal(providers.getProviderSummary('codex', legacyId).apiFormat, 'openai_responses');
+  assert.throws(() => providers.updateProvider('codex', legacyId, { apiFormat: 'anthropic' }), /Codex 线路只能用/);
+
+  assert.equal(providers.normalizeApiFormat('anthropic', 'codex', {}), 'openai_responses');
+  assert.equal(providers.normalizeApiFormat('openai_responses', 'claude', {}), 'anthropic');
+
+  // A row the old form stored as Codex + Anthropic: read as responses, never
+  // offered to Claude Code, and the store label is repaired on migration.
+  const storeFile = path.join(dataDir, 'providers.json');
+  const list = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
+  const row = list.find(provider => provider.id === legacyId);
+  row.apiFormat = 'anthropic';
+  fs.writeFileSync(storeFile, JSON.stringify(list, null, 2), { mode: 0o600 });
+  const summary = providers.getProviderSummary('codex', legacyId);
+  assert.equal(summary.apiFormat, 'openai_responses');
+  assert.equal(summary.compatibleClis.includes('claude'), false);
+  assert.equal(summary.compatibleClis.includes('codex'), true);
+  assert.equal(providers.providerSupportsCli({ ...row }, 'claude'), false);
+  providers.migrateLegacyProviderProtocols();
+  const repaired = JSON.parse(fs.readFileSync(storeFile, 'utf8')).find(provider => provider.id === legacyId);
+  assert.equal(repaired.apiFormat, 'openai_responses');
+});
