@@ -1289,6 +1289,26 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .air-provider-facts small { color: #8494a4; font-size: 7px; text-transform: uppercase; letter-spacing: .4px; }
 .air-provider-facts strong { margin-top: 3px; color: #48657f; font-size: 9px; font-weight: 620; }
 .air-provider-limit { padding: 7px 9px; color: #8b949e; border-radius: 9px; background: #f5f9fd; font-size: 9px; }
+/* 余量走势：卡片内联迷你曲线 + 点击展开详情（public/air-provider-trend.js）。 */
+.air-provider-card-expandable { cursor: pointer; }
+.air-provider-card-expandable:focus-visible { outline: 2px solid #8fbdec; outline-offset: 2px; }
+.air-provider-card-expandable:hover .air-provider-trend { background: #eef6ff; }
+.air-provider-trend { display: grid; gap: 5px; padding: 8px 9px; border-radius: 10px; background: #f5f9fd; transition: background .15s ease; }
+.air-provider-trend-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.air-provider-trend-title { color: #8494a4; font-size: 8px; text-transform: uppercase; letter-spacing: .4px; }
+.air-provider-trend-values { min-width: 0; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.air-provider-trend-chip { display: inline-flex; align-items: center; gap: 4px; color: #48657f; font-size: 9px; font-variant-numeric: tabular-nums; }
+.air-provider-trend-dot { width: 6px; height: 6px; flex: 0 0 6px; display: inline-block; border-radius: 50%; background: #8b949e; }
+.air-provider-trend-svg { width: 100%; height: 32px; display: block; overflow: visible; }
+.air-provider-trend-dialog { width: min(760px, 94vw); max-width: 760px; }
+.air-provider-trend-detail { display: grid; gap: 10px; margin-top: 12px; }
+.air-provider-trend-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.air-provider-trend-legend-row { display: inline-flex; align-items: center; gap: 5px; color: #5a7185; font-size: 10px; }
+.air-provider-trend-legend-row strong { color: #2c4f6d; font-size: 11px; font-variant-numeric: tabular-nums; }
+.air-provider-trend-legend-reset { color: #8b9aa8; font-size: 9px; }
+.air-provider-trend-chart { width: 100%; height: auto; display: block; }
+.air-provider-trend-caption { display: grid; gap: 2px; color: #55718b; font-size: 10px; }
+.air-provider-trend-meta, .air-provider-trend-error { color: #8b9aa8; font-size: 9px; }
 .air-provider-card-actions { min-height: 31px; display: flex; align-items: center; gap: 5px; margin-top: auto; padding-top: 10px; border-top: 1px solid #e7eef5; }
 .air-provider-card-actions button { min-height: 29px; padding: 4px 8px; color: #55718b; border-color: transparent; background: transparent; font-size: 9px; }
 .air-provider-card-actions button:hover { border-color: #d9e5f0; background: #f5f9fd; }

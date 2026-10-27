@@ -138,8 +138,10 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-10-25 结构化 429 拒绝透传：429 冷却记录同一行追加 rejection，
   // api-error-host 同一行接 proxyFailureForAttempt（行数不变），实测 3020/159086。
   'server.js': Object.freeze({
-    ceiling: 3020,
-    byteCeiling: 159086,
+    // 2026-10-27 Provider 卡片余量走势：GET /api/providers/limit-history 单独一行挂载，
+    // 采样钩子随 provider-limit-cache 构造同行注入，实测 3021/159674。
+    ceiling: 3021,
+    byteCeiling: 159674,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),
@@ -497,9 +499,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   完成/失败，中英各 4 行，重跑生成器实测 9804/631565。
     // +1 双语键（airProviderRelayCopyImport）：已导入借道线路的「复制原始导入信息」
     //   按钮，中英各 1 行 = +2 行，重跑生成器实测 9806/631690。
-    maxLines: 9806,
+    // +16 双语键（airProviderTrend*）：Provider 卡片余量走势（迷你曲线/详情弹层/
+    //   预计用完时间/采样说明），中英各 16 行；重跑生成器实测 9840/634513。
+    maxLines: 9840,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 632590,
+    maxBytes: 634513,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

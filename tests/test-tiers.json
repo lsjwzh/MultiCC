@@ -1241,6 +1241,15 @@
       ]
     },
     {
+      "path": "tests/test-air-provider-trend.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:task-first",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
       "path": "tests/test-air-push-cdp.js",
       "tier": "flow",
       "lane": "cdp",
@@ -4120,6 +4129,15 @@
       ]
     },
     {
+      "path": "tests/test-provider-limit-history.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
       "path": "tests/test-provider-log-watchdog.js",
       "tier": "core",
       "lane": "deterministic",
@@ -4150,6 +4168,15 @@
       "path": "tests/test-provider-quota-guard-card.js",
       "tier": "other",
       "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-provider-quota-history.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
     },
     {
       "path": "tests/test-provider-quota-ui.js",

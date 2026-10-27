@@ -148,6 +148,13 @@ C 走 `src/token-global.js`：扫 `~/.claude/projects`（`:21`）+ `~/.codex/ses
 另有一条独立的余额面：`src/routes/provider-balance.js:43 createProviderBalanceRuntime`，
 出口 `:92 /api/providers/balances`、`:99 /api/providers/:appType/:id/balance`（管理页 `public/manage-provider-balance.js`）。
 
+卡片余量走势另存一份**只追加的采样库**：`provider-limit-cache.record` 成功后经 `onRecord`
+交给 `src/quota/provider-quota-history.js`，由 Rust 内核 `native/core/src/quota_history.rs`
+持有（SQLite `provider-quota-history.db`，WAL，同窗口 5 分钟去重，默认保留 14 天，按桶降采样）；
+出口 `src/routes/provider-limit-history.js /api/providers/limit-history`，前端
+`public/air-provider-trend.js` 在卡片内画迷你曲线、点击展开详情大图。内核缺失时接口答
+`available:false`，卡片只是不画趋势，不影响线路列表本身。
+
 ### 2.3 链路图
 
 ```mermaid
