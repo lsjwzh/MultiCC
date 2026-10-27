@@ -6,8 +6,7 @@
 // `security` 工具的 -w 会把密码短暂出现在进程参数里（同 macos-power 里 osascript
 // 弹管理员密码的先例），所以绝不把密码写进日志、错误消息或任何回复。
 const { execFile } = require('node:child_process');
-const { homedir, userInfo } = require('node:os');
-const path = require('node:path');
+const { userInfo } = require('node:os');
 
 const SERVICE = 'com.multicc.agent.unlock';
 const MAX_PASSWORD_LENGTH = 2048;
@@ -21,7 +20,7 @@ const MAX_PASSWORD_LENGTH = 2048;
 // 也是同一个。Agent 是 Developer ID 签名（designated requirement 是 identifier+TeamID
 // 而不是 cdhash），所以这条授权扛得住它被重新编译/更新，不会每次更新又弹一次。
 function defaultAgentAppPath() {
-  return process.env.MULTICC_AGENT_APP || path.join(homedir(), 'Applications', 'MultiCC Agent.app');
+  return process.env.MULTICC_AGENT_APP || '/Applications/MultiCC Agent.app';
 }
 
 function defaultAccount() {
