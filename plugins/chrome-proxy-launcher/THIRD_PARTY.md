@@ -2,11 +2,13 @@
 
 ## meow（mihomo 的 Rust 重实现）
 
-- 文件：`bin/darwin-arm64/meow.gz`（gzip 压缩的 macOS arm64 内核，解压后约 9MB）
+- 文件：`bin/<平台>-<架构>/meow.gz`（Windows 为 `meow.exe.gz`；gzip 压缩的单文件内核，解压后约 9MB）。仓库只提交 `darwin-arm64`，其余平台由发版流水线按 `bundled-binaries.json` 下载并校验后生成
 - 版本：v0.26.1（2026-10-21 发布，`meow 0.26.1`）
 - 来源：<https://github.com/meow-rs/meow-rs/releases/tag/v0.26.1>
-- 下载地址：<https://github.com/meow-rs/meow-rs/releases/download/v0.26.1/meow-v0.26.1-aarch64-apple-darwin.tar.gz>
-- sha256（上游 tar.gz 原包）：`1fbc19f54a51469dab03253ede4d4186e19517ccfb8a76f00657cc32f543d5ae`
+- 各平台下载地址与 sha256（上游原包）以 `bundled-binaries.json` 为唯一来源；macOS arm64 为
+  <https://github.com/meow-rs/meow-rs/releases/download/v0.26.1/meow-v0.26.1-aarch64-apple-darwin.tar.gz>，
+  sha256 `1fbc19f54a51469dab03253ede4d4186e19517ccfb8a76f00657cc32f543d5ae`
+- Linux 使用 musl 静态构建（x64 / arm64），Windows 使用 msvc 构建
 - 许可证：**MIT**（见上游仓库 <https://github.com/meow-rs/meow-rs/blob/main/LICENSE>）
 - 源码：<https://github.com/meow-rs/meow-rs>（tag `v0.26.1`）
 
@@ -20,17 +22,6 @@
 
 ### 更新内核
 
-从 <https://github.com/meow-rs/meow-rs/releases> 下载对应平台的文件，
-解压出 `meow` 后执行：
-
-```sh
-gzip -9 -c meow > plugins/chrome-proxy-launcher/bin/<平台>-<架构>/meow.gz
-```
-
-重启插件页（首次启动会自动重新解压）。
-
-### 其他平台
-
-插件按 `bin/<平台>-<架构>/` 查找内核（见 `plugins/README.md`）。其他平台把
-官方 release 的单文件压缩成 `meow.gz` 放到对应目录即可（未压缩的 `meow`
-也可以直接放）。
+改 `bundled-binaries.json` 里每个平台的 `url` 与 `sha256`（sha256 取上游 release 页给出的
+digest），然后重新执行 `node scripts/build-plugin-binaries.js --platform … --arch …`。
+macOS arm64 的 `meow.gz` 随仓库提交，更新后一并提交。

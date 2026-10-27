@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "name": "meow",
+      "version": "0.26.1",
+      "license": "MIT",
+      "source": "https://github.com/meow-rs/meow-rs/releases/tag/v0.26.1",
+      "targets": {
+        "darwin-arm64": {
+          "url": "https://github.com/meow-rs/meow-rs/releases/download/v0.26.1/meow-v0.26.1-aarch64-apple-darwin.tar.gz",
+          "sha256": "1fbc19f54a51469dab03253ede4d4186e19517ccfb8a76f00657cc32f543d5ae",
+          "member": "meow",
+          "output": "meow.gz"
+        },
+        "darwin-x64": {
+          "url": "https://github.com/meow-rs/meow-rs/releases/download/v0.26.1/meow-v0.26.1-x86_64-apple-darwin.tar.gz",
+          "sha256": "6004c9ca6d04131ea48bee9f1961165bd65c60f7c2fd859eba6846b922c8a0c1",
+          "member": "meow",
+          "output": "meow.gz"
+        },
+        "linux-x64": {
+          "url": "https://github.com/meow-rs/meow-rs/releases/download/v0.26.1/meow-v0.26.1-x86_64-unknown-linux-musl.tar.gz",
+          "sha256": "867e57331f5d4b14e585bc743192c18ffbec75510ca8228c6f7e8d608c9fac9c",
+          "member": "meow",
+          "output": "meow.gz"
+        },
+        "linux-arm64": {
+          "url": "https://github.com/meow-rs/meow-rs/releases/download/v0.26.1/meow-v0.26.1-aarch64-unknown-linux-musl.tar.gz",
+          "sha256": "7a512d75e1eeb9f014d48a8a3b21b17338ac930b918a2c763df112313c9ff394",
+          "member": "meow",
+          "output": "meow.gz"
+        },
+        "win32-x64": {
+          "url": "https://github.com/meow-rs/meow-rs/releases/download/v0.26.1/meow-v0.26.1-x86_64-pc-windows-msvc.zip",
+          "sha256": "c212a27184973bd1eb1c8c713d919da0eaa2daaf2695afb7b73ca61705ea97a9",
+          "member": "meow.exe",
+          "output": "meow.exe.gz"
+        },
+        "win32-arm64": {
+          "url": "https://github.com/meow-rs/meow-rs/releases/download/v0.26.1/meow-v0.26.1-aarch64-pc-windows-msvc.zip",
+          "sha256": "cb6c0f5897ff76f9c24e4710e0dabc2039151906466369c5b89eb839573a658b",
+          "member": "meow.exe",
+          "output": "meow.exe.gz"
+        }
+      }
+    }
+  ]
+}

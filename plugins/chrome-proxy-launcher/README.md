@@ -185,17 +185,31 @@ launch 返回的 `geo` 字段记录套用结果（`applied: true` + 国家/时�
 
 ## 构建
 
+发版时每个平台的 standalone / 桌面包都会带上**自己平台**的插件二进制和 meow 内核
+（`bin/<平台>-<架构>/`，包里不夹带别的平台）。流水线在打包前执行：
+
+```bash
+node scripts/build-plugin-binaries.js --platform <darwin|linux|win32> --arch <x64|arm64>
+```
+
+它做两件事：用 cargo 编译本插件（Linux 目标统一 `*-unknown-linux-musl` 静态链接，
+跨架构交叉用 `cargo zigbuild`，所以老发行版的 glibc 不会成为问题），并按
+`bundled-binaries.json` 下载对应平台的 meow（校验 sha256 后压成 `meow.gz`，
+Windows 为 `meow.exe.gz`）。打包阶段 `scripts/stage-plugin-binaries.js` 只保留目标
+平台目录；发版模式（`MULTICC_REQUIRE_RUST_BUNDLE=1`）缺目标平台二进制直接失败。
+
+本机开发只需要当前平台：
+
 ```bash
 cd plugins/chrome-proxy-launcher
 cargo build --release
 mkdir -p bin/darwin-arm64 && cp target/release/chrome-proxy-launcher bin/darwin-arm64/
 ```
 
-其他平台把产物放进 `bin/<platform>-<arch>/`（命名见 plugins/README.md），
-通道会优先取当前平台的目录。
-
-`bin/darwin-arm64/chrome-proxy-launcher` 已随仓库提交（约 2.4MB，外加 5MB 的
-`meow.gz`），开箱即用；其他平台需要本机构建。
+仓库只提交 `bin/darwin-arm64/`（约 2.4MB，外加 5MB 的 `meow.gz`），其他平台的目录
+由 `.gitignore` 排除——它们属于发版产物，不进源码树。从源码运行（`./multicc start`）
+的非 macOS arm64 用户需要先执行上面的 `build-plugin-binaries.js`，否则插件面板会
+提示「插件二进制缺失」。
 
 测试（在仓库根目录执行）：
 

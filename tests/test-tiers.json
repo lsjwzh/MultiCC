@@ -3994,6 +3994,15 @@
       ]
     },
     {
+      "path": "tests/test-plugin-binaries.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:standalone",
+      "entrypoints": [
+        "npm:test:standalone"
+      ]
+    },
+    {
       "path": "tests/test-plugins-routes.js",
       "tier": "other",
       "lane": "deterministic",

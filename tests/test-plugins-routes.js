@@ -16,7 +16,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createPluginsRoutes } = require('../src/routes/plugins');
+const { createPluginsRoutes, resolveBinary } = require('../src/routes/plugins');
 
 function makeStubPluginsDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-plugins-test-'));
@@ -141,6 +141,17 @@ test('run reports missing binary as 503', async () => {
   const result = await runtime.runPluginCommand('no-binary', 'a', {});
   assert.equal(result.status, 503);
   assert.match(result.payload.error, /二进制/);
+});
+
+test('resolveBinary finds the .exe cargo writes on Windows', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-plugin-exe-'));
+  const manifest = { engine: { type: 'command', binary: 'bin/tool', binaryPlatformDir: 'bin' } };
+  fs.mkdirSync(path.join(dir, 'bin', 'win32-x64'), { recursive: true });
+  const exe = path.join(dir, 'bin', 'win32-x64', 'tool.exe');
+  fs.writeFileSync(exe, 'MZ');
+  assert.equal(resolveBinary({ manifest, dir }, 'win32', 'x64'), exe);
+  assert.equal(resolveBinary({ manifest, dir }, 'linux', 'x64'), null);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('static route serves only the declared ui subtree', async () => {

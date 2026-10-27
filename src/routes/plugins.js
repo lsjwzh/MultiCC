@@ -60,10 +60,13 @@ function resolveBinary({ manifest, dir }, platform, arch) {
   const candidates = [];
   const binary = engine.binary;
   const base = path.basename(binary);
+  // Windows 上 cargo 产物带 .exe，manifest 里写的是不带后缀的名字。
+  const names = platform === 'win32' && !base.endsWith('.exe') ? [base, `${base}.exe`] : [base];
   if (engine.binaryPlatformDir) {
-    candidates.push(path.join(dir, engine.binaryPlatformDir, `${platform}-${arch}`, base));
+    for (const name of names) candidates.push(path.join(dir, engine.binaryPlatformDir, `${platform}-${arch}`, name));
   }
   candidates.push(path.join(dir, binary));
+  if (names.length > 1) candidates.push(path.join(dir, `${binary}.exe`));
   for (const candidate of candidates) {
     // 只接受插件目录内的路径（binary 是相对路径拼进 dir，但配置可能写 ../）。
     const resolved = path.resolve(candidate);
