@@ -151,11 +151,41 @@ const API_FORMATS = Object.freeze({
 // /responses natively (probed 2026-09-12 — DeepSeek, GLM, Qwen, MiniMax,
 // Moonshot, XFYun, StepFun, Ark all return 401 not 404 on /responses), so the
 // local responses↔chat conversion bridge was retired.
+//
+// The pool (appType) fixes the wire format: a claude row stores ANTHROPIC_* env
+// and a codex row stores a config.toml with wire_api = "responses". Every
+// route builder reads credentials from the shape that matches the format, so a
+// codex row labelled 'anthropic' had no usable key on any lane — the label is
+// therefore derived from the pool, never trusted on its own.
+function apiFormatForAppType(appType) {
+  if (appType === 'claude') return API_FORMATS.ANTHROPIC;
+  if (appType === 'codex') return API_FORMATS.OPENAI_RESPONSES;
+  return null;
+}
+
 function normalizeApiFormat(value, appType, cfg = {}) {
+  const fixed = apiFormatForAppType(appType);
+  if (fixed) return fixed;
   const raw = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
   if (raw === 'anthropic' || raw === 'messages' || raw === 'anthropic_messages') return API_FORMATS.ANTHROPIC;
-  if (appType === 'claude') return API_FORMATS.ANTHROPIC;
   return API_FORMATS.OPENAI_RESPONSES;
+}
+
+// An explicit apiFormat from a client that contradicts the pool is a form bug
+// (e.g. CLI=Codex + protocol=Anthropic): reject it instead of storing a row
+// that no lane can run. Legacy spellings that normalize to the pool's format
+// ('openai_chat', 'messages') are still accepted.
+function assertApiFormatMatchesAppType(apiFormat, appType) {
+  if (apiFormat === undefined || apiFormat === null || apiFormat === '') return;
+  const raw = String(apiFormat).trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const asked = (raw === 'anthropic' || raw === 'messages' || raw === 'anthropic_messages')
+    ? API_FORMATS.ANTHROPIC : API_FORMATS.OPENAI_RESPONSES;
+  const fixed = apiFormatForAppType(appType);
+  if (fixed && asked !== fixed) {
+    throw new Error(appType === 'codex'
+      ? 'Codex 线路只能用 OpenAI Responses 协议；Anthropic 协议的上游请建成 Claude 线路'
+      : 'Claude 线路只能用 Anthropic Messages 协议；OpenAI 协议的上游请建成 Codex 线路');
+  }
 }
 
 function compatibleClisForFormat(apiFormat) {
@@ -895,6 +925,7 @@ function createProvider({ appType, name, baseUrl, authToken, model, models, apiF
   // Official entries are never created here (they come from the account
   // catalog), so a brand-new provider can't own a dedicated egress.
   if (egressBinding !== undefined) throw new Error('专用出口只能绑在 Claude 官方账号线路上');
+  assertApiFormatMatchesAppType(apiFormat, appType);
   // Generate id first so buildSettingsConfig can embed it in the proxy base_url.
   const id = crypto.randomUUID();
   const cfg = (settingsConfig && typeof settingsConfig === 'object')
@@ -972,6 +1003,7 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
   if (egressBinding !== undefined) {
     throw new Error('专用出口只能绑在 Claude 官方账号线路上');
   }
+  assertApiFormatMatchesAppType(apiFormat, appType);
   const list = loadStore();
   const p = list.find(x => x.appType === appType && x.id === id);
   if (!p) throw new Error('provider not found');
@@ -1146,7 +1178,10 @@ function migrateLegacyProviderProtocols() {
     const legacyChatBridge = provider.appType === 'codex'
       && (provider.apiFormat === 'openai_chat'
         || (cfg.proxyTarget && cfg.proxyTarget.mode === 'chat-to-responses'));
-    if (Object.values(API_FORMATS).includes(provider.apiFormat) && !legacyChatBridge) return provider;
+    // A pool/label mismatch (e.g. a codex row saved as 'anthropic' by the old
+    // add-provider form) is repaired here too: the pool decides the format.
+    const poolMismatch = provider.apiFormat !== normalizeApiFormat(provider.apiFormat, provider.appType, cfg);
+    if (Object.values(API_FORMATS).includes(provider.apiFormat) && !legacyChatBridge && !poolMismatch) return provider;
     const migrated = {
       ...provider,
       apiFormat: normalizeApiFormat(provider.apiFormat, provider.appType, cfg),

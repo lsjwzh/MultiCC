@@ -184,7 +184,23 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     await page.evaluate(`(()=>{const select=document.getElementById('air-provider-form').elements.preset;select.value='claude-deepseek';select.dispatchEvent(new Event('change'))})()`);
     assert.equal(await page.evaluate(`document.getElementById('air-provider-form').elements.model.value`), 'deepseek-v4-pro');
     assert.equal(await page.evaluate(`document.getElementById('air-provider-form').elements.models.value`),
-      'deepseek-v4-pro\ndeepseek-v4-flash');
+      'deepseek-v4-pro\ndeepseek-flash');
+    // 协议跟着 CLI 走、永远只读；切 CLI 时同厂商模板整套换成另一协议的那份。
+    const formState = `(()=>{const f=document.getElementById('air-provider-form').elements;return {preset:f.preset.value,appType:f.appType.value,apiFormat:f.apiFormat.value,locked:f.apiFormat.disabled,baseUrl:f.baseUrl.value,hint:document.getElementById('air-provider-protocol-hint').textContent}})()`;
+    let state = await page.evaluate(formState);
+    assert.equal(state.apiFormat, 'anthropic');
+    assert.equal(state.locked, true);
+    assert.match(state.hint, /Anthropic/);
+    await page.evaluate(`(()=>{const select=document.getElementById('air-provider-form').elements.appType;select.value='codex';select.dispatchEvent(new Event('change'))})()`);
+    state = await page.evaluate(formState);
+    assert.deepEqual([state.preset, state.appType, state.apiFormat, state.locked, state.baseUrl],
+      ['codex-deepseek', 'codex', 'openai_responses', true, 'https://api.deepseek.com']);
+    assert.match(state.hint, /OpenAI Responses/);
+    // 没有另一协议版本的模板：回到自定义并清掉它带进来的地址，不把 Anthropic 地址留给 Codex。
+    await page.evaluate(`(()=>{const select=document.getElementById('air-provider-form').elements.preset;select.value='claude-minimax';select.dispatchEvent(new Event('change'))})()`);
+    await page.evaluate(`(()=>{const select=document.getElementById('air-provider-form').elements.appType;select.value='codex';select.dispatchEvent(new Event('change'))})()`);
+    state = await page.evaluate(formState);
+    assert.deepEqual([state.preset, state.apiFormat, state.baseUrl], ['', 'openai_responses', '']);
     await page.evaluate(`document.querySelector('[data-provider-account="claude"]').click()`);
     assert.ok(await page.waitFor(`document.querySelector('[data-k="label"]') !== null`), '账号入口直接进入创建并登录流程');
   });

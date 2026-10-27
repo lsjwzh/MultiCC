@@ -1092,17 +1092,26 @@ class _ProviderEditorState extends State<_ProviderEditor> {
             if (!_isEdit) ...[
               const _FieldLabel('类型'),
               Row(children: [
-                _typeChoice('claude', 'Claude'),
+                _typeChoice('claude', 'Claude · Anthropic'),
                 const SizedBox(width: 8),
-                _typeChoice('codex', 'Codex'),
+                _typeChoice('codex', 'Codex · OpenAI'),
               ]),
-              const SizedBox(height: 14),
+              const SizedBox(height: 6),
             ],
+            // 协议由类型决定（服务端按线路池定死，矛盾组合会被拒）。
+            Text(
+                _appType == 'claude'
+                    ? '协议：Anthropic Messages。Base URL 填 Anthropic 兼容地址（如 …/anthropic）；上游只有 OpenAI 接口请选 Codex。'
+                    : '协议：OpenAI Responses。Base URL 填到 /v1（CLI 请求 /v1/responses）；上游只有 Anthropic 接口请选 Claude。',
+                style: const TextStyle(color: AppColors.faint, fontSize: 11.5, height: 1.4)),
+            const SizedBox(height: 14),
             const _FieldLabel('名称'),
             _input(_name, hint: '如 DeepSeek / OpenRouter'),
             const SizedBox(height: 14),
             const _FieldLabel('Base URL'),
-            _input(_baseUrl, hint: 'https://api.deepseek.com/anthropic', mono: true),
+            _input(_baseUrl,
+                hint: _appType == 'claude' ? 'https://api.deepseek.com/anthropic' : 'https://api.deepseek.com',
+                mono: true),
             const SizedBox(height: 14),
             const _FieldLabel('API Key'),
             _input(_token,
@@ -1120,7 +1129,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
             _input(_model, hint: '如 deepseek-v4-pro', mono: true),
             const SizedBox(height: 14),
             const _FieldLabel('可用模型列表（每行一个，可选）'),
-            _input(_models, hint: 'deepseek-v4-pro\ndeepseek-v4-flash', mono: true, maxLines: 3),
+            _input(_models, hint: 'deepseek-v4-pro\ndeepseek-flash', mono: true, maxLines: 3),
             if (_appType == 'claude') ...[
               const SizedBox(height: 14),
               const _FieldLabel('模型映射（分级覆盖，可选）'),

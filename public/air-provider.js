@@ -26,17 +26,23 @@
   ]);
   const PRESET_REFRESH_MS = 24 * 60 * 60 * 1000;
   const PRESET_FETCH_TIMEOUT_MS = 6000;
+  // 与 public/provider-presets.json 同步（同 version、同条目；test-provider-catalog 校验）。
+  const BUNDLED_PRESET_VERSION = '2026-10-27';
   const LOCAL_PRESETS = [
     { id: 'claude-api', appType: 'claude', name: t('airProviderPresetClaudeApi'), nameKey: 'airProviderPresetClaudeApi', baseUrl: 'https://api.anthropic.com', model: '', apiFormat: 'anthropic' },
-    { id: 'claude-glm', appType: 'claude', name: t('airProviderPresetGlm'), nameKey: 'airProviderPresetGlm', baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-5.2', apiFormat: 'anthropic', aliasMap: { fable: { model: 'glm-5.3', name: 'GLM5.3' } } },
-    { id: 'claude-deepseek', appType: 'claude', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/anthropic', model: 'deepseek-v4-pro', models: ['deepseek-v4-pro', 'deepseek-v4-flash'], apiFormat: 'anthropic' },
-    { id: 'claude-minimax', appType: 'claude', name: 'MiniMax', baseUrl: 'https://api.minimaxi.com/anthropic', model: 'MiniMax-M2', apiFormat: 'anthropic' },
-    { id: 'claude-qwen', appType: 'claude', name: t('airProviderPresetQwen'), nameKey: 'airProviderPresetQwen', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus', apiFormat: 'anthropic' },
-    { id: 'claude-openrouter', appType: 'claude', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', apiFormat: 'anthropic' },
+    { id: 'claude-glm', appType: 'claude', name: t('airProviderPresetGlm'), nameKey: 'airProviderPresetGlm', baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-5.3', models: ['glm-5.3', 'glm-5.2'], apiFormat: 'anthropic', aliasMap: { fable: { model: 'glm-5.3', name: 'GLM5.3' } } },
+    { id: 'claude-deepseek', appType: 'claude', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/anthropic', model: 'deepseek-v4-pro', models: ['deepseek-v4-pro', 'deepseek-flash'], apiFormat: 'anthropic' },
+    { id: 'claude-kimi', appType: 'claude', name: 'Kimi (Moonshot)', baseUrl: 'https://api.moonshot.cn/anthropic', model: 'kimi-k3.1-pro', models: ['kimi-k3.1-pro', 'kimi-k3', 'kimi-k2.7-code'], apiFormat: 'anthropic' },
+    { id: 'claude-minimax', appType: 'claude', name: 'MiniMax', baseUrl: 'https://api.minimax.cn/anthropic', model: 'MiniMax-M3', models: ['MiniMax-M3', 'MiniMax-M3.1-Flash'], apiFormat: 'anthropic' },
+    { id: 'claude-qwen', appType: 'claude', name: t('airProviderPresetQwen'), nameKey: 'airProviderPresetQwen', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3.7-plus', models: ['qwen3.7-plus', 'qwen3.7-max', 'qwen3.6-flash'], apiFormat: 'anthropic' },
+    { id: 'claude-openrouter', appType: 'claude', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-5.5', models: ['anthropic/claude-sonnet-5.5', 'anthropic/claude-opus-5.5', 'anthropic/claude-haiku-5.5'], apiFormat: 'anthropic' },
+    { id: 'codex-deepseek', appType: 'codex', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro', models: ['deepseek-v4-pro', 'deepseek-flash'], apiFormat: 'openai_responses' },
+    { id: 'codex-glm', appType: 'codex', name: t('airProviderPresetGlm'), nameKey: 'airProviderPresetGlm', baseUrl: 'https://open.bigmodel.cn/api/v1', model: 'glm-5.3', models: ['glm-5.3', 'glm-5.2'], apiFormat: 'openai_responses' },
+    { id: 'codex-kimi', appType: 'codex', name: 'Kimi (Moonshot)', baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi-k3.1-pro', models: ['kimi-k3.1-pro', 'kimi-k3', 'kimi-k2.7-code'], apiFormat: 'openai_responses' },
+    { id: 'codex-qwen', appType: 'codex', name: t('airProviderPresetQwen'), nameKey: 'airProviderPresetQwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.7-plus', models: ['qwen3.7-plus', 'qwen3.7-max', 'qwen3.6-flash'], apiFormat: 'openai_responses' },
     { id: 'codex-xf-maas', appType: 'codex', name: t('airProviderPresetXfMaas'), nameKey: 'airProviderPresetXfMaas', baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v1', model: 'xopglm52', apiFormat: 'openai_responses' },
-    { id: 'codex-deepseek', appType: 'codex', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-v4-pro', models: ['deepseek-v4-pro', 'deepseek-v4-flash'], apiFormat: 'openai_responses' },
   ];
-  const localPresetCatalog = presetCatalogOf({ version: 'bundled', presets: LOCAL_PRESETS });
+  const localPresetCatalog = presetCatalogOf({ version: BUNDLED_PRESET_VERSION, presets: LOCAL_PRESETS });
   let presetCatalog = localPresetCatalog;
   let presetSource = 'local';
   let presetSyncedAt = 0;
@@ -121,7 +127,7 @@
       const list = groups.get(appType) || [];
       if (!list.length) continue;
       const group = document.createElement('optgroup');
-      group.label = appType === 'claude' ? 'Claude' : 'Codex';
+      group.label = t(appType === 'claude' ? 'airProviderPresetGroupClaude' : 'airProviderPresetGroupCodex');
       for (const preset of list) {
         const option = make('option', presetLabel(preset));
         option.value = preset.id;
@@ -242,7 +248,7 @@
         <div class="section-heading"><div><span class="eyebrow">${t('airAdminPanelProvider')}</span><h2 id="air-provider-form-title">${t('airProviderFormTitleNew')}</h2></div><button type="button" id="air-provider-close" aria-label="${t('airProviderClose')}">×</button></div>
         <p>${t('airProviderFormIntro')}</p>
         <div id="air-provider-create-choice" class="air-provider-create-choice">
-          <section><strong>${t('airProviderAddByKey')}</strong><span>${t('airProviderAddByKeyDesc')}</span><div><button type="button" data-provider-key="claude">Claude</button><button type="button" data-provider-key="codex">Codex</button></div></section>
+          <section><strong>${t('airProviderAddByKey')}</strong><span>${t('airProviderAddByKeyDesc')}</span><div><button type="button" data-provider-key="claude">Claude · Anthropic</button><button type="button" data-provider-key="codex">Codex · OpenAI</button></div></section>
           <section><strong>${t('airProviderAddAccount')}</strong><span>${t('airProviderAddAccountDesc')}</span><div><button type="button" data-provider-account="claude">Claude</button><button type="button" data-provider-account="codex">Codex</button></div></section>
         </div>
         <div id="air-provider-api-fields">
@@ -253,7 +259,8 @@
           <span id="air-provider-preset-status"></span>
           <button type="button" id="air-provider-preset-refresh">${t('airProviderPresetRefresh')}</button>
         </div>
-        <div class="form-row"><label>CLI<select name="appType"><option value="claude">Claude</option><option value="codex">Codex</option></select></label><label>${t('airProviderUpstreamProtocol')}<select name="apiFormat"><option value="anthropic">Anthropic Messages</option><option value="openai_responses">OpenAI Responses</option></select></label></div>
+        <div class="form-row"><label>CLI<select name="appType"><option value="claude">Claude</option><option value="codex">Codex</option></select></label><label>${t('airProviderUpstreamProtocol')}<select name="apiFormat" disabled><option value="anthropic">Anthropic Messages</option><option value="openai_responses">OpenAI Responses</option></select></label></div>
+        <p id="air-provider-protocol-hint" class="air-provider-protocol-hint"></p>
         <label>${t('airProviderName')}<input name="name" required maxlength="240" placeholder="${t('airProviderNamePlaceholder')}"></label>
         <label>Base URL<input name="baseUrl" maxlength="2048" placeholder="${t('airProviderBaseUrlPlaceholder')}"></label>
         <label>API Key<input name="authToken" type="password" maxlength="4096" autocomplete="off" placeholder="${t('airProviderTokenPlaceholder')}"></label>
@@ -279,7 +286,7 @@
     el('air-provider-close').onclick = () => dialog.close();
     el('air-provider-cancel').onclick = () => dialog.close();
     form.elements.preset.onchange = () => applyPreset(form.elements.preset.value);
-    form.elements.appType.onchange = syncDialogProtocol;
+    form.elements.appType.onchange = changeDialogAppType;
     renderPresetOptions();
     renderPresetStatus();
     el('air-provider-preset-refresh').onclick = () => { void refreshPresets(true); };
@@ -302,13 +309,51 @@
     return dialog;
   }
 
+  // 协议不是独立选项：claude 线路存 ANTHROPIC_* env、codex 线路存 wire_api=responses
+  // 的 config.toml，服务端（core.js apiFormatForAppType）按线路池定死协议并拒收
+  // 矛盾组合。这里只把结果显示出来，下拉永远只读。
+  function protocolForAppType(appType) {
+    return appType === 'claude' ? 'anthropic' : 'openai_responses';
+  }
+
   function syncDialogProtocol() {
     const form = el('air-provider-form');
     if (!form) return;
     const claude = form.elements.appType.value === 'claude';
-    form.elements.apiFormat.disabled = claude;
-    if (claude) form.elements.apiFormat.value = 'anthropic';
+    form.elements.apiFormat.value = protocolForAppType(form.elements.appType.value);
+    form.elements.apiFormat.disabled = true;
+    el('air-provider-protocol-hint').textContent = t(claude ? 'airProviderProtocolHintClaude' : 'airProviderProtocolHintCodex');
     el('air-provider-aliases').hidden = !claude;
+  }
+
+  // 同一厂商两种协议的模板按 id 约定成对：`claude-<vendor>` / `codex-<vendor>`。
+  function siblingPreset(preset, appType) {
+    const vendor = String(preset && preset.id || '').replace(/^(claude|codex)-/, '');
+    return vendor ? presetById(`${appType}-${vendor}`) : null;
+  }
+
+  // 套了模板后再切 CLI：模板里的 Base URL / 模型是另一种协议的，留着就会把
+  // Anthropic 地址存进 Codex 线路。有同厂商另一协议的模板就整套换过去（已填的
+  // API Key 保留），没有就清掉模板带进来的字段，回到自定义。
+  function changeDialogAppType() {
+    const form = el('air-provider-form');
+    if (!form) return;
+    const appType = form.elements.appType.value;
+    const current = presetById(form.elements.preset.value);
+    if (current && current.appType !== appType) {
+      const sibling = siblingPreset(current, appType);
+      if (sibling) {
+        form.elements.preset.value = sibling.id;
+        applyPreset(sibling.id);
+        return;
+      }
+      form.elements.preset.value = '';
+      if (form.elements.baseUrl.value.trim() === (current.baseUrl || '')) form.elements.baseUrl.value = '';
+      if (form.elements.model.value.trim() === (current.model || '')) form.elements.model.value = '';
+      form.elements.models.value = '';
+      fillAliases(form, null);
+    }
+    syncDialogProtocol();
   }
 
   function applyPreset(key) {
@@ -319,7 +364,7 @@
     form.elements.name.value = presetLabel(preset);
     form.elements.baseUrl.value = preset.baseUrl || '';
     form.elements.model.value = preset.model || '';
-    form.elements.apiFormat.value = preset.apiFormat;
+    form.elements.apiFormat.value = protocolForAppType(preset.appType);
     form.elements.models.value = (preset.models && preset.models.length ? preset.models : [preset.model])
       .filter(Boolean).join('\n');
     fillAliases(form, preset.aliasMap || null);
@@ -427,7 +472,7 @@
     form.elements.providerId.value = provider?.id || '';
     form.elements.appType.value = provider?.appType || 'claude';
     form.elements.appType.disabled = !!provider;
-    form.elements.apiFormat.value = provider?.apiFormat || (provider?.appType === 'codex' ? 'openai_responses' : 'anthropic');
+    form.elements.apiFormat.value = protocolForAppType(form.elements.appType.value);
     form.elements.name.value = provider?.name || '';
     form.elements.baseUrl.value = provider?.baseUrl || '';
     form.elements.model.value = provider?.model || '';
@@ -454,7 +499,6 @@
     form.elements.authToken.disabled = locked;
     form.elements.model.disabled = locked;
     form.elements.models.disabled = locked;
-    if (locked) form.elements.apiFormat.disabled = true;
     for (const tier of ['opus', 'sonnet', 'haiku', 'fable']) {
       form.elements[`alias-${tier}-model`].disabled = locked;
       form.elements[`alias-${tier}-name`].disabled = locked;
@@ -494,7 +538,7 @@
         baseUrl: form.elements.baseUrl.value.trim(),
         model,
         models: catalogApi.normalizeModelOptions(form.elements.models.value, model),
-        apiFormat: form.elements.apiFormat.value,
+        apiFormat: protocolForAppType(appType),
         egressIpAllowlist,
       };
       const token = form.elements.authToken.value.trim();
