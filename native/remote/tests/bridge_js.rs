@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use support::*;
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::Notify;
@@ -606,6 +607,7 @@ async fn wait_until(mut check: impl FnMut() -> bool) {
     panic!("等待超时");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn rfb_pipes_bytes_both_ways_and_queues_pre_connect_messages() {
     let dir = temp_dir("rfb");
@@ -711,6 +713,7 @@ async fn rfb_closes_the_ws_with_1011_when_the_socket_is_unavailable() {
     let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn rfb_applies_backpressure_without_dropping_or_reordering_bytes() {
     let dir = temp_dir("rfb-order");
@@ -790,6 +793,7 @@ async fn rfb_applies_backpressure_without_dropping_or_reordering_bytes() {
     let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn rfb_stall_watchdog_counts_screen_data_never_outgoing_input() {
     let dir = temp_dir("rfb-stall");
@@ -848,4 +852,26 @@ async fn rfb_stall_watchdog_counts_screen_data_never_outgoing_input() {
     wait_until(|| ws.frames().len() >= 6).await;
     assert_eq!(ws.close_reason(), None);
     task.abort();
+}
+
+// Windows has no Unix socket transport; both video paths must report their
+// fallback instead of attempting a connection or accepting a broken stream.
+#[cfg(not(unix))]
+#[tokio::test]
+async fn unavailable_unix_transports_close_with_explicit_fallbacks() {
+    let ws = FakeWs::new();
+    let (_tx, rx) = mpsc::unbounded_channel();
+    rfb::run(ws.clone(), rx, RfbOptions::default()).await;
+    assert_eq!(ws.close_reason(), Some((1011, "rfb-unavailable".into())));
+
+    let ws = FakeWs::new();
+    let (_tx, rx) = mpsc::unbounded_channel();
+    multicc_remote::h264::run(
+        ws.clone(),
+        rx,
+        h264_opts(),
+        Arc::new(multicc_remote::stats::Registry::new()),
+    )
+    .await;
+    assert_eq!(ws.close_reason(), Some((1011, "h264-unavailable".into())));
 }

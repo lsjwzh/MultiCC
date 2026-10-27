@@ -23,6 +23,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: 检查 Rust 源码
+        shell: bash
         run: |
           cargo fmt --all --manifest-path native/Cargo.toml --check
           cargo clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings

@@ -7,6 +7,7 @@ mod support;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::{Json, Router};
+#[cfg(unix)]
 use multicc_remote::agent::{AgentClient, UnixAgentClient};
 use multicc_remote::annotation::handle_annotation;
 use multicc_remote::host::{self, Host};
@@ -120,6 +121,7 @@ fn input_whitelist_coerces_clamps_and_pins_the_session() {
 }
 
 // ── Agent 客户端 ───────────────────────────────────────────────────────
+#[cfg(unix)]
 #[tokio::test]
 async fn agent_call_speaks_one_json_line_over_the_unix_socket() {
     let dir = temp_dir("agent");

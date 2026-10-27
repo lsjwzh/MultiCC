@@ -26,7 +26,9 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::UnixStream;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+#[cfg(unix)]
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub const T_CONFIG: u8 = 1;
 pub const T_KEY: u8 = 2;

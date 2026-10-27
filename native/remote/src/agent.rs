@@ -92,6 +92,7 @@ async fn call_over_unix(_socket: Option<PathBuf>, _req: Value, _timeout: Duratio
 }
 
 /// JS 的 `error.code`：Node 给的是 ENOENT/ECONNREFUSED 这类短码。
+#[cfg(unix)]
 fn error_code(error: &std::io::Error) -> String {
     match error.raw_os_error() {
         Some(2) => "ENOENT".into(),
