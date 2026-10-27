@@ -118,10 +118,11 @@ const MIGRATION_DEBT = Object.freeze({
   // 没回来抬这一格，main 上这道闸已红；本轮再 +3 行（status 带回真实光标位置，给
   // scripts/remote-screen-probe.js 判定「悬停到达系统」）。按实测高水位登记，拆分条件不变。
   'scripts/macos-agent/MultiCCAgent.swift': Object.freeze({
-    ceiling: 3064,
+    ceiling: 3056,
     // 2026-10-27 补登记：远控手势一轮合入后实测 145870 字节（超上格 9 字节）没回来
     // 抬这一格，main 上这道闸已红；本轮零 Swift 变更，仅按实测对齐高水位。拆分条件不变。
-    byteCeiling: 145870,
+    // Permission requests now live in AgentPermissions.swift; ratchet the reduced source.
+    byteCeiling: 145299,
     target: 3000,
     reason: 'macOS desktop agent single-file implementation; split screen capture / input injection / permission probing next',
   }),
@@ -497,7 +498,8 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +1 双语键（airProviderRelayCopyImport）：已导入借道线路的「复制原始导入信息」
     //   按钮，中英各 1 行 = +2 行，重跑生成器实测 9806/631690。
     maxLines: 9806,
-    maxBytes: 631690,
+    // Existing permission guidance now explains the separate helper identity and list registration.
+    maxBytes: 632590,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

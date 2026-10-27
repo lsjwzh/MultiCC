@@ -91,7 +91,7 @@ signing_identity() {
 }
 
 [ -f "$SRC" ] || die "missing $SRC"
-SUM="$(cat "$SRC" "$HERE/macos-agent/LidBrightnessBridge.h" "$HERE/macos-agent/LidBrightnessBridge.m" "$HERE/macos-agent/MultiCCAgentH264.swift" | /usr/bin/openssl dgst -sha256 | awk '{print $NF}')"
+SUM="$(cat "$SRC" "$HERE/macos-agent/LidBrightnessBridge.h" "$HERE/macos-agent/LidBrightnessBridge.m" "$HERE/macos-agent/MultiCCAgentH264.swift" "$HERE/macos-agent/AgentPermissions.swift" | /usr/bin/openssl dgst -sha256 | awk '{print $NF}')"
 # shasum uses Perl, which can fail in a broken LC_CTYPE environment while a
 # shell pipeline still exits successfully. Never install with an empty stamp.
 [ "${#SUM}" -eq 64 ] || die "could not hash Agent sources"
@@ -100,6 +100,7 @@ STAMP="$APP/Contents/Resources/source.sha256"
 SIGNER_STAMP="$APP/Contents/Resources/signer"
 SIGNER="$(signing_identity)"
 REBUILT=""
+RESOURCES_CHANGED=""
 if [ -x "$BIN" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$SUM" ]; then
   echo "multicc-agent: binary up to date"
 else
@@ -134,6 +135,7 @@ else
   <key>CFBundleIdentifier</key><string>$LABEL</string>
   <key>CFBundleName</key><string>MultiCC Agent</string>
   <key>CFBundleExecutable</key><string>MultiCCAgent</string>
+  <key>CFBundleIconFile</key><string>AgentIcon.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1</string>
   <key>LSUIElement</key><true/>
@@ -144,7 +146,21 @@ INFO
   printf '%s\n' "$SUM" > "$STAMP"
 fi
 
-if [ -n "$REBUILT" ] || [ "$(cat "$SIGNER_STAMP" 2>/dev/null)" != "$SIGNER" ]; then
+# Repair old bundles even when the executable is current. Never rebuild Swift
+# just to update artwork, and never modify sealed resources on a no-op install.
+ICON="$HERE/macos-agent/AgentIcon.icns"
+[ -f "$ICON" ] || die "missing $ICON"
+if ! cmp -s "$ICON" "$APP/Contents/Resources/AgentIcon.icns"; then
+  cp "$ICON" "$APP/Contents/Resources/AgentIcon.icns"
+  RESOURCES_CHANGED=1
+fi
+if [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist" 2>/dev/null || true)" != AgentIcon.icns ]; then
+  /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconFile' "$APP/Contents/Info.plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleIconFile string AgentIcon.icns' "$APP/Contents/Info.plist"
+  RESOURCES_CHANGED=1
+fi
+
+if [ -n "$REBUILT" ] || [ -n "$RESOURCES_CHANGED" ] || [ "$(cat "$SIGNER_STAMP" 2>/dev/null)" != "$SIGNER" ]; then
   OLD_SIGNER="$(cat "$SIGNER_STAMP" 2>/dev/null || true)"
   # Installs from before the signer stamp existed were always ad-hoc.
   if [ -z "$OLD_SIGNER" ] && [ -z "$REBUILT" ]; then OLD_SIGNER=-; fi
@@ -164,6 +180,12 @@ if [ -n "$REBUILT" ] || [ "$(cat "$SIGNER_STAMP" 2>/dev/null)" != "$SIGNER" ]; t
   fi
 fi
 echo "multicc-agent: requirement $(codesign -dr - "$APP" 2>/dev/null | sed -n 's/^#* *designated => //p')"
+
+# Register the finished, signed bundle so System Settings can resolve its
+# display name and icon. This registers an app, never grants TCC permissions.
+if [ -z "$NO_LAUNCHCTL" ]; then
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1 || true
+fi
 
 mkdir -p "$DIR" "$(dirname "$LINK")" "$(dirname "$PLIST")"
 chmod 0700 "$DIR"
