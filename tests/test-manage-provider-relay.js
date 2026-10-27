@@ -270,6 +270,29 @@ test('new device sharing generates a per-link credential and exposes inventory/r
   assert.doesNotMatch(source, /RELAY_TOKEN_UNSET/);
 });
 
+test('imported relay lines and recorded shares expose a copy-again action', () => {
+  const ctx = loadModule();
+  const imported = { appType: 'claude', hasToken: true, baseUrl: 'https://lender.example:3000/claude-proxy/acct/remote' };
+  assert.equal(ctx.isRelayImportProvider(imported), true);
+  assert.equal(ctx.isRelayImportProvider({ appType: 'codex', hasToken: true, baseUrl: 'https://l.example/codex-proxy/official' }), true);
+  assert.equal(ctx.isRelayImportProvider({ ...imported, hasToken: false }), false, 'no stored credential, nothing to copy');
+  assert.equal(ctx.isRelayImportProvider({ ...imported, baseUrl: 'http://127.0.0.1:3000/claude-proxy/acct/remote' }), false, 'loopback is the local CPR pipeline');
+  assert.equal(ctx.isRelayImportProvider({ appType: 'claude', hasToken: true, baseUrl: 'https://api.deepseek.com/anthropic' }), false);
+  assert.equal(ctx.isRelayImportProvider({ appType: 'codex', hasToken: true, baseUrl: 'https://l.example/claude-proxy/acct/remote' }), false, 'protocol must match');
+
+  const card = fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8');
+  assert.match(card, /isRelayImportProvider\?\.\(provider\)/);
+  assert.match(card, /t\('airProviderRelayCopyImport'\)/);
+  const source = fs.readFileSync(SOURCE_PATH, 'utf8');
+  assert.match(source, /\/relay-import-code/);
+  assert.match(source, /\/api\/provider-relay-shares\/\$\{encodeURIComponent\(shareId\)\}\/code/);
+  assert.match(source, /share\.recoverable/);
+  const zh = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'assets', 'i18n', 'zh.json'), 'utf8'));
+  const en = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'assets', 'i18n', 'en.json'), 'utf8'));
+  assert.equal(zh.airProviderRelayCopyImport, '复制原始导入信息');
+  assert.ok(en.airProviderRelayCopyImport);
+});
+
 test('advanced provider options use goal-based choices instead of advanced-account jargon', () => {
   const panel = fs.readFileSync(path.join(ROOT, 'public', 'air-provider-advanced.js'), 'utf8');
   const zh = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'assets', 'i18n', 'zh.json'), 'utf8'));

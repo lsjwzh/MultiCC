@@ -806,6 +806,19 @@ function getProvider(appType, id) {
   return loadStore().find(p => p.id === id && (!appType || p.appType === appType)) || null;
 }
 
+// Raw bearer credential of a stored provider, for the "copy original import
+// info" action on a relay-imported line. Only the owner-facing route calls it;
+// summaries keep exposing the masked token only.
+function getRelayImportToken(appType, id) {
+  const p = getProvider(appType, id);
+  if (!p || (officialCatalog && officialCatalog.isOfficial && officialCatalog.isOfficial(p))) return '';
+  const cfg = appType === 'codex' ? effectiveCodexSettings(p) : parseConfig(p.settingsConfig);
+  const token = appType === 'codex'
+    ? (cfg.auth && cfg.auth.OPENAI_API_KEY)
+    : ((cfg.env || {}).ANTHROPIC_AUTH_TOKEN || (cfg.env || {}).ANTHROPIC_API_KEY);
+  return typeof token === 'string' ? token.trim() : '';
+}
+
 function getProviderSummary(appType, id) {
   const p = getProvider(appType, id);
   return p ? summarize(p) : null;
@@ -2626,6 +2639,7 @@ module.exports = {
   readCodexOfficialModels,
   CODEX_OFFICIAL_MODELS_FALLBACK,
   summarize,
+  getRelayImportToken,
   getProviderUsageStats,
   readDailyWindows,
   CLAUDE_ROUTING_KEYS,

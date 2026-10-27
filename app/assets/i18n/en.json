@@ -2134,6 +2134,7 @@
   "airProviderAdvRelayImport": "Use a route from another device",
   "airProviderAdvRelayImportHint": "Paste a share code created by another MultiCC device",
   "airProviderAdvRelayRecords": "View sharing history",
+  "airProviderRelayCopyImport": "Copy original import info",
   "airProviderRelayShare": "Share with another device",
   "airProviderAdvZcodeTitle": "ZCode native connection / Coding Plan",
   "airProviderAdvZcodeDesc": "The official configuration used when a session picks “ZCode native / Coding Plan”. Create ordinary API providers above; ZCode generates an isolated config per session and leaves this native connection alone.",
