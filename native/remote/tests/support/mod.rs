@@ -118,7 +118,10 @@ pub struct FakeAgent {
 
 impl FakeAgent {
     pub fn new(reply: impl Fn(&Value) -> Value + Send + Sync + 'static) -> Arc<Self> {
-        Arc::new(FakeAgent { calls: Mutex::new(Vec::new()), reply: Mutex::new(Box::new(reply)) })
+        Arc::new(FakeAgent {
+            calls: Mutex::new(Vec::new()),
+            reply: Mutex::new(Box::new(reply)),
+        })
     }
 
     pub fn set(&self, reply: impl Fn(&Value) -> Value + Send + Sync + 'static) {
@@ -126,11 +129,21 @@ impl FakeAgent {
     }
 
     pub fn requests(&self) -> Vec<Value> {
-        self.calls.lock().unwrap().iter().map(|(req, _)| req.clone()).collect()
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(req, _)| req.clone())
+            .collect()
     }
 
     pub fn timeouts(&self) -> Vec<Option<Duration>> {
-        self.calls.lock().unwrap().iter().map(|(_, timeout)| *timeout).collect()
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, timeout)| *timeout)
+            .collect()
     }
 
     pub fn reset(&self) {
@@ -164,14 +177,21 @@ pub fn mac_exec(log: Arc<Mutex<Vec<Vec<String>>>>) -> Exec {
         let log = log.clone();
         let cmd = cmd.clone();
         Box::pin(async move {
-            log.lock().unwrap().push(std::iter::once(cmd.clone()).chain(args.iter().cloned()).collect());
+            log.lock().unwrap().push(
+                std::iter::once(cmd.clone())
+                    .chain(args.iter().cloned())
+                    .collect(),
+            );
             match cmd.as_str() {
                 "osascript" => Ok("0, 0, 1470, 956\n".to_string()),
                 "sips" if args.first().map(|a| a == "-g").unwrap_or(false) => {
                     Ok("pixelWidth: 2940\npixelHeight: 1912\n".to_string())
                 }
                 "sips" => {
-                    let index = args.iter().position(|a| a == "--out").ok_or("sips 没有 --out")?;
+                    let index = args
+                        .iter()
+                        .position(|a| a == "--out")
+                        .ok_or("sips 没有 --out")?;
                     std::fs::write(&args[index + 1], "img").map_err(|e| e.to_string())?;
                     Ok(String::new())
                 }
@@ -218,14 +238,18 @@ pub fn frame(ty: u8, body: &[u8]) -> Vec<u8> {
 
 /// 线协议金样：路径从 CARGO_MANIFEST_DIR 回到仓库根。
 pub fn wire_fixture() -> Value {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/remote-screen-wire.json");
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()));
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/remote-screen-wire.json");
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()));
     serde_json::from_str(&text).expect("wire fixture 不是 JSON")
 }
 
 // ── HTTP 响应读数 ──────────────────────────────────────────────────────
 pub async fn body_json(response: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes)
         .unwrap_or_else(|_| panic!("响应体不是 JSON: {:?}", String::from_utf8_lossy(&bytes)))
 }

@@ -46,10 +46,23 @@ mod tests {
 
     #[test]
     fn truthiness_matches_javascript() {
-        for falsy in [None, Some(json!(null)), Some(json!("")), Some(json!(0)), Some(json!(false))] {
+        for falsy in [
+            None,
+            Some(json!(null)),
+            Some(json!("")),
+            Some(json!(0)),
+            Some(json!(false)),
+        ] {
             assert!(!truthy(falsy.as_ref()), "{falsy:?}");
         }
-        for truthy_value in [json!(1), json!(-1), json!("x"), json!(true), json!([]), json!({})] {
+        for truthy_value in [
+            json!(1),
+            json!(-1),
+            json!("x"),
+            json!(true),
+            json!([]),
+            json!({}),
+        ] {
             assert!(truthy(Some(&truthy_value)), "{truthy_value}");
         }
     }

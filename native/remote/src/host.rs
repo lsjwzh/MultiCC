@@ -112,8 +112,8 @@ fn join(dir: &str, name: &str) -> String {
 
 pub fn profile_for(platform: &str, home: &str, env: &HashMap<String, String>) -> Profile {
     if platform == "darwin" {
-        let dir = env_value(env, "MULTICC_AGENT_DIR")
-            .unwrap_or_else(|| join(home, ".multicc/agent"));
+        let dir =
+            env_value(env, "MULTICC_AGENT_DIR").unwrap_or_else(|| join(home, ".multicc/agent"));
         return Profile {
             platform: platform.into(),
             label: "macOS".into(),
@@ -126,7 +126,8 @@ pub fn profile_for(platform: &str, home: &str, env: &HashMap<String, String>) ->
                 env_value(env, "MULTICC_AGENT_RFB_SOCK").unwrap_or_else(|| join(&dir, "rfb.sock")),
             ),
             h264_sock: Some(
-                env_value(env, "MULTICC_AGENT_H264_SOCK").unwrap_or_else(|| join(&dir, "h264.sock")),
+                env_value(env, "MULTICC_AGENT_H264_SOCK")
+                    .unwrap_or_else(|| join(&dir, "h264.sock")),
             ),
             features: Features::MAC,
             modifier: "cmd".into(),
@@ -143,7 +144,8 @@ pub fn profile_for(platform: &str, home: &str, env: &HashMap<String, String>) ->
             supported: false,
             transport: "named-pipe".into(),
             agent_sock: Some(
-                env_value(env, "MULTICC_AGENT_PIPE").unwrap_or_else(|| "\\\\.\\pipe\\multicc-agent".into()),
+                env_value(env, "MULTICC_AGENT_PIPE")
+                    .unwrap_or_else(|| "\\\\.\\pipe\\multicc-agent".into()),
             ),
             rfb_sock: None,
             h264_sock: None,
@@ -158,7 +160,8 @@ pub fn profile_for(platform: &str, home: &str, env: &HashMap<String, String>) ->
     //
     // installHint：Linux 的 agent 不随服务端自动装（要本机编译），连不上 agent 时
     // 前端把这条命令原样给用户。路径相对服务端目录（发行包里同样存在）。
-    let runtime = env_value(env, "XDG_RUNTIME_DIR").unwrap_or_else(|| format!("/run/user/{}", uid()));
+    let runtime =
+        env_value(env, "XDG_RUNTIME_DIR").unwrap_or_else(|| format!("/run/user/{}", uid()));
     Profile {
         platform: "linux".into(),
         label: "Linux".into(),
@@ -257,7 +260,13 @@ pub struct Host {
 impl Host {
     pub fn new(profile: Profile, exec: Exec, call: Option<HostCall>) -> Self {
         let is_mac = profile.platform == "darwin";
-        Self { profile, is_mac, logical: Mutex::new(None), exec, call }
+        Self {
+            profile,
+            is_mac,
+            logical: Mutex::new(None),
+            exec,
+            call,
+        }
     }
 
     /// 按编译目标和进程环境推导画像。
@@ -286,19 +295,28 @@ impl Host {
     /// 才成立（乘任何系数都会让坐标整体偏移）。
     pub async fn logical_size(&self, phys_w: f64, phys_h: f64) -> Size {
         if !self.profile.supported {
-            return Size { width: 0.0, height: 0.0 };
+            return Size {
+                width: 0.0,
+                height: 0.0,
+            };
         }
         if let Some(cached) = *self.logical.lock().unwrap() {
             return cached;
         }
         if !self.is_mac {
-            let size = Size { width: phys_w.max(0.0), height: phys_h.max(0.0) };
+            let size = Size {
+                width: phys_w.max(0.0),
+                height: phys_h.max(0.0),
+            };
             *self.logical.lock().unwrap() = Some(size);
             return size;
         }
         let out = (self.exec)(
             "osascript".into(),
-            vec!["-e".into(), "tell application \"Finder\" to get bounds of window of desktop".into()],
+            vec![
+                "-e".into(),
+                "tell application \"Finder\" to get bounds of window of desktop".into(),
+            ],
             Duration::from_millis(4000),
         )
         .await;
@@ -307,17 +325,26 @@ impl Host {
             let w = parts.get(2).copied().flatten().unwrap_or(0) as f64;
             let h = parts.get(3).copied().flatten().unwrap_or(0) as f64;
             if w > 0.0 && h > 0.0 {
-                let size = Size { width: w, height: h };
+                let size = Size {
+                    width: w,
+                    height: h,
+                };
                 *self.logical.lock().unwrap() = Some(size);
                 return size;
             }
         }
         if phys_w > 0.0 {
-            let size = Size { width: (phys_w / 2.0).round(), height: (phys_h / 2.0).round() };
+            let size = Size {
+                width: (phys_w / 2.0).round(),
+                height: (phys_h / 2.0).round(),
+            };
             *self.logical.lock().unwrap() = Some(size);
             return size;
         }
-        Size { width: 0.0, height: 0.0 }
+        Size {
+            width: 0.0,
+            height: 0.0,
+        }
     }
 
     /// 已缓存的主屏逻辑尺寸（出过帧之后才非空）；标注换算需要它，且不能再触发采样。
@@ -368,9 +395,17 @@ impl Host {
         }
         let reply = call(Value::Object(req), Some(Duration::from_millis(15000))).await;
         if crate::agent::agent_failed(&reply) {
-            let reason = reply.get("error").and_then(|v| v.as_str()).unwrap_or("snap-failed").to_string();
+            let reason = reply
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("snap-failed")
+                .to_string();
             // 裁到屏幕外面是调用方的错（400），其余是 agent 侧的问题（502）。
-            let status = if reason == "region-outside-screen" { 400 } else { 502 };
+            let status = if reason == "region-outside-screen" {
+                400
+            } else {
+                502
+            };
             return Err(AppError::from_agent(status, reason, reply));
         }
         let width = number_field(&reply, "width");
@@ -378,7 +413,11 @@ impl Host {
         if width > 0.0 && height > 0.0 {
             *self.logical.lock().unwrap() = Some(Size { width, height });
         }
-        Ok(CaptureInfo { width, height, region: region_value(&reply, "crop") })
+        Ok(CaptureInfo {
+            width,
+            height,
+            region: region_value(&reply, "crop"),
+        })
     }
 
     fn mac_only(&self, name: &str) -> AppResult<()> {
@@ -395,12 +434,21 @@ impl Host {
         self.mac_only("imageSize")?;
         let out = (self.exec)(
             "sips".into(),
-            vec!["-g".into(), "pixelWidth".into(), "-g".into(), "pixelHeight".into(), file.into()],
+            vec![
+                "-g".into(),
+                "pixelWidth".into(),
+                "-g".into(),
+                "pixelHeight".into(),
+                file.into(),
+            ],
             Duration::from_millis(8000),
         )
         .await
         .map_err(|message| AppError::new(502, message))?;
-        Ok(Size { width: grab_label(&out, "pixelWidth"), height: grab_label(&out, "pixelHeight") })
+        Ok(Size {
+            width: grab_label(&out, "pixelWidth"),
+            height: grab_label(&out, "pixelHeight"),
+        })
     }
 
     /// 先按原生像素裁，再编码：局部放大因此保留原始细节（v2.4.1）。
@@ -435,7 +483,11 @@ impl Host {
         resample_width: Option<f64>,
     ) -> AppResult<()> {
         self.mac_only("convertImage")?;
-        let mut args = vec!["-s".to_string(), "format".to_string(), if jpeg { "jpeg".into() } else { "png".into() }];
+        let mut args = vec![
+            "-s".to_string(),
+            "format".to_string(),
+            if jpeg { "jpeg".into() } else { "png".into() },
+        ];
         if jpeg {
             if let Some(q) = quality {
                 args.push("-s".into());
@@ -482,8 +534,21 @@ impl Host {
         map.insert("transport".into(), json!(p.transport));
         map.insert("features".into(), p.features.to_json());
         map.insert("modifier".into(), json!(p.modifier));
-        map.insert("installHint".into(), p.install_hint.clone().map(Value::String).unwrap_or(Value::Null));
-        map.insert("reason".into(), if p.supported { Value::Null } else { json!("platform-unsupported") });
+        map.insert(
+            "installHint".into(),
+            p.install_hint
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        );
+        map.insert(
+            "reason".into(),
+            if p.supported {
+                Value::Null
+            } else {
+                json!("platform-unsupported")
+            },
+        );
         Value::Object(map)
     }
 }
@@ -502,7 +567,9 @@ pub fn default_exec() -> Exec {
             match tokio::time::timeout(timeout, command.output()).await {
                 Err(_) => Err(format!("{cmd}: timeout")),
                 Ok(Err(error)) => Err(format!("{cmd}: {error}")),
-                Ok(Ok(output)) if !output.status.success() => Err(format!("{cmd}: exit {}", output.status)),
+                Ok(Ok(output)) if !output.status.success() => {
+                    Err(format!("{cmd}: exit {}", output.status))
+                }
                 Ok(Ok(output)) => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
             }
         })
@@ -530,14 +597,20 @@ fn parse_int_prefix(text: &str) -> Option<i64> {
 fn grab_label(out: &str, label: &str) -> f64 {
     // 对应 /pixelWidth:\s*(\d+)/
     let needle = format!("{label}:");
-    let Some(pos) = out.find(&needle) else { return 0.0 };
+    let Some(pos) = out.find(&needle) else {
+        return 0.0;
+    };
     let rest = out[pos + needle.len()..].trim_start();
     let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().unwrap_or(0.0)
 }
 
 fn number_field(value: &Value, key: &str) -> f64 {
-    value.get(key).and_then(|v| v.as_f64()).filter(|v| v.is_finite()).unwrap_or(0.0)
+    value
+        .get(key)
+        .and_then(|v| v.as_f64())
+        .filter(|v| v.is_finite())
+        .unwrap_or(0.0)
 }
 
 fn region_value(value: &Value, key: &str) -> Option<Value> {

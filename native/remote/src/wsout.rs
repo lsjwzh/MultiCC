@@ -63,13 +63,26 @@ pub fn spawn(socket: WebSocket) -> (Arc<WsChannel>, mpsc::UnboundedReceiver<Inco
     let task_open = open.clone();
     let task_close = close.clone();
     tokio::spawn(write_loop(sink, rx, task_queued, task_open, task_close));
-    (Arc::new(WsChannel { tx, queued, open, close }), in_rx)
+    (
+        Arc::new(WsChannel {
+            tx,
+            queued,
+            open,
+            close,
+        }),
+        in_rx,
+    )
 }
 
 /// 写任务主体。抽成泛型是为了单测能塞假 sink 真跑并发 —— 真的 `WebSocket` 在
 /// 测试里造不出来，而「先 send 后记账」的回绕只在高并发下才暴露。
-async fn write_loop<S>(mut sink: S, mut rx: mpsc::UnboundedReceiver<OutMsg>, task_queued: Arc<AtomicUsize>, task_open: Arc<AtomicBool>, task_close: Arc<CloseState>)
-where
+async fn write_loop<S>(
+    mut sink: S,
+    mut rx: mpsc::UnboundedReceiver<OutMsg>,
+    task_queued: Arc<AtomicUsize>,
+    task_open: Arc<AtomicBool>,
+    task_close: Arc<CloseState>,
+) where
     S: Sink<Message> + Unpin,
 {
     loop {
@@ -120,7 +133,10 @@ where
 }
 
 /// 读任务：断连时发送端被丢弃，桥收到 `None` 即「客户端关了」。
-pub fn spawn_reader(mut stream: futures_util::stream::SplitStream<WebSocket>, tx: mpsc::UnboundedSender<Incoming>) -> tokio::task::JoinHandle<()> {
+pub fn spawn_reader(
+    mut stream: futures_util::stream::SplitStream<WebSocket>,
+    tx: mpsc::UnboundedSender<Incoming>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(message) = stream.next().await {
             let mapped = match message {
@@ -142,7 +158,12 @@ pub fn spawn_reader(mut stream: futures_util::stream::SplitStream<WebSocket>, tx
 /// 反过来写（先 send 后 fetch_add）会输给写端：消息一进队列，写任务可能抢在
 /// 这里 fetch_add 之前就写进 socket 并 fetch_sub —— 从 0 减出 usize::MAX。
 /// 之后 buffered() 永远是天文数字，普通帧全被判为积压丢掉，画面黑且不自愈。
-fn enqueue(queued: &AtomicUsize, tx: &mpsc::UnboundedSender<OutMsg>, message: OutMsg, len: usize) -> bool {
+fn enqueue(
+    queued: &AtomicUsize,
+    tx: &mpsc::UnboundedSender<OutMsg>,
+    message: OutMsg,
+    len: usize,
+) -> bool {
     queued.fetch_add(len, Ordering::SeqCst);
     if tx.send(message).is_err() {
         // 写端已经退出：撤回这次记账，别把字节数白留在账上。
@@ -222,7 +243,10 @@ mod tests {
     impl Sink<Message> for CountingSink {
         type Error = std::io::Error;
 
-        fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
 
@@ -232,11 +256,17 @@ mod tests {
             Ok(())
         }
 
-        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
 
-        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
     }
@@ -256,7 +286,12 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         drop(rx);
         let queued = AtomicUsize::new(0);
-        assert!(!enqueue(&queued, &tx, OutMsg::Bin(Bytes::from_static(b"abcd")), 4));
+        assert!(!enqueue(
+            &queued,
+            &tx,
+            OutMsg::Bin(Bytes::from_static(b"abcd")),
+            4
+        ));
         assert_eq!(queued.load(Ordering::SeqCst), 0);
     }
 
@@ -301,7 +336,10 @@ mod tests {
                     for _ in 0..PER {
                         assert!(ws.try_send(Bytes::from_static(b"12345678")));
                         // 回绕后的值会是一个天文数字，立刻在这里露馅。
-                        assert!(ws.buffered() <= TOTAL, "queued bytes blew past the enqueued total");
+                        assert!(
+                            ws.buffered() <= TOTAL,
+                            "queued bytes blew past the enqueued total"
+                        );
                     }
                 }));
             }

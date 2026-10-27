@@ -65,9 +65,11 @@ pub fn factory() -> Option<P2pFactory> {
     if std::env::var("MULTICC_REMOTE_P2P").is_ok_and(|v| v == "0") {
         return None;
     }
-    Some(Arc::new(|opts: P2pOptions, tx: UnboundedSender<P2pEvent>| {
-        Box::new(Session::start(opts, tx)) as Box<dyn P2pControl>
-    }))
+    Some(Arc::new(
+        |opts: P2pOptions, tx: UnboundedSender<P2pEvent>| {
+            Box::new(Session::start(opts, tx)) as Box<dyn P2pControl>
+        },
+    ))
 }
 
 // ───────────────────────────── 同步外壳 ─────────────────────────────
@@ -105,7 +107,15 @@ impl P2pSink for Sink {
             let end = (off + chunk).min(bytes.len());
             let piece = bytes.slice(off..end);
             self.shared.queued.fetch_add(piece.len(), Ordering::SeqCst);
-            if self.shared.out_tx.send(OutFrame { gen: self.gen, data: piece }).is_err() {
+            if self
+                .shared
+                .out_tx
+                .send(OutFrame {
+                    gen: self.gen,
+                    data: piece,
+                })
+                .is_err()
+            {
                 self.shared.queued.fetch_sub(end - off, Ordering::SeqCst);
                 self.alive.store(false, Ordering::SeqCst);
                 return false;
@@ -151,10 +161,7 @@ impl P2pControl for Session {
                 if candidate.len() > MAX_CANDIDATE {
                     return;
                 }
-                let sdp_mid = c
-                    .get("sdpMid")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
+                let sdp_mid = c.get("sdpMid").and_then(Value::as_str).map(str::to_owned);
                 let sdp_mline_index = c
                     .get("sdpMLineIndex")
                     .and_then(Value::as_u64)
@@ -199,7 +206,9 @@ impl Session {
             out_tx,
             cmd_tx,
         });
-        let session = Session { shared: shared.clone() };
+        let session = Session {
+            shared: shared.clone(),
+        };
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 handle.spawn(async move {
@@ -289,10 +298,7 @@ impl PeerConnectionEventHandler for Handler {
     }
 
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
-        let _ = self.ev_tx.send(Ev::DataChannel {
-            gen: self.gen,
-            dc,
-        });
+        let _ = self.ev_tx.send(Ev::DataChannel { gen: self.gen, dc });
     }
 }
 
@@ -589,9 +595,7 @@ async fn build_answer(
     // trickle ICE：answer 立即发出（不等候选收集完）。
     if let Some(local) = pc.local_description().await {
         if !shared.closed.load(Ordering::SeqCst) {
-            let _ = ev_tx.send(P2pEvent::Signal(
-                json!({"t":"rtc-answer","sdp": local.sdp}),
-            ));
+            let _ = ev_tx.send(P2pEvent::Signal(json!({"t":"rtc-answer","sdp": local.sdp})));
         }
     }
     Ok(PeerState {

@@ -49,8 +49,9 @@ impl Default for RfbOptions {
         let connect: RfbConnector =
             Arc::new(|path| Box::pin(async move { UnixStream::connect(path).await }));
         #[cfg(not(unix))]
-        let connect: RfbConnector =
-            Arc::new(|_path| Box::pin(async { Err(io::Error::new(io::ErrorKind::Unsupported, "unix-socket")) }));
+        let connect: RfbConnector = Arc::new(|_path| {
+            Box::pin(async { Err(io::Error::new(io::ErrorKind::Unsupported, "unix-socket")) })
+        });
         Self {
             socket_path: None,
             timeout: Duration::from_millis(12000),
@@ -76,7 +77,12 @@ fn as_bytes(message: Incoming) -> Bytes {
 }
 
 /// 入队给写端，并在队列太大时拒绝（Node 的 `sock.writableLength + len > max`）。
-fn queue_write(tx: &mpsc::UnboundedSender<Bytes>, queued: &AtomicUsize, max: usize, data: Bytes) -> bool {
+fn queue_write(
+    tx: &mpsc::UnboundedSender<Bytes>,
+    queued: &AtomicUsize,
+    max: usize,
+    data: Bytes,
+) -> bool {
     let len = data.len();
     if queued.load(Ordering::SeqCst) + len > max {
         return false;
@@ -151,7 +157,16 @@ pub async fn drive(
             return die(&ws, "rfb-backpressure", true);
         }
     }
-    let outcome = pump(&ws, &mut input, &mut reader, &write_tx, &queued, &mut stall, &opts).await;
+    let outcome = pump(
+        &ws,
+        &mut input,
+        &mut reader,
+        &write_tx,
+        &queued,
+        &mut stall,
+        &opts,
+    )
+    .await;
     writer_task.abort();
     if let Some((reason, close_ws)) = outcome {
         die(&ws, reason, close_ws);

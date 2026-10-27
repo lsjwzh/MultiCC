@@ -11,6 +11,7 @@
 //! 这个端口只监听 127.0.0.1，它的唯一合法调用方就是同机的 Node 进程。
 
 use crate::agent::agent_failed;
+use crate::agent::AgentClient;
 use crate::annotation::handle_annotation;
 use crate::capture::{Frame, Screen, SESSION};
 use crate::describe::describe;
@@ -19,7 +20,6 @@ use crate::host::Host;
 use crate::region::{js_num, js_num_str, js_number, parse_region};
 use crate::stats::Registry;
 use crate::wake::WakeState;
-use crate::agent::AgentClient;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{DefaultBodyLimit, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -36,8 +36,9 @@ use std::time::Duration;
 pub const SECRET_HEADER: &str = "x-multicc-remote-secret";
 
 /// op 白名单：前端能触发的动作全集。`unlock` 故意不在这里 —— 它只属于唤屏接口。
-pub const INPUT_OPS: [&str; 10] =
-    ["click", "move", "scroll", "drag", "pointer", "type", "press", "release", "resume", "status"];
+pub const INPUT_OPS: [&str; 10] = [
+    "click", "move", "scroll", "drag", "pointer", "type", "press", "release", "resume", "status",
+];
 
 #[derive(Clone)]
 pub struct AppState {
@@ -52,7 +53,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(dir: PathBuf, host: Arc<Host>, agent: Arc<dyn AgentClient>, secret: impl Into<String>) -> Self {
+    pub fn new(
+        dir: PathBuf,
+        host: Arc<Host>,
+        agent: Arc<dyn AgentClient>,
+        secret: impl Into<String>,
+    ) -> Self {
         let screen = Arc::new(Screen::new(dir, host.clone(), agent.clone()));
         Self {
             screen,
@@ -75,9 +81,10 @@ impl AppState {
 pub fn json_response(status: u16, body: Value) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut response = (status, Json(body)).into_response();
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json; charset=utf-8"));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
     response
 }
 
@@ -88,7 +95,10 @@ pub fn send_error(st: &AppState, error: &AppError) -> Response {
     map.insert("error".into(), error_field(error));
     map.insert(
         "message".into(),
-        json!(describe(&describe_source(error), st.host.profile.install_hint.as_deref())),
+        json!(describe(
+            &describe_source(error),
+            st.host.profile.install_hint.as_deref()
+        )),
     );
     json_response(error.status, Value::Object(map))
 }
@@ -113,7 +123,9 @@ fn num_field(map: &Map<String, Value>, key: &str) -> Option<f64> {
 /// JS `num(v) || fallback`：不是「缺键才回退」，0、-0、NaN（num 已滤掉）都算假。
 /// drag 的 ms、click 的 count、scroll 的 amount 全靠这个语义。
 fn num_or(map: &Map<String, Value>, key: &str, fallback: f64) -> f64 {
-    num_field(map, key).filter(|value| *value != 0.0).unwrap_or(fallback)
+    num_field(map, key)
+        .filter(|value| *value != 0.0)
+        .unwrap_or(fallback)
 }
 
 fn valid_viewer(text: &str) -> bool {
@@ -127,7 +139,11 @@ pub fn build_input(body: &Value) -> AppResult<Value> {
     let map = body.as_object().unwrap_or(&empty);
     let op = string_or_empty(map.get("op"));
     if !INPUT_OPS.contains(&op.as_str()) {
-        let shown = if op.is_empty() { "(empty)".to_string() } else { op.clone() };
+        let shown = if op.is_empty() {
+            "(empty)".to_string()
+        } else {
+            op.clone()
+        };
         return Err(AppError::new(400, format!("op not allowed: {shown}")));
     }
     let mut req = Map::new();
@@ -216,8 +232,14 @@ pub fn input_timeout(req: &Value) -> Option<Duration> {
     if req.get("op").and_then(|v| v.as_str()) != Some("type") {
         return None;
     }
-    let length = req.get("text").and_then(|v| v.as_str()).map(|t| t.encode_utf16().count()).unwrap_or(0);
-    Some(Duration::from_millis((8000 + 30 * length).min(130000) as u64))
+    let length = req
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(|t| t.encode_utf16().count())
+        .unwrap_or(0);
+    Some(Duration::from_millis(
+        (8000 + 30 * length).min(130000) as u64
+    ))
 }
 
 /// 查询串/JSON 体里的 region 键。值保持原来的字符串形态，交给 parse_region 校验。
@@ -238,7 +260,9 @@ fn socket_path(socket: &Option<String>) -> Option<PathBuf> {
 /// 新版 Agent 才有 h264.sock；前端据此决定先试 H.264 还是直接用 noVNC。
 fn streams(st: &AppState) -> Value {
     let exists = |path: &Option<String>| {
-        path.as_ref().map(|p| Path::new(p).exists()).unwrap_or(false)
+        path.as_ref()
+            .map(|p| Path::new(p).exists())
+            .unwrap_or(false)
     };
     json!({ "h264": exists(&st.host.profile.h264_sock), "rfb": exists(&st.host.profile.rfb_sock) })
 }
@@ -250,11 +274,16 @@ pub async fn capabilities(State(st): State<AppState>) -> Response {
     };
     body.insert("streams".into(), streams(&st));
     let mut response = json_response(200, Value::Object(body));
-    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
-pub async fn frame(State(st): State<AppState>, Query(query): Query<HashMap<String, String>>) -> Response {
+pub async fn frame(
+    State(st): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
     let region = match parse_region(&region_object(&query)) {
         Ok(region) => region,
         Err(error) => return send_error(&st, &error),
@@ -308,7 +337,11 @@ pub async fn input(State(st): State<AppState>, body: Option<Json<Value>>) -> Res
         let picked = reply
             .get("reason")
             .filter(|value| crate::jsval::truthy(Some(value)))
-            .or_else(|| reply.get("error").filter(|value| crate::jsval::truthy(Some(value))));
+            .or_else(|| {
+                reply
+                    .get("error")
+                    .filter(|value| crate::jsval::truthy(Some(value)))
+            });
         if let Some(error) = picked {
             map.insert("error".into(), error.clone());
         }
@@ -353,7 +386,10 @@ pub async fn ws(
     State(st): State<AppState>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    let h264 = query.get("mode").map(|mode| mode == "h264").unwrap_or(false);
+    let h264 = query
+        .get("mode")
+        .map(|mode| mode == "h264")
+        .unwrap_or(false);
     ws.on_upgrade(move |socket| async move {
         let (out, input) = crate::wsout::spawn(socket);
         if h264 {
@@ -429,7 +465,10 @@ pub fn router_with_limit(state: AppState, body_limit: usize) -> Router {
         .route("/internal/annotation", post(annotation).layer(limit()))
         .route("/ws/remote-screen", get(ws))
         .layer(middleware::from_fn(json_payload_too_large))
-        .layer(middleware::from_fn_with_state(state.clone(), require_secret))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_secret,
+        ))
         .with_state(state)
 }
 
@@ -488,7 +527,10 @@ mod tests {
         stream.read_to_string(&mut raw).await.unwrap();
         server.abort();
         assert!(raw.starts_with("HTTP/1.1 413"), "{raw}");
-        assert!(raw.to_ascii_lowercase().contains("application/json"), "{raw}");
+        assert!(
+            raw.to_ascii_lowercase().contains("application/json"),
+            "{raw}"
+        );
         let payload = raw.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(payload).unwrap(),
