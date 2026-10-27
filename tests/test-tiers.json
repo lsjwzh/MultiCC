@@ -3189,6 +3189,15 @@
       ]
     },
     {
+      "path": "tests/test-env-doctor.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
       "path": "tests/test-error-envelope.js",
       "tier": "core",
       "lane": "deterministic",

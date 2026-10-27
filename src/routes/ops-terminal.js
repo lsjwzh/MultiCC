@@ -307,6 +307,10 @@ function createOpsTerminalRoutes({
 
 module.exports = {
   createOpsTerminalRoutes,
+  // The environment doctor (src/doctor/environment.js) starts from the same
+  // probe, so the AI and the panel never disagree about the host.
+  probeEnv,
+  execShell,
   startShell,
   GIT_INSTALL_COMMANDS,
   MAX_COMMAND_LENGTH,
