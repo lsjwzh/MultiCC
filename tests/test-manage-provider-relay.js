@@ -293,6 +293,38 @@ test('imported relay lines and recorded shares expose a copy-again action', () =
   assert.ok(en.airProviderRelayCopyImport);
 });
 
+test('copy reports the real clipboard outcome instead of always claiming success', async () => {
+  const ctx = loadModule();
+  const el = () => ({ focus() {}, select() {}, setSelectionRange() {} });
+  // Secure context: the async clipboard API wins.
+  let written = null;
+  ctx.navigator = { clipboard: { writeText: async text => { written = text; } } };
+  assert.equal(await ctx._relayCopyText('mcrelay1.abc', el()), true);
+  assert.equal(written, 'mcrelay1.abc');
+  // Plain-http LAN access: no clipboard API, execCommand decides.
+  ctx.navigator = {};
+  ctx.document.execCommand = () => true;
+  assert.equal(await ctx._relayCopyText('mcrelay1.abc', el()), true);
+  ctx.document.execCommand = () => false;
+  assert.equal(await ctx._relayCopyText('mcrelay1.abc', el()), false, 'a refused copy must not be reported as success');
+  // Clipboard API present but rejecting (permission denied) falls back, then reports honestly.
+  ctx.navigator = { clipboard: { writeText: async () => { throw new Error('denied'); } } };
+  ctx.document.execCommand = () => { throw new Error('blocked'); };
+  assert.equal(await ctx._relayCopyText('mcrelay1.abc', el()), false);
+
+  const status = { textContent: '', className: '' };
+  ctx._relayCopyResult(status, true);
+  assert.match(status.textContent, /已复制/);
+  assert.match(status.className, /ok/);
+  ctx._relayCopyResult(status, false);
+  assert.match(status.textContent, /手动复制/);
+  assert.match(status.className, /err/);
+
+  // The dialogs must show the result inside the overlay (a toast is hidden behind it).
+  const source = fs.readFileSync(SOURCE_PATH, 'utf8');
+  assert.doesNotMatch(source, /showToast\('分享码已复制'\)/);
+});
+
 test('advanced provider options use goal-based choices instead of advanced-account jargon', () => {
   const panel = fs.readFileSync(path.join(ROOT, 'public', 'air-provider-advanced.js'), 'utf8');
   const zh = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'assets', 'i18n', 'zh.json'), 'utf8'));
