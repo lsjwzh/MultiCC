@@ -230,6 +230,21 @@
     permissionRestartDirect.onclick = () => { void restartAgentFromCard(); };
     const permissionTools = make('div', null, 'air-global-foot');
     permissionTools.append(permissionButton, permissionRestartDirect);
+    // 一台 Mac 只有一个 Agent，几份 MultiCC（桌面版 / 独立包 / 源码）共用它：
+    // 谁装的、有没有被别的 MultiCC 换掉、哪份还在用旧规则，都在这里说清楚。
+    const agentInstall = make('div');
+    agentInstall.id = 'air-global-agent-install';
+    agentInstall.hidden = true;
+    const agentInstallText = make('div');
+    agentInstallText.id = 'air-global-agent-install-text';
+    const agentReplace = make('button', t('airGlobalAgentReplace'));
+    agentReplace.type = 'button';
+    agentReplace.id = 'air-global-agent-replace';
+    agentReplace.hidden = true;
+    agentReplace.onclick = () => { void replaceAgent(); };
+    const agentInstallFoot = make('div', null, 'air-global-foot');
+    agentInstallFoot.append(agentReplace);
+    agentInstall.append(agentInstallText, agentInstallFoot);
     const permissionDialog = make('dialog', null, 'air-global-permission-dialog');
     permissionDialog.id = 'air-global-permission-dialog';
     const permissionTitle = make('h3', t('airGlobalPermissionsTitle'));
@@ -320,6 +335,7 @@
       make('p', t('airGlobalPowerDesc'), 'air-global-desc'),
       foot,
       permissionTools,
+      agentInstall,
       permissionDialog,
       make('div', null, 'air-global-sep'),
       unlockLabel,
@@ -481,6 +497,50 @@
     }
   }
 
+  function agentOwnerText(owner) {
+    if (owner?.kind === 'source') return t('airGlobalAgentOwnerSource', { root: owner.root || '' });
+    if (owner?.kind === 'desktop') return t('airGlobalAgentOwnerDesktop', { version: owner.version || '' });
+    if (owner?.kind === 'package') return t('airGlobalAgentOwnerPackage', { version: owner.version || '' });
+    return t('airGlobalAgentOwnerUnknown');
+  }
+
+  async function loadAgentInstall() {
+    const box = el('air-global-agent-install');
+    if (!box) return;
+    let data;
+    try { data = await context.api('/api/system/agent-install'); }
+    catch (_) { box.hidden = true; return; }
+    if (box !== el('air-global-agent-install')) return;
+    const lines = [];
+    const replaced = data.replaced || data.last?.replaced;
+    if (replaced) lines.push(t('airGlobalAgentReplaced', { app: replaced.app }));
+    const plan = data.plan || {};
+    if (plan.reason === 'other-owner') lines.push(t('airGlobalAgentOtherOwner', { owner: agentOwnerText(plan.owner), build: plan.installedBuild }));
+    if (plan.reason === 'installed-newer') lines.push(t('airGlobalAgentNewer', {
+      owner: agentOwnerText(data.installed?.owner), installed: plan.installedBuild, shipped: plan.shippedBuild,
+    }));
+    if (data.last?.reason === 'signing-unavailable') lines.push(t('airGlobalAgentSigningDeferred'));
+    for (const other of data.others || []) {
+      if (other.legacyRules && !other.autoInstallDisabled) lines.push(t('airGlobalAgentLegacyDesktop', { version: other.version || '', app: other.app }));
+    }
+    el('air-global-agent-install-text').replaceChildren(...lines.map(line => make('p', line, 'air-global-desc')));
+    el('air-global-agent-replace').hidden = !(plan.reason === 'other-owner' && data.local === true);
+    box.hidden = !lines.length || data.applicable === false;
+  }
+
+  async function replaceAgent() {
+    const button = el('air-global-agent-replace');
+    if (!button || button.disabled) return;
+    button.disabled = true;
+    try {
+      const data = await context.api('/api/system/agent-install/replace', {}, 'POST');
+      if (!data.ok) throw new Error(data.error || data.reason || 'replace failed');
+      await loadAgentInstall();
+    } catch (error) {
+      el('air-global-agent-install-text').append(make('p', t('airGlobalAgentReplaceFailed', { message: error.message }), 'air-global-desc'));
+    } finally { button.disabled = false; }
+  }
+
   const AUTHORIZATION_TEXT = {
     authorized: 'airGlobalUnlockAuthorized',
     'waiting-for-user': 'airGlobalUnlockWaitAuthorize',
@@ -633,7 +693,7 @@
   }
 
   function load() {
-    return Promise.all([loadPower(), loadCpr(), loadRemoteScreen()]);
+    return Promise.all([loadPower(), loadCpr(), loadRemoteScreen(), loadAgentInstall()]);
   }
 
   function beginPowerSetup(action) {

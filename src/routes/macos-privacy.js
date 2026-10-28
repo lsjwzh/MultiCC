@@ -36,6 +36,10 @@ function createMacosPrivacyRoutes({
   agentBin = process.env.MULTICC_AGENT_BIN || path.join(homedir(), '.multicc', 'bin', 'multicc-agent'),
   uid = process.getuid?.(),
   delay = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  // Lazy: only the Agent install routes need it, and only on macOS.
+  agentProvisioner = () => require('../macos-agent-provision').sharedMacosAgentProvisioner({
+    rootDir: path.join(__dirname, '..', '..'), logger: log,
+  }),
   resolveAgentApp = () => {
     try {
       const binary = require('node:fs').realpathSync(agentBin);
@@ -102,6 +106,33 @@ function createMacosPrivacyRoutes({
     const outcome = await restarting;
     if (outcome.error) return res.status(503).json({ ok: false, error: outcome.error });
     return res.json(permissionReply(req, outcome.result));
+  }
+
+  // Who installed the shared Agent and whether this copy deferred to another
+  // one. File reads only — cheap enough to load with the settings card.
+  function agentInstallHandler(req, res) {
+    res.set('Cache-Control', 'no-store');
+    if (platform !== 'darwin') return res.json({ ok: true, applicable: false });
+    try {
+      const provisioner = agentProvisioner();
+      const seen = provisioner.inspect();
+      return res.json({ ok: true, applicable: true, local: isLocal(req), ...seen,
+        plan: provisioner.plan(), last: provisioner.getStatus() || null });
+    } catch (error) {
+      return res.status(500).json({ ok: false, error: error.message });
+    }
+  }
+
+  // The user's explicit choice in a same-build conflict: put this copy's
+  // Agent in place. Never offered for a newer installed build.
+  async function agentReplaceHandler(req, res) {
+    if (platform !== 'darwin') return res.status(400).json({ ok: false, error: 'macOS only' });
+    if (!isLocal(req)) return res.status(403).json({ ok: false, error: '请在这台 Mac 上替换 Agent。' });
+    const provisioner = agentProvisioner();
+    const decided = provisioner.plan();
+    if (decided.reason !== 'other-owner') return res.status(409).json({ ok: false, error: 'nothing to replace', reason: decided.reason });
+    const outcome = await provisioner.ensure({ replace: true });
+    return res.status(outcome.ok ? 200 : 500).json({ ...outcome, ok: Boolean(outcome.ok) });
   }
 
   async function openAgentPermissionHandler(req, res) {
@@ -178,9 +209,12 @@ function createMacosPrivacyRoutes({
     app.get('/api/system/agent-permissions', agentPermissionsHandler);
     app.post('/api/system/agent-permissions/open', openAgentPermissionHandler);
     app.post('/api/system/agent-permissions/restart', restartAgentPermissionHandler);
+    app.get('/api/system/agent-install', agentInstallHandler);
+    app.post('/api/system/agent-install/replace', agentReplaceHandler);
   }
 
-  return { mountRoutes, targetHandler, openHandler, agentPermissionsHandler, openAgentPermissionHandler, restartAgentPermissionHandler };
+  return { mountRoutes, targetHandler, openHandler, agentPermissionsHandler, openAgentPermissionHandler, restartAgentPermissionHandler,
+    agentInstallHandler, agentReplaceHandler };
 }
 
 module.exports = { createMacosPrivacyRoutes, FULL_DISK_ACCESS_URL, AGENT_PERMISSION_URLS };

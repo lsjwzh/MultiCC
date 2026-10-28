@@ -1,7 +1,7 @@
 'use strict';
 
 const { sanitizePublicText } = require('../http/public-safety');
-const { createMacosAgentProvisioner } = require('../macos-agent-provision');
+const { sharedMacosAgentProvisioner } = require('../macos-agent-provision');
 
 // Names bundled skills used to ship under. Keep entries here permanently:
 // a machine can upgrade from any old version.
@@ -75,7 +75,7 @@ function createSkillSyncRuntime(rawDeps) {
   // null disables; a temp rootDir without the installer is a no-op.
   const desktopAgent = deps.desktopAgentProvisioner !== undefined
     ? deps.desktopAgentProvisioner
-    : createMacosAgentProvisioner({ rootDir, logger });
+    : sharedMacosAgentProvisioner({ rootDir, logger });
 
   let lastResult = null;
   let running = false;
