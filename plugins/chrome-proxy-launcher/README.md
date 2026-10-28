@@ -178,6 +178,9 @@ launch 返回的 `geo` 字段记录套用结果（`applied: true` + 国家/时�
 - `run/<id>.pid` —— 运行中的实例 pid
 - `run/<id>.core.pid` / `run/<id>.core.json` —— 订阅出口的 meow 内核
 - `run/<id>.relay.json` —— 本地中继的 pid 与端口（有中继时才有）
+- `run/read-<摘要>.sock` —— 运行中实例的页面只读接口（仅 macOS/Linux，权限 0600）。
+  路径超过系统 socket 长度上限（macOS 104 字节）时改放 `/tmp/multicc-cpl-<uid>/`
+  （仅属主可访问）；监督进程被强杀留下的无人监听 socket 会在下次启动时清理重建
 - `runtime/meow` —— 从插件自带 `meow.gz` 解压出来的内核（可随时删除，会自动重建）
 - `core/<id>/` —— 每个身份的内核工作目录（`config.yaml`、`core.log`）
 - `chrome-profiles/<id>/` —— 每个身份的 Chrome user-data-dir（删除身份时
@@ -246,6 +249,8 @@ node --test --test-concurrency=1 plugins/chrome-proxy-launcher/tests/isolation.c
 | `subscription-refresh` | `{id}` | 重新拉取订阅 |
 | `subscription-remove` | `{id}` | 删除订阅（仍被身份引用时拒绝） |
 | `relay` | `{id, proxy:{…}, hop?:{…}}` | 内部命令：launch 自动拉起的本地中继；带 `hop`（socks5）时经跳板连上游，不单独使用 |
+| `browser-read-capabilities` | – | 页面只读协议 `multicc-browser-read-v1` 的能力声明：可用动作、不执行任意脚本、不读凭据 |
+| `browser-read` | `{profileId, sourceRevision, protocol, requestId, action, …}` | 对运行中实例做固定只读调用（`status` / `pages` / `read-page` / `inspect-page` / `open-page`），经监督进程的私有 CDP 管道，不开调试端口；实例启动早于此功能时返回 `available:false` |
 
 代理类型支持 `http` / `https` / `socks5`，可选用户名密码。注意两处边界：
 

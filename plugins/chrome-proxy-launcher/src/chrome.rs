@@ -381,6 +381,8 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
     let deadline = Instant::now() + Duration::from_secs(18);
     let _lock = crate::browser_session::launch_lock(&profile.id)?;
     ensure_not_running(&profile.id)?;
+    // 在准备扩展或出口进程前冻结元数据；校验失败不遗留辅助进程。
+    let source_revision = crate::read_bridge::source_revision(profile)?;
     if url.is_some_and(|u| u.trim_start().starts_with('-')) { return Err("网页地址不能是启动参数".into()); }
     let source_browser = find_browser(profile.chrome_path.as_deref())?;
     let (browser, dock_badge) = crate::dock_badge::prepare(profile, &source_browser);
@@ -538,7 +540,7 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
         None => Err("出口准备耗时过长，请重新启动浏览器".into()),
         Some(budget) => match extension {
             Some(extension) => crate::browser_session::launch(
-                &profile.id, &browser, &args, &extension, budget, tz, &ui_args,
+                &profile.id, &browser, &args, &extension, &source_revision, budget, tz, &ui_args,
             ),
             None => spawn_plain(&browser, &args, tz, &ui_args, &data_dir, deadline).map(
                 |pid| json!({"pid":pid,"fingerprint":{"status":"notRequested","installationVerified":false}}),

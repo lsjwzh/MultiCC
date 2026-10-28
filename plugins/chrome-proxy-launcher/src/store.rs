@@ -120,6 +120,25 @@ pub fn home_dir() -> PathBuf {
 }
 
 pub fn data_dir() -> PathBuf {
+    #[cfg(feature = "gapaw-read-bridge-test")]
+    {
+        // 仅显式测试构建可注入数据根，缺失或不属于夹具目录时立即停止，禁止回退生产数据。
+        let root = PathBuf::from(std::env::var_os("CHROME_READ_TEST_ROOT").expect("测试构建必须指定 CHROME_READ_TEST_ROOT"));
+        assert!(root.is_absolute() && root.parent() == Some(std::path::Path::new("/tmp")) && root.file_name().and_then(|v| v.to_str()).is_some_and(|v| v.starts_with("cbr-")), "测试数据根必须是 /tmp/cbr-* 专用目录");
+        let meta = fs::symlink_metadata(&root).expect("测试根目录不存在");
+        assert!(meta.is_dir() && !meta.file_type().is_symlink(), "测试根目录不能是符号链接");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            assert!(meta.uid() == unsafe { libc::geteuid() } && meta.permissions().mode() & 0o077 == 0, "测试根目录属主或权限无效");
+        }
+        let data = root.join("source-data");
+        if let Ok(meta) = fs::symlink_metadata(&data) {
+            assert!(meta.is_dir() && !meta.file_type().is_symlink(), "测试数据目录不能是符号链接");
+        }
+        return data;
+    }
+    #[cfg(not(feature = "gapaw-read-bridge-test"))]
     home_dir().join(".multicc").join("plugins-data").join("chrome-proxy-launcher")
 }
 

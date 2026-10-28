@@ -10,6 +10,7 @@ pub fn launch(
     browser: &std::path::Path,
     args: &[String],
     extension: &Value,
+    source_revision: &Value,
     budget: Duration,
     tz: Option<&str>,
     ui_args: &[String],
@@ -36,7 +37,7 @@ pub fn launch(
         let mut child = command
             .spawn()
             .map_err(|e| format!("启动浏览器监督进程失败：{e}"))?;
-        let input = json!({"browser":browser,"args":args,"extensionPath":extension["extensionPath"],"id":id,"timeoutMs":budget.as_millis(),"tz":tz,"uiArgs":ui_args});
+        let input = json!({"browser":browser,"args":args,"extensionPath":extension["extensionPath"],"id":id,"sourceRevision":source_revision,"timeoutMs":budget.as_millis(),"tz":tz,"uiArgs":ui_args});
         let sent = child
             .stdin
             .take()
@@ -79,7 +80,7 @@ pub fn launch(
 #[cfg(unix)]
 mod unix {
     use super::*;
-    use std::io::{Error, Read};
+    use std::io::Error;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::{net::UnixStream, process::CommandExt};
     use std::process::Child;
@@ -110,42 +111,96 @@ mod unix {
         read: BufReader<UnixStream>,
         id: u64,
         startup_deadline: Option<Instant>,
+        broken: bool,
+        write_broken: bool,
+        frame_complete: bool,
+        pending_frame: Vec<u8>,
+        timed_out: bool,
+        events: Vec<Value>,
     }
     impl Pipe {
         fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+            self.call_with_session(method, params, None, Instant::now() + Duration::from_secs(12))
+        }
+        fn call_with_session(&mut self, method: &str, params: Value, session: Option<&str>, request_deadline: Instant) -> Result<Value, String> {
+            if self.broken { return Err("浏览器私有管道已失效，请重新启动该身份".into()); }
+            let deadline = self.startup_deadline.map_or(request_deadline, |d| d.min(request_deadline));
+            if deadline <= Instant::now() { return Err("浏览器只读请求超时".into()); }
+            self.frame_complete = false;
+            self.timed_out = false;
+            let result = self.call_frame(method, params, session, deadline);
+            if result.is_err() && !self.frame_complete && !self.timed_out { self.broken = true; }
+            result
+        }
+        fn call_frame(&mut self, method: &str, params: Value, session: Option<&str>, request_deadline: Instant) -> Result<Value, String> {
+            if method == "_read_events" { return Ok(json!(std::mem::take(&mut self.events))); }
+            let Some(write_budget) = request_deadline.checked_duration_since(Instant::now()) else {
+                self.frame_complete = true;
+                return Err("浏览器只读请求超时".into());
+            };
             self.id += 1;
-            let request = json!({"id":self.id,"method":method,"params":params});
+            let mut request = json!({"id":self.id,"method":method,"params":params});
+            if let Some(session) = session { request["sessionId"] = json!(session); }
             let request = request.to_string() + "\0";
-            self.write
-                .write_all(request.as_bytes())
-                .map_err(|_| "浏览器私有管道已断开")?;
-            let request_deadline = Instant::now() + Duration::from_secs(12);
+            if self.write.set_write_timeout(Some(write_budget.min(Duration::from_millis(100)))).is_err() {
+                self.write_broken = true;
+                return Err("浏览器私有管道不可写".into());
+            }
+            if self.write.write_all(request.as_bytes()).is_err() {
+                self.write_broken = true;
+                return Err("浏览器私有管道已断开".into());
+            }
+            #[cfg(feature = "gapaw-read-bridge-test")]
+            if method == "DOMSnapshot.captureSnapshot" {
+                let gate = crate::store::data_dir().join("run/test-snapshot-delay");
+                if std::fs::remove_file(&gate).is_ok() {
+                    std::fs::write(gate.with_extension("started"), b"request-written").map_err(|e| e.to_string())?;
+                    while Instant::now() < request_deadline && !STOP.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                }
+            }
             let deadline = self
                 .startup_deadline
                 .map_or(request_deadline, |d| d.min(request_deadline));
             loop {
-                let remaining = deadline
-                    .checked_duration_since(Instant::now())
-                    .ok_or("等待浏览器响应超时")?;
-                self.read
-                    .get_ref()
-                    .set_read_timeout(Some(remaining))
-                    .map_err(|e| e.to_string())?;
-                let mut bytes = Vec::new();
-                let count = self
-                    .read
-                    .by_ref()
-                    .take(8 * 1024 * 1024)
-                    .read_until(0, &mut bytes)
-                    .map_err(|_| format!("浏览器未能完成 {method}（超时或管道断开）"))?;
-                if count == 0 || bytes.last() != Some(&0) {
-                    return Err("浏览器响应无效或已退出".into());
+                let mut bytes = std::mem::take(&mut self.pending_frame);
+                loop {
+                    if STOP.load(Ordering::Relaxed) { return Err("浏览器正在停止，已取消读取".into()); }
+                    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                        // 超时只终止本次等待，已读片段留在当前管道中。
+                        // 后续请求先续读至 NUL 边界，再按请求编号丢弃迟到响应。
+                        // 片段不向调用方返回；EOF、超限、坏 JSON 和写入失败仍作废。
+                        self.frame_complete = bytes.is_empty();
+                        self.pending_frame = bytes;
+                        self.timed_out = true;
+                        return Err("等待浏览器响应超时".into());
+                    };
+                    self.read.get_ref().set_read_timeout(Some(remaining.min(Duration::from_millis(100)))).map_err(|_| "浏览器私有管道不可读")?;
+                    let buffer = match self.read.fill_buf() {
+                        Ok(buffer) => buffer,
+                        Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) => continue,
+                        Err(_) => return Err("浏览器响应超时或管道已断开".into()),
+                    };
+                    if buffer.is_empty() { return Err("浏览器响应无效或已退出".into()); }
+                    let count = buffer.iter().position(|b| *b == 0).map_or(buffer.len(), |i| i + 1);
+                    if bytes.len() + count > 8 * 1024 * 1024 { return Err("浏览器响应超过读取上限".into()); }
+                    bytes.extend_from_slice(&buffer[..count]);
+                    self.read.consume(count);
+                    if bytes.last() == Some(&0) { break; }
                 }
                 bytes.pop();
                 let v: Value = serde_json::from_slice(&bytes).map_err(|_| "浏览器响应格式无效")?;
                 if v["id"].as_u64() != Some(self.id) {
+                    if self.events.len() < 512 && matches!(v["method"].as_str(), Some("Network.requestWillBeSent" | "Network.responseReceived" | "Network.loadingFinished" | "Network.loadingFailed")) {
+                        // 不缓存请求头、响应头、Cookie 或请求体。
+                        let r = &v["params"]["response"];
+                        self.events.push(json!({"method":v["method"],"sessionId":v["sessionId"],"requestId":v["params"]["requestId"],"type":v["params"]["type"],"url":r["url"],"status":r["status"],"mimeType":r["mimeType"],"metadata":{
+                            "country":v["params"]["request"]["headers"]["country"].as_str().filter(|s|s.len()==2&&s.bytes().all(|b|b.is_ascii_alphabetic()))}}));
+                    }
                     continue;
                 }
+                self.frame_complete = true;
                 if v.get("error").is_some() {
                     // 不回显 CDP 完整响应，避免潜在路径/URL 泄露。
                     return Err(format!(
@@ -154,6 +209,17 @@ mod unix {
                 }
                 return Ok(v["result"].clone());
             }
+        }
+        // 停止后不再解析读端；仅当此前所有写帧完整时发送一次固定关闭请求。
+        // 读端即使因取消或半帧而失效，Browser.close 仍可让 Chrome 正常保存会话。
+        fn request_close(&mut self) -> Result<(), String> {
+            self.broken = true;
+            if self.write_broken { return Err("浏览器写入管道已失效".into()); }
+            self.write_broken = true;
+            self.id += 1;
+            self.write.set_write_timeout(Some(Duration::from_millis(500))).map_err(|e| e.to_string())?;
+            let request = json!({"id":self.id,"method":"Browser.close","params":{}}).to_string() + "\0";
+            self.write.write_all(request.as_bytes()).map_err(|_| "发送浏览器关闭请求失败".into())
         }
     }
 
@@ -232,6 +298,12 @@ mod unix {
             read: BufReader::new(read),
             id: 0,
             startup_deadline: Some(startup_deadline),
+            broken: false,
+            write_broken: false,
+            frame_complete: false,
+            pending_frame: vec![],
+            timed_out: false,
+            events: vec![],
         };
         let targets = pipe.call("Target.getTargets", json!({}))?;
         if targets["targetInfos"]
@@ -245,32 +317,10 @@ mod unix {
             .as_str()
             .filter(|id| !id.is_empty())
             .ok_or("浏览器未确认扩展加载成功")?;
-        let mut opener_command = Command::new(browser);
-        if let Some(zone) = tz {
-            opener_command.env("TZ", zone);
-        }
-        let mut opener = Browser(
-            opener_command
-                .args(&args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|e| format!("打开身份窗口失败：{e}"))?,
-        );
-        let deadline = startup_deadline.min(Instant::now() + Duration::from_secs(6));
-        loop {
-            if let Some(status) = opener.0.try_wait().map_err(|e| e.to_string())? {
-                if !status.success() {
-                    return Err("打开身份窗口失败".into());
-                }
-                break;
-            }
-            if Instant::now() > deadline {
-                return Err("等待身份窗口打开超时".into());
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        let initial_url = args.iter().rev().find(|arg| !arg.starts_with("--"))
+            .map(String::as_str).unwrap_or("chrome://newtab/");
+        pipe.call("Target.createTarget", json!({"url":initial_url,"newWindow":true}))?;
+        let bridge = crate::read_bridge::unix::Bridge::bind(id, input["sourceRevision"].clone())?;
         let state = crate::store::data_dir()
             .join("run")
             .join(format!("{id}.browser.json"));
@@ -285,19 +335,29 @@ mod unix {
         writeln!(std::io::stdout(), "{result}").map_err(|_| "启动请求已中断")?;
         std::io::stdout().flush().map_err(|_| "启动请求已中断")?;
         pipe.startup_deadline = None;
-        // 没有订阅 CDP 事件，保持管道存活即可。停止时仍通过正常 Browser.close 保存会话。
+        // 停止后不再接受排队 RPC，也不再读取/复用已取消的响应。
+        let mut stopping = false;
         loop {
             if child.0.try_wait().map_err(|e| e.to_string())?.is_some() {
                 break;
             }
-            if STOP.swap(false, Ordering::Relaxed) {
-                let _ = pipe.call("Browser.close", json!({}));
+            if STOP.load(Ordering::Relaxed) && !stopping {
+                stopping = true;
+                let _ = pipe.request_close();
+            }
+            if !stopping {
+                bridge.poll_with_cancel(
+                    |method, params, session, deadline| pipe.call_with_session(method, params, session, deadline),
+                    || STOP.load(Ordering::Relaxed),
+                );
             }
             std::thread::sleep(Duration::from_millis(100));
         }
         let _ = std::fs::remove_file(state);
         Ok(())
     }
+    #[cfg(test)]
+    include!("read_bridge_integration.rs");
 }
 
 pub fn supervise(input: &Value) {

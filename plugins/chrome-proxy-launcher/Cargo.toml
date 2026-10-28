@@ -1,11 +1,14 @@
 [package]
 name = "chrome-proxy-launcher"
-version = "1.6.3"
+version = "1.6.4"
 edition = "2021"
 description = "MultiCC plugin: launch isolated Chrome profiles, each pinned to its own proxy / VPN egress"
 license = "MIT"
 
 # 独立 crate：刻意不进 native/ 的 workspace，插件目录整体复制即可安装。
+[features]
+gapaw-read-bridge-test = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -18,6 +21,8 @@ ureq = { version = "2.12", features = ["tls"] }
 flate2 = "1"
 getrandom = "0.2"
 libc = "0.2"
+url = "2"
+sha2 = "0.10"
 
 [profile.release]
 strip = true

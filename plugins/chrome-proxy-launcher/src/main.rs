@@ -13,6 +13,9 @@
 mod chrome;
 mod dock_badge;
 mod browser_session;
+mod read_bridge;
+mod page_observer;
+mod public_read;
 mod core;
 mod fingerprint;
 mod geo;
@@ -332,7 +335,11 @@ fn command_stop(input: &Value) -> Result<Value, String> {
     // 先让 Chrome 正常退出（期间它可能还要经代理收尾），再收中继/内核。
     let quit = if browser_session::request_stop(&id, pid) && chrome::wait_exit(pid, Duration::from_secs(8)) {
         Ok(())
-    } else { chrome::quit_gracefully(pid) };
+    } else {
+        #[cfg(feature = "gapaw-read-bridge-test")]
+        let _ = std::fs::write(store::data_dir().join("run/test-system-stop-fallback"), b"fallback");
+        chrome::quit_gracefully(pid)
+    };
     store::clear_pid(&id);
     chrome::stop_relay_if_any(&id);
     core::stop_if_any(&id);
@@ -743,6 +750,8 @@ fn main() {
     if command == "browser-supervise" { browser_session::supervise(&input); return; }
     let result = match command.as_str() {
         "detect" => command_detect(&input),
+        "browser-read-capabilities" => public_read::capabilities(),
+        "browser-read" => public_read::execute(&input),
         "list" => command_list(&input),
         "save" => command_save(&input),
         "remove" => command_remove(&input),
@@ -778,7 +787,7 @@ fn main() {
                 })
         }
         _ => Err(format!(
-            "未知命令 `{command}`（可用：detect / list / save / remove / launch / stop / probe / fingerprint-prepare / egress / egress-stop / subscription-save / subscription-refresh / subscription-remove / relay）"
+            "未知命令 `{command}`（可用：detect / list / save / remove / launch / stop / probe / fingerprint-prepare / egress / egress-stop / subscription-save / subscription-refresh / subscription-remove / relay / browser-read-capabilities / browser-read）"
         )),
     };
     match result {
