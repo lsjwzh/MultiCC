@@ -1,6 +1,6 @@
 # 插件列表（在线目录）设计
 
-状态：方案稿（2026-10-28），待确认第八节的三个问题后实施。
+状态：2026-10-28 三项已定（见第八节），第一步（只读展示）已实施，列表仓库 [lsjwzh/multicc-plugins](https://github.com/lsjwzh/multicc-plugins) 已上线。
 
 ## 一、要解决什么
 
@@ -114,11 +114,11 @@
 
 ## 五、拉取与缓存
 
-- 地址：默认 `https://raw.githubusercontent.com/lsjwzh/multicc-plugins/main/index.json`（待定，见第八节），失败时依次试 `https://cdn.jsdelivr.net/gh/lsjwzh/multicc-plugins@main/index.json` 和用户在设置里填的地址。
+- 地址：默认 `https://raw.githubusercontent.com/lsjwzh/multicc-plugins/main/index.json`，失败时改走 `https://cdn.jsdelivr.net/gh/lsjwzh/multicc-plugins@main/index.json`。设了环境变量 `MULTICC_PLUGIN_CATALOG_URL` 时先试它（只接受 https，本机回环地址可用 http），签名照样必须对得上。
 - 签名：同目录下的 `index.json.sig`（ed25519）。验签用的公钥写在 MultiCC 源码里，验签不过就当拉取失败。镜像能加快下载，但改不了内容。
-- 缓存：结果和 ETag 写到 `~/.multicc/plugins-catalog/index.json`。启动 15 秒后拉一次，之后每 24 小时一次；定时器不阻止进程退出，失败只记一条警告（和 CLI 更新角标的做法一样）。面板上可以手动刷新。
+- 缓存：验签通过的列表写到 `~/.multicc/plugins-catalog/`（`index.json`、`index.json.sig`、`meta.json`），每次读缓存都重新验签，被改过的缓存直接丢弃。列表只有几 KB，没有用 ETag。启动 15 秒后拉一次，之后每 24 小时一次；定时器不阻止进程退出，失败只记一条警告（和 CLI 更新角标的做法一样）。面板上可以手动刷新。设 `MULTICC_PLUGIN_CATALOG_OFFLINE=1` 只用缓存、不定时拉取（和价格表的 `MULTICC_PRICE_TABLE_OFFLINE` 一样）。
 - 离线：用缓存的那份；没有缓存时，只按本机已装的插件和程序目录里的内置插件展示，“可安装”一栏写“列表暂时拉不到”。
-- 发版：每个 MultiCC 发布包里附一份当时的 `index.json` 快照，作为首次启动、拉取失败时的兜底。
+- 发版：每个 MultiCC 发布包里附一份当时的 `index.json` 快照，作为首次启动、拉取失败时的兜底（还没做，放在第二步）。
 
 ## 六、安装、更新、卸载
 
@@ -132,7 +132,7 @@
 
 | 位置 | 改动 |
 | --- | --- |
-| 新仓库 `lsjwzh/multicc-plugins`（待定） | `index.json` + `index.json.sig`；CI 检查格式、URL 前缀、sha256 能对上 Release 里的文件 |
+| 新仓库 `lsjwzh/multicc-plugins`（已建） | `index.json` + `index.json.sig`；CI 检查格式、URL 前缀、sha256 能对上 Release 里的文件 |
 | `src/plugins/catalog.js`（新） | 拉取、验签、缓存、版本范围比较、本机状态计算（系统版本、架构、MultiCC 版本、Agent 构建号、外部 App 版本） |
 | `src/plugins/installer.js`（新） | 下载、校验、解压、换入、退回、卸载 |
 | `src/routes/plugins.js` | 扫两个目录；`GET /api/plugins` 带上 `pluginApi`；新增 `GET /api/plugins/catalog`、`POST /api/plugins/:id/install`、`POST /api/plugins/:id/uninstall`、`POST /api/plugins/:id/rollback` |
@@ -146,10 +146,18 @@
 2. 安装、更新、卸载、退回，用户目录；
 3. 每日检查和“可更新”角标，并在推送设置、钩子里按 `provides` 列出插件。
 
-## 八、待你确认
+## 八、已定事项（2026-10-28）
 
-1. **列表放在哪**：
-   - A：新建独立仓库 `lsjwzh/multicc-plugins`。推荐，列表可以随时更新，不用跟着 MultiCC 发版；
-   - B：放在 MultiCC 主仓的 `plugins/catalog.json`，从 main 分支的 raw 地址拉取。
-2. **后置安装的插件装到哪**：推荐改为 `~/.multicc/plugins/<id>/`（理由见第一节第 3 点）。这会改掉之前“装进 MultiCC 的 `plugins/` 目录”的决定（见 `docs/notification-channel-plugin-design.md` 15.2）。
-3. **列表从第一版就签名吗**：推荐要。代价是发布列表时要多签一次名，签名私钥由你保管。
+1. **列表放在独立仓库** [`lsjwzh/multicc-plugins`](https://github.com/lsjwzh/multicc-plugins)（公开，MIT）。列表可以随时更新，不用跟着 MultiCC 发版。仓库里有 `scripts/validate.js`（格式、规则、签名、下载包核对，CI 每次推送都跑）和 `scripts/sign.js`。
+2. **后置安装的插件装到 `~/.multicc/plugins/<id>/`**，推翻了之前“装进 MultiCC 的 `plugins/` 目录”的决定（`docs/notification-channel-plugin-design.md` 15.2 已同步）。设了 `MULTICC_DATA_DIR` 的实例（比如桌面版）放在各自数据目录下的 `plugins/`，和其他数据一样互不干扰。
+3. **列表从第一版就签名**。密钥 id `catalog-2026-10`，公钥在 `src/plugins/catalog.js` 的 `CATALOG_KEYS` 和列表仓库的 `keys.json`；私钥只在维护者 Mac 的登录钥匙串里（条目 `multicc-plugin-catalog-signing`），不进任何仓库，CI 也拿不到。这台 Mac 丢了就只能按列表仓库 README 的“换签名密钥”步骤换钥，所以请把它另外备份一份。
+
+## 九、实施进度
+
+第一步已完成：
+- `src/plugins/catalog.js`：版本范围比较、列表格式检查（一条坏条目只丢它自己，schema 不对整份拒绝）、验签、拉取（两个源依次试、拒绝比缓存旧的列表、并发刷新只发一轮请求）、缓存、本机信息（系统版本、架构、MultiCC 版本、插件接口版本、Agent 构建号、外部 App 版本）和每个插件的状态。
+- `src/routes/plugins.js`：同时扫程序目录的 `plugins/`（内置）和 `~/.multicc/plugins/`（后置安装），同名以内置为准并报冲突；新增 `GET /api/plugins/catalog`、`POST /api/plugins/catalog/refresh`；启动 15 秒后拉一次列表，之后每 24 小时一次。
+- 插件面板：按“本机插件 / 可安装 / 收起的不支持本机”分组，状态标签、要求说明、第一条不满足的原因、分类筛选、刷新。
+- 测试：`tests/test-plugin-catalog.js`（`test:task-first`）、`tests/test-air-plugins-cdp.js`（`test:cdp`）。
+
+还没做：发布包附带列表快照、安装 / 更新 / 卸载 / 退回（第二步）；“可更新”角标、推送设置和钩子按 `provides` 列出插件（第三步）。分类目前只认 `channel`、`browser`，加新分类要先在面板里加上它的显示名。
