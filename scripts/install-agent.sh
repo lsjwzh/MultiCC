@@ -36,6 +36,15 @@
 #     rebuilds. MULTICC_AGENT_SIGN_IDENTITY=- forces ad-hoc.
 #   - rebuild ONLY when the Swift source changes (tracked by a stamp), and
 #     re-sign without rebuilding when only the chosen identity changed.
+#   - never fall back to ad-hoc on its own when the installed Agent carries a
+#     real signature: the identity may only be unusable for now (a clock that
+#     starts at 1970 after boot makes the certificate "not yet valid"). Exit 75
+#     and keep the installed Agent; MULTICC_AGENT_SIGN_IDENTITY=- overrides.
+#
+# Every install writes ~/.multicc/agent/install.json (build, source hash, and
+# which MultiCC copy installed it). Several copies on one Mac share this Agent;
+# src/macos-agent-provision.js uses the record so that none of them replaces a
+# newer build or another copy's same-build Agent.
 set -eu
 
 LABEL=com.multicc.agent
@@ -69,7 +78,7 @@ end run
 APPLESCRIPT
     fi
     lc bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
-    rm -f "$PLIST" "$LINK" "$DIR/agent.sock"
+    rm -f "$PLIST" "$LINK" "$DIR/agent.sock" "$DIR/install.json"
     # config.json and agent.log stay: they hold the user's choices and history.
     # The marker stops MultiCC from reinstalling it at the next start.
     mkdir -p "$DIR" && : > "$DIR/auto-install-disabled"
@@ -128,6 +137,13 @@ case "$SUM" in *[!0-9a-f]*) die "invalid Agent source hash" ;; esac
 STAMP="$APP/Contents/Resources/source.sha256"
 SIGNER_STAMP="$APP/Contents/Resources/signer"
 SIGNER="$(signing_identity)"
+INSTALLED_SIGNER="$(cat "$SIGNER_STAMP" 2>/dev/null || true)"
+if [ "$SIGNER" = - ] && [ -z "${MULTICC_AGENT_SIGN_IDENTITY:-}" ] && [ -n "$INSTALLED_SIGNER" ] && [ "$INSTALLED_SIGNER" != - ]; then
+  echo "multicc-agent: signing identity $INSTALLED_SIGNER is not usable right now (system clock or keychain); keeping the installed Agent and its grants. Set MULTICC_AGENT_SIGN_IDENTITY=- to re-sign ad-hoc on purpose." >&2
+  exit 75
+fi
+BUILD="$(sed -n 's/.*"build"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$HERE/macos-agent/agent-build.json" 2>/dev/null | head -n 1)"
+[ -n "$BUILD" ] || BUILD=0
 REBUILT=""
 RESOURCES_CHANGED=""
 if [ -x "$BIN" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$SUM" ]; then
@@ -306,4 +322,25 @@ if [ -z "$NO_LAUNCHCTL" ]; then
   LEGACY_PLIST="$HOME/Library/LaunchAgents/com.zhuanz.lid-display-guard.plist"
   [ ! -f "$LEGACY_PLIST" ] || mv "$LEGACY_PLIST" "$LEGACY_PLIST.disabled"
 fi
-echo "multicc-agent: installed $LABEL"
+# Who installed this build. The installing copy is the tree this script lives
+# in: a desktop app's bundled server, a source checkout, or a package.
+ROOT="$(cd "$HERE/.." && pwd -P)"
+case "$ROOT" in
+  *.app/Contents/Resources/app-server) KIND=desktop ;;
+  *) if [ -e "$ROOT/.git" ]; then KIND=source; else KIND=package; fi ;;
+esac
+VERSION="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/package.json" 2>/dev/null | head -n 1)"
+json() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
+RECORD_TMP="$(mktemp "$DIR/.install.json.XXXXXX")"
+{
+  printf '{\n  "build": %s,\n' "$BUILD"
+  printf '  "sourceSha256": %s,\n' "$(json "$SUM")"
+  printf '  "app": %s,\n' "$(json "$APP")"
+  printf '  "signer": %s,\n' "$(json "$SIGNER")"
+  printf '  "installerKind": %s,\n' "$(json "$KIND")"
+  printf '  "installerVersion": %s,\n' "$(json "$VERSION")"
+  printf '  "installerRoot": %s,\n' "$(json "$ROOT")"
+  printf '  "installedAt": %s\n}\n' "$(json "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+} > "$RECORD_TMP"
+mv -f "$RECORD_TMP" "$DIR/install.json"
+echo "multicc-agent: installed $LABEL (build $BUILD)"

@@ -34,6 +34,8 @@ const MACOS_AGENT_FILES = [
   'scripts/macos-agent/MultiCCAgentH264.swift',
   'scripts/macos-agent/AgentPermissions.swift',
   'scripts/macos-agent/AgentIcon.icns',
+  // Build number that ranks this copy's Agent against the installed one.
+  'scripts/macos-agent/agent-build.json',
 ];
 // The root power reconciler 「关盖运行」installs inside its one administrator
 // prompt (plugins/utils/macos-power.js). Without these two files in the staged

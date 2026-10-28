@@ -724,6 +724,7 @@ test('agent: installer build, client/server protocol and chrome watchdog', { ski
 
 // ── Auto-provisioning: installing/updating MultiCC installs/updates the agent ──
 const { createMacosAgentProvisioner } = require('../src/macos-agent-provision');
+const { sourceHash, readShippedBuild } = require('../src/macos-agent-build');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
@@ -740,6 +741,7 @@ function provisionFixture() {
   fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'MultiCCAgentH264.swift'), '// h264\n');
   fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'AgentPermissions.swift'), '// permissions\n');
   fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'AgentIcon.icns'), 'icns-fixture');
+  fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'agent-build.json'), JSON.stringify({ build: 2, sourceSha256: sourceHash(root) }));
   const env = {
     MULTICC_AGENT_APP: path.join(tmp, 'MultiCC Agent.app'),
     MULTICC_AGENT_PLIST: path.join(tmp, 'agent.plist'),
@@ -774,12 +776,106 @@ function provisionFixture() {
     return child;
   };
   const logs = [];
+  const desktopEnv = path.join(tmp, 'desktop-multicc.env');
   const make = (over = {}) => createMacosAgentProvisioner({
-    rootDir: root, home: tmp, platform: 'darwin', env, spawn: spawnFake,
+    rootDir: root, home: tmp, platform: 'darwin', env, spawn: spawnFake, desktopApps: [], desktopEnvFile: desktopEnv,
     logger: { log: (m) => logs.push(m), warn: (m) => logs.push(`WARN ${m}`) }, ...over,
   });
-  return { tmp, root, env, installed, calls, exits, logs, make };
+  const stampOf = () => fs.readFileSync(path.join(env.MULTICC_AGENT_APP, 'Contents', 'Resources', 'source.sha256'), 'utf8').trim();
+  // What install-agent.sh writes after each install.
+  const writeRecord = (over = {}) => {
+    fs.mkdirSync(env.MULTICC_AGENT_DIR, { recursive: true });
+    fs.writeFileSync(path.join(env.MULTICC_AGENT_DIR, 'install.json'), JSON.stringify({
+      build: 2, sourceSha256: stampOf(), app: env.MULTICC_AGENT_APP, installerKind: 'desktop', installerVersion: '9.9.9',
+      installerRoot: '/Applications/MultiCC.app/Contents/Resources/app-server', installedAt: '2026-10-28T00:00:00Z', ...over,
+    }));
+  };
+  return { tmp, root, env, installed, calls, exits, logs, make, desktopEnv, stampOf, writeRecord };
 }
+
+test('agent build number: agent-build.json pins the shipped Agent sources (bump on every source change)', () => {
+  const root = path.join(__dirname, '..');
+  const shipped = readShippedBuild(root);
+  assert.ok(shipped.build >= 1, 'agent-build.json must carry a positive build number');
+  assert.equal(shipped.sourceSha256, sourceHash(root),
+    'Agent sources changed: run `node src/macos-agent-build.js bump` so other MultiCC copies can tell this build is newer');
+  // install-agent.sh hashes the same files in the same order.
+  const installer = fs.readFileSync(INSTALLER, 'utf8');
+  const hashed = installer.match(/SUM="\$\(cat ([^|]+)\|/)[1].match(/macos-agent\/([\w.]+)/g).map(m => m.slice('macos-agent/'.length));
+  assert.deepEqual(['MultiCCAgent.swift', ...hashed], require('../src/macos-agent-build').AGENT_SOURCE_FILES);
+});
+
+test('agent provisioning: copies sharing one Agent never downgrade it and never replace another copy\'s same build', async () => {
+  const f = provisionFixture();
+  // A newer build, whoever installed it, is shared as is.
+  f.installed('// newer code\n');
+  f.writeRecord({ build: 3 });
+  assert.deepEqual(f.make().plan(), { action: 'skip', reason: 'installed-newer', installedBuild: 3, shippedBuild: 2 });
+  // Same build, different code, another copy's install: left alone and named;
+  // only the user's explicit replace goes ahead.
+  f.writeRecord({ build: 2 });
+  const conflict = f.make().plan();
+  assert.equal(conflict.action, 'skip');
+  assert.equal(conflict.reason, 'other-owner');
+  assert.deepEqual([conflict.owner.kind, conflict.owner.version], ['desktop', '9.9.9']);
+  assert.equal(f.make().plan({ replace: true }).reason, 'source-changed');
+  // Same build installed by this very copy: a developer iterating, so update.
+  f.writeRecord({ build: 2, installerRoot: fs.realpathSync(f.root) });
+  assert.equal(f.make().plan().reason, 'source-changed');
+  // An older build is upgraded.
+  f.writeRecord({ build: 1 });
+  assert.deepEqual(f.make().plan(), { action: 'update', reason: 'source-changed' });
+  assert.equal(f.make().inspect().installed.build, 1);
+  // Same code is current no matter who installed it.
+  f.installed('// v1\n');
+  f.writeRecord({ build: 2 });
+  assert.deepEqual(f.make().plan(), { action: 'skip', reason: 'up-to-date' });
+  assert.equal(f.make().inspect().installed.build, 2);
+
+  // A copy that predates the record replaced the recorded Agent: it ranks as
+  // build 0, is upgraded back, and the replacement is reported.
+  f.installed('// legacy copy\n');
+  const p = f.make();
+  const seen = p.inspect();
+  assert.equal(seen.installed.build, 0);
+  assert.equal(seen.installed.owner, null);
+  assert.equal(seen.replaced.previousBuild, 2);
+  f.calls.length = 0;
+  const upgraded = await p.ensure();
+  assert.equal(upgraded.action, 'update');
+  assert.ok(upgraded.replaced, 'the replacement must reach the settings card');
+  assert.ok(f.logs.some(l => l.startsWith('WARN') && l.includes('replaced by another MultiCC')));
+
+  // The installer refuses to drop a real signature (exit 75): nothing changed,
+  // nothing to ping, retried at the next start.
+  f.calls.length = 0;
+  f.exits.install = 75;
+  const deferred = await f.make().ensure();
+  assert.deepEqual([deferred.ok, deferred.action, deferred.reason], [true, 'skip', 'signing-unavailable']);
+  assert.deepEqual(f.calls, [['sh', 'install']]);
+  fs.rmSync(f.tmp, { recursive: true, force: true });
+});
+
+test('agent provisioning: names the desktop copies that still use the old install rule', () => {
+  const f = provisionFixture();
+  const desk = path.join(f.tmp, 'Apps', 'MultiCC.app');
+  const server = path.join(desk, 'Contents', 'Resources', 'app-server');
+  fs.mkdirSync(path.join(server, 'scripts', 'macos-agent'), { recursive: true });
+  fs.writeFileSync(path.join(server, 'package.json'), '{"version":"2.11.3"}');
+  const others = () => f.make({ desktopApps: [desk] }).inspect().others;
+  assert.deepEqual(others(), [{ kind: 'desktop', app: desk, version: '2.11.3', legacyRules: true, autoInstallDisabled: false }]);
+  fs.writeFileSync(f.desktopEnv, 'PORT=3000\nMULTICC_AGENT_AUTO_INSTALL=0\n');
+  assert.equal(others()[0].autoInstallDisabled, true);
+  fs.writeFileSync(path.join(server, 'scripts', 'macos-agent', 'agent-build.json'), '{"build":2}');
+  assert.equal(others()[0].legacyRules, false);
+  // A copy never lists itself, and knows it is the desktop app.
+  const inside = f.make({ desktopApps: [desk], rootDir: server }).inspect();
+  assert.deepEqual(inside.others, []);
+  assert.equal(inside.self.kind, 'desktop');
+  assert.equal(inside.self.version, '2.11.3');
+  assert.equal(f.make().inspect().self.kind, 'package');
+  fs.rmSync(f.tmp, { recursive: true, force: true });
+});
 
 test('agent provisioning: decides install / update / skip from what is on disk', () => {
   const f = provisionFixture();
@@ -878,6 +974,54 @@ test('agent provisioning: the default installation probe uses global Application
   delete env.MULTICC_AGENT_APP;
   assert.deepEqual(f.make({ fs: fixtureFs, env }).plan(), { action: 'install', reason: 'not-installed' });
   assert.ok(accesses.includes('/Applications/MultiCC Agent.app/Contents/MacOS/MultiCCAgent'));
+});
+
+test('installer: keeps a really signed Agent instead of falling back to ad-hoc, and records who installed it', { skip: process.platform !== 'darwin', timeout: 60000 }, t => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-signer-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const prebuilt = path.join(tmp, 'prebuilt');
+  fs.mkdirSync(prebuilt);
+  fs.copyFileSync('/usr/bin/true', path.join(prebuilt, 'MultiCCAgent'));
+  const repoRoot = path.join(__dirname, '..');
+  fs.writeFileSync(path.join(prebuilt, 'source.sha256'), `${sourceHash(repoRoot)}\n`);
+  // An empty keychain, as `security find-identity -v` reports one whose
+  // certificate is "not yet valid" (clock at 1970 right after boot).
+  const shim = path.join(tmp, 'shim');
+  fs.mkdirSync(shim);
+  fs.writeFileSync(path.join(shim, 'security'), '#!/bin/sh\necho "     0 valid identities found"\n', { mode: 0o755 });
+  const env = {
+    PATH: `${shim}:${process.env.PATH}`, HOME: process.env.HOME,
+    MULTICC_AGENT_PREBUILT: prebuilt,
+    MULTICC_AGENT_APP: path.join(tmp, 'MultiCC Agent.app'),
+    MULTICC_AGENT_PLIST: path.join(tmp, 'agent.plist'),
+    MULTICC_AGENT_DIR: path.join(tmp, 'agent'),
+    MULTICC_AGENT_LINK: path.join(tmp, 'bin', 'multicc-agent'),
+    MULTICC_AGENT_NO_LAUNCHCTL: '1',
+    MULTICC_AGENT_POWER_DISABLED: '1',
+  };
+  execFileSync('/bin/sh', [INSTALLER, 'install'], { env: { ...env, MULTICC_AGENT_SIGN_IDENTITY: '-' } });
+  const record = JSON.parse(fs.readFileSync(path.join(env.MULTICC_AGENT_DIR, 'install.json'), 'utf8'));
+  assert.equal(record.build, readShippedBuild(repoRoot).build);
+  assert.equal(record.sourceSha256, sourceHash(repoRoot));
+  assert.equal(record.app, env.MULTICC_AGENT_APP);
+  assert.equal(record.installerRoot, fs.realpathSync(repoRoot));
+  assert.equal(record.installerKind, 'source', 'a checkout (or worktree) installs as source');
+  assert.equal(record.installerVersion, require('../package.json').version);
+
+  // Pretend the installed Agent carries a real signature.
+  const signerStamp = path.join(env.MULTICC_AGENT_APP, 'Contents', 'Resources', 'signer');
+  fs.writeFileSync(signerStamp, 'A1B2C3D4\n');
+  const plistBefore = fs.readFileSync(env.MULTICC_AGENT_PLIST, 'utf8');
+  const kept = spawnSync('/bin/sh', [INSTALLER, 'install'], { env, encoding: 'utf8' });
+  assert.equal(kept.status, 75, kept.stderr);
+  assert.match(kept.stderr, /A1B2C3D4 is not usable right now/);
+  assert.equal(fs.readFileSync(signerStamp, 'utf8'), 'A1B2C3D4\n', 'the installed Agent must stay untouched');
+  assert.equal(fs.readFileSync(env.MULTICC_AGENT_PLIST, 'utf8'), plistBefore);
+  // Choosing ad-hoc on purpose still works.
+  execFileSync('/bin/sh', [INSTALLER, 'install'], { env: { ...env, MULTICC_AGENT_SIGN_IDENTITY: '-' } });
+  assert.equal(fs.readFileSync(signerStamp, 'utf8'), '-\n');
+  execFileSync('/bin/sh', [INSTALLER, 'uninstall'], { env });
+  assert.equal(fs.existsSync(path.join(env.MULTICC_AGENT_DIR, 'install.json')), false);
 });
 
 test('agent provisioning: packages ship the installer, and the installer prefers a matching prebuilt binary', { skip: process.platform !== 'darwin', timeout: 60000 }, () => {

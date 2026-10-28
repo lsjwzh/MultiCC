@@ -104,6 +104,25 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     return json(agentPermissions);
   };
   routes['GET /api/system/agent-permissions'] = () => json(agentPermissions);
+  // One Agent shared by several MultiCC copies: a same-build conflict with a
+  // desktop install, and a desktop app that still uses the old install rule.
+  let agentConflict = true;
+  const agentReplaces = [];
+  routes['GET /api/system/agent-install'] = () => json({
+    ok: true, applicable: true, local: true,
+    self: { kind: 'source', version: '2.11.3', root: '/projects/multicc' },
+    shipped: { build: 2 }, installed: { app: '/Applications/MultiCC Agent.app', build: 2, owner: null }, replaced: null,
+    plan: agentConflict ? { action: 'skip', reason: 'other-owner', installedBuild: 2,
+      owner: { kind: 'desktop', version: '9.9.9', root: '/Applications/MultiCC.app/Contents/Resources/app-server' } }
+      : { action: 'skip', reason: 'up-to-date' },
+    last: null,
+    others: agentConflict ? [{ kind: 'desktop', app: '/Applications/MultiCC.app', version: '2.11.3', legacyRules: true, autoInstallDisabled: false }] : [],
+  });
+  routes['POST /api/system/agent-install/replace'] = () => {
+    agentReplaces.push(1);
+    agentConflict = false;
+    return json({ ok: true, action: 'update', reason: 'source-changed' });
+  };
   routes['POST /api/system/agent-permissions/open'] = req => {
     permissionOpens.push(JSON.parse(req.body).permission);
     return json({ ok: true, status: 'opened' });
@@ -236,6 +255,16 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     })()`), '电源状态读回来了');
     assert.deepEqual(calls().slice(base).sort(),
       ['GET /api/settings/power'], '打开面板只读电源那一条状态：一次');
+    // 共用 Agent 的提示：谁装的、哪份桌面版还在用旧规则；冲突时才有「用本份替换」。
+    assert.ok(await page.waitFor(`document.getElementById('air-global-agent-install')?.hidden === false`), 'Agent 共用提示出现');
+    const agentText = await text('#air-global-agent-install-text');
+    assert.ok(agentText.includes(await tParams('airGlobalAgentOtherOwner', { owner: await tParams('airGlobalAgentOwnerDesktop', { version: '9.9.9' }), build: 2 })), agentText);
+    assert.ok(agentText.includes(await tParams('airGlobalAgentLegacyDesktop', { version: '2.11.3', app: '/Applications/MultiCC.app' })), agentText);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-agent-replace').hidden`), false);
+    await page.screenshot('01b-agent-install-notice');
+    await page.evaluate(`document.getElementById('air-global-agent-replace').click()`);
+    await settle(agentReplaces, 1);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-agent-install').hidden === true`), '替换后冲突消失，提示收起');
     assert.equal(await page.evaluate(`document.getElementById('air-global-oauth-enabled')`), null,
       'OAuth 重放那一块已经整块退场，页面上不该再有那颗勾');
     assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .air-legacy-frame').length`), 0, '原生面板里没有旧 manage 的 iframe');

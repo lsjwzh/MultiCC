@@ -282,3 +282,38 @@ test('the permission-denied failure actually routes to this button', () => {
     'install-developer-tools');
   assert.equal(dirReasonFix('home-or-above'), null);
 });
+
+test('shared Agent install state: read-only status, and replace only in a same-build conflict on this Mac', async () => {
+  const ensured = [];
+  let plan = { action: 'skip', reason: 'up-to-date' };
+  const provisioner = {
+    inspect: () => ({ self: { kind: 'source' }, shipped: { build: 2 }, installed: { build: 2 }, replaced: null, others: [] }),
+    plan: () => plan,
+    getStatus: () => ({ reason: 'signing-unavailable' }),
+    ensure: async options => { ensured.push(options); return { ok: true, action: 'update', reason: 'source-changed' }; },
+  };
+  const make = platform => createMacosPrivacyRoutes({ platform, run: fakeRun({}), log: silent, permissionTargets: targets(), agentProvisioner: () => provisioner });
+  const local = { socket: { remoteAddress: '127.0.0.1' } };
+
+  let res = fakeRes();
+  make('linux').agentInstallHandler(local, res);
+  assert.deepStrictEqual(res.body, { ok: true, applicable: false });
+  res = fakeRes();
+  make('darwin').agentInstallHandler(local, res);
+  assert.strictEqual(res.body.local, true);
+  assert.strictEqual(res.body.installed.build, 2);
+  assert.deepStrictEqual(res.body.plan, plan);
+  assert.strictEqual(res.body.last.reason, 'signing-unavailable');
+
+  res = fakeRes();
+  await make('darwin').agentReplaceHandler(local, res);
+  assert.strictEqual(res.statusCode, 409, 'nothing to replace unless another copy holds the same build');
+  plan = { action: 'skip', reason: 'other-owner' };
+  res = fakeRes();
+  await make('darwin').agentReplaceHandler({ socket: { remoteAddress: '10.0.0.8' } }, res);
+  assert.strictEqual(res.statusCode, 403);
+  res = fakeRes();
+  await make('darwin').agentReplaceHandler(local, res);
+  assert.strictEqual(res.statusCode, 200);
+  assert.deepStrictEqual(ensured, [{ replace: true }]);
+});

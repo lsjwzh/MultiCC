@@ -527,6 +527,10 @@ test('system route mount owns the app-binary metadata and canonical download rou
     ['GET', '/api/system/agent-permissions', 'function'],
     ['POST', '/api/system/agent-permissions/open', 'function'],
     ['POST', '/api/system/agent-permissions/restart', 'function'],
+    // Shared-Agent install state (who installed it, which build) and the
+    // user's explicit "use this copy's Agent" in a same-build conflict.
+    ['GET', '/api/system/agent-install', 'function'],
+    ['POST', '/api/system/agent-install/replace', 'function'],
     // Repair terminal (src/routes/ops-terminal.js): runs a shell command as
     // the service account for a host that cannot add its first directory.
     // The widest grant in this family, so it is listed one route at a time:
