@@ -232,6 +232,8 @@ function createPluginsRoutes(deps) {
           return finish(502, { error: '插件输出不是 JSON' });
         }
       });
+      // 插件不读 stdin 就退出时，写入会异步报 EPIPE；结果仍以 stdout 为准，只记日志。
+      child.stdin.on('error', error => logger.warn('plugin_stdin_failed', { id, command, error: error.message }));
       try {
         child.stdin.end(JSON.stringify(input ?? {}));
       } catch (error) {

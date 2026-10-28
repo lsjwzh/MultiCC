@@ -460,7 +460,12 @@ fn number(value: &Value, key: &str) -> Option<f64> {
     if let Some(number) = number.as_f64() {
         return number.is_finite().then_some(number);
     }
-    number.as_str()?.trim().parse::<f64>().ok().filter(|v| v.is_finite())
+    number
+        .as_str()?
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
 }
 
 /// Trim, cap and reject empty/control-only text; never store arbitrary blobs.
@@ -487,13 +492,17 @@ mod tests {
     use super::*;
 
     fn entry(kind: &str, windows: &str) -> String {
-        format!(r#"{{"appType":"claude","providerId":"glm","sampledAt":1000000,"summary":{{"kind":"{kind}","windows":{windows}}}}}"#)
+        format!(
+            r#"{{"appType":"claude","providerId":"glm","sampledAt":1000000,"summary":{{"kind":"{kind}","windows":{windows}}}}}"#
+        )
     }
 
     fn rows(history: &History) -> i64 {
         history
             .connection
-            .query_row("SELECT COUNT(*) FROM provider_quota_samples", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM provider_quota_samples", [], |row| {
+                row.get(0)
+            })
             .unwrap()
     }
 
@@ -525,20 +534,25 @@ mod tests {
     #[test]
     fn dedupes_within_five_minutes_unless_the_window_rolled() {
         let mut history = History::memory();
-        history.record(&entry("window", r#"[{"window":"5h","usedPercent":10,"resetMs":2000000}]"#)).unwrap();
+        history
+            .record(&entry(
+                "window",
+                r#"[{"window":"5h","usedPercent":10,"resetMs":2000000}]"#,
+            ))
+            .unwrap();
         // Same window, +1 minute → skipped even though the value moved.
         history
-            .record(&r#"{"appType":"claude","providerId":"glm","sampledAt":1060000,"summary":{"kind":"window","windows":[{"window":"5h","usedPercent":20,"resetMs":2000000}]}}"#)
+            .record(r#"{"appType":"claude","providerId":"glm","sampledAt":1060000,"summary":{"kind":"window","windows":[{"window":"5h","usedPercent":20,"resetMs":2000000}]}}"#)
             .unwrap();
         assert_eq!(rows(&history), 1);
         // New reset time → a new window, recorded immediately.
         history
-            .record(&r#"{"appType":"claude","providerId":"glm","sampledAt":1060000,"summary":{"kind":"window","windows":[{"window":"5h","usedPercent":0,"resetMs":3000000}]}}"#)
+            .record(r#"{"appType":"claude","providerId":"glm","sampledAt":1060000,"summary":{"kind":"window","windows":[{"window":"5h","usedPercent":0,"resetMs":3000000}]}}"#)
             .unwrap();
         assert_eq!(rows(&history), 2);
         // Past the 5-minute interval → recorded.
         history
-            .record(&r#"{"appType":"claude","providerId":"glm","sampledAt":1360000,"summary":{"kind":"window","windows":[{"window":"5h","usedPercent":30,"resetMs":3000000}]}}"#)
+            .record(r#"{"appType":"claude","providerId":"glm","sampledAt":1360000,"summary":{"kind":"window","windows":[{"window":"5h","usedPercent":30,"resetMs":3000000}]}}"#)
             .unwrap();
         assert_eq!(rows(&history), 3);
     }
@@ -558,7 +572,10 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!((series.as_str(), unit.as_str(), value), ("balance", "CNY", 12.5));
+        assert_eq!(
+            (series.as_str(), unit.as_str(), value),
+            ("balance", "CNY", 12.5)
+        );
         // No amount at all: nothing to draw.
         history
             .record(r#"{"appType":"codex","providerId":"empty","sampledAt":2000000,"summary":{"kind":"balance","available":true,"total":null,"currency":"CNY"}}"#)
@@ -578,9 +595,14 @@ mod tests {
             .record(r#"{"appType":"claude","providerId":"glm","sampledAt":1000000,"summary":{"kind":"availability","status":"rejected"}}"#)
             .unwrap();
         assert_eq!(rows(&history), 0);
-        history.record(&entry("window", r#"[{"window":"5h","usedPercent":10,"resetMs":2000000}]"#)).unwrap();
         history
-            .record(&r#"{"appType":"claude","providerId":"glm","sampledAt":900000,"summary":{"kind":"window","windows":[{"window":"5h","usedPercent":50,"resetMs":2000000}]}}"#)
+            .record(&entry(
+                "window",
+                r#"[{"window":"5h","usedPercent":10,"resetMs":2000000}]"#,
+            ))
+            .unwrap();
+        history
+            .record(r#"{"appType":"claude","providerId":"glm","sampledAt":900000,"summary":{"kind":"window","windows":[{"window":"5h","usedPercent":50,"resetMs":2000000}]}}"#)
             .unwrap();
         assert_eq!(rows(&history), 1);
     }
@@ -613,10 +635,15 @@ mod tests {
     fn prunes_readings_older_than_retention() {
         let mut history = History::memory();
         history.retention_ms = 10 * 60 * 1000;
-        history.record(&entry("window", r#"[{"window":"5h","usedPercent":10,"resetMs":2000000}]"#)).unwrap();
+        history
+            .record(&entry(
+                "window",
+                r#"[{"window":"5h","usedPercent":10,"resetMs":2000000}]"#,
+            ))
+            .unwrap();
         assert_eq!(rows(&history), 1);
         history
-            .record(&r#"{"appType":"claude","providerId":"glm","sampledAt":20000000,"summary":{"kind":"window","windows":[{"window":"5h","usedPercent":20,"resetMs":2000000}]}}"#)
+            .record(r#"{"appType":"claude","providerId":"glm","sampledAt":20000000,"summary":{"kind":"window","windows":[{"window":"5h","usedPercent":20,"resetMs":2000000}]}}"#)
             .unwrap();
         assert_eq!(rows(&history), 1, "the first reading is outside retention");
     }

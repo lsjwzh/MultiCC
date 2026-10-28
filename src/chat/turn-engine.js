@@ -883,27 +883,19 @@ function createChatTurnEngine(deps) {
         continue;
       }
       if (evt.type === 'error') {
-        logger.warn('chat_provider_error_observed', {
-          sessionId: sessionName, turnId: turn.turnId, runnerId: runner.runnerId,
-          provider: provider.name, kind: evt.kind || 'provider_error',
-          message: sanitizeApiErrorMessage(evt.message),
-        });
+        const publicMessage = sanitizeApiErrorMessage(evt.message);
+        logger.warn('chat_provider_error_observed', { sessionId: sessionName, turnId: turn.turnId, runnerId: runner.runnerId,
+          provider: provider.name, kind: evt.kind || 'provider_error', message: publicMessage });
         turnProgressHeartbeat.updatePhase(sessionName, turn.turnId,
           evt.kind === 'transport_disconnect' ? 'recovering' : 'finalizing');
         if (evt.kind === 'response_completed_disconnect') {
-          const publicMessage = sanitizeApiErrorMessage(evt.message);
           cs._codexPendingStreamError = publicMessage;
           cs._codexPendingStreamErrorCount = (cs._codexPendingStreamErrorCount || 0) + 1;
           const hasOutput = !!(cs.currentAssistantText || cs.currentToolCalls.length || cs._resultSaved);
           if (hasOutput) cs._codexRecoveredDisconnect = true;
-          logger.warn('chat_provider_response_completed_disconnect', {
-            sessionId: sessionName,
-            provider: provider.name,
-            afterOutput: hasOutput,
-            occurrence: cs._codexPendingStreamErrorCount,
-          });
+          logger.warn('chat_provider_response_completed_disconnect', { sessionId: sessionName, provider: provider.name,
+            afterOutput: hasOutput, occurrence: cs._codexPendingStreamErrorCount });
         } else if (evt.kind === 'transport_disconnect') {
-          const publicMessage = sanitizeApiErrorMessage(evt.message);
           cs._codexTransportError = publicMessage;
           cs._sawApiError = true;
           runner.sawApiError = true;
@@ -919,7 +911,6 @@ function createChatTurnEngine(deps) {
             phase: meaningfulTurnOutput(cs) || turnHasSideEffects(cs) ? 'stream' : 'before_first_token',
           });
         } else {
-          const publicMessage = sanitizeApiErrorMessage(evt.message);
           cs._adapterError = publicMessage;
           runner.adapterError = publicMessage;
           runner.sawApiError = true;

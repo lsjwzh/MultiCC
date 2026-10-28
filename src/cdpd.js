@@ -15,7 +15,7 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
-const { spawn, spawnSync } = require('child_process');
+const { spawn, execFile } = require('child_process');
 
 // 与 native/cdpd/src/lib.rs 的 PROTOCOL_VERSION 一致；tests/test-cdpd.js 用二进制的
 // --version 校验。
@@ -114,13 +114,19 @@ function protocolOf(pong) {
 }
 
 // `multicc-cdpd 2 0.2.0` → { protocol: 2, version: '0.2.0' }，按 mtime 缓存。
+// 异步执行：它在服务端进程里跑，不许用同步子进程卡住事件循环。
 const versionCache = new Map();
-function binaryVersion(file, { run = spawnSync, fileSystem = fs } = {}) {
+function runVersion(file) {
+  return new Promise((resolve) => {
+    execFile(file, ['--version'], { encoding: 'utf8', timeout: 10_000 }, (_error, stdout) => resolve({ stdout }));
+  });
+}
+async function binaryVersion(file, { run = runVersion, fileSystem = fs } = {}) {
   let stamp;
   try { stamp = fileSystem.statSync(file).mtimeMs; } catch (_) { return null; }
   const cached = versionCache.get(file);
   if (cached && cached.stamp === stamp) return cached.value;
-  const result = run(file, ['--version'], { encoding: 'utf8', timeout: 10_000 });
+  const result = await run(file);
   const match = /^multicc-cdpd (\d+) (\S+)/.exec(String(result.stdout || '').trim());
   const value = match ? { protocol: Number(match[1]), version: match[2] } : null;
   versionCache.set(file, { stamp, value });
@@ -198,7 +204,7 @@ function createCdpdProvisioner(options = {}) {
     const state = inspect();
     if (state.disabled) return { action: 'skip', reason: 'disabled' };
     const pong = await ping();
-    const shipped = state.binaryPresent ? readVersion(state.binary) : null;
+    const shipped = state.binaryPresent ? await readVersion(state.binary) : null;
     if (pong) {
       const running = protocolOf(pong);
       if (running === PROTOCOL_VERSION) {

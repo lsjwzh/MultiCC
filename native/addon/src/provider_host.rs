@@ -84,6 +84,11 @@ impl RustProviderRequest {
         self.inner.cancel();
     }
 }
+impl Default for RustProviderRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[napi]
 pub async fn authorize_provider_request(input: String) -> Result<String> {

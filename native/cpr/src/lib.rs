@@ -6,5 +6,5 @@ pub mod plan;
 pub mod settings;
 pub mod transport;
 
-pub mod provider_host;
 pub mod codex_official;
+pub mod provider_host;
