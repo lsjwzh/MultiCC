@@ -152,7 +152,8 @@
       unsupported: t('airPluginsStateUnsupported'),
     }[row.state];
     tags.append(make('span', label, `air-plugins-tag is-${row.state}`));
-    if (!row.listed && row.state !== 'builtin') tags.append(make('span', t('airPluginsUnlisted'), 'air-plugins-tag'));
+    // listed 为 null = 还没拿到列表，说不上在不在里面。
+    if (row.listed === false) tags.append(make('span', t('airPluginsUnlisted'), 'air-plugins-tag'));
     return tags;
   }
 
@@ -172,6 +173,7 @@
     const needs = LOCAL_STATES.has(row.state) && row.state !== 'incompatible' ? '' : requirementText(row.requires);
     if (needs) copy.append(make('div', needs, 'air-plugins-meta'));
     if (row.reason) copy.append(make('div', reasonText(row.reason), 'air-plugins-why'));
+    if (row.misplaced) copy.append(make('div', t('airPluginsMisplaced'), 'air-plugins-meta'));
     if (row.state === 'installable' || row.state === 'update') copy.append(make('div', t('airPluginsInstallLater'), 'air-plugins-meta'));
     if (local && !local.engine.available) {
       copy.append(make('div', local.engine.reason || t('airPluginsEngineMissing'), 'air-plugins-badge'));
@@ -201,6 +203,7 @@
       return typeof root.formatRelativeTime === 'function' ? root.formatRelativeTime(ms) : String(iso).slice(0, 10);
     };
     if (refreshing) return { text: t('airPluginsRefreshing'), warn: false };
+    if (info.legacy) return { text: t('airPluginsCatalogUnavailable'), warn: true };
     if (!info.available) return { text: t('airPluginsCatalogMissing'), warn: Boolean(info.error) };
     if (info.error) return { text: t('airPluginsCatalogStale', { time: when(info.fetchedAt) }), warn: true };
     return { text: t('airPluginsCatalogUpdated', { time: when(info.fetchedAt) }), warn: false };
@@ -306,12 +309,34 @@
     conflicts = Array.isArray(payload && payload.conflicts) ? payload.conflicts : [];
   }
 
+  // 旧接口 /api/plugins 的清单 → 面板的行。只知道本机装了什么：内置与否、
+  // 在不在列表里都说不上（listed: null），所以一律是「已安装」。
+  function fromLegacyList(payload) {
+    const list = Array.isArray(payload && payload.plugins) ? payload.plugins : [];
+    return {
+      catalog: { available: false, configured: false, legacy: true, error: null },
+      conflicts: Array.isArray(payload && payload.conflicts) ? payload.conflicts : [],
+      plugins: list.map(local => ({
+        id: local.id, name: local.name, nameEn: local.nameEn || null, icon: local.icon, category: local.category || null,
+        summary: local.description || '', summaryEn: local.descriptionEn || null, homepage: null, listed: null, local,
+        state: 'installed', reason: null, installedVersion: local.version || null, candidate: null, latest: null, requires: null, misplaced: false,
+      })),
+    };
+  }
+
   async function load(context) {
     try {
       accept(await context.api('/api/plugins/catalog'));
     } catch (error) {
-      plugins = [];
-      context.notice?.(t('airPluginsLoadFail') + (error && error.message ? '：' + error.message : ''));
+      // 源码运行合并新代码后、服务重启前，网页已是新的而服务端还没有
+      // /api/plugins/catalog：退回旧清单接口照常列出本机插件，状态行写明原因，
+      // 不让整页变成「加载失败 / 还没有安装插件」。
+      try {
+        accept(fromLegacyList(await context.api('/api/plugins')));
+      } catch (_) {
+        plugins = [];
+        context.notice?.(t('airPluginsLoadFail') + (error && error.message ? '：' + error.message : ''));
+      }
     }
     paint(document.getElementById('admin-content'), context);
   }

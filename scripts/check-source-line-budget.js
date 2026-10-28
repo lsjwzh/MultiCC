@@ -521,10 +521,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +11 双语键（airGlobalAgent*）：设置页「共用 Agent」提示（谁装的、构建号冲突时
     //   「用本份替换」、仍用旧规则的桌面版），中英各 11 行 = +22 行（上一轮漏登记）；
     // +41 双语键（airPlugins*）：插件面板接插件列表 —— 状态标签、要求说明、不满足的
-    //   原因、分组与刷新，中英各 41 行 = +82 行；重跑生成器实测 9956/643789。
-    maxLines: 9956,
+    //   原因、分组与刷新，中英各 41 行 = +82 行；重跑生成器实测 9956。
+    // +2 双语键（airPluginsCatalogUnavailable/airPluginsMisplaced）：服务端还没重启到
+    //   带插件列表的版本时退回旧清单的说明，以及「非内置插件放在程序目录」的提示，
+    //   中英各 2 行 = +4 行，重跑生成器实测 9960/644444。
+    maxLines: 9960,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 643789,
+    maxBytes: 644444,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
