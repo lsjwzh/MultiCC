@@ -49,8 +49,10 @@ impl Task for HistoryJob {
 impl RustQuotaHistory {
     #[napi(constructor)]
     pub fn new(file: String, retention_ms: Option<f64>) -> Result<Self> {
-        let history = History::open(&file, retention_ms.map(|value| value as i64))
-            .map_err(|error| napi::Error::from_reason(format!("quota_history_open_failed: {error}")))?;
+        let history =
+            History::open(&file, retention_ms.map(|value| value as i64)).map_err(|error| {
+                napi::Error::from_reason(format!("quota_history_open_failed: {error}"))
+            })?;
         Ok(Self {
             state: Arc::new(Mutex::new(history)),
         })

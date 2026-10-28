@@ -10,7 +10,8 @@ fn date(value: &Value) -> Option<f64> {
         } else {
             n
         }
-    } else if let Some(s) = value.as_str() {
+    } else {
+        let s = value.as_str()?;
         DateTime::parse_from_rfc3339(s)
             .map(|d| d.timestamp_millis() as f64)
             .ok()
@@ -20,8 +21,6 @@ fn date(value: &Value) -> Option<f64> {
                     .and_hms_opt(0, 0, 0)
                     .map(|d| d.and_utc().timestamp_millis() as f64)
             })?
-    } else {
-        return None;
     };
     (946684800000.0..4102444800000.0)
         .contains(&ms)
