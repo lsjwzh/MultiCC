@@ -191,8 +191,8 @@ function assignKillReason(runner, reason) {
 
 // Transient event errors may recover (for example Codex housekeeping failures).
 // Clear them only after the owning adapter confirms completion, the execution
-// boundary settles, and the result is durable. Proxy failures are independently
-// reconciled by the attempt runtime and still veto success.
+// boundary settles, and the result is durable. Proxy diagnostics use the same
+// completed-turn evidence in the attempt runtime; they are not deleted.
 // A boundary error envelope ("Codex 出错：Selected model is at capacity" as
 // the assistant text) is provider-owned fault evidence — never clear it.
 function clearErrorFlagsForSucceededTurn(turn, runner, cs, facts = {}) {
@@ -201,13 +201,16 @@ function clearErrorFlagsForSucceededTurn(turn, runner, cs, facts = {}) {
   if (facts.killReason) return false;
   if (facts.code !== undefined && facts.code !== null && facts.code !== 0) return false;
   if (facts.boundaryErrorEnvelope) return false;
-  const hadErrorFlags = !!(runner.sawApiError || runner.apiErrorRaw || runner.adapterError);
+  const hadErrorFlags = !!(runner.sawApiError || runner.apiErrorRaw || runner.adapterError
+    || cs?._sawApiError || cs?._adapterError || cs?._codexTransportError || cs?._codexPendingStreamError);
   runner.sawApiError = false;
   runner.apiErrorRaw = null;
   runner.adapterError = null;
   if (cs) {
     cs._sawApiError = false;
     cs._adapterError = null;
+    cs._codexTransportError = '';
+    cs._codexPendingStreamError = '';
   }
   return hadErrorFlags;
 }

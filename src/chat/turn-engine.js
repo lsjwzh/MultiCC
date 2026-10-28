@@ -883,6 +883,11 @@ function createChatTurnEngine(deps) {
         continue;
       }
       if (evt.type === 'error') {
+        logger.warn('chat_provider_error_observed', {
+          sessionId: sessionName, turnId: turn.turnId, runnerId: runner.runnerId,
+          provider: provider.name, kind: evt.kind || 'provider_error',
+          message: sanitizeApiErrorMessage(evt.message),
+        });
         turnProgressHeartbeat.updatePhase(sessionName, turn.turnId,
           evt.kind === 'transport_disconnect' ? 'recovering' : 'finalizing');
         if (evt.kind === 'response_completed_disconnect') {
@@ -1853,7 +1858,7 @@ function createChatTurnEngine(deps) {
           || runner.apiErrorRaw
           || runner.sawApiError
           || runner.adapterError
-          || pendingTransportError
+          || cs._codexTransportError
           || killReason
           || code !== 0
           || (!turn.resultDurable && !hasTurnOutput)
@@ -1887,7 +1892,7 @@ function createChatTurnEngine(deps) {
         // A Codex transport continuation must stay on the physical route whose
         // native conversation is being resumed. Do not consume an Auto pool
         // candidate before the finalizer gives that continuation precedence.
-        const deferAutoToCodexContinuation = cs.cli === 'codex' && !!pendingStreamError;
+        const deferAutoToCodexContinuation = cs.cli === 'codex' && !!cs._codexPendingStreamError;
         const autoFailover = apiErrorDecision && !deferAutoToCodexContinuation
           ? autoTurn.failover(apiErrorDecision, attemptFacts) : null;
         const autoHandoffPreparation = apiErrorDecision && !deferAutoToCodexContinuation
@@ -1922,7 +1927,7 @@ function createChatTurnEngine(deps) {
           sameDurablePartial: hasMatchingPartialCheckpoint(runner, closeCheckpointKey),
           isRetry: !!isRetry,
           recoveredTransport: recoveredCodexDisconnect,
-          pendingStreamError,
+          pendingStreamError: cs._codexPendingStreamError,
           nativeSession: !!persisted.cliSessionId,
           codexDisconnectAttempt: cs._codexStreamContinuationCount || 0,
           freshStartAttempt: isRetry ? 1 : 0,

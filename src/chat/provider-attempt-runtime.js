@@ -5,7 +5,7 @@ const { isCompleted } = require('../cli-adapters/completion');
 const { isResident } = require('../cli/cli-capability');
 const { isProxyFailureCompatibleWithCompletion } = require('./adapter-completion');
 const { isProxyStallCode } = require('../providers/proxy-stall-watch');
-const { normalizeRejection } = require('./api-error-policy');
+const { normalizeRejection, sanitizeMessage } = require('./api-error-policy');
 const {
   createExactSecretStreamRedactor, redactExactSecretFragments, redactProviderRouteCapability,
 } = require('../observability');
@@ -1248,14 +1248,10 @@ function createProviderAttemptRuntime(options = {}) {
         record.requestDeadlineAt = null;
         record.requestFailures = 0;
       }
-      // A cleanly terminated inference request after an earlier transport stain
-      // is host-observed proof that the upstream recovered inside this attempt.
-      // Mark (never delete) the stain: the close/commit adjudicators still
-      // require a protocol-attested completion before forgiving it, and a later
-      // failure simply replaces the record (losing the recovered marker).
-      // HTTP-error stains are never marked — 4xx/5xx stays unforgivable.
+      // 请求恢复标记只用于诊断，不是最终成功的额外门槛。HTTP 错误同样可以恢复；
+      // 最终判定以当前运行器的整轮完成证据为准，原始错误记录不删除。
       if (proxyOutcome?.termination === 'completed'
-          && record.proxyFailure && record.proxyFailure.httpStatus == null
+          && record.proxyFailure
           && record.proxyFailure.recovered !== true) {
         record.proxyFailure = Object.freeze({
           ...record.proxyFailure, recovered: true, recoveredAt: Number(now()),
@@ -1275,6 +1271,16 @@ function createProviderAttemptRuntime(options = {}) {
     const status = Number(event.statusCode);
     const httpStatus = Number.isInteger(status) && status >= 400 && status <= 599
       ? status : null;
+    // 每次错误都进入事件日志，后续恢复、覆盖最新错误或切换尝试都不会抹去历史。
+    auditOnly(sessionId, {
+      type: 'provider_attempt_proxy_failure_observed', operation: 'proxy_outcome',
+      runtimeEpoch: record.runtimeEpoch, turnId: record.turnId,
+      routeAttemptId: record.routeAttemptId, routeGeneration: record.routeGeneration,
+      providerId: record.providerId, httpStatus,
+      code: sanitizeMessage(clean(event.errorCode) || 'UPSTREAM_HTTP_ERROR'),
+      requestId: proxyOutcome?.requestId || null,
+      termination: proxyOutcome?.termination || null,
+    });
     // Socket teardown must not replace stronger upstream failure evidence.
     if (httpStatus == null && proxyOutcome?.termination === 'downstream_disconnect'
         && record.proxyFailure) {
@@ -1341,11 +1347,8 @@ function createProviderAttemptRuntime(options = {}) {
   function proxyFailure(reference, facts = {}) {
     const record = currentBySession.get(clean(reference && reference.sessionId));
     if (!sameAttempt(record, reference) || !record.proxyFailure) return null;
-    // A client may close after consuming a protocol completion, before HTTP
-    // EOF; a mid-turn upstream cut may be followed by a clean retry. Both are
-    // reconciled by the shared predicate — with a durable successful result
-    // from this runner and a clean end. This rule is shared by all
-    // CLIs/providers; raw error strings never prove harmless teardown.
+    // 原始诊断始终可读；最终判定只在当前运行器正常完成且结果保存后忽略历史错误。
+    // 不依赖 HTTP 成功事件先到、后到，或客户端是否等到 HTTP EOF。
     if (facts.resultDurable === true && isCompleted(facts.completion)
         && isProxyFailureCompatibleWithCompletion(record.proxyFailure, facts.completion)) return null;
     return Object.freeze({ ...record.proxyFailure });

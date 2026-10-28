@@ -13,7 +13,8 @@ function stateful(over = {}) {
   return {
     turn: { resultDurable: true, resultRunnerId: 'runner-1' },
     runner: { runnerId: 'runner-1', completionOutcome: { version: 1, state: 'completed', settled: true }, sawApiError: true, apiErrorRaw: { code: 'error' }, adapterError: 'boom' },
-    cs: { _sawApiError: true, _adapterError: 'boom' },
+    cs: { _sawApiError: true, _adapterError: 'boom',
+      _codexTransportError: 'connection reset', _codexPendingStreamError: 'stream interrupted' },
     ...over,
   };
 }
@@ -29,6 +30,8 @@ function stateful(over = {}) {
   assert.strictEqual(runner.adapterError, null);
   assert.strictEqual(cs._sawApiError, false);
   assert.strictEqual(cs._adapterError, null);
+  assert.strictEqual(cs._codexTransportError, '');
+  assert.strictEqual(cs._codexPendingStreamError, '');
 }
 
 {
