@@ -7,6 +7,13 @@ const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletion
 const { clearErrorFlagsForSucceededTurn, evaluatePostTurn } = require('../src/chat/turn-lifecycle');
 const { planTurnFinalization, resolveTurnFinalization } = require('../src/chat/finalize-plan');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { observeProxyRequest } = require('../src/providers/proxy-outcome');
+const { createTurnEventJournal } = require('../src/chat/turn-event-journal');
+const { recordResultEvent } = require('../src/chat/turn-lifecycle');
+const { EventEmitter } = require('node:events');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 
 const adapters = [
   require('../src/cli-adapters/claude').createClaudeAdapter({}),
@@ -165,7 +172,9 @@ test('durable native success followed by rejected send cannot suppress errors or
   assert.equal(clearErrorFlagsForSucceededTurn(turn, { ...normal, sawApiError: true }, {}, {}), true);
   assert.equal(clearErrorFlagsForSucceededTurn(turn, { ...normal, runnerId: 'stale', sawApiError: true }, {}, {}), false);
   for (const failure of [{ httpStatus: 429 }, { proxyOutcome: { termination: 'upstream_failure' } }]) {
-    assert.equal(canPersistAdapterCompletion(outcome, failure), false);
+    assert.equal(canPersistAdapterCompletion(outcome, failure), true,
+      'a normal native completion reconciles historical request errors');
+    assert.equal(canPersistAdapterCompletion({ ...outcome, state: 'failed' }, failure), false);
   }
   assert.equal(canPersistAdapterCompletion(outcome, null, { message: 'provider error envelope' }), false);
 });
@@ -185,6 +194,73 @@ test('missing completion never turns exit zero or a saved answer into success', 
   const plan = planTurnFinalization({ current: true, runnerKind: 'process', code: 0,
     hasOutput: true, resultEvent: true, resultDurable: true });
   assert.equal(resolveTurnFinalization(plan).effects.some(e => e.type === 'complete-session-turn'), false);
+});
+
+test('恢复后的整轮结果不受代理回调顺序影响，错误日志仍落盘', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'multicc-recovery-journal-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  for (const cli of ['codex', 'codex-exp', 'claude']) {
+    for (const order of ['success-first', 'success-late', 'disconnect', 'missing-success', 'terminal-failure']) {
+      await t.test(`${cli}: ${order}`, async subtest => {
+        const journal = createTurnEventJournal({ dir: () => dir });
+        const sessionId = `${cli}-${order}`;
+        subtest.after(() => journal.whenIdle(sessionId));
+        const runtime = createProviderAttemptRuntime({ audit: journal.note });
+        const attempt = runtime.beginAttempt({ sessionId, turnId: 'turn', cli,
+          providerId: 'provider', providerName: 'Provider', model: 'model',
+          protocol: cli === 'claude' ? 'anthropic' : 'openai-responses', providerRevision: 'rev', attemptNo: 1 });
+        const identity = { ...attempt, roleKind: 'main', routeAttribution: 'exact' };
+        function request() {
+          const req = Object.assign(new EventEmitter(), { method: 'POST',
+            url: cli === 'claude' ? '/v1/messages' : '/responses' });
+          const res = Object.assign(new EventEmitter(), { statusCode: 200, writableEnded: false });
+          const observation = observeProxyRequest(cli === 'claude' ? 'claude' : 'codex', req, res,
+            (proxyOutcome, event) => runtime.observeProxyOutcome({ ...identity, ...event, proxyOutcome }));
+          return { observation, res };
+        }
+        const first = request();
+        first.observation.settle({ status: 'error', statusCode: 502, errorCode: 'UPSTREAM_HTTP_ERROR' });
+        const original = runtime.proxyFailure(attempt);
+        const retry = request();
+        if (order === 'success-first' || order === 'terminal-failure') {
+          retry.observation.settle({ status: 'success', statusCode: 200 });
+        } else if (order === 'disconnect') retry.res.emit('close');
+        const adapter = adapters.find(item => item.name === cli);
+        const terminalFailure = cli === 'codex' ? { type: 'turn.failed' }
+          : cli === 'codex-exp' ? { method: 'turn/completed', params: { turn: { status: 'failed' } } }
+            : { type: 'result', subtype: 'error_during_execution', is_error: true };
+        const runner = { runnerId: 'runner', turnId: 'turn', sawApiError: true,
+          apiErrorRaw: { code: 'UPSTREAM_HTTP_ERROR', httpStatus: 502 },
+          completion: play(adapter, order === 'terminal-failure' ? [terminalFailure] : traces[cli]) };
+        const turn = { turnId: 'turn', resultDurable: false };
+        const cs = { _sawApiError: true, _codexTransportError: 'connection reset', _codexPendingStreamError: 'stream cut' };
+        const completion = settleAdapterCompletion(runner, { kind: 'stream', resolved: true });
+        const persisted = canPersistAdapterCompletion(completion, runtime.proxyFailure(attempt));
+        recordResultEvent(turn, runner, { current: true, persisted });
+        clearErrorFlagsForSucceededTurn(turn, runner, cs, {});
+        const apiError = !!runtime.proxyFailure(attempt, { resultDurable: turn.resultDurable, completion })
+          || !!runner.sawApiError || !!cs._codexTransportError;
+        const resolved = resolveTurnFinalization(planTurnFinalization({ current: true,
+          runnerKind: 'stream', cli, completion, hasOutput: true,
+          resultEvent: true, resultDurable: turn.resultDurable, apiError }));
+        const classification = resolved.effects.find(effect => effect.type === 'classify-turn-end').classification;
+        const succeeded = order !== 'terminal-failure';
+        assert.equal(persisted, succeeded);
+        assert.equal(classification, succeeded ? 'succeeded' : 'api-error');
+        const postTurn = resolved.effects.find(effect => effect.type === 'run-post-turn');
+        assert.equal(postTurn.apiError, !succeeded);
+        runtime.finishAttempt(attempt, { outcome: succeeded ? 'succeeded' : 'failed' });
+        if (order === 'success-late') retry.observation.settle({ status: 'success', statusCode: 200 });
+        assert.equal(runtime.snapshot(sessionId).outcome, succeeded ? 'succeeded' : 'failed');
+        assert.equal(runtime.proxyFailure(attempt).httpStatus, 502);
+        await journal.whenIdle(sessionId);
+        const errors = journal.read(sessionId).filter(item => item.event.type === 'provider_attempt_proxy_failure_observed');
+        assert.ok(errors.some(item => item.event.httpStatus === 502
+          && item.event.code === 'UPSTREAM_HTTP_ERROR' && item.event.requestId === original.requestId));
+        if (order === 'disconnect') assert.ok(errors.some(item => item.event.termination === 'downstream_disconnect'));
+      });
+    }
+  }
 });
 
 test('persistent Claude ignores child/background results and joins its native process', async t => {

@@ -20,6 +20,8 @@ const scenarios = [
   ['opencode', 'completed', false], ['opencode', 'tool-stop', true],
   ['pi', 'completed', false], ['pi', 'failed', true], ['pi', 'unknown', true],
   ['pi', 'late-exit-error', true],
+  ['codex', 'recovered-http', false], ['codex', 'recovered-transport', false],
+  ['codex', 'recovered-disconnect', false],
 ];
 const write = (kind, data) => fs.writeFileSync(path.join(dataDir, kind + '.json'), JSON.stringify({
   __multiccSchema: { kind, version: 1, writtenAt: new Date().toISOString() }, data,
@@ -51,6 +53,12 @@ function reply() {
     if (mode !== 'unknown') emit({ type: 'agent_end', messages: [message], willRetry: false });
   } else if (cli === 'codex') {
     emit({ type: 'thread.started', thread_id: 'thread-' + mode });
+    const recoveredErrors = {
+      'recovered-http': 'upstream HTTP 502',
+      'recovered-transport': 'stream disconnected before completion: error sending request',
+      'recovered-disconnect': 'stream disconnected before completion: missing response.completed',
+    };
+    if (recoveredErrors[mode]) emit({ type: 'error', message: recoveredErrors[mode] });
     emit({ type: 'item.completed', item: { type: 'agent_message', text } });
     if (mode !== 'unknown') emit({ type: mode === 'failed' ? 'turn.failed' : 'turn.completed', usage: {}, error: mode === 'failed' ? { message: 'failure' } : undefined });
   } else if (cli === 'claude') {
@@ -198,6 +206,11 @@ async function stop() {
       assert.ok(answer, `${sid} retains output`);
       assert.equal(answer.partial === true, partial, `${sid} finality`);
       assert.equal(frames.some(e => e.type === 'result'), !partial || cli === 'claude', `${sid} final result frame`);
+      if (mode.startsWith('recovered-')) {
+        assert.equal(frames.some(e => e.type === 'api_error_policy'), false, `${sid} no stale error adjudication`);
+        assert.ok(output.split('\n').some(line => line.includes('chat_provider_error_observed')
+          && line.includes(sid)), `${sid} retains diagnostic log`);
+      }
       console.log(`PASS ${sid}: ${partial ? 'partial' : 'durable final'}`);
       ws.terminate(); ws = null;
     }

@@ -27,28 +27,20 @@ function finalizeCompletionStream(promise, { runner, finalize, onRejected, onFin
   });
 }
 
-// Transport failure recorded at the proxy boundary that can coexist with a
-// genuinely completed turn. Shared by the persist gate below and by
-// provider-attempt-runtime's close-time proxyFailure() reconciliation, so both
-// adjudicators forgive exactly the same evidence.
-//   - httpStatus != null (4xx/5xx): real upstream error, never forgivable.
-//   - downstream_disconnect: the client hung up after consuming the terminal
-//     frame but before HTTP EOF — benign by construction.
-//   - anything else (upstream_failure, unknown): forgivable only when the
-//     runtime marked the stain `recovered` (a later inference request on the
-//     same attempt ended cleanly) AND the turn completion is protocol-attested.
-//     Host-guessed completions (exit_fallback) never forgive transport
-//     evidence — exit 0 plus output cannot prove the model finished.
+// 当前运行器的协议成功 + 正常收尾证明流程已恢复。物理请求的历史错误只作诊断，
+// 不再要求另一个 HTTP 成功回调，也不按错误码决定能否恢复。保存和收尾共用此规则。
+// 紧急修复限于现有 Node 协议桥；待运行器/回合所有权迁入 Rust 时一起迁移此判断，
+// 避免现在增加第二套跨语言收尾状态机。
 function isProxyFailureCompatibleWithCompletion(proxyFailure, outcome) {
-  if (!proxyFailure || proxyFailure.httpStatus != null) return false;
-  const termination = proxyFailure.proxyOutcome?.termination;
-  if (termination === 'downstream_disconnect') return true;
-  return proxyFailure.recovered === true
-    && (outcome?.source === 'protocol' || outcome?.source === 'protocol_and_exit');
+  if (!proxyFailure || !isCompleted(outcome)) return false;
+  if (outcome.source === 'protocol' || outcome.source === 'protocol_and_exit') return true;
+  // 无原生完成协议的旧适配器仍只允许已知的正常收尾断连；仅有输出/退出码不证明恢复。
+  return proxyFailure.httpStatus == null
+    && proxyFailure.proxyOutcome?.termination === 'downstream_disconnect';
 }
 
 // This is a turn-level success candidate, never a proxy-level HTTP success.
-// Known upstream errors and error envelopes still veto the history commit.
+// 最终错误回复仍表示流程失败；历史请求错误交给整轮完成证据协调。
 function canPersistAdapterCompletion(outcome, proxyFailure, errorEnvelope) {
   return isCompleted(outcome) && !errorEnvelope
     && (!proxyFailure || isProxyFailureCompatibleWithCompletion(proxyFailure, outcome));
