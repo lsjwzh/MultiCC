@@ -36,11 +36,25 @@ const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
 
+const { openCdpSocket } = require('./cdp-relay');
+
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORTS = [9222];
 const DEFAULT_CONNECT_TIMEOUT_MS = 3000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 15000;
 const WS_OPTIONS = { perMessageDeflate: false, maxPayload: 16 * 1024 * 1024 };
+// How long to wait once the gateway reports Chrome is (very likely) showing
+// "Allow remote debugging?". Giving up earlier is harmless — the gateway keeps
+// waiting, so the click still counts for the next attempt — but the user who is
+// about to click should not see this attempt fail first.
+const DEFAULT_APPROVAL_TIMEOUT_MS = 60000;
+
+function useGateway(candidate, env = process.env) {
+  const mode = String(env.MULTICC_CDP_GATEWAY || '').trim();
+  if (mode === '0') return false;
+  if (mode === '1') return true;
+  return Boolean(candidate && candidate.approvalGated);
+}
 
 class ChromeUnavailableError extends Error {
   constructor(message, tried) {
@@ -132,9 +146,24 @@ function createChromeCdp(options = {}) {
     commandTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
     readFile = (file) => fs.promises.readFile(file, 'utf8'),
     probeDebugPort = (h, p) => httpJson(h, p, '/json/version', connectTimeoutMs),
-    openSocket = (url) => new WebSocket(url, WS_OPTIONS),
+    env = process.env,
+    // Chrome 144+ asks "Allow remote debugging?" for every NEW WebSocket — but
+    // only when debugging was switched on at runtime (chrome://inspect), which
+    // since Chrome 136 is the only way to debug a browser's default profile.
+    // Those candidates go through the local CDP gateway (src/cdp-relay.js),
+    // which keeps one approved connection per browser. A Chrome launched with
+    // --remote-debugging-port never asks, so it keeps a plain socket: there is
+    // nothing to save, and the gateway would hold its connection open.
+    // MULTICC_CDP_GATEWAY=1 routes everything through the gateway, =0 nothing.
+    openSocket = (url, candidate) => (useGateway(candidate, env)
+      ? openCdpSocket(url, { env })
+      : new WebSocket(url, WS_OPTIONS)),
+    gatedProfileDirs = defaultProfileDirs(),
+    approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS,
     now = () => Date.now(),
   } = options;
+
+  const gated = new Set(gatedProfileDirs.map((dir) => path.resolve(dir)));
 
   // Candidates in preference order, without connecting to any of them.
   async function discover() {
@@ -160,7 +189,12 @@ function createChromeCdp(options = {}) {
       catch (_) { tried.push({ source: 'profile', detail: dir, reason: 'no DevToolsActivePort' }); continue; }
       const parsed = parseDevToolsActivePort(raw);
       if (!parsed) { tried.push({ source: 'profile', detail: dir, reason: 'unparsable DevToolsActivePort' }); continue; }
-      found.push({ source: 'profile', detail: dir, wsUrl: `ws://${host}:${parsed.port}${parsed.path}` });
+      found.push({
+        source: 'profile',
+        detail: dir,
+        wsUrl: `ws://${host}:${parsed.port}${parsed.path}`,
+        approvalGated: gated.has(path.resolve(dir)),
+      });
     }
     return { found, tried };
   }
@@ -168,7 +202,7 @@ function createChromeCdp(options = {}) {
   function openBrowserSocket(candidate) {
     return new Promise((resolve, reject) => {
       let socket;
-      try { socket = openSocket(candidate.wsUrl); }
+      try { socket = openSocket(candidate.wsUrl, candidate); }
       catch (err) { reject(err); return; }
 
       const pending = new Map();
@@ -176,11 +210,17 @@ function createChromeCdp(options = {}) {
       let nextId = 0;
       let opened = false;
 
-      const timer = setTimeout(() => {
+      const giveUp = () => {
         if (opened) return;
         try { socket.close(); } catch (_) {}
         reject(new Error('connect timeout'));
-      }, connectTimeoutMs);
+      };
+      let timer = setTimeout(giveUp, connectTimeoutMs);
+      socket.on('pending', () => {
+        if (opened) return;
+        clearTimeout(timer);
+        timer = setTimeout(giveUp, approvalTimeoutMs);
+      });
 
       // Settling a command always goes through here, so its timeout dies with
       // it — an un-cleared timer would keep the event loop alive for the whole
@@ -388,6 +428,7 @@ function profileDirsFromEnv(env = process.env) {
 
 module.exports = {
   createChromeCdp,
+  useGateway,
   defaultProfileDirs,
   parseDevToolsActivePort,
   cookieDomainMatches,

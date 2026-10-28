@@ -7,7 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { sourcePaths, sourceFingerprint, probeAddon, builtFromSource } = require('./rust-source-cache');
-const { executable, hasRemoteCrate, probeRemoteVersion, remoteBinaryName } = require('./build-rust-kernels');
+const { executable, hasRemoteCrate, hasCdpdCrate, probeRemoteVersion, probeCdpdVersion,
+  remoteBinaryName, cdpdBinaryName } = require('./build-rust-kernels');
 
 // 「🖥 屏幕」的二进制和原生模块同目录才认（Node 端查找顺序见
 // docs/remote-screen-process.md §1）。原型开发路径上它只是可选件：缺了就补编一次，
@@ -48,9 +49,30 @@ function ensureRemoteBinary({ repoRoot, addon, env, cache, log, run,
   return null;
 }
 
+// CDP 网关（native/cdpd）。缺失/过期只意味着「浏览器授权退化成每次连接一次」，
+// 所以和远控一样是可选件：编不出来也照常启动。
+function ensureCdpdBinary({ repoRoot, addon, env, cache, log, run, cdpdVersion = probeCdpdVersion }) {
+  if (!hasCdpdCrate(repoRoot)) return null;
+  const configured = env.MULTICC_CDP_BIN && path.resolve(env.MULTICC_CDP_BIN);
+  if (configured) return fs.existsSync(configured) ? configured : null;
+  const binary = cdpdBinaryName(process.platform);
+  const target = path.join(path.dirname(addon), binary);
+  if (fs.existsSync(target) && executable(target) && cdpdVersion(target).ok) return target;
+  log(`未找到可用的 CDP 网关 ${target}，正在只编译 multicc-cdpd（不影响服务启动）…`);
+  const result = run(process.execPath, [path.join(repoRoot, 'scripts/build-rust-kernels.js'),
+    '--cdpd-only', '--out', path.dirname(addon), '--target-dir', cache.targetDir], {
+    cwd: repoRoot, env: { ...env, MULTICC_RUST_ADDON: '', MULTICC_REQUIRE_RUST_BUNDLE: '' },
+    stdio: ['ignore', 2, 2],
+  });
+  if ((!result.error && result.status === 0) && fs.existsSync(target) && cdpdVersion(target).ok) return target;
+  log(`CDP 网关不可用：缺少 ${target}。浏览器调试授权会退化为每条连接一次；`
+    + '修复：安装可用的 Rust 工具链后重新执行 ./multicc start，或设置 MULTICC_CDP_BIN。');
+  return null;
+}
+
 function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = process.env,
   probe = probeAddon, paths = sourcePaths, builtFrom = builtFromSource, run = spawnSync,
-  remoteVersion = probeRemoteVersion, log = console.error } = {}) {
+  remoteVersion = probeRemoteVersion, cdpdVersion = probeCdpdVersion, log = console.error } = {}) {
   // Provider persistence and credential reads always use Rust. The SQLite and
   // transport rollback flags no longer imply that the addon may be omitted.
   const cache = paths(repoRoot, env);
@@ -73,12 +95,18 @@ function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = proc
     // 远控是可选件：任何意外都不许挡住服务启动。
     catch (error) { log(`远控「🖥 屏幕」不可用：${error.message}。服务照常启动。`); return null; }
   };
+  const ensureCdpd = addon => {
+    try { return ensureCdpdBinary({ repoRoot, addon, env, cache, log, run, cdpdVersion }); }
+    catch (error) { log(`CDP 网关不可用：${error.message}。服务照常启动。`); return null; }
+  };
   if (current && probe(resolved)) {
     ensureRemote(resolved);
+    ensureCdpd(resolved);
     return resolved;
   }
   if (probe(file)) {
     ensureRemote(file);
+    ensureCdpd(file);
     return file;
   }
   if (configured) {
@@ -96,6 +124,7 @@ function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = proc
     if (configured && !ownCache && !current && probe(resolved)) {
       log('无法为当前源码编译 Rust 模块，暂时沿用指定的模块；它不是当前源码构建的，新加的原生功能可能不可用。');
       ensureRemote(resolved);
+      ensureCdpd(resolved);
       return resolved;
     }
     throw new Error('Rust 自动编译失败，服务尚未启动。源码开发需要可用的 Rust/Cargo 和平台链接工具；安装后重试 ./multicc start。');
@@ -106,6 +135,7 @@ function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = proc
   }
   if (!probe(file)) throw new Error('Rust 产物未通过运行校验，服务尚未启动；请检查工具链及目标架构。');
   ensureRemote(file);
+  ensureCdpd(file);
   log('Rust 模块已就绪，后续启动将自动复用。');
   return file;
 }
@@ -115,4 +145,4 @@ if (require.main === module) {
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }
 
-module.exports = { ensureRemoteBinary, ensureSourceRust };
+module.exports = { ensureRemoteBinary, ensureCdpdBinary, ensureSourceRust };

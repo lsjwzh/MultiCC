@@ -85,7 +85,7 @@ function nativeBinaryPlatform(file, { readBytes = 4096 } = {}) {
 // The remote-screen process (multicc-remote) is an extensionless executable, so
 // it is matched by name — an arch/OS mismatch there fails at spawn time just as
 // silently as a wrong addon does at require() time.
-const NATIVE_BINARIES = new Set(['multicc-remote', 'multicc-remote.exe']);
+const NATIVE_BINARIES = new Set(['multicc-remote', 'multicc-remote.exe', 'multicc-cdpd', 'multicc-cdpd.exe']);
 
 function collectNativeBinaries(root, { skipDirs = new Set(['src', 'deps', 'prebuilds']) } = {}) {
   const found = [];

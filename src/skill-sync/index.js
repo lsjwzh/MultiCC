@@ -2,6 +2,7 @@
 
 const { sanitizePublicText } = require('../http/public-safety');
 const { sharedMacosAgentProvisioner } = require('../macos-agent-provision');
+const { sharedCdpdProvisioner } = require('../cdpd');
 
 // Names bundled skills used to ship under. Keep entries here permanently:
 // a machine can upgrade from any old version.
@@ -76,6 +77,12 @@ function createSkillSyncRuntime(rawDeps) {
   const desktopAgent = deps.desktopAgentProvisioner !== undefined
     ? deps.desktopAgentProvisioner
     : sharedMacosAgentProvisioner({ rootDir, logger });
+  // CDP 网关（native/cdpd）：三平台同一个常驻进程。没有它，Chrome 144+ 会为每条
+  // 新连接弹一次「允许远程调试」——服务端启动时确保它活着，且不与服务端同寿。
+  // null 禁用；二进制不在（未构建/未打包）时 ensure() 只返回 skip。
+  const cdpd = deps.cdpdProvisioner !== undefined
+    ? deps.cdpdProvisioner
+    : sharedCdpdProvisioner({ logger });
 
   let lastResult = null;
   let running = false;
@@ -443,6 +450,7 @@ function createSkillSyncRuntime(rawDeps) {
     acceptingAiConversions = true;
     const bundled = installBundledSkills();
     if (desktopAgent) desktopAgent.ensure();
+    if (cdpd) cdpd.ensure().catch((error) => recordBackgroundFailure('cdpd start', error));
     let reverseImports = [];
     try {
       reverseImports = skillConverter.importAllProviderSkills() || [];

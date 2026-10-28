@@ -10,6 +10,8 @@ const { sourcePaths, sourceFingerprint, probeAddon, provenancePath, writeProvena
 // 「🖥 屏幕」不可用，不能连累服务启动。workspace 里还没有 remote 时，两条
 // 产物规则都必须当它不存在。
 const REMOTE_CRATE = 'multicc-remote';
+// CDP 网关（三平台同一份实现）。编不出来只让「一次审批」退化成直连，不影响启动。
+const CDPD_CRATE = 'multicc-cdpd';
 
 function targetFor(platform, arch) {
   const targets = { 'darwin-arm64': 'aarch64-apple-darwin', 'darwin-x64': 'x86_64-apple-darwin',
@@ -42,6 +44,28 @@ function workspaceMembers(repoRoot) {
 
 function hasRemoteCrate(repoRoot) {
   return workspaceMembers(repoRoot).includes('remote');
+}
+
+function hasCdpdCrate(repoRoot) {
+  return workspaceMembers(repoRoot).includes('cdpd');
+}
+
+function cdpdBinaryName(platform) {
+  return platform === 'win32' ? 'multicc-cdpd.exe' : 'multicc-cdpd';
+}
+
+// --version 打印一行 `multicc-cdpd <协议版本> <crate 版本>`。服务端只和同协议的网关
+// 说话，编出一个对不上的二进制等于没编。三处必须一致（tests/test-cdpd.js 校验）：
+// 这里、src/cdpd.js 的 PROTOCOL_VERSION、native/cdpd/src/lib.rs 的 PROTOCOL_VERSION。
+// 不 require src/cdpd.js：构建脚本不依赖服务端模块（源码启动测试会只拷 scripts/）。
+const CDPD_PROTOCOL = 2;
+const CDPD_VERSION_PREFIX = `${CDPD_CRATE} ${CDPD_PROTOCOL} `;
+
+function probeCdpdVersion(file, { run = spawnSync } = {}) {
+  const result = run(file, ['--version'], { encoding: 'utf8', timeout: 15_000 });
+  const output = `${result.stdout || ''}`.trim();
+  const ok = !result.error && result.status === 0 && output.startsWith(CDPD_VERSION_PREFIX);
+  return { ok, output, status: result.status, error: result.error };
 }
 
 function verify(file, platform, arch) {
@@ -89,7 +113,7 @@ function build({ platform = process.platform, arch = process.arch,
   out = process.env.MULTICC_RUST_PREBUILT_DIR,
   targetDir = process.env.CARGO_TARGET_DIR,
   requireRemote = process.env.MULTICC_REQUIRE_RUST_BUNDLE === '1',
-  remoteOnly = false, repoRoot, run = spawnSync, probe = probeAddon, logger = console } = {}) {
+  remoteOnly = false, cdpdOnly = false, repoRoot, run = spawnSync, probe = probeAddon, logger = console } = {}) {
   const repo = path.resolve(repoRoot || path.resolve(__dirname, '..'));
   const target = targetFor(platform, arch);
   const fingerprint = sourceFingerprint(repo, process.env);
@@ -107,7 +131,7 @@ function build({ platform = process.platform, arch = process.arch,
   };
   const produced = [];
 
-  if (!remoteOnly) {
+  if (!remoteOnly && !cdpdOnly) {
     cargo('multicc-addon');
     const library = platform === 'win32' ? 'multicc_addon.dll'
       : platform === 'darwin' ? 'libmulticc_addon.dylib' : 'libmulticc_addon.so';
@@ -127,9 +151,9 @@ function build({ platform = process.platform, arch = process.arch,
 
   let remote = null;
   let remoteError = null;
-  if (!hasRemoteCrate(repo)) {
+  if (cdpdOnly || !hasRemoteCrate(repo)) {
     // 迁移进行中的正常状态：源码里还没有远控进程，什么都不缺。
-    logger.log('native/remote 尚未加入 cargo workspace，跳过远控二进制 multicc-remote。');
+    if (!cdpdOnly) logger.log('native/remote 尚未加入 cargo workspace，跳过远控二进制 multicc-remote。');
   } else {
     const source = path.resolve(targetDir, target, 'release', remoteBinaryName(platform));
     const file = path.resolve(out, `${platform}-${arch}`, remoteBinaryName(platform));
@@ -159,6 +183,40 @@ function build({ platform = process.platform, arch = process.arch,
     }
   }
 
+  let cdpd = null;
+  let cdpdError = null;
+  if (!hasCdpdCrate(repo)) {
+    logger.log('native/cdpd 尚未加入 cargo workspace，跳过 CDP 网关 multicc-cdpd。');
+  } else {
+    const name = platform === 'win32' ? 'multicc-cdpd.exe' : 'multicc-cdpd';
+    const source = path.resolve(targetDir, target, 'release', name);
+    const file = path.resolve(out, `${platform}-${arch}`, name);
+    try {
+      cargo(CDPD_CRATE);
+      verify(source, platform, arch);
+      const temporary = copyStaged(source, file, { executable: true });
+      try {
+        if (platform === process.platform && arch === process.arch) {
+          const result = run(temporary, ['--version'], { encoding: 'utf8', timeout: 15_000 });
+          const output = `${result.stdout || ''}`.trim();
+          if (result.status !== 0 || !output.startsWith(CDPD_VERSION_PREFIX)) {
+            throw new Error(`--version 校验失败（期望以 "${CDPD_VERSION_PREFIX}" 开头，实际输出：${output || `退出码 ${result.status}`}）`);
+          }
+        }
+        fs.renameSync(temporary, file);
+      } finally {
+        fs.rmSync(temporary, { force: true });
+      }
+      produced.push({ kind: 'CDP 网关', file });
+      cdpd = file;
+      logger.log(`CDP 网关已构建：${file}`);
+    } catch (error) {
+      // 网关编不出来只是退回「每条连接一次授权」，不能连累服务启动。
+      cdpdError = error;
+      logger.error(`警告：CDP 网关 ${CDPD_CRATE} 未构建，浏览器授权会退化成每次连接一次：${error.message}`);
+    }
+  }
+
   // Record the source these files were built from (see rust-source-cache.js). An
   // edit during the build leaves no record, so nothing can vouch for mixed output.
   // 两个产物一起记账：任何一个没有来源记录，都当成不是当前源码编的。
@@ -168,7 +226,7 @@ function build({ platform = process.platform, arch = process.arch,
     else fs.rmSync(provenancePath(file), { force: true });
   }
   const addon = produced.find(item => item.kind === '模块');
-  return { addon: addon ? addon.file : null, remote, remoteError };
+  return { addon: addon ? addon.file : null, remote, remoteError, cdpd, cdpdError };
 }
 
 function parseArgs(argv, env = process.env) {
@@ -176,10 +234,11 @@ function parseArgs(argv, env = process.env) {
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (flag === '--remote-only') { options.remoteOnly = true; continue; }
+    if (flag === '--cdpd-only') { options.cdpdOnly = true; continue; }
     if (flag === '--require-remote') { options.requireRemote = true; continue; }
     const key = { '--out': 'out', '--platform': 'platform', '--arch': 'arch', '--target-dir': 'targetDir' }[flag];
     if (!key || !argv[i + 1]) {
-      throw new Error('参数：--out 目录 --platform 平台 --arch 架构 --target-dir 编译缓存目录 [--remote-only] [--require-remote]');
+      throw new Error('参数：--out 目录 --platform 平台 --arch 架构 --target-dir 编译缓存目录 [--remote-only] [--cdpd-only] [--require-remote]');
     }
     options[key] = argv[++i];
   }
@@ -192,6 +251,7 @@ if (require.main === module) {
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
 module.exports = {
-  REMOTE_CRATE, build, executable, hasRemoteCrate, parseArgs, probeRemoteVersion, remoteBinaryName,
+  REMOTE_CRATE, CDPD_CRATE, CDPD_PROTOCOL, build, executable, hasRemoteCrate, hasCdpdCrate, parseArgs, probeRemoteVersion,
+  probeCdpdVersion, cdpdBinaryName, remoteBinaryName,
   remoteBinaryPath, targetFor, verify, workspaceMembers,
 };

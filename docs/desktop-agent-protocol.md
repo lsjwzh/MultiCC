@@ -147,6 +147,136 @@ CLI，但**服务端只走 socket**。CLI 的成功输出是一行 JSON（同 §
 畸形 JSON、未知 op、缺字段、越权 —— 否则那些分支就只能靠读代码相信它们是对的。
 CLI 与 socket 走的是同一个 socket、同一段解析，所以 CLI 上的断言对服务端等价。
 
+### 4.4 CDP 网关——独立进程 `multicc-cdpd`，三平台同一份实现
+
+Chrome 144+ 对**运行时开启调试的浏览器**（chrome://inspect 里打开；Chrome 136 起这是
+默认 profile 唯一能开调试的方式）改成**每条 WebSocket 连接审批一次**，点「允许」只覆盖
+那一条连接（Chrome DevTools 团队：*the prompt appears once per WebSocket connection by
+design*）。「一个动作一个进程、一个进程一条连接」的脚本因此每个动作弹一次窗。用
+`--remote-debugging-port` + 独立 `--user-data-dir` 启动的 Chrome 不受影响，从不弹窗。
+
+网关常驻、每个 Chrome 只保留**一条**上游连接，本地调用方复用它。这段逻辑和平台无关，
+所以**不放在桌面 Agent 里**（Agent 依赖 AppKit / ScreenCaptureKit / X11，Windows 还没有
+Agent），而是独立的 Rust 进程 `native/cdpd`（crate `multicc-cdpd`）。
+
+#### 落盘位置
+
+| 平台 | IPC | 默认地址 |
+|---|---|---|
+| macOS / Linux | unix socket（0600） | `~/.multicc/cdpd/cdp.sock` |
+| Windows | 命名管道（拒绝远程客户端） | `\\.\pipe\multicc-cdpd-<用户名>` |
+
+同目录还有 `cdpd.lock`（单实例 flock，进程死了内核自动释放）、`cdpd.log`（只记元数据，
+**不记帧内容**——里面有 cookie；1MB 轮转）、`endpoint.json`（WebSocket 入口，0600）。
+`MULTICC_CDP_DIR` 改目录，`MULTICC_CDP_SOCK` 单独改 socket / 管道名。刻意不跟随
+`XDG_RUNTIME_DIR`：launchd/systemd 拉起的服务端和终端里的脚本环境不同，地址却必须相同。
+`src/cdpd.js` 与 `native/cdpd/src/paths.rs` 逐条镜像，`multicc-cdpd paths` 可对照。
+
+#### 核心不变量：调用方断开 ≡ 它自己的 WebSocket 断开
+
+直连时 Chrome 在 WS 关闭时自动 detach 该连接的所有 session、销毁 `disposeOnDetach` 的
+browser context、丢掉 `setDiscoverTargets` / `setAutoAttach` 等浏览器级状态。共用一条
+WS 时这些都不会自动发生。所以每个 **lane**（一个逻辑调用方）先经
+`Target.attachToBrowserTarget` 拿一个自己的浏览器级会话，lane 里的一切都挂在它下面；
+lane 结束时 detach 这一个会话，Chrome 级联清理。浏览器级状态与事件也因此按 lane 隔离。
+
+| 规则 | 原因 |
+|---|---|
+| 响应按全局 id 精确回给发起方；无主响应**丢弃，不广播** | 广播出去的 id 可能撞上别人的待决 id |
+| 事件按 sessionId 归属只送给对应 lane | 别的会话的 Network 事件不是你的 |
+| lane 只能用自己的 sessionId | 防止借别人的 session 操作别人的页面 |
+| **target 租约**：`createTarget` 的创建者、显式 `attachToTarget` 的 lane 独占该 tab；别人 attach / `closeTarget` 立刻得到 `cdp-target-busy` | 两个会话同时驱动一个 tab 会互相覆盖导航与输入。不排队：一条卡住的命令不该拖死所有会话，换个新 tab 永远可行。`setAutoAttach` 的自动 attach 是旁观，不占租约 |
+| browser context 归创建者，别人 `disposeBrowserContext` 得到 `cdp-target-busy` | 同上 |
+| `Browser.close` / `Browser.crash` 默认拦截（`allowBrowserClose` 放开） | 共享的是用户的日常 Chrome；Puppeteer 里 `close()`/`disconnect()` 写混很常见 |
+| 调用方都走了**也不关上游**，上游断了**也不主动重连** | 前者是「只审批一次」的来源；后者会在用户什么都没做时弹窗 |
+
+Chrome 不支持 `attachToBrowserTarget` 时 lane 退回 `shared` 模式（原样转发、失去隔离），
+`ready` 里的 `mode` 会如实说明。
+
+#### 行协议（unix socket / 命名管道）
+
+```json
+→ { "op": "cdp", "wsUrl": "ws://127.0.0.1:58142/devtools/browser/…", "lane": "job-7", "laneTtlMs": 600000 }
+← { "ok": true, "phase": "accepted", "protocol": 2, "version": "0.2.0", "wsUrl": "…" }
+← { "ok": true, "phase": "ready", "wsUrl": "…", "lane": "job-7", "mode": "isolated" }   // 用户点了允许
+→ { "id": 1, "method": "Target.createTarget", "params": { "url": "about:blank" } }
+← { "id": 1, "result": { "targetId": "…" } }                                            // id 已还原
+← { "ok": false, "error": "cdp-upstream-closed", "detail": "…" }                        // 随后连接关闭
+```
+
+- `wsUrl` 也可以换成 `"activePort": "<DevToolsActivePort 文件|profile 目录|default>"`，
+  `default` = 用户日常 Chrome。每次现读，Chrome 重启后换了的 browser id 自然跟上。
+- **两段式握手**：`accepted` 表示网关接手了——此后调用方**不得**回退直连（网关可能正在
+  等用户点允许，此刻直连就是第二个弹窗）；`ready` 表示上游已授权、lane 会话已建好。
+  等待审批期间到来的调用方共享同一次建连（single-flight），用户只看到一个弹窗。
+- 命名 lane 跨连接存活（默认 TTL 10 分钟，上限 24 小时），一次性 CLI 和「每动作一个
+  进程」的脚本靠它保住 tab；匿名 lane 与连接同寿。`op:"release"` 提前结束。
+- 只连本机 Chrome（`MULTICC_CDP_ALLOW_REMOTE=1` 放开）；调用方单帧 64MB、上游单条
+  消息 512MB（tungstenite 默认 16MB，一张整页截图就会打断已授权的连接）。
+- 积压超过 4096 帧的慢调用方被断开，不拖住同一 Chrome 上的其他人。
+
+错误码（`ok:false` 的 `error`）：
+
+| code | 含义 | 调用方该做什么 |
+|---|---|---|
+| `chrome_unavailable` | Chrome 没在听 / 地址不对（没有弹窗） | 可随时重试 |
+| `chrome_rejected` | Chrome 拒绝了握手（通常是用户点了拒绝） | 告诉用户；进入冷却 |
+| `chrome_approval_timeout` | 默认 180s 内没人点允许（`MULTICC_CDP_APPROVAL_TIMEOUT_SECS`） | 同上 |
+| `chrome_cooldown` | 上次被拒/超时后的冷却期（30s 起按次数加倍，上限 10 分钟），带 `retryAfterMs` | 别循环重试——那正是「刚拒绝又弹出来」；用户说「我去点」时带 `force` |
+| `bad-request` | 参数错、非本机 Chrome、lane 名不合法 | 修请求；这是唯一允许回退直连的拒绝 |
+| `cdp-upstream-closed` / `cdp-lane-released` | 已就绪后上游断开 / lane 被释放 | 重新 attach |
+| `cdp-target-busy`（CDP error） | 租约冲突 | 自己开新 tab |
+
+其他 op（一问一答）：`ping`、`status`（每个上游的 lane / 会话 / 租约）、`endpoint`、
+`release`、`shutdown`（有已授权上游时要 `force`，否则用户得重新审批）。
+
+#### WebSocket 入口（现成工具零改动接入）
+
+Puppeteer `browserWSEndpoint`、Playwright `connectOverCDP`、chrome-devtools-mcp
+`--wsEndpoint`、Python `websocket.create_connection` 都说原生 CDP over WebSocket：
+
+```sh
+URL=$(multicc-cdpd endpoint --active-port default --lane my-script)   # 顺便按需拉起网关
+# → ws://127.0.0.1:<port>/cdp/<token>?activePort=default&lane=my-script
+```
+
+只绑 127.0.0.1；路径带随机 token（只在 0600 的 `endpoint.json` 和本地 socket 里拿得到）；
+**带 `Origin` 头的握手一律 403**（网页能连 ws://127.0.0.1，Origin 是区分它们的信号）。
+`MULTICC_CDP_WS=0` 关闭，`MULTICC_CDP_WS_PORT` 固定端口。
+
+#### CLI（三平台同一个）
+
+```sh
+multicc-cdpd cdp '{"method":"Browser.getVersion"}' --active-port default [--lane N]   # 一次性调用
+multicc-cdpd endpoint --ws ws://127.0.0.1:9222/devtools/browser/… [--lane N] [--ttl S]
+multicc-cdpd status | ping | paths
+multicc-cdpd release --lane N --active-port default
+multicc-cdpd shutdown [--force]
+```
+
+`cdp` / `endpoint` 发现网关没在跑会自己拉起。**技能和脚本请用上面的 CLI 或 WebSocket
+入口，不要自己连 Chrome**——自己开的那条连接就是会弹窗的那条。
+
+#### 生命周期与服务端接入
+
+- 不是服务端的子进程（服务端重启不该让用户再点一次允许）。服务端启动时
+  `src/cdpd.js` 的 `ensure()` detached 拉起；之后每个进程第一次用网关前再 `ensure()`
+  一次，因为网关**无上游且无连接满 1 小时会自己退出**（`MULTICC_CDP_IDLE_EXIT_SECS`，
+  0 = 不退出）——有上游时永不退出。
+- 「在跑」的判据是 ping 得通，不是 socket 文件存在（被 SIGKILL 后文件会留下；
+  2026-10-28 重启后网关没起来就是这个）。并发拉起由单实例锁兜底，多出来的自己退出。
+- 守护进程 cwd 是自己的目录（不钉住会被删的 worktree），环境只带 HOME/PATH 等必需项和
+  `MULTICC_CDP_*`（不把服务端的 API key 带进常驻进程）。
+- 版本：`--version` 打印 `multicc-cdpd <协议> <crate 版本>`。协议不同 → 强制换掉（会多
+  弹一次窗，日志里说明）；同协议、crate 版本更新 → 空闲时才换，有已授权上游就保留旧的。
+- 服务端 `src/chrome-cdp.js` 只把**默认 profile 目录里 `DevToolsActivePort` 发现的**
+  浏览器送进网关（`src/cdp-relay.js`，`ws` 形状的 socket）；`--remote-debugging-port`
+  启动的直连。`MULTICC_CDP_GATEWAY=1` 全部走网关、`=0` 全部直连；
+  `MULTICC_CDP_AUTOSTART=0` 只用已在跑的网关。网关在等审批时 relay 会发 `pending`
+  事件，chrome-cdp 据此把连接超时放宽到 60s。
+- 二进制查找：`MULTICC_CDP_BIN` → 原生模块同目录（`native/prebuilt/<platform>-<arch>/`），
+  由 `scripts/build-rust-kernels.js` 构建投放，源码模式下 `scripts/ensure-source-rust.js` 补编。
+
 ## 5. 护栏——不是可选项
 
 下面这些在 macOS 实现里是既有行为，新平台必须**同样**实现，否则「服务端只发白名单 op」

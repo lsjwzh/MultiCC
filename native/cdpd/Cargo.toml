@@ -1,0 +1,23 @@
+[package]
+name = "multicc-cdpd"
+version = "0.2.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "multicc-cdpd"
+path = "src/main.rs"
+
+[lib]
+name = "multicc_cdpd"
+path = "src/lib.rs"
+
+[dependencies]
+futures-util = "0.3"
+getrandom = "0.3"
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal"] }
+tokio-tungstenite = "0.29"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
