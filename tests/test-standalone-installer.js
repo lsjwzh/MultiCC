@@ -59,6 +59,8 @@ function buildFixtureBundle(version = '9.9.9') {
   write(path.join(resources, 'app-server', 'package.json'), `${JSON.stringify({ name: 'multicc', version }, null, 2)}\n`);
   write(path.join(resources, 'bundle-manifest.json'),
     `${JSON.stringify({ version, platform: PLATFORM, arch: ARCH }, null, 2)}\n`);
+  write(path.join(resources, 'app-server', 'plugins', 'chrome-proxy-launcher', 'plugin.json'),
+    `${JSON.stringify({ id: 'chrome-proxy-launcher', version })}\n`);
   fs.mkdirSync(path.join(resources, 'launcher', 'lib'), { recursive: true });
   for (const file of ['standalone-launcher.js', 'standalone-cli.js']) {
     fs.copyFileSync(path.join(ROOT, 'scripts', file), path.join(resources, 'launcher', file));
@@ -189,6 +191,13 @@ test('install.sh unpacks, configures, starts, and safely replaces a previous ins
   assert.equal(firstStatus.status, 0, firstStatus.stderr);
   assert.equal(JSON.parse(firstStatus.stdout).running, true, 'the installer must leave MultiCC running');
 
+  // A private plugin copied into the program's plugins/ (what its README says to
+  // do), and the built-in one as an older version left it.
+  const installedPlugins = path.join(installDir, resourcesRel(), 'app-server', 'plugins');
+  write(path.join(installedPlugins, 'gapaw-creator-workbench', 'plugin.json'), '{"id":"gapaw-creator-workbench","version":"0.10.0"}\n');
+  write(path.join(installedPlugins, 'gapaw-creator-workbench', 'bin', 'tool'), '#!/bin/sh\n', 0o755);
+  write(path.join(installedPlugins, 'chrome-proxy-launcher', 'plugin.json'), '{"id":"chrome-proxy-launcher","version":"old"}\n');
+
   // Reinstalling over a previous installation is an upgrade, not an error.
   const second = runInstaller([
     '--from', archive, '--dir', installDir, '--port', '3111', '--no-service', '--no-open',
@@ -206,6 +215,12 @@ test('install.sh unpacks, configures, starts, and safely replaces a previous ins
     'a replacement install must stop the old process and bring the new bundle back up');
   const leftovers = fs.readdirSync(targetParent).filter(name => name.includes('.old-'));
   assert.deepEqual(leftovers, [], 'the replaced installation must not be left behind');
+  // …but the plugin installed by hand came along; the built-in is the new package's.
+  assert.match(second.stdout, /kept plugin gapaw-creator-workbench/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(installedPlugins, 'gapaw-creator-workbench', 'plugin.json'), 'utf8')).version, '0.10.0',
+    'an upgrade must not lose a plugin someone installed by hand');
+  assert.ok(fs.statSync(path.join(installedPlugins, 'gapaw-creator-workbench', 'bin', 'tool')).mode & 0o100, 'still executable');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(installedPlugins, 'chrome-proxy-launcher', 'plugin.json'), 'utf8')).version, '9.9.9');
 });
 
 // PORT in the environment used to be overwritten by the script's own default,
@@ -286,6 +301,9 @@ test('install.sh upgrades a pre-standalone source checkout instead of refusing i
   write(path.join(installDir, 'ui-layout.json'), '{"theme":"dark"}\n');
   write(path.join(installDir, 'memories', 'note.md'), '# remembered\n');
   write(path.join(installDir, 'logs', 'multicc.log'), 'not data\n');
+  // A private plugin in the checkout's own plugins/, next to a built-in one.
+  write(path.join(installDir, 'plugins', 'private-notes', 'plugin.json'), '{"id":"private-notes","version":"0.1.0"}\n');
+  write(path.join(installDir, 'plugins', 'chrome-proxy-launcher', 'plugin.json'), '{"id":"chrome-proxy-launcher","version":"old"}\n');
 
   const res = runInstaller(['--from', archive, '--dir', installDir, '--yes', '--no-start'], { env });
   assert.equal(res.status, 0, `upgrading an old installation must succeed:\n${res.stdout}\n${res.stderr}`);
@@ -299,6 +317,11 @@ test('install.sh upgrades a pre-standalone source checkout instead of refusing i
   assert.equal(fs.readFileSync(path.join(backup, 'package.json'), 'utf8'),
     '{"name":"multicc","version":"1.6.10"}\n', 'the backup must keep the old tree');
   assert.equal(fs.existsSync(path.join(backup, 'server.js')), true);
+  const newPlugins = path.join(installDir, resourcesRel(), 'app-server', 'plugins');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(newPlugins, 'private-notes', 'plugin.json'), 'utf8')).version, '0.1.0',
+    'a plugin installed by hand in the old checkout comes along');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(newPlugins, 'chrome-proxy-launcher', 'plugin.json'), 'utf8')).version, '9.9.9',
+    'the built-in is the new package\'s');
   assert.equal(fs.existsSync(path.join(backup, 'node_modules', 'some-dep')), true,
     'a kept backup must not be trimmed');
   assert.equal(fs.readFileSync(path.join(backup, '.env'), 'utf8'),
@@ -753,6 +776,21 @@ test('both installers put the old directory back when the new one cannot land', 
     'install.sh must restore the previous installation when the move fails');
   assert.match(ps1, /IsNullOrWhiteSpace\(\$legacyDir\)[\s\S]{0,140}Move-Item -LiteralPath \$legacyDir -Destination \$InstallDir/,
     'install.ps1 must restore the previous installation when the move fails');
+});
+
+test('both installers copy hand-installed plugins across before the old directory goes', () => {
+  const sh = fs.readFileSync(INSTALLER, 'utf8');
+  const ps1 = fs.readFileSync(WINDOWS_INSTALLER, 'utf8');
+  const carry = sh.indexOf('__carry-plugins --from "$CARRY_FROM"');
+  assert.ok(carry > sh.indexOf('mv "$UNPACK_DIR" "$INSTALL_DIR"') && carry < sh.indexOf('UPGRADE_COMMITTED=true\n'),
+    'install.sh must copy plugins after the new package lands and before the old one is removed');
+  assert.match(sh, /if \[ -n "\$OLD_DIR" \] && \[ "\$PLUGINS_LEFT_BEHIND" != "\$OLD_DIR" \]; then rm -rf "\$OLD_DIR"; fi/,
+    'install.sh must keep the old directory when a plugin could not be copied');
+  const ps1Carry = ps1.indexOf('__carry-plugins --from $carryFrom');
+  assert.ok(ps1Carry > ps1.indexOf('Move-Item -LiteralPath $staged -Destination $InstallDir') && ps1Carry < ps1.indexOf('Remove-Item -LiteralPath $oldDir -Recurse -Force'),
+    'install.ps1 must copy plugins before it removes the old directory');
+  assert.match(ps1, /if \(\$pluginsCopied -and [^\n]*\$oldDir[^\n]*\)\s*\{\s*Remove-Item -LiteralPath \$oldDir -Recurse -Force/,
+    'install.ps1 must keep the old directory when a plugin could not be copied');
 });
 
 test('install.sh keeps the old --branch command line working', () => {

@@ -89,8 +89,9 @@ function createPaths({ dataDir } = {}) {
       ? path.join(os.homedir(), '.multicc', 'runtimes', 'voice')
       : path.join(root, 'runtimes', 'voice'),
     // Plugins installed from the plugin catalog (docs/plugin-catalog-design.md).
-    // The package's own plugins/ holds only the built-in ones: a desktop app's
-    // tree is read-only and a package upgrade replaces it.
+    // The package's own plugins/ holds the built-in ones (a desktop app's tree is
+    // read-only); a plugin copied in there by hand survives a standalone upgrade
+    // only because the installers carry it across (standalone-cli.js carryUserPlugins).
     userPluginsDir: root === PKG_ROOT
       ? path.join(os.homedir(), '.multicc', 'plugins')
       : path.join(root, 'plugins'),

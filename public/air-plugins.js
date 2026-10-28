@@ -173,7 +173,6 @@
     const needs = LOCAL_STATES.has(row.state) && row.state !== 'incompatible' ? '' : requirementText(row.requires);
     if (needs) copy.append(make('div', needs, 'air-plugins-meta'));
     if (row.reason) copy.append(make('div', reasonText(row.reason), 'air-plugins-why'));
-    if (row.misplaced) copy.append(make('div', t('airPluginsMisplaced'), 'air-plugins-meta'));
     if (row.state === 'installable' || row.state === 'update') copy.append(make('div', t('airPluginsInstallLater'), 'air-plugins-meta'));
     if (local && !local.engine.available) {
       copy.append(make('div', local.engine.reason || t('airPluginsEngineMissing'), 'air-plugins-badge'));
@@ -319,7 +318,7 @@
       plugins: list.map(local => ({
         id: local.id, name: local.name, nameEn: local.nameEn || null, icon: local.icon, category: local.category || null,
         summary: local.description || '', summaryEn: local.descriptionEn || null, homepage: null, listed: null, local,
-        state: 'installed', reason: null, installedVersion: local.version || null, candidate: null, latest: null, requires: null, misplaced: false,
+        state: 'installed', reason: null, installedVersion: local.version || null, candidate: null, latest: null, requires: null,
       })),
     };
   }

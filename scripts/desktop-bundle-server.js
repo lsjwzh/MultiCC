@@ -83,15 +83,32 @@ function crossArchNpmEnv({ arch, platform }) {
   return npmEnv;
 }
 
-function copyTree(src, dest, { filter } = {}) {
+function copyTree(src, dest, { filter, skip = [] } = {}) {
   fs.cpSync(src, dest, {
     recursive: true,
     filter: (srcPath) => {
       const base = path.basename(srcPath);
       if (filter && filter.some(re => re.test(base))) return false;
-      return true;
+      return !skip.includes(srcPath);
     },
   });
+}
+
+// Plugins in plugins/ that git does not track are someone's own: a private
+// plugin, or one copied in to try it. A package ships the built-in ones only.
+// An exported tree (not a git checkout of its own) holds tracked files only,
+// so there is nothing to leave out.
+function untrackedPlugins(repoRoot) {
+  const dir = path.join(repoRoot, 'plugins');
+  const top = spawnSync('git', ['-C', repoRoot, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  if (top.status !== 0 || fs.realpathSync(top.stdout.trim()) !== fs.realpathSync(repoRoot)) return [];
+  const listed = spawnSync('git', ['-C', repoRoot, 'ls-files', '-z', '--', 'plugins'], { encoding: 'utf8' });
+  if (listed.status !== 0) throw new Error(`git ls-files failed: ${listed.stderr}`);
+  const tracked = new Set(listed.stdout.split('\0').filter(Boolean).map(file => file.split('/')[1]));
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter(entry => !tracked.has(entry.name) && fs.existsSync(path.join(dir, entry.name, 'plugin.json')))
+    .map(entry => entry.name)
+    .sort();
 }
 
 function transformPackageJson(pkg) {
@@ -140,7 +157,11 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
     const src = path.join(repoRoot, entry);
     if (!fs.existsSync(src)) throw new Error(`missing ${src} — run from the repo root`);
     if (entry === 'public') copyTree(src, path.join(out, 'public'), { filter: PUBLIC_EXCLUDE });
-    else copyTree(src, path.join(out, entry));
+    else if (entry === 'plugins') {
+      const own = untrackedPlugins(repoRoot);
+      for (const id of own) logger.log(`[desktop-bundle-server] leaving out plugins/${id}: not in git (a locally installed plugin)`);
+      copyTree(src, path.join(out, entry), { skip: own.map(id => path.join(src, id)) });
+    } else copyTree(src, path.join(out, entry));
   }
   // 2) the scripts the installed tree still reaches for: the router MCP child
   //   that src/ spawns, and the manual local-ASR model fetcher. The server
@@ -261,5 +282,5 @@ if (require.main === module) {
 
 module.exports = {
   OPTIONAL_AT_RUNTIME, PUBLIC_EXCLUDE, MACOS_AGENT_FILES, POWERD_FILES, parseArgs, copyTree, crossArchNpmEnv,
-  transformPackageJson, stageServer, main,
+  transformPackageJson, untrackedPlugins, stageServer, main,
 };

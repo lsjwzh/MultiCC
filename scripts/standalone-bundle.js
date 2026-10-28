@@ -725,6 +725,17 @@ async function stageResources({
   return { staged, runtime, resourcesDir };
 }
 
+// The plugins this package ships, so an upgrade can tell them from ones someone
+// installed by hand next to them (standalone-cli.js carryUserPlugins).
+function bundledPlugins(resourcesDir) {
+  const dir = path.join(resourcesDir, 'app-server', 'plugins');
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter(entry => entry.isDirectory() && fs.existsSync(path.join(dir, entry.name, 'plugin.json')))
+    .map(entry => entry.name)
+    .sort();
+}
+
 function writeManifest({ resourcesDir, version, platform, arch, nodeVersion, nodeRuntime, install }) {
   const manifest = {
     name: 'multicc-standalone',
@@ -736,6 +747,7 @@ function writeManifest({ resourcesDir, version, platform, arch, nodeVersion, nod
     productionDependencies: install,
     builtAt: new Date().toISOString(),
     macosMinimum: platform === 'darwin' ? macosFloorForNode(nodeVersion) : null,
+    builtinPlugins: bundledPlugins(resourcesDir),
   };
   fs.writeFileSync(path.join(resourcesDir, 'bundle-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
@@ -861,6 +873,7 @@ module.exports = {
   SUPPORTED_PLATFORMS,
   archiveBundle,
   assertNodeVersionSupported,
+  bundledPlugins,
   buildStandaloneBundle,
   bundleName,
   bundleReadme,

@@ -4,7 +4,7 @@
 //   ② 每张卡的状态标签、要求说明、第一条不满足的原因，都由服务端的原因码拼出当前语言的文案；
 //   ③ 分类筛选只留该类；刷新只发一次 POST，失败时状态行变成警示且保留旧列表；
 //   ④ 已装插件仍能打开自带面板（iframe 指向 /plugins/<id>/<ui>）；
-//   ⑤ 非内置插件放在程序目录里，卡片提示移到 ~/.multicc/plugins/；
+//   ⑤ 放在程序目录里的私有插件：显示「已安装」+「本地插件」，不当成内置，也不催着挪目录；
 //   ⑥ 新网页配还没重启的旧服务（没有 /api/plugins/catalog）：退回旧清单照常列出，不报加载失败。
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
@@ -34,7 +34,7 @@ function payload({ error = null } = {}) {
       row({ id: 'feishu-notify', name: 'Feishu', category: 'channel', state: 'incompatible', installedVersion: '1.0.0', local: local('feishu-notify', '1.0.0', null),
         reason: { code: 'appMissing', app: 'com.electron.lark', name: '飞书', nameEn: 'Lark', required: '7.0.0' } }),
       row({ id: 'chrome-proxy-launcher', name: 'Chrome 隔离出口启动器', category: 'browser', distribution: 'builtin', state: 'builtin', installedVersion: '1.6.3', local: local('chrome-proxy-launcher', '1.6.3') }),
-      row({ id: 'gapaw-creator-workbench', name: 'Gapaw 达人工作台', distribution: null, state: 'installed', listed: false, misplaced: true, installedVersion: '0.10.0',
+      row({ id: 'gapaw-creator-workbench', name: 'Gapaw 达人工作台', distribution: null, state: 'installed', listed: false, installedVersion: '0.10.0',
         local: { ...local('gapaw-creator-workbench', '0.10.0'), source: 'builtin' } }),
       row({ id: 'tab-saver', name: 'Tab Saver', category: 'browser', state: 'installable', candidate: '0.3.0', latest: '0.3.0',
         requires: { multicc: '>=2.12.0', platforms: [{ os: 'darwin', minOS: '13.0' }], permissions: ['accessibility'] } }),
@@ -90,12 +90,10 @@ test('the Air plugins panel groups the plugin list by what this machine can do',
     // ② 标签、要求、原因
     assert.equal(await cardText('wechat-desktop-notify', 'tag'), await tr('airPluginsStateUpdate', { version: '0.2.0' }));
     assert.equal(await cardText('chrome-proxy-launcher', 'tag'), await tr('airPluginsStateBuiltin'));
-    // ⑤ 放错目录：状态是「已安装」+「不在插件列表里」，卡片上有移目录的提示；内置的没有。
+    // ⑤ 私有插件：状态是「已安装」+「本地插件」，卡片上没有别的提示行。
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('[data-plugin-id="gapaw-creator-workbench"] .air-plugins-tag')].map(n => n.textContent)`),
       [await tr('airPluginsStateInstalled'), await tr('airPluginsUnlisted')]);
-    const misplaced = await tr('airPluginsMisplaced');
-    assert.ok((await page.evaluate(`document.querySelector('[data-plugin-id="gapaw-creator-workbench"]').textContent`)).includes(misplaced));
-    assert.ok(!(await page.evaluate(`document.querySelector('[data-plugin-id="chrome-proxy-launcher"]').textContent`)).includes(misplaced));
+    assert.equal(await page.evaluate(`document.querySelectorAll('[data-plugin-id="gapaw-creator-workbench"] .air-plugins-meta').length`), 0);
     assert.equal(await cardText('feishu-notify', 'why'), await tr('airPluginsWhyAppMissingMin', { name: await page.evaluate(`getLang() === 'en' ? 'Lark' : '飞书'`), required: '7.0.0' }));
     assert.equal(await cardText('linux-tray', 'why'), await tr('airPluginsWhyOs', { supported: 'Linux' }));
     const needs = await cardText('tab-saver', 'meta');
