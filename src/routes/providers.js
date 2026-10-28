@@ -250,9 +250,11 @@ function createProviderRoutes(rawDeps) {
         } catch (_) { /* a catalog refresh must never hide the Provider list */ }
       }
       const ccSwitchStatus = deps.providers.getCcSwitchStatus();
-      const providers = deps.providers.listProviders(
+      const subscriptions = require('../quota/account-subscription-cache');
+      await subscriptions.ready().catch(() => {});
+      const providers = subscriptions.project(deps.providers.listProviders(
         appType === 'claude' || appType === 'codex' ? appType : undefined,
-      ).filter(provider => !cli || deps.providers.providerSupportsCli(provider, cli));
+      )).filter(provider => !cli || deps.providers.providerSupportsCli(provider, cli));
       // 选择器先返回内存快照；后台刷新由 Rust 按账号应用一天 TTL/CLI 版本。
       if (deps.codexAccountModelCatalogRuntime && req.query.poll !== '1') {
         for (const provider of providers.filter(p => p.appType === 'codex' && p.isOfficial)) {
@@ -301,7 +303,11 @@ function createProviderRoutes(rawDeps) {
         available: true,
         ccSwitchAvailable: ccSwitchStatus.available,
         ccSwitchStatus,
-        providers: providersWithLimits,
+        providers: providersWithLimits.map(provider => {
+          if (!provider.virtual) return provider;
+          try { return { ...provider, virtualStatus: require('../providers/virtual-provider').status(provider, deps.providers.listProviders()) }; }
+          catch (_) { return { ...provider, virtualStatus: { availableCount: 0, error: '请更新 Rust 模块并手动重启服务' } }; }
+        }),
         defaults: providerDefaults,
         stats: deps.providers.getProviderUsageStats().stats,
         // Old clients ignore extra top-level fields; new clients use this to
@@ -359,6 +365,7 @@ function createProviderRoutes(rawDeps) {
           models: req.body.models,
           ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
           settingsConfig: req.body.settingsConfig,
+          ...(req.body.virtual !== undefined ? { virtual: req.body.virtual } : {}),
           aliasMap: req.body.aliasMap,
           ...(egressIpAllowlist !== undefined ? { egressIpAllowlist } : {}),
           ...(egressBinding !== undefined ? { egressBinding } : {}),
@@ -381,6 +388,7 @@ function createProviderRoutes(rawDeps) {
           models: req.body.models,
           ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
           settingsConfig: req.body.settingsConfig,
+          ...(req.body.virtual !== undefined ? { virtual: req.body.virtual } : {}),
           aliasMap: req.body.aliasMap,
           ...(egressIpAllowlist !== undefined ? { egressIpAllowlist } : {}),
           ...(egressBinding !== undefined ? { egressBinding } : {}),

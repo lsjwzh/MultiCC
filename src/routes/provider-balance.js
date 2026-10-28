@@ -220,6 +220,18 @@ function createProviderBalanceRuntime(options = {}) {
   async function fetchOne(appType, id) {
     const provider = getProvider(appType, id);
     if (!provider) return { ok: false, reason: 'not_found' };
+    if (provider.virtual) {
+      const virtual = require('../providers/virtual-provider');
+      await virtual.refresh(provider);
+      let member;
+      try { member = virtual.resolve(provider); }
+      catch (error) {
+        if (error.code !== 'VIRTUAL_NO_AVAILABLE_MEMBER') throw error;
+        return { ok: false, reason: 'no_available_member', providerId: id, appType: provider.appType, virtual: true };
+      }
+      const result = await refreshOne(member.appType, member.id);
+      return { ...result, providerId: id, virtual: true, quotaScope: 'current_member' };
+    }
     const target = getProviderLimitTarget(appType, id);
     if (!target || !target.strategy || !adapters[target.strategy]) {
       return { ok: false, reason: 'unsupported', providerId: id, appType: provider.appType };

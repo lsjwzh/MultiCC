@@ -11,6 +11,12 @@ function dateMs(value) {
 }
 
 function subscriptionFromBody(body, { source = 'account', observedAt = Date.now() } = {}) {
+  // Migration bridge: extended billing-field parsing lives in Rust. Older
+  // binaries retain the existing parser until their next native rebuild.
+  const native = require('../native/runtime').getNative('subscription');
+  if (typeof native?.parseAccountSubscription === 'function') {
+    return JSON.parse(native.parseAccountSubscription(JSON.stringify({ body, source, observedAt })));
+  }
   if (!body || typeof body !== 'object') return null;
   const rows = [body.subscription, body.billing, body.organization?.subscription, body.organization, body];
   const pickDate = keys => {

@@ -122,8 +122,7 @@
       ? clean(api.openCodeNativeProviderLabel(id)) : '';
   }
 
-  // 一条线路的规范化形状：固定模式从线路下拉里选出来的值（可能是 opencode-native:
-  // 前缀、也可能是一个 Provider id）折成这个形状，后面的兼容判定只看它。
+  // 将原生线路或 Provider 归一化，供兼容性判定使用。
   function lineShape(value, provider) {
     if (isNativeLine(value)) {
       return { id: clean(value), native: true, protocol: null, hasToken: false, baseUrl: '' };
@@ -131,6 +130,7 @@
     const source = provider || {};
     return {
       id: clean(value),
+      ...(source.virtual ? { virtual: source.virtual, appType: source.appType } : {}),
       native: false,
       protocol: protocolOf(source),
       hasToken: source.hasToken === true,
@@ -270,6 +270,8 @@
     const who = clean(cli);
     const target = line || {};
     const name = typeof label === 'function' ? label : value => value;
+    if (target.virtual && who.replace(/-exp$/, '') !== target.appType) return { ok: false,
+      code: 'virtual_cli_mismatch', reason: `此虚拟组合仅支持 ${target.appType} CLI`, short: '仅限同 CLI' };
     if (!CLI_PROTOCOLS[who]) {
       return { ok: false, code: 'unsupported_cli', reason: `不支持的 CLI：${who || '（空）'}`,
         short: SHORT_REASON.unsupported_cli };
@@ -298,8 +300,7 @@
     return { ok: true };
   }
 
-  // 池子里一行的问题（null = 没问题）。老配置里已经用不了的组合不静默丢掉，
-  // 留在原位标黄把原因说出来，保存时才拦。
+  // 不兼容的旧配置留在原位说明原因，保存时拦截。
   function rowIssue(row, line, label) {
     if (!row) return null;
     if (!line) return { code: 'missing_line', reason: '这条线路已经不在线路表里了' };
@@ -309,8 +310,7 @@
   }
 
   // 能把某条线路跑起来的所有 CLI，附「能不能跑」和一句短理由 —— 行上那颗 CLI
-  // 小下拉就用这个列表（不能跑的置灰说明原因）。调用方必须把这一行自己的 CLI
-  // 传进来：跑不了的组合要留在原位标出来，而不是让下拉空着。
+  // 下拉置灰不兼容的选项，当前不可用的 CLI 仍保留并说明原因。
   function cliChoicesForLine(line, label, clis) {
     const list = Array.isArray(clis) && clis.length ? clis : AUTO_CLIS;
     return list.map(cli => {
@@ -551,42 +551,7 @@
       Object.prototype.hasOwnProperty.call(params, name) ? params[name] : match));
   }
 
-  function el(doc, tag, className, text) {
-    const node = doc.createElement(tag);
-    if (className) node.className = className;
-    if (text != null) node.textContent = text;
-    return node;
-  }
-
-  function show(node, visible) {
-    if (node) node.hidden = !visible;
-    return node;
-  }
-
-  function option(doc, value, label, { disabled = false } = {}) {
-    const item = el(doc, 'option', null, label);
-    item.value = value;
-    item.disabled = disabled;
-    return item;
-  }
-
-  function segment(doc, className, label) {
-    const group = el(doc, 'div', `rc-seg ${className}`);
-    if (label) {
-      group.setAttribute('role', 'group');
-      group.setAttribute('aria-label', label);
-    }
-    return group;
-  }
-
-  function segButton(doc, group, className, text, label) {
-    const button = el(doc, 'button', `rc-seg-btn ${className}`, text);
-    button.type = 'button';
-    button.setAttribute('aria-checked', 'false');
-    if (label) button.title = label;
-    group.append(button);
-    return button;
-  }
+  const { el, show, option, segment, segButton } = (typeof module === 'object' && module.exports ? require('./provider-catalog') : scope().MultiCCProviderCatalog).dom;
 
   function mark(doc, cli, extra) {
     const catalog = scope() && scope().MultiCCProviderCatalog;
@@ -1144,6 +1109,23 @@
     lineSelect.setAttribute('aria-label', tt('runConfigLineLabel', '线路'));
     const lineNote = el(doc, 'p', 'rc-note');
     lineField.append(lineSelect, lineNote);
+    function manageButton() {
+      const control = el(doc, 'button', 'rc-manage-providers', '找不到线路？添加 / 管理 Provider');
+      control.type = 'button';
+      control.onclick = async () => {
+        await catalogApi.openManager();
+        if (closed) return;
+        catalogs.clear(); catalogErrors.clear(); pickerData = null;
+        try {
+          await loadCatalog(currentCli);
+          providers = providersOf(currentCli);
+          renderFixed(); renderSub(); renderPool(); renderFooter();
+          if (pickerOpen) await renderPicker();
+        } catch (_) { error.textContent = '刷新线路失败，请重新打开配置后重试'; }
+      };
+      return control;
+    }
+    lineField.append(manageButton());
     const modelField = el(doc, 'label', 'rc-field rc-model-field');
     // 标题行带「刷新模型」：opencode 的模型 id 跟着上游走，面板再打开时列表可能
     // 还是上次缓存里的旧 id（含已被下架的）。这个按钮跳过服务端与浏览器两层缓存。
@@ -1253,6 +1235,7 @@
     const subProviderSelect = el(doc, 'select', 'rc-sub-provider');
     subProviderSelect.setAttribute('aria-label', tt('runConfigSubProvider', '子 agent 线路'));
     subProviderField.append(subProviderSelect);
+    subProviderField.append(manageButton());
     const subModelField = el(doc, 'label', 'rc-field');
     subModelField.append(el(doc, 'span', null, tt('runConfigSubModel', '子 agent 模型')));
     const subModelSelect = el(doc, 'select', 'rc-sub-model');
@@ -1333,6 +1316,7 @@
     const poolTitle = el(doc, 'h3', null, tt('runConfigPoolHead', '线路池'));
     const poolNote = el(doc, 'p', null, tt('runConfigPoolNote', '拖动排序'));
     poolHead.append(poolTitle, poolNote);
+    poolHead.append(manageButton());
     const poolList = el(doc, 'div', 'rc-pool');
     const addButton = el(doc, 'button', 'rc-add', `＋ ${tt('runConfigAddLine', '添加线路')}`);
     addButton.type = 'button';

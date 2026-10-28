@@ -140,8 +140,8 @@ const MIGRATION_DEBT = Object.freeze({
   'server.js': Object.freeze({
     // 2026-10-27 Provider 卡片余量走势：GET /api/providers/limit-history 单独一行挂载，
     // 采样钩子随 provider-limit-cache 构造同行注入，实测 3021/159674。
-    ceiling: 3021,
-    byteCeiling: 159674,
+    ceiling: 3019,
+    byteCeiling: 158625,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),
@@ -151,8 +151,8 @@ const MIGRATION_DEBT = Object.freeze({
   // 搜索框 + 自定义输入 + 状态行 + 刷新按钮整块搬进独立模块，run-config 只留挂载，
   // 落回 <= 3000 就删掉这条。
   'public/run-config.js': Object.freeze({
-    ceiling: 3033,
-    byteCeiling: 153881,
+    ceiling: 3017,
+    byteCeiling: 153796,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),
