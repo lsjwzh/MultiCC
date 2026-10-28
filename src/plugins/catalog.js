@@ -413,9 +413,10 @@ function computeStates({ catalog, installed = [], host }) {
   }
   // Installed but not on the list: a local or retired plugin. Still judged by
   // its own plugin.json, and still openable. "Built-in" is the list's word to
-  // give: a folder copied into the package plugins/ is not a built-in just
-  // because of where it sits, so without the list every one of them is
-  // simply installed (listed: null, nobody knows yet).
+  // give: a folder copied into the package plugins/ (a private plugin) is not a
+  // built-in just because of where it sits, and a standalone upgrade carries it
+  // across (scripts/standalone-cli.js carryUserPlugins). Without the list every
+  // one of them is simply installed (listed: null, nobody knows yet).
   for (const local of byId.values()) {
     const unmet = unmetRequirement(local.requires, host);
     rows.push({
@@ -425,12 +426,6 @@ function computeStates({ catalog, installed = [], host }) {
       state: unmet ? 'incompatible' : 'installed', reason: unmet,
       installedVersion: local.version, candidate: null, latest: null, requires: local.requires || null, notes: null, notesEn: null,
     });
-  }
-  // A plugin that is not a built-in but sits in the package plugins/: a
-  // standalone upgrade replaces that tree, so it belongs in the user plugin
-  // directory. Only said when the list can tell what is built in.
-  for (const row of rows) {
-    row.misplaced = Boolean(catalog && row.local && row.local.source === 'builtin' && row.distribution !== 'builtin');
   }
   return rows.sort((a, b) => (STATE_ORDER.indexOf(a.state) - STATE_ORDER.indexOf(b.state)) || a.id.localeCompare(b.id));
 }

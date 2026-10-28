@@ -857,3 +857,174 @@ test('standalone build wiring: lifecycle lib is shared with the desktop shell, n
   assert.match(build, /Rust SQLite required/);
   assert.match(build, /serverDir: path.join\(resourcesDir, 'app-server'\)/);
 });
+
+// ── Hand-installed plugins across an upgrade ────────────────────────────────
+// A plugin copied into the package's app-server/plugins/ (a private plugin) must
+// survive every upgrade, which replaces the whole package; the built-in ones are
+// the new package's business; a package never ships a plugin git does not track.
+
+function pluginTree(root, platform, plugins, { manifest } = {}) {
+  const resources = cliScript.bundleResources(root, platform);
+  const dir = path.join(resources, 'app-server', 'plugins');
+  fs.mkdirSync(path.join(dir, 'bridges'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'bridges', 'wechat-ilink.js'), '// internal module, not a plugin\n');
+  for (const [id, version] of Object.entries(plugins)) {
+    fs.mkdirSync(path.join(dir, id, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(dir, id, 'plugin.json'), JSON.stringify({ id, version }));
+    fs.writeFileSync(path.join(dir, id, 'bin', 'tool'), `${id} ${version}\n`, { mode: 0o755 });
+  }
+  if (manifest) fs.writeFileSync(path.join(resources, 'bundle-manifest.json'), JSON.stringify(manifest));
+  return dir;
+}
+
+const pluginVersion = (dir, id) => JSON.parse(fs.readFileSync(path.join(dir, id, 'plugin.json'), 'utf8')).version;
+const quietLog = () => { const lines = []; return { lines, log: line => lines.push(line), error: line => lines.push(line) }; };
+
+for (const platform of ['darwin', 'linux', 'win32']) {
+  test(`upgrade (${platform}): plugins the old package did not ship are copied into the new one`, () => {
+    const scratch = tmpdir('multicc-carry-');
+    const home = path.join(scratch, 'home');
+    const oldRoot = path.join(scratch, 'MultiCC.old-1');
+    const newRoot = path.join(scratch, 'MultiCC');
+    const linked = path.join(scratch, 'dev', 'linked-tool');
+    fs.mkdirSync(linked, { recursive: true });
+    fs.writeFileSync(path.join(linked, 'plugin.json'), JSON.stringify({ id: 'linked-tool', version: '0.0.1' }));
+    const from = pluginTree(oldRoot, platform, {
+      'chrome-proxy-launcher': '1.6.3', 'retired-builtin': '1.0.0', 'gapaw-creator-workbench': '0.10.0', 'my-tool': '2.0.0',
+    }, { manifest: { version: '2.12.0', builtinPlugins: ['chrome-proxy-launcher', 'retired-builtin'] } });
+    fs.symlinkSync(linked, path.join(from, 'linked-tool'));
+    // The new package now ships my-tool itself.
+    const to = pluginTree(newRoot, platform, { 'chrome-proxy-launcher': '1.7.0', 'my-tool': '3.0.0' });
+    const log = quietLog();
+    const result = cliScript.carryUserPlugins({
+      oldRoot, newRoot, platform, env: { MULTICC_STANDALONE_HOME: home }, now: Date.UTC(2026, 9, 28, 8), logger: log,
+    });
+
+    assert.deepEqual(result.kept.sort(), ['gapaw-creator-workbench', 'linked-tool']);
+    assert.equal(pluginVersion(to, 'gapaw-creator-workbench'), '0.10.0', 'the private plugin is in the new package');
+    assert.equal(fs.readFileSync(path.join(to, 'gapaw-creator-workbench', 'bin', 'tool'), 'utf8'), 'gapaw-creator-workbench 0.10.0\n');
+    assert.ok(fs.statSync(path.join(to, 'gapaw-creator-workbench', 'bin', 'tool')).mode & 0o100, 'still executable');
+    assert.equal(fs.lstatSync(path.join(to, 'linked-tool')).isSymbolicLink(), true, 'a linked plugin stays a link');
+    assert.equal(fs.realpathSync(path.join(to, 'linked-tool')), fs.realpathSync(linked));
+    assert.equal(pluginVersion(to, 'chrome-proxy-launcher'), '1.7.0', 'a built-in is the new package\'s own');
+    assert.equal(fs.existsSync(path.join(to, 'retired-builtin')), false, 'a built-in the new package dropped is not brought back');
+    assert.equal(fs.readFileSync(path.join(to, 'bridges', 'wechat-ilink.js'), 'utf8'), '// internal module, not a plugin\n');
+    // A hand-installed plugin whose id is a built-in now gives way, but is kept.
+    assert.equal(pluginVersion(to, 'my-tool'), '3.0.0');
+    assert.equal(result.backedUp.length, 1);
+    assert.equal(result.backedUp[0].path, path.join(home, 'plugins-backup', 'my-tool-2026-10-28T08-00-00-000Z'));
+    assert.equal(pluginVersion(path.dirname(result.backedUp[0].path), path.basename(result.backedUp[0].path)), '2.0.0');
+    assert.ok(log.lines.some(line => line.includes('kept plugin gapaw-creator-workbench')));
+    assert.ok(log.lines.some(line => line.includes('my-tool is built in now')));
+    assert.deepEqual(result.failed, []);
+    // Copied, not moved: the old tree stays whole until the upgrade is committed.
+    assert.equal(pluginVersion(from, 'gapaw-creator-workbench'), '0.10.0');
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+}
+
+test('upgrade: a package from before builtinPlugins existed, and a source checkout', () => {
+  const scratch = tmpdir('multicc-carry-legacy-');
+  const newRoot = path.join(scratch, 'MultiCC');
+  const to = pluginTree(newRoot, 'linux', { 'chrome-proxy-launcher': '1.7.0' });
+  // An old package without the list: an id the new one ships is that built-in.
+  const oldRoot = path.join(scratch, 'old');
+  pluginTree(oldRoot, 'linux', { 'chrome-proxy-launcher': '1.6.3', 'gapaw-creator-workbench': '0.10.0' }, { manifest: { version: '2.11.3' } });
+  const first = cliScript.carryUserPlugins({ oldRoot, newRoot, platform: 'linux', env: { MULTICC_STANDALONE_HOME: path.join(scratch, 'home') }, logger: quietLog() });
+  assert.deepEqual(first, { kept: ['gapaw-creator-workbench'], backedUp: [], failed: [] });
+  assert.equal(pluginVersion(to, 'chrome-proxy-launcher'), '1.7.0');
+  assert.equal(fs.existsSync(path.join(scratch, 'home', 'plugins-backup')), false, 'nothing to back up');
+  // Running it again finds everything already in place.
+  assert.deepEqual(cliScript.carryUserPlugins({ oldRoot, newRoot, platform: 'linux', env: { MULTICC_STANDALONE_HOME: path.join(scratch, 'home') }, logger: quietLog() }), { kept: [], backedUp: [], failed: [] });
+  // install.sh keeps a pre-standalone source checkout as the backup: its plugins/ is at the top.
+  const checkout = path.join(scratch, 'checkout');
+  fs.mkdirSync(path.join(checkout, 'plugins', 'private-notes'), { recursive: true });
+  fs.writeFileSync(path.join(checkout, 'server.js'), '');
+  fs.writeFileSync(path.join(checkout, 'plugins', 'private-notes', 'plugin.json'), JSON.stringify({ id: 'private-notes', version: '0.1.0' }));
+  assert.deepEqual(cliScript.carryUserPlugins({ oldRoot: checkout, newRoot, platform: 'linux', logger: quietLog() }).kept, ['private-notes']);
+  assert.equal(pluginVersion(to, 'private-notes'), '0.1.0');
+  // No plugins directory at all (a very old package): nothing to do.
+  assert.deepEqual(cliScript.carryUserPlugins({ oldRoot: path.join(scratch, 'empty'), newRoot, platform: 'linux', logger: quietLog() }), { kept: [], backedUp: [], failed: [] });
+  fs.rmSync(scratch, { recursive: true, force: true });
+});
+
+test('upgrade: a plugin that cannot be read is reported, the rest still copied, nothing half-copied', { skip: process.platform === 'win32' || (process.getuid && process.getuid() === 0) }, () => {
+  const scratch = tmpdir('multicc-carry-fail-');
+  const oldRoot = path.join(scratch, 'old');
+  const newRoot = path.join(scratch, 'new');
+  const from = pluginTree(oldRoot, 'linux', { 'a-tool': '1.0.0', 'b-tool': '1.0.0' }, { manifest: { builtinPlugins: [] } });
+  const to = pluginTree(newRoot, 'linux', {});
+  fs.chmodSync(path.join(from, 'a-tool', 'bin'), 0o000);
+  try {
+    const result = cliScript.carryUserPlugins({ oldRoot, newRoot, platform: 'linux', logger: quietLog() });
+    assert.deepEqual(result.kept, ['b-tool']);
+    assert.deepEqual(result.failed.map(item => item.id), ['a-tool']);
+    assert.deepEqual(fs.readdirSync(to).sort(), ['b-tool', 'bridges'], 'no a-tool, and no leftover partial copy');
+  } finally {
+    fs.chmodSync(path.join(from, 'a-tool', 'bin'), 0o755);
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test('upgrade: the in-bundle swap carries plugins across, and keeps the old tree when it cannot', () => {
+  const scratch = tmpdir('multicc-carry-swap-');
+  const env = { ...process.env, MULTICC_STANDALONE_HOME: path.join(scratch, 'home') };
+  const swap = (root, staged) => spawnSync(process.execPath, [
+    path.join(ROOT, 'scripts', 'standalone-cli.js'), '__swap', '--wait-pid', '0', '--root', root, '--staged', staged, '--version', '9.9.9',
+  ], { encoding: 'utf8', env });
+  const platform = process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux';
+
+  const root = path.join(scratch, 'MultiCC');
+  pluginTree(root, platform, { 'chrome-proxy-launcher': '1.6.3', 'gapaw-creator-workbench': '0.10.0' }, { manifest: { version: '2.12.0', builtinPlugins: ['chrome-proxy-launcher'] } });
+  const staged = path.join(scratch, 'staged');
+  pluginTree(staged, platform, { 'chrome-proxy-launcher': '1.7.0' });
+  const ok = swap(root, staged);
+  assert.equal(ok.status, 0, ok.stderr);
+  const installed = path.join(cliScript.bundleResources(root, platform), 'app-server', 'plugins');
+  assert.equal(pluginVersion(installed, 'gapaw-creator-workbench'), '0.10.0');
+  assert.equal(pluginVersion(installed, 'chrome-proxy-launcher'), '1.7.0');
+  assert.deepEqual(fs.readdirSync(scratch).filter(name => name.includes('.old-')), [], 'the previous bundle is removed after copying');
+
+  // A plugin that cannot be read: the new version still lands, the old tree stays.
+  if (process.platform !== 'win32' && process.getuid && process.getuid() !== 0) {
+    const staged2 = path.join(scratch, 'staged2');
+    pluginTree(staged2, platform, { 'chrome-proxy-launcher': '1.8.0' });
+    const locked = path.join(installed, 'gapaw-creator-workbench', 'bin');
+    fs.chmodSync(locked, 0o000);
+    const kept = swap(root, staged2);
+    fs.readdirSync(scratch).filter(name => name.includes('.old-')).forEach(name => {
+      fs.chmodSync(path.join(cliScript.bundleResources(path.join(scratch, name), platform), 'app-server', 'plugins', 'gapaw-creator-workbench', 'bin'), 0o755);
+    });
+    assert.equal(kept.status, 0, kept.stderr);
+    assert.equal(pluginVersion(path.join(cliScript.bundleResources(root, platform), 'app-server', 'plugins'), 'chrome-proxy-launcher'), '1.8.0');
+    const left = fs.readdirSync(scratch).filter(name => name.includes('.old-'));
+    assert.equal(left.length, 1, 'the previous bundle stays when a plugin could not be copied');
+    assert.equal(pluginVersion(path.join(cliScript.bundleResources(path.join(scratch, left[0]), platform), 'app-server', 'plugins'), 'gapaw-creator-workbench'), '0.10.0');
+  }
+  fs.rmSync(scratch, { recursive: true, force: true });
+});
+
+test('packaging: the manifest lists the shipped plugins, and a plugin git does not track is left out', () => {
+  const scratch = tmpdir('multicc-bundle-plugins-');
+  const resources = path.join(scratch, 'Resources');
+  pluginTree(path.dirname(resources), 'linux', { 'chrome-proxy-launcher': '1.6.3', 'b-tool': '1.0.0' });
+  assert.deepEqual(bundleScript.bundledPlugins(resources), ['b-tool', 'chrome-proxy-launcher'], 'plugins only, not bridges/');
+  assert.deepEqual(bundleScript.bundledPlugins(path.join(scratch, 'nothing')), []);
+
+  const { untrackedPlugins } = require(path.join(ROOT, 'scripts', 'desktop-bundle-server.js'));
+  const repo = path.join(scratch, 'repo');
+  for (const id of ['chrome-proxy-launcher', 'gapaw-creator-workbench']) {
+    fs.mkdirSync(path.join(repo, 'plugins', id), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'plugins', id, 'plugin.json'), JSON.stringify({ id }));
+  }
+  fs.mkdirSync(path.join(repo, 'plugins', 'bridges'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'plugins', 'bridges', 'x.js'), '');
+  // Not a git checkout of its own (an exported tree): everything in it is shipped.
+  assert.deepEqual(untrackedPlugins(repo), []);
+  const git = (...args) => assert.equal(spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).status, 0);
+  git('init', '-q');
+  fs.writeFileSync(path.join(repo, '.gitignore'), '/plugins/*\n!/plugins/bridges/\n!/plugins/chrome-proxy-launcher/\n');
+  git('add', '-A');
+  assert.deepEqual(untrackedPlugins(repo), ['gapaw-creator-workbench']);
+  fs.rmSync(scratch, { recursive: true, force: true });
+});

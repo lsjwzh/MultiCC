@@ -1408,6 +1408,20 @@ UPGRADE_NEW_INSTALLED=true
 chmod +x "$INSTALL_DIR/multicc" 2>/dev/null || true
 ok "Installed MultiCC ${VERSION_NUMBER}"
 
+# Plugins someone installed by hand live in the package's plugins/ next to the
+# built-in ones, and the old tree is about to go: the new package's own CLI
+# copies them across (standalone-cli.js carryUserPlugins). Copied, so a failed
+# start can still put the old tree back whole; if copying fails, the previous
+# installation stays on disk instead of taking the plugins with it.
+PLUGINS_LEFT_BEHIND=""
+CARRY_FROM="${OLD_DIR:-$LEGACY_DIR}"
+if [ -n "$CARRY_FROM" ] && [ -d "$CARRY_FROM" ]; then
+  if ! "${MULTICC_CMD[@]}" __carry-plugins --from "$CARRY_FROM"; then
+    PLUGINS_LEFT_BEHIND="$CARRY_FROM"
+    warn "Some plugins could not be copied from the previous installation; it is kept at $CARRY_FROM."
+  fi
+fi
+
 # ── Check git ─────────────────────────────────────────────────────────────
 # MultiCC gives every session its own git worktree, so git has to actually work
 # here. The package ships its own Node runtime, but it cannot ship git. On macOS
@@ -1751,7 +1765,8 @@ fi
 # Keep the previous program until configuration and (unless --no-start) the
 # readiness gate pass. --no-start intentionally leaves a paused job unloaded.
 UPGRADE_COMMITTED=true
-[ -n "$OLD_DIR" ] && rm -rf "$OLD_DIR"
+if [ -n "$OLD_DIR" ] && [ "$PLUGINS_LEFT_BEHIND" != "$OLD_DIR" ]; then rm -rf "$OLD_DIR"; fi
+[ -n "$PLUGINS_LEFT_BEHIND" ] && warn "Plugins that could not be copied are still in $PLUGINS_LEFT_BEHIND."
 
 # ── Done ──────────────────────────────────────────────────────────────────
 echo ""

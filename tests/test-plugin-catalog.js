@@ -172,17 +172,16 @@ test('states: builtin, installed, update, installable, unsupported, incompatible
   // Not on the list: shown from plugin.json, with the list offline too.
   // Without the list nobody can say what is built in: everything on disk is installed, listed unknown.
   const unlisted = computeStates({ catalog: null, installed: [local('my-tool', '0.0.1'), local('chrome-proxy-launcher', '1.6.3', 'builtin')], host: HOST });
-  assert.deepEqual(unlisted.map(row => [row.id, row.state, row.listed, row.misplaced]), [['chrome-proxy-launcher', 'installed', null, false], ['my-tool', 'installed', null, false]]);
-  // With the list: a folder copied into the package plugins/ is not a built-in
-  // (it reads "installed", not on the list, in the wrong place); the listed
-  // built-in there is fine; the same unlisted plugin in the user directory is
-  // not misplaced.
+  assert.deepEqual(unlisted.map(row => [row.id, row.state, row.listed]), [['chrome-proxy-launcher', 'installed', null], ['my-tool', 'installed', null]]);
+  // With the list: a folder copied into the package plugins/ (a private plugin)
+  // is not a built-in just because of where it sits — it reads "installed", not
+  // on the list; the listed built-in there is still built in.
   const copied = byId(computeStates({ catalog, host: HOST, installed: [
     local('chrome-proxy-launcher', '1.6.3', 'builtin'), local('gapaw-creator-workbench', '0.10.0', 'builtin'), local('my-tool', '0.0.1'),
   ] }));
-  assert.deepEqual([copied['gapaw-creator-workbench'].state, copied['gapaw-creator-workbench'].listed, copied['gapaw-creator-workbench'].misplaced], ['installed', false, true]);
-  assert.deepEqual([copied['chrome-proxy-launcher'].state, copied['chrome-proxy-launcher'].misplaced], ['builtin', false]);
-  assert.deepEqual([copied['my-tool'].state, copied['my-tool'].misplaced], ['installed', false]);
+  assert.deepEqual([copied['gapaw-creator-workbench'].state, copied['gapaw-creator-workbench'].listed], ['installed', false]);
+  assert.deepEqual([copied['chrome-proxy-launcher'].state, copied['chrome-proxy-launcher'].listed], ['builtin', true]);
+  assert.deepEqual([copied['my-tool'].state, copied['my-tool'].listed], ['installed', false]);
   // Panel order: what needs attention first.
   const order = computeStates({ catalog, installed: [local('wechat-desktop-notify', '0.1.0'), local('chrome-proxy-launcher', '1.6.3', 'builtin')], host: ready });
   assert.deepEqual(order.map(row => row.state), ['update', 'builtin']);
@@ -325,12 +324,12 @@ test('routes: built-in and installed plugins are listed together, built-in wins 
   assert.equal(refreshed.body.plugins.length, 2);
 
   // Without a catalog the panel still lists what is installed; which of it is
-  // built in is the list's call, so nothing is labelled built-in or misplaced.
+  // built in is the list's call, so nothing is labelled built-in.
   const offline = createPluginsRoutes({ pluginsDir: builtin, userPluginsDir: user, hostFacts, platform: process.platform, arch: process.arch, logger: { warn() {} } });
   const quiet = await offline.catalogPayload();
   assert.equal(quiet.catalog.configured, false);
-  assert.deepEqual(quiet.plugins.map(row => [row.id, row.state, row.listed, row.misplaced]),
-    [['chrome-proxy-launcher', 'installed', null, false], ['wechat-desktop-notify', 'installed', null, false]]);
+  assert.deepEqual(quiet.plugins.map(row => [row.id, row.state, row.listed]),
+    [['chrome-proxy-launcher', 'installed', null], ['wechat-desktop-notify', 'installed', null]]);
   const missing = res();
   await new Promise(resolve => { offline.mount({ get() {}, post: (p, h) => { if (p.endsWith('/refresh')) resolve(h({}, missing)); } }); });
   assert.equal(missing.code, 404);

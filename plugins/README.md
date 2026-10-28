@@ -9,10 +9,18 @@
 
 ## 安装 / 卸载
 
-这个目录只放**内置插件**（随 MultiCC 发布）。另外安装的插件放在用户目录
-`~/.multicc/plugins/`：桌面版的程序目录只读，独立包升级会整包替换程序目录，
-装在这里的插件会丢。设了 `MULTICC_DATA_DIR` 的实例（比如桌面版）用各自数据目录
-下的 `plugins/`。
+随 MultiCC 发布的**内置插件**在这个目录里，被 git 跟踪（`.gitignore` 末尾的白名单）。
+另外安装的插件放在用户目录 `~/.multicc/plugins/`；设了 `MULTICC_DATA_DIR` 的实例
+（比如桌面版，它的程序目录只读）用各自数据目录下的 `plugins/`。
+
+自己的私有插件直接复制进这个目录也可以，升级不会丢：
+- 源码运行：被 `.gitignore` 忽略，`./multicc update` 不碰它；打包脚本也不会把没被 git
+  跟踪的插件打进安装包（`scripts/desktop-bundle-server.js` `untrackedPlugins`）。
+- 独立包：升级会整包替换程序目录，但 install.sh、install.ps1 和 `multicc update`
+  都会在删掉旧版本前，把旧包没有自带的插件原样复制到新版本
+  （`scripts/standalone-cli.js` `carryUserPlugins`）。新版本恰好内置了同 id 的插件时
+  以内置为准，你的那份备份到数据目录的 `plugins-backup/`；复制失败时旧版本整个留在
+  磁盘上，不删。
 
 ```bash
 cp -R <某个插件文件夹> ~/.multicc/plugins/   # 安装

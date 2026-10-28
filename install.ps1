@@ -609,7 +609,20 @@ try {
         }
         throw
     }
-    if (-not [string]::IsNullOrWhiteSpace($oldDir) -and (Test-Path -LiteralPath $oldDir)) {
+    # Plugins someone installed by hand live in the package's plugins/ next to
+    # the built-in ones: the new package's own CLI copies them across before the
+    # old tree goes (standalone-cli.js carryUserPlugins). If that fails, the
+    # previous installation stays on disk instead of taking the plugins with it.
+    $carryFrom = if (-not [string]::IsNullOrWhiteSpace($oldDir)) { $oldDir } else { $legacyDir }
+    $pluginsCopied = $true
+    if (-not [string]::IsNullOrWhiteSpace($carryFrom) -and (Test-Path -LiteralPath $carryFrom)) {
+        & (Join-Path $InstallDir 'Resources\runtime\node.exe') (Join-Path $InstallDir 'Resources\launcher\standalone-cli.js') __carry-plugins --from $carryFrom
+        if ($LASTEXITCODE -ne 0) {
+            $pluginsCopied = $false
+            Write-Warn "Some plugins could not be copied from the previous installation; it is kept at $carryFrom."
+        }
+    }
+    if ($pluginsCopied -and -not [string]::IsNullOrWhiteSpace($oldDir) -and (Test-Path -LiteralPath $oldDir)) {
         Remove-Item -LiteralPath $oldDir -Recurse -Force
     }
     $MultiCCCommand = Join-Path $InstallDir 'multicc.cmd'

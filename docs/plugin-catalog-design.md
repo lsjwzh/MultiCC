@@ -8,7 +8,7 @@
 
 1. **用户不知道有哪些插件**。没有地方列出“还能装什么”。
 2. **不知道装上能不能用**。插件可能需要某个系统版本、某个 MultiCC 版本、某个 Agent 构建号、某个外部 App（如微信 4.x）或某些系统权限，现在都没有地方声明，装了才发现不能用。
-3. **装在程序目录里会丢**。桌面版的程序目录在 `MultiCC.app` 里，是只读的；独立包升级会整包替换程序目录。只有源码运行能这样装。
+3. **装在程序目录里会丢**。桌面版的程序目录在 `MultiCC.app` 里，是只读的；独立包升级会整包替换程序目录。只有源码运行能这样装。（已处理：独立包升级会把手装的插件带到新版本，见第八节第 4 条。）
 
 ## 二、整体做法
 
@@ -151,6 +151,12 @@
 1. **列表放在独立仓库** [`lsjwzh/multicc-plugins`](https://github.com/lsjwzh/multicc-plugins)（公开，MIT）。列表可以随时更新，不用跟着 MultiCC 发版。仓库里有 `scripts/validate.js`（格式、规则、签名、下载包核对，CI 每次推送都跑）和 `scripts/sign.js`。
 2. **后置安装的插件装到 `~/.multicc/plugins/<id>/`**，推翻了之前“装进 MultiCC 的 `plugins/` 目录”的决定（`docs/notification-channel-plugin-design.md` 15.2 已同步）。设了 `MULTICC_DATA_DIR` 的实例（比如桌面版）放在各自数据目录下的 `plugins/`，和其他数据一样互不干扰。
 3. **列表从第一版就签名**。密钥 id `catalog-2026-10`，公钥在 `src/plugins/catalog.js` 的 `CATALOG_KEYS` 和列表仓库的 `keys.json`；私钥只在维护者 Mac 的登录钥匙串里（条目 `multicc-plugin-catalog-signing`），不进任何仓库，CI 也拿不到。这台 Mac 丢了就只能按列表仓库 README 的“换签名密钥”步骤换钥，所以请把它另外备份一份。
+
+4. **升级不丢用户已有的插件**（2026-10-28 用户要求）。私有插件（比如本地装的 Gapaw 达人工作台）不进插件列表，用户会直接复制进程序目录的 `plugins/`：
+   - 独立包的三条升级路径（`install.sh`、`install.ps1`、`multicc update` 的包内替换）在删掉旧版本前，都调用新包里的 `standalone-cli.js __carry-plugins`，把旧包没有自带的插件原样复制过去（权限、符号链接都保留）。“自带了哪些”记在安装包的 `bundle-manifest.json` 的 `builtinPlugins`；没有这一项的旧包只自带过 `chrome-proxy-launcher`，所以新包也有的 id 就当作同一个内置插件。新版本内置了同 id 插件时以内置为准，用户那份放到数据目录的 `plugins-backup/<id>-<时间>/`。复制先写临时名再改名，失败的插件不会半截出现在新版本里；只要有一个没复制成功，旧版本整个留在磁盘上。
+   - 源码运行的 `./multicc update` 用 `git stash --include-untracked` 和 `reset --hard`，都不碰被忽略的文件，私有插件原地不动。
+   - 打包时（桌面版和独立包共用 `desktop-bundle-server.js`）跳过没被 git 跟踪的插件，私有插件不会被打进发布包。
+   - 插件面板上，这类插件显示“已安装 / 本地插件”，不当成内置，也不提示挪目录。
 
 ## 九、实施进度
 

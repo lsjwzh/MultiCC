@@ -692,6 +692,120 @@ function extractArchive({ archive, dest, platform, logger: log }) {
   return dest;
 }
 
+// ── Hand-installed plugins across an upgrade ────────────────────────────────
+
+// A plugin someone installed by hand sits next to the built-in ones in the
+// package's app-server/plugins/ (a private plugin's README tells people to copy
+// it there). Every upgrade replaces the whole package, so before the old tree is
+// deleted, each plugin the old package did not ship itself is copied into the
+// new one. Copied, not moved: until the upgrade is committed the old tree must
+// stay whole, because a failed start puts it back.
+//
+// "Did not ship" is the old bundle-manifest.json's builtinPlugins. Packages from
+// before that list shipped one plugin (chrome-proxy-launcher), so for them an id
+// the new package also ships is taken to be that same built-in. A plugin whose id
+// a newer package now ships as a built-in gives way to it; the user's copy is kept
+// under <data>/plugins-backup/ instead of being dropped.
+function previousPluginsDir(root, platform) {
+  const bundled = path.join(bundleResources(root, platform), 'app-server', 'plugins');
+  if (fs.existsSync(bundled)) return bundled;
+  // A source checkout: what install.sh keeps when it upgrades a pre-standalone install.
+  const checkout = path.join(root, 'plugins');
+  return fs.existsSync(path.join(root, 'server.js')) && fs.existsSync(checkout) ? checkout : null;
+}
+
+function shippedPlugins(root, platform) {
+  try {
+    const list = JSON.parse(fs.readFileSync(path.join(bundleResources(root, platform), 'bundle-manifest.json'), 'utf8')).builtinPlugins;
+    return Array.isArray(list) ? new Set(list) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function pathTaken(file) {
+  try { fs.lstatSync(file); return true; } catch (_) { return false; }
+}
+
+// Not fs.cpSync: on an unreadable directory it aborts the whole process from
+// native code instead of throwing, and the swap helper must live to restart the
+// server. Links are copied as they are (relative ones still resolve: the new
+// tree has the old one's shape); permissions come along, so bin/ stays executable.
+function copyPluginTree(source, dest) {
+  const stat = fs.lstatSync(source);
+  if (stat.isSymbolicLink()) {
+    fs.symlinkSync(fs.readlinkSync(source), dest);
+  } else if (stat.isDirectory()) {
+    fs.mkdirSync(dest);
+    for (const name of fs.readdirSync(source)) copyPluginTree(path.join(source, name), path.join(dest, name));
+    fs.chmodSync(dest, stat.mode & 0o7777);
+  } else if (stat.isFile()) {
+    fs.copyFileSync(source, dest, fs.constants.COPYFILE_EXCL);
+    fs.chmodSync(dest, stat.mode & 0o7777);
+  }
+}
+
+// Returns what it did; a plugin it could not copy is in `failed` (the others
+// are still copied) and the caller keeps the old tree on disk.
+function carryUserPlugins({ oldRoot, newRoot, platform, env = process.env, now = Date.now(), logger: log = console }) {
+  const result = { kept: [], backedUp: [], failed: [] };
+  const from = previousPluginsDir(oldRoot, platform);
+  if (!from) return result;
+  const to = path.join(bundleResources(newRoot, platform), 'app-server', 'plugins');
+  const shipped = shippedPlugins(oldRoot, platform);
+  const stamp = new Date(now).toISOString().replace(/[:.]/g, '-');
+  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+    const source = path.join(from, entry.name);
+    // Only plugins: bridges/, cron/ and the like are part of the package itself.
+    if (!(entry.isDirectory() || entry.isSymbolicLink()) || !fs.existsSync(path.join(source, 'plugin.json'))) continue;
+    if (shipped && shipped.has(entry.name)) continue;
+    let dest = path.join(to, entry.name);
+    const builtInNow = pathTaken(dest);
+    if (builtInNow && !shipped) continue;
+    if (builtInNow) dest = path.join(standaloneDataDir({ env }), 'plugins-backup', `${entry.name}-${stamp}`);
+    // Into a dot-name first, so a copy cut short never looks like a plugin.
+    const partial = path.join(path.dirname(dest), `.${path.basename(dest)}.copying-${process.pid}`);
+    try {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.rmSync(partial, { recursive: true, force: true });
+      copyPluginTree(source, partial);
+      fs.renameSync(partial, dest);
+    } catch (error) {
+      try { fs.rmSync(partial, { recursive: true, force: true }); } catch (_) {}
+      result.failed.push({ id: entry.name, error: error.message });
+      log.error(`could not copy plugin ${entry.name}: ${error.message}`);
+      continue;
+    }
+    if (builtInNow) {
+      result.backedUp.push({ id: entry.name, path: dest });
+      log.log(`plugin ${entry.name} is built in now; your copy is kept at ${dest}`);
+    } else {
+      result.kept.push(entry.name);
+      log.log(`kept plugin ${entry.name} from the previous installation`);
+    }
+  }
+  return result;
+}
+
+// Internal: run by install.sh / install.ps1 from the NEW package, pointing at
+// the directory the previous installation was moved aside to.
+function cmdCarryPlugins(layout, env, args) {
+  if (!args.from) {
+    process.stderr.write('__carry-plugins needs --from <previous installation>\n');
+    return 2;
+  }
+  try {
+    const { failed } = carryUserPlugins({
+      oldRoot: path.resolve(args.from), newRoot: layout.bundleRoot, platform: layout.platform, env,
+      logger: { log: line => process.stdout.write(`  ${line}\n`), error: line => process.stderr.write(`  ${line}\n`) },
+    });
+    return failed.length ? 1 : 0;
+  } catch (error) {
+    process.stderr.write(`could not copy plugins from ${args.from}: ${error.message}\n`);
+    return 1;
+  }
+}
+
 // The swap can never happen in-process: the running CLI, and on POSIX the
 // runtime binary it is executing from, both live inside the directory being
 // replaced. So we hand the last step to a short-lived helper started from the
@@ -732,7 +846,6 @@ async function cmdSwap(layout, env, args) {
     if (fs.existsSync(root)) fs.renameSync(root, retired);
     fs.renameSync(staged, root);
     log.log(`updated to ${args.version} (previous bundle kept at ${retired})`);
-    fs.rmSync(retired, { recursive: true, force: true });
   } catch (error) {
     log.error(`swap failed: ${error.message}`);
     // The CLI already wrote its exit marker; a newer one makes the web UI
@@ -743,6 +856,15 @@ async function cmdSwap(layout, env, args) {
       try { fs.renameSync(retired, root); log.log('restored the previous bundle'); } catch (_) {}
     }
     return 1;
+  }
+  // The new version is in place either way; only a plugin that could not be
+  // copied keeps the previous bundle on disk.
+  try {
+    const { failed } = carryUserPlugins({ oldRoot: retired, newRoot: root, platform: layout.platform, env, logger: log });
+    if (failed.length) log.error(`plugins not copied: ${failed.map(item => item.id).join(', ')}; the previous bundle stays at ${retired}`);
+    else fs.rmSync(retired, { recursive: true, force: true });
+  } catch (error) {
+    log.error(`could not copy plugins from the previous bundle (${error.message}); it stays at ${retired}`);
   }
   appendUpdateLog(env, [`${UPDATE_STEP_MARKER} restart done ${Math.floor(Date.now() / 1000)}`]);
   if (args.restart) {
@@ -982,9 +1104,9 @@ function parseArgs(argv) {
   const args = {
     command: null, rest: [], port: null, data: null, noOpen: false, foreground: false,
     check: false, restart: false, json: false, follow: false, lines: null,
-    waitPid: null, root: null, staged: null, version: null, help: false,
+    waitPid: null, root: null, staged: null, version: null, from: null, help: false,
   };
-  const takesValue = new Set(['--port', '--data', '--lines', '--wait-pid', '--root', '--staged', '--version']);
+  const takesValue = new Set(['--port', '--data', '--lines', '--wait-pid', '--root', '--staged', '--version', '--from']);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (takesValue.has(arg)) {
@@ -1003,6 +1125,7 @@ function parseArgs(argv) {
       else if (arg === '--root') args.root = value;
       else if (arg === '--staged') args.staged = value;
       else if (arg === '--version') args.version = value;
+      else if (arg === '--from') args.from = value;
     } else if (arg === '--no-open') args.noOpen = true;
     else if (arg === '-f' || arg === '--foreground') args.foreground = true;
     else if (arg === '--check') args.check = true;
@@ -1055,6 +1178,7 @@ async function main(argv = process.argv.slice(2)) {
   if (args.command !== '__swap') requireBundle(layout);
   switch (args.command) {
     case '__swap': return cmdSwap(layout, env, args);
+    case '__carry-plugins': return cmdCarryPlugins(layout, env, args);
     case 'start': return cmdStart(layout, env, args);
     case 'stop': return cmdStop(layout, env);
     case 'restart': return cmdRestart(layout, env, args);
@@ -1083,6 +1207,7 @@ module.exports = {
   archiveName,
   assetUrl,
   bundleResources,
+  carryUserPlugins,
   compareVersions,
   configGet,
   downloadProgressText,
