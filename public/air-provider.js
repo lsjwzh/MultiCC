@@ -253,6 +253,7 @@
         <div id="air-provider-create-choice" class="air-provider-create-choice">
           <section><strong>${t('airProviderAddByKey')}</strong><span>${t('airProviderAddByKeyDesc')}</span><div><button type="button" data-provider-key="claude">Claude · Anthropic</button><button type="button" data-provider-key="codex">Codex · OpenAI</button></div></section>
           <section><strong>${t('airProviderAddAccount')}</strong><span>${t('airProviderAddAccountDesc')}</span><div><button type="button" data-provider-account="claude">Claude</button><button type="button" data-provider-account="codex">Codex</button></div></section>
+          <section><strong>虚拟 Provider</strong><span>组合相同 CLI 的线路，自动切换并共享。</span><div><button type="button" data-provider-virtual>创建组合</button></div></section>
         </div>
         <div id="air-provider-api-fields">
         <p id="air-provider-official-hint" class="air-migration-note" hidden>${t('airProviderOfficialLockedHint')}</p>
@@ -287,6 +288,9 @@
     document.body.append(dialog);
     const form = el('air-provider-form');
     el('air-provider-close').onclick = () => dialog.close();
+    dialog.querySelector('[data-provider-virtual]').onclick = () => {
+      dialog.close(); root.MultiCCVirtualProvider?.open({ providers: data?.providers || [], api: context.api, onSaved: load });
+    };
     el('air-provider-cancel').onclick = () => dialog.close();
     form.elements.preset.onchange = () => applyPreset(form.elements.preset.value);
     form.elements.appType.onchange = changeDialogAppType;
@@ -466,6 +470,7 @@
   }
 
   function openEditor(provider = null) {
+    if (provider?.virtual) return root.MultiCCVirtualProvider?.open({ provider, providers: data.providers, api: context.api, onSaved: load });
     const dialog = ensureDialog();
     const form = el('air-provider-form');
     form.reset();
@@ -585,6 +590,7 @@
     if (terminal) tags.append(make('span', t('airProviderTerminalTag')));
     else if (account) tags.append(make('span', t('airProviderAccountTag')));
     if (provider.hasToken) tags.append(make('span', t('airProviderKeyConfigured')));
+    if (provider.virtual) tags.append(make('span', '虚拟组合'));
     // 专用出口：卡片上标出来，免得要逐个点开编辑框才知道这个账号从哪个 IP 出去。
     if (provider.egressBinding && provider.egressBinding.profileId) {
       const tag = make('span', t('airProviderEgressBindingTag'));
@@ -603,6 +609,19 @@
       fact(t('airProviderTotalUsage'), providerStat(provider)),
     );
     card.append(head, endpoint, facts);
+    if (provider.virtual) {
+      endpoint.textContent = `同 ${cliName(provider.appType)} 的 ${provider.virtual.members.length} 条线路 · ${provider.virtual.strategy === 'ordered' ? '按顺序使用' : '优先使用即将到期线路'}`;
+      const state = provider.virtualStatus;
+      const status = make('p', state?.error || `可用 ${state?.availableCount ?? '—'} 条 · 当前 ${state?.members?.find(p => p.id === state.selectedId)?.name || '暂无可用成员'}`, 'air-provider-limit');
+      card.append(status);
+      for (const member of state?.members || []) {
+        const reasons = { expired: '已到期', exhausted: '余量耗尽', cooldown: '暂不可用', missing: '成员已删除', login: '需要登录', model: '模型不兼容', guard: '出口或额度保护暂停' };
+        const info = make('p', `${member.name || member.id} · ${reasons[member.reason] || '可用'} · ${member.limit?.summaryText || '余量未知'}`);
+        if (member.expiresAt) info.append(document.createTextNode(` · 到期 ${new Date(member.expiresAt).toLocaleString()}`));
+        if (member.subscription?.nextBillingAt) info.append(document.createTextNode(` · 下次续费 ${new Date(member.subscription.nextBillingAt).toLocaleDateString()}`));
+        card.append(info);
+      }
+    }
     const limitView = resolveLimit(provider);
     if (limitView?.text) {
       const limit = make('p', limitView.text, 'air-provider-limit');
@@ -1124,6 +1143,7 @@
     for (const [value, label] of protocols) { const tab = button(label, () => setProtocol(value), 'air-provider-tab'); tab.dataset.protocol = value; tabs.append(tab); }
     const importButton = button(t('airProviderImportFromCcSwitch'), importProviders); importButton.id = 'air-provider-import';
     toolbar.append(tabs, importButton);
+    toolbar.append(button('＋ 虚拟 Provider', () => root.MultiCCVirtualProvider?.open({ providers: data?.providers || [], api: context.api, onSaved: load })));
     const cards = make('div', null, 'air-provider-cards'); cards.id = 'air-provider-cards';
     const advanced = make('section', null, 'air-provider-advanced'); advanced.id = 'air-provider-advanced'; advanced.hidden = !advancedOpen;
     const note = make('div', null, 'air-migration-note'); note.append(make('strong', t('airProviderAdvancedTitle')), make('span', t('airProviderAdvancedBody')));

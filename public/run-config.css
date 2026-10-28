@@ -258,3 +258,9 @@ dialog .air-config-field input { margin-top: 7px; }
 .rc-preset-chip > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .rc-preset-chip-x { min-height:0; padding:0 6px; border:0; background:transparent; color:#7f90a2; font-size:11px; cursor:pointer; }
 .rc-preset-chip-x:hover { color:#c0392b; }
+
+.rc-manage-providers { align-self:flex-start; font:inherit; font-size:12px; color:var(--accent,#73aaff); background:transparent; border:0; padding:6px 0; cursor:pointer; text-align:left; }
+html.provider-overlay #sidebar { display:none !important; }
+html.provider-overlay body { grid-template-columns:minmax(0,1fr); }
+html.provider-overlay main { margin-left:0; width:100%; min-width:0; }
+html.provider-overlay #task-header .breadcrumb { display:none; }

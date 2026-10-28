@@ -103,6 +103,7 @@ function _relayShowCode(title, hint, code) {
       <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">${escapeHtml(title)}</div>
       <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:10px">${escapeHtml(hint)}</div>
       <textarea data-k="code" rows="5" readonly style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:8px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"></textarea>
+      <p data-k="network-hint" style="font-size:12px;line-height:1.6;color:var(--faint)"></p>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
         <button class="btn" data-act="close" style="font-size:13px">关闭</button>
         <button class="btn btn-green" data-act="copy" style="font-size:13px">复制分享码</button>
@@ -112,6 +113,7 @@ function _relayShowCode(title, hint, code) {
   const codeEl = overlay.querySelector('[data-k="code"]');
   const statusEl = overlay.querySelector('[data-k="status"]');
   codeEl.value = code;
+  multiccMountExternalAccessHint(overlay.querySelector('[data-k="network-hint"]'), parseRelayShareCode(code).payload?.baseUrl);
   // 弹层盖在页面提示之上，showToast 的反馈会被挡住，所以结果直接写在弹层里。
   const copy = async () => _relayCopyResult(statusEl, await _relayCopyText(code, codeEl));
   overlay.querySelector('[data-act="copy"]').onclick = copy;
@@ -164,9 +166,11 @@ function manageRelayShares(appType = '', providerId = '') {
         <button class="btn" data-act="close">关闭</button>
       </div>
       <div data-k="list" style="display:grid;gap:8px"><div class="status-text">读取中…</div></div>
+      <p data-k="network-hint" style="font-size:12px;line-height:1.6;color:var(--faint)"></p>
       <div data-k="status" class="status-text" style="margin-top:8px"></div>
     </div>`);
   const listEl = overlay.querySelector('[data-k="list"]');
+  multiccMountExternalAccessHint(overlay.querySelector('[data-k="network-hint"]'));
   const statusEl = overlay.querySelector('[data-k="status"]');
   const refresh = async () => {
     const query = new URLSearchParams();

@@ -43,6 +43,32 @@ const optionTexts = `[...document.querySelectorAll('.air-config-dialog[open] .rc
 // 只认当前打开的那个对话框：关掉的旧对话框要等 close 事件派发完才从 DOM 摘掉。
 const visible = selector => `(() => { const el = document.querySelector(${JSON.stringify('.air-config-dialog[open] ' + selector)}); return !!el && !el.closest('[hidden]') && el.getBoundingClientRect().height > 0; })()`;
 
+test('Provider 管理浮层关闭后保留自定义模型草稿，并重新加载新增线路', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  let added = false;
+  const line = id => ({ id, name: id, appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude-exp'], model: 'm', modelOptions: ['m'] });
+  const fixture = { ...routes,
+    '/api/providers': () => json({ providers: added ? [line('existing'), line('added')] : [line('existing')], defaults: {} }),
+    '/air': { headers: { 'content-type': 'text/html' }, body: '<!doctype html><title>Provider fixture</title><p>Provider manager</p>' },
+  };
+  await withCdpHarness({ routes: fixture, screenshotDir: qaDir() }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await page.navigate('/run-config-host.html');
+    assert.ok(await page.waitFor('window.MultiCCRunConfig'));
+    await page.evaluate(`window.MultiCCRunConfig.open({ configuration: { cli: 'claude-exp', provider: 'existing', model: 'my-draft-model' } }, ['claude-exp'], () => {})`);
+    assert.ok(await page.waitFor(`document.querySelector('.rc-model-custom')?.value === 'my-draft-model'`));
+    await page.evaluate(`document.querySelector('.rc-line-field .rc-manage-providers').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.provider-manager-dialog[open] iframe')?.src.includes('view=provider')`));
+    assert.ok(await page.evaluate(`document.querySelector('.provider-manager-dialog').getBoundingClientRect().width <= 390`));
+    added = true;
+    await page.evaluate(`document.querySelector('.provider-manager-dialog button').click()`);
+    assert.ok(await page.waitFor(`!document.querySelector('.provider-manager-dialog') && document.querySelector('.rc-line option[value="added"]')`));
+    assert.equal(await page.evaluate(`document.querySelector('.rc-line').value`), 'existing');
+    assert.equal(await page.evaluate(`document.querySelector('.rc-model-custom').value`), 'my-draft-model');
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog').open`), true);
+  });
+});
+
 test('官方账号登录：移动端打开终端、刷新身份，保留已有 API Key 选择并提供弹窗拦截后的入口', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   let saved = false;

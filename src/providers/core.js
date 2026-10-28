@@ -210,6 +210,7 @@ const CREDENTIAL_GATED_CLIS = new Set(['zcode', 'kimi', 'dsh', 'grok']);
 
 function providerSupportsCli(provider, cli) {
   if (!provider || !cli) return false;
+  if (provider.virtual) return [provider.appType, `${provider.appType}-exp`].includes(String(cli));
   const format = normalizeApiFormat(provider.apiFormat || provider.protocol, provider.appType, parseConfig(provider.settingsConfig));
   if (!compatibleClisForFormat(format).includes(String(cli))) return false;
   if (!CREDENTIAL_GATED_CLIS.has(String(cli))) return true;
@@ -694,6 +695,7 @@ function summarize(p, opts = {}) {
     needsLogin: p.needsLogin === true,
     accountEmail: p.accountEmail || null,
     subscription: p.subscription || null,
+    ...(p.virtual ? { virtual: p.virtual } : {}),
     isDefaultOfficial: p.isDefaultOfficial === true,
     quotaKind: p.quotaKind || null,
     // Advanced option: non-empty means this provider may only be used while
@@ -718,6 +720,8 @@ function summarize(p, opts = {}) {
     // official-accounts store this provider borrows, if any.
     officialAccountId: (cfg.officialAccount && typeof cfg.officialAccount.id === 'string')
       ? cfg.officialAccount.id : null,
+    ...(p.virtual ? { isOfficial: false, hasToken: false, tokenMask: '', baseUrl: '',
+      compatibleClis: [p.appType, `${p.appType}-exp`] } : {}),
   };
 }
 
@@ -838,6 +842,7 @@ function getProviderSummary(appType, id) {
 // host is the ORIGINAL upstream host (not our local proxy), so a session routed
 // through the responses-compat proxy still resolves to its real vendor.
 function getProviderLimitTarget(appType, id) {
+  if (getProvider(appType, id)?.virtual) return null;
   const provider = getProvider(appType, id);
   if (!provider) return null;
   const cfg = parseConfig(provider.settingsConfig);
@@ -932,7 +937,24 @@ function normalizeEgressBinding(value) {
   return { pluginId, profileId };
 }
 
-function createProvider({ appType, name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist, egressBinding }) {
+function saveVirtualProvider(appType, id, name, virtual) {
+  if (!String(name || '').trim()) throw new Error('name required');
+  const plan = require('./virtual-provider').validate({ appType, id, virtual, providers: listProviders() });
+  const list = loadStore();
+  const previous = list.find(p => p.id === id && p.appType === appType);
+  const record = { id, appType, name: String(name).trim(), source: 'local', virtual: plan.virtual,
+    apiFormat: appType === 'claude' ? 'anthropic' : 'openai_responses',
+    createdAt: previous?.createdAt || Date.now(),
+    // Non-routable placeholder: only Rust CPR may resolve virtual members.
+    settingsConfig: buildSettingsConfig(appType, { baseUrl: 'https://virtual.invalid',
+      authToken: 'multicc-virtual', providerId: id, model: plan.models[0] || '', models: plan.models }) };
+  if (previous) list[list.indexOf(previous)] = record; else list.push(record);
+  atomicWriteJson(STORE_FILE, list);
+  return { id, appType, name: record.name };
+}
+
+function createProvider({ appType, name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist, egressBinding, virtual }) {
+  if (virtual !== undefined) return saveVirtualProvider(appType, crypto.randomUUID(), name, virtual);
   if (!APP_TYPES.includes(appType)) throw new Error('appType must be claude or codex');
   if (!name || !String(name).trim()) throw new Error('name required');
   // Official entries are never created here (they come from the account
@@ -963,7 +985,12 @@ function createProvider({ appType, name, baseUrl, authToken, model, models, apiF
   return { id: p.id, appType, name: p.name };
 }
 
-function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist, egressBinding }) {
+function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist, egressBinding, virtual }) {
+  const existingVirtual = getProvider(appType, id);
+  if (virtual !== undefined || existingVirtual?.virtual) {
+    if (!existingVirtual?.virtual) throw new Error('普通线路不能直接转换成虚拟线路，请新建组合');
+    return saveVirtualProvider(appType, id, name ?? existingVirtual.name, virtual ?? existingVirtual.virtual);
+  }
   if (officialCatalog && (isOfficialProviderId(appType, id) || isOfficialProviderId(appType, officialCatalog.normalize(appType, id)))) {
     // Login/account identity is OAuth-managed and not editable here. Advanced
     // settings (currently: egress-IP allowlist) are the one thing an official
@@ -2412,6 +2439,9 @@ function claudeRoutingProviderView(provider) {
 function routingProviderView(appType, providerId) {
   let provider = null;
   try { provider = getProvider(appType, providerId); } catch (_) { provider = null; }
+  if (provider?.virtual && String(process.env.MULTICC_CPR_BACKEND || '').trim().toLowerCase() === 'node') {
+    throw new Error('虚拟线路需要 Rust CPR，请在设置中切换后手动重启');
+  }
   return appType === 'claude' ? claudeRoutingProviderView(provider) : provider;
 }
 

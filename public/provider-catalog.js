@@ -4,6 +4,9 @@
   const catalog = factory();
   if (typeof module === 'object' && module.exports) module.exports = catalog;
   if (root) root.MultiCCProviderCatalog = catalog;
+  if (root?.document && new URLSearchParams(root.location?.search || '').get('providerOverlay') === '1') {
+    root.document.documentElement.classList.add('provider-overlay');
+  }
 })(typeof window !== 'undefined' ? window : null, function createProviderCatalog() {
   // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
   // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
@@ -617,6 +620,8 @@
       // 账号库条目 id：面板据此判断「账号线路」并给出重新登录入口。
       officialAccountId: text(value.officialAccountId, 80) || null,
       subscription: value.subscription && typeof value.subscription === 'object' ? value.subscription : null,
+      virtual: value.virtual && typeof value.virtual === 'object' ? value.virtual : null,
+      virtualStatus: value.virtualStatus && typeof value.virtualStatus === 'object' ? value.virtualStatus : null,
       limit: normalizeProviderLimit(value.limit),
     });
   }
@@ -1264,7 +1269,68 @@
     }
   }
 
+  function el(doc, tag, className, text) {
+    const node = doc.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function show(node, visible) {
+    if (node) node.hidden = !visible;
+    return node;
+  }
+
+  function option(doc, value, label, { disabled = false } = {}) {
+    const item = el(doc, 'option', null, label);
+    item.value = value;
+    item.disabled = disabled;
+    return item;
+  }
+
+  function segment(doc, className, label) {
+    const group = el(doc, 'div', `rc-seg ${className}`);
+    if (label) {
+      group.setAttribute('role', 'group');
+      group.setAttribute('aria-label', label);
+    }
+    return group;
+  }
+
+  function segButton(doc, group, className, text, label) {
+    const button = el(doc, 'button', `rc-seg-btn ${className}`, text);
+    button.type = 'button';
+    button.setAttribute('aria-checked', 'false');
+    if (label) button.title = label;
+    group.append(button);
+    return button;
+  }
+
+  function openManager() {
+    const doc = window.document;
+    const previous = doc.activeElement;
+    const dialog = doc.createElement('dialog');
+    dialog.className = 'provider-manager-dialog';
+    dialog.setAttribute('aria-label', '管理 Provider');
+    dialog.style.cssText = 'width:min(1200px,96vw);height:92dvh;max-width:96vw;max-height:94dvh;padding:0;border:1px solid #555;border-radius:16px;background:var(--panel,#141922);color:var(--text,#eee)';
+    const bar = doc.createElement('div'); bar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 16px';
+    const title = doc.createElement('strong'); title.textContent = '管理 Provider';
+    const close = doc.createElement('button'); close.type = 'button'; close.textContent = '完成并返回线路选择';
+    close.onclick = () => dialog.close();
+    bar.append(title, close);
+    const frame = doc.createElement('iframe');
+    frame.title = 'Provider 管理'; frame.src = '/air?view=provider&providerOverlay=1';
+    frame.style.cssText = 'display:block;width:100%;height:calc(100% - 54px);border:0';
+    dialog.append(bar, frame); doc.body.append(dialog);
+    return new Promise(resolve => {
+      dialog.addEventListener('close', () => { dialog.remove(); previous?.focus?.(); resolve(); }, { once: true });
+      dialog.showModal();
+    });
+  }
+
   return {
+    openManager,
+    dom: Object.freeze({ el, show, option, segment, segButton }),
     normalizeProvider,
     normalizeProviderPreset,
     normalizePresetCatalog,

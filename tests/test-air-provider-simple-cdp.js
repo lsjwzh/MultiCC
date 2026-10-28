@@ -19,6 +19,8 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
   const limit = (kind, windows) => ({ summaryText: '旧文案不应出现', fetchedAt: now - 60_000,
     bar: providerLimitBar({ kind, fetchedAt: now - 60_000, summary: { windows } }) });
   const routes = {};
+  const virtualSaves = [];
+  routes['POST /api/providers'] = ({ body }) => { virtualSaves.push(JSON.parse(body)); return json({ ok: true, id: 'virtual-fixture' }); };
   const publicDir = path.resolve(__dirname, '../public');
   for (const file of fs.readdirSync(publicDir).filter(name => /\.(js|css|html)$/.test(name))) {
     const type = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html';
@@ -198,8 +200,27 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     await page.evaluate(`document.querySelector('#admin-actions .primary').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-provider-dialog').open===true`));
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.air-provider-create-choice strong')].map(node=>node.textContent)`),
-      ['使用 API Key', '添加登录账号']);
+      ['使用 API Key', '添加登录账号', '虚拟 Provider']);
     assert.equal(await page.evaluate(`document.getElementById('air-provider-api-fields').hidden`), true);
+    await page.evaluate(`document.querySelector('[data-provider-virtual]').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.virtual-provider-members')`));
+    t.diagnostic(await page.screenshot('virtual-provider-editor'));
+    assert.equal(await page.evaluate(`!!document.querySelector('.virtual-provider-members [data-member-id="codex-official"]')`), false);
+    await page.evaluate(`(() => {
+      const form = document.querySelector('.virtual-provider-members').closest('form');
+      form.elements.name.value = '共享测试组合';
+      form.querySelector('[data-member-id="p1"]').click();
+      form.querySelector('input[type="datetime-local"]').value = '2030-05-12T12:00';
+      form.querySelector('input[type="datetime-local"]').dispatchEvent(new Event('change'));
+      form.requestSubmit();
+    })()`);
+    assert.ok(await page.waitFor(`!document.querySelector('.virtual-provider-members')`));
+    assert.equal(virtualSaves.length, 1);
+    assert.equal(virtualSaves[0].name, '共享测试组合');
+    assert.equal(virtualSaves[0].appType, 'claude');
+    assert.equal(virtualSaves[0].virtual.members[0].id, 'p1');
+    assert.equal(typeof virtualSaves[0].virtual.members[0].expiresAt, 'number');
+    await page.evaluate(`document.querySelector('#admin-actions .primary').click()`);
     // 模板来自目录（本地内置 / GitHub 更新），不再是一段写死的 option HTML。
     await page.evaluate(`document.querySelector('[data-provider-key="claude"]').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-provider-api-fields').hidden===false`));
@@ -230,5 +251,10 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     assert.deepEqual([state.preset, state.apiFormat, state.baseUrl], ['', 'openai_responses', '']);
     await page.evaluate(`document.querySelector('[data-provider-account="claude"]').click()`);
     assert.ok(await page.waitFor(`document.querySelector('[data-k="label"]') !== null`), '账号入口直接进入创建并登录流程');
+    await page.navigate('/air?view=provider&providerOverlay=1');
+    assert.ok(await page.waitFor(`document.documentElement.classList.contains('provider-overlay') && document.querySelectorAll('.air-provider-card').length===4`));
+    assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('sidebar')).display`), 'none');
+    assert.ok(await page.evaluate(`document.querySelector('main').getBoundingClientRect().width <= innerWidth`));
+    t.diagnostic(await page.screenshot('provider-manager-embedded-mobile'));
   });
 });

@@ -33,8 +33,9 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
     const hooks = createRequestHooks(options);
     const credentials = options.hopCredentials || createHopCredentialStore({ paths: options.paths, cprHome: options.cprHome });
     const exchanges = new Set();
+    const observedResponses = new WeakSet();
     let closed = false;
-    async function handle(req, res) {
+    async function handle(req, res, retry = {}) {
       if (closed) return reply(res, 503, { error: 'Rust CPR 已关闭' });
       let gone = !!res.destroyed, exchange, context, terminal = false, firstByte = false;
       const started = Date.now();
@@ -59,10 +60,10 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
         gone = true; settle('error', 'CLIENT_DISCONNECTED'); exchange?.abort();
       };
       res.once('close', disconnect);
-      res.on('error', () => {});
+      if (!observedResponses.has(res)) { observedResponses.add(res); res.on('error', () => {}); }
       res.on('error', disconnect);
       try {
-        const body = await readBody(req);
+        const body = retry.body || await readBody(req);
         if (gone) return;
         let route;
         try { route = JSON.parse(await native.cprRoute(JSON.stringify({ protocol, url: req.url, body }))); }
@@ -80,7 +81,13 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
             route.providerId = route.mainProviderId;
           }
         }
-        const input = { route, provider, body, method: req.method, headers: req.headers,
+        const virtual = provider?.virtual ? provider : null;
+        const virtualRuntime = options.virtualProviders || require('./virtual-provider');
+        if (virtual) {
+          if (!retry.body) await virtualRuntime.refresh(virtual);
+          provider = virtualRuntime.resolve(virtual, { model: JSON.parse(body || '{}').model, excluded: retry.excluded || [] });
+        }
+        const input = { route: virtual ? { ...route, providerId: provider.id } : route, provider, body, method: req.method, headers: req.headers,
           officialViaProxy: env.CLAUDE_OFFICIAL_VIA_PROXY === '1', officialProviderId: options.officialProviderId,
           officialBaseUrl: options.officialBaseUrl, oauthBeta: options.oauthBeta, codexProxyPath: options.codexProxyPath,
           headersTimeoutMs: options.headersTimeoutMs };
@@ -105,7 +112,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
         await stage.prepare();
         if (options.resolveUpstreamAgent) {
           const resolver = options.resolveUpstreamAgent;
-          const args = { ...context, provider, url: plan.url, isOfficialOAuth: !!input.officialToken };
+          const args = { ...context, ...(virtual ? { providerId: provider.id } : {}), provider, url: plan.url, isOfficialOAuth: !!input.officialToken };
           if (typeof resolver.resolveProxyUrl === 'function') plan.proxyUrl = await resolver.resolveProxyUrl(args);
           else if (await resolver(args)) throw Object.assign(new Error('Rust CPR 需要出口地址接口，无法使用 Node 专属 Agent'), { code: 'RUST_CPR_EGRESS_UNSUPPORTED' });
         }
@@ -121,8 +128,18 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
           exchanges.add(exchange);
           if (gone || closed) { exchange.abort(); return; }
           const head = JSON.parse(await exchange.open());
+          if (virtual && head.rateLimit) safeCall(virtualRuntime.observe, provider, head.rateLimit);
           context.isStream = head.isStream;
           if (head.status < 200 || head.status >= 300) {
+            if (virtual && virtualRuntime.outcome(provider, head.status, res.headersSent)) {
+              // No response bytes have left the host. Close the rejected
+              // exchange before resolving another member; never replay a stream.
+              await exchange.close(); exchanges.delete(exchange); exchange = null;
+              activity('end', { status: 'switching' });
+              terminal = true;
+              res.removeListener('close', disconnect); res.removeListener('error', disconnect);
+              return await handle(req, res, { body, excluded: [...(retry.excluded || []), provider.id] });
+            }
             // 宿主 OAuth 暂存器必须在读取错误正文前收到响应头，才有机会超时取消。
             const heldAuth = !!(options.recoverOfficialCredential && input.officialToken && credentialAccountId && [401, 403].includes(head.status));
             if (heldAuth && !gone) res.writeHead(head.status, head.headers);

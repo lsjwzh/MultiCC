@@ -5980,6 +5980,11 @@
       ]
     },
     {
+      "path": "tests/test-virtual-provider.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-voice-acp-admission.js",
       "tier": "other",
       "lane": "deterministic",

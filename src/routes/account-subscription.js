@@ -9,14 +9,13 @@ const { outboundFetch } = require('../network/outbound');
 // never rotate credentials, and never let a billing failure erase quota data.
 function mountAccountSubscriptionRoute(app, vendor, deps = {}) {
   const pending = new Map();
-  app.get(`/api/${vendor}/subscription`, async (req, res) => {
-    const id = String(req.query?.account || '').trim();
-    if (id && !/^[a-f0-9]{16}$/.test(id)) return res.status(400).json({ status: 'unavailable', error: 'invalid account' });
+  const cache = require('../quota/account-subscription-cache');
+  async function read(id) {
     if (vendor === 'claude' && id && !deps.accounts.listClaudeAccounts().some(a => a.id === id)) {
-      return res.status(404).json({ status: 'no_auth' });
+      return { status: 'no_auth' };
     }
-    res.set?.('Cache-Control', 'no-store');
     if (!pending.has(id)) {
+      const attemptAt = Date.now();
       const query = async () => {
         const fetch = deps.fetch || outboundFetch;
         if (vendor === 'codex') {
@@ -43,9 +42,21 @@ function mountAccountSubscriptionRoute(app, vendor, deps = {}) {
         const profile = await fetchProfile(fetch, token);
         return { status: 'ok', subscription: profile.subscription || null };
       };
-      pending.set(id, query().catch(error => ({ status: error?.status === 401 ? 'no_auth' : 'unavailable' })).finally(() => pending.delete(id)));
+      pending.set(id, query().catch(error => ({ status: error?.status === 401 ? 'no_auth' : 'unavailable' }))
+        .then(async result => { await cache.record(vendor, id, result, attemptAt).catch(() => {}); return result; })
+        .finally(() => pending.delete(id)));
     }
-    res.json(await pending.get(id));
+    return pending.get(id);
+  }
+  cache.register(vendor, read);
+  app.get(`/api/${vendor}/subscription`, async (req, res) => {
+    const id = String(req.query?.account || '').trim();
+    if (id && !/^[a-f0-9]{16}$/.test(id)) return res.status(400).json({ status: 'unavailable', error: 'invalid account' });
+    if (vendor === 'claude' && id && !deps.accounts.listClaudeAccounts().some(a => a.id === id)) {
+      return res.status(404).json({ status: 'no_auth' });
+    }
+    res.set?.('Cache-Control', 'no-store');
+    res.json(await read(id));
   });
 }
 

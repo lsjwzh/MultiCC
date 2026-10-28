@@ -97,6 +97,15 @@ test('cliLineVerdict：协议对得上才 ok', () => {
   assert.equal(run.cliLineVerdict('claude', { id: 'x' }).code, 'unknown_protocol');
 });
 
+test('虚拟组合只能选择同一 CLI 家族，普通跨协议兼容线路不受影响', () => {
+  const pool = { ...anthropicLine, appType: 'claude', virtual: { members: [{ id: 'a' }] } };
+  assert.equal(run.rowIssue({ cli: 'opencode' }, run.lineShape(pool.id, pool)).code, 'virtual_cli_mismatch');
+  assert.deepEqual(run.cliLineVerdict('claude', pool), { ok: true });
+  assert.deepEqual(run.cliLineVerdict('claude-exp', pool), { ok: true });
+  for (const cli of ['opencode', 'zcode', 'codex']) assert.equal(run.cliLineVerdict(cli, pool).code, 'virtual_cli_mismatch');
+  assert.deepEqual(run.cliLineVerdict('opencode', anthropicLine), { ok: true });
+});
+
 test('cliLineVerdict：直连上游的车道必须自带 key 与 baseUrl', () => {
   assert.equal(run.cliLineVerdict('zcode', noCredLine).code, 'needs_credentials');
   assert.equal(run.cliLineVerdict('kimi', noCredLine).code, 'needs_credentials');

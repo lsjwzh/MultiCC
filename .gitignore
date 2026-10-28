@@ -150,6 +150,9 @@ provider-relay-shares.json
 provider-limit-cache.db
 provider-limit-cache.db-shm
 provider-limit-cache.db-wal
+provider-quota-history.db
+provider-quota-history.db-shm
+provider-quota-history.db-wal
 quota-bar-cache.json
 
 # Local-only scripts (not for git)
