@@ -706,6 +706,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1312,17 +1322,20 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "chrono-tz",
+ "fs2",
  "rusqlite",
  "ryu-js",
  "serde",
  "serde_json",
  "sha1",
+ "sha2",
 ]
 
 [[package]]
 name = "multicc-cpr"
 version = "0.1.0"
 dependencies = [
+ "multicc-core",
  "percent-encoding",
  "reqwest",
  "serde",
@@ -2398,6 +2411,17 @@ name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",

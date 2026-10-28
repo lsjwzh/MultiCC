@@ -4147,6 +4147,11 @@
       ]
     },
     {
+      "path": "tests/test-provider-native-host.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-provider-protocol-routing.js",
       "tier": "core",
       "lane": "deterministic",

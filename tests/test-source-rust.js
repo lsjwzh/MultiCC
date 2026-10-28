@@ -69,9 +69,9 @@ test('source cache lives in the primary worktree and fingerprints source/config 
   assert.equal(cacheRoot(worktree), path.join(root, 'data/rust-source'));
 });
 
-test('explicit emergency Node mode for both SQLite and CPR never builds Rust', () => {
-  assert.equal(ensureSourceRust({ env: { MULTICC_SQLITE_BACKEND: 'node', MULTICC_CPR_BACKEND: 'node' },
-    paths() { throw Error('unexpected cache access'); } }), null);
+test('Provider storage still requires Rust when SQLite and CPR select their Node fallback', () => {
+  assert.throws(() => ensureSourceRust({ env: { MULTICC_SQLITE_BACKEND: 'node', MULTICC_CPR_BACKEND: 'node' },
+    paths() { throw Error('Provider storage requires addon'); } }), /Provider storage requires addon/);
 });
 
 test('Rust CPR still requires the source addon when SQLite uses emergency Node mode', () => {

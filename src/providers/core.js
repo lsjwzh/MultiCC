@@ -86,15 +86,14 @@ function enableUnifiedOfficialProviders() {
       const previous = records.find(p => p.appType === type && p.id === defaults[type]);
       selection[type] = require('../official-accounts').officialAccountIdFromProvider(previous) || 'global';
     }
-    atomicWriteJson(selectionFile, selection);
+    require('./native-credentials').credential({ operation: 'writeJson', file: selectionFile, data: selection });
   }
   officialCatalog = require('./official-catalog').createOfficialCatalog({
     readRecords: loadStore,
     readSelection() {
-      try { return JSON.parse(fs.readFileSync(selectionFile, 'utf8')); }
-      catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
+      return require('./native-credentials').credential({ operation: 'readStateJson', file: selectionFile }) || {};
     },
-    writeSelection: selection => atomicWriteJson(selectionFile, selection),
+    writeSelection: selection => require('./native-credentials').credential({ operation: 'writeJson', file: selectionFile, data: selection }),
     ...(() => {
       const store = require('../official-accounts').createOfficialAccountStore();
       return {
@@ -253,19 +252,9 @@ const WIRE_DEFAULT_MODEL = process.env.CLAUDE_WIRE_DEFAULT_MODEL || 'claude-sonn
 
 // ── multicc store (providers.json) ───────────────────────────────────────────
 
-function loadStore() {
-  try {
-    const d = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8'));
-    if (Array.isArray(d)) return d;
-    if (d && Array.isArray(d.providers)) return d.providers;
-  } catch (_) {}
-  return [];
-}
-
-function saveStore(list) {
-  try { atomicWriteJson(STORE_FILE, list); }
-  catch (e) { console.error('[multicc] save providers.json failed:', e.message); }
-}
+const nativeProviderStore = require('./native-store').createNativeProviderStore(STORE_FILE);
+function loadStore() { return nativeProviderStore.read(); }
+function saveStore(list, source = list) { nativeProviderStore.write(list, source); }
 
 function getCcSwitchStatus() {
   return sqliteRuntime.getStatus(resolveCcDb());
@@ -949,7 +938,7 @@ function saveVirtualProvider(appType, id, name, virtual) {
     settingsConfig: buildSettingsConfig(appType, { baseUrl: 'https://virtual.invalid',
       authToken: 'multicc-virtual', providerId: id, model: plan.models[0] || '', models: plan.models }) };
   if (previous) list[list.indexOf(previous)] = record; else list.push(record);
-  atomicWriteJson(STORE_FILE, list);
+  saveStore(list);
   return { id, appType, name: record.name };
 }
 
@@ -1168,7 +1157,7 @@ function updateProviderRelayModelCatalog(appType, id, input = {}) {
   // success when its durable write failed: the caller would otherwise cache a
   // catalog that disappears on the next read/restart. Fail closed so the
   // runtime retries while the last-known-good file remains untouched.
-  atomicWriteJson(STORE_FILE, list);
+  saveStore(list);
   return result;
 }
 
@@ -1180,13 +1169,13 @@ function deleteProvider(appType, id) {
     // provider — drop it so store reads never see a dead entry's restriction.
     const list = loadStore();
     const next = list.filter(p => !(p.appType === appType && p.id === id));
-    if (next.length !== list.length) saveStore(next);
+    if (next.length !== list.length) saveStore(next, list);
     return deleted;
   }
   const list = loadStore();
   const next = list.filter(p => !(p.appType === appType && p.id === id));
   if (next.length === list.length) return false;
-  saveStore(next);
+  saveStore(next, list);
   return true;
 }
 
@@ -1230,7 +1219,7 @@ function migrateLegacyProviderProtocols() {
     updated++;
     return migrated;
   });
-  if (updated) saveStore(next);
+  if (updated) saveStore(next, list);
   return { updated, skipped, total: list.length };
 }
 

@@ -1,9 +1,8 @@
 'use strict';
 
-const { subscriptionFromBody } = require('../quota/subscription');
-const { readCodexAuth, requestCodexUsage } = require('../quota/codex-usage-request');
-const { fetchProfile } = require('../claude-auth/official-oauth');
-const { outboundFetch } = require('../network/outbound');
+const { query: querySubscription } = require('../providers/native-subscription');
+const os = require('node:os');
+const path = require('node:path');
 
 // Explicit, read-only account queries. Never fall through to another account,
 // never rotate credentials, and never let a billing failure erase quota data.
@@ -17,20 +16,10 @@ function mountAccountSubscriptionRoute(app, vendor, deps = {}) {
     if (!pending.has(id)) {
       const attemptAt = Date.now();
       const query = async () => {
-        const fetch = deps.fetch || outboundFetch;
         if (vendor === 'codex') {
-          const authFile = id ? deps.resolveAccountAuthFile?.(id) : undefined;
-          if (id && !authFile) return { status: 'no_auth' };
-          const auth = readCodexAuth(authFile);
-          if (!auth) return { status: 'no_auth' };
-          try {
-            const response = await requestCodexUsage(auth, { fetch, signal: AbortSignal.timeout(10000) });
-            if (response.status === 401) return { status: 'no_auth' };
-            if (!response.ok) return { status: 'unavailable', subscription: auth.subscription, stale: true };
-            const body = await response.json();
-            const subscription = subscriptionFromBody(body, { source: 'usage' });
-            return { status: 'ok', subscription: subscription || auth.subscription || null };
-          } catch (_) { return { status: 'unavailable', subscription: auth.subscription, stale: true }; }
+          const authFile = id ? deps.resolveAccountAuthFile?.(id) : path.join(os.homedir(), '.codex', 'auth.json');
+          if (!authFile) return { status: 'no_auth' };
+          return querySubscription({ vendor, authFile }, { fetch: deps.fetch });
         }
         let token;
         if (id) token = (await deps.credentials.peekAccountToken(id))?.token;
@@ -38,9 +27,7 @@ function mountAccountSubscriptionRoute(app, vendor, deps = {}) {
           const read = await (deps.readCliCredentials || require('../quota/claude-cli-oauth').readCliCredentials)();
           if (read?.ok && (read.expiresAt == null || read.expiresAt > Date.now())) token = read.accessToken;
         }
-        if (!token) return { status: 'no_auth' };
-        const profile = await fetchProfile(fetch, token);
-        return { status: 'ok', subscription: profile.subscription || null };
+        return querySubscription({ vendor, token }, { fetch: deps.fetch });
       };
       pending.set(id, query().catch(error => ({ status: error?.status === 401 ? 'no_auth' : 'unavailable' }))
         .then(async result => { await cache.record(vendor, id, result, attemptAt).catch(() => {}); return result; })

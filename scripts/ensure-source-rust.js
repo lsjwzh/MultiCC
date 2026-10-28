@@ -51,7 +51,8 @@ function ensureRemoteBinary({ repoRoot, addon, env, cache, log, run,
 function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = process.env,
   probe = probeAddon, paths = sourcePaths, builtFrom = builtFromSource, run = spawnSync,
   remoteVersion = probeRemoteVersion, log = console.error } = {}) {
-  if (env.MULTICC_SQLITE_BACKEND === 'node' && String(env.MULTICC_CPR_BACKEND || 'rust').trim().toLowerCase() === 'node') return null;
+  // Provider persistence and credential reads always use Rust. The SQLite and
+  // transport rollback flags no longer imply that the addon may be omitted.
   const cache = paths(repoRoot, env);
   const target = `${process.platform}-${process.arch}`;
   const file = path.join(cache.prebuiltDir, target, 'multicc_core.node');

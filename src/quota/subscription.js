@@ -37,17 +37,7 @@ function subscriptionFromBody(body, { source = 'account', observedAt = Date.now(
 }
 
 function codexAuthSubscription(auth) {
-  const tokens = auth?.tokens || {};
-  for (const token of [tokens.id_token, tokens.access_token]) {
-    try {
-      const payload = JSON.parse(Buffer.from(String(token).split('.')[1], 'base64url').toString('utf8'));
-      const claims = payload['https://api.openai.com/auth'];
-      if (!claims || (tokens.account_id && claims.chatgpt_account_id && tokens.account_id !== claims.chatgpt_account_id)) continue;
-      const subscription = subscriptionFromBody(claims, { source: 'login', observedAt: dateMs(payload.iat) });
-      if (subscription) return subscription;
-    } catch (_) { /* Opaque or malformed credentials expose no billing date. */ }
-  }
-  return null;
+  return require('../providers/native-credentials').credential({ operation: 'codexSubscription', auth });
 }
 
 module.exports = { dateMs, subscriptionFromBody, codexAuthSubscription };

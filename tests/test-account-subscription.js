@@ -93,7 +93,8 @@ test('Codex 接口使用指定账号，支持实时日期、登录快照和鉴�
 
 test('Claude 只读指定账号 profile，合并并发查询且不刷新凭据', async () => {
   const seen = [];
-  let release;
+  let release, started;
+  const ready = new Promise(resolve => { started = resolve; });
   const read = route('claude', {
     accounts: { listClaudeAccounts: () => [{ id: ID }, { id: 'bbbbbbbbbbbbbbbb' }] },
     credentials: { peekAccountToken: async id => { seen.push(id); return { token: `fixture-${id}` }; },
@@ -101,12 +102,12 @@ test('Claude 只读指定账号 profile，合并并发查询且不刷新凭据',
     fetch: async (url, options) => {
       assert.equal(url, 'https://api.anthropic.com/api/oauth/profile');
       assert.equal(options.headers.Authorization, `Bearer fixture-${ID}`);
-      await new Promise(resolve => { release = resolve; });
+      await new Promise(resolve => { release = resolve; started(); });
       return json({ organization: { subscription: { next_billing_date: DATE } }, account: { email: 'private@example.invalid' } });
     },
   });
   const first = read(), second = read();
-  await new Promise(resolve => setImmediate(resolve));
+  await ready;
   release();
   const results = await Promise.all([first, second]);
   assert.deepEqual(seen, [ID]);

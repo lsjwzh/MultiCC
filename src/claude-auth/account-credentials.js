@@ -22,7 +22,7 @@
 // instead of triggering a rotation, because showing a usage number must not
 // spend the account's one single-use credential.
 
-const { isCliCopy } = require('../official-accounts');
+const { credential } = require('../providers/native-credentials');
 
 const EXPIRY_MARGIN_MS = 5 * 60 * 1000; // 与官方 CLI 一样，提前五分钟检查续期
 // A peek may hand out a token this close to expiry: it is about to be used for
@@ -52,25 +52,11 @@ function createClaudeAccountCredentialService(options = {}) {
   const inflight = new Map(); // accountId -> Promise (singleflight)
 
   function readStored(id) {
-    const data = accounts.readClaudeCredential(id);
-    if (!data) return { ok: false, reason: 'credential_unreadable' };
-    const accessToken = typeof data.access_token === 'string' ? data.access_token.trim() : '';
-    if (!accessToken) return { ok: false, reason: 'access_token_missing' };
-    const expiresAt = data.expired ? Date.parse(data.expired) : null;
-    return {
-      ok: true,
-      accessToken,
-      refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token.trim() : '',
-      expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
-      cliCopy: isCliCopy(data.source),
-    };
+    return credential({ operation: 'stored', data: accounts.readClaudeCredential(id) });
   }
 
-  // The one place "can this be handed out" is answered.
   function usable(stored, margin) {
-    if (!stored.ok) return { token: null, reason: stored.reason };
-    if (fresh(stored.expiresAt, margin)) return { token: stored.accessToken };
-    return { token: null, reason: stored.cliCopy ? 'cli_copy_needs_login' : 'access_token_expired' };
+    return credential({ operation: 'usable', stored, margin, now: now() });
   }
 
   function withTimeout(promise, ms) {
@@ -169,11 +155,13 @@ function createClaudeAccountCredentialService(options = {}) {
   // The cpr claude-proxy entry point (createHandler options.readOfficialCredential):
   // an account context object resolves through the delegating read; anything else
   // (the canonical claude-official provider's legacy string arg) defers to the
-  // shared Keychain reader. The default is required lazily so this module stays
-  // loadable in tests without the router package.
+  // Rust Keychain/file reader. The CLI supervisor remains the only refresher.
   const sharedLoginReader = typeof options.sharedLoginReader === 'function'
     ? options.sharedLoginReader
-    : (arg) => require('cli-provider-router').readOfficialOAuthToken(arg);
+    : async (keychainService) => {
+      const value = await require('../quota/claude-cli-oauth').readCliCredentials({ keychainService });
+      return value.ok && fresh(value.expiresAt, 0) ? { token: value.accessToken } : { token: null, reason: value.reason || 'access_token_expired' };
+    };
 
   function readOfficialCredential(arg) {
     if (arg && typeof arg === 'object') return readAccountToken(arg.accountId);

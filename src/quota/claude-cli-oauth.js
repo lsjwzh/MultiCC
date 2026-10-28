@@ -25,13 +25,11 @@ const { outboundFetch } = require('../network/outbound');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile } = require('child_process');
 
 const { fetchUsage } = require('../claude-auth/official-oauth');
 
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 const CREDENTIALS_FILE = path.join(os.homedir(), '.claude', '.credentials.json');
-const SECURITY_TIMEOUT_MS = 10000;
 // A token that dies in the next minute is not worth a round trip — the endpoint
 // would answer 401 and we would spend the fallback budget on a known-dead token.
 const EXPIRY_SKEW_MS = 60 * 1000;
@@ -39,41 +37,18 @@ const EXPIRY_SKEW_MS = 60 * 1000;
 // The store is `{"claudeAiOauth":{accessToken,refreshToken,expiresAt,...}}` in
 // every version seen so far, but older builds wrote the fields at the top level.
 function parseCredentials(raw) {
-  let json;
-  try {
-    json = JSON.parse(String(raw || ''));
-  } catch (_) {
-    return { ok: false, reason: 'not_json' };
-  }
-  const oauth = json && typeof json === 'object' && json.claudeAiOauth && typeof json.claudeAiOauth === 'object'
-    ? json.claudeAiOauth
-    : json;
-  const accessToken = typeof oauth?.accessToken === 'string' ? oauth.accessToken.trim() : '';
-  if (!accessToken) return { ok: false, reason: 'access_token_missing' };
-  const expiresAt = Number(oauth.expiresAt);
-  return {
-    ok: true,
-    accessToken,
-    refreshToken: typeof oauth.refreshToken === 'string' ? oauth.refreshToken : '',
-    expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
-    subscriptionType: typeof oauth.subscriptionType === 'string' ? oauth.subscriptionType : '',
-    scopes: Array.isArray(oauth.scopes) ? oauth.scopes.filter(x => typeof x === 'string') : null,
-  };
-}
-
-function runSecurity(service, { timeoutMs = SECURITY_TIMEOUT_MS } = {}) {
-  return new Promise((resolve) => {
-    execFile('security', ['find-generic-password', '-s', service, '-w'], { timeout: timeoutMs }, (err, stdout) => {
-      resolve(err ? null : String(stdout || ''));
-    });
-  });
+  return require('../providers/native-credentials').credential({ operation: 'parseCli', raw: String(raw || '') });
 }
 
 // Injected reader + fetch keep this testable without a keychain or a network.
 async function readCliCredentials(options = {}) {
+  if (!options.readKeychain && !options.readFile) {
+    return require('../providers/native-credentials').readCli({ platform: options.platform || process.platform,
+      file: options.credentialsFile || CREDENTIALS_FILE, service: options.keychainService || KEYCHAIN_SERVICE });
+  }
   const {
     platform = process.platform,
-    readKeychain = () => runSecurity(KEYCHAIN_SERVICE),
+    readKeychain = async () => null,
     readFile = async (file) => fs.readFileSync(file, 'utf8'),
     credentialsFile = CREDENTIALS_FILE,
   } = options;

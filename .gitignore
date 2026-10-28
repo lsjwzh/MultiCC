@@ -203,3 +203,7 @@ services/openrouter-usage/
 !/plugins/cron/
 !/plugins/utils/
 !/plugins/voice/
+
+# Rust provider store coordination (runtime data)
+/providers.json.lock
+/official-provider-selection.json.lock

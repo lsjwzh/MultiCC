@@ -13,7 +13,6 @@
 // current access token for each request and swaps credentials only on the
 // host-to-ChatGPT hop.
 
-const fs = require('node:fs');
 const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
@@ -87,16 +86,6 @@ function parseObject(value) {
   }
 }
 
-function jwtExpiryMs(token) {
-  try {
-    const payload = JSON.parse(Buffer.from(String(token).split('.')[1], 'base64url').toString('utf8'));
-    const seconds = Number(payload && payload.exp);
-    return Number.isFinite(seconds) ? seconds * 1000 : null;
-  } catch (_) {
-    return null;
-  }
-}
-
 function isOfficialCodexOAuthProvider(provider) {
   if (!provider || provider.appType !== 'codex') return false;
   const config = parseObject(provider.settingsConfig);
@@ -113,23 +102,13 @@ function isOfficialCodexOAuthProvider(provider) {
 }
 
 function readCodexOfficialCredential(options = {}) {
-  const authFile = options.authFile || DEFAULT_AUTH_FILE;
-  const readFileSync = options.readFileSync || fs.readFileSync;
-  const now = typeof options.now === 'function' ? options.now : Date.now;
-  let auth;
-  try {
-    auth = parseObject(readFileSync(authFile, 'utf8'));
-  } catch (_) {
-    return { ok: false, reason: 'credential_unreadable' };
+  const input = { operation: 'codexCredential', file: options.authFile || DEFAULT_AUTH_FILE,
+    now: typeof options.now === 'function' ? options.now() : Date.now() };
+  if (options.readFileSync) {
+    try { input.auth = parseObject(options.readFileSync(input.file, 'utf8')); }
+    catch (_) { return { ok: false, reason: 'credential_unreadable' }; }
   }
-  const tokens = parseObject(auth.tokens);
-  const accessToken = typeof tokens.access_token === 'string' ? tokens.access_token.trim() : '';
-  const accountId = typeof tokens.account_id === 'string' ? tokens.account_id.trim() : '';
-  if (!accessToken) return { ok: false, reason: 'access_token_missing' };
-  if (!accountId) return { ok: false, reason: 'account_id_missing' };
-  const expiresAt = jwtExpiryMs(accessToken);
-  if (expiresAt && expiresAt <= now()) return { ok: false, reason: 'access_token_expired', expiresAt };
-  return { ok: true, accessToken, accountId, expiresAt };
+  return require('../providers/native-credentials').credential(input);
 }
 
 function normalizeProxyPath(value) {
