@@ -1232,6 +1232,15 @@
       ]
     },
     {
+      "path": "tests/test-air-plugins-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
       "path": "tests/test-air-provider-simple-cdp.js",
       "tier": "flow",
       "lane": "cdp",
@@ -4009,6 +4018,15 @@
       "owner": "npm:test:standalone",
       "entrypoints": [
         "npm:test:standalone"
+      ]
+    },
+    {
+      "path": "tests/test-plugin-catalog.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:task-first",
+      "entrypoints": [
+        "npm:test:task-first"
       ]
     },
     {

@@ -14,6 +14,12 @@
 // manifest、spawn 二进制、转发 stdin/stdout JSON、挂静态文件 —— 不含业务
 // 逻辑；插件的全部行为都住在插件自己的可执行文件里，目录复制进来即安装。
 //
+// 两个来源：程序目录的 plugins/ 只放内置插件（随 MultiCC 发布）；后置安装的
+// 插件在 userPluginsDir（默认 ~/.multicc/plugins/）—— 桌面版的程序目录只读、
+// 独立包升级会整包替换，装进程序目录的插件会丢。同一 id 两边都有时以内置为准，
+// 并在清单里报出冲突。插件列表（GitHub 上签名的 index.json）由
+// src/plugins/catalog.js 拉取，这里只把它和本机已装的合成每个插件的状态。
+//
 // 安全：插件目录来自仓库（或运维手动放置），但通道仍按不可信输入处理 ——
 // id 白名单字符、command 必须在 manifest.commands、静态文件 realpath 必须
 // 落在插件目录内、spawn 不走 shell、stdin/stdout 有超时与体积上限。
@@ -21,6 +27,9 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const {
+  PLUGIN_API_VERSION, appsReferenced, computeStates, createHostFacts, createPluginCatalog,
+} = require('../plugins/catalog');
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 const COMMAND_PATTERN = /^[a-z][a-z0-9-]*$/i;
@@ -78,12 +87,17 @@ function resolveBinary({ manifest, dir }, platform, arch) {
   return null;
 }
 
-function pluginEntry(pluginsDir, id, platform, arch) {
+function pluginEntry(pluginsDir, id, platform, arch, source = 'builtin') {
   const found = readManifest(pluginsDir, id);
   if (!found) return null;
   const binary = resolveBinary(found, platform, arch);
+  const manifest = found.manifest;
   return {
     id,
+    source,
+    requires: manifest.requires && typeof manifest.requires === 'object' && !Array.isArray(manifest.requires) ? manifest.requires : null,
+    category: typeof manifest.category === 'string' ? manifest.category : null,
+    provides: Array.isArray(manifest.provides) ? manifest.provides.filter(item => typeof item === 'string') : [],
     name: found.manifest.name || id,
     nameEn: found.manifest.nameEn || null,
     version: found.manifest.version || '0.0.0',
@@ -106,18 +120,70 @@ function createPluginsRoutes(deps) {
     if (!deps || !deps[key]) throw new TypeError(`[plugins] ${key} is required`);
   }
   const { pluginsDir, platform, arch, logger } = deps;
+  // server.js 传 paths（src/paths.js 的 userPluginsDir / pluginCatalogDir）；测试直接给目录。
+  const userPluginsDir = deps.userPluginsDir || (deps.paths && deps.paths.userPluginsDir) || null;
+  const catalogDir = deps.catalogDir || (deps.paths && deps.paths.pluginCatalogDir) || null;
+  const roots = [['builtin', pluginsDir], ...(userPluginsDir ? [['user', userPluginsDir]] : [])];
+  const catalog = deps.catalog || (catalogDir ? createPluginCatalog({ cacheDir: catalogDir, logger }) : null);
+  const hostFacts = deps.hostFacts || createHostFacts({ platform, arch });
+  // MULTICC_PLUGIN_CATALOG_OFFLINE=1 只用缓存、不定时拉取（同 MULTICC_PRICE_TABLE_OFFLINE）。
+  if (catalog && deps.autoRefresh && process.env.MULTICC_PLUGIN_CATALOG_OFFLINE !== '1') catalog.start();
 
-  function listPlugins() {
-    let ids = [];
+  function idsIn(dir) {
     try {
-      ids = fs.readdirSync(pluginsDir, { withFileTypes: true })
-        .filter(entry => entry.isDirectory())
+      return fs.readdirSync(dir, { withFileTypes: true })
+        .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
         .map(entry => entry.name)
         .sort();
     } catch (_) {
       return []; // 目录不存在：一台没有任何插件的安装是正常状态
     }
-    return ids.map(id => pluginEntry(pluginsDir, id, platform, arch)).filter(Boolean);
+  }
+
+  // { plugins, conflicts }：内置在前、同 id 的后置插件被内置盖住并记一笔。
+  function scan() {
+    const plugins = [];
+    const conflicts = [];
+    const seen = new Set();
+    for (const [source, dir] of roots) {
+      for (const id of idsIn(dir)) {
+        const entry = pluginEntry(dir, id, platform, arch, source);
+        if (!entry) continue;
+        if (seen.has(id)) { conflicts.push(id); continue; }
+        seen.add(id);
+        plugins.push(entry);
+      }
+    }
+    return { plugins, conflicts };
+  }
+
+  function listPlugins() {
+    return scan().plugins;
+  }
+
+  // 按 id 找插件所在目录：与 scan() 同一优先级（内置先）。
+  function findManifest(id) {
+    for (const [, dir] of roots) {
+      const found = readManifest(dir, id);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  async function catalogPayload() {
+    const { plugins, conflicts } = scan();
+    const snapshot = catalog ? catalog.snapshot() : { catalog: null, source: null, fetchedAt: null, updatedAt: null, error: null };
+    const host = await hostFacts(appsReferenced(snapshot.catalog, plugins));
+    return {
+      pluginApi: PLUGIN_API_VERSION,
+      host: { os: host.os, arch: host.arch, osVersion: host.osVersion, multicc: host.multicc, agentBuild: host.agentBuild },
+      catalog: {
+        available: Boolean(snapshot.catalog), configured: Boolean(catalog), updatedAt: snapshot.updatedAt,
+        fetchedAt: snapshot.fetchedAt, source: snapshot.source, error: snapshot.error,
+      },
+      conflicts,
+      plugins: computeStates({ catalog: snapshot.catalog, installed: plugins, host }),
+    };
   }
 
   function runPluginCommand(id, command, input) {
@@ -128,7 +194,7 @@ function createPluginsRoutes(deps) {
       if (!entry.commands.includes(command)) {
         return resolve({ status: 400, payload: { error: `命令 ${command} 不在插件 ${id} 的白名单里` } });
       }
-      const found = readManifest(pluginsDir, id);
+      const found = findManifest(id);
       const binary = resolveBinary(found, platform, arch);
       if (!binary) {
         return resolve({ status: 503, payload: { error: `插件 ${id} 的二进制不可用（${entry.engine.reason}）` } });
@@ -176,7 +242,7 @@ function createPluginsRoutes(deps) {
 
   function servePluginFile(req, res) {
     const id = req.params.id;
-    const found = readManifest(pluginsDir, id);
+    const found = findManifest(id);
     if (!found) return res.status(404).json({ error: `插件 ${id} 不存在` });
     const relative = (req.params[0] || '').replace(/\\/g, '/');
     if (!relative || relative.includes('..') || relative.startsWith('/')) {
@@ -207,7 +273,22 @@ function createPluginsRoutes(deps) {
 
   function mount(app) {
     app.get('/api/plugins', (req, res) => {
-      res.json({ plugins: listPlugins() });
+      const { plugins, conflicts } = scan();
+      res.json({ pluginApi: PLUGIN_API_VERSION, plugins, conflicts });
+    });
+    // 插件列表 × 本机：每个插件的状态（内置 / 已安装 / 可更新 / 可安装 / 不支持本机 /
+    // 已装但不兼容）与第一条不满足的要求。只读；refresh 只是立刻重拉一次列表。
+    app.get('/api/plugins/catalog', async (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      try { res.json(await catalogPayload()); }
+      catch (error) { res.status(500).json({ error: error.message }); }
+    });
+    app.post('/api/plugins/catalog/refresh', async (req, res) => {
+      if (!catalog) return res.status(404).json({ error: '插件列表未配置' });
+      try {
+        await catalog.refresh();
+        res.json(await catalogPayload());
+      } catch (error) { res.status(500).json({ error: error.message }); }
     });
     app.post('/api/plugins/:id/run', async (req, res) => {
       const command = typeof req.body?.command === 'string' ? req.body.command : '';
@@ -219,7 +300,7 @@ function createPluginsRoutes(deps) {
     app.get('/plugins/:id/*', servePluginFile);
   }
 
-  return { mount, listPlugins, runPluginCommand, servePluginFile };
+  return { mount, listPlugins, scan, catalogPayload, runPluginCommand, servePluginFile, catalog };
 }
 
 module.exports = { createPluginsRoutes, pluginEntry, readManifest, resolveBinary };

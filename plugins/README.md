@@ -9,18 +9,28 @@
 
 ## 安装 / 卸载
 
+这个目录只放**内置插件**（随 MultiCC 发布）。另外安装的插件放在用户目录
+`~/.multicc/plugins/`：桌面版的程序目录只读，独立包升级会整包替换程序目录，
+装在这里的插件会丢。设了 `MULTICC_DATA_DIR` 的实例（比如桌面版）用各自数据目录
+下的 `plugins/`。
+
 ```bash
-cp -R <某个插件文件夹> plugins/     # 安装
-rm -rf plugins/<插件id>             # 卸载
+cp -R <某个插件文件夹> ~/.multicc/plugins/   # 安装
+rm -rf ~/.multicc/plugins/<插件id>           # 卸载
 ```
 
-不需要重启：Air「资料与插件 → 插件」面板每次打开都会重新读清单。入口在
-侧栏「资料与插件」区（`资料与插件 → 插件`）。
+同一个 id 两边都有时以内置为准，面板上会提示冲突。不需要重启：Air「资料与插件 →
+插件」面板每次打开都会重新读清单。
+
+面板同时读 GitHub 上的插件列表 [lsjwzh/multicc-plugins](https://github.com/lsjwzh/multicc-plugins)
+（带签名，格式见那边的 README 和 `docs/plugin-catalog-design.md`），把每个插件分成
+内置 / 已安装 / 可更新 / 可安装 / 不支持本机 / 已装但不兼容，并写出第一条不满足的要求。
+发布一个可另外安装的插件，就是在那份列表里加一条。
 
 git 只跟踪这里的内置项（本 README、上面四个内部目录、`chrome-proxy-launcher/`）：
-复制进来的插件属于本机数据，默认被根目录 `.gitignore` 的 plugins 白名单忽略，
-不会让检出变「脏」。要把一个插件做成内置插件随仓库发布，在那段白名单末尾加一行
-`!/plugins/<插件id>/`。
+复制进来的插件默认被根目录 `.gitignore` 的 plugins 白名单忽略，不会让检出变「脏」。
+要把一个插件做成内置插件随仓库发布，在那段白名单末尾加一行 `!/plugins/<插件id>/`，
+并在插件列表里把它登记为 `builtin`。
 
 ## 插件规范
 
@@ -49,6 +59,8 @@ plugins/<id>/
 | `engine.binaryPlatformDir` | 跨平台产物目录（通道先试 `<dir>/<platform>-<arch>/<basename>`） |
 | `commands` | 允许调用的子命令白名单（通道强制校验） |
 | `ui` | 面板页相对路径；只有该文件所在子树会通过 HTTP 暴露 |
+| `category` / `provides` | 可选。分组用的分类（`channel`、`browser`）和插件提供的能力（如 `channel`：可作提醒渠道） |
+| `requires` | 可选，和插件列表里每个版本的 `requires` 同一格式：`multicc`（版本范围）、`pluginApi`、`agentBuild`、`platforms[{os, arch, minOS}]`、`apps[{id, name, minVersion}]`、`permissions`。装着的插件以这里为准判断兼容性 |
 
 ## 通信协议
 

@@ -140,8 +140,10 @@ const MIGRATION_DEBT = Object.freeze({
   'server.js': Object.freeze({
     // 2026-10-27 Provider 卡片余量走势：GET /api/providers/limit-history 单独一行挂载，
     // 采样钩子随 provider-limit-cache 构造同行注入，实测 3021/159674。
+    // 2026-10-28 插件挂载改传 paths（内置+~/.multicc/plugins 两处插件与插件列表），
+    // 同行注释同时缩短，实测 3019/158624。
     ceiling: 3019,
-    byteCeiling: 158625,
+    byteCeiling: 158624,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),
@@ -516,9 +518,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   刷新中/成功（含条数）/失败三条回执，生成器实测 9817/633464。
     // +16 双语键（airProviderTrend*）：Provider 卡片余量走势（迷你曲线/详情弹层/
     //   预计用完时间/采样说明），中英各 16 行；与主线词典合并后重跑生成器实测 9852/635387。
-    maxLines: 9852,
+    // +11 双语键（airGlobalAgent*）：设置页「共用 Agent」提示（谁装的、构建号冲突时
+    //   「用本份替换」、仍用旧规则的桌面版），中英各 11 行 = +22 行（上一轮漏登记）；
+    // +41 双语键（airPlugins*）：插件面板接插件列表 —— 状态标签、要求说明、不满足的
+    //   原因、分组与刷新，中英各 41 行 = +82 行；重跑生成器实测 9956/643789。
+    maxLines: 9956,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 635387,
+    maxBytes: 643789,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

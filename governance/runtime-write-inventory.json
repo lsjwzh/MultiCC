@@ -600,6 +600,32 @@
           "anchor": "LINK=\"$HOME/.multicc/bin/multicc-agent\""
         }
       ]
+    },
+    {
+      "id": "catalog-installed-plugins",
+      "classification": "external-owner",
+      "owner": "plugin catalog (src/plugins/catalog.js, src/routes/plugins.js)",
+      "rationale": "Plugins installed from the signed plugin catalog are user-chosen third-party software. They cannot live in the package plugins/ directory: a desktop app tree is read-only and a package upgrade replaces the whole tree. Installs without MULTICC_DATA_DIR use ~/.multicc/plugins, isolated installs keep them below their own data root.",
+      "migrationStrategy": "Each plugin is a self-contained folder that is reinstalled from the catalog (sha256-verified asset) instead of being copied when the layout changes; plugin settings live in the plugin data directory and survive an uninstall.",
+      "sources": [
+        {
+          "file": "src/paths.js",
+          "anchor": "? path.join(os.homedir(), '.multicc', 'plugins')"
+        }
+      ]
+    },
+    {
+      "id": "plugin-catalog-cache",
+      "classification": "ephemeral",
+      "owner": "plugin catalog (src/plugins/catalog.js)",
+      "rationale": "The last verified copy of the signed plugin list (index.json, index.json.sig, meta.json) so the plugin panel works offline. It is re-verified against the pinned keys on every load, so a tampered cache is rejected, not trusted.",
+      "migrationStrategy": "Disposable: deleting it only means the next refresh downloads the list again; never migrate its contents.",
+      "sources": [
+        {
+          "file": "src/paths.js",
+          "anchor": "? path.join(os.homedir(), '.multicc', 'plugins-catalog')"
+        }
+      ]
     }
   ]
 }

@@ -88,6 +88,16 @@ function createPaths({ dataDir } = {}) {
     voiceRuntimesDir: root === PKG_ROOT
       ? path.join(os.homedir(), '.multicc', 'runtimes', 'voice')
       : path.join(root, 'runtimes', 'voice'),
+    // Plugins installed from the plugin catalog (docs/plugin-catalog-design.md).
+    // The package's own plugins/ holds only the built-in ones: a desktop app's
+    // tree is read-only and a package upgrade replaces it.
+    userPluginsDir: root === PKG_ROOT
+      ? path.join(os.homedir(), '.multicc', 'plugins')
+      : path.join(root, 'plugins'),
+    // The last verified copy of the signed plugin list (src/plugins/catalog.js).
+    pluginCatalogDir: root === PKG_ROOT
+      ? path.join(os.homedir(), '.multicc', 'plugins-catalog')
+      : path.join(root, 'plugins-catalog'),
     // A disposable, user-editable starter repo. Keep it out of the package
     // checkout so trying the onboarding sample can never modify live MultiCC
     // source. Isolated test deployments keep it under their data root.
