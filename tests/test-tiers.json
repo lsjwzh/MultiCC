@@ -1817,6 +1817,24 @@
       ]
     },
     {
+      "path": "tests/test-cdpd-gateway.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
+      "path": "tests/test-cdpd.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
       "path": "tests/test-chat-admit-error-feedback.js",
       "tier": "core",
       "lane": "deterministic",

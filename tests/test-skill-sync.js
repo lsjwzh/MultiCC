@@ -121,6 +121,8 @@ function createHarness(t, options = {}) {
     cwdForSession: session => session.cwd || tempDir,
     startDetached: options.startDetached || (async request => { state.detached.push(request); }),
     rootDir,
+    // The real one starts a long-lived process in the user's home directory.
+    cdpdProvisioner: options.cdpdProvisioner !== undefined ? options.cdpdProvisioner : null,
     claudeCommand: "/opt/Claude's/bin/claude",
     auxSessionId: '__aux__',
     agentsSkillsDir,
@@ -575,4 +577,15 @@ test('every bundled skill in the repo carries a .skill-version marker', () => {
     })
     .map(entry => entry.name);
   assert.deepEqual(missing, [], 'skills without a numeric .skill-version are never distributed by installBundledSkills');
+});
+
+test('start makes sure the CDP gateway runs, and a failure there does not stop startup', async (t) => {
+  const calls = [];
+  const harness = createHarness(t, {
+    cdpdProvisioner: { ensure: () => { calls.push('ensure'); return Promise.reject(new Error('no binary')); } },
+  });
+  assert.doesNotThrow(() => harness.runtime.start());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['ensure']);
+  await harness.runtime.stop();
 });

@@ -360,3 +360,24 @@ test('getCookies tolerates a browser that answers with nothing', async () => {
   const browser = browserStub({ 'Storage.getCookies': () => ({}) });
   assert.deepEqual(await cdp.getCookies('qoder.com.cn', { browser }), []);
 });
+
+// Only a browser whose debugging was switched on at runtime asks the user per
+// connection; that is the only kind worth sending through the CDP gateway.
+test('only default-profile browsers go through the CDP gateway unless told otherwise', async () => {
+  const { useGateway } = require('../src/chrome-cdp');
+  const profile = '/tmp/default-chrome';
+  const opened = [];
+  const cdp = createChromeCdp({
+    ports: [9222],
+    profileDirs: [profile, '/tmp/managed-profile'],
+    gatedProfileDirs: [profile],
+    probeDebugPort: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/launched' }),
+    readFile: async () => '58142\n/devtools/browser/live\n',
+    openSocket: (url, candidate) => { opened.push({ url, gated: useGateway(candidate, {}) }); throw new Error('stop here'); },
+  });
+  await assert.rejects(cdp.attach());
+  assert.deepEqual(opened.map((o) => o.gated), [false, true, false],
+    'launched with a debug port: direct; default profile: gateway; a custom profile: direct');
+  assert.equal(useGateway({ approvalGated: false }, { MULTICC_CDP_GATEWAY: '1' }), true);
+  assert.equal(useGateway({ approvalGated: true }, { MULTICC_CDP_GATEWAY: '0' }), false);
+});

@@ -1316,6 +1316,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "multicc-cdpd"
+version = "0.2.0"
+dependencies = [
+ "futures-util",
+ "getrandom 0.3.4",
+ "libc",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "multicc-core"
 version = "0.1.0"
 dependencies = [

@@ -39,6 +39,10 @@ jobs:
           else
             echo "::notice::native/remote 尚未加入 cargo workspace，跳过 multicc-remote 测试"
           fi
+      # CDP 网关（native/cdpd）的路由状态机与分帧测试。
+      - name: 测试 CDP 网关
+        shell: bash
+        run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-cdpd
       - name: 构建并强制执行原生差分测试
         shell: bash
         env:

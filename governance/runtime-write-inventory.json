@@ -236,6 +236,23 @@
       ]
     },
     {
+      "id": "cdp-gateway-runtime",
+      "classification": "external-owner",
+      "owner": "multicc-cdpd CDP gateway (native/cdpd)",
+      "rationale": "One gateway per user machine holds the approved Chrome DevTools connections and outlives any MultiCC checkout or data dir (several installs share it, so Chrome asks once). Its directory holds the IPC socket, the single-instance lock, a size-capped metadata-only log and endpoint.json (WebSocket endpoint token); MULTICC_CDP_DIR / MULTICC_CDP_SOCK override it.",
+      "migrationStrategy": "Paths are mirrored byte-for-byte in src/cdpd.js and native/cdpd/src/paths.rs (tests/test-cdpd-gateway.js compares them). If the default moves, keep answering on the old socket for one release or have src/cdpd.js retire the old daemon via op:shutdown before starting the new one; nothing in the directory needs migrating (all of it is recreated on start).",
+      "sources": [
+        {
+          "file": "src/cdpd.js",
+          "anchor": "const dir = env.MULTICC_CDP_DIR || join(base, '.multicc', 'cdpd');"
+        },
+        {
+          "file": "native/cdpd/src/paths.rs",
+          "anchor": ".join(\".multicc\")"
+        }
+      ]
+    },
+    {
       "id": "macos-agent-power-preferences",
       "classification": "external-owner",
       "owner": "macOS desktop agent (host power services)",
