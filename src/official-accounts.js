@@ -24,7 +24,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { codexAuthSubscription } = require('./quota/subscription');
 
-const { atomicWriteJson, ensurePrivateDir, secureFile } = require('./runtime-security');
+const { ensurePrivateDir, secureFile } = require('./runtime-security');
 
 const DEFAULT_ROOT = path.join(os.homedir(), '.multicc', 'official-accounts');
 const ACCOUNT_ID_PATTERN = /^[a-f0-9]{16}$/;
@@ -95,13 +95,9 @@ function rewrittenSince(file, importedAt) {
   try { return fs.statSync(file).mtimeMs > at + 2000; } catch (_) { return false; }
 }
 
-function readJsonIfExists(file) {
-  try {
-    return parseJson(fs.readFileSync(file, 'utf8'));
-  } catch (_) {
-    return null;
-  }
-}
+const { credential } = require('./providers/native-credentials');
+function readJsonIfExists(file) { return credential({ operation: 'readJson', file }); }
+function writeAccountJson(file, data) { return credential({ operation: 'writeJson', file, data }); }
 
 function createOfficialAccountStore(options = {}) {
   const root = path.resolve(options.root || DEFAULT_ROOT);
@@ -145,13 +141,12 @@ function createOfficialAccountStore(options = {}) {
     const dir = codexDir(id);
     ensurePrivateDir(dir);
     const meta = { label: String(label || '').trim().slice(0, 64), createdAt: Date.now() };
-    atomicWriteJson(codexMetaFile(id), meta);
+    writeAccountJson(codexMetaFile(id), meta);
     return { id, dir, authFile: codexAuthFile(id), label: meta.label };
   }
 
   function writeCodexMeta(id, patch) {
-    const meta = { ...(readJsonIfExists(codexMetaFile(id)) || {}), ...patch };
-    atomicWriteJson(codexMetaFile(id), meta);
+    const meta = credential({ operation: 'patchJson', file: codexMetaFile(id), data: patch });
     return meta;
   }
 
@@ -210,23 +205,14 @@ function createOfficialAccountStore(options = {}) {
     if (!auth || typeof auth !== 'object') throw new TypeError('[official-accounts] auth object is required');
     const file = codexAuthFile(id);
     ensurePrivateDir(path.dirname(file));
-    atomicWriteJson(file, auth);
+    writeAccountJson(file, auth);
     secureFile(file);
     return auth;
   }
 
   // Same read the relay does, shared so quota/refresh agree on the verdicts.
   function readCodexCredential(id, { now = Date.now } = {}) {
-    const auth = readJsonIfExists(codexAuthFile(id));
-    if (!auth) return { ok: false, reason: 'credential_unreadable' };
-    const tokens = auth.tokens && typeof auth.tokens === 'object' ? auth.tokens : {};
-    const accessToken = typeof tokens.access_token === 'string' ? tokens.access_token.trim() : '';
-    const accountId = typeof tokens.account_id === 'string' ? tokens.account_id.trim() : '';
-    if (!accessToken) return { ok: false, reason: 'access_token_missing' };
-    if (!accountId) return { ok: false, reason: 'account_id_missing' };
-    const expiresAt = jwtExpiryMs(accessToken);
-    if (expiresAt && expiresAt <= now()) return { ok: false, reason: 'access_token_expired', expiresAt };
-    return { ok: true, accessToken, accountId, expiresAt };
+    return credential({ operation: 'codexCredential', file: codexAuthFile(id), now: now() });
   }
 
   // ── Claude ───────────────────────────────────────────────────────────────
@@ -237,14 +223,7 @@ function createOfficialAccountStore(options = {}) {
   function writeClaudeCredential(id, data) {
     const file = claudeFile(id);
     ensurePrivateDir(path.dirname(file));
-    const existing = readJsonIfExists(file) || {};
-    const merged = {
-      ...existing,
-      ...data,
-      type: 'claude',
-    };
-    atomicWriteJson(file, merged);
-    secureFile(file);
+    const merged = credential({ operation: 'patchJson', file, data, claude: true });
     // Only a write that carries a token is evidence the account is usable: a
     // metadata-only write (createClaudeAccount's label/createdAt) says nothing
     // about the grant and must not be read as a recovery.

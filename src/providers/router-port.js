@@ -510,15 +510,14 @@ function createProviderRouterPort(options = {}) {
       // driven by the rejection itself rather than by a guess made before the
       // hop. Only the router's requestHooks capability is assumed — a router
       // without it keeps the relay's pre-proxy normalization below.
-      const historyHooks = mode === 'cpr' && typeof router.CAPABILITIES?.requestHooks === 'string'
+      const nativeOfficial = typeof router.CAPABILITIES?.rustOfficialProxy === 'string' && !mountOptions.codexOfficialRelay?.fetch;
+      const historyHooks = (mode === 'cpr' || nativeOfficial) && typeof router.CAPABILITIES?.requestHooks === 'string'
         ? createCodexHistoryHooks({ logger })
         : null;
-      // CPR's generic Codex proxy intentionally requires an API key + base_url.
-      // Mount the host-owned ChatGPT OAuth adapter first on the SAME guarded
-      // admission surface. Official therefore shares attempt authorization,
-      // liveness, abort, usage and delta contracts with every managed route;
-      // only the final host-to-upstream credential injection differs.
-      mountCodexOfficialRelay(admission ? admission.app : app, {
+      // Rust serves official OAuth and API-key routes through one guarded
+      // proxy. Retain the legacy relay only for the explicitly selected Node
+      // backend or an injected SDK transport that cannot cross N-API.
+      if (!nativeOfficial) mountCodexOfficialRelay(admission ? admission.app : app, {
         ...common,
         logger,
         ...(mountOptions.codexOfficialRelay || {}),
@@ -533,7 +532,7 @@ function createProviderRouterPort(options = {}) {
       });
       mounted.codex = requireMethod(backend, 'mountCodexProxy', mode === 'cpr' ? 'router' : 'legacy')(
         admission ? admission.app : app,
-        { ...common, ...(historyHooks || {}), ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent, onDelta: admission.onDelta } : {}), ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}), ...(mountOptions.codexProxy || {}) },
+        { ...common, codexOfficialRelay: mountOptions.codexOfficialRelay, ...(historyHooks || {}), ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent, onDelta: admission.onDelta } : {}), ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}), ...(mountOptions.codexProxy || {}) },
       );
       if (trace && !app[CODEX_TRACE_EXIT]) {
         app[CODEX_TRACE_EXIT] = true;

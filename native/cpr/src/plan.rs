@@ -306,6 +306,43 @@ pub fn prepare(input: Value) -> Result<Value, String> {
         parsed.set_query(route.query.strip_prefix('?'));
         parsed.set_fragment(None);
         parsed.to_string()
+    } else if crate::codex_official::is_official(provider, &cfg) {
+        if !body.is_object() {
+            return Err("Responses 请求必须是 JSON 对象".into());
+        }
+        if cfg["officialAccount"].is_object() {
+            let id = text(&cfg["officialAccount"], "id");
+            if id.len() != 16
+                || !id
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            {
+                return Err("官方账号标识无效，不能回退到本机登录".into());
+            }
+        }
+        let credential = &input["codexCredential"];
+        if text(credential, "accessToken").is_empty() || text(credential, "accountId").is_empty() {
+            return Ok(
+                json!({"credentialRequest":{"vendor":"codex","accountId":cfg["officialAccount"]["id"]}}),
+            );
+        }
+        crate::codex_official::headers(
+            &mut headers,
+            text(credential, "accessToken"),
+            text(credential, "accountId"),
+        );
+        crate::codex_official::body(&mut body);
+        route.is_stream = body["stream"] != false;
+        body["stream"] = route.is_stream.into();
+        wire = body.to_string();
+        mode = "direct-responses".into();
+        let url = text(&input, "codexOfficialUrl");
+        safe_url(if url.is_empty() {
+            "https://chatgpt.com/backend-api/codex/responses"
+        } else {
+            url
+        })?
+        .to_string()
     } else {
         if !body.is_object() {
             return Err("Responses 请求必须是 JSON 对象".into());

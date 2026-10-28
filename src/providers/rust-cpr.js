@@ -1,7 +1,7 @@
 'use strict';
 
-// 迁移桥接：Express/宿主 JS 回调不能跨 N-API 传递，保留授权、凭据和事件适配。
-// 路由、模型、HTTP/TLS、流解析和协议兼容均由 native/cpr 实现。
+// Express 请求/响应、插件回调和 CLI 刷新监督器的接口适配。
+// Rust 持有存储鉴权、凭据读取、候选尝试状态、协议和上游传输。
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { getNative } = require('../native/runtime');
@@ -15,7 +15,7 @@ function resolveCprBackend(env = process.env) {
 function createRustCprRouter(router, { native, env = process.env } = {}) {
   const unavailable = () => new Error('Rust CPR 模块不可用或版本不匹配，请重新构建 Rust 模块，或将 MULTICC_CPR_BACKEND 设为 node');
   try { native ||= getNative('cpr', 'rust'); } catch (_) { throw unavailable(); }
-  if (native?.cprProtocolVersion?.() !== 1 || ['cprRoute', 'cprPrepare', 'cprCreateExchange'].some(name => typeof native[name] !== 'function')) {
+  if (native?.cprProtocolVersion?.() !== 1 || ['cprRoute', 'cprPrepare', 'cprCreateExchange', 'RustProviderRequest', 'authorizeProviderRequest', 'codexOfficialError'].some(name => typeof native[name] !== 'function')) {
     throw unavailable();
   }
   // 复用锁定版本 CPR 的现有宿主回调/能力令牌接口，不另写一套 JS 业务策略。
@@ -35,10 +35,11 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
     const exchanges = new Set();
     const observedResponses = new WeakSet();
     let closed = false;
-    async function handle(req, res, retry = {}) {
+    async function handle(req, res) {
       if (closed) return reply(res, 503, { error: 'Rust CPR 已关闭' });
       let gone = !!res.destroyed, exchange, context, terminal = false, firstByte = false;
       const started = Date.now();
+      const request = new native.RustProviderRequest();
       const activity = (phase, extra = {}) => {
         if (context?.sessionId) safeCall(options.onActivity, { sessionId: context.sessionId, role: context.role,
           providerId: context.providerId, providerName: context.providerName, phase, at: Date.now(), ...extra });
@@ -57,134 +58,178 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
       }
       const disconnect = () => {
         if (res.writableEnded || terminal) return;
-        gone = true; settle('error', 'CLIENT_DISCONNECTED'); exchange?.abort();
+        gone = true; request.cancel(); settle('error', 'CLIENT_DISCONNECTED'); exchange?.abort();
       };
       res.once('close', disconnect);
       if (!observedResponses.has(res)) { observedResponses.add(res); res.on('error', () => {}); }
       res.on('error', disconnect);
       try {
-        const body = retry.body || await readBody(req);
+        const body = await readBody(req);
         if (gone) return;
         let route;
         try { route = JSON.parse(await native.cprRoute(JSON.stringify({ protocol, url: req.url, body }))); }
         catch (error) { throw Object.assign(error, { safeCprMessage: error.message, statusCode: 400 }); }
         if (protocol === 'claude' && req.method === 'HEAD' && route.apiPath === '/') return reply(res, 200, {});
-        const auth = authorizeManagedRequest(req, { cli: protocol, providerId: route.providerId, sessionId: route.sessionId,
-          roleKind: route.role, agentRole: route.agentRole, routeName: route.routeName }, credentials, { requireManaged: options.requireHopCredential });
+        const authContext = { cli: protocol, providerId: route.providerId, sessionId: route.sessionId,
+          roleKind: route.role, agentRole: route.agentRole, routeName: route.routeName };
+        const auth = credentials.dataFile
+          ? JSON.parse(await native.authorizeProviderRequest(JSON.stringify({ file: credentials.dataFile,
+            route: authContext, headers: req.headers, requireManaged: options.requireHopCredential === true, now: Date.now() })))
+          : authorizeManagedRequest(req, authContext, credentials, { requireManaged: options.requireHopCredential });
         if (!auth.ok) return reply(res, 401, { error: '路由能力凭据无效', reason: auth.reason });
-        let provider = options.getProvider(protocol, route.providerId);
-        if (!provider && protocol === 'claude' && route.role === 'sub' && route.providerId !== route.mainProviderId) {
-          provider = options.getProvider(protocol, route.mainProviderId);
-          if (provider) {
-            safeCall(options.onRoutingEvent, { type: 'provider-routing-fallback', status: 'default-fallback', reason: 'unknown-sub-provider',
-              cli: 'claude', sessionId: route.sessionId, providerId: route.providerId, fallbackProviderId: route.mainProviderId });
-            route.providerId = route.mainProviderId;
-          }
-        }
-        const virtual = provider?.virtual ? provider : null;
-        const virtualRuntime = options.virtualProviders || require('./virtual-provider');
-        if (virtual) {
-          if (!retry.body) await virtualRuntime.refresh(virtual);
-          provider = virtualRuntime.resolve(virtual, { model: JSON.parse(body || '{}').model, excluded: retry.excluded || [] });
-        }
-        const input = { route: virtual ? { ...route, providerId: provider.id } : route, provider, body, method: req.method, headers: req.headers,
-          officialViaProxy: env.CLAUDE_OFFICIAL_VIA_PROXY === '1', officialProviderId: options.officialProviderId,
-          officialBaseUrl: options.officialBaseUrl, oauthBeta: options.oauthBeta, codexProxyPath: options.codexProxyPath,
-          headersTimeoutMs: options.headersTimeoutMs };
-        let prepared = await prepare(input), credentialAccountId;
-        if (prepared.credentialRequest) {
-          const accountId = prepared.credentialRequest.accountId;
-          credentialAccountId = accountId;
-          const keychainService = options.keychainService || 'Claude Code-credentials';
-          const arg = accountId ? { provider, providerId: route.providerId, accountId, keychainService } : keychainService;
-          const credential = await (options.readOfficialCredential || router.readOfficialOAuthToken)(arg);
-          if (!credential?.token) return reply(res, 502, { error: `官方 OAuth 不可用：${credential?.reason || '无法读取凭据'}` });
-          input.officialToken = credential.token;
-          prepared = await prepare(input);
-        }
-        const plan = prepared.plan;
-        context = { sessionId: route.sessionId, providerId: route.providerId, providerName: plan.providerName || route.providerId,
-          role: route.role, roleKind: route.role, agentRole: route.agentRole || null, routeName: route.routeName,
-          model: plan.route.model, isStream: plan.route.isStream,
-          protocol: protocol === 'claude' ? 'anthropic-messages' : plan.mode === 'responses-compat' ? 'openai-responses-compat' : 'openai-responses' };
-        activity('request');
-        const stage = createRequestStage(hooks, { ...context, protocol: protocol === 'claude' ? 'anthropic-messages' : 'openai-responses', mode: plan.mode, body: plan.body });
-        await stage.prepare();
-        if (options.resolveUpstreamAgent) {
-          const resolver = options.resolveUpstreamAgent;
-          const args = { ...context, ...(virtual ? { providerId: provider.id } : {}), provider, url: plan.url, isOfficialOAuth: !!input.officialToken };
-          if (typeof resolver.resolveProxyUrl === 'function') plan.proxyUrl = await resolver.resolveProxyUrl(args);
-          else if (await resolver(args)) throw Object.assign(new Error('Rust CPR 需要出口地址接口，无法使用 Node 专属 Agent'), { code: 'RUST_CPR_EGRESS_UNSUPPORTED' });
-        }
-        // 复用宿主统一网络策略（含 macOS 系统代理和旁路规则），避免原生请求绕过它。
-        plan.proxyUrl ||= await require('../network/outbound').policy.proxyForUrl(plan.url) || undefined;
-        for (let attempt = 1; ; attempt++) {
-          if (gone) return;
-          // 修复后重新进入 Rust，统一重新计算模型和 Content-Length。
-          input.body = stage.text;
-          const updated = (await prepare(input)).plan;
-          updated.proxyUrl = plan.proxyUrl;
-          exchange = await native.cprCreateExchange(JSON.stringify(updated));
-          exchanges.add(exchange);
-          if (gone || closed) { exchange.abort(); return; }
-          const head = JSON.parse(await exchange.open());
-          if (virtual && head.rateLimit) safeCall(virtualRuntime.observe, provider, head.rateLimit);
-          context.isStream = head.isStream;
-          if (head.status < 200 || head.status >= 300) {
-            if (virtual && virtualRuntime.outcome(provider, head.status, res.headersSent)) {
-              // No response bytes have left the host. Close the rejected
-              // exchange before resolving another member; never replay a stream.
-              await exchange.close(); exchanges.delete(exchange); exchange = null;
-              activity('end', { status: 'switching' });
-              terminal = true;
-              res.removeListener('close', disconnect); res.removeListener('error', disconnect);
-              return await handle(req, res, { body, excluded: [...(retry.excluded || []), provider.id] });
+        let refreshed = false;
+        candidate: for (;;) {
+          if (gone || closed) { request.cancel(); return; }
+          let provider = options.getProvider(protocol, route.providerId);
+          if (!provider && protocol === 'claude' && route.role === 'sub' && route.providerId !== route.mainProviderId) {
+            provider = options.getProvider(protocol, route.mainProviderId);
+            if (provider) {
+              safeCall(options.onRoutingEvent, { type: 'provider-routing-fallback', status: 'default-fallback', reason: 'unknown-sub-provider',
+                cli: 'claude', sessionId: route.sessionId, providerId: route.providerId, fallbackProviderId: route.mainProviderId });
+              route.providerId = route.mainProviderId;
             }
-            // 宿主 OAuth 暂存器必须在读取错误正文前收到响应头，才有机会超时取消。
-            const heldAuth = !!(options.recoverOfficialCredential && input.officialToken && credentialAccountId && [401, 403].includes(head.status));
-            if (heldAuth && !gone) res.writeHead(head.status, head.headers);
-            const errorBody = await exchange.errorBody();
-            if (!errorBody.complete) {
-              if (!heldAuth && !gone) res.writeHead(head.status, head.headers);
-              if (!gone && !res.write(errorBody.data)) await waitWritable(res);
-              while (!gone) {
-                const chunk = await exchange.read();
-                if (chunk.data.length && !res.write(chunk.data)) await waitWritable(res);
-                if (JSON.parse(chunk.meta).done) break;
+          }
+          const virtual = provider?.virtual ? provider : null;
+          const virtualRuntime = options.virtualProviders || require('./virtual-provider');
+          if (virtual) {
+            if (!refreshed) { await virtualRuntime.refresh(virtual); refreshed = true; }
+            provider = virtualRuntime.resolve(virtual, { model: route.model, request });
+          }
+          const input = { route: virtual ? { ...route, providerId: provider.id } : route, provider, body, method: req.method, headers: req.headers,
+            officialViaProxy: env.CLAUDE_OFFICIAL_VIA_PROXY === '1', officialProviderId: options.officialProviderId,
+            officialBaseUrl: options.officialBaseUrl, oauthBeta: options.oauthBeta, codexProxyPath: options.codexProxyPath,
+            headersTimeoutMs: options.headersTimeoutMs, codexOfficialUrl: options.codexOfficialRelay?.upstreamUrl };
+          let prepared = await prepare(input), credentialAccountId;
+          const credentialFailure = (statusCode, payload) => {
+            context = { sessionId: route.sessionId, providerId: route.providerId, providerName: provider?.name || route.providerId,
+              role: route.role, roleKind: route.role, agentRole: route.agentRole || null, routeName: route.routeName,
+              model: route.model, isStream: route.isStream, protocol: protocol === 'claude' ? 'anthropic-messages' : 'openai-responses' };
+            activity('request'); settle('error', 'OAUTH_CREDENTIAL_UNAVAILABLE', null, statusCode);
+            return reply(res, statusCode, payload);
+          };
+          if (prepared.credentialRequest) {
+            if (prepared.credentialRequest.vendor === 'codex') {
+              const official = options.codexOfficialRelay || {};
+              const accountId = prepared.credentialRequest.accountId;
+              const authFile = accountId ? official.resolveAccountAuthFile?.(accountId) : official.authFile;
+              const credential = official.readCredential
+                ? await official.readCredential({ provider, providerId: provider.id })
+                : accountId && !authFile ? { ok: false, reason: 'account_credential_unresolved' }
+                  : require('../codex/official-relay').readCodexOfficialCredential({ authFile });
+              if (!credential?.ok) return credentialFailure(503, { error: 'Codex 官方账号凭据不可用，请重新登录',
+                code: 'CODEX_OFFICIAL_OAUTH_UNAVAILABLE', reason: credential?.reason || 'credential_unavailable' });
+              input.codexCredential = credential;
+              prepared = await prepare(input);
+            } else {
+              const accountId = prepared.credentialRequest.accountId;
+              credentialAccountId = accountId;
+              const keychainService = options.keychainService || 'Claude Code-credentials';
+              const arg = accountId ? { provider, providerId: route.providerId, accountId, keychainService } : keychainService;
+              const credential = await (options.readOfficialCredential || (async service => {
+                if (service && typeof service === 'object') return { token: null, reason: 'account_credential_unresolved' };
+                const value = await require('../quota/claude-cli-oauth').readCliCredentials({ keychainService: service });
+                return value.ok && (value.expiresAt == null || value.expiresAt > Date.now())
+                  ? { token: value.accessToken } : { token: null, reason: value.reason || 'access_token_expired' };
+              }))(arg);
+              if (!credential?.token) return credentialFailure(502, { error: `官方 OAuth 不可用：${credential?.reason || '无法读取凭据'}` });
+              input.officialToken = credential.token;
+              prepared = await prepare(input);
+            }
+          }
+          const plan = prepared.plan;
+          context = { sessionId: route.sessionId, providerId: route.providerId, providerName: plan.providerName || route.providerId,
+            role: route.role, roleKind: route.role, agentRole: route.agentRole || null, routeName: route.routeName,
+            model: plan.route.model, isStream: plan.route.isStream,
+            protocol: protocol === 'claude' ? 'anthropic-messages' : plan.mode === 'responses-compat' ? 'openai-responses-compat' : 'openai-responses' };
+          activity('request');
+          const stage = createRequestStage(hooks, { ...context, protocol: protocol === 'claude' ? 'anthropic-messages' : 'openai-responses', mode: plan.mode, body: plan.body });
+          await stage.prepare();
+          if (options.resolveUpstreamAgent) {
+            const resolver = options.resolveUpstreamAgent;
+            const args = { ...context, ...(virtual ? { providerId: provider.id } : {}), provider, url: plan.url, isOfficialOAuth: !!input.officialToken };
+            if (typeof resolver.resolveProxyUrl === 'function') plan.proxyUrl = await resolver.resolveProxyUrl(args);
+            else if (await resolver(args)) throw Object.assign(new Error('Rust CPR 需要出口地址接口，无法使用 Node 专属 Agent'), { code: 'RUST_CPR_EGRESS_UNSUPPORTED' });
+          }
+          // 复用宿主统一网络策略（含 macOS 系统代理和旁路规则），避免原生请求绕过它。
+          plan.proxyUrl ||= await require('../network/outbound').policy.proxyForUrl(plan.url) || undefined;
+          for (let attempt = 1; ; attempt++) {
+            if (gone) return;
+            // 修复后重新进入 Rust，统一重新计算模型和 Content-Length。
+            input.body = stage.text;
+            const updated = (await prepare(input)).plan;
+            updated.proxyUrl = plan.proxyUrl;
+            exchange = await native.cprCreateExchange(JSON.stringify(updated));
+            exchanges.add(exchange);
+            if (gone || closed) { exchange.abort(); return; }
+            const head = JSON.parse(await exchange.open());
+            if (virtual && head.rateLimit) safeCall(virtualRuntime.observe, provider, head.rateLimit);
+            context.isStream = head.isStream;
+            if (head.status < 200 || head.status >= 300) {
+              if (virtual && virtualRuntime.outcome(provider, head.status, res.headersSent, undefined, request)) {
+                // No response bytes have left the host. Close the rejected
+                // exchange before resolving another member; never replay a stream.
+                await exchange.close(); exchanges.delete(exchange); exchange = null;
+                activity('end', { status: 'switching' });
+                continue candidate;
               }
-              settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status);
-              if (!gone) res.end();
+              // 宿主 OAuth 暂存器必须在读取错误正文前收到响应头，才有机会超时取消。
+              const heldAuth = !!(options.recoverOfficialCredential && input.officialToken && credentialAccountId && [401, 403].includes(head.status));
+              if (heldAuth && !gone) res.writeHead(head.status, head.headers);
+              const errorBody = await exchange.errorBody();
+              if (!errorBody.complete) {
+                if (input.codexCredential) {
+                  settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status);
+                  if (!gone) reply(res, head.status, JSON.parse(native.codexOfficialError(JSON.stringify({ status: head.status }))));
+                  return;
+                }
+                if (!heldAuth && !gone) res.writeHead(head.status, head.headers);
+                if (!gone && !res.write(errorBody.data)) await waitWritable(res);
+                while (!gone) {
+                  const chunk = await exchange.read();
+                  if (chunk.data.length && !res.write(chunk.data)) await waitWritable(res);
+                  if (JSON.parse(chunk.meta).done) break;
+                }
+                settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status);
+                if (!gone) res.end();
+                return;
+              }
+              const detail = errorBody.data.toString('utf8');
+              await exchange.close(); exchanges.delete(exchange);
+              if (!heldAuth && !gone && await stage.repair({ status: head.status, message: detail, attempt, errorCode: 'UPSTREAM_HTTP_ERROR' })) continue;
+              // 额度墙（订阅窗口/余额耗尽）在 CLI 的秒级重试里不可能成功：带 x-should-retry: false
+              // 让它立刻停手；普通 429 限流仍然交给 CLI 自己退避。
+              if (input.codexCredential) {
+                settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status);
+                if (!gone) reply(res, head.status, JSON.parse(native.codexOfficialError(JSON.stringify({
+                  status: head.status, body: detail, credential: input.codexCredential }))));
+                return;
+              }
+              const headers = errorBody.noRetry === true ? { ...head.headers, 'x-should-retry': 'false' } : head.headers;
+              let rejection;
+              try { if (typeof errorBody.rejection === 'string') rejection = JSON.parse(errorBody.rejection); } catch (_) { /* 旧原生模块或损坏 JSON：不带归因。 */ }
+              if (!heldAuth && !gone) res.writeHead(head.status, headers);
+              settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status, rejection);
+              if (!gone) res.end(errorBody.data);
               return;
             }
-            const detail = errorBody.data.toString('utf8');
-            await exchange.close(); exchanges.delete(exchange);
-            if (!heldAuth && !gone && await stage.repair({ status: head.status, message: detail, attempt, errorCode: 'UPSTREAM_HTTP_ERROR' })) continue;
-            // 额度墙（订阅窗口/余额耗尽）在 CLI 的秒级重试里不可能成功：带 x-should-retry: false
-            // 让它立刻停手；普通 429 限流仍然交给 CLI 自己退避。
-            const headers = errorBody.noRetry === true ? { ...head.headers, 'x-should-retry': 'false' } : head.headers;
-            let rejection;
-            try { if (typeof errorBody.rejection === 'string') rejection = JSON.parse(errorBody.rejection); } catch (_) { /* 旧原生模块或损坏 JSON：不带归因。 */ }
-            if (!heldAuth && !gone) res.writeHead(head.status, headers);
-            settle('error', 'UPSTREAM_HTTP_ERROR', null, head.status, rejection);
-            if (!gone) res.end(errorBody.data);
-            return;
-          }
-          if (gone) return;
-          if (head.rateLimit) safeCall(options.onRateLimit, { ...context, rateLimitInfo: head.rateLimit });
-          res.writeHead(head.status, head.headers);
-          res.flushHeaders?.();
-          while (!gone) {
-            const chunk = await exchange.read();
-            const meta = JSON.parse(chunk.meta);
-            for (const event of meta.events) safeCall(options.onDelta, event, context);
-            if (chunk.data.length) {
-              if (!firstByte) { firstByte = true; activity('first_byte'); }
-              if (!res.write(chunk.data)) await waitWritable(res);
-            }
-            if (meta.done) {
-              settle(meta.failed ? 'error' : 'success', meta.failed ? 'UPSTREAM_RESPONSE_FAILED' : undefined, meta.usage, meta.statusCode);
-              if (!gone) res.end();
-              return;
+            if (gone) return;
+            if (head.rateLimit) safeCall(options.onRateLimit, { ...context, rateLimitInfo: head.rateLimit });
+            request.commit();
+            res.writeHead(head.status, head.headers);
+            res.flushHeaders?.();
+            while (!gone) {
+              const chunk = await exchange.read();
+              const meta = JSON.parse(chunk.meta);
+              for (const event of meta.events) safeCall(options.onDelta, event, context);
+              if (chunk.data.length) {
+                if (!firstByte) { firstByte = true; activity('first_byte'); }
+                if (!res.write(chunk.data)) await waitWritable(res);
+              }
+              if (meta.done) {
+                settle(meta.failed ? 'error' : 'success', meta.failed ? 'UPSTREAM_RESPONSE_FAILED' : undefined, meta.usage, meta.statusCode);
+                if (!gone) res.end();
+                return;
+              }
             }
           }
         }
@@ -199,6 +244,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
         else reply(res, error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 502,
           { error: { type: code, message: error.safeCprMessage || (code === 'RUST_CPR_REQUEST_FAILED' ? 'Rust CPR 请求失败，请检查供应商配置或切回 Node 版本' : 'Rust CPR 上游请求失败') } });
       } finally {
+        request.cancel();
         if (exchange) { await exchange.close(); exchanges.delete(exchange); }
         res.removeListener('close', disconnect); res.removeListener('error', disconnect);
       }
@@ -206,7 +252,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
     return { handle, async close() { closed = true; for (const item of exchanges) item.abort(); await Promise.allSettled([...exchanges].map(item => item.close())); exchanges.clear(); } };
   }
   return Object.freeze({ ...router,
-    CAPABILITIES: Object.freeze({ ...router.CAPABILITIES, rustProtocolProxy: '1.0.0' }),
+    CAPABILITIES: Object.freeze({ ...router.CAPABILITIES, rustProtocolProxy: '1.0.0', rustOfficialProxy: '1.0.0' }),
     mountClaudeProxy(app, options = {}) {
       const handler = createHandler('claude', options);
       const prefix = '/' + String(options.claudeProxyPath || options.mountPath || '/claude-proxy').replace(/^\/+|\/+$/g, '');

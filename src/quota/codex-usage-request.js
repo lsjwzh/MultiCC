@@ -1,10 +1,8 @@
 'use strict';
 
-const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { outboundFetch } = require('../network/outbound');
-const { codexAuthSubscription } = require('./subscription');
 
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 
@@ -31,14 +29,8 @@ function requestCodexUsage(auth, { fetch = outboundFetch, signal } = {}) {
 // is picked up automatically. Returns null on any problem → the poll shows
 // nothing rather than fabricating.
 function readCodexAuth(authFile = path.join(os.homedir(), '.codex', 'auth.json')) {
-  try {
-    const auth = JSON.parse(fs.readFileSync(authFile || path.join(os.homedir(), '.codex', 'auth.json'), 'utf8'));
-    const tokens = auth && auth.tokens;
-    if (!tokens || !tokens.access_token) return null;
-    return { accessToken: tokens.access_token, accountId: tokens.account_id || '', subscription: codexAuthSubscription(auth) };
-  } catch (_) {
-    return null;
-  }
+  return require('../providers/native-credentials').credential({ operation: 'codexAuth',
+    file: authFile || path.join(os.homedir(), '.codex', 'auth.json') });
 }
 
 module.exports = { requestCodexUsage, readCodexAuth };

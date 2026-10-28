@@ -407,6 +407,9 @@ rustTest('429 结算事件透传结构化 rejection，旧原生模块不新增�
     code: 'five_hour', model: 'wire-model', source: 'headers' };
   // 假原生交换让错误正文路径可控：只需要 open/errorBody/close/abort。
   const fakeNative = extra => ({
+    RustProviderRequest: native.RustProviderRequest,
+    authorizeProviderRequest: native.authorizeProviderRequest,
+    codexOfficialError: native.codexOfficialError,
     cprProtocolVersion: () => 1,
     cprRoute: async () => JSON.stringify({ protocol: 'claude', providerId: 'main', mainProviderId: 'main',
       sessionId: 'fixture-session', role: 'main', agentRole: '', routeName: 'main', model: 'wire-model',
@@ -472,4 +475,62 @@ rustTest('未结束的 OAuth 错误由宿主超时取消，上游连接不会遗
   await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody).then(res => res.text()).catch(() => {});
   await closed;
   assert.equal(recoveries, 0); assert.equal(h.requests.length, 1); assert.equal(h.activity.filter(e => e.phase === 'end').length, 1);
+});
+
+rustTest('Rust 官方 Codex 代理使用当前账号凭据，隔离私有请求头并保留流和用量', async t => {
+  let token = 'fixture-current';
+  const h = await harness(t, 'rust', { protocol: 'codex',
+    entries: () => ({ official: { id: 'official', appType: 'codex', name: '官方测试账号',
+      settingsConfig: { auth: { auth_mode: 'chatgpt' }, officialAccount: { id: 'aaaaaaaaaaaaaaaa' } } } }),
+    proxy: upstream => ({ codexOfficialRelay: { upstreamUrl: `${upstream}/backend-api/codex/responses`,
+      readCredential: async ({ provider }) => { assert.equal(provider.id, 'official'); return { ok: true, accessToken: token, accountId: 'fixture-account' }; } } }),
+  });
+  const body = { model: 'fixture-model', stream: true, store: true, input: [{ type: 'reasoning', content: [{ type: 'text', text: 'private-schema' }], encrypted_content: 'opaque' }] };
+  const response = await h.post('/codex-proxy/official/session/main/responses', body, {
+    authorization: 'Bearer borrower-capability', 'chatgpt-account-id': 'wrong-account', 'x-multicc-private': 'internal', 'x-forwarded-for': '198.51.100.1', 'x-access-token': 'host-secret', originator: 'codex-fixture' });
+  assert.equal(response.status, 200); assert.match(await response.text(), /response.completed/);
+  assert.equal(h.requests.length, 1);
+  const sent = h.requests[0];
+  assert.equal(sent.headers.authorization, 'Bearer fixture-current');
+  assert.equal(sent.headers['chatgpt-account-id'], 'fixture-account');
+  assert.equal(sent.headers['x-multicc-private'], undefined); assert.equal(sent.headers['x-access-token'], undefined);
+  assert.equal(sent.headers['x-forwarded-for'], undefined); assert.equal(sent.headers.originator, 'codex-fixture');
+  const sentBody = JSON.parse(sent.body);
+  assert.equal(sentBody.store, false); assert.equal(sentBody.input[0].content, undefined);
+  assert.ok(h.usage.length > 0);
+  token = 'fixture-rotated';
+  await (await h.post('/codex-proxy/official/session/main/responses', body)).text();
+  assert.equal(h.requests[1].headers.authorization, 'Bearer fixture-rotated');
+});
+
+rustTest('Rust 官方 Codex 账号缺失时不读取全局登录，也不拨上游', async t => {
+  const h = await harness(t, 'rust', { protocol: 'codex',
+    entries: () => ({ official: { id: 'official', appType: 'codex', settingsConfig: { auth: { auth_mode: 'chatgpt' }, officialAccount: { id: 'aaaaaaaaaaaaaaaa' } } } }),
+    proxy: upstream => ({ codexOfficialRelay: { upstreamUrl: upstream, resolveAccountAuthFile: () => null } }),
+  });
+  const response = await h.post('/codex-proxy/official/session/main/responses', { model: 'fixture', input: 'hello' });
+  assert.equal(response.status, 503); assert.equal((await response.json()).reason, 'account_credential_unresolved');
+  assert.equal(h.requests.length, 0);
+});
+
+rustTest('Rust 官方上游错误不能把宿主 OAuth 令牌或账号传给借用方', async t => {
+  const h = await harness(t, 'rust', { protocol: 'codex',
+    entries: () => ({ official: { id: 'official', appType: 'codex', settingsConfig: { auth: { auth_mode: 'chatgpt' } } } }),
+    proxy: upstream => ({ codexOfficialRelay: { upstreamUrl: upstream,
+      readCredential: async () => ({ ok: true, accessToken: 'fixture-private-token', accountId: 'fixture-private-account' }) } }),
+    upstream: (_, res) => { res.writeHead(403); res.end(JSON.stringify({ error: { message: 'Denied fixture-private-token for fixture-private-account' } })); },
+  });
+  const response = await h.post('/codex-proxy/official/session/main/responses', { model: 'fixture', input: 'hello' });
+  assert.equal(response.status, 403);
+  const text = await response.text();
+  assert.doesNotMatch(text, /fixture-private/); assert.match(text, /REDACTED/);
+});
+
+rustTest('Rust Claude 指定账号没有凭据端口时明确拒绝，不查询共享登录', async t => {
+  const h = await harness(t, 'rust', {
+    entries: () => ({ account: { id: 'account', appType: 'claude', settingsConfig: { env: {}, officialAccount: { id: 'aaaaaaaaaaaaaaaa' } } } }),
+  });
+  const response = await h.post('/claude-proxy/account/session/v1/messages', claudeBody);
+  assert.equal(response.status, 502); assert.match(await response.text(), /account_credential_unresolved/);
+  assert.equal(h.requests.length, 0); assert.equal(h.usage.length, 1);
 });

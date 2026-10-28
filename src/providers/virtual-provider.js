@@ -1,8 +1,7 @@
 'use strict';
 
-// Migration bridge only: the host owns the existing provider/quota stores and
-// Express callbacks. Rust owns configuration validation, selection and retry
-// policy. Remove this bridge when those store ports move to Rust CPR.
+// Host ports for the existing quota recorder, egress plugins and refresh callbacks.
+// Native storage and per-request Rust state own persistence, selection and retries.
 const { getNative } = require('../native/runtime');
 const subscriptions = require('../quota/account-subscription-cache');
 let cache = null;
@@ -16,12 +15,13 @@ function call(method, input) {
   return JSON.parse(native[method](JSON.stringify(input)));
 }
 function validate(input) { return call('validateVirtualProvider', input); }
-function status(provider, providers, { model, excluded = [] } = {}) {
-  return call('selectVirtualProvider', { appType: provider.appType, virtual: provider.virtual,
+function snapshot(provider, providers, { model, excluded = [] } = {}) {
+  return { providerId: provider.id, appType: provider.appType, virtual: provider.virtual,
     providers: providers.map(p => ({ ...p, virtualGateAllowed:
       require('./egress-ip-policy').checkEgressIpAllowed(p).allowed && !guard?.check({ appType: p.appType, providerId: p.id }).blocked })),
-    limits: cache?.snapshot().entries || {}, subscriptions: subscriptions.snapshot(), model, excluded, now: Date.now() });
+    limits: cache?.snapshot().entries || {}, subscriptions: subscriptions.snapshot(), model, excluded, now: Date.now() };
 }
+function status(provider, providers, options) { return call('selectVirtualProvider', snapshot(provider, providers, options)); }
 async function refresh(provider) {
   await subscriptions.ready();
   const providers = require('./core').listProviders();
@@ -34,14 +34,18 @@ async function refresh(provider) {
 }
 function resolve(provider, options) {
   const core = require('./core');
-  const decision = status(provider, core.listProviders().filter(p => !p.virtual), options);
+  const input = snapshot(provider, core.listProviders().filter(p => !p.virtual), options);
+  let decision;
+  try { decision = options?.request ? JSON.parse(options.request.choose(JSON.stringify(input))) : call('selectVirtualProvider', input); }
+  catch (error) { if (error.message !== 'VIRTUAL_NO_AVAILABLE_MEMBER') throw error; decision = {}; }
   if (!decision.selectedId) throw Object.assign(new Error('虚拟线路暂无可用成员，请检查余量、到期日期和模型'),
     { code: 'VIRTUAL_NO_AVAILABLE_MEMBER', statusCode: 503, safeCprMessage: '虚拟线路暂无可用成员，请检查余量、到期日期和模型' });
   return core.routingProviderView(provider.appType, decision.selectedId);
 }
-function outcome(provider, statusCode, headersSent, resetMs) {
-  const result = call('virtualProviderFailure', { status: statusCode, headersSent, resetMs,
-    previous: cache?.get(provider.appType, provider.id)?.summary, now: Date.now() });
+function outcome(provider, statusCode, headersSent, resetMs, request) {
+  const input = { providerId: provider.id, status: statusCode, headersSent, resetMs,
+    previous: cache?.get(provider.appType, provider.id)?.summary, now: Date.now() };
+  const result = request ? JSON.parse(request.outcome(JSON.stringify(input))) : call('virtualProviderFailure', input);
   if (result.record) cache?.record(provider.appType, provider.id, result.record);
   return result.retry;
 }

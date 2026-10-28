@@ -21,8 +21,12 @@ const MAX_ERROR: usize = 64 * 1024;
 static CLIENTS: OnceLock<StdMutex<HashMap<String, Client>>> = OnceLock::new();
 
 fn client(plan: &Plan) -> Result<Client, String> {
-    // 宿主每次按统一策略解析出口；空值明确代表直连，不能再被隐式环境代理覆盖。
-    let key = plan.proxy_url.clone().unwrap_or_else(|| "direct".into());
+    client_for_proxy(plan.proxy_url.as_deref())
+}
+
+pub(crate) fn client_for_proxy(proxy_url: Option<&str>) -> Result<Client, String> {
+    // An absent proxy explicitly means direct, never an environment override.
+    let key = proxy_url.unwrap_or("direct").to_owned();
     let mut cache = CLIENTS
         .get_or_init(Default::default)
         .lock()
@@ -35,7 +39,7 @@ fn client(plan: &Plan) -> Result<Client, String> {
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(30))
         .pool_idle_timeout(Duration::from_secs(60));
-    if let Some(proxy) = &plan.proxy_url {
+    if let Some(proxy) = proxy_url {
         builder = builder
             .no_proxy()
             .proxy(reqwest::Proxy::all(proxy).map_err(|_| "账号出口地址无效")?);
