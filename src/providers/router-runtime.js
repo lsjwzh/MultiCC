@@ -14,7 +14,8 @@ const {
 } = require('./router-adapter');
 const { toLegacyProviderView } = require('./binding');
 const { applyCliKeyAccountEnv, selectedAccountId } = require('../cli-key-accounts');
-const { ensureLoopbackNoProxyEnv } = require('../network/proxy-policy');
+const { ensureLoopbackNoProxyEnv, hasProxyEnv } = require('../network/proxy-policy');
+const { latestChildProxyEnv } = require('../network/global-proxy');
 
 const DEFAULT_MODE = 'legacy';
 
@@ -161,11 +162,30 @@ function createProviderRouterRuntime(options = {}) {
     return { ...result, env: applyCliKeyAccountEnv(result.env || {}, session, keyAccounts, cli) };
   }
 
-  // Children routed onto the local CPR (127.0.0.1) must never let an inherited
-  // proxy env capture that hop; see ensureLoopbackNoProxyEnv.
-  function withLoopbackNoProxy(result) {
+  // Children routed onto the local CPR (127.0.0.1) must never let a proxy
+  // capture that hop. Two capture paths: (a) inherited proxy env without a
+  // loopback NO_PROXY — fixed by ensureLoopbackNoProxyEnv; (b) codex
+  // (Rust/reqwest) silently reading the macOS system proxy when the env has no
+  // proxy vars at all. For (b) declare the discovered proxy explicitly: env
+  // vars take precedence over system settings in reqwest, and the env path
+  // honors NO_PROXY, so the loopback bypass applies. Snapshot comes from the
+  // global proxy refresh (60s cadence); a stale or absent snapshot keeps the
+  // previous behavior, and the hijack hint on the turn error covers the gap.
+  const childProxyEnv = options.childProxyEnv || latestChildProxyEnv;
+  function withManagedProxyEnv(result, cli) {
     if (!result || !result.env) return result;
-    return { ...result, env: ensureLoopbackNoProxyEnv(result.env) };
+    let env = result.env;
+    if (['codex', 'codex-exp'].includes(cli) && !hasProxyEnv(env)) {
+      const snapshot = childProxyEnv();
+      if (snapshot) env = {
+        ...env,
+        http_proxy: snapshot.HTTP_PROXY || '', HTTP_PROXY: snapshot.HTTP_PROXY || '',
+        https_proxy: snapshot.HTTPS_PROXY || '', HTTPS_PROXY: snapshot.HTTPS_PROXY || '',
+        no_proxy: snapshot.NO_PROXY || '', NO_PROXY: snapshot.NO_PROXY || '',
+      };
+    }
+    const merged = ensureLoopbackNoProxyEnv(env);
+    return merged === env ? result : { ...result, env: merged };
   }
 
   function resolveSpawnEnv(session, overrides) {
@@ -178,7 +198,7 @@ function createProviderRouterRuntime(options = {}) {
     const result = binding.cli === 'pi' || hostOwnsOfficialCodexHome(binding)
       ? legacy.resolveSpawnEnv(toLegacyProviderView(binding))
       : port.resolveSpawn(binding);
-    return withLoopbackNoProxy(withKeyAccount(result, session, binding.cli));
+    return withManagedProxyEnv(withKeyAccount(result, session, binding.cli), binding.cli);
   }
 
   function buildChildEnv(base, session, extra = {}, overrides) {
@@ -188,7 +208,7 @@ function createProviderRouterRuntime(options = {}) {
     const result = mode === 'shadow' || binding.cli === 'pi' || hostOwnsOfficialCodexHome(binding)
       ? legacy.buildChildEnv(base, toLegacyProviderView(binding), extra)
       : port.buildChildEnv(base, binding, extra);
-    return withLoopbackNoProxy(withKeyAccount(result, session, binding.cli));
+    return withManagedProxyEnv(withKeyAccount(result, session, binding.cli), binding.cli);
   }
 
   return Object.freeze({
