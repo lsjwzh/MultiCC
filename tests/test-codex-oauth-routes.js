@@ -90,12 +90,13 @@ test('missing credentials offer login even before a token refresh has failed', (
   assert.equal(res.body.loginCommand, 'codex login');
 });
 
-test('login opener reuses an existing login session without creating a new one', async () => {
+test('login opener disposes the previous login terminal and creates a fresh one', async () => {
   const app = fakeApp();
+  const disposed = [];
   let created = 0;
   mountCodexOAuthRoutes(app, {
     getStatus: () => ({}),
-    persistedSessionExists: id => id === CODEX_LOGIN_SESSION_ID,
+    disposeLoginTerminal: async loginFlow => { disposed.push(loginFlow); return 0; },
     directories: new Map([['d1', { id: 'd1', path: '/tmp/x' }]]),
     createSessionRecord: async () => { created += 1; return { ok: true, id: CODEX_LOGIN_SESSION_ID }; },
   });
@@ -105,8 +106,9 @@ test('login opener reuses an existing login session without creating a new one',
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.ok, true);
   assert.equal(res.body.sessionId, CODEX_LOGIN_SESSION_ID);
-  assert.equal(res.body.reused, true);
-  assert.equal(created, 0);
+  assert.equal(res.body.reused, false);
+  assert.equal(created, 1);
+  assert.deepEqual(disposed, ['codex-login']);
 });
 
 test('login opener creates the whitelisted codex-login terminal on the default login', async () => {

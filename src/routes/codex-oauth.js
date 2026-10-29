@@ -4,22 +4,22 @@
 // a one-click path into an interactive `codex login`. The login itself is a
 // browser OAuth flow that no non-interactive process can complete (every
 // multicc codex turn is a fresh `codex exec`), so the POST endpoint never
-// runs the login itself — it only opens (or reuses) a terminal session where
-// a human can complete it. Once `codex login` rewrites ~/.codex/auth.json,
-// the refresher's re-read self-heals the needs_login state.
+// runs the login itself — it only opens a fresh terminal session where a human
+// can complete it. The previous login terminal is disposed first: a saved one
+// would only replay the last run instead of showing a new login prompt. Once
+// `codex login` rewrites ~/.codex/auth.json, the refresher's re-read self-heals
+// the needs_login state; the exit path drops the terminal record entirely.
 
 const CODEX_LOGIN_SESSION_ID = 'codex-login';
 
 function createLoginSessionOpener(deps) {
-  const { directories, createSessionRecord } = deps;
+  const { directories, createSessionRecord, disposeLoginTerminal = async () => 0 } = deps;
   return async function openCodexLoginSession() {
-    if (deps.persistedSessionExists && deps.persistedSessionExists(CODEX_LOGIN_SESSION_ID)) {
-      return { ok: true, sessionId: CODEX_LOGIN_SESSION_ID, reused: true };
-    }
     const dirList = typeof directories.values === 'function'
       ? [...directories.values()] : [];
     const dir = dirList.find(d => d && d.path) || dirList[0];
     if (!dir) return { ok: false, error: 'no directory available' };
+    await disposeLoginTerminal('codex-login');
     const result = await createSessionRecord({
       dir,
       cli: 'codex',
