@@ -775,3 +775,33 @@ test('managed child env declares the proxy for codex and pins the loopback bypas
   assert.strictEqual(inherited.env.https_proxy, undefined);
   assert.ok(inherited.env.no_proxy.includes('127.0.0.1'));
 });
+
+// The local loopback proxy hop (127.0.0.1 /claude-proxy|/codex-proxy) is the
+// only place a system proxy could hijack a managed child's model traffic, so
+// the set of lanes allowed onto it must stay explicit. Non-managed lanes
+// (kimi/dsh/zcode/opencode/grok/qoder/...) dial their provider's external
+// endpoint directly and must never receive a loopback endpoint from us.
+test('managed loopback routing stays bound to the claude/codex lane families', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
+  const managed = ['claude', 'claude-exp', 'codex', 'codex-exp'];
+  for (const cli of managed) assert.ok(SUPPORTED_CHAT_CLIS.includes(cli), cli);
+  const source = fs.readFileSync(path.join(__dirname, '../src/chat/turn-engine.js'), 'utf8');
+  // The two spawn-time gates are the only wiring between lanes and the managed
+  // proxy env. If either condition changes, revisit this allowlist on purpose.
+  assert.match(source, /if \(persisted\.cli === 'claude' \|\| persisted\.cli === 'claude-exp'\) providers\.applyClaudeProxyEnv/);
+  assert.match(source, /persisted\.cli === 'codex' \|\| persisted\.cli === 'codex-exp'\) \{\s*const proxyRequired = providers\.codexProxyConfigRequired/);
+  // Behavioural spot check on the dsh lane (pure env, no filesystem): its
+  // endpoint stays the provider's external URL and no loopback leaks in.
+  // kimi/grok builders write real session homes on disk, so they stay
+  // source-gated above instead of being driven here.
+  const providers = require('../src/providers/core');
+  const dsh = providers.buildDshRoute({
+    name: 'dsh-relay',
+    settingsConfig: JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'k', ANTHROPIC_BASE_URL: 'https://api.example.com' } }),
+  }, { id: 'sess', model: 'glm-4.6' });
+  assert.equal(dsh.env.DEEPSEEK_BASE_URL, 'https://api.example.com');
+  assert.equal('ANTHROPIC_BASE_URL' in dsh.env, false);
+  assert.equal(JSON.stringify(dsh.env).includes('127.0.0.1'), false);
+});

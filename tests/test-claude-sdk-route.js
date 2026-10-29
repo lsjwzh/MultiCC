@@ -118,3 +118,45 @@ test('closing a relay aborts an unfinished upstream and closes its listener', as
   await Promise.all([failed, disconnected]);
   await assert.rejects(fetch(relay.env.ANTHROPIC_BASE_URL));
 });
+
+test('managedRoute accepts exactly the managed shape and normalizes a trailing slash', () => {
+  const route = managedRoute({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:3000/claude-proxy/p1/s1/',
+    ANTHROPIC_AUTH_TOKEN: 'tok' });
+  assert.equal(route.url.pathname, '/claude-proxy/p1/s1');
+  assert.equal(route.token, 'tok');
+  assert.equal(route.identity, 'http://127.0.0.1:3000/claude-proxy/p1');
+  // Missing token still resolves (bind() refuses it), so shape checks stay honest.
+  assert.equal(managedRoute({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:3000/claude-proxy/p1/s1' }).token, '');
+  for (const url of [
+    'http://127.0.0.1:3000/claude-proxy/p1/s1#frag',
+    'http://127.0.0.1:3000/claude-proxy/p1/s1/extra',
+    'http://127.0.0.1:3000/codex-proxy/p1/s1',
+    'http://127.0.0.1:3000/claude-proxy/p1',
+    'not a url', '',
+  ]) assert.equal(managedRoute({ ANTHROPIC_BASE_URL: url }), null);
+});
+
+// The resident query bakes its endpoint at start; rotating provider routes
+// between attempts must never require restarting it. This is the whole reason
+// the relay exists — verify the rotation end to end.
+test('bind() rotates to the next attempt route once idle', async t => {
+  const received = [];
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.once('end', () => { received.push(req.url); res.writeHead(200); res.end('ok'); });
+  });
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+  t.after(() => { upstream.closeAllConnections(); upstream.close(); });
+  const relay = await createRouteRelay({ logger: null });
+  t.after(() => relay.close());
+  const origin = `http://127.0.0.1:${upstream.address().port}`;
+  const headers = { authorization: `Bearer ${relay.env.ANTHROPIC_AUTH_TOKEN}` };
+  relay.bind({ ANTHROPIC_BASE_URL: `${origin}/claude-proxy/first-attempt/s1`, ANTHROPIC_AUTH_TOKEN: 'cap-1' });
+  await fetch(relay.env.ANTHROPIC_BASE_URL + '/v1/messages', { method: 'POST', headers, body: '{}' });
+  relay.bind({ ANTHROPIC_BASE_URL: `${origin}/claude-proxy/second-attempt/s1`, ANTHROPIC_AUTH_TOKEN: 'cap-2' });
+  await fetch(relay.env.ANTHROPIC_BASE_URL + '/v1/messages', { method: 'POST', headers, body: '{}' });
+  assert.deepEqual(received, [
+    '/claude-proxy/first-attempt/s1/v1/messages',
+    '/claude-proxy/second-attempt/s1/v1/messages',
+  ]);
+});
