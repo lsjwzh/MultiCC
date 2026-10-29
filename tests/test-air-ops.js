@@ -186,7 +186,7 @@ function createClock() {
   };
 }
 
-function buildContext({ fetchImpl, confirmResult = true, pushInfo = null, qrcode = null, openExternal = null }) {
+function buildContext({ fetchImpl, confirmResult = true, pushInfo = null, qrcode = null, openExternal = null, desktopUpdate = null }) {
   const registry = registryFrom(AIR_HTML);
   const reloads = [];
   const clock = createClock();
@@ -228,6 +228,9 @@ function buildContext({ fetchImpl, confirmResult = true, pushInfo = null, qrcode
   // The desktop dialog opens the release page through window.open (the shell
   // routes it to the system browser); record the URL instead of navigating.
   if (openExternal) context.open = url => { openExternal(url); return null; };
+  // Present only when the Electron shell exposed its updater (desktop/preload.js):
+  // air-ops.js uses this to pick the in-app flow over the releases download page.
+  if (desktopUpdate) context.multiccDesktop = { update: desktopUpdate };
   vm.createContext(context);
   // air.html carries shared/format.js as a <script> ahead of air-ops.js (the
   // order tests/test-format-guard.js pins); a sandbox runs no script tags and
@@ -387,6 +390,70 @@ test('the desktop shell points at a new installer instead of updating in place',
   assert.ok(releases, 'the dialog offers the release page');
   releases.onclick();
   assert.deepEqual(opened, ['https://github.com/lsjwzh/MultiCC/releases/latest']);
+});
+
+test('the desktop shell downloads and installs in-app when its updater is available', async () => {
+  const fetchImpl = scriptedFetch({
+    '/api/update/status': [{ json: { state: 'idle', running: false, kind: 'desktop' } }],
+    '/api/version-check': [{ json: { current: '2.4.3', channel: 'dev', latest: 'v2.8.2', latestVersion: '2.8.2', updateAvailable: true } }],
+    '/api/server-info': [{ json: { uptimeMs: 900 } }],
+  });
+  const started = [];
+  let push = null;
+  const bridge = {
+    supported: true,
+    start: async options => { started.push(options); return { ok: true, state: { state: 'running', steps: [] } }; },
+    onProgress: handler => { push = handler; return () => { push = null; }; },
+  };
+  const { registry, advance } = buildContext({ fetchImpl, desktopUpdate: bridge });
+  await settle();
+
+  registry['air-ver-row'].onclick();
+  await settle();
+
+  // The confirm dialog offers the in-app update, not the releases page.
+  assert.equal(findButton(registry, '打开发布页'), null, 'no download-page fallback when the shell can self-update');
+  const confirm = findButton(registry, '立即更新');
+  assert.ok(confirm, 'the in-app update button is offered');
+  assert.match(dialogText(registry), /下载并安装新版本/);
+
+  confirm.onclick();
+  await settle();
+
+  // Nothing is POSTed to the server: the Electron shell performs the update.
+  assert.equal(fetchImpl.calls.some(call => call.url === '/api/update'), false,
+    'the shell, not the server, runs the desktop update');
+  assert.equal(started.length, 1);
+  assert.equal(started[0].version, '2.8.2', 'the resolved target version is handed to the shell');
+  assert.equal(typeof push, 'function', 'the UI subscribed to the run progress');
+
+  // A running snapshot paints the step checklist and the download percentage.
+  push({
+    state: 'running', running: true, startedAt: new Date(0).toISOString(),
+    steps: [
+      { id: 'check', state: 'done', startedAt: null, endedAt: null, note: null, progress: null },
+      { id: 'download', state: 'running', startedAt: new Date(0).toISOString(), endedAt: null, note: null, progress: { text: '10 MB / 24 MB', percent: 42 } },
+      { id: 'checksum', state: 'pending', startedAt: null, endedAt: null, note: null, progress: null },
+      { id: 'install-app', state: 'pending', startedAt: null, endedAt: null, note: null, progress: null },
+      { id: 'relaunch', state: 'pending', startedAt: null, endedAt: null, note: null, progress: null },
+    ],
+    tail: '',
+  });
+  await settle();
+  const text = dialogText(registry);
+  assert.match(text, /下载新版本安装包/, 'the download step is named');
+  assert.match(text, /安装新版本/, 'the install step is named');
+  assert.match(text, /重启应用/, 'the relaunch step is named');
+  assert.match(registry['air-ver-hint'].textContent, /42%/, 'the download percentage reaches the sidebar hint');
+
+  // Completion says the app is restarting — it never reloads the page (the app
+  // relaunch replaces everything on its own).
+  push({ state: 'succeeded', running: false, steps: [], tail: '' });
+  await settle();
+  assert.match(dialogText(registry), /即将自动重启/);
+  await advance(POLL_MS_UNDER_TEST * 2);
+  await settle();
+  assert.match(dialogText(registry), /即将自动重启/, 'the dialog stays put; only the restart takes over');
 });
 
 test('a 409 refusal is reported instead of being mistaken for a running update', async () => {

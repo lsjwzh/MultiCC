@@ -3061,6 +3061,15 @@
       ]
     },
     {
+      "path": "tests/test-desktop-updater.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:desktop",
+      "entrypoints": [
+        "npm:test:desktop"
+      ]
+    },
+    {
       "path": "tests/test-detached-durable.js",
       "tier": "core",
       "lane": "deterministic",

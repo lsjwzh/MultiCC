@@ -198,6 +198,8 @@
     install: 'airOpsStepInstall', verify: 'airOpsStepVerify', restart: 'airOpsStepRestart', ready: 'airOpsStepReady',
     // Standalone package (scripts/standalone-cli.js declares its own plan).
     download: 'airOpsStepDownload', checksum: 'airOpsStepChecksum', extract: 'airOpsStepExtract',
+    // Desktop self-update plan (desktop/lib/desktop-updater.js).
+    'install-app': 'airOpsStepInstallApp', relaunch: 'airOpsStepRelaunch',
   };
   const STEP_ICONS = { done: '✓', running: '⟳', failed: '✗', skipped: '–', pending: '·' };
 
@@ -651,11 +653,154 @@
     return dialog;
   }
 
+  // ── Desktop self-update (in-app) ────────────────────────────────────────
+  // The Electron shell exposes its updater over preload IPC (desktop/preload.js).
+  // When it is present *and* this build can replace itself, the desktop app
+  // downloads, verifies, installs and relaunches on its own — no trip to the
+  // releases page. The bridge emits snapshots in the same shape
+  // /api/update/status returns, so the progress panel above renders a desktop
+  // run with no special-casing.
+  function desktopUpdateBridge() {
+    const bridge = root && root.multiccDesktop && root.multiccDesktop.update;
+    return bridge && bridge.supported ? bridge : null;
+  }
+
+  // The one in-flight desktop run (null when idle): its latest snapshot and the
+  // unsubscribe handle. Held here so the version row can reopen the progress
+  // dialog after the user backgrounds it.
+  let desktopRun = null;
+
+  function stopDesktopRun() {
+    if (desktopRun && typeof desktopRun.unsubscribe === 'function') {
+      try { desktopRun.unsubscribe(); } catch (_) { /* already gone */ }
+    }
+    desktopRun = null;
+  }
+
+  function paintDesktopRun(dialog, state) {
+    if (!dialog || !state) return;
+    if (state.state === 'failed') {
+      setVersionHint(t('airOpsUpdateFailed'));
+      dialog.setTitle(t('airOpsUpdateFailed'));
+      dialog.setBody(t('airOpsDesktopFailedBody'));
+      dialog.setLog(state.tail || '');
+      dialog.setButtons([
+        ...(root && typeof root.open === 'function'
+          ? [{ label: t('airOpsOpenReleases'), onClick: () => { openReleases(); dialog.close(); } }]
+          : []),
+        { label: t('airOpsClose'), onClick: () => dialog.close() },
+      ], () => dialog.close());
+      return;
+    }
+    if (state.state === 'succeeded') {
+      setVersionHint(t('airOpsDesktopRestarting'), true);
+      dialog.setTitle(t('airOpsUpdateDoneTitle'));
+      dialog.setBody(t('airOpsDesktopDoneBody'));
+      dialog.setLog('');
+      dialog.setButtons([]);
+      return;
+    }
+    const current = (state.steps || []).find(step => step.state === 'running');
+    const label = current ? t(STEP_LABEL_KEYS[current.id] || 'airOpsUpdating') : t('airOpsUpdating');
+    const detail = current && current.progress
+      ? (current.progress.percent != null ? `${current.progress.percent}%` : current.progress.text)
+      : '';
+    setVersionHint([label, detail].filter(Boolean).join(' ').slice(0, 40), true);
+    dialog.setBody(t('airOpsDesktopRunningBody'));
+  }
+
+  async function startDesktopUpdate(bridge, info) {
+    const dialog = openDialog();
+    dialog.setTitle(t('airOpsUpdatingTitle'));
+    dialog.setBody(t('airOpsDesktopRunningBody'));
+    dialog.setExtra(null);
+    dialog.setLog('');
+    dialog.setButtons([{ label: t('airOpsRunInBackground'), onClick: () => dialog.close() }], () => dialog.close());
+
+    const progress = attachProgress(dialog);
+    progress.update(null);
+    setVersionHint(t('airOpsUpdating'), true);
+
+    const unsubscribe = bridge.onProgress(state => {
+      if (!state) return;
+      if (desktopRun) desktopRun.state = state;
+      const live = activeDialog && activeDialog.isOpen() ? activeDialog : null;
+      if (live === dialog) { progress.update(state); paintDesktopRun(live, state); }
+      if (state.state === 'failed') stopDesktopRun();
+    });
+    desktopRun = { unsubscribe, state: null };
+
+    let result;
+    try {
+      result = await bridge.start({ version: (info && (info.latestVersion || info.latest)) || null });
+    } catch (error) {
+      result = { ok: false, code: 'DESKTOP_UPDATE_FAILED', error: error.message };
+    }
+
+    if (result && result.ok) return;
+    // A refusal that carries a run state means the run itself failed; paint it.
+    const refusal = result || {};
+    if (refusal.state) { paintDesktopRun(dialog, refusal.state); return; }
+    // Otherwise this build cannot self-update (dev checkout, a .deb install):
+    // point at the releases page instead of leaving a dead dialog.
+    setVersionHint('');
+    dialog.setTitle(t('airOpsCannotStart'));
+    dialog.setBody(refusal.code === 'DESKTOP_UPDATE_UNSUPPORTED'
+      ? t('airOpsDesktopUpdateUnsupported')
+      : `${refusal.error || t('airOpsCannotStart')}${refusal.code ? `\n(${refusal.code})` : ''}`);
+    dialog.setButtons([
+      ...(root && typeof root.open === 'function'
+        ? [{ label: t('airOpsOpenReleases'), onClick: () => { openReleases(); dialog.close(); } }]
+        : []),
+      { label: t('airOpsClose'), onClick: () => dialog.close() },
+    ], () => dialog.close());
+  }
+
+  // Installer confirms with the same current/latest header the git path shows,
+  // minus the force checkbox (a desktop release is always fetched fresh).
+  function showDesktopInAppUpdate(bridge, info) {
+    const updateAvailable = !!(info && info.updateAvailable);
+    const latestText = info && info.latest ? info.latest : (info && info.latestVersion) || null;
+    const dialog = openDialog();
+    dialog.setTitle(updateAvailable ? t('airOpsNewVersionFound') : t('airOpsUpdateMultiCC'));
+    dialog.setBody([
+      t('airOpsCurrentVersion', { current: `v${(info && info.current) || '—'}`, channel: (info && info.channel) || 'dev' }),
+      updateAvailable
+        ? t('airOpsLatestVersion', { latest: latestText })
+        : (info && info.apiError ? t('airOpsLatestOffline') : t('airOpsLatestIsCurrent', { latest: latestText || t('airOpsUnknown') })),
+      '',
+      t('airOpsDesktopInAppIntro'),
+    ].join('\n'));
+    dialog.setExtra(null);
+    dialog.setLog('');
+    dialog.setButtons([
+      { label: t('airOpsCancel'), onClick: () => dialog.close() },
+      {
+        label: updateAvailable ? t('airOpsUpdateNow') : t('airOpsUpdateAnyway'),
+        kind: 'primary',
+        onClick: () => { dialog.close(); void startDesktopUpdate(bridge, info); },
+      },
+    ], () => dialog.close());
+  }
+
   let updateFlowOpen = false;
   async function openUpdateFlow() {
     if (updateFlowOpen) return;
     updateFlowOpen = true;
     try {
+      // A desktop self-update already in flight (this tab): reopen its progress
+      // dialog rather than starting a second run.
+      if (desktopRun) {
+        const dialog = openDialog();
+        dialog.setTitle(t('airOpsUpdatingTitle'));
+        dialog.setBody(t('airOpsDesktopRunningBody'));
+        dialog.setExtra(null);
+        dialog.setLog('');
+        dialog.setButtons([{ label: t('airOpsRunInBackground'), onClick: () => dialog.close() }], () => dialog.close());
+        const progress = attachProgress(dialog);
+        if (desktopRun.state) { progress.update(desktopRun.state); paintDesktopRun(dialog, desktopRun.state); }
+        return;
+      }
       // An update already in flight (possibly started in another tab, or
       // before a reload) takes precedence over anything this click would do.
       const running = await fetchUpdateStatus();
@@ -680,7 +825,13 @@
       }
       const kind = running && running.kind;
       if (kind === 'desktop') {
-        showDesktopUpdate(info);
+        // The shell can install a new release over itself → do it in-app, with
+        // the same progress panel the other flows use. Anywhere else (a browser
+        // tab pointed at the desktop-hosted server, a build that cannot
+        // self-update) falls back to the releases download page.
+        const bridge = desktopUpdateBridge();
+        if (bridge) showDesktopInAppUpdate(bridge, info);
+        else showDesktopUpdate(info);
         return;
       }
       await confirmThenUpdate(info, { kind });
