@@ -2,6 +2,17 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.12.0 — One browser approval per session, virtual providers, and quota trends (2026-10-29)
+
+- Add `multicc-cdpd`, a cross-platform CDP gateway daemon written in Rust. Chrome 144+ asks for remote-debugging approval once per WebSocket connection, so a tool that opens a connection per command made the user approve every command. The gateway keeps one approved upstream connection per Chrome and lets local callers share it over a Unix socket, a named pipe, or a loopback WebSocket entry, with per-caller target isolation and backoff after a refused approval. The browser skill now reaches the main Chrome through the gateway and starts it in the background when it is not running.
+- Add a read-only page bridge to Chrome Proxy Launcher (1.6.4): the supervising process can return a bounded text snapshot of a page without exposing general CDP access or script execution.
+- Add virtual providers. A virtual provider lists the identities of existing providers and fails over between them; credentials stay in their existing store, and validation, eligibility, and failover policy live in the Rust core. Provider credentials, authorization, request building, and storage move into the Rust core as well, and ChatGPT OAuth uses the same native transport as ordinary Responses routes.
+- Show a remaining-quota trend on each provider card: a sparkline for the 5-hour, 7-day, monthly, or balance series, and a detail view with axes, a legend, and an estimated time until the quota runs out. Samples are kept in a dedicated SQLite file owned by the Rust core and served downsampled from `GET /api/providers/limit-history`. Subscription billing dates are tracked separately from OAuth expiry and usage resets.
+- Read the signed plugin catalog published at `lsjwzh/multicc-plugins`. The list is trusted only when its ed25519 signature verifies against a pinned key, and a list older than the cached one is refused so a stale mirror cannot roll a fix back. Installing from the catalog is not part of this release.
+- Give the macOS Agent a build number so a Mac with several MultiCC copies (desktop app, standalone package, source checkout) keeps one Agent: a newer build is shared instead of replaced, an identical build installed by another copy is not swapped automatically, and the installer exits instead of falling back to ad-hoc signing when no valid certificate is available.
+- Stop the mobile app from locking its send channel when a delivery confirmation is lost: a message waiting longer than 12 seconds for confirmation no longer blocks the next one, and the pending message is resent once after reconnecting. A provider switch also clears the previous provider's API error. Update the mobile app to 2.39.1 (build 182).
+- Keep CI clean on all three platforms: rustfmt and clippy pass again, plugin stdin handles EPIPE, the cdpd version probe is asynchronous, and `turn-engine.js` is back under the 3,000-line budget. The provider router suites join the core release tier.
+
 ## v2.11.3 — Rust remote desktop, direct mobile connections, and easier setup (2026-10-27)
 
 The v2.11.0, v2.11.1, and v2.11.2 candidates stopped at release checks and
