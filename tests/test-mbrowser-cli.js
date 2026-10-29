@@ -31,6 +31,9 @@ const CHILD_ENV = {
   // (or a doctor ping) the real one or the real gateway.
   MBROWSER_MAIN_USER_DATA_DIR: path.join(TEMP, 'main-chrome'),
   MULTICC_CDP_DIR: path.join(TEMP, 'cdpd'),
+  // Isolation routing asks the MultiCC server; never the real one.
+  MULTICC_BASE_URL: 'http://127.0.0.1:9',
+  MBROWSER_ISO_DATA_ROOT: path.join(TEMP, 'plugins-data'),
 };
 
 function run(args, env = {}) {

@@ -1,6 +1,6 @@
 ---
 name: multicc-browser
-description: 当用户需要 browser-use、网页交互或登录时，用 MultiCC 自带的 mbrowser：默认经 MultiCC 的 CDP 网关直接在用户的日常 Chrome（主浏览器、主 profile 的登录态）里后台操作，可新开窗口，但不抢前台焦点、不置前、不改模式、不重启、不关闭它；只有主浏览器不可用或用户要求隔离时才启动专用 Chrome，而且默认带上主 profile 的登录态，用户明确说不要现有登录信息才用空白 profile。只有登录/扫码/授权对话框这类必须用户亲手做的步骤才请用户自己切过去；BrowserAct/OpenClaw/Browser Harness 等只在用户明确点名时才用。
+description: 当用户需要 browser-use、网页交互或登录时，用 MultiCC 自带的 mbrowser：先查 MultiCC 浏览器隔离插件（如 Chrome 隔离出口启动器）里哪个隔离环境（账号+独立出口 IP）用过目标站点，命中就优先在那个隔离环境里操作，多个候选让用户选；没命中再经 MultiCC 的 CDP 网关直接在用户的日常 Chrome（主浏览器、主 profile 的登录态）里后台操作，可新开窗口，但不抢前台焦点、不置前、不改模式、不重启、不关闭它；只有主浏览器不可用或用户要求隔离时才启动专用 Chrome，而且默认带上主 profile 的登录态，用户明确说不要现有登录信息才用空白 profile。只有登录/扫码/授权对话框这类必须用户亲手做的步骤才请用户自己切过去；BrowserAct/OpenClaw/Browser Harness 等只在用户明确点名时才用。
 ---
 
 # MultiCC 浏览器操控（mbrowser）
@@ -12,6 +12,7 @@ description: 当用户需要 browser-use、网页交互或登录时，用 MultiC
 | `main`（默认，不带 `-p` 就是它） | 用户的**日常 Chrome**（主浏览器、主 profile 的登录态） | 只经 MultiCC 的 CDP 网关 `multicc-cdpd`：整台 Chrome 只占一条已授权的连接，“允许远程调试”只需用户点一次，之后各会话、守护进程重启都复用 |
 | 专用 profile（`-p NAME`） | mbrowser 自己启动的 Chrome（独立目录） | 自己的调试端口，不弹授权 |
 | `attach` 的外部 profile | 别人用调试端口启动的 Chrome | 登记的 `--cdp-url` |
+| 隔离环境（`-p iso:<id>`） | MultiCC 浏览器隔离插件里的一个身份：独立 profile + 独立出口 IP + 通常一个登录账号 | 见下文「隔离环境优先」 |
 
 普通公开网页的只读资料仍优先用搜索/抓取；需要 JS 渲染、登录或点击时才进浏览器。
 
@@ -31,6 +32,26 @@ description: 当用户需要 browser-use、网页交互或登录时，用 MultiC
 绝不做任何置前/激活动作：`Page.bringToFront`、`Target.activateTarget`、`/json/activate`、在页面里 `window.open`（实测会激活窗口）、AppleScript `activate`、`open -a`（不带 `-g`）、`cliclick`。
 
 **唯一需要用户出场的情况**是某一步必须由用户亲手完成（输入凭据、扫码、应答钥匙串/系统授权对话框、Chrome 的“允许远程调试”），或用户明确说要看。这时也**不代为置前**：告诉用户在哪个窗口/标签做，让用户自己切过去；做完继续在同一个窗口后台干活，不切模式、不重启、不关窗口。
+
+## 隔离环境优先（先查再开）
+
+MultiCC 的浏览器隔离插件（目前是「Chrome 隔离出口启动器」`chrome-proxy-launcher`）为每个账号维护一个隔离 Chrome，各自绑定出口 IP。**要操作某个站点时，先看哪个隔离环境用过它**：
+
+```bash
+$MB envs                       # 所有隔离环境：账号、备注、出口、可控程度、用过的站点
+$MB envs tiktok.com            # 只看用过某站点的环境
+$MB route https://seller-us.tiktok.com/   # 该站点该用哪个环境/profile
+```
+
+- 「用过的站点」来自该环境自己的浏览历史（顶层打开过的页面）和 cookie 的域名，只读域名和次数，不读 cookie 值。用过 ≠ 现在仍登录，进页面后核对账号。
+- **不带 `-p` 的 `open` 会自动路由**：只有一个隔离环境用过该站点 → 直接在那个环境里打开，并让本会话后续不带 `-p` 的命令都跟过去（直到下一次 `open` 路由到别处）；**多个环境都用过** → 报 `route_ambiguous` 并列出候选，用 `wait_for_user_answer` 让用户选账号，**不按访问次数替用户选**；都没用过 → 落到主浏览器。显式 `-p` 或 `MBROWSER_PROFILE` 总是优先（例如用户就要用自己的浏览器：`-p main`）。
+- 隔离环境能做到什么，看它是怎么启动的（`envs` 里写明）：
+  - **完全可控**（实例开着本机调试端口）：所有命令照常用，同样后台、不抢焦点；mbrowser 不启动、不停止、不重启它。
+  - **只读**（插件自己启动的实例只开私有管道）：只能 `open`（仅不带查询参数的 https 地址，开成后台标签）、`tabs --domain D`、`text`、`snapshot`（页面文本，没有元素引用）。需要点击/输入时报 `iso_read_only`：请用户在那个窗口亲手做，或经用户同意改用 MultiCC Agent 桌面操作。**绝不换到主浏览器或别的环境去做**——那会把这个账号和另一个 profile、另一个出口 IP 串在一起，正是隔离要避免的。
+  - **没在运行**：报 `iso_not_running`，不会自动启动（启动会弹出一个窗口）。先问用户，用户同意后 `$MB start iso:<id> [URL]`，或请用户在插件里启动。
+- 报 `iso_restart_required` / `iso_read_failed`：这个实例是旧版插件启动的，页面接口对不上，需要用户在插件里正常关闭再启动一次；不要自己重启它。
+- `stop iso:<id>` 只停 mbrowser 自己连它用的守护进程，隔离环境本身由插件管，永远不动。
+- 隔离环境的账号就是插件里的身份名（多为登录邮箱）和备注；`tag` 不用于隔离环境。
 
 ## 默认：在主浏览器里操作
 
@@ -53,7 +74,7 @@ $MB close                                # 任务结束只关本次自己开的�
 
 ## 什么时候才启动专用 Chrome
 
-默认都在主浏览器里做。只有这些情况才用专用 profile：
+没有隔离环境命中时默认在主浏览器里做。只有这些情况才用专用 profile：
 
 1. 用户要求隔离（另一个账号、不想动自己的浏览器、要无头批量跑）；
 2. 任务需要的账号/登录态只在某个已有专用 profile 里（`mbrowser sites <域名>` 能查到，见下）；
@@ -73,6 +94,7 @@ $MB open https://example.com -p shop
 
 ## 已有专用 profile
 
+0. 先 `mbrowser route <站点>`：命中隔离环境就按上节走，下面只在没命中时适用。
 1. `mbrowser profiles` 列出全部（`main` 永远排第一）；`mbrowser sites <域名或URL>` 查曾访问某站点的 profile。站点记录只表示曾访问，不证明仍登录。
 2. 用户指定了身份/profile 就用它；任务已确认的 profile 或 `MBROWSER_PROFILE` 次之；否则默认 `main`。多个候选且无法确定账号时，用 `wait_for_user_answer` 让用户选，不按“最近使用”盲选。
 3. 专用 profile 已运行就直接在本会话后台标签操作，永远不为「切成 headless」或「看得更清楚」重启它；未运行的专用 profile 默认无头启动。不要 `--force`、杀进程或删锁来夺取在用目录。
