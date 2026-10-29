@@ -44,6 +44,9 @@ process.env.MULTICC_CDP_DIR = path.join(TEMP, 'cdpd');
 process.env.MULTICC_CDP_SOCK = path.join(TEMP, 'cdpd', 'gw.sock');
 delete process.env.MULTICC_CDP_BIN;
 delete process.env.MULTICC_RUST_ADDON;
+// Isolation routing asks the MultiCC server; never the real one.
+process.env.MULTICC_BASE_URL = 'http://127.0.0.1:9';
+process.env.MBROWSER_ISO_DATA_ROOT = path.join(TEMP, 'plugins-data');
 
 const P = require(path.join(ROOT, 'skills', 'multicc-browser', 'lib', 'paths'));
 

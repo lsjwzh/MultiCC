@@ -3724,6 +3724,15 @@
       ]
     },
     {
+      "path": "tests/test-mbrowser-isolation.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-mbrowser-snapshot.js",
       "tier": "flow",
       "lane": "isolated",

@@ -38,6 +38,8 @@
 |---|---|
 | `doctor` | 只读体检：OS 版本/档位、架构、Node 版本、主浏览器状态（是否运行、远程调试是否打开）、CDP 网关状态、找到的浏览器及其与该系统最低版本和架构的匹配、最终选用的可执行文件、正在运行的 profile |
 | `profiles` | 列出 profile（`main` 永远排第一） |
+| `envs [DOMAIN_OR_URL]` | 列出 MultiCC 浏览器隔离插件里的全部隔离环境：`iso:<id>`、账号（插件身份名）、备注、所属插件、出口、可控程度（完全可控/只读/未运行）、用过的站点（历史访问次数）；带域名时只列用过它的环境 |
+| `route URL_OR_DOMAIN` | 给出该站点该用哪个环境：唯一命中的隔离环境 / 多个候选（须问用户）/ 没有命中则 `main` |
 | `sites [DOMAIN_OR_URL]` | 查哪些 profile 曾访问某个域名（登录态须在页面核对）（按最近使用排序，带账号标签）；不带参数时列出所有已记录的域名。数据来自站点登记表，`open` 成功后自动写入 |
 | `tag NAME --domain D [--label L]` | 给 profile `NAME` 在域名 `D` 下打一个人类可读的账号标签（如邮箱/用户名），写进站点登记表；重复打标签会更新而不是追加 |
 | `start [NAME] [--create [--blank]] [--headed\|--headless] [--browser PATH] [--mock-keychain] [--startup-timeout S] [--force]` | `start main`（或不带 NAME）：连接主浏览器，没运行就在后台启动它；main 不接受模式/浏览器类参数。其它 NAME：启动或复用专用 profile；`--create` 新建时默认导入主浏览器的 cookie，`--blank` 才建空白 profile。不指定模式时，沿用正在运行的浏览器；已停止的托管 profile 默认无头启动，忽略上次人工登录留下的有头配置。`start` 只对**已存在**的 profile 生效，新建必须加 `--create`；页面类命令只会自动启动**已存在**的 profile。显式 `--headed` / `--headless` 可切换模式并重启 Chrome；其它会话持有标签时默认拒绝，普通自动化不要用 `--force` 绕过 |
@@ -54,6 +56,18 @@
 ### 站点登记表（哪个 profile 曾访问哪个站点）
 
 `${MULTICC_DATA_DIR:-~/.multicc}/browser/sites.json`：`{ "<域名>": [{ profile, label, lastUsedAt }] }`。每次 `open` 成功后自动追加/更新当前 profile 在该域名下的记录（不用手动维护）；`tag NAME --domain D --label L` 额外写入人类可读标签。同一域名出现多条记录表示多个候选 profile，不证明账号不同或登录仍有效——用 `sites DOMAIN` 查出来，交给用户选，不要凑合选第一条。这张表只是"域名 → profile 名单"的索引，真正的登录态（cookie/storage）还是在各自的 Chrome `user-data-dir` 里，删这张表不影响登录态，删 profile 目录才会丢登录态。
+
+## 隔离环境（`iso:<id>`）
+
+隔离插件 = MultiCC 插件里同时有 `list`、`launch`、`browser-read` 命令的插件（目前是 `chrome-proxy-launcher`）。mbrowser 经 MultiCC 服务端的插件接口（`GET /api/plugins`、`POST /api/plugins/<id>/run`，地址取 `$MULTICC_BASE_URL`，默认 `http://127.0.0.1:3000`）读身份清单，不自己执行插件二进制。
+
+- **账号与站点**：账号是插件身份名与备注；用过的站点读该身份 profile（`~/.multicc/plugins-data/<插件>/chrome-profiles/<id>/Default/`）里的 `History`（顶层访问过的网址，按站点汇总次数）和 `Cookies`（只读 `host_key` 列，不读值），都以 SQLite `immutable` 方式只读打开，不锁、不影响运行中的 Chrome。站点按可注册域名归并（`seller-us.tiktok.com` → `tiktok.com`）。
+- **路由规则**：以历史访问为准，嵌入广告留下的 cookie 不算（只有读不到历史的环境才退回看 cookie）。一个环境命中 → 选它；多个 → `route_ambiguous`，交给用户选；没有 → `main`。不带 `-p` 的 `open` 自动执行这套路由，并把结果记为本会话的默认目标（`<state>/browser/routes.json`，一天过期），后续不带 `-p` 的命令跟随；显式 `-p` / `MBROWSER_PROFILE` 总是优先。MultiCC 服务端连不上时不路由，`open` 照常走默认 profile（stderr 提示一行）。
+- **可控程度**：
+  - `cdp`：实例在运行、profile 目录的 `DevToolsActivePort` 指向的本机端口在听、且持有 profile 的进程就是插件记录的那个 → 用一个 attach 守护进程（`iso-<id>`）完全控制，端口变化时自动换新；不启动、不停止、不重启实例。
+  - `read`：插件自己启动的实例只开私有管道（`--remote-debugging-pipe`）→ 经插件的只读接口 `multicc-browser-read-v1`：`open`（`open-page`，只接受无端口、无查询参数、无片段的 https 地址，后台标签）、`tabs --domain D[,D2]`（`pages`，该接口只列指定站点的页面）、`text` / `snapshot`（`read-page`，页面正文，无元素引用）。其它命令报 `iso_read_only`。
+  - `stopped`：`iso_not_running`；只有显式 `start iso:<id> [URL]` 才会调用插件 `launch`（会开窗口，可能到前台）。
+- `stop iso:<id>` 只停 mbrowser 的 attach 守护进程；`status`/`ping iso:<id>` 显示该环境概况；`login`/`attach`/`tag` 不适用于隔离环境。
 
 ## 页面命令
 
@@ -113,7 +127,9 @@ page: Sign in — https://example.com/login
 | 变量 | 作用 |
 |---|---|
 | `MULTICC_NODE` | 指定跑 mbrowser 的 Node（须 ≥22）；正常情况不用设，MultiCC 会把自己的 Node 放到 PATH |
-| `MBROWSER_PROFILE` | 默认 profile 名（等价于 `-p`；不设就是 `main`） |
+| `MBROWSER_PROFILE` | 默认 profile 名（等价于 `-p`，可以是 `iso:<id>`；不设时用本会话的路由结果，再默认 `main`） |
+| `MULTICC_BASE_URL` | MultiCC 服务端地址，用来查隔离插件（MultiCC 会话自动带上） |
+| `MBROWSER_ISO_DATA_ROOT` | 隔离插件数据根目录（默认 `~/.multicc/plugins-data`；测试用） |
 | `MBROWSER_MAIN_USER_DATA_DIR` | 主浏览器的 user-data-dir（默认 Google Chrome 的标准位置；测试用） |
 | `MBROWSER_MAIN_CHROME` | 主浏览器没运行时用来启动它的 `.app`/可执行文件 |
 | `MULTICC_CDP_BIN` | `multicc-cdpd` 网关二进制（默认在 `$MULTICC_RUST_ADDON` 同目录或 `PATH` 里找） |
@@ -125,6 +141,11 @@ page: Sign in — https://example.com/login
 
 ## 排错
 
+- **`route_ambiguous`**：多个隔离环境都用过这个站点。把候选（账号、出口）列给用户选，再用 `-p iso:<id>`；用户要用自己的浏览器就 `-p main`。
+- **`iso_read_only`**：只读隔离环境不能点击/输入。请用户在那个窗口亲手做，或经同意改用桌面操作；不要换到别的浏览器做。
+- **`iso_not_running`**：先问用户再 `start iso:<id>`。
+- **`iso_restart_required` / `iso_read_failed`**：实例由旧版插件启动，页面接口对不上，请用户在插件里关闭后重新启动一次。
+- **`multicc_unavailable`**：连不上 MultiCC 服务端，无法查隔离环境；检查服务或 `MULTICC_BASE_URL`。
 - **`main_not_debuggable`**：主浏览器在运行，但远程调试没开。请用户打开 `chrome://inspect/#remote-debugging` 勾选“Allow remote debugging for this browser instance”（一次即可，重启后仍记得）。不要重启/强杀用户的浏览器。
 - **Chrome 弹“允许远程调试？”**：网关第一次连这台 Chrome 时出现，请用户点一次「允许」。之后不会再弹；如果每条命令都弹，说明有东西绕过了网关直连 Chrome（检查是否有脚本自己连调试端口）。
 - **`chrome_rejected` / `chrome_approval_timeout` / `chrome_cooldown`**：用户拒绝/没应答，网关进入冷却（30s 起按次数加倍）。别循环重试，先问用户。

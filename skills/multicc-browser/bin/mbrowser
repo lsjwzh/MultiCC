@@ -15,11 +15,13 @@ const P = require(path.join(LIB, 'paths'));
 const client = require(path.join(LIB, 'client'));
 const registry = require(path.join(LIB, 'registry'));
 const lifecycle = require(path.join(LIB, 'lifecycle'));
+const iso = require(path.join(LIB, 'iso-commands'));
+const { isIsoRef } = require(path.join(LIB, 'isolation'));
 const { COMMANDS } = require(path.join(LIB, 'actions'));
 const { VERSION } = require(path.join(LIB, 'version'));
 
 const PAGE_COMMANDS = Object.keys(COMMANDS);
-const LIFECYCLE_COMMANDS = ['doctor', 'profiles', 'sites', 'tag', 'start', 'login', 'attach', 'status', 'stop', 'ping'];
+const LIFECYCLE_COMMANDS = ['doctor', 'profiles', 'envs', 'route', 'sites', 'tag', 'start', 'login', 'attach', 'status', 'stop', 'ping'];
 
 const BOOLEAN_FLAGS = new Set([
   'json', 'create', 'force', 'all', 'headed', 'headless', 'mockKeychain', 'keepChrome', 'newTab', 'newWindow', 'blank',
@@ -38,6 +40,8 @@ const USAGE = `usage: mbrowser <command> [args] [-p NAME] [--json] [--tab TARGET
 
 Default profile: main = the user's everyday Chrome, driven through the MultiCC
 CDP gateway (one approval, background tabs, never activated or closed).
+Isolation environments (MultiCC isolation plugins, one account + egress each)
+are -p iso:<id>; an \`open\` without -p goes to the one already used for that site.
 
 page commands:
   open URL [--new-tab|--new-window]    navigate (adds https:// when it looks like a host);
@@ -61,6 +65,8 @@ page commands:
 lifecycle:
   doctor                               what this machine can run
   profiles                             known profiles and their state
+  envs [DOMAIN_OR_URL]                 isolation environments: account, egress, control, sites used
+  route URL_OR_DOMAIN                  which environment/profile to use for a site
   sites [DOMAIN_OR_URL]                查询站点的已有 Profile（不自动选择账号）
   tag NAME --domain D [--label L]       为已有 Profile 登记站点和账号标签
   start [NAME] [--create [--blank]] [--headed|--headless] [--browser PATH] [--mock-keychain]
@@ -73,7 +79,8 @@ lifecycle:
   stop [NAME|--all] [--keep-chrome]
   ping                                 daemon metadata (starts one if needed)
 
-global: -p/--profile NAME (default $MBROWSER_PROFILE or 'main'), --json, --tab TARGET,
+global: -p/--profile NAME|iso:ID (default $MBROWSER_PROFILE, this session's route, or 'main'),
+        --json, --tab TARGET,
         -h/--help, --version`;
 
 function camel(name) {
@@ -163,6 +170,7 @@ function parseArgs(argv) {
 
 function profileNameFrom(flags, positional, { required = false, index = 0 } = {}) {
   const name = flags.profile || positional[index] || P.defaultProfile();
+  if (isIsoRef(name)) return name;
   P.requireName(name);
   if (required && !flags.profile && !positional[index]) {
     throw new P.MbError('usage', 'this command needs a profile name (NAME or -p NAME)');
@@ -175,7 +183,7 @@ function profileNameFrom(flags, positional, { required = false, index = 0 } = {}
 // creating a profile, so it must never be a side effect of a typo. Only
 // `start --create` (and `login --create`) may mint a profile.
 function assertProfileExists(name) {
-  if (lifecycle.profileExists(name)) return;
+  if (isIsoRef(name) || lifecycle.profileExists(name)) return;
   throw new P.MbError('not_created',
     `profile ${name} does not exist; create it with \`mbrowser start ${name} --create\``);
 }
@@ -241,6 +249,11 @@ async function main(argv) {
   if (LIFECYCLE_COMMANDS.includes(command)) {
     if (command === 'doctor') return report(flags, await lifecycle.doctor({ browser: flags.browser }));
     if (command === 'profiles') return report(flags, lifecycle.profiles());
+    if (command === 'envs') return report(flags, await iso.envs({ filter: positional[1] }));
+    if (command === 'route') {
+      if (!positional[1]) throw new P.MbError('usage', 'route needs a URL or a domain');
+      return report(flags, await iso.route(positional[1]));
+    }
     if (command === 'sites') {
       const target = positional[1];
       if (target) {
@@ -259,6 +272,7 @@ async function main(argv) {
     }
     if (command === 'tag') {
       const name = profileNameFrom(flags, positional, { index: 1, required: true });
+      if (isIsoRef(name)) throw new P.MbError('usage', 'isolation environments are labelled by their plugin identity (account name); tag is for mbrowser profiles');
       assertProfileExists(name);
       const domain = registry.domainFromUrl(flags.domain);
       if (!domain) throw new P.MbError('usage', 'tag 需要 --domain 指定有效的 HTTP(S) 域名或地址。');
@@ -266,8 +280,10 @@ async function main(argv) {
       return report(flags, { text: '已登记 ' + name + ' → ' + domain, domain, candidates });
     }
     if (command === 'start') {
+      const startName = profileNameFrom(flags, positional, { index: 1 });
+      if (isIsoRef(startName)) return report(flags, await iso.start(startName, { url: positional[2] }));
       return report(flags, await lifecycle.start({
-        name: profileNameFrom(flags, positional, { index: 1 }),
+        name: startName,
         create: Boolean(flags.create),
         blank: flags.blank === true,
         headed: flags.headed === true,
@@ -279,6 +295,9 @@ async function main(argv) {
       }));
     }
     if (command === 'login') {
+      if (isIsoRef(profileNameFrom(flags, positional, { index: 1 }))) {
+        throw new P.MbError('usage', 'log in to an isolation environment in its own window (start it with `mbrowser start iso:<id> URL` once the user agrees)');
+      }
       return report(flags, await lifecycle.login({
         name: profileNameFrom(flags, positional, { index: 1 }),
         url: positional[2],
@@ -288,6 +307,9 @@ async function main(argv) {
       }));
     }
     if (command === 'attach') {
+      if (isIsoRef(profileNameFrom(flags, positional, { index: 1 }))) {
+        throw new P.MbError('usage', 'isolation environments attach by themselves when they expose a DevTools port; use -p iso:<id>');
+      }
       return report(flags, await lifecycle.attach({
         name: profileNameFrom(flags, positional, { index: 1 }),
         cdpUrl: flags.cdpUrl,
@@ -295,9 +317,14 @@ async function main(argv) {
     }
     if (command === 'status') {
       if (flags.all) return report(flags, lifecycle.profiles());
-      return report(flags, await lifecycle.status({ name: profileNameFrom(flags, positional, { index: 1 }) }));
+      const statusName = profileNameFrom(flags, positional, { index: 1 });
+      if (isIsoRef(statusName)) return report(flags, await iso.status(statusName));
+      return report(flags, await lifecycle.status({ name: statusName }));
     }
     if (command === 'stop') {
+      if (!flags.all && isIsoRef(profileNameFrom(flags, positional, { index: 1 }))) {
+        return report(flags, await iso.stop(profileNameFrom(flags, positional, { index: 1 })));
+      }
       return report(flags, await lifecycle.stop({
         name: profileNameFrom(flags, positional, { index: 1 }),
         all: Boolean(flags.all),
@@ -306,6 +333,7 @@ async function main(argv) {
     }
     if (command === 'ping') {
       const name = profileNameFrom(flags, positional, { index: 1 });
+      if (isIsoRef(name)) return report(flags, await iso.status(name));
       // `ping` starts a daemon, and a daemon starts Chrome in a fresh
       // user-data-dir: a mistyped -p would silently mint a new profile.
       assertProfileExists(name);
@@ -319,7 +347,21 @@ async function main(argv) {
     return 2;
   }
 
-  const name = profileNameFrom(flags, []);
+  // An explicit -p or MBROWSER_PROFILE wins; otherwise an `open` is routed
+  // to the isolation environment already used for that site, and the other
+  // commands follow this session's last route.
+  let name;
+  let routeNote = null;
+  if (flags.profile || process.env.MBROWSER_PROFILE) {
+    name = profileNameFrom(flags, []);
+  } else if (command === 'open' && positional[1]) {
+    const routed = await iso.autoRoute(positional[1]);
+    routeNote = routed.note;
+    if (routed.warning) process.stderr.write(`mbrowser: ${routed.warning}\n`);
+    name = routed.profile || P.defaultProfile();
+  } else {
+    name = iso.stickyProfile() || P.defaultProfile();
+  }
   assertProfileExists(name);
   args.newTab = flags.newTab === true;
   args.newWindow = flags.newWindow === true;
@@ -344,10 +386,16 @@ async function main(argv) {
   if (flags.direction !== undefined) args.direction = flags.direction;
   if (flags.quietMs !== undefined) args.quietMs = flags.quietMs;
 
+  if (isIsoRef(name)) {
+    const isoResult = await iso.runPageCommand(name, command, args, flags);
+    if (routeNote) isoResult.text = `${routeNote}\n${isoResult.text || ''}`;
+    return report(flags, isoResult);
+  }
   const result = await client.call(name, command, args, { tab: flags.tab, owner: undefined });
   if (command === 'open' && args.url) {
     await registry.recordUse(registry.domainFromUrl(args.url), name);
   }
+  if (routeNote && result && typeof result.text === 'string') result.text = `${routeNote}\n${result.text}`;
   return report(flags, result);
 }
 
