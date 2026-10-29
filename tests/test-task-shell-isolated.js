@@ -255,6 +255,31 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     socket.close(); socket = null;
     fs.writeFileSync(release, 'done');
     await wait(async () => (await api(`/api/task-shells/${sa.id}/tasks/${first.taskId}`)).messages.some(m => m.role === 'assistant'), 'original never completed');
+    // A share guest holding an operate link sends a bare user_message (no
+    // taskShell flag). It must be routed through the task shell exactly like
+    // the owner's own input — it used to fall to task_shell_route_required and
+    // vanish, which the share page renders as "the input was swallowed".
+    const shareCreated = await api(`/api/sessions/${second.sessionId}/share`, { access: 'operate', password: 'share-pw' });
+    const shareAuth = await fetch(`${base}/api/share/${shareCreated.token}/auth`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'share-pw' }) });
+    assert.equal(shareAuth.status, 200, 'share password auth must succeed');
+    const setCookies = typeof shareAuth.headers.getSetCookie === 'function'
+      ? shareAuth.headers.getSetCookie() : [shareAuth.headers.get('set-cookie')].filter(Boolean);
+    const shareCookie = setCookies.map(c => c.split(';')[0]).join('; ');
+    assert.ok(shareCookie.includes(`multicc_share_${shareCreated.token}=`), 'share auth must mint its cookie');
+    const shareEvents = [];
+    const shareSocket = new WebSocket(base.replace('http', 'ws') + `/ws/chat?share=${shareCreated.token}&session=${second.sessionId}`,
+      { headers: { Cookie: shareCookie } });
+    shareSocket.on('message', data => { shareEvents.push(JSON.parse(String(data))); });
+    shareSocket.on('error', () => {});
+    await new Promise((resolve, reject) => { shareSocket.once('open', resolve); shareSocket.once('error', reject); });
+    shareSocket.send(JSON.stringify({ type: 'user_message', text: 'HELLO_FROM_SHARE', clientMsgId: 'share-1' }));
+    await wait(() => shareEvents.some(e => e.type === 'task_shell_routed' && e.clientMsgId === 'share-1'),
+      'operate share input must be routed through the task shell');
+    assert.equal(shareEvents.some(e => e.code === 'task_shell_route_required'), false,
+      'operate share input must not be bounced to the task entry');
+    await wait(() => rows().some(r => r.prompt.includes('HELLO_FROM_SHARE')), 'share guest turn never reached the CLI');
+    shareSocket.close();
     // Board preview preserves ownership. A manual fork owns a new real worktree
     // at the source commit and retains history without executing on creation.
     const preview = await api(`/api/task-shell-tasks/${first.taskId}`);
