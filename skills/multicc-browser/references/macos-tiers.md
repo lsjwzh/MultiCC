@@ -29,7 +29,7 @@ MultiCC Agent 在所有档位都只作**前台桌面**后备（14+ 用 ScreenCap
 
 | 来源 | 采纳 | 不采纳 |
 |---|---|---|
-| MultiCC `mbrowser`（本技能默认） | 专用 user-data-dir + loopback 端口；每 profile 一个常驻守护进程；每会话自己的后台标签；引用快照→操作→再快照；真实 CDP 输入但不聚焦窗口 | — |
+| MultiCC `mbrowser`（本技能默认） | 默认经 MultiCC CDP 网关操作用户的日常 Chrome（一次授权、后台标签、不置前）；专用 profile 用独立 user-data-dir + loopback 端口且默认导入主浏览器的 cookie；每 profile 一个常驻守护进程；每会话自己的后台标签；引用快照→操作→再快照；真实 CDP 输入但不聚焦窗口 | 绕过网关直连主浏览器 |
 | Browser Use 官方技能 / Harness | CDP 专用浏览器；`BU_NAME` 命名 daemon 复用登录态；状态→动作→再取状态的循环；与 mbrowser 共用同一批专用 Profile 目录 | 默认接管个人 Chrome；云端浏览器作为默认 |
 | BrowserAct | 仅后台操作、禁止激活窗口；每个浏览器独立 Profile；登录/验证码交给用户；敏感动作逐项确认 | `chrome-direct` 接管个人 Chrome 作为默认；把 `which` 命中当作“已验证本地执行层” |
 | OpenClaw 托管浏览器 | 显式命名的托管 Profile；页面变化后重新快照、旧引用作废 | 默认 `chrome` 扩展接管档案 |

@@ -242,3 +242,176 @@ test('login keeps its headed window instead of handing the profile back', async 
   assert.match(result.text, /do not restart or close this browser/);
   assert.doesNotMatch(result.text, /--headless|--mode|hand it back/);
 });
+
+// ------------------------------------------------------------- main profile
+
+const net = require('node:net');
+const G = require('../skills/multicc-browser/lib/gateway');
+const M = require('../skills/multicc-browser/lib/main-chrome');
+const seed = require('../skills/multicc-browser/lib/seed');
+
+test('gateway refusals keep their code and say what to do; tokens never reach text', () => {
+  const refused = G.refusalFromClose(JSON.stringify({
+    ok: false, error: 'chrome_cooldown', detail: 'Chrome refused recently', retryAfterMs: 30000,
+  }));
+  assert.equal(refused.code, 'chrome_cooldown');
+  assert.match(refused.message, /retry after 30s/);
+  assert.match(refused.message, /do not loop/);
+  assert.equal(G.refusalFromClose(JSON.stringify({ ok: false, error: 'cdp-upstream-closed', detail: 'gone' })).code,
+    'cdp_upstream_closed', 'codes stay parseable as [a-z0-9_]+ for the CLI');
+  assert.equal(G.refusalFromClose('normal closure'), null);
+  assert.equal(G.redact('ws://127.0.0.1:1/cdp/abc123?lane=x'), 'ws://127.0.0.1:1/cdp/<token>?lane=x');
+  assert.equal(G.endpointUrl('ws://127.0.0.1:1/cdp/t', { lane: 'mbrowser-main', ttlSeconds: 600 }),
+    'ws://127.0.0.1:1/cdp/t?activePort=default&lane=mbrowser-main&ttl=600');
+});
+
+test('without a running gateway or its binary the main profile fails with a usable message', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mbrowser-gw-'));
+  try {
+    const env = { HOME: root, PATH: '', MULTICC_CDP_DIR: path.join(root, 'cdpd'), MULTICC_CDP_BIN: path.join(root, 'nope') };
+    await assert.rejects(G.baseEndpoint({ env }), error => error.code === 'gateway_unavailable'
+      && /MULTICC_CDP_BIN/.test(error.message));
+    await assert.rejects(G.baseEndpoint({ env: { ...env, MULTICC_CDP_GATEWAY: '0' } }),
+      error => error.code === 'gateway_disabled');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+async function listening() {
+  const server = net.createServer(socket => socket.destroy());
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  return server;
+}
+
+test('a main Chrome that is not running is started in the background, then used', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbrowser-main-'));
+  const server = await listening();
+  t.after(() => { server.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  let launches = 0;
+  const result = await M.ensureMain({
+    dir,
+    timeoutMs: 5000,
+    launch: () => {
+      launches += 1;
+      // What a plain launch of a Chrome with the inspect switch on produces.
+      fs.writeFileSync(path.join(dir, 'DevToolsActivePort'), `${server.address().port}\n/devtools/browser/x\n`);
+      return 'Google Chrome';
+    },
+  });
+  assert.equal(launches, 1);
+  assert.equal(result.launched, true);
+  assert.equal(result.debuggable, true);
+  // Already debuggable: no second launch.
+  assert.equal((await M.ensureMain({ dir, launch: () => { throw new Error('must not launch'); } })).launched, false);
+});
+
+test('a stale DevToolsActivePort is not mistaken for a debuggable Chrome, and a dud launch is named', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbrowser-main-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const server = await listening();
+  const deadPort = server.address().port;
+  await new Promise(resolve => server.close(resolve));
+  fs.writeFileSync(path.join(dir, 'DevToolsActivePort'), `${deadPort}\n/devtools/browser/x\n`);
+  const state = await M.inspect({ dir });
+  assert.equal(state.debuggable, false);
+  await assert.rejects(M.ensureMain({ dir, timeoutMs: 600, launch: () => 'Google Chrome' }),
+    error => error.code === 'main_launch_failed');
+  await assert.rejects(M.ensureMain({ dir, allowLaunch: false }), error => error.code === 'main_not_running');
+});
+
+test('launching the main Chrome on macOS never brings it to the front', () => {
+  const calls = [];
+  const app = fs.mkdtempSync(path.join(os.tmpdir(), 'Google Chrome-')) ;
+  const bundle = `${app}.app`;
+  fs.renameSync(app, bundle);
+  try {
+    M.launchMain({
+      env: { MBROWSER_MAIN_CHROME: bundle },
+      platform: 'darwin',
+      spawnImpl: (cmd, args) => { calls.push([cmd, ...args]); return { on() {}, unref() {} }; },
+    });
+  } finally {
+    fs.rmSync(bundle, { recursive: true, force: true });
+  }
+  assert.deepEqual(calls, [['open', '-g', '-a', bundle]]);
+});
+
+test('cookies from the main Chrome become settable cookies, and one bad cookie cannot sink the rest', async () => {
+  const session = { name: 's', value: '1', domain: '.a.test', path: '/', expires: -1, session: true, secure: true, httpOnly: true, sameSite: 'Lax', size: 2 };
+  const persistent = { name: 'p', value: '2', domain: 'b.test', path: '/x', expires: 1900000000, session: false, secure: false, httpOnly: false, priority: 'High' };
+  assert.deepEqual(seed.toCookieParam(session),
+    { name: 's', value: '1', domain: '.a.test', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' });
+  assert.equal(seed.toCookieParam(persistent).expires, 1900000000);
+  assert.equal('size' in seed.toCookieParam(session), false, 'read-only fields are dropped');
+
+  const bad = { name: 'bad', value: 'x', domain: 'c.test', path: '/' };
+  const calls = [];
+  const send = async (method, params) => {
+    calls.push(params.cookies.length);
+    if (params.cookies.some(cookie => cookie.name === 'bad')) throw new Error('Invalid cookie fields');
+    return {};
+  };
+  const result = await seed.importCookies(send, [session, bad, persistent]);
+  assert.deepEqual(result, { imported: 2, failed: 1, total: 3 });
+  assert.deepEqual(calls, [3, 1, 1, 1]);
+});
+
+test('a new dedicated profile starts with the main Chrome\'s login unless the user asked for blank', async t => {
+  isolate(t);
+  const cookies = [{ name: 'sid', value: 'v', domain: 'site.test', path: '/' }];
+  const exports = [];
+  t.mock.method(seed, 'exportMainCookies', async () => { exports.push(1); return cookies; });
+  const commands = [];
+  t.mock.method(client, 'ensureDaemon', async () => ({ pid: 1, version: 'test', headed: false }));
+  t.mock.method(client, 'call', async (name, command, args) => {
+    commands.push(command);
+    if (command === 'import-cookies') {
+      assert.deepEqual(args.cookies, cookies);
+      return { imported: 1, failed: 0, total: 1 };
+    }
+    return { headed: false, chromePid: 9, userDataDir: P.profileDir(name), socket: P.socketPath(name) };
+  });
+  const seeded = await lifecycle.start({ name: 'shop', create: true });
+  assert.equal(exports.length, 1);
+  assert.deepEqual(commands, ['import-cookies', 'status']);
+  assert.match(seeded.text, /imported 1 cookies from the everyday Chrome/);
+  assert.equal(lifecycle.profileConfig('shop').seed.status, 'done');
+
+  const blank = await lifecycle.start({ name: 'clean', create: true, blank: true });
+  assert.equal(exports.length, 1, '--blank never reads the main Chrome');
+  assert.deepEqual(lifecycle.profileConfig('clean').seed, { from: 'blank' });
+  assert.match(blank.text, /created blank/);
+
+  // An existing profile keeps its own login.
+  await lifecycle.start({ name: 'work' });
+  assert.equal(exports.length, 1);
+});
+
+test('when the main Chrome cannot be read, no half-made profile is left behind', async t => {
+  isolate(t);
+  t.mock.method(seed, 'exportMainCookies', async () => {
+    throw new P.MbError('main_not_debuggable', 'remote debugging is off');
+  });
+  t.mock.method(client, 'ensureDaemon', async () => { throw new Error('must not start a browser'); });
+  await assert.rejects(lifecycle.start({ name: 'shop', create: true }), error => error.code === 'main_not_debuggable');
+  assert.equal(lifecycle.profileConfig('shop'), null);
+  assert.equal(fs.existsSync(P.profileDir('shop')), false);
+});
+
+test('the main daemon never changes mode, restarts or reopens the everyday Chrome', async t => {
+  isolate(t);
+  process.env.MBROWSER_MAIN_USER_DATA_DIR = path.join(process.env.MBROWSER_PROFILES_DIR, '..', 'main-chrome');
+  t.after(() => { delete process.env.MBROWSER_MAIN_USER_DATA_DIR; });
+  const daemon = new Daemon('main');
+  assert.equal(daemon.kind, 'main');
+  assert.equal(daemon.userDataDir, process.env.MBROWSER_MAIN_USER_DATA_DIR);
+  await assert.rejects(daemon.setMode({ headed: false }), error => error.code === 'main_chrome');
+  t.mock.method(daemon, 'relaunch', async () => { throw new Error('must not relaunch'); });
+  daemon.phase = 'ready';
+  await daemon.onChromeLost('user quit Chrome');
+  assert.equal(daemon.phase, 'chrome-down');
+  assert.equal(daemon.relaunch.mock.callCount(), 0);
+  assert.equal(lifecycle.profileExists('main'), true);
+  await assert.rejects(lifecycle.start({ name: 'main', headless: true }), error => error.code === 'usage');
+});

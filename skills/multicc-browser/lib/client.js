@@ -21,6 +21,13 @@ const { MbError } = P;
 const PING_TIMEOUT_MS = 5000;
 const CALL_TIMEOUT_MS = 120000;
 const STARTUP_GRACE_MS = 10000;
+// The main profile's first connection can wait on the user's "Allow remote
+// debugging?" click (the gateway gives up after 180s) or a background launch.
+const MAIN_STARTUP_TIMEOUT_S = 200;
+const APPROVAL_HINT_AFTER_MS = 4000;
+const APPROVAL_HINT =
+  'mbrowser: connecting to the everyday Chrome — if Chrome shows "Allow remote debugging?", ' +
+  'the user has to click Allow once (later commands reuse that approval)\n';
 
 // Deliberately NOT unref'd: while the CLI waits for a daemon to come up, this
 // timer is often the only thing keeping the event loop alive, and an unref'd
@@ -134,12 +141,17 @@ function daemonGoneError(name) {
   return new MbError('daemon_died', `daemon exited during startup; see ${P.logPath(name)}`);
 }
 
-async function waitForDaemon(name, { timeoutMs, pid }) {
-  const socketPath = P.socketPath(name);
-  const deadline = Date.now() + timeoutMs;
+async function waitForDaemon(name, { timeoutMs, pid, hint = null }) {
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  let hinted = false;
   for (;;) {
     const result = await pingOnce(name);
     if (result) return result;
+    if (hint && !hinted && Date.now() - started > APPROVAL_HINT_AFTER_MS) {
+      hinted = true;
+      try { process.stderr.write(hint); } catch (_) { /* stderr closed */ }
+    }
     if (pid && !CH.processAlive(pid)) throw daemonGoneError(name);
     if (Date.now() > deadline) {
       throw new MbError('daemon_timeout',
@@ -167,8 +179,10 @@ async function ensureDaemon(name, options = {}) {
   const spawnImpl = options.spawn || spawnDaemon;
   const daemonOptions = options.daemonOptions || {};
   const pid = spawnImpl(name, daemonOptions);
-  const timeoutMs = (Number(daemonOptions.startupTimeout) || 60) * 1000 + STARTUP_GRACE_MS;
-  return waitForDaemon(name, { timeoutMs, pid });
+  const main = name === 'main';
+  const startupS = Number(daemonOptions.startupTimeout) || (main ? MAIN_STARTUP_TIMEOUT_S : 60);
+  const timeoutMs = startupS * 1000 + STARTUP_GRACE_MS;
+  return waitForDaemon(name, { timeoutMs, pid, hint: main ? APPROVAL_HINT : null });
 }
 
 async function call(name, cmd, args = {}, options = {}) {

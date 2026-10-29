@@ -8,6 +8,13 @@
 // delimited JSON over a 0600 unix socket. Because Chrome is spawned detached,
 // restarting the daemon (or upgrading the skill) re-attaches to the same
 // browser instead of throwing away the user's logged-in tabs.
+//
+// Three kinds of browser sit behind a daemon:
+//   main     the user's everyday Chrome (profile `main`, the default), reached
+//            only through the MultiCC CDP gateway; never stopped, restarted
+//            or activated, started in the background only when not running
+//   managed  a dedicated Chrome this daemon launched in its own user-data-dir
+//   attach   an external browser named by `attach --cdp-url`
 
 const fs = require('fs');
 const net = require('net');
@@ -19,6 +26,9 @@ const CH = require('./chrome');
 const { renderSnapshot, roleOf, nameOf } = require('./snapshot');
 const { COMMANDS } = require('./actions');
 const { PageSession, shortId, ATTACH_TIMEOUT_MS } = require('./page-session');
+const G = require('./gateway');
+const M = require('./main-chrome');
+const { importCookies } = require('./seed');
 const { VERSION } = require('./version');
 
 const { MbError } = P;
@@ -28,6 +38,8 @@ const BACKOFF_MS = [1000, 2000, 5000, 10000];
 const MAX_FAILURES = 5;
 const FAILURE_WINDOW_MS = 10 * 60 * 1000;
 const DEFAULT_STARTUP_TIMEOUT_S = 60;
+// A named gateway lane keeps this daemon's tab leases across its own restarts.
+const MAIN_LANE_TTL_S = 600;
 
 // Note: deliberately NOT unref'd. A detached daemon mid-shutdown (socket closed,
 // Chrome stop pending) can briefly hold no other handle; an unref'd timer would
@@ -46,13 +58,18 @@ class Daemon {
     this.proc = null;
     this.chromePid = null;
     this.port = null;
-    this.userDataDir = this.config.userDataDir || P.profileDir(this.name);
+    this.kind = M.isMainName(this.name) ? 'main' : (this.config.attachOnly ? 'attach' : 'managed');
+    this.userDataDir = this.kind === 'main'
+      ? M.mainUserDataDir()
+      : (this.config.userDataDir || P.profileDir(this.name));
     this.browserPath = null;
     this.owned = false;
-    this.attachOnly = Boolean(this.config.attachOnly);
+    this.attachOnly = this.kind === 'attach';
     // A previous manual login is not permission to pop up a window on the
     // next cold start. Live browsers recover their actual mode when attached.
-    this.headed = this.attachOnly ? Boolean(this.config.headed) : this.options.headed === true;
+    // The main Chrome is the user's own window, so it counts as headed.
+    this.headed = this.kind === 'main' ? true
+      : (this.attachOnly ? Boolean(this.config.headed) : this.options.headed === true);
     this.cdpUrl = this.config.cdpUrl || null;
     this.targets = new Map();
     this.pages = new Map();
@@ -87,7 +104,7 @@ class Daemon {
   async boot() {
     P.ensureStateDirs();
     this.acquireLock();
-    this.log(`daemon start pid=${process.pid} version=${VERSION} headed=${this.headed} attachOnly=${this.attachOnly}`);
+    this.log(`daemon start pid=${process.pid} version=${VERSION} kind=${this.kind} headed=${this.headed}`);
     await this.ensureChrome();
     await this.startIpc();
     await this.restoreOwners();
@@ -132,6 +149,7 @@ class Daemon {
   }
 
   async ensureChrome() {
+    if (this.kind === 'main') return this.connectMain();
     if (this.attachOnly) return this.attachExternal();
     const active = CH.readsDevToolsActivePort(this.userDataDir);
     const savedPid = Number(this.state.chromePid) || null;
@@ -153,6 +171,24 @@ class Daemon {
     await this.launchChrome();
   }
 
+  // The everyday Chrome, through the gateway. Starting it is allowed (in the
+  // background, as the user would); its first connection may wait on the
+  // user's "Allow remote debugging?" click, hence the long first timeout.
+  async connectMain() {
+    const main = await M.ensureMain({ dir: this.userDataDir, log: message => this.log(message) });
+    const url = await G.mainEndpoint({ lane: `mbrowser-${this.name}`, ttlSeconds: MAIN_LANE_TTL_S });
+    this.log(`connecting to the main chrome (pid ${main.pid || '?'}, port ${main.port}) via ${G.redact(url)}`);
+    this.phase = 'connecting';
+    await this.connectBrowser(url, { firstTimeout: G.APPROVAL_TIMEOUT_MS, displayUrl: G.redact(url) });
+    this.chromePid = main.pid || null;
+    this.port = main.port;
+    this.owned = false;
+    this.browserPath = 'main Chrome via multicc-cdpd';
+    this.phase = 'ready';
+    this.reason = null;
+    this.log(`connected to the main chrome${main.launched ? ' (started it in the background)' : ''}`);
+  }
+
   async attachExternal() {
     if (!this.cdpUrl) throw new MbError('attach', `profile ${this.name} is attach-only but has no cdpUrl`);
     const url = new URL(this.cdpUrl);
@@ -166,6 +202,7 @@ class Daemon {
   }
 
   async launchChrome() {
+    if (this.kind === 'main') return this.connectMain();
     const holder = CH.singletonLockHolder(this.userDataDir);
     if (holder) {
       const active = CH.readsDevToolsActivePort(this.userDataDir);
@@ -231,7 +268,7 @@ class Daemon {
     this.phase = 'ready';
   }
 
-  async connectBrowser(wsUrl) {
+  async connectBrowser(wsUrl, { firstTimeout = 10000, displayUrl } = {}) {
     if (this.cdp) {
       // Detach the loss hook first: this teardown is deliberate (a reconnect),
       // and letting it fire would start a keep-alive relaunch that races — and
@@ -243,14 +280,14 @@ class Daemon {
     }
     for (const session of this.pages.values()) session.detach();
     this.pages.clear();
-    const client = await CDP.connect(wsUrl, { timeout: ATTACH_TIMEOUT_MS, label: this.name });
+    const client = await CDP.connect(wsUrl, { timeout: ATTACH_TIMEOUT_MS, label: this.name, displayUrl });
     client.onClose = reason => {
       if (!this.shuttingDown) this.onChromeLost(reason.message);
     };
     this.cdp = client;
     this.browserWsUrl = wsUrl;
     this.targets.clear();
-    await client.send('Target.setDiscoverTargets', { discover: true }, undefined, { timeout: 10000 });
+    await client.send('Target.setDiscoverTargets', { discover: true }, undefined, { timeout: firstTimeout });
     client.on('Target.targetCreated', params => this.onTargetCreated(params.targetInfo));
     client.on('Target.targetInfoChanged', params => this.onTargetInfoChanged(params.targetInfo));
     client.on('Target.targetDestroyed', params => this.onTargetDestroyed(params.targetId));
@@ -379,6 +416,12 @@ class Daemon {
       this.log('attach-only profile: not relaunching');
       return;
     }
+    // The user quit or restarted their own browser: never reopen it behind
+    // their back. The next command that needs it reconnects (connectMain).
+    if (this.kind === 'main') {
+      this.log('main chrome: not reconnecting until the next command');
+      return;
+    }
     if (!this.headed) await this.relaunch('headless keep-alive');
   }
 
@@ -430,6 +473,19 @@ class Daemon {
   async ensureReady() {
     if (this.cdp && !this.cdp.closed && this.phase === 'ready') return;
     if (this.cdp && !this.cdp.closed && this.phase !== 'chrome-down') return;
+    if (this.kind === 'main') {
+      // No backoff loop: "remote debugging is off" or "the user declined" is
+      // an answer for the caller, and retrying would only re-show a dialog.
+      try {
+        await this.connectMain();
+      } catch (error) {
+        this.phase = 'chrome-down';
+        this.reason = error.message;
+        throw error;
+      }
+      await this.restoreOwners();
+      return;
+    }
     // A normal page command must not reopen a headed window the user closed.
     // launchChrome still reuses a live lock holder and restores its real mode.
     if (!this.attachOnly) this.headed = false;
@@ -457,9 +513,13 @@ class Daemon {
     return record.current || record.tabs[record.tabs.length - 1] || null;
   }
 
-  async createTab({ url = 'about:blank', background = true } = {}) {
-    const result = await this.cdp.send('Target.createTarget',
-      { url, background: Boolean(background) }, undefined, { timeout: 15000 });
+  // background: never the active tab. newWindow: a window of its own, shown
+  // without focus — it may appear on screen but never takes keyboard focus or
+  // brings the browser forward (measured on Chrome 156).
+  async createTab({ url = 'about:blank', background = true, newWindow = false } = {}) {
+    const params = { url, background: Boolean(background) };
+    if (newWindow) params.newWindow = true;
+    const result = await this.cdp.send('Target.createTarget', params, undefined, { timeout: 15000 });
     if (!result.targetId) throw new MbError('new_tab_failed', 'Target.createTarget returned no targetId');
     this.targets.set(result.targetId, {
       targetId: result.targetId, type: 'page', url, title: '', attached: false,
@@ -529,7 +589,8 @@ class Daemon {
         url: info.url || '',
         owner: targetOwner,
         current,
-        mark: current ? '*' : (targetOwner === owner ? 'mine' : 'other'),
+        mark: current ? '*' : (targetOwner === owner ? 'mine'
+          : (!targetOwner && this.kind === 'main' ? 'user' : 'other')),
       });
     }
     out.sort((a, b) => Number(b.current) - Number(a.current));
@@ -656,8 +717,8 @@ class Daemon {
       pageInfo: () => session.pageInfo(),
       resolveRef: ref => this.resolveRef(session, ref),
       snapshot: options => this.snapshot(session, options),
-      newTab: async ({ url, background }) => {
-        const targetId = await this.createTab({ url, background });
+      newTab: async ({ url, background, newWindow }) => {
+        const targetId = await this.createTab({ url, background, newWindow });
         this.claim(owner, targetId);
         this.persist();
         return this.tabView(targetId, owner);
@@ -689,6 +750,14 @@ class Daemon {
         return { id, ok: true, result: { stopping: true, keepChrome } };
       }
       if (cmd === 'set-mode') return { id, ok: true, result: await this.setMode(args) };
+      if (cmd === 'import-cookies') {
+        if (this.kind !== 'managed') {
+          throw new MbError('usage', `profile ${this.name} is not a browser mbrowser launched; it keeps its own cookies`);
+        }
+        await this.ensureReady();
+        const send = (method, params) => this.cdp.send(method, params, undefined, { timeout: 30000 });
+        return { id, ok: true, result: await importCookies(send, args.cookies) };
+      }
       if (cmd === 'ensure-tabs') {
         await this.ensureReady();
         const targetId = await this.ensureOwnTab(owner);
@@ -696,13 +765,43 @@ class Daemon {
       }
       const action = COMMANDS[cmd];
       if (!action) throw new MbError('unknown_command', `unknown command "${cmd}"`);
+      // Listing or switching tabs needs no page of our own, so it must not
+      // create one: in the main Chrome that would leave a blank tab in the
+      // user's window just because someone looked.
+      if (cmd === 'tabs' || cmd === 'tab') {
+        await this.ensureReady();
+        const result = await action({
+          listTabs: () => this.listTabs(owner),
+          switchTab: selector => this.switchTab(owner, selector),
+        }, args);
+        const notices = this.takeNotices(owner);
+        if (notices.length) {
+          result.notice = notices.join('; ');
+          result.text = `${notices.join('\n')}\n${result.text || ''}`.trim();
+        }
+        this.persist();
+        return { id, ok: true, result };
+      }
       // `close [TARGET]` names its target positionally and must never create one.
       const selector = request.tab || args.tab || (cmd === 'close' ? args.target : null);
+      let actionArgs = args;
+      // A session's first `open --new-tab|--new-window` creates its tab where
+      // asked and loads the page there, instead of an extra blank tab first
+      // (in the main Chrome that would be a stray tab in the user's window).
+      if (cmd === 'open' && !selector && (args.newTab || args.newWindow)) {
+        await this.ensureReady();
+        if (!this.currentTab(owner)) {
+          const targetId = await this.createTab({ url: 'about:blank', background: true, newWindow: Boolean(args.newWindow) });
+          this.claim(owner, targetId);
+          this.persist();
+          actionArgs = { ...args, newTab: false, newWindow: false };
+        }
+      }
       const target = await this.resolveTargetFor(owner, selector, { create: cmd !== 'close' });
       const session = this.sessionFor(target.targetId);
       const result = await this.enqueue(session, async () => {
         const ctx = this.contextFor(session, owner);
-        const value = await action(ctx, args);
+        const value = await action(ctx, actionArgs);
         if (target.foreign) {
           value.foreign = true;
           value.text = `${value.text || ''}\n[note: tab ${shortId(target.targetId)} belongs to ${target.owner}; you asked for it explicitly]`.trim();
@@ -730,6 +829,10 @@ class Daemon {
   async setMode(args) {
     const headed = Boolean(args.headed);
     const mode = headed ? 'headed' : 'headless';
+    if (this.kind === 'main') {
+      throw new MbError('main_chrome',
+        'the main profile is the user\'s everyday Chrome; mbrowser never restarts it or changes its mode');
+    }
     if (this.attachOnly) {
       throw new MbError('attach',
         `profile ${this.name} is attach-only (${this.cdpUrl}); mbrowser never restarts a browser it did not launch`);
@@ -821,6 +924,7 @@ class Daemon {
       pid: process.pid,
       version: VERSION,
       profile: this.name,
+      kind: this.kind,
       chromePid: this.chromePid,
       port: this.port,
       headed: this.headed,
@@ -888,6 +992,8 @@ class Daemon {
   async shutdown({ keepChrome = false } = {}) {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    // Stopping mbrowser never closes the user's everyday browser.
+    if (this.kind === 'main') keepChrome = true;
     this.log(`shutdown keepChrome=${keepChrome} pid=${this.chromePid}`);
     if (this.healthTimer) clearInterval(this.healthTimer);
     if (this.server) {

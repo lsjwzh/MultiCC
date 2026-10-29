@@ -27,6 +27,10 @@ const CHILD_ENV = {
   MBROWSER_PROFILES_DIR: path.join(TEMP, 'profiles'),
   MBROWSER_PROFILE: '',
   MULTICC_SESSION_ID: '',
+  // The default profile is the user's everyday Chrome; never let a test read
+  // (or a doctor ping) the real one or the real gateway.
+  MBROWSER_MAIN_USER_DATA_DIR: path.join(TEMP, 'main-chrome'),
+  MULTICC_CDP_DIR: path.join(TEMP, 'cdpd'),
 };
 
 function run(args, env = {}) {
@@ -49,6 +53,8 @@ test('long flags map to camelCase and booleans never eat the next argument', () 
   // A boolean immediately followed by another flag stays boolean.
   assert.deepEqual(parseArgs(['snapshot', '--interactive', '--json']).flags,
     { interactive: true, json: true });
+  assert.deepEqual(parseArgs(['open', 'https://a.test', '--new-window']).flags, { newWindow: true });
+  assert.deepEqual(parseArgs(['start', 'work', '--create', '--blank']).flags, { create: true, blank: true });
   // `--flag=value` and the space form agree.
   assert.equal(parseArgs(['text', '--max-chars=50']).flags.maxChars, '50');
   assert.equal(parseArgs(['text', '--max-chars', '50']).flags.maxChars, '50');
@@ -92,7 +98,7 @@ test('positional arguments are shaped per command', () => {
 
 test('the usage text lists one command per line and covers the real surface', () => {
   for (const spec of [
-    '  open URL [--new-tab]',
+    '  open URL [--new-tab|--new-window]',
     '  snapshot [--interactive] [--max-chars N]',
     '  click REF | --xy X Y [--double] [--right]',
     '  type REF TEXT [--clear] [--submit]',
@@ -357,7 +363,10 @@ test('--json emits a single machine-readable document', () => {
   const profiles = run(['profiles', '--json']);
   assert.equal(profiles.status, 0);
   const parsed = JSON.parse(profiles.stdout);
-  assert.deepEqual(parsed.profiles, []);
+  // `main` (the everyday Chrome) is always there and always listed first.
+  assert.deepEqual(parsed.profiles.map(profile => [profile.name, profile.kind]), [['main', 'main']]);
+  assert.equal(parsed.profiles[0].userDataDir, CHILD_ENV.MBROWSER_MAIN_USER_DATA_DIR);
+  assert.equal(parsed.profiles[0].headed, false, 'the user\'s own window is never reported as one of ours');
   assert.equal(typeof parsed.text, 'string');
 
   const doctor = run(['doctor', '--json']);
@@ -366,7 +375,9 @@ test('--json emits a single machine-readable document', () => {
   assert.equal(report.os.platform, process.platform);
   assert.equal(typeof report.version, 'string');
   assert.ok(Array.isArray(report.candidates));
-  assert.equal(report.profiles.length, 0);
+  assert.equal(report.profiles.length, 1);
+  assert.equal(report.main.debuggable, false);
+  assert.equal(report.gateway.running, false);
 
   const text = run(['doctor']);
   assert.equal(text.status, 0, text.stderr);
@@ -450,9 +461,9 @@ test('成功导航记录实际指定 Profile，失败导航不记录，也不按
   assert.equal(candidates.find(entry => entry.profile === 'work').label, '业务账号', '自动访问登记保留手工账号标签');
   assert.equal(open(['open', 'https://fail.example', '--json']).status, 1);
   assert.equal(JSON.parse(run(['sites', 'fail.example', '--json'], env).stdout).candidates.length, 0);
-  assert.equal(open(['open', 'https://default.example', '--json'], { MBROWSER_PROFILE: '' }).status, 1, '默认 Profile 不存在时不能凑合选择其他账号');
-  fs.mkdirSync(path.join(env.MBROWSER_PROFILES_DIR, 'default'), { recursive: true });
-  const defaultOpen = open(['open', 'https://default.example', '--json'], { MBROWSER_PROFILE: '' });
+  // 不指定 Profile 时走用户日常 Chrome（main），即便站点索引里有别的账号也不自动换过去。
+  const defaultOpen = open(['open', 'https://existing.example', '--json'], { MBROWSER_PROFILE: '' });
   assert.equal(defaultOpen.status, 0, defaultOpen.stderr);
-  assert.equal(JSON.parse(defaultOpen.stdout).profile, 'default');
+  assert.equal(JSON.parse(defaultOpen.stdout).profile, 'main');
+  assert.equal(open(['open', 'https://x.example', '-p', 'ghost', '--json']).status, 1, '拼错的 Profile 不会被凑合成其他账号');
 });
