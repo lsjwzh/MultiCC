@@ -219,6 +219,7 @@ fn budget_left(deadline: Instant, reserve: Duration) -> Duration {
 /// 普通启动（不自动加载扩展）。需要覆盖界面 locale 时与 browser_session 同样
 /// 走两阶段：主进程只带开关 + --no-startup-window + locale 参数，等它的
 /// 单实例 socket 就绪后，再由第二次调用把网页 / 会话恢复转发给它。
+#[cfg(not(unix))]
 fn spawn_plain(
     browser: &std::path::Path,
     args: &[String],
@@ -540,8 +541,13 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
         None => Err("出口准备耗时过长，请重新启动浏览器".into()),
         Some(budget) => match extension {
             Some(extension) => crate::browser_session::launch(
-                &profile.id, &browser, &args, &extension, &source_revision, budget, tz, &ui_args,
+                &profile.id, &browser, &args, Some(&extension), &source_revision, budget, tz, &ui_args,
             ),
+            #[cfg(unix)]
+            None => crate::browser_session::launch(
+                &profile.id, &browser, &args, None, &source_revision, budget, tz, &ui_args,
+            ),
+            #[cfg(not(unix))]
             None => spawn_plain(&browser, &args, tz, &ui_args, &data_dir, deadline).map(
                 |pid| json!({"pid":pid,"fingerprint":{"status":"notRequested","installationVerified":false}}),
             ),
@@ -567,6 +573,7 @@ pub fn launch(profile: &Profile, url: Option<&str>, check_proxy: bool, automatic
         "args": args,
         "fingerprint": session["fingerprint"],
         "supervisorPid": session["supervisorPid"],
+        "browserControl": session["browserControl"],
     });
     if let Some(map) = result.as_object_mut() {
         for (key, value) in extras {

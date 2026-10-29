@@ -14,6 +14,8 @@ mod chrome;
 mod dock_badge;
 mod browser_session;
 mod read_bridge;
+#[cfg(unix)]
+mod control_bridge;
 mod page_observer;
 mod public_read;
 mod core;
@@ -161,6 +163,9 @@ fn profile_with_runtime(profile: Profile, subscriptions: &[Subscription]) -> Val
         }
         if running {
             map.insert("pid".into(), json!(pid));
+            if let Some(control) = pid.and_then(|pid| browser_session::control_metadata(&profile.id, pid)) {
+                map.insert("browserControl".into(), control);
+            }
         }
     }
     value

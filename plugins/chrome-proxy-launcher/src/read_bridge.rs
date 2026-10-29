@@ -151,7 +151,7 @@ pub mod unix {
         path.as_os_str().as_bytes().len() < max
     }
     /// /tmp 是共享目录：只用自己建的、仅属主可访问的目录，别人抢先建的同名目录直接拒绝。
-    fn ensure_short_dir(dir: &Path) -> Result<()> {
+    pub(crate) fn ensure_short_dir(dir: &Path) -> Result<()> {
         match fs::DirBuilder::new().mode(0o700).create(dir) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -175,7 +175,7 @@ pub mod unix {
         }
         Ok(())
     }
-    fn same_user(stream: &UnixStream) -> bool {
+    pub(crate) fn same_user(stream: &UnixStream) -> bool {
         #[cfg(any(
             target_os = "macos",
             target_os = "freebsd",

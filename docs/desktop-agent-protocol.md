@@ -197,7 +197,7 @@ Chrome 不支持 `attachToBrowserTarget` 时 lane 退回 `shared` 模式（原�
 
 ```json
 → { "op": "cdp", "wsUrl": "ws://127.0.0.1:58142/devtools/browser/…", "lane": "job-7", "laneTtlMs": 600000 }
-← { "ok": true, "phase": "accepted", "protocol": 2, "version": "0.2.0", "wsUrl": "…" }
+← { "ok": true, "phase": "accepted", "protocol": 2, "version": "0.3.0", "wsUrl": "…" }
 ← { "ok": true, "phase": "ready", "wsUrl": "…", "lane": "job-7", "mode": "isolated" }   // 用户点了允许
 → { "id": 1, "method": "Target.createTarget", "params": { "url": "about:blank" } }
 ← { "id": 1, "result": { "targetId": "…" } }                                            // id 已还原
@@ -206,6 +206,7 @@ Chrome 不支持 `attachToBrowserTarget` 时 lane 退回 `shared` 模式（原�
 
 - `wsUrl` 也可以换成 `"activePort": "<DevToolsActivePort 文件|profile 目录|default>"`，
   `default` = 用户日常 Chrome。每次现读，Chrome 重启后换了的 browser id 自然跟上。
+- 隔离插件可给 `wsUrl: "pipe:///absolute/private/control.sock"`（Unix）：网关校验 socket 类型、当前用户属主和 `0600` 权限，经本地行协议传输完整 CDP，继续使用同一套路由和租约。`ping` 的 `capabilities` 包含 `browser-control-pipe-v1` 时才可用。插件启动时发 `{ "op": "register", "wsUrl": "pipe:///…" }`，收到 `{ "ok": true, "registered": true }` 表示网关已接手建连；`status.upstreams[].state` 为 `ready` 才表示已连通。注册不创建调用方 lane。监督进程重新连接后清理旧浏览器根会话，实例重开换地址；旧只读接口保持原有权限范围。
 - **两段式握手**：`accepted` 表示网关接手了——此后调用方**不得**回退直连（网关可能正在
   等用户点允许，此刻直连就是第二个弹窗）；`ready` 表示上游已授权、lane 会话已建好。
   等待审批期间到来的调用方共享同一次建连（single-flight），用户只看到一个弹窗。

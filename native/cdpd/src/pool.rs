@@ -228,6 +228,29 @@ fn normalize(url: &str) -> String {
 }
 
 pub fn validate(url: &str, allow_remote: bool) -> Result<(), Refusal> {
+    if let Some(path) = url.strip_prefix("pipe://") {
+        #[cfg(not(unix))]
+        let _ = path;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+            let meta = std::fs::symlink_metadata(path).map_err(|_| {
+                Refusal::bad_request(
+                    "browser control socket is unavailable; reopen the isolation instance",
+                )
+            })?;
+            if std::path::Path::new(path).is_absolute()
+                && meta.file_type().is_socket()
+                && meta.uid() == unsafe { libc::geteuid() }
+                && meta.permissions().mode() & 0o077 == 0
+            {
+                return Ok(());
+            }
+        }
+        return Err(Refusal::bad_request(
+            "browser control requires a private, current-user local socket",
+        ));
+    }
     let rest = url
         .strip_prefix("ws://")
         .or_else(|| url.strip_prefix("wss://"))

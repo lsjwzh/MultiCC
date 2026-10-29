@@ -14,6 +14,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const net = require('node:net');
 const { spawn, spawnSync, execFile } = require('node:child_process');
 const WebSocket = require('ws');
 
@@ -325,3 +326,61 @@ test('chrome-cdp sends a default-profile browser through the gateway, by default
     await chrome.close();
   }
 });
+
+test('isolation control pipes register before callers and share one upstream per instance',
+  { skip: skip || (process.platform === 'win32' && 'Unix isolation transport'), timeout: 15000 }, async t => {
+    const env = gatewayEnv();
+    await startDaemon(env);
+    t.after(() => stopDaemon(env));
+    const fixtures = [];
+    for (const account of ['one', 'two']) {
+      const socketPath = path.join(env.MULTICC_CDP_DIR, `${account}.sock`);
+      const fixture = { attempts: 0, sockets: new Set() };
+      let serial = 0;
+      const server = net.createServer(socket => {
+        fixture.attempts++;
+        fixture.sockets.add(socket);
+        socket.on('error', () => {});
+        socket.on('close', () => fixture.sockets.delete(socket));
+        let buffer = '';
+        socket.on('data', chunk => {
+          buffer += chunk;
+          while (buffer.includes('\n')) {
+            const at = buffer.indexOf('\n');
+            const frame = JSON.parse(buffer.slice(0, at));
+            buffer = buffer.slice(at + 1);
+            let result = {};
+            if (frame.method === 'Target.attachToBrowserTarget') result = { sessionId: `B${++serial}` };
+            if (frame.method === 'Target.createTarget') result = { targetId: 'same-target-id' };
+            if (frame.method === 'Runtime.evaluate') result = { result: { value: account } };
+            socket.write(`${JSON.stringify({ id: frame.id, ...(frame.sessionId ? { sessionId: frame.sessionId } : {}), result })}\n`);
+          }
+        });
+      });
+      await new Promise(resolve => server.listen(socketPath, resolve));
+      fs.chmodSync(socketPath, 0o600);
+      t.after(() => { for (const socket of fixture.sockets) socket.destroy(); return new Promise(resolve => server.close(resolve)); });
+      fixture.url = `pipe://${socketPath}`;
+      assert.deepEqual(await cdpd.request({ op: 'register', wsUrl: fixture.url }, { env }), { ok: true, registered: true });
+      assert.ok(await until(() => fixture.attempts === 1), 'startup registration opens the shared upstream');
+      fixtures.push(fixture);
+    }
+    const clients = fixtures.map(f => connect(f.url, env));
+    t.after(() => clients.forEach(c => c.socket.close()));
+    await Promise.all(clients.map(c => c.opened));
+    for (let i = 0; i < clients.length; i++) {
+      const evaluated = await clients[i].call('Runtime.evaluate', { expression: 'account' });
+      assert.equal(evaluated.result.result.value, i === 0 ? 'one' : 'two');
+      const created = await clients[i].call('Target.createTarget', { url: 'about:blank', background: true });
+      assert.equal(created.result.targetId, 'same-target-id', 'identical target ids belong to separate instances');
+      assert.equal(fixtures[i].attempts, 1, 'callers reuse the upstream opened at launch');
+    }
+    const extra = connect(fixtures[0].url, env);
+    t.after(() => extra.socket.close());
+    await extra.opened;
+    assert.equal((await extra.call('Runtime.evaluate')).result.result.value, 'one');
+    assert.equal(fixtures[0].attempts, 1);
+    fs.chmodSync(fixtures[0].url.slice('pipe://'.length), 0o666);
+    const refused = await cdpd.request({ op: 'register', wsUrl: fixtures[0].url }, { env });
+    assert.equal(refused.ok, false, 'other-user-readable sockets cannot become browser controls');
+  });

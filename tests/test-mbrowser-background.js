@@ -415,3 +415,28 @@ test('the main daemon never changes mode, restarts or reopens the everyday Chrom
   assert.equal(lifecycle.profileExists('main'), true);
   await assert.rejects(lifecycle.start({ name: 'main', headless: true }), error => error.code === 'usage');
 });
+
+test('an older Agent gateway is reported clearly and the isolation browser never connects directly', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mbrowser-old-gateway-'));
+  const socketPath = path.join(root, 'cdp.sock');
+  const operations = [];
+  const server = net.createServer(socket => {
+    socket.on('error', () => {});
+    let body = '';
+    socket.on('data', chunk => {
+      body += chunk;
+      if (!body.includes('\n')) return;
+      const request = JSON.parse(body.split('\n')[0]);
+      operations.push(request.op);
+      socket.end(JSON.stringify(request.op === 'endpoint'
+        ? { ok: true, url: 'ws://127.0.0.1:1/cdp/private-token' }
+        : { ok: true, protocol: 2, version: '0.2.0' }) + '\n');
+    });
+  });
+  await new Promise(resolve => server.listen(socketPath, resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); });
+  await assert.rejects(G.browserEndpoint({ wsUrl: 'pipe:///tmp/identity.sock', env: { MULTICC_CDP_SOCK: socketPath } }),
+    error => error.code === 'gateway_upgrade_required' && !error.message.includes('private-token')
+      && /do not fall back/.test(error.message));
+  assert.deepEqual(operations, ['endpoint', 'ping']);
+});

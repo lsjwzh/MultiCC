@@ -64,8 +64,9 @@
 - **账号与站点**：账号是插件身份名与备注；用过的站点读该身份 profile（`~/.multicc/plugins-data/<插件>/chrome-profiles/<id>/Default/`）里的 `History`（顶层访问过的网址，按站点汇总次数）和 `Cookies`（只读 `host_key` 列，不读值），都以 SQLite `immutable` 方式只读打开，不锁、不影响运行中的 Chrome。站点按可注册域名归并（`seller-us.tiktok.com` → `tiktok.com`）。
 - **路由规则**：以历史访问为准，嵌入广告留下的 cookie 不算（只有读不到历史的环境才退回看 cookie）。一个环境命中 → 选它；多个 → `route_ambiguous`，交给用户选；没有 → `main`。不带 `-p` 的 `open` 自动执行这套路由，并把结果记为本会话的默认目标（`<state>/browser/routes.json`，一天过期），后续不带 `-p` 的命令跟随；显式 `-p` / `MBROWSER_PROFILE` 总是优先。MultiCC 服务端连不上时不路由，`open` 照常走默认 profile（stderr 提示一行）。
 - **可控程度**：
+  - `agent`：插件 1.7.0 起启动时默认登记 `multicc-browser-control-v1` 私有控制通道；所有页面命令经 `multicc-cdpd` 的共享连接和标签页租约执行。点击、输入、截图均可用，Chrome 不监听 TCP 调试端口；自动指纹关闭时同样可用。监督进程独占匿名管道，只读与控制请求编号互不干扰。网关重启后自动登记；实例重开生成新地址，旧守护进程退役但不关闭浏览器。
   - `cdp`：实例在运行、profile 目录的 `DevToolsActivePort` 指向的本机端口在听、且持有 profile 的进程就是插件记录的那个 → 用一个 attach 守护进程（`iso-<id>`）完全控制，端口变化时自动换新；不启动、不停止、不重启实例。
-  - `read`：插件自己启动的实例只开私有管道（`--remote-debugging-pipe`）→ 经插件的只读接口 `multicc-browser-read-v1`：`open`（`open-page`，只接受无端口、无查询参数、无片段的 https 地址，后台标签）、`tabs --domain D[,D2]`（`pages`，该接口只列指定站点的页面）、`text` / `snapshot`（`read-page`，页面正文，无元素引用）。其它命令报 `iso_read_only`。
+  - `read`：升级前已经启动的旧私有管道实例→ 经插件的只读接口 `multicc-browser-read-v1`：`open`（`open-page`，只接受无端口、无查询参数、无片段的 https 地址，后台标签）、`tabs --domain D[,D2]`（`pages`，该接口只列指定站点的页面）、`text` / `snapshot`（`read-page`，页面正文，无元素引用）。其它命令报 `iso_read_only`。
   - `stopped`：`iso_not_running`；只有显式 `start iso:<id> [URL]` 才会调用插件 `launch`（会开窗口，可能到前台）。
 - `stop iso:<id>` 只停 mbrowser 的 attach 守护进程；`status`/`ping iso:<id>` 显示该环境概况；`login`/`attach`/`tag` 不适用于隔离环境。
 

@@ -9,10 +9,12 @@
 // An environment is addressed as `iso:<profileId>` (or `iso:<pluginId>/<id>`
 // when two plugins share an id). How far mbrowser can drive it depends on how
 // the plugin started it:
+//   agent    the supervisor advertises a private pipe through the Agent CDP
+//            gateway: full control, shared connection and target leases
 //   cdp      the instance listens on a loopback DevTools port: full control,
 //            through a daemon that attaches like `attach` (never launches,
 //            stops or restarts it)
-//   read     the plugin's own launch only opens a private pipe; the plugin's
+//   read     a legacy plugin launch only opened a private pipe; the plugin's
 //            read bridge (multicc-browser-read-v1) can list pages, read a
 //            page's text and open a background tab — nothing else
 //   stopped  not running; only an explicit `start iso:…` asks the plugin to
@@ -60,8 +62,8 @@ function parseIsoRef(ref) {
 // The daemon behind a `cdp` environment needs a profile-shaped name for its
 // socket, lock and log.
 function daemonName(env) {
-  const plain = `iso-${env.profileId}`;
-  if (P.isValidName(plain)) return plain;
+  // Plugin ids participate even for short profile ids: two plugins may both
+  // have a "shop" identity with different accounts and network egress.
   const digest = crypto.createHash('sha1').update(`${env.pluginId}/${env.profileId}`).digest('hex').slice(0, 16);
   return `iso-${digest}`;
 }
@@ -205,6 +207,10 @@ function sourceRevision(profile, subscriptions) {
 
 async function controlOf(profile, userDataDir) {
   if (!profile.running) return { control: 'stopped' };
+  if (profile.browserControl && profile.browserControl.protocol === 'multicc-browser-control-v1'
+      && /^pipe:\/\/\//.test(profile.browserControl.wsUrl || '')) {
+    return { control: 'agent', wsUrl: profile.browserControl.wsUrl };
+  }
   const active = CH.readsDevToolsActivePort(userDataDir);
   // DevToolsActivePort outlives a pipe-only relaunch, so the port must answer
   // and the process holding the profile must be the running instance.

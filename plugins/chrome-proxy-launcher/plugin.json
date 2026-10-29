@@ -3,7 +3,7 @@
   "id": "chrome-proxy-launcher",
   "name": "Chrome 隔离出口启动器",
   "nameEn": "Chrome Isolated Proxy Launcher",
-  "version": "1.6.4",
+  "version": "1.7.0",
   "description": "为每个身份维护一份完全隔离的 Chrome profile，并强制绑定各自的出口：本机 VPN / http(s)・socks5 代理（支持账号密码），或 Clash 订阅节点（可经跳板链到上游住宅代理）。",
   "descriptionEn": "One isolated Chrome profile per identity, each pinned to its own egress: local VPN / http(s)/socks5 proxies with auth, or Clash subscription nodes (optionally chained through a jump node to a residential upstream).",
   "icon": "🌐",
@@ -30,6 +30,11 @@
     "browser-read-capabilities",
     "browser-read"
   ],
+  "browserControl": {
+    "protocol": "multicc-browser-control-v1",
+    "transport": "private-local-pipe",
+    "gateway": "multicc-cdpd"
+  },
   "readOnlyBridge": {
     "protocol": "multicc-browser-read-v1"
   },
