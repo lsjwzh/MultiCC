@@ -14,6 +14,7 @@ const {
 } = require('./router-adapter');
 const { toLegacyProviderView } = require('./binding');
 const { applyCliKeyAccountEnv, selectedAccountId } = require('../cli-key-accounts');
+const { ensureLoopbackNoProxyEnv } = require('../network/proxy-policy');
 
 const DEFAULT_MODE = 'legacy';
 
@@ -160,6 +161,13 @@ function createProviderRouterRuntime(options = {}) {
     return { ...result, env: applyCliKeyAccountEnv(result.env || {}, session, keyAccounts, cli) };
   }
 
+  // Children routed onto the local CPR (127.0.0.1) must never let an inherited
+  // proxy env capture that hop; see ensureLoopbackNoProxyEnv.
+  function withLoopbackNoProxy(result) {
+    if (!result || !result.env) return result;
+    return { ...result, env: ensureLoopbackNoProxyEnv(result.env) };
+  }
+
   function resolveSpawnEnv(session, overrides) {
     const binding = createBinding(session, overrides);
     // CPR's generic Codex materializer copies provider/global auth.json before
@@ -170,7 +178,7 @@ function createProviderRouterRuntime(options = {}) {
     const result = binding.cli === 'pi' || hostOwnsOfficialCodexHome(binding)
       ? legacy.resolveSpawnEnv(toLegacyProviderView(binding))
       : port.resolveSpawn(binding);
-    return withKeyAccount(result, session, binding.cli);
+    return withLoopbackNoProxy(withKeyAccount(result, session, binding.cli));
   }
 
   function buildChildEnv(base, session, extra = {}, overrides) {
@@ -180,7 +188,7 @@ function createProviderRouterRuntime(options = {}) {
     const result = mode === 'shadow' || binding.cli === 'pi' || hostOwnsOfficialCodexHome(binding)
       ? legacy.buildChildEnv(base, toLegacyProviderView(binding), extra)
       : port.buildChildEnv(base, binding, extra);
-    return withKeyAccount(result, session, binding.cli);
+    return withLoopbackNoProxy(withKeyAccount(result, session, binding.cli));
   }
 
   return Object.freeze({
