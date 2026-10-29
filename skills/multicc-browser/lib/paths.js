@@ -105,8 +105,10 @@ function socketPath(name) {
   return path.join(shortSocketDir(), `${digest}.sock`);
 }
 
+// `main` is the user's everyday Chrome (main-chrome.js): mbrowser works there
+// unless told otherwise.
 function defaultProfile() {
-  return process.env.MBROWSER_PROFILE || 'default';
+  return process.env.MBROWSER_PROFILE || 'main';
 }
 
 function ensureDir(dir, mode) {

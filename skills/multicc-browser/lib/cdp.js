@@ -6,6 +6,13 @@
 
 const { MbError } = require('./paths');
 
+// The gateway refuses with a close frame whose reason carries its error code
+// (gateway.js); requiring it lazily keeps this module free of a cycle.
+function refusal(reason) {
+  if (!reason) return null;
+  return require('./gateway').refusalFromClose(reason);
+}
+
 const DEFAULT_TIMEOUT = 30000;
 
 function isSessionGone(message) {
@@ -14,8 +21,10 @@ function isSessionGone(message) {
 }
 
 class CDP {
-  constructor(url, { timeout = DEFAULT_TIMEOUT, label = 'cdp' } = {}) {
+  constructor(url, { timeout = DEFAULT_TIMEOUT, label = 'cdp', displayUrl } = {}) {
     this.url = url;
+    // What error text may show: a gateway URL carries an access token.
+    this.displayUrl = displayUrl || url;
     this.label = label;
     this.defaultTimeout = timeout;
     this.ws = null;
@@ -38,14 +47,14 @@ class CDP {
       try {
         socket = new WebSocket(this.url);
       } catch (error) {
-        reject(new MbError('cdp_connect', `cannot open ${this.url}: ${error.message}`));
+        reject(new MbError('cdp_connect', `cannot open ${this.displayUrl}: ${error.message}`));
         return;
       }
       this.ws = socket;
       const timer = setTimeout(() => {
-        this.fail(new MbError('cdp_connect', `timed out connecting to ${this.url}`));
+        this.fail(new MbError('cdp_connect', `timed out connecting to ${this.displayUrl}`));
         try { socket.close(); } catch (_) { /* already gone */ }
-        reject(new MbError('cdp_connect', `timed out connecting to ${this.url}`));
+        reject(new MbError('cdp_connect', `timed out connecting to ${this.displayUrl}`));
       }, this.defaultTimeout);
       timer.unref?.();
       socket.addEventListener('open', () => {
@@ -55,13 +64,15 @@ class CDP {
       socket.addEventListener('message', event => this.onMessage(event.data));
       socket.addEventListener('error', () => {
         clearTimeout(timer);
-        const error = new MbError('cdp_connect', `WebSocket error on ${this.url}`);
+        const error = new MbError('cdp_connect', `WebSocket error on ${this.displayUrl}`);
         reject(error);
         this.fail(error);
       });
-      socket.addEventListener('close', () => {
+      socket.addEventListener('close', event => {
         clearTimeout(timer);
-        this.finish(this.closeReason || new MbError('cdp_closed', `connection closed: ${this.url}`));
+        const refused = refusal(event && event.reason);
+        if (refused) this.closeReason = refused;
+        this.finish(this.closeReason || new MbError('cdp_closed', `connection closed: ${this.displayUrl}`));
       });
     });
   }
@@ -110,7 +121,7 @@ class CDP {
     const timeout = options.timeout || this.defaultTimeout;
     return new Promise((resolve, reject) => {
       if (this.closed) {
-        reject(new MbError('cdp_closed', `not connected: ${this.closeReason ? this.closeReason.message : this.url}`));
+        reject(new MbError('cdp_closed', `not connected: ${this.closeReason ? this.closeReason.message : this.displayUrl}`));
         return;
       }
       const id = this.nextId++;
@@ -150,7 +161,7 @@ class CDP {
       if (this.closed) {
         clearTimeout(timer);
         off();
-        reject(new MbError('cdp_closed', `not connected: ${this.url}`));
+        reject(new MbError('cdp_closed', `not connected: ${this.displayUrl}`));
       }
     });
   }
@@ -165,7 +176,10 @@ class CDP {
     this.closeReason = this.closeReason || error;
     for (const [, entry] of this.pending) {
       clearTimeout(entry.timer);
-      entry.reject(entry.method
+      // A gateway refusal keeps its own code (chrome_rejected, …): it tells
+      // the caller what to do, "abandoned" does not.
+      const gatewayRefusal = Boolean(this.closeReason.details && this.closeReason.details.gateway);
+      entry.reject(entry.method && !gatewayRefusal
         ? new MbError('cdp_closed', `${entry.method} abandoned: ${this.closeReason.message}`)
         : this.closeReason);
     }

@@ -35,6 +35,15 @@ process.env.MBROWSER_PROFILES_DIR = path.join(TEMP, 'profiles');
 process.env.MBROWSER_PROFILE = '';
 process.env.MULTICC_SESSION_ID = 'session-under-test';
 delete process.env.MBROWSER_CHROME;
+// The default profile is the user's everyday Chrome behind the MultiCC gateway,
+// and creating a profile reads that Chrome's login. None of it may reach the
+// real browser or the real gateway, and nothing may launch a real Chrome.
+process.env.MBROWSER_MAIN_USER_DATA_DIR = path.join(TEMP, 'main-chrome');
+process.env.MBROWSER_MAIN_CHROME = path.join(TEMP, 'no-main-chrome');
+process.env.MULTICC_CDP_DIR = path.join(TEMP, 'cdpd');
+process.env.MULTICC_CDP_SOCK = path.join(TEMP, 'cdpd', 'gw.sock');
+delete process.env.MULTICC_CDP_BIN;
+delete process.env.MULTICC_RUST_ADDON;
 
 const P = require(path.join(ROOT, 'skills', 'multicc-browser', 'lib', 'paths'));
 
@@ -73,6 +82,7 @@ async function createFakeChrome() {
     sockets: new Set(),
     dialog: null,
     protocolErrors: new Map(),
+    upgrades: [],
   };
   let nextTargetId = 2;
 
@@ -240,6 +250,7 @@ async function createFakeChrome() {
   });
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (request, socket, head) => {
+    state.upgrades.push(request.url);
     wss.handleUpgrade(request, socket, head, client => wss.emit('connection', client, request));
   });
   wss.on('connection', client => {
@@ -587,7 +598,7 @@ test('the daemon drives a browser over the socket and shuts down cleanly', async
   assert.equal(fs.existsSync(P.statePath(PROFILE)), false);
 
   // ---- a daemon that dies on boot reports why, instead of just its log path.
-  const broken = await run(['start', 'broken', '--create', '--headless', '--mock-keychain',
+  const broken = await run(['start', 'broken', '--create', '--blank', '--headless', '--mock-keychain',
     '--browser', path.join(TEMP, 'no-such-browser')]);
   assert.equal(broken.status, 1);
   assert.match(broken.stderr, /browser_missing/);
@@ -596,4 +607,115 @@ test('the daemon drives a browser over the socket and shuts down cleanly', async
     'the boot failure recorded in the log is surfaced as the CLI error');
 
   assert.deepEqual(leftoverProcesses(), [], 'no mbrowser process or browser from this run survives');
+});
+
+// ------------------------------------------------------------- main profile
+
+// The MultiCC gateway as the skill sees it: a line-protocol socket whose
+// `endpoint` op names a loopback WebSocket. Here that WebSocket is the fake
+// Chrome itself, so every frame the daemon sends is visible to the test.
+function createFakeGateway(wsBase) {
+  const socketPath = process.env.MULTICC_CDP_SOCK;
+  fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+  try { fs.unlinkSync(socketPath); } catch (_) { /* fresh */ }
+  const requests = [];
+  const server = net.createServer(connection => {
+    let buffer = '';
+    connection.on('data', chunk => {
+      buffer += chunk.toString('utf8');
+      const nl = buffer.indexOf('\n');
+      if (nl < 0) return;
+      const body = JSON.parse(buffer.slice(0, nl));
+      requests.push(body.op);
+      const reply = body.op === 'endpoint'
+        ? { ok: true, url: `${wsBase}/cdp/secret-token`, port: 0 }
+        : { ok: true, pong: true, pid: process.pid, protocol: 2, version: 'test' };
+      connection.end(`${JSON.stringify(reply)}\n`);
+    });
+  });
+  return new Promise(resolve => server.listen(socketPath, () => resolve({
+    requests,
+    close: () => new Promise(done => server.close(done)),
+  })));
+}
+
+test('main: the everyday Chrome is the default, reached only through the gateway, worked in the background', async t => {
+  const chrome = await createFakeChrome();
+  const port = Number(new URL(chrome.cdpUrl).port);
+  const gateway = await createFakeGateway(`ws://127.0.0.1:${port}`);
+  const mainDir = process.env.MBROWSER_MAIN_USER_DATA_DIR;
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.writeFileSync(path.join(mainDir, 'Local State'), JSON.stringify({ devtools: { remote_debugging: { 'user-enabled': true } } }));
+  fs.writeFileSync(path.join(mainDir, 'DevToolsActivePort'), `${port}\n/devtools/browser/fake\n`);
+  // A live pid holds the profile, the way a running Chrome does.
+  fs.symlinkSync(`fakehost-${process.pid}`, path.join(mainDir, 'SingletonLock'));
+  const startedPids = [];
+  t.after(async () => {
+    await run(['stop', 'main']);
+    await waitForGone(startedPids);
+    await gateway.close();
+    await chrome.close();
+    fs.rmSync(TEMP, { recursive: true, force: true });
+  });
+
+  // Looking at the tab list never creates a tab (in the main Chrome that
+  // would be a stray blank tab in the user's window).
+  const listed = await json(['tabs']);
+  assert.equal(chrome.state.createdTabs.length, 0, '`tabs` must not open a tab');
+  assert.deepEqual(listed.tabs.map(tab => tab.mark), ['user']);
+
+  // No -p: the main profile. The first page of a session lands in a window of
+  // its own when asked, shown without focus, and the page loads right there.
+  const opened = await json(['open', 'https://example.test/main', '--new-window']);
+  const ping = await json(['ping']);
+  startedPids.push(ping.pid);
+  assert.equal(ping.profile, 'main');
+  assert.equal(ping.kind, 'main');
+  assert.equal(ping.owned, false);
+  assert.equal(gateway.requests.includes('endpoint'), true, 'the address came from the gateway');
+  const upgrade = new URL(chrome.state.upgrades.at(-1), 'ws://x');
+  assert.equal(upgrade.pathname, '/cdp/secret-token', 'the daemon connected to the gateway, not to Chrome directly');
+  assert.equal(upgrade.searchParams.get('activePort'), 'default');
+  assert.equal(upgrade.searchParams.get('lane'), 'mbrowser-main');
+  assert.equal(chrome.state.upgrades.some(url => url.startsWith('/devtools/')), false);
+  assert.equal(chrome.state.createdTabs.length, 1, 'no stray blank tab before the requested window');
+  assert.deepEqual(chrome.state.createdTabs[0], { url: 'about:blank', background: true, newWindow: true });
+  assert.match(opened.text, /^open https:\/\/example\.test\/main/);
+  assert.equal(chrome.state.calls.includes('Page.navigate'), true);
+
+  // Later tabs are background tabs too; nothing is ever activated.
+  const second = await json(['open', 'https://example.test/two', '--new-tab']);
+  assert.equal(second.newWindow, false);
+  assert.deepEqual(chrome.state.createdTabs.at(-1), { url: 'https://example.test/two', background: true });
+  for (const forbidden of ['Target.activateTarget', 'Page.bringToFront', 'Browser.close', 'Browser.setWindowBounds']) {
+    assert.equal(chrome.state.calls.includes(forbidden), false, `${forbidden} must never be sent to the main Chrome`);
+  }
+  const tabs = await json(['tabs']);
+  assert.equal(tabs.tabs.find(tab => tab.id === 'T1').mark, 'user', 'the user\'s own tabs are labelled as theirs');
+  assert.match(fs.readFileSync(P.logPath('main'), 'utf8'), /\/cdp\/<token>/);
+  assert.equal(fs.readFileSync(P.logPath('main'), 'utf8').includes('secret-token'), false, 'the gateway token stays out of logs');
+
+  // The main Chrome has no mode to change and is never restarted or closed.
+  const headed = await run(['start', 'main', '--headed']);
+  assert.equal(headed.status, 2);
+  assert.match(headed.stderr, /everyday Chrome/);
+  const stopped = await runOk(['stop', 'main']);
+  assert.match(stopped.stdout, /everyday Chrome is untouched/);
+  assert.deepEqual(await waitForGone(startedPids), []);
+  assert.equal(chrome.state.calls.includes('Browser.close'), false);
+
+  // Running, but remote debugging off: a precise answer, and no launch attempt.
+  fs.rmSync(path.join(mainDir, 'DevToolsActivePort'));
+  const off = await run(['open', 'https://example.test/off']);
+  assert.equal(off.status, 1);
+  assert.match(off.stderr, /main_not_debuggable/);
+  assert.match(off.stderr, /chrome:\/\/inspect\/#remote-debugging/);
+
+  // Not running at all: mbrowser would start it in the background; here the
+  // launcher points nowhere, so the failure is named instead of hanging.
+  fs.rmSync(path.join(mainDir, 'SingletonLock'));
+  const missing = await run(['open', 'https://example.test/missing']);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /main_missing/);
+  assert.deepEqual(leftoverProcesses(), []);
 });

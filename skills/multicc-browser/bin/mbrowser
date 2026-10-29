@@ -22,7 +22,7 @@ const PAGE_COMMANDS = Object.keys(COMMANDS);
 const LIFECYCLE_COMMANDS = ['doctor', 'profiles', 'sites', 'tag', 'start', 'login', 'attach', 'status', 'stop', 'ping'];
 
 const BOOLEAN_FLAGS = new Set([
-  'json', 'create', 'force', 'all', 'headed', 'headless', 'mockKeychain', 'keepChrome', 'newTab',
+  'json', 'create', 'force', 'all', 'headed', 'headless', 'mockKeychain', 'keepChrome', 'newTab', 'newWindow', 'blank',
   'double', 'right', 'clear', 'submit', 'interactive', 'full', 'load', 'idle', 'hard', 'help',
   'version', 'verbose',
 ]);
@@ -36,8 +36,12 @@ const VALUE_FLAGS = new Set([
 
 const USAGE = `usage: mbrowser <command> [args] [-p NAME] [--json] [--tab TARGET]
 
+Default profile: main = the user's everyday Chrome, driven through the MultiCC
+CDP gateway (one approval, background tabs, never activated or closed).
+
 page commands:
-  open URL [--new-tab]                 navigate (adds https:// when it looks like a host)
+  open URL [--new-tab|--new-window]    navigate (adds https:// when it looks like a host);
+                                       new tabs/windows open in the background, without focus
   snapshot [--interactive] [--max-chars N]
   click REF | --xy X Y [--double] [--right]
   type REF TEXT [--clear] [--submit]
@@ -59,15 +63,17 @@ lifecycle:
   profiles                             known profiles and their state
   sites [DOMAIN_OR_URL]                查询站点的已有 Profile（不自动选择账号）
   tag NAME --domain D [--label L]       为已有 Profile 登记站点和账号标签
-  start [NAME] [--create] [--headed|--headless] [--browser PATH] [--mock-keychain]
+  start [NAME] [--create [--blank]] [--headed|--headless] [--browser PATH] [--mock-keychain]
         [--startup-timeout S] [--force]
-  login NAME [URL]                     headed browser for a manual login
+                                       a new profile starts with the everyday Chrome's login
+                                       (cookies); --blank only when the user said not to use it
+  login NAME [URL]                     a window for a manual login (main: a background tab)
   attach NAME --cdp-url http://127.0.0.1:PORT
   status [NAME]                        daemon, browser and tab state
   stop [NAME|--all] [--keep-chrome]
   ping                                 daemon metadata (starts one if needed)
 
-global: -p/--profile NAME (default $MBROWSER_PROFILE or 'default'), --json, --tab TARGET,
+global: -p/--profile NAME (default $MBROWSER_PROFILE or 'main'), --json, --tab TARGET,
         -h/--help, --version`;
 
 function camel(name) {
@@ -263,6 +269,7 @@ async function main(argv) {
       return report(flags, await lifecycle.start({
         name: profileNameFrom(flags, positional, { index: 1 }),
         create: Boolean(flags.create),
+        blank: flags.blank === true,
         headed: flags.headed === true,
         headless: flags.headless === true,
         browser: flags.browser,
@@ -276,6 +283,7 @@ async function main(argv) {
         name: profileNameFrom(flags, positional, { index: 1 }),
         url: positional[2],
         create: Boolean(flags.create),
+        blank: flags.blank === true,
         browser: flags.browser,
       }));
     }
@@ -314,6 +322,7 @@ async function main(argv) {
   const name = profileNameFrom(flags, []);
   assertProfileExists(name);
   args.newTab = flags.newTab === true;
+  args.newWindow = flags.newWindow === true;
   args.double = flags.double === true;
   args.right = flags.right === true;
   args.clear = flags.clear === true;

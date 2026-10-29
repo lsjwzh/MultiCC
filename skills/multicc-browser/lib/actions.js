@@ -9,7 +9,7 @@
 //   ctx.on(method, handler)            session-scoped event subscription
 //   ctx.resolveRef(ref)                -> {backendDOMNodeId, role, name, nth, frameId}
 //   ctx.snapshot({interactive,maxChars}) -> {text, refs, tab, title, url}
-//   ctx.newTab({url, background, visible}) / ctx.listTabs() / ctx.switchTab(p) / ctx.closeTab(id)
+//   ctx.newTab({url, background, newWindow}) / ctx.listTabs() / ctx.switchTab(p) / ctx.closeTab(id)
 //   ctx.pendingDialog()                -> {type, message, url} | null
 //
 // Actions return plain objects; `text` is the human-facing rendering and the CLI
@@ -515,7 +515,10 @@ function idleWaiter(ctx, quietMs) {
 
 async function open(ctx, args) {
   const url = normalizeUrl(args.url);
-  const target = args.newTab ? await ctx.newTab({ url, background: true }) : null;
+  // Always background: a new tab never becomes the active one, and a new
+  // window (--new-window) is shown without focus.
+  const fresh = args.newTab || args.newWindow;
+  const target = fresh ? await ctx.newTab({ url, background: true, newWindow: Boolean(args.newWindow) }) : null;
   if (!target) {
     const before = await currentUrl(ctx);
     await ctx.send('Page.navigate', { url }, { timeout: 30000 });
@@ -527,7 +530,8 @@ async function open(ctx, args) {
   }
   // Target.createTarget returns before the page has loaded, and ctx is bound to
   // the old tab, so this cannot wait for the new tab's load state.
-  return { text: `open ${url} in a new tab ${target.shortId} — ${target.title || '(untitled)'}`, ...target, newTab: true };
+  const where = args.newWindow ? 'a new background window' : 'a new background tab';
+  return { text: `open ${url} in ${where} ${target.shortId} — ${target.title || '(untitled)'}`, ...target, newTab: true, newWindow: Boolean(args.newWindow) };
 }
 
 async function historyStep(ctx, args, delta) {
