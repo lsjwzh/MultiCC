@@ -740,3 +740,38 @@ test('Pi keeps local configuration outside CPR unknown-CLI materialization', () 
     assert.equal(calls.filter(call => call.method === 'legacyResolveSpawnEnv').length, 1);
   }
 });
+
+test('managed child env declares the proxy for codex and pins the loopback bypass', () => {
+  const snapshot = {
+    HTTP_PROXY: 'http://127.0.0.1:7897', HTTPS_PROXY: 'http://127.0.0.1:7897',
+    NO_PROXY: 'localhost,127.0.0.1,::1,[::1]',
+  };
+  const runtime = createProviderRouterRuntime({
+    mode: 'legacy', providers: fakeProviders(), childProxyEnv: () => snapshot, ...HOST,
+  });
+  // No proxy vars anywhere + a discovered proxy → declare it so reqwest's env
+  // path (which honors NO_PROXY) wins over the macOS system proxy it reads.
+  const child = runtime.buildChildEnv({ PATH: '/bin' }, { id: 's1', cli: 'codex', provider: 'p1' });
+  assert.strictEqual(child.env.http_proxy, 'http://127.0.0.1:7897');
+  assert.strictEqual(child.env.HTTPS_PROXY, 'http://127.0.0.1:7897');
+  assert.ok(child.env.no_proxy.includes('127.0.0.1'));
+  assert.strictEqual(child.env.no_proxy, child.env.NO_PROXY);
+  const term = runtime.resolveSpawnEnv({ id: 's1t', cli: 'codex', provider: 'p1' });
+  assert.strictEqual(term.env.https_proxy, 'http://127.0.0.1:7897');
+  // Non-codex children keep the previous behavior entirely.
+  const claude = runtime.buildChildEnv({ PATH: '/bin' }, { id: 's2', cli: 'claude', provider: 'p1' });
+  assert.strictEqual(claude.env.http_proxy, undefined);
+  assert.strictEqual(claude.env.no_proxy, undefined);
+  // No discovered proxy → nothing to declare.
+  const cold = createProviderRouterRuntime({
+    mode: 'legacy', providers: fakeProviders(), childProxyEnv: () => null, ...HOST,
+  });
+  const untouched = cold.buildChildEnv({ PATH: '/bin' }, { id: 's3', cli: 'codex', provider: 'p1' });
+  assert.strictEqual(untouched.env.http_proxy, undefined);
+  assert.strictEqual(untouched.env.no_proxy, undefined);
+  // Shell-exported proxy vars win; only the loopback bypass is merged in.
+  const inherited = runtime.buildChildEnv({ HTTP_PROXY: 'http://shell:1' }, { id: 's4', cli: 'codex', provider: 'p1' });
+  assert.strictEqual(inherited.env.HTTP_PROXY, 'http://shell:1');
+  assert.strictEqual(inherited.env.https_proxy, undefined);
+  assert.ok(inherited.env.no_proxy.includes('127.0.0.1'));
+});

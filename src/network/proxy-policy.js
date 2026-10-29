@@ -133,5 +133,5 @@ function createProxyPolicy(options = {}) {
   return { configuration, proxyForUrl, invalidate() { checkedAt = -Infinity; } };
 }
 module.exports = { createProxyPolicy, parseMacSystemProxy, readMacSystemProxy,
-  resolveProxyConfig, cidrToRange, bypassProxy, isLoopback,
+  resolveProxyConfig, cidrToRange, bypassProxy, isLoopback, hasProxyEnv,
   mergeLoopbackNoProxy, ensureLoopbackNoProxyEnv };

@@ -2,7 +2,10 @@
 
 const assert = require('assert');
 const { test } = require('node:test');
-const { installGlobalProxy, resolveProxyEnv, parseMacSystemProxy, cidrToRange } = require('../src/network/global-proxy');
+const {
+  installGlobalProxy, resolveProxyEnv, parseMacSystemProxy, cidrToRange,
+  latestChildProxyEnv, latestProxyMode, systemProxyHijackHint, resetLatestForTests,
+} = require('../src/network/global-proxy');
 const { ensureLoopbackNoProxyEnv, mergeLoopbackNoProxy } = require('../src/network/proxy-policy');
 
 const SCUTIL = `<dictionary> {
@@ -106,4 +109,56 @@ test('an explicit proxy env skips reading the system proxy', async () => {
   await g.ready;
   await g.refresh();
   assert.strictEqual(reads, 0);
+});
+
+test('mergeLoopbackNoProxy mirrors DIRECT_HOSTS into both spellings and keeps entries', () => {
+  const merged = mergeLoopbackNoProxy({ no_proxy: 'example.com', OTHER: '1' });
+  assert.ok(merged.no_proxy.includes('example.com'));
+  for (const h of ['localhost', '127.0.0.1', '::1', '[::1]']) assert.ok(merged.NO_PROXY.includes(h), h);
+  assert.strictEqual(merged.no_proxy, merged.NO_PROXY);
+  assert.strictEqual(merged.OTHER, '1');
+});
+
+test('ensureLoopbackNoProxyEnv only rewrites env that carries proxy vars', () => {
+  const clean = { PATH: '/bin' };
+  assert.strictEqual(ensureLoopbackNoProxyEnv(clean), clean);
+  const proxied = ensureLoopbackNoProxyEnv({ HTTP_PROXY: 'http://p:1' });
+  assert.strictEqual(proxied.HTTP_PROXY, 'http://p:1');
+  assert.ok(proxied.no_proxy.includes('127.0.0.1'));
+  assert.strictEqual(proxied.NO_PROXY, proxied.no_proxy);
+});
+
+test('refresh publishes the child proxy env snapshot and its mode', async () => {
+  resetLatestForTests();
+  const system = parseMacSystemProxy(SCUTIL);
+  const g = installGlobalProxy({
+    env: {}, platform: 'darwin', refresh: false, log() {}, apply() {},
+    readSystemProxy: async () => system,
+  });
+  await g.ready;
+  const snapshot = latestChildProxyEnv();
+  assert.strictEqual(snapshot.HTTPS_PROXY, 'http://127.0.0.1:7897');
+  for (const h of ['localhost', '127.0.0.1', '::1']) assert.ok(snapshot.NO_PROXY.includes(h), h);
+  assert.strictEqual(latestProxyMode(), 'system-proxy');
+  g.stop();
+  resetLatestForTests();
+});
+
+test('systemProxyHijackHint fires only for codex 502-style failures under an active system proxy', async () => {
+  resetLatestForTests();
+  assert.strictEqual(systemProxyHijackHint({ cli: 'codex', httpStatus: 502 }), null);
+  const system = parseMacSystemProxy(SCUTIL);
+  const g = installGlobalProxy({
+    env: {}, platform: 'darwin', refresh: false, log() {}, apply() {},
+    readSystemProxy: async () => system,
+  });
+  await g.ready;
+  const hint = systemProxyHijackHint({ cli: 'codex', httpStatus: 502 });
+  assert.ok(/系统代理劫持/.test(hint));
+  assert.ok(systemProxyHijackHint({ cli: 'codex', detail: 'Unknown error' }).includes('127.0.0.1'));
+  assert.strictEqual(systemProxyHijackHint({ cli: 'claude', httpStatus: 502 }), null);
+  assert.strictEqual(systemProxyHijackHint({ cli: 'codex', httpStatus: 500 }), null);
+  assert.strictEqual(systemProxyHijackHint({ cli: 'codex', httpStatus: null, detail: 'unrelated failure' }), null);
+  g.stop();
+  resetLatestForTests();
 });

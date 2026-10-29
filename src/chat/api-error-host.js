@@ -3,6 +3,7 @@
 const { isErrorOnlyText, normalizeRejection, retryNotice } = require('./api-error-policy');
 const { vendorLoginForCli } = require('../cli-adapters/vendor-login');
 const { looksLikeRevokedOAuth } = require('../claude-auth/oauth-refresh');
+const { systemProxyHijackHint } = require('../network/global-proxy');
 
 function cleanIdentity(value) {
   return value == null ? '' : String(value).trim();
@@ -271,9 +272,17 @@ function createApiErrorHost(options = {}) {
         ...(vendorLogin.autoStart ? { autoStart: true } : {}),
       } : null;
       const baseMessage = retryNotice(decision);
-      const message = vendorLogin
+      const vendorMessage = vendorLogin
         ? `${baseMessage} ${vendorLogin.label} 使用厂商独立账号：点下方按钮打开登录终端，${vendorLogin.autoStart ? '按提示完成浏览器授权' : `输入 ${vendorLogin.loginCommand} 完成登录`}后再重新发送。`
         : baseMessage;
+      // Only when the macOS system proxy is what traffic follows AND the error
+      // shape matches a hijacked loopback hop; null in every other environment.
+      const hijackHint = systemProxyHijackHint({
+        cli: identity.cli,
+        httpStatus: decision.error.httpStatus,
+        detail: decision.error.rootCause || decision.error.sanitizedMessage,
+      });
+      const message = hijackHint ? `${vendorMessage} ${hijackHint}` : vendorMessage;
       chatBroadcast(sessionName, {
         type: 'api_error_policy',
         state: decision.action === 'retry' ? 'retry_wait' : 'failed',
