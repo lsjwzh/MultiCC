@@ -20,7 +20,7 @@ function readCommandcodeLogin({ home = os.homedir(), env = process.env } = {}) {
 }
 
 function mountCommandcodeAuthRoutes(app, deps) {
-  const { directories, createSessionRecord, persistedSessionExists = () => false,
+  const { directories, createSessionRecord, disposeLoginTerminal = async () => 0,
     getStatus = readCommandcodeLogin } = deps;
   app.get('/api/commandcode/auth/status', (req, res) => {
     res.json({ ok: true, ...getStatus() });
@@ -28,9 +28,11 @@ function mountCommandcodeAuthRoutes(app, deps) {
   app.post('/api/commandcode/auth/login', async (req, res) => {
     const sessionId = 'commandcode-login';
     try {
-      if (persistedSessionExists(sessionId)) return res.json({ ok: true, sessionId, reused: true });
       const dir = [...directories.values()].find(item => item && item.path);
       if (!dir) return res.status(409).json({ ok: false, error: '请先添加一个项目目录，再打开登录终端。' });
+      // A login terminal is one-shot: drop the previous run (and its tmux pane)
+      // so every click starts a new terminal instead of the saved one.
+      await disposeLoginTerminal('commandcode-login');
       const result = await createSessionRecord({
         dir, id: sessionId, cli: 'commandcode', kind: 'terminal', label: 'Command Code 官方账号登录',
         provider: null, loginFlow: 'commandcode-login',

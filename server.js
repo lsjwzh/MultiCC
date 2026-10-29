@@ -139,6 +139,7 @@ const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
+const { createLoginTerminalDisposer } = require('./src/session/login-terminal');
 const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
 const { mountZcodeAuthRoutes } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes } = require('./src/routes/kimi-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
@@ -1211,6 +1212,14 @@ async function createSession(id) {
         broadcastTo(session.clients, { type: 'exit', data: exitMsg });
         await stopOutputCapture(session);
         sessions.delete(id);
+        // Login terminals are one-shot: the flow ends with its process, so the
+        // record must not survive — otherwise the next login click re-attaches
+        // the saved terminal and only replays the previous run.
+        if (persisted && persisted.loginFlow) {
+          persistedSessions.delete(id);
+          savePersistedSessionsBestEffort('runtime.login-terminal-exit');
+          workspaceBroadcast(persisted.dirId, { type: 'session_deleted', sessionId: id });
+        }
       } else {
         // Tmux session still alive but stream died — restart output capture
         console.log(`[multicc] Stream died for ${id}, restarting output capture...`);
@@ -1558,8 +1567,16 @@ function createSessionRecord(input) {
   })(input);
 }
 
+// Login terminals are one-shot (src/session/login-terminal.js): each login
+// click disposes the flow's previous terminal — tmux pane included — so a saved
+// pane is never reattached, and the exit path drops the record.
+const disposeLoginTerminal = createLoginTerminalDisposer({
+  persistedSessions, tmuxKillSession, destroySessionCascade,
+  saveSessions: savePersistedSessionsBestEffort,
+});
+
 mountSessionCreateRoutes(app, {
-  directories, createSessionRecord, asyncHandler, sessions: persistedSessions,
+  directories, createSessionRecord, asyncHandler, sessions: persistedSessions, disposeLoginTerminal,
   createTask: input => taskShellHost.createTask(input), getRecord: id => persistedSessions.get(id),
 });
 
@@ -2137,7 +2154,7 @@ providerRoutes.mountCatalogRoutes(app);
 // opencode session has no multicc-managed provider's model list to render.
 mountOpenCodeModelRoutes(app); require('./src/routes/cli-key-accounts').mountCliKeyAccountRoutes(app, { store: require('./src/cli-key-accounts').sharedCliKeyAccountStore(), sessionPersistence }); require('./src/routes/codex-models').mountCodexModelRoutes(app);
 require('./src/routes/commandcode-auth').mountCommandcodeAuthRoutes(app, {
-  directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id),
+  directories, createSessionRecord, disposeLoginTerminal,
   getStatus: () => {
     const env = { ...process.env };
     secretsVault.applyEnvOverlay(env);
@@ -2160,8 +2177,8 @@ mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes
 // Vendor routes feed results into the provider-limit cache via the recorder;
 // Qoder/OpenCode/Codex are account-level, so only ark/kimi/claude feed here.
 mountArkQuotaRoutes(app, limitRecorder.recordVendor); mountKimiQuotaRoutes(app, { recordVendor: limitRecorder.recordVendor }); mountClaudeUsageQuotaRoutes(app, limitRecorder.recordClaude); mountAliyunQuotaRoutes(app); require('./src/routes/quota-bars').mountQuotaBarRoutes(app, { quotaBarCache, recordVendor: limitRecorder.recordVendor, recordClaude: limitRecorder.recordClaude });
-mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id) }); mountCodexAccountRoutes(app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id), cliLogin }); mountClaudeAccountRoutes(app, { accounts: officialAccounts, providers, credentials: claudeAccountCredentials, logger, cliLogin, recordUsage: (providerId, usage) => limitRecorder.recordOfficialWindows('claude', providerId, { windows: require('./src/quota/official-account-usage').claudeUsageWindows(usage) }) }); require('./src/quota/official-account-usage').createOfficialAccountUsageSweeper({ accounts: officialAccounts, recorder: limitRecorder, logger }).start(); // multi-account management under /api/{codex,claude}/accounts — see src/routes/{codex,claude}-accounts.js
-const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent }); claudeOAuthSurface.mountRoutes(app); // see src/routes/claude-oauth.js header
+mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, disposeLoginTerminal }); mountCodexAccountRoutes(app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id), cliLogin }); mountClaudeAccountRoutes(app, { accounts: officialAccounts, providers, credentials: claudeAccountCredentials, logger, cliLogin, recordUsage: (providerId, usage) => limitRecorder.recordOfficialWindows('claude', providerId, { windows: require('./src/quota/official-account-usage').claudeUsageWindows(usage) }) }); require('./src/quota/official-account-usage').createOfficialAccountUsageSweeper({ accounts: officialAccounts, recorder: limitRecorder, logger }).start(); // multi-account management under /api/{codex,claude}/accounts — see src/routes/{codex,claude}-accounts.js
+const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent, disposeLoginTerminal }); claudeOAuthSurface.mountRoutes(app); // see src/routes/claude-oauth.js header
 // Token APIs remain between the two Provider route phases so the established
 // route ordering stays byte-compatible while accounting lives in one runtime.
 tokenUsageRuntime.mountRoutes(app);

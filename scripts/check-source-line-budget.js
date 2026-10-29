@@ -142,8 +142,10 @@ const MIGRATION_DEBT = Object.freeze({
     // 采样钩子随 provider-limit-cache 构造同行注入，实测 3021/159674。
     // 2026-10-28 插件挂载改传 paths（内置+~/.multicc/plugins 两处插件与插件列表），
     // 同行注释同时缩短，实测 3019/158624。
-    ceiling: 3019,
-    byteCeiling: 158624,
+    // 2026-10-29 登录终端改成一次性（src/session/login-terminal.js）：挂载四处
+    // disposeLoginTerminal，进程退出时删记录并广播，实测 3036/159569。
+    ceiling: 3036,
+    byteCeiling: 159569,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),

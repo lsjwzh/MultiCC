@@ -9,8 +9,9 @@
 // token itself is dead (`needs-login`) or the CLI ran and still could not
 // refresh (`failed`). Both mean a human has to complete the login flow, and
 // the login flow is a TUI no headless process can drive — so the POST
-// endpoint never runs the login itself, it only opens (or reuses) a
-// whitelisted terminal session where a human can.
+// endpoint never runs the login itself, it only opens a fresh whitelisted
+// terminal session where a human can. The previous one is disposed first so a
+// saved login terminal is never reattached.
 //
 // Once the human finishes, the Keychain holds a *different* valid credential
 // than the one the session was opened with. The closer watches for exactly
@@ -20,15 +21,13 @@
 const CLAUDE_AUTH_SESSION_ID = 'claude-auth-login';
 
 function createLoginSessionOpener(deps) {
-  const { directories, createSessionRecord } = deps;
+  const { directories, createSessionRecord, disposeLoginTerminal = async () => 0 } = deps;
   return async function openClaudeLoginSession() {
-    if (deps.persistedSessionExists && deps.persistedSessionExists(CLAUDE_AUTH_SESSION_ID)) {
-      return { ok: true, sessionId: CLAUDE_AUTH_SESSION_ID, reused: true };
-    }
     const dirList = typeof directories.values === 'function'
       ? [...directories.values()] : [];
     const dir = dirList.find(d => d && d.path) || dirList[0];
     if (!dir) return { ok: false, error: 'no directory available' };
+    await disposeLoginTerminal('claude-auth-login');
     const result = await createSessionRecord({
       dir,
       cli: 'claude',
@@ -165,6 +164,7 @@ function createClaudeOAuthSurface(deps) {
         directories: deps.directories,
         createSessionRecord: deps.createSessionRecord,
         persistedSessionExists: id => deps.persistedSessions.has(id),
+        disposeLoginTerminal: deps.disposeLoginTerminal,
         closer,
         readCredentialExpiry: async () => {
           const credentials = await deps.refresher.readCredentials();

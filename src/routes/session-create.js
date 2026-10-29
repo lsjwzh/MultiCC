@@ -31,7 +31,8 @@ function mountSessionCreateRoutes(app, rawDeps) {
   // One-click remedy surfaced by the chat UI when a vendor-auth CLI
   // (WorkBuddy/Qoder) fails with "authentication required": open a whitelisted
   // interactive login terminal in the same directory so the user can run the
-  // vendor TUI's /login. Reuses an existing login terminal when one exists.
+  // vendor TUI's /login. Login terminals are one-shot — the previous one is
+  // disposed so every click starts a new terminal (src/session/login-terminal.js).
   app.post('/api/sessions/:id/vendor-login-terminal', deps.asyncHandler(async (req, res) => {
     const source = deps.sessions.get(req.params.id);
     if (!source) return res.status(404).json({ error: 'session not found' });
@@ -41,12 +42,7 @@ function mountSessionCreateRoutes(app, rawDeps) {
     }
     const dir = deps.directories.get(source.dirId);
     if (!dir) return res.status(404).json({ error: 'directory not found' });
-    for (const record of deps.sessions.values()) {
-      if (record && record.kind === 'terminal' && record.dirId === dir.id
-          && record.loginFlow === spec.loginFlow) {
-        return res.json({ ...record, reused: true, url: terminalPageUrl(record.id) });
-      }
-    }
+    if (typeof deps.disposeLoginTerminal === 'function') await deps.disposeLoginTerminal(spec.loginFlow);
     const result = await deps.createSessionRecord({
       dir, cli: source.cli, kind: 'terminal',
       label: `${spec.label} 登录`,

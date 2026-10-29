@@ -121,16 +121,18 @@ test('login opener creates the whitelisted claude-auth-login terminal', async ()
   });
 });
 
-test('login opener reuses an existing session and never creates a second one', async () => {
+test('login opener disposes the previous terminal and always creates a new one', async () => {
+  const disposed = [];
   let creates = 0;
   const opener = createLoginSessionOpener({
-    directories: new Map(),
-    persistedSessionExists: () => true,
-    createSessionRecord: async () => { creates += 1; return { ok: true, id: 'x' }; },
+    directories: new Map([['dir-1', { id: 'dir-1', path: '/tmp/one' }]]),
+    disposeLoginTerminal: async loginFlow => { disposed.push(loginFlow); return 1; },
+    createSessionRecord: async () => { creates += 1; return { ok: true, id: CLAUDE_AUTH_SESSION_ID }; },
   });
   const result = await opener();
-  assert.deepEqual(result, { ok: true, sessionId: CLAUDE_AUTH_SESSION_ID, reused: true });
-  assert.equal(creates, 0);
+  assert.deepEqual(result, { ok: true, sessionId: CLAUDE_AUTH_SESSION_ID, reused: false });
+  assert.equal(creates, 1);
+  assert.deepEqual(disposed, ['claude-auth-login']);
 });
 
 test('login endpoint notes the credential the session opened with', async () => {

@@ -62,15 +62,15 @@ test('官方登录状态只返回身份摘要，区分本地凭据和环境密�
   }
 });
 
-test('官方登录接口创建并复用受限登录终端，不接受客户端命令或密钥', async () => {
+test('官方登录接口每次新起登录终端，不接受客户端命令或密钥', async () => {
   const app = fakeApp();
   const created = [];
-  let exists = false;
+  const disposed = [];
   mountCommandcodeAuthRoutes(app, {
     directories: new Map([['project', { id: 'project', path: '/project' }]]),
-    persistedSessionExists: () => exists,
+    disposeLoginTerminal: async loginFlow => { disposed.push(loginFlow); return 0; },
     getStatus: () => ({ credentialSaved: true, userName: '测试用户', environmentKey: false }),
-    createSessionRecord: async input => { created.push(input); exists = true; return { ok: true, id: input.id }; },
+    createSessionRecord: async input => { created.push(input); return { ok: true, id: input.id }; },
   });
   const invoke = async (route) => {
     const res = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
@@ -81,8 +81,11 @@ test('官方登录接口创建并复用受限登录终端，不接受客户端�
   const first = await invoke('POST /api/commandcode/auth/login');
   const second = await invoke('POST /api/commandcode/auth/login');
   assert.equal(first.body.sessionId, 'commandcode-login');
-  assert.equal(second.body.reused, true);
-  assert.equal(created.length, 1);
+  assert.equal(second.body.sessionId, 'commandcode-login');
+  // 登录终端是一次性的：每次请求先清掉上一个（连同 tmux 面板）再新建，
+  // 不会把上次登录完留下的终端复用给下一次。
+  assert.deepEqual(disposed, ['commandcode-login', 'commandcode-login']);
+  assert.equal(created.length, 2);
   assert.equal(created[0].loginFlow, 'commandcode-login');
   assert.equal(created[0].kind, 'terminal');
   assert.equal(created[0].provider, null);

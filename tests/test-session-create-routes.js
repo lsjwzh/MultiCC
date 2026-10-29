@@ -160,21 +160,23 @@ test('vendor login terminal: unknown session and non-vendor cli are rejected', a
   assert.equal(creates.length, 0);
 });
 
-test('vendor login terminal: creates a whitelisted loginFlow terminal once, then reuses it', async () => {
+test('vendor login terminal: disposes the previous one and creates a fresh terminal each time', async () => {
   const dir = { id: 'fleet-1' };
   const sessions = new Map([
     ['wb-chat', { id: 'wb-chat', dirId: dir.id, cli: 'codebuddy', kind: 'chat' }],
   ]);
   const app = fakeApp();
   const creates = [];
+  const disposed = [];
   mountSessionCreateRoutes(app, {
     directories: new Map([[dir.id, dir]]),
     sessions,
     asyncHandler: fn => fn,
+    disposeLoginTerminal: async loginFlow => { disposed.push(loginFlow); return 0; },
     async createSessionRecord(input) {
       creates.push(input);
       const session = {
-        id: 'wb-login-1', dirId: dir.id, cli: input.cli, kind: input.kind,
+        id: `wb-login-${creates.length}`, dirId: dir.id, cli: input.cli, kind: input.kind,
         label: input.label, loginFlow: input.loginFlow,
       };
       sessions.set(session.id, session);
@@ -195,11 +197,13 @@ test('vendor login terminal: creates a whitelisted loginFlow terminal once, then
   assert.equal(creates[0].persistence, 'required');
   assert.match(creates[0].label, /WorkBuddy/);
 
+  // 登录终端是一次性的：第二次点击先清掉上一次，再开一个新终端。
   const again = await invoke(handler, { params: { id: 'wb-chat' } });
   assert.equal(again.statusCode, 200);
-  assert.equal(again.body.id, 'wb-login-1');
-  assert.equal(again.body.reused, true);
-  assert.equal(creates.length, 1);
+  assert.equal(again.body.id, 'wb-login-2');
+  assert.equal(again.body.reused, undefined);
+  assert.equal(creates.length, 2);
+  assert.deepEqual(disposed, ['codebuddy-login', 'codebuddy-login']);
 });
 
 test('vendor login terminal: qoder maps to qoder-login', async () => {
@@ -223,4 +227,40 @@ test('vendor login terminal: qoder maps to qoder-login', async () => {
   });
   assert.equal(response.statusCode, 200);
   assert.equal(creates[0].loginFlow, 'qoder-login');
+});
+
+// ── one-shot login terminals ─────────────────────────────────────────────────
+
+const { createLoginTerminalDisposer } = require('../src/session/login-terminal');
+
+test('login disposer kills the flow tmux panes and drops every saved login record', async () => {
+  const persistedSessions = new Map([
+    ['codex-login', { id: 'codex-login', dirId: 'fleet-1', loginFlow: 'codex-login', kind: 'terminal' }],
+    ['cc-login', { id: 'cc-login', dirId: 'fleet-1', loginFlow: 'commandcode-login', kind: 'terminal' }],
+    ['chat-1', { id: 'chat-1', dirId: 'fleet-1', kind: 'chat' }],
+  ]);
+  const killed = [];
+  const saved = [];
+  const cascade = [];
+  const dispose = createLoginTerminalDisposer({
+    persistedSessions,
+    tmuxKillSession: async id => { killed.push(id); return true; },
+    destroySessionCascade: async (record, dir, opts) => { cascade.push({ id: record.id, dir, opts }); return { ok: true }; },
+    saveSessions: source => saved.push(source),
+  });
+
+  assert.equal(await dispose('codex-login'), 1);
+  // The cascade only kills a tmux pane it still has an in-memory handle for, so
+  // the disposer kills the id itself as well (a recovered pane has no handle).
+  assert.deepEqual(killed, ['codex-login']);
+  assert.equal(cascade.length, 1);
+  assert.deepEqual(cascade[0].opts, { force: true });
+  assert.equal(persistedSessions.has('codex-login'), false);
+  assert.equal(persistedSessions.has('cc-login'), true, 'a different login flow is left alone');
+  assert.equal(persistedSessions.has('chat-1'), true, 'chat sessions are not touched');
+  assert.deepEqual(saved, ['runtime.login-terminal-reset']);
+
+  assert.equal(await dispose(''), 0);
+  assert.equal(await dispose('missing-flow'), 0);
+  assert.deepEqual(saved, ['runtime.login-terminal-reset'], 'a no-op reset never rewrites state');
 });
