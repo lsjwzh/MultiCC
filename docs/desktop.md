@@ -76,7 +76,7 @@ userData 的物理路径：macOS `~/Library/Application Support/MultiCC`；Windo
 
 ### 桌面版与 CLI 版的差异
 
-- **更新**：桌面版不能自更新。侧栏底部的版本行照常检查新版本，点开的对话框只提供「打开发布页」——下载新的桌面安装包覆盖安装即可（数据保留在 userData，不受影响）。服务端的 `/api/update` 对桌面版固定返回 409 `DESKTOP_UPDATE_UNSUPPORTED`：桌面版的程序就是 `.app` 本体，`install.sh` 那套「替换安装目录」在这里没有对应物。`/api/update/status` 因此报 `kind: "desktop"`（独立安装包仍是 `standalone`，git 检出是 `git`）。
+- **更新**：桌面版在应用内自更新。侧栏底部的版本行照常检查新版本，确认后由桌面主进程（`desktop/lib/desktop-updater.js`）完成「检查 → 下载（带进度条与步骤清单）→ 校验 SHA-256 → 安装 → 重启」：安装脚本在应用退出后替换程序本体并重新拉起（macOS 挂载 dmg 后用 `ditto` 覆盖 `.app`；Windows 运行 NSIS 安装包；Linux 覆盖 AppImage 文件）。数据保留在 userData，不受影响。无法自更新的构建（开发态、Linux `.deb` 安装）自动退回「打开发布页」下载覆盖安装。服务端的 `/api/update` 对桌面版仍固定返回 409 `DESKTOP_UPDATE_UNSUPPORTED`：桌面版的程序就是 `.app` 本体，`install.sh` 那套「替换安装目录」在这里没有对应物，真正执行更新的是桌面 shell 经 preload IPC 暴露的 `multiccDesktop.update`，其进度事件与更新状态接口同形状，前端共用同一套进度面板。`/api/update/status` 仍报 `kind: "desktop"`（独立安装包是 `standalone`，git 检出是 `git`）。
 - **重启**：桌面版的「重启」不再拉起外部管理脚本，而是优雅退出、由主进程自动重新拉起服务端（同一数据目录与端口），进行中的输出会先落盘。
 - **网络**：桌面版后端永远只绑定 `127.0.0.1`；局域网/远程访问请继续使用 CLI 安装方式。
 - 与 CLI 版可并存，但两者数据目录不同，互不共享会话。

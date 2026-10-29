@@ -527,9 +527,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +1 双语键（airPluginsCatalogUnavailable）：服务端还没重启到带插件列表的版本时
     //   退回旧清单的说明，中英各 1 行（同批加过又撤掉的 airPluginsMisplaced 不计：
     //   独立包升级会把手装插件带到新版本，不再提示挪目录），重跑生成器实测 9958/644139。
-    maxLines: 9958,
+    // +7 双语键（airOpsStepInstallApp/Relaunch + airOpsDesktopInAppIntro/RunningBody/
+    //   DoneBody/Restarting/FailedBody）：桌面版改为在应用内下载安装新版本并显示进度与
+    //   步骤，中英各 7 行 = +14 行，重跑生成器实测 9972/645682。
+    maxLines: 9972,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 644139,
+    maxBytes: 645682,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

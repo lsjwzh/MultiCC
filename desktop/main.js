@@ -23,6 +23,7 @@ const {
 } = require('./lib/desktop-env');
 const { createBackendSupervisor } = require('./lib/backend-supervisor');
 const { reclaimOrphan } = require('./lib/orphan-reclaim');
+const { createDesktopUpdater, resolveInstallTarget } = require('./lib/desktop-updater');
 
 // ── Single instance ─────────────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock();
@@ -45,6 +46,7 @@ let supervisorLog = null;
 let isQuitting = false;
 let startingNewRun = false;
 let currentOrigin = null;
+let desktopUpdater = null;
 
 function logLine(...args) {
   const text = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
@@ -60,6 +62,53 @@ function sanitizedBaseEnv() {
   // would otherwise turn the whole app into a headless process.)
   delete env.ELECTRON_RUN_AS_NODE;
   return env;
+}
+
+// ── Desktop self-update ─────────────────────────────────────────────────────
+// The program the user installed and this process runs from: the .app on
+// macOS, the install directory on Windows, the AppImage file on Linux. Only
+// the shell knows it, which is why the swap happens here rather than on the
+// server (which keeps refusing /api/update with DESKTOP_UPDATE_UNSUPPORTED).
+function resolveAppBundlePath() {
+  if (process.platform === 'darwin') return path.resolve(process.resourcesPath, '..', '..');
+  if (process.platform === 'win32') return path.resolve(process.resourcesPath, '..');
+  return process.env.APPIMAGE || path.resolve(process.resourcesPath, '..');
+}
+
+// Whether this build can install a new release over itself. A dev checkout
+// (`electron .`) is not the shipped program, and a Linux .deb install has no
+// in-place path, so both answer false and the web UI keeps its download-page
+// fallback instead of walking the user into an update that cannot happen.
+function desktopUpdateSupported() {
+  if (!app.isPackaged) return false;
+  const target = resolveInstallTarget({ platform: process.platform, bundlePath: resolveAppBundlePath(), env: process.env });
+  return target.kind !== 'unsupported';
+}
+
+function createDesktopUpdaterInstance() {
+  const workDir = path.join(app.getPath('userData'), 'update');
+  fs.mkdirSync(workDir, { recursive: true });
+  desktopUpdater = createDesktopUpdater({
+    spawn: childProcess.spawn,
+    platform: process.platform,
+    arch: process.arch,
+    currentVersion: app.getVersion(),
+    bundlePath: resolveAppBundlePath(),
+    workDir,
+    appPid: process.pid,
+    supported: desktopUpdateSupported(),
+    logger: { log: logLine, error: logLine, warn: logLine },
+    // Progress is what the web UI paints: a snapshot in the same shape
+    // src/update-runner.js readUpdateStatus returns, so public/air-ops.js's
+    // progress panel renders a desktop run unchanged.
+    onProgress: (state) => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop:update:progress', state);
+    },
+    // The installer script waits for this pid to disappear, then swaps the
+    // bundle and reopens it; quitting here is what lets it proceed.
+    onQuit: () => app.quit(),
+  });
+  return desktopUpdater;
 }
 
 // ── System language ─────────────────────────────────────────────────────────
@@ -255,6 +304,21 @@ async function stopEverything() {
 function wireIpc() {
   const { ipcMain, dialog } = require('electron');
   ipcMain.handle('desktop:version', () => app.getVersion());
+  // Answer the preload's synchronous capability probe before any page loads:
+  // the web UI uses it to decide between the in-app update flow and the
+  // download-page fallback.
+  ipcMain.on('desktop:update:supported', (event) => { event.returnValue = desktopUpdateSupported(); });
+  ipcMain.handle('desktop:update:status', () => (desktopUpdater ? desktopUpdater.getState() : null));
+  ipcMain.handle('desktop:update:start', async (_event, options) => {
+    try {
+      if (!desktopUpdater) createDesktopUpdaterInstance();
+      const state = await desktopUpdater.start(options || {});
+      return { ok: true, state };
+    } catch (error) {
+      logLine(`desktop update failed: ${error.message}`);
+      return { ok: false, code: error.code || 'DESKTOP_UPDATE_FAILED', error: error.message, state: desktopUpdater ? desktopUpdater.getState() : null };
+    }
+  });
   ipcMain.on('desktop:retry', () => {
     logLine('retry requested from error page');
     if (mainWindow) mainWindow.loadURL(SPLASH_URL);
@@ -312,6 +376,7 @@ if (gotLock) {
     }
 
     wireIpc();
+    createDesktopUpdaterInstance();
     createWindow();
     app.on('activate', () => { if (!mainWindow) createWindow(); });
     await startBackend();
