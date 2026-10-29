@@ -10,10 +10,11 @@
 //!   的时候弹出授权框，只在下一个调用方到来时由池子重新建连。
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{self, protocol::WebSocketConfig, Message};
@@ -35,6 +36,45 @@ pub fn ws_config() -> WebSocketConfig {
     WebSocketConfig::default()
         .max_message_size(Some(MAX_WS_MESSAGE))
         .max_frame_size(Some(MAX_WS_MESSAGE))
+}
+
+type BrowserSink = Pin<Box<dyn Sink<Message, Error = tungstenite::Error> + Send>>;
+type BrowserStream = Pin<Box<dyn Stream<Item = Result<Message, tungstenite::Error>> + Send>>;
+
+/// The isolation supervisor exposes line-delimited CDP on a private local
+/// socket. The same router handles it and Chrome WebSockets; no second set of
+/// session/target ownership rules lives in the plugin.
+async fn connect_browser(url: &str) -> Result<(BrowserSink, BrowserStream), tungstenite::Error> {
+    if let Some(path) = url.strip_prefix("pipe://") {
+        let connection = crate::ipc::connect(std::path::Path::new(path)).await?;
+        let (reader, writer) = tokio::io::split(connection);
+        let sink = futures_util::sink::unfold(writer, |mut writer, message: Message| async move {
+            if let Message::Text(text) = message {
+                wire::write_line(&mut writer, &text).await?;
+            }
+            Ok::<_, tungstenite::Error>(writer)
+        });
+        let stream = futures_util::stream::unfold(
+            wire::LineReader::new(reader, MAX_WS_MESSAGE),
+            |mut reader| async move {
+                match reader.next_line().await {
+                    Ok(Some(line)) => Some((Ok(Message::Text(line.into())), reader)),
+                    Ok(None) => None,
+                    Err(error) => Some((
+                        Err(tungstenite::Error::Io(std::io::Error::other(
+                            error.to_string(),
+                        ))),
+                        reader,
+                    )),
+                }
+            },
+        );
+        return Ok((Box::pin(sink), Box::pin(stream)));
+    }
+    let (socket, _) =
+        tokio_tungstenite::connect_async_with_config(url, Some(ws_config()), true).await?;
+    let (sink, stream) = socket.split();
+    Ok((Box::pin(sink), Box::pin(stream)))
 }
 
 pub enum ConnMsg {
@@ -95,10 +135,7 @@ async fn run(
     crate::log!("[{url}] connecting");
     let mut waiting: HashMap<ConnId, ConnTx> = HashMap::new();
     let mut early: Vec<Cmd> = Vec::new();
-    let connect = tokio::time::timeout(
-        connect_timeout,
-        tokio_tungstenite::connect_async_with_config(url, Some(ws_config()), true),
-    );
+    let connect = tokio::time::timeout(connect_timeout, connect_browser(url));
     tokio::pin!(connect);
     let result = loop {
         tokio::select! {
@@ -127,7 +164,7 @@ async fn run(
     };
 
     let socket = match result {
-        Ok(Ok((socket, _))) => socket,
+        Ok(Ok(socket)) => socket,
         Ok(Err(error)) => {
             let (code, outcome) = classify(&error);
             crate::log!("[{url}] connect failed ({code}): {error}");
@@ -146,7 +183,7 @@ async fn run(
     };
     crate::log!("[{url}] ready after {}ms", started.elapsed().as_millis());
 
-    let (mut sink, mut stream) = socket.split();
+    let (mut sink, mut stream) = socket;
     let (to_chrome, mut chrome_queue) = mpsc::unbounded_channel::<String>();
     let writer_events = own.clone();
     tokio::spawn(async move {

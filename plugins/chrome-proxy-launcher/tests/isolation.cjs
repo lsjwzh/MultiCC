@@ -16,7 +16,7 @@ function fixture(t) {
   const profilesFile = path.join(root, 'profiles.json');
   fs.writeFileSync(profilesFile, JSON.stringify([profile]));
   function run(command, input) {
-    const result = spawnSync(binary, [command], { env: { ...process.env, HOME: home }, input: JSON.stringify(input), encoding: 'utf8', timeout: 5000 });
+    const result = spawnSync(binary, [command], { env: { ...process.env, HOME: home, MULTICC_CDP_GATEWAY: '0' }, input: JSON.stringify(input), encoding: 'utf8', timeout: 5000 });
     assert.ifError(result.error);
     return JSON.parse(result.stdout);
   }
@@ -63,14 +63,19 @@ test('真实 Chrome：固定代理可用时访问成功，断代理后目标直�
     if (req.url !== url) { res.writeHead(502); res.end(); return; }
     http.get(url, upstream => upstream.pipe(res)).on('error', () => { res.writeHead(502); res.end(); });
   });
-  proxy.on('connect', (req, socket) => socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'));
+  proxy.on('connect', (req, socket) => { socket.on('error', () => {}); socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); });
   await listen(proxy);
   t.after(() => close(proxy));
   f.profile.proxy.port = proxy.address().port;
   fs.writeFileSync(f.profilesFile, JSON.stringify([f.profile]));
-  // 用无副作用的占位可执行文件获取 Rust 实际生成的参数，再在临时目录跑无头 Chrome。
+  // 普通启动也必须拥有控制管道；用临时无头实例获取实际参数后正常关闭。
+  const wrapper = path.join(f.home, 'chrome');
+  fs.writeFileSync(wrapper, '#!/bin/sh\nexec '+"'"+process.env.CHROME_TEST_BIN.replaceAll("'", "'\\''")+"'"+' --headless=new --use-mock-keychain --disable-background-networking \"$@\"\n', {mode:0o700});
+  f.profile.chromePath = wrapper;
+  fs.writeFileSync(f.profilesFile, JSON.stringify([f.profile]));
   const launched = f.run('launch', { id: 'fixture', checkProxy: false, url, automaticFingerprint: false });
-  assert.equal(launched.ok, true);
+  assert.equal(launched.ok, true, JSON.stringify(launched));
+  assert.equal(f.run('stop', {id:'fixture'}).ok, true);
   let runNumber = 0;
   const runChrome = () => new Promise((resolve, reject) => {
     const suffix = ++runNumber;

@@ -191,6 +191,16 @@ class Daemon {
 
   async attachExternal() {
     if (!this.cdpUrl) throw new MbError('attach', `profile ${this.name} is attach-only but has no cdpUrl`);
+    if (this.config.gateway) {
+      const endpoint = await G.browserEndpoint({ wsUrl: this.cdpUrl,
+        lane: `mbrowser-${this.name}`, ttlSeconds: MAIN_LANE_TTL_S });
+      await this.connectBrowser(endpoint, { displayUrl: G.redact(endpoint) });
+      this.port = null;
+      this.owned = false;
+      this.phase = 'ready';
+      this.log('attached to isolation Chrome through the MultiCC Agent gateway');
+      return;
+    }
     const url = new URL(this.cdpUrl);
     const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
     const data = await fetchVersion(port, { host: url.hostname, timeout: 5000 });
@@ -473,6 +483,13 @@ class Daemon {
   async ensureReady() {
     if (this.cdp && !this.cdp.closed && this.phase === 'ready') return;
     if (this.cdp && !this.cdp.closed && this.phase !== 'chrome-down') return;
+    if (this.attachOnly && this.config.gateway) {
+      // Losing the gateway is not losing ownership of the isolated Chrome.
+      // Reattach on demand without starting or restarting a browser.
+      await this.attachExternal();
+      await this.restoreOwners();
+      return;
+    }
     if (this.kind === 'main') {
       // No backoff loop: "remote debugging is off" or "the user declined" is
       // an answer for the caller, and retrying would only re-show a dialog.

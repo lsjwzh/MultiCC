@@ -142,8 +142,8 @@ async function baseEndpoint({ env = process.env } = {}) {
 
 // lane: a named caller keeps its tab leases across reconnects for ttl seconds;
 // without one the lane lives exactly as long as the WebSocket.
-function endpointUrl(base, { activePort = 'default', lane, ttlSeconds } = {}) {
-  const query = [`activePort=${encodeURIComponent(activePort)}`];
+function endpointUrl(base, { activePort = 'default', wsUrl, lane, ttlSeconds } = {}) {
+  const query = [wsUrl ? `ws=${encodeURIComponent(wsUrl)}` : `activePort=${encodeURIComponent(activePort)}`];
   if (lane) query.push(`lane=${encodeURIComponent(lane)}`);
   if (ttlSeconds) query.push(`ttl=${Math.max(1, Math.round(Number(ttlSeconds)))}`);
   return `${base}?${query.join('&')}`;
@@ -151,6 +151,19 @@ function endpointUrl(base, { activePort = 'default', lane, ttlSeconds } = {}) {
 
 async function mainEndpoint(options = {}) {
   return endpointUrl(await baseEndpoint(options), options);
+}
+
+async function browserEndpoint(options = {}) {
+  const base = await baseEndpoint(options);
+  if (String(options.wsUrl || '').startsWith('pipe://')) {
+    const pong = await request({ op: 'ping' }, options);
+    if (!pong || !Array.isArray(pong.capabilities) || !pong.capabilities.includes('browser-control-pipe-v1')) {
+      throw new MbError('gateway_upgrade_required',
+        'the running MultiCC gateway does not support isolation control pipes yet; update MultiCC and restart it manually. ' +
+        'Keep this account in its isolation environment; do not fall back to the everyday Chrome.');
+    }
+  }
+  return endpointUrl(base, options);
 }
 
 // The token in the path is what keeps other local users out; it has no place
@@ -203,6 +216,7 @@ module.exports = {
   baseEndpoint,
   endpointUrl,
   mainEndpoint,
+  browserEndpoint,
   redact,
   refusalFromClose,
   status,

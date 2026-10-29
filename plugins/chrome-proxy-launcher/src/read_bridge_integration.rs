@@ -4,7 +4,7 @@ fn read_bridge_pipe_recovers_after_boundary_timeout_and_skips_late_response() {
     let (write, server_read) = UnixStream::pair().unwrap();
     let (mut server_write, read) = UnixStream::pair().unwrap();
     let mut pipe = Pipe { write, read: BufReader::new(read), id: 0, startup_deadline: None,
-        broken: false, write_broken: false, frame_complete: false, pending_frame: vec![], timed_out: false, events: vec![] };
+        broken: false, write_broken: false, frame_complete: false, pending_frame: vec![], timed_out: false, control: None, events: vec![] };
     assert!(pipe.call_with_session("Browser.getVersion", json!({}), None,
         Instant::now() + Duration::from_millis(30)).is_err());
     assert!(!pipe.broken, "尚未读到响应字节的超时不破坏帧边界");
@@ -20,7 +20,7 @@ fn read_bridge_pipe_expired_request_writes_nothing_and_remains_usable() {
     let (write, _server_read) = UnixStream::pair().unwrap();
     let (mut server_write, read) = UnixStream::pair().unwrap();
     let mut pipe = Pipe { write, read: BufReader::new(read), id: 0, startup_deadline: None,
-        broken: false, write_broken: false, frame_complete: false, pending_frame: vec![], timed_out: false, events: vec![] };
+        broken: false, write_broken: false, frame_complete: false, pending_frame: vec![], timed_out: false, control: None, events: vec![] };
     assert!(pipe.call_with_session("Browser.getVersion", json!({}), None, Instant::now()).is_err());
     assert_eq!(pipe.id, 0);
     assert!(!pipe.broken);
@@ -34,7 +34,7 @@ fn read_bridge_pipe_partial_timeout_resumes_without_mixing_response_ids() {
     let (mut server_write, read) = UnixStream::pair().unwrap();
     server_write.write_all(b"{\"id\":1").unwrap();
     let mut pipe = Pipe { write, read: BufReader::new(read), id: 0, startup_deadline: None,
-        broken: false, write_broken: false, frame_complete: false, pending_frame: vec![], timed_out: false, events: vec![] };
+        broken: false, write_broken: false, frame_complete: false, pending_frame: vec![], timed_out: false, control: None, events: vec![] };
     assert!(pipe.call_with_session("Browser.getVersion", json!({}), None,
         Instant::now() + Duration::from_millis(30)).is_err());
     assert!(!pipe.broken, "半帧超时保存已读片段，不丢失响应边界");
@@ -57,7 +57,7 @@ fn read_bridge_pipe_rejects_partial_frames_without_reusing_stream() {
         startup_deadline: None,
         broken: false,
         write_broken: false,
-        frame_complete: false, pending_frame: vec![], timed_out: false, events:vec![],
+        frame_complete: false, pending_frame: vec![], timed_out: false, control: None, events:vec![],
     };
     assert!(pipe.call("Browser.getVersion", json!({})).is_err());
     assert!(pipe.broken);
@@ -81,7 +81,7 @@ fn read_bridge_pipe_never_closes_after_failed_write() {
     let (_server_write, read) = UnixStream::pair().unwrap();
     drop(peer);
     let mut pipe = Pipe { write, read: BufReader::new(read), id: 0, startup_deadline: None,
-        broken: false, write_broken: false, frame_complete: false, pending_frame: vec![], timed_out: false, events:vec![] };
+        broken: false, write_broken: false, frame_complete: false, pending_frame: vec![], timed_out: false, control: None, events:vec![] };
     assert!(pipe.call("Browser.getVersion", json!({})).is_err());
     assert!(pipe.write_broken);
     let id = pipe.id;
@@ -103,7 +103,7 @@ fn read_bridge_pipe_preserves_complete_cdp_errors() {
         startup_deadline: None,
         broken: false,
         write_broken: false,
-        frame_complete: false, pending_frame: vec![], timed_out: false, events:vec![],
+        frame_complete: false, pending_frame: vec![], timed_out: false, control: None, events:vec![],
     };
     assert!(pipe
         .call("Target.getTargetInfo", json!({"targetId":"closed"}))
@@ -172,7 +172,7 @@ fn read_bridge_headless_pipe() {
         startup_deadline: None,
         broken: false,
         write_broken: false,
-        frame_complete: false, pending_frame: vec![], timed_out: false, events:vec![],
+        frame_complete: false, pending_frame: vec![], timed_out: false, control: None, events:vec![],
     };
     let targets = pipe.call("Target.getTargets", json!({})).unwrap();
     let target = targets["targetInfos"]

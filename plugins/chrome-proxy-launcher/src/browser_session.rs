@@ -1,5 +1,5 @@
 //! 私有匿名 CDP 管道：每次启动加载扩展，成功后才创建网页窗口。
-//! 监督进程与一次性插件请求分离，不开放 TCP 调试端口。
+//! 监督进程与一次性插件请求分离；完整控制经本机 Agent 网关，不开放 TCP 调试端口。
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -9,7 +9,7 @@ pub fn launch(
     id: &str,
     browser: &std::path::Path,
     args: &[String],
-    extension: &Value,
+    extension: Option<&Value>,
     source_revision: &Value,
     budget: Duration,
     tz: Option<&str>,
@@ -37,7 +37,7 @@ pub fn launch(
         let mut child = command
             .spawn()
             .map_err(|e| format!("启动浏览器监督进程失败：{e}"))?;
-        let input = json!({"browser":browser,"args":args,"extensionPath":extension["extensionPath"],"id":id,"sourceRevision":source_revision,"timeoutMs":budget.as_millis(),"tz":tz,"uiArgs":ui_args});
+        let input = json!({"browser":browser,"args":args,"extensionPath":extension.map(|e| &e["extensionPath"]),"id":id,"sourceRevision":source_revision,"timeoutMs":budget.as_millis(),"tz":tz,"uiArgs":ui_args});
         let sent = child
             .stdin
             .take()
@@ -117,32 +117,66 @@ mod unix {
         pending_frame: Vec<u8>,
         timed_out: bool,
         events: Vec<Value>,
+        control: Option<crate::control_bridge::Bridge>,
     }
     impl Pipe {
         fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
-            self.call_with_session(method, params, None, Instant::now() + Duration::from_secs(12))
+            self.call_with_session(
+                method,
+                params,
+                None,
+                Instant::now() + Duration::from_secs(12),
+            )
         }
-        fn call_with_session(&mut self, method: &str, params: Value, session: Option<&str>, request_deadline: Instant) -> Result<Value, String> {
-            if self.broken { return Err("浏览器私有管道已失效，请重新启动该身份".into()); }
-            let deadline = self.startup_deadline.map_or(request_deadline, |d| d.min(request_deadline));
-            if deadline <= Instant::now() { return Err("浏览器只读请求超时".into()); }
+        fn call_with_session(
+            &mut self,
+            method: &str,
+            params: Value,
+            session: Option<&str>,
+            request_deadline: Instant,
+        ) -> Result<Value, String> {
+            if self.broken {
+                return Err("浏览器私有管道已失效，请重新启动该身份".into());
+            }
+            let deadline = self
+                .startup_deadline
+                .map_or(request_deadline, |d| d.min(request_deadline));
+            if deadline <= Instant::now() {
+                return Err("浏览器只读请求超时".into());
+            }
             self.frame_complete = false;
             self.timed_out = false;
             let result = self.call_frame(method, params, session, deadline);
-            if result.is_err() && !self.frame_complete && !self.timed_out { self.broken = true; }
+            if result.is_err() && !self.frame_complete && !self.timed_out {
+                self.broken = true;
+            }
             result
         }
-        fn call_frame(&mut self, method: &str, params: Value, session: Option<&str>, request_deadline: Instant) -> Result<Value, String> {
-            if method == "_read_events" { return Ok(json!(std::mem::take(&mut self.events))); }
+        fn call_frame(
+            &mut self,
+            method: &str,
+            params: Value,
+            session: Option<&str>,
+            request_deadline: Instant,
+        ) -> Result<Value, String> {
+            if method == "_read_events" {
+                return Ok(json!(std::mem::take(&mut self.events)));
+            }
             let Some(write_budget) = request_deadline.checked_duration_since(Instant::now()) else {
                 self.frame_complete = true;
                 return Err("浏览器只读请求超时".into());
             };
             self.id += 1;
             let mut request = json!({"id":self.id,"method":method,"params":params});
-            if let Some(session) = session { request["sessionId"] = json!(session); }
+            if let Some(session) = session {
+                request["sessionId"] = json!(session);
+            }
             let request = request.to_string() + "\0";
-            if self.write.set_write_timeout(Some(write_budget.min(Duration::from_millis(100)))).is_err() {
+            if self
+                .write
+                .set_write_timeout(Some(write_budget.min(Duration::from_millis(100))))
+                .is_err()
+            {
                 self.write_broken = true;
                 return Err("浏览器私有管道不可写".into());
             }
@@ -154,55 +188,22 @@ mod unix {
             if method == "DOMSnapshot.captureSnapshot" {
                 let gate = crate::store::data_dir().join("run/test-snapshot-delay");
                 if std::fs::remove_file(&gate).is_ok() {
-                    std::fs::write(gate.with_extension("started"), b"request-written").map_err(|e| e.to_string())?;
+                    std::fs::write(gate.with_extension("started"), b"request-written")
+                        .map_err(|e| e.to_string())?;
                     while Instant::now() < request_deadline && !STOP.load(Ordering::Relaxed) {
                         std::thread::sleep(Duration::from_millis(20));
                     }
                 }
             }
-            let deadline = self
-                .startup_deadline
-                .map_or(request_deadline, |d| d.min(request_deadline));
+            let request_id = self.id;
             loop {
-                let mut bytes = std::mem::take(&mut self.pending_frame);
-                loop {
-                    if STOP.load(Ordering::Relaxed) { return Err("浏览器正在停止，已取消读取".into()); }
-                    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                        // 超时只终止本次等待，已读片段留在当前管道中。
-                        // 后续请求先续读至 NUL 边界，再按请求编号丢弃迟到响应。
-                        // 片段不向调用方返回；EOF、超限、坏 JSON 和写入失败仍作废。
-                        self.frame_complete = bytes.is_empty();
-                        self.pending_frame = bytes;
-                        self.timed_out = true;
-                        return Err("等待浏览器响应超时".into());
-                    };
-                    self.read.get_ref().set_read_timeout(Some(remaining.min(Duration::from_millis(100)))).map_err(|_| "浏览器私有管道不可读")?;
-                    let buffer = match self.read.fill_buf() {
-                        Ok(buffer) => buffer,
-                        Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) => continue,
-                        Err(_) => return Err("浏览器响应超时或管道已断开".into()),
-                    };
-                    if buffer.is_empty() { return Err("浏览器响应无效或已退出".into()); }
-                    let count = buffer.iter().position(|b| *b == 0).map_or(buffer.len(), |i| i + 1);
-                    if bytes.len() + count > 8 * 1024 * 1024 { return Err("浏览器响应超过读取上限".into()); }
-                    bytes.extend_from_slice(&buffer[..count]);
-                    self.read.consume(count);
-                    if bytes.last() == Some(&0) { break; }
-                }
-                bytes.pop();
-                let v: Value = serde_json::from_slice(&bytes).map_err(|_| "浏览器响应格式无效")?;
-                if v["id"].as_u64() != Some(self.id) {
-                    if self.events.len() < 512 && matches!(v["method"].as_str(), Some("Network.requestWillBeSent" | "Network.responseReceived" | "Network.loadingFinished" | "Network.loadingFailed")) {
-                        // 不缓存请求头、响应头、Cookie 或请求体。
-                        let r = &v["params"]["response"];
-                        self.events.push(json!({"method":v["method"],"sessionId":v["sessionId"],"requestId":v["params"]["requestId"],"type":v["params"]["type"],"url":r["url"],"status":r["status"],"mimeType":r["mimeType"],"metadata":{
-                            "country":v["params"]["request"]["headers"]["country"].as_str().filter(|s|s.len()==2&&s.bytes().all(|b|b.is_ascii_alphabetic()))}}));
-                    }
+                let v = self.read_frame(request_deadline)?;
+                self.observe(&v);
+                if v["id"].as_u64() != Some(request_id) {
                     continue;
                 }
                 self.frame_complete = true;
                 if v.get("error").is_some() {
-                    // 不回显 CDP 完整响应，避免潜在路径/URL 泄露。
                     return Err(format!(
                         "浏览器拒绝 {method}；需使用支持自动加载扩展的 Chrome，或检查组织策略"
                     ));
@@ -210,16 +211,170 @@ mod unix {
                 return Ok(v["result"].clone());
             }
         }
+        fn observe(&mut self, v: &Value) {
+            if let Some(control) = &mut self.control {
+                control.route(v);
+            }
+            if self.events.len() < 512
+                && matches!(
+                    v["method"].as_str(),
+                    Some(
+                        "Network.requestWillBeSent"
+                            | "Network.responseReceived"
+                            | "Network.loadingFinished"
+                            | "Network.loadingFailed"
+                    )
+                )
+            {
+                // 不缓存请求头、响应头、Cookie 或请求体。
+                let r = &v["params"]["response"];
+                self.events.push(json!({"method":v["method"],"sessionId":v["sessionId"],"requestId":v["params"]["requestId"],"type":v["params"]["type"],"url":r["url"],"status":r["status"],"mimeType":r["mimeType"],"metadata":{
+                            "country":v["params"]["request"]["headers"]["country"].as_str().filter(|s|s.len()==2&&s.bytes().all(|b|b.is_ascii_alphabetic()))}}));
+            }
+        }
+        fn read_frame(&mut self, request_deadline: Instant) -> Result<Value, String> {
+            let deadline = self
+                .startup_deadline
+                .map_or(request_deadline, |d| d.min(request_deadline));
+            let mut bytes = std::mem::take(&mut self.pending_frame);
+            loop {
+                self.pump_control()?;
+                if STOP.load(Ordering::Relaxed) {
+                    return Err("浏览器正在停止，已取消读取".into());
+                }
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    // 超时只终止本次等待，已读片段留在当前管道中。
+                    // 后续请求先续读至 NUL 边界，再按请求编号丢弃迟到响应。
+                    // 片段不向调用方返回；EOF、超限、坏 JSON 和写入失败仍作废。
+                    self.frame_complete = bytes.is_empty();
+                    self.pending_frame = bytes;
+                    self.timed_out = true;
+                    return Err("等待浏览器响应超时".into());
+                };
+                self.read
+                    .get_ref()
+                    .set_read_timeout(Some(remaining.min(Duration::from_millis(100))))
+                    .map_err(|_| "浏览器私有管道不可读")?;
+                let buffer = match self.read.fill_buf() {
+                    Ok(buffer) => buffer,
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock
+                                | std::io::ErrorKind::TimedOut
+                                | std::io::ErrorKind::Interrupted
+                        ) =>
+                    {
+                        continue
+                    }
+                    Err(_) => return Err("浏览器响应超时或管道已断开".into()),
+                };
+                if buffer.is_empty() {
+                    return Err("浏览器响应无效或已退出".into());
+                }
+                let count = buffer
+                    .iter()
+                    .position(|b| *b == 0)
+                    .map_or(buffer.len(), |i| i + 1);
+                if bytes.len() + count > 512 * 1024 * 1024 {
+                    return Err("浏览器响应超过读取上限".into());
+                }
+                bytes.extend_from_slice(&buffer[..count]);
+                self.read.consume(count);
+                if bytes.last() == Some(&0) {
+                    break;
+                }
+            }
+            bytes.pop();
+            let v: Value = serde_json::from_slice(&bytes).map_err(|_| "浏览器响应格式无效")?;
+            self.frame_complete = true;
+            Ok(v)
+        }
+        fn send_control(&mut self, mut frame: Value) -> Result<(), String> {
+            self.id += 1;
+            if let Some(control) = &mut self.control {
+                if !control.track(self.id, &frame) {
+                    return Ok(());
+                }
+            }
+            frame["id"] = json!(self.id);
+            self.write_frame(&frame)
+        }
+        fn write_frame(&mut self, frame: &Value) -> Result<(), String> {
+            if self.write_broken {
+                return Err("浏览器私有管道已断开".into());
+            }
+            self.write
+                .set_write_timeout(Some(Duration::from_millis(100)))
+                .map_err(|e| e.to_string())?;
+            if self
+                .write
+                .write_all((frame.to_string() + "\0").as_bytes())
+                .is_err()
+            {
+                self.write_broken = true;
+                self.broken = true;
+                return Err("浏览器私有管道已断开".into());
+            }
+            Ok(())
+        }
+        fn pump_control(&mut self) -> Result<(), String> {
+            if self.broken {
+                return Err("浏览器私有管道已失效".into());
+            }
+            let Some(control) = &mut self.control else {
+                return Ok(());
+            };
+            let requests = control.requests();
+            let detached = control.take_detached();
+            for request in requests {
+                self.send_control(request)?;
+            }
+            for session in detached {
+                self.id += 1;
+                self.write_frame(&json!({"id":self.id,"method":"Target.detachFromTarget","params":{"sessionId":session}}))?;
+            }
+            Ok(())
+        }
+        fn poll_control(&mut self) -> Result<(), String> {
+            if STOP.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            self.pump_control()?;
+            for _ in 0..64 {
+                self.timed_out = false;
+                match self.read_frame(Instant::now() + Duration::from_millis(1)) {
+                    Ok(frame) => self.observe(&frame),
+                    Err(_) if STOP.load(Ordering::Relaxed) => return Ok(()),
+                    Err(_) if self.timed_out => break,
+                    Err(error) => {
+                        self.broken = true;
+                        return Err(error);
+                    }
+                }
+            }
+            if let Some(control) = &mut self.control {
+                control.register();
+            }
+            Ok(())
+        }
         // 停止后不再解析读端；仅当此前所有写帧完整时发送一次固定关闭请求。
         // 读端即使因取消或半帧而失效，Browser.close 仍可让 Chrome 正常保存会话。
         fn request_close(&mut self) -> Result<(), String> {
             self.broken = true;
-            if self.write_broken { return Err("浏览器写入管道已失效".into()); }
+            if self.write_broken {
+                return Err("浏览器写入管道已失效".into());
+            }
             self.write_broken = true;
             self.id += 1;
-            self.write.set_write_timeout(Some(Duration::from_millis(500))).map_err(|e| e.to_string())?;
-            let request = json!({"id":self.id,"method":"Browser.close","params":{}}).to_string() + "\0";
-            self.write.write_all(request.as_bytes()).map_err(|_| "发送浏览器关闭请求失败".into())
+            self.write
+                .set_write_timeout(Some(Duration::from_millis(500)))
+                .map_err(|e| e.to_string())?;
+            let request =
+                json!({"id":self.id,"method":"Browser.close","params":{}}).to_string() + "\0";
+            self.write
+                .write_all(request.as_bytes())
+                .map_err(|_| "发送浏览器关闭请求失败".into())
         }
     }
 
@@ -243,7 +398,7 @@ mod unix {
         let browser = input["browser"].as_str().ok_or("缺少浏览器路径")?;
         let args: Vec<String> =
             serde_json::from_value(input["args"].clone()).map_err(|_| "启动参数无效")?;
-        let extension = input["extensionPath"].as_str().ok_or("缺少扩展目录")?;
+        let extension = input["extensionPath"].as_str();
         // 出口地理一致性的时区半边：TZ 环境跟着实例走（Chrome 的 Intl/Date
         // 读它），两个阶段（无窗口的扩展加载 + 身份窗口）都要带上。
         let tz = input["tz"].as_str().filter(|zone| !zone.is_empty());
@@ -263,13 +418,15 @@ mod unix {
         if let Some(zone) = tz {
             command.env("TZ", zone);
         }
+        command.args(
+            args.iter()
+                .filter(|a| extension.is_none() || a.starts_with("--")),
+        );
+        if extension.is_some() {
+            command.args(["--no-startup-window", "--enable-unsafe-extension-debugging"]);
+        }
         command
-            .args(args.iter().filter(|a| a.starts_with("--")))
-            .args([
-                "--no-startup-window",
-                "--remote-debugging-pipe",
-                "--enable-unsafe-extension-debugging",
-            ])
+            .arg("--remote-debugging-pipe")
             .args(&ui_args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -304,34 +461,53 @@ mod unix {
             pending_frame: vec![],
             timed_out: false,
             events: vec![],
+            control: None,
         };
         let targets = pipe.call("Target.getTargets", json!({}))?;
-        if targets["targetInfos"]
-            .as_array()
-            .is_some_and(|ts| ts.iter().any(|t| t["type"] == "page"))
+        if extension.is_some()
+            && targets["targetInfos"]
+                .as_array()
+                .is_some_and(|ts| ts.iter().any(|t| t["type"] == "page"))
         {
             return Err("浏览器提前打开了网页，已停止启动以避免扩展加载竞态".into());
         }
-        let loaded = pipe.call("Extensions.loadUnpacked", json!({"path":extension}))?;
-        let extension_id = loaded["id"]
-            .as_str()
-            .filter(|id| !id.is_empty())
-            .ok_or("浏览器未确认扩展加载成功")?;
-        let initial_url = args.iter().rev().find(|arg| !arg.starts_with("--"))
-            .map(String::as_str).unwrap_or("chrome://newtab/");
-        pipe.call("Target.createTarget", json!({"url":initial_url,"newWindow":true}))?;
+        let fingerprint = if let Some(extension) = extension {
+            let loaded = pipe.call("Extensions.loadUnpacked", json!({"path":extension}))?;
+            let extension_id = loaded["id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or("浏览器未确认扩展加载成功")?;
+            json!({"status":"loaded","installationVerified":true,"extensionId":extension_id})
+        } else {
+            json!({"status":"notRequested","installationVerified":false})
+        };
+        let initial_url = args
+            .iter()
+            .rev()
+            .find(|arg| !arg.starts_with("--"))
+            .map(String::as_str)
+            .unwrap_or("chrome://newtab/");
+        if extension.is_some() {
+            pipe.call(
+                "Target.createTarget",
+                json!({"url":initial_url,"newWindow":true}),
+            )?;
+        }
         let bridge = crate::read_bridge::unix::Bridge::bind(id, input["sourceRevision"].clone())?;
+        let control = crate::control_bridge::Bridge::bind(&crate::store::data_dir(), id)?;
+        let control_metadata = control.metadata();
+        pipe.control = Some(control);
         let state = crate::store::data_dir()
             .join("run")
             .join(format!("{id}.browser.json"));
         std::fs::create_dir_all(state.parent().unwrap()).map_err(|_| "创建运行记录目录失败")?;
         std::fs::write(
             &state,
-            json!({"pid":child.0.id(),"supervisorPid":std::process::id()}).to_string(),
+            json!({"pid":child.0.id(),"supervisorPid":std::process::id(),"browserControl":control_metadata}).to_string(),
         )
         .map_err(|_| "保存浏览器监督记录失败")?;
         let result = json!({"ok":true,"data":{"pid":child.0.id(),"supervisorPid":std::process::id(),
-            "fingerprint":{"status":"loaded","installationVerified":true,"extensionId":extension_id}}});
+            "browserControl":control_metadata,"fingerprint":fingerprint}});
         writeln!(std::io::stdout(), "{result}").map_err(|_| "启动请求已中断")?;
         std::io::stdout().flush().map_err(|_| "启动请求已中断")?;
         pipe.startup_deadline = None;
@@ -346,12 +522,15 @@ mod unix {
                 let _ = pipe.request_close();
             }
             if !stopping {
+                pipe.poll_control()?;
                 bridge.poll_with_cancel(
-                    |method, params, session, deadline| pipe.call_with_session(method, params, session, deadline),
+                    |method, params, session, deadline| {
+                        pipe.call_with_session(method, params, session, deadline)
+                    },
                     || STOP.load(Ordering::Relaxed),
                 );
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(5));
         }
         let _ = std::fs::remove_file(state);
         Ok(())
@@ -367,6 +546,43 @@ pub fn supervise(input: &Value) {
     let result: Result<(), String> = Err("此平台不支持自动加载扩展".into());
     if let Err(error) = result {
         println!("{}", json!({"ok":false,"error":error}));
+    }
+}
+
+/// Never advertise stale state from an earlier Chrome/supervisor lifetime.
+pub fn control_metadata(id: &str, pid: i32) -> Option<Value> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+        let path = crate::store::data_dir()
+            .join("run")
+            .join(format!("{id}.browser.json"));
+        let state: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        if state["pid"].as_i64() != Some(pid as i64) {
+            return None;
+        }
+        let supervisor = i32::try_from(state["supervisorPid"].as_i64()?).ok()?;
+        if supervisor <= 1 || !crate::chrome::pid_alive(supervisor) {
+            return None;
+        }
+        let control = &state["browserControl"];
+        if control["protocol"] != crate::control_bridge::PROTOCOL {
+            return None;
+        }
+        let path = control["wsUrl"].as_str()?.strip_prefix("pipe://")?;
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        if !meta.file_type().is_socket()
+            || meta.uid() != unsafe { libc::geteuid() }
+            || meta.permissions().mode() & 0o077 != 0
+        {
+            return None;
+        }
+        Some(control.clone())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (id, pid);
+        None
     }
 }
 

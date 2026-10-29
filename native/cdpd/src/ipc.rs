@@ -156,6 +156,10 @@ pub async fn handle(io: Box<dyn Duplex>, daemon: Arc<Daemon>) {
     let reply = match request["op"].as_str().unwrap_or("") {
         "ping" => daemon.ping_body(),
         "status" => daemon.status().await,
+        "register" => match target_url(&request).and_then(|url| daemon.pool.handle(&url, false)) {
+            Ok(_) => json!({"ok":true,"registered":true}),
+            Err(refusal) => refusal_value(&refusal),
+        },
         "endpoint" => match daemon.front.get() {
             Some(front) => json!({ "ok": true, "url": front.base() }),
             None => {

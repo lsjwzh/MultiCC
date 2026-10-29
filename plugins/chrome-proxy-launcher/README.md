@@ -49,6 +49,16 @@ https://chromium.googlesource.com/chromium/src/+/HEAD/net/docs/proxy.md
 3. 「测出口」确认这个身份的外网 IP；「启动浏览器」开一个隔离实例；
    「停止」结束该身份的实例。
 
+## 启动即接入 Agent 浏览器控制通道
+
+1.7.0 起，macOS/Linux 隔离实例启动时默认创建 `multicc-browser-control-v1` 私有控制通道，并向本机 `multicc-cdpd` 网关登记。Chrome 的匿名管道仍由 Rust 监督进程独占，不开放 TCP 调试端口；网关经当前用户专属的本地 socket 复用连接。关闭自动指纹扩展时同样接入控制通道，并保留 Chrome 原生标签恢复。
+
+`mbrowser envs` 会显示 `full control (MultiCC Agent gateway, private pipe)`，可继续用 `-p iso:<id>` 在原实例后台点击、输入、截图。各实例保持自己的 profile、登录态和代理出口；多个调用方沿用网关的浏览器会话隔离与标签页租约。只读页面接口继续独立提供受限读取，不会被扩展为通用执行接口。控制及请求分派在 Rust 中实现；Node 仅适配现有技能 CLI、插件 API 和网关传输。
+
+升级前已经运行的实例保持原状态，需要用户在插件里正常关闭、重新启动一次。不要强杀 Chrome，也不要切换到主浏览器完成失败的操作。旧网关没有 `browser-control-pipe-v1` 能力时，mbrowser 会报 `gateway_upgrade_required`：先更新 MultiCC，再由用户手动运行新版 `multicc-cdpd shutdown --force`，下一次启动实例或使用 mbrowser 时会拉起新版网关。这会断开旧网关的连接，主 Chrome 后续可能需要重新允许一次调试，因此不会自动执行。若网关暂时不可用，实例仍保留私有通道并定期重新登记；不会回退到其他账号。
+
+这沿用现有插件的 Unix 浏览器监督能力。Windows 的自动指纹启动仍明确报不支持，普通启动保持原行为，本次不声称已经具备 Windows 隔离控制通道。
+
 ## 原版 Chrome 的轻量指纹扩展
 
 默认勾选「启动时自动加载轻量指纹扩展」。点击身份的「启动浏览器」即可：
@@ -65,7 +75,7 @@ Rust 自动准备该身份的扩展，通过私有匿名 CDP 管道等待 Chrome
 
 **会话兼容边界**：保留登录态及会话 Cookie。为了让扩展先于网页运行，自动模式
 打开指定网址（未指定则打开新标签），不会自动恢复上次的全部标签。
-取消勾选自动指纹即可使用原来的普通启动方式（`automaticFingerprint:false`），
+取消勾选自动指纹即可使用保留私有控制通道的普通启动方式（`automaticFingerprint:false`），
 保留 Chrome 原生标签恢复；它不负责停用曾经手动安装的扩展。
 本次打包并实测 macOS arm64 + 原版 Chrome 156；Unix 管道实现可供 Linux 构建，
 但 Linux 尚未实测，Windows 自动模式明确报不支持，不伪报加载成功。

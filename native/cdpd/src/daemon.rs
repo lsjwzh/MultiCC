@@ -71,6 +71,7 @@ impl Daemon {
             "pid": std::process::id(),
             "startedAt": crate::log::format_utc(self.started_ms / 1000),
             "busy": self.busy(),
+            "capabilities": if cfg!(unix) { vec!["browser-control-pipe-v1"] } else { vec![] },
         })
     }
 

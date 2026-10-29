@@ -135,7 +135,9 @@ test('names, sites and refs are parsed the way routing needs', () => {
   assert.deepEqual(I.parseIsoRef('iso:iso-plugin/shop'), { pluginId: 'iso-plugin', profileId: 'shop' });
   assert.throws(() => I.parseIsoRef('iso:../x'), error => error.code === 'usage');
   assert.throws(() => I.parseIsoRef('iso:a/b/c'), error => error.code === 'usage');
-  assert.equal(I.daemonName({ pluginId: PLUGIN, profileId: 'shop' }), 'iso-shop');
+  assert.match(I.daemonName({ pluginId: PLUGIN, profileId: 'shop' }), /^iso-[0-9a-f]{16}$/);
+  assert.notEqual(I.daemonName({ pluginId: PLUGIN, profileId: 'shop' }),
+    I.daemonName({ pluginId: 'another-plugin', profileId: 'shop' }));
   assert.match(I.daemonName({ pluginId: PLUGIN, profileId: 'x'.repeat(100) }), /^iso-[0-9a-f]{16}$/);
   assert.equal(I.isIsolationPlugin({ commands: ['list', 'launch', 'browser-read'] }), true);
   assert.equal(I.isIsolationPlugin({ commands: ['list', 'launch'] }), false);
@@ -147,6 +149,10 @@ test('an environment is driven fully only when its own running process holds a l
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   assert.deepEqual(await I.controlOf({ running: false }, dir), { control: 'stopped' });
+  const browserControl = { protocol: 'multicc-browser-control-v1', wsUrl: 'pipe:///tmp/private.sock' };
+  assert.deepEqual(await I.controlOf({ running: true, browserControl }, dir),
+    { control: 'agent', wsUrl: browserControl.wsUrl }, 'private Agent transport takes priority over stale ports');
+  assert.deepEqual(await I.controlOf({ running: false, browserControl }, dir), { control: 'stopped' });
   assert.deepEqual(await I.controlOf({ running: true, pid: process.pid }, dir), { control: 'read' }, 'pipe-only instance');
   fs.writeFileSync(path.join(dir, 'DevToolsActivePort'), `${server.address().port}\n/devtools/browser/abc\n`);
   fs.symlinkSync(`host-${process.pid}`, path.join(dir, 'SingletonLock'));

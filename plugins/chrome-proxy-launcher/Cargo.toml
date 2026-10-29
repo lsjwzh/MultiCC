@@ -1,6 +1,6 @@
 [package]
 name = "chrome-proxy-launcher"
-version = "1.6.4"
+version = "1.7.0"
 edition = "2021"
 description = "MultiCC plugin: launch isolated Chrome profiles, each pinned to its own proxy / VPN egress"
 license = "MIT"

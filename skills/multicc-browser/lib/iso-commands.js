@@ -48,6 +48,7 @@ function saveSessionRoute(owner, value) {
 // --------------------------------------------------------------- envs / route
 
 function controlText(entry) {
+  if (entry.control === 'agent') return 'full control (MultiCC Agent gateway, private pipe)';
   if (entry.control === 'cdp') return 'full control (loopback DevTools port)';
   if (entry.control === 'read') return 'read-only (plugin page bridge: open/tabs/text/snapshot)';
   return 'not running';
@@ -141,15 +142,14 @@ function stickyProfile() {
 
 // ------------------------------------------------------------ page commands
 
-// A `cdp` environment is driven like `attach`: a daemon that attaches to the
-// instance's loopback port and never launches, stops or restarts it. The port
-// changes with every relaunch, so the config is refreshed on each use and a
-// daemon still holding the old endpoint is retired.
+// Both control transports use an attach-only daemon. Private Agent endpoints
+// and legacy DevTools ports change on relaunch; retire stale daemons without
+// ever closing or restarting the browser.
 async function ensureIsoDaemon(entry) {
   const name = I.daemonName(entry);
-  const cdpUrl = `http://127.0.0.1:${entry.port}`;
+  const cdpUrl = entry.control === 'agent' ? entry.wsUrl : `http://127.0.0.1:${entry.port}`;
   const existing = P.readJson(P.configPath(name), null) || {};
-  if (existing.cdpUrl !== cdpUrl || !existing.iso) {
+  if (existing.cdpUrl !== cdpUrl || !existing.iso || Boolean(existing.gateway) !== (entry.control === 'agent')) {
     P.ensureStateDirs();
     P.writeJson(P.configPath(name), {
       name,
@@ -158,6 +158,7 @@ async function ensureIsoDaemon(entry) {
       attachOnly: true,
       headed: true,
       cdpUrl,
+      gateway: entry.control === 'agent',
       iso: { ref: entry.ref, pluginId: entry.pluginId, profileId: entry.profileId, account: entry.account },
     });
     const running = await client.pingOnce(name);
@@ -259,7 +260,7 @@ async function runPageCommand(ref, command, args, flags) {
       `${entry.ref} (${entry.account}) is not running. Starting it opens a browser window, so ask the user first; ` +
       `with their OK: \`mbrowser start ${entry.ref}\`, or they start it from the plugin.`);
   }
-  if (entry.control === 'cdp') {
+  if (entry.control === 'cdp' || entry.control === 'agent') {
     const name = await ensureIsoDaemon(entry);
     const result = await client.call(name, command, args, { tab: flags.tab });
     return { ...result, environment: entry.ref };
