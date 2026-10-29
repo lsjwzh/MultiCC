@@ -2883,7 +2883,11 @@ function createChatTurnEngine(deps) {
               .clearTaskShellHistory(shellId, sessionName, Math.max(0, parseInt(msg.keep, 10) || 0), { limit: CHAT_HISTORY_PAGE }) });
             return;
           }
-          if (!ws._sharePerm && msg.taskShell === true && ['user_message', 'cancel'].includes(msg.type)) {
+          // Share guests with operate permission send plain user_message/cancel
+          // (no taskShell flag) — route them through the same task-shell input
+          // path instead of bouncing them to the task entry, which they cannot use.
+          const shareOperateInput = ws._sharePerm === 'operate' && ['user_message', 'cancel'].includes(msg.type);
+          if (shareOperateInput || (!ws._sharePerm && msg.taskShell === true && ['user_message', 'cancel'].includes(msg.type))) {
             try {
               const result = await taskContextHost.sendTaskShellInput(sessionName, msg, shellId);
               sendWs(ws, { type: 'task_shell_routed', ...result });
