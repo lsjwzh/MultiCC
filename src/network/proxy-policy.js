@@ -44,6 +44,20 @@ function hasProxyEnv(env) {
   return ['http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']
     .some(key => env[key] !== undefined);
 }
+// Child processes inherit the host env; when it carries proxy vars (e.g. the
+// host was launched from a shell with Clash env exported), loopback hops such
+// as the local CPR at 127.0.0.1 must stay direct even for tools that never
+// consult the macOS system-proxy exception list.
+function mergeLoopbackNoProxy(env) {
+  const entries = [env && env.no_proxy, env && env.NO_PROXY]
+    .flatMap(value => String(value || '').split(/[\s,]+/)).filter(Boolean);
+  const merged = [...new Set([...entries, ...DIRECT_HOSTS])].join(',');
+  return { ...(env || {}), no_proxy: merged, NO_PROXY: merged };
+}
+function ensureLoopbackNoProxyEnv(env) {
+  if (!env || typeof env !== 'object' || !hasProxyEnv(env)) return env;
+  return mergeLoopbackNoProxy(env);
+}
 function resolveProxyConfig(env, system) {
   const explicit = hasProxyEnv(env);
   const http = env.http_proxy ?? env.HTTP_PROXY, https = env.https_proxy ?? env.HTTPS_PROXY;
@@ -119,4 +133,5 @@ function createProxyPolicy(options = {}) {
   return { configuration, proxyForUrl, invalidate() { checkedAt = -Infinity; } };
 }
 module.exports = { createProxyPolicy, parseMacSystemProxy, readMacSystemProxy,
-  resolveProxyConfig, cidrToRange, bypassProxy, isLoopback };
+  resolveProxyConfig, cidrToRange, bypassProxy, isLoopback,
+  mergeLoopbackNoProxy, ensureLoopbackNoProxyEnv };

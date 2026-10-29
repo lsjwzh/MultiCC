@@ -6,6 +6,7 @@ const os = require('os');
 const net = require('net');
 const path = require('path');
 const { execFile } = require('child_process');
+const { mergeLoopbackNoProxy } = require('./network/proxy-policy');
 
 const TMUX_PREFIX = 'multicc-';
 const TMUX_FIFO_DIR = path.join(os.tmpdir(), 'multicc-fifos');
@@ -44,10 +45,11 @@ async function tmuxHasSession(id) {
 
 async function tmuxCreateSession(id, cwd, cols, rows, cmd, envExtra) {
   const args = ['new-session', '-d', '-s', tmuxSessionName(id)];
-  if (envExtra && typeof envExtra === 'object') {
-    for (const [key, value] of Object.entries(envExtra)) {
-      if (value != null) args.push('-e', `${key}=${String(value)}`);
-    }
+  // A tmux session also inherits the tmux server's environment underneath
+  // envExtra; pin the loopback bypass unconditionally so an inherited proxy
+  // can never capture local hops (the CPR at 127.0.0.1) inside terminals.
+  for (const [key, value] of Object.entries(mergeLoopbackNoProxy(envExtra))) {
+    if (value != null) args.push('-e', `${key}=${String(value)}`);
   }
   args.push('-x', String(cols), '-y', String(rows), '-c', cwd, cmd);
   await run('tmux', args, { env: { TERM: 'xterm-256color', COLORTERM: 'truecolor' } });

@@ -3,6 +3,7 @@
 const assert = require('assert');
 const { test } = require('node:test');
 const { installGlobalProxy, resolveProxyEnv, parseMacSystemProxy, cidrToRange } = require('../src/network/global-proxy');
+const { ensureLoopbackNoProxyEnv, mergeLoopbackNoProxy } = require('../src/network/proxy-policy');
 
 const SCUTIL = `<dictionary> {
   ExceptionsList : <array> {
