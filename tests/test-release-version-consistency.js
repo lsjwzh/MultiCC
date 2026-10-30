@@ -326,13 +326,20 @@ test('core runner covers every selected path and expands declared variants', () 
   // temporary stores, loopback fixtures, injected fetch and example.invalid
   // endpoints (virtual-provider also pins MULTICC_DATA_DIR to a temp root).
   // No account, keychain, browser or live API is involved. 367 entries, 339 commands.
-  assert.equal(core.length, 367, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 367);
+  // Re-audited: tests/test-secret-audit.js is a new security boundary suite
+  // (vault management, panel reads, tool invocation and missing entries must all
+  // leave durable audit records; a failed audit blocks use). It runs on a temp
+  // MULTICC_DATA_DIR, spawns nothing and needs no account or live API, so it
+  // stays in the deterministic release core tier. 367 + 1 = 368 entries and
+  // 339 + 1 = 340 commands, since a new manifest path is a new runner command.
+  // 368 entries, 340 commands.
+  assert.equal(core.length, 368, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 368);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 307);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 308);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 29);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -342,8 +349,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 339,
-    '336 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 340,
+    '337 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
