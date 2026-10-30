@@ -540,3 +540,23 @@ test('stop clears every idle timer and invalidates stale timer and Aux callbacks
   assert.equal(harness.runtime.onInput('term'), false);
   assert.equal(harness.runtime.notify('term', 'completed', 'after stop'), false);
 });
+
+test('notifyHost sends a plugin health alert to every existing channel, outside any session cooldown', async () => {
+  const harness = createHarness();
+  harness.runtime.notify('term', 'error', 'first');
+  const alert = { source: 'demo-plugin', key: 'agent-permissions', level: 'critical', title: 'Agent 权限缺失', body: 'x'.repeat(900) };
+  const payload = harness.runtime.notifyHost(alert);
+  assert.equal(payload.title, 'MultiCC: Agent 权限缺失');
+  assert.equal(payload.body.length, 500);
+  assert.equal(payload.type, 'alert');
+  assert.equal(payload.level, 'critical');
+  assert.equal(payload.tag, 'multicc-alert-demo-plugin-agent-permissions');
+  await flush();
+  assert.equal(harness.state.pushCalls.length, 2, 'the session push and the alert both went out');
+  assert.equal(harness.state.pushCalls[1]({ locale: 'en' }), payload);
+  assert.deepEqual(harness.state.barkCalls[1], [payload.title, payload.body, '/air']);
+  assert.equal(harness.state.webhookCalls[1], payload);
+  assert.equal(harness.runtime.notifyHost(null), false);
+  harness.runtime.stop();
+  assert.equal(harness.runtime.notifyHost(alert), false, 'nothing after stop');
+});

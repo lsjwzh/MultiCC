@@ -212,6 +212,45 @@ print("HTTP pointer native OK")
   assert.match(execFileSync(binary, [], { encoding: 'utf8', timeout: 10000 }), /HTTP pointer native OK/);
 });
 
+// lease: a plugin that thinks between operations (a takeover can wait minutes for
+// a model) must keep other sessions out without sending any input, and only the
+// holder may let go. The real Control class, compiled with stubs.
+test('lease op holds the input lease with no input: others are busy, renewal and release are the holder\'s', { skip: !hasSwift, timeout: 60000 }, t => {
+  const root = fs.mkdtempSync('/tmp/multicc-agent-lease-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/MultiCCAgent.swift'), 'utf8');
+  const control = source.slice(source.indexOf('final class Control {'), source.indexOf('let control = Control()'));
+  assert.ok(control.includes('func hold('), 'Control.hold must exist');
+  const op = source.slice(source.indexOf('  case "lease":'), source.indexOf('  case "pointer":'));
+  assert.match(op, /control\.hold\(session/);
+  assert.match(op, /control\.isHalted && !control\.clearIdleHalt\(\)/, 'a live Esc stop refuses a lease like any dispatch');
+  assert.match(op, /"remote-screen"/, 'the remote viewer has its own lease path and must not hold one this way');
+  const file = path.join(root, 'main.swift');
+  fs.writeFileSync(file, `import Foundation
+func log(_ text: String) {}
+final class HumanInputGate { func snapshot(at now: Double) -> (phase: String, visible: Bool) { ("idle", false) } }
+let humanInput = HumanInputGate()
+func inputClock() -> Double { 0 }
+${control}
+let c = Control()
+precondition(c.hold("plugin-a", seconds: 60) == nil)
+precondition(c.holderConflict("other") == "plugin-a", "a held lease makes everyone else busy")
+precondition(c.holderConflict("plugin-a") == nil)
+precondition(c.hold("other", seconds: 60) == "plugin-a", "another session cannot take a held lease")
+precondition(c.hold("plugin-a", seconds: 60) == nil, "the holder renews")
+precondition(!c.release("other"), "only the holder releases")
+precondition((c.snapshot()["leaseHolder"] as? String) == "plugin-a")
+precondition(c.release("plugin-a"))
+precondition(c.holderConflict("other") == nil)
+precondition(c.hold("plugin-a", seconds: -1) == nil)
+precondition(c.hold("other", seconds: 60) == nil, "an expired lease is free")
+print("lease OK")
+`);
+  const binary = path.join(root, 'lease-tests');
+  execFileSync('xcrun', ['swiftc', file, '-o', binary], { timeout: 60000 });
+  assert.match(execFileSync(binary, [], { encoding: 'utf8', timeout: 10000 }), /lease OK/);
+});
+
 // Wire golden (tests/fixtures/remote-screen-wire.json), the Agent half: the real
 // h264Session reader (real readFully over a socketpair) must decode the bytes the
 // App sends — and the real h264Message must frame what the App parses — exactly

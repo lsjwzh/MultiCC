@@ -294,6 +294,34 @@ function createPushRuntime(options) {
     return payload;
   }
 
+  // A health alert that belongs to no session: a resident plugin found a problem
+  // (Agent permissions lost, the app it drives logged out) or stopped running
+  // (src/plugins/channel-host.js). It goes to the existing channels only — a
+  // channel must not be the one reporting its own failure — and skips the
+  // per-session cooldown: the host raises each problem once until it recovers.
+  function notifyHost(alert) {
+    if (stopped || !alert || typeof alert !== 'object') return false;
+    const title = String(alert.title || alert.key || '').slice(0, 120);
+    const body = String(alert.body || '').slice(0, 500);
+    const source = String(alert.source || 'host').slice(0, 64);
+    const payload = {
+      title: `MultiCC: ${title}`,
+      body,
+      type: 'alert',
+      level: alert.level === 'critical' ? 'critical' : 'warn',
+      source,
+      key: String(alert.key || '').slice(0, 64),
+      tag: `multicc-alert-${source}-${String(alert.key || '').slice(0, 64)}`,
+      url: '/air',
+    };
+    fireAndForget('web push failed', () => push.sendPushToAll(() => payload));
+    if (push.fcmDevices) fireAndForget('FCM notification failed', () => push.fcmDevices.send(() => payload));
+    fireAndForget('Bark notification failed', () => push.sendBarkNotification(payload.title, body, payload.url));
+    fireAndForget('webhook notification failed', () => push.sendWebhookNotification(payload));
+    try { logger.log(`[multicc/push] Sent ${payload.level} alert ${payload.key} from ${source}`); } catch (_) {}
+    return payload;
+  }
+
   function route(handler) {
     return function guardedPushRoute(req, res, next) {
       Promise.resolve().then(() => handler(req, res)).catch(error => {
@@ -415,6 +443,7 @@ function createPushRuntime(options) {
     onOutput,
     onInput,
     notify,
+    notifyHost,
     cleanup,
     stop,
   });

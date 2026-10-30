@@ -68,6 +68,8 @@ plugins/<id>/
 | `engine.type` | 目前只有 `command` |
 | `engine.binary` | 可执行文件相对路径 |
 | `engine.binaryPlatformDir` | 跨平台产物目录（通道先试 `<dir>/<platform>-<arch>/<basename>`） |
+| `engine.resident` | 可选，`true` 表示常驻插件：MultiCC 启动时拉起，见下文「常驻插件与通知渠道」 |
+| `channel` | 可选，`{label, labelEn?, platforms?}`：声明这个常驻插件是一个通知渠道（推送设置、钩子只认这一项） |
 | `commands` | 允许调用的子命令白名单（通道强制校验） |
 | `ui` | 面板页相对路径；只有该文件所在子树会通过 HTTP 暴露 |
 | `category` / `provides` | 可选。分组用的分类（`channel`、`browser`）和插件提供的能力（如 `channel`：可作提醒渠道） |
@@ -89,6 +91,35 @@ plugins/<id>/
 - `POST /api/plugins/<id>/run` — body `{"command":"…","input":{…}}`，spawn
   插件二进制（不走 shell、20s 超时、命令白名单校验）
 - `GET  /plugins/<id>/<ui 子树>` — 插件面板静态文件（受与主站相同的鉴权保护）
+
+### 常驻插件与通知渠道
+
+`engine.resident: true` 的插件由 MultiCC 在启动时拉起为常驻进程（`<binary> serve`，见
+`src/plugins/channel-host.js`）：退出后按 1 秒、5 秒、30 秒、之后每 5 分钟退避重启，连续运行
+满一分钟算恢复；插件被删掉、换了版本或换了程序文件，30 秒内停掉或换新；本机不满足
+`channel.platforms` / `requires.platforms` 的不拉起。常驻插件的面板命令（`/api/plugins/<id>/run`）
+不再每次启动程序，转给常驻进程；超过 20 秒的操作由插件自己返回任务编号，面板再轮询。
+
+常驻进程和 MultiCC 走它的标准输入输出，每行一个 JSON：
+
+```
+MultiCC → 插件  {"id":7,"type":"run","command":"health","input":{…}}
+                {"id":8,"type":"targets"}               渠道插件：接收人列表
+插件 → MultiCC  {"id":7,"ok":true,"data":{…}}  或  {"id":7,"ok":false,"error":"…"}
+                {"event":"hello","protocol":1,"version":"0.1.0"}     启动后就绪时发一次
+                {"event":"alert","key":"agent-permissions","level":"warn"|"critical","title":"…","body":"…"}
+                {"event":"alert","key":"agent-permissions","resolved":true}   问题消失
+                {"event":"alert",…,"replay":true}   重启后补报已推送过、还没恢复的问题（只上页面）
+```
+
+- 标准输入读到结束（MultiCC 退出、重启或停掉插件）时，插件要自己退出。
+- 环境变量：`MULTICC_PLUGIN_ID`、`MULTICC_PLUGIN_DATA_DIR`（插件自己的数据目录，
+  `~/.multicc/plugins-data/<id>/`）、`MULTICC_BASE_URL`（本服务地址，本机请求不用口令）、
+  `MULTICC_PLUGIN_PROTOCOL`（目前是 `1`）。
+- 告警交给推送的现有渠道（网页推送、FCM、Bark、Webhook）；同一个 key 恢复之前只发一次，
+  每个插件每小时最多 10 条。插件停了一分钟还没回来，MultiCC 替它报一条 `plugin-down`。
+- `GET /api/channels`：常驻插件是否在运行、未恢复的告警；`GET /api/channels/targets`：
+  各渠道插件的接收人（`targets` 回 `{"targets":[{"id","name","status"}]}`）。
 
 **插件 UI**（ui/index.html ↔ 通道）：同源页面，直接 `fetch('/api/plugins/<id>/run',
 {method:'POST', body: JSON.stringify({command, input})})`；登录 cookie 由浏览器
