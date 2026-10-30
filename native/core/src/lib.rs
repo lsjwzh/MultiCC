@@ -2,6 +2,7 @@ pub mod publication;
 pub mod publication_identity;
 pub mod quota_history;
 pub mod search;
+pub mod secret_audit;
 pub mod sqlite;
 pub mod subagent_defaults;
 pub mod subscription;

@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const { createPaths } = require('./paths');
 const { atomicWriteJson } = require('./runtime-security');
+const secretAudit = require('./secret-audit');
 
 const STORE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).secretsFile;
 
@@ -189,44 +190,46 @@ function envDigest(env) {
   return hash.digest('hex');
 }
 
-function applyEnvOverlay(env) {
+function applyEnvOverlay(env, context = {}) {
   if (!env || typeof env !== 'object') return env;
-  for (const [name, value] of Object.entries(envOverlay())) {
-    if (!(name in env)) env[name] = value;
-  }
-  return env;
+  const overlay = envOverlay();
+  const names = Object.keys(overlay).filter(name => !(name in env));
+  return secretAudit.call('env_inject', { source: 'child_env', sessionId: env.MULTICC_SESSION_ID, ...context }, names, () => {
+    for (const name of names) env[name] = overlay[name];
+    return env;
+  });
 }
 
 function mount(app) {
   app.get('/api/secrets', (req, res) => {
-    res.json(safeList());
+    res.json(module.exports.list({ source: 'http' }));
   });
   app.post('/api/secrets', (req, res) => {
     const body = req.body || {};
-    const result = upsert({
+    const result = module.exports.upsert({
       name: body.name,
       value: body.value,
       description: body.description,
       source: body.source === 'agent' ? 'agent' : 'user',
       sessionId: body.sessionId,
-    });
+    }, { source: 'http', sessionId: body.sessionId });
     if (result.error) return res.status(result.status || 400).json({ error: result.error });
     res.status(result.created ? 201 : 200).json({ ok: true, entry: meta(result.entry) });
   });
   app.post('/api/secrets/:name/rename', (req, res) => {
-    const result = rename(req.params.name, (req.body || {}).to);
+    const result = module.exports.rename(req.params.name, (req.body || {}).to, { source: 'http' });
     if (result.error) return res.status(result.status || 400).json({ error: result.error });
     res.json({ ok: true, entry: meta(result.entry) });
   });
   app.delete('/api/secrets/:name', (req, res) => {
-    const result = remove(req.params.name);
+    const result = module.exports.remove(req.params.name, { source: 'http' });
     if (result.error) return res.status(result.status || 404).json({ error: result.error });
     res.json(result);
   });
   // Value read for the panel's reveal action only. Named separately from the
   // list route so access logs make the value-touching calls obvious.
   app.get('/api/secrets/:name/value', (req, res) => {
-    const result = reveal(req.params.name);
+    const result = module.exports.reveal(req.params.name, { source: 'http' });
     if (result.error) return res.status(result.status || 404).json({ error: result.error });
     res.json({ ok: true, name: result.entry.name, value: result.entry.value });
   });
@@ -239,13 +242,13 @@ module.exports = {
   NAME_RE,
   LEGACY_NAME_RE,
   mount,
-  list: safeList,
-  upsert,
-  remove,
-  rename,
-  reveal,
+  list: context => secretAudit.call('list', context, [], safeList),
+  upsert: (input, context) => secretAudit.call('upsert', context, [input?.name], () => upsert(input)),
+  remove: (name, context) => secretAudit.call('remove', context, [name], () => remove(name)),
+  rename: (from, to, context) => secretAudit.call('rename', context, [from, to], () => rename(from, to)),
+  reveal: (name, context) => secretAudit.call('reveal', context, [name], () => reveal(name)),
   has,
-  envOverlay,
+  envOverlay: context => secretAudit.call('env_overlay', context, Object.keys(envOverlay()), envOverlay),
   envDigest,
   applyEnvOverlay,
   ENV_EXCLUDED_PREFIXES,

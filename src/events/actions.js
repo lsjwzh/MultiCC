@@ -92,7 +92,7 @@ async function runWebhook(event, rule, ctx) {
     'X-Multicc-Timestamp': timestamp,
   };
   if (action.secretName) {
-    const secret = ctx.resolveSecret(action.secretName);
+    const secret = ctx.resolveSecret(action.secretName, { sessionId: event.sessionId });
     if (!secret) return { ok: false, error: 'webhook secret not found' };
     headers['X-Multicc-Signature'] = sign(secret, body, timestamp);
   }

@@ -22,7 +22,7 @@ const INVALID_TARGET_CODE = 'invalid_routing_target';
 
 function vaultKeyResolver(vaultOf) {
   return name => {
-    const result = vaultOf().reveal(name);
+    const result = vaultOf().reveal(name, { source: 'routing_test' });
     return result && result.entry ? result.entry.value : null;
   };
 }

@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const secretAudit = require('./secret-audit');
 const {
   explicitlyNamesTerminal,
   isTerminalGateway,
@@ -1295,7 +1296,7 @@ function createRouterToolRuntime({
     }
   }
 
-  async function execute(token, tool, args = {}, options = {}) {
+  async function executeImpl(token, tool, args = {}, options = {}) {
     if (!TOOL_NAMES.has(tool)) {
       throw new RouterToolError('unknown_tool', 'unknown router tool', 404);
     }
@@ -1322,9 +1323,7 @@ function createRouterToolRuntime({
     if (tool === 'wait_for_user_answer' || tool === 'request_user_input') {
       return requestUserInput(context, args);
     }
-    if (tool === 'request_secret_input') {
-      return requestSecretInput(context, args);
-    }
+    if (tool === 'request_secret_input') return requestSecretInput(context, args);
     if (tool === 'list_secrets') {
       rejectUnknownArguments(args, new Set());
       return listSecretsForContext(context);
@@ -1345,6 +1344,19 @@ function createRouterToolRuntime({
     if (tool === 'dispatch_status') return dispatchStatus(context, args);
     if (tool === 'dispatch_cancel') return dispatchCancel(context, args);
     return dispatchSlave(context, args);
+  }
+
+  async function execute(token, tool, args = {}, options = {}) {
+    if (!['list_secrets', 'request_secret_input', 'run_with_secrets', 'http_request_with_secret'].includes(tool)) {
+      return executeImpl(token, tool, args, options);
+    }
+    const context = contextFor(token);
+    // Names only. Reuse the HTTP host adapter's placeholder collector;
+    // no URL, command, question, body or header is journaled.
+    const names = tool === 'run_with_secrets' ? args?.secrets
+      : tool === 'http_request_with_secret' ? secretTools?.namesForHttp?.(args) || [] : [args?.name];
+    return secretAudit.call(tool, { ...context, source: 'mcp' }, names,
+      () => executeImpl(token, tool, args, options));
   }
 
   return Object.freeze({

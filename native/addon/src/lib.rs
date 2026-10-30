@@ -6,6 +6,7 @@ pub mod cpr;
 pub mod publication;
 pub mod quota_history;
 pub mod remote_screen;
+pub mod secret_audit;
 pub mod sqlite;
 pub mod subagent_defaults;
 pub mod task_context;

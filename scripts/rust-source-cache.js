@@ -87,7 +87,7 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function') process.exit(1);
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
-      'codexOfficialError'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
     const db=new a.RustDatabase(':memory:',false,false,5000);
     db.exec('CREATE TABLE smoke(x); CREATE VIRTUAL TABLE f USING fts5(x)');db.close();
     if(typeof a.validatePublicationText!=='function' || typeof a.quickCommitMessage!=='function'

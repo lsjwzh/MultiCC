@@ -2228,7 +2228,7 @@ function createChatTurnEngine(deps) {
       nativeSessionId: persisted.cliSessionId, allowMissingNativeSession: !persisted.cliSessionId,
       officialOAuth: getClaudeOfficialViaProxy(),
     });
-    secretsVault.applyEnvOverlay(childEnv); // 常驻流不走 spawnProcess；每轮重建，中途改动由各流据 envDigest 在回合边界回收
+    secretsVault.applyEnvOverlay(childEnv, { source: 'resident_turn', sessionId: sessionName, turnId: turn.turnId, taskId: persisted.taskBoundTaskId }); // 常驻流不走 spawnProcess；每轮重建，中途改动由各流据 envDigest 在回合边界回收
     const streamSettingsFile = providers.settingsOverrideFor(sessionName, childEnv, invocation.settings);
     // Adapter-declared argv for a protocol whose prompt moves from argv to stdin.
     const streamArgs = invocation.streamArgs || invocation.args;

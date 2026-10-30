@@ -45,7 +45,7 @@ function createEventsHost(deps) {
     hub, persistedSessions, saveBestEffort, logger,
     store: { read: () => readJsonFile(rulesFile), write: (value) => atomicWriteJson(rulesFile, value) },
     notify: (...args) => deps.notify(...args),
-    resolveSecret: (name) => { const result = deps.secretsVault.reveal(name); return result && result.entry ? result.entry.value : null; },
+    resolveSecret: (name, context) => { const result = deps.secretsVault.reveal(name, { ...context, source: 'event_webhook' }); return result && result.entry ? result.entry.value : null; },
     lookup: (host) => dns.promises.lookup(host, { all: true }),
     httpPost: postJson,
     allowPrivateWebhooks: process.env.MULTICC_EVENT_WEBHOOK_ALLOW_PRIVATE === '1',
