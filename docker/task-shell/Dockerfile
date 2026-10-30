@@ -17,12 +17,15 @@ FROM tools AS clean-install
 WORKDIR /candidate
 COPY . .
 COPY --from=rust-build /build/native/target/release/libmulticc_addon.so /tmp/multicc-core.node
-# 远控进程和原生模块同目录：服务端按这个位置找 multicc-remote，「🖥 屏幕」才有后端。
+# 远控进程、CDP 网关和原生模块同目录：服务端按这个位置找 multicc-remote 与
+# multicc-cdpd，「🖥 屏幕」和浏览器网关才有后端。
 COPY --from=rust-build /build/native/target/release/multicc-remote /tmp/multicc-remote
+COPY --from=rust-build /build/native/target/release/multicc-cdpd /tmp/multicc-cdpd
 RUN arch="$(uname -m)"; case "$arch" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac; \
     mkdir -p "native/prebuilt/linux-$arch" && mv /tmp/multicc-core.node "native/prebuilt/linux-$arch/multicc_core.node" && \
     cp /tmp/multicc-remote "native/prebuilt/linux-$arch/multicc-remote" && \
-    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote"
+    cp /tmp/multicc-cdpd "native/prebuilt/linux-$arch/multicc-cdpd" && \
+    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd"
 RUN chown -R node:node /candidate
 USER node
 ENV NODE_ENV=test ASR_LOCAL=off MULTICC_CHROME_BIN=/usr/bin/chromium
@@ -36,10 +39,12 @@ RUN npm ci --no-audit --no-fund
 COPY . .
 COPY --from=rust-build /build/native/target/release/libmulticc_addon.so /tmp/multicc-core.node
 COPY --from=rust-build /build/native/target/release/multicc-remote /tmp/multicc-remote
+COPY --from=rust-build /build/native/target/release/multicc-cdpd /tmp/multicc-cdpd
 RUN arch="$(uname -m)"; case "$arch" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac; \
     mkdir -p "native/prebuilt/linux-$arch" && mv /tmp/multicc-core.node "native/prebuilt/linux-$arch/multicc_core.node" && \
     cp /tmp/multicc-remote "native/prebuilt/linux-$arch/multicc-remote" && \
-    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote"
+    cp /tmp/multicc-cdpd "native/prebuilt/linux-$arch/multicc-cdpd" && \
+    chmod 0755 "native/prebuilt/linux-$arch/multicc-remote" "native/prebuilt/linux-$arch/multicc-cdpd"
 RUN chmod +x docker/task-shell/fake-codex.js \
     && mkdir -p /var/lib/multicc \
     && chown -R node:node /opt/multicc /var/lib/multicc

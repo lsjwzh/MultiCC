@@ -132,8 +132,8 @@ test('locality checks stay limited to authentication and sensitive host controls
   // Ordinary authenticated product features must never grow a second
   // localhost-only authorization layer. The helper is reserved for: local
   // auth bootstrap/bypass, external WebSocket ticket enforcement, access-token
-  // editability, scoped internal MCP bridges, and the explicitly enumerated
-  // sensitive host settings.
+  // editability, scoped internal MCP bridges, plugin installation on this
+  // machine, and the explicitly enumerated sensitive host settings.
   assert.deepEqual(localityUsers, [
     'server.js',
     'src/host-power-services.js',
@@ -143,6 +143,7 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/host-power.js',
     'src/routes/host-read.js',
     'src/routes/host-write.js',
+    'src/routes/plugins.js',
     'src/ws/connection-router.js',
   ]);
   assert.doesNotMatch(taskBoardRoutes, /\bisLocalRequest\b/);
