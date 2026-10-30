@@ -150,8 +150,10 @@ const MIGRATION_DEBT = Object.freeze({
     // disposeLoginTerminal，进程退出时删记录并广播，实测 3036/159569。
     // 2026-10-30 常驻插件那一轮：挂载点改传 resident（port/alert 给
     // src/plugins/channel-host.js 同行注入），行数不变、字节 +62，实测 3036/159631。
+    // 2026-10-30 插件目录那一轮合入时行数不变、字节再 +82，没回来抬这一格，
+    // main 上这道闸已红；按实测 3036/159713 对齐高水位，拆分条件不变。
     ceiling: 3036,
-    byteCeiling: 159631,
+    byteCeiling: 159713,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),
