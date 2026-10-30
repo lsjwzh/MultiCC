@@ -157,7 +157,7 @@ jobs:
             fi
           fi
           echo "DESKTOP_SIGNING_STATUS=$signing_status" >> "$GITHUB_ENV"
-          # 后续打包检查据此决定要不要 codesign --verify 新加的 multicc-remote。
+          # 后续打包检查据此决定要不要 codesign --verify 新加的 multicc-remote / multicc-cdpd。
           echo "DESKTOP_SIGNED=$([ -n "${CSC_LINK:-}" ] && echo 1 || echo 0)" >> "$GITHUB_ENV"
 
           case "${RUNNER_ARCH}" in
@@ -237,25 +237,30 @@ jobs:
                 exit 1
               fi
             done
-            # 「🖥 屏幕」的远控进程和原生模块同目录。它没有扩展名，也不会被
-            # require() 时发现：缺件或丢了可执行位，只有用户点开关时才会暴露。
-            remote_name=multicc-remote
-            if [ "${{ matrix.platform }}" = windows ]; then remote_name=multicc-remote.exe; fi
-            remote_rel="app-server/native/prebuilt/${{ matrix.native_platform }}-$arch/$remote_name"
-            if [ ! -f "$app_resources/$remote_rel" ]; then
-              echo "::error::$app_resources/$remote_rel is missing from the packaged app — remote screen would be unavailable"
-              exit 1
-            fi
-            if [ "${{ matrix.platform }}" != windows ] && [ ! -x "$app_resources/$remote_rel" ]; then
-              echo "::error::$app_resources/$remote_rel lost its executable bit during packaging"
-              exit 1
-            fi
-            # macOS: extraResources land inside the .app, so @electron/osx-sign
-            # treats the extensionless binary like runtime/bin/node. Prove it was
-            # signed instead of assuming the walk covered it.
+            # 「🖥 屏幕」的远控进程和浏览器 CDP 网关都和原生模块同目录。它们没有
+            # 扩展名，也不会被 require() 时发现：缺件或丢了可执行位，只有用户用到时
+            # 才会暴露（v2.12.0 就这样漏发了 multicc-cdpd）。
+            exe_suffix=""
+            if [ "${{ matrix.platform }}" = windows ]; then exe_suffix=.exe; fi
+            for companion in "multicc-remote:remote screen" "multicc-cdpd:the browser CDP gateway"; do
+              companion_rel="app-server/native/prebuilt/${{ matrix.native_platform }}-$arch/${companion%%:*}$exe_suffix"
+              if [ ! -f "$app_resources/$companion_rel" ]; then
+                echo "::error::$app_resources/$companion_rel is missing from the packaged app — ${companion#*:} would be unavailable"
+                exit 1
+              fi
+              if [ "${{ matrix.platform }}" != windows ] && [ ! -x "$app_resources/$companion_rel" ]; then
+                echo "::error::$app_resources/$companion_rel lost its executable bit during packaging"
+                exit 1
+              fi
+              # macOS: extraResources land inside the .app, so @electron/osx-sign
+              # treats extensionless binaries like runtime/bin/node. Prove each was
+              # signed instead of assuming the walk covered it.
+              if [ "${{ matrix.platform }}" = macos ] && [ "${DESKTOP_SIGNED:-0}" = 1 ]; then
+                codesign --verify --strict --verbose=2 "$app_resources/$companion_rel"
+              fi
+            done
             if [ "${{ matrix.platform }}" = macos ] && [ "${DESKTOP_SIGNED:-0}" = 1 ]; then
               if [ "$arch" = "arm64" ]; then app_bundle="dist/mac-arm64/MultiCC.app"; else app_bundle="dist/mac/MultiCC.app"; fi
-              codesign --verify --strict --verbose=2 "$app_resources/$remote_rel"
               codesign --verify --deep --strict --verbose=2 "$app_bundle"
             fi
             echo "$app_resources carries the standalone tree"
@@ -401,9 +406,10 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --out dist-standalone $extra_flags
 
-      # 远控二进制必须真的进了 tar/zip：tar 会保留权限位，zip 不需要，但两者
-      # 都必须在解包后还能执行、还能说出协议版本。这里直接看产物目录。
-      - name: 校验远控二进制随包发布
+      # 远控二进制和 CDP 网关必须真的进了 tar/zip：tar 会保留权限位，zip 不需要，
+      # 但都必须在解包后还能执行、还能说出协议版本。这里直接看产物目录
+      # （v2.12.0 只查了远控，multicc-cdpd 就这样漏发了）。
+      - name: 校验远控与 CDP 网关二进制随包发布
         shell: bash
         run: |
           set -euo pipefail
@@ -414,24 +420,29 @@ jobs:
           else
             resources="$bundle/Resources"
           fi
-          remote_name=multicc-remote
-          if [ "${{ matrix.platform }}" = win32 ]; then remote_name=multicc-remote.exe; fi
-          remote="$resources/app-server/native/prebuilt/${{ matrix.platform }}-${{ matrix.arch }}/$remote_name"
-          [ -f "$remote" ] || { echo "::error::standalone bundle is missing $remote"; exit 1; }
-          if [ "${{ matrix.platform }}" != win32 ] && [ ! -x "$remote" ]; then
-            echo "::error::$remote lost its executable bit before archiving"
-            exit 1
-          fi
+          exe_suffix=""
+          if [ "${{ matrix.platform }}" = win32 ]; then exe_suffix=.exe; fi
           case "${RUNNER_ARCH}" in
             ARM64) host_arch=arm64 ;;
             X64) host_arch=x64 ;;
             *) host_arch=unknown ;;
           esac
-          if [ "$host_arch" = "${{ matrix.arch }}" ]; then
-            "$remote" --version | grep -q '^multicc-remote 1 ' || { echo "::error::$remote --version is not multicc-remote 1"; exit 1; }
-          else
-            echo "cross-arch build: skipping the remote --version smoke"
-          fi
+          cdpd_prefix="multicc-cdpd $(node -p "require('./scripts/build-rust-kernels').CDPD_PROTOCOL") "
+          for companion in "multicc-remote:multicc-remote 1 " "multicc-cdpd:$cdpd_prefix"; do
+            name="${companion%%:*}"
+            prefix="${companion#*:}"
+            file="$resources/app-server/native/prebuilt/${{ matrix.platform }}-${{ matrix.arch }}/$name$exe_suffix"
+            [ -f "$file" ] || { echo "::error::standalone bundle is missing $file"; exit 1; }
+            if [ "${{ matrix.platform }}" != win32 ] && [ ! -x "$file" ]; then
+              echo "::error::$file lost its executable bit before archiving"
+              exit 1
+            fi
+            if [ "$host_arch" = "${{ matrix.arch }}" ]; then
+              "$file" --version | grep -q "^$prefix" || { echo "::error::$file --version does not start with '$prefix'"; exit 1; }
+            else
+              echo "cross-arch build: skipping the $name --version smoke"
+            fi
+          done
 
       # 插件面板里的「插件二进制缺失」就是这一步漏掉的样子：每个平台的包都必须
       # 带上自己那份插件二进制和内核，且不夹带别的平台。

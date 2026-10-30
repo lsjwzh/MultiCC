@@ -211,8 +211,10 @@ function build({ platform = process.platform, arch = process.arch,
       cdpd = file;
       logger.log(`CDP 网关已构建：${file}`);
     } catch (error) {
-      // 网关编不出来只是退回「每条连接一次授权」，不能连累服务启动。
+      // 网关编不出来只是退回「每条连接一次授权」，不能连累服务启动；但发布路径
+      // 和远控一样必须报错，否则安装包会像 v2.12.0 那样悄悄缺件。
       cdpdError = error;
+      if (requireRemote) throw new Error(`CDP 网关构建失败：${error.message}`);
       logger.error(`警告：CDP 网关 ${CDPD_CRATE} 未构建，浏览器授权会退化成每次连接一次：${error.message}`);
     }
   }

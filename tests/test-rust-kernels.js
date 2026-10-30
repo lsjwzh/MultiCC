@@ -170,6 +170,7 @@ rustTest('打包后的 Rust 模块可加载，错误架构不能进入安装包'
       const dir = path.join(process.env.MULTICC_RUST_PREBUILT_DIR, `${process.platform}-${arch}`);
       fs.mkdirSync(dir, { recursive: true }); fs.copyFileSync(source, path.join(dir, 'multicc_core.node'));
       fs.writeFileSync(path.join(dir, remoteName()), binaryHeader(process.platform, arch));
+      fs.writeFileSync(path.join(dir, cdpdBinaryName(process.platform)), binaryHeader(process.platform, arch));
     }
     const options = { repoRoot: '.', out: path.join(root, 'app-server'), logger: { log() {} } };
     const staged = stageRustKernels(options);
@@ -190,6 +191,11 @@ rustTest('打包后的 Rust 模块可加载，错误架构不能进入安装包'
       assert.equal(fs.existsSync(stagedRemote), true, '远控二进制必须和模块同目录打包');
       if (process.platform !== 'win32') assert.equal(fs.statSync(stagedRemote).mode & 0o111, 0o111);
     }
+    if (hasCdpdCrate('.')) {
+      const stagedCdpd = path.join(path.dirname(staged), cdpdBinaryName(process.platform));
+      assert.equal(fs.existsSync(stagedCdpd), true, 'CDP 网关必须和模块同目录打包（v2.12.0 漏发过）');
+      if (process.platform !== 'win32') assert.equal(fs.statSync(stagedCdpd).mode & 0o111, 0o111);
+    }
     assert.throws(() => stageRustKernels({ ...options, npmEnv: { npm_config_arch: 'ia32' } }), /架构不匹配/);
   } finally {
     if (beforeDir === undefined) delete process.env.MULTICC_RUST_PREBUILT_DIR; else process.env.MULTICC_RUST_PREBUILT_DIR = beforeDir;
@@ -199,7 +205,8 @@ rustTest('打包后的 Rust 模块可加载，错误架构不能进入安装包'
 
 // ---- multicc-remote：分步编译、缺件策略、可执行位、--version ----
 
-const { build, hasRemoteCrate, remoteBinaryName, remoteBinaryPath } = require('../scripts/build-rust-kernels');
+const { build, hasRemoteCrate, hasCdpdCrate, remoteBinaryName, remoteBinaryPath, cdpdBinaryName,
+  CDPD_PROTOCOL } = require('../scripts/build-rust-kernels');
 const { builtFromSource: fromSource, sourceFingerprint: fingerprintOf } = require('../scripts/rust-source-cache');
 const { stageRustKernels: stageKernels } = require('../scripts/stage-rust-kernels');
 
@@ -230,13 +237,18 @@ function binaryHeader(platform = process.platform, arch = process.arch) {
 }
 
 // 一个只读写文件、不真跑编译器的 cargo：按 -p 写出对应产物，记录调用顺序。
-function fakeCargo({ failRemote = false, omitRemote = false, version = 'multicc-remote 1 0.1.0\n' } = {}) {
+function fakeCargo({ failRemote = false, omitRemote = false, failCdpd = false, version = 'multicc-remote 1 0.1.0\n' } = {}) {
   const calls = [];
   const run = (command, args, options = {}) => {
-    if (command !== 'cargo') return { status: 0, stdout: version, stderr: '' };
+    if (command !== 'cargo') {
+      // --version 探测打到的是暂存文件（<名字>.<pid>.tmp），按文件名区分是哪个二进制。
+      const cdpd = path.basename(command).startsWith('multicc-cdpd');
+      return { status: 0, stdout: cdpd ? `multicc-cdpd ${CDPD_PROTOCOL} 0.3.0\n` : version, stderr: '' };
+    }
     calls.push(args.join(' '));
     const crate = args[args.indexOf('-p') + 1];
     if (crate === 'multicc-remote' && failRemote) return { status: 2, stdout: '', stderr: 'compile error' };
+    if (crate === 'multicc-cdpd' && failCdpd) return { status: 2, stdout: '', stderr: 'compile error' };
     const target = args[args.indexOf('--target') + 1];
     const release = path.join(options.env.CARGO_TARGET_DIR, target, 'release');
     fs.mkdirSync(release, { recursive: true });
@@ -244,6 +256,8 @@ function fakeCargo({ failRemote = false, omitRemote = false, version = 'multicc-
       const library = process.platform === 'win32' ? 'multicc_addon.dll'
         : process.platform === 'darwin' ? 'libmulticc_addon.dylib' : 'libmulticc_addon.so';
       fs.writeFileSync(path.join(release, library), Buffer.concat([binaryHeader(), Buffer.alloc(300)]));
+    } else if (crate === 'multicc-cdpd') {
+      fs.writeFileSync(path.join(release, cdpdBinaryName(process.platform)), Buffer.concat([binaryHeader(), Buffer.alloc(300)]));
     } else if (!omitRemote) {
       fs.writeFileSync(path.join(release, remoteName()), Buffer.concat([binaryHeader(), Buffer.alloc(300)]));
     }
@@ -368,5 +382,53 @@ test('打包：远控二进制同目录复制且保留可执行位，workspace �
   fs.writeFileSync(path.join(prebuilt, remoteName()), binaryHeader(process.platform, wrongArch));
   assert.throws(() => stageKernels({ repoRoot: fixture.root, out: path.join(fixture.root, 'stage-bad'), logger: quiet }),
     /平台或架构不匹配|架构/);
+});
+
+// ---- multicc-cdpd：v2.12.0 安装包只带了远控、漏了网关，下面两条守住打包与发布路径 ----
+
+test('打包：CDP 网关和远控一起同目录复制且保留可执行位，workspace 声明了却缺件必须报错', t => {
+  ownPrebuiltRoot(t);
+  const fixture = rustBuildFixture(t, { members: ['core', 'addon', 'remote', 'cdpd'] });
+  const prebuilt = path.join(fixture.root, 'native/prebuilt', `${process.platform}-${process.arch}`);
+  fs.mkdirSync(prebuilt, { recursive: true });
+  fs.writeFileSync(path.join(prebuilt, 'multicc_core.node'), Buffer.concat([binaryHeader(), Buffer.alloc(300)]));
+  fs.writeFileSync(path.join(prebuilt, remoteName()), binaryHeader(process.platform));
+  assert.throws(() => stageKernels({ repoRoot: fixture.root, out: path.join(fixture.root, 'stage-missing'), logger: quiet }),
+    /打包缺少 CDP 网关 multicc-cdpd/);
+  const cdpdName = cdpdBinaryName(process.platform);
+  fs.writeFileSync(path.join(prebuilt, cdpdName), binaryHeader(process.platform));
+  const logs = [];
+  const staged = stageKernels({ repoRoot: fixture.root, out: path.join(fixture.root, 'stage'),
+    logger: { log(message) { logs.push(message); } } });
+  const cdpd = path.join(path.dirname(staged), cdpdName);
+  assert.deepEqual(fs.readFileSync(cdpd), binaryHeader(process.platform));
+  assert.equal(fs.existsSync(path.join(path.dirname(staged), remoteName())), true);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(cdpd).mode & 0o111, 0o111);
+  assert.match(logs.join('\n'), /模块 \+ 远控二进制 \+ CDP 网关/);
+  const wrongArch = process.arch === 'arm64' ? 'x64' : 'arm64';
+  fs.writeFileSync(path.join(prebuilt, cdpdName), binaryHeader(process.platform, wrongArch));
+  assert.throws(() => stageKernels({ repoRoot: fixture.root, out: path.join(fixture.root, 'stage-bad'), logger: quiet }),
+    /平台或架构不匹配/);
+});
+
+test('CDP 网关编不出来：源码路径只警告，发布路径必须报错', t => {
+  const fixture = rustBuildFixture(t, { members: ['core', 'addon', 'remote', 'cdpd'] });
+  const ok = fakeCargo();
+  const built = build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
+    requireRemote: true, run: ok.run, logger: quiet });
+  assert.deepEqual(ok.calls.map(call => call.split(' ').pop()), ['multicc-addon', 'multicc-remote', 'multicc-cdpd']);
+  assert.equal(built.cdpd, path.join(path.dirname(built.addon), cdpdBinaryName(process.platform)));
+  fs.rmSync(built.cdpd);
+
+  const warnings = [];
+  const source = build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
+    requireRemote: false, run: fakeCargo({ failCdpd: true }).run,
+    logger: { log() {}, error(message) { warnings.push(message); } } });
+  assert.equal(source.cdpd, null);
+  assert.equal(fs.existsSync(source.addon), true, '模块仍然可用，服务照常启动');
+  assert.match(warnings.join('\n'), /浏览器授权会退化成每次连接一次/);
+
+  assert.throws(() => build({ repoRoot: fixture.root, out: fixture.out, targetDir: fixture.targetDir, probe: () => true,
+    requireRemote: true, run: fakeCargo({ failCdpd: true }).run, logger: quiet }), /CDP 网关构建失败/);
 });
 

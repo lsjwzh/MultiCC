@@ -66,6 +66,18 @@ jobs:
             fi
             "$remote" --version | grep -q '^multicc-remote 1 ' || { echo "::error::$remote --version is not multicc-remote 1"; exit 1; }
           fi
+          # CDP 网关同理：v2.12.0 的安装包就是在这里没人查，悄悄缺了 multicc-cdpd。
+          if [ -f native/cdpd/Cargo.toml ]; then
+            cdpd_bin=multicc-cdpd
+            if [ "$RUNNER_OS" = "Windows" ]; then cdpd_bin=multicc-cdpd.exe; fi
+            cdpd="$MULTICC_RUST_PREBUILT_DIR/$(node -p 'process.platform+"-"+process.arch')/$cdpd_bin"
+            cdpd_prefix="multicc-cdpd $(node -p 'require("./scripts/build-rust-kernels").CDPD_PROTOCOL') "
+            [ -f "$cdpd" ] || { echo "::error::missing $cdpd"; exit 1; }
+            if [ "$RUNNER_OS" != "Windows" ]; then
+              [ -x "$cdpd" ] || { echo "::error::$cdpd is not executable"; exit 1; }
+            fi
+            "$cdpd" --version | grep -q "^$cdpd_prefix" || { echo "::error::$cdpd --version does not start with '$cdpd_prefix'"; exit 1; }
+          fi
           # The SQLite bundle test stages the complete server, including its
           # platform plugins. Build those inputs before invoking the real copier.
           if [ "$RUNNER_OS" = "Linux" ]; then
