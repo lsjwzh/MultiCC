@@ -4,6 +4,11 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const os = require('os');
 const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
+const auditDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-secret-tools-test-'));
+process.env.MULTICC_DATA_DIR = auditDir;
+test.after(() => fs.rmSync(auditDir, { recursive: true, force: true }));
 const {
   createSecretTools, createRedactor, createCollector, SecretToolError,
 } = require('../src/secret-tools');

@@ -15,6 +15,7 @@
 
 const fs = require('fs');
 const { spawn } = require('child_process');
+const secretAudit = require('./secret-audit');
 
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const PLACEHOLDER_RE = /\{\{secret:([A-Za-z_][A-Za-z0-9_]{0,63})\}\}/g;
@@ -136,7 +137,6 @@ function createSecretTools({
   fetchImpl = (...a) => fetch(...a),
   spawnImpl = spawn,
   baseEnv = () => process.env,
-  logger = console,
 } = {}) {
   if (!vault || typeof vault.reveal !== 'function') {
     throw new TypeError('[secret-tools] vault with reveal() is required');
@@ -159,12 +159,6 @@ function createSecretTools({
       );
     }
     return resolved;
-  }
-
-  function audit(tool, context, names, detail) {
-    try {
-      logger.log(`[secret-tools] ${tool} session=${context?.sessionId || '?'} secrets=${names.join(',')} ${detail}`);
-    } catch (_) { /* logging must never fail a tool call */ }
   }
 
   async function runWithSecrets(context, args = {}, options = {}) {
@@ -195,7 +189,6 @@ function createSecretTools({
     const env = sanitizedEnv(baseEnv());
     for (const { name, value } of secrets) env[name] = value;
     const shell = fs.existsSync('/bin/bash') ? '/bin/bash' : '/bin/sh';
-    audit('run_with_secrets', context, names, `cwd=${cwd} cmd=${redact(args.command).replace(/\s+/g, ' ').slice(0, 160)}`);
 
     const startedAt = Date.now();
     return new Promise((resolve, reject2) => {
@@ -408,8 +401,6 @@ function createSecretTools({
       throw new SecretToolError('invalid_arguments', 'GET cannot carry a body');
     }
 
-    audit('http_request_with_secret', context, names, `${method} ${parsed.protocol}//${parsed.host}${parsed.pathname}`);
-
     const timeoutSignal = AbortSignal.timeout(timeoutS * 1000);
     const signal = options.signal ? AbortSignal.any([timeoutSignal, options.signal]) : timeoutSignal;
     const startedAt = Date.now();
@@ -455,7 +446,17 @@ function createSecretTools({
     return result;
   }
 
-  return { runWithSecrets, httpRequestWithSecret };
+  const namesForHttp = args => collectPlaceholders([
+    args?.url, args?.body, ...Object.values(args?.headers || {}), ...jsonStrings(args?.json),
+  ]);
+  return {
+    namesForHttp,
+    runWithSecrets: async (context, args, options) => secretAudit.call('run_with_secrets', { source: 'mcp', ...context },
+      args?.secrets, () => runWithSecrets(context, args, options)),
+    httpRequestWithSecret: async (context, args, options) => secretAudit.call('http_request_with_secret', { source: 'mcp', ...context },
+      namesForHttp(args),
+      () => httpRequestWithSecret(context, args, options)),
+  };
 }
 
 module.exports = {

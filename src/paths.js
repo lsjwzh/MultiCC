@@ -168,6 +168,8 @@ function createPaths({ dataDir } = {}) {
     // other secrets the user fills via the secure dialog or the /manage panel.
     // Values live ONLY here (0600) and never pass through any LLM transcript.
     secretsFile: path.join(root, 'secrets.json'),
+    // Metadata-only, append-only vault access journal (private 0600).
+    secretAuditFile: path.join(root, 'logs', 'secret-audit.jsonl'),
     taskBoardFile: path.join(root, 'task_board.json'),
     taskShellDbFile: path.join(root, 'task-shells.sqlite'),
     // Full-text index over chat_history (src/search/index-store.js). Derived data:

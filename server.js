@@ -1084,7 +1084,7 @@ async function createSession(id) {
   // CODEX_HOME). The route segment is the session's proxy capability, never a bare id.
   const routeSession = terminalProxyRoutes.sessionSegment(persisted);
   const provEnv = providerRouterRuntime.resolveSpawnEnv(persisted);
-  const termEnv = { ...provEnv.env, ...(persisted.loginEnv || {}) }; secretsVault.applyEnvOverlay(termEnv); // loginEnv: allowlisted login-terminal pins (sanitizeLoginEnv), e.g. CODEX_HOME=<account dir>; 保险箱条目按名注入 env（set-if-absent，见 src/secrets-vault.js）
+  const termEnv = { ...provEnv.env, ...(persisted.loginEnv || {}) }; secretsVault.applyEnvOverlay(termEnv, { source: 'terminal', sessionId: persisted.id }); // loginEnv: allowlisted login-terminal pins (sanitizeLoginEnv), e.g. CODEX_HOME=<account dir>; 保险箱条目按名注入 env（set-if-absent，见 src/secrets-vault.js）
   // 登录终端必须走官方浏览器授权，不能被继承的 API Key 短路。
   if (persisted.loginFlow === 'commandcode-login') termEnv.COMMAND_CODE_API_KEY = '';
   if (persisted.cli === 'claude') {
@@ -2157,7 +2157,7 @@ require('./src/routes/commandcode-auth').mountCommandcodeAuthRoutes(app, {
   directories, createSessionRecord, disposeLoginTerminal,
   getStatus: () => {
     const env = { ...process.env };
-    secretsVault.applyEnvOverlay(env);
+    secretsVault.applyEnvOverlay(env, { source: 'commandcode_login' });
     return require('./src/routes/commandcode-auth').readCommandcodeLogin({ env });
   },
 });

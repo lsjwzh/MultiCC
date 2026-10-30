@@ -26,6 +26,7 @@
 
 const { jevTarget, validateProviderSelection } = require('../providers/auto-provider-config');
 const { createJevClient } = require('../providers/jev-client');
+const secretAudit = require('../secret-audit');
 
 const DEFAULT_TTL_MS = 10 * 60_000;
 const MAX_ENTRIES = 256;
@@ -43,7 +44,7 @@ function textHash(text) {
 // value is read in-process and never crosses a log line, an event or the wire.
 function defaultApiKeyResolver(name) {
   const vault = require('../secrets-vault');
-  const result = vault.reveal(name);
+  const result = vault.reveal(name, { source: 'auto_provider_routing' });
   return result && result.entry ? result.entry.value : null;
 }
 
@@ -124,7 +125,7 @@ function createAutoProviderRouting(options = {}) {
     // Which gateway this pool evaluates through — resolved in one place, shared
     // with the editor's "test" route so both reach the same host and model.
     const target = jevTarget(routing);
-    const promise = jev.classify({
+    const promise = secretAudit.withContext({ sessionId, taskId: session.taskBoundTaskId }, () => jev.classify({
       text,
       tiers,
       apiKeyName: target.apiKeyName,
@@ -136,7 +137,7 @@ function createAutoProviderRouting(options = {}) {
       timeoutMs: routing.timeoutMs,
       model: target.model,
       context,
-    }).then((verdict) => {
+    })).then((verdict) => {
       remember(sessionId, hash, verdict);
       return verdict;
     }).catch((error) => {

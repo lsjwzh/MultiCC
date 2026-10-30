@@ -274,7 +274,7 @@ function createRouterToolHost({
     // reference $NAME in commands. Set-if-absent + routing-namespace exclusion
     // (src/secrets-vault.js envOverlay) keep provider routing authoritative —
     // this runs AFTER the provider env, MCP env and MULTICC_* markers are set.
-    secretsVault.applyEnvOverlay(env);
+    secretsVault.applyEnvOverlay(env, { source: 'cli_spawn', sessionId, turnId, taskId });
     let proc;
     try {
       proc = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
