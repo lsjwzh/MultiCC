@@ -621,8 +621,8 @@
     {
       "id": "catalog-installed-plugins",
       "classification": "external-owner",
-      "owner": "plugin catalog (src/plugins/catalog.js, src/routes/plugins.js)",
-      "rationale": "Plugins installed from the signed plugin catalog are user-chosen third-party software. They cannot live in the package plugins/ directory: a desktop app tree is read-only and a package upgrade replaces the whole tree. Installs without MULTICC_DATA_DIR use ~/.multicc/plugins, isolated installs keep them below their own data root.",
+      "owner": "plugin catalog (src/plugins/installer.js, src/routes/plugins.js)",
+      "rationale": "Plugins installed from the signed plugin catalog are user-chosen third-party software. They cannot live in the package plugins/ directory: a desktop app tree is read-only and a package upgrade replaces the whole tree. Installs without MULTICC_DATA_DIR use ~/.multicc/plugins, isolated installs keep them below their own data root. The installer unpacks into .staging/ (swept after a day) and keeps the version an update replaced in .previous/<id>/ for one roll back; both start with a dot, so the plugin scan never takes them for plugins.",
       "migrationStrategy": "Each plugin is a self-contained folder that is reinstalled from the catalog (sha256-verified asset) instead of being copied when the layout changes; plugin settings live in the plugin data directory and survive an uninstall.",
       "sources": [
         {

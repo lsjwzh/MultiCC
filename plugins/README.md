@@ -33,7 +33,10 @@ rm -rf ~/.multicc/plugins/<插件id>           # 卸载
 面板同时读 GitHub 上的插件列表 [lsjwzh/multicc-plugins](https://github.com/lsjwzh/multicc-plugins)
 （带签名，格式见那边的 README 和 `docs/plugin-catalog-design.md`），把每个插件分成
 内置 / 已安装 / 可更新 / 可安装 / 不支持本机 / 已装但不兼容，并写出第一条不满足的要求。
-发布一个可另外安装的插件，就是在那份列表里加一条。
+列表里的插件可以在面板上一键安装、更新、卸载，更新后还能退回上一个版本（只能在这台电脑上
+操作，手机和远程页面只能看）。装到上面的用户目录，下载包按列表里的 sha256 核对；卸载只删
+程序，`~/.multicc/plugins-data/<插件id>/` 里的设置和记录保留。发布一个可另外安装的插件：
+在列表仓库运行 `node scripts/release.js <插件目录>`，见那边的 README。
 
 git 只跟踪这里的内置项（本 README、上面四个内部目录、`chrome-proxy-launcher/`）：
 复制进来的插件默认被根目录 `.gitignore` 的 plugins 白名单忽略，不会让检出变「脏」。

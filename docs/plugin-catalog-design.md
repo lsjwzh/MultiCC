@@ -1,6 +1,6 @@
 # 插件列表（在线目录）设计
 
-状态：2026-10-28 三项已定（见第八节），第一步（只读展示）已实施，列表仓库 [lsjwzh/multicc-plugins](https://github.com/lsjwzh/multicc-plugins) 已上线。
+状态：2026-10-28 三项已定（见第八节），第一步（只读展示）已实施，列表仓库 [lsjwzh/multicc-plugins](https://github.com/lsjwzh/multicc-plugins) 已上线；2026-10-30 第二步（一键安装、更新、卸载、退回）已实施，随下一个 MultiCC 版本发布。
 
 ## 一、要解决什么
 
@@ -123,9 +123,11 @@
 ## 六、安装、更新、卸载
 
 - **安装 / 更新**：按 `<os>-<arch>` 下载对应的包到 `~/.multicc/plugins/.staging/`，校验 size 和 sha256，解压，检查 `plugin.json` 的 `id` 和 `version` 与列表一致、可执行文件有执行权限。确认无误后整体换入 `~/.multicc/plugins/<id>/`，旧版本留在 `~/.multicc/plugins/.previous/<id>/`，可以一键退回。
-- **常驻插件**：先停旧进程，再换文件，最后起新进程；新进程体检不过就自动退回旧版。
+- **常驻插件**：先停旧进程，再换文件，最后起新进程；新进程体检不过就自动退回旧版。（插件系统还没有常驻运行，这一条随常驻能力一起做。）
+- **下载包里只能有普通文件**：链接、设备文件一律拒收；权限位保留，去掉组和其他人的写权限。可以多包一层顶层目录（`<id>-<version>/`），解压时去掉。
+- **同时只做一件事**：同一个插件正在安装、卸载或退回时，再点会得到“正在处理”；`.staging/` 里超过一天的残留在下次操作时清掉。
 - **卸载**：只删程序文件，`~/.multicc/plugins-data/<id>/` 里的配置和记录保留，并在卸载确认框里写清楚这一点。
-- **权限**：安装、更新、卸载只接受本机请求（和 Agent 权限按钮一样）；从手机或远程打开的页面只能查看，按钮上写“请在这台电脑上操作”。
+- **权限**：安装、更新、卸载只接受本机请求（和 Agent 权限按钮一样）；从手机或远程打开的页面只能查看，按钮上写“请在这台电脑上操作”。本机请求不需要口令，所以还要求请求来自 MultiCC 自己的页面：带 `Origin` 头而且和服务地址不同源的一律拒绝（`crossOrigin`），免得别的网站在浏览器里提交一个表单就能替用户装卸插件。
 - **来源**：`src/routes/plugins.js` 改为扫两个目录，程序目录的 `plugins/`（内置）和 `~/.multicc/plugins/`（后置安装）。同一 id 两边都有时以内置为准，并在面板上报冲突。
 
 ## 七、要改的地方
@@ -140,6 +142,8 @@
 | Air「资料与插件 → 插件」面板 | 分组展示、状态标签、要求说明、安装 / 更新 / 卸载 / 退回按钮、刷新列表 |
 | 运行时写入登记 | `~/.multicc/plugins/`、`~/.multicc/plugins-catalog/` 两个新写入目录登记到 `scripts/check-runtime-write-inventory.js` |
 | 测试 | 版本范围、兼容判断的每个分支、验签失败、sha256 不符、解压后 id 不符、换入失败退回、离线兜底 |
+
+发布一个后置插件（在列表仓库里）：`node scripts/release.js <插件目录>` 先只打包、打印将要写入的条目；确认后加 `--publish`，把每个平台一个的 zip 传到 GitHub Release（默认放在列表仓库自己的 Release 里，tag 是 `<id>-v<version>`，这样插件源码可以不公开；`--repo` 可改放插件自己的仓库），并把这个版本写进 `index.json`；然后照常 `sign.js`、`validate.js --signature --assets`、提交推送。下载包只含运行需要的东西：`plugin.json`、界面目录、本平台的 `bin/<os>-<arch>/`、说明和许可文件，以及 `plugin.json` 的 `files` 里列出的文件，不含源码。同一个版本只能发布一次。
 
 实施分三步，每步可以单独上线：
 1. 列表格式、`plugin.json` 的 `requires`、本机状态计算、面板只读展示（没有安装按钮）；
@@ -166,4 +170,13 @@
 - 插件面板：按“本机插件 / 可安装 / 收起的不支持本机”分组，状态标签、要求说明、第一条不满足的原因、分类筛选、刷新。
 - 测试：`tests/test-plugin-catalog.js`（`test:task-first`）、`tests/test-air-plugins-cdp.js`（`test:cdp`）。
 
-还没做：发布包附带列表快照、安装 / 更新 / 卸载 / 退回（第二步）；“可更新”角标、推送设置和钩子按 `provides` 列出插件（第三步）。分类目前只认 `channel`、`browser`，加新分类要先在面板里加上它的显示名。
+第二步已完成（2026-10-30）：
+- `src/plugins/installer.js`：按列表给的地址下载（走统一出站，代理设置照常生效），边下边算 sha256，超出列表写的大小立即停；大小和 sha256 都对上才解压；解压后的 `plugin.json` 的 id、版本必须和列表一致，本平台的可执行文件必须在；整体换入，被替换的版本留在 `.previous/<id>/`，退回是两者互换，所以退回也能再退回；卸载只删程序。
+- `src/session/handoff-zip.js`：zip 读写带上 Unix 权限位（Info-ZIP 的写法），插件的可执行文件装上后仍可执行。
+- `src/routes/plugins.js`：新增 `POST /api/plugins/:id/install`（安装和更新共用，版本和下载包只取列表为本机挑出的那个，调用方指定不了）、`/uninstall`、`/rollback`，只接受本机请求；`GET /api/plugins/catalog` 增加 `manage.allowed`（这次请求能不能装卸）和每行的 `removable`、`rollbackVersion`。内置插件和放在程序目录里的插件不能从这里卸载或覆盖。
+- 插件面板：卡片上的“安装 v…”“更新到 v…”“退回 v…”“卸载”，卸载前确认并说明数据保留；失败按错误码显示原因；手机或远程打开时按钮置灰并写明“请在这台电脑上操作”。
+- 列表仓库：`scripts/release.js` 打包与发布（见第七节末尾）。
+- 测试：`tests/test-plugin-installer.js`（`test:task-first`）、`tests/test-air-plugins-cdp.js` 新增一键安装用例（`test:cdp`）；另用真实 GitHub Release 下载核对过跳转后的大小与 sha256 校验。
+- 已经发布的 MultiCC（2.12.0 及更早）没有安装按钮。所以列表里后置插件的 `requires.multicc` 要写成带安装功能的那个版本或更高，旧版本会显示“需要 MultiCC x.y 或更高”。
+
+还没做：发布包附带列表快照；常驻插件的停、换、起与体检失败自动退回（等插件系统有常驻能力）；“可更新”角标、推送设置和钩子按 `provides` 列出插件（第三步）。分类目前只认 `channel`、`browser`，加新分类要先在面板里加上它的显示名。

@@ -4066,6 +4066,15 @@
       ]
     },
     {
+      "path": "tests/test-plugin-installer.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:task-first",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
       "path": "tests/test-plugins-routes.js",
       "tier": "other",
       "lane": "deterministic",

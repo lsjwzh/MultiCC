@@ -1028,7 +1028,7 @@ MultiCC 只保存接收人编号，不保存微信里的名称。名称只在插
 | 内容 | 说明 |
 | --- | --- |
 | 位置 | 自己的仓库，不在 MultiCC 仓库里，放在 MultiCC 仓库旁边的同级目录 `code/claudecode/multicc-wechat-notify/`（用户 2026-10-28 确认） |
-| 安装 | 装到 `~/.multicc/plugins/wechat-desktop-notify/`（2026-10-28 用户确认；桌面版的程序目录只读、独立包升级会整包替换，见 `docs/plugin-catalog-design.md`）。发布时在 [lsjwzh/multicc-plugins](https://github.com/lsjwzh/multicc-plugins) 的 `index.json` 加一条 `optional` 插件，写明它需要的 macOS 版本、MultiCC 版本、Agent 构建号和微信版本，下载包放在插件仓库的 GitHub Release 上。一键安装做好之前，手动复制到这个目录即可；卸载就是删掉这个文件夹 |
+| 安装 | 装到 `~/.multicc/plugins/wechat-desktop-notify/`（2026-10-28 用户确认；桌面版的程序目录只读、独立包升级会整包替换，见 `docs/plugin-catalog-design.md`）。发布时在 [lsjwzh/multicc-plugins](https://github.com/lsjwzh/multicc-plugins) 的 `index.json` 加一条 `optional` 插件，写明它需要的 macOS 版本、MultiCC 版本、Agent 构建号和微信版本，下载包用列表仓库的 `scripts/release.js` 打包并传到 GitHub Release（默认放在列表仓库的 Release 里，插件源码可以不公开）。用户在插件面板上一键安装、更新、卸载、退回（2026-10-30 已实现，见 `docs/plugin-catalog-design.md` 第九节）；卸载只删程序，数据保留 |
 | 清单与源码 | `plugin.json`（含 `resident` 和 `channel` 声明）；Rust 源码：剧本执行器、核对与发送、文字识别、剪贴板、锁屏、空闲时长、`wxctl` 过滤代理、截图打码、剧本检查与回放、投递队列 |
 | 面板 | `ui/`：向导、体检卡片、接收人簿、发送方式、发送记录、接管回放、剧本版本与差异 |
 | 附带数据 | 初版剧本 `playbooks/base.json`、操作员提示词模板 |
