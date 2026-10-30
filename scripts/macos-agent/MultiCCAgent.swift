@@ -2536,9 +2536,14 @@ func rfbKey(_ c: RfbClient, down: Bool, keysym: UInt32) {
   }
   guard down else { return }   // chords are posted down+up atomically on key-down
   let chordMods = c.mods.intersection(["ctrl", "cmd", "alt"])
-  // Plain printable → unicode event, exactly like the type op (any layout/IME).
-  if chordMods.isEmpty, keysym >= 0x20, keysym <= 0x10FFFF, keysym != 0xD,
-     let scalar = Unicode.Scalar(keysym), Unicode.Scalar(keysym)!.properties.generalCategory != .format {
+  // X11 functional keysyms are not Unicode: 0xFF08 is BackSpace, whereas
+  // U+FF08 is a fullwidth left parenthesis. Tagged Unicode remains unambiguous.
+  let taggedUnicode = (keysym & 0xFF000000) == 0x01000000
+  let codepoint = taggedUnicode ? (keysym & 0x00FFFFFF) : keysym
+  let functional = !taggedUnicode && (0xFE00...0xFFFF).contains(keysym)
+  // Retain raw codepoints outside the reserved range for older H.264 clients.
+  if chordMods.isEmpty, !functional, codepoint >= 0x20, codepoint <= 0x10FFFF,
+     let scalar = Unicode.Scalar(codepoint), scalar.properties.generalCategory != .format {
     rfbInput(["op": "type", "text": String(Character(scalar)), "allowTerminal": true, "allowSystem": true])
     return
   }
@@ -2546,7 +2551,7 @@ func rfbKey(_ c: RfbClient, down: Bool, keysym: UInt32) {
   var shift = false
   if name == nil {
     if keysym >= 0x61 && keysym <= 0x7A { name = String(UnicodeScalar(keysym)!) }
-    else if keysym >= 0x41 && keysym <= 0x5A { name = String(UnicodeScalar(keysym - 0x20)!).lowercased(); shift = true }
+    else if keysym >= 0x41 && keysym <= 0x5A { name = String(UnicodeScalar(keysym + 0x20)!); shift = true }
     else if keysym >= 0x30 && keysym <= 0x39 { name = String(UnicodeScalar(keysym)!) }
     else if keysym >= 0xFFBE && keysym <= 0xFFC9 { name = "f\(keysym - 0xFFBE + 1)" }
     else if let (base, needsShift) = RFB_PUNCT_KEYS[keysym] { name = base; shift = needsShift }

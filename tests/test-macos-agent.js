@@ -856,6 +856,55 @@ test('agent provisioning: copies sharing one Agent never downgrade it and never 
   fs.rmSync(f.tmp, { recursive: true, force: true });
 });
 
+test('agent provisioning: a new shipped build upgrades another copy on startup and stays current after restart', async t => {
+  const f = provisionFixture();
+  t.after(() => fs.rmSync(f.tmp, { recursive: true, force: true }));
+  const shipped = readShippedBuild(path.join(__dirname, '..'));
+  assert.ok(shipped.build > 1);
+  const nextSource = '// keyboard fix in the updated MultiCC package\n';
+  fs.writeFileSync(path.join(f.root, 'scripts/macos-agent/MultiCCAgent.swift'), nextSource);
+  fs.writeFileSync(path.join(f.root, 'scripts/macos-agent/agent-build.json'), JSON.stringify({
+    build: shipped.build, sourceSha256: sourceHash(f.root),
+  }));
+  f.installed('// previous Agent\n');
+  f.writeRecord({ build: shipped.build - 1 });
+  const config = path.join(f.env.MULTICC_AGENT_DIR, 'config.json');
+  const settings = '{"chrome":{"enabled":false},"userChoice":"keep"}\n';
+  fs.writeFileSync(config, settings);
+  const calls = [];
+  const spawnInstaller = (file, args) => {
+    const sub = args.at(-1);
+    calls.push([path.basename(file), sub]);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    setImmediate(() => {
+      if (sub === 'install') {
+        f.installed(nextSource);
+        f.writeRecord({ build: shipped.build, installerRoot: fs.realpathSync(f.root) });
+      }
+      child.emit('close', 0);
+    });
+    return child;
+  };
+  const startup = f.make({ spawn: spawnInstaller });
+  assert.deepEqual(startup.plan(), { action: 'update', reason: 'source-changed' });
+  const result = await startup.ensure();
+  assert.equal(result.ok, true);
+  assert.equal(result.ready, true);
+  assert.equal(result.action, 'update');
+  assert.deepEqual(calls, [['sh', 'install'], ['MultiCCAgent', 'ping']], 'an upgrade must not request permissions again');
+  assert.equal(startup.inspect().installed.build, shipped.build);
+  assert.equal(f.stampOf(), sourceHash(f.root));
+  assert.equal(fs.readFileSync(config, 'utf8'), settings);
+  // A new provisioner models the next MultiCC process starting with this package.
+  calls.length = 0;
+  const restarted = f.make({ spawn: spawnInstaller });
+  assert.deepEqual(restarted.plan(), { action: 'skip', reason: 'up-to-date' });
+  assert.equal((await restarted.ensure()).action, 'skip');
+  assert.deepEqual(calls, [], 'an unchanged restart must not reinstall or restart the Agent');
+});
+
 test('agent provisioning: names the desktop copies that still use the old install rule', () => {
   const f = provisionFixture();
   const desk = path.join(f.tmp, 'Apps', 'MultiCC.app');
@@ -1111,4 +1160,95 @@ test('agent provisioning: packages ship the installer, and the installer prefers
   execFileSync('/bin/sh', [INSTALLER, 'install'], { env });
   assert.ok(!fs.existsSync(path.join(env.MULTICC_AGENT_DIR, 'auto-install-disabled')));
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+
+// Execute the production encoder and Swift dispatch with OS input stubbed out.
+// These regressions must never type into the developer's foreground app.
+test('remote keyboard: H.264 separates functional keys from Unicode text', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../public/chat-remote-screen-h264.js'), 'utf8');
+  const start = source.indexOf('  const KEYSYMS =');
+  const end = source.indexOf('  class H264View');
+  assert.ok(start >= 0 && end > start);
+  const encode = vm.runInNewContext(source.slice(start, end) + '\nkeysymOf;');
+  const named = { Backspace: 0xff08, Delete: 0xffff, Enter: 0xff0d, Tab: 0xff09,
+    Escape: 0xff1b, ArrowLeft: 0xff51, Home: 0xff50, End: 0xff57, F1: 0xffbe, F12: 0xffc9 };
+  for (const [key, expected] of Object.entries(named)) assert.equal(encode({ key }), expected, key);
+  for (const key of ['a', 'A', ' ', '(', 'é', '中', '（', '）', '😀']) {
+    const cp = key.codePointAt(0);
+    assert.equal(encode({ key }), cp <= 255 ? cp : 0x01000000 + cp, key);
+  }
+  assert.notEqual(encode({ key: '（' }), encode({ key: 'Backspace' }));
+  for (const key of ['Dead', 'Process', 'Unidentified', 'ab', '']) assert.equal(encode({ key }), 0, key);
+});
+
+test('remote keyboard: Swift dispatch preserves deletion, navigation, shortcuts and text', { skip: !hasSwift, timeout: 60000 }, t => {
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'mcagent-keyboard-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/MultiCCAgent.swift'), 'utf8');
+  const start = source.indexOf('let RFB_SPECIAL_KEYS:');
+  const end = source.indexOf('@available(macOS 14.0, *)\nfunc rfbPointer', start);
+  assert.ok(start >= 0 && end > start);
+  const cases = [];
+  const press = (ks, key, mods = []) => cases.push({ ks, mods, expected: [['press', key]] });
+  const text = (ks, value) => cases.push({ ks, mods: [], expected: [['type', value]] });
+  const special = [[0xff08, 'delete'], [0xffff, 'forwarddelete'], [0xff09, 'tab'],
+    [0xff0d, 'return'], [0xff1b, 'escape'], [0xff50, 'home'], [0xff51, 'left'],
+    [0xff52, 'up'], [0xff53, 'right'], [0xff54, 'down'], [0xff55, 'pageup'],
+    [0xff56, 'pagedown'], [0xff57, 'end']];
+  for (let n = 1; n <= 12; n++) special.push([0xffbd + n, `f${n}`]);
+  for (const [ks, key] of special) {
+    press(ks, key);
+    press(ks, `shift+${key}`, [0xffe1]);
+  }
+  press(0xff08, 'cmd+delete', [0xffe7]);
+  press(0xff08, 'alt+delete', [0xffe9]);
+  press(0x63, 'cmd+c', [0xffe7]);
+  for (let ks = 0x41; ks <= 0x5a; ks++) {
+    press(ks, `cmd+shift+${String.fromCharCode(ks).toLowerCase()}`, [0xffe7, 0xffe1]);
+  }
+  for (const value of ['a', 'A', ' ', '(', 'é', '中', '（', '）', '😀']) {
+    const cp = value.codePointAt(0);
+    text(cp <= 255 ? cp : 0x01000000 + cp, value);
+  }
+  text(0x4e2d, '中'); // Older H.264 raw-codepoint clients.
+  text(0x1f600, '😀');
+  for (const ks of [0, 0xfe01, 0xff63, 0xd800, 0x01110000, 0x0100200d]) {
+    cases.push({ ks, mods: [], expected: [] });
+  }
+  const exercise = cases.map(({ ks, mods }) => `
+    calls = []
+    do {
+      let client = RfbClient()
+      for mod: UInt32 in [${mods}] { rfbKey(client, down: true, keysym: mod) }
+      rfbKey(client, down: true, keysym: ${ks})
+      rfbKey(client, down: false, keysym: ${ks})
+      for mod: UInt32 in [${mods}] { rfbKey(client, down: false, keysym: mod) }
+      precondition(client.mods.isEmpty)
+      results.append(calls)
+    }`).join('\n');
+  const file = path.join(root, 'main.swift');
+  fs.writeFileSync(file, `import Foundation
+class RfbClient { var mods: Set<String> = [] }
+var calls: [[String]] = []
+func log(_ message: String) {}
+func handle(_ req: [String: Any]) -> [String: Any] {
+  precondition(req["session"] as? String == "remote-screen")
+  precondition(req["allowTerminal"] as? Bool == true && req["allowSystem"] as? Bool == true)
+  let op = req["op"] as! String
+  calls.append([op, req[op == "type" ? "text" : "keys"] as! String])
+  return ["ok": true]
+}
+${source.slice(start, end)}
+var results: [[[String]]] = []
+if #available(macOS 14.0, *) { ${exercise} }
+print(String(data: try JSONSerialization.data(withJSONObject: results), encoding: .utf8)!)
+`);
+  const actual = JSON.parse(execFileSync('swift', [file], { encoding: 'utf8', timeout: 55000 }));
+  assert.equal(actual.length, cases.length);
+  for (let i = 0; i < cases.length; i++) {
+    assert.deepEqual(actual[i], cases[i].expected, `keysym=0x${cases[i].ks.toString(16)} mods=${cases[i].mods}`);
+  }
+  t.diagnostic(`${cases.length} production Swift dispatch cases passed`);
 });
