@@ -28,11 +28,11 @@
 
 | 系统 | 适用设备 | 安装包 |
 |---|---|---|
-| macOS 13+ | Apple 芯片（M1／M2／M3／M4 等） | [下载 DMG](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/multicc-desktop-2.12.0-macos-arm64.dmg) |
-| macOS 13+ | Intel 芯片 | [下载 DMG](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/multicc-desktop-2.12.0-macos-x64.dmg) |
-| Windows | 64 位 Intel／AMD | [下载安装程序](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/multicc-desktop-2.12.0-windows-x64.exe) |
-| Linux | 64 位 Intel／AMD，通用发行版 | [下载 AppImage](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/multicc-desktop-2.12.0-linux-x64.AppImage) |
-| Linux | 64 位 Intel／AMD，Debian／Ubuntu | [下载 DEB](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/multicc-desktop-2.12.0-linux-x64.deb) |
+| macOS 13+ | Apple 芯片（M1／M2／M3／M4 等） | [下载 DMG](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/multicc-desktop-2.12.1-macos-arm64.dmg) |
+| macOS 13+ | Intel 芯片 | [下载 DMG](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/multicc-desktop-2.12.1-macos-x64.dmg) |
+| Windows | 64 位 Intel／AMD | [下载安装程序](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/multicc-desktop-2.12.1-windows-x64.exe) |
+| Linux | 64 位 Intel／AMD，通用发行版 | [下载 AppImage](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/multicc-desktop-2.12.1-linux-x64.AppImage) |
+| Linux | 64 位 Intel／AMD，Debian／Ubuntu | [下载 DEB](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/multicc-desktop-2.12.1-linux-x64.deb) |
 
 ### 手机 App
 
@@ -40,7 +40,7 @@
 
 | 系统 | 下载入口 |
 |---|---|
-| Android | [下载官方签名 APK](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/multicc.apk) |
+| Android | [下载官方签名 APK](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/multicc.apk) |
 | iPhone／iPad | [前往 App Store](https://apps.apple.com/app/id6807642727)（商店版本以 Apple 审核进度为准） |
 
 <details>
@@ -50,15 +50,15 @@
 
 | 系统 | 架构 | 独立包 |
 |---|---|---|
-| macOS 11+ | Apple 芯片 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/multicc-standalone-2.12.0-darwin-arm64.tar.gz) |
-| macOS 11+ | Intel | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/multicc-standalone-2.12.0-darwin-x64.tar.gz) |
-| Linux | x64 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/multicc-standalone-2.12.0-linux-x64.tar.gz) |
-| Linux | ARM64 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/multicc-standalone-2.12.0-linux-arm64.tar.gz) |
-| Windows | x64 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/multicc-standalone-2.12.0-win32-x64.zip) |
+| macOS 11+ | Apple 芯片 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/multicc-standalone-2.12.1-darwin-arm64.tar.gz) |
+| macOS 11+ | Intel | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/multicc-standalone-2.12.1-darwin-x64.tar.gz) |
+| Linux | x64 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/multicc-standalone-2.12.1-linux-x64.tar.gz) |
+| Linux | ARM64 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/multicc-standalone-2.12.1-linux-arm64.tar.gz) |
+| Windows | x64 | [下载](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/multicc-standalone-2.12.1-win32-x64.zip) |
 
 </details>
 
-当前桌面版与独立版：**v2.12.0**。校验文件、历史版本和签名说明见 [Releases](https://github.com/lsjwzh/MultiCC/releases)；[下载 SHA-256 清单](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.0/SHA256SUMS.txt)。[桌面版安装说明](docs/desktop.md)。
+当前桌面版与独立版：**v2.12.1**。校验文件、历史版本和签名说明见 [Releases](https://github.com/lsjwzh/MultiCC/releases)；[下载 SHA-256 清单](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/SHA256SUMS.txt)。[桌面版安装说明](docs/desktop.md)。
 
 > 这是一份**中文导引**，不是英文 README 的逐句翻译。完整的技术细节都在 [`docs/`](docs/) 下的分主题文档里（中英混合，逐步补全）。
 
@@ -195,12 +195,12 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.12.0/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.12.1/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.12.0/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.12.1/install.ps1 | iex
 ```
 
 一行命令，没有任何参数：URL 里的 tag **就是**版本。脚本下载该版本的**独立包**——服务端 + 固定版本的 Node 运行时 + 全部生产依赖，一个压缩包；校验 SHA-256、解压到稳定的 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`）、移除 macOS 下载隔离标记、生成 `ACCESS_TOKEN`、启动服务并自动打开浏览器，同时可选注册为登录自启（macOS `launchd` / Linux systemd user / Windows Startup）。命令结束时界面已经可用；全程不编译任何东西，**目标机器不需要 Node、npm、Homebrew、Visual Studio 或 Xcode**。MultiCC 运行时需要可用的 `git`（每个会话都有独立 worktree）；安装器会检查并在缺失时给出对应平台的最短修复方法。
@@ -216,7 +216,7 @@ curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # 用已经下载好的包安装
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.12.0-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.12.1-darwin-arm64.tar.gz
 
 # 服务器/自动化环境：装好但不启动，或启动但不打开浏览器
 curl -sSL .../install.sh | bash -s -- --no-start
