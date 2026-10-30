@@ -4904,6 +4904,11 @@
       ]
     },
     {
+      "path": "tests/test-secret-audit.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-secret-tools.js",
       "tier": "core",
       "lane": "deterministic"
