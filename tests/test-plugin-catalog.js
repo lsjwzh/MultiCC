@@ -196,7 +196,7 @@ test('host facts: real lookups are cached and only for the apps the list names',
     appVersion: async app => { asked.push(app.id); return app.id === WECHAT.id ? { path: '/Applications/WeChat.app', version: '4.1.15' } : null; },
   });
   const first = await facts([WECHAT, { id: 'com.example.none' }]);
-  assert.deepEqual(first, { os: 'darwin', arch: 'arm64', osVersion: '15.3', multicc: '2.11.3', pluginApi: 1, agentBuild: 1, apps: { [WECHAT.id]: { path: '/Applications/WeChat.app', version: '4.1.15' } } });
+  assert.deepEqual(first, { os: 'darwin', arch: 'arm64', osVersion: '15.3', multicc: '2.11.3', pluginApi: 2, agentBuild: 1, apps: { [WECHAT.id]: { path: '/Applications/WeChat.app', version: '4.1.15' } } });
   await facts([WECHAT, { id: 'com.example.none' }]);
   assert.equal(asked.length, 2, 'second call within a minute is cached');
   clock = 61_000;
@@ -300,7 +300,7 @@ test('routes: built-in and installed plugins are listed together, built-in wins 
   assert.deepEqual(plugins[1].provides, ['channel']);
 
   const payload = await routes.catalogPayload();
-  assert.equal(payload.pluginApi, 1);
+  assert.equal(payload.pluginApi, 2);
   assert.equal(payload.catalog.available, true);
   assert.deepEqual(payload.plugins.map(row => [row.id, row.state, row.candidate]), [['wechat-desktop-notify', 'update', '0.2.0'], ['chrome-proxy-launcher', 'builtin', null]]);
   assert.equal(payload.plugins[0].local.source, 'user');

@@ -117,12 +117,16 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-10-24 补登记：远控拖动修复（d541971d，HTTP 指针 HttpScreenPointers +46 行）合入时
   // 没回来抬这一格，main 上这道闸已红；本轮再 +3 行（status 带回真实光标位置，给
   // scripts/remote-screen-probe.js 判定「悬停到达系统」）。按实测高水位登记，拆分条件不变。
+  // 2026-10-30 常驻插件协议那一轮：Control 类新增 lease 指令（微信桌面提醒插件发送期
+  // 用来占住输入串行化：dispatch 的 case "lease" + hold 函数 + 拒绝规则，+32 行），
+  // 实测 3088/147196，按棘轮对齐高水位。拆分条件不变。
   'scripts/macos-agent/MultiCCAgent.swift': Object.freeze({
-    ceiling: 3056,
+    ceiling: 3088,
     // 2026-10-27 补登记：远控手势一轮合入后实测 145870 字节（超上格 9 字节）没回来
     // 抬这一格，main 上这道闸已红；本轮零 Swift 变更，仅按实测对齐高水位。拆分条件不变。
     // Permission requests now live in AgentPermissions.swift; ratchet the reduced source.
-    byteCeiling: 145299,
+    // 2026-10-30 随 lease 指令一并抬到实测 147196。
+    byteCeiling: 147196,
     target: 3000,
     reason: 'macOS desktop agent single-file implementation; split screen capture / input injection / permission probing next',
   }),
@@ -144,8 +148,10 @@ const MIGRATION_DEBT = Object.freeze({
     // 同行注释同时缩短，实测 3019/158624。
     // 2026-10-29 登录终端改成一次性（src/session/login-terminal.js）：挂载四处
     // disposeLoginTerminal，进程退出时删记录并广播，实测 3036/159569。
+    // 2026-10-30 常驻插件那一轮：挂载点改传 resident（port/alert 给
+    // src/plugins/channel-host.js 同行注入），行数不变、字节 +62，实测 3036/159631。
     ceiling: 3036,
-    byteCeiling: 159569,
+    byteCeiling: 159631,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),

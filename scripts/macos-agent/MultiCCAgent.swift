@@ -1215,6 +1215,17 @@ final class Control {
     guard leaseHolder == session else { return false }
     leaseHolder = nil; return true
   }
+  // Hold (or renew) the lease without any input: a caller that thinks between
+  // operations for longer than leaseSeconds keeps other sessions out instead of
+  // letting the lease lapse mid-task. Not an operation, so `active` and the
+  // one-shot Esc bookkeeping are untouched. Returns the conflicting holder, if any.
+  func hold(_ session: String, seconds: TimeInterval) -> String? {
+    lock.lock(); defer { lock.unlock() }
+    if let h = leaseHolder, h != session, leaseUntil > Date() { return h }
+    leaseHolder = session
+    leaseUntil = Date().addingTimeInterval(seconds)
+    return nil
+  }
   func snapshot() -> [String: Any] {
     lock.lock(); defer { lock.unlock() }
     var r: [String: Any] = ["halted": halted]
@@ -1526,6 +1537,22 @@ func handle(_ req: [String: Any]) -> [String: Any] {
     if session == "remote-screen", #available(macOS 14.0, *) { HttpScreenPointers.shared.releaseAll() }
     #endif
     return ["ok": control.release(session)]
+  case "lease":
+    // Hold the input lease with no input (renew by calling again, end with
+    // release). Same gates as an operation minus the target checks: a stop
+    // pressed while nothing runs is cleared like any dispatch, a live one refuses.
+    if session == "anonymous" || session == "remote-screen" {
+      return refused("bad-session", "lease needs the caller's own session name", retrySafe: false)
+    }
+    if control.isHalted && !control.clearIdleHalt() {
+      return refused("user-stopped", "the user pressed Esc to stop computer use: stop and ask the user", retrySafe: false)
+    }
+    let seconds = max(5, min(Control.leaseSeconds, num(req["seconds"]) ?? Control.leaseSeconds))
+    if let h = control.hold(session, seconds: seconds) {
+      return refused("busy", "another session (\(h)) is using the computer; wait or ask the user")
+    }
+    DispatchQueue.main.async { computerUseHUD.update() }
+    return ["ok": true, "leaseSeconds": Int(seconds)]
   case "pointer":
     #if canImport(ScreenCaptureKit) && compiler(>=5.9)
     guard session == "remote-screen", #available(macOS 14.0, *) else { return refused("unsupported", "pointer is reserved for the remote screen viewer", retrySafe: false) }

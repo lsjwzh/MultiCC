@@ -20,7 +20,8 @@ const { execFile } = require('child_process');
 
 // What plugin.json features this MultiCC understands. A plugin that needs a
 // newer one ("requires.pluginApi") is shown as needing a MultiCC upgrade.
-const PLUGIN_API_VERSION = 1;
+// 2: resident plugins and the channel declaration (src/plugins/channel-host.js).
+const PLUGIN_API_VERSION = 2;
 const CATALOG_SCHEMA = 1;
 // Keys allowed to sign index.json. To rotate, ship the new key here one
 // release before the catalog switches to it, and drop the old one later.

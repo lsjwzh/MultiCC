@@ -31,6 +31,7 @@ const {
   PLUGIN_API_VERSION, appsReferenced, computeStates, createHostFacts, createPluginCatalog,
 } = require('../plugins/catalog');
 const { createPluginInstaller } = require('../plugins/installer');
+const { createChannelHost, normalizeChannel } = require('../plugins/channel-host');
 const { isLocalRequest: isLocalPeer } = require('../request-locality');
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -113,6 +114,10 @@ function pluginEntry(pluginsDir, id, platform, arch, source = 'builtin') {
     icon: found.manifest.icon || '🧩',
     commands: found.manifest.commands,
     ui: found.manifest.ui || null,
+    // 常驻插件与通知渠道（src/plugins/channel-host.js）：resident 由 MultiCC 拉起常驻，
+    // channel 声明它能当提醒渠道。
+    resident: manifest.engine.resident === true,
+    channel: normalizeChannel(manifest.channel),
     engine: {
       type: 'command',
       available: Boolean(binary),
@@ -147,6 +152,23 @@ function createPluginsRoutes(deps) {
   }) : null);
   // MULTICC_PLUGIN_CATALOG_OFFLINE=1 只用缓存、不定时拉取（同 MULTICC_PRICE_TABLE_OFFLINE）。
   if (catalog && deps.autoRefresh && process.env.MULTICC_PLUGIN_CATALOG_OFFLINE !== '1') catalog.start();
+  // 常驻插件（deps.resident 由 server.js 给：本服务的地址、告警交给哪个推送入口）。插件的
+  // 数据目录与用户插件目录同级（~/.multicc/plugins-data/<id>/，隔离实例在各自数据根下）。
+  const residentDataDir = deps.resident && (deps.resident.dataDir || (userPluginsDir && path.join(path.dirname(userPluginsDir), 'plugins-data')));
+  const channelHost = residentDataDir ? createChannelHost({
+    discover: () => scan().plugins.filter(plugin => plugin.resident).map(plugin => {
+      const found = findManifest(plugin.id);
+      return { ...plugin, dir: found && found.dir, binary: found ? resolveBinary(found, platform, arch) : null };
+    }),
+    dataDir: residentDataDir,
+    platform,
+    // server.js 只给端口（同一行守字节预算）；测试可以直接给 baseUrl。
+    baseUrl: deps.resident.baseUrl || (deps.resident.port ? () => `http://127.0.0.1:${deps.resident.port()}` : null),
+    alert: deps.resident.alert || (() => {}),
+    logger,
+    ...(deps.resident.overrides || {}),
+  }) : null;
+  if (channelHost && deps.resident.autoStart !== false) channelHost.start();
 
   function idsIn(dir) {
     try {
@@ -271,6 +293,8 @@ function createPluginsRoutes(deps) {
       if (!entry.commands.includes(command)) {
         return resolve({ status: 400, payload: { error: `命令 ${command} 不在插件 ${id} 的白名单里` } });
       }
+      // 常驻插件不再每次启动程序，转给它的常驻进程（长操作由插件自己返回任务编号）。
+      if (channelHost && channelHost.isResident(id)) return channelHost.run(id, command, input).then(resolve);
       const found = findManifest(id);
       const binary = resolveBinary(found, platform, arch);
       if (!binary) {
@@ -385,11 +409,21 @@ function createPluginsRoutes(deps) {
       const result = await runPluginCommand(req.params.id, command, req.body.input);
       res.status(result.status).json(result.payload);
     });
+    // 常驻插件与通知渠道：是否在运行、未恢复的告警；各渠道的接收人（推送设置、钩子用）。
+    app.get('/api/channels', (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      res.json({ available: Boolean(channelHost), plugins: channelHost ? channelHost.status() : [] });
+    });
+    app.get('/api/channels/targets', async (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      try { res.json({ channels: channelHost ? await channelHost.targets() : [] }); }
+      catch (error) { res.status(500).json({ error: error.message }); }
+    });
     // 插件 UI 静态树（iframe 源）。挂在全局 auth gate 之后，与页面同等鉴权。
     app.get('/plugins/:id/*', servePluginFile);
   }
 
-  return { mount, listPlugins, scan, catalogPayload: publicPayload, runPluginCommand, servePluginFile, catalog, installer };
+  return { mount, listPlugins, scan, catalogPayload: publicPayload, runPluginCommand, servePluginFile, catalog, installer, channelHost };
 }
 
 module.exports = { createPluginsRoutes, pluginEntry, readManifest, resolveBinary };

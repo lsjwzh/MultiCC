@@ -1835,6 +1835,15 @@
       ]
     },
     {
+      "path": "tests/test-channel-host.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:task-first",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
       "path": "tests/test-chat-admit-error-feedback.js",
       "tier": "core",
       "lane": "deterministic",
