@@ -41,7 +41,9 @@
     const f = /^F([1-9]|1[0-2])$/.exec(ev.key);
     if (f) return 0xffbe + Number(f[1]) - 1;
     const cp = ev.key && ev.key.codePointAt(0);
-    if (cp && String.fromCodePoint(cp) === ev.key) return cp; // 单个字符（含 BMP 外）
+    // X11 Unicode keysyms must be tagged so fullwidth text cannot collide
+    // with functional keys such as BackSpace (0xff08).
+    if (cp && String.fromCodePoint(cp) === ev.key) return cp <= 0xff ? cp : (0x01000000 | cp);
     return 0;
   }
 
