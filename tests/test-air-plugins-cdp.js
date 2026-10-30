@@ -5,7 +5,9 @@
 //   ③ 分类筛选只留该类；刷新只发一次 POST，失败时状态行变成警示且保留旧列表；
 //   ④ 已装插件仍能打开自带面板（iframe 指向 /plugins/<id>/<ui>）；
 //   ⑤ 放在程序目录里的私有插件：显示「已安装」+「本地插件」，不当成内置，也不催着挪目录；
-//   ⑥ 新网页配还没重启的旧服务（没有 /api/plugins/catalog）：退回旧清单照常列出，不报加载失败。
+//   ⑥ 新网页配还没重启的旧服务（没有 /api/plugins/catalog）：退回旧清单照常列出，不报加载失败；
+//   ⑦ 一键安装 / 更新 / 退回 / 卸载：按钮只出现在该出现的卡上，点了发对应的 POST 并按返回的清单重画；
+//      失败按错误码显示原因、原版本不动；不是这台电脑打开的页面，按钮置灰并写明原因。
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
@@ -54,8 +56,10 @@ const pageRoutes = () => ({
 const RENDER = `MultiCCAirPlugins.render(document.getElementById('admin-content'), {
   api: async (url, body, method) => {
     const response = await fetch(url, { method: method || 'GET', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-    return response.json();
+    // 和 air.js 的 api() 一样：失败时把服务端返回的字段（code 等）并进错误对象。
+    const result = await response.json().catch(() => null);
+    if (!response.ok) throw Object.assign(new Error((result && result.error) || 'HTTP ' + response.status), result || {});
+    return result;
   },
   notice: message => { window.__notice = message; },
 })`;
@@ -155,5 +159,87 @@ test('a new panel on a server not restarted yet falls back to the old plugin lis
     await page.screenshot('02-plugins-legacy-server');
     await page.evaluate(`document.querySelector('[data-plugin-id="gapaw-creator-workbench"] .air-plugins-open').click()`);
     assert.ok(await page.waitFor(`document.querySelector('.air-plugins-frame')?.getAttribute('src') === '/plugins/gapaw-creator-workbench/ui/index.html'`), '照样能打开插件自带的界面');
+  });
+});
+
+test('one-click install, update, roll back and uninstall from the plugin cards', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const shots = path.join(os.tmpdir(), 'multicc-air-plugins-qa');
+  let allowed = true;
+  const posts = [];
+  const withManage = body => ({ ...body, manage: { available: true, allowed } });
+  const base = () => {
+    const body = payload();
+    const wechat = body.plugins.find(item => item.id === 'wechat-desktop-notify');
+    Object.assign(wechat, { removable: true, rollbackVersion: '0.0.9' });
+    return withManage(body);
+  };
+  const afterInstall = () => {
+    const body = base();
+    const tab = body.plugins.find(item => item.id === 'tab-saver');
+    Object.assign(tab, { state: 'installed', installedVersion: '0.3.0', candidate: null, removable: true, local: local('tab-saver', '0.3.0') });
+    return body;
+  };
+  const afterUninstall = () => {
+    const body = afterInstall();
+    const wechat = body.plugins.find(item => item.id === 'wechat-desktop-notify');
+    Object.assign(wechat, { state: 'installable', installedVersion: null, candidate: '0.2.0', removable: false, rollbackVersion: null, local: null });
+    return body;
+  };
+  const routes = {
+    ...pageRoutes(),
+    'GET /api/plugins/catalog': () => json(base()),
+    'POST /api/plugins/tab-saver/install': () => { posts.push('tab-saver/install'); return json({ ok: true, ...afterInstall() }); },
+    'POST /api/plugins/wechat-desktop-notify/install': () => { posts.push('wechat/install'); return { status: 502, ...json({ code: 'checksum', error: 'sha256 does not match the list' }) }; },
+    'POST /api/plugins/wechat-desktop-notify/uninstall': () => { posts.push('wechat/uninstall'); return json({ ok: true, ...afterUninstall() }); },
+  };
+  await withCdpHarness({ routes, screenshotDir: shots }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/');
+    assert.ok(await page.waitFor(`typeof window.MultiCCAirPlugins === 'object' && typeof window.t === 'function'`));
+    await page.evaluate(RENDER);
+    const tr = (key, params) => page.evaluate(`t(${JSON.stringify(key)}, ${JSON.stringify(params || null)})`);
+    const actions = id => page.evaluate(`[...document.querySelectorAll('[data-plugin-id="${id}"] .air-plugins-actions button')].map(b => [b.dataset.action, b.textContent, b.disabled])`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('.air-plugins-card').length === 6`));
+
+    assert.deepEqual(await actions('tab-saver'), [['install', await tr('airPluginsInstall', { version: '0.3.0' }), false]]);
+    assert.deepEqual(await actions('wechat-desktop-notify'), [
+      ['install', await tr('airPluginsUpdate', { version: '0.2.0' }), false],
+      ['rollback', await tr('airPluginsRollback', { version: '0.0.9' }), false],
+      ['uninstall', await tr('airPluginsUninstall'), false],
+    ]);
+    for (const id of ['chrome-proxy-launcher', 'gapaw-creator-workbench', 'feishu-notify', 'linux-tray']) {
+      assert.deepEqual(await actions(id), [], `${id} 没有装卸按钮（内置、放在程序目录里、不是从列表装的、不支持本机）`);
+    }
+    await page.screenshot('03-plugins-actions');
+
+    // 安装：发一次 POST，按返回的清单重画，卡片挪到「本机插件」。
+    await page.evaluate(`document.querySelector('[data-plugin-id="tab-saver"] [data-action="install"]').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('#air-plugins-local [data-plugin-id="tab-saver"]') !== null`), '装好后进本机插件');
+    assert.deepEqual(posts, ['tab-saver/install']);
+    assert.deepEqual(await actions('tab-saver'), [['uninstall', await tr('airPluginsUninstall'), false]]);
+
+    // 更新失败：按错误码写原因，版本不变。
+    await page.evaluate(`document.querySelector('[data-plugin-id="wechat-desktop-notify"] [data-action="install"]').click()`);
+    assert.ok(await page.waitFor(`!!document.querySelector('[data-plugin-id="wechat-desktop-notify"] .air-plugins-why')`));
+    assert.equal(await page.evaluate(`document.querySelector('[data-plugin-id="wechat-desktop-notify"] .air-plugins-why').textContent`),
+      await tr('airPluginsActionFailed', { error: await tr('airPluginsErrChecksum') }));
+    assert.equal(await page.evaluate(`document.querySelector('[data-plugin-id="wechat-desktop-notify"] .air-plugins-version').textContent`), 'v0.1.0');
+
+    // 卸载要先确认：取消就不发请求。
+    await page.evaluate(`window.confirm = () => false; document.querySelector('[data-plugin-id="wechat-desktop-notify"] [data-action="uninstall"]').click()`);
+    assert.deepEqual(posts, ['tab-saver/install', 'wechat/install']);
+    await page.evaluate(`window.__asked = ''; window.confirm = text => { window.__asked = text; return true; }; document.querySelector('[data-plugin-id="wechat-desktop-notify"] [data-action="uninstall"]').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('#air-plugins-installable [data-plugin-id="wechat-desktop-notify"]') !== null`));
+    assert.equal(await page.evaluate('window.__asked'), await tr('airPluginsUninstallConfirm', { name: '微信桌面提醒' }));
+    assert.deepEqual(posts, ['tab-saver/install', 'wechat/install', 'wechat/uninstall']);
+
+    // 从手机或远程打开：按钮置灰、写明原因，点了也不发请求。
+    allowed = false;
+    await page.evaluate('MultiCCAirPlugins.refresh()');
+    assert.ok(await page.waitFor(`[...document.querySelectorAll('.air-plugins-actions button')].length > 0 && [...document.querySelectorAll('.air-plugins-actions button')].every(b => b.disabled)`));
+    assert.equal(await page.evaluate(`document.querySelector('[data-plugin-id="tab-saver"] [data-action="install"]').title`), await tr('airPluginsLocalOnly'));
+    assert.ok((await page.evaluate(`document.querySelector('.air-plugins-bar').textContent`)).includes(await tr('airPluginsLocalOnly')));
+    await page.screenshot('04-plugins-remote');
   });
 });

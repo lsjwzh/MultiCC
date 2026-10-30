@@ -27,6 +27,9 @@
   let conflicts = [];
   let category = null;
   let refreshing = false;
+  let manage = null; // { available, allowed }：服务端说这次能不能装卸（只有本机能）
+  let pending = null; // { id, action }：正在装 / 卸 / 退回的那一个
+  let failures = {}; // id → 上一次装卸失败的原因
   let styleNode = null;
 
   function styleSheet() {
@@ -73,6 +76,8 @@
 .air-plugins-card.is-incompatible .air-plugins-why { color: #8a6414; }
 .air-plugins-card.is-unsupported { background: #fafbfc; box-shadow: none; }
 .air-plugins-card.is-unsupported .air-plugins-name { color: #6b8299; }
+.air-plugins-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; }
+.air-plugins-actions button:disabled { cursor: not-allowed; opacity: .55; }
 .air-plugins-link { flex: 0 0 auto; color: #2f7ac4; font-size: 10.5px; text-decoration: none; }
 .air-plugins-link:hover { text-decoration: underline; }
 `;
@@ -173,7 +178,7 @@
     const needs = LOCAL_STATES.has(row.state) && row.state !== 'incompatible' ? '' : requirementText(row.requires);
     if (needs) copy.append(make('div', needs, 'air-plugins-meta'));
     if (row.reason) copy.append(make('div', reasonText(row.reason), 'air-plugins-why'));
-    if (row.state === 'installable' || row.state === 'update') copy.append(make('div', t('airPluginsInstallLater'), 'air-plugins-meta'));
+    if (failures[row.id]) copy.append(make('div', t('airPluginsActionFailed', { error: failures[row.id] }), 'air-plugins-why'));
     if (local && !local.engine.available) {
       copy.append(make('div', local.engine.reason || t('airPluginsEngineMissing'), 'air-plugins-badge'));
     }
@@ -185,6 +190,8 @@
       link.rel = 'noopener noreferrer';
       card.append(link);
     }
+    const actions = actionButtons(row);
+    if (actions) card.append(actions);
     if (local) {
       const open = button(t('airPluginsOpen'), () => { activeId = row.id; paint(document.getElementById('admin-content'), contextRef); }, 'air-plugins-open');
       open.disabled = !local.engine.available || !local.ui;
@@ -192,6 +199,49 @@
       card.append(open);
     }
     return card;
+  }
+
+  // 安装 / 更新 / 卸载 / 退回。服务端只接受本机请求：别处打开的页面按钮置灰并写明原因。
+  function actionButtons(row) {
+    if (!manage || !manage.available) return null;
+    const list = [];
+    if (row.state === 'installable') list.push(['install', t('airPluginsInstall', { version: row.candidate }), 'air-plugins-open']);
+    if (row.state === 'update') list.push(['install', t('airPluginsUpdate', { version: row.candidate }), 'air-plugins-open']);
+    if (row.rollbackVersion) list.push(['rollback', t('airPluginsRollback', { version: row.rollbackVersion }), 'air-plugins-back']);
+    if (row.removable) list.push(['uninstall', t('airPluginsUninstall'), 'air-plugins-back']);
+    if (!list.length) return null;
+    const box = make('div', null, 'air-plugins-actions');
+    for (const [action, label, className] of list) {
+      const working = pending && pending.id === row.id && pending.action === action;
+      const node = button(working ? t('airPluginsWorking') : label, () => { void runAction(row, action); }, className);
+      node.dataset.action = action;
+      node.disabled = Boolean(pending) || !manage.allowed;
+      if (!manage.allowed) node.title = t('airPluginsLocalOnly');
+      box.append(node);
+    }
+    return box;
+  }
+
+  const ERROR_KEYS = {
+    localOnly: 'airPluginsLocalOnly', busy: 'airPluginsErrBusy', download: 'airPluginsErrDownload',
+    size: 'airPluginsErrChecksum', checksum: 'airPluginsErrChecksum', package: 'airPluginsErrPackage', mismatch: 'airPluginsErrPackage',
+  };
+
+  async function runAction(row, action) {
+    if (pending || !contextRef) return;
+    if (action === 'uninstall' && !root.confirm(t('airPluginsUninstallConfirm', { name: pickText(row, 'name', 'nameEn') }))) return;
+    pending = { id: row.id, action };
+    delete failures[row.id];
+    paint(document.getElementById('admin-content'));
+    try {
+      accept(await contextRef.api(`/api/plugins/${encodeURIComponent(row.id)}/${action}`, {}, 'POST'));
+    } catch (error) {
+      const key = error && ERROR_KEYS[error.code];
+      failures[row.id] = key ? t(key) : ((error && error.message) || t('airPluginsLoadFail'));
+    } finally {
+      pending = null;
+      paint(document.getElementById('admin-content'));
+    }
   }
 
   function catalogLine() {
@@ -215,6 +265,9 @@
     status.id = 'air-plugins-catalog-status';
     if (catalogInfo && catalogInfo.error) status.title = catalogInfo.error.message;
     bar.append(status);
+    if (manage && manage.available && !manage.allowed && rows.some(row => row.state === 'installable' || row.state === 'update' || row.removable)) {
+      bar.append(make('p', t('airPluginsLocalOnly'), 'air-plugins-hint'));
+    }
     if (catalogInfo && catalogInfo.configured) {
       const refresh = button(t('airPluginsRefresh'), () => { void refreshCatalog(); }, 'air-plugins-back');
       refresh.id = 'air-plugins-refresh';
@@ -306,6 +359,7 @@
     plugins = Array.isArray(payload && payload.plugins) ? payload.plugins : [];
     catalogInfo = (payload && payload.catalog) || null;
     conflicts = Array.isArray(payload && payload.conflicts) ? payload.conflicts : [];
+    manage = (payload && payload.manage) || null;
   }
 
   // 旧接口 /api/plugins 的清单 → 面板的行。只知道本机装了什么：内置与否、

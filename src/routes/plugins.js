@@ -14,11 +14,11 @@
 // manifest、spawn 二进制、转发 stdin/stdout JSON、挂静态文件 —— 不含业务
 // 逻辑；插件的全部行为都住在插件自己的可执行文件里，目录复制进来即安装。
 //
-// 两个来源：程序目录的 plugins/ 只放内置插件（随 MultiCC 发布）；后置安装的
-// 插件在 userPluginsDir（默认 ~/.multicc/plugins/）—— 桌面版的程序目录只读、
-// 独立包升级会整包替换，装进程序目录的插件会丢。同一 id 两边都有时以内置为准，
-// 并在清单里报出冲突。插件列表（GitHub 上签名的 index.json）由
-// src/plugins/catalog.js 拉取，这里只把它和本机已装的合成每个插件的状态。
+// 两个来源：程序目录的 plugins/ 放内置插件（随 MultiCC 发布）；从插件列表安装的
+// 插件在 userPluginsDir（默认 ~/.multicc/plugins/），桌面版的程序目录只读。同一 id
+// 两边都有时以内置为准，并在清单里报出冲突。插件列表（GitHub 上签名的 index.json）
+// 由 src/plugins/catalog.js 拉取，这里把它和本机已装的合成每个插件的状态；安装、
+// 更新、卸载、退回由 src/plugins/installer.js 做，只接受本机请求。
 //
 // 安全：插件目录来自仓库（或运维手动放置），但通道仍按不可信输入处理 ——
 // id 白名单字符、command 必须在 manifest.commands、静态文件 realpath 必须
@@ -30,11 +30,18 @@ const { spawn } = require('child_process');
 const {
   PLUGIN_API_VERSION, appsReferenced, computeStates, createHostFacts, createPluginCatalog,
 } = require('../plugins/catalog');
+const { createPluginInstaller } = require('../plugins/installer');
+const { isLocalRequest: isLocalPeer } = require('../request-locality');
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 const COMMAND_PATTERN = /^[a-z][a-z0-9-]*$/i;
 const RUN_TIMEOUT_MS = 20_000;
 const RUN_MAX_BUFFER = 4 * 1024 * 1024;
+// 安装类错误码 → HTTP 状态（src/plugins/installer.js PluginInstallError）。
+const INSTALL_ERROR_STATUS = {
+  invalidId: 400, busy: 409, noPrevious: 409, notInstalled: 404,
+  download: 502, size: 502, checksum: 502, package: 422, mismatch: 422,
+};
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -126,6 +133,18 @@ function createPluginsRoutes(deps) {
   const roots = [['builtin', pluginsDir], ...(userPluginsDir ? [['user', userPluginsDir]] : [])];
   const catalog = deps.catalog || (catalogDir ? createPluginCatalog({ cacheDir: catalogDir, logger }) : null);
   const hostFacts = deps.hostFacts || createHostFacts({ platform, arch });
+  const isLocalRequest = deps.isLocalRequest || isLocalPeer;
+  const installer = deps.installer || (userPluginsDir ? createPluginInstaller({
+    root: userPluginsDir,
+    platform,
+    // 走统一出站（代理设置照常生效）；测试注入 deps.fetch。
+    fetch: deps.fetch || ((...args) => require('../network/outbound').outboundFetch(...args)),
+    inspect: (parent, id) => {
+      const found = readManifest(parent, id);
+      return found ? { manifest: found.manifest, binary: resolveBinary(found, platform, arch) } : null;
+    },
+    logger,
+  }) : null);
   // MULTICC_PLUGIN_CATALOG_OFFLINE=1 只用缓存、不定时拉取（同 MULTICC_PRICE_TABLE_OFFLINE）。
   if (catalog && deps.autoRefresh && process.env.MULTICC_PLUGIN_CATALOG_OFFLINE !== '1') catalog.start();
 
@@ -170,10 +189,17 @@ function createPluginsRoutes(deps) {
     return null;
   }
 
-  async function catalogPayload() {
+  async function catalogPayload(req) {
     const { plugins, conflicts } = scan();
     const snapshot = catalog ? catalog.snapshot() : { catalog: null, source: null, fetchedAt: null, updatedAt: null, error: null };
     const host = await hostFacts(appsReferenced(snapshot.catalog, plugins));
+    const rows = computeStates({ catalog: snapshot.catalog, installed: plugins, host });
+    // 只有从列表装进用户目录的插件能卸载、退回；内置和放在程序目录里的不归这里管。
+    for (const row of rows) {
+      const managed = Boolean(installer && row.local && row.local.source === 'user');
+      row.removable = managed;
+      row.rollbackVersion = managed ? installer.previousVersion(row.id) : null;
+    }
     return {
       pluginApi: PLUGIN_API_VERSION,
       host: { os: host.os, arch: host.arch, osVersion: host.osVersion, multicc: host.multicc, agentBuild: host.agentBuild },
@@ -182,8 +208,59 @@ function createPluginsRoutes(deps) {
         fetchedAt: snapshot.fetchedAt, source: snapshot.source, error: snapshot.error,
       },
       conflicts,
-      plugins: computeStates({ catalog: snapshot.catalog, installed: plugins, host }),
+      // allowed：这次请求来自这台电脑本身（和 Agent 权限按钮一样），手机和远程页面只能看。
+      manage: { available: Boolean(installer), allowed: Boolean(installer && req && isLocalRequest(req)) },
+      plugins: rows,
+      _snapshot: snapshot,
+      _host: host,
     };
+  }
+
+  async function publicPayload(req) {
+    const { _snapshot, _host, ...payload } = await catalogPayload(req);
+    return payload;
+  }
+
+  // 安装 / 更新：版本和下载包都只取列表算出的那个（row.candidate），不接受调用方指定。
+  async function installFromCatalog(req, id) {
+    const payload = await catalogPayload(req);
+    const row = payload.plugins.find(item => item.id === id);
+    if (!row || row.listed !== true || row.distribution !== 'optional') {
+      return { status: 404, payload: { code: 'notListed', error: `插件 ${id} 不在插件列表里，或者是内置插件` } };
+    }
+    if (row.state !== 'installable' && row.state !== 'update') {
+      return { status: 409, payload: { code: 'notInstallable', state: row.state, error: `插件 ${id} 现在不能安装（${row.state}）` } };
+    }
+    if (row.local && row.local.source !== 'user') {
+      return { status: 409, payload: { code: 'inProgramDir', error: `插件 ${id} 放在程序目录的 plugins/ 里，先把它移走再从列表安装` } };
+    }
+    const entry = payload._snapshot.catalog.plugins.find(item => item.id === id);
+    const release = entry.releases.find(item => item.version === row.candidate);
+    const asset = release.assets[`${payload._host.os}-${payload._host.arch}`];
+    const result = await installer.install({ id, version: release.version, asset });
+    return { status: 200, payload: { ok: true, result, ...(await publicPayload(req)) } };
+  }
+
+  // 本机请求不用口令，所以别的网站在浏览器里提交一个表单到 127.0.0.1 也算「本机」。
+  // 浏览器跨站 POST 一定带 Origin：带了就必须和本服务同源；不带的是 curl 这类非浏览器。
+  function sameOrigin(req) {
+    const origin = req.headers && req.headers.origin;
+    if (!origin) return true;
+    try { return new URL(origin).host === req.headers.host; } catch (_) { return false; }
+  }
+
+  async function manage(req, res, work) {
+    if (!installer) return res.status(404).json({ code: 'unavailable', error: '这个实例没有用户插件目录' });
+    if (!isLocalRequest(req)) return res.status(403).json({ code: 'localOnly', error: '请在这台电脑上安装、卸载插件' });
+    if (!sameOrigin(req)) return res.status(403).json({ code: 'crossOrigin', error: '只接受 MultiCC 自己页面发来的安装、卸载请求' });
+    try {
+      const outcome = await work();
+      res.status(outcome.status).json(outcome.payload);
+    } catch (error) {
+      const status = INSTALL_ERROR_STATUS[error.code];
+      if (!status) logger.warn('plugin_manage_failed', { id: req.params.id, error: error.message });
+      res.status(status || 500).json({ code: error.code || 'failed', error: error.message });
+    }
   }
 
   function runPluginCommand(id, command, input) {
@@ -282,16 +359,26 @@ function createPluginsRoutes(deps) {
     // 已装但不兼容）与第一条不满足的要求。只读；refresh 只是立刻重拉一次列表。
     app.get('/api/plugins/catalog', async (req, res) => {
       res.set('Cache-Control', 'no-store');
-      try { res.json(await catalogPayload()); }
+      try { res.json(await publicPayload(req)); }
       catch (error) { res.status(500).json({ error: error.message }); }
     });
     app.post('/api/plugins/catalog/refresh', async (req, res) => {
       if (!catalog) return res.status(404).json({ error: '插件列表未配置' });
       try {
         await catalog.refresh();
-        res.json(await catalogPayload());
+        res.json(await publicPayload(req));
       } catch (error) { res.status(500).json({ error: error.message }); }
     });
+    // 安装 / 更新 / 卸载 / 退回：只接受本机请求；成功后带回最新的整张清单。
+    app.post('/api/plugins/:id/install', (req, res) => manage(req, res, () => installFromCatalog(req, req.params.id)));
+    app.post('/api/plugins/:id/uninstall', (req, res) => manage(req, res, async () => {
+      const result = await installer.uninstall(req.params.id);
+      return { status: 200, payload: { ok: true, result, ...(await publicPayload(req)) } };
+    }));
+    app.post('/api/plugins/:id/rollback', (req, res) => manage(req, res, async () => {
+      const result = await installer.rollback(req.params.id);
+      return { status: 200, payload: { ok: true, result, ...(await publicPayload(req)) } };
+    }));
     app.post('/api/plugins/:id/run', async (req, res) => {
       const command = typeof req.body?.command === 'string' ? req.body.command : '';
       if (!command) return res.status(400).json({ error: '缺少 command' });
@@ -302,7 +389,7 @@ function createPluginsRoutes(deps) {
     app.get('/plugins/:id/*', servePluginFile);
   }
 
-  return { mount, listPlugins, scan, catalogPayload, runPluginCommand, servePluginFile, catalog };
+  return { mount, listPlugins, scan, catalogPayload: publicPayload, runPluginCommand, servePluginFile, catalog, installer };
 }
 
 module.exports = { createPluginsRoutes, pluginEntry, readManifest, resolveBinary };

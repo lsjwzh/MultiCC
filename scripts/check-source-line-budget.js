@@ -530,9 +530,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +7 双语键（airOpsStepInstallApp/Relaunch + airOpsDesktopInAppIntro/RunningBody/
     //   DoneBody/Restarting/FailedBody）：桌面版改为在应用内下载安装新版本并显示进度与
     //   步骤，中英各 7 行 = +14 行，重跑生成器实测 9972/645682。
-    maxLines: 9972,
+    // +11 双语键（airPluginsInstall/Update/Rollback/Uninstall/Working/LocalOnly/
+    //   ActionFailed/UninstallConfirm + airPluginsErr*）：插件面板的一键安装、更新、卸载、
+    //   退回与失败原因，删掉「一键安装将在后续版本提供」一条，中英各净增 11 行 = +22 行，
+    //   重跑生成器实测 9994/647070。
+    maxLines: 9994,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 645682,
+    maxBytes: 647070,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
