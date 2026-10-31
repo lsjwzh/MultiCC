@@ -10,6 +10,8 @@
 //
 // 这里没有任何具体渠道（微信……）的代码，也不保存投递：队列、重试、发送记录都在插件里。
 
+const { isBackgroundLetter } = require('../classify/vocab');
+
 const CATEGORIES = Object.freeze(['done', 'question', 'background', 'error']);
 const DEFAULT_CATEGORIES = Object.freeze(['error', 'question']);
 const PLUGIN_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -65,7 +67,7 @@ function checkTarget(plugin, target) {
 function categoryOfPush(type, classifyState) {
   if (type === 'succeeded') return 'done';
   if (type === 'error') return 'error';
-  if (type === 'waiting') return classifyState === 'B' ? 'background' : 'question';
+  if (type === 'waiting') return isBackgroundLetter(classifyState) ? 'background' : 'question';
   return null;
 }
 
