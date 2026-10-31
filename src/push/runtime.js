@@ -6,6 +6,8 @@ const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
 const { BusinessPushRequestError } = require('./business');
 const { mountBarkDeviceRoutes } = require('./bark-devices');
 const { notificationCopy } = require('./notification-copy');
+const channelRegistry = require('../plugins/channel-registry');
+const { mountChannelSubscriptionRoutes } = require('./channel-subscriptions');
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
 const DEFAULT_IDLE_MS = 6000;
@@ -129,6 +131,7 @@ function createPushRuntime(options) {
 
   function hasNotifyConsumer(sessionId) {
     if (push.fcmDevices?.hasEnabled() || push.subscriptions.size > 0 || (push.hasBarkDevices ? push.hasBarkDevices() : push.cfg.BARK_URL) || push.cfg.WEBHOOK_URL) return true;
+    if (push.channelSubscriptions?.hasEnabled()) return true;
     if ((sessions.get(sessionId)?.clients?.size || 0) > 0) return true;
     const dirId = persistedSessions.get(sessionId)?.dirId;
     return !!(dirId && (workspaceClients.get(dirId)?.size || 0) > 0);
@@ -290,9 +293,36 @@ function createPushRuntime(options) {
       payload.title, `${message} ${shortCwd}`, payload.url,
     ));
     fireAndForget('webhook notification failed', () => push.sendWebhookNotification(payload));
+    routeToChannels(sessionId, type, message, options, timestamp);
     try { logger.log(`[multicc/push] Sent ${type} notification for session ${sessionId}`); } catch (_) {}
     return payload;
   }
+
+  // 第五路：按推送设置里的插件渠道订阅交给插件入队（方案 10.3），同样不等结果。现有渠道
+  // 一直收全部类别；插件渠道只收订阅勾了的类别，并且不收服务重启打断的回合（10.5）。
+  function routeToChannels(sessionId, type, message, options, timestamp) {
+    const subscriptions = push.channelSubscriptions;
+    if (!subscriptions || !subscriptions.hasEnabled()) return;
+    const category = channelRegistry.categoryOfPush(type, options && options.classifyState);
+    if (!category) return;
+    if (category === 'error' && options && options.errorCategory === 'cancel_shutdown') return;
+    fireAndForget('plugin channel delivery failed', () => subscriptions.dispatch({
+      sessionId, category, summary: String(message || ''), occurredAt: timestamp,
+    }));
+  }
+
+  // 「这个任务现在怎样」：投递里的任务名、项目，和插件的发送前复核都用它。
+  channelRegistry.setTaskLookup(sessionId => {
+    const persisted = persistedSessions.get(sessionId);
+    if (!persisted) return null;
+    const taskState = getTaskState(persisted) || {};
+    const cwd = persisted.cwd || sessions.get(sessionId)?.cwd || '';
+    return {
+      label: String(persisted.label || ''),
+      project: channelRegistry.projectName(cwd),
+      classifyState: taskState.classifyState || null,
+    };
+  });
 
   // A health alert that belongs to no session: a resident plugin found a problem
   // (Agent permissions lost, the app it drives logged out) or stopped running
@@ -338,6 +368,15 @@ function createPushRuntime(options) {
     }
     if (push.fcmDevices) push.fcmDevices.mountRoutes(app, route);
     if (push.barkDevices) mountBarkDeviceRoutes(app, push.barkDevices, route);
+    if (push.channelSubscriptions && typeof app.get === 'function' && typeof app.put === 'function') {
+      mountChannelSubscriptionRoutes(app, push.channelSubscriptions, route, () => {
+        const fcm = push.fcmDevices && typeof push.fcmDevices.list === 'function' ? push.fcmDevices.list().filter(device => device.enabled !== false).length
+          : (push.fcmDevices?.hasEnabled() ? 1 : 0);
+        const bark = Boolean(push.hasBarkDevices ? push.hasBarkDevices() : push.cfg.BARK_URL);
+        const webhook = Boolean(push.cfg.WEBHOOK_URL);
+        return { webPush: push.subscriptions.size, fcm, bark, webhook, any: push.subscriptions.size > 0 || fcm > 0 || bark || webhook };
+      });
+    }
     app.post('/api/push/subscribe', route(async (req, res) => {
       const subscription = req.body;
       if (!subscription || !subscription.endpoint) {

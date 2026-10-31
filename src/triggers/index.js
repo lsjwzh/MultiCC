@@ -1,7 +1,8 @@
 'use strict';
 
 const { sanitizePublicText } = require('../http/public-safety');
-const { validateEventRule } = require('../events/rules');
+const { validateEventRule, channelProblem } = require('../events/rules');
+const channelRegistry = require('../plugins/channel-registry');
 
 const DEFAULT_TRIGGER_PROMPT =
   '【multicc 自动触发】请使用 multicc-trigger skill 执行检查流程：查看当前 git 改动（git status/diff），' +
@@ -106,7 +107,10 @@ function createSessionTriggers(rawDeps) {
         nowIso: () => new Date(now()).toISOString(),
         scope: 'session',
       });
-      return result.error ? { error: result.error } : { trigger: result.rule };
+      if (result.error) return { error: result.error };
+      // 「发到渠道」的接收人只在保存时核对（design 10.4）。
+      const channelError = channelProblem(result.rule, deps.checkChannelTarget || channelRegistry.checkTarget);
+      return channelError ? { error: channelError } : { trigger: result.rule };
     }
     const trigger = {
       id: body.id || deps.crypto.randomUUID(),

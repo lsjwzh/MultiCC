@@ -19,7 +19,8 @@
 
 const { matchesAny } = require('./catalog');
 const { ACTIONS } = require('./actions');
-const { validateEventRule, matchesFilter } = require('./rules');
+const { validateEventRule, matchesFilter, channelActions, channelProblem } = require('./rules');
+const channelRegistry = require('../plugins/channel-registry');
 
 const MAX_FANOUT = 20;
 const MAX_DEPTH = 2;
@@ -48,7 +49,9 @@ function createEventRuleEngine(deps) {
     httpPost: deps.httpPost || (async () => { throw Object.assign(new Error('no transport'), { code: 'NO_TRANSPORT' }); }),
     sleep: deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
     allowPrivateWebhooks: deps.allowPrivateWebhooks === true,
+    deliverChannel: deps.deliverChannel || ((plugin, payload) => channelRegistry.deliver(plugin, payload)),
   };
+  const checkChannelTarget = deps.checkChannelTarget || channelRegistry.checkTarget;
 
   let globalRules = [];
   const lastFired = new Map();   // ruleId[:sessionId] -> ts
@@ -213,7 +216,10 @@ function createEventRuleEngine(deps) {
       park(outcome.target || event.sessionId, rule, owner, step, 'inject');
       return outcome;
     }
-    record({ ruleId: rule.id, kind: action.kind, eventType: event.type, ok: outcome.ok, error: outcome.error || null, ...progress });
+    record({
+      ruleId: rule.id, kind: action.kind, eventType: event.type, ok: outcome.ok, error: outcome.error || null,
+      ...(outcome.deliveryId != null ? { deliveryId: outcome.deliveryId } : {}), ...progress,
+    });
     if (action.kind === 'inject-prompt' && outcome.ok) selfInjected.set(outcome.target, rule.id);
     hub.emit('trigger.fired', event.sessionId, {
       ruleId: rule.id, actionKind: action.kind, ok: outcome.ok, cause: event.type, ...progress,
@@ -298,15 +304,34 @@ function createEventRuleEngine(deps) {
     }
   }
 
+  // 哪些钩子在用渠道（/api/channels 的 inUse：插件停了还有钩子指望它，Air 要出横幅）。
+  function channelUsage() {
+    const out = [];
+    const add = (rule, owner) => {
+      if (!rule || !rule.enabled) return;
+      for (const action of channelActions(rule)) out.push({ plugin: action.plugin, target: action.target, kind: 'hook', source: rule.id, owner });
+    };
+    for (const rule of globalRules) add(rule, null);
+    for (const [sessionId, persisted] of persistedSessions) {
+      for (const trigger of Array.isArray(persisted && persisted.triggers) ? persisted.triggers : []) {
+        if (trigger.type === 'event') add(trigger, sessionId);
+      }
+    }
+    return out;
+  }
+  let stopUsage = null;
+
   function start() {
     if (unsubscribe) return false;
     load();
     unsubscribe = hub.subscribe(onEvent);
+    if (!stopUsage) stopUsage = channelRegistry.addUsageSource(channelUsage);
     return true;
   }
 
   function stop() {
     if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    if (stopUsage) { stopUsage(); stopUsage = null; }
     lastFired.clear();
     selfInjected.clear();
     chains.clear();
@@ -316,6 +341,8 @@ function createEventRuleEngine(deps) {
     if (globalRules.length >= MAX_GLOBAL_RULES) return { error: 'too many global rules' };
     const validation = validateEventRule(body, { idFactory, nowIso: () => new Date(now()).toISOString(), scope: 'global' });
     if (validation.error) return validation;
+    const channelError = channelProblem(validation.rule, checkChannelTarget);
+    if (channelError) return { error: channelError };
     globalRules.push(validation.rule);
     persist();
     return validation;
@@ -328,6 +355,8 @@ function createEventRuleEngine(deps) {
       idFactory, nowIso: () => globalRules[index].createdAt, scope: 'global',
     });
     if (validation.error) return validation;
+    const channelError = channelProblem(validation.rule, checkChannelTarget);
+    if (channelError) return { error: channelError };
     validation.rule.lastFiredAt = globalRules[index].lastFiredAt;
     // firedAt records that a one-shot rule was already spent; an edit must not
     // erase that history (re-enabling is what re-arms the rule).

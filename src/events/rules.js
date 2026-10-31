@@ -8,7 +8,9 @@
 
 const { isKnownPattern } = require('./catalog');
 
-const ACTION_KINDS = Object.freeze(['inject-prompt', 'webhook', 'notify']);
+const ACTION_KINDS = Object.freeze(['inject-prompt', 'webhook', 'notify', 'channel']);
+const CHANNEL_PLUGIN_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const CHANNEL_TARGET_ID = /^[A-Za-z0-9._:-]{1,64}$/;
 const MAX_PATTERNS = 10;
 const MAX_FILTER_IDS = 50;
 const MIN_INJECT_COOLDOWN_MS = 10000;
@@ -72,10 +74,36 @@ function validateAction(raw) {
       if (!/^[A-Za-z0-9_.-]{1,64}$/.test(String(raw.secretName))) return { error: 'invalid secretName' };
       action.secretName = String(raw.secretName);
     }
+  } else if (kind === 'channel') {
+    // 「发到渠道」（design 10.4）：插件 id + 插件里的接收人编号，可选文案（留空由插件排版）。
+    // 接收人在不在只在保存时查（channelProblem），这里只看形状：规则文件加载时不能因为
+    // 接收人删了就把规则丢掉，要留着标红。
+    const plugin = String(raw.plugin || '');
+    const target = String(raw.target || '');
+    if (!CHANNEL_PLUGIN_ID.test(plugin) || !CHANNEL_TARGET_ID.test(target)) return { error: 'invalid channel action' };
+    action.plugin = plugin;
+    action.target = target;
+    action.message = textField(raw.message, 400);
   } else {
     action.message = textField(raw.message, 400);
   }
   return { action };
+}
+
+// The channel actions of a rule (main action and chain steps).
+function channelActions(rule) {
+  return [rule && rule.action, ...(rule && Array.isArray(rule.then) ? rule.then : [])]
+    .filter((action) => action && action.kind === 'channel');
+}
+
+// Save-time check of every channel action: `check(plugin, target)` answers an
+// error string or null (src/plugins/channel-registry.js checkTarget).
+function channelProblem(rule, check) {
+  for (const action of channelActions(rule)) {
+    const problem = check(action.plugin, action.target);
+    if (problem) return problem;
+  }
+  return null;
 }
 
 // body: raw request/object. Returns { rule } or { error }.
@@ -139,4 +167,4 @@ function matchesFilter(rule, event) {
   return true;
 }
 
-module.exports = { ACTION_KINDS, MIN_INJECT_COOLDOWN_MS, MAX_CHAIN_STEPS, validateEventRule, validateAction, validateWebhookUrl, matchesFilter };
+module.exports = { ACTION_KINDS, MIN_INJECT_COOLDOWN_MS, MAX_CHAIN_STEPS, validateEventRule, validateAction, validateWebhookUrl, matchesFilter, channelActions, channelProblem };

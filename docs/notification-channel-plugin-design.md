@@ -2,7 +2,7 @@
 
 版本：第五版，2026 年 10 月 28 日，取代第四版。第五版重新定位插件：插件是 MultiCC 和微信之间的能力与配置中心，发给谁、怎么发由你配置（第四节、第十节）。第四版加入的“大模型接管与剧本修补”（第九节）保持不变。
 
-状态：第五版已于 2026-10-28 经你确认。第零阶段验证进行中（结果见 12.1）；第一阶段已于 2026-10-30 实现（见 12.2），插件源码在同级目录 `multicc-wechat-notify/`，还不能发送。标“已有”的内容已对照当前代码或本机状态核实，并给出位置；标“拟新增”的为提案。仓库路径相对于项目根目录。
+状态：第五版已于 2026-10-28 经你确认。第零阶段验证进行中（结果见 12.1）；第一阶段已于 2026-10-30 实现（见 12.2）；第二阶段（接收人簿、投递队列、真实发送）已实现，0.2.1 于 2026-10-31 登记进插件列表并经手机确认送达；第三阶段（接入推送设置与钩子）的代码已于 2026-10-31 完成（见 12.3），要重启 MultiCC 后实机验收。插件源码在同级目录 `multicc-wechat-notify/`。标“已有”的内容已对照当前代码或本机状态核实，并给出位置；标“拟新增”的为提案。仓库路径相对于项目根目录。
 
 ## 一、结论
 
@@ -946,6 +946,29 @@ MultiCC 只保存接收人编号，不保存微信里的名称。名称只在插
 - 插件侧：Rust 测试 25 项。
 - 端到端：用新宿主拉起真实插件，连本机 Agent 和 MultiCC，体检结果与本机一致（一档；升二档只差锁屏实测）。模拟 Agent 停止时，须知确认前不推送；确认后推送一次，重复体检不再推；重启后补报但不重推；Agent 恢复后自动消除。
 - 待你重启 MultiCC 后实机确认：常驻拉起；Agent 自动更新到构建 5，三项权限仍为 true。
+
+### 12.3 第三阶段实现（2026-10-31）
+
+| 部分 | 实现 | 位置 |
+| --- | --- | --- |
+| 渠道登记处 | 宿主、推送订阅、钩子三方经它互找（不在 server.js 里串）；事件 → 类别（`done`/`question`/`background`/`error`）；拼 `deliver`；`dedupKey` = 任务 + 类别；发送前复核的判断 | `src/plugins/channel-registry.js` |
+| 宿主投递 | `deliver` 消息（5 秒超时）；接收人簿缓存（就绪、重新扫描、列接收人时刷新），保存时同步核对接收人；`/api/channels` 加 `ui`、`inUse`；`POST /api/channels/recheck`（只收本机） | `src/plugins/channel-host.js`、`src/routes/plugins.js` |
+| 推送订阅 | `channel-subscriptions.json`（与 `bark-devices.json` 同目录）；`GET`/`PUT`/`POST`/`DELETE /api/push/channel-subscriptions`、`POST /api/push/test-channel`；`notify()` 第五路按订阅投递、不等结果；`hasNotifyConsumer` 计入订阅；出错类推送带 `errorCategory`，`cancel_shutdown` 不投给渠道 | `src/push/channel-subscriptions.js`、`src/push/runtime.js`、`src/push/service.js`、`src/classify/state-machine.js`、`src/paths.js` |
+| 钩子「发到渠道」 | 动作 `channel`（可作主动作或链式步骤）；保存时核对插件与接收人（全局规则和会话触发器）；执行记录带投递编号；加载规则文件不校验接收人，已删的照常留着、执行时记失败 | `src/events/rules.js`、`src/events/actions.js`、`src/events/engine.js`、`src/triggers/index.js` |
+| 页面 | 推送设置「插件渠道」一栏（没装渠道插件不出现、不读订阅）；钩子编辑器「发到渠道」；触发器卡片引用已删接收人时标红；Air 顶部横幅（未恢复的告警，或有人在用但插件没运行）；39 个中英双语词条 | `public/plugin-channels.js`、`public/air-push.js`、`public/hook-editor.js`、`public/air-trigger-center.js`、`app/assets/i18n/` |
+| 插件 0.3.0 | 事项记任务编号；去重按接收人；出错抑制按「接收人 + 任务」、复核为已解决的不算；发送前问 MultiCC 复核，全部解决就取消；多任务合并时正文逐行写任务名；面板「快速接入」（写的就是推送订阅）与中英文案；文字识别和剪贴板辅助程序随包编译，用户机器不需要命令行工具 | `multicc-wechat-notify/` |
+
+和前文的差别：
+
+- **去重键不含发生时刻。** 只写「任务 + 类别」：同一件事从推送订阅和钩子同时到同一个接收人，插件并成一条；插件只在这条还在排队时去重，发出去之后的新情况照常入队，重复出错由出错抑制管。
+- **钩子编辑器的链式步骤里，「发到渠道」只能原样保留或删除**，和通知、Webhook 步骤一样；要新加只能作主动作。
+- **推送设置里的接收人只读**，要改去插件面板（链接直接打开插件面板）。
+- **复核只看分类字母。** 「出错了」看任务现在是不是 E，「在等你回答」看是不是 W，「等后台」看是不是 B；任务删了算已解决。比 `todoProblemOf` 粗，但不依赖任务板。
+
+已验证：
+- MultiCC 侧：新增 `tests/test-channel-routing.js`（6 项，真起一个假渠道插件：只收订阅勾的类别、现有渠道照收全部、重启打断不投、保存核对、钩子过滤与失败不影响别的规则、订阅与钩子同键、`inUse` 与复核）与 `tests/test-plugin-channels-cdp.js`（3 项，真浏览器）；`test:task-first` 405 项、推送/钩子/会话触发器相关 12 组测试、多语言与行数上限检查全部通过。`test-air-push-cdp.js` 在改动前的提交上就红在「面包屑」一条，与本次无关。
+- 插件侧：Rust 测试 65 + 2 项（含整点任务连续出错只提醒一次、订阅与钩子同键只留一行、schema 2 → 3 升级）。
+- 待你重启 MultiCC 后实机验收：推送设置里给接收人勾类别并点「测试」，手机收到；建一条「发到渠道」钩子。
 
 ## 十三、验收
 

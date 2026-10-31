@@ -6,6 +6,7 @@
 const crypto = require('crypto');
 const net = require('net');
 const { renderInjection } = require('./envelope');
+const channelRegistry = require('../plugins/channel-registry');
 
 const WEBHOOK_TIMEOUT_MS = 5000;
 const WEBHOOK_ATTEMPTS = 3;
@@ -122,6 +123,25 @@ async function runNotify(event, rule, ctx) {
   return { ok: result !== false };
 }
 
+// 「发到渠道」（design 10.4）：把事件转成 deliver 交给插件入队；插件回了投递编号就算这一
+// 步成功，最终发送结果在插件的发送记录里。去重键与推送订阅一致（任务 + 类别），同一件事
+// 同时命中推送订阅和钩子时，同一个接收人只收一条。
+async function runChannel(event, rule, ctx) {
+  const action = rule.action;
+  const occurredAt = typeof event.ts === 'number' ? event.ts : (Date.parse(event.ts) || ctx.now());
+  const payload = channelRegistry.delivery({
+    target: action.target,
+    source: `hook:${rule.id}`,
+    sessionId: event.sessionId,
+    category: channelRegistry.categoryOfEvent(event.type),
+    summary: action.message || String(event.data.goal || ''),
+    occurredAt,
+  });
+  const result = await ctx.deliverChannel(action.plugin, payload);
+  if (result && result.ok) return { ok: true, deliveryId: result.deliveryId ?? null };
+  return { ok: false, error: String((result && result.error) || 'channel delivery failed').slice(0, 200) };
+}
+
 // Each firing gets its own chat task/session. The clientMsgId is derived from the
 // event so a retried delivery of the same event cannot create a second one.
 async function createTargetSession(event, rule, ctx) {
@@ -157,6 +177,7 @@ const ACTIONS = Object.freeze({
   'inject-prompt': runInject,
   webhook: runWebhook,
   notify: runNotify,
+  channel: runChannel,
 });
 
 module.exports = { ACTIONS, isPrivateAddress, webhookBody, sign, NOTIFY_TYPE };
