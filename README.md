@@ -75,11 +75,11 @@ The selected agents do the planning and execution; MultiCC supplies the coordina
 
 | System | Device | Installer |
 |---|---|---|
-| macOS 13+ | Apple silicon (M1 / M2 / M3 / M4 and later) | [Download DMG](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/multicc-desktop-2.13.0-macos-arm64.dmg) |
-| macOS 13+ | Intel | [Download DMG](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/multicc-desktop-2.13.0-macos-x64.dmg) |
-| Windows | 64-bit Intel / AMD | [Download installer](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/multicc-desktop-2.13.0-windows-x64.exe) |
-| Linux | 64-bit Intel / AMD, general distributions | [Download AppImage](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/multicc-desktop-2.13.0-linux-x64.AppImage) |
-| Linux | 64-bit Intel / AMD, Debian / Ubuntu | [Download DEB](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/multicc-desktop-2.13.0-linux-x64.deb) |
+| macOS 13+ | Apple silicon (M1 / M2 / M3 / M4 and later) | [Download DMG](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/multicc-desktop-2.13.1-macos-arm64.dmg) |
+| macOS 13+ | Intel | [Download DMG](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/multicc-desktop-2.13.1-macos-x64.dmg) |
+| Windows | 64-bit Intel / AMD | [Download installer](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/multicc-desktop-2.13.1-windows-x64.exe) |
+| Linux | 64-bit Intel / AMD, general distributions | [Download AppImage](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/multicc-desktop-2.13.1-linux-x64.AppImage) |
+| Linux | 64-bit Intel / AMD, Debian / Ubuntu | [Download DEB](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/multicc-desktop-2.13.1-linux-x64.deb) |
 
 ### Mobile app
 
@@ -87,7 +87,7 @@ The mobile app connects to your own MultiCC server. Install the desktop app or s
 
 | System | Download |
 |---|---|
-| Android | [Official signed APK](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/multicc.apk) |
+| Android | [Official signed APK](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/multicc.apk) |
 | iPhone / iPad | [App Store](https://apps.apple.com/app/id6807642727) (availability follows Apple review) |
 
 <details>
@@ -97,15 +97,15 @@ Standalone packages include Node.js. Use the [one-line installer](#quick-start) 
 
 | System | Architecture | Package |
 |---|---|---|
-| macOS 11+ | Apple silicon | [Download](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/multicc-standalone-2.13.0-darwin-arm64.tar.gz) |
-| macOS 11+ | Intel | [Download](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/multicc-standalone-2.13.0-darwin-x64.tar.gz) |
-| Linux | x64 | [Download](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/multicc-standalone-2.13.0-linux-x64.tar.gz) |
-| Linux | ARM64 | [Download](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/multicc-standalone-2.13.0-linux-arm64.tar.gz) |
-| Windows | x64 | [Download](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/multicc-standalone-2.13.0-win32-x64.zip) |
+| macOS 11+ | Apple silicon | [Download](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/multicc-standalone-2.13.1-darwin-arm64.tar.gz) |
+| macOS 11+ | Intel | [Download](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/multicc-standalone-2.13.1-darwin-x64.tar.gz) |
+| Linux | x64 | [Download](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/multicc-standalone-2.13.1-linux-x64.tar.gz) |
+| Linux | ARM64 | [Download](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/multicc-standalone-2.13.1-linux-arm64.tar.gz) |
+| Windows | x64 | [Download](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/multicc-standalone-2.13.1-win32-x64.zip) |
 
 </details>
 
-Desktop and standalone version: **v2.13.0**. See [Releases](https://github.com/lsjwzh/MultiCC/releases) for checksums, signing information, and older versions; [download SHA256SUMS.txt](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.0/SHA256SUMS.txt). [Desktop installation guide](docs/desktop.md).
+Desktop and standalone version: **v2.13.1**. See [Releases](https://github.com/lsjwzh/MultiCC/releases) for checksums, signing information, and older versions; [download SHA256SUMS.txt](https://github.com/lsjwzh/MultiCC/releases/download/v2.13.1/SHA256SUMS.txt). [Desktop installation guide](docs/desktop.md).
 
 ## Choose how to work
 
@@ -177,7 +177,7 @@ The picker shows installed engines and saved sessions, with installation actions
 
 ## The Air console
 
-The screenshots below were refreshed from the v2.13.0 source on 2026-10-31. They show that version of the web UI with isolated example data, not live task results or real account activity. The phone image is responsive web UI, not the Flutter app. See [capture details](docs/images/README.md).
+The screenshots below were refreshed from the v2.13.1 source on 2026-10-31. They show that version of the web UI with isolated example data, not live task results or real account activity. The phone image is responsive web UI, not the Flutter app. See [capture details](docs/images/README.md).
 
 `/air` is MultiCC's home screen — both `/` and the old `/manage` now redirect there. Tasks, not roles, are the unit of work: you describe what you want done, and each task retains its own identity, execution context and history. Tasks in one conversation shell share its worktree; independent task workspaces provide isolation.
 
@@ -231,12 +231,12 @@ Remote desktop control requires a desktop agent on the host and its OS permissio
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.13.0/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.13.1/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.13.0/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.13.1/install.ps1 | iex
 ```
 
 One line, no flags: the tag in the URL *is* the version. The script downloads that
@@ -261,7 +261,7 @@ curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # From a package you already downloaded
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.13.0-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.13.1-darwin-arm64.tar.gz
 
 # Server/automation installs: install without starting, or start without a browser
 curl -sSL .../install.sh | bash -s -- --no-start
