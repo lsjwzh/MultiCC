@@ -1580,15 +1580,14 @@ mountSessionCreateRoutes(app, {
   createTask: input => taskShellHost.createTask(input), getRecord: id => persistedSessions.get(id),
 });
 
-// Cross-CLI switching keeps one native state per CLI and emits a visible,
-// bounded handoff checkpoint. Provider defaults and the warm chat stream are
-// resolved lazily because their host runtimes are composed later in this file.
+// Cross-CLI switching: one native state per CLI + a visible, bounded handoff
+// checkpoint. Provider lookups/chat stream resolve lazily (built below).
 const cliSwitchRuntime = createCliSwitchRuntime({
   records: persistedSessions,
   sessionPersistence,
   supportedClis: SUPPORTED_CHAT_CLIS,
   chatSessions,
-  getProviderDefaults: () => providerDefaults,
+  getProviderDefaults: () => providerDefaults, validProviderId: (...a) => validProviderId(...a), getProviders: () => providers,
   codexDefaultReasoningLevel, synchronizeCodexSessionRoute: route => providers.synchronizeCodexSessionRoute(route),
   getHistory: loadChatHistory,
   buildHandoffCheckpoint,

@@ -77,6 +77,9 @@ ${['auth-client.js', 'i18n-catalog.js', 'i18n.js', 'shared/dom-helpers.js', 'sha
 const inDialog = selector => `.air-config-dialog[open] ${selector}`;
 const openDraft = (page, configuration = { cli: 'claude-exp', provider: 'p-main', model: 'claude-opus' }, extra = {}) =>
   page.evaluate(`window.__saved=[];window.MultiCCRunConfig.open(${JSON.stringify({ configuration, ...extra })}, ['claude-exp','codex-exp'], value => { window.__saved.push(value) })`);
+// 已有会话（带 sessionId）的对话框：保存走 switch-cli + PATCH，界面上的选择不再回传 onSaved。
+const openSession = (page, configuration) =>
+  page.evaluate(`window.__saved=[];window.MultiCCRunConfig.open(${JSON.stringify({ sessionId: 's1', configuration })}, ['claude', 'claude-exp', 'codex-exp'], value => { window.__saved.push(value) })`);
 const text = (page, selector) => page.evaluate(`(document.querySelector(${JSON.stringify(inDialog(selector))})||{}).textContent||''`);
 const saveShot = (file, target) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.copyFileSync(file, target); return target; };
 
@@ -208,6 +211,95 @@ test('draft defaults prefill the global route (follows global) and follow family
     const saved = await page.evaluate('window.__saved');
     assert.deepEqual(saved[0].subagent, { providerId: 'p-cheap', model: 'claude-haiku' });
     assert.equal(saved[0].subagentInherited, true);
+  });
+});
+
+test('existing session: switching to another sub-agent family seeds the new family default and saves it as inherited', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const routes = buildRoutes();
+  // 这一族默认指向一条只有它才有的线路（p-ds · opus），与主线路区分开。
+  const claudeLines = [
+    ...claudeProviders,
+    { id: 'p-ds', name: 'DeepSeek 线路', appType: 'claude', apiFormat: 'anthropic',
+      compatibleClis: ['claude', 'claude-exp'], model: 'opus', modelOptions: ['opus', 'sonnet'] },
+  ];
+  const familyDefaults = {
+    claude: 'p-main', codex: 'x-main',
+    subagent: { claude: { providerId: 'p-ds', model: 'opus' }, codex: null },
+  };
+  routes['/api/providers'] = ({ url }) => {
+    const cli = url.searchParams.get('cli') || '';
+    if (cli === 'claude' || cli === 'claude-exp') return json({ available: true, providers: claudeLines, defaults: familyDefaults });
+    if (cli === 'codex' || cli === 'codex-exp') return json({ available: true, providers: codexProviders, defaults: familyDefaults });
+    return json({ available: true, providers: [], defaults: {} });
+  };
+  const calls = [];
+  routes['POST /api/sessions/s1/switch-cli'] = ({ body }) => {
+    calls.push({ kind: 'switch', body: JSON.parse(body || '{}') });
+    return json({ ok: true });
+  };
+  routes['PATCH /api/sessions/s1'] = ({ body }) => {
+    calls.push({ kind: 'patch', body: JSON.parse(body || '{}') });
+    return json({ ok: true });
+  };
+  await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-subagent-cdp'), locale: 'zh-CN' }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/run-config-host.html');
+    assert.ok(await page.waitFor('window.MultiCCRunConfig && document.readyState==="complete"'));
+    // codex 家族没有默认、会话存的也是 null：打开时不换 CLI 就老老实实显示随主线路。
+    await openSession(page, { cli: 'codex-exp', provider: 'x-main', model: 'gpt-5.6', subagent: null, cliAccounts: {} });
+    assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}) !== null`));
+    assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value`), '');
+    assert.equal((await text(page, '.rc-sub-state')).trim(), '跟随主线路');
+
+    // 换到 claude 家族：没动过子 agent，按 claude 的全局默认预填并标成跟随全局。
+    await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.air-cli-option[data-cli="claude-exp"]'))}).click()`);
+    assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value === 'p-ds'`), '已有会话换家族也要预填新家族默认');
+    assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-model'))}).value`), 'opus');
+    assert.equal((await text(page, '.rc-sub-state')).trim(), '跟随全局默认');
+
+    await page.evaluate(`document.querySelector('.air-config-dialog[open] form').requestSubmit()`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open]') === null`));
+    const patch = calls.find(call => call.kind === 'patch');
+    assert.ok(patch, '保存要 PATCH 会话');
+    assert.deepEqual(patch.body.subagent, { providerId: 'p-ds', model: 'opus' });
+    assert.equal(patch.body.subagentInherited, true, '跟随全局默认的线路要带 inherited，别被降成单独设置');
+  });
+});
+
+test('existing session: an own sub-agent route on the same family survives a CLI switch', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const routes = buildRoutes();
+  const calls = [];
+  routes['POST /api/sessions/s1/switch-cli'] = ({ body }) => {
+    calls.push({ kind: 'switch', body: JSON.parse(body || '{}') });
+    return json({ ok: true });
+  };
+  routes['PATCH /api/sessions/s1'] = ({ body }) => {
+    calls.push({ kind: 'patch', body: JSON.parse(body || '{}') });
+    return json({ ok: true });
+  };
+  await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-subagent-cdp'), locale: 'zh-CN' }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/run-config-host.html');
+    assert.ok(await page.waitFor('window.MultiCCRunConfig && document.readyState==="complete"'));
+    await openSession(page, { cli: 'claude', provider: 'p-main', model: 'claude-opus',
+      subagent: { providerId: 'p-main', model: 'claude-opus' }, cliAccounts: {} });
+    assert.ok(await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}) !== null`));
+    assert.equal((await text(page, '.rc-sub-state')).trim(), '已单独设置');
+
+    // claude → claude-exp 是同一族：单独设置的线路不能被家族默认盖掉。
+    await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.air-cli-option[data-cli="claude-exp"]'))}).click()`);
+    await page.waitFor(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-provider'))}).value === 'p-main'`);
+    assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(inDialog('.rc-sub-model'))}).value`), 'claude-opus');
+    assert.equal((await text(page, '.rc-sub-state')).trim(), '已单独设置');
+
+    await page.evaluate(`document.querySelector('.air-config-dialog[open] form').requestSubmit()`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open]') === null`));
+    const patch = calls.find(call => call.kind === 'patch');
+    assert.ok(patch, '保存要 PATCH 会话');
+    assert.deepEqual(patch.body.subagent, { providerId: 'p-main', model: 'claude-opus' });
+    assert.equal(patch.body.subagentInherited, undefined, '自己设的线路不带 inherited');
   });
 });
 

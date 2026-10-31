@@ -55,7 +55,9 @@ function createHarness(overrides = {}) {
       mutate(source, fn) { effects.push(`mutate:${source}`); return fn(records); },
     },
     supportedClis: SUPPORTED_CHAT_CLIS,
-    getProviderDefaults: () => ({ codex: 'codex-default', claude: 'claude-default' }),
+    getProviderDefaults: overrides.getProviderDefaults || (() => ({ codex: 'codex-default', claude: 'claude-default' })),
+    validProviderId: overrides.validProviderId,
+    getProviders: overrides.getProviders,
     codexDefaultReasoningLevel: () => 'xhigh',
     getHistory: overrides.getHistory || (id => [{ role: 'user', content: `history:${id}`, ts: 90 }]),
     synchronizeCodexSessionRoute: route => effects.push(`sync:${route.nativeSessionId}`),
@@ -378,6 +380,82 @@ test('successful switch preserves side-effect order, checkpoint and target state
     'chat:cli_switched',
     'workspace:session_cli_changed',
   ]);
+});
+
+// Regression (2026-10-31 user report): a task created on codex-exp (no Codex
+// sub-agent default, so its route was null) and later moved to claude-exp kept
+// following the main line although the Claude family default (DeepSeek Flash ·
+// opus) was set. A lane switch now applies the destination family default the
+// way session creation does; a route the user picked is never replaced.
+function subagentDefaultsHarness(session, subagentDefaults, extra = {}) {
+  return createHarness({
+    session,
+    getProviderDefaults: () => ({ codex: 'codex-default', claude: 'claude-default', subagent: subagentDefaults }),
+    validProviderId: (_cli, id) => (id === 'gone' ? { ok: false } : { ok: true, value: id || null }),
+    getProviders: () => ({ codexProviderProxyable: () => true }),
+    availability: { claude: { available: true }, 'claude-exp': { available: true }, codex: { available: true }, 'codex-exp': { available: true } },
+    ...extra,
+  });
+}
+
+function codexTask(subagent = null) {
+  return {
+    id: 's1', dirId: 'd1', kind: 'chat', cli: 'codex-exp', label: 'Codex task',
+    branch: 'multicc/s1', cliSessionId: 'codex-native', model: null, effort: 'xhigh',
+    provider: 'codex-provider', subagent, agent: null,
+  };
+}
+
+test('a lane switch puts a never-set sub-agent route on the destination family default', async () => {
+  const h = subagentDefaultsHarness(codexTask(), { claude: { providerId: 'p-ds', model: 'opus' }, codex: null });
+  const res = await h.invoke({ body: { cli: 'claude-exp' } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(h.session.cli, 'claude-exp');
+  assert.deepEqual(h.session.subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
+  assert.deepEqual(h.session.cliStates['claude-exp'].subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
+  assert.deepEqual(res.body.subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
+  // Back to Codex: that family has no default, so the inherited Claude route
+  // must not leak into it, and the Codex lane keeps following the main line.
+  await h.invoke({ body: { cli: 'codex-exp' } });
+  assert.equal(h.session.subagent, null);
+});
+
+test('a lane switch keeps a route the user picked and drops a stale or invalid default', async () => {
+  const own = { providerId: 'p-own', model: 'sonnet' };
+  const kept = subagentDefaultsHarness({ ...codexTask(), cli: 'claude', subagent: own, provider: 'claude-provider' },
+    { claude: { providerId: 'p-ds', model: 'opus' } });
+  kept.session.cliStates['claude-exp'] = { cliSessionId: null, provider: 'claude-provider', subagent: own, updatedAt: 1 };
+  await kept.invoke({ body: { cli: 'claude-exp' } });
+  assert.deepEqual(kept.session.subagent, own);
+
+  // A remembered lane that only carried an inherited copy is refreshed to the
+  // current default; one whose default no longer validates falls back to null.
+  const stale = subagentDefaultsHarness(codexTask(), { claude: { providerId: 'p-new', model: 'haiku' } });
+  stale.session.cliStates['claude-exp'] = { cliSessionId: null, provider: 'claude-provider',
+    subagent: { providerId: 'p-old', model: 'opus', inherited: true }, updatedAt: 1 };
+  await stale.invoke({ body: { cli: 'claude-exp' } });
+  assert.deepEqual(stale.session.subagent, { providerId: 'p-new', model: 'haiku', inherited: true });
+
+  const invalid = subagentDefaultsHarness(codexTask(), { claude: { providerId: 'gone', model: 'opus' } });
+  await invalid.invoke({ body: { cli: 'claude-exp' } });
+  assert.equal(invalid.session.subagent, null);
+
+  // Ephemeral helper chats are not tasks: creation leaves them out, so does the switch.
+  const helper = subagentDefaultsHarness({ ...codexTask(), ephemeral: true }, { claude: { providerId: 'p-ds', model: 'opus' } });
+  await helper.invoke({ body: { cli: 'claude-exp' } });
+  assert.equal(helper.session.subagent, null);
+});
+
+test('a deferred lane switch stages the destination family default for the next turn', async () => {
+  const h = subagentDefaultsHarness(codexTask(), { claude: { providerId: 'p-ds', model: 'opus' } });
+  h.chat.isStreaming = true;
+  const res = await h.invoke({ body: { cli: 'claude-exp' } });
+  assert.equal(res.body.deferred, true);
+  assert.deepEqual(h.session.pendingConfiguration.profile.subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
+  h.chat.isStreaming = false;
+  assert.equal(h.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(h.session.cli, 'claude-exp');
+  assert.deepEqual(h.session.subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
 });
 
 test('pending handoff is consumed exactly once and emits the legacy acknowledgement', () => {

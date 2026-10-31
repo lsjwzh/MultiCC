@@ -1,6 +1,7 @@
 'use strict';
 
 const { desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
+const { familyDefaultSubagent } = require('../session/subagent');
 const { isChatStateBusy } = require('../session/runtime-busy');
 const { selectionKey } = require('../chat/auto-provider-selection-key');
 const { getChildProxyEnv } = require('../network/outbound');
@@ -799,6 +800,27 @@ function createCliSwitchRuntime(options) {
     return job;
   }
 
+  // A lane whose sub-task route was never set individually (none, or one the
+  // family default put there) follows the destination family's default, the
+  // same rule session creation applies: a task created on Codex and moved to
+  // Claude must not stay on the main line while the Claude default is set.
+  // A route the user picked is never replaced. Remembered lanes are refreshed
+  // too — the sync only rewrites the active lane, so their inherited copy may
+  // be stale.
+  function followSubagentDefault(target) {
+    if (typeof options.validProviderId !== 'function' || typeof options.getProviders !== 'function') return;
+    if (target.ephemeral === true || target.loginFlow) return;
+    if (target.subagent && target.subagent.inherited !== true) return;
+    const next = familyDefaultSubagent({
+      cli: target.cli, provider: target.provider || null,
+      providerDefaults: options.getProviderDefaults() || {},
+      validProviderId: options.validProviderId, providers: options.getProviders(),
+    });
+    target.subagent = next;
+    const lane = target.cliStates && target.cliStates[target.cli];
+    if (lane) lane.subagent = next ? { ...next } : null;
+  }
+
   function cliSwitchDefaults(cli) {
     const providerDefaults = options.getProviderDefaults() || {};
     const providerPool = cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli;
@@ -879,6 +901,7 @@ function createCliSwitchRuntime(options) {
       nativeSessionExists: options.nativeSessionExists || nativeSessionExists,
       now,
     });
+    followSubagentDefault(session);
     if (result.staleNativeSessionId) {
       console.warn(`[multicc/cli-switch] [${session.id}] ${targetCli} native session ${result.staleNativeSessionId} no longer exists; switching without reuse`);
     }
@@ -986,6 +1009,7 @@ function createCliSwitchRuntime(options) {
       Object.assign(draft, desiredSession(session));
     } else if ((session.cli || 'claude') !== targetCli || fresh) {
       options.activateCliState(draft, targetCli, { fresh, defaults: cliSwitchDefaults(targetCli) });
+      followSubagentDefault(draft);
     }
     sessionPersistence.mutate('http.stage-cli-switch', () => stageConfiguration(session, draft, { fresh }));
     const event = { type: 'session_configuration_pending', sessionId: session.id,

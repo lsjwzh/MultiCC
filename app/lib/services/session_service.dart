@@ -27,6 +27,10 @@ Map<String, dynamic> sessionAIConfigPatchBody({
     body['subagent'] = null;
   } else if (subagent != null && !subagent.isEmpty) {
     body['subagent'] = subagent.toJson();
+    // 面板判定「跟随全局默认、用户没动」才会带 inherited：明说出来，切车道时
+    // switch-cli 刚套上的家族默认原样存回去仍算继承（与 web 的 subagentInherited
+    // 同一个字段），不会被降成单独设置。
+    if (subagent.inherited) body['subagentInherited'] = true;
   }
   return body;
 }

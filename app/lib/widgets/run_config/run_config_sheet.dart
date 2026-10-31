@@ -150,6 +150,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   bool _defaultsLoaded = false;
   bool _defaultsApplied = false;
 
+  /// 换车道时默认还没取回来：等 [_loadSubagentDefaults] 落地后按当时那条车道
+  /// 补种（只对「用户没碰过子 agent」的换道有效，见 [_selectCli]）。
+  bool _pendingLaneSeed = false;
+
   /// 打开面板时那份「来自全局默认」的线路（session.subagent.inherited，或草稿
   /// 自动预填的家族默认）。用户没动过选择器、且值仍是这一条时，徽标显示
   /// 「跟随全局默认」；清除全局默认后置空，把选择器重置回随主。
@@ -323,6 +327,15 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
         _subagentDefaults = defaults;
         _defaultsLoaded = true;
       });
+      // 换车道时默认还没取回来：现在按当前这条车道补种（和当场种上一样）。
+      if (_pendingLaneSeed) {
+        _pendingLaneSeed = false;
+        if (!_subagentTouched) {
+          _seedFamilyDefault(_cli, _provider);
+          // 已经按当前车道种过（或确认没有默认），草稿的首帧预填不再改它。
+          _defaultsApplied = true;
+        }
+      }
       _maybePrefillSubagent();
     } on SubagentSyncUnavailable {
       // 原生模块是旧版本：默认值读不到，同步也做不了。面板照常打开，只把开关
@@ -330,11 +343,17 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       if (mounted) {
         setState(() {
           _defaultsLoaded = true;
+          _pendingLaneSeed = false;
           _syncUnavailable = true;
         });
       }
     } catch (_) {
-      if (mounted) setState(() => _defaultsLoaded = true);
+      if (mounted) {
+        setState(() {
+          _defaultsLoaded = true;
+          _pendingLaneSeed = false;
+        });
+      }
     }
   }
 
@@ -344,9 +363,43 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     return _subagentDefaults[family];
   }
 
+  /// 家族默认落到子 agent 选择器上。草稿首帧预填和换车道的补种都走这一条：
+  /// 模型非空、线路在这条车道的池子里才种得上。种不上返回 false，选择器保持
+  /// 调用方给的状态（由调用方决定要不要清回随主 —— 摆一个选不中的值只会让下拉
+  /// 回落成「随主」却把值偷偷存下去）。
+  bool _seedFamilyDefault(SessionCli cli, String mainProviderId) {
+    final def = _defaultForCli(cli);
+    final model = def?.model ?? '';
+    final providerId = def?.providerId ?? '';
+    final pool = _poolFor(cli.name);
+    if (model.isEmpty ||
+        (providerId.isNotEmpty &&
+            !pool.any((p) => p['id']?.toString() == providerId))) {
+      return false;
+    }
+    final choices = runModelChoices(
+      cli,
+      providerId.isEmpty ? mainProviderId : providerId,
+      pool,
+    ).where((m) => m.isNotEmpty).toList();
+    setState(() {
+      _subProvider = providerId;
+      _subModel = model;
+      _customSubModel = !choices.contains(model);
+      _subCustomCtrl.text = _customSubModel ? model : '';
+      // 种的是家族默认：用户没动过就还是「跟随全局默认」，建任务时整个不发
+      // subagent，让服务端按它当时的默认套用并标 inherited。
+      _inheritedSeed = SessionSubagent(
+        providerId: providerId.isEmpty ? mainProviderId : providerId,
+        model: model,
+        inherited: true,
+      );
+    });
+    return true;
+  }
+
   /// 新任务草稿：用户还没碰过子 agent、也没有传进来的子任务，就把家族默认选上
-  /// （和 web 草稿预填同一条规则）。线路在池子里不存在就不预填 —— 摆一个选不中
-  /// 的值只会让下拉回落成「随主」却把值偷偷存下去。
+  /// （和 web 草稿预填同一条规则）。
   void _maybePrefillSubagent() {
     if (!widget.draft || _subagentTouched || _defaultsApplied) return;
     _defaultsApplied = true;
@@ -358,43 +411,14 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     if (carried && !widget.subInherited) return;
     final target = _currentSubagentTarget();
     if (target == null) return;
-    final def = _defaultForCli(target.cli);
-    final model = def?.model ?? '';
-    final providerId = def?.providerId ?? '';
-    final pool = _poolFor(target.cli.name);
-    final usable =
-        model.isNotEmpty &&
-        (providerId.isEmpty ||
-            pool.any((p) => p['id']?.toString() == providerId));
-    if (!usable) {
-      if (carried) {
-        setState(() {
-          _subProvider = '';
-          _subModel = '';
-          _customSubModel = false;
-          _subCustomCtrl.text = '';
-          _inheritedSeed = null;
-        });
-      }
-      return;
-    }
-    final choices = runModelChoices(
-      target.cli,
-      providerId.isEmpty ? target.mainProviderId : providerId,
-      pool,
-    ).where((m) => m.isNotEmpty).toList();
+    if (_seedFamilyDefault(target.cli, target.mainProviderId)) return;
+    if (!carried) return;
     setState(() {
-      _subProvider = providerId;
-      _subModel = model;
-      _customSubModel = !choices.contains(model);
-      _subCustomCtrl.text = _customSubModel ? model : '';
-      // 预填的是家族默认：用户没动过就还是「跟随全局默认」，建任务时整个不发
-      // subagent，让服务端按它当时的默认套用并标 inherited。
-      _inheritedSeed = SessionSubagent(
-        providerId: providerId.isEmpty ? target.mainProviderId : providerId,
-        model: model,
-        inherited: true,
-      );
+      _subProvider = '';
+      _subModel = '';
+      _customSubModel = false;
+      _subCustomCtrl.text = '';
+      _inheritedSeed = null;
     });
   }
 
@@ -892,8 +916,30 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
 
   // ── 固定一条：换 CLI / 线路 ────────────────────────────────────────────
 
+  /// 换车道时子 agent 那条路由留不留：用户没碰过、是自己单独设的一套、而且
+  /// 目标车道还在同一个家族里（claude ↔ claude-exp 这些车道的线路池是共用的）
+  /// 才留着。随主 / 跟着全局默认 / 跨家族都算「换道后不再适用」，换成目标车道
+  /// 的家族默认，没有就回随主。
+  bool _keepsOwnSubagentAcross(SessionCli next) {
+    if (_subagentTouched) return false;
+    final model = _customSubModel ? _subCustomCtrl.text.trim() : _subModel;
+    if (model.isEmpty) return false;
+    final current = buildSubagent(
+      subProviderId: _subProvider,
+      subModel: model,
+      mainProvider: _provider,
+    );
+    if (_followsGlobalRoute(current)) return false;
+    return subagentFamilyOf(_cli.name) == subagentFamilyOf(next.name);
+  }
+
   Future<void> _selectCli(SessionCli cli) async {
     if (cli == _cli) return;
+    final keepOwnSubagent = _keepsOwnSubagentAcross(cli);
+    // 用户没碰过子 agent、又没有「同一家族里还成立」的单独设置：目标车道该套用
+    // 它自己家族的默认（没有就是随主），不然会话面板保存时会把服务端刚按
+    // switch-cli 套上的默认当成显式 null 抹掉。
+    final seedSubagent = !_subagentTouched && !keepOwnSubagent;
     setState(() {
       _cli = cli;
       _provider = '';
@@ -901,12 +947,14 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       _effort = cli.defaultEffort;
       _customModel = false;
       _customCtrl.text = '';
-      _subProvider = '';
-      _subModel = '';
-      _customSubModel = false;
-      _subCustomCtrl.text = '';
-      // 换了主车道，旧车道那条「继承来的」路由不再适用。
-      _inheritedSeed = null;
+      if (!keepOwnSubagent) {
+        _subProvider = '';
+        _subModel = '';
+        _customSubModel = false;
+        _subCustomCtrl.text = '';
+        // 换了主车道，旧车道那条「继承来的」路由不再适用。
+        _inheritedSeed = null;
+      }
     });
     _cancelSync();
     if (!cli.supportsProvider) {
@@ -930,6 +978,13 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       _provider = _seedProviderFor(cli, providers);
       _model = _defaultModelFor(_provider);
     });
+    if (!seedSubagent) return;
+    if (_defaultsLoaded) {
+      _seedFamilyDefault(cli, _provider);
+    } else {
+      // 默认还没取回来：记下来，等 _loadSubagentDefaults 落地后按当前车道补种。
+      _pendingLaneSeed = true;
+    }
   }
 
   Future<void> _warmOwnCatalog(SessionCli cli) async {
