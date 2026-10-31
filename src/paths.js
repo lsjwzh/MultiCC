@@ -54,6 +54,8 @@ function createPaths({ dataDir } = {}) {
     serviceRoutesFile: path.join(root, 'service-routes.json'),
     fcmDevicesFile: path.join(root, 'fcm-devices.json'),
     barkDevicesFile: path.join(root, 'bark-devices.json'),
+    // 推送设置「插件渠道」一栏的订阅（插件 id + 接收人编号 + 收哪几类）。
+    channelSubscriptionsFile: path.join(root, 'channel-subscriptions.json'),
     pkgRoot: PKG_ROOT,
     sessionsFile: path.join(root, 'sessions.json'),
     directoriesFile: path.join(root, 'directories.json'),

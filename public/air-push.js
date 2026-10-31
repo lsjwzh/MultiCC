@@ -1,7 +1,8 @@
 'use strict';
 
 // Air 原生「推送通知」面板 —— 从旧 manage 页的推送那一格搬过来（原生 DOM，不嵌旧 manage 页）。
-// 三块：① 本机浏览器的订阅状态 ② 服务端投递健康度 ③ 备用通道（Bark / Webhook）。
+// 三块：① 本机浏览器的订阅状态 ② 服务端投递健康度 ③ 备用通道（Bark / Webhook）；装了通知
+// 渠道插件（微信……）时最后多一栏「插件渠道」（plugin-channels.js，没装就不出现）。
 // 后端契约：GET /api/push/health、GET|POST /api/settings/notify（src/routes/host-read.js 的
 // createPushHealthHandler / createNotifySettingsHandler）、POST /api/push/test|test-bark|
 // test-webhook（src/push/runtime.js）。
@@ -225,7 +226,8 @@
 
   function load() {
     paintClient(); // 这一块是本地读，不发请求
-    return Promise.all([loadHealth(), loadNotify()]);
+    const channels = root.MultiCCPluginChannels ? root.MultiCCPluginChannels.renderPush(el('air-plugin-channels')) : null;
+    return Promise.all([loadHealth(), loadNotify(), channels]);
   }
 
   // ── 订阅开关 ───────────────────────────────────────────────────────────
@@ -420,7 +422,8 @@
   function build() {
     const page = make('div', null, 'air-push-page');
     const phones = make('div'); phones.id = 'air-bark-phones';
-    page.append(style(), phones, clientCard(), healthCard(), backupCard());
+    const channels = make('div'); channels.id = 'air-plugin-channels'; channels.hidden = true;
+    page.append(style(), phones, clientCard(), healthCard(), backupCard(), channels);
     return page;
   }
 

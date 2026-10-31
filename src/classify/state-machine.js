@@ -404,11 +404,17 @@ function createClassifyStateMachine(rawDeps) {
     // The push carries the LETTER, not just the coarse type: B and W both push
     // `waiting`, so without it the lock screen would announce B with W's
     // 「等待操作」 and tell the user to act on work nobody is waiting on them for.
+    // Error pushes carry the API-error category so a plugin channel can leave out
+    // turns a service restart cut short (cancel_shutdown, design 10.5); the
+    // existing channels ignore it.
+    const pushOptions = { classifyState: cls };
+    const errorCategory = error && cs?._lastApiErrorDecision?.category;
+    if (errorCategory) pushOptions.errorCategory = errorCategory;
     if (isTerminal) {
-      if (!cancel) triggerPush(sessionId, pushType, waitMsg, { classifyState: cls });
+      if (!cancel) triggerPush(sessionId, pushType, waitMsg, pushOptions);
       terminalBroadcast(sessionId, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
     } else {
-      if (!cancel) triggerPush(sessionId, pushType, `[Chat] ${waitMsg}`, { classifyState: cls });
+      if (!cancel) triggerPush(sessionId, pushType, `[Chat] ${waitMsg}`, pushOptions);
       chatBroadcast(sessionName, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
     }
     const dirId2 = persistedSessions.get(sessionName)?.dirId;

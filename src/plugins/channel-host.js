@@ -11,6 +11,9 @@
 // 和常驻进程之间走它的标准输入输出，每行一个 JSON：
 //   MultiCC → 插件  {"id":7,"type":"run","command":"health","input":{…}}
 //                   {"id":8,"type":"targets"}        {"id":9,"type":"status"}
+//                   {"id":10,"type":"deliver","target":"…","source":"push:…","sessionId":"…",
+//                    "taskName":"…","project":"…","category":"error","summary":"…",
+//                    "occurredAt":…,"dedupKey":"…"}   只入队，插件回投递编号（方案 10.1）
 //   插件 → MultiCC  {"id":7,"ok":true,"data":{…}} 或 {"id":7,"ok":false,"error":"…"}
 //                   {"event":"hello","protocol":1,"version":"0.1.0"}      就绪
 //                   {"event":"alert","key":"agent-permissions","level":"warn"|"critical",
@@ -34,6 +37,7 @@ const HEALTHY_AFTER_MS = 60_000;
 const DOWN_ALERT_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 const TARGETS_TIMEOUT_MS = 3_000;
+const DELIVER_TIMEOUT_MS = 5_000;
 const STOP_GRACE_MS = 3_000;
 const MAX_LINE = 4 * 1024 * 1024;
 const ALERT_KEY = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -159,6 +163,7 @@ function createChannelHost(deps) {
       rec.downSince = null;
       if (rec.alerts.has('plugin-down')) raise(rec, { key: 'plugin-down', resolved: true });
       logger.info('plugin_resident_ready', { id: rec.id, pid: rec.child && rec.child.pid, version: rec.reportedVersion });
+      if (rec.spec.channel) refreshTargets(rec);
       return;
     }
     if (message.event === 'alert') raise(rec, message);
@@ -258,6 +263,7 @@ function createChannelHost(deps) {
       id: spec.id, spec, fingerprint: fingerprint(spec), child: null, ready: false, stopping: false,
       startedAt: null, readyAt: null, reportedVersion: null, failures: 0, lastExit: null, downSince: null,
       pending: new Map(), alerts: new Map(), alertTimes: [], stderr: [], restartTimer: null, downTimer: null,
+      knownTargets: null,
     };
     records.set(spec.id, rec);
     launch(rec);
@@ -306,6 +312,7 @@ function createChannelHost(deps) {
       records.delete(id);
     }
     for (const [id, spec] of wanted) if (!records.has(id)) startRecord(spec);
+    for (const rec of records.values()) if (rec.ready && rec.spec.channel) refreshTargets(rec);
   }
 
   function request(rec, type, body, timeoutMs = requestTimeoutMs) {
@@ -348,6 +355,8 @@ function createChannelHost(deps) {
       nameEn: rec.spec.nameEn || null,
       version: rec.reportedVersion || rec.spec.version || null,
       channel: rec.spec.channel || null,
+      // 面板地址（推送设置、钩子、横幅里的「去插件面板」链接用）。
+      ui: rec.spec.ui ? `/plugins/${encodeURIComponent(rec.id)}/${String(rec.spec.ui).replace(/^\/+/, '')}` : null,
       running: Boolean(rec.child),
       ready: rec.ready,
       pid: rec.child ? rec.child.pid : null,
@@ -365,10 +374,45 @@ function createChannelHost(deps) {
     for (const [id, { spec, reason }] of skipped) {
       plugins.push({
         id, name: spec.name || id, nameEn: spec.nameEn || null, version: spec.version || null,
-        channel: spec.channel || null, running: false, ready: false, unsupported: reason, alerts: [],
+        channel: spec.channel || null, ui: null, running: false, ready: false, unsupported: reason, alerts: [],
       });
     }
     return plugins.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  function briefTargets(list) {
+    return (Array.isArray(list) ? list : []).filter(target => target && typeof target.id === 'string').map(target => ({
+      id: text(target.id, 64), name: text(target.name, 80) || target.id, status: text(target.status, 32) || null,
+    }));
+  }
+
+  // 接收人簿缓存（就绪时、每次重新扫描、每次有人列接收人时刷新）：保存推送订阅和钩子时
+  // 要同步核对接收人还在不在，不能为此等插件。
+  async function refreshTargets(rec) {
+    const reply = await request(rec, 'targets', {}, TARGETS_TIMEOUT_MS);
+    if (reply.ok) rec.knownTargets = briefTargets(reply.data && reply.data.targets);
+    return reply;
+  }
+
+  // 保存时核对（方案 10.4）：插件声明了渠道、在运行、接收人在它的接收人簿里。
+  function checkTarget(id, target) {
+    const rec = records.get(id);
+    if (!rec) {
+      return skipped.has(id) && skipped.get(id).spec.channel ? 'channel plugin not running' : 'unknown channel plugin';
+    }
+    if (!rec.spec.channel) return 'unknown channel plugin';
+    if (!rec.ready || !rec.knownTargets) return 'channel plugin not running';
+    return rec.knownTargets.some(item => item.id === target) ? null : 'unknown channel target';
+  }
+
+  // 投递一件事：插件只回「已入队」和投递编号，不等发送结果（方案 10.1）。
+  async function deliver(id, payload) {
+    const rec = records.get(id);
+    if (!rec || !rec.spec.channel) return { ok: false, error: 'unknown channel plugin' };
+    const reply = await request(rec, 'deliver', { ...payload }, DELIVER_TIMEOUT_MS);
+    if (!reply.ok) return { ok: false, error: reply.error, down: Boolean(reply.down || reply.exited) };
+    const data = reply.data || {};
+    return { ok: true, receipt: data, deliveryId: data.deliveryId ?? null };
   }
 
   // 各渠道插件的接收人（推送设置、钩子编辑器的下拉框）；没就绪的插件带 error，不阻塞别的插件。
@@ -377,15 +421,10 @@ function createChannelHost(deps) {
     return Promise.all(channels.map(async item => {
       const base = { plugin: item.id, name: item.name, label: item.channel.label, labelEn: item.channel.labelEn, ready: item.ready };
       if (!item.ready) return { ...base, targets: [], error: item.unsupported ? `本机不支持（${item.unsupported}）` : '插件没有运行' };
-      const reply = await request(records.get(item.id), 'targets', {}, TARGETS_TIMEOUT_MS);
+      const rec = records.get(item.id);
+      const reply = await refreshTargets(rec);
       if (!reply.ok) return { ...base, targets: [], error: reply.error };
-      const list = Array.isArray(reply.data && reply.data.targets) ? reply.data.targets : [];
-      return {
-        ...base,
-        targets: list.filter(target => target && typeof target.id === 'string').map(target => ({
-          id: text(target.id, 64), name: text(target.name, 80) || target.id, status: text(target.status, 32) || null,
-        })),
-      };
+      return { ...base, targets: rec.knownTargets || [] };
     }));
   }
 
@@ -404,7 +443,7 @@ function createChannelHost(deps) {
     records.clear();
   }
 
-  return { start, stop, reconcile, run, isResident, status, targets };
+  return { start, stop, reconcile, run, isResident, status, targets, deliver, checkTarget };
 }
 
 module.exports = { PROTOCOL, BACKOFF_MS, createChannelHost, normalizeChannel, unsupportedReason };

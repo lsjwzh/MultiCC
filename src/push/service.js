@@ -16,6 +16,7 @@ const { atomicWriteJson } = require('../runtime-security');
 const { createBusinessPushService } = require('./business');
 const { createFcmDevices } = require('./fcm-devices');
 const { createBarkDevices } = require('./bark-devices');
+const { createChannelSubscriptions } = require('./channel-subscriptions');
 const http = require('http');
 const https = require('https');
 const webpush = require('web-push');
@@ -166,6 +167,10 @@ async function sendBarkNotification(title, body, url) {
   }
 }
 
+// Plugin channels (WeChat …): which recipient gets which categories. The
+// deliveries themselves are queued inside each plugin, never here.
+const channelSubscriptions = createChannelSubscriptions({ file: PUSH_PATHS.channelSubscriptionsFile, logger: console });
+
 // Generic webhook notification
 function sendWebhookNotification(payload) {
   if (!cfg.WEBHOOK_URL) return;
@@ -204,6 +209,7 @@ module.exports = {
   barkHealth,
   barkDevices,
   fcmDevices,
+  channelSubscriptions,
   hasBarkDevices,
   webhookHealth,
   businessPush,

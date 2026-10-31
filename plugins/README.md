@@ -105,6 +105,10 @@ plugins/<id>/
 ```
 MultiCC → 插件  {"id":7,"type":"run","command":"health","input":{…}}
                 {"id":8,"type":"targets"}               渠道插件：接收人列表
+                {"id":9,"type":"deliver","target":"…","source":"push:<订阅>"|"hook:<规则>",
+                 "sessionId":"…","taskName":"…","project":"…","category":"error",
+                 "summary":"…","occurredAt":…,"dedupKey":"<sessionId>:<category>"|null}
+                                                        渠道插件：投递一件事，只入队、回投递编号
 插件 → MultiCC  {"id":7,"ok":true,"data":{…}}  或  {"id":7,"ok":false,"error":"…"}
                 {"event":"hello","protocol":1,"version":"0.1.0"}     启动后就绪时发一次
                 {"event":"alert","key":"agent-permissions","level":"warn"|"critical","title":"…","body":"…"}
@@ -118,8 +122,19 @@ MultiCC → 插件  {"id":7,"type":"run","command":"health","input":{…}}
   `MULTICC_PLUGIN_PROTOCOL`（目前是 `1`）。
 - 告警交给推送的现有渠道（网页推送、FCM、Bark、Webhook）；同一个 key 恢复之前只发一次，
   每个插件每小时最多 10 条。插件停了一分钟还没回来，MultiCC 替它报一条 `plugin-down`。
-- `GET /api/channels`：常驻插件是否在运行、未恢复的告警；`GET /api/channels/targets`：
-  各渠道插件的接收人（`targets` 回 `{"targets":[{"id","name","status"}]}`）。
+- `GET /api/channels`：常驻插件是否在运行、未恢复的告警、面板地址 `ui`，渠道插件另有
+  `inUse`（有推送订阅或钩子在用它）；`GET /api/channels/targets`：各渠道插件的接收人
+  （`targets` 回 `{"targets":[{"id","name","status"}]}`，只有 `status` 为 `active` 的才真发）。
+- **投递**（`deliver`）：推送设置「插件渠道」一栏的订阅（`src/push/channel-subscriptions.js`）
+  和钩子的「发到渠道」动作（`src/events/actions.js`）都经 `src/plugins/channel-registry.js`
+  交给插件。`category` 只有 `done`、`question`、`background`、`error`、`test` 几种；
+  `dedupKey` 是「任务 + 类别」，同一件事从订阅和钩子同时到同一个接收人时插件只留一条。
+  插件回 `{"deliveryId":…}`（或 `{"queued":false,"suppressed":true}`）就算交付成功，合并、
+  去重、限频、重试和发送记录都在插件里。服务重启打断的回合（`cancel_shutdown`）不投给渠道。
+- **发送前复核**：插件真要动手之前可以 `POST /api/channels/recheck`
+  `{"items":[{"sessionId","category"}]}`（只收本机请求），回
+  `{"items":[{"sessionId","category","active":true|false}]}`：`false` 表示问题已经解决
+  （任务不在了，或者它现在的状态已不是这一类），插件应把这条从正文里去掉，全去掉就取消。
 
 **插件 UI**（ui/index.html ↔ 通道）：同源页面，直接 `fetch('/api/plugins/<id>/run',
 {method:'POST', body: JSON.stringify({command, input})})`；登录 cookie 由浏览器

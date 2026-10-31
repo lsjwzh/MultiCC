@@ -32,6 +32,7 @@ const {
 } = require('../plugins/catalog');
 const { createPluginInstaller } = require('../plugins/installer');
 const { createChannelHost, normalizeChannel } = require('../plugins/channel-host');
+const channelRegistry = require('../plugins/channel-registry');
 const { isLocalRequest: isLocalPeer } = require('../request-locality');
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -169,6 +170,8 @@ function createPluginsRoutes(deps) {
     ...(deps.resident.overrides || {}),
   }) : null;
   if (channelHost && deps.resident.autoStart !== false) channelHost.start();
+  // 推送订阅和钩子从登记处拿宿主投递（src/plugins/channel-registry.js）；测试可以不登记。
+  if (channelHost && deps.resident.register !== false) channelRegistry.register(channelHost);
 
   function idsIn(dir) {
     try {
@@ -412,7 +415,27 @@ function createPluginsRoutes(deps) {
     // 常驻插件与通知渠道：是否在运行、未恢复的告警；各渠道的接收人（推送设置、钩子用）。
     app.get('/api/channels', (req, res) => {
       res.set('Cache-Control', 'no-store');
-      res.json({ available: Boolean(channelHost), plugins: channelHost ? channelHost.status() : [] });
+      // inUse：有推送订阅或钩子指望它。插件停了而 inUse 为真，Air 要出横幅。
+      const usage = channelRegistry.usage();
+      const plugins = (channelHost ? channelHost.status() : []).map(item => {
+        if (!item.channel) return item;
+        const count = usage.filter(use => use.plugin === item.id).length;
+        return { ...item, inUse: count > 0, subscriptions: usage.filter(use => use.plugin === item.id && use.kind === 'push').length, uses: count };
+      });
+      res.json({ available: Boolean(channelHost), plugins });
+    });
+    // 插件发送前复核（方案 10.5 第 5 步）：这些任务的问题还在不在。只给本机的插件进程。
+    app.post('/api/channels/recheck', (req, res) => {
+      if (!isLocalRequest(req)) return res.status(403).json({ error: '只接受本机插件的复核请求' });
+      const items = Array.isArray(req.body && req.body.items) ? req.body.items.slice(0, 200) : [];
+      res.set('Cache-Control', 'no-store');
+      res.json({
+        items: items.filter(item => item && typeof item === 'object').map(item => {
+          const sessionId = typeof item.sessionId === 'string' ? item.sessionId.slice(0, 128) : '';
+          const category = typeof item.category === 'string' ? item.category.slice(0, 32) : '';
+          return { sessionId, category, active: channelRegistry.stillActive(sessionId, category) };
+        }),
+      });
     });
     app.get('/api/channels/targets', async (req, res) => {
       res.set('Cache-Control', 'no-store');

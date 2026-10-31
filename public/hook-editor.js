@@ -37,6 +37,7 @@
     ['notify', 'hookActNotify'],
     ['webhook', 'hookActWebhook'],
     ['inject-prompt', 'hookActInject'],
+    ['channel', 'hookActChannel'],   // 发到渠道（微信等通知渠道插件，design 10.4）
   ]);
 
   // 选择器都带 dialog.hook-dialog 前缀：Air 的全局 `input{width:100%}`、`dialog label{margin-top}`
@@ -88,6 +89,7 @@ dialog.hook-dialog #hook-chain-add{align-self:flex-start;font:inherit;padding:4p
   let session = null;   // { id, label } fixed owner when opened from a chat page
   let editing = null;   // the item being edited: { scope, sessionId, rule }
   let sessionChoices = [];
+  let channels = [];   // [{ plugin, label, labelEn, ready, error?, targets:[{id,name,status}] }]
   let dirChoices = [];
   let cliChoices = [];
   let onSaved = null;
@@ -121,6 +123,13 @@ dialog.hook-dialog #hook-chain-add{align-self:flex-start;font:inherit;padding:4p
         h('label', {}, h('span', { text: tr('hookWebhookSecret') }), h('select', { name: 'secretName' })),
         h('label', { class: 'hook-check' }, h('input', { type: 'checkbox', name: 'includeConclusion' }),
           h('span', { text: tr('hookIncludeConclusion') }))),
+      h('div', { 'data-kind': 'channel' },
+        h('label', {}, h('span', { text: tr('hookChannelPlugin') }), h('select', { name: 'channelPlugin' })),
+        h('label', {}, h('span', { text: tr('hookChannelTarget') }), h('select', { name: 'channelTarget' })),
+        h('p', { class: 'hook-error', id: 'hook-channel-problem', role: 'status' }),
+        h('label', {}, h('span', { text: tr('hookChannelMessage') }),
+          h('textarea', { name: 'channelMessage', rows: '2', maxlength: '400', placeholder: tr('hookChannelMessagePh') })),
+        h('p', { class: 'hook-note', text: tr('hookChannelHint') })),
       h('div', { 'data-kind': 'inject-prompt' },
         h('label', {}, h('span', { text: tr('hookInjectTarget') }),
           h('input', { type: 'search', name: 'targetFilter', placeholder: tr('hookSessionSearch'), autocomplete: 'off' }),
@@ -152,6 +161,8 @@ dialog.hook-dialog #hook-chain-add{align-self:flex-start;font:inherit;padding:4p
     document.body.append(dialog);
 
     form.elements.kind.onchange = syncKind;
+    form.elements.channelPlugin.onchange = () => syncChannel('');
+    form.elements.channelTarget.onchange = () => syncChannel(form.elements.channelTarget.value);
     form.elements.target.onchange = syncTarget;
     form.elements.targetFilter.oninput = () => renderFiltered(form.elements.target);
     form.elements.scopeFilter.oninput = () => renderFiltered(form.elements.scopeSession);
@@ -200,6 +211,39 @@ dialog.hook-dialog #hook-chain-add{align-self:flex-start;font:inherit;padding:4p
       steps.push({ kind: 'inject-prompt', prompt });
     }
     return steps;
+  }
+
+  function channelLabel(item) {
+    const en = typeof root.getLang === 'function' && root.getLang() === 'en';
+    return (en && item.labelEn) || item.label || item.name || item.plugin;
+  }
+
+  const targetStatus = status => (root.MultiCCPluginChannels ? root.MultiCCPluginChannels.statusText(status) : (status || ''));
+
+  // 接收人下拉：来自插件的接收人簿。规则里的接收人已经不在了（或插件没在运行），保留它的
+  // 编号当选项并标红，免得静默改成别人（保存时后端会拒绝，见 src/events/rules.js）。
+  function syncChannel(selected) {
+    const plugin = channels.find(item => item.plugin === form.elements.channelPlugin.value);
+    const targets = plugin ? plugin.targets : [];
+    const options = targets.map(target => [target.id,
+      target.status === 'active' ? target.name : `${target.name}（${targetStatus(target.status)}）`]);
+    const gone = selected && !targets.some(target => target.id === selected);
+    if (gone) options.push([selected, `${selected}（${tr(plugin && plugin.ready !== false && !plugin.error ? 'hookChannelMissing' : 'hookChannelDown')}）`]);
+    fillOptions(form.elements.channelTarget, options, selected || (options[0] || [''])[0]);
+    const current = targets.find(target => target.id === form.elements.channelTarget.value);
+    let problem = '';
+    if (!plugin || plugin.error || plugin.ready === false) problem = tr('hookChannelDown');
+    else if (!form.elements.channelTarget.value) problem = tr('hookChannelNoTargets');
+    else if (!current) problem = tr('hookChannelMissing');
+    else if (current.status !== 'active') problem = tr('hookChannelNotActive', { status: targetStatus(current.status) });
+    form.querySelector('#hook-channel-problem').textContent = problem;
+  }
+
+  async function loadChannels() {
+    try {
+      const data = await request('/api/channels/targets');
+      return Array.isArray(data && data.channels) ? data.channels : [];
+    } catch (_) { return []; }
   }
 
   function actionName(kind) {
@@ -299,6 +343,15 @@ dialog.hook-dialog #hook-chain-add{align-self:flex-start;font:inherit;padding:4p
     form.elements.url.value = action.url || '';
     form.elements.includeConclusion.checked = action.includeConclusion === true;
     form.elements.prompt.value = action.prompt || '';
+    form.elements.channelMessage.value = action.kind === 'channel' ? (action.message || '') : '';
+    // 没装渠道插件时不给选「发到渠道」；已有的渠道规则照常能编辑。
+    const channelOption = form.elements.kind.querySelector('option[value=channel]');
+    channelOption.hidden = !channels.length && action.kind !== 'channel';
+    channelOption.disabled = channelOption.hidden;
+    const plugins = channels.map(item => [item.plugin, channelLabel(item)]);
+    if (action.kind === 'channel' && action.plugin && !plugins.some(([id]) => id === action.plugin)) plugins.push([action.plugin, action.plugin]);
+    fillOptions(form.elements.channelPlugin, plugins, action.kind === 'channel' ? action.plugin : (plugins[0] || [''])[0]);
+    syncChannel(action.kind === 'channel' ? action.target : '');
     form.elements.cooldown.value = rule && rule.cooldownMs ? String(Math.round(rule.cooldownMs / 1000)) : '';
     form.elements.once.checked = Boolean(rule && rule.once);
     form.elements.enabled.checked = rule ? rule.enabled !== false : true;
@@ -346,7 +399,12 @@ dialog.hook-dialog #hook-chain-add{align-self:flex-start;font:inherit;padding:4p
     const kind = form.elements.kind.value;
     const action = { kind };
     if (kind === 'notify') action.message = form.elements.message.value.trim();
-    else if (kind === 'webhook') {
+    else if (kind === 'channel') {
+      action.plugin = form.elements.channelPlugin.value;
+      action.target = form.elements.channelTarget.value;
+      if (!action.plugin || !action.target) throw invalid(tr('hookErrChannel'));
+      action.message = form.elements.channelMessage.value.trim();
+    } else if (kind === 'webhook') {
       action.url = form.elements.url.value.trim();
       if (!action.url) throw invalid(tr('hookErrUrl'));
       if (form.elements.secretName.value) action.secretName = form.elements.secretName.value;
@@ -405,8 +463,9 @@ dialog.hook-dialog #hook-chain-add{align-self:flex-start;font:inherit;padding:4p
     editing = opts.item || null;
     onSaved = opts.onSaved || null;
     // 会话 / 工作区 / CLI 由编辑器自己取，两个入口（会话页头、触发器 tab）选项一致。
-    const [sessions, dirs, clis] = await Promise.all([
-      opts.sessions ? Promise.resolve(opts.sessions) : loadSessions(), loadDirs(), loadClis()]);
+    const [sessions, dirs, clis, channelList] = await Promise.all([
+      opts.sessions ? Promise.resolve(opts.sessions) : loadSessions(), loadDirs(), loadClis(), loadChannels()]);
+    channels = channelList;
     sessionChoices = sessions.map(entry => [entry.id, entry.label || entry.id]);
     dirChoices = dirs;
     cliChoices = clis;
@@ -452,6 +511,6 @@ dialog.hook-dialog #hook-chain-add{align-self:flex-start;font:inherit;padding:4p
   }
 
   root.MultiCCHookEditor = Object.freeze({
-    EVENT_OPTIONS, ACTION_OPTIONS, open, listForSession, removeItem, setEnabled, testItem, expandedType,
+    EVENT_OPTIONS, ACTION_OPTIONS, open, listForSession, removeItem, setEnabled, testItem, expandedType, loadChannels,
   });
 })(typeof window !== 'undefined' ? window : null);

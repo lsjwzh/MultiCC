@@ -24,6 +24,7 @@
 
   let ctx = {};
   let items = [];
+  let channels = [];   // 渠道插件的接收人（标出「发到渠道」引用了已删除的接收人）
   let tab = 'cron';
   let loading = false;
   const notice = text => { if (typeof ctx.notice === 'function') ctx.notice(text); };
@@ -95,6 +96,15 @@
         if (root.confirm(t('hookDeleteConfirm'))) act('hookDeleteFailed', () => editor().removeItem(item));
       }, 'danger'));
     article.append(head, flow, owner, actions);
+    // 发到渠道：写明发给谁；接收人已从插件里删掉、或插件没在运行，整张卡标红（design 13 节）。
+    for (const action of [rule.action, ...(rule.then || [])].filter(step => step && step.kind === 'channel')) {
+      const channel = channels.find(item => item.plugin === action.plugin);
+      const target = channel && channel.targets.find(item => item.id === action.target);
+      const problem = !channel || channel.error || channel.ready === false ? t('hookChannelDown') : (target ? '' : t('hookChannelMissing'));
+      flow.append(node('small', `（${channel ? channel.label || channel.plugin : action.plugin} → ${target ? target.name : action.target}${problem ? ` · ${problem}` : ''}）`,
+        problem ? 'hook-channel-bad' : ''));
+      if (problem) article.classList.add('hook-channel-broken');
+    }
     if (rule.action.kind === 'inject-prompt') {
       const target = rule.action.newSession ? t('hookTargetNew') : (rule.action.targetSessionId
         ? t('hookTargetSession', { id: rule.action.targetSessionId }) : t('hookInjectSource'));
@@ -141,8 +151,9 @@
     if (loading) return;
     loading = true;
     try {
-      const value = await request('/api/event-triggers');
+      const [value, channelList] = await Promise.all([request('/api/event-triggers'), editor().loadChannels()]);
       items = Array.isArray(value && value.items) ? value.items : [];
+      channels = channelList;
       render();
     } catch (error) {
       notice(t('hookLoadFailed', { msg: errorText(error) }));

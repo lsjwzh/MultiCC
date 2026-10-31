@@ -544,9 +544,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   ActionFailed/UninstallConfirm + airPluginsErr*）：插件面板的一键安装、更新、卸载、
     //   退回与失败原因，删掉「一键安装将在后续版本提供」一条，中英各净增 11 行 = +22 行，
     //   重跑生成器实测 9994/647070。
-    maxLines: 9994,
+    // +39 双语键（hookActChannel/hookChannel*/hookErrChannel + pc*）：通知渠道插件接入推送设置的
+    //   「插件渠道」一栏、钩子的「发到渠道」动作与 Air 顶部的渠道横幅（docs/notification-channel-
+    //   plugin-design.md 10.3/10.4），中英各 39 行 = +78 行，重跑生成器实测 10072/651860。
+    maxLines: 10072,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 647070,
+    maxBytes: 651860,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
