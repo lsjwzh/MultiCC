@@ -20,6 +20,7 @@ import '../services/remote_screen_region.dart';
 import '../services/remote_screen_service.dart';
 import '../services/remote_touch_controller.dart';
 import '../services/settings_service.dart';
+import '../widgets/remote_wheel_rail.dart';
 
 /// 键盘条的功能键/快捷键：[label, spec]。spec 里 `+` 分段，修饰键映射成
 /// RFB keysym，其余段按单字符或命名键解析 —— 与 Web 版 KEYS 表一致。
@@ -160,6 +161,12 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
 
   int _lastX = 0;
   int _lastY = 0;
+  /// 画面是否被摸过：[_lastX]/[_lastY] 的坐标域随 live（源图）与
+  /// fallback（[_fallbackArea] 内）不同，没摸过时用画面中心。
+  bool _hasPointer = false;
+  /// fallback 滚轮靠 HTTP：多格脉冲合并成一趟循环，避免并发请求丢格。
+  int _scrollPending = 0;
+  bool _scrollBusy = false;
   final TextEditingController _textCtrl = TextEditingController();
 
   /// 捏合缩放：InteractiveViewer 的变换只改视觉框，Listener 收到的
@@ -177,6 +184,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     onPointer: (mask, x, y) {
       final source = _svc.source;
       _inputSinceFrame = true;
+      _hasPointer = true;
       _lastX = x;
       _lastY = y;
       if (source != null) {
@@ -236,6 +244,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     _svc = widget.service ?? RemoteScreenService(settings: widget.settings);
     _modeSub = _svc.onModeChange.listen((_) {
       _touch.reset();
+      _hasPointer = false; // live↔fallback 的坐标域不同，旧坐标不能再用
       _decoder.clear();
       _frameAge = 0;
       _inputSinceFrame = false;
@@ -552,8 +561,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
           duration: const Duration(seconds: 4),
           content: Text(
             on
-                ? '触控板模式：单指只动光标 · 轻点单击 · 按住后再拖 = 拖拽 · 双指捏合缩放、同时拖动画面 · 未放大时双指上下滑 = 滚动 · 双指轻点 = 右键'
-                : '触摸模式：手指点哪、拖到哪 · 双指捏合缩放、同时拖动画面',
+                ? '触控板模式：单指只动光标 · 轻点单击 · 按住后再拖 = 拖拽 · 双指捏合缩放、同时拖动画面 · 未放大时双指上下滑 = 滚动 · 双指轻点 = 右键 · 画面旁竖条 = 滚轮'
+                : '触摸模式：手指点哪、拖到哪 · 双指捏合缩放、同时拖动画面 · 画面旁竖条 = 滚轮',
           ),
         ),
       );
@@ -574,23 +583,64 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     );
   }
 
-  void _wheelPulse(int mask) {
+  /// 滚轮一格（[up] 为真向上滚）。live 走 RFB 指针位：Agent 只认
+  /// 0x08/0x10 相对上一帧的上升沿，所以每格后面必须补一个 mask=0 的
+  /// 抬起，否则同向连点第二下会被静默吞掉（与 RemoteTouchController 一致）。
+  /// fallback 走 HTTP scroll，多格合并成一趟串行循环。
+  void _wheelNotch(bool up) {
     if (!_control) return;
     final source = _svc.source;
     if (source != null) {
-      source.pointerEvent(mask, _lastX, _lastY);
+      final x = _hasPointer ? _lastX : source.width ~/ 2;
+      final y = _hasPointer ? _lastY : source.height ~/ 2;
+      source.pointerEvent(up ? 0x08 : 0x10, x, y);
+      source.pointerEvent(0, x, y); // 抬起，下一格才算新的沿
+      _inputSinceFrame = true;
       return;
     }
-    final area = _svc.viewRegion;
-    if (_svc.fallbackJpeg == null || area == null) return;
-    unawaited(
-      _svc.inputOp({
-        'op': 'scroll',
-        'x': (area.x + area.width / 2).round(),
-        'y': (area.y + area.height / 2).round(),
-        'amount': mask == 0x08 ? 3 : -3,
-      }),
-    );
+    if (_svc.fallbackJpeg == null) return;
+    _scrollPending += up ? 3 : -3; // 一格 = 3 行，与 Agent 的 notch 同量
+    if (!_scrollBusy) unawaited(_drainScroll());
+  }
+
+  Future<void> _drainScroll() async {
+    _scrollBusy = true;
+    try {
+      final area = _fallbackArea;
+      final region = _svc.viewRegion;
+      final int x;
+      final int y;
+      if (_hasPointer && area != null) {
+        x = (area.x + _lastX).round();
+        y = (area.y + _lastY).round();
+      } else if (region != null) {
+        x = (region.x + region.width / 2).round();
+        y = (region.y + region.height / 2).round();
+      } else {
+        // 还不知道逻辑屏幕尺寸时退回整屏中心。
+        x = _svc.fallbackWidth ~/ 2;
+        y = _svc.fallbackHeight ~/ 2;
+      }
+      while (_scrollPending != 0 && mounted) {
+        final amount = _scrollPending.clamp(-50, 50).toInt();
+        _scrollPending -= amount;
+        final res = await _svc.inputOp({
+          'op': 'scroll',
+          'x': x,
+          'y': y,
+          'amount': amount,
+        });
+        if (!mounted) return;
+        if (res['ok'] == false) {
+          _scrollPending = 0; // 报错就丢掉积压，不无限重试
+          _showErr(res);
+          return;
+        }
+        _inputSinceFrame = true;
+      }
+    } finally {
+      _scrollBusy = false;
+    }
   }
 
   // Fixed logical source geometry for the current fallback gesture.
@@ -1170,6 +1220,19 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
               ),
             ),
           ),
+        // 画面旁的滚轮竖条：opaque Listener 独占自身区域，摸到它就不会
+        // 落进 InteractiveViewer / 画面 Listener；位置按未放大几何算，
+        // 捏合缩放时竖条不跳。框选时让位给框。
+        if (_control && !_boxSelOn)
+          Positioned.fromRect(
+            rect: remoteWheelRailRect(vp, offX, offY),
+            child: RemoteWheelRail(
+              onNotch: _wheelNotch,
+              semanticLabel: t('rsWheelTitle'),
+              upLabel: t('rsWheelUp'),
+              downLabel: t('rsWheelDown'),
+            ),
+          ),
         if (_zoomed || _svc.region != null) _zoomBadge(vp, offX, offY, dw, dh),
       ],
     );
@@ -1339,10 +1402,6 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
                 ),
               ),
               const SizedBox(width: 6),
-              // 滚轮脉冲（Agent 端 mask 8=上 / 16=下，沿即触发）。
-              _keyChip('⬆', () => _wheelPulse(0x08)),
-              _keyChip('⬇', () => _wheelPulse(0x10)),
-              const SizedBox(width: 2),
               FilledButton(
                 style: FilledButton.styleFrom(
                   backgroundColor: const Color(0xFF1267b5),
