@@ -52,6 +52,24 @@
 }
 .rs-zoombadge[hidden] { display: none; }
 
+/* 滚轮条（触屏）：画面旁一根竖条当鼠标滚轮；位置由 placeWheel() 按黑边算。 */
+.rs-wheel {
+  position: absolute; z-index: 2; box-sizing: border-box; width: 36px; display: flex; flex-direction: column;
+  background: rgba(28, 28, 30, .6); border: 1px solid #48484a; border-radius: 18px; overflow: hidden;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.rs-wheel[hidden] { display: none; }
+.rs-wheel.active { background: rgba(28, 28, 30, .9); border-color: #0a84ff; }
+.rs-wheel-btn {
+  flex: 0 0 34px; padding: 0; background: none; border: 0; color: #eee; font-size: 12px;
+  cursor: pointer; touch-action: none;
+}
+.rs-wheel-btn:active { background: rgba(10, 132, 255, .35); }
+.rs-wheel-grip {
+  flex: 1; min-height: 24px; margin: 0 9px; border-radius: 6px; cursor: ns-resize; touch-action: none;
+  background: repeating-linear-gradient(to bottom, rgba(235, 235, 245, .4) 0 2px, transparent 2px 8px);
+}
+
 /* 框选局部放大：拖画矩形 → 选区等比铺满视口（复用 rs-zoom 变换）。 */
 .rs-boxrect {
   position: absolute; border: 1.5px dashed #4da3ff; background: rgba(77, 163, 255, .14);

@@ -730,6 +730,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/remote_wheel_rail_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/role_tokens_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -4660,6 +4665,15 @@
       "owner": "npm:test:security",
       "entrypoints": [
         "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-remote-screen-wheel-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
       ]
     },
     {

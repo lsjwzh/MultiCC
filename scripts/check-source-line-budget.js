@@ -547,9 +547,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +39 双语键（hookActChannel/hookChannel*/hookErrChannel + pc*）：通知渠道插件接入推送设置的
     //   「插件渠道」一栏、钩子的「发到渠道」动作与 Air 顶部的渠道横幅（docs/notification-channel-
     //   plugin-design.md 10.3/10.4），中英各 39 行 = +78 行，重跑生成器实测 10072/651860。
-    maxLines: 10072,
+    // +3 双语键（rsWheelTitle/rsWheelUp/rsWheelDown）：屏幕浮层画面旁的「滚轮条」（web+App 共用），
+    //   中英各 3 行 = +6 行，重跑生成器实测 10078/652199。
+    maxLines: 10078,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 651860,
+    maxBytes: 652199,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

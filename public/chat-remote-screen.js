@@ -195,6 +195,7 @@
         if (s !== current || current.closed) { URL.revokeObjectURL(url); break; }
         if (epoch !== current.regionEpoch) { URL.revokeObjectURL(url); continue; }
         s.regionLoading = false;
+        placeWheel(); // 图的宽高比可能变了（选区 / 从流式退回）
         if (s.lastUrl) URL.revokeObjectURL(s.lastUrl);
         s.lastUrl = url;
         const dt = Date.now() - t0;
@@ -434,6 +435,9 @@
         s.viewRegion = null; s.regionLoading = false;
         status(kind === 'h264' ? h264Label(rfb) : tr('rsLiveMode', '流畅模式'));
         if (!s.screenW) void ensureScreenSize(); // 轻点精确单击的坐标域要逻辑尺寸
+        const cv = wrap.querySelector('canvas');
+        if (cv) s.wheelRO?.observe(cv); // 画布随 framebuffer / 解码尺寸变，滚轮条跟着重排
+        placeWheel();
         if (s.control) setControl(true);
         resolve(true);
       });
@@ -632,6 +636,7 @@
     s.boxBtn.classList.toggle('rs-boxon', on);
     s.stage.classList.toggle('rs-boxsel', on);
     if (s.boxRect) s.boxRect.hidden = true;
+    placeWheel();
     if (on) status(tr('rsBoxSelHint', '在画面上拖动圈选要看清的区域，画完自动退出'));
   }
   async function applyBoxZoom(a, b) {
@@ -696,30 +701,34 @@
     return sizeProbe.then(() => (s ? s.screenW : 0));
   }
 
-  // 放大态的轻点：noVNC 模式视觉归一化后乘屏幕逻辑尺寸（不是 canvas 的
-  // framebuffer 尺寸），fallback 模式沿用 toScreen；HTTP input 的坐标域
-  // 是屏幕逻辑点。
+  // 视口坐标 → 屏幕逻辑点（HTTP input 的坐标域）。流畅 / 高清模式的画布按
+  // contain 铺好，rect 就是绘制区（含捏合 transform），视觉归一化后乘屏幕逻辑
+  // 尺寸（不是 canvas 的 framebuffer / 解码尺寸）；兼容模式沿用 toScreen。
+  function logicalAt(cx, cy) {
+    if (!s) return null;
+    const cv = s.rfbWrap?.querySelector('canvas');
+    if (cv) {
+      const r = cv.getBoundingClientRect();
+      if (!r.width || !r.height) return null;
+      const sw = s.screenW || cv.width;
+      const sh = s.screenH || Math.round(sw * cv.height / cv.width);
+      const u = (cx - r.left) / r.width, v = (cy - r.top) / r.height;
+      if (u < 0 || v < 0 || u > 1 || v > 1) return null;
+      return { x: Math.round(u * sw), y: Math.round(v * sh) };
+    }
+    const p = s.rfbWrap || !s.img ? null : toScreen({ clientX: cx, clientY: cy });
+    return p && { x: p.x, y: p.y };
+  }
+
+  // 放大态的轻点：坐标换算归 logicalAt；流畅模式下逻辑尺寸要先探到。
   async function zoomTap(ev, button) {
     if (!s?.control || s.regionLoading) return;
-    let x = null, y = null;
-    if (s.rfbWrap) {
-      const cv = s.rfbWrap.querySelector('canvas');
-      if (cv) {
-        const r = cv.getBoundingClientRect();
-        if (r.width && r.height) {
-          const sw = s.screenW || (await ensureScreenSize()) || cv.width;
-          const sh = s.screenH || Math.round(sw * cv.height / cv.width);
-          x = Math.round((ev.clientX - r.left) / r.width * sw);
-          y = Math.round((ev.clientY - r.top) / r.height * sh);
-        }
-      }
-    } else if (s.img) {
-      const p = toScreen(ev);
-      if (p) { x = p.x; y = p.y; }
-    }
-    if (x == null || y == null || x < 0 || y < 0 || x >= s.screenW || y >= s.screenH) return;
+    if (s.rfbWrap && !s.screenW) await ensureScreenSize();
+    const p = logicalAt(ev.clientX, ev.clientY);
+    if (!p || p.x >= s.screenW || p.y >= s.screenH) return;
+    s.cursorPt = p;
     ripple(ev.clientX, ev.clientY);
-    input({ op: 'click', x, y, button: button === 2 ? 'right' : 'left' });
+    input({ op: 'click', x: p.x, y: p.y, button: button === 2 ? 'right' : 'left' });
   }
 
   // 点亮「右键」后的下一次点击按右键发送；用掉即复位（按钮熄灭）。
@@ -727,6 +736,141 @@
     const on = !!(s && s.rightOnce);
     if (on) { s.rightOnce = false; s.rightBtn.classList.remove('on'); }
     return on;
+  }
+
+  // ── 滚轮条（触屏）──
+  // 画面上单指当鼠标、双指管缩放平移，滚轮单独占画面旁这根竖条：中间滚花区上下拖
+  // = 连续滚（手指往下 = 内容往下 = 滚轮上，与手机滑屏同向），两端 ▲ / ▼ 点一格、
+  // 按住连发。滚动落在最后点过的位置（Mac 的滚轮作用于光标下的窗口）。三种画面
+  // 统一走 HTTP scroll（逻辑点域），与其它输入在 Agent 端汇合同一护栏。桌面鼠标
+  // 本来就有滚轮（noVNC / 高清 / 兼容模式都接了 wheel），所以只在触屏设备显示。
+  const WHEEL_STEP = 16, WHEEL_W = 36;
+  const touchDevice = () => !!(global.matchMedia?.('(any-pointer: coarse)').matches || navigator.maxTouchPoints > 0);
+  function wheelPoint() {
+    const area = s.viewRegion || (s.screenW ? { x: 0, y: 0, width: s.screenW, height: s.screenH } : null);
+    const p = s.cursorPt;
+    if (p && (!s.viewRegion || (p.x >= area.x && p.y >= area.y && p.x < area.x + area.width && p.y < area.y + area.height))) return p;
+    return area && { x: Math.round(area.x + area.width / 2), y: Math.round(area.y + area.height / 2) };
+  }
+  function wheelNotch(up) {
+    const current = s;
+    if (!current || !current.control || current.regionLoading) return;
+    current.wheelPending = (current.wheelPending || 0) + (up ? 3 : -3);
+    if (current.wheelBusy) return;
+    current.wheelBusy = true;
+    void (async () => {
+      try {
+        if (!current.screenW) await ensureScreenSize();
+        // 一次只飞一个请求，拖得快就把攒下的格数并成一次发（每格 3 行，同 RFB 滚轮脉冲）。
+        while (s === current && current.control && current.wheelPending) {
+          const amount = Math.max(-60, Math.min(60, current.wheelPending));
+          current.wheelPending -= amount;
+          const at = wheelPoint();
+          if (!at || !(await input({ op: 'scroll', x: at.x, y: at.y, amount }))) break;
+        }
+      } finally {
+        current.wheelPending = 0; // 出错就丢掉积压，别在急停 / 断线后补滚一大截
+        current.wheelBusy = false;
+      }
+    })();
+  }
+  function buildWheel() {
+    const rail = el('div', 'rs-wheel');
+    rail.hidden = true;
+    rail.title = tr('rsWheelTitle', '滚轮：上下拖动连续滚动；点 ▲ / ▼ 滚一格，按住连续滚');
+    rail.setAttribute('role', 'group');
+    rail.setAttribute('aria-label', rail.title);
+    const upBtn = el('button', 'rs-wheel-btn', '▲');
+    const grip = el('div', 'rs-wheel-grip');
+    const downBtn = el('button', 'rs-wheel-btn', '▼');
+    rail.append(upBtn, grip, downBtn);
+    // 画面层的手势挂在 stage 上：冒泡到这里就截住（捕获阶段由 wireGestures 自己让开）。
+    for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'contextmenu']) {
+      rail.addEventListener(type, ev => { ev.stopPropagation(); if (type === 'contextmenu') ev.preventDefault(); });
+    }
+    let hold = null;
+    const stopHold = () => {
+      if (hold) { clearTimeout(hold.timer); clearInterval(hold.timer); hold = null; }
+      rail.classList.remove('active');
+    };
+    const arrow = (b, up, label) => {
+      b.type = 'button';
+      b.setAttribute('aria-label', label);
+      b.addEventListener('pointerdown', ev => {
+        ev.preventDefault();
+        stopHold();
+        try { b.setPointerCapture(ev.pointerId); } catch {}
+        rail.classList.add('active');
+        wheelNotch(up);
+        const h = { id: ev.pointerId, timer: 0 };
+        h.timer = setTimeout(() => {
+          if (hold === h) h.timer = setInterval(() => { if (rail.isConnected) wheelNotch(up); else stopHold(); }, 90);
+        }, 350);
+        hold = h;
+      });
+      for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+        b.addEventListener(type, ev => { if (hold && hold.id === ev.pointerId) stopHold(); });
+      }
+      b.addEventListener('click', ev => { if (ev.detail === 0) wheelNotch(up); }); // 键盘回车 / 空格
+    };
+    arrow(upBtn, true, tr('rsWheelUp', '向上滚'));
+    arrow(downBtn, false, tr('rsWheelDown', '向下滚'));
+    let drag = null, phase = 0;
+    grip.addEventListener('pointerdown', ev => {
+      ev.preventDefault();
+      try { grip.setPointerCapture(ev.pointerId); } catch {}
+      drag = { id: ev.pointerId, y: ev.clientY, acc: 0 };
+      rail.classList.add('active');
+    });
+    grip.addEventListener('pointermove', ev => {
+      if (!drag || ev.pointerId !== drag.id) return;
+      const dy = ev.clientY - drag.y;
+      drag.y = ev.clientY;
+      drag.acc += dy;
+      phase += dy;
+      grip.style.backgroundPositionY = Math.round(phase) % 8 + 'px'; // 滚花跟着手指转
+      while (Math.abs(drag.acc) >= WHEEL_STEP) {
+        const up = drag.acc > 0;
+        drag.acc += up ? -WHEEL_STEP : WHEEL_STEP;
+        wheelNotch(up);
+      }
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+      grip.addEventListener(type, ev => {
+        if (drag && ev.pointerId === drag.id) { drag = null; rail.classList.remove('active'); }
+      });
+    }
+    return rail;
+  }
+  // 按未放大时的黑边定位（捏合时竖条不跳）：横屏放进右侧黑边、竖屏放进画面下方
+  // 空白的右下角，都不挡画面；没有黑边才叠在画面右缘。规则与 App 端同一份。
+  function placeWheel() {
+    const rail = s && s.wheel;
+    if (!rail) return;
+    const show = !!(s.control && !s.boxSelOn) && touchDevice();
+    rail.hidden = !show;
+    if (!show) return;
+    const W = s.stage.clientWidth, H = s.stage.clientHeight;
+    if (!W || !H) return;
+    const cv = s.rfbWrap?.querySelector('canvas');
+    const iw = cv ? cv.width : (s.img.naturalWidth || s.screenW);
+    const ih = cv ? cv.height : (s.img.naturalHeight || s.screenH);
+    const k = iw && ih ? Math.min(W / iw, H / ih) : 0;
+    const padX = k ? (W - iw * k) / 2 : 0, padY = k ? (H - ih * k) / 2 : 0;
+    let h, left, top;
+    if (padX >= WHEEL_W + 12) {
+      h = Math.min(260, H * 0.6); left = W - padX + (padX - WHEEL_W) / 2; top = (H - h) / 2;
+    } else if (padY >= 112) { // 竖条至少 96 高：两端箭头 + 一截滚花区
+      h = Math.min(220, padY - 16); left = W - WHEEL_W - 8; top = H - padY + (padY - h) / 2;
+    } else {
+      h = Math.max(Math.min(120, H - 16), Math.min(220, H * 0.5)); left = W - WHEEL_W - 6; top = (H - h) / 2;
+    }
+    const at = [left, top, h].map(Math.round);
+    if (rail.dataset.at === at.join(',')) return;
+    rail.dataset.at = at.join(',');
+    rail.style.left = at[0] + 'px';
+    rail.style.top = at[1] + 'px';
+    rail.style.height = at[2] + 'px';
   }
 
   function wireGestures(stage) {
@@ -746,7 +890,15 @@
     };
     // iOS Safari 的私有手势缩放会和 pointer 捏合叠乘，必须一并关掉。
     stage.addEventListener('gesturestart', ev => ev.preventDefault());
+    // 未放大时画面上的按下 / 抬起都会落到远端光标上：记成滚轮条的落点。
+    const noteCursor = ev => {
+      if (!s || !s.control || s.boxSelOn || zoom.scale !== 1) return;
+      const p = logicalAt(ev.clientX, ev.clientY);
+      if (p) s.cursorPt = p;
+    };
     stage.addEventListener('pointerdown', ev => {
+      if (ev.target?.closest?.('.rs-wheel')) return; // 滚轮条自己处理，画面手势不掺和
+      if (!pts.size) noteCursor(ev); // 第二指是捏合，不是点
       if (s?.regionLoading) { ev.preventDefault(); ev.stopPropagation(); return; }
       if (s && s.boxSelOn) {
         if (box) { // 拖拽中又落一指：取消本次框选，新指落回常规手势
@@ -826,6 +978,7 @@
       }
     }, true);
     stage.addEventListener('pointerup', ev => {
+      if (!pinch && !ev.target?.closest?.('.rs-wheel')) noteCursor(ev); // 拖拽松手处
       if (box) {
         if (ev.pointerId !== box.id) return;
         pts.delete(ev.pointerId);
@@ -891,6 +1044,7 @@
     s.modeBtn.textContent = on ? '🖱 ' + tr('rsControl', '可操作') : '👁 ' + tr('rsViewOnly', '只看');
     s.modeBtn.classList.toggle('on', on);
     ov.classList.toggle('rs-control', on);
+    placeWheel();
     if (s.rfb) {
       // 流畅模式：指针 + 键盘都交给 noVNC，自己的 keybar 收起来。
       s.rfb.viewOnly = !on;
@@ -992,6 +1146,12 @@
     s.boxRect = el('div', 'rs-boxrect');
     s.boxRect.hidden = true;
     stage.appendChild(s.boxRect);
+    s.wheel = buildWheel();
+    stage.appendChild(s.wheel);
+    if (typeof ResizeObserver === 'function') {
+      s.wheelRO = new ResizeObserver(() => placeWheel());
+      s.wheelRO.observe(stage);
+    }
     resetZoom();
     s.permBar = el('div', 'rs-permbar');
     s.permBar.hidden = true;
@@ -1038,6 +1198,7 @@
       clearInterval(s.haltTimer);
       clearInterval(s.permTimer);
       clearInterval(s.wakeTimer);
+      s.wheelRO?.disconnect();
       if (s.rfb) { s.rfbIntent = true; try { s.rfb.disconnect(); } catch {} }
       if (s.lastUrl) URL.revokeObjectURL(s.lastUrl);
     }
