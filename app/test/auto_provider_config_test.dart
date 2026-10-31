@@ -94,6 +94,38 @@ void main() {
     expect(manual['providerSelection'], isNull);
   });
 
+  test('PATCH body marks a sub-agent route that follows the family default', () {
+    final inherited = sessionAIConfigPatchBody(
+      provider: 'p1',
+      model: '',
+      effort: 'high',
+      subagent: const SessionSubagent(
+        providerId: 'p-ds',
+        model: 'opus',
+        inherited: true,
+      ),
+    );
+    expect(inherited['subagent'], {'providerId': 'p-ds', 'model': 'opus'});
+    expect(inherited['subagentInherited'], isTrue);
+
+    final own = sessionAIConfigPatchBody(
+      provider: 'p1',
+      model: '',
+      effort: 'high',
+      subagent: const SessionSubagent(providerId: 'p-own', model: 'sonnet'),
+    );
+    expect(own.containsKey('subagentInherited'), isFalse);
+
+    final cleared = sessionAIConfigPatchBody(
+      provider: 'p1',
+      model: '',
+      effort: 'high',
+      clearSubagent: true,
+    );
+    expect(cleared['subagent'], isNull);
+    expect(cleared.containsKey('subagentInherited'), isFalse);
+  });
+
   test('Auto title does not claim the configured primary before routing', () {
     expect(autoProviderRouteLabel('anthropic', null), 'Auto · Anthropic → 待路由');
     expect(

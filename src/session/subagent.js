@@ -49,4 +49,20 @@ function withSubagentSource(next, previous, inherited = false) {
   return inherited || (same && previous.inherited === true) ? { ...next, inherited: true } : next;
 }
 
-module.exports = { normalizeSubagentInput, withSubagentSource };
+// The family default (AI 配置 → 子任务默认线路) for a chat on `cli`, validated
+// against that chat's main line and marked inherited — or null when the family
+// has none or it no longer validates (provider deleted, a Codex chat with no
+// main line…): a stale default must never fail the caller, it just means "no
+// route". Session creation and a CLI lane switch both take it from here, so a
+// task created on Codex and moved to Claude ends up exactly where a task
+// created on Claude would.
+function familyDefaultSubagent({ cli, provider = null, providerDefaults, validProviderId, providers } = {}) {
+  const family = cli === 'claude' || cli === 'claude-exp' ? 'claude'
+    : cli === 'codex' || cli === 'codex-exp' ? 'codex' : null;
+  const route = family ? (providerDefaults?.subagent?.[family] ?? null) : null;
+  if (!route) return null;
+  const checked = normalizeSubagentInput({ cli, provider, subagent: route, validProviderId, providers });
+  return checked.ok && checked.value ? { ...checked.value, inherited: true } : null;
+}
+
+module.exports = { normalizeSubagentInput, withSubagentSource, familyDefaultSubagent };

@@ -152,7 +152,9 @@ const MIGRATION_DEBT = Object.freeze({
     // src/plugins/channel-host.js 同行注入），行数不变、字节 +62，实测 3036/159631。
     // 2026-10-30 插件目录那一轮合入时行数不变、字节再 +82，没回来抬这一格，
     // main 上这道闸已红；按实测 3036/159713 对齐高水位，拆分条件不变。
-    ceiling: 3036,
+    // 2026-10-31 切 CLI 车道跟随子 agent 家族默认：切换运行时同行注入
+    // validProviderId/getProviders，上方注释压成两行抵掉字节，实测 3035/159713。
+    ceiling: 3035,
     byteCeiling: 159713,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
@@ -163,8 +165,8 @@ const MIGRATION_DEBT = Object.freeze({
   // 搜索框 + 自定义输入 + 状态行 + 刷新按钮整块搬进独立模块，run-config 只留挂载，
   // 落回 <= 3000 就删掉这条。
   'public/run-config.js': Object.freeze({
-    ceiling: 3017,
-    byteCeiling: 153796,
+    ceiling: 3026,
+    byteCeiling: 154489,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),

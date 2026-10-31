@@ -2160,6 +2160,169 @@ void main() {
       manager.dispose();
     }
   });
+
+  // ── 换车道时的子 agent 家族默认 ──────────────────────────────────────────
+
+  const codexProviders = <Map<String, dynamic>>[
+    {
+      'id': 'codex-official',
+      'name': 'Codex 官方',
+      'protocol': 'openai',
+      'modelOptions': ['gpt-5'],
+    },
+  ];
+
+  /// 两条车道各自的池 + 一份 Claude 家族默认（Codex 家族没有默认）。
+  MockClient laneSwitchClient() => MockClient((request) async {
+    if (request.url.path == '/api/providers') {
+      final lane = request.url.queryParameters['cli'] ?? '';
+      return _json(200, {
+        'providers': lane.startsWith('claude')
+            ? _claudeProviders
+            : codexProviders,
+      });
+    }
+    if (request.url.path == '/api/subagent-defaults') {
+      return _json(200, {
+        'ok': true,
+        'defaults': {
+          'claude': {'providerId': 'relay', 'model': 'glm-5.2'},
+          'codex': null,
+        },
+      });
+    }
+    return _json(404, {'error': 'not found'});
+  });
+
+  testWidgets('会话面板：从 codex-exp 换到 claude-exp，子 agent 套上 Claude 家族默认', (
+    tester,
+  ) async {
+    final s = await settings(host: 'http://server.example');
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.codexExp,
+        providers: codexProviders,
+        provider: 'codex-official',
+        model: '',
+        effort: 'medium',
+        settings: s,
+        httpClient: laneSwitchClient(),
+        cliAvailability: const {
+          SessionCli.codexExp: true,
+          SessionCli.claudeExp: true,
+        },
+      ),
+      out,
+    );
+    // 打开时还是随主：Codex 家族没有全局默认。
+    expect(find.text('跟随主线路'), findsOneWidget);
+
+    await tester.ensureVisible(
+      find.byKey(const Key('run-cli-option-claude-exp')),
+    );
+    await tester.tap(find.byKey(const Key('run-cli-option-claude-exp')));
+    await tester.pumpAndSettle();
+
+    // 换道后直接显示「跟随全局默认」，保存时带上这条路由 —— 不能发成显式
+    // null 把服务端刚按 switch-cli 套上的默认抹掉。
+    expect(find.text('跟随全局默认'), findsOneWidget);
+    await _save(tester);
+    expect(out.value?.switchToCli, 'claude-exp');
+    expect(out.value?.subagent?.providerId, 'relay');
+    expect(out.value?.subagent?.model, 'glm-5.2');
+    expect(out.value?.subagentCleared, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('草稿面板：换到 Claude 家族车道时预填家族默认', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.codexExp,
+        providers: codexProviders,
+        provider: 'codex-official',
+        model: '',
+        effort: 'medium',
+        settings: s,
+        httpClient: laneSwitchClient(),
+        draft: true,
+        cliAvailability: const {
+          SessionCli.codexExp: true,
+          SessionCli.claudeExp: true,
+        },
+      ),
+      out,
+    );
+    expect(find.text('跟随主线路'), findsOneWidget);
+
+    await tester.ensureVisible(
+      find.byKey(const Key('run-cli-option-claude-exp')),
+    );
+    await tester.tap(find.byKey(const Key('run-cli-option-claude-exp')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('跟随全局默认'), findsOneWidget);
+    final line = tester.widget<Text>(
+      find.byKey(const ValueKey('run-subagent-default-line')),
+    );
+    expect(line.data, '全局默认：Zhipu · glm-5.2');
+    await _save(tester);
+    expect(out.value?.subagent?.providerId, 'relay');
+    expect(out.value?.subagent?.model, 'glm-5.2');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('同一家族内换道：用户单独设置的子 agent 不被重置', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/providers') {
+        return _json(200, {'providers': _claudeProviders});
+      }
+      if (request.url.path == '/api/subagent-defaults') {
+        return _json(200, {
+          'ok': true,
+          'defaults': {'claude': null, 'codex': null},
+        });
+      }
+      return _json(404, {'error': 'not found'});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: _claudeProviders,
+        provider: 'relay',
+        model: '',
+        effort: 'medium',
+        subProviderId: 'relay',
+        subModel: 'glm-5.2',
+        subInherited: false,
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claudeExp: true},
+      ),
+      out,
+    );
+    expect(find.text('已单独设置'), findsOneWidget);
+
+    await tester.ensureVisible(
+      find.byKey(const Key('run-cli-option-claude-exp')),
+    );
+    await tester.tap(find.byKey(const Key('run-cli-option-claude-exp')));
+    await tester.pumpAndSettle();
+
+    // 线路池是家族共用的：同一家族内换道不该把这条自己的设置清成随主。
+    expect(find.text('已单独设置'), findsOneWidget);
+    await _save(tester);
+    expect(out.value?.subagent?.providerId, 'relay');
+    expect(out.value?.subagent?.model, 'glm-5.2');
+    expect(tester.takeException(), isNull);
+  });
 }
 
 /// 走 openRunConfigSheet 那条真保存流程：只记录写下来的配置，不发网络。

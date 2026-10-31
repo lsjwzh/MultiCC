@@ -908,6 +908,9 @@
     // 线路本身带 inherited。换家族时可以整份替换；原样保存仍算跟随全局（服务端保留标记）。
     let subagentSeedAuto = !!(subagentSeed && (subagentSeed.inherited === true || config.subagentInherited === true));
     let subagentSeedFamily = subagentSeed ? subagentFamily(config.cli || currentCli) : '';
+    // 已有会话在对话框里换过 CLI（可能换了子 agent 家族）：只有这时才按新家族
+    // 默认回填；单纯打开对话框（CLI 没动）保持原样。
+    let cliSwitched = false;
     // 首次强提示：读过一次 localStorage 就记住；本次打开内 dismissed 也是终态。
     let subGuideSeenOnOpen = guideSeen(scope() && scope().localStorage);
     let subGuideShown = false;
@@ -1962,10 +1965,11 @@
       subagentSeedFamily = subagentFamily(subCli());
     }
 
-    // 草稿：子 agent 没设过或只跟着全局默认走时，按这一族当前的全局默认（subDefaults，比目录那份新）
-    // 预填，换家族也照办；动过下拉或带来的是单独设置的线路就不碰。返回 true = 种子变了，要重铺。
+    // 草稿，或已有会话在对话框里换了 CLI：子 agent 没设过或只跟着全局默认走时，
+    // 按这一族当前的全局默认（subDefaults，比目录那份新）预填，换家族也照办；动过
+    // 下拉或带来的是新家族自己单独设置的线路就不碰。返回 true = 种子变了，要重铺。
     function seedDraftSubagent() {
-      if (!draft || terminalDraft || subagentTouched) return false;
+      if ((!draft && !cliSwitched) || terminalDraft || subagentTouched) return false;
       const cli = subCli();
       const family = subagentFamily(cli);
       if (!family || !catalogs.get(cli)) return false;
@@ -2683,6 +2687,9 @@
         await request(base, {
           ...(!providerless(currentCli) ? { provider: patch.value.provider, providerSelection: null } : {}),
           model: patch.value.model, effort: patch.value.effort, subagent,
+          // switch-cli 可能刚把目标家族的默认标成 inherited；这里跟同一份线路，
+          // 明确带上标记，避免 PATCH 把它降成单独设置。
+          ...(subagentFollowsGlobal(subagent) ? { subagentInherited: true } : {}),
           ...(accountPatch() ? { cliAccounts: accountPatch() } : {}),
         }, 'PATCH');
         await onSaved();
@@ -2710,7 +2717,8 @@
         await request(`${base}/switch-cli`, { cli: primary.cli });
       }
       await request(base, { provider: primary.providerId, providerSelection: selection }, 'PATCH');
-      await request(base, { model: primary.model || null, subagent }, 'PATCH');
+      await request(base, { model: primary.model || null, subagent,
+        ...(subagentFollowsGlobal(subagent) ? { subagentInherited: true } : {}) }, 'PATCH');
       await onSaved();
       await finishSubagentSync();
     }
@@ -2730,6 +2738,7 @@
     }
 
     function selectCli(cli) {
+      cliSwitched = true;
       if (stopModelWatch) stopModelWatch();
       stopModelWatch = null;
       modelWatchKey = '';
@@ -2746,7 +2755,7 @@
         providers = providersOf(cli);
         setBusy(false);
         renderFixed();
-        // 草稿里换了 CLI（可能换了家族）：没动过子 agent 就按新家族的默认预填。
+        // 草稿或已有会话在对话框里换了 CLI（可能换了家族）：没动过子 agent 就按新家族的默认预填。
         if (seedDraftSubagent()) renderSub(true);
         renderFooter();
       }, () => {
