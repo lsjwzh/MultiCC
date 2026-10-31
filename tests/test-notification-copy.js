@@ -399,7 +399,12 @@ test('服务端推送的词只在一处；拿到字母时 B 才说自己的话�
   const waitingPushes = machine.match(/triggerPush\(sessionId, pushType,[^\n]*\)/g) || [];
   assert.equal(waitingPushes.length, 2, 'state-machine.js 的等待类 triggerPush 调用点数变了，请重新核对');
   for (const call of waitingPushes) {
-    assert.match(call, /\{ classifyState: cls \}/, `等待类 triggerPush 少了字母：${call}`);
+    // 字母可以写成字面量，也可以经一个选项变量传进去（错误类推送还要附带错误分类），
+    // 但那个变量必须在同一文件里以 { classifyState: cls } 起手定义。
+    const named = call.match(/,\s*([A-Za-z_$][\w$]*)\)$/);
+    const carriesLetter = /\{ classifyState: cls \}/.test(call)
+      || (named && new RegExp(`const ${named[1]} = \\{ classifyState: cls \\}`).test(machine));
+    assert.ok(carriesLetter, `等待类 triggerPush 少了字母：${call}`);
   }
   assert.equal(
     SERVER.notificationCopy('waiting', 'zh').title,
