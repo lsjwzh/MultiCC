@@ -1,9 +1,9 @@
 {
   "captures": {
     "en/air-tasks": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "en/air-tasks.png",
       "language": "en",
       "viewport": {
@@ -12,14 +12,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:53:46.126Z",
-      "sha256": "4ffbb3e6b741f1629f0a0ba0ca8d78edc4135118f2599c759bed3494ef7533e2",
+      "capturedAt": "2026-10-31T14:59:29.861Z",
+      "sha256": "0aa2d9ead6000784cc34c5c1e7e14eb0b44a961ae83ae38f9bcc5f06e66868e9",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "en/air-first-run": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "en/air-first-run.png",
       "language": "en",
       "viewport": {
@@ -28,14 +28,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:53:47.473Z",
-      "sha256": "7b4427b0929b3f62497fb564633a0342fdaa9113f5f82d170b77170b66dc2809",
+      "capturedAt": "2026-10-31T14:59:31.196Z",
+      "sha256": "cb9bf27001bc712d63f9124989b4778c0981a60ba16cb52c167d7c13453058c4",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "en/air-new-task": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "en/air-new-task.png",
       "language": "en",
       "viewport": {
@@ -44,14 +44,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:53:49.088Z",
-      "sha256": "94f88797796bfe62c02480fea236183cb999648a75d12ae4050cf754ce30ec0d",
+      "capturedAt": "2026-10-31T14:59:32.836Z",
+      "sha256": "ab2bef4282a6bdba2daafab45fcbbd0eec196d25964151947b2c78b2c006b53d",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "en/air-mobile": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "en/air-mobile.png",
       "language": "en",
       "viewport": {
@@ -60,14 +60,14 @@
         "deviceScaleFactor": 2,
         "mobile": true
       },
-      "capturedAt": "2026-10-23T16:53:50.714Z",
+      "capturedAt": "2026-10-31T14:59:34.450Z",
       "sha256": "4f9c5eb3dd62ef5654043d624a6917573435057b41ab12e132364c20f21cf998",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "en/air-provider": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "en/air-provider.png",
       "language": "en",
       "viewport": {
@@ -76,14 +76,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:53:52.094Z",
-      "sha256": "626b39464c092135b15ff544dcad68406a4edacc92546e17f61791982088af74",
+      "capturedAt": "2026-10-31T14:59:35.774Z",
+      "sha256": "232f39c199c620690fede34fd2afe91053754eedafadc905625953a30eb3c606",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "en/aux-console": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "en/aux-console.png",
       "language": "en",
       "viewport": {
@@ -92,14 +92,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:53:53.436Z",
-      "sha256": "8bd0d45a19e3bc96f879963f87398efe9ec7aa6dd4341eeda2e7aa3941066ab8",
+      "capturedAt": "2026-10-31T14:59:37.069Z",
+      "sha256": "042cd6d173b02754a510d486921271a63ca017b5b25feb56d84bc8e70c7c6d91",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "en/air-power": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "en/air-power.png",
       "language": "en",
       "viewport": {
@@ -108,14 +108,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:53:54.773Z",
-      "sha256": "5c2af58f3e01fa6beb4c2265cb0f68ad43a7731de6f9c9815062c48e2bcb2345",
+      "capturedAt": "2026-10-31T14:59:38.385Z",
+      "sha256": "dea3c8a2b50782a3487eb9e4f646d6d53c833d24d9c5a6735dd6cceeac8af434",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "en/air-account-proxy": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "en/air-account-proxy.png",
       "language": "en",
       "viewport": {
@@ -124,14 +124,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:53:56.256Z",
-      "sha256": "2cac61f6b1a15545330b00ae31a070c8cefdd87f2592b854f5a6c3a1951efd7c",
+      "capturedAt": "2026-10-31T14:59:39.799Z",
+      "sha256": "864eca25b304159b759af185348a586950ca8a9a4f30e35ff9ad5f142c3b9f2f",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "zh/air-tasks": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "air-tasks.png",
       "language": "zh",
       "viewport": {
@@ -140,14 +140,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:53:57.736Z",
-      "sha256": "53c302c743f95df8f99c67e3bda65084c7cf9ef638c3d2caac3dbe8dab215cb0",
+      "capturedAt": "2026-10-31T14:59:41.130Z",
+      "sha256": "602ee10a0574e58aec202766187934888fbb663d84e3a8d1b2d5080716e754de",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "zh/air-first-run": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "air-first-run.png",
       "language": "zh",
       "viewport": {
@@ -156,14 +156,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:53:59.165Z",
-      "sha256": "7274d92d1a5b8cfee38d561abc43f2662faf732a8ef678e28d4963b2236e9d3d",
+      "capturedAt": "2026-10-31T14:59:42.415Z",
+      "sha256": "6d6310877d39b0247cda1f1630711e3947170420749e10b46feed3495a31bbe3",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "zh/air-new-task": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "air-new-task.png",
       "language": "zh",
       "viewport": {
@@ -172,14 +172,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:54:01.047Z",
-      "sha256": "7c736867e148e8b3b1945c948e28e065e3d9cf9cc2374613ff50d6234786a438",
+      "capturedAt": "2026-10-31T14:59:44.003Z",
+      "sha256": "ad5c111e4aed2e0755c88056af0c565f83509736fc75376d2e3b9ac5f0b62efc",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "zh/air-mobile": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "air-mobile.png",
       "language": "zh",
       "viewport": {
@@ -188,14 +188,14 @@
         "deviceScaleFactor": 2,
         "mobile": true
       },
-      "capturedAt": "2026-10-23T16:54:02.892Z",
+      "capturedAt": "2026-10-31T14:59:45.558Z",
       "sha256": "21d705f475c80455ec466a2fbe846387a7f8d936f56f5a550af4e7f63cf48893",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "zh/air-provider": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "air-provider.png",
       "language": "zh",
       "viewport": {
@@ -204,14 +204,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:54:04.442Z",
-      "sha256": "199113585bd0c3fcbb4dc7810a08c39e129144e6e47eb6e28bd4dce0b4ca3d30",
+      "capturedAt": "2026-10-31T14:59:46.859Z",
+      "sha256": "d3811f6b4f6b574cca1fd41d7d8dc13e715365d32dfb00f393c85ee26223e957",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "zh/aux-console": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "aux-console.png",
       "language": "zh",
       "viewport": {
@@ -220,14 +220,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:54:05.958Z",
-      "sha256": "48bdd7cb7b1b67fa0ba0332589974d78b7310ba091ad93cd7321366e9caaf7fb",
+      "capturedAt": "2026-10-31T14:59:48.155Z",
+      "sha256": "e2a32a3f403dd9377be859ea1c13dadbdc349eb44c615b41c1a763a8e57c6128",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "zh/air-power": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "air-power.png",
       "language": "zh",
       "viewport": {
@@ -236,14 +236,14 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:54:07.318Z",
-      "sha256": "0e5e64234b72d80ca7f2a78e3917b66c026658a9fa1fa553deab6e6a9e20a332",
+      "capturedAt": "2026-10-31T14:59:49.460Z",
+      "sha256": "6684f44cc0f921ff374f5fa9bcf5967d2be4d865fb3645ddfe43f041853eccf5",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     },
     "zh/air-account-proxy": {
-      "version": "2.9.3",
-      "publicSha256": "1a844633e0b7cf2e0253f6286bca495558a4e4840a92c14f57ef80c24c015bb5",
-      "captureScriptSha256": "20d32d6bc233f1cca7363c8d8adf5f5d3d7580645080229ea1662a06a180fb1b",
+      "version": "2.12.1",
+      "publicSha256": "ddb98be5ee3b9820d2a2f6e876c0bed3bd1ac63dbd6b0ba4f9998ba1a8437445",
+      "captureScriptSha256": "20aad264eee641df6c05a47d226b91bc07d843bb2fe35e52f6563d769c1374a1",
       "file": "air-account-proxy.png",
       "language": "zh",
       "viewport": {
@@ -252,8 +252,8 @@
         "deviceScaleFactor": 2,
         "mobile": false
       },
-      "capturedAt": "2026-10-23T16:54:08.769Z",
-      "sha256": "24a0e017ec3964c3baf8a1b449ebaf47a3a53f133db34815277bb9180efe66a0",
+      "capturedAt": "2026-10-31T14:59:50.876Z",
+      "sha256": "36165a82be4aaef967dbc72a6537fd4d6d78b60771ad8e67a2a190505984d97b",
       "dataSource": "isolated synthetic API fixture; current unmodified web UI"
     }
   }

@@ -1,8 +1,8 @@
 # README screenshots
 
 The top-level [English README](../../README.md) and [Chinese README](../../README.zh.md)
-use the current web client under `public/`. The set was refreshed on **2026-10-24**
-from **v2.9.3**. English captures live in `en/`; Chinese captures live here.
+use the current web client under `public/`. The set was refreshed on **2026-10-31**
+from **v2.12.1**. English captures live in `en/`; Chinese captures live here.
 
 These are **UI illustrations with synthetic example data**, rendered by the real
 web frontend against isolated API fixtures. They are not live production sessions,

@@ -5,16 +5,16 @@
 <h1 align="center">MultiCC</h1>
 
 <p align="center">
-  <strong>Keep agents working. Step in from your phone when they need you.</strong>
+  <strong>Your own Super Agent. From goal to delivery.</strong>
 </p>
 
 <p align="center">
-  <em>A self-hosted workspace for coding agents: assign tasks, follow progress, and take over a desktop step when needed.<br/>
-  Reply when you're done, and let the agent continue in the same task.</em>
+  <em>An open-source, self-hosted workspace that brings coding agents, task context, memory and tools together.<br/>
+  Delegate work, collect results and keep the task moving—with human help when needed.</em>
 </p>
 
 <p align="center">
-  <a href="#step-in-then-let-the-agent-continue">Human handoff</a> &bull;
+  <a href="#your-super-agent-workflow">Super Agent workflow</a> &bull;
   <a href="#download-multicc"><strong>Downloads</strong></a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#what-else-it-does">Features</a> &bull;
@@ -36,6 +36,36 @@
 
 
 ---
+
+## Your Super Agent workflow
+
+**Turn the coding agents you already use into a coordinated workspace for getting work done.** MultiCC connects Claude Code, Codex and other supported engines with task history, scoped memory, tools, background execution and reviewable outputs. Run it on your own computer or server, and follow the work from desktop or phone.
+
+```mermaid
+flowchart LR
+    G[Your goal] --> T[Task context and memory]
+    T --> A[Agents and tools]
+    A --> D[Delegate independent work]
+    D --> R[Collect results]
+    A --> R
+    A --> H[Ask for human help when needed]
+    H --> A
+    R --> O[Review files, reports and code]
+```
+
+| From your goal… | …to a result you can inspect |
+|---|---|
+| **Plan and delegate** | Ask the Commander to coordinate work, or start a task directly. Delegate independent work to other agents and collect their results. |
+| **Keep relevant context** | Task history, scoped memory and on-demand retrieval bring earlier decisions into the work, with source information. |
+| **Act through tools** | Use configured browser, desktop, command-line and service integrations to work with your actual environment. |
+| **Wait and continue** | Background commands, asynchronous dispatch and callback/poll waits bring results back. Schedules and internal event triggers support recurring work. |
+| **Review the delivery** | Inspect reports, files, previews and code diffs. Separate workspaces isolate independent changes before review and integration. |
+
+**Try a goal:** “Investigate this repo's onboarding problem, use our earlier decisions, propose a fix, delegate an independent review if useful, and return the changes with the relevant checks.”
+
+The selected agents do the planning and execution; MultiCC supplies the coordination and continuity. Independent task workspaces can run in parallel. Tasks in the same conversation shell share a worktree and run serially. Your host and MultiCC service must stay running. Model and external service charges depend on your configuration.
+
+**→ [How the Super Agent workflow works, with implementation details and boundaries](docs/super-agent.md)**
 
 ## Download MultiCC
 
@@ -77,27 +107,15 @@ Standalone packages include Node.js. Use the [one-line installer](#quick-start) 
 
 Desktop and standalone version: **v2.12.1**. See [Releases](https://github.com/lsjwzh/MultiCC/releases) for checksums, signing information, and older versions; [download SHA256SUMS.txt](https://github.com/lsjwzh/MultiCC/releases/download/v2.12.1/SHA256SUMS.txt). [Desktop installation guide](docs/desktop.md).
 
-## Step in, then let the agent continue
-
-A task can reach a step that needs you: a sign-in confirmation, a visual decision, or a desktop interaction. MultiCC brings the task and the host's screen into the same conversation, accessible from your computer or phone.
-
-1. **Give the agent a task.** It works in a task-bound conversation; code changes have their own Git worktree.
-2. **Get a specific request for help.** The agent explains what is blocked and can provide a remote-control link or a screenshot to annotate.
-3. **Handle that step.** Open the host's screen from the chat, click or type as needed, then close the controls and reply that you're done.
-4. **Continue to a result.** The agent checks the new state and carries on with the same task. Review its output and, for code changes, the diff and relevant checks.
-
-Remote desktop control requires a desktop agent on the host and its OS permissions. macOS uses MultiCC Agent; Linux requires X11 and its agent. Windows desktop control and Wayland are not currently supported. The host and MultiCC service must remain running, and your phone needs an authenticated LAN or tunnel connection. **Reply in the chat after completing the desktop action to let the agent continue.**
-
-**→ [Getting started](#quick-start) · [Human-assistance workflow](skills/multicc-human-assist/SKILL.md) · [Host setup and permissions](skills/multicc-computer-use/SKILL.md)**
-
 ## Choose how to work
 
 | When you need to… | MultiCC gives you… |
 |---|---|
-| Step away from your desk | The same task on the web or mobile app, with notifications and remote desktop access on supported hosts |
-| Work on several changes | Separate task worktrees, visible diffs, and a merge workflow with syntax checks; conflicts still need resolution |
+| Coordinate a larger goal | Commander and cross-session dispatch, with task history, memory and results kept alongside the work |
+| Work on several changes | Independent task workspaces, visible diffs, and a merge workflow with syntax checks; conflicts still need resolution |
 | Ask another coding agent to continue | In-place engine switching, with the same task and worktree plus a visible handoff checkpoint |
 | Wait for a build or external result | Background commands, scheduled tasks, and registered waits that return results to the conversation |
+| Step away from your desk | The same task on the web or mobile app; human assistance and remote desktop access on supported hosts |
 
 Supported engines include **Claude Code, Codex, OpenCode, ZCode, Kimi Code, Qoder, WorkBuddy, DSH, Gemini CLI, Command Code, Grok, and pi**. Provider and model controls, subagent routing, memory, voice, and IM bridges support these workflows; see the [feature catalogue](docs/features.md).
 
@@ -159,9 +177,9 @@ The picker shows installed engines and saved sessions, with installation actions
 
 ## The Air console
 
-The screenshots below were refreshed from the v2.9.3 source on 2026-10-24. They show the current web UI with isolated example data, not live task results or real account activity. The phone image is responsive web UI, not the Flutter app. See [capture details](docs/images/README.md).
+The screenshots below were refreshed from the v2.12.1 source on 2026-10-31. They show that version of the web UI with isolated example data, not live task results or real account activity. The phone image is responsive web UI, not the Flutter app. See [capture details](docs/images/README.md).
 
-`/air` is MultiCC's home screen — both `/` and the old `/manage` now redirect there. Tasks, not roles, are the unit of work: you describe what you want done, and each task carries its own bound session, worktree, and transcript.
+`/air` is MultiCC's home screen — both `/` and the old `/manage` now redirect there. Tasks, not roles, are the unit of work: you describe what you want done, and each task retains its own identity, execution context and history. Tasks in one conversation shell share its worktree; independent task workspaces provide isolation.
 
 ![The Air console: directories and tasks at a glance](docs/images/en/air-tasks.png)
 
@@ -181,12 +199,25 @@ The screenshots below were refreshed from the v2.9.3 source on 2026-10-24. They 
 
 ---
 
+## Step in, then let the agent continue
+
+A task can reach a step that needs you: a sign-in confirmation, a visual decision, or a desktop interaction. MultiCC brings the task and the host's screen into the same conversation, accessible from your computer or phone.
+
+1. **Give the agent a task.** It works in a task-bound conversation. Independent task workspaces isolate code changes; tasks in the same conversation shell share a worktree.
+2. **Get a specific request for help.** The agent explains what is blocked and can provide a remote-control link or a screenshot to annotate.
+3. **Handle that step.** Open the host's screen from the chat, click or type as needed, then close the controls and reply that you're done.
+4. **Continue to a result.** The agent checks the new state and carries on with the same task. Review its output and, for code changes, the diff and relevant checks.
+
+Remote desktop control requires a desktop agent on the host and its OS permissions. macOS uses MultiCC Agent; Linux requires X11 and its agent. Windows desktop control and Wayland are not currently supported. The host and MultiCC service must remain running, and your phone needs an authenticated LAN or tunnel connection. **Reply in the chat after completing the desktop action to let the agent continue.**
+
+**→ [Getting started](#quick-start) · [Human-assistance workflow](skills/multicc-human-assist/SKILL.md) · [Host setup and permissions](skills/multicc-computer-use/SKILL.md)**
+
 ## Why people run it
 
 | | |
 |---|---|
 | 🔄 **Not locked to one vendor** | Quota exhausted, model deprecated, or a task better suited to another engine — switch instead of starting over. |
-| 🧵 **Real parallelism** | Each session gets its own git worktree on branch `multicc/<sessionId>`. Code changes stay separate until you review and merge them through a syntax-gated API; overlapping changes can still conflict. |
+| 🧵 **Independent work in parallel** | Separate task workspaces isolate code changes. Tasks in the same conversation shell share a worktree and run serially. Review diffs and checks before merging; overlapping changes can still conflict. |
 | 💸 **Cheap subagents** | Main agent on a frontier model, subagents routed to DeepSeek / GLM / Qwen through a local provider router. Choose models for each role and inspect their actual usage. |
 | 📱 **Sessions outlive the client** | Reconnect from your phone while the host and service remain running. Terminal sessions live in `tmux`, chat sessions as stateful turns. |
 | 🗣️ **Voice, including full duplex** | Dictate prompts, or hold a real-time speech-to-speech conversation with your agent while your hands are busy. |
@@ -476,6 +507,7 @@ Keep the Mac and MultiCC service running, connected to the network, and adequate
 
 | Document | What's in it |
 |---|---|
+| **[Super Agent workflow](docs/super-agent.md)** | Goals, delegation, context, tools, results and current boundaries |
 | **[Multi-CLI switching](docs/cli-switching.md)** | Checkpoint format, reuse semantics, API, one-click install |
 | [Installation & service management](docs/installation.md) | Install flags, updating, `./multicc` commands, systemd, Flutter builds |
 | [Desktop app](docs/desktop.md) | macOS / Windows / Linux desktop installers: first launch, failures, data & log locations, security model, signing |
@@ -523,10 +555,12 @@ Providers, subagent routing, voice, TTS/ASR and notification settings are config
 
 Projects that **harness** the official CLIs — spawning and managing the real `claude` / `codex` binaries rather than reimplementing them — cluster into remote-access wrappers, web IDEs, and multi-agent orchestrators.
 
-**MultiCC combines these workflows:**
+**MultiCC brings the Super Agent workflow into one self-hosted workspace:**
 
-- **Human handoff within a task** — remote desktop controls and screenshot annotations, followed by the agent continuing after your reply
-
+- **Goal-oriented coordination** — Commander, task-first delegation and asynchronous results
+- **Context and memory** — task history, scoped memory and on-demand retrieval with sources
+- **Tools and delivery** — configured browser and desktop tools, background work, files, previews and code review
+- **Human assistance when needed** — remote desktop controls and screenshot annotations, followed by the agent continuing after your reply
 - **In-place cross-CLI switching** across the supported engines with a bounded handoff checkpoint
 - **Task board with bound chat sessions** — every task gets a private chat transcript, short codes, and lifecycle controls
 - **Scheduled messages** and **relay-token remote sharing**
@@ -608,7 +642,7 @@ A few of the most common questions:
 
 ## 中文用户
 
-**让智能体持续推进任务；需要你时，在手机接手一步，再让它继续。** MultiCC 将任务、工作区、跨引擎接续与人机协作放在同一个工作台。
+**你自己的 Super Agent，从目标推进到交付。** MultiCC 将编程智能体、任务上下文、记忆、工具和结果组织在同一个自托管工作台；需要人介入时，再从电脑或手机接手。
 安装、首次任务与常见问题的中文说明见 **[README.zh.md](README.zh.md)**。界面支持中英文切换，非中文系统默认英文，可通过侧栏的 EN/中 切换。
 
 ---
