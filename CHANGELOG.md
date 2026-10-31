@@ -2,11 +2,15 @@
 
 All notable changes to MultiCC are documented in this file.
 
-## v2.13.0 — Notification channel plugins, an audited secret vault, and a remote scroll rail (2026-11-01)
+## v2.13.1 — Notification channel plugins, an audited secret vault, and a remote scroll rail (2026-11-01)
+
+The v2.13.0 candidate stopped at the release notes check, because its notes
+used arrow symbols outside the allowed English punctuation, and was not
+published. Its tag is preserved; v2.13.1 carries the same changes.
 
 - Add notification channel plugins (plugin API 2). A plugin that declares `engine.resident` is started as `<binary> serve` and kept running: it restarts after 1 s, 5 s, 30 s, then every 5 minutes, is rescanned every 30 seconds, stops when it is removed, and is replaced when its version changes. A resident plugin that also declares `channel` becomes a delivery channel: Push settings gain a "Plugin channels" section whose new subscriptions start with only "error" and "waiting for your answer" selected, and hooks gain a "send to channel" action that checks its recipient on save. A plugin's own alerts reach web push, FCM, Bark, and webhooks once per incident and at most 10 per plugin per hour, MultiCC reports `plugin-down` when a plugin process stays stopped for a minute, Air shows a banner, and trigger cards that point at a removed recipient are marked. Turns interrupted by a service restart are not delivered to channels, and none of this UI appears until a channel plugin is installed. Plugins that require plugin API 2, such as the WeChat desktop notifier, can be installed from the catalog starting with this release.
 - Audit every access to the secret vault. Listing, reading a value, adding, updating, renaming, deleting, injecting secrets into a process environment, and the MCP secret tools each append one line to `logs/secret-audit.jsonl` (mode `0600`) in the Rust core, recording the name, caller, session, and outcome but never the value, command, or URL. When the audit line cannot be written the access is refused with `503 secret_audit_unavailable`, and the native module self-check now requires the audit entry point, so a stale cached module is rebuilt instead of reused.
-- Scroll the remote screen from a rail next to the picture on touch devices: drag it for continuous scrolling, or tap and hold ▲/▼ to step. The mobile app replaces its toolbar scroll buttons with the rail, and a second scroll step in the same direction is no longer swallowed. The macOS Agent gains a `lease` command that holds input control without sending input, for plugins, and moves to build 5.
+- Scroll the remote screen from a rail next to the picture on touch devices: drag it for continuous scrolling, or tap and hold its up and down arrows to step. The mobile app replaces its toolbar scroll buttons with the rail, and a second scroll step in the same direction is no longer swallowed. The macOS Agent gains a `lease` command that holds input control without sending input, for plugins, and moves to build 5.
 - Apply each CLI family's default subagent route when a session is created or switched to another CLI, without replacing a route the user picked. The web and mobile run-configuration panels keep "follow the default" when saving instead of turning it into a per-session choice.
 - Tag error push notifications with their error category, and reposition both READMEs and `docs/super-agent.md` around MultiCC as a Super Agent workspace that carries a goal through to delivery.
 - Update the mobile app to 2.40.0 (build 184).
