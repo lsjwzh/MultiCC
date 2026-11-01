@@ -40,6 +40,14 @@ function createMachineRuntime({ root, authSecurity, getWss = () => null }) {
   }
   function mount(app, express) {
     const json = express.json({ limit: '16kb' });
+    // Loopback bypasses authentication and the proxy attaches the paired grant,
+    // so a cross-site page must never reach /api/machines by borrowing either.
+    app.use('/api/machines', (req, res, next) => {
+      if (String(req.headers['sec-fetch-site'] || '').toLowerCase() === 'cross-site') {
+        return res.status(403).json({ ok: false, code: 'machine_cross_site_denied', error: '不允许从其他网站访问多电脑接口' });
+      }
+      next();
+    });
     const route = (method, path, operation, input = req => req.body || {}) => app[method](path, json, async (req, res) => send(res, await operate(operation, input(req))));
     // Mounted before the global JSON parser: preserve multipart and binary bodies.
     app.use('/api/machines/:machineId/proxy', express.raw({ type: () => true, limit: '48mb' }), async (req, res) => {

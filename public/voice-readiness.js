@@ -242,6 +242,14 @@
     }
 
     function openSettings() {
+      // In a computer scope the entry console is above us: navigate the
+      // outermost scoped window instead of escaping to the entry's top page.
+      const scope = win.MultiCCMachineScope;
+      if (scope) {
+        const target = typeof scope.rootWindow === 'function' ? scope.rootWindow() : win;
+        target.location.assign(scope.navigation(SETTINGS_URL));
+        return;
+      }
       // The Chat page usually lives in an Air iframe; settings belong to the top window.
       let target = win;
       try { if (win.top && win.top.location && win.top.location.origin === win.location.origin) target = win.top; } catch (_) {}

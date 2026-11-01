@@ -510,6 +510,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/machine_ui_i18n_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/main_shell_overlay_test.dart",
       "tier": "other",
       "lane": "flutter"

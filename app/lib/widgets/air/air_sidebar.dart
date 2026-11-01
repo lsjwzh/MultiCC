@@ -104,7 +104,10 @@ class AirSidebar extends StatelessWidget {
 
   /// 「推送通知」在原生侧落到设置中心的那一页（本机通知通道，不是浏览器订阅）。
   final VoidCallback onOpenPush;
-  final VoidCallback onLogout;
+
+  /// 机器壳（目标电脑作用域）里没有「退出登录」：清的是入口连接，作用域实例
+  /// 一保存 host/token 就会抛 StateError。null = 不渲染那颗按钮。
+  final VoidCallback? onLogout;
   final VoidCallback? onOpenVoiceCall;
   final ValueChanged<bool>? onAdvancedModeChanged;
 
@@ -754,7 +757,7 @@ class _MoreSection extends StatelessWidget {
   final VoidCallback onOpenAllDestinations;
   final AirOpsStore ops;
   final VoidCallback onOpenPush;
-  final VoidCallback onLogout;
+  final VoidCallback? onLogout;
 
   /// 「常用设置」那三行（Provider 配置 / 外网穿透 / 消息桥接）。它们就是老抽屉里
   /// 的三个目的地，没有自己的原生页，所以整条交给宿主去开那一页。

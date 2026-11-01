@@ -38,9 +38,19 @@ test('real console keeps the entry sidebar and remote frame scoped through refre
   routes['/api/machines/machine_remote/proxy/api/download'] = { headers: { 'content-type': 'text/plain; charset=utf-8' }, body: 'remote file contents' };
   routes['POST /api/auth/ws-ticket'] = ({ body }) => json({ ticket: 'fixture', path: JSON.parse(body).path });
   routes['POST /api/machines/machine_remote/ws-ticket'] = ({ body }) => json({ ticket: 'scoped-fixture', path: JSON.parse(body).path.split('?')[0], proxyPath: '/ws/machines/machine_remote' });
+  routes['POST /api/machines/machine_remote/proxy/api/aux/cancel'] = json({ ok: true });
   await withCdpHarness({ routes, locale: 'zh-CN', screenshotDir: path.join(os.tmpdir(), 'multicc-computers-qa') }, async page => {
     await page.navigate('/air');
     assert.ok(await page.waitFor('document.getElementById("console-view-machines")'));
+    // No ?machine=: machine-scope.js must be a no-op, so an image URL that only
+    // the entry computer can serve stays exactly as written.
+    const plainImg = await page.evaluate(`(async () => {
+      const img = document.createElement('img'); img.setAttribute('src', '/api/entry-only?probe=1');
+      document.body.append(img); await new Promise(resolve => setTimeout(resolve, 50));
+      img.remove();
+      return img.getAttribute('src');
+    })()`);
+    assert.equal(plainImg, '/api/entry-only?probe=1');
     await page.evaluate('document.getElementById("console-view-machines").click()');
     assert.ok(await page.waitFor('document.querySelector(".machine-tabs")?.textContent.includes("工作电脑")'));
     await page.evaluate('document.querySelectorAll(".machine-tabs button")[1].click()');
@@ -58,19 +68,54 @@ test('real console keeps the entry sidebar and remote frame scoped through refre
       localStorage.setItem('air:draft:same-id', 'entry draft'); w.localStorage.setItem('air:draft:same-id', 'remote draft');
       const response = await w.fetch('/api/value');
       const socket = await w.multiccWsUrl('ws://' + location.host + '/ws/chat?session=same-id');
-      const sharedSocket = await w.multiccWsUrl('ws://' + location.host + '/ws/chat?session=same-id&share=fixture');
+      const sharedSocket = await w.multiccWsUrl('ws://' + location.host + '/ws/chat?session=same-id&share=fixture&token=entry-token');
+      const doc = w.document;
+      const img = doc.createElement('img');
+      img.setAttribute('src', '/api/download?path=%2Ftmp%2Fa.png&inline=1&token=entry-token');
+      const staticImg = doc.createElement('img');
+      staticImg.setAttribute('src', '/icons/logo.png');
+      const poster = doc.createElement('video');
+      poster.setAttribute('poster', '/api/download?path=%2Ftmp%2Fposter.png&inline=1');
+      doc.body.append(img, staticImg, poster);
+      await new Promise(resolve => setTimeout(resolve, 80));
+      const beacon = w.navigator.sendBeacon('/api/aux/cancel', new Blob(['{"id":"x"}'], { type: 'application/json' }));
+      // The chat page sits inside the scoped /air frame: its outermost scoped
+      // window is that frame, never the entry console above it.
+      const nested = doc.createElement('iframe');
+      nested.srcdoc = '<script src="/machine-scope.js"></script>';
+      doc.body.append(nested);
+      const nestedRoot = await new Promise(resolve => { nested.onload = () => resolve(nested.contentWindow.MultiCCMachineScope.rootWindow() === w); });
       window.keptMachineFrame = frame;
-      return { value: await response.json(), local: localStorage.getItem('air:draft:same-id'), remote: w.localStorage.getItem('air:draft:same-id'), socket, sharedSocket };
+      return { value: await response.json(), local: localStorage.getItem('air:draft:same-id'), remote: w.localStorage.getItem('air:draft:same-id'), socket, sharedSocket,
+        img: img.getAttribute('src'), staticImg: staticImg.getAttribute('src'), poster: poster.getAttribute('poster'), beacon, nestedRoot };
     })()`);
     assert.deepEqual(scoped.value, { target: 'remote' });
     assert.equal(scoped.local, 'entry draft'); assert.equal(scoped.remote, 'remote draft');
     assert.equal(new URL(scoped.socket).pathname, '/ws/machines/machine_remote');
     assert.equal(new URL(scoped.sharedSocket).pathname, '/ws/machines/machine_remote');
+    assert.equal(new URL(scoped.sharedSocket).searchParams.has('share'), false);
+    assert.equal(new URL(scoped.sharedSocket).searchParams.has('token'), false);
+    // Every scoped ticket request must ask for the bare path — share/token in
+    // the query would be rejected by the target's machine proxy.
+    const ticketPaths = page.requests.filter(r => r.path === '/api/machines/machine_remote/ws-ticket').map(r => JSON.parse(r.body).path);
+    assert.ok(ticketPaths.length >= 2, `expected scoped ws-ticket calls, got ${ticketPaths.length}`);
+    for (const ticketPath of ticketPaths) assert.equal(/[?&](?:share|token)=/.test(ticketPath), false, `ticket path kept a credential: ${ticketPath}`);
+    // Remote images stream through the proxy; the entry token is stripped and
+    // static assets are left alone.
+    assert.equal(new URL(scoped.img).pathname, '/api/machines/machine_remote/proxy/api/download');
+    assert.equal(new URL(scoped.img).searchParams.has('token'), false);
+    assert.equal(new URL(scoped.img).searchParams.get('inline'), '1');
+    assert.equal(scoped.staticImg, '/icons/logo.png');
+    assert.equal(new URL(scoped.poster).pathname, '/api/machines/machine_remote/proxy/api/download');
+    assert.equal(scoped.beacon, true);
+    assert.equal(scoped.nestedRoot, true);
     await page.evaluate(`window.MultiCCAirAdmin.render('overview', {data: {directories: [], tasks: []}})`);
     assert.equal(await page.evaluate('window.keptMachineFrame === document.querySelector(".machine-frame")'), true);
     assert.ok((await page.evaluate('document.getElementById("sidebar").textContent')).includes('入口目录'));
     assert.ok(page.requests.some(r => r.path === '/api/machines/machine_remote/proxy/api/value'));
     assert.ok(!page.requests.some(r => r.path === '/api/value'));
+    assert.ok(page.requests.some(r => r.path === '/api/machines/machine_remote/proxy/api/aux/cancel'));
+    assert.ok(!page.requests.some(r => r.path === '/api/aux/cancel'));
     await page.evaluate(`Array.from(document.querySelector('.machine-frame').parentElement.children).find(n => n.tagName === 'BUTTON').click()`);
     assert.ok(await page.waitFor('document.querySelector(".machine-directory")'));
     await page.evaluate('document.querySelectorAll(".machine-actions button")[1].click()');
@@ -86,11 +131,14 @@ test('real console keeps the entry sidebar and remote frame scoped through refre
     assert.equal(await page.evaluate('getComputedStyle(document.getElementById("setup-card")).display'), 'none');
     assert.ok(await page.evaluate('document.querySelector(".machine-tabs").getBoundingClientRect().bottom < innerHeight'), 'computer tabs must be visible in the first mobile viewport');
     await page.screenshot('console-machines-mobile');
+    // Media probes above may race one un-rewritten entry request; what must not
+    // happen is the scoped download itself landing on the entry computer.
+    const entryDownloads = page.requests.filter(r => r.path === '/api/download').length;
     await page.navigate('/air?machine=machine_remote&machineName=工作电脑&machineDownload=%2Ftmp%2Freport.txt&inline=1&token=fixture-token');
     assert.ok(await page.waitFor('document.body.textContent.includes("remote file contents")'));
     const download = await page.evaluate('location.href');
     assert.equal(new URL(download).pathname, '/api/machines/machine_remote/proxy/api/download');
     assert.equal(new URL(download).searchParams.has('token'), false);
-    assert.ok(!page.requests.some(r => r.path === '/api/download'));
+    assert.equal(page.requests.filter(r => r.path === '/api/download').length, entryDownloads);
   });
 });

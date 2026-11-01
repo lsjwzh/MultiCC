@@ -114,7 +114,12 @@ if (typeof module !== 'undefined' && module.exports) {
     if (url.searchParams.get('share') && !window.MultiCCMachineScope) return url.toString();
     if (window.MultiCCMachineScope) {
       const scope = window.MultiCCMachineScope;
+      // The target's machine proxy (native/core/src/machines/mod.rs) rejects
+      // token/ticket/share in a scoped query: the ticket exchanged below with
+      // the pairing grant is the only credential the target accepts.
       url.searchParams.delete('ticket');
+      url.searchParams.delete('share');
+      url.searchParams.delete('token');
       const response = await window.fetch(`${scope.prefix}/ws-ticket`, {
         method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: url.pathname + url.search }),

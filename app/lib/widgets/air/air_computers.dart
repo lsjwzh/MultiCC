@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import '../../i18n.dart';
 import '../../providers/session_manager.dart';
 import '../../screens/main_shell.dart';
 import '../../screens/machine_settings_screen.dart';
@@ -44,7 +45,11 @@ class _AirComputerConsoleState extends State<AirComputerConsole> {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
-              for (final (index, label) in [(0, '任务'), (1, '目录'), (2, '多电脑')])
+              for (final (index, label) in [
+                (0, t('task')),
+                (1, t('airMachinesDirectory')),
+                (2, t('airMachines')),
+              ])
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ChoiceChip(
@@ -202,7 +207,11 @@ class _AirComputersState extends State<AirComputers> {
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (_, update) => AlertDialog(
-          title: Text(existing == null ? '添加电脑' : '重新连接电脑'),
+          title: Text(
+            existing == null
+                ? t('airMachinesAdd')
+                : t('airMachinesReconnectTitle'),
+          ),
           content: SingleChildScrollView(
             child: SizedBox(
               width: 380,
@@ -212,10 +221,10 @@ class _AirComputersState extends State<AirComputers> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     for (final (controller, label, secret) in [
-                      (name, '电脑名称', false),
-                      (origin, '访问地址（含协议与端口）', false),
-                      (password, '目标电脑访问密码', true),
-                    ])
+                      (name, t('airMachinesName'), false),
+                      (origin, t('airMachinesOriginFull'), false),
+                      (password, t('airMachinesPassword'), true),
+                    ]) ...[
                       Padding(
                         padding: const EdgeInsets.only(bottom: 12),
                         child: TextFormField(
@@ -226,11 +235,24 @@ class _AirComputersState extends State<AirComputers> {
                           enableSuggestions: !secret,
                           validator: (value) =>
                               value == null || value.trim().isEmpty
-                              ? '请填写此项'
+                              ? t('airMachinesRequired')
                               : null,
                         ),
                       ),
-                    const Text('只连接你管理的电脑。密码仅用于验证，后续授权可在目标电脑单独撤销。'),
+                      // 只是静态说明：http 会把访问密码与授权明文送出。
+                      if (controller == origin)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Text(
+                            t('airMachinesInsecureHint'),
+                            style: const TextStyle(
+                              color: AppColors.muted,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                    ],
+                    Text(t('airMachinesPairHintCurrent')),
                     if (error.isNotEmpty)
                       Text(
                         error,
@@ -244,7 +266,7 @@ class _AirComputersState extends State<AirComputers> {
           actions: [
             TextButton(
               onPressed: saving ? null : () => Navigator.pop(dialogContext),
-              child: const Text('取消'),
+              child: Text(t('cancel')),
             ),
             FilledButton(
               onPressed: saving
@@ -281,7 +303,9 @@ class _AirComputersState extends State<AirComputers> {
                         payload['password'] = '';
                       }
                     },
-              child: Text(saving ? '正在验证…' : '验证并连接'),
+              child: Text(
+                saving ? t('airMachinesVerifying') : t('airMachinesVerify'),
+              ),
             ),
           ],
         ),
@@ -303,16 +327,18 @@ class _AirComputersState extends State<AirComputers> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('移除 ${machine.name} 的连接？'),
-        content: const Text('不会删除目标电脑上的目录和任务。'),
+        title: Text(
+          t('airMachinesRemoveTitle', {'name': machine.name}),
+        ),
+        content: Text(t('airMachinesRemoveBody')),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
+            child: Text(t('cancel')),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('移除连接'),
+            child: Text(t('airMachinesRemove')),
           ),
         ],
       ),
@@ -326,7 +352,7 @@ class _AirComputersState extends State<AirComputers> {
       if (!mounted) return;
       if (result['remoteRevoked'] != true) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('连接已移除。目标电脑离线，请在其访问授权中撤销旧授权。')),
+          SnackBar(content: Text(t('airMachinesRemovedOffline'))),
         );
       }
       _selected = null;
@@ -391,9 +417,12 @@ class _AirComputersState extends State<AirComputers> {
             OutlinedButton.icon(
               onPressed: () => _connect(),
               icon: const Icon(Icons.add),
-              label: const Text('添加电脑'),
+              label: Text(t('airMachinesAdd')),
             ),
-            TextButton(onPressed: _grants, child: const Text('入口电脑的访问授权')),
+            TextButton(
+              onPressed: _grants,
+              child: Text(t('airMachinesEntryGrants')),
+            ),
           ],
         ),
         SingleChildScrollView(
@@ -405,7 +434,8 @@ class _AirComputersState extends State<AirComputers> {
                   padding: const EdgeInsets.only(right: 8),
                   child: ChoiceChip(
                     label: Text(
-                      '${machine.name}${machine.local ? ' · 入口电脑' : ''}',
+                      '${machine.name}'
+                      '${machine.local ? t('airMachinesEntrySuffix') : ''}',
                     ),
                     selected: _selected?.id == machine.id,
                     onSelected: (_) => _select(machine),
@@ -417,15 +447,15 @@ class _AirComputersState extends State<AirComputers> {
         if (_selected case final machine?) ...[
           const SizedBox(height: 16),
           Text(
-            '当前操作电脑：${machine.name}',
+            '${t('airMachinesTargetPrefix')}${machine.name}',
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
           Text(
             _busy
-                ? '正在连接…'
+                ? t('airMachinesConnectingNow')
                 : _error.isEmpty
-                ? '已连接 · 操作仅作用于此电脑'
-                : '连接不可用',
+                ? t('airMachinesConnectedNow')
+                : t('airMachinesUnavailable'),
             style: const TextStyle(color: AppColors.muted),
           ),
           Wrap(
@@ -435,16 +465,16 @@ class _AirComputersState extends State<AirComputers> {
                 onPressed: _busy || _error.isNotEmpty
                     ? null
                     : () => _settingsPage(machine),
-                child: const Text('电脑设置'),
+                child: Text(t('airMachinesSettings')),
               ),
               if (!machine.local) ...[
                 TextButton(
                   onPressed: () => _connect(machine),
-                  child: const Text('重新连接'),
+                  child: Text(t('airMachinesReconnect')),
                 ),
                 TextButton(
                   onPressed: () => _remove(machine),
-                  child: const Text('移除连接'),
+                  child: Text(t('airMachinesRemove')),
                 ),
               ],
             ],
@@ -462,15 +492,15 @@ class _AirComputersState extends State<AirComputers> {
           if (!_busy &&
               _error.isEmpty &&
               (_snapshot?.directories.isEmpty ?? false))
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Text('这台电脑暂无工作目录'),
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(t('airMachinesNoDirectoriesNow')),
             ),
         ],
         if (_busy) const LinearProgressIndicator(),
         if (_error.isNotEmpty) ...[
           Text(_error),
-          TextButton(onPressed: _load, child: const Text('重试')),
+          TextButton(onPressed: _load, child: Text(t('retry'))),
         ],
       ],
     ),
@@ -502,7 +532,7 @@ class _ComputerTargetShellState extends State<ComputerTargetShell> {
       appBar: AppBar(
         automaticallyImplyLeading: false,
         leading: IconButton(
-          tooltip: '返回多电脑',
+          tooltip: t('airMachinesBackToComputers'),
           icon: const Icon(Icons.close),
           onPressed: () => Navigator.of(context).pop(),
         ),
@@ -511,7 +541,9 @@ class _ComputerTargetShellState extends State<ComputerTargetShell> {
           preferredSize: const Size.fromHeight(28),
           child: Padding(
             padding: const EdgeInsets.only(bottom: 8),
-            child: Text('当前操作与保存目标：${widget.name}'),
+            child: Text(
+              t('airMachinesShellTarget', {'name': widget.name}),
+            ),
           ),
         ),
       ),
@@ -568,15 +600,17 @@ class _ComputerGrantsState extends State<ComputerGrants> {
     final approved = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('撤销 ${grant['name']} 的访问？'),
+        title: Text(
+          t('airMachinesRevokeTitle', {'name': '${grant['name']}'}),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
+            child: Text(t('cancel')),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('撤销访问'),
+            child: Text(t('airMachinesRevoke')),
           ),
         ],
       ),
@@ -595,17 +629,17 @@ class _ComputerGrantsState extends State<ComputerGrants> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('入口电脑的访问授权')),
+    appBar: AppBar(title: Text(t('airMachinesEntryGrants'))),
     body: ListView(
       children: [
         if (_grants.isEmpty && _error.isEmpty)
-          const ListTile(title: Text('暂无其他电脑的访问授权')),
+          ListTile(title: Text(t('airMachinesNoGrants'))),
         for (final grant in _grants)
           ListTile(
             title: Text(grant['name']),
             trailing: TextButton(
               onPressed: () => _revoke(grant),
-              child: const Text('撤销访问'),
+              child: Text(t('airMachinesRevoke')),
             ),
           ),
         if (_error.isNotEmpty) ListTile(title: Text(_error), onTap: _load),

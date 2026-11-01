@@ -60,7 +60,7 @@
     for (const open of document.querySelectorAll('dialog[open]')) open.close();
     if (!location.pathname.startsWith('/air')) { location.href = window.MultiCCMachineScope?.navigation('/air?view=aux') || '/air?view=aux'; return; }
     // window.history: `history` in this file is the command history above.
-    window.history.pushState({}, '', '/air?view=aux');
+    window.history.pushState({}, '', window.MultiCCMachineScope?.navigation('/air?view=aux') || '/air?view=aux');
     window.dispatchEvent(new PopStateEvent('popstate'));
   }
 

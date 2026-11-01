@@ -63,17 +63,56 @@ class _TaskArtifactsPanelState extends State<TaskArtifactsPanel> {
     if (_searchCtrl.text.isNotEmpty) _searchCtrl.clear();
   }
 
+  /// 机器作用域里 `/manage` 的机器参数会被服务端 302 丢掉，直接开 Air 的
+  /// 同名 view；单机保持原地址不变。
+  String _page(String path) {
+    if (!widget.settings.isMachineScoped) return path;
+    return path.startsWith('/manage?')
+        ? path.replaceFirst('/manage?', '/air?')
+        : path;
+  }
+
+  void _machineUnavailable() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(t('airMachinesUnavailable')),
+        duration: const Duration(milliseconds: 1600),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   Future<void> _open(String url) async {
-    final uri = Uri.tryParse(widget.settings.buildHttpUrl(url));
+    final resolved = widget.settings.machinePageUrl(_page(url));
+    if (resolved == null) {
+      _machineUnavailable();
+      return;
+    }
+    final uri = Uri.tryParse(resolved);
     if (uri == null) return;
     await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   Future<void> _copy(String url) async {
+    var resolved = widget.settings.machinePageUrl(_page(url));
+    if (resolved == null) {
+      _machineUnavailable();
+      return;
+    }
+    // 复制出去的链接会被转贴：机器作用域补上的访问令牌不能跟着进剪贴板。
+    if (widget.settings.isMachineScoped) {
+      final uri = Uri.parse(resolved);
+      if (uri.queryParameters.containsKey('token')) {
+        final query = Map<String, String>.of(uri.queryParameters)
+          ..remove('token');
+        resolved = uri
+            .replace(queryParameters: query.isEmpty ? null : query)
+            .toString();
+      }
+    }
     try {
-      await Clipboard.setData(
-        ClipboardData(text: widget.settings.buildHttpUrl(url)),
-      );
+      await Clipboard.setData(ClipboardData(text: resolved));
       widget.controller.markCopied(true);
     } catch (_) {
       widget.controller.markCopied(false);

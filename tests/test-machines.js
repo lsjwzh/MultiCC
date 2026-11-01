@@ -56,9 +56,15 @@ test('two computers isolate writes, proxy raw uploads, bridge sockets and revoke
   const a = await instance(t, 'entry'), b = await instance(t, 'target');
   const rejected = await a.request('/api/machines', 'POST', { name: '电脑乙', origin: b.origin, password: 'wrong' });
   assert.equal(rejected.status, 403);
+  assert.equal(rejected.body.code, 'machine_password_invalid');
   const added = await a.request('/api/machines', 'POST', { name: '电脑乙', origin: b.origin, password: 'fixture-access-password' });
   assert.equal(added.status, 200);
   const id = added.body.id, proxy = `/api/machines/${id}/proxy`;
+  const crossSite = await a.request('/api/machines', 'GET', undefined, { 'sec-fetch-site': 'cross-site' });
+  assert.equal(crossSite.status, 403);
+  assert.equal(crossSite.body.code, 'machine_cross_site_denied');
+  assert.equal((await a.request(proxy + '/api/value', 'GET', undefined, { 'sec-fetch-site': 'cross-site' })).status, 403);
+  assert.equal((await a.request('/api/machines', 'GET', undefined, { 'sec-fetch-site': 'same-origin' })).status, 200);
   assert.equal((await a.request(proxy + '/api/value')).body.value, 'target');
   await a.request(proxy + '/api/value', 'PUT', { value: 'changed remotely' });
   assert.equal((await b.request('/api/value')).body.value, 'changed remotely');

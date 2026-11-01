@@ -13,6 +13,7 @@ import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../screens/file_browser_screen.dart';
+import '../screens/machine_settings_screen.dart';
 import '../screens/settings_screen.dart';
 import '../utils/context_level.dart';
 import '../screens/share_messages_screen.dart';
@@ -554,7 +555,12 @@ class ChatHeader extends StatelessWidget {
 
   void _openSettings(BuildContext context, SettingsService settings) {
     Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => SettingsScreen(settings: settings)),
+      MaterialPageRoute(
+        // 机器壳里的对话不能再打开入口电脑的设置页（连接保存会抛 StateError）。
+        builder: (_) => settings.isMachineScoped
+            ? MachineSettingsScreen(settings: settings)
+            : SettingsScreen(settings: settings),
+      ),
     );
   }
 }

@@ -36,10 +36,54 @@ String rewriteLoopbackUrl(String rawUrl, String currentHost) {
   return uri.replace(host: host).toString();
 }
 
-/// 打开一个登记条目，返回是否成功交给系统浏览器。相对路径（/docs/…、
-/// /artifacts/…）拼到当前服务器 origin 并附 token（同源凭据安全）；绝对
-/// http(s) URL 打开前做 loopback host 改写，绝不附带 token，避免把服务器凭据
-/// 泄露给第三方 host。
+/// 解析登记条目最终要交给浏览器的 URL。
+///
+/// 单机作用域：相对路径（/docs/…、/artifacts/…）拼到当前服务器 origin 并附
+/// token（同源凭据安全）；绝对 http(s) URL 打开前做 loopback host 改写，绝不
+/// 附带 token，避免把服务器凭据泄露给第三方 host。
+///
+/// 机器作用域：资源根（/artifacts|/services|/plugins）由目标电脑 origin 提供；
+/// loopback 绝对地址把 host 换成**目标电脑**的 host（端口、协议、路径保持），
+/// 与单机用入口 host 改写对称；其它相对路径交给 [SettingsService.machinePageUrl]
+/// 带上 machine 参数开入口页面。返回 null 表示目标 origin 未知 —— 调用方必须
+/// 提示不可用，绝不能回落到入口电脑地址。
+@visibleForTesting
+Uri? docsRegistryEntryUri(SettingsService settings, DocsRegistryEntry e) {
+  if (settings.isMachineScoped) {
+    if (settings.isMachineResourcePath(e.url)) {
+      return settings.machineResourceUrl(e.url);
+    }
+    final absolute = e.url.startsWith('http://') ||
+        e.url.startsWith('https://');
+    if (absolute) {
+      final uri = Uri.tryParse(e.url);
+      if (uri != null && isLoopbackHost(uri.host)) {
+        final machineHost = Uri.tryParse(settings.machineOrigin)?.host ?? '';
+        if (machineHost.isEmpty) return null;
+        return Uri.parse(rewriteLoopbackUrl(e.url, machineHost));
+      }
+      return Uri.parse(e.url);
+    }
+    final page = settings.machinePageUrl(e.url);
+    return page == null ? null : Uri.parse(page);
+  }
+  final remote = settings.machineResourceUrl(e.url);
+  if (remote != null) return remote;
+  if (e.url.startsWith('http://') || e.url.startsWith('https://')) {
+    final serverHost = Uri.tryParse(settings.buildHttpUrl('/'))?.host ?? '';
+    return Uri.parse(rewriteLoopbackUrl(e.url, serverHost));
+  }
+  final token = settings.token.trim();
+  return Uri.parse(settings.buildHttpUrl(e.url)).replace(
+    queryParameters: {
+      ...?Uri.tryParse(e.url)?.queryParameters,
+      if (token.isNotEmpty) 'token': token,
+    },
+  );
+}
+
+/// 打开一个登记条目，返回是否成功交给系统浏览器。解析规则见
+/// [docsRegistryEntryUri]。
 ///
 /// 服务与文档页与「本目录产物」页共用这一份实现 —— 两个页面点同一条登记
 /// 必须得到同一种打开行为（改写规则只写一次）。
@@ -47,22 +91,8 @@ Future<bool> openDocsRegistryEntry(
   SettingsService settings,
   DocsRegistryEntry e,
 ) async {
-  Uri uri;
-  final remote = settings.machineResourceUrl(e.url);
-  if (remote != null) {
-    uri = remote;
-  } else if (e.url.startsWith('http://') || e.url.startsWith('https://')) {
-    final serverHost = Uri.tryParse(settings.buildHttpUrl('/'))?.host ?? '';
-    uri = Uri.parse(rewriteLoopbackUrl(e.url, serverHost));
-  } else {
-    final token = settings.token.trim();
-    uri = Uri.parse(settings.buildHttpUrl(e.url)).replace(
-      queryParameters: {
-        ...?Uri.tryParse(e.url)?.queryParameters,
-        if (token.isNotEmpty) 'token': token,
-      },
-    );
-  }
+  final uri = docsRegistryEntryUri(settings, e);
+  if (uri == null) return false;
   try {
     return await launchUrl(uri, mode: LaunchMode.externalApplication);
   } catch (_) {
@@ -189,7 +219,16 @@ class _DocsRegistryScreenState extends State<DocsRegistryScreen> {
   /// 打开条目 —— 见 [openDocsRegistryEntry]（与「本目录产物」页同一份实现）。
   Future<void> _open(DocsRegistryEntry e) async {
     final ok = await openDocsRegistryEntry(widget.settings, e);
-    if (!ok) _snack(t('openBrowserFailed'), isError: true);
+    if (ok) return;
+    // 目标电脑 origin 未知时不要提示成「打开失败再试一次」：那条路根本不该
+    // 回落到入口电脑。
+    final unavailable =
+        widget.settings.isMachineResourcePath(e.url) &&
+        widget.settings.machineResourceUrl(e.url) == null;
+    _snack(
+      t(unavailable ? 'airMachinesUnavailable' : 'openBrowserFailed'),
+      isError: true,
+    );
   }
 
   Future<void> _togglePin(DocsRegistryEntry e) async {

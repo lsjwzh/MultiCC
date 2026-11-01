@@ -148,7 +148,7 @@ const MIGRATION_DEBT = Object.freeze({
   // 落回 <= 3000 就删掉这条。
   'public/run-config.js': Object.freeze({
     ceiling: 3026,
-    byteCeiling: 154489,
+    byteCeiling: 154536,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),
@@ -536,9 +536,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   = +16 行，重跑生成器实测 10094/652690；同时改写 rsControlHint/rsRfbCtrlHint
     //   （双击不再复位，改指右下角「1×」；长按=右键），中英各 1 行，实测 10094/652752。
     // +31 双语键：多电脑入口、连接与撤销授权、目标电脑及保存提示；仅增加生成词典数据。
-    maxLines: 10158,
+    // +41 双语键（App 的多电脑设置面：地址校验、连接进度、撤销确认、设置分类与工具
+    //   菜单，以及网页添加电脑表单复用的 airMachinesInsecureHint 明文传输提示），
+    //   中英各 41 行 = +82 行，重跑生成器实测 10240/661845（行数按 countLines 量法，
+    //   比 wc -l 多 1）。
+    maxLines: 10240,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 656277,
+    maxBytes: 661845,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

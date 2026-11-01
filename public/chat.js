@@ -202,7 +202,8 @@ function fixupLocalImages(root) {
     img.addEventListener('load', () => chatScrollController?.handleLayoutChange(), { once: true });
     if (!_LOCAL_IMG_RE.test(raw)) return;
     const p = raw.replace(/^file:\/\//, '');
-    const url = withToken('/api/download?path=' + encodeURIComponent(p) + '&inline=1');
+    const download = withToken('/api/download?path=' + encodeURIComponent(p) + '&inline=1');
+    const url = window.MultiCCMachineScope ? window.MultiCCMachineScope.http(download) : download;
     const name = p.split(/[\\/]/).pop();
     img.src = url;
     img.style.maxWidth = '100%';
@@ -2821,7 +2822,7 @@ const taskSeparation = window.MultiCCTaskSeparation.createController({
   getSession: () => SHARE_MODE || _params.get('readOnly') === '1' ? null : _sessionName,
   request: (url, options) => chatApi.json(withToken(url), options),
   show: window.MultiCCTaskSeparation.showDialog, showPill: window.MultiCCTaskSeparation.showPill,
-  navigate: url => { (window.top || window).location.href = window.MultiCCMachineScope?.navigation(url) || url; },
+  navigate: url => { const scope = window.MultiCCMachineScope; (scope?.rootWindow ? scope.rootWindow() : window.top || window).location.href = scope?.navigation(url) || url; },
   report: error => console.warn('Task separation:', error.message),
 });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) taskSeparation.refresh(); });

@@ -287,7 +287,9 @@ class AirOpsPanel extends StatelessWidget {
 
   final AirOpsStore store;
   final VoidCallback onOpenPush;
-  final VoidCallback onLogout;
+
+  /// 机器作用域下传 null：退出登录清的是入口连接，作用域内没有这个入口。
+  final VoidCallback? onLogout;
 
   @override
   Widget build(BuildContext context) {
@@ -355,11 +357,12 @@ class AirOpsPanel extends StatelessWidget {
                     label: '🔄 重启',
                     onTap: () => unawaited(confirmAirRestart(context, store)),
                   ),
-                  _OpsButton(
-                    semanticKey: 'air-logout-btn',
-                    label: '退出登录',
-                    onTap: onLogout,
-                  ),
+                  if (onLogout != null)
+                    _OpsButton(
+                      semanticKey: 'air-logout-btn',
+                      label: '退出登录',
+                      onTap: onLogout!,
+                    ),
                 ],
               ),
             ),
