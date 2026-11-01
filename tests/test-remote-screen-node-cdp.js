@@ -137,15 +137,15 @@ test('h264 stream: fake agent → bridge → Chrome WebCodecs decodes frames and
       assert.equal(view.closed, false);
       assert.ok(received.includes(REQ_KEY), 'decoder asked for a key frame on configure');
 
-      // 输入：可操作态下点 canvas 中心、敲一个 a。CSS 640 宽 → 逻辑 320，中心 = (160,120)。
+      // 输入：画面端只提供 sendPointer / sendKey（手势与键盘由共享输入层驱动）。
+      // CSS 640 宽 → 逻辑 320，中心 = (160,120)。
       received.length = 0;
       await page.evaluate(`(() => {
-        const c = document.querySelector('#t canvas');
-        window.v.viewOnly = false;
-        const at = (type, buttons) => c.dispatchEvent(new PointerEvent(type, { clientX: 320, clientY: 240, buttons, bubbles: true }));
-        at('pointerdown', 1); at('pointerup', 0);
-        c.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
-        c.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+        const v = window.v;
+        v.sendPointer(1, 160, 120);
+        v.sendPointer(0, 160, 120);
+        v.sendKey(true, 0x61);
+        v.sendKey(false, 0x61);
         return true;
       })()`);
       const deadline = Date.now() + 3000;
@@ -155,22 +155,13 @@ test('h264 stream: fake agent → bridge → Chrome WebCodecs decodes frames and
       assert.ok(hex.includes('0500' + '00a0' + '0078'), `pointer up at (160,120): ${hex}`);
       assert.ok(hex.includes('0401000000000061') && hex.includes('0400000000000061'), `key a down/up: ${hex}`);
 
-      // 悬停：画面里是远端真实光标，鼠标不按键移动也要发（限频，首个立即、末个补发，中间丢）；
-      // 触屏没有悬停，不发。
+      // 悬停样本（输入层限频后发来的 mask 0 指针）照样原样转发。
       received.length = 0;
-      await page.evaluate(`(() => {
-        const c = document.querySelector('#t canvas');
-        const mv = (x, pointerType) => c.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: 240, buttons: 0, pointerType, bubbles: true }));
-        for (let x = 100; x <= 300; x += 20) mv(x, 'mouse');
-        mv(400, 'touch');
-        return true;
-      })()`);
+      await page.evaluate('window.v.sendPointer(0, 50, 120), window.v.sendPointer(0, 150, 120), true');
       await new Promise(r => setTimeout(r, 300));
       const hover = Buffer.from(received).toString('hex');
-      assert.ok(hover.includes('0500' + '0032' + '0078'), `first hover sample goes out at once (50,120): ${hover}`);
-      assert.ok(hover.includes('0500' + '0096' + '0078'), `final hover position is flushed (150,120): ${hover}`);
-      assert.ok(!hover.includes('0500' + '0064' + '0078'), `burst samples in between are throttled: ${hover}`);
-      assert.ok(!hover.includes('0500' + '00c8' + '0078'), `touch moves without contact send nothing: ${hover}`);
+      assert.ok(hover.includes('0500' + '0032' + '0078'), `hover at (50,120): ${hover}`);
+      assert.ok(hover.includes('0500' + '0096' + '0078'), `hover at (150,120): ${hover}`);
 
       await page.evaluate('window.v.disconnect(), true');
       assert.ok(await page.waitFor('window.disconnected === true', { timeoutMs: 3000 }));
@@ -208,13 +199,7 @@ test('h264 p2p: Chrome ⇄ werift DataChannel carries frames and input, falls ba
       const relayed = bridges[0].stats.forwarded;
 
       received.length = 0;
-      await page.evaluate(`(() => {
-        const c = document.querySelector('#t canvas');
-        window.v.viewOnly = false;
-        c.dispatchEvent(new PointerEvent('pointerdown', { clientX: 320, clientY: 240, buttons: 1, bubbles: true }));
-        c.dispatchEvent(new PointerEvent('pointerup', { clientX: 320, clientY: 240, buttons: 0, bubbles: true }));
-        return true;
-      })()`);
+      await page.evaluate('window.v.sendPointer(1, 160, 120), window.v.sendPointer(0, 160, 120), true');
       const deadline = Date.now() + 3000;
       while (received.length < 12 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50));
       assert.ok(Buffer.from(received).toString('hex').includes('050100a00078'), 'pointer arrives over the direct channel');

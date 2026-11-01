@@ -324,10 +324,15 @@ abstract final class RfbKeysyms {
   static const linefeed = 0xFF0A;
   static const enter = 0xFF0D;
   static const escape = 0xFF1B;
+  static const home = 0xFF50;
   static const left = 0xFF51;
   static const up = 0xFF52;
   static const right = 0xFF53;
   static const down = 0xFF54;
+  static const pageUp = 0xFF55;
+  static const pageDown = 0xFF56;
+  static const end = 0xFF57;
+  static const f1 = 0xFFBE; // F1…F12 are consecutive.
   static const delete = 0xFFFF;
   static const shiftL = 0xFFE1;
   static const ctrlL = 0xFFE3;

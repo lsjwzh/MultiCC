@@ -67,14 +67,16 @@ function msg(type, payload) {
   return Buffer.concat([head, payload]);
 }
 
-// 只装播放端的测试页：640×480 的容器 + chat-remote-screen-h264.js。
+// 只装播放端 + 共享输入层的测试页：640×480 的容器 + chat-remote-screen-h264.js。
 function viewerRoutes() {
   return {
     '/': { headers: { 'content-type': 'text/html; charset=utf-8' },
       body: '<!doctype html><body style="margin:0"><div id="t" style="position:fixed;inset:0;width:640px;height:480px"></div>'
-        + '<script src="/chat-remote-screen-h264.js"></script></body>' },
+        + '<script src="/chat-remote-screen-h264.js"></script><script src="/chat-remote-input.js"></script></body>' },
     '/chat-remote-screen-h264.js': { headers: { 'content-type': 'text/javascript' },
       body: fs.readFileSync(path.join(__dirname, '..', 'public', 'chat-remote-screen-h264.js')) },
+    '/chat-remote-input.js': { headers: { 'content-type': 'text/javascript' },
+      body: fs.readFileSync(path.join(__dirname, '..', 'public', 'chat-remote-input.js')) },
   };
 }
 
@@ -148,15 +150,15 @@ test('h264 stream: fake agent → multicc-remote → Node forwarder → Chrome d
       assert.equal(view.closed, false);
       assert.ok(received.includes(REQ_KEY), 'decoder asked for a key frame on configure');
 
-      // 输入：可操作态下点 canvas 中心、敲一个 a。CSS 640 宽 → 逻辑 320，中心 = (160,120)。
+      // 输入：画面端只提供 sendPointer / sendKey；手势与键盘由共享输入层驱动。
+      // CSS 640 宽 → 逻辑 320，中心 = (160,120)。
       received.length = 0;
       await page.evaluate(`(() => {
-        const c = document.querySelector('#t canvas');
-        window.v.viewOnly = false;
-        const at = (type, buttons) => c.dispatchEvent(new PointerEvent(type, { clientX: 320, clientY: 240, buttons, bubbles: true }));
-        at('pointerdown', 1); at('pointerup', 0);
-        c.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
-        c.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+        const v = window.v;
+        v.sendPointer(1, 160, 120);
+        v.sendPointer(0, 160, 120);
+        v.sendKey(true, 0x61);
+        v.sendKey(false, 0x61);
         return true;
       })()`);
       const deadline = Date.now() + 3000;
@@ -166,12 +168,27 @@ test('h264 stream: fake agent → multicc-remote → Node forwarder → Chrome d
       assert.ok(hex.includes('0500' + '00a0' + '0078'), `pointer up at (160,120): ${hex}`);
       assert.ok(hex.includes('0401000000000061') && hex.includes('0400000000000061'), `key a down/up: ${hex}`);
 
-      // 悬停：画面里是远端真实光标，鼠标不按键移动也要发（限频，首个立即、末个补发，中间丢）；
-      // 触屏没有悬停，不发。
+      // 悬停：层每 ~30ms 发一次无按键指针样本（画面里画的是远端真实光标）；触屏没有悬停。
+      await page.evaluate(`(() => {
+        const t = document.getElementById('t');
+        window.rin = MultiCCRemoteInput.create({
+          stage: t,
+          modifier: () => 'cmd',
+          control: () => true,
+          adapter: () => ({
+            kind: 'h264',
+            point: (x, y) => window.v.clientToInput(x, y),
+            pointer: (mask, x, y) => window.v.sendPointer(mask, x, y),
+            wheel: (bit, x, y, held) => { window.v.sendPointer(held | bit, x, y); window.v.sendPointer(held, x, y); },
+            key: (down, ks) => window.v.sendKey(down, ks),
+          }),
+        });
+        return true;
+      })()`);
       received.length = 0;
       await page.evaluate(`(() => {
-        const c = document.querySelector('#t canvas');
-        const mv = (x, pointerType) => c.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: 240, buttons: 0, pointerType, bubbles: true }));
+        const t = document.getElementById('t');
+        const mv = (x, pointerType) => t.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: 240, buttons: 0, pointerType, bubbles: true }));
         for (let x = 100; x <= 300; x += 20) mv(x, 'mouse');
         mv(400, 'touch');
         return true;

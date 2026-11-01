@@ -38,7 +38,17 @@
   const KEYS = [
     ['⏎', 'return'], ['Esc', 'escape'], ['Tab', 'tab'], ['⌫', 'delete'], ['Space', 'space'],
     ['←', 'left'], ['↑', 'up'], ['↓', 'down'], ['→', 'right'],
-    ['⌘A', 'cmd+a'], ['⌘C', 'cmd+c'], ['⌘V', 'cmd+v'], ['⌘Z', 'cmd+z'], ['⌘Tab', 'cmd+tab'], ['⌘W', 'cmd+w'],
+    ['⌘A', 'cmd+a'], ['⌘C', 'cmd+c'], ['⌘V', 'cmd+v'], ['⌘Z', 'cmd+z'],
+    // 浏览器自己会吃掉这几个组合键，页面上收不到 keydown：只能走键栏芯片。
+    ['⌘Tab', 'cmd+tab'], ['⌘W', 'cmd+w'], ['⌘T', 'cmd+t'], ['⌘N', 'cmd+n'], ['⌘Q', 'cmd+q'],
+  ];
+  // 修饰键芯片：点一下 = 一次性（作用于下一次指针按下 / 按键后自动松开），
+  // 连点两下 = 锁定，点亮时再点 = 释放。流式模式发真 KeyEvent，兼容模式进 mods。
+  const CHIPS = [
+    ['shift', '⇧', 'rsModShift', 'Shift'],
+    ['cmd', '⌘', 'rsModCmd', 'Command（⌘）'],
+    ['alt', '⌥', 'rsModAlt', 'Option（⌥）'],
+    ['ctrl', '⌃', 'rsModCtrl', 'Control（⌃）'],
   ];
 
   let ov = null;
@@ -143,6 +153,7 @@
         current.pauseBtn.textContent = '⏸ ' + tr('rsPause', '暂停');
         // 旧流可能停在锁屏前：断开后恢复 JPEG 取帧，避免仍停在黑屏。
         if (current.rfb) {
+          current.input?.releaseAll();
           current.rfbIntent = true;
           current.rfb.disconnect();
           current.rfb = null;
@@ -361,6 +372,7 @@
     if (current.closed || current.paused || current.region) return;
     const old = current.rfb;
     if (old) {
+      current.input?.releaseAll();
       // 等旧流的 disconnect 收尾（它会把图片层摆回来），再连新的，免得两者交错。
       const gone = new Promise(r => { old.addEventListener('disconnect', r, { once: true }); setTimeout(r, 1500); });
       current.rfbIntent = true;
@@ -405,7 +417,11 @@
         wrap.remove();
         if (s === current) s.img.style.display = '';
         if (s && s.rfbWrap === wrap) s.rfbWrap = null;
-        if (s && s.rfb === rfb) s.rfb = null;
+        if (s && s.rfb === rfb) {
+          s.rfb = null;
+          s.kind = 'http';
+          if (s.control) setControl(true); // 退回 JPEG 后提示 / 键栏按兼容模式重画
+        }
       };
       const fail = () => {
         if (settled) return;
@@ -431,6 +447,7 @@
         if (settled || !s) { settled = true; return; }
         settled = true;
         clearTimeout(timer);
+        s.kind = kind;
         s.img.style.display = 'none';
         s.viewRegion = null; s.regionLoading = false;
         status(kind === 'h264' ? h264Label(rfb) : tr('rsLiveMode', '流畅模式'));
@@ -438,13 +455,15 @@
         const cv = wrap.querySelector('canvas');
         if (cv) s.wheelRO?.observe(cv); // 画布随 framebuffer / 解码尺寸变，滚轮条跟着重排
         placeWheel();
-        if (s.control) setControl(true);
+        setControl(s.control); // 三种模式共用同一套手势 / 键栏提示
         resolve(true);
       });
       // 高清模式在直连 / 中继之间切换时刷新状态栏。
       rfb.addEventListener('transport', () => { if (s === current && s.rfb === rfb) status(h264Label(rfb)); });
       rfb.addEventListener('disconnect', () => {
         clearTimeout(timer);
+        // 先把按住的键 / 按钮放掉（仍在控制模式也要发 up），再收尾换回兼容模式。
+        current.input?.releaseAll();
         const intentional = current.rfbIntent;
         current.rfbIntent = false;
         teardown();
@@ -499,108 +518,132 @@
     setTimeout(() => dot.remove(), 600);
   }
 
-  function wirePointer(stage) {
-    let down = null;
-    let lastClick = null;
+  // ── 三种模式的输入适配器（手势与键盘全在 chat-remote-input.js 那一层）──
+  //
+  // 高清：H264View.sendPointer/sendKey，clientToInput 负责逻辑点换算。
+  // 流畅：noVNC 恒 viewOnly（它自己的指针 / 键盘 / 手势全部早退），这里直接用
+  //       RFB.messages.pointerEvent/keyEvent 往同一条 socket 写，坐标用
+  //       Display.absX/absY（framebuffer 像素）；Cursor 伪编码照旧，本地鼠标
+  //       看到的准星形状不变。
+  // 兼容：HTTP input。pointer 只认 mask 0/1，中键 / 右键在落点上改成一次
+  //       click.button（Agent 的 drag 没有 button 字段，中/右键本来就拖不了）。
+  function streamAdapter() {
+    const view = s.rfb;
+    const kind = s.kind === 'rfb' ? 'rfb' : 'h264';
+    const RfbClass = rfbMod && (rfbMod.RFB || rfbMod.default);
+    const messages = RfbClass && RfbClass.messages;
+    const canvas = s.rfbWrap?.querySelector('canvas') || null;
+    const live = () => !!s && s.rfb === view;
+    return {
+      kind,
+      point(cx, cy) {
+        if (kind === 'h264') return view.clientToInput(cx, cy);
+        const disp = view._display;
+        if (!disp || !canvas) return null;
+        const r = canvas.getBoundingClientRect();
+        if (!r.width || !r.height) return null;
+        if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) return null;
+        const x = Math.max(0, Math.min(disp.width - 1, disp.absX(cx - r.left)));
+        const y = Math.max(0, Math.min(disp.height - 1, disp.absY(cy - r.top)));
+        return { x: Math.round(x), y: Math.round(y) };
+      },
+      pointer(mask, x, y) {
+        if (!live()) return;
+        if (kind === 'h264') { view.sendPointer(mask, x, y); return; }
+        if (messages && view._sock) messages.pointerEvent(view._sock, x, y, mask);
+      },
+      wheel(bit, x, y, held) {
+        if (!live()) return;
+        if (kind === 'h264') { view.sendPointer(held | bit, x, y); view.sendPointer(held, x, y); return; }
+        if (messages && view._sock) {
+          messages.pointerEvent(view._sock, x, y, held | bit);
+          messages.pointerEvent(view._sock, x, y, held);
+        }
+      },
+      key(down, ks) {
+        if (!live()) return;
+        if (kind === 'h264') { view.sendKey(down, ks); return; }
+        if (messages && view._sock) messages.keyEvent(view._sock, ks, down ? 1 : 0);
+      },
+    };
+  }
+
+  // 兼容模式的 HTTP 通道：pointer 样本按 mask 边沿合并（拖动时不刷屏），
+  // 老服务端不认识 pointer 时退回 click/drag。
+  function httpAdapter() {
     const viewer = global.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2);
+    const mods = () => (s && s.input ? s.input.mods() : []);
+    const withMods = body => { const m = mods(); return m.length ? { ...body, mods: m } : body; };
     const pending = [];
     let sending = false, queuedMask = 0, drained = Promise.resolve();
     let legacy = false, legacyDown = null;
+    let pressMask = 0, downMask = 0, downAt = null;
     const legacyPointer = async body => {
       if (body.mask === 1) { legacyDown ||= body; return; }
       const start = legacyDown; legacyDown = null;
       if (!start) return;
       const drag = Math.hypot(body.x - start.x, body.y - start.y) > 8;
-      await input({ op: drag ? 'drag' : 'click', x: start.x, y: start.y,
-        ...(drag ? { x2: body.x, y2: body.y, ms: 350 } : {}) });
+      await input(withMods({ op: drag ? 'drag' : 'click', x: start.x, y: start.y,
+        ...(drag ? { x2: body.x, y2: body.y, ms: 350 } : {}) }));
     };
-    const pointer = (mask, p) => {
+    const sample = (mask, x, y) => {
       const edge = mask !== queuedMask;
       queuedMask = mask;
-      const sample = { op: 'pointer', viewer, mask, x: p.x, y: p.y, edge };
-      if (!edge && pending.length && !pending[pending.length - 1].edge) pending[pending.length - 1] = sample;
-      else pending.push(sample);
+      const body = withMods({ op: 'pointer', viewer, mask, x, y, edge });
+      if (!edge && pending.length && !pending[pending.length - 1].edge) pending[pending.length - 1] = body;
+      else pending.push(body);
       if (sending) return;
       sending = true;
       drained = (async () => {
         try {
           while (pending.length) {
-            const { edge: _, ...body } = pending.shift();
-            if (!legacy) await input(body, () => { legacy = true; });
-            if (legacy) await legacyPointer(body);
+            const { edge: _, ...rest } = pending.shift();
+            if (!legacy) await input(rest, () => { legacy = true; });
+            if (legacy) await legacyPointer(rest);
           }
         } finally { sending = false; }
       })();
     };
-    s.cancelFallback = () => {
-      if (down?.dragging) pointer(0, down.last);
-      down = null;
-      return drained;
+    return {
+      kind: 'http',
+      point: (cx, cy) => toScreen({ clientX: cx, clientY: cy }),
+      pointer(mask, x, y) {
+        if (mask === 1) { pressMask = 1; sample(1, x, y); return; }
+        if (mask === 2 || mask === 4) {
+          // 中/右键按下：只记落点，等抬起时发 click.button。
+          if (!pressMask) { pressMask = mask; downMask = mask; downAt = { x, y }; }
+          return;
+        }
+        if (pressMask === 2 || pressMask === 4) {
+          const at = downAt || { x, y };
+          const button = downMask === 4 ? 'right' : 'middle';
+          pressMask = 0; downMask = 0; downAt = null;
+          void input(withMods({ op: 'click', x: at.x, y: at.y, button }));
+          return;
+        }
+        pressMask = 0;
+        sample(0, x, y);
+      },
+      // 兼容模式没有轮齿脉冲：输入层把两个轴的累积格数直接换算成 scroll 的量。
+      scroll(amount, amountX, x, y) {
+        if (!amount && !amountX) return;
+        void input(withMods({ op: 'scroll', x, y, amount, ...(amountX ? { amountX } : {}) }));
+      },
+      key() {},
+      press: keys => input(withMods({ op: 'press', keys })),
+      type: text => input({ op: 'type', text }),
     };
-    stage.addEventListener('contextmenu', ev => ev.preventDefault());
-    stage.addEventListener('pointerdown', ev => {
-      if (!s.control || s.rfb || s.regionLoading) return;
-      const p = toScreen(ev);
-      if (!p) return;
-      ev.preventDefault();
-      stage.setPointerCapture(ev.pointerId);
-      down = { p, last: p, id: ev.pointerId, button: ev.button, dragging: false };
-    });
-    stage.addEventListener('pointermove', ev => {
-      if (!down || ev.pointerId !== down.id) return;
-      const p = toScreen(ev);
-      if (!p) return;
-      if (!down.dragging && Math.hypot(p.cx - down.p.cx, p.cy - down.p.cy) <= 8) return;
-      if (!down.dragging) {
-        down.dragging = true;
-        pointer(1, down.p);
-      }
-      down.last = p;
-      pointer(1, p);
-    });
-    stage.addEventListener('pointerup', ev => {
-      if (!down || ev.pointerId !== down.id) return;
-      const start = down;
-      down = null;
-      const p = toScreen(ev) || start.p;
-      if (start.dragging) {
-        ripple(p.cx, p.cy);
-        pointer(1, p);
-        pointer(0, p);
-        return;
-      }
-      const right = start.button === 2 || s.rightOnce;
-      if (s.rightOnce) { s.rightOnce = false; s.rightBtn.classList.remove('on'); }
-      const now = Date.now();
-      const dbl = !right && lastClick && now - lastClick.at < 350 && Math.hypot(p.x - lastClick.x, p.y - lastClick.y) < 6;
-      lastClick = dbl ? null : { at: now, x: p.x, y: p.y };
-      ripple(start.p.cx, start.p.cy);
-      input({ op: 'click', x: start.p.x, y: start.p.y, button: right ? 'right' : 'left', count: dbl ? 2 : 1 });
-    });
-    stage.addEventListener('pointercancel', () => s?.cancelFallback?.());
-    stage.addEventListener('lostpointercapture', () => s?.cancelFallback?.());
-    let acc = 0, wheelAt = null, wheelTimer = null;
-    stage.addEventListener('wheel', ev => {
-      if (!s.control || s.rfb || s.regionLoading) return;
-      const p = toScreen(ev);
-      if (!p) return;
-      ev.preventDefault();
-      acc += ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaY;
-      wheelAt = p;
-      if (wheelTimer) return;
-      wheelTimer = setTimeout(() => {
-        wheelTimer = null;
-        const amount = Math.max(-50, Math.min(50, -Math.round(acc / 40)));
-        acc = 0;
-        if (amount) input({ op: 'scroll', x: wheelAt.x, y: wheelAt.y, amount });
-      }, 90);
-    }, { passive: false });
+  }
+
+  function adapterFor() {
+    if (!s) return null;
+    if (s.rfb) return streamAdapter();
+    return s.httpAdapter || (s.httpAdapter = httpAdapter());
   }
 
   // ── 双指捏合缩放（手机上小目标点不准）──
-  // 放大态由手势层在捕获阶段独占指针：单指拖动=平移、原地轻点=精确单击
-  // （两种模式最终都走 HTTP input，与 RFB 输入在 Agent 端汇合同一护栏）、
-  // 快速点两下=复位。缩回 1x 后完全交还原有交互（noVNC / wirePointer）。
+  // 双指只动本地视图（捏合 + 平移），一根字节都不发给 Mac；放大后单指仍是鼠标，
+  // 拖到画面边缘会自己平移视图。双击不再复位，右下角常驻「1×」按钮是唯一退路。
   const zoom = { scale: 1, tx: 0, ty: 0 };
   function applyZoom() {
     if (!s || !s.zoomer) return;
@@ -608,8 +651,12 @@
     s.zoomer.style.transform = zoom.scale === 1
       ? '' : `translate(${zoom.tx}px, ${zoom.ty}px) scale(${zoom.scale})`;
     if (s.zoomBadge) {
+      // 双击不再复位缩放，这个常驻按钮就是回到 1× / 全屏的唯一入口。
       s.zoomBadge.hidden = zoom.scale === 1 && !s.region;
-      s.zoomBadge.textContent = s.region ? '全屏 · ' + Math.round(zoom.scale * 100) + '%' : Math.round(zoom.scale * 100) + '%';
+      s.zoomBadge.textContent = s.region
+        ? tr('rsZoomRegion', '全屏 · {pct}%', { pct: Math.round(zoom.scale * 100) })
+        : tr('rsZoomOneX', '1×');
+      if (s.zoomBadge.dataset) s.zoomBadge.dataset.scale = String(zoom.scale);
     }
   }
   function clampPan() {
@@ -639,6 +686,46 @@
     placeWheel();
     if (on) status(tr('rsBoxSelHint', '在画面上拖动圈选要看清的区域，画完自动退出'));
   }
+  // 框选：输入层只报原始 client 坐标，这里负责画矩形，再把 stage 局部坐标交给裁剪。
+  function boxBegin(cx, cy) {
+    if (!s) return;
+    s.boxOrigin = s.stage.getBoundingClientRect();
+    s.boxFrom = { x: cx, y: cy };
+    paintBoxRect(cx, cy, cx, cy);
+  }
+  function paintBoxRect(x0, y0, x1, y1) {
+    if (!s || !s.boxRect) return;
+    const r = s.boxOrigin || s.stage.getBoundingClientRect();
+    s.boxRect.hidden = false;
+    s.boxRect.style.left = Math.min(x0, x1) - r.left + 'px';
+    s.boxRect.style.top = Math.min(y0, y1) - r.top + 'px';
+    s.boxRect.style.width = Math.abs(x1 - x0) + 'px';
+    s.boxRect.style.height = Math.abs(y1 - y0) + 'px';
+  }
+  function boxFinish(x0, y0, x1, y1) {
+    if (!s) return;
+    const r = s.boxOrigin || s.stage.getBoundingClientRect();
+    if (s.boxRect) s.boxRect.hidden = true;
+    s.boxFrom = null;
+    setBoxSel(false);
+    // 对角线太短视为误触：退出框选但不改缩放。
+    if (Math.hypot(x1 - x0, y1 - y0) < 24) {
+      // 框选期间可能还按着上一个手势的按钮：先放掉，别让心跳一直续着 Mac 的按键。
+      s.input?.releasePointer?.();
+      return;
+    }
+    applyBoxZoom({ x: Math.min(x0, x1) - r.left, y: Math.min(y0, y1) - r.top },
+      { x: Math.max(x0, x1) - r.left, y: Math.max(y0, y1) - r.top });
+  }
+  function boxCancel() {
+    if (!s) return;
+    // 取消框选时把还按住的按钮放掉（心跳在输入层里一起停）。
+    s.input?.releasePointer?.();
+    if (s.boxRect) s.boxRect.hidden = true;
+    s.boxFrom = null;
+    setBoxSel(false);
+  }
+
   async function applyBoxZoom(a, b) {
     const current = s;
     if (!current || current.regionLoading) return;
@@ -667,6 +754,7 @@
     if (region.width < 1 || region.height < 1) return;
     current.region = region; current.regionEpoch++; current.regionLoading = true;
     if (current.rfb) {
+      current.input?.releaseAll();
       current.rfbIntent = true; current.rfb.disconnect(); current.rfb = null;
       current.rfbWrap?.remove(); current.rfbWrap = null;
     }
@@ -701,37 +789,8 @@
     return sizeProbe.then(() => (s ? s.screenW : 0));
   }
 
-  // 视口坐标 → 屏幕逻辑点（HTTP input 的坐标域）。流畅 / 高清模式的画布按
-  // contain 铺好，rect 就是绘制区（含捏合 transform），视觉归一化后乘屏幕逻辑
-  // 尺寸（不是 canvas 的 framebuffer / 解码尺寸）；兼容模式沿用 toScreen。
-  function logicalAt(cx, cy) {
-    if (!s) return null;
-    const cv = s.rfbWrap?.querySelector('canvas');
-    if (cv) {
-      const r = cv.getBoundingClientRect();
-      if (!r.width || !r.height) return null;
-      const sw = s.screenW || cv.width;
-      const sh = s.screenH || Math.round(sw * cv.height / cv.width);
-      const u = (cx - r.left) / r.width, v = (cy - r.top) / r.height;
-      if (u < 0 || v < 0 || u > 1 || v > 1) return null;
-      return { x: Math.round(u * sw), y: Math.round(v * sh) };
-    }
-    const p = s.rfbWrap || !s.img ? null : toScreen({ clientX: cx, clientY: cy });
-    return p && { x: p.x, y: p.y };
-  }
-
-  // 放大态的轻点：坐标换算归 logicalAt；流畅模式下逻辑尺寸要先探到。
-  async function zoomTap(ev, button) {
-    if (!s?.control || s.regionLoading) return;
-    if (s.rfbWrap && !s.screenW) await ensureScreenSize();
-    const p = logicalAt(ev.clientX, ev.clientY);
-    if (!p || p.x >= s.screenW || p.y >= s.screenH) return;
-    s.cursorPt = p;
-    ripple(ev.clientX, ev.clientY);
-    input({ op: 'click', x: p.x, y: p.y, button: button === 2 ? 'right' : 'left' });
-  }
-
   // 点亮「右键」后的下一次点击按右键发送；用掉即复位（按钮熄灭）。
+  function peekRightOnce() { return !!(s && s.rightOnce); }
   function takeRightOnce() {
     const on = !!(s && s.rightOnce);
     if (on) { s.rightOnce = false; s.rightBtn.classList.remove('on'); }
@@ -784,7 +843,7 @@
     const grip = el('div', 'rs-wheel-grip');
     const downBtn = el('button', 'rs-wheel-btn', '▼');
     rail.append(upBtn, grip, downBtn);
-    // 画面层的手势挂在 stage 上：冒泡到这里就截住（捕获阶段由 wireGestures 自己让开）。
+    // 输入层在 stage 捕获阶段就让开滚轮条（它还自带 pointer 事件过滤）。
     for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'contextmenu']) {
       rail.addEventListener(type, ev => { ev.stopPropagation(); if (type === 'contextmenu') ev.preventDefault(); });
     }
@@ -873,192 +932,42 @@
     rail.style.height = at[2] + 'px';
   }
 
-  function wireGestures(stage) {
-    const pts = new Map();
-    let pinch = null, pan = null, lastTap = 0;
-    // 框选拖拽中 {id, rect, x0, y0, x1, y1}：rect 是 down 时 stage 的视口位置。
-    let box = null;
-    // 流畅模式「右键」待发的那一次点击 {id, x, y}。
-    let rightTap = null;
-    const paintBox = () => {
-      if (!box || !s || !s.boxRect) return;
-      s.boxRect.hidden = false;
-      s.boxRect.style.left = Math.min(box.x0, box.x1) - box.rect.left + 'px';
-      s.boxRect.style.top = Math.min(box.y0, box.y1) - box.rect.top + 'px';
-      s.boxRect.style.width = Math.abs(box.x1 - box.x0) + 'px';
-      s.boxRect.style.height = Math.abs(box.y1 - box.y0) + 'px';
-    };
-    // iOS Safari 的私有手势缩放会和 pointer 捏合叠乘，必须一并关掉。
-    stage.addEventListener('gesturestart', ev => ev.preventDefault());
-    // 未放大时画面上的按下 / 抬起都会落到远端光标上：记成滚轮条的落点。
-    const noteCursor = ev => {
-      if (!s || !s.control || s.boxSelOn || zoom.scale !== 1) return;
-      const p = logicalAt(ev.clientX, ev.clientY);
-      if (p) s.cursorPt = p;
-    };
-    stage.addEventListener('pointerdown', ev => {
-      if (ev.target?.closest?.('.rs-wheel')) return; // 滚轮条自己处理，画面手势不掺和
-      if (!pts.size) noteCursor(ev); // 第二指是捏合，不是点
-      if (s?.regionLoading) { ev.preventDefault(); ev.stopPropagation(); return; }
-      if (s && s.boxSelOn) {
-        if (box) { // 拖拽中又落一指：取消本次框选，新指落回常规手势
-          pts.delete(box.id);
-          box = null;
-          if (s.boxRect) s.boxRect.hidden = true;
-          setBoxSel(false);
-        } else { // 鼠标 / 触屏一致：画框期间独占，noVNC 与 wirePointer 都不掺和
-          pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-          ev.preventDefault();
-          ev.stopPropagation();
-          try { stage.setPointerCapture(ev.pointerId); } catch {}
-          box = {
-            id: ev.pointerId, rect: stage.getBoundingClientRect(),
-            x0: ev.clientX, y0: ev.clientY, x1: ev.clientX, y1: ev.clientY,
-          };
-          paintBox();
-          return;
-        }
-      }
-      if (s && s.rfb && s.rightOnce && !box) {
-        if (rightTap) { // 待发中又落一指：取消右键，第一指留在 pts 里，
-          // 与新指凑成两指照常捏合（别删 pts，删了就单指落空）
-          rightTap = null;
-        } else { // 流畅模式下 noVNC 只认左键：点亮「右键」后的这一次点击
-          // 在这里独占（鼠标 / 触屏一致），按右键经 HTTP 发出，坐标换算与
-          // 放大态归 zoomTap 一条路（屏幕逻辑域）。
-          pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-          ev.preventDefault();
-          ev.stopPropagation();
-          try { stage.setPointerCapture(ev.pointerId); } catch {}
-          rightTap = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
-          return;
-        }
-      }
-      if (ev.pointerType === 'mouse') return; // 鼠标用户不受影响，走原有交互
-      pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-      const two = pts.size >= 2;
-      if (!two && zoom.scale === 1) return;
-      ev.preventDefault();
-      ev.stopPropagation(); // 捏合/放大期间独占，noVNC 与 wirePointer 都不掺和
-      try { stage.setPointerCapture(ev.pointerId); } catch {}
-      if (two) {
-        s?.cancelFallback?.();
-        const [a, b] = [...pts.values()];
-        pinch = {
-          d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2,
-          s: zoom.scale, tx: zoom.tx, ty: zoom.ty,
-        };
-        pan = null;
-      } else {
-        pan = { x: ev.clientX, y: ev.clientY, tx: zoom.tx, ty: zoom.ty, moved: false, at: Date.now(), button: ev.button };
-      }
-    }, true);
-    stage.addEventListener('pointermove', ev => {
-      if (!pts.has(ev.pointerId)) return;
-      pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-      if (box) {
-        if (ev.pointerId !== box.id) return;
-        box.x1 = ev.clientX; box.y1 = ev.clientY;
-        paintBox();
-        return;
-      }
-      if (pinch && pts.size >= 2) {
-        const [a, b] = [...pts.values()];
-        const d = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
-        zoom.scale = Math.min(5, Math.max(1, pinch.s * d / pinch.d));
-        const k = zoom.scale / pinch.s; // 中点锚定：捏合前的中点内容跟随手指
-        zoom.tx = (a.x + b.x) / 2 - (pinch.mx - pinch.tx) * k;
-        zoom.ty = (a.y + b.y) / 2 - (pinch.my - pinch.ty) * k;
-        clampPan(); applyZoom();
-      } else if (pan && zoom.scale > 1) {
-        const dx = ev.clientX - pan.x, dy = ev.clientY - pan.y;
-        if (Math.hypot(dx, dy) > 8) pan.moved = true;
-        zoom.tx = pan.tx + dx; zoom.ty = pan.ty + dy;
-        clampPan(); applyZoom();
-      }
-    }, true);
-    stage.addEventListener('pointerup', ev => {
-      if (!pinch && !ev.target?.closest?.('.rs-wheel')) noteCursor(ev); // 拖拽松手处
-      if (box) {
-        if (ev.pointerId !== box.id) return;
-        pts.delete(ev.pointerId);
-        const b = box;
-        box = null;
-        if (s && s.boxRect) s.boxRect.hidden = true;
-        setBoxSel(false);
-        // 对角线太短视为误触：退出框选但不改缩放
-        if (s && Math.hypot(b.x1 - b.x0, b.y1 - b.y0) >= 24) {
-          applyBoxZoom(
-            { x: b.x0 - b.rect.left, y: b.y0 - b.rect.top },
-            { x: b.x1 - b.rect.left, y: b.y1 - b.rect.top });
-        }
-        return;
-      }
-      if (rightTap) {
-        if (ev.pointerId !== rightTap.id) return;
-        pts.delete(ev.pointerId);
-        const r = rightTap;
-        rightTap = null;
-        // 拖动超过轻点阈值视为取消（不消耗「右键」，与兼容模式同语义）
-        if (Math.hypot(ev.clientX - r.x, ev.clientY - r.y) <= 8) {
-          takeRightOnce();
-          void zoomTap(ev, 2);
-        }
-        return;
-      }
-      pts.delete(ev.pointerId);
-      if (pinch && pts.size < 2) pinch = null; // 剩一指可接着平移
-      if (pan && pts.size === 0) {
-        const p = pan; pan = null;
-        if (!p.moved && Date.now() - p.at < 600) {
-          const now = Date.now();
-          if (zoom.scale > 1 && now - lastTap < 350) { lastTap = 0; resetZoom(); return; }
-          lastTap = now;
-          // 兼容模式的放大态轻点也接「右键」（流畅模式走上面的 rightTap 分支）
-          if (zoom.scale > 1) void zoomTap(ev, takeRightOnce() ? 2 : p.button);
-        }
-      }
-    }, true);
-    stage.addEventListener('pointercancel', ev => {
-      if (box) {
-        if (ev.pointerId !== box.id) return;
-        pts.delete(ev.pointerId);
-        box = null;
-        if (s && s.boxRect) s.boxRect.hidden = true;
-        setBoxSel(false);
-        return;
-      }
-      if (rightTap) {
-        if (ev.pointerId !== rightTap.id) return;
-        pts.delete(ev.pointerId);
-        rightTap = null; // 系统打断：只退出拦截，「右键」留给下一次点击
-        return;
-      }
-      pts.delete(ev.pointerId); pinch = null; pan = null;
-    }, true);
-  }
-
   function setControl(on) {
-    if (!on) s.cancelFallback?.();
+    if (!on) s.input?.releaseAll();
     s.control = on;
     s.modeBtn.textContent = on ? '🖱 ' + tr('rsControl', '可操作') : '👁 ' + tr('rsViewOnly', '只看');
     s.modeBtn.classList.toggle('on', on);
     ov.classList.toggle('rs-control', on);
     placeWheel();
+    paintChips();
     if (s.rfb) {
-      // 流畅模式：指针 + 键盘都交给 noVNC，自己的 keybar 收起来。
-      s.rfb.viewOnly = !on;
-      s.keybar.hidden = true;
+      // 流畅模式：noVNC 恒为只看——指针 / 键盘 / 手势全部由 chat-remote-input.js
+      // 这一层发（noVNC 自己的手势会把捏合译成 Ctrl+滚轮，还会改写 ⌘/⌥）。
+      s.rfb.viewOnly = true;
+      s.keybar.hidden = !on;
       s.hint.textContent = on
-        ? tr('rsRfbCtrlHint', '直接在本画面上点击 / 拖动 / 打字；双指捏合可放大精确定位，快速点两下复位；想停止操作，点聊天输入框旁的 ■ 停止按钮')
+        ? tr('rsRfbCtrlHint', '直接在本画面上点击 / 拖动 / 打字；双指捏合可放大精确定位，右下角「1×」复位；想停止操作，点聊天输入框旁的 ■ 停止按钮')
         : tr('rsViewHint', '只看模式：不会向本机发送任何操作。「✎ 标注」可冻结画面后标注对话');
       startHaltPoll(on);
       return;
     }
     s.keybar.hidden = !on;
     s.hint.textContent = on
-      ? tr('rsControlHint', '点击=单击，拖动=拖拽，滚轮=滚动，快速点两下=双击；双指捏合可放大精确定位，点两下复位；想停止操作，点聊天输入框旁的 ■ 停止按钮')
+      ? tr('rsControlHint', '点击=单击，拖动=拖拽，滚轮=滚动，长按=右键；双指捏合可放大精确定位，右下角「1×」复位；想停止操作，点聊天输入框旁的 ■ 停止按钮')
       : tr('rsViewHint', '只看模式：不会向本机发送任何操作。「✎ 标注」可冻结画面后标注对话');
+  }
+
+  // 修饰键芯片状态：一次性 = on，锁定 = lock（CSS 两种样式）。
+  function paintChips() {
+    if (!s || !s.chips) return;
+    for (const [name, chip] of s.chips) {
+      const state = s.input ? s.input.chipState(name) : 'off';
+      chip.classList.toggle('on', state === 'once');
+      chip.classList.toggle('lock', state === 'lock');
+      chip.dataset.state = state;
+      chip.setAttribute('aria-pressed', state === 'off' ? 'false' : 'true');
+      if (name === 'cmd') chip.textContent = ctrlMod() ? 'Ctrl' : '⌘';
+    }
   }
 
   async function annotate() {
@@ -1085,7 +994,7 @@
     const head = el('div', 'rs-head');
     const title = el('span', 'rs-title', '🖥 ' + tr('rsTitle', '本机屏幕'));
     const statusEl = el('span', 'rs-status');
-    s = { control: false, paused: false, closed: false, boxSelOn: false, region: null, viewRegion: null, regionEpoch: 0, regionLoading: false, screenW: 0, screenH: 0, status: statusEl, errAt: 0, haltTimer: 0, permTimer: 0 };
+    s = { control: false, paused: false, closed: false, boxSelOn: false, region: null, viewRegion: null, regionEpoch: 0, regionLoading: false, screenW: 0, screenH: 0, status: statusEl, errAt: 0, haltTimer: 0, permTimer: 0, kind: 'http', chips: [], cursorPt: null };
     s.modeBtn = btn('', tr('rsModeTitle', '切换只看 / 可操作'), () => setControl(!s.control));
     s.rightBtn = btn(tr('rsRightClick', '右键'), tr('rsRightClickHint', '下一次点击按右键发送（触屏用）'), () => {
       s.rightOnce = !s.rightOnce;
@@ -1098,6 +1007,7 @@
       pauseBtn.textContent = s.paused ? '▶ ' + tr('rsResume', '继续') : '⏸ ' + tr('rsPause', '暂停');
       if (s.paused) {
         if (s.rfb) {
+          s.input?.releaseAll();
           s.rfbIntent = true;
           try { s.rfb.disconnect(); } catch {}
           // 断流后取一帧 JPEG，让画面停在当前状态，而不是流式之前那张旧图。
@@ -1139,7 +1049,7 @@
     s.img.draggable = false;
     s.zoomer.appendChild(s.img);
     stage.appendChild(s.zoomer);
-    s.zoomBadge = btn('', tr('rsZoomReset', '复位缩放'), () => resetZoom(), 'rs-zoombadge');
+    s.zoomBadge = btn('1×', tr('rsZoomReset', '复位缩放'), () => resetZoom(), 'rs-zoombadge');
     s.zoomBadge.hidden = true;
     stage.appendChild(s.zoomBadge);
     // 框选放大时画的矩形（zoomer 之外、不随缩放移动）
@@ -1157,22 +1067,55 @@
     s.permBar.hidden = true;
     s.hint = el('div', 'rs-hint');
     s.keybar = el('div', 'rs-keybar');
+    // 修饰键芯片：流式模式发真 KeyEvent，兼容模式把它们塞进 HTTP 的 mods。
+    const mods = el('div', 'rs-mods');
+    for (const [name, symbol, titleKey, titleFallback] of CHIPS) {
+      const chip = btn(symbol, tr(titleKey, titleFallback), () => { s.input?.chipTap(name); paintChips(); }, 'rs-key rs-mod');
+      chip.dataset.mod = name;
+      chip.setAttribute('aria-pressed', 'false');
+      s.chips.push([name, chip]);
+      mods.appendChild(chip);
+    }
+    s.keybar.appendChild(mods);
     const text = el('input', 'rs-text');
     text.placeholder = tr('rsTypePlaceholder', '输入文字，发送到本机当前焦点…');
     const send = () => {
-      if (!text.value) return;
-      input({ op: 'type', text: text.value }).then(ok => { if (ok) text.value = ''; });
+      const value = text.value;
+      if (!value || !s?.input) return;
+      if (s.input.sendText(value)) text.value = '';
     };
     text.addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); send(); } });
     s.keybar.append(text, btn(tr('rsSend', '发送'), '', send, 'primary'));
-    for (const [label, keys] of keyRow()) s.keybar.appendChild(btn(label, keys, () => input({ op: 'press', keys }), 'rs-key'));
+    for (const [label, keys] of keyRow()) s.keybar.appendChild(btn(label, keys, () => s.input?.pressKeys(keys), 'rs-key'));
+
+    // 输入层：触屏 / 鼠标 / 滚轮 / 键盘只有这一份实现，三种画面模式只换 adapter。
+    s.input = global.MultiCCRemoteInput && global.MultiCCRemoteInput.create({
+      stage,
+      modifier: () => (ctrlMod() ? 'ctrl' : 'cmd'),
+      control: () => !!(s && s.control),
+      blocked: () => !!(s && s.regionLoading),
+      disabled: () => !s || s.closed,
+      adapter: adapterFor,
+      rightOnce: peekRightOnce,
+      onRightUsed: takeRightOnce,
+      zoom: () => zoom,
+      setZoom: (scale, tx, ty) => { zoom.scale = scale; zoom.tx = tx; zoom.ty = ty; clampPan(); applyZoom(); },
+      panBy: (dx, dy) => { zoom.tx += dx; zoom.ty += dy; clampPan(); applyZoom(); },
+      stageRect: () => stage.getBoundingClientRect(),
+      boxSelecting: () => !!(s && s.boxSelOn),
+      onBoxStart: (cx, cy) => boxBegin(cx, cy),
+      onBoxMove: (cx, cy) => paintBoxRect(s.boxFrom ? s.boxFrom.x : cx, s.boxFrom ? s.boxFrom.y : cy, cx, cy),
+      onBoxEnd: (x0, y0, x1, y1) => boxFinish(x0, y0, x1, y1),
+      onBoxCancel: () => boxCancel(),
+      onPoint: pt => { if (s) s.cursorPt = pt; },
+      onTap: (cx, cy) => ripple(cx, cy),
+      onChips: paintChips,
+    });
     ov.append(head, s.wakeHint, s.permBar, stage, s.hint, s.keybar);
     void refreshWake();
     const current = s;
     s.wakeTimer = setInterval(() => { void refreshWake(current); }, 5000);
     document.body.appendChild(ov);
-    wirePointer(stage);
-    wireGestures(stage);
     setControl(false);
     // 深链接（#rs=control）可能跑在 installButton 之前，这里再确认一次能力：本机 agent
     // 还做不了就摆明说，不去连一连不上的 agent、也不去问唤醒状态。
@@ -1191,9 +1134,10 @@
   function close() {
     if (!ov) return;
     const wasControl = s && s.control;
-    const released = s?.cancelFallback?.() || Promise.resolve();
     if (s) {
       s.closed = true;
+      // 先放掉所有按住的按钮 / 键，再拆 DOM 与连接（输入层要靠 s 里的 adapter 发包）。
+      s.input?.dispose();
       clearTimeout(s.resumeTimer);
       clearInterval(s.haltTimer);
       clearInterval(s.permTimer);
@@ -1206,7 +1150,7 @@
     ov.remove();
     ov = null;
     // 关掉浮层即交还租约，不让 agent 再等 120 秒。
-    if (wasControl) void released.then(() => fetch(tok('/api/remote-screen/input'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op: 'release' }) })).catch(() => {});
+    if (wasControl) void fetch(tok('/api/remote-screen/input'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op: 'release' }) }).catch(() => {});
   }
 
   function installButton() {

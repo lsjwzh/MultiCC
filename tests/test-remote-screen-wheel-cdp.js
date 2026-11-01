@@ -51,12 +51,13 @@ const PAGE = `<!doctype html><html lang="zh"><head><meta charset="utf-8">
     return realFetch(url, opts);
   };
 </script>
+<script src="/chat-remote-input.js"></script>
 <script src="/chat-remote-screen.js"></script>
 </body></html>`;
 
 function buildRoutes() {
   const routes = { '/': { body: PAGE, headers: { 'content-type': 'text/html; charset=utf-8' } } };
-  for (const file of ['chat-remote-screen.js', 'chat-remote-screen.css']) {
+  for (const file of ['chat-remote-input.js', 'chat-remote-screen.js', 'chat-remote-screen.css']) {
     routes['/' + file] = {
       body: fs.readFileSync(path.join(publicDir, file)),
       headers: { 'content-type': file.endsWith('.js') ? 'text/javascript' : 'text/css' },
@@ -120,8 +121,8 @@ test('touch: the wheel rail sits beside the picture and scrolls where the user l
     await mouse(page, 'mousePressed', tx, ty);
     await mouse(page, 'mouseReleased', tx, ty);
     await sleep(400);
-    const tap = (await takeInputs(page)).pop();
-    assert.equal(tap.op, 'click');
+    const tap = (await takeInputs(page)).find(body => body.op === 'pointer' ? body.mask === 1 : body.op === 'click');
+    assert.ok(tap, 'a tap sends a pointer press (or a click when the server rejects pointer)');
 
     const [up, grip, down] = g.parts;
     // 滚花区往下拖 64px（4px 一步）= 4 格滚轮上 = +12 行。从滚花区顶端起按，
@@ -132,7 +133,7 @@ test('touch: the wheel rail sits beside the picture and scrolls where the user l
     await mouse(page, 'mouseReleased', grip.x, y0 + 64);
     await sleep(500);
     let got = await takeInputs(page);
-    assert.ok(got.length >= 1 && got.every(body => body.op === 'scroll'), 'a rail drag sends only scroll ops');
+    assert.ok(got.length >= 1 && got.every(body => body.op === 'scroll'), `a rail drag sends only scroll ops: ${JSON.stringify(got)}`);
     assert.equal(lines(got), 12, 'drag down 64px = 4 notches up');
     assert.ok(got.every(body => body.x === tap.x && body.y === tap.y), 'scroll lands on the last tapped point');
 

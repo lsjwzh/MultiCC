@@ -108,16 +108,16 @@ func post(_ e: CGEvent?, pid: pid_t? = nil, flags: CGEventFlags = []) {
   deliverAutomationEvent(e, pid: pid)
 }
 
-func click(_ p: CGPoint, right: Bool, count: Int) {
-  let down: CGEventType = right ? .rightMouseDown : .leftMouseDown
-  let up: CGEventType = right ? .rightMouseUp : .leftMouseUp
-  let button: CGMouseButton = right ? .right : .left
-  post(CGEvent(mouseEventSource: automationEventSource, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: button))
+func click(_ p: CGPoint, right: Bool, middle: Bool = false, count: Int, flags: CGEventFlags = []) {
+  let down: CGEventType = right ? .rightMouseDown : (middle ? .otherMouseDown : .leftMouseDown)
+  let up: CGEventType = right ? .rightMouseUp : (middle ? .otherMouseUp : .leftMouseUp)
+  let button: CGMouseButton = right ? .right : (middle ? .center : .left)
+  post(CGEvent(mouseEventSource: automationEventSource, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: button), flags: flags)
   for i in 1...max(1, min(count, 3)) {
     for type in [down, up] {
       let e = CGEvent(mouseEventSource: automationEventSource, mouseType: type, mouseCursorPosition: p, mouseButton: button)
       e?.setIntegerValueField(.mouseEventClickState, value: Int64(i))
-      post(e)
+      post(e, flags: flags)
     }
     usleep(30_000)
   }
@@ -125,9 +125,9 @@ func click(_ p: CGPoint, right: Bool, count: Int) {
 
 // Press at a, smooth-step through ~60Hz leftMouseDragged events, release at b.
 // Always releases, even when the user pauses/cancels halfway (no stuck button).
-func drag(_ a: CGPoint, _ b: CGPoint, ms: Int) -> Bool {
-  post(CGEvent(mouseEventSource: automationEventSource, mouseType: .mouseMoved, mouseCursorPosition: a, mouseButton: .left))
-  post(CGEvent(mouseEventSource: automationEventSource, mouseType: .leftMouseDown, mouseCursorPosition: a, mouseButton: .left))
+func drag(_ a: CGPoint, _ b: CGPoint, ms: Int, flags: CGEventFlags = []) -> Bool {
+  post(CGEvent(mouseEventSource: automationEventSource, mouseType: .mouseMoved, mouseCursorPosition: a, mouseButton: .left), flags: flags)
+  post(CGEvent(mouseEventSource: automationEventSource, mouseType: .leftMouseDown, mouseCursorPosition: a, mouseButton: .left), flags: flags)
   usleep(40_000)
   let steps = max(4, ms / 16)
   var lastPoint = a
@@ -136,14 +136,14 @@ func drag(_ a: CGPoint, _ b: CGPoint, ms: Int) -> Bool {
     if control.isHalted || (humanInput.isActive && humanInput.isPaused) { completed = false; break }
     let t = Double(i) / Double(steps), e = t * t * (3 - 2 * t)
     let p = CGPoint(x: a.x + (b.x - a.x) * e, y: a.y + (b.y - a.y) * e)
-    post(CGEvent(mouseEventSource: automationEventSource, mouseType: .leftMouseDragged, mouseCursorPosition: p, mouseButton: .left))
+    post(CGEvent(mouseEventSource: automationEventSource, mouseType: .leftMouseDragged, mouseCursorPosition: p, mouseButton: .left), flags: flags)
     lastPoint = p
     usleep(16_000)
   }
   // Release where we actually stopped, never jump to the original destination
   // after a person has taken over. A partial drag needs fresh observation.
   let releasePoint = completed ? lastPoint : (CGEvent(source: nil)?.location ?? lastPoint)
-  post(CGEvent(mouseEventSource: automationEventSource, mouseType: .leftMouseUp, mouseCursorPosition: releasePoint, mouseButton: .left))
+  post(CGEvent(mouseEventSource: automationEventSource, mouseType: .leftMouseUp, mouseCursorPosition: releasePoint, mouseButton: .left), flags: flags)
   return completed
 }
 
@@ -1534,7 +1534,7 @@ func handle(_ req: [String: Any]) -> [String: Any] {
     return ["ok": true, "halted": false]
   case "release":
     #if canImport(ScreenCaptureKit) && compiler(>=5.9)
-    if session == "remote-screen", #available(macOS 14.0, *) { HttpScreenPointers.shared.releaseAll() }
+    if session == "remote-screen", #available(macOS 14.0, *) { rfbReleaseAllInput() }
     #endif
     return ["ok": control.release(session)]
   case "lease":
@@ -1559,7 +1559,7 @@ func handle(_ req: [String: Any]) -> [String: Any] {
     guard let viewer = req["viewer"] as? String, !viewer.isEmpty, viewer.count <= 64,
           let mask = num(req["mask"]), mask == 0 || mask == 1,
           let x = num(req["x"]), let y = num(req["y"]) else { return ["ok": false, "error": "viewer, mask, x and y are required"] }
-    return HttpScreenPointers.shared.pointer(viewer, mask: Int(mask), x: Int(x), y: Int(y))
+    return HttpScreenPointers.shared.pointer(viewer, mask: Int(mask), x: Int(x), y: Int(y), mods: httpMods(req))
     #else
     return refused("unsupported", "live pointers require macOS 14 or newer", retrySafe: false)
     #endif
@@ -1572,28 +1572,22 @@ func handle(_ req: [String: Any]) -> [String: Any] {
   case "move", "click", "scroll":
     guard let x = num(req["x"]), let y = num(req["y"]) else { return ["ok": false, "error": "x and y are required"] }
     let p = CGPoint(x: x, y: y)
+    let button = (req["button"] as? String) ?? ""
     return withMutation(req, session: session, target: pidAt(p), kind: .pointer) {
-      if op == "move" {
-        post(CGEvent(mouseEventSource: automationEventSource, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
-      } else if op == "click" {
-        click(p, right: (req["button"] as? String) == "right", count: Int(num(req["count"]) ?? 1))
-      } else {
-        post(CGEvent(mouseEventSource: automationEventSource, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
-        let amount = Int32(max(-200, min(200, num(req["amount"]) ?? -5)))
-        post(CGEvent(scrollWheelEvent2Source: automationEventSource, units: .line, wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0))
+      withTransientMods(httpMods(req)) { flags in
+        if op == "move" {
+          post(CGEvent(mouseEventSource: automationEventSource, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left), flags: flags)
+        } else if op == "click" {
+          click(p, right: button == "right", middle: button == "middle", count: Int(num(req["count"]) ?? 1), flags: flags)
+        } else {
+          post(CGEvent(mouseEventSource: automationEventSource, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left), flags: flags)
+          let amount = Int32(max(-200, min(200, num(req["amount"]) ?? -5)))
+          let amountX = Int32(max(-50, min(50, (num(req["amountX"]) ?? 0).rounded())))
+          post(CGEvent(scrollWheelEvent2Source: automationEventSource, units: .line,
+                       wheelCount: amountX != 0 ? 2 : 1, wheel1: amount, wheel2: amountX, wheel3: 0), flags: flags)
+        }
+        return dispatched("hid_events")
       }
-      return dispatched("hid_events")
-    }
-  case "dragdown":
-    // Press only; the live-drag path owns the release (rfbDragEnd). Reserved for the
-    // remote-screen viewer — any other caller would leave the button stuck down.
-    guard session == "remote-screen" else { return refused("unsupported", "dragdown is reserved for the remote screen viewer", retrySafe: false) }
-    guard let x = num(req["x"]), let y = num(req["y"]) else { return ["ok": false, "error": "x and y are required"] }
-    let a = CGPoint(x: x, y: y)
-    return withMutation(req, session: session, target: pidAt(a), kind: .pointer) {
-      post(CGEvent(mouseEventSource: automationEventSource, mouseType: .mouseMoved, mouseCursorPosition: a, mouseButton: .left))
-      post(CGEvent(mouseEventSource: automationEventSource, mouseType: .leftMouseDown, mouseCursorPosition: a, mouseButton: .left))
-      return dispatched("hid_events")
     }
   case "drag":
     guard let x = num(req["x"]), let y = num(req["y"]), let x2 = num(req["x2"]), let y2 = num(req["y2"]) else {
@@ -1601,12 +1595,14 @@ func handle(_ req: [String: Any]) -> [String: Any] {
     }
     let a = CGPoint(x: x, y: y), b = CGPoint(x: x2, y: y2)
     return withMutation(req, session: session, target: pidAt(a), kind: .pointer) {
-      if !drag(a, b, ms: Int(max(80, min(3000, num(req["ms"]) ?? 300)))) {
-        return ["ok": false, "outcome": "partial", "dispatched": "dispatched", "retrySafe": false,
-                "reason": control.isHalted ? "user-stopped" : "user-active",
-                "error": "drag interrupted by user input; button released. Observe before continuing"]
+      withTransientMods(httpMods(req)) { flags in
+        if !drag(a, b, ms: Int(max(80, min(3000, num(req["ms"]) ?? 300))), flags: flags) {
+          return ["ok": false, "outcome": "partial", "dispatched": "dispatched", "retrySafe": false,
+                  "reason": control.isHalted ? "user-stopped" : "user-active",
+                  "error": "drag interrupted by user input; button released. Observe before continuing"]
+        }
+        return dispatched("hid_events")
       }
-      return dispatched("hid_events")
     }
   case "type":
     guard let text = req["text"] as? String, !text.isEmpty, text.count <= 4000 else {
@@ -1642,12 +1638,14 @@ func handle(_ req: [String: Any]) -> [String: Any] {
     guard let keys = req["keys"] as? String else { return ["ok": false, "error": "keys is required, e.g. cmd+shift+g"] }
     let chord: (CGKeyCode, CGEventFlags, String)
     do { chord = try parseChord(keys) } catch ChordError.bad(let m) { return ["ok": false, "error": m] } catch { return ["ok": false, "error": "\(error)"] }
+    var chordFlags = chord.1
+    for m in httpMods(req) { chordFlags.insert(MODIFIERS[m] ?? []) }
     let repeatCount = max(1, min(50, Int(num(req["repeat"]) ?? 1)))
     if (req["dryRun"] as? Bool) == true {
-      return ["ok": true, "keyCode": Int(chord.0), "flags": NSNumber(value: chord.1.rawValue), "key": chord.2]
+      return ["ok": true, "keyCode": Int(chord.0), "flags": NSNumber(value: chordFlags.rawValue), "key": chord.2]
     }
     let bgPid = num(req["pid"]).map { pid_t($0) }
-    if bgPid != nil && chord.1.contains(.maskCommand) && DANGEROUS_BACKGROUND_KEYS.contains(chord.2) {
+    if bgPid != nil && chordFlags.contains(.maskCommand) && DANGEROUS_BACKGROUND_KEYS.contains(chord.2) {
       return refused("dangerous-background-hotkey", "cmd+\(chord.2) to a background app closes or hides it; bring it forward instead", retrySafe: false)
     }
     let targetForPress = bgPid ?? focusedAppPid()
@@ -1658,7 +1656,7 @@ func handle(_ req: [String: Any]) -> [String: Any] {
                   "reason": control.isHalted ? "user-stopped" : "user-active",
                   "error": "input interrupted or target changed after \(i) of \(repeatCount) presses"]
         }
-        postChord(chord.0, chord.1, pid: bgPid)
+        postChord(chord.0, chordFlags, pid: bgPid)
       }
       return dispatched(bgPid == nil ? "hid_events" : "pid_events")
     }
@@ -1940,22 +1938,28 @@ final class RfbClient: NSObject {
   var needsFull = true
   var framebufferSize: (w: Int, h: Int)?
   var dirty: [CGRect] = []
-  // pointer state
+  // pointer/modifier state, guarded by inputLock (MultiCCAgentRemoteInput.swift)
+  let inputLock = NSLock()
   var lastMask = 0
-  var downPos: CGPoint?
-  var downAt = Date.distantPast
-  // live touch drag: the left button is physically held down (see rfbLeftHeldMove)
-  let dragLock = NSLock()
-  var liveDrag = false         // mouse-down was posted, mouse-up still owed (dragLock)
-  var dragDead = false         // this press may not start/continue a drag: refused, halted, locked (dragLock)
-  var liveDragPos = CGPoint.zero
-  var liveDragAt = Date.distantPast
-  var lastClickAt = Date.distantPast
-  var lastClickPos = CGPoint.zero
+  var lastPointerPos = CGPoint.zero
+  var heldButtons = 0          // 0x01/0x02/0x04 currently posted down
+  var deadButtons = 0          // refused presses: their motion and release post nothing
+  var buttonLastAt: [Int: Date] = [:]
+  var buttonLastPos: [Int: CGPoint] = [:]
+  var buttonCount: [Int: Int] = [:]
+  var buttonClick: [Int: Int] = [:]   // click count decided at press, echoed on the up
+  var buttonDownPos: [Int: CGPoint] = [:]   // press point, to tell a drag from a click
+  var heldModKeysyms: [UInt32: CGKeyCode] = [:]   // modifier keysym → virtual key down
+  var transientDown: Set<String> = []             // HTTP pointer mods pressed with the button
+  var wantedTransientMods: Set<String> = []       // HTTP pointer mods requested for the next press
+  var transientMods = false    // HTTP pointer: mods do not outlive the gesture
+  var mods: Set<String> = []   // names of the really-held modifiers (flags on every event)
+  var lastPointerAt = Date.distantPast   // last pointer sample (10 s idle release)
+  var inputAt = Date.distantPast         // last input of any kind (30 s modifier idle)
+  var watchdogRunning = false
   var lastMoveAt = Date.distantPast
   var lastMovePos = CGPoint.zero
-  var mods: Set<String> = []
-  var hoverMoves = false       // H.264 viewer: no-button motion moves the real cursor (rfbHover)
+  var hoverMoves = false       // no-button motion moves the real cursor (rfbHover)
   // negotiated state, guarded by RfbScreen's lock
   var div = RFB_DIV            // client framebuffer = logical / div
   var swapRB = false           // SetPixelFormat asked for RGBX (noVNC) instead of our BGRX
@@ -1967,7 +1971,6 @@ final class RfbClient: NSObject {
   var tileCols = 0             // RFB_TILE grid over the client framebuffer (Tight clients)
   var lossyTile: [Bool] = []   // last sent as JPEG, owes a lossless re-send
   var tileTouched: [Double] = []   // last change or JPEG send (timeIntervalSinceReferenceDate)
-  var lastPointerAt = Date.distantPast
   var cursorKey = 0            // shape last sent with the cursor pseudo-encoding (0 = none)
   var zlib: AnyObject?         // Tight zlib stream 0 (RfbZlib), lives as long as the connection
   init(_ fd: Int32) { self.fd = fd }
@@ -2523,250 +2526,6 @@ final class RfbScreen: NSObject, SCStreamOutput {
   }
 }
 
-// X11 keysyms → our key names / modifiers (see parseChord for the grammar).
-let RFB_SPECIAL_KEYS: [UInt32: String] = [
-  0xFF08: "delete", 0xFF09: "tab", 0xFF0D: "return", 0xFF1B: "escape", 0xFFFF: "forwarddelete",
-  0xFF50: "home", 0xFF51: "left", 0xFF52: "up", 0xFF53: "right", 0xFF54: "down",
-  0xFF55: "pageup", 0xFF56: "pagedown", 0xFF57: "end", 0x0020: "space",
-]
-let RFB_MOD_KEYS: [UInt32: String] = [
-  0xFFE1: "shift", 0xFFE2: "shift", 0xFFE3: "ctrl", 0xFFE4: "ctrl",
-  0xFFE9: "alt", 0xFFEA: "alt", 0xFE03: "alt",
-  0xFFE7: "cmd", 0xFFE8: "cmd", 0xFFEB: "cmd", 0xFFEC: "cmd",
-]
-// Punctuation keysyms → (US-layout base key, needs shift); only used when a
-// ctrl/cmd/alt chord turns the printable path off.
-let RFB_PUNCT_KEYS: [UInt32: (String, Bool)] = [
-  0x21: ("1", true), 0x40: ("2", true), 0x23: ("3", true), 0x24: ("4", true), 0x25: ("5", true),
-  0x5E: ("6", true), 0x26: ("7", true), 0x2A: ("8", true), 0x28: ("9", true), 0x29: ("0", true),
-  0x3C: ("comma", true), 0x3E: ("period", true), 0x3F: ("slash", true), 0x3A: ("semicolon", true),
-  0x7B: ("leftbracket", true), 0x7D: ("rightbracket", true), 0x7C: ("backslash", true),
-  0x22: ("quote", true), 0x5F: ("minus", true), 0x2B: ("equal", true), 0x7E: ("grave", true),
-  0x2C: ("comma", false), 0x2D: ("minus", false), 0x2E: ("period", false), 0x2F: ("slash", false),
-  0x3B: ("semicolon", false), 0x3D: ("equal", false), 0x5B: ("leftbracket", false),
-  0x5C: ("backslash", false), 0x5D: ("rightbracket", false), 0x27: ("quote", false), 0x60: ("grave", false),
-]
-
-@available(macOS 14.0, *)
-func rfbInput(_ req: [String: Any]) {
-  var req = req
-  req["session"] = "remote-screen"
-  let r = handle(req)
-  if (r["ok"] as? Bool) != true { log("rfb input refused: \(r["reason"] ?? r["error"] ?? "?")") }
-}
-
-@available(macOS 14.0, *)
-func rfbKey(_ c: RfbClient, down: Bool, keysym: UInt32) {
-  if let mod = RFB_MOD_KEYS[keysym] {
-    if down { c.mods.insert(mod) } else { c.mods.remove(mod) }
-    return
-  }
-  guard down else { return }   // chords are posted down+up atomically on key-down
-  let chordMods = c.mods.intersection(["ctrl", "cmd", "alt"])
-  // X11 functional keysyms are not Unicode: 0xFF08 is BackSpace, whereas
-  // U+FF08 is a fullwidth left parenthesis. Tagged Unicode remains unambiguous.
-  let taggedUnicode = (keysym & 0xFF000000) == 0x01000000
-  let codepoint = taggedUnicode ? (keysym & 0x00FFFFFF) : keysym
-  let functional = !taggedUnicode && (0xFE00...0xFFFF).contains(keysym)
-  // Retain raw codepoints outside the reserved range for older H.264 clients.
-  if chordMods.isEmpty, !functional, codepoint >= 0x20, codepoint <= 0x10FFFF,
-     let scalar = Unicode.Scalar(codepoint), scalar.properties.generalCategory != .format {
-    rfbInput(["op": "type", "text": String(Character(scalar)), "allowTerminal": true, "allowSystem": true])
-    return
-  }
-  var name = RFB_SPECIAL_KEYS[keysym]
-  var shift = false
-  if name == nil {
-    if keysym >= 0x61 && keysym <= 0x7A { name = String(UnicodeScalar(keysym)!) }
-    else if keysym >= 0x41 && keysym <= 0x5A { name = String(UnicodeScalar(keysym + 0x20)!); shift = true }
-    else if keysym >= 0x30 && keysym <= 0x39 { name = String(UnicodeScalar(keysym)!) }
-    else if keysym >= 0xFFBE && keysym <= 0xFFC9 { name = "f\(keysym - 0xFFBE + 1)" }
-    else if let (base, needsShift) = RFB_PUNCT_KEYS[keysym] { name = base; shift = needsShift }
-  }
-  guard let key = name else { return }
-  var parts: [String] = []
-  for m in ["ctrl", "alt", "cmd"] where c.mods.contains(m) { parts.append(m) }
-  if c.mods.contains("shift") || shift { parts.append("shift") }
-  parts.append(key)
-  rfbInput(["op": "press", "keys": parts.joined(separator: "+"), "allowTerminal": true, "allowSystem": true])
-}
-
-@available(macOS 14.0, *)
-func rfbPointer(_ c: RfbClient, mask: Int, x rfbX: Int, y rfbY: Int) {
-  // RFB framebuffer px → logical points (this client's framebuffer runs at 1/div)
-  let div = RfbScreen.shared.notePointer(c)
-  let x = rfbX * div, y = rfbY * div
-  let p = CGPoint(x: CGFloat(x), y: CGFloat(y))
-  let prev = c.lastMask
-  c.lastMask = mask
-  if mask == 0 && prev == 0 {
-    if c.hoverMoves { rfbHover(c, p) }
-    return
-  }
-  // Wheel buttons are transient pulses in RFB.
-  if (mask & 0x08 != 0 && prev & 0x08 == 0) || (mask & 0x10 != 0 && prev & 0x10 == 0) {
-    rfbInput(["op": "scroll", "x": x, "y": y, "amount": mask & 0x08 != 0 ? 3 : -3, "allowSystem": true])
-    return
-  }
-  if mask & 0x04 != 0 && prev & 0x04 == 0 {
-    rfbInput(["op": "click", "x": x, "y": y, "button": "right", "count": 1, "allowSystem": true])
-    return
-  }
-  let left = mask & 0x01 != 0, wasLeft = prev & 0x01 != 0
-  if left && !wasLeft {
-    c.downPos = p; c.downAt = Date()
-    c.dragLock.lock(); c.dragDead = false; c.dragLock.unlock()
-  } else if left && wasLeft {
-    rfbLeftHeldMove(c, p)
-  } else if !left && wasLeft, let start = c.downPos {
-    c.downPos = nil
-    c.dragLock.lock(); let live = c.liveDrag, dead = c.dragDead; c.dragDead = false; c.dragLock.unlock()
-    if live { rfbDragEnd(c, p); return }   // the drag already happened live: just let go where the finger lifted
-    if dead { return }                     // refused / stopped mid-press: nothing more may be sent for it
-    if hypot(p.x - start.x, p.y - start.y) > 8 {
-      rfbInput(["op": "drag", "x": Int(start.x), "y": Int(start.y), "x2": x, "y2": y, "ms": 250, "allowSystem": true])
-    } else {
-      let now = Date()
-      let dbl = now.timeIntervalSince(c.lastClickAt) < 0.35 && hypot(start.x - c.lastClickPos.x, start.y - c.lastClickPos.y) < 6
-      c.lastClickAt = now; c.lastClickPos = start
-      rfbInput(["op": "click", "x": Int(start.x), "y": Int(start.y), "count": dbl ? 2 : 1, "allowSystem": true])
-    }
-  }
-}
-
-// JPEG/crop viewers use ordered HTTP samples but the same native drag state,
-// policy gate and idle-release watchdog as an RFB connection. No socket is owned.
-@available(macOS 14.0, *)
-final class HttpScreenPointers {
-  static let shared = HttpScreenPointers()
-  private let lock = NSLock()
-  private var clients: [String: RfbClient] = [:]
-
-  func pointer(_ viewer: String, mask: Int, x: Int, y: Int) -> [String: Any] {
-    lock.lock(); defer { lock.unlock() }
-    for key in Array(clients.keys) {
-      if let c = clients[key], Date().timeIntervalSince(c.lastPointerAt) > 15 {
-        rfbDragAbort(c); clients.removeValue(forKey: key)
-      }
-    }
-    if clients[viewer] == nil {
-      guard clients.count < 16 else { return ["ok": false, "error": "busy"] }
-      let c = RfbClient(-1); c.div = 1; c.hoverMoves = true
-      clients[viewer] = c
-    }
-    let c = clients[viewer]!
-    rfbPointer(c, mask: mask, x: x, y: y)
-    c.dragLock.lock(); let dead = c.dragDead; c.dragLock.unlock()
-    return dead ? ["ok": false, "error": "drag-refused"] : ["ok": true]
-  }
-
-  func releaseAll() {
-    lock.lock(); defer { lock.unlock() }
-    for c in clients.values { rfbDragAbort(c) }
-    clients.removeAll()
-  }
-}
-
-// Live touch drag. A drag used to be replayed after the finger lifted (one "drag" op
-// from the press point to the release point), so the remote never followed the finger
-// and a scrollbar / window / selection only jumped at the end. Now, once the pointer
-// leaves the 8pt click slop with the left button held, the button is pressed at the
-// touch-down point (dragdown op: the full withMutation policy — protected apps, lease,
-// halt, lock), moves stream as leftMouseDragged on the light rfbHover-style path (no
-// per-sample AX hit test: a drag crosses many windows, withMutation would call that
-// "stale"), and mouse-up ALWAYS follows: finger lift, disconnect, Esc, screen lock, or
-// 10s without pointer traffic. The button can never be left stuck down.
-let RFB_DRAG_SLOP: CGFloat = 8
-let RFB_DRAG_IDLE_RELEASE: TimeInterval = 10
-
-@available(macOS 14.0, *)
-func rfbDragEnd(_ c: RfbClient, _ at: CGPoint?) {
-  c.dragLock.lock()
-  let was = c.liveDrag
-  c.liveDrag = false
-  let p = at ?? c.liveDragPos
-  c.dragLock.unlock()
-  guard was else { return }
-  post(CGEvent(mouseEventSource: automationEventSource, mouseType: .leftMouseUp, mouseCursorPosition: p, mouseButton: .left))
-}
-
-/// Connection gone / session over: give the button back.
-@available(macOS 14.0, *)
-func rfbDragAbort(_ c: RfbClient) { rfbDragEnd(c, nil) }
-
-@available(macOS 14.0, *)
-func rfbDragWatchdog(_ c: RfbClient) {
-  Thread.detachNewThread {
-    while true {
-      Thread.sleep(forTimeInterval: 0.5)
-      c.dragLock.lock()
-      let live = c.liveDrag, idle = Date().timeIntervalSince(c.liveDragAt)
-      c.dragLock.unlock()
-      if !live { return }
-      if idle > RFB_DRAG_IDLE_RELEASE {
-        log("rfb drag: released after \(Int(RFB_DRAG_IDLE_RELEASE))s without pointer traffic")
-        rfbDragEnd(c, nil)
-        return
-      }
-    }
-  }
-}
-
-@available(macOS 14.0, *)
-func rfbLeftHeldMove(_ c: RfbClient, _ p: CGPoint) {
-  guard let start = c.downPos else { return }
-  c.dragLock.lock(); let dead = c.dragDead, live = c.liveDrag; c.dragLock.unlock()
-  if dead { return }
-  if !live {
-    guard hypot(p.x - start.x, p.y - start.y) > RFB_DRAG_SLOP else { return }
-    let r = handle(["op": "dragdown", "x": Int(start.x), "y": Int(start.y), "allowSystem": true, "session": "remote-screen"])
-    if (r["ok"] as? Bool) != true {
-      log("rfb drag refused: \(r["reason"] ?? r["error"] ?? "?")")
-      c.dragLock.lock(); c.dragDead = true; c.dragLock.unlock()
-      return
-    }
-    c.dragLock.lock(); c.liveDrag = true; c.liveDragPos = start; c.liveDragAt = Date(); c.dragLock.unlock()
-    rfbDragWatchdog(c)
-  }
-  rfbDragStep(c, p)
-}
-
-@available(macOS 14.0, *)
-func rfbDragStep(_ c: RfbClient, _ p: CGPoint) {
-  // Hard stops end the drag (button released) instead of silently dropping samples:
-  // never keep dragging into a locked screen, after Esc, or under another session.
-  guard AXIsProcessTrusted(), !screenLocked(), !(control.isHalted && !control.clearIdleHalt()),
-        control.holderConflict("remote-screen") == nil else {
-    rfbDragEnd(c, nil)
-    c.dragLock.lock(); c.dragDead = true; c.dragLock.unlock()
-    return
-  }
-  c.dragLock.lock(); c.liveDragPos = p; c.liveDragAt = Date(); c.dragLock.unlock()
-  guard Date().timeIntervalSince(c.lastMoveAt) >= 0.012 else { return }   // ≤ ~80 Hz
-  // A busy input lane just drops this sample; the mouse-up carries the final point.
-  guard mutationLane.try() else { return }
-  defer { mutationLane.unlock() }
-  c.lastMoveAt = Date()
-  post(CGEvent(mouseEventSource: automationEventSource, mouseType: .leftMouseDragged, mouseCursorPosition: p, mouseButton: .left))
-}
-
-// Hover from the H.264 viewer. Its video shows the real cursor (nothing draws one
-// locally), so without this the pointer only jumps on click. Moving the cursor acts
-// on nothing, so it skips withMutation's per-app checks and its two AX hit tests per
-// sample — but Esc halt, the lock screen and another session's lease still win, and
-// a busy input lane just drops the sample (the browser sends the next within ~33ms
-// and always flushes the final position). noVNC keeps hover local (Cursor pseudo-
-// encoding) and never sets hoverMoves.
-@available(macOS 14.0, *)
-func rfbHover(_ c: RfbClient, _ p: CGPoint) {
-  guard hypot(p.x - c.lastMovePos.x, p.y - c.lastMovePos.y) >= 1 else { return }
-  guard AXIsProcessTrusted(), !screenLocked(), !(control.isHalted && !control.clearIdleHalt()),
-        control.holderConflict("remote-screen") == nil, mutationLane.try() else { return }
-  defer { mutationLane.unlock() }
-  c.lastMoveAt = Date(); c.lastMovePos = p
-  post(CGEvent(mouseEventSource: automationEventSource, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
-}
-
 @available(macOS 14.0, *)
 func rfbSender(_ c: RfbClient) {
   while true {
@@ -2804,11 +2563,14 @@ func rfbSession(_ fd: Int32) {
   var noSigPipe: Int32 = 1
   _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
   let client = RfbClient(fd)
+  client.hoverMoves = true   // noVNC draws the cursor locally but still follows hover
+  rfbRegisterClient(client)
   let senderDone = DispatchSemaphore(value: 0)
   var senderStarted = false
   RfbScreen.shared.attach(client)
   defer {
-    rfbDragAbort(client)   // a live touch drag must never outlive its connection
+    rfbReleaseAll(client)   // a held button/modifier must never outlive its connection
+    rfbRemoveClient(client)
     client.shutdown()
     if senderStarted { senderDone.wait() }
     RfbScreen.shared.detach(client)

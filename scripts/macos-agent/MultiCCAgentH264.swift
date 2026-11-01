@@ -500,7 +500,13 @@ func h264Session(_ fd: Int32) {
   _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
   let client = H264Client(fd)
   guard H264Screen.shared.attach(client) else { return }
-  defer { rfbDragAbort(client.input); client.shutdown(); H264Screen.shared.detach(client) }
+  rfbRegisterClient(client.input)
+  defer {
+    rfbReleaseAll(client.input)   // a held button/modifier must never outlive its connection
+    rfbRemoveClient(client.input)
+    client.shutdown()
+    H264Screen.shared.detach(client)
+  }
   reader: while !client.isClosed {
     guard let head = readFully(fd, 1) else { break }
     switch head[0] {

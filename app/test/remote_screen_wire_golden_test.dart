@@ -102,6 +102,38 @@ void main() {
     }
   });
 
+  // Typed text used to send the raw codepoint: U+FF08 '（' is 0xFF08, which the
+  // Agent reads as BackSpace; '，' is 0xFF0C (Return) and '）' is 0xFF09 (Tab).
+  // Anything above U+00FF must carry the 0x01000000 Unicode keysym tag.
+  test('typeText tags non-Latin codepoints and maps newline / tab', () {
+    String keyEvent(int down, int keysym) => _hex([
+      4,
+      down,
+      0,
+      0,
+      (keysym >> 24) & 0xFF,
+      (keysym >> 16) & 0xFF,
+      (keysym >> 8) & 0xFF,
+      keysym & 0xFF,
+    ]);
+
+    final want = <String>[];
+    for (final keysym in [
+      0x41, // 'A'
+      0x0100FF08, // '（'
+      0x0100FF0C, // '，'
+      0x0100FF09, // '）'
+      0xFF0D, // '\n' → Return
+      0xFF09, // '\t' → Tab
+    ]) {
+      want.add(keyEvent(1, keysym));
+      want.add(keyEvent(0, keysym));
+    }
+
+    final input = _Input()..typeText('A（，）\n\t');
+    expect(input.sent, want);
+  });
+
   test('rate-control messages encode to the golden bytes', () {
     for (final c in rateControl.where((c) => c['kind'] == 'cap')) {
       final sent = <Uint8List>[];

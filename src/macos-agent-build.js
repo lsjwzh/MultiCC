@@ -19,6 +19,7 @@ const AGENT_SOURCE_FILES = Object.freeze([
   'LidBrightnessBridge.m',
   'MultiCCAgentH264.swift',
   'AgentPermissions.swift',
+  'MultiCCAgentRemoteInput.swift',
 ]);
 const BUILD_FILE = 'agent-build.json';
 

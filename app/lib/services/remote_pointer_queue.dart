@@ -22,10 +22,16 @@ class RemotePointerQueue {
         error.startsWith('op not allowed');
   }
 
-  void add(int mask, int x, int y) {
+  void add(int mask, int x, int y, {List<String> mods = const []}) {
     final edge = mask != _mask;
     _mask = mask;
-    final sample = _Sample(mask, x, y, edge);
+    final sample = _Sample(
+      mask,
+      x,
+      y,
+      edge,
+      mods.isEmpty ? const <String>[] : List<String>.unmodifiable(mods),
+    );
     if (!edge && _pending.isNotEmpty && !_pending.last.edge) {
       _pending[_pending.length - 1] = sample;
     } else {
@@ -49,6 +55,7 @@ class RemotePointerQueue {
         'mask': sample.mask,
         'x': sample.x,
         'y': sample.y,
+        if (sample.mods.isNotEmpty) 'mods': sample.mods,
       });
       if (unsupported(reply)) {
         _legacy = true;
@@ -73,12 +80,14 @@ class RemotePointerQueue {
       'x': down.x,
       'y': down.y,
       if (drag) ...{'x2': sample.x, 'y2': sample.y, 'ms': 350},
+      if (down.mods.isNotEmpty) 'mods': down.mods,
     });
   }
 }
 
 class _Sample {
-  const _Sample(this.mask, this.x, this.y, this.edge);
+  const _Sample(this.mask, this.x, this.y, this.edge, this.mods);
   final int mask, x, y;
   final bool edge;
+  final List<String> mods;
 }

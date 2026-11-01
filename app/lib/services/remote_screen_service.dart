@@ -111,6 +111,11 @@ class RemoteScreenService {
   RemoteScreenMode mode = RemoteScreenMode.connecting;
   String? error;
 
+  /// 本机桌面 Agent 的主修饰键（能力画像的 `modifier`）：Mac 是 "cmd"，
+  /// Linux 是 "ctrl"。键盘条的 ⌘ 快捷键按它换成 Ctrl（与 Web 的 ctrlMod 一致）；
+  /// 取不到时按 Mac 处理（默认 "cmd"）。
+  String hostModifier = 'cmd';
+
   /// 画面当前走哪条路（状态栏显示用）。
   final ValueNotifier<RemoteLinkPath> linkPath = ValueNotifier(
     RemoteLinkPath.relay,
@@ -599,6 +604,10 @@ class RemoteScreenService {
         final streams = decoded['streams'];
         if (streams is Map && streams['h264'] is bool) {
           _serverH264 = streams['h264'] as bool;
+        }
+        final modifier = decoded['modifier'];
+        if (modifier is String && modifier.isNotEmpty) {
+          hostModifier = modifier;
         }
         if (decoded['supported'] is bool) return decoded['supported'] as bool;
       }

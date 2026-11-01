@@ -109,27 +109,9 @@ const MIGRATION_DEBT = Object.freeze({
   // 编排，而不是继续抬天花板。
   // 2026-09-28 前后它自己降回 2993（<= 3000），这条登记按闸的要求退休 —— 别再把它
   // 加回来。该拆的仍是渲染/事件编排。
-  // scripts/macos-agent/MultiCCAgent.swift 是 Swift 写的 macOS 桌面 Agent 单文件实现，
-  // 远程接入那一轮（输入串行化、XWayland 假成功、Esc 断打字等修复）叠上来后实测
-  // 3015/143469，越过 3k。这次只按实测高水位登记，不动 Swift（同文件还要在 macOS CI
-  // 里真编译）；下一次动它该拆的是「屏幕采集 / 输入注入 / 权限探测」那三族，落回
-  // <= 3000 就把这条删掉。
-  // 2026-10-24 补登记：远控拖动修复（d541971d，HTTP 指针 HttpScreenPointers +46 行）合入时
-  // 没回来抬这一格，main 上这道闸已红；本轮再 +3 行（status 带回真实光标位置，给
-  // scripts/remote-screen-probe.js 判定「悬停到达系统」）。按实测高水位登记，拆分条件不变。
-  // 2026-10-30 常驻插件协议那一轮：Control 类新增 lease 指令（微信桌面提醒插件发送期
-  // 用来占住输入串行化：dispatch 的 case "lease" + hold 函数 + 拒绝规则，+32 行），
-  // 实测 3088/147196，按棘轮对齐高水位。拆分条件不变。
-  'scripts/macos-agent/MultiCCAgent.swift': Object.freeze({
-    ceiling: 3088,
-    // 2026-10-27 补登记：远控手势一轮合入后实测 145870 字节（超上格 9 字节）没回来
-    // 抬这一格，main 上这道闸已红；本轮零 Swift 变更，仅按实测对齐高水位。拆分条件不变。
-    // Permission requests now live in AgentPermissions.swift; ratchet the reduced source.
-    // 2026-10-30 随 lease 指令一并抬到实测 147196。
-    byteCeiling: 147196,
-    target: 3000,
-    reason: 'macOS desktop agent single-file implementation; split screen capture / input injection / permission probing next',
-  }),
+  // 2026-11-01 远程输入重构：RFB/H.264 的键、指针、拖动、悬停、HTTP 指针，加上新增的
+  // 按住修饰键逻辑，拆到了 MultiCCAgentRemoteInput.swift；实测 2860 行（<= 3000），
+  // 这条登记按闸的要求退休 —— 别再把它加回来。
   // server.js 在「移除迁移例外」（见上方注释）之后又被官方账号/额度与主机电源
   // 那一族抬起且没回来登记 —— 2026-10-22 插件通道接线时实测 3020/158444
   //（本轮零行变更，仅合并 require 与挂载同行）。按棘轮补登记存量高水位；
@@ -549,9 +531,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   plugin-design.md 10.3/10.4），中英各 39 行 = +78 行，重跑生成器实测 10072/651860。
     // +3 双语键（rsWheelTitle/rsWheelUp/rsWheelDown）：屏幕浮层画面旁的「滚轮条」（web+App 共用），
     //   中英各 3 行 = +6 行，重跑生成器实测 10078/652199。
-    maxLines: 10078,
+    // +8 双语键（rsZoomOneX/rsZoomRegion/rsModShift/rsModCmd/rsModAlt/rsModCtrl + App 的
+    //   rsMore/rsMoreClose）：远程输入重构的粘滞修饰键芯片、缩放角标文案，中英各 8 行
+    //   = +16 行，重跑生成器实测 10094/652690；同时改写 rsControlHint/rsRfbCtrlHint
+    //   （双击不再复位，改指右下角「1×」；长按=右键），中英各 1 行，实测 10094/652752。
+    maxLines: 10094,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 652199,
+    maxBytes: 652752,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

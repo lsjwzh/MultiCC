@@ -1,5 +1,6 @@
 #!/bin/sh
-# Compile MultiCCAgent.swift (+ MultiCCAgentH264.swift) into one (optionally universal) binary.
+# Compile MultiCCAgent.swift (+ H264, remote input, permissions) into one
+# (optionally universal) binary.
 #
 #   build.sh OUT [ARCH...]      ARCH = arm64 | x86_64 (default: this Mac's)
 #
@@ -16,6 +17,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/MultiCCAgent.swift"
 SRC_H264="$HERE/MultiCCAgentH264.swift"
+SRC_REMOTE="$HERE/MultiCCAgentRemoteInput.swift"
 SRC_PERMISSIONS="$HERE/AgentPermissions.swift"
 BRIDGE="$HERE/LidBrightnessBridge.m"
 HEADER="$HERE/LidBrightnessBridge.h"
@@ -44,7 +46,7 @@ for arch in "$@"; do
   xcrun clang -O2 -fobjc-arc -target "$arch-apple-macos11.0" -c "$BRIDGE" -o "$WORK/$arch-bridge.o"
   # shellcheck disable=SC2086
   xcrun swiftc -O -target "$arch-apple-macos11.0" -import-objc-header "$HEADER" $WEAK \
-    -o "$WORK/$arch" "$WORK/main.swift" "$SRC_H264" "$SRC_PERMISSIONS" "$WORK/$arch-bridge.o"
+    -o "$WORK/$arch" "$WORK/main.swift" "$SRC_H264" "$SRC_REMOTE" "$SRC_PERMISSIONS" "$WORK/$arch-bridge.o"
   SLICES="$SLICES $WORK/$arch"
 done
 # shellcheck disable=SC2086
