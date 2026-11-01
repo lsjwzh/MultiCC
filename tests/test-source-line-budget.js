@@ -78,10 +78,9 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // budget is a violation above, so this pins the declared set — a new god file
   // cannot be quietly parked here, and retiring an entry (by splitting the file
   // back under 3000) means shrinking this list in the same commit.
-  // 当前主线三笔登记：run-config 的模型配置面板、macOS 桌面 Agent 的 Swift
-  // 单文件实现、server.js 的账号/额度与主机电源路由族（见
-  // scripts/check-source-line-budget.js 里那几条注释）。任何新增都必须同时在
-  // 这里显式列出；拆回 3000 行以内要连同 MIGRATION_DEBT 一起删掉。
+  // Remaining debt is the run-config model panel and the server route families.
+  // The macOS Agent was split below 3000 lines and no longer has a debt entry.
+  // New debt must be listed here; retiring debt must shrink both lists.
   assert.deepEqual(result.debts.map(entry => entry.file),
-    ['public/run-config.js', 'scripts/macos-agent/MultiCCAgent.swift', 'server.js']);
+    ['public/run-config.js', 'server.js']);
 });
