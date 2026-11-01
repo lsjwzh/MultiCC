@@ -136,7 +136,7 @@ const MIGRATION_DEBT = Object.freeze({
     // main 上这道闸已红；按实测 3036/159713 对齐高水位，拆分条件不变。
     // 2026-10-31 切 CLI 车道跟随子 agent 家族默认：切换运行时同行注入
     // validProviderId/getProviders，上方注释压成两行抵掉字节，实测 3035/159713。
-    ceiling: 3035,
+    ceiling: 3033,
     byteCeiling: 159713,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
@@ -535,9 +535,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   rsMore/rsMoreClose）：远程输入重构的粘滞修饰键芯片、缩放角标文案，中英各 8 行
     //   = +16 行，重跑生成器实测 10094/652690；同时改写 rsControlHint/rsRfbCtrlHint
     //   （双击不再复位，改指右下角「1×」；长按=右键），中英各 1 行，实测 10094/652752。
-    maxLines: 10094,
+    // +31 双语键：多电脑入口、连接与撤销授权、目标电脑及保存提示；仅增加生成词典数据。
+    maxLines: 10158,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 652752,
+    maxBytes: 656277,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

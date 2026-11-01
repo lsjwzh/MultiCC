@@ -279,7 +279,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   SessionManager({required this.settings}) {
     fcm = FcmService(settings: settings, onTap: openSessionFromNotification);
-    fcm.start();
+    if (!settings.isMachineScoped) fcm.start();
     _sessionService = SessionService(settings: settings);
     WidgetsBinding.instance.addObserver(this);
     loadDashboard();
@@ -289,7 +289,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     );
     // Route notification taps to the matching session (chat opens inline,
     // terminal gets pushed by MainShell). Flushes any cold-start payload now.
-    NotificationService.setSelectHandler(openSessionFromNotification);
+    if (!settings.isMachineScoped) NotificationService.setSelectHandler(openSessionFromNotification);
   }
 
   // ── Notification tap routing ───────────────────────────────────────────────
@@ -329,10 +329,10 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      fcm.refresh();
+      if (!settings.isMachineScoped) fcm.refresh();
       // Back in the foreground — the keep-alive foreground service (if it was
       // running) is no longer needed; drop its ongoing notification + wake lock.
-      BackgroundKeepAlive.stop();
+      if (!settings.isMachineScoped) BackgroundKeepAlive.stop();
       _backgroundedAt = null;
       _isInBackground = false;
       // Return to the foreground: we don't guess whether the OS froze the
@@ -358,7 +358,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       // live sockets) alive via the Android foreground service, so streaming
       // continues instead of freezing. Opt-in + Android-only (see
       // BackgroundKeepAlive); a no-op otherwise.
-      if (settings.keepAliveEnabled && _providers.isNotEmpty) {
+      if (!settings.isMachineScoped && settings.keepAliveEnabled && _providers.isNotEmpty) {
         BackgroundKeepAlive.start();
       }
       for (final p in _providers.values) {
@@ -876,7 +876,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void notifyListeners() {
-    fcm.setActiveSession(_activeSessionId);
+    if (!settings.isMachineScoped) fcm.setActiveSession(_activeSessionId);
     super.notifyListeners();
   }
 

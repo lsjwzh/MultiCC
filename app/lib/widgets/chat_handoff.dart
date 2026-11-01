@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:provider/provider.dart';
 
 import '../i18n.dart';
 import '../services/settings_service.dart';
@@ -229,7 +230,7 @@ Future<void> showHandoffExportDialog(
     context: context,
     builder: (_) => _HandoffExportDialog(
       sessionId: sessionId,
-      settings: settings,
+      settings: settings ?? context.read<SettingsService?>(),
       httpClient: httpClient,
     ),
   );
@@ -247,7 +248,7 @@ Future<void> showHandoffImportDialog(
     context: context,
     builder: (_) => _HandoffImportDialog(
       currentSessionId: currentSessionId,
-      settings: settings,
+      settings: settings ?? context.read<SettingsService?>(),
       httpClient: httpClient,
     ),
   );

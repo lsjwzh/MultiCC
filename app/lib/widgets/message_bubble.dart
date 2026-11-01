@@ -35,7 +35,8 @@ import 'tool_card.dart';
 Future<void> _handleLinkTap(BuildContext context, String? href) async {
   if (href == null || href.trim().isEmpty) return;
   var target = href.trim();
-  final settings = SettingsService.current;
+  final settings = context.read<SettingsService?>() ?? SettingsService.current;
+  target = settings?.machineResourceUrl(target)?.toString() ?? target;
 
   // 远程屏幕直达链接（multicc-human-assist 求助通道）：Web 在聊天页原地展开
   // 「🖥 屏幕」浮层，App 这里同一条链接路由到原生屏幕页，不走浏览器。
@@ -203,6 +204,11 @@ Future<void> _openLocalFile(
 ) async {
   final messenger = ScaffoldMessenger.of(context);
   try {
+    if (settings.isMachineScoped) {
+      final uri = settings.machineFileUrl(path);
+      if (await launchUrl(uri, mode: LaunchMode.externalApplication)) return;
+      throw StateError('file viewer unavailable');
+    }
     final request = buildMulticcDownloadRequest(
       host: settings.host,
       path: path,
@@ -408,8 +414,7 @@ Future<void> _confirmDeleteMessage(
   if (ok != true || !context.mounted) return;
   final messenger = ScaffoldMessenger.of(context);
   final provider = context.read<ChatProvider>();
-  final settings = SettingsService.current;
-  if (settings == null) return;
+  final settings = provider.settings;
   try {
     await SessionService(settings: settings).deleteMessage(
       shellMessageOwner(provider.executionSessionName, msgId).sessionId,
@@ -514,8 +519,7 @@ Future<void> _forkFromMessage(BuildContext context, ChatMessage message) async {
   if (ok != true || !context.mounted) return;
   final messenger = ScaffoldMessenger.of(context);
   final provider = context.read<ChatProvider>();
-  final settings = SettingsService.current;
-  if (settings == null) return;
+  final settings = provider.settings;
   try {
     final newId = await SessionService(settings: settings).forkSession(
       shellMessageOwner(provider.executionSessionName, msgId).sessionId,
@@ -1369,15 +1373,14 @@ final _localImgRe = RegExp(
 
 /// Build the request for a local-filesystem image routed through the multicc
 /// server. Authentication stays in the header and never enters the image URL.
-MulticcDownloadRequest? _localImageRequest(String rawPath) {
-  final s = SettingsService.current;
+MulticcDownloadRequest? _localImageRequest(String rawPath, SettingsService? s) {
   if (s == null) return null;
   final p = rawPath.replaceFirst(RegExp(r'^file://'), '');
-  return buildMulticcDownloadRequest(
-    host: s.host,
-    path: p,
-    accessToken: s.token,
-    inline: true,
+  return MulticcDownloadRequest(
+    uri: Uri.parse(s.buildHttpUrl('/api/download')).replace(
+      queryParameters: {'path': p, 'inline': '1'},
+    ),
+    headers: {if (s.token.isNotEmpty) 'X-Access-Token': s.token},
   );
 }
 
@@ -1397,7 +1400,7 @@ class _MarkdownContent extends StatelessWidget {
           sizedImageBuilder: (config) {
             final raw = config.uri.toString();
             final isLocal = _localImgRe.hasMatch(raw);
-            final localRequest = isLocal ? _localImageRequest(raw) : null;
+            final localRequest = isLocal ? _localImageRequest(raw, context.read<SettingsService?>() ?? SettingsService.current) : null;
             final url = isLocal ? localRequest?.uri.toString() : raw;
             if (url == null || url.isEmpty) {
               return _ImageErrorNote(name: config.alt ?? raw);

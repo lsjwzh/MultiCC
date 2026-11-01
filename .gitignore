@@ -207,3 +207,8 @@ services/openrouter-usage/
 # Rust provider store coordination (runtime data)
 /providers.json.lock
 /official-provider-selection.json.lock
+
+# Private computer pairing registry and atomic-write coordination
+/machines.json
+/machines.lock
+/machines.write_*.tmp

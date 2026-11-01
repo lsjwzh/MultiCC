@@ -27,6 +27,7 @@ import '../services/update_service.dart';
 import '../theme.dart';
 import '../utils/format.dart';
 import 'air/air_console.dart';
+import 'air/air_computers.dart';
 import 'air/air_directory_schedules.dart';
 import 'air/air_directory_search.dart';
 import 'air/air_directory_task_panel.dart';
@@ -50,6 +51,7 @@ import 'air/air_workspace_card.dart';
 import 'air/air_mobile_workspace.dart';
 import 'air/air_mobile_setup.dart';
 import '../screens/air_settings_screen.dart';
+import '../screens/machine_settings_screen.dart';
 import 'create_session_dialog.dart';
 
 import 'tour_overlay.dart';
@@ -150,7 +152,7 @@ class _AirTasksViewState extends State<AirTasksView>
   /// （同 Web 的 closeNewTaskComposer，两条路径都关）。真是一个任务都没建起来时它是
   /// false，弹层留着、草稿还在输入框里，重试就是原样再点一次。
   bool _lastCreateHandedOff = false;
-  String? _directoryId;
+  late String? _directoryId = widget.settings.machineDirectoryId;
   String _error = '';
   String _lastCreateError = '';
   bool _capacityError = false;
@@ -184,7 +186,7 @@ class _AirTasksViewState extends State<AirTasksView>
 
   /// 打开 Air 就落在控制台（Web 那边裸 `/air` 也落这一页）。第一眼要看到的是
   /// 「有什么在跑、有什么在等我」，而不是某一个目录里的对话。
-  _AirMode _mode = _AirMode.console;
+  late _AirMode _mode = widget.settings.machineDirectoryId == null ? _AirMode.console : _AirMode.tasks;
   // 手机控制台下段清单按哪个目录看（null = 全部项目）。这只是那一页的筛选，不改
   // [_directoryId]（原「最近任务」页的目录筛选，两页合并后归控制台）。
   String? _mobileConsoleDir;
@@ -277,7 +279,7 @@ class _AirTasksViewState extends State<AirTasksView>
   }
 
   Future<void> _loadStore() async {
-    final store = await AirLocalStore.load();
+    final store = await AirLocalStore.load(scope: widget.settings.storageScope);
     if (!mounted) return;
     setState(() {
       _store = store;
@@ -1348,6 +1350,7 @@ class _AirTasksViewState extends State<AirTasksView>
     final uri = Uri.parse(widget.settings.buildHttpUrl('/air')).replace(
       queryParameters: {
         'view': 'overview',
+        if (widget.settings.isMachineScoped) 'machine': widget.settings.machineId!,
         if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
       },
     );
@@ -1910,7 +1913,7 @@ class _AirTasksViewState extends State<AirTasksView>
           Expanded(
             child: switch (_mode) {
               _AirMode.schedules => _mobileSchedulePanel(data),
-              _AirMode.console => AirConsoleBody(
+              _AirMode.console => AirComputerConsole(settings: widget.settings, data: data, httpClient: widget.httpClient, onDirectory: _selectDirectory, onSettings: () => unawaited(_mobileSettings()), child: AirConsoleBody(
                 settings: widget.settings,
                 httpClient: widget.httpClient,
                 sync: _sync,
@@ -1928,7 +1931,7 @@ class _AirTasksViewState extends State<AirTasksView>
                 onOpenMemory: _openMemoryGraph,
                 onOpenTaskgraph: () => unawaited(_openTaskGraph()),
                 onOpenAiAssistant: _openAiAssistant,
-              ),
+              )),
               _AirMode.library => AirDirectoryLibrary(
                 directories: data?.directories ?? const [],
                 currentDirectoryId: _directoryId,

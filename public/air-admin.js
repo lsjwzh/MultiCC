@@ -112,7 +112,7 @@
   // 从目录退回来、刷新、下次打开都还是同一种看法。
   const CONSOLE_VIEW_KEY = 'air:console-view';
   let consoleView = (() => {
-    try { return root.localStorage.getItem(CONSOLE_VIEW_KEY) === 'dirs' ? 'dirs' : 'tasks'; } catch (_) { return 'tasks'; }
+    try { return ['dirs', 'machines'].includes(root.localStorage.getItem(CONSOLE_VIEW_KEY)) ? root.localStorage.getItem(CONSOLE_VIEW_KEY) : 'tasks'; } catch (_) { return 'tasks'; }
   })();
   // 输入法组合期（拼音还没选词）里整页重建，等于把搜索框从文档里摘走：浏览器会就此
   // 结束这次组合，一个字也提交不了 —— 中文打不出来，英文却没事（英文的每个字符本来
@@ -483,6 +483,8 @@
   window.addEventListener('resize', () => { if (priorityGrid?.isConnected) fitPriorityCards(priorityGrid); });
 
   function renderOverview(context) {
+    // Keep remote forms and sockets mounted while the entry computer refreshes.
+    if (consoleView === 'machines' && el('console-home')?.dataset.view === 'machines') return;
     const { data, setMode, navigate } = context;
     const tasks = data?.tasks || [];
     const counts = data?.taskStats?.all;
@@ -716,7 +718,7 @@
     viewSwitch.id = 'console-view-switch';
     viewSwitch.setAttribute('role', 'tablist');
     viewSwitch.setAttribute('aria-label', t('airConsole'));
-    for (const [view, key] of [['tasks', 'docsScopeTask'], ['dirs', 'docsScopeDir']]) {
+    for (const [view, key] of [['tasks', 'docsScopeTask'], ['dirs', 'docsScopeDir'], ...(!root.MultiCCMachineScope ? [['machines', 'airMachines']] : [])]) {
       const tab = make('button', t(key));
       tab.type = 'button';
       tab.id = `console-view-${view}`;
@@ -768,6 +770,7 @@
     // 节点不拆：切回任务看法不用重画，手机那张卡也照旧挂着）；搜索框跟着改搜目录。
     function applyView() {
       home.dataset.view = consoleView;
+      if (consoleView === 'machines') root.MultiCCAirMachines?.mount(home, context);
       for (const tab of viewSwitch.children) tab.setAttribute('aria-selected', String(tab.dataset.consoleView === consoleView));
       homeSearch.placeholder = t(consoleView === 'dirs' ? 'airSearchNameOrPath' : 'airAdminSearchPlaceholder');
       homeSearch.value = consoleView === 'dirs' ? consoleHomeQuery : consoleFilter.query;
@@ -1212,7 +1215,7 @@
 
   function renderDocs(context) {
     setActions([
-      action(t('airServiceRoutes'), () => { window.location.href = '/service-routes.html'; }),
+      action(t('airServiceRoutes'), () => { window.location.href = root.MultiCCMachineScope?.navigation('/service-routes.html') || '/service-routes.html'; }),
       action(t('airAdminRefresh'), () => loadDocs(), '', keepsGlyph('↻')),
       action(t('airAdminRegisterService'), () => el('service-dialog').showModal(), 'primary', keepsGlyph('＋')),
     ]);
@@ -1737,7 +1740,7 @@
     // 藏着）：由 air-mobile.js 切，和桌面 tab 记在同一个键上。
     consoleView: () => consoleView,
     setConsoleView: view => {
-      consoleView = view === 'dirs' ? 'dirs' : 'tasks';
+      consoleView = ['dirs', 'machines'].includes(view) ? view : 'tasks';
       try { root.localStorage.setItem(CONSOLE_VIEW_KEY, consoleView); } catch (_) { /* 无痕模式 */ }
     },
     // 清单按某个项目在看时，新建任务默认落到那个项目（弹窗里仍可改）。

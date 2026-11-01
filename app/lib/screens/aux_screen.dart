@@ -300,7 +300,7 @@ class _AuxScreenState extends State<AuxScreen> {
               onPressed: _saving ? null : _save,
               child: _saving
                   ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFffffff)))
-                  : const Text('保存配置'),
+                  : Text(widget.settings.targetSaveLabel('保存配置')),
             ),
           ),
         ],

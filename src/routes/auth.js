@@ -272,7 +272,7 @@ function createAuthRuntime(rawDeps) {
           return next();
         }
       } catch (_) { /* a scoped authorizer always fails closed */ }
-      if (isAuthenticated(req)) return next();
+      if (!req.headers['x-multicc-machine-grant'] && isAuthenticated(req)) return next();
       // Redirect HTML requests to login, reject API calls with 403
       if (req.headers.accept?.includes('text/html') || (!req.path.startsWith('/api/') && req.method === 'GET')) {
         res.redirect(`/login?redirect=${encodeURIComponent(req.originalUrl)}`);
@@ -312,6 +312,7 @@ function createAuthRuntime(rawDeps) {
     app.post('/api/auth/ws-ticket', express.json({ limit: '4kb' }), (req, res) => {
       try {
         const issued = authSecurity.issueWsTicket(req.body && req.body.path || '/', {
+          machineGrantId: req.machineGrantId || undefined,
           correlationId: req.correlationId || req.id,
           requestId: req.id,
         });

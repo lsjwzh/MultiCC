@@ -394,7 +394,10 @@ class _ProviderScreenState extends State<ProviderScreen> {
         if (sessionId.isNotEmpty) {
           final uri = Uri.parse(widget.settings.buildHttpUrl('/index.html')).replace(queryParameters: {
             'id': sessionId,
-            if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
+            if (widget.settings.isMachineScoped) 'machine': widget.settings.machineId!,
+            if (widget.settings.isMachineScoped) 'machineName': widget.settings.machineName!,
+            if (widget.settings.machineOrigin.isNotEmpty) 'machineOrigin': widget.settings.machineOrigin,
+        if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
           });
           await launchUrl(uri, mode: LaunchMode.externalApplication);
           _snack('账号已创建，请在打开的页面完成登录');
@@ -617,6 +620,9 @@ class _ProviderScreenState extends State<ProviderScreen> {
       queryParameters: {
         'view': 'provider',
         'providerConnection': section,
+        if (widget.settings.isMachineScoped) 'machine': widget.settings.machineId!,
+        if (widget.settings.isMachineScoped) 'machineName': widget.settings.machineName!,
+        if (widget.settings.machineOrigin.isNotEmpty) 'machineOrigin': widget.settings.machineOrigin,
         if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
       },
     );
@@ -1152,7 +1158,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
                 onPressed: _saving ? null : _save,
                 child: _saving
                     ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFffffff)))
-                    : Text(_isEdit ? '保存' : '创建'),
+                    : Text(widget.manage.settings.targetSaveLabel(_isEdit ? '保存' : '创建')),
               ),
             ),
           ],

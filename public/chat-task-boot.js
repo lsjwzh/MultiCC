@@ -104,7 +104,8 @@ function mountTaskAttribution() {
     // （Air 里是父窗口的地址；独立聊天页直接落到 /air）。先让成功提示露个脸。
     onRelocated: ({ dirId, taskId }) => {
       void refreshShellHistory();
-      const url = `/air?dir=${encodeURIComponent(dirId)}&task=${encodeURIComponent(taskId)}`;
+      const targetUrl = `/air?dir=${encodeURIComponent(dirId)}&task=${encodeURIComponent(taskId)}`;
+      const url = window.MultiCCMachineScope?.navigation(targetUrl) || targetUrl;
       let target = null;
       try { target = window.parent && window.parent !== window ? window.parent.location : null; } catch (_) { target = null; }
       setTimeout(() => {
@@ -163,7 +164,7 @@ async function bootChatEntry() {
       // Preserve that route and its parameters instead of rebuilding a chat URL.
       const url = new URL(target, location.href);
       if (_params.get('external')) url.searchParams.set('external', _params.get('external'));
-      location.replace(url.href);
+      location.replace(window.MultiCCMachineScope?.navigation(url.href) || url.href);
     } else connect();
   } catch (error) {
     addSystemMsg(error.message);

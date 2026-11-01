@@ -10,6 +10,14 @@ extension _AirMobileShell on _AirTasksViewState {
   };
 
   Future<void> _mobileSettings() async {
+    if (widget.settings.isMachineScoped) {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => MachineSettingsScreen(settings: widget.settings),
+        ),
+      );
+      return;
+    }
     await widget.beforeOpenNavigation?.call();
     if (!mounted) return;
     _closeDrawer();
@@ -134,41 +142,48 @@ extension _AirMobileShell on _AirTasksViewState {
     );
   }
 
-  Widget _mobileWorkspace(AirSnapshot? data) => AirMobileWorkspace(
-    key: ValueKey(_mode),
+  Widget _mobileWorkspace(AirSnapshot? data) => AirComputerConsole(
+    settings: widget.settings,
     data: data,
-    sync: _sync,
-    // 控制台按顶栏选的项目看（null = 全部项目），不改当前目录 [_directoryId]。
-    directoryId: _mobileConsoleDir,
-    recentTasks: _sidebarTasks(),
-    setupNotice: data == null
-        ? null
-        : AirMobileSetup(
-            key: _mobileSetup,
-            settings: widget.settings,
-            httpClient: widget.httpClient,
-            onSettings: _mobileSettings,
-          ),
-    onOpenTask: (task) => unawaited(_open(task)),
-    onTaskAction: (task) => _runTaskAction(task),
-    onRefresh: _refresh,
-    onResource: (v) {
-      switch (v) {
-        case 'docs':
-          unawaited(
-            _push(
-              (_) => DocsRegistryScreen(
-                settings: widget.settings,
-                httpClient: widget.httpClient,
-              ),
+    httpClient: widget.httpClient,
+    onDirectory: _selectDirectory,
+    onSettings: () => unawaited(_mobileSettings()),
+    child: AirMobileWorkspace(
+      key: ValueKey(_mode),
+      data: data,
+      sync: _sync,
+      // 控制台按顶栏选的项目看（null = 全部项目），不改当前目录 [_directoryId]。
+      directoryId: _mobileConsoleDir,
+      recentTasks: _sidebarTasks(),
+      setupNotice: data == null
+          ? null
+          : AirMobileSetup(
+              key: _mobileSetup,
+              settings: widget.settings,
+              httpClient: widget.httpClient,
+              onSettings: _mobileSettings,
             ),
-          );
-        case 'memory':
-          _openMemoryGraph();
-        case 'taskgraph':
-          unawaited(_openTaskGraph());
-      }
-    },
+      onOpenTask: (task) => unawaited(_open(task)),
+      onTaskAction: (task) => _runTaskAction(task),
+      onRefresh: _refresh,
+      onResource: (v) {
+        switch (v) {
+          case 'docs':
+            unawaited(
+              _push(
+                (_) => DocsRegistryScreen(
+                  settings: widget.settings,
+                  httpClient: widget.httpClient,
+                ),
+              ),
+            );
+          case 'memory':
+            _openMemoryGraph();
+          case 'taskgraph':
+            unawaited(_openTaskGraph());
+        }
+      },
+    ),
   );
 
   Widget _mobileSchedulePanel(AirSnapshot? data) => Column(

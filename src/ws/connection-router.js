@@ -19,7 +19,7 @@ function mountWsConnectionRouter(wss, deps) {
     parseCookies,
     isLocalRequest,
     isRequestPeerAllowed = () => true,
-    authSecurity,
+    authSecurity, machines,
     voiceAsr,
     ttsService,
     remoteScreenRfb,
@@ -101,6 +101,8 @@ function mountWsConnectionRouter(wss, deps) {
       onLog: (event, fields) => logger.warn(event, { ...fields, correlationId: ws._correlationId }),
     });
 
+    if (require('./machines').bridgeMachineSocket(ws, urlObj, { authSecurity })) return;
+
     // A valid share token replaces normal auth only for its scoped chat.
     let sharePerm = null;
     if (urlObj.pathname === '/ws/chat' && urlObj.searchParams.get('share')) {
@@ -122,12 +124,15 @@ function mountWsConnectionRouter(wss, deps) {
       const local = isLocalRequest(req);
       const cookies = parseCookies(req.headers.cookie);
       const accessToken = getAccessToken();
-      const ticket = accessToken
-        && authSecurity.consumeWsTicket(urlObj.searchParams.get('ticket'), urlObj.pathname);
+      const ticket = urlObj.searchParams.has('ticket') && authSecurity?.consumeWsTicket?.(urlObj.searchParams.get('ticket'), urlObj.pathname);
       const legacyCookie = accessToken && allowLegacyWsCookie && cookies.multicc_auth
         && authSecurity.verifyCookie(cookies.multicc_auth);
       const legacyToken = accessToken && allowLegacyWsToken
         && authSecurity.verifyAccessToken(urlObj.searchParams.get('token'));
+      if (ticket?.machineGrantId) {
+        if (!machines?.active(ticket.machineGrantId)) { ws.close(4003, '电脑授权已撤销'); return; }
+        ws._machineGrantId = ticket.machineGrantId;
+      }
       if (ticket) ws._correlationId = ticket.correlationId || ticket.requestId;
       if (ticket && ((ticket.fleetSessionId && ticket.fleetSessionId !== addressedSessionId)
           || (ticket.fleetDirectoryId && ticket.fleetDirectoryId !== addressedDirectoryId))) {

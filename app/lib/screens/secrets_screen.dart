@@ -321,7 +321,7 @@ class _SecretsScreenState extends State<SecretsScreen> {
                               ),
                             )
                           : Text(
-                              t('save'),
+                              widget.settings.targetSaveLabel(t('save')),
                               style: const TextStyle(
                                 fontWeight: FontWeight.w700,
                               ),

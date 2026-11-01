@@ -356,8 +356,8 @@ let _shuttingDown = false;
 // ── Access token authentication (cookie-based login) ──
 // `let` (not const): editable at runtime via /api/settings/access-token from
 // localhost, hot-reloaded without restart (persisted to .env).
-let ACCESS_TOKEN = networkPolicy.accessToken, fleetSharingRuntime = null;
-const authSecurity = createAuthSecurity({ getSecret: () => ACCESS_TOKEN });
+let ACCESS_TOKEN = networkPolicy.accessToken, fleetSharingRuntime = null; const authSecurity = createAuthSecurity({ getSecret: () => ACCESS_TOKEN });
+const machines = require('./src/machines').createMachineRuntime({ root: MULTICC_PATHS.root, authSecurity, getWss: () => wss });
 const ALLOW_LEGACY_TOKEN_QUERY = envEnabled(process.env.MULTICC_ALLOW_LEGACY_TOKEN_QUERY);
 const ALLOW_LEGACY_WS_TOKEN = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_TOKEN);
 const ALLOW_LEGACY_WS_COOKIE = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_COOKIE);
@@ -374,12 +374,10 @@ function parseCookies(header) {
 
 app.use(requestIdMiddleware, require('./src/http/json-compression').jsonCompression);
 routerToolHost.mount(app);
-// Auth owns shutdown, login, scoped grants and the global request gate.
+// Auth gates shutdown, login and scoped grants.
 // It stays mounted before every API/relay route so mutable credentials apply
-// immediately and no downstream handler can accidentally bypass the boundary.
+// Downstream routes cannot bypass authentication.
 // ACCESS_TOKEN and shutdown state are read lazily on each request.
-// Provider relay shares are independently scoped and usage-accounted.
-// Legacy global relay credentials remain inside auth during migration.
 const serviceRoutes = require('./src/service-routes').createServiceRoutes({ authenticate: req => authRuntime.isAuthenticated(req), peerAllowed: req => !networkPolicy.lanOnly || isPrivateRequestPeer(req) });
 const authRuntime = createAuthRuntime({ handleServiceRequest: serviceRoutes.handleHttp,
   express,
@@ -393,7 +391,7 @@ const authRuntime = createAuthRuntime({ handleServiceRequest: serviceRoutes.hand
   createErrorDto,
   getAccessToken: () => ACCESS_TOKEN,
   getShuttingDown: () => _shuttingDown,
-  authorizeScopedRequest: req => fleetSharingRuntime?.sharing.authorizeRequest({ token: req.headers['x-multicc-fleet-token'], grant: req.headers['x-multicc-fleet-grant'], method: req.method, pathname: req.originalUrl }) === true, authorizeProviderRelayRequest: input => providerRelayShares.authorize(input),
+  authorizeScopedRequest: req => machines.authorize(req) || fleetSharingRuntime?.sharing.authorizeRequest({ token: req.headers['x-multicc-fleet-token'], grant: req.headers['x-multicc-fleet-grant'], method: req.method, pathname: req.originalUrl }) === true, authorizeProviderRelayRequest: input => providerRelayShares.authorize(input),
   allowLegacyTokenQuery: ALLOW_LEGACY_TOKEN_QUERY,
 });
 authRuntime.mountRoutes(app);
@@ -1360,7 +1358,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) livenessRuntime.recordProxyActivity({ ...event, sessionId: bound.sessionId }); },
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
-app.use(express.json({ limit: '50mb' })); serviceRoutes.mountManagement(app); require('./src/routes/quota-guard').mountQuotaGuardRoutes(app, { file: MULTICC_PATHS.quotaGuardFile }); // GET/PUT /api/settings/quota-guard —— 官方账号额度保护阈值（写 quota-guard.json，约 5 秒热生效）
+machines.mount(app, express); app.use(express.json({ limit: '50mb' })); serviceRoutes.mountManagement(app); require('./src/routes/quota-guard').mountQuotaGuardRoutes(app, { file: MULTICC_PATHS.quotaGuardFile }); // GET/PUT /api/settings/quota-guard —— 官方账号额度保护阈值（写 quota-guard.json，约 5 秒热生效）
 // Codex 协议代理端点：官方 relay 与 responses-compat（XFYun 流稳定化）。
 // Responses↔Chat 转换桥已退役——主流国产服务商均已原生支持 /responses。
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
@@ -2800,7 +2798,7 @@ createOrchestrationRoutes({
 
 // WebSocket authentication, endpoint routing, terminal attachment and keep-alive
 // live behind one transport boundary. Mutable auth/shutdown state stays lazy.
-mountWsConnectionRouter(wss, {
+mountWsConnectionRouter(wss, { machines,
   metrics,
   logger,
   share,

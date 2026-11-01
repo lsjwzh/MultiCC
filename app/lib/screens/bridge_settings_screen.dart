@@ -353,7 +353,7 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
           width: double.infinity,
           child: FilledButton(
             onPressed: _busy ? null : _saveConfig,
-            child: const Text('保存凭证'),
+            child: Text(widget.settings.targetSaveLabel('保存凭证')),
           ),
         ),
       ],

@@ -1466,7 +1466,9 @@ class AirService {
 /// Air 的两条「手边记录」：收藏的目录、打开过的任务。和 Web Air 一样存在本机
 /// （那边是 localStorage，这边是 SharedPreferences），键名保持一致，方便对照。
 class AirLocalStore {
-  AirLocalStore._(this._prefs);
+  AirLocalStore._(this._prefs, this.scope);
+  final String scope;
+  String _key(String value) => scope.isEmpty ? value : 'machine:$scope:$value';
 
   static const _favoritesKey = 'air:favorites';
   static const _recentKey = 'air:recent-tasks';
@@ -1476,19 +1478,19 @@ class AirLocalStore {
 
   final SharedPreferences _prefs;
 
-  static Future<AirLocalStore> load() async =>
-      AirLocalStore._(await SharedPreferences.getInstance());
+  static Future<AirLocalStore> load({String scope = ''}) async =>
+      AirLocalStore._(await SharedPreferences.getInstance(), scope);
 
-  List<String> get favorites => _prefs.getStringList(_favoritesKey) ?? const [];
+  List<String> get favorites => _prefs.getStringList(_key(_favoritesKey)) ?? const [];
 
-  List<String> get recentTasks => _prefs.getStringList(_recentKey) ?? const [];
+  List<String> get recentTasks => _prefs.getStringList(_key(_recentKey)) ?? const [];
 
   String get taskSort =>
-      _prefs.getString(_taskSortKey) == 'visit' ? 'visit' : 'message';
+      _prefs.getString(_key(_taskSortKey)) == 'visit' ? 'visit' : 'message';
 
   Map<String, int> get taskVisitedAt {
     try {
-      final raw = jsonDecode(_prefs.getString(_visitedKey) ?? '{}') as Map;
+      final raw = jsonDecode(_prefs.getString(_key(_visitedKey)) ?? '{}') as Map;
       return raw.map(
         (key, value) => MapEntry('$key', (value as num?)?.toInt() ?? 0),
       );
@@ -1500,7 +1502,7 @@ class AirLocalStore {
   int visitedAt(String taskId) => taskVisitedAt[taskId] ?? 0;
 
   Future<void> setTaskSort(String value) =>
-      _prefs.setString(_taskSortKey, value == 'visit' ? 'visit' : 'message');
+      _prefs.setString(_key(_taskSortKey), value == 'visit' ? 'visit' : 'message');
 
   /// 收藏最多 5 个；再多就不是「手边」而是另一个目录列表了（同 Web Air 的
   /// `favorites.length < 5`）。
@@ -1516,7 +1518,7 @@ class AirLocalStore {
       if (next.length >= favoriteLimit) next.removeAt(0);
       next.add(dirId);
     }
-    await _prefs.setStringList(_favoritesKey, next);
+    await _prefs.setStringList(_key(_favoritesKey), next);
   }
 
   Future<void> rememberTask(String taskId) async {
@@ -1527,8 +1529,8 @@ class AirLocalStore {
       ..[taskId] = DateTime.now().millisecondsSinceEpoch;
     visited.removeWhere((id, _) => !kept.contains(id));
     await Future.wait([
-      _prefs.setStringList(_recentKey, kept),
-      _prefs.setString(_visitedKey, jsonEncode(visited)),
+      _prefs.setStringList(_key(_recentKey), kept),
+      _prefs.setString(_key(_visitedKey), jsonEncode(visited)),
     ]);
   }
 
@@ -1540,15 +1542,15 @@ class AirLocalStore {
   }) async {
     final keptFavorites = favorites.where(directoryIds.contains).toList();
     if (keptFavorites.length != favorites.length) {
-      await _prefs.setStringList(_favoritesKey, keptFavorites);
+      await _prefs.setStringList(_key(_favoritesKey), keptFavorites);
     }
     final keptRecent = recentTasks.where(taskIds.contains).toList();
     if (keptRecent.length != recentTasks.length) {
-      await _prefs.setStringList(_recentKey, keptRecent);
+      await _prefs.setStringList(_key(_recentKey), keptRecent);
     }
     final visited = taskVisitedAt
       ..removeWhere((id, _) => !taskIds.contains(id));
-    await _prefs.setString(_visitedKey, jsonEncode(visited));
+    await _prefs.setString(_key(_visitedKey), jsonEncode(visited));
   }
 }
 

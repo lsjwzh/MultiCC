@@ -2821,7 +2821,7 @@ const taskSeparation = window.MultiCCTaskSeparation.createController({
   getSession: () => SHARE_MODE || _params.get('readOnly') === '1' ? null : _sessionName,
   request: (url, options) => chatApi.json(withToken(url), options),
   show: window.MultiCCTaskSeparation.showDialog, showPill: window.MultiCCTaskSeparation.showPill,
-  navigate: url => { (window.top || window).location.href = url; },
+  navigate: url => { (window.top || window).location.href = window.MultiCCMachineScope?.navigation(url) || url; },
   report: error => console.warn('Task separation:', error.message),
 });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) taskSeparation.refresh(); });

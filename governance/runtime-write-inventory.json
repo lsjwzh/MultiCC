@@ -643,6 +643,23 @@
           "anchor": "? path.join(os.homedir(), '.multicc', 'plugins-catalog')"
         }
       ]
+    },
+    {
+      "id": "computer-pairing-registry",
+      "classification": "external-owner",
+      "owner": "Rust machines store / MULTICC_DATA_DIR",
+      "rationale": "Instance-owned identity and revocable computer grants use the configured data root, private 0600 files and atomic replacement; no worktree-derived path or CLI environment injection.",
+      "migrationStrategy": "Move with the instance data root; preserve machines.json and machines.lock together. Never copy identity between independently running computers.",
+      "sources": [
+        {
+          "file": "native/core/src/machines/store.rs",
+          "anchor": "let path = root.join(\"machines.json\");"
+        },
+        {
+          "file": "src/machines.js",
+          "anchor": "function createMachineRuntime({ root, authSecurity, getWss = () => null })"
+        }
+      ]
     }
   ]
 }

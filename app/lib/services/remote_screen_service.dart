@@ -148,6 +148,7 @@ class RemoteScreenService {
   ///
   /// 只在本 service 里用 —— 页面/其它功能的请求仍各自走 SettingsService。
   String _httpUrl(String path) {
+    if (settings.isMachineScoped) return settings.buildHttpUrl(path);
     var base = (_lanOrigin ?? settings.host).replaceAll(RegExp(r'/$'), '');
     if (!base.startsWith('http')) base = 'http://$base';
     return '$base$path';
@@ -173,6 +174,11 @@ class RemoteScreenService {
   /// capabilities / 换票 / WS / input / 轮询帧全都改走它。
   Future<void> _prepareLink() async {
     if (_disposed) return;
+    if (settings.isMachineScoped) {
+      _lanOrigin = null;
+      _setBasePath(RemoteLinkPath.relay);
+      return;
+    }
     _p2pActive = false;
     final configured = settings.host.trim();
     if (configured.isEmpty) {
@@ -623,9 +629,7 @@ class RemoteScreenService {
     try {
       await _http
           .post(
-            Uri.parse(
-              _httpUrl('/api/system/agent-permissions/open'),
-            ),
+            Uri.parse(_httpUrl('/api/system/agent-permissions/open')),
             headers: _headers,
             body: jsonEncode({'permission': permission}),
           )
@@ -638,9 +642,7 @@ class RemoteScreenService {
     try {
       final res = await _http
           .post(
-            Uri.parse(
-              _httpUrl('/api/system/agent-permissions/restart'),
-            ),
+            Uri.parse(_httpUrl('/api/system/agent-permissions/restart')),
             headers: _headers,
             body: '{}',
           )
@@ -765,9 +767,7 @@ class RemoteScreenService {
       }
       final res = await _http
           .get(
-            Uri.parse(
-              _httpUrl('/api/remote-screen/frame'),
-            ).replace(
+            Uri.parse(_httpUrl('/api/remote-screen/frame')).replace(
               queryParameters: selected?.toMap().map(
                 (k, v) => MapEntry(k, '$v'),
               ),
