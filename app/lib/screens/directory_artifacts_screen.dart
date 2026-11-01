@@ -141,7 +141,14 @@ class _DirectoryArtifactsScreenState extends State<DirectoryArtifactsScreen> {
     final settings = _settings;
     if (settings == null) return;
     final ok = await openDocsRegistryEntry(settings, e);
-    if (!ok) _snack(t('openBrowserFailed'), isError: true);
+    if (ok) return;
+    final unavailable =
+        settings.isMachineResourcePath(e.url) &&
+        settings.machineResourceUrl(e.url) == null;
+    _snack(
+      t(unavailable ? 'airMachinesUnavailable' : 'openBrowserFailed'),
+      isError: true,
+    );
   }
 
   /// 永久保留 —— 唯一的「永不被回收」承诺，与置顶独立。

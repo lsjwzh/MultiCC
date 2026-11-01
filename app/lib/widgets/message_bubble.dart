@@ -36,7 +36,24 @@ Future<void> _handleLinkTap(BuildContext context, String? href) async {
   if (href == null || href.trim().isEmpty) return;
   var target = href.trim();
   final settings = context.read<SettingsService?>() ?? SettingsService.current;
-  target = settings?.machineResourceUrl(target)?.toString() ?? target;
+  if (settings != null && settings.isMachineResourcePath(target)) {
+    final remote = settings.machineResourceUrl(target);
+    if (remote == null) {
+      // 机器作用域里资源根属于目标电脑；origin 不知道时不能悄悄换成入口电脑
+      // 的同一路径（那是另一台机器的数据）。
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(t('airMachinesUnavailable')),
+            duration: const Duration(milliseconds: 1600),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+    target = remote.toString();
+  }
 
   // 远程屏幕直达链接（multicc-human-assist 求助通道）：Web 在聊天页原地展开
   // 「🖥 屏幕」浮层，App 这里同一条链接路由到原生屏幕页，不走浏览器。
@@ -64,12 +81,14 @@ Future<void> _handleLinkTap(BuildContext context, String? href) async {
   }
 
   // Root-relative path: resolve against the multicc server we're talking to.
+  // 机器作用域下入口页会带上 machine 参数（网页据此进入作用域模式），
+  // 单机下与 buildHttpUrl 完全一致。
   if (target.startsWith('/')) {
-    final base = settings?.buildHttpUrl(target);
+    final base = settings?.machinePageUrl(target);
     if (base != null) target = base;
   } else if (!target.contains('://') && !target.startsWith('mailto:')) {
     // Bare host or path without a scheme — assume http for the current server.
-    final base = settings?.buildHttpUrl('/$target');
+    final base = settings?.machinePageUrl('/$target');
     if (base != null) target = base;
   }
 

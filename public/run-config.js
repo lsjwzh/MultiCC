@@ -1789,7 +1789,7 @@
         const url = `/?id=${encodeURIComponent(result.sessionId)}`;
         accountLoginLink.href = url;
         show(accountLoginLink, true);
-        if (popup) popup.location.replace(url);
+        if (popup) popup.location.replace(window.MultiCCMachineScope?.navigation(url) || url);
         accountLoginStatus.textContent = tt('runConfigAccountLoginHint', '在登录终端完成浏览器授权，回来点击“刷新登录状态”。远程访问时，请在运行 MultiCC 的电脑上完成授权。');
       }, cause => {
         if (popup) popup.close();

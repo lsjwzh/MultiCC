@@ -5,6 +5,7 @@ mod store;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
+use std::time::Duration;
 use store::{Grant, Locked, Peer};
 
 #[derive(Debug)]
@@ -79,14 +80,14 @@ async fn add(root: &str, input: &Value) -> Result<Value, Error> {
     if token.is_empty() || token.len() > 4096 { return Err(fail(400, "machine_password_required", "请在连接窗口输入目标电脑的访问密码")); }
     if !text(input, "expectedId").is_empty() {
         let response = network::request(&origin, "/api/machines/self", "GET", ("x-access-token", token), None, &json!({})).await?;
-        if text(&network::response_json(&response)?, "id") != text(input, "expectedId") {
+        if text(&network::response_json_pairing(&response)?, "id") != text(input, "expectedId") {
             return Err(fail(409, "machine_identity_changed", "此地址对应另一台电脑，请核对地址或将其单独添加"));
         }
     }
     let response = network::request(&origin, "/api/machines/pair", "POST", ("x-access-token", token),
         Some(serde_json::to_vec(&json!({ "ownerId": owner_id, "name": owner_name })).unwrap()),
         &json!({ "headers": { "content-type": "application/json" } })).await?;
-    let paired = network::response_json(&response)?;
+    let paired = network::response_json_pairing(&response)?;
     let id = text(&paired["machine"], "id");
     if !store::valid_id(id) || id == owner_id || !text(&paired, "grant").starts_with("mcg_") {
         return Err(fail(400, "machine_pair_invalid", "目标电脑的身份无效或与当前电脑相同"));
@@ -166,16 +167,23 @@ where F: Fn(String) -> Fut, Fut: std::future::Future<Output = bool> {
         if !network::api_path(path) { return Err(fail(403, "machine_path_denied", "此地址不能通过电脑连接访问")); }
         let origin = network::origin(&peer.origin)?;
         let url = origin.join(path).map_err(|_| fail(400, "machine_path_invalid", "电脑请求地址无效"))?;
-        let mut response = network::client(&origin).await?.get(url)
+        let mut response = network::stream_client(&origin).await?.get(url)
             .header("x-multicc-machine-grant", &peer.grant).header("accept", "text/event-stream")
-            .send().await.map_err(|_| fail(502, "machine_unreachable", "暂时连接不上这台电脑"))?;
+            .send().await.map_err(|e| network::transport_error(&e, "暂时连接不上这台电脑"))?;
         if response.status().is_redirection() { return Err(fail(502, "machine_redirect_rejected", "请使用电脑的最终访问地址")); }
         let headers = json!({ "status": response.status().as_u16(), "headers": {
             "content-type": response.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream")
         }});
         if !emit(headers.to_string()).await { return Ok(()); }
         let mut total = 0;
-        while let Some(chunk) = response.chunk().await.map_err(|_| fail(502, "machine_response_incomplete", "电脑实时连接中断"))? {
+        loop {
+            // A quiet stream is not a failed stream: bridges heartbeat every few
+            // seconds, so 5 minutes of silence ends the view instead of hanging.
+            let chunk = match tokio::time::timeout(Duration::from_secs(300), response.chunk()).await {
+                Ok(Ok(Some(chunk))) => chunk,
+                Ok(Ok(None)) | Err(_) => break,
+                Ok(Err(_)) => return Err(fail(502, "machine_response_incomplete", "电脑实时连接中断")),
+            };
             total += chunk.len();
             if total > 48 * 1024 * 1024 || !emit(json!({"body": STANDARD.encode(&chunk)}).to_string()).await { break; }
         }
@@ -190,6 +198,33 @@ where F: Fn(String) -> Fut, Fut: std::future::Future<Output = bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct CertificateFailure;
+    impl std::fmt::Display for CertificateFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result { formatter.write_str("invalid peer certificate: UnknownIssuer") }
+    }
+    impl std::error::Error for CertificateFailure {}
+    #[derive(Debug)]
+    struct TransportFailure(CertificateFailure);
+    impl std::fmt::Display for TransportFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result { formatter.write_str("error sending request") }
+    }
+    impl std::error::Error for TransportFailure {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.0) }
+    }
+
+    #[test]
+    fn classifies_certificate_failures_and_pairing_passwords() {
+        assert!(network::has_certificate_error(&TransportFailure(CertificateFailure)));
+        assert!(!network::has_certificate_error(&std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused")));
+        let wrong_password = network::response_json_pairing(&json!({ "status": 403 })).unwrap_err();
+        assert_eq!((wrong_password.status, wrong_password.code), (403, "machine_password_invalid"));
+        let expired_grant = network::response_json(&json!({ "status": 401 })).unwrap_err();
+        assert_eq!((expired_grant.status, expired_grant.code), (403, "machine_authorization_required"));
+        assert!(network::response_json_pairing(&json!({ "status": 200, "body": STANDARD.encode("{}") })).is_ok());
+    }
+
     #[test]
     fn scopes_reject_recursive_admin_and_ambiguous_paths() {
         for path in ["/api/machines/pair", "/api/machines/x/proxy/api/air", "/api/../auth/exchange", "/api/%2e%2e/air", "//evil/api/air", "/api/air#fragment"] { assert!(!network::api_path(path)); }

@@ -84,7 +84,7 @@
       for (const [key, label, type, value] of [['name', tr('airMachinesName'), 'text', existing?.name || ''], ['origin', tr('airMachinesOrigin'), 'url', existing?.origin || ''], ['password', tr('airMachinesPassword'), 'password', '']]) {
         const row = node('label', label), input = node('input'); input.type = type; input.required = true; input.value = value; input.autocomplete = key === 'password' ? 'off' : 'on'; inputs[key] = input; row.append(input); form.append(row);
       }
-      form.append(node('p', tr('airMachinesPairHint'), 'machine-note'));
+      form.append(node('p', tr('airMachinesPairHint'), 'machine-note'), node('p', tr('airMachinesInsecureHint'), 'machine-note'));
       const error = node('p', '', 'machine-warning'); error.hidden = true;
       const save = node('button', tr('airMachinesVerify')); save.type = 'submit';
       form.append(error, save, button(tr('cancel'), show)); body.append(form);

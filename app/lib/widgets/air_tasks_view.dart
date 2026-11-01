@@ -1351,6 +1351,8 @@ class _AirTasksViewState extends State<AirTasksView>
       queryParameters: {
         'view': 'overview',
         if (widget.settings.isMachineScoped) 'machine': widget.settings.machineId!,
+        if (widget.settings.isMachineScoped) 'machineName': widget.settings.machineName!,
+        if (widget.settings.isMachineScoped && widget.settings.machineOrigin.isNotEmpty) 'machineOrigin': widget.settings.machineOrigin,
         if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
       },
     );
@@ -1434,6 +1436,7 @@ class _AirTasksViewState extends State<AirTasksView>
       _openSchedules();
       return;
     }
+    if (destination == WorkspaceDestination.goal && openMachineGoalPage(context, widget.settings)) return;
     final handler = widget.onOpenDestination;
     _closeDrawer();
     if (handler != null) {
@@ -1447,7 +1450,7 @@ class _AirTasksViewState extends State<AirTasksView>
             WorkspaceDestination.docs => DocsRegistryScreen(
               settings: widget.settings,
             ),
-            _ => SettingsScreen(settings: widget.settings),
+            _ => airScopedSettingsPage(widget.settings),
           },
         ),
       ),
@@ -1694,7 +1697,7 @@ class _AirTasksViewState extends State<AirTasksView>
         ),
         onOpenPush: () =>
             _push((_) => PushSettingsScreen(settings: widget.settings)),
-        onLogout: () => unawaited(
+        onLogout: widget.settings.isMachineScoped ? null : () => unawaited(
           confirmAirLogout(
             context,
             onLogout: () async {

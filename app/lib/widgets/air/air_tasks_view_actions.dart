@@ -1,5 +1,48 @@
 part of '../air_tasks_view.dart';
 
+/// 机器壳里的「任务预检」（Goal）落点。
+///
+/// 预检配置存在**目标电脑**的服务端；原生设置页没有这一节，而入口的
+/// [SettingsScreen] 带着「连接与服务地址」面板，一保存就会对机器作用域实例
+/// 调 `save(host/token)` 抛 StateError。所以直接打开目标电脑的 Air goal 页。
+/// 返回 false 表示不是机器作用域，调用方沿用原来的路由。
+bool openMachineGoalPage(BuildContext context, SettingsService settings) {
+  if (!settings.isMachineScoped) return false;
+  unawaited(_openScopedPage(context, settings, '/air?view=goal'));
+  return true;
+}
+
+/// 机器作用域下入口电脑设置页的替身：只碰目标电脑的配置。
+Widget airScopedSettingsPage(SettingsService settings) =>
+    settings.isMachineScoped
+    ? MachineSettingsScreen(settings: settings)
+    : SettingsScreen(settings: settings);
+
+Future<void> _openScopedPage(
+  BuildContext context,
+  SettingsService settings,
+  String path,
+) async {
+  final url = settings.machinePageUrl(path);
+  if (url == null) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(t('airMachinesUnavailable'))),
+      );
+    }
+    return;
+  }
+  final opened = await launchUrl(
+    Uri.parse(url),
+    mode: LaunchMode.externalApplication,
+  );
+  if (!opened && context.mounted) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(t('openBrowserFailed'))));
+  }
+}
+
 /// 任务行上的手动动作（长按菜单 / 行内按钮）。
 ///
 /// 动作体与搬出来之前逐字一致（乐观更新与失败回滚都在原处）。用 mixin 而不是

@@ -189,7 +189,9 @@ class SettingsService {
   String? get machineDirectoryId => _machineDirectoryId;
   String targetSaveLabel(String label) =>
       isMachineScoped ? '保存到 $machineName' : label;
-  String? _entryHost, _entryToken;
+  /// 机器作用域实例的入口连接来源：不复制 host/token 快照，入口重连（换服务器）
+  /// 后旧实例跟着走 —— 它发的 `/api/machines/<id>/proxy/...` 仍然打向入口。
+  SettingsService? _entry;
   bool get isMachineScoped => machineId != null;
   String get storageScope =>
       isMachineScoped ? '${Uri.encodeComponent(host)}:$machineId' : '';
@@ -213,8 +215,7 @@ class SettingsService {
       .._machineName = name
       .._machineOrigin = origin
       .._machineDirectoryId = directoryId
-      .._entryHost = host
-      .._entryToken = token;
+      .._entry = this;
     scoped.language.value = language.value;
     scoped.fontScale.value = fontScale.value;
     scoped.advancedMode.value = advancedMode.value;
@@ -275,9 +276,9 @@ class SettingsService {
   }
 
   String get host =>
-      _entryHost ?? _demoHost ?? _prefs.getString(_keyHost) ?? '';
+      _entry?.host ?? _demoHost ?? _prefs.getString(_keyHost) ?? '';
   String get token =>
-      _entryToken ?? _demoToken ?? _prefs.getString(_keyToken) ?? '';
+      _entry?.token ?? _demoToken ?? _prefs.getString(_keyToken) ?? '';
   String get session => _prefs.getString(scopedKey(_keySession)) ?? '';
   String get cwd => _prefs.getString(scopedKey(_keyCwd)) ?? '';
   String get lang => language.value;
@@ -549,6 +550,56 @@ class SettingsService {
       return '$h/api/machines/$machineId/proxy$path';
     }
     return '$h$path';
+  }
+
+  /// 目标电脑的「资源根」路径（`/artifacts`、`/services`、`/plugins`）。
+  ///
+  /// 只认 [machineResourceUrl] 会接管的路径形态：根相对，或指向环回地址的
+  /// 绝对 URL。外站链接不算 —— 聊天里它们照旧原样打开。
+  bool isMachineResourcePath(String path) {
+    if (!isMachineScoped) return false;
+    final uri = Uri.tryParse(path);
+    if (uri == null ||
+        !RegExp(r'^/(artifacts|services|plugins)/').hasMatch(uri.path)) {
+      return false;
+    }
+    if (uri.hasScheme && !['127.0.0.1', 'localhost', '::1'].contains(uri.host)) {
+      return false;
+    }
+    return true;
+  }
+
+  /// 交给系统浏览器 / 剪贴板的页面地址。
+  ///
+  /// 单机作用域与 [buildHttpUrl] 逐字一致（调用方依赖这一点）。机器作用域：
+  /// - `/api/` 仍走机器代理路径（[buildHttpUrl]）；
+  /// - `/artifacts|/services|/plugins` 由目标电脑 origin 提供；
+  /// - 其它根路径页面指向**入口电脑**，但带上 machine / machineName /
+  ///   machineOrigin（token 处理与 [machineFileUrl] 一致），网页端据此进入
+  ///   作用域模式，不会误开入口电脑上的数据。
+  ///
+  /// 只有「机器资源路径 + 目标 origin 未知」会返回 null：调用方必须提示，
+  /// 绝不能回落到入口电脑地址。
+  String? machinePageUrl(String path) {
+    if (!isMachineScoped) return buildHttpUrl(path);
+    if (!path.startsWith('/') || path.startsWith('/api/')) {
+      return buildHttpUrl(path);
+    }
+    if (isMachineResourcePath(path)) {
+      return machineResourceUrl(path)?.toString();
+    }
+    final uri = Uri.parse(buildHttpUrl(path));
+    return uri
+        .replace(
+          queryParameters: {
+            ...uri.queryParameters,
+            'machine': machineId!,
+            'machineName': machineName!,
+            if (machineOrigin.isNotEmpty) 'machineOrigin': machineOrigin,
+            if (token.isNotEmpty) 'token': token,
+          },
+        )
+        .toString();
   }
 
   /// Browser bootstrap uses the existing HTML token exchange; the final file

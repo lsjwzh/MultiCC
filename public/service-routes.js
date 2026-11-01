@@ -43,7 +43,8 @@
       body: body ? JSON.stringify(body) : undefined,
     });
     if (response.status === 401 || response.redirected) {
-      location.href = '/login?redirect=' + encodeURIComponent(location.pathname);
+      const redirect = location.pathname + (window.MultiCCMachineScope ? location.search : '');
+      location.href = '/login?redirect=' + encodeURIComponent(redirect);
       throw new Error('请先登录');
     }
     const result = await response.json();

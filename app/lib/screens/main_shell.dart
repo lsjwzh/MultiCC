@@ -22,6 +22,7 @@ import 'chat_screen.dart';
 import '../widgets/chat_loading_view.dart';
 import 'provider_screen.dart';
 import 'push_settings_screen.dart';
+import 'machine_settings_screen.dart';
 import 'settings_screen.dart';
 import 'cron_screen.dart';
 import 'docs_registry_screen.dart';
@@ -408,6 +409,10 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
   );
 
   void _openNavigationDestination(WorkspaceDestination destination) {
+    // 机器壳里不能再打开入口电脑的 SettingsScreen：它带着「连接与服务地址」
+    // 面板，一保存就会对机器作用域实例调 save(host/token) 抛 StateError。
+    // 机器作用域下这两项都落到目标电脑自己的设置页。
+    final machine = widget.settings.isMachineScoped;
     final route = switch (destination) {
       WorkspaceDestination.cron => _routeTo(
         (_) => CronScreen(settings: widget.settings),
@@ -418,18 +423,20 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
       WorkspaceDestination.voice => _routeTo(
         (_) => VoiceSettingsScreen(settings: widget.settings),
       ),
-      WorkspaceDestination.goal => _routeTo(
-        (_) => SettingsScreen(
-          settings: widget.settings,
-          initialSection: SettingsInitialSection.goal,
-        ),
-      ),
+      WorkspaceDestination.goal => machine
+          ? _routeTo((_) => MachineSettingsScreen(settings: widget.settings))
+          : _routeTo(
+              (_) => SettingsScreen(
+                settings: widget.settings,
+                initialSection: SettingsInitialSection.goal,
+              ),
+            ),
       WorkspaceDestination.provider => _routeTo(
         (_) => ProviderScreen(settings: widget.settings),
       ),
-      WorkspaceDestination.global => _routeTo(
-        (_) => SettingsScreen(settings: widget.settings),
-      ),
+      WorkspaceDestination.global => machine
+          ? _routeTo((_) => MachineSettingsScreen(settings: widget.settings))
+          : _routeTo((_) => SettingsScreen(settings: widget.settings)),
       WorkspaceDestination.push => _routeTo(
         (_) => PushSettingsScreen(settings: widget.settings),
       ),
@@ -459,11 +466,21 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
   }
 
   Future<void> _openWebMemoryGraph() async {
-    final token = widget.settings.token.trim();
-    final uri = Uri.parse(widget.settings.buildHttpUrl('/manage')).replace(
-      queryParameters: {'view': 'memory', if (widget.settings.isMachineScoped) 'machine': widget.settings.machineId!, if (widget.settings.isMachineScoped) 'machineName': widget.settings.machineName!, if (widget.settings.machineOrigin.isNotEmpty) 'machineOrigin': widget.settings.machineOrigin, if (token.isNotEmpty) 'token': token},
-    );
-    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    final settings = widget.settings;
+    final Uri? uri;
+    if (settings.isMachineScoped) {
+      // 服务端 `/manage` 的 302 只透传 view/token/external/dir/task，machine
+      // 参数会被丢掉 —— 直接开 Air 的 memory view，由网页端进入作用域模式。
+      final url = settings.machinePageUrl('/air?view=memory');
+      uri = url == null ? null : Uri.parse(url);
+    } else {
+      final token = settings.token.trim();
+      uri = Uri.parse(settings.buildHttpUrl('/manage')).replace(
+        queryParameters: {'view': 'memory', if (token.isNotEmpty) 'token': token},
+      );
+    }
+    final opened = uri != null &&
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!opened && mounted) {
       ScaffoldMessenger.of(
         context,

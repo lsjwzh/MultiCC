@@ -161,11 +161,21 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
   }
 
   Future<void> _openWechatLogin() async {
-    final token = widget.settings.token.trim();
-    final uri = Uri.parse(
-      widget.settings.buildHttpUrl('/manage'),
-    ).replace(queryParameters: token.isEmpty ? null : {'token': token});
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+    final settings = widget.settings;
+    final Uri? uri;
+    if (settings.isMachineScoped) {
+      // 机器壳里服务端 `/manage` 的重定向会丢掉 machine 参数，直接开 Air 的
+      // 消息桥接 view（machinePageUrl 会补上作用域参数与 token）。
+      final url = settings.machinePageUrl('/air?view=bridges');
+      uri = url == null ? null : Uri.parse(url);
+    } else {
+      final token = settings.token.trim();
+      uri = Uri.parse(settings.buildHttpUrl('/manage')).replace(
+        queryParameters: token.isEmpty ? null : {'token': token},
+      );
+    }
+    if (uri == null ||
+        !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       _snack('无法打开网页管理台');
     }
   }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../i18n.dart';
 import '../services/machine_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/air/air_ops.dart';
@@ -44,21 +45,26 @@ class _MachineCliScreenState extends State<MachineCliScreen> {
   }
 
   Future<void> _install(String cli, bool upgrade) async {
+    final action = upgrade ? t('airCliUpdateUpgrade') : t('airCliUpdateInstall');
     final approved = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(
-          '${upgrade ? '升级' : '安装'} $cli 到 ${widget.settings.machineName}？',
+          t('airMachinesCliConfirm', {
+            'action': action,
+            'cli': cli,
+            'name': '${widget.settings.machineName}',
+          }),
         ),
-        content: const Text('使用目标电脑上的官方安装方式。'),
+        content: Text(t('airMachinesCliConfirmHint')),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
+            child: Text(t('cancel')),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('继续'),
+            child: Text(t('continueAction')),
           ),
         ],
       ),
@@ -67,7 +73,7 @@ class _MachineCliScreenState extends State<MachineCliScreen> {
     setState(() {
       _busy = true;
       _error = '';
-      _receipt = '正在提交…';
+      _receipt = t('airMachinesCliSubmitting');
     });
     try {
       final started = await _service.request(
@@ -76,7 +82,9 @@ class _MachineCliScreenState extends State<MachineCliScreen> {
       );
       final jobId = started['jobId'] ?? started['job']?['id'];
       if (jobId == null) {
-        if (mounted) setState(() => _receipt = '请求已完成');
+        if (mounted) {
+          setState(() => _receipt = t('airMachinesCliRequestDone'));
+        }
         return;
       }
       for (var attempt = 0; attempt < 150 && mounted; attempt++) {
@@ -93,7 +101,9 @@ class _MachineCliScreenState extends State<MachineCliScreen> {
         }
         await Future<void>.delayed(const Duration(seconds: 2));
       }
-      if (mounted) setState(() => _receipt = '目标电脑仍在执行，可稍后刷新版本列表。');
+      if (mounted) {
+        setState(() => _receipt = t('airMachinesCliStillRunning'));
+      }
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
@@ -103,11 +113,15 @@ class _MachineCliScreenState extends State<MachineCliScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('命令行工具')),
+    appBar: AppBar(title: Text(t('airMachinesCliTools'))),
     body: ListView(
       children: [
         ListTile(
-          title: Text('安装与升级目标：${widget.settings.machineName}'),
+          title: Text(
+            t('airMachinesCliTarget', {
+              'name': '${widget.settings.machineName}',
+            }),
+          ),
           trailing: IconButton(
             onPressed: _load,
             icon: const Icon(Icons.refresh),
@@ -117,7 +131,9 @@ class _MachineCliScreenState extends State<MachineCliScreen> {
           ListTile(
             title: Text(entry.key),
             subtitle: Text(
-              '${entry.value['available'] == true ? entry.value['version'] ?? '版本未知' : '未安装'}',
+              entry.value['available'] == true
+                  ? '${entry.value['version'] ?? t('airMachinesCliUnknownVersion')}'
+                  : t('airCliUpdateNotInstalled'),
             ),
             trailing:
                 entry.value['available'] != true ||
@@ -129,7 +145,11 @@ class _MachineCliScreenState extends State<MachineCliScreen> {
                             entry.key,
                             entry.value['available'] == true,
                           ),
-                    child: Text(entry.value['available'] == true ? '升级' : '安装'),
+                    child: Text(
+                      entry.value['available'] == true
+                          ? t('airCliUpdateUpgrade')
+                          : t('airCliUpdateInstall'),
+                    ),
                   )
                 : null,
           ),
@@ -168,7 +188,7 @@ class _MachineHostScreenState extends State<MachineHostScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('电脑与电源')),
+    appBar: AppBar(title: Text(t('airMachinesCategoryPower'))),
     body: ListenableBuilder(
       listenable: _ops,
       builder: (_, _) => ListView(
@@ -177,13 +197,15 @@ class _MachineHostScreenState extends State<MachineHostScreen> {
             title: Text(widget.settings.machineName!),
             subtitle: Text(
               _ops.hasBootReading
-                  ? '已运行 ${Duration(milliseconds: _ops.uptimeMs).inMinutes} 分钟'
-                  : '正在读取电脑状态…',
+                  ? t('airMachinesHostUptime', {
+                      'n': '${Duration(milliseconds: _ops.uptimeMs).inMinutes}',
+                    })
+                  : t('airMachinesHostReading'),
             ),
           ),
           if (_ops.lidSleepAvailable == true)
             SwitchListTile(
-              title: const Text('关盖运行'),
+              title: Text(t('airLidSleep')),
               value: _ops.lidSleepOn,
               onChanged: _ops.lidSleepBusy
                   ? null
@@ -191,13 +213,17 @@ class _MachineHostScreenState extends State<MachineHostScreen> {
             ),
           if (_ops.autoUnlockAvailable)
             SwitchListTile(
-              title: const Text('允许自动解锁'),
+              title: Text(t('airGlobalUnlockToggle')),
               value: _ops.autoUnlockOn,
               onChanged: (_) => _ops.toggleAutoUnlock(),
             ),
           ListTile(
-            title: Text('手动重启 ${widget.settings.machineName} 的服务'),
-            subtitle: const Text('会中断这台电脑上正在执行的会话，请先确认任务状态。'),
+            title: Text(
+              t('airMachinesHostRestartService', {
+                'name': '${widget.settings.machineName}',
+              }),
+            ),
+            subtitle: Text(t('airMachinesHostRestartWarning')),
             trailing: const Icon(Icons.restart_alt),
             onTap: () => confirmAirRestart(context, _ops),
           ),
