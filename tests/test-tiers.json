@@ -795,6 +795,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/sticky_modifiers_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/system_inject_message_test.dart",
       "tier": "other",
       "lane": "flutter"
