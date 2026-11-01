@@ -5533,6 +5533,11 @@
       "lane": "deterministic"
     },
     {
+      "path": "tests/test-task-board-store.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-task-board.js",
       "tier": "core",
       "lane": "deterministic",
@@ -5569,6 +5574,11 @@
         "docker/task-shell/run-tests.js",
         "npm:test:core"
       ]
+    },
+    {
+      "path": "tests/test-task-domain-native.js",
+      "tier": "core",
+      "lane": "deterministic"
     },
     {
       "path": "tests/test-task-first-entry.js",

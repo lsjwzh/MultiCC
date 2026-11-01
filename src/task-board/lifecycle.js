@@ -1,5 +1,6 @@
 'use strict';
 
+const { boardRule } = require('./native-bridge');
 const { taskHistoryRefusal } = require('../session/task-history-retention');
 
 // Purge-stage refusals that describe a permanent state (evidence retention,
@@ -7,8 +8,7 @@ const { taskHistoryRefusal } = require('../session/task-history-retention');
 // the write barrier rolls back and the card stays operable. Anything else
 // (disk, worktree IO) is transient — the barrier stays so a retry resumes the
 // same cleanup and no half-deleted task can execute.
-const PERMANENT_PURGE_REFUSALS = new Set(['TASK_HISTORY_REFERENCED', 'task_session_shared', 'shell_workspace_referenced',
-  'task_workspace_dirty', 'task_workspace_unmerged', 'task_workspace_ignored', 'task_workspace_unverifiable']);
+
 
 // Lifecycle authority is independent of whether a task's execution is writable.
 // A conversation task can be archived/deleted without taking over its session.
@@ -26,8 +26,7 @@ function createTaskLifecycle({ getBoard, resolveTask, taskIdentityIds, commit, t
     pending.add(task.id);
     try {
       await assertIdle(task);
-      if (options.expectedRevision != null && task.recordType === 'planned'
-          && Number(options.expectedRevision) !== task.planningRevision) {
+      if (!boardRule('lifecycleValidate', { task, expectedRevision: options.expectedRevision }).ok) {
         throw Object.assign(new Error('revision_conflict'), { code: 'revision_conflict' });
       }
       const ids = taskIdentityIds(task), dirId = taskDirId(task);
@@ -40,25 +39,16 @@ function createTaskLifecycle({ getBoard, resolveTask, taskIdentityIds, commit, t
       }
       // Persist a write barrier before cleanup. Retrying after a transient
       // failure resumes this same deletion; permanent refusals restore the card.
-      let result = commit(board => { for (const id of ids) if (board.tasks[id]) board.tasks[id].deleting = true; return { ok: true }; });
+      let result = commit(board => boardRule('lifecycle', { board, ids, operation: 'barrier' }));
       if (!result.ok) throw Object.assign(new Error(result.error), { code: result.error, status: 500 });
       try { await purge(task, ids, purgeOptions); }
       catch (error) {
-        if (PERMANENT_PURGE_REFUSALS.has(error.code)) {
-          try { commit(board => { for (const id of ids) if (board.tasks[id]) delete board.tasks[id].deleting; return { ok: true }; }); } catch (_) {}
+        if (boardRule('permanentPurgeRefusal', { code: error.code })) {
+          try { commit(board => boardRule('lifecycle', { board, ids, operation: 'rollback' })); } catch (_) {}
         }
         throw error;
       }
-      result = commit(board => {
-        for (const id of ids) delete board.tasks[id];
-        board.deletedTaskIds = [...new Set([...(board.deletedTaskIds || []), ...ids])];
-        for (const [id, group] of Object.entries(board.taskGroups || {})) {
-          group.taskIds = group.taskIds.filter(memberId => !ids.includes(memberId));
-          if (group.taskIds.length < 2) delete board.taskGroups[id];
-          else if (ids.includes(group.rootTaskId)) group.rootTaskId = group.taskIds[0];
-        }
-        return { ok: true };
-      });
+      result = commit(board => boardRule('lifecycle', { board, ids, operation: 'delete' }));
       if (!result.ok) throw Object.assign(new Error(result.error), { code: result.error, status: 500 });
       notify(dirId, ids, 'deleted');
       return { ok: true, deleted: true, taskIds: ids };
@@ -89,16 +79,9 @@ function createTaskLifecycle({ getBoard, resolveTask, taskIdentityIds, commit, t
       if (task.deleting && action !== 'delete') return fail(res, 'task_deleting');
       await assertIdle(task);
       const expected = req.body?.expectedRevision ?? req.body?.revision;
-      if (expected != null && task.recordType === 'planned' && Number(expected) !== task.planningRevision) return fail(res, 'revision_conflict');
+      if (!boardRule('lifecycleValidate', { task, expectedRevision: expected }).ok) return fail(res, 'revision_conflict');
       const ids = taskIdentityIds(task), dirId = taskDirId(task);
-      const status = action === 'archive' ? 'archived' : task.archivedFromStatus || 'active';
-      const result = commit(board => {
-        const current = board.tasks[task.id];
-        if (action === 'archive' && current.status !== 'archived') current.archivedFromStatus = current.status;
-        current.status = status; current.updatedAt = Date.now();
-        if (current.recordType === 'planned') current.planningRevision = (current.planningRevision || 1) + 1;
-        return { ok: true };
-      });
+      const result = commit(board => boardRule('lifecycle', { board, taskId: task.id, operation: action, now: Date.now() }));
       if (!result.ok) return fail(res, result.error, 500);
       notify(dirId, ids);
       // Legacy /status callers also reach archive/restore here; neither releases a session.

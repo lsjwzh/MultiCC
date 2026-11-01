@@ -47,6 +47,14 @@ function fallback(feature, override, error) {
 }
 function record(feature) { counts[feature] += 1; }
 function status() { return { loaded: !!loaded, loadError, ...counts }; }
+// napi 把结构化错误码塞在 message 里，code 统一是 GenericFailure；还原成真实码。
+function nativeCode(error) {
+  if (error?.code === 'GenericFailure') {
+    const code = /^([A-Za-z][A-Za-z0-9_]*)(?::|$)/.exec(String(error.message || ''))?.[1];
+    if (code) error.code = code;
+  }
+  return error;
+}
 
 // 原生任务共用 libuv 工作池。限制并行和排队数量，避免搜索突发占满文件 I/O 线程。
 let active = 0;
@@ -64,4 +72,4 @@ function runNative(operation) {
     if (active < 2) start(); else waiting.push(start);
   });
 }
-module.exports = { getNative, modeFor, fallback, record, status, runNative };
+module.exports = { getNative, modeFor, fallback, record, status, runNative, nativeCode };

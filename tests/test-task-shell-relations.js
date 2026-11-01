@@ -6,21 +6,10 @@ const assert = require('node:assert/strict');
 const { createTaskRelations } = require('../src/task-shell/relations');
 const { createTaskGraphRoutes } = require('../src/routes/task-graph');
 
-function fakeStore() {
-  const data = new Map();
-  const key = (kind, id) => `${kind}\u0000${id}`;
-  const clone = value => JSON.parse(JSON.stringify(value));
-  return {
-    get: (kind, id) => (data.has(key(kind, id)) ? clone(data.get(key(kind, id))) : null),
-    set: (kind, id, value) => { data.set(key(kind, id), clone(value)); return value; },
-    remove: (kind, id) => data.delete(key(kind, id)),
-    list: kind => [...data.entries()].filter(([entry]) => entry.startsWith(`${kind}\u0000`)).map(([, value]) => clone(value)),
-    transaction: callback => callback(),
-  };
-}
 
-function setup() {
-  const store = fakeStore();
+function setup(t) {
+  const store = require('../src/task-shell/store').createTaskShellStore(':memory:');
+  t.after(() => store.close());
   store.set('shell', 'sh_1', { id: 'sh_1', dirId: 'dir_1', sourceSessionId: 'conv-1' });
   for (const id of ['tsk_a', 'tsk_b', 'tsk_c']) {
     store.set('task', id, { id, dirId: 'dir_1', title: id.slice(-1).toUpperCase(), sessionId: `s-${id}` });
@@ -35,8 +24,8 @@ function setup() {
   return { store, relations, changed };
 }
 
-test('a relation is an audited edge and replays under the same operation id', () => {
-  const { store, relations, changed } = setup();
+test('a relation is an audited edge and replays under the same operation id', t => {
+  const { store, relations, changed } = setup(t);
   const created = relations.create('sh_1', { fromTaskId: 'tsk_a', toTaskId: 'tsk_b', clientMsgId: 'm1' });
   assert.equal(created.created, true);
   assert.equal(created.relation.kind, 'related');
@@ -61,8 +50,8 @@ test('a relation is an audited edge and replays under the same operation id', ()
   assert.equal(store.list('relation').length, 2);
 });
 
-test('relations refuse self-edges, foreign projects, unlinked tasks and unknown tasks', () => {
-  const { relations } = setup();
+test('relations refuse self-edges, foreign projects, unlinked tasks and unknown tasks', t => {
+  const { relations } = setup(t);
   assert.throws(() => relations.create('sh_1', { fromTaskId: 'tsk_a', toTaskId: 'tsk_a', clientMsgId: 'm1' }), { code: 'invalid_input' });
   assert.throws(() => relations.create('sh_1', { fromTaskId: 'tsk_a', toTaskId: 'tsk_other', clientMsgId: 'm2' }), { code: 'project_mismatch' });
   assert.throws(() => relations.create('sh_1', { fromTaskId: 'tsk_a', toTaskId: 'tsk_missing', clientMsgId: 'm3' }), { code: 'task_not_found' });
@@ -73,8 +62,8 @@ test('relations refuse self-edges, foreign projects, unlinked tasks and unknown 
   assert.throws(() => relations.create('sh_1', { fromTaskId: 'tsk_a', toTaskId: 'tsk_b', clientMsgId: 'bad id!' }), { code: 'invalid_input' });
 });
 
-test('removing a relation restores the graph without touching attribution', () => {
-  const { store, relations } = setup();
+test('removing a relation restores the graph without touching attribution', t => {
+  const { store, relations } = setup(t);
   const created = relations.create('sh_1', { kind: 'group', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', clientMsgId: 'm1' });
   const removed = relations.remove('sh_1', { relationId: created.relation.id, clientMsgId: 'm2' });
   assert.equal(removed.removed, true);

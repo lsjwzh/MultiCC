@@ -2,71 +2,31 @@
 const { hash, snapshotHistory, renderSnapshots } = require('./context');
 const fail = code => Object.assign(new Error(code), { code, status: 409 });
 
+// 角色版本、校验、快照和幂等事务由 Rust 仓储持有；这里只读取宿主默认角色。
 function verifiedSnapshot(store, id, taskId = null) {
-  const snapshot = id && store.get('task-role:snapshot', id);
-  if (!snapshot || (taskId && snapshot.taskId !== taskId)
-    || snapshot.id !== 'role_' + hash({ taskId: snapshot.taskId, version: snapshot.version, bindings: snapshot.bindings })) return null;
-  return snapshot;
+  return store.rule({ action: 'roleVerify', id, taskId });
 }
-
 function materializeSnapshot(store, value) {
-  const id = 'role_' + hash(value);
-  const snapshot = { ...value, id, prompt: value.bindings.map(b => `【${b.name}】\n${b.prompt}`).join('\n\n') };
-  const old = store.get('task-role:snapshot', id);
-  if (old && JSON.stringify(old) !== JSON.stringify(snapshot)) throw fail('role_snapshot_conflict');
-  if (!old) store.set('task-role:snapshot', id, snapshot);
-  return id;
+  return store.rule({ action: 'roleMaterialize', value });
 }
-
 function createRoleBindings(store, { getRecord, getDirectory, assertWritable = () => {} }) {
-  function current(taskId) {
-    const task = store.get('task', taskId); if (!task) throw fail('task_not_found');
-    const saved = store.get('task-role:binding', taskId); if (saved) return saved;
-    const record = getRecord(task.sessionId), dir = getDirectory?.(task.dirId);
-    const prompt = record?.rolePrompt || task.runtime?.rolePrompt || dir?.rolePrompt || '';
-    return { taskId, version: 0, bindings: prompt ? [{ name: '原有角色', prompt }] : [] };
+  function facts(taskId) {
+    const task = store.get('task', taskId);
+    return { record: task ? getRecord(task.sessionId) : null, directory: task ? getDirectory?.(task.dirId) : null };
   }
-  function update(taskId, input = {}) {
-    if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0
-      || typeof input.clientMsgId !== 'string' || !/^[\w.:-]{1,160}$/.test(input.clientMsgId)
-      || !Array.isArray(input.bindings) || input.bindings.length > 8) throw fail('invalid_role_binding');
-    const bindings = input.bindings.map(b => {
-      if (!b || typeof b.name !== 'string' || !b.name.trim() || b.name.length > 80
-        || typeof b.prompt !== 'string' || !b.prompt.trim()) throw fail('invalid_role_binding');
-      return { name: b.name.trim(), prompt: b.prompt.trim() };
-    });
-    if (bindings.reduce((n, b) => n + b.prompt.length + b.name.length, 0) > 40000) throw fail('invalid_role_binding');
-    const id = hash([taskId, input.clientMsgId]), fingerprint = hash([input.expectedVersion, bindings]);
-    return store.transaction(() => {
-      assertWritable(taskId);
-      const old = store.get('task-role:change', id);
-      if (old) { if (old.fingerprint !== fingerprint) throw fail('idempotency_conflict'); return old.result; }
-      const previous = current(taskId);
-      if (previous.version !== input.expectedVersion) throw fail('role_version_conflict');
-      const result = { taskId, version: previous.version + 1, bindings };
-      store.set('task-role:binding', taskId, result);
-      store.set('task-role:change', id, { id, fingerprint, previous, result, createdAt: Date.now() });
-      return result;
-    });
-  }
-  function snapshot(taskId) {
-    const value = current(taskId);
-    // Freeze the legacy/default role once. The execution record later contains
-    // a compiled prompt and must never feed back into the binding definition.
-    if (!store.get('task-role:binding', taskId)) store.set('task-role:binding', taskId, value);
-    return materializeSnapshot(store, value);
-  }
-  function inherit(sourceTaskId, targetTaskId) {
-    const source = current(sourceTaskId);
-    const value = { taskId: targetTaskId, version: source.version,
-      bindings: source.bindings.map(binding => ({ ...binding })) };
-    const previous = store.get('task-role:binding', targetTaskId);
-    if (previous && JSON.stringify(previous) !== JSON.stringify(value)) throw fail('role_binding_conflict');
-    if (!previous) store.set('task-role:binding', targetTaskId, value);
-    return value;
-  }
-  return { current, update, snapshot, inherit,
-    isSnapshotFor: (taskId, id) => !!verifiedSnapshot(store, id, taskId) };
+  return {
+    current: taskId => store.rule({ action: 'roleCurrent', taskId, ...facts(taskId) }),
+    update(taskId, input = {}) {
+      store.rule({ action: 'roleValidate', input });
+      return store.transaction(() => {
+        assertWritable(taskId);
+        return store.rule({ action: 'roleUpdate', taskId, input, now: Date.now(), ...facts(taskId) });
+      });
+    },
+    snapshot: taskId => store.rule({ action: 'roleSnapshot', taskId, ...facts(taskId) }),
+    inherit: (sourceTaskId, taskId) => store.rule({ action: 'roleInherit', sourceTaskId, taskId, ...facts(sourceTaskId) }),
+    isSnapshotFor: (taskId, id) => !!verifiedSnapshot(store, id, taskId),
+  };
 }
 
 // Called only under a workspace permit before launching the queued receipt.

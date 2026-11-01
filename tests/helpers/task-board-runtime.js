@@ -77,6 +77,40 @@ function mkRuntime(overrides = {}) {
     logger: { log: () => {} },
     ...overrides,
   };
+  // 故障注入端口仅存在于测试；正常测试与产品都使用 Rust 文件仓储。
+  if (overrides.atomicWriteJson) {
+    const repository = require('../../src/task-board/repository').createTaskBoardRepository(file);
+    const readRevision = f => {
+      try { return Number(JSON.parse(fs.readFileSync(f, 'utf8')).revision) || 0; } catch (_) { return 0; }
+    };
+    deps.taskBoardRepository = { load: () => repository.load(), save(value, expectedRevision, options = {}) {
+      // 与 Rust save 相同的乐观并发契约：expectedRevision 必须等于磁盘
+      // primary/recovery 的最大 revision，否则拒绝写入，而不是静默覆盖。
+      const recovery = file.replace(/\.json$/i, '') + '.planning-v2.json';
+      const disk = Math.max(readRevision(file), readRevision(recovery));
+      let next = value, conflict = null;
+      if (expectedRevision !== undefined && Number(expectedRevision) !== disk) {
+        if (options.onConflict !== 'preserve') {
+          throw Object.assign(new Error('TASK_BOARD_REVISION_CONFLICT'), { code: 'TASK_BOARD_REVISION_CONFLICT' });
+        }
+        let backup = null;
+        try {
+          backup = file.replace(/\.json$/i, '') + `.conflict-r${disk}-${Date.now()}.json`;
+          fs.copyFileSync(file, backup);
+        } catch (_) { backup = null; }
+        next = { ...value, revision: disk + 1 };
+        conflict = { diskRevision: disk, backup };
+      }
+      let previous = null;
+      try { previous = fs.readFileSync(file); } catch (_) {}
+      deps.atomicWriteJson(file, next);
+      try { deps.atomicWriteJson(recovery, next); }
+      catch (error) { if (previous) fs.writeFileSync(file, previous); else fs.unlinkSync(file); throw error; }
+      const reply = { ok: true, revision: Number(next.revision) };
+      if (conflict) reply.conflict = conflict;
+      return reply;
+    } };
+  }
   runtime = createTaskBoardRuntime(deps);
   return {
     runtime, deps, file, auxCalls, broadcasts, dispatches, sessionMessages, creates,

@@ -1,15 +1,9 @@
 'use strict';
-
-// Fine-grained task-first workflows can legitimately create hundreds of tasks
-// in one directory. Keep every task-shell creation path on the same limit.
+const { taskDomain } = require('../native/task-domain');
 const MAX_TASKS_PER_DIRECTORY = 1024;
-
 function directoryTaskCount(store, dirId) {
-  return store.list('task').filter(task => task.dirId === dirId).length;
+  return store.rule ? store.rule({ action: 'directoryCount', dirId })
+    : taskDomain({ op: 'capacity', tasks: store.list('task'), dirId }).count;
 }
-
-function directoryAtCapacity(store, dirId) {
-  return directoryTaskCount(store, dirId) >= MAX_TASKS_PER_DIRECTORY;
-}
-
+function directoryAtCapacity(store, dirId) { return store.rule ? store.rule({ action: 'directoryCapacity', dirId }) : taskDomain({ op: 'capacity', tasks: store.list('task'), dirId }).atCapacity; }
 module.exports = { MAX_TASKS_PER_DIRECTORY, directoryTaskCount, directoryAtCapacity };

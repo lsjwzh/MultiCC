@@ -127,13 +127,19 @@ run('schema 升级和损坏数据库拒绝打开，不覆盖原模型', async t 
   const broken = file + '.broken'; fs.writeFileSync(broken, 'not a database');
   await assert.rejects(model.run({ op: 'open', file: broken }), /schema|open_failed/);
 });
-run('无效类型、孤立 surrogate 和不支持的 ID 明确失败', async t => {
+run('无效类型、宽松解码和损坏记录明确处理', async t => {
   const { db, data, model, refresh } = await setup(t); await refresh();
   await assert.rejects(model.run({ op: 'page', options: { limit: {} } }), /invalid_number/);
   await assert.rejects(model.run({ op: 'page', options: { query: 'a'.repeat(199) + '😀' } }), /unsupported_query/);
   data.overlays[data.tasks[0].id].title = '禁止覆盖源字段';
   await assert.rejects(refresh(), /unsupported_overlay/); delete data.overlays[data.tasks[0].id].title;
   db.prepare('UPDATE shell_records SET body=? WHERE id=?').run(JSON.stringify({ ...data.tasks[0], title: '\ud800' }), data.tasks[0].id);
+  // S1：Rust 宽松解码把孤立代理项改写为 U+FFFD，不再让整库刷新失败。
+  const lenient = await refresh();
+  assert.equal(lenient.rowsLoaded, data.tasks.length);
+  assert.ok((await model.run({ op: 'snapshot' })).tasks.some(task => task.id === data.tasks[0].id
+    && String(task.title).includes('�')));
+  db.prepare('UPDATE shell_records SET body=? WHERE id=?').run('{broken', data.tasks[0].id);
   await assert.rejects(refresh(), /invalid_record/);
   db.prepare('UPDATE shell_records SET body=? WHERE id=?').run(JSON.stringify(data.tasks[0]), data.tasks[0].id);
   db.prepare("INSERT INTO shell_records VALUES('task',?,?)").run('tsk_A', JSON.stringify({ ...data.tasks[0], id: 'mismatched' }));
