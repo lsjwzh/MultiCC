@@ -1,4 +1,5 @@
 pub mod publication;
+pub mod machines;
 pub mod publication_identity;
 pub mod quota_history;
 pub mod search;

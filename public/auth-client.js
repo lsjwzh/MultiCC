@@ -60,7 +60,12 @@ if (typeof module !== 'undefined' && module.exports) {
       if (!headers.has('X-Access-Token')) headers.set('X-Access-Token', bootstrapToken);
       options.headers = headers;
     }
-    return nativeFetch(externalProxyInput(input), options);
+    let scoped = externalProxyInput(input);
+    if (window.MultiCCMachineScope && isSameOrigin(scoped)) {
+      const target = window.MultiCCMachineScope.http(scoped instanceof Request ? scoped.url : scoped);
+      scoped = scoped instanceof Request ? new Request(target, scoped) : target;
+    }
+    return nativeFetch(scoped, options);
   };
 
   async function responseError(response, context) {
@@ -106,7 +111,20 @@ if (typeof module !== 'undefined' && module.exports) {
     // 分享连接用 token 本身授权（服务端 src/ws/connection-router.js 认 share 参数就
     // 不再要 ticket）。这里必须放行：换 ticket 的接口是管理员接口，接收方没有登录，
     // 401 会让 WS 卡在永久重连上。
-    if (url.searchParams.get('share')) return url.toString();
+    if (url.searchParams.get('share') && !window.MultiCCMachineScope) return url.toString();
+    if (window.MultiCCMachineScope) {
+      const scope = window.MultiCCMachineScope;
+      url.searchParams.delete('ticket');
+      const response = await window.fetch(`${scope.prefix}/ws-ticket`, {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: url.pathname + url.search }),
+      });
+      if (!response.ok) throw await responseError(response);
+      const issued = await response.json();
+      if (issued.path !== url.pathname || issued.proxyPath !== `/ws/machines/${scope.id}` || !issued.ticket) throw new Error('电脑连接票据无效');
+      url.pathname = issued.proxyPath; url.search = ''; url.searchParams.set('ticket', issued.ticket);
+      return url.href;
+    }
     if (externalFleetId) {
       const sessionId = url.searchParams.get('session') || url.searchParams.get('id') || '';
       const directoryId = url.searchParams.get('dirId') || '';

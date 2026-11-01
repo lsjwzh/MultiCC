@@ -23,10 +23,8 @@ class ChatWidthSetting {
     max: 980,
   );
 
-  ChatWidthSetting copyWith({bool? limited, int? max}) => ChatWidthSetting(
-    limited: limited ?? this.limited,
-    max: max ?? this.max,
-  );
+  ChatWidthSetting copyWith({bool? limited, int? max}) =>
+      ChatWidthSetting(limited: limited ?? this.limited, max: max ?? this.max);
 
   @override
   bool operator ==(Object other) =>
@@ -52,7 +50,11 @@ class TerminalMacro {
     this.sendEnter = true,
   });
 
-  Map<String, dynamic> toJson() => {'label': label, 'text': text, 'enter': sendEnter};
+  Map<String, dynamic> toJson() => {
+    'label': label,
+    'text': text,
+    'enter': sendEnter,
+  };
 
   static TerminalMacro? fromJson(dynamic raw) {
     if (raw is! Map) return null;
@@ -179,6 +181,47 @@ class SettingsService {
 
   SettingsService._();
 
+  String? _machineId, _machineName, _machineDirectoryId;
+  String _machineOrigin = '';
+  String? get machineId => _machineId;
+  String? get machineName => _machineName;
+  String get machineOrigin => _machineOrigin;
+  String? get machineDirectoryId => _machineDirectoryId;
+  String targetSaveLabel(String label) =>
+      isMachineScoped ? '保存到 $machineName' : label;
+  String? _entryHost, _entryToken;
+  bool get isMachineScoped => machineId != null;
+  String get storageScope =>
+      isMachineScoped ? '${Uri.encodeComponent(host)}:$machineId' : '';
+  String scopedKey(String key) =>
+      isMachineScoped ? 'machine:$storageScope:$key' : key;
+
+  /// Immutable connection target; never changes the app's primary connection.
+  SettingsService forMachine(
+    String id,
+    String name, {
+    String? directoryId,
+    String origin = '',
+  }) {
+    if (isMachineScoped ||
+        !RegExp(r'^machine_[A-Za-z0-9_-]{1,100}$').hasMatch(id)) {
+      throw const FormatException('电脑标识无效');
+    }
+    final scoped = SettingsService._()
+      .._prefs = _prefs
+      .._machineId = id
+      .._machineName = name
+      .._machineOrigin = origin
+      .._machineDirectoryId = directoryId
+      .._entryHost = host
+      .._entryToken = token;
+    scoped.language.value = language.value;
+    scoped.fontScale.value = fontScale.value;
+    scoped.advancedMode.value = advancedMode.value;
+    scoped.chatWidth.value = chatWidth.value;
+    return scoped;
+  }
+
   static Future<SettingsService> getInstance() async {
     if (_instance == null) {
       _instance = SettingsService._();
@@ -231,10 +274,12 @@ class SettingsService {
     _demoToken = null;
   }
 
-  String get host => _demoHost ?? _prefs.getString(_keyHost) ?? '';
-  String get token => _demoToken ?? _prefs.getString(_keyToken) ?? '';
-  String get session => _prefs.getString(_keySession) ?? '';
-  String get cwd => _prefs.getString(_keyCwd) ?? '';
+  String get host =>
+      _entryHost ?? _demoHost ?? _prefs.getString(_keyHost) ?? '';
+  String get token =>
+      _entryToken ?? _demoToken ?? _prefs.getString(_keyToken) ?? '';
+  String get session => _prefs.getString(scopedKey(_keySession)) ?? '';
+  String get cwd => _prefs.getString(scopedKey(_keyCwd)) ?? '';
   String get lang => language.value;
 
   Future<void> setLanguage(String value) async {
@@ -254,16 +299,18 @@ class SettingsService {
   }
 
   /// Default Claude model for newly created chats ('' = follow Claude default).
-  String get defaultModel => _prefs.getString(_keyDefaultModel) ?? '';
+  String get defaultModel =>
+      _prefs.getString(scopedKey(_keyDefaultModel)) ?? '';
 
   /// 首启配置卡被「暂时跳过」了吗。键名跟 Web 的 localStorage 键一字不差
   /// （`air:setup-dismissed`，public/air.js 的 setupDismissed）—— 两边存的是各自
   /// 设备的本地偏好，本来就不会同步，但名字对齐之后「跳过的只是这张卡、不是那项
   /// 配置」这条语义在两端读起来是同一句话（同 [OnboardingStore] 的做法）。
-  bool get airSetupDismissed => _prefs.getBool(_keyAirSetupDismissed) ?? false;
+  bool get airSetupDismissed =>
+      _prefs.getBool(scopedKey(_keyAirSetupDismissed)) ?? false;
 
   Future<void> dismissAirSetup() =>
-      _prefs.setBool(_keyAirSetupDismissed, true);
+      _prefs.setBool(scopedKey(_keyAirSetupDismissed), true);
 
   /// Whether local push notifications are shown for turn outcomes.
   bool get notificationsEnabled => _prefs.getBool(_keyNotify) ?? true;
@@ -295,8 +342,9 @@ class SettingsService {
   Future<void> toggleTaskNotify(String sessionId) =>
       setTaskNotifyEnabled(sessionId, !taskNotifyEnabled(sessionId));
 
-  static String _taskNotifyKey(String sessionId) =>
-      sessionId.isEmpty ? 'multicc_notify' : 'multicc_notify:$sessionId';
+  String _taskNotifyKey(String sessionId) => scopedKey(
+    sessionId.isEmpty ? 'multicc_notify' : 'multicc_notify:$sessionId',
+  );
 
   /// Whether the Android foreground keep-alive service runs while backgrounded,
   /// holding the chat sockets open (Android only; off by default — it costs an
@@ -359,7 +407,7 @@ class SettingsService {
   /// pending-input and API-error state are deliberately not cached: the server
   /// replays those authoritative states on every chat reconnect.
   Map<String, dynamic>? readChatRuntimeCache(String sessionId) {
-    final raw = _prefs.getString('$_keyChatRuntimePrefix$sessionId');
+    final raw = _prefs.getString(scopedKey('$_keyChatRuntimePrefix$sessionId'));
     if (raw == null || raw.isEmpty) return null;
     try {
       final decoded = jsonDecode(raw);
@@ -374,7 +422,7 @@ class SettingsService {
     Map<String, dynamic> value,
   ) async {
     await _prefs.setString(
-      '$_keyChatRuntimePrefix$sessionId',
+      scopedKey('$_keyChatRuntimePrefix$sessionId'),
       jsonEncode(value),
     );
   }
@@ -385,9 +433,11 @@ class SettingsService {
   /// 兼容为 async；读不回写，免得给没碰过的会话凭空造记录。
   DispatchMode readDispatchMode(String sessionId) {
     if (sessionId.isEmpty) return DispatchMode.defaultMode;
-    final stored = _prefs.getString('$_keyDispatchModePrefix$sessionId');
+    final stored = _prefs.getString(
+      scopedKey('$_keyDispatchModePrefix$sessionId'),
+    );
     if (stored != null) return DispatchMode.fromWireName(stored);
-    final legacy = _prefs.getBool('$_keyNoDispatchPrefix$sessionId');
+    final legacy = _prefs.getBool(scopedKey('$_keyNoDispatchPrefix$sessionId'));
     if (legacy == true) return DispatchMode.none;
     return DispatchMode.defaultMode;
   }
@@ -395,7 +445,7 @@ class SettingsService {
   Future<void> saveDispatchMode(String sessionId, DispatchMode mode) async {
     if (sessionId.isEmpty) return;
     await _prefs.setString(
-      '$_keyDispatchModePrefix$sessionId',
+      scopedKey('$_keyDispatchModePrefix$sessionId'),
       mode.wireName,
     );
   }
@@ -422,7 +472,9 @@ class SettingsService {
     final trimmed = macros.take(terminalMacroMax).toList();
     await _prefs.setString(
       'multicc_terminal_macros',
-      trimmed.isEmpty ? '' : jsonEncode(trimmed.map((m) => m.toJson()).toList()),
+      trimmed.isEmpty
+          ? ''
+          : jsonEncode(trimmed.map((m) => m.toJson()).toList()),
     );
   }
 
@@ -436,6 +488,9 @@ class SettingsService {
     bool? keepAliveEnabled,
     double? fontScale,
   }) async {
+    if (isMachineScoped && (host != null || token != null)) {
+      throw StateError('电脑设置不能更改使用端连接');
+    }
     // 演示中改连接 = 先离开演示，后面的比较和落盘都针对真实配置。
     if (host != null || token != null) exitDemo();
     final connectionChanged =
@@ -447,10 +502,12 @@ class SettingsService {
     }
     if (host != null) await _prefs.setString(_keyHost, host.trim());
     if (token != null) await _prefs.setString(_keyToken, token.trim());
-    if (session != null) await _prefs.setString(_keySession, session);
-    if (cwd != null) await _prefs.setString(_keyCwd, cwd);
+    if (session != null) {
+      await _prefs.setString(scopedKey(_keySession), session);
+    }
+    if (cwd != null) await _prefs.setString(scopedKey(_keyCwd), cwd);
     if (defaultModel != null) {
-      await _prefs.setString(_keyDefaultModel, defaultModel);
+      await _prefs.setString(scopedKey(_keyDefaultModel), defaultModel);
     }
     if (notificationsEnabled != null) {
       await _prefs.setBool(_keyNotify, notificationsEnabled);
@@ -488,6 +545,44 @@ class SettingsService {
   String buildHttpUrl(String path) {
     var h = host.replaceAll(RegExp(r'/$'), '');
     if (!h.startsWith('http')) h = 'http://$h';
+    if (isMachineScoped && path.startsWith('/api/')) {
+      return '$h/api/machines/$machineId/proxy$path';
+    }
     return '$h$path';
+  }
+
+  /// Browser bootstrap uses the existing HTML token exchange; the final file
+  /// request carries only the entry cookie and an explicitly scoped API path.
+  Uri machineFileUrl(String path, {bool inline = false}) {
+    if (!isMachineScoped || path.isEmpty || path.contains('\u0000')) {
+      throw const FormatException('电脑文件路径无效');
+    }
+    return Uri.parse(buildHttpUrl('/air')).replace(
+      queryParameters: {
+        'machine': machineId!,
+        'machineName': machineName!,
+        if (machineOrigin.isNotEmpty) 'machineOrigin': machineOrigin,
+        'machineDownload': path,
+        if (inline) 'inline': '1',
+        if (token.isNotEmpty) 'token': token,
+      },
+    );
+  }
+
+  Uri? machineResourceUrl(String path) {
+    if (!isMachineScoped || _machineOrigin.isEmpty) return null;
+    final uri = Uri.tryParse(path);
+    if (uri == null ||
+        !RegExp(r'^/(artifacts|services|plugins)/').hasMatch(uri.path)) {
+      return null;
+    }
+    if (uri.hasScheme && !['127.0.0.1', 'localhost', '::1'].contains(uri.host)) {
+      return null;
+    }
+    return Uri.parse(_machineOrigin).resolve(
+      uri.toString().startsWith('/')
+          ? uri.toString()
+          : '${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}${uri.hasFragment ? '#${uri.fragment}' : ''}',
+    );
   }
 }

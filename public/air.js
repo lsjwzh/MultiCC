@@ -431,7 +431,7 @@
     if (nextMode === 'schedules') params.set('view', 'schedules');
     if (adminModes.has(nextMode)) params.set('view', nextMode);
     const external = initialParams.get('external');
-    if (external) params.set('external', external);
+    if (external) params.set('external', external); if (window.MultiCCMachineScope) { params.set('machine', window.MultiCCMachineScope.id); if (window.MultiCCMachineScope.name) params.set('machineName', window.MultiCCMachineScope.name); if (window.MultiCCMachineScope.origin) params.set('machineOrigin', window.MultiCCMachineScope.origin); }
     if (directoryId) params.set('dir', directoryId);
     if (taskId && nextMode === 'tasks') params.set('task', taskId);
     return '/air' + (params.size ? '?' + params : '');

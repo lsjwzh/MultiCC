@@ -3,6 +3,7 @@ use napi::{bindgen_prelude::AsyncTask, Env, Result, Task};
 use napi_derive::napi;
 use std::{sync::Arc, time::Instant};
 pub mod cpr;
+pub mod machines;
 pub mod publication;
 pub mod quota_history;
 pub mod remote_screen;

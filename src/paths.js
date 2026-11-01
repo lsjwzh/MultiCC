@@ -133,6 +133,8 @@ function createPaths({ dataDir } = {}) {
     sharesFile: path.join(root, 'shares.json'),
     fleetSharesFile: path.join(root, 'fleet-shares.json'),
     externalFleetsFile: path.join(root, 'external-fleets.json'),
+    // Rust computer registry: private grants, never exported to runner env.
+    machinesFile: path.join(root, 'machines.json'),
     pushSubscriptionsFile: path.join(root, 'push_subscriptions.json'),
     eventRulesFile: path.join(root, 'event_rules.json'),
     pushNotificationReceiptsFile: path.join(root, 'push_notification_receipts.json'),

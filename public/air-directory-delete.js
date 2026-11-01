@@ -64,7 +64,7 @@
     // 被删掉的正是地址栏里那个 dir：留在原地只会看到一页空目录。air.js 的
     // popstate 处理函数就是「从地址栏重读一遍再渲染」，所以写同样的地址再派一次
     // popstate（同 air-dir-schedules.js 的做法），不整页重载。
-    const url = '/air?view=directories';
+    const url = root.MultiCCMachineScope?.navigation('/air?view=directories') || '/air?view=directories';
     if (typeof root.PopStateEvent !== 'function') { root.location.assign(url); return; }
     root.history.pushState({}, '', url);
     root.dispatchEvent(new root.PopStateEvent('popstate'));

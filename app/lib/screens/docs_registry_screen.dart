@@ -48,7 +48,10 @@ Future<bool> openDocsRegistryEntry(
   DocsRegistryEntry e,
 ) async {
   Uri uri;
-  if (e.url.startsWith('http://') || e.url.startsWith('https://')) {
+  final remote = settings.machineResourceUrl(e.url);
+  if (remote != null) {
+    uri = remote;
+  } else if (e.url.startsWith('http://') || e.url.startsWith('https://')) {
     final serverHost = Uri.tryParse(settings.buildHttpUrl('/'))?.host ?? '';
     uri = Uri.parse(rewriteLoopbackUrl(e.url, serverHost));
   } else {

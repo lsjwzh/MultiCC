@@ -58,7 +58,7 @@
   // is the page (air.js routes on popstate), so the user lands on the form.
   function openAuxSettings() {
     for (const open of document.querySelectorAll('dialog[open]')) open.close();
-    if (!location.pathname.startsWith('/air')) { location.href = '/air?view=aux'; return; }
+    if (!location.pathname.startsWith('/air')) { location.href = window.MultiCCMachineScope?.navigation('/air?view=aux') || '/air?view=aux'; return; }
     // window.history: `history` in this file is the command history above.
     window.history.pushState({}, '', '/air?view=aux');
     window.dispatchEvent(new PopStateEvent('popstate'));

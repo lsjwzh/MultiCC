@@ -505,6 +505,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/machine_scope_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/main_shell_overlay_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -1150,6 +1155,11 @@
       "entrypoints": [
         "npm:test:cdp"
       ]
+    },
+    {
+      "path": "tests/test-air-machines-cdp.js",
+      "tier": "flow",
+      "lane": "cdp"
     },
     {
       "path": "tests/test-air-manage-shell.js",
@@ -2393,6 +2403,12 @@
       "entrypoints": [
         "npm:test:provider-router"
       ]
+    },
+    {
+      "path": "tests/test-chrome-proxy-editor-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp"
     },
     {
       "path": "tests/test-classify-api-error-state.js",
@@ -3650,6 +3666,12 @@
       "path": "tests/test-log-housekeeping.js",
       "tier": "flow",
       "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-machines.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:machines"
     },
     {
       "path": "tests/test-macos-agent.js",

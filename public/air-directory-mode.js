@@ -367,7 +367,8 @@
         ...(runtime.model ? { model: runtime.model } : {}),
         ...(runtime.effort ? { effort: runtime.effort } : {}),
       });
-      root.location.assign(`/?id=${encodeURIComponent(session.id)}`);
+      const url = `/?id=${encodeURIComponent(session.id)}`;
+      root.location.assign(root.MultiCCMachineScope?.navigation(url) || url);
     } catch (error) {
       ctx.notice?.(translate('airTerminalCreateFailed', { error: error?.message || error }));
     } finally {

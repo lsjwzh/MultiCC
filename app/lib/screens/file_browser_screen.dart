@@ -246,6 +246,11 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
     bool inline = false,
   }) async {
     try {
+      if (widget.settings.isMachineScoped) {
+        final uri = widget.settings.machineFileUrl(path, inline: inline);
+        if (await launchUrl(uri, mode: LaunchMode.externalApplication)) return;
+        throw StateError('file viewer unavailable');
+      }
       final request = buildMulticcDownloadRequest(
         host: widget.settings.host,
         path: path,

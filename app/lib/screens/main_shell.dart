@@ -461,7 +461,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
   Future<void> _openWebMemoryGraph() async {
     final token = widget.settings.token.trim();
     final uri = Uri.parse(widget.settings.buildHttpUrl('/manage')).replace(
-      queryParameters: {'view': 'memory', if (token.isNotEmpty) 'token': token},
+      queryParameters: {'view': 'memory', if (widget.settings.isMachineScoped) 'machine': widget.settings.machineId!, if (widget.settings.isMachineScoped) 'machineName': widget.settings.machineName!, if (widget.settings.machineOrigin.isNotEmpty) 'machineOrigin': widget.settings.machineOrigin, if (token.isNotEmpty) 'token': token},
     );
     final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!opened && mounted) {
@@ -480,7 +480,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     final mgr = context.read<SessionManager>();
     return AirTasksView(
       settings: widget.settings,
-      onSwitchServer: _switchServer,
+      onSwitchServer: widget.settings.isMachineScoped ? null : _switchServer,
       onOpenDestination: _openNavigationDestination,
       // 语音通话是原生独占的（麦克风要 HTTPS），老首页那一版入口随整块首页
       // 一起下线了，这里把它接回 Air 侧栏。

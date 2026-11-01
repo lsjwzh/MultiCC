@@ -8,6 +8,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:provider/provider.dart';
 
 import '../i18n.dart';
 import '../services/annotation_inbox.dart';
@@ -477,7 +478,7 @@ class _ImageAnnotateScreenState extends State<ImageAnnotateScreen> {
 
   /// POST /api/secrets; returns null on success, else a human-readable error.
   Future<String?> _postSecret(String name, String value) async {
-    final s = SettingsService.current;
+    final s = context.read<SettingsService?>() ?? SettingsService.current;
     if (s == null) return 'no server';
     try {
       final res = await http

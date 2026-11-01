@@ -116,12 +116,15 @@ class WsTicketClient {
         !socketUri.path.startsWith('/')) {
       throw const WsTicketException('invalid_socket_uri');
     }
+    final machine = RegExp(
+      r'^/api/machines/(machine_[A-Za-z0-9_-]+)/proxy/api/auth/ws-ticket$',
+    ).firstMatch(ticketEndpoint.path);
     if ((ticketEndpoint.scheme != 'http' && ticketEndpoint.scheme != 'https') ||
         ticketEndpoint.host.isEmpty ||
         ticketEndpoint.userInfo.isNotEmpty ||
         ticketEndpoint.query.isNotEmpty ||
         ticketEndpoint.fragment.isNotEmpty ||
-        ticketEndpoint.path != '/api/auth/ws-ticket' ||
+        (ticketEndpoint.path != '/api/auth/ws-ticket' && machine == null) ||
         !_sameServerOrigin(socketUri, ticketEndpoint)) {
       throw const WsTicketException('invalid_ticket_endpoint');
     }
@@ -135,9 +138,17 @@ class WsTicketClient {
     http.Response response;
     try {
       response = await _post(
-        ticketEndpoint,
+        machine == null
+            ? ticketEndpoint
+            : ticketEndpoint.replace(
+                path: '/api/machines/${machine.group(1)}/ws-ticket',
+              ),
         headers: headers,
-        body: jsonEncode({'path': socketUri.path}),
+        body: jsonEncode({
+          'path': machine == null
+              ? socketUri.path
+              : '${socketUri.path}${socketUri.hasQuery ? '?${socketUri.query}' : ''}',
+        }),
       ).timeout(timeout);
     } catch (_) {
       throw const WsTicketException('ticket_request_failed');
@@ -164,6 +175,16 @@ class WsTicketClient {
       throw const WsTicketException('invalid_ticket_response');
     }
 
+    if (machine != null) {
+      final proxyPath = '/ws/machines/${machine.group(1)}';
+      if (decoded['proxyPath'] != proxyPath) {
+        throw const WsTicketException('invalid_ticket_response');
+      }
+      return socketUri.replace(
+        path: proxyPath,
+        queryParameters: {'ticket': ticket},
+      );
+    }
     final params = <String, dynamic>{};
     for (final entry in socketUri.queryParametersAll.entries) {
       if (entry.key != 'token' && entry.key != 'ticket') {

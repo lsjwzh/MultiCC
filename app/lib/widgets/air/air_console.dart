@@ -200,7 +200,7 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
 
   Future<void> _loadLocalStore() async {
     try {
-      final store = await AirLocalStore.load();
+      final store = await AirLocalStore.load(scope: widget.settings.storageScope);
       if (mounted) setState(() => _localStore = store);
     } catch (_) {
       // 本机访问记录不可读时仍可按消息排序，控制台不因此失败。
