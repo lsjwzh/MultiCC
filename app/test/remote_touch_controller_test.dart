@@ -1,5 +1,6 @@
 import 'dart:ui' show Offset, Rect, Size;
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:multicc_app/services/remote_touch_controller.dart';
 
@@ -15,6 +16,8 @@ class _Rig {
             onHold: () => holds++,
             onRightUsed: () => rightUsed++,
             holdDelay: const Duration(milliseconds: 40),
+            longPressDelay: const Duration(milliseconds: 40),
+            dragLockDelay: const Duration(milliseconds: 40),
             moveInterval: Duration.zero,
           )
           ..mode = mode
@@ -74,21 +77,70 @@ void main() {
       expect(r.events.last, '0@320,120');
     });
 
-    test('长按不动没有右键：抬手就是普通单击；右键只走显式开关', () {
+    test('长按不动 500ms = 在按下点右键；抬手不再发任何事件', () async {
       final r = _Rig();
       r.down(1, 100, 50);
-      r.advance(900); // 远超旧版 450ms 长按
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      // 按下点的右键 down/up，不会有额外的左键或第二次右键。
+      expect(r.events, ['0@200,100', '4@200,100', '0@200,100']);
+      expect(r.holds, 1);
       r.up(1, 100, 50);
-      expect(r.events.where((e) => e.startsWith('4@')), isEmpty);
-      expect(r.events.sublist(r.events.length - 2), ['1@200,100', '0@200,100']);
+      expect(r.events, ['0@200,100', '4@200,100', '0@200,100']);
+    });
 
+    test('长按之后移动/抬手都不再发事件（这次触摸已结束）', () async {
+      final r = _Rig();
+      r.down(1, 100, 50);
+      await Future<void>.delayed(const Duration(milliseconds: 80));
       r.events.clear();
+      r.move(1, 160, 70);
+      r.up(1, 160, 70);
+      expect(r.events, isEmpty);
+    });
+
+    test('显式「右键」开关：下一次轻点按右键并熄灯', () {
+      final r = _Rig();
       r.c.rightOnce = true;
       r.down(1, 100, 50);
       r.up(1, 100, 50);
       expect(r.events.sublist(r.events.length - 2), ['4@200,100', '0@200,100']);
       expect(r.rightUsed, 1);
       expect(r.c.rightOnce, isFalse);
+    });
+
+    test('按住左键期间每 3s 重发最后一次样本，松手后停止', () {
+      fakeAsync((clock) {
+        final events = <String>[];
+        final c = RemoteTouchController(
+            onPointer: (m, x, y) => events.add('$m@$x,$y'),
+            moveInterval: Duration.zero,
+          )
+          ..display = const Size(400, 200)
+          ..source = const Size(800, 400);
+        var t = Duration.zero;
+        c.down(1, const Offset(100, 50), const Offset(100, 50), t);
+        c.move(
+          1,
+          const Offset(140, 50),
+          const Offset(140, 50),
+          t += const Duration(milliseconds: 16),
+        );
+        events.clear();
+        clock.elapse(const Duration(seconds: 3));
+        expect(events, ['1@280,100'], reason: '心跳 = 同一 mask、同一位置');
+        clock.elapse(const Duration(seconds: 3));
+        expect(events, ['1@280,100', '1@280,100']);
+        c.up(
+          1,
+          const Offset(140, 50),
+          const Offset(140, 50),
+          t += const Duration(milliseconds: 16),
+        );
+        final settled = events.length;
+        clock.elapse(const Duration(seconds: 10));
+        expect(events.length, settled, reason: '松手后不再有心跳');
+        expect(events.last, '0@280,100');
+      });
     });
 
     test('拖动中第二指落下：立刻松开左键，不留幽灵按键', () {
@@ -178,7 +230,7 @@ void main() {
       expect(r.rightUsed, 1);
     });
 
-    test('按住不动 → 进入拖拽（按下左键 + 触觉），再滑动是带键移动，抬手松开', () async {
+    test('按住不动 → 进入拖拽（按下左键 + 触觉），再滑动是带键移动，抬手后锁窗口结束才松开', () async {
       final r = _Rig(mode: RemoteTouchMode.trackpad);
       r.down(1, 10, 10);
       await Future<void>.delayed(const Duration(milliseconds: 80));
@@ -187,8 +239,90 @@ void main() {
       r.move(1, 30, 10);
       expect(r.events.last.startsWith('1@'), isTrue);
       r.up(1, 30, 10);
-      expect(r.events.last.startsWith('0@'), isTrue);
+      expect(
+        r.events.where((e) => e.startsWith('0@')),
+        isEmpty,
+        reason: '松手后左键还要保持 500ms（窗口内可继续拖）',
+      );
       expect(r.events.where((e) => e.startsWith('4@')), isEmpty);
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(r.events.last.startsWith('0@'), isTrue);
+    });
+
+    test('拖拽锁窗口内再落下 = 继续同一段拖拽，不发新的按下；窗口过去才松开', () {
+      fakeAsync((clock) {
+        final events = <String>[];
+        final c =
+            RemoteTouchController(
+                onPointer: (m, x, y) => events.add('$m@$x,$y'),
+                holdDelay: const Duration(milliseconds: 40),
+                dragLockDelay: const Duration(milliseconds: 500),
+                moveInterval: Duration.zero,
+              )
+              ..mode = RemoteTouchMode.trackpad
+              ..display = const Size(400, 200)
+              ..source = const Size(800, 400);
+        var t = Duration.zero;
+        c.down(1, const Offset(10, 10), const Offset(10, 10), t);
+        clock.elapse(const Duration(milliseconds: 50));
+        expect(events, ['1@400,200']);
+        c.move(
+          1,
+          const Offset(20, 10),
+          const Offset(20, 10),
+          t += const Duration(milliseconds: 16),
+        );
+        c.up(
+          1,
+          const Offset(20, 10),
+          const Offset(20, 10),
+          t += const Duration(milliseconds: 16),
+        );
+        expect(events.where((e) => e.startsWith('0@')), isEmpty);
+        clock.elapse(const Duration(milliseconds: 200));
+        expect(
+          events.where((e) => e.startsWith('0@')),
+          isEmpty,
+          reason: '窗口还没到',
+        );
+        final before = events.length;
+        c.down(1, const Offset(20, 10), const Offset(20, 10), t);
+        expect(events.length, before, reason: '左键一直按着，不重发按下');
+        c.move(
+          1,
+          const Offset(30, 10),
+          const Offset(30, 10),
+          t += const Duration(milliseconds: 16),
+        );
+        expect(events.last.startsWith('1@'), isTrue);
+        c.up(
+          1,
+          const Offset(30, 10),
+          const Offset(30, 10),
+          t += const Duration(milliseconds: 16),
+        );
+        clock.elapse(const Duration(milliseconds: 600));
+        expect(events.last.startsWith('0@'), isTrue);
+      });
+    });
+
+    test('拖拽中光标不受可见块限制，能走到源画面边缘', () async {
+      final r = _Rig(mode: RemoteTouchMode.trackpad)
+        ..c.viewScale = 2
+        ..c.visible = const Rect.fromLTWH(200, 100, 400, 200);
+      r.down(1, 10, 10);
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(r.events, ['1@400,200']);
+      for (var i = 1; i <= 40; i++) {
+        r.move(1, 10.0 + i * 10, 10);
+      }
+      expect(r.c.cursor, const Offset(799, 200));
+      expect(r.events.last, '1@799,200');
+      expect(
+        r.events.every((e) => e.startsWith('1@')),
+        isTrue,
+        reason: '拖拽期间只发按住移动',
+      );
     });
 
     test('先滑动再停住不会触发拖拽（长按只对「没动过」的触摸生效）', () async {

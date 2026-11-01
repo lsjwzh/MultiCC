@@ -120,6 +120,90 @@ fn input_whitelist_coerces_clamps_and_pins_the_session() {
     );
 }
 
+#[test]
+fn input_whitelist_canonicalises_mods_and_forwards_middle_and_amount_x() {
+    // mods：去重 + 未知项丢弃 + 固定 shift,ctrl,alt,cmd 顺序；数组顺序不影响结果。
+    let click = routes::build_input(&json!({
+        "op": "click", "x": 1, "y": 2, "mods": ["cmd", "bogus", "shift", "cmd", 7]
+    }))
+    .unwrap();
+    assert_eq!(
+        click,
+        json!({ "op": "click", "session": "remote-screen", "x": 1, "y": 2, "allowSystem": true,
+                "count": 1, "mods": ["shift", "cmd"] })
+    );
+    // click / move / scroll / drag / pointer / press 六个 op 都接受 mods。
+    for body in [
+        json!({ "op": "click", "x": 1, "y": 2 }),
+        json!({ "op": "move", "x": 1, "y": 2 }),
+        json!({ "op": "scroll", "x": 1, "y": 2 }),
+        json!({ "op": "drag", "x": 1, "y": 2, "x2": 3, "y2": 4 }),
+        json!({ "op": "pointer", "viewer": "viewer-1", "mask": 1, "x": 1, "y": 2 }),
+        json!({ "op": "press", "keys": "cmd+c" }),
+    ] {
+        let mut body = body.as_object().unwrap().clone();
+        body.insert("mods".into(), json!(["alt", "ctrl"]));
+        let built = routes::build_input(&Value::Object(body)).unwrap();
+        assert_eq!(built["mods"], json!(["ctrl", "alt"]), "{built}");
+    }
+    // 非数组静默忽略；过滤后为空也不转发；其他 op 不接受 mods。
+    for body in [
+        json!({ "op": "click", "x": 1, "y": 2, "mods": "cmd" }),
+        json!({ "op": "click", "x": 1, "y": 2, "mods": { "shift": true } }),
+        json!({ "op": "click", "x": 1, "y": 2, "mods": [] }),
+        json!({ "op": "click", "x": 1, "y": 2, "mods": ["nope"] }),
+        json!({ "op": "type", "text": "x", "mods": ["cmd"] }),
+        json!({ "op": "release", "mods": ["cmd"] }),
+    ] {
+        let built = routes::build_input(&body).unwrap();
+        assert!(built.get("mods").is_none(), "{body}");
+    }
+
+    // button：right / middle 原样转发，其余（含 "left"）按左键、不带 button。
+    for (button, expected) in [
+        (json!("right"), Some(json!("right"))),
+        (json!("middle"), Some(json!("middle"))),
+        (json!("left"), None),
+        (json!("RIGHT"), None),
+        (json!(""), None),
+        (json!(null), None),
+        (json!(4), None),
+    ] {
+        let built =
+            routes::build_input(&json!({ "op": "click", "x": 1, "y": 1, "button": button }))
+                .unwrap();
+        assert_eq!(built.get("button").cloned(), expected, "{button}");
+    }
+
+    // amountX：round + clamp −50…50，只在非零时转发（-0 是假值）。
+    for (amount_x, expected) in [
+        (json!(12.6), Some(json!(13))),
+        (json!(-999), Some(json!(-50))),
+        (json!(999), Some(json!(50))),
+        (json!("-2.5"), Some(json!(-2))),
+        (json!(0), None),
+        (json!(-0.0), None),
+        (json!(-0.4), None),
+        (json!("nan"), None),
+        (json!(null), None),
+        (json!(false), None),
+    ] {
+        let built =
+            routes::build_input(&json!({ "op": "scroll", "x": 1, "y": 1, "amountX": amount_x }))
+                .unwrap();
+        assert_eq!(built.get("amountX").cloned(), expected, "{amount_x}");
+        // amount 与 amountX 互不影响：只给 amountX 时 amount 仍是 0。
+        assert_eq!(built["amount"], json!(0), "{amount_x}");
+    }
+    let both =
+        routes::build_input(&json!({ "op": "scroll", "x": 1, "y": 1, "amount": 4, "amountX": -6 }))
+            .unwrap();
+    assert_eq!(
+        (both["amount"].clone(), both["amountX"].clone()),
+        (json!(4), json!(-6))
+    );
+}
+
 // ── Agent 客户端 ───────────────────────────────────────────────────────
 #[cfg(unix)]
 #[tokio::test]

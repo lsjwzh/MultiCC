@@ -552,6 +552,34 @@ void main() {
     );
   });
 
+  test('能力探测顺带记住本机主修饰键；缺字段时保持 cmd', () async {
+    final incoming = StreamController<dynamic>();
+    incoming.stream.listen((_) {});
+    addTearDown(incoming.close);
+
+    Future<RemoteScreenService> probe(Object body) async {
+      final s = await _make(
+        incoming: incoming,
+        sent: [],
+        httpStub: MockClient((_) async => http.Response(jsonEncode(body), 200)),
+      );
+      addTearDown(s.dispose);
+      await s.supportsRemoteScreen();
+      return s;
+    }
+
+    expect(
+      (await probe({
+        'ok': true,
+        'supported': true,
+        'modifier': 'ctrl',
+        'streams': {'h264': true},
+      })).hostModifier,
+      'ctrl',
+    );
+    expect((await probe({'ok': true, 'supported': true})).hostModifier, 'cmd');
+  });
+
   test('唤起状态只读，点击才提交；服务端拒绝不能当成功', () async {
     final incoming = StreamController<dynamic>();
     incoming.stream.listen((_) {});

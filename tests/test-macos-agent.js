@@ -22,6 +22,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 test('agent + scroll sources: ungated code stays Swift 5.5 compatible (macOS 11 floor)', () => {
   const sources = [
     path.join(__dirname, '..', 'scripts', 'macos-agent', 'MultiCCAgent.swift'),
+    path.join(__dirname, '..', 'scripts', 'macos-agent', 'MultiCCAgentRemoteInput.swift'),
     path.join(__dirname, '..', 'scripts', 'macos-agent', 'AgentPermissions.swift'),
     path.join(__dirname, '..', 'skills', 'multicc-computer-use', 'scripts', 'scroll.swift'),
   ];
@@ -98,70 +99,116 @@ print("Permission request regression OK")
   assert.match(execFileSync(binary, [], { encoding: 'utf8', timeout: 5000 }), /Permission request regression OK/);
 });
 
-// Live touch drag holds the real left button down while a finger is on the phone.
-// The inputs that must always give it back can't be exercised here (they'd move the
-// real pointer), so pin the structure that guarantees it.
-test('remote screen live drag: every exit path releases the button, dragdown is viewer-only', () => {
+// Live touch input presses immediately on the rising edge and the button /
+// modifier state is owned by MultiCCAgentRemoteInput.swift. The inputs that
+// must always give it back cannot run here (they would move the real pointer),
+// so pin the structure that guarantees it.
+test('remote screen input: immediate press, live drag, and every exit path releases buttons + modifiers', () => {
   const dir = path.join(__dirname, '..', 'scripts', 'macos-agent');
   const src = fs.readFileSync(path.join(dir, 'MultiCCAgent.swift'), 'utf8');
+  const input = fs.readFileSync(path.join(dir, 'MultiCCAgentRemoteInput.swift'), 'utf8');
   const h264 = fs.readFileSync(path.join(dir, 'MultiCCAgentH264.swift'), 'utf8');
-  const body = (name) => {
-    const at = src.indexOf(`func ${name}(`);
+  const body = (text, name) => {
+    const at = text.indexOf(`func ${name}(`);
     assert.ok(at > 0, `${name} exists`);
-    const next = src.indexOf('\n}\n', at);
-    return src.slice(at, next);
+    const next = text.indexOf('\n}\n', at);
+    return text.slice(at, next);
   };
-  // press goes through the full policy gate and only for the remote-screen session
-  const handleCase = src.slice(src.indexOf('case "dragdown":'), src.indexOf('case "drag":'));
-  assert.match(handleCase, /session == "remote-screen"/);
-  assert.match(handleCase, /withMutation\(/);
-  assert.match(handleCase, /\.leftMouseDown/);
-  assert.doesNotMatch(handleCase, /\.leftMouseUp/);
-  // release: lift, disconnect (RFB + H.264 sessions), idle watchdog, hard stops
-  assert.match(body('rfbPointer'), /if live \{ rfbDragEnd\(c, p\); return \}/);
-  assert.match(src, /defer \{\s*rfbDragAbort\(client\)/);
-  assert.match(h264, /defer \{ rfbDragAbort\(client\.input\);/);
-  assert.match(body('rfbDragWatchdog'), /RFB_DRAG_IDLE_RELEASE/);
-  const step = body('rfbDragStep');
+  // The press goes through the full policy gate (halt/lock/lease/AX/protected).
+  const press = body(input, 'rfbPressButton');
+  assert.match(press, /withMutation\(/);
+  assert.match(press, /session: "remote-screen"/);
+  assert.match(press, /mouseEventClickState/);
+  // dragdown is gone: it pressed without tracking, so nothing could release it.
+  assert.doesNotMatch(src, /case "dragdown":/);
+  // Rising edges press immediately; a refused press is dead (no retry/click).
+  const pointer = body(input, 'rfbPointer');
+  assert.match(pointer, /if rfbPressButton\(/);
+  assert.match(pointer, /c\.deadButtons \|= spec\.bit/);
+  assert.match(pointer, /rfbReleaseButtons\(c, at: p, only: released\)/);
+  assert.match(pointer, /if heartbeat \{ return \}/);
+  // Heartbeat only refreshes the timers; the 10 s / 30 s watchdogs are the net.
+  const watchdog = body(input, 'rfbWatchdog');
+  assert.match(watchdog, /RFB_DRAG_IDLE_RELEASE/);
+  assert.match(watchdog, /RFB_MOD_IDLE_RELEASE/);
+  // Hard stops give the button back instead of dropping samples silently.
+  const move = body(input, 'rfbDragMove');
   for (const guard of ['AXIsProcessTrusted()', 'screenLocked()', 'control.isHalted', 'holderConflict("remote-screen")']) {
-    assert.ok(step.includes(guard), `rfbDragStep stops on ${guard}`);
+    assert.ok(move.includes(guard), `rfbDragMove stops on ${guard}`);
   }
-  assert.match(step, /rfbDragEnd\(c, nil\)/);
-  assert.match(body('rfbDragEnd'), /\.leftMouseUp/);
-  // a refused press must not be retried on every move sample
-  assert.match(body('rfbLeftHeldMove'), /c\.dragDead = true/);
+  assert.match(move, /rfbReleaseAll\(c\)/);
+  // Release-all covers buttons and modifiers, on every disconnect path.
+  const releaseAll = body(input, 'rfbReleaseAll');
+  assert.match(releaseAll, /rfbReleaseButtons\(c, at: nil\)/);
+  assert.match(releaseAll, /rfbReleaseModifiers\(c\)/);
+  assert.match(body(input, 'rfbReleaseButtons'), /spec\.up/);
+  assert.match(src, /defer \{\s*rfbReleaseAll\(client\)/);
+  assert.ok(h264.includes('rfbReleaseAll(client.input)'));
+  // Modifiers are real flagsChanged key events, held per client.
+  const mod = body(input, 'rfbModifier');
+  assert.match(mod, /keyboardEventSource: automationEventSource, virtualKey: mod\.code, keyDown: true/);
+  assert.match(mod, /keyboardEventSource: automationEventSource, virtualKey: mod\.code, keyDown: false/);
+  assert.match(input, /0xFFE1: \("shift", 0x38\)/);
+  // Click count: press time, double-click interval clamped 0.3..0.6, 6 pt, max 3.
+  const count = body(input, 'rfbClickCount');
+  assert.match(count, /doubleClickInterval/);
+  assert.match(count, /min\(0\.6, max\(0\.3/);
+  assert.match(count, /<= 6/);
+  assert.match(count, /min\(3,/);
+  // A press that becomes a drag resets that button's click history on release.
+  assert.match(body(input, 'rfbReleaseButtons'), /hypot\(p\.x - down\.x, p\.y - down\.y\) > 6/);
+  // Input hot paths use the same one-shot-halt predicate as every other gate.
+  for (const name of ['rfbModifier', 'rfbWatchdog', 'rfbDragMove', 'rfbHover']) {
+    assert.match(body(input, name), /control\.isHalted && !control\.clearIdleHalt\(\)/, `${name} clears an idle halt`);
+  }
+  // Hover is on for RFB clients too (contract: all client kinds).
+  assert.match(src, /client\.hoverMoves = true/);
 });
 
-test('HTTP fallback native pointer: held moves dispatch live; release, refusal and viewer teardown are safe', { skip: !hasSwift, timeout: 60000 }, t => {
+test('HTTP fallback native pointer: immediate press, heartbeat, drag, wheel, middle/right, modifiers, refusal and teardown', { skip: !hasSwift, timeout: 60000 }, t => {
   const root = fs.mkdtempSync('/tmp/multicc-http-pointer-native-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const input = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/MultiCCAgentRemoteInput.swift'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/MultiCCAgent.swift'), 'utf8');
-  const body = name => {
-    const start = source.indexOf(`func ${name}(`);
-    assert.ok(start > 0);
-    let end = source.indexOf('{', start), depth = 1;
-    while (depth && ++end < source.length) {
-      if (source[end] === '{') depth++;
-      if (source[end] === '}') depth--;
+  const fn = (text, name) => {
+    const start = text.indexOf(`func ${name}(`);
+    assert.ok(start > 0, `${name} exists`);
+    let end = text.indexOf('{', start), depth = 1;
+    while (depth && ++end < text.length) {
+      if (text[end] === '{') depth++;
+      if (text[end] === '}') depth--;
     }
-    return source.slice(start, end + 1);
+    return text.slice(start, end + 1);
   };
   const client = source.slice(source.indexOf('final class RfbClient:'), source.indexOf('/// One persistent deflate stream'));
-  const http = source.slice(source.indexOf('final class HttpScreenPointers {'), source.indexOf('// Live touch drag.'));
+  const http = input.slice(input.indexOf('final class HttpScreenPointers {'), input.indexOf('// Every live stream client'));
+  const buttons = input.slice(input.indexOf('let RFB_SPECIAL_KEYS:'), input.indexOf('@available(macOS 14.0, *)\nfunc rfbInput'));
   const file = path.join(root, 'main.swift');
   fs.writeFileSync(file, `import Foundation
 import CoreGraphics
+import AppKit
 import Darwin
 let RFB_DIV = 2
-let RFB_DRAG_SLOP: CGFloat = 8
 let automationEventSource = CGEventSource(stateID: .privateState)
 let mutationLane = NSLock()
-var events: [CGEventType] = []
+let MODIFIERS: [String: CGEventFlags] = ["shift": .maskShift, "ctrl": .maskControl, "alt": .maskAlternate, "cmd": .maskCommand]
+var types: [CGEventType] = []
+var flagsLog: [CGEventFlags] = []
+var clickLog: [Int64] = []
 var refused = false
-func post(_ event: CGEvent?) { if let event = event { events.append(event.type) } }
+func post(_ event: CGEvent?, pid: pid_t? = nil, flags: CGEventFlags = []) {
+  guard let event = event else { return }
+  types.append(event.type)
+  flagsLog.append(flags)
+  clickLog.append(event.getIntegerValueField(.mouseEventClickState))
+}
+func postModifierKey(_ name: String, down: Bool, flags: CGEventFlags, pid: pid_t? = nil) {
+  types.append(.flagsChanged); flagsLog.append(flags); clickLog.append(0)
+}
 func log(_ text: String) {}
 func AXIsProcessTrusted() -> Bool { true }
 func screenLocked() -> Bool { false }
+enum MutKind { case pointer, keyboard }
 final class Control {
   var isHalted = false
   func clearIdleHalt() -> Bool { false }
@@ -172,39 +219,113 @@ final class RfbScreen {
   static let shared = RfbScreen()
   func notePointer(_ c: RfbClient) -> Int { c.lastPointerAt = Date(); return c.div }
 }
-func handle(_ request: [String: Any]) -> [String: Any] {
-  if !refused { events.append(.leftMouseDown) }
-  return ["ok": !refused]
+func dispatched(_ what: String) -> [String: Any] { ["ok": true] }
+func pidAt(_ p: CGPoint) -> pid_t? { 42 }
+func withMutation(_ req: [String: Any], session: String, target: pid_t?, kind: MutKind,
+                  _ body: () -> [String: Any]) -> [String: Any] {
+  if refused { return ["ok": false, "reason": "test refusal"] }
+  return body()
 }
-func rfbInput(_ request: [String: Any]) { events.append(.otherMouseDown) }
-func rfbHover(_ c: RfbClient, _ p: CGPoint) {}
-func rfbDragWatchdog(_ c: RfbClient) {}
+func rfbStartWatchdog(_ c: RfbClient) {}
 ${client}
-${body('rfbPointer')}
-${body('rfbDragEnd')}
-${body('rfbDragAbort')}
-${body('rfbLeftHeldMove')}
-${body('rfbDragStep')}
+${buttons}
+${fn(input, 'rfbDeriveMods')}
+${fn(input, 'rfbFlagsLocked')}
+${fn(input, 'rfbFlags')}
+${fn(input, 'rfbSyncTransientMods')}
+${fn(input, 'rfbClickCount')}
+${fn(input, 'rfbPressButton')}
+${fn(input, 'rfbReleaseButtons')}
+${fn(input, 'rfbReleaseModifiers')}
+${fn(input, 'rfbReleaseAll')}
+${fn(input, 'rfbPointer')}
+${fn(input, 'rfbDragMove')}
+${fn(input, 'rfbHover')}
 ${http}
 let pointers = HttpScreenPointers.shared
-_ = pointers.pointer("a", mask: 1, x: 100, y: 100)
-precondition(events.isEmpty)
-_ = pointers.pointer("a", mask: 1, x: 140, y: 100)
-precondition(events == [.leftMouseDown, .leftMouseDragged], "drag must dispatch before lift")
-_ = pointers.pointer("a", mask: 0, x: 150, y: 100)
-precondition(events.last == .leftMouseUp)
-events.removeAll()
-_ = pointers.pointer("b", mask: 1, x: 10, y: 10)
-_ = pointers.pointer("b", mask: 1, x: 50, y: 10)
+// A rising edge presses at once: no client-side slop on the Agent.
+_ = pointers.pointer("a", mask: 1, x: 100, y: 100, mods: [])
+precondition(types == [.leftMouseDown], "press must be immediate: \\(types)")
+// Heartbeat (same mask and position) posts nothing but keeps the button alive.
+types.removeAll()
+_ = pointers.pointer("a", mask: 1, x: 100, y: 100, mods: [])
+precondition(types.isEmpty, "heartbeat posts nothing")
+// Motion while held streams dragged events.
+_ = pointers.pointer("a", mask: 1, x: 140, y: 100, mods: [])
+precondition(types == [.leftMouseDragged])
+types.removeAll()
+// Release at the release point.
+_ = pointers.pointer("a", mask: 0, x: 150, y: 100, mods: [])
+precondition(types == [.leftMouseUp])
+// Double click: the second press and up carry click state 2 (decided at press).
+types.removeAll(); clickLog.removeAll()
+_ = pointers.pointer("d", mask: 1, x: 10, y: 10, mods: [])
+_ = pointers.pointer("d", mask: 0, x: 10, y: 10, mods: [])
+_ = pointers.pointer("d", mask: 1, x: 11, y: 10, mods: [])
+_ = pointers.pointer("d", mask: 0, x: 11, y: 10, mods: [])
+precondition(clickLog == [1, 1, 2, 2], "click count at press: \\(clickLog)")
+// A press that becomes a drag must not seed the next click: drag away, then
+// click back at the press point within the interval → count 1 (not 2).
+_ = pointers.pointer("g", mask: 1, x: 300, y: 300, mods: [])
+_ = pointers.pointer("g", mask: 1, x: 340, y: 300, mods: [])
+_ = pointers.pointer("g", mask: 0, x: 340, y: 300, mods: [])
+types.removeAll(); clickLog.removeAll()
+_ = pointers.pointer("g", mask: 1, x: 300, y: 300, mods: [])
+_ = pointers.pointer("g", mask: 0, x: 300, y: 300, mods: [])
+precondition(clickLog == [1, 1], "a drag resets the click count: \\(clickLog)")
+// Same when the drag comes back to the press point before release: the travel
+// itself (not just the release point) is what makes it a drag.
+_ = pointers.pointer("g2", mask: 1, x: 300, y: 300, mods: [])
+_ = pointers.pointer("g2", mask: 1, x: 340, y: 300, mods: [])
+_ = pointers.pointer("g2", mask: 1, x: 300, y: 300, mods: [])
+_ = pointers.pointer("g2", mask: 0, x: 300, y: 300, mods: [])
+types.removeAll(); clickLog.removeAll()
+_ = pointers.pointer("g2", mask: 1, x: 300, y: 300, mods: [])
+_ = pointers.pointer("g2", mask: 0, x: 300, y: 300, mods: [])
+precondition(clickLog == [1, 1], "a round-trip drag resets the click count: \\(clickLog)")
+// Middle and right use otherMouse / rightMouse.
+types.removeAll()
+_ = pointers.pointer("m", mask: 2, x: 20, y: 20, mods: [])
+_ = pointers.pointer("m", mask: 0, x: 20, y: 20, mods: [])
+precondition(types == [.otherMouseDown, .otherMouseUp], "middle: \\(types)")
+types.removeAll()
+_ = pointers.pointer("r", mask: 4, x: 30, y: 30, mods: [])
+_ = pointers.pointer("r", mask: 0, x: 30, y: 30, mods: [])
+precondition(types == [.rightMouseDown, .rightMouseUp], "right: \\(types)")
+// Wheel bits are pulses: vertical and horizontal each scroll once.
+types.removeAll()
+_ = pointers.pointer("w", mask: 0x08, x: 5, y: 5, mods: [])
+_ = pointers.pointer("w", mask: 0, x: 5, y: 5, mods: [])
+_ = pointers.pointer("w", mask: 0x20, x: 6, y: 5, mods: [])
+_ = pointers.pointer("w", mask: 0, x: 6, y: 5, mods: [])
+precondition(types == Array(repeating: .scrollWheel, count: 2), "wheel: \\(types)")
+// Mask-0 motion without a button is hover for HTTP clients too.
+types.removeAll()
+_ = pointers.pointer("h", mask: 0, x: 200, y: 200, mods: [])
+_ = pointers.pointer("h", mask: 0, x: 230, y: 200, mods: [])
+precondition(types == [.mouseMoved, .mouseMoved], "hover: \\(types)")
+// HTTP mods are pressed with the button and released with it.
+types.removeAll(); flagsLog.removeAll()
+_ = pointers.pointer("k", mask: 1, x: 40, y: 40, mods: ["shift"])
+_ = pointers.pointer("k", mask: 1, x: 44, y: 40, mods: [])
+_ = pointers.pointer("k", mask: 0, x: 44, y: 40, mods: [])
+precondition(types == [.flagsChanged, .leftMouseDown, .leftMouseDragged, .leftMouseUp, .flagsChanged], "mods: \\(types)")
+precondition(flagsLog[1].contains(.maskShift) && flagsLog[3].contains(.maskShift), "held modifier flags on the button")
+precondition(!flagsLog[4].contains(.maskShift), "modifier released last")
+// Teardown gives an in-flight drag back.
+types.removeAll()
+_ = pointers.pointer("b", mask: 1, x: 60, y: 60, mods: [])
+_ = pointers.pointer("b", mask: 1, x: 90, y: 60, mods: [])
 pointers.releaseAll()
-precondition(events == [.leftMouseDown, .leftMouseDragged, .leftMouseUp])
-events.removeAll(); refused = true
-_ = pointers.pointer("c", mask: 1, x: 10, y: 10)
-let result = pointers.pointer("c", mask: 1, x: 50, y: 10)
+precondition(types == [.leftMouseDown, .leftMouseDragged, .leftMouseUp])
+// A refused press is dead: no retry on moves and no click on release.
+types.removeAll(); refused = true
+_ = pointers.pointer("c", mask: 1, x: 10, y: 10, mods: [])
+let result = pointers.pointer("c", mask: 1, x: 50, y: 10, mods: [])
 precondition(result["ok"] as? Bool == false)
-_ = pointers.pointer("c", mask: 1, x: 70, y: 10)
-_ = pointers.pointer("c", mask: 0, x: 70, y: 10)
-precondition(events.isEmpty, "refused input must not retry or click on release")
+_ = pointers.pointer("c", mask: 1, x: 70, y: 10, mods: [])
+_ = pointers.pointer("c", mask: 0, x: 70, y: 10, mods: [])
+precondition(types.isEmpty, "refused input must not retry or click on release")
 print("HTTP pointer native OK")
 `);
   const binary = path.join(root, 'pointer-tests');
@@ -309,6 +430,9 @@ final class H264Screen {
 func rfbPointer(_ c: RfbClient, mask: Int, x: Int, y: Int) { calls.append("pointer \\(mask) \\(x) \\(y)") }
 func rfbKey(_ c: RfbClient, down: Bool, keysym: UInt32) { calls.append("key \\(down ? 1 : 0) \\(keysym)") }
 func rfbDragAbort(_ c: RfbClient) {}
+func rfbRegisterClient(_ c: RfbClient) {}
+func rfbRemoveClient(_ c: RfbClient) {}
+func rfbReleaseAll(_ c: RfbClient) {}
 ${be}
 ${fn(agent, 'readFully')}
 ${fn(h264, 'h264Message')}
@@ -779,6 +903,7 @@ function provisionFixture() {
   fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'LidBrightnessBridge.m'), '// bridge\n');
   fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'MultiCCAgentH264.swift'), '// h264\n');
   fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'AgentPermissions.swift'), '// permissions\n');
+  fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'MultiCCAgentRemoteInput.swift'), '// input\n');
   fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'AgentIcon.icns'), 'icns-fixture');
   fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'agent-build.json'), JSON.stringify({ build: 2, sourceSha256: sourceHash(root) }));
   const env = {
@@ -797,7 +922,7 @@ function provisionFixture() {
     fs.mkdirSync(path.dirname(env.MULTICC_AGENT_LINK), { recursive: true });
     try { fs.symlinkSync(bin, env.MULTICC_AGENT_LINK); } catch (_) { /* already linked */ }
     const hash = crypto.createHash('sha256').update(source);
-    for (const file of ['LidBrightnessBridge.h', 'LidBrightnessBridge.m', 'MultiCCAgentH264.swift', 'AgentPermissions.swift'])
+    for (const file of ['LidBrightnessBridge.h', 'LidBrightnessBridge.m', 'MultiCCAgentH264.swift', 'AgentPermissions.swift', 'MultiCCAgentRemoteInput.swift'])
       hash.update(fs.readFileSync(path.join(root, 'scripts', 'macos-agent', file)));
     fs.writeFileSync(path.join(res, 'source.sha256'), `${hash.digest('hex')}\n`);
     fs.copyFileSync(path.join(root, 'scripts', 'macos-agent', 'AgentIcon.icns'), path.join(res, 'AgentIcon.icns'));
@@ -1122,7 +1247,7 @@ test('agent provisioning: packages ship the installer, and the installer prefers
   fs.copyFileSync('/usr/bin/true', path.join(prebuilt, 'MultiCCAgent'));
   const sourceDir = path.join(__dirname, '..', 'scripts', 'macos-agent');
   const hash = crypto.createHash('sha256');
-  for (const file of ['MultiCCAgent.swift', 'LidBrightnessBridge.h', 'LidBrightnessBridge.m', 'MultiCCAgentH264.swift', 'AgentPermissions.swift'])
+  for (const file of ['MultiCCAgent.swift', 'LidBrightnessBridge.h', 'LidBrightnessBridge.m', 'MultiCCAgentH264.swift', 'AgentPermissions.swift', 'MultiCCAgentRemoteInput.swift'])
     hash.update(fs.readFileSync(path.join(sourceDir, file)));
   fs.writeFileSync(path.join(prebuilt, 'source.sha256'), `${hash.digest('hex')}\n`);
   const env = {
@@ -1206,11 +1331,14 @@ test('agent provisioning: packages ship the installer, and the installer prefers
 // These regressions must never type into the developer's foreground app.
 test('remote keyboard: H.264 separates functional keys from Unicode text', () => {
   const vm = require('node:vm');
-  const source = fs.readFileSync(path.join(__dirname, '../public/chat-remote-screen-h264.js'), 'utf8');
-  const start = source.indexOf('  const KEYSYMS =');
-  const end = source.indexOf('  class H264View');
-  assert.ok(start >= 0 && end > start);
-  const encode = vm.runInNewContext(source.slice(start, end) + '\nkeysymOf;');
+  // The keysym table lives in the shared remote-input module (chat-remote-screen-h264.js
+  // loads it too); run the production module with a bare DOM stub and use its export.
+  const source = fs.readFileSync(path.join(__dirname, '../public/chat-remote-input.js'), 'utf8');
+  const sandbox = { document: {}, console };
+  sandbox.global = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  const encode = sandbox.MultiCCRemoteInput.keysymOf;
   const named = { Backspace: 0xff08, Delete: 0xffff, Enter: 0xff0d, Tab: 0xff09,
     Escape: 0xff1b, ArrowLeft: 0xff51, Home: 0xff50, End: 0xff57, F1: 0xffbe, F12: 0xffc9 };
   for (const [key, expected] of Object.entries(named)) assert.equal(encode({ key }), expected, key);
@@ -1225,9 +1353,19 @@ test('remote keyboard: H.264 separates functional keys from Unicode text', () =>
 test('remote keyboard: Swift dispatch preserves deletion, navigation, shortcuts and text', { skip: !hasSwift, timeout: 60000 }, t => {
   const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'mcagent-keyboard-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const source = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/MultiCCAgent.swift'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/MultiCCAgentRemoteInput.swift'), 'utf8');
+  const fn = (name) => {
+    const start = source.indexOf(`func ${name}(`);
+    assert.ok(start > 0, `${name} exists`);
+    let end = source.indexOf('{', start), depth = 1;
+    while (depth && ++end < source.length) {
+      if (source[end] === '{') depth++;
+      if (source[end] === '}') depth--;
+    }
+    return source.slice(start, end + 1);
+  };
   const start = source.indexOf('let RFB_SPECIAL_KEYS:');
-  const end = source.indexOf('@available(macOS 14.0, *)\nfunc rfbPointer', start);
+  const end = source.indexOf('@available(macOS 14.0, *)\nfunc rfbInput', start);
   assert.ok(start >= 0 && end > start);
   const cases = [];
   const press = (ks, key, mods = []) => cases.push({ ks, mods, expected: [['press', key]] });
@@ -1269,7 +1407,27 @@ test('remote keyboard: Swift dispatch preserves deletion, navigation, shortcuts 
     }`).join('\n');
   const file = path.join(root, 'main.swift');
   fs.writeFileSync(file, `import Foundation
-class RfbClient { var mods: Set<String> = [] }
+import CoreGraphics
+let MODIFIERS: [String: CGEventFlags] = ["shift": .maskShift, "ctrl": .maskControl, "alt": .maskAlternate, "cmd": .maskCommand]
+let automationEventSource = CGEventSource(stateID: .privateState)
+final class Control {
+  var isHalted = false
+  func clearIdleHalt() -> Bool { false }
+  func holderConflict(_ session: String) -> String? { nil }
+}
+let control = Control()
+func AXIsProcessTrusted() -> Bool { true }
+func screenLocked() -> Bool { false }
+func post(_ event: CGEvent?, pid: pid_t? = nil, flags: CGEventFlags = []) {}
+func rfbStartWatchdog(_ c: RfbClient) {}
+func rfbReleaseAll(_ c: RfbClient) { c.heldModKeysyms.removeAll(); c.mods.removeAll() }
+class RfbClient {
+  let inputLock = NSLock()
+  var mods: Set<String> = []
+  var heldModKeysyms: [UInt32: CGKeyCode] = [:]
+  var transientDown: Set<String> = []
+  var inputAt = Date.distantPast
+}
 var calls: [[String]] = []
 func log(_ message: String) {}
 func handle(_ req: [String: Any]) -> [String: Any] {
@@ -1280,6 +1438,12 @@ func handle(_ req: [String: Any]) -> [String: Any] {
   return ["ok": true]
 }
 ${source.slice(start, end)}
+${fn('rfbDeriveMods')}
+${fn('rfbFlagsLocked')}
+${fn('rfbFlags')}
+${fn('rfbModifier')}
+${fn('rfbInput')}
+${fn('rfbKey')}
 var results: [[[String]]] = []
 if #available(macOS 14.0, *) { ${exercise} }
 print(String(data: try JSONSerialization.data(withJSONObject: results), encoding: .utf8)!)

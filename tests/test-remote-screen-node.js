@@ -110,6 +110,55 @@ test('input whitelist: unlock/see/set refused, fields coerced and clamped, sessi
   assert.deepEqual(rs.buildInput({ op: 'release' }).req, { op: 'release', session: 'remote-screen' });
 });
 
+test('input whitelist: mods are canonicalised, button right/middle only, amountX rounded and non-zero', () => {
+  // mods：去重 + 未知项丢弃 + 固定 shift,ctrl,alt,cmd 顺序；数组顺序不影响结果。
+  const click = rs.buildInput({ op: 'click', x: 1, y: 2, mods: ['cmd', 'bogus', 'shift', 'cmd', 7] }).req;
+  assert.deepEqual(click, {
+    op: 'click', session: 'remote-screen', x: 1, y: 2, allowSystem: true, count: 1, mods: ['shift', 'cmd'],
+  });
+  // click / move / scroll / drag / pointer / press 六个 op 都接受 mods。
+  const mods = ['alt', 'ctrl'];
+  for (const body of [
+    { op: 'click', x: 1, y: 2 },
+    { op: 'move', x: 1, y: 2 },
+    { op: 'scroll', x: 1, y: 2 },
+    { op: 'drag', x: 1, y: 2, x2: 3, y2: 4 },
+    { op: 'pointer', viewer: 'viewer-1', mask: 1, x: 1, y: 2 },
+    { op: 'press', keys: 'cmd+c' },
+  ]) assert.deepEqual(rs.buildInput({ ...body, mods }).req.mods, ['ctrl', 'alt'], body.op);
+  // 非数组静默忽略；过滤后为空也不转发；其他 op 不接受 mods。
+  for (const body of [
+    { op: 'click', x: 1, y: 2, mods: 'cmd' },
+    { op: 'click', x: 1, y: 2, mods: { shift: true } },
+    { op: 'click', x: 1, y: 2, mods: [] },
+    { op: 'click', x: 1, y: 2, mods: ['nope'] },
+    { op: 'type', text: 'x', mods: ['cmd'] },
+    { op: 'release', mods: ['cmd'] },
+  ]) assert.equal('mods' in rs.buildInput(body).req, false, JSON.stringify(body));
+
+  // button：right / middle 原样转发，其余（含 "left"）按左键、不带 button。
+  assert.equal(rs.buildInput({ op: 'click', x: 1, y: 1, button: 'right' }).req.button, 'right');
+  assert.equal(rs.buildInput({ op: 'click', x: 1, y: 1, button: 'middle' }).req.button, 'middle');
+  for (const button of ['left', 'RIGHT', '', null, 4]) {
+    assert.equal('button' in rs.buildInput({ op: 'click', x: 1, y: 1, button }).req, false, String(button));
+  }
+
+  // amountX：round + clamp −50…50，只在非零时转发（-0 是假值）。
+  assert.equal(rs.buildInput({ op: 'scroll', x: 1, y: 1, amountX: 12.6 }).req.amountX, 13);
+  assert.equal(rs.buildInput({ op: 'scroll', x: 1, y: 1, amountX: -999 }).req.amountX, -50);
+  assert.equal(rs.buildInput({ op: 'scroll', x: 1, y: 1, amountX: 999 }).req.amountX, 50);
+  assert.equal(rs.buildInput({ op: 'scroll', x: 1, y: 1, amountX: '-2.5' }).req.amountX, -2);
+  for (const amountX of [0, -0.4, 'nan', null, false, undefined]) {
+    const req = rs.buildInput({ op: 'scroll', x: 1, y: 1, amountX }).req;
+    assert.equal('amountX' in req, false, String(amountX));
+  }
+  // amount 与 amountX 互不影响。
+  assert.deepEqual(
+    [rs.buildInput({ op: 'scroll', x: 1, y: 1, amount: 4, amountX: -6 }).req.amount,
+      rs.buildInput({ op: 'scroll', x: 1, y: 1, amount: 4, amountX: -6 }).req.amountX],
+    [4, -6]);
+});
+
 test('routes: frame is a logical-width jpeg, snapshot returns a download url, refusals are explained', async () => {
   rs._resetForTests();
   agentLog = [];
@@ -551,17 +600,15 @@ function webHarness() {
   // 钩子按源码文本改这一行：导出表一变，这里就得跟着变（少了它就是 probe 未定义，
   // 两个用例一起红 —— 这正是「让测试自己告诉你它被改坏了」的那条线）。
   source = source.replace('global.MultiCCRemoteScreen = Object.freeze({ open, close, openMode });',
-    'global.probe = { toScreen, applyBoxZoom, zoomTap, loop, resetZoom, wirePointer, set: value => { s = value; ov = { appendChild() {}, classList: { toggle() {} } }; }, zoom };');
+    'global.probe = { toScreen, applyBoxZoom, loop, resetZoom, httpAdapter, set: value => { s = value; ov = { appendChild() {}, classList: { toggle() {} } }; }, zoom };');
   vm.runInNewContext(source, context);
   return { context, probe: window.probe };
 }
 
 test('web fallback streams before lift and coalesces motion behind a slow request', async () => {
   const { context, probe } = webHarness();
-  const handlers = {};
-  const stage = { addEventListener: (name, fn) => { handlers[name] = fn; }, setPointerCapture() {} };
   const state = {
-    control: true, screenW: 400, screenH: 200, stage, unhalt: {},
+    control: true, screenW: 400, screenH: 200, unhalt: {},
     img: { naturalWidth: 400, naturalHeight: 200, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 200 }) },
   };
   probe.set(state);
@@ -572,26 +619,23 @@ test('web fallback streams before lift and coalesces motion behind a slow reques
     if (sent.length === 1) await new Promise(resolve => { finish = resolve; });
     return { ok: true, json: async () => ({ ok: true }) };
   };
-  probe.wirePointer(stage);
-  const event = x => ({ pointerId: 1, button: 0, clientX: x, clientY: 50, preventDefault() {} });
-  handlers.pointerdown(event(50));
-  handlers.pointermove(event(80));
+  const adapter = probe.httpAdapter();
+  adapter.pointer(1, 50, 50);
   assert.equal(sent.length, 1, 'press has left the browser before pointerup');
   assert.deepEqual([sent[0].op, sent[0].mask, sent[0].x], ['pointer', 1, 50]);
-  handlers.pointermove(event(100));
-  handlers.pointermove(event(120));
-  handlers.pointerup(event(130));
+  adapter.pointer(1, 80, 50);
+  adapter.pointer(1, 100, 50);
+  adapter.pointer(1, 120, 50);
+  adapter.pointer(0, 130, 50);
   finish();
-  await state.cancelFallback();
-  assert.deepEqual(sent.map(sample => [sample.mask, sample.x]), [[1, 50], [1, 130], [0, 130]]);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(sent.map(sample => [sample.mask, sample.x]), [[1, 50], [1, 120], [0, 130]]);
   assert.ok(sent.every(sample => sample.op === 'pointer'));
 });
 
 test('web fallback retains dragging when an older Agent lacks the pointer protocol', async () => {
   const { context, probe } = webHarness();
-  const handlers = {};
-  const stage = { addEventListener: (name, fn) => { handlers[name] = fn; }, setPointerCapture() {} };
-  const state = { control: true, screenW: 400, screenH: 200, stage, unhalt: {},
+  const state = { control: true, screenW: 400, screenH: 200, unhalt: {},
     img: { naturalWidth: 400, naturalHeight: 200, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 200 }) } };
   probe.set(state);
   const sent = [];
@@ -600,17 +644,16 @@ test('web fallback retains dragging when an older Agent lacks the pointer protoc
     return { ok: true, json: async () => body.op === 'pointer'
       ? { ok: false, error: 'unknown op: pointer' } : { ok: true } };
   };
-  probe.wirePointer(stage);
-  const event = x => ({ pointerId: 1, button: 0, clientX: x, clientY: 50, preventDefault() {} });
-  handlers.pointerdown(event(50));
-  handlers.pointermove(event(100));
-  handlers.pointerup(event(120));
-  await state.cancelFallback();
+  const adapter = probe.httpAdapter();
+  adapter.pointer(1, 50, 50);
+  adapter.pointer(1, 100, 50);
+  adapter.pointer(0, 120, 50);
+  await new Promise(resolve => setTimeout(resolve, 20));
   assert.deepEqual(sent.map(body => body.op), ['pointer', 'drag']);
   assert.deepEqual([sent[1].x, sent[1].x2], [50, 120]);
 });
 
-test('web crops use image letterboxing and nested origins; view-only zoom taps send no input', async () => {
+test('web crops use image letterboxing and nested origins', async () => {
   const { context, probe } = webHarness();
   const state = {
     screenW: 1000, screenH: 500, viewRegion: { x: 200, y: 100, width: 400, height: 200 },
@@ -625,7 +668,6 @@ test('web crops use image letterboxing and nested origins; view-only zoom taps s
   assert.deepEqual([p.x, p.y], [400, 200]);
   assert.equal(probe.toScreen({ clientX: 210, clientY: 50 }), null, 'letterbox does not map to an input');
   context.fetch = () => { throw new Error('view-only must not send'); };
-  await probe.zoomTap({ clientX: 210, clientY: 220 }, 0);
   // Image occupies stage y=100..300. Selecting its middle quarter crops at the source.
   await probe.applyBoxZoom({ x: 100, y: 150 }, { x: 300, y: 250 });
   assert.deepEqual(Object.values(state.region), [300, 150, 200, 100]);

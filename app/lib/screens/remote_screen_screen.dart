@@ -1,8 +1,10 @@
 // 「🖥 屏幕」App 端：直连 /ws/remote-screen 讲最小 RFB 3.8（RemoteScreenRfb），
 // 断流/旧 Agent 自动回退 JPEG 轮询（RemoteScreenService）。只看/可操作、
-// 显式「右键」一次性按钮（长按保持为按住拖动）、滚轮脉冲、键盘条（文字 + 功能键/快捷键和弦）与可选 Esc 急停的
-// 「解除急停」都对着 Web 版 public/chat-remote-screen.js 的语义。
+// 触摸模式长按 500ms = 右键、触控板拖拽松手 500ms 锁、粘住的修饰键
+// （⇧ ⌘ ⌥ ⌃）、滚轮脉冲、键盘条（文字 + 功能键/快捷键和弦 + 「更多」面板）
+// 与可选 Esc 急停的「解除急停」都对着 Web 版 public/chat-remote-screen.js 的语义。
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -18,12 +20,15 @@ import '../services/remote_frame_decoder.dart';
 import '../services/remote_pointer_queue.dart';
 import '../services/remote_screen_region.dart';
 import '../services/remote_screen_service.dart';
+import '../services/remote_screen_source.dart';
 import '../services/remote_touch_controller.dart';
 import '../services/settings_service.dart';
+import '../services/sticky_modifiers.dart';
 import '../widgets/remote_wheel_rail.dart';
 
 /// 键盘条的功能键/快捷键：[label, spec]。spec 里 `+` 分段，修饰键映射成
 /// RFB keysym，其余段按单字符或命名键解析 —— 与 Web 版 KEYS 表一致。
+/// ⌘ 只是 Mac 的写法：本机是 Linux 时按能力画像换成 Ctrl（见 [_remapLabel]）。
 const List<List<String>> _keyBarSpecs = [
   ['⏎', 'return'],
   ['Esc', 'escape'],
@@ -42,6 +47,45 @@ const List<List<String>> _keyBarSpecs = [
   ['⌘W', 'cmd+w'],
 ];
 
+/// 「更多」面板：F1–F12、Home/End/PgUp/PgDn、前向 Delete、常用 ⌘ 快捷键。
+const List<List<String>> _moreKeySpecs = [
+  ['F1', 'f1'],
+  ['F2', 'f2'],
+  ['F3', 'f3'],
+  ['F4', 'f4'],
+  ['F5', 'f5'],
+  ['F6', 'f6'],
+  ['F7', 'f7'],
+  ['F8', 'f8'],
+  ['F9', 'f9'],
+  ['F10', 'f10'],
+  ['F11', 'f11'],
+  ['F12', 'f12'],
+  ['Home', 'home'],
+  ['End', 'end'],
+  ['PgUp', 'pageup'],
+  ['PgDn', 'pagedown'],
+  ['⌦', 'delete'],
+  ['⌘Space', 'cmd+space'],
+  ['⌘Q', 'cmd+q'],
+  ['⌘S', 'cmd+s'],
+  ['⌘F', 'cmd+f'],
+  ['⌘T', 'cmd+t'],
+  ['⌘N', 'cmd+n'],
+  ['⇧Tab', 'shift+tab'],
+  ['⌃C', 'ctrl+c'],
+];
+
+/// 按住会连发的键：初始 400ms 后每 70ms 一次（退格、前向 Delete、方向键）。
+const Set<String> _repeatSpecs = {
+  'backspace',
+  'delete',
+  'left',
+  'up',
+  'down',
+  'right',
+};
+
 const Map<String, int> _namedKeysyms = {
   'return': RfbKeysyms.enter,
   'enter': RfbKeysyms.enter,
@@ -55,6 +99,24 @@ const Map<String, int> _namedKeysyms = {
   'up': RfbKeysyms.up,
   'down': RfbKeysyms.down,
   'right': RfbKeysyms.right,
+  'home': RfbKeysyms.home,
+  'end': RfbKeysyms.end,
+  'pageup': RfbKeysyms.pageUp,
+  'pgup': RfbKeysyms.pageUp,
+  'pagedown': RfbKeysyms.pageDown,
+  'pgdn': RfbKeysyms.pageDown,
+  'f1': RfbKeysyms.f1,
+  'f2': RfbKeysyms.f1 + 1,
+  'f3': RfbKeysyms.f1 + 2,
+  'f4': RfbKeysyms.f1 + 3,
+  'f5': RfbKeysyms.f1 + 4,
+  'f6': RfbKeysyms.f1 + 5,
+  'f7': RfbKeysyms.f1 + 6,
+  'f8': RfbKeysyms.f1 + 7,
+  'f9': RfbKeysyms.f1 + 8,
+  'f10': RfbKeysyms.f1 + 9,
+  'f11': RfbKeysyms.f1 + 10,
+  'f12': RfbKeysyms.f1 + 11,
 };
 
 const Map<String, int> _modifierKeysyms = {
@@ -146,6 +208,15 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   // 长按不再等于右键：按住不动再拖是推动/拖拽，右键必须显式点亮。
   bool _rightOnce = false;
 
+  /// 粘住的修饰键（⇧ ⌘ ⌥ ⌃）：点一下 = 一次性，连点两下 = 锁定。
+  final StickyModifiers _sticky = StickyModifiers();
+  /// 本次「按下+松开」周期里发过按键/按钮：松手时用掉一次性修饰键。
+  bool _pointerUsed = false;
+  /// 键盘条「更多」面板展开中。
+  bool _moreOpen = false;
+  /// 连发（退格 / 前向 Delete / 方向键）的计时器。
+  Timer? _repeatTimer;
+
   /// 横幅独立于取帧权限门：屏录、辅助功能通过后，急停警告仍须保留。
   Map<String, dynamic>? _permGate;
   bool _permStarted = false;
@@ -187,13 +258,21 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
       _hasPointer = true;
       _lastX = x;
       _lastY = y;
+      if (mask & 7 != 0) _pointerUsed = true; // 真按了键：松手时用掉一次性修饰键
+      // 兼容模式没有 KeyEvent 通道：修饰键只能随每个指针/滚轮请求带过去。
+      final mods = _stickyHttpMods();
       if (source != null) {
         source.pointerEvent(mask, x, y);
       } else {
         final area = _fallbackArea;
         if (area == null) return;
         if (mask == 0 || mask == 1) {
-          _pointerQueue.add(mask, (area.x + x).round(), (area.y + y).round());
+          _pointerQueue.add(
+            mask,
+            (area.x + x).round(),
+            (area.y + y).round(),
+            mods: mods,
+          );
         } else if (mask == 4) {
           unawaited(
             _pointerQueue.drained.then(
@@ -202,6 +281,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
                 'x': (area.x + x).round(),
                 'y': (area.y + y).round(),
                 'button': 'right',
+                if (mods.isNotEmpty) 'mods': mods,
               }),
             ),
           );
@@ -244,6 +324,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     _svc = widget.service ?? RemoteScreenService(settings: widget.settings);
     _modeSub = _svc.onModeChange.listen((_) {
       _touch.reset();
+      _releaseStickyAll(rebuild: false);
+      _stopRepeat();
       _hasPointer = false; // live↔fallback 的坐标域不同，旧坐标不能再用
       _decoder.clear();
       _frameAge = 0;
@@ -373,6 +455,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) {
       _backgrounded = true;
+      // 进后台前把按着的按钮/修饰键/连发都放开：回前台不该带着幽灵按键。
+      _touch.reset();
+      _releaseStickyAll();
+      _stopRepeat();
     } else if (state == AppLifecycleState.resumed && _backgrounded) {
       // 切去别的 App（比如去 GitHub Mobile 点批准）再回来：连接和 iOS 硬件
       // 解码会话多半已经死了，立刻按高清优先重连，不让画面停在几十秒前。
@@ -389,6 +475,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     _haltTimer?.cancel();
     _permTimer?.cancel();
     _ageTimer?.cancel();
+    _stopRepeat();
+    _releaseStickyAll(rebuild: false);
     _touch.reset();
     _decoder.dispose();
     _cursorMark.dispose();
@@ -436,7 +524,10 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
 
   // ── 操作开关 ──
   void _setControl(bool on) {
-    setState(() => _control = on);
+    setState(() {
+      _control = on;
+      if (!on) _moreOpen = false;
+    });
     if (on) {
       _hadControl = true;
       _startHaltPoll();
@@ -444,6 +535,8 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
       _haltTimer?.cancel();
       _haltTimer = null;
       _rightOnce = false;
+      _stopRepeat();
+      _releaseStickyAll(rebuild: false);
       _touch.reset();
     }
   }
@@ -535,6 +628,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     if (!_control) return;
     _syncTouch(dw, dh);
     _touch.move(e.pointer, e.localPosition, e.position, e.timeStamp);
+    _autoPanDrag(e);
   }
 
   void _onPointerUp(PointerEvent e, double dw, double dh) {
@@ -544,10 +638,67 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     } else {
       _touch.up(e.pointer, e.localPosition, e.position, e.timeStamp);
     }
+    // 按下+松开走完一轮：一次性修饰键到此放开（锁定态不受影响）。
+    if (_pointerUsed) {
+      _pointerUsed = false;
+      _consumeOneShots();
+    }
+  }
+
+  /// 放大后拖拽到舞台边缘：朝那一侧推画面，远端指针能一直走到画面外沿。
+  /// 边缘带 = 24px 或舞台轴长的 8%（取大），每次移动最多推 16px。
+  void _autoPanDrag(PointerMoveEvent e) {
+    final g = _stageGeo;
+    if (g == null || !_touch.dragging) return;
+    final m = _xform.value;
+    final s = m.getMaxScaleOnAxis();
+    if (s <= 1.01) return;
+    // localPosition 是内容局部坐标（已被 hit-test 逆变换）；加内容框偏移再
+    // 过当前矩阵，才是手指在视口里的位置。触控板拖拽时真正要跟的是虚拟光标
+    // 的位置 —— 手指位置和远端指针已经解耦，只有光标能走到画面边缘。
+    final Offset anchor;
+    final src = _touch.source;
+    if (_touch.mode == RemoteTouchMode.trackpad &&
+        src.width > 0 &&
+        src.height > 0) {
+      anchor = Offset(
+        _touch.cursor.dx / src.width * g.dw + g.offX,
+        _touch.cursor.dy / src.height * g.dh + g.offY,
+      );
+    } else {
+      anchor = e.localPosition + Offset(g.offX, g.offY);
+    }
+    final view = MatrixUtils.transformPoint(m, anchor);
+    final bandX = math.max(24.0, g.vp.width * 0.08);
+    final bandY = math.max(24.0, g.vp.height * 0.08);
+    double push(double v, double len, double band) {
+      if (v < band) return (band - v).clamp(0.0, 16.0).toDouble();
+      if (v > len - band) return -(v - (len - band)).clamp(0.0, 16.0).toDouble();
+      return 0;
+    }
+
+    final dx = push(view.dx, g.vp.width, bandX);
+    final dy = push(view.dy, g.vp.height, bandY);
+    if (dx == 0 && dy == 0) return;
+    _clampingView = true;
+    try {
+      _xform.value = Matrix4.identity()
+        ..translate(m.entry(0, 3) + dx, m.entry(1, 3) + dy)
+        ..scale(s);
+    } finally {
+      _clampingView = false;
+    }
+    _keepViewInBounds(); // 推到内容边界就停，不留空边
+    // 单指拖拽时 InteractiveViewer 的 onInteractionUpdate 每帧把矩阵写回
+    // 手势起点（它以为单指不该动画面）。自动平移要成为新的起点，否则下一个
+    // 移动事件就把平移撤销掉。
+    _xformAtStart = _xform.value.clone();
   }
 
   void _toggleTrackpad() {
     _touch.reset(); // 切档先把按着的键松开
+    _stopRepeat();
+    _releaseStickyAll(rebuild: false);
     _cursorMark.value = null;
     final on = !_trackpad;
     setState(() => _trackpad = on);
@@ -624,11 +775,13 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
       while (_scrollPending != 0 && mounted) {
         final amount = _scrollPending.clamp(-50, 50).toInt();
         _scrollPending -= amount;
+        final mods = _stickyHttpMods();
         final res = await _svc.inputOp({
           'op': 'scroll',
           'x': x,
           'y': y,
           'amount': amount,
+          if (mods.isNotEmpty) 'mods': mods,
         });
         if (!mounted) return;
         if (res['ok'] == false) {
@@ -646,6 +799,53 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
   // Fixed logical source geometry for the current fallback gesture.
   ScreenRegion? _fallbackArea;
 
+  // ── 粘住的修饰键 ──
+  /// 兼容模式 HTTP `mods`（按服务端顺序 shift,ctrl,alt,cmd）。[spec] 里已经
+  /// 含有的修饰键不重复带：`⌘A` 配锁定的 ⌘ 只发一次。
+  List<String> _stickyHttpMods([String? spec]) {
+    final names = _sticky.httpNames;
+    if (names.isEmpty) return const [];
+    if (spec == null) return names;
+    final parts = spec.split('+').map((p) => p.toLowerCase()).toSet();
+    return [
+      for (final name in names)
+        if (!parts.contains(name)) name,
+    ];
+  }
+
+  /// 流式通道真的按下/松开修饰键；兼容模式没有 KeyEvent 通道，只改状态，
+  /// 等下一次指针/滚轮/按键请求带上 `mods`。
+  void _emitSticky(StickyModifierTransition tr, {bool rebuild = true}) {
+    final source = _svc.source;
+    if (source != null) {
+      for (final chip in tr.down) {
+        source.keyEvent(true, chip.keysym);
+      }
+      for (final chip in tr.up) {
+        source.keyEvent(false, chip.keysym);
+      }
+    }
+    if (rebuild && mounted) setState(() {});
+  }
+
+  void _tapSticky(StickyModifierKey chip) => _emitSticky(_sticky.tap(chip));
+
+  /// 一次性修饰键用掉了（指针一轮或一次按键之后）。
+  void _consumeOneShots() {
+    final tr = _sticky.consumeOneShots();
+    if (tr.up.isNotEmpty) _emitSticky(tr);
+  }
+
+  /// 离开操作模式 / 切模式 / 进后台 / 断线：所有按着的修饰键全部放开。
+  void _releaseStickyAll({bool rebuild = true}) =>
+      _emitSticky(_sticky.releaseAll(), rebuild: rebuild);
+
+  /// 当前点亮（一次性或锁定）的修饰键 keysym，按键和弦先按它们。
+  List<int> _stickyKeysyms() => [
+    for (final chip in StickyModifiers.definitions)
+      if (_sticky.stateOf(chip.id) != StickyModifierState.off) chip.keysym,
+  ];
+
   // ── 键盘条 ──
   Future<void> _sendText() async {
     final text = _textCtrl.text;
@@ -653,6 +853,7 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     if (_svc.mode == RemoteScreenMode.live) {
       _svc.source?.typeText(text);
       _textCtrl.clear();
+      _consumeOneShots();
       return;
     }
     final res = await _svc.inputOp({'op': 'type', 'text': text});
@@ -661,31 +862,46 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
       _showErr(res);
     } else {
       _textCtrl.clear();
+      _consumeOneShots();
     }
   }
 
   Future<void> _pressSpec(String spec) async {
     if (!_control) return;
     if (_svc.mode != RemoteScreenMode.live) {
-      final res = await _svc.inputOp({'op': 'press', 'keys': spec});
-      if (mounted && res['ok'] == false) _showErr(res);
+      final mods = _stickyHttpMods(spec);
+      final res = await _svc.inputOp({
+        'op': 'press',
+        'keys': spec,
+        if (mods.isNotEmpty) 'mods': mods,
+      });
+      if (!mounted) return;
+      if (res['ok'] == false) {
+        _showErr(res);
+      } else {
+        _consumeOneShots();
+      }
       return;
     }
     final source = _svc.source;
     if (source == null) return;
-    final mods = <int>[];
+    // 粘住的修饰键已经在流里真的按着：和弦里不能重复按、更不能替它松开
+    // （否则锁定的 ⌘ 会被一次 ⌘S 释放掉）。只补 spec 里还没按着的修饰键。
+    final held = _stickyKeysyms();
+    final mods = <int>{};
     var keysym = -1;
     for (final part in spec.split('+')) {
       final mod = _modifierKeysyms[part.toLowerCase()];
       if (mod != null) {
-        mods.add(mod);
+        if (!held.contains(mod)) mods.add(mod);
         continue;
       }
       final named = _namedKeysyms[part.toLowerCase()];
       if (named != null) {
         keysym = named;
-      } else if (part.length == 1) {
-        keysym = part.runes.first;
+      } else if (part.runes.length == 1) {
+        // 多字节字符（中文标点等）要打 tagged keysym，否则会被当成控制键。
+        keysym = keysymForText(part.runes.first);
       }
     }
     if (keysym < 0) return;
@@ -694,8 +910,9 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
       source.keyEvent(true, keysym);
       source.keyEvent(false, keysym);
     } else {
-      source.chord(mods, keysym);
+      source.chord(mods.toList(), keysym);
     }
+    _consumeOneShots();
   }
 
   // ── UI ──
@@ -1368,6 +1585,23 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
     );
   }
 
+  void _stopRepeat() {
+    _repeatTimer?.cancel();
+    _repeatTimer = null;
+  }
+
+  /// 本机主修饰键跟着能力画像走：Linux/Windows 把 ⌘ 显示与发送成 Ctrl。
+  String _remapLabel(String label) =>
+      _svc.hostModifier == 'ctrl' ? label.replaceAll('⌘', 'Ctrl') : label;
+
+  String _remapSpec(String spec) {
+    if (_svc.hostModifier != 'ctrl') return spec;
+    return spec
+        .split('+')
+        .map((part) => part.toLowerCase() == 'cmd' ? 'ctrl' : part)
+        .join('+');
+  }
+
   Widget _keyBar() {
     return Container(
       color: const Color(0xFF161b26),
@@ -1421,24 +1655,114 @@ class _RemoteScreenScreenState extends State<RemoteScreenScreen>
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                for (final spec in _keyBarSpecs)
-                  _keyChip(spec[0], () => _pressSpec(spec[1])),
+                for (final chip in StickyModifiers.definitions)
+                  _modChip(chip),
+                const SizedBox(width: 4),
+                for (final spec in _keyBarSpecs) _specChip(spec),
+                _keyChip(
+                  _moreOpen ? t('rsMoreClose') : t('rsMore'),
+                  () => setState(() => _moreOpen = !_moreOpen),
+                  active: _moreOpen,
+                ),
               ],
             ),
           ),
+          if (_moreOpen) ...[
+            const SizedBox(height: 6),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (final spec in _moreKeySpecs) _specChip(spec),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
 
-  Widget _keyChip(String label, VoidCallback onTap) {
+  Widget _specChip(List<String> spec) {
+    final label = _remapLabel(spec[0]);
+    final normalized = _remapSpec(spec[1]);
+    if (_repeatSpecs.contains(normalized)) {
+      return _repeatChip(label, normalized);
+    }
+    return _keyChip(label, () => _pressSpec(normalized));
+  }
+
+  /// 修饰键芯片：暗底 = 关；绿字绿边 = 一次性；绿底 = 锁定。
+  Widget _modChip(StickyModifierKey chip) {
+    final state = _sticky.stateOf(chip.id);
+    final lit = state != StickyModifierState.off;
+    const accent = Color(0xFF2ba67a);
     return Padding(
       padding: const EdgeInsets.only(right: 4),
       child: OutlinedButton(
         style: OutlinedButton.styleFrom(
-          foregroundColor: const Color(0xFFdce6f1),
-          side: const BorderSide(color: Color(0xFF2a3242)),
-          backgroundColor: const Color(0xFF10141c),
+          foregroundColor: lit && state == StickyModifierState.locked
+              ? const Color(0xFF10141c)
+              : lit
+              ? accent
+              : const Color(0xFFdce6f1),
+          backgroundColor: state == StickyModifierState.locked
+              ? accent
+              : const Color(0xFF10141c),
+          side: BorderSide(
+            color: lit ? accent : const Color(0xFF2a3242),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          minimumSize: const Size(0, 34),
+        ),
+        onPressed: () => _tapSticky(chip),
+        child: Text(
+          chip.label,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: state == StickyModifierState.locked
+                ? FontWeight.w700
+                : FontWeight.w500,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 按住连发：立即一发，400ms 后每 70ms 一发（退格 / 前向 Delete / 方向键）。
+  Widget _repeatChip(String label, String spec) {
+    return Listener(
+      onPointerDown: (_) {
+        _pressSpec(spec);
+        _stopRepeat();
+        _repeatTimer = Timer(const Duration(milliseconds: 400), () {
+          _repeatTimer = Timer.periodic(
+            const Duration(milliseconds: 70),
+            (_) => _pressSpec(spec),
+          );
+        });
+      },
+      onPointerUp: (_) => _stopRepeat(),
+      onPointerCancel: (_) => _stopRepeat(),
+      // 按住由上面的 Listener 负责，按钮本身的点击只做无障碍占位。
+      child: _keyChip(label, () {}),
+    );
+  }
+
+  Widget _keyChip(String label, VoidCallback onTap, {bool active = false}) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: OutlinedButton(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: active
+              ? const Color(0xFF10141c)
+              : const Color(0xFFdce6f1),
+          side: BorderSide(
+            color: active ? const Color(0xFF2ba67a) : const Color(0xFF2a3242),
+          ),
+          backgroundColor: active
+              ? const Color(0xFF2ba67a)
+              : const Color(0xFF10141c),
           padding: const EdgeInsets.symmetric(horizontal: 10),
           minimumSize: const Size(0, 34),
         ),

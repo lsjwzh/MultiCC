@@ -33,6 +33,7 @@ const MACOS_AGENT_FILES = [
   'scripts/macos-agent/LidBrightnessBridge.m',
   'scripts/macos-agent/MultiCCAgentH264.swift',
   'scripts/macos-agent/AgentPermissions.swift',
+  'scripts/macos-agent/MultiCCAgentRemoteInput.swift',
   'scripts/macos-agent/AgentIcon.icns',
   // Build number that ranks this copy's Agent against the installed one.
   'scripts/macos-agent/agent-build.json',

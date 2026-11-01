@@ -6,15 +6,19 @@ import 'dart:ui' show Offset, Rect, Size;
 ///
 /// 两种模式（对照 UU 远程的「触摸 / 鼠标」两档）：
 ///  · [RemoteTouchMode.direct]  手指点哪远端点哪。按下**立即**有本地落点反馈，
-///    推动超过 [slop] 才按下左键（按在最初落点上）并逐点跟随；轻点才是单击。
-///    没有任何延迟计时器，也没有长按右键 —— 右键走显式「右键」按钮。
+///    推动超过 [slop] 才按下左键（按在最初落点上）并逐点跟随；轻点才是单击；
+///    按住不动 [longPressDelay] 不越过死区 = 该点右键（触觉反馈），抬手不再发
+///    任何事件。显式「右键」按钮仍把下一次轻点变成右键。
 ///  · [RemoteTouchMode.trackpad] 触控板：一指滑动带着虚拟光标走（带加速度），
-///    轻点 = 点击，按住不动 [holdDelay] 后再拖 = 拖拽，未放大时双指平行滑动 = 滚动，
+///    轻点 = 点击，按住不动 [holdDelay] 后再拖 = 拖拽（松手后左键再保持
+///    [dragLockDelay]，窗口内再落下继续同一段拖拽），未放大时双指平行滑动 = 滚动，
 ///    双指轻点 = 右键，放大后手指位移按缩放比例变细（精确定位）。
 ///
-/// 单指只做鼠标、从不移动画面；画面的缩放与平移只归双指（放大后双指一律交给
-/// 缩放手势，同时缩放和拖动）。所以触控板光标被限制在 [visible] 里，不会走到
-/// 看不见的地方。
+/// 单指只做鼠标、从不移动画面；画面的缩放与平移只归双指。触控板光标在没按下时
+/// 被限制在 [visible] 里，不会走到看不见的地方；**拖拽中不再限制**——画面边缘
+/// 靠近时会自动平移（见页面 [_autoPanDrag]），远端指针要能一直朝边缘走。
+/// 按住左键期间每 [heartbeatInterval] 重发一次最后一次指针样本（Agent 的心跳，
+/// 空闲看门狗据此不松开）。
 ///
 /// 坐标约定：输出一律是**源画面像素**（RFB 帧缓冲坐标）；输入 `local` 是
 /// 内容局部坐标（直接模式的绝对映射），`global` 是视口坐标（触控板的相对位移
@@ -28,6 +32,9 @@ class RemoteTouchController {
     this.onHold,
     this.onRightUsed,
     this.holdDelay = const Duration(milliseconds: 350),
+    this.longPressDelay = const Duration(milliseconds: 500),
+    this.dragLockDelay = const Duration(milliseconds: 500),
+    this.heartbeatInterval = const Duration(seconds: 3),
     this.moveInterval = const Duration(milliseconds: 8),
     this.tapMax = const Duration(milliseconds: 300),
     this.slop = 6.0,
@@ -40,13 +47,20 @@ class RemoteTouchController {
   /// 本地光标/落点标记（源画面像素）；`null` = 隐藏。
   final void Function(Offset? source, bool pressed)? onCursor;
 
-  /// 触控板长按进入拖拽时回调（界面给一下触觉反馈）。
+  /// 长按触发事件（直接模式 = 右键，触控板 = 进入拖拽）的回调，界面给一下触觉反馈。
   final void Function()? onHold;
 
   /// 「右键」一次性开关被这次点击用掉（界面据此熄灯）。
   final void Function()? onRightUsed;
 
   final Duration holdDelay;
+  final Duration longPressDelay;
+
+  /// 触控板拖拽松手后左键保持的窗口；窗口内再落下 = 继续同一段拖拽。
+  final Duration dragLockDelay;
+
+  /// 按住左键期间重发最后一次指针样本的间隔（Agent 的空闲看门狗心跳）。
+  final Duration heartbeatInterval;
   final Duration moveInterval;
   final Duration tapMax;
   final double slop;
@@ -85,11 +99,15 @@ class RemoteTouchController {
   Offset _lastGlobal = Offset.zero;
   Offset _lastSrc = Offset.zero;
   bool _moved = false;
+  bool _longPressed = false; // 直接模式：长按已经发过右键，抬手/移动不再发
   bool _dragging = false; // 直接模式：左键已按下
   bool _holding = false; // 触控板：长按进入的拖拽中
   Duration? _lastSentAt;
   _Move? _pending;
   Timer? _holdTimer;
+  Timer? _longTimer;
+  Timer? _dragLockTimer;
+  Timer? _beatTimer;
   Timer? _flushTimer;
   Timer? _fadeTimer;
 
@@ -119,11 +137,15 @@ class RemoteTouchController {
     }
     _multi = false;
     _primary = id;
+    // 触控板拖拽锁窗口内再落下：继续同一段拖拽（左键一直按着，不重发按下）。
+    final continueDrag =
+        mode == RemoteTouchMode.trackpad && _holding && _dragLockTimer != null;
     _lastT = t;
     _downLocal = local;
     _downGlobal = global;
     _lastGlobal = global;
     _moved = false;
+    _longPressed = false;
     _dragging = false;
     _holding = false;
     _lastSentAt = null;
@@ -134,7 +156,20 @@ class RemoteTouchController {
       _lastSrc = s;
       onPointer(0, s.dx.round(), s.dy.round()); // 光标先跳过来：H.264 画面里立刻可见
       onCursor?.call(s, true);
+      // 按住不动 500ms = 该点右键；越过死区或抬手都会取消它。
+      _longTimer?.cancel();
+      _longTimer = Timer(longPressDelay, _fireLongPress);
     } else {
+      if (continueDrag) {
+        _dragLockTimer!.cancel();
+        _dragLockTimer = null;
+        _holding = true;
+        _moved = true;
+        _holdTimer?.cancel();
+        _ensureHeartbeat();
+        onCursor?.call(cursor, true);
+        return;
+      }
       if (cursor == Offset.zero) {
         cursor = Offset(source.width / 2, source.height / 2);
       }
@@ -178,6 +213,7 @@ class RemoteTouchController {
     }
     if (!_ready || id != _primary) return;
     _holdTimer?.cancel();
+    _longTimer?.cancel();
     // Deliver the last held-position sample before the release. The Agent
     // needs a held move to start a live drag, including very short gestures.
     _flush(t);
@@ -195,6 +231,7 @@ class RemoteTouchController {
     final had = _pts.remove(id) != null;
     if (!had) return;
     _holdTimer?.cancel();
+    _longTimer?.cancel();
     _cancelFlush();
     if (_multi) {
       if (_pts.isEmpty) _endMulti();
@@ -208,6 +245,10 @@ class RemoteTouchController {
   /// 切模式 / 失去操作权 / dispose：松手、清状态。
   void reset() {
     _holdTimer?.cancel();
+    _longTimer?.cancel();
+    _dragLockTimer?.cancel();
+    _dragLockTimer = null;
+    _stopHeartbeat();
     _cancelFlush();
     _fadeTimer?.cancel();
     _releaseIfHeld();
@@ -216,15 +257,21 @@ class RemoteTouchController {
     _endMulti();
   }
 
+  /// 当前是否有一段左键按住（拖拽中，含触控板的松手锁窗口）。
+  bool get dragging => _dragging || _holding;
+
   // ── 直接模式 ──
 
   void _directMove(Offset local, Offset global, Duration t) {
+    if (_longPressed) return; // 长按已发右键：本次触摸到此为止，直到抬手
     if (!_dragging) {
       if ((global - _downGlobal).distance <= slop) return;
       _moved = true;
+      _longTimer?.cancel();
       _dragging = true;
       final s = _toSource(_downLocal); // 按在最初落点上，不是越过死区后的位置
       onPointer(1, s.dx.round(), s.dy.round());
+      _ensureHeartbeat();
     }
     final s = _toSource(local);
     _lastSrc = s;
@@ -233,14 +280,41 @@ class RemoteTouchController {
   }
 
   void _directUp(Offset local) {
+    if (_longPressed) {
+      // 长按右键已在按下点发出，抬手不再发任何东西。
+      _longPressed = false;
+      _fade();
+      return;
+    }
     if (_dragging) {
       final s = _toSource(local);
       onPointer(0, s.dx.round(), s.dy.round());
       _dragging = false;
+      _stopHeartbeat();
     } else {
       _click(_toSource(_downLocal));
     }
     _fade();
+  }
+
+  /// 直接模式：按住不动 500ms（未越过死区）= 在按下点右键。
+  void _fireLongPress() {
+    if (mode != RemoteTouchMode.direct ||
+        _pts.length != 1 ||
+        _moved ||
+        _dragging ||
+        _multi ||
+        !_ready) {
+      return;
+    }
+    _longPressed = true;
+    final s = _toSource(_downLocal);
+    _lastSrc = s;
+    final x = s.dx.round(), y = s.dy.round();
+    onPointer(4, x, y);
+    onPointer(0, x, y);
+    onCursor?.call(s, false);
+    onHold?.call();
   }
 
   // ── 触控板 ──
@@ -250,6 +324,7 @@ class RemoteTouchController {
     _holding = true;
     onPointer(1, cursor.dx.round(), cursor.dy.round());
     onCursor?.call(cursor, true);
+    _ensureHeartbeat();
     onHold?.call();
   }
 
@@ -267,9 +342,9 @@ class RemoteTouchController {
         (source.width / display.width) /
         math.max(0.1, viewScale) *
         (1 + math.min(_accelMax, speed / _accelSpeed));
-    cursor = _keepVisible(
-      Offset(cursor.dx + d.dx * gain, cursor.dy + d.dy * gain),
-    );
+    final next = Offset(cursor.dx + d.dx * gain, cursor.dy + d.dy * gain);
+    // 拖拽中不限制在可见块内：远端指针要能一直朝画面边缘走（页面会跟着平移）。
+    cursor = _holding ? _clampSource(next) : _keepVisible(next);
     _lastGlobal = global;
     _lastT = t;
     _queue(_holding ? 1 : 0, cursor, t);
@@ -278,11 +353,21 @@ class RemoteTouchController {
 
   void _padUp(Duration t) {
     if (_holding) {
-      onPointer(0, cursor.dx.round(), cursor.dy.round());
-      _holding = false;
+      // 拖拽松手：左键再保持 500ms；窗口内再落下 = 继续同一段拖拽，否则松开。
+      _dragLockTimer?.cancel();
+      _dragLockTimer = Timer(dragLockDelay, _endLockedDrag);
     } else if (!_moved) {
       _click(cursor); // 没拖、没进长按 = 轻点（不设时限，免得 300~350ms 之间落空）
     }
+    onCursor?.call(cursor, _holding);
+  }
+
+  void _endLockedDrag() {
+    _dragLockTimer = null;
+    if (!_holding) return;
+    _holding = false;
+    _stopHeartbeat();
+    onPointer(0, cursor.dx.round(), cursor.dy.round());
     onCursor?.call(cursor, false);
   }
 
@@ -385,6 +470,10 @@ class RemoteTouchController {
   }
 
   void _releaseIfHeld() {
+    _longTimer?.cancel();
+    _dragLockTimer?.cancel();
+    _dragLockTimer = null;
+    _stopHeartbeat();
     if (_dragging) {
       onPointer(0, _lastSrc.dx.round(), _lastSrc.dy.round());
       _dragging = false;
@@ -393,6 +482,26 @@ class RemoteTouchController {
       onPointer(0, cursor.dx.round(), cursor.dy.round());
       _holding = false;
     }
+  }
+
+  /// 按住左键期间每 [heartbeatInterval] 重发最后一次样本：Agent 把它当心跳，
+  /// 空闲看门狗就不会在长拖拽中途松开。
+  void _ensureHeartbeat() {
+    if (_beatTimer != null) return;
+    _beatTimer = Timer.periodic(heartbeatInterval, (_) {
+      if (_dragging) {
+        onPointer(1, _lastSrc.dx.round(), _lastSrc.dy.round());
+      } else if (_holding) {
+        onPointer(1, cursor.dx.round(), cursor.dy.round());
+      } else {
+        _stopHeartbeat();
+      }
+    });
+  }
+
+  void _stopHeartbeat() {
+    _beatTimer?.cancel();
+    _beatTimer = null;
   }
 
   void _queue(int mask, Offset s, Duration t) {
@@ -462,6 +571,14 @@ class RemoteTouchController {
     (local.dx / display.width * source.width).clamp(0.0, source.width - 1),
     (local.dy / display.height * source.height).clamp(0.0, source.height - 1),
   );
+
+  /// 只夹在源画面内（拖拽中用）：不许走到画面外，但允许走出当前可见块，
+  /// 页面会在靠近边缘时自动平移视角。
+  Offset _clampSource(Offset c) =>
+      Offset(_within(c.dx, 0, source.width - 1), _within(c.dy, 0, source.height - 1));
+
+  static double _within(double v, double lo, double hi) =>
+      v < lo ? lo : (v > hi ? hi : v);
 
   // 加速度：每秒 1200 逻辑像素时增益翻倍，封顶 2.5 倍。
   static const double _accelSpeed = 1200;

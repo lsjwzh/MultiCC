@@ -57,11 +57,19 @@ mixin ScreenInputMixin implements ScreenSource {
 
   /// Types text key-by-key (down+up per code point). CJK code points work:
   /// the Agent posts them as unicode events, not through an IME.
+  ///
+  /// Every code point above 0xFF is tagged (0x01000000 | cp). Untagged values
+  /// in 0xFE00…0xFFFF are function keys on the Agent, so a raw fullwidth
+  /// character used to press one: "（" (U+FF08) was BackSpace, "）" (U+FF09)
+  /// Tab, "－" (U+FF0D) Return, "；" (U+FF1B) Esc. Newline/tab go out as
+  /// Return/Tab, matching the Web client and CONTRACT §4.
   @override
   void typeText(String text) {
-    for (final codePoint in text.runes) {
-      keyEvent(true, codePoint);
-      keyEvent(false, codePoint);
+    // "\r\n" (pasted Windows text) is one line break, not two Returns.
+    for (final codePoint in text.replaceAll('\r\n', '\n').runes) {
+      final keysym = keysymForText(codePoint);
+      keyEvent(true, keysym);
+      keyEvent(false, keysym);
     }
   }
 
@@ -77,6 +85,16 @@ mixin ScreenInputMixin implements ScreenSource {
       keyEvent(false, mod);
     }
   }
+}
+
+/// A printable code point as an X11 keysym. Codepoints above 0xFF must be
+/// tagged, otherwise they fall into the X11 function-key range (0xFE00–0xFFFF)
+/// and are executed as keys instead of typed as text. Newline and tab are sent
+/// as Return and Tab.
+int keysymForText(int codePoint) {
+  if (codePoint == 0x0A || codePoint == 0x0D) return 0xFF0D; // Return
+  if (codePoint == 0x09) return 0xFF09; // Tab
+  return codePoint > 0xFF ? 0x01000000 | codePoint : codePoint;
 }
 
 void _be16(Uint8List m, int at, int v) {

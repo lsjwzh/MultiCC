@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/screens/remote_screen_screen.dart';
+import 'package:multicc_app/services/remote_screen_rfb.dart' show RfbKeysyms;
 import 'package:multicc_app/services/remote_screen_service.dart';
 import 'package:multicc_app/services/remote_screen_region.dart';
 import 'package:multicc_app/services/remote_screen_source.dart';
@@ -551,6 +552,250 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
   });
 
+  testWidgets('a zoomed trackpad drag auto-pans along with the virtual cursor', (
+    tester,
+  ) async {
+    final service = await _openLive(tester, trackpad: true);
+    final stage = find.byType(InteractiveViewer);
+    final transform = tester
+        .widget<InteractiveViewer>(stage)
+        .transformationController!;
+    transform.value = Matrix4.identity()..scale(2.0);
+    await tester.pump();
+    final before = transform.value.clone();
+    service.input.events.clear();
+    final drag = await tester.startGesture(tester.getCenter(stage));
+    // 按住不动先进入拖拽，再把手一路往右划。
+    await tester.pump(const Duration(milliseconds: 400));
+    for (var i = 0; i < 30; i++) {
+      await drag.moveBy(const Offset(10, 0));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await drag.up();
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(
+      transform.value.getTranslation().x,
+      lessThan(before.getTranslation().x),
+      reason: '虚拟光标到了右边缘，画面跟着推过去',
+    );
+    expect(transform.value.getMaxScaleOnAxis(), closeTo(2.0, 0.01));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  // ── 粘住的修饰键 / 键盘条 ──
+  testWidgets('sticky ⇧ is one-shot over the stream; More sends F1 and ⌘S', (
+    tester,
+  ) async {
+    final service = await _openLive(tester);
+    service.input.events.clear();
+    await tester.tap(find.text('⇧'));
+    await tester.pump();
+    expect(_keys(service.input), [(true, RfbKeysyms.shiftL)]);
+
+    // 下一次指针按下+松开用掉一次性修饰键。
+    await tester.tap(find.byType(InteractiveViewer));
+    await tester.pump();
+    expect(_keys(service.input).last, (false, RfbKeysyms.shiftL));
+
+    await tester.ensureVisible(find.text('更多'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('更多'));
+    await tester.pump();
+    expect(find.text('F1'), findsOneWidget);
+    service.input.events.clear();
+    await tester.tap(find.text('F1'));
+    await tester.pump();
+    expect(_keys(service.input), [(true, 0xFFBE), (false, 0xFFBE)]);
+
+    service.input.events.clear();
+    await tester.ensureVisible(find.text('⌘S'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('⌘S'));
+    await tester.pump();
+    expect(_keys(service.input), [
+      (true, RfbKeysyms.cmdL),
+      (true, 0x73),
+      (false, 0x73),
+      (false, RfbKeysyms.cmdL),
+    ]);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('a host that uses ctrl rewrites the ⌘ chips', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.getInstance();
+    final service = _Service(settings)..hostModifier = 'ctrl';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RemoteScreenScreen(
+          settings: settings,
+          service: service,
+          initialControl: true,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 30)),
+    );
+    await tester.pump();
+    expect(find.text('⌘A'), findsNothing);
+    expect(find.text('CtrlA'), findsOneWidget);
+    service.input.events.clear();
+    await tester.tap(find.text('CtrlA'));
+    await tester.pump();
+    expect(_keys(service.input), [
+      (true, RfbKeysyms.ctrlL),
+      (true, 0x61),
+      (false, 0x61),
+      (false, RfbKeysyms.ctrlL),
+    ]);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('compat mode rides a one-shot ⇧ on the HTTP pointer, then drops it', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.getInstance();
+    final service = _Service(settings, fallback: true);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RemoteScreenScreen(
+          settings: settings,
+          service: service,
+          initialControl: true,
+        ),
+      ),
+    );
+    await tester.pump();
+    final stage = find.byType(InteractiveViewer);
+    expect(stage, findsOneWidget);
+    await tester.tap(find.text('⇧'));
+    await tester.pump();
+    service.requests.clear();
+    await tester.tap(stage);
+    await tester.pump(const Duration(milliseconds: 20));
+    final firstPress = service.requests
+        .where((r) => r['op'] == 'pointer' && r['mask'] == 1)
+        .toList();
+    expect(firstPress, isNotEmpty);
+    expect(firstPress.first['mods'], ['shift']);
+
+    service.requests.clear();
+    await tester.tap(stage);
+    await tester.pump(const Duration(milliseconds: 20));
+    final secondPress = service.requests
+        .where((r) => r['op'] == 'pointer' && r['mask'] == 1)
+        .toList();
+    expect(secondPress, isNotEmpty);
+    expect(secondPress.every((r) => !r.containsKey('mods')), isTrue);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('a locked ⌘ survives pointer use and keybar chords', (
+    tester,
+  ) async {
+    final service = await _openLive(tester);
+    await tester.ensureVisible(find.text('⌘'));
+    await tester.pumpAndSettle();
+    service.input.events.clear();
+    // 连点两下 = 锁定：第一下按下 ⌘，第二下只改状态。
+    await tester.tap(find.text('⌘'));
+    await tester.tap(find.text('⌘'));
+    await tester.pump();
+    expect(_keys(service.input), [(true, RfbKeysyms.cmdL)]);
+
+    // 指针按下+松开不会用掉锁定态。
+    service.input.events.clear();
+    await tester.tap(find.byType(InteractiveViewer));
+    await tester.pump();
+    expect(_keys(service.input), isEmpty);
+
+    // 和弦里 ⌘ 已经按着：不能再发一次 down，更不能替它发 up。
+    service.input.events.clear();
+    await tester.ensureVisible(find.text('⌘C'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('⌘C'));
+    await tester.pump();
+    expect(_keys(service.input), [(true, 0x63), (false, 0x63)]);
+
+    service.input.events.clear();
+    await tester.ensureVisible(find.text('⌘'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('⌘'));
+    await tester.pump();
+    expect(_keys(service.input), [(false, RfbKeysyms.cmdL)]);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('holding ⌫ keeps sending BackSpace', (tester) async {
+    final service = await _openLive(tester);
+    service.input.events.clear();
+    await tester.ensureVisible(find.text('⌫'));
+    await tester.pumpAndSettle();
+    final hold = await tester.startGesture(tester.getCenter(find.text('⌫')));
+    await tester.pump(const Duration(milliseconds: 30));
+    expect(
+      _keys(service.input).where((k) => k.$1).length,
+      1,
+      reason: '第一发在按下时立即发出',
+    );
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(milliseconds: 75));
+    await tester.pump(const Duration(milliseconds: 75));
+    await tester.pump(const Duration(milliseconds: 75));
+    await hold.up();
+    await tester.pump();
+    final presses = _keys(
+      service.input,
+    ).where((k) => k.$1 && k.$2 == RfbKeysyms.backspace).length;
+    expect(presses, greaterThanOrEqualTo(4));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('a zoomed drag into the stage edge auto-pans the view', (
+    tester,
+  ) async {
+    final service = await _openLive(tester);
+    final stage = find.byType(InteractiveViewer);
+    final transform = tester
+        .widget<InteractiveViewer>(stage)
+        .transformationController!;
+    transform.value = Matrix4.identity()..scale(2.0);
+    await tester.pump();
+    final before = transform.value.clone();
+    service.input.events.clear();
+    final drag = await tester.startGesture(tester.getCenter(stage));
+    for (var i = 0; i < 30; i++) {
+      await drag.moveBy(const Offset(14, 0));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await drag.up();
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(
+      transform.value.getTranslation().x,
+      lessThan(before.getTranslation().x),
+      reason: '靠近右边缘时画面被推向左侧',
+    );
+    expect(transform.value.getMaxScaleOnAxis(), closeTo(2.0, 0.01));
+    expect(
+      service.input.events.where((e) => e[0] == 5 && e[1] == 1),
+      isNotEmpty,
+      reason: '拖拽本身照常发给远端',
+    );
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
+
   // The geometry matrix: every combination a real phone can be in. A tap must
   // reach the remote as press + release at the source pixel under the finger,
   // and nothing may throw or push the picture out of the viewport. The -0.0
@@ -593,6 +838,13 @@ void main() {
 List<(int, int, int)> _pointers(_Source s) => [
   for (final e in s.events)
     if (e[0] == 5) (e[1], (e[2] << 8) | e[3], (e[4] << 8) | e[5]),
+];
+
+/// KeyEvent：[type=4][down][pad u16][keysym be32]。
+List<(bool, int)> _keys(_Source s) => [
+  for (final e in s.events)
+    if (e.length >= 8 && e[0] == 4)
+      (e[1] != 0, (e[4] << 24) | (e[5] << 16) | (e[6] << 8) | e[7]),
 ];
 
 Future<void> _geometryCase(

@@ -57,6 +57,7 @@ function createMacosAgentProvisioner(deps = {}) {
   const bridgeSource = path.join(rootDir, 'scripts', 'macos-agent', 'LidBrightnessBridge.m');
   const h264Source = path.join(rootDir, 'scripts', 'macos-agent', 'MultiCCAgentH264.swift');
   const permissionSource = path.join(rootDir, 'scripts', 'macos-agent', 'AgentPermissions.swift');
+  const remoteInputSource = path.join(rootDir, 'scripts', 'macos-agent', 'MultiCCAgentRemoteInput.swift');
   const icon = path.join(rootDir, 'scripts', 'macos-agent', 'AgentIcon.icns');
   // macOS installation adapter: keep this default aligned with install-agent.sh.
   const app = env.MULTICC_AGENT_APP || '/Applications/MultiCC Agent.app';
@@ -142,7 +143,7 @@ function createMacosAgentProvisioner(deps = {}) {
   function plan(options = {}) {
     if (platform !== 'darwin') return { action: 'skip', reason: 'not-macos' };
     if (env.MULTICC_AGENT_AUTO_INSTALL === '0') return { action: 'skip', reason: 'disabled-by-env' };
-    if (![script, source, bridgeHeader, bridgeSource, h264Source, permissionSource, icon].every(exists)) return { action: 'skip', reason: 'installer-not-shipped' };
+    if (![script, source, bridgeHeader, bridgeSource, h264Source, permissionSource, remoteInputSource, icon].every(exists)) return { action: 'skip', reason: 'installer-not-shipped' };
     if (exists(path.join(agentDir, 'auto-install-disabled'))) return { action: 'skip', reason: 'uninstalled-by-user' };
     if (!exists(bin)) return { action: 'install', reason: 'not-installed' };
     // Installed but unrunnable: what a copy that lost its executable bit leaves

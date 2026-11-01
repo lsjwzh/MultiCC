@@ -93,15 +93,23 @@ Linux X11 的实现是 `scripts/linux-agent/`（C）；Windows 还没有，`nati
 |---|---|---|
 | `snap` | `path`, `crop?`, `jpeg?`, `quality?` | 把主屏（或 `crop` 指定的区域）截到 `path`。默认 PNG，**原生物理像素**，不要缩放 |
 | `status` | — | 返回 `{ ok, screenLocked, accessibility, screenRecording, control: { leaseHolder, halted } }` |
-| `click` | `x, y, button?('right'), count?(1-3)` | 在逻辑点上点击 |
-| `move` | `x, y` | 移动指针 |
-| `scroll` | `x, y, amount`（-50..50） | 在 `(x,y)` 处滚动 |
-| `drag` | `x, y, x2, y2, ms`（80..3000） | 从 a 拖到 b |
+| `click` | `x, y, button?('right'\|'middle'), count?(1-3), mods?` | 在逻辑点上点击；`middle` 走 otherMouse |
+| `move` | `x, y, mods?` | 移动指针 |
+| `scroll` | `x, y, amount`（-50..50）, `amountX?`（-50..50，正 = 向左）, `mods?` | 在 `(x,y)` 处滚动；`amountX` 走 wheel2 |
+| `drag` | `x, y, x2, y2, ms`（80..3000）, `mods?` | 从 a 拖到 b |
 | `type` | `text`（≤4000 字符） | 向当前焦点输入文本 |
-| `press` | `keys`（如 `cmd+c` / `ctrl+c`，≤40 字符） | 按组合键。**键名是契约词表，跟 macOS 一致**：`delete` = 退格（Web 的 ⌫ 发的就是它），向前删除是 `forwarddelete` |
-| `release` | — | 释放操作租约 |
+| `press` | `keys`（如 `cmd+c` / `ctrl+c`，≤40 字符）, `mods?` | 按组合键。**键名是契约词表，跟 macOS 一致**：`delete` = 退格（Web 的 ⌫ 发的就是它），向前删除是 `forwarddelete`；`mods` 合并进 chord |
+| `pointer` | `viewer`, `mask`(0\|1), `x`, `y`, `mods?` | 兼容通道的有状态指针采样（仅左键；`viewer` 标识一个手势序列）。三条通道共用按下/拖动/松开与空闲释放语义，见 §6.3 |
+| `lease` | `seconds?`（5..120，缺省 120） | 只占住/续期操作租约，不注入任何输入；`anonymous` / `remote-screen` 不能用，`release` 交还 |
+| `release` | — | 释放操作租约，并松开 `remote-screen` 仍按住的按钮与修饰键 |
 | `resume` | — | 解除 Esc 急停 |
 | `unlock` | — | 提交已保存的密码解锁（**只能由服务端唤屏路由触发**，见 §5） |
+
+`mods` 只接受 `"shift"` / `"ctrl"` / `"alt"` / `"cmd"`：去重、固定按这个顺序、
+未知项丢掉、非数组当空。对 `click` / `move` / `scroll` / `drag` 是「夹住这一次操作」
+的真实按下+松开（像 chord）；对 `pointer` 是按下时按下、松开时松开（见 §6.3）；
+对 `press` 直接并进 chord 的 flags。服务端白名单见 `native/remote/`（Node 与 Rust
+必须逐字节等价）。
 
 #### `snap` 的可选字段
 
@@ -298,6 +306,9 @@ multicc-cdpd shutdown [--force]
    合适的 reason**，而不是断连。
 6. **不执行命令、不任意读写路径**：op 集合是封闭的。`snap` 的 `path` 必须落在调用方给的
    目录内（服务端的 `assistDir`）。
+7. **输入不得卡住**：任何「按下」都必须在断开、Esc 急停、锁屏、租约冲突、辅助功能授权
+   丢失、`release` 和空闲看门狗时被松开，修饰键同样。三条输入通道共用 §6.3 的释放规则，
+   不能只在某一条上做。
 
 ## 6. 串流（可选 feature：`stream`）
 
@@ -329,8 +340,9 @@ WebRTC DataChannel（P2P）；打洞失败时就走这条 WS——中继只用�
   补编两次（让文字变清晰）；收到关键帧请求时立即把最后一帧编成关键帧。
 - 服务端 → Agent 只有三种定长消息：`0x4B`（要关键帧）、RFB KeyEvent（`4`+7 字节）、
   RFB PointerEvent（`5`+5 字节，坐标是逻辑点）。输入同样走 `handle()` 全部护栏。
-  例外是不按键的悬停（mask 0 → 0）：画面里画的是远端真实光标，浏览器限频约 30 次/秒发来，
-  Agent 只移动光标（不做逐 App 检查，但 Esc 急停 / 锁屏 / 其它会话租约照样拦，输入通道忙就丢这一次）。
+  不按键的悬停（掩码 0）对 RFB 与 H.264 都生效（见 §6.3）：画面里画的是远端真实光标，
+  浏览器限频约 30 次/秒发来，Agent 只移动光标（不做逐 App 检查，但 Esc 急停 / 锁屏 /
+  其它会话租约照样拦，输入通道忙就丢这一次）。
 - 丢帧而不断流：Agent 每个连接排队超过 4 帧、服务端 WS 积压超过水位，都只丢普通帧并等
   下一个关键帧。出不了首帧（无 socket / 无录屏授权）时服务端以 `1011` 关 WS，前端回退 noVNC。
 - Flutter App（iOS/Android）同样连 `?mode=h264`，但解码在本机原生做：iOS 走 VideoToolbox
@@ -356,6 +368,34 @@ WebRTC DataChannel（P2P）；打洞失败时就走这条 WS——中继只用�
   STUN；设为空串 = 只在局域网直连。`MULTICC_REMOTE_P2P=0` 完全关闭直连。
 - 依赖 `werift`（纯 JS）；未安装时自动只走中继，不报错。
 - 浏览器直连失败按 5s / 15s / 60s 退避重试；画面全程由中继兜底，不黑屏。
+
+### 6.3 指针掩码与按住修饰键（RFB / H.264 / HTTP `pointer` 共用）
+
+三条输入通道最后都进同一个入口（macOS：`MultiCCAgentRemoteInput.swift`），语义必须一致
+（服务端不解释掩码，只搬字节）：
+
+- 掩码位：`0x01` 左、`0x02` 中、`0x04` 右、`0x08` 滚轮上、`0x10` 滚轮下、`0x20` 滚轮左、
+  `0x40` 滚轮右；掩码 0 的无键移动是悬停。
+- **按下即时生效**：左/中/右的上升沿立刻发真实 mouseDown，走和普通 `click` 相同的策略
+  闸门（Esc 急停 / 锁屏 / 租约 / 辅助功能 / 受保护 App）。被拒绝时这次按下作废，之后的
+  移动与松开都不再发任何事件。Agent 侧不再有 8pt 容差——触摸端的 slop 由客户端自己判。
+- 按住期间移动发 `left/right/otherMouseDragged`（≤ ~80 Hz；输入通道忙就丢这一帧，
+  松开点一定送达）。**下降沿**在释放点发对应的 mouseUp。
+- 点击计数在**按下时**算：同一按钮、距上次按下不超过 `NSEvent.doubleClickInterval`
+  （钳到 0.3…0.6 s）且距离 ≤ 6 pt → 计数 +1，最多 3，写进 down 和 up 的
+  `mouseEventClickState`。
+- **心跳**：掩码与坐标都和上一帧相同 → 只刷新空闲看门狗，不发任何事件。客户端在按住
+  按钮期间每 3 s 发一次；10 s 没有指针流量才自动松开（真正的断线/卡死保险）。
+- 滚轮位是脉冲（先 `mask|bit` 再回到 `mask`），每个上升沿滚 3 行；`0x20` 向左
+  （wheel2 +3），`0x40` 向右（wheel2 −3）。
+- **修饰键是真的按住**：修饰键 keysym 的 KeyEvent 发真实 flagsChanged（左/右各自的虚拟
+  键码，累计 flags），并按客户端记住。按住期间该客户端的所有事件（鼠标按下/拖动/松开、
+  滚轮、悬停、组合键）都带这些 flags。`Shift_L/R`、`Control_L/R`、`Meta/Super_L/R`（⌘）、
+  `Alt_L/R`、`ISO_Level3_Shift`、`Mode_switch`（⌥）都认，左右分开记。
+- **全部释放**（给所有仍按住的按钮/修饰键补 up）：连接断开、Esc 急停、锁屏、租约被别的
+  会话拿走、辅助功能授权丢失、`release` op、按住按钮 10 s 无指针流量、以及按住修饰键时
+  30 s 没有任何输入。
+- 所有注入事件都带 `EVENT_MARK`，本机 Esc 监听与「真人在操作」检测会忽略它们。
 
 ## 7. 各平台实现要点
 

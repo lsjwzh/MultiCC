@@ -58,6 +58,10 @@ const DIR = path.join(createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).ass
 // 再桥到 rfb.sock；鉴权在 WS 层（同 /ws/chat 的 ws-ticket），Agent 侧 getpeereid
 // 校验同 uid。Agent 未带该 socket（旧版本 / macOS<14）时连接失败，前端回退轮询。
 const INPUT_OPS = new Set(['click', 'move', 'scroll', 'drag', 'pointer', 'type', 'press', 'release', 'resume', 'status']);
+// 「兼容」HTTP 通道的修饰键：只认这四个，规范顺序 shift,ctrl,alt,cmd（Agent 按这个
+// 顺序按下，和前端 sticky chip 的显示顺序一致）。哪些 op 接受 mods 见 MOD_OPS。
+const MODS = ['shift', 'ctrl', 'alt', 'cmd'];
+const MOD_OPS = ['click', 'move', 'scroll', 'drag', 'pointer', 'press'];
 const KEEP_SHOTS = 20;
 
 const deps = { agentCall, execFile, sock: null, rfbSock: null, h264Sock: null, dir: DIR };
@@ -189,6 +193,12 @@ function buildInput(body = {}) {
     if (x == null || y == null) return { error: 'x and y are required' };
     Object.assign(req, { x, y, allowSystem: true });
   }
+  // 按住修饰键的取一个手势：只认数组（非数组静默忽略，不报错），元素严格比对，
+  // 未知项丢弃，去重后固定按 shift,ctrl,alt,cmd 排；空数组不转发。
+  if (MOD_OPS.includes(op) && Array.isArray(body.mods)) {
+    const mods = MODS.filter(m => body.mods.includes(m));
+    if (mods.length) req.mods = mods;
+  }
   // Compatibility transport only: retain the Agent's existing RFB drag policy.
   if (op === 'pointer') {
     if (typeof body.viewer !== 'string' || !/^[a-zA-Z0-9-]{1,64}$/.test(body.viewer)) return { error: 'viewer is required' };
@@ -196,10 +206,17 @@ function buildInput(body = {}) {
     Object.assign(req, { viewer: body.viewer, mask: body.mask });
   }
   if (op === 'click') {
-    if (body.button === 'right') req.button = 'right';
+    // 只认 "right" / "middle" 两个字面量，其余（含 "left"）一律按默认左键处理。
+    if (body.button === 'right' || body.button === 'middle') req.button = body.button;
     req.count = Math.max(1, Math.min(3, num(body.count) || 1));
   }
-  if (op === 'scroll') req.amount = Math.max(-50, Math.min(50, Math.round(num(body.amount) || 0)));
+  if (op === 'scroll') {
+    req.amount = Math.max(-50, Math.min(50, Math.round(num(body.amount) || 0)));
+    // amountX：水平滚动，正数 = 向左（和 wheel2 的符号约定一致）。只转发非零值，
+    // 0 / -0 都不带（JS 的 `-0` 是假值）。
+    const amountX = Math.max(-50, Math.min(50, Math.round(num(body.amountX) || 0)));
+    if (amountX) req.amountX = amountX;
+  }
   if (op === 'drag') {
     const x2 = num(body.x2), y2 = num(body.y2);
     if (x2 == null || y2 == null) return { error: 'x2 and y2 are required' };

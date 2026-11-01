@@ -40,6 +40,12 @@ pub const INPUT_OPS: [&str; 10] = [
     "click", "move", "scroll", "drag", "pointer", "type", "press", "release", "resume", "status",
 ];
 
+/// HTTP `mods` 的白名单与规范顺序（shift,ctrl,alt,cmd），与 JS 的 MODS 一致。
+pub const MODS: [&str; 4] = ["shift", "ctrl", "alt", "cmd"];
+
+/// 接受 `mods` 的 op：按住修饰键再点/拖/滚/移动，以及 press 的字符和弦。
+pub const MOD_OPS: [&str; 6] = ["click", "move", "scroll", "drag", "pointer", "press"];
+
 #[derive(Clone)]
 pub struct AppState {
     pub screen: Arc<Screen>,
@@ -157,6 +163,23 @@ pub fn build_input(body: &Value) -> AppResult<Value> {
         req.insert("y".into(), js_num(y));
         req.insert("allowSystem".into(), json!(true));
     }
+    // JS：`Array.isArray(body.mods)` —— 非数组静默忽略（不报错）；元素用严格相等
+    // (`includes`) 比对，所以非字符串和未知项自然都被丢掉；去重后按 MODS 顺序排。
+    // 空数组不转发（Agent 收到空 mods 和没给一样，但保持线上形状一致）。
+    if MOD_OPS.contains(&op.as_str()) {
+        if let Some(Value::Array(items)) = map.get("mods") {
+            let mut mods = Vec::new();
+            // 遍历白名单而不是输入数组：既完成去重，又固定了 shift,ctrl,alt,cmd 的顺序。
+            for name in MODS {
+                if items.iter().any(|item| item.as_str() == Some(name)) {
+                    mods.push(json!(name));
+                }
+            }
+            if !mods.is_empty() {
+                req.insert("mods".into(), Value::Array(mods));
+            }
+        }
+    }
     // 兼容通道：保留 Agent 现有的 RFB 拖动策略（pointer 只认 0/1 两种 mask）。
     if op == "pointer" {
         let viewer = match map.get("viewer") {
@@ -172,8 +195,12 @@ pub fn build_input(body: &Value) -> AppResult<Value> {
         req.insert("mask".into(), json!(mask));
     }
     if op == "click" {
-        if map.get("button").and_then(|v| v.as_str()) == Some("right") {
-            req.insert("button".into(), json!("right"));
+        // JS `body.button === 'right' || body.button === 'middle'`：只认这两个字面量，
+        // 其余（含 "left"）一律按默认左键处理（不转发 button）。
+        if let Some(button) = map.get("button").and_then(|v| v.as_str()) {
+            if button == "right" || button == "middle" {
+                req.insert("button".into(), json!(button));
+            }
         }
         let count = num_or(map, "count", 1.0);
         req.insert("count".into(), js_num(count.clamp(1.0, 3.0)));
@@ -181,6 +208,12 @@ pub fn build_input(body: &Value) -> AppResult<Value> {
     if op == "scroll" {
         let amount = num_or(map, "amount", 0.0);
         req.insert("amount".into(), js_num(js_round(amount).clamp(-50.0, 50.0)));
+        // amountX：水平滚动（正值 = 向左，和 wheel2 符号一致），同样 round + clamp，
+        // 只在非零时转发 —— JS `if (amountX)` 把 0 和 -0 都当假值。
+        let amount_x = js_round(num_or(map, "amountX", 0.0)).clamp(-50.0, 50.0);
+        if amount_x != 0.0 {
+            req.insert("amountX".into(), js_num(amount_x));
+        }
     }
     if op == "drag" {
         let (Some(x2), Some(y2)) = (num_field(map, "x2"), num_field(map, "y2")) else {

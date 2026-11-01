@@ -5,16 +5,16 @@
 // 3=普通帧（payload 前 8 字节是 µs 时间戳，后面是 Annex B）、4=pong（别的客户端的
 // 心跳应答，这里不发起码率控制，直接忽略）。
 //
-// 对外只模仿 chat-remote-screen.js 用到的那一小截 noVNC RFB 接口：
-// new View(target, url)、viewOnly / scaleViewport、disconnect()、'connect' / 'disconnect'
-// 事件、target 里放一个 canvas（宽高 = 屏幕逻辑点），所以宿主的放大、轻点、
-// 右键、框选逻辑一行都不用分支。输入按 RFB PointerEvent / KeyEvent 的字节格式发回，
-// Agent 侧与 noVNC 输入走同一个 rfbPointer / rfbKey。
+// 这个类现在只画像素，不再碰输入（见 chat-remote-input.js）：对外只暴露
+// sendPointer(mask,x,y) / sendKey(down,keysym) / releaseAll() 和
+// clientToInput(clientX,clientY) 坐标映射，由输入层统一驱动。
+// 仍模仿 noVNC RFB 的一小截接口（viewOnly / scaleViewport / disconnect /
+// 'connect' / 'disconnect' / 'transport' 事件），宿主的画面管线不用分支。
 //
 // 指针坐标永远是「逻辑点」：canvas 是解码尺寸，App 设了码率上限后共享编码器会降分辨率
 // （config.width/height 变小），而 config.inputWidth/inputHeight 始终是主屏逻辑尺寸。
-// 所以 _point() 先落到 canvas 再映射到 inputWidth/inputHeight（缺省回落到 width/height），
-// 否则多个观看者同时看、或 App 正在限速时，网页这端的点击会落在左上角。
+// 所以 clientToInput() 先落到 canvas 再映射到 inputWidth/inputHeight（缺省回落到
+// width/height），否则多个观看者同时看、或 App 正在限速时，网页这端的点击会落在左上角。
 //
 // P2P：服务端在这条 WS 上发 rtc-hello 时，这里建 RTCPeerConnection + DataChannel
 // 试直连（信令仍走这条 WS，见 src/remote-screen-p2p.js）。服务端发 rtc-active 后帧改
@@ -25,27 +25,8 @@
   'use strict';
 
   const T_CONFIG = 1, T_KEY = 2, T_DELTA = 3, T_PONG = 4, REQ_KEY = 0x4b;
-  const KEYSYMS = {
-    Backspace: 0xff08, Tab: 0xff09, Enter: 0xff0d, Escape: 0xff1b, Delete: 0xffff,
-    Home: 0xff50, ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54,
-    PageUp: 0xff55, PageDown: 0xff56, End: 0xff57,
-    Shift: 0xffe1, Control: 0xffe3, Alt: 0xffe9, Meta: 0xffe7,
-  };
-  const MODIFIERS = [0xffe1, 0xffe3, 0xffe9, 0xffe7];
   const P2P_OPEN_TIMEOUT_MS = 10000;
-  const HOVER_MS = 33;
   const P2P_RETRY_MS = [5000, 15000, 60000];
-
-  function keysymOf(ev) {
-    if (KEYSYMS[ev.key]) return KEYSYMS[ev.key];
-    const f = /^F([1-9]|1[0-2])$/.exec(ev.key);
-    if (f) return 0xffbe + Number(f[1]) - 1;
-    const cp = ev.key && ev.key.codePointAt(0);
-    // X11 Unicode keysyms must be tagged so fullwidth text cannot collide
-    // with functional keys such as BackSpace (0xff08).
-    if (cp && String.fromCodePoint(cp) === ev.key) return cp <= 0xff ? cp : (0x01000000 | cp);
-    return 0;
-  }
 
   class H264View extends EventTarget {
     static supported() {
@@ -66,13 +47,7 @@
       this._waitKey = true;
       this._lastKeyReq = 0;
       this._errors = [];
-      this._mask = 0;
       this._lastXY = [0, 0];
-      this._held = new Set();
-      this._lastWheel = 0;
-      this._lastHover = 0;
-      this._hoverTimer = null;
-      this._hoverXY = null;
       this.stats = { frames: 0, bytes: 0, dropped: 0 };
       this.transport = 'relay';
       this._pc = null;
@@ -91,11 +66,7 @@
       this._canvas = canvas;
       this._ctx = canvas.getContext('2d');
 
-      this._onPointer = this._onPointer.bind(this);
-      this._onWheel = this._onWheel.bind(this);
-      this._onKey = this._onKey.bind(this);
-      this._onMenu = ev => { if (!this._viewOnly) ev.preventDefault(); };
-      canvas.addEventListener('contextmenu', this._onMenu);
+      canvas.addEventListener('contextmenu', ev => ev.preventDefault());
       if (typeof ResizeObserver === 'function') {
         this._ro = new ResizeObserver(() => this._fit());
         this._ro.observe(target);
@@ -113,22 +84,15 @@
       this._ws = ws;
     }
 
+    // 只为兼容宿主旧代码保留：画面端不再挂任何输入监听，是否可控制由输入层判断。
     get viewOnly() { return this._viewOnly; }
-    set viewOnly(on) {
-      on = !!on;
-      if (on === this._viewOnly) return;
-      this._viewOnly = on;
-      const c = this._canvas;
-      const verb = on ? 'removeEventListener' : 'addEventListener';
-      for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) c[verb](type, this._onPointer);
-      c[verb]('wheel', this._onWheel, { passive: false });
-      c[verb]('keydown', this._onKey);
-      c[verb]('keyup', this._onKey);
-      if (on) this._releaseAll();
-    }
+    set viewOnly(on) { this._viewOnly = !!on; }
 
     get scaleViewport() { return this._scale; }
     set scaleViewport(on) { this._scale = !!on; this._fit(); }
+
+    get inputWidth() { return this._inputW || this._canvas.width; }
+    get inputHeight() { return this._inputH || this._canvas.height; }
 
     disconnect() {
       try { this._ws.close(); } catch {}
@@ -137,7 +101,6 @@
 
     _finish() {
       if (this._closed) return;
-      this.viewOnly = true;   // 先放开按住的键（仍可发送），再标记关闭
       this._closed = true;
       this._p2pStop();
       try { this._ro?.disconnect(); } catch {}
@@ -146,6 +109,42 @@
       this.dispatchEvent(new Event('disconnect'));
     }
 
+    // ── 输入 API（由 chat-remote-input.js 调用）─────────────────────────────
+    // RFB 字节格式：[5][mask][x hi][x lo][y hi][y lo]；mask 位见 CONTRACT §2。
+    sendPointer(mask, x, y) {
+      if (this._closed) return;
+      this._lastXY = [x, y];
+      this._send([5, mask & 0xff, (x >> 8) & 255, x & 255, (y >> 8) & 255, y & 255]);
+    }
+
+    // [4][down][pad][pad][keysym u32 BE]
+    sendKey(down, ks) {
+      if (this._closed) return;
+      this._send([4, down ? 1 : 0, 0, 0,
+        (ks >>> 24) & 255, (ks >>> 16) & 255, (ks >>> 8) & 255, ks & 255]);
+    }
+
+    // 只看 / 断开 / 切模式时把可能残留的按钮放掉（键由输入层自己逐个发 up）。
+    releaseAll() {
+      if (this._closed) return;
+      this._send([5, 0, (this._lastXY[0] >> 8) & 255, this._lastXY[0] & 255,
+        (this._lastXY[1] >> 8) & 255, this._lastXY[1] & 255]);
+    }
+
+    // 页面坐标 → 输入域逻辑点。落在 canvas 之外（放大后四周黑边）时返回 null，
+    // 输入层据此忽略这一指（拖动越界时不发帧，抬指仍会补最后一帧）。
+    clientToInput(clientX, clientY) {
+      const r = this._canvas.getBoundingClientRect();
+      if (!r.width || !r.height) return null;
+      if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) return null;
+      const jw = this._inputW || this._canvas.width;
+      const jh = this._inputH || this._canvas.height;
+      const x = Math.round((clientX - r.left) / r.width * jw);
+      const y = Math.round((clientY - r.top) / r.height * jh);
+      return { x: Math.max(0, Math.min(jw - 1, x)), y: Math.max(0, Math.min(jh - 1, y)) };
+    }
+
+    // ── 传输 ────────────────────────────────────────────────────────────────
     _send(bytes) {
       if (this._closed) return;
       const dc = this._dc;
@@ -351,96 +350,6 @@
       c.style.height = h + 'px';
       c.style.left = (this._scale ? Math.max(0, Math.round((tw - w) / 2)) : 0) + 'px';
       c.style.top = (this._scale ? Math.max(0, Math.round((th - h) / 2)) : 0) + 'px';
-    }
-
-    // 指针 → 逻辑点。canvas 是解码（编码）尺寸，getBoundingClientRect 含宿主捏合放大的
-    // transform；Agent 的 H.264 指针域是主屏逻辑点 = config.inputWidth/inputHeight。
-    _point(ev) {
-      const r = this._canvas.getBoundingClientRect();
-      const jw = this._inputW || this._canvas.width;
-      const jh = this._inputH || this._canvas.height;
-      const x = Math.round((ev.clientX - r.left) / r.width * jw);
-      const y = Math.round((ev.clientY - r.top) / r.height * jh);
-      return [Math.max(0, Math.min(jw - 1, x)), Math.max(0, Math.min(jh - 1, y))];
-    }
-
-    _pointer(mask, x, y) {
-      this._send([5, mask, x >> 8, x & 255, y >> 8, y & 255]);
-    }
-
-    _onPointer(ev) {
-      if (this._viewOnly) return;
-      const b = ev.buttons || 0;
-      // DOM buttons: 1 左 / 2 右 / 4 中 → RFB mask: 1 左 / 2 中 / 4 右
-      const mask = (b & 1 ? 1 : 0) | (b & 4 ? 2 : 0) | (b & 2 ? 4 : 0);
-      if (ev.type === 'pointerdown') {
-        this._canvas.focus({ preventScroll: true });
-        try { this._canvas.setPointerCapture(ev.pointerId); } catch {}
-      }
-      // 不按键的悬停移动：只有鼠标才有（触屏没有悬停），限频发给 Agent 带动真实光标，
-      // 画面里的光标才会跟手（视频里画的就是远端光标，本页不画本地光标）。
-      if (ev.type === 'pointermove' && !mask && !this._mask) {
-        if (ev.pointerType === 'mouse') this._hover(this._point(ev));
-        return;
-      }
-      const [x, y] = this._point(ev);
-      this._lastXY = [x, y];
-      this._mask = ev.type === 'pointercancel' ? 0 : mask;
-      this._pointer(this._mask, x, y);
-      ev.preventDefault();
-    }
-
-    // 约 30 次/秒，末尾那次一定补发，光标停在鼠标真正停下的位置。
-    _hover(xy) {
-      this._hoverXY = xy;
-      if (this._hoverTimer) return;
-      const wait = HOVER_MS - (Date.now() - this._lastHover);
-      if (wait <= 0) { this._flushHover(); return; }
-      this._hoverTimer = setTimeout(() => this._flushHover(), wait);
-    }
-
-    _flushHover() {
-      clearTimeout(this._hoverTimer);
-      this._hoverTimer = null;
-      if (this._viewOnly || this._mask || !this._hoverXY) return;
-      this._lastHover = Date.now();
-      const [x, y] = this._hoverXY;
-      this._hoverXY = null;
-      this._lastXY = [x, y];
-      this._pointer(0, x, y);
-    }
-
-    _onWheel(ev) {
-      if (this._viewOnly || !ev.deltaY) return;
-      ev.preventDefault();
-      const now = Date.now();
-      if (now - this._lastWheel < 60) return;
-      this._lastWheel = now;
-      const [x, y] = this._point(ev);
-      const bit = ev.deltaY < 0 ? 8 : 16; // RFB: 8 = 上滚，16 = 下滚
-      this._pointer(this._mask | bit, x, y);
-      this._pointer(this._mask, x, y);
-    }
-
-    _key(down, ks) {
-      this._send([4, down ? 1 : 0, 0, 0, (ks >>> 24) & 255, (ks >>> 16) & 255, (ks >>> 8) & 255, ks & 255]);
-    }
-
-    _onKey(ev) {
-      if (this._viewOnly || ev.isComposing || ev.key === 'Process') return;
-      const ks = keysymOf(ev);
-      if (!ks) return;
-      ev.preventDefault();
-      const down = ev.type === 'keydown';
-      if (down) this._held.add(ks); else this._held.delete(ks);
-      this._key(down, ks);
-    }
-
-    // 切回「只看」或断开时把按住的修饰键放掉，避免 Agent 侧粘住 ⌘/Shift。
-    _releaseAll() {
-      for (const ks of new Set([...this._held, ...MODIFIERS])) this._key(false, ks);
-      this._held.clear();
-      if (this._mask) { this._mask = 0; this._pointer(0, this._lastXY[0], this._lastXY[1]); }
     }
   }
 
