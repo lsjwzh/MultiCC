@@ -96,7 +96,7 @@ fn identity(file: &PathBuf) -> Result<String, String> {
 impl ReadModel {
     pub fn run(&mut self, input: &str) -> Result<String, String> {
         let command: Command =
-            serde_json::from_str(input).map_err(|_| "read_model_invalid_command")?;
+            crate::json_lenient::from_str(input).map_err(|_| "read_model_invalid_command")?;
         let result = match command {
             Command::Open { file } => {
                 let file = fs::canonicalize(file).map_err(|_| "read_model_source_unavailable")?;

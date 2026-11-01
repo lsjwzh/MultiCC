@@ -1,6 +1,7 @@
 'use strict';
 
 const planning = require('../task-board/planning');
+const { cloneBoard } = require('../native/task-domain');
 
 function responseStatus(error) {
   if (error === 'task_not_found') return 404;
@@ -108,7 +109,7 @@ function createTaskPlanningRuntime({
       return res.status(409).json({ error: 'directory_not_found' });
     }
     const probe = planning.updatePlannedTask(
-      JSON.parse(JSON.stringify(getBoard())), task.id, body,
+      cloneBoard(getBoard()), task.id, body,
       { expectedRevision: expectedRevision(body) },
     );
     if (!probe.ok) return fail(res, probe);
@@ -132,7 +133,7 @@ function createTaskPlanningRuntime({
     if (!task) return res.status(404).json({ error: 'task_not_found' });
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const probe = planning.movePlannedTask(
-      JSON.parse(JSON.stringify(getBoard())), task.id, body,
+      cloneBoard(getBoard()), task.id, body,
       { expectedRevision: expectedRevision(body) },
     );
     if (!probe.ok) return fail(res, probe);

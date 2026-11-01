@@ -535,14 +535,18 @@
     {
       "id": "task-shell-sqlite",
       "classification": "migration-required",
-      "owner": "task-shell/store",
+      "owner": "Rust task store",
       "sources": [
         {
           "file": "src/paths.js",
           "anchor": "taskShellDbFile: path.join(root, 'task-shells.sqlite')"
+        },
+        {
+          "file": "native/core/src/task_store.rs",
+          "anchor": "pub struct TaskStore {"
         }
       ],
-      "rationale": "Opt-in task-shell bindings, immutable context snapshots and durable route receipts.",
+      "rationale": "Canonical task-shell bindings, immutable context snapshots, indexed receipts and per-kind row cache are owned by the Rust task store.",
       "migrationStrategy": "Additive data-root SQLite namespace; old sessions are unchanged. Back up database with WAL via SQLite backup; disabling experiment keeps history readable."
     },
     {
@@ -660,6 +664,19 @@
           "anchor": "function createMachineRuntime({ root, authSecurity, getWss = () => null })"
         }
       ]
+    },
+    {
+      "id": "task-board-rust-repository",
+      "classification": "migration-required",
+      "owner": "Rust task board repository",
+      "sources": [
+        {
+          "file": "native/core/src/task_domain/repository.rs",
+          "anchor": "let recovery = sibling(file, \".planning-v2.json\");"
+        }
+      ],
+      "rationale": "The existing task board JSON, recovery sidecar, non-overwriting legacy backup and private advisory lock form one Rust-owned data-root namespace.",
+      "migrationStrategy": "Keep existing file names and JSON schema. Write recovery before primary under an exclusive lock, roll back reported failures, and select the higher durable revision after a crash. Move all sidecars together if the data root is relocated."
     }
   ]
 }

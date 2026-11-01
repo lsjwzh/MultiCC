@@ -19,18 +19,12 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     return task;
   }
   function ownerOf(task) {
-    if (task.ownerShellId) return shell(task.ownerShellId);
-    const link = store.linkByTask(task.id);
-    if (link) return shell(link.shellId);
-    const sid = task.sessionId || task.chatSessionId || task.refs?.find(r => getRecord(r.sessionId))?.sessionId;
-    const record = sid && getRecord(sid);
-    // Historical board tasks may reference reusable execution slots or legacy
-    // experiments. They have no ordinary chat shell; never call open() for them
-    // during a board read, where one unsupported source would abort every row.
-    if (!record || record.kind !== 'chat' || record.taskExecutionSlot || record.experimentalMode
-      || ['gateway', 'aux'].includes(record.type) || (record.type === 'commander' && !ports.taskFirst)) return null;
-    return open(sid);
+    const ids = new Set([task.sessionId, task.chatSessionId, ...(task.refs || []).map(ref => ref.sessionId)].filter(Boolean));
+    const records = Object.fromEntries([...ids].map(id => [id, getRecord(id)]));
+    const plan = store.rule({ action: 'ownerPlan', task, records, taskFirst: ports.taskFirst });
+    return plan?.shellId ? shell(plan.shellId) : plan?.sessionId ? open(plan.sessionId) : null;
   }
+
   function access(taskOrId) {
     // 缓存版按 id 取（见 store.cachedById）：任务板读投影逐卡调这里，一轮上千次。
     const stored = id => (store.cachedById ? store.cachedById('task').get(id) : null) || store.get('task', id);
@@ -39,11 +33,9 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     // A transcript can carry a task id whose record is gone (deleted task or a
     // pre-migration annotation). Nothing may be written to it, and a read
     // projection must not fail because one row lost its card.
-    if (!task) return { status: 'active', readOnly: true, ownerShellId: null, sourceSessionId: null, forkedFromTaskId: null };
-    const owner = ownerOf(task);
-    const lifecycle = getTask(task.id) || task;
-    return { status: lifecycle.status || 'active', readOnly: lifecycle.status === 'archived' || lifecycle.deleting === true || (owner ? !owner.standalone && !task.taskFirst : task.origin !== 'board'), ownerShellId: owner?.id || null,
-      sourceSessionId: owner?.sourceSessionId || null, forkedFromTaskId: task.forkedFromTaskId || null };
+    const owner = task ? ownerOf(task) : null;
+    return store.rule({ action: 'taskAccess', task: task || null, owner,
+      lifecycle: task ? getTask(task.id) || task : null });
   }
   async function taskEntry(id, { includeMessages = true } = {}) {
     const task = findTask(id), lifecycle = getTask(id) || task;

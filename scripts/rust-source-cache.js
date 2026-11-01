@@ -88,6 +88,14 @@ function probeAddon(file, node = process.execPath) {
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(a.taskStoreProtocolVersion?.()!==1 || a.taskDomainProtocolVersion?.()!==1
+      || ['RustTaskStore','RustAirCardCache','taskDomain','taskDomainAsync'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(typeof a.RustAirCardCache.prototype.prepareAsync!=='function') process.exit(1);
+    const store=new a.RustTaskStore(':memory:');
+    store.run(JSON.stringify({op:'set',kind:'task',id:'smoke',body:JSON.stringify({id:'smoke'})}));
+    if(JSON.parse(store.run('{"op":"get","kind":"task","id":"smoke"}')).id!=='smoke') process.exit(1);
+    store.run('{"op":"close"}');
+    if(JSON.parse(a.taskDomain('{"op":"normalize","action":"createEmptyBoard"}')).result.schemaVersion!==2) process.exit(1);
     const db=new a.RustDatabase(':memory:',false,false,5000);
     db.exec('CREATE TABLE smoke(x); CREATE VIRTUAL TABLE f USING fts5(x)');db.close();
     if(typeof a.validatePublicationText!=='function' || typeof a.quickCommitMessage!=='function'

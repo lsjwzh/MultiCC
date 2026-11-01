@@ -474,7 +474,9 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
   for (const file of ['src/task-shell/store.js',
     'src/orchestration/sqlite-store.js', 'src/quota/provider-limit-cache.js', 'src/sqlite-runtime.js']) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
-    assert.match(source, /sqlite\/driver|require\('\.\/sqlite\/driver'\)/, `${file} must use the shared driver`);
+    // task-shell 仓储迁移后不再经 JS 打开 SQLite：整个 store 由原生
+    // RustTaskStore 承载，同属“只用 Rust、绝不碰 npm addon”的边界。
+    assert.match(source, /sqlite\/driver|RustTaskStore/, `${file} must use the shared driver or the native Rust store`);
     assert.doesNotMatch(source, /require\('better-sqlite3'\)/, `${file} must not require the addon`);
   }
 

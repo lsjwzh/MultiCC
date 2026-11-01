@@ -10,11 +10,14 @@ pub mod subscription;
 pub mod subscription_cache;
 pub mod task_context;
 pub mod task_read_model;
+pub mod task_store;
+pub mod task_domain;
 pub mod usage;
 pub mod virtual_provider;
 
 pub mod claude_refresh;
 pub mod codex_models;
+pub mod json_lenient;
 
 pub mod provider_authorization;
 pub mod provider_credentials;

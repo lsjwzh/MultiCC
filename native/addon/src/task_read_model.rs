@@ -1,11 +1,24 @@
+use crate::guard::guard;
 use crate::NativeResult;
 use multicc_core::task_read_model::ReadModel;
 use napi::{bindgen_prelude::AsyncTask, Env, Result, Task};
 use napi_derive::napi;
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::Instant,
 };
+
+// 持锁区 panic 后取回状态继续；ReadModel 没有未提交事务需要回滚。
+fn lock_model(state: &Arc<Mutex<ReadModel>>) -> MutexGuard<'_, ReadModel> {
+    match state.lock() {
+        Ok(model) => model,
+        Err(poisoned) => {
+            let model = poisoned.into_inner();
+            state.clear_poison();
+            model
+        }
+    }
+}
 
 #[napi]
 pub struct RustTaskReadModel {
@@ -19,16 +32,15 @@ impl Task for ReadJob {
     type Output = NativeResult;
     type JsValue = NativeResult;
     fn compute(&mut self) -> Result<NativeResult> {
-        let start = Instant::now();
-        let result = self
-            .state
-            .lock()
-            .map_err(|_| napi::Error::from_reason("read_model_unavailable"))?
-            .run(&self.input)
-            .map_err(napi::Error::from_reason)?;
-        Ok(NativeResult {
-            result,
-            compute_ms: start.elapsed().as_secs_f64() * 1000.0,
+        guard("TASK_READ_MODEL_PANIC", || {
+            let start = Instant::now();
+            let result = lock_model(&self.state)
+                .run(&self.input)
+                .map_err(napi::Error::from_reason)?;
+            Ok(NativeResult {
+                result,
+                compute_ms: start.elapsed().as_secs_f64() * 1000.0,
+            })
         })
     }
     fn resolve(&mut self, _: Env, result: NativeResult) -> Result<NativeResult> {

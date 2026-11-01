@@ -3,6 +3,7 @@ use napi::{bindgen_prelude::AsyncTask, Env, Result, Task};
 use napi_derive::napi;
 use std::{sync::Arc, time::Instant};
 pub mod cpr;
+pub mod guard;
 pub mod machines;
 pub mod publication;
 pub mod quota_history;
@@ -10,8 +11,11 @@ pub mod remote_screen;
 pub mod secret_audit;
 pub mod sqlite;
 pub mod subagent_defaults;
+pub mod task_board;
 pub mod task_context;
 pub mod task_read_model;
+pub mod task_store;
+pub mod task_domain;
 pub mod virtual_provider;
 
 #[napi(object)]

@@ -1,304 +1,65 @@
 'use strict';
+const { getNative, nativeCode } = require('../native/runtime');
 
-const fs = require('node:fs');
-const path = require('node:path');
-const { databaseConstructor } = require('../sqlite/driver');
-
-// Durable task-shell routing state. Chat history and the task board
-// keep their existing ownership. Sync transactions cover decisions before any
-// asynchronous workspace creation or delivery can yield.
+// 迁移桥接：Rust 拥有连接、SQL、索引、JSON 缓存及其版本。这里仅维持同步调用
+// 契约和原有只读 JS 对象的身份；镜像的更换完全由原生返回的 token 决定。
 function createTaskShellStore(file) {
-  if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  const Database = databaseConstructor();
-  const db = new Database(file, { timeout: 5000 });
-  try {
-    const version = db.pragma('user_version', { simple: true });
-    if (version > 1) throw new Error('unsupported task-shell schema');
-    db.pragma('journal_mode = WAL');
-    // WAL 配套 synchronous=NORMAL：提交不再逐条 fsync（只在 checkpoint 落盘）。
-    // FULL 是 SQLite 文档里 WAL 的非推荐档，每条收据/投递写都同步刷盘，
-    // 流式轮次一密集就把事件循环卡出几百毫秒。NORMAL 下掉电最多丢最后几笔
-    // 路由记录（重投/确认幂等），不会损坏库 —— search/index-store 同款配置。
-    db.pragma('synchronous = NORMAL');
-    db.exec('CREATE TABLE IF NOT EXISTS shell_records (kind TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(kind, id)); PRAGMA user_version = 1;');
-    if (file !== ':memory:') for (const suffix of ['', '-wal', '-shm']) {
-      try { fs.chmodSync(file + suffix, 0o600); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const addon = getNative('task_store', 'rust');
+  if (addon.taskStoreProtocolVersion?.() !== 1 || typeof addon.RustTaskStore !== 'function') {
+    throw new Error('任务仓储 Rust 接口不可用，请构建当前原生模块后手动重启');
+  }
+  const native = new addon.RustTaskStore(file);
+  const run = command => {
+    try { return JSON.parse(native.run(JSON.stringify(command))); }
+    catch (error) { throw nativeCode(error); }
+  };
+  function rule(command) {
+    try { return run({ ...command, op: 'rule' }); }
+    catch (error) {
+      if (!error.message.startsWith('TASK_RULE:')) throw error;
+      const { code, message, status } = JSON.parse(error.message.slice(10));
+      throw Object.assign(new Error(message), { code, status });
     }
-  } catch (error) { db.close(); throw error; }
-  const select = db.prepare('SELECT body FROM shell_records WHERE kind = ? AND id = ?');
-  const all = db.prepare('SELECT body FROM shell_records WHERE kind = ? ORDER BY rowid');
-  const allWithIds = db.prepare('SELECT id, body FROM shell_records WHERE kind = ? ORDER BY rowid');
-  const allWithRowids = db.prepare('SELECT rowid AS rid, id, body FROM shell_records WHERE kind = ? ORDER BY rowid');
-  // 删除只需要关联字段。让 SQLite 投影，避免把整批收据里的上下文和消息正文
-  // 搬到 JS 再解析；多路径 json_extract 同时保留字符串、布尔值等原始类型。
-  const deletionEntriesStmt = db.prepare(`SELECT id,
-    json_extract(body, '$.id', '$.taskId', '$.receiptId') AS refs,
-    json_type(body, '$.id') IS NOT NULL AS hasId,
-    json_type(body, '$.taskId') IS NOT NULL AS hasTaskId,
-    json_type(body, '$.receiptId') IS NOT NULL AS hasReceiptId
-    FROM shell_records WHERE kind = ? ORDER BY rowid`);
-  const receiptShellStmt = db.prepare("SELECT json_extract(body, '$.shellId') AS shellId FROM shell_records WHERE kind = 'receipt' AND id = ?");
-  const rowidOf = db.prepare('SELECT rowid AS rid FROM shell_records WHERE kind = ? AND id = ?');
-  const receiptWatermarkStmt = db.prepare("SELECT max(rowid) AS mx FROM shell_records WHERE kind = 'receipt'");
-  // 写入口只有这两个语句：set/remove、派生索引维护、收据桶重建用的都是它们，
-  // 所以这组自增计数覆盖本连接的全部写路径 —— 见下面行缓存的失效信号。
-  // 按 kind 分开记：收据、投递记录每轮都在写，只有一个总计数时，任何一笔收据都会
-  // 让 10MB 的 task 表缓存作废，下一次 /api/air 又得整表重新 JSON.parse。
-  const writesByKind = new Map();
-  const noteWrite = kind => writesByKind.set(kind, (writesByKind.get(kind) || 0) + 1);
-  const putStmt = db.prepare('INSERT INTO shell_records(kind, id, body) VALUES (?, ?, ?) ON CONFLICT(kind, id) DO UPDATE SET body = excluded.body');
-  const removeStmt = db.prepare('DELETE FROM shell_records WHERE kind = ? AND id = ?');
-  const put = { run: (...args) => { const out = putStmt.run(...args); noteWrite(args[0]); return out; } };
-  const remove = { run: (...args) => { const out = removeStmt.run(...args); noteWrite(args[0]); return out; } };
-  const get = (kind, id) => { const row = select.get(kind, id); return row ? JSON.parse(row.body) : null; };
-  const scan = kind => allWithIds.all(kind).map(row => ({ id: row.id, value: JSON.parse(row.body) }));
-
-  // ── 派生索引 ────────────────────────────────────────────────────────────
-  // 「按 sessionId 找 task」「按 taskId 找 link」是任务壳每次读投影都要问的
-  // 单点查询，但 shell_records 只有 PRIMARY KEY(kind, id)：task 行的 id 是
-  // tsk_…，sessionId 没有二级索引。这两次查询因此被写成了 list(kind).find()，
-  // 即每次全表读 + 逐行 JSON.parse。任务板读投影是按卡片逐个解析权属的，
-  // 实测 1069 张卡片会触发 511 次 task 全表读（约 490MB JSON 重新解析），
-  // 单次 /api/air 约 3.1s CPU —— 全部花在同一个 O(1) 查询上。
-  // 索引行是派生状态：与源行同事务写入，读不到时回退一次全表扫描并回填
-  // 标记（含"确实没有"的负标记），永远不是权威数据。
-  // 一个 sessionId 只应有一个 task（identity 由 adopt 保证）；真出现重复行时
-  // 索引取最后写入的那一行，而不是旧的 list().find 会取到的最早一行。
-  const TASK_BY_SESSION = 'task-session';
-  const LINK_BY_TASK = 'link-task';
-  const indexRow = (kind, id) => get(kind, id);
-  // 会话壳的收据（receipt）是任务壳里最大的一张表：线上 1294 行、约 31MB，
-  // 单行最大 200KB（快照/上下文计划都挂在上面）。view() 起初只想要「这个壳
-  // 最后 100 条收据」，却因此把整张表 list() 出来逐行 JSON.parse —— 每次
-  // /api/task-shells/:id 约 0.35s，全部花在过滤别的壳的行上。
-  // 索引先按壳分桶保存收据 id（插入序，与 rowid 一致，也就是旧的 list() 顺序）。
-  // 老库第一次读时用一次全表扫描把桶建全，之后只增量维护；meta 行记录
-  // 「已经建过」，这样「这个壳没有收据」和「桶还没建」不会再被混为一谈。
-  const RECEIPTS_BY_SHELL = 'receipt-shell';
-  const RECEIPT_INDEX_META = 'receipt-index-meta';
-  function dropTaskIndex(taskId, sessionId) {
-    if (!sessionId) return;
-    const current = indexRow(TASK_BY_SESSION, sessionId);
-    if (current && current.taskId === taskId) remove.run(TASK_BY_SESSION, sessionId);
   }
-  function dropLinkIndex(linkId) {
-    const row = select.get('link', linkId);
-    if (!row) return;
-    const link = JSON.parse(row.body);
-    if (!link?.taskId) return;
-    const current = indexRow(LINK_BY_TASK, link.taskId);
-    if (current && current.linkId === linkId) remove.run(LINK_BY_TASK, link.taskId);
+  const mirrors = new Map();
+  function cached(shape, kind) {
+    const key = `${shape}:${kind}`, held = mirrors.get(key);
+    const reply = run({ op: 'cached', shape, kind, token: held?.token });
+    if (reply.rows) mirrors.set(key, { token: reply.token, rows: reply.rows });
+    return mirrors.get(key);
   }
-  // 桶里存 { id, rowid } 而不是纯 id：旧实现按 list() 的 rowid 顺序取最后 N 条，
-  // 收据被改写（UPSERT）时 rowid 不变。只存 id 的话，「换了壳的收据」或任何
-  // 改写都会掉到桶尾，读出来的顺序就与旧行为不一致。
-  function receiptItemsFor(shellId) {
-    return indexRow(RECEIPTS_BY_SHELL, shellId)?.items || [];
-  }
-  function writeReceiptItems(shellId, items) {
-    put.run(RECEIPTS_BY_SHELL, shellId, JSON.stringify({ shellId, items }));
-  }
-  function addReceiptIndex(shellId, receiptId) {
-    const items = receiptItemsFor(shellId);
-    const rowid = rowidOf.get('receipt', receiptId)?.rid ?? null;
-    const existing = items.find(item => item.id === receiptId);
-    if (existing) {
-      if (existing.rowid !== rowid) writeReceiptItems(shellId, items.map(item => item.id === receiptId ? { id: receiptId, rowid } : item));
-      return;
-    }
-    writeReceiptItems(shellId, [...items, { id: receiptId, rowid }]);
-    bumpReceiptWatermark(rowid);
-  }
-  // meta 里的 watermark 是本进程已经记进桶的最大收据 rowid。库里出现了比它更大的
-  // 行，就说明有人绕过本进程写过收据（老代码进程在重启交接窗口里补写），这时桶不再
-  // 可信，必须重建一次 —— 否则那几条收据会永久不出现在 view() 里。
-  function receiptWatermark() {
-    return receiptWatermarkStmt.get().mx ?? 0;
-  }
-  function bumpReceiptWatermark(rowid) {
-    const meta = indexRow(RECEIPT_INDEX_META, 'v1');
-    if (!meta || !rowid || rowid <= (meta.watermark || 0)) return;
-    put.run(RECEIPT_INDEX_META, 'v1', JSON.stringify({ ...meta, watermark: rowid }));
-  }
-  function dropReceiptIndex(shellId, receiptId) {
-    if (!shellId) return;
-    const items = receiptItemsFor(shellId);
-    const next = items.filter(item => item.id !== receiptId);
-    if (next.length !== items.length) writeReceiptItems(shellId, next);
-  }
-  // 一次全表扫描把所有壳的桶补齐（老库首次读取时走一次），并落 meta 标记。
-  const buildReceiptIndex = db.transaction(force => {
-    if (!force && indexRow(RECEIPT_INDEX_META, 'v1')) return;
-    const grouped = new Map();
-    for (const row of allWithRowids.all('receipt')) {
-      const shellId = JSON.parse(row.body)?.shellId;
-      if (!shellId) continue;
-      if (!grouped.has(shellId)) grouped.set(shellId, []);
-      grouped.get(shellId).push({ id: row.id, rowid: row.rid });
-    }
-    for (const [shellId, items] of grouped) writeReceiptItems(shellId, items);
-    put.run(RECEIPT_INDEX_META, 'v1', JSON.stringify({ builtAt: Date.now(), watermark: receiptWatermark(), shells: grouped.size }));
-  });
-  const putIndexed = db.transaction((kind, id, body, previous) => {
-    // 先写源行、再维护派生索引：收据桶要记录源行的 rowid（顺序就是它），
-    // 而 rowid 只有行写下去之后才存在。
-    put.run(kind, id, body);
-    if (kind === 'task') {
-      const before = previous ? JSON.parse(previous.body) : null;
-      const after = JSON.parse(body);
-      if (before?.sessionId && before.sessionId !== after?.sessionId) dropTaskIndex(id, before.sessionId);
-      if (after?.sessionId) put.run(TASK_BY_SESSION, after.sessionId, JSON.stringify({ taskId: after.id || id, sessionId: after.sessionId }));
-    } else if (kind === 'link') {
-      const link = JSON.parse(body);
-      // list('link').find 一直解析到「这个 task 的最早一条 link」；保持这个语义，
-      // 否则同一个 task 被再次 link 时会静默把卡片换到另一个 shell 名下。
-      const current = link?.taskId && indexRow(LINK_BY_TASK, link.taskId);
-      if (link?.taskId && !current?.linkId) {
-        put.run(LINK_BY_TASK, link.taskId, JSON.stringify({ taskId: link.taskId, shellId: link.shellId, linkId: id }));
-      }
-    } else if (kind === 'receipt') {
-      const before = previous ? JSON.parse(previous.body) : null;
-      const after = JSON.parse(body);
-      if (before?.shellId && before.shellId !== after?.shellId) dropReceiptIndex(before.shellId, id);
-      if (after?.shellId) addReceiptIndex(after.shellId, id);
-    }
-  });
-  const removeIndexed = db.transaction((kind, id) => {
-    if (kind === 'task') {
-      const row = select.get('task', id);
-      dropTaskIndex(id, row ? JSON.parse(row.body)?.sessionId : null);
-    } else if (kind === 'link') dropLinkIndex(id);
-    else if (kind === 'receipt') dropReceiptIndex(receiptShellStmt.get(id)?.shellId, id);
-    return remove.run(kind, id);
-  });
-  const list = kind => all.all(kind).map(row => JSON.parse(row.body));
-  const entriesStmt = db.prepare('SELECT id, body FROM shell_records WHERE kind = ?');
-  const entries = kind => entriesStmt.all(kind).map(row => [row.id, JSON.parse(row.body)]);
-
-  // ── 行缓存 ──────────────────────────────────────────────────────────────
-  // list(kind) 是「整表读 + 逐行 JSON.parse + 重新分配」。同一份内容反复重建没有
-  // 意义：线上 task 表 514 行 / 4.5MB，一次 /api/air 要读两遍（migrate 一次、
-  // listTasks 一次），每遍 12-20ms，还要把这 4.5MB 重新分配一遍（服务进程 RSS 已
-  // 到 1GB）。这里记住上一次解析出来的行，内容没变就直接复用。
-  //
-  // 失效信号必须同时看两路：
-  //   · data_version：SQLite 在「别的连接提交」时自增，自己的写不动它（实测同连接
-  //     连写两次值不变，另一连接写一次才 +1）。同一个库文件上还有第二个连接 ——
-  //     admission 的 store（见 workspace/admission.js），只看自己的写会漏掉它。
-  //   · writesByKind：本连接对这个 kind 的写计数（上面两个写入口自增），补上
-  //     data_version 看不见的自写。别的 kind 的自写不影响它；别的连接的任何写仍会
-  //     推动 data_version（SQLite 不按表区分），那一路宁可多失效也不漏。
-  // 只对「小表」开放：receipt 一个 kind 就 201MB，缓存它等于把线上库常驻内存。
-  // 白名单外的 kind 直接报错，而不是悄悄退化成不缓存 —— 那会变成沉默的性能 bug。
-  //
-  // workspace:record / workspace:lease 同样是「小表 + 被逐条问到」：容量判定
-  // （registry.available）每张卡片问一次，每次都要两遍整表读 + 逐行 JSON.parse
-  // （线上 445 + 187 行）。实测一轮 Air 快照问 251 次 = 176ms，占整轮的 96%；
-  // 接上缓存后降到 5ms。行数会随 worktree 数增长，但始终是「本地 worktree 的
-  // 数量级」，不是 receipt 那种按轮次累积的量级。
-  // link / shell 与 task 同一量级（线上 1k 行 / 0.1-0.3MB），却被 chatScope /
-  // view() 的每个 HTTP 请求整表解析 —— 2026-10-21 CPU profile：linkedTasks 的
-  // 两次全表 JSON.parse 占进程 CPU 的 ~60%（App 每次打开会话都走一遍）。
-  const CACHEABLE = new Set(['task', 'link', 'shell', 'task-first:indexed', 'workspace:record', 'workspace:lease']);
-  const rowCache = new Map();
-  function cached(shape, kind, build) {
-    if (!CACHEABLE.has(kind)) throw new Error(`row cache not allowed for kind ${kind}`);
-    const epoch = `${db.pragma('data_version', { simple: true })}:${writesByKind.get(kind) || 0}`;
-    const key = `${shape}:${kind}`;
-    const hit = rowCache.get(key);
-    if (hit && hit.epoch === epoch) return hit.rows;
-    const built = build();
-    rowCache.set(key, { epoch, rows: built });
-    return built;
-  }
-
   return {
-    get,
-    list,
-    entries,
-    deletionEntries: kind => deletionEntriesStmt.all(kind).map(row => {
-      const [id, taskId, receiptId] = JSON.parse(row.refs);
-      return [row.id, {
-        ...(row.hasId ? { id } : {}),
-        ...(row.hasTaskId ? { taskId } : {}),
-        ...(row.hasReceiptId ? { receiptId } : {}),
-      }];
-    }),
-    // 缓存版 list/entries：内容没变时复用上次解析的行，省掉整表读与几 MB 的
-    // JSON.parse。返回的**数组是副本**（调用方 sort/push 不会污染缓存），但**行
-    // 对象是共享的、只读的** —— 调用方不得就地改写（今天这些调用点都只读：
-    // find/filter/map）。set/remove 与别的连接提交都会让它失效。
-    cachedList: kind => cached('rows', kind, () => list(kind)).slice(),
-    // 按 value.id 取行（与 task-first 里 `new Map(cachedList('task').map(…))` 同一口径），
-    // 和 cachedList 共用同一份解析结果，不再多 parse 一遍。逐卡问权属的 taskAccess
-    // 用它代替 get('task', id)：一张 task 行平均 10KB（九成是 contextLedger），逐卡
-    // 单行读 + JSON.parse 一轮 Air 快照就是 50~180ms。行对象同样共享、只读。
-    cachedById: kind => cached('byId', kind, () => new Map(cached('rows', kind, () => list(kind))
-      .filter(value => value && typeof value.id === 'string').map(value => [value.id, value]))),
-    cachedEntries: kind => cached('entries', kind, () => entries(kind)).slice(),
-    // 「这几个 kind 自上次以来有没有可能变过」的廉价读数，口径与行缓存的失效信号
-    // 相同（外部连接的任何提交 + 本连接对这几个 kind 的写）。读数相同 ⇒ 内容没变；
-    // 读数不同只说明「可能变了」。Air 的卡片缓存拿它当签名的一部分。
-    epoch: kinds => `${db.pragma('data_version', { simple: true })}:${kinds.map(kind => writesByKind.get(kind) || 0).join(',')}`,
-    // 单点查询（索引命中即一次单行读；未命中回退扫描并回填标记）。
-    taskBySession(sessionId) {
-      if (!sessionId) return null;
-      const indexed = indexRow(TASK_BY_SESSION, sessionId);
-      if (indexed) {
-        const found = indexed.taskId ? get('task', indexed.taskId) : null;
-        if (indexed.taskId && !found) remove.run(TASK_BY_SESSION, sessionId);
-        return found;
-      }
-      const found = scan('task').find(entry => entry.value?.sessionId === sessionId) || null;
-      put.run(TASK_BY_SESSION, sessionId, JSON.stringify({ taskId: found ? found.value?.id || found.id : null, sessionId }));
-      return found ? found.value : null;
+    backend: 'rust',
+    rule,
+    get: (kind, id) => run({ op: 'get', kind, id }),
+    list: kind => run({ op: 'list', kind }),
+    entries: kind => run({ op: 'entries', kind }),
+    deletionEntries: kind => run({ op: 'deletionEntries', kind }),
+    cachedList: kind => cached('rows', kind).rows.slice(),
+    cachedEntries: kind => cached('entries', kind).rows.slice(),
+    cachedById(kind) {
+      const mirror = cached('rows', kind);
+      mirror.byId ||= new Map(mirror.rows.filter(value => value && typeof value.id === 'string').map(value => [value.id, value]));
+      return mirror.byId;
     },
-    linkByTask(taskId) {
-      if (!taskId) return null;
-      const indexed = indexRow(LINK_BY_TASK, taskId);
-      if (indexed) {
-        const found = indexed.linkId ? get('link', indexed.linkId) : null;
-        if (indexed.linkId && !found) remove.run(LINK_BY_TASK, taskId);
-        return found;
+    epoch: kinds => run({ op: 'epoch', kinds }),
+    taskBySession: id => run({ op: 'taskBySession', id }),
+    linkByTask: id => run({ op: 'linkByTask', id }),
+    receiptsForShell: (id, limit = 100) => run({ op: 'receiptsForShell', id, limit }),
+    set(kind, id, value) { run({ op: 'set', kind, id, body: JSON.stringify(value) }); return value; },
+    remove: (kind, id) => run({ op: 'remove', kind, id }),
+    transaction(callback) {
+      const frame = run({ op: 'begin' });
+      try {
+        const result = callback();
+        if (result && typeof result.then === 'function') throw new TypeError('任务仓储事务回调必须同步');
+        run({ op: 'commit', frame }); return result;
+      } catch (error) {
+        try { run({ op: 'rollback', frame }); } catch (rollbackError) { error.rollbackError = rollbackError; }
+        mirrors.clear(); throw error;
       }
-      const found = scan('link').find(entry => entry.value?.taskId === taskId) || null;
-      put.run(LINK_BY_TASK, taskId, JSON.stringify({ taskId,
-        shellId: found?.value?.shellId || null, linkId: found ? found.id : null }));
-      return found ? found.value : null;
     },
-    // 一个壳最后 limit 条收据，顺序与 list('receipt').filter(…).slice(-limit) 完全一致。
-    receiptsForShell(shellId, limit = 100) {
-      if (!shellId) return [];
-      const meta = indexRow(RECEIPT_INDEX_META, 'v1');
-      if (!meta) buildReceiptIndex(false);
-      else if (receiptWatermark() > (meta.watermark || 0)) buildReceiptIndex(true);
-      const items = [...receiptItemsFor(shellId)].sort((a, b) => (a.rowid ?? 0) - (b.rowid ?? 0));
-      const slice = limit > 0 ? items.slice(-limit) : items;
-      const out = [];
-      let stale = false;
-      for (const item of slice) {
-        const row = select.get('receipt', item.id);
-        if (!row) { stale = true; continue; }
-        out.push(JSON.parse(row.body));
-      }
-      // 索引行不是权威数据：真有对不上的行，就地按现存行收敛一次。
-      if (stale) writeReceiptItems(shellId, items.filter(item => select.get('receipt', item.id)));
-      return out;
-    },
-    set(kind, id, value) {
-      const body = JSON.stringify(value);
-      if (kind === 'snapshot') {
-        const previous = select.get(kind, id);
-        if (previous && previous.body !== body) throw new Error('immutable snapshot conflict');
-      }
-      if (kind === 'task' || kind === 'link' || kind === 'receipt') putIndexed(kind, id, body, select.get(kind, id));
-      else put.run(kind, id, body);
-      return value;
-    },
-    remove: (kind, id) => (kind === 'task' || kind === 'link' || kind === 'receipt' ? removeIndexed(kind, id) : remove.run(kind, id)),
-    transaction: callback => db.transaction(callback).immediate(),
-    close: () => { if (db.open) db.close(); },
+    close() { run({ op: 'close' }); mirrors.clear(); },
   };
 }
-
 module.exports = { createTaskShellStore };

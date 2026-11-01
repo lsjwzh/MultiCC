@@ -74,7 +74,7 @@ pub fn truthy(v: &Value) -> bool {
 }
 
 pub fn project(id: &str, body: &str) -> Result<Value, String> {
-    let source: Source = serde_json::from_str(body).map_err(|_| "read_model_invalid_record")?;
+    let source: Source = crate::json_lenient::from_str(body).map_err(|_| "read_model_invalid_record")?;
     if id != source.id || id.is_empty() {
         return Err("read_model_unsupported_identity".into());
     }

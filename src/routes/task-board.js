@@ -17,6 +17,7 @@ const { assertTaskBoardDeps, createRelatedTaskLinker } = require('../task-board/
 const { createColdStartSeed } = require('../task-board/cold-start-seed');
 const { createTaskRetention } = require('../task-board/retention');
 const { createTaskPlanningRuntime } = require('./task-planning');
+const { openBoardStore } = require('../task-board/board-store');
 
 function createTaskBoardRuntime(deps) {
   assertTaskBoardDeps(deps);
@@ -37,54 +38,33 @@ function createTaskBoardRuntime(deps) {
     ? deps.createSessionRecord : null;
   const logger = deps.logger || console;
 
-  const recoveryFile = file.replace(/\.json$/i, '') + '.planning-v2.json';
-  let rawBoard = null;
-  try { rawBoard = JSON.parse(fs.readFileSync(file, 'utf8')); }
-  catch (_) { /* absent/corrupt legacy file starts empty, as before */ }
-  let recoveryBoard = null;
-  try { recoveryBoard = JSON.parse(fs.readFileSync(recoveryFile, 'utf8')); }
-  catch (_) { /* recovery sidecar is additive */ }
-  const rawSchemaValue = Math.max(0, Math.floor(Number(rawBoard?.schemaVersion) || 0));
-  const recoverySchema = Math.max(0, Math.floor(Number(recoveryBoard?.schemaVersion) || 0));
-  if (recoverySchema === planning.TASK_BOARD_SCHEMA_VERSION
-      && (!rawBoard || rawSchemaValue < planning.TASK_BOARD_SCHEMA_VERSION)) {
-    logger.log('[multicc/taskboard] restored planning board from v2 recovery sidecar');
-    rawBoard = recoveryBoard;
+  const repository = deps.taskBoardRepository || require('../task-board/repository').createTaskBoardRepository(file);
+  const loaded = repository.load();
+  if (loaded.restored) logger.log('[multicc/taskboard] restored planning board from v2 recovery sidecar');
+  if (loaded.quarantined?.length) {
+    (logger.warn || logger.log).call(logger,
+      `[multicc/taskboard] quarantined ${loaded.quarantined.length} unreadable board file(s): ${loaded.quarantined.join(', ')}`);
   }
-  let board;
-  if (rawBoard && typeof rawBoard === 'object') {
-    const rawSchema = Math.max(0, Math.floor(Number(rawBoard?.schemaVersion) || 0));
-    if (rawSchema > planning.TASK_BOARD_SCHEMA_VERSION) {
-      throw Object.assign(new Error(`[taskboard] unsupported schemaVersion ${rawSchema}`), {
-        code: 'TASK_BOARD_SCHEMA_UNSUPPORTED',
-      });
+  // 任务板常驻 Rust：规则调用只上送变更，落盘直接写常驻副本（见 board-store.js）。
+  const boardStore = openBoardStore({ raw: loaded.raw, repository, logger });
+  const board = boardStore.board;
+  const persistWithRecovery = expectedRevision => {
+    // preserve：磁盘 revision 被外部写者推高时不丢改动，先备份磁盘主档再改写 revision。
+    const persisted = boardStore.persist(expectedRevision);
+    if (persisted?.conflict) {
+      (logger.warn || logger.log).call(logger,
+        `[multicc/taskboard] revision conflict: disk=${persisted.conflict.diskRevision}, backup=${persisted.conflict.backup}`);
     }
-    if (rawSchema < planning.TASK_BOARD_SCHEMA_VERSION
-        && (Object.keys(rawBoard?.tasks || {}).length || Object.keys(rawBoard?.modules || {}).length)) {
-      const backup = file.replace(/\.json$/i, '') + '.pre-planning-v1.json';
-      if (!fs.existsSync(backup)) atomicWriteJson(backup, rawBoard);
-    }
-    board = core.normalizeBoard(rawBoard);
-  } else board = core.createEmptyBoard();
-
-  function persistWithRecovery(value) {
-    let previous = null;
-    try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) {}
-    atomicWriteJson(file, value);
-    try { atomicWriteJson(recoveryFile, value); }
-    catch (error) {
-      try { previous ? atomicWriteJson(file, previous) : fs.unlinkSync(file); }
-      catch (_) {}
-      throw error;
-    }
-  }
+    return persisted;
+  };
 
   function save() {
     const previousRevision = Number(board.revision) || 0;
     board.schemaVersion = planning.TASK_BOARD_SCHEMA_VERSION;
     board.revision = previousRevision + 1;
     try {
-      persistWithRecovery(board);
+      const persisted = persistWithRecovery(previousRevision);
+      if (Number.isFinite(Number(persisted?.revision))) board.revision = Number(persisted.revision);
       return true;
     } catch (e) {
       board.revision = previousRevision;
@@ -93,35 +73,27 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
-  // Persist planning candidates before reconciling them into the live board.
+  // 规划类变更在活板上就地执行、落盘成功才算数；任何失败按前像回滚（含 revision），
+  // 与旧的"整板深拷贝候选 → 落盘 → 回填"对外语义一致。
   function commitPlanningMutation(mutate) {
-    const candidate = JSON.parse(JSON.stringify(board));
-    let result;
-    try { result = mutate(candidate); }
-    catch (error) { return { ok: false, error: error?.code || 'invalid_request' }; }
-    if (!result?.ok) return result || { ok: false, error: 'invalid_request' };
-    candidate.schemaVersion = planning.TASK_BOARD_SCHEMA_VERSION;
-    candidate.revision = (Number(board.revision) || 0) + 1;
-    try { persistWithRecovery(candidate); }
-    catch (error) {
-      logger.log(`[multicc/taskboard] planning save failed: ${error?.message || error}`);
-      return { ok: false, error: 'persistence_failed' };
-    }
-    const reconcileMap = (target, source) => {
-      for (const id of Object.keys(target)) if (!source[id]) delete target[id];
-      for (const [id, value] of Object.entries(source)) {
-        if (!target[id]) { target[id] = value; continue; }
-        for (const key of Object.keys(target[id])) delete target[id][key];
-        Object.assign(target[id], value);
+    return boardStore.transaction(rollback => {
+      let result;
+      try { result = mutate(board); }
+      catch (error) { rollback(); return { ok: false, error: error?.code || 'invalid_request' }; }
+      if (!result?.ok) { rollback(); return result || { ok: false, error: 'invalid_request' }; }
+      const previousRevision = Number(board.revision) || 0;
+      board.schemaVersion = planning.TASK_BOARD_SCHEMA_VERSION;
+      board.revision = previousRevision + 1;
+      try {
+        const persisted = persistWithRecovery(previousRevision);
+        if (Number.isFinite(Number(persisted?.revision))) board.revision = Number(persisted.revision);
+      } catch (error) {
+        logger.log(`[multicc/taskboard] planning save failed: ${error?.message || error}`);
+        rollback();
+        return { ok: false, error: 'persistence_failed' };
       }
-    };
-    reconcileMap(board.modules, candidate.modules);
-    reconcileMap(board.tasks, candidate.tasks);
-    reconcileMap(board.taskGroups, candidate.taskGroups || {});
-    board.schemaVersion = candidate.schemaVersion;
-    board.revision = candidate.revision;
-    board.deletedTaskIds = candidate.deletedTaskIds || [];
-    return { ...result, taskId: result.task?.id || null };
+      return { ...result, taskId: result.task?.id || null };
+    });
   }
 
   function resolvedTask(taskId) {

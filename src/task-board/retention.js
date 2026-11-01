@@ -1,5 +1,6 @@
 'use strict';
 
+const { taskDomain } = require('../native/task-domain');
 const { isOpenRunState } = require('../classify/vocab');
 const { MAX_TASKS_PER_DIRECTORY } = require('../task-shell/capacity');
 const MAX_BATCH_DELETE = 100;
@@ -12,37 +13,34 @@ function timestamp(value) {
 }
 
 function lastInteraction(task, record) {
-  const messageRefs = (Array.isArray(task.refs) ? task.refs : [])
-    .filter(ref => ref.sessionId === record.id && (ref.userMsgId || ref.assistantMsgId));
-  if (!messageRefs.length) return 0;
-  const latest = Math.max(...messageRefs.map(ref => timestamp(ref.ts)));
-  return latest || timestamp(record.lastWorkAt);
+  return taskDomain({ op: 'lastInteraction', task: { ...task,
+    refs: (Array.isArray(task.refs) ? task.refs : []).map(ref => ({ ...ref, timestamp: timestamp(ref.ts) })) },
+    record: { ...record, lastWorkTimestamp: timestamp(record.lastWorkAt) } });
 }
-
 function retentionCandidates({ board, shellTasks, dirId, records, pinnedIds, excludedIds = [],
   getRunState, isSessionBusy = () => false, taskDirId, taskLineageIds }) {
   if (!Array.isArray(pinnedIds)) throw new Error('air pins unavailable');
   const pinned = new Set(pinnedIds);
   const excluded = new Set(excludedIds.filter(Boolean));
-  const candidates = [];
-  for (const shellTask of shellTasks) {
-    if (shellTask.dirId !== dirId || !shellTask.ready || excluded.has(shellTask.id)) continue;
-    const task = board.tasks?.[shellTask.id];
+  const facts = {};
+  for (const shell of shellTasks) {
+    // Rust 谓词的结构性条件在 JS 先行（与旧实现同序）：getRunState /
+    // isSessionBusy / lastInteraction 都不便宜，只给幸存候选付这笔钱。
+    // facts 缺键的 shell 在 Rust 侧同一结构段被跳过，结果不变。
+    if (shell.dirId !== dirId || !shell.ready || excluded.has(shell.id)) continue;
+    const task = board.tasks?.[shell.id], record = records.get(shell.sessionId);
     if (!task || taskDirId(task) !== dirId || task.deleting || task.mergedIntoTaskId
         || !(task.status === 'done' || (task.status === 'archived' && task.archivedFromStatus === 'done'))) continue;
     const lineage = taskLineageIds(task);
     if (lineage.length !== 1 || lineage.some(id => pinned.has(id))) continue;
-    const record = records.get(shellTask.sessionId);
-    // Only a dedicated execution can be removed without affecting another
-    // task's conversation. Legacy shared shells are never automatic victims.
     if (!record || record.taskBoundTaskId !== task.id || record.dirId !== dirId
         || record.workspaceOwnerSessionId) continue;
-    const runState = getRunState(record.id);
-    if (!runState || isOpenRunState(runState) || isSessionBusy(record.id)) continue;
-    const at = lastInteraction(task, record);
-    if (at > 0) candidates.push({ id: task.id, sessionId: record.id, at });
+    facts[shell.id] = { dirId: taskDirId(task), lineage, record,
+      runState: getRunState(record.id), busy: isSessionBusy(record.id),
+      lastInteraction: lastInteraction(task, record) };
   }
-  return candidates.sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  const idOrder = Object.keys(facts).sort((a, b) => a.localeCompare(b));
+  return taskDomain({ op: 'retention', board, shellTasks, dirId, facts, pinnedIds, excludedIds, idOrder });
 }
 
 function createTaskRetention(deps) {

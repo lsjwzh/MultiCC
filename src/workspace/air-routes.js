@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const core = require('../task-board/core');
+const { taskDomain, taskDomainAsync } = require('../native/task-domain');
 const { isAbnormalLetter, isGoalState } = require('../classify/vocab');
 const { createAirPinRuntime } = require('./pins');
 const { createAirTodoRuntime } = require('./todos');
@@ -117,6 +118,14 @@ function publicMigration(migration) {
 // Air reads canonical task records through the task-shell/board authority.
 // The client cannot mint a workspace permit, writer proof or attribution fact.
 function mountAirRoutes(app, deps) {
+  // 三份清单在同一个同步段复用 Rust 已判定的可见集合，不重复序列化任务板。
+  let taskSnapshot = null;
+  function snapshotLists(tasks) {
+    const previous = taskSnapshot;
+    taskSnapshot = tasks;
+    try { return { taskPins: pins().read(), taskTodos: todos().read(), taskTodoIgnored: todoIgnores().read() }; }
+    finally { taskSnapshot = previous; }
+  }
   // 处理器可以直接写完响应（条件请求就是如此），也可以照旧返回一个对象。
   const route = fn => async (req, res) => {
     try {
@@ -180,10 +189,7 @@ function mountAirRoutes(app, deps) {
   // 会话受理物证自愈，再把陈旧的 worker 声明投影回会话真实状态。这一份口径同时
   // 给快照和「手动忽略」用，杜绝两处各自猜一个状态。
   function projectRunStateOf(task, now) {
-    const hasTurnState = sessionId => core.sessionHasTurn(deps.records.get(sessionId));
-    return core.deadDispatchClaim(task, core.taskRunSessionIds(task).some(hasTurnState), now)
-      ? 'idle'
-      : (core.staleWorkerClaim(task, deps.getSessionRunState, now) || task.runState || null);
+    return taskDomain({ op: 'runState', task, facts: runFacts(task), now });
   }
 
   // 待办来源类别 + 「这一次问题什么时候开始」。出错/等待的落判都会写
@@ -206,16 +212,13 @@ function mountAirRoutes(app, deps) {
 
   /** 独立任务列表与 pin 共用同一可见集合；会话内尚未隔离的任务只保留消息归属。 */
   function boardTasks() {
+    if (taskSnapshot) return taskSnapshot;
     const board = deps.getBoard?.() || {};
     // The board index predates separation metadata. Read the canonical shell
     // records so existing cards are hidden too, including after migration.
     // A confirmed split can still be waiting for execution creation: it is not
     // independent until ready. Ordinary planned tasks need no such check.
-    const unseparated = new Set((deps.shell.listTasks?.() || [])
-      .filter(task => task.embedded === true || (task.separatedFromTaskId && !task.ready))
-      .map(task => task.id));
-    return Object.values(board.tasks || {}).filter(t => !t.mergedIntoTaskId
-      && !board.deletedTaskIds?.includes(t.id) && !unseparated.has(t.id));
+    return taskDomain({ op: 'airVisible', board, shellTasks: deps.shell.listTasks?.() || [] }).map(id => board.tasks[id]);
   }
   // 一次请求只读一次 admission 快照：这是整表读（workspace:record + lease），
   // 按卡片各读一次时 1069 张卡片要多花约 0.4s 的 CPU 与等量 JSON 解析。
@@ -223,30 +226,6 @@ function mountAirRoutes(app, deps) {
   // 而用户要判断的正是「在本地占着地的是哪些、休眠了哪些、还有多少没落地」。
   // 口径直接来自 registry 的 residency（resident/retained 都在磁盘上、hibernated
   // 只剩分支引用、planned 还没落地），再叠一层「此刻是否被占用」。
-  function lifecycleByDirectory(snapshot) {
-    const byDir = new Map();
-    const byId = new Map();
-    for (const workspace of snapshot.workspaces || []) {
-      byId.set(workspace.id, workspace);
-      if (!workspace.dirId) continue;
-      const bucket = byDir.get(workspace.dirId)
-        || { resident: 0, retained: 0, hibernated: 0, planned: 0, leased: 0 };
-      const residency = ['resident', 'retained', 'hibernated'].includes(workspace.residency)
-        ? workspace.residency : 'planned';
-      bucket[residency] += 1;
-      byDir.set(workspace.dirId, bucket);
-    }
-    for (const lease of snapshot.leases || []) {
-      const workspace = byId.get(lease.workspaceId);
-      const bucket = workspace && workspace.dirId && byDir.get(workspace.dirId);
-      if (bucket) bucket.leased += 1;
-    }
-    for (const bucket of byDir.values()) {
-      bucket.onDisk = bucket.resident + bucket.retained;
-      bucket.total = bucket.onDisk + bucket.hibernated + bucket.planned;
-    }
-    return byDir;
-  }
 
   // 卡片查自己的 workspace/lease 原本是两次 find()：1069 张卡片 × 1228 条记录，
   // 平方级的扫描。一次请求里 admission 快照是同一份对象，折成两张 Map 就够，
@@ -287,72 +266,27 @@ function mountAirRoutes(app, deps) {
   // 这张卡自己的 workspace/lease）。runState / worktreeChanges / capacityReason 留空位
   // 占住字段顺序，由 cardOverlay 每轮现填 —— 两条路径吐出的 JSON 逐字节相同，缓存
   // 命中与否客户端看不出来。
-  function cardBase(board, t, admission, admissionIdx, timedAdd) {
+  // 宿主只读取权威接口，Rust 组装卡片并决定状态覆盖。
+  function cardFacts(t, taskDirs, records, admissionIdx, timedAdd) {
     const sessionId = t.chatSessionId || t.sessionId || null;
-    const record = deps.records.get(sessionId);
-    // 逐卡嫌疑点各记一笔合计（单张卡片的读数太小，只有合计看得见走势）：
-    // taskAccess 是每条卡一次的权属查询；resource / attention 是 cardLoopMs 里剩下
-    // 那一半的候选。
-    const access = timedAdd('accessMs', () => deps.shell.taskAccess(t));
-    let capacityOf = null;
-    const taskResource = timedAdd('resourceMs', () => resource(sessionId, admission, admissionIdx,
-      workspace => { capacityOf = workspace; return null; }));
-    // `updatedAt` is task-metadata time: renaming, changing lifecycle/status,
-    // classification and new messages can all move it.  The Air task list
-    // needs a separate conversation clock so a housekeeping edit cannot jump
-    // an old task above a task that just received a message.
-    const lastMessageAt = (Array.isArray(t.refs) ? t.refs : [])
-      .reduce((latest, ref) => Math.max(latest, Number(ref?.ts) || 0), 0)
-      || Number(t.createdAt) || Number(t.updatedAt) || 0;
-    const card = { id: t.id, dirId: core.taskDirId(board, t) || deps.records.get(sessionId)?.dirId, title: t.title, status: t.status,
-      recordType: t.recordType || null, workflowStage: t.workflowStage || null,
-      updatedAt: t.updatedAt || t.createdAt, lastMessageAt,
-      sessionId, ...access,
-      // 当前绑定线路来自任务自己的会话，不拿全局默认值猜；无绑定时留空。
-      providerName: record?.provider
-        ? (deps.providerName?.(record) || record.provider) : null,
-      // 占位，见 cardOverlay。
-      runState: null,
-      // ✅ 那一格的子状态（达成目标 / 需要交互，读不到就是 null = 老样子的「执行
-      // 成功」）。判定在服务端 classify 落盘时做完（src/classify/vocab.js
-      // goalStateForClassify），客户端只读不推；它只配 succeeded 用，别的状态一律
-      // 忽略 —— 一条刚跑起来的新一轮不该顶着上一轮的「达成目标」。
-      goalState: isGoalState(record?.taskState?.goalState) ? record.taskState.goalState : null,
-      resource: taskResource, worktreeChanges: null,
-      // 未看过的结果（完成/出错/等回复）只在服务端记一份，所有客户端读同一个答案。
-      attention: timedAdd('attentionMs', () => pendingAttention(t)) };
-    // capacityOf：需要容量判定的那份 workspace（没有就是 null），留给 cardOverlay。
-    return { t, card, capacityOf: capacityOf && { id: capacityOf.id, residency: capacityOf.residency, dirId: capacityOf.dirId } };
+    const record = records[sessionId];
+    const workspace = admissionIdx.workspaceByOwner.get(record?.workspaceOwnerSessionId || sessionId) || null;
+    const lease = workspace ? admissionIdx.leaseByWorkspace.get(workspace.id) || null : null;
+    return { task: t, record: record || null, workspace, lease,
+      dirId: taskDirs[t.id],
+      access: timedAdd('accessMs', () => deps.shell.taskAccess(t)),
+      providerName: record?.provider ? record.providerName : null };
   }
-  // 每轮现算的三格。底稿对象是缓存共享的，这里只做浅拷贝、从不改它。
-  function cardOverlay({ t, card, capacityOf }, now, capacity, timedAdd) {
-    const record = deps.records.get(card.sessionId);
-    // 外层卡片只需要回答「这份 worktree 还有东西没交付吗」，不要把完整 merge
-    // 状态（冲突文件、分支细节等）复制进 15 秒一轮的 Air 快照。状态来自和任务页头
-    // 同一份缓存；首次读取触发后台刷新，下一轮快照自然带上结果。只触发磁盘上真实
-    // 驻留的 worktree：hibernated / planned 没有 checkout，逐条跑 Git 既没意义，
-    // 也会让上千张历史卡片排进状态队列。
-    let worktreeChanges = null;
-    if (record && ['resident', 'retained'].includes(card.resource.residency)
-        && typeof deps.mergeStateCached === 'function') {
-      const mergeState = timedAdd('mergeStateMs', () => deps.mergeStateCached(deps.directories.get(record.dirId), record));
-      if (mergeState && mergeState.reason !== 'loading' && mergeState.worktreeMissing !== true) {
-        const ahead = Math.max(0, Number.parseInt(mergeState.ahead, 10) || 0);
-        worktreeChanges = { dirty: mergeState.dirty === true, ahead };
-      }
+  function runFacts(task) {
+    const facts = {};
+    for (const id of new Set([...core.taskRunSessionIds(task), task.routing?.workerSessionId, task.chatSessionId].filter(Boolean))) {
+      let runState = null;
+      try { runState = deps.getSessionRunState?.(id) || null; } catch (_) {}
+      facts[id] = { taskState: deps.records.get(id)?.taskState || null, runState };
     }
-    // 这一轮到底在不在跑，是队列事件折出来的事实（src/task-board/normalize.js
-    // TASK_RUN_STATES），不是客户端能从 status 猜出来的：status 只有
-    // active/done/archived 三个人为的生命周期取值，「执行中」根本不在里面。
-    // 客户端只读它，不推断它。它随派发宽限（时间）和执行会话的队列状态变，所以
-    // 不进底稿。自愈：证明这一轮从没被受理过的卡片按空闲投影，而不是永久「执行中」。
-    const runState = timedAdd('runStateMs', () => projectRunStateOf(t, now));
-    // 容量判定看的是全局租约数与同目录驻留数，任何一张卡的变化都可能改它，所以
-    // 也不进底稿（逐卡签名覆盖不了跨卡的输入）。
-    const capacityReason = capacityOf ? timedAdd('capacityMs', () => capacity(capacityOf)) : null;
-    return { ...card, runState,
-      resource: capacityReason === null ? card.resource : { ...card.resource, capacityReason }, worktreeChanges };
+    return facts;
   }
+
   // 签名用输入内容而不是版本号：任务板卡片与会话记录都有原地改写，版本号漏记一次
   // 就是一张永远不刷新的卡。
   //   全局签名：任务库读数（权属表的行太大，只取读数，见 store.epoch）+ 任务板的
@@ -360,47 +294,19 @@ function mountAirRoutes(app, deps) {
   //   逐卡签名：这张卡在任务板上的全文 + 它引用到的会话记录投影 + 它自己的
   //            workspace/lease。会话投影每轮每条只算一次。
   const CARD_STORE_KINDS = ['task', 'task-session', 'link', 'link-task', 'shell'];
-  function globalCardSignature(board) {
-    const epoch = deps.shell.readEpoch ? deps.shell.readEpoch(CARD_STORE_KINDS) : null;
-    if (epoch == null) return null;
-    return crypto.createHash('sha1')
-      .update(JSON.stringify([epoch, board.modules || null, board.taskGroups || null])).digest('base64url');
-  }
-  function cardSignatures(admissionIdx) {
-    const projections = new Map(), providerNames = new Map();
-    // 只投影底稿读到的会话字段（含 taskAccess 判权属时读的那几个）。providerName
-    // 的结果按 (cli, provider) 记一次：线路改名也得让签名变。
-    const projection = sessionId => {
-      if (!sessionId) return 'null';
-      if (projections.has(sessionId)) return projections.get(sessionId);
-      const r = deps.records.get(sessionId);
-      let value = 'null';
-      if (r) {
-        let providerName = null;
-        if (r.provider) {
-          const key = `${r.cli}\u0000${r.provider}`;
-          if (!providerNames.has(key)) providerNames.set(key, deps.providerName?.(r) || null);
-          providerName = providerNames.get(key);
-        }
-        value = JSON.stringify([r.id, r.dirId, r.kind, r.type, r.cli, r.provider, providerName, r.worktreePath, r.branch,
-          r.workspaceOwnerSessionId, r.workspaceState, r.taskBoundTaskId, r.taskExecutionSlot,
-          r.experimentalMode, r.taskState?.goalState]);
-      }
-      projections.set(sessionId, value);
-      return value;
-    };
-    return t => {
-      const sessionId = t.chatSessionId || t.sessionId || null;
-      const ids = new Set([sessionId, t.sessionId, t.chatSessionId]);
-      for (const ref of Array.isArray(t.refs) ? t.refs : []) ids.add(ref?.sessionId);
-      const owner = deps.records.get(sessionId)?.workspaceOwnerSessionId;
-      if (owner) ids.add(owner);
-      const workspace = admissionIdx.workspaceByOwner.get(owner || sessionId) || null;
-      const lease = workspace ? admissionIdx.leaseByWorkspace.get(workspace.id) || null : null;
-      const hash = crypto.createHash('sha1').update(JSON.stringify(t) || 'null');
-      for (const id of ids) hash.update('\n' + String(id) + '=' + projection(id));
-      return hash.update('\n' + JSON.stringify([workspace, lease])).digest('base64url');
-    };
+  // 只采集权威会话字段，签名算法与目录统计在 Rust 异步执行。
+  function cardRecordFacts() {
+    const providerNames = new Map();
+    return Object.fromEntries([...deps.records].map(([id, record]) => {
+      const r = Object.fromEntries(['id', 'dirId', 'kind', 'type', 'cli', 'provider', 'worktreePath', 'branch',
+        'workspaceOwnerSessionId', 'workspaceState', 'taskBoundTaskId', 'taskExecutionSlot', 'experimentalMode']
+        .filter(key => record[key] !== undefined).map(key => [key, record[key]]));
+      const key = `${record.cli}\u0000${record.provider}`;
+      if (record.provider && !providerNames.has(key)) providerNames.set(key, deps.providerName?.(record) || null);
+      r.providerName = providerNames.get(key) || null;
+      r.taskState = { goalState: record.taskState?.goalState };
+      return [id, r];
+    }));
   }
   const cardCache = deps.cardCache || createAirCardCache({
     mode: process.env.AIR_CARD_CACHE || (deps.registerSync ? 'on' : 'shadow'),
@@ -449,18 +355,6 @@ function mountAirRoutes(app, deps) {
     // paths from both authorities: session records cover ordinary chats;
     // task metadata covers detached/task-bound worktrees whose session record
     // may already be gone. This is inventory only — no cleanup is attempted.
-    const worktreesByDir = new Map();
-    const noteWorktree = (dirId, worktreePath) => {
-      if (!dirId || !worktreePath) return;
-      if (!worktreesByDir.has(dirId)) worktreesByDir.set(dirId, new Set());
-      worktreesByDir.get(dirId).add(worktreePath);
-    };
-    for (const record of deps.records.values()) noteWorktree(record.dirId, record.worktreePath);
-    for (const task of Object.values(board.tasks || {})) {
-      const sessionId = task.chatSessionId || task.sessionId || null;
-      const dirId = core.taskDirId(board, task) || deps.records.get(sessionId)?.dirId;
-      noteWorktree(dirId, task.worktreePath);
-    }
     lap('boardMs');
     // 与任务板同一条自愈规则（见 task-board/view.js 的 deadDispatchClaim /
     // sessionHasTurn）：派发时写下的乐观 runState，如果名下会话拿不出受理物证，
@@ -470,46 +364,65 @@ function mountAirRoutes(app, deps) {
     const admission = deps.admission.snapshot();
     lap('admissionMs');
     const admissionIdx = admissionIndex(admission);
-    const lifecycle = lifecycleByDirectory(admission);
+    const recordFacts = cardRecordFacts();
+    const prepare = cardCache.prepareAsync || taskDomainAsync;
+    const prepared = await prepare({ op: 'airInputs', board, records: recordFacts, admission,
+      shellTasks: deps.shell.listTasks?.() || [],
+      epoch: cardCache.mode === 'off' ? null : deps.shell.readEpoch?.(CARD_STORE_KINDS) ?? null });
     const hibernationPolicy = (() => {
       try { return deps.hibernation?.()?.policy?.() || null; } catch (_) { return null; }
     })();
     lap('admissionIndexMs');
     const selected = options.ids && new Set(options.ids);
-    const cards = boardTasks().filter(task => !selected || selected.has(task.id));
+    const cards = prepared.tasks.filter(task => !selected || selected.has(task.id));
     timing?.set('cardCount', cards.length);
     lap('cardListMs');
     // 底稿（内容只由输入决定的部分）逐卡走 air-card-cache.js；runState /
     // worktreeChanges / capacityReason 随时间与全局运行时变，每轮现算叠上去
     // （见 cardOverlay）。
-    const globalSignature = cardCache.mode === 'off' ? null : globalCardSignature(board);
-    const signatureOf = cardCache.mode === 'off' ? null : cardSignatures(admissionIdx);
+    const globalSignature = prepared.globalSignature;
+    const signatureOf = task => prepared.signatures[task.id];
     lap('cardSignatureMs');
-    const resolve = options.cooperative ? cardCache.resolveAsync : cardCache.resolve;
-    const { entries, hits, builds } = await resolve(globalSignature, cards, {
+    const resolve = cardCache.resolveAsync || cardCache.resolve;
+    const nativeBaseOf = t => cardFacts(t, prepared.taskDirs, recordFacts, admissionIdx, timedAdd);
+    const resolved = await resolve(globalSignature, cards, {
       keyOf: t => t.id, signatureOf: t => (signatureOf ? signatureOf(t) : null),
-      prune: !selected, build: t => cardBase(board, t, admission, admissionIdx, timedAdd) });
+      prune: !selected, nativeBaseOf,
+      build: t => ({ t, ...taskDomain({ op: 'cardBase', ...nativeBaseOf(t) }) }) });
+    const { entries, hits, builds } = resolved;
     timing?.set('cardHits', hits);
     timing?.set('cardBuilds', builds);
     const capacity = capacityMemo();
-    const tasks = [];
+    const facts = {}, merges = {}, capacityReasons = {};
     for (let i = 0; i < entries.length; i++) {
-      tasks.push(cardOverlay(entries[i], projectNow, capacity, timedAdd));
+      const { t, card, capacityOf } = entries[i];
+      for (const id of new Set([...(t.refs || []).map(ref => ref.sessionId), t.routing?.workerSessionId, t.chatSessionId].filter(Boolean))) {
+        if (Object.hasOwn(facts, id)) continue;
+        let runState = null;
+        try { runState = deps.getSessionRunState?.(id) || null; } catch (_) {}
+        const state = deps.records.get(id)?.taskState;
+        facts[id] = { taskState: state ? Object.fromEntries(['queueState', 'classifyState', 'classifyHistory',
+          'classifyUpdatedAt', 'lastTurnEndedAt', 'startedAt', 'endedAt'].map(key => [key, state[key]])) : null, runState };
+      }
+      const record = deps.records.get(card.sessionId);
+      merges[card.id] = record && ['resident', 'retained'].includes(card.resource.residency)
+        && typeof deps.mergeStateCached === 'function'
+        ? timedAdd('mergeStateMs', () => deps.mergeStateCached(deps.directories.get(record.dirId), record)) : null;
+      capacityReasons[card.id] = capacityOf ? timedAdd('capacityMs', () => capacity(capacityOf)) : null;
       if (options.cooperative && i % 24 === 23) await new Promise(done => setImmediate(done));
     }
-    // 最近有消息的在前。任务板本身是从旧到新存的，客户端凡是「先放自己知道的几条、
-    // 剩下按原顺序补位」的列表（旧版 App 的手机最近任务就是）都会把新任务压到底。
-    // 平手按 updatedAt；再平手保持任务板原顺序（sort 是稳定的），ETag 不会因排序抖动。
-    tasks.sort((a, b) => (b.lastMessageAt - a.lastMessageAt)
-      || ((Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0)));
+    const overlayFacts = { now: projectNow, facts, merges, capacityReasons };
+    const tasks = cardCache.overlayAsync ? await cardCache.overlayAsync(resolved, overlayFacts)
+      : await taskDomainAsync({ op: 'cardOverlayBatch', entries, ...overlayFacts });
+    // 最近消息、updatedAt、原顺序的稳定排序由 Rust 完成。
     lap('cardLoopMs');
     const payload = { ok: true, directories: [...deps.directories.values()].map(d => ({
       id: d.id, name: d.name, path: d.path,
-      worktreeCount: worktreesByDir.get(d.id)?.size || 0,
+      worktreeCount: prepared.worktreeCounts[d.id] || 0,
       // 生命周期拆解（见 lifecycleByDirectory）：本地/休眠/计划各几个、此刻几个在用。
-      worktreeLifecycle: lifecycle.get(d.id) || { resident: 0, retained: 0, hibernated: 0, planned: 0, leased: 0, onDisk: 0, total: 0 },
+      worktreeLifecycle: prepared.lifecycle[d.id] || { resident: 0, retained: 0, hibernated: 0, planned: 0, leased: 0, onDisk: 0, total: 0 },
     })),
-      tasks, taskPins: pins().read(), taskTodos: todos().read(), taskTodoIgnored: todoIgnores().read(), budgets: admission.budgets, clis: deps.clis, migration, lastRuntime,
+      tasks, ...snapshotLists(prepared.tasks), budgets: admission.budgets, clis: deps.clis, migration, lastRuntime,
       // 自动回收的策略（闲置阈值/间隔）由运行时给出，面板据此把「多久没用会被收走」
       // 说准，而不是在客户端再猜一个默认值。
       worktreePolicy: hibernationPolicy,
