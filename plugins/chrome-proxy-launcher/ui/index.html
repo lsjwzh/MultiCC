@@ -61,7 +61,7 @@
   .empty { color: var(--muted); text-align: center; padding: 18px 0; }
   .sub-meta { color: var(--muted); font-size: 12px; }
   .btnbar { display: flex; gap: 8px; flex-wrap: wrap; }
-  ul.subs li.editing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  ul.subs li.editing, ul.profiles li.editing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 </style>
 </head>
 <body>
@@ -69,9 +69,10 @@
 <h1>🌐 Chrome 隔离出口启动器</h1>
 <p class="sub">每个身份 = 一份完全隔离的 Chrome profile + 一个强制出口。出口可以是本机代理端口，也可以是 Clash 订阅里的节点（由插件自带的 meow 内核承接）；家宽/住宅代理常需要先经节点跳板，填在「上游」里就是 本机 → 跳板节点 → 住宅代理 → 目标站。固定代理不配置直连备用；出口不可用时网页请求失败。浏览器参数并非系统级断网保护。</p>
 
-<section class="card">
-  <h2>新建 / 编辑身份</h2>
-  <label>身份名称（如「美区店铺」「运营 A」）</label>
+<section class="card" id="profile-editor">
+  <h2 id="profile-editor-title">新建身份</h2>
+  <p class="hint" id="profile-editor-hint" hidden></p>
+  <label for="f-name">身份名称（如「美区店铺」「运营 A」）</label>
   <input id="f-name" placeholder="必填">
 
   <label>出口类型</label>
@@ -175,6 +176,7 @@
     <button type="button" id="btn-detect">探测本机代理端口</button>
     <button type="button" id="btn-test">测这个出口</button>
     <button type="button" class="primary" id="btn-save">保存身份</button>
+    <button type="button" id="btn-profile-cancel" hidden>取消编辑</button>
   </div>
   <div class="chips" id="chips"></div>
 </section>
@@ -235,6 +237,7 @@ async function run(command, input) {
 
 let subscriptions = [];   // 最近一次 list 的结果
 let editingSubId = '';    // 正在编辑的订阅 id（空 = 新增）
+let editingProfile = null;
 const probeResults = new Map(); // id -> probe 返回（exitIp/via/latencyMs/geo）
 
 // probe 返回 {countryCode,countryName,timezone,locale}，launch 返回同结构
@@ -265,7 +268,7 @@ function subById(id) {
 function fillSubscriptionOptions(selectedId) {
   const select = $('f-sub');
   select.replaceChildren();
-  if (!subscriptions.length) {
+  if (!subscriptions.length && !selectedId) {
     const option = document.createElement('option');
     option.value = '';
     option.textContent = '（先到「订阅管理」添加订阅）';
@@ -280,7 +283,14 @@ function fillSubscriptionOptions(selectedId) {
     option.textContent = `${item.name}（${item.nodes.length} 个节点）`;
     select.append(option);
   }
-  if (selectedId && subById(selectedId)) select.value = selectedId;
+  if (selectedId && !subById(selectedId)) {
+    const missing = document.createElement('option');
+    missing.value = selectedId;
+    missing.textContent = '（原订阅已失效，请重新选择）';
+    missing.disabled = true;
+    select.append(missing);
+  }
+  if (selectedId) select.value = selectedId;
 }
 
 function fillNodeOptions(selectedNode) {
@@ -298,7 +308,14 @@ function fillNodeOptions(selectedNode) {
     option.textContent = name;
     select.append(option);
   }
-  if (selectedNode && sub.nodes.includes(selectedNode)) select.value = selectedNode;
+  if (selectedNode && !sub.nodes.includes(selectedNode)) {
+    const missing = document.createElement('option');
+    missing.value = selectedNode;
+    missing.textContent = `（原节点已失效，请重新选择）${selectedNode}`;
+    missing.disabled = true;
+    select.append(missing);
+  }
+  if (selectedNode) select.value = selectedNode;
 }
 
 function syncViaBlock() {
@@ -332,10 +349,15 @@ function readDirectProxy() {
 function readSubscriptionEgress() {
   const id = $('f-sub').value;
   if (!id) throw new Error('请先选择订阅（没有就去下面添加）');
-  return { id, node: $('f-node').value || '', via: readVia() };
+  const sub = subById(id);
+  if (!sub) throw new Error('原订阅已失效，请重新选择订阅和节点');
+  const node = $('f-node').value;
+  if (!node || !sub.nodes.includes(node)) throw new Error('原节点已失效，请重新选择可用节点');
+  return { id, node, via: readVia() };
 }
 
 function fillForm(profile) {
+  editingProfile = profile;
   $('f-name').value = profile ? profile.name : '';
   const egressType = (profile && profile.egressType) || 'direct';
   $('f-egress').value = egressType;
@@ -360,9 +382,32 @@ function fillForm(profile) {
 
   $('f-chrome').value = (profile && profile.chromePath) || '';
   $('btn-save').dataset.editing = profile ? profile.id : '';
-  $('btn-save').textContent = profile ? `更新「${profile.name}」` : '保存身份';
+  syncProfileEditor();
   syncEgressBlocks();
   syncViaBlock();
+}
+
+function syncProfileEditor() {
+  const profile = editingProfile;
+  $('profile-editor-title').textContent = profile ? `编辑身份「${profile.name}」` : '新建身份';
+  $('btn-save').textContent = profile ? '保存修改' : '保存身份';
+  $('btn-profile-cancel').hidden = !profile;
+  const hint = $('profile-editor-hint');
+  hint.hidden = !profile;
+  hint.className = profile?.running ? 'hint bad' : 'hint';
+  hint.textContent = profile?.running
+    ? '该身份浏览器正在运行。修改出口前请先在身份列表中点击「停止」，保存后再启动；身份名称仍可直接修改。'
+    : '修改下方配置后点击「保存修改」，或点击「取消编辑」返回新建身份。';
+  for (const row of $('list').children) {
+    row.classList.toggle('editing', row.dataset.profileId === profile?.id);
+  }
+}
+
+function startEditProfile(profile) {
+  fillForm(profile);
+  notice(`正在编辑「${profile.name}」，请在下方修改出口配置后保存。`);
+  $('profile-editor').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  $('f-name').focus({ preventScroll: true });
 }
 
 function makeButton(text, className, onClick) {
@@ -453,6 +498,13 @@ function resetSubForm() {
 async function refresh() {
   const data = await run('list');
   subscriptions = data.subscriptions || [];  const profiles = data.profiles || [];
+  if (editingProfile) {
+    editingProfile = profiles.find(profile => profile.id === editingId()) || null;
+    if (!editingProfile) {
+      fillForm(null);
+      notice('正在编辑的身份已被删除，请重新选择身份。', 'bad');
+    }
+  }
   // 正在编辑的订阅被别人删了：退出编辑态，避免拿失效 id 去保存。
   if (editingSubId && !subscriptions.some(item => item.id === editingSubId)) resetSubForm();
   renderSubscriptions();
@@ -465,6 +517,7 @@ async function refresh() {
   list.replaceChildren();
   for (const profile of profiles) {
     const item = document.createElement('li');
+    item.dataset.profileId = profile.id;
 
     const head = document.createElement('div');
     head.className = 'p-head';
@@ -555,7 +608,7 @@ async function refresh() {
       }));
     }
     actions.append(
-      makeButton('编辑', '', () => fillForm(profile)),
+      makeButton('编辑', '', () => startEditProfile(profile)),
       makeButton('删除', 'danger', async event => {
         if (!confirm(`删除身份「${profile.name}」？运行中的浏览器会被关闭。磁盘上的隔离 profile 目录会保留，可手动清理。`)) return;
         event.target.disabled = true;
@@ -579,6 +632,7 @@ async function refresh() {
     item.append(scope);
     list.append(item);
   }
+  syncProfileEditor();
 }
 
 $('f-egress').onchange = syncEgressBlocks;
@@ -651,12 +705,13 @@ $('btn-save').onclick = async event => {
       id: editingId(),
       name: $('f-name').value.trim(),
       egressType,
-      note: '',
+      note: editingProfile?.note || '',
       chromePath: $('f-chrome').value.trim(),
     };
     if (egressType === 'subscription') input.subscription = readSubscriptionEgress();
     else input.proxy = readDirectProxy();
     const result = await run('save', input);
+    probeResults.delete(result.profile.id);
     fillForm(null);
     notice(`已保存「${result.profile.name}」`);
   } catch (error) {
@@ -698,6 +753,7 @@ $('btn-sub-add').onclick = async event => {
 };
 
 $('btn-sub-cancel').onclick = () => resetSubForm();
+$('btn-profile-cancel').onclick = () => fillForm(null);
 
 fillForm(null);
 refresh().catch(error => notice(error.message, 'bad'));
