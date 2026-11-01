@@ -2,6 +2,14 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.13.2 — Reliable remote dragging and unified input controls (2026-11-01)
+
+- Unify web remote input across H.264, RFB, and compatibility views. A single finger clicks or drags, a stationary long press opens the context menu, and two fingers zoom and pan locally. Dragging near a zoomed view's edge pans the picture while keeping the remote pointer under the finger. Desktop input supports left, middle, and right buttons, both wheel axes, physical modifier keys, and composed text.
+- Add one-shot and locked modifier controls to web and mobile remote screens. Tap a modifier for the next action, double-tap to keep it held, and release held buttons and modifiers when leaving control mode, losing focus, disconnecting, or switching the view. The mobile trackpad keeps a drag active briefly between finger movements and brings its pointer back into the visible area after panning.
+- Make pointer presses, movement, release, and heartbeat handling consistent across streamed and HTTP input. The macOS Agent advances to build 9, releases stale input after an idle timeout, respects control leases and emergency stops, and shares its pointer state handling with compatibility requests. The Rust remote service validates viewer identities and normalizes modifier names and horizontal scroll input.
+- Retain the existing Node remote-input adapter only as the compatibility bridge for hosts still using the legacy remote backend. It forwards the same bounded protocol fields as Rust; remove this bridge when the Rust backend covers those hosts and cross-platform parity is verified. No new backend business service is introduced in Node.
+- Update the mobile app to 2.40.1 (build 185).
+
 ## v2.13.1 — Notification channel plugins, an audited secret vault, and a remote scroll rail (2026-11-01)
 
 The v2.13.0 candidate stopped at the release notes check, because its notes
