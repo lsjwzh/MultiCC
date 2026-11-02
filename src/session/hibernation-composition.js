@@ -35,6 +35,7 @@ function createSessionHibernation(deps) {
           return await gitWorktreeAdd(dir.path, record.id, dir.baseBranch, {
             sessionId: record.id,
             requireExistingBranch: true,
+            syncFromBase: true,
           });
         } catch (error) {
           if (error?.code !== 'WORKTREE_BRANCH_MISSING') throw error;
@@ -42,7 +43,7 @@ function createSessionHibernation(deps) {
           // unusable. Recreate only this session's isolated branch/path from the
           // directory base; an existing detached/conflicted checkout is retained
           // by gitWorktreeAdd and continues in place.
-          return gitWorktreeAdd(dir.path, record.id, dir.baseBranch, { sessionId: record.id });
+          return gitWorktreeAdd(dir.path, record.id, dir.baseBranch, { sessionId: record.id, syncFromBase: true });
         }
       },
     },

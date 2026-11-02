@@ -98,7 +98,7 @@ function probeAddon(file, node = process.execPath) {
     if(JSON.parse(a.taskDomain('{"op":"normalize","action":"createEmptyBoard"}')).result.schemaVersion!==2) process.exit(1);
     const db=new a.RustDatabase(':memory:',false,false,5000);
     db.exec('CREATE TABLE smoke(x); CREATE VIRTUAL TABLE f USING fts5(x)');db.close();
-    if(typeof a.validatePublicationText!=='function' || typeof a.quickCommitMessage!=='function'
+    if(typeof a.syncWorktreeOnWake!=='function' || typeof a.validatePublicationText!=='function' || typeof a.quickCommitMessage!=='function'
       || typeof a.gitCommitEnvironment!=='function' || typeof a.validatePublicationRecords!=='function'
       || typeof a.planTaskContextRead!=='function' || typeof a.selectTaskContextRecords!=='function'
       || typeof a.rankTaskContextCandidates!=='function' || typeof a.RustTaskReadModel!=='function' || a.taskReadModelProtocolVersion?.()!==1) process.exit(1);

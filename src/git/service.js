@@ -8,6 +8,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { defaultRepoActor, DEFAULT_TIMEOUT_MS } = require('../repo-actor');
 const { validateCommitMessage, validateCommitRange, quickCommitMessage } = require('./publication-policy');
+const { syncWorktreeOnWake } = require('./wake-sync');
 
 const execFileAsync = promisify(execFile);
 const WORKTREE_SUBDIR = '.multicc-worktrees';
@@ -315,6 +316,8 @@ async function gitWorktreeAdd(dirPath, sessionId, baseBranch, opts = {}) {
   const worktreePath = path.join(dirPath, WORKTREE_SUBDIR, sessionId);
   const branch = `multicc/${sessionId}`;
   return defaultRepoActor.run(dirPath, 'worktree-add', async ({ execGit, progress }) => {
+    const restored = async result => opts.syncFromBase
+      ? { ...result, sync: await syncWorktreeOnWake(dirPath, result, baseBranch) } : result;
     progress('prepare');
     await ensureExcludedWith(execGit, dirPath);
     await fsp.mkdir(path.join(dirPath, WORKTREE_SUBDIR), { recursive: true });
@@ -337,7 +340,7 @@ async function gitWorktreeAdd(dirPath, sessionId, baseBranch, opts = {}) {
             throw error;
           }
         }
-        return { ok: true, worktreePath, branch, existing: true };
+        return restored({ ok: true, worktreePath, branch, existing: true });
       }
     } catch (error) {
       if (error && error.code && error.code.startsWith('WORKTREE_')) throw error;
@@ -346,7 +349,7 @@ async function gitWorktreeAdd(dirPath, sessionId, baseBranch, opts = {}) {
     await execGit(dirPath, branchExists
       ? ['worktree', 'add', worktreePath, branch]
       : ['worktree', 'add', worktreePath, '-b', branch, baseBranch]);
-    return { ok: true, worktreePath, branch, existing: false };
+    return restored({ ok: true, worktreePath, branch, existing: false });
   }, { ...opts, sessionId });
 }
 
