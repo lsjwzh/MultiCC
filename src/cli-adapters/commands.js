@@ -73,6 +73,22 @@ function firstRunnable(paths, context) {
   return paths.find(candidate => isRunnableFile(candidate, context)) || null;
 }
 
+// Availability must use the same Windows extension rules as command resolution:
+// an already resolved codex.exe must never be probed as codex.exe.EXE.
+function isCommandAvailable(command, options = {}) {
+  const candidate = String(command || '').trim();
+  if (!candidate) return false;
+  const { isWindows, env, fsImpl } = createContext(options);
+  const pathApi = isWindows ? path.win32 : path;
+  const explicitPath = pathApi.isAbsolute(candidate) || candidate.includes('/')
+    || (isWindows && candidate.includes('\\'));
+  if (explicitPath) {
+    return executableNames(candidate, { isWindows, env })
+      .some(file => isRunnableFile(file, { isWindows, fsImpl }));
+  }
+  return !!findExecutableOnPath(candidate, { isWindows, env, fsImpl });
+}
+
 function createContext(options) {
   return {
     isWindows: options.isWindows ?? process.platform === 'win32',
@@ -285,4 +301,4 @@ function resolveCliCommands(options = {}) {
   };
 }
 
-module.exports = { findExecutableOnPath, resolveCliCommands };
+module.exports = { findExecutableOnPath, isCommandAvailable, resolveCliCommands };

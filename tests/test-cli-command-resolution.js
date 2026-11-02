@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const {
   findExecutableOnPath,
+  isCommandAvailable,
   resolveCliCommands,
 } = require('../src/cli-adapters/commands');
 
@@ -46,6 +47,30 @@ try {
     isWindows: true,
     env: { PATH: windowsBin, PATHEXT: '.EXE;.CMD' },
   }), windowsCommand, 'Windows lookup does not append PATHEXT twice');
+
+  const windowsCodex = path.join(windowsBin, 'codex.exe');
+  makeExecutable(windowsCodex);
+  const windowsContext = { isWindows: true, env: { Path: windowsBin, PATHEXT: '.EXE;.CMD' } };
+  assert.strictEqual(isCommandAvailable(windowsCodex, windowsContext), true,
+    'a resolved Windows codex.exe remains available with uppercase PATHEXT');
+  assert.strictEqual(isCommandAvailable('codex.exe', windowsContext), true,
+    'Windows fallback names with extensions resolve through case-insensitive Path');
+  assert.strictEqual(isCommandAvailable('demo', windowsContext), true,
+    'extensionless Windows commands still use PATHEXT');
+  assert.strictEqual(isCommandAvailable(windowsCommand, windowsContext), true,
+    'absolute CMD adapters are available without a duplicated extension');
+  assert.strictEqual(isCommandAvailable(path.join(windowsBin, 'missing.exe'), windowsContext), false,
+    'missing Windows executables remain unavailable');
+  const windowsDirectory = path.join(windowsBin, 'directory.EXE');
+  fs.mkdirSync(windowsDirectory);
+  assert.strictEqual(isCommandAvailable(windowsDirectory, windowsContext), false,
+    'a directory named like an executable is unavailable');
+  assert.strictEqual(isCommandAvailable(unixCommand, { isWindows: false }), true,
+    'absolute POSIX executables remain available');
+  assert.strictEqual(isCommandAvailable(nonExecutable, { isWindows: false }), false,
+    'POSIX files without execute permission remain unavailable');
+  assert.strictEqual(isCommandAvailable('', windowsContext), false,
+    'an empty command remains unavailable');
 
   const codexOverride = path.join(root, 'custom-codex');
   makeExecutable(codexOverride);
