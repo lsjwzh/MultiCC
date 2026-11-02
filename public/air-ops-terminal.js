@@ -98,9 +98,11 @@
     const retryButton = node('button', t('airOpsTerminalRetry'), 'primary');
     retryButton.type = 'button';
     retryButton.hidden = true;
+    const recheck = node('button', t('airOpsTerminalRecheck'));
+    recheck.type = 'button';
     const close = node('button', t('airOpsTerminalClose'));
     close.type = 'button';
-    footer.append(ready, retryButton, close);
+    footer.append(ready, retryButton, recheck, close);
 
     form.append(envBox, advice, cmdline, output, historyRow, footer);
     d.append(form);
@@ -112,6 +114,8 @@
     let view = null; // the job this panel is showing: { id, command, from, out, meta }
     let lastRun = null;
     let aiRun = null; // the diagnosis this panel is following
+    let probing = false;
+    let gitInstallCompleted = false;
 
     close.onclick = () => d.close();
     d.onclose = () => {
@@ -121,6 +125,11 @@
       d.remove();
     };
     retryButton.onclick = () => { d.close(); retry(); };
+    recheck.onclick = async () => {
+      if (view || probing) return;
+      await probe();
+      if (!closed) prefill();
+    };
     form.onsubmit = event => { event.preventDefault(); void runCommand(); };
     stopButton.onclick = () => {
       stopButton.disabled = true;
@@ -128,11 +137,14 @@
     };
 
     const envReady = () => !!(env && env.git && env.git.available && env.identity && env.identity.valid);
+    const isGitInstall = command => env?.platform === 'win32' && typeof command === 'string'
+      && command.trim() === env.suggestions?.gitInstall?.trim();
 
     // The next repair the user can actually run from here, in dependency order:
     // identity cannot be set before git exists.
     function nextSuggestion() {
       const suggestions = (env && env.suggestions) || {};
+      if (env?.platform === 'win32' && !env.git?.available && gitInstallCompleted) return null;
       if (!(env && env.git && env.git.available)) return suggestions.gitInstallRunnable ? suggestions.gitInstall : null;
       return env.identity && env.identity.valid ? null : suggestions.identity || null;
     }
@@ -154,6 +166,8 @@
     function paintEnv() {
       envBox.replaceChildren();
       advice.replaceChildren();
+      ready.textContent = '';
+      retryButton.hidden = true;
       if (!env) return;
       const git = env.git || {};
       const identity = env.identity || {};
@@ -172,6 +186,17 @@
       row(t('airOpsTerminalPackageLabel'), env.packageManager || t('airOpsTerminalPackageNone'));
 
       const suggestions = env.suggestions || {};
+      if (!git.available && env.platform === 'win32') {
+        const help = node('section', null, 'air-ops-git-help');
+        help.setAttribute('role', 'status');
+        help.append(node('p', t(gitInstallCompleted ? 'airOpsTerminalGitInstallPending' : 'airOpsTerminalGitWindowsHint')));
+        const steps = node('ol');
+        for (const key of ['airOpsTerminalGitRestartStep', 'airOpsTerminalGitTerminalStep', 'airOpsTerminalGitRecheckStep']) {
+          steps.append(node('li', t(key)));
+        }
+        help.append(steps);
+        advice.append(help);
+      }
       if (!git.available && suggestions.gitInstall && !suggestions.gitInstallRunnable) {
         // Offering a one-click run here could only end in "must be root".
         const note = node('p', t('airOpsTerminalNeedsRoot', { user: (account && account.user) || '' }), 'air-ops-needs-root');
@@ -196,13 +221,22 @@
     }
 
     async function probe() {
+      probing = true;
+      recheck.disabled = true;
+      recheck.textContent = t('airOpsTerminalRechecking');
       try {
         env = await request('/api/system/ops-env', undefined, 'GET');
+        if (env.git?.available) gitInstallCompleted = false;
       } catch (error) {
         env = null;
+        if (closed) return;
         paintEnv();
         envBox.append(node('p', t('airOpsTerminalProbeFailed', { message: error.message }), 'air-ops-status-bad'));
         return;
+      } finally {
+        probing = false;
+        recheck.disabled = !!view;
+        recheck.textContent = t('airOpsTerminalRecheck');
       }
       if (!closed) paintEnv();
     }
@@ -226,6 +260,7 @@
       runButton.hidden = running;
       stopButton.hidden = !running;
       stopButton.disabled = false;
+      recheck.disabled = running || probing;
     }
 
     function append(text) {
@@ -251,6 +286,7 @@
       entry.append(node('div', `$ ${job.command}`, 'air-ops-cmd-head'), out, meta);
       output.append(entry);
       view = { id: job.id, command: job.command, from: 0, out, meta, entry };
+      view.gitInstall = isGitInstall(job.command);
       setRunning(true);
       apply(job);
       output.scrollTop = output.scrollHeight;
@@ -292,7 +328,8 @@
         parts.push(`${(job.durationMs / 1000).toFixed(1)}s`);
       }
       mine.meta.textContent = parts.join(' · ');
-      const failed = !job || job.exitCode !== 0 || job.timedOut || job.stopped;
+      const failed = !job || job.exitCode !== 0 || job.timedOut || job.stopped || job.error;
+      if (mine.gitInstall) gitInstallCompleted = !failed;
       if (failed) mine.entry.classList.add('air-ops-entry-bad');
       remember(mine.command);
       recentJobs.unshift({ command: mine.command, exitCode: job ? job.exitCode : null, output: mine.out.textContent.slice(-1500) });
@@ -475,7 +512,13 @@
       ]);
       if (closed) return;
       if (running && running.running && !view) attach(running);
-      else prefill();
+      else {
+        // Reopening the panel must not offer the same successful install again.
+        gitInstallCompleted = !env?.git?.available && isGitInstall(running?.command)
+          && running.exitCode === 0 && !running.timedOut && !running.stopped && !running.error;
+        if (env) paintEnv();
+        prefill();
+      }
     })();
   }
 
