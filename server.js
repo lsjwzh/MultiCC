@@ -552,24 +552,7 @@ const { vendorLoginTerminalCmd, cliForLoginFlow } = require('./src/cli-adapters/
 const CLAUDE_CMD = cliCommands.claude;
 
 function cliCommandAvailable(command) {
-  const candidate = String(command || '').trim();
-  if (!candidate) return false;
-  const suffixes = isWindows
-    ? String(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
-    : [''];
-  const locations = (path.isAbsolute(candidate) || candidate.includes(path.sep))
-    ? ['']
-    : String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  for (const dir of locations) {
-    for (const suffix of suffixes) {
-      const file = dir ? path.join(dir, candidate + suffix) : candidate + suffix;
-      try {
-        fs.accessSync(file, fs.constants.X_OK);
-        return true;
-      } catch (_) {}
-    }
-  }
-  return false;
+  return require('./src/cli-adapters/commands').isCommandAvailable(command, { isWindows });
 }
 
 function cliAvailabilitySummary() {
