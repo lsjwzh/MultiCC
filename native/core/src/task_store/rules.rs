@@ -77,20 +77,20 @@ fn owner_from(t: &Value, link: &Value, records: &Value, task_first: bool) -> Val
         return json!({"shellId":link["shellId"]});
     }
     let sid = if truth(&t["sessionId"]) {
-            t["sessionId"].clone()
-        } else if truth(&t["chatSessionId"]) {
-            t["chatSessionId"].clone()
-        } else {
-            items(&t["refs"])
-                .iter()
-                .find(|r| {
-                    records
-                        .get(text(&r["sessionId"]))
-                        .is_some_and(|v| !v.is_null())
-                })
-                .map(|r| r["sessionId"].clone())
-                .unwrap_or(Value::Null)
-        };
+        t["sessionId"].clone()
+    } else if truth(&t["chatSessionId"]) {
+        t["chatSessionId"].clone()
+    } else {
+        items(&t["refs"])
+            .iter()
+            .find(|r| {
+                records
+                    .get(text(&r["sessionId"]))
+                    .is_some_and(|v| !v.is_null())
+            })
+            .map(|r| r["sessionId"].clone())
+            .unwrap_or(Value::Null)
+    };
     let record = &records[text(&sid)];
     if record.is_null()
         || record["kind"] != "chat"

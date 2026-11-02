@@ -275,10 +275,10 @@ pub fn apply(b: &mut Value, v: &Value) -> Result<Value, String> {
                     && v["sessionId"] != t["chatSessionId"]
             )
         }
-        "taskDirId" => dir(&b, &t),
-        "resolveTask" => resolve(&b, text(&v["taskId"])),
+        "taskDirId" => dir(b, &t),
+        "resolveTask" => resolve(b, text(&v["taskId"])),
         "taskLineageIds" => {
-            let target = resolve(&b, text(&v["taskId"]));
+            let target = resolve(b, text(&v["taskId"]));
             if target.is_null() {
                 json!([])
             } else {
@@ -286,7 +286,7 @@ pub fn apply(b: &mut Value, v: &Value) -> Result<Value, String> {
                 for t in objects(&b["tasks"]) {
                     if t["id"] != target["id"]
                         && truth(&t["mergedInto"])
-                        && resolve(&b, text(&t["id"]))["id"] == target["id"]
+                        && resolve(b, text(&t["id"]))["id"] == target["id"]
                     {
                         ids.push(t["id"].clone());
                     }

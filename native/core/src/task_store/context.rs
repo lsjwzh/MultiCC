@@ -54,7 +54,11 @@ fn same(s: &Value, r: &Value) -> bool {
     s["id"] == r["id"] && s["version"] == r["version"]
 }
 fn triple(receipt: &str, s: &Value) -> (String, String, String) {
-    (receipt.to_string(), s["id"].to_string(), s["version"].to_string())
+    (
+        receipt.to_string(),
+        s["id"].to_string(),
+        s["version"].to_string(),
+    )
 }
 fn trace_source(s: &Value, retained: bool, include: bool) -> Value {
     let mut out = serde_json::Map::new();
@@ -103,7 +107,11 @@ impl TaskStore {
     fn ensure_catalog(&mut self, task: &str, key: &str, content: &Value) -> Result<()> {
         let id = catalog_id(task, key);
         if self.body("context-source", &id)?.is_none() {
-            self.put("context-source", &id, &json!({"taskId":task,"key":key,"source":content}))?;
+            self.put(
+                "context-source",
+                &id,
+                &json!({"taskId":task,"key":key,"source":content}),
+            )?;
         }
         Ok(())
     }
@@ -274,7 +282,8 @@ impl TaskStore {
         let mut found = vec![];
         for (id, entry) in ledger["sources"].as_object().into_iter().flatten() {
             if entry["key"].as_str().is_none() {
-                let probe = json!({"id":id,"version":entry["version"],"receiptId":entry["receiptId"]});
+                let probe =
+                    json!({"id":id,"version":entry["version"],"receiptId":entry["receiptId"]});
                 if let Some(hit) = self.origin(task, &probe)? {
                     found.push((id.clone(), hit));
                 }
@@ -285,7 +294,11 @@ impl TaskStore {
             self.ensure_catalog(task, &key, &content)?;
             ledger["sources"][&id]["key"] = json!(key);
         }
-        for entry in ledger["sources"].as_object().into_iter().flat_map(|o| o.values()) {
+        for entry in ledger["sources"]
+            .as_object()
+            .into_iter()
+            .flat_map(|o| o.values())
+        {
             if let Some(k) = entry["key"].as_str() {
                 keep.insert(k.to_string());
             }
@@ -449,7 +462,11 @@ impl TaskStore {
                 continue;
             }
             let task = value["id"].as_str().unwrap_or(&id).to_string();
-            for (sid, entry) in value["contextLedger"]["sources"].as_object().into_iter().flatten() {
+            for (sid, entry) in value["contextLedger"]["sources"]
+                .as_object()
+                .into_iter()
+                .flatten()
+            {
                 let probe = json!({"id":sid,"version":entry["version"]});
                 needed
                     .entry(triple(text(&entry["receiptId"]), &probe))
@@ -527,7 +544,11 @@ impl TaskStore {
             self.report("compact", i, detailed.len());
             let body: String = self
                 .db()?
-                .query_row("SELECT body FROM shell_records WHERE rowid=?1", [rowid], |r| r.get(0))
+                .query_row(
+                    "SELECT body FROM shell_records WHERE rowid=?1",
+                    [rowid],
+                    |r| r.get(0),
+                )
                 .map_err(err)?;
             let mut value = parse(&body)?;
             let task = text(&value["taskId"]).to_string();
@@ -582,8 +603,10 @@ impl TaskStore {
                 |r| r.get(0),
             )
             .map_err(err)?;
-        Ok(json!({"rows":rowids.len(),"ledgers":ledgers.len(),"compacted":compacted,"demoted":demoted,
+        Ok(
+            json!({"rows":rowids.len(),"ledgers":ledgers.len(),"compacted":compacted,"demoted":demoted,
             "live":live,"catalog":catalog,"scanMs":scanned.saturating_sub(started),
-            "rewriteMs":rewritten.saturating_sub(scanned),"ledgerMs":now().saturating_sub(rewritten)}))
+            "rewriteMs":rewritten.saturating_sub(scanned),"ledgerMs":now().saturating_sub(rewritten)}),
+        )
     }
 }

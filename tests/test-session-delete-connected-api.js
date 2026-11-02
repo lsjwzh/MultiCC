@@ -202,14 +202,18 @@ function waitForFrame(socket, type) {
   ];
   history.write(dirtySessionId, original);
   const originalBytes = fs.readFileSync(history.fileFor(dirtySessionId), 'utf8');
-  fs.writeFileSync(path.join(dataDir, 'task_board.json'), JSON.stringify({
-    // The board store refuses a hand-written file without its schema envelope.
-    schemaVersion: 2, revision: 2,
-    modules: {}, tasks: { 'retained-task': {
+  // Seed through the real repository so the primary and recovery copy advance
+  // together. A hard-coded revision can be older than the recovery sidecar.
+  const { createTaskBoardRepository } = require('../src/task-board/repository');
+  const boardRepository = createTaskBoardRepository(path.join(dataDir, 'task_board.json'));
+  const previousBoard = boardRepository.load().raw;
+  boardRepository.save({
+    ...previousBoard, schemaVersion: 2, revision: previousBoard.revision + 1,
+    tasks: { ...previousBoard.tasks, 'retained-task': {
       id: 'retained-task', title: 'retain task evidence', status: 'done', chatSessionId: dirtySessionId,
       refs: [{ sessionId: dirtySessionId, dirId: directoryId, userMsgId: 'task-user', assistantMsgId: 'task-answer', ts: 1 }],
     } },
-  }));
+  }, previousBoard.revision);
   await startServer(port);
   const historySocket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(dirtySessionId)}`);
   const initialPage = waitForFrame(historySocket, 'chat_history');
@@ -228,6 +232,7 @@ function waitForFrame(socket, type) {
   response = await api('GET', `/api/sessions/${dirtySessionId}/history`);
   assert.deepEqual(response.data.messages, []);
   response = await api('GET', '/api/task-shell-tasks/retained-task/history');
+  assert.equal(response.status, 200, JSON.stringify(response.data));
   assert.equal(response.data.messages.length, 2, 'task projection still reads every original message');
   response = await api('POST', '/api/task-board/tasks/retained-task/status', { status: 'archived' });
   assert.equal(response.status, 200);

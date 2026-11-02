@@ -70,7 +70,7 @@ pub fn run_on(b: &Value, v: &Value) -> Value {
         } else {
             &t["sessionId"]
         };
-        let d = dir(b, &t);
+        let d = dir(b, t);
         note(
             if truth(&d) {
                 d

@@ -55,7 +55,8 @@ try {
     'a resolved Windows codex.exe remains available with uppercase PATHEXT');
   assert.strictEqual(isCommandAvailable('codex.exe', windowsContext), true,
     'Windows fallback names with extensions resolve through case-insensitive Path');
-  const windowsNpmCli = path.join(windowsBin, 'claude.cmd');
+  // Match PATHEXT case so this Windows fixture also works on case-sensitive Linux.
+  const windowsNpmCli = path.join(windowsBin, 'claude.CMD');
   makeExecutable(windowsNpmCli);
   assert.strictEqual(isCommandAvailable('claude.exe', windowsContext), true,
     'a boot-time .exe fallback finds the PATHEXT variant an npm install wrote');

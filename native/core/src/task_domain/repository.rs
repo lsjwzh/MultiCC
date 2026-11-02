@@ -109,7 +109,9 @@ fn prune_backups(file: &Path, infix: &str, keep: usize) {
         .unwrap_or_default();
     let base = name.strip_suffix(".json").unwrap_or(&name);
     let prefix = format!("{base}{infix}");
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     let mut backups: Vec<(u128, PathBuf)> = entries
         .filter_map(|entry| {
             let path = entry.ok()?.path();
@@ -321,9 +323,9 @@ pub fn save_board_stamped(
     let recovery = sibling(file, ".planning-v2.json");
     let old = fs::read(file).ok();
     let old_recovery = fs::read(&recovery).ok();
-    let unchanged = known.as_ref().filter(|k| {
-        k.path == file && stamp_of(file, &recovery, k.revision).as_ref() == Some(*k)
-    });
+    let unchanged = known
+        .as_ref()
+        .filter(|k| k.path == file && stamp_of(file, &recovery, k.revision).as_ref() == Some(*k));
     let (primary, disk_revision) = match unchanged {
         Some(k) => (ReadState::Parsed(Value::Null), k.revision),
         None => {

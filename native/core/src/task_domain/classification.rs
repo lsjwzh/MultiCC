@@ -58,7 +58,7 @@ pub fn find_task(b: &Value, module: &Value, title: &Value, options: &Value) -> V
             continue;
         }
         let same = truth(module) && t["moduleId"] == *module;
-        let same_dir = truth(&options["dirId"]) && dir(b, &t) == options["dirId"];
+        let same_dir = truth(&options["dirId"]) && dir(b, t) == options["dirId"];
         if !same && !same_dir {
             continue;
         }
@@ -77,7 +77,7 @@ pub fn find_task(b: &Value, module: &Value, title: &Value, options: &Value) -> V
             } else {
                 0.0
             };
-        if best.is_null() || rank > previous || (rank == previous && last(&t) > last(&best)) {
+        if best.is_null() || rank > previous || (rank == previous && last(t) > last(&best)) {
             best = t.clone();
             score = s;
         }
