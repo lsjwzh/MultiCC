@@ -1,6 +1,8 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
+const { findExecutableOnPath } = require('../cli-adapters/commands');
+const windowsEnv = require('../windows-env');
 
 // Ops terminal — the repair surface for hosts whose environment is too broken
 // to create the first directory in: git missing on a bare cloud VM, commit
@@ -141,16 +143,29 @@ async function probeAccount(exec, platform) {
   return { user, uid, sudo };
 }
 
-async function probeGit(exec, platform) {
-  const gitPath = firstLine(await exec(platform === 'win32' ? 'where git' : 'command -v git'));
+// Windows gives a running process a copy of its startup environment, so `where
+// git` keeps missing a git installed afterwards. Resolve against the current
+// install locations instead of asking the frozen PATH.
+function defaultFindGit() {
+  if (process.platform === 'win32') windowsEnv.augmentPath(process.env);
+  return findExecutableOnPath('git', { isWindows: process.platform === 'win32' });
+}
+
+async function probeGit(exec, platform, resolvedWindowsPath = null) {
+  const gitPath = platform === 'win32' ? resolvedWindowsPath : firstLine(await exec('command -v git'));
   if (!gitPath) return { available: false, version: null };
-  if (platform === 'darwin' && gitPath === '/usr/bin/git') {
+  let command = 'git --version';
+  if (platform === 'win32') {
+    // The resolved path can contain spaces; a bare `git` would still go through
+    // the frozen PATH this probe exists to bypass.
+    command = `"${gitPath}" --version`;
+  } else if (platform === 'darwin' && gitPath === '/usr/bin/git') {
     // The macOS shim: running it without Command Line Tools raises the system
     // install dialog. `xcode-select -p` is the dialog-free probe (same rule as
     // src/routes/developer-tools.js).
     if ((await exec('xcode-select -p')).code !== 0) return { available: false, version: null };
   }
-  const match = /git version (\S+)/.exec((await exec('git --version')).stdout || '');
+  const match = /git version (\S+)/.exec((await exec(command)).stdout || '');
   return match ? { available: true, version: match[1] } : { available: false, version: null };
 }
 
@@ -166,12 +181,16 @@ function installAdvice(packageManager, account) {
   return { command, runnable: false };
 }
 
-async function probeEnv(exec, platform) {
-  const git = await probeGit(exec, platform);
+async function probeEnv(exec, platform, findGit) {
+  const gitPath = platform === 'win32' ? findGit('git') : null;
+  const git = await probeGit(exec, platform, gitPath);
   let identity = { name: null, email: null, valid: false };
   if (git.available) {
-    const name = firstLine(await exec('git config --get user.name')) || null;
-    const email = firstLine(await exec('git config --get user.email')) || null;
+    // Same rule as the version probe: name the binary the resolver found, not a
+    // bare `git` that the frozen PATH would still miss.
+    const prefix = gitPath ? `"${gitPath}"` : 'git';
+    const name = firstLine(await exec(`${prefix} config --get user.name`)) || null;
+    const email = firstLine(await exec(`${prefix} config --get user.email`)) || null;
     identity = { name, email, valid: identityPartValid(name, false) && identityPartValid(email, true) };
   }
   const account = await probeAccount(exec, platform);
@@ -199,6 +218,10 @@ function createOpsTerminalRoutes({
   exec = execShell,
   start = startShell,
   now = Date.now,
+  findGit = defaultFindGit,
+  // Windows only: the persisted PATH is re-read so a tool installed since the
+  // process started is visible without restarting it.
+  refreshEnv = windowsEnv.refresh,
 } = {}) {
   let job = null;
   let sequence = 0;
@@ -235,7 +258,12 @@ function createOpsTerminalRoutes({
 
   async function envHandler(req, res, next) {
     try {
-      res.json({ ok: true, platform, ...(await probeEnv(exec, platform)) });
+      // This is the panel's "re-check" entry point, so it is the one place that
+      // must not answer from the environment captured at process start.
+      if (platform === 'win32') {
+        try { await refreshEnv({ force: true }); } catch (_) { /* probe with what we have */ }
+      }
+      res.json({ ok: true, platform, ...(await probeEnv(exec, platform, findGit)) });
     } catch (error) {
       next(error);
     }
@@ -278,6 +306,11 @@ function createOpsTerminalRoutes({
             timedOut: current.timedOut, stopped: current.stopped, outputChars: current.dropped + current.output.length,
           });
         } catch (_) { /* auditing must not fail the job */ }
+        // A repair install has just written PATH; fold it in before the next
+        // status poll so the panel can go green without a restart.
+        if (platform === 'win32') {
+          Promise.resolve(refreshEnv({ force: true })).catch(() => {});
+        }
       });
     return res.json({ ok: true, job: snapshot(current, 0) });
   }

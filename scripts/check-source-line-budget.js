@@ -136,8 +136,10 @@ const MIGRATION_DEBT = Object.freeze({
     // main 上这道闸已红；按实测 3036/159713 对齐高水位，拆分条件不变。
     // 2026-10-31 切 CLI 车道跟随子 agent 家族默认：切换运行时同行注入
     // validProviderId/getProviders，上方注释压成两行抵掉字节，实测 3035/159713。
-    ceiling: 3033,
-    byteCeiling: 159713,
+    // 2026-11-02 Windows 启动 PATH 刷新接线：可用性重解析移进 commands.js，
+    // server.js 只留一行 getter，实测 3022/159546，按棘轮下调。
+    ceiling: 3022,
+    byteCeiling: 159546,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),
@@ -546,9 +548,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +2 双语键（airOpsDataMigrating/airOpsDataMigratingBody）：网页一键更新时新版本首次启动在升级
     //   任务数据，更新弹窗显示升级百分比而不是「服务重启中」，中英各 2 行 = +4 行，实测 10256/663218。
     // +7 双语键：Windows 安装 Git 后的重开指引和环境重新检测；仅增加生成词典数据。
+    // 同一批文案改写（重新检测即可，不再要求重启）后实测 10270/665596，按高水位抬 byte 上限。
     maxLines: 10270,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 665553,
+    maxBytes: 665596,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
