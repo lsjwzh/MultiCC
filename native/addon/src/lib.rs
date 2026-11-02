@@ -13,9 +13,9 @@ pub mod sqlite;
 pub mod subagent_defaults;
 pub mod task_board;
 pub mod task_context;
+pub mod task_domain;
 pub mod task_read_model;
 pub mod task_store;
-pub mod task_domain;
 pub mod virtual_provider;
 
 #[napi(object)]

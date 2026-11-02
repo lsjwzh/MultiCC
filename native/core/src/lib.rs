@@ -1,5 +1,5 @@
-pub mod publication;
 pub mod machines;
+pub mod publication;
 pub mod publication_identity;
 pub mod quota_history;
 pub mod search;
@@ -9,9 +9,9 @@ pub mod subagent_defaults;
 pub mod subscription;
 pub mod subscription_cache;
 pub mod task_context;
+pub mod task_domain;
 pub mod task_read_model;
 pub mod task_store;
-pub mod task_domain;
 pub mod usage;
 pub mod virtual_provider;
 

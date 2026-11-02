@@ -109,13 +109,22 @@ pub fn migration_pending(file: &str) -> bool {
 // 迁移没提交，库本身就是最新的原样数据）。
 fn remove_stale_backups(file: &str, from: i64) -> Result<()> {
     let path = Path::new(file);
-    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let prefix = format!(
         "{}.v{from}-backup-",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or_default()
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
     );
     for entry in std::fs::read_dir(dir).map_err(err)?.flatten() {
-        if entry.file_name().to_str().is_some_and(|n| n.starts_with(&prefix)) {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with(&prefix))
+        {
             std::fs::remove_file(entry.path()).map_err(err)?;
         }
     }
@@ -189,7 +198,9 @@ impl TaskStore {
         let started = now();
         let db = self.db()?;
         let has_rows: bool = db
-            .query_row("SELECT EXISTS(SELECT 1 FROM shell_records)", [], |r| r.get(0))
+            .query_row("SELECT EXISTS(SELECT 1 FROM shell_records)", [], |r| {
+                r.get(0)
+            })
             .map_err(err)?;
         let columns = db
             .prepare("SELECT name FROM pragma_table_info('shell_records')")
@@ -531,10 +542,14 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
         let mut receipts = vec![];
         for chunk in task_ids.chunks(400) {
             let marks = vec!["?"; chunk.len()].join(",");
-            let sql = format!("SELECT body FROM shell_records WHERE kind='receipt' AND task_ref IN ({marks})");
+            let sql = format!(
+                "SELECT body FROM shell_records WHERE kind='receipt' AND task_ref IN ({marks})"
+            );
             let mut stmt = self.db()?.prepare(&sql).map_err(err)?;
             let bodies = stmt
-                .query_map(rusqlite::params_from_iter(chunk.iter()), |r| r.get::<_, String>(0))
+                .query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+                    r.get::<_, String>(0)
+                })
                 .map_err(err)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(err)?;
@@ -550,18 +565,28 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
             for chunk in task_ids.chunks(400) {
                 let marks = vec!["?"; chunk.len()].join(",");
                 let sql = format!("SELECT id FROM shell_records WHERE kind=? AND (id IN ({marks}) OR task_ref IN ({marks}))");
-                let args = std::iter::once(*kind).chain(chunk.iter().copied()).chain(chunk.iter().copied());
+                let args = std::iter::once(*kind)
+                    .chain(chunk.iter().copied())
+                    .chain(chunk.iter().copied());
                 let mut stmt = self.db()?.prepare(&sql).map_err(err)?;
-                for id in stmt.query_map(rusqlite::params_from_iter(args), |r| r.get::<_, String>(0)).map_err(err)? {
+                for id in stmt
+                    .query_map(rusqlite::params_from_iter(args), |r| r.get::<_, String>(0))
+                    .map_err(err)?
+                {
                     targets.insert(id.map_err(err)?);
                 }
             }
             for chunk in receipts.chunks(400) {
                 let marks = vec!["?"; chunk.len()].join(",");
-                let sql = format!("SELECT id FROM shell_records WHERE kind=? AND receipt_ref IN ({marks})");
+                let sql = format!(
+                    "SELECT id FROM shell_records WHERE kind=? AND receipt_ref IN ({marks})"
+                );
                 let args = std::iter::once(*kind).chain(chunk.iter().map(String::as_str));
                 let mut stmt = self.db()?.prepare(&sql).map_err(err)?;
-                for id in stmt.query_map(rusqlite::params_from_iter(args), |r| r.get::<_, String>(0)).map_err(err)? {
+                for id in stmt
+                    .query_map(rusqlite::params_from_iter(args), |r| r.get::<_, String>(0))
+                    .map_err(err)?
+                {
                     targets.insert(id.map_err(err)?);
                 }
             }
@@ -576,7 +601,8 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
         if let Some(maps) = self.access.take().filter(|m| m.epoch == epoch) {
             return Ok(maps);
         }
-        let map = |rows: Vec<(i64, String, Value)>| rows.into_iter().map(|(_, id, v)| (id, v)).collect();
+        let map =
+            |rows: Vec<(i64, String, Value)>| rows.into_iter().map(|(_, id, v)| (id, v)).collect();
         Ok(AccessMaps {
             links: map(self.rows("link", false)?),
             index: map(self.rows("link-task", false)?),
@@ -602,7 +628,9 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
             .into_iter()
             .find(|(_, _, value)| value["taskId"] == task_id);
         let index = match &found {
-            Some((_, key, value)) => json!({"taskId":task_id,"shellId":value["shellId"],"linkId":key}),
+            Some((_, key, value)) => {
+                json!({"taskId":task_id,"shellId":value["shellId"],"linkId":key})
+            }
             None => json!({"taskId":task_id,"shellId":null,"linkId":null}),
         };
         self.put("link-task", task_id, &index)?;
@@ -648,7 +676,10 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
             }
             "purgeTaskRefs" => {
                 let kinds = items(&v["kinds"]).iter().map(text).collect::<Vec<_>>();
-                let ids = items(&v["ids"]).iter().filter_map(Value::as_str).collect::<Vec<_>>();
+                let ids = items(&v["ids"])
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>();
                 self.atomic(|s| s.purge_task_refs(&kinds, &ids))?
             }
             "contextCommitted" => self.context_committed(text(&v["taskId"]), id)?,
@@ -712,7 +743,8 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
                         }
                         found
                     } else {
-                        let found = self.rows("task", true)?
+                        let found = self
+                            .rows("task", true)?
                             .into_iter()
                             .find(|(_, _, value)| value["sessionId"] == id);
                         let index = if let Some((_, key, value)) = &found {
@@ -725,7 +757,7 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
                     }
                 }
             }
-            "linkByTask" => self.link_by_task(&id)?,
+            "linkByTask" => self.link_by_task(id)?,
             "receiptsForShell" => {
                 if id.is_empty() {
                     json!([])

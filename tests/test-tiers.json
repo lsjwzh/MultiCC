@@ -6296,6 +6296,15 @@
       ]
     },
     {
+      "path": "tests/test-windows-env.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-workbuddy-dsh-adapters.js",
       "tier": "core",
       "lane": "deterministic",

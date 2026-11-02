@@ -251,8 +251,9 @@ impl BoardState {
             &self.task_order,
             &self.group_order,
         );
-        let outcome =
-            catch_unwind(AssertUnwindSafe(|| dispatch(board, dates, tasks, groups, &command)));
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            dispatch(board, dates, tasks, groups, &command)
+        }));
         let reply = match outcome {
             Ok(Ok(out)) => {
                 let diff = if writes || self.verify_reads {
@@ -510,8 +511,8 @@ impl BoardState {
     fn changes(&self) -> Changes {
         let mut c = Changes::default();
         let empty = Map::new();
-        for k in 0..KINDS.len() {
-            let cur = self.board[KINDS[k]].as_object().unwrap_or(&empty);
+        for (k, kind) in KINDS.iter().enumerate() {
+            let cur = self.board[*kind].as_object().unwrap_or(&empty);
             let old = &self.shadow.hashes[k];
             let mut hashes = HashMap::with_capacity(cur.len());
             for (id, v) in cur {
@@ -567,7 +568,10 @@ impl BoardState {
                 } else {
                     Value::Null
                 };
-                out.insert((*name).into(), json!({"set":set,"del":c.del[k],"order":order}));
+                out.insert(
+                    (*name).into(),
+                    json!({"set":set,"del":c.del[k],"order":order}),
+                );
             }
             self.shadow.keys[k] = cur.keys().cloned().collect();
         }

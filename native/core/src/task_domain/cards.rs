@@ -141,7 +141,11 @@ pub fn base(v: &Value) -> Value {
         last
     } else {
         let created = num(&t["createdAt"]);
-        if created != 0.0 { created } else { num(&t["updatedAt"]) }
+        if created != 0.0 {
+            created
+        } else {
+            num(&t["updatedAt"])
+        }
     };
     let mut card = json!({"id":t["id"],"title":t["title"],"status":t["status"],"recordType":or(&t["recordType"],&Value::Null),"workflowStage":or(&t["workflowStage"],&Value::Null),"lastMessageAt":last,"sessionId":session});
     if let Some(dir) = v.get("dirId") {

@@ -2,6 +2,16 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.14.0 — Manage multiple computers from one console (2026-11-02)
+
+- Add multi-computer management to the web console and mobile app. Connect computers you manage, switch between their task directories, and open each computer's settings without leaving the console. Each remote page shows which computer receives your actions and saved settings.
+- Isolate remote requests, live connections, drafts, task caches, files, annotations, and handoff packages by computer. An offline computer or revoked authorization produces an explicit error instead of sending an action to the entry computer. Keep credentials and vaults on their respective computers.
+- Pair computers using individually revocable grants. The Rust core owns computer identities, private grant storage, address validation, remote HTTP transport, and event streams. Existing Express and WebSocket SDK adapters remain as the host bridge until the Rust host supports the same tested interfaces; they do not implement the new authorization or registry rules. Both computers must run this release and be reachable at their configured addresses.
+- Move task-board rules, task storage, and card construction into the Rust core, retain the task board in memory, and synchronize changes by revision. Upgrade task data to schema v2 with layered context records; first startup displays migration progress and allows more time for the upgrade. Existing Node SDK and external-operation orchestration remains during migration and can be removed after its transaction and recovery contracts move to Rust.
+- Improve context details in web and mobile chat, distinguishing the current context from cumulative usage and exposing the sources used for a turn.
+- Repair Windows host terminal and CLI discovery, refresh installed-tool paths without restarting the server, and preserve the user's command precedence. Retain the Node-specific process environment and terminal adapters for the current host until equivalent Rust host integration is verified. Update proxy-addr to 2.0.8 and exclude relay-key files from version control.
+- Update the mobile app to 2.41.0 (build 186).
+
 ## v2.13.2 — Reliable remote dragging and unified input controls (2026-11-01)
 
 - Unify web remote input across H.264, RFB, and compatibility views. A single finger clicks or drags, a stationary long press opens the context menu, and two fingers zoom and pan locally. Dragging near a zoomed view's edge pans the picture while keeping the remote pointer under the finger. Desktop input supports left, middle, and right buttons, both wheel axes, physical modifier keys, and composed text.

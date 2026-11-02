@@ -104,7 +104,8 @@ impl CardCache {
         self.stats[key] = json!(self.stats[key].as_u64().unwrap_or(0) + n as u64);
     }
     pub fn run(&mut self, input: &str) -> Result<String, String> {
-        let v: Value = crate::json_lenient::from_str(input).map_err(|_| "invalid_card_cache_input")?;
+        let v: Value =
+            crate::json_lenient::from_str(input).map_err(|_| "invalid_card_cache_input")?;
         let now = num(&v["now"]);
         let result = match text(&v["op"]) {
             "open" => {

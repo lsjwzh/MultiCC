@@ -350,13 +350,15 @@ test('core runner covers every selected path and expands declared variants', () 
   // port with a fake native module) uses temp directories and loopback only;
   // deterministic.
   // 368 + 3 + 1 + 1 = 373 entries, deterministic 311 + 1 = 312, 344 + 1 = 345 commands.
-  assert.equal(core.length, 373, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 373);
+  // Windows CLI discovery uses injected filesystem, registry, and process adapters only.
+  // Register its seven deterministic regressions in core: 374 entries, 313 deterministic, 346 commands.
+  assert.equal(core.length, 374, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 374);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 312);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 313);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 30);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -366,8 +368,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 345,
-    '342 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 346,
+    '343 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

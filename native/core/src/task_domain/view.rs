@@ -56,13 +56,13 @@ pub fn apply(b: &Value, v: &Value, host: Host) -> Value {
                 .collect(),
         );
         let routing = routing(&t["routing"]);
-        let run_ids = run_ids(&t);
+        let run_ids = run_ids(t);
         let has_turn =
             v["hasTurnPort"] != true || run_ids.iter().any(|id| facts[text(id)]["hasTurn"] == true);
-        let mut state = if dead(&t, has_turn, num(&v["now"])) {
+        let mut state = if dead(t, has_turn, num(&v["now"])) {
             json!("idle")
         } else {
-            let state = stale(&t, &facts[text(&sole_id(&t))]["runState"], num(&v["now"]));
+            let state = stale(t, &facts[text(&sole_id(t))]["runState"], num(&v["now"]));
             if !state.is_null() {
                 state
             } else if [
@@ -94,7 +94,7 @@ pub fn apply(b: &Value, v: &Value, host: Host) -> Value {
         } else {
             Value::Null
         };
-        let mut out = json!({"id":t["id"],"moduleId":t["moduleId"],"title":t["title"],"status":t["status"],"deleting":t["deleting"]==true,"areas":t["areas"],"refCount":array(&t["refs"]).len(),"sessionIds":ids,"dirIds":unique(dirs.into_iter().filter(truth).collect()),"lastTs":last(&t),"createdAt":t["createdAt"],"taskGroupId":group_by.get(text(&t["id"])).cloned().unwrap_or(Value::Null),"mergedTaskCount":merged.get(text(&t["id"])).copied().unwrap_or(0),"origin":if ["board","session"].contains(&text(&t["origin"])){t["origin"].clone()}else{origin(&t["id"])} });
+        let mut out = json!({"id":t["id"],"moduleId":t["moduleId"],"title":t["title"],"status":t["status"],"deleting":t["deleting"]==true,"areas":t["areas"],"refCount":array(&t["refs"]).len(),"sessionIds":ids,"dirIds":unique(dirs.into_iter().filter(truth).collect()),"lastTs":last(t),"createdAt":t["createdAt"],"taskGroupId":group_by.get(text(&t["id"])).cloned().unwrap_or(Value::Null),"mergedTaskCount":merged.get(text(&t["id"])).copied().unwrap_or(0),"origin":if ["board","session"].contains(&text(&t["origin"])){t["origin"].clone()}else{origin(&t["id"])} });
         let fields = planning::fields(t, host);
         for (k, val) in fields.as_object().unwrap() {
             out[k] = val.clone();
