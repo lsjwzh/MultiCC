@@ -23,6 +23,17 @@ test('删除投影保留存储键、关联值类型和缺失字段，兼容没�
   assert.equal(f.store.get('receipt-index-meta', 'v1'), null, '投影查询不依赖或重建收据桶');
 });
 
+test('删除投影在 SQL 里只取引用字段，孤立代理项与整行宽松解码口径一致', t => {
+  const f = fixture(t);
+  const raw = new (databaseConstructor())(f.file, { timeout: 5000 });
+  // 原文字面量里的孤立代理项转义：SQLite 接受，serde 只能宽松解码。
+  const body = '{"id":"r\\ud800","taskId":"tsk_\\udc00x","payload":"\\ud83d"}';
+  try { raw.prepare('INSERT INTO shell_records(kind, id, body) VALUES (?, ?, ?)').run('receipt', 'lone', body); }
+  finally { raw.close(); }
+  assert.deepEqual(f.store.deletionEntries('receipt'), [['lone', { id: 'r\ufffd', taskId: 'tsk_\ufffdx' }]]);
+  assert.deepEqual(f.store.get('receipt', 'lone'), { id: 'r\ufffd', taskId: 'tsk_\ufffdx', payload: '\ufffd' });
+});
+
 test('批量删除按原有归属清理关联行和索引，并保留共享快照与仍有任务的壳', t => {
   const f = fixture(t);
   const shells = [

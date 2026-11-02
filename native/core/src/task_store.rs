@@ -304,6 +304,52 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
     // link-task 索引协议：命中即 PK 查 link 行，索引指向已删 link 时清索引，
     // 未命中全表扫一次并回填（含否定缓存）。ownerPlan 与 linkByTask op 必须共用，
     // 否则规则路径每次全表扫描且永不回填。
+    // 删除扫描只要三个引用字段。收据行平均约 80KB（整类数百 MB），整行解析一次删除
+    // 就要数秒；在 SQL 里投影，与迁移前的口径相同。SQLite 拒绝的行（宽松解码才能读的
+    // 脏数据）退回整行解析，结果不变。
+    fn deletion_entries(&self, kind: &str) -> Result<Vec<Value>> {
+        const KEYS: [&str; 3] = ["id", "taskId", "receiptId"];
+        let db = self.db()?;
+        let projected = (|| -> rusqlite::Result<Vec<(String, String, [bool; 3])>> {
+            let mut stmt = db.prepare_cached(
+                "SELECT id,json_extract(body,'$.id','$.taskId','$.receiptId'),\
+                 json_type(body,'$.id') IS NOT NULL,json_type(body,'$.taskId') IS NOT NULL,\
+                 json_type(body,'$.receiptId') IS NOT NULL FROM shell_records WHERE kind=? ORDER BY rowid",
+            )?;
+            let rows = stmt.query_map([kind], |r| {
+                Ok((r.get(0)?, r.get(1)?, [r.get(2)?, r.get(3)?, r.get(4)?]))
+            })?;
+            rows.collect()
+        })();
+        let Ok(projected) = projected else {
+            return Ok(self
+                .rows(kind, true)?
+                .into_iter()
+                .map(|(_, id, v)| {
+                    let mut refs = serde_json::Map::new();
+                    for key in KEYS {
+                        if let Some(value) = v.get(key) {
+                            refs.insert(key.into(), value.clone());
+                        }
+                    }
+                    json!([id, refs])
+                })
+                .collect());
+        };
+        projected
+            .into_iter()
+            .map(|(id, values, present)| {
+                let values = parse(&values)?;
+                let mut refs = serde_json::Map::new();
+                for (i, key) in KEYS.iter().enumerate() {
+                    if present[i] {
+                        refs.insert((*key).into(), values[i].clone());
+                    }
+                }
+                Ok(json!([id, refs]))
+            })
+            .collect()
+    }
     fn link_by_task(&mut self, task_id: &str) -> Result<Value> {
         if task_id.is_empty() {
             return Ok(Value::Null);
@@ -357,19 +403,7 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
                 .into_iter()
                 .map(|(_, id, v)| json!([id, v]))
                 .collect::<Vec<_>>()),
-            "deletionEntries" => json!(self
-                .rows(kind, true)?
-                .into_iter()
-                .map(|(_, id, v)| {
-                    let mut refs = serde_json::Map::new();
-                    for key in ["id", "taskId", "receiptId"] {
-                        if let Some(value) = v.get(key) {
-                            refs.insert(key.into(), value.clone());
-                        }
-                    }
-                    json!([id, refs])
-                })
-                .collect::<Vec<_>>()),
+            "deletionEntries" => json!(self.deletion_entries(kind)?),
             "set" => {
                 self.set(kind, id, text(&v["body"]))?;
                 Value::Null

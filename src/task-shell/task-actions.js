@@ -18,10 +18,16 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     if (!task) throw fail('task_not_found', 'Task not found', 404);
     return task;
   }
+  // 归属与权限规则只读下面这些字段。整行任务（平均约 9KB）、整条会话记录与任务板
+  // 镜像都不必过原生边界：任务板读投影逐卡调这里，整份序列化一轮就是几十 MB。
+  const recordFacts = record => record && { kind: record.kind, type: record.type,
+    taskExecutionSlot: record.taskExecutionSlot, experimentalMode: record.experimentalMode };
   function ownerOf(task) {
     const ids = new Set([task.sessionId, task.chatSessionId, ...(task.refs || []).map(ref => ref.sessionId)].filter(Boolean));
-    const records = Object.fromEntries([...ids].map(id => [id, getRecord(id)]));
-    const plan = store.rule({ action: 'ownerPlan', task, records, taskFirst: ports.taskFirst });
+    const records = Object.fromEntries([...ids].map(id => [id, recordFacts(getRecord(id))]));
+    const facts = { id: task.id, ownerShellId: task.ownerShellId, sessionId: task.sessionId, chatSessionId: task.chatSessionId,
+      refs: (task.refs || []).map(ref => ({ sessionId: ref.sessionId })) };
+    const plan = store.rule({ action: 'ownerPlan', task: facts, records, taskFirst: ports.taskFirst });
     return plan?.shellId ? shell(plan.shellId) : plan?.sessionId ? open(plan.sessionId) : null;
   }
 
@@ -34,8 +40,11 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     // pre-migration annotation). Nothing may be written to it, and a read
     // projection must not fail because one row lost its card.
     const owner = task ? ownerOf(task) : null;
-    return store.rule({ action: 'taskAccess', task: task || null, owner,
-      lifecycle: task ? getTask(task.id) || task : null });
+    const lifecycle = task ? getTask(task.id) || task : null;
+    return store.rule({ action: 'taskAccess',
+      task: task ? { taskFirst: task.taskFirst, origin: task.origin, forkedFromTaskId: task.forkedFromTaskId } : null,
+      owner: owner && { id: owner.id, standalone: owner.standalone, sourceSessionId: owner.sourceSessionId },
+      lifecycle: lifecycle && { status: lifecycle.status, deleting: lifecycle.deleting } });
   }
   async function taskEntry(id, { includeMessages = true } = {}) {
     const task = findTask(id), lifecycle = getTask(id) || task;

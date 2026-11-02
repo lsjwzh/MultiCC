@@ -89,8 +89,8 @@ function probeAddon(file, node = process.execPath) {
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(a.taskStoreProtocolVersion?.()!==1 || a.taskDomainProtocolVersion?.()!==1
-      || ['RustTaskStore','RustAirCardCache','taskDomain','taskDomainAsync'].some(key=>typeof a[key]!=='function')) process.exit(1);
-    if(typeof a.RustAirCardCache.prototype.prepareAsync!=='function') process.exit(1);
+      || ['RustTaskStore','RustAirCardCache','RustTaskBoard','taskDomain','taskDomainAsync'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(typeof a.RustAirCardCache.prototype.prepareAsync!=='function' || typeof a.RustAirCardCache.prototype.prepareBoardAsync!=='function') process.exit(1);
     const store=new a.RustTaskStore(':memory:');
     store.run(JSON.stringify({op:'set',kind:'task',id:'smoke',body:JSON.stringify({id:'smoke'})}));
     if(JSON.parse(store.run('{"op":"get","kind":"task","id":"smoke"}')).id!=='smoke') process.exit(1);
