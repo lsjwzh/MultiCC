@@ -2533,6 +2533,9 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
 .air-ops-status-bad { color: #b34128; }
 .air-ops-muted { color: var(--muted); }
 .air-ops-needs-root { margin: 10px 0 4px; color: var(--warning); font-size: 12px; line-height: 1.6; }
+.air-ops-git-help { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; line-height: 1.6; }
+.air-ops-git-help p { margin: 0 0 6px; font-weight: 600; }
+.air-ops-git-help ol { margin: 0; padding-left: 20px; }
 .air-ops-copy { display: block; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); font-size: 12px; word-break: break-all; user-select: all; }
 .air-ops-chips, .air-ops-history { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
 .air-ops-history:empty { margin-top: 0; }

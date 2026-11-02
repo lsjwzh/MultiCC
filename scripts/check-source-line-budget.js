@@ -545,9 +545,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   10252/662731。
     // +2 双语键（airOpsDataMigrating/airOpsDataMigratingBody）：网页一键更新时新版本首次启动在升级
     //   任务数据，更新弹窗显示升级百分比而不是「服务重启中」，中英各 2 行 = +4 行，实测 10256/663218。
-    maxLines: 10256,
+    // +7 双语键：Windows 安装 Git 后的重开指引和环境重新检测；仅增加生成词典数据。
+    maxLines: 10270,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 663218,
+    maxBytes: 665553,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

@@ -22,6 +22,103 @@ const CONTENT_TYPE = { css: 'text/css', js: 'text/javascript', svg: 'image/svg+x
 
 const json = value => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
 
+test('安装完成但 Git 不可用时引导重开，检测成功后才能重试添加项目', async t => {
+  if (!findChromeBinary()) return t.skip('需要浏览器');
+  const publicDir = path.resolve(__dirname, '../public');
+  const command = require('../src/routes/ops-terminal').GIT_INSTALL_COMMANDS.winget;
+  let platform = 'win32', available = false, probeFails = false, job = null;
+  const routes = {
+    '/': { headers: { 'content-type': 'text/html; charset=utf-8' }, body: `<!doctype html><html lang="zh"><head>
+      <meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/air.css"></head><body>
+      <script src="/i18n-catalog.js"></script><script src="/i18n.js"></script><script src="/air-ops-terminal.js"></script>
+      <script>window.__errors=[];addEventListener('error',e=>__errors.push(e.message));
+      addEventListener('unhandledrejection',e=>__errors.push(String(e.reason)));
+      MultiCCAirOps.open({retry:()=>{window.__retried=true}});</script></body></html>` },
+    '/api/system/ops-env': () => probeFails
+      ? { status: 503, ...json({ ok: false, message: '检测暂时失败' }) }
+      : json({ ok: true, platform, git: { available, version: available ? '2.56.0' : null },
+        identity: { valid: available, name: 'tester', email: 'tester@example.com' },
+        packageManager: 'winget', suggestions: { gitInstall: command, gitInstallRunnable: true } }),
+    'GET /api/system/ops-run': () => json({ ok: true, job }),
+    'POST /api/system/ops-run': ({ body }) => {
+      job = { id: 1, command: JSON.parse(body).command, running: true, exitCode: null, durationMs: 100,
+        chunk: '', total: 0, skipped: 0, timedOut: false, stopped: false, error: null };
+      return json({ ok: true, job });
+    },
+  };
+  for (const file of ['air.css', 'i18n-catalog.js', 'i18n.js', 'air-ops-terminal.js']) {
+    routes[`/${file}`] = { body: fs.readFileSync(path.join(publicDir, file)),
+      headers: { 'content-type': file.endsWith('.css') ? 'text/css' : 'text/javascript' } };
+  }
+  await withCdpHarness({ routes, locale: 'zh-CN', screenshotDir: path.join(os.tmpdir(), 'multicc-git-onboarding-qa') }, async page => {
+    const button = label => `[...document.querySelectorAll('.air-ops-footer button')].find(b=>b.textContent===${JSON.stringify(label)})`;
+    const ready = () => page.waitFor(`${button('重新检测')} && !${button('重新检测')}.disabled`);
+    await page.navigate('/');
+    assert.ok(await ready());
+    assert.match(await page.evaluate('document.querySelector(".air-ops-env").textContent'), /当前不可用/);
+    assert.match(await page.evaluate('document.querySelector(".air-ops-git-help").textContent'), /如果刚安装过/);
+    assert.equal(await page.evaluate('document.querySelector(".air-ops-input").value'), command);
+    await page.evaluate('document.querySelector(".air-ops-dialog form").requestSubmit()');
+    assert.ok(await page.waitFor('!document.querySelector(".air-ops-cmdline .danger").hidden'));
+    assert.equal(await page.evaluate(`${button('重新检测')}.disabled`), true);
+    job = { ...job, running: false, exitCode: 0, durationMs: 500 };
+    assert.ok(await page.waitFor('document.querySelector(".air-ops-git-help").textContent.includes("安装命令已完成")'));
+    assert.equal(await page.evaluate('document.querySelector(".air-ops-input").value'), '', '不能再次自动填入安装命令');
+    assert.equal(await page.evaluate('document.querySelector(".air-ops-advice .air-ops-chip") === null'), true);
+    assert.equal(await page.evaluate(`${button('重试添加项目')}.hidden`), true, '退出码零不代表环境就绪');
+
+    // 重开后仍根据后台最后一次安装结果显示指引，不再鼓励重复安装。
+    await page.navigate('/');
+    assert.ok(await ready());
+    assert.match(await page.evaluate('document.querySelector(".air-ops-git-help").textContent'), /安装命令已完成/);
+    assert.equal(await page.evaluate('document.querySelector(".air-ops-input").value'), '');
+    t.diagnostic('电脑界面：' + await page.screenshot('git-restart-desktop'));
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    assert.ok(await page.evaluate('document.querySelector(".air-ops-dialog").scrollWidth <= document.querySelector(".air-ops-dialog").clientWidth + 1'), '手机宽度下不横向溢出');
+    t.diagnostic('手机界面：' + await page.screenshot('git-restart-mobile'));
+
+    available = true;
+    await page.evaluate(`${button('重新检测')}.click()`);
+    assert.ok(await page.waitFor('document.querySelector(".air-ops-ready").textContent.includes("环境已就绪")'));
+    assert.equal(await page.evaluate('document.querySelector(".air-ops-git-help") === null'), true);
+    assert.equal(await page.evaluate(`${button('重试添加项目')}.hidden`), false);
+    probeFails = true;
+    await page.evaluate(`${button('重新检测')}.click()`);
+    assert.ok(await page.waitFor('document.querySelector(".air-ops-env").textContent.includes("环境检测失败")'));
+    assert.equal(await page.evaluate(`${button('重试添加项目')}.hidden`), true, '检测失败时移除旧的就绪状态');
+    assert.equal(await page.evaluate('document.querySelector(".air-ops-ready").textContent'), '');
+    await page.navigate('/');
+    assert.ok(await ready());
+    assert.match(await page.evaluate('document.querySelector(".air-ops-env").textContent'), /环境检测失败/, '首次检测失败也应保留报错');
+    probeFails = false;
+    await page.evaluate(`${button('重新检测')}.click()`);
+    assert.ok(await page.waitFor(`!${button('重试添加项目')}.hidden`));
+    await page.evaluate(`${button('重试添加项目')}.click()`);
+    assert.equal(await page.evaluate('window.__retried'), true);
+
+    available = false;
+    for (const result of [{ exitCode: 1 }, { exitCode: 0, stopped: true }, { exitCode: 0, timedOut: true }]) {
+      job = { ...job, exitCode: 0, stopped: false, timedOut: false, ...result };
+      await page.navigate('/');
+      assert.ok(await ready());
+      assert.doesNotMatch(await page.evaluate('document.querySelector(".air-ops-git-help").textContent'), /安装命令已完成/);
+      assert.equal(await page.evaluate('document.querySelector(".air-ops-input").value'), command);
+    }
+    job = { ...job, command: 'git --version', exitCode: 0, timedOut: false };
+    await page.navigate('/');
+    assert.ok(await ready());
+    assert.doesNotMatch(await page.evaluate('document.querySelector(".air-ops-git-help").textContent'), /安装命令已完成/, '其他命令成功不能当成安装完成');
+    for (platform of ['linux', 'darwin']) {
+      await page.navigate('/');
+      assert.ok(await ready());
+      assert.equal(await page.evaluate('document.querySelector(".air-ops-git-help") === null'), true);
+      assert.deepEqual(await page.evaluate('window.__errors'), []);
+    }
+    assert.equal(page.requests.filter(r => r.path === '/api/restart').length, 0, '绝不自动重启服务');
+    assert.equal(page.requests.filter(r => r.path === '/api/system/ops-run' && r.method === 'POST').length, 1);
+  });
+});
+
 test('the Air host-ops region renders, reads light, and drives the update flow', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   const publicDir = path.resolve(__dirname, '../public');
