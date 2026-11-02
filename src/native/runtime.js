@@ -56,11 +56,11 @@ function nativeCode(error) {
   return error;
 }
 
-// 原生任务共用 libuv 工作池。限制并行和排队数量，避免搜索突发占满文件 I/O 线程。
+// 原生任务共用 libuv 工作池。只限制并行数，避免搜索突发占满文件 I/O 线程；排满时
+// 等待而不拒绝：Air 刷新与任务板落盘也走这条队列，拒绝就是一次失败的刷新或保存。
 let active = 0;
 const waiting = [];
 function runNative(operation) {
-  if (active >= 2 && waiting.length >= 16) return Promise.reject(new Error('rust_queue_full'));
   return new Promise((resolve, reject) => {
     const start = () => {
       active += 1;

@@ -190,3 +190,16 @@ test('real worktree baseline refuses dirty files and shared siblings block write
   states.set('member', { isStreaming: true }); assert.equal(host.busy('root'), true);
   await assert.rejects(host.captureForkBaseline({ sessionId: 'root' }, { sourceSessionId: 'root' }), { code: 'fork_source_busy' });
 });
+
+test('taskAccess 只把规则读到的字段送过原生边界，整行任务不随卡片逐张序列化', t => {
+  const f = fixture(t);
+  const task = f.runtime.adopt(f.a.id, 'a');
+  f.store.set('task', task.id, { ...f.store.get('task', task.id), contextLedger: { blob: 'x'.repeat(200_000) } });
+  const expected = f.runtime.taskAccess(task.id);
+  const rule = f.store.rule, sizes = [];
+  f.store.rule = command => { sizes.push([command.action, JSON.stringify(command).length]); return rule(command); };
+  try { assert.deepEqual(f.runtime.taskAccess(task.id), expected); } finally { f.store.rule = rule; }
+  assert.equal(expected.ownerShellId, f.a.id);
+  assert.deepEqual(sizes.map(([action]) => action), ['ownerPlan', 'taskAccess']);
+  for (const [action, size] of sizes) assert.ok(size < 2000, `${action} 载荷 ${size} 字节`);
+});
