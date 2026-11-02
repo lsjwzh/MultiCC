@@ -147,6 +147,10 @@ providers.json
 providers.json.bak-*
 provider-defaults.json
 provider-relay-shares.json
+# 借道分享凭据的本地加密密钥及原子写入临时文件，禁止入库。
+provider-relay-shares.json.key
+provider-relay-shares.json.key.tmp.*
+provider-relay-shares.json.tmp.*
 provider-limit-cache.db
 provider-limit-cache.db-shm
 provider-limit-cache.db-wal
