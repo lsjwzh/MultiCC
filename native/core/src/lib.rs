@@ -13,6 +13,7 @@ pub mod task_read_model;
 pub mod task_store;
 pub mod task_domain;
 pub mod usage;
+pub mod worktree_sync;
 pub mod virtual_provider;
 
 pub mod claude_refresh;

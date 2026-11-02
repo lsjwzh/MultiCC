@@ -198,10 +198,10 @@ function createSessionHibernationRuntime(options = {}) {
   function touchUnlocked(sessionId, source = 'runtime.hibernate.touch') {
     return persistState(sessionId, source, (record) => {
       record.lastWorkAt = iso(now());
-      // Keep a visible warning while the resident checkout is detached or on a
-      // different branch. A later successful inspection clears it.
+      // Preserve resident checkout warnings and skipped wake-sync diagnostics
+      // across admission touches. Successful recovery clears them separately.
       if (!['workspace_branch_mismatch', 'workspace_worktree_unregistered']
-        .includes(record.workspaceStateErrorCode)) {
+        .includes(record.workspaceStateErrorCode) && !record.workspaceStateErrorCode?.startsWith('wake_sync_')) {
         record.workspaceStateErrorCode = null;
       }
     });
@@ -249,9 +249,10 @@ function createSessionHibernationRuntime(options = {}) {
         current.worktreePath = result.worktreePath || current.worktreePath;
         current.branch = result.branch || current.branch;
         current.hibernatedAt = null;
-        current.workspaceStateErrorCode = null;
+        current.workspaceStateErrorCode = result.sync?.code || null;
       });
       updateChatCwd(sessionId, records.get(sessionId).worktreePath);
+      if (result.sync) publish('sync', result.sync.ok ? 'success' : 'skip', sessionId, result.sync.code || null);
       publish('thaw', 'success', sessionId);
       return { ok: true, thawed: true };
     } catch (error) {
