@@ -33,7 +33,9 @@ const GIT_INSTALL_COMMANDS = Object.freeze({
   pacman: 'pacman -S --noconfirm git',
   zypper: 'zypper --non-interactive install git',
   brew: 'brew install git',
-  winget: 'winget install --id Git.Git -e',
+  // stdin is closed: scope the source to avoid msstore prompts, accept both
+  // agreement types, and keep winget and the Git installer non-interactive.
+  winget: 'winget install --id Git.Git -e --source winget --accept-source-agreements --accept-package-agreements --silent --disable-interactivity',
   choco: 'choco install -y git',
   scoop: 'scoop install git',
 });
