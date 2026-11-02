@@ -444,7 +444,7 @@ function createChatTurnEngine(deps) {
   function contextTraceFor(sessionName, cs) {
     if (!cs?._taskShellReceiptId) return null;
     try {
-      return taskContextHost?.taskShellContextTrace?.(sessionName, cs._taskShellReceiptId) || null;
+      return taskContextHost?.taskShellContextTrace?.(sessionName, cs._taskShellReceiptId, { summary: true }) || null;
     } catch (error) {
       logger.warn('task_shell_context_trace_failed', {
         sessionId: sessionName,

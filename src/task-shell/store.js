@@ -13,6 +13,9 @@ function createTaskShellStore(file) {
     try { return JSON.parse(native.run(JSON.stringify(command))); }
     catch (error) { throw nativeCode(error); }
   };
+  // 打开时做过 v1→v2 迁移就报一次结果（只有计数、耗时与备份路径，不含用户数据）。
+  const migration = run({ op: 'migration' });
+  if (migration?.stats?.rows) console.info('[multicc] 任务仓储已升级到 v2', migration);
   function rule(command) {
     try { return run({ ...command, op: 'rule' }); }
     catch (error) {
@@ -34,7 +37,11 @@ function createTaskShellStore(file) {
     get: (kind, id) => run({ op: 'get', kind, id }),
     list: kind => run({ op: 'list', kind }),
     entries: kind => run({ op: 'entries', kind }),
-    deletionEntries: kind => run({ op: 'deletionEntries', kind }),
+    // 删除这些任务的关联行（按引用列索引），见 runtime.purgeTasks。
+    purgeTaskRefs: (kinds, ids) => run({ op: 'purgeTaskRefs', kinds, ids }),
+    // 上下文记录：提交后压缩并整理窗口；读取引用来源面板的数据。
+    contextCommitted: (taskId, receiptId) => run({ op: 'contextCommitted', taskId, id: receiptId }),
+    contextTrace: (receiptId, includeMessages = false) => run({ op: 'contextTrace', id: receiptId, includeMessages }),
     cachedList: kind => cached('rows', kind).rows.slice(),
     cachedEntries: kind => cached('entries', kind).rows.slice(),
     cachedById(kind) {

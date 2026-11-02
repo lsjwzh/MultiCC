@@ -38,7 +38,7 @@ const LIB_DIR = fs.existsSync(path.join(__dirname, 'lib'))
   ? path.join(__dirname, 'lib')
   : path.resolve(__dirname, '..', 'desktop', 'lib');
 const {
-  createLogger, openBrowser, probeReady, standaloneDataDir,
+  createLogger, openBrowser, probeReady, readStartupState, standaloneDataDir,
 } = require(path.join(__dirname, 'standalone-launcher'));
 const { pidAlive, readRuntimeInfo } = require(path.join(LIB_DIR, 'orphan-reclaim'));
 const { dequarantine, translocationGuidance } = require(path.join(LIB_DIR, 'desktop-env'));
@@ -234,15 +234,29 @@ async function cmdStart(layout, env, args) {
   return 0;
 }
 
-async function waitUntilReady(layout, env, port, { attempts = 120 } = {}) {
+// A first boot after upgrading converts the task database before it serves
+// (35-70s on a large real database, longer on slow disks). While the launcher
+// reports that upgrade, waiting does not use up attempts — only this cap.
+const MIGRATION_WAIT_MS = 30 * 60_000;
+
+async function waitUntilReady(layout, env, port, {
+  attempts = 120, intervalMs = 500, migrationWaitMs = MIGRATION_WAIT_MS, write = text => process.stdout.write(text),
+} = {}) {
+  const startedAt = Date.now();
+  let lastLine = '';
   for (let i = 0; i < attempts; i += 1) {
     const state = await currentState(layout, env);
     if (state.running) return state;
-    if (state.origin && !state.running) {
-      // Wait for readiness on the origin the launcher recorded, even when the
-      // requested port was taken and it moved on to another one.
+    const migration = readStartupState(standaloneDataDir({ env }))?.migration;
+    if (migration && Date.now() - startedAt < migrationWaitMs) {
+      i -= 1;
+      const line = migration.state === 'failed'
+        ? `waiting: ${migration.error?.message || 'upgrade failed'}`
+        : `${migration.step} ${migration.percent}%`;
+      if (line !== lastLine) write(`Upgrading task data (one time only): ${line}\n`);
+      lastLine = line;
     }
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
   return { running: false, origin: null };
 }
@@ -261,10 +275,13 @@ async function cmdRestart(layout, env, args) {
 async function cmdStatus(layout, env, args) {
   const state = await currentState(layout, env);
   const configFile = envFilePath(layout, env);
+  const migration = state.running ? null : readStartupState(standaloneDataDir({ env }))?.migration || null;
   if (args.json) {
     process.stdout.write(`${JSON.stringify({
       running: state.running,
       starting: Boolean(state.starting),
+      migrating: Boolean(migration),
+      ...(migration ? { migration } : {}),
       pid: state.pid,
       url: state.origin,
       version: layout.manifest.version,
@@ -279,6 +296,8 @@ async function cmdStatus(layout, env, args) {
   process.stdout.write(`MultiCC ${layout.manifest.version} (${layout.platform}-${layout.arch})\n`);
   if (state.running) {
     process.stdout.write(`  status: running at ${state.origin} (pid ${state.pid})\n`);
+  } else if (migration) {
+    process.stdout.write(`  status: upgrading task data (one time only), ${migration.state === 'failed' ? migration.error?.message : `${migration.percent}%`}\n`);
   } else if (state.starting) {
     process.stdout.write(`  status: starting (pid ${state.pid}, not ready yet)\n`);
   } else {

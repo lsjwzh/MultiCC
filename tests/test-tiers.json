@@ -5875,6 +5875,24 @@
       ]
     },
     {
+      "path": "tests/test-task-store-migration-gate.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-store-v2.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
       "path": "tests/test-task-worktree.js",
       "tier": "core",
       "lane": "deterministic"

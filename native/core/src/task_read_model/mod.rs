@@ -110,7 +110,7 @@ impl ReadModel {
                 let schema: i64 = db
                     .pragma_query_value(None, "user_version", |r| r.get(0))
                     .map_err(|_| "read_model_schema")?;
-                if schema != 1 {
+                if !(1..=crate::task_store::SCHEMA_VERSION).contains(&schema) {
                     return Err("read_model_unsupported_schema".into());
                 }
                 db.prepare("SELECT id,body FROM shell_records WHERE kind='task' ORDER BY rowid")
@@ -192,7 +192,7 @@ impl ReadModel {
         let schema: i64 = db
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(|_| "read_model_read_failed")?;
-        if schema != 1 {
+        if !(1..=crate::task_store::SCHEMA_VERSION).contains(&schema) {
             return Err("read_model_unsupported_schema".into());
         }
         db.pragma_query_value(None, "data_version", |r| r.get(0))
@@ -307,7 +307,7 @@ impl ReadModel {
         let schema: i64 = db
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(|_| "read_model_read_failed")?;
-        if schema != 1 {
+        if !(1..=crate::task_store::SCHEMA_VERSION).contains(&schema) {
             return Err("read_model_unsupported_schema".into());
         }
         // Only this persistent connection owns data_version. All writers are

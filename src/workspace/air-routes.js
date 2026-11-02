@@ -267,14 +267,14 @@ function mountAirRoutes(app, deps) {
   // 占住字段顺序，由 cardOverlay 每轮现填 —— 两条路径吐出的 JSON 逐字节相同，缓存
   // 命中与否客户端看不出来。
   // 宿主只读取权威接口，Rust 组装卡片并决定状态覆盖。
-  function cardFacts(t, taskDirs, records, admissionIdx, timedAdd) {
+  function cardFacts(t, taskDirs, records, admissionIdx, timedAdd, accessOf) {
     const sessionId = t.chatSessionId || t.sessionId || null;
     const record = records[sessionId];
     const workspace = admissionIdx.workspaceByOwner.get(record?.workspaceOwnerSessionId || sessionId) || null;
     const lease = workspace ? admissionIdx.leaseByWorkspace.get(workspace.id) || null : null;
     return { task: t, record: record || null, workspace, lease,
       dirId: taskDirs[t.id],
-      access: timedAdd('accessMs', () => deps.shell.taskAccess(t)),
+      access: accessOf(t),
       providerName: record?.provider ? record.providerName : null };
   }
   function runFacts(task) {
@@ -289,11 +289,11 @@ function mountAirRoutes(app, deps) {
 
   // 签名用输入内容而不是版本号：任务板卡片与会话记录都有原地改写，版本号漏记一次
   // 就是一张永远不刷新的卡。
-  //   全局签名：任务库读数（权属表的行太大，只取读数，见 store.epoch）+ 任务板的
-  //            模块/分组。读数拿不到就返回 null —— 缓存据此放弃，而不是猜。
+  //   全局签名：任务板的模块/分组。
   //   逐卡签名：这张卡在任务板上的全文 + 它引用到的会话记录投影 + 它自己的
-  //            workspace/lease。会话投影每轮每条只算一次。
-  const CARD_STORE_KINDS = ['task', 'task-session', 'link', 'link-task', 'shell'];
+  //            workspace/lease + 它的权限判断结果（任务库对卡片的唯一输入，整页
+  //            一次批量算出）。会话投影每轮每条只算一次。任务库任何一行变了，只有
+  //            结果真变了的那几张卡重建。
   // 只采集权威会话字段，签名算法与目录统计在 Rust 异步执行。
   function cardRecordFacts() {
     const providerNames = new Map();
@@ -367,8 +367,10 @@ function mountAirRoutes(app, deps) {
     const recordFacts = cardRecordFacts();
     const prepare = cardCache.prepareAsync || taskDomainAsync;
     const prepared = await prepare({ op: 'airInputs', board, records: recordFacts, admission,
-      shellTasks: deps.shell.listTasks?.() || [],
-      epoch: cardCache.mode === 'off' ? null : deps.shell.readEpoch?.(CARD_STORE_KINDS) ?? null });
+      // 可见性只看这四个字段；整行任务不随每次刷新序列化。
+      shellTasks: (deps.shell.listTasks?.() || []).map(t => ({ id: t.id, embedded: t.embedded,
+        separatedFromTaskId: t.separatedFromTaskId, ready: t.ready })),
+      cacheable: cardCache.mode !== 'off' });
     const hibernationPolicy = (() => {
       try { return deps.hibernation?.()?.policy?.() || null; } catch (_) { return null; }
     })();
@@ -381,10 +383,16 @@ function mountAirRoutes(app, deps) {
     // worktreeChanges / capacityReason 随时间与全局运行时变，每轮现算叠上去
     // （见 cardOverlay）。
     const globalSignature = prepared.globalSignature;
-    const signatureOf = task => prepared.signatures[task.id];
+    const accessById = timedAdd('accessMs', () => deps.shell.taskAccessBatch
+      ? deps.shell.taskAccessBatch(cards) : new Map(cards.map(t => [t.id, deps.shell.taskAccess(t)])));
+    const accessOf = t => accessById.get(t.id);
+    const signatureOf = task => {
+      const signature = prepared.signatures[task.id];
+      return signature == null ? signature : `${signature}:${JSON.stringify(accessOf(task) ?? null)}`;
+    };
     lap('cardSignatureMs');
     const resolve = cardCache.resolveAsync || cardCache.resolve;
-    const nativeBaseOf = t => cardFacts(t, prepared.taskDirs, recordFacts, admissionIdx, timedAdd);
+    const nativeBaseOf = t => cardFacts(t, prepared.taskDirs, recordFacts, admissionIdx, timedAdd, accessOf);
     const resolved = await resolve(globalSignature, cards, {
       keyOf: t => t.id, signatureOf: t => (signatureOf ? signatureOf(t) : null),
       prune: !selected, nativeBaseOf,

@@ -211,9 +211,13 @@ test('managed execution helper prepares at actual turn, commits only successful 
     opts: { taskShellReceiptId: d.receiptId }, text: 'first', isFirstTurn: true });
   assert.ok(managed.seed); contextSent(turn);
   contextCompleted({ turn, terminalBlocked: true }, { effects: [{ type: 'classify-turn-end', classification: 'succeeded' }] });
-  assert.equal(f.store.get('task', d.taskId).contextLedger, undefined);
+  assert.equal(f.store.get('context-ledger', d.taskId), null);
+  const taskRow = f.store.get('task', d.taskId);
   contextCompleted({ turn }, { effects: [{ type: 'classify-turn-end', classification: 'succeeded' }] });
-  assert.ok(f.store.get('task', d.taskId).contextLedger);
+  assert.ok(f.store.get('context-ledger', d.taskId)?.sources);
+  // 台账单独成类：普通一轮提交不重写任务行（任务行缓存与 Air 卡片不随之失效）。
+  assert.deepEqual(f.store.get('task', d.taskId), taskRow);
+  assert.equal(f.store.get('task', d.taskId).contextLedger, undefined);
   const next = await delivery(f, 'next');
   const warm = prepareManagedContext({ host, memory, sessionName: d.sessionId, persisted: f.records.get(d.sessionId), turn: { turnId: 'next' },
     opts: { taskShellReceiptId: next.receiptId }, text: 'next', isFirstTurn: false });

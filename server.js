@@ -28,8 +28,8 @@ for (const k of [
   'CLAUDE_CODE_EXECPATH', 'CLAUDE_CODE_SESSION_ID',]) {
   if (process.env[k]) { console.log(`[multicc] stripping leaked ${k} so spawned claude keeps the full tool set`); delete process.env[k]; }
 }
-// Every outbound request follows the user's proxy (env, else macOS system proxy);
-// loopback and the system exceptions list stay direct.
+require('./src/task-shell/migration-gate').runAtBoot();
+// Outbound requests use the user's proxy (env/system), loopback/exceptions direct
 require('./src/network/global-proxy').installGlobalProxy();
 const express = require('express');
 const http = require('http');

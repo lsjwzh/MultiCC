@@ -62,7 +62,97 @@ fn public_relation(r: &Value) -> Value {
     };
     json!({"id":r["id"],"shellId":r["shellId"],"kind":r["kind"],"fromTaskId":r["fromTaskId"],"toTaskId":r["toTaskId"],"fromTitle":null,"toTitle":null,"provenance":r.get("provenance").filter(|v|truth(v)).cloned().unwrap_or(json!("user")),"confirmed":r["confirmed"]!=false,"revision":revision,"createdAt":r["createdAt"],"resolvedAt":r.get("removedAt").filter(|v|truth(v)).cloned().unwrap_or(Value::Null),"createdBy":r.get("createdBy").filter(|v|truth(v)).cloned().unwrap_or(Value::Null)})
 }
+fn task_access(t: &Value, owner: &Value, lifecycle: &Value) -> Value {
+    if t.is_null() {
+        return json!({"status":"active","readOnly":true,"ownerShellId":null,"sourceSessionId":null,"forkedFromTaskId":null});
+    }
+    json!({"status":lifecycle.get("status").filter(|v|truth(v)).cloned().unwrap_or(json!("active")),"readOnly":lifecycle["status"]=="archived"||lifecycle["deleting"]==true||if !owner.is_null(){!truth(&owner["standalone"])&&!truth(&t["taskFirst"])}else{t["origin"]!="board"},"ownerShellId":owner.get("id").filter(|v|truth(v)).cloned().unwrap_or(Value::Null),"sourceSessionId":owner.get("sourceSessionId").filter(|v|truth(v)).cloned().unwrap_or(Value::Null),"forkedFromTaskId":t.get("forkedFromTaskId").filter(|v|truth(v)).cloned().unwrap_or(Value::Null)})
+}
+// 归属规则本体（纯函数）：link 是这张卡的 link 行（没有为 Null）。逐卡与整页批量共用。
+fn owner_from(t: &Value, link: &Value, records: &Value, task_first: bool) -> Value {
+    if truth(&t["ownerShellId"]) {
+        return json!({"shellId":t["ownerShellId"]});
+    }
+    if !link.is_null() {
+        return json!({"shellId":link["shellId"]});
+    }
+    let sid = if truth(&t["sessionId"]) {
+            t["sessionId"].clone()
+        } else if truth(&t["chatSessionId"]) {
+            t["chatSessionId"].clone()
+        } else {
+            items(&t["refs"])
+                .iter()
+                .find(|r| {
+                    records
+                        .get(text(&r["sessionId"]))
+                        .is_some_and(|v| !v.is_null())
+                })
+                .map(|r| r["sessionId"].clone())
+                .unwrap_or(Value::Null)
+        };
+    let record = &records[text(&sid)];
+    if record.is_null()
+        || record["kind"] != "chat"
+        || truth(&record["taskExecutionSlot"])
+        || truth(&record["experimentalMode"])
+        || ["gateway", "aux"].contains(&text(&record["type"]))
+        || (record["type"] == "commander" && !task_first)
+    {
+        Value::Null
+    } else {
+        json!({"sessionId":sid})
+    }
+}
 impl TaskStore {
+    fn owner_plan(&mut self, t: &Value, records: &Value, task_first: bool) -> Result<Value> {
+        let link = if truth(&t["ownerShellId"]) {
+            Value::Null
+        } else {
+            self.link_by_task(text(&t["id"]))?
+        };
+        Ok(owner_from(t, &link, records, task_first))
+    }
+    // 整页批量：link、link 索引与任务壳从按写入读数缓存的内存映射里取，一页只在这三类
+    // 真被写过时重读一次。索引缺失或失效的卡回到 link_by_task（写否定缓存/清失效索引）。
+    fn access_batch(&mut self, v: &Value) -> Result<Value> {
+        let records = &v["records"];
+        let task_first = v["taskFirst"] == true;
+        let maps = self.access_maps()?;
+        let mut out = vec![];
+        for item in items(&v["items"]) {
+            let t = &item["task"];
+            let link = if truth(&t["ownerShellId"]) {
+                Value::Null
+            } else {
+                match maps.link_for(text(&t["id"])) {
+                    Some(link) => link,
+                    None => self.link_by_task(text(&t["id"]))?,
+                }
+            };
+            let plan = owner_from(t, &link, records, task_first);
+            let owner = if truth(&plan["shellId"]) {
+                match maps.shells.get(text(&plan["shellId"])) {
+                    Some(shell) if shell.get("standalone").is_some() => {
+                        json!({"id":shell["id"],"standalone":shell["standalone"],"sourceSessionId":shell["sourceSessionId"]})
+                    }
+                    // 壳不在或缺 standalone：宿主走逐卡路径（会建壳/回填）。
+                    _ => {
+                        out.push(json!({"pending":true}));
+                        continue;
+                    }
+                }
+            } else if truth(&plan["sessionId"]) {
+                out.push(json!({"pending":true}));
+                continue;
+            } else {
+                Value::Null
+            };
+            out.push(task_access(t, &owner, &item["lifecycle"]));
+        }
+        self.access = Some(maps);
+        Ok(json!(out))
+    }
     fn current_role(&self, id: &str, v: &Value) -> Result<Value> {
         let task = self.get("task", id)?;
         if task.is_null() {
@@ -108,60 +198,13 @@ impl TaskStore {
         let id = text(&v["taskId"]);
         let input = &v["input"];
         match action {
-            "ownerPlan" => {
-                let t = &v["task"];
-                if truth(&t["ownerShellId"]) {
-                    return Ok(json!({"shellId":t["ownerShellId"]}));
-                }
-                let task_id = text(&t["id"]);
-                let link = self.link_by_task(task_id)?;
-                if !link.is_null() {
-                    return Ok(json!({"shellId":link["shellId"]}));
-                }
-                let records = &v["records"];
-                let sid = if truth(&t["sessionId"]) {
-                    t["sessionId"].clone()
-                } else if truth(&t["chatSessionId"]) {
-                    t["chatSessionId"].clone()
-                } else {
-                    array(&t["refs"])
-                        .iter()
-                        .find(|r| {
-                            records
-                                .get(text(&r["sessionId"]))
-                                .is_some_and(|v| !v.is_null())
-                        })
-                        .map(|r| r["sessionId"].clone())
-                        .unwrap_or(Value::Null)
-                };
-                let record = &records[text(&sid)];
-                Ok(
-                    if record.is_null()
-                        || record["kind"] != "chat"
-                        || truth(&record["taskExecutionSlot"])
-                        || truth(&record["experimentalMode"])
-                        || ["gateway", "aux"].contains(&text(&record["type"]))
-                        || (record["type"] == "commander" && v["taskFirst"] != true)
-                    {
-                        Value::Null
-                    } else {
-                        json!({"sessionId":sid})
-                    },
-                )
-            }
-            "taskAccess" => {
-                let t = &v["task"];
-                if t.is_null() {
-                    return Ok(
-                        json!({"status":"active","readOnly":true,"ownerShellId":null,"sourceSessionId":null,"forkedFromTaskId":null}),
-                    );
-                }
-                let lifecycle = &v["lifecycle"];
-                let owner = &v["owner"];
-                Ok(
-                    json!({"status":lifecycle.get("status").filter(|v|truth(v)).cloned().unwrap_or(json!("active")),"readOnly":lifecycle["status"]=="archived"||lifecycle["deleting"]==true||if !owner.is_null(){!truth(&owner["standalone"])&&!truth(&t["taskFirst"])}else{t["origin"]!="board"},"ownerShellId":owner.get("id").filter(|v|truth(v)).cloned().unwrap_or(Value::Null),"sourceSessionId":owner.get("sourceSessionId").filter(|v|truth(v)).cloned().unwrap_or(Value::Null),"forkedFromTaskId":t.get("forkedFromTaskId").filter(|v|truth(v)).cloned().unwrap_or(Value::Null)}),
-                )
-            }
+            "ownerPlan" => self.owner_plan(&v["task"], &v["records"], v["taskFirst"] == true),
+            "taskAccess" => Ok(task_access(&v["task"], &v["owner"], &v["lifecycle"])),
+            // 一次算出整页卡片的权限：读投影只读不写。需要补写任务壳（新建或回填
+            // standalone）的卡标成 pending，由宿主走原来的逐卡路径处理。
+            // 一次算出整页卡片的权限：读投影不建壳。需要补写任务壳（新建或回填
+            // standalone）的卡标成 pending，由宿主走原来的逐卡路径处理。
+            "accessBatch" => self.access_batch(v),
             "roleValidate" => binding_input(input),
             "roleCurrent" => self.current_role(id, v),
             "roleUpdate" => {

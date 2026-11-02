@@ -2,36 +2,58 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const { fixture } = require('./helpers/task-shell');
+const { createTaskShellStore } = require('../src/task-shell/store');
 const { databaseConstructor } = require('../src/sqlite/driver');
 
-test('删除投影保留存储键、关联值类型和缺失字段，兼容没有派生索引的旧行', t => {
-  const f = fixture(t);
-  const raw = new (databaseConstructor())(f.file, { timeout: 5000 });
-  const rows = [
-    ['stored-key', { id: 'logical-id', taskId: 'tsk_old', receiptId: 'receipt-old', payload: '大正文'.repeat(5000) }],
-    ['missing', {}],
-    ['nulls', { id: null, taskId: null, receiptId: null }],
-    ['typed', { id: false, taskId: 7, receiptId: ['a', { nested: true }] }],
-  ];
+// v1 旧库：没有引用列。打开时迁移补齐，删除只按引用列索引找行。
+function legacyStore(t, rows) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-purge-v1-'));
+  const file = path.join(dir, 'shell.sqlite');
+  const raw = new (databaseConstructor())(file, { timeout: 5000 });
   try {
+    raw.exec('CREATE TABLE shell_records(kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(kind,id)); PRAGMA user_version=1;');
     const insert = raw.prepare('INSERT INTO shell_records(kind, id, body) VALUES (?, ?, ?)');
-    for (const [id, row] of rows) insert.run('receipt', id, JSON.stringify(row));
+    for (const [kind, id, body] of rows) insert.run(kind, id, typeof body === 'string' ? body : JSON.stringify(body));
   } finally { raw.close(); }
-  assert.deepEqual(f.store.deletionEntries('receipt'), rows.map(([id, row]) => [id,
-    Object.fromEntries(Object.entries(row).filter(([key]) => ['id', 'taskId', 'receiptId'].includes(key)))]));
-  assert.equal(f.store.get('receipt-index-meta', 'v1'), null, '投影查询不依赖或重建收据桶');
+  const store = createTaskShellStore(file);
+  t.after(() => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  return { store, file, dir };
+}
+
+test('旧库迁移补齐引用列：按存储键、正文 taskId、收据 id 删除，非字符串引用不误删', t => {
+  const { store, file, dir } = legacyStore(t, [
+    ['receipt', 'stored-key', { id: 'receipt-old', taskId: 'tsk_old', payload: '大正文'.repeat(5000) }],
+    ['receipt', 'missing', {}],
+    ['receipt', 'nulls', { id: null, taskId: null, receiptId: null }],
+    ['receipt', 'typed', { id: false, taskId: 7, receiptId: ['a', { nested: true }] }],
+    ['answer', 'via-receipt', { receiptId: 'receipt-old' }],
+    ['answer', 'typed-receipt', { receiptId: 7 }],
+    ['claim', 'tsk_old', { receiptId: 'unrelated' }],
+    ['claim', 'kept', { taskId: 'tsk_other' }],
+  ]);
+  const raw = new (databaseConstructor())(file, { timeout: 5000 });
+  try {
+    assert.equal(raw.pragma('user_version', { simple: true }), 2);
+    assert.deepEqual(raw.prepare("SELECT id, task_ref, receipt_ref FROM shell_records WHERE kind='receipt' ORDER BY rowid").all(), [
+      { id: 'stored-key', task_ref: 'tsk_old', receipt_ref: null }, { id: 'missing', task_ref: null, receipt_ref: null },
+      { id: 'nulls', task_ref: null, receipt_ref: null }, { id: 'typed', task_ref: null, receipt_ref: null }]);
+  } finally { raw.close(); }
+  assert.equal(fs.readdirSync(dir).filter(name => name.includes('.v1-backup-')).length, 1, '迁移前整库备份');
+  const result = store.purgeTaskRefs(['receipt', 'answer', 'claim'], ['tsk_old', '7']);
+  assert.deepEqual(result, { removed: 3, receipts: 1 });
+  assert.deepEqual(store.entries('receipt').map(([id]) => id), ['missing', 'nulls', 'typed']);
+  assert.deepEqual(store.entries('answer').map(([id]) => id), ['typed-receipt']);
+  assert.deepEqual(store.entries('claim').map(([id]) => id), ['kept']);
 });
 
-test('删除投影在 SQL 里只取引用字段，孤立代理项与整行宽松解码口径一致', t => {
-  const f = fixture(t);
-  const raw = new (databaseConstructor())(f.file, { timeout: 5000 });
+test('孤立代理项：迁移后的引用列与整行宽松解码同一口径', t => {
   // 原文字面量里的孤立代理项转义：SQLite 接受，serde 只能宽松解码。
-  const body = '{"id":"r\\ud800","taskId":"tsk_\\udc00x","payload":"\\ud83d"}';
-  try { raw.prepare('INSERT INTO shell_records(kind, id, body) VALUES (?, ?, ?)').run('receipt', 'lone', body); }
-  finally { raw.close(); }
-  assert.deepEqual(f.store.deletionEntries('receipt'), [['lone', { id: 'r\ufffd', taskId: 'tsk_\ufffdx' }]]);
-  assert.deepEqual(f.store.get('receipt', 'lone'), { id: 'r\ufffd', taskId: 'tsk_\ufffdx', payload: '\ufffd' });
+  const { store } = legacyStore(t, [['receipt', 'lone', '{"id":"r\\ud800","taskId":"tsk_\\udc00x","payload":"\\ud83d"}']]);
+  assert.deepEqual(store.get('receipt', 'lone'), { id: 'r\ufffd', taskId: 'tsk_\ufffdx', payload: '\ufffd' });
+  assert.deepEqual(store.purgeTaskRefs(['receipt'], ['tsk_\ufffdx']), { removed: 1, receipts: 1 });
+  assert.equal(store.get('receipt', 'lone'), null);
 });
 
 test('批量删除按原有归属清理关联行和索引，并保留共享快照与仍有任务的壳', t => {
@@ -91,7 +113,7 @@ test('批量删除按原有归属清理关联行和索引，并保留共享快�
   assert.ok(f.store.get('snapshot', 'snap_shared'));
 });
 
-test('删除只扫一次收据关联投影，壳数量不增加 task 全表读取，JS 不解析收据正文', t => {
+test('删除走一次按引用列的批量清理，壳数量不增加 task 全表读取，JS 不解析收据正文', t => {
   const f = fixture(t);
   const marker = '不可送入删除路径的收据正文';
   const payload = marker.repeat(10000);
@@ -105,7 +127,7 @@ test('删除只扫一次收据关联投影，壳数量不增加 task 全表读�
   const scans = new Map();
   let taskReads = 0;
   const originalList = f.store.list, originalEntries = f.store.entries;
-  const originalDeletionEntries = f.store.deletionEntries;
+  const originalPurge = f.store.purgeTaskRefs;
   const originalParse = JSON.parse;
   f.store.list = kind => {
     assert.notEqual(kind, 'receipt', '禁止整表读取收据正文');
@@ -116,9 +138,9 @@ test('删除只扫一次收据关联投影，壳数量不增加 task 全表读�
     assert.notEqual(kind, 'receipt', '禁止通过 entries 整表读取收据正文');
     return originalEntries(kind);
   };
-  f.store.deletionEntries = kind => {
-    scans.set(kind, (scans.get(kind) || 0) + 1);
-    return originalDeletionEntries(kind);
+  f.store.purgeTaskRefs = (kinds, ids) => {
+    for (const kind of kinds) scans.set(kind, (scans.get(kind) || 0) + 1);
+    return originalPurge(kinds, ids);
   };
   JSON.parse = function (text, ...args) {
     assert.equal(typeof text === 'string' && text.includes(marker), false,
@@ -127,7 +149,7 @@ test('删除只扫一次收据关联投影，壳数量不增加 task 全表读�
   };
   try { f.runtime.purgeTasks(['tsk_delete']); }
   finally { JSON.parse = originalParse; }
-  assert.equal(scans.get('receipt'), 1, '收据投影只扫描一次并复用于关联删除');
+  assert.equal(scans.get('receipt'), 1, '收据与全部关联类型在一次批量清理里处理');
   assert.equal(taskReads, 2, '删除前与删除后各读一次，剩余集合供全部壳和快照复用');
   assert.equal(f.store.get('receipt', 'receipt_0'), null);
   assert.equal(f.store.get('receipt', 'receipt_1').payload, payload);

@@ -121,7 +121,7 @@ run('损坏记录刷新失败保留上次完整快照，恢复后可重试', asy
 run('schema 升级和损坏数据库拒绝打开，不覆盖原模型', async t => {
   const { db, file, model, refresh } = await setup(t); await refresh();
   const before = await model.run({ op: 'snapshot' });
-  db.pragma('user_version=2');
+  db.pragma('user_version=3');
   await assert.rejects(model.run({ op: 'open', file }), /unsupported_schema/);
   assert.deepEqual(await model.run({ op: 'snapshot' }), before);
   const broken = file + '.broken'; fs.writeFileSync(broken, 'not a database');

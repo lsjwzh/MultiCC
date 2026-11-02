@@ -149,11 +149,12 @@ pub fn run_on(b: &Value, v: &Value) -> Value {
         s.push_str(&format!("\n{}", wire(&json!([w, l]))));
         signatures[text(&t["id"])] = json!(digest(&s));
     }
-    let global = if v["epoch"].is_null() {
+    // 任务仓储的依赖已逐卡并入签名（宿主把批量算出的权限结果拼进每卡签名），这里
+    // 只剩任务板级的模块/分组；cacheable=false（缓存关闭）时放弃缓存。
+    let global = if v["cacheable"] == false {
         Value::Null
     } else {
         json!(digest(&wire(&json!([
-            v["epoch"],
             b.get("modules").cloned().unwrap_or(Value::Null),
             b.get("taskGroups").cloned().unwrap_or(Value::Null)
         ]))))

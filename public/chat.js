@@ -1188,8 +1188,9 @@ function syncTokenRate() {
 // readout opens. See chat-usage-readout.js for why money is not among them.
 const usageReadout = window.MultiCCChatUsageReadout?.createUsageReadout({
   bar: costBar, panel: document.getElementById('usage-detail-pop'), document,
-  loadContextTrace: trace => chatApi.json(withToken(
-    `/api/sessions/${encodeURIComponent(_sessionName)}/context?traceId=${encodeURIComponent(trace.traceId)}&include=messages`,
+  // 摘要 trace 展开时先不带 include 拉明细；「查看引用内容」才带 include=messages。
+  loadContextTrace: (trace, { includeMessages = true } = {}) => chatApi.json(withToken(
+    `/api/sessions/${encodeURIComponent(_sessionName)}/context?traceId=${encodeURIComponent(trace.traceId)}${includeMessages ? '&include=messages' : ''}`,
   )),
 });
 function noteRequestUsage(usage) {

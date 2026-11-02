@@ -1731,10 +1731,19 @@ if [ "$NO_START" = false ]; then
     # Loading is asynchronous. Wait for the service before invoking start,
     # which would otherwise race launchd and start a second launcher.
     service_ready=false
+    migration_waited=0
     for ((ready_attempt=0; ready_attempt<60; ready_attempt++)); do
-      if "${MULTICC_CMD[@]}" status --json 2>/dev/null | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
+      status_json="$("${MULTICC_CMD[@]}" status --json 2>/dev/null || true)"
+      if printf '%s' "$status_json" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
         service_ready=true
         break
+      fi
+      # The first boot after an upgrade converts the task database once before
+      # serving. That wait does not use up attempts (capped at 30 minutes).
+      if printf '%s' "$status_json" | grep -q '"migrating"[[:space:]]*:[[:space:]]*true' && [ "$migration_waited" -lt 1800 ]; then
+        [ $((migration_waited % 15)) -eq 0 ] && info "正在升级任务数据（仅此一次），请稍候…"
+        migration_waited=$((migration_waited + 1))
+        ready_attempt=$((ready_attempt - 1))
       fi
       sleep 1
     done

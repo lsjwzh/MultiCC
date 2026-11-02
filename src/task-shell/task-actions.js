@@ -22,12 +22,14 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
   // 镜像都不必过原生边界：任务板读投影逐卡调这里，整份序列化一轮就是几十 MB。
   const recordFacts = record => record && { kind: record.kind, type: record.type,
     taskExecutionSlot: record.taskExecutionSlot, experimentalMode: record.experimentalMode };
+  const sessionIdsOf = task => [task.sessionId, task.chatSessionId, ...(task.refs || []).map(ref => ref.sessionId)].filter(Boolean);
+  const ownerFacts = task => ({ id: task.id, ownerShellId: task.ownerShellId, sessionId: task.sessionId, chatSessionId: task.chatSessionId,
+    refs: (task.refs || []).map(ref => ({ sessionId: ref.sessionId })) });
+  const accessFacts = task => ({ taskFirst: task.taskFirst, origin: task.origin, forkedFromTaskId: task.forkedFromTaskId });
+  const lifecycleFacts = lifecycle => lifecycle && { status: lifecycle.status, deleting: lifecycle.deleting };
   function ownerOf(task) {
-    const ids = new Set([task.sessionId, task.chatSessionId, ...(task.refs || []).map(ref => ref.sessionId)].filter(Boolean));
-    const records = Object.fromEntries([...ids].map(id => [id, recordFacts(getRecord(id))]));
-    const facts = { id: task.id, ownerShellId: task.ownerShellId, sessionId: task.sessionId, chatSessionId: task.chatSessionId,
-      refs: (task.refs || []).map(ref => ({ sessionId: ref.sessionId })) };
-    const plan = store.rule({ action: 'ownerPlan', task: facts, records, taskFirst: ports.taskFirst });
+    const records = Object.fromEntries([...new Set(sessionIdsOf(task))].map(id => [id, recordFacts(getRecord(id))]));
+    const plan = store.rule({ action: 'ownerPlan', task: ownerFacts(task), records, taskFirst: ports.taskFirst });
     return plan?.shellId ? shell(plan.shellId) : plan?.sessionId ? open(plan.sessionId) : null;
   }
 
@@ -40,11 +42,20 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     // pre-migration annotation). Nothing may be written to it, and a read
     // projection must not fail because one row lost its card.
     const owner = task ? ownerOf(task) : null;
-    const lifecycle = task ? getTask(task.id) || task : null;
-    return store.rule({ action: 'taskAccess',
-      task: task ? { taskFirst: task.taskFirst, origin: task.origin, forkedFromTaskId: task.forkedFromTaskId } : null,
+    return store.rule({ action: 'taskAccess', task: task ? accessFacts(task) : null,
       owner: owner && { id: owner.id, standalone: owner.standalone, sourceSessionId: owner.sourceSessionId },
-      lifecycle: lifecycle && { status: lifecycle.status, deleting: lifecycle.deleting } });
+      lifecycle: task ? lifecycleFacts(getTask(task.id) || task) : null });
+  }
+  // 整页卡片一次原生调用算完权限（与逐卡 access 同一套规则）。规则判定需要补写
+  // 任务壳的卡（新建壳、回填 standalone）标成 pending，回到逐卡路径，写入行为不变。
+  function accessBatch(tasks) {
+    const byId = store.cachedById ? store.cachedById('task') : null;
+    const rows = tasks.map(t => byId?.get(t.id) || t);
+    const records = {};
+    for (const task of rows) for (const id of sessionIdsOf(task)) if (!Object.hasOwn(records, id)) records[id] = recordFacts(getRecord(id));
+    const results = store.rule({ action: 'accessBatch', records, taskFirst: ports.taskFirst,
+      items: rows.map(task => ({ task: { ...ownerFacts(task), ...accessFacts(task) }, lifecycle: lifecycleFacts(getTask(task.id) || task) })) });
+    return new Map(tasks.map((t, i) => [t.id, results[i]?.pending ? access(t) : results[i]]));
   }
   async function taskEntry(id, { includeMessages = true } = {}) {
     const task = findTask(id), lifecycle = getTask(id) || task;
@@ -228,6 +239,6 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     forks.set(key, operation);
     try { return await operation; } finally { forks.delete(key); }
   }
-  return { ownerOf, taskEntry, bindPlannedTask, taskAccess: access, assertBoardWritable, forkTask, createStandalone };
+  return { ownerOf, taskEntry, bindPlannedTask, taskAccess: access, taskAccessBatch: accessBatch, assertBoardWritable, forkTask, createStandalone };
 }
 module.exports = { createTaskActions };

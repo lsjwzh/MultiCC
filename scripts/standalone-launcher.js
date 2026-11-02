@@ -204,6 +204,18 @@ function openBrowser(origin, { spawnImpl = spawn, platform = process.platform, l
   }
 }
 
+const STARTUP_STATE_FILE = 'standalone-startup.json';
+// What the supervising launcher last reported while the server was not ready
+// yet (today: the one-time task data upgrade). Stale or orphaned reports count
+// as nothing so a crashed launcher can never keep a CLI waiting.
+function readStartupState(dir, { now = Date.now(), isAlive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } } } = {}) {
+  try {
+    const value = JSON.parse(fs.readFileSync(path.join(dir, STARTUP_STATE_FILE), 'utf8'));
+    if (!value || !Number.isFinite(value.at) || now - value.at > 15_000 || !isAlive(value.pid)) return null;
+    return value;
+  } catch (_) { return null; }
+}
+
 async function probeReady(origin, { fetchImpl = fetch, timeoutMs = 1_500 } = {}) {
   try {
     const res = await fetchImpl(`${origin.replace(/\/$/, '')}/readyz`, {
@@ -256,6 +268,16 @@ function createLauncher({
   // crash and would restart it.
   const pidFile = path.join(path.dirname(infoFile), 'standalone-launcher.pid');
   const stopRequestFile = path.join(path.dirname(infoFile), 'standalone-launcher.stop');
+  // Boot-time progress the CLI can show before desktop-runtime.json exists
+  // (that file is written only on ready). See readStartupState.
+  const startupFile = path.join(path.dirname(infoFile), STARTUP_STATE_FILE);
+  let lastMigrationLine = '';
+  function writeStartupState(value) {
+    try { fs.writeFileSync(startupFile, JSON.stringify(value), { mode: 0o600 }); } catch (_) {}
+  }
+  function clearStartupState() {
+    try { fs.unlinkSync(startupFile); } catch (_) {}
+  }
   if (!logger) logger = createLogger({ logFile: path.join(desktopEnv.logsDir, 'standalone.log') });
   if (!openUrl) openUrl = origin => openBrowser(origin, { spawnImpl, platform, logger });
   const killTree = (pid, options) => killProcessTree(pid, options);
@@ -573,6 +595,13 @@ function createLauncher({
       runtimeInfoFile: infoFile,
       logger,
       onPhase: (phase, info) => {
+        if (phase === 'migrating') {
+          const { migration } = info;
+          const line = migration.state === 'failed' ? `waiting: ${migration.error.message}` : `${migration.step} ${migration.percent}%`;
+          if (line !== lastMigrationLine) logger.log(`upgrading task data (one time): ${line}`);
+          lastMigrationLine = line;
+          writeStartupState({ pid: process.pid, at: Date.now(), migration });
+        } else clearStartupState();
         if (phase === 'ready') {
           logger.log(`server ready at ${info.origin}`);
           settleReady.resolve({ origin: info.origin, pid: info.pid || null });
@@ -732,6 +761,7 @@ module.exports = {
   main,
   openBrowser,
   parseArgs,
+  readStartupState,
   standaloneDataDir,
   probeReady,
   resolveStandalonePaths,

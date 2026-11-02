@@ -207,8 +207,15 @@ function showError(failure, origin) {
 }
 
 // ── Supervisor phases ───────────────────────────────────────────────────────
+// First boot after an upgrade converts the task database before serving; its
+// stand-in answers with a self-refreshing progress page (shown once).
+let showingMigration = false;
 function handlePhase(phase, info) {
-  if (phase === 'ready') {
+  if (phase === 'migrating') {
+    if (mainWindow && !showingMigration) mainWindow.loadURL(`${info.origin}/`);
+    showingMigration = true;
+  } else if (phase === 'ready') {
+    showingMigration = false;
     currentOrigin = info.origin;
     logLine(`backend ready at ${info.origin}`);
     if (mainWindow) mainWindow.loadURL(`${info.origin}/`);

@@ -59,6 +59,23 @@ test('the latest assistant context trace survives history replay without borrowi
   assert.equal(missing.lastContextTrace, null);
 });
 
+test('a summary context trace replays untouched and still replaces an older embedded full trace', () => {
+  // 新消息只内嵌摘要（count，没有 sources 等数组）；明细由前端按 traceId 再拉，
+  // 所以历史回放必须原样交出这个对象，不能补字段也不能丢字段。
+  const summary = {
+    version: 1, traceId: 'sr-sum', currentTask: { taskId: 'tsk-latest', taskName: '最新', mode: 'native' },
+    managedOnly: true, summary: true, count: 124, budget: { limit: 8000, used: 450, managedOnly: true },
+    contextStatus: 'sent',
+  };
+  const plan = initialPlan({ messages: [
+    { id: 'a1', role: 'assistant', contextTrace: { traceId: 'sr-old', currentTask: { taskId: 't' }, sources: [{ id: 'x' }] } },
+    { id: 'u2', role: 'user' },
+    { id: 'a2', role: 'assistant', usage: { input_tokens: 5 }, contextTrace: summary },
+  ] });
+  assert.deepEqual(plan.lastContextTrace, summary);
+  assert.equal(plan.lastContextTrace.sources, undefined);
+});
+
 test('initial plan falls back to safe assistant usage sums without mutating input', () => {
   const messages = [
     null,
