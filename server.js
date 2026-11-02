@@ -248,6 +248,8 @@ const { mountWsConnectionRouter } = require('./src/ws/connection-router');
 const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const { createHostEnv } = require('./src/host-env');
+// Windows keeps its startup PATH: widen it from install dirs + registry now.
+const windowsEnv = require('./src/windows-env'); windowsEnv.prepare();
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const providerRelayShares = createProviderRelayShareStore({ file: MULTICC_PATHS.providerRelaySharesFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
@@ -555,10 +557,14 @@ function cliCommandAvailable(command) {
   return require('./src/cli-adapters/commands').isCommandAvailable(command, { isWindows });
 }
 
+// Re-resolve when the environment moved: a just-installed CLI must show up.
+const commandsForAvailability = require('./src/cli-adapters/commands').createCommandResolver({ isWindows, seed: cliCommands });
+
 function cliAvailabilitySummary() {
+  const commands = commandsForAvailability();
   const out = {};
   for (const cli of SUPPORTED_CHAT_CLIS) {
-    let available = cliCommandAvailable(cliCommands[cli]);
+    let available = cliCommandAvailable(commands[cli]);
     if (cli === 'claude-exp') try { require.resolve('@anthropic-ai/claude-agent-sdk'); } catch (_) { available = false; }
     out[cli] = { available };
   }

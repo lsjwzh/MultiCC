@@ -3,6 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const windowsEnv = require('../windows-env');
 const { zcodeEngineCandidates } = require('./zcode-engine');
 
 const WINDOWS_DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD';
@@ -86,12 +87,24 @@ function isCommandAvailable(command, options = {}) {
     return executableNames(candidate, { isWindows, env })
       .some(file => isRunnableFile(file, { isWindows, fsImpl }));
   }
-  return !!findExecutableOnPath(candidate, { isWindows, env, fsImpl });
+  if (findExecutableOnPath(candidate, { isWindows, env, fsImpl })) return true;
+  // A boot-time fallback names the extension that was expected then
+  // (`claude.exe`), while the npm installer writes the PATHEXT variant
+  // (`claude.cmd`). The stem goes back through PATHEXT instead of pinning the
+  // extension — this is what lets a CLI installed after startup be detected.
+  if (!isWindows) return false;
+  const stem = candidate.replace(/\.[^.\\/]+$/, '');
+  return stem !== candidate && !!findExecutableOnPath(stem, { isWindows, env, fsImpl });
 }
 
 function createContext(options) {
+  const isWindows = options.isWindows ?? process.platform === 'win32';
+  // The real process env is the one Windows froze at startup: widen it with the
+  // install directories an installer may have created since. An injected env is
+  // left exactly as given, so tests and callers control PATH themselves.
+  if (isWindows && !options.env) windowsEnv.augmentPath(process.env);
   return {
-    isWindows: options.isWindows ?? process.platform === 'win32',
+    isWindows,
     env: options.env || process.env,
     fsImpl: options.fsImpl || fs,
     homeDir: options.homeDir || os.homedir(),
@@ -301,4 +314,19 @@ function resolveCliCommands(options = {}) {
   };
 }
 
-module.exports = { findExecutableOnPath, isCommandAvailable, resolveCliCommands };
+const SILENT_LOGGER = { log() {}, warn() {} };
+
+// Availability is recomputed when the environment moves instead of staying
+// frozen at boot: a Windows process started before a CLI was installed must
+// still detect it. The seed keeps the boot-time map until the first change.
+function createCommandResolver({ isWindows = process.platform === 'win32', seed, logger = SILENT_LOGGER } = {}) {
+  let current = { revision: windowsEnv.version(), commands: seed };
+  return function commandsNow() {
+    const revision = windowsEnv.version();
+    if (current.revision === revision) return current.commands;
+    try { current = { revision, commands: resolveCliCommands({ isWindows, logger }) }; } catch (_) { /* keep the seed */ }
+    return current.commands;
+  };
+}
+
+module.exports = { createCommandResolver, findExecutableOnPath, isCommandAvailable, resolveCliCommands };
