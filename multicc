@@ -113,12 +113,30 @@ wait_for_ready() {
   fi
   url="http://127.0.0.1:${port}/readyz"
   echo "Waiting for startup migrations and readiness..."
-  for _i in $(seq 1 120); do
+  # The first boot after an upgrade converts the task database once before it
+  # serves (its stand-in answers phase:"data-migration" with a percentage).
+  # That wait does not use up the 60s budget; it is capped at 30 minutes.
+  local _i=0 _migrating=0 _line="" _last=""
+  while [ "$_i" -lt 120 ]; do
+    _i=$((_i + 1))
     if probe="$("$NODE" -e '(async()=>{for(const u of [process.argv[1],process.argv[2]]){try{const r=await fetch(u);const t=await r.text();process.stdout.write(t.slice(0,2000));process.exit(r.status===200?0:2)}catch{}}process.exit(3)})()' "$url" "http://[::1]:${port}/readyz" 2>/dev/null)"; then
       echo "MultiCC readiness confirmed."
       return 0
     fi
-    [ $((_i % 10)) -eq 0 ] && echo "  still starting… $((_i / 2))s"
+    case "$probe" in
+      *'"phase":"data-migration"'*)
+        _line="$("$NODE" -e 'try{const m=JSON.parse(process.argv[1]).migration;process.stdout.write(m.state==="failed"?`waiting: ${m.error.message}`:`${m.step} ${m.percent}%`)}catch{}' "$probe" 2>/dev/null)"
+        case "$probe" in
+          *'"state":"failed"'*) case "$probe" in *'"retrying":true'*) ;; *)
+            echo "Task data upgrade failed: ${_line#waiting: }"
+            return 1 ;; esac ;;
+        esac
+        if [ "$_migrating" -lt 3600 ]; then _migrating=$((_migrating + 1)); _i=$((_i - 1)); fi
+        [ "$_line" != "$_last" ] && echo "  upgrading task data (one time only): ${_line}"
+        _last="$_line"
+        ;;
+      *) [ $((_i % 10)) -eq 0 ] && echo "  still starting… $((_i / 2))s" ;;
+    esac
     sleep 0.5
   done
   echo "MultiCC restarted but readiness did not become healthy."

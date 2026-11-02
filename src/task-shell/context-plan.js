@@ -7,8 +7,10 @@ function createContextPlanner({ store, getRecord, getHistory, getTask, graphCont
   function prepare(task, { receiptId, turnId, text = '', isFirstTurn = false, fallback = '', memory, budget = 8000, force = false }) {
     const receipt = store.get('receipt', receiptId);
     if (!receipt || receipt.taskId !== task.id) throw new Error('context_receipt_mismatch');
-    if (!force && receipt.contextPlan?.turnId === turnId) return receipt.contextPlan;
-    const record = getRecord(task.sessionId), prior = task.contextLedger;
+    // 已提交的计划压缩过（没有注入文本），同一轮再来只能重新准备。
+    if (!force && receipt.contextPlan?.turnId === turnId && receipt.contextPlan.format !== 2) return receipt.contextPlan;
+    // 台账每轮都变，单独成类存放，不随任务行重写（见 task_store/context.rs）。
+    const record = getRecord(task.sessionId), prior = store.get('context-ledger', task.id);
     const reset = isFirstTurn || !prior || prior.cli !== record.cli || prior.roleEpoch !== record.taskRoleEpoch
       || (prior.nativeId && record.cliSessionId && prior.nativeId !== record.cliSessionId);
     const ledger = reset ? {} : prior.sources;
@@ -65,7 +67,7 @@ function createContextPlanner({ store, getRecord, getHistory, getTask, graphCont
     for (const source of byId.values()) {
       const previous = ledger[source.id];
       if (previous?.version === source.version) {
-        if (requested.has(source.id)) retained.push({ id: source.id, version: source.version, mode: source.mode, taskName: source.taskName, receiptId: previous.receiptId });
+        if (requested.has(source.id)) retained.push({ id: source.id, version: source.version, mode: source.mode, taskName: source.taskName, receiptId: previous.receiptId, ...(previous.key ? { key: previous.key } : {}) });
         continue;
       }
       if (!requested.has(source.id) && !previous) continue;
@@ -99,31 +101,27 @@ function createContextPlanner({ store, getRecord, getHistory, getTask, graphCont
   }
   function complete(task, receiptId, turnId, success) {
     const receipt = store.get('receipt', receiptId), plan = receipt?.contextPlan;
-    if (!success || !receipt || receipt.taskId !== task.id || plan?.turnId !== turnId || plan.status !== 'sent') return;
+    // 已压缩（被后面的轮次取代后整理过）的计划没有完整来源，不能再提交；台账缺这一轮，下一轮重发即可。
+    if (!success || !receipt || receipt.taskId !== task.id || plan?.turnId !== turnId || plan.status !== 'sent' || plan.format === 2) return;
     const latest = store.get('task', task.id), record = getRecord(task.sessionId);
-    const sources = plan.initial ? {} : { ...(latest.contextLedger?.sources || {}) };
+    const sources = plan.initial ? {} : { ...(store.get('context-ledger', task.id)?.sources || {}) };
     for (const source of plan.sources) {
       if (source.withdraws) delete sources[source.withdraws];
       else sources[source.id] = { version: source.version, taskName: source.taskName, truncated: source.truncated, receiptId: receipt.id };
     }
-    latest.contextLedger = { sources, generation: plan.generation, cli: plan.cli, roleEpoch: plan.roleEpoch, nativeId: record.cliSessionId };
+    const ledger = { taskId: task.id, sources, generation: plan.generation, cli: plan.cli, roleEpoch: plan.roleEpoch, nativeId: record.cliSessionId };
     // Keep persistent imports; one-shot handoffs disappear only after a successful real turn.
     const included = new Set(plan.sources.map(s => s.snapshotId).filter(Boolean));
-    latest.handoffSnapshotIds = (latest.handoffSnapshotIds || []).filter(id => !included.has(id));
+    const handoffs = (latest.handoffSnapshotIds || []).filter(id => !included.has(id));
     plan.status = 'committed';
-    store.transaction(() => { store.set('task', task.id, latest); store.set('receipt', receipt.id, receipt); });
+    store.transaction(() => {
+      store.set('context-ledger', task.id, ledger);
+      // 任务行只在一次性交接真被消费时才写：普通一轮不改任务行，任务行缓存和卡片不失效。
+      if (handoffs.length !== (latest.handoffSnapshotIds || []).length) store.set('task', task.id, { ...latest, handoffSnapshotIds: handoffs });
+      store.set('receipt', receipt.id, receipt);
+      store.contextCommitted(task.id, receipt.id);
+    });
   }
   return { prepare, sent, complete };
 }
-function tracePlan(plan, includeMessages, store) {
-  if (!plan || plan.status === 'prepared') return [];
-  const keys = ['id', 'version', 'mode', 'taskId', 'taskName', 'path', 'scope', 'skill', 'snapshotId', 'estimatedTokens', 'truncated', 'reason', 'via', 'messageCount'];
-  const retained = (plan.retained || []).flatMap(ref => {
-    const original = ref.receiptId && store?.get('receipt', ref.receiptId)?.contextPlan?.sources
-      .find(s => s.id === ref.id && s.version === ref.version);
-    return original ? [{ ...original, retained: true }] : [];
-  });
-  return [...plan.sources, ...retained].map(source => ({ retained: source.retained === true, ...Object.fromEntries(keys.filter(k => source[k] !== undefined).map(k => [k, source[k]])),
-    ...(includeMessages ? { excerpt: source.excerpt } : {}) }));
-}
-module.exports = { createContextPlanner, tracePlan };
+module.exports = { createContextPlanner };

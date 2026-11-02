@@ -153,6 +153,42 @@ test('health-probe resolves on 200 and retries through refusals', async () => {
   );
 });
 
+function migrationRes(migration) {
+  return { status: 503, headers: new Headers({ 'content-type': 'application/json' }),
+    json: async () => ({ status: 'not_ready', phase: 'data-migration', migration }), arrayBuffer: async () => new ArrayBuffer(0) };
+}
+
+test('health-probe keeps waiting past its timeout while the task data upgrade reports progress', async () => {
+  let calls = 0;
+  const seen = [];
+  const started = Date.now();
+  const result = await waitForReadiness({
+    origin: 'http://127.0.0.1:1', intervalMs: 5, timeoutMs: 40, onMigration: m => seen.push(m.percent),
+    fetchImpl: async () => {
+      calls += 1;
+      // Well past timeoutMs: a plain 503 would already have timed out.
+      return Date.now() - started < 200 ? migrationRes({ state: 'running', step: 'migrate', percent: Math.min(99, calls) }) : fakeRes(200);
+    },
+  });
+  assert.equal(result.status, 200);
+  assert.ok(seen.length > 3 && seen.every((p, i) => !i || p >= seen[i - 1]));
+
+  // Still capped: a migration that never ends does not hold the window forever.
+  await assert.rejects(waitForReadiness({ origin: 'http://127.0.0.1:1', intervalMs: 5, timeoutMs: 20, migrationTimeoutMs: 80,
+    fetchImpl: async () => migrationRes({ state: 'running', step: 'vacuum', percent: 95 }) }), error => error.code === 'READY_TIMEOUT');
+  // A failed upgrade is reported at once with its reason, not after the timeout.
+  await assert.rejects(waitForReadiness({ origin: 'http://127.0.0.1:1', intervalMs: 5, timeoutMs: 5000,
+    fetchImpl: async () => migrationRes({ state: 'failed', step: 'failed', percent: 0, error: { code: 'boom', message: 'boom: disk' } }) }),
+  error => error.code === 'DATA_MIGRATION_FAILED' && /boom: disk/.test(error.message));
+  // Waiting for disk space is not a failure: the server retries by itself.
+  let spaceCalls = 0;
+  const resumed = await waitForReadiness({ origin: 'http://127.0.0.1:1', intervalMs: 5, timeoutMs: 5000,
+    fetchImpl: async () => (++spaceCalls < 4
+      ? migrationRes({ state: 'failed', step: 'failed', percent: 0, error: { code: 'task_store_migration_needs_space', message: 'x', retrying: true } })
+      : fakeRes(200)) });
+  assert.equal(resumed.status, 200);
+});
+
 // ── unit: desktop-env ───────────────────────────────────────────────────────
 
 test('desktop-env resolves packaged and dev layouts', () => {

@@ -540,9 +540,14 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   菜单，以及网页添加电脑表单复用的 airMachinesInsecureHint 明文传输提示），
     //   中英各 41 行 = +82 行，重跑生成器实测 10240/661845（行数按 countLines 量法，
     //   比 wc -l 多 1）。
-    maxLines: 10240,
+    // +6 双语键（usageContextDetailExpired/OmittedCount/OmitReason*）：聊天页「本轮引用来源」改按
+    //   需拉明细后，明细过期提示与按原因的省略计数，中英各 6 行 = +12 行，重跑生成器实测
+    //   10252/662731。
+    // +2 双语键（airOpsDataMigrating/airOpsDataMigratingBody）：网页一键更新时新版本首次启动在升级
+    //   任务数据，更新弹窗显示升级百分比而不是「服务重启中」，中英各 2 行 = +4 行，实测 10256/663218。
+    maxLines: 10256,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 661845,
+    maxBytes: 663218,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

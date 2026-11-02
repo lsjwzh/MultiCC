@@ -42,3 +42,18 @@ impl RustTaskStore {
 pub fn task_store_protocol_version() -> u32 {
     1
 }
+// 启动闸门：打开前只读探测是否需要迁移；需要时由 migrateTaskStore 单独打开、迁移并立刻
+// 关闭连接（返回迁移报告），之后正式打开的就是新版本库。
+#[napi]
+pub fn task_store_migration_pending(file: String) -> bool {
+    multicc_core::task_store::migration_pending(&file)
+}
+#[napi]
+pub fn migrate_task_store(file: String) -> Result<String> {
+    guard("TASK_STORE_PANIC", || {
+        let mut store = TaskStore::open(&file).map_err(napi::Error::from_reason)?;
+        store
+            .run(r#"{"op":"migration"}"#)
+            .map_err(napi::Error::from_reason)
+    })
+}

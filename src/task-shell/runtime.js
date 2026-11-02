@@ -184,13 +184,15 @@ function createTaskShellRuntime(ports) {
       ...(includeMessages ? { messages: snapshot.messages } : {}),
     };
   }
-  function contextTrace(sessionId, receiptId, { includeMessages = false } = {}) {
+  // summary=true 是落进聊天记录的那份：只留数量与预算，明细由面板按需走这个接口拉。
+  function contextTrace(sessionId, receiptId, { includeMessages = false, summary = false } = {}) {
     const owner = owns(identifier(sessionId, 'sessionId'));
     if (!owner) throw failure('task_shell_context_unavailable', 'This session is not owned by a task shell', 404);
     const receipt = store.get('receipt', identifier(receiptId, 'receiptId'));
     if (!receipt || receipt.taskId !== owner.id) throw failure('receipt_not_found', 'receipt_not_found', 404);
     const current = store.get('task', receipt.attributedTaskId || receipt.taskId) || owner;
-    const sources = require('./context-plan').tracePlan(receipt.contextPlan, includeMessages, store);
+    const plan = store.contextTrace(receiptId, includeMessages && !summary);
+    const sources = plan?.sources || [];
     const seen = new Set();
     for (const [mode, ids] of [
       ['imported', receipt.contextSeedSnapshotIds],
@@ -220,13 +222,16 @@ function createTaskShellRuntime(ports) {
         ...(includeMessages && typeof source.excerpt === 'string' ? { excerpt: source.excerpt } : {}),
       });
     }
+    const head = { version: 1, traceId: receipt.id,
+      currentTask: { taskId: current.id, taskName: current.title || current.id, mode: 'native' } };
+    if (summary) return { ...head, managedOnly: true, summary: true, count: 1 + sources.length,
+      ...(plan ? { budget: plan.budget, contextStatus: plan.status } : {}) };
     return {
-      version: 1,
-      traceId: receipt.id,
-      currentTask: { taskId: current.id, taskName: current.title || current.id, mode: 'native' },
+      ...head,
       sources,
       managedOnly: true,
-      ...(receipt.contextPlan ? { budget: receipt.contextPlan.budget, contextStatus: receipt.contextPlan.status, retained: receipt.contextPlan.retained, omitted: receipt.contextPlan.omitted, diagnostics: receipt.contextPlan.diagnostics } : {}),
+      ...(plan ? { budget: plan.budget, contextStatus: plan.status, retained: plan.retained, omitted: plan.omitted, diagnostics: plan.diagnostics,
+        ...(plan.omittedCounts ? { omittedCounts: plan.omittedCounts } : {}), ...(plan.detailExpired ? { detailExpired: true } : {}) } : {}),
     };
   }
   function savingsFor(s, taskId) {
@@ -251,13 +256,10 @@ function createTaskShellRuntime(ports) {
     const removed = new Set(ids);
     store.transaction(() => {
       const snapshots = new Set(store.list('task').filter(t => removed.has(t.id)).flatMap(t => t.snapshotIds || []));
-      const receiptEntries = store.deletionEntries('receipt');
-      const receipts = new Set(receiptEntries.filter(([, r]) => removed.has(r.taskId)).map(([, r]) => r.id));
-      for (const kind of ['task', 'link', 'claim', 'receipt', 'answer', 'fork', 'task-separation']) {
-        for (const [id, value] of kind === 'receipt' ? receiptEntries : store.deletionEntries(kind)) {
-          if (removed.has(id) || removed.has(value.taskId) || receipts.has(value.receiptId)) store.remove(kind, id);
-        }
-      }
+      // 存储键是任务 id、正文 taskId 指向任务、或 receiptId 指向这些任务收据的行，
+      // 在 Rust 里按引用列索引删除（含派生索引维护），不再全表扫描收据。
+      store.purgeTaskRefs(['task', 'link', 'claim', 'receipt', 'answer', 'fork', 'task-separation',
+        'context-ledger', 'context-source'], ids);
       const remainingTasks = store.list('task');
       const occupiedShells = new Set(remainingTasks.map(t => t.ownerShellId));
       for (const s of store.list('shell')) {

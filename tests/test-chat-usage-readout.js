@@ -283,3 +283,237 @@ test('memory manifests with no task id retain distinct excerpts, managed budget 
   await panel.listeners.get('click')({ target: { closest: () => true } });
   assert.match(panel.innerHTML, /excerpt 0 &lt;script&gt;/); assert.match(panel.innerHTML, /excerpt 1 &lt;script&gt;/);
 });
+
+// ── 摘要 trace：新消息只内嵌 count，明细在展开时按需拉 ─────────────────────────────
+
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
+// 后端新消息内嵌的形状：没有 sources / retained / omitted / diagnostics。
+const SUMMARY = {
+  version: 1, traceId: 'sr-sum', currentTask: { taskId: 'tsk-current', taskName: '当前任务', mode: 'native' },
+  managedOnly: true, summary: true, count: 124, budget: { limit: 8000, used: 450, managedOnly: true },
+  contextStatus: 'sent',
+};
+
+// 明细接口（不带 include）回的完整对象；not_relevant 只在 omittedCounts 里。
+function fullDetail(extra = {}) {
+  return {
+    version: 1, traceId: 'sr-sum', currentTask: SUMMARY.currentTask, managedOnly: true,
+    budget: SUMMARY.budget, contextStatus: 'sent',
+    sources: [
+      { id: 'memory:a', mode: 'memory:shared', path: 'shared/a.md', version: '111111111111', taskName: '记忆 A', estimatedTokens: 40 },
+      { id: 'graph:parent:tsk-p', mode: 'graph:parent', taskId: 'tsk-p', taskName: '父任务', estimatedTokens: 12, retained: true },
+    ],
+    retained: [{ id: 'graph:parent:tsk-p' }],
+    omitted: [{ id: 'memory:big', reason: 'budget' }],
+    omittedCounts: { not_relevant: 123, budget: 1 },
+    diagnostics: [{ path: 'shared/bad.md', reason: 'unreadable' }],
+    ...extra,
+  };
+}
+
+function mountReadout(loadContextTrace) {
+  const bar = fakeElement();
+  const panel = fakeElement();
+  const readout = createUsageReadout({ bar, panel, document: fakeElement(), loadContextTrace });
+  return { bar, panel, readout };
+}
+
+test('a legacy full trace renders exactly as before and never fetches on open', async () => {
+  const trace = {
+    traceId: 'sr-old', currentTask: { taskId: 'tsk-current', taskName: '当前任务' }, budget: { used: 450, limit: 8000 },
+    retained: [{ id: 'prior' }], omitted: [{ id: 'memory:x', reason: 'budget' }, { id: 'memory:y', reason: 'not_relevant' }],
+    diagnostics: [{ path: 'shared/bad.md', reason: 'unreadable' }],
+    sources: [{ taskId: 'tsk-source', taskName: '源任务', mode: 'refilled', messageCount: 2, estimatedTokens: 300 }],
+  };
+  const calls = [];
+  const { bar, panel, readout } = mountReadout(async (t, options) => { calls.push(options); return trace; });
+  readout.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: trace });
+  assert.match(bar.innerHTML, /⌁ 引用 2/);
+  bar.fire('click');
+  await flush();
+  assert.deepEqual(calls, [], 'an embedded full trace already carries its detail');
+  assert.match(panel.innerHTML, /托管上下文：约 450 \/ 8000 tokens · 沿用 1 项 · 省略 2 项/);
+  // 逐条清单里的原因原样显示（不翻译、不加计数行）。
+  assert.match(panel.innerHTML, /memory:x · budget/);
+  assert.match(panel.innerHTML, /memory:y · not_relevant/);
+  assert.doesNotMatch(panel.innerHTML, /与本轮无关|条<\/div>/);
+  assert.match(panel.innerHTML, /按需补取 · 2 条消息 · 约 300 tokens/);
+  assert.match(panel.innerHTML, /查看引用内容/);
+  assert.doesNotMatch(panel.innerHTML, /较早|已清理|正在读取/);
+});
+
+test('a summary trace shows its count without any source arrays', () => {
+  const { bar, readout } = mountReadout();
+  readout.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: SUMMARY });
+  assert.match(bar.innerHTML, /⌁ 引用 124/);
+  assert.equal(bar.attrs['aria-label'], '上下文占用详情，124 个可追溯来源');
+  // 摘要里没有 count 或 count 不合法时，退回「1 + 来源数」，不显示 NaN。
+  const { bar: bar2, readout: readout2 } = mountReadout();
+  readout2.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: { ...SUMMARY, count: 'many' } });
+  assert.match(bar2.innerHTML, /⌁ 引用 1/);
+  assert.doesNotMatch(bar2.innerHTML, /NaN/);
+});
+
+test('opening a summary trace fetches the detail once, without messages, and renders it as a full trace', async () => {
+  const calls = [];
+  let release;
+  const { bar, panel, readout } = mountReadout((trace, options) => {
+    calls.push({ traceId: trace.traceId, ...options });
+    return new Promise(resolve => { release = () => resolve(fullDetail()); });
+  });
+  readout.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: SUMMARY });
+  assert.deepEqual(calls, [], 'a closed panel fetches nothing');
+
+  bar.fire('click');
+  assert.deepEqual(calls, [{ traceId: 'sr-sum', includeMessages: false }]);
+  // 读取中：当前任务行 + 预算，但不把还没拿到的沿用 / 省略数字写成 0。
+  assert.match(panel.innerHTML, /正在读取…/);
+  assert.match(panel.innerHTML, /托管上下文：约 450 \/ 8000 tokens/);
+  assert.doesNotMatch(panel.innerHTML, /沿用 0 项|省略 0 项/);
+  assert.doesNotMatch(panel.innerHTML, /记忆 A/);
+
+  release();
+  await flush();
+  assert.doesNotMatch(panel.innerHTML, /正在读取…/);
+  assert.match(panel.innerHTML, /记忆·目录 · 约 40 tokens/);
+  assert.match(panel.innerHTML, /记忆 A/);
+  assert.match(panel.innerHTML, /父任务/);
+  assert.match(panel.innerHTML, /沿用（本轮未重发）/);
+  // 省略总数：预算类逐条列出又在计数里，同一原因只算一次；与本轮无关 123 条只在计数里。
+  assert.match(panel.innerHTML, /沿用 1 项 · 省略 124 项/);
+  assert.match(panel.innerHTML, /shared\/bad\.md unreadable/);
+  assert.match(panel.innerHTML, /查看引用内容/, 'message bodies still need the explicit button');
+
+  // 收起再展开，或悬停抖动，都不再重复拉取。
+  bar.fire('click');
+  bar.fire('click');
+  bar.fire('mouseenter');
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.match(bar.innerHTML, /⌁ 引用 124/, 'the bar keeps the count the summary declared');
+});
+
+test('the view-content button on an expanded summary still pulls include=messages', async () => {
+  const calls = [];
+  const { bar, panel, readout } = mountReadout(async (trace, options) => {
+    calls.push(options);
+    return options.includeMessages
+      ? fullDetail({ sources: fullDetail().sources.map((s, i) => ({ ...s, excerpt: `节选 ${i} <b>` })) })
+      : fullDetail();
+  });
+  readout.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: SUMMARY });
+  bar.fire('click');
+  await flush();
+  assert.doesNotMatch(panel.innerHTML, /节选 0/);
+  await panel.listeners.get('click')({ target: { closest: () => true } });
+  assert.deepEqual(calls, [{ includeMessages: false }, { includeMessages: true }]);
+  assert.match(panel.innerHTML, /节选 0 &lt;b&gt;/);
+  assert.match(panel.innerHTML, /节选 1 &lt;b&gt;/);
+  assert.doesNotMatch(panel.innerHTML, /<b>/);
+  assert.match(panel.innerHTML, /记忆 A/, 'rows stay put while the bodies arrive');
+});
+
+test('a failed detail fetch shows the error and waits for an explicit retry', async () => {
+  let attempts = 0;
+  const { bar, panel, readout } = mountReadout(async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('boom <x>');
+    return fullDetail();
+  });
+  readout.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: SUMMARY });
+  bar.fire('click');
+  await flush();
+  assert.match(panel.innerHTML, /boom &lt;x&gt;/);
+  assert.match(panel.innerHTML, /usage-context-load[^>]*>重试</);
+  assert.doesNotMatch(panel.innerHTML, /正在读取/);
+
+  bar.fire('click');
+  bar.fire('click');
+  await flush();
+  assert.equal(attempts, 1, 'reopening must not hammer a failing endpoint');
+
+  await panel.listeners.get('click')({ target: { closest: () => true } });
+  assert.equal(attempts, 2);
+  assert.match(panel.innerHTML, /记忆 A/);
+  assert.doesNotMatch(panel.innerHTML, /boom/);
+
+  // 返回空体也是失败，不能卡在「读取中」或无限重拉。
+  const empty = mountReadout(async () => null);
+  empty.readout.render({ contextTrace: SUMMARY });
+  empty.bar.fire('click');
+  await flush();
+  assert.match(empty.panel.innerHTML, /引用内容读取失败/);
+});
+
+test('a detail that lands after a newer turn arrived is dropped', async () => {
+  const pending = [];
+  const { bar, panel, readout } = mountReadout((trace) => new Promise(resolve => {
+    pending.push(() => resolve(fullDetail({ traceId: trace.traceId, sources: [{ id: `memory:${trace.traceId}`, mode: 'memory:task', taskName: `来自 ${trace.traceId}` }] })));
+  }));
+  readout.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: SUMMARY });
+  bar.fire('click');
+  readout.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: { ...SUMMARY, traceId: 'sr-next', count: 3 } });
+  assert.equal(pending.length, 2, 'the open panel fetches the new turn right away');
+  pending[0]();
+  await flush();
+  assert.doesNotMatch(panel.innerHTML, /来自 sr-sum/);
+  assert.match(panel.innerHTML, /正在读取…/);
+  pending[1]();
+  await flush();
+  assert.match(panel.innerHTML, /来自 sr-next/);
+  assert.doesNotMatch(panel.innerHTML, /来自 sr-sum/);
+});
+
+test('an expired detail says so, lists omissions by reason, and does not invent fields for thin sources', async () => {
+  const detail = fullDetail({
+    detailExpired: true,
+    retained: [], omitted: [{ id: 'memory:big', reason: 'budget' }],
+    omittedCounts: { not_relevant: 12345, duplicate_in_native: 2, '<odd>': 1, budget: 0, bogus: 'x' },
+    sources: [
+      { id: 'memory:gone', version: 'abcdef0123456789', reason: 'scope_default', retained: true },
+      { id: 'memory:a', mode: 'memory:shared', path: 'shared/a.md', version: '111111111111', taskName: '记忆 A' },
+    ],
+  });
+  const { bar, panel, readout } = mountReadout(async () => detail);
+  readout.render({ requestUsage: REQUEST, contextWindow: WINDOW, contextTrace: SUMMARY });
+  bar.fire('click');
+  await flush();
+  const html = panel.innerHTML;
+  assert.match(html, /这一轮较早，沿用与省略明细已清理，仅保留实际注入的来源/);
+  assert.ok(html.indexOf('这一轮较早') < html.indexOf('memory:gone'), 'the note sits above the source list');
+  assert.match(html, /查看省略原因/);
+  assert.match(html, /与本轮无关 12,345 条/);
+  assert.match(html, /原生历史中已有 2 条/);
+  assert.match(html, /&lt;odd&gt; 1 条/, 'an unknown reason is shown as-is and escaped');
+  assert.doesNotMatch(html, /超出上下文预算 0|bogus/, 'zero and non-numeric counts are ignored');
+  assert.match(html, /memory:big · budget/, 'itemised omissions keep listing');
+  assert.match(html, /省略 12349 项/, 'total = 12345 + 2 + 1 counted, plus the one itemised budget entry');
+  // 只剩 id/version/reason 的来源：不编造「初始化导入 · 0 条消息」，只显示实际有的信息。
+  const rowStart = html.lastIndexOf('<div class="usage-context-source">', html.indexOf('memory:gone'));
+  const thin = html.slice(rowStart, html.indexOf('</div>', rowStart));
+  assert.match(thin, /沿用（本轮未重发） · v abcdef012345/);
+  assert.match(thin, /<small>scope_default<\/small>/);
+  assert.doesNotMatch(thin, /初始化导入|0 条消息|<strong><\/strong>/);
+  // 完整来源照旧。
+  assert.match(html, /记忆·目录 · v 111111111111/);
+  assert.match(html, /<strong>记忆 A<\/strong><code>shared\/a\.md<\/code>/);
+
+  // 没过期的明细不出这句提示。
+  const fresh = mountReadout(async () => fullDetail());
+  fresh.readout.render({ contextTrace: SUMMARY });
+  fresh.bar.fire('click');
+  await flush();
+  assert.doesNotMatch(fresh.panel.innerHTML, /较早，沿用与省略明细已清理/);
+  assert.match(fresh.panel.innerHTML, /与本轮无关 123 条/);
+});
+
+test('the web chat loader asks for include=messages only when bodies are wanted', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const chat = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat.js'), 'utf8');
+  assert.match(chat, /loadContextTrace: \(trace, \{ includeMessages = true \} = \{\}\)/,
+    'a caller that passes no options keeps the old include=messages behaviour');
+  assert.match(chat, /\$\{includeMessages \? '&include=messages' : ''\}/);
+  assert.match(chat, /\/api\/sessions\/\$\{encodeURIComponent\(_sessionName\)\}\/context\?traceId=/);
+});

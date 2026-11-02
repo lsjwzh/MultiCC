@@ -178,6 +178,7 @@ function createBackendSupervisor(rawDeps) {
         intervalMs: 400,
         timeoutMs: opts.healthTimeoutMs,
         signal: healthAbort.signal,
+        onMigration: migration => onPhase('migrating', { port, origin, attempt: attempts, migration }),
       });
     } catch (error) {
       if (stopRequested || state === 'stopping') return;

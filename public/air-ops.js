@@ -336,6 +336,9 @@
   async function fetchUpdateStatus() {
     try {
       const result = await raw('/api/update/status');
+      // First boot of the new version may upgrade the task database before it
+      // serves; its stand-in answers every request with that progress.
+      if (result.data && result.data.phase === 'data-migration') return { unreachable: true, migration: result.data.migration };
       if (!result.ok || !result.data) return { unreachable: true };
       return result.data;
     } catch (_) {
@@ -400,7 +403,11 @@
         if (progress) progress.update(state.unreachable ? null : state, { unreachable: !!state.unreachable });
         if (standalone) paintRawLog(dialog, state.unreachable ? null : state, { unreachable: !!state.unreachable });
 
-        if (state.unreachable) {
+        if (state.unreachable && state.migration && state.migration.state !== 'failed') {
+          sawUnreachable = true;
+          setVersionHint(t('airOpsDataMigrating', { percent: state.migration.percent }), true);
+          if (dialog) dialog.setBody(t('airOpsDataMigratingBody', { percent: state.migration.percent }));
+        } else if (state.unreachable) {
           sawUnreachable = true;
           setVersionHint(t('airOpsServerRestarting'), true);
           if (dialog) dialog.setBody(t('airOpsServerRestartingBody'));

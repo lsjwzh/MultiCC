@@ -9,7 +9,7 @@ const { mountAirRoutes } = require('../src/workspace/air-routes');
 const { createAirCardCache } = require('../src/workspace/air-card-cache');
 const { airResponse } = require('./helpers/air-response');
 
-function fixture({ mode = 'on', verifyMs = 60_000, epoch = () => 'e1' } = {}) {
+function fixture({ mode = 'on', verifyMs = 60_000 } = {}) {
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
   const now = Date.now();
   const board = { tasks: {
@@ -23,7 +23,9 @@ function fixture({ mode = 'on', verifyMs = 60_000, epoch = () => 'e1' } = {}) {
     ['s1', { id: 's1', dirId: 'd1', kind: 'chat', cli: 'codex', provider: 'p1', taskState: { classifyState: 'P', goalState: null } }],
     ['s2', { id: 's2', dirId: 'd1', kind: 'chat', cli: 'codex' }],
   ]);
-  const state = { accessCalls: 0, runState: 'running', merge: { ahead: '0', dirty: false } };
+  // 权限是任务库对卡片的唯一输入：每轮整页批量算一次，结果并进逐卡签名。
+  const state = { builds: 0, batchCalls: 0, accessCalls: 0, access: {}, runState: 'running', merge: { ahead: '0', dirty: false } };
+  const accessOf = t => ({ readOnly: false, status: 'active', ...state.access[t.id] });
   const logs = [];
   const logger = { warn: (event, data) => logs.push({ event, ...data }), info: (event, data) => logs.push({ event, ...data }) };
   mountAirRoutes(app, {
@@ -33,8 +35,9 @@ function fixture({ mode = 'on', verifyMs = 60_000, epoch = () => 'e1' } = {}) {
     getBoard: () => board, clis: ['codex'], providerName: r => `线路-${r.provider}`,
     getSessionRunState: () => state.runState,
     mergeStateCached: () => state.merge,
-    shell: { taskAccess: () => { state.accessCalls += 1; return { readOnly: false, status: 'active' }; }, readEpoch: () => epoch() },
-    cardCache: createAirCardCache({ mode, verifyMs, logger }),
+    shell: { taskAccess: t => { state.accessCalls += 1; return accessOf(t); },
+      taskAccessBatch: tasks => { state.batchCalls += 1; return new Map(tasks.map(t => [t.id, accessOf(t)])); } },
+    cardCache: counted(createAirCardCache({ mode, verifyMs, logger }), state),
   });
   const get = async () => {
     const res = airResponse();
@@ -44,13 +47,21 @@ function fixture({ mode = 'on', verifyMs = 60_000, epoch = () => 'e1' } = {}) {
   return { get, board, records, state, logs };
 }
 const card = (json, id) => json.tasks.find(task => task.id === id);
+// 数「这一轮真正重建了几张卡」：缓存层自己报的 builds。
+function counted(cache, state) {
+  const resolveAsync = cache.resolveAsync;
+  cache.resolveAsync = async (...args) => { const result = await resolveAsync(...args); state.builds += result.builds; return result; };
+  return cache;
+}
 
-test('输入没变时命中缓存：不再逐卡解析权属，正文逐字节不变', async () => {
+test('输入没变时命中缓存：权限每轮只批量算一次，正文逐字节不变', async () => {
   const f = fixture();
   const first = await f.get();
-  assert.equal(f.state.accessCalls, 2);
+  assert.equal(f.state.builds, 2);
   const second = await f.get();
-  assert.equal(f.state.accessCalls, 2, '命中时不再逐卡调 taskAccess');
+  assert.equal(f.state.builds, 2, '命中时不重建');
+  assert.equal(f.state.batchCalls, 2, '每轮整页一次批量权限');
+  assert.equal(f.state.accessCalls, 0, '不再逐卡调 taskAccess');
   assert.equal(second.body, first.body, '命中与现建吐出的正文必须相同');
 });
 
@@ -62,7 +73,7 @@ test('命中缓存的那几轮，runState 与 worktreeChanges 仍是现算的', 
   f.state.runState = 'idle';                       // 执行会话已经不在跑（过了派发宽限）
   f.state.merge = { ahead: '2', dirty: true };     // worktree 后台刷新出了新状态
   const second = await f.get();
-  assert.equal(f.state.accessCalls, 2, '这两格变化不该让底稿重建');
+  assert.equal(f.state.builds, 2, '这两格变化不该让底稿重建');
   assert.equal(card(second.json, 'tsk_1').runState, 'idle');
   assert.deepEqual(card(second.json, 'tsk_1').worktreeChanges, { dirty: true, ahead: 2 });
 });
@@ -72,20 +83,20 @@ test('卡片或它引用的会话记录被原地改写时，只重建那一张�
   await f.get();
   f.board.tasks.tsk_2.title = '改过名';           // 原地改写，没有任何版本号
   assert.equal(card((await f.get()).json, 'tsk_2').title, '改过名');
-  assert.equal(f.state.accessCalls, 3, '只有 tsk_2 重建（正在跑的那张卡不能拖着整板重建）');
+  assert.equal(f.state.builds, 3, '只有 tsk_2 重建（正在跑的那张卡不能拖着整板重建）');
   f.records.get('s1').taskState.goalState = 'achieved';
   assert.equal(card((await f.get()).json, 'tsk_1').goalState, 'achieved');
-  assert.equal(f.state.accessCalls, 4, 's1 只被 tsk_1 引用');
+  assert.equal(f.state.builds, 4, 's1 只被 tsk_1 引用');
   f.records.get('s1').provider = 'p2';
   assert.equal(card((await f.get()).json, 'tsk_1').providerName, '线路-p2');
-  assert.equal(f.state.accessCalls, 5);
+  assert.equal(f.state.builds, 5);
   // 新出现的卡只建它自己；消失的卡不留在缓存里。
   f.board.tasks.tsk_3 = { id: 'tsk_3', title: '新卡', status: 'active', refs: [{ sessionId: 's2', dirId: 'd1', ts: 1 }] };
   assert.equal((await f.get()).json.tasks.length, 3);
-  assert.equal(f.state.accessCalls, 6);
+  assert.equal(f.state.builds, 6);
   delete f.board.tasks.tsk_3;
   assert.equal((await f.get()).json.tasks.length, 2);
-  assert.equal(f.state.accessCalls, 6);
+  assert.equal(f.state.builds, 6);
 });
 
 test('capacityReason 每轮现算（跨卡输入），且一轮里按目录/驻留态只问一次', async () => {
@@ -100,7 +111,7 @@ test('capacityReason 每轮现算（跨卡输入），且一轮里按目录/驻�
   mountAirRoutes(app, {
     admission: { snapshot: () => ({ workspaces, leases: [], budgets: {} }), capacityReason: () => { asked += 1; return reason; } },
     records, directories: new Map(), getBoard: () => ({ tasks }), clis: [],
-    shell: { taskAccess: () => ({ readOnly: false }), readEpoch: () => 'e' },
+    shell: { taskAccess: () => ({ readOnly: false }) },
     cardCache: createAirCardCache({ mode: 'on' }),
   });
   const run = async () => { const res = airResponse(); await handlers.get('/api/air')({ headers: {} }, res); return JSON.parse(res.body); };
@@ -115,23 +126,23 @@ test('capacityReason 每轮现算（跨卡输入），且一轮里按目录/驻�
   assert.deepEqual(keys, ['id', 'residency', 'lease', 'capacityReason', 'reason', 'pins', 'path', 'branch'], '字段顺序不变');
 });
 
-test('任务库读数变了（权属可能变了）就重建；读数拿不到就绕过缓存', async () => {
-  let epoch = 'e1';
-  const f = fixture({ epoch: () => epoch });
+test('任务库的变化只让权限结果真变了的那张卡重建，不再整板失效', async () => {
+  const f = fixture();
   await f.get(); await f.get();
-  assert.equal(f.state.accessCalls, 2);
-  epoch = 'e2';
+  assert.equal(f.state.builds, 2);
+  f.state.access.tsk_2 = { readOnly: true, status: 'archived' };   // 只有 tsk_2 的权限变了
+  const json = (await f.get()).json;
+  assert.equal(f.state.builds, 3, '只重建 tsk_2');
+  assert.equal(card(json, 'tsk_2').readOnly, true);
+  assert.equal(card(json, 'tsk_1').readOnly, false);
   await f.get();
-  assert.equal(f.state.accessCalls, 4, '读数变化必须重建');
-  epoch = null;
-  await f.get(); await f.get();
-  assert.equal(f.state.accessCalls, 8, '读数为 null 时每轮现建');
+  assert.equal(f.state.builds, 3, '结果稳定后继续命中');
 });
 
 test('on 档：同一份缓存最多用 verifyMs，到点现建一次并比对', async () => {
   const f = fixture({ verifyMs: 0 });
   await f.get(); await f.get();
-  assert.equal(f.state.accessCalls, 4, 'verifyMs=0 等于每轮都核对');
+  assert.equal(f.state.builds, 4, 'verifyMs=0 等于每轮都核对');
   assert.equal(f.logs.filter(line => line.event === 'air_card_cache_mismatch').length, 0, '签名完整时核对不出差异');
 });
 
@@ -139,22 +150,17 @@ test('shadow 档永远现建；签名没变而内容变了时记下差异（签�
   const f = fixture({ mode: 'shadow' });
   const first = await f.get();
   const second = await f.get();
-  assert.equal(f.state.accessCalls, 4, 'shadow 档不省活');
+  assert.equal(f.state.builds, 4, 'shadow 档不省活');
   assert.equal(second.body, first.body);
-  // 造一个签名覆盖不到的输入变化：taskAccess 的结果凭空变了，读数却没动。
-  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  // 造一个签名覆盖不到的输入变化：底稿内容凭空变了，签名却没动。
   const logs = [];
+  const cache = createAirCardCache({ mode: 'shadow', logger: { warn: (event, data) => logs.push({ event, ...data }) } });
   let readOnly = false;
-  mountAirRoutes(app, {
-    admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }), capacityReason: () => null },
-    records: new Map(), directories: new Map(), getBoard: () => ({ tasks: { t: { id: 't', title: 'x', refs: [] } } }), clis: [],
-    shell: { taskAccess: () => ({ readOnly }), readEpoch: () => 'same' },
-    cardCache: createAirCardCache({ mode: 'shadow', logger: { warn: (event, data) => logs.push({ event, ...data }) } }),
-  });
-  const run = async () => { const res = airResponse(); await handlers.get('/api/air')({ headers: {} }, res); return JSON.parse(res.body); };
-  await run();
+  const spec = { keyOf: item => item, signatureOf: () => 'same',
+    build: item => ({ card: { id: item, title: 'x', readOnly } }) };
+  cache.resolve('g', ['t'], spec);
   readOnly = true;
-  assert.equal((await run()).tasks[0].readOnly, true, 'shadow 档返回的永远是现建结果');
+  assert.equal(cache.resolve('g', ['t'], spec).entries[0].card.readOnly, true, 'shadow 档返回的永远是现建结果');
   const mismatch = logs.find(line => line.event === 'air_card_cache_mismatch');
   assert.ok(mismatch, '必须记下差异');
   assert.equal(mismatch.taskId, 't');

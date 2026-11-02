@@ -1,7 +1,6 @@
 import '../widgets/context_source_details.dart';
 import '../services/chat_shell_view.dart';
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -2535,200 +2534,10 @@ class _ContextUsageBar extends StatelessWidget {
     return rows;
   }
 
-  static List<Map<String, dynamic>> _traceSources(Map<String, dynamic>? trace) {
-    final raw = trace?['sources'];
-    if (raw is! List) return const [];
-    return raw
-        .whereType<Map>()
-        .map((value) => Map<String, dynamic>.from(value))
-        .toList();
-  }
-
-  static int _traceCount(Map<String, dynamic>? trace) =>
-      trace == null ? 0 : 1 + _traceSources(trace).length;
-
-  static String _sourceMode(dynamic value) {
-    final mode = value?.toString() ?? '';
-    if (mode == 'refilled') return t('usageContextRefilled');
-    if (RegExp(r'^(memory|context|task):').hasMatch(mode))
-      return contextSourceLabel(mode);
-    // 任务图谱上下文的引用来源：mode 形如 graph:parent / graph:memory。
-    final graph = RegExp(r'^graph:(.+)$').firstMatch(mode);
-    if (graph != null) {
-      final key =
-          'usageContextGraph${graph.group(1)![0].toUpperCase()}${graph.group(1)!.substring(1)}';
-      final labeled = t(key);
-      return labeled == key ? t('usageContextGraphTask') : labeled;
-    }
-    return t('usageContextImported');
-  }
-
-  static String _messageText(dynamic value) {
-    if (value is String) return value;
-    try {
-      return jsonEncode(value);
-    } catch (_) {
-      return value?.toString() ?? '';
-    }
-  }
-
-  static Widget _traceSection(
-    Map<String, dynamic> trace, {
-    bool loading = false,
-    String error = '',
-  }) {
-    final current = trace['currentTask'] is Map
-        ? Map<String, dynamic>.from(trace['currentTask'] as Map)
-        : const <String, dynamic>{};
-    final sources = _traceSources(trace);
-    final children = <Widget>[
-      const Divider(color: Color(0xFFdce6f1), height: 20),
-      Row(
-        children: [
-          const Icon(Icons.link, size: 14, color: Color(0xFF005cc5)),
-          const SizedBox(width: 5),
-          Text(
-            t('usageContextSources', {'n': '${1 + sources.length}'}),
-            style: const TextStyle(color: Color(0xFF4a6076), fontSize: 12),
-          ),
-        ],
-      ),
-      const SizedBox(height: 7),
-      Text(
-        '${t('usageContextCurrent')} · ${t('usageContextNative')}',
-        style: const TextStyle(color: Color(0xFF6f8096), fontSize: 10),
-      ),
-      SelectableText(
-        (current['taskName'] ?? current['taskId'] ?? '').toString(),
-        style: const TextStyle(color: Color(0xFF4a6076), fontSize: 12),
-      ),
-      SelectableText(
-        (current['taskId'] ?? '').toString(),
-        style: const TextStyle(color: Color(0xFF8a9aab), fontSize: 10),
-      ),
-    ];
-    if (trace['budget'] is Map)
-      children.add(ContextBudgetDetails(trace: trace));
-    for (final source in sources) {
-      final messages = source['messages'] is List
-          ? (source['messages'] as List).whereType<Map>().toList()
-          : const <Map>[];
-      final count =
-          (source['messageCount'] as num?)?.toInt() ?? messages.length;
-      final tokens = (source['estimatedTokens'] as num?)?.toInt() ?? 0;
-      final omitted = (source['omittedExchanges'] as num?)?.toInt() ?? 0;
-      final isGraph = RegExp(
-        r'^(graph|memory|task|context):',
-      ).hasMatch('${source['mode']}');
-      final subtitle =
-          '${_sourceMode(source['mode'])}'
-          '${isGraph ? '' : ' · ${t('usageContextMessages', {'n': '$count'})}'}'
-          '${tokens > 0 ? ' · ${t('usageContextApproxTokens', {'n': _amount(tokens)})}' : ''}'
-          '${omitted > 0 ? ' · ${t('usageContextOmitted', {'n': '$omitted'})}' : ''}${contextSourceMeta(source)}';
-      children.add(
-        ExpansionTile(
-          tilePadding: EdgeInsets.zero,
-          childrenPadding: const EdgeInsets.only(left: 8, bottom: 4),
-          dense: true,
-          title: Text(
-            (source['taskName'] ?? source['taskId'] ?? '').toString(),
-            style: const TextStyle(color: Color(0xFF4a6076), fontSize: 12),
-          ),
-          subtitle: Text(
-            subtitle,
-            style: const TextStyle(color: Color(0xFF6f8096), fontSize: 10),
-          ),
-          children:
-              <List<String>>[
-                    ...messages.map(
-                      (message) => [
-                        message['role'] == 'user'
-                            ? t('tbRoleUser')
-                            : t('tbRoleAssistant'),
-                        _messageText(message['content']),
-                      ],
-                    ),
-                    // 图谱上下文来源没有消息，只有实际注入的那一行节选。
-                    if (source['excerpt'] is String &&
-                        (source['excerpt'] as String).trim().isNotEmpty)
-                      [
-                        t('usageContextExcerpt'),
-                        (source['excerpt'] as String).trim(),
-                      ],
-                    if (source['path'] != null)
-                      [t('usageContextPath'), '${source['path']}'],
-                    if (source['reason'] != null)
-                      [t('usageContextReason'), '${source['reason']}'],
-                  ]
-                  .map(
-                    (pair) => Padding(
-                      padding: const EdgeInsets.only(bottom: 7),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          SizedBox(
-                            width: 34,
-                            child: Text(
-                              pair[0],
-                              style: const TextStyle(
-                                color: Color(0xFF8a9aab),
-                                fontSize: 10,
-                              ),
-                            ),
-                          ),
-                          Expanded(
-                            child: SelectableText(
-                              pair[1],
-                              style: const TextStyle(
-                                color: Color(0xFF6f8096),
-                                fontSize: 11,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  )
-                  .toList(),
-        ),
-      );
-    }
-    if (loading) {
-      children.add(
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 6),
-          child: LinearProgressIndicator(minHeight: 2),
-        ),
-      );
-    }
-    if (error.isNotEmpty) {
-      children.add(
-        Text(
-          error,
-          style: const TextStyle(color: Color(0xFFb64e43), fontSize: 11),
-        ),
-      );
-    }
-    children.add(
-      Padding(
-        padding: const EdgeInsets.only(top: 7),
-        child: Text(
-          t('usageContextManagedScope'),
-          style: const TextStyle(color: Color(0xFF8a9aab), fontSize: 10),
-        ),
-      ),
-    );
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: children,
-    );
-  }
-
   void _showDetail(BuildContext context, ChatProvider p) {
     final rows = _detailRows(p);
     final summaryTrace = p.contextTrace;
     if (rows.isEmpty && summaryTrace == null) return;
-    final hasRemoteSources = _traceSources(summaryTrace).isNotEmpty;
     showDialog<void>(
       context: context,
       builder: (_) => AlertDialog(
@@ -2739,55 +2548,45 @@ class _ContextUsageBar extends StatelessWidget {
         content: SizedBox(
           width: 520,
           child: SingleChildScrollView(
-            child: FutureBuilder<Map<String, dynamic>>(
-              initialData: summaryTrace,
-              future: hasRemoteSources ? p.loadContextTrace() : null,
-              builder: (context, snapshot) => Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final row in rows)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            row[0],
-                            style: const TextStyle(
-                              color: Color(0xFF6f8096),
-                              fontSize: 11,
-                            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final row in rows)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          row[0],
+                          style: const TextStyle(
+                            color: Color(0xFF6f8096),
+                            fontSize: 11,
                           ),
-                          const SizedBox(height: 2),
-                          Text(
-                            row[1],
-                            style: const TextStyle(
-                              color: Color(0xFF4a6076),
-                              fontSize: 12,
-                            ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          row[1],
+                          style: const TextStyle(
+                            color: Color(0xFF4a6076),
+                            fontSize: 12,
                           ),
-                        ],
-                      ),
-                    ),
-                  Text(
-                    t('usageSessionHint'),
-                    style: const TextStyle(
-                      color: Color(0xFF8a9aab),
-                      fontSize: 11,
+                        ),
+                      ],
                     ),
                   ),
-                  if (snapshot.data != null)
-                    _traceSection(
-                      snapshot.data!,
-                      loading:
-                          snapshot.connectionState == ConnectionState.waiting,
-                      error: snapshot.hasError
-                          ? t('usageContextLoadFailed')
-                          : '',
-                    ),
-                ],
-              ),
+                Text(
+                  t('usageSessionHint'),
+                  style: const TextStyle(color: Color(0xFF8a9aab), fontSize: 11),
+                ),
+                // 新消息内嵌的只是摘要：loader 会现拉完整明细再画。
+                if (summaryTrace != null)
+                  ContextTraceLoader(
+                    trace: summaryTrace,
+                    load: p.loadContextTrace,
+                  ),
+              ],
             ),
           ),
         ),
@@ -2856,7 +2655,7 @@ class _ContextUsageBar extends StatelessWidget {
                 const Icon(Icons.link, size: 12, color: Color(0xFF8a9aab)),
                 const SizedBox(width: 2),
                 Text(
-                  t('usageContextSources', {'n': '${_traceCount(trace)}'}),
+                  t('usageContextSources', {'n': '${contextTraceCount(trace)}'}),
                   style: const TextStyle(
                     color: Color(0xFF8a9aab),
                     fontSize: 11,
