@@ -10,9 +10,11 @@
 
 use std::time::Duration;
 
-/// 首次尝试前的等待：弹窗本身出现也要一点时间。
+/// 首次尝试前的等待：弹窗本身出现也要一点时间。只被 macOS 实现引用。
+#[cfg(target_os = "macos")]
 const FIRST_TRY_DELAY: Duration = Duration::from_millis(700);
-/// 两次尝试的间隔。授权框是模态的，一直等到握手超时为止。
+/// 两次尝试的间隔。授权框是模态的，一直等到握手超时为止。只被 macOS 实现引用。
+#[cfg(target_os = "macos")]
 const TRY_INTERVAL: Duration = Duration::from_millis(1200);
 
 /// AppleScript：在目标浏览器进程里找「远程调试」授权框并点允许按钮。
