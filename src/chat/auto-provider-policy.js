@@ -154,6 +154,18 @@ function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000, model 
 // (the same vendor behind different logins, trust domain 'official') the one
 // with more headroom wins once stickiness has had its say — compared in 20-point
 // bands so small drifts do not bounce a session between accounts.
+//
+// Stickiness never outlives a higher-priority line's quota: when an earlier line
+// was the reason this session moved, and the cache now reports it usable again
+// (a fresh available reading, or an availability park that has expired), the
+// pool returns to it. Ordered pools therefore resume "line 1 first" after a
+// reset instead of pinning the fallback for the rest of the day. A line that is
+// merely unmeasured stays behind the sticky route, so neither an aged-out
+// reading nor a one-off failure re-rolls the route on every turn.
+function recoveredForPriority(candidate) {
+  return candidate.limitState === 'available'
+    || candidate.limitReason === 'provider_cooldown_expired';
+}
 function tierRank(candidate, preferredTier, ladder) {
   if (!preferredTier) return 0;
   if (candidate.tier === preferredTier) return 0;
@@ -192,8 +204,13 @@ function chooseCandidate({
       const pinOrder = (isPinned(left) ? 0 : 1) - (isPinned(right) ? 0 : 1);
       if (pinOrder !== 0) return pinOrder;
     }
-    if (left.providerId === stickyProviderId && right.providerId !== stickyProviderId) return -1;
-    if (right.providerId === stickyProviderId && left.providerId !== stickyProviderId) return 1;
+    if (left.providerId === stickyProviderId && right.providerId !== stickyProviderId) {
+      // A recovered, roomier earlier line reclaims its place over the fallback.
+      return recoveredForPriority(right) && !nearLimit(right) && right.priority < left.priority ? 1 : -1;
+    }
+    if (right.providerId === stickyProviderId && left.providerId !== stickyProviderId) {
+      return recoveredForPriority(left) && !nearLimit(left) && left.priority < right.priority ? -1 : 1;
+    }
     const pressure = (nearLimit(left) ? 1 : 0) - (nearLimit(right) ? 1 : 0);
     if (pressure !== 0) return pressure;
     const leftBand = officialBand(left), rightBand = officialBand(right);
