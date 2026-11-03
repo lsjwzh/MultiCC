@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "multicc-cdpd"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",
