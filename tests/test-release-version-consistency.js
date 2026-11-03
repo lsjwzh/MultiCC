@@ -371,13 +371,19 @@ test('core runner covers every selected path and expands declared variants', () 
   // format helpers — no clock, port, FS or process of its own — safe for the
   // deterministic release tier.
   // 376 + 2 = 378 entries, 315 + 2 = 317 deterministic, 348 + 2 = 350 commands.
-  assert.equal(core.length, 378, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 378);
+  // Re-audited for the resident Claude API error incident:
+  // tests/test-claude-api-error-message.js (already run by npm:test:core) drives
+  // the turn engine, background hold and Claude adapter with plain objects and
+  // no-op callbacks — no clock, port, FS or process — safe for the deterministic
+  // release tier.
+  // 378 + 1 = 379 entries, 317 + 1 = 318 deterministic, 350 + 1 = 351 commands.
+  assert.equal(core.length, 379, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 379);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 317);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 318);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 30);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -387,8 +393,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 350,
-    '347 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 351,
+    '348 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
