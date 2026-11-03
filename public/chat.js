@@ -1160,7 +1160,10 @@ function updateUI() {
   syncTokenRate();
 }
 function paintTokenRate() {
-  const tools = { toolRunning: false, toolSince: 0, toolEndedAt: 0 };
+  const tools = {
+    toolRunning: false, toolSince: 0, toolEndedAt: 0,
+    bgRunning: chatBgActivity.runningCount() > 0,
+  };
   for (const tool of currentToolCards.values()) {
     if (!tool || tool.name === 'Thinking' || !tool.startedAt) continue;
     if (tool.endedAt) tools.toolEndedAt = Math.max(tools.toolEndedAt, tool.endedAt);
