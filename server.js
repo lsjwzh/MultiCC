@@ -181,9 +181,10 @@ const {
   createCodexOAuthRefresher,
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
 } = require('./src/codex/oauth-refresh');
-const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel, isGoalState } = require('./src/classify/vocab');
+const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
 const { taskShortCode, initTaskShortCodeRegistry } = require('./src/classify/task-short-code');
-const { installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness } = require('./src/classify/aux-verdict-health');
+const { installAuxHealthProvider, fanOutAuxVerdictStaleness } = require('./src/classify/aux-verdict-health');
+const { taskStatePayload } = require('./src/chat/task-state-payload');
 const { recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
 const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/chat/host-prompts');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
@@ -2429,15 +2430,11 @@ function setTaskState(sessionId, patch, opts = {}) {
   };
   persisted.taskState = next; bus.emit('task:state-changed', sessionId, cur, next);
   if (opts.save !== false) savePersistedSessionsBestEffort('runtime.task-state');
-  // Push classify goal/phase to connected chat clients.
-  const classifyPayload = {
-    type: 'task_state',
-    goal: next.goal || '', taskShortCode: taskShortCode(next.taskId),
-    phase: next.phase || 'idle',
-    classifyState: next.classifyState || null, apiError: next.apiError || null, goalState: isGoalState(next.goalState) ? next.goalState : null,
-    // Verdicts carry whether Aux is still answering (src/classify/aux-verdict-health.js).
-    ...auxVerdictStaleness(),
-  };
+  // Push classify goal/phase to connected chat clients. The payload contract is
+  // shared with the connect seed and the extracted store — see
+  // src/chat/task-state-payload.js; drifting it once cost reopened pages the
+  // last API error.
+  const classifyPayload = taskStatePayload(next);
   try {
     chatBroadcast(sessionId, classifyPayload);
   } catch (_) {}

@@ -541,11 +541,17 @@
       if (!lastVerdict) return;
       renderAuxClassify(lastVerdict.goal, lastVerdict.phase, lastVerdict.classifyState, lastVerdict.code, {
         goalState: lastVerdict.goalState,
+        cancelledAt: lastVerdict.cancelledAt,
+        // The repaint freshness must restate the staleness just applied —
+        // renderAuxClassify re-reads freshness wholesale, so omitting it here
+        // would immediately wipe the marker this event exists to paint.
+        ...verdictStaleness,
       });
     }
 
     function renderAuxClassify(goal, phase, classifyState, code, freshness) {
-      lastVerdict = { goal, phase, classifyState, code, goalState: freshness?.goalState || null };
+      lastVerdict = { goal, phase, classifyState, code, goalState: freshness?.goalState || null,
+        cancelledAt: freshness?.cancelledAt || null };
       if (freshness && typeof freshness === 'object') verdictStaleness = readStaleness(freshness);
       const bar = doc.getElementById('aux-classify-bar');
       if (!bar) return;
@@ -569,6 +575,13 @@
       const phaseLabel = phaseLabels[String(phase || '').toLowerCase()] || '';
       if (phaseEl) { phaseEl.textContent = phaseLabel; phaseEl.style.display = phaseLabel ? '' : 'none'; }
       const display = classifyDisplay(classifyState || 'P');
+      // 用户主动停止的轮次判定仍是 E，但徽标该说「已取消」而不是「API 异常」——
+      // cancelled 是 session 域的正式状态（status-presentation.js），与任务卡同源。
+      if (String(classifyState || '') === 'E' && freshness?.cancelledAt) {
+        display.status = 'cancelled';
+        display.barTint = 'cancelled';
+        display.label = translate('statusCancelled');
+      }
       // ✅ 的子状态词（达成目标 / 需要交互）与 Air 任务行同源（status-presentation
       // 的 succeededSubLabel），聊天窗口不再只能说「执行成功」；非 D 或没有子状态时
       // 该函数返回 ''，退回 display.label 原词。

@@ -687,12 +687,32 @@
             'waiting',
           );
           break;
-        case 'task_state':
+        case 'task_state': {
           liveUi.renderAuxClassify(message.goal, message.phase, message.classifyState, message.taskShortCode, {
             auxUnhealthy: message.auxUnhealthy, auxUnhealthySince: message.auxUnhealthySince,
             goalState: message.goalState || null,
+            cancelledAt: message.cancelledAt || null,
           });
+          // The frame carries the persisted upstream-error envelope on the same
+          // contract as api_error_policy (src/chat/task-state-payload.js). That
+          // live event is never replayed, so this field is the only way a
+          // reopened page can re-render the bar. A user-stopped turn
+          // (cancelledAt) is not an upstream failure — the badge says 已取消
+          // and the bar stays hidden.
+          if (Object.prototype.hasOwnProperty.call(message, 'apiError') && liveUi.renderApiError) {
+            const apiError = message.apiError;
+            if (apiError && !message.cancelledAt) {
+              liveUi.renderApiError(apiError);
+              // offer() is idempotent (chat-doctor.js), so every broadcast may
+              // re-ask; only terminal failures get the doctor, as on the live
+              // api_error_policy path below.
+              if (apiError.action !== 'retry') host.offerDoctor?.(global.document?.getElementById('api-error-bar'));
+            } else {
+              liveUi.clearApiError?.();
+            }
+          }
           break;
+        }
         // Aux health flipped while this page was open. The judgement on the bar
         // is the one Aux stopped revising, so the bar has to be repainted — no
         // further task_state is coming for this session.

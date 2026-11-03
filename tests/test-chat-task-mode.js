@@ -78,9 +78,35 @@ test('read-only task boot hydrates the original chat renderers without opening a
   assert.deepEqual(rendered.identity, ['Archived task', 'task-old']);
   assert.equal(rendered.plan.value.messages[0].tools[0].name, 'Read');
   assert.equal(rendered.queue[0][0].entryId, 'q1');
-  assert.deepEqual(JSON.parse(JSON.stringify(rendered.classify)), ['ship', 'done', 'D', '', { goalState: null }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(rendered.classify)), ['ship', 'done', 'D', '', { goalState: null, cancelledAt: null }]);
   assert.equal(rendered.artifacts.taskId, 'task-old');
   assert.equal(context.statusEl.textContent, '只读历史');
+  // The persisted apiError envelope rides the same snapshot, so the read-only
+  // page repaints the API-error bar exactly like the live WS task_state path;
+  // a user-stopped turn (cancelledAt) never repaints it.
+  const rendered2 = {};
+  const snapshot2 = { task: { title: 't' }, messages: [], execution: { queue: {}, classify: {
+    state: 'E', goal: 'g', phase: 'done', apiError: { provider: 'claude', httpStatus: 502 } } } };
+  const context2 = { URL, URLSearchParams, _taskId: 'task-err', _params: new URLSearchParams({ task: 'task-err', readOnly: '1' }),
+    window: { fetch: async () => response(snapshot2),
+      MultiCCChatSessionQueue: { render: () => {} }, MultiCCTaskArtifacts: { setScope: () => {} } },
+    document: { body: { classList: { add: () => {} } }, getElementById: () => ({ style: {} }) },
+    updateTabIdentity: () => {}, resetHistoryPagination: () => {},
+    chatHistoryView: { clearMessages: () => {} }, chatHistoryStore: { acceptHistory: v => ({ v }) },
+    applyHistoryPlan: () => {}, renderAuxClassify: () => {},
+    renderApiError: envelope => { rendered2.apiError = envelope; },
+    addSystemMsg: m => assert.fail(m), statusEl: {}, encodeURIComponent };
+  await vm.runInNewContext(boot + '\nbootChatEntry();', context2);
+  assert.deepEqual(rendered2.apiError, { provider: 'claude', httpStatus: 502 });
+  const rendered3 = {};
+  const context3 = { ...context2, _taskId: 'task-cancel',
+    _params: new URLSearchParams({ task: 'task-cancel', readOnly: '1' }),
+    window: { fetch: async () => response({ task: { title: 't' }, messages: [], execution: { queue: {}, classify: {
+      state: 'E', goal: 'g', phase: 'done', apiError: { provider: 'claude' }, cancelledAt: 1 } } }),
+      MultiCCChatSessionQueue: { render: () => {} }, MultiCCTaskArtifacts: { setScope: () => {} } },
+    renderApiError: envelope => { rendered3.apiError = envelope; } };
+  await vm.runInNewContext(boot + '\nbootChatEntry();', context3);
+  assert.equal(rendered3.apiError, undefined, 'a cancelled turn is not an upstream failure');
 });
 
 test('task-link HTTP failures do not enter a second UI', async () => {

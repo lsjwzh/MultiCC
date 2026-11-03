@@ -344,14 +344,27 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   // Every task_state producer must carry the outward short code. The connect-time
   // seed in turn-engine once omitted it, so a freshly opened chat showed the bare
   // goal until the next classify event — pin the field on the wire. The payload
-  // now lives in src/chat/task-state-seed.js (the turn engine is at its line
-  // ceiling), which is also where freshness rides along: a page opened during an
-  // outage would otherwise never learn its verdict is frozen.
+  // now lives in one shared builder, src/chat/task-state-payload.js: the seed,
+  // server.js's live broadcast and the extracted store must send the SAME frame,
+  // because they once drifted and a reopened page lost the last API error (the
+  // seed omitted apiError, and api_error_policy events are never replayed).
+  const payload = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'task-state-payload.js'), 'utf8');
+  assert.ok(payload.includes('taskShortCode: taskShortCode(next.taskId)'));
+  assert.ok(payload.includes('...auxVerdictStaleness()'));
+  assert.ok(payload.includes('apiError: next.apiError || null'),
+    'the persisted error envelope is a reopened page`s only way to re-render the bar');
+  assert.ok(payload.includes('cancelledAt: next.cancelledAt || null'),
+    'a user-stopped turn must be distinguishable from an upstream failure');
   const seed = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'task-state-seed.js'), 'utf8');
-  assert.ok(seed.includes("taskShortCode: taskShortCode(task.taskId)"));
-  assert.ok(seed.includes('...auxVerdictStaleness()'));
+  assert.ok(seed.includes("require('./task-state-payload')"));
+  assert.ok(seed.includes('task.apiError'), 'a persisted error alone must still seed the frame');
   const turnEngine = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine.js'), 'utf8');
   assert.ok(turnEngine.includes('if (seed) sendWs(ws, seed);'), 'the connect path must send it');
+  assert.ok(source.includes('taskStatePayload(next)'),
+    'server.js`s live broadcast must share the payload contract');
+  const taskStateStore = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'task-state-store.js'), 'utf8');
+  assert.ok(taskStateStore.includes('taskStatePayload(next)'),
+    'the extracted store must share the payload contract');
 });
 
 test('chat worktree guidance treats sync API as manual and permits safe Agent self-sync', () => {
