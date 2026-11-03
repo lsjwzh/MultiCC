@@ -643,6 +643,7 @@
           break;
         case 'progress_heartbeat':
           activeProgressTurnId = String(message.turnId || 'active');
+          host.noteTurnHeartbeat?.(message);
           liveUi.pushDanmaku('progress', formatProgressHeartbeat(message, host.translate), `turn:${activeProgressTurnId}`);
           break;
         case 'background_tasks':

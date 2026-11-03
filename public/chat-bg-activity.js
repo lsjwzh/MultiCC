@@ -16,6 +16,9 @@
 
   const TICK_MS = 1000;   // 时长走字频率
   const POLL_MS = 5000;   // lastOutput / createdAt 校准轮询，只在行可见时才有意义
+  // 快照对账的宽限：快照只列服务端确认的后台任务，分类缺口会让真在跑的任务
+  // 短暂缺席；有心跳/进度证据的任务在宽限内不收行，免得活动行一闪一闪。
+  const SNAPSHOT_GRACE_MS = 90000;
   const DESC_MAX = 60;    // 主行里任务描述的截断长度（title 属性里留全文）
   const TAIL_MAX = 120;   // 「最近输出」行的截断长度
   const TITLE_MAX = 160;  // 悬停提示里每条任务描述的截断长度
@@ -222,6 +225,7 @@
         startedAt: prev ? prev.startedAt : now(),
         tailLine: prev ? prev.tailLine : '',
         tailAt: prev ? prev.tailAt : 0,
+        lastSeenAt: now(),
       });
     }
 
@@ -244,6 +248,7 @@
           if (!taskId) return;
           if (!running.has(taskId)) remember(taskId, message.description);
           else if (message.description) running.get(taskId).description = message.description;
+          if (running.has(taskId)) running.get(taskId).lastSeenAt = now();
           // 进度心跳说明任务活着，顺带拉一次台账校准 tail。
           schedulePollNow();
           render();
@@ -266,12 +271,16 @@
             if (running.has(taskId)) {
               const task = running.get(taskId);
               if (snap.description) task.description = snap.description;
+              task.lastSeenAt = now();
             } else {
               remember(taskId, snap.description);
             }
           }
           for (const taskId of [...running.keys()]) {
-            if (!snapshot.has(taskId)) running.delete(taskId);
+            if (snapshot.has(taskId)) continue;
+            // 快照缺席但进度证据还新鲜：宽限内保留，避免与弹幕面板不一致地闪收。
+            if (now() - (running.get(taskId).lastSeenAt || 0) <= SNAPSHOT_GRACE_MS) continue;
+            running.delete(taskId);
           }
           if (running.size > 0) { ensureTimers(); schedulePollNow(); }
           render();
