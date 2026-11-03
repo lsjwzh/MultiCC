@@ -2,6 +2,12 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.14.1 — A per-device send key, unified computer cards, and the WorkBuddy desktop CLI (2026-11-03)
+
+- Add a per-device send-key preference. Keep the classic mode where Enter sends and Shift + Enter inserts a newline, or switch so Enter inserts a newline and Cmd/Ctrl + Enter sends. The toggle lives in Settings on the Air page, the chat page and the Air chat frame read the same stored value, the composer placeholder names the key that sends, and a change made in one tab applies in the others.
+- Restyle the computer directory cards in Air to reuse the console card grid, so card widths no longer drift with the length of a directory name.
+- Detect the WorkBuddy CLI embedded in the macOS desktop app, so the codebuddy lane works on a Mac even without a PATH installation.
+
 ## v2.14.0 — Manage multiple computers from one console (2026-11-02)
 
 - Add multi-computer management to the web console and mobile app. Connect computers you manage, switch between their task directories, and open each computer's settings without leaving the console. Each remote page shows which computer receives your actions and saved settings.
