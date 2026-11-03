@@ -4495,6 +4495,15 @@
       ]
     },
     {
+      "path": "tests/test-qoder-cli-version-selection.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-qoder-models-route.js",
       "tier": "core",
       "lane": "deterministic",

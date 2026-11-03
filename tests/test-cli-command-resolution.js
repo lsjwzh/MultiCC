@@ -203,7 +203,13 @@ try {
     'a machine that only has the homebrew copy resolves exactly as before');
 
   const source = fs.readFileSync(require.resolve('../src/cli-adapters/commands'), 'utf8');
-  assert.ok(!/\b(?:execSync|execFileSync|spawnSync)\b/.test(source), 'command resolution uses no synchronous child process');
+  // qoder is the deliberate exception: choosing the newest install requires a
+  // synchronous `--version` probe, and resolveCliCommands() must stay sync.
+  assert.ok(!/\b(?:execSync|spawnSync)\b/.test(source), 'command resolution uses no other synchronous child process');
+  assert.strictEqual((source.match(/\bexecFileSync\(/g) || []).length, 1,
+    'only the qoder version probe runs a child synchronously');
+  assert.ok(/execFileSync\(candidate, \['--version'\]/.test(source),
+    'the synchronous probe is the qoder --version check');
 
   console.log('CLI command resolution tests passed');
 } finally {

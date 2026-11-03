@@ -3,6 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const windowsEnv = require('../windows-env');
 const { zcodeEngineCandidates } = require('./zcode-engine');
 
@@ -234,19 +235,95 @@ function resolveKimi(context) {
   return findExecutableOnPath('kimi', context) || (isWindows ? 'kimi.exe' : 'kimi');
 }
 
+// Qoder can be installed by several independent products: the official
+// installer, the CN desktop app's companion service, and npm-style prefixes.
+// No single location is the "real" one, so unlike codex we do not pin path
+// order when more than one is runnable: we probe `--version` and take the
+// newest. Explicit QODER_CMD/QODERCN_CMD overrides still win verbatim and are
+// never version-compared — pinning an older CLI is a user decision.
+//
+// The probe must be synchronous because resolveCliCommands() is synchronous.
+// Worst case is candidate count (at most 7: six install locations plus the
+// PATH hit) x the 2s timeout, serially ~14s — but only on the first resolution
+// in a process. The memo below (keyed by the runnable candidate list) makes
+// every later call O(1); createCommandResolver()'s own freeze window is
+// untouched, and a changed candidate set naturally gets a fresh probe.
+//
+// Backend-language exception (AGENTS.md): this is CLI discovery inside the
+// Node adapter layer that resolveCliCommands() already owns and every lane
+// calls synchronously at startup. Moving only qoder's probe to Rust would
+// split the resolver for no behavior gain; the exception is limited to this
+// startup-only probe.
+const QODER_VERSION_PROBE_TIMEOUT_MS = 2000;
+const qoderVersionMemo = new Map();
+
+function parseQoderVersion(output) {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(String(output || ''));
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+}
+
+function compareQoderVersions(left, right) {
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return 0;
+}
+
+// Candidates are the runnable files already filtered in path order. The first
+// one is the fallback when every probe fails to report a parsable version
+// (timeout, crash, non-semver output), preserving the old first-hit behavior.
+function selectNewestQoder(candidates) {
+  const memoKey = candidates.join('\n');
+  if (qoderVersionMemo.has(memoKey)) return qoderVersionMemo.get(memoKey);
+  let selected = candidates[0] || null;
+  let selectedVersion = null;
+  for (const candidate of candidates) {
+    let output;
+    try {
+      output = execFileSync(candidate, ['--version'], {
+        timeout: QODER_VERSION_PROBE_TIMEOUT_MS,
+        encoding: 'utf8',
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch (_) {
+      continue;
+    }
+    const version = parseQoderVersion(output);
+    if (!version) continue;
+    // Strictly newer only: equal versions keep the earlier path.
+    if (!selectedVersion || compareQoderVersions(version, selectedVersion) > 0) {
+      selected = candidate;
+      selectedVersion = version;
+    }
+  }
+  qoderVersionMemo.set(memoKey, selected);
+  return selected;
+}
+
 function resolveQoder(context) {
   const { isWindows, env, homeDir } = context;
   if (env.QODER_CMD) return env.QODER_CMD;
   if (env.QODERCN_CMD) return env.QODERCN_CMD;
-  const directHit = firstRunnable([
+  const candidates = [
     '/opt/homebrew/bin/qoderclicn',
     '/usr/local/bin/qoderclicn',
     path.join(homeDir, '.local', 'bin', 'qoderclicn'),
     path.join(homeDir, '.qoder', 'bin', 'qoderclicn'),
+    // On machines that only use the desktop app this is typically an empty
+    // directory, not a file: isRunnableFile() rejects directories, so it is
+    // skipped without breaking resolution.
     path.join(homeDir, '.qoder-cn', 'bin', 'qoderclicn'),
-  ], context);
-  if (directHit) return directHit;
-  return findExecutableOnPath('qoderclicn', context) || (isWindows ? 'qoderclicn.exe' : 'qoderclicn');
+    // Qoder CN desktop app companion service install location (macOS/Linux).
+    // The Windows equivalent is unconfirmed, so no Windows-only path is added;
+    // a normal Windows install is still found through PATH.
+    path.join(homeDir, '.qodersec', 'bin', 'qoderclicn'),
+  ];
+  const pathHit = findExecutableOnPath('qoderclicn', context);
+  if (pathHit && !candidates.includes(pathHit)) candidates.push(pathHit);
+  const runnable = candidates.filter(candidate => isRunnableFile(candidate, context));
+  if (!runnable.length) return isWindows ? 'qoderclicn.exe' : 'qoderclicn';
+  return selectNewestQoder(runnable);
 }
 
 // WorkBuddy / CodeBuddy CLI (Tencent): binary `codebuddy`, alias `cbc`.
