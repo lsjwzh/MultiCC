@@ -83,6 +83,8 @@ test('waiting for the first token escalates only after a large-context allowance
   meter.begin(0);
   c.advance(5_000);
   assert.deepEqual([meter.snapshot().phase, meter.snapshot().tone], ['waiting', 'idle']);
+  c.advance(133_000);
+  assert.equal(meter.snapshot().tone, 'idle', '2m18s of prefill-sized silence is not an alarm');
   c.advance(rate.WAITING_MS[0]);
   assert.equal(meter.snapshot().tone, 'warning');
   c.advance(rate.WAITING_MS[1]);
@@ -187,7 +189,7 @@ test('describe() renders every phase with its duration and a detailed tooltip', 
   assert.equal(rate.describe({ ...base, phase: 'flowing', rate: 4.25 }).text, '⚡ 4.3 tok/s');
   assert.equal(rate.describe({ ...base, phase: 'tool', phaseMs: 12000 }).text, '🔧 工具运行 12s');
   assert.equal(rate.describe({ ...base, phase: 'thinking', phaseMs: 3500 }).text, '💭 思考中 3.5s');
-  assert.equal(rate.describe({ ...base, phase: 'waiting', phaseMs: 75000, tone: 'warning' }).text, '⏳ 等待响应 1m 15s');
+  assert.equal(rate.describe({ ...base, phase: 'waiting', phaseMs: 75000, tone: 'warning' }).text, '⏳ AI 请求处理中 1m 15s');
   const paused = rate.describe({ active: true, total: 0, ttftMs: null, phase: 'paused', phaseMs: 50000, tone: 'danger' });
   assert.equal(paused.text, '⏸ 0 tok/s · AI 请求已停 50s');
   assert.equal(paused.tone, 'danger');
