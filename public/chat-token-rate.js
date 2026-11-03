@@ -39,10 +39,13 @@
   // One observation this large is a reconnect or replay restoring the reply in
   // one go, not tokens generated in that instant — it re-anchors, never counts.
   const RESYNC_TOKENS = 2000;
-  // [amber, red] in ms. A first token can legitimately take a while on a large
-  // context; output that stops mid-stream is suspicious much sooner.
-  const WAITING_MS = Object.freeze([30000, 90000]);
-  const PAUSED_MS = Object.freeze([10000, 45000]);
+  // [amber, red] in ms. Silence with an active turn is usually the provider
+  // prefilling a large context or compacting between requests — minutes long
+  // and invisible here, since the first stream event only arrives with the
+  // first token. So both fuses stay long; only sustained unexplained silence
+  // may read as an alarm.
+  const WAITING_MS = Object.freeze([180000, 600000]);
+  const PAUSED_MS = Object.freeze([60000, 300000]);
 
   const WIDE = /[⺀-鿿가-힯豈-﫿＀-￯]/g;
 
@@ -183,7 +186,7 @@
       case 'flowing': text = tt('tokenRateFlowing', '⚡ {rate} tok/s', { rate: rateNumber(snap.rate) }); break;
       case 'tool': text = tt('tokenRateTool', '🔧 工具运行 {dur}', { dur }); break;
       case 'thinking': text = tt('tokenRateThinking', '💭 思考中 {dur}', { dur }); break;
-      case 'waiting': text = tt('tokenRateWaiting', '⏳ 等待响应 {dur}', { dur }); break;
+      case 'waiting': text = tt('tokenRateWaiting', '⏳ AI 请求处理中 {dur}', { dur }); break;
       case 'bg': text = tt('tokenRateBg', '⏸ AI 请求已停 {dur} · 后台任务执行中', { dur }); break;
       default: text = tt('tokenRatePaused', '⏸ 0 tok/s · AI 请求已停 {dur}', { dur }); break;
     }
