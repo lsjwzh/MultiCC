@@ -50,10 +50,14 @@
         if (view === 'settings') return frame('settings');
         const snapshot = await api(path('/api/air'));
         if (current !== generation || !host.isConnected) return;
-        const grid = node('div', null, 'directory-grid');
+        // 卡片与「按目录」首页同一种（article.directory-card 包 button），网格直接吃
+        // console-directory-grid 那套稿件样式（air-navigation.css），不在这里另起一份，
+        // 否则卡片宽度随内容长短漂移（之前就是裸 .directory-grid 没有网格样式）。
+        const grid = node('div', null, 'directory-grid console-directory-grid');
         for (const directory of snapshot.directories || []) {
-          const card = button('', () => frame('tasks', directory.id)); card.className = 'machine-directory';
-          card.append(node('strong', directory.name), node('small', directory.path, 'machine-note')); grid.append(card);
+          const btn = button('', () => frame('tasks', directory.id)); btn.className = 'machine-directory';
+          btn.append(node('strong', directory.name), node('small', directory.path, 'machine-note'));
+          const card = node('article', null, 'directory-card'); card.append(btn); grid.append(card);
         }
         if (!grid.children.length) grid.append(node('p', tr('airMachinesNoDirectories')));
         body.append(grid, button(tr('airMachinesManageDirectories'), () => frame('directories')));
