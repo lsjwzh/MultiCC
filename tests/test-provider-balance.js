@@ -35,10 +35,11 @@ const TARGETS = {
 // `cached` stands in for provider-limit-cache: keys are `<appType>:<id>` (the
 // same composite identity the real cache uses). Every runtime here is wired
 // with a lookupCached, like the server's mountProviderBalanceRoutes is.
-function harness({ adapters, fail = [], throwOn = [], cached = {}, lookupThrows = false } = {}) {
+function harness({ adapters, fail = [], throwOn = [], cached = {}, lookupThrows = false, now = null } = {}) {
   const seen = [];
   const recorded = [];
   const runtime = createProviderBalanceRuntime({
+    ...(now ? { now } : {}),
     lookupCached: (appType, id) => {
       if (lookupThrows) throw new Error('cache exploded');
       return cached[`${appType}:${id}`] || null;
@@ -93,7 +94,9 @@ test('queryOne resolves a pollable provider to its adapter DTO', async () => {
 });
 
 test('只读共享缓存不触发上游查询，响应携带规范快照', async () => {
-  const h = harness({ cached: CACHED_WINDOW });
+  // Read at the fixture's own time: the cached 5h window resets an hour later,
+  // so it is still a measurement rather than an inferred post-reset reading.
+  const h = harness({ cached: CACHED_WINDOW, now: () => 1_700_000_000_000 });
   const result = h.runtime.readCached('claude', 'glm-1');
   assert.equal(result.type, 'provider_limit_updated');
   assert.equal(result.providerId, 'glm-1');
