@@ -147,13 +147,17 @@
     return cached ? cached.models : [];
   }
 
-  async function loadQoderModels() {
-    const cached = readQoderCache();
+  // `force` = the picker's 刷新模型 button: ignore localStorage and ask the
+  // server to skip its own cache, exactly like loadOpenCodeModels.
+  async function loadQoderModels(options) {
+    const force = !!(options && options.force);
+    const cached = force ? null : readQoderCache();
     if (cached) return cached.models;
-    if (qoderModelsPromise) return qoderModelsPromise;
+    if (!force && qoderModelsPromise) return qoderModelsPromise;
     qoderModelsPromise = (async () => {
       try {
-        const data = await window.fetch('/api/qoder/models', { credentials: 'same-origin' })
+        const url = force ? '/api/qoder/models?refresh=1' : '/api/qoder/models';
+        const data = await window.fetch(url, { credentials: 'same-origin' })
           .then(r => (r && r.ok ? r.json() : null));
         const models = data && Array.isArray(data.models) ? data.models : [];
         // Only persist the real catalog: caching the offline tier fallback for
@@ -201,13 +205,16 @@
     return cached ? cached.models : [];
   }
 
-  async function loadCodebuddyModels() {
-    const cached = readCodebuddyCache();
+  // Same `force` contract as loadOpenCodeModels / loadQoderModels.
+  async function loadCodebuddyModels(options) {
+    const force = !!(options && options.force);
+    const cached = force ? null : readCodebuddyCache();
     if (cached) return cached.models;
-    if (codebuddyModelsPromise) return codebuddyModelsPromise;
+    if (!force && codebuddyModelsPromise) return codebuddyModelsPromise;
     codebuddyModelsPromise = (async () => {
       try {
-        const data = await window.fetch('/api/codebuddy/models', { credentials: 'same-origin' })
+        const url = force ? '/api/codebuddy/models?refresh=1' : '/api/codebuddy/models';
+        const data = await window.fetch(url, { credentials: 'same-origin' })
           .then(r => (r && r.ok ? r.json() : null));
         const models = data && Array.isArray(data.models) ? data.models : [];
         if (models.length && data.source !== 'fallback') writeCodebuddyCache(models);
@@ -235,13 +242,15 @@
         return { at, models };
       } catch (_) { return null; }
     }
-    async function load() {
-      const cached = read();
+    async function load(options) {
+      const force = !!(options && options.force);
+      const cached = force ? null : read();
       if (cached) return cached.models;
-      if (inflight) return inflight;
+      if (!force && inflight) return inflight;
       inflight = (async () => {
         try {
-          const data = await window.fetch(url, { credentials: 'same-origin' }).then(r => (r && r.ok ? r.json() : null));
+          const requestUrl = force ? `${url}?refresh=1` : url;
+          const data = await window.fetch(requestUrl, { credentials: 'same-origin' }).then(r => (r && r.ok ? r.json() : null));
           const models = data && Array.isArray(data.models) ? data.models : [];
           // fallback / unauthenticated lists are served but never pinned for an hour
           if (models.length && data.source === 'cli') {
@@ -299,13 +308,14 @@
 
   async function loadCodexModels(options = {}) {
     const key = codexCatalogKey(options);
-    const requestKey = key + (options.poll ? ':poll' : ':open');
+    const force = options.force === true;
+    const requestKey = key + (options.poll ? ':poll' : ':open') + (force ? ':force' : '');
     if (codexModelsPromises.has(requestKey)) return codexModelsPromises.get(requestKey);
     const promise = (async () => {
       const controller = typeof AbortController === 'function' ? new AbortController() : null;
       let timeout;
       try {
-        const suffix = `?providerId=${encodeURIComponent(key)}${options.poll ? '&poll=1' : ''}`;
+        const suffix = `?providerId=${encodeURIComponent(key)}${options.poll ? '&poll=1' : ''}${force ? '&refresh=1' : ''}`;
         const data = await Promise.race([
           window.fetch(`/api/codex/models${suffix}`, {
             credentials: 'same-origin', ...(controller ? { signal: controller.signal } : {}),
@@ -418,13 +428,17 @@
     } catch (_) { /* ignore quota / disabled storage */ }
   }
 
-  async function loadClaudeModels() {
+  // `force` = the picker's 刷新模型 button: skip the stale-while-revalidate
+  // shortcut and ask the server to re-extract the CLI bundle's model table.
+  async function loadClaudeModels(options) {
+    const force = !!(options && options.force);
     const cached = readClaudeModelsSync();
-    if (cached.length && claudeModelsFresh()) return cached;
-    if (claudeModelsPromise) return claudeModelsPromise;
+    if (!force && cached.length && claudeModelsFresh()) return cached;
+    if (!force && claudeModelsPromise) return claudeModelsPromise;
     claudeModelsPromise = (async () => {
       try {
-        const data = await window.fetch('/api/claude/models', { credentials: 'same-origin' })
+        const url = force ? '/api/claude/models?refresh=1' : '/api/claude/models';
+        const data = await window.fetch(url, { credentials: 'same-origin' })
           .then(r => (r && r.ok ? r.json() : null));
         const models = data && Array.isArray(data.models) ? data.models : [];
         // Only persist the CLI-derived list: caching the offline fallback for a

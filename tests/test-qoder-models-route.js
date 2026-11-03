@@ -27,9 +27,9 @@ function fakeCli(stdout, { exitCode = 0 } = {}) {
   return file;
 }
 
-function list() {
+function list(opts) {
   return new Promise((resolve, reject) => {
-    listQoderModels((err, models, source) => (err ? reject(err) : resolve({ models, source })));
+    listQoderModels((err, models, source) => (err ? reject(err) : resolve({ models, source })), opts);
   });
 }
 
@@ -82,6 +82,37 @@ test('a CLI that prints only the header falls back rather than serving nothing',
   const { models, source } = await list();
   assert.equal(source, 'fallback');
   assert.ok(models.length > 0);
+});
+
+test('refresh=1 skips the one-day cache (the picker 刷新模型 button)', async () => {
+  process.env.QODER_CMD = fakeCli('MODEL\nQwen3.7-Max');
+  const cached = await list();
+  assert.equal(cached.source, 'cli');
+  process.env.QODER_CMD = fakeCli('MODEL\nQwen3.8-Max\nGLM-5.2');
+  // Without refresh the warm cache wins even though the CLI now says otherwise.
+  assert.deepEqual((await list()).models.map(entry => entry.model), ['Qwen3.7-Max']);
+  const fresh = await list({ refresh: true });
+  assert.equal(fresh.source, 'cli');
+  assert.deepEqual(fresh.models.map(entry => entry.model), ['Qwen3.8-Max', 'GLM-5.2']);
+});
+
+test('the route accepts ?refresh=1 and ?refresh=true', async () => {
+  const routes = new Map();
+  mod.mountQoderModelRoutes({ get: (route, handler) => routes.set(route, handler) });
+  const handler = routes.get('/api/qoder/models');
+  mod._setCacheForTest(Date.now(), [{ model: 'cached-model', label: 'cached-model' }]);
+  process.env.QODER_CMD = fakeCli('MODEL\nlive-model');
+
+  const cachedBody = await new Promise(resolve => handler({ query: {} }, { json: resolve }));
+  assert.equal(cachedBody.source, 'cache');
+  assert.deepEqual(cachedBody.models.map(entry => entry.model), ['cached-model']);
+
+  for (const value of ['1', 'true']) {
+    mod._setCacheForTest(Date.now(), [{ model: 'cached-model', label: 'cached-model' }]);
+    const body = await new Promise(resolve => handler({ query: { refresh: value } }, { json: resolve }));
+    assert.equal(body.source, 'cli', `refresh=${value} bypasses the cache`);
+    assert.deepEqual(body.models.map(entry => entry.model), ['live-model']);
+  }
 });
 
 test('the route reports source and cached, and never 500s on a dead CLI', async () => {

@@ -60,8 +60,8 @@ function resolveQoderBin() {
   } catch (_) { return 'qoderclicn'; }
 }
 
-function listQoderModels(callback) {
-  if (cache && (Date.now() - cache.at) < QODER_TTL_MS) {
+function listQoderModels(callback, opts = {}) {
+  if (!opts.refresh && cache && (Date.now() - cache.at) < QODER_TTL_MS) {
     return setImmediate(() => callback(null, cache.models, 'cache'));
   }
   const bin = resolveQoderBin();
@@ -80,10 +80,12 @@ function listQoderModels(callback) {
 function mountQoderModelRoutes(app) {
   if (!app || typeof app.get !== 'function') return;
   app.get('/api/qoder/models', (req, res) => {
+    // ?refresh=1 skips the 1-day cache (the picker 刷新模型 button).
+    const refresh = /^(?:1|true)$/i.test(String((req && req.query && req.query.refresh) || ''));
     listQoderModels((err, models, source) => {
       if (err) return res.status(503).json({ error: 'qoder models unavailable', models: [] });
       res.json({ models, source, cached: source === 'cache' });
-    });
+    }, { refresh });
   });
 }
 

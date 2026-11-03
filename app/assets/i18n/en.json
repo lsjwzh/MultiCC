@@ -3106,7 +3106,7 @@
   "runConfigPresetAppliedDraft": "Preset applied to the draft. Review the lines and save this panel. Mixed official and custom lines require fresh confirmation.",
   "runConfigPresetDeleteConfirm": "Delete this local preset? The current pool will not change.",
   "runConfigModelRefresh": "Refresh models",
-  "runConfigModelRefreshHint": "Re-read the model list from the local opencode install",
+  "runConfigModelRefreshHint": "Re-read the model list from the local CLI install",
   "runConfigModelRefreshing": "Refreshing…",
   "runConfigModelRefreshed": "Model list refreshed: {count}",
   "runConfigModelRefreshFailed": "Refresh failed. Try again in a moment.",

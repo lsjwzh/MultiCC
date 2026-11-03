@@ -66,8 +66,8 @@ function resolveBin() {
   } catch (_) { return 'commandcode'; }
 }
 
-function listCommandcodeModels(callback) {
-  if (cache && (Date.now() - cache.at) < TTL_MS) {
+function listCommandcodeModels(callback, opts = {}) {
+  if (!opts.refresh && cache && (Date.now() - cache.at) < TTL_MS) {
     return setImmediate(() => callback(null, cache.models, 'cache'));
   }
   execFile(resolveBin(), ['--list-models'], { timeout: TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
@@ -83,10 +83,12 @@ function listCommandcodeModels(callback) {
 function mountCommandcodeModelRoutes(app) {
   if (!app || typeof app.get !== 'function') return;
   app.get('/api/commandcode/models', (req, res) => {
+    // ?refresh=1 skips the 1-hour cache (the picker 刷新模型 button).
+    const refresh = /^(?:1|true)$/i.test(String((req && req.query && req.query.refresh) || ''));
     listCommandcodeModels((err, models, source) => {
       if (err) return res.status(503).json({ error: 'commandcode models unavailable', models: [] });
       res.json({ models, source, cached: source === 'cache' });
-    });
+    }, { refresh });
   });
 }
 

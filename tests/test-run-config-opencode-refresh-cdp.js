@@ -85,14 +85,72 @@ test('opencode model picker: 刷新模型 bypasses both caches and repaints live
   });
 });
 
-test('opencode model picker: other CLIs keep the button hidden', async t => {
+// 花名册：模型下拉由 /api/<cli>/models 这类实时目录喂的 CLI 才显示「刷新模型」。
+// dsh / gemini / zcode / kimi / pi 的清单是内置表或 provider 目录，没有可刷的东西。
+const ROSTER = ['opencode', 'qoder', 'codebuddy', 'commandcode', 'grok',
+  'claude', 'claude-exp', 'codex', 'codex-exp'];
+const STATIC_CLIS = ['dsh', 'gemini', 'zcode', 'kimi', 'pi'];
+const liveRoutes = () => {
+  const fixture = { ...routes };
+  for (const cli of ROSTER) fixture[`GET /api/${cli}/models`] = () => json({ models: LIVE, source: 'cli' });
+  return fixture;
+};
+
+test('model picker: every dynamic-catalog CLI shows the refresh button', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
-  const fixture = { ...routes, 'GET /api/opencode/models': () => json({ models: LIVE, source: 'cli' }) };
-  await withCdpHarness({ routes: fixture, screenshotDir: qaDir() }, async page => {
+  await withCdpHarness({ routes: liveRoutes(), screenshotDir: qaDir() }, async page => {
     await page.navigate('/run-config-host.html');
     assert.ok(await page.waitFor('window.MultiCCRunConfig'));
-    await page.evaluate(`window.MultiCCRunConfig.open({ configuration: { cli: 'grok' } }, ['grok'], () => {})`);
-    assert.ok(await page.waitFor(`!!document.querySelector(${JSON.stringify(D + '.rc-model')})`));
-    assert.equal(await page.evaluate(visible('.rc-model-refresh')), false, 'only opencode has a live model table');
+    for (const cli of ROSTER) {
+      await page.evaluate(`window.testDialog=MultiCCRunConfig.open({ configuration: { cli: ${JSON.stringify(cli)} } }, [${JSON.stringify(cli)}], () => {})`);
+      // boot() 先画骨架再等 /api/providers；模型字段就绪后按钮状态才是终态。
+      assert.ok(await page.waitFor(`${optionValues}.length > 1`));
+      assert.equal(await page.evaluate(visible('.rc-model-refresh')), true, `${cli} has a live model table`);
+      await page.evaluate('window.testDialog.close()');
+    }
+  });
+});
+
+test('model picker: static-list CLIs keep the button hidden', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  await withCdpHarness({ routes: liveRoutes(), screenshotDir: qaDir() }, async page => {
+    await page.navigate('/run-config-host.html');
+    assert.ok(await page.waitFor('window.MultiCCRunConfig'));
+    for (const cli of STATIC_CLIS) {
+      await page.evaluate(`window.testDialog=MultiCCRunConfig.open({ configuration: { cli: ${JSON.stringify(cli)} } }, [${JSON.stringify(cli)}], () => {})`);
+      assert.ok(await page.waitFor(`${optionValues}.length > 1`));
+      assert.equal(await page.evaluate(visible('.rc-model-refresh')), false, `${cli} has no live catalog to refresh`);
+      await page.evaluate('window.testDialog.close()');
+    }
+  });
+});
+
+test('qoder model picker: 刷新模型 bypasses both caches and repaints live ids', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const QODER_KEY = 'multicc.qoder.models.v1';
+  const STALE_QODER = [{ model: 'Qwen3.7-Max', label: 'Qwen3.7-Max' }];
+  const LIVE_QODER = [{ model: 'Qwen3.8-Max', label: 'Qwen3.8-Max' }, { model: 'GLM-5.2', label: 'GLM-5.2' }];
+  const fixture = { ...liveRoutes(), 'GET /api/qoder/models': () => json({ models: LIVE_QODER, source: 'cli' }) };
+  await withCdpHarness({ routes: fixture, screenshotDir: qaDir() }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/run-config-host.html');
+    assert.ok(await page.waitFor('window.MultiCCRunConfig && window.MultiCCChatAiConfig'));
+    await page.evaluate(`localStorage.setItem(${JSON.stringify(QODER_KEY)}, ${JSON.stringify(JSON.stringify({ at: Date.now(), models: STALE_QODER }))})`);
+    await page.evaluate(`window.testDialog=MultiCCRunConfig.open({ configuration: { cli: 'qoder' } }, ['qoder'], () => {})`);
+    assert.ok(await page.waitFor(`${optionValues}.includes('Qwen3.7-Max')`), 'stale cached ids paint first');
+    assert.equal(
+      page.requests.filter(r => r.path === '/api/qoder/models').length, 0,
+      'a warm browser cache must not hit the server before the button is pressed',
+    );
+
+    await page.evaluate(`document.querySelector(${JSON.stringify(D + '.rc-model-refresh')}).click()`);
+    assert.ok(await page.waitFor(`${optionValues}.includes('Qwen3.8-Max')`), 'live list replaces the cached one');
+    assert.equal(await page.evaluate(`${optionValues}.includes('Qwen3.7-Max')`), false, 'the retired id is gone');
+    const calls = page.requests.filter(r => r.path === '/api/qoder/models');
+    assert.equal(calls.length, 1, 'exactly one refetch');
+    assert.match(calls[0].url, /refresh=1/, 'the server cache is bypassed too');
+    assert.match(await page.evaluate(`document.querySelector(${JSON.stringify(D + '.rc-model-status')}).textContent`), /刷新|refreshed/i, 'the result is reported');
+    assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(D + '.rc-model-refresh')}).disabled`), false, 'button is usable again');
+    await page.evaluate('window.testDialog.close()');
   });
 });

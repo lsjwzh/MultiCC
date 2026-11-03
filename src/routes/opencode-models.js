@@ -13,6 +13,17 @@
 // picker opens do not spawn the CLI. The TTL matches the CLI's own cadence:
 // opencode re-checks models.dev on a 60-minute timer, so an upstream model
 // rename becomes visible here within the same hour instead of a day later.
+//
+// OpenAI-compatible providers configured in opencode.json (`options.baseURL`)
+// are a special case: their model list lives at the gateway, not in models.dev,
+// and users tend to hand-write a static whitelist under `provider.<id>.models`.
+// Upstream renames (e.g. DeepSeek `deepseek-v4-flash` → `deepseek-v4.1-flash`)
+// therefore froze the picker forever — the 刷新 button only re-read the same
+// file. On every cache miss (and every ?refresh=1) we now also GET
+// `{baseURL}/models` for each such provider (3s timeout, several in parallel),
+// and replace that provider's static list with the live one. Any failure keeps
+// the static list, so a gateway outage can never take the picker down
+// (fail-open).
 
 const { execFile } = require('child_process');
 const fs = require('fs');
@@ -21,7 +32,11 @@ const path = require('path');
 
 const OPENCODE_TTL_MS = 60 * 60 * 1000; // 1 hour — opencode's own refresh cadence
 const OPENCODE_TIMEOUT_MS = 2000;
+const OPENCODE_HTTP_TIMEOUT_MS = 3000;
 const MAX_MODELS = 1000;
+// Below this normalised similarity we do not guess a replacement. A typo or a
+// genuinely unrelated model must not be "corrected" into a different line.
+const MODEL_SIMILARITY_THRESHOLD = 0.6;
 
 // opencode is rarely on the server's PATH (it lives in ~/.opencode/bin, only
 // added by interactive zsh rc). Probe the explicit override first, then PATH
@@ -66,44 +81,176 @@ function parseOpenCodeStdout(stdout) {
   return out;
 }
 
-function readOpenCodeJsonFallback() {
+function openCodeConfigCandidates() {
   const home = os.homedir();
-  const candidates = [
+  return [
     path.join(home, '.config', 'opencode', 'opencode.json'),
     path.join(home, '.config', 'opencode', 'opencode.jsonc'),
   ];
-  for (const file of candidates) {
-    let raw;
-    try {
-      raw = fs.readFileSync(file, 'utf8');
-    } catch (_) { continue; }
-    // opencode.jsonc allows // and /* */ comments — strip them naively.
-    const cleaned = String(raw || '')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/^\s*\/\/.*$/gm, '');
-    let cfg;
-    try {
-      cfg = JSON.parse(cleaned);
-    } catch (_) { continue; }
-    const providers = cfg && typeof cfg.provider === 'object' ? cfg.provider : null;
-    if (!providers) continue;
-    const out = [];
-    const seen = new Set();
-    for (const [id, entry] of Object.entries(providers)) {
-      const models = entry && typeof entry.models === 'object' ? entry.models : null;
-      if (!models) continue;
-      for (const model of Object.keys(models)) {
-        const key = `${id}/${model}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const labelField = models[model] && typeof models[model].name === 'string' ? models[model].name : key;
-        out.push({ provider: id, model, label: `${key} (${labelField})` });
-        if (out.length >= MAX_MODELS) return out;
-      }
+}
+
+// Parse one opencode.json/jsonc file and return its raw `provider` object. The
+// raw object (not the flattened triples) is what the dynamic-list layer needs:
+// `options.baseURL` / `options.apiKey` only exist here.
+function readOpenCodeConfigFile(file) {
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (_) { return null; }
+  // opencode.jsonc allows // and /* */ comments — strip them naively.
+  const cleaned = String(raw || '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  let cfg;
+  try {
+    cfg = JSON.parse(cleaned);
+  } catch (_) { return null; }
+  return cfg && typeof cfg.provider === 'object' && cfg.provider ? cfg.provider : null;
+}
+
+// Raw provider definitions: `{[providerId]: {name, npm, options:{baseURL,apiKey}, models}}`.
+function readOpenCodeConfigProviders() {
+  for (const file of openCodeConfigCandidates()) {
+    const providers = readOpenCodeConfigFile(file);
+    if (providers) return providers;
+  }
+  return null;
+}
+
+function staticModelsFromProviders(providers) {
+  const out = [];
+  const seen = new Set();
+  for (const [id, entry] of Object.entries(providers || {})) {
+    const models = entry && typeof entry.models === 'object' ? entry.models : null;
+    if (!models) continue;
+    for (const model of Object.keys(models)) {
+      const key = `${id}/${model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const labelField = models[model] && typeof models[model].name === 'string' ? models[model].name : key;
+      out.push({ provider: id, model, label: `${key} (${labelField})` });
+      if (out.length >= MAX_MODELS) return out;
     }
+  }
+  return out;
+}
+
+function readOpenCodeJsonFallback() {
+  for (const file of openCodeConfigCandidates()) {
+    const providers = readOpenCodeConfigFile(file);
+    if (!providers) continue;
+    const out = staticModelsFromProviders(providers);
     if (out.length) return out;
   }
   return [];
+}
+
+// `{env:VAR}` is opencode's own indirection for secrets; expand it so the
+// gateway call can authenticate without storing keys in the config.
+function resolveConfiguredApiKey(rawKey) {
+  const text = typeof rawKey === 'string' ? rawKey.trim() : '';
+  if (!text) return '';
+  const match = /^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(text);
+  return match ? String(process.env[match[1]] || '') : text;
+}
+
+function modelsEndpointFor(baseURL) {
+  const base = typeof baseURL === 'string' ? baseURL.trim().replace(/\/+$/, '') : '';
+  if (!base) return null;
+  return /\/models$/i.test(base) ? base : `${base}/models`;
+}
+
+function modelsFromGatewayPayload(providerId, payload) {
+  const data = Array.isArray(payload) ? payload
+    : payload && Array.isArray(payload.data) ? payload.data
+      : payload && Array.isArray(payload.models) ? payload.models : [];
+  const out = [];
+  const seen = new Set();
+  for (const entry of data) {
+    const id = entry && typeof entry === 'object' ? String(entry.id || '').trim() : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const key = `${providerId}/${id}`;
+    const name = typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : '';
+    out.push({ provider: providerId, model: id, label: name ? `${key} (${name})` : key });
+    if (out.length >= MAX_MODELS) break;
+  }
+  return out;
+}
+
+async function fetchGatewayModels(providerId, endpoint, apiKey, fetchImpl) {
+  const request = async (key) => {
+    const headers = { accept: 'application/json' };
+    if (key) headers.authorization = `Bearer ${key}`;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), OPENCODE_HTTP_TIMEOUT_MS) : null;
+    try {
+      const res = await fetchImpl(endpoint, { method: 'GET', headers, signal: controller?.signal });
+      return { res, status: Number(res && res.status) || 0 };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+  let { res, status } = await request(apiKey);
+  // A stale/expired key must not hide a gateway that serves the catalog
+  // unauthenticated (the OpenCode Zen Go endpoint does exactly this).
+  if (apiKey && (status === 401 || status === 403)) {
+    ({ res } = await request(''));
+  }
+  if (!res || !res.ok) return null;
+  const payload = await res.json();
+  const models = modelsFromGatewayPayload(providerId, payload);
+  return models.length ? models : null;
+}
+
+// Parallel, per-provider, fail-open: a provider that errors simply keeps its
+// static config list.
+function fetchDynamicProviderModels(providers, fetchImpl) {
+  if (typeof fetchImpl !== 'function') return Promise.resolve(new Map());
+  const entries = Object.entries(providers || {}).filter(([, entry]) =>
+    entry && entry.options && typeof entry.options.baseURL === 'string' && entry.options.baseURL.trim());
+  if (!entries.length) return Promise.resolve(new Map());
+  return Promise.all(entries.map(async ([id, entry]) => {
+    try {
+      const endpoint = modelsEndpointFor(entry.options.baseURL);
+      if (!endpoint) return null;
+      const models = await fetchGatewayModels(id, endpoint, resolveConfiguredApiKey(entry.options.apiKey), fetchImpl);
+      return models ? [id, models] : null;
+    } catch (_) {
+      return null;
+    }
+  })).then(pairs => new Map(pairs.filter(Boolean)));
+}
+
+// Configured models with each provider's live list substituted in when the
+// gateway answered. Providers without a live list keep their static entries.
+function configuredModelsWithDynamic(providers, dynamicById) {
+  if (!providers) return [];
+  const out = [];
+  const seen = new Set();
+  const push = (item) => {
+    const key = `${item.provider}/${item.model}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(item);
+  };
+  for (const [id, entry] of Object.entries(providers)) {
+    const live = dynamicById.get(id);
+    if (live && live.length) {
+      for (const item of live) push(item);
+      if (out.length >= MAX_MODELS) return out.slice(0, MAX_MODELS);
+      continue;
+    }
+    const models = entry && typeof entry.models === 'object' ? entry.models : null;
+    if (!models) continue;
+    for (const model of Object.keys(models)) {
+      const key = `${id}/${model}`;
+      const labelField = models[model] && typeof models[model].name === 'string' ? models[model].name : key;
+      push({ provider: id, model, label: `${key} (${labelField})` });
+      if (out.length >= MAX_MODELS) return out.slice(0, MAX_MODELS);
+    }
+  }
+  return out;
 }
 
 function tryCliCandidate(binFile, cb) {
@@ -173,16 +320,119 @@ function listOpenCodeModels(callback, opts = {}) {
   if (!opts.refresh && cache && (Date.now() - cache.at) < OPENCODE_TTL_MS) {
     return setImmediate(() => callback(null, cache.models, 'cache'));
   }
+  let providers = null;
+  try {
+    providers = readOpenCodeConfigProviders();
+  } catch (_) { providers = null; }
   let configured = [];
   try {
-    configured = readOpenCodeJsonFallback() || [];
+    configured = providers ? configuredModelsWithDynamic(providers, new Map())
+      : (readOpenCodeJsonFallback() || []);
   } catch (_) { configured = []; }
-  listCliModels((err, cliModels) => {
-    if (err && !configured.length) return callback(err, [], 'fallback');
-    const models = err ? configured : mergeOpenCodeModels(configured, cliModels, readOpenCodeAuthProviders());
+  const fetchImpl = opts.fetchImpl || globalThis.fetch;
+  const cliLister = typeof opts.cliLister === 'function' ? opts.cliLister : listCliModels;
+  let cliSettled = false;
+  let dynamicSettled = false;
+  let finished = false;
+  let cliErr = null;
+  let cliModels = [];
+  let finalConfigured = configured;
+  const finish = () => {
+    if (finished || !cliSettled || !dynamicSettled) return;
+    finished = true;
+    if (cliErr && !finalConfigured.length) return callback(cliErr, [], 'fallback');
+    const models = cliErr ? finalConfigured
+      : mergeOpenCodeModels(finalConfigured, cliModels, readOpenCodeAuthProviders());
     cache = { at: Date.now(), models };
-    callback(null, models, configured.length ? 'config' : 'cli');
+    callback(null, models, finalConfigured.length ? 'config' : 'cli');
+  };
+  try {
+    cliLister((err, models) => {
+      cliErr = err || null;
+      cliModels = models || [];
+      cliSettled = true;
+      finish();
+    });
+  } catch (error) {
+    cliErr = error;
+    cliSettled = true;
+    finish();
+  }
+  fetchDynamicProviderModels(providers, fetchImpl).then(dynamicById => {
+    finalConfigured = configuredModelsWithDynamic(providers, dynamicById);
+  }).catch(() => {
+    finalConfigured = configured;
+  }).then(() => {
+    dynamicSettled = true;
+    finish();
   });
+}
+
+// ── Model validation at spawn time ─────────────────────────────────────────
+// Once the picker has a live list, a model that vanished upstream should fail
+// with a one-shot, actionable error instead of being sent to the gateway and
+// rejected there. The cache is the only source (no network on the hot path);
+// a cold cache returns null so native OpenCode lines still spawn before the
+// first picker refresh.
+
+function levenshteinDistance(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+function modelSimilarity(a, b) {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.startsWith(b) || b.startsWith(a)) return 0.92;
+  if (a.includes(b) || b.includes(a)) return 0.85;
+  return 1 - (levenshteinDistance(a, b) / Math.max(a.length, b.length));
+}
+
+function bestModelSuggestion(provider, target, candidates) {
+  let best = null;
+  let bestScore = 0;
+  for (const candidate of candidates) {
+    if (candidate.model === target) continue;
+    const score = modelSimilarity(target, candidate.model);
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+  if (!best || bestScore < MODEL_SIMILARITY_THRESHOLD) return null;
+  return `${provider}/${best.model}`;
+}
+
+function validateOpenCodeModel(model) {
+  const requested = String(model == null ? '' : model).trim();
+  // Only qualified `<provider>/<model>` ids can be attributed to a configured
+  // provider. Bare ids belong to managed MultiCC routes, which this list does
+  // not describe — never block those (fail-open).
+  const slash = requested.indexOf('/');
+  if (slash <= 0 || slash >= requested.length - 1) return null;
+  const provider = requested.slice(0, slash);
+  const target = requested.slice(slash + 1);
+  const models = peekOpenCodeModels();
+  if (!models.length) return null;
+  const sameProvider = models.filter(item => item.provider === provider);
+  // An unknown provider may be a MultiCC-managed route: no evidence, no veto.
+  if (!sameProvider.length) return null;
+  if (sameProvider.some(item => item.model === target)) return null;
+  return { valid: false, suggestion: bestModelSuggestion(provider, target, sameProvider) };
 }
 
 // Synchronous read of whatever the 1-hour cache already holds. It never spawns
@@ -211,6 +461,8 @@ module.exports = {
   parseOpenCodeStdout,
   peekOpenCodeModels,
   readOpenCodeJsonFallback,
+  readOpenCodeConfigProviders,
+  validateOpenCodeModel,
   mergeOpenCodeModels,
   // exposed for tests
   _setCacheForTest(at, models) { cache = { at, models }; },
