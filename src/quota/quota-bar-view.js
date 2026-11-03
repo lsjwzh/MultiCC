@@ -67,6 +67,38 @@ function unifiedRemaining(usedPercent) {
   return Math.max(0, Math.min(100, Math.round(100 - used)));
 }
 
+// ── Rolled-window inference ─────────────────────────────────────────────────
+// A percentage is a reading of the window that was open when it was taken. When
+// that window's reset deadline lies BETWEEN the reading and this render, the
+// window has rolled: the reading names a window that no longer exists, and the
+// current one is unmeasured. The honest number for "now" is the post-reset
+// state — the quota is full again until somebody measures otherwise — so the
+// bar says that instead of recycling the dead window's percentage, and marks it
+// with a `~` so an inference is never read as a measurement. A reading taken
+// AFTER the deadline (a vendor answering late, a stale resetsAt) is already a
+// reading of the current window and stays untouched.
+function rolledReading(usedPercent, resetsAtMs, measuredAtMs, nowMs) {
+  const used = finiteNumber(usedPercent);
+  const at = finiteNumber(resetsAtMs);
+  const measured = finiteNumber(measuredAtMs);
+  if (used === null || at === null || measured === null) return { used, estimated: false };
+  if (at <= measured || at > nowMs) return { used, estimated: false };
+  return { used: 0, estimated: true };
+}
+
+// The mark an estimated percentage carries, in the baked bytes and in catalog
+// params alike, so both languages spell it the same without a dictionary entry.
+function pctCell(number, estimated) {
+  return `${estimated ? '~' : ''}${number}`;
+}
+
+// One tooltip line per bar that carries at least one estimated window, saying
+// what the `~` means and how to replace the inference with a measurement.
+function estimatedNote() {
+  return part('quotaEstimatedNote', null,
+    '带 ~ 的百分比为推测值：该窗口的重置时间在上次实测之后已过，按重置后满额推算。点 ⟳ 可实测。');
+}
+
 function unifiedColorFromRemaining(rem) {
   if (rem === null) return COLOR.blue;
   if (rem <= 10) return COLOR.red;
@@ -113,11 +145,14 @@ function agoTag(tsMs) {
 }
 
 // One window → `<label> <remaining>% [<countdown>]`; '' when percent is missing.
-function windowSeg(label, usedPercent, resetsAtMs) {
+// `estimated` marks a remaining percentage that is a post-reset inference rather
+// than a reading (see rolledReading).
+function windowSeg(label, usedPercent, resetsAtMs, estimated) {
   const rem = unifiedRemaining(usedPercent);
   if (rem === null) return '';
   const cd = cdTag(resetsAtMs, label);
-  return cd ? `${label} ${rem}% ${cd}` : `${label} ${rem}%`;
+  const pct = `${pctCell(rem, estimated)}%`;
+  return cd ? `${label} ${pct} ${cd}` : `${label} ${pct}`;
 }
 
 // Canonical window-bar display order: short → long, 5h → 1wk → 1m. Rank by the
@@ -225,7 +260,7 @@ function withStates(base, states) {
 
 // ── OpenCode Go (5h / weekly / monthly) ─────────────────────────────────────
 
-function openCodeBar(value) {
+function openCodeBar(value, nowMs) {
   if (!value) {
     return partsView(
       [part('quotaOpenCodeIdleText', null, 'OpenCode Go 余量 · ⟳ 刷新')],
@@ -282,20 +317,20 @@ function openCodeBar(value) {
     return s === null || !fetchedAt ? null : fetchedAt + s * 1000;
   };
   const entries = [];
+  const wins = [];
   for (const [key, token] of [['rolling', '5h'], ['weekly', '1wk'], ['monthly', '1m']]) {
     const w = u[key];
     if (!w || !Number.isFinite(w.usagePercent)) continue;
-    entries.push({ window: token, seg: windowSeg(token, w.usagePercent, resetAt(w.resetInSec)) });
+    const at = resetAt(w.resetInSec);
+    const r = rolledReading(w.usagePercent, at, fetchedAt, nowMs);
+    wins.push({ key, token, w, at, r });
+    entries.push({ window: token, seg: windowSeg(token, r.used, at, r.estimated) });
   }
   const ago = agoTag(value.fetchedAt);
   const viaZenApi = typeof value.source === 'string' && value.source.startsWith('zen-api');
   const segs = sortSegs(entries).join(' · ') || '—';
 
-  const maxPct = Math.max(
-    u.rolling?.usagePercent ?? 0,
-    u.weekly?.usagePercent ?? 0,
-    u.monthly?.usagePercent ?? 0,
-  );
+  const maxPct = Math.max(...wins.map((x) => x.r.used));
   let color = COLOR.blue;
   if (maxPct >= 90) color = COLOR.red;
   else if (maxPct >= 70) color = COLOR.yellow;
@@ -308,9 +343,9 @@ function openCodeBar(value) {
     ['weekly', '周', 'quotaOpenCodeWindowWeekly', 'quotaPeriodWeekly', '1wk'],
     ['monthly', '月', 'quotaOpenCodeWindowMonthly', 'quotaPeriodMonthly', '1m'],
   ]) {
-    const w = u[key];
-    if (!w) continue;
-    const at = resetAt(w.resetInSec);
+    const win = wins.find((x) => x.key === key);
+    if (!win) continue;
+    const { w, at, r } = win;
     // An exhausted window reports status:"rate-limited" — say so, because a
     // segment sitting at "0% 余量" alone reads like a glitch.
     const reset = at ? part('quotaResetAfterSuffix', { at: cdTag(at, windowToken) }, ` · 重置 ${cdTag(at, windowToken)} 后`) : null;
@@ -319,9 +354,11 @@ function openCodeBar(value) {
     // translating. "5h" already reads the same in both, so it stays the literal
     // the server has always baked in.
     const name = nameKey ? part(nameKey, null, zh) : zh;
-    lines.push(part(lineKey, { name, pct: fmt(w.usagePercent), reset, limited },
-      cat(part(null, null, `${zh}: ${fmt(w.usagePercent)}%`), reset, limited)));
+    const pct = pctCell(fmt(r.used), r.estimated);
+    lines.push(part(lineKey, { name, pct, reset, limited },
+      cat(part(null, null, `${zh}: ${pct}%`), reset, limited)));
   }
+  if (wins.some((x) => x.r.estimated)) lines.push(estimatedNote());
   lines.push(syncLine(ago), refreshLine());
   if (u.useBalance) lines.push(part('quotaBalanceFallbackEnabled', null, '已启用：超额用余额兜底'));
   return partsView(
@@ -339,7 +376,7 @@ function normalizeResetTime(value) {
   return Math.trunc(number < 10_000_000_000 ? number * 1000 : number);
 }
 
-function qoderBar(value) {
+function qoderBar(value, nowMs) {
   if (!value) {
     return partsView(
       [part('quotaQoderIdleText', null, 'Qoder CN 余量 · ⟳ 刷新')],
@@ -387,30 +424,40 @@ function qoderBar(value) {
     ?? normalizeResetTime(value.plan && value.plan.end_date)
     ?? normalizeResetTime(value.plan && value.plan.next_refresh_date);
 
+  // A cycle that rolled after the reading resets every counter it meters, so
+  // the inferred current state is an untouched cycle (see rolledReading).
+  const r = rolledReading(pct, resetAt, value.fetchedAt, nowMs);
+  const shownUsed = r.estimated ? 0 : used;
+  const shownRemaining = r.estimated ? limit : remaining;
+
   const ago = agoTag(value.fetchedAt);
-  const seg = windowSeg('1m', pct, resetAt) || '—';
+  const seg = windowSeg('1m', r.used, resetAt, r.estimated) || '—';
 
   const planTier = value.plan?.plan_tier?.replace('PLAN_TIER_', '') || '';
   const title = [
     part('quotaQoderUsageTitle', null, 'Qoder CN 用量（CDP 抓 qoder.com.cn）'),
     part('quotaPlanLine', { plan: planTier }, `套餐: ${planTier}`),
-    part('quotaTotalLine', { used, limit, remaining }, `总计: ${used}/${limit} · 剩余 ${remaining}`),
+    part('quotaTotalLine', { used: pctCell(shownUsed, r.estimated), limit, remaining: pctCell(shownRemaining, r.estimated) },
+      `总计: ${pctCell(shownUsed, r.estimated)}/${limit} · 剩余 ${pctCell(shownRemaining, r.estimated)}`),
   ];
   if (planQ.limit_value) {
-    title.push(part('quotaPlanQuotaLine', { used: planQ.used_value, limit: planQ.limit_value },
-      `套餐配额: ${planQ.used_value}/${planQ.limit_value}`));
+    title.push(part('quotaPlanQuotaLine', { used: pctCell(r.estimated ? 0 : planQ.used_value, r.estimated), limit: planQ.limit_value },
+      `套餐配额: ${pctCell(r.estimated ? 0 : planQ.used_value, r.estimated)}/${planQ.limit_value}`));
   }
   if (pkg.limit_value) {
-    title.push(part('quotaAddonQuotaLine', { used: pkg.used_value, limit: pkg.limit_value, remaining: pkg.remaining_value },
-      `加油包: ${pkg.used_value}/${pkg.limit_value} (剩 ${pkg.remaining_value})`));
+    title.push(part('quotaAddonQuotaLine', {
+      used: pctCell(r.estimated ? 0 : pkg.used_value, r.estimated), limit: pkg.limit_value,
+      remaining: pctCell(r.estimated ? pkg.limit_value : pkg.remaining_value, r.estimated),
+    }, `加油包: ${pctCell(r.estimated ? 0 : pkg.used_value, r.estimated)}/${pkg.limit_value} (剩 ${pctCell(r.estimated ? pkg.limit_value : pkg.remaining_value, r.estimated)})`));
   }
   title.push(resetAt !== null
     ? part('quotaResetAfterLine', { at: cdTag(resetAt, '1m') }, `重置: ${cdTag(resetAt, '1m')} 后`)
     : part('quotaExpiryUnknown', null, '到期时间未知（API 未返回 nextResetAt/套餐到期日）'));
+  if (r.estimated) title.push(estimatedNote());
   title.push(syncLine(ago), refreshLine());
   return partsView(
     [part(null, null, seg), ago ? part(null, null, ago, ' · ') : null, part(null, null, '⟳', ' ')],
-    unifiedColorFromRemaining(unifiedRemaining(pct)),
+    unifiedColorFromRemaining(unifiedRemaining(r.used)),
     title,
   );
 }
@@ -427,7 +474,7 @@ function codexResultWindows(value) {
   return value.weekly ? [{ window: '1wk', ...value.weekly }] : [];
 }
 
-function codexBar(value) {
+function codexBar(value, nowMs) {
   if (!value) {
     return partsView(
       [part('quotaCodexIdleText', null, 'Codex 余量 · ⟳ 刷新')],
@@ -452,18 +499,19 @@ function codexBar(value) {
   }
   const ago = agoTag(value.fetchedAt);
   const resetMs = (w) => (finiteNumber(w.resetsAt) ? finiteNumber(w.resetsAt) * 1000 : null);
-  const seg = sortSegs(windows.map((w) => ({ window: w.window, seg: windowSeg(w.window, w.usedPercent, resetMs(w)) })))
+  const read = windows.map((w) => ({ w, at: resetMs(w), r: rolledReading(w.usedPercent, resetMs(w), value.fetchedAt, nowMs) }));
+  const seg = sortSegs(read.map((x) => ({ window: x.w.window, seg: windowSeg(x.w.window, x.r.used, x.at, x.r.estimated) })))
     .join(' · ') || '—';
   // The account stops at whichever cycle runs out first.
-  const worst = Math.max(...windows.map((w) => finiteNumber(w.usedPercent)));
+  const worst = value.limitReached ? 100 : Math.max(...read.map((x) => x.r.used));
 
   const title = [
     part('quotaCodexTitle', null, 'Codex 额度（chatgpt.com/backend-api/wham/usage）'),
     part('quotaPlanLine', { plan: `${value.planType || '?'}${value.email ? ' · ' + value.email : ''}` },
       `套餐: ${value.planType || '?'}${value.email ? ' · ' + value.email : ''}`),
   ];
-  for (const w of windows.slice().sort((a, b) => windowRank(a.window) - windowRank(b.window))) {
-    title.push(windowDetailLine(w.window, finiteNumber(w.usedPercent), resetMs(w)));
+  for (const x of read.slice().sort((a, b) => windowRank(a.w.window) - windowRank(b.w.window))) {
+    title.push(windowDetailLine(x.w.window, x.r.used, x.at, x.r.estimated));
   }
   for (const a of (value.additional || [])) {
     title.push(part('quotaAdditionalWindowLine', { name: a.name, used: a.usedPercent }, `${a.name}: ${a.usedPercent}% 已用`));
@@ -471,10 +519,11 @@ function codexBar(value) {
   if (value.credits && value.credits.hasCredits) {
     title.push(part('quotaCreditsBalanceLine', { balance: value.credits.balance }, `Credits 余额: ${value.credits.balance}`));
   }
+  if (read.some((x) => x.r.estimated)) title.push(estimatedNote());
   title.push(syncLine(ago), refreshLine());
   return partsView(
     [part(null, null, seg), ago ? part(null, null, ago, ' · ') : null, part(null, null, '⟳', ' ')],
-    unifiedColorFromRemaining(unifiedRemaining(value.limitReached ? 100 : worst)),
+    unifiedColorFromRemaining(unifiedRemaining(worst)),
     title,
   );
 }
@@ -538,7 +587,7 @@ function fmtNum(n) {
   return String(Number(v.toFixed(2)));
 }
 
-function arkBar(value, baseUrl) {
+function arkBar(value, baseUrl, nowMs) {
   if (!value) {
     return partsView(
       [part('quotaArkIdleText', null, '火山方舟 余量 · ⟳ 刷新')],
@@ -587,13 +636,17 @@ function arkBar(value, baseUrl) {
   const plan = ordered[0];
   const entries = [];
   let maxUsed = 0;
+  const periodRead = (p) => {
+    const at = finiteNumber(p.resetAt) || null;
+    return { p, at, r: rolledReading(finiteNumber(p.percent) ?? 0, at, value.fetchedAt, nowMs) };
+  };
   for (const p of plan.periods) {
-    const pct = finiteNumber(p.percent) ?? 0;
-    if (pct > maxUsed) maxUsed = pct;
-    const token = arkWindowLabel(p.label);
-    entries.push({ window: token, seg: windowSeg(token, pct, p.resetAt || null) });
+    const x = periodRead(p);
+    if (x.r.used > maxUsed) maxUsed = x.r.used;
+    entries.push({ window: arkWindowLabel(p.label), seg: windowSeg(arkWindowLabel(p.label), x.r.used, x.at, x.r.estimated) });
   }
   const titleLines = [];
+  let anyEstimated = false;
   for (const it of ordered) {
     const isCurrent = it === plan;
     titleLines.push(part('quotaArkPlanHeader', {
@@ -602,26 +655,31 @@ function arkBar(value, baseUrl) {
       current: isCurrent ? part('quotaArkCurrentProvider', null, '（当前 provider）') : null,
     }, `${arkProductLabel(it.product)}${it.tier ? ' · ' + it.tier : ''}${isCurrent ? '（当前 provider）' : ''}`));
     for (const p of it.periods) {
+      const { at, r } = periodRead(p);
+      if (r.estimated) anyEstimated = true;
       const windowToken = arkWindowLabel(p.label);
       const usedPct = finiteNumber(p.percent);
-      const remainingPct = unifiedRemaining(usedPct);
-      const remainingText = remainingPct === null ? '余量未知' : `余量 ${fmtNum(remainingPct)}%`;
-      const usedPctText = usedPct === null ? '已用未知' : `已用 ${fmtNum(usedPct)}%`;
-      const totals = (p.used != null && p.total != null) ? ` (${fmtNum(p.used)}/${fmtNum(p.total)})` : '';
-      const reset = p.resetAt ? part('quotaResetSuffix', { at: cdTag(p.resetAt, windowToken) }, ` · ${cdTag(p.resetAt, windowToken)} 后重置`) : null;
+      const shownUsed = r.estimated ? 0 : usedPct;
+      const remainingPct = shownUsed === null ? null : unifiedRemaining(shownUsed);
+      const remainingText = remainingPct === null ? '余量未知' : `余量 ${pctCell(fmtNum(remainingPct), r.estimated)}%`;
+      const usedPctText = shownUsed === null ? '已用未知' : `已用 ${pctCell(fmtNum(shownUsed), r.estimated)}%`;
+      const totals = (p.used != null && p.total != null)
+        ? ` (${pctCell(fmtNum(r.estimated ? 0 : p.used), r.estimated)}/${fmtNum(p.total)})` : '';
+      const reset = at !== null ? part('quotaResetSuffix', { at: cdTag(at, windowToken) }, ` · ${cdTag(at, windowToken)} 后重置`) : null;
       titleLines.push(part('quotaArkPeriodLine', {
         period: arkPeriodPart(p.label),
         remaining: remainingPct === null
           ? part('quotaRemainingUnknown', null, '余量未知')
-          : part('quotaRemainingPct', { pct: fmtNum(remainingPct) }, `余量 ${fmtNum(remainingPct)}%`),
-        used: usedPct === null
+          : part('quotaRemainingPct', { pct: pctCell(fmtNum(remainingPct), r.estimated) }, `余量 ${pctCell(fmtNum(remainingPct), r.estimated)}%`),
+        used: shownUsed === null
           ? part('quotaUsedUnknown', null, '已用未知')
-          : part('quotaUsedPct', { pct: fmtNum(usedPct) }, `已用 ${fmtNum(usedPct)}%`),
+          : part('quotaUsedPct', { pct: pctCell(fmtNum(shownUsed), r.estimated) }, `已用 ${pctCell(fmtNum(shownUsed), r.estimated)}%`),
         total: totals,
         reset,
-      }, `  ${arkPeriodLabel(p.label)}: ${remainingText} · ${usedPctText}${totals}${p.resetAt ? ` · ${cdTag(p.resetAt, windowToken)} 后重置` : ''}`));
+      }, `  ${arkPeriodLabel(p.label)}: ${remainingText} · ${usedPctText}${totals}${at !== null ? ` · ${cdTag(at, windowToken)} 后重置` : ''}`));
     }
   }
+  if (anyEstimated) titleLines.push(estimatedNote());
   const ago = agoTag(value.fetchedAt);
   const segments = sortSegs(entries);
   const productPart = arkProductPart(plan.product);
@@ -648,7 +706,7 @@ function arkBar(value, baseUrl) {
 
 // ── Zhipu official sites (z.ai / bigmodel.cn) ───────────────────────────────
 
-function zhipuBar(value) {
+function zhipuBar(value, nowMs) {
   if (!value) {
     return partsView(
       [part('quotaZhipuIdleText', null, 'Zhipu 余量 · ⟳ 刷新')],
@@ -681,31 +739,38 @@ function zhipuBar(value) {
   // The backend orders the caller's current site first; it drives the compact
   // bar (5h + 1wk windows) while every site's detail stays in the tooltip.
   const s = okSites[0];
+  const r5 = rolledReading(s.usedPercent, s.resetsAt || null, value.fetchedAt, nowMs);
+  const rw = rolledReading(s.weeklyUsedPercent, s.weeklyResetsAt || null, value.fetchedAt, nowMs);
   const entries = [];
-  let maxUsed = s.usedPercent;
-  entries.push({ window: '5h', seg: windowSeg('5h', s.usedPercent, s.resetsAt || null) });
+  let maxUsed = r5.used;
+  entries.push({ window: '5h', seg: windowSeg('5h', r5.used, s.resetsAt || null, r5.estimated) });
   if (Number.isFinite(s.weeklyUsedPercent)) {
-    if (s.weeklyUsedPercent > maxUsed) maxUsed = s.weeklyUsedPercent;
-    entries.push({ window: '1wk', seg: windowSeg('1wk', s.weeklyUsedPercent, s.weeklyResetsAt || null) });
+    if (rw.used > maxUsed) maxUsed = rw.used;
+    entries.push({ window: '1wk', seg: windowSeg('1wk', rw.used, s.weeklyResetsAt || null, rw.estimated) });
   }
   const titleLines = [];
+  let anyEstimated = false;
   for (const site of okSites) {
+    const site5 = rolledReading(site.usedPercent, site.resetsAt || null, value.fetchedAt, nowMs);
+    const siteW = rolledReading(site.weeklyUsedPercent, site.weeklyResetsAt || null, value.fetchedAt, nowMs);
+    if (site5.estimated || siteW.estimated) anyEstimated = true;
     const reset = site.resetsAt ? part('quotaResetSuffix', { at: cdTag(site.resetsAt, '5h') }, ` · ${cdTag(site.resetsAt, '5h')} 后重置`) : null;
     const weekly = Number.isFinite(site.weeklyUsedPercent) ? part('quotaZhipuWeeklySegment', {
-      pct: fmtNum(site.weeklyUsedPercent),
+      pct: pctCell(fmtNum(siteW.estimated ? 0 : site.weeklyUsedPercent), siteW.estimated),
       reset: site.weeklyResetsAt
         ? part('quotaZhipuWeeklyReset', { at: cdTag(site.weeklyResetsAt, '1wk') }, `（${cdTag(site.weeklyResetsAt, '1wk')} 后重置）`)
         : null,
-    }, ` · 周 ${fmtNum(site.weeklyUsedPercent)}% 已用${site.weeklyResetsAt ? `（${cdTag(site.weeklyResetsAt, '1wk')} 后重置）` : ''}`) : null;
+    }, ` · 周 ${pctCell(fmtNum(siteW.estimated ? 0 : site.weeklyUsedPercent), siteW.estimated)}% 已用${site.weeklyResetsAt ? `（${cdTag(site.weeklyResetsAt, '1wk')} 后重置）` : ''}`) : null;
     titleLines.push(part('quotaZhipuSiteLine', {
       site: site.site,
       host: site.host,
-      pct: fmtNum(site.usedPercent),
+      pct: pctCell(fmtNum(site5.estimated ? 0 : site.usedPercent), site5.estimated),
       reset,
       weekly,
       tier: site.tier ? ` · ${site.tier}` : '',
-    }, `${site.site} (${site.host}): 5h ${fmtNum(site.usedPercent)}% 已用${site.resetsAt ? ` · ${cdTag(site.resetsAt, '5h')} 后重置` : ''}${Number.isFinite(site.weeklyUsedPercent) ? ` · 周 ${fmtNum(site.weeklyUsedPercent)}% 已用${site.weeklyResetsAt ? `（${cdTag(site.weeklyResetsAt, '1wk')} 后重置）` : ''}` : ''}${site.tier ? ` · ${site.tier}` : ''}`));
+    }, `${site.site} (${site.host}): 5h ${pctCell(fmtNum(site5.estimated ? 0 : site.usedPercent), site5.estimated)}% 已用${site.resetsAt ? ` · ${cdTag(site.resetsAt, '5h')} 后重置` : ''}${Number.isFinite(site.weeklyUsedPercent) ? ` · 周 ${pctCell(fmtNum(siteW.estimated ? 0 : site.weeklyUsedPercent), siteW.estimated)}% 已用${site.weeklyResetsAt ? `（${cdTag(site.weeklyResetsAt, '1wk')} 后重置）` : ''}` : ''}${site.tier ? ` · ${site.tier}` : ''}`));
   }
+  if (anyEstimated) titleLines.push(estimatedNote());
   const ago = agoTag(value.fetchedAt);
   const segs = sortSegs(entries).join(' · ') || '—';
   const title = [part('quotaZhipuUsageTitle', null, 'Zhipu 官方站点窗口用量（glm-monitor 额度端点）'), ...titleLines, syncLine(ago), refreshLine()];
@@ -767,7 +832,7 @@ function kimiCachedView(cachedOk, fetchedAt, reason, headline) {
   );
 }
 
-function kimiBar(value, cached) {
+function kimiBar(value, cached, nowMs) {
   const cachedOk = kimiCachedSites(cached);
   if (!value) {
     if (cachedOk.length) {
@@ -826,7 +891,8 @@ function kimiBar(value, cached) {
         used: s && Number.isFinite(s.usedPercent) ? s.usedPercent : (s ? s.percent : NaN),
         resetAt: s && Number.isFinite(s.resetMs) ? s.resetMs : null,
       }))
-      .filter((s) => Number.isFinite(s.used));
+      .filter((s) => Number.isFinite(s.used))
+      .map((s) => ({ ...s, r: rolledReading(s.used, s.resetAt, value.fetchedAt, nowMs) }));
     if (!summary.length) {
       return partsView(
         [part('quotaKimiSubscriptionNoParseText', null, 'Kimi 订阅：已登录，未解析出用量 · ⟳ 重试')],
@@ -835,15 +901,17 @@ function kimiBar(value, cached) {
           `已抓到 kimi.com 会员页，但没解析出百分比。\n原文：${String(value.text || '').slice(0, 300)}`)],
       );
     }
-    const maxPct = Math.max(...summary.map((s) => s.used));
+    const maxPct = Math.max(...summary.map((s) => s.r.used));
     const ago = agoTag(value.fetchedAt);
     const text = sortSegs(summary.map((s) => ({
-      window: s.label, seg: windowSeg(s.label, s.used, s.resetAt),
+      window: s.label, seg: windowSeg(s.label, s.r.used, s.resetAt, s.r.estimated),
     }))).join(' · ');
     const title = [part('quotaKimiSubscriptionTitle', null, 'Kimi 订阅用量（会员页抓取；订阅 key 无预付余额接口）')];
     for (const s of summary) {
-      title.push(part('quotaKimiSummaryLine', { label: s.label, used: s.used }, `${s.label}: 已用 ${s.used}%`));
+      title.push(part('quotaKimiSummaryLine', { label: s.label, used: pctCell(s.r.estimated ? 0 : s.used, s.r.estimated) },
+        `${s.label}: 已用 ${pctCell(s.r.estimated ? 0 : s.used, s.r.estimated)}%`));
     }
+    if (summary.some((s) => s.r.estimated)) title.push(estimatedNote());
     title.push(syncLine(ago), refreshLine());
     return partsView(
       [part(null, null, text), ago ? part(null, null, ago, ' · ') : null, part(null, null, '⟳', ' ')],
@@ -1000,8 +1068,8 @@ function normalizeEventWindows(list) {
 
 // One tooltip line per window, in the same words as the Claude bar's rows
 // (CLAUDE_WINDOW_ZH / CLAUDE_WINDOW_PART below; only read at render time).
-function windowDetailLine(window, used, resetsAtMs) {
-  const pct = Math.round(used);
+function windowDetailLine(window, used, resetsAtMs, estimated) {
+  const pct = pctCell(Math.round(used), estimated);
   const cd = cdTag(resetsAtMs, window);
   return part('quotaClaudeWindowDetail', {
     window: CLAUDE_WINDOW_PART[window],
@@ -1011,7 +1079,7 @@ function windowDetailLine(window, used, resetsAtMs) {
   }, `${CLAUDE_WINDOW_ZH[window]}: 已用 ${pct}%${cd ? ` · ${cd} 后重置` : ''}`);
 }
 
-function windowEventBar(info) {
+function windowEventBar(info, nowMs = Date.now()) {
   if (!info) return null;
   const provider = info.provider === 'glm' ? 'glm'
     : info.provider === 'codex' ? 'codex'
@@ -1025,24 +1093,30 @@ function windowEventBar(info) {
   const label = provider === 'opencode' ? 'OpenCode Go · ' : '';
   if (Array.isArray(info.windows) && info.windows.length) {
     const rows = info.windows.slice()
-      .sort((a, b) => windowRank(a.window) - windowRank(b.window));
-    const segs = rows.map((w) => windowSeg(w.window, w.usedPercent, w.resetsAtMs)).filter(Boolean);
+      .sort((a, b) => windowRank(a.window) - windowRank(b.window))
+      .map((w) => ({ w, r: rolledReading(w.usedPercent, w.resetsAtMs, info.observedAtMs, nowMs) }));
+    const segs = rows.map((x) => windowSeg(x.w.window, x.r.used, x.w.resetsAtMs, x.r.estimated)).filter(Boolean);
     // Colour by the cycle that runs out first; an upstream rejection is the
     // account saying one of them already has.
-    const worst = info.status === 'rejected' ? 100 : Math.max(...rows.map((w) => w.usedPercent));
+    const worst = info.status === 'rejected' ? 100 : Math.max(...rows.map((x) => x.r.used));
+    const title = [titleLine, ...rows.map((x) => windowDetailLine(x.w.window, x.r.used, x.w.resetsAtMs, x.r.estimated))];
+    if (rows.some((x) => x.r.estimated)) title.push(estimatedNote());
     return partsView(
       [part(null, null, `${label}${segs.join(' · ')}`)],
       unifiedColorFromRemaining(unifiedRemaining(worst)),
-      [titleLine, ...rows.map((w) => windowDetailLine(w.window, w.usedPercent, w.resetsAtMs))],
+      title,
     );
   }
-  const used = info.status === 'rejected' ? 100 : finiteNumber(info.usedPercentage);
+  const usedRaw = info.status === 'rejected' ? 100 : finiteNumber(info.usedPercentage);
+  const r = rolledReading(usedRaw, info.resetsAtMs, info.observedAtMs, nowMs);
   const token = info.kind === 'weekly' ? '1wk' : '5h';
-  const seg = windowSeg(token, used, info.resetsAtMs);
+  const seg = windowSeg(token, r.used, info.resetsAtMs, r.estimated);
+  const title = [titleLine];
+  if (r.estimated) title.push(estimatedNote());
   return partsView(
     [part(null, null, `${label}${seg || token}`)],
-    unifiedColorFromRemaining(unifiedRemaining(used)),
-    [titleLine],
+    unifiedColorFromRemaining(unifiedRemaining(r.used)),
+    title,
   );
 }
 
@@ -1093,6 +1167,7 @@ function claudeWindowRows(usage, live) {
         label: String(s.label || ''),
         used: s.usedPercent,
         resetAt: finiteNumber(s.resetMs),
+        measured: finiteNumber(usage.fetchedAt),
       });
     }
   }
@@ -1102,7 +1177,10 @@ function claudeWindowRows(usage, live) {
     const used = live.status === 'rejected' ? 100 : finiteNumber(live.usedPercentage);
     if (used !== null) {
       const i = rows.findIndex((r) => r.window === '5h');
-      const row = { window: '5h', name: '5h', label: '', used, resetAt: finiteNumber(live.resetsAtMs) };
+      const row = {
+        window: '5h', name: '5h', label: '', used,
+        resetAt: finiteNumber(live.resetsAtMs), measured: finiteNumber(live.observedAtMs),
+      };
       if (i >= 0) rows[i] = row; else rows.push(row);
     }
   }
@@ -1156,8 +1234,9 @@ const CLAUDE_ACTION_SEG = Object.freeze({
 });
 const CLAUDE_ACTION_SEG_REFRESH = part('quotaClaudeActionRefresh', null, '⟳ 刷新');
 
-function claudeBarForState(usage, live, state) {
-  const rows = claudeWindowRows(usage, live);
+function claudeBarForState(usage, live, state, nowMs) {
+  const rows = claudeWindowRows(usage, live)
+    .map((row) => ({ ...row, r: rolledReading(row.used, row.resetAt, row.measured, nowMs) }));
   const ago = agoTag(usage && usage.status === 'ok' ? usage.fetchedAt : 0);
 
   // A placeholder for every window with no row, then the rows themselves,
@@ -1176,29 +1255,32 @@ function claudeBarForState(usage, live, state) {
         ? part('quotaClaudeRowFrom', { label: r.label }, `（${r.label}）`)
         : null;
       const cd = cdTag(r.resetAt, r.window);
+      const pct = pctCell(Math.round(r.r.used), r.r.estimated);
       return {
         window: r.window,
-        seg: windowSeg(r.name, r.used, r.resetAt),
+        seg: windowSeg(r.name, r.r.used, r.resetAt, r.r.estimated),
         detail: part('quotaClaudeWindowDetail', {
           window: CLAUDE_WINDOW_PART[r.window],
           from: fromPiece,
-          pct: Math.round(r.used),
+          pct,
           reset: cd ? part('quotaResetSuffix', { at: cd }, ` · ${cd} 后重置`) : null,
-        }, `${CLAUDE_WINDOW_ZH[r.window]}${fromPiece ? `（${r.label}）` : ''}: 已用 ${Math.round(r.used)}%${cd ? ` · ${cd} 后重置` : ''}`),
+        }, `${CLAUDE_WINDOW_ZH[r.window]}${fromPiece ? `（${r.label}）` : ''}: 已用 ${pct}%${cd ? ` · ${cd} 后重置` : ''}`),
       };
     }))
     .map((e, i) => ({ e, i }))
     .sort((a, b) => (windowRank(a.e.window) - windowRank(b.e.window)) || (a.i - b.i))
     .map(({ e }) => e);
 
-  const worst = rows.length ? Math.max(...rows.map((r) => r.used)) : null;
+  const worst = rows.length ? Math.max(...rows.map((r) => r.r.used)) : null;
   const textParts = entries.map((e) => part(null, null, e.seg))
     .concat(ago ? [part(null, null, ago)] : [], [CLAUDE_ACTION_SEG[state.action] || CLAUDE_ACTION_SEG_REFRESH]);
   // The scrape's own status is worth a line only when it explains something — a
   // missing window, a failure, or a fetch in flight. With every window in hand
   // and nothing happening it is noise.
   const titleParts = [part('quotaClaudeTitle', null, 'Claude 订阅窗口用量（5h 和周额度来自对话响应头；手动刷新补充完整用量）')]
-    .concat(entries.map((e) => e.detail), ago ? [part('quotaSyncAt', { ago }, `同步于 ${ago}`)] : [],
+    .concat(entries.map((e) => e.detail),
+      rows.some((r) => r.r.estimated) ? [estimatedNote()] : [],
+      ago ? [part('quotaSyncAt', { ago }, `同步于 ${ago}`)] : [],
       missing.length || state.action === 'fetching' || state.action === 'login_pending' ? [state.title] : []);
   return partsView(textParts,
     worst === null ? COLOR.gray : unifiedColorFromRemaining(unifiedRemaining(worst)),
@@ -1211,10 +1293,10 @@ function claudeBar(usage, live, nowMs = Date.now()) {
     if (merged) ({ usage, live } = merged);
   }
   const base = claudeBarForState(usage, live,
-    !usage ? CLAUDE_SCRAPE_IDLE : (CLAUDE_SCRAPE_STATES[usage.status] || CLAUDE_SCRAPE_UNAVAILABLE));
+    !usage ? CLAUDE_SCRAPE_IDLE : (CLAUDE_SCRAPE_STATES[usage.status] || CLAUDE_SCRAPE_UNAVAILABLE), nowMs);
   return withStates(base, {
-    fetching: claudeBarForState(usage, live, CLAUDE_SCRAPE_FETCHING),
-    login_pending: claudeBarForState(usage, live, CLAUDE_SCRAPE_LOGIN_PENDING),
+    fetching: claudeBarForState(usage, live, CLAUDE_SCRAPE_FETCHING, nowMs),
+    login_pending: claudeBarForState(usage, live, CLAUDE_SCRAPE_LOGIN_PENDING, nowMs),
     unreachable: unreachableView(vendorLabel('claude')),
   });
 }
@@ -1297,15 +1379,16 @@ const ARK_INSTALLING = Object.freeze({
  * @returns {{text:string,color:string,title:string,action:?string,states:object}}
  */
 function renderQuotaBar(kind, value, opts = {}) {
+  const nowMs = finiteNumber(opts.nowMs) ?? Date.now();
   let base;
   switch (kind) {
-    case 'opencode': base = openCodeBar(value); break;
-    case 'qoder': base = qoderBar(value); break;
-    case 'codex': base = codexBar(value); break;
-    case 'ark': base = arkBar(value, opts.baseUrl); break;
-    case 'zhipu': base = zhipuBar(value); break;
-    case 'kimi': base = kimiBar(value, opts.cached); break;
-    case 'claude': return claudeBar(value, opts.live);
+    case 'opencode': base = openCodeBar(value, nowMs); break;
+    case 'qoder': base = qoderBar(value, nowMs); break;
+    case 'codex': base = codexBar(value, nowMs); break;
+    case 'ark': base = arkBar(value, opts.baseUrl, nowMs); break;
+    case 'zhipu': base = zhipuBar(value, nowMs); break;
+    case 'kimi': base = kimiBar(value, opts.cached, nowMs); break;
+    case 'claude': return claudeBar(value, opts.live, nowMs);
     default: return null;
   }
   const label = vendorLabel(kind);
@@ -1334,7 +1417,7 @@ function idleQuotaBars() {
 // Rebuild window rows from durable summaries so old caches (including the
 // official-account writer's former used-percent/7d text) recover countdowns
 // without another network fetch. Formatting still goes through windowSeg.
-function providerLimitBar(entry) {
+function providerLimitBar(entry, nowMs = Date.now()) {
   if (!entry) return null;
   const summary = entry.summary || {};
   const cycle = label => ({ session: '5h', five_hour: '5h', '7d': '1wk',
@@ -1348,19 +1431,22 @@ function providerLimitBar(entry) {
       resetMs: summary.resetsAtMs }];
   }
   rows = rows.filter(row => row && finiteNumber(row.usedPercent) !== null)
-    .map(row => ({ ...row, window: cycle(row.window || row.label) }));
+    .map(row => ({ ...row, window: cycle(row.window || row.label) }))
+    .map(row => ({ ...row, r: rolledReading(row.usedPercent, row.resetMs, entry.fetchedAt, nowMs) }));
   let base;
   if (rows.length) {
     const entries = rows.map(row => {
       const name = (entry.kind === 'claude' || summary.provider === 'claude')
         && row.label && row.label !== row.window
         ? claudeRowName(row.window, row.label) : row.window;
-      return { window: row.window, seg: windowSeg(name, row.usedPercent, row.resetMs) };
+      return { window: row.window, seg: windowSeg(name, row.r.used, row.resetMs, row.r.estimated) };
     });
+    const titleLines = rows.filter(row => CLAUDE_WINDOW_ZH[row.window]).sort((a, b) => windowRank(a.window) - windowRank(b.window))
+      .map(row => windowDetailLine(row.window, row.r.used, row.resetMs, row.r.estimated));
+    if (rows.some(row => row.r.estimated)) titleLines.push(estimatedNote());
     base = partsView([part(null, null, sortSegs(entries).join(' · '))],
-      unifiedColorFromRemaining(unifiedRemaining(Math.max(...rows.map(row => Number(row.usedPercent))))),
-      rows.filter(row => CLAUDE_WINDOW_ZH[row.window]).sort((a, b) => windowRank(a.window) - windowRank(b.window))
-        .map(row => windowDetailLine(row.window, Number(row.usedPercent), row.resetMs)));
+      unifiedColorFromRemaining(unifiedRemaining(Math.max(...rows.map(row => row.r.used)))),
+      titleLines);
   } else if (entry.kind === 'balance') {
     base = balanceBar(summary);
   } else {

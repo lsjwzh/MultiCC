@@ -278,7 +278,7 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
       if (dto.provider === 'claude' && dto.source === 'response_headers') {
         const summary = claudeQuota('cache', { dto, previous: cache.get(appType, providerId)?.summary, nowMs: at });
         if (!summary) return null;
-        const bar = providerLimitBar({ kind: 'window', summary, fetchedAt: at });
+        const bar = providerLimitBar({ kind: 'window', summary, fetchedAt: at }, at);
         return cache.record(appType, providerId, { kind: 'window', summary,
           summaryText: compactBarText(bar?.text || ''), barText: bar?.text || null, fetchedAt: at });
       }
@@ -293,13 +293,13 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
         const summary = { kind: 'window', provider: 'claude', status: dto.status,
           window: main.window, usedPercentage: main.usedPercent, resetsAtMs: main.resetMs,
           observedAtMs: dto.fetchedAt || at, windows };
-        const bar = providerLimitBar({ kind: 'window', summary, fetchedAt: dto.fetchedAt || at });
+        const bar = providerLimitBar({ kind: 'window', summary, fetchedAt: dto.fetchedAt || at }, at);
         return cache.record(appType, providerId, { kind: 'window', summary,
           summaryText: compactBarText(bar?.text || ''), barText: bar?.text || null, fetchedAt: dto.fetchedAt || at });
       }
       const normalized = normalizeWindowEvent(dto, dto.fetchedAt || at);
       if (!normalized) return null;
-      const bar = windowEventBar(normalized);
+      const bar = windowEventBar(normalized, at);
       const summary = {
         kind: 'window',
         provider: normalized.provider,
@@ -586,7 +586,7 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     }
 
     let bar = null;
-    try { bar = renderQuotaBar(kind, result, { baseUrl, ...(opts || {}) }); } catch (_) { bar = null; }
+    try { bar = renderQuotaBar(kind, result, { baseUrl, ...(opts || {}), nowMs: Number(now()) }); } catch (_) { bar = null; }
     const summaryText = compactBarText(bar ? bar.text : '');
     const reported = vendorWindows(kind, result, baseUrl);
     let n = 0;
@@ -650,7 +650,7 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     const rows = mergeWindows(windows.filter(w => w && Number.isFinite(Number(w.usedPercent))),
       previous && previous.summary && previous.summary.windows, Number(at));
     const summary = { kind: appType, status: 'ok', fetchedAt: at, windows: rows };
-    const text = providerLimitBar({ kind: appType, summary })?.text || '';
+    const text = providerLimitBar({ kind: appType, summary }, at)?.text || '';
     return cache.record(appType, providerId, {
       kind: appType,
       summary,

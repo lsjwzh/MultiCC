@@ -30,7 +30,7 @@ test('legacy official caches recover canonical remaining percentages, window nam
     summary: { windows: [
       { window: '7d', label: 'Weekly', usedPercent: 36, resetMs: now + 3 * 86_400_000 },
       { window: '5h', label: 'Current session', usedPercent: 45, resetMs: now + 2 * 3_600_000 },
-    ] } });
+    ] } }, now);
   const view = resolveQuotaBar(bar, { now });
   assert.equal(view.text, '5h 55% 2h · 1wk 64% 3d · 更新于 1 分钟前');
   assert.match(view.title, /2h 后重置/);
@@ -40,6 +40,31 @@ test('legacy official caches recover canonical remaining percentages, window nam
   assert.doesNotMatch(view.text, /7d|⟳|\{/);
 });
 
+// The user's complaint in one test: a stale `5h 0%` whose reset deadline has
+// passed is a dead window's reading. The bar must show the post-reset state
+// (full quota), visibly flagged with `~` as an inference, not a measurement.
+test('a window that reset after the last reading renders as a marked estimate', () => {
+  const now = 1_700_000_000_000;
+  const bar = Renderer.providerLimitBar({ kind: 'claude', fetchedAt: now - 6 * 3_600_000,
+    summary: { windows: [
+      { window: '5h', label: 'Session limit', usedPercent: 100, resetMs: now - 3_600_000 },
+      { window: '1wk', label: 'Weekly limit', usedPercent: 41, resetMs: now + 3 * 86_400_000 },
+    ] } }, now);
+  const view = resolveQuotaBar(bar, { now });
+  assert.match(view.text, /5h ~100%/);
+  assert.match(view.text, /1wk 59%/);
+  assert.match(view.title, /推测值/);
+  assert.equal(view.color, '#58a6ff');
+  // A reading taken AFTER the deadline already describes the new window: real.
+  const fresh = Renderer.providerLimitBar({ kind: 'claude', fetchedAt: now - 3_600_000,
+    summary: { windows: [{ window: '5h', usedPercent: 20, resetMs: now - 6 * 3_600_000 }] } }, now);
+  assert.doesNotMatch(resolveQuotaBar(fresh, { now }).text, /~/);
+  // A window that has not reset yet keeps its measured reading: real.
+  const live = Renderer.providerLimitBar({ kind: 'claude', fetchedAt: now - 6 * 3_600_000,
+    summary: { windows: [{ window: '5h', usedPercent: 20, resetMs: now + 3_600_000 }] } }, now);
+  assert.doesNotMatch(resolveQuotaBar(live, { now }).text, /~/);
+});
+
 test('provider views share chat window segments, colors and rollover arithmetic', () => {
   const now = 1_700_000_000_000;
   const summary = { provider: 'codex', status: 'allowed', usedPercentage: 92,
@@ -47,9 +72,9 @@ test('provider views share chat window segments, colors and rollover arithmetic'
       { window: '1wk', usedPercent: 25, resetMs: now + 86_400_000 },
       { window: '5h', usedPercent: 92, resetMs: now - 3_600_000 },
     ] };
-  const provider = resolveQuotaBar(Renderer.providerLimitBar({ kind: 'window', summary }), { now });
+  const provider = resolveQuotaBar(Renderer.providerLimitBar({ kind: 'window', summary }, now), { now });
   const chat = resolveQuotaBar(Renderer.windowEventBar({ ...summary,
-    windows: summary.windows.map(w => ({ ...w, resetsAtMs: w.resetMs })) }), { now });
+    windows: summary.windows.map(w => ({ ...w, resetsAtMs: w.resetMs })) }, now), { now });
   assert.equal(provider.text, chat.text);
   assert.equal(provider.color, chat.color);
   assert.equal(provider.text, '5h 8% 4h · 1wk 75% 1d');
@@ -58,7 +83,7 @@ test('provider views share chat window segments, colors and rollover arithmetic'
 test('provider views keep missing reset data absent, balances intact and failed snapshots readable', () => {
   const now = 1_700_000_000_000;
   const bar = Renderer.providerLimitBar({ kind: 'claude', stale: true, lastError: 'network',
-    summary: { windows: [{ window: '1wk', label: 'All models', usedPercent: 80, resetMs: null }] } });
+    summary: { windows: [{ window: '1wk', label: 'All models', usedPercent: 80, resetMs: null }] } }, now);
   assert.equal(resolveQuotaBar(bar, { now }).text, '1wk-ALL 20% · 查询失败 · 过期');
   assert.equal(bar.color, '#d29922');
   const balance = Renderer.providerLimitBar({ kind: 'balance',
@@ -66,7 +91,7 @@ test('provider views keep missing reset data absent, balances intact and failed 
   assert.equal(balance.text, Renderer.balanceBar({ available: true, total: 12.5, currency: 'CNY' }).text);
   assert.equal(balance.color, '#d29922');
   const vendor = Renderer.providerLimitBar({ kind: 'qoder', fetchedAt: now,
-    barText: `1m 70% {cd:${now + 86_400_000}|1m} · {ago:${now - 60_000}} ⟳` });
+    barText: `1m 70% {cd:${now + 86_400_000}|1m} · {ago:${now - 60_000}} ⟳` }, now);
   assert.equal(resolveQuotaBar(vendor, { now }).text, '1m 70% 1d · 更新于 刚刚');
   assert.equal(Renderer.providerLimitBar(null), null);
   assert.equal(Renderer.providerLimitBar({ stale: true, summaryText: '' }), null);
@@ -76,10 +101,10 @@ test('a single Codex five-hour window is never relabelled as weekly', () => {
   const now = 1_700_000_000_000;
   const entry = { kind: 'window', barText: `5h 80% {cd:${now + 3600_000}|5h}`,
     summary: { provider: 'codex', usedPercentage: 20, resetsAtMs: now + 3600_000 } };
-  assert.equal(resolveQuotaBar(Renderer.providerLimitBar(entry), { now }).text, '5h 80% 1h');
+  assert.equal(resolveQuotaBar(Renderer.providerLimitBar(entry, now), { now }).text, '5h 80% 1h');
   entry.summary.window = '5h';
   delete entry.barText;
-  assert.equal(resolveQuotaBar(Renderer.providerLimitBar(entry), { now }).text, '5h 80% 1h');
+  assert.equal(resolveQuotaBar(Renderer.providerLimitBar(entry, now), { now }).text, '5h 80% 1h');
 });
 
 test('the golden fixture is non-empty and anchored to a fixed now', () => {
@@ -271,6 +296,13 @@ const BAR_INPUTS = [
     status: 'ok', fetchedAt: AGO_MS,
     summary: [{ window: '5h', label: 'Session limit', usedPercent: 72 }, { window: '1wk', label: 'Weekly limit', usedPercent: 41 }],
   }, { live: Renderer.normalizeWindowEvent({ status: 'allowed', rateLimitType: 'five_hour', utilization: 0.28, resetsAt: (NOW_MS + 3600_000) / 1000, provider: 'claude' }, NOW_MS) }],
+  ['claude: window rolled after the reading is an estimate', 'claude', {
+    status: 'ok', fetchedAt: NOW_MS - 6 * 3_600_000,
+    summary: [
+      { window: '5h', label: 'Session limit', usedPercent: 100, resetMs: NOW_MS - 3_600_000 },
+      { window: '1wk', label: 'Weekly limit', usedPercent: 41, resetMs: NOW_MS + 3 * 86_400_000 },
+    ],
+  }],
 ];
 
 // The bars that are not a vendor render at all: the window event and the
@@ -280,14 +312,14 @@ const EXTRA_BARS = [
   ['provider limit: remaining windows and localized freshness', () => Renderer.providerLimitBar({
     kind: 'claude', fetchedAt: AGO_MS, stale: true,
     summary: { windows: [{ window: '7d', label: 'All models', usedPercent: 72, resetMs: NOW_MS + 86_400_000 }] },
-  })],
+  }, NOW_MS)],
   ['provider limit: failed query preserves the cached reading', () => Renderer.providerLimitBar({
     kind: 'window', lastError: 'network', stale: true,
     summary: { provider: 'glm', usedPercentage: 80, resetsAtMs: NOW_MS + 3600_000 },
-  })],
+  }, NOW_MS)],
   ['window event: GLM five-hour, labelled as routed provider', () => {
     const glm = Renderer.normalizeWindowEvent({ status: 'allowed', rateLimitType: 'five_hour', utilization: 0.44, resetsAt: (NOW_MS + 3600_000) / 1000, provider: 'glm' }, NOW_MS);
-    return Renderer.labelRoutedProvider(Renderer.windowEventBar(glm), 'glm');
+    return Renderer.labelRoutedProvider(Renderer.windowEventBar(glm, NOW_MS), 'glm');
   }],
   ['balance: CNY, labelled', () => {
     const norm = Renderer.normalizeBalance({ kind: 'balance', available: true, currency: 'CNY', total: 87.69 });
@@ -304,7 +336,7 @@ function everyView(bar) {
 
 function allBars() {
   const bars = [];
-  for (const [name, kind, value, opts] of BAR_INPUTS) bars.push([name, Renderer.renderQuotaBar(kind, value, opts)]);
+  for (const [name, kind, value, opts] of BAR_INPUTS) bars.push([name, Renderer.renderQuotaBar(kind, value, { ...opts, nowMs: NOW_MS })]);
   for (const [name, build] of EXTRA_BARS) bars.push([name, build()]);
   return bars;
 }

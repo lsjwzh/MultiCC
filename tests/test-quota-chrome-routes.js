@@ -73,7 +73,7 @@ test('a rate-limited weekly window renders as a red 1wk segment with a tooltip m
       weekly: { status: 'rate-limited', resetInSec: 126381, usagePercent: 100 },
       monthly: { status: 'ok', resetInSec: 1300584, usagePercent: 74 },
     },
-  });
+  }, { nowMs: 1700000000000 });
   // Segment present (1wk 0% remaining) and the whole bar red at 100%.
   assert.match(bar.text, /1wk 0%/);
   assert.equal(bar.color, '#f85149');

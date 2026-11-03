@@ -63,8 +63,8 @@ test('tags the provider from the event and resolves resetsAt seconds→ms', () =
 // ── Renderer: bars (key invariants; the golden parity test pins exact text) ──
 test('the Claude bar renders every window, "-" for missing data, and is always clickable', () => {
   const live = normalizeFiveHourRateLimit({ status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.724, resetsAt: (NOW + 3_600_000) / 1000 }, NOW);
-  assert.match(resolve(Renderer.claudeBar(null, live)).text, /^5h 28% 1h · 1wk - · ⟳ 刷新$/);
-  assert.equal(resolve(Renderer.claudeBar(null, live)).color, '#d29922');
+  assert.match(resolve(Renderer.claudeBar(null, live, NOW)).text, /^5h 28% 1h · 1wk - · ⟳ 刷新$/);
+  assert.equal(resolve(Renderer.claudeBar(null, live, NOW)).color, '#d29922');
   // Idle (no data at all) still shows the shape and the refresh affordance.
   assert.equal(resolve(Renderer.claudeBar(null, null)).text, '5h - · 1wk - · ⟳ 刷新');
   // needs_login turns the affordance into a login action.
@@ -75,9 +75,9 @@ test('GLM 5h, Codex weekly and OpenCode weekly render as single window segments'
   const glm = Renderer.normalizeWindowEvent({ status: 'allowed', rateLimitType: 'five_hour', utilization: 0.44, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' }, NOW);
   const codex = Renderer.normalizeWindowEvent({ status: 'allowed', rateLimitType: 'weekly', utilization: 0.64, resetsAt: (NOW + 3_600_000) / 1000, provider: 'codex' }, NOW);
   const opencode = Renderer.normalizeWindowEvent({ status: 'rejected', rateLimitType: 'weekly', utilization: 1, resetsAt: (NOW + 86_400_000) / 1000, provider: 'opencode' }, NOW);
-  assert.match(resolve(Renderer.windowEventBar(glm)).text, /^5h 56% 1h$/);
-  assert.match(resolve(Renderer.windowEventBar(codex)).text, /^1wk 36% 1h$/);
-  assert.match(resolve(Renderer.windowEventBar(opencode)).text, /^OpenCode Go · 1wk 0% 1d$/);
+  assert.match(resolve(Renderer.windowEventBar(glm, NOW)).text, /^5h 56% 1h$/);
+  assert.match(resolve(Renderer.windowEventBar(codex, NOW)).text, /^1wk 36% 1h$/);
+  assert.match(resolve(Renderer.windowEventBar(opencode, NOW)).text, /^OpenCode Go · 1wk 0% 1d$/);
 });
 
 test('a Codex Plus event carries 5h + weekly and renders both, coloured by the tighter one', () => {
@@ -90,7 +90,7 @@ test('a Codex Plus event carries 5h + weekly and renders both, coloured by the t
     ],
   }, NOW);
   assert.deepEqual(codex.windows.map((w) => w.window), ['1wk', '5h'], 'unknown window tokens are dropped');
-  const view = resolve(Renderer.windowEventBar(codex));
+  const view = resolve(Renderer.windowEventBar(codex, NOW));
   assert.match(view.text, /^5h 8% 1h · 1wk 97% 6d/);
   assert.equal(view.color, '#f85149', '8% left on the 5h window → red, despite 97% weekly');
   assert.match(view.title, /5小时: 已用 92%/);
@@ -105,18 +105,18 @@ test('the Codex click bar shows every window the plan reports', () => {
   const plus = resolve(Renderer.renderQuotaBar('codex', {
     status: 'ok', fetchedAt: NOW, planType: 'plus',
     windows: [{ window: '5h', usedPercent: 22, resetsAt: at(3_600_000) }, { window: '1wk', usedPercent: 3, resetsAt: at(6 * 86_400_000) }],
-  }));
+  }, { nowMs: NOW }));
   assert.match(plus.text, /^5h 78% 1h · 1wk 97% 6d/);
   // A result from before `windows` existed still renders its week.
   const legacy = resolve(Renderer.renderQuotaBar('codex', {
     status: 'ok', fetchedAt: NOW, weekly: { usedPercent: 64, resetsAt: at(3_600_000) },
-  }));
+  }, { nowMs: NOW }));
   assert.match(legacy.text, /^1wk 36% 1h/);
 });
 
 test('the OpenCode routed-provider label says whose window it is', () => {
   const glm = Renderer.normalizeWindowEvent({ status: 'allowed', rateLimitType: 'five_hour', utilization: 0.44, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' }, NOW);
-  const labeled = Renderer.labelRoutedProvider(Renderer.windowEventBar(glm), 'glm');
+  const labeled = Renderer.labelRoutedProvider(Renderer.windowEventBar(glm, NOW), 'glm');
   assert.match(resolve(labeled).text, /^路由供应商 GLM · 5h 56%/);
 });
 
@@ -214,7 +214,7 @@ test('consumeRateLimitEvent renders the server bar, gates by CLI, and persists i
   const f = freshClient();
   try {
     const info = { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.72, resetsAt: (NOW + 3_600_000) / 1000 };
-    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.consumeRateLimitEvent(info, 'chat-1', bar);
     const el = f.element('claude-rate-limit-bar');
     assert.equal(el.style.display, 'block');
@@ -233,7 +233,7 @@ test('a GLM 5h window bar shows under codex (provider matches that CLI)', () => 
   const f = freshClient();
   try {
     const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.44, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
-    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.consumeRateLimitEvent(info, 'glm-sess', bar);
     f.C.setCli('codex');
     assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
@@ -245,7 +245,7 @@ test('an OpenCode weekly limit event shows only under opencode', () => {
   const f = freshClient();
   try {
     const info = { status: 'rejected', rateLimitType: 'weekly', utilization: 1, resetsAt: (NOW + 86_400_000) / 1000, provider: 'opencode' };
-    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.consumeRateLimitEvent(info, 'opencode-sess', bar);
     f.C.setCli('opencode');
     assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
@@ -280,7 +280,7 @@ test('the Claude subscription bar (and its idle placeholder) also shows under cl
     assert.match(f.element('claude-rate-limit-bar').textContent, /^5h - · 1wk -/);
 
     const info = { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.72, resetsAt: (NOW + 3_600_000) / 1000 };
-    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.consumeRateLimitEvent(info, 'exp-1', bar);
     assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
     assert.match(f.element('claude-rate-limit-bar').textContent, /^5h 28%/);
@@ -328,7 +328,7 @@ test('a borrowed window bar paints in a claude-exp session', () => {
     // provider — the shape every 借用 claude provider has.
     f.C.setProviderBaseUrl('https://relay.example:3000/claude-proxy/official/remote');
     const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.3, resetsAt: (NOW + 3_600_000) / 1000, provider: 'claude' };
-    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.consumeRateLimitEvent(info, 'borrowed-exp', bar);
     assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
     assert.match(f.element('claude-rate-limit-bar').textContent, /^5h 70%/);
@@ -352,7 +352,7 @@ test('restoreFiveHourRateLimit replays the persisted bar AND its provider identi
   const f = freshClient();
   try {
     const info = { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.5, resetsAt: (NOW + 3_600_000) / 1000 };
-    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.consumeRateLimitEvent(info, 'chat-1', bar);
     const key = 'multicc:claude-rate-limit:v1:chat-1';
     const raw = f.values.get(key);
@@ -367,7 +367,7 @@ test('restoreFiveHourRateLimit replays the persisted bar AND its provider identi
 
 test('a legacy bare persisted bar still replays (no identity, no crash)', () => {
   const info = { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.5, resetsAt: (NOW + 3_600_000) / 1000 };
-  const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+  const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW), NOW);
   // The shape written before the identity was persisted: the bare server bar.
   const f = freshClient({ 'multicc:claude-rate-limit:v1:old-1': JSON.stringify(bar) });
   try {
@@ -393,7 +393,7 @@ test('a borrowed window bar survives a page reload', () => {
   try {
     p1.C.setCli('claude-exp');
     p1.C.setProviderBaseUrl(relay);
-    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW), NOW);
     p1.C.consumeRateLimitEvent(info, 'borrowed-1', bar);
     persisted = p1.values.get('multicc:claude-rate-limit:v1:borrowed-1');
     assert.ok(persisted);
@@ -420,7 +420,7 @@ test('the first provider report is not a switch; a real one still wipes', () => 
   const f = freshClient(null, { providerReport: false });
   try {
     const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.3, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
-    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.setCli('codex');
     f.C.consumeRateLimitEvent(info, 'codex-1', bar);
     const key = 'multicc:claude-rate-limit:v1:codex-1';
@@ -448,7 +448,7 @@ test('a pending flip alone is not a provider switch', () => {
   try {
     const relay = 'https://relay.example:3000/claude-proxy/official/remote';
     const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.3, resetsAt: (NOW + 3_600_000) / 1000, provider: 'claude' };
-    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.setCli('claude-exp');
     f.C.setProviderBaseUrl(relay, 'borrowed-1', { appType: 'claude' });
     f.C.consumeRateLimitEvent(info, 'borrowed-1', bar);
@@ -502,7 +502,7 @@ test('a borrowed GLM window bar shows under the claude CLI when the provider is 
     // the gate instead.
     f.C.setProviderBaseUrl('https://relay.example:3000/claude-proxy/glm/remote');
     const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.44, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
-    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.consumeRateLimitEvent(info, 'relay-sess', bar);
     assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
     assert.match(f.element('claude-rate-limit-bar').textContent, /^5h 56%/);
@@ -519,7 +519,7 @@ test('a codex-protocol relay gates its window to the codex/opencode CLIs', () =>
   try {
     f.C.setProviderBaseUrl('http://192.168.1.9:3000/codex-proxy/official');
     const info = { status: 'allowed', rateLimitType: 'weekly', utilization: 0.64, resetsAt: (NOW + 86_400_000) / 1000, provider: 'codex' };
-    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.consumeRateLimitEvent(info, 'relay-cx', bar);
     f.C.setCli('codex');
     assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
@@ -611,7 +611,7 @@ test('loopback relay plumbing is not a borrowed provider and a balance chip show
     assert.equal(f.C.isRelayBaseUrl('http://localhost:3000/codex-proxy/abc'), false);
     f.C.setProviderBaseUrl('http://127.0.0.1:3000/claude-proxy/abc/remote');
     const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.3, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
-    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.consumeRateLimitEvent(info, 'local-sess', bar);
     assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
 
@@ -633,7 +633,7 @@ test('switching provider clears the previous provider\'s stale window bar', () =
     f.C.setCli('codex');
     f.C.setProviderBaseUrl('https://glm.example/api/paas/v4');
     const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.8, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
-    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW), NOW);
     f.C.consumeRateLimitEvent(info, 'mixed-sess', bar);
     assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
     const key = 'multicc:claude-rate-limit:v1:mixed-sess';
@@ -680,7 +680,7 @@ test('a Zhipu provider shows one window bar, from the Provider query alone', asy
     // The passive pass-through GLM event does not displace the Provider query's
     // fuller window bar for the same account.
     const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.05, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
-    f.C.consumeRateLimitEvent(info, 'zhipu-dup', Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW)));
+    f.C.consumeRateLimitEvent(info, 'zhipu-dup', Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW), NOW));
     assert.equal(f.element('claude-rate-limit-bar').textContent, 'Provider GLM window');
   } finally { f.cleanup(); }
 });
@@ -973,7 +973,7 @@ test('a provider-snapshot kimi bar answers the user click: loading render, then 
     const providerBar = Renderer.providerLimitBar({
       kind: 'kimi', fetchedAt: NOW,
       summary: { windows: [{ window: '5h', usedPercent: 18, resetMs: NOW + 3_600_000 }] },
-    });
+    }, NOW);
     f.C.consumeProviderLimitSnapshot({
       providerId: 'kimi-prov', appType: 'claude', kind: 'kimi',
       fetchedAt: NOW, updatedAt: NOW, bar: providerBar, dto: { kind: 'window' },

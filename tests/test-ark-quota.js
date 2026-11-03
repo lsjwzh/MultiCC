@@ -87,7 +87,7 @@ test('renders Ark Coding compact bar as remaining quota in canonical window orde
         ],
       },
     ],
-  }, { baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3' });
+  }, { baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3', nowMs: now });
 
   // Each deadline names its own window (`|5h` / `|1wk` / `|1m`) so a client that
   // paints the bar after the deadline has passed can show the next reset instead.
@@ -122,7 +122,7 @@ test('renders the Coding Plan session window as the 5h rolling window', () => {
         ],
       },
     ],
-  }, { baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3' });
+  }, { baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3', nowMs: now });
 
   assert.ok(bar.text.startsWith('Coding · 5h 70%'), `session window must render as 5h: ${bar.text}`);
   assert.ok(!bar.text.includes('会话'), `bar must not label the session window 会话: ${bar.text}`);

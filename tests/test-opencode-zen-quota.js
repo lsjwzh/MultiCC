@@ -220,7 +220,7 @@ test('the bar names the Zen API as its source and renders the three windows', ()
       },
     }, NOW),
   };
-  const bar = renderQuotaBar('opencode', dto);
+  const bar = renderQuotaBar('opencode', dto, { nowMs: NOW });
   assert.match(bar.title, /Zen API \/zen\/go\/v1\/usage/);
   assert.match(bar.title, /5h: 0%/);
   assert.match(bar.title, /周: 40%/);
