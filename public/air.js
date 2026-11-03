@@ -972,28 +972,20 @@
   // 都是同一份 —— 关掉再搬回目录首页原位（#empty 的最后一个孩子就是它）。
   //
   // 目录首页开着的时候，弹窗后面那一页会暂时缺了输入框（被搬走了）。那一片被
-  // ::backdrop 压暗着，读起来就是「它弹出来了」，关掉即回原位。
-  let quickDialogDirectoryId = null;
+  // ::backdrop 压暗着，读起来就是「它弹出来了」，关掉即回原位。弹窗打开时选中的
+  // 目录 id 由 air-quick-machine.js 持有（本机与远程同一套状态）。
 
+  // 电脑胶囊选中远程电脑时，目录清单与目标 id 都在 air-quick-machine.js 里
+  // （它经代理拉目标电脑的目录并缓存）；本机路径与原逻辑一字不差。
   function quickTargetDirectoryId() {
-    if (!$('quick-task-dialog').open) return directoryId;
-    return data?.directories?.some(entry => entry.id === quickDialogDirectoryId)
-      ? quickDialogDirectoryId : directoryId;
+    return window.MultiCCAirQuickMachine ? window.MultiCCAirQuickMachine.targetDirectoryId() : directoryId;
   }
 
   function openNewTaskComposer() {
     const dialog = $('quick-task-dialog');
     if (!data || !directoryId || dialog.open) return;
-    const select = $('quick-task-dialog-directory');
-    select.replaceChildren(...data.directories.map(entry => {
-      const option = node('option', [entry.name, entry.path].filter(Boolean).join(' · '));
-      option.value = entry.id;
-      return option;
-    }));
-    quickDialogDirectoryId = data.directories.some(entry => entry.id === directoryId)
-      ? directoryId : data.directories[0]?.id || null;
-    select.value = quickDialogDirectoryId || '';
-    select.disabled = false;
+    window.MultiCCAirQuickMachine?.syncDialog?.();
+    $('quick-task-dialog-directory').disabled = false;
     $('quick-task-slot').append($('quick-task-form'));
     dialog.showModal();
     // 这个模块平时折成一条细杠（air-quick-fold.js）；弹窗里要的是整张。
@@ -1010,7 +1002,7 @@
   // 本来就是它，append 回去正好是原来那个位置。
   $('quick-task-dialog').addEventListener('close', () => {
     $('empty').append($('quick-task-form'));
-    quickDialogDirectoryId = null;
+    window.MultiCCAirQuickMachine?.resetDialog?.();
     $('quick-task-dialog-directory').disabled = false;
     // 它平时折成一条细杠，弹窗里为了写字摊开成整张 —— 回到目录首页就按原来的
     // 规矩收回去，别让一次「算了」把半屏的卡片留在那儿。盒子里还有草稿时
@@ -1018,9 +1010,6 @@
     window.__airQuickFold?.fold?.();
   });
   $('quick-task-dialog-close').onclick = closeNewTaskComposer;
-  $('quick-task-dialog-directory').onchange = event => {
-    quickDialogDirectoryId = event.target.value;
-  };
 
   // 新任务不再每次从「默认线路 · 默认模型」起步：/api/air 快照带着 lastRuntime
   // —— 最近一次实际用过的那套 CLI · 线路 · 模型。refresh() 会把它灌进胶囊；
@@ -1198,25 +1187,28 @@
     }
     const attempt = quickCreateAttempt;
     let created = null;
+    // 电脑胶囊选中远程电脑时整条创建链路走那台电脑的代理（未选中时 request 就是本地调用）。
+    const quickMachine = window.MultiCCAirQuickMachine?.selected?.() || null;
+    const targetApi = window.MultiCCAirQuickMachine?.request || api;
     $('quick-task-submit').disabled = true;
     if ($('quick-task-dialog').open) $('quick-task-dialog-directory').disabled = true;
     quickStatus(t('airQuickCreating'));
     try {
       const title = typed.split(/\n/).find(Boolean).trim().slice(0, 120);
-      created = await api('/api/air/tasks', { dirId: targetDirectoryId, title, clientMsgId: attempt.createId, ...runtime });
+      created = await targetApi('/api/air/tasks', { dirId: targetDirectoryId, title, clientMsgId: attempt.createId, ...runtime });
       quickStatus(t('airQuickWritingFirstMessage'));
       // Roles are bound before the first message: the binding speaks for the
       // next message, and the next message is exactly the one below.
       if (quickRoles.length) {
-        await api(`/api/air/tasks/${encodeURIComponent(created.taskId)}/roles`, {
+        await targetApi(`/api/air/tasks/${encodeURIComponent(created.taskId)}/roles`, {
           bindings: quickRoles, expectedVersion: 0, clientMsgId: `${attempt.createId}-roles`,
         });
       }
       // API-key 账户（Command Code / OpenCode）不在建任务的 runtime 里：建好会话后、第一条消息前补上。
       if (quickRuntime.cliAccounts && Object.keys(quickRuntime.cliAccounts).length) {
-        await api(`/api/sessions/${encodeURIComponent(created.sessionId)}`, { cliAccounts: quickRuntime.cliAccounts }, 'PATCH');
+        await targetApi(`/api/sessions/${encodeURIComponent(created.sessionId)}`, { cliAccounts: quickRuntime.cliAccounts }, 'PATCH');
       }
-      await api(`/api/task-shell-tasks/${encodeURIComponent(created.taskId)}/messages`, {
+      await targetApi(`/api/task-shell-tasks/${encodeURIComponent(created.taskId)}/messages`, {
         text, clientMsgId: attempt.sendId, intent: 'work', ...(goal ? { goal: true, goalLimits: goalLimits || {} } : {}),
       });
       quickCreateAttempt = null;
@@ -1237,10 +1229,13 @@
       // 这一份是整条链路都成了：从侧栏弹进来的话，弹窗跟着收掉（它会把输入框
       // 搬回目录首页）。失败时留着 —— 草稿还在里面，重试就是原样再点一次。
       closeNewTaskComposer();
+      // 任务在另一台电脑上：本地看板没有这条，直接开那台电脑的控制台落到它。
+      if (quickMachine) { location.href = window.MultiCCAirQuickMachine.taskUrl(targetDirectoryId, created.taskId); return; }
       await refresh();
       navigate(targetDirectoryId, created.taskId);
     } catch (error) {
       if (created?.taskId) {
+        if (quickMachine) { location.href = window.MultiCCAirQuickMachine.taskUrl(targetDirectoryId, created.taskId); return; }
         sessionStorage.setItem(`air:draft:${created.taskId}`, text);
         quickCreateAttempt = null;
         closeNewTaskComposer();
@@ -2799,6 +2794,8 @@
   bindQuickVoice();
   $('quick-task-goal').onchange = renderQuickGoalLimits;
   $('quick-ai-pill').onclick = openQuickConfiguration;
+  window.MultiCCAirQuickMachine?.init?.({ api, notice, pill: $('quick-machine-pill'), select: $('quick-task-dialog-directory'),
+    localEntries: () => data?.directories || [], localDirectoryId: () => directoryId, dialogOpen: () => $('quick-task-dialog').open });
   $('quick-role-pill').onclick = openQuickRoles;
   $('quick-task-input').onkeydown = event => {
     if (!(window.MultiCCSendKey?.isSend(event) ?? (event.key === 'Enter' && !event.shiftKey && !event.isComposing))) return;

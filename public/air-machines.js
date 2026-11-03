@@ -2,6 +2,12 @@
   'use strict';
   let selected = 'self';
   const cache = new WeakMap();
+  // Directory snapshot per computer. A tab click renders the last known
+  // directories immediately and refreshes behind them, so switching computers
+  // no longer waits for remote round trips before showing anything.
+  const snapshots = new Map();
+  const warming = new Set();
+  const FRESH_MS = 60000;
   const tr = (key, params) => root.t(key, params);
   function node(tag, text, cls) { const n = document.createElement(tag); if (text) n.textContent = text; if (cls) n.className = cls; return n; }
   function button(text, click) { const b = node('button', text); b.type = 'button'; b.onclick = click; return b; }
@@ -10,13 +16,13 @@
     if (cache.has(host)) return;
     cache.set(host, true);
     const panel = node('section', null, 'machine-panel'); host.append(panel);
-    let machine, generation = 0, view = 'directories', machines = [], self;
+    let machine, generation = 0, view = 'directories', machines = [], self, gridHost = null;
     const api = context.api;
     const status = node('div', tr('airMachinesLoading'), 'machine-note');
     const tabs = node('div', null, 'machine-tabs'); tabs.setAttribute('role', 'tablist');
     const body = node('div');
     const toolbar = node('div', null, 'machine-toolbar');
-    toolbar.append(button(tr('airMachinesAdd'), () => connect()), button(tr('refresh'), load), button(tr('airMachinesGrants'), grants));
+    toolbar.append(button(tr('airMachinesAdd'), () => connect()), button(tr('refresh'), () => load(true)), button(tr('airMachinesGrants'), grants));
     panel.append(toolbar, tabs, status, body);
     function path(suffix) { return machine.local ? suffix : `/api/machines/${machine.id}/proxy${suffix}`; }
     function frame(mode, dir) {
@@ -31,6 +37,21 @@
       iframe.src = `/air?${query}`;
       body.append(back, target, hint, iframe);
     }
+    function renderGrid(directories) {
+      if (!gridHost) return;
+      gridHost.replaceChildren();
+      // 卡片与「按目录」首页同一种（article.directory-card 包 button），网格直接吃
+      // console-directory-grid 那套稿件样式（air-navigation.css），不在这里另起一份，
+      // 否则卡片宽度随内容长短漂移（之前就是裸 .directory-grid 没有网格样式）。
+      const grid = node('div', null, 'directory-grid console-directory-grid');
+      for (const directory of directories) {
+        const btn = button('', () => frame('tasks', directory.id)); btn.className = 'machine-directory';
+        btn.append(node('strong', directory.name), node('small', directory.path, 'machine-note'));
+        const card = node('article', null, 'directory-card'); card.append(btn); grid.append(card);
+      }
+      if (!grid.children.length) grid.append(node('p', tr('airMachinesNoDirectories')));
+      gridHost.append(grid, button(tr('airMachinesManageDirectories'), () => frame('directories')));
+    }
     async function show() {
       const current = ++generation;
       body.replaceChildren(); status.textContent = `${machine.name} · ${tr('airMachinesConnecting')}`;
@@ -42,35 +63,56 @@
         if (!root.confirm(`${tr('airMachinesRemoveConfirm')} ${machine.name}`)) return;
         try { const result = await api(`/api/machines/${machine.id}`, undefined, 'DELETE'); selected = 'self'; await load(); if (!result.remoteRevoked) context.notice(tr('airMachinesRemoveOffline')); } catch (e) { status.textContent = e.message; }
       }));
-      heading.append(actions); body.append(heading);
-      try {
-        await api(path('/api/machines/self'));
-        if (current !== generation || !host.isConnected) return;
+      heading.append(actions);
+      gridHost = node('div');
+      body.append(heading, gridHost);
+      const cached = view === 'directories' ? snapshots.get(machine.id) : null;
+      if (cached) {
         status.textContent = `${machine.name} · ${tr('airMachinesConnected')}`;
-        if (view === 'settings') return frame('settings');
-        const snapshot = await api(path('/api/air'));
-        if (current !== generation || !host.isConnected) return;
-        // 卡片与「按目录」首页同一种（article.directory-card 包 button），网格直接吃
-        // console-directory-grid 那套稿件样式（air-navigation.css），不在这里另起一份，
-        // 否则卡片宽度随内容长短漂移（之前就是裸 .directory-grid 没有网格样式）。
-        const grid = node('div', null, 'directory-grid console-directory-grid');
-        for (const directory of snapshot.directories || []) {
-          const btn = button('', () => frame('tasks', directory.id)); btn.className = 'machine-directory';
-          btn.append(node('strong', directory.name), node('small', directory.path, 'machine-note'));
-          const card = node('article', null, 'directory-card'); card.append(btn); grid.append(card);
+        renderGrid(cached.directories);
+        void refresh(current);
+        return;
+      }
+      await refresh(current);
+    }
+    async function refresh(current) {
+      try {
+        if (view === 'settings') {
+          await api(path('/api/machines/self'));
+          if (current !== generation || !host.isConnected) return;
+          status.textContent = `${machine.name} · ${tr('airMachinesConnected')}`;
+          frame('settings');
+          return;
         }
-        if (!grid.children.length) grid.append(node('p', tr('airMachinesNoDirectories')));
-        body.append(grid, button(tr('airMachinesManageDirectories'), () => frame('directories')));
+        // Probe and snapshot in parallel: the probe used to gate the snapshot
+        // fetch, so nothing appeared until both round trips finished in series.
+        const [probe, snap] = await Promise.allSettled([api(path('/api/machines/self')), api(path('/api/air'))]);
+        if (current !== generation || !host.isConnected) return;
+        if (snap.status === 'fulfilled') {
+          const directories = snap.value.directories || [];
+          snapshots.set(machine.id, { directories, at: Date.now() });
+          status.textContent = `${machine.name} · ${tr('airMachinesConnected')}`;
+          renderGrid(directories);
+          return;
+        }
+        throw probe.status === 'rejected' ? probe.reason : snap.reason;
       } catch (e) {
         if (current !== generation) return;
         status.textContent = `${machine.name} · ${tr('airMachinesUnavailable')}`;
-        const error = node('div', e.message, 'machine-warning');
-        error.append(button(tr('retry'), show)); body.append(error);
+        // A stale grid stays useful while the computer is unreachable: the
+        // warning rides below it instead of replacing the directories.
+        if (!gridHost.children.length) {
+          const error = node('div', e.message, 'machine-warning');
+          error.append(button(tr('retry'), show)); gridHost.append(error);
+          return;
+        }
+        gridHost.append(node('div', e.message, 'machine-warning'));
       }
     }
-    async function load() {
+    async function load(force) {
       try {
         const data = await api('/api/machines'); self = data.self; machines = [self, ...data.machines];
+        if (force) snapshots.clear();
         if (!machines.some(m => m.id === selected)) selected = self.id;
         tabs.replaceChildren();
         for (const item of machines) {
@@ -78,7 +120,26 @@
           b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(selected === item.id)); tabs.append(b);
         }
         machine = machines.find(m => m.id === selected); await show();
+        warm();
       } catch (e) { status.textContent = e.message; }
+    }
+    // Fill snapshots (and, through the Rust proxy, its pooled TLS connections)
+    // for every remote computer in the background, so the first click on a tab
+    // renders from cache instead of paying the round trips cold.
+    function warm() {
+      void (async () => {
+        for (const item of machines) {
+          if (item.local || warming.has(item.id)) continue;
+          const cached = snapshots.get(item.id);
+          if (cached && Date.now() - cached.at < FRESH_MS) continue;
+          warming.add(item.id);
+          try {
+            const snap = await api(`/api/machines/${item.id}/proxy/api/air`);
+            snapshots.set(item.id, { directories: snap.directories || [], at: Date.now() });
+          } catch (_) { /* the click path reports the real error */ }
+          finally { warming.delete(item.id); }
+        }
+      })();
     }
     function connect(existing) {
       ++generation; body.replaceChildren();
@@ -95,7 +156,7 @@
       form.onsubmit = async event => {
         event.preventDefault(); save.disabled = true;
         const payload = { ...Object.fromEntries(Object.entries(inputs).map(([k, n]) => [k, n.value])), ...(existing ? { expectedId: existing.id } : {}) }; inputs.password.value = '';
-        try { const result = await api('/api/machines', payload, 'POST'); selected = result.id; await load(); }
+        try { const result = await api('/api/machines', payload, 'POST'); selected = result.id; snapshots.delete(result.id); await load(); }
         catch (e) { error.hidden = false; error.textContent = e.message; }
         finally { payload.password = ''; save.disabled = false; }
       };
@@ -118,5 +179,9 @@
     }
     load();
   }
-  root.MultiCCAirMachines = { mount };
+  root.MultiCCAirMachines = {
+    mount,
+    snapshot: id => snapshots.get(id) || null,
+    remember: (id, directories) => { snapshots.set(id, { directories, at: Date.now() }); },
+  };
 })(window);
