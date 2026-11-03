@@ -420,6 +420,25 @@
     return readModelCacheSync('multicc.codebuddy.models.v1', 60 * 60 * 1000);
   }
 
+  // The CLIs whose picker is fed by a live catalog endpoint and therefore gets
+  // the 刷新模型 button. Everything else (dsh / gemini / zcode / kimi / pi) is
+  // a static or provider-catalog list with nothing to re-read. Keep this as the
+  // single roster; run-config.js reads it off this module.
+  const REFRESHABLE_MODEL_CLIS = Object.freeze(new Set([
+    'opencode', 'qoder', 'codebuddy', 'commandcode', 'grok',
+    'claude', 'claude-exp', 'codex', 'codex-exp',
+  ]));
+
+  // Resolve a loader exposed by shared/models.js. In the browser that is
+  // window.<name>; in node tests the module has no root, so fall back to
+  // globalThis. Missing loaders stay null (callers keep their fallback list).
+  function catalogLoader(name) {
+    const fromRoot = root && root[name];
+    if (typeof fromRoot === 'function') return fromRoot;
+    return typeof globalThis !== 'undefined' && typeof globalThis[name] === 'function'
+      ? globalThis[name] : null;
+  }
+
   // Background-refresh the OpenCode model list (1-hour cache, shared with
   // shared/models.js via the same localStorage key). The chat page should call
   // this once on init when `cli === 'opencode'`; on completion it triggers a
@@ -431,9 +450,10 @@
   async function refreshOpenCodeModels(rebuildCallback, options) {
     const force = !!(options && options.force);
     try {
-      if (typeof loadOpenCodeModels !== 'function') return [];
+      const loader = catalogLoader('loadOpenCodeModels');
+      if (!loader) return [];
       const prev = readOpenCodeModelsSync();
-      const models = await loadOpenCodeModels({ force });
+      const models = await loader({ force });
       if (typeof rebuildCallback === 'function' && (force || prev.length === 0)) {
         try { rebuildCallback(); } catch (_) { /* noop */ }
       }
@@ -443,62 +463,115 @@
 
   // Same contract as refreshOpenCodeModels, for the Qoder CN catalog. The chat
   // page calls this on init when `cli === 'qoder'` so the picker upgrades from
-  // the built-in tiers to the account's real model list.
-  async function refreshQoderModels(rebuildCallback) {
+  // the built-in tiers to the account's real model list. `options.force` is the
+  // 刷新模型 button: pass refresh=1 through and repaint even with a warm list.
+  async function refreshQoderModels(rebuildCallback, options) {
+    const force = !!(options && options.force);
     try {
-      if (typeof loadQoderModels !== 'function') return;
+      const loader = catalogLoader('loadQoderModels');
+      if (!loader) return [];
       const prev = readQoderModelsSync();
-      await loadQoderModels();
-      if (typeof rebuildCallback === 'function' && prev.length === 0) {
+      const models = await loader({ force });
+      if (typeof rebuildCallback === 'function' && (force || prev.length === 0)) {
         try { rebuildCallback(); } catch (_) { /* noop */ }
       }
-    } catch (_) { /* swallow — picker keeps the tier fallback */ }
+      return Array.isArray(models) ? models : [];
+    } catch (_) { return []; /* swallow — picker keeps the tier fallback */ }
   }
 
   // Same contract as refreshQoderModels, for the Claude CLI-bundle model list.
   // The chat page calls this on init / CLI switch when `cli === 'claude'` so
   // the picker upgrades from the static table to the CLI's real model ids.
-  async function refreshClaudeModels(rebuildCallback) {
+  async function refreshClaudeModels(rebuildCallback, options) {
+    const force = !!(options && options.force);
     try {
-      if (typeof loadClaudeModels !== 'function') return;
+      const loader = catalogLoader('loadClaudeModels');
+      if (!loader) return [];
       const prev = readClaudeModelsSync();
-      await loadClaudeModels();
-      if (typeof rebuildCallback === 'function' && prev.length === 0) {
+      const models = await loader({ force });
+      if (typeof rebuildCallback === 'function' && (force || prev.length === 0)) {
         try { rebuildCallback(); } catch (_) { /* noop */ }
       }
-    } catch (_) { /* swallow — picker keeps the static table */ }
+      return Array.isArray(models) ? models : [];
+    } catch (_) { return []; /* swallow — picker keeps the static table */ }
   }
 
   // Same contract as refreshQoderModels, for the WorkBuddy catalog. The chat
   // page calls this on init / CLI switch when `cli === 'codebuddy'` so the
   // picker upgrades from the fallback snapshot to the installed CLI's ids.
-  async function refreshCodebuddyModels(rebuildCallback) {
+  async function refreshCodebuddyModels(rebuildCallback, options) {
+    const force = !!(options && options.force);
     try {
-      if (typeof loadCodebuddyModels !== 'function') return;
+      const loader = catalogLoader('loadCodebuddyModels');
+      if (!loader) return [];
       const prev = readCodebuddyModelsSync();
-      await loadCodebuddyModels();
-      if (typeof rebuildCallback === 'function' && prev.length === 0) {
+      const models = await loader({ force });
+      if (typeof rebuildCallback === 'function' && (force || prev.length === 0)) {
         try { rebuildCallback(); } catch (_) { /* noop */ }
       }
-    } catch (_) { /* swallow — picker keeps the fallback snapshot */ }
+      return Array.isArray(models) ? models : [];
+    } catch (_) { return []; /* swallow — picker keeps the fallback snapshot */ }
   }
 
   // Same contract as refreshCodebuddyModels, for Command Code / Grok.
   function liveCatalogRefresher(loaderName, cacheKey) {
-    return async function refresh(rebuildCallback) {
+    return async function refresh(rebuildCallback, options) {
+      const force = !!(options && options.force);
       try {
-        const loader = root && root[loaderName];
-        if (typeof loader !== 'function') return;
+        const loader = catalogLoader(loaderName);
+        if (!loader) return [];
         const had = readModelCacheSync(cacheKey, 60 * 60 * 1000).length > 0;
-        await loader();
-        if (typeof rebuildCallback === 'function' && !had) {
+        const models = await loader({ force });
+        if (typeof rebuildCallback === 'function' && (force || !had)) {
           try { rebuildCallback(); } catch (_) { /* noop */ }
         }
-      } catch (_) { /* swallow — picker keeps the static fallback */ }
+        return Array.isArray(models) ? models : [];
+      } catch (_) { return []; /* swallow — picker keeps the static fallback */ }
     };
   }
   const refreshCommandcodeModels = liveCatalogRefresher('loadCommandcodeModels', 'multicc.commandcode.models.v1');
   const refreshGrokModels = liveCatalogRefresher('loadGrokModels', 'multicc.grok.models.v1');
+
+  // Codex's catalog is per account: force asks the server to re-check the CLI
+  // version / one-day cache for the provider the picker currently has selected.
+  async function refreshCodexModels(rebuildCallback, options) {
+    const force = !!(options && options.force);
+    try {
+      const loader = catalogLoader('loadCodexModels');
+      if (!loader) return [];
+      // The picker keeps the account catalog in memory (not localStorage), so
+      // "already had a list" is read from that catalog before the fetch.
+      const reader = catalogLoader('readCodexModelCatalogSync');
+      let prev = false;
+      try { prev = !!(reader && (((reader(options) || {}).models) || []).length); } catch (_) {}
+      const catalog = await loader({ force, providerId: options && options.providerId });
+      const models = catalog && Array.isArray(catalog.models) ? catalog.models : [];
+      if (typeof rebuildCallback === 'function' && (force || !prev)) {
+        try { rebuildCallback(); } catch (_) { /* noop */ }
+      }
+      return models;
+    } catch (_) { return []; }
+  }
+
+  // One 刷新模型 entry point for every dynamic CLI. `options.force` bypasses
+  // both browser and server caches; `options.providerId` is only meaningful for
+  // Codex. Returns the freshly fetched entries so the caller can report a count.
+  const MODEL_REFRESHERS = Object.freeze({
+    opencode: refreshOpenCodeModels,
+    qoder: refreshQoderModels,
+    codebuddy: refreshCodebuddyModels,
+    commandcode: refreshCommandcodeModels,
+    grok: refreshGrokModels,
+    claude: refreshClaudeModels,
+    'claude-exp': refreshClaudeModels,
+    codex: refreshCodexModels,
+    'codex-exp': refreshCodexModels,
+  });
+
+  function refreshModelsForCli(cli, rebuildCallback, options) {
+    const refresh = MODEL_REFRESHERS[String(cli || '')];
+    return refresh ? refresh(rebuildCallback, options) : Promise.resolve([]);
+  }
 
   // The vendor's own section for a model (Command Code groups its catalog as
   // Open Source / Anthropic / OpenAI / Google / xAI / ...). '' = ungrouped.
@@ -850,7 +923,10 @@
     loadProviderList,
     loadSession,
     saveSession,
+    REFRESHABLE_MODEL_CLIS,
+    refreshModelsForCli,
     refreshOpenCodeModels,
+    refreshCodexModels,
     refreshQoderModels,
     refreshCodebuddyModels,
     refreshCommandcodeModels,

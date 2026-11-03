@@ -26,9 +26,9 @@ function fakeCli(stdout, { exitCode = 0 } = {}) {
   return file;
 }
 
-function list() {
+function list(opts) {
   return new Promise((resolve, reject) => {
-    listCodebuddyModels((err, models, source) => (err ? reject(err) : resolve({ models, source })));
+    listCodebuddyModels((err, models, source) => (err ? reject(err) : resolve({ models, source })), opts);
   });
 }
 
@@ -103,6 +103,37 @@ test('help that lacks the list falls back rather than serving nothing', async ()
   const first = await list();
   assert.equal(first.source, 'fallback');
   assert.ok(first.models.length > 0);
+});
+
+test('refresh=1 skips the one-hour cache (the picker 刷新模型 button)', async () => {
+  process.env.CODEBUDDY_CMD = fakeCli(HELP_WITH_MODELS);
+  const cached = await list();
+  assert.equal(cached.source, 'cli');
+  process.env.CODEBUDDY_CMD = fakeCli('--model <model>  Currently supported: (glm-5.3, glm-5.4, hy4-preview-f)\n');
+  // Without refresh the warm cache wins even though the CLI now says otherwise.
+  assert.deepEqual((await list()).models.map(entry => entry.model), ['hy4-preview-f', 'glm-5.3', 'kimi-k3-1']);
+  const fresh = await list({ refresh: true });
+  assert.equal(fresh.source, 'cli');
+  assert.deepEqual(fresh.models.map(entry => entry.model), ['glm-5.3', 'glm-5.4', 'hy4-preview-f']);
+});
+
+test('the route accepts ?refresh=1 and ?refresh=true', async () => {
+  const routes = new Map();
+  mod.mountCodebuddyModelRoutes({ get: (route, handler) => routes.set(route, handler) });
+  const handler = routes.get('/api/codebuddy/models');
+  mod._setCacheForTest(Date.now(), [{ model: 'cached-model', label: 'cached-model' }]);
+  process.env.CODEBUDDY_CMD = fakeCli('--model <model>  Currently supported: (live-model)\n');
+
+  const cachedBody = await new Promise(resolve => handler({ query: {} }, { json: resolve }));
+  assert.equal(cachedBody.source, 'cache');
+  assert.deepEqual(cachedBody.models.map(entry => entry.model), ['cached-model']);
+
+  for (const value of ['1', 'true']) {
+    mod._setCacheForTest(Date.now(), [{ model: 'cached-model', label: 'cached-model' }]);
+    const body = await new Promise(resolve => handler({ query: { refresh: value } }, { json: resolve }));
+    assert.equal(body.source, 'cli', `refresh=${value} bypasses the cache`);
+    assert.deepEqual(body.models.map(entry => entry.model), ['live-model']);
+  }
 });
 
 test('mountCodebuddyModelRoutes serves GET /api/codebuddy/models', async () => {

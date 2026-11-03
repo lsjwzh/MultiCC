@@ -148,9 +148,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 3032/153881。登记实测高水位；下一次动它该拆的是模型字段那一族 —— 模型下拉 +
   // 搜索框 + 自定义输入 + 状态行 + 刷新按钮整块搬进独立模块，run-config 只留挂载，
   // 落回 <= 3000 就删掉这条。
+  // 2026-11-03 把「刷新模型」从 opencode 推广到全部动态目录 CLI（花名册在
+  // chat-ai-config 的 REFRESHABLE_MODEL_CLIS；点击按 cli 分发、回填 Codex 账号
+  // 目录），实测 3044/155465，按棘轮上调。下一次动它该拆的仍是模型字段那一族。
   'public/run-config.js': Object.freeze({
-    ceiling: 3026,
-    byteCeiling: 154536,
+    ceiling: 3044,
+    byteCeiling: 155465,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),

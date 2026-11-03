@@ -1135,7 +1135,7 @@
     const modelHead = el(doc, 'div', 'rc-field-head');
     const modelRefresh = el(doc, 'button', 'rc-model-refresh', tt('runConfigModelRefresh', '刷新模型'));
     modelRefresh.type = 'button';
-    modelRefresh.title = tt('runConfigModelRefreshHint', '重新读取本机 opencode 的模型列表');
+    modelRefresh.title = tt('runConfigModelRefreshHint', '重新读取本机 CLI 的模型列表');
     show(modelRefresh, false);
     modelHead.append(el(doc, 'span', null, tt('runConfigModelLabel', '模型')), modelRefresh);
     modelField.append(modelHead);
@@ -1573,9 +1573,10 @@
     }
 
     function renderModel() {
-      // 只有 opencode 的模型表是从本机 CLI 实时拉的，其余 CLI 的清单要么在
-      // provider 目录里、要么是固定档位，没有可刷的东西。
-      show(modelRefresh, currentCli === 'opencode');
+      // 花名册（chat-ai-config 的 REFRESHABLE_MODEL_CLIS）里的 CLI 模型表来自
+      // 本机 CLI 实时目录，有可刷的东西；其余 CLI 的清单要么在 provider 目录里、
+      // 要么是固定档位。
+      show(modelRefresh, aiApi.REFRESHABLE_MODEL_CLIS.has(currentCli));
       fillModel(modelSelect, modelCustom, providerValue, currentCli, modelValue);
       modelValue = currentModelValue();
       watchSelectedModels();
@@ -2843,19 +2844,36 @@
       renderFooter();
     };
     modelCustom.oninput = () => { modelValue = currentModelValue(); renderFooter(); };
-    // 手动刷新 opencode 模型表：绕过两层缓存重新读本机 CLI。当前选中的模型原样
+    // 手动刷新动态模型表：绕过两层缓存重新读本机 CLI。当前选中的模型原样
     // 保留 —— 即使它已经下架，换不换、换成哪个得由用户决定，这里只把真实列表摆出来。
     modelRefresh.onclick = async event => {
       if (event) { event.preventDefault(); event.stopPropagation(); }
       if (modelRefresh.disabled) return;
+      const cliAtClick = currentCli;
+      const providerAtClick = providerValue;
       const selected = currentModelValue();
       modelRefresh.disabled = true;
       modelRefresh.textContent = tt('runConfigModelRefreshing', '刷新中…');
       let models = [];
-      try { models = await aiApi.refreshOpenCodeModels(null, { force: true }); } catch (_) { models = []; }
+      try {
+        models = await aiApi.refreshModelsForCli(cliAtClick, null,
+          { force: true, providerId: providerAtClick });
+      } catch (_) { models = []; }
       if (!closed) {
-        fillModel(modelSelect, modelCustom, providerValue, currentCli, selected);
-        modelValue = currentModelValue();
+        if (currentCli === cliAtClick) {
+          // Codex 的账号目录缓存在 run-config 自己的 catalogs 里，force 拿到的新
+          // 清单要先回填，fillModel 才画得出来（与 watchCodexModels 的回填一致）。
+          if ((cliAtClick === 'codex' || cliAtClick === 'codex-exp') && models.length) {
+            const catalog = catalogs.get(cliAtClick);
+            if (catalog) {
+              catalogs.set(cliAtClick, { ...catalog, providers: catalog.providers.map(item =>
+                item.id === providerAtClick ? { ...item, modelOptions: models.map(model => model.model) } : item) });
+              providers = providersOf(cliAtClick);
+            }
+          }
+          fillModel(modelSelect, modelCustom, providerValue, currentCli, selected);
+          modelValue = currentModelValue();
+        }
         modelStatus.textContent = models.length
           ? tt('runConfigModelRefreshed', '模型列表已刷新：{count} 个', { count: models.length })
           : tt('runConfigModelRefreshFailed', '刷新失败，请稍后重试');

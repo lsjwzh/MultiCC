@@ -3106,7 +3106,7 @@
   "runConfigPresetAppliedDraft": "已套用草稿；检查线路后点击底部“保存”。混用官方与自建线路需重新确认。",
   "runConfigPresetDeleteConfirm": "只删除本机预设，不会修改当前线路池。确定删除吗？",
   "runConfigModelRefresh": "刷新模型",
-  "runConfigModelRefreshHint": "重新读取本机 opencode 的模型列表",
+  "runConfigModelRefreshHint": "重新读取本机 CLI 的模型列表",
   "runConfigModelRefreshing": "刷新中…",
   "runConfigModelRefreshed": "模型列表已刷新：{count} 个",
   "runConfigModelRefreshFailed": "刷新失败，请稍后重试",

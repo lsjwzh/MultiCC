@@ -225,7 +225,14 @@ function createAcpAdapter({
         const message = params.message || `${label} error`;
         return [{
           type: 'error', label, kind: 'provider', message,
-          error: { source: `${name}_event`, provider: name, code: params.code || params.phase || null, message },
+          error: {
+            source: `${name}_event`, provider: name, code: params.code || params.phase || null,
+            // Optional structured category (e.g. invalid_request_model) lets a
+            // host-side precondition failure keep a non-retryable verdict
+            // instead of degrading to text classification.
+            ...(params.category ? { category: params.category } : {}),
+            message,
+          },
         }];
       }
       return [];

@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const ai = require('../public/chat-ai-config');
 const autoEditor = require('../public/auto-provider-editor');
@@ -497,6 +498,100 @@ test('commandcode and grok pickers read the live catalog and keep the vendor gro
   }
 });
 
+
+// 载入一份独立的 public/shared/models.js：同一条 force 契约要在每个动态目录
+// loader 上成立 —— 跳过 localStorage、请求 ?refresh=1、返回新列表。
+function loadModelsModule({ store = {}, responses = [] } = {}) {
+  const calls = [];
+  const context = {
+    Date, Promise, String, Set, Map, Array, Number, JSON, encodeURIComponent,
+    setTimeout, clearTimeout,
+    window: {
+      localStorage: {
+        getItem: key => (key in store ? store[key] : null),
+        setItem: (key, value) => { store[key] = String(value); },
+      },
+      async fetch(url) {
+        calls.push(url);
+        const body = responses.shift() || { models: [] };
+        return { ok: true, async json() { return body; } };
+      },
+    },
+  };
+  context.window.window = context.window;
+  context.window.Date = Date;
+  context.window.setTimeout = setTimeout;
+  context.window.clearTimeout = clearTimeout;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'public', 'shared', 'models.js'), 'utf8'), context);
+  return { win: context.window, calls, store };
+}
+
+test('every dynamic-catalog loader has the same force contract', async () => {
+  const at = Date.now();
+  const cases = [
+    ['loadQoderModels', 'multicc.qoder.models.v1', '/api/qoder/models'],
+    ['loadCodebuddyModels', 'multicc.codebuddy.models.v1', '/api/codebuddy/models'],
+    ['loadCommandcodeModels', 'multicc.commandcode.models.v1', '/api/commandcode/models'],
+    ['loadGrokModels', 'multicc.grok.models.v1', '/api/grok/models'],
+    ['loadClaudeModels', 'multicc.claude.models.v1', '/api/claude/models'],
+  ];
+  for (const [loader, key, url] of cases) {
+    const store = { [key]: JSON.stringify({ at, models: [{ model: 'stale-model', label: 'stale-model' }] }) };
+    const { win, calls } = loadModelsModule({
+      store,
+      responses: [{ models: [{ model: 'live-model', label: 'live-model' }], source: 'cli' }],
+    });
+    // A warm browser cache wins without refresh ...
+    assert.deepEqual((await win[loader]()).map(entry => entry.model), ['stale-model'], loader);
+    assert.equal(calls.length, 0, `${loader} must not hit the network on a warm cache`);
+    // ... and force skips both layers.
+    assert.deepEqual((await win[loader]({ force: true })).map(entry => entry.model), ['live-model'], loader);
+    assert.deepEqual(calls, [`${url}?refresh=1`], loader);
+  }
+});
+
+test('codex loader force asks the server to skip its account cache', async () => {
+  const { win, calls } = loadModelsModule({
+    responses: [{ models: [{ model: 'gpt-new', label: 'GPT New' }], source: 'cli' }],
+  });
+  const catalog = await win.loadCodexModels({ force: true, providerId: 'codex-official-abc' });
+  assert.equal(catalog.models[0].model, 'gpt-new');
+  assert.deepEqual(calls, ['/api/codex/models?providerId=codex-official-abc&refresh=1']);
+});
+
+test('refreshModelsForCli dispatches the roster and forwards force/providerId', async () => {
+  const modulePath = require.resolve('../public/chat-ai-config');
+  const seen = {};
+  const store = {};
+  delete require.cache[modulePath];
+  globalThis.window = {
+    localStorage: { getItem: key => store[key] || null, setItem: (key, value) => { store[key] = String(value); } },
+    async loadQoderModels(options) { seen.qoder = options; return [{ model: 'qoder-live' }]; },
+    async loadCodexModels(options) { seen.codex = options; return { models: [{ model: 'codex-live' }] }; },
+    readCodexModelCatalogSync() { return null; },
+  };
+  const ai = require(modulePath);
+  try {
+    for (const cli of ['opencode', 'qoder', 'codebuddy', 'commandcode', 'grok', 'claude', 'claude-exp', 'codex', 'codex-exp']) {
+      assert.ok(ai.REFRESHABLE_MODEL_CLIS.has(cli), `${cli} belongs on the roster`);
+    }
+    for (const cli of ['dsh', 'gemini', 'zcode', 'kimi', 'pi']) {
+      assert.equal(ai.REFRESHABLE_MODEL_CLIS.has(cli), false, `${cli} has a static list`);
+    }
+    assert.deepEqual(JSON.parse(JSON.stringify(await ai.refreshModelsForCli('qoder', null, { force: true }))),
+      [{ model: 'qoder-live' }]);
+    assert.equal(seen.qoder.force, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(await ai.refreshModelsForCli('codex-exp', null,
+      { force: true, providerId: 'account-a' }))), [{ model: 'codex-live' }]);
+    assert.equal(seen.codex.force, true);
+    assert.equal(seen.codex.providerId, 'account-a');
+    assert.deepEqual(await ai.refreshModelsForCli('dsh', null, { force: true }), []);
+  } finally {
+    delete globalThis.window;
+    delete require.cache[modulePath];
+  }
+});
 
 test('Pi follows native settings and never offers a stale managed provider model', () => {
   const config = state({ cli: 'pi' });
