@@ -489,6 +489,19 @@ test('a real provider failure at the replay boundary still names the upstream ou
   assert.match(retryNotice(result), /上游 API 中断/);
 });
 
+test('a trailing 429 envelope with no code still names the upstream outage', () => {
+  // The chained 「…正文。API Error: Request rejected (429) …」 turn is detected
+  // from the assistant text, so the verdict carries an HTTP status but no code.
+  const result = decide({
+    source: 'claude_result', provider: 'claude', code: null, httpStatus: 429,
+    message: 'API Error: Request rejected (429) · This request would exceed your account\'s rate limit. Please try again later.',
+  }, { phase: 'stream', partialOutput: true });
+  assert.equal(result.reason, 'unsafe_replay_boundary');
+  const notice = retryNotice(result);
+  assert.match(notice, /上游 API 中断/);
+  assert.doesNotMatch(notice, /非上游 API 故障/);
+});
+
 test('only the per-request attempt count caps host retries', () => {
   const raw = {
     message: 'API Error: 502 getaddrinfo ENOTFOUND open.bigmodel.cn',
