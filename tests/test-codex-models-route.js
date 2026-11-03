@@ -39,8 +39,17 @@ function accountRouteFixture() {
       }; });
     },
   };
+  // 借道线路不再走账号目录：codex 路由把非官方记录转给 provider 实时目录。
+  const providerModelsRuntime = {
+    listProviderModels(id) {
+      return id === custom.id
+        ? Promise.resolve({ status: 200, body: { models: [
+          { model: 'relay-live', label: 'Relay live' }], source: 'live' } })
+        : Promise.resolve({ status: 404, body: { error: 'provider not found' } });
+    },
+  };
   mountCodexModelRoutes({ get: (p, fn) => routes.set(`GET ${p}`, fn),
-    post: (p, fn) => routes.set(`POST ${p}`, fn) }, undefined, accountRuntime);
+    post: (p, fn) => routes.set(`POST ${p}`, fn) }, undefined, accountRuntime, providerModelsRuntime);
   async function request(query, method = 'GET') {
     const res = { statusCode: 200, status(code) { this.statusCode = code; return this; },
       set() {}, json(body) { this.body = body; return this; } };
@@ -66,10 +75,15 @@ test('账号模型接口立即返回，轮询读取完成结果而不重复启�
   assert.equal(f.calls(), 1);
 });
 
-test('账号模型接口拒绝不存在或借道线路，不回落到全局账号', async () => {
+test('账号模型接口拒绝不存在的线路，但借道线路改为实时目录而不是失败', async () => {
   const f = accountRouteFixture();
   assert.equal((await f.request({ providerId: 'missing' })).statusCode, 404);
-  assert.equal((await f.request({ providerId: 'relay' })).statusCode, 400);
+  const relay = await f.request({ providerId: 'relay', refresh: '1' });
+  assert.equal(relay.statusCode, 200);
+  assert.equal(relay.body.source, 'live');
+  assert.equal(relay.body.available, true);
+  assert.deepEqual(relay.body.models.map(item => item.model), ['relay-live']);
+  // 借道线路有自己的 baseURL/key，绝不能落到本机官方账号目录。
   assert.equal(f.calls(), 0);
 });
 

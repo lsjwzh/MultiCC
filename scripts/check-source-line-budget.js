@@ -138,8 +138,10 @@ const MIGRATION_DEBT = Object.freeze({
     // validProviderId/getProviders，上方注释压成两行抵掉字节，实测 3035/159713。
     // 2026-11-02 Windows 启动 PATH 刷新接线：可用性重解析移进 commands.js，
     // server.js 只留一行 getter，实测 3022/159546，按棘轮下调。
-    ceiling: 3022,
-    byteCeiling: 159546,
+    // 2026-11-03 借道实时模型：GET /api/providers/:id/models 挂载一行（逻辑在
+    // routes/provider-models.js），实测 3024/159751，按棘轮上调。
+    ceiling: 3024,
+    byteCeiling: 159751,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),
@@ -151,9 +153,11 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-03 把「刷新模型」从 opencode 推广到全部动态目录 CLI（花名册在
   // chat-ai-config 的 REFRESHABLE_MODEL_CLIS；点击按 cli 分发、回填 Codex 账号
   // 目录），实测 3044/155465，按棘轮上调。下一次动它该拆的仍是模型字段那一族。
+  // 2026-11-03 借道线路实时模型：选中自定义 provider 时后台拉 /models 再重建，
+  // 实测 3066/156696，按棘轮上调；模型字段那一族的拆分条件不变。
   'public/run-config.js': Object.freeze({
-    ceiling: 3044,
-    byteCeiling: 155465,
+    ceiling: 3066,
+    byteCeiling: 156696,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),

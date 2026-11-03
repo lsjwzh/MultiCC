@@ -381,19 +381,37 @@ function createCodexModelsRuntime(options = {}) {
 
 const defaultRuntime = createCodexModelsRuntime();
 
-function mountCodexModelRoutes(app, runtime, accountRuntime) {
+function mountCodexModelRoutes(app, runtime, accountRuntime, providerModelsRuntime) {
   if (!app || typeof app.get !== 'function') return;
   // Existing embedders may inject the legacy single-account runtime. The
   // production API uses the Rust account catalog; Express only projects its
   // snapshot and schedules work, never waits for a CLI discovery.
   if (!runtime) accountRuntime ||= require('../codex/model-catalog').defaultRuntime;
-  function accountResponse(req, res, pollOnly = false) {
+  async function accountResponse(req, res, pollOnly = false) {
     const providerId = String(req.query?.providerId || req.body?.providerId || 'codex-official');
     const provider = accountRuntime.resolveProvider(providerId);
     if (!provider) return res.status(404).json({ error: '账号线路不存在' });
     if (provider.appType !== 'codex') return res.status(400).json({ error: '该线路不是 Codex 官方账号' });
     const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
-    if (!isOfficialCodexOAuthProvider(provider)) return res.status(400).json({ error: '该线路不是 Codex 官方账号' });
+    if (!isOfficialCodexOAuthProvider(provider)) {
+      // 借道（第三方中转）线路: this endpoint used to reject it with "该线路
+      // 不是 Codex 官方账号", so 刷新模型 could never work on a relay. Those
+      // rows carry their own base URL/key, not an OAuth account, so delegate to
+      // the provider live-catalog path (same fetch as /api/providers/:id/models).
+      // The response keeps the account-catalog shape loadCodexModels() expects.
+      const catalogRuntime = providerModelsRuntime || require('./provider-models').getSharedProviderModelsRuntime();
+      const result = await catalogRuntime.listProviderModels(provider.id, {
+        refresh: /^(?:1|true)$/i.test(String(req.query?.refresh || '')),
+      });
+      const models = (result.body && Array.isArray(result.body.models) ? result.body.models : [])
+        .map(item => Object.freeze({ model: item.model, label: item.label || item.model }));
+      res.set?.('Cache-Control', 'no-store');
+      return res.json({
+        models, source: result.body?.source || 'fallback', cached: false,
+        available: models.length > 0, refreshing: false, fallback: 'custom',
+        diagnostic: { code: models.length ? 'ok' : 'none', message: '' },
+      });
+    }
     if (!pollOnly) {
       // No force flag here: opening a picker must respect the one-day cache.
       // Only successful login explicitly requests a new-identity refresh.

@@ -2134,6 +2134,8 @@ const providerRoutes = createProviderRoutes({
 });
 const { providerDefaults, validProviderId } = providerRoutes;
 providerRoutes.mountCatalogRoutes(app);
+// GET /api/providers/:id/models — 借道线路实时模型目录（服务端存储的 baseURL/key，1h 缓存）。
+require('./src/routes/provider-models').mountProviderModelRoutes(app, { providers });
 
 // GET /api/opencode/models — list models the local opencode CLI exposes
 // (provider/model strings, cached for 1 day). Used by the chat picker when an
