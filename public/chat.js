@@ -664,6 +664,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     try {
       const message = JSON.parse(data);
       taskSeparation?.onEvent(message);
+      chatBgActivity?.onEvent(message);
       if (message.type === 'task_attribution_updated') window.MultiCCTaskAttributionRuntime?.onBroadcast?.(message);
       if (message.type === 'shell_history_update') {
         chatHistoryView.commitSourcePage(message.sourceSessionId, message.messages || []);
@@ -2386,6 +2387,18 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     consumeUserInputRequestId,
     rearmUnread,
   },
+});
+/* ── Background task activity strip ──
+   轮次等待期间贴在呼吸灯下方，展示后台任务描述 + 走字时长 + 最近输出，
+   免得「后台在忙」被误读成「AI 卡住」。事件从 onMessage 旁路喂进来。 */
+const chatBgActivity = window.MultiCCChatBgActivity.create({
+  document,
+  getMessagesEl: () => messagesEl,
+  getIsStreaming: () => isStreaming,
+  translate: tt,
+  getSessionId: () => _sessionName || sessionId || '',
+  fetchJson: path => chatApi.json(withToken(path)),
+  debug: dbg,
 });
 // Session-identity chrome (role prompt, provider/model) has no task-mode
 // equivalent: the routing recorded on the task is what ran. A share has no
