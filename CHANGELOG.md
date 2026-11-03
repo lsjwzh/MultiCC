@@ -2,6 +2,15 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.15.0 — Live relay model lists, visible background activity, and a quieter debug prompt (2026-11-03)
+
+- Fetch relay providers' model lists live. GET /api/providers/:id/models asks the provider's own stored gateway for its models endpoint (the browser never supplies a URL), the picker shows the static list first and rebuilds when the live catalog lands, failures keep the static list, and a codex relay's refresh-models action no longer fails with an account-lane error.
+- Show what the background is doing while a turn streams without new text. A live status line under the breathing dot names the oldest running background task, walks its elapsed time, and shows its latest output; the line goes away when the turn ends.
+- Auto-dismiss the Chrome "Allow remote debugging" prompt on macOS. The CDP gateway clicks Allow through the accessibility API during the handshake window when it has permission; when it does not, nothing changes and the manual path with backoff stays exactly as it was.
+- Put the Air sidebar's recent tasks on one rule for web and mobile alike: order by the most recent message time, with no opened-first or current-directory weighting.
+- Fold the Air brand into the directory card so the header shows a single space switcher, with the CLI update badge beside it.
+- Update the mobile app to 2.41.1 (build 187).
+
 ## v2.14.1 — A per-device send key, unified computer cards, and the WorkBuddy desktop CLI (2026-11-03)
 
 - Add a per-device send-key preference. Keep the classic mode where Enter sends and Shift + Enter inserts a newline, or switch so Enter inserts a newline and Cmd/Ctrl + Enter sends. The toggle lives in Settings on the Air page, the chat page and the Air chat frame read the same stored value, the composer placeholder names the key that sends, and a change made in one tab applies in the others.
