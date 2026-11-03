@@ -5001,6 +5001,15 @@
       ]
     },
     {
+      "path": "tests/test-send-key.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-server-cpu-hotpaths.js",
       "tier": "other",
       "lane": "deterministic",

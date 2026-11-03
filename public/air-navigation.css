@@ -136,8 +136,8 @@
 .air-setting-copy { flex: 1; min-width: 0; }
 .air-setting-copy strong, .air-setting-copy small { display: block; }
 .air-setting-copy small { font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
-#settings-power-controls, #settings-host-controls { padding: 10px 20px; border-top: 1px solid var(--hairline); }
-#settings-power-controls button { width: 100%; }
+#settings-input-controls, #settings-power-controls, #settings-host-controls { padding: 10px 20px; border-top: 1px solid var(--hairline); }
+#settings-input-controls button, #settings-power-controls button { width: 100%; }
 #settings-host-controls .ops-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 #setup-card { display: block; max-width: 720px; margin: 0 auto 24px; padding: 12px 0 24px; background: transparent; border: 0; box-shadow: none; }
 .setup-intro { margin-bottom: 20px; }
@@ -172,11 +172,16 @@
 .air-settings-layout .air-setting-card { flex-direction: row; text-align: left; min-height: 84px; }
 #tasks button { padding: 7px 11px; }
 .power-setting-wrap { display: flex; align-items: center; position: relative; gap: 8px; }
-#settings-power-controls .sidebar-setting-row { flex: 1; font-size: 14px; padding: 12px 0; min-height: 48px; }
-#settings-power-controls .more-setting-copy { white-space: normal; flex: 1; }
-#settings-power-controls .row-switch { width: 36px; height: 22px; }
-#settings-power-controls .row-switch::after { width: 18px; height: 18px; margin: 2px; }
-#settings-power-controls .on .row-switch::after { transform: translateX(14px); }
+#settings-input-controls .sidebar-setting-row, #settings-power-controls .sidebar-setting-row { flex: 1; font-size: 14px; padding: 12px 0; min-height: 48px; }
+#settings-input-controls .more-setting-copy, #settings-power-controls .more-setting-copy { white-space: normal; flex: 1; }
+#settings-input-controls .row-switch, #settings-power-controls .row-switch { width: 36px; height: 22px; }
+#settings-input-controls .row-switch::after, #settings-power-controls .row-switch::after { width: 18px; height: 18px; margin: 2px; }
+#settings-input-controls .on .row-switch::after, #settings-power-controls .on .row-switch::after { transform: translateX(14px); }
+/* 发送快捷键这行没有 ⓘ 浮层（电源行才有），说明直接排在标题下面；右侧让出 ⓘ 那一列
+   （约 30px + 8px 间距），开关才和下面电源行的开关对齐。 */
+#settings-input-controls .sidebar-setting-row { padding-right: 38px; }
+#settings-input-controls .more-setting-copy strong, #settings-input-controls .more-setting-copy small { display: block; text-align: left; }
+#settings-input-controls .more-setting-copy small { margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.5; font-weight: 400; }
 .power-setting-wrap:has(button[hidden]) { display: none; }
 .power-setting-wrap details summary { list-style: none; color: var(--muted); cursor: pointer; padding: 8px; }
 .power-setting-wrap details small { position: absolute; z-index: 2; right: 0; top: 100%; width: min(300px, 100%); padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: white; box-shadow: var(--shadow-2); }

@@ -483,7 +483,9 @@
       hudRawText?.addEventListener('input', () => { hudRawFinal = (hudRawText.textContent || '').trim(); });
       for (const editable of [hudRefinedText, hudRawText]) {
         editable?.addEventListener('keydown', event => {
-          if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+          const sendKey = win.MultiCCSendKey;
+          if (sendKey ? sendKey.isSend(event)
+            : (event.key === 'Enter' && !event.shiftKey && !event.isComposing)) {
             event.preventDefault();
             commitStreamingVoice();
           }

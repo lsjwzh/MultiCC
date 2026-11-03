@@ -549,9 +549,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   任务数据，更新弹窗显示升级百分比而不是「服务重启中」，中英各 2 行 = +4 行，实测 10256/663218。
     // +7 双语键：Windows 安装 Git 后的重开指引和环境重新检测；仅增加生成词典数据。
     // 同一批文案改写（重新检测即可，不再要求重启）后实测 10270/665596，按高水位抬 byte 上限。
-    maxLines: 10270,
+    // +5 双语键（airSendKeyDescOff/DescOn/Title + airQuickTaskPlaceholderModEnterMac/Ctrl）：
+    //   输入框「发送快捷键」设置（Enter 发送 vs ⌘/Ctrl + Enter 发送）。中英各 5 行 = +10 行，
+    //   重新生成实测 10280/666917，按高水位抬一格。
+    maxLines: 10280,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 665596,
+    maxBytes: 666917,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

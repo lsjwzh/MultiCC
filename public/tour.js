@@ -441,7 +441,10 @@
       resultBaseline.sent = true;
     };
     const markEnter = (event) => {
-      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) markSent();
+      // Mirror the chat composer so the tour sees a send in either key mode.
+      const sendKey = window.MultiCCSendKey;
+      if (sendKey ? sendKey.isSend(event)
+        : (event.key === 'Enter' && !event.shiftKey && !event.isComposing)) markSent();
     };
     sendButton?.addEventListener('click', markSent, true);
     sendButton?.addEventListener('touchend', markSent, true);

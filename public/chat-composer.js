@@ -313,7 +313,11 @@
           }
         });
         inputEl.addEventListener('keydown', event => {
-          if (!isMobile && event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+          // Read the per-device preference fresh each keydown so the Air settings
+          // row (another module, same document) takes effect immediately.
+          const sendKey = win.MultiCCSendKey;
+          if (sendKey ? sendKey.isSend(event, { mobile: isMobile })
+            : (!isMobile && event.key === 'Enter' && !event.shiftKey && !event.isComposing)) {
             event.preventDefault();
             send();
           }
