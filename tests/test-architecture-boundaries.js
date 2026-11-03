@@ -56,7 +56,11 @@ test('production request paths do not run synchronous child processes', () => {
   // and the delayed restart manager spawn it as its own process (`node
   // src/server-processes.js list|stop|lock-alive|owner`), so it never runs
   // inside a request path and may deliberately block.
-  const exempt = new Set(['src/server-processes.js']);
+  // src/cli-adapters/commands.js probes Qoder install candidates with
+  // `--version` once per process (resolveCliCommands() is a synchronous
+  // startup-time API and the probe is memoized), so it never blocks a request;
+  // removing the memo or probing per request must also remove this exemption.
+  const exempt = new Set(['src/server-processes.js', 'src/cli-adapters/commands.js']);
   const files = ['server.js'];
   const visit = (directory) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
