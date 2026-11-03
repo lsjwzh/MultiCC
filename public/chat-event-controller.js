@@ -529,6 +529,8 @@
           if (message.providerId) state.activeProviderId = message.providerId;
           if (message.providerName) state.activeProviderName = displayProviderName(message.providerName);
           applyProviderRouteModel(message);
+          // 气泡可能已经在流式（路由事件晚于 message_start）：就地补上/更新归属行。
+          if (state.currentMsgEl) attachLiveRouteAttribution(state.currentMsgEl);
           host.updateProviderBtn?.();
           break;
         case 'provider_auto_route': {
@@ -931,8 +933,27 @@
       return true;
     }
 
+    // 自动选线时用户看不见「这一轮到底落在哪条线路上」：路由事件一到，就把归属行
+    // （「由 车道 · 线路 · 模型 产出」，与轮末 result 落地的是同一行）提前挂到还在
+    // 流式的气泡上。result 到来时 attachModelAttribution 先清后挂，服务端算出的最终
+    // 归属原位替换这份提前量；中途 failover 换线路同样只更新这一行，绝不挂出第二行。
+    function liveRouteAttribution() {
+      if (state.sessionProviderSelection?.mode !== 'auto') return null;
+      const providerId = state.activeProviderId || '';
+      const providerName = state.activeProviderName || '';
+      const model = state.activeProviderModel || '';
+      if (!providerId && !providerName && !model) return null;
+      return { cli: state.currentCli || '', providerId, providerName, model };
+    }
+    function attachLiveRouteAttribution(bubble) {
+      const attribution = liveRouteAttribution();
+      if (!attribution || !bubble) return;
+      liveUi.attachModelAttribution?.(bubble, attribution);
+    }
+
     function createAssistantBubble() {
       const bubble = historyView.createAssistantBubble(true);
+      attachLiveRouteAttribution(bubble);
       host.maybeScrollToBottom?.();
       return bubble;
     }
