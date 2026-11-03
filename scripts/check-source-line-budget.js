@@ -562,9 +562,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +3 双语键（bgActivityRunning/RunningCount/Latest）：聊天页呼吸灯下方的后台任务
     //   活动行（chat-bg-activity.js）——任务在跑、时长走字与最近输出。中英各 3 行 = +6 行，
     //   重新生成实测 10286/667216，按高水位抬一格。
-    maxLines: 10286,
+    // +1 双语键（tokenRateBg）：速率角标在后台任务仍在跑时显示「AI 请求已停 · 后台任务
+    //   执行中」而不升级为黄色（chat-token-rate.js 经 bg-activity 的 runningCount 判断）。
+    //   重新生成实测 10288/667388，按高水位抬一格。
+    maxLines: 10288,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 667216,
+    maxBytes: 667388,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
