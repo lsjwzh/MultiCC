@@ -17,6 +17,20 @@ String openCodeNativeProviderOf(String value) =>
 bool isOpenCodeNativeProvider(String value) =>
     openCodeNativeProviderOf(value).isNotEmpty;
 
+/// OpenCode Go 的两种 id 指同一条线路：内置 `opencode-go`，以及早期安装指引
+/// 让用户手写的 `opencodego`。配置改写可能让缓存/会话在两个 id 之间迁移，
+/// 比对时只保留字母数字，别把同一批模型当成「不存在」。
+String openCodeNativeIdKey(String id) =>
+    id.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+
+/// 线路 id 改名时，`<旧id>/<模型>` 跟着改成 `<新id>/<模型>`；其余值原样返回。
+String rewriteOpenCodeNativeModel(String model, String fromId, String toId) {
+  final text = model.trim();
+  if (fromId.isEmpty || toId.isEmpty || fromId == toId) return text;
+  final prefix = '$fromId/';
+  return text.startsWith(prefix) ? '$toId${text.substring(fromId.length)}' : text;
+}
+
 /// Display names for OpenCode's own native providers. Mirrors the Web picker's
 /// OPENCODE_NATIVE_NAMES (public/chat-ai-config.js) and the synthetic rows
 /// created in [mergeOpenCodeNativeProviders]; a provider the table does not
@@ -25,7 +39,11 @@ bool isOpenCodeNativeProvider(String value) =>
 /// The lane is already OpenCode, so the name no longer repeats it — the old
 /// `OpenCode 原生 · OpenCode Go` said the vendor twice.
 String openCodeNativeProviderDisplayName(String provider) {
-  const names = {'opencode': 'OpenCode Zen', 'opencodego': 'OpenCode Go'};
+  const names = {
+    'opencode': 'OpenCode Zen',
+    'opencode-go': 'OpenCode Go',
+    'opencodego': 'OpenCode Go',
+  };
   final name = names[provider];
   if (name != null) return name;
   return provider.isEmpty ? 'OpenCode' : 'OpenCode · $provider';
@@ -79,10 +97,15 @@ String openCodeNativeProviderForModel(
 ) {
   final slash = model.indexOf('/');
   if (slash <= 0) return '';
-  final candidate = openCodeNativeProviderId(model.substring(0, slash));
-  return providers.any((provider) => provider['id'] == candidate)
-      ? candidate
-      : '';
+  final wanted = openCodeNativeIdKey(model.substring(0, slash));
+  for (final provider in providers) {
+    final id = provider['id']?.toString() ?? '';
+    if (isOpenCodeNativeProvider(id) &&
+        openCodeNativeIdKey(openCodeNativeProviderOf(id)) == wanted) {
+      return id;
+    }
+  }
+  return '';
 }
 
 List<String> openCodeNativeModelOptions(List<Map<String, dynamic>> providers) {

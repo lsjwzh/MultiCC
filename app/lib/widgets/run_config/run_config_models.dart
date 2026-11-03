@@ -49,8 +49,13 @@ List<String> runModelChoices(
     return ['', ...openCodeNativeModelOptions(providers)];
   }
   if (cli == SessionCli.opencode && isOpenCodeNativeProvider(provider)) {
+    // 线路 id 会在配置改写时变（手写的 `opencodego` ↔ 内置 `opencode-go`）
+    // 而模型不变：按「只留字母数字」对齐，旧会话不会得到空候选。
+    final wanted = openCodeNativeIdKey(openCodeNativeProviderOf(provider));
     for (final p in providers) {
-      if (p['id'] == provider) {
+      final id = p['id']?.toString() ?? '';
+      if (isOpenCodeNativeProvider(id) &&
+          openCodeNativeIdKey(openCodeNativeProviderOf(id)) == wanted) {
         final options = p['modelOptions'];
         return options is List
             ? options.map((value) => value.toString()).toList()
