@@ -93,17 +93,19 @@ test('the CLI update badge sits on the brand row and its popover lands on screen
     assert.equal(await page.evaluate('document.getElementById("cli-update-badge").textContent'), '2');
     assert.equal(await page.evaluate('document.getElementById("cli-update-btn").classList.contains("has-update")'), true);
 
-    // 它在品牌行里，不是新的一栏：顶部贴齐品牌、左侧在侧栏内。
+    // 它在顶卡的品牌行里，不是新的一栏：贴齐品牌、位于目录行（.space-main）上方、
+    // 左侧在侧栏内。品牌行和目录卡已合并成一块顶卡，所以「在卡片上方」精确到
+    // 「在目录行的上方」。
     const geometry = await page.evaluate(`(() => {
       const button = document.getElementById('cli-update-btn');
       const brand = document.querySelector('.brand-row');
-      const card = document.querySelector('.space-card');
-      const b = button.getBoundingClientRect(), row = brand.getBoundingClientRect(), c = card.getBoundingClientRect();
-      return { top: b.top, rowTop: row.top, rowBottom: row.bottom, right: b.right, width: b.width, cardTop: c.top };
+      const main = document.querySelector('.space-main');
+      const b = button.getBoundingClientRect(), row = brand.getBoundingClientRect(), m = main.getBoundingClientRect();
+      return { top: b.top, bottom: b.bottom, rowTop: row.top, rowBottom: row.bottom, right: b.right, width: b.width, mainTop: m.top };
     })()`);
     assert.ok(geometry.top >= geometry.rowTop - 1 && geometry.top < geometry.rowBottom,
       `图标必须落在品牌行的高度内：${JSON.stringify(geometry)}`);
-    assert.ok(geometry.top < geometry.cardTop, '图标要在工作目录卡片上方（页面左上角）');
+    assert.ok(geometry.bottom <= geometry.mainTop + 1, '图标要在目录行上方（顶卡的抬头区）');
     assert.ok(geometry.right < 300, '图标要留在侧栏宽度内');
 
     // ── The popover ────────────────────────────────────────────────────────

@@ -204,12 +204,24 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(await page.evaluate(`[...document.querySelectorAll('#sidebar *')].some(el=>el.textContent==='收藏目录')`), false, '侧栏不再有「收藏目录」标题');
     assert.equal(await page.evaluate(`document.querySelector('.space-shortcuts').textContent.replace(/\\s+/g,'')`), '项目⌘K切换', '目录卡快捷行只剩标题和 ⌘K 提示');
     assert.equal(await page.evaluate(`document.getElementById('task-list-title').textContent`), '最近任务');
-    assert.ok(await page.waitFor(`document.querySelectorAll('#tasks button').length===1`), '最近里只有打开过的这一条');
-    // 一行要能自己说清：状态徽标（注册表给的词）、所属目录、阶段与资源去向。
-    assert.equal(await page.evaluate(`document.querySelector('#tasks button .mc-status-label').textContent`), '空闲', '任务行带状态徽标');
-    assert.equal(await page.evaluate(`document.querySelector('#tasks button .task-dir').textContent`), 'MultiCC 主仓', '任务行带所属目录');
-    assert.ok(await page.evaluate(`document.querySelector('#tasks button .task-note').textContent.includes('计划')`), '阶段跟在后面');
-    assert.equal(await page.evaluate(`document.querySelectorAll('#tasks button.ring-running').length`), 0, '没在跑的任务不带圈');
+    // 「最近」是纯时间序：最后一条消息（回退 updatedAt）倒序、跨目录不加权，不再是
+    // 「只有打开过的」。fixture 的四条按 updatedAt 9000/7000/5000/1000 排下来。
+    // 徽标只有图标（词收进 aria/tooltip），目录跟在标题后面，阶段/资源在小字行。
+    const sideRows = await page.evaluate(`[...document.querySelectorAll('#tasks button')].map(row => ({
+      title: row.querySelector('strong').firstChild.textContent,
+      status: row.querySelector('.mc-status')?.getAttribute('aria-label') || '',
+      dir: row.querySelector('.task-dir')?.textContent || '',
+      note: row.querySelector('.task-note')?.textContent || '',
+      ring: row.classList.contains('ring-running'),
+      iconOnly: !row.querySelector('.mc-status-label'),
+    }))`);
+    assert.deepEqual(sideRows.map(row => row.title),
+      ['结算页金额四舍五入错误', '登录页空状态文案', '收口 Air 的控制台', '导出失败重试'], '最近任务按最近动静倒序');
+    assert.ok(sideRows.every(row => row.iconOnly), '侧栏状态缩成一枚图标，词收进 tooltip/aria');
+    assert.equal(sideRows[2].status, '空闲', '任务行的徽标语义仍读得到');
+    assert.equal(sideRows[2].dir, 'MultiCC 主仓', '任务行带所属目录');
+    assert.ok(sideRows[2].note.includes('计划'), '阶段跟在后面');
+    assert.deepEqual(sideRows.map(row => row.ring), [false, true, false, false], '只有在跑的那条带圈');
     const before = await page.evaluate(`(() => {
       const clock = document.createElement('span');
       clock.id = 'keep-alive-marker';
@@ -423,7 +435,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.ok(await page.waitFor(`document.getElementById('task-state').classList.contains('ring-running')`), '页头状态行带圈');
     assert.equal(await page.evaluate(`document.querySelector('#tasks button.ring-running .task-dir').textContent`), 'Gapasea', '侧栏里在跑的那条也带圈');
     assert.equal(await page.evaluate(`document.querySelector('.space-card').classList.contains('ring-running')`), false, '当前目录卡片不带圈（没切到任务所属的目录）');
-    assert.equal(await page.evaluate(`document.querySelector('#tasks button.ring-running .mc-status-label').textContent`), '执行中');
+    assert.equal(await page.evaluate(`document.querySelector('#tasks button.ring-running .mc-status').getAttribute('aria-label')`), '执行中');
     // 页头那行状态是个 22px 高的小胶囊，圈画在上面本来就容易撞：它自己还有一枚
     // ::after 的「 ›」（「这里能点」的提示）。圈因此走 ::before —— 箭头得原地不动。
     assert.ok((await page.evaluate(`getComputedStyle(document.getElementById('task-state'),'::after').content`)).includes('›'),
@@ -944,10 +956,14 @@ test('a task waiting on background work never renders as waiting for you', async
     await page.navigate('/air?dir=d1&task=tsk_bg');
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='等回调：索引重建'`));
 
-    const badge = await page.evaluate(`document.querySelector('#tasks button .mc-status-label').textContent`);
+    // 侧栏徽标现在是纯图标（词收进 aria/tooltip）：读 aria-label 断它说的词。
+    // 「最近」是纯时间序，三条都在：tsk_bg(900) 在最上面，在跑的 tsk_run(700) 也在。
+    const badge = await page.evaluate(`document.querySelector('#tasks button .mc-status').getAttribute('aria-label')`);
     assert.equal(badge, '等待后台任务', '侧栏徽标说的是「等后台任务」');
     assert.notEqual(badge, '等待回答', '同一行绝不能自报「等待回答」');
-    assert.equal(await page.evaluate(`document.querySelectorAll('#tasks button.ring-running').length`), 0, '等后台任务不算本机在跑，不拿圈');
+    const rings = await page.evaluate(`[...document.querySelectorAll('#tasks button')].map(row => row.querySelector('strong').firstChild.textContent + ':' + row.classList.contains('ring-running'))`);
+    assert.deepEqual(rings, ['等回调：索引重建:false', '等回答：发布口径:false', '在跑：投放日报:true'],
+      '等后台任务不算本机在跑，不拿圈；真在跑的那条才有');
     await page.screenshot('bg-wait-sidebar');
 
     // 控制台徽标数的是「要我动手的」：只有那条等回答的，等后台任务的不算。
