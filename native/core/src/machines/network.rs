@@ -3,11 +3,54 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use reqwest::{redirect::Policy, Client, Method, Url};
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     net::{IpAddr, SocketAddr},
-    time::Duration,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 const BODY_LIMIT: usize = 48 * 1024 * 1024;
+/// One request deadline; the pooled client itself carries none so event
+/// streams and short calls can share it.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+/// Rebuilding a client per request re-resolved DNS and redid the TLS handshake
+/// on every proxied call, so each computer switch paid two full handshakes in
+/// series. A pooled client keeps its connections alive between clicks; the TTL
+/// plus connect-failure eviction below keep stale DNS from sticking.
+const CLIENT_TTL: Duration = Duration::from_secs(600);
+
+fn client_cache() -> &'static Mutex<HashMap<String, (Instant, Client)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Client)>>> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+fn cache_key(url: &Url) -> String {
+    url.origin().ascii_serialization()
+}
+
+async fn pooled_client(url: &Url) -> Result<Client, Error> {
+    let key = cache_key(url);
+    {
+        let mut cache = client_cache().lock().unwrap_or_else(|e| e.into_inner());
+        cache.retain(|_, (built_at, _)| built_at.elapsed() < CLIENT_TTL);
+        if let Some((_, client)) = cache.get(&key) {
+            return Ok(client.clone());
+        }
+    }
+    let client = client_with(url).await?;
+    client_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, (Instant::now(), client.clone()));
+    Ok(client)
+}
+
+fn evict_client(url: &Url) {
+    client_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&cache_key(url));
+}
 
 pub fn origin(raw: &str) -> Result<Url, Error> {
     let url = Url::parse(raw.trim())
@@ -66,29 +109,20 @@ pub async fn addresses(url: &Url) -> Result<Vec<SocketAddr>, Error> {
     Ok(addresses)
 }
 
-async fn client_with(url: &Url, timeout: Option<Duration>) -> Result<Client, Error> {
+async fn client_with(url: &Url) -> Result<Client, Error> {
     let addresses = addresses(url).await?;
-    let builder = Client::builder()
+    Client::builder()
         .redirect(Policy::none())
         .no_proxy()
         .connect_timeout(Duration::from_secs(8))
-        .resolve_to_addrs(url.host_str().unwrap().trim_matches(['[', ']']), &addresses);
-    let builder = match timeout {
-        Some(timeout) => builder.timeout(timeout),
-        None => builder,
-    };
-    builder
+        .resolve_to_addrs(url.host_str().unwrap().trim_matches(['[', ']']), &addresses)
         .build()
         .map_err(|_| fail(503, "machine_transport_unavailable", "电脑连接暂时不可用"))
 }
 
-pub async fn client(url: &Url) -> Result<Client, Error> {
-    client_with(url, Some(Duration::from_secs(90))).await
-}
-
-/// Event streams must not inherit the 90s total deadline: idle gaps are normal.
+/// Event streams must not inherit the request deadline: idle gaps are normal.
 pub async fn stream_client(url: &Url) -> Result<Client, Error> {
-    client_with(url, None).await
+    client_with(url).await
 }
 
 pub(crate) fn has_certificate_error(error: &(dyn std::error::Error + 'static)) -> bool {
@@ -179,22 +213,7 @@ pub async fn request(
         "HEAD" => Method::HEAD,
         _ => return Err(fail(400, "machine_method_invalid", "不支持此请求方式")),
     };
-    let mut request = client(&base)
-        .await?
-        .request(method, url)
-        .header(credential.0, credential.1);
-    for name in [
-        "content-type",
-        "accept",
-        "if-none-match",
-        "if-modified-since",
-        "range",
-    ] {
-        if let Some(value) = input["headers"][name].as_str() {
-            request = request.header(name, value);
-        }
-    }
-    if let Some(body) = body {
+    if let Some(body) = body.as_ref() {
         if body.len() > BODY_LIMIT {
             return Err(fail(
                 413,
@@ -202,12 +221,56 @@ pub async fn request(
                 "电脑请求内容过大，超过 48MB 的文件请在目标电脑上直接打开或下载",
             ));
         }
-        request = request.body(body);
     }
-    let mut response = request
-        .send()
-        .await
-        .map_err(|e| transport_error(&e, "暂时连接不上这台电脑，请检查网络或访问地址"))?;
+    let forwarded: Vec<(&str, &str)> = [
+        "content-type",
+        "accept",
+        "if-none-match",
+        "if-modified-since",
+        "range",
+    ]
+    .into_iter()
+    .filter_map(|name| input["headers"][name].as_str().map(|value| (name, value)))
+    .collect();
+    let build = |client: &Client| {
+        let mut request = client
+            .request(method.clone(), url.clone())
+            .timeout(REQUEST_TIMEOUT)
+            .header(credential.0, credential.1);
+        for (name, value) in &forwarded {
+            request = request.header(*name, *value);
+        }
+        if let Some(body) = body.as_ref() {
+            request = request.body(body.clone());
+        }
+        request
+    };
+    let mut response = None;
+    for attempt in 0..2 {
+        let client = pooled_client(&base).await?;
+        match build(&client).send().await {
+            Ok(reply) => {
+                response = Some(reply);
+                break;
+            }
+            // The pooled client pins DNS at build time; a stale address shows
+            // up as a connect failure. Evict once so the retry re-resolves.
+            Err(e) if attempt == 0 && e.is_connect() => evict_client(&base),
+            Err(e) => {
+                return Err(transport_error(
+                    &e,
+                    "暂时连接不上这台电脑，请检查网络或访问地址",
+                ))
+            }
+        }
+    }
+    let mut response = response.ok_or_else(|| {
+        fail(
+            502,
+            "machine_unreachable",
+            "暂时连接不上这台电脑，请检查网络或访问地址",
+        )
+    })?;
     let status = response.status().as_u16();
     if response.status().is_redirection() {
         return Err(fail(

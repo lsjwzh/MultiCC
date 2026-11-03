@@ -147,6 +147,25 @@
 .mc-composer__pill--ai.is-auto { color: #6b46b8; border-color: #ddd2f4; background-image: linear-gradient(#f6f2ff, #f6f2ff); }
 .mc-composer__pill--ai.is-pending { color: #8a6d2f; border-color: #f0d69a; background: #fff8e8; }
 .mc-composer__pill--role { flex: 0 0 auto; }
+/* The computer capsule: only rendered when several computers are paired, so it
+   gets its own calm green to stay distinguishable from the route and role pills. */
+.mc-composer__pill--machine { flex: 0 0 auto; color: #2f6b4f; border-color: #cfe8da; background: #eaf7f0; }
+.mc-composer__pill--machine::before { content: '💻'; margin-right: 6px; font-size: 10px; }
+/* Its picker hangs under the pill; fixed so the composer's overflow never clips
+   it, narrow enough to survive a phone-width band. */
+.quick-machine-pop {
+  position: fixed; z-index: 80; min-width: 220px; max-width: min(320px, calc(100vw - 16px));
+  background: #fff; border: 1px solid #d8e0ea; border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(24, 39, 75, .16); padding: 6px; display: grid; gap: 2px;
+}
+.quick-machine-pop button {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  width: 100%; text-align: left; padding: 8px 10px; border: 0; border-radius: 8px;
+  background: none; font: inherit; color: #20314a; cursor: pointer;
+}
+.quick-machine-pop button:hover, .quick-machine-pop button:focus-visible { background: #eef9f5; }
+.quick-machine-pop button[aria-checked="true"] { background: #eaf7f0; font-weight: 600; }
+.quick-machine-pop small { color: #6b7a8c; font-weight: 400; }
 
 /* The route text is one inner box so it can be scrolled inside a pill that never
    moves: the ◆, the padding and the border stay put while the words travel.

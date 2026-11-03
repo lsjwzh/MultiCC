@@ -379,6 +379,9 @@
             <div class="mc-composer__aux">
               <button id="quick-ai-pill" class="mc-composer__pill mc-composer__pill--ai" type="button"></button>
               <button id="quick-role-pill" class="mc-composer__pill mc-composer__pill--role" type="button" data-i18n="airQuickAddRole">＋ 角色</button>
+              <!-- 电脑胶囊只在配置了多电脑时显示（air-quick-machine.js）：选新任务
+                   创建在哪台电脑，默认隐藏，不占未配置用户的胶囊行。 -->
+              <button id="quick-machine-pill" class="mc-composer__pill mc-composer__pill--machine" type="button" hidden></button>
             </div>
             <div id="quick-task-files"></div>
             <textarea id="quick-task-input" class="mc-composer__input" rows="4" maxlength="32000" required
@@ -760,7 +763,7 @@
   <!-- 目录首页的目录排序：与 App 共享的服务端 ui-layout（dirOrder）。控制台在
        air-admin.js 里渲染，必须排在它前面。 -->
   <script src="ui-layout-store.js"></script>
-  <link rel="stylesheet" href="air-machines.css"><script src="air-machines.js"></script><script src="air-admin.js"></script>
+  <link rel="stylesheet" href="air-machines.css"><script src="air-machines.js"></script><script src="air-quick-machine.js"></script><script src="air-admin.js"></script>
   <script src="qrcode.min.js"></script>
   <!-- 通知标题的唯一来源（pwa.js 的本地通知兜底也读它）。 -->
   <script src="shared/notification-copy.js"></script>
