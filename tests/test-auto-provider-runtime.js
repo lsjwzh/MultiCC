@@ -604,6 +604,36 @@ test('a successful fallback becomes sticky on the next turn', () => {
   assert.equal(second.initial().providerId, 'backup');
 });
 
+test('a sticky fallback hands the pool back to an earlier line once its quota recovers', () => {
+  const { runtime, session, limits, clock } = fixture({ emptyFetchedAt: 990_000 });
+  const first = runtime.beginTurn({ session, turnId: 'turn-1' });
+  assert.equal(first.initial().providerId, 'backup');
+  first.recordSuccess({ providerId: 'backup' });
+  // No fresh reading yet: the aged-out exhaustion verdict still keeps line 1
+  // behind the route that actually worked.
+  clock.now += 61_000;
+  assert.equal(runtime.beginTurn({ session, turnId: 'unmeasured' }).initial().providerId, 'backup');
+  // The reset landed and the cache observed it: line 1 is first again.
+  limits.set('empty', {
+    status: 'ok', kind: 'balance', fetchedAt: clock.now,
+    summary: { kind: 'balance', available: true, total: 20 },
+    summaryText: '余额 20',
+  });
+  assert.equal(runtime.beginTurn({ session, turnId: 'recovered' }).initial().providerId, 'empty');
+});
+
+test('a recovered line that is still near its limit does not reclaim the route', () => {
+  const { runtime, session, limits } = fixture({ emptyFetchedAt: 990_000 });
+  const first = runtime.beginTurn({ session, turnId: 'turn-1' });
+  assert.equal(first.initial().providerId, 'backup');
+  first.recordSuccess({ providerId: 'backup' });
+  limits.set('empty', {
+    status: 'ok', kind: 'window', fetchedAt: 1_000_000,
+    summary: { kind: 'window', windows: [{ usedPercent: 95, resetMs: 2_000_000 }] },
+  });
+  assert.equal(runtime.beginTurn({ session, turnId: 'nearly-full' }).initial().providerId, 'backup');
+});
+
 test('a fallback remains current across cloned selections and expired quota readings until it is exhausted', () => {
   const { runtime, session, limits, clock } = fixture({ emptyFetchedAt: 1_000_000 });
   const first = runtime.beginTurn({ session, turnId: 'initial-backup' });
