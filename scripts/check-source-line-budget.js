@@ -555,9 +555,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +5 双语键（airSendKeyDescOff/DescOn/Title + airQuickTaskPlaceholderModEnterMac/Ctrl）：
     //   输入框「发送快捷键」设置（Enter 发送 vs ⌘/Ctrl + Enter 发送）。中英各 5 行 = +10 行，
     //   重新生成实测 10280/666917，按高水位抬一格。
-    maxLines: 10280,
+    // +3 双语键（bgActivityRunning/RunningCount/Latest）：聊天页呼吸灯下方的后台任务
+    //   活动行（chat-bg-activity.js）——任务在跑、时长走字与最近输出。中英各 3 行 = +6 行，
+    //   重新生成实测 10286/667216，按高水位抬一格。
+    maxLines: 10286,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 666917,
+    maxBytes: 667216,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

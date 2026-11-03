@@ -1,0 +1,54 @@
+/* 后台任务活动行（chat-bg-activity.js）：轮次等待期间贴在呼吸灯下方，展示
+   正在运行的后台任务与最近输出，避免用户把「后台在忙」误读成「AI 卡住」。 */
+.bg-activity {
+  align-self: flex-start;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: min(72ch, 92%);
+  margin-top: 6px;
+  padding: 6px 12px;
+  background: var(--chat-surface);
+  border: 1px solid var(--chat-line);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--chat-muted);
+  animation: bg-activity-in 0.25s ease;
+}
+
+.bg-activity-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--chat-blue);
+  animation: bg-activity-pulse 1.6s infinite ease-in-out;
+}
+
+.bg-activity-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bg-activity-main,
+.bg-activity-tail {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bg-activity-tail { opacity: 0.85; }
+
+@keyframes bg-activity-pulse {
+  0%, 100% { transform: scale(0.6); opacity: 0.35; }
+  50% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes bg-activity-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
