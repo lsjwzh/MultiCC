@@ -93,6 +93,14 @@ class FakeNode {
 
   getBoundingClientRect() { return this._rect; }
 
+  closest(selector) {
+    for (let current = this; current; current = current.parentNode) {
+      if (selector.startsWith('.') && (current.classList.contains(selector.slice(1))
+        || current.className.split(/\s+/).includes(selector.slice(1)))) return current;
+    }
+    return null;
+  }
+
   contains(node) {
     if (node === this) return true;
     return this.children.some(child => child.contains(node));
@@ -272,7 +280,6 @@ test('没有新版时图标保持安静，有新版才挂数量角标', async ()
   });
   await settle();
   assert.equal(quiet.registry['cli-update-badge'].hidden, true);
-  assert.equal(quiet.registry['cli-update-icon'].textContent, '⇧');
   assert.equal(quiet.registry['cli-update-btn'].classList.contains('has-update'), false);
 
   const busy = buildContext({
@@ -287,7 +294,6 @@ test('没有新版时图标保持安静，有新版才挂数量角标', async ()
   await settle();
   assert.equal(busy.registry['cli-update-badge'].hidden, false);
   assert.equal(busy.registry['cli-update-badge'].textContent, '2');
-  assert.equal(busy.registry['cli-update-icon'].textContent, '🆕');
   assert.equal(busy.registry['cli-update-btn'].classList.contains('has-update'), true);
 });
 

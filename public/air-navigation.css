@@ -1,11 +1,52 @@
 /* Air navigation and task-first console. Keep these after the base skin. */
-#sidebar { gap: 5px; padding-top: 18px; background: rgba(255,255,255,.85); }
+#sidebar { gap: 5px; padding-top: 18px; background: #f7f8fa; border-right-color: #e4e7ec; }
 #sidebar > .space-card, #sidebar > #create, #sidebar > #onboarding-entry, #sidebar > .sidebar-resources { flex-shrink: 0; }
-#sidebar #create { width: 100%; margin: 6px 0; min-height: 42px; color: white; border: 0; background: linear-gradient(180deg,#2585f0,#1272df); box-shadow: 0 5px 14px #1678e82b; }
-#sidebar #task-sidebar { flex: 1 1 auto; min-height: 110px; overflow: hidden; }
+#sidebar #create { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 7px 0 9px; min-height: 40px; color: #fff; border: 1px solid #2468d3; border-radius: 10px; background: #3478e5; box-shadow: 0 1px 2px #152d5120, inset 0 1px 0 #ffffff26; font-size: 13px; font-weight: 600; }
+#sidebar #create:hover { background: #286bd5; }
+#sidebar #create:active { background: #215fc4; box-shadow: inset 0 1px 3px #173f7b30; }
+/* 顶栏沿用一行结构，以中性的底色和统一线条图标区分品牌、目录与工具。 */
+#sidebar .space-card { gap: 2px; min-height: 54px; padding: 7px; border-color: #e1e5eb; border-radius: 12px; background: #fff; box-shadow: 0 1px 3px #1c2b4010; }
+#sidebar .space-card .brand { border-radius: 9px; text-decoration: none; }
+#sidebar .space-card .brand-mark { width: 28px; height: 30px; border: 1px solid #26364d; border-radius: 8px; color: #fff; background: #26364d; box-shadow: inset 0 1px 0 #ffffff20; font-size: 14px; font-weight: 750; letter-spacing: -1px; }
+#sidebar .space-main { gap: 3px; min-height: 36px; padding: 2px 4px 2px 6px; border-radius: 7px; }
+#sidebar .space-main:hover, #sidebar .space-main.active { background: #f1f4f8; }
+#sidebar .space-copy strong { color: #253247; font-size: 13px; font-weight: 650; letter-spacing: -.2px; }
+#sidebar .space-copy small { margin-top: 1px; color: #8590a0; font-size: 10px; }
+#sidebar .space-chevron { display: flex; flex: 0 0 auto; color: #8b95a3; }
+.sidebar-icon { display: block; flex: 0 0 auto; width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+#sidebar .space-chevron .sidebar-icon { width: 12px; height: 12px; }
+#sidebar .space-card .notify-entry-btn, #sidebar .space-card .cli-update-btn { width: 26px; height: 30px; min-width: 26px; min-height: 30px; border-radius: 7px; color: #7a8697; }
+#sidebar .space-card .notify-entry-btn svg, #sidebar .space-card .cli-update-btn svg { width: 16px; height: 16px; }
+#sidebar .space-card .notify-entry-btn:hover, #sidebar .space-card .notify-entry-btn[aria-expanded="true"], #sidebar .space-card .cli-update-btn:hover, #sidebar .space-card .cli-update-btn[aria-expanded="true"] { border-color: transparent; color: #306dca; background: #edf2fa; }
+#sidebar .space-card .cli-update-btn.has-update { color: #306dca; }
+#sidebar .cli-update-badge { top: -3px; right: -3px; min-width: 15px; padding: 0 3px; font-size: 9px; line-height: 12px; }
+#sidebar > .nav-row { gap: 10px; min-height: 36px; padding: 0 10px; border-radius: 9px; color: #647084; font-size: 13px; }
+#sidebar > .nav-row:hover { border-color: transparent; color: #34435b; background: #eceff3; }
+#sidebar > .nav-row.active { border-color: #e3e7ed; color: #293a52; background: #fff; box-shadow: 0 1px 2px #1c2b4007; }
+#sidebar > .nav-row .sidebar-icon { color: #8a95a5; }
+#sidebar > .nav-row.active .sidebar-icon { color: #3478e5; }
+#sidebar #task-sidebar { flex: 1 1 auto; min-height: 110px; overflow: hidden; margin-top: 10px; padding-top: 12px; border-top: 1px solid #e4e7ec; }
 #tasks { min-height: 0; overflow-y: auto; }
-#recent-all { margin-left: auto; min-height: 28px; padding: 0 3px; border: 0; background: transparent; color: var(--accent); font-size: 12px; }
-.task-heading { gap: 7px; }
+#recent-all { margin-left: auto; min-height: 28px; padding: 0 3px; border: 0; background: transparent; color: #8792a2; font-size: 11px; }
+#recent-all:hover { color: var(--accent); }
+.task-heading { justify-content: flex-start; gap: 7px; margin: 0 9px 4px; }
+#sidebar .task-heading strong { color: #7d8898; font-size: 11px; font-weight: 550; }
+#sidebar #task-count { min-width: 18px; padding: 0 5px; border-radius: 5px; background: #e9ecf1; color: #8792a2; font-size: 10px; text-align: center; }
+#sidebar #tasks button { border-radius: 10px; color: #47556a; }
+#sidebar #tasks button:hover { background: #eceff4; }
+#sidebar #tasks button.selected { border-color: #dce6f8; color: #2467c9; background: #eaf1fc; box-shadow: none; }
+#sidebar #tasks strong { font-weight: 550; line-height: 1.5; }
+#sidebar .task-dir { color: #7c8899; background: #e9edf2; border-radius: 4px; }
+#sidebar #tasks button.selected .task-dir { color: #5f83ba; background: #dfeafb; }
+#sidebar #tasks button.unseen { box-shadow: inset 0 0 0 1px #cbdcf5; background: #f1f5fc; }
+#sidebar #tasks button.unseen-error { box-shadow: inset 0 0 0 1px #eacbc8; background: #fcf4f3; }
+#sidebar #tasks button.unseen.selected { border-color: #bfd3f1; background: #eaf1fc; }
+#sidebar #tasks button.unseen-error.selected { border-color: #dab0ac; background: #f9eae8; }
+#sidebar #tasks button.unseen::after { top: 8px; right: 7px; width: 6px; height: 6px; }
+#sidebar .sidebar-resources { border-top-color: #e4e7ec; color: #647084; font-size: 12px; }
+#sidebar .side-bottom { border-top-color: #e4e7ec; }
+#sidebar .side-lang { background: transparent; }
+#sidebar :is(button, a, summary):focus-visible { outline: 2px solid #3478e5; outline-offset: 2px; }
 .sidebar-resources { border-top: 1px solid var(--hairline); padding-top: 5px; }
 .sidebar-resources summary { display: flex; align-items: center; gap: 10px; padding: 8px 10px; cursor: pointer; list-style: none; }
 .sidebar-resources summary::after { content: '›'; margin-left: auto; }
