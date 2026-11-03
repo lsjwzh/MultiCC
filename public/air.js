@@ -1277,23 +1277,22 @@
       const button = node('button', null, [task.id === taskId ? 'selected' : '', elsewhere ? 'elsewhere' : '', unseenKind === 'error' ? 'unseen unseen-error' : unseenKind ? 'unseen' : ''].filter(Boolean).join(' '));
       button.dataset.task = task.id;
       applyRing(button, isRunningTask(task), task.id);
-      // 一行三件事实：状态徽标（图标 + 中文，来自注册表）、标题、然后是这条记录
-      // 的类型/阶段/资源去向。目录作为标签跟在同一行里 —— 「最近」这条带子本来就
-      // 是跨目录的（谁最近有动静谁在上面），所以每一行都自报家门，
-      // 而不是只给「不在当前目录」的那几行加标记：一份一半带标签一半不带的列表，
-      // 读的人得先知道哪一半是什么规则。
-      const meta = node('small', null, 'task-meta');
-      meta.append(statusBadge(task));
+      // 卡片只留一层头行：状态缩成一枚图标放在标题最前面（词收进 tooltip/aria，悬停
+      // 仍读得到），标题最多折两行，目录跟在标题后面。provider 不进侧栏卡片 —— 那一格
+      // 信息量低还占地方；阶段/资源只在徽标没说过、且确实有话要说时才落到下面那行小字。
+      const head = node('span', null, 'task-head');
+      head.append(statusBadge(task, { showLabel: false }));
+      const title = node('strong', task.title);
+      if (isPinned(task.id)) title.append(node('span', '📌', 'task-pin'));
       const worktreeBadge = window.MultiCCAirAdmin?.worktreeChangeBadge?.(task);
-      if (worktreeBadge) meta.append(worktreeBadge);
-      meta.append(node('em', directoryName(task.dirId), 'task-dir'));
-      // 手机上 pin 住的那几条就排在这份列表的最上面，标记说明它们为什么在那儿。
-      if (isPinned(task.id)) meta.append(node('span', '📌', 'task-pin'));
+      if (worktreeBadge) title.append(worktreeBadge);
+      title.append(node('em', directoryName(task.dirId), 'task-dir'));
+      head.append(title);
       const stage = task.recordType === 'planned' ? t('airSidebarPlanned', { stage: label(task.workflowStage || task.status) }) : '';
       // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。
       const badgeText = taskBadgeWord(task);
-      const extra = [task.providerName, stage, holdText(task.resource)].filter(part => part && !badgeText.includes(part)).join(' · ');
-      button.append(node('strong', task.title), meta);
+      const extra = [stage, holdText(task.resource)].filter(part => part && !badgeText.includes(part)).join(' · ');
+      button.append(head);
       if (extra) button.append(node('small', extra, 'task-note'));
       button.onclick = () => openSidebarTask(task);
       return button;

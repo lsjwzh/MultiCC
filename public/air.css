@@ -162,7 +162,7 @@ small, .caption { color: var(--muted); font-size: 11px; }
    图标是品牌行的一部分，不是新的一栏：它贴在「MultiCC Air」右边，平时只是一颗
    灰图标，有新版才挂数字角标。角标的形色沿用版本行那颗 .ops-badge —— 同一个侧栏
    里「有新东西」只该有一种表示法。 */
-.brand-row { display: flex; align-items: center; gap: 8px; margin: 0 4px 16px; }
+.brand-row { display: flex; align-items: center; gap: 8px; margin: 0 4px 10px; }
 /* 特异性 (0,2,0) 压过下面「Air 2026」那段 .brand{margin:0 4px 18px} 的 (0,1,0)，
    于是品牌行的留白只由 .brand-row 一处决定，老规则不用回头改。 */
 .brand-row .brand { flex: 1 1 auto; min-width: 0; margin: 0; }
@@ -341,15 +341,15 @@ small, .caption { color: var(--muted); font-size: 11px; }
      （#task-sidebar 本来就在滚动）。 */
   flex-shrink: 0;
 }
-.space-main { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 12px 11px 8px; border: 0; border-radius: 0; background: transparent; text-align: left; }
+.space-main { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 9px 11px 5px; border: 0; border-radius: 0; background: transparent; text-align: left; }
 .space-main:hover, .space-main.active { background: #eff6ff; }
 .space-icon { color: var(--accent); }
 .space-copy { min-width: 0; flex: 1; }
 .space-copy strong, .space-copy small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .space-copy strong { font-size: 13px; font-weight: 640; }
-.space-copy small { margin-top: 2px; font-size: 10px; }
+.space-copy small { margin-top: 1px; font-size: 10px; }
 .space-chevron { color: var(--muted); }
-.space-shortcuts { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 8px 6px; color: var(--muted); font-size: 10px; }
+.space-shortcuts { display: flex; align-items: center; gap: 7px; min-height: 26px; padding: 0 9px 5px; color: var(--muted); font-size: 10px; }
 .space-shortcuts kbd { margin-left: auto; font: inherit; }
 
 .nav-row { width: 100%; display: flex; align-items: center; gap: 9px; border-color: transparent; background: transparent; text-align: left; color: #4f657d; }
@@ -402,7 +402,7 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
 .task-heading .caption { margin: 0; text-transform: uppercase; letter-spacing: .8px; }
 .task-heading strong { display: block; font-size: 12px; font-weight: 610; }
 #task-count { color: var(--muted); font-size: 11px; }
-.sidebar-create { width: 100%; margin-bottom: 8px; color: #0d69d5; border-color: transparent; background: transparent; text-align: left; }
+.sidebar-create { width: 100%; margin-bottom: 6px; color: #0d69d5; border-color: transparent; background: transparent; text-align: left; }
 .sidebar-create:hover { background: #fff; }
 /* The list is the band that gives way: it takes whatever height is left over and
    scrolls inside itself. That is also where the sidebar's dead space went — the
@@ -412,7 +412,7 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
    `min-height` keeps a floor under it: below that the band scrolls again (the
    `overflow-y: auto` it has kept as a fallback), so a window too short for even
    a couple of rows still reaches everything. */
-#tasks { display: block; flex: 1 1 auto; min-height: 120px; margin: 9px 0 4px; overflow-y: auto; overscroll-behavior: contain; }
+#tasks { display: block; flex: 1 1 auto; min-height: 120px; margin: 6px 0 4px; overflow-y: auto; overscroll-behavior: contain; }
 /* 行高只由内容决定，没有任何一条路能压扁它 —— 两层，各自独立。
    第一层：清单不是 flex 列。全局那条 `nav{display:flex;flex-direction:column;gap:4px}`
    把 `#tasks` 也变成了 flex 列，而 `#tasks` 现在是有确定高度的滚动容器：列里的行默认
@@ -426,7 +426,7 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
    清单给得下的空间是靠滚来用的，不是靠把行压扁。 */
 #tasks > * { display: block; flex: 0 0 auto; }
 #tasks > * + * { margin-top: 4px; }
-#tasks button { padding: 10px; border-radius: 11px; }
+#tasks button { padding: 8px 9px; border-radius: 11px; }
 #tasks button:hover { background: rgba(255, 255, 255, .65); }
 #tasks button.selected { color: #0d63c4; border-color: #d7e7f8; background: #fff; box-shadow: 0 5px 14px #42688f0a; }
 /* 换位那两拍的四个状态（类由 air-task-motion.js 上，位移全部由它写在行内
@@ -437,10 +437,19 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
 #tasks button.is-reordering { z-index: 1; will-change: transform; }
 #tasks button.is-flying { z-index: 2; background: #fff; box-shadow: 0 16px 34px #42688f30; }
 #tasks button.is-collapsing { z-index: 2; background: #fff; box-shadow: 0 10px 22px #42688f26; }
-#tasks strong { display: block; font-size: 13px; font-weight: 610; line-height: 1.45; }
+/* 卡片头行：一枚状态图标 + 标题。图标不带词（tooltip/aria 仍带着词），标题最多
+   折两行就收 —— 露出更多卡比看全一个长标题值钱。目录标签跟在标题后面（同一行
+   流里），「它在哪」和「它叫什么」是一件事。 */
+.task-head { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
+.task-head > .mc-status { flex: 0 0 auto; margin-top: 2px; font-size: 12px; line-height: 1.2; }
+#tasks strong { flex: 1 1 auto; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 13px; font-weight: 610; line-height: 1.4; }
+#tasks strong .task-dir { margin-left: 5px; vertical-align: 1px; }
+#tasks strong .task-pin { margin-right: 3px; vertical-align: 1px; }
+#tasks strong .worktree-change-badge { width: 15px; height: 15px; margin-left: 4px; border-radius: 5px; font-size: 10px; vertical-align: 2px; }
 #tasks small { display: block; margin-top: 3px; line-height: 1.35; }
 /* 一行三件事实：徽标 / 标题 / 目录与阶段。目录标签跟徽标同一行，因为「它在哪」
-   和「它现在怎么样」是同一个问题的一半。 */
+   和「它现在怎么样」是同一个问题的一半。（目录首页那份列表用的结构，侧栏卡片
+   已经收成 .task-head 一行，见 air.js renderSidebarTasks。） */
 .task-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
 .task-meta .mc-status { font-size: 11px; }
 .worktree-change-badge {
@@ -1755,19 +1764,19 @@ body {
 main { background: transparent; }
 
 /* ── 侧栏 ────────────────────────────────────────────────────────────── */
-#sidebar { gap: 10px; padding: 26px 18px 20px; border-right: 1px solid var(--hairline); background: #fff; box-shadow: none; }
+#sidebar { gap: 8px; padding: 20px 18px 16px; border-right: 1px solid var(--hairline); background: #fff; box-shadow: none; }
 .brand { margin: 0 4px 18px; font-size: 18.5px; letter-spacing: -.4px; }
 .brand-mark { width: 30px; height: 30px; border-radius: 11px; box-shadow: 0 8px 20px rgba(20, 110, 220, .22); }
 .space-card { border: 1px solid var(--hairline); border-radius: 18px; background: #fff; box-shadow: var(--shadow-1); }
-.space-main { padding: 14px 13px 10px; }
+.space-main { padding: 10px 13px 7px; }
 .space-copy strong { font-size: 13.5px; }
-.space-shortcuts { min-height: 36px; padding: 0 10px 8px; }
-.nav-row { min-height: 42px; padding: 0 12px; border-radius: 14px; font-size: 13.5px; }
+.space-shortcuts { min-height: 27px; padding: 0 11px 6px; }
+.nav-row { min-height: 38px; padding: 0 12px; border-radius: 14px; font-size: 13.5px; }
 .nav-row.active { border-color: #d9e8f8; background: #f4f9ff; }
-#task-sidebar { margin-top: 6px; }
-.task-heading { margin: 0 6px 10px; }
+#task-sidebar { margin-top: 4px; }
+.task-heading { margin: 0 6px 8px; }
 .sidebar-create { min-height: 38px; border-radius: 13px; }
-#tasks button { padding: 12px; border-radius: 16px; }
+#tasks button { padding: 9px 10px; border-radius: 16px; }
 #tasks button.selected { border-color: #dbe9f9; background: #f7fbff; box-shadow: var(--shadow-1); }
 #tasks strong { font-size: 12.5px; }
 .task-note { font-size: 10.5px; }
@@ -2273,7 +2282,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   position: relative;
   box-shadow: inset 0 0 0 2px var(--accent, #0d63c4);
 }
-#tasks button.unseen .task-meta .mc-status {
+#tasks button.unseen .task-head .mc-status {
   color: var(--accent-strong, #0a4d9e);
   font-weight: 600;
 }
@@ -2292,7 +2301,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
 #tasks button.unseen-error {
   box-shadow: inset 0 0 0 2px var(--danger, #b64e43);
 }
-#tasks button.unseen-error .task-meta .mc-status {
+#tasks button.unseen-error .task-head .mc-status {
   color: var(--danger, #b64e43);
 }
 #tasks button.unseen-error::after {
