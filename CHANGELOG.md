@@ -2,6 +2,19 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.15.3 — Honest quota bars, sturdier error handling, and faster computer switching (2026-11-03)
+
+- Keep an API error out of a finished answer. When one or more "API Error: ..." envelopes are glued onto the end of a reply, including chains produced by repeated background wake-ups, the transcript now keeps only the real answer, and the resident Claude lane's synthetic API error message is dropped when the turn already has output. The retry notice also recognizes a status-only envelope as an upstream interruption.
+- Give every lane the same error treatment. CodeBuddy, Kimi, Qoder, and the ZCode bridge now report a terminal failure with its HTTP status, so a 429 or a quota wall is classified like the other lanes, and a 429 that only the CLI reports afterwards still parks the account so Auto stops choosing it. A background wake-up that fails now releases the held turn as a failure instead of hiding behind the held answer, while a later successful wake still wins.
+- Release the quota guard for one revalidated turn when its blocking reading is older than a configurable age (30 minutes by default), and kick a quota re-read so the cache supplies the verdict. An account that was upgraded or topped up no longer stays blocked until the window resets, and the guard settings now take a maximum reading age. Codex quota reads now refresh an expired token once and retry.
+- Mark inferred quota percentages. When a window's reset time passed after the last measurement, bars across Claude, Codex, OpenCode, Qoder, Kimi, Zhipu, and Ark show it as full with a leading tilde and a tooltip note, instead of recycling the dead window's number as if it were a fresh reading.
+- Keep the token-rate chip calm while the turn is alive. A fresh server heartbeat or a running background task (including rows in the live panel) reads as "task running", and the amber and red fuses are measured in minutes rather than seconds. The background activity line also holds a task through a short grace period when the server snapshot misses it, so the row no longer blinks out.
+- Show the route attribution while the answer is still streaming. When auto routing picks a lane, the "produced by lane - provider - model" line is attached to the streaming bubble as soon as the route event lands and is replaced in place by the final attribution at turn end, so a mid-turn failover never adds a second line.
+- Make switching computers faster in Air. Directory lists are cached and warmed in the background, the Rust proxy keeps pooled connections per computer with a retry that re-resolves on a connect failure, and a stale directory grid stays visible with a warning when that computer is unreachable. With several computers paired, the new-task composer gains a computer pill that chooses where the task is created, lists that computer's own directories and CLIs, and opens the task there afterwards.
+- Treat the old handwritten opencodego line id and the built-in opencode-go id as the same lane on web and mobile, rewriting stored model prefixes when a model list is refreshed so an old session no longer looks empty.
+- Stop a turn rule from announcing a task as goal achieved. A rule verdict now carries no sub-state and leaves the task phase alone; only a manual mark or the later model attribution sets the badge. The local-resource guidance now says to copy an image to the durable assist folder before linking it, and @anthropic-ai/claude-agent-sdk is updated to 0.3.317.
+- Update the mobile app to 2.41.2 (build 188).
+
 ## v2.15.2 — Live relay model lists, visible background activity, and a quieter debug prompt (2026-11-03)
 
 The v2.15.0 and v2.15.1 candidates stopped before a Release was created:

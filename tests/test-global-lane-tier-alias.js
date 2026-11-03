@@ -206,6 +206,6 @@ test('kimi: the adapter argv carries the resolved model, never the tier word', (
     attemptNo: 1,
   }).invocation;
 
-  assert.deepEqual(invocation.args, ['--output-format', 'stream-json', '--auto', '--model', 'kimi-k2', '-p']);
+  assert.deepEqual(invocation.args, ['--output-format', 'stream-json', '--model', 'kimi-k2', '-p']);
   assert.ok(!invocation.args.includes('opus'));
 });

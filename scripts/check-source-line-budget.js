@@ -575,9 +575,14 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +4 双语键（airQuickMachine/airQuickMachineSelf/Title/RemoteTitle）：新任务
     //   输入框的电脑胶囊（配置多电脑时才显示）。重跑生成器实测 10294/667824，
     //   按真实高水位抬一格。
-    maxLines: 10294,
+    // main 随后未登记涨到 10300：+3 双语键（tokenRateBg/tokenRateAlive——速率角标在
+    //   后台任务或服务端心跳仍在时显示「执行中」；quotaEstimatedNote——额度条「~」推测值
+    //   的悬浮说明），中英各 3 行 = +6 行；tokenRateWaiting/Paused 只改写文案不增行。
+    //   v2.15.3 发版时按提交的真实文件 10300/668483 抬一格（生成器源仍是旧文案，重跑会
+    //   丢键，故不重新生成）。
+    maxLines: 10300,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 667824,
+    maxBytes: 668483,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
