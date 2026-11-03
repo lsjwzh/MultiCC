@@ -101,12 +101,10 @@
   // ── Badge ──────────────────────────────────────────────────────────────
   function paintBadge() {
     const button = el('cli-update-btn');
-    const icon = el('cli-update-icon');
     const badge = el('cli-update-badge');
     if (!button) return;
     const count = Number((lastState && lastState.updateCount) || 0);
     button.classList.toggle('has-update', count > 0);
-    if (icon) icon.textContent = count > 0 ? '🆕' : '⇧';
     if (!badge) return;
     // 角标只在真有新版时出现 —— 平时这颗图标就该是「一切都好」的样子。
     if (count > 0) {

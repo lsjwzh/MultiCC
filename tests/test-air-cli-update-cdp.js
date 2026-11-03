@@ -92,6 +92,7 @@ test('the CLI update badge sits on the brand row and its popover lands on screen
     // ── The badge ──────────────────────────────────────────────────────────
     assert.equal(await page.evaluate('document.getElementById("cli-update-badge").textContent'), '2');
     assert.equal(await page.evaluate('document.getElementById("cli-update-btn").classList.contains("has-update")'), true);
+    assert.equal(await page.evaluate('document.querySelector("#cli-update-icon path")?.tagName'), 'path');
 
     // 顶卡是一行：M 标 + 目录 + 两颗图标。它在这张卡的右端、卡的高度之内，
     // 左侧留在侧栏宽度内 —— 不是新的一栏。
@@ -139,6 +140,7 @@ test('the CLI update badge sits on the brand row and its popover lands on screen
     assert.ok(await page.waitFor('document.getElementById("cli-update-badge").hidden === true'),
       '升级完成后角标必须消失（靠 ?refresh=1 重探，而不是回放旧缓存）');
     assert.equal(upgrades, 1);
+    assert.equal(await page.evaluate('document.querySelector("#cli-update-icon path")?.tagName'), 'path');
     assert.match(await page.evaluate('document.getElementById("cli-update-log").textContent'), /changed 1 package/);
     assert.deepEqual(await page.evaluate('window.__errors'), []);
   });
