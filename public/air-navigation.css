@@ -1,9 +1,10 @@
 /* Air navigation and task-first console. Keep these after the base skin. */
 #sidebar { gap: 5px; padding-top: 18px; background: #f7f8fa; border-right-color: #e4e7ec; }
 #sidebar > .space-card, #sidebar > #create, #sidebar > #onboarding-entry, #sidebar > .sidebar-resources { flex-shrink: 0; }
-#sidebar #create { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 7px 0 9px; min-height: 40px; color: #fff; border: 1px solid #2468d3; border-radius: 10px; background: #3478e5; box-shadow: 0 1px 2px #152d5120, inset 0 1px 0 #ffffff26; font-size: 13px; font-weight: 600; }
-#sidebar #create:hover { background: #286bd5; }
-#sidebar #create:active { background: #215fc4; box-shadow: inset 0 1px 3px #173f7b30; }
+/* 新建入口用白底胶囊保持可发现性，避免整条高饱和色抢过目录与任务。 */
+#sidebar #create { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 7px 0 9px; min-height: 40px; color: #3d495a; border: 1px solid #e6eaf0; border-radius: 999px; background: #fff; box-shadow: 0 1px 3px #1c2b400c; font-size: 13px; font-weight: 500; }
+#sidebar #create:hover { border-color: #d6dde7; background: #fff; box-shadow: 0 2px 5px #1c2b4012; }
+#sidebar #create:active { border-color: #d6dde7; background: #edf0f4; box-shadow: inset 0 1px 2px #1c2b4008; }
 /* 顶栏沿用一行结构，以中性的底色和统一线条图标区分品牌、目录与工具。 */
 #sidebar .space-card { gap: 2px; min-height: 54px; padding: 7px; border-color: #e1e5eb; border-radius: 12px; background: #fff; box-shadow: 0 1px 3px #1c2b4010; }
 #sidebar .space-card .brand { border-radius: 9px; text-decoration: none; }
