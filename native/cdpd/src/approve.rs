@@ -86,7 +86,9 @@ pub fn spawn(url: String) -> Option<tokio::task::JoinHandle<()>> {
             let outcome = tokio::task::spawn_blocking(try_click_allow).await;
             match outcome {
                 Ok(ClickOutcome::Clicked) => {
-                    crate::log!("[{url}] auto-approved the remote-debugging dialog via accessibility");
+                    crate::log!(
+                        "[{url}] auto-approved the remote-debugging dialog via accessibility"
+                    );
                     return;
                 }
                 Ok(ClickOutcome::NoDialog) => {}
