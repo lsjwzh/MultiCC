@@ -143,8 +143,12 @@ const MIGRATION_DEBT = Object.freeze({
     // 2026-11-03 额度死锁自愈：余量刷新端口接线改交 src/quota/quota-self-heal.js
     // （一行换一行，新增 stale 放行重读 + codex 401 自愈），实测 3024/159748，
     // 按棘轮下调字节。
-    ceiling: 3024,
-    byteCeiling: 159748,
+    // 2026-11-03 task_state 载荷三处构造合一（src/chat/task-state-payload.js，
+    // 修重开页面丢 API 异常横幅）：内联 payload 换成共享 builder，随行的
+    // isGoalState/auxVerdictStaleness 导入失去用处一并摘；rebase 到额度自愈
+    // 之后实测 3021/159599，按棘轮下调。
+    ceiling: 3021,
+    byteCeiling: 159599,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),

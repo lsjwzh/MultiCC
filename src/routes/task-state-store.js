@@ -1,6 +1,7 @@
-const { taskShortCode } = require('../classify/task-short-code');
-const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
-const { isGoalState } = require('../classify/vocab');
+// The wire payload is shared with the connect seed and server.js's legacy
+// broadcast — see src/chat/task-state-payload.js; the three producers must
+// never drift (a reopened page once lost the last API error to that drift).
+const { taskStatePayload } = require('../chat/task-state-payload');
 
 function createTaskStateStore(deps) {
   const { persistedSessions, saveBestEffort, chatBroadcast, workspaceBroadcast } = deps;
@@ -36,27 +37,7 @@ function createTaskStateStore(deps) {
     const next = { ...cur, ...patch };
     persisted.taskState = next;
     if (opts.save !== false) saveBestEffort('runtime.task-state');
-    const classifyPayload = {
-      type: 'task_state',
-      goal: next.goal || '',
-      // Stable display handle for the outward task (`#CODE · goal`). Derived
-      // from the taskId so it survives title edits within the same task and
-      // renews when Aux mints a new taskId. Empty until Aux attributes a task.
-      taskShortCode: taskShortCode(next.taskId),
-      phase: next.phase || 'idle',
-      classifyState: next.classifyState || null,
-      // 「执行成功」这一格的子状态（达成目标 / 需要交互）。只影响展示文案，随
-      // task_state 一起广播，卡片不必自己从 goal/phase 再推一遍。
-      goalState: isGoalState(next.goalState) ? next.goalState : null,
-      apiError: next.apiError || null,
-      // Lets a surface say 「已取消」 instead of 「API 异常」 without inventing a
-      // second terminal value: the state is still E, only the reason differs.
-      cancelledAt: next.cancelledAt || null,
-      cancelReason: next.cancelledAt ? (next.cancelReason || null) : null,
-      // Same freshness fact server.js's setTaskState sends, so this extraction
-      // cannot drop it when it takes over the live path.
-      ...auxVerdictStaleness(),
-    };
+    const classifyPayload = taskStatePayload(next);
     try { chatBroadcast(sessionId, classifyPayload); } catch (_) {}
     if (persisted.dirId) {
       try { workspaceBroadcast(persisted.dirId, { ...classifyPayload, sessionId }); } catch (_) {}

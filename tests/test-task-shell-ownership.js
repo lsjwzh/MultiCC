@@ -40,8 +40,12 @@ test('queued successors cannot cancel an ended turn; live turns and pending ques
   assert.deepEqual(projected.queue.queued.map(item => [item.entryId, item.position, item.text]), [['fifo-1', 1, '排队消息']]);
   assert.equal(projected.queue.active.deliveryId, undefined, 'private scheduler delivery identity stays server-side');
   // 2a20600f added goalState to the task-state seed (validated, null when unset);
-  // this record carries none, so the projection pins the explicit null.
+  // this record carries none, so the projection pins the explicit null. The
+  // apiError/cancelledAt pair mirrors the WS task_state contract
+  // (src/chat/task-state-payload.js) so a reopened read-only page can repaint
+  // the API-error bar and say 已取消 for user-stopped turns.
   assert.deepEqual(projected.classify, { state: 'W', goal: '恢复完整聊天能力', phase: 'verifying', updatedAt: 123, goalState: null,
+    apiError: null, cancelledAt: null,
     history: [{ at: 120, taskId: 'task-a', goal: '恢复完整聊天能力', phase: 'implementing', state: 'C', error: false, evidence: 'continue' }] });
   assert.deepEqual(projected.events, [{ ts: 125, type: 'tool_result', detail: '{"name":"Read","ok":true}' }]);
   await assert.rejects(host.sendClientInput(record.id, {

@@ -1256,6 +1256,61 @@ test('api_error_policy renders into the api-error bar and clears on the next str
     'the detailed policy message must not be replaced by a generic action');
 });
 
+test('task_state replays the persisted apiError envelope so a reopened page re-shows the bar', () => {
+  // api_error_policy events are live-only; the connect seed and every live
+  // task_state broadcast carry the same persisted envelope, and this branch is
+  // what keeps the bar alive across a page reopen.
+  const rendered = [];
+  let cleared = 0;
+  const offered = [];
+  const fixture = controllerFixture({ offerDoctor: el => { offered.push(el); } });
+  const generation = fixture.controller.beginGeneration();
+  fixture.liveUi.renderApiError = envelope => { rendered.push(envelope); };
+  fixture.liveUi.clearApiError = () => { cleared += 1; };
+  const envelope = { provider: 'claude', category: 'network', httpStatus: 502, action: 'fail', rootCause: 'ENOTFOUND x' };
+  fixture.controller.handleEvent({ type: 'task_state', goal: 'g', phase: 'idle', classifyState: 'E', apiError: envelope }, generation);
+  assert.deepEqual(rendered, [envelope]);
+  assert.equal(cleared, 0);
+  assert.equal(offered.length, 1, 'a terminal failure keeps the doctor offer, as on the live path');
+  // Frames without the field (older producers) leave the bar alone.
+  fixture.controller.handleEvent({ type: 'task_state', goal: 'g', classifyState: 'P' }, generation);
+  assert.equal(rendered.length, 1);
+  assert.equal(cleared, 0);
+  // A cleared envelope clears the bar (e.g. the next turn superseded it).
+  fixture.controller.handleEvent({ type: 'task_state', goal: 'g', classifyState: 'P', apiError: null }, generation);
+  assert.equal(cleared, 1);
+  assert.equal(rendered.length, 1);
+  // A user-stopped turn is not an upstream failure: no bar, and any stale one hides.
+  fixture.controller.handleEvent({ type: 'task_state', goal: 'g', classifyState: 'E', apiError: envelope, cancelledAt: 1 }, generation);
+  assert.equal(rendered.length, 1);
+  assert.equal(cleared, 2);
+  assert.equal(offered.length, 1, 'a cancelled turn never re-offers the doctor');
+});
+
+test('a cancelled E verdict presents 已取消 on the classify bar instead of API 异常', () => {
+  const { document, ids } = fakeDocument();
+  const bar = new FakeElement('div'); ids.set('aux-classify-bar', bar);
+  ids.set('ac-goal', new FakeElement('span'));
+  ids.set('ac-phase', new FakeElement('span'));
+  const stateEl = new FakeElement('span'); ids.set('ac-state', stateEl);
+  const liveUi = liveUiApi.createLiveUi({
+    document,
+    messagesEl: new FakeElement('div'),
+    translate: key => key,
+  });
+  liveUi.renderAuxClassify('实现登录', 'implementing', 'E');
+  assert.equal(stateEl.dataset.status, 'error');
+  liveUi.renderAuxClassify('实现登录', 'implementing', 'E', '', { cancelledAt: 123 });
+  assert.equal(stateEl.dataset.status, 'cancelled');
+  // A freshness-only repaint keeps both the cancellation and the stale marker.
+  liveUi.applyAuxVerdictStaleness({ auxUnhealthy: true, auxUnhealthySince: 1 });
+  assert.equal(stateEl.dataset.status, 'cancelled');
+  assert.equal(bar.classList.contains('aux-stale'), true,
+    'the staleness event must survive the repaint it triggers');
+  liveUi.renderAuxClassify('实现登录', 'implementing', 'E', '', { cancelledAt: null });
+  assert.equal(stateEl.dataset.status, 'error');
+});
+
 test('Claude stream reuses one bubble and binds tool input/result without HTML interpretation', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();

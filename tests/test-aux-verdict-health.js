@@ -85,9 +85,25 @@ test('the connect seed carries the judgement and its freshness, or says nothing'
     assert.deepEqual(rest, {
       type: 'task_state', goal: '排查电量消耗增加原因',
       phase: 'implementation', classifyState: 'C', goalState: null,
+      apiError: null, cancelledAt: null, cancelReason: null,
       auxUnhealthy: true, auxUnhealthySince: 1_700_000_000_000,
     });
   });
+  // The persisted upstream-error envelope rides the seed: api_error_policy
+  // events are live-only, so this is a reopened page's only way to re-render
+  // the API-error bar. It is also a judgement on its own — an unattributed
+  // session whose last turn failed must still seed, or the error is lost.
+  {
+    const apiError = { provider: 'claude', category: 'network', httpStatus: 502, action: 'fail' };
+    const seeded = taskStateSeed({ phase: 'idle', classifyState: 'E', apiError });
+    assert.equal(seeded?.apiError, apiError);
+    assert.equal(taskStateSeed({ goal: 'g', apiError })?.apiError, apiError);
+    // 用户主动停止的轮次：状态仍是 E，但 cancelledAt 让界面说「已取消」。
+    const cancelled = taskStateSeed({ goal: 'g', classifyState: 'E', cancelledAt: 123, cancelReason: 'user' });
+    assert.deepEqual([cancelled?.cancelledAt, cancelled?.cancelReason], [123, 'user']);
+    assert.equal(taskStateSeed({ goal: 'g', cancelReason: 'user' })?.cancelReason, null,
+      'a reason without the cancellation itself must not leak');
+  }
   // ✅ 的子状态随种子帧下发，聊天栏才能和任务卡说同一个词；乱值不透传。
   assert.equal(taskStateSeed({ goal: 'g', classifyState: 'D', goalState: 'interact' }).goalState, 'interact');
   assert.equal(taskStateSeed({ goal: 'g', classifyState: 'D', goalState: 'bogus' }).goalState, null);

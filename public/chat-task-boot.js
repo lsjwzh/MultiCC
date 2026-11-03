@@ -139,7 +139,14 @@ async function bootChatEntry() {
       const queue = snapshot.execution?.queue || {};
       window.MultiCCChatSessionQueue?.render(queue.queued || [], queue, document);
       const classify = snapshot.execution?.classify;
-      if (classify?.state) renderAuxClassify(classify.goal, classify.phase, classify.state, '', { goalState: classify.goalState || null });
+      if (classify?.state) renderAuxClassify(classify.goal, classify.phase, classify.state, '', {
+        goalState: classify.goalState || null, cancelledAt: classify.cancelledAt || null,
+      });
+      // 与 WS task_state 同一份落盘信封：只读页重开同样重画上次的 API 异常
+      // 横幅；用户主动停止（cancelledAt）的轮次不算上游故障，不画。
+      if (classify?.apiError && !classify?.cancelledAt && typeof renderApiError === 'function') {
+        renderApiError(classify.apiError);
+      }
       window.MultiCCTaskArtifacts?.setScope({ taskId: _taskId });
       statusEl.textContent = '只读历史'; statusEl.className = '';
     } catch (error) {

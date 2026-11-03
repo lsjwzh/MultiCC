@@ -901,6 +901,8 @@ function _classifyDisp(classifyState) { return chatLiveUi.classifyDisplay(classi
 function renderAuxClassify(goal, phase, classifyState, code, freshness) {
   return chatLiveUi.renderAuxClassify(goal, phase, classifyState, code, freshness);
 }
+// Boot 路径（只读页）与 WS controller 共用同一个横幅渲染器。
+function renderApiError(envelope) { return chatLiveUi.renderApiError(envelope); }
 
 // Manual turn verdict from the classify bar. This changes only the turn outcome
 // to D/succeeded; it never marks the TaskBoard lifecycle complete.
