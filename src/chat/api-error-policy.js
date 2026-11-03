@@ -281,19 +281,83 @@ function apiErrorSignaturesQuoted() {
 // Some CLIs append the error envelope to the END of an otherwise complete
 // assistant turn ("…正文：API Error: Request rejected (429)…"). The whole-message
 // predicate above cannot see that shape, so the error text used to land in the
-// transcript verbatim. This splitter recognizes exactly one trailing envelope:
-// it must sit at the very end, on its own or after a sentence/line boundary,
-// and be short. Anything ambiguous stays untouched.
+// transcript verbatim. This single-envelope expression must sit at the very
+// end, on its own or after a sentence/line boundary, and be short. Anything
+// ambiguous stays untouched.
 const TRAILING_ERROR_ENVELOPE_RE = /(?:^|[\n。：:；;])\s*(failed to authenticate\b[^\n]{0,80}?api\s*error\s*:|api\s*error\s*:)[^\n。！？]{0,400}\s*$/i;
+
+// Background-task notifications can wake an already-finished turn several
+// times, and each follow-up request that is rate limited appends ANOTHER
+// "API Error: …" envelope to the same assistant text. The CLI glues them
+// straight onto the prior text with the sentence punctuation that ended it
+// ("…later.API Error: …"), so a chain longer than the 400-char allowance — or
+// any envelope preceded by an ASCII '.' — is invisible to the expression
+// above. Peel one bounded envelope at a time from the end instead. An inner
+// envelope may follow glue punctuation (.!?)), but the chain as a whole must
+// still begin at the existing boundary set (or the start of the text), so
+// prose ending in "… later." is not falsely stripped.
+const TRAILING_ENVELOPE_GLUE_RE = /[.!?)]/;
+const TRAILING_ENVELOPE_REAL_BOUNDARY_RE = /[\n。：:；;]/;
+const TRAILING_ENVELOPE_UNIT_RE = /(?:failed to authenticate\b[^\n]{0,80}?api\s*error\s*:|api\s*error\s*:)[^\n。！？]{0,400}\s*$/i;
+// One unit is at most 400 content chars + the optional auth prefix + token;
+// the peel only ever looks at this tail, so long assistant text stays cheap.
+const TRAILING_ENVELOPE_TAIL_WINDOW = 600;
+const MAX_TRAILING_ENVELOPE_CHAIN = 8;
+
+// Returns the absolute start index of the last envelope that ends exactly at
+// `end`, or null. The regex is anchored at the end and bounded to the tail so
+// the leftmost acceptable start never scans the whole message.
+function findTrailingEnvelopeUnit(text, end) {
+  const floor = Math.max(0, end - TRAILING_ENVELOPE_TAIL_WINDOW);
+  const matched = TRAILING_ENVELOPE_UNIT_RE.exec(text.slice(floor, end));
+  if (!matched) return null;
+  return floor + matched.index;
+}
+
+// Peels a chain of back-to-back trailing envelopes and returns
+// { body, envelope, envelopeCount }. `body` is the real answer with the whole
+// chain removed (it keeps the sentence punctuation that introduced the chain,
+// e.g. the trailing "。"), and `envelope` is the concatenated chain so that
+// envelopeHttpStatus still finds its first status. Empty `body` means the
+// entire message was envelopes (the >600-char whole-message form).
+function peelTrailingEnvelopeChain(text) {
+  const end = text.length;
+  let cursor = end;
+  for (let peeled = 0; peeled < MAX_TRAILING_ENVELOPE_CHAIN; peeled += 1) {
+    const unitStart = findTrailingEnvelopeUnit(text, cursor);
+    if (unitStart == null || unitStart >= cursor) return null;
+    let before = unitStart - 1;
+    while (before >= 0 && /\s/.test(text[before])) before -= 1;
+    if (before < 0) {
+      // Every byte is an envelope — no real answer body escaped.
+      return { body: '', envelope: text.trim(), envelopeCount: peeled + 1 };
+    }
+    const boundaryChar = text[before];
+    if (TRAILING_ENVELOPE_REAL_BOUNDARY_RE.test(boundaryChar)) {
+      return {
+        body: text.slice(0, unitStart).trim(),
+        envelope: text.slice(unitStart, end).trim(),
+        envelopeCount: peeled + 1,
+      };
+    }
+    if (!TRAILING_ENVELOPE_GLUE_RE.test(boundaryChar)) return null; // prose — ambiguous
+    cursor = before + 1; // the glue punctuation closes the previous envelope
+  }
+  return null; // chain longer than the cap — leave the text untouched
+}
 
 function splitTrailingErrorEnvelope(value) {
   const text = String(value || '').trim();
   if (!text || isErrorOnlyText(text)) return null;
   const matched = TRAILING_ERROR_ENVELOPE_RE.exec(text);
-  if (!matched) return null;
-  const body = text.slice(0, matched.index).trim();
-  if (!body) return null; // whole-message case — handled by isErrorOnlyText callers
-  return Object.freeze({ body, envelope: matched[0].trim() });
+  if (matched) {
+    const body = text.slice(0, matched.index).trim();
+    if (!body) return null; // whole-message case — handled by isErrorOnlyText callers
+    return Object.freeze({ body, envelope: matched[0].trim() });
+  }
+  const chain = peelTrailingEnvelopeChain(text);
+  if (!chain || !chain.body) return null; // whole-message chain — see detectErrorEnvelope
+  return Object.freeze({ body: chain.body, envelope: chain.envelope });
 }
 
 // Unified turn-boundary detector: recognizes BOTH the whole-message envelope
@@ -368,7 +432,20 @@ function detectErrorEnvelope(provider, text) {
     });
   }
   const split = splitTrailingErrorEnvelope(trimmed);
-  if (!split) return null;
+  if (!split) {
+    // A whole message that is nothing but a >600-char chain of envelopes still
+    // fails the whole-message predicate above; recognize it as error-only so
+    // the accumulated 429 text is not persisted as real output.
+    const chain = peelTrailingEnvelopeChain(trimmed);
+    if (!chain || chain.body) return null;
+    return Object.freeze({
+      source: envelopeSourceFor(provider),
+      provider: String(provider || 'claude').toLowerCase(),
+      message: trimmed,
+      httpStatus: envelopeHttpStatus(trimmed),
+      body: null,
+    });
+  }
   return Object.freeze({
     source: envelopeSourceFor(provider),
     provider: String(provider || 'claude').toLowerCase(),

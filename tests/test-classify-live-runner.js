@@ -8,7 +8,7 @@ const { classifyDisplay } = require('../src/classify/vocab');
 
 function fixture({
   cli = 'opencode', goal = '已识别任务', isStreaming = true, type = 'worker',
-  history = null, auxText = null, taskShell = false, toolCalls = [], separationResult = null,
+  history = null, auxText = null, auxError = null, taskShell = false, toolCalls = [], separationResult = null,
   board = null, messageSearch = null,
 } = {}) {
   const record = {
@@ -40,7 +40,7 @@ function fixture({
   const observed = {
     enqueued: 0, enqueuedTasks: [], transitions: 0,
     transitionResults: [], transitionOptions: [], broadcasts: [], summaries: [],
-    statuses: [],
+    statuses: [], pushes: [],
     boardReassignments: [], boardGroupLinks: [], shellSettlements: [], separations: [], annotations: [],
   };
   const auxQueue = {
@@ -51,6 +51,7 @@ function fixture({
     enqueue(task) {
       observed.enqueued += 1;
       observed.enqueuedTasks.push(task);
+      if (auxError) return Promise.reject(new Error(auxError));
       return Promise.resolve({ text: auxText || '已识别任务\n实现中\nW' });
     },
   };
@@ -114,7 +115,7 @@ function fixture({
     chatBroadcast: (_sessionId, event) => observed.broadcasts.push(event),
     workspaceBroadcast() {},
     terminalBroadcast() {},
-    triggerPush() {},
+    triggerPush: (...args) => { observed.pushes.push(args); },
     evaluateTurnApiError() {},
     turnHasSideEffects: () => false,
     retryNotice: () => '',
@@ -456,12 +457,125 @@ test('delayed attribution with a superseded anchor cannot overwrite the newer ta
   assert.equal(h.chatState.currentTask.goal, '更新后的任务');
 });
 
+// ── 规则判定提交 D 时不得宣布「达成目标」 ────────────────────────────────────
+//
+// D 只描述「这一轮正常收尾」，不是「任务做完了」。轮次规则没有任何目标证据，所以
+// 它提交的 D 必须保持无子状态（首屏/推送都是「执行成功」），phase 也不能被它强制
+// 成 done（vocab 的 phase 映射正是拿 done 当「达成目标」的兜底）。子状态只由随后
+// 的 Aux 归因答案或用户手动「标记达成目标」写入。线上事故：Aux 因 429/超忙没有
+// 回来，规则判定的「达成目标 · 已完成」就永久留在了卡片上。
+
+test('a rule-committed D keeps no goal sub-state and the task phase', () => {
+  // No currentUserText/currentAssistantText: runClassifyNow returns early, so this
+  // is exactly the "rule verdict committed and Aux never answered" shape.
+  const h = fixture({ goal: '把登录页改成暗色', isStreaming: false });
+  h.chatState.claudeProc = null;
+  h.chatState.currentTask.phase = 'implementing';
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(h.observed.enqueued, 0, 'no Aux answer in this scenario');
+
+  assert.equal(h.record.taskState.classifyState, 'D');
+  assert.equal(h.record.taskState.goalState, null, '规则只证明这一轮收尾，不能宣布达成目标');
+  assert.equal(h.record.taskState.phase, 'implementing', '规则判定不得把 phase 推成 done');
+  assert.equal(h.chatState.currentTask.phase, 'implementing');
+
+  const row = h.record.taskState.classifyHistory.at(-1);
+  assert.equal(row.state, 'D');
+  assert.equal(row.goalState, null, '历史行回放也不能带「达成目标」');
+  assert.equal(row.phase, 'implementing');
+
+  const notify = h.observed.broadcasts.filter(event => event.type === 'notify').pop();
+  assert.equal(notify.goalState, null);
+  assert.match(notify.message, /^执行成功：把登录页改成暗色$/);
+  const push = h.observed.pushes.at(-1);
+  assert.equal(push[3].goalState, null, '锁屏推送同样只说「执行成功」');
+  assert.doesNotMatch(push[2], /达成目标|需要交互/);
+});
+
+test('the model attribution answer still refines the rule D into 达成目标', async () => {
+  const h = fixture({
+    goal: '把登录页改成暗色', isStreaming: false,
+    auxText: JSON.stringify({
+      taskName: '把登录页改成暗色', phase: 'done', goalState: 'achieved',
+      relation: 'same', taskId: 'task-1',
+    }),
+  });
+  h.chatState.claudeProc = null;
+  h.chatState.currentUserText = '把登录页改成暗色';
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(h.record.taskState.goalState, null, '规则提交时还没有答案');
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(h.record.taskState.classifyState, 'D', '精修只动子状态/阶段，不动字母');
+  assert.equal(h.record.taskState.goalState, 'achieved');
+  assert.equal(h.record.taskState.phase, 'done');
+  assert.equal(h.record.taskState.classifyHistory.at(-1).goalState, 'achieved');
+});
+
+test('an interact answer from the model lands on the rule D unchanged', async () => {
+  const h = fixture({
+    goal: '把登录页改成暗色', isStreaming: false,
+    auxText: JSON.stringify({
+      taskName: '把登录页改成暗色', phase: 'verifying', goalState: 'interact',
+      relation: 'same', taskId: 'task-1',
+    }),
+  });
+  h.chatState.claudeProc = null;
+  h.chatState.currentUserText = '把登录页改成暗色';
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(h.record.taskState.goalState, 'interact');
+  assert.equal(h.record.taskState.phase, 'verifying');
+  assert.equal(h.record.taskState.classifyHistory.at(-1).goalState, 'interact');
+});
+
+test('a failed Aux answer leaves the rule D with no fabricated sub-state', async () => {
+  const h = fixture({ goal: '把登录页改成暗色', isStreaming: false, auxError: 'Service is too busy' });
+  h.chatState.claudeProc = null;
+  h.chatState.currentUserText = '把登录页改成暗色';
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(h.observed.enqueued, 1, '归因仍会尝试一次');
+  assert.equal(h.record.taskState.classifyState, 'D');
+  assert.equal(h.record.taskState.goalState, null, 'Aux 失败时不得留下任何子状态');
+  assert.equal(h.record.taskState.phase, 'implementing');
+});
+
+test('a manual 达成目标 mark inside the current task survives the rule commit', () => {
+  const h = fixture({ goal: '把登录页改成暗色', isStreaming: false });
+  h.chatState.claudeProc = null;
+  // 用户已把同一任务里上一轮手动标成「达成目标」。
+  h.record.taskState.goalState = 'achieved';
+  h.record.taskState.goalStateManualAt = Date.now();
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(h.record.taskState.goalState, 'achieved', '手动标记是规则层唯一的真实证据，必须保住');
+
+  // 旧任务留下的手动标记不算当前任务的证据。
+  const stale = fixture({ goal: '把登录页改成暗色', isStreaming: false });
+  stale.chatState.claudeProc = null;
+  stale.record.taskState.goalState = 'achieved';
+  stale.record.taskState.goalStateManualAt = stale.record.taskState.startedAt - 1;
+  stale.machine.classifyTurnEnd(stale.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(stale.record.taskState.goalState, null, '任务之外的手动标记不得泄漏到这一轮');
+});
+
+test('gateway turns keep their own D sub-state (their transaction is the evidence)', () => {
+  const h = fixture({ goal: '把登录页改成暗色', isStreaming: false, type: 'gateway' });
+  h.chatState.claudeProc = null;
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(h.record.taskState.classifyState, 'D');
+  assert.equal(h.record.taskState.phase, 'done');
+  assert.equal(h.record.taskState.goalState, 'achieved', 'gateway_turn_succeeded 保留原 phase 映射');
+});
+
 // ── D 判定落地后，归因答案把 goalState 精修回去 ──────────────────────────────
 //
-// 轮次规则的 D 判定先提交（此刻 phase 被强制成 done，推送/首屏只能用映射兜底——
-// 通常「达成目标」），归因 aux 的答案后到：applyTaskAttributionResult 在判定仍是 D
-// 时用模型直出的 goalState 精修 taskState 与对应 D 历史行。三件事要钉住：模型值
-// 优先、模型没给但带来新鲜 phase 时按映射重算（修掉强制 done 的污染）、非 D 不采信。
+// 轮次规则的 D 判定先提交，此刻它不带任何子状态（首屏/推送只说「执行成功」）；
+// 归因 aux 的答案后到：applyTaskAttributionResult 在判定仍是 D 时用模型直出的
+// goalState 精修 taskState 与对应 D 历史行。三件事要钉住：模型值优先、模型没给
+// 但带来新鲜 phase 时按映射重算、非 D 不采信。
 
 function dRefineFixture({ classifyState, historyGoalState, taskGoalState }) {
   const h = fixture({ goal: '把登录页改成暗色' });
@@ -501,8 +615,8 @@ test('a still-D verdict is refined by the model goalState when attribution lands
 });
 
 test('model goalState missing falls back to the fresh phase mapping, un-polluting the forced done', () => {
-  // D 提交时 phase 被强制 done → 首屏「达成目标」。归因答案没有 goalState，但带来
-  // 了自己的 phase=verifying → 按映射重算成 interact，污染被纠正。
+  // 盘上仍是「旧规则提交留下的 achieved + phase=done」这种被污染的状态；归因答案
+  // 没有 goalState，但带来了自己的 phase=verifying → 按映射重算成 interact，污染被纠正。
   const h = dRefineFixture({ classifyState: 'D', historyGoalState: 'achieved', taskGoalState: 'achieved' });
   h.machine.applyTaskAttributionResult(h.chatState, 's1', {
     taskName: '把登录页改成暗色', phase: 'verifying', goalState: null,
