@@ -1914,6 +1914,15 @@
       ]
     },
     {
+      "path": "tests/test-chat-bg-activity.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-chat-composer-band-cdp.js",
       "tier": "flow",
       "lane": "cdp",
