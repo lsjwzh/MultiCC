@@ -20,44 +20,70 @@ const TRY_INTERVAL: Duration = Duration::from_millis(1200);
 
 /// AppleScript：在目标浏览器进程里找「远程调试」授权框并点允许按钮。
 /// 输出一行结果供日志区分：clicked / no-dialog；失败走 stderr。
-/// 文案按「按钮名字段」匹配，中英 Chrome 各自一份候选。
+///
+/// 实测结构（Chrome 156 / macOS）：授权框是窗口的 AXSheet，标题是元素名字
+/// （AXSheet 或内部 AXHeading，如「要允许远程调试吗？」），**按钮埋在 6 层
+/// group 里**——所以必须递归找，不能只看 sheet 的直接子元素。为了防误点，
+/// 只在同一个弹窗子树里先确认 marker 文本、再点 Allow/允许。
 #[cfg(target_os = "macos")]
 const SCRIPT: &str = r#"
+on hasMarker(el, markers, depth)
+    if depth > 10 then return false
+    tell application "System Events"
+        try
+            set nm to name of el as text
+            repeat with m in markers
+                if nm contains m then return true
+            end repeat
+        end try
+        try
+            repeat with child in UI elements of el
+                if my hasMarker(child, markers, depth + 1) then return true
+            end repeat
+        end try
+    end tell
+    return false
+end hasMarker
+
+on clickAllow(el, allowNames, depth)
+    if depth > 10 then return false
+    tell application "System Events"
+        try
+            if (role of el as text) is "AXButton" and (name of el) is in allowNames then
+                click el
+                return true
+            end if
+        end try
+        try
+            repeat with child in UI elements of el
+                if my clickAllow(child, allowNames, depth + 1) then return true
+            end repeat
+        end try
+    end tell
+    return false
+end clickAllow
+
 on run argv
     set procName to item 1 of argv
+    set allowNames to {"Allow", "允许"}
+    set markers to {"remote debugging", "远程调试"}
     tell application "System Events"
         if not (exists process procName) then return "no-dialog"
         tell process procName
-            set allowNames to {"Allow", "允许"}
-            set markers to {"remote debugging", "远程调试"}
             repeat with w in windows
-                set targets to {w}
+                set targets to {}
                 try
-                    set targets to targets & sheets of w
+                    repeat with s in sheets of w
+                        set end of targets to s
+                    end repeat
+                end try
+                try
+                    if (subrole of w as text) is in {"AXSystemDialog", "AXDialog"} then set end of targets to w
                 end try
                 repeat with t in targets
-                    try
-                        set scopes to {t}
-                        try
-                            set scopes to scopes & groups of t
-                        end try
-                        repeat with s in scopes
-                            set texts to name of static texts of s
-                            set joined to texts as text
-                            set hit to false
-                            repeat with m in markers
-                                if joined contains m then set hit to true
-                            end repeat
-                            if hit then
-                                repeat with b in buttons of s
-                                    if name of b is in allowNames then
-                                        click b
-                                        return "clicked"
-                                    end if
-                                end repeat
-                            end if
-                        end repeat
-                    end try
+                    if my hasMarker(t, markers, 0) then
+                        if my clickAllow(t, allowNames, 0) then return "clicked"
+                    end if
                 end repeat
             end repeat
         end tell
