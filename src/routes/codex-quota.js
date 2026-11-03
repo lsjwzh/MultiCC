@@ -32,27 +32,43 @@ function windowResetsAt(w, nowMs) {
 }
 
 async function fetchCodexUsage(nowMs = Date.now(), options = {}) {
-  const auth = readCodexAuth(options.authFile);
-  if (!auth) return { status: 'no_auth', error: options.authFile ? '该账号尚未完成登录' : '未找到 ~/.codex/auth.json，请先登录 codex' };
+  // An expired on-disk token is repairable — the host's OAuth refresher (the
+  // hook injected into usage-limit-poller) rotates it on the spot. Without
+  // this, a manual ⟳ answered no_auth until something else happened to run
+  // the codex CLI, which is exactly the deadlock a quota-guarded account sits
+  // in. One refresh attempt, then one retry with the re-read credential.
+  const refreshAuth = typeof options.refreshAuth === 'function'
+    ? options.refreshAuth
+    : input => require('../usage-limit-poller').runCodexAuthRefresh(input);
 
-  let body;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  try {
-    const res = await requestCodexUsage(auth, { fetch: options.fetch, signal: ctrl.signal });
-    if (res.status === 401 || res.status === 403) {
-      // e.g. {"error":{"code":"token_revoked"}} — the stored login is dead.
-      let code = '';
-      try { code = ((await res.json()).error || {}).code || ''; } catch (_) {}
-      return { status: 'no_auth', error: `Codex 登录凭证已失效（HTTP ${res.status}${code ? ` ${code}` : ''}），请重新登录 codex` };
+  async function attempt() {
+    const auth = readCodexAuth(options.authFile);
+    if (!auth) return { status: 'no_auth', error: options.authFile ? '该账号尚未完成登录' : '未找到 ~/.codex/auth.json，请先登录 codex' };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+    try {
+      const res = await requestCodexUsage(auth, { fetch: options.fetch, signal: ctrl.signal });
+      if (res.status === 401 || res.status === 403) {
+        // e.g. {"error":{"code":"token_revoked"}} — the stored login is dead.
+        let code = '';
+        try { code = ((await res.json()).error || {}).code || ''; } catch (_) {}
+        return { status: 'no_auth', authRejected: true, error: `Codex 登录凭证已失效（HTTP ${res.status}${code ? ` ${code}` : ''}），请重新登录 codex` };
+      }
+      if (!res.ok) return { status: 'unavailable', error: `HTTP ${res.status}` };
+      return { body: await res.json() };
+    } catch (err) {
+      return { status: 'unavailable', error: ctrl.signal.aborted ? `timeout after ${TIMEOUT_MS}ms` : (err.message || 'fetch failed') };
+    } finally {
+      clearTimeout(timer);
     }
-    if (!res.ok) return { status: 'unavailable', error: `HTTP ${res.status}` };
-    body = await res.json();
-  } catch (err) {
-    return { status: 'unavailable', error: ctrl.signal.aborted ? `timeout after ${TIMEOUT_MS}ms` : (err.message || 'fetch failed') };
-  } finally {
-    clearTimeout(timer);
   }
+
+  let outcome = await attempt();
+  if (outcome.authRejected && await refreshAuth({ authFile: options.authFile || null })) {
+    outcome = await attempt();
+  }
+  if (outcome.status) return { status: outcome.status, error: outcome.error };
+  const body = outcome.body;
 
   const rl = body && typeof body === 'object' ? body.rate_limit : null;
   if (!rl || typeof rl !== 'object') return { status: 'unavailable', error: 'rate_limit missing' };

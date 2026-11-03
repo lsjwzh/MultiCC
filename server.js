@@ -2186,7 +2186,7 @@ providerRoutes.mountManagementRoutes(app);
 // the usage-limit poller's adapters. Outcomes mirror into the provider-limit cache
 // (onResult); lookupCached reads it back so a transient failure answers last-known-
 // good cached+stale — never for a 借道 lender (relay routes pass no lookupCached).
-limitRecorder.setRefresher(require('./src/providers/virtual-provider').setRefresher(mountProviderBalanceRoutes(app, { ...providers, onResult: limitRecorder.recordProvider, lookupCached: (appType, id) => providerLimitCache.get(appType, id) })?.refreshOne)); // shared quota refresh port
+require('./src/quota/quota-self-heal').wireQuotaSelfHeal({ app, providers, limitRecorder, providerLimitCache, quotaGuard, codexOAuthRefresh, codexAccountRefresh, officialAccounts, mountProviderBalanceRoutes }); // shared quota refresh port + stale-gate re-read + codex 401 self-heal
 mountProviderLimitHistoryRoutes(app, { history: providerQuotaHistory, providers }); // GET /api/providers/limit-history — 卡片余量走势（采样由 Rust 内核持有）
 
 // ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,

@@ -315,6 +315,51 @@ test('Codex adapter: missing OAuth token → null, no fetch', async () => {
   );
 });
 
+test('Codex adapter: a 401 repairs the token via the injected refresher, then retries once', async (t) => {
+  let auth = { accessToken: 'at-old', accountId: 'acct-1' };
+  const repairs = [];
+  poller.setCodexAuthRefresher(async (input) => {
+    repairs.push(input);
+    auth = { accessToken: 'at-new', accountId: 'acct-1' };
+    return true;
+  });
+  t.after(() => poller.setCodexAuthRefresher(null));
+  await withFetch(
+    (url, opts, n) => {
+      if (n === 1) return { ok: false, status: 401, text: async () => '{"error":{"code":"token_expired"}}', json: async () => ({}) };
+      assert.strictEqual(opts.headers.Authorization, 'Bearer at-new', 'the retry reads the repaired credential');
+      return okJson({
+        plan_type: 'pro',
+        rate_limit: { allowed: true, limit_reached: false,
+          primary_window: { used_percent: 0, limit_window_seconds: 604800, reset_at: 222 },
+          secondary_window: null },
+      });
+    },
+    async (calls) => {
+      const dto = await poller.pollCodexUsage({ strategy: 'codex-oauth-usage' }, 0, 6000, () => auth);
+      assert.strictEqual(calls.length, 2, 'exactly one retry');
+      assert.strictEqual(repairs.length, 1, 'exactly one repair attempt');
+      assert.strictEqual(dto.provider, 'codex');
+      assert.strictEqual(dto.tier, 'pro');
+    },
+  );
+});
+
+test('Codex adapter: a declined repair propagates the 401 instead of retrying', async (t) => {
+  poller.setCodexAuthRefresher(async () => false);
+  t.after(() => poller.setCodexAuthRefresher(null));
+  await withFetch(
+    () => ({ ok: false, status: 401, text: async () => '{}', json: async () => ({}) }),
+    async (calls) => {
+      await assert.rejects(
+        poller.pollCodexUsage({ strategy: 'codex-oauth-usage' }, 0, 6000, CODEX_AUTH),
+        (error) => error.kind === 'limit_fetch_failed' && /HTTP 401/.test(error.detail),
+      );
+      assert.strictEqual(calls.length, 1, 'no retry without a repair');
+    },
+  );
+});
+
 test('poller dedups codex OAuth by keyHashSeed across sessions → one fetch', async () => {
   const target = { providerId: 'codex-official', host: 'chatgpt.com', apiKey: null, keyHashSeed: 'codex-oauth', strategy: 'codex-oauth-usage' };
   await withFetch(

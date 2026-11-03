@@ -21,11 +21,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { DEFAULTS, envConfig, normalizeConfig } = require('../quota/quota-guard');
+const { DEFAULTS, envConfig, normalizeConfig, readingAgeOf } = require('../quota/quota-guard');
 
 const PERCENT_KEYS = Object.freeze(['fiveHourPercent', 'weeklyPercent', 'monthlyPercent']);
 const SCOPES = Object.freeze(['official', 'all']);
-const BODY_KEYS = Object.freeze([...PERCENT_KEYS, 'enabled', 'scope']);
+const BODY_KEYS = Object.freeze([...PERCENT_KEYS, 'enabled', 'scope', 'maxReadingAgeMs']);
 
 function percentInput(value) {
   if (value == null || value === '') return { error: '必须是 1–100 的数字' };
@@ -36,6 +36,15 @@ function percentInput(value) {
   // guard is the explicit way to say that.
   if (number < 1 || number > 100) return { error: '必须在 1–100 之间' };
   return { value: number };
+}
+
+// How old a blocking reading may get before the gate releases for a re-read.
+// Rejected rather than clamped: below a minute every request would re-ask
+// upstream, and "5" is a half-typed form, not an intention.
+function readingAgeInput(value) {
+  const parsed = readingAgeOf(value);
+  if (parsed == null) return { error: '必须是 60000–604800000 之间的毫秒数' };
+  return { value: parsed };
 }
 
 // The file is the only place these settings live, and a half-written one would
@@ -105,6 +114,11 @@ function mountQuotaGuardRoutes(app, { file, env = process.env } = {}) {
       }
       next.scope = scope;
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'maxReadingAgeMs')) {
+      const parsed = readingAgeInput(body.maxReadingAgeMs);
+      if (parsed.error) return res.status(400).json({ ok: false, error: `maxReadingAgeMs: ${parsed.error}` });
+      next.maxReadingAgeMs = parsed.value;
+    }
     if (!BODY_KEYS.some(key => Object.prototype.hasOwnProperty.call(body, key))) {
       return res.status(400).json({ ok: false, error: '没有可保存的设置' });
     }
@@ -117,4 +131,4 @@ function mountQuotaGuardRoutes(app, { file, env = process.env } = {}) {
   });
 }
 
-module.exports = { mountQuotaGuardRoutes, percentInput, readSaved, writeAtomic };
+module.exports = { mountQuotaGuardRoutes, percentInput, readingAgeInput, readSaved, writeAtomic };
