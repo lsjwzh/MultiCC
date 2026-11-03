@@ -151,13 +151,17 @@
    gets its own calm green to stay distinguishable from the route and role pills. */
 .mc-composer__pill--machine { flex: 0 0 auto; color: #2f6b4f; border-color: #cfe8da; background: #eaf7f0; }
 .mc-composer__pill--machine::before { content: '💻'; margin-right: 6px; font-size: 10px; }
-/* Its picker hangs under the pill; fixed so the composer's overflow never clips
-   it, narrow enough to survive a phone-width band. */
+/* Its picker hangs under the pill. It is a <dialog> opened with showModal so it
+   lives in the top layer ABOVE the new-task modal dialog — a plain fixed div
+   appended to <body> would paint behind that dialog and never be reachable.
+   margin:0 + fixed top/left override the UA centering so it anchors to the pill;
+   the backdrop is transparent so the composer behind stays fully visible. */
 .quick-machine-pop {
-  position: fixed; z-index: 80; min-width: 220px; max-width: min(320px, calc(100vw - 16px));
+  position: fixed; inset: auto; margin: 0; min-width: 220px; max-width: min(320px, calc(100vw - 16px));
   background: #fff; border: 1px solid #d8e0ea; border-radius: 12px;
   box-shadow: 0 12px 32px rgba(24, 39, 75, .16); padding: 6px; display: grid; gap: 2px;
 }
+.quick-machine-pop::backdrop { background: transparent; }
 .quick-machine-pop button {
   display: flex; justify-content: space-between; align-items: center; gap: 8px;
   width: 100%; text-align: left; padding: 8px 10px; border: 0; border-radius: 8px;

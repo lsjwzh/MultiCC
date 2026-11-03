@@ -74,17 +74,17 @@
   }
   function closePop() {
     if (!pop) return;
-    pop.remove(); pop = null;
-    document.removeEventListener('mousedown', onOutside, true);
+    const node = pop; pop = null;
     root.removeEventListener('resize', closePop);
-  }
-  function onOutside(event) {
-    if (pop && !pop.contains(event.target) && event.target !== pill) closePop();
+    if (node.open) node.close(); else node.remove();
   }
   function openPop() {
     closePop();
-    pop = document.createElement('div');
-    pop.className = 'quick-machine-pop'; pop.setAttribute('role', 'menu');
+    // A <dialog> + showModal, not a fixed <div>: the new-task composer is itself a
+    // modal dialog in the top layer, so anything appended to <body> paints behind
+    // it. A second showModal stacks above it, which is what "on top" needs.
+    const node = document.createElement('dialog');
+    node.className = 'quick-machine-pop'; node.setAttribute('role', 'menu');
     const entries = [{ machine: null, name: selfName ? `${t('airQuickMachineSelf')} · ${selfName}` : t('airQuickMachineSelf') },
       ...machines.map(machine => ({ machine, name: machine.name }))];
     for (const entry of entries) {
@@ -102,13 +102,16 @@
         if (dialogOpen()) syncDialog();
         root.dispatchEvent(new CustomEvent('air:quick-machine-changed'));
       };
-      pop.append(row);
+      node.append(row);
     }
-    document.body.append(pop);
+    document.body.append(node);
+    node.showModal();
     const rect = pill.getBoundingClientRect();
-    pop.style.left = `${Math.max(8, Math.min(rect.left, root.innerWidth - 280))}px`;
-    pop.style.top = `${rect.bottom + 6}px`;
-    document.addEventListener('mousedown', onOutside, true);
+    node.style.left = `${Math.max(8, Math.min(rect.left, root.innerWidth - 280))}px`;
+    node.style.top = `${rect.bottom + 6}px`;
+    node.addEventListener('click', event => { if (event.target === node) node.close(); });
+    node.addEventListener('close', () => { node.remove(); if (pop === node) { pop = null; root.removeEventListener('resize', closePop); } });
+    pop = node;
     root.addEventListener('resize', closePop);
   }
   root.MultiCCAirQuickMachine = {
