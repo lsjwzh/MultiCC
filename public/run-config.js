@@ -576,7 +576,8 @@
     return cli === 'claude' ? 'claude-exp' : cli === 'codex' ? 'codex-exp' : cli;
   }
 
-  function request(url, body, method = 'POST') {
+  let requestOverride = null; // 远程目标时 open() 换成走机器代理的请求函数
+  function request(url, body, method = 'POST') { if (requestOverride) return requestOverride(url, body, method);
     const options = { method, headers: { Accept: 'application/json' } };
     if (body !== undefined) {
       options.headers['Content-Type'] = 'application/json';
@@ -846,13 +847,13 @@
   }
 
   // ── 对话框 ───────────────────────────────────────────────────────────────
-  function open(entry, clis, onSaved) {
+  function open(entry, clis, onSaved, options) {
     const doc = typeof document !== 'undefined' ? document : null;
     const catalogApi = scope() && scope().MultiCCProviderCatalog;
     const aiApi = scope() && scope().MultiCCChatAiConfig;
     const editorApi = scope() && scope().MultiCCAutoProviderEditor;
     if (!doc || !catalogApi || !aiApi) throw new Error(tt('runConfigComponentsMissing', '运行配置组件没有加载。'));
-
+    requestOverride = (options && typeof options.request === 'function') ? options.request : null;
     const draft = !entry.sessionId;
     const terminalDraft = draft && entry.purpose === 'terminal';
     const stored = entry.configuration || {};
@@ -1370,8 +1371,7 @@
     dialog.tabIndex = -1;
     try { dialog.focus({ preventScroll: true }); } catch (_) { dialog.focus(); }
     dialog.onclose = () => {
-      closed = true;
-      ++epoch;
+      closed = true; ++epoch; requestOverride = null;
       if (stopModelWatch) stopModelWatch();
       dialog.remove();
     };
