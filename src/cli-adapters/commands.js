@@ -259,6 +259,8 @@ function resolveCodebuddy(context) {
     '/usr/local/bin/codebuddy',
     path.join(homeDir, '.local', 'bin', 'codebuddy'),
     path.join(homeDir, '.codebuddy', 'bin', 'codebuddy'),
+    // macOS desktop app embeds the CLI instead of installing it onto PATH.
+    '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
   ], context);
   if (directHit) return directHit;
   return findExecutableOnPath('codebuddy', context)
