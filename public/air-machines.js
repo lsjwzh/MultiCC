@@ -90,7 +90,7 @@
         if (current !== generation || !host.isConnected) return;
         if (snap.status === 'fulfilled') {
           const directories = snap.value.directories || [];
-          snapshots.set(machine.id, { directories, at: Date.now() });
+          snapshots.set(machine.id, { directories, clis: snap.value.clis || [], at: Date.now() });
           status.textContent = `${machine.name} · ${tr('airMachinesConnected')}`;
           renderGrid(directories);
           return;
@@ -135,7 +135,7 @@
           warming.add(item.id);
           try {
             const snap = await api(`/api/machines/${item.id}/proxy/api/air`);
-            snapshots.set(item.id, { directories: snap.directories || [], at: Date.now() });
+            snapshots.set(item.id, { directories: snap.directories || [], clis: snap.clis || [], at: Date.now() });
           } catch (_) { /* the click path reports the real error */ }
           finally { warming.delete(item.id); }
         }
@@ -182,6 +182,6 @@
   root.MultiCCAirMachines = {
     mount,
     snapshot: id => snapshots.get(id) || null,
-    remember: (id, directories) => { snapshots.set(id, { directories, at: Date.now() }); },
+    remember: (id, directories, clis) => { snapshots.set(id, { directories, clis: clis || [], at: Date.now() }); },
   };
 })(window);

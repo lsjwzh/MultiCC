@@ -6,7 +6,7 @@
   let api = null, notice = () => {}, pill = null, pop = null, select = null;
   let localEntries = () => [], localDirectoryId = () => null, dialogOpen = () => false;
   let selfName = '', machines = [], selected = null;
-  let directories = [], directoryId = null, dialogDirectoryId = null;
+  let directories = [], directoryId = null, dialogDirectoryId = null, remoteClis = [];
   const t = (key, params) => {
     const text = typeof root.t === 'function' ? root.t(key, params) : '';
     if (!text || text === key) return key;
@@ -14,7 +14,7 @@
   };
   function render() {
     if (!pill) return;
-    if (!machines.length) { selected = null; directories = []; directoryId = null; }
+    if (!machines.length) { selected = null; directories = []; directoryId = null; remoteClis = []; }
     pill.hidden = !machines.length;
     pill.textContent = t('airQuickMachine', { name: selected ? selected.name : t('airQuickMachineSelf') });
     pill.title = selected ? t('airQuickMachineRemoteTitle', { name: selected.name }) : t('airQuickMachineTitle');
@@ -27,19 +27,21 @@
       machines = data.machines || [];
     } catch (_) { machines = []; }
     if (selected && !machines.some(machine => machine.id === selected.id)) {
-      selected = null; directories = []; directoryId = null;
+      selected = null; directories = []; directoryId = null; remoteClis = [];
     }
     render();
     return machines;
   }
   async function loadDirectories() {
-    if (!selected) { directories = []; directoryId = null; return directories; }
+    if (!selected) { directories = []; directoryId = null; remoteClis = []; return directories; }
     const cached = root.MultiCCAirMachines?.snapshot?.(selected.id);
-    if (cached) directories = cached.directories || [];
+    // 老缓存可能没有 clis 字段（加字段前存的），那种就当没缓存重新拉一次补全。
+    if (cached && Array.isArray(cached.clis)) { directories = cached.directories || []; remoteClis = cached.clis; }
     else {
       const snap = await api(`/api/machines/${encodeURIComponent(selected.id)}/proxy/api/air`);
       directories = snap.directories || [];
-      root.MultiCCAirMachines?.remember?.(selected.id, directories);
+      remoteClis = snap.clis || [];
+      root.MultiCCAirMachines?.remember?.(selected.id, directories, remoteClis);
     }
     if (!directories.some(entry => entry.id === directoryId)) directoryId = directories[0]?.id || null;
     return directories;
@@ -130,6 +132,7 @@
     },
     selected: () => selected,
     directories: () => directories,
+    clis: () => (selected ? remoteClis : null),
     directoryId: () => directoryId,
     setDirectoryId: id => { directoryId = id; },
     syncDialog,

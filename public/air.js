@@ -1021,10 +1021,10 @@
   let quickRuntimeDirty = false;
   let quickRoles = [];
 
-  // One source of truth for the CLI the panel is about to use: the pill names it
-  // and the AI 配置 dialog opens on it, so the two can never disagree about what
-  // a task created from here will run.
-  function quickCli() { return quickRuntime.cli || firstChatCli(); }
+  // 可用 CLI 以目标电脑 /api/air 的 clis 为准（选了远程时），本机清单对它无意义；
+  // 胶囊与 AI 配置对话框共用 quickCli()，存的不被目标支持就回落到它的默认。
+  function quickClis() { const m = window.MultiCCAirQuickMachine; return m?.selected?.() ? (m.clis() || []) : (Array.isArray(data?.clis) ? data.clis : []); }
+  function quickCli() { const clis = quickClis(); if (quickRuntime.cli && (!clis.length || clis.includes(quickRuntime.cli))) return quickRuntime.cli; return clis.find(cliOffersInChat) || clis[0] || firstChatCli(); }
 
   // 线路胶囊上那一串（CLI · 线路 · 模型 · 状态）会随着 provider 名字变长，而它
   // 左边还压着「＋ 角色」——所以给它一个上限宽度，超出来的部分改成跑马灯一直走，
@@ -1110,10 +1110,10 @@
 
   function openQuickConfiguration() {
     if (!directoryId || !window.MultiCCRunConfig) return;
-    window.MultiCCRunConfig.open(
-      { task: { title: t('airNewTask') }, configuration: { ...quickRuntime, cli: quickCli() } }, data?.clis,
-      runtime => { quickRuntime = runtime; quickRuntimeDirty = true; renderQuickPills(); },
-    );
+    const machine = window.MultiCCAirQuickMachine; const remote = machine?.selected?.() || null;
+    window.MultiCCRunConfig.open({ task: { title: t('airNewTask') }, configuration: { ...quickRuntime, cli: quickCli() } },
+      remote ? machine.clis() : data?.clis, runtime => { quickRuntime = runtime; quickRuntimeDirty = true; renderQuickPills(); },
+      remote ? { request: machine.request } : undefined);
   }
 
   function openQuickRoles() {
@@ -1173,7 +1173,7 @@
     const text = typed + (paths.length ? t('airQuickAttachments', { paths: paths.join(' ') }) : '');
     // The pill's runtime is pinned onto the task at creation; the route it names
     // takes effect immediately, exactly as it does on the chat's own composer.
-    const runtime = { cli: quickRuntime.cli || firstChatCli() };
+    const runtime = { cli: quickCli() };
     for (const key of ['provider', 'providerSelection', 'model', 'effort']) {
       if (quickRuntime[key]) runtime[key] = quickRuntime[key];
     }
@@ -2796,6 +2796,8 @@
   $('quick-ai-pill').onclick = openQuickConfiguration;
   window.MultiCCAirQuickMachine?.init?.({ api, notice, pill: $('quick-machine-pill'), select: $('quick-task-dialog-directory'),
     localEntries: () => data?.directories || [], localDirectoryId: () => directoryId, dialogOpen: () => $('quick-task-dialog').open });
+  // 换目标电脑就清掉路由字段，回落到那台电脑的默认（子 agent 等非路由配置保留）。
+  window.addEventListener('air:quick-machine-changed', () => { for (const k of ['cli', 'provider', 'providerName', 'model', 'cliAccounts']) delete quickRuntime[k]; quickRuntimeDirty = false; renderQuickPills(); });
   $('quick-role-pill').onclick = openQuickRoles;
   $('quick-task-input').onkeydown = event => {
     if (!(window.MultiCCSendKey?.isSend(event) ?? (event.key === 'Enter' && !event.shiftKey && !event.isComposing))) return;
