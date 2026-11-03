@@ -2,12 +2,14 @@
 
 All notable changes to MultiCC are documented in this file.
 
-## v2.15.1 — Live relay model lists, visible background activity, and a quieter debug prompt (2026-11-03)
+## v2.15.2 — Live relay model lists, visible background activity, and a quieter debug prompt (2026-11-03)
 
-The v2.15.0 candidate stopped before its Release was created, because the
-remote-debugging prompt dismisser in the CDP gateway missed a final rustfmt
-pass and the desktop packaging job failed its source check, and its tag is
-preserved; v2.15.1 carries the same changes with the formatting fixed.
+The v2.15.0 and v2.15.1 candidates stopped before a Release was created:
+the remote-debugging prompt dismisser in the CDP gateway first missed a
+rustfmt pass and then left its macOS-only timing constants ungated, so the
+cross-platform source check failed on Linux and Windows and the desktop
+packaging job never ran. Both tags are preserved; v2.15.2 carries the same
+changes with the formatting and platform gates fixed.
 
 - Fetch relay providers' model lists live. GET /api/providers/:id/models asks the provider's own stored gateway for its models endpoint (the browser never supplies a URL), the picker shows the static list first and rebuilds when the live catalog lands, failures keep the static list, and a codex relay's refresh-models action no longer fails with an account-lane error.
 - Show what the background is doing while a turn streams without new text. A live status line under the breathing dot names the oldest running background task, walks its elapsed time, and shows its latest output; the line goes away when the turn ends.
