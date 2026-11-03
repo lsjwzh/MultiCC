@@ -85,6 +85,43 @@ test('opencode model picker: 刷新模型 bypasses both caches and repaints live
   });
 });
 
+// OpenCode Go 的线路 id 会在手写的 `opencodego` 与内置的 `opencode-go` 之间迁移
+// （配置改写只改 provider 名，模型不变）。刷新拿到新 id 时，线路和选中的模型都要
+// 跟着对齐；否则旧 id 过滤不到任何模型，下拉看起来像被清空，只能重开面板才恢复。
+test('opencode model picker: 刷新模型 remaps a legacy opencodego line to the live opencode-go id', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const LEGACY = [
+    { provider: 'opencodego', model: 'deepseek-v4-pro', label: 'opencodego/deepseek-v4-pro' },
+  ];
+  const RENAMED = [
+    { provider: 'opencode-go', model: 'deepseek-v4-pro', label: 'opencode-go/deepseek-v4-pro' },
+    { provider: 'opencode-go', model: 'glm-5.2', label: 'opencode-go/glm-5.2' },
+  ];
+  const fixture = { ...routes, 'GET /api/opencode/models': () => json({ models: RENAMED, source: 'cli' }) };
+  await withCdpHarness({ routes: fixture, screenshotDir: qaDir() }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/run-config-host.html');
+    assert.ok(await page.waitFor('window.MultiCCRunConfig && window.MultiCCChatAiConfig'));
+    await page.evaluate(`localStorage.setItem(${JSON.stringify(CACHE_KEY)}, ${JSON.stringify(JSON.stringify({ at: Date.now(), models: LEGACY }))})`);
+    await page.evaluate(`window.testDialog=MultiCCRunConfig.open({ configuration: { cli: 'opencode' } }, ['opencode'], () => {})`);
+    assert.ok(await page.waitFor(`${optionValues}.length > 1`));
+    // 选中旧别名线路（手写 opencodego 时代留下的值）。
+    await page.evaluate(`(() => { const s = document.querySelector(${JSON.stringify(D + '.rc-line')}); s.value = 'opencode-native:opencodego'; s.onchange(); })()`);
+    assert.ok(await page.waitFor(`${optionValues}.includes('opencodego/deepseek-v4-pro')`), 'the legacy line paints its cached models first');
+
+    await page.evaluate(`document.querySelector(${JSON.stringify(D + '.rc-model-refresh')}).click()`);
+    assert.ok(await page.waitFor(`${optionValues}.includes('opencode-go/glm-5.2')`),
+      'the renamed live ids paint without reopening the dialog');
+    assert.deepEqual(await page.evaluate(optionValues), ['opencode-go/deepseek-v4-pro', 'opencode-go/glm-5.2', '__custom__'],
+      'the model dropdown is never left empty by the rename');
+    assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(D + '.rc-line')}).value`),
+      'opencode-native:opencode-go', 'the selected line follows the renamed provider id');
+    assert.equal(await page.evaluate(`document.querySelector(${JSON.stringify(D + '.rc-model')}).value`),
+      'opencode-go/deepseek-v4-pro', 'the selected model keeps its id under the new prefix');
+    console.log('OpenCode rename screenshot:', await page.screenshot('run-config-opencode-rename'));
+  });
+});
+
 // 花名册：模型下拉由 /api/<cli>/models 这类实时目录喂的 CLI 才显示「刷新模型」。
 // dsh / gemini / zcode / kimi / pi 的清单是内置表或 provider 目录，没有可刷的东西。
 const ROSTER = ['opencode', 'qoder', 'codebuddy', 'commandcode', 'grok',

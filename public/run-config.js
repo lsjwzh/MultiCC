@@ -1020,6 +1020,11 @@
       return found ? found.label.replace(/^OpenCode 原生 · /, '') : id;
     }
 
+    // OpenCode 原生线路 id 会在配置改写时变（手写的 `opencodego` ↔ 内置
+    // `opencode-go`）而模型不变；对齐规则由 chat-ai-config 统一提供。
+    const resolveNativeLine = value => aiApi.resolveOpenCodeNativeLine(value);
+    const rewriteNativeModel = (model, fromId, toId) => aiApi.rewriteOpenCodeNativeModel(model, fromId, toId);
+
     function rowLine(row) {
       if (isNativeLine(row.providerId)) return lineShape(row.providerId);
       const provider = providerById(row.cli, row.providerId);
@@ -1513,9 +1518,16 @@
         providerValue = '';
         return;
       }
-      if (pendingNative && items.some(item => item.value === pendingNative)) {
-        providerValue = pendingNative;
+      if (pendingNative) {
+        const resolved = resolveNativeLine(pendingNative);
+        modelValue = rewriteNativeModel(modelValue, nativeLineId(pendingNative), nativeLineId(resolved));
+        providerValue = resolved;
         pendingNative = '';
+      }
+      if (isNativeLine(providerValue)) {
+        const resolved = resolveNativeLine(providerValue);
+        modelValue = rewriteNativeModel(modelValue, nativeLineId(providerValue), nativeLineId(resolved));
+        providerValue = resolved;
       }
       if (!items.some(item => item.value === providerValue)) providerValue = items[0].value;
       lineSelect.replaceChildren(...items.map(item => option(doc, item.value, item.label)));
@@ -2873,7 +2885,7 @@
       if (modelRefresh.disabled) return;
       const cliAtClick = currentCli;
       const providerAtClick = providerValue;
-      const selected = currentModelValue();
+      let selected = currentModelValue();
       modelRefresh.disabled = true;
       modelRefresh.textContent = tt('runConfigModelRefreshing', '刷新中…');
       let models = [];
@@ -2883,6 +2895,17 @@
       } catch (_) { models = []; }
       if (!closed) {
         if (currentCli === cliAtClick) {
+          // 刷新可能改掉 OpenCode 原生线路的 id（opencodego → opencode-go）或
+          // 新增/移除线路：只重画模型下拉会让旧 id 匹配不到模型、看起来像被清空。
+          // 先按新目录对齐线路与模型前缀，线路/模型一起重画。
+          if (cliAtClick === 'opencode') {
+            const resolved = resolveNativeLine(providerValue);
+            if (resolved !== providerValue) {
+              selected = rewriteNativeModel(selected, nativeLineId(providerValue), nativeLineId(resolved));
+              providerValue = resolved;
+            }
+            renderLineSelect();
+          }
           // Codex 的账号目录缓存在 run-config 自己的 catalogs 里，force 拿到的新
           // 清单要先回填，fillModel 才画得出来（与 watchCodexModels 的回填一致）。
           if ((cliAtClick === 'codex' || cliAtClick === 'codex-exp') && models.length) {
@@ -2970,7 +2993,10 @@
       // 写的）。原生线路表第一次打开时可能还没拉回来，先记下来，等它到了再切过去。
       const nativeFromModel = currentCli === 'opencode' && !desired ? String(config.model || '').split('/')[0] : '';
       if (nativeFromModel) {
-        pendingNative = nativeLineValue(nativeFromModel);
+        // 旧会话的模型前缀可能还是别名 id（opencodego/x → opencode-go/x）：
+        // 按目录里的真实线路 id 改写，下拉才能直接选中它。
+        pendingNative = resolveNativeLine(nativeLineValue(nativeFromModel));
+        modelValue = rewriteNativeModel(modelValue, nativeFromModel, nativeLineId(pendingNative));
         desired = pendingNative;
       }
       if (!desired && !providerless(currentCli)) {

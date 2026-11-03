@@ -155,9 +155,11 @@ const MIGRATION_DEBT = Object.freeze({
   // 目录），实测 3044/155465，按棘轮上调。下一次动它该拆的仍是模型字段那一族。
   // 2026-11-03 借道线路实时模型：选中自定义 provider 时后台拉 /models 再重建，
   // 实测 3066/156696，按棘轮上调；模型字段那一族的拆分条件不变。
+  // 2026-11-03 OpenCode Go 线路 id 迁移：「刷新模型」后按 chat-ai-config 的
+  // 别名规则对齐线路与模型前缀，并重画线路下拉，实测 3092/158373，按棘轮上调。
   'public/run-config.js': Object.freeze({
-    ceiling: 3066,
-    byteCeiling: 156696,
+    ceiling: 3092,
+    byteCeiling: 158373,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),
