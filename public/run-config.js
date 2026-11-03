@@ -1580,6 +1580,7 @@
       fillModel(modelSelect, modelCustom, providerValue, currentCli, modelValue);
       modelValue = currentModelValue();
       watchSelectedModels();
+      warmRelayModels();
     }
 
     function watchSelectedModels() {
@@ -1622,6 +1623,27 @@
         }
       }
       paintModelStatus();
+    }
+
+    // 借道（自定义）线路的模型目录：先用 provider 的静态 modelOptions 画出，
+    // 服务端 /api/providers/:id/models 拉回实时清单后再重建一次。别名档位
+    // （opus/sonnet/…）是 Claude 的路由概念，不列具体模型，也就不必拉目录。
+    function warmRelayModels() {
+      if (closed || providerless(currentCli) || !providerValue) return;
+      const provider = providerById(currentCli, providerValue);
+      if (!provider || provider.virtual || provider.isOfficial || !provider.baseUrl) return;
+      if (provider.aliasMap && Object.keys(provider.aliasMap).length) return;
+      if (typeof aiApi.warmProviderModels !== 'function') return;
+      const marker = epoch;
+      const selectedCli = currentCli;
+      const selectedProvider = providerValue;
+      void aiApi.warmProviderModels(selectedProvider, () => {
+        if (closed || marker !== epoch || currentCli !== selectedCli || providerValue !== selectedProvider) return;
+        const selected = currentModelValue();
+        fillModel(modelSelect, modelCustom, providerValue, currentCli, selected);
+        modelValue = currentModelValue();
+        renderFooter();
+      });
     }
 
     function paintModelStatus() {

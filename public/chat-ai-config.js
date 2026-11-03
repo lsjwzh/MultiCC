@@ -258,7 +258,12 @@
 
   function providerModelOptions(providerId, state) {
     const provider = findProvider(providerId, state);
-    return provider && Array.isArray(provider.modelOptions)
+    if (!provider) return [];
+    // 借道线路：静态 modelOptions 先顶上，warmProviderModels 拉回实时目录后
+    // 这里优先读 1 小时缓存；缓存只存 live 结果，失败/编辑线路都会退回静态表。
+    const live = readProviderModelsSync(provider.id || effectiveProviderId(providerId, state));
+    if (live.length) return live.map(entry => entry.model).filter(Boolean);
+    return Array.isArray(provider.modelOptions)
       ? provider.modelOptions.filter(Boolean)
       : [];
   }
@@ -420,6 +425,147 @@
     return readModelCacheSync('multicc.codebuddy.models.v1', 60 * 60 * 1000);
   }
 
+  // ── Relay (借道) provider live model list ────────────────────────────────
+  // GET /api/providers/:id/models asks the server to pull `{baseURL}/models`
+  // from the provider's OWN stored config (the browser never supplies a base
+  // URL). The picker renders the static `modelOptions` immediately and then
+  // rebuilds once the live list lands; failures leave the static list intact.
+  // Mirrored per provider for one hour, exactly like the other live catalogs.
+  const PROVIDER_MODELS_TTL_MS = 60 * 60 * 1000;
+  // A relay that cannot answer must not be re-probed on every keystroke/render;
+  // force (刷新模型) always bypasses this.
+  const PROVIDER_MODELS_FAILURE_TTL_MS = 60 * 1000;
+  const PROVIDER_MODELS_KEY_PREFIX = 'multicc.provider.models.v1:';
+  const OFFICIAL_PROVIDER_ID_RE = /^(?:claude|codex)-official(?:-[a-f0-9]{16})?$/;
+  // CLIs that can bind a MultiCC provider AND appear on the refresh roster.
+  const RELAY_PROVIDER_CLIS = Object.freeze(new Set([
+    'claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'grok',
+  ]));
+  const providerModelsInflight = new Map();
+  const providerModelsFailedAt = new Map();
+
+  function providerModelsCacheKey(providerId) {
+    return PROVIDER_MODELS_KEY_PREFIX + String(providerId || '');
+  }
+
+  function readProviderModelsCache(providerId) {
+    try {
+      const ls = root && root.localStorage;
+      if (!ls) return null;
+      const raw = ls.getItem(providerModelsCacheKey(providerId));
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      const at = Number(obj && obj.at) || 0;
+      const models = obj && Array.isArray(obj.models) ? obj.models : [];
+      if (!at || (Date.now() - at) >= PROVIDER_MODELS_TTL_MS || !models.length) return null;
+      return { at, source: String(obj && obj.source || ''), models };
+    } catch (_) { return null; }
+  }
+
+  // Only a live upstream answer is worth pinning; a fallback is just the static
+  // provider list the caller already has, and caching it would hide provider
+  // edits for an hour.
+  function readProviderModelsSync(providerId) {
+    const cached = readProviderModelsCache(providerId);
+    return cached && cached.source === 'live' ? cached.models : [];
+  }
+
+  function writeProviderModelsCache(providerId, models) {
+    try {
+      const ls = root && root.localStorage;
+      if (ls && Array.isArray(models) && models.length) {
+        ls.setItem(providerModelsCacheKey(providerId), JSON.stringify({
+          at: Date.now(), source: 'live', models,
+        }));
+      }
+    } catch (_) { /* ignore quota / disabled storage */ }
+  }
+
+  function normalizeProviderModelEntry(entry) {
+    if (typeof entry === 'string') {
+      const model = entry.trim();
+      return model ? { model, label: model } : null;
+    }
+    if (!entry || typeof entry !== 'object') return null;
+    const model = String(entry.model || entry.id || '').trim();
+    if (!model) return null;
+    const label = String(entry.label || entry.name || entry.display_name || model).trim() || model;
+    return { model, label };
+  }
+
+  // Anything that is NOT an official account (or an OpenCode-native row) is a
+  // user-configured relay/custom provider with its own /models endpoint.
+  function isRelayProviderId(providerId) {
+    const id = String(providerId || '').trim();
+    return !!id && !OFFICIAL_PROVIDER_ID_RE.test(id) && !id.startsWith(OPENCODE_NATIVE_PREFIX);
+  }
+
+  async function loadProviderModels(providerId, options) {
+    const id = String(providerId || '').trim();
+    if (!id) return [];
+    const force = !!(options && options.force);
+    if (!force) {
+      const cached = readProviderModelsCache(id);
+      if (cached && cached.source === 'live' && cached.models.length) return cached.models;
+      const failedAt = providerModelsFailedAt.get(id) || 0;
+      if (failedAt && (Date.now() - failedAt) < PROVIDER_MODELS_FAILURE_TTL_MS) return [];
+      const active = providerModelsInflight.get(id);
+      if (active) return active;
+    }
+    const fetchFn = root && typeof root.fetch === 'function'
+      ? root.fetch.bind(root)
+      : (typeof fetch === 'function' ? fetch : null);
+    if (!fetchFn) return [];
+    const promise = (async () => {
+      try {
+        const url = `/api/providers/${encodeURIComponent(id)}/models${force ? '?refresh=1' : ''}`;
+        const response = await fetchFn(url, { credentials: 'same-origin' });
+        if (!response || !response.ok) {
+          providerModelsFailedAt.set(id, Date.now());
+          return [];
+        }
+        const data = await response.json();
+        const models = (data && Array.isArray(data.models) ? data.models : [])
+          .map(normalizeProviderModelEntry).filter(Boolean);
+        if (models.length && data && data.source === 'live') {
+          writeProviderModelsCache(id, models);
+          providerModelsFailedAt.delete(id);
+        } else {
+          providerModelsFailedAt.set(id, Date.now());
+        }
+        return models;
+      } catch (_) {
+        providerModelsFailedAt.set(id, Date.now());
+        return [];
+      } finally {
+        providerModelsInflight.delete(id);
+      }
+    })();
+    providerModelsInflight.set(id, promise);
+    return promise;
+  }
+
+  // Same contract as refreshQoderModels, for a relay provider's live catalog.
+  async function refreshProviderModels(providerId, rebuildCallback, options) {
+    const force = !!(options && options.force);
+    const prev = readProviderModelsSync(providerId);
+    let models = [];
+    try { models = await loadProviderModels(providerId, { force }); } catch (_) { models = []; }
+    if (typeof rebuildCallback === 'function' && (force || prev.length === 0)) {
+      try { rebuildCallback(); } catch (_) { /* noop */ }
+    }
+    return models;
+  }
+
+  // Picker-open warm: static modelOptions render first, then this refreshes in
+  // the background and the caller rebuilds. Never waits, never throws.
+  async function warmProviderModels(providerId, rebuildCallback) {
+    if (!isRelayProviderId(providerId)) return [];
+    const cached = readProviderModelsSync(providerId);
+    if (cached.length) return cached;
+    return refreshProviderModels(providerId, rebuildCallback, {});
+  }
+
   // The CLIs whose picker is fed by a live catalog endpoint and therefore gets
   // the 刷新模型 button. Everything else (dsh / gemini / zcode / kimi / pi) is
   // a static or provider-catalog list with nothing to re-read. Keep this as the
@@ -569,7 +715,20 @@
   });
 
   function refreshModelsForCli(cli, rebuildCallback, options) {
-    const refresh = MODEL_REFRESHERS[String(cli || '')];
+    const name = String(cli || '');
+    const refresh = MODEL_REFRESHERS[name];
+    const providerId = options && options.providerId;
+    // 借道线路的模型表属于 provider，不属于 CLI：claude/codex 等挂在自定义
+    // provider 上时，刷新按钮必须请求 /api/providers/:id/models，而不是去读本机
+    // 官方账号目录（codex 旧路径会直接报「账号线路不存在」）。
+    if (providerId && RELAY_PROVIDER_CLIS.has(name) && isRelayProviderId(providerId)) {
+      return refreshProviderModels(providerId, rebuildCallback, options).then(models => {
+        if (models.length) return models;
+        // A provider that has no pullable catalog (or was deleted) keeps its old
+        // CLI-specific behaviour instead of breaking the button.
+        return refresh ? refresh(rebuildCallback, options) : [];
+      });
+    }
     return refresh ? refresh(rebuildCallback, options) : Promise.resolve([]);
   }
 
@@ -642,6 +801,10 @@
     if (named) return named.labelKey ? translate(state, named.labelKey) : named.label;
     const live = readClaudeModelsSync().find(entry => entry && entry.model === value);
     if (live && live.label) return live.label;
+    // Relay live catalogs carry the upstream's display name (or just the id).
+    const relay = readProviderModelsSync(effectiveProviderId(providerId, state))
+      .find(entry => entry && entry.model === value);
+    if (relay && relay.label && relay.label !== value) return relay.label;
     if (value === '__custom__') return translate(state, 'custom');
     return value;
   }
@@ -925,6 +1088,9 @@
     saveSession,
     REFRESHABLE_MODEL_CLIS,
     refreshModelsForCli,
+    refreshProviderModels,
+    warmProviderModels,
+    isRelayProviderId,
     refreshOpenCodeModels,
     refreshCodexModels,
     refreshQoderModels,

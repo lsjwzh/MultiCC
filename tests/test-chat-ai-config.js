@@ -593,6 +593,69 @@ test('refreshModelsForCli dispatches the roster and forwards force/providerId', 
   }
 });
 
+test('借道 provider 先画静态 modelOptions，再异步换成 /api/providers/:id/models 的实时目录', async () => {
+  const modulePath = require.resolve('../public/chat-ai-config');
+  const store = {};
+  const calls = [];
+  globalThis.window = {
+    localStorage: {
+      getItem: key => store[key] || null,
+      setItem: (key, value) => { store[key] = String(value); },
+    },
+    async fetch(url) {
+      calls.push(url);
+      if (!url.startsWith('/api/providers/plain/models')) throw new Error(`unexpected fetch ${url}`);
+      return {
+        ok: true, status: 200,
+        async json() {
+          return { models: [{ model: 'live-a', label: 'Live A' }, { model: 'live-b', label: 'live-b' }], source: 'live' };
+        },
+      };
+    },
+  };
+  delete require.cache[modulePath];
+  const relayAi = require(modulePath);
+  const config = state({
+    providers: [{
+      id: 'plain', appType: 'claude', name: 'Plain', model: 'static-a',
+      modelOptions: ['static-a', 'static-b'], aliasMap: {},
+    }],
+    defaults: { claude: 'plain', codex: null },
+  });
+  try {
+    // 冷缓存：静态表先顶上。
+    assert.deepEqual(relayAi.providerModelOptions('plain', config), ['static-a', 'static-b']);
+    let warmed = 0;
+    await relayAi.warmProviderModels('plain', () => { warmed += 1; });
+    assert.deepEqual(calls, ['/api/providers/plain/models']);
+    assert.equal(warmed, 1);
+    // 实时目录落地后重建，缓存键里带 providerId。
+    assert.deepEqual(relayAi.providerModelOptions('plain', config), ['live-a', 'live-b']);
+    assert.deepEqual(relayAi.buildModelChoices('plain', config), ['live-a', 'live-b', '__custom__']);
+    assert.equal(relayAi.modelChoiceLabel('live-a', 'plain', config), 'Live A');
+    assert.ok(store['multicc.provider.models.v1:plain']);
+
+    // 刷新按钮：绕过浏览器 + 服务端缓存。
+    let rebuilt = 0;
+    const models = await relayAi.refreshModelsForCli('claude', () => { rebuilt += 1; },
+      { force: true, providerId: 'plain' });
+    assert.deepEqual(models.map(entry => entry.model), ['live-a', 'live-b']);
+    assert.deepEqual(calls, ['/api/providers/plain/models', '/api/providers/plain/models?refresh=1']);
+    assert.equal(rebuilt, 1);
+
+    // 官方账号 id 与静态 CLI 不走这条新路径（花名册/行为保持原样）。
+    assert.equal(relayAi.isRelayProviderId('claude-official'), false);
+    assert.equal(relayAi.isRelayProviderId('codex-official-0123456789abcdef'), false);
+    assert.equal(relayAi.REFRESHABLE_MODEL_CLIS.has('dsh'), false);
+    assert.deepEqual(await relayAi.refreshModelsForCli('dsh', null,
+      { force: true, providerId: 'plain' }), []);
+    assert.equal(calls.length, 2);
+  } finally {
+    delete globalThis.window;
+    delete require.cache[modulePath];
+  }
+});
+
 test('Pi follows native settings and never offers a stale managed provider model', () => {
   const config = state({ cli: 'pi' });
   assert.equal(providerCatalog.cliDisplayName('pi'), 'Pi');

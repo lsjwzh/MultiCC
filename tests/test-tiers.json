@@ -4274,6 +4274,15 @@
       ]
     },
     {
+      "path": "tests/test-provider-models-route.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
       "path": "tests/test-provider-native-host.js",
       "tier": "core",
       "lane": "deterministic"
