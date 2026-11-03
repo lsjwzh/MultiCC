@@ -142,3 +142,64 @@ test('a turn ending does not scrape Claude, and the poller still runs', async ()
 test('throws when required deps are missing', () => {
   assert.throws(() => createUsageLimitWiring({}), /requires/);
 });
+
+// ── quota self-heal wiring (src/quota/quota-self-heal.js) ────────────────────
+
+test('the guard\'s stale release re-reads the provider through the balance refresh port', async () => {
+  const { createQuotaGuard } = require('../src/quota/quota-guard');
+  const { wireQuotaSelfHeal } = require('../src/quota/quota-self-heal');
+  const NOW = 1_800_000_000_000;
+  const quotaGuard = createQuotaGuard({
+    cache: {
+      get: () => ({
+        status: 'ok', fetchedAt: NOW - 2 * 3600_000,
+        summary: { kind: 'window', windows: [{ window: '1wk', usedPercent: 100, resetMs: NOW + 48 * 3600_000 }] },
+      }),
+    },
+    env: {}, now: () => NOW,
+  });
+  const reads = [];
+  const refreshOne = (appType, id) => { reads.push([appType, id]); return Promise.resolve(null); };
+  wireQuotaSelfHeal({
+    app: null,
+    providers: {},
+    limitRecorder: { recordProvider: () => {}, setRefresher: () => {} },
+    providerLimitCache: { get: () => null },
+    quotaGuard,
+    codexOAuthRefresh: null,
+    codexAccountRefresh: { sync: () => {}, refreshers: new Map() },
+    officialAccounts: { listCodexAccounts: () => [], codexAuthFile: () => null },
+    mountProviderBalanceRoutes: () => ({ refreshOne }),
+  });
+  const verdict = quotaGuard.check({ appType: 'codex', providerId: 'codex-official-x' });
+  assert.strictEqual(verdict.blocked, false);
+  assert.strictEqual(verdict.reason, 'stale_reading');
+  assert.deepStrictEqual(reads, [['codex', 'codex-official-x']], 'the release offers one real re-read');
+});
+
+test('a codex 401 routes to the shared or per-account OAuth refresher, never to a cliCopy', async (t) => {
+  const { wireCodexAuthRefresher } = require('../src/quota/quota-self-heal');
+  const poller = require('../src/usage-limit-poller');
+  t.after(() => poller.setCodexAuthRefresher(null));
+  const attempts = [];
+  const codexOAuthRefresh = {
+    refresh: async (input) => { attempts.push(['shared', input]); return { outcome: 'fresh' }; },
+  };
+  const accountRefresher = {
+    refresh: async (input) => { attempts.push(['acc1', input]); return { outcome: 'refreshed' }; },
+  };
+  const officialAccounts = {
+    listCodexAccounts: () => [{ id: 'acc1', cliCopy: false }, { id: 'acc2', cliCopy: true }],
+    codexAuthFile: (id) => `/accounts/${id}/auth.json`,
+  };
+  const codexAccountRefresh = { sync: () => {}, refreshers: new Map([['acc1', accountRefresher]]) };
+  wireCodexAuthRefresher({ codexOAuthRefresh, codexAccountRefresh, officialAccounts });
+
+  assert.strictEqual(await poller.runCodexAuthRefresh({ authFile: null }), true, 'the shared login refreshes');
+  assert.strictEqual(await poller.runCodexAuthRefresh({ authFile: '/accounts/acc1/auth.json' }), true);
+  assert.strictEqual(await poller.runCodexAuthRefresh({ authFile: '/accounts/acc2/auth.json' }), false,
+    'a cliCopy shares the CLI\'s single-use refresh token — never rotated here');
+  assert.strictEqual(await poller.runCodexAuthRefresh({ authFile: '/accounts/ghost/auth.json' }), false);
+  assert.deepStrictEqual(attempts.map(([who]) => who), ['shared', 'acc1']);
+  assert.deepStrictEqual(attempts[0][1], { reason: 'codex-quota-401', force: true });
+});

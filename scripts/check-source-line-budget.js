@@ -140,8 +140,11 @@ const MIGRATION_DEBT = Object.freeze({
     // server.js 只留一行 getter，实测 3022/159546，按棘轮下调。
     // 2026-11-03 借道实时模型：GET /api/providers/:id/models 挂载一行（逻辑在
     // routes/provider-models.js），实测 3024/159751，按棘轮上调。
+    // 2026-11-03 额度死锁自愈：余量刷新端口接线改交 src/quota/quota-self-heal.js
+    // （一行换一行，新增 stale 放行重读 + codex 401 自愈），实测 3024/159748，
+    // 按棘轮下调字节。
     ceiling: 3024,
-    byteCeiling: 159751,
+    byteCeiling: 159748,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),

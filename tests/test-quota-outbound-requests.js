@@ -50,6 +50,40 @@ test('Codex 页面与轮询共用请求地址、认证头和代理入口，保�
   }
 });
 
+test('Codex 页面 401 时先自愈凭证再重试一次，修复失败则维持 no_auth', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-outbound-'));
+  const authFile = path.join(dir, 'auth.json');
+  fs.writeFileSync(authFile, JSON.stringify({ tokens: { access_token: 'old-token', account_id: 'test-account' } }));
+  const calls = [];
+  try {
+    handler = async (_url, init) => {
+      calls.push(init.headers.Authorization);
+      return calls.length === 1
+        ? json({ error: { code: 'token_expired' } }, 401)
+        : json({ rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 604800, reset_at: 10000 } } });
+    };
+    const refreshAuth = async (input) => {
+      assert.equal(input && input.authFile, authFile);
+      fs.writeFileSync(authFile, JSON.stringify({ tokens: { access_token: 'new-token', account_id: 'test-account' } }));
+      return true;
+    };
+    const result = await fetchCodexUsage(1000, { authFile, refreshAuth });
+    assert.equal(result.status, 'ok');
+    assert.deepEqual(calls, ['Bearer old-token', 'Bearer new-token']);
+
+    calls.length = 0;
+    handler = async (_url, init) => {
+      calls.push(init.headers.Authorization);
+      return json({ error: { code: 'token_revoked' } }, 401);
+    };
+    const declined = await fetchCodexUsage(1000, { authFile, refreshAuth: async () => false });
+    assert.equal(declined.status, 'no_auth');
+    assert.equal(calls.length, 1, 'no retry without a repair');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('余量轮询超时会中止统一请求并保留超时诊断', async () => {
   handler = async (_url, { signal }) => new Promise((_resolve, reject) => {
     signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });

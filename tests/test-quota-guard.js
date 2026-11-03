@@ -23,8 +23,8 @@ const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime
 const NOW = 1_800_000_000_000;
 const HOUR = 60 * 60_000;
 
-function entry(windows, { fetchedAt = NOW } = {}) {
-  return { status: 'ok', fetchedAt, summary: { kind: 'window', windows } };
+function entry(windows, { fetchedAt = NOW, lastAttemptAt = null } = {}) {
+  return { status: 'ok', fetchedAt, lastAttemptAt, summary: { kind: 'window', windows } };
 }
 
 function window(name, usedPercent, resetMs) {
@@ -49,15 +49,20 @@ test('defaults hold a subscription at 98% and can be overridden per window', () 
   assert.equal(defaults.fiveHourPercent, 98);
   assert.equal(defaults.weeklyPercent, 98);
   assert.equal(defaults.scope, 'official');
+  assert.equal(defaults.maxReadingAgeMs, 30 * 60_000);
 
   const env = envConfig({
     MULTICC_QUOTA_GUARD_PERCENT: '95',
     MULTICC_QUOTA_GUARD_WEEKLY_PERCENT: '90',
     MULTICC_QUOTA_GUARD_SCOPE: 'all',
+    MULTICC_QUOTA_GUARD_MAX_READING_AGE_MS: '600000',
   });
   assert.equal(env.fiveHourPercent, 95);
   assert.equal(env.weeklyPercent, 90);
   assert.equal(env.scope, 'all');
+  assert.equal(env.maxReadingAgeMs, 600_000);
+  // An out-of-band age is ignored, not clamped into a nonsense gate.
+  assert.equal(envConfig({ MULTICC_QUOTA_GUARD_MAX_READING_AGE_MS: '5' }).maxReadingAgeMs, undefined);
 
   const off = normalizeConfig({ ...envConfig({ MULTICC_QUOTA_GUARD: '0' }) });
   assert.equal(off.enabled, false);
@@ -95,11 +100,64 @@ test('the fullest window decides, and a disabled guard never fires', () => {
   }).blocked, false);
 });
 
-test('an old reading is still a lower bound inside its window', () => {
-  // Rolling windows never give quota back before the reset, so a two-hour-old
-  // 99% weekly reading cannot mean less than 99% now.
+test('a blocking reading older than maxReadingAgeMs releases the gate for revalidation', () => {
+  // Consumption is monotone inside a window, but the denominator is not: a
+  // plan upgrade or top-up shrinks usedPercent mid-window, and a held gate
+  // starves the refresh path that would learn it. A two-hour-old 99% weekly
+  // reading (default max age: 30 minutes) therefore does not block — it asks
+  // for a re-read instead.
   const stale = entry([window('7d', 99, NOW + 48 * HOUR)], { fetchedAt: NOW - 2 * HOUR });
-  assert.equal(guardVerdict(stale, { now: NOW }).blocked, true);
+  const verdict = guardVerdict(stale, { now: NOW });
+  assert.equal(verdict.blocked, false);
+  assert.equal(verdict.reason, 'stale_reading');
+  assert.equal(verdict.kind, 'weekly');
+  assert.equal(verdict.usedPercent, 99);
+  assert.equal(verdict.readingAtMs, NOW - 2 * HOUR);
+});
+
+test('a blocking reading inside maxReadingAgeMs still blocks', () => {
+  const fresh = entry([window('7d', 99, NOW + 48 * HOUR)], { fetchedAt: NOW - 10 * 60_000 });
+  assert.equal(guardVerdict(fresh, { now: NOW }).blocked, true);
+  // The bound is configurable per install.
+  assert.equal(guardVerdict(fresh, { now: NOW, config: { maxReadingAgeMs: 5 * 60_000 } }).reason, 'stale_reading');
+});
+
+test('a failed re-read re-arms the staleness clock', () => {
+  // The account read 99% two hours ago, but a refresh was attempted (and
+  // failed) five minutes ago: while upstream cannot be asked, the gate keeps
+  // holding rather than releasing a probe turn on every check.
+  const rearmed = entry([window('7d', 99, NOW + 48 * HOUR)], {
+    fetchedAt: NOW - 2 * HOUR,
+    lastAttemptAt: NOW - 5 * 60_000,
+  });
+  assert.equal(guardVerdict(rearmed, { now: NOW }).blocked, true);
+});
+
+test('a stale release offers the provider a re-read, throttled per provider', () => {
+  let clock = NOW;
+  const cache = {
+    get: () => entry([window('7d', 99, clock + 48 * HOUR)], { fetchedAt: clock - 2 * HOUR }),
+  };
+  const offered = [];
+  const instance = createQuotaGuard({
+    cache, now: () => clock, env: {}, configFile: null,
+    onStale: (appType, providerId) => offered.push([appType, providerId]),
+  });
+  assert.equal(instance.check({ appType: 'claude', providerId: 'claude-official-abc' }).reason, 'stale_reading');
+  instance.check({ appType: 'claude', providerId: 'claude-official-abc' });
+  instance.check({ appType: 'claude', providerId: 'claude-official-abc' });
+  assert.deepEqual(offered, [['claude', 'claude-official-abc']], 'one offer per throttle window');
+  // The refresher can also be (re)wired after construction, and the throttle
+  // window having passed lets the next check offer again.
+  clock += 61_000;
+  const later = [];
+  instance.setStaleRefresher((appType, providerId) => later.push([appType, providerId]));
+  instance.check({ appType: 'claude', providerId: 'claude-official-abc' });
+  assert.deepEqual(later, [['claude', 'claude-official-abc']]);
+  instance.setStaleRefresher(null);
+  clock += 61_000;
+  instance.check({ appType: 'claude', providerId: 'claude-official-abc' });
+  assert.deepEqual(later, [['claude', 'claude-official-abc']], 'a cleared refresher offers nothing');
 });
 
 test('a single top-level reading is read as the window it names', () => {

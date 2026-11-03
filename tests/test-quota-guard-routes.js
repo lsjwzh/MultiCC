@@ -60,6 +60,7 @@ test('with no file, the API answers exactly the defaults the guard uses', () => 
   assert.equal(res.code, 200);
   assert.deepEqual(res.payload.config, {
     enabled: true, fiveHourPercent: 98, weeklyPercent: 98, monthlyPercent: 98, scope: 'official',
+    maxReadingAgeMs: 30 * 60_000,
   });
   assert.deepEqual(res.payload.saved, {});
   assert.deepEqual(res.payload.envOverrides, []);
@@ -87,6 +88,25 @@ test('values that would strand every request are refused, not clamped', () => {
   assert.equal(routes.put({ enabled: 'yes' }).code, 400);
   assert.equal(routes.put({}).code, 400);
   assert.equal(percentInput('97.5').value, 97.5);
+});
+
+test('maxReadingAgeMs saves within its band and is refused outside it', () => {
+  const file = tempFile();
+  const routes = mount(file);
+  for (const maxReadingAgeMs of [0, -1, 5, 59_999, 8 * 24 * 3600_000, 'abc', '', null]) {
+    const res = routes.put({ maxReadingAgeMs });
+    assert.equal(res.code, 400, `maxReadingAgeMs=${JSON.stringify(maxReadingAgeMs)}`);
+    assert.match(res.payload.error, /maxReadingAgeMs/);
+  }
+  const saved = routes.put({ maxReadingAgeMs: 10 * 60_000 });
+  assert.equal(saved.code, 200);
+  assert.equal(saved.payload.config.maxReadingAgeMs, 600_000);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).maxReadingAgeMs, 600_000);
+  // The guard itself re-reads the saved value.
+  const instance = createQuotaGuard({
+    cache: { get: () => null }, configFile: file, env: {}, now: () => NOW,
+  });
+  assert.equal(instance.config().maxReadingAgeMs, 600_000);
 });
 
 test('an environment override is reported instead of silently outvoted', () => {

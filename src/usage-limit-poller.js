@@ -178,12 +178,7 @@ async function pollDeepseekBalance(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
 // window the plan has is surfaced — Plus meters a 5h window AND a weekly one,
 // and the 5h one is usually what stops a session first; prolite has only the
 // week. Windows are classified by length (src/codex/rate-limit-windows.js).
-async function pollCodexUsage(target, nowMs, timeoutMs = POLL_TIMEOUT_MS, readAuth = null) {
-  const reader = readAuth
-    || (target && target.authFile ? () => readCodexAuth(target.authFile) : readCodexAuth);
-  const auth = reader();
-  if (!auth) return null;
-  const body = await readJson(signal => requestCodexUsage(auth, { signal }), timeoutMs);
+function codexUsageDto(body, nowMs) {
   const rl = body && typeof body === 'object' ? body.rate_limit : null;
   if (!rl || typeof rl !== 'object') return null;
   const windows = codexRateLimitWindows(rl, nowMs);
@@ -208,6 +203,25 @@ async function pollCodexUsage(target, nowMs, timeoutMs = POLL_TIMEOUT_MS, readAu
     // cache keeps them so Auto steers off an account before any one runs dry.
     windows: windows.map((w) => ({ window: w.window, label: w.label, usedPercent: w.usedPercent, resetMs: w.resetMs })),
   };
+}
+
+async function pollCodexUsage(target, nowMs, timeoutMs = POLL_TIMEOUT_MS, readAuth = null) {
+  const reader = readAuth
+    || (target && target.authFile ? () => readCodexAuth(target.authFile) : readCodexAuth);
+  let auth = reader();
+  if (!auth) return null;
+  try {
+    return codexUsageDto(await readJson(signal => requestCodexUsage(auth, { signal }), timeoutMs), nowMs);
+  } catch (error) {
+    // An expired token is repairable: offer the injected refresher one shot,
+    // then retry the read once with whatever auth.json now holds. Any other
+    // failure (and a declined refresh) propagates unchanged.
+    if (!/HTTP 40[13]\b/.test(String(error && error.detail || ''))) throw error;
+    if (!(await runCodexAuthRefresh({ authFile: (target && target.authFile) || null }))) throw error;
+    auth = reader();
+    if (!auth) return null;
+    return codexUsageDto(await readJson(signal => requestCodexUsage(auth, { signal }), timeoutMs), nowMs);
+  }
 }
 
 async function pollRelayQuota(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
@@ -246,6 +260,22 @@ const ADAPTERS = Object.freeze({
   'codex-oauth-usage': pollCodexUsage,
   'relay-quota': pollRelayQuota,
 });
+
+// A 401 from the usage read means the on-disk OAuth token expired, and the
+// poller cannot repair that itself — only the codex CLI rotating the refresh
+// token can (src/codex/oauth-refresh.js, which the host already runs on a
+// timer). The host injects that repair here; a 401 then costs one refresh
+// attempt and one retry instead of every poll failing until something else
+// happens to run the CLI. The hook receives { authFile } and resolves truthy
+// when a retry is worth it (the token moved, or was already fresh).
+let codexAuthRefresher = null;
+function setCodexAuthRefresher(fn) {
+  codexAuthRefresher = typeof fn === 'function' ? fn : null;
+}
+async function runCodexAuthRefresh(input) {
+  if (typeof codexAuthRefresher !== 'function') return false;
+  try { return !!(await codexAuthRefresher(input || {})); } catch (_) { return false; }
+}
 
 // ── Poller: dedup by account, TTL cache, best-effort broadcast. ──
 
@@ -327,6 +357,8 @@ module.exports = {
   pollDeepseekBalance,
   pollCodexUsage,
   pollRelayQuota,
+  setCodexAuthRefresher,
+  runCodexAuthRefresh,
   keyHash,
   TTL_BY_STRATEGY,
 };

@@ -17,10 +17,19 @@
 // above the configured share, with a reset still ahead? If so the caller must
 // not send more requests to that account until the window resets.
 //
-// Why a stale reading is still trustworthy: inside one window `usedPercent` only
-// increases — rolling windows never give quota back before their reset — so an
-// old reading is a LOWER BOUND on the current one. The only way it becomes wrong
-// is if the window it described has already reset, which the reset time covers.
+// Why a stale reading may still hold the gate, but only for a while: inside
+// one window `usedPercent` only increases for CONSUMPTION — rolling windows
+// never give quota back before their reset — so an old reading is a lower
+// bound on what was spent. The denominator is another matter: a plan upgrade,
+// a top-up or an account change shrinks usedPercent mid-window, and the cache
+// cannot learn any of that while the gate holds every turn, because the quota
+// refresh rides on completed turns — a hard block on a stale reading is a
+// deadlock that only a manual cache edit used to break. So a blocking reading
+// older than maxReadingAgeMs RELEASES the gate (`stale_reading`): one turn is
+// let through and a re-read is kicked off, after which a genuinely exhausted
+// account re-parks on the fresh reading or the real 429. A failed re-read
+// stamps lastAttemptAt, which re-arms the staleness clock — an unreachable
+// upstream is probed at most once per maxReadingAgeMs, never hammered.
 // A window that publishes no reset time never blocks: there would be no honest
 // moment to lift the gate.
 //
@@ -32,7 +41,8 @@
 //       "fiveHourPercent": 98,
 //       "weeklyPercent": 98,
 //       "monthlyPercent": 98,
-//       "scope": "official" }
+//       "scope": "official",
+//       "maxReadingAgeMs": 1800000 }
 //
 //   MULTICC_QUOTA_GUARD=0|1                 master switch
 //   MULTICC_QUOTA_GUARD_PERCENT=98          every window at once
@@ -40,6 +50,9 @@
 //   MULTICC_QUOTA_GUARD_WEEKLY_PERCENT=98   seven-day window
 //   MULTICC_QUOTA_GUARD_MONTHLY_PERCENT=98  thirty-day window
 //   MULTICC_QUOTA_GUARD_SCOPE=official|all  which providers the gate may hold
+//   MULTICC_QUOTA_GUARD_MAX_READING_AGE_MS=1800000  how old a blocking reading
+//                                           may get before the gate releases
+//                                           for revalidation instead
 //
 // `scope: 'official'` is the default because only an official subscription has
 // a window that is actually consumed to zero; a third-party relay reporting 98%
@@ -53,7 +66,16 @@ const DEFAULTS = Object.freeze({
   weeklyPercent: 98,
   monthlyPercent: 98,
   scope: 'official',
+  // A blocking reading this old has outlived the evidence behind it (see the
+  // header): the gate releases for one revalidated turn instead of holding
+  // the account — and the refresh path — hostage until the window resets.
+  maxReadingAgeMs: 30 * 60 * 1000,
 });
+
+// A re-read offer per provider at most this often; check() runs per candidate
+// per turn, and without the throttle a stale gate would re-kick the refresh
+// on every one of them.
+const STALE_NOTIFY_MIN_INTERVAL_MS = 60 * 1000;
 
 // Settings are re-read at most this often, so editing quota-guard.json (or the
 // environment of a restart) takes effect without a per-request stat/parse.
@@ -79,6 +101,15 @@ function boolOf(value, fallback) {
   return fallback;
 }
 
+// Below a minute the gate would re-ask upstream on nearly every request, and
+// above a week it is no release valve at all — both read as form mistakes.
+function readingAgeOf(value) {
+  const number = Number(value);
+  if (value == null || value === '' || !Number.isFinite(number)) return null;
+  if (number < 60_000 || number > 7 * 24 * 3600_000) return null;
+  return Math.trunc(number);
+}
+
 function normalizeConfig(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const scope = clean(source.scope).toLowerCase();
@@ -88,6 +119,7 @@ function normalizeConfig(raw) {
     weeklyPercent: percentOf(source.weeklyPercent) ?? DEFAULTS.weeklyPercent,
     monthlyPercent: percentOf(source.monthlyPercent) ?? DEFAULTS.monthlyPercent,
     scope: scope === 'all' ? 'all' : 'official',
+    maxReadingAgeMs: readingAgeOf(source.maxReadingAgeMs) ?? DEFAULTS.maxReadingAgeMs,
   });
 }
 
@@ -111,6 +143,8 @@ function envConfig(env = process.env) {
   if (monthly != null) patch.monthlyPercent = monthly;
   const scope = clean(env.MULTICC_QUOTA_GUARD_SCOPE).toLowerCase();
   if (scope === 'all' || scope === 'official') patch.scope = scope;
+  const maxReadingAge = readingAgeOf(env.MULTICC_QUOTA_GUARD_MAX_READING_AGE_MS);
+  if (maxReadingAge != null) patch.maxReadingAgeMs = maxReadingAge;
   return patch;
 }
 
@@ -161,6 +195,18 @@ function liveWindows(entry) {
   return rows;
 }
 
+// The moment the entry last said something about the account: a successful
+// read stamps fetchedAt, a failed refresh stamps lastAttemptAt. Taking the
+// max means a failed re-read re-arms the staleness clock — while upstream
+// cannot be asked at all, the gate keeps holding instead of releasing a probe
+// turn on every check.
+function readingTimestamp(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const stamps = [Number(entry.fetchedAt), Number(entry.lastAttemptAt)]
+    .filter(value => Number.isFinite(value) && value > 0);
+  return stamps.length ? Math.max(...stamps) : null;
+}
+
 // The verdict for one provider. `blocked` is the only thing a caller acts on;
 // the rest is there to be logged and shown, so a held turn can say which window
 // and until when. Ties break towards the fullest window, then the farthest reset.
@@ -181,6 +227,23 @@ function guardVerdict(entry, { config = DEFAULTS, now = Date.now() } = {}) {
   hits.sort((left, right) => (right.usedPercent - left.usedPercent)
     || (right.resetMs - left.resetMs));
   const top = hits[0];
+  // A blocking reading older than maxReadingAgeMs releases the gate instead:
+  // the account may have been upgraded or topped up since, and holding the
+  // turns is exactly what starves the refresh path of a fresh reading. The
+  // caller lets the turn through; check() turns this reason into a re-read.
+  const readingAt = readingTimestamp(entry);
+  if (readingAt != null && now - readingAt > settings.maxReadingAgeMs) {
+    return Object.freeze({
+      blocked: false,
+      reason: 'stale_reading',
+      window: top.window,
+      kind: top.kind,
+      usedPercent: top.usedPercent,
+      threshold: top.threshold,
+      resetsAtMs: top.resetMs,
+      readingAtMs: readingAt,
+    });
+  }
   return Object.freeze({
     blocked: true,
     reason: `quota_guard_${top.kind}`,
@@ -195,9 +258,15 @@ function guardVerdict(entry, { config = DEFAULTS, now = Date.now() } = {}) {
 
 function createQuotaGuard({
   cache, configFile = null, env = process.env, now = Date.now, logger = null,
+  onStale = null,
 } = {}) {
   let cached = null;
   let cachedAt = 0;
+  // The re-read offered on a stale_reading release, (appType, providerId) =>
+  // Promise. Wired after the balance routes exist, so a setter, not an option
+  // the constructor's callers already had to have.
+  let staleRefresher = typeof onStale === 'function' ? onStale : null;
+  const staleNotifiedAt = new Map();
 
   function readFileConfig() {
     if (!configFile) return {};
@@ -251,10 +320,31 @@ function createQuotaGuard({
         resetsAt: new Date(verdict.resetsAtMs).toISOString(),
       });
     }
+    if (verdict.reason === 'stale_reading') {
+      const stamp = now();
+      if (stamp - (staleNotifiedAt.get(id) || 0) >= STALE_NOTIFY_MIN_INTERVAL_MS) {
+        staleNotifiedAt.set(id, stamp);
+        if (logger && typeof logger.info === 'function') {
+          logger.info('quota_guard_stale_release', {
+            providerId: id,
+            window: verdict.window,
+            usedPercent: verdict.usedPercent,
+            readingAt: new Date(verdict.readingAtMs).toISOString(),
+          });
+        }
+        if (staleRefresher) {
+          try { Promise.resolve(staleRefresher(type, id)).catch(() => {}); } catch (_) { /* a re-read must never break a turn */ }
+        }
+      }
+    }
     return verdict;
   }
 
-  return Object.freeze({ check, config, appliesTo });
+  function setStaleRefresher(fn) {
+    staleRefresher = typeof fn === 'function' ? fn : null;
+  }
+
+  return Object.freeze({ check, config, appliesTo, setStaleRefresher });
 }
 
 module.exports = {
@@ -264,6 +354,7 @@ module.exports = {
   guardVerdict,
   liveWindows,
   normalizeConfig,
+  readingAgeOf,
   thresholdFor,
   windowKind,
 };
