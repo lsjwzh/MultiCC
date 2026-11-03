@@ -1793,6 +1793,17 @@
       });
     }
 
+    // Task-keyed rows still spinning: what the panel shows as running background
+    // work. The token-rate chip trusts this over its own timers, so the chip and
+    // the panel can never disagree about whether background work is in flight.
+    function danmakuRunningCount() {
+      let count = 0;
+      for (const [key, row] of danmaku.rows) {
+        if (key.startsWith('t:') && row.state === 'start') count++;
+      }
+      return count;
+    }
+
     return Object.freeze({
       accumulateLiveUsage,
       fmtDuration,
@@ -1806,6 +1817,7 @@
       applyAuxVerdictStaleness,
       renderLiveness,
       pushDanmaku,
+      danmakuRunningCount,
       danmakuOnDisconnect,
       reconcileDanmakuTasks,
       settleTurnScopedDanmaku,

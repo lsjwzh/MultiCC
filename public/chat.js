@@ -388,6 +388,7 @@ let _liveStreamUsage = null;
 const tokenRateBar = document.getElementById('token-rate-bar');
 const tokenRate = window.MultiCCChatTokenRate?.createTokenRateMeter() || null;
 let _tokenRateTimer = null;
+let _turnHeartbeatAt = 0;
 // Provider-level time-window token stats (updated after each turn)
 let _providerId = null;
 let _providerName = null;
@@ -1162,7 +1163,10 @@ function updateUI() {
 function paintTokenRate() {
   const tools = {
     toolRunning: false, toolSince: 0, toolEndedAt: 0,
-    bgRunning: chatBgActivity.runningCount() > 0,
+    // 弹幕面板里还在转的任务行是用户亲眼可见的「后台在跑」，与活动行台账取并集，
+    // 两边对同一事实永不打架。
+    bgRunning: chatBgActivity.runningCount() > 0 || chatLiveUi.danmakuRunningCount() > 0,
+    heartbeatAt: _turnHeartbeatAt,
   };
   for (const tool of currentToolCards.values()) {
     if (!tool || tool.name === 'Thinking' || !tool.startedAt) continue;
@@ -2384,6 +2388,9 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     maybeScrollToBottom,
     renderCurrentText,
     tokenRate,
+    // 服务端静默期心跳＝轮次还活着的证据；速率角标用它把 prefill/压缩这类
+    // 页面无信号的静默归因成「任务执行中」，而不是红色告警。
+    noteTurnHeartbeat: () => { _turnHeartbeatAt = Date.now(); },
     renderSessionQueue: window.MultiCCChatSessionQueue.render,
     renderPendingUserInput: message => pendingUserInputController.render(message),
     getUserInputRequestId: () => chatEventState.pendingUserInputRequestId,

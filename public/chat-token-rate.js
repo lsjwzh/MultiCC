@@ -10,10 +10,10 @@
 // the per-request exact figure, when the lane reports one, goes in the tooltip.
 //
 // Silence is only alarming when nothing explains it. A running tool, an open
-// thinking block, a background task still working or a request still waiting
-// for its first token are all quiet for a reason, so each gets its own neutral
-// state; only unexplained silence (or output that stopped mid-stream) turns
-// amber, then red.
+// thinking block, a background task still working, a fresh turn heartbeat or a
+// request still waiting for its first token are all quiet for a reason, so
+// each gets its own neutral state; only unexplained silence (or output that
+// stopped mid-stream) turns amber, then red.
 (function attachChatTokenRate(root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
@@ -46,6 +46,9 @@
   // may read as an alarm.
   const WAITING_MS = Object.freeze([180000, 600000]);
   const PAUSED_MS = Object.freeze([60000, 300000]);
+  // The server beats every 8s while a turn is silent; a beat this old means
+  // the runner stopped reporting, which is exactly when silence is suspect.
+  const HEARTBEAT_FRESH_MS = 30000;
 
   const WIDE = /[⺀-鿿가-힯豈-﫿＀-￯]/g;
 
@@ -162,6 +165,12 @@
         if (ctx.bgRunning) {
           return { ...base, phase: 'bg', rate: 0, phaseMs: t - Math.max(lastAt, segmentAt), tone: 'busy' };
         }
+        // A fresh turn heartbeat says the runner is alive and working between
+        // stream events (prefill, compaction, a tool the cards don't show).
+        if (Number.isFinite(ctx.heartbeatAt) && ctx.heartbeatAt > 0
+          && t - ctx.heartbeatAt <= HEARTBEAT_FRESH_MS) {
+          return { ...base, phase: 'alive', rate: 0, phaseMs: t - Math.max(lastAt, segmentAt), tone: 'busy' };
+        }
         const waiting = lastAt < segmentAt;
         const phaseMs = t - (waiting ? segmentAt : lastAt);
         const limits = waiting ? WAITING_MS : PAUSED_MS;
@@ -188,6 +197,7 @@
       case 'thinking': text = tt('tokenRateThinking', '💭 思考中 {dur}', { dur }); break;
       case 'waiting': text = tt('tokenRateWaiting', '⏳ AI 请求处理中 {dur}', { dur }); break;
       case 'bg': text = tt('tokenRateBg', '⏸ AI 请求已停 {dur} · 后台任务执行中', { dur }); break;
+      case 'alive': text = tt('tokenRateAlive', '⏸ AI 请求已停 {dur} · 任务执行中', { dur }); break;
       default: text = tt('tokenRatePaused', '⏸ 0 tok/s · AI 请求已停 {dur}', { dur }); break;
     }
     const lines = [tt('tokenRateTitle', '实时输出速度（按流式文本估算，近 3 秒）')];
@@ -208,7 +218,7 @@
   }
 
   return Object.freeze({
-    WINDOW_MS, RESYNC_TOKENS, WAITING_MS, PAUSED_MS,
+    WINDOW_MS, RESYNC_TOKENS, WAITING_MS, PAUSED_MS, HEARTBEAT_FRESH_MS,
     estimateTokens, createTokenRateMeter, describe,
   });
 });

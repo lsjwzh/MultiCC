@@ -210,7 +210,15 @@ test('background_tasks snapshot reconciles unknown and vanished tasks', () => {
   assert.match(text, /×2/);
   assert.match(text, /任务甲（更新）/, '快照描述应覆盖');
   harness.controller.onEvent({ type: 'background_tasks', tasks: [] });
-  assert.equal(stripOf(harness.messagesEl), null, '快照清空应收行');
+  assert.ok(stripOf(harness.messagesEl), '宽限内快照缺席不闪收');
+  harness.clock.now += 60_000;
+  harness.controller.onEvent({ type: 'monitor_progress', task_id: 't1', description: '任务甲', background: true });
+  harness.clock.now += 60_000;
+  harness.controller.onEvent({ type: 'background_tasks', tasks: [] });
+  assert.ok(stripOf(harness.messagesEl), '进度心跳刷新宽限，快照缺席仍不收');
+  harness.clock.now += 91_000;
+  harness.controller.onEvent({ type: 'background_tasks', tasks: [] });
+  assert.equal(stripOf(harness.messagesEl), null, '宽限过后快照仍缺席才收行');
   harness.controller.dispose();
 });
 

@@ -152,6 +152,24 @@ test('running background tasks explain the quiet without escalating', () => {
     '⏸ AI 请求已停 6m 15s · 后台任务执行中');
 });
 
+test('a fresh turn heartbeat explains silence the task panel cannot see', () => {
+  const { c, meter } = meterAt();
+  meter.begin(0);
+  c.advance(500);
+  meter.noteChunk('abcdabcd');
+  c.advance(rate.WINDOW_MS + 1);
+  c.advance(rate.PAUSED_MS[1] + 1_000);
+  const tNow = c.advance(0);
+  const snap = meter.snapshot({ heartbeatAt: tNow - 5_000 });
+  assert.deepEqual([snap.phase, snap.tone], ['alive', 'busy']);
+  // A stale beat means the runner stopped reporting: the alarm comes back.
+  assert.equal(meter.snapshot({ heartbeatAt: tNow - rate.HEARTBEAT_FRESH_MS - 1 }).phase, 'paused');
+  assert.equal(meter.snapshot({ heartbeatAt: 0 }).phase, 'paused');
+  assert.equal(
+    rate.describe({ active: true, total: 0, ttftMs: null, phase: 'alive', phaseMs: 375_000, tone: 'busy' }).text,
+    '⏸ AI 请求已停 6m 15s · 任务执行中');
+});
+
 test('the exact per-request count becomes a measured rate', () => {
   const { c, meter } = meterAt();
   meter.begin(0);
@@ -214,4 +232,9 @@ test('the chat page ships the chip, its stylesheet and the module in load order'
   assert.match(chatJs, /\n    tokenRate,\n/, 'the event controller reports into the same meter');
   assert.match(chatJs, /bgRunning: chatBgActivity\.runningCount\(\) > 0/,
     'running background tasks feed the meter so explained silence stays neutral');
+  assert.match(chatJs, /chatLiveUi\.danmakuRunningCount\(\) > 0/,
+    'the panel’s spinning rows are a second source of background truth');
+  assert.match(chatJs, /heartbeatAt: _turnHeartbeatAt/, 'the turn heartbeat feeds the meter');
+  const liveUi = fs.readFileSync(path.join(__dirname, '../public/chat-live-ui.js'), 'utf8');
+  assert.match(liveUi, /function danmakuRunningCount\(\)/, 'the panel exposes its spinning task rows');
 });
