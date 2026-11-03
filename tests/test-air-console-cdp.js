@@ -184,7 +184,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
 
     // ── 侧栏：任务区只装「最近」，其余操作按频次收敛 ─────────────────────
     assert.equal(await page.evaluate(`document.getElementById('activity')===null`), true, '跨目录活动入口已移除');
-    assert.equal(await page.evaluate(`[...document.querySelectorAll('#sidebar .nav-row')].map(el=>el.textContent.replace(/\\s+/g,'').replace(/\\d+$/,'')).join('|')`), '◫控制台|◴定时任务|⚙设置›');
+    assert.equal(await page.evaluate(`[...document.querySelectorAll('#sidebar .nav-row')].map(el=>el.textContent.replace(/\\s+/g,'').replace(/\\d+$/,'')).join('|')`), '控制台|定时任务|⚙设置›');
     assert.ok(await page.waitFor(`document.getElementById('console-badge').hidden===false`), '控制台行带常驻徽标');
     // 徽标数 = 要我动手的任务（现场里只有一条等回答的）。在跑的那条不算 ——
     // 它不需要我操作，不该在侧栏催我。
@@ -456,41 +456,41 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(await page.evaluate(`[...document.querySelectorAll('#directory-grid button small')].some(el=>el.textContent.includes('已收藏'))`), false,
       '目录库不再给收藏过的目录打「已收藏」');
 
-    // ── 「只有半边」的那个圈：目录视图 ───────────────────────────────────
-    // 地址里不带 &task= 时 air.js 会给 #library（就是 .space-main）挂 .active，
-    // 底色是不透明的 #eff6ff，正好贴在卡片 padding 边上。圈当年画在 card 自己身上，
-    // 于是上/左/右三条边被它整条盖掉，只剩下面一条 —— 用户看到的「有时候是好的，
-    // 有时候只有半边」：同一个页面，点进任务就正常，回到目录视图（或鼠标停在卡片
-    // 上，.space-main:hover 是同一套底色）就缺三条边。圈现在画在 ::before 覆盖层上，
-    // 是卡片自己的子元素，永远在所有后代之上。这条断言就是那次修复的守卫。
+    // 顶栏不再画卡片边框；运行状态通过品牌旁的静态圆点保留。
+    const assertDirectoryDot = async () => {
+      const dot = await page.evaluate(`(() => {
+        const host = document.querySelector('.space-card');
+        const brand = host.querySelector('.brand-mark');
+        const r = brand.getBoundingClientRect();
+        const border = getComputedStyle(brand);
+        const style = getComputedStyle(brand, '::after');
+        return { frame: getComputedStyle(host, '::before').content,
+          content: style.content, animation: style.animationName,
+          x: r.right - parseFloat(border.borderRightWidth) - parseFloat(style.right) - parseFloat(style.width) / 2,
+          y: r.top + parseFloat(border.borderTopWidth) + parseFloat(style.top) + parseFloat(style.height) / 2 };
+      })()`);
+      assert.equal(dot.frame, 'none', '运行中也不恢复整行卡片描边');
+      assert.equal(dot.content, '""', '品牌旁显示运行圆点');
+      assert.equal(dot.animation, 'none', '运行圆点保持静态');
+      const x = Math.floor(dot.x) - 3, y = Math.floor(dot.y) - 3;
+      const shot = await captureRegion(page, { x, y, width: 8, height: 8 });
+      assert.ok(saturation(shot.at(Math.round(dot.x - x), Math.round(dot.y - y))) >= RING_MIN_SATURATION,
+        '运行圆点实际可见，不被目录按钮的背景遮挡');
+    };
     await page.navigate('/air?dir=d3');
     assert.ok(await page.waitFor(`document.querySelector('.space-card.ring-running')!==null`));
-    await page.screenshot('07-ring-directory');
-    const cover = await page.evaluate(`(() => { const lib = document.getElementById('library');
-      return { active: lib.classList.contains('active'), bg: getComputedStyle(lib).backgroundColor }; })()`);
-    // 前提：当年盖住圈的那个不透明后代还在。它哪天不在了，这组断言就复现不出当时的
-    // 场景 —— 那时该另找一个能盖住圈的后代来守着，而不是把这条删掉。
-    assert.equal(cover.active, true, '目录视图里 #library 带 .active（当年盖住圈的就是它）');
-    assert.equal(cover.bg, 'rgb(239, 246, 255)', '它还是不透明的');
-    await assertRingDrawn(page, '.space-card', '当前目录卡片（目录视图）');
-    // 圈的颜色是「按 id 挑」而不是「每次随机」：整页重来一遍，同一张卡片还得是同一
-    // 个色。列表本来每 15 秒就随快照重画一次，随机会让同一行一直在换颜色。
+    assert.equal(await page.evaluate(`document.getElementById('library').classList.contains('active')`), true);
+    await page.screenshot('07-directory-running-dot');
+    await assertDirectoryDot();
     const tintOf = () => page.evaluate(`getComputedStyle(document.querySelector('.space-card')).getPropertyValue('--ring-tint').trim()`);
     const firstTint = await tintOf();
-    assert.match(firstTint, /^#[0-9a-f]{6}$/i, `圈的 --ring-tint 该是调色板里的颜色，实际是 ${JSON.stringify(firstTint)}`);
+    assert.match(firstTint, /^#[0-9a-f]{6}$/i);
     await page.navigate('/air?dir=d3');
     assert.ok(await page.waitFor(`document.querySelector('.space-card.ring-running')!==null`));
-    assert.equal(await tintOf(), firstTint, '同一个目录重画之后应该还是同一个颜色');
-    // 圈对任何人都已经不动了（air.css 那段有原因：软件光栅下「一直有东西在动」就是
-    // 合成器永远不 idle）。所以这里不再有「静音版」这一说 —— 换到 reduced-motion
-    // 偏好，看到的还是同一个圈、同一个颜色，四条边照样要画出来：晕动症用户不该
-    // 因此丢掉「这条在跑」。顺带把「圈上不许挂动画」钉在这里，动画回到圈上不该
-    // 只靠肉眼在用户机器上发现。
+    assert.equal(await tintOf(), firstTint, '同一个目录重画之后保留相同的状态颜色');
     await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
-    assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('.space-card'),'::before').animationName`), 'none',
-      '圈是静态描边：prefers-reduced-motion 下当然还是不动');
-    await page.screenshot('08-ring-directory-reduced-motion');
-    await assertRingDrawn(page, '.space-card', '当前目录卡片（目录视图 · 关掉动画）');
+    await page.screenshot('08-directory-running-dot-reduced-motion');
+    await assertDirectoryDot();
     await page.send('Emulation.setEmulatedMedia', { features: [] });
 
     await page.navigate('/air?dir=d1&task=tsk_here');
