@@ -377,11 +377,12 @@
                  air-role-editor.js) and holds the answer until the task is
                  created — the form never grows a second copy of the controls. -->
             <div class="mc-composer__aux">
+              <!-- 电脑胶囊排在胶囊行最前（air-quick-machine.js）：它决定新任务创建在
+                   哪台电脑，是后面 provider/角色的前提，所以领頭；只在配置了多电脑时
+                   显示，默认隐藏，不占未配置用户的胶囊行。 -->
+              <button id="quick-machine-pill" class="mc-composer__pill mc-composer__pill--machine" type="button" hidden></button>
               <button id="quick-ai-pill" class="mc-composer__pill mc-composer__pill--ai" type="button"></button>
               <button id="quick-role-pill" class="mc-composer__pill mc-composer__pill--role" type="button" data-i18n="airQuickAddRole">＋ 角色</button>
-              <!-- 电脑胶囊只在配置了多电脑时显示（air-quick-machine.js）：选新任务
-                   创建在哪台电脑，默认隐藏，不占未配置用户的胶囊行。 -->
-              <button id="quick-machine-pill" class="mc-composer__pill mc-composer__pill--machine" type="button" hidden></button>
             </div>
             <div id="quick-task-files"></div>
             <textarea id="quick-task-input" class="mc-composer__input" rows="4" maxlength="32000" required
