@@ -8,6 +8,7 @@
 //! 只在 macOS 且上游是 `ws://`（pipe:// 是隔离实例的私有通道，本来就不弹窗）时
 //! 由 [`upstream`] 在等待建连期间拉起，建连有了结果（成功/失败/超时）立即停。
 
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
 /// 首次尝试前的等待：弹窗本身出现也要一点时间。只被 macOS 实现引用。
