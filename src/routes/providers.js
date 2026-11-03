@@ -286,7 +286,7 @@ function createProviderRoutes(rawDeps) {
               // resolve the canonical bar's time tokens just like chat does.
               summaryText: entry.summaryText,
               bar: providerLimitBar({ ...entry,
-                stale: !!(entry.fetchedAt != null && nowMs - entry.fetchedAt > staleAfterMs) }),
+                stale: !!(entry.fetchedAt != null && nowMs - entry.fetchedAt > staleAfterMs) }, nowMs),
               fetchedAt: entry.fetchedAt,
               updatedAt: entry.updatedAt,
               lastError: entry.lastError,

@@ -400,7 +400,7 @@ test('provider pickers resolve the same server bar as the cards, including reset
   const { providerLimitBar } = require('../src/quota/quota-bar-view');
   const { resolveProviderLimit } = require('../public/quota-bar-view');
   const bar = providerLimitBar({ kind: 'claude', stale: true, fetchedAt: now - 60_000,
-    summary: { windows: [{ window: '7d', usedPercent: 36, resetMs: now + 86_400_000 }] } });
+    summary: { windows: [{ window: '7d', usedPercent: 36, resetMs: now + 86_400_000 }] } }, now);
   const provider = providerCatalog.normalizeProvider({ id: 'p1', appType: 'claude',
     limit: { summaryText: '7d 36%', bar, fetchedAt: now - 60_000, stale: true } });
   const resolved = resolveProviderLimit(provider.limit, { now });

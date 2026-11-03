@@ -7,7 +7,7 @@ const { STALE_MS_DEFAULT } = require('./provider-limit-cache');
 function providerLimitSnapshot(entry, now = Date.now()) {
   if (!entry || entry.kind === 'availability') return null;
   const stale = entry.fetchedAt != null && now - entry.fetchedAt > STALE_MS_DEFAULT;
-  const bar = providerLimitBar({ ...entry, stale });
+  const bar = providerLimitBar({ ...entry, stale }, now);
   if (!bar) return null;
   return {
     type: 'provider_limit_updated', ok: true,
