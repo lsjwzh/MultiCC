@@ -19,6 +19,7 @@ const crypto = require('crypto');
 const {
   classifyDisplay,
   resolveGoalState,
+  GOAL_STATES,
   phaseLabel,
   isProcessingLetter,
   isWaitForUserLetter,
@@ -162,6 +163,21 @@ function createClassifyStateMachine(rawDeps) {
     return { state: 'unknown', reason: 'liveness_unavailable' };
   }
 
+  // ── Rule verdicts are turn evidence, not goal evidence ──────────────────
+  // 轮次规则（classifyTurnEnd）只证明「这一轮正常收尾」，证不了「任务的所有要求都
+  // 做完了」。它提交 D 时若顺手按 phase=done 映射出子状态，首屏和推送就会抢在
+  // Aux 答案之前宣布「达成目标」；一旦 Aux 失败（超忙/429），这句假话就永久留下。
+  // 所以规则提交的 D 一律不带子状态；这一层唯一的真实证据是用户手动「标记达成
+  // 目标」（goalStateManualAt），且必须落在当前任务内——与下面
+  // applyTaskAttributionResult 的 manualAchieved 用同一条时间线判据。
+  function ruleCommitGoalState(persisted, cs) {
+    const ts = getTaskState(persisted);
+    const taskStartedAt = Number(cs?.currentTask?.startedAt || ts.startedAt || 0);
+    return ts.goalState === GOAL_STATES.achieved
+      && Number(ts.goalStateManualAt || 0) >= taskStartedAt
+      ? GOAL_STATES.achieved : null;
+  }
+
   function dispatchStateAction(result, ctx) {
     const { state, goal, phase } = result;
     // The letter IS the state (single source). The legacy error/background flags
@@ -194,12 +210,22 @@ function createClassifyStateMachine(rawDeps) {
     }
     const finalGoal = (cs && cs.currentTask) ? cs.currentTask.goal : goal;
     const finalPhase = (cs && cs.currentTask) ? cs.currentTask.phase : phase;
+    // A rule verdict carries no goal evidence, so its D sub-state is null unless
+    // the user marked this task achieved by hand (see ruleCommitGoalState).
+    // Gateway turns are the one exception: their D IS the completion evidence for
+    // their own routing transaction (resolveTurnState's gateway_turn_succeeded)
+    // and they never get an Aux refine, so they keep the existing phase mapping.
+    const ruleCommit = source === 'multicc/turn-rules'
+      && result.evidence !== 'gateway_turn_succeeded';
+    const ruleGoalState = ruleCommit && isTerminalLetter(state)
+      ? ruleCommitGoalState(persisted, cs) : null;
     // The entry's goalState is resolved from the SAME final goal/phase the
     // completion notice below persists (model-inferred value first, phase mapping
     // as the fallback; including the dismissed-question null), so a history row
     // replays to the sub-state the bar actually showed.
-    const entryGoalState = result.evidence === 'user_dismissed_question'
-      ? null : resolveGoalState(state, result.goalState, { state, goal: finalGoal, phase: finalPhase });
+    const entryGoalState = result.evidence === 'user_dismissed_question' ? null
+      : ruleCommit ? ruleGoalState
+        : resolveGoalState(state, result.goalState, { state, goal: finalGoal, phase: finalPhase });
     const entry = { at: now, goal: goal || '', taskId: entryTaskId,
       phase: phase || '', state, goalState: entryGoalState,
       error: !!error, evidence: result.evidence || undefined };
@@ -286,8 +312,11 @@ function createClassifyStateMachine(rawDeps) {
       // ✅ 这一格的三个子状态（达成目标 / 需要交互 / 无子状态）：模型在归集 JSON 里
       // 直接推理的 goalState 优先（见 vocab.js resolveGoalState），没给时按刚落盘的
       // goal + phase 映射兜底 —— 卡片不用自己推，也不会有第二份口径。
+      // 轮次规则的判定没有目标证据（见 ruleCommitGoalState），此时只认手动标记，
+      // 否则保持无子状态，等 Aux 归因答案到达后再精修。
       const goalState = dismissedQuestion ? null
-        : resolveGoalState(state, result.goalState, { state, goal: finalGoal, phase: finalPhase });
+        : ruleCommit ? ruleGoalState
+          : resolveGoalState(state, result.goalState, { state, goal: finalGoal, phase: finalPhase });
       const completionTaskId = transitionTaskId || entryTaskId;
       const completionTaskShortCode = taskShortCode(completionTaskId);
       const completionNotice = {
@@ -612,12 +641,13 @@ function createClassifyStateMachine(rawDeps) {
     const persisted = persistedSessions.get(sessionName);
     const currentState = getTaskState(persisted);
     const taskStartedAt = Number(cs.currentTask.startedAt || currentState.startedAt || 0);
-    // The turn-rules verdict commits D BEFORE this attribution answer arrives, and
-    // it forces phase='done' at that moment — so the sub-state first painted (and
-    // pushed) came from the polluted mapping. The model's own goalState lands HERE:
-    // refine the live taskState and the matching D history rows with it. Only a
-    // still-D verdict may be refined; the anchor/superseded guards above already
-    // prove this answer belongs to the turn that verdict judged.
+    // The turn-rules verdict commits D BEFORE this attribution answer arrives,
+    // and it deliberately reports no goalState (rule evidence cannot prove the
+    // task is done) — so the sub-state first painted (and pushed) is a plain
+    // 「执行成功」. The model's own goalState lands HERE: refine the live taskState
+    // and the matching D history rows with it. Only a still-D verdict may be
+    // refined; the anchor/superseded guards above already prove this answer
+    // belongs to the turn that verdict judged.
     // A user who already marked this turn 「达成目标」 by hand (mark-goal-achieved)
     // outranks the model: the refine must not paint 「需要交互」 back over it.
     const manualAchieved = currentState.goalState === 'achieved'
@@ -1392,7 +1422,11 @@ function createClassifyStateMachine(rawDeps) {
     applyClassifyResult(cs, sessionName, sessionId, {
       ...verdict,
       goal: cs?.currentTask?.goal || getTaskState(persisted).goal || '',
-      phase: isTerminalLetter(verdict.state)
+      // 规则判定不把 phase 推成 'done'：D 只说明这一轮正常收尾，没有「任务所有
+      // 要求都做完」的证据（vocab 的 phase 映射正是拿它当「达成目标」的兜底）。
+      // 保持任务当前阶段，交给随后的 Aux 归因按模型读数精修。网关轮例外：它的 D
+      // 就是自身路由事务完成的证据，且不参与 Aux 归因，维持原行为。
+      phase: verdict.evidence === 'gateway_turn_succeeded'
         ? 'done' : cs?.currentTask?.phase || getTaskState(persisted).phase || 'planning',
     }, applyOptions);
 

@@ -683,6 +683,71 @@ test('trailing envelopes appended after real output are split into body + error'
   }
 });
 
+test('a chain of back-to-back trailing envelopes is stripped as one error', () => {
+  // Production shape (Claude Code CLI resident lane): the main answer finished,
+  // background-task notifications woke the agent twice, and each follow-up
+  // request got a 429 whose envelope was glued onto the same assistant text —
+  // four identical envelopes, no separator, ~450 chars from the first to the
+  // end so the single-envelope 400-char allowance could not see it.
+  const rateLimitEnvelope = "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.";
+  const text = `巡检照常：19:00 整点，21:00 起每 15 分钟一次。${rateLimitEnvelope.repeat(4)}`;
+  const detected = detectErrorEnvelope('claude', text);
+  assert.ok(detected, 'the four glued 429 envelopes must be detected');
+  assert.equal(detected.body, '巡检照常：19:00 整点，21:00 起每 15 分钟一次。');
+  assert.equal(detected.body.endsWith('每 15 分钟一次。'), true);
+  assert.doesNotMatch(detected.body, /api error/i);
+  assert.equal(detected.httpStatus, 429);
+  assert.equal((detected.message.match(/api error/gi) || []).length, 4);
+});
+
+test('two different envelopes chained after real output still resolve to the first status', () => {
+  const rateLimit = "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.";
+  const overloaded = 'API Error: 529 Overloaded · The upstream provider returned an overloaded error after the request was accepted. This is a temporary capacity problem on the provider side and it usually clears within a minute; retry the request when the queued work has drained and the service reports healthy again. Consider reducing the batch size until the provider recovers fully.';
+  const text = `答案正文已给出。${rateLimit}${overloaded}`;
+  assert.ok(text.length > 400, 'the chain must exceed the single-envelope allowance to exercise the peel');
+  const detected = detectErrorEnvelope('claude', text);
+  assert.ok(detected);
+  assert.equal(detected.body, '答案正文已给出。');
+  assert.equal(detected.httpStatus, 429);
+  assert.match(detected.message, /429/);
+  assert.match(detected.message, /529/);
+});
+
+test('a single trailing envelope keeps its historical split (delimiter dropped)', () => {
+  const detected = detectErrorEnvelope('claude', '正文输出完毕。API Error: 502 upstream error: TLS disconnected');
+  assert.ok(detected);
+  assert.equal(detected.body, '正文输出完毕');
+  assert.equal(detected.httpStatus, 502);
+});
+
+test('prose ending in a sentence with a glued envelope but no chain start is left untouched', () => {
+  // ASCII "." is not one of the chain-start boundaries, so "…done.API Error: …"
+  // stays ambiguous and detectErrorEnvelope returns null (unchanged behavior:
+  // the text is persisted verbatim rather than stripped as an error).
+  const text = '我已经把巡检脚本改好了.The job is done.API Error: Request rejected (429) · rate limited.';
+  assert.equal(detectErrorEnvelope('claude', text), null);
+});
+
+test('an all-envelope chain longer than the 600-char whole-message cap is error-only', () => {
+  const text = "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.".repeat(6);
+  assert.ok(text.length > 600);
+  const detected = detectErrorEnvelope('claude', text);
+  assert.ok(detected);
+  assert.equal(detected.body, null);
+  assert.equal(detected.httpStatus, 429);
+});
+
+test('chained-envelope detection stays bounded on 200KB of prose that mentions API Error', () => {
+  const chunk = '正文段落里提到了 API Error: 429 的处理方式，然后继续解释重试与退避策略。';
+  const prose = chunk.repeat(Math.ceil(220_000 / chunk.length));
+  assert.ok(prose.length > 200_000);
+  const startedAt = process.hrtime.bigint();
+  const detected = detectErrorEnvelope('claude', prose);
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+  assert.equal(detected, null);
+  assert.ok(elapsedMs < 200, `detection took ${elapsedMs.toFixed(1)}ms`);
+});
+
 test('envelope detection never fires on prose that merely mentions errors', () => {
   assert.equal(detectErrorEnvelope('claude', '好的，我来解释 API Error 的处理方式，以及重试策略。'), null);
   assert.equal(detectErrorEnvelope('claude', '如果看到 API Error: 429 就等一会再重试。'), null);
