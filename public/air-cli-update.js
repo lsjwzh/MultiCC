@@ -227,10 +227,13 @@
     const anchor = el('cli-update-btn');
     if (!panel || !anchor || typeof anchor.getBoundingClientRect !== 'function') return;
     const rect = anchor.getBoundingClientRect();
+    // 顶卡一栏化之后按钮住在卡里：浮层贴整卡的下边出，不压卡边的描线。
+    const host = anchor.closest('.space-card');
+    const bottom = host ? Math.max(rect.bottom, host.getBoundingClientRect().bottom) : rect.bottom;
     const width = panel.offsetWidth || 340;
     const viewport = Number(root.innerWidth) || 0;
     const left = viewport ? Math.min(Math.max(8, rect.right - width), Math.max(8, viewport - width - 8)) : 8;
-    panel.style.top = `${Math.round(rect.bottom + 8)}px`;
+    panel.style.top = `${Math.round(bottom + 8)}px`;
     panel.style.left = `${Math.round(left)}px`;
   }
 

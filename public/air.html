@@ -40,22 +40,23 @@
 </head>
 <body>
   <aside id="sidebar" aria-label="工作目录与任务导航" data-i18n-aria-label="airSidebarNav">
-    <!-- 顶卡是一整块：品牌行（含通知与 CLI 更新两颗图标）和当前目录卡合在同一
-         个框里 —— 「这是哪个产品 + 我在哪个目录」是侧栏的同一段抬头，分两张卡
-         只是多一道边和一段间距。目录切换仍点下面那行（#library），侧拉浮层照旧
-         贴着整卡右边出（air-directory-nav.js）。运行圈画在整卡上（air.js 的
-         applyRing 找 .space-card），包住品牌行是刻意的：圈说的是「这个目录有任务
-         在跑」，不是卡里的某一行。 -->
+    <!-- 顶卡就是一行：M 标（回 /air 首页）＋当前目录（名字加路径两行小字，⌄ 开
+         侧拉切目录）＋通知与 CLI 更新两颗图标。「这是哪个产品、我在哪个目录」
+         一行说完，不再有品牌行和目录卡两层叠放。运行圈画在整卡上（air.js 的
+         applyRing 找 .space-card），侧拉浮层照旧贴着卡右边出（air-directory-nav.js）。 -->
     <div class="space-card">
-      <div class="brand-row">
-        <a class="brand" href="/air" aria-label="MultiCC Air 首页" data-i18n-aria-label="airHome"><span class="brand-mark">M</span><span>MultiCC <b>Air</b></span></a>
-        <!-- 通知与播报入口：M 猫 + 喇叭。语音播报、任务提醒、系统推送（Bark /
-             Webhook 的跳转也在里面）全收在这一个面板（air-notify-settings.js），
-             偏好本体在 shared/notify-prefs.js，Air 外壳和聊天帧读同一份。
-             和 CLI 角标同一颗 30px 图标位的样式，不占任务清单的高度。 -->
-        <button id="notify-entry-btn" class="notify-entry-btn" type="button"
-                aria-haspopup="dialog" aria-expanded="false" aria-controls="notify-pop"
-                title="通知与播报" data-i18n-title="airNotifyTitle" data-i18n-aria-label="airNotifyTitle">
+      <a class="brand" href="/air" aria-label="MultiCC Air 首页" data-i18n-aria-label="airHome" title="MultiCC Air"><span class="brand-mark">M</span></a>
+      <button id="library" class="space-main" type="button" aria-expanded="false" aria-controls="directory-flyout" aria-haspopup="true">
+        <span class="space-copy"><strong id="directory-name" data-i18n="airHeaderLoadingDirectory">正在读取…</strong><small id="directory-path"></small></span>
+        <span class="space-chevron">⌄</span>
+      </button>
+      <!-- 通知与播报入口：M 猫 + 喇叭。语音播报、任务提醒、系统推送（Bark /
+           Webhook 的跳转也在里面）全收在这一个面板（air-notify-settings.js），
+           偏好本体在 shared/notify-prefs.js，Air 外壳和聊天帧读同一份。
+           和 CLI 角标同占顶卡右端的小图标位，不占任务清单的高度。 -->
+      <button id="notify-entry-btn" class="notify-entry-btn" type="button"
+              aria-haspopup="dialog" aria-expanded="false" aria-controls="notify-pop"
+              title="通知与播报" data-i18n-title="airNotifyTitle" data-i18n-aria-label="airNotifyTitle">
         <svg viewBox="0 0 96 96" width="26" height="26" aria-hidden="true" focusable="false">
           <defs>
             <linearGradient id="nfyBadgeGrad" x1="0" y1="0" x2="0" y2="1">
@@ -98,24 +99,15 @@
           </g>
         </svg>
       </button>
-      <!-- CLI 待更新角标：常驻一颗小图标，有新版时挂数字角标，点开是升级浮层
-           （见 air-cli-update.js）。放在品牌行里而不是单开一栏 —— 它是提示，
-           不该占任务清单的高度，也不该在没事的时候显得像一件待办。 -->
+      <!-- CLI 待更新角标：常驻顶卡右端一颗小图标，有新版时挂数字角标，点开是
+           升级浮层（见 air-cli-update.js）。它是提示，不该占任务清单的高度，
+           也不该在没事的时候显得像一件待办。 -->
       <button id="cli-update-btn" class="cli-update-btn" type="button"
               aria-haspopup="dialog" aria-expanded="false" aria-controls="cli-update-pop"
               title="CLI 更新" data-i18n-title="airCliUpdateTitle" data-i18n-aria-label="airCliUpdateTitle">
         <span id="cli-update-icon" aria-hidden="true">⇧</span>
         <span id="cli-update-badge" class="cli-update-badge" hidden></span>
       </button>
-      </div>
-      <button id="library" class="space-main" type="button" aria-expanded="false" aria-controls="directory-flyout" aria-haspopup="true">
-        <span class="space-icon">▣</span>
-        <span class="space-copy"><strong id="directory-name" data-i18n="airHeaderLoadingDirectory">正在读取…</strong><small id="directory-path"></small></span>
-        <span class="space-chevron">⌄</span>
-      </button>
-      <div class="space-shortcuts">
-        <span data-i18n="airWorkspace">工作目录</span><kbd data-i18n="airSwitchHint">⌘ K 切换</kbd>
-      </div>
     </div>
 
     <button id="onboarding-entry" type="button" hidden><span data-i18n="airGuideTitle">上手指南</span><b id="onboarding-progress">0 / 3</b></button>

@@ -93,19 +93,17 @@ test('the CLI update badge sits on the brand row and its popover lands on screen
     assert.equal(await page.evaluate('document.getElementById("cli-update-badge").textContent'), '2');
     assert.equal(await page.evaluate('document.getElementById("cli-update-btn").classList.contains("has-update")'), true);
 
-    // 它在顶卡的品牌行里，不是新的一栏：贴齐品牌、位于目录行（.space-main）上方、
-    // 左侧在侧栏内。品牌行和目录卡已合并成一块顶卡，所以「在卡片上方」精确到
-    // 「在目录行的上方」。
+    // 顶卡是一行：M 标 + 目录 + 两颗图标。它在这张卡的右端、卡的高度之内，
+    // 左侧留在侧栏宽度内 —— 不是新的一栏。
     const geometry = await page.evaluate(`(() => {
       const button = document.getElementById('cli-update-btn');
-      const brand = document.querySelector('.brand-row');
-      const main = document.querySelector('.space-main');
-      const b = button.getBoundingClientRect(), row = brand.getBoundingClientRect(), m = main.getBoundingClientRect();
-      return { top: b.top, bottom: b.bottom, rowTop: row.top, rowBottom: row.bottom, right: b.right, width: b.width, mainTop: m.top };
+      const card = document.querySelector('.space-card');
+      const b = button.getBoundingClientRect(), c = card.getBoundingClientRect();
+      return { top: b.top, bottom: b.bottom, right: b.right, cardTop: c.top, cardBottom: c.bottom, cardRight: c.right };
     })()`);
-    assert.ok(geometry.top >= geometry.rowTop - 1 && geometry.top < geometry.rowBottom,
-      `图标必须落在品牌行的高度内：${JSON.stringify(geometry)}`);
-    assert.ok(geometry.bottom <= geometry.mainTop + 1, '图标要在目录行上方（顶卡的抬头区）');
+    assert.ok(geometry.top >= geometry.cardTop - 1 && geometry.bottom <= geometry.cardBottom + 1,
+      `图标必须落在顶卡那一行的高度内：${JSON.stringify(geometry)}`);
+    assert.ok(geometry.right <= geometry.cardRight + 1, '图标收在顶卡右端');
     assert.ok(geometry.right < 300, '图标要留在侧栏宽度内');
 
     // ── The popover ────────────────────────────────────────────────────────
@@ -121,7 +119,7 @@ test('the CLI update badge sits on the brand row and its popover lands on screen
                expanded: document.getElementById('cli-update-btn').getAttribute('aria-expanded') };
     })()`);
     assert.ok(pop.left >= 0 && pop.right <= 1280, `浮层不能被挤出视口：${JSON.stringify(pop)}`);
-    assert.ok(pop.top > geometry.rowBottom - 1, '浮层要贴在图标下方，而不是压在它身上');
+    assert.ok(pop.top > geometry.cardBottom - 1, `浮层要贴在顶卡下方，而不是压在图标身上：${JSON.stringify({ pop, geometry })}`);
     assert.equal(pop.rows, 4, '四个 CLI 都要列出来（可升级的排最前）');
     // 行名是家族: 升级的对象是家族的 CLI 制品, 不是某条车道。
     assert.match(pop.firstRow, /^Claude(?! Code)/);

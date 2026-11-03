@@ -202,7 +202,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
       assert.equal(await page.evaluate(`document.getElementById('${gone}')===null`), true, `#${gone} 已从侧栏移除`);
     }
     assert.equal(await page.evaluate(`[...document.querySelectorAll('#sidebar *')].some(el=>el.textContent==='收藏目录')`), false, '侧栏不再有「收藏目录」标题');
-    assert.equal(await page.evaluate(`document.querySelector('.space-shortcuts').textContent.replace(/\\s+/g,'')`), '项目⌘K切换', '目录卡快捷行只剩标题和 ⌘K 提示');
+    assert.equal(await page.evaluate(`document.querySelector('.space-shortcuts')===null`), true, '目录卡的「⌘K 切换」提示行已撤（顶卡收成一行）');
     assert.equal(await page.evaluate(`document.getElementById('task-list-title').textContent`), '最近任务');
     // 「最近」是纯时间序：最后一条消息（回退 updatedAt）倒序、跨目录不加权，不再是
     // 「只有打开过的」。fixture 的四条按 updatedAt 9000/7000/5000/1000 排下来。

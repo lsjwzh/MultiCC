@@ -154,18 +154,13 @@ small, .caption { color: var(--muted); font-size: 11px; }
   overscroll-behavior: contain;
 }
 
-.brand { display: flex; align-items: center; gap: 10px; margin: 0 4px 16px; color: var(--text); font-size: 18px; font-weight: 680; letter-spacing: -.3px; }
-.brand b { color: var(--accent); font-weight: 580; }
+.brand { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--text); font-size: 18px; font-weight: 680; letter-spacing: -.3px; }
 .brand-mark { display: grid; width: 28px; height: 28px; place-items: center; color: #fff; border-radius: 9px; background: linear-gradient(145deg, #3899f8, #116edb); box-shadow: 0 6px 16px #1475df30; }
 
 /* ── CLI 待更新角标（air-cli-update.js）────────────────────────────────────
-   图标是品牌行的一部分，不是新的一栏：它贴在「MultiCC Air」右边，平时只是一颗
-   灰图标，有新版才挂数字角标。角标的形色沿用版本行那颗 .ops-badge —— 同一个侧栏
-   里「有新东西」只该有一种表示法。 */
-.brand-row { display: flex; align-items: center; gap: 8px; margin: 0 4px 10px; }
-/* 特异性 (0,2,0) 压过下面「Air 2026」那段 .brand{margin:0 4px 18px} 的 (0,1,0)，
-   于是品牌行的留白只由 .brand-row 一处决定，老规则不用回头改。 */
-.brand-row .brand { flex: 1 1 auto; min-width: 0; margin: 0; }
+   图标住在顶卡右端，不是新的一栏：平时只是一颗灰图标，有新版才挂数字角标。
+   角标的形色沿用版本行那颗 .ops-badge —— 同一个侧栏里「有新东西」只该有一种
+   表示法。 */
 .cli-update-btn {
   position: relative;
   flex: 0 0 auto;
@@ -334,32 +329,26 @@ small, .caption { color: var(--muted); font-size: 11px; }
 .notify-switch:disabled { opacity: .45; cursor: not-allowed; }
 
 .space-card {
-  overflow: hidden; margin-bottom: 2px; border: 1px solid rgba(196, 216, 237, .95); border-radius: 14px; background: rgba(255, 255, 255, .78); box-shadow: 0 8px 25px #4568870b;
-  /* 侧栏是一列 flex，视口不够高时默认会把子项一起压扁。这张卡里有 fixed 内容的
-     两行（目录名 + 快捷行），而且自己是 overflow:hidden —— 一旦被压，第二行直接
-     消失、图标顶出卡片边界。它没有「可压缩的余地」，所以拒绝收缩：要挤就挤任务区
-     （#task-sidebar 本来就在滚动）。 */
+  /* 顶卡就是一行：M 标 ｜ 目录（名+路径）｜ 通知 ｜ CLI 角标。 */
+  display: flex; align-items: center; gap: 4px;
+  overflow: hidden; margin-bottom: 2px; padding: 5px 6px; border: 1px solid rgba(196, 216, 237, .95); border-radius: 14px; background: rgba(255, 255, 255, .78); box-shadow: 0 8px 25px #4568870b;
+  /* 侧栏是一列 flex，视口不够高时默认会把子项一起压扁。这张卡就一行固定高度的
+     内容，而且自己是 overflow:hidden —— 一旦被压，图标直接顶出卡片边界。它没有
+     「可压缩的余地」，所以拒绝收缩：要挤就挤任务区（#task-sidebar 本来就在滚动）。 */
   flex-shrink: 0;
 }
-.space-main { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 9px 11px 5px; border: 0; border-radius: 0; background: transparent; text-align: left; }
+/* M 标就是品牌位：名字不进布局（在 title/aria 里），这一行留给目录。 */
+.space-card .brand { flex: 0 0 auto; margin: 0; }
+.space-card .brand-mark { width: 26px; height: 26px; border-radius: 8px; font-size: 12px; box-shadow: none; }
+.space-main { flex: 1 1 auto; width: auto; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 3px 6px; border: 0; border-radius: 9px; background: transparent; text-align: left; }
 .space-main:hover, .space-main.active { background: #eff6ff; }
-.space-icon { color: var(--accent); }
 .space-copy { min-width: 0; flex: 1; }
 .space-copy strong, .space-copy small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .space-copy strong { font-size: 13px; font-weight: 640; }
-.space-copy small { margin-top: 1px; font-size: 10px; }
-.space-chevron { color: var(--muted); }
-.space-shortcuts { display: flex; align-items: center; gap: 7px; min-height: 26px; padding: 0 9px 5px; color: var(--muted); font-size: 10px; }
-.space-shortcuts kbd { margin-left: auto; font: inherit; }
-
-/* 品牌行住在顶卡里：不再是独立一行，所以没有外边距，字号和 M 标都收小一档
-   （它是卡片的抬头，不是页面的标题），下面用一条发丝线把「产品」和「目录」
-   轻轻分开。 */
-.space-card .brand-row { margin: 0; padding: 9px 11px 7px; border-bottom: 1px solid rgba(203, 219, 238, .55); }
-.space-card .brand { gap: 8px; font-size: 14.5px; }
-.space-card .brand-mark { width: 23px; height: 23px; border-radius: 7px; font-size: 11px; box-shadow: none; }
-.space-card .notify-entry-btn, .space-card .cli-update-btn { width: 26px; height: 26px; min-width: 26px; min-height: 26px; padding: 0; font-size: 13px; }
-.space-card .notify-entry-btn svg { width: 21px; height: 21px; }
+.space-copy small { font-size: 10px; }
+.space-chevron { color: var(--muted); font-size: 11px; }
+.space-card .notify-entry-btn, .space-card .cli-update-btn { flex: 0 0 auto; width: 24px; height: 24px; min-width: 24px; min-height: 24px; padding: 0; font-size: 12px; }
+.space-card .notify-entry-btn svg { width: 20px; height: 20px; }
 
 .nav-row { width: 100%; display: flex; align-items: center; gap: 9px; border-color: transparent; background: transparent; text-align: left; color: #4f657d; }
 .nav-row.active { color: #0f63c6; border-color: #cfe3f8; background: #fff; }
@@ -1774,12 +1763,8 @@ main { background: transparent; }
 
 /* ── 侧栏 ────────────────────────────────────────────────────────────── */
 #sidebar { gap: 8px; padding: 20px 18px 16px; border-right: 1px solid var(--hairline); background: #fff; box-shadow: none; }
-.brand { margin: 0 4px 18px; font-size: 18.5px; letter-spacing: -.4px; }
-.brand-mark { width: 30px; height: 30px; border-radius: 11px; box-shadow: 0 8px 20px rgba(20, 110, 220, .22); }
 .space-card { border: 1px solid var(--hairline); border-radius: 18px; background: #fff; box-shadow: var(--shadow-1); }
-.space-main { padding: 10px 13px 7px; }
 .space-copy strong { font-size: 13.5px; }
-.space-shortcuts { min-height: 27px; padding: 0 11px 6px; }
 .nav-row { min-height: 38px; padding: 0 12px; border-radius: 14px; font-size: 13.5px; }
 .nav-row.active { border-color: #d9e8f8; background: #f4f9ff; }
 #task-sidebar { margin-top: 4px; }
