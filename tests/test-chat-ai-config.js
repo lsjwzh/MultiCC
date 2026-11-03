@@ -465,6 +465,32 @@ test('opencode native providers (Zen / Go) become Provider rows that filter the 
   }
 });
 
+test('opencode native ids are compared on alphanumerics so opencodego still finds opencode-go models', () => {
+  // 配置改写会把 OpenCode Go 的线路 id 在 `opencodego`（手写）与 `opencode-go`
+  // （内置）之间迁移，模型没变。刷新拿到新 id 后，旧会话选中的线路必须照旧匹配
+  // 到模型，否则模型下拉会被过滤成空、看起来像「点刷新就清空了」。
+  const modulePath = require.resolve('../public/chat-ai-config');
+  const store = { 'multicc.opencode.models.v2': JSON.stringify({ at: Date.now(), models: [
+    { provider: 'opencode-go', model: 'deepseek-v4-pro', label: 'opencode-go/deepseek-v4-pro' },
+    { provider: 'opencode', model: 'big-pickle', label: 'opencode/big-pickle' },
+  ] }) };
+  delete require.cache[modulePath];
+  globalThis.window = { localStorage: { getItem: key => store[key] || null } };
+  const ai = require(modulePath);
+  try {
+    const state = { cli: 'opencode', providers: [] };
+    assert.equal(ai.openCodeNativeIdKey('opencodego'), ai.openCodeNativeIdKey('opencode-go'));
+    assert.equal(ai.openCodeNativeProviderLabel('opencode-go'), 'OpenCode Go');
+    assert.deepEqual(ai.buildModelChoices('opencode-native:opencodego', state),
+      ['opencode-go/deepseek-v4-pro', '__custom__']);
+    assert.deepEqual(ai.buildModelChoices('opencode-native:opencode-go', state),
+      ['opencode-go/deepseek-v4-pro', '__custom__']);
+  } finally {
+    delete globalThis.window;
+    delete require.cache[modulePath];
+  }
+});
+
 test('commandcode and grok pickers read the live catalog and keep the vendor grouping', () => {
   const modulePath = require.resolve('../public/chat-ai-config');
   const at = Date.now();

@@ -360,7 +360,12 @@
       // first picker open may return [] here, then refreshOpenCodeModels()
       // fires a rebuild once the fetch resolves.
       const nativeId = openCodeNativeProviderOf(providerId);
-      const cached = readOpenCodeModelsSync().filter(m => !nativeId || m.provider === nativeId);
+      // 线路 id 会在配置改写时变（手写的 `opencodego` ↔ 内置 `opencode-go`）而
+      // 模型不变：按「只留字母数字」对齐，旧会话选中的线路才不会在刷新后匹配
+      // 不到任何模型、看起来像被清空。
+      const nativeKey = openCodeNativeIdKey(nativeId);
+      const cached = readOpenCodeModelsSync()
+        .filter(m => !nativeId || openCodeNativeIdKey(m.provider) === nativeKey);
       // A picked native provider pins its own models — no "follow config" row.
       if (cached.length) return [...(nativeId ? [] : ['']), ...cached.map(m => `${m.provider}/${m.model}`), '__custom__'];
       return ['', '__custom__'];
@@ -373,10 +378,16 @@
   // `opencode-native:<id>` rows that only filter the model list, and save as
   // provider '' (native config) with a `<id>/<model>` model.
   const OPENCODE_NATIVE_PREFIX = 'opencode-native:';
-  const OPENCODE_NATIVE_NAMES = { opencode: 'OpenCode Zen', opencodego: 'OpenCode Go' };
+  const OPENCODE_NATIVE_NAMES = { opencode: 'OpenCode Zen', 'opencode-go': 'OpenCode Go', opencodego: 'OpenCode Go' };
   function openCodeNativeProviderOf(value) {
     const text = String(value || '');
     return text.startsWith(OPENCODE_NATIVE_PREFIX) ? text.slice(OPENCODE_NATIVE_PREFIX.length) : '';
+  }
+  // OpenCode Go 的两种 id 指同一个线路：内置 `opencode-go`，以及早期安装指引让
+  // 用户手写的 `opencodego`。配置改写可能让缓存/会话在两个 id 之间迁移，比对时
+  // 只保留字母数字，避免把同一批模型当成「不存在」。
+  function openCodeNativeIdKey(id) {
+    return String(id || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   }
   // 线路名只有一个来源（这张表）。模型缓存是冷的也答得出来：药丸只有
   // `<线路id>/<模型>` 这一条线索（见 run-config.js 的 openCodeRouteName）。
@@ -388,6 +399,25 @@
   function openCodeNativeProviders() {
     const ids = [...new Set(readOpenCodeModelsSync().map(m => m.provider).filter(Boolean))];
     return ids.map(id => ({ value: OPENCODE_NATIVE_PREFIX + id, label: `OpenCode 原生 · ${openCodeNativeProviderLabel(id)}` }));
+  }
+  // 把（可能带旧别名的）原生线路值对齐到当前模型目录里的真实 id；非原生线路或
+  // 目录里找不到对应 id 时原样返回。刷新后旧会话的 `opencodego` 才能落到
+  // `opencode-go` 上，而不是匹配不到任何模型。
+  function resolveOpenCodeNativeLine(value) {
+    const key = openCodeNativeIdKey(openCodeNativeProviderOf(value));
+    if (!key) return String(value == null ? '' : value);
+    const match = openCodeNativeProviders()
+      .find(item => openCodeNativeIdKey(openCodeNativeProviderOf(item.value)) === key);
+    return match ? match.value : value;
+  }
+  // 线路 id 改名时，`<旧id>/<模型>` 跟着改成 `<新id>/<模型>`；其余值原样返回。
+  function rewriteOpenCodeNativeModel(model, fromId, toId) {
+    const text = String(model == null ? '' : model).trim();
+    const from = String(fromId || '');
+    const to = String(toId || '');
+    if (!from || !to || from === to) return text;
+    const prefix = `${from}/`;
+    return text.startsWith(prefix) ? `${to}/${text.slice(prefix.length)}` : text;
   }
 
   // Synchronous read of a CLI model cache populated by shared/models.js
@@ -1072,6 +1102,9 @@
     openCodeNativeProviders,
     openCodeNativeProviderOf,
     openCodeNativeProviderLabel,
+    openCodeNativeIdKey,
+    resolveOpenCodeNativeLine,
+    rewriteOpenCodeNativeModel,
     stripModelSuffix,
     defaultModelChoice,
     modelChoiceLabel,
