@@ -424,30 +424,17 @@
     });
   }
 
-  // 侧栏「最近任务」只有两个来源，都跨目录、都不随当前目录变：
-  //   ① 有未读结果的任务（按最后一条消息时间）；
-  //   ② 在这个浏览器里打开过的任务（按最近打开顺序，rememberTask 记最多 12 条）。
-  // 不再拿当前目录的任务来填空位：那样切目录时侧栏会整片换掉，看着像「任务跟着
-  // 目录变」。某个目录的完整任务在目录首页和控制台里。
-  function recentTasks({ tasks, recentTaskIds, limit, isUnseen, statusOf }) {
+  // 侧栏「最近任务」就一条排序规矩：按最近一次动静（最后一条消息时间，回退更新
+  // 时间）倒序，不叠别的加权 —— 不分「未读优先」也不分「我打开过的优先」。未读的
+  // 任务通常刚收到结果、lastMessageAt 本来就新，纯时间序天然把它顶在前面。任务集
+  // 本身就是 /api/air 带来的那份跨目录近期任务（air-sync 的 include 会把打开过的
+  // 也捎进池子），某个目录的完整任务在目录首页和控制台里。
+  function recentTasks({ tasks, limit, statusOf }) {
     const messageAt = task => Number(task?.lastMessageAt || task?.updatedAt || 0);
-    const byId = new Map(tasks.map(task => [task.id, task]));
-    const pool = [];
-    const seen = new Set();
-    // Unread outcomes must remain reachable even when all recent slots are
-    // already occupied by opened tasks.
-    for (const task of tasks.filter(t => isUnseen(t.id) && !['archived', 'cancelled'].includes(statusOf(t)))
-      .sort((a, b) => messageAt(b) - messageAt(a))) {
-      seen.add(task.id);
-      pool.push(task);
-    }
-    for (const id of recentTaskIds) {
-      const task = byId.get(id);
-      if (!task || seen.has(task.id)) continue;
-      seen.add(task.id);
-      pool.push(task);
-    }
-    return pool.slice(0, limit);
+    return tasks
+      .filter(task => !['archived', 'cancelled'].includes(statusOf(task)))
+      .sort((a, b) => messageAt(b) - messageAt(a) || String(a?.id || '').localeCompare(String(b?.id || '')))
+      .slice(0, limit);
   }
 
   root.MultiCCTaskNotify = Object.freeze({

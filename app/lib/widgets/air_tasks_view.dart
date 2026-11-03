@@ -1457,8 +1457,9 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
-  /// 侧栏的「最近任务」：先放这次会话里打开过的（跨目录），不够再用当前目录里
-  /// 最近更新过的补上——和 Web Air 的 `#tasks` 一样的取舍。
+  /// 侧栏的「最近任务」就一条排序规矩：按最近一次动静（最后一条消息时间）倒序，
+  /// 不叠别的加权——不分「打开过的优先」也不拿当前目录补位（用户 2026-11-03 定的，
+  /// 和 Web Air 的 `#tasks` 同一条规矩，见 public/air-task-notify.js 的 recentTasks）。
   ///
   /// 上限（同 Web 的 `RECENT_LIMIT`）不再按「一屏能放下几条」来定：侧栏的任务带
   /// 现在吃满剩下的高度并在内部滚，列八条会在下面留一大片空白——那片地方本来就
@@ -1476,14 +1477,14 @@ class _AirTasksViewState extends State<AirTasksView>
       final task = data.taskOf(id);
       if (task != null && seen.add(task.id)) rows.add(task);
     }
-    for (final id in _store?.recentTasks ?? const <String>[]) {
-      final task = data.taskOf(id);
-      if (task != null && seen.add(task.id)) rows.add(task);
-      if (rows.length >= 30) return rows;
-    }
-    for (final task in data.tasksOf(_directoryId)) {
-      if (seen.add(task.id)) rows.add(task);
+    final recent = data.tasks.where((task) => task.status != 'archived').toList()
+      ..sort((a, b) {
+        final primary = b.lastMessageAt.compareTo(a.lastMessageAt);
+        return primary != 0 ? primary : a.id.compareTo(b.id);
+      });
+    for (final task in recent) {
       if (rows.length >= 30) break;
+      if (seen.add(task.id)) rows.add(task);
     }
     // 30 是长尾的闸门，不是「一屏」；截的是尾巴，pin 住的那几条在最前面，动不到。
     return rows.length > 30 ? rows.sublist(0, 30) : rows;

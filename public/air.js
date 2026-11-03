@@ -223,9 +223,9 @@
     if (!pinned.length) return list;
     return [...pinned, ...list.filter(item => !taken.has(item.id))];
   }
-  // 侧栏的任务区只装「手上的任务」：打开过的排在前面，然后是当前目录里最新的几个。
-  // 后一半是必要的 —— 第一次进来没有浏览记录，只有前一半的话列出来是空的，而一条
-  // 空列表并不比一条能点的任务更有用。完整的那份列表在控制台（全部目录 + 搜索）。
+  // 侧栏的任务区只装「最近有动静的任务」：按最后一条消息时间倒序（air-task-notify.js
+  // 的 recentTasks），跨目录、不随当前目录变，也不叠「未读优先」「打开过的优先」这些
+  // 分组 —— 纯时间序。完整的那份列表在控制台（全部目录 + 搜索）。
   //
   // 这个数不再是「一屏能放下几条」，而是「最多往回翻几条」：任务带现在自己吃掉
   // 侧栏剩下的高度并在内部滚动（air.css 的 #tasks），列八条会在下面留一大片空白
@@ -233,8 +233,7 @@
   // 任务时不去建几百个按钮），所以给得比任何一屏都宽。
   const RECENT_LIMIT = 30;
   function recentPool() {
-    return window.MultiCCTaskNotify.recentTasks({ tasks: data?.tasks || [], recentTaskIds,
-      limit: RECENT_LIMIT, isUnseen: id => taskNotify?.isUnseen(id), statusOf: taskStatus });
+    return window.MultiCCTaskNotify.recentTasks({ tasks: data?.tasks || [], limit: RECENT_LIMIT, statusOf: taskStatus });
   }
   const todoTasks = () => window.MultiCCAirAdmin?.todoTasks?.(data) || [];
 
@@ -343,7 +342,8 @@
   // ── ⌘K：目录和任务一起搜 ────────────────────────────────────────────────
   // 找任务不该先要求你想起来它在哪个目录，也不该要求你记得标题里那几个字：
   // 有全文结果时任务按内容相关度排（服务端算，命中片段直接当副标题），没有时退回
-  // 「手上的任务在前，然后是当前目录，最后是其余任务」这条时间序。
+  // 「最近有动静的在前，然后是其余任务」这条时间序（recentPool 之后的 data.tasks
+  // 本身就来自服务端的 lastMessageAt 倒序）。
   function paletteCandidates(query) {
     const needle = query.trim().toLowerCase();
     const matches = text => !needle || text.toLowerCase().includes(needle);
@@ -1279,7 +1279,7 @@
       applyRing(button, isRunningTask(task), task.id);
       // 一行三件事实：状态徽标（图标 + 中文，来自注册表）、标题、然后是这条记录
       // 的类型/阶段/资源去向。目录作为标签跟在同一行里 —— 「最近」这条带子本来就
-      // 是跨目录的（未读结果 + 我打开过的任务），所以每一行都自报家门，
+      // 是跨目录的（谁最近有动静谁在上面），所以每一行都自报家门，
       // 而不是只给「不在当前目录」的那几行加标记：一份一半带标签一半不带的列表，
       // 读的人得先知道哪一半是什么规则。
       const meta = node('small', null, 'task-meta');
@@ -1356,7 +1356,7 @@
     .filter(Boolean);
   const isPinned = id => !!id && taskPins.includes(id);
 
-  /** 侧栏那份列表：手机上 pin 住的排在最前面，剩下的照旧（最近 + 当前目录）。 */
+  /** 侧栏那份列表：手机上 pin 住的排在最前面，剩下的照最近动静倒序。 */
   function sidebarTasks() {
     const pool = recentPool();
     const pinned = pinnedTasks();
