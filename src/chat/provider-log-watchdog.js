@@ -250,7 +250,7 @@ function createProviderLogWatchdog(deps = {}) {
       if (recordLimit) {
         try { recordLimit(sessionId, limitInfo); } catch (_) {}
       }
-      const bar = windowEventBar(normalizeWindowEvent(limitInfo, at));
+      const bar = windowEventBar(normalizeWindowEvent(limitInfo, at), at);
       const limitEvt = { type: 'rate_limit_event', sessionId, rate_limit_info: limitInfo, bar };
       try {
         if (Array.isArray(cs.streamReplay)) {
