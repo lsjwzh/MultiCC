@@ -740,6 +740,18 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   /// 别名中继的模型存的是 tier 名或真模型 id，两种写法都折算到 tier 名上。
   String _seedModel(String provider, String model) {
     if (model.isEmpty) return model;
+    // OpenCode 原生线路改名后，旧会话的模型前缀（opencodego/x）要跟到新 id
+    // （opencode-go/x），否则下拉会把整条记录当成「自定义」。
+    if (isOpenCodeNativeProvider(provider)) {
+      final slash = model.indexOf('/');
+      if (slash > 0) {
+        final from = model.substring(0, slash);
+        final to = openCodeNativeProviderOf(provider);
+        if (openCodeNativeIdKey(from) == openCodeNativeIdKey(to)) {
+          return rewriteOpenCodeNativeModel(model, from, to);
+        }
+      }
+    }
     for (final p in _providers) {
       if (p['id'] != provider) continue;
       final aliasMap = p['aliasMap'];
