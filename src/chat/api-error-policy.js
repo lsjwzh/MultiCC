@@ -1097,8 +1097,11 @@ function retryNotice(decision) {
   if (decision.reason === 'unsafe_replay_boundary') {
     // Only announce an upstream interruption when the evidence really came from
     // the provider boundary. A host-stopped turn, or a verdict carrying no
-    // provider evidence at all, is an interruption — not an API outage.
-    const fromProvider = !!error.code && !NON_PROVIDER_SOURCES.has(error.source);
+    // provider evidence at all, is an interruption — not an API outage. An
+    // HTTP status counts as provider evidence on its own: a trailing
+    // 「API Error: Request rejected (429)」 envelope carries one but no code.
+    const fromProvider = (!!error.code || Number(error.httpStatus) > 0)
+      && !NON_PROVIDER_SOURCES.has(error.source);
     const lead = fromProvider ? '上游 API 中断，但本轮' : '本轮未正常结束（非上游 API 故障）。';
     return `${lead}已有部分输出或工具执行；为避免重复副作用，未自动重放。${causeNotice}${error.userAction}`;
   }
