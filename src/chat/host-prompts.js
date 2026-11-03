@@ -113,8 +113,13 @@ function createHostPrompts(env = process.env, { assistRoot } = {}) {
   // Injected into chat-mode system prompt so the agent knows it can SHOW images to
   // the user: the web chat renders Markdown and rewrites local-path <img> through
   // /api/download, so an absolute-path image link just works.
+  // The link is resolved every time the message is opened, so an image under
+  // $TMPDIR or a test fixture directory turns into "cannot load image" once
+  // that directory is cleaned; durable copies go to the swept assist root.
+  const displayRoot = String(assistRoot || '~/.multicc/assist').replace(/\/+$/, '');
   const multiccImgHint = [
     'You are talking to the user inside the MultiCC web chat; replies render as Markdown. To SHOW a local image, link its ABSOLUTE path: ![caption](/absolute/path/to/image.png) — only for files that exist; wrap paths with spaces or parentheses in angle brackets, never percent-encode. Local file links work the same: [name](/abs/path/report.pdf). Details: multicc-local-resource skill.',
+    `The chat stores only the path and loads it again whenever the message is opened, so never link an image that lives in $TMPDIR, /tmp, /var/folders or a test/fixture output directory: copy it first to \`${displayRoot}/$MULTICC_SESSION_ID/\` (kept 7 days) and link the copy, or publish it with the multicc-artifact skill when it must outlive that.`,
     '',
     ...buildHumanAssistPrompt(assistRoot),
     '',
