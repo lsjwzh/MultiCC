@@ -131,6 +131,57 @@ function createApiErrorHost(options = {}) {
     return Object.freeze({ ...raw, rejection, ...(hasStatus ? {} : { httpStatus: 429 }) });
   }
 
+  // handleProxyOutcome() is the 429 writer for requests the Rust proxy could
+  // attribute exactly. A 429 the CLI only reports afterwards (text envelope, or
+  // the structured synthetic message) is invisible there — and without a
+  // record Auto keeps re-selecting the exhausted account on the next turns.
+  // Bookkeeping only: the quota module owns the cooldown rules (reset-bearing
+  // verdicts park until the reset, everything else gets its default cooldown)
+  // and Auto only reads the cache this writes.
+  function proxyRecordedRateLimit(runner) {
+    if (!proxyFailureForAttempt) return false;
+    const providerAttempt = runner?.providerAttempt;
+    if (!providerAttempt || typeof providerAttempt !== 'object') return false;
+    let failure;
+    try { failure = proxyFailureForAttempt(providerAttempt); } catch (_) { return false; }
+    // The runtime scopes this to the live attempt. A bare 429 without a
+    // structured rejection was still recorded by handleProxyOutcome, so the
+    // status — not the normalized verdict — is what says "already counted".
+    return !!failure && Number(failure.httpStatus) === 429;
+  }
+
+  function parkRateLimitedProvider(decision, identity, runner, sessionName) {
+    if (!recordProviderFailure) return;
+    const error = decision && decision.error;
+    if (!error) return;
+    // A quota wall (billing_quota) is still a 429 at the transport level and
+    // must keep the account out of Auto exactly like a transient limit; the
+    // recorder names the parked row from the structured verdict it is given.
+    if (error.category !== 'rate_limit' && error.category !== 'billing_quota') return;
+    if (Number(error.httpStatus) !== 429 && !error.rejection) return;
+    const providerId = identity && identity.providerId;
+    if (!providerId || providerId === '_default_') return;
+    // The proxy already wrote this same attempt's 429; a second record would
+    // only double-count one failure (and re-trigger its quota refresh).
+    if (proxyRecordedRateLimit(runner)) return;
+    // Vendor-login CLIs are deliberately NOT skipped here: unlike a revoked
+    // credential (which only the vendor TUI can repair, so a park would never
+    // be released), a rate-limit cooldown is bounded and clears itself, and
+    // Auto still must not pick a provider that just answered 429.
+    const model = runner?.providerAttempt && typeof runner.providerAttempt === 'object'
+      ? cleanIdentity(runner.providerAttempt.model) : '';
+    try {
+      recordProviderFailure({
+        sessionId: sessionName,
+        providerId,
+        category: error.category,
+        httpStatus: 429,
+        ...(error.rejection ? { rejection: error.rejection } : {}),
+        ...(model ? { model } : {}),
+      });
+    } catch (_) { /* bookkeeping must never mask the turn failure it observes */ }
+  }
+
   // A revoked OAuth credential is a dead account, not an expired one: no refresh
   // can revive it (see claude-auth/oauth-refresh.js), so the only useful
   // reaction is to stop routing there. In-turn failover covers this turn;
@@ -264,6 +315,7 @@ function createApiErrorHost(options = {}) {
       const vendorLogin = decision.error.category === 'authentication_permission' && !commandcodeKeyAccount
         ? vendorLoginForCli(identity.cli) : null;
       parkRevokedCredential(decision, identity, vendorLogin);
+      parkRateLimitedProvider(decision, identity, runner, sessionName);
       const authAction = vendorLogin ? {
         kind: 'vendor_login_terminal',
         cli: identity.cli,

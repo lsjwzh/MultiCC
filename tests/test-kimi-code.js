@@ -62,6 +62,86 @@ test('registration chain exposes kimi across every integration point', () => {
   assert.equal(providers.compatibleClisForFormat('anthropic').includes('kimi'), false);
 });
 
+// ── Headless stream-json adapter ────────────────────────────────────────────
+// Fixtures come from kimi-code 2.3.3 dist/main.mjs: PromptJsonWriter.writeRetrying
+// (~21886889), reportSessionOccupied (~21904943) and validateOptions (~19532882).
+
+test('kimi print invocation never combines --auto with -p', () => {
+  const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+  const adapter = createKimiAdapter({ cmd: '/fake/kimi' });
+  const inv = adapter.buildInvocation({
+    historyHandle: { isFirstTurn: true, cliSessionId: null },
+    spawnOpts: {},
+    contextLayers: [], userText: 'hi', suffix: '', rolePrompt: null, systemPrompt: '',
+  });
+  assert.equal(inv.args.includes('--auto'), false,
+    '2.x validateOptions: Cannot combine --prompt with --auto.');
+  assert.equal(inv.args[inv.args.indexOf('--output-format') + 1], 'stream-json');
+  assert.deepEqual(inv.args.slice(-1), ['-p'], '-p stays the last flag before the payload');
+});
+
+test('kimi decodes its fatal stdout error envelope', () => {
+  const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+  const adapter = createKimiAdapter({ cmd: 'kimi' });
+  const decoded = adapter.decodeEvent({
+    type: 'error',
+    code: 'session.occupied',
+    message: 'Session is already running in another process.',
+    details: { statusCode: 409, requestId: 'req-1' },
+  });
+  assert.equal(decoded.length, 1);
+  assert.equal(decoded[0].type, 'error');
+  assert.equal(decoded[0].message, 'Session is already running in another process.');
+  assert.equal(decoded[0].error.source, 'kimi_event');
+  assert.equal(decoded[0].error.provider, 'kimi');
+  assert.equal(decoded[0].error.code, 'session.occupied');
+  assert.equal(decoded[0].error.httpStatus, 409);
+  assert.equal(decoded[0].error.requestId, 'req-1');
+});
+
+test('kimi keeps a transient retry out of the error path', () => {
+  const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+  const adapter = createKimiAdapter({ cmd: 'kimi' });
+  const decoded = adapter.decodeEvent({
+    role: 'meta',
+    type: 'turn.step.retrying',
+    failed_attempt: 1, next_attempt: 2, max_attempts: 4, delay_ms: 800,
+    error_name: 'APIProviderRateLimitError', error_message: 'rate limited', status_code: 429,
+  });
+  assert.equal(decoded.length, 1);
+  assert.equal(decoded[0].type, 'status', 'a retry is not the turn outcome');
+  assert.equal(decoded[0].status, 'thinking');
+  assert.equal(decoded[0].retry.code, 'APIProviderRateLimitError');
+  assert.equal(decoded[0].retry.httpStatus, 429);
+  assert.equal(decoded[0].retry.nextAttempt, 2);
+  assert.equal(decoded[0].retry.maxAttempts, 4);
+});
+
+test('a retried-then-successful kimi turn completes', () => {
+  const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+  const adapter = createKimiAdapter({ cmd: 'kimi' });
+  const tracker = adapter.createCompletionTracker();
+  const feed = (raw) => tracker.observe(raw, adapter.decodeEvent(raw));
+  feed({
+    role: 'meta', type: 'turn.step.retrying',
+    failed_attempt: 1, next_attempt: 2, max_attempts: 4, delay_ms: 800,
+    error_name: 'APIProviderRateLimitError', error_message: 'rate limited', status_code: 429,
+  });
+  feed({ role: 'assistant', content: 'final answer' });
+  feed({ role: 'meta', type: 'session.resume_hint', session_id: 'sess_1', command: 'kimi -r sess_1' });
+  assert.equal(tracker.finish({ kind: 'process', code: 0 }).state, 'completed');
+});
+
+test('a fatal kimi error envelope fails the turn', () => {
+  const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+  const adapter = createKimiAdapter({ cmd: 'kimi' });
+  const tracker = adapter.createCompletionTracker();
+  const raw = { type: 'error', code: 'session.occupied', message: 'Session is already running.' };
+  tracker.observe(raw, adapter.decodeEvent(raw));
+  assert.equal(tracker.finish({ kind: 'process', code: 4 }).state, 'failed',
+    'reportSessionOccupied exits 4');
+});
+
 test('kimi provider routing requires HTTP credentials and stays fail-closed', () => {
   assert.equal(providers.providerSupportsCli({
     appType: 'codex', apiFormat: 'openai_chat',

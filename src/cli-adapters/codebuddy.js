@@ -20,6 +20,45 @@ function codebuddyEffortLevel(session) {
   return CODEBUDDY_REASONING_LEVELS.has(value) ? value : null;
 }
 
+// CodeBuddy 2.177.1 terminal failures are a single `result` frame built by
+// createResultMessage / buildErrorTerminalFields (codebuddy-headless.js
+// ~5524179 and ~5525246):
+//   { type:"result", subtype:"error_during_execution", is_error:true,
+//     errors:[<string>…], errors_info:[{status,code,category,details}] }
+// where extractStructuredErrorInfo (~5521775) copies a numeric HTTP `status`
+// (or `statusCode`) out of the wrapped provider error. There is no Claude
+// synthetic assistant flag (the bundle has no isApiErrorMessage /
+// api_error_status at all), so the host's Claude-lane interceptor cannot see
+// this failure; lift the structured status into the shape the shared result
+// classifier already reads (`error.http_status`), and keep the message.
+// `code`/`category` are deliberately left out: an explicit rate-limit code
+// outranks quota-wall wording in api-error-policy, and CodeBuddy's `quota`
+// category covers both 429 limiter and billing exhaustion.
+function httpStatusOf(value) {
+  const number = Number(value);
+  return value !== null && value !== '' && Number.isFinite(number)
+    && number >= 400 && number <= 599 ? Math.round(number) : undefined;
+}
+
+function resultErrorFields(event) {
+  if (event.type !== 'result') return null;
+  if (event.is_error !== true && !/^error(?:_|$)/.test(String(event.subtype || ''))) return null;
+  const info = Array.isArray(event.errors_info)
+    ? event.errors_info.find(item => item && typeof item === 'object') : null;
+  const detail = info && typeof info.details === 'string' && info.details.trim() ? info.details : undefined;
+  const firstError = Array.isArray(event.errors)
+    ? event.errors.find(value => typeof value === 'string' && value.trim()) : undefined;
+  const message = detail || firstError
+    || (typeof event.result === 'string' && event.result.trim() ? event.result : undefined);
+  const httpStatus = httpStatusOf(info?.status ?? info?.statusCode)
+    ?? httpStatusOf(event.http_status ?? event.status_code ?? event.status);
+  if (httpStatus === undefined && message === undefined) return null;
+  return {
+    ...(httpStatus !== undefined ? { http_status: httpStatus } : {}),
+    ...(message !== undefined ? { message } : {}),
+  };
+}
+
 function createCodebuddyAdapter({ cmd, routerMcpNode, routerMcpScript }) {
   const routerArgs = claudeLikeMcpArgs(routerMcpNode, routerMcpScript);
   return {
@@ -58,6 +97,10 @@ function createCodebuddyAdapter({ cmd, routerMcpNode, routerMcpScript }) {
         const decoded = [{ type: 'session_init', model: event.model, raw: event }];
         if (event.session_id) decoded.push({ type: 'session_started', sessionId: event.session_id });
         return decoded;
+      }
+      if (event.type === 'result') {
+        const error = event.error && typeof event.error === 'object' ? null : resultErrorFields(event);
+        return [{ type: 'claude_event', raw: error ? { ...event, error } : event }];
       }
       return [{ type: 'claude_event', raw: event }];
     },

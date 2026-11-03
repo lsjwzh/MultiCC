@@ -38,12 +38,13 @@ test('Monitor hook only captures known native notifications and never captures s
   assert.equal(seen.filter(event => !event.probe).length, 0, 'a mixed batch must not partially duplicate delivery');
 });
 
-test('background hold releases after quiet, waits out a busy self-wake at the cap, and keeps failures out of the answer', async () => {
+test('background hold releases after quiet, waits out a busy self-wake at the cap, and lets the last self-wake decide the outcome', async () => {
   const { createBackgroundHold } = require('../src/chat/background-hold');
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const main = { type: 'result', subtype: 'success', is_error: false, result: 'first', usage: { input_tokens: 1 } };
   const wake = (result, extra = {}) => ({ type: 'result', subtype: 'success', is_error: false, result,
     origin: { kind: 'task-notification' }, usage: { input_tokens: 9 }, ...extra });
+  const failure = (result, extra = {}) => wake(result, { subtype: 'error_during_execution', is_error: true, ...extra });
   let active = true;
   const released = [];
   const hold = createBackgroundHold({ hasBackground: () => active, release: r => released.push(r), quietMs: 40, tickMs: 10, maxMs: 10000 });
@@ -51,15 +52,44 @@ test('background hold releases after quiet, waits out a busy self-wake at the ca
   assert.equal(hold.start(main), true);
   assert.equal(hold.observe({ type: 'assistant' }), false, 'self-wake output streams into the turn');
   assert.equal(hold.observe(wake('second')), true, 'self-wake results stay internal');
-  assert.equal(hold.observe(wake('boom', { subtype: 'error_during_execution', is_error: true })), true);
+  assert.equal(hold.observe(failure('boom', { terminal_reason: 'api_error', api_error_status: 429 })), true);
   await wait(80);
   assert.deepEqual(released, [], 'held while background work runs');
   active = false;
   await wait(100);
   assert.equal(released.length, 1);
-  assert.equal(released[0].result, 'second', 'the last successful self-wake answer wins');
+  // "The last upstream request of the turn decides": the failure after the
+  // success is what the user saw last, so the released turn must be a failure.
+  assert.equal(released[0].result, 'boom', 'the last self-wake answer wins even when it failed');
+  assert.equal(released[0].is_error, true);
+  assert.equal(released[0].terminal_reason, 'api_error');
+  assert.equal(released[0].api_error_status, 429);
+  assert.equal(released[0].background_wake_failed, true);
   assert.equal(released[0].origin, undefined, 'the main result identity is kept');
+  assert.equal(released[0].parent_tool_use_id, undefined, 'the main result identity is kept');
   assert.deepEqual(released[0].usage, { input_tokens: 9 });
+
+  // Reverse order: a success after the failure supersedes it.
+  const recovered = [];
+  const reverse = createBackgroundHold({ hasBackground: () => true, release: r => recovered.push(r), quietMs: 20, tickMs: 10, maxMs: 10000 });
+  assert.equal(reverse.start(main), true);
+  assert.equal(reverse.observe(failure('wake-429')), true);
+  assert.equal(reverse.observe(wake('recovered')), true);
+  active = true;
+  reverse.flush();
+  assert.equal(recovered[0].result, 'recovered');
+  assert.notEqual(recovered[0].is_error, true);
+  assert.equal(recovered[0].background_wake_failed, undefined);
+
+  // A cancelled self-wake carries no upstream verdict and changes nothing.
+  const ignored = [];
+  const cancelling = createBackgroundHold({ hasBackground: () => true, release: r => ignored.push(r), quietMs: 20, tickMs: 10, maxMs: 10000 });
+  assert.equal(cancelling.start(main), true);
+  assert.equal(cancelling.observe(wake('kept')), true);
+  assert.equal(cancelling.observe(failure('interrupted', { terminal_reason: 'interrupted' })), true);
+  cancelling.flush();
+  assert.equal(ignored[0].result, 'kept', 'cancel/abort/interrupt does not replace the tracked outcome');
+  assert.notEqual(ignored[0].is_error, true);
 
   const capped = [];
   const busy = createBackgroundHold({ hasBackground: () => true, release: r => capped.push(r), quietMs: 10, tickMs: 10, maxMs: 30 });

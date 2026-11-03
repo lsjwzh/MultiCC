@@ -9,6 +9,7 @@
 
 const crypto = require('crypto');
 const turnTimeline = require('./turn-timeline');
+const claudeApiError = require('./claude-api-error-message');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
 const { DELIVERY_CLASS, deliveryClassForItem } = require('../orchestration/delivery-classes');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
@@ -156,23 +157,20 @@ function markReplaySafeAssistantEnvelope(event, providerName) {
   if (!event || event.type !== 'assistant' || !Array.isArray(event.message?.content)) return event;
   const blocks = event.message.content;
   if (!blocks.length || !blocks.every(block => block && block.type === 'text')) return event;
-  const envelope = detectErrorEnvelope(
-    providerName,
-    blocks.map(block => String(block.text || '')).join(''),
-  );
+  const envelope = detectErrorEnvelope(providerName, blocks.map(block => String(block.text || '')).join(''));
   return envelope && envelope.body == null ? markHostErrorEnvelope(event) : event;
 }
 
-function reconcileBoundaryErrorEnvelope(attemptRuntime, providerAttempt, providerName, text) {
-  const envelope = detectErrorEnvelope(providerName, text);
+function reconcileBoundaryErrorEnvelope(attemptRuntime, providerAttempt, providerName, cs, structured) {
+  const text = typeof cs === 'string' ? cs : cs?.currentAssistantText, envelope = structured || detectErrorEnvelope(providerName, text);
+  // Persist the answer, never "answer + API Error: …" (text-only lanes too); an error-only envelope keeps its text.
+  if (envelope && envelope.body != null && cs && typeof cs === 'object') cs.currentAssistantText = envelope.body;
   if (!envelope || envelope.body != null) return envelope;
-  // Some CLI failure paths end without a result event, so the complete text is
-  // first available only at close/finalize. Feed the same unforgeable proof to
-  // the attempt runtime here that the normal assistant-snapshot path uses.
+  // CLI failure paths without a result event: give the attempt runtime the same proof at close/finalize.
   if (attemptRuntime && typeof attemptRuntime.observeEvent === 'function' && providerAttempt) {
     attemptRuntime.observeEvent(providerAttempt, markHostErrorEnvelope({
       type: 'assistant',
-      message: { content: [{ type: 'text', text: String(text || '') }] },
+      message: { content: [{ type: 'text', text: String(envelope.message || text || '') }] },
     }));
   }
   return envelope;
@@ -510,15 +508,16 @@ function createChatTurnEngine(deps) {
   }
 
   // Apply one claude-shaped stream-json event to chat session state, then forward
-  // it to clients. Shared by the per-turn spawn path (handleLine) and the
-  // persistent streaming path (runChatTurnStreaming) so the two never drift.
-  // Native result metadata is consumed after runner settlement.
+  // it to clients; shared by handleLine and runChatTurnStreaming so they never drift.
   function applyClaudeChatEvent(cs, sessionName, evt, forward, turn, runner, providerName = 'claude') {
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
     evt = attemptRuntime.scrubAttemptStructure(runner.providerAttempt, evt);
     turnProgressHeartbeat.touchActivity(sessionName, turn.turnId); turnTimeline.observeClaude(cs, evt);
+    const apiErrorMode = claudeApiError.intercept(runner, evt, cs, { sessionId: sessionName, turnId: turn.turnId, logger });
+    if (apiErrorMode === 'drop' || apiErrorMode === 'suppress') return;
     if (evt.type === 'assistant' && evt.message?.model) noteReportedModel(sessionName, evt.message.model);
     if (evt.type === 'assistant' && evt.message?.content) {
+      if (apiErrorMode !== 'append') claudeApiError.recoverPendingEvent(runner, cs, evt, { sessionId: sessionName, turnId: turn.turnId, logger });
       for (const block of evt.message.content) {
         if (block.type === 'text') {
           turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
@@ -588,13 +587,11 @@ function createChatTurnEngine(deps) {
       const resultCompletion = runner.completionOutcome;
       const resultSucceeded = canPersistAdapterCompletion(resultCompletion, attemptRuntime.proxyFailure?.(runner.providerAttempt));
       const apiFailure = resultCompletion.state === 'failed' && resultCompletion.source === 'protocol';
-      const detectedErrorEnvelope = detectErrorEnvelope(providerName, cs.currentAssistantText);
+      const detectedErrorEnvelope = claudeApiError.apiErrorEnvelope(runner, providerName, cs.currentAssistantText) || detectErrorEnvelope(providerName, cs.currentAssistantText);
       const envelopeError = apiFailure ? null : detectedErrorEnvelope;
       if (envelopeError && envelopeError.body != null) {
-        // Trailing envelope appended after real output: strip the error text so
-        // it never reaches the transcript; the meaningful body below is still
-        // checkpointed as a partial by the close finalizer (finalize-plan's
-        // append.required path fires on apiError + hasOutput).
+        // Trailing envelope appended after real output: strip the error text so it
+        // never reaches the transcript; the body is still checkpointed as a partial.
         cs.currentAssistantText = envelopeError.body;
       }
       if (apiFailure || envelopeError) {
@@ -606,7 +603,7 @@ function createChatTurnEngine(deps) {
           source: envelopeSourceFor(providerName),
           provider: providerName,
           code: evt.startup_failure_reason || detail.code || evt.subtype || detail.type, errors: evt.errors,
-          httpStatus: detail.http_status || detail.status_code || detail.status || evt.http_status || evt.status_code || evt.status,
+          httpStatus: detail.http_status || detail.status_code || detail.status || evt.http_status || evt.status_code || evt.status || evt.api_error_status,
           headers: detail.headers || evt.headers, requestId: detail.request_id || evt.request_id,
           message: detail.message || evt.result || evt.subtype || 'api_error',
         };
@@ -1812,7 +1809,8 @@ function createChatTurnEngine(deps) {
         else if (code !== 0 && !recoveredCodexDisconnect) kind = 'nonzero_exit';
         else if (!turn.resultDurable && !cs.currentAssistantText && !cs.currentToolCalls.length) kind = 'empty_exit';
         const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
-          attemptRuntime, runner.providerAttempt, provider?.name || cs.cli, cs.currentAssistantText,
+          attemptRuntime, runner.providerAttempt, provider?.name || cs.cli, cs,
+          claudeApiError.boundaryEnvelope(runner, provider?.name || cs.cli, cs),
         );
         commitAdapterResult(provider, sessionName, cs, persisted, turn, runner, forward, boundaryErrorEnvelope);
         diag.resultSaved = !!turn.resultDurable;
@@ -2501,7 +2499,8 @@ function createChatTurnEngine(deps) {
     if (!isCurrentTurnRunner(cs, turn, runner)) return;
     const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
       attemptRuntime, runner.providerAttempt,
-      provider?.name || persisted.cli || 'claude', cs.currentAssistantText,
+      provider?.name || persisted.cli || 'claude', cs,
+      claudeApiError.boundaryEnvelope(runner, provider?.name || persisted.cli || 'claude', cs),
     );
     commitAdapterResult(provider, sessionName, cs, persisted, turn, runner,
       evt => forwardProviderEvent(sessionName, cs, turn, runner, evt), boundaryErrorEnvelope);

@@ -81,6 +81,48 @@ function startBridge(t, fx, args = []) {
 
 const textOf = (events) => events.filter((e) => e.type === 'text').map((e) => e.part.text).join('');
 
+// 自唤醒轮会失败/会恢复的假引擎（覆盖 fixture() 写好的默认一个）。FAKE_WAKE_MODE=
+// fail：后台任务结束后唯一一次自唤醒以 turn.failed 报上游 429 收尾；recover：先失败
+// 一次，紧接着再自唤醒一次并成功。
+function writeWakeEngine(engine) {
+  fs.writeFileSync(engine, String.raw`'use strict';
+if (process.argv[2] !== 'app-server') process.exit(2);
+let sid = null, seq = 10, turnNo = 0;
+const mode = process.env.FAKE_WAKE_MODE || 'fail';
+const bgMs = Number(process.env.FAKE_ZCODE_BG_MS || 200);
+const out = m => process.stdout.write(JSON.stringify(m) + '\n');
+const ev = (type, payload) => out({ method: 'session/event', params: { sessionId: sid, seq: ++seq, type, payload } });
+function answer(text, extra) {
+  ev('turn.started', { turnNumber: ++turnNo, ...(extra || {}) });
+  ev('model.streaming', { kind: 'text_delta', delta: text, assistantMessageId: 'a' + turnNo });
+  ev('turn.completed', { resultType: 'success', response: text, usage: { inputTokens: 2, outputTokens: 1 } });
+}
+require('readline').createInterface({ input: process.stdin }).on('line', line => {
+  const m = JSON.parse(line);
+  if (m.method === 'session/create') {
+    sid = 'sess_wake_' + process.pid;
+    return out({ id: m.id, result: { session: { sessionId: sid } } });
+  }
+  if (m.method === 'session/resume') { sid = m.params.sessionId; return out({ id: m.id, result: { session: { sessionId: sid } } }); }
+  if (m.method === 'session/subscribe') return out({ id: m.id, result: { eventSeq: seq } });
+  if (m.method === 'session/stop') return out({ id: m.id, result: {} });
+  if (m.method === 'v4/command') { out({ id: m.id, result: {} }); return; }
+  if (m.method !== 'session/send') return out({ id: m.id, result: {} });
+  out({ id: m.id, result: { accepted: true, sessionId: sid } });
+  const text = String(m.params.content);
+  if (!text.startsWith('bg')) return answer('echo:' + text);
+  ev('session.updated', { taskId: 'exec_1', taskKind: 'bash', status: 'running', pid: process.pid });
+  answer('started background');
+  setTimeout(() => {
+    ev('session.updated', { taskId: 'exec_1', taskKind: 'bash', status: 'completed', pid: process.pid });
+    ev('turn.started', { turnNumber: ++turnNo, inputSource: 'background_task' });
+    ev('turn.failed', { error: { type: 'api_error', message: '上游 429 限流', code: 429 }, turnPhase: 'model' });
+    if (mode === 'recover') answer('woke again', { inputSource: 'background_task' });
+  }, bgMs);
+});
+`);
+}
+
 test('one engine and one native session serve every turn, and stdin close shuts it down', { timeout: 10000 }, async (t) => {
   const fx = fixture('turns');
   t.after(fx.cleanup);
@@ -115,6 +157,38 @@ test('a background task holds the turn and its self-wake turn flows into it', { 
   assert.deepEqual(bg, [1, 0]);
   assert.ok(types.indexOf('multicc_background') < end);
   assert.equal(b.events[end].status, 'success');
+  b.child.stdin.end();
+  await b.exited;
+});
+
+test('a failed final self-wake fails the held turn and carries the error', { timeout: 10000 }, async (t) => {
+  const fx = fixture('wake-fail', { FAKE_ZCODE_BG_MS: '150', FAKE_WAKE_MODE: 'fail' });
+  t.after(fx.cleanup);
+  writeWakeEngine(fx.engine);
+  const b = startBridge(t, fx);
+  b.send({ text: 'bgfail' });
+  const [end] = await b.waitTurnEnds(1);
+  assert.equal(end.status, 'failed');
+  const errIdx = b.events.findIndex((e) => e.type === 'error');
+  const endIdx = b.events.findIndex((e) => e.type === 'multicc_turn_end');
+  assert.ok(errIdx >= 0 && errIdx < endIdx, `the carried error must land before the turn end: ${JSON.stringify(b.events)}`);
+  assert.match(String(b.events[errIdx].error.message), /429/);
+  assert.equal(textOf(b.events), 'started background');
+  b.child.stdin.end();
+  await b.exited;
+});
+
+test('a later successful self-wake supersedes an earlier failure', { timeout: 10000 }, async (t) => {
+  const fx = fixture('wake-recover', { FAKE_ZCODE_BG_MS: '150', FAKE_WAKE_MODE: 'recover' });
+  t.after(fx.cleanup);
+  writeWakeEngine(fx.engine);
+  const b = startBridge(t, fx);
+  b.send({ text: 'bgrec' });
+  const [end] = await b.waitTurnEnds(1);
+  assert.equal(end.status, 'success');
+  assert.equal(b.events.some((e) => e.type === 'error'), false,
+    'a recovered wake failure must not surface in the successful answer');
+  assert.equal(textOf(b.events), 'started background\n\nwoke again');
   b.child.stdin.end();
   await b.exited;
 });

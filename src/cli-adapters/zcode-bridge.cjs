@@ -653,17 +653,32 @@ function runResident() {
     setImmediate(pump);
   }
 
+  // 一个宿主回合由它最后一次上游请求决定。hold 期间的自唤醒轮失败还不是定论：
+  // 同一回合后面还可能有别的自唤醒轮成功。失败的错误事件先扣在 cur.wakeFailure
+  // 里，收轮时仍是「最后一轮失败」才放出去 —— 否则错误文案会混进一条随后成功
+  // 收尾的回答，宿主那边还会因 sawError 把整轮判失败。
+  function endHeldTurn(cur) {
+    const failure = cur && cur.wakeFailure;
+    if (failure) {
+      for (const event of failure.events) emit(event);
+      cur.wakeFailure = null;
+      endTurn('failed');
+      return;
+    }
+    endTurn('success');
+  }
+
   function tick() {
     if (tasks.prune()) reportBackground();
     const cur = current;
     if (!cur || !cur.hold) return;
     const now = Date.now();
-    if (now >= cur.hold.forceAt) { endTurn('success'); return; }
+    if (now >= cur.hold.forceAt) { endHeldTurn(cur); return; }
     if (engineBusy || cur.segment) { cur.hold.quietSince = 0; return; }
-    if (now >= cur.hold.capAt) { endTurn('success'); return; }
+    if (now >= cur.hold.capAt) { endHeldTurn(cur); return; }
     if (tasks.active) { cur.hold.quietSince = 0; return; }
     if (!cur.hold.quietSince) cur.hold.quietSince = now;
-    if (now - cur.hold.quietSince >= HOLD_QUIET_MS) endTurn('success');
+    if (now - cur.hold.quietSince >= HOLD_QUIET_MS) endHeldTurn(cur);
   }
   const ticker = setInterval(tick, HOLD_TICK_MS);
   ticker.unref();
@@ -683,19 +698,33 @@ function runResident() {
       // 自唤醒轮：hold 期间的那几轮，或恰好抢在本轮前面跑的那一轮 —— 都另起
       // mapper，接着流进同一个宿主回合。
       const wake = cur.ownDone || payload.inputSource === 'background_task';
-      cur.segment = { wake, mapper: createZcodeTurnMapper({ sessionId: sid, separateFirstText: cur.textSeen }) };
+      cur.segment = { wake, errors: [], mapper: createZcodeTurnMapper({ sessionId: sid, separateFirstText: cur.textSeen }) };
     }
     const seg = cur.segment;
     if (!seg) return;
     const { events, done } = seg.mapper.map(params);
     for (const event of events) {
       if (event.type === 'text') cur.textSeen = true;
+      // 自唤醒轮的错误先扣住（见 endHeldTurn）；成功轮会把它作废。
+      if (seg.wake && event.type === 'error') { seg.errors.push(event); continue; }
       emit(event);
     }
     if (!done) return;
     cur.segment = null;
     // 自唤醒轮收尾：hold 的 tick 决定何时收宿主回合；被取消时答案已完整，直接收。
-    if (seg.wake) { if (stopping && cur.ownDone) endTurn('success'); return; }
+    if (seg.wake) {
+      if (done === 'failed') {
+        // 兜底：正常映射失败必带 error 事件；万一没有，也要让宿主看见失败。
+        cur.wakeFailure = { events: seg.errors.length ? seg.errors : [{
+          type: 'error',
+          error: { code: TERMINAL_ERROR_CODE, message: 'ZCode 自唤醒轮失败' },
+        }] };
+      } else if (done === 'success') {
+        cur.wakeFailure = null;   // 后一次自唤醒成功 → 前一次失败只是「已恢复」
+      }
+      if (stopping && cur.ownDone) endHeldTurn(cur);
+      return;
+    }
     cur.ownDone = true;
     if (done === 'success' && tasks.active > 0 && !stopping && holdMax > 0) {
       const now = Date.now();
@@ -815,7 +844,7 @@ function runResident() {
     const turn = turns.shift();
     const cur = current = {
       accepted: false, evidence: false, buffered: [], segment: null,
-      ownDone: false, textSeen: false, hold: null,
+      ownDone: false, textSeen: false, hold: null, wakeFailure: null,
     };
     const mismatch = modelMismatchMessage(turn.model || model);
     if (mismatch || !turn.text) {
@@ -857,7 +886,7 @@ function runResident() {
   // 引擎在跑一轮 = 发 stop 等它把 turn.completed(cancelled) 吐回来（上限 STOP_SETTLE_MS）。
   function onSignal() {
     if (stopping) return;
-    if (current && current.hold && !current.segment) endTurn('success');
+    if (current && current.hold && !current.segment) endHeldTurn(current);
     stopping = true;
     if (engine && engineBusy && sid) {
       for (const msg of stopCommands(sid, engine.nextId)) engine.send(msg);

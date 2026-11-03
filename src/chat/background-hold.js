@@ -9,6 +9,12 @@ const { isMainResult } = require('../cli-adapters/result-completion');
 // provider route, live stream consumer) instead of being re-queued as a
 // separate 🔇 turn. The cap is the backstop for work that never ends; after it,
 // completions fall back to the queued notice.
+//
+// The LAST self-wake result decides the released outcome: a later success
+// supersedes an earlier failure and vice versa, while cancellations/aborts and
+// unknown results leave it untouched. Releasing a turn whose last wake failed
+// as a success is how a 429 from a task-notification wake was hidden behind the
+// held answer.
 const QUIET_MS = 5000;
 const TICK_MS = 1000;
 const DEFAULT_MAX_MS = 60 * 60 * 1000;
@@ -20,21 +26,42 @@ function holdMaxMs(env = process.env) {
 }
 
 const succeeded = event => event?.subtype === 'success' && event.is_error === false;
+// The last self-wake request is what decides the turn: a failure that no later
+// success superseded must be released as a failure, not hidden behind the held
+// main answer. Cancellations/aborts/interrupts and unrecognized results carry no
+// upstream verdict and therefore leave the tracked outcome untouched.
+const CANCELLED = new Set(['cancelled', 'aborted', 'interrupted']);
+const failed = event => event?.is_error === true || /^error(?:_|$)/.test(event?.subtype || '')
+  || event?.terminal_reason === 'api_error';
 const CONTINUATION = new Set(['assistant', 'user', 'stream_event']);
+
+const pickFrom = (latest, held) => key => (latest[key] !== undefined ? latest[key] : held[key]);
 
 // The released event keeps the held main result's identity (it is what the
 // completion tracker adjudicates) and takes the final answer, usage and cost
 // from the last successful self-wake query.
 function merge(held, latest) {
   if (!latest) return held;
-  const pick = key => (latest[key] !== undefined ? latest[key] : held[key]);
+  const pick = pickFrom(latest, held);
   return { ...held, result: pick('result'), usage: pick('usage'), modelUsage: pick('modelUsage'),
     total_cost_usd: pick('total_cost_usd') };
 }
 
+// A failed last wake releases the held turn as an API error. `result` is
+// intentionally undefined when the failing result carried no text: the held
+// main answer must not masquerade as the failed request's output.
+function failedRelease(held, failure) {
+  const pick = pickFrom(failure, held);
+  return { ...held, subtype: failure.subtype, is_error: true,
+    terminal_reason: failure.terminal_reason ?? 'api_error',
+    api_error_status: failure.api_error_status, result: failure.result, errors: failure.errors,
+    usage: pick('usage'), modelUsage: pick('modelUsage'), total_cost_usd: pick('total_cost_usd'),
+    background_wake_failed: true };
+}
+
 function createBackgroundHold({ hasBackground, release, quietMs = QUIET_MS, tickMs = TICK_MS,
   maxMs = holdMaxMs() } = {}) {
-  let held = null, latest = null, busy = false, expired = false, quietSince = 0, done = false;
+  let held = null, latest = null, lastWake = null, busy = false, expired = false, quietSince = 0, done = false;
   let ticker = null, capTimer = null, overrunTimer = null;
 
   function clear() {
@@ -45,8 +72,8 @@ function createBackgroundHold({ hasBackground, release, quietMs = QUIET_MS, tick
     if (done || !held) return null;
     done = true;
     clear();
-    const result = merge(held, latest);
-    held = latest = null;
+    const result = lastWake && failed(lastWake) ? failedRelease(held, lastWake) : merge(held, latest);
+    held = latest = lastWake = null;
     release(result);
     return result;
   }
@@ -86,7 +113,9 @@ function createBackgroundHold({ hasBackground, release, quietMs = QUIET_MS, tick
       if (event?.type === 'result') {
         busy = false;
         quietSince = 0;
-        if (succeeded(event)) latest = event;
+        if (CANCELLED.has(event?.terminal_reason)) { tick(); return true; }
+        if (succeeded(event)) { latest = event; lastWake = event; }
+        else if (failed(event)) lastWake = event;
         tick();
         return true;
       }
@@ -98,7 +127,7 @@ function createBackgroundHold({ hasBackground, release, quietMs = QUIET_MS, tick
     },
     // Release now (cancel / insert-now): the held answer is complete.
     flush: finish,
-    dispose() { done = true; held = latest = null; clear(); },
+    dispose() { done = true; held = latest = lastWake = null; clear(); },
   };
 }
 
