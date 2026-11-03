@@ -1012,8 +1012,8 @@ void main() {
     );
     expect(find.text('新任务'), findsOneWidget);
     expect(find.text('更多与系统'), findsOneWidget);
-    // 最近打开过的任务优先：这次会话没打开过任何任务，补位的是当前目录里
-    // 最近更新过的那条。
+    // 侧栏「最近任务」按最近动静倒序：这份快照里唯一没归档的就是 t1，
+    // 所以它该在（归档的 t2 不进侧栏）。
     expect(find.byKey(const ValueKey('air-side-task-t1')), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
