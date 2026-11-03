@@ -256,6 +256,26 @@ test('validateOpenCodeModel leaves unknown providers and bare ids alone', () => 
   assert.equal(validateOpenCodeModel('glm-5.2'), null, 'unqualified ids belong to managed routes');
 });
 
+// A config rewrite renamed the custom provider `opencodego` to the built-in
+// `opencode-go`: sessions stored before the rename must still get a suggestion.
+const RENAMED_CACHE = [
+  { provider: 'opencode-go', model: 'deepseek-v4.1-flash', label: 'opencode-go/deepseek-v4.1-flash' },
+  { provider: 'opencode-go', model: 'glm-5.2', label: 'opencode-go/glm-5.2' },
+  { provider: 'opencode', model: 'big-pickle', label: 'opencode/big-pickle (OpenCode Zen)' },
+];
+
+test('validateOpenCodeModel maps a renamed provider id to the same model', () => {
+  _setCacheForTest(Date.now(), RENAMED_CACHE);
+  const verdict = validateOpenCodeModel('opencodego/glm-5.2');
+  assert.deepEqual(verdict, { valid: false, suggestion: 'opencode-go/glm-5.2' });
+});
+
+test('validateOpenCodeModel combines provider rename with model rename', () => {
+  _setCacheForTest(Date.now(), RENAMED_CACHE);
+  const verdict = validateOpenCodeModel('opencodego/deepseek-v4-flash');
+  assert.deepEqual(verdict, { valid: false, suggestion: 'opencode-go/deepseek-v4.1-flash' });
+});
+
 // ── spawn-time guard (adapter mount point) ─────────────────────────────────
 
 function envelopeFor(rawModel) {

@@ -11,7 +11,7 @@
 const NATIVE_OPENCODE_PREFIX = 'opencode-native:';
 // The OpenCode provider id namespace: lowercase-ish, no path separators.
 const NATIVE_OPENCODE_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
-const NATIVE_OPENCODE_NAMES = { opencode: 'OpenCode Zen', opencodego: 'OpenCode Go' };
+const NATIVE_OPENCODE_NAMES = { opencode: 'OpenCode Zen', opencodego: 'OpenCode Go', 'opencode-go': 'OpenCode Go' };
 
 // The id behind a `opencode-native:<id>` value, or null for anything else. A
 // null answer is not "invalid": it means the value is an ordinary provider id.

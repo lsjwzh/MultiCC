@@ -429,8 +429,23 @@ function validateOpenCodeModel(model) {
   const models = peekOpenCodeModels();
   if (!models.length) return null;
   const sameProvider = models.filter(item => item.provider === provider);
-  // An unknown provider may be a MultiCC-managed route: no evidence, no veto.
-  if (!sameProvider.length) return null;
+  if (!sameProvider.length) {
+    // Provider id aliases: a config rewrite can rename the provider without
+    // touching the models (custom `opencodego` → built-in `opencode-go`).
+    // Match on the normalized id (alphanumerics only) so stored sessions keep
+    // getting a useful suggestion instead of a blind upstream error. Zero or
+    // ambiguous matches stay fail-open — it may be a MultiCC-managed route.
+    const wanted = provider.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const aliases = [...new Set(models.map(item => item.provider))]
+      .filter(id => id.toLowerCase().replace(/[^a-z0-9]/g, '') === wanted);
+    if (aliases.length !== 1) return null;
+    const aliasProvider = aliases[0];
+    const aliasModels = models.filter(item => item.provider === aliasProvider);
+    if (aliasModels.some(item => item.model === target)) {
+      return { valid: false, suggestion: `${aliasProvider}/${target}` };
+    }
+    return { valid: false, suggestion: bestModelSuggestion(aliasProvider, target, aliasModels) };
+  }
   if (sameProvider.some(item => item.model === target)) return null;
   return { valid: false, suggestion: bestModelSuggestion(provider, target, sameProvider) };
 }
