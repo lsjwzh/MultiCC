@@ -11,6 +11,68 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const WebSocket = require('ws');
 const { assertTestDir } = require('../src/paths');
+const { createQoderAdapter } = require('../src/cli-adapters/qoder');
+
+// ── qoder: structured API-error fields ───────────────────────────────────
+// The CLI writes a synthetic assistant frame (isApiErrorMessage, with the HTTP
+// status in displayErrorCode) and then an error result frame. The adapter must
+// expose those as the fields the shared classifier reads, without inventing a
+// status from Qoder's own sub-400 codes.
+const qoderUnit = createQoderAdapter({ cmd: 'qoder' });
+const qoderSynthetic = qoderUnit.decodeEvent({
+  type: 'assistant', isApiErrorMessage: true, displayErrorCode: 429,
+  error: 'rate_limit_exceeded', errorDetails: 'HTTP 429',
+  message: { model: 'performance', content: [{ type: 'text', text: '[API Error: rate limited]' }] },
+})[0];
+if (qoderSynthetic.type !== 'claude_event' || qoderSynthetic.raw.api_error_status !== 429) {
+  throw new Error(`qoder synthetic assistant status not mapped: ${JSON.stringify(qoderSynthetic)}`);
+}
+if (qoderSynthetic.raw.displayErrorCode !== 429 || qoderSynthetic.raw.error !== 'rate_limit_exceeded') {
+  throw new Error('qoder synthetic assistant fields must survive the mapping');
+}
+const qoderQuotaCode = qoderUnit.decodeEvent({
+  type: 'assistant', isApiErrorMessage: true, displayErrorCode: 110,
+  message: { content: [{ type: 'text', text: 'daily usage limit' }] },
+})[0];
+if ('api_error_status' in qoderQuotaCode.raw) {
+  throw new Error('qoder sub-400 display code must not become an HTTP status');
+}
+const qoderResult = qoderUnit.decodeEvent({
+  type: 'result', subtype: 'error_during_execution', is_error: true,
+  error_code: 429, errors: ['The request limit has been reached.'],
+})[0];
+if (qoderResult.raw.error?.http_status !== 429
+  || qoderResult.raw.error?.message !== 'The request limit has been reached.') {
+  throw new Error(`qoder error result fields not mapped: ${JSON.stringify(qoderResult)}`);
+}
+if (qoderResult.raw.error_code !== 429 || !Array.isArray(qoderResult.raw.errors)) {
+  throw new Error('qoder error result fields must survive the mapping');
+}
+// Provider string codes are not statuses; sub-400 numeric codes are Qoder's
+// own (105/110/112…) and must not be reported as HTTP statuses.
+const qoderStringCode = qoderUnit.decodeEvent({
+  type: 'result', subtype: 'error_during_execution', is_error: true,
+  error_code: 'invalid_api_key', error_message: 'bad key',
+})[0];
+if (qoderStringCode.raw.error?.http_status !== undefined
+  || qoderStringCode.raw.error?.message !== 'bad key') {
+  throw new Error(`qoder string code mapping wrong: ${JSON.stringify(qoderStringCode)}`);
+}
+const qoderInternalCode = qoderUnit.decodeEvent({
+  type: 'result', subtype: 'error_during_execution', is_error: true,
+  error_code: 10408, errors: ['timeout'],
+})[0];
+if ('http_status' in qoderInternalCode.raw.error) {
+  throw new Error('qoder internal numeric code must not become an HTTP status');
+}
+// Success results and sub-agent results are untouched.
+const qoderSuccess = { type: 'result', subtype: 'success', is_error: false, result: 'ok' };
+if (qoderUnit.decodeEvent(qoderSuccess)[0].raw !== qoderSuccess) {
+  throw new Error('qoder success result must pass through untouched');
+}
+if (qoderUnit.decodeEvent({ type: 'result', subtype: 'error_during_execution', is_error: true, parent_tool_use_id: 't1' }).length !== 0) {
+  throw new Error('qoder sub-agent result must still be filtered');
+}
 
 const ROOT = path.join(__dirname, '..');
 const PORT = 3994;

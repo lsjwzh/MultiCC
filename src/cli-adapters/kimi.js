@@ -2,13 +2,20 @@
 
 // Kimi Code adapter (@moonshot-ai/kimi-code, binary `kimi`).
 //
-// Headless protocol (grounded from the 0.32.x bundle): `kimi -p <prompt>
-// --output-format stream-json --auto` emits one JSON object per line:
-//   { role:"meta", type:"system.version", ... }                    (banner)
+// Headless protocol (grounded from the 2.3.3 bundle,
+// /opt/homebrew/lib/node_modules/@moonshot-ai/kimi-code/dist/main.mjs): `kimi
+// -p <prompt> --output-format stream-json` emits one JSON object per line:
+//   { role:"meta", type:"system.version", version }                 (banner)
 //   { role:"assistant", content?, tool_calls:[{type,id,function:{name,arguments}}] }
 //   { role:"tool", tool_call_id, content }                          (tool result)
-//   { role:"meta", type:"turn.step.retrying", error_message, ... }  (transient)
+//   { role:"meta", type:"turn.step.retrying", failed_attempt, next_attempt,
+//     max_attempts, delay_ms, error_name, error_message, status_code } (transient)
 //   { role:"meta", type:"session.resume_hint", session_id, command }(last line)
+//   { type:"error", code, message, details }                       (fatal, exit 4)
+// `--auto` must NOT be passed with `-p`: validateOptions throws
+// "Cannot combine --prompt with --auto." (main.mjs byte ~19537959) and the
+// print path already calls `setMode("auto")` on the agent (main.mjs
+// ~21931856, in the same block that catches SESSION_OCCUPIED).
 // Continuation turns use `-S/--session <sessionId>` (the resume hint id).
 // Provider credentials ride kimi-code's documented env fallback
 // (KIMI_API_KEY / KIMI_BASE_URL), injected by buildKimiCodeRoute.
@@ -19,6 +26,11 @@ const { completion, createCompletionTracker } = require('./completion');
 
 const { displayNameOf } = require('../cli/cli-capability');
 const LABEL = displayNameOf('kimi');
+
+function numberOrUndefined(value) {
+  const n = Number(value);
+  return value !== null && value !== '' && Number.isFinite(n) ? n : undefined;
+}
 
 function parseToolArguments(raw) {
   if (raw == null) return {};
@@ -63,7 +75,9 @@ function createKimiAdapter({ cmd, routerMcpNode, routerMcpScript } = {}) {
     },
     buildInvocation(env) {
       const isFirstTurn = env.historyHandle.isFirstTurn;
-      const args = ['--output-format', 'stream-json', '--auto', ...routerArgs];
+      // Print mode already forces permission-mode auto; `--auto` + `-p` is a
+      // fatal option conflict in the installed 2.x line (see the header).
+      const args = ['--output-format', 'stream-json', ...routerArgs];
       if (env.spawnOpts.rawModel) args.push('--model', env.spawnOpts.rawModel);
       if (!isFirstTurn && env.historyHandle.cliSessionId) {
         args.push('--session', env.historyHandle.cliSessionId);
@@ -114,10 +128,53 @@ function createKimiAdapter({ cmd, routerMcpNode, routerMcpScript } = {}) {
         if (event.type === 'session.resume_hint' && event.session_id) {
           decoded.push({ type: 'session_started', sessionId: event.session_id });
         } else if (event.type === 'turn.step.retrying') {
-          // Transient provider retry — keep the turn visibly alive; the final
-          // outcome arrives as assistant text or a non-zero exit.
-          decoded.push({ type: 'status', status: 'thinking' });
+          // Transient provider retry — NOT a turn failure: a later attempt can
+          // succeed, and the turn is decided by the last one. Keep the turn
+          // visibly alive and carry the structured facts for observability;
+          // emitting a `type:'error'` here would make the completion tracker
+          // sawError sticky and fail a turn that later recovers.
+          const retry = {};
+          const failedAttempt = numberOrUndefined(event.failed_attempt);
+          const nextAttempt = numberOrUndefined(event.next_attempt);
+          const maxAttempts = numberOrUndefined(event.max_attempts);
+          const delayMs = numberOrUndefined(event.delay_ms);
+          const httpStatus = numberOrUndefined(event.status_code);
+          if (failedAttempt !== undefined) retry.failedAttempt = failedAttempt;
+          if (nextAttempt !== undefined) retry.nextAttempt = nextAttempt;
+          if (maxAttempts !== undefined) retry.maxAttempts = maxAttempts;
+          if (delayMs !== undefined) retry.delayMs = delayMs;
+          if (httpStatus !== undefined) retry.httpStatus = httpStatus;
+          if (typeof event.error_name === 'string' && event.error_name) retry.code = event.error_name;
+          if (typeof event.error_message === 'string' && event.error_message) retry.message = event.error_message;
+          decoded.push({
+            type: 'status',
+            status: 'thinking',
+            ...(Object.keys(retry).length ? { retry } : {}),
+          });
         }
+      } else if (event.type === 'error') {
+        // Fatal print-mode envelope (e.g. session.occupied, exit 4):
+        // { type:"error", code, message, details } written to stdout by
+        // reportSessionOccupied (main.mjs ~21940670). Terminal turn failures
+        // that are thrown from runNativeTurn have no stdout envelope; they only
+        // surface as stderr + exit 1 (the host's process-close fallback).
+        const detail = event.details && typeof event.details === 'object' ? event.details : {};
+        const message = event.message || detail.message || `${LABEL} 出错`;
+        decoded.push({
+          type: 'error',
+          label: LABEL,
+          message,
+          kind: 'provider',
+          error: {
+            source: 'kimi_event',
+            provider: 'kimi',
+            code: event.code || detail.code || detail.name,
+            httpStatus: numberOrUndefined(detail.statusCode ?? detail.status
+              ?? event.status_code ?? event.statusCode),
+            requestId: detail.requestId || detail.requestID || event.requestId,
+            message,
+          },
+        });
       }
       return decoded;
     },

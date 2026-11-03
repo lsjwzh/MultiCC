@@ -256,12 +256,21 @@ function sanitizeMessage(value, fallback = 'Upstream API request failed', maxLen
 // — the error text would land in the transcript as if it were partial output.
 // "Codex Exp" is the resident lane's former name, kept for text that persisted
 // under it.
-const ERROR_ONLY_PREFIX_RE = /^(?:api\s*error|failed to authenticate|error:|codex\s*(?:exec\s*|exp\s*)?(?:error|出错)|claude\s*(?:error|出错)|opencode\s*(?:error|出错)|qoder\s*(?:error|出错)|zcode\s*(?:error|出错)|kimi\s*(?:error|出错)|codebuddy\s*(?:error|出错)|dsh\s*(?:error|出错)|gemini\s*(?:error|出错)|grok\s*(?:error|出错)|pi\s*(?:error|出错)|stream disconnected|connection (?:closed|reset|refused)|request (?:failed|timed out)|rate limit|overloaded|internal server error|service unavailable|timeout|timed out)/i;
+const ERROR_ONLY_PREFIX_RE = /^(?:api\s*error|failed to authenticate|error:|codex\s*(?:exec\s*|exp\s*)?(?:error|出错)|claude\s*(?:error|出错)|opencode\s*(?:error|出错)|qoder\s*(?:error|出错)|zcode\s*(?:error|出错)|kimi\s*(?:error|出错)|codebuddy\s*(?:error|出错)|dsh\s*(?:error|出错)|gemini\s*(?:error|出错)|grok\s*(?:error|出错)|pi\s*(?:error|出错)|stream disconnected|connection (?:closed|reset|refused)|request (?:failed|timed out)|request rejected\s*\(\s*[45]\d\d\s*\)|rate limit|overloaded|internal server error|service unavailable|timeout|timed out|\[error\]|exceeded retry limit|response stalled)/i;
+
+// The host's quota guard answers some lanes with a bare JSON object instead of
+// prose. It carries no "API Error:" prefix, so the prefix list above cannot see
+// it; the code field is the only stable signature.
+function isQuotaGuardJson(text) {
+  if (text[0] !== '{') return false;
+  return /"code"\s*:\s*"quota[_-]?guard/i.test(text)
+    || /"error"\s*:\s*"[^"]{0,200}quota[ _-]?guard/i.test(text);
+}
 
 function isErrorOnlyText(value) {
   const text = String(value || '').trim();
   if (!text || text.length > 600) return false;
-  return ERROR_ONLY_PREFIX_RE.test(text);
+  return ERROR_ONLY_PREFIX_RE.test(text) || isQuotaGuardJson(text);
 }
 
 // Canonical "what an API fault looks like in text" signature list. Every
@@ -281,83 +290,172 @@ function apiErrorSignaturesQuoted() {
 // Some CLIs append the error envelope to the END of an otherwise complete
 // assistant turn ("…正文：API Error: Request rejected (429)…"). The whole-message
 // predicate above cannot see that shape, so the error text used to land in the
-// transcript verbatim. This single-envelope expression must sit at the very
-// end, on its own or after a sentence/line boundary, and be short. Anything
-// ambiguous stays untouched.
-const TRAILING_ERROR_ENVELOPE_RE = /(?:^|[\n。：:；;])\s*(failed to authenticate\b[^\n]{0,80}?api\s*error\s*:|api\s*error\s*:)[^\n。！？]{0,400}\s*$/i;
-
-// Background-task notifications can wake an already-finished turn several
-// times, and each follow-up request that is rate limited appends ANOTHER
-// "API Error: …" envelope to the same assistant text. The CLI glues them
-// straight onto the prior text with the sentence punctuation that ended it
-// ("…later.API Error: …"), so a chain longer than the 400-char allowance — or
-// any envelope preceded by an ASCII '.' — is invisible to the expression
-// above. Peel one bounded envelope at a time from the end instead. An inner
-// envelope may follow glue punctuation (.!?)), but the chain as a whole must
-// still begin at the existing boundary set (or the start of the text), so
-// prose ending in "… later." is not falsely stripped.
-const TRAILING_ENVELOPE_GLUE_RE = /[.!?)]/;
-const TRAILING_ENVELOPE_REAL_BOUNDARY_RE = /[\n。：:；;]/;
-const TRAILING_ENVELOPE_UNIT_RE = /(?:failed to authenticate\b[^\n]{0,80}?api\s*error\s*:|api\s*error\s*:)[^\n。！？]{0,400}\s*$/i;
+// transcript verbatim. The envelope must sit at the very end and stay short.
+//
+// The head is the CLI's own envelope prefix; "Failed to authenticate." rides
+// along because the CLI glues the login line and the API line together.
+const TRAILING_ENVELOPE_HEAD_RE = /(?:failed to authenticate\b[^\n]{0,80}?api\s*error\s*:|api\s*error\s*:)/gi;
+// Where the first envelope of a chain may begin: a real line/sentence boundary
+// OR the ASCII sentence terminator / closing mark the CLI glues directly onto
+// ("…push main and the tag.API Error: …", "…（见上文）API Error: …"). A backtick
+// is deliberately absent — "…写成 `API Error: 429`" is prose quoting an error,
+// and so is a head glued straight onto a letter or digit.
+const TRAILING_ENVELOPE_BOUNDARY_RE = /[\n。：:；;.!?()（)）」』”’"]/;
+// Seam punctuation that the historical single-envelope split drops from the
+// body. The ASCII terminators and closing brackets/quotes newly accepted as
+// boundaries are NOT dropped: they end the answer's own sentence ("…the tag.")
+// and keep "（见上文）" or "…(see the log above)" balanced.
+const TRAILING_ENVELOPE_SEAM_RE = /[\n。：:；;]/;
+// Single-envelope shape (weak heads only, no sentence punctuation inside).
+// detectErrorEnvelope uses the structural scan below instead; this export
+// stays for callers that only need to describe the plain form.
+const TRAILING_ERROR_ENVELOPE_RE = /(?:^|[\n。：:；;.!?()（)）」』”’"])\s*(failed to authenticate\b[^\n]{0,80}?api\s*error\s*:|api\s*error\s*:)[^\n。！？]{0,400}\s*$/i;
+// A full-width sentence punctuation mark inside the envelope is normally the
+// end of REAL prose ("…API Error: 429 rate limited. 不过我已经…结果如下。"), so it
+// is only tolerated for structurally unambiguous heads: a status, the CLI's
+// "Request rejected (429)", the auth glue, or a known CLI phrase.
+const TRAILING_ENVELOPE_STRONG_HEAD_RES = Object.freeze([
+  /^api\s*error\s*:\s*[45]\d\d\b/i,
+  /^api\s*error\s*:\s*request rejected\s*\(\s*\d{3}\s*\)/i,
+  /^api\s*error\s*:\s*(?:the operation timed out|unable to connect to api|connection error|response stalled\b)/i,
+  /^failed to authenticate\b/i,
+]);
+const ENVELOPE_SENTENCE_PUNCT_RE = /[。！？]/;
 // One unit is at most 400 content chars + the optional auth prefix + token;
 // the peel only ever looks at this tail, so long assistant text stays cheap.
+const TRAILING_ENVELOPE_MAX_CONTENT = 400;
 const TRAILING_ENVELOPE_TAIL_WINDOW = 600;
 const MAX_TRAILING_ENVELOPE_CHAIN = 8;
 
+// Is `content` (the text between the head and the end of the message) short,
+// single-line and plausible as envelope text?
+//
+// Weak heads keep the historical rule: any full-width 。！？ ends the unit.
+// Zhipu's quota text carries those inside provider codes — "[1113][余额不足或]
+// 无可用资源包,请充值。]" — so punctuation inside a closed [...] segment is read
+// as data, not as prose.
+//
+// A strong head may additionally END on sentence punctuation ("API Error: 403
+// 用户额度不足。"): the trailing run is stripped before the scan. It must not
+// span a sentence, though — "API Error: 429 rate limited. 不过我已经…结果如下。"
+// is prose quoting an envelope, and its ASCII "." before the full-width mark
+// keeps it rejected.
+function envelopeContentAllowed(head, content) {
+  if (content.length > TRAILING_ENVELOPE_MAX_CONTENT) return false;
+  if (content.includes('\n')) return false;
+  // The structured-head patterns read the status/phrase that FOLLOWS "API
+  // Error:", so they are matched against head + content, not the head alone.
+  const strong = TRAILING_ENVELOPE_STRONG_HEAD_RES.some(re => re.test(`${head}${content}`));
+  let body = content;
+  const trailingRun = /[。！？]+$/.exec(body);
+  if (trailingRun) {
+    if (!strong || /[.!?]/.test(body.slice(0, trailingRun.index))) return false;
+    body = body.slice(0, trailingRun.index);
+  }
+  let depth = 0;
+  for (const ch of body) {
+    if (ch === '[') depth += 1;
+    else if (ch === ']') { if (depth > 0) depth -= 1; }
+    else if (depth === 0 && ENVELOPE_SENTENCE_PUNCT_RE.test(ch)) return false;
+  }
+  return depth === 0; // an unclosed "[" is not a provider code segment
+}
+
 // Returns the absolute start index of the last envelope that ends exactly at
-// `end`, or null. The regex is anchored at the end and bounded to the tail so
-// the leftmost acceptable start never scans the whole message.
+// `end`, or null. Candidates are scanned left to right (the same preference a
+// greedy `…$` expression has) and bounded to the tail, so the leftmost
+// acceptable start never scans the whole message. A candidate whose content is
+// unusable is skipped rather than fatal: in a glued chain of four envelopes the
+// first three heads are too long and only the fourth starts the last unit.
 function findTrailingEnvelopeUnit(text, end) {
   const floor = Math.max(0, end - TRAILING_ENVELOPE_TAIL_WINDOW);
-  const matched = TRAILING_ENVELOPE_UNIT_RE.exec(text.slice(floor, end));
-  if (!matched) return null;
-  return floor + matched.index;
+  const slice = text.slice(floor, end);
+  let contentEnd = slice.length;
+  while (contentEnd > 0 && /\s/.test(slice[contentEnd - 1])) contentEnd -= 1;
+  if (contentEnd === 0) return null;
+  TRAILING_ENVELOPE_HEAD_RE.lastIndex = 0;
+  let matched;
+  while ((matched = TRAILING_ENVELOPE_HEAD_RE.exec(slice)) !== null) {
+    if (matched[0].length === 0) { TRAILING_ENVELOPE_HEAD_RE.lastIndex += 1; continue; }
+    const contentStart = matched.index + matched[0].length;
+    if (contentStart > contentEnd) return null;
+    if (envelopeContentAllowed(matched[0], slice.slice(contentStart, contentEnd))) {
+      return floor + matched.index;
+    }
+  }
+  return null;
 }
 
 // Peels a chain of back-to-back trailing envelopes and returns
 // { body, envelope, envelopeCount }. `body` is the real answer with the whole
-// chain removed (it keeps the sentence punctuation that introduced the chain,
-// e.g. the trailing "。"), and `envelope` is the concatenated chain so that
+// chain removed (it keeps the punctuation that introduced the chain, e.g. the
+// trailing "。"), and `envelope` is the concatenated chain so that
 // envelopeHttpStatus still finds its first status. Empty `body` means the
 // entire message was envelopes (the >600-char whole-message form).
+//
+// Background-task notifications can wake an already-finished turn several
+// times, and each follow-up request that is rate limited appends ANOTHER
+// "API Error: …" envelope to the same assistant text, glued with the sentence
+// punctuation that ended the previous one ("…later.API Error: …"). Glue marks
+// are also legitimate chain-start boundaries now, so "accept here" is only
+// provisional: keep peeling past one to see whether an earlier envelope owns
+// the same chain, and fall back to the last accepted cut when it does not.
 function peelTrailingEnvelopeChain(text) {
   const end = text.length;
   let cursor = end;
+  let accepted = null;
   for (let peeled = 0; peeled < MAX_TRAILING_ENVELOPE_CHAIN; peeled += 1) {
     const unitStart = findTrailingEnvelopeUnit(text, cursor);
-    if (unitStart == null || unitStart >= cursor) return null;
+    if (unitStart == null || unitStart >= cursor) return accepted;
     let before = unitStart - 1;
-    while (before >= 0 && /\s/.test(text[before])) before -= 1;
+    let lineStart = false;
+    while (before >= 0 && /\s/.test(text[before])) {
+      // A newline in the gap is a boundary on its own: the CLI prints the
+      // envelope on its own line ("…渲染到什么程度\n\nAPI Error: …") even when
+      // the prose character before it is a letter.
+      if (text[before] === '\n') lineStart = true;
+      before -= 1;
+    }
     if (before < 0) {
       // Every byte is an envelope — no real answer body escaped.
       return { body: '', envelope: text.trim(), envelopeCount: peeled + 1 };
     }
-    const boundaryChar = text[before];
-    if (TRAILING_ENVELOPE_REAL_BOUNDARY_RE.test(boundaryChar)) {
-      return {
-        body: text.slice(0, unitStart).trim(),
-        envelope: text.slice(unitStart, end).trim(),
-        envelopeCount: peeled + 1,
-      };
+    if (!lineStart && !TRAILING_ENVELOPE_BOUNDARY_RE.test(text[before])) {
+      return accepted; // prose — ambiguous
     }
-    if (!TRAILING_ENVELOPE_GLUE_RE.test(boundaryChar)) return null; // prose — ambiguous
-    cursor = before + 1; // the glue punctuation closes the previous envelope
+    accepted = {
+      body: text.slice(0, unitStart).trim(),
+      envelope: text.slice(unitStart, end).trim(),
+      envelopeCount: peeled + 1,
+    };
+    cursor = before + 1;
   }
   return null; // chain longer than the cap — leave the text untouched
+}
+
+// A JSON document ending in a quoted "API Error: …" element (a task-board
+// payload, an aux result) is structured data, not prose with an envelope
+// appended: the quote that precedes the "head" is a JSON string delimiter.
+function looksLikeJsonDocument(text) {
+  if (text[0] !== '{' && text[0] !== '[') return false;
+  try { JSON.parse(text); return true; } catch { return false; }
 }
 
 function splitTrailingErrorEnvelope(value) {
   const text = String(value || '').trim();
   if (!text || isErrorOnlyText(text)) return null;
-  const matched = TRAILING_ERROR_ENVELOPE_RE.exec(text);
-  if (matched) {
-    const body = text.slice(0, matched.index).trim();
-    if (!body) return null; // whole-message case — handled by isErrorOnlyText callers
-    return Object.freeze({ body, envelope: matched[0].trim() });
-  }
+  if (looksLikeJsonDocument(text)) return null;
   const chain = peelTrailingEnvelopeChain(text);
   if (!chain || !chain.body) return null; // whole-message chain — see detectErrorEnvelope
-  return Object.freeze({ body: chain.body, envelope: chain.envelope });
+  if (chain.envelopeCount > 1) {
+    return Object.freeze({ body: chain.body, envelope: chain.envelope });
+  }
+  // Historical single-envelope split: the punctuation that introduced the
+  // envelope belongs to the reader-visible seam, so it is dropped with it.
+  const lastChar = chain.body[chain.body.length - 1];
+  const body = lastChar && TRAILING_ENVELOPE_SEAM_RE.test(lastChar)
+    ? chain.body.slice(0, -1).trim() : chain.body;
+  return Object.freeze({ body, envelope: chain.envelope });
 }
 
 // Unified turn-boundary detector: recognizes BOTH the whole-message envelope

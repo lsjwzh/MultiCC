@@ -458,9 +458,11 @@ assert.strictEqual(
 
 // kimi：stream-json headless 协议。`-p` 必须保持最后一个 flag（multicc 把
 // payload 作为末尾 argv 追加）；续轮带 --session；首轮 rolePrompt 包裹。
+// `--auto` 不能与 `-p` 同时出现（kimi-code 2.x validateOptions 直接抛
+// "Cannot combine --prompt with --auto."），print 模式本身已是 auto 权限。
 {
   const firstTurn = kimi.buildInvocation(opencodeEnvelope);
-  assert.deepStrictEqual(firstTurn.args, ['--output-format', 'stream-json', '--auto', '--model', 'open/model', '-p']);
+  assert.deepStrictEqual(firstTurn.args, ['--output-format', 'stream-json', '--model', 'open/model', '-p']);
   assert.strictEqual(firstTurn.cmd, 'kimi');
   assert.strictEqual(firstTurn.payload, 'hello');
   const withRole = kimi.buildInvocation({ ...opencodeEnvelope, rolePrompt: '你是审查者' });
@@ -469,7 +471,7 @@ assert.strictEqual(
     ...opencodeEnvelope,
     historyHandle: { isFirstTurn: false, cliSessionId: 'kimi-sess-1' },
   });
-  assert.deepStrictEqual(continuation.args, ['--output-format', 'stream-json', '--auto', '--model', 'open/model', '--session', 'kimi-sess-1', '-p']);
+  assert.deepStrictEqual(continuation.args, ['--output-format', 'stream-json', '--model', 'open/model', '--session', 'kimi-sess-1', '-p']);
   assert.strictEqual(continuation.payload, 'hello');
 
   assert.deepStrictEqual(kimi.decodeEvent({ role: 'assistant', content: 'hello' }), [{ type: 'assistant_text', text: 'hello' }]);
@@ -496,7 +498,7 @@ assert.strictEqual(
   );
   assert.deepStrictEqual(
     kimi.decodeEvent({ role: 'meta', type: 'turn.step.retrying', error_message: '429' }),
-    [{ type: 'status', status: 'thinking' }],
+    [{ type: 'status', status: 'thinking', retry: { message: '429' } }],
   );
   assert.deepStrictEqual(kimi.decodeEvent({ role: 'meta', type: 'system.version' }), []);
   assert.strictEqual(

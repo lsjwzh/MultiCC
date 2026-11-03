@@ -40,6 +40,39 @@ assert.strictEqual(
   'claude_event',
 );
 
+// ── codebuddy: result errors keep the provider's structured HTTP status ───
+// createResultMessage/buildErrorTerminalFields (codebuddy-headless.js
+// ~5525246) emit only errors/errors_info; the adapter lifts status+message
+// into the error object the shared result classifier reads.
+const cbError = codebuddy.decodeEvent({
+  type: 'result', subtype: 'error_during_execution', is_error: true,
+  session_id: 'cb-2', errors: ['Rate limited'],
+  errors_info: [{ status: 429, code: 'rate_limit_exceeded', category: 'quota', details: 'Rate limited' }],
+})[0];
+assert.strictEqual(cbError.type, 'claude_event');
+assert.deepStrictEqual(cbError.raw.error, { http_status: 429, message: 'Rate limited' });
+assert.strictEqual(cbError.raw.errors_info[0].status, 429, 'original fields must survive');
+// No structured info: the errors[] text still becomes the message.
+assert.deepStrictEqual(
+  codebuddy.decodeEvent({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['boom'] })[0].raw.error,
+  { message: 'boom' },
+);
+// A provider string code is not a status and must not fake one.
+assert.deepStrictEqual(
+  codebuddy.decodeEvent({
+    type: 'result', subtype: 'error_during_execution', is_error: true,
+    errors: ['unauthorized'], errors_info: [{ status: 'unauthorized', code: 'auth' }],
+  })[0].raw.error,
+  { message: 'unauthorized' },
+);
+// Success and an existing structured error object are untouched.
+assert.deepStrictEqual(
+  codebuddy.decodeEvent({ type: 'result', subtype: 'success', is_error: false, result: 'ok' })[0].raw,
+  { type: 'result', subtype: 'success', is_error: false, result: 'ok' },
+);
+const cbExisting = { type: 'result', subtype: 'error_during_execution', is_error: true, error: { code: 'x' } };
+assert.strictEqual(codebuddy.decodeEvent(cbExisting)[0].raw, cbExisting);
+
 // ── codebuddy: buildInvocation first turn / continuation / effort gating ──
 assert.deepStrictEqual(
   codebuddy.buildInvocation(envelope).args,

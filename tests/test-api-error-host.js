@@ -724,3 +724,158 @@ test('the runtime itself scopes the merge to the live attempt', () => {
   assert.equal(staleRunner.error.category, 'rate_limit');
   assert.equal(staleRunner.error.rejection, null);
 });
+
+// ── 429s the proxy never attributed are still parked for Auto ───────────────
+// handleProxyOutcome() records only the 429 of a request the Rust proxy could
+// attribute exactly. A 429 the CLI reports afterwards used to leave no trace,
+// so Auto kept re-selecting the exhausted account on the following turns. The
+// host now asks the quota module to record it — once, and never for a 429 the
+// proxy already wrote.
+const RATE_LIMIT_429_TEXT = "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.";
+const QUOTA_WALL_429_TEXT = "API Error: Request rejected (429) · You've exceeded your 5-hour usage quota.";
+
+function rateLimitHost(options = {}) {
+  const now = options.now || 1_700_000_000_000;
+  const records = [];
+  const policy = createApiErrorPolicyRuntime({ now: () => now, random: () => 0 });
+  const host = createApiErrorHost({
+    policy,
+    logger: { info() {}, warn() {}, error() {} },
+    persistedSessions: new Map(),
+    setTaskState() {},
+    chatBroadcast() {},
+    setSessionStatus() {},
+    clearIncrementalSave() {},
+    isCurrentTurnRunner: () => true,
+    isShuttingDown: () => false,
+    now: () => now,
+    recordProviderFailure: options.recordProviderFailure || (input => records.push(input)),
+    proxyFailureForAttempt: options.proxyFailureForAttempt,
+  });
+  return { host, records };
+}
+
+function cliRateLimitTurn(host, overrides = {}) {
+  const envelope = overrides.text
+    ? detectErrorEnvelope('claude', overrides.text)
+    : detectErrorEnvelope('claude', RATE_LIMIT_429_TEXT);
+  return host.evaluateTurnApiError({
+    sessionName: 'session-1', cs: {}, persisted: overrides.persisted || { cli: 'claude', provider: 'provider-a' },
+    turn: { turnId: 'turn-1' },
+    runner: 'runner' in overrides ? overrides.runner : {
+      providerAttempt: { sessionId: 'session-1', routeAttemptId: 'attempt-1', providerId: 'provider-a', model: 'model-a' },
+    },
+    raw: overrides.raw || envelope, attempt: 0,
+  });
+}
+
+test('a CLI 429 the proxy never attributed is recorded once for Auto', () => {
+  const { host, records } = rateLimitHost();
+  const result = cliRateLimitTurn(host);
+  assert.equal(result.error.category, 'rate_limit');
+  assert.deepEqual(records, [{
+    sessionId: 'session-1',
+    providerId: 'provider-a',
+    category: 'rate_limit',
+    httpStatus: 429,
+    model: 'model-a',
+  }], 'the exhausted provider is written to the cache Auto reads');
+});
+
+test('the identity falls back to the session provider when the attempt has none', () => {
+  const { host, records } = rateLimitHost();
+  cliRateLimitTurn(host, { runner: {} });
+  assert.deepEqual(records, [{
+    sessionId: 'session-1',
+    providerId: 'provider-a',
+    category: 'rate_limit',
+    httpStatus: 429,
+  }]);
+});
+
+test('a 429 the proxy already recorded is not counted twice', () => {
+  for (const failure of [
+    entitlementFailure(),          // structured verdict
+    { httpStatus: 429 },           // bare proxy 429, still recorded in handleProxyOutcome
+  ]) {
+    const { host, records } = rateLimitHost({ proxyFailureForAttempt: () => failure });
+    const result = cliRateLimitTurn(host);
+    assert.equal(Number(result.error.httpStatus), 429);
+    assert.deepEqual(records, [], 'handleProxyOutcome owns this attempt’s 429');
+  }
+});
+
+test('a duplicate decision does not record the 429 again', () => {
+  const parks = [];
+  const h = harness({ recordProviderFailure: input => parks.push(input) });
+  h.decideWith(() => decision({
+    action: 'fail_fast',
+    error: { category: 'rate_limit', httpStatus: 429, rejection: null },
+  }));
+  const run = () => h.host.evaluateTurnApiError({
+    sessionName: 'session-1', cs: {}, persisted: { cli: 'claude', provider: 'p-glm' },
+    turn: { turnId: 'turn-1' }, runner: {}, raw: { httpStatus: 429 }, attempt: 0,
+  });
+  run();
+  h.decideWith(() => decision({
+    action: 'fail_fast', duplicate: true,
+    error: { category: 'rate_limit', httpStatus: 429, rejection: null },
+  }));
+  run();
+  assert.equal(parks.length, 1, 'idempotent duplicate deliveries stay idempotent');
+});
+
+test('non-429 failures never park a provider', () => {
+  const cases = [
+    { category: 'network', httpStatus: null },
+    { category: 'provider_transient', httpStatus: 500 },
+    { category: 'authentication_permission', httpStatus: 401, rootCause: '401 invalid x-api-key', sanitizedMessage: '401 invalid x-api-key' },
+    { category: 'context_token_limit', httpStatus: 400 },
+  ];
+  for (const error of cases) {
+    const parks = [];
+    const h = harness({ recordProviderFailure: input => parks.push(input) });
+    h.decideWith(() => decision({ action: 'fail', error }));
+    h.host.evaluateTurnApiError({
+      sessionName: 'session-1', cs: {}, persisted: { cli: 'claude', provider: 'p-glm' },
+      turn: { turnId: 'turn-1' }, runner: {}, raw: {}, attempt: 0,
+    });
+    assert.deepEqual(parks, [], `${error.category}/${error.httpStatus} is not a rate-limit park`);
+  }
+});
+
+test('a quota-wall 429 is recorded with the quota category', () => {
+  const { host, records } = rateLimitHost();
+  const result = cliRateLimitTurn(host, { text: QUOTA_WALL_429_TEXT, runner: {} });
+  assert.equal(result.error.category, 'billing_quota');
+  assert.deepEqual(records, [{
+    sessionId: 'session-1',
+    providerId: 'provider-a',
+    category: 'billing_quota',
+    httpStatus: 429,
+  }], 'the recorder names the parked row from the category it is given');
+});
+
+test('a providerless default route is never parked for a 429', () => {
+  const { host, records } = rateLimitHost();
+  cliRateLimitTurn(host, { persisted: { cli: 'claude' }, runner: {} });
+  assert.deepEqual(records, [], 'there is no provider id to park');
+});
+
+test('a vendor-login CLI 429 still parks its provider (the cooldown self-clears)', () => {
+  const { host, records } = rateLimitHost();
+  cliRateLimitTurn(host, {
+    persisted: { cli: 'qoder', provider: 'qoder-account-1' },
+    runner: {},
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].providerId, 'qoder-account-1');
+  assert.equal(records[0].category, 'rate_limit');
+});
+
+test('a failing 429 park never masks the turn failure it observes', () => {
+  const { host } = rateLimitHost({ recordProviderFailure: () => { throw new Error('limit cache down'); } });
+  const result = cliRateLimitTurn(host);
+  assert.equal(result.error.category, 'rate_limit');
+  assert.equal(result.action, 'fail_fast');
+});

@@ -419,6 +419,21 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     // deadline than a bare cooldown would. A rejection that names a real reset
     // wins over it, because that reset is the more precise deadline.
     if (policy?.preserve && (!park || !park.blockedUntilMs)) return previous;
+    // A parked credential is a state, not a cooldown: no later 429 may lift it
+    // (only releaseProviderFailure does), and a bare record — no structured
+    // verdict, no explicit deadline — must never shorten a longer park an
+    // earlier reset-bearing record already established. A structured verdict,
+    // even one whose reset has already passed, may still replace it.
+    if (!isRevokedCategory(category) && previous?.summary?.status === 'rejected') {
+      const previousUntil = Number(previous.summary.blockedUntilMs);
+      if (previous.summary.revoked === true) return previous;
+      const accountWide = String(previous.summary.scope || '') !== 'model';
+      if (!rejection && blockedUntilMs == null && accountWide
+          && Number.isFinite(previousUntil)
+          && previousUntil > Number(now()) + PROVIDER_FAILURE_COOLDOWN_MS) {
+        return previous;
+      }
+    }
     const recorded = recordCooldown(identity, { category, httpStatus, blockedUntilMs, park });
     if (refreshProvider && policy?.refresh !== false) {
       try {

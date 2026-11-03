@@ -733,12 +733,127 @@ test('a single trailing envelope keeps its historical split (delimiter dropped)'
   assert.equal(detected.httpStatus, 502);
 });
 
-test('prose ending in a sentence with a glued envelope but no chain start is left untouched', () => {
-  // ASCII "." is not one of the chain-start boundaries, so "…done.API Error: …"
-  // stays ambiguous and detectErrorEnvelope returns null (unchanged behavior:
-  // the text is persisted verbatim rather than stripped as an error).
-  const text = '我已经把巡检脚本改好了.The job is done.API Error: Request rejected (429) · rate limited.';
-  assert.equal(detectErrorEnvelope('claude', text), null);
+test('a chain head glued onto ASCII sentence punctuation is a trailing envelope', () => {
+  // Production misses: the CLI glued "API Error: …" straight onto the sentence
+  // that ended the answer. The old boundary set ([\n。：:；;]) only fired after
+  // CJK punctuation, so every one of these was persisted as real output.
+  const cases = [
+    ['I pushed main and the tag.', "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.", 'I pushed main and the tag.'],
+    ['I am extracting the offers now.', 'Failed to authenticate. API Error: 403 用户额度不足, 剩余额度: ＄-2.53 (request id: 20260630182451514881408268d9d6SaERUZbx)', 'I am extracting the offers now.'],
+    ['Almost ready before submitting.', 'API Error: The operation timed out.', 'Almost ready before submitting.'],
+    ['Continuing to hold.', 'API Error: The operation timed out.', 'Continuing to hold.'],
+    ['Done (see the log above)', 'API Error: 502 upstream error: TLS disconnected', 'Done (see the log above)'],
+    ['Done, see the log（上文）', 'API Error: 502 upstream error: TLS disconnected', 'Done, see the log（上文）'],
+    ['Done, see the log「上文」', 'API Error: 502 upstream error: TLS disconnected', 'Done, see the log「上文」'],
+    ['The log says "boom"', 'API Error: 502 upstream error: TLS disconnected', 'The log says "boom"'],
+    ['That is wrong!', 'API Error: 502 upstream error: TLS disconnected', 'That is wrong!'],
+    ['Did it fail?', 'API Error: 502 upstream error: TLS disconnected', 'Did it fail?'],
+  ];
+  for (const [lead, envelope, body] of cases) {
+    const detected = detectErrorEnvelope('claude', `${lead}${envelope}`);
+    assert.ok(detected, `glued envelope must be detected: ${lead}`);
+    assert.equal(detected.body, body, `the answer keeps its own sentence terminator: ${lead}`);
+    assert.equal(detected.message, envelope, lead);
+  }
+  // The billing wording still outranks the 403 that carried it.
+  const billed = detectErrorEnvelope('claude',
+    'I am extracting the offers now.Failed to authenticate. API Error: 403 用户额度不足, 剩余额度: ＄-2.53 (request id: x)');
+  assert.equal(normalizeApiError(billed, { source: billed.source, provider: 'claude' }).category, 'billing_quota');
+});
+
+test('an envelope printed on its own line after prose is still trailing', () => {
+  // Real corpus sample: the CLI put the envelope on its own line, so the
+  // character before it is a letter once the blank line is collapsed.
+  const text = '同时看截图,确认 UI 到底渲染到什么程度\n\nAPI Error: 400 Model only support text input Request id: 021790125033687cd2cfaf2275915feb63370f28ffb18cb22c603';
+  const detected = detectErrorEnvelope('claude', text);
+  assert.ok(detected);
+  assert.equal(detected.body, '同时看截图,确认 UI 到底渲染到什么程度');
+  assert.equal(detected.httpStatus, 400);
+});
+
+test('a JSON payload that quotes an envelope is data, not an appended error', () => {
+  const payload = JSON.stringify({
+    tasks: [{
+      id: 'tsk_97f74e044ea5be23b18a7d305933df9e',
+      title: '排查403认证失败报错',
+      module: '服务端',
+      areas: ['Failed to authenticate 认证链路', 'API Error: 403 Request not allowed', '模型服务商鉴权/代理透传'],
+    }],
+  });
+  assert.equal(detectErrorEnvelope('claude', payload), null);
+  // …while the quota-guard JSON is still error-only at the whole-message level.
+  const guard = '{"error":"quota guard: 5h window exhausted","code":"quota_guard:5h:100pct"}';
+  assert.equal(detectErrorEnvelope('claude', guard).body, null);
+});
+
+test('a head glued onto a letter, digit or backtick is prose quoting an error', () => {
+  // "not a letter/digit" and "not a backtick": the head must still look like a
+  // chain start, otherwise the text is a sentence that happens to end in an
+  // error-shaped quote.
+  assert.equal(detectErrorEnvelope('claude', 'The relay answered 429API Error: 429 rate limited.'), null);
+  assert.equal(detectErrorEnvelope('claude', 'the CLI printed laterAPI Error: 429 rate limited.'), null);
+  assert.equal(detectErrorEnvelope('claude', '日志里就是这么写的：`API Error: 429 rate limited.`'), null);
+  assert.equal(detectErrorEnvelope('claude', '日志里就是这么写的：“API Error: 429 rate limited.”'), null);
+});
+
+test('an envelope may carry 。！？ only when its head is structured or the text is in [...]', () => {
+  // Zhipu quota text: the full stop lives inside the provider's own code
+  // bracket, which the old [^\n。！？]{0,400} content class could not cross.
+  const compaction = 'Context automatic compaction failed: API Error: Request rejected (429) · [1113][余额不足或无可用资源包,请充值。]';
+  const weekly = 'API Error: Request rejected (429) · [1310][您已达到每周/每月使用上限。您的限额将在 2026-10-22 20:59:00 重置。]';
+  const first = detectErrorEnvelope('claude', compaction);
+  assert.ok(first, 'the bracketed Zhipu quota text must be detected');
+  assert.equal(first.body, 'Context automatic compaction failed');
+  assert.match(first.message, /余额不足/);
+  assert.equal(normalizeApiError(first, { source: first.source, provider: 'claude' }).category, 'billing_quota');
+  const second = detectErrorEnvelope('claude', `已完成的巡检如下。${weekly}`);
+  assert.ok(second, 'the weekly quota text must be detected');
+  assert.equal(second.body, '已完成的巡检如下');
+  assert.equal(second.httpStatus, 429);
+  // A structured head may also simply END on full-width punctuation.
+  const ended = detectErrorEnvelope('claude', '正文已经写完。API Error: 500 服务内部错误。');
+  assert.ok(ended);
+  assert.equal(ended.body, '正文已经写完');
+  // A weak head keeps the historical restriction even for a trailing mark.
+  assert.equal(detectErrorEnvelope('claude', '正文已经写完。API Error: 未知故障。'), null);
+  // …and a strong head cannot span a sentence: this is prose quoting an
+  // envelope, followed by the real answer.
+  assert.equal(detectErrorEnvelope('claude', '步骤一完成。API Error: 429 rate limited. 不过我已经在步骤二重试成功了，结果如下。'), null);
+});
+
+test('whole-message error wordings beyond the API Error prefix are error-only', () => {
+  const samples = [
+    '[ERROR] Service is too busy, please try again later.',
+    'exceeded retry limit, last status: 429',
+    'Response stalled mid-stream. The response above may be incomplete.',
+    'Request rejected (429) · This request would exceed your account\'s rate limit. Please try again later.',
+    '{"error":"quota guard: 5h window exhausted","code":"quota_guard:5h:100pct"}',
+  ];
+  for (const message of samples) {
+    const envelope = detectErrorEnvelope('claude', message);
+    assert.ok(envelope, `whole-message wording must be detected: ${message.slice(0, 40)}`);
+    assert.equal(envelope.body, null, message.slice(0, 40));
+    assert.equal(envelope.message, message);
+  }
+  assert.equal(detectErrorEnvelope('claude', 'Request rejected (429) · rate limited.').httpStatus, 429);
+  assert.equal(detectErrorEnvelope('claude', 'Response stalled mid-stream. The response above may be incomplete.').httpStatus, null);
+  // The same wordings ending a real answer are trailing envelopes, not prose.
+  const trailing = detectErrorEnvelope('claude', '巡检已经跑完，结果见上。Response stalled mid-stream. The response above may be incomplete.');
+  assert.equal(trailing, null, 'a strong phrase without the API Error prefix is not a trailing head');
+});
+
+test('prose that discusses or quotes an error is never flagged', () => {
+  const prose = [
+    '现有实现直接把上游返回的报错再包装成 `API Error: 400 Content Exists Risk`。  文案指向**上游内容风控拒绝**，并非模型生成的普通回答。现有日志里也没有这条。',
+    '**预期**：后台任务完成通知里有正常结果，没有 `API Error: 409 ... provider route attempt is no longer active`。  **2. 后台任务通知要给出真实结论。**',
+    '第一处修正是丢弃 `e.cause`，导致上游 401/网络错误被显示为 "stream disconnected before completion: fetch failed"。 [decision] 结论是改成结构化错误。',
+    '步骤一完成。API Error: 429 rate limited. 不过我已经在步骤二重试成功了，结果如下。',
+    '示例：失败时正文后面会跟一段 API Error: Request rejected (429) · rate limited. 然后我们再重试。',
+  ];
+  for (const text of prose) {
+    assert.equal(detectErrorEnvelope('claude', text), null, text.slice(0, 40));
+    assert.equal(splitTrailingErrorEnvelope(text), null, text.slice(0, 40));
+  }
 });
 
 test('an all-envelope chain longer than the 600-char whole-message cap is error-only', () => {

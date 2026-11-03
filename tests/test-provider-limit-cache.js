@@ -785,7 +785,73 @@ function testStructuredRejectionPark() {
   cache.close();
 }
 
+// ── a bare 429 never downgrades a stronger park ─────────────────────────────
+
+// The host now writes the 429s the proxy could not attribute. Those records
+// carry no structured verdict, so they must stay the *weakest* evidence in the
+// store: an earlier reset-bearing park (or a revoked credential) is never
+// shortened by them, or the next Auto turn would hand the account back early.
+function testBareRateLimitKeepsStrongerPark() {
+  const file = tmpDb('bare-429');
+  const clock = fixedClock(1_700_000_000_000);
+  const now = clock.now();
+  const cache = createProviderLimitCache({ file, now: clock.now });
+  const recorder = createLimitRecorder({
+    cache,
+    persistedSessions: fakeSessions({}),
+    providers: stubProviders({
+      list: [
+        { id: 'p-glm', appType: 'claude', name: 'GLM' },
+        { id: 'p-ds', appType: 'claude', name: 'Claude 官方 · a' },
+      ],
+    }),
+    now: clock.now,
+  });
+  const bare = () => recorder.recordProviderFailure({
+    providerId: 'p-glm', category: 'rate_limit', httpStatus: 429,
+  });
+
+  const longPark = recorder.recordProviderFailure({
+    providerId: 'p-glm', category: 'rate_limit', httpStatus: 429,
+    rejection: { kind: 'window', scope: 'account', window: '5h', resetMs: now + 3 * 3600_000 },
+  });
+  ok(longPark.summary.blockedUntilMs === now + 3 * 3600_000, 'a reset-bearing park holds until its reset');
+  ok(bare().summary.blockedUntilMs === now + 3 * 3600_000,
+    'a bare 429 never shortens a longer reset-bearing park');
+
+  // A shorter cooldown still replaces a shorter park — nothing is frozen.
+  recorder.recordProviderFailure({
+    providerId: 'p-glm', category: 'rate_limit', httpStatus: 429,
+    rejection: { kind: 'window', scope: 'account', window: '5h', resetMs: now + 60_000 },
+  });
+  ok(bare().summary.blockedUntilMs === now + PROVIDER_FAILURE_COOLDOWN_MS,
+    'a bare 429 still applies over a park that has already lapsed');
+
+  // A caller that supplies a verdict keeps the legacy replacement rule, even
+  // when that verdict says the reset is already behind us.
+  const replaced = recorder.recordProviderFailure({
+    providerId: 'p-glm', category: 'rate_limit', httpStatus: 429,
+    rejection: { kind: 'window', scope: 'account', window: '5h', resetMs: now - 1 },
+  });
+  ok(replaced.summary.blockedUntilMs === now + PROVIDER_FAILURE_COOLDOWN_MS,
+    'a structured past reset still falls back to the default cooldown');
+
+  // Revocation is a state: no 429 — bare or structured — may lift it.
+  recorder.recordProviderFailure({ providerId: 'p-ds', category: 'authentication_permission', httpStatus: 401 });
+  const afterBare = recorder.recordProviderFailure({ providerId: 'p-ds', category: 'rate_limit', httpStatus: 429 });
+  ok(afterBare.summary.revoked === true && afterBare.summary.blockedUntilMs === AUTH_REVOKED_BLOCKED_UNTIL_MS,
+    'a bare 429 never un-parks a revoked credential');
+  const afterStructured = recorder.recordProviderFailure({
+    providerId: 'p-ds', category: 'rate_limit', httpStatus: 429,
+    rejection: { kind: 'billing', scope: 'account', resetMs: now + 3600_000 },
+  });
+  ok(afterStructured.summary.revoked === true,
+    'a billing wall does not lift a revoked park either (only a re-login does)');
+  cache.close();
+}
+
 testSharedSnapshots();
+testBareRateLimitKeepsStrongerPark();
 testCompactBarText();
 testSqliteSchema();
 testStore();

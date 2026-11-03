@@ -186,6 +186,25 @@ test('an authoritative error-only snapshot reconciles earlier streamed error del
   assert.equal(runtime.snapshot('streamed-error').visibleOutputObserved, false);
 });
 
+test('a trailing envelope found only at the turn boundary never reaches the persisted partial', () => {
+  // Text-only lanes (kimi, relayed codex/opencode text) have no result-event
+  // strip: the boundary is where "answer + API Error: …" must become the answer.
+  const cs = { currentAssistantText: 'Pushed main and the tag.API Error: Request rejected (429) · Please try again later.' };
+  const envelope = reconcileBoundaryErrorEnvelope(null, null, 'kimi', cs);
+  assert.equal(envelope.httpStatus, 429);
+  assert.equal(envelope.body, 'Pushed main and the tag.');
+  assert.equal(cs.currentAssistantText, 'Pushed main and the tag.');
+
+  const errorOnly = { currentAssistantText: 'API Error: Request rejected (429) · Please try again later.' };
+  assert.equal(reconcileBoundaryErrorEnvelope(null, null, 'kimi', errorOnly).body, null);
+  assert.equal(errorOnly.currentAssistantText, 'API Error: Request rejected (429) · Please try again later.',
+    'an error-only envelope keeps its text so the failed turn still shows the error bubble');
+
+  const clean = { currentAssistantText: 'All done.' };
+  assert.equal(reconcileBoundaryErrorEnvelope(null, null, 'kimi', clean), null);
+  assert.equal(clean.currentAssistantText, 'All done.');
+});
+
 test('provider-cause evidence outranks the proxy generic status at turn close', () => {
   // The relay records "upstream HTTP 429" generically; the CLI's own envelope or
   // error event names the cause ("You have exceeded the 5-hour usage quota…").
