@@ -49,7 +49,7 @@
   function createBgActivity(options = {}) {
     const doc = options.document || (typeof document !== 'undefined' ? document : null);
     if (!doc || typeof options.getMessagesEl !== 'function' || typeof options.getIsStreaming !== 'function') {
-      return Object.freeze({ onEvent() {}, dispose() {} });
+      return Object.freeze({ onEvent() {}, dispose() {}, runningCount: () => 0 });
     }
     const translate = typeof options.translate === 'function' ? options.translate : (key => key);
     const getSessionId = typeof options.getSessionId === 'function' ? options.getSessionId : () => '';
@@ -299,7 +299,8 @@
       stopTimersIfIdle();
     }
 
-    return Object.freeze({ onEvent, dispose });
+    // 速率角标（chat-token-rate.js）用它区分「AI 请求停了但后台在跑」和真卡死。
+    return Object.freeze({ onEvent, dispose, runningCount: () => running.size });
   }
 
   const api = Object.freeze({ create: createBgActivity });

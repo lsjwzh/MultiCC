@@ -128,6 +128,28 @@ test('a running tool or an open thinking block explains the quiet', () => {
   assert.equal(meter.snapshot({ toolEndedAt: toolEnd }).phase, 'waiting');
 });
 
+test('running background tasks explain the quiet without escalating', () => {
+  const { c, meter } = meterAt();
+  meter.begin(0);
+  c.advance(500);
+  meter.noteChunk('abcdabcd');
+  c.advance(rate.WINDOW_MS + 1);
+  c.advance(rate.PAUSED_MS[1] + 1_000);
+  const snap = meter.snapshot({ bgRunning: true });
+  assert.deepEqual([snap.phase, snap.tone], ['bg', 'busy']);
+  assert.ok(snap.phaseMs > rate.PAUSED_MS[1]);
+  // The same silence with nothing running behind it stays the alarming pause.
+  assert.deepEqual([meter.snapshot().phase, meter.snapshot().tone], ['paused', 'danger']);
+  // Silence before any output is explained the same way.
+  const { c: c2, meter: fresh } = meterAt();
+  fresh.begin(0);
+  c2.advance(120_000);
+  assert.equal(fresh.snapshot({ bgRunning: true }).phase, 'bg');
+  assert.equal(
+    rate.describe({ active: true, total: 0, ttftMs: null, phase: 'bg', phaseMs: 375_000, tone: 'busy' }).text,
+    '⏸ AI 请求已停 6m 15s · 后台任务执行中');
+});
+
 test('the exact per-request count becomes a measured rate', () => {
   const { c, meter } = meterAt();
   meter.begin(0);
@@ -167,7 +189,7 @@ test('describe() renders every phase with its duration and a detailed tooltip', 
   assert.equal(rate.describe({ ...base, phase: 'thinking', phaseMs: 3500 }).text, '💭 思考中 3.5s');
   assert.equal(rate.describe({ ...base, phase: 'waiting', phaseMs: 75000, tone: 'warning' }).text, '⏳ 等待响应 1m 15s');
   const paused = rate.describe({ active: true, total: 0, ttftMs: null, phase: 'paused', phaseMs: 50000, tone: 'danger' });
-  assert.equal(paused.text, '⏸ 0 tok/s · 已停 50s');
+  assert.equal(paused.text, '⏸ 0 tok/s · AI 请求已停 50s');
   assert.equal(paused.tone, 'danger');
   assert.equal(paused.title, '实时输出速度（按流式文本估算，近 3 秒）');
 });
@@ -188,4 +210,6 @@ test('the chat page ships the chip, its stylesheet and the module in load order'
   assert.match(chatJs, /pendingUserInputController\.setConnected\(\);\n  syncTokenRate\(\);\n\}/,
     'the chip follows every streaming transition through updateUI');
   assert.match(chatJs, /\n    tokenRate,\n/, 'the event controller reports into the same meter');
+  assert.match(chatJs, /bgRunning: chatBgActivity\.runningCount\(\) > 0/,
+    'running background tasks feed the meter so explained silence stays neutral');
 });
