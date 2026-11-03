@@ -258,7 +258,8 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
         expected: window.t(keys[index]), zh: window.I18N.zh[keys[index]],
       }));
       return [
-        one('.space-shortcuts span', 'airWorkspace'),
+        // .space-shortcuts（airWorkspace 的侧栏用例）随顶卡一栏化撤掉了；
+        // 该键还有控制台/移动端等多处使用，不在这里重复断。
         one('#create [data-i18n]', 'airNewTask'),
         one('#task-list-title', 'airRecentTasks'),
         one('.side-bottom > small', 'airTagline'),
