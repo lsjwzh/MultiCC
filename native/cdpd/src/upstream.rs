@@ -115,11 +115,12 @@ pub fn spawn(
     generation: u64,
     url: String,
     connect_timeout: Duration,
+    auto_approve: bool,
 ) -> mpsc::Sender<Cmd> {
     let (tx, rx) = mpsc::channel(1024);
     let own = tx.clone();
     tokio::spawn(async move {
-        let outcome = run(&url, rx, own, connect_timeout).await;
+        let outcome = run(&url, rx, own, connect_timeout, auto_approve).await;
         pool.finished(&key, generation, outcome);
     });
     tx
@@ -130,9 +131,17 @@ async fn run(
     mut rx: mpsc::Receiver<Cmd>,
     own: mpsc::Sender<Cmd>,
     connect_timeout: Duration,
+    auto_approve: bool,
 ) -> Outcome {
     let started = Instant::now();
     crate::log!("[{url}] connecting");
+    // 等握手（= 等 Chrome 授权框被允许）期间，尝试替用户点掉那个弹窗；
+    // 建连一有结果（成功/失败/超时）这个守卫就把后台尝试停掉。
+    let _auto_approve = if auto_approve {
+        crate::approve::AbortOnDrop::new(crate::approve::spawn(url.to_string()))
+    } else {
+        crate::approve::AbortOnDrop::new(None)
+    };
     let mut waiting: HashMap<ConnId, ConnTx> = HashMap::new();
     let mut early: Vec<Cmd> = Vec::new();
     let connect = tokio::time::timeout(connect_timeout, connect_browser(url));

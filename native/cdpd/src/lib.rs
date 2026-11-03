@@ -14,6 +14,7 @@
 //!
 //! 协议契约见 docs/desktop-agent-protocol.md §4.4。
 
+pub mod approve;
 pub mod daemon;
 pub mod front;
 pub mod ipc;

@@ -6,7 +6,7 @@
 
 ## 架构与状态
 
-- **`main`（默认）= 用户的日常 Chrome**。只经 MultiCC 的 CDP 网关 `multicc-cdpd` 连接（`ws://127.0.0.1:<port>/cdp/<token>?activePort=default&lane=mbrowser-main`）：网关对这台 Chrome 只保留一条已授权的连接，所以 Chrome 144+ 的“允许远程调试？”只需用户点一次，守护进程重启、技能升级、别的会话都复用它；网关还给每个调用方独立的浏览器级会话，抢同一个标签返回 `cdp-target-busy`。主浏览器**绝不直连**（直连就是第二个弹窗）。
+- **`main`（默认）= 用户的日常 Chrome**。只经 MultiCC 的 CDP 网关 `multicc-cdpd` 连接（`ws://127.0.0.1:<port>/cdp/<token>?activePort=default&lane=mbrowser-main`）：网关对这台 Chrome 只保留一条已授权的连接，Chrome 144+ 的“允许远程调试？”弹窗由网关用辅助功能自动点「允许」（点不掉才请用户点一次），守护进程重启、技能升级、别的会话都复用它；网关还给每个调用方独立的浏览器级会话，抢同一个标签返回 `cdp-target-busy`。主浏览器**绝不直连**（直连就是第二个弹窗）。
   - 它的远程调试是 `chrome://inspect/#remote-debugging` 里的开关（Chrome 136 起默认 profile 只能这样开），Chrome 把它记在 `Local State` 的 `devtools.remote_debugging.user-enabled`，重启后仍生效。
   - 主浏览器没在运行时，mbrowser 用主 profile **在后台**启动它（macOS `open -g -a "Google Chrome"`，Linux/Windows 直接起 `chrome`，都不带任何参数），等它打开调试端口后经网关连接。正在运行却没开调试时报 `main_not_debuggable`，绝不重启用户的浏览器。
   - mbrowser 永远不关闭、不重启、不激活主浏览器：`stop main` 只停守护进程，`set-mode`/`--headed`/`--headless` 对 main 一律拒绝；主浏览器被用户关掉后，守护进程不会自己把它重新打开，等下一条命令才会（后台）启动。

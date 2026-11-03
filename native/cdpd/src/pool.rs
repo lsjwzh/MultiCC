@@ -57,6 +57,9 @@ pub struct Settings {
     pub cooldown_base: Duration,
     pub cooldown_max: Duration,
     pub allow_remote: bool,
+    /// macOS：等建连时尝试用辅助功能自动点掉「允许远程调试」弹窗；
+    /// 点不掉仍走原来的「用户亲手点 / 超时退避」。MULTICC_CDP_AUTO_APPROVE=0 关掉。
+    pub auto_approve: bool,
 }
 
 impl Settings {
@@ -76,6 +79,9 @@ impl Settings {
             allow_remote: std::env::var("MULTICC_CDP_ALLOW_REMOTE")
                 .map(|v| v.trim() == "1")
                 .unwrap_or(false),
+            auto_approve: std::env::var("MULTICC_CDP_AUTO_APPROVE")
+                .map(|v| v.trim() != "0")
+                .unwrap_or(true),
         }
     }
 }
@@ -144,6 +150,7 @@ impl Pool {
             generation,
             url.to_string(),
             self.settings.connect_timeout,
+            self.settings.auto_approve,
         );
         inner.actors.insert(
             key,

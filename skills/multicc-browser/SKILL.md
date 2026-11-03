@@ -31,7 +31,7 @@ description: 当用户需要 browser-use、网页交互或登录时，用 MultiC
 
 绝不做任何置前/激活动作：`Page.bringToFront`、`Target.activateTarget`、`/json/activate`、在页面里 `window.open`（实测会激活窗口）、AppleScript `activate`、`open -a`（不带 `-g`）、`cliclick`。
 
-**唯一需要用户出场的情况**是某一步必须由用户亲手完成（输入凭据、扫码、应答钥匙串/系统授权对话框、Chrome 的“允许远程调试”），或用户明确说要看。这时也**不代为置前**：告诉用户在哪个窗口/标签做，让用户自己切过去；做完继续在同一个窗口后台干活，不切模式、不重启、不关窗口。
+**唯一需要用户出场的情况**是某一步必须由用户亲手完成（输入凭据、扫码、应答钥匙串/系统授权对话框），或用户明确说要看。Chrome 的“允许远程调试”弹窗从网关 0.4.0 起默认由它用辅助功能自动点掉（`MULTICC_CDP_AUTO_APPROVE=0` 可关），只有自动点不掉（没辅助功能权限等）才请用户点。这时也**不代为置前**：告诉用户在哪个窗口/标签做，让用户自己切过去；做完继续在同一个窗口后台干活，不切模式、不重启、不关窗口。
 
 ## 隔离环境优先（先查再开）
 
@@ -67,7 +67,7 @@ $MB close                                # 任务结束只关本次自己开的�
 ```
 
 - **主浏览器没在运行**：mbrowser 会用主 profile 在后台把它启动起来（macOS 用 `open -g`，不置前），再经网关连接。这就是「实在要启动 Chrome 也走主 profile」的默认做法。
-- **第一次连接**：如果 Chrome 弹出“允许远程调试？”，告诉用户点一次「允许」（mbrowser 会在等待时提示）。之后的命令、别的会话都复用这条已授权连接，不会再弹。
+- **第一次连接**：Chrome 若弹出“允许远程调试？”，网关会先尝试用辅助功能自动点「允许」（通常 1~2 秒内自己消失）；等几秒没消失再告诉用户点一次。之后的命令、别的会话都复用这条已授权连接，不会再弹。
 - **报 `main_not_debuggable`**：主浏览器在运行但没开远程调试。请用户在主浏览器打开 `chrome://inspect/#remote-debugging`，勾选“Allow remote debugging for this browser instance”——只需一次，Chrome 重启后仍记得。不要为此退出、重启或强杀用户的浏览器。
 - **报 `chrome_rejected` / `chrome_approval_timeout` / `chrome_cooldown`**：用户拒绝了或没应答授权弹窗。别循环重试（那就是「刚拒绝又弹出来」），先问用户。
 - **报 `gateway_unavailable`**：网关不在且找不到它的二进制；在 MultiCC 会话里运行 mbrowser，或设 `MULTICC_CDP_BIN`。主浏览器绝不绕过网关直连。
