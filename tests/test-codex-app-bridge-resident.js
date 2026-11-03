@@ -24,11 +24,11 @@ const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
 
 const BRIDGE = path.join(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs');
 
-function startBridge(root, extraArgs = []) {
+function startBridge(root, extraArgs = [], envExtra = {}) {
   const logFile = path.join(root, `requests-${extraArgs.length}-${Math.random().toString(36).slice(2)}.jsonl`);
   fs.writeFileSync(logFile, '');
   const child = spawn(process.execPath, [BRIDGE, ...extraArgs], {
-    cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile }, stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile, ...envExtra }, stdio: ['pipe', 'pipe', 'pipe'],
   });
   const notifications = [];
   const waiters = [];
@@ -119,6 +119,56 @@ test('resident bridge re-attaches to a resumed thread instead of forking one', a
   );
   bridge.child.stdin.end();
   await bridge.exited;
+});
+
+test('resident bridge replaces a thread whose model provider no longer exists', async (t) => {
+  if (process.platform === 'win32') return;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-provider-gone-'));
+  const bin = writeFakeAppServer(root);
+  // The exact refusal codex 0.162 emits when a resumed chat names a provider
+  // that was removed from config.toml (repro of the 2026-11-04 live failure).
+  const bridge = startBridge(root,
+    ['--codex-bin', bin, '--resident', '--thread-id', 'thread-from-disk'],
+    {
+      FAKE_CODEX_REJECT: 'thread/resume',
+      FAKE_CODEX_REJECT_MESSAGE: 'This chat uses model provider "multicc_official_relay", which is no longer configured. Restore this provider\'s configuration to continue.',
+    });
+  t.after(() => { try { bridge.child.kill('SIGKILL'); } catch (_) {} });
+
+  bridge.send('continue on a fresh thread');
+  const turn = await bridge.nextTurn();
+  assert.equal(turn.params.turn.status, 'completed');
+
+  const missing = bridge.notifications.find((message) => message.method === 'multicc/native_session_missing');
+  assert.ok(missing, `the host must be told the stored thread is gone; stderr=${bridge.stderr()}`);
+  assert.equal(missing.params.threadId, 'thread-from-disk');
+
+  const methods = bridge.requests().filter((item) => item.id).map((item) => item.method);
+  assert.deepEqual(methods, ['initialize', 'thread/resume', 'thread/start', 'turn/start']);
+  const started = bridge.requests().find((item) => item.method === 'turn/start');
+  assert.equal(started.params.threadId, 'thread-resident',
+    'the turn must run on the replacement thread, not the unusable one');
+
+  bridge.child.stdin.end();
+  assert.equal((await bridge.exited).code, 0, `recovery is not a failure; ${bridge.stderr()}`);
+});
+
+test('resident bridge still fails closed when resume breaks for another reason', async (t) => {
+  if (process.platform === 'win32') return;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-resume-fatal-'));
+  const bin = writeFakeAppServer(root);
+  // A timeout/auth/transport failure is not proof that the thread is unusable:
+  // forking a fresh conversation there would silently drop the user's context.
+  const bridge = startBridge(root,
+    ['--codex-bin', bin, '--resident', '--thread-id', 'thread-from-disk'],
+    { FAKE_CODEX_REJECT: 'thread/resume', FAKE_CODEX_REJECT_MESSAGE: 'thread/resume timed out' });
+  t.after(() => { try { bridge.child.kill('SIGKILL'); } catch (_) {} });
+
+  const exit = await bridge.exited;
+  assert.equal(exit.code, 1);
+  assert.equal(bridge.notifications.find((message) => message.method === 'multicc/native_session_missing'), undefined);
+  assert.equal(bridge.requests().find((item) => item.method === 'thread/start'), undefined);
+  assert.match(bridge.stderr(), /thread\/resume timed out/);
 });
 
 test('resident bridge refuses a non-JSON stdin line instead of starting a turn', async (t) => {

@@ -212,6 +212,18 @@ function commonParams(model) {
   };
 }
 
+// A stored thread is resumable only while codex still has its rollout AND every
+// `model_provider` that rollout names is still configured. Switching a session
+// between relay/official routes leaves the old chat pointing at a provider id
+// that no longer exists; codex 0.162+ then refuses to resume it —
+// `This chat uses model provider "<id>", which is no longer configured.` — and
+// exits before starting the turn. Both failures are local and pre-turn: no
+// provider request ran and nothing was written, so the lane recovers the same
+// way instead of dying. Anything else (timeout, auth, upstream error) still
+// propagates untouched, because forking a fresh conversation there would throw
+// away context for a failure that a retry could survive.
+const UNUSABLE_THREAD_RE = /(?:no rollout found for thread id|uses model provider[\s\S]{0,160}?which is no longer configured)/i;
+
 // Start a fresh thread, or re-attach to one an earlier process left behind.
 // Returns the thread id the app-server will accept turns against.
 async function openThread(threadId, model) {
@@ -224,8 +236,9 @@ async function openThread(threadId, model) {
       background.setMainThread(threadId);
       return threadId;
     } catch (error) {
-      // 只在恢复请求明确报告历史缺失时重建，其他错误仍按原路径处理。
-      if (!/\bno rollout found for thread id\b/i.test(String(error.message))) throw error;
+      // 只在恢复请求明确报告该原生会话已不可复用时重建，其他错误仍按原路径处理。
+      if (!UNUSABLE_THREAD_RE.test(String(error.message))) throw error;
+      process.stderr.write(`[codex-exp] native session ${threadId} cannot be resumed: ${String(error.message).slice(0, 200)}\n`);
       mainThreadId = null;
       background.setMainThread(null);
       process.stdout.write(`${JSON.stringify({ method: 'multicc/native_session_missing', params: { threadId } })}\n`);

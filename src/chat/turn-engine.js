@@ -684,7 +684,7 @@ function createChatTurnEngine(deps) {
         rememberActiveCliState(persisted);
         savePersistedSessionsBestEffort('runtime.codex-resume-missing');
         forward({ type: 'system', subtype: 'warning',
-          message: 'Codex 原生历史文件已缺失，已自动新建会话上下文并继续本条消息。' });
+          message: 'Codex 原生会话已不可复用（历史缺失或线路配置已变更），已自动新建会话并附带上下文摘要，继续本条消息。' });
         continue;
       }
       if (evt.type === 'session_started') {
