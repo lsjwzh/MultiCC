@@ -678,6 +678,51 @@ test('Auto Provider init and route events update actual route without replacing 
   assert.deepEqual(fixture.state.sessionProviderSelection, selection);
 });
 
+test('Auto Provider stamps the live bubble with the resolved route attribution', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  const attached = [];
+  const realAttach = fixture.liveUi.attachModelAttribution;
+  fixture.liveUi.attachModelAttribution = (target, attribution) => {
+    attached.push(attribution);
+    return realAttach(target, attribution);
+  };
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'auto-live', is_streaming: true,
+    providerSelection: { version: 1, mode: 'auto', protocol: 'anthropic', candidates: [] },
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, routePhase: 'selected',
+    providerId: 'backup', providerName: 'Backup', model: 'm2',
+  }, generation);
+  assert.equal(attached.length, 0, 'no bubble exists before the first stream frame');
+  fixture.controller.handleEvent({ type: 'stream_event', event: { type: 'message_start' } }, generation);
+  assert.deepEqual(attached, [{ cli: 'claude', providerId: 'backup', providerName: 'Backup', model: 'm2' }],
+    'the route that began before message_start is stamped when the bubble appears');
+  assert.equal(fixture.bubble.querySelectorAll('.msg-model-attribution').length, 1);
+  // Failover mid-turn: the stamp is rewritten in place, never a second line.
+  fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, routePhase: 'selected',
+    providerId: 'rescue', providerName: 'Rescue', model: 'm3',
+  }, generation);
+  assert.deepEqual(attached[1], { cli: 'claude', providerId: 'rescue', providerName: 'Rescue', model: 'm3' });
+  assert.equal(fixture.bubble.querySelectorAll('.msg-model-attribution').length, 1,
+    'a route change updates the existing attribution line in place');
+});
+
+test('fixed-provider sessions do not stamp an early route attribution', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  const attached = [];
+  fixture.liveUi.attachModelAttribution = (target, attribution) => { attached.push(attribution); };
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'manual-live', is_streaming: true,
+    providerId: 'account-a', providerName: 'Account A',
+  }, generation);
+  fixture.controller.handleEvent({ type: 'stream_event', event: { type: 'message_start' } }, generation);
+  assert.deepEqual(attached, [], 'manual mode knows its lane from the header; only the result attribution applies');
+});
+
 test('Auto Provider keeps the internal default-model sentinel out of the visible route model', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();
