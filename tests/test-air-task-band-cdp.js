@@ -48,10 +48,9 @@ function buildRoutes() {
 }
 
 // 标题得真会折行。侧栏的行宽 236px 上下，真实任务的名字常常是两三行（用户侧栏里
-// 就有「运行 TikTok 库存同步脚本（xlwms→TikTok 每小时同步）」这种），而一行标题的
-// min-content 差不多就是它自己的高度 —— 压也压不出多少来，下面那几条「行内容不出框」
-// 的断言会退化成永远为真的摆设。第一条按真实长度折成三行并挂上 `.long-title`（行会
-// 被重排，所以量的是这条带标记的，不是「第一条」），压矮一点就看得出来。
+// 就有「运行 TikTok 库存同步脚本（xlwms→TikTok 每小时同步）」这种）。侧栏卡片现在
+// 把标题夹在两行（-webkit-line-clamp: 2，露出更多卡比看全长标题值钱），下面那几条
+// 「行内容不出框」的断言量的是夹完之后的两行 —— 压矮一点照样看得出来。
 const LONG_TITLE = '运行 TikTok 库存同步脚本（xlwms→TikTok 每小时同步），并把当天的 GMV Max 广告数据落进本地库';
 const fillRows = `(() => {
   const list = document.getElementById('tasks');
@@ -104,9 +103,10 @@ async function assertRowsKeepTheirContent(page, when) {
   const rows = await page.evaluate(rowGeometry);
   assert.equal(rows.clipped, 0, `${when}：每一行都要装得下自己的内容`);
   assert.equal(rows.overlaps, 0, `${when}：行与行不许叠在一起`);
-  // 「行高 ≥ 内容高」在折行的行上才有牙齿：一条标题折成三行，压矮一点就露馅。
+  // 「行高 ≥ 内容高」在折行的行上才有牙齿：长标题被夹成两行（约 36px + 内边距），
+  // 行被压矮一点就露馅。
   assert.ok(
-    rows.long.content >= 60,
+    rows.long.content >= 30,
     `${when}：长标题那条的内容高只有 ${rows.long.content}，标题没折行 —— fixture 变软了，量不到压行`,
   );
   assert.ok(
