@@ -2802,10 +2802,9 @@
   $('quick-ai-pill').onclick = openQuickConfiguration;
   $('quick-role-pill').onclick = openQuickRoles;
   $('quick-task-input').onkeydown = event => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      $('quick-task-form').requestSubmit();
-    }
+    if (!(window.MultiCCSendKey?.isSend(event) ?? (event.key === 'Enter' && !event.shiftKey && !event.isComposing))) return;
+    event.preventDefault();
+    $('quick-task-form').requestSubmit();
   };
   // Attachments arrive the same three ways the chat composer accepts them:
   // the button, a paste, or a drop anywhere on the card.
