@@ -352,6 +352,15 @@ small, .caption { color: var(--muted); font-size: 11px; }
 .space-shortcuts { display: flex; align-items: center; gap: 7px; min-height: 26px; padding: 0 9px 5px; color: var(--muted); font-size: 10px; }
 .space-shortcuts kbd { margin-left: auto; font: inherit; }
 
+/* 品牌行住在顶卡里：不再是独立一行，所以没有外边距，字号和 M 标都收小一档
+   （它是卡片的抬头，不是页面的标题），下面用一条发丝线把「产品」和「目录」
+   轻轻分开。 */
+.space-card .brand-row { margin: 0; padding: 9px 11px 7px; border-bottom: 1px solid rgba(203, 219, 238, .55); }
+.space-card .brand { gap: 8px; font-size: 14.5px; }
+.space-card .brand-mark { width: 23px; height: 23px; border-radius: 7px; font-size: 11px; box-shadow: none; }
+.space-card .notify-entry-btn, .space-card .cli-update-btn { width: 26px; height: 26px; min-width: 26px; min-height: 26px; padding: 0; font-size: 13px; }
+.space-card .notify-entry-btn svg { width: 21px; height: 21px; }
+
 .nav-row { width: 100%; display: flex; align-items: center; gap: 9px; border-color: transparent; background: transparent; text-align: left; color: #4f657d; }
 .nav-row.active { color: #0f63c6; border-color: #cfe3f8; background: #fff; }
 nav { display: flex; flex-direction: column; gap: 4px; }
@@ -1910,7 +1919,8 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
      手机上会把中间那些固定内容压扁（目录卡被裁），而这些恰恰是抽屉存在的理由；
      手机上滚动一屏比钉住一行值。 */
   #sidebar { position: fixed; inset: 0 auto 0 0; width: min(286px, calc(100% - 34px)); transform: translateX(-105%); box-shadow: 14px 0 70px #263f5d30; overflow-y: auto; overscroll-behavior: contain; }
-  #sidebar > .brand-row, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .caption, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
+  /* 品牌行已并进顶卡（.space-card），不再是侧栏的直接孩子，不在此列。 */
+  #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .caption, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
   /* 任务区跟着抽屉一起滚，不再自己开第二层滚动条。 */
   #task-sidebar { overflow: visible; }
   #tasks { overflow: visible; }
@@ -2102,7 +2112,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
    是版本行还没长出更新提示、目录名还没换行时量到的下限。 */
 @media (max-height: 640px) {
   #sidebar { overflow-y: auto; overscroll-behavior: contain; }
-  #sidebar > .brand-row, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
+  #sidebar > .space-card, #sidebar > .nav-row, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
   #task-sidebar { overflow: visible; }
   #tasks { min-height: 0; overflow: visible; }
 }
