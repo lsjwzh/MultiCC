@@ -218,17 +218,13 @@
   // synthesizes it the same way the server's lane catalog does.
   const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok']);
   const VENDOR_NATIVE_SET = new Set(VENDOR_NATIVE_CLIS);
-  const VENDOR_NATIVE_NAMES = Object.freeze({
-    qoder: 'Qoder CN', codebuddy: 'WorkBuddy', gemini: 'Gemini', pi: 'Pi',
-    commandcode: 'Command Code', dsh: 'DSH', grok: 'Grok',
-  });
   function vendorNativeList(cli) {
     const scope = typeof window !== 'undefined' ? window : null;
     const api = scope && scope.MultiCCChatAiConfig;
     const items = api && typeof api.vendorNativeProvidersFor === 'function'
       ? api.vendorNativeProvidersFor(cli) : [];
     if (items.length) return items;
-    return [{ value: `${cli}-native:${cli}`, label: VENDOR_NATIVE_NAMES[cli] || cli, modelOptions: [] }];
+    return [{ value: `${cli}-native:${cli}`, label: cliName(cli), modelOptions: [] }];
   }
   function vendorNativeProviders(cli) {
     return vendorNativeList(cli).map(item => ({
@@ -246,7 +242,8 @@
   // restating seven names.
   function cliName(cli) {
     const scope = typeof window !== 'undefined' ? window : null;
-    const catalog = scope && scope.MultiCCProviderCatalog;
+    const catalog = (scope && scope.MultiCCProviderCatalog)
+      || (typeof require === 'function' ? require('./provider-catalog.js') : null);
     if (cli && catalog && typeof catalog.cliDisplayName === 'function') {
       const name = catalog.cliDisplayName(cli);
       if (name) return String(name);
