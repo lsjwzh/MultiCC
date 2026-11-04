@@ -16,6 +16,59 @@ function safeText(value, limit = 180) {
     .replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, limit);
 }
 
+// 去掉 Codex 常见的 shell 包装（`/bin/zsh -lc '…'`、`bash -c "…"`），只留真正的命令；
+// 开头的 `cd <dir> &&` 也去掉——目录对「在干什么」没有信息量，还会把命令挤出可见宽度。
+function unwrapShellCommand(command) {
+  if (Array.isArray(command) && command.length === 3 && /^-l?c$/.test(String(command[1]))
+    && /(?:^|\/)(?:ba|z|fi)?sh$/.test(String(command[0]))) command = command[2];
+  let text = Array.isArray(command) ? command.join(' ') : String(command || '');
+  text = text.replace(/\s+/g, ' ').trim();
+  const wrapped = text.match(/^(?:\S*\/)?(?:ba|z|fi)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/);
+  if (wrapped) text = wrapped[2].trim();
+  return text.replace(/^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*/, '').trim();
+}
+
+function baseName(path) {
+  const parts = String(path || '').split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '';
+}
+
+function shortArgs(args) {
+  if (!args || typeof args !== 'object') return safeText(args, 80);
+  const pick = args.description || args.command || args.query || args.pattern || args.path
+    || args.file_path || args.url || args.prompt || args.name;
+  if (pick) return safeText(typeof pick === 'string' ? pick : JSON.stringify(pick), 80);
+  try { return safeText(JSON.stringify(args), 80); } catch (_) { return ''; }
+}
+
+// 工具的具体内容（命令、改了哪些文件、MCP 参数、搜索词），接在笼统标签后面，
+// 让后台任务卡和底部状态行能看出「正在执行什么」而不只是「正在执行」。
+// 一律过 safeText 脱敏；只取调用参数，不碰命令输出。
+function toolDetail(item) {
+  switch (item.type) {
+    case 'commandExecution': return safeText(unwrapShellCommand(item.command), 100);
+    case 'fileChange': {
+      const names = (Array.isArray(item.changes) ? item.changes : [])
+        .map(change => baseName(change?.path)).filter(Boolean);
+      if (!names.length) return '';
+      const head = names.slice(0, 3).join(', ');
+      return safeText(names.length > 3 ? `${head} 等 ${names.length} 个文件` : head, 100);
+    }
+    case 'mcpToolCall': return shortArgs(item.arguments);
+    case 'webSearch': return safeText(item.query || item.action?.query || '', 80);
+    default: return '';
+  }
+}
+
+function toolLabelOf(item) {
+  let label = TOOL_LABELS[item.type];
+  if (!label) return '';
+  if (item.type === 'commandExecution' && /\b(test|pytest|jest|vitest)\b/.test(unwrapShellCommand(item.command))) label = '正在运行测试';
+  if (item.type === 'mcpToolCall' && item.tool) label += `：${safeText(item.tool, 60)}`;
+  const detail = toolDetail(item);
+  return detail ? `${label} · ${detail}` : label;
+}
+
 // 将属于当前会话树的原生事件转成后台展示事件，不转发子线程原始输出。
 function createCodexBackgroundEvents({ emit, attach, mainThreadId = null, now = Date.now,
   setTimer = setTimeout, clearTimer = clearTimeout, throttleMs = 1000 } = {}) {
@@ -157,9 +210,7 @@ function createCodexBackgroundEvents({ emit, attach, mainThreadId = null, now = 
         if (item.kind === 'completed' || item.kind === 'interrupted') finish(target, item.kind);
       }
     }
-    let toolLabel = TOOL_LABELS[item.type];
-    if (item.type === 'commandExecution' && /\b(test|pytest|jest|vitest)\b/.test(item.command || '')) toolLabel = '正在运行测试';
-    if (item.type === 'mcpToolCall' && item.tool) toolLabel += `：${safeText(item.tool, 60)}`;
+    const toolLabel = toolLabelOf(item);
     if (method === 'item/started' && toolLabel) {
       if (agent) progress(agent, toolLabel, true);
       else if (id === mainId && item.id) {
@@ -187,7 +238,11 @@ function createCodexBackgroundEvents({ emit, attach, mainThreadId = null, now = 
       progress(agent, '工具仍在执行');
     }
     if (method === 'item/completed' && toolLabel) {
-      if (agent) progress(agent, item.status === 'failed' ? '工具执行失败，等待子任务结果' : '工具执行结束', true);
+      if (agent) {
+        const detail = toolDetail(item);
+        const outcome = item.status === 'failed' ? '工具执行失败，等待子任务结果' : '工具执行结束';
+        progress(agent, detail ? `${outcome} · ${detail}` : outcome, true);
+      }
       else finishTool(`${id}:${item.id}`, item.status === 'failed' || item.error ||
         (item.exitCode != null && Number(item.exitCode) !== 0) ? 'failed' :
         item.status === 'completed' ? 'completed' : 'interrupted');
@@ -217,4 +272,4 @@ function createCodexBackgroundEvents({ emit, attach, mainThreadId = null, now = 
   };
 }
 
-module.exports = { createCodexBackgroundEvents, safeText };
+module.exports = { createCodexBackgroundEvents, safeText, unwrapShellCommand, toolDetail };

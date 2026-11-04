@@ -151,3 +151,25 @@ test('适配器展示原生 Agent 工具卡片及中文状态', () => {
     status: 'completed', agentsStates: { child: { status: 'running' } } } } })[0];
   assert.match(result.content, /正在执行/);
 });
+
+test('本轮工具和子任务进度带上具体操作：命令、文件、MCP 参数、搜索词', () => {
+  const f = fixture();
+  f.item('main', { id: 'c1', type: 'commandExecution', command: "/bin/zsh -lc 'cd /Users/x/repo && gh run watch 19021 --exit-status'" }, 'item/started');
+  assert.equal(f.events.at(-1).description, '本轮工具 · 正在执行命令 · gh run watch 19021 --exit-status');
+  f.item('main', { id: 'c2', type: 'commandExecution', command: ['/bin/bash', '-lc', 'npm test -- --grep chat'] }, 'item/started');
+  assert.equal(f.events.at(-1).description, '本轮工具 · 正在运行测试 · npm test -- --grep chat');
+  f.item('main', { id: 'f1', type: 'fileChange', changes: [{ path: '/r/public/a.js' }, { path: 'b.css' }, { path: 'c.md' }, { path: 'd.ts' }] }, 'item/started');
+  assert.equal(f.events.at(-1).description, '本轮工具 · 正在修改文件 · a.js, b.css, c.md 等 4 个文件');
+  f.item('main', { id: 'm1', type: 'mcpToolCall', tool: 'search_docs', arguments: { query: '路由配置' } }, 'item/started');
+  assert.equal(f.events.at(-1).description, '本轮工具 · 正在调用工具：search_docs · 路由配置');
+  f.item('main', { id: 'w1', type: 'webSearch', query: 'codex app-server events' }, 'item/started');
+  assert.equal(f.events.at(-1).description, '本轮工具 · 正在搜索资料 · codex app-server events');
+  // 命令里的凭据照样脱敏。
+  f.item('main', { id: 'c3', type: 'commandExecution', command: 'curl -H "Authorization: Bearer fake-test-key-123456" https://x' }, 'item/started');
+  assert.equal(f.events.at(-1).description.includes('fake-test-key-123456'), false);
+  // 子任务里的工具同样带内容。
+  f.spawn('a');
+  f.item('a', { id: 't', type: 'commandExecution', command: 'cargo build --release' }, 'item/started');
+  assert.match(f.events.at(-1).description, /子任务 1：检查接口 · 正在执行命令 · cargo build --release/);
+  f.tracker.dispose();
+});
