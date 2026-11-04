@@ -454,6 +454,63 @@
       return line;
     }
 
+    // 流式尾巴：[动态点][归属文字]，始终是 .msg-content 的最后一个子节点。流式期间
+    // 正文 / 工具卡片会不断 append 进来，所以用 MutationObserver 把它推回末尾；流式结束
+    // （streaming-dot 被摘掉）后观察器自行断开，尾巴不再出点、只剩文字。
+    function removeStreamTail(content) {
+      const tail = content.querySelector('.msg-stream-tail');
+      if (tail) {
+        tail._mcObserver?.disconnect?.();
+        tail._mcResize?.disconnect?.();
+        tail.remove();
+      }
+      content.classList?.remove('has-stream-tail');
+    }
+
+    function updateTailMarquee(clip, line) {
+      if (!clip || !line || !clip.isConnected) return;
+      const overflow = Math.ceil((line.scrollWidth || 0) - (clip.clientWidth || 0));
+      if (overflow > 2) {
+        clip.style.setProperty('--mc-marquee-shift', `${-overflow}px`);
+        clip.style.setProperty('--mc-marquee-duration', `${Math.max(4, Math.round(overflow / 25) + 3)}s`);
+        clip.classList.add('marquee');
+      } else {
+        clip.classList.remove('marquee');
+        clip.style.removeProperty('--mc-marquee-shift');
+      }
+    }
+
+    function attachStreamTail(content, line) {
+      const tail = doc.createElement('div');
+      tail.className = 'msg-stream-tail';
+      const dot = doc.createElement('span');
+      dot.className = 'msg-stream-tail-dot';
+      const clip = doc.createElement('span');
+      clip.className = 'msg-stream-tail-clip';
+      clip.appendChild(line);
+      tail.append(dot, clip);
+      content.appendChild(tail);
+      content.classList.add('has-stream-tail');
+      const MO = win && win.MutationObserver;
+      if (typeof MO === 'function') {
+        const observer = new MO(() => {
+          if (!tail.parentNode) { observer.disconnect(); return; }
+          if (!content.classList.contains('streaming-dot')) { observer.disconnect(); return; }
+          if (tail.nextSibling) content.appendChild(tail);
+        });
+        observer.observe(content, { childList: true });
+        tail._mcObserver = observer;
+      }
+      const RO = win && win.ResizeObserver;
+      if (typeof RO === 'function') {
+        const ro = new RO(() => updateTailMarquee(clip, line));
+        ro.observe(clip);
+        tail._mcResize = ro;
+      }
+      const raf = win && typeof win.requestAnimationFrame === 'function' ? win.requestAnimationFrame.bind(win) : null;
+      if (raf) raf(() => updateTailMarquee(clip, line));
+    }
+
     // 同一轮里模型可能换过，所以归属是「这条消息」的，不是会话的：活体气泡在 result
     // 事件落地时挂一次，历史回放由 renderAssistant 走同一条路（chat.js 把它接进
     // createHistoryView），两边落点必须一致。
@@ -469,10 +526,17 @@
       if (!content) return null;
       content.querySelector('.msg-model-attribution')?.remove();
       content.querySelector('.msg-model-attribution-row')?.remove();
+      removeStreamTail(content);
       const line = buildModelAttributionLine(attribution);
       if (!line) return null;
       const host = content.querySelector('.tool-trajectory-label') || content.querySelector('.msg-timing');
       if (host) { host.appendChild(line); return line; }
+      // 还在流式（自动选线提前挂的那份）：不单独占一行，跟在底部「动态点」后面，
+      // 和点同一行；窄了就缩宽并跑马灯。轮末 result 再挂时会先清掉它、落回时间行。
+      if (content.classList && content.classList.contains('streaming-dot')) {
+        attachStreamTail(content, line);
+        return line;
+      }
       // 没有可搭的车（老历史缺时间戳，那一行根本不建）：自占一行，但仍贴右 ——
       // `.msg-content` 是普通块，`margin-left:auto` 在那儿不成立（那需要一个 flex
       // 父级），所以要自己带一层推右的容器。App 侧同一条兜底用 Align.centerRight。
