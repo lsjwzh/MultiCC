@@ -730,10 +730,21 @@ test('Auto Provider stamps the live bubble with the resolved route attribution',
     providerId: 'backup', providerName: 'Backup', model: 'm2',
   }, generation);
   assert.equal(attached.length, 0, 'no bubble exists before the first stream frame');
+  // The real createAssistantBubble(true) marks the content as streaming.
+  fixture.content.classList.add('streaming-dot');
   fixture.controller.handleEvent({ type: 'stream_event', event: { type: 'message_start' } }, generation);
   assert.deepEqual(attached, [{ cli: 'claude', providerId: 'backup', providerName: 'Backup', model: 'm2' }],
     'the route that began before message_start is stamped when the bubble appears');
   assert.equal(fixture.bubble.querySelectorAll('.msg-model-attribution').length, 1);
+  // While streaming it rides the bottom "live dot" row instead of taking a line of its own.
+  const tail = fixture.bubble.querySelectorAll('.msg-stream-tail')[0];
+  assert.ok(tail, 'the early attribution rides a stream tail');
+  assert.equal(tail.querySelectorAll('.msg-stream-tail-dot').length, 1, 'the tail carries the live dot');
+  assert.equal(tail.querySelectorAll('.msg-model-attribution').length, 1,
+    'the early attribution sits next to the streaming dot');
+  assert.equal(fixture.content.classList.contains('has-stream-tail'), true);
+  assert.equal(fixture.bubble.querySelectorAll('.msg-model-attribution-row').length, 0,
+    'no standalone attribution row while streaming');
   // Failover mid-turn: the stamp is rewritten in place, never a second line.
   fixture.controller.handleEvent({
     type: 'provider_route_event', version: 1, routePhase: 'selected',

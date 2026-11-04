@@ -626,6 +626,52 @@
       justify-content: flex-end;
     }
 
+    /* 流式中的归属：不占独立一行，跟在底部「动态点」后面（同一行）。尾巴存在时
+       .msg-content 自带的 ::after 点让位给尾巴里的点。宽度不够（手机 / 窄栏）时
+       缩宽，文字放不下就来回跑马灯。流式结束后点消失，只剩文字。 */
+    .msg-content.streaming-dot.has-stream-tail::after { display: none; }
+    .msg-stream-tail {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 100%;
+      min-width: 0;
+      margin-top: 4px;
+    }
+    .msg-stream-tail-dot {
+      flex: 0 0 auto;
+      width: 6px; height: 6px; margin-left: 4px;
+      background: var(--chat-blue); border-radius: 50%;
+      animation: blink 1s infinite;
+    }
+    .msg-content:not(.streaming-dot) .msg-stream-tail-dot { display: none; }
+    .msg-stream-tail-clip {
+      flex: 0 1 auto;
+      min-width: 0;
+      max-width: min(100%, 560px);
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .msg-stream-tail .msg-model-attribution {
+      display: inline-block;
+      margin-left: 0;
+      vertical-align: middle;
+    }
+    .msg-stream-tail-clip.marquee .msg-model-attribution {
+      animation: msg-attr-marquee var(--mc-marquee-duration, 8s) linear infinite alternate;
+    }
+    @keyframes msg-attr-marquee {
+      0%, 12% { transform: translateX(0); }
+      88%, 100% { transform: translateX(var(--mc-marquee-shift, 0px)); }
+    }
+    @media (max-width: 640px) {
+      .msg-stream-tail-clip { max-width: min(100%, 62vw); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .msg-stream-tail-clip.marquee .msg-model-attribution { animation: none; }
+      .msg-stream-tail-clip { text-overflow: ellipsis; }
+    }
+
     /* ── Thinking indicator ── */
     .thinking-bubble {
       align-self: flex-start;
