@@ -97,6 +97,13 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
             icon: const Icon(Icons.add_rounded, size: 16),
             label: const Text('存为预设'),
           ),
+          if (_activePresetId.isNotEmpty)
+            TextButton.icon(
+              key: const ValueKey('run-preset-update'),
+              onPressed: _presetBusy ? null : _updatePreset,
+              icon: const Icon(Icons.save_outlined, size: 16),
+              label: const Text('更新预设'),
+            ),
         ],
       ),
       if (_presetNotice.isNotEmpty)
@@ -200,13 +207,55 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       return;
     }
     if (!mounted) return;
+    final saved = await _writePreset(
+      result: result,
+      id:
+          existing?.id ??
+          DateTime.now().microsecondsSinceEpoch.toRadixString(36),
+      name: name,
+    );
+    if (saved != null) {
+      _presetMessage('已存为预设；当前会话还需点击底部“保存”才会生效。');
+    }
+  }
+
+  /// 原地更新套用中的那份预设：同 id、同名字，不再弹命名框（避免手打同名
+  /// 才覆盖、打错名就多出一份）。
+  Future<void> _updatePreset() async {
+    if (_activePresetId.isEmpty) return;
+    final result = _autoSelectionResult();
+    if (!result.ok) {
+      _presetMessage(result.error ?? '先配置至少两条可用线路', error: true);
+      return;
+    }
+    if (!await _confirmPreset(
+      '更新预设？',
+      '“$_activePresetName”会保存成当前的线路组合，旧组合不再保留。',
+      '更新',
+    )) {
+      return;
+    }
+    if (!mounted) return;
+    final saved = await _writePreset(
+      result: result,
+      id: _activePresetId,
+      name: _activePresetName,
+    );
+    if (saved != null) {
+      _presetMessage('已更新预设；当前会话还需点击底部“保存”才会生效。');
+    }
+  }
+
+  Future<RunConfigPreset?> _writePreset({
+    required AutoWireResult result,
+    required String id,
+    required String name,
+  }) async {
     setState(() => _presetBusy = true);
     try {
       final subagent = _collectAutoSubagent(_autoPrimaryProviderId);
       final preset = RunConfigPreset(
-        id:
-            existing?.id ??
-            DateTime.now().microsecondsSinceEpoch.toRadixString(36),
+        id: id,
         name: name,
         protocol: result.protocol,
         rows: [
@@ -229,10 +278,17 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         subagentModel: subagent?.model ?? '',
       );
       final saved = await _presetStore.save(preset);
-      if (mounted) setState(() => _presets = saved);
-      _presetMessage('已存为预设；当前会话还需点击底部“保存”才会生效。');
+      if (mounted) {
+        setState(() {
+          _presets = saved;
+          _activePresetId = preset.id;
+          _activePresetName = preset.name;
+        });
+      }
+      return preset;
     } catch (_) {
       _presetMessage('预设未能保存到本机，请重试。', error: true);
+      return null;
     } finally {
       if (mounted) setState(() => _presetBusy = false);
     }
@@ -288,7 +344,16 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       }
       try {
         final remaining = await _presetStore.delete(id);
-        if (mounted) setState(() => _presets = remaining);
+        if (mounted) {
+          setState(() {
+            _presets = remaining;
+            // 删掉的正是当前套用的那份：退回「存为预设」，池子本身不动。
+            if (_activePresetId == id) {
+              _activePresetId = '';
+              _activePresetName = '';
+            }
+          });
+        }
         _presetMessage('已删除预设；当前线路池未改变。');
       } catch (_) {
         _presetMessage('预设未能删除，请重试。', error: true);
@@ -330,6 +395,9 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         _rows
           ..clear()
           ..addAll(preset.copyRows());
+        // 之后改池子再点「更新预设」写回的就是这一条。
+        _activePresetId = preset.id;
+        _activePresetName = preset.name;
         _order = preset.pickOrder;
         _tiering = preset.tiering;
         _maxAttempts = preset.maxAttempts;

@@ -645,10 +645,12 @@
       && typeof item.name === 'string');
   }
 
-  function rememberPreset(list, value, { name = '', recent = false, now = Date.now() } = {}) {
+  // `id` lets an in-place update keep the preset's identity instead of minting a
+  // new one, so a preset applied from the dropdown is the one that gets rewritten.
+  function rememberPreset(list, value, { id = '', name = '', recent = false, now = Date.now() } = {}) {
     const signature = presetSignature(value);
     const entry = {
-      id: `p${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      id: id || `p${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       name: String(name || '').trim().slice(0, 60),
       recent,
       protocol: value.protocol,
@@ -835,6 +837,11 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     // The stored pool the two pool-level choices were last read from, so a
     // re-render of the same selection does not overwrite the user's own choice.
     let seededKey = null;
+    // The named preset currently applied, if any. While it is set, 「存为预设」
+    // turns into 「更新预设」and writes back to this same entry (id and name)
+    // instead of asking for a name and risking a duplicate.
+    let activePresetId = '';
+    let activePresetName = '';
     const loadModels = options.loadModels || loadCandidateModels;
     const formatProvider = typeof options.formatProvider === 'function'
       ? options.formatProvider : provider => provider.name || provider.id;
@@ -872,6 +879,8 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       tt('autoEditorPresetDelete', '删除预设'));
     const presetOpen = button('multicc-auto-editor-preset-open multicc-auto-editor-link',
       tt('autoEditorPresetOpen', '存为预设'));
+    const presetUpdate = button('multicc-auto-editor-preset-update multicc-auto-editor-link',
+      tt('autoEditorPresetUpdate', '更新预设'));
     const presetForm = make('div', 'multicc-auto-editor-preset-form');
     const presetName = make('input', 'multicc-auto-editor-preset-name');
     presetName.type = 'text';
@@ -882,7 +891,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       tt('autoEditorJevKeyCancel', '取消'));
     presetForm.append(presetName, presetSave, presetCancel);
     const presetStatus = make('div', 'multicc-auto-editor-preset-status');
-    presetBar.append(presetSelect, presetDelete, presetOpen, presetForm, presetStatus);
+    presetBar.append(presetSelect, presetDelete, presetOpen, presetUpdate, presetForm, presetStatus);
     if (!presetStore) presetBar.style.display = 'none';
     top.append(title, presetBar);
 
@@ -1580,13 +1589,28 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         && preset.candidates.filter(candidate => pool.has(String(candidate.providerId))).length >= 2);
     }
 
+    // 「存为预设」始终可用（套用后还能另存一份）；「更新预设」只在确实套着
+    // 一份具名预设时出现，点它直接原地写回，不再问名字。
+    function syncPresetButtons() {
+      show(presetUpdate, Boolean(activePresetId));
+    }
+
+    function clearActivePreset() {
+      activePresetId = '';
+      activePresetName = '';
+      syncPresetButtons();
+    }
+
     function showPresetForm(open) {
       show(presetForm, open);
       show(presetOpen, !open);
+      syncPresetButtons();
       if (open && typeof presetName.focus === 'function') presetName.focus();
     }
 
-    function renderPresets() {
+    // [keepId] keeps the dropdown (and the update mode) on a preset that still
+    // exists after a save or an in-place update.
+    function renderPresets(keepId) {
       const presets = protocol ? usablePresets() : [];
       const placeholder = make('option', '', presets.length
         ? tt('autoEditorPresetPlaceholder', '套用预设…')
@@ -1597,11 +1621,13 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         option.value = preset.id;
         return option;
       }));
-      presetSelect.value = '';
+      const keep = keepId && presets.some(preset => preset.id === keepId) ? keepId : '';
+      presetSelect.value = keep;
       presetSelect.disabled = !presets.length;
-      presetDelete.disabled = true;
-      show(presetDelete, false);
+      presetDelete.disabled = !keep;
+      show(presetDelete, Boolean(keep));
       showPresetForm(false);
+      if (!keep) clearActivePreset();
     }
 
     function applyPreset(id) {
@@ -1616,6 +1642,14 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       presetSelect.value = id;
       presetDelete.disabled = false;
       show(presetDelete, true);
+      // 「最近使用」entries have no stable identity worth rewriting; only a
+      // named preset becomes the target of 更新预设.
+      if (preset.recent) clearActivePreset();
+      else {
+        activePresetId = preset.id;
+        activePresetName = preset.name || '';
+        syncPresetButtons();
+      }
       presetStatus.textContent = tt('autoEditorPresetApplied', '已套用预设，确认无误后保存即可。');
       notify();
       return true;
@@ -1625,10 +1659,32 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       const result = controller.read({ remember: false, forPreset: true });
       if (!result.ok || !result.value) return result;
       const name = presetName.value.trim();
-      storePresets(rememberPreset(loadPresets(), result.value, { name, now: now() }));
+      const signature = presetSignature(result.value);
+      const list = rememberPreset(loadPresets(), result.value, { name, now: now() });
+      storePresets(list);
       presetName.value = '';
-      renderPresets();
+      const saved = list.find(item => !item.recent && item.name === name
+        && presetSignature(item) === signature);
+      if (saved) {
+        activePresetId = saved.id;
+        activePresetName = saved.name || '';
+      }
+      renderPresets(saved ? saved.id : '');
       presetStatus.textContent = tt('autoEditorPresetSaved', '已保存为预设。');
+      return result;
+    }
+
+    // Rewrite the applied preset in place: same id, same name, new pool.
+    function updatePreset() {
+      if (!activePresetId) return savePreset();
+      const result = controller.read({ remember: false, forPreset: true });
+      if (!result.ok || !result.value) return result;
+      const id = activePresetId;
+      storePresets(rememberPreset(loadPresets(), result.value, {
+        id, name: activePresetName, now: now(),
+      }));
+      renderPresets(id);
+      presetStatus.textContent = tt('autoEditorPresetUpdated', '已更新预设。');
       return result;
     }
 
@@ -1638,9 +1694,11 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       else {
         presetDelete.disabled = true;
         show(presetDelete, false);
+        clearActivePreset();
       }
     });
     presetOpen.addEventListener('click', () => showPresetForm(true));
+    presetUpdate.addEventListener('click', updatePreset);
     presetCancel.addEventListener('click', () => showPresetForm(false));
     presetSave.addEventListener('click', savePreset);
     presetName.addEventListener('keydown', event => {
@@ -1654,7 +1712,8 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       const id = presetSelect.value;
       if (!id) return;
       storePresets(loadPresets().filter(item => item.id !== id));
-      renderPresets();
+      // 删的是别的预设时，当前套用的那份仍在，更新模式不该被顺手清掉。
+      renderPresets(activePresetId === id ? '' : activePresetId);
       presetStatus.textContent = tt('autoEditorPresetDeleted', '预设已删除。');
     });
 

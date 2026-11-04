@@ -437,6 +437,35 @@ test('a configured pool can be saved as a named preset and applied to a fresh ed
   assert.equal(store.data.length, 0);
 });
 
+test('an applied preset updates in place without asking for its name again', () => {
+  const store = memoryPresetStore();
+  const first = mountEditor({ presetStore: store });
+  first.click('managed-c', 'add-one');
+  first.$('preset-open').emit('click');
+  first.$('preset-name').value = '便宜优先';
+  first.$('preset-save').emit('click');
+  const originalId = store.data[0].id;
+
+  const second = mountEditor({ presetStore: store });
+  second.$('preset-select').value = originalId;
+  second.$('preset-select').emit('change');
+  assert.notEqual(second.$('preset-update').style.display, 'none',
+    '套用后出现更新按钮，而不是逼用户再存一份');
+
+  second.click('managed-b', 'move-up');
+  second.$('preset-update').emit('click');
+  assert.equal(store.data.length, 1, '原地更新，不新增预设');
+  assert.equal(store.data[0].id, originalId, '沿用同一个 id');
+  assert.equal(store.data[0].name, '便宜优先');
+  assert.deepEqual(store.data[0].candidates.map(c => c.providerId),
+    ['managed-b', 'managed-a', 'managed-c']);
+  assert.equal(second.$('preset-select').value, originalId, '更新后仍停在这份预设上');
+  assert.notEqual(second.$('preset-update').style.display, 'none', '更新后仍是当前预设');
+
+  second.$('preset-delete').emit('click');
+  assert.equal(store.data.length, 0);
+});
+
 test('a pool mixing official and managed lines saves and round-trips without any cross-trust tick', () => {
   const store = memoryPresetStore();
   const first = mountEditor({ presetStore: store });

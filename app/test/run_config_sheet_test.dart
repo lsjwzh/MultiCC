@@ -1232,6 +1232,85 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('套用后的预设可以原地更新，不用再输名字', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/providers') {
+        return _json(200, {'providers': poolProviders});
+      }
+      return _json(200, {'ok': true});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: pool,
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claude: true},
+      ),
+      out,
+    );
+
+    await tester.tap(find.byKey(const Key('run-preset-save')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('run-preset-name')), '日常双线路');
+    await tester.tap(find.byKey(const Key('run-preset-name-save')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('更新预设'),
+      findsOneWidget,
+      reason: '刚存的这份就是当前预设，改完可以直接更新',
+    );
+
+    await tester.ensureVisible(find.byKey(const Key('run-preset-choose')));
+    await tester.tap(find.byKey(const Key('run-preset-choose')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('日常双线路'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('套用').last);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('更新预设'),
+      findsOneWidget,
+      reason: '套用后按钮变成更新，而不是再存一份',
+    );
+
+    final cheap = find.byKey(const Key('run-pool-row-claude:cheap'));
+    await tester.ensureVisible(cheap);
+    await tester.tap(
+      find.descendant(of: cheap, matching: find.byTooltip('下移')),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(const Key('run-preset-update')));
+    await tester.tap(find.byKey(const Key('run-preset-update')));
+    await tester.pumpAndSettle();
+    expect(find.text('更新预设？'), findsOneWidget, reason: '更新前要确认');
+    await tester.tap(find.text('更新').last);
+    await tester.pumpAndSettle();
+
+    final raw = (await SharedPreferences.getInstance()).getString(
+      runConfigPresetKey,
+    )!;
+    final list = jsonDecode(raw) as List;
+    expect(list.length, 1, reason: '原地更新，不新增第二份预设');
+    expect(list.first['name'], '日常双线路');
+    expect(
+      (list.first['candidates'] as List)
+          .map((item) => item['providerId'])
+          .toList(),
+      ['strong', 'cheap'],
+    );
+    expect(find.text('更新预设'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('预设带上子任务：存下来再套用，子任务线路与模型回到面板', (tester) async {
     final s = await settings(host: 'http://server.example');
     final client = MockClient((request) async {

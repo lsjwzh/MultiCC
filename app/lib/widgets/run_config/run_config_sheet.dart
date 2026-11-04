@@ -192,6 +192,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     fallbackLane: widget.cli.name,
   );
   List<RunConfigPreset> _presets = const [];
+  /// 当前套用的具名预设。非空时「存为预设」变成「更新预设」，原地改写这一条
+  /// （同 id、同名字），而不是再弹一次命名框、存出第二份。
+  String _activePresetId = '';
+  String _activePresetName = '';
   String _presetNotice = '';
   bool _presetNoticeError = false;
   bool _presetBusy = false;
