@@ -443,8 +443,12 @@
           message.timeline);
         // 归属行是这条消息的页脚最后一行：result 里的字段和随后落库的同名字段出自
         // 服务端同一次计算，所以流式中的气泡与刷新后的历史逐字一致。
-        if (content && message.modelAttribution) {
-          liveUi.attachModelAttribution?.(resultBubble, message.modelAttribution);
+        // result 没带归属（老服务端 / 四项皆空）时，退回流式期间已经显示的那份实时
+        // 路由归属：它此刻挂在底部「动态点」那行，点要消失了，得挪回时间行最右端，
+        // 不能孤零零留一行。
+        const finalAttribution = message.modelAttribution || liveRouteAttribution();
+        if (content && finalAttribution) {
+          liveUi.attachModelAttribution?.(resultBubble, finalAttribution);
         }
       }
       state.turnStartMs = 0;
@@ -980,6 +984,16 @@
       liveUi.attachModelAttribution?.(bubble, attribution);
     }
 
+    // 刷新 / 断线重连时，「正在生成」的那条回复是按历史消息重画出来的
+    // （renderAssistant 只画定稿形态），这里把它恢复成和直播气泡一样：底部动态点
+    // + 自动选线时同一行最右端的归属。chat.js 的 applyHistoryPlan 接管流式尾巴时调用。
+    function adoptStreamingBubble(bubble) {
+      const content = bubble?.querySelector?.('.msg-content');
+      if (!content) return;
+      content.classList.add('streaming-dot');
+      attachLiveRouteAttribution(bubble);
+    }
+
     function createAssistantBubble() {
       const bubble = historyView.createAssistantBubble(true);
       attachLiveRouteAttribution(bubble);
@@ -1236,6 +1250,7 @@
       handleToolResult,
       finalizeAssistantMsg,
       finishStreaming,
+      adoptStreamingBubble,
     });
   }
 

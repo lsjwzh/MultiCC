@@ -755,6 +755,49 @@ test('Auto Provider stamps the live bubble with the resolved route attribution',
     'a route change updates the existing attribution line in place');
 });
 
+test('a reconnected streaming tail gets its live dot and route attribution back', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'auto-reconnect', is_streaming: true,
+    providerSelection: { version: 1, mode: 'auto', protocol: 'anthropic', candidates: [] },
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, routePhase: 'selected',
+    providerId: 'backup', providerName: 'Backup', model: 'm2',
+  }, generation);
+  // History replay draws the in-progress answer in its final shape: no dot, no attribution.
+  assert.equal(fixture.content.classList.contains('streaming-dot'), false);
+  fixture.controller.adoptStreamingBubble(fixture.bubble);
+  assert.equal(fixture.content.classList.contains('streaming-dot'), true, 'the live dot is back');
+  const tail = fixture.bubble.querySelectorAll('.msg-stream-tail')[0];
+  assert.ok(tail, 'attribution rides the dot row');
+  assert.equal(tail.querySelectorAll('.msg-model-attribution').length, 1);
+});
+
+test('a result without its own attribution moves the live one onto the timing row', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'auto-noattr', is_streaming: true,
+    providerSelection: { version: 1, mode: 'auto', protocol: 'anthropic', candidates: [] },
+  }, generation);
+  fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, routePhase: 'selected',
+    providerId: 'backup', providerName: 'Backup', model: 'm2',
+  }, generation);
+  fixture.content.classList.add('streaming-dot');
+  fixture.controller.handleEvent({ type: 'stream_event', event: { type: 'message_start' } }, generation);
+  assert.equal(fixture.bubble.querySelectorAll('.msg-stream-tail').length, 1);
+  fixture.controller.handleEvent({ type: 'result', durationMs: 1200 }, generation);
+  assert.equal(fixture.bubble.querySelectorAll('.msg-stream-tail').length, 0, 'the dot row is gone');
+  const timing = fixture.bubble.querySelectorAll('.msg-timing')[0];
+  assert.ok(timing);
+  assert.equal(timing.querySelectorAll('.msg-model-attribution').length, 1,
+    'attribution lands on the right end of the timing row');
+  assert.equal(fixture.bubble.querySelectorAll('.msg-model-attribution').length, 1);
+});
+
 test('fixed-provider sessions do not stamp an early route attribution', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();
