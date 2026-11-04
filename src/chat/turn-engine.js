@@ -1320,6 +1320,7 @@ function createChatTurnEngine(deps) {
       };
       chatSessions.set(sessionName, cs);
     }
+    if (cs && persisted.workspaceState === 'awake' && persisted.worktreePath) cs.cwd = cwdForSession(persisted) || cs.cwd;
 
     cancelClassify(cs);
     if (!originContinue || directUserInput) {

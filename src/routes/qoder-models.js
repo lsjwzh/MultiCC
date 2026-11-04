@@ -89,8 +89,16 @@ function mountQoderModelRoutes(app) {
   });
 }
 
+// Synchronous view for the Auto Provider runtime: warm cache or the bundled
+// tier fallback, never a network call from a turn.
+function peekQoderModels() {
+  if (cache && (Date.now() - cache.at) < QODER_TTL_MS) return cache.models;
+  return QODER_TIER_FALLBACK.map(model => ({ model, label: model }));
+}
+
 module.exports = {
   mountQoderModelRoutes,
+  peekQoderModels,
   listQoderModels,
   parseQoderStdout,
   QODER_TIER_FALLBACK,

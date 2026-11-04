@@ -22,9 +22,11 @@ const {
   nativeOpenCodeId,
 } = require('./native-opencode');
 const {
-  NATIVE_COMMANDCODE_ID,
-  nativeCommandCodeId,
-} = require('./native-commandcode');
+  MODEL_ID: NATIVE_VENDOR_MODEL_ID,
+  NATIVE_VENDOR_ID,
+  VENDOR_NATIVE_SET,
+  nativeVendorOf,
+} = require('./native-vendor');
 
 const PROTOCOLS = new Set(['anthropic', 'openai_responses']);
 const PROVIDER_ID = /^[A-Za-z0-9._:-]{1,160}$/;
@@ -79,9 +81,9 @@ const DEFAULT_ROUTING_TIMEOUT_MS = 2_500;
 // session then switches lanes (with the usual handoff checkpoint) when the pool
 // picks a line on another CLI. Only lanes whose provider is a user-selectable
 // route are eligible — a providerless lane has nothing for the pool to pick.
-const AUTO_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi', 'commandcode']);
+const AUTO_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi', 'dsh', 'grok', 'qoder', 'codebuddy', 'gemini', 'pi', 'commandcode']);
 // These lanes resolve the API dialect independently for each physical attempt.
-const MULTI_PROTOCOL_CLIS = new Set(['opencode', 'zcode']);
+const MULTI_PROTOCOL_CLIS = new Set(['opencode', 'zcode', 'grok']);
 // When a cross-CLI pool leaves the session's current lane:
 //   failover — only when no line on the current CLI is usable (default; a lane
 //              switch costs a handoff, so it is the last resort);
@@ -197,17 +199,26 @@ function validateCandidate(raw, index, context) {
       protocol: null,
     });
   }
-  // Command Code owns its vendor catalog (one native line, any vendor model id).
-  // Like OpenCode's native rows it is named, not looked up: a stored pool must
-  // validate without the vendor CLI ever listing its models.
-  const nativeCommandCode = nativeCommandCodeId(providerId);
-  if (nativeCommandCode !== null) {
-    if (!NATIVE_COMMANDCODE_ID.test(nativeCommandCode)) {
-      return fail(`candidate ${index + 1} has an invalid Command Code provider id`, 'invalid_provider_candidate');
+  // A vendor-native line owns its catalog the same way OpenCode's native rows
+  // do: named, not looked up, so a stored pool validates without the vendor CLI
+  // ever being asked for its models. One line per lane, and only on that lane.
+  const nativeVendor = nativeVendorOf(providerId);
+  if (nativeVendor !== null) {
+    if (!NATIVE_VENDOR_ID.test(nativeVendor.id) || nativeVendor.id !== nativeVendor.cli) {
+      return fail(`candidate ${index + 1} has an invalid vendor-native provider id`,
+        'invalid_provider_candidate');
+    }
+    if (!VENDOR_NATIVE_SET.has(nativeVendor.cli)) {
+      return fail(`candidate ${index + 1} names an unknown vendor-native lane`,
+        'invalid_provider_candidate');
     }
     const lane = cli || context.homeCli || null;
-    if (lane !== 'commandcode') {
-      return fail(`candidate ${index + 1} names a Command Code native line, which is only usable on the commandcode cli`,
+    if (lane !== nativeVendor.cli) {
+      return fail(`candidate ${index + 1} names a ${nativeVendor.cli} native line, which is only usable on the ${nativeVendor.cli} cli`,
+        'invalid_provider_candidate');
+    }
+    if (model && !NATIVE_VENDOR_MODEL_ID.test(model)) {
+      return fail(`candidate ${index + 1} has an invalid vendor-native model`,
         'invalid_provider_candidate');
     }
     const value = { providerId, model, priority, enabled };

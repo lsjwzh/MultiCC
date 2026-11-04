@@ -20,6 +20,7 @@ import '../../providers/session_manager.dart';
 import '../../services/auto_provider_routing.dart';
 import '../../services/codebuddy_models_service.dart';
 import '../../services/commandcode_grok_models_service.dart';
+import '../../services/native_vendor_service.dart';
 import '../../services/codex_models_service.dart';
 import '../../services/opencode_models_service.dart';
 import '../../services/qoder_models_service.dart';
@@ -795,12 +796,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
           ? widget.cli.name
           : candidate.cli!.trim();
       final openCodeNative = isOpenCodeNativeProvider(candidate.providerId);
-      final commandCodeNative = isCommandCodeNativeProvider(
-        candidate.providerId,
-      );
-      final nativeLane = openCodeNative
-          ? 'opencode'
-          : (commandCodeNative ? 'commandcode' : '');
+      final vendorNative = vendorNativeProviderOf(candidate.providerId);
+      final nativeLane = openCodeNative ? 'opencode' : vendorNative;
       final wrongLane = nativeLane.isNotEmpty && lane != nativeLane;
       final rung = autoRungFor(candidate, selection.routing?.tiers ?? const []);
       _rows.add(
@@ -813,7 +810,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
           problem: wrongLane
               ? (openCodeNative
                     ? 'OpenCode 原生线路只能跑在 OpenCode 车道上'
-                    : 'Command Code 原生线路只能跑在 Command Code 车道上')
+                    : '${vendorNativeProviderDisplayName(nativeLane)} 原生线路只能跑在它自己的车道上')
               : null,
           sendable: !wrongLane,
         ),
@@ -1075,7 +1072,9 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   }
 
   void _submitFixed() {
-    final native = isOpenCodeNativeProvider(_provider);
+    final native =
+        isOpenCodeNativeProvider(_provider) ||
+        isVendorNativeProvider(_provider);
     var model = _customModel ? _customCtrl.text.trim() : _model;
     if (native && model.isEmpty) {
       final options = _choicesFor(_provider);
@@ -1125,10 +1124,11 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       setState(() => _autoError = result.error ?? '');
       return;
     }
-    final native =
-        isOpenCodeNativeProvider(result.firstProviderId) ||
-        isCommandCodeNativeProvider(result.firstProviderId);
-    final provider = native ? '' : result.firstProviderId;
+    // OpenCode native lines save as provider '' + `<id>/<model>` (existing
+    // contract). Other vendor-native ids travel in providerSelection and are
+    // normalized back to a provider-less lane by the server on PATCH.
+    final openCodeNative = isOpenCodeNativeProvider(result.firstProviderId);
+    final provider = openCodeNative ? '' : result.firstProviderId;
     final firstName = _lineName(result.firstProviderId);
     final subCli = _autoSubCli();
     final collected = _collectAutoSubagent(provider);
@@ -1190,14 +1190,15 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   // ── 小工具 ────────────────────────────────────────────────────────────
 
   String _lineName(String providerId) {
-    if (isCommandCodeNativeProvider(providerId)) {
+    final vendor = vendorNativeProviderOf(providerId);
+    if (vendor.isNotEmpty) {
       for (final p in _providers) {
         if (p['id'] == providerId) {
           return p['name']?.toString() ??
-              commandCodeNativeProviderDisplayName();
+              vendorNativeProviderDisplayName(vendor);
         }
       }
-      return commandCodeNativeProviderDisplayName();
+      return vendorNativeProviderDisplayName(vendor);
     }
     if (isOpenCodeNativeProvider(providerId)) {
       final native = openCodeNativeProviderOf(providerId);

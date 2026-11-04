@@ -7,6 +7,8 @@
 const SUPPORTED_CHAT_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok', 'commandcode', 'pi']);
 const { repairZcodeSessionState } = require('./cli-adapters/zcode-session');
 const { isResidentSession, providerlessClis } = require('./cli/cli-capability');
+const { nativeVendorOf } = require('./providers/native-vendor');
+const { nativeOpenCodeId } = require('./providers/native-opencode');
 
 // Derived, not listed: "owns its own account/model config" is a column of the
 // canonical CLI table (src/cli/cli-capability.js DISPLAY). The set that used to
@@ -24,12 +26,18 @@ function cloneValue(value) {
 
 // A provider-less lane owns its account/model config, so a manual provider and a
 // subagent route stay null. An Auto Provider pool is different: it is a
-// cross-lane routing policy, and a vendor-native line (Command Code today) is a
-// legitimate candidate on such a lane. Keep the pool across a lane switch; only
-// the concrete provider binding is removed.
-function routingSelection(value) {
-  const clone = cloneValue(value);
-  return clone && clone.mode === 'auto' ? clone : null;
+// cross-lane routing policy, and a vendor-native line is a legitimate candidate
+// on such a lane. Keep the pool across a lane switch only when it actually names
+// one of THIS lane's native lines; a stale managed-only pool is still dropped.
+function routingSelection(value, cli) {
+  if (!value || value.mode !== 'auto' || !Array.isArray(value.candidates)) return null;
+  const owns = value.candidates.some(candidate => {
+    if (!candidate || candidate.enabled === false) return false;
+    const vendor = nativeVendorOf(candidate.providerId);
+    if (vendor && vendor.cli === cli) return true;
+    return cli === 'opencode' && nativeOpenCodeId(candidate.providerId) !== null;
+  });
+  return owns ? cloneValue(value) : null;
 }
 
 function activeState(session, now = Date.now()) {
@@ -43,7 +51,7 @@ function activeState(session, now = Date.now()) {
     // Only Command Code has a vendor-native Auto line today; the other
     // provider-less lanes keep the old "no route of any kind" state.
     providerSelection: providerless
-      ? ((session.cli || 'claude') === 'commandcode' ? routingSelection(session.providerSelection) : null)
+      ? routingSelection(session.providerSelection, session.cli || 'claude')
       : (cloneValue(session.providerSelection) || null),
     subagent: providerless ? null : (cloneValue(session.subagent) || null),
     agent: session.agent || null,
@@ -129,7 +137,7 @@ function activateCliState(session, targetCli, options = {}) {
   const providerless = PROVIDERLESS_CLIS.has(targetCli);
   session.provider = providerless ? null : (state.provider || null);
   session.providerSelection = providerless
-    ? (targetCli === 'commandcode' ? routingSelection(state.providerSelection) : null)
+    ? routingSelection(state.providerSelection, targetCli)
     : (cloneValue(state.providerSelection) || null);
   session.subagent = providerless ? null : (cloneValue(state.subagent) || null);
   session.agent = state.agent || null;

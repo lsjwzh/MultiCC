@@ -37,10 +37,11 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (provider === undefined) {
     const defaultPool = cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli;
     const primary = primaryProviderCandidate(autoSelection.value, cli);
-    // A vendor-native Auto line (commandcode-native:…) has no provider record;
-    // the lane owns its account, so the concrete fallback stays null. Keep this
-    // prefix check local: src/session must not require the provider context.
-    const nativeLine = primary && String(primary.providerId || '').startsWith('commandcode-native:');
+    // A vendor-native Auto line (<cli>-native:<cli>) has no provider record;
+    // the lane owns its account, so the concrete fallback stays null. Keep the
+    // prefix list local: src/session must not require the provider context.
+    const nativeLine = primary
+      && /^(?:qoder|codebuddy|gemini|pi|commandcode|dsh|grok)-native:/.test(String(primary.providerId || ''));
     providerId = (nativeLine ? null : primary?.providerId)
       || providerDefaults[defaultPool] || null;
   } else {

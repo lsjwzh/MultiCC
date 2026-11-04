@@ -16,7 +16,7 @@ const { isValidIp } = require('../providers/egress-ip');
 const { reassignProviderSessions } = require('../provider-reassign');
 const { encodeRelayShareCode, relayModelsOf } = require('../providers/relay-share-code');
 const { parseCredential, relayRouteFromBaseUrl } = require('../providers/relay-share-store');
-const { nativeCommandCodeId } = require('../providers/native-commandcode');
+const { nativeVendorOf } = require('../providers/native-vendor');
 const { CLAUDE_MODELS_FALLBACK } = require('./claude-models');
 
 // A borrowed Claude line carries no canonical ANTHROPIC_MODEL: its share code
@@ -257,10 +257,11 @@ function createProviderRoutes(rawDeps) {
       id = deps.providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli, id);
     }
     if (id == null || id === '') return { ok: true, value: null };
-    // The Auto Provider pool's vendor-native Command Code line has no provider
-    // record; the lane itself owns the account, so only the lane check applies.
-    if (nativeCommandCodeId(id) !== null) {
-      return cli === 'commandcode' ? { ok: true, value: String(id) } : { ok: false };
+    // A vendor-native Auto line has no provider record; the lane itself owns the
+    // account, so only the lane check applies.
+    const nativeVendor = nativeVendorOf(id);
+    if (nativeVendor !== null) {
+      return cli === nativeVendor.cli ? { ok: true, value: String(id) } : { ok: false };
     }
     // Qoder CN remains vendor-managed. OpenCode and ZCode both support the two
     // MultiCC pools, so their provider ids are looked up globally and then
