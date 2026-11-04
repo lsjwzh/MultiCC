@@ -1188,3 +1188,18 @@ test('reasoning spans are measured so think time reaches the wall-clock', () => 
 
   assert.doesNotThrow(() => closeOpenThinkingTool(undefined));
 });
+
+test('a turn refreshes a stale chat cwd before spawning the CLI', () => {
+  const source = fs.readFileSync('src/chat/turn-engine.js', 'utf8');
+  const start = source.indexOf('function runChatTurn(sessionName, text, opts = {})');
+  const end = source.indexOf('function runChatTurnStreaming(', start);
+  assert.ok(start >= 0 && end > start);
+  const body = source.slice(start, end);
+  const created = body.indexOf('chatSessions.set(sessionName, cs)');
+  const refreshed = body.indexOf("cs.cwd = cwdForSession(persisted)");
+  assert.ok(created >= 0 && refreshed > created,
+    'the cached cwd must be re-resolved after the chat state exists');
+  // The CLI-switch path does the same before reusing the chat state.
+  const switchSource = fs.readFileSync('src/cli/switch-runtime.js', 'utf8');
+  assert.match(switchSource, /chat\.cwd = cwd/);
+});
