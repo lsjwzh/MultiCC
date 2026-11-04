@@ -5,6 +5,7 @@ use std::{sync::Arc, time::Instant};
 pub mod cpr;
 pub mod guard;
 pub mod machines;
+pub mod opencode_error;
 pub mod publication;
 pub mod quota_history;
 pub mod remote_screen;

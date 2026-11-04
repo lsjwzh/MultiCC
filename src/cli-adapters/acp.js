@@ -227,6 +227,7 @@ function createAcpAdapter({
           type: 'error', label, kind: 'provider', message,
           error: {
             source: `${name}_event`, provider: name, code: params.code || params.phase || null,
+            ...(params.errorName ? { errorName: params.errorName } : {}),
             // Optional structured category (e.g. invalid_request_model) lets a
             // host-side precondition failure keep a non-retryable verdict
             // instead of degrading to text classification.

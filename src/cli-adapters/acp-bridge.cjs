@@ -349,6 +349,8 @@ function reportFailure(label, error, phase) {
   emit('multicc/error', {
     message: `${label}: ${error.message}`,
     code: error.code || null,
+    // Preserve OpenCode's typed cause even when JSON-RPC only says -32603.
+    errorName: error.rpcError?.data?.errorName || null,
     phase,
   });
   process.exitCode = 1;
