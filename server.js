@@ -3009,6 +3009,10 @@ app.use(safeErrorHandler(logger));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
 const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, docsRegistry.listPermanentArtifactIds()); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
     trackServiceTimer(setInterval(() => cleanupArtifacts(), 6 * 3600 * 1000)); require('./src/assist-snapshots').startAssistSweep({ assistDir: MULTICC_PATHS.assistDir, trackTimer: trackServiceTimer, log: (message) => logger.info('assist_snapshot_cleanup', { message }) });
+    // Stale CLI session sandboxes (codex/zcode per-session CODEX_HOME dirs) grow
+    // without bound; same boot+interval contract as the assist sweep above.
+    const runtimeHomesJanitor = require('./src/runtime-homes-janitor');
+    runtimeHomesJanitor.startRuntimeHomesJanitor({ ttlDays: envNumber(process.env.MULTICC_RUNTIME_HOME_TTL_DAYS, runtimeHomesJanitor.DEFAULT_TTL_DAYS), trackTimer: trackServiceTimer, log: (message) => logger.info('runtime_home_cleanup', { message }) });
     // Keep the official OAuth credential alive. The check is a credential read;
     // it only runs the CLI once the expiry is close, so the router never has to
     // report "run `claude` once to refresh the Keychain" to a user. Boot counts
