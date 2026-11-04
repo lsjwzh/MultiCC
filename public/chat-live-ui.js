@@ -531,8 +531,8 @@
       if (!line) return null;
       const host = content.querySelector('.tool-trajectory-label') || content.querySelector('.msg-timing');
       if (host) { host.appendChild(line); return line; }
-      // 还在流式（自动选线提前挂的那份）：不单独占一行，跟在底部「动态点」后面，
-      // 和点同一行；窄了就缩宽并跑马灯。轮末 result 再挂时会先清掉它、落回时间行。
+      // 还在流式（自动选线提前挂的那份）：不单独占一行，和底部「动态点」同一行、
+      // 贴最右端（与轮末贴时间行最右端同一摆法）；窄了就缩宽并跑马灯。轮末 result 再挂时会先清掉它、落回时间行。
       if (content.classList && content.classList.contains('streaming-dot')) {
         attachStreamTail(content, line);
         return line;
