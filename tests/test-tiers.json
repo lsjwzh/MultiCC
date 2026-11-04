@@ -750,6 +750,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/run_config_presets_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/run_config_sheet_test.dart",
       "tier": "flow",
       "lane": "flutter"
@@ -4889,6 +4894,15 @@
       "owner": "npm:test:cdp",
       "entrypoints": [
         "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-run-config-presets.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
       ]
     },
     {

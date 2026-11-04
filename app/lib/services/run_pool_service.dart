@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/message.dart';
 import 'codex_models_service.dart';
+import 'commandcode_grok_models_service.dart';
 import 'manage_service.dart';
 import 'opencode_models_service.dart';
 import 'settings_service.dart';
@@ -28,39 +29,48 @@ class RunPoolService {
     if (hit != null) return Future.value(hit);
     final settings = this.settings;
     if (settings == null) return Future.value(null);
-    return _inflight.putIfAbsent(lane, () async {
-      try {
-        final cli = tryParseCli(lane);
-        if (cli != null) {
-          if (cli.isCodexFamily) {
-            await CodexModelsService(settings: settings).load();
-          } else if (cli == SessionCli.opencode) {
-            await OpenCodeModelsService(
+    return _inflight
+        .putIfAbsent(lane, () async {
+          try {
+            final cli = tryParseCli(lane);
+            if (cli != null) {
+              if (cli.isCodexFamily) {
+                await CodexModelsService(settings: settings).load();
+              } else if (cli == SessionCli.opencode) {
+                await OpenCodeModelsService(
+                  settings: settings,
+                  httpClient: httpClient,
+                ).load();
+              } else if (cli == SessionCli.commandcode) {
+                await CommandCodeModelsService(settings: settings).load();
+              } else if (cli.isClaudeFamily) {
+                // Claude 的清单是本机 CLI 包里读的，不在关键路径上。
+              }
+            }
+            final d = await ManageService(
               settings: settings,
               httpClient: httpClient,
-            ).load();
-          } else if (cli.isClaudeFamily) {
-            // Claude 的清单是本机 CLI 包里读的，不在关键路径上。
+            ).fetchProvidersForCli(lane);
+            var providers = (d['providers'] as List? ?? [])
+                .map((e) => (e as Map).cast<String, dynamic>())
+                .toList();
+            if (lane == 'opencode') {
+              providers = mergeOpenCodeNativeProviders(
+                providers,
+                OpenCodeModelsService.cached,
+              );
+            } else if (lane == 'commandcode') {
+              providers = mergeCommandCodeNativeProviders(
+                providers,
+                CommandCodeModelsService.cached,
+              );
+            }
+            _cache[lane] = providers;
+            return providers;
+          } catch (_) {
+            return null;
           }
-        }
-        final d = await ManageService(
-          settings: settings,
-          httpClient: httpClient,
-        ).fetchProvidersForCli(lane);
-        var providers = (d['providers'] as List? ?? [])
-            .map((e) => (e as Map).cast<String, dynamic>())
-            .toList();
-        if (lane == 'opencode') {
-          providers = mergeOpenCodeNativeProviders(
-            providers,
-            OpenCodeModelsService.cached,
-          );
-        }
-        _cache[lane] = providers;
-        return providers;
-      } catch (_) {
-        return null;
-      }
-    }).whenComplete(() => _inflight.remove(lane));
+        })
+        .whenComplete(() => _inflight.remove(lane));
   }
 }

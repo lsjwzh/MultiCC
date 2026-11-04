@@ -7,9 +7,12 @@ import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:multicc_app/models/message.dart';
+import 'package:multicc_app/services/commandcode_grok_models_service.dart';
+import 'package:multicc_app/services/live_model_catalog.dart';
 import 'package:multicc_app/services/manage_service.dart';
 import 'package:multicc_app/services/opencode_models_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
+import 'package:multicc_app/widgets/run_config/run_config_lanes.dart';
 import 'package:multicc_app/widgets/run_config/run_config_sheet.dart';
 import 'package:multicc_app/widgets/run_config/run_config_wire.dart';
 
@@ -128,4 +131,17 @@ void main() {
       expect(result!.providerLabel, 'OpenCode Zen');
     },
   );
+
+  test('Command Code 的厂商原生线路只挂 commandcode 车道', () {
+    final merged = mergeCommandCodeNativeProviders(const [], const [
+      LiveModel('deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-flash'),
+      LiveModel('claude-sonnet-5-5', 'claude-sonnet-5-5'),
+    ]);
+    final line = merged.single;
+    expect(line['id'], commandCodeNativeProviderId);
+    expect(line['nativeCommandCode'], true);
+    expect(line['modelOptions'], contains('deepseek/deepseek-v4-flash'));
+    expect(isCommandCodeNativeProvider(commandCodeNativeProviderId), isTrue);
+    expect(lanesForLine(line), const ['commandcode']);
+  });
 }

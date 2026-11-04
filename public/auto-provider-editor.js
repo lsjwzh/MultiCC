@@ -19,7 +19,7 @@
   // cross-CLI, and the session switches lanes when the pool picks a line on
   // another one. Mirrors AUTO_CLIS in src/providers/auto-provider-config.js, so
   // the editor offers exactly the lanes the server accepts.
-  const AUTO_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi']);
+  const AUTO_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi', 'commandcode']);
   const AUTO_CLI_SET = new Set(AUTO_CLIS);
   // When a cross-CLI pool leaves the session's current lane:
   //   failover — only when no line on the current CLI is usable (the default),
@@ -211,6 +211,28 @@
   function normalizeCli(value) {
     const cli = String(value == null ? '' : value).trim();
     return AUTO_CLI_SET.has(cli) ? cli : '';
+  }
+
+  // Command Code's only line: the vendor CLI owns the account and the catalog.
+  // It is not in the MultiCC provider store, so the editor synthesizes it the
+  // same way the server's lane catalog does.
+  const COMMANDCODE_NATIVE_LINE = 'commandcode-native:commandcode';
+  function isCommandCodeNative(providerId) {
+    return String(providerId == null ? '' : providerId).startsWith('commandcode-native:');
+  }
+  function commandCodeNativeProvider() {
+    const scope = typeof window !== 'undefined' ? window : null;
+    const api = scope && scope.MultiCCChatAiConfig;
+    const modelOptions = api && typeof api.commandCodeModelIds === 'function'
+      ? api.commandCodeModelIds() : [];
+    return {
+      id: COMMANDCODE_NATIVE_LINE,
+      name: 'Command Code',
+      nativeCommandCode: true,
+      appType: 'commandcode',
+      model: modelOptions[0] || null,
+      modelOptions,
+    };
   }
 
   // Display name of a lane — the provider catalog owns the table (it carries
@@ -1653,6 +1675,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     // each lane on its own, and every lane has to stay single-protocol, so a
     // line whose protocol differs from the pool's is never offered.
     function laneProviders(cli) {
+      if (cli === 'commandcode') return [commandCodeNativeProvider()];
       const entry = laneEntry(cli);
       const list = entry && Array.isArray(entry.providers) ? entry.providers : null;
       if (!list) return null;
@@ -1929,6 +1952,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       }
       const used = [];
       const homeProviders = providersForProtocol(providers, protocol);
+      if (homeCli === 'commandcode') homeProviders.unshift(commandCodeNativeProvider());
       homeProviders.forEach((provider, index) => {
         const providerId = String(provider.id);
         const configured = homeOf(providerId);

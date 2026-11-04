@@ -420,6 +420,26 @@
     return text.startsWith(prefix) ? `${to}/${text.slice(prefix.length)}` : text;
   }
 
+  // Command Code's own line: the vendor CLI owns the account and the model
+  // catalog (`command-code --list-models`), so the Auto Provider editor shows a
+  // single synthetic line and stores the vendor model id as the wire model.
+  // Mirrors src/providers/native-commandcode.js.
+  const COMMANDCODE_NATIVE_PREFIX = 'commandcode-native:';
+  const COMMANDCODE_NATIVE_LINE = COMMANDCODE_NATIVE_PREFIX + 'commandcode';
+  function isCommandCodeNativeProvider(value) {
+    return String(value || '').startsWith(COMMANDCODE_NATIVE_PREFIX);
+  }
+  function commandCodeNativeProviderLabel() {
+    return 'Command Code（本机 CLI / 官方账号）';
+  }
+  function commandCodeModelIds() {
+    return readModelCacheSync('multicc.commandcode.models.v1', 60 * 60 * 1000).map(m => m && m.model).filter(Boolean);
+  }
+  // 只有一条：模型在行上的下拉里选，不按模型拆线路。
+  function commandCodeNativeProviders() {
+    return [{ value: COMMANDCODE_NATIVE_LINE, label: commandCodeNativeProviderLabel(), modelOptions: commandCodeModelIds() }];
+  }
+
   // Synchronous read of a CLI model cache populated by shared/models.js
   // (loadOpenCodeModels / loadQoderModels). Returns [] when the cache is
   // missing/stale so callers can render a placeholder option without blocking.
@@ -1103,6 +1123,10 @@
     openCodeNativeProviderOf,
     openCodeNativeProviderLabel,
     openCodeNativeIdKey,
+    commandCodeNativeProviders,
+    commandCodeNativeProviderLabel,
+    commandCodeModelIds,
+    isCommandCodeNativeProvider,
     resolveOpenCodeNativeLine,
     rewriteOpenCodeNativeModel,
     stripModelSuffix,

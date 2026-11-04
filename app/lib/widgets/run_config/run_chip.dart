@@ -17,6 +17,7 @@ import '../../providers/chat_provider.dart';
 import '../../providers/session_manager.dart';
 import '../../services/codex_models_service.dart';
 import '../../services/manage_service.dart';
+import '../../services/commandcode_grok_models_service.dart';
 import '../../services/opencode_models_service.dart';
 import '../../services/session_service.dart';
 import '../../services/settings_service.dart';
@@ -94,6 +95,9 @@ class _RunChipState extends State<RunChip> {
       if (cli == SessionCli.opencode) {
         await OpenCodeModelsService(settings: widget.settings).load();
       }
+      if (cli == SessionCli.commandcode) {
+        await CommandCodeModelsService(settings: widget.settings).load();
+      }
       final d = await ManageService(
         settings: widget.settings,
       ).fetchProvidersForCli(cli.name);
@@ -105,6 +109,11 @@ class _RunChipState extends State<RunChip> {
         providers = mergeOpenCodeNativeProviders(
           providers,
           OpenCodeModelsService.cached,
+        );
+      } else if (cli == SessionCli.commandcode) {
+        providers = mergeCommandCodeNativeProviders(
+          providers,
+          CommandCodeModelsService.cached,
         );
       }
       setState(() => _providers = providers);

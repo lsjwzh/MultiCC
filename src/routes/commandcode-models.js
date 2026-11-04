@@ -80,6 +80,14 @@ function listCommandcodeModels(callback, opts = {}) {
   });
 }
 
+// Synchronous view for the Auto Provider runtime's lane catalog: the warm cache
+// when it exists, otherwise the bundled snapshot. Never starts the ~6s network
+// listing from a turn, and never returns an empty line list.
+function peekCommandcodeModels() {
+  if (cache && (Date.now() - cache.at) < TTL_MS) return cache.models;
+  return COMMANDCODE_MODEL_FALLBACK.map(m => ({ ...m, label: m.model }));
+}
+
 function mountCommandcodeModelRoutes(app) {
   if (!app || typeof app.get !== 'function') return;
   app.get('/api/commandcode/models', (req, res) => {
@@ -95,6 +103,7 @@ function mountCommandcodeModelRoutes(app) {
 module.exports = {
   mountCommandcodeModelRoutes,
   listCommandcodeModels,
+  peekCommandcodeModels,
   parseCommandcodeList,
   COMMANDCODE_MODEL_FALLBACK,
   _setCacheForTest(at, models) { cache = { at, models }; },

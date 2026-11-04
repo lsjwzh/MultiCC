@@ -581,3 +581,38 @@ test('OpenCode and ZCode Auto pools resolve both provider stores and validate mo
     assert.deepEqual(checks.map(item => item.appType), ['codex', 'codex']);
   }
 });
+
+// ── Command Code native line ────────────────────────────────────────────────
+
+test('a Command Code native candidate is validated structurally, without the vendor catalog', () => {
+  const providers = catalog();
+  const pool = candidates => ({ version: 1, mode: 'auto', maxAttempts: 2, candidates });
+  const ok = validateProviderSelection(pool([
+    { providerId: 'commandcode-native:commandcode', cli: 'commandcode', model: 'deepseek/deepseek-v4-flash' },
+    { providerId: 'backup', cli: 'claude', model: 'good-model', priority: 2 },
+  ]), { cli: 'commandcode', providers });
+  assert.equal(ok.ok, true, ok.error);
+  assert.equal(ok.value.protocol, 'anthropic');
+  assert.equal(ok.value.candidates[0].cli, 'commandcode');
+
+  const wrongLane = validateProviderSelection(pool([
+    { providerId: 'commandcode-native:commandcode', cli: 'claude', model: 'deepseek/deepseek-v4-flash' },
+    { providerId: 'backup', cli: 'claude', model: 'good-model', priority: 2 },
+  ]), { cli: 'claude', providers });
+  assert.equal(wrongLane.code, 'invalid_provider_candidate');
+  assert.match(wrongLane.error, /only usable on the commandcode cli/);
+
+  const badId = validateProviderSelection(pool([
+    { providerId: 'commandcode-native:-bad', cli: 'commandcode', model: 'deepseek/flash' },
+    { providerId: 'backup', cli: 'claude', model: 'good-model', priority: 2 },
+  ]), { cli: 'commandcode', providers });
+  assert.equal(badId.code, 'invalid_provider_candidate');
+  assert.match(badId.error, /invalid Command Code provider id/);
+
+  const badModel = validateProviderSelection(pool([
+    { providerId: 'commandcode-native:commandcode', cli: 'commandcode', model: 'not allowed model' },
+    { providerId: 'backup', cli: 'claude', model: 'good-model', priority: 2 },
+  ]), { cli: 'commandcode', providers });
+  assert.equal(badModel.code, 'invalid_provider_candidate');
+  assert.match(badModel.error, /invalid model/);
+});

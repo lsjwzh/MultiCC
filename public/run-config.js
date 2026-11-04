@@ -42,6 +42,10 @@
   const MAX_ATTEMPTS = 4;
   const MIN_ATTEMPTS = 2;
   const NATIVE_PREFIX = 'opencode-native:';
+  // 厂商原生线路：CLI 自己管账号和模型目录，MultiCC provider 表里没有条目。
+  // OpenCode 会有多条（Zen / Go / auth login），Command Code 只有一条。
+  const COMMANDCODE_NATIVE_PREFIX = 'commandcode-native:';
+  const COMMANDCODE_NATIVE_LINE = COMMANDCODE_NATIVE_PREFIX + 'commandcode';
   // 用 API Key 认证的车道（Command Code、OpenCode 的 opencode.ai 线路）：会话可以给
   // 每条车道各挑一个账户（服务端 src/cli-key-accounts.js），留空 = 用 CLI 自己的登录。
   const KEY_ACCOUNT_CLIS = Object.freeze(['commandcode', 'opencode']);
@@ -60,6 +64,9 @@
     opencode: 'both',
     zcode: 'both',
     kimi: 'openai_responses',
+    // Command Code 只跑它自己的厂商目录；'both' 只表示它能进池，不代表能跑
+    // 任意 MultiCC 线路（见 cliLineVerdict 的 commandcode 分支）。
+    commandcode: 'both',
   });
   const AUTO_CLIS = Object.freeze(Object.keys(CLI_PROTOCOLS));
   // 直连上游的车道：线路必须自带 baseUrl 与 token，否则这条组合跑不起来。
@@ -93,13 +100,30 @@
     return protocol === 'anthropic' || protocol === 'openai_responses' ? protocol : null;
   }
 
-  function isNativeLine(providerId) {
+  function isOpenCodeNativeLine(providerId) {
     return clean(providerId).startsWith(NATIVE_PREFIX);
+  }
+
+  function isCommandCodeNativeLine(providerId) {
+    return clean(providerId).startsWith(COMMANDCODE_NATIVE_PREFIX);
+  }
+
+  function isNativeLine(providerId) {
+    return isOpenCodeNativeLine(providerId) || isCommandCodeNativeLine(providerId);
+  }
+
+  // 这条原生线路属于哪条车道；空串 = 不是原生线路。
+  function nativeLineCli(providerId) {
+    if (isOpenCodeNativeLine(providerId)) return 'opencode';
+    if (isCommandCodeNativeLine(providerId)) return 'commandcode';
+    return '';
   }
 
   function nativeLineId(providerId) {
     const text = clean(providerId);
-    return text.startsWith(NATIVE_PREFIX) ? text.slice(NATIVE_PREFIX.length) : '';
+    if (text.startsWith(NATIVE_PREFIX)) return text.slice(NATIVE_PREFIX.length);
+    if (text.startsWith(COMMANDCODE_NATIVE_PREFIX)) return text.slice(COMMANDCODE_NATIVE_PREFIX.length);
+    return '';
   }
 
   function nativeLineValue(id) {
@@ -277,10 +301,23 @@
         short: SHORT_REASON.unsupported_cli };
     }
     if (target.native) {
-      return who === 'opencode'
-        ? { ok: true }
-        : { ok: false, code: 'native_line_needs_opencode', reason: 'OpenCode 自己的线路只能用 OpenCode 跑',
+      const owner = nativeLineCli(target.id);
+      if (who === owner) return { ok: true };
+      if (owner === 'opencode') {
+        return { ok: false, code: 'native_line_needs_opencode', reason: 'OpenCode 自己的线路只能用 OpenCode 跑',
           short: SHORT_REASON.native_line_needs_opencode };
+      }
+      if (owner === 'commandcode') {
+        return { ok: false, code: 'native_line_needs_commandcode', reason: 'Command Code 自己的线路只能用 Command Code 跑',
+          short: '仅 Command Code' };
+      }
+      return { ok: false, code: 'unknown_protocol', reason: '这条线路没有协议信息，用不了', short: SHORT_REASON.unknown_protocol };
+    }
+    // Command Code 的模型目录来自它自己的 CLI（`command-code --list-models`），
+    // MultiCC 的托管线路它跑不了 —— 这不是协议问题，而是它没有对应的 provider 绑定。
+    if (who === 'commandcode') {
+      return { ok: false, code: 'commandcode_own_catalog',
+        reason: 'Command Code 只能跑它自己的线路', short: '用自己的线路' };
     }
     const protocol = protocolOf(target);
     if (!protocol) {
@@ -438,11 +475,16 @@
     let model = clean(draft.model);
     let provider = null;
     if (isNativeLine(value)) {
-      if (cli !== 'opencode') return fail('OpenCode 自己的线路只能用 OpenCode 跑。', 'provider_cli_mismatch');
-      const id = nativeLineId(value);
-      const chosen = model || clean(draft.nativeDefaultModel);
-      if (!chosen) return fail('挑一条 OpenCode 的线路和它的模型。', 'invalid_provider_candidate');
-      model = chosen.startsWith(`${id}/`) ? chosen : `${id}/${chosen}`;
+      if (nativeLineCli(value) !== cli) return fail('厂商原生线路只能用它自己的 CLI 跑。', 'provider_cli_mismatch');
+      if (isOpenCodeNativeLine(value)) {
+        const id = nativeLineId(value);
+        const chosen = model || clean(draft.nativeDefaultModel);
+        if (!chosen) return fail('挑一条 OpenCode 的线路和它的模型。', 'invalid_provider_candidate');
+        model = chosen.startsWith(`${id}/`) ? chosen : `${id}/${chosen}`;
+      } else {
+        // Command Code: provider 留空，model 就是厂商目录里的原始 id。
+        if (!model) return fail('挑一个 Command Code 的模型。', 'invalid_provider_candidate');
+      }
     } else {
       provider = value || null;
     }
@@ -1010,15 +1052,33 @@
 
     function lineName(row) {
       const saved = row.name;
-      if (isNativeLine(row.providerId)) return saved || nativeLabelOf(nativeLineId(row.providerId));
+      if (isNativeLine(row.providerId)) return saved || nativeLabelOf(row.providerId);
       const provider = providerById(row.cli, row.providerId);
       return provider ? (provider.name || provider.id) : (saved || row.providerId);
     }
 
     function nativeLabelOf(id) {
+      const value = isCommandCodeNativeLine(id) ? id : nativeLineValue(id);
+      if (isCommandCodeNativeLine(value)) {
+        const list = aiApi.commandCodeNativeProviders ? aiApi.commandCodeNativeProviders() : [];
+        const found = list.find(item => item.value === value);
+        return found ? found.label : 'Command Code';
+      }
       const list = aiApi.openCodeNativeProviders();
-      const found = list.find(item => item.value === nativeLineValue(id));
+      const found = list.find(item => item.value === value);
       return found ? found.label.replace(/^OpenCode 原生 · /, '') : id;
+    }
+
+    function nativeLineAvailable(providerId) {
+      const value = clean(providerId);
+      if (isCommandCodeNativeLine(value)) {
+        const list = aiApi.commandCodeNativeProviders ? aiApi.commandCodeNativeProviders() : [];
+        return list.some(item => item.value === value);
+      }
+      if (isOpenCodeNativeLine(value)) {
+        return aiApi.openCodeNativeProviders().some(item => item.value === value);
+      }
+      return false;
     }
 
     // OpenCode 原生线路 id 会在配置改写时变（手写的 `opencodego` ↔ 内置
@@ -1053,7 +1113,7 @@
       if (!selection || selection.mode !== 'auto') return [];
       return (selection.candidates || []).filter(Boolean).map(candidate => ({
         providerId: String(candidate.providerId || ''),
-        cli: candidate.cli ? String(candidate.cli) : (isNativeLine(candidate.providerId) ? 'opencode' : currentCli),
+        cli: candidate.cli ? String(candidate.cli) : (nativeLineCli(candidate.providerId) || currentCli),
         model: candidate.model ? String(candidate.model) : '',
         customModel: '',
         autoModel: candidate.autoModel === true,
@@ -1462,6 +1522,10 @@
         for (const nativeItem of aiApi.openCodeNativeProviders()) {
           items.push({ value: nativeItem.value, label: nativeItem.label.replace(/^OpenCode 原生 · /, '') + '（本机 OpenCode 登录）' });
         }
+      }
+      if (currentCli === 'commandcode') {
+        const nativeItems = aiApi.commandCodeNativeProviders ? aiApi.commandCodeNativeProviders() : [];
+        for (const nativeItem of nativeItems) items.push({ value: nativeItem.value, label: nativeItem.label });
       }
       for (const provider of list) items.push({ value: provider.id, label: providerName(provider) });
       return items;
@@ -2556,6 +2620,12 @@
             label: item.label.replace(/^OpenCode 原生 · /, ''),
           })) };
         }
+        if (cli === 'commandcode') {
+          const natives = aiApi.commandCodeNativeProviders ? aiApi.commandCodeNativeProviders() : [];
+          return { cli, native: true, error: false, items: natives.map(item => ({
+            providerId: item.value, cli, model: '', label: item.label,
+          })) };
+        }
         return loadCatalog(cli).then(catalog => ({
           cli,
           native: false,
@@ -2642,7 +2712,7 @@
       }
       const nextRows = (preset.candidates || []).map(candidate => ({
         providerId: String(candidate.providerId || ''),
-        cli: candidate.cli || (isNativeLine(candidate.providerId) ? 'opencode' : currentCli),
+        cli: candidate.cli || (nativeLineCli(candidate.providerId) || currentCli),
         model: candidate.model || '', customModel: '', autoModel: candidate.autoModel === true,
         tier: candidate.tier === 't2' ? 'medium' : candidate.tier === 't3' ? 'complex' : 'simple',
         name: '', enabled: true,
@@ -2655,7 +2725,7 @@
         }
       }
       if (nextRows.some(row => isNativeLine(row.providerId)
-        ? !aiApi.openCodeNativeProviders().some(item => item.value === row.providerId)
+        ? !nativeLineAvailable(row.providerId)
         : !!rowIssue(row, rowLine(row), cliLabel))) {
         presetStatus.textContent = tt('runConfigPresetLineUnavailable', '预设中的线路或 CLI 已不可用，未套用。');
         presetSelect.value = activePresetId;
