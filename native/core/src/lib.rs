@@ -1,5 +1,5 @@
 pub mod machines;
-pub mod opencode_error;
+pub mod provider_error;
 pub mod opencode_context;
 pub mod publication;
 pub mod publication_identity;

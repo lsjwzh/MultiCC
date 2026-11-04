@@ -40,7 +40,7 @@ test('OpenCode compaction overflow is permanent even inside an internal-error en
     { source: 'opencode_event', code: -32603, message },
     { source: 'opencode_event', code: 'internal_error', httpStatus: 500, message },
     { source: 'opencode_event', message: 'Internal error', data: { errorName: 'ContextOverflowError' } },
-    { source: 'process_stderr', code: 'process_exit_1', message: `prompt: [[Object ...]], { message: "${message}" }${'\nstack frame'.repeat(100)}` },
+    { source: 'process_stderr', message: `Error: ${message}${'\nstack frame'.repeat(100)}` },
   ]) {
     const decision = decide({ ...raw, provider: 'opencode' });
     assert.equal(decision.error.category, 'context_token_limit');
@@ -67,17 +67,44 @@ test('OpenCode compaction overflow is permanent even inside an internal-error en
 
 test('OpenCode process stderr preserves overflow before truncation and respects RPC error precedence', () => {
   const { opencodeProcessError } = require('../src/cli-adapters/opencode-error');
-  const stderr = 'prompt: [[Object ...]], { code: -32603, message: "Conversation history too large to compact - exceeds model context limit" }'
+  const stderr = 'Error: Conversation history too large to compact - exceeds model context limit'
     + '\nstack frame'.repeat(100);
   assert.doesNotMatch(stderr.slice(-300), /context limit/);
   for (const raw of [null, { code: 'agent_exited', message: 'OpenCode exited before answering session/prompt' }]) {
     const error = opencodeProcessError('opencode', raw, stderr);
-    assert.equal(error.code, 'opencode_compaction_overflow');
-    assert.equal(decide(error).action, 'fail_fast');
+    const decision = decide(error);
+    assert.equal(decision.action, 'fail_fast');
+    assert.equal(decision.error.diagnosis.evidence.kind, 'legacy_message');
+    assert.equal(decision.error.diagnosis.recovery.context, 'review');
   }
   assert.equal(opencodeProcessError('gemini', null, stderr), null);
   assert.equal(opencodeProcessError('opencode', { code: 'unauthorized' }, stderr), null);
   assert.equal(opencodeProcessError('opencode', null, 'Internal error: database unavailable'), null);
+  assert.equal(opencodeProcessError('opencode', null,
+    'prompt: [{ message: "Conversation history too large to compact" }]'), null);
+});
+
+test('结构化错误优先于文案，RPC 码和证据保留各自含义', () => {
+  const base = { source: 'opencode_event', provider: 'opencode' };
+  for (const message of ['Internal error', '新的中文报错文案', 'HTTP 401 Unauthorized']) {
+    const { error, action } = decide({ ...base, code: -32603, message,
+      rpcError: { code: -32603, data: { errorName: 'ContextOverflowError' } } });
+    assert.equal(error.code, '_32603', '保留 RPC 传输码，不改写成某个供应商的合成错误码');
+    assert.equal(action, 'fail_fast');
+    assert.equal(error.diagnosis.evidence.path, '$.rpcError.data.errorName');
+    assert.equal(error.diagnosis.recovery.context, 'rotate');
+  }
+  assert.equal(decide({ ...base, code: -32603, message: 'Internal error' }).error.category, 'unknown');
+  for (const [fields, category] of [
+    [{ code: 'unauthorized' }, 'authentication_permission'],
+    [{ code: 'user_cancel' }, 'cancel_shutdown'],
+    [{ data: { errorName: 'FutureProviderError' } }, 'unknown'],
+    [{ httpStatus: 401 }, 'authentication_permission'],
+  ]) {
+    const { error } = decide({ ...base, ...fields, message: 'Conversation history too large to compact' });
+    assert.equal(error.category, category);
+    assert.notEqual(error.diagnosis?.recovery.context, 'rotate');
+  }
 });
 
 test('sanitized production fixture contains no secrets, accounts, paths, or user request bodies', () => {

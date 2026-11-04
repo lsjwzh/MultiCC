@@ -31,6 +31,7 @@
 
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
+const { errorFields } = require('../provider-error');
 
 const PROTOCOL_VERSION = 1;
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -366,8 +367,8 @@ function reportFailure(label, error, phase) {
   emit('multicc/error', {
     message: `${label}: ${error.message}`,
     code: error.code || null,
-    // Preserve OpenCode's typed cause even when JSON-RPC only says -32603.
-    errorName: error.rpcError?.data?.errorName || null,
+    // Preserve numeric RPC codes and nested causes, excluding request bodies.
+    ...(error.rpcError ? { rpcError: errorFields(error.rpcError) } : {}),
     phase,
   });
   process.exitCode = 1;
