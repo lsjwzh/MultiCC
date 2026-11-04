@@ -22,6 +22,16 @@ function cloneValue(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+// A provider-less lane owns its account/model config, so a manual provider and a
+// subagent route stay null. An Auto Provider pool is different: it is a
+// cross-lane routing policy, and a vendor-native line (Command Code today) is a
+// legitimate candidate on such a lane. Keep the pool across a lane switch; only
+// the concrete provider binding is removed.
+function routingSelection(value) {
+  const clone = cloneValue(value);
+  return clone && clone.mode === 'auto' ? clone : null;
+}
+
 function activeState(session, now = Date.now()) {
   const providerless = PROVIDERLESS_CLIS.has(session.cli || 'claude');
   return {
@@ -30,7 +40,11 @@ function activeState(session, now = Date.now()) {
     model: session.model || null,
     effort: session.effort || null,
     provider: providerless ? null : (session.provider || null),
-    providerSelection: providerless ? null : (cloneValue(session.providerSelection) || null),
+    // Only Command Code has a vendor-native Auto line today; the other
+    // provider-less lanes keep the old "no route of any kind" state.
+    providerSelection: providerless
+      ? ((session.cli || 'claude') === 'commandcode' ? routingSelection(session.providerSelection) : null)
+      : (cloneValue(session.providerSelection) || null),
     subagent: providerless ? null : (cloneValue(session.subagent) || null),
     agent: session.agent || null,
     reportedModel: session.reportedModel || null,
@@ -114,7 +128,9 @@ function activateCliState(session, targetCli, options = {}) {
   session.effort = state.effort || null;
   const providerless = PROVIDERLESS_CLIS.has(targetCli);
   session.provider = providerless ? null : (state.provider || null);
-  session.providerSelection = providerless ? null : (cloneValue(state.providerSelection) || null);
+  session.providerSelection = providerless
+    ? (targetCli === 'commandcode' ? routingSelection(state.providerSelection) : null)
+    : (cloneValue(state.providerSelection) || null);
   session.subagent = providerless ? null : (cloneValue(state.subagent) || null);
   session.agent = state.agent || null;
   if (state.reportedModel) session.reportedModel = state.reportedModel;

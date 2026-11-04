@@ -36,7 +36,13 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   const autoSelection = validateProviderSelection(providerSelection, { cli, providers }); if (!autoSelection.ok) return { ok: false, error: autoSelection.error }; let providerId;
   if (provider === undefined) {
     const defaultPool = cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli;
-    providerId = primaryProviderCandidate(autoSelection.value, cli)?.providerId || providerDefaults[defaultPool] || null;
+    const primary = primaryProviderCandidate(autoSelection.value, cli);
+    // A vendor-native Auto line (commandcode-native:…) has no provider record;
+    // the lane owns its account, so the concrete fallback stays null. Keep this
+    // prefix check local: src/session must not require the provider context.
+    const nativeLine = primary && String(primary.providerId || '').startsWith('commandcode-native:');
+    providerId = (nativeLine ? null : primary?.providerId)
+      || providerDefaults[defaultPool] || null;
   } else {
     const v = validProviderId(cli, provider);
     if (!v.ok) return { ok: false, error: 'invalid provider' }; if (autoSelection.value && !autoSelection.value.candidates.some(candidate => candidate.enabled && candidate.providerId === v.value)) return { ok: false, error: 'Auto Provider fallback must be an enabled candidate' };

@@ -13,6 +13,7 @@ library;
 
 import '../../models/message.dart';
 import '../../services/auto_provider_routing.dart';
+import '../../services/commandcode_grok_models_service.dart';
 import '../../services/opencode_models_service.dart';
 import 'run_config_lanes.dart';
 
@@ -163,7 +164,9 @@ RunWireResult buildFixedOutcome({
   bool subagentCleared = false,
   bool subagentInherited = false,
 }) {
-  final native = isOpenCodeNativeProvider(providerId);
+  final native =
+      isOpenCodeNativeProvider(providerId) ||
+      isCommandCodeNativeProvider(providerId);
   var provider = native ? '' : providerId;
   var wireModel = model.trim();
   // OpenCode 原生线路把 `<id>/<model>` 整个存进 model，provider 反而留空。

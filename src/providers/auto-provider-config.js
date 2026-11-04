@@ -21,6 +21,10 @@ const {
   NATIVE_OPENCODE_ID,
   nativeOpenCodeId,
 } = require('./native-opencode');
+const {
+  NATIVE_COMMANDCODE_ID,
+  nativeCommandCodeId,
+} = require('./native-commandcode');
 
 const PROTOCOLS = new Set(['anthropic', 'openai_responses']);
 const PROVIDER_ID = /^[A-Za-z0-9._:-]{1,160}$/;
@@ -75,7 +79,7 @@ const DEFAULT_ROUTING_TIMEOUT_MS = 2_500;
 // session then switches lanes (with the usual handoff checkpoint) when the pool
 // picks a line on another CLI. Only lanes whose provider is a user-selectable
 // route are eligible — a providerless lane has nothing for the pool to pick.
-const AUTO_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi']);
+const AUTO_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi', 'commandcode']);
 // These lanes resolve the API dialect independently for each physical attempt.
 const MULTI_PROTOCOL_CLIS = new Set(['opencode', 'zcode']);
 // When a cross-CLI pool leaves the session's current lane:
@@ -181,6 +185,30 @@ function validateCandidate(raw, index, context) {
     }
     if (model && !model.startsWith(`${nativeId}/`)) {
       return fail(`candidate ${index + 1} model must start with "${nativeId}/"`, 'invalid_provider_candidate');
+    }
+    const value = { providerId, model, priority, enabled };
+    if (tier != null) value.tier = tier;
+    if (cli != null) value.cli = cli;
+    if (autoModel) value.autoModel = true;
+    return Object.freeze({
+      ok: true,
+      value: Object.freeze(value),
+      trustDomain: 'user-managed',
+      protocol: null,
+    });
+  }
+  // Command Code owns its vendor catalog (one native line, any vendor model id).
+  // Like OpenCode's native rows it is named, not looked up: a stored pool must
+  // validate without the vendor CLI ever listing its models.
+  const nativeCommandCode = nativeCommandCodeId(providerId);
+  if (nativeCommandCode !== null) {
+    if (!NATIVE_COMMANDCODE_ID.test(nativeCommandCode)) {
+      return fail(`candidate ${index + 1} has an invalid Command Code provider id`, 'invalid_provider_candidate');
+    }
+    const lane = cli || context.homeCli || null;
+    if (lane !== 'commandcode') {
+      return fail(`candidate ${index + 1} names a Command Code native line, which is only usable on the commandcode cli`,
+        'invalid_provider_candidate');
     }
     const value = { providerId, model, priority, enabled };
     if (tier != null) value.tier = tier;

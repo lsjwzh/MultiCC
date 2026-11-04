@@ -527,3 +527,16 @@ test('guideSeen / markGuideSeen：注入的存储，读不到或抛错都不炸'
   assert.equal(run.markGuideSeen(null), false);
   assert.equal(run.markGuideSeen({ setItem() { throw new Error('quota'); } }), false);
 });
+
+test('Command Code 的厂商原生线路只归 commandcode 车道', () => {
+  const native = run.lineShape('commandcode-native:commandcode');
+  assert.equal(native.native, true);
+  assert.equal(native.protocol, null);
+  assert.deepEqual(run.cliLineVerdict('commandcode', native), { ok: true });
+  assert.equal(run.cliLineVerdict('claude', native).code, 'native_line_needs_commandcode');
+  // 托管线路它跑不了：这是它自己的目录，不是协议问题。
+  assert.equal(run.cliLineVerdict('commandcode', { id: 'backup', protocol: 'anthropic' }).code,
+    'commandcode_own_catalog');
+  assert.equal(run.isNativeLine('commandcode-native:commandcode'), true);
+  assert.equal(run.nativeLineId('commandcode-native:commandcode'), 'commandcode');
+});

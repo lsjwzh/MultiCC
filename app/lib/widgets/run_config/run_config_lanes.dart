@@ -6,6 +6,7 @@
 library;
 
 import '../../models/message.dart';
+import '../../services/commandcode_grok_models_service.dart';
 import '../../services/opencode_models_service.dart';
 
 /// 车道 → 它服务的协议，顺序无所谓。供行的 CLI 菜单判断兼容。
@@ -17,6 +18,8 @@ const Map<String, List<String>> kLaneProtocols = <String, List<String>>{
   'opencode': ['anthropic', 'openai_responses'],
   'zcode': ['anthropic', 'openai_responses'],
   'kimi': ['openai_responses'],
+  // Command Code 只跑自己的厂商目录；协议是描述性的（目录里两种都有）。
+  'commandcode': ['anthropic', 'openai_responses'],
 };
 
 /// 自动池新建线路可选的车道；旧车道仍由协议表支持，但不再作为新选项。
@@ -27,6 +30,7 @@ const List<String> kAutoLanes = <String>[
   'opencode',
   'zcode',
   'kimi',
+  'commandcode',
 ];
 
 /// 需要自带 baseUrl + token 才跑得动的车道（服务端 core.js 的校验）。
@@ -49,12 +53,13 @@ bool laneServesProtocol(String lane, String? protocol) {
 /// 这条线路能挂到的车道，按 [kAutoLanes] 的顺序。OpenCode 原生线路只有 opencode
 /// 能跑；其余按协议过滤。
 List<String> lanesForLine(Map<String, dynamic> provider) {
-  if (isOpenCodeNativeProvider(provider['id']?.toString() ?? '')) {
-    return const ['opencode'];
-  }
+  final id = provider['id']?.toString() ?? '';
+  if (isOpenCodeNativeProvider(id)) return const ['opencode'];
+  if (isCommandCodeNativeProvider(id)) return const ['commandcode'];
   final protocol = providerProtocolOf(provider);
   return [
     for (final lane in kAutoLanes)
-      if (laneServesProtocol(lane, protocol)) lane,
+      // Command Code 的托管协议是描述性的，但它只能跑自己的原生线路。
+      if (lane != 'commandcode' && laneServesProtocol(lane, protocol)) lane,
   ];
 }

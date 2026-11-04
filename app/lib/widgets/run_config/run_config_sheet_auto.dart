@@ -317,8 +317,10 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
             .firstOrNull;
         // 旧会话仍可能用 claude/codex 车道；它们不在“新建线路”的现代车道菜单里，
         // 但协议兼容时可以继续套用既有预设。
-        if (matching == null ||
-            !laneServesProtocol(row.lane, providerProtocolOf(matching))) {
+        final native = isCommandCodeNativeProvider(row.providerId);
+        if (!native &&
+            (matching == null ||
+                !laneServesProtocol(row.lane, providerProtocolOf(matching)))) {
           _presetMessage('预设中的 ${row.providerId} 线路已不可用，未套用。', error: true);
           return;
         }
@@ -626,6 +628,15 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
   }
 
   String _autoRowName(RunPoolRow row) {
+    if (isCommandCodeNativeProvider(row.providerId)) {
+      for (final p in _poolFor(row.lane)) {
+        if (p['id'] == row.providerId) {
+          return p['name']?.toString() ??
+              commandCodeNativeProviderDisplayName();
+        }
+      }
+      return commandCodeNativeProviderDisplayName();
+    }
     if (isOpenCodeNativeProvider(row.providerId)) {
       final native = openCodeNativeProviderOf(row.providerId);
       for (final p in _poolFor(row.lane)) {
@@ -641,6 +652,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
   /// 返回空串 —— 调用方据此不画副行。
   String _autoRowLimitDetail(RunPoolRow row) {
     if (isOpenCodeNativeProvider(row.providerId)) return '';
+    if (isCommandCodeNativeProvider(row.providerId)) return '';
     for (final p in _poolFor(row.lane)) {
       if (p['id'] == row.providerId) return providerLimitDetail(p);
     }
@@ -735,6 +747,9 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
   /// 原生/未知处理 —— OpenCode 原生只有 opencode，未知协议只有 opencode。
   List<String> _compatibleLanes(RunPoolRow row) {
     if (isOpenCodeNativeProvider(row.providerId)) return const ['opencode'];
+    if (isCommandCodeNativeProvider(row.providerId)) {
+      return const ['commandcode'];
+    }
     for (final lane in {row.lane, ...kAutoLanes}) {
       final provider = _providerMap(lane, row.providerId);
       if (provider != null) return lanesForLine(provider);
@@ -964,7 +979,9 @@ class _AddLineSheetState extends State<_AddLineSheet> {
   List<String> get _lanes => kAutoLanes.where((lane) {
     final cli = tryParseCli(lane);
     if (cli == null) return false;
-    return cli.supportsProvider && widget.available(cli);
+    // Command Code 是自持账号车道，但它在自动池里有一条厂商原生线路。
+    return (cli.supportsProvider || cli == SessionCli.commandcode) &&
+        widget.available(cli);
   }).toList();
 
   @override
@@ -1088,9 +1105,13 @@ class _AddLineSheetState extends State<_AddLineSheet> {
     for (final lane in _lanes) {
       final pool = _pools[lane];
       if (pool == null) continue;
-      final nativeOnly = lane == 'opencode';
+      final nativeOnly = lane == 'opencode' || lane == 'commandcode';
       final entries = pool.where((provider) {
-        if (nativeOnly && provider['nativeOpenCode'] != true) return false;
+        if (nativeOnly &&
+            provider['nativeOpenCode'] != true &&
+            provider['nativeCommandCode'] != true) {
+          return false;
+        }
         if (_query.isEmpty) return true;
         final name = (provider['name'] ?? provider['id'] ?? '').toString();
         return name.toLowerCase().contains(_query.toLowerCase());
@@ -1118,10 +1139,15 @@ class _AddLineSheetState extends State<_AddLineSheet> {
               ),
               if (nativeOnly) ...[
                 const SizedBox(width: 8),
-                const Expanded(
+                Expanded(
                   child: Text(
-                    '这里只列 OpenCode 自己的线路；上面的线路也都能跑',
-                    style: TextStyle(color: AppColors.faint, fontSize: 10.5),
+                    lane == 'commandcode'
+                        ? '这里只列 Command Code 自己的线路'
+                        : '这里只列 OpenCode 自己的线路；上面的线路也都能跑',
+                    style: const TextStyle(
+                      color: AppColors.faint,
+                      fontSize: 10.5,
+                    ),
                   ),
                 ),
               ],

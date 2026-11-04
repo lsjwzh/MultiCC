@@ -1456,3 +1456,45 @@ test('a remembered line on another lane moves a fresh failover session there bef
   const fresh = crossFixture().session;
   assert.equal(make().planTurn({ session: fresh, text: '你好' }), null);
 });
+
+test('a Command Code native line runs as a provider-less lane with the vendor model', () => {
+  const { _setCacheForTest, _resetCacheForTest } = require('../src/routes/commandcode-models');
+  _setCacheForTest(Date.now(), [
+    { model: 'deepseek/deepseek-v4-flash', group: 'Open Source' },
+    { model: 'claude-sonnet-5-5', group: 'Anthropic' },
+  ]);
+  try {
+    const backup = { id: 'backup', name: 'Backup', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'good-model', modelOptions: ['good-model'] };
+    const providers = {
+      appTypeForCli: cli => (cli === 'claude' ? 'claude' : null),
+      appTypesForCli: cli => (cli === 'claude' ? ['claude'] : []),
+      listProviders: appType => (appType === 'claude' ? [backup] : []),
+      providerSupportsCli: (provider, cli) => provider.compatibleClis.includes(cli),
+      modelValidForProvider: (_appType, id, model) => id === 'backup' && model === 'good-model',
+    };
+    const runtime = createAutoProviderRuntime({ providers });
+    const session = {
+      id: 'cc-native', cli: 'commandcode',
+      providerSelection: {
+        version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: false,
+        candidates: [
+          { providerId: 'commandcode-native:commandcode', cli: 'commandcode', model: 'deepseek/deepseek-v4-flash', priority: 1 },
+          // Another lane's line keeps the pool valid; the turn stays on the
+          // commandcode lane and picks its native line.
+          { providerId: 'backup', cli: 'claude', model: 'good-model', priority: 2 },
+        ],
+      },
+    };
+    const turn = runtime.beginTurn({ session, turnId: 'cc-turn' });
+    assert.deepEqual(turn.initial(), {
+      providerId: 'commandcode-native:commandcode',
+      model: 'deepseek/deepseek-v4-flash',
+      reasonCode: 'auto_initial_selection',
+    });
+    // The synthetic line is named from its vendor, protocol-agnostic.
+    const snapshot = runtime.snapshot('cc-native');
+    assert.equal(snapshot.providerName, 'Command Code');
+  } finally {
+    _resetCacheForTest();
+  }
+});

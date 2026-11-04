@@ -10,7 +10,12 @@ const {
   nativeOpenCodeId,
   syntheticNativeOpenCodeProvider,
 } = require('../providers/native-opencode');
+const {
+  NATIVE_COMMANDCODE_LINE_ID,
+  syntheticNativeCommandCodeProvider,
+} = require('../providers/native-commandcode');
 const { peekOpenCodeModels } = require('../routes/opencode-models');
+const { peekCommandcodeModels } = require('../routes/commandcode-models');
 const {
   chooseCandidate,
   failoverSafety,
@@ -111,6 +116,17 @@ function createAutoProviderRuntime(options = {}) {
   // (model choices included) while the spawn path resolves it to OpenCode's own
   // config.
   function laneCatalog(cli, nativeIds = null) {
+    // Command Code has no MultiCC providers at all: its lane catalog is the one
+    // synthetic vendor line, whose model list comes from the same 1-hour cache
+    // the model picker uses. This keeps a commandcode candidate resolvable
+    // without ever asking the provider store for a route that does not exist.
+    if (cli === 'commandcode') {
+      const line = syntheticNativeCommandCodeProvider(
+        NATIVE_COMMANDCODE_LINE_ID,
+        peekCommandcodeModels().map(entry => entry && entry.model).filter(Boolean),
+      );
+      return new Map([[line.id, line]]);
+    }
     const appType = providers.appTypeForCli(cli);
     const resolvedAppTypes = typeof providers.appTypesForCli === 'function'
       ? providers.appTypesForCli(cli)

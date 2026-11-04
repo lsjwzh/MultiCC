@@ -195,7 +195,10 @@ function createProviderRouterRuntime(options = {}) {
     // select MultiCC's credential-free relay home at this earliest boundary.
     // Pi owns its local provider credentials. CPR has no Pi materializer yet;
     // keep unknown-CLI fallback behavior outside this lane.
-    const result = binding.cli === 'pi' || hostOwnsOfficialCodexHome(binding)
+    // Provider-less vendor lanes (pi, commandcode) own their credentials; the
+    // legacy adapter answers those with an empty env, while CPR has no
+    // materializer for them.
+    const result = binding.cli === 'pi' || binding.cli === 'commandcode' || hostOwnsOfficialCodexHome(binding)
       ? legacy.resolveSpawnEnv(toLegacyProviderView(binding))
       : port.resolveSpawn(binding);
     return withManagedProxyEnv(withKeyAccount(result, session, binding.cli), binding.cli);
@@ -205,7 +208,8 @@ function createProviderRouterRuntime(options = {}) {
     const binding = createBinding(session, overrides);
     // Shadow comparisons are intentionally limited to summary/model/spawn.
     // Child-env construction can materialize Codex state, so it stays legacy.
-    const result = mode === 'shadow' || binding.cli === 'pi' || hostOwnsOfficialCodexHome(binding)
+    const result = mode === 'shadow' || binding.cli === 'pi' || binding.cli === 'commandcode'
+      || hostOwnsOfficialCodexHome(binding)
       ? legacy.buildChildEnv(base, toLegacyProviderView(binding), extra)
       : port.buildChildEnv(base, binding, extra);
     return withManagedProxyEnv(withKeyAccount(result, session, binding.cli), binding.cli);

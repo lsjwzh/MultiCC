@@ -6,6 +6,7 @@ const { resolveModelRequestPolicy } = require('./model-request-policy');
 const { createProviderRouteProof } = require('./turn-request');
 const { protocolFamilyOf } = require('../cli/cli-capability');
 const { nativeOpenCodeId } = require('../providers/native-opencode');
+const { nativeCommandCodeId } = require('../providers/native-commandcode');
 
 function clean(value) {
   return value == null ? '' : String(value).trim();
@@ -76,8 +77,9 @@ function createProviderInvocationFactory(options = {}) {
     // resolves to the native config for the opencode lane) keeps every layer
     // below free of the native id, so nothing ever looks up a managed provider
     // that does not exist.
-    const spawnProviderId = nativeOpenCodeId(input.providerId) !== null
-      ? '' : input.providerId;
+    const nativeLine = nativeOpenCodeId(input.providerId) !== null
+      || nativeCommandCodeId(input.providerId) !== null;
+    const spawnProviderId = nativeLine ? '' : input.providerId;
     const selectionOverrides = Object.freeze({
       ...(input.providerId !== undefined ? { providerId: spawnProviderId } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),

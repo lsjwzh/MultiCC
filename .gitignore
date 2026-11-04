@@ -42,6 +42,9 @@ air-todos.json
 air-todo-ignores.json
 task-short-codes.json
 task-short-codes.json.bak-*
+# Auto 线路池预设库：服务端运行时数据（src/paths.js），Web/App 本地存储只是缓存。
+run-config-presets.json
+run-config-presets.json.tmp.*
 shares.json
 fleet-shares.json
 provider-relay-shares.json

@@ -790,7 +790,14 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       final lane = (candidate.cli ?? '').trim().isEmpty
           ? widget.cli.name
           : candidate.cli!.trim();
-      final native = isOpenCodeNativeProvider(candidate.providerId);
+      final openCodeNative = isOpenCodeNativeProvider(candidate.providerId);
+      final commandCodeNative = isCommandCodeNativeProvider(
+        candidate.providerId,
+      );
+      final nativeLane = openCodeNative
+          ? 'opencode'
+          : (commandCodeNative ? 'commandcode' : '');
+      final wrongLane = nativeLane.isNotEmpty && lane != nativeLane;
       final rung = autoRungFor(candidate, selection.routing?.tiers ?? const []);
       _rows.add(
         RunPoolRow(
@@ -799,10 +806,12 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
           model: candidate.model ?? '',
           autoModel: candidate.autoModel,
           markedTier: rung > 0 ? rung : null,
-          problem: native && lane != 'opencode'
-              ? 'OpenCode 原生线路只能跑在 OpenCode 车道上'
+          problem: wrongLane
+              ? (openCodeNative
+                    ? 'OpenCode 原生线路只能跑在 OpenCode 车道上'
+                    : 'Command Code 原生线路只能跑在 Command Code 车道上')
               : null,
-          sendable: !(native && lane != 'opencode'),
+          sendable: !wrongLane,
         ),
       );
     }
@@ -1112,7 +1121,9 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       setState(() => _autoError = result.error ?? '');
       return;
     }
-    final native = isOpenCodeNativeProvider(result.firstProviderId);
+    final native =
+        isOpenCodeNativeProvider(result.firstProviderId) ||
+        isCommandCodeNativeProvider(result.firstProviderId);
     final provider = native ? '' : result.firstProviderId;
     final firstName = _lineName(result.firstProviderId);
     final subCli = _autoSubCli();
@@ -1175,6 +1186,15 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   // ── 小工具 ────────────────────────────────────────────────────────────
 
   String _lineName(String providerId) {
+    if (isCommandCodeNativeProvider(providerId)) {
+      for (final p in _providers) {
+        if (p['id'] == providerId) {
+          return p['name']?.toString() ??
+              commandCodeNativeProviderDisplayName();
+        }
+      }
+      return commandCodeNativeProviderDisplayName();
+    }
     if (isOpenCodeNativeProvider(providerId)) {
       final native = openCodeNativeProviderOf(providerId);
       for (final p in _providers) {
@@ -1635,9 +1655,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
           modelSearchField(
             onChanged: (v) => setState(() => _modelFilter = v),
             decoration: runConfigInputDecoration(),
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium!.copyWith(color: AppColors.text, fontSize: 13),
+            style: Theme.of(context).textTheme.bodyMedium!.copyWith(
+              color: AppColors.text,
+              fontSize: 13,
+            ),
           ),
           const SizedBox(height: 6),
         ],
@@ -1731,21 +1752,21 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
             ],
           )
         else
-        Row(
-          children: [
-            for (var i = 0; i < rungs.length; i += 1) ...[
-              if (i > 0) const SizedBox(width: 6),
-              Expanded(
-                child: _segmentedButton(
-                  key: Key('run-effort-${rungs[i].$1}'),
-                  label: rungs[i].$2,
-                  selected: i == index,
-                  onTap: () => setState(() => _effort = rungs[i].$1),
+          Row(
+            children: [
+              for (var i = 0; i < rungs.length; i += 1) ...[
+                if (i > 0) const SizedBox(width: 6),
+                Expanded(
+                  child: _segmentedButton(
+                    key: Key('run-effort-${rungs[i].$1}'),
+                    label: rungs[i].$2,
+                    selected: i == index,
+                    onTap: () => setState(() => _effort = rungs[i].$1),
+                  ),
                 ),
-              ),
+              ],
             ],
-          ],
-        ),
+          ),
       ],
     );
   }
@@ -2686,7 +2707,9 @@ Future<void> openRunConfigSheet(
       SnackBar(content: Text('✓ 运行配置已保存：${summary.join(' | ')}，下一轮对话生效')),
     );
   } catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text(runConfigSaveFailureText(e))));
+    messenger.showSnackBar(
+      SnackBar(content: Text(runConfigSaveFailureText(e))),
+    );
     return;
   }
   // 同步是保存之后的第二步：任务自己那份配置已经落盘，这一步失败只提示、不回滚
