@@ -85,8 +85,14 @@ function mountCodebuddyModelRoutes(app) {
   });
 }
 
+function peekCodebuddyModels() {
+  if (cache && (Date.now() - cache.at) < CODEBUDDY_TTL_MS) return cache.models;
+  return CODEBUDDY_MODEL_FALLBACK.map(model => ({ model, label: model }));
+}
+
 module.exports = {
   mountCodebuddyModelRoutes,
+  peekCodebuddyModels,
   listCodebuddyModels,
   parseCodebuddyHelp,
   CODEBUDDY_MODEL_FALLBACK,

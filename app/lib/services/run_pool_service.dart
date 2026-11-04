@@ -5,7 +5,10 @@ import 'package:http/http.dart' as http;
 
 import '../models/message.dart';
 import 'codex_models_service.dart';
+import 'codebuddy_models_service.dart';
 import 'commandcode_grok_models_service.dart';
+import 'native_vendor_service.dart';
+import 'qoder_models_service.dart';
 import 'manage_service.dart';
 import 'opencode_models_service.dart';
 import 'settings_service.dart';
@@ -43,6 +46,12 @@ class RunPoolService {
                 ).load();
               } else if (cli == SessionCli.commandcode) {
                 await CommandCodeModelsService(settings: settings).load();
+              } else if (cli == SessionCli.qoder) {
+                await QoderModelsService(settings: settings).load();
+              } else if (cli == SessionCli.codebuddy) {
+                await CodebuddyModelsService(settings: settings).load();
+              } else if (cli == SessionCli.grok) {
+                await GrokModelsService(settings: settings).load();
               } else if (cli.isClaudeFamily) {
                 // Claude 的清单是本机 CLI 包里读的，不在关键路径上。
               }
@@ -59,11 +68,8 @@ class RunPoolService {
                 providers,
                 OpenCodeModelsService.cached,
               );
-            } else if (lane == 'commandcode') {
-              providers = mergeCommandCodeNativeProviders(
-                providers,
-                CommandCodeModelsService.cached,
-              );
+            } else if (vendorNativeClis.contains(lane)) {
+              providers = mergeVendorNativeProviders(lane, providers);
             }
             _cache[lane] = providers;
             return providers;

@@ -1498,3 +1498,38 @@ test('a Command Code native line runs as a provider-less lane with the vendor mo
     _resetCacheForTest();
   }
 });
+
+test('a WorkBuddy native line resolves from the vendor catalog', () => {
+  const { _setCacheForTest, _resetCacheForTest } = require('../src/routes/codebuddy-models');
+  _setCacheForTest(Date.now(), [{ model: 'hy4-preview-f', label: 'hy4-preview-f' }]);
+  try {
+    const backup = { id: 'backup', name: 'Backup', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'good-model', modelOptions: ['good-model'] };
+    const providers = {
+      appTypeForCli: cli => (cli === 'claude' ? 'claude' : null),
+      appTypesForCli: cli => (cli === 'claude' ? ['claude'] : []),
+      listProviders: appType => (appType === 'claude' ? [backup] : []),
+      providerSupportsCli: (provider, cli) => provider.compatibleClis.includes(cli),
+      modelValidForProvider: (_appType, id, model) => id === 'backup' && model === 'good-model',
+    };
+    const runtime = createAutoProviderRuntime({ providers });
+    const session = {
+      id: 'wb-native', cli: 'codebuddy',
+      providerSelection: {
+        version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: false,
+        candidates: [
+          { providerId: 'codebuddy-native:codebuddy', cli: 'codebuddy', model: 'hy4-preview-f', priority: 1 },
+          { providerId: 'backup', cli: 'claude', model: 'good-model', priority: 2 },
+        ],
+      },
+    };
+    const turn = runtime.beginTurn({ session, turnId: 'wb-turn' });
+    assert.deepEqual(turn.initial(), {
+      providerId: 'codebuddy-native:codebuddy',
+      model: 'hy4-preview-f',
+      reasonCode: 'auto_initial_selection',
+    });
+    assert.equal(runtime.snapshot('wb-native').providerName, 'WorkBuddy');
+  } finally {
+    _resetCacheForTest();
+  }
+});

@@ -14,7 +14,7 @@ const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
 const { isGoalState } = require('../classify/vocab');
 const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../providers/auto-provider-config');
 const { mergeCliAccountsPatch, retainExistingCliAccounts, sharedCliKeyAccountStore } = require('../cli-key-accounts');
-const { nativeCommandCodeId } = require('../providers/native-commandcode');
+const { nativeVendorName, nativeVendorOf } = require('../providers/native-vendor');
 
 // Session profile routes: PATCH /api/sessions/:id (label/model/effort/agent/
 // rolePrompt/memory/auto-flags/provider/subagent/cliAccounts edits) and POST
@@ -308,7 +308,7 @@ function createSessionProfileRoutes(rawDeps) {
               toProviderId: preparedPrimaryProvider.providerId,
             });
           }
-          s.provider = nativeCommandCodeId(preparedPrimaryProvider.providerId) !== null
+          s.provider = nativeVendorOf(preparedPrimaryProvider.providerId) !== null
             ? null : preparedPrimaryProvider.providerId;
           s.model = preparedPrimaryProvider.model
             || providerRouterRuntime.getProviderSummary(undefined, preparedPrimaryProvider.providerId)?.model || null;
@@ -394,12 +394,12 @@ function createSessionProfileRoutes(rawDeps) {
         // A vendor-native line (Command Code) is a pool candidate, not a
         // provider binding: the lane stays provider-less while its Auto pool
         // keeps the synthetic line id.
-        s.provider = nativeCommandCodeId(v.value) !== null ? null : v.value;
+        s.provider = nativeVendorOf(v.value) !== null ? null : v.value;
         // Chat sessions pick it up on the next per-turn spawn; a warm streaming
         // process must be torn down so it relaunches with the new env.
         if ((s.cli || 'claude') === 'claude') closeStream();
         const pname = v.value
-          ? (nativeCommandCodeId(v.value) !== null ? 'Command Code' : (providerSummary?.name || v.value))
+          ? (nativeVendorOf(v.value) !== null ? nativeVendorName(nativeVendorOf(v.value).cli) : (providerSummary?.name || v.value))
           : (sessionCli === 'zcode' ? 'ZCode 原生 / Coding Plan' : (appType ? '默认登录' : '厂商客户端设置'));
         appendEvent(s.dirId, 'session_provider_changed', `${s.label || s.id} → ${pname}`, s.id);
         // Push current classify state to chat so the classify bar updates immediately

@@ -43,7 +43,7 @@ test('导出面：模式、挑选方式、档位、池子上限', () => {
   assert.equal(run.NATIVE_PREFIX, 'opencode-native:');
   assert.equal(run.AUTO_MODEL_VALUE, '__auto_model__');
   // 直连上游的那两条才要凭据；claude/codex/opencode 用 multicc 线路。
-  assert.deepEqual([...run.CREDENTIAL_CLIS], ['zcode', 'kimi']);
+  assert.deepEqual([...run.CREDENTIAL_CLIS], ['zcode', 'kimi', 'dsh', 'grok']);
   // 协议矩阵：claude 家族 anthropic；codex/kimi openai_responses；opencode/zcode 两边都行。
   assert.equal(run.CLI_PROTOCOLS.claude, 'anthropic');
   assert.equal(run.CLI_PROTOCOLS.kimi, 'openai_responses');
@@ -533,10 +533,23 @@ test('Command Code 的厂商原生线路只归 commandcode 车道', () => {
   assert.equal(native.native, true);
   assert.equal(native.protocol, null);
   assert.deepEqual(run.cliLineVerdict('commandcode', native), { ok: true });
-  assert.equal(run.cliLineVerdict('claude', native).code, 'native_line_needs_commandcode');
+  assert.equal(run.cliLineVerdict('claude', native).code, 'native_line_needs_cli');
   // 托管线路它跑不了：这是它自己的目录，不是协议问题。
   assert.equal(run.cliLineVerdict('commandcode', { id: 'backup', protocol: 'anthropic' }).code,
-    'commandcode_own_catalog');
+    'vendor_native_only');
   assert.equal(run.isNativeLine('commandcode-native:commandcode'), true);
   assert.equal(run.nativeLineId('commandcode-native:commandcode'), 'commandcode');
+});
+
+test('WorkBuddy / Qoder 的厂商原生线路只归自己的车道', () => {
+  for (const cli of ['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok']) {
+    const native = run.lineShape(`${cli}-native:${cli}`);
+    assert.equal(native.native, true, cli);
+    assert.deepEqual(run.cliLineVerdict(cli, native), { ok: true }, cli);
+    assert.equal(run.cliLineVerdict('claude', native).code, 'native_line_needs_cli', cli);
+  }
+  // dsh/grok 有托管池，普通线路仍按协议判定。
+  assert.equal(run.cliLineVerdict('dsh', { id: 'backup', protocol: 'anthropic', hasToken: true, baseUrl: 'https://x' }).ok, true);
+  assert.equal(run.cliLineVerdict('qoder', { id: 'backup', protocol: 'anthropic' }).code,
+    'vendor_native_only');
 });

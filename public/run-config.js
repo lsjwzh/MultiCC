@@ -44,8 +44,12 @@
   const NATIVE_PREFIX = 'opencode-native:';
   // 厂商原生线路：CLI 自己管账号和模型目录，MultiCC provider 表里没有条目。
   // OpenCode 会有多条（Zen / Go / auth login），Command Code 只有一条。
-  const COMMANDCODE_NATIVE_PREFIX = 'commandcode-native:';
-  const COMMANDCODE_NATIVE_LINE = COMMANDCODE_NATIVE_PREFIX + 'commandcode';
+  const VENDOR_NATIVE_SUFFIX = '-native:';
+  const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok']);
+  const VENDOR_NATIVE_SET = new Set(VENDOR_NATIVE_CLIS);
+  // Lanes that have no managed provider pool at all: their only line is the
+  // vendor catalog. dsh/grok are managed-capable and therefore absent here.
+  const VENDOR_ONLY_CLIS = new Set(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode']);
   // 用 API Key 认证的车道（Command Code、OpenCode 的 opencode.ai 线路）：会话可以给
   // 每条车道各挑一个账户（服务端 src/cli-key-accounts.js），留空 = 用 CLI 自己的登录。
   const KEY_ACCOUNT_CLIS = Object.freeze(['commandcode', 'opencode']);
@@ -64,13 +68,20 @@
     opencode: 'both',
     zcode: 'both',
     kimi: 'openai_responses',
-    // Command Code 只跑它自己的厂商目录；'both' 只表示它能进池，不代表能跑
-    // 任意 MultiCC 线路（见 cliLineVerdict 的 commandcode 分支）。
+    // 自持目录的车道：'both' 只表示它能进池，实际只能跑自己的原生线路
+    // （见 cliLineVerdict 的 VENDOR_ONLY_CLIS 分支）。
+    qoder: 'both',
+    codebuddy: 'both',
+    gemini: 'both',
+    pi: 'both',
     commandcode: 'both',
+    dsh: 'anthropic',
+    // Grok 的 config.toml 支持 messages / responses 两种后端。
+    grok: 'both',
   });
   const AUTO_CLIS = Object.freeze(Object.keys(CLI_PROTOCOLS));
   // 直连上游的车道：线路必须自带 baseUrl 与 token，否则这条组合跑不起来。
-  const CREDENTIAL_CLIS = Object.freeze(['zcode', 'kimi']);
+  const CREDENTIAL_CLIS = Object.freeze(['zcode', 'kimi', 'dsh', 'grok']);
 
   // ── 小工具 ────────────────────────────────────────────────────────────────
   function fail(error, code) {
@@ -104,25 +115,32 @@
     return clean(providerId).startsWith(NATIVE_PREFIX);
   }
 
-  function isCommandCodeNativeLine(providerId) {
-    return clean(providerId).startsWith(COMMANDCODE_NATIVE_PREFIX);
+  function vendorNativeCliOf(providerId) {
+    const text = clean(providerId);
+    const at = text.indexOf(VENDOR_NATIVE_SUFFIX);
+    if (at <= 0) return '';
+    const cli = text.slice(0, at);
+    return VENDOR_NATIVE_SET.has(cli) ? cli : '';
+  }
+
+  function isVendorNativeLine(providerId) {
+    return vendorNativeCliOf(providerId) !== '';
   }
 
   function isNativeLine(providerId) {
-    return isOpenCodeNativeLine(providerId) || isCommandCodeNativeLine(providerId);
+    return isOpenCodeNativeLine(providerId) || isVendorNativeLine(providerId);
   }
 
   // 这条原生线路属于哪条车道；空串 = 不是原生线路。
   function nativeLineCli(providerId) {
     if (isOpenCodeNativeLine(providerId)) return 'opencode';
-    if (isCommandCodeNativeLine(providerId)) return 'commandcode';
-    return '';
+    return vendorNativeCliOf(providerId);
   }
 
   function nativeLineId(providerId) {
     const text = clean(providerId);
     if (text.startsWith(NATIVE_PREFIX)) return text.slice(NATIVE_PREFIX.length);
-    if (text.startsWith(COMMANDCODE_NATIVE_PREFIX)) return text.slice(COMMANDCODE_NATIVE_PREFIX.length);
+    if (isVendorNativeLine(text)) return text.slice(text.indexOf(VENDOR_NATIVE_SUFFIX) + VENDOR_NATIVE_SUFFIX.length);
     return '';
   }
 
@@ -307,17 +325,15 @@
         return { ok: false, code: 'native_line_needs_opencode', reason: 'OpenCode 自己的线路只能用 OpenCode 跑',
           short: SHORT_REASON.native_line_needs_opencode };
       }
-      if (owner === 'commandcode') {
-        return { ok: false, code: 'native_line_needs_commandcode', reason: 'Command Code 自己的线路只能用 Command Code 跑',
-          short: '仅 Command Code' };
-      }
-      return { ok: false, code: 'unknown_protocol', reason: '这条线路没有协议信息，用不了', short: SHORT_REASON.unknown_protocol };
+      const ownerName = name(owner) || owner;
+      return { ok: false, code: 'native_line_needs_cli', reason: `${ownerName} 自己的线路只能用 ${ownerName} 跑`,
+        short: `仅 ${ownerName}` };
     }
-    // Command Code 的模型目录来自它自己的 CLI（`command-code --list-models`），
-    // MultiCC 的托管线路它跑不了 —— 这不是协议问题，而是它没有对应的 provider 绑定。
-    if (who === 'commandcode') {
-      return { ok: false, code: 'commandcode_own_catalog',
-        reason: 'Command Code 只能跑它自己的线路', short: '用自己的线路' };
+    // 没有 MultiCC provider 池的车道只能跑自己的目录 —— 这不是协议问题，而是
+    // 它没有对应的 provider 绑定。dsh/grok 有托管池，走下面的正常协议检查。
+    if (VENDOR_ONLY_CLIS.has(who)) {
+      return { ok: false, code: 'vendor_native_only',
+        reason: `${name(who) || who} 只能跑它自己的线路`, short: '用自己的线路' };
     }
     const protocol = protocolOf(target);
     if (!protocol) {
@@ -482,8 +498,9 @@
         if (!chosen) return fail('挑一条 OpenCode 的线路和它的模型。', 'invalid_provider_candidate');
         model = chosen.startsWith(`${id}/`) ? chosen : `${id}/${chosen}`;
       } else {
-        // Command Code: provider 留空，model 就是厂商目录里的原始 id。
-        if (!model) return fail('挑一个 Command Code 的模型。', 'invalid_provider_candidate');
+        // 厂商原生线路：provider 留空，model 就是厂商目录里的原始 id。
+        // 空模型 = 用这条 CLI 自己的默认模型。
+        model = model || clean(draft.nativeDefaultModel);
       }
     } else {
       provider = value || null;
@@ -1058,25 +1075,30 @@
     }
 
     function nativeLabelOf(id) {
-      const value = isCommandCodeNativeLine(id) ? id : nativeLineValue(id);
-      if (isCommandCodeNativeLine(value)) {
-        const list = aiApi.commandCodeNativeProviders ? aiApi.commandCodeNativeProviders() : [];
+      const value = isNativeLine(id) ? clean(id) : nativeLineValue(id);
+      const cli = nativeLineCli(value);
+      if (cli === 'opencode') {
+        const list = aiApi.openCodeNativeProviders();
         const found = list.find(item => item.value === value);
-        return found ? found.label : 'Command Code';
+        return found ? found.label.replace(/^OpenCode 原生 · /, '') : id;
       }
-      const list = aiApi.openCodeNativeProviders();
-      const found = list.find(item => item.value === value);
-      return found ? found.label.replace(/^OpenCode 原生 · /, '') : id;
+      if (cli) {
+        const list = aiApi.vendorNativeProvidersFor ? aiApi.vendorNativeProvidersFor(cli) : [];
+        const found = list.find(item => item.value === value);
+        return found ? found.label : (cliName(cli) || cli);
+      }
+      return id;
     }
 
     function nativeLineAvailable(providerId) {
       const value = clean(providerId);
-      if (isCommandCodeNativeLine(value)) {
-        const list = aiApi.commandCodeNativeProviders ? aiApi.commandCodeNativeProviders() : [];
-        return list.some(item => item.value === value);
-      }
-      if (isOpenCodeNativeLine(value)) {
+      const cli = nativeLineCli(value);
+      if (cli === 'opencode') {
         return aiApi.openCodeNativeProviders().some(item => item.value === value);
+      }
+      if (cli) {
+        const list = aiApi.vendorNativeProvidersFor ? aiApi.vendorNativeProvidersFor(cli) : [];
+        return list.some(item => item.value === value);
       }
       return false;
     }
@@ -1523,8 +1545,8 @@
           items.push({ value: nativeItem.value, label: nativeItem.label.replace(/^OpenCode 原生 · /, '') + '（本机 OpenCode 登录）' });
         }
       }
-      if (currentCli === 'commandcode') {
-        const nativeItems = aiApi.commandCodeNativeProviders ? aiApi.commandCodeNativeProviders() : [];
+      if (VENDOR_NATIVE_SET.has(currentCli)) {
+        const nativeItems = aiApi.vendorNativeProvidersFor ? aiApi.vendorNativeProvidersFor(currentCli) : [];
         for (const nativeItem of nativeItems) items.push({ value: nativeItem.value, label: nativeItem.label });
       }
       for (const provider of list) items.push({ value: provider.id, label: providerName(provider) });
@@ -2609,7 +2631,7 @@
 
     function loadPickerData() {
       const wanted = availableClis().filter(item => item.ok).map(item => item.cli);
-      return Promise.all(wanted.map(cli => {
+      return Promise.all(wanted.map(async cli => {
         if (cli === 'opencode') {
           const natives = aiApi.openCodeNativeProviders();
           if (!natives.length) {
@@ -2620,11 +2642,25 @@
             label: item.label.replace(/^OpenCode 原生 · /, ''),
           })) };
         }
-        if (cli === 'commandcode') {
-          const natives = aiApi.commandCodeNativeProviders ? aiApi.commandCodeNativeProviders() : [];
-          return { cli, native: true, error: false, items: natives.map(item => ({
-            providerId: item.value, cli, model: '', label: item.label,
-          })) };
+        if (VENDOR_NATIVE_SET.has(cli)) {
+          const natives = (aiApi.vendorNativeProvidersFor ? aiApi.vendorNativeProvidersFor(cli) : [])
+            .map(item => ({ providerId: item.value, cli, model: '', label: item.label }));
+          // dsh/grok also run managed lines; the provider-less lanes only have
+          // the vendor catalog.
+          if (VENDOR_ONLY_CLIS.has(cli)) {
+            return { cli, native: true, error: false, items: natives };
+          }
+          const catalog = await loadCatalog(cli);
+          return {
+            cli, native: true, error: false,
+            items: [
+              ...catalogApi.providersForCli(catalog, cli).map(provider => ({
+                providerId: String(provider.id), cli, model: provider.model || '',
+                label: provider.name || provider.id, provider,
+              })),
+              ...natives,
+            ],
+          };
         }
         return loadCatalog(cli).then(catalog => ({
           cli,

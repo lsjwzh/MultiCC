@@ -941,7 +941,7 @@ test('a cross-CLI pool writes its lane policy and the server reads it back', () 
   // A lane name the server does not know is refused here rather than there.
   assert.equal(editor.serializeDraft({
     protocol: 'anthropic', providers: providers(),
-    candidates: [candidates[0], { ...candidates[1], cli: 'gemini' }],
+    candidates: [candidates[0], { ...candidates[1], cli: 'notacli' }],
   }).code, 'invalid_provider_candidate');
 });
 

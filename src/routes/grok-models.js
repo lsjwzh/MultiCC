@@ -77,8 +77,14 @@ function mountGrokModelRoutes(app) {
   });
 }
 
+function peekGrokModels() {
+  if (cache && (Date.now() - cache.at) < TTL_MS) return cache.models;
+  return GROK_MODEL_FALLBACK.map(model => ({ model, label: model }));
+}
+
 module.exports = {
   mountGrokModelRoutes,
+  peekGrokModels,
   listGrokModels,
   parseGrokModels,
   GROK_MODEL_FALLBACK,
