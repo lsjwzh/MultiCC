@@ -287,3 +287,25 @@ test('no timers leak after dispose', () => {
   assert.equal(harness.timers.handles.length, 0);
   assert.equal(stripOf(harness.messagesEl), null);
 });
+
+test('merges into the streaming bubble status row when the host accepts it', () => {
+  const writes = [];
+  let accept = true;
+  const harness = makeHarness({ setStatus: (text, title) => { writes.push({ text, title }); return accept; } });
+  harness.controller.onEvent({ type: 'monitor_started', task_id: 't1', description: '跑核心测试', background: true });
+  assert.equal(stripOf(harness.messagesEl), null, '状态行接手后不再挂独立胶囊');
+  const last = writes[writes.length - 1];
+  assert.match(last.text, /后台任务执行中 · 跑核心测试/);
+  assert.match(last.title, /跑核心测试/);
+  // 宿主没有生成中的气泡（返回 false）→ 退回胶囊。
+  accept = false;
+  harness.clock.now += 1000;
+  harness.timers.tick(1000);
+  assert.ok(stripOf(harness.messagesEl), '无状态行可写时退回胶囊');
+  // 任务收尾：清空状态槽。
+  accept = true;
+  harness.controller.onEvent({ type: 'monitor_done', task_id: 't1' });
+  assert.equal(writes[writes.length - 1].text, '', '没有后台任务时清空 bg 槽，让位给最新工具调用');
+  assert.equal(stripOf(harness.messagesEl), null);
+  harness.controller.dispose();
+});

@@ -626,10 +626,11 @@
       justify-content: flex-end;
     }
 
-    /* 流式中的归属：不占独立一行，和底部「动态点」同一行、贴最右端 —— 与轮末落在
-       时间行最右端的摆法一致（左边是点/时间，右边是归属）。尾巴存在时
-       .msg-content 自带的 ::after 点让位给尾巴里的点。宽度不够（手机 / 窄栏）时
-       缩宽，文字放不下就来回跑马灯。流式结束后点消失，只剩文字。 */
+    /* ── 消息最底部的流式状态行（chat-live-ui ensureStreamTail）──
+       [动态点] [状态文字] …… [由 X 产出]
+       状态文字：有后台任务显示后台任务，没有就显示主流程最近一次工具调用，单行省略、
+       悬停看全文。归属贴最右端，与轮末贴「N tools · 时长」行最右端同一摆法；窄了缩宽、
+       放不下就跑马灯。轮次结束整行摘掉。有这一行时 .msg-content 自带的 ::after 点让位。 */
     .msg-content.streaming-dot.has-stream-tail::after { display: none; }
     .msg-stream-tail {
       display: flex;
@@ -637,7 +638,10 @@
       gap: 8px;
       max-width: 100%;
       min-width: 0;
-      margin-top: 4px;
+      margin-top: 6px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--chat-muted);
     }
     .msg-stream-tail-dot {
       flex: 0 0 auto;
@@ -646,14 +650,24 @@
       animation: blink 1s infinite;
     }
     .msg-content:not(.streaming-dot) .msg-stream-tail-dot { display: none; }
+    .msg-stream-tail-status {
+      flex: 1 1 0;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .msg-stream-tail-status:empty { display: none; }
     .msg-stream-tail-clip {
       flex: 0 1 auto;
       min-width: 0;
+      max-width: min(50%, 480px);
       margin-left: auto;
-      max-width: min(100%, 560px);
       overflow: hidden;
       white-space: nowrap;
     }
+    .msg-stream-tail-clip:empty { display: none; }
+    .msg-stream-tail-status:empty + .msg-stream-tail-clip { max-width: min(100%, 560px); }
     .msg-stream-tail .msg-model-attribution {
       display: inline-block;
       margin-left: 0;
@@ -667,7 +681,8 @@
       88%, 100% { transform: translateX(var(--mc-marquee-shift, 0px)); }
     }
     @media (max-width: 640px) {
-      .msg-stream-tail-clip { max-width: min(100%, 62vw); }
+      .msg-stream-tail-clip { max-width: 45%; }
+      .msg-stream-tail-status:empty + .msg-stream-tail-clip { max-width: min(100%, 62vw); }
     }
     @media (prefers-reduced-motion: reduce) {
       .msg-stream-tail-clip.marquee .msg-model-attribution { animation: none; }

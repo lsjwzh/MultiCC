@@ -991,11 +991,13 @@
       const content = bubble?.querySelector?.('.msg-content');
       if (!content) return;
       content.classList.add('streaming-dot');
+      liveUi.ensureStreamTail?.(bubble);
       attachLiveRouteAttribution(bubble);
     }
 
     function createAssistantBubble() {
       const bubble = historyView.createAssistantBubble(true);
+      liveUi.ensureStreamTail?.(bubble);
       attachLiveRouteAttribution(bubble);
       host.maybeScrollToBottom?.();
       return bubble;
@@ -1037,6 +1039,7 @@
               startedAt: Date.now(),
             });
             historyView.appendToolCard(state.currentMsgEl.querySelector('.msg-content'), card);
+            noteToolActivity(state.currentToolCards.get(event.index));
           }
           break;
         case 'content_block_delta':
@@ -1051,7 +1054,7 @@
           } else if (event.delta?.type === 'input_json_delta' && event.delta.partial_json) {
             host.tokenRate?.noteChunk(event.delta.partial_json);
             const tool = state.currentToolCards.get(event.index);
-            if (tool) { tool.inputJson += event.delta.partial_json; historyView.updateToolInput(tool); }
+            if (tool) { tool.inputJson += event.delta.partial_json; updateToolInput(tool); }
           }
           break;
         case 'content_block_stop':
@@ -1099,6 +1102,26 @@
       host.maybeScrollToBottom?.();
     }
 
+    // 主流程最近一次工具调用 → 底部状态行（没有后台任务时显示）。摘要字段与工具卡片
+    // 标题（chat-history-view updateToolInput）取同一组，所以两处念的是同一句话。
+    // Thinking 是推理过程不是动作，不覆盖上一条工具。
+    function noteToolActivity(tool) {
+      if (!tool || tool.name === 'Thinking' || !state.currentMsgEl) return;
+      let parsed = {};
+      try { parsed = JSON.parse(tool.inputJson || '{}') || {}; } catch (_) { parsed = {}; }
+      const pick = parsed.description || parsed.command || parsed.pattern || parsed.file_path
+        || parsed.path || parsed.url || parsed.query || parsed.prompt || '';
+      const summary = String(pick == null ? '' : pick).replace(/\s+/g, ' ').trim();
+      const name = String(tool.name || 'Tool');
+      const text = summary ? `${name} · ${summary.length > 120 ? summary.slice(0, 119) + '…' : summary}` : name;
+      liveUi.setStreamStatus?.(state.currentMsgEl, 'tool', text, summary ? `${name} · ${summary}` : name);
+    }
+
+    function updateToolInput(tool) {
+      historyView.updateToolInput(tool);
+      noteToolActivity(tool);
+    }
+
     function findCurrentToolCardById(id) {
       for (const tool of state.currentToolCards.values()) if (tool.id === id) return tool;
       return null;
@@ -1144,7 +1167,7 @@
             state.currentToolCards.set(`id:${block.id}`, tool);
             historyView.appendToolCard(state.currentMsgEl.querySelector('.msg-content'), card);
           } else if (block.input) tool.inputJson = JSON.stringify(block.input);
-          historyView.updateToolInput(tool);
+          updateToolInput(tool);
           host.maybeScrollToBottom?.();
         }
       }
@@ -1196,7 +1219,7 @@
         host.tokenRate?.noteChunk(d.text);
         tool.reasoning = (tool.reasoning || '') + d.text;
         tool.inputJson = JSON.stringify({ text: tool.reasoning });
-        historyView.updateToolInput(tool);
+        updateToolInput(tool);
         host.maybeScrollToBottom?.();
       } else if (d.type === 'tool' && d.tool && d.toolId) {
         settleThinkingCards();
@@ -1213,7 +1236,7 @@
         tool.args = (tool.args || '') + (d.tool.arguments || '');
         try { tool.inputJson = JSON.stringify(JSON.parse(tool.args)); }
         catch (_) { tool.inputJson = JSON.stringify({ arguments: tool.args }); }
-        historyView.updateToolInput(tool);
+        updateToolInput(tool);
         host.maybeScrollToBottom?.();
       }
     }
@@ -1222,7 +1245,10 @@
       liveUi.hideThinking();
       state.liveStreamUsage = null;
       if (state.currentMsgEl) {
+        // 底部状态行（点 · 进度 · 归属）只属于生成中；归属由 result 挂回时间行。
+        liveUi.removeStreamTail?.(state.currentMsgEl);
         state.currentMsgEl.querySelector('.streaming-dot')?.classList.remove('streaming-dot');
+        state.currentMsgEl.querySelector('.msg-content')?.classList.remove('streaming-dot');
         try { host.renderCurrentText?.(true); }
         catch (error) {
           host.warn?.('Failed to render final assistant text');
