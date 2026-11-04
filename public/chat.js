@@ -2408,6 +2408,8 @@ const chatBgActivity = window.MultiCCChatBgActivity.create({
   document,
   getMessagesEl: () => messagesEl,
   getIsStreaming: () => isStreaming,
+  // 合进消息最底部的状态行（与动态点、归属同一行）；没有生成中的气泡才回退胶囊。
+  setStatus: (text, title) => !!currentMsgEl && chatLiveUi.setStreamStatus(currentMsgEl, 'bg', text, title),
   translate: tt,
   getSessionId: () => _sessionName || sessionId || '',
   fetchJson: path => chatApi.json(withToken(path)),

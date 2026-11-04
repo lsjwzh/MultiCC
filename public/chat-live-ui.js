@@ -454,10 +454,26 @@
       return line;
     }
 
-    // 流式尾巴：[动态点][归属文字]，始终是 .msg-content 的最后一个子节点。流式期间
-    // 正文 / 工具卡片会不断 append 进来，所以用 MutationObserver 把它推回末尾；流式结束
-    // （streaming-dot 被摘掉）后观察器自行断开，尾巴不再出点、只剩文字。
-    function removeStreamTail(content) {
+    // ── 流式状态行（消息最底部那一行）──
+    // [动态点] [状态文字] ……………… [由 X 产出]
+    // · 动态点：这条回复还在生成。
+    // · 状态文字：有后台任务时显示后台任务（chat-bg-activity 写 'bg'），没有时显示主
+    //   流程最近一次工具调用（chat-event-controller 写 'tool'）。两路各写各的槽位，
+    //   这里按「后台优先」挑一个显示，谁都不用知道对方。
+    // · 归属：自动选线时提前挂上的「由 X 产出」，贴最右端；窄了缩宽并跑马灯。
+    // 它始终是 .msg-content 的最后一个子节点：流式期间正文 / 工具卡片不断 append，
+    // MutationObserver 把它推回末尾。轮次结束（finishStreaming）整行摘掉，归属由
+    // result 挂回「N tools · 时长」行最右端。
+    function contentOf(target) {
+      if (!target) return null;
+      if ((target.classList && target.classList.contains('msg-content'))
+        || String(target.className || '').split(/\s+/).includes('msg-content')) return target;
+      return target.querySelector ? target.querySelector('.msg-content') : null;
+    }
+
+    function removeStreamTail(target) {
+      const content = contentOf(target);
+      if (!content) return;
       const tail = content.querySelector('.msg-stream-tail');
       if (tail) {
         tail._mcObserver?.disconnect?.();
@@ -467,7 +483,8 @@
       content.classList?.remove('has-stream-tail');
     }
 
-    function updateTailMarquee(clip, line) {
+    function updateTailMarquee(clip) {
+      const line = clip && clip.firstElementChild;
       if (!clip || !line || !clip.isConnected) return;
       const overflow = Math.ceil((line.scrollWidth || 0) - (clip.clientWidth || 0));
       if (overflow > 2) {
@@ -480,22 +497,28 @@
       }
     }
 
-    function attachStreamTail(content, line) {
+    // 只给还在生成的气泡建（content 带 streaming-dot）；已结束的气泡返回 null。
+    function ensureStreamTail(target) {
+      const content = contentOf(target);
+      if (!content || !content.classList || !content.classList.contains('streaming-dot')) return null;
+      const existing = content.querySelector('.msg-stream-tail');
+      if (existing) return existing;
       const tail = doc.createElement('div');
       tail.className = 'msg-stream-tail';
       const dot = doc.createElement('span');
       dot.className = 'msg-stream-tail-dot';
+      const status = doc.createElement('span');
+      status.className = 'msg-stream-tail-status';
       const clip = doc.createElement('span');
       clip.className = 'msg-stream-tail-clip';
-      clip.appendChild(line);
-      tail.append(dot, clip);
+      tail.append(dot, status, clip);
+      tail._mcStatus = { bg: null, tool: null };
       content.appendChild(tail);
       content.classList.add('has-stream-tail');
       const MO = win && win.MutationObserver;
       if (typeof MO === 'function') {
         const observer = new MO(() => {
-          if (!tail.parentNode) { observer.disconnect(); return; }
-          if (!content.classList.contains('streaming-dot')) { observer.disconnect(); return; }
+          if (!tail.parentNode || !content.classList.contains('streaming-dot')) { observer.disconnect(); return; }
           if (tail.nextSibling) content.appendChild(tail);
         });
         observer.observe(content, { childList: true });
@@ -503,12 +526,39 @@
       }
       const RO = win && win.ResizeObserver;
       if (typeof RO === 'function') {
-        const ro = new RO(() => updateTailMarquee(clip, line));
+        const ro = new RO(() => updateTailMarquee(clip));
         ro.observe(clip);
         tail._mcResize = ro;
       }
+      return tail;
+    }
+
+    function paintStreamStatus(tail) {
+      const status = tail.querySelector('.msg-stream-tail-status');
+      if (!status) return;
+      const slots = tail._mcStatus || {};
+      const pick = (slots.bg && slots.bg.text) ? slots.bg : (slots.tool && slots.tool.text ? slots.tool : null);
+      const text = pick ? pick.text : '';
+      if (status.textContent !== text) status.textContent = text;
+      status.title = pick ? (pick.title || pick.text) : '';
+      status.dataset.source = pick ? (pick === slots.bg ? 'bg' : 'tool') : '';
+    }
+
+    // source: 'bg'（后台任务）| 'tool'（主流程最新工具调用）。text 为空即清掉该槽。
+    // 返回 true 表示写进了状态行（气泡还在生成），false 表示没有可写的状态行。
+    function setStreamStatus(target, source, text, title) {
+      const tail = ensureStreamTail(target);
+      if (!tail) return false;
+      tail._mcStatus[source] = text ? { text: String(text), title: title ? String(title) : '' } : null;
+      paintStreamStatus(tail);
+      return true;
+    }
+
+    function placeAttributionInTail(tail, line) {
+      const clip = tail.querySelector('.msg-stream-tail-clip');
+      clip.replaceChildren(line);
       const raf = win && typeof win.requestAnimationFrame === 'function' ? win.requestAnimationFrame.bind(win) : null;
-      if (raf) raf(() => updateTailMarquee(clip, line));
+      if (raf) raf(() => updateTailMarquee(clip));
     }
 
     // 同一轮里模型可能换过，所以归属是「这条消息」的，不是会话的：活体气泡在 result
@@ -526,17 +576,13 @@
       if (!content) return null;
       content.querySelector('.msg-model-attribution')?.remove();
       content.querySelector('.msg-model-attribution-row')?.remove();
-      removeStreamTail(content);
       const line = buildModelAttributionLine(attribution);
       if (!line) return null;
+      // 还在生成：放进底部状态行最右端（与轮末贴时间行最右端同一摆法）。
+      const tail = ensureStreamTail(content);
+      if (tail) { placeAttributionInTail(tail, line); return line; }
       const host = content.querySelector('.tool-trajectory-label') || content.querySelector('.msg-timing');
       if (host) { host.appendChild(line); return line; }
-      // 还在流式（自动选线提前挂的那份）：不单独占一行，和底部「动态点」同一行、
-      // 贴最右端（与轮末贴时间行最右端同一摆法）；窄了就缩宽并跑马灯。轮末 result 再挂时会先清掉它、落回时间行。
-      if (content.classList && content.classList.contains('streaming-dot')) {
-        attachStreamTail(content, line);
-        return line;
-      }
       // 没有可搭的车（老历史缺时间戳，那一行根本不建）：自占一行，但仍贴右 ——
       // `.msg-content` 是普通块，`margin-left:auto` 在那儿不成立（那需要一个 flex
       // 父级），所以要自己带一层推右的容器。App 侧同一条兜底用 Align.centerRight。
@@ -1889,6 +1935,9 @@
       buildModelAttributionLine,
       attachUsageLine,
       attachModelAttribution,
+      ensureStreamTail,
+      setStreamStatus,
+      removeStreamTail,
       classifyDisplay,
       renderAuxClassify,
       applyAuxVerdictStaleness,

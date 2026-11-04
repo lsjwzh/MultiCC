@@ -798,6 +798,34 @@ test('a result without its own attribution moves the live one onto the timing ro
   assert.equal(fixture.bubble.querySelectorAll('.msg-model-attribution').length, 1);
 });
 
+test('the bottom status row shows the latest tool call, and background tasks take priority', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.content.classList.add('streaming-dot');
+  fixture.controller.handleEvent({ type: 'stream_event', event: { type: 'message_start' } }, generation);
+  const tail = fixture.bubble.querySelectorAll('.msg-stream-tail')[0];
+  assert.ok(tail, 'every streaming bubble gets the status row, attribution or not');
+  const status = tail.querySelectorAll('.msg-stream-tail-status')[0];
+  assert.equal(status.textContent, '');
+  fixture.controller.handleEvent({ type: 'stream_event', event: {
+    type: 'content_block_start', index: 1, content_block: { type: 'tool_use', name: 'Bash', id: 'tu1' },
+  } }, generation);
+  assert.equal(status.textContent, 'Bash', 'a tool shows up the moment it starts');
+  fixture.controller.handleEvent({ type: 'stream_event', event: {
+    type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"command":"npm  test"}' },
+  } }, generation);
+  assert.equal(status.textContent, 'Bash · npm test', 'then its summary, same fields as the tool card');
+  assert.equal(fixture.liveUi.setStreamStatus(fixture.bubble, 'bg', '后台任务执行中 · 构建', '构建'), true);
+  assert.equal(status.textContent, '后台任务执行中 · 构建', 'background tasks win over the tool line');
+  assert.equal(status.dataset.source, 'bg');
+  fixture.liveUi.setStreamStatus(fixture.bubble, 'bg', '');
+  assert.equal(status.textContent, 'Bash · npm test', 'back to the latest tool once background work ends');
+  fixture.controller.handleEvent({ type: 'result', durationMs: 900 }, generation);
+  assert.equal(fixture.bubble.querySelectorAll('.msg-stream-tail').length, 0, 'the row belongs to streaming only');
+  assert.equal(fixture.liveUi.setStreamStatus(fixture.bubble, 'bg', 'late'), false,
+    'a finished bubble refuses status writes so the background strip falls back');
+});
+
 test('fixed-provider sessions do not stamp an early route attribution', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();

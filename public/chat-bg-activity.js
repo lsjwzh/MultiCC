@@ -126,15 +126,19 @@
       return [...running.values()].sort((a, b) => a.startedAt - b.startedAt);
     }
 
+    // 首选落点：当前生成中气泡最底部的状态行（点 · 状态 · 归属，chat-live-ui
+    // setStreamStatus）。宿主返回 false（还没有生成中的气泡，例如只有 thinking 气泡）
+    // 才退回独立胶囊。
+    const setStatus = typeof options.setStatus === 'function' ? options.setStatus : null;
+
     function render() {
       const streaming = options.getIsStreaming();
       if (running.size === 0 || !streaming) {
+        if (setStatus) setStatus('', '');
         if (el) { el.remove(); lastSignature = ''; }
         stopTimersIfIdle();
         return;
       }
-      const node = ensureEl();
-      if (!node) return;
       const tasks = focusTasks();
       const focus = tasks[0];
       const label = tasks.length > 1
@@ -150,6 +154,17 @@
         if (task.tailLine && (!tailSource || (task.tailAt || 0) > (tailSource.tailAt || 0))) tailSource = task;
       }
       const tailText = tailSource ? tailSource.tailLine : '';
+      const titleText = tasks.map(task => clampText(task.description, TITLE_MAX)).join('\n');
+      if (setStatus) {
+        const inline = tailText ? `${mainText} · ↳ ${tailText}` : mainText;
+        const title = tailText ? `${titleText}\n↳ ${tr('bgActivityLatest')} · ${tailText}` : titleText;
+        if (setStatus(inline, title)) {
+          if (el) { el.remove(); el = null; lastSignature = ''; }
+          return;
+        }
+      }
+      const node = ensureEl();
+      if (!node) return;
       const signature = `${mainText}\n${tailText}`;
       if (signature === lastSignature) return;
       lastSignature = signature;
@@ -165,7 +180,7 @@
           tail.hidden = true;
         }
       }
-      node.title = tasks.map(task => clampText(task.description, TITLE_MAX)).join('\n');
+      node.title = titleText;
       debug('bg-activity', `render — ${running.size} running`);
     }
 
