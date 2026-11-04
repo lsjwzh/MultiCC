@@ -90,8 +90,7 @@ impl Candidate {
         if char_len(&provider_id) > MAX_PROVIDER_ID {
             return None;
         }
-        let cli = trimmed(object.get("cli"))
-            .filter(|text| char_len(text) <= MAX_CLI);
+        let cli = trimmed(object.get("cli")).filter(|text| char_len(text) <= MAX_CLI);
         let model = match object.get("model") {
             None | Some(Value::Null) => None,
             Some(Value::String(text)) => {
@@ -167,10 +166,9 @@ impl Preset {
     // generated id when the entry has none.
     fn from_value(value: &Value, index: usize) -> Option<Preset> {
         let object = value.as_object()?;
-        let name = trimmed(object.get("name"))
-            .filter(|text| char_len(text) <= MAX_NAME)?;
-        let protocol = trimmed(object.get("protocol"))
-            .filter(|text| PROTOCOLS.contains(&text.as_str()))?;
+        let name = trimmed(object.get("name")).filter(|text| char_len(text) <= MAX_NAME)?;
+        let protocol =
+            trimmed(object.get("protocol")).filter(|text| PROTOCOLS.contains(&text.as_str()))?;
         let raw_candidates = object.get("candidates").and_then(Value::as_array)?;
         if raw_candidates.len() < MIN_CANDIDATES || raw_candidates.len() > MAX_CANDIDATES {
             return None;
@@ -204,25 +202,34 @@ impl Preset {
         let max_attempts = int_like(object.get("maxAttempts"))
             .unwrap_or(MIN_ATTEMPTS)
             .clamp(MIN_ATTEMPTS, max_allowed);
-        let sticky = object.get("sticky").and_then(Value::as_bool).unwrap_or(true);
-        let recent = object.get("recent").and_then(Value::as_bool).unwrap_or(false);
+        let sticky = object
+            .get("sticky")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let recent = object
+            .get("recent")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let saved_at = saved_at(object.get("savedAt"));
         let id = trimmed(object.get("id"))
             .filter(|text| char_len(text) <= MAX_ID)
             .unwrap_or_else(|| format!("p{:x}{index}", saved_at));
-        let subagent = object.get("subagent").and_then(Value::as_object).and_then(|sub| {
-            let provider_id = sub
-                .get("providerId")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty() && char_len(text) <= MAX_PROVIDER_ID)?;
-            let model = sub
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty() && char_len(text) <= MAX_MODEL)?;
-            Some((provider_id.to_owned(), model.to_owned()))
-        });
+        let subagent = object
+            .get("subagent")
+            .and_then(Value::as_object)
+            .and_then(|sub| {
+                let provider_id = sub
+                    .get("providerId")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty() && char_len(text) <= MAX_PROVIDER_ID)?;
+                let model = sub
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty() && char_len(text) <= MAX_MODEL)?;
+                Some((provider_id.to_owned(), model.to_owned()))
+            });
 
         Some(Preset {
             id,
@@ -553,7 +560,9 @@ mod tests {
         assert_eq!(list[2]["model"], Value::Null);
         assert_eq!(list[2]["tier"], "t2");
         assert_eq!(list[2]["autoModel"], true);
-        assert!(list.iter().all(|candidate| candidate.get("secret").is_none()));
+        assert!(list
+            .iter()
+            .all(|candidate| candidate.get("secret").is_none()));
 
         // No tier anywhere: pick defaults to order. maxAttempts clamps to len.
         let plain = norm(json!({ "presets": [{
@@ -659,11 +668,16 @@ mod tests {
                 error.starts_with("RUN_CONFIG_PRESETS_INVALID: "),
                 "unexpected error: {error}"
             );
-            assert!(merge(input).unwrap_err().starts_with("RUN_CONFIG_PRESETS_INVALID: "));
+            assert!(merge(input)
+                .unwrap_err()
+                .starts_with("RUN_CONFIG_PRESETS_INVALID: "));
         }
         assert_eq!(norm(json!({ "presets": "oops" })), json!({ "presets": [] }));
         assert_eq!(norm(json!({})), json!({ "presets": [] }));
-        assert_eq!(merged(json!({ "stored": 7, "incoming": {} })), json!({ "presets": [] }));
+        assert_eq!(
+            merged(json!({ "stored": 7, "incoming": {} })),
+            json!({ "presets": [] })
+        );
         assert_eq!(merged(json!({})), json!({ "presets": [] }));
     }
 

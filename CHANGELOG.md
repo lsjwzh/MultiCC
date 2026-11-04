@@ -2,13 +2,14 @@
 
 All notable changes to MultiCC are documented in this file.
 
-## v2.16.0 — Shared run presets, a native Command Code lane, and clearer chat recovery (2026-11-04)
+## v2.15.4 — Run preset and provider routing fixes (2026-11-04)
 
 - Save Auto Provider run configurations as named presets and use them across web and mobile. The Rust core validates, normalizes, and merges presets while the existing Node host adapter handles local persistence and session injection. Applied named presets can now be updated in place without creating duplicates; the current session still changes only after its run configuration is saved. Move host persistence and injection to Rust once the Rust host has equivalent session and storage contracts.
-- Add Command Code's vendor-managed account and model catalog as a native line in the Auto Provider pool on web and mobile. Its CLI owns authentication and model discovery; the existing Node CLI and provider adapters bridge the line into cross-CLI routing until those host interfaces move to Rust. Ordered pools return to a recovered higher-priority line after a quota reset instead of staying on the fallback.
+- Let the Auto Provider pool use native lines for Command Code, Qoder, CodeBuddy, Gemini, Pi, DeepSeek, and Grok on web and mobile. Each CLI owns its account and model catalog; the existing Node CLI and provider adapters bridge these lines into cross-CLI routing until those host interfaces move to Rust. Ordered pools return to a recovered higher-priority line after a quota reset instead of staying on the fallback.
 - Keep a reopened chat's status accurate: restore the persisted API error bar, show user cancellation as cancelled rather than an upstream API failure, and preserve the stale-verdict marker during a repaint. A reconnect also displays attributed streaming frames before the first route event instead of hiding the live reply.
 - Recover a Codex native session when its saved provider is no longer configured, and find the macOS Chrome remote-debugging Allow button inside nested dialog groups. The Codex bridge is a required Node app-server adapter until native host session recovery moves to Rust.
-- Update the mobile app to 2.42.0 (build 189).
+- Refresh an OpenCode session's worktree directory before spawning its next turn, and probe a borrowed Claude line with a model the lender actually serves. Official Claude relay sharing now supplies its known model list when the account stores no default model.
+- Update the mobile app to 2.41.3 (build 189).
 
 ## v2.15.3 — Honest quota bars, sturdier error handling, and faster computer switching (2026-11-03)
 
