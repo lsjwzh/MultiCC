@@ -869,6 +869,16 @@ function createCliSwitchRuntime(options) {
       chat.claudeProc = null;
     }
     options.cancelClassify(chat);
+    // The lane switch must also re-resolve the workspace root: a chat state
+    // created while the worktree was still being added keeps a stale cwd, and
+    // opencode would then spawn its project/sandbox against the main checkout.
+    if (session.workspaceState === 'awake' && session.worktreePath
+        && typeof options.cwdForSession === 'function') {
+      try {
+        const cwd = options.cwdForSession(session);
+        if (cwd) chat.cwd = cwd;
+      } catch (_) { /* keep the previous cwd; the turn refresh retries */ }
+    }
     chat.cli = session.cli;
     chat.chatTurnCount = (session.cliSessionId || session._streamSessionId) ? 1 : 0;
     chat.lineBuf = '';
