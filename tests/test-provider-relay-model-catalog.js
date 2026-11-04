@@ -71,6 +71,24 @@ test('relay model normalization is bounded, ordered and accepts current model-id
   ]), ['gpt-6.1-sol', 'glm-5.2[1M]', 'vendor/model:v2']);
 });
 
+test('a Claude official account exposes the CLI fallback catalog instead of an empty one', async () => {
+  const { providers } = providerRuntime({
+    getProviderSummary: (appType, id) => ({
+      id, appType, name: 'Claude Official', isOfficial: true, model: '', modelOptions: [],
+    }),
+  });
+  const runtime = createProviderRelayModelCatalogRuntime({
+    providers,
+    now: () => 5000,
+    fetch: async () => { throw new Error('unused'); },
+  });
+  const catalog = await runtime.sourceCatalog('claude', 'claude-official-aaaaaaaaaaaaaaaa');
+  assert.equal(catalog.ok, true);
+  assert.ok(catalog.models.includes('claude-haiku-4-5'));
+  assert.ok(catalog.models.includes('claude-sonnet-5'));
+  assert.equal(catalog.preferredModel, catalog.models[0]);
+});
+
 test('lender catalog reads cached Codex models without refreshing and mounts both scoped paths', async () => {
   const { providers } = providerRuntime({
     getProviderSummary: (appType, id) => id === 'missing' ? null : ({

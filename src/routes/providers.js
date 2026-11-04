@@ -17,6 +17,47 @@ const { reassignProviderSessions } = require('../provider-reassign');
 const { encodeRelayShareCode, relayModelsOf } = require('../providers/relay-share-code');
 const { parseCredential, relayRouteFromBaseUrl } = require('../providers/relay-share-store');
 const { nativeVendorOf } = require('../providers/native-vendor');
+const { CLAUDE_MODELS_FALLBACK } = require('./claude-models');
+
+// A borrowed Claude line carries no canonical ANTHROPIC_MODEL: its share code
+// only names a relay endpoint, so the provider summary is alias-only with an
+// empty model list until the lender's catalog sync lands. The old speed test
+// fell straight through to WIRE_DEFAULT_MODEL — a hardcoded id that outlives
+// its upstream — so every borrowed Claude line probed a retired model and got
+// `404 model: claude-sonnet-4-5`. Prefer what the provider actually serves:
+// explicit env, then its relay catalog, then the CLI-known current models.
+function wireModelId(value) {
+  const model = String(value || '').trim();
+  // `claude-opus-5[1m]` is a CLI context suffix; the wire only accepts the id.
+  return model.replace(/\[[^\]]*\]$/, '').trim();
+}
+
+function preferredSpeedtestModel(values) {
+  const models = (Array.isArray(values) ? values : [])
+    .map(wireModelId)
+    .filter(Boolean);
+  if (!models.length) return '';
+  const unique = [...new Set(models)];
+  return unique.find(model => /haiku/i.test(model)) || unique[0];
+}
+
+function claudeSpeedtestModel(env, summary) {
+  const explicit = [
+    env.ANTHROPIC_MODEL,
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+    env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+    summary && summary.model,
+  ].map(value => (typeof value === 'string' ? value.trim() : '')).find(Boolean);
+  if (explicit) return explicit;
+  const fromCatalog = preferredSpeedtestModel(summary && summary.modelOptions);
+  if (fromCatalog) return fromCatalog;
+  if (relayRouteFromBaseUrl(env.ANTHROPIC_BASE_URL)) {
+    // The bootstrap catalog a relay importer can read; cheap, current, and
+    // accepts the retired 4-5 ids this fallback replaces.
+    return preferredSpeedtestModel(CLAUDE_MODELS_FALLBACK.map(entry => entry.model));
+  }
+  return '';
+}
 
 // req.body.egressIpAllowlist arrives as an array (or is absent — leave the
 // stored value untouched on PATCH, that's the `undefined` case) or `null`/`[]`
@@ -557,8 +598,11 @@ function createProviderRoutes(rawDeps) {
           });
         }
 
-        const model = env.ANTHROPIC_MODEL
-          || env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+        const speedtestSummary = deps.providerRouterRuntime.getProviderSummary(
+          'claude',
+          req.params.id,
+        ) || {};
+        const model = claudeSpeedtestModel(env, speedtestSummary)
           || deps.providers.WIRE_DEFAULT_MODEL;
         const isOfficialOAuth = isOfficial && !hasKey;
         const body = JSON.stringify({

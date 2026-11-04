@@ -10,6 +10,7 @@
 
 const crypto = require('node:crypto');
 const { outboundFetch } = require('../network/outbound');
+const { relayModelsOf } = require('./relay-share-code');
 
 const MAX_MODELS = 100;
 const MAX_MODEL_LENGTH = 160;
@@ -147,8 +148,7 @@ function createProviderRelayModelCatalogRuntime(options = {}) {
     }
 
     const models = normalizeModels([
-      summary.model,
-      ...(Array.isArray(summary.modelOptions) ? summary.modelOptions : []),
+      ...relayModelsOf(summary),
       ...discovered,
     ]);
     if (!models.length) {
