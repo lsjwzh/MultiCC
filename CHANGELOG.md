@@ -2,13 +2,21 @@
 
 All notable changes to MultiCC are documented in this file.
 
-## v2.15.4 — Run preset and provider routing fixes (2026-11-04)
+## v2.15.5 — Run preset and provider routing fixes (2026-11-04)
+
+The v2.15.4 candidate stopped before a Release was created: the deterministic
+CI suite found duplicate CLI display-name maps in two browser modules. Its tag
+is preserved; v2.15.5 carries the same changes with those modules reading the
+shared provider catalog instead.
 
 - Save Auto Provider run configurations as named presets and use them across web and mobile. The Rust core validates, normalizes, and merges presets while the existing Node host adapter handles local persistence and session injection. Applied named presets can now be updated in place without creating duplicates; the current session still changes only after its run configuration is saved. Move host persistence and injection to Rust once the Rust host has equivalent session and storage contracts.
 - Let the Auto Provider pool use native lines for Command Code, Qoder, CodeBuddy, Gemini, Pi, DeepSeek, and Grok on web and mobile. Each CLI owns its account and model catalog; the existing Node CLI and provider adapters bridge these lines into cross-CLI routing until those host interfaces move to Rust. Ordered pools return to a recovered higher-priority line after a quota reset instead of staying on the fallback.
 - Keep a reopened chat's status accurate: restore the persisted API error bar, show user cancellation as cancelled rather than an upstream API failure, and preserve the stale-verdict marker during a repaint. A reconnect also displays attributed streaming frames before the first route event instead of hiding the live reply.
 - Recover a Codex native session when its saved provider is no longer configured, and find the macOS Chrome remote-debugging Allow button inside nested dialog groups. The Codex bridge is a required Node app-server adapter until native host session recovery moves to Rust.
 - Refresh an OpenCode session's worktree directory before spawning its next turn, and probe a borrowed Claude line with a model the lender actually serves. Official Claude relay sharing now supplies its known model list when the account stores no default model.
+- Read vendor-native CLI labels from the shared provider catalog in the browser Auto Provider editor and model picker, so a renamed lane has one display name across the app.
+- Recognize OpenCode context-limit errors across ACP and legacy transports, stop retries that would replay an oversized prompt, and show the underlying reason consistently.
+- Use the Rust core to read OpenCode's native usage and model limits before rotating a full session; keep older messages out of the current turn's usage and show the model context in chat. The existing Node code remains a narrow CLI and session bridge until the Rust host owns those interfaces.
 - Update the mobile app to 2.41.3 (build 189).
 
 ## v2.15.3 — Honest quota bars, sturdier error handling, and faster computer switching (2026-11-03)

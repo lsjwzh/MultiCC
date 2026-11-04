@@ -426,17 +426,14 @@
   // src/providers/native-vendor.js. OpenCode keeps its multi-provider form.
   const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok']);
   const VENDOR_NATIVE_SET = new Set(VENDOR_NATIVE_CLIS);
-  const VENDOR_NATIVE_NAMES = Object.freeze({
-    qoder: 'Qoder CN', codebuddy: 'WorkBuddy', gemini: 'Gemini', pi: 'Pi',
-    commandcode: 'Command Code', dsh: 'DSH', grok: 'Grok',
-  });
   function vendorNativeName(cli) {
-    const catalog = root && root.MultiCCProviderCatalog;
+    const catalog = (root && root.MultiCCProviderCatalog)
+      || (typeof require === 'function' ? require('./provider-catalog.js') : null);
     if (catalog && typeof catalog.cliDisplayName === 'function') {
       const name = catalog.cliDisplayName(cli);
       if (name) return String(name);
     }
-    return VENDOR_NATIVE_NAMES[cli] || String(cli || '');
+    return String(cli || '');
   }
   function vendorNativeProviderOf(value) {
     const text = String(value || '');
