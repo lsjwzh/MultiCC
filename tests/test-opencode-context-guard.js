@@ -88,6 +88,23 @@ test('只有超限错误时保持未知用量，而不是伪造 0% 的健康水�
   assert.equal((await f.guard.enforce(record())).action, 'rotate');
 });
 
+test('纯文案、鉴权、输出限制和请求回显不能触发自动轮换', async t => {
+  for (const error of [
+    { message: 'Conversation history too large to compact' },
+    { name: 'ProviderAuthError', data: { message: 'context window exceeded' } },
+    { name: 'FutureProviderError', data: { message: 'prompt too long' } },
+    { code: 'max_tokens_exceeded' },
+    { prompt: { name: 'ContextOverflowError' } },
+    { message: 'prompt: [{message: "Conversation history too large to compact"}]' },
+  ]) {
+    const f = fixture(t, {});
+    f.add(measured(10));
+    f.add({ role: 'assistant', error, tokens: { input: 0, output: 0 } });
+    assert.equal((await f.reader.read('s1')).overflow, false);
+    assert.notEqual((await f.guard.enforce(record())).action, 'rotate');
+  }
+});
+
 test('待完成交接不能绕过旧目标检查；轮换保留源摘要和完整显示历史', async t => {
   const f = fixture(t);
   f.add(measured());

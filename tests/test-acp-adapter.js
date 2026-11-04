@@ -218,13 +218,15 @@ test('OpenCode ACP context errors survive the bridge and fail without replaying 
     assert.equal(code, 1);
     assert.equal(requests.filter(r => r.method === 'session/prompt').length, 1);
     const error = events.find(e => e.method === 'multicc/error');
-    assert.equal(error.params.errorName, 'ContextOverflowError');
+    assert.equal(error.params.rpcError.code, -32603);
+    assert.equal(error.params.rpcError.data.errorName, 'ContextOverflowError');
     const adapter = createOpencodeAdapter({ cmd: 'opencode', env: {} });
     const tracker = createAdapterCompletion(adapter);
     for (const event of events) tracker.observe(event, adapter.decodeEvent(event));
     assert.equal(tracker.finish({ kind: 'process', code }).state, 'failed');
     assert.equal(events.some(e => e.method === 'multicc/turnEnd'), false);
     const [decoded] = adapter.decodeEvent(error);
+    assert.equal(decoded.error.code, -32603);
     assert.match(decoded.message, /上下文上限/);
     assert.match(decoded.message, /压缩上下文.*保留完整聊天历史/);
     assert.doesNotMatch(decoded.message, /Internal error|无响应|\[Object/);
@@ -247,11 +249,31 @@ test('OpenCode legacy JSON context failures use the same structured diagnosis', 
   const [decoded] = adapter.decodeEvent({ type: 'error', error: {
     name: 'ContextOverflowError', data: { message: 'Internal error' },
   } });
-  assert.equal(decoded.error.category, 'context_token_limit');
-  assert.equal(decoded.error.code, 'context_length_exceeded');
+  const { normalizeApiError } = require('../src/chat/api-error-policy');
+  const normalized = normalizeApiError(decoded.error);
+  assert.equal(normalized.category, 'context_token_limit');
+  assert.equal(decoded.error.error.name, 'ContextOverflowError');
+  assert.equal(normalized.diagnosis.recovery.context, 'rotate');
   assert.match(decoded.message, /保留完整聊天历史/);
   const [unrelated] = adapter.decodeEvent({ type: 'error', error: { data: { message: 'HTTP 401 Unauthorized' } } });
   assert.equal(unrelated.message, 'HTTP 401 Unauthorized');
+});
+
+test('协议投影保留数值码和嵌套类型，巨大文案不会挤掉类型或带入请求正文', () => {
+  const { errorFields, classifyProviderError } = require('../src/provider-error');
+  const wire = errorFields({ code: -32603, message: 'x'.repeat(100000), data: {
+    errorName: 'ContextOverflowError', statusCode: 400,
+    prompt: { message: '不得透传的请求正文' }, authorization: '不得透传的认证字段',
+  } });
+  assert.equal(wire.code, -32603);
+  assert.equal(wire.data.errorName, 'ContextOverflowError');
+  assert.equal(wire.data.statusCode, 400);
+  assert.equal(wire.message.length, 65536);
+  assert.equal(wire.data.prompt, undefined);
+  assert.equal(wire.data.authorization, undefined);
+  const failure = classifyProviderError(wire, { provider: 'opencode', source: 'opencode_event' });
+  assert.equal(failure.diagnosis.recovery.context, 'rotate');
+  assert.equal(failure.diagnosis.evidence.path, '$.data.errorName');
 });
 
 test('permission and router MCP helpers', () => {

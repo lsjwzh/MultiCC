@@ -176,7 +176,12 @@ pub fn read(input: &str) -> Result<String, String> {
             continue;
         }
         if overflow.is_none() {
-            overflow = crate::opencode_error::diagnose(&data["error"]);
+            overflow = crate::provider_error::diagnose(
+                "opencode",
+                crate::provider_error::Origin::NativeHistory,
+                &data["error"],
+            )
+            .filter(|failure| failure.should_rotate_context());
         }
         if let Some(measured) = tokens(&data) {
             usage = Some(measured);

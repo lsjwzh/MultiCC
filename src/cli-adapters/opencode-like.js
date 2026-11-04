@@ -1,6 +1,7 @@
 'use strict';
 
 const { renderPrompt } = require('../message-composer');
+const { errorFields } = require('../provider-error');
 const { createStepCompletionTracker } = require('./step-completion');
 
 function createOpencodeLikeAdapter({
@@ -98,6 +99,7 @@ function createOpencodeLikeAdapter({
           error: {
             source: `${name}_event`,
             provider: name,
+            error: errorFields(detail),
             code: data.code || detail.code || detail.name || event.code,
             ...(data.errorName || detail.name ? { errorName: data.errorName || detail.name } : {}),
             ...(data.category || detail.category || event.category
