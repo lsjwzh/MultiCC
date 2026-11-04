@@ -8,7 +8,7 @@
  *
  * 边界（写死在这里，超了就是协议变了）：
  *   · 顶层必须是对象；只支持一层嵌套对象（snap 的 crop）
- *   · 不支持数组
+ *   · mods 支持字符串数组（位掩码供 XTest 原生适配使用）
  *   · 字符串支持全部必需转义（\" \\ \/ \b \f \n \r \t \uXXXX，含代理对）
  *   · 数字交给 strtod，超过 63 字符的 token 当解析失败
  */
@@ -89,6 +89,7 @@ static int parse_string(cur *c, char *out, size_t cap, char *err, size_t errsz) 
      * 所以 1 字节的路径只需 n+2 <= cap —— 一律按 4 字节预留会让 "status"
      * 这种 6 个字符的短串在 n=5 时就被判 "string too long"。 */
     if (n + 1 >= cap) { snprintf(err, errsz, "string too long"); return 0; }
+    if (ch < 0x20) { snprintf(err, errsz, "unescaped control character"); return 0; }
     if (ch != '\\') { out[n++] = (char)ch; continue; }
     if (c->p >= c->end) break;
     char e = *c->p++;
@@ -164,6 +165,28 @@ static int parse_object_raw(cur *c, char **out, char *err, size_t errsz) {
 static int parse_value(cur *c, jfield *f, char *err, size_t errsz) {
   int ch = at(c);
 
+  if (ch == '[' && strcmp(f->key, "mods") == 0) {
+    f->is_array = 1;
+    c->p++;
+    skip_ws(c);
+    if (at(c) == ']') { c->p++; return 1; }
+    for (int count = 0; count < 32; count++) {
+      char name[64];
+      if (!parse_string(c, name, sizeof(name), err, errsz)) return 0;
+      if (!strcmp(name, "shift")) f->mods |= 1;
+      if (!strcmp(name, "ctrl")) f->mods |= 2;
+      if (!strcmp(name, "alt")) f->mods |= 4;
+      if (!strcmp(name, "cmd")) f->mods |= 8;
+      skip_ws(c);
+      if (at(c) == ']') { c->p++; return 1; }
+      if (at(c) != ',') break;
+      c->p++;
+      skip_ws(c);
+    }
+    snprintf(err, errsz, "bad mods array");
+    return 0;
+  }
+
   if (ch == '"') {
     cur probe = *c;
     if (!skip_string(&probe)) { snprintf(err, errsz, "bad string"); return 0; }
@@ -210,6 +233,14 @@ static int parse_value(cur *c, jfield *f, char *err, size_t errsz) {
   }
 }
 
+static int finish_object(cur *c, char *err, size_t errsz) {
+  c->p++;
+  skip_ws(c);
+  if (c->p == c->end) return 1;
+  snprintf(err, errsz, "trailing data after object");
+  return 0;
+}
+
 int json_parse(const char *text, size_t len, jobject *out, char *err, size_t errsz) {
   cur c = { text, text + len };
   int cap = 0;
@@ -220,7 +251,7 @@ int json_parse(const char *text, size_t len, jobject *out, char *err, size_t err
   if (at(&c) != '{') { snprintf(err, errsz, "expected object"); return 0; }
   c.p++;
   skip_ws(&c);
-  if (at(&c) == '}') return 1;
+  if (at(&c) == '}') return finish_object(&c, err, errsz);
 
   for (;;) {
     if (out->n == cap) {
@@ -243,7 +274,7 @@ int json_parse(const char *text, size_t len, jobject *out, char *err, size_t err
 
     skip_ws(&c);
     if (at(&c) == ',') { c.p++; continue; }
-    if (at(&c) == '}') return 1;
+    if (at(&c) == '}') return finish_object(&c, err, errsz);
     snprintf(err, errsz, "expected ',' or '}' after %s", f->key);
     return 0;
   }
@@ -269,7 +300,12 @@ int jhas(const jobject *o, const char *key) { return find(o, key) != NULL; }
 
 const char *jstr(const jobject *o, const char *key) {
   const jfield *f = find(o, key);
-  return f && f->s ? f->s : NULL;
+  return f && f->s && !f->is_obj ? f->s : NULL;
+}
+
+int jmods(const jobject *o) {
+  const jfield *f = find(o, "mods");
+  return f && f->is_array ? f->mods : 0;
 }
 
 int jnum(const jobject *o, const char *key, double *out) {

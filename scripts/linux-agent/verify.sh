@@ -4,6 +4,7 @@
 # 不要求本机是 Linux，也不要求装任何 X11 开发包：全在容器里跑。
 #
 #   ./scripts/linux-agent/verify.sh                 # 默认 1280x800x24
+#   sh scripts/linux-agent/verify.sh --native       # Linux 上直接编译并在 Xvfb 验证，不需要 Docker
 #   SCREEN=1920x1080x24 verify.sh                   # 换分辨率
 #   MULTICC_LINUX_PROBE_IMAGE=foo verify.sh         # 换镜像名（避免和别的构建撞）
 #   APT_MIRROR=mirrors.tuna.tsinghua.edu.cn/ubuntu-ports verify.sh   # 直连官方源拉不动时
@@ -18,6 +19,23 @@ DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 IMAGE=${MULTICC_LINUX_PROBE_IMAGE:-multicc-linux-agent-probe}
 SCREEN=${SCREEN:-${PROBE_SCREEN:-1280x800x24}}
 MIRROR=${APT_MIRROR:-}
+
+if [ "${1:-}" = "--native" ]; then
+  [ "$(uname -s)" = Linux ] || { echo '--native requires Linux' >&2; exit 2; }
+  command -v xvfb-run >/dev/null || { echo 'Install Xvfb and xauth before running --native' >&2; exit 2; }
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/multicc-linux-verify.XXXXXX")
+  trap 'rm -rf "$WORK"' EXIT INT TERM
+  MULTICC_STRICT=1 sh "$DIR/build.sh" "$WORK/multicc-agent-linux"
+  cc -O2 -Wall -Wextra -Werror "$DIR/test-json.c" "$DIR/json.c" -o "$WORK/test-json"
+  "$WORK/test-json"
+  cc -O2 -Wall -Wextra -Werror "$DIR/probe.c" -lX11 -lXext -lXtst -o "$WORK/probe"
+  export MULTICC_AGENT_BIN="$WORK/multicc-agent-linux" MULTICC_TARGET_BIN="$WORK/multicc-linux-target"
+  xvfb-run -a --server-args="-screen 0 $SCREEN" "$WORK/probe"
+  xvfb-run -a --server-args="-screen 0 $SCREEN" sh "$DIR/conformance.sh"
+  xvfb-run -a --server-args="-screen 0 $SCREEN" sh "$DIR/install-smoke.sh"
+  exit 0
+fi
+if [ "$#" -gt 0 ]; then echo 'Usage: verify.sh [--native]' >&2; exit 2; fi
 
 # 下面凡是「变量紧挨着中文」的地方都写 ${VAR} 而不是 $VAR：zh_CN.UTF-8 下
 # macOS 的 bash 会把多字节字符的第一个字节当成变量名的一部分，$MIRROR）直接

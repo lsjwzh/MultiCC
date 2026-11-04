@@ -46,6 +46,11 @@ const POWERD_FILES = [
   'scripts/install-powerd.sh',
   'scripts/multicc-powerd.sh',
 ];
+const LINUX_AGENT_FILES = ['agent.c', 'agent.h', 'json.c', 'image.c', 'x11.c', 'build.sh',
+  'install.sh', 'verify.sh', 'conformance.sh', 'install-smoke.sh', 'probe.c', 'test-target.c',
+  'test-json.c', 'Dockerfile.verify'].map(name => `scripts/linux-agent/${name}`);
+const WINDOWS_AGENT_FILES = ['install.ps1', 'verify.ps1', 'install-smoke.ps1', 'test-target.ps1']
+  .map(name => `scripts/windows-agent/${name}`);
 
 function parseArgs(argv) {
   const args = { out: null, repoRoot: null, install: true, arch: null, platform: null };
@@ -179,7 +184,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   // …and the macOS desktop agent, which src/macos-agent-provision.js installs
   // at startup (a few KB; ignored on other platforms). The release adds a
   // prebuilt binary next to it (standalone-bundle.js prebuildMacosAgent).
-  for (const file of [...MACOS_AGENT_FILES, ...POWERD_FILES]) {
+  for (const file of [...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES]) {
     fs.mkdirSync(path.dirname(path.join(out, file)), { recursive: true });
     fs.copyFileSync(path.join(repoRoot, file), path.join(out, file));
     if (file.endsWith('.sh')) fs.chmodSync(path.join(out, file), 0o755);
@@ -224,7 +229,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
     'public/air.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
     'plugins/bridges/wechat-ilink.js', ...MACOS_AGENT_FILES,
-    ...POWERD_FILES,
+    ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES,
     'skills/multicc-artifact/references/registration-rule.md',
     // A quick file sentinel; verifyServerDependencies below checks every
     // declared production dependency and rejects build-checkout fallbacks.
@@ -282,6 +287,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  OPTIONAL_AT_RUNTIME, PUBLIC_EXCLUDE, MACOS_AGENT_FILES, POWERD_FILES, parseArgs, copyTree, crossArchNpmEnv,
+  OPTIONAL_AT_RUNTIME, PUBLIC_EXCLUDE, MACOS_AGENT_FILES, POWERD_FILES, LINUX_AGENT_FILES, WINDOWS_AGENT_FILES,
+  parseArgs, copyTree, crossArchNpmEnv,
   transformPackageJson, untrackedPlugins, stageServer, main,
 };

@@ -219,6 +219,35 @@ function build({ platform = process.platform, arch = process.arch,
     }
   }
 
+  // Windows desktop capture/input is a separate per-user process. Ship its
+  // prebuilt binary so installation does not require a Rust toolchain.
+  if (platform === 'win32' && !remoteOnly && !cdpdOnly && workspaceMembers(repo).includes('desktop-agent')) {
+    const name = 'multicc-desktop-agent.exe';
+    const source = path.resolve(targetDir, target, 'release', name);
+    const file = path.resolve(out, `${platform}-${arch}`, name);
+    try {
+      cargo('multicc-desktop-agent');
+      verify(source, platform, arch);
+      const temporary = copyStaged(source, file, { executable: true });
+      try {
+        if (platform === process.platform && arch === process.arch) {
+          const result = run(temporary, ['--version'], { encoding: 'utf8', timeout: 15_000 });
+          if (result.status !== 0 || !String(result.stdout || '').startsWith('multicc-desktop-agent ')) {
+            throw new Error('Windows desktop agent failed its version check');
+          }
+        }
+        fs.renameSync(temporary, file);
+      } finally {
+        fs.rmSync(temporary, { force: true });
+      }
+      produced.push({ kind: 'Windows desktop agent', file });
+      logger.log(`Windows desktop agent built: ${file}`);
+    } catch (error) {
+      if (requireRemote) throw error;
+      logger.error(`Windows desktop agent unavailable: ${error.message}`);
+    }
+  }
+
   // Record the source these files were built from (see rust-source-cache.js). An
   // edit during the build leaves no record, so nothing can vouch for mixed output.
   // 两个产物一起记账：任何一个没有来源记录，都当成不是当前源码编的。

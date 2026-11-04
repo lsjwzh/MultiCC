@@ -171,6 +171,7 @@ rustTest('打包后的 Rust 模块可加载，错误架构不能进入安装包'
       fs.mkdirSync(dir, { recursive: true }); fs.copyFileSync(source, path.join(dir, 'multicc_core.node'));
       fs.writeFileSync(path.join(dir, remoteName()), binaryHeader(process.platform, arch));
       fs.writeFileSync(path.join(dir, cdpdBinaryName(process.platform)), binaryHeader(process.platform, arch));
+      if (process.platform === 'win32') fs.writeFileSync(path.join(dir, 'multicc-desktop-agent.exe'), binaryHeader(process.platform, arch));
     }
     const options = { repoRoot: '.', out: path.join(root, 'app-server'), logger: { log() {} } };
     const staged = stageRustKernels(options);
@@ -288,6 +289,39 @@ function ownPrebuiltRoot(t) {
 }
 
 const quiet = { log() {}, error() {} };
+
+test('Windows package builds and requires the desktop agent companion', t => {
+  ownPrebuiltRoot(t);
+  const fixture = rustBuildFixture(t, { members: ['core', 'addon', 'desktop-agent'] });
+  const crates = [];
+  const run = (command, args, options) => {
+    if (command !== 'cargo') return { status: 0, stdout: 'multicc-desktop-agent 0.1.0\n' };
+    const crate = args[args.indexOf('-p') + 1];
+    crates.push(crate);
+    const dir = path.join(options.env.CARGO_TARGET_DIR, args[args.indexOf('--target') + 1], 'release');
+    fs.mkdirSync(dir, { recursive: true });
+    const name = crate === 'multicc-addon' ? 'multicc_addon.dll' : 'multicc-desktop-agent.exe';
+    fs.writeFileSync(path.join(dir, name), binaryHeader('win32', 'x64'));
+    return { status: 0 };
+  };
+  build({ platform: 'win32', arch: 'x64', repoRoot: fixture.root, out: fixture.out,
+    targetDir: fixture.targetDir, probe: () => true, run, logger: quiet });
+  assert.deepEqual(crates, ['multicc-addon', 'multicc-desktop-agent']);
+  const previous = process.env.MULTICC_RUST_PREBUILT_DIR;
+  process.env.MULTICC_RUST_PREBUILT_DIR = fixture.out;
+  try {
+    const { stageRustKernels } = require('../scripts/stage-rust-kernels');
+    const options = { repoRoot: fixture.root, out: path.join(fixture.root, 'stage'),
+      npmEnv: { npm_config_platform: 'win32', npm_config_arch: 'x64' }, logger: quiet };
+    const staged = stageRustKernels(options);
+    assert.ok(fs.existsSync(path.join(path.dirname(staged), 'multicc-desktop-agent.exe')));
+    fs.rmSync(path.join(fixture.out, 'win32-x64', 'multicc-desktop-agent.exe'));
+    assert.throws(() => stageRustKernels(options), /Missing Windows desktop agent/);
+  } finally {
+    if (previous === undefined) delete process.env.MULTICC_RUST_PREBUILT_DIR;
+    else process.env.MULTICC_RUST_PREBUILT_DIR = previous;
+  }
+});
 
 test('远控二进制分步编译：先模块后进程，可执行位保留并过 --version 校验', t => {
   const fixture = rustBuildFixture(t);

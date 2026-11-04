@@ -31,7 +31,7 @@ const {
   PortUnavailableError, findFreePort, probePort, selectPort,
 } = require(path.join(DESKTOP, 'lib', 'port-chooser.js'));
 const { waitForReadiness } = require(path.join(DESKTOP, 'lib', 'health-probe.js'));
-const { MACOS_AGENT_FILES, POWERD_FILES } = require(path.join(ROOT, 'scripts', 'desktop-bundle-server.js'));
+const { MACOS_AGENT_FILES, POWERD_FILES, LINUX_AGENT_FILES, WINDOWS_AGENT_FILES } = require(path.join(ROOT, 'scripts', 'desktop-bundle-server.js'));
 const desktopEnv = require(path.join(DESKTOP, 'lib', 'desktop-env.js'));
 const { createBackendSupervisor } = require(path.join(DESKTOP, 'lib', 'backend-supervisor.js'));
 const { reclaimOrphan, pidAlive } = require(path.join(DESKTOP, 'lib', 'orphan-reclaim.js'));
@@ -557,14 +557,14 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
     'src/voice/asr-model-installer.js',
     'plugins/bridges/wechat-ilink.js', 'plugins/cron/cron-tasks.js',
     'skills/multicc-artifact/references/registration-rule.md',
-    'package.json', ...MACOS_AGENT_FILES, ...POWERD_FILES]) {
+    'package.json', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES]) {
     assert.ok(fs.existsSync(path.join(staged, must)), `staged tree missing ${must}`);
   }
   // The macOS agent installer is run by the server at startup, the powerd
   // installer is run inside the one admin prompt 「关盖运行」 raises, and the ASR
   // fetcher is run by hand: all three must stay executable or they would
   // silently do nothing.
-  for (const sh of [...MACOS_AGENT_FILES, ...POWERD_FILES, 'scripts/setup-local-asr.sh', 'install-git.sh']
+  for (const sh of [...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES, 'scripts/setup-local-asr.sh', 'install-git.sh']
     .filter(f => f.endsWith('.sh'))) {
     assert.ok(fs.statSync(path.join(staged, sh)).mode & 0o100, `${sh} must stay executable`);
   }
@@ -592,7 +592,7 @@ function stubRepoRoot(dir) {
     `${JSON.stringify({ name: 'stub', version: '1.0.0', dependencies: {} }, null, 2)}\n`);
   for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'public/air.html',
     'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
-    'src/voice/asr-model-installer.js', ...MACOS_AGENT_FILES, ...POWERD_FILES,
+    'src/voice/asr-model-installer.js', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES,
     'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md']) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -603,15 +603,25 @@ function stubRepoRoot(dir) {
 
 function stageWithStubNpm(body, extraArgs = []) {
   const root = stubRepoRoot(tmpdir('desktop-stage-root-'));
-  // This test only verifies npm target propagation. A labelled Mach-O header
-  // fixture supplies its cross-platform staging prerequisite, never runtime proof.
+  // These tests exercise npm behavior, including failures. Supply the native
+  // staging prerequisite for every target so a missing addon cannot hide npm.
   const fixtureEnv = {};
-  if (extraArgs.includes('darwin') && extraArgs.includes('x64')) {
+  {
+    const platformIndex = extraArgs.indexOf('--platform');
+    const archIndex = extraArgs.indexOf('--arch');
+    const platform = platformIndex < 0 ? process.platform : extraArgs[platformIndex + 1];
+    const arch = archIndex < 0 ? process.arch : extraArgs[archIndex + 1];
     const prebuilt = path.join(root, 'fixture-prebuilt');
-    const dir = path.join(prebuilt, 'darwin-x64');
+    const dir = path.join(prebuilt, `${platform}-${arch}`);
     fs.mkdirSync(dir, { recursive: true });
     const header = Buffer.alloc(32);
-    header.writeUInt32LE(0xfeedfacf, 0); header.writeUInt32LE(0x01000007, 4);
+    if (platform === 'darwin') {
+      header.writeUInt32LE(0xfeedfacf, 0);
+      header.writeUInt32LE(arch === 'arm64' ? 0x0100000c : 0x01000007, 4);
+    } else {
+      header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]);
+      header.writeUInt16LE(arch === 'arm64' ? 0xb7 : 0x3e, 18);
+    }
     fs.writeFileSync(path.join(dir, 'multicc_core.node'), header);
     fixtureEnv.MULTICC_RUST_PREBUILT_DIR = prebuilt;
   }

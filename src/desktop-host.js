@@ -8,9 +8,8 @@
 //   · macOS 独有的三件壳外调用（逻辑尺寸 / 图像处理 / 唤屏）收在这里
 //
 // 现在有 macOS（scripts/macos-agent/MultiCCAgent.swift）和 Linux X11
-// （scripts/linux-agent/）两份 agent。Windows 还是 supported:false：路由因此干净地
-// 回 platform-unsupported，前端据此把 🖥 收起来，而不是每个请求去连一个不存在的
-// 管道。等 C# agent 落地，改的是这里的画像，不是路由。
+// （scripts/linux-agent/）以及 Windows Rust agent（native/desktop-agent/）。
+// 此表仅保留 Node 回退适配，与 native/remote/src/host.rs 的平台画像同步。
 //
 // Agent 必须实现的 op ABI、传输约定和护栏要求见 docs/desktop-agent-protocol.md。
 
@@ -43,13 +42,12 @@ function profileFor(platform, { home, env = {} } = {}) {
     };
   }
   if (platform === 'win32') {
-    // 计划中的 Windows agent：命名管道 + DXGI Desktop Duplication + SendInput，
-    // v1 不做 unlock（安全桌面够不到，见 docs/desktop-agent-protocol.md）。
+    // Rust Windows agent: named pipe + GDI capture + SendInput, no secure-desktop unlock.
     return {
-      platform, label: 'Windows', supported: false, transport: 'named-pipe',
+      platform, label: 'Windows', supported: true, transport: 'named-pipe',
       agentSock: env.MULTICC_AGENT_PIPE || '\\\\.\\pipe\\multicc-agent',
-      rfbSock: null, h264Sock: null, features: NO_FEATURES, modifier: 'ctrl',
-      installHint: null,
+      rfbSock: null, h264Sock: null, features: LINUX_FEATURES, modifier: 'ctrl',
+      installHint: 'powershell -NoProfile -File scripts/windows-agent/install.ps1 install',
     };
   }
   // Linux agent：X11 走 XShm + XTEST。Wayland 只能走 portal（每次截图/注入都要
