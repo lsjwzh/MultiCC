@@ -626,7 +626,8 @@
       justify-content: flex-end;
     }
 
-    /* 流式中的归属：不占独立一行，跟在底部「动态点」后面（同一行）。尾巴存在时
+    /* 流式中的归属：不占独立一行，和底部「动态点」同一行、贴最右端 —— 与轮末落在
+       时间行最右端的摆法一致（左边是点/时间，右边是归属）。尾巴存在时
        .msg-content 自带的 ::after 点让位给尾巴里的点。宽度不够（手机 / 窄栏）时
        缩宽，文字放不下就来回跑马灯。流式结束后点消失，只剩文字。 */
     .msg-content.streaming-dot.has-stream-tail::after { display: none; }
@@ -648,6 +649,7 @@
     .msg-stream-tail-clip {
       flex: 0 1 auto;
       min-width: 0;
+      margin-left: auto;
       max-width: min(100%, 560px);
       overflow: hidden;
       white-space: nowrap;
