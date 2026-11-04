@@ -51,6 +51,9 @@
 | `GET` / `PUT` | `/api/provider-defaults` | Read / set default provider per CLI |
 | `GET` | `/api/subagent-defaults` | Read the sub-agent default per CLI family (`{ claude, codex }`, each `{ providerId, model }` or `null`) |
 | `POST` | `/api/subagent-defaults/sync` | Set the CLI family's global sub-agent default and apply it to that family's chat tasks without their own sub-agent setup (`{ cli, subagent, dryRun? }`). Applied routes carry `inherited: true`; tasks with their own route are counted as `kept` and left alone. `subagent: null` clears the default and returns inherited tasks to the main line. Busy tasks pick it up on their next turn |
+| `GET` | `/api/run-config/presets` | Read the server-side run-config (Auto pool) preset library shared by the web app and mobile app |
+| `PUT` | `/api/run-config/presets` | Replace the preset library with `{ presets: [...] }` (validated and normalized by the Rust kernel) |
+| `POST` | `/api/run-config/presets/merge` | Merge the caller's local presets into the stored library (`{ presets: [...] }`) and return the merged list — the migration path a client uses when it opens the sheet |
 
 ## Orchestration
 

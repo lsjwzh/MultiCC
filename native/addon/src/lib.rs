@@ -8,6 +8,7 @@ pub mod machines;
 pub mod publication;
 pub mod quota_history;
 pub mod remote_screen;
+pub mod run_config_presets;
 pub mod secret_audit;
 pub mod sqlite;
 pub mod subagent_defaults;

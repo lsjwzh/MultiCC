@@ -2,6 +2,7 @@ pub mod machines;
 pub mod publication;
 pub mod publication_identity;
 pub mod quota_history;
+pub mod run_config_presets;
 pub mod search;
 pub mod secret_audit;
 pub mod sqlite;

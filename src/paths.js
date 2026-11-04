@@ -143,6 +143,9 @@ function createPaths({ dataDir } = {}) {
     auxConfigFile: path.join(root, 'aux-config.json'),
     goalConfigFile: path.join(root, 'goal-config.json'),
     providerDefaultsFile: path.join(root, 'provider-defaults.json'),
+    // Auto 候选池预设的跨端库（src/routes/run-config-presets.js）。Web 与 App
+    // 的本地存储只是缓存，这份文件才是权威；只含线路 id / 模型，不含密钥。
+    runConfigPresetsFile: path.join(root, 'run-config-presets.json'),
     providerRelaySharesFile: path.join(root, 'provider-relay-shares.json'),
     // Last-known-good per-provider limit/usage summaries, persisted so the
     // Web/App provider pickers can show quota freshness after a restart,

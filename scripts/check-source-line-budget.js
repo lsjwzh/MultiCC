@@ -147,8 +147,10 @@ const MIGRATION_DEBT = Object.freeze({
     // 修重开页面丢 API 异常横幅）：内联 payload 换成共享 builder，随行的
     // isGoalState/auxVerdictStaleness 导入失去用处一并摘；rebase 到额度自愈
     // 之后实测 3021/159599，按棘轮下调。
-    ceiling: 3021,
-    byteCeiling: 159599,
+    // 2026-11-04 运行配置预设跨端库：require + 挂载共 4 行（逻辑与校验在
+    // src/routes/run-config-presets.js 与 Rust），实测 3026/159933，按棘轮上调。
+    ceiling: 3026,
+    byteCeiling: 159933,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),
@@ -166,9 +168,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 别名规则对齐线路与模型前缀，并重画线路下拉，实测 3092/158373，按棘轮上调。
   // 2026-11-03 多电脑：新任务选了远程电脑时 open() 可注入走机器代理的请求函数，
   // 让 /api/providers 目录落在目标电脑；行数不变（3092），字节 158655，按棘轮上调。
+  // 2026-11-04 预设改跨端：打开面板 merge 服务端、保存/删除后 PUT 完整表（含
+  // 迟到响应的 seq 防护），实测 3117/159815，按棘轮上调；模型字段那一族的
+  // 拆分条件不变。
   'public/run-config.js': Object.freeze({
-    ceiling: 3092,
-    byteCeiling: 158655,
+    ceiling: 3117,
+    byteCeiling: 159815,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),
