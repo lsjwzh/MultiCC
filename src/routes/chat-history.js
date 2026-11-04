@@ -731,7 +731,7 @@ function createChatHistoryRuntime(rawDeps) {
     // to answer "what would trimming actually cost", which is O(file) and therefore
     // opt-in. The transcript path is deliberately never returned — responses must
     // not leak absolute filesystem paths.
-    app.get('/api/sessions/:id/context-level', (req, res, next) => {
+    app.get('/api/sessions/:id/context-level', async (req, res, next) => {
       const sessionId = req.params.id;
       const persisted = deps.persistedSessions.get(sessionId);
       if (!persisted) return res.status(404).json({ error: 'session not found' });
@@ -751,7 +751,7 @@ function createChatHistoryRuntime(rawDeps) {
               });
           }
           const cliSessionId = persisted._streamSessionId || persisted.cliSessionId || null;
-          const usage = opencodeContextReader.read(cliSessionId, persisted.model || null);
+          const usage = await opencodeContextReader.read(cliSessionId, persisted.model || null);
           return res.json({ ok: true, supported: true, cli: 'opencode', native: usage });
         }
         if (persisted.cli !== 'claude') {

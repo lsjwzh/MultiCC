@@ -24,10 +24,9 @@ fn collect(value: &Value, depth: usize, messages: &mut Vec<String>, codes: &mut 
     }
 }
 
-pub fn describe(input: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+pub fn diagnose(value: &Value) -> Option<Value> {
     let (mut messages, mut codes) = (Vec::new(), Vec::new());
-    collect(&value, 0, &mut messages, &mut codes);
+    collect(value, 0, &mut messages, &mut codes);
     let compaction = codes.iter().any(|c| c == "opencode_compaction_overflow")
         || messages
             .iter()
@@ -52,11 +51,16 @@ pub fn describe(input: &str) -> Result<String, String> {
             ]
             .iter()
             .any(|pattern| m.contains(pattern))
+        })
+        || messages.iter().any(|m| {
+            m.contains("maximum context length is")
+                && m.contains("however")
+                && m.contains("input tokens")
         });
     if !overflow {
-        return Ok("null".into());
+        return None;
     }
-    Ok(json!({
+    Some(json!({
         "category": "context_token_limit",
         "code": if compaction { "opencode_compaction_overflow" } else { "context_length_exceeded" },
         "message": if compaction {
@@ -65,7 +69,12 @@ pub fn describe(input: &str) -> Result<String, String> {
             "OpenCode 请求超过模型上下文上限。"
         },
         "userAction": "请使用聊天菜单中的“压缩上下文”新开原生上下文（保留完整聊天历史），再继续任务；若仍超限，请缩短本次输入或选择上下文容量更大的模型。"
-    }).to_string())
+    }))
+}
+
+pub fn describe(input: &str) -> Result<String, String> {
+    let value: Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    Ok(diagnose(&value).unwrap_or(Value::Null).to_string())
 }
 
 #[cfg(test)]

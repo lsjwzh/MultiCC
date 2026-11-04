@@ -1,114 +1,43 @@
 'use strict';
 
-// Read-only water level for OpenCode native sessions.
-//
-// OpenCode keeps its native conversation in ~/.local/share/opencode/opencode.db
-// (SQLite, WAL). The authoritative usage figure is the `tokens` object of the
-// session's LATEST message row: `total` is what the model saw on the most
-// recent request, i.e. the live context water level. Queries are strictly
-// scoped by the exact native session id MultiCC captured from the adapter's
-// session_started event, so sibling sessions in the same working directory are
-// never mis-attributed.
-//
-// Everything here is read-only (Rust SQLite readOnly connection tolerates the
-// live WAL). MultiCC never writes to the user's OpenCode database.
-
-const path = require('path');
-const { createOpencodeModelLimitResolver } = require('../providers/opencode-model-limits');
-
-const DEFAULT_DB_PATH = () => {
-  const home = process.env.HOME || require('node:os').homedir();
-  return path.join(home, '.local', 'share', 'opencode', 'opencode.db');
-};
+// 迁移桥接：Rust 负责只读数据库查询、用量归一化和模型窗口解析。
+// 数据库与目录 I/O 在原生工作线程执行；宿主迁入 Rust 后可移除本桥接。
+const path = require('node:path');
+const os = require('node:os');
+const { getNative } = require('../native/runtime');
 
 const DEFAULT_THRESHOLD = 0.85;
-
 function clampThreshold(value) {
   const n = Number(value);
-  if (!Number.isFinite(n)) return DEFAULT_THRESHOLD;
-  return Math.min(0.95, Math.max(0.5, n));
+  return Number.isFinite(n) ? Math.min(0.95, Math.max(0.5, n)) : DEFAULT_THRESHOLD;
 }
-
 function resolveThreshold(env = process.env) {
-  if (env.MULTICC_OPENCODE_CONTEXT_THRESHOLD != null && env.MULTICC_OPENCODE_CONTEXT_THRESHOLD !== '') {
-    return clampThreshold(env.MULTICC_OPENCODE_CONTEXT_THRESHOLD);
-  }
-  return DEFAULT_THRESHOLD;
-}
-
-function openDefaultDatabase(dbPath) {
-  const Database = require('../sqlite/driver').databaseConstructor();
-  return new Database(dbPath, { readOnly: true, fileMustExist: true });
-}
-
-function extractTokens(data) {
-  const tokens = data && typeof data === 'object' ? data.tokens : null;
-  if (!tokens || typeof tokens !== 'object') return null;
-  const num = value => (Number.isFinite(Number(value)) ? Number(value) : 0);
-  return {
-    total: num(tokens.total),
-    input: num(tokens.input),
-    output: num(tokens.output),
-    reasoning: num(tokens.reasoning),
-    cacheRead: num(tokens.cache && tokens.cache.read),
-    cacheWrite: num(tokens.cache && tokens.cache.write),
-  };
+  const value = env.MULTICC_OPENCODE_CONTEXT_THRESHOLD;
+  return value != null && value !== '' ? clampThreshold(value) : DEFAULT_THRESHOLD;
 }
 
 function createOpencodeContextReader(deps = {}) {
-  const dbPathResolver = deps.dbPath
-    ? () => deps.dbPath
-    : DEFAULT_DB_PATH;
-  const openDatabase = deps.openDatabase || openDefaultDatabase;
-  const limitResolver = deps.limitResolver || createOpencodeModelLimitResolver();
-  const logger = deps.logger || console;
-  const threshold = deps.threshold != null ? clampThreshold(deps.threshold) : resolveThreshold(deps.env);
-
-  // Reads the latest message's token usage for exactly one native session.
-  // Returns null when the row / db is unavailable — callers degrade, never throw.
-  function read(sessionId, modelId) {
-    const nativeId = String(sessionId || '').trim();
-    if (!nativeId) return { found: false, reason: 'no-native-session' };
-    let db;
+  const env = deps.env || process.env;
+  const home = env.HOME || os.homedir();
+  const dbPath = deps.dbPath || path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'opencode', 'opencode.db');
+  const cachePath = deps.cachePath || path.join(env.XDG_CACHE_HOME || path.join(home, '.cache'), 'opencode', 'models.json');
+  const threshold = deps.threshold != null ? clampThreshold(deps.threshold) : resolveThreshold(env);
+  const nativeModule = deps.getNative || (() => getNative('opencode_context'));
+  async function invoke(fields) {
     try {
-      db = openDatabase(dbPathResolver());
-    } catch (_) {
-      return { found: false, reason: 'db-unavailable' };
-    }
-    try {
-      const row = db.prepare(
-        'SELECT data FROM message WHERE session_id = ? ORDER BY time_created DESC, id DESC LIMIT 1',
-      ).get(nativeId);
-      if (!row) return { found: false, reason: 'session-not-found' };
-      let data;
-      try { data = JSON.parse(row.data); } catch (_) { data = null; }
-      const tokens = extractTokens(data);
-      if (!tokens) return { found: false, reason: 'usage-missing' };
-      const limit = limitResolver.resolve(modelId);
-      const ratio = limit.context > 0 ? tokens.total / limit.context : 0;
-      return {
-        found: true,
-        sessionId: nativeId,
-        tokens,
-        limit: { context: limit.context, output: limit.output, source: limit.source },
-        threshold,
-        ratio: Math.round(ratio * 1000) / 1000,
-        wouldRotate: limit.source === 'models.dev' && ratio >= threshold,
-      };
+      const native = nativeModule();
+      if (typeof native?.readOpencodeContext !== 'function') return { found: false, reason: 'native-unavailable' };
+      return JSON.parse(await native.readOpencodeContext(JSON.stringify({ dbPath, cachePath, threshold, ...fields })));
     } catch (error) {
-      try { logger.warn('opencode_context_read_failed', { reason: error && error.message }); } catch (_) {}
+      deps.logger?.warn?.('opencode_context_read_failed', { reason: error?.code || 'read-failed' });
       return { found: false, reason: 'read-failed' };
-    } finally {
-      try { if (db && typeof db.close === 'function') db.close(); } catch (_) {}
     }
   }
-
-  return Object.freeze({ read, threshold });
+  return Object.freeze({
+    read: (sessionId, modelId) => invoke({ sessionId, modelId }), threshold,
+    cursor: sessionId => invoke({ op: 'cursor', sessionId }),
+    turnUsage: (sessionId, cursor) => invoke({ op: 'turn_usage', sessionId, cursor }),
+  });
 }
 
-module.exports = {
-  DEFAULT_THRESHOLD,
-  clampThreshold,
-  createOpencodeContextReader,
-  resolveThreshold,
-};
+module.exports = { DEFAULT_THRESHOLD, clampThreshold, resolveThreshold, createOpencodeContextReader };

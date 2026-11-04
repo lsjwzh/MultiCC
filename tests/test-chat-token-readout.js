@@ -12,6 +12,14 @@ const WINDOW = 1_000_000;
 const publicDir = path.join(__dirname, '..', 'public');
 const readPublic = name => fs.readFileSync(path.join(publicDir, name), 'utf8');
 
+test('OpenCode 的最后一次请求水位与本轮累计用量分别展示', () => {
+  const ctx = readout.turnContext({ input_tokens: 300, output_tokens: 20,
+    cache_read_input_tokens: 10, context_tokens: 215, context_input_tokens: 205, context_output_tokens: 10 }, 1000);
+  assert.equal(ctx.total, 215);
+  assert.equal(ctx.billed, 330);
+  assert.equal(ctx.aggregated, false);
+});
+
 // One Claude request: cache reads are what actually sat in the window.
 const claudeTurn = {
   input_tokens: 12_000,

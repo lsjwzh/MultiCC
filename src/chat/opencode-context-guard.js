@@ -1,72 +1,62 @@
 'use strict';
 
-// Pre-turn admission guard for OpenCode native context (mirrors
-// codex-rollout-guard): when the CURRENT native session's water level has
-// crossed a safe fraction of the model's REAL context limit, the turn rotates
-// to a fresh native session via a bounded handoff checkpoint, so a long-lived
-// session cannot silently walk into "Prompt is too long".
-//
-// Decision only — the caller (turn-engine) performs the rotation with the
-// shared pendingCliHandoff machinery. The guard never touches the user's
-// OpenCode database (the reader is read-only) and fails open: any error means
-// "don't rotate this turn", never a blocked turn.
-//
-// A rotation additionally requires the limit to come from the models.dev
-// catalog (reader.wouldRotate). A guessed/fallback limit never triggers
-// rotation — an unknown model degrades safely instead of rotating on a
-// fabricated window.
-
+// Rust 决定准入；Node 仅通过既有宿主端口保存交接摘要与广播。
+// 不修改 OpenCode 数据库。宿主迁入 Rust 后可删除这一层。
+const crypto = require('node:crypto');
+const { getNative } = require('../native/runtime');
 const { createOpencodeContextReader } = require('./opencode-context');
+const { buildHandoffCheckpoint, clearAllNativeCliStates } = require('../cli-switch');
 
 function createOpencodeContextGuard(deps = {}) {
-  const logger = deps.logger || console;
-  const reader = deps.contextReader
-    || createOpencodeContextReader({ logger, env: deps.env });
-
-  function enforce(record) {
-    const base = { action: 'skipped' };
+  const reader = deps.contextReader || createOpencodeContextReader(deps);
+  const nativeModule = deps.getNative || (() => getNative('opencode_context'));
+  async function enforce(record = {}) {
     try {
-      const persisted = record || {};
-      if (persisted.kind && persisted.kind !== 'chat') {
-        return Object.freeze({ ...base, reason: 'not_chat_session' });
-      }
-      const handoff = persisted.pendingCliHandoff;
-      if (handoff && handoff.status === 'pending') {
-        // A checkpoint is already queued for the next turn — rotating again
-        // would stack checkpoints and re-clear state for no benefit.
-        return Object.freeze({ ...base, reason: 'handoff_pending' });
-      }
-      const cliSessionId = persisted._streamSessionId || persisted.cliSessionId || null;
-      if (!cliSessionId) {
-        return Object.freeze({ ...base, reason: 'no_native_session' });
-      }
-      const usage = reader.read(cliSessionId, persisted.model || null);
-      if (!usage || usage.found !== true) {
-        return Object.freeze({ ...base, reason: (usage && usage.reason) || 'usage_unavailable' });
-      }
-      const metrics = {
-        cliSessionId,
-        tokensTotal: usage.tokens.total,
-        contextLimit: usage.limit.context,
-        limitSource: usage.limit.source,
-        threshold: usage.threshold,
-        ratio: usage.ratio,
-      };
-      if (usage.limit.source !== 'models.dev') {
-        // Unknown model: never rotate on a guessed window.
-        return Object.freeze({ ...base, reason: 'limit_unknown', ...metrics });
-      }
-      if (usage.wouldRotate !== true) {
-        return Object.freeze({ ...base, reason: 'below_threshold', ...metrics });
-      }
-      return Object.freeze({ action: 'rotate', reason: 'context_water_level_exceeded', ...metrics });
+      const native = nativeModule();
+      if (typeof native?.planOpencodeContext !== 'function') return { action: 'skipped', reason: 'native-unavailable' };
+      const nativeId = record._streamSessionId || record.cliSessionId || null;
+      const usage = nativeId ? await reader.read(nativeId, record.model || null) : null;
+      return Object.freeze(JSON.parse(native.planOpencodeContext(JSON.stringify({
+        record: { kind: record.kind, cliSessionId: record.cliSessionId, _streamSessionId: record._streamSessionId }, usage,
+      }))));
     } catch (error) {
-      try { logger.warn('opencode_context_guard_failed', { reason: error && error.message }); } catch (_) {}
-      return Object.freeze({ ...base, reason: 'error' });
+      deps.logger?.warn?.('opencode_context_guard_failed', { reason: error?.code || 'error' });
+      return Object.freeze({ action: 'skipped', reason: 'error' });
     }
   }
-
   return Object.freeze({ enforce });
 }
 
-module.exports = { createOpencodeContextGuard };
+async function enforceOpencodeContextForTurn({ guard, persisted, sessionName, history,
+  rememberActiveCliState, savePersistedSessionsBestEffort, logger, appendEvent, chatBroadcast, assertCurrent }) {
+  const nativeId = persisted._streamSessionId || persisted.cliSessionId;
+  const model = persisted.model;
+  const verdict = await guard.enforce(persisted);
+  assertCurrent?.();
+  if (nativeId !== (persisted._streamSessionId || persisted.cliSessionId) || model !== persisted.model) {
+    return { action: 'skipped', reason: 'native_changed' };
+  }
+  if (verdict.action !== 'rotate') return verdict;
+  const pending = persisted.pendingCliHandoff?.status === 'pending' ? persisted.pendingCliHandoff : null;
+  // 跨 CLI 交接可能正在复用超限的旧会话；保留原交接摘要，仅换原生目标。
+  const checkpoint = { ...(pending?.checkpoint || buildHandoffCheckpoint({
+    session: persisted, fromCli: 'opencode', toCli: 'opencode', history: history(),
+  })), reason: 'auto_native_context_rotate' };
+  persisted.pendingCliHandoff = {
+    ...pending, id: pending?.id || `checkpoint_${crypto.randomBytes(8).toString('hex')}`,
+    fromCli: pending?.fromCli || 'opencode', toCli: 'opencode',
+    createdAt: pending?.createdAt || checkpoint.createdAt, status: 'pending',
+    reason: 'auto_native_context_rotate', reusedTarget: false, checkpoint,
+  };
+  const clearedNativeSessions = clearAllNativeCliStates(persisted);
+  rememberActiveCliState(persisted);
+  savePersistedSessionsBestEffort('runtime.opencode-context-rotate');
+  logger.warn('opencode_context_rotated', { sessionId: sessionName,
+    rotatedCliSessionId: verdict.cliSessionId, reason: verdict.reason, tokensTotal: verdict.tokensTotal,
+    contextLimit: verdict.contextLimit, ratio: verdict.ratio, threshold: verdict.threshold, clearedNativeSessions });
+  appendEvent(persisted.dirId, 'opencode_context_rotated', verdict.message, sessionName);
+  chatBroadcast(sessionName, { type: 'system', subtype: 'native_context_rotated', auto: true, message: verdict.message });
+  return verdict;
+}
+
+module.exports = { createOpencodeContextGuard, enforceOpencodeContextForTurn };

@@ -745,7 +745,7 @@ test('opaque hostile session ids remain inside the repository data root', () => 
 // fails: it reports the water level of the CLI transcript that `--resume` reloads.
 // It is a GET the UI may poll, so it must never rewrite the transcript, and — like
 // every other diagnostic here — must not hand an absolute filesystem path to a client.
-test('context level reports the transcript water level read-only and without leaking paths', () => {
+test('context level reports the transcript water level read-only and without leaking paths', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-context-level-home-'));
   const cwd = '/repo/.multicc-worktrees/s1';
   const prevHome = process.env.HOME;
@@ -868,7 +868,7 @@ test('context level reports the transcript water level read-only and without lea
     const okApp = createFakeApp();
     okFixture.runtime.mountRoutes(okApp);
     const okRes = createResponse();
-    okApp.routes.get('GET /api/sessions/:id/context-level')(
+    await okApp.routes.get('GET /api/sessions/:id/context-level')(
       { params: { id: 's1' }, query: {} }, okRes, () => {},
     );
     assert.equal(okRes.statusCode, 200);
@@ -887,7 +887,7 @@ test('context level reports the transcript water level read-only and without lea
       const mApp = createFakeApp();
       missing.runtime.mountRoutes(mApp);
       const mRes = createResponse();
-      mApp.routes.get('GET /api/sessions/:id/context-level')(
+      await mApp.routes.get('GET /api/sessions/:id/context-level')(
         { params: { id: 's1' }, query: {} }, mRes, () => {},
       );
       assert.equal(mRes.body.supported, true);
@@ -903,7 +903,7 @@ test('context level reports the transcript water level read-only and without lea
     const sApp = createFakeApp();
     streamed.runtime.mountRoutes(sApp);
     const sRes = createResponse();
-    sApp.routes.get('GET /api/sessions/:id/context-level')(
+    await sApp.routes.get('GET /api/sessions/:id/context-level')(
       { params: { id: 's1' }, query: {} }, sRes, () => {},
     );
     assert.equal(sRes.body.supported, true);

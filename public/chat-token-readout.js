@@ -50,6 +50,13 @@
       + count(usage.cache_creation_input_tokens);
     const billed = resident + output;
     const window = count(contextWindow);
+    // OpenCode 原生记录给出了最后一次请求的水位，与本轮累计计费用量分开。
+    const measured = count(usage.context_tokens);
+    if (measured) {
+      return Object.freeze({ input: count(usage.context_input_tokens),
+        output: count(usage.context_output_tokens), total: measured, billed,
+        aggregated: false, withinWindow: !window || measured <= window });
+    }
     if (!window || billed <= window) {
       return Object.freeze({
         input: resident,

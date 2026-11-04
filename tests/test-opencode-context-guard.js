@@ -1,217 +1,167 @@
 'use strict';
-
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const {
-  createOpencodeContextReader,
-  clampThreshold,
-  resolveThreshold,
-  DEFAULT_THRESHOLD,
-} = require('../src/chat/opencode-context');
-const { createOpencodeContextGuard } = require('../src/chat/opencode-context-guard');
+const Database = require('better-sqlite3');
+const { createOpencodeContextReader, clampThreshold, resolveThreshold } = require('../src/chat/opencode-context');
+const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('../src/chat/opencode-context-guard');
+const { getNative } = require('../src/native/runtime');
 
-// ── Reader ──────────────────────────────────────────────────────────────────
-
-function fakeDb(rows) {
-  return {
-    prepare() {
-      return { get: id => (rows[id] !== undefined ? { data: rows[id] } : undefined) };
-    },
-    close() {},
-  };
-}
-
-function usageRow(total, extra = {}) {
-  return JSON.stringify({ tokens: { total, input: 10, output: 5, cache: { read: total - 15, write: 0 } }, ...extra });
-}
-
-test('reader reports the water level of exactly the requested native session', () => {
-  const opens = [];
-  const reader = createOpencodeContextReader({
-    dbPath: '/fake/opencode.db',
-    openDatabase: p => { opens.push(p); return fakeDb({
-      'ses-bloated': usageRow(897243),
-      'ses-fresh': usageRow(1200),
-    }); },
-    limitResolver: { resolve: () => ({ context: 1000000, output: 32768, source: 'models.dev', matched: 1 }) },
-    threshold: 0.85,
-  });
-  assert.deepEqual(opens, []);
-  const bloated = reader.read('ses-bloated', 'deepseek-v4-flash');
-  assert.equal(opens.length, 1, 'read-only connection per read');
-  assert.equal(bloated.found, true);
-  assert.equal(bloated.tokens.total, 897243);
-  assert.deepEqual(bloated.limit, { context: 1000000, output: 32768, source: 'models.dev' });
-  assert.equal(bloated.ratio, 0.897);
-  assert.equal(bloated.wouldRotate, true);
-  // A sibling session in the same cwd is a distinct native id and stays low.
-  const fresh = reader.read('ses-fresh', 'deepseek-v4-flash');
-  assert.equal(fresh.tokens.total, 1200);
-  assert.equal(fresh.wouldRotate, false);
-  // Unknown ids and missing rows degrade without throwing.
-  assert.deepEqual(reader.read('nope', 'm'), { found: false, reason: 'session-not-found' });
-  assert.deepEqual(reader.read('', 'm'), { found: false, reason: 'no-native-session' });
-  assert.deepEqual(reader.read(null, 'm'), { found: false, reason: 'no-native-session' });
-});
-
-test('reader never rotates on a fallback (unknown-model) limit', () => {
-  const reader = createOpencodeContextReader({
-    openDatabase: () => fakeDb({ s1: usageRow(200000) }),
-    limitResolver: { resolve: () => ({ context: 128000, output: 8192, source: 'fallback', matched: 0 }) },
-    threshold: 0.85,
-  });
-  const usage = reader.read('s1', 'totally-unknown');
-  assert.equal(usage.limit.source, 'fallback');
-  // 200000/128000 > threshold, but a guessed window must not drive rotation.
-  assert.equal(usage.wouldRotate, false);
-});
-
-test('reader degrades safely when the database is unavailable or corrupt', () => {
-  const unavailable = createOpencodeContextReader({
-    openDatabase: () => { throw new Error('ENOENT'); },
-  });
-  assert.deepEqual(unavailable.read('s1', 'm'), { found: false, reason: 'db-unavailable' });
-
-  const logs = [];
-  const corrupt = createOpencodeContextReader({
-    openDatabase: () => fakeDb({ s1: 'not-json' }),
-    logger: { warn: (event, payload) => logs.push({ event, payload }) },
-  });
-  assert.equal(corrupt.read('s1', 'm').found, false);
-  const throwing = createOpencodeContextReader({
-    openDatabase: () => ({ prepare() { throw new Error('locked'); }, close() {} }),
-    logger: { warn: () => {} },
-  });
-  assert.equal(throwing.read('s1', 'm').reason, 'read-failed');
-});
-
-test('threshold resolves from env and clamps into a safe band', () => {
-  assert.equal(DEFAULT_THRESHOLD, 0.85);
-  assert.equal(resolveThreshold({}), 0.85);
-  assert.equal(resolveThreshold({ MULTICC_OPENCODE_CONTEXT_THRESHOLD: '0.7' }), 0.7);
-  assert.equal(resolveThreshold({ MULTICC_OPENCODE_CONTEXT_THRESHOLD: '0.05' }), 0.5);
-  assert.equal(resolveThreshold({ MULTICC_OPENCODE_CONTEXT_THRESHOLD: '4' }), 0.95);
-  assert.equal(resolveThreshold({ MULTICC_OPENCODE_CONTEXT_THRESHOLD: 'abc' }), 0.85);
-  assert.equal(clampThreshold(NaN), 0.85);
-});
-
-// ── Guard ───────────────────────────────────────────────────────────────────
-
-function guardWith(readerResult) {
-  return createOpencodeContextGuard({
-    contextReader: { read: () => readerResult },
-    logger: { warn: () => {} },
-  });
-}
-
-const RECORD = { kind: 'chat', cli: 'opencode', cliSessionId: 'ses-1', model: 'deepseek-v4-flash' };
-
-test('guard orders rotation only on a real-limit breach at a safe boundary', () => {
-  const verdict = guardWith({
-    found: true,
-    sessionId: 'ses-1',
-    tokens: { total: 900000 },
-    limit: { context: 1000000, output: 32768, source: 'models.dev' },
-    threshold: 0.85,
-    ratio: 0.9,
-    wouldRotate: true,
-  }).enforce(RECORD);
-  assert.equal(verdict.action, 'rotate');
-  assert.equal(verdict.reason, 'context_water_level_exceeded');
-  assert.equal(verdict.tokensTotal, 900000);
-  assert.equal(verdict.contextLimit, 1000000);
-  assert.ok(Object.isFrozen(verdict));
-});
-
-test('guard stays passive below the threshold, on fallback limits, and while a handoff is pending', () => {
-  const hot = { found: true, tokens: { total: 10 }, limit: { context: 1000000, source: 'models.dev' }, threshold: 0.85, ratio: 0.01, wouldRotate: false };
-  assert.equal(guardWith(hot).enforce(RECORD).reason, 'below_threshold');
-
-  const guessed = { found: true, tokens: { total: 900000 }, limit: { context: 128000, source: 'fallback' }, threshold: 0.85, ratio: 7, wouldRotate: false };
-  const guessedVerdict = guardWith(guessed).enforce(RECORD);
-  assert.equal(guessedVerdict.action, 'skipped');
-  assert.equal(guessedVerdict.reason, 'limit_unknown');
-
-  const pending = { ...RECORD, pendingCliHandoff: { status: 'pending', reason: 'auto_native_context_rotate' } };
-  assert.equal(guardWith({ ...hot, wouldRotate: true, ratio: 0.99 }).enforce(pending).reason, 'handoff_pending');
-  // A consumed handoff must not block the next rotation forever.
-  const consumed = { ...RECORD, pendingCliHandoff: { status: 'consumed' } };
-  assert.equal(guardWith({ ...hot, wouldRotate: true, ratio: 0.99 }).enforce(consumed).action, 'rotate');
-});
-
-test('guard skips sessions without a native id and fails open on reader errors', () => {
-  assert.equal(guardWith({ found: true, wouldRotate: true }).enforce({ ...RECORD, cliSessionId: null }).reason, 'no_native_session');
-  assert.equal(guardWith({ found: false, reason: 'db-unavailable' }).enforce(RECORD).reason, 'db-unavailable');
-  assert.equal(guardWith({ found: false, reason: 'session-not-found' }).enforce(RECORD).reason, 'session-not-found');
-  const failing = createOpencodeContextGuard({
-    contextReader: { read: () => { throw new Error('boom'); } },
-    logger: { warn: () => {} },
-  });
-  assert.equal(failing.enforce(RECORD).action, 'skipped');
-  assert.equal(failing.enforce(RECORD).reason, 'error');
-  // Prefer the streaming-path id when both exist, matching context-level.
-  const streamed = guardWith({ found: true, tokens: { total: 950000 }, limit: { context: 1000000, source: 'models.dev' }, threshold: 0.85, ratio: 0.95, wouldRotate: true })
-    .enforce({ ...RECORD, _streamSessionId: 'ses-stream' });
-  assert.equal(streamed.action, 'rotate');
-});
-
-test('turn-engine wires the opencode rotation at turn admission, before native-session lineage', () => {
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  const hook = source.indexOf("turnCli === 'opencode' && persisted.cliSessionId");
-  assert.ok(hook > 0, 'the opencode admission hook must exist');
-  // d05f667e widened the codex rollout guard to codex-exp and added the native
-  // session guard for the other resume-capable lanes; the order is
-  // codex → native lanes → opencode, all before first-vs-resume is decided.
-  // 801715ed moved the inline guard block into enforceCodexRolloutForTurn —
-  // same admission point, new literal for the same condition.
-  const codexHook = source.indexOf("['codex', 'codex-exp'].includes(turnCli) && persisted.cliSessionId");
-  assert.ok(codexHook > 0 && hook > codexHook, 'the opencode hook sits after the codex guard');
-  const nativeHook = source.indexOf('nativeSessionGuard.handles(turnCli) && persisted.cliSessionId');
-  assert.ok(nativeHook > codexHook && hook > nativeHook,
-    'the native-lane guard sits between the codex guard and the opencode hook');
-  const request = source.indexOf('turnRequest = normalizeTurnRequest({');
-  const lineage = source.indexOf('hasNativeSession:', request);
-  assert.ok(request > hook && lineage > request,
-    'rotation must clear native state BEFORE the turn decides first-vs-resume');
-  assert.match(source.slice(lineage, lineage + 160), /hasNativeHistory\(persisted\)/,
-    'first-vs-resume must use the canonical native-history proof');
-  assert.ok(source.includes("reason: 'auto_native_context_rotate'"));
-  // Rotation is decision + shared handoff machinery, never a direct write into
-  // the user's OpenCode database.
-  const guardSource = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'chat', 'opencode-context-guard.js'), 'utf8');
-  assert.equal(guardSource.includes('INSERT'), false);
-  assert.equal(guardSource.includes('UPDATE'), false);
-  assert.equal(guardSource.includes('DELETE'), false);
-});
-
-test('guard reads a real SQLite database read-only via node:sqlite', () => {
+function fixture(t, catalog = { provider: { models: { model: { limit: { context: 1000, output: 100 } } } } }) {
+  assert.equal(typeof getNative('opencode_context', 'rust').readOpencodeContext, 'function', '必须使用当前源码的原生模块');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-opencode-ctx-'));
-  const dbFile = path.join(root, 'opencode.db');
-  // Build a minimal WAL-shaped database with better-sqlite3, then read it
-  // through the default node:sqlite opener exactly like production.
-  const Database = require('better-sqlite3');
-  const db = new Database(dbFile);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dbPath = path.join(root, 'opencode.db');
+  const cachePath = path.join(root, 'models.json');
+  fs.writeFileSync(cachePath, JSON.stringify(catalog));
+  const db = new Database(dbPath);
   db.exec('CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)');
-  const insert = db.prepare('INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)');
-  insert.run('m2', 'ses-a', 2000, usageRow(500000));
-  insert.run('m1', 'ses-a', 1000, usageRow(100000));
-  insert.run('m3', 'ses-b', 3000, usageRow(50));
-  db.close();
-  const reader = createOpencodeContextReader({
-    dbPath: dbFile,
-    limitResolver: { resolve: () => ({ context: 1000000, output: 32768, source: 'models.dev', matched: 1 }) },
-    threshold: 0.85,
-  });
-  const usage = reader.read('ses-a', 'm');
-  assert.equal(usage.found, true);
-  // The LATEST message wins (500000, not the older 100000).
-  assert.equal(usage.tokens.total, 500000);
-  assert.equal(usage.wouldRotate, false);
-  assert.equal(reader.read('ses-b', 'm').tokens.total, 50);
-  fs.rmSync(root, { recursive: true, force: true });
+  t.after(() => db.close());
+  const insert = db.prepare('INSERT INTO message VALUES (?, ?, ?, ?)');
+  let n = 0;
+  function add(data, sid = 's1') {
+    const id = `m${String(++n).padStart(5, '0')}`;
+    insert.run(id, sid, n, JSON.stringify(data));
+  }
+  const reader = createOpencodeContextReader({ dbPath, cachePath });
+  return { root, dbPath, cachePath, db, add, reader, guard: createOpencodeContextGuard({ contextReader: reader }) };
+}
+const measured = (input = 900, extra = {}) => ({ role: 'assistant', modelID: 'model', providerID: 'provider',
+  tokens: { input, output: 10, reasoning: 2, cache: { read: 5, write: 3 } }, ...extra });
+const record = () => ({ kind: 'chat', cli: 'opencode', cliSessionId: 's1', model: null });
+
+test('读取最近有效用量：用户消息、失败零值和缺失 total 不会清空水位', async t => {
+  const f = fixture(t);
+  f.add(measured());
+  f.add(measured(0, { tokens: { input: 0, output: 0 }, error: { name: 'MessageAbortedError' } }));
+  f.add({ role: 'user', model: { providerID: 'provider', modelID: 'model' } });
+  f.add(measured(10), 'sibling');
+  const before = fs.readFileSync(f.dbPath);
+  const usage = await f.reader.read('s1', null);
+  assert.equal(usage.tokens.total, 918);
+  assert.equal(usage.limit.source, 'models.dev');
+  assert.equal(usage.modelId, 'provider/model');
+  assert.equal(usage.wouldRotate, true);
+  assert.equal((await f.guard.enforce(record())).action, 'rotate');
+  assert.equal((await f.reader.read('sibling')).wouldRotate, false);
+  assert.deepEqual(fs.readFileSync(f.dbPath), before, '只读查询不得改写原生历史');
+});
+
+test('默认模型、带供应商前缀与模型自身含斜杠都能找到真实窗口', async t => {
+  const f = fixture(t, { a: { models: {
+    model: { limit: { context: 1000 } }, 'org/model': { limit: { context: 2000 } },
+    outputOnly: { limit: { output: 100 } },
+  } } });
+  f.add(measured());
+  assert.equal((await f.reader.read('s1', 'custom/model')).limit.context, 1000);
+  assert.equal((await f.reader.read('s1', 'org/model')).limit.context, 2000);
+  assert.equal((await f.reader.read('s1', 'custom/org/model')).limit.context, 2000);
+  assert.equal((await f.reader.read('s1', 'outputOnly')).limit.source, 'fallback');
+  assert.equal((await f.reader.read('s1', 'unknown')).wouldRotate, false);
+});
+
+test('确认超限可覆盖未知窗口与低旧水位，最近成功压缩后的用量解除旧错误', async t => {
+  const f = fixture(t, {});
+  f.add(measured(10));
+  f.add(measured(0, { tokens: { input: 0, output: 0 }, error: { name: 'ContextOverflowError',
+    data: { message: 'Conversation history too large to compact - exceeds model context limit' } } }));
+  const usage = await f.reader.read('s1');
+  assert.equal(usage.tokens.total, 28);
+  assert.equal(usage.overflow, true);
+  assert.equal((await f.guard.enforce(record())).reason, 'native_context_overflow');
+  f.add(measured(20));
+  assert.equal((await f.reader.read('s1')).overflow, false);
+  assert.equal((await f.guard.enforce(record())).reason, 'limit_unknown');
+});
+
+test('只有超限错误时保持未知用量，而不是伪造 0% 的健康水位', async t => {
+  const f = fixture(t, {});
+  f.add({ role: 'assistant', tokens: { input: 0, output: 0 }, error: { name: 'UnknownError', data: {
+    message: "This model's maximum context length is 1048576 tokens. However, you requested 32000 output tokens and your prompt contains at least 1016577 input tokens."
+  } } });
+  const usage = await f.reader.read('s1');
+  assert.equal(usage.tokens, null);
+  assert.equal(usage.ratio, null);
+  assert.equal(usage.usageKnown, false);
+  assert.equal((await f.guard.enforce(record())).action, 'rotate');
+});
+
+test('待完成交接不能绕过旧目标检查；轮换保留源摘要和完整显示历史', async t => {
+  const f = fixture(t);
+  f.add(measured());
+  const persisted = { ...record(), pendingCliHandoff: { id: 'keep-id', status: 'pending', reusedTarget: true,
+    fromCli: 'claude-exp', toCli: 'opencode', reason: 'auto_provider_cli_switch',
+    checkpoint: { createdAt: 'today', transcript: ['重要上下文'] } } };
+  const notices = [], saved = [];
+  const run = () => enforceOpencodeContextForTurn({ guard: f.guard, persisted, sessionName: 'logical',
+    history: () => { throw Error('已有摘要不应被替换'); }, rememberActiveCliState() {},
+    savePersistedSessionsBestEffort: why => saved.push(why), logger: { warn() {} }, appendEvent() {},
+    chatBroadcast: (_, event) => notices.push(event) });
+  assert.equal((await run()).action, 'rotate');
+  assert.equal(persisted.cliSessionId, null);
+  assert.equal(persisted.pendingCliHandoff.id, 'keep-id');
+  assert.equal(persisted.pendingCliHandoff.fromCli, 'claude-exp');
+  assert.equal(persisted.pendingCliHandoff.reusedTarget, false);
+  assert.deepEqual(persisted.pendingCliHandoff.checkpoint.transcript, ['重要上下文']);
+  assert.equal(saved.length, 1);
+  assert.match(notices[0].message, /完整对话历史保留/);
+  assert.equal((await run()).reason, 'no_native_session');
+  assert.equal(notices.length, 1, '新上下文尚未启动时不能重复轮换');
+});
+
+test('本轮用量游标隔离旧历史、兄弟会话和失败请求，累加所有有效步骤', async t => {
+  const f = fixture(t);
+  f.add(measured(9000));
+  const cursor = await f.reader.cursor('s1');
+  f.add(measured(100));
+  f.add(measured(200));
+  f.add(measured(5000), 'sibling');
+  f.add({ role: 'assistant', tokens: { input: 0, output: 0 }, error: { name: 'UnknownError' } });
+  const usage = await f.reader.turnUsage('s1', cursor);
+  assert.equal(usage.input_tokens, 300);
+  assert.equal(usage.output_tokens, 20);
+  assert.equal(usage.cache_read_input_tokens, 10);
+  assert.equal(usage.cache_creation_input_tokens, 6);
+  assert.equal(usage.reasoning_output_tokens, 4);
+  assert.equal(usage.context_tokens, 218);
+  assert.equal(usage.request_count, 2);
+  assert.equal(await f.reader.turnUsage('sibling', cursor), null);
+  assert.equal(await f.reader.turnUsage('s1', await f.reader.cursor('s1')), null);
+});
+
+test('数据库不可读、用量未知和原生模块缺失均返回明确原因', async t => {
+  const f = fixture(t);
+  assert.equal((await f.reader.read('missing')).reason, 'session-not-found');
+  assert.equal((await f.reader.read('')).reason, 'no-native-session');
+  f.add({ role: 'user' });
+  assert.equal((await f.reader.read('s1')).reason, 'usage-missing');
+  const missing = createOpencodeContextReader({ dbPath: path.join(f.root, 'absent.db') });
+  assert.equal((await missing.read('s1')).reason, 'db-unavailable');
+  assert.equal(fs.existsSync(path.join(f.root, 'absent.db')), false);
+  assert.equal((await createOpencodeContextReader({ getNative: () => null }).read('s1')).reason, 'native-unavailable');
+});
+
+test('阈值边界保持兼容，数据库路径尊重 XDG 环境', async () => {
+  assert.equal(resolveThreshold({}), .85);
+  assert.equal(resolveThreshold({ MULTICC_OPENCODE_CONTEXT_THRESHOLD: '0.7' }), .7);
+  assert.equal(clampThreshold(4), .95);
+  assert.equal(clampThreshold(0.05), .5);
+  assert.equal(clampThreshold(NaN), .85);
+  let args;
+  const reader = createOpencodeContextReader({ env: { HOME: '/h', XDG_DATA_HOME: '/d', XDG_CACHE_HOME: '/c' },
+    getNative: () => ({ async readOpencodeContext(input) { args = JSON.parse(input); return '{}'; } }) });
+  await reader.read('s1');
+  assert.equal(args.dbPath, '/d/opencode/opencode.db');
+  assert.equal(args.cachePath, '/c/opencode/models.json');
+});
+
+test('异步检查期间原生目标改变时不清除新目标', async () => {
+  const persisted = record();
+  const result = await enforceOpencodeContextForTurn({ persisted, guard: { async enforce() {
+    persisted.cliSessionId = 'replacement'; return { action: 'rotate' };
+  } } });
+  assert.equal(result.reason, 'native_changed');
+  assert.equal(persisted.cliSessionId, 'replacement');
 });
