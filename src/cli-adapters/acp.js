@@ -65,6 +65,7 @@ function createAcpAdapter({
   modelViaArgv = false, effortViaArgv = false, effortViaConfig = true, agentViaMode = false,
   routerMcpNode = null, routerMcpScript = null, userInputReminder = '',
   terminalCmd = null,
+  nativeUsage = null,
 }) {
   // Per-adapter decode state, keyed by the agent's own ids so concurrent
   // sessions of the same CLI never share an entry.
@@ -164,6 +165,7 @@ function createAcpAdapter({
   function buildArgs(env) {
     const so = env.spawnOpts;
     const args = [bridge, '--agent-bin', cmd, '--label', label];
+    if (nativeUsage) args.push('--native-usage', nativeUsage);
     const argv = typeof agentArgs === 'function' ? agentArgs(so) : agentArgs;
     for (const arg of argv) args.push('--agent-arg', arg);
     if (env.historyHandle.cliSessionId) args.push('--session-id', env.historyHandle.cliSessionId);

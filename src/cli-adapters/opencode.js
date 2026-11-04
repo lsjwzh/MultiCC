@@ -78,6 +78,7 @@ function createOpencodeAdapter({
   }
   return withModelGuard(createAcpAdapter({
     name: 'opencode', label: LABEL, cmd, agentArgs: ['acp'],
+    nativeUsage: 'opencode',
     // OpenCode agents (build/plan) are ACP session modes.
     agentViaMode: true,
     routerMcpNode, routerMcpScript, userInputReminder,

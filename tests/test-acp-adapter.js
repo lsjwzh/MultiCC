@@ -45,6 +45,18 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (m.method === 'session/cancel') { cancelled && cancelled(); return; }
   if (m.method === 'session/prompt') {
     const sid = m.params.sessionId;
+    if (mode === 'native-usage' || mode === 'native-usage-rpc') {
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(process.env.ACP_TEST_DB);
+      const insert = db.prepare('INSERT INTO message VALUES (?, ?, ?, ?)');
+      for (const [id, time, input] of [['new1', 2, 100], ['new2', 3, 200]]) {
+        insert.run(id, sid, time, JSON.stringify({ role: 'assistant', tokens: { input, output: 10, cache: { read: 5, write: 0 } } }));
+      }
+      db.close();
+      update(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '已完成' } });
+      return reply({ stopReason: 'end_turn', ...(mode === 'native-usage-rpc'
+        ? { usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 } } : {}) });
+    }
     if (mode === 'context') return send({ id: m.id, error: {
       code: -32603, message: 'Internal error: Conversation history too large to compact - exceeds model context limit',
       data: { service: 'session', errorName: 'ContextOverflowError' },
@@ -66,15 +78,27 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 });
 `;
 
-function runBridge(args, { signalAfterMs = 0 } = {}) {
+function runBridge(args, { signalAfterMs = 0, nativeUsage = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-test-'));
   const agent = path.join(dir, 'agent.js');
   const log = path.join(dir, 'log.jsonl');
   fs.writeFileSync(agent, FAKE_AGENT);
+  const env = { ...process.env };
+  if (nativeUsage) {
+    const dbPath = path.join(dir, 'opencode', 'opencode.db');
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const db = new (require('better-sqlite3'))(dbPath);
+    db.exec('CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)');
+    db.prepare('INSERT INTO message VALUES (?, ?, ?, ?)').run('old', 'ses_old', 1,
+      JSON.stringify({ role: 'assistant', tokens: { input: 9999, output: 999 } }));
+    db.close();
+    env.XDG_DATA_HOME = dir;
+    env.ACP_TEST_DB = dbPath;
+  }
   const [mode, ...rest] = args;
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [BRIDGE, '--agent-bin', process.execPath,
-      '--agent-arg', agent, '--agent-arg', mode, '--agent-arg', log, '--label', 'Fake', ...rest], { cwd: dir });
+      '--agent-arg', agent, '--agent-arg', mode, '--agent-arg', log, '--label', 'Fake', ...rest], { cwd: dir, env });
     let out = '';
     child.stdout.on('data', (chunk) => { out += chunk; });
     if (signalAfterMs) setTimeout(() => child.kill('SIGTERM'), signalAfterMs);
@@ -82,10 +106,33 @@ function runBridge(args, { signalAfterMs = 0 } = {}) {
       const events = out.split('\n').filter(Boolean).map(line => JSON.parse(line));
       const requests = fs.existsSync(log)
         ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
+      fs.rmSync(dir, { recursive: true, force: true });
       resolve({ code, events, requests });
     });
   });
 }
+
+test('第三方 OpenCode 没有返回 ACP 用量时，从本轮原生消息补齐且不重复统计旧历史', async () => {
+  const { code, events } = await runBridge(['native-usage', '--native-usage', 'opencode',
+    '--session-id', 'ses_old', '--', '继续'], { nativeUsage: true });
+  assert.equal(code, 0);
+  const result = events.find(e => e.method === 'multicc/turnEnd');
+  assert.equal(result.params.usage.input_tokens, 300);
+  assert.equal(result.params.usage.output_tokens, 20);
+  assert.equal(result.params.usage.cache_read_input_tokens, 10);
+  assert.equal(result.params.usage.context_tokens, 215);
+  const [decoded] = createOpencodeAdapter({ cmd: 'opencode', env: {} }).decodeEvent(result);
+  assert.equal(decoded.usage.input_tokens, 300);
+});
+
+test('ACP 已返回有效用量时保留原值，原生记录只补充上下文水位', async () => {
+  const { events } = await runBridge(['native-usage-rpc', '--native-usage', 'opencode',
+    '--session-id', 'ses_old', '--', '继续'], { nativeUsage: true });
+  const usage = events.find(e => e.method === 'multicc/turnEnd').params.usage;
+  assert.equal(usage.input_tokens, 7);
+  assert.equal(usage.output_tokens, 3);
+  assert.equal(usage.context_tokens, 215);
+});
 
 function envelope({ first = true, sessionId = null, model = null, effort = null, agent = null } = {}) {
   return {
@@ -220,7 +267,7 @@ test('opencode defaults to ACP; gemini and grok launch their ACP servers', () =>
   const inv = opencode.buildInvocation(envelope({ first: false, sessionId: 'ses_1', model: 'p/m', effort: 'high', agent: 'plan' }));
   assert.equal(inv.cmd, process.execPath);
   assert.deepEqual(inv.args.slice(1), [
-    '--agent-bin', '/bin/opencode', '--label', 'OpenCode', '--agent-arg', 'acp', '--session-id', 'ses_1',
+    '--agent-bin', '/bin/opencode', '--label', 'OpenCode', '--native-usage', 'opencode', '--agent-arg', 'acp', '--session-id', 'ses_1',
     '--model', 'p/m', '--effort', 'high', '--mode', 'plan', '--router-mcp', '/n', '/r.js', '--',
   ]);
   assert.equal(inv.payload, 'R\n\nhello');

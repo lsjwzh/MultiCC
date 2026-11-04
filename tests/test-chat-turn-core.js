@@ -211,7 +211,7 @@ test('provider-cause evidence outranks the proxy generic status at turn close', 
   // Both close paths must hand the specific record to the policy — reading the
   // proxy record first made every quota wall a retryable rate limit.
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  assert.equal(source.split('boundaryErrorEnvelope || runner.apiErrorRaw || proxyFailure').length - 1, 2,
+  assert.equal((source.match(/boundaryErrorEnvelope\s*\|\| (?:opencodeProcessError\([^\n]+?\) \|\| )?runner\.apiErrorRaw \|\| proxyFailure/g) || []).length, 2,
     'both the process and stream close paths must prefer provider-owned evidence over the proxy status');
   assert.equal(/proxyFailure \|\| boundaryErrorEnvelope/.test(source), false,
     'the generic proxy record must never shadow the provider diagnosis');

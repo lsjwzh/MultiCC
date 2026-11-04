@@ -47,6 +47,7 @@ function parseArgs(argv) {
     if (value === '--agent-bin') options.agentBin = argv[++index];
     else if (value === '--agent-arg') options.agentArgs.push(argv[++index]);
     else if (value === '--label') options.label = argv[++index];
+    else if (value === '--native-usage') options.nativeUsage = argv[++index];
     else if (value === '--session-id') options.sessionId = argv[++index];
     else if (value === '--model') options.model = argv[++index];
     else if (value === '--mode') options.mode = argv[++index];
@@ -106,6 +107,9 @@ function normalizeUsage(usage) {
 }
 
 function createBridge(options, { env = process.env, spawnFn = spawn } = {}) {
+  // OpenCode 的 ACP 用量字段为可选；用原生消息游标限定本轮，避免重复累计。
+  const nativeUsage = options.nativeUsage === 'opencode'
+    ? require('../chat/opencode-context').createOpencodeContextReader({ env }) : null;
   const child = spawnFn(options.agentBin, options.agentArgs, {
     cwd: process.cwd(), env, stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -311,13 +315,26 @@ function createBridge(options, { env = process.env, spawnFn = spawn } = {}) {
 
   async function prompt(text) {
     cancelRequested = false;
+    const usageCursor = nativeUsage ? await nativeUsage.cursor(sessionId) : null;
+    if (stopping) {
+      emit('multicc/turnEnd', { sessionId, stopReason: 'cancelled', usage: null });
+      return 'cancelled';
+    }
     activePrompt = request('session/prompt', {
       sessionId, prompt: [{ type: 'text', text }],
     }, { timeoutMs: 0 });
     try {
       const result = await activePrompt;
       const stopReason = cancelRequested && result.stopReason !== 'end_turn' ? 'cancelled' : (result.stopReason || 'end_turn');
-      emit('multicc/turnEnd', { sessionId, stopReason, usage: normalizeUsage(result.usage) });
+      let usage = normalizeUsage(result.usage);
+      if (nativeUsage && usageCursor?.sessionId === sessionId) {
+        const measured = await nativeUsage.turnUsage(sessionId, usageCursor);
+        if (measured?.usage_source === 'opencode_native') {
+          usage = usage && Object.values(usage).some(value => Number(value) > 0)
+            ? { ...measured, ...usage } : measured;
+        }
+      }
+      emit('multicc/turnEnd', { sessionId, stopReason, usage });
       return stopReason;
     } finally {
       activePrompt = null;
