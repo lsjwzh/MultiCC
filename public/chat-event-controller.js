@@ -277,7 +277,16 @@
       if (!routeOwnable) return true;
       if (scope === 'host') return message.type !== 'part_delta' && message.type !== 'stream_event';
       if (scope !== 'attempt') return false;
-      return sameProviderRoute(providerRouteIdentity(message), activeProviderRoute);
+      const identity = providerRouteIdentity(message);
+      if (!identity) return false;
+      // A reconnected page can advertise v1 before any route event has been
+      // seen: the reconnect init carries `providerRoute` only while the attempt
+      // is still running. Dropping attributed frames in that window blacked out
+      // the whole live turn (the text was persisted and only appeared after a
+      // reload). Accept a fully attributed frame until the first route event
+      // installs the high-water mark that rejects genuinely stale attempts.
+      if (!activeProviderRoute && !providerRouteTerminal) return true;
+      return sameProviderRoute(identity, activeProviderRoute);
     }
 
     function applyProviderRouteModel(message) {

@@ -113,6 +113,28 @@ void main() {
   );
 
   test(
+    'attributed frames render before the first route event installs a high-water mark',
+    () {
+      final gate = ProviderRouteGate();
+      // Reconnect while the turn streams but the server has no running attempt
+      // to echo back: init advertises v1 with providerRoute null.
+      gate.accept(init());
+      expect(
+        gate.accept(frame(1, 'attempt-1')),
+        isTrue,
+        reason: 'a fully attributed frame must not be blacked out',
+      );
+      expect(gate.accept(route(2, 'attempt-2')), isTrue);
+      expect(
+        gate.accept(frame(1, 'attempt-1')),
+        isFalse,
+        reason: 'once the route is known stale attempts stay rejected',
+      );
+      expect(gate.accept(frame(2, 'attempt-2')), isTrue);
+    },
+  );
+
+  test(
     'attempt scope is fail-closed while host terminal frames stay compatible',
     () {
       final gate = ProviderRouteGate();

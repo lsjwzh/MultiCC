@@ -68,7 +68,15 @@ class ProviderRouteGate {
     if (scope != 'attempt') return false;
 
     final candidate = _ProviderRouteIdentity.from(message);
-    return !_terminal && candidate != null && candidate == _active;
+    if (candidate == null) return false;
+    // A reconnected page can advertise v1 before any route event has been
+    // seen: the reconnect init carries `providerRoute` only while the attempt
+    // is still running. Dropping attributed frames in that window blacked out
+    // the whole live turn (the text was persisted and only appeared after a
+    // reload). Accept a fully attributed frame until the first route event
+    // installs the high-water mark that rejects genuinely stale attempts.
+    if (_active == null && !_terminal) return true;
+    return !_terminal && candidate == _active;
   }
 
   bool _acceptRouteEvent(Map<String, dynamic> message) {

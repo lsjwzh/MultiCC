@@ -630,6 +630,40 @@ test('route protocol v1 reconnect init restores the active attempt and terminal 
   assert.equal(fixture.state.currentTextContent, 'after-reconnect');
 });
 
+test('route protocol v1 renders attributed frames that arrive before the first route event', () => {
+  const fixture = controllerFixture();
+  fixture.state.currentCli = 'opencode';
+  const generation = fixture.controller.beginGeneration();
+  const identity = {
+    providerRouteScope: 'attempt', runtimeEpoch: 'epoch-u', turnId: 'turn-u',
+    decisionId: 'decision-u', routeAttemptId: 'attempt-u', routeGeneration: 1,
+    attemptNo: 1, providerId: 'provider-u', providerRevision: 'revision-u',
+  };
+  // Reconnect while the turn streams but the server has no running attempt to
+  // echo back: init advertises v1 with providerRoute null.
+  assert.equal(fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'strict', is_streaming: true,
+    providerRouteProtocolVersion: 1, providerRoute: null,
+  }, generation), true);
+  assert.equal(fixture.controller.handleEvent({
+    type: 'assistant',
+    message: { textSnapshot: true, content: [{ type: 'text', text: 'live-without-route' }] },
+    ...identity,
+  }, generation), true, 'a fully attributed frame must not be blacked out');
+  assert.equal(fixture.state.currentTextContent, 'live-without-route');
+  // The first route event installs the high-water mark; stale attempts are
+  // still rejected from then on.
+  assert.equal(fixture.controller.handleEvent({
+    type: 'provider_route_event', version: 1, routePhase: 'selected', ...identity,
+  }, generation), true);
+  assert.equal(fixture.controller.handleEvent({
+    type: 'assistant',
+    message: { textSnapshot: true, content: [{ type: 'text', text: 'stale' }] },
+    ...identity, routeGeneration: 9, attemptNo: 9,
+  }, generation), false);
+  assert.equal(fixture.state.currentTextContent, 'live-without-route');
+});
+
 test('fixed-provider system init updates the quota selection as well as the model label', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();
