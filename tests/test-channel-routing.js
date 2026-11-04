@@ -299,6 +299,11 @@ test('/api/channels reports who relies on a channel; recheck answers whether the
   env.persistedSessions.get('s1').taskState.classifyState = 'P'; // the user picked it up again
   answer = await ask([{ sessionId: 's1', category: 'error' }]);
   assert.equal(answer.body.items[0].active, false);
+  // question 类别接受 W 和 D（task.needs_interaction 触发时 classifyState 已是 D）
+  env.persistedSessions.get('s2').taskState.classifyState = 'D';
+  answer = await ask([{ sessionId: 's2', category: 'question' }]);
+  assert.equal(answer.body.items[0].active, true);
+  env.persistedSessions.get('s2').taskState.classifyState = 'W'; // restore
   const remote = await call(env.app, 'POST', '/api/channels/recheck', { body: { items: [] }, local: false });
   assert.equal(remote.statusCode, 403);
 });

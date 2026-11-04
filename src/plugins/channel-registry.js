@@ -119,14 +119,21 @@ async function deliver(plugin, payload) {
 
 // 发送前复核（方案 10.5 第 5 步）：这件事的问题还在不在。完成、测试这类不是「问题」，
 // 一直算在；任务已经删了算不在；其余看任务现在的分类字母是否还是当时那个。
+// question 类别特殊：task.waiting_user (W) 和 task.needs_interaction (D) 都归它，
+// 所以 D 和 W 都算"还在"——和"需要我处理"过滤器口径一致。
 const CATEGORY_LETTER = Object.freeze({ error: 'E', question: 'W', background: 'B' });
+const CATEGORY_LETTERS = Object.freeze({
+  error: ['E'],
+  question: ['W', 'D'],
+  background: ['B'],
+});
 
 function stillActive(sessionId, category) {
-  const letter = CATEGORY_LETTER[category];
-  if (!letter || !sessionId) return true;
+  const letters = CATEGORY_LETTERS[category];
+  if (!letters || !sessionId) return true;
   const task = taskOf(sessionId);
   if (!task) return taskLookup ? false : true;
-  return task.classifyState === letter;
+  return letters.includes(task.classifyState);
 }
 
 function reset() {
