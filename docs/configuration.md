@@ -69,6 +69,7 @@ Provider config is stored locally and managed from `/manage`:
 |------|---------|
 | `providers.json` | MultiCC-owned provider store (API keys inside). Import from `~/.cc-switch/cc-switch.db`, but edits don't write back. |
 | `provider-defaults.json` | Default provider id per CLI for new sessions. |
+| `run-config-presets.json` | Run-config (Auto pool) preset library shared across web and mobile. Clients keep a local cache; this file is authoritative. Provider ids and models only — never keys. |
 | `official-provider-selection.json` | Active official account per CLI, shared by all sessions using that official provider. |
 | `~/.multicc/codex-homes/<providerId>/` | Materialized `CODEX_HOME` per Codex provider — isolated auth/config. |
 | `~/.multicc/kimi-homes/<sessionId>/` | Isolated `KIMI_CODE_HOME` per Kimi session bound to a MultiCC provider — injected credentials never touch the native `~/.kimi-code` login. |

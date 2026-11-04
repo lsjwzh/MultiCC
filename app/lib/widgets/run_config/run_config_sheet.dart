@@ -186,7 +186,11 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   bool _autoMore = false;
   String _autoError = '';
   SessionProviderRouting? _seededRouting;
-  final RunConfigPresetStore _presetStore = RunConfigPresetStore();
+  late final RunConfigPresetStore _presetStore = RunConfigPresetStore(
+    settings: widget.settings,
+    httpClient: widget.httpClient,
+    fallbackLane: widget.cli.name,
+  );
   List<RunConfigPreset> _presets = const [];
   String _presetNotice = '';
   bool _presetNoticeError = false;

@@ -2420,6 +2420,7 @@
       if (!writePresets(readPresets().filter(item => item.id !== id))) {
         presetStatus.textContent = tt('runConfigPresetStoreFailed', '预设未能保存到本机，请重试。'); return;
       }
+      pushPresets();
       if (activePresetId === id) activePresetId = '';
       renderPresets();
       presetStatus.textContent = tt('autoEditorPresetDeleted', '预设已删除。');
@@ -2441,6 +2442,28 @@
         storage.setItem(PRESET_KEY, JSON.stringify(list));
         return true;
       } catch (_) { return false; }
+    }
+
+    // 预设是跨端共享的：localStorage 只是缓存，服务端 /api/run-config/presets
+    // 才是权威。打开面板时把本机条目 merge 上去并取回完整表；服务端不可用时
+    // 本机预设照常可用。seq 防止迟到的 merge 响应覆盖用户刚保存的条目。
+    let presetSyncSeq = 0;
+    function syncPresets() {
+      const seq = ++presetSyncSeq;
+      request('/api/run-config/presets/merge', { presets: readPresets() }).then((result) => {
+        if (closed || seq !== presetSyncSeq) return;
+        const remote = Array.isArray(result && result.presets) ? result.presets : null;
+        if (!remote || !writePresets(remote)) return;
+        renderPresets();
+      }, () => { /* 老服务端/离线：退回本机缓存 */ });
+    }
+
+    function pushPresets() {
+      ++presetSyncSeq;
+      request('/api/run-config/presets', { presets: readPresets() }, 'PUT').then(
+        () => { /* 服务端已归一化；本地缓存保持原样 */ },
+        () => { /* 同步失败只是这台设备暂时不同步，不打断保存 */ },
+      );
     }
 
     function showPresetForm(open) {
@@ -2479,6 +2502,7 @@
         presetStatus.textContent = tt('runConfigPresetStoreFailed', '预设未能保存到本机，请重试。');
         return;
       }
+      pushPresets();
       activePresetId = entry.id;
       presetName.value = '';
       showPresetForm(false);
@@ -3008,6 +3032,7 @@
       setBusy(false);
       renderModes();
       renderFixed();
+      syncPresets();
       // 草稿没带子 agent：这一族有默认就预填一次（用户动过下拉则不碰）。
       if (seedDraftSubagent()) renderSub(true);
       renderAuto();
