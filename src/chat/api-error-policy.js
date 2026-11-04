@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { redact } = require('../observability');
 const { extractUpstreamError } = require('../upstream-error');
+const { describeOpencodeContextError } = require('../cli-adapters/opencode-error');
 
 const CATEGORIES = Object.freeze([
   'authentication_permission',
@@ -758,6 +759,12 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
   ).toLowerCase().slice(0, 40);
   const nested = raw && typeof raw === 'object' && raw.error && typeof raw.error === 'object'
     ? raw.error : {};
+  const declaredCategory = normalizeCode(context.category || raw.category || nested.category);
+  const opencodeContext = provider === 'opencode' && TRUSTED_TEXT_SOURCES.has(source)
+    && (!CATEGORY_SET.has(declaredCategory) || declaredCategory === 'context_token_limit')
+    && !CANCELLATION_CODES.has(normalizeCode(context.code || raw.code || nested.code))
+    ? describeOpencodeContextError(raw) : null;
+  if (opencodeContext) raw = { ...raw, ...opencodeContext };
   const providerId = routeIdentityText(
     context.providerId ?? raw.providerId ?? nested.providerId,
     '_default_',
@@ -796,7 +803,8 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
   // through to sourceMessage so the errors[] text can speak instead.
   const upstreamMessage = String(upstream.message || '').trim().toLowerCase() === 'error_during_execution'
     ? '' : upstream.message;
-  const message = upstreamMessage || sourceMessage(raw);
+  const message = raw.category === 'context_token_limit' && opencodeContext
+    ? opencodeContext.message : upstreamMessage || sourceMessage(raw);
   const rawCategory = normalizeCode(context.category || raw.category || nested.category);
   const explicit = structuredCategory(httpStatus, code, rawCategory);
   const trustedTextCategory = TRUSTED_TEXT_SOURCES.has(source)
@@ -919,7 +927,8 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
     sideEffects,
     attempt: Math.max(0, Number(context.attempt || raw.attempt || 0) || 0),
     maxAttempts: null,
-    userAction: userAction(category, retryAfterMs, rejection),
+    userAction: category === 'context_token_limit' && opencodeContext
+      ? opencodeContext.userAction : userAction(category, retryAfterMs, rejection),
     rejection,
     sanitizedMessage,
     // Keep a longer redacted root cause than the compact summary. Extracting
@@ -1173,6 +1182,10 @@ function retryNotice(decision) {
     : '';
   if (error.category === 'adapter_configuration') {
     return `CLI 或适配器配置错误，未自动重试。${causeNotice}${error.userAction}`;
+  }
+  if (error.provider === 'opencode' && error.category === 'context_token_limit'
+      && ['opencode_compaction_overflow', 'context_length_exceeded', 'context_window_exceeded'].includes(error.code)) {
+    return `OpenCode 上下文超限，未自动重试。${causeNotice}${error.userAction}`;
   }
   if (error.category === 'cancel_shutdown') {
     // A host-side stop names itself, and its cause is the stop itself — so the

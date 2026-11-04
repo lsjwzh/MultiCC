@@ -99,6 +99,7 @@ function createOpencodeLikeAdapter({
             source: `${name}_event`,
             provider: name,
             code: data.code || detail.code || detail.name || event.code,
+            ...(data.errorName || detail.name ? { errorName: data.errorName || detail.name } : {}),
             ...(data.category || detail.category || event.category
               ? { category: data.category || detail.category || event.category } : {}),
             httpStatus: data.statusCode || data.status || detail.statusCode

@@ -3,6 +3,7 @@
 const { createAcpAdapter } = require('./acp');
 const { createOpencodeLikeAdapter } = require('./opencode-like');
 const { validateOpenCodeModel } = require('../routes/opencode-models');
+const { describeOpencodeContextError } = require('./opencode-error');
 
 // OpenCode runs over ACP (`opencode acp`) through acp-bridge.cjs: streamed
 // text/thinking, live tool cards, an authoritative stopReason and in-place
@@ -44,6 +45,14 @@ function withModelGuard(adapter, encode) {
   const build = adapter.buildInvocation.bind(adapter);
   return {
     ...adapter,
+    decodeEvent(event) {
+      return adapter.decodeEvent(event).map(decoded => {
+        if (decoded.type !== 'error') return decoded;
+        const detail = describeOpencodeContextError(decoded.error || decoded);
+        return detail ? { ...decoded, message: `${detail.message}${detail.userAction}`,
+          error: { ...decoded.error, ...detail } } : decoded;
+      });
+    },
     buildInvocation(env) {
       const rawModel = env && env.spawnOpts ? env.spawnOpts.rawModel : null;
       const verdict = validateOpenCodeModel(rawModel);

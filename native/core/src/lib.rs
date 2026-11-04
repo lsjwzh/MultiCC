@@ -1,4 +1,5 @@
 pub mod machines;
+pub mod opencode_error;
 pub mod publication;
 pub mod publication_identity;
 pub mod quota_history;

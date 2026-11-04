@@ -34,6 +34,52 @@ function decide(raw, context = {}, deps = {}) {
   }, { now: () => 1_000_000, random: () => 0, ...deps });
 }
 
+test('OpenCode compaction overflow is permanent even inside an internal-error envelope', () => {
+  const message = 'Internal error: Conversation history too large to compact - exceeds model context limit';
+  for (const raw of [
+    { source: 'opencode_event', code: -32603, message },
+    { source: 'opencode_event', code: 'internal_error', httpStatus: 500, message },
+    { source: 'opencode_event', message: 'Internal error', data: { errorName: 'ContextOverflowError' } },
+    { source: 'process_stderr', code: 'process_exit_1', message: `prompt: [[Object ...]], { message: "${message}" }${'\nstack frame'.repeat(100)}` },
+  ]) {
+    const decision = decide({ ...raw, provider: 'opencode' });
+    assert.equal(decision.error.category, 'context_token_limit');
+    assert.equal(decision.action, 'fail_fast');
+    assert.equal(decision.error.retryable, false);
+    assert.match(decision.error.rootCause, /上下文上限/);
+    assert.match(retryNotice(decision), /压缩上下文.*保留完整聊天历史/);
+    assert.doesNotMatch(retryNotice(decision), /无响应|stack frame|\[Object/);
+  }
+  const cancelled = decide({ source: 'process_stderr', provider: 'opencode', code: 'user_cancel', message });
+  assert.equal(cancelled.error.category, 'cancel_shutdown');
+  const unrelated = decide({ source: 'opencode_event', provider: 'opencode', code: 'internal_error', message: 'Internal server error' });
+  assert.equal(unrelated.error.category, 'provider_transient');
+  assert.equal(unrelated.action, 'retry');
+  const untrusted = decide({ source: 'assistant_text', provider: 'opencode', message });
+  assert.equal(untrusted.error.category, 'unknown');
+  const explicit = decide({ source: 'opencode_event', provider: 'opencode',
+    error: { category: 'authentication_permission', message } });
+  assert.equal(explicit.error.category, 'authentication_permission');
+  const outputLimit = decide({ source: 'opencode_event', provider: 'opencode', code: 'max_tokens_exceeded',
+    message: 'Output token limit reached' });
+  assert.doesNotMatch(retryNotice(outputLimit), /上下文超限/);
+});
+
+test('OpenCode process stderr preserves overflow before truncation and respects RPC error precedence', () => {
+  const { opencodeProcessError } = require('../src/cli-adapters/opencode-error');
+  const stderr = 'prompt: [[Object ...]], { code: -32603, message: "Conversation history too large to compact - exceeds model context limit" }'
+    + '\nstack frame'.repeat(100);
+  assert.doesNotMatch(stderr.slice(-300), /context limit/);
+  for (const raw of [null, { code: 'agent_exited', message: 'OpenCode exited before answering session/prompt' }]) {
+    const error = opencodeProcessError('opencode', raw, stderr);
+    assert.equal(error.code, 'opencode_compaction_overflow');
+    assert.equal(decide(error).action, 'fail_fast');
+  }
+  assert.equal(opencodeProcessError('gemini', null, stderr), null);
+  assert.equal(opencodeProcessError('opencode', { code: 'unauthorized' }, stderr), null);
+  assert.equal(opencodeProcessError('opencode', null, 'Internal error: database unavailable'), null);
+});
+
 test('sanitized production fixture contains no secrets, accounts, paths, or user request bodies', () => {
   assert.equal(fixture.sanitized, true);
   const text = JSON.stringify(fixture);

@@ -45,6 +45,13 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (m.method === 'session/cancel') { cancelled && cancelled(); return; }
   if (m.method === 'session/prompt') {
     const sid = m.params.sessionId;
+    if (mode === 'context') return send({ id: m.id, error: {
+      code: -32603, message: 'Internal error: Conversation history too large to compact - exceeds model context limit',
+      data: { service: 'session', errorName: 'ContextOverflowError' },
+    } });
+    if (mode === 'context-name') return send({ id: m.id, error: {
+      code: -32603, message: 'Internal error', data: { errorName: 'ContextOverflowError' },
+    } });
     if (mode === 'hang') { cancelled = () => reply({ stopReason: 'cancelled' }); return; }
     update(sid, { sessionUpdate: 'agent_thought_chunk', messageId: 't1', content: { type: 'text', text: 'think' } });
     update(sid, { sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'ls', kind: 'execute', status: 'pending', rawInput: { command: 'ls' } });
@@ -154,6 +161,50 @@ test('auth failures carry the agent login hint', async () => {
   const error = events.find(e => e.method === 'multicc/error');
   assert.match(error.params.message, /Authentication required \(run fake login\)/);
   assert.equal(error.params.code, 'auth_required');
+});
+
+test('OpenCode ACP context errors survive the bridge and fail without replaying the prompt', async () => {
+  const { createApiErrorPolicyRuntime, retryNotice } = require('../src/chat/api-error-policy');
+  const { planTurnFinalization, resolveTurnFinalization } = require('../src/chat/finalize-plan');
+  for (const mode of ['context', 'context-name']) {
+    const { code, events, requests } = await runBridge([mode, '--session-id', 'ses_old', '--', 'continue']);
+    assert.equal(code, 1);
+    assert.equal(requests.filter(r => r.method === 'session/prompt').length, 1);
+    const error = events.find(e => e.method === 'multicc/error');
+    assert.equal(error.params.errorName, 'ContextOverflowError');
+    const adapter = createOpencodeAdapter({ cmd: 'opencode', env: {} });
+    const tracker = createAdapterCompletion(adapter);
+    for (const event of events) tracker.observe(event, adapter.decodeEvent(event));
+    assert.equal(tracker.finish({ kind: 'process', code }).state, 'failed');
+    assert.equal(events.some(e => e.method === 'multicc/turnEnd'), false);
+    const [decoded] = adapter.decodeEvent(error);
+    assert.match(decoded.message, /上下文上限/);
+    assert.match(decoded.message, /压缩上下文.*保留完整聊天历史/);
+    assert.doesNotMatch(decoded.message, /Internal error|无响应|\[Object/);
+    const decision = createApiErrorPolicyRuntime().evaluate(decoded.error, { phase: 'before_first_token' });
+    assert.equal(decision.error.category, 'context_token_limit');
+    assert.equal(decision.action, 'fail_fast');
+    assert.equal(decision.error.safeToRetry, false);
+    assert.match(retryNotice(decision), /上下文超限，未自动重试/);
+    for (const isRetry of [false, true]) {
+      const plan = planTurnFinalization({ current: true, runnerKind: 'process', cli: 'opencode',
+        code, hasOutput: false, isRetry, adapterError: true, apiError: true, apiErrorDecision: decision });
+      assert.equal(plan.action, 'finalize');
+      assert.ok(!resolveTurnFinalization(plan).effects.some(e => e.type === 'report-empty-retry-failure'));
+    }
+  }
+});
+
+test('OpenCode legacy JSON context failures use the same structured diagnosis', () => {
+  const adapter = createOpencodeAdapter({ cmd: 'opencode', env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } });
+  const [decoded] = adapter.decodeEvent({ type: 'error', error: {
+    name: 'ContextOverflowError', data: { message: 'Internal error' },
+  } });
+  assert.equal(decoded.error.category, 'context_token_limit');
+  assert.equal(decoded.error.code, 'context_length_exceeded');
+  assert.match(decoded.message, /保留完整聊天历史/);
+  const [unrelated] = adapter.decodeEvent({ type: 'error', error: { data: { message: 'HTTP 401 Unauthorized' } } });
+  assert.equal(unrelated.message, 'HTTP 401 Unauthorized');
 });
 
 test('permission and router MCP helpers', () => {

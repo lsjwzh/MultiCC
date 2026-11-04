@@ -79,6 +79,7 @@ const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex
 const { captureNativeSessionId } = require('./native-session-state');
 const { hasNativeHistory } = require('../cli-adapters/claude-exp-history');
 const { createOpencodeContextGuard } = require('./opencode-context-guard');
+const { opencodeProcessError } = require('../cli-adapters/opencode-error');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
 const { createDeliveryProbeRegistry, shouldReexecutePersistedDelivery } = require('./delivery-probe');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
@@ -1068,12 +1069,9 @@ function createChatTurnEngine(deps) {
           message: `${turnCli} 原生会话历史过大（>${Math.round(nativeResult.maxBytes / 1048576)}MB），已归档并重建上下文；旧历史文件保留在归档目录，未删除。` });
       }
     }
-    // Pre-turn water-level guard (opencode only): when the CURRENT native
-    // session crossed a safe fraction of the model's real context limit,
-    // rotate to a fresh native session. Full page history is untouched; the
-    // bounded handoff checkpoint carries prior context into this turn, and
-    // clearing cliSessionId below makes this turn a first turn (fresh
-    // `opencode run`, no --continue) — mirroring the manual rotate path.
+    // OpenCode water-level guard: rotate to a fresh native session with a
+    // bounded handoff checkpoint, preserving full page history. Clearing the
+    // native id prevents both ACP and legacy JSON from resuming old history.
     if (turnCli === 'opencode' && persisted.cliSessionId) {
       const contextVerdict = opencodeContextGuard.enforce(persisted);
       if (contextVerdict.action === 'rotate') {
@@ -1858,7 +1856,8 @@ function createChatTurnEngine(deps) {
           provider: cs.cli,
           code: killReason,
           message: 'turn cancelled',
-        } : (runner.modelTimeoutStopping && proxyFailure) || boundaryErrorEnvelope || runner.apiErrorRaw || proxyFailure || {
+        } : (runner.modelTimeoutStopping && proxyFailure) || boundaryErrorEnvelope
+          || opencodeProcessError(cs.cli, runner.apiErrorRaw, stderrBuf) || runner.apiErrorRaw || proxyFailure || {
           source: 'process_stderr',
           provider: cs.cli,
           code: killReason || (code !== 0 ? `process_exit_${code}` : 'empty_exit'),

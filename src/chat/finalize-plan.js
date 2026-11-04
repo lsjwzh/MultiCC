@@ -359,7 +359,10 @@ function resolveTurnFinalization(plan, outcome = {}) {
   if (facts.runnerKind === 'stream') effects.push(effect('cancel-classify'));
   effects.push(effect('clear-stream-replay'));
 
-  if (facts.runnerKind === 'process' && facts.isRetry && !facts.hasOutput) {
+  // A classified/provider error already has its own notice; do not overwrite
+  // that diagnosis with the empty-process fallback ("no response").
+  if (facts.runnerKind === 'process' && facts.isRetry && !facts.hasOutput
+      && !facts.apiErrorDecision && !facts.adapterError) {
     effects.push(effect('report-empty-retry-failure'));
   }
   if (facts.runnerKind === 'process' && facts.guardedHandoffResumeFailure) {
