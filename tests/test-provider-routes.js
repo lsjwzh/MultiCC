@@ -55,7 +55,7 @@ function okHttp(requests = []) {
     request(options, onResponse) {
       requests.push(options);
       const request = new EventEmitter();
-      request.write = () => {};
+      request.write = (chunk) => { options.body = `${options.body || ''}${chunk}`; };
       request.setTimeout = () => {};
       request.destroy = () => {};
       request.end = () => queueMicrotask(() => {
@@ -793,6 +793,60 @@ test('a third-party codex speed test dials the loopback hop, never the vendor', 
   assert.deepEqual(response.body, { ok: true, ms: 0, status: 200, model: 'gpt-test' });
 });
 
+test('a borrowed Claude speed test probes a model the lender serves, not the retired wire default', async () => {
+  const requests = [];
+  const relayBase = 'https://lender.example:3000/claude-proxy/claude-official-abc/remote';
+  const relayProvider = {
+    id: 'relay', appType: 'claude', name: 'Claude 账号 · x · 远程共享',
+    settingsConfig: {
+      env: { ANTHROPIC_BASE_URL: relayBase, ANTHROPIC_AUTH_TOKEN: 'mcr1.abcdefghijklmnop.secret' },
+    },
+  };
+
+  // Empty catalog (an older bridge / not yet synced): the fallback must be a
+  // current CLI-known model, not WIRE_DEFAULT_MODEL.
+  let harness = createHarness({
+    http: okHttp(requests),
+    https: okHttp(requests),
+    providers: { getProvider: () => relayProvider },
+    providerRouterRuntime: {
+      getProviderSummary: () => ({
+        id: 'relay', appType: 'claude', name: relayProvider.name, isOfficial: false,
+        model: '', modelOptions: [], baseUrl: relayBase,
+      }),
+    },
+  });
+  let response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
+    params: { appType: 'claude', id: 'relay' },
+  });
+  assert.equal(response.body.ok, true);
+  const firstBody = JSON.parse(requests.at(-1).body);
+  assert.equal(firstBody.model, 'claude-haiku-4-5');
+  assert.notEqual(firstBody.model, 'claude-wire-default');
+
+  // Once the relay catalog sync lands, its models win; a cheap entry is used
+  // and the CLI-only `[1m]` suffix never reaches the wire.
+  requests.length = 0;
+  harness = createHarness({
+    http: okHttp(requests),
+    https: okHttp(requests),
+    providers: { getProvider: () => relayProvider },
+    providerRouterRuntime: {
+      getProviderSummary: () => ({
+        id: 'relay', appType: 'claude', name: relayProvider.name, isOfficial: false,
+        model: '', modelOptions: ['claude-opus-5[1m]', 'claude-sonnet-5', 'claude-haiku-4-5'],
+        baseUrl: relayBase,
+      }),
+    },
+  });
+  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/speedtest', {
+    params: { appType: 'claude', id: 'relay' },
+  });
+  assert.equal(response.body.ok, true);
+  const syncedBody = JSON.parse(requests.at(-1).body);
+  assert.equal(syncedBody.model, 'claude-haiku-4-5');
+});
+
 test('provider defaults validate the full request before changing live state', async () => {
   const harness = createHarness();
   const response = await invoke(harness.app, 'PUT', '/api/provider-defaults', {
@@ -936,6 +990,30 @@ test('relay-share issues a recorded provider-scoped credential from a supplied p
   );
   assert.equal(officialPayload.model, 'gpt-5.6-sol');
   assert.deepEqual(officialPayload.models, ['gpt-5.6-sol', 'gpt-5.6-terra']);
+
+  // A Claude official account stores no canonical model id either. Its share
+  // code must still carry the CLI-known set, or the importer falls back to a
+  // hardcoded id that may already be retired upstream.
+  harness = createHarness({
+    providers: {
+      getProvider: (appType, id) => ({ id, appType, name: 'Claude Official', settingsConfig: { env: {} } }),
+    },
+    providerRouterRuntime: {
+      getProviderSummary: () => ({
+        id: 'claude-official-aaaaaaaaaaaaaaaa', appType: 'claude', isOfficial: true,
+        model: '', modelOptions: [],
+      }),
+    },
+  });
+  response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
+    params: { appType: 'claude', id: 'claude-official-aaaaaaaaaaaaaaaa' },
+    body: { publicBaseUrl: 'https://relay.example/', token: 'official-claude-secret' },
+  });
+  const claudeOfficialPayload = JSON.parse(
+    Buffer.from(response.body.code.slice('mcrelay1.'.length), 'base64url').toString('utf8'),
+  );
+  assert.ok(claudeOfficialPayload.models.includes('claude-haiku-4-5'));
+  assert.ok(claudeOfficialPayload.models.includes('claude-sonnet-5'));
 
   // A missing/invalid public base URL is rejected.
   response = await invoke(harness.app, 'POST', '/api/providers/:appType/:id/relay-share', {
