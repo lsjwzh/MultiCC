@@ -344,21 +344,52 @@ int x11_click(int x, int y, int button, int count) {
  * 写反了会变成一个「不报错、只是滚反了」的故障。X11 一次滚轮 = 一次按键，
  * 于是把「格子数」映射成有限次点击 —— 上限 20 是防呆：服务端允许 amount 到
  * ±50，真按 50 次会把页面滚飞。 */
-int x11_scroll(int x, int y, int amount) {
+int x11_scroll(int x, int y, int amount, int amount_x) {
   if (!tdpy) { fail("no-display"); return 0; }
   if (!x11_move(x, y)) return 0;
-  int n = amount < 0 ? -amount : amount;
-  if (n > 20) n = 20;
-  unsigned btn = amount < 0 ? 5u : 4u;
-  for (int i = 0; i < n; i++) {
-    if (interrupted()) return X11_INTERRUPTED;
-    XTestFakeButtonEvent(tdpy, btn, True, CurrentTime);
-    XTestFakeButtonEvent(tdpy, btn, False, CurrentTime);
-    XSync(tdpy, False);
-    t_progress++;
-    nap_ms(14);
+  int amounts[] = { amount, amount_x };
+  for (int axis = 0; axis < 2; axis++) {
+    int a = amounts[axis];
+    int n = a < 0 ? -a : a;
+    if (n > 50) n = 50;
+    unsigned btn = axis ? (a < 0 ? 7u : 6u) : (a < 0 ? 5u : 4u);
+    for (int i = 0; i < n; i++) {
+      if (interrupted()) return X11_INTERRUPTED;
+      XTestFakeButtonEvent(tdpy, btn, True, CurrentTime);
+      XTestFakeButtonEvent(tdpy, btn, False, CurrentTime);
+      XSync(tdpy, False);
+      t_progress++;
+      nap_ms(14);
+    }
   }
   return 1;
+}
+
+static __thread KeyCode held_mods[4];
+static __thread int held_mod_count = 0;
+
+int x11_modifiers(int mask) {
+  if (!tdpy) return 0;
+  const KeySym symbols[] = { XK_Shift_L, XK_Control_L, XK_Alt_L, XK_Super_L };
+  char keys[32];
+  XQueryKeymap(tdpy, keys);
+  for (int i = 0; i < 4; i++) if (mask & (1 << i)) {
+    KeyCode code = XKeysymToKeycode(tdpy, symbols[i]);
+    if (!code) { fail("modifier-unavailable"); return 0; }
+    /* Only release keys this request pressed; preserve physically held modifiers. */
+    if (!(keys[code / 8] & (1 << (code % 8)))) {
+      if (!XTestFakeKeyEvent(tdpy, code, True, CurrentTime)) return 0;
+      held_mods[held_mod_count++] = code;
+    }
+  }
+  XSync(tdpy, False);
+  return 1;
+}
+
+void x11_release_modifiers(void) {
+  if (!tdpy) return;
+  while (held_mod_count) XTestFakeKeyEvent(tdpy, held_mods[--held_mod_count], False, CurrentTime);
+  XSync(tdpy, False);
 }
 
 int x11_drag(int x, int y, int x2, int y2, int ms) {

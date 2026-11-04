@@ -18,7 +18,7 @@
 
 /* ── 极简 JSON（json.c）────────────────────────────────────────────────────
  * 只做契约需要的部分：扁平对象 + 一层嵌套（snap 的 crop）。值域是字符串 /
- * 数字 / 布尔 / null。不实现数组、不实现任意深度 —— 请求里出现这些就是协议
+ * 数字 / 布尔 / null，及 mods 字符串数组。不实现任意深度 —— 请求里出现这些就是协议
  * 变了，宁可解析失败也不要维护一个「看起来能跑」的半吊子解析器。
  * 字符串支持全部 JSON 必需转义（含 \uXXXX 与代理对）：type 的文本是任意
  * Unicode，中文必须原样穿过。 */
@@ -27,6 +27,7 @@ typedef struct {
   char *s;              /* 字符串值（已解码）；对象值时为原文（用 jobj 再解析） */
   double n;
   int is_num, is_bool, is_null, is_obj, b;
+  int is_array, mods;   /* mods: shift=1, ctrl=2, alt=4, cmd=8 */
 } jfield;
 
 typedef struct { jfield *f; int n; } jobject;
@@ -37,6 +38,7 @@ int jhas(const jobject *o, const char *key);
 const char *jstr(const jobject *o, const char *key);          /* 无 → NULL */
 int jnum(const jobject *o, const char *key, double *out);     /* 无 → 0 */
 int jbool(const jobject *o, const char *key, int *out);       /* 无 → 0 */
+int jmods(const jobject *o);
 int jobj(const jobject *o, const char *key, jobject *out);    /* 嵌套对象 → 再解析 */
 
 /* 单行 JSON 响应构造器。容量由调用方给（本 agent 的响应都很小，没有图像数据
@@ -86,7 +88,9 @@ void x11_set_interrupt(int (*fn)(void));     /* 每一步之前问它「该停�
 int  x11_progress(void);
 int x11_move(int x, int y);
 int x11_click(int x, int y, int button, int count);
-int x11_scroll(int x, int y, int amount);
+int x11_scroll(int x, int y, int amount, int amount_x);
+int x11_modifiers(int mask);
+void x11_release_modifiers(void);
 int x11_drag(int x, int y, int x2, int y2, int ms);
 int x11_type(const char *utf8);
 int x11_press(const char *keys);

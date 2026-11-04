@@ -1,0 +1,31 @@
+name: Windows desktop agent
+on:
+  push:
+    paths: ['native/desktop-agent/**', 'native/remote/src/agent.rs', 'scripts/windows-agent/**', '.github/workflows/windows-agent.yml', 'native/Cargo.toml', 'native/Cargo.lock']
+  pull_request:
+    paths: ['native/desktop-agent/**', 'native/remote/src/agent.rs', 'scripts/windows-agent/**', '.github/workflows/windows-agent.yml', 'native/Cargo.toml', 'native/Cargo.lock']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-desktop-agent
+      - run: cargo build --locked --release --manifest-path native/Cargo.toml -p multicc-desktop-agent
+      - name: Verify the actual named pipe server
+        shell: pwsh
+        run: ./scripts/windows-agent/verify.ps1 -Binary ./native/target/release/multicc-desktop-agent.exe
+      - name: Verify installation and startup from PowerShell 7
+        shell: pwsh
+        run: ./scripts/windows-agent/install-smoke.ps1 -Binary ./native/target/release/multicc-desktop-agent.exe
+      - name: Verify installation and startup from Windows PowerShell
+        shell: powershell
+        run: ./scripts/windows-agent/install-smoke.ps1 -Binary ./native/target/release/multicc-desktop-agent.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: multicc-desktop-agent-windows-x64
+          path: native/target/release/multicc-desktop-agent.exe

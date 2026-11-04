@@ -426,11 +426,16 @@ fn desktop_host_profiles_match_the_js_table() {
     );
 
     let win = host::profile_for("win32", "C:\\Users\\x", &HashMap::new());
-    assert!(!win.supported);
+    assert!(win.supported);
     assert_eq!(win.transport, "named-pipe");
     assert_eq!(win.modifier, "ctrl");
     assert_eq!(win.rfb_sock, None);
-    assert_eq!(win.features, host::Features::NONE);
+    assert_eq!(win.features, host::Features::LINUX);
+    assert!(win
+        .install_hint
+        .as_ref()
+        .unwrap()
+        .contains("windows-agent/install.ps1"));
 
     let env: HashMap<String, String> = [("XDG_RUNTIME_DIR".to_string(), "/run/user/7".to_string())]
         .into_iter()
@@ -552,6 +557,36 @@ async fn linux_capture_goes_through_the_agents_snap_and_mac_helpers_fail_loudly(
 }
 
 #[tokio::test]
+async fn windows_capture_and_input_use_the_agent_without_macos_helpers() {
+    let agent = FakeAgent::new(
+        |req| json!({"ok":true,"width":2560,"height":1440,"crop":req.get("crop").cloned().unwrap_or(Value::Null)}),
+    );
+    let profile = host::profile_for("win32", "C:\\Users\\x", &HashMap::new());
+    let host = Arc::new(Host::new(
+        profile,
+        panic_exec(),
+        Some(multicc_remote::agent::host_call(agent.clone())),
+    ));
+    let capture = host
+        .capture_direct("C:\\Temp\\shot.png", None, "remote-screen", false, 60)
+        .await
+        .unwrap();
+    assert_eq!((capture.width, capture.height), (2560.0, 1440.0));
+    let state =
+        AppState::new(temp_dir("windows-input"), host, agent.clone(), "secret").with_p2p(None);
+    let response = routes::input(
+        State(state),
+        json_body(json!({"op":"click","x":123,"y":234,"mods":["ctrl"]})),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let requests = agent.requests();
+    assert_eq!(requests[1]["op"], "click");
+    assert_eq!(requests[1]["allowSystem"], true);
+    assert_eq!(requests[1]["mods"], json!(["ctrl"]));
+}
+
+#[tokio::test]
 async fn linux_wake_route_collapses_on_features_wake_not_supported() {
     let dir = temp_dir("linux-wake");
     let agent = FakeAgent::new(|_| json!({ "ok": true, "screenLocked": false }));
@@ -667,10 +702,11 @@ async fn capabilities_answer_what_this_machine_can_do_and_non_mac_refuses_cleanl
     );
     assert_eq!(caps["streams"], json!({ "h264": false, "rfb": false }));
 
-    // win32：三条路由干净拒绝，不碰 agent 也不碰 shell（假 exec 一调就报错）。
+    // Explicit unsupported-host fixture: refuse before contacting an agent or shell.
     let dir = temp_dir("win");
     let agent = FakeAgent::new(|_| json!({ "ok": true }));
-    let profile = host::profile_for("win32", "C:\\Users\\x", &HashMap::new());
+    let mut profile = host::profile_for("win32", "C:\\Users\\x", &HashMap::new());
+    profile.supported = false;
     let host = Arc::new(Host::new(profile, panic_exec(), None));
     let state = AppState::new(dir, host, agent.clone(), "secret").with_p2p(None);
 

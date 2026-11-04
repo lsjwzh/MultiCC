@@ -136,12 +136,12 @@ pub fn profile_for(platform: &str, home: &str, env: &HashMap<String, String>) ->
         };
     }
     if platform == "win32" {
-        // 计划中的 Windows agent：命名管道 + DXGI Desktop Duplication + SendInput，
-        // v1 不做 unlock（安全桌面够不到）。
+        // The Rust agent uses GDI capture (also works without DXGI/GPU) and SendInput.
+        // Like Linux, it serves frames by polling; secure desktops cannot be unlocked.
         return Profile {
             platform: platform.into(),
             label: "Windows".into(),
-            supported: false,
+            supported: true,
             transport: "named-pipe".into(),
             agent_sock: Some(
                 env_value(env, "MULTICC_AGENT_PIPE")
@@ -149,9 +149,9 @@ pub fn profile_for(platform: &str, home: &str, env: &HashMap<String, String>) ->
             ),
             rfb_sock: None,
             h264_sock: None,
-            features: Features::NONE,
+            features: Features::LINUX,
             modifier: "ctrl".into(),
-            install_hint: None,
+            install_hint: Some("powershell -NoProfile -File scripts/windows-agent/install.ps1 install".into()),
         };
     }
     // Linux agent：X11 走 XShm + XTEST。Wayland 会话里 XWayland 其实连得上，

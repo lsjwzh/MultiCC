@@ -229,7 +229,7 @@ test('annotation-live hands remote-screen shots to the built-in handler without 
 
 // ── 跨平台：本机 desktop agent 的画像、能力接口、非 macOS 的干净拒绝 ──
 
-test('desktop-host 画像：macOS 与 Linux X11 有 agent，win32 如实报不支持', () => {
+test('desktop-host 画像：macOS、Linux X11 与 Windows 均有 agent', () => {
   const mac = profileFor('darwin', { home: '/Users/x' });
   assert.equal(mac.supported, true);
   assert.equal(mac.transport, 'unix');
@@ -239,11 +239,12 @@ test('desktop-host 画像：macOS 与 Linux X11 有 agent，win32 如实报不�
   assert.equal(mac.rfbSock, '/Users/x/.multicc/agent/rfb.sock');
 
   const win = profileFor('win32', { home: 'C:\\Users\\x' });
-  assert.equal(win.supported, false);
+  assert.equal(win.supported, true);
   assert.equal(win.transport, 'named-pipe');
   assert.equal(win.modifier, 'ctrl');
   assert.equal(win.rfbSock, null);
-  assert.deepEqual(Object.values(win.features), [false, false, false, false, false, false, false, false]);
+  assert.deepEqual(Object.values(win.features), [true, true, true, true, false, false, false, false]);
+  assert.match(win.installHint, /windows-agent\/install.ps1/);
 
   const linux = profileFor('linux', { home: '/home/x', env: { XDG_RUNTIME_DIR: '/run/user/7' } });
   assert.equal(linux.supported, true);
@@ -372,6 +373,7 @@ test('能力接口回答「本机能做什么」；非 macOS 上三条路由干�
   try {
     rs._resetForTests();
     rs._deps.host = createDesktopHost({ platform: 'win32', exec: () => { throw new Error('off-macOS must not shell out'); } });
+    rs._deps.host.profile.supported = false;
     rs._deps.sock = path.join(tmp, 'never-created.sock');
     rs._deps.agentCall = async () => { calls++; return { ok: true }; };
     assert.equal((await invoke(app.handlers['GET /api/remote-screen/frame'])).statusCode, 503);

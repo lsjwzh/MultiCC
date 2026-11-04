@@ -18,7 +18,7 @@ TARGET="$(dirname -- "$OUT")/multicc-linux-target"
 
 AGENT_SRC=""
 for s in agent.c json.c x11.c image.c; do AGENT_SRC="$AGENT_SRC $HERE/$s"; done
-LIBS="-lX11 -lXext -lXtst -lXss -lz -ljpeg"
+LIBS="-lX11 -lXext -lXtst -lXss -lz -ljpeg -lm"
 
 # 变量紧挨着中文时一律写 ${VAR}：zh_CN.UTF-8 下 macOS 的 sh 会把多字节字符的
 # 第一个字节当成变量名的一部分（$OUT）直接报 unbound variable。
