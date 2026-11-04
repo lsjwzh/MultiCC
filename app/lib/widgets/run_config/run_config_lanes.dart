@@ -6,7 +6,7 @@
 library;
 
 import '../../models/message.dart';
-import '../../services/commandcode_grok_models_service.dart';
+import '../../services/native_vendor_service.dart';
 import '../../services/opencode_models_service.dart';
 
 /// 车道 → 它服务的协议，顺序无所谓。供行的 CLI 菜单判断兼容。
@@ -18,8 +18,15 @@ const Map<String, List<String>> kLaneProtocols = <String, List<String>>{
   'opencode': ['anthropic', 'openai_responses'],
   'zcode': ['anthropic', 'openai_responses'],
   'kimi': ['openai_responses'],
-  // Command Code 只跑自己的厂商目录；协议是描述性的（目录里两种都有）。
+  // 自持目录的车道：协议是描述性的（目录里两种都有），实际只跑自己的原生线路。
+  'qoder': ['anthropic', 'openai_responses'],
+  'codebuddy': ['anthropic', 'openai_responses'],
+  'gemini': ['anthropic', 'openai_responses'],
+  'pi': ['anthropic', 'openai_responses'],
   'commandcode': ['anthropic', 'openai_responses'],
+  // dsh/grok 有托管池：协议按服务端池子算。
+  'dsh': ['anthropic'],
+  'grok': ['anthropic', 'openai_responses'],
 };
 
 /// 自动池新建线路可选的车道；旧车道仍由协议表支持，但不再作为新选项。
@@ -30,11 +37,17 @@ const List<String> kAutoLanes = <String>[
   'opencode',
   'zcode',
   'kimi',
+  'dsh',
+  'grok',
+  'qoder',
+  'codebuddy',
+  'gemini',
+  'pi',
   'commandcode',
 ];
 
 /// 需要自带 baseUrl + token 才跑得动的车道（服务端 core.js 的校验）。
-const Set<String> kLaneNeedsEndpoint = <String>{'zcode', 'kimi'};
+const Set<String> kLaneNeedsEndpoint = <String>{'zcode', 'kimi', 'dsh', 'grok'};
 
 /// 线路记录里说的协议（'anthropic' / 'openai_responses'），拿不到返回 null。
 /// 'openai_chat' 是退役写法，服务端仍当 responses 认。
@@ -55,11 +68,13 @@ bool laneServesProtocol(String lane, String? protocol) {
 List<String> lanesForLine(Map<String, dynamic> provider) {
   final id = provider['id']?.toString() ?? '';
   if (isOpenCodeNativeProvider(id)) return const ['opencode'];
-  if (isCommandCodeNativeProvider(id)) return const ['commandcode'];
+  final vendor = vendorNativeProviderOf(id);
+  if (vendor.isNotEmpty) return [vendor];
   final protocol = providerProtocolOf(provider);
   return [
     for (final lane in kAutoLanes)
-      // Command Code 的托管协议是描述性的，但它只能跑自己的原生线路。
-      if (lane != 'commandcode' && laneServesProtocol(lane, protocol)) lane,
+      // 自持目录的车道的托管协议是描述性的，它只能跑自己的原生线路。
+      if (!vendorOnlyClis.contains(lane) && laneServesProtocol(lane, protocol))
+        lane,
   ];
 }

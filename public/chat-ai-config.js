@@ -420,24 +420,78 @@
     return text.startsWith(prefix) ? `${to}/${text.slice(prefix.length)}` : text;
   }
 
-  // Command Code's own line: the vendor CLI owns the account and the model
-  // catalog (`command-code --list-models`), so the Auto Provider editor shows a
-  // single synthetic line and stores the vendor model id as the wire model.
-  // Mirrors src/providers/native-commandcode.js.
-  const COMMANDCODE_NATIVE_PREFIX = 'commandcode-native:';
-  const COMMANDCODE_NATIVE_LINE = COMMANDCODE_NATIVE_PREFIX + 'commandcode';
+  // Vendor-native lines: the CLI owns the account and the model catalog, so the
+  // Auto Provider editor shows one synthetic line per lane (`<cli>-native:<cli>`)
+  // and stores the vendor model id as the wire model. Mirrors
+  // src/providers/native-vendor.js. OpenCode keeps its multi-provider form.
+  const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok']);
+  const VENDOR_NATIVE_SET = new Set(VENDOR_NATIVE_CLIS);
+  const VENDOR_NATIVE_NAMES = Object.freeze({
+    qoder: 'Qoder CN', codebuddy: 'WorkBuddy', gemini: 'Gemini', pi: 'Pi',
+    commandcode: 'Command Code', dsh: 'DSH', grok: 'Grok',
+  });
+  function vendorNativeName(cli) {
+    const catalog = root && root.MultiCCProviderCatalog;
+    if (catalog && typeof catalog.cliDisplayName === 'function') {
+      const name = catalog.cliDisplayName(cli);
+      if (name) return String(name);
+    }
+    return VENDOR_NATIVE_NAMES[cli] || String(cli || '');
+  }
+  function vendorNativeProviderOf(value) {
+    const text = String(value || '');
+    const at = text.indexOf('-native:');
+    if (at <= 0) return '';
+    const cli = text.slice(0, at);
+    return VENDOR_NATIVE_SET.has(cli) ? cli : '';
+  }
+  function isVendorNativeProvider(value) {
+    return vendorNativeProviderOf(value) !== '';
+  }
+  function vendorNativeModelIds(cli) {
+    try {
+      if (cli === 'commandcode') {
+        const cached = readModelCacheSync('multicc.commandcode.models.v1', 60 * 60 * 1000);
+        return (cached.length ? cached.map(m => m.model) : COMMANDCODE_MODEL_OPTIONS).filter(Boolean);
+      }
+      if (cli === 'qoder') {
+        const cached = readQoderModelsSync();
+        return (cached.length ? cached.map(m => m.model) : QODER_MODEL_OPTIONS).filter(Boolean);
+      }
+      if (cli === 'codebuddy') {
+        const cached = readCodebuddyModelsSync();
+        return (cached.length ? cached.map(m => m.model) : CODEBUDDY_MODEL_OPTIONS).filter(Boolean);
+      }
+      if (cli === 'grok') {
+        const cached = readModelCacheSync('multicc.grok.models.v1', 60 * 60 * 1000);
+        return (cached.length ? cached.map(m => m.model) : GROK_MODEL_OPTIONS).filter(Boolean);
+      }
+    } catch (_) { /* a cold cache is not a failure */ }
+    if (cli === 'dsh') return DSH_MODEL_OPTIONS.filter(Boolean);
+    if (cli === 'gemini') return GEMINI_MODEL_OPTIONS.filter(Boolean);
+    return [];
+  }
+  function vendorNativeProvidersFor(cli) {
+    const lane = String(cli || '');
+    if (!VENDOR_NATIVE_SET.has(lane)) return [];
+    return [{
+      value: `${lane}-native:${lane}`,
+      label: `${vendorNativeName(lane)}（本机 CLI / 官方账号）`,
+      modelOptions: vendorNativeModelIds(lane),
+    }];
+  }
+  const COMMANDCODE_NATIVE_LINE = 'commandcode-native:commandcode';
   function isCommandCodeNativeProvider(value) {
-    return String(value || '').startsWith(COMMANDCODE_NATIVE_PREFIX);
+    return String(value || '').startsWith('commandcode-native:');
   }
   function commandCodeNativeProviderLabel() {
-    return 'Command Code（本机 CLI / 官方账号）';
+    return `${vendorNativeName('commandcode')}（本机 CLI / 官方账号）`;
   }
   function commandCodeModelIds() {
-    return readModelCacheSync('multicc.commandcode.models.v1', 60 * 60 * 1000).map(m => m && m.model).filter(Boolean);
+    return vendorNativeModelIds('commandcode');
   }
-  // 只有一条：模型在行上的下拉里选，不按模型拆线路。
   function commandCodeNativeProviders() {
-    return [{ value: COMMANDCODE_NATIVE_LINE, label: commandCodeNativeProviderLabel(), modelOptions: commandCodeModelIds() }];
+    return vendorNativeProvidersFor('commandcode');
   }
 
   // Synchronous read of a CLI model cache populated by shared/models.js
@@ -1127,6 +1181,11 @@
     commandCodeNativeProviderLabel,
     commandCodeModelIds,
     isCommandCodeNativeProvider,
+    vendorNativeProvidersFor,
+    vendorNativeProviderOf,
+    vendorNativeModelIds,
+    isVendorNativeProvider,
+    VENDOR_NATIVE_CLIS,
     resolveOpenCodeNativeLine,
     rewriteOpenCodeNativeModel,
     stripModelSuffix,

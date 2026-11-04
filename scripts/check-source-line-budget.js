@@ -171,12 +171,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-04 预设改跨端：打开面板 merge 服务端、保存/删除后 PUT 完整表（含
   // 迟到响应的 seq 防护），实测 3117/159815，按棘轮上调；模型字段那一族的
   // 拆分条件不变。
-  // 2026-11-04 自动线路池接入 Command Code 的厂商原生线路（commandcode-native:
-  // 合成线路、池选择器与车道判定），实测 3187/163385，按棘轮上调；模型字段
-  // 那一族的拆分条件不变。
+  // 2026-11-04 自动线路池接入全部厂商原生线路（Command Code / WorkBuddy /
+  // Qoder / Gemini / Pi / DSH / Grok），池选择器与车道判定随之扩展，实测
+  // 3223/164653，按棘轮上调；模型字段那一族的拆分条件不变。
   'public/run-config.js': Object.freeze({
-    ceiling: 3187,
-    byteCeiling: 163385,
+    ceiling: 3223,
+    byteCeiling: 164653,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),

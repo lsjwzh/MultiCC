@@ -9,7 +9,7 @@ const cliUpstream = require('./cli-upstream-version');
 const capability = require('./cli-capability');
 const homebrewTakeover = require('./homebrew-takeover');
 const { nativeSessionExists } = require('./native-session-exists');
-const { nativeCommandCodeId } = require('../providers/native-commandcode');
+const { nativeVendorOf } = require('../providers/native-vendor');
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -1068,7 +1068,7 @@ function createCliSwitchRuntime(options) {
       session.providerSelection = pool;
       // A vendor-native line (Command Code) has no provider record to bind: the
       // lane stays provider-less and the pool carries the line per turn.
-      session.provider = nativeCommandCodeId(plan.providerId) !== null ? null : plan.providerId;
+      session.provider = nativeVendorOf(plan.providerId) !== null ? null : plan.providerId;
       session.model = null;
       session.pendingCliHandoff.reason = 'auto_provider_cli_switch';
       options.rememberActiveCliState(session);

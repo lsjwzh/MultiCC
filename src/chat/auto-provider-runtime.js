@@ -11,11 +11,10 @@ const {
   syntheticNativeOpenCodeProvider,
 } = require('../providers/native-opencode');
 const {
-  NATIVE_COMMANDCODE_LINE_ID,
-  syntheticNativeCommandCodeProvider,
-} = require('../providers/native-commandcode');
+  VENDOR_NATIVE_SET,
+  syntheticVendorProvider,
+} = require('../providers/native-vendor');
 const { peekOpenCodeModels } = require('../routes/opencode-models');
-const { peekCommandcodeModels } = require('../routes/commandcode-models');
 const {
   chooseCandidate,
   failoverSafety,
@@ -116,15 +115,12 @@ function createAutoProviderRuntime(options = {}) {
   // (model choices included) while the spawn path resolves it to OpenCode's own
   // config.
   function laneCatalog(cli, nativeIds = null) {
-    // Command Code has no MultiCC providers at all: its lane catalog is the one
-    // synthetic vendor line, whose model list comes from the same 1-hour cache
-    // the model picker uses. This keeps a commandcode candidate resolvable
-    // without ever asking the provider store for a route that does not exist.
-    if (cli === 'commandcode') {
-      const line = syntheticNativeCommandCodeProvider(
-        NATIVE_COMMANDCODE_LINE_ID,
-        peekCommandcodeModels().map(entry => entry && entry.model).filter(Boolean),
-      );
+    // Vendor-native lanes: one synthetic line per lane, catalogued from that
+    // vendor's own model cache. dsh/grok additionally run managed lines, so
+    // their catalog is the normal one plus the native line; the provider-less
+    // lanes have only the native line.
+    if (VENDOR_NATIVE_SET.has(cli) && cli !== 'dsh' && cli !== 'grok') {
+      const line = syntheticVendorProvider(cli);
       return new Map([[line.id, line]]);
     }
     const appType = providers.appTypeForCli(cli);
@@ -142,6 +138,10 @@ function createAutoProviderRuntime(options = {}) {
         const key = NATIVE_OPENCODE_PREFIX + id;
         if (!byId.has(key)) byId.set(key, syntheticNativeOpenCodeProvider(id, nativeModelOptions(id)));
       }
+    }
+    if (VENDOR_NATIVE_SET.has(cli)) {
+      const line = syntheticVendorProvider(cli);
+      byId.set(line.id, line);
     }
     return byId;
   }

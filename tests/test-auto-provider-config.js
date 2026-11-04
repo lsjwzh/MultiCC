@@ -177,7 +177,7 @@ test('a cross-CLI pool without a usable home lane rejects the candidates that st
   assert.equal(missing.code, 'invalid_provider_candidate');
   assert.match(missing.error, /candidate 1 must name its cli/);
   // A lane name the pool cannot switch to is no better than no lane at all.
-  assert.equal(validateProviderSelection(crossCliSelection(), { cli: 'gemini', providers }).code,
+  assert.equal(validateProviderSelection(crossCliSelection(), { cli: 'notacli', providers }).code,
     'invalid_provider_candidate');
 });
 
@@ -607,7 +607,7 @@ test('a Command Code native candidate is validated structurally, without the ven
     { providerId: 'backup', cli: 'claude', model: 'good-model', priority: 2 },
   ]), { cli: 'commandcode', providers });
   assert.equal(badId.code, 'invalid_provider_candidate');
-  assert.match(badId.error, /invalid Command Code provider id/);
+  assert.match(badId.error, /invalid vendor-native provider id/);
 
   const badModel = validateProviderSelection(pool([
     { providerId: 'commandcode-native:commandcode', cli: 'commandcode', model: 'not allowed model' },
@@ -615,4 +615,28 @@ test('a Command Code native candidate is validated structurally, without the ven
   ]), { cli: 'commandcode', providers });
   assert.equal(badModel.code, 'invalid_provider_candidate');
   assert.match(badModel.error, /invalid model/);
+});
+
+test('every vendor-native lane validates its own line, including WorkBuddy and Qoder', () => {
+  const providers = catalog();
+  for (const cli of ['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok']) {
+    const pool = validateProviderSelection({
+      version: 1, mode: 'auto', maxAttempts: 2,
+      candidates: [
+        { providerId: `${cli}-native:${cli}`, cli, model: 'some-model', priority: 1 },
+        { providerId: 'backup', cli: 'claude', model: 'good-model', priority: 2 },
+      ],
+    }, { cli, providers });
+    assert.equal(pool.ok, true, `${cli}: ${pool.error}`);
+    assert.equal(pool.value.candidates[0].cli, cli);
+    // The same line on another lane is refused structurally.
+    const foreign = validateProviderSelection({
+      version: 1, mode: 'auto', maxAttempts: 2,
+      candidates: [
+        { providerId: `${cli}-native:${cli}`, cli: 'claude', model: 'some-model', priority: 1 },
+        { providerId: 'backup', cli: 'claude', model: 'good-model', priority: 2 },
+      ],
+    }, { cli: 'claude', providers });
+    assert.equal(foreign.code, 'invalid_provider_candidate', cli);
+  }
 });

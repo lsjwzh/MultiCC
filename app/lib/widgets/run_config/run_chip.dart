@@ -17,7 +17,10 @@ import '../../providers/chat_provider.dart';
 import '../../providers/session_manager.dart';
 import '../../services/codex_models_service.dart';
 import '../../services/manage_service.dart';
+import '../../services/codebuddy_models_service.dart';
 import '../../services/commandcode_grok_models_service.dart';
+import '../../services/native_vendor_service.dart';
+import '../../services/qoder_models_service.dart';
 import '../../services/opencode_models_service.dart';
 import '../../services/session_service.dart';
 import '../../services/settings_service.dart';
@@ -98,6 +101,15 @@ class _RunChipState extends State<RunChip> {
       if (cli == SessionCli.commandcode) {
         await CommandCodeModelsService(settings: widget.settings).load();
       }
+      if (cli == SessionCli.qoder) {
+        await QoderModelsService(settings: widget.settings).load();
+      }
+      if (cli == SessionCli.codebuddy) {
+        await CodebuddyModelsService(settings: widget.settings).load();
+      }
+      if (cli == SessionCli.grok) {
+        await GrokModelsService(settings: widget.settings).load();
+      }
       final d = await ManageService(
         settings: widget.settings,
       ).fetchProvidersForCli(cli.name);
@@ -110,11 +122,8 @@ class _RunChipState extends State<RunChip> {
           providers,
           OpenCodeModelsService.cached,
         );
-      } else if (cli == SessionCli.commandcode) {
-        providers = mergeCommandCodeNativeProviders(
-          providers,
-          CommandCodeModelsService.cached,
-        );
+      } else if (vendorNativeClis.contains(cli.name)) {
+        providers = mergeVendorNativeProviders(cli.name, providers);
       }
       setState(() => _providers = providers);
       context.read<ChatProvider>().applyProviderCatalog(providers);

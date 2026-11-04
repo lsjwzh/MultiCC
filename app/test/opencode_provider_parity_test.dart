@@ -10,6 +10,7 @@ import 'package:multicc_app/models/message.dart';
 import 'package:multicc_app/services/commandcode_grok_models_service.dart';
 import 'package:multicc_app/services/live_model_catalog.dart';
 import 'package:multicc_app/services/manage_service.dart';
+import 'package:multicc_app/services/native_vendor_service.dart';
 import 'package:multicc_app/services/opencode_models_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/run_config/run_config_lanes.dart';
@@ -143,5 +144,18 @@ void main() {
     expect(line['modelOptions'], contains('deepseek/deepseek-v4-flash'));
     expect(isCommandCodeNativeProvider(commandCodeNativeProviderId), isTrue);
     expect(lanesForLine(line), const ['commandcode']);
+  });
+
+  test('厂商原生线路覆盖 WorkBuddy / Qoder，并且只挂自己的车道', () {
+    for (final cli in vendorNativeClis) {
+      final id = vendorNativeProviderId(cli);
+      expect(isVendorNativeProvider(id), isTrue, reason: cli);
+      expect(vendorNativeProviderOf(id), cli, reason: cli);
+      expect(lanesForLine({'id': id}), [cli], reason: cli);
+    }
+    final workbuddy = mergeVendorNativeProviders('codebuddy', const []);
+    expect(workbuddy.single['id'], 'codebuddy-native:codebuddy');
+    expect(workbuddy.single['nativeVendor'], true);
+    expect(workbuddy.single['name'], 'WorkBuddy');
   });
 }
