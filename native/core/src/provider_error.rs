@@ -333,5 +333,5 @@ pub fn classify(input: &str) -> Result<String, String> {
         &args["error"],
     )
     .map(|diagnosis| json!({"presentation":presentation(&diagnosis),"diagnosis":diagnosis}));
-    Ok(serde_json::to_string(&result).map_err(|e| e.to_string())?)
+    serde_json::to_string(&result).map_err(|e| e.to_string())
 }
