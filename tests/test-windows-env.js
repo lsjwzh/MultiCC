@@ -7,7 +7,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const windowsEnv = require('../src/windows-env');
-const { isCommandAvailable } = require('../src/cli-adapters/commands');
+const { isCommandAvailable, createCommandResolver } = require('../src/cli-adapters/commands');
+const { createCliAdapters } = require('../src/cli-adapters');
 const { createOpsTerminalRoutes } = require('../src/routes/ops-terminal');
 
 function fakeRes() {
@@ -70,6 +71,7 @@ test('refresh reads both persisted PATH values and only writes when something is
   let clock = 100000;
   const calls = [];
   const run = (exe, args, options, callback) => {
+    if (args[3] !== 'Path') return callback(new Error('missing Git registry key'));
     calls.push(args[1]);
     if (args[1].startsWith('HKLM')) {
       callback(null, 'HKEY_LOCAL_MACHINE\\...\\Environment\n    Path    REG_EXPAND_SZ    C:\\Program Files\\Git\\cmd;%USERPROFILE%\\bin\n');
@@ -91,6 +93,49 @@ test('refresh reads both persisted PATH values and only writes when something is
   assert.equal(calls.length, 2);
 });
 
+test('refresh discovers versioned Codex and custom Git without relying on persisted PATH', async () => {
+  windowsEnv._resetForTests();
+  const env = { Path: 'C:\\Windows', localappdata: 'C:\\Users\\me\\AppData\\Local' };
+  const run = (_exe, args, _options, callback) => {
+    callback(null, args[3] === 'InstallPath' && args[1].startsWith('HKCU')
+      ? '    InstallPath    REG_SZ    D:\\Custom Git\n' : '');
+  };
+  const gitDir = 'D:\\Custom Git\\cmd';
+  const codexDir = 'C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin\\0.166.0';
+  let discoveryCount = 0;
+  const discover = async input => {
+    discoveryCount += 1;
+    assert.deepEqual(input, { localAppData: env.localappdata, gitInstallPaths: ['D:\\Custom Git'] });
+    return { codex: `${codexDir}\\codex.exe`, pathDirs: [gitDir, codexDir] };
+  };
+  const options = { windows: true, force: true, env, run, discover, fsImpl: fakeFs([]) };
+  assert.equal((await windowsEnv.refresh(options)).changed, true);
+  assert.equal(env.Path, `C:\\Windows;${gitDir};${codexDir}`);
+  assert.equal(env.PATH, undefined, 'case-insensitive Path is updated without creating a second key');
+  const revision = windowsEnv.version();
+  assert.equal((await windowsEnv.refresh(options)).changed, false);
+  assert.ok(windowsEnv.version() > revision, 'installing a binary inside an existing directory also invalidates command maps');
+  assert.equal(discoveryCount, 2);
+});
+
+test('concurrent environment probes share one discovery and failed registry reads still allow discovery', async () => {
+  windowsEnv._resetForTests();
+  let release;
+  let count = 0;
+  const env = { PATH: 'C:\\Windows' };
+  const options = { windows: true, force: true, env, fsImpl: fakeFs([]),
+    run: (_exe, _args, _options, callback) => callback(new Error('denied')),
+    discover: async () => { count += 1; return new Promise(resolve => { release = resolve; }); } };
+  const first = windowsEnv.refresh(options);
+  const second = windowsEnv.refresh(options);
+  assert.equal(first, second);
+  await new Promise(resolve => setImmediate(resolve));
+  release({ codex: null, pathDirs: ['D:\\Git\\cmd'] });
+  assert.equal((await first).changed, true);
+  assert.equal(count, 1);
+  assert.equal(env.PATH, 'C:\\Windows;D:\\Git\\cmd');
+});
+
 test('a failed registry read never damages the current PATH', async () => {
   windowsEnv._resetForTests();
   const run = (exe, args, options, callback) => callback(new Error('access denied'));
@@ -100,20 +145,78 @@ test('a failed registry read never damages the current PATH', async () => {
   assert.equal(env.PATH, 'C:\\Windows');
 });
 
+test('a scan that changes the environment immediately refreshes the command map', () => {
+  let revision = 0;
+  let resolutions = 0;
+  const seed = { codex: 'codex.exe' };
+  const environment = { version: () => revision, augmentPath: () => { revision = 1; }, scheduleRefresh() {} };
+  const commands = createCommandResolver({ isWindows: true, seed, environment,
+    resolve: () => { resolutions += 1; return { codex: 'D:\\Codex\\codex.exe' }; } });
+  assert.equal(commands(), seed, 'the shared map remains stable for login and auxiliary consumers');
+  assert.equal(seed.codex, 'D:\\Codex\\codex.exe', 'the first call sees the scan performed on that call');
+  commands();
+  assert.equal(resolutions, 1);
+});
+
+test('CLI invocation and app-server bridge follow the refreshed availability command map', () => {
+  let revision = 0;
+  let codex = 'codex.exe';
+  const environment = { version: () => revision, augmentPath() {}, scheduleRefresh() {} };
+  const { commands, registry } = createCliAdapters({ isWindows: true, commandEnvironment: environment,
+    resolveCliCommands: () => ({ claude: 'claude.exe', codex, 'codex-exp': codex }),
+    codexReasoningConfigArg: () => null, codexModelConfigArg: () => null,
+  });
+  const oldAdapter = registry.get('codex');
+  const invocation = { spawnOpts: {}, historyHandle: { isFirstTurn: true }, contextLayers: [], userText: 'probe' };
+  codex = 'C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin\\0.166.0\\codex.exe';
+  revision += 1;
+  const next = registry.get('codex');
+  assert.equal(commands.codex, codex);
+  assert.equal(next.buildInvocation(invocation).cmd, codex);
+  const bridge = registry.get('codex-exp').buildInvocation(invocation);
+  assert.equal(bridge.args[bridge.args.indexOf('--codex-bin') + 1], codex);
+  assert.equal(oldAdapter.cmd, 'codex.exe', 'an active turn keeps its original adapter');
+  assert.equal(registry.get('codex'), next, 'unchanged maps preserve adapter state');
+});
+
+const native = require('../src/native/runtime').getNative('windows_tools');
+test('native installer discovery feeds the Windows PATH refresh', {
+  skip: typeof native?.windowsToolsDiscover !== 'function' && 'Rust installer discovery is not built',
+}, async t => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  windowsEnv._resetForTests();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-windows-install-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const bin = path.join(root, 'OpenAI', 'Codex', 'bin', '0.166.0');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'codex.exe'), 'fixture');
+  const env = { LOCALAPPDATA: root, PATH: 'C:\\Windows' };
+  await windowsEnv.refresh({ env, windows: true, force: true, fsImpl: fakeFs([]),
+    run: (_exe, _args, _opts, callback) => callback(new Error('missing')) });
+  assert.equal(env.PATH, `C:\\Windows;${bin}`);
+  assert.equal(isCommandAvailable('codex.exe', { isWindows: true, env }), true);
+});
+
 test('the Windows env probe names the resolved git instead of trusting PATH', async () => {
   windowsEnv._resetForTests();
   const calls = [];
   const git = 'C:\\Program Files\\Git\\cmd\\git.exe';
   const exec = async (command) => {
     calls.push(command);
-    if (command === `"${git}" --version`) return { code: 0, stdout: 'git version 2.56.0.windows.4\n' };
-    if (command.endsWith('config --get user.name')) return { code: 0, stdout: 'me\n' };
-    if (command.endsWith('config --get user.email')) return { code: 0, stdout: 'me@example.com\n' };
     if (command === 'where winget') return { code: 0, stdout: 'winget.exe\n' };
     return { code: 127, stdout: '' };
   };
+  const gitCalls = [];
+  const runGit = async (file, args) => {
+    assert.equal(file, git);
+    gitCalls.push(args);
+    return { code: 0, stdout: args[0] === '--version' ? 'git version 2.56.0.windows.4\n'
+      : args[2] === 'user.name' ? 'me\n' : 'me@example.com\n' };
+  };
   const routes = createOpsTerminalRoutes({
-    platform: 'win32', log: { warn() {} }, exec,
+    platform: 'win32', log: { warn() {} }, exec, runGit,
     findGit: () => git,
     refreshEnv: async () => ({ changed: false }),
   });
@@ -121,7 +224,8 @@ test('the Windows env probe names the resolved git instead of trusting PATH', as
   await routes.envHandler({}, res, (error) => { throw error; });
   assert.deepEqual(res.body.git, { available: true, version: '2.56.0.windows.4' });
   assert.equal(res.body.identity.valid, true);
-  assert.ok(calls.includes(`"${git}" config --get user.name`));
+  assert.deepEqual(gitCalls, [['--version'], ['config', '--get', 'user.name'], ['config', '--get', 'user.email']]);
+  assert.ok(!calls.some(command => command.includes('git')), 'Git never passes through CMD string parsing');
   assert.ok(!calls.includes('where git'), 'git is no longer looked up through the frozen PATH');
 });
 

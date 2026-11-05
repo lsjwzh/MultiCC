@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const { resolveCliCommands } = require('./commands');
+const { resolveCliCommands, createCommandResolver } = require('./commands');
 const { createCliProviderRegistry } = require('./core');
 const { createClaudeAdapter } = require('./claude');
 const { createClaudeExpAdapter } = require('./claude-exp');
@@ -19,7 +19,10 @@ const { createGrokAdapter } = require('./grok');
 const { createPiAdapter } = require('./pi');
 
 function createCliAdapters(deps) {
-  const commands = resolveCliCommands({ isWindows: deps.isWindows });
+  const commands = (deps.resolveCliCommands || resolveCliCommands)({ isWindows: deps.isWindows });
+  const commandsNow = createCommandResolver({ isWindows: deps.isWindows, seed: commands,
+    ...(deps.commandEnvironment ? { environment: deps.commandEnvironment } : {}),
+    ...(deps.resolveCliCommands ? { resolve: deps.resolveCliCommands } : {}) });
   const routerMcpNode = deps.routerMcpNode || process.execPath;
   const routerMcpScript = deps.routerMcpScript
     || path.join(__dirname, '..', '..', 'scripts', 'multicc-router-mcp.js');
@@ -30,7 +33,7 @@ function createCliAdapters(deps) {
   console.log(`[multicc] Using codebuddy: ${commands.codebuddy}`);
   console.log(`[multicc] Using dsh: ${commands.dsh}`);
 
-  const registry = createCliProviderRegistry([
+  const buildRegistry = () => createCliProviderRegistry([
     createClaudeAdapter({
       cmd: commands.claude,
       args: deps.claudeArgs,
@@ -96,6 +99,24 @@ function createCliAdapters(deps) {
     createGrokAdapter({ cmd: commands.grok, routerMcpNode, routerMcpScript }),
     createPiAdapter({ cmd: commands.pi, routerMcpNode, routerMcpScript }),
   ]);
+
+  // Existing turns keep their adapter; the next invocation uses the same
+  // refreshed command map as availability, including Codex app-server argv.
+  let current = buildRegistry();
+  let signature = JSON.stringify(commands);
+  const latestRegistry = () => {
+    commandsNow();
+    const next = JSON.stringify(commands);
+    if (signature !== next) {
+      current = buildRegistry();
+      signature = next;
+    }
+    return current;
+  };
+  const registry = {
+    get: cli => latestRegistry().get(cli),
+    get providers() { return latestRegistry().providers; },
+  };
 
   return { commands, registry };
 }

@@ -31,11 +31,16 @@ const REGISTRY_KEYS = Object.freeze([
   'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment',
   'HKCU\\Environment',
 ]);
+const GIT_REGISTRY_KEYS = Object.freeze([
+  'HKLM\\SOFTWARE\\GitForWindows',
+  'HKCU\\SOFTWARE\\GitForWindows',
+]);
 
 let revision = 0;
 let lastScanAt = 0;
 let lastRefreshAt = 0;
 let inFlight = null;
+let discoveredCommands = {};
 
 function envValue(env, name) {
   if (Object.prototype.hasOwnProperty.call(env, name)) return env[name];
@@ -128,13 +133,14 @@ function augmentPath(env = process.env, {
   return true;
 }
 
-function parseRegistryPath(stdout) {
+function parseRegistryValue(stdout, name) {
   for (const line of String(stdout || '').split(/\r?\n/)) {
-    const match = /^\s*Path\s+REG_(?:EXPAND_)?SZ\s*(.*)$/i.exec(line);
-    if (match) return match[1].trim();
+    const match = /^\s*(\S+)\s+REG_(?:EXPAND_)?SZ\s*(.*)$/i.exec(line);
+    if (match && match[1].toLowerCase() === name.toLowerCase()) return match[2].trim();
   }
   return null;
 }
+const parseRegistryPath = stdout => parseRegistryValue(stdout, 'Path');
 
 function expandEnv(value, env) {
   return String(value || '').replace(/%([^%]+)%/g, (whole, name) => {
@@ -143,16 +149,24 @@ function expandEnv(value, env) {
   });
 }
 
-function readKey(run, exe, key) {
+function readKey(run, exe, key, name = 'Path') {
   return new Promise((resolve) => {
     try {
-      run(exe, ['query', key, '/v', 'Path'], { timeout: PROBE_TIMEOUT_MS, windowsHide: true }, (error, stdout) => {
-        resolve(error ? null : parseRegistryPath(stdout));
+      run(exe, ['query', key, '/v', name], { timeout: PROBE_TIMEOUT_MS, windowsHide: true }, (error, stdout) => {
+        resolve(error ? null : parseRegistryValue(stdout, name));
       });
     } catch (_) {
       resolve(null);
     }
   });
+}
+
+// Filesystem discovery stays in Rust's worker pool. This module only adapts
+// registry reads and the Node process environment used by child_process.
+async function discoverTools(input) {
+  const native = require('./native/runtime').getNative('windows_tools');
+  if (!native?.windowsToolsDiscover) return null;
+  return JSON.parse(await native.windowsToolsDiscover(JSON.stringify(input)));
 }
 
 function mergePath(current, registryValues, env) {
@@ -183,6 +197,7 @@ function refresh({
   maxAgeMs = DEFAULT_MAX_AGE_MS,
   now = Date.now,
   fsImpl = fs,
+  discover = discoverTools,
 } = {}) {
   if (!windows) return Promise.resolve({ changed: false, supported: false });
   if (inFlight) return inFlight;
@@ -192,20 +207,30 @@ function refresh({
   }
 
   inFlight = (async () => {
+    const before = String(envValue(env, 'PATH') || '');
     augmentPath(env, { fsImpl, windows, now, force: true });
     const systemRoot = envValue(env, 'SystemRoot') || envValue(env, 'windir') || 'C:\\Windows';
     const exe = path.win32.join(systemRoot, 'System32', 'reg.exe');
-    const values = await Promise.all(REGISTRY_KEYS.map(key => readKey(run, exe, key)));
+    const [values, gitRoots] = await Promise.all([
+      Promise.all(REGISTRY_KEYS.map(key => readKey(run, exe, key))),
+      Promise.all(GIT_REGISTRY_KEYS.map(key => readKey(run, exe, key, 'InstallPath'))),
+    ]);
+    let tools = null;
+    try {
+      tools = await discover({ localAppData: envValue(env, 'LOCALAPPDATA'),
+        gitInstallPaths: gitRoots.filter(Boolean).map(root => expandEnv(root, env)) });
+    } catch (_) { /* retain the last discovery when the worker is unavailable */ }
+    if (tools) discoveredCommands = { codex: tools.codex || null };
     lastRefreshAt = now();
-    if (values.every(value => value == null)) {
-      return { changed: false, path: String(envValue(env, 'PATH') || '') };
-    }
     const current = String(envValue(env, 'PATH') || '');
-    const merged = mergePath(current, values, env);
-    if (!merged || merged === current) return { changed: false, path: current };
-    setEnvValue(env, 'PATH', merged);
+    const merged = mergePath(current, [...values, ...(tools?.pathDirs || [])], env);
+    if (merged && merged !== current) setEnvValue(env, 'PATH', merged);
+    // A new CLI may appear inside an existing PATH directory, or replace a
+    // versioned executable, without changing PATH at all. Invalidate command
+    // maps after every real refresh, including a successful empty discovery.
     revision += 1;
-    return { changed: true, path: merged };
+    const updated = String(envValue(env, 'PATH') || '');
+    return { changed: updated !== before, path: updated };
   })().finally(() => { inFlight = null; });
 
   return inFlight;
@@ -226,11 +251,16 @@ function version() {
   return revision;
 }
 
+function command(name, env = process.env) {
+  return env === process.env ? discoveredCommands[name] || null : null;
+}
+
 function _resetForTests() {
   revision = 0;
   lastScanAt = 0;
   lastRefreshAt = 0;
   inFlight = null;
+  discoveredCommands = {};
 }
 
 module.exports = {
@@ -242,5 +272,6 @@ module.exports = {
   refresh,
   scheduleRefresh,
   version,
+  command,
   _resetForTests,
 };

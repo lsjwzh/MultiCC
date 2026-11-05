@@ -23,6 +23,8 @@
 // the installer shares; this is only the HTTP handle and the job's progress.
 const { execFile, spawn } = require('node:child_process');
 const defaultPortableGit = require('../portable-git');
+const windowsEnv = require('../windows-env');
+const { findExecutableOnPath } = require('../cli-adapters/commands');
 
 const PROBE_TIMEOUT_MS = 5000;
 const INSTALL_TIMEOUT_MS = 20000;
@@ -48,9 +50,11 @@ function createDeveloperToolsRoutes({
   spawnProcess = spawn,
   portableGit = defaultPortableGit,
   childEnv = () => require('../network/outbound').getChildProxyEnv(process.env),
+  refreshEnv = windowsEnv.refresh,
+  findGit = () => findExecutableOnPath('git', { isWindows: platform === 'win32' }),
 } = {}) {
   const exec = (file, args, timeout) => new Promise((resolve) => {
-    run(file, args, { timeout }, (error, stdout, stderr) => {
+    run(file, args, { timeout, windowsHide: true }, (error, stdout, stderr) => {
       resolve({
         failed: Boolean(error),
         code: error && typeof error.code === 'number' ? error.code : (error ? -1 : 0),
@@ -74,6 +78,13 @@ function createDeveloperToolsRoutes({
   // not be told to install anything. So the tools are only the answer when the
   // *only* git on PATH is the shim.
   async function gitWorks() {
+    if (platform === 'win32') {
+      try { await refreshEnv({ force: true }); } catch (_) { /* probe the environment we still have */ }
+      const git = findGit();
+      if (!git) return false;
+      const version = await exec(git, ['--version'], PROBE_TIMEOUT_MS);
+      return !version.failed && /^git version \S+/.test(version.stdout);
+    }
     if (platform === 'darwin' && await toolsInstalled()) return true;
     const resolved = await exec('/bin/sh', ['-c', 'command -v git'], PROBE_TIMEOUT_MS);
     const gitPath = resolved.failed ? '' : resolved.stdout.split('\n')[0].trim();

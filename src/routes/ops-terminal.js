@@ -1,6 +1,6 @@
 'use strict';
 
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
 const { findExecutableOnPath } = require('../cli-adapters/commands');
 const windowsEnv = require('../windows-env');
 
@@ -119,6 +119,17 @@ async function execShell(command) {
 const firstLine = (result) => (result.code === 0 ? String(result.stdout || '').trim().split('\n')[0].trim() : '');
 const identityPartValid = (value, isEmail) => !!value && !BAD_IDENTITY_CHARS.test(value) && (!isEmail || value.includes('@'));
 
+// Node's Windows process adapter: pass the executable and argv separately.
+// cmd.exe reparses quotes around Program Files paths and can report a working
+// Git as missing. Detection never needs a shell.
+function execGitFile(file, args) {
+  return new Promise(resolve => {
+    execFile(file, args, { timeout: PROBE_TIMEOUT_MS, windowsHide: true }, (error, stdout) => {
+      resolve({ code: error ? (error.code || 1) : 0, stdout: String(stdout || '') });
+    });
+  });
+}
+
 async function probePackageManager(exec, platform) {
   if (platform === 'win32') {
     for (const name of ['winget', 'choco', 'scoop']) {
@@ -151,21 +162,17 @@ function defaultFindGit() {
   return findExecutableOnPath('git', { isWindows: process.platform === 'win32' });
 }
 
-async function probeGit(exec, platform, resolvedWindowsPath = null) {
+async function probeGit(exec, platform, resolvedWindowsPath, runGit) {
   const gitPath = platform === 'win32' ? resolvedWindowsPath : firstLine(await exec('command -v git'));
   if (!gitPath) return { available: false, version: null };
-  let command = 'git --version';
-  if (platform === 'win32') {
-    // The resolved path can contain spaces; a bare `git` would still go through
-    // the frozen PATH this probe exists to bypass.
-    command = `"${gitPath}" --version`;
-  } else if (platform === 'darwin' && gitPath === '/usr/bin/git') {
+  if (platform === 'darwin' && gitPath === '/usr/bin/git') {
     // The macOS shim: running it without Command Line Tools raises the system
     // install dialog. `xcode-select -p` is the dialog-free probe (same rule as
     // src/routes/developer-tools.js).
     if ((await exec('xcode-select -p')).code !== 0) return { available: false, version: null };
   }
-  const match = /git version (\S+)/.exec((await exec(command)).stdout || '');
+  const version = platform === 'win32' ? await runGit(gitPath, ['--version']) : await exec('git --version');
+  const match = version.code === 0 && /git version (\S+)/.exec(version.stdout || '');
   return match ? { available: true, version: match[1] } : { available: false, version: null };
 }
 
@@ -181,16 +188,14 @@ function installAdvice(packageManager, account) {
   return { command, runnable: false };
 }
 
-async function probeEnv(exec, platform, findGit) {
+async function probeEnv(exec, platform, findGit, runGit) {
   const gitPath = platform === 'win32' ? findGit('git') : null;
-  const git = await probeGit(exec, platform, gitPath);
+  const git = await probeGit(exec, platform, gitPath, runGit);
   let identity = { name: null, email: null, valid: false };
   if (git.available) {
-    // Same rule as the version probe: name the binary the resolver found, not a
-    // bare `git` that the frozen PATH would still miss.
-    const prefix = gitPath ? `"${gitPath}"` : 'git';
-    const name = firstLine(await exec(`${prefix} config --get user.name`)) || null;
-    const email = firstLine(await exec(`${prefix} config --get user.email`)) || null;
+    const config = key => gitPath ? runGit(gitPath, ['config', '--get', key]) : exec(`git config --get ${key}`);
+    const name = firstLine(await config('user.name')) || null;
+    const email = firstLine(await config('user.email')) || null;
     identity = { name, email, valid: identityPartValid(name, false) && identityPartValid(email, true) };
   }
   const account = await probeAccount(exec, platform);
@@ -219,6 +224,7 @@ function createOpsTerminalRoutes({
   start = startShell,
   now = Date.now,
   findGit = defaultFindGit,
+  runGit = execGitFile,
   // Windows only: the persisted PATH is re-read so a tool installed since the
   // process started is visible without restarting it.
   refreshEnv = windowsEnv.refresh,
@@ -263,7 +269,7 @@ function createOpsTerminalRoutes({
       if (platform === 'win32') {
         try { await refreshEnv({ force: true }); } catch (_) { /* probe with what we have */ }
       }
-      res.json({ ok: true, platform, ...(await probeEnv(exec, platform, findGit)) });
+      res.json({ ok: true, platform, ...(await probeEnv(exec, platform, findGit, runGit)) });
     } catch (error) {
       next(error);
     }
