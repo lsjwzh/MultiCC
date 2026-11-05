@@ -41,7 +41,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends procps \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-COPY probe.c agent.h json.c x11.c image.c agent.c test-target.c build.sh conformance.sh install.sh install-smoke.sh /src/
+COPY probe.c agent.h json.c x11.c image.c agent.c test-target.c test-json.c build.sh conformance.sh install.sh install-smoke.sh /src/
+
+RUN gcc -O2 -Wall -Wextra -Werror -o /tmp/test-json /src/test-json.c /src/json.c && /tmp/test-json
 
 # -Wall -Wextra 当门禁：探针自己要能零警告编过。agent 那些源文件则由 build.sh
 # 用同一个标准编（MULTICC_STRICT=1 把警告升级成错误）。

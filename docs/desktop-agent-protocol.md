@@ -2,8 +2,9 @@
 
 「🖥 屏幕」的能力不来自 MultiCC 服务端，而来自**跑在用户图形会话里的那个 desktop agent**。
 macOS 的实现是 `scripts/macos-agent/MultiCCAgent.swift`（Swift，`MultiCC Agent.app`），
-Linux X11 的实现是 `scripts/linux-agent/`（C）；Windows 还没有，`native/remote/`（Rust 进程
-`multicc-remote`）的画像表里如实登记成 `supported: false`。
+Linux X11 的实现是 `scripts/linux-agent/`（C 原生适配）；Windows 的实现是
+`native/desktop-agent/`（Rust）。`native/remote/` 通过 Unix socket 或本机命名管道接入。
+Windows 首版已具备构建与验证入口；真实桌面验收仍须按下文执行，不等同于已经验证上线。
 
 这份文档是**给下一个平台实现看的契约**：照它实现，服务端、Web 前端、Flutter App、
 标注→动作链路、坐标换算一个字都不用改——它们只认下面这些 op 和 reason，不认平台名。
@@ -28,7 +29,7 @@ Linux X11 的实现是 `scripts/linux-agent/`（C）；Windows 还没有，`nati
 |---|---|---|---|
 | macOS | unix socket | `~/.multicc/agent/agent.sock`（`MULTICC_AGENT_SOCK` 可覆盖） | `getpeereid`，必须同 uid |
 | Linux X11 | unix socket | `$XDG_RUNTIME_DIR/multicc-agent/agent.sock` | `SO_PEERCRED`，必须同 uid |
-| Windows (计划) | 命名管道 | `\\.\pipe\multicc-agent` | 管道 ACL 只给当前用户 |
+| Windows | 命名管道 | `\\.\pipe\multicc-agent` | 管道 ACL 只给当前用户 |
 
 - 目录 `0700`，socket `0600`（Windows：管道 ACL 等价）。
 - **不监听 TCP。** 跨机器不是这一层的职责——服务端已经有 tunnel / relay，远程访问鉴权在
@@ -114,7 +115,7 @@ Linux X11 的实现是 `scripts/linux-agent/`（C）；Windows 还没有，`nati
 #### `snap` 的可选字段
 
 `crop` / `jpeg` / `quality` 都是**后加的**，macOS 那份实现不认识它们 —— 这不重要，
-因为服务端只在 `host.captureDirect` 存在时才发（也就是只在 Linux 上）。多出来的字段
+因为服务端只在 `host.captureDirect` 存在时才发（也就是 Linux / Windows）。多出来的字段
 是纯增量：新 agent 对老服务端、老 agent 对新服务端都仍然只走 `path`。
 
 | 字段 | 语义 |
@@ -164,8 +165,8 @@ design*）。「一个动作一个进程、一个进程一条连接」的脚本�
 `--remote-debugging-port` + 独立 `--user-data-dir` 启动的 Chrome 不受影响，从不弹窗。
 
 网关常驻、每个 Chrome 只保留**一条**上游连接，本地调用方复用它。这段逻辑和平台无关，
-所以**不放在桌面 Agent 里**（Agent 依赖 AppKit / ScreenCaptureKit / X11，Windows 还没有
-Agent），而是独立的 Rust 进程 `native/cdpd`（crate `multicc-cdpd`）。
+所以**不放在桌面 Agent 里**（Agent 依赖 AppKit / ScreenCaptureKit / X11 / Win32），
+而是独立的 Rust 进程 `native/cdpd`（crate `multicc-cdpd`）。
 
 #### 落盘位置
 
@@ -404,31 +405,57 @@ WebRTC DataChannel（P2P）；打洞失败时就走这条 WS——中继只用�
 ScreenCaptureKit / CGWindowList 截图，CGEvent 注入，AX 元素树，`caffeinate` 唤屏，
 `sips` 做图像处理，`osascript` 取桌面逻辑 bounds。授权在系统设置里一次性发给这个 `.app`。
 
-### Windows（计划）
+### Windows（Rust 首版：`native/desktop-agent/`）
 
-- 截图：DXGI Desktop Duplication 为主（快、按显示器），`Windows.Graphics.Capture`（WinRT，
-  可为窗口级），GDI `BitBlt` 兜底。**系统不设捕获授权**——这里比 macOS 简单。
-- 输入：`SendInput`。陷阱有二：
-  - **UIPI**：普通完整性进程发不进提权窗口。解法是清单 `uiAccess="true"` + Authenticode
-    签名 + 安装在 `Program Files`，或让 agent 整体提权运行。
-  - **安全桌面**（UAC 提示、锁屏、Ctrl+Alt+Del）根本够不到。
-- DPI/多屏：设 Per-Monitor-V2 DPI 感知，逻辑尺寸由 `GetDpiForMonitor` 得出，
-  正好对上服务端 `X-Screen-Width` 那套「图上 1px = 1 逻辑点」的契约。
-- 元素树：UIA。
-- 实现语言：C#/.NET self-contained 单文件 exe（WinRT/UIA/Desktop Duplication 都是一等公民）。
-- **v1 不做解锁**：`unlock` 一律回 `{ ok:false, reason:'screen-locked' }`（或专用 reason），
-  `features.unlock = false`。真要做，需要一个 SYSTEM 级服务（SendSAS / 凭据提供程序）。
-- 修饰键是 **Ctrl** → 画像 `modifier: 'ctrl'`，前端快捷键行据此把 `cmd+x` 换成 `ctrl+x`。
+- 截图：GDI `BitBlt` 捕获主屏，不依赖 GPU/DXGI；先裁原始像素再编码 PNG/JPEG。
+  截图使用临时文件加原子替换，支持标注后的原路径重拍，拒绝设备路径、目录穿越和目标重解析点。
+- DPI：Per-Monitor-V2；本平台的坐标域是主屏物理像素，截图尺寸与输入坐标一致。
+- 输入：`SendInput`，支持点击、拖动、双轴滚动、组合键、UTF-16 文本与 HTTP `pointer`。
+  指针由 `viewer` 独占，心跳不重复注入，10 秒无心跳释放。仅释放 Agent 自己按下的键。
+- 护栏：输入串行，等待上限 3 秒；租约代次保证 `release` / `resume` 后旧请求不会复活。
+  物理 Esc 由低级键盘钩子观察，忽略合成事件；钩子未就绪拒绝输入。多步输入遇急停、
+  锁屏、控制权撤销或请求断开即停止，并报告 `partial` / `retrySafe`。
+- 密码框：Win32 密码样式与 UI Automation `IsPassword` 两层检查；查询失败拒绝打字。
+  不自动提升权限，UIPI 拒绝如实报错。Session 0、UAC 安全桌面、锁屏不接受操作。
+- 命名管道不允许远程客户端；受保护 DACL 只授予当前登录用户。Agent 不监听 TCP。
+- `features`：查看、控制、快照、标注可用；串流、唤醒、自动解锁、元素树未实现。
+  `unlock` 回 `unlock-unsupported`。快捷键修饰键为 Ctrl。
+- 安装：`powershell -NoProfile -File scripts/windows-agent/install.ps1 install`。
+  优先使用发行包中的 exe，否则本机 Cargo/MSVC 构建；也可用 `-Binary` 指定可信二进制。
+  安装在当前用户目录，Startup 快捷方式随图形登录启动，`status` / `uninstall` 管理它。
+  不安装系统服务，也不需要管理员权限。MultiCC 服务端须由用户手动重启后加载新代码。
+
+验证入口：
+
+```powershell
+cargo test --locked --manifest-path native/Cargo.toml -p multicc-desktop-agent
+cargo build --locked --release --manifest-path native/Cargo.toml -p multicc-desktop-agent
+powershell -NoProfile -File scripts/windows-agent/verify.ps1 -Binary native/target/release/multicc-desktop-agent.exe
+powershell -NoProfile -File scripts/windows-agent/install-smoke.ps1 -Binary native/target/release/multicc-desktop-agent.exe
+# 在可操作的已登录 Windows 桌面上验证截图、输入、密码框与租约：
+powershell -NoProfile -File scripts/windows-agent/verify.ps1 -Binary native/target/release/multicc-desktop-agent.exe -Desktop
+```
+
+Windows CI 配置为执行真实命名管道测试（含 ACL），分别用 PowerShell 5 与 7 运行安装冒烟，
+并生成 exe；桌面检查是独立入口。安装冒烟使用临时安装目录、自启目录和独立管道，验证
+安装、实际自启命令、重装替换进程、ACL 与卸载，不改当前用户的正式安装。
+自启快捷方式固定使用系统自带的 Windows PowerShell，避免 PowerShell 7 的 `$PSHOME`
+不含 `powershell.exe`，或 PowerShell 7 升级后路径失效。
+`-Desktop` 的输入靶子运行在独立 STA 进程，核对实际鼠标事件、修饰键释放、中文/emoji
+文本、Ctrl+A 与密码框拒绝输入；靶子坐标采用 Per-Monitor-V2，避免缩放下误点。
+最终人工验收仍包括：浏览器/App 控制普通应用、中文与 emoji、缩放坐标、长文本中按实体 Esc、
+锁屏/UAC 拒绝、页面断开后释放按键。仅有交叉编译通过不能替代这些结果。
 
 ### Linux X11（已实现：`scripts/linux-agent/`）
 
-C，零第三方依赖（只用系统库 `X11 Xext Xtst Xss z jpeg`），五个源文件：`agent.c`（op 与
+C，零第三方依赖（只用系统库 `X11 Xext Xtst Xss z jpeg m`），五个源文件：`agent.c`（op 与
 护栏）、`x11.c`（截图/注入/锁屏判定/Esc 观察）、`json.c`、`image.c`（PNG+JPEG 编码）、
 `agent.h`。编译、验证、一致性测试各一条命令：
 
 ```sh
 scripts/linux-agent/build.sh              # 编 agent 与测试靶子
-scripts/linux-agent/verify.sh             # 容器里起 Xvfb 跑探针 + conformance.sh（不需要 Linux 主机）
+sh scripts/linux-agent/verify.sh          # Docker 中跑探针、一致性测试和安装冒烟
+sh scripts/linux-agent/verify.sh --native # Linux 上直接用 Xvfb，绕过 Docker 依赖
 DISPLAY=:0 scripts/linux-agent/conformance.sh   # 在真桌面上跑同一套
 ```
 
@@ -443,7 +470,10 @@ DISPLAY=:0 scripts/linux-agent/conformance.sh   # 在真桌面上跑同一套
   **推到整串输完之后**：按一次还原一次的话，接收方收到 KeyPress 去反查 keysym 时映射
   已经变回去了——症状是「字打进去了但对方认不出」，最难查的一类。用轮换的一小撮空闲键码，
   避免给所有客户端反复刷 MappingNotify。
-- **滚轮方向反着记**：`amount > 0` 是**向上**（契约跟 macOS 对齐），而 X11 的 button 4 才是上。
+- **双轴滚轮**：`amount > 0` 向上（button 4），负值向下（button 5）；
+  `amountX > 0` 向左（button 6），负值向右（button 7），每轴上限 50。
+- **修饰键**：`mods` 字符串数组支持 Shift/Ctrl/Alt/Super，点击/移动/拖动/滚动结束后释放；
+  `press` 合并到组合键。旧版不支持 `pointer` 时，Web 使用现有 click/drag 兼容通道。
 - **锁屏判定是尽力而为且偏保守**：焦点窗口的 `WM_CLASS` 命中已知锁屏程序，或 XScreenSaver
   报 `state=On` 且 `kind != ScreenSaverBlanked`（单纯熄屏不算锁）。判错的代价不对称：
   把「锁着」误判成「没锁」会把注入打到锁屏窗口上（绝不能发生），反过来只是多点一次不动。
@@ -537,3 +567,36 @@ macOS 那套做法**不可能**。没有全局截图、没有全局注入，唯�
 能力矩阵（`features`）与 op 的对应关系：`view` → `snap`；`control` → `click/move/scroll/drag/type/press`；
 `snapshot` + `annotate` → 服务端自己完成（截图 + 标注→动作）；`stream` → §6；`wake` → `caffeinate` 等价物；
 `unlock` → `unlock`；`elementTree` → §4.2。
+
+
+### 本次实现边界与验证记录（2026-11-05）
+
+新增 Windows 后端、控制状态与输入校验均使用 Rust；Node 仅同步旧回退层的平台画像。
+Linux 保留已有 C/Xlib 边界，仅修协议字段和 XTest 调用的兼容错误；本轮直接重写其线程、
+连接和输入护栏会扩大未验证迁移范围。后续迁移条件是 Rust 原生绑定通过同一套 X11
+一致性测试和实际桌面回归，再替换 C 请求层。Node 画像随回退层退役一同删除。
+
+本轮确认的执行结果：
+
+| 验证 | 环境 | 结果 |
+|---|---|---|
+| Rust Agent 核心与远控全部测试 | macOS，`cargo test --locked --manifest-path native/Cargo.toml -p multicc-desktop-agent -p multicc-remote` | 87 通过 |
+| Node 回退、原生构建/打包与桌面壳回归 | macOS，`node --test tests/test-rust-kernels.js tests/test-desktop-shell.js tests/test-remote-screen-node.js` | 85 通过，1 项因缺少 Electron 工具链跳过 |
+| Windows MSVC 目标全部测试代码的严格 Clippy | macOS 交叉检查，重建目标标准库，`-D warnings` | 通过；未链接或执行 Windows exe |
+| Windows 安装/验证/靶子脚本 | PowerShell 7.6.9 实际解析器 | 4 份脚本语法通过；未执行 Win32 行为 |
+| Linux 严格编译、JSON 与截图/输入原语 | Ubuntu 26.04 arm64 独立 Lima 虚拟机、Xvfb | 两种分辨率均通过 |
+| Linux 一致性与安装冒烟 | 同上，1280×800 和 1920×1080 | 每轮 124 项一致性、12 项安装冒烟通过，零失败 |
+
+Docker 引擎仍有磁盘 I/O 错误，本轮改用独立虚拟机运行同一验证脚本的原生入口。
+在准备好 X11 开发依赖、Xvfb、xauth 与 procps 的 Linux 机器上可直接复现：
+
+```sh
+sh scripts/linux-agent/verify.sh --native
+SCREEN=1920x1080x24 sh scripts/linux-agent/verify.sh --native
+```
+
+Xvfb 验证包含真实窗口像素、中文输入、Esc 中断长输入、断线后停止输入、输入串行、
+300 次请求后的 X 连接存活、窗口销毁竞态、修饰键释放、水平滚动与安装/重装/自启/卸载。
+此处的 Esc 由另一 X11 客户端产生，不代表硬件键盘验收；真实 GNOME/KDE 桌面的锁屏、
+合成器与缩放仍需现场回归。Windows 命名管道 ACL、PowerShell 安装卸载、真实桌面输入及
+实体 Esc 尚未执行，CI 已配置但本轮未触发。必须完成这些验收后才能宣称两端已验证可用。

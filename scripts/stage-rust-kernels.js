@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { hasRemoteCrate, hasCdpdCrate, remoteBinaryName, cdpdBinaryName, verify } = require('./build-rust-kernels');
+const { hasRemoteCrate, hasCdpdCrate, remoteBinaryName, cdpdBinaryName, workspaceMembers, verify } = require('./build-rust-kernels');
 
 // 和原生模块同目录的可执行件。服务端只在模块旁边找它们（远控见
 // docs/remote-screen-process.md §1，网关见 src/cdpd.js binaryPath），所以打包必须
@@ -12,6 +12,9 @@ const COMPANIONS = [
     missing: '打包缺少远控二进制' },
   { label: 'CDP 网关', crate: 'native/cdpd', inWorkspace: hasCdpdCrate, binaryName: cdpdBinaryName,
     missing: '打包缺少 CDP 网关 multicc-cdpd' },
+  { label: 'Windows desktop agent', crate: 'native/desktop-agent', platform: 'win32',
+    inWorkspace: repo => workspaceMembers(repo).includes('desktop-agent'),
+    binaryName: () => 'multicc-desktop-agent.exe', missing: 'Missing Windows desktop agent' },
 ];
 
 // Electron 和 standalone 共用。只复制目标架构，禁止宿主二进制冒充交叉构建产物。
@@ -31,6 +34,7 @@ function stageRustKernels({ repoRoot, out, npmEnv = {}, logger = console }) {
 
   const staged = [];
   for (const companion of COMPANIONS) {
+    if (companion.platform && companion.platform !== platform) continue;
     const binary = companion.binaryName(platform);
     const companionSource = path.join(root, `${platform}-${arch}`, binary);
     if (!fs.existsSync(companionSource)) {

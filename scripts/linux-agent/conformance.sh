@@ -450,6 +450,24 @@ fi
 kill "$T2PID" 2>/dev/null || true
 T2PID=
 
+# ── Modifier / horizontal wheel protocol regressions ─────────────────────
+sect "10. 修饰键与水平滚动"
+req '{"op":"resume"}' >/dev/null
+req '{"op":"release"}' >/dev/null
+R=$(req '{"op":"click","session":"mods-test","allowSystem":true,"x":483,"y":391,"mods":["ctrl","shift"]}')
+has "带修饰键数组的点击能执行" "$R" '"ok":true'
+seen "靶子观察到 Ctrl+Shift 点击" 'BUTTON-STATE 1 5 83,91'
+R=$(req '{"op":"click","session":"mods-test","allowSystem":true,"x":484,"y":392}')
+has "修饰键点击后的普通点击成功" "$R" '"ok":true'
+seen "修饰键已松开" 'BUTTON-STATE 1 0 84,92'
+R=$(req '{"op":"scroll","session":"mods-test","allowSystem":true,"x":450,"y":350,"amount":0,"amountX":1}')
+has "水平滚动回 ok" "$R" '"ok":true'
+seen "向左滚动注入 X11 button 6" 'BTN 6 press 50,50'
+R=$(req '{"op":"scroll","session":"mods-test","allowSystem":true,"x":450,"y":350,"amount":0,"amountX":-1}')
+has "反向水平滚动回 ok" "$R" '"ok":true'
+seen "向右滚动注入 X11 button 7" 'BTN 7 press 50,50'
+has "拒绝对象尾部额外数据" "$(req '{"op":"ping"}garbage')" '"error":"bad-json"'
+
 # ── 汇总 ─────────────────────────────────────────────────────────────────
 
 printf '\n\033[1m汇总：%d 通过，%d 失败\033[0m\n' "$PASS" "$FAIL"

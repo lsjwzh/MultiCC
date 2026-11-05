@@ -222,6 +222,7 @@ static int run_target(int argc, char **argv) {
       case ButtonPress:
       case ButtonRelease: {
         int down = ev.type == ButtonPress;
+        if (down) printf("BUTTON-STATE %u %u %d,%d\n", ev.xbutton.button, ev.xbutton.state, ev.xbutton.x, ev.xbutton.y);
         if (ev.xbutton.button == Button4 || ev.xbutton.button == Button5) {
           if (down) printf("SCROLL %s\n", ev.xbutton.button == Button4 ? "up" : "down");
         } else {
@@ -235,6 +236,7 @@ static int run_target(int argc, char **argv) {
         break;
       case KeyPress: {
         unsigned cp = key_codepoint(d, &ev.xkey);
+        printf("KEY-STATE %u\n", ev.xkey.state);
         if (cp) printf("KEY U+%04X\n", cp);
         else printf("KEYSYM 0x%04lx\n", (unsigned long)XLookupKeysym(&ev.xkey, 0));
         break;

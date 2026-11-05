@@ -8,8 +8,7 @@ use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
-#[cfg(unix)]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// 其余 op 都是毫秒级，沿用默认超时；`type` 由调用方按字数放大。
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(8000);
@@ -18,10 +17,10 @@ pub trait AgentClient: Send + Sync {
     fn call(&self, req: Value, timeout: Option<Duration>) -> BoxFuture<'static, Value>;
 }
 
-/// 真实现：连 unix socket，写一行，读到第一个换行为止。
+/// Native IPC: Unix socket on macOS/Linux, local named pipe on Windows.
 #[derive(Clone, Debug)]
 pub struct UnixAgentClient {
-    /// 画像里的 agent.sock；None = 这台机器没有 agent（win32 之类）。
+    /// The socket or pipe supplied by the platform profile.
     pub socket: Option<PathBuf>,
 }
 
@@ -48,7 +47,6 @@ pub fn agent_failed(reply: &Value) -> bool {
     reply.is_null() || reply.get("ok") == Some(&Value::Bool(false))
 }
 
-#[cfg(unix)]
 async fn call_over_unix(socket: Option<PathBuf>, req: Value, timeout: Duration) -> Value {
     let Some(path) = socket else {
         // 画像里没有 socket：JS 会 createConnection(undefined) 抛 ENOENT，
@@ -56,7 +54,7 @@ async fn call_over_unix(socket: Option<PathBuf>, req: Value, timeout: Duration) 
         return json!({ "ok": false, "error": "agent-unreachable" });
     };
     let exchange = async move {
-        let mut stream = tokio::net::UnixStream::connect(&path).await?;
+        let mut stream = connect(&path).await?;
         let mut line = serde_json::to_string(&req).unwrap_or_else(|_| "{}".into());
         line.push('\n');
         stream.write_all(line.as_bytes()).await?;
@@ -68,6 +66,10 @@ async fn call_over_unix(socket: Option<PathBuf>, req: Value, timeout: Duration) 
                 return Ok::<Result<Value, &'static str>, std::io::Error>(Err("agent-closed"));
             }
             buf.extend_from_slice(&chunk[..n]);
+            // Desktop replies contain metadata, never image bytes. Bound a damaged peer.
+            if buf.len() > 1024 * 1024 {
+                return Ok(Err("agent-bad-response"));
+            }
             if let Some(nl) = buf.iter().position(|b| *b == b'\n') {
                 return Ok(
                     serde_json::from_slice::<Value>(&buf[..nl]).map_err(|_| "agent-bad-response")
@@ -85,14 +87,36 @@ async fn call_over_unix(socket: Option<PathBuf>, req: Value, timeout: Duration) 
     }
 }
 
-/// Windows 上还没有 unix socket 传输：永远按「连不上 Agent」回复。
-#[cfg(not(unix))]
-async fn call_over_unix(_socket: Option<PathBuf>, _req: Value, _timeout: Duration) -> Value {
-    json!({ "ok": false, "error": "agent-unreachable" })
+trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
+
+#[cfg(unix)]
+async fn connect(path: &std::path::Path) -> std::io::Result<Box<dyn Duplex>> {
+    Ok(Box::new(tokio::net::UnixStream::connect(path).await?))
+}
+
+#[cfg(windows)]
+async fn connect(path: &std::path::Path) -> std::io::Result<Box<dyn Duplex>> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    if !path.to_string_lossy().starts_with(r"\\.\pipe\") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "local pipe required",
+        ));
+    }
+    loop {
+        match ClientOptions::new().open(path) {
+            Ok(pipe) => return Ok(Box::new(pipe)),
+            // The outer timeout covers both connecting and the response.
+            Err(error) if error.raw_os_error() == Some(231) => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// JS 的 `error.code`：Node 给的是 ENOENT/ECONNREFUSED 这类短码。
-#[cfg(unix)]
 fn error_code(error: &std::io::Error) -> String {
     match error.raw_os_error() {
         Some(2) => "ENOENT".into(),

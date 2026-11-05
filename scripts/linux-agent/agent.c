@@ -395,7 +395,13 @@ static void do_input(const jobject *req, const char *op, jout *out) {
     if (!read_xy(req, "x", "y", &x, &y)) { x11_injecting(0); fail_with(out, "x-and-y-required", NULL); return; }
     jnum(req, "amount", &amount);
     if (!isfinite(amount)) amount = 0;
-    ok = x11_scroll((int)x, (int)y, (int)amount);
+    double amount_x = 0;
+    jnum(req, "amountX", &amount_x);
+    if (!isfinite(amount_x)) amount_x = 0;
+    /* Clamp before converting: a finite JSON number can still overflow int. */
+    amount = fmax(-50, fmin(50, amount));
+    amount_x = fmax(-50, fmin(50, amount_x));
+    ok = x11_scroll((int)x, (int)y, (int)amount, (int)amount_x);
   } else if (strcmp(op, "drag") == 0) {
     if (!read_xy(req, "x", "y", &x, &y) || !read_xy(req, "x2", "y2", &x2, &y2)) {
       x11_injecting(0);
@@ -404,6 +410,7 @@ static void do_input(const jobject *req, const char *op, jout *out) {
     }
     jnum(req, "ms", &ms);
     if (!isfinite(ms)) ms = 300;
+    ms = fmax(80, fmin(3000, ms));
     ok = x11_drag((int)x, (int)y, (int)x2, (int)y2, (int)ms);
   } else if (strcmp(op, "type") == 0) {
     const char *text = jstr(req, "text");
@@ -412,7 +419,13 @@ static void do_input(const jobject *req, const char *op, jout *out) {
   } else if (strcmp(op, "press") == 0) {
     const char *keys = jstr(req, "keys");
     if (!keys) { x11_injecting(0); fail_with(out, "keys-required", NULL); return; }
-    ok = x11_press(keys);
+    char chord[128] = "";
+    int mask = jmods(req);
+    const char *names[] = { "shift+", "ctrl+", "alt+", "cmd+" };
+    if (strlen(keys) > 40) { x11_injecting(0); fail_with(out, "bad-arguments", NULL); return; }
+    for (int i = 0; i < 4; i++) if (mask & (1 << i)) strcat(chord, names[i]);
+    strcat(chord, keys);
+    ok = x11_press(chord);
   }
   x11_injecting(0);
 
@@ -490,7 +503,12 @@ static void dispatch(jobject *req, jout *out) {
       fail_with(out, "busy", "another input is still running");
       return;
     }
-    if (gate(req, op, out, needs_system)) do_input(req, op, out);
+    if (gate(req, op, out, needs_system)) {
+      if (!strcmp(op, "type") || !strcmp(op, "press") || x11_modifiers(jmods(req))) {
+        do_input(req, op, out);
+      } else fail_with(out, "inject-failed", x11_last_error());
+      x11_release_modifiers();
+    }
     pthread_mutex_unlock(&g_input_mu);
     return;
   }
@@ -510,8 +528,8 @@ static void respond(const char *line, size_t len, char *resp, size_t respcap) {
     fail_with(&out, "bad-json", err);
   } else {
     dispatch(&req, &out);
-    json_free(&req);
   }
+  json_free(&req);
   jo_finish(&out);
   if (!jo_ok(&out)) {
     /* 响应被截断了：宁可回一个明确的错误，也不要发半条 JSON 出去。 */
