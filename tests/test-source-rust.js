@@ -83,6 +83,17 @@ test('Rust CPR still requires the source addon when SQLite uses emergency Node m
 
 const nativeTest = (name, fn) => test(name, { skip: process.platform === 'win32' && 'source manager uses a POSIX shell' }, fn);
 
+test('addon preflight rejects an exported audit function that cannot write', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-audit-preflight-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const wrapper = write(root, 'broken-audit.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}),
+    recordSecretAudit() { throw new Error('secret_audit_unavailable'); }
+  };`);
+  assert.equal(probeAddon(addon), true, 'the real addon must pass the durable audit probe');
+  assert.equal(probeAddon(wrapper), false, 'an exported function alone cannot pass preflight');
+});
+
 nativeTest('first source boot builds once; a new process reuses it and source changes select a new addon', t => {
   const { root, run, count } = fixture(t);
   const first = run(); assert.equal(first.status, 0, first.stderr);

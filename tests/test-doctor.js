@@ -73,6 +73,29 @@ test('autofix edits only in main or the session worktree and records actions', a
 const toolDef = [{ name: 'echo', description: 'e', parameters: { type: 'object', properties: {} }, run: a => `got ${a.v}` },
   { name: 'finish', description: 'f', parameters: { type: 'object', properties: {} }, run: () => 'ok' }];
 
+test('doctor reads Responses SSE even when a relay omits or mislabels Content-Type', async t => {
+  const http = require('node:http');
+  const reply = { output: [{ type: 'function_call', call_id: 'done', name: 'finish', arguments: '{"summary":"ok"}' }] };
+  const server = http.createServer((req, res) => {
+    req.resume();
+    const mode = req.url.slice(1);
+    if (mode !== 'missing') res.setHeader('Content-Type', mode === 'sse' ? 'text/event-stream' : 'application/json');
+    if (mode === 'json') return res.end(JSON.stringify(reply));
+    res.end(`event: response.created\r\ndata: {"type":"response.created"}\r\n\r\n`
+      + `event: response.completed\r\ndata: ${JSON.stringify({ type: 'response.completed', response: reply })}\r\n\r\n`);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  for (const mode of ['missing', 'mislabeled', 'sse', 'json']) {
+    const result = await runToolLoop({
+      target: { wireApi: 'responses', url: `http://127.0.0.1:${server.address().port}/${mode}`, apiKey: 'test-only' },
+      model: 'm', system: 's', user: 'u', tools: toolDef,
+    });
+    assert.equal(result.finished, true, mode);
+    assert.equal(result.report.summary, 'ok', mode);
+  }
+});
+
 for (const [wire, first, second, expectResultShape] of [
   ['messages',
     { content: [{ type: 'text', text: 'checking' }, { type: 'tool_use', id: 't1', name: 'echo', input: { v: 1 } }] },
