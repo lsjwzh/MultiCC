@@ -142,6 +142,7 @@ function createCliSwitchRuntime(options) {
     || (() => `handoff_${crypto.randomBytes(8).toString('hex')}`);
   // specs/spawn 可由测试注入; 缺省用本文件常量与 lazy require 的 spawn。
   const installSpecs = options.installSpecs || OFFICIAL_INSTALL_SPECS;
+  const refreshCliEnvironment = options.refreshCliEnvironment || require('../windows-env').refresh;
   const spawnProcessOverride = options.spawnProcess;
   const homebrewOwnerOf = typeof options.homebrewOwnerOf === 'function'
     ? options.homebrewOwnerOf
@@ -769,12 +770,16 @@ function createCliSwitchRuntime(options) {
       job.endedAt = new Date(clock()).toISOString();
       job.error = `安装进程异常: ${err && err.message || err}`;
     });
-    proc.on('exit', (code, signal) => {
+    proc.on('exit', async (code, signal) => {
       if (job.status !== 'running') return;
       clearTimer();
       job.endedAt = new Date(clock()).toISOString();
       job.exitCode = code == null ? null : code;
       if (code === 0) {
+        // The installer can create a versioned directory or update registry
+        // PATH after the server started. Keep the job running until discovery
+        // has finished, then test the binary the next turn will actually use.
+        try { await refreshCliEnvironment({ force: true }); } catch (_) { /* probe the last usable environment */ }
         // exit0 后复查可用性; PATH 仍找不到 -> error(中文文案)。
         const avail = options.cliAvailabilitySummary();
         if (avail && avail[cli] && avail[cli].available) {
@@ -1204,6 +1209,9 @@ function createCliSwitchRuntime(options) {
     }));
 
     app.get('/api/cli/install-specs', asyncHandler(async (req, res) => {
+      // Await Windows discovery before selecting a default on standalone's
+      // first page load. A boot-time command map can predate the installer.
+      await refreshCliEnvironment();
       return res.json({
         ok: true,
         // 键是家族(= 升级目标)。客户端拿到的是车道 id(选择器、会话记录都是车道),

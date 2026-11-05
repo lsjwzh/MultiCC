@@ -178,6 +178,33 @@ test('non-macOS hosts are told plainly that this is not their fix', async () => 
   assert.equal(res.body.code, 'NOT_APPLICABLE');
 });
 
+test('Windows Git status refreshes the environment and executes the resolved binary without a POSIX shell', async () => {
+  const calls = [];
+  const git = 'C:\\Program Files\\Git\\cmd\\git.exe';
+  let refreshed = false;
+  const routes = createDeveloperToolsRoutes({
+    platform: 'win32', log: silent,
+    refreshEnv: async () => { refreshed = true; },
+    findGit: () => { assert.equal(refreshed, true); return git; },
+    run: fakeRun((file, args) => file === git && args[0] === '--version'
+      ? { stdout: 'git version 2.56.0.windows.4' } : fail('ENOENT'), calls),
+  });
+  const res = fakeRes();
+  await routes.statusHandler({}, res);
+  assert.equal(res.body.gitWorks, true);
+  assert.deepEqual(calls, [[git, '--version']]);
+});
+
+test('Windows Git status reports missing or broken executables accurately', async () => {
+  for (const git of [null, 'D:\\Broken Git\\git.exe']) {
+    const routes = createDeveloperToolsRoutes({ platform: 'win32', log: silent,
+      refreshEnv: async () => {}, findGit: () => git, run: fakeRun(() => fail('ENOENT'), []) });
+    const res = fakeRes();
+    await routes.statusHandler({}, res);
+    assert.equal(res.body.gitWorks, false);
+  }
+});
+
 // ── Portable git (install-git.sh as a background job) ─────────────────────────
 
 // A child process stand-in the test finishes by hand, so "running" is observable.

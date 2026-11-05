@@ -84,7 +84,8 @@ function probeAddon(file, node = process.execPath) {
   // A separate process avoids require() caching and contains invalid binaries.
   const script = `const a=require(process.argv[1]);
     if(a.protocolVersion?.()!==1 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprBackendSettings!=='function' || typeof a.cprCreateExchange!=='function' || typeof a.RustDatabase!=='function' || typeof a.remoteScreenBackendSettings!=='function'
-      || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function') process.exit(1);
+      || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function'
+      || typeof a.windowsToolsDiscover!=='function') process.exit(1);
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
