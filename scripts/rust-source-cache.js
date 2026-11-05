@@ -89,6 +89,18 @@ function probeAddon(file, node = process.execPath) {
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    // An exported function is insufficient: Windows must be able to lock,
+    // append and flush an audit record before this addon can run chat turns.
+    const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+    const auditRoot=fs.mkdtempSync(path.join(os.tmpdir(),'multicc-addon-audit-'));
+    try {
+      const file=path.join(auditRoot,'logs','audit.jsonl');
+      const started=JSON.parse(a.recordSecretAudit(file,JSON.stringify({operation:'env_inject',phase:'started'})));
+      a.recordSecretAudit(file,JSON.stringify({operation:'env_inject',phase:'completed',callId:started.callId}));
+      const rows=fs.readFileSync(file,'utf8').trim().split('\\n').map(line=>JSON.parse(line));
+      if(rows.length!==2 || rows[0].callId!==started.callId || rows[1].callId!==started.callId
+        || rows[0].outcome!=='started' || rows[1].outcome!=='succeeded') throw Error('audit_preflight_failed');
+    } finally { fs.rmSync(auditRoot,{recursive:true,force:true}); }
     if(a.taskStoreProtocolVersion?.()!==1 || a.taskDomainProtocolVersion?.()!==1
       || ['RustTaskStore','RustAirCardCache','RustTaskBoard','taskDomain','taskDomainAsync'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustAirCardCache.prototype.prepareAsync!=='function' || typeof a.RustAirCardCache.prototype.prepareBoardAsync!=='function') process.exit(1);

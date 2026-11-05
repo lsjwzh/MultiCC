@@ -49,7 +49,9 @@ function postJson(target, body, headers, timeoutMs, signal) {
           return finish(new Error(msg));
         }
         try {
-          const sse = String(res.headers['content-type'] || '').includes('text/event-stream');
+          // Some Responses relays return SSE with a JSON or missing media type.
+          const sse = String(res.headers['content-type'] || '').includes('text/event-stream')
+            || (target.wireApi === 'responses' && /^\s*(?:event:|data:)/.test(data));
           const parsed = sse ? parseResponsesStream(data) : JSON.parse(data);
           if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
           finish(null, parsed);

@@ -166,6 +166,10 @@ fn append(path: &Path, event: &Value) -> std::io::Result<()> {
     }
     let mut options = OpenOptions::new();
     options.create(true).append(true);
+    // Windows rejects LockFileEx on an append-only handle (ERROR_ACCESS_DENIED).
+    // Reading as well permits locking while retaining atomic append writes.
+    #[cfg(windows)]
+    options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
