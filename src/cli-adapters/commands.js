@@ -157,25 +157,8 @@ function resolveCodex(context) {
     if (!path.isAbsolute(pinned) || isRunnableFile(pinned, { isWindows, fsImpl })) return pinned;
     logger.warn(`[multicc] WARNING: CODEX_CMD=${pinned} is not runnable, falling back to auto-detection`);
   }
-  if (isWindows && env.LOCALAPPDATA) {
-    const local = path.join(env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin');
-    try {
-      const localCandidates = fsImpl.readdirSync(local, { withFileTypes: true })
-        .filter(entry => entry.isDirectory())
-        .map(entry => {
-          const exe = path.join(local, entry.name, 'codex.exe');
-          try {
-            if (!isRunnableFile(exe, { isWindows, fsImpl })) return null;
-            return { exe, mtimeMs: fsImpl.statSync(exe).mtimeMs };
-          } catch (_) {
-            return null;
-          }
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.mtimeMs - a.mtimeMs);
-      if (localCandidates.length) return localCandidates[0].exe;
-    } catch (_) {}
-  }
+  const discovered = isWindows && windowsEnv.command('codex', env);
+  if (discovered && isRunnableFile(discovered, context)) return discovered;
   // 顺序即策略, 不是随手排的: ~/.local/bin 必须在 homebrew 之前。
   // 官方 curl 安装脚本(BIN_DIR 默认 $HOME/.local/bin)和 standalone 包推荐的
   // `npm install -g --prefix "$HOME/.local"` 都落在这里, 而安装脚本自己也是把
@@ -398,13 +381,21 @@ const SILENT_LOGGER = { log() {}, warn() {} };
 // Availability is recomputed when the environment moves instead of staying
 // frozen at boot: a Windows process started before a CLI was installed must
 // still detect it. The seed keeps the boot-time map until the first change.
-function createCommandResolver({ isWindows = process.platform === 'win32', seed, logger = SILENT_LOGGER } = {}) {
-  let current = { revision: windowsEnv.version(), commands: seed };
+function createCommandResolver({ isWindows = process.platform === 'win32', seed = {}, logger = SILENT_LOGGER,
+  environment = windowsEnv, resolve = resolveCliCommands } = {}) {
+  let revision = environment.version();
   return function commandsNow() {
-    const revision = windowsEnv.version();
-    if (current.revision === revision) return current.commands;
-    try { current = { revision, commands: resolveCliCommands({ isWindows, logger }) }; } catch (_) { /* keep the seed */ }
-    return current.commands;
+    if (isWindows) {
+      environment.augmentPath();
+      environment.scheduleRefresh();
+    }
+    const latest = environment.version();
+    if (revision === latest) return seed;
+    try {
+      Object.assign(seed, resolve({ isWindows, logger }));
+      revision = latest;
+    } catch (_) { /* retry on the next call, keeping the last usable map */ }
+    return seed;
   };
 }
 

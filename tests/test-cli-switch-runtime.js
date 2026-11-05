@@ -91,6 +91,7 @@ function createHarness(overrides = {}) {
       claude: { available: true }, codex: { available: true },
       opencode: { available: true }, zcode: { available: true }, qoder: { available: true },
     }),
+    refreshCliEnvironment: overrides.refreshCliEnvironment || (async () => {}),
     sessionProviderName: value => value.provider ? `name:${value.provider}` : null,
     sessionProviderBaseUrl: value => value.provider ? `https://${value.provider}.example.com` : null,
     effectiveSessionModel: value => value.model || 'effective-default',
@@ -537,6 +538,16 @@ test('install-specs returns the static official command table', async () => {
   assert.equal(res.body.availability.codex.available, true);
 });
 
+test('install-specs awaits environment discovery before reporting CLI availability', async () => {
+  let discovered = false;
+  const { invokeSpecs } = createHarness({
+    refreshCliEnvironment: async () => { await new Promise(resolve => setImmediate(resolve)); discovered = true; },
+    cliAvailabilitySummary: () => ({ codex: { available: discovered } }),
+  });
+  const res = await invokeSpecs();
+  assert.equal(res.body.availability.codex.available, true);
+});
+
 test('install rejects an unsupported cli with 400', async () => {
   const { invokeInstall } = createHarness();
   const res = await invokeInstall('nope');
@@ -594,12 +605,39 @@ test('install transitions running -> done via a fake spawn that exits 0 and re-c
   // 翻转可用性后 exit 0 -> done
   available = true;
   proc.emit('exit', 0, null);
+  await new Promise(resolve => setImmediate(resolve));
   res = await harness.invokeStatus(jobId);
   assert.equal(res.body.job.status, 'done');
   assert.equal(res.body.job.exitCode, 0);
   assert.equal(res.body.job.error, null);
   assert.equal(res.body.availability.codex.available, true);
   assert.equal(res.body.job.logTail.includes('installing codex'), true);
+});
+
+test('a successful install waits for environment discovery before checking availability', async () => {
+  let available = false;
+  let finishDiscovery;
+  const proc = new EventEmitter();
+  proc.stdout = new EventEmitter();
+  proc.stderr = new EventEmitter();
+  proc.kill = () => {};
+  const harness = createHarness({
+    spawnProcess: () => proc,
+    refreshCliEnvironment: async ({ force }) => {
+      assert.equal(force, true);
+      await new Promise(resolve => { finishDiscovery = resolve; });
+      available = true;
+    },
+    cliAvailabilitySummary: () => ({ codex: { available } }),
+  });
+  const started = await harness.invokeInstall('codex');
+  proc.emit('exit', 0, null);
+  assert.equal((await harness.invokeStatus(started.body.jobId)).body.job.status, 'running');
+  finishDiscovery();
+  await new Promise(resolve => setImmediate(resolve));
+  const status = await harness.invokeStatus(started.body.jobId);
+  assert.equal(status.body.job.status, 'done');
+  assert.equal(status.body.availability.codex.available, true);
 });
 
 test('install exit non-zero marks the job as error', async () => {
@@ -1317,6 +1355,7 @@ test('a successful upgrade invalidates both caches so the badge clears on the ne
   assert.equal(started.statusCode, 202);
   installed = 'claude v2.0.2'; // 升级把二进制真的换掉了
   proc.emit('exit', 0, null);
+  await new Promise(resolve => setImmediate(resolve));
 
   const after = await harness.invokeVersions();
   assert.equal(after.body.cached, false, '升级成功后必须重探, 而不是回放旧缓存');
