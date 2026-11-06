@@ -75,8 +75,8 @@ fn discover(input: Input) -> Discovery {
 }
 
 pub fn scan(input: &str) -> Result<String, String> {
-    let input =
-        serde_json::from_str(input).map_err(|_| "invalid_windows_tools_input".to_string())?;
+    let input = crate::json_lenient::from_str(input)
+        .map_err(|_| "invalid_windows_tools_input".to_string())?;
     serde_json::to_string(&discover(input)).map_err(|_| "windows_tools_encode_failed".to_string())
 }
 

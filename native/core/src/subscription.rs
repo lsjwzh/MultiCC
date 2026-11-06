@@ -28,7 +28,8 @@ fn date(value: &Value) -> Option<f64> {
 }
 
 pub fn parse(input: &str) -> Result<String, String> {
-    let v: Value = serde_json::from_str(input).map_err(|_| "Invalid subscription response")?;
+    let v: Value =
+        crate::json_lenient::from_str(input).map_err(|_| "Invalid subscription response")?;
     let body = &v["body"];
     if !body.is_object() {
         return Ok("null".into());

@@ -46,7 +46,8 @@ pub fn for_provider(provider: &Value, entries: &Value) -> Value {
 }
 
 pub fn project(input: &str) -> Result<String, String> {
-    let v: Value = serde_json::from_str(input).map_err(|_| "invalid subscription projection")?;
+    let v: Value =
+        crate::json_lenient::from_str(input).map_err(|_| "invalid subscription projection")?;
     let mut providers = v["providers"].as_array().cloned().unwrap_or_default();
     for p in &mut providers {
         let subscription = for_provider(p, &v["subscriptions"]);
@@ -58,7 +59,8 @@ pub fn project(input: &str) -> Result<String, String> {
 }
 
 pub fn access(file: &str, input: &str) -> Result<String, String> {
-    let v: Value = serde_json::from_str(input).map_err(|_| "invalid subscription cache input")?;
+    let v: Value =
+        crate::json_lenient::from_str(input).map_err(|_| "invalid subscription cache input")?;
     let db = Connection::open(file).map_err(|_| "subscription cache unavailable")?;
     db.busy_timeout(Duration::from_secs(5))
         .map_err(|_| "subscription cache unavailable")?;
@@ -121,7 +123,7 @@ pub fn access(file: &str, input: &str) -> Result<String, String> {
     for row in rows {
         let (vendor, account, sub, at) = row.map_err(|_| "subscription read failed")?;
         let sub = sub
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|s| crate::json_lenient::from_str::<Value>(&s).ok())
             .and_then(|s| snapshot(&s));
         entries.insert(
             format!("{vendor}:{account}"),

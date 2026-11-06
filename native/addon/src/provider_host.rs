@@ -7,7 +7,7 @@ pub fn provider_store(file: String, input: String) -> Result<String> {
 
 #[napi]
 pub fn provider_credential(input: String) -> Result<String> {
-    let v = serde_json::from_str(&input)
+    let v = multicc_core::json_lenient::from_str(&input)
         .map_err(|_| napi::Error::from_reason("CREDENTIAL_INVALID_REQUEST"))?;
     multicc_core::provider_credentials::run(&v)
         .map(|v| v.to_string())
@@ -23,7 +23,7 @@ pub async fn read_provider_cli_credential(input: String) -> Result<String> {
 
 #[napi]
 pub async fn account_subscription_plan(input: String) -> Result<String> {
-    let v = serde_json::from_str(&input)
+    let v = multicc_core::json_lenient::from_str(&input)
         .map_err(|_| napi::Error::from_reason("SUBSCRIPTION_INVALID_REQUEST"))?;
     multicc_cpr::provider_host::subscription_plan(v)
         .await
@@ -32,13 +32,13 @@ pub async fn account_subscription_plan(input: String) -> Result<String> {
 }
 #[napi]
 pub fn account_subscription_result(input: String) -> Result<String> {
-    let v = serde_json::from_str(&input)
+    let v = multicc_core::json_lenient::from_str(&input)
         .map_err(|_| napi::Error::from_reason("SUBSCRIPTION_INVALID_REQUEST"))?;
     Ok(multicc_cpr::provider_host::subscription_result(&v).to_string())
 }
 #[napi]
 pub async fn query_account_subscription(input: String) -> Result<String> {
-    let v = serde_json::from_str(&input)
+    let v = multicc_core::json_lenient::from_str(&input)
         .map_err(|_| napi::Error::from_reason("SUBSCRIPTION_INVALID_REQUEST"))?;
     Ok(multicc_cpr::provider_host::subscription_query(v)
         .await
@@ -59,7 +59,7 @@ impl RustProviderRequest {
     }
     #[napi]
     pub fn choose(&mut self, input: String) -> Result<String> {
-        let v = serde_json::from_str(&input)
+        let v = multicc_core::json_lenient::from_str(&input)
             .map_err(|_| napi::Error::from_reason("PROVIDER_REQUEST_INVALID_INPUT"))?;
         self.inner
             .choose(v)
@@ -68,7 +68,7 @@ impl RustProviderRequest {
     }
     #[napi]
     pub fn outcome(&mut self, input: String) -> Result<String> {
-        let v = serde_json::from_str(&input)
+        let v = multicc_core::json_lenient::from_str(&input)
             .map_err(|_| napi::Error::from_reason("PROVIDER_REQUEST_INVALID_INPUT"))?;
         self.inner
             .outcome(v)
@@ -93,7 +93,7 @@ impl Default for RustProviderRequest {
 #[napi]
 pub async fn authorize_provider_request(input: String) -> Result<String> {
     tokio::task::spawn_blocking(move || {
-        let v = serde_json::from_str(&input)
+        let v = multicc_core::json_lenient::from_str(&input)
             .map_err(|_| "HOP_CREDENTIAL_INVALID_REQUEST".to_owned())?;
         multicc_core::provider_authorization::authorize(&v).map(|v| v.to_string())
     })
@@ -104,7 +104,7 @@ pub async fn authorize_provider_request(input: String) -> Result<String> {
 
 #[napi]
 pub fn codex_official_error(input: String) -> Result<String> {
-    let v = serde_json::from_str(&input)
+    let v = multicc_core::json_lenient::from_str(&input)
         .map_err(|_| napi::Error::from_reason("PROVIDER_REQUEST_INVALID_INPUT"))?;
     Ok(multicc_cpr::codex_official::public_error(&v).to_string())
 }

@@ -466,7 +466,7 @@ fn replay_prefix(f: &Fragment) -> usize {
     }
 }
 pub fn compute(json: &str) -> Result<String, String> {
-    let input: Input = serde_json::from_str(json).map_err(|_| "invalid_usage_input")?;
+    let input: Input = crate::json_lenient::from_str(json).map_err(|_| "invalid_usage_input")?;
     let timezone: Tz = input
         .timezone
         .parse()

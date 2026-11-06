@@ -13,7 +13,7 @@ fn number(v: &Value) -> Option<f64> {
 }
 
 pub fn validate(input: &str) -> Result<String, String> {
-    let v: Value = serde_json::from_str(input).map_err(|_| "Invalid virtual provider")?;
+    let v: Value = crate::json_lenient::from_str(input).map_err(|_| "Invalid virtual provider")?;
     let kind = text(&v["appType"]);
     if !["claude", "codex"].contains(&kind) {
         return Err("请选择 Claude 或 Codex CLI".into());
@@ -113,7 +113,8 @@ fn blocked(summary: &Value, model: &str, now: f64) -> Option<&'static str> {
 }
 
 pub fn select(input: &str) -> Result<String, String> {
-    let v: Value = serde_json::from_str(input).map_err(|_| "Invalid virtual routing input")?;
+    let v: Value =
+        crate::json_lenient::from_str(input).map_err(|_| "Invalid virtual routing input")?;
     let now = number(&v["now"]).ok_or("Missing routing clock")?;
     let kind = text(&v["appType"]);
     let model = text(&v["model"]);
@@ -192,7 +193,7 @@ pub fn select(input: &str) -> Result<String, String> {
 /// Only explicit pre-stream rejection is replayable. Never retry ambiguous
 /// network failures, 5xx responses or a stream that already produced output.
 pub fn failure(input: &str) -> Result<String, String> {
-    let v: Value = serde_json::from_str(input).map_err(|_| "Invalid virtual outcome")?;
+    let v: Value = crate::json_lenient::from_str(input).map_err(|_| "Invalid virtual outcome")?;
     let status = v["status"].as_u64().unwrap_or(0);
     let retry = [401, 402, 403, 429].contains(&status) && v["headersSent"] != true;
     let now = number(&v["now"]).unwrap_or(0.0);

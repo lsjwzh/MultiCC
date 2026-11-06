@@ -34,7 +34,7 @@ pub fn read(file: &Path) -> Result<Option<Value>, String> {
     if bytes.len() as u64 > LIMIT {
         return Err("PROVIDER_STORE_TOO_LARGE".into());
     }
-    serde_json::from_slice(&bytes)
+    crate::json_lenient::from_slice(&bytes)
         .map(Some)
         .map_err(|_| "PROVIDER_STORE_INVALID_JSON".into())
 }
@@ -122,7 +122,8 @@ pub fn atomic_write(file: &Path, v: &Value) -> Result<(), String> {
     result
 }
 pub fn access(file: &str, input: &str) -> Result<String, String> {
-    let op: Value = serde_json::from_str(input).map_err(|_| "PROVIDER_STORE_INVALID_REQUEST")?;
+    let op: Value =
+        crate::json_lenient::from_str(input).map_err(|_| "PROVIDER_STORE_INVALID_REQUEST")?;
     let file = Path::new(file);
     // Advisory lock is never held across N-API calls. A conflicting writer fails
     // explicitly; a stale editor cannot overwrite the winning revision.

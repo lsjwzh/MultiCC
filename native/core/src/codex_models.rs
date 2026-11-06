@@ -169,7 +169,7 @@ fn read_json(path: &Path) -> Option<Value> {
     if data.len() > MAX_BYTES {
         return None;
     }
-    serde_json::from_slice(&data).ok()
+    crate::json_lenient::from_slice(&data).ok()
 }
 fn disk(home: &Path, own: bool) -> Option<Catalog> {
     let value = read_json(&home.join(if own {
@@ -367,7 +367,7 @@ fn discover(input: &Input, deadline: Instant) -> Result<Vec<Model>, &'static str
         pending.extend(bytes);
         while let Some(end) = pending.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = pending.drain(..=end).collect();
-            let Ok(msg) = serde_json::from_slice::<Value>(&line) else {
+            let Ok(msg) = crate::json_lenient::from_slice::<Value>(&line) else {
                 continue;
             };
             if msg.get("id").and_then(Value::as_u64) != Some(id) {
@@ -412,7 +412,7 @@ pub fn refresh(input_json: &str) -> Result<String, String> {
 }
 fn refresh_with_timeout(input_json: &str, timeout: Duration) -> Result<String, String> {
     let input: Input =
-        serde_json::from_str(input_json).map_err(|_| "模型目录参数无效".to_owned())?;
+        crate::json_lenient::from_str(input_json).map_err(|_| "模型目录参数无效".to_owned())?;
     if !input.home.is_absolute()
         || input
             .home

@@ -359,7 +359,7 @@ pub fn response_json(response: &Value) -> Result<Value, Error> {
     let bytes = STANDARD
         .decode(response["body"].as_str().unwrap_or(""))
         .map_err(|_| fail(502, "machine_response_invalid", "电脑响应无效"))?;
-    serde_json::from_slice(&bytes).map_err(|_| {
+    crate::json_lenient::from_slice(&bytes).map_err(|_| {
         fail(
             502,
             "machine_response_invalid",
