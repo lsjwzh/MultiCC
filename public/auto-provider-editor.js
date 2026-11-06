@@ -358,6 +358,7 @@
       candidates,
       maxAttempts: 2,
       sticky: true,
+      preferMaxQuota: true,
       allowCrossTrust: false,
     };
   }
@@ -612,6 +613,7 @@
         candidates: cleanCandidates,
         maxAttempts,
         sticky: draft.sticky !== false,
+        preferMaxQuota: draft.preferMaxQuota !== false,
         allowCrossTrust: crossesTrust,
         // Only a pool that actually spans lanes has a lane policy; a single-CLI
         // pool keeps exactly the wire shape it had before cross-CLI existed.
@@ -660,6 +662,7 @@
       candidates: value.candidates.map(({ providerId, model, priority }) => ({ providerId, model: model || null, priority })),
       maxAttempts: value.maxAttempts,
       sticky: value.sticky !== false,
+      preferMaxQuota: value.preferMaxQuota !== false,
       savedAt: now,
     };
     const current = normalizePresets(list);
@@ -1022,6 +1025,14 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     const sticky = make('input', 'multicc-auto-editor-sticky');
     sticky.type = 'checkbox';
     stickyLabel.append(sticky, document.createTextNode(tt('autoEditorStickySuffix', ' 优先保持当前线路')));
+    const preferQuotaLabel = make('label');
+    const preferQuota = make('input', 'multicc-auto-editor-prefer-quota');
+    preferQuota.type = 'checkbox';
+    preferQuotaLabel.append(preferQuota,
+      document.createTextNode(tt('autoEditorPreferQuotaSuffix', ' 优先用额度最多的线路')));
+    const preferQuotaHelp = make('div', 'multicc-auto-editor-fine',
+      tt('autoEditorPreferQuotaHelp',
+        '「额度最多」＝额度读数里用量百分比最低。开启后每轮优先从剩余额度最多的线路开始，相差满 20% 才会切换，减少任务中途额度用尽被打断；没有额度读数的线路仍按列表优先级参与。关闭后严格按列表优先级选线，只在额度临尽或请求失败时切换。'));
     const unknownRow = make('label', '', tt('autoEditorJevUnknownLabel', '判断不了难度时（Jev 超时或没连上） '));
     const onUnknownSelect = make('select', 'multicc-auto-editor-jev-unknown');
     for (const [value, key, fallback] of UNKNOWN_CHOICES) {
@@ -1032,7 +1043,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     unknownRow.appendChild(onUnknownSelect);
     const help = make('div', 'multicc-auto-editor-fine',
       tt('autoEditorHelp', '只在还没收到回复、也没执行过工具时才会切换线路；额度已用完的线路会被提前跳过。'));
-    moreBody.append(maxLabel, stickyLabel, unknownRow, help);
+    moreBody.append(maxLabel, stickyLabel, preferQuotaLabel, preferQuotaHelp, unknownRow, help);
     more.append(moreSummary, moreBody);
 
     container.replaceChildren(top, modeRow, modeHint, cliSwitchRow, cliSwitchHint,
@@ -1240,6 +1251,9 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       const parts = [
         tt('autoEditorMoreAttempts', '最多试 {count} 条', { count: maxAttempts.value }),
         sticky.checked ? tt('autoEditorMoreSticky', '保持当前线路') : tt('autoEditorMoreNoSticky', '每次从第 1 条开始'),
+        preferQuota.checked
+          ? tt('autoEditorMorePreferQuota', '额度优先')
+          : tt('autoEditorMoreNoPreferQuota', '按优先级'),
       ];
       if (routingOn) {
         const choice = UNKNOWN_CHOICES.find(([value]) => value === onUnknownSelect.value) || UNKNOWN_CHOICES[0];
@@ -1639,7 +1653,8 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       initialSelection = {
         version: 1, mode: 'auto', protocol: preset.protocol,
         candidates: preset.candidates.map(candidate => ({ ...candidate, enabled: true })),
-        maxAttempts: preset.maxAttempts, sticky: preset.sticky !== false, allowCrossTrust: false,
+        maxAttempts: preset.maxAttempts, sticky: preset.sticky !== false,
+        preferMaxQuota: preset.preferMaxQuota !== false, allowCrossTrust: false,
       };
       render();
       presetSelect.value = id;
@@ -2063,6 +2078,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       maxAttempts.value = String(configuredSelection?.maxAttempts
         || Math.max(2, Math.min(3, order.length)));
       sticky.checked = configuredSelection ? configuredSelection.sticky !== false : true;
+      preferQuota.checked = configuredSelection ? configuredSelection.preferMaxQuota !== false : true;
       // The gateway belongs to the routing config, not to the session: seed it
       // from the configured pool so re-saving keeps the same one. A pool that
       // predates the field has none, and it was always evaluated through Vercel.
@@ -2108,6 +2124,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
 
     maxAttempts.addEventListener('change', notify);
     sticky.addEventListener('change', notify);
+    preferQuota.addEventListener('change', notify);
     orderMode.addEventListener('click', () => {
       setRouting(false);
       notify();
@@ -2168,6 +2185,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
           candidates: rawCandidates(),
           maxAttempts: Number(maxAttempts.value),
           sticky: sticky.checked,
+          preferMaxQuota: preferQuota.checked,
           routingEnabled: routingOn,
           // Both are pool-level: the lane policy is only written when some line
           // spans a lane, and the tiering only ridealong with a routing config.

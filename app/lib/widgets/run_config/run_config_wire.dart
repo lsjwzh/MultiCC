@@ -205,6 +205,7 @@ class AutoWireInput {
     required this.sticky,
     required this.allowCrossTrust,
     required this.previousRouting,
+    this.preferMaxQuota = true,
   });
 
   final String sessionLane;
@@ -215,6 +216,10 @@ class AutoWireInput {
   final bool sticky;
   final bool allowCrossTrust;
   final SessionProviderRouting? previousRouting;
+
+  /// 额度优先：两条线路都有额度读数时，剩余额度多的优先。见
+  /// SessionProviderSelection.preferMaxQuota。
+  final bool preferMaxQuota;
 }
 
 class AutoWireResult {
@@ -326,6 +331,7 @@ AutoWireResult buildAutoSelection(AutoWireInput input) {
     maxAttempts: maxAttempts,
     sticky: input.sticky,
     allowCrossTrust: input.allowCrossTrust,
+    preferMaxQuota: input.preferMaxQuota,
     routing: routing,
     cliSwitch: difficulty ? 'routing' : 'failover',
   );

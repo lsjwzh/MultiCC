@@ -253,6 +253,7 @@ function providerSelectionDto(input) {
     candidates: value.candidates.map(candidate => ({ ...candidate })),
     maxAttempts: value.maxAttempts,
     sticky: value.sticky,
+    preferMaxQuota: value.preferMaxQuota !== false,
     allowCrossTrust: value.allowCrossTrust,
     ...(value.cliSwitch ? { cliSwitch: value.cliSwitch } : {}),
     ...(value.routing

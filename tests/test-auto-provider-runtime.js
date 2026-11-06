@@ -1399,6 +1399,23 @@ test('chooseCandidate steers between official accounts by headroom without bounc
   assert.equal(chooseCandidate({ candidates: [line('relay-a', 70, 0, { trustDomain: 'relay' }), line('relay-b', 5, 1, { trustDomain: 'relay' })] }).candidate.providerId, 'relay-a');
 });
 
+test('preferMaxQuota (byQuota) lets the roomiest line outrank sticky, and the checkbox turns it off', () => {
+  const { chooseCandidate } = require('../src/chat/auto-provider-policy');
+  const line = (providerId, usedPercent, index, extra = {}) => ({
+    providerId, index, priority: index, enabled: true, limitState: 'available', usedPercent, ...extra,
+  });
+  // On: a full band roomier than the sticky route wins even for non-official
+  // (relay) lines — the steering is no longer an official-only privilege.
+  const pool = [line('tight', 70, 0), line('roomy', 15, 1, { trustDomain: 'relay' })];
+  assert.equal(chooseCandidate({ candidates: pool, stickyProviderId: 'tight', byQuota: true }).candidate.providerId, 'roomy');
+  // Off: the same pair keeps the sticky route, whatever the readings say.
+  assert.equal(chooseCandidate({ candidates: pool, stickyProviderId: 'tight' }).candidate.providerId, 'tight');
+  // On, but within a band: sticky still holds (no bouncing).
+  assert.equal(chooseCandidate({ candidates: [line('sticky', 41, 0), line('other', 59, 1)], stickyProviderId: 'sticky', byQuota: true }).candidate.providerId, 'sticky');
+  // An unmeasured line never loses on quota alone.
+  assert.equal(chooseCandidate({ candidates: [line('blind', null, 0), line('full-ish', 89, 1)], stickyProviderId: 'blind', byQuota: true }).candidate.providerId, 'blind');
+});
+
 test('official account usage sweeper records every signed-in codex account under its own provider id', async () => {
   const { createOfficialAccountUsageSweeper, claudeUsageWindows } = require('../src/quota/official-account-usage');
   assert.deepEqual(claudeUsageWindows({ five_hour: { utilization: 42, resets_at: null }, seven_day: { utilization: null } }),

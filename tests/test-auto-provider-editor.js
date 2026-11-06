@@ -185,6 +185,7 @@ test('a new pool enables only the first two user-managed providers', () => {
     ],
     maxAttempts: 2,
     sticky: true,
+    preferMaxQuota: true,
     allowCrossTrust: false,
   });
   assert.equal(editor.defaultSelection([
@@ -216,6 +217,7 @@ test('serializeDraft keeps enabled candidates only, orders priorities and clamps
     ],
     maxAttempts: 2,
     sticky: false,
+    preferMaxQuota: true,
     allowCrossTrust: false,
   });
   assert.equal(editor.serializeDraft({
@@ -599,7 +601,7 @@ test('the fallback choice for an unjudged message is written only when it differ
   assert.equal($('more').children[0].innerText.includes('判断不了'), false, 'the fallback only matters when routing');
   routeOn();
   assert.equal($('jev-unknown').value, 'strong');
-  assert.match($('more').children[0].innerText, /最多试 2 条 · 保持当前线路 · 判断不了按复杂/);
+  assert.match($('more').children[0].innerText, /最多试 2 条 · 保持当前线路 · 额度优先 · 判断不了按复杂/);
   assert.equal('onUnknown' in control.read({ remember: false }).value.routing, false);
   $('jev-unknown').value = 'weak';
   $('jev-unknown').emit('change');
@@ -1037,6 +1039,7 @@ test('a pool saved before cross-CLI and price tiering re-saves byte for byte', (
     ],
     maxAttempts: 2,
     sticky: true,
+    preferMaxQuota: true,
     allowCrossTrust: false,
   };
   const plain = mountEditor({ initialSelection: stored });

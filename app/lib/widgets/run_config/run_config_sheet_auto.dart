@@ -272,6 +272,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         tiering: _tiering,
         maxAttempts: result.selection!.maxAttempts,
         sticky: _sticky,
+        preferMaxQuota: _preferQuota,
         savedAt: DateTime.now().millisecondsSinceEpoch,
         // 子任务线路 id + 模型跟池子一起存（不含任何密钥）；留空 = 跟随主线路。
         subagentProviderId: subagent?.providerId ?? '',
@@ -402,6 +403,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         _tiering = preset.tiering;
         _maxAttempts = preset.maxAttempts;
         _sticky = preset.sticky;
+        _preferQuota = preset.preferMaxQuota;
         _subProvider = preset.subagentProviderId;
         _subModel = preset.subagentModel;
         _customSubModel = false;
@@ -1014,6 +1016,22 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
           style: TextStyle(color: AppColors.text, fontSize: 13),
         ),
         onChanged: (value) => setState(() => _sticky = value),
+      ),
+      SwitchListTile(
+        key: const ValueKey('run-prefer-quota'),
+        value: _preferQuota,
+        contentPadding: EdgeInsets.zero,
+        title: const Text(
+          '优先用额度最多的线路',
+          style: TextStyle(color: AppColors.text, fontSize: 13),
+        ),
+        subtitle: const Text(
+          '「额度最多」＝额度读数里用量百分比最低。开启后每轮优先从剩余额度最多的线路开始，'
+          '相差满 20% 才会切换，减少任务中途额度用尽被打断；没有额度读数的线路仍按列表优先级参与。'
+          '关闭后严格按列表优先级选线，只在额度临尽或请求失败时切换。',
+          style: TextStyle(color: AppColors.muted, fontSize: 11, height: 1.35),
+        ),
+        onChanged: (value) => setState(() => _preferQuota = value),
       ),
     ];
   }

@@ -88,7 +88,7 @@ function limitState(entry, { now = Date.now(), staleAfterMs, model } = {}) {
 
 function chooseCandidate({
   candidates, attempted = new Set(), stickyProviderId = null, preferredTier = null,
-  ladder = null, pinned = null, preferCli = null, byPrice = false,
+  ladder = null, pinned = null, preferCli = null, byPrice = false, byQuota = false,
 } = {}) {
   const list = Array.isArray(candidates) ? candidates : [];
   const { wire, fields } = encoder();
@@ -111,6 +111,7 @@ function chooseCandidate({
     pinned: pinned ? fields(pinned, PIN_FIELDS) : null,
     preferCli: wire(preferCli),
     byPrice: wire(byPrice),
+    byQuota: wire(byQuota),
   };
   const answer = JSON.parse(native.autoProviderChooseCandidate(JSON.stringify(request)));
   return Object.freeze({

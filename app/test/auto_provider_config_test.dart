@@ -232,6 +232,7 @@ void main() {
       ],
       'maxAttempts': 2,
       'sticky': true,
+      'preferMaxQuota': true,
       'allowCrossTrust': false,
       'cliSwitch': 'routing',
     };
@@ -270,6 +271,7 @@ void main() {
       ],
       'maxAttempts': 2,
       'sticky': true,
+      'preferMaxQuota': true,
       'allowCrossTrust': false,
       'cliSwitch': 'failover',
       'routing': {
@@ -313,6 +315,7 @@ void main() {
       ],
       'maxAttempts': 2,
       'sticky': true,
+      'preferMaxQuota': true,
       'allowCrossTrust': false,
       'cliSwitch': 'eager',
       'routing': {

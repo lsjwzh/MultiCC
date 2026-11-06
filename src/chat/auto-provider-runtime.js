@@ -349,6 +349,7 @@ function createAutoProviderRuntime(options = {}) {
       preferredTier: decision && decision.tier || null,
       ladder: ladder.tiers,
       byPrice: ladder.byPrice === true || !!ladder.tiers,
+      byQuota: selection.preferMaxQuota !== false,
       preferCli: cli,
       stickyProviderId: selection.sticky ? stickyBySession.get(session.id) : null,
     }).candidate;
@@ -531,6 +532,7 @@ function createAutoProviderRuntime(options = {}) {
         preferredTier,
         ladder: ladder.tiers,
         byPrice,
+        byQuota: selection.preferMaxQuota !== false,
         pinned: pending ? { providerId: pending.providerId, model: pending.model || null } : null,
         stickyProviderId: selection.sticky ? stickyBySession.get(session.id) : null,
       });
@@ -653,7 +655,10 @@ function createAutoProviderRuntime(options = {}) {
       if (backgroundActive) return null;
       const excluded = new Set(attempted);
       if (attempt?.providerId) excluded.add(attempt.providerId);
-      const order = { attempted: excluded, preferredTier, ladder: ladder.tiers, byPrice };
+      const order = {
+        attempted: excluded, preferredTier, ladder: ladder.tiers, byPrice,
+        byQuota: selection.preferMaxQuota !== false,
+      };
       let picked = unsafe ? chooseCandidate({ candidates, ...order }) : { candidate: null, skipped: [] };
       if (!picked.candidate && selection.cliSwitch
           && (hopsBySession.get(session.id) || 0) < selection.maxAttempts) {

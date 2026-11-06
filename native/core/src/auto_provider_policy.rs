@@ -48,6 +48,11 @@ pub const SAFE_PHASES: [&str; 3] = ["connect", "request", "before_first_token"];
 /// Usage at or above this share of a window counts as "about to run dry" when
 /// choosing a new route. It does not evict an existing usable sticky route.
 pub const NEAR_LIMIT_PERCENT: f64 = 90.0;
+/// Quota-first steering (`preferMaxQuota`) compares the room two lines have
+/// left in bands this wide, so a few points of drift cannot bounce a session
+/// between lines on every turn. The width matches [`Line::official_band`]:
+/// one shared notion of "measurably roomier".
+pub const QUOTA_BAND_PERCENT: f64 = 20.0;
 /// A usage reading stays a useful steering hint for longer than it stays a
 /// trustworthy exhaustion verdict (the per-account sweeper runs every ~10 min).
 const USAGE_HINT_MS: f64 = 30.0 * 60_000.0;
@@ -578,7 +583,16 @@ impl<'a> Line<'a> {
         if !self.get("trustDomain").is("official") {
             return None;
         }
-        self.usage().map(|used| (used / 20.0).floor())
+        self.band_of()
+    }
+    /// The quota-first steering band: floor(usedPercent / QUOTA_BAND_PERCENT).
+    /// A non-finite reading (or none at all) is no opinion — see
+    /// [`Order::compare`] for how that keeps unmeasured lines on their
+    /// configured order.
+    fn band_of(&self) -> Option<f64> {
+        self.usage()
+            .filter(|used| used.is_finite())
+            .map(|used| (used / QUOTA_BAND_PERCENT).floor())
     }
     fn price(&self) -> Js<'a> {
         if self.get("priced").strict_eq(Js::Bool(true)) {
@@ -610,6 +624,13 @@ impl<'a> Line<'a> {
 ///   tier climbs before it descends (the nearer stronger tier first);
 /// * `pinned` — a reserved line ({providerId, cli, model}) from a handoff or a
 ///   planned lane switch; it outranks stickiness;
+/// * `by_quota` — quota-first steering (`preferMaxQuota`): between two lines
+///   that both carry a usage reading, the one with more headroom wins, in
+///   QUOTA_BAND_PERCENT bands, ahead of stickiness — riding the roomiest line
+///   is what keeps a long task from being interrupted by a wall it could see
+///   coming. A line without a reading expresses no opinion here, so an
+///   unmeasured pool (or an unmeasured line of a mixed one) keeps the ordering
+///   it always had;
 /// * `prefer_cli` — the session's current lane; a tie stays on it, since
 ///   leaving it costs a handoff;
 /// * `by_price` — price-tiered pools prefer the cheaper line inside a tier.
@@ -620,6 +641,7 @@ struct Order<'a> {
     pinned: Option<&'a Map<String, Value>>,
     prefer_cli: Js<'a>,
     by_price: bool,
+    by_quota: bool,
 }
 
 impl Order<'_> {
@@ -669,6 +691,18 @@ impl Order<'_> {
             let pin = rank(self.is_pinned(left)) - rank(self.is_pinned(right));
             if pin != 0.0 {
                 return pin;
+            }
+        }
+        // Quota-first steering. Only a pair of readings is compared: a line
+        // with no reading keeps the place the keys below give it, so a mixed
+        // pool never demotes an unmeasured line below a measured one merely
+        // for being unmeasured (a nearly-full reading must not win by default
+        // either — that is exactly what the near-limit rule below is for).
+        if self.by_quota {
+            if let (Some(a), Some(b)) = (left.band_of(), right.band_of()) {
+                if a != b {
+                    return a - b;
+                }
             }
         }
         let left_sticky = left.get("providerId").strict_eq(self.sticky);
@@ -775,9 +809,9 @@ fn js_sort<T>(items: &mut [T], compare: impl Fn(&T, &T) -> f64) {
 /// limitReason, tier, cli, model, priority, index, usedPercent, trustDomain,
 /// priced, blended }], attempted: [id], stickyProviderId, preferredTier,
 /// ladder: null | [tier], pinned: null | { providerId, cli, model }, preferCli,
-/// byPrice }`. Answer: `{ candidate: position | null, skipped: [{ index:
-/// position, reason: string | null }] }` — a null reason is the candidate's own
-/// `limitReason`.
+/// byPrice, byQuota }`. Answer: `{ candidate: position | null, skipped: [{
+/// index: position, reason: string | null }] }` — a null reason is the
+/// candidate's own `limitReason`.
 pub fn choose_candidate(input: &str) -> Result<String, String> {
     let request = parse(input)?;
     Ok(choose_candidate_of(&request).to_string())
@@ -797,6 +831,7 @@ fn choose_candidate_of(request: &Value) -> Value {
         pinned: request.get("pinned").and_then(Value::as_object),
         prefer_cli: js(request.get("preferCli")),
         by_price: js(request.get("byPrice")).truthy(),
+        by_quota: js(request.get("byQuota")).truthy(),
     };
     let mut usable = Vec::new();
     let mut skipped = Vec::new();
@@ -1021,6 +1056,49 @@ mod tests {
             skipped,
             json!({ "candidate": null, "skipped": [{ "index": 0, "reason": "fresh_limit_exhausted" }] })
         );
+    }
+
+    #[test]
+    fn quota_first_rides_the_roomiest_line() {
+        let line = |id: &str, used: Option<f64>, priority: u32| {
+            let mut line = json!({ "providerId": id, "priority": priority, "index": priority,
+                "limitState": "available" });
+            if let Some(used) = used {
+                line["usedPercent"] = json!(used);
+            }
+            line
+        };
+        let pick = |by_quota: bool, sticky: &str, lines: Value| {
+            call(
+                choose_candidate,
+                json!({ "candidates": lines, "attempted": [],
+                "stickyProviderId": sticky, "byQuota": by_quota }),
+            )["candidate"]
+                .clone()
+        };
+        let pool = json!([
+            line("tight", Some(70.0), 0),
+            line("roomy", Some(10.0), 1),
+            line("unmeasured", None, 2)
+        ]);
+        // On: the roomiest measured line beats both the priority-#1 line and
+        // the sticky route — that is the point of the option.
+        assert_eq!(pick(true, "tight", pool.clone()), json!(1));
+        // Off: the ordering the pool was configured for.
+        assert_eq!(pick(false, "", pool.clone()), json!(0));
+        assert_eq!(pick(false, "tight", pool), json!(0));
+        // Bands: when another line is a full band roomier than the sticky
+        // route, the route moves (61% vs 41%); inside a band (41% vs 59%)
+        // sticky holds — the hysteresis that keeps a session from bouncing
+        // every turn.
+        let banded = json!([line("sticky", Some(41.0), 0), line("other", Some(59.0), 1)]);
+        assert_eq!(pick(true, "sticky", banded), json!(0));
+        let banded = json!([line("sticky", Some(61.0), 0), line("other", Some(41.0), 1)]);
+        assert_eq!(pick(true, "sticky", banded), json!(1));
+        // An unmeasured line never loses (or wins) on quota alone: a sticky
+        // unmeasured route survives even a measured near-limit challenger.
+        let mixed = json!([line("sticky-blind", None, 0), line("nearly-full", Some(89.0), 1)]);
+        assert_eq!(pick(true, "sticky-blind", mixed), json!(0));
     }
 
     #[test]

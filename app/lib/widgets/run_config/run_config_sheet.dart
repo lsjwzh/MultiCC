@@ -184,6 +184,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   RunTiering _tiering = RunTiering.jev;
   int _maxAttempts = 2;
   bool _sticky = true;
+  bool _preferQuota = true;
   bool _autoMore = false;
   String _autoError = '';
   SessionProviderRouting? _seededRouting;
@@ -781,6 +782,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     _seededRouting = selection.routing;
     _maxAttempts = selection.maxAttempts;
     _sticky = selection.sticky;
+    _preferQuota = selection.preferMaxQuota;
     _order = selection.routing != null
         ? RunPickOrder.difficulty
         : RunPickOrder.order;
@@ -1183,6 +1185,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
         sticky: _sticky,
         allowCrossTrust: _poolCrossesTrust(),
         previousRouting: _seededRouting,
+        preferMaxQuota: _preferQuota,
       ),
     );
   }
