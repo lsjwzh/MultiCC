@@ -35,6 +35,12 @@
 //! `normalize_stored_provider_selection`, `primary_provider_candidate`,
 //! `selection_clis`, `catalog_app_types`, `protocol_of`, `trust_domain_of`,
 //! `custom_endpoint_error`, `validate_routing_target`, `jev_target`.
+//!
+//! Requests are parsed leniently ([`crate::json_lenient`]): the JS bridge
+//! `JSON.stringify`s whatever it was handed, and a lone surrogate (a sliced
+//! emoji, pasted mojibake) must reach the validation rules as U+FFFD, the way
+//! the old JS implementation's plain string handling saw it — not fail the
+//! whole call as a malformed request.
 
 use regex::Regex;
 use serde_json::{json, Map, Value};
@@ -537,7 +543,7 @@ fn require_facts(request: &Value) -> Result<Facts, String> {
 // ── `facts()` snapshot ──────────────────────────────────────────────────────
 
 pub fn facts(request: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let value: Value = crate::json_lenient::from_str(request).map_err(|error| error.to_string())?;
     let parsed = Facts::from_value(&value)?;
     let default_api_key = parsed
         .default_api_key_name()
@@ -590,14 +596,14 @@ fn trust_domain_of_value(provider: &Value) -> &'static str {
 }
 
 pub fn protocol_of(request: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let value: Value = crate::json_lenient::from_str(request).map_err(|error| error.to_string())?;
     stringify_option(protocol_of_value(
         value.get("provider").unwrap_or(&Value::Null),
     ))
 }
 
 pub fn trust_domain_of(request: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let value: Value = crate::json_lenient::from_str(request).map_err(|error| error.to_string())?;
     let domain = trust_domain_of_value(value.get("provider").unwrap_or(&Value::Null));
     stringify_option(Some(domain.to_string()))
 }
@@ -650,7 +656,7 @@ fn custom_endpoint_error_value(facts: &Facts, raw: &Value) -> Option<String> {
 }
 
 pub fn custom_endpoint_error(request: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let value: Value = crate::json_lenient::from_str(request).map_err(|error| error.to_string())?;
     let facts = require_facts(&value)?;
     let raw = value.get("endpoint").unwrap_or(&Value::Null);
     stringify_option(custom_endpoint_error_value(&facts, raw))
@@ -794,7 +800,7 @@ fn validate_routing_target_value(facts: &Facts, input: Option<&Value>) -> Result
 }
 
 pub fn validate_routing_target(request: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let value: Value = crate::json_lenient::from_str(request).map_err(|error| error.to_string())?;
     let facts = require_facts(&value)?;
     let outcome = validate_routing_target_value(&facts, value.get("input"));
     let result = match outcome {
@@ -857,7 +863,7 @@ fn jev_target_value(facts: &Facts, routing: Option<&Value>) -> Value {
 }
 
 pub fn jev_target(request: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let value: Value = crate::json_lenient::from_str(request).map_err(|error| error.to_string())?;
     let facts = require_facts(&value)?;
     let target = jev_target_value(&facts, value.get("routing"));
     serde_json::to_string(&target).map_err(|error| error.to_string())
@@ -1813,7 +1819,10 @@ fn run_selection(
     // so it can be turned back off per pool.
     value.insert(
         "preferMaxQuota".to_string(),
-        Value::Bool(!value_is(get(&input, "preferMaxQuota"), &Value::Bool(false))),
+        Value::Bool(!value_is(
+            get(&input, "preferMaxQuota"),
+            &Value::Bool(false),
+        )),
     );
     value.insert(
         "allowCrossTrust".to_string(),
@@ -1833,7 +1842,7 @@ fn lane_label(lane: Option<&str>) -> String {
 }
 
 pub fn validate_provider_selection(request: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let value: Value = crate::json_lenient::from_str(request).map_err(|error| error.to_string())?;
     let facts = require_facts(&value)?;
     let input = value.get("input").cloned().unwrap_or(Value::Null);
     let options = value.get("options").cloned();
@@ -1882,7 +1891,7 @@ fn normalize_value(input: &Value, facts: Facts) -> Result<Option<Value>, Pending
 }
 
 fn normalize_request(request: &str) -> Result<Option<Value>, String> {
-    let value: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let value: Value = crate::json_lenient::from_str(request).map_err(|error| error.to_string())?;
     let facts = require_facts(&value)?;
     let input = value.get("input").cloned().unwrap_or(Value::Null);
     normalize_value(&input, facts).map_err(|_| "unexpected callback probe".to_string())
@@ -1920,7 +1929,7 @@ fn priority_less_than(left: Option<&Value>, right: Option<&Value>) -> bool {
 }
 
 pub fn primary_provider_candidate(request: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let value: Value = crate::json_lenient::from_str(request).map_err(|error| error.to_string())?;
     let selection = value.get("selection").cloned().unwrap_or(Value::Null);
     let cli = value.get("cli").cloned().unwrap_or(Value::Null);
     let candidates = get(&selection, "candidates")
@@ -1955,7 +1964,7 @@ pub fn primary_provider_candidate(request: &str) -> Result<String, String> {
 }
 
 pub fn selection_clis(request: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let value: Value = crate::json_lenient::from_str(request).map_err(|error| error.to_string())?;
     let selection = value.get("selection").cloned().unwrap_or(Value::Null);
     let candidates = get(&selection, "candidates")
         .and_then(Value::as_array)
@@ -1983,7 +1992,7 @@ pub fn selection_clis(request: &str) -> Result<String, String> {
 /// `appTypes` is the raw result of `appTypesForCli`; `hasAppTypesForCli` says
 /// whether that callback exists at all.
 pub fn catalog_app_types(request: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let value: Value = crate::json_lenient::from_str(request).map_err(|error| error.to_string())?;
     let cli = js_string(get(&value, "cli").unwrap_or(&Value::Null));
     let app_type = get(&value, "appType").cloned().unwrap_or(Value::Null);
     let has_app_types_for_cli = value.get("hasAppTypesForCli").is_some_and(truthy);
@@ -2074,6 +2083,24 @@ mod tests {
         assert_eq!(snapshot["defaultRoutingApiKey"], json!("VERCEL_API_KEY"));
         assert_eq!(snapshot["maxRoutingEndpointChars"], json!(300));
         assert_eq!(snapshot["maxTiers"], json!(6));
+    }
+
+    #[test]
+    fn lone_surrogate_requests_reach_validation_not_a_parse_error() {
+        // JSON.stringify on the JS side emits "\ud834" for a sliced surrogate;
+        // the old JS implementation passed that text through to the rules, so
+        // parsing must be lenient and surface U+FFFD, not reject the request.
+        let facts = serde_json::to_string(&sample_facts()).unwrap();
+        let request = format!(r#"{{"facts":{facts},"endpoint":"x\ud834"}}"#);
+        assert_eq!(
+            custom_endpoint_error(&request).unwrap(),
+            serde_json::to_string("routing.endpoint must be a URL").unwrap()
+        );
+        let request = r#"{"selection":{"candidates":[{"cli":"\ud834"}]}}"#;
+        assert_eq!(
+            selection_clis(request).unwrap(),
+            serde_json::to_string(&json!(["\u{fffd}"])).unwrap()
+        );
     }
 
     #[test]
