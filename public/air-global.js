@@ -18,10 +18,6 @@
   let context = null;
   let setupFromShortcut = null;
   let styleNode = null;
-  let cprState = null;
-  let cprBusy = false;
-  let remoteScreenState = null;
-  let remoteScreenBusy = false;
 
   // 样式跟模块走：这页是后加的，不去动 air.css（那份是外壳和各面板共用的）。
   // 颜色只用 Air v2 的词表（--hairline / --muted / --faint / --shadow-1）。
@@ -73,126 +69,6 @@
     const note = make('span', noteText == null ? '' : noteText, 'admin-panel-note');
     head.append(title, note);
     return { head, note };
-  }
-
-  function cprCard() {
-    const panel = make('section', null, 'admin-panel air-global-card');
-    panel.id = 'air-global-cpr-card';
-    const { head } = card(t('airGlobalCprExperiment'), t('airGlobalCprTitle'));
-    const row = make('div', null, 'air-global-foot');
-    const button = make('button', t('airGlobalCprTryRust'), 'btn btn-sm');
-    button.id = 'air-global-cpr-toggle';
-    button.type = 'button'; button.disabled = true;
-    button.addEventListener('click', toggleCpr);
-    const status = make('span', t('airGlobalCprLoading'), 'air-global-status');
-    status.id = 'air-global-cpr-status'; status.setAttribute('aria-live', 'polite');
-    row.append(button, status);
-    panel.append(head, row, make('p', t('airGlobalCprDesc'), 'air-global-desc'));
-    return panel;
-  }
-
-  function paintCpr(data) {
-    const button = el('air-global-cpr-toggle'), status = el('air-global-cpr-status');
-    if (!button || !status) return;
-    cprState = data;
-    button.textContent = t(data.configuredBackend === 'rust' ? 'airGlobalCprUseNode' : 'airGlobalCprTryRust');
-    button.disabled = cprBusy || (data.configuredBackend !== 'rust' && !data.rustAvailable);
-    const params = { current: data.currentBackend === 'rust' ? 'Rust' : 'Node',
-      next: data.configuredBackend === 'rust' ? 'Rust' : 'Node' };
-    status.textContent = t(data.restartRequired ? 'airGlobalCprPending' : 'airGlobalCprCurrent', params);
-    if (!data.rustAvailable && data.configuredBackend !== 'rust') status.textContent += ' · ' + t('airGlobalCprUnavailable');
-    status.className = 'air-global-status';
-  }
-
-  async function loadCpr() {
-    try { paintCpr(await context.api('/api/settings/cpr-backend')); }
-    catch (error) {
-      const status = el('air-global-cpr-status');
-      if (status) { status.textContent = t('airGlobalCprFailed', { message: error.message }); status.className = 'air-global-status err'; }
-    }
-  }
-
-  async function toggleCpr() {
-    if (cprBusy || !cprState) return;
-    cprBusy = true;
-    el('air-global-cpr-toggle').disabled = true;
-    let failure;
-    try {
-      paintCpr(await context.api('/api/settings/cpr-backend', {
-        backend: cprState.configuredBackend === 'rust' ? 'node' : 'rust',
-      }));
-    } catch (error) {
-      failure = error;
-      await loadCpr(); // 超时也可能已经保存，以服务端快照为准。
-    } finally { cprBusy = false; if (cprState) paintCpr(cprState); }
-    if (failure && el('air-global-cpr-status')) {
-      el('air-global-cpr-status').textContent = t('airGlobalCprFailed', { message: failure.message });
-      el('air-global-cpr-status').className = 'air-global-status err';
-    }
-  }
-
-  // ── 远程屏幕后端：默认 Rust 独立进程，Node 只是回退 ──────────────────────
-  // 与 CPR 那张卡同一套语义：只写配置，不热切换、不重启，必须手动重启才生效。
-  function remoteScreenCard() {
-    const panel = make('section', null, 'admin-panel air-global-card');
-    panel.id = 'air-global-remote-backend-card';
-    const { head } = card(t('airGlobalRemoteBackendEyebrow'), t('airGlobalRemoteBackendTitle'));
-    const row = make('div', null, 'air-global-foot');
-    const button = make('button', t('airGlobalRemoteBackendUseNode'), 'btn btn-sm');
-    button.id = 'air-global-remote-backend-toggle';
-    button.type = 'button'; button.disabled = true;
-    button.addEventListener('click', toggleRemoteScreen);
-    const status = make('span', t('airGlobalRemoteBackendLoading'), 'air-global-status');
-    status.id = 'air-global-remote-backend-status'; status.setAttribute('aria-live', 'polite');
-    row.append(button, status);
-    panel.append(head, row, make('p', t('airGlobalRemoteBackendDesc'), 'air-global-desc'));
-    return panel;
-  }
-
-  function paintRemoteScreen(data) {
-    const button = el('air-global-remote-backend-toggle');
-    const status = el('air-global-remote-backend-status');
-    if (!button || !status) return;
-    remoteScreenState = data;
-    const target = data.configuredBackend === 'rust' ? 'node' : 'rust';
-    button.textContent = t(target === 'node' ? 'airGlobalRemoteBackendUseNode' : 'airGlobalRemoteBackendUseRust');
-    button.disabled = remoteScreenBusy || (target === 'rust' ? !data.rustAvailable : !data.nodeAvailable);
-    const params = { current: data.currentBackend === 'rust' ? 'Rust' : 'Node',
-      next: data.configuredBackend === 'rust' ? 'Rust' : 'Node' };
-    status.textContent = t(data.restartRequired ? 'airGlobalRemoteBackendPending' : 'airGlobalRemoteBackendCurrent', params);
-    // 不可用的一边说明原因：按钮点不动的原因不能只靠猜。
-    const reasons = [];
-    if (!data.rustAvailable) reasons.push(t('airGlobalRemoteBackendRustUnavailable'));
-    if (!data.nodeAvailable) reasons.push(t('airGlobalRemoteBackendNodeUnavailable'));
-    if (reasons.length) status.textContent += ' · ' + reasons.join('；');
-    status.className = 'air-global-status';
-  }
-
-  async function loadRemoteScreen() {
-    try { paintRemoteScreen(await context.api('/api/settings/remote-screen-backend')); }
-    catch (error) {
-      const status = el('air-global-remote-backend-status');
-      if (status) { status.textContent = t('airGlobalRemoteBackendFailed', { message: error.message }); status.className = 'air-global-status err'; }
-    }
-  }
-
-  async function toggleRemoteScreen() {
-    if (remoteScreenBusy || !remoteScreenState) return;
-    remoteScreenBusy = true;
-    el('air-global-remote-backend-toggle').disabled = true;
-    let failure;
-    try {
-      paintRemoteScreen(await context.api('/api/settings/remote-screen-backend', {
-        backend: remoteScreenState.configuredBackend === 'rust' ? 'node' : 'rust',
-      }));
-    } catch (error) {
-      failure = error;
-      await loadRemoteScreen(); // 超时也可能已经保存，以服务端快照为准。
-    } finally { remoteScreenBusy = false; if (remoteScreenState) paintRemoteScreen(remoteScreenState); }
-    if (failure && el('air-global-remote-backend-status')) {
-      el('air-global-remote-backend-status').textContent = t('airGlobalRemoteBackendFailed', { message: failure.message });
-      el('air-global-remote-backend-status').className = 'air-global-status err';
-    }
   }
 
   // ── 电源：只有两条对外设置（关盖运行、允许自动解锁） ──────────────────────
@@ -693,7 +569,7 @@
   }
 
   function load() {
-    return Promise.all([loadPower(), loadCpr(), loadRemoteScreen(), loadAgentInstall()]);
+    return Promise.all([loadPower(), loadAgentInstall()]);
   }
 
   function beginPowerSetup(action) {
@@ -711,14 +587,10 @@
     pendingPowerAction = null;
     powerState = null;
     powerBusy = false;
-    cprState = null;
-    cprBusy = false;
-    remoteScreenState = null;
-    remoteScreenBusy = false;
     // 安装包（APK / iOS OTA）不在这页重复第二遍 —— 见文件头。这里只留一句指路。
     const install = make('section', null, 'admin-panel');
     install.append(make('p', t('airGlobalInstallHint'), 'admin-empty air-global-hint'));
-    host.replaceChildren(install, powerCard(), cprCard(), remoteScreenCard());
+    host.replaceChildren(install, powerCard());
     injectStyle(host);
     const action = setupFromShortcut;
     setupFromShortcut = null;

@@ -39,7 +39,7 @@ const int h264ReqKey = 0x4B;
 const int h264Cap = 0x42;
 const int h264Ping = 0x50;
 
-/// 单帧上限与桥一致（remote-screen-h264-bridge.js 的 maxFrameBytes）。
+/// 单帧上限与桥一致（native/remote/src/h264.rs 的 max_frame_bytes）。
 const int _maxFrameBytes = 8 * 1024 * 1024;
 
 class H264Frame {

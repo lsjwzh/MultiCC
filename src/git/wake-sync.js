@@ -8,7 +8,7 @@ const { getNative } = require('../native/runtime');
 
 async function syncWorktreeOnWake(dirPath, worktree, baseBranch) {
   try {
-    const native = getNative('worktree_sync', 'rust');
+    const native = getNative();
     if (typeof native.syncWorktreeOnWake !== 'function') {
       return { ok: false, code: 'wake_sync_unavailable' };
     }

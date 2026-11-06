@@ -65,14 +65,14 @@ function fakeNative() {
   };
 }
 
-function fixture({ file = null, native = fakeNative(), writeError = null } = {}) {
+function fixture({ file = null, native = fakeNative(), getNative, writeError = null } = {}) {
   const app = fakeApp();
   const fs = memoryFs(file);
   const writes = [];
   mountRunConfigPresetsRoutes(app, {
     file: '/runtime/run-config-presets.json',
     fs,
-    getNative: () => native,
+    getNative: getNative || (() => native),
     write(target, value) {
       if (writeError) throw writeError;
       writes.push({ target, value });
@@ -144,7 +144,7 @@ test('请求体不是数组或超过上限 → 400，且不落盘', async () => 
 });
 
 test('原生模块缺失 → 503，客户端可退回本机缓存', async () => {
-  const { app } = fixture({ native: null });
+  const { app } = fixture({ getNative: () => { throw new Error('rust_backend_unavailable'); } });
   for (const [method, route] of [
     ['GET', '/api/run-config/presets'],
     ['PUT', '/api/run-config/presets'],

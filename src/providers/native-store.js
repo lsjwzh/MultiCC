@@ -5,7 +5,7 @@ const { getNative } = require('../native/runtime');
 function createNativeProviderStore(file) {
   const revisions = new WeakMap();
   function access(input) {
-    try { return JSON.parse(getNative('provider_store', 'rust').providerStore(file, JSON.stringify(input))); }
+    try { return JSON.parse(getNative().providerStore(file, JSON.stringify(input))); }
     catch (error) { error.code = error.message; throw error; }
   }
   return {

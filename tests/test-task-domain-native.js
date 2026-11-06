@@ -227,7 +227,7 @@ test('孤立代理项由 Rust 宽松解码清洗，字面反斜杠保持原样',
   const loaded = createTaskBoardRepository(file).load();
   assert.equal(loaded.raw.tasks.t.title, '丁�', '任务板仓储 load 读得出孤立代理项');
 
-  const cache = new (getNative('task_domain', 'rust').RustAirCardCache)();
+  const cache = new (getNative().RustAirCardCache)();
   const reply = JSON.parse(cache.run(JSON.stringify({ op: 'overlay', keys: ['t'], tokens: [0], nativeRenderable: false,
     entries: [{ t: {}, card: { id: 't', title: '戊\ud800', refs: [] } }], facts: {}, now: 1, merges: {}, capacityReasons: {} })));
   assert.ok(reply.cards[0].title.includes('�'), '卡片缓存解析也要清洗');
@@ -352,7 +352,7 @@ test('原生 panic 被捕获为 TASK_DOMAIN_PANIC，且之后进程仍可用', (
       const afterAsync = await taskDomainAsync({ op: 'airVisible', board: { tasks: {}, modules: {} }, shellTasks: [] });
       try { planning.normalizePlanningTask([]); } catch (error) { planningCode = codeOf(error); }
       const afterPlanning = taskDomain({ op: 'airVisible', board: { tasks: {}, modules: {} }, shellTasks: [] });
-      const cache = new (getNative('task_domain', 'rust').RustAirCardCache)();
+      const cache = new (getNative().RustAirCardCache)();
       try { cache.run(JSON.stringify({ op: '__panicProbe' })); } catch (error) { cacheCode = codeOf(error); }
       const afterCache = JSON.parse(cache.run(JSON.stringify({ op: 'open', mode: 'shadow', verifyMs: 60000, reportMs: 600000, now: 1 })));
       console.log(JSON.stringify({ syncCode, asyncCode, planningCode, cacheCode,

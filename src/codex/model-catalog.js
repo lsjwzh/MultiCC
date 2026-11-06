@@ -43,8 +43,7 @@ function createCodexAccountModelCatalogRuntime(options = {}) {
       if (!isOfficialCodexOAuthProvider(provider)) return unavailable('not_official');
       const home = homeOf(accountOf(provider));
       if (invalidating.has(home)) return { ...unavailable('refreshing'), source: 'loading' };
-      const addon = getNative('codex_models');
-      if (typeof addon?.codexModelsPeek !== 'function') return unavailable();
+      const addon = getNative();
       return JSON.parse(addon.codexModelsPeek(home));
     } catch (_) { return unavailable(); }
   }
@@ -93,8 +92,7 @@ function createCodexAccountModelCatalogRuntime(options = {}) {
     }
     let nativeCompleted = false;
     const promise = Promise.resolve().then(async () => {
-      const addon = getNative('codex_models');
-      if (typeof addon?.codexModelsRefresh !== 'function') return unavailable();
+      const addon = getNative();
       const env = await childEnv(home, provider);
       const cliBin = options.cliBin || require('../cli-adapters/commands').resolveCliCommands({
         env, logger: { log() {}, warn() {} },
@@ -119,8 +117,7 @@ function createCodexAccountModelCatalogRuntime(options = {}) {
       if (!isOfficialCodexOAuthProvider(provider)) return unavailable('not_official');
       const home = homeOf(accountOf(provider));
       if (invalidating.has(home)) return peekProvider(provider);
-      const addon = getNative('codex_models');
-      if (typeof addon?.codexModelsLoad !== 'function') return unavailable();
+      const addon = getNative();
       await runNative(() => addon.codexModelsLoad(home));
       return peekProvider(provider);
     } catch (_) { return unavailable(); }

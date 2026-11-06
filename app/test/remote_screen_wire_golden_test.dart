@@ -1,7 +1,7 @@
 // The wire golden contract — the App half.
 //
 // The H.264 channel carries the same bytes through three programs: this App
-// encodes input and parses frames, src/remote-screen-h264-bridge.js relays
+// encodes input and parses frames, native/remote/src/h264.rs relays
 // them, and the Agent (MultiCCAgentH264.swift h264Session) decodes input. Each
 // end used to assert its own hand-copied bytes, so an encoding change on one
 // side stayed green everywhere. All three now answer to one table,

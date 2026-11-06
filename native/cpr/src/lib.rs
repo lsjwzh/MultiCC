@@ -3,7 +3,6 @@ pub mod claude_quota;
 pub mod error_policy;
 pub mod observer;
 pub mod plan;
-pub mod settings;
 pub mod transport;
 
 pub mod codex_official;

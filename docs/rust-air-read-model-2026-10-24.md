@@ -14,12 +14,11 @@ Rust 位于 native/core/src/task_read_model/，通过异步 RustTaskReadModel �
 
 独立 SQLite 直接读取试点仍是可调用的只读工具，未替代上述权威卡片生成入口。此前该试点的冷读加速数据不能直接代表本轮生产接入路径。此前实验也证明热缓存请求 Rust 慢于 Node；这次切换依照用户授权推进后端迁移，不作全面性能提升承诺。
 
-## 默认值与应急回退
+## 默认值与失败语义
 
-- 未配置 MULTICC_AIR_READ_BACKEND 时使用 rust。
-- 仅显式配置 MULTICC_AIR_READ_BACKEND=node 时使用保留的 Node 索引。
-- 未知配置直接拒绝；Rust 模块缺失、接口不符或运行失败不会自动降级为 Node。
-- 配置或代码变更都需要用户手动重启生效。
+- Air 摘要索引只有 Rust 实现；`MULTICC_AIR_READ_BACKEND` 开关和 Node 索引回退已删除。
+- Rust 模块缺失、接口不符或运行失败都会明确失败，不会降级为 Node。
+- 代码变更需要用户手动重启生效。
 
 源码启动的原生产物预检现在要求 taskReadModelProtocolVersion=1，并实际执行 Air open、publish、serialized 和 close。源码指纹缓存会随 Rust 源码变化重新构建；安装包需包含对应平台的新模块。旧模块不能通过新版预检。
 

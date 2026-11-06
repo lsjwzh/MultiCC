@@ -285,7 +285,7 @@ test('router runtime layers the pick onto chat (buildChildEnv) and terminal (res
   for (const runtimeMode of ['legacy', 'cpr', 'shadow']) {
     const runtime = createProviderRouterRuntime({
       mode: runtimeMode, providers: fakeProviders(), router: fakeRouter(), keyAccounts: store,
-      env: { MULTICC_CPR_BACKEND: 'node' },
+      env: {},
       dataRoot: '/multicc/data', codexHomesDir: '/multicc/codex-homes',
     });
     const child = runtime.buildChildEnv({ PATH: '/bin' }, session, { TERM: 'dumb' });
@@ -298,7 +298,7 @@ test('router runtime layers the pick onto chat (buildChildEnv) and terminal (res
   }
   const unwired = createProviderRouterRuntime({
     providers: fakeProviders(), router: fakeRouter(), dataRoot: '/multicc/data', codexHomesDir: '/multicc/codex-homes',
-    env: { MULTICC_CPR_BACKEND: 'node' },
+    env: {},
   });
   assert.throws(() => unwired.buildChildEnv({}, session, {}), error => error.code === 'CLI_KEY_ACCOUNT_MISSING',
     'a runtime without a store still refuses to spawn a picked account on the CLI login');

@@ -53,7 +53,6 @@ jobs:
         env:
           MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
           CARGO_TARGET_DIR: ${{ runner.temp }}/multicc-rust-target
-          MULTICC_RUST_BACKEND: rust
           MULTICC_REQUIRE_RUST_TESTS: '1'
           MULTICC_REQUIRE_RUST_BUNDLE: '1'
         run: |

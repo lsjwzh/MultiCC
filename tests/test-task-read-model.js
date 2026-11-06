@@ -6,17 +6,18 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createTaskReadModel } = require('../src/native/task-read-model');
-const { CompatDatabase: NodeDatabase } = require('../src/sqlite/node-driver');
+const { CompatDatabase } = require('../src/sqlite/driver');
 const { getNative } = require('../src/native/runtime');
 const { oracle, fixtures, initialize } = require('./helpers/task-read-model');
-const addon = getNative('read_model', process.env.MULTICC_REQUIRE_RUST_TESTS === '1' ? 'rust' : 'auto');
+let addon = null;
+try { addon = getNative(); } catch (_) { /* availability is asserted below */ }
 const native = typeof addon?.RustTaskReadModel === 'function';
 if (!native && process.env.MULTICC_REQUIRE_RUST_TESTS === '1') throw new Error('read_model_backend_unavailable');
 
 async function setup(t, data = fixtures(), opts = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-task-read-model-'));
   const file = path.join(dir, 'tasks.sqlite');
-  const db = new NodeDatabase(file);
+  const db = new CompatDatabase(file);
   initialize(db, data.tasks, opts);
   const model = createTaskReadModel({ addon });
   t.after(async () => { await model.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -180,7 +181,7 @@ run('独占写锁使刷新明确失败，解锁后重试且无部分发布', asy
     db.exec('BEGIN EXCLUSIVE');process.stdout.write('locked');
     let done=false;function close(){if(done)return;done=true;clearTimeout(timer);db.exec('ROLLBACK');db.close();process.stdin.destroy();}
     const timer=setTimeout(close,2000);process.stdin.once('data',close);
-  `, require.resolve('../src/sqlite/node-driver'), file], { stdio: ['pipe', 'pipe', 'pipe'] });
+  `, require.resolve('../src/sqlite/driver'), file], { stdio: ['pipe', 'pipe', 'pipe'] });
   const exited = new Promise(resolve => holder.once('exit', resolve));
   try {
     await new Promise((resolve, reject) => { holder.stdout.once('data', resolve); holder.once('error', reject); holder.once('exit', () => reject(new Error('lock_holder_exited'))); });

@@ -2,9 +2,9 @@
 // Adapter between the provider-limit cache and the Rust quota-history kernel.
 //
 // The kernel owns the samples table, dedupe/retention and downsampling; this
-// file only marshals JSON and keeps the native handle lazy. A process without a
-// matching native addon simply reports `available: false` — the provider cards
-// then render without a trend instead of failing the providers API.
+// file only marshals JSON and keeps the native handle lazy. Constructor failure
+// (unreadable/corrupt database) still degrades the provider cards to "no trend"
+// instead of failing the providers API.
 
 const fs = require('node:fs');
 const { getNative, runNative } = require('../native/runtime');
@@ -28,17 +28,9 @@ function createProviderQuotaHistory({
   function ensure() {
     if (handle) return handle;
     if (unavailable) return null;
-    let addon = native;
-    if (!addon) {
-      try { addon = getNative('quota_history'); } catch (_) { addon = null; }
-    }
-    const Constructor = addon && addon.RustQuotaHistory;
-    if (typeof Constructor !== 'function') {
-      unavailable = true;
-      return null;
-    }
+    const addon = native || getNative();
     try {
-      handle = new Constructor(file, Math.trunc(retentionMs));
+      handle = new addon.RustQuotaHistory(file, Math.trunc(retentionMs));
       // SQLite derives the -wal/-shm modes from the database file; tighten the
       // main file before the first write so sidecars inherit 0600 too.
       try { fs.chmodSync(file, 0o600); } catch (_) { /* best effort */ }

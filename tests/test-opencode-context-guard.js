@@ -10,7 +10,7 @@ const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('.
 const { getNative } = require('../src/native/runtime');
 
 function fixture(t, catalog = { provider: { models: { model: { limit: { context: 1000, output: 100 } } } } }) {
-  assert.equal(typeof getNative('opencode_context', 'rust').readOpencodeContext, 'function', '必须使用当前源码的原生模块');
+  assert.equal(typeof getNative().readOpencodeContext, 'function', '必须使用当前源码的原生模块');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-opencode-ctx-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const dbPath = path.join(root, 'opencode.db');
@@ -157,7 +157,7 @@ test('数据库不可读、用量未知和原生模块缺失均返回明确原�
   const missing = createOpencodeContextReader({ dbPath: path.join(f.root, 'absent.db') });
   assert.equal((await missing.read('s1')).reason, 'db-unavailable');
   assert.equal(fs.existsSync(path.join(f.root, 'absent.db')), false);
-  assert.equal((await createOpencodeContextReader({ getNative: () => null }).read('s1')).reason, 'native-unavailable');
+  assert.equal((await createOpencodeContextReader({ getNative: () => { throw new Error('rust_backend_unavailable'); } }).read('s1')).reason, 'read-failed');
 });
 
 test('阈值边界保持兼容，数据库路径尊重 XDG 环境', async () => {

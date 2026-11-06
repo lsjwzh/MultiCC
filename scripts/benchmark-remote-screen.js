@@ -18,7 +18,7 @@
 //   · 不 import src/remote-screen-*.js，也不读它的内部状态；只走
 //     HTTP（/readyz、/api/auth/ws-ticket）与 WS（/ws/remote-screen?mode=h264）。
 //   · 假 Agent 用 MULTICC_AGENT_SOCK / MULTICC_AGENT_H264_SOCK /
-//     MULTICC_AGENT_RFB_SOCK 指过去（见 src/desktop-host.js，Rust 进程也继承
+//     MULTICC_AGENT_RFB_SOCK 指过去（见 native/remote/src/host.rs，Rust 进程也继承
 //     这些覆盖项）；MULTICC_AGENT_AUTO_INSTALL=0，绝不碰本机真 Agent。
 //   · p2p 用 werift 当浏览器端（与 App/网页同一条信令：rtc-hello / rtc-offer /
 //     rtc-answer / 双向 rtc-ice / rtc-active），MULTICC_REMOTE_STUN= 空串只用

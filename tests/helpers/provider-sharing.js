@@ -162,7 +162,7 @@ function mountAuth(app, metrics, providerRelayShares) {
   runtime.mountRoutes(app);
 }
 
-function createInstance({ providers, providerRelayShares, defaultsFile, activity, backend,
+function createInstance({ providers, providerRelayShares, defaultsFile, activity,
   authorizeProxyRequest = () => ({ ok: false, code: 'no-active-attempt' }) }) {
   const app = express();
   const metrics = [];
@@ -178,7 +178,6 @@ function createInstance({ providers, providerRelayShares, defaultsFile, activity
     .mountManagementRoutes(app);
   const root = path.dirname(defaultsFile);
   const runtime = createProviderRouterRuntime({ providers, mode: 'legacy',
-    env: backend ? { MULTICC_CPR_BACKEND: backend } : {},
     dataRoot: root, codexHomesDir: path.join(root, 'codex-homes') });
   const usage = [], rates = [];
   const mounted = runtime.mountProtocolProxies(app, {

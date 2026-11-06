@@ -147,7 +147,7 @@ function buildTaskGraphContextDetail(ports, { taskId, tokenBudget = DEFAULT_TOKE
     reason: relevance(query, source.excerpt) ? 'query_and_relation' : 'relation',
   }));
   // Project affinity is a ranking hint; it does not exclude related history.
-  const ranked = JSON.parse(getNative('task_context', 'rust').rankTaskContextCandidates(
+  const ranked = JSON.parse(getNative().rankTaskContextCandidates(
     JSON.stringify({ dirId, candidates: related.map(({ sourceDirId, priority }, index) => ({ index, sourceDirId, priority })) })));
   const candidates = ranked.map(({ index, priority }) => ({ ...related[index], priority }));
   const selected = selectContext(candidates, { budget: tokenBudget,

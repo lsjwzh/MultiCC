@@ -9,7 +9,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { spawnSync } = require('node:child_process');
 const WebSocket = require('ws');
 const { startHarness } = require('./helpers/remote-screen-e2e-harness');
 
@@ -54,8 +53,8 @@ function safeParse(text) {
   try { return JSON.parse(text); } catch { return null; }
 }
 
-async function relayCase(t, backend) {
-  const h = await startHarness({ fixtureDir: FIXTURE_DIR, backend });
+async function relayCase(t) {
+  const h = await startHarness({ fixtureDir: FIXTURE_DIR });
   t.after(() => h.close());
 
   // 1. 外网请求：没令牌的能力查询与换票都被拒，带令牌才放行，且如实报告 h264.sock。
@@ -106,8 +105,7 @@ async function relayCase(t, backend) {
   assert.ok(live.binary.length >= before);
 }
 
-test('remote-screen e2e harness: the real server relays the agent stream behind tunnel auth', { skip: !darwin && 'server exposes h264.sock on macOS only', timeout: 90000 }, t => relayCase(t, 'rust'));
-test('remote-screen e2e harness: the Node fallback backend relays the agent stream byte-identically', { skip: !darwin && 'server exposes h264.sock on macOS only', timeout: 90000 }, t => relayCase(t, 'node'));
+test('remote-screen e2e harness: the real server relays the agent stream behind tunnel auth', { skip: !darwin && 'server exposes h264.sock on macOS only', timeout: 90000 }, relayCase);
 
 // ── 直连（P2P）──
 //
@@ -133,14 +131,14 @@ function parseFrames(hex) {
   return out;
 }
 
-async function p2pCase(t, backend) {
+async function p2pCase(t) {
     let RTCPeerConnection;
     try { ({ RTCPeerConnection } = require('werift')); } catch { t.skip('werift not installed'); return; }
 
     // 空串 = 不用 STUN（本机回环直连）；Rust 进程继承 server.js 的环境变量。
     const savedStun = process.env.MULTICC_REMOTE_STUN;
     process.env.MULTICC_REMOTE_STUN = '';
-    const h = await startHarness({ fixtureDir: FIXTURE_DIR, p2pStats: true, backend });
+    const h = await startHarness({ fixtureDir: FIXTURE_DIR, p2pStats: true });
     t.after(async () => {
       if (savedStun === undefined) delete process.env.MULTICC_REMOTE_STUN;
       else process.env.MULTICC_REMOTE_STUN = savedStun;
@@ -244,50 +242,7 @@ async function p2pCase(t, backend) {
 }
 
 test('remote-screen e2e harness: a werift peer moves frames and input onto the DataChannel and back to the relay when it closes',
-  { skip: !darwin && 'server exposes h264.sock on macOS only', timeout: 120000 }, t => p2pCase(t, 'rust'));
-test('remote-screen e2e harness: the Node fallback keeps the same P2P DataChannel contract',
-  { skip: !darwin && 'server exposes h264.sock on macOS only', timeout: 120000 }, t => p2pCase(t, 'node'));
-
-// ── Node 后端不启动 Rust 远控进程 ──
-
-// ps 全表里的子孙进程（只看本测试起的 server.js 那一支，别把本机常驻服务算进来）。
-function processTable() {
-  const out = spawnSync('ps', ['-ax', '-o', 'pid=,ppid=,command='], { encoding: 'utf8' }).stdout || '';
-  return out.split('\n').map(line => {
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
-    return m && { pid: Number(m[1]), ppid: Number(m[2]), command: m[3] };
-  }).filter(Boolean);
-}
-
-function descendants(rootPid) {
-  const table = processTable();
-  const found = [];
-  const queue = [rootPid];
-  while (queue.length) {
-    const parent = queue.shift();
-    for (const proc of table) {
-      if (proc.ppid !== parent) continue;
-      found.push(proc);
-      queue.push(proc.pid);
-    }
-  }
-  return found;
-}
-
-test('remote-screen e2e harness: node backend never spawns the multicc-remote process',
-  { skip: !darwin && 'server exposes h264.sock on macOS only', timeout: 90000 }, async t => {
-    const h = await startHarness({ fixtureDir: FIXTURE_DIR, backend: 'node' });
-    t.after(() => h.close());
-    assert.equal(h.backend, 'node');
-    // 访问远控路由，确保 Node 实现真的被加载和调用过（而不是根本没走到）。
-    const caps = await (await fetch(`${h.direct}/api/remote-screen/capabilities`, {
-      headers: { 'X-Access-Token': h.token },
-    })).json();
-    assert.equal(caps.streams?.h264, true, JSON.stringify(caps));
-    assert.ok(processTable().some(proc => proc.pid === h.childPid), 'ps 表里应能看到测试 server');
-    const remote = descendants(h.childPid).filter(proc => /multicc-remote/.test(proc.command));
-    assert.deepEqual(remote, [], `node 后端不应有远控子进程：${JSON.stringify(remote)}`);
-  });
+  { skip: !darwin && 'server exposes h264.sock on macOS only', timeout: 120000 }, p2pCase);
 
 // ── HTTP 面（真 binary，经隧道 + 令牌）──
 //

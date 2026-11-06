@@ -1,3 +1,6 @@
+pub mod auto_provider_config;
+pub mod auto_provider_policy;
+pub mod cli_capability;
 pub mod machines;
 pub mod opencode_context;
 pub mod provider_error;

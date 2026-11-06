@@ -15,8 +15,6 @@
 //
 // 用法：
 //   模块：const h = await startHarness(); … await h.close();
-//   backend:'node' 时经 MULTICC_REMOTE_SCREEN_BACKEND 让服务端加载 Node 回退实现
-//   （P2P 统计改由 remote-screen-p2p-stats-observer.js 预加载钩子写同一份形状）。
 //   命令行（给 flutter test / 模拟器用）：node tests/helpers/remote-screen-e2e-harness.js [--direct]
 //     就绪后 stdout 打一行 JSON {ready, server, direct, control, token}；stdin 关闭或收到
 //     SIGTERM 时收尾退出。控制端口（只听 loopback）：
@@ -41,8 +39,6 @@ const { ensureSourceRust } = require('../../scripts/ensure-source-rust');
 
 const ROOT = path.join(__dirname, '..', '..');
 const FIXTURE_DIR = path.join(ROOT, 'tests', 'fixtures', 'remote-screen-h264');
-// Node 回退后端的 P2P 观测钩子（`node -r` 预加载；只读，不改行为）。
-const NODE_P2P_OBSERVER = path.join(__dirname, 'remote-screen-p2p-stats-observer.js');
 const TUNNEL_PEER = '203.0.113.9'; // TEST-NET-3：服务端只看「有没有转发头」，值无所谓
 
 // ── 假 Agent 的截图 ──
@@ -343,10 +339,8 @@ async function waitReady(base, child, output) {
 }
 
 async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platform, p2pStats = false,
-  powerConsentFile = null, backend = 'rust' } = {}) {
-  if (platform !== 'darwin') throw new Error('the server only exposes h264.sock on macOS (desktop-host profile)');
-  // 后端经环境变量交给 server.js 的选择层：rust（默认）走 multicc-remote，node 走回退实现。
-  if (!['rust', 'node'].includes(backend)) throw new Error(`unknown remote-screen backend: ${backend}`);
+  powerConsentFile = null } = {}) {
+  if (platform !== 'darwin') throw new Error('the server only exposes h264.sock on macOS (Rust host profile)');
   const messages = loadStream(fixtureDir);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rs-e2e-'));
   const dataDir = assertTestDir(path.join(root, 'data'));
@@ -371,16 +365,15 @@ async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platf
     const agent = await startFakeAgent(agentDir, messages);
     cleanups.push(() => agent.close());
 
-    // 首次可能要现编（约 1 分钟），之后按指纹复用缓存。Node 回退不需要远控进程，
-    // 但服务端其它功能仍用同一个原生模块，所以照常准备。
+    // 首次可能要现编（约 1 分钟），之后按指纹复用缓存；同时把 multicc-remote 放进
+    // 模块所在目录。
     const rustAddon = ensureSourceRust({ log: () => {} });
-    // 观测口：rust 后端由 multicc-remote 自己按 200ms 原子写这个文件（见
-    // docs/remote-screen-process.md §5）；node 后端由预加载的观测钩子写同一份形状。
+    // 观测口：multicc-remote 自己按 200ms 原子写这个文件（见
+    // docs/remote-screen-process.md §5）。
     const statsFile = path.join(root, 'p2p-stats.json');
     const port = await freePort();
     let log = '';
-    const preload = p2pStats && backend === 'node' ? ['-r', NODE_P2P_OBSERVER] : [];
-    const child = spawn(process.execPath, [...preload, 'server.js'], {
+    const child = spawn(process.execPath, ['server.js'], {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -391,10 +384,7 @@ async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platf
         MULTICC_AGENT_DIR: agentDir,
         MULTICC_AGENT_AUTO_INSTALL: '0',
         MULTICC_REMOTE_POWER_CONSENT_FILE: consentFile,
-        ...(backend === 'node' ? { MULTICC_REMOTE_SCREEN_BACKEND: 'node' } : {}),
-        ...(p2pStats && backend === 'node'
-          ? { MULTICC_TEST_P2P_STATS_FILE: statsFile }
-          : p2pStats ? { MULTICC_REMOTE_STATS_FILE: statsFile } : {}),
+        ...(p2pStats ? { MULTICC_REMOTE_STATS_FILE: statsFile } : {}),
         ...(rustAddon ? { MULTICC_RUST_ADDON: rustAddon } : {}),
         MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '60000',
       },
@@ -428,18 +418,13 @@ async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platf
         if (p2pStats) {
           try {
             const file = JSON.parse(fs.readFileSync(statsFile, 'utf8'));
-            if (backend === 'node') {
-              // 观测钩子直接写 {id, stats, wsBinary, at}，形状与服务端桥一致。
-              stats = file;
-            } else {
-              const conns = Array.isArray(file.connections) ? file.connections : [];
-              // Rust 侧按连接记；老的观测口只盯一条 h264 桥，形状（stats/wsBinary）
-              // 不能变 —— 模拟器里的互通用例按老形状读。
-              const c = conns.filter(x => x && x.mode === 'h264').at(-1) || conns.at(-1);
-              if (c) {
-                const { clientBinary, mode, ...rest } = c;
-                stats = { id: 1, stats: rest, wsBinary: clientBinary ?? 0, at: Date.now() };
-              }
+            const conns = Array.isArray(file.connections) ? file.connections : [];
+            // Rust 侧按连接记；老的观测口只盯一条 h264 桥，形状（stats/wsBinary）
+            // 不能变 —— 模拟器里的互通用例按老形状读。
+            const c = conns.filter(x => x && x.mode === 'h264').at(-1) || conns.at(-1);
+            if (c) {
+              const { clientBinary, mode, ...rest } = c;
+              stats = { id: 1, stats: rest, wsBinary: clientBinary ?? 0, at: Date.now() };
             }
           } catch {}
         }
@@ -464,7 +449,6 @@ async function startHarness({ fixtureDir = FIXTURE_DIR, platform = process.platf
       token,
       messages,
       agent,
-      backend,
       childPid: child.pid,
       powerConsentFile: consentFile,
       serverLog: () => log,

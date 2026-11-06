@@ -520,7 +520,9 @@ function createClaudeOAuthRefresher(options = {}) {
         const previousAttempt = state.postExpiryAttempt;
         const plan = expiredPlan(before, force);
         if (plan) spend.probes = Math.max(spend.probes, plan.budgetFloor);
-        if (plan ? !plan.allowProbe : (!force && spend.probes >= maxProbesPerWindow)) {
+        // Rust is the only probe-budget policy. Without a native plan no probe
+        // is admitted, forced or not: there is no JavaScript copy to fall back to.
+        if (!plan?.allowProbe) {
           steps.push({ step: rung.step, skipped: 'budget_spent' });
           continue;
         }

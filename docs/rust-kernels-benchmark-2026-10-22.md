@@ -2,6 +2,8 @@
 
 日期：2026-10-22（北京时间）。代码基线：`e31e00dd`。本报告记录实现与本机验证，不代表已发布或已替换运行中的服务。
 
+> 2026-11-06 注：Node 实现已删除，Rust 是唯一实现。下文的 `MULTICC_RUST_BACKEND`、`MULTICC_RUST_SEARCH`、`MULTICC_RUST_USAGE` 不再被读取；原生模块缺失或版本过旧时相关接口直接报错，不再回退 Node。`npm run benchmark:rust` 与 `scripts/benchmark-rust-kernels.js` 已随 Node 对照一起移除。以下内容保留为当时的实测记录。
+
 ## 结论
 
 两个模块已通过 napi-rs 接入 Node，随 Electron / standalone 打包的构建路径已接入。性能收益有限且取决于边界开销：3,000 个任务复用索引查询约快 1.48 倍，含每次内容指纹校验的缓存调用仅约 1.06 倍；约 101 MiB 的 Token 扫描约快 1.33 倍。更明确的收益是把重建索引和扫描计算移到工作线程，降低主线程停顿。

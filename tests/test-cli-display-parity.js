@@ -4,7 +4,8 @@
 //
 // What this defends:
 //   1. One CLI catalogue exists once per platform — server
-//      (src/cli/cli-capability.js CLIS, the authoritative one), web
+//      (native/core/src/cli_capability.rs CLIS, the authoritative one, read
+//      through src/cli/cli-capability.js), web
 //      (public/provider-catalog.js CLI_FAMILIES) and app
 //      (app/lib/utils/cli_display.dart kCliFamilies) — and the three agree.
 //      Before this they were written out ten-plus times and had already drifted:

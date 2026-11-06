@@ -150,12 +150,43 @@ fn frames(value: &Value, path: &str, depth: usize, out: &mut Vec<Frame>) {
     }
 }
 
+/// Codes that name a local stop: the user, the server or MultiCC itself ended
+/// the run. A local stop is never a provider fault, so it outranks every other
+/// piece of evidence and Auto never fails over on it. This is the one table:
+/// `src/chat/api-error-policy.js` reads it through [`facts`].
+pub const LOCAL_CANCELLATION_CODES: &[&str] = &[
+    "aborterror",
+    "aborted",
+    "cancelled",
+    "canceled",
+    "user_cancel",
+    "new_user_message",
+    "shutdown",
+    "server_shutting_down",
+    "session_delete",
+    "cli_switch",
+    "relocate",
+    "sigterm",
+    "sigint",
+    // The server killed its own child to respawn it.
+    "restart_spawn",
+];
+
+/// The classifier's tables that JavaScript policy still consults.
+pub fn facts() -> String {
+    json!({ "cancellationCodes": LOCAL_CANCELLATION_CODES }).to_string()
+}
+
 // Wire identifiers are an adapter contract, not error prose. Generic wrappers
 // carry no domain meaning; unknown specific types block legacy inference.
 fn wire_type(provider: &str, code: &str) -> Option<(Category, Reason)> {
     use Category::*;
     use Reason::*;
-    Some(match code.to_ascii_lowercase().as_str() {
+    let code = code.to_ascii_lowercase();
+    if LOCAL_CANCELLATION_CODES.contains(&code.as_str()) {
+        return Some((CancelShutdown, Other));
+    }
+    Some(match code.as_str() {
         "contextoverflowerror" if provider == "opencode" => (ContextTokenLimit, ContextOverflow),
         "messageabortederror" if provider == "opencode" => (CancelShutdown, Other),
         "providerautherror" if provider == "opencode" => (AuthenticationPermission, Other),
@@ -163,9 +194,6 @@ fn wire_type(provider: &str, code: &str) -> Option<(Category, Reason)> {
             (ContextTokenLimit, ContextOverflow)
         }
         "max_tokens_exceeded" | "max_output_tokens" => (ContextTokenLimit, OutputLimit),
-        "aborterror" | "cancelled" | "canceled" | "user_cancel" | "aborted" | "shutdown" => {
-            (CancelShutdown, Other)
-        }
         "authentication_error"
         | "permission_denied"
         | "unauthorized"

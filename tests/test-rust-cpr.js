@@ -8,10 +8,9 @@ const path = require('node:path');
 const express = require('express');
 const nodeRouter = require('cli-provider-router');
 const { createProviderRouterRuntime } = require('../src/providers/router-runtime');
-const { createRustCprRouter, resolveCprBackend } = require('../src/providers/rust-cpr');
+const { createRustCprRouter } = require('../src/providers/rust-cpr');
 const { createClaudeEgressAgentResolver } = require('../src/claude-auth/egress-agent');
-const { mountCprBackendSettingsRoutes } = require('../src/routes/cpr-backend-settings');
-const native = require('../src/native/runtime').getNative('cpr', process.env.MULTICC_REQUIRE_RUST_TESTS === '1' ? 'rust' : 'auto');
+const native = require('../src/native/runtime').getNative();
 const available = native?.cprProtocolVersion?.() === 1;
 if (process.env.MULTICC_REQUIRE_RUST_TESTS === '1') assert.equal(available, true, '必须构建包含 CPR 的 Rust 模块');
 const rustTest = (name, fn) => test(name, { skip: !available && '尚未构建 Rust CPR', timeout: 15000 }, fn);
@@ -26,7 +25,7 @@ const claudeStream = sse({ type: 'message_start', message: { usage: { input_toke
 const responseStream = sse({ type: 'response.output_text.delta', delta: '你好' })
   + sse({ type: 'response.completed', response: { id: 'resp_fixture', output: [], usage: { input_tokens: 12, output_tokens: 4, input_tokens_details: { cached_tokens: 5 } } } });
 
-async function harness(t, backend, options = {}) {
+async function harness(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rust-cpr-'));
   const requests = [], usage = [], activity = [], deltas = [], rates = [];
   const upstream = http.createServer(async (req, res) => {
@@ -42,8 +41,9 @@ async function harness(t, backend, options = {}) {
   };
   const providers = { getProvider: (_, id) => entries[id] || null, getProviderSummary: () => null,
     resolveSpawnEnv: () => ({ env: {} }), buildChildEnv: () => ({ env: {} }), resolveSessionWireModel: model => model };
-  const runtime = createProviderRouterRuntime({ providers, env: { MULTICC_CPR_BACKEND: backend,
-    CLAUDE_OFFICIAL_VIA_PROXY: '1' }, mode: options.mode || 'legacy', dataRoot: root, codexHomesDir: path.join(root, 'codex') });
+  const runtime = createProviderRouterRuntime({ providers, env: {
+    CLAUDE_OFFICIAL_VIA_PROXY: '1', ...options.env }, mode: options.mode || 'legacy',
+  dataRoot: root, codexHomesDir: path.join(root, 'codex') });
   const app = express();
   const callbacks = { onUsageObserved: e => usage.push(e), onActivity: e => activity.push(e),
     onDelta: (e, ctx) => deltas.push({ e, ctx }), onRateLimit: e => rates.push(e) };
@@ -64,99 +64,37 @@ async function harness(t, backend, options = {}) {
     post: (url, body, headers = {}) => fetch(base + url, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json', ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) }) };
 }
 
-test('默认 Rust，显式 Node 可回退，非法值失败，旧原生模块不能冒充 Rust CPR', () => {
-  assert.equal(resolveCprBackend({}), 'rust'); assert.equal(resolveCprBackend({ MULTICC_CPR_BACKEND: ' Rust ' }), 'rust');
-  assert.equal(resolveCprBackend({ MULTICC_CPR_BACKEND: 'node' }), 'node');
-  assert.throws(() => resolveCprBackend({ MULTICC_CPR_BACKEND: 'auto' }), /只支持/);
+test('Rust CPR 是唯一后端，旧原生模块不能冒充', () => {
   assert.throws(() => createRustCprRouter(nodeRouter, { native: {} }), /版本不匹配/);
 });
 
-async function settingsHarness(t, overrides = {}) {
-  let config = {}, writes = [];
-  const runtime = { proxyBackend: 'node' };
-  const app = express(); app.use(express.json());
-  mountCprBackendSettingsRoutes(app, { runtime, env: {}, getNative: () => native,
-    readEnvFile: () => ({ UNRELATED: 'fixture-other-value', ...config }),
-    writeEnvFile: updates => { writes.push(updates); config = { ...config, ...updates }; }, ...overrides });
-  const server = http.createServer(app), base = await listen(server);
-  t.after(() => close(server));
-  return { runtime, writes, config: () => config,
-    read: () => fetch(base + '/api/settings/cpr-backend'),
-    save: body => fetch(base + '/api/settings/cpr-backend', { method: 'POST',
-      headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) };
-}
-
-rustTest('设置入口保存和撤回待重启选择，当前运行版本保持不变', async t => {
-  const h = await settingsHarness(t);
-  let view = await (await h.read()).json();
-  assert.equal(view.currentBackend, 'node'); assert.equal(view.configuredBackend, 'rust');
-  assert.equal(view.restartRequired, true); assert.equal(view.rustAvailable, true);
-  view = await (await h.save({ backend: 'rust', UNRELATED: 'must-not-save' })).json();
-  assert.equal(view.currentBackend, 'node'); assert.equal(view.configuredBackend, 'rust');
-  assert.equal(view.restartRequired, true); assert.equal(h.runtime.proxyBackend, 'node');
-  assert.deepEqual(h.writes, [{ MULTICC_CPR_BACKEND: 'rust' }]);
-  assert.equal((await (await h.read()).json()).configuredBackend, 'rust');
-  view = await (await h.save({ backend: 'node' })).json();
-  assert.equal(view.restartRequired, false); assert.equal(view.currentBackend, 'node');
-  assert.doesNotMatch(JSON.stringify(view), /UNRELATED|fixture-other-value|updates/);
+rustTest('旧的 MULTICC_CPR_BACKEND=node 配置文件被忽略，运行时固定 Rust', async t => {
+  const h = await harness(t, { env: { MULTICC_CPR_BACKEND: 'node' } });
+  assert.equal(h.runtime.proxyBackend, 'rust');
 });
 
-rustTest('设置入口拒绝非法值和不可用 Rust，同时允许回退 Node', async t => {
-  const h = await settingsHarness(t, { getNative: () => ({ cprBackendSettings: native.cprBackendSettings }) });
-  for (const value of [undefined, true, {}, 'auto', 'rust\nOTHER=1']) {
-    const response = await h.save({ backend: value });
-    assert.equal(response.status, 400); await response.text();
-  }
-  let response = await h.save({ backend: 'rust' });
-  assert.equal(response.status, 503); await response.text(); assert.equal(h.writes.length, 0);
-  response = await h.save({ backend: 'node' });
-  assert.equal(response.status, 200); await response.text(); assert.equal(h.writes.length, 1);
-});
-
-rustTest('设置入口保留外部显式 Node 配置，持久化选择优先，缺省运行状态为 Rust', async t => {
-  const h = await settingsHarness(t, { env: { MULTICC_CPR_BACKEND: 'node' } });
-  let view = await (await h.read()).json();
-  assert.equal(view.configuredBackend, 'node'); assert.equal(view.restartRequired, false);
-  await (await h.save({ backend: 'rust' })).text();
-  view = await (await h.read()).json();
-  assert.equal(view.configuredBackend, 'rust'); assert.equal(view.restartRequired, true);
-  const defaults = await settingsHarness(t, { runtime: undefined });
-  view = await (await defaults.read()).json();
-  assert.equal(view.currentBackend, 'rust'); assert.equal(view.configuredBackend, 'rust');
-  assert.equal(view.restartRequired, false);
-});
-
-rustTest('设置写入失败不会伪报已保存，也不会公开配置路径或敏感正文', async t => {
-  const h = await settingsHarness(t, { writeEnvFile: () => { throw Error('/private/fixture/config fixture-sensitive-text'); } });
-  const response = await h.save({ backend: 'rust' });
-  assert.equal(response.status, 503);
-  assert.doesNotMatch(await response.text(), /private|fixture-sensitive-text/);
-  assert.equal((await (await h.read()).json()).configuredBackend, 'rust');
-});
-
-rustTest('Node 与 Rust 差分：Claude 模型改写、请求路径、凭据、SSE 原文和用量一致', async t => {
-  const results = [];
-  for (const backend of ['node', 'rust']) {
-    const h = await harness(t, backend);
-    const res = await h.post('/claude-proxy/main/fixture/v1/messages?beta=true', claudeBody,
-      { authorization: 'Bearer downstream-virtual', 'x-api-key': 'downstream-virtual', 'accept-encoding': 'gzip' });
-    assert.equal(res.status, 200); assert.equal(await res.text(), claudeStream);
-    assert.equal(h.runtime.proxyBackend, backend);
-    assert.equal(h.requests[0].headers.authorization, 'Bearer test-upstream-key');
-    assert.equal(h.requests[0].headers['x-api-key'], undefined);
-    assert.equal(h.requests[0].url, '/v1/messages?beta=true');
-    assert.equal(JSON.parse(h.requests[0].body).model, 'wire-model');
-    assert.equal(Number(h.requests[0].headers['content-length']), Buffer.byteLength(h.requests[0].body));
-    results.push({ tokens: h.usage[0].tokens, status: h.usage[0].status, phases: h.activity.map(e => e.phase), deltas: h.deltas.map(d => d.e) });
-  }
-  assert.deepEqual(results[1], results[0]);
+rustTest('Claude 模型改写、请求路径、凭据、SSE 原文和用量正确', async t => {
+  const h = await harness(t);
+  const res = await h.post('/claude-proxy/main/fixture/v1/messages?beta=true', claudeBody,
+    { authorization: 'Bearer downstream-virtual', 'x-api-key': 'downstream-virtual', 'accept-encoding': 'gzip' });
+  assert.equal(res.status, 200); assert.equal(await res.text(), claudeStream);
+  assert.equal(h.runtime.proxyBackend, 'rust');
+  assert.equal(h.requests[0].headers.authorization, 'Bearer test-upstream-key');
+  assert.equal(h.requests[0].headers['x-api-key'], undefined);
+  assert.equal(h.requests[0].url, '/v1/messages?beta=true');
+  assert.equal(JSON.parse(h.requests[0].body).model, 'wire-model');
+  assert.equal(Number(h.requests[0].headers['content-length']), Buffer.byteLength(h.requests[0].body));
+  assert.equal(h.usage.length, 1); assert.equal(h.usage[0].status, 'success');
+  assert.equal(h.usage[0].tokens.input, 7); assert.equal(h.usage[0].tokens.output, 4);
+  assert.deepEqual(h.activity.map(e => e.phase), ['request', 'first_byte', 'end']);
+  assert.equal(h.deltas.length, 1); assert.equal(h.deltas[0].e.type, 'text');
 });
 
 rustTest('Claude 流尾重复输入和缓存累计快照不会重复计量，原文透传', async t => {
   const stream = sse({ type: 'message_start', message: { usage: { input_tokens: 38, cache_read_input_tokens: 2, cache_creation_input_tokens: 3 } } })
     + sse({ type: 'message_delta', usage: { input_tokens: 38, output_tokens: 21, cache_read_input_tokens: 2, cache_creation_input_tokens: 3 } })
     + sse({ type: 'message_stop' });
-  const h = await harness(t, 'rust', { upstream: (_req, res) => {
+  const h = await harness(t, { upstream: (_req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(stream);
   } });
   const response = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
@@ -166,7 +104,7 @@ rustTest('Claude 流尾重复输入和缓存累计快照不会重复计量，原
 });
 
 rustTest('Claude 未改写请求保留字节和缓存前缀；API_KEY 不转发虚拟 Bearer', async t => {
-  const h = await harness(t, 'rust', { entries: url => ({ main: { settingsConfig: { env: { ANTHROPIC_BASE_URL: url, ANTHROPIC_API_KEY: 'test-api-key' } } } }) });
+  const h = await harness(t, { entries: url => ({ main: { settingsConfig: { env: { ANTHROPIC_BASE_URL: url, ANTHROPIC_API_KEY: 'test-api-key' } } } }) });
   const raw = '{ "model" : "claude-test", "messages" : [] , "stream": false }';
   const res = await h.post('/claude-proxy/main/fixture/v1/messages', raw, { authorization: 'Bearer virtual', 'x-api-key': 'virtual' });
   await res.text();
@@ -175,7 +113,7 @@ rustTest('Claude 未改写请求保留字节和缓存前缀；API_KEY 不转发�
 });
 
 rustTest('Claude 子路由解码与悬空供应商回退均使用真正被拨号线路的模型', async t => {
-  const h = await harness(t, 'rust');
+  const h = await harness(t);
   let res = await h.post('/claude-proxy/main/fixture/v1/messages', { ...claudeBody, model: 'cpr:missing:sonnet' });
   assert.equal(res.status, 200); await res.text();
   assert.equal(JSON.parse(h.requests[0].body).model, 'wire-model'); assert.equal(h.usage[0].roleKind, 'sub');
@@ -184,17 +122,17 @@ rustTest('Claude 子路由解码与悬空供应商回退均使用真正被拨号
   await res.text(); assert.equal(h.usage[1].providerId, 'sub');
 });
 
-rustTest('Node 与 Rust 差分：Codex 原生 Responses 流、命名子代理、缓存用量一致', async t => {
-  const results = [];
-  for (const backend of ['node', 'rust']) {
-    const h = await harness(t, backend, { protocol: 'codex', mode: 'cpr' });
-    const res = await h.post('/codex-proxy/codex/fixture/explorer/responses', { model: 'gpt-fixture', input: [], stream: true });
-    assert.equal(res.status, 200); assert.equal(await res.text(), responseStream);
-    assert.equal(h.requests[0].url, '/v1/responses'); assert.equal(h.requests[0].headers.authorization, 'Bearer test-codex-key');
-    results.push({ tokens: h.usage[0].tokens, roleKind: h.usage[0].roleKind, agentRole: h.usage[0].agentRole,
-      routeName: h.usage[0].routeName, phases: h.activity.map(e => e.phase), deltas: h.deltas.map(d => d.e) });
-  }
-  assert.deepEqual(results[1], results[0]);
+rustTest('Codex 原生 Responses 流、命名子代理和缓存用量正确', async t => {
+  const h = await harness(t, { protocol: 'codex', mode: 'cpr' });
+  const res = await h.post('/codex-proxy/codex/fixture/explorer/responses', { model: 'gpt-fixture', input: [], stream: true });
+  assert.equal(res.status, 200); assert.equal(await res.text(), responseStream);
+  assert.equal(h.runtime.proxyBackend, 'rust');
+  assert.equal(h.requests[0].url, '/v1/responses'); assert.equal(h.requests[0].headers.authorization, 'Bearer test-codex-key');
+  assert.equal(h.usage.length, 1); assert.equal(h.usage[0].tokens.input, 7);
+  assert.equal(h.usage[0].tokens.output, 4); assert.equal(h.usage[0].tokens.cacheRead, 5);
+  assert.equal(h.usage[0].agentRole, 'explorer');
+  assert.deepEqual(h.activity.map(e => e.phase), ['request', 'first_byte', 'end']);
+  assert.equal(h.deltas.length, 1); assert.equal(h.deltas[0].e.type, 'text');
 });
 
 rustTest('SSE 跨字节中文、工具参数、推理和响应内失败均由 Rust 正确归因', async t => {
@@ -203,7 +141,7 @@ rustTest('SSE 跨字节中文、工具参数、推理和响应内失败均由 Ru
     + sse({ type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'tool_1', name: 'read' } })
     + sse({ type: 'content_block_delta', index: 2, delta: { partial_json: '{"路径":"中文"}' } })
     + sse({ type: 'error', error: { message: 'fixture failure' } });
-  const h = await harness(t, 'rust', { upstream: async (req, res) => {
+  const h = await harness(t, { upstream: async (req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const bytes = Buffer.from(stream);
     for (let i = 0; i < bytes.length; i++) { res.write(bytes.subarray(i, i + 1)); if (i % 25 === 0) await new Promise(resolve => setImmediate(resolve)); }
@@ -216,7 +154,7 @@ rustTest('SSE 跨字节中文、工具参数、推理和响应内失败均由 Ru
 });
 
 rustTest('Codex 非流式 JSON 记录用量，401 保留上游错误且不会重试', async t => {
-  const h = await harness(t, 'rust', { protocol: 'codex', upstream: (req, res, requests) => {
+  const h = await harness(t, { protocol: 'codex', upstream: (req, res, requests) => {
     res.writeHead(requests.length === 1 ? 200 : 401, { 'content-type': 'application/json', 'x-fixture-error': 'yes' });
     res.end(requests.length === 1 ? JSON.stringify({ usage: { input_tokens: 9, output_tokens: 2 } }) : '{"error":"fixture rejection"}');
   } });
@@ -228,7 +166,7 @@ rustTest('Codex 非流式 JSON 记录用量，401 保留上游错误且不会重
 });
 
 rustTest('Rust 仍经过宿主授权；失效路由和跨供应商子路由都不能拨号', async t => {
-  const h = await harness(t, 'rust', { authorize: arg => ({ ok: arg.providerId === 'main', code: 'attempt_not_active' }) });
+  const h = await harness(t, { authorize: arg => ({ ok: arg.providerId === 'main', code: 'attempt_not_active' }) });
   let res = await h.post('/claude-proxy/other/fixture/v1/messages', claudeBody);
   assert.equal(res.status, 409); await res.text();
   res = await h.post('/claude-proxy/main/fixture/v1/messages', { ...claudeBody, model: 'cpr:other:sonnet' });
@@ -237,7 +175,7 @@ rustTest('Rust 仍经过宿主授权；失效路由和跨供应商子路由都�
 
 rustTest('官方 OAuth 更换凭据后只重拨一次，逻辑用量和结束事件各一次', async t => {
   let token = 'old-test', refreshes = 0;
-  const h = await harness(t, 'rust', { entries: () => ({ main: { name: '官方', settingsConfig: { officialAccount: { id: 'a'.repeat(16) }, env: {} } } }),
+  const h = await harness(t, { entries: () => ({ main: { name: '官方', settingsConfig: { officialAccount: { id: 'a'.repeat(16) }, env: {} } } }),
     proxy: url => ({ officialBaseUrl: url, readOfficialCredential: () => ({ token }), recoverOfficialCredential: async () => { refreshes++; token = 'new-test'; return { token }; } }),
     upstream: (req, res) => {
       res.writeHead(req.headers.authorization === 'Bearer old-test' ? 401 : 200, { 'content-type': 'application/json' });
@@ -251,7 +189,7 @@ rustTest('官方 OAuth 更换凭据后只重拨一次，逻辑用量和结束事
 });
 
 rustTest('上游拒绝修复在输出前重拨，修复次数有界', async t => {
-  const h = await harness(t, 'rust', { protocol: 'codex', proxy: () => ({ hookRetryMax: 1,
+  const h = await harness(t, { protocol: 'codex', proxy: () => ({ hookRetryMax: 1,
     onUpstreamRejected: ({ body }) => ({ retry: true, body: { ...body, repaired: true } }) }),
     upstream: (req, res, requests) => { res.writeHead(requests.length < 2 ? 400 : 200, { 'content-type': 'text/event-stream' }); res.end(requests.length < 2 ? '{"error":"history"}' : responseStream); } });
   const res = await h.post('/codex-proxy/codex/fixture/main/responses', { model: 'fixture', input: [] });
@@ -260,7 +198,7 @@ rustTest('上游拒绝修复在输出前重拨，修复次数有界', async t =>
 });
 
 rustTest('Responses 兼容模式在输出前退避重试繁忙响应，并补齐缺失结束事件', async t => {
-  const h = await harness(t, 'rust', { protocol: 'codex', entries: url => ({ codex: { settingsConfig: { proxyTarget: { mode: 'responses-compat', baseUrl: url + '/responses', apiKey: 'test-key' } } } }),
+  const h = await harness(t, { protocol: 'codex', entries: url => ({ codex: { settingsConfig: { proxyTarget: { mode: 'responses-compat', baseUrl: url + '/responses', apiKey: 'test-key' } } } }),
     upstream: (req, res, requests) => {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end(requests.length === 1 ? sse({ type: 'response.failed', response: { error: { message: 'system is busy' } } })
@@ -275,7 +213,7 @@ rustTest('客户端在连接期和流期间取消，Rust 释放上游并只结�
   for (const streaming of [false, true]) {
     let upstreamClosed;
     const closed = new Promise(resolve => { upstreamClosed = resolve; });
-    const h = await harness(t, 'rust', { upstream: (req, res) => {
+    const h = await harness(t, { upstream: (req, res) => {
       res.once('close', upstreamClosed);
       if (streaming) { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(': heartbeat\n\n'); }
     } });
@@ -292,7 +230,7 @@ rustTest('客户端在连接期和流期间取消，Rust 释放上游并只结�
 });
 
 rustTest('不支持的协议和上游重定向不会自动借用 Node 或泄露凭据', async t => {
-  const h = await harness(t, 'rust', { protocol: 'codex', upstream: (req, res) => { res.writeHead(302, { location: 'http://127.0.0.1:1/stolen' }); res.end('redirect'); } });
+  const h = await harness(t, { protocol: 'codex', upstream: (req, res) => { res.writeHead(302, { location: 'http://127.0.0.1:1/stolen' }); res.end('redirect'); } });
   let res = await h.post('/codex-proxy/codex/fixture/main/responses', { input: [] });
   assert.equal(res.status, 302); await res.text(); assert.equal(h.requests.length, 1);
   h.entries.codex.settingsConfig.proxyTarget = { mode: 'chat-to-responses', baseUrl: 'http://127.0.0.1:1/chat', apiKey: 'test-key' };
@@ -313,7 +251,7 @@ rustTest('官方账号专用出口确实经插件代理，出口失败时不能�
     resolutions++;
     return enabled ? { status: 200, payload: { proxyUrl } } : { status: 503, payload: { error: 'fixture unavailable' } };
   }, createAgent: () => { throw new Error('Rust 不应创建 Node Agent'); } });
-  const h = await harness(t, 'rust', { entries: () => ({ main: { name: '官方', egressBinding: { pluginId: 'fixture', profileId: 'account' }, settingsConfig: { officialAccount: { id: 'a'.repeat(16) }, env: {} } } }),
+  const h = await harness(t, { entries: () => ({ main: { name: '官方', egressBinding: { pluginId: 'fixture', profileId: 'account' }, settingsConfig: { officialAccount: { id: 'a'.repeat(16) }, env: {} } } }),
     proxy: url => ({ officialBaseUrl: url, readOfficialCredential: () => ({ token: 'fixture-oauth' }), resolveUpstreamAgent: resolver.resolveUpstreamAgent }) });
   let res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
   assert.equal(res.status, 200); await res.text(); assert.equal(seen.length, 1); assert.equal(h.requests.length, 1);
@@ -337,7 +275,7 @@ rustTest('统一网络策略决定 Rust 出口，策略失败不能静默直连'
     if (unavailable) throw new Error('fixture-policy-unavailable');
     return proxyUrl;
   });
-  const h = await harness(t, 'rust', { entries: () => ({ main: { settingsConfig: { env: {
+  const h = await harness(t, { entries: () => ({ main: { settingsConfig: { env: {
     ANTHROPIC_BASE_URL: 'http://rust-cpr-fixture.invalid', ANTHROPIC_API_KEY: 'fixture-key',
   } } } }) });
   let res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
@@ -350,8 +288,8 @@ rustTest('统一网络策略决定 Rust 出口，策略失败不能静默直连'
   assert.equal(seen.length, 1); assert.equal(h.requests.length, 0);
 });
 
-for (const backend of ['node', 'rust']) rustTest(`${backend} 限流响应头同时传递 5h 和周额度；HEAD 不拨号、不记账`, async t => {
-  const h = await harness(t, backend, { upstream: (req, res) => {
+rustTest('限流响应头同时传递 5h 和周额度；HEAD 不拨号、不记账', async t => {
+  const h = await harness(t, { upstream: (req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'anthropic-ratelimit-unified-5h-utilization': '0.8',
       'anthropic-ratelimit-unified-5h-status': 'allowed_warning', 'anthropic-ratelimit-unified-5h-reset': '1900000000',
       'anthropic-ratelimit-unified-7d-utilization': '0.65', 'anthropic-ratelimit-unified-7d-reset': '1900500000' });
@@ -367,9 +305,9 @@ for (const backend of ['node', 'rust']) rustTest(`${backend} 限流响应头同�
   assert.equal(h.requests[0].url, '/v1/messages');
 });
 
-for (const backend of ['node', 'rust']) rustTest(`${backend} 周额度单独返回或耗尽时仍上报，响应头缺失时不伪造`, async t => {
+rustTest('周额度单独返回或耗尽时仍上报，响应头缺失时不伪造', async t => {
   let count = 0;
-  const h = await harness(t, backend, { upstream: (_req, res) => {
+  const h = await harness(t, { upstream: (_req, res) => {
     count++;
     const headers = count === 3 ? {} : { 'anthropic-ratelimit-unified-7d-utilization': count === 1 ? '0.65' : '1',
       'anthropic-ratelimit-unified-7d-reset': '1900500000' };
@@ -389,7 +327,7 @@ for (const backend of ['node', 'rust']) rustTest(`${backend} 周额度单独返�
 
 rustTest('429 额度墙带 x-should-retry: false，普通限流保持可重试', async t => {
   let count = 0;
-  const h = await harness(t, 'rust', { upstream: (_req, res) => {
+  const h = await harness(t, { upstream: (_req, res) => {
     count++;
     res.writeHead(429, { 'content-type': 'application/json' });
     res.end(count === 1
@@ -449,7 +387,7 @@ rustTest('429 结算事件透传结构化 rejection，旧原生模块不新增�
 });
 
 rustTest('首包等待有上限，错误回调不会包含上游地址或能力令牌', async t => {
-  const h = await harness(t, 'rust', { proxy: () => ({ headersTimeoutMs: 25 }), upstream: () => {} });
+  const h = await harness(t, { proxy: () => ({ headersTimeoutMs: 25 }), upstream: () => {} });
   const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
   assert.equal(res.status, 502); const text = await res.text(); assert.match(text, /UPSTREAM_HEADERS_TIMEOUT/);
   assert.doesNotMatch(text, /test-upstream-key|127\.0\.0\.1/); assert.equal(h.usage[0].errorCode, 'UPSTREAM_HEADERS_TIMEOUT');
@@ -458,7 +396,7 @@ rustTest('首包等待有上限，错误回调不会包含上游地址或能力�
 rustTest('超大 OAuth 错误原样转发，宿主不恢复、不重复记账', async t => {
   const errorBody = '测'.repeat(30 * 1024);
   let recoveries = 0;
-  const h = await harness(t, 'rust', { entries: () => ({ main: { settingsConfig: { officialAccount: { id: 'a'.repeat(16) }, env: {} } } }),
+  const h = await harness(t, { entries: () => ({ main: { settingsConfig: { officialAccount: { id: 'a'.repeat(16) }, env: {} } } }),
     proxy: url => ({ officialBaseUrl: url, readOfficialCredential: () => ({ token: 'fixture-oauth' }), recoverOfficialCredential: async () => { recoveries++; return { token: 'new-fixture' }; } }),
     upstream: (req, res) => { res.writeHead(401); res.end(errorBody); } });
   const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
@@ -469,7 +407,7 @@ rustTest('超大 OAuth 错误原样转发，宿主不恢复、不重复记账', 
 rustTest('未结束的 OAuth 错误由宿主超时取消，上游连接不会遗留', async t => {
   let closedUpstream, recoveries = 0;
   const closed = new Promise(resolve => { closedUpstream = resolve; });
-  const h = await harness(t, 'rust', { entries: () => ({ main: { settingsConfig: { officialAccount: { id: 'a'.repeat(16) }, env: {} } } }),
+  const h = await harness(t, { entries: () => ({ main: { settingsConfig: { officialAccount: { id: 'a'.repeat(16) }, env: {} } } }),
     proxy: url => ({ officialBaseUrl: url, authErrorTimeoutMs: 40, readOfficialCredential: () => ({ token: 'fixture-oauth' }), recoverOfficialCredential: async () => { recoveries++; return { token: 'new-fixture' }; } }),
     upstream: (req, res) => { res.once('close', closedUpstream); res.writeHead(401, { 'content-length': '999' }); res.write('{"error":'); } });
   await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody).then(res => res.text()).catch(() => {});
@@ -479,7 +417,7 @@ rustTest('未结束的 OAuth 错误由宿主超时取消，上游连接不会遗
 
 rustTest('Rust 官方 Codex 代理使用当前账号凭据，隔离私有请求头并保留流和用量', async t => {
   let token = 'fixture-current';
-  const h = await harness(t, 'rust', { protocol: 'codex',
+  const h = await harness(t, { protocol: 'codex',
     entries: () => ({ official: { id: 'official', appType: 'codex', name: '官方测试账号',
       settingsConfig: { auth: { auth_mode: 'chatgpt' }, officialAccount: { id: 'aaaaaaaaaaaaaaaa' } } } }),
     proxy: upstream => ({ codexOfficialRelay: { upstreamUrl: `${upstream}/backend-api/codex/responses`,
@@ -504,7 +442,7 @@ rustTest('Rust 官方 Codex 代理使用当前账号凭据，隔离私有请求�
 });
 
 rustTest('Rust 官方 Codex 账号缺失时不读取全局登录，也不拨上游', async t => {
-  const h = await harness(t, 'rust', { protocol: 'codex',
+  const h = await harness(t, { protocol: 'codex',
     entries: () => ({ official: { id: 'official', appType: 'codex', settingsConfig: { auth: { auth_mode: 'chatgpt' }, officialAccount: { id: 'aaaaaaaaaaaaaaaa' } } } }),
     proxy: upstream => ({ codexOfficialRelay: { upstreamUrl: upstream, resolveAccountAuthFile: () => null } }),
   });
@@ -514,7 +452,7 @@ rustTest('Rust 官方 Codex 账号缺失时不读取全局登录，也不拨上�
 });
 
 rustTest('Rust 官方上游错误不能把宿主 OAuth 令牌或账号传给借用方', async t => {
-  const h = await harness(t, 'rust', { protocol: 'codex',
+  const h = await harness(t, { protocol: 'codex',
     entries: () => ({ official: { id: 'official', appType: 'codex', settingsConfig: { auth: { auth_mode: 'chatgpt' } } } }),
     proxy: upstream => ({ codexOfficialRelay: { upstreamUrl: upstream,
       readCredential: async () => ({ ok: true, accessToken: 'fixture-private-token', accountId: 'fixture-private-account' }) } }),
@@ -527,7 +465,7 @@ rustTest('Rust 官方上游错误不能把宿主 OAuth 令牌或账号传给借�
 });
 
 rustTest('Rust Claude 指定账号没有凭据端口时明确拒绝，不查询共享登录', async t => {
-  const h = await harness(t, 'rust', {
+  const h = await harness(t, {
     entries: () => ({ account: { id: 'account', appType: 'claude', settingsConfig: { env: {}, officialAccount: { id: 'aaaaaaaaaaaaaaaa' } } } }),
   });
   const response = await h.post('/claude-proxy/account/session/v1/messages', claudeBody);

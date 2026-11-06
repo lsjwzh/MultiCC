@@ -2,6 +2,9 @@
 
 日期：2026-10-23。结论针对当前实现：建议继续默认使用 Node，Rust 保持实验选项。Rust 在部分并发场景能提高吞吐，也能正确处理跨块 UTF-8，但当前长上下文路径明显更慢，且 Codex 错误响应格式尚未与 Node 一致。
 
+> 2026-11-06 注：Node 后端已删除，Rust 是唯一实现；本文的对照数据仅作历史记录。
+> `scripts/benchmark-cpr-backends.js` 已随双后端退场一起删除。
+
 ## 测试条件
 
 - Apple M4、macOS ARM64（Darwin 24.3.0），Node v26.8.1，安装的 `cli-provider-router` 为 0.5.2。

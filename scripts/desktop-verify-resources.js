@@ -53,8 +53,8 @@ function verifyDesktopResources({ resourcesDir, execute = true, timeoutMs = 60_0
       if (r('@iarna/toml').parse('value = 1').value !== 1) throw new Error('TOML parse failed');
       if (!/^1\\./.test(r('cli-provider-router').API_VERSION || '')) throw new Error('CPR API major 1 required');
       let cpr;
-      try { cpr = r('./src/native/runtime').getNative('cpr', 'rust'); } catch (_) { throw new Error('Rust SQLite / CPR module unavailable'); }
-      if (cpr.cprProtocolVersion?.() !== 1 || typeof cpr.cprCreateExchange !== 'function' || typeof cpr.cprBackendSettings !== 'function') throw new Error('Rust CPR module required');
+      try { cpr = r('./src/native/runtime').getNative(); } catch (_) { throw new Error('Rust SQLite / CPR module unavailable'); }
+      if (cpr.cprProtocolVersion?.() !== 1 || typeof cpr.cprCreateExchange !== 'function') throw new Error('Rust CPR module required');
       const db = new (r('./src/sqlite/driver').databaseConstructor())(':memory:');
       if (db.backend !== 'rust') throw new Error('Rust SQLite required');
       db.exec('create table smoke(x); create virtual table f using fts5(x)');
@@ -63,7 +63,7 @@ function verifyDesktopResources({ resourcesDir, execute = true, timeoutMs = 60_0
       db.close();`;
     const result = spawnSync(runtimeNode, ['--disable-warning=ExperimentalWarning', '-e', script],
       { cwd: appServerDir, encoding: 'utf8', timeout: timeoutMs,
-        env: { ...process.env, MULTICC_RUST_ADDON: '', MULTICC_RUST_PREBUILT_DIR: '', MULTICC_SQLITE_BACKEND: 'rust' } });
+        env: { ...process.env, MULTICC_RUST_ADDON: '', MULTICC_RUST_PREBUILT_DIR: '' } });
     if (result.error || result.status !== 0) {
       throw new Error(`packaged runtime dependency smoke failed: ${result.error?.message || result.stderr || result.stdout || `exit ${result.status}`}`);
     }

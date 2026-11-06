@@ -1,6 +1,7 @@
 // CLI 展示目录（App 侧的唯一一份）。
 //
-// 权威表在服务端：src/cli/cli-capability.js 的 CLIS。Web 侧镜像在
+// 权威表在服务端：native/core/src/cli_capability.rs 的 CLIS（经 src/cli/cli-capability.js
+// 读取）。Web 侧镜像在
 // public/provider-catalog.js，这里是 App 侧镜像；tests/test-cli-display-parity.js
 // 读这三份，任何一列漂移就红。
 //

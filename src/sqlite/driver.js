@@ -5,9 +5,58 @@
 // Legacy synchronous callbacks must remain synchronous until the business ports
 // become explicit async commands. No automatic fallback after a failed write.
 const path = require('node:path');
-const { normalizeError: normalizeNodeError } = require('./node-driver');
 const DEFAULT_TIMEOUT_MS = 5000;
 let native;
+
+// better-sqlite3 exposed `SQLITE_*` codes; callers (and the CLI provider
+// router) branch on the textual form, so map the numeric extended code back.
+const SQLITE_CODE_BY_EXTENDED = new Map([
+  [1555, 'SQLITE_CONSTRAINT_PRIMARYKEY'],
+  [2067, 'SQLITE_CONSTRAINT_UNIQUE'],
+  [787, 'SQLITE_CONSTRAINT_FOREIGNKEY'],
+  [1299, 'SQLITE_CONSTRAINT_NOTNULL'],
+  [275, 'SQLITE_CONSTRAINT_CHECK'],
+  [1811, 'SQLITE_CONSTRAINT_TRIGGER'],
+  [2579, 'SQLITE_CONSTRAINT_DATATYPE'],
+  [531, 'SQLITE_CONSTRAINT_ROWID'],
+]);
+const SQLITE_CODE_BY_PRIMARY = new Map([
+  [1, 'SQLITE_ERROR'],
+  [3, 'SQLITE_INTERNAL'],
+  [4, 'SQLITE_PERM'],
+  [5, 'SQLITE_BUSY'],
+  [6, 'SQLITE_LOCKED'],
+  [7, 'SQLITE_NOMEM'],
+  [8, 'SQLITE_READONLY'],
+  [9, 'SQLITE_INTERRUPT'],
+  [10, 'SQLITE_IOERR'],
+  [11, 'SQLITE_CORRUPT'],
+  [12, 'SQLITE_NOTFOUND'],
+  [13, 'SQLITE_FULL'],
+  [14, 'SQLITE_CANTOPEN'],
+  [15, 'SQLITE_PROTOCOL'],
+  [17, 'SQLITE_SCHEMA'],
+  [18, 'SQLITE_TOOBIG'],
+  [19, 'SQLITE_CONSTRAINT'],
+  [20, 'SQLITE_MISMATCH'],
+  [21, 'SQLITE_MISUSE'],
+  [22, 'SQLITE_NOLFS'],
+  [23, 'SQLITE_AUTH'],
+  [26, 'SQLITE_NOTADB'],
+]);
+function normalizeNodeError(error) {
+  if (!error || typeof error !== 'object') return error;
+  if (typeof error.errcode !== 'number') return error;
+  if (typeof error.code === 'string' && error.code.startsWith('SQLITE_')) return error;
+  const mapped = SQLITE_CODE_BY_EXTENDED.get(error.errcode)
+    || SQLITE_CODE_BY_PRIMARY.get(error.errcode & 0xff)
+    || 'SQLITE_ERROR';
+  try {
+    error.nodeCode = error.code;
+    error.code = mapped;
+  } catch (_) { /* frozen error objects keep Node's code */ }
+  return error;
+}
 
 class SqliteUnavailableError extends Error {
   constructor(cause) {
@@ -131,9 +180,6 @@ class CompatDatabase {
   unwrap() { return this._handle(); }
 }
 function databaseConstructor() {
-  const backend = process.env.MULTICC_SQLITE_BACKEND || 'rust';
-  if (backend === 'node') return require('./node-driver').databaseConstructor();
-  if (backend !== 'rust') throw new Error('invalid_sqlite_backend');
   return CompatDatabase;
 }
 function isSqliteAvailable() {

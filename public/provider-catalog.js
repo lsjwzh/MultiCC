@@ -114,7 +114,8 @@
 
   // ── CLI 目录（唯一的 web 侧副本）────────────────────────────────────────────
   //
-  // 服务端 src/cli/cli-capability.js 的 CLIS 是权威表，这里是它在浏览器侧的镜像；
+  // 权威表是 native/core/src/cli_capability.rs 的 CLIS（服务端经 src/cli/cli-capability.js
+  // 读取），这里是它在浏览器侧的镜像；
   // App 侧还有一份 app/lib/utils/cli_display.dart。tests/test-cli-display-parity.js
   // 读这三份，任何一列漂移就红。
   //

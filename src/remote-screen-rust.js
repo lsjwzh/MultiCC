@@ -2,9 +2,8 @@
 
 // ── Remote screen（轻量远程协助）：Node 侧的启动看护与转发层（Rust 后端） ──
 //
-// 本文件不是 server.js 直接 require 的入口：src/remote-screen.js 是选择层，按
-// MULTICC_REMOTE_SCREEN_BACKEND 决定加载本文件还是 remote-screen-node.js（迁移前的
-// Node 回退实现，见那边的文件头）。默认走这里。
+// 本文件是远控的唯一实现层；server.js 经 src/remote-screen.js（只做一次 require 转发）
+// 加载本文件。迁移前的 Node 回退实现已删除，不存在按环境变量切换后端的路径。
 //
 // 远控的业务实现整体搬进了独立的 Rust 进程 multicc-remote（native/remote/，
 // 契约见 docs/remote-screen-process.md）：Agent socket 客户端、平台画像、截图与

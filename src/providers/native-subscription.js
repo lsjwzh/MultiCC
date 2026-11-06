@@ -4,7 +4,7 @@
 const { getNative } = require('../native/runtime');
 const { policy } = require('../network/outbound');
 async function query(input, { fetch } = {}) {
-  const native = getNative('provider_credentials', 'rust');
+  const native = getNative();
   const plan = JSON.parse(await native.accountSubscriptionPlan(JSON.stringify(input)));
   if (plan.result) return plan.result;
   if (!fetch) {

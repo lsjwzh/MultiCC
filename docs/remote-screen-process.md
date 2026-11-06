@@ -4,7 +4,7 @@
 Agent socket 客户端、平台画像、截图与裁剪、输入白名单、冻结快照与标注执行、
 唤屏、RFB / H.264 视频流转发、WebRTC P2P 直连。
 
-Node（`src/remote-screen-rust.js`，由选择层 `src/remote-screen.js` 默认加载）只做三件事：
+Node（`src/remote-screen-rust.js`，经入口 `src/remote-screen.js` 加载）只做三件事：
 
 1. 启动、看护这个进程；
 2. 沿用全站鉴权（HTTP 中间件、WS 票据）；
@@ -14,8 +14,7 @@ Node 不解析远控协议，也不承载远控策略（AGENTS.md「后端默认
 截图、编码、输入注入仍然在桌面 Agent 里（见 desktop-agent-protocol.md），
 客户端（网页、App）看到的接口和字节流与迁移前完全一致。
 
-迁移前的 Node 实现原样保留为回退后端（`src/remote-screen-node.js`），
-默认不加载；选择方式与删除条件见 §7。
+迁移前的 Node 回退实现已整块删除：远控只有 Rust 一种实现，不存在按配置切换后端的路径。
 
 ## 1. 启动
 
@@ -65,7 +64,7 @@ Node 在全站鉴权之后，把 `/api/remote-screen/` 开头的请求原样转�
 - 响应的状态码、`content-type`、`cache-control`、`x-screen-*`、`x-region-*` 和响应体原样流回。
   `GET /wake` 的所有分支（含 503 与平台不支持的 200）都带 `Cache-Control: no-store`。
 
-Rust 端的路由与 JSON 形状与迁移前的 `src/remote-screen-node.js` / `remote-screen-wake.js` 完全一致：
+Rust 端的路由与 JSON 形状与迁移前（已删除）的 Node 实现完全一致：
 
 | 路由 | 说明 |
 |---|---|
@@ -117,37 +116,16 @@ Rust 端的路由与 JSON 形状与迁移前的 `src/remote-screen-node.js` / `r
 - 运行中退出：Node 按 1、2、4、8…30 秒退避重启；正在转发的 WS 一律以 1011 关闭，由客户端重连。
 - 构建：二进制与原生模块在同一个 cargo workspace，但**单独编译**。远控二进制编不出来，只会让远控不可用，不影响服务启动。
 
-## 7. 后端选择与 Node 回退
+## 7. 唯一实现
 
-`src/remote-screen.js` 是选择层，两套实现接口一致：`remote-screen-rust.js`（默认，转发到
-`multicc-remote`）和 `remote-screen-node.js`（迁移前的 Node 实现，原样保留）。
+`src/remote-screen.js` 只是稳定入口，直接 `module.exports = require('./remote-screen-rust')`：
+转发到独立进程 `multicc-remote`。迁移前的 Node 实现（`remote-screen-node.js`、`src/desktop-host.js`、
+`remote-screen-{h264-bridge,p2p,region,rfb-bridge,wake}.js`）与配套回退测试已整块删除。
 
-- **开关**：环境变量 `MULTICC_REMOTE_SCREEN_BACKEND`，取值 `rust`（默认）或 `node`。
-  选择只发生在服务启动、模块加载时读一次 `process.env`（server.js 启动时已把宿主 `.env`
-  载入 `process.env`，与 CPR 的 `currentBackend` 同一来源）。**切换不热生效，必须手动重启服务**，
-  与 CPR 后端开关同一套语义：设置接口只写配置文件，不改 `process.env`、不重启服务。
-- **非法值**（空串以外的其他值）按 `rust` 处理，并打一行 warn；配置写错不该让「🖥 屏幕」
-  整体不可用。
-- **设置入口**：全局配置页「远程屏幕后端」卡片 → `GET/POST /api/settings/remote-screen-backend`。
-  决策在 Rust（`native/addon/src/remote_screen.rs`），Node 只收集宿主事实并落盘
-  `.env` 里的 `MULTICC_REMOTE_SCREEN_BACKEND`。响应里 `currentBackend` 是实际生效值、
-  `configuredBackend` 是重启后生效值，两者不同即 `restartRequired: true`。
-  - `rustAvailable`：能否解析到 `multicc-remote` 二进制（只查路径，**不会启动进程**）；
-  - `nodeAvailable`：`werift` 能否 `require.resolve`（Node 回退版的 P2P 依赖）；
-  - 切到不可用的一侧回 409，非法后端值回 400；原生模块缺这个导出时设置接口回 503。
-- **只加载选中的那一套**：选 `node` 时绝不加载/启动 `multicc-remote`，选 `rust` 时不会
-  `require werift`。
+- **不再有开关**：`MULTICC_REMOTE_SCREEN_BACKEND` 不再被读取。旧 `.env` 里残留的 `node`
+  值一律忽略，实际行为始终是 Rust；不需要也无法再切换。
+- **设置入口已撤**：全局配置页的「远程屏幕后端」卡片与 `/api/settings/remote-screen-backend`
+  均已删除。
+- **依赖**：`werift` 仅剩测试与基准使用（e2e 里当浏览器端），已从 dependencies 降到
+  devDependencies，生产代码不再 require 它。
 
-### Node 例外说明（AGENTS.md「后端默认使用 Rust」）
-
-- **为什么保留**：Rust 进程在部分平台/机器上可能编不出来或运行不起来（缺工具链、链接器或被
-  sandbox 挡住），用户需要一条不需要 Rust 的退路；它同时是 Node/Rust 行为差分测试的参照实现。
-- **范围**：只有「🖥 屏幕」远控这一个子系统，且只通过上面的环境变量选中；默认永远是 Rust，
-  不参与其他任何功能，不改变全站鉴权与客户端契约。
-- **迁移/删除条件**（满足任意一条即整块删除）：① Rust 版在发布平台稳定运行满一个发布周期，
-  且设置页的切换入口撤掉；② 远控的鉴权/WS 路由也搬进 Rust、改由 Rust 直接监听端口，
-  Node 回退不再能共用同一入口；③ Node 回退连续两个发布周期无人使用。
-- **同步删除清单**：`src/remote-screen-node.js`、`src/desktop-host.js`、
-  `src/remote-screen-{h264-bridge,p2p,region,rfb-bridge,wake}.js`、设置卡片与
-  `/api/settings/remote-screen-backend`、`MULTICC_REMOTE_SCREEN_BACKEND` 开关、
-  `tests/test-remote-screen-node*.js` 与 `tests/helpers/remote-screen-p2p-stats-observer.js`。

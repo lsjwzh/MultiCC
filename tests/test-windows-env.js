@@ -179,7 +179,7 @@ test('CLI invocation and app-server bridge follow the refreshed availability com
   assert.equal(registry.get('codex'), next, 'unchanged maps preserve adapter state');
 });
 
-const native = require('../src/native/runtime').getNative('windows_tools');
+const native = require('../src/native/runtime').getNative();
 test('native installer discovery feeds the Windows PATH refresh', {
   skip: typeof native?.windowsToolsDiscover !== 'function' && 'Rust installer discovery is not built',
 }, async t => {

@@ -2,6 +2,8 @@
 
 本轮用户已授权默认接入 Rust 并提交合并，最新接入范围见 [Air 摘要读模型默认使用 Rust](rust-air-read-model-2026-10-24.md)。下文保留为接入前的阶段记录。
 
+> 2026-11-06 注：Air 读模型的 Node 回退已删除，Rust 是唯一实现；下文提到的 `scripts/benchmark-task-read-model.js` 已移除，`src/workspace/air-read-index.js` 只作为测试对照保留。
+
 
 后续：[热路径优化与 Air 契约隔离验证](rust-task-read-model-hot-air-2026-10-24.md)。下文记录首轮试点的实现与测量，后续变化以该补充报告为准。
 

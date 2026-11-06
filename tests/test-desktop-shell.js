@@ -745,9 +745,7 @@ test('packaged dependency gate checks cross-arch trees and detects transitive lo
   writeBundleFile(resources, 'bundle-manifest.json', JSON.stringify({ platform: process.platform, arch: process.arch }));
   const { stageRustKernels } = require('../scripts/stage-rust-kernels');
   const rustFile = stageRustKernels({ repoRoot: ROOT, out: path.join(resources, 'app-server'), logger: { log() {} } });
-  for (const name of ['driver.js', 'node-driver.js']) {
-    writeBundleFile(resources, `app-server/src/sqlite/${name}`, fs.readFileSync(path.join(ROOT, 'src/sqlite', name)));
-  }
+  writeBundleFile(resources, 'app-server/src/sqlite/driver.js', fs.readFileSync(path.join(ROOT, 'src/sqlite/driver.js')));
   writeBundleFile(resources, 'app-server/src/native/runtime.js', fs.readFileSync(path.join(ROOT, 'src/native/runtime.js')));
   if (process.platform === 'win32') fs.copyFileSync(process.execPath, runtime);
   else {
@@ -757,7 +755,7 @@ test('packaged dependency gate checks cross-arch trees and detects transitive lo
     fs.symlinkSync(process.execPath, runtime);
   }
   assert.equal(verifyDesktopResources({ resourcesDir: resources }).executed, true);
-  // A host addon or emergency driver must not mask a broken packaged addon.
+  // A host addon must not mask a broken packaged addon.
   const binary = fs.readFileSync(rustFile);
   const hostAddon = path.join(resources, 'host-addon.node');
   fs.writeFileSync(hostAddon, binary);
@@ -770,8 +768,7 @@ test('packaged dependency gate checks cross-arch trees and detects transitive lo
   const result = spawnSync(process.execPath, ['-e',
     'require(process.argv[1]).verifyDesktopResources({resourcesDir:process.argv[2]})',
     path.join(ROOT, 'scripts/desktop-verify-resources.js'), resources], {
-    encoding: 'utf8', env: { ...process.env, MULTICC_SQLITE_BACKEND: 'node',
-      MULTICC_RUST_ADDON: hostAddon },
+    encoding: 'utf8', env: { ...process.env, MULTICC_RUST_ADDON: hostAddon },
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /smoke failed:[\s\S]*Rust SQLite/);

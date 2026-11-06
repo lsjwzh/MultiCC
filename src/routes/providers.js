@@ -198,18 +198,12 @@ function createProviderRoutes(rawDeps) {
   const log = deps.logger || console;
   const providerDefaults = { ...DEFAULT_PROVIDER_IDS };
 
-  // 子任务默认线路的归一化只由 Rust 决定；原生模块缺失/过旧时保持磁盘上的原值不动，
-  // 这样以后有了新模块再保存也不会把用户已存的键丢掉（透传）。
-  const subagentNative = () => {
-    try {
-      return typeof deps.getNative === 'function'
-        ? deps.getNative()
-        : require('../native/runtime').getNative('subagent_defaults');
-    } catch (_) { return null; }
-  };
+  // 子任务默认线路的归一化只由 Rust 决定。
+  const subagentNative = () => typeof deps.getNative === 'function'
+    ? deps.getNative()
+    : require('../native/runtime').getNative();
   function normalizeStoredSubagent(value) {
     const native = subagentNative();
-    if (!native || typeof native.normalizeSubagentDefaults !== 'function') return undefined;
     try {
       const parsed = JSON.parse(native.normalizeSubagentDefaults(JSON.stringify({ stored: value })));
       if (!parsed || typeof parsed !== 'object') return undefined;
@@ -376,10 +370,6 @@ function createProviderRoutes(rawDeps) {
 
   function mountManagementRoutes(app) {
     for (const method of ['get', 'post', 'patch', 'delete', 'put']) assertAppMethod(app, method);
-    require('./cpr-backend-settings').mountCprBackendSettingsRoutes(app, { runtime: deps.providerRouterRuntime });
-    // 「🖥 屏幕」后端开关：rust 独立进程（默认）/ node 回退，只写配置、重启生效。
-    require('./remote-screen-backend-settings').mountRemoteScreenBackendSettingsRoutes(app,
-      typeof deps.getNative === 'function' ? { getNative: deps.getNative } : {});
     // 子任务默认线路 + 一键同步（迁移桥接：Rust 决策，Node 落盘/逐会话 PATCH）。
     require('./subagent-defaults').mountSubagentDefaultsRoutes(app, {
       providerDefaults,

@@ -22,11 +22,10 @@ function createOpencodeContextReader(deps = {}) {
   const dbPath = deps.dbPath || path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'opencode', 'opencode.db');
   const cachePath = deps.cachePath || path.join(env.XDG_CACHE_HOME || path.join(home, '.cache'), 'opencode', 'models.json');
   const threshold = deps.threshold != null ? clampThreshold(deps.threshold) : resolveThreshold(env);
-  const nativeModule = deps.getNative || (() => getNative('opencode_context'));
+  const nativeModule = deps.getNative || (() => getNative());
   async function invoke(fields) {
     try {
       const native = nativeModule();
-      if (typeof native?.readOpencodeContext !== 'function') return { found: false, reason: 'native-unavailable' };
       return JSON.parse(await native.readOpencodeContext(JSON.stringify({ dbPath, cachePath, threshold, ...fields })));
     } catch (error) {
       deps.logger?.warn?.('opencode_context_read_failed', { reason: error?.code || 'read-failed' });

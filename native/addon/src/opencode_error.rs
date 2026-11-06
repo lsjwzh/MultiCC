@@ -6,3 +6,9 @@ use napi_derive::napi;
 pub fn classify_provider_error(input: String) -> Result<String> {
     multicc_core::provider_error::classify(&input).map_err(napi::Error::from_reason)
 }
+
+/// The classifier tables JavaScript policy reads: `{ cancellationCodes }`.
+#[napi]
+pub fn provider_error_facts() -> String {
+    multicc_core::provider_error::facts()
+}

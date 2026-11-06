@@ -149,3 +149,21 @@ fn stderr_only_accepts_standalone_error_records() {
         Category::CancelShutdown
     );
 }
+
+#[test]
+fn every_local_stop_code_outranks_provider_evidence() {
+    // A server-side respawn kill that also carries an upstream 429 is still a
+    // local stop: Auto must not read it as a reason to switch lines.
+    for code in LOCAL_CANCELLATION_CODES {
+        for value in [
+            json!({ "code": code, "httpStatus": 429 }),
+            json!({ "data": { "errorName": code.to_ascii_uppercase() }, "category": "rate_limit" }),
+        ] {
+            let d = event(value).unwrap();
+            assert_eq!(d.category, Category::CancelShutdown, "{code}");
+        }
+    }
+    let facts: Value = serde_json::from_str(&facts()).unwrap();
+    assert_eq!(facts["cancellationCodes"], json!(LOCAL_CANCELLATION_CODES));
+    assert!(LOCAL_CANCELLATION_CODES.contains(&"restart_spawn"));
+}

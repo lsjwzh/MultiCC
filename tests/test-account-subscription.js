@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { dateMs, subscriptionFromBody, codexAuthSubscription } = require('../src/quota/subscription');
+const { subscriptionFromBody, codexAuthSubscription } = require('../src/quota/subscription');
 const { mountAccountSubscriptionRoute } = require('../src/routes/account-subscription');
 const { createOfficialAccountStore } = require('../src/official-accounts');
 
@@ -28,9 +28,6 @@ function route(vendor, deps) {
 }
 
 test('只接受有效订阅日期，不把重置、登录过期或创建时间当成续费', () => {
-  for (const value of [null, '', false, {}, [], 'bad', 0, -1, Infinity, '   ']) assert.equal(dateMs(value), null);
-  assert.equal(dateMs(MS / 1000), MS);
-  assert.equal(dateMs(String(MS)), MS);
   assert.equal(subscriptionFromBody({ resets_at: DATE, expires_at: DATE, created_at: DATE, exp: MS / 1000 }), null);
   const result = subscriptionFromBody({ subscription: { next_billing_date: DATE } });
   assert.equal(result.nextBillingAt, MS);

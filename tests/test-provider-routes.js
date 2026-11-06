@@ -217,10 +217,6 @@ test('provider route extraction preserves the mounted surface and response DTOs'
   assert.deepEqual(harness.app.routes, [
     'GET /api/providers',
     'GET /api/providers/stats',
-    'GET /api/settings/cpr-backend',
-    'POST /api/settings/cpr-backend',
-    'GET /api/settings/remote-screen-backend',
-    'POST /api/settings/remote-screen-backend',
     'GET /api/subagent-defaults',
     'POST /api/subagent-defaults/sync',
     'POST /api/providers/import',

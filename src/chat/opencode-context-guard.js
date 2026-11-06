@@ -9,11 +9,10 @@ const { buildHandoffCheckpoint, clearAllNativeCliStates } = require('../cli-swit
 
 function createOpencodeContextGuard(deps = {}) {
   const reader = deps.contextReader || createOpencodeContextReader(deps);
-  const nativeModule = deps.getNative || (() => getNative('opencode_context'));
+  const nativeModule = deps.getNative || (() => getNative());
   async function enforce(record = {}) {
     try {
       const native = nativeModule();
-      if (typeof native?.planOpencodeContext !== 'function') return { action: 'skipped', reason: 'native-unavailable' };
       const nativeId = record._streamSessionId || record.cliSessionId || null;
       const usage = nativeId ? await reader.read(nativeId, record.model || null) : null;
       return Object.freeze(JSON.parse(native.planOpencodeContext(JSON.stringify({

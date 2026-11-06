@@ -12,12 +12,10 @@ const { findLanIPv4, listen, listenHttp, closeServer, serverOrigin, loadRelayUiM
   providerFacade, createInstance, postJson, requestJson, ACCESS_TOKEN, RELAY_TOKEN,
   UPSTREAM_TOKEN, CLIENT_TOKEN, MODEL } = require('./helpers/provider-sharing');
 
+// Rust is the only CPR proxy, so only the topology varies now.
 const relayCases = [
-  { sourceBackend: 'node', targetBackend: 'node' },
-  { sourceBackend: 'rust', targetBackend: 'node' },
-  { sourceBackend: 'node', targetBackend: 'rust' },
-  { sourceBackend: 'rust', targetBackend: 'rust' },
-  { self: true }, // No backend override: prove that both self-relay hops default to Rust.
+  {},
+  { self: true },
 ];
 const streamText = 'SHARED_PROVIDER_STREAM_你好🌏';
 const sse = obj => `event: ${obj.type}\ndata: ${JSON.stringify(obj)}\n\n`;
@@ -26,7 +24,7 @@ const streamBody = sse({ type: 'message_start', message: { usage: { input_tokens
   + sse({ type: 'message_delta', usage: { output_tokens: 4 } }) + sse({ type: 'message_stop' });
 
 for (const scenario of relayCases) {
-test(`Claude LAN sharing ${scenario.self ? 'self → self (default Rust)' : `${scenario.targetBackend} → ${scenario.sourceBackend}`}`,
+test(`Claude LAN sharing ${scenario.self ? 'self → self' : 'Rust → Rust'}`,
   { timeout: 20000 }, async t => {
   const lanIp = findLanIPv4();
   if (!lanIp) {
@@ -118,14 +116,12 @@ test(`Claude LAN sharing ${scenario.self ? 'self → self (default Rust)' : `${s
     providerRelayShares: sourceRelayShares,
     defaultsFile: path.join(root, 'source', 'provider-defaults.json'),
     activity: sourceActivity,
-    backend: scenario.sourceBackend,
   });
   target = scenario.self ? source : createInstance({
     providers: targetProviders,
     providerRelayShares: targetRelayShares,
     defaultsFile: path.join(root, 'target', 'provider-defaults.json'),
     activity: targetActivity,
-    backend: scenario.targetBackend,
   });
   sourceServer = await listen(source.app, scenario.self ? '0.0.0.0' : lanIp);
   targetServer = scenario.self ? sourceServer : await listen(target.app, '127.0.0.1');
@@ -134,8 +130,8 @@ test(`Claude LAN sharing ${scenario.self ? 'self → self (default Rust)' : `${s
 
   assert.equal(sourceServer.address().address, scenario.self ? '0.0.0.0' : lanIp);
   assert.equal(targetServer.address().address, scenario.self ? '0.0.0.0' : '127.0.0.1');
-  assert.equal(source.runtime.proxyBackend, scenario.sourceBackend || 'rust');
-  assert.equal(target.runtime.proxyBackend, scenario.targetBackend || 'rust');
+  assert.equal(source.runtime.proxyBackend, 'rust');
+  assert.equal(target.runtime.proxyBackend, 'rust');
 
   const shared = await postJson(
     `${sourceOrigin}/api/providers/claude/source-provider/relay-share`,
@@ -257,7 +253,7 @@ test(`Claude LAN sharing ${scenario.self ? 'self → self (default Rust)' : `${s
   console.log(`provider sharing LAN integration: ${target.runtime.proxyBackend} ${targetOrigin} → ${source.runtime.proxyBackend} ${sourceOrigin}; self=${!!scenario.self}; JSON/SSE/usage/quota/auth checked`);
 });
 
-test(`Codex LAN sharing ${scenario.self ? 'self → self (default Rust)' : `${scenario.targetBackend} → ${scenario.sourceBackend}`}`,
+test(`Codex LAN sharing ${scenario.self ? 'self → self' : 'Rust → Rust'}`,
   { timeout: 20000 }, async t => {
   const lanIp = findLanIPv4();
   if (!lanIp) return t.skip('requires an active RFC1918 LAN IPv4 address');
@@ -288,23 +284,23 @@ test(`Codex LAN sharing ${scenario.self ? 'self → self (default Rust)' : `${sc
   const sourceStore = store('source'), targetStore = scenario.self ? sourceStore : store('target');
   sourceStore.saveStore([{ id: 'source-codex', appType: 'codex', name: 'LAN Source Codex', source: 'local',
     settingsConfig: { auth: { OPENAI_API_KEY: UPSTREAM_TOKEN }, config: `model = "${MODEL}"\nmodel_provider = "fixture"\n[model_providers.fixture]\nbase_url = "${serverOrigin(upstream)}/v1"\nwire_api = "responses"\n` } }]);
-  const make = (store, name, backend) => {
+  const make = (store, name) => {
     const instance = createInstance({ providers: providerFacade(store),
       providerRelayShares: createProviderRelayShareStore({ file: path.join(root, name, 'shares.json') }),
-      defaultsFile: path.join(root, name, 'defaults.json'), activity: [], backend,
+      defaultsFile: path.join(root, name, 'defaults.json'), activity: [],
       authorizeProxyRequest: route => ({ ok: route.sessionId === 'fixture', code: 'no-active-attempt' }) });
     instances.push(instance); return instance;
   };
-  const source = make(sourceStore, 'source', scenario.sourceBackend);
-  const target = scenario.self ? source : make(targetStore, 'target', scenario.targetBackend);
+  const source = make(sourceStore, 'source');
+  const target = scenario.self ? source : make(targetStore, 'target');
   const sourceServer = await listen(source.app, scenario.self ? '0.0.0.0' : lanIp);
   servers.push(sourceServer);
   const targetServer = scenario.self ? sourceServer : await listen(target.app, '127.0.0.1');
   if (!scenario.self) servers.push(targetServer);
   const sourceOrigin = `http://${lanIp}:${sourceServer.address().port}`;
   const targetOrigin = `http://127.0.0.1:${targetServer.address().port}`;
-  assert.equal(source.runtime.proxyBackend, scenario.sourceBackend || 'rust');
-  assert.equal(target.runtime.proxyBackend, scenario.targetBackend || 'rust');
+  assert.equal(source.runtime.proxyBackend, 'rust');
+  assert.equal(target.runtime.proxyBackend, 'rust');
   const shared = await postJson(`${sourceOrigin}/api/providers/codex/source-codex/relay-share`,
     { publicBaseUrl: sourceOrigin, token: RELAY_TOKEN }, { 'x-access-token': ACCESS_TOKEN });
   assert.equal(shared.response.status, 200);

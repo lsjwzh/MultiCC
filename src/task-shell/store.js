@@ -4,7 +4,7 @@ const { getNative, nativeCode } = require('../native/runtime');
 // 迁移桥接：Rust 拥有连接、SQL、索引、JSON 缓存及其版本。这里仅维持同步调用
 // 契约和原有只读 JS 对象的身份；镜像的更换完全由原生返回的 token 决定。
 function createTaskShellStore(file) {
-  const addon = getNative('task_store', 'rust');
+  const addon = getNative();
   if (addon.taskStoreProtocolVersion?.() !== 1 || typeof addon.RustTaskStore !== 'function') {
     throw new Error('任务仓储 Rust 接口不可用，请构建当前原生模块后手动重启');
   }

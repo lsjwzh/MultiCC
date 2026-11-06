@@ -12,7 +12,7 @@ const { createProviderLimitCache } = require('../src/quota/provider-limit-cache'
 const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
 const { createProviderRelayShareStore } = require('../src/providers/relay-share-store');
 const { createInstance, listen, listenHttp, closeServer, serverOrigin, postJson, ACCESS_TOKEN } = require('./helpers/provider-sharing');
-const native = require('../src/native/runtime').getNative('virtual_provider');
+const native = require('../src/native/runtime').getNative();
 const available = typeof native?.selectVirtualProvider === 'function';
 if (process.env.MULTICC_REQUIRE_RUST_TESTS === '1') assert.ok(available, 'build the virtual provider Rust addon');
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));

@@ -6,7 +6,7 @@ const runtime = require('./runtime');
 // validates all commands and opens the source read-only. Node also supplies ICU
 // collation for historical IDs, because it is part of the existing V8 contract.
 // Do not add projection or caching rules here.
-function createTaskReadModel({ addon = runtime.getNative('read_model', 'rust'), maxPending = 16 } = {}) {
+function createTaskReadModel({ addon = runtime.getNative(), maxPending = 16 } = {}) {
   if (typeof addon?.RustTaskReadModel !== 'function') throw new Error('read_model_backend_unavailable');
   if (!Number.isInteger(maxPending) || maxPending < 1 || maxPending > 16) throw new Error('read_model_invalid_queue_limit');
   const native = new addon.RustTaskReadModel();
