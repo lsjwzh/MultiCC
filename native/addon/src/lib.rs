@@ -20,8 +20,8 @@ pub mod task_domain;
 pub mod task_read_model;
 pub mod task_store;
 pub mod virtual_provider;
-pub mod worktree_sync;
 pub mod windows_tools;
+pub mod worktree_sync;
 
 #[napi(object)]
 pub struct NativeResult {

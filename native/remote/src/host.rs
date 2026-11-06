@@ -151,7 +151,9 @@ pub fn profile_for(platform: &str, home: &str, env: &HashMap<String, String>) ->
             h264_sock: None,
             features: Features::LINUX,
             modifier: "ctrl".into(),
-            install_hint: Some("powershell -NoProfile -File scripts/windows-agent/install.ps1 install".into()),
+            install_hint: Some(
+                "powershell -NoProfile -File scripts/windows-agent/install.ps1 install".into(),
+            ),
         };
     }
     // Linux agent：X11 走 XShm + XTEST。Wayland 会话里 XWayland 其实连得上，

@@ -169,6 +169,10 @@ scripts/bigmodel-snatch/
 docs/browser-control-review-2026-09-22.md
 docs/browser-user-feedback-2026-09-22.md
 
+# Browser runtime state and the managed quota Chrome profile contain local session data.
+/browser/
+/quota-browser-profile/
+
 # 讯飞 503 对比测试脚本（含 API key，仅本地）
 test_xf_503.sh
 
