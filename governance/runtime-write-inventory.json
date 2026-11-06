@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedAt": "2026-09-26",
+  "reviewedAt": "2026-11-06",
   "entries": [
     {
       "id": "server-env",
@@ -114,6 +114,19 @@
         {
           "file": "src/codex/session-home.js",
           "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-session-homes'));"
+        }
+      ]
+    },
+    {
+      "id": "stale-cli-session-homes",
+      "classification": "migration-required",
+      "owner": "CLI session home lifecycle",
+      "rationale": "The cleanup adapter scans the historical ~/.multicc root for stale Codex and ZCode session homes. These directories can contain native session state and credentials, so their root and retention rules must remain stable while the Node host owns CLI lifecycles.",
+      "migrationStrategy": "Move the bounded scan and cleanup to an asynchronous Rust host operation when Rust owns CLI home creation and retention; verify the same whitelist, freshness and symlink protections before removing the Node adapter.",
+      "sources": [
+        {
+          "file": "src/runtime-homes-janitor.js",
+          "anchor": "const rawRoot = String(homesRoot || path.join(os.homedir(), '.multicc'));"
         }
       ]
     },
