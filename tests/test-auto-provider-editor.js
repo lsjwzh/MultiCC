@@ -490,6 +490,45 @@ test('a pool mixing official and managed lines saves and round-trips without any
   assert.equal(applied.value.allowCrossTrust, true, '套用后同样是混池，直接可存');
 });
 
+test('saving under an existing name rewrites that preset instead of minting a second id', () => {
+  const store = memoryPresetStore();
+  const first = mountEditor({ presetStore: store });
+  first.click('managed-c', 'add-one');
+  first.$('preset-open').emit('click');
+  first.$('preset-name').value = '日常';
+  first.$('preset-save').emit('click');
+  const originalId = store.data[0].id;
+
+  const second = mountEditor({ presetStore: store });
+  second.click('managed-b', 'move-up');
+  second.$('preset-open').emit('click');
+  second.$('preset-name').value = '日常';
+  second.$('preset-save').emit('click');
+  assert.equal(store.data.filter(item => !item.recent).length, 1, '同名保存不新增第二份');
+  assert.equal(store.data[0].id, originalId, '沿用原 id，引用它的会话不会悬空');
+  assert.equal(second.$('preset-select').value, originalId, '保存后仍停在这份预设上');
+});
+
+test('an applied preset is stamped onto the pool handed to the host', () => {
+  const store = memoryPresetStore();
+  const first = mountEditor({ presetStore: store });
+  first.click('managed-c', 'add-one');
+  first.$('preset-open').emit('click');
+  first.$('preset-name').value = '日常';
+  first.$('preset-save').emit('click');
+  const id = store.data[0].id;
+
+  const second = mountEditor({ presetStore: store });
+  second.$('preset-select').value = id;
+  second.$('preset-select').emit('change');
+  assert.equal(second.control.read({ remember: false }).value.presetId, id,
+    '宿主拿到的池子带着出处，预设改名后胶囊才能跟着改');
+
+  const fresh = mountEditor({ presetStore: memoryPresetStore() });
+  assert.equal('presetId' in fresh.control.read({ remember: false }).value, false,
+    '没有套用预设就不写出处');
+});
+
 test('reading a valid pool records it as a recent preset, deduplicated and capped', () => {
   const store = memoryPresetStore();
   const { control } = mountEditor({ presetStore: store });

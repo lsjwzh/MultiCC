@@ -56,6 +56,20 @@ void main() {
     expect(config.providerSelection?.toJson(), json);
   });
 
+  test('preset provenance survives parse/save and can be stamped onto a pool', () {
+    final json = {...selection.toJson(), 'presetId': 'p1abc'};
+    final parsed = parseProviderSelection(json);
+    expect(parsed?.presetId, 'p1abc');
+    expect(parsed?.toJson(), json, reason: '手机保存不能把预设出处丢掉');
+
+    final stamped = selection.withPreset('p1abc');
+    expect(stamped.presetId, 'p1abc');
+    expect(stamped.candidates, selection.candidates);
+    expect(stamped.toJson(), json);
+    // 没有出处时线上形状保持不变（老数据/手搭池子）。
+    expect(selection.toJson().containsKey('presetId'), isFalse);
+  });
+
   test('session DTOs preserve explicit mixed-trust authorization', () {
     const mixed = SessionProviderSelection(
       protocol: 'anthropic',

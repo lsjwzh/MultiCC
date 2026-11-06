@@ -652,6 +652,8 @@
 
   // `id` lets an in-place update keep the preset's identity instead of minting a
   // new one, so a preset applied from the dropdown is the one that gets rewritten.
+  // Saving under an existing name keeps that entry's id too: sessions remember the
+  // preset by id (providerSelection.presetId), and a second id would orphan them.
   function rememberPreset(list, value, { id = '', name = '', recent = false, now = Date.now() } = {}) {
     const signature = presetSignature(value);
     const entry = {
@@ -674,6 +676,7 @@
       return [...current.filter(item => !item.recent), ...recents];
     }
     const others = current.filter(item => presetSignature(item) !== signature
+      && item.id !== entry.id
       && !(item.name && item.name === entry.name && !item.recent));
     const named = [entry, ...others.filter(item => !item.recent)].slice(0, MAX_NAMED_PRESETS);
     return [...named, ...others.filter(item => item.recent)];
@@ -1678,7 +1681,13 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       if (!result.ok || !result.value) return result;
       const name = presetName.value.trim();
       const signature = presetSignature(result.value);
-      const list = rememberPreset(loadPresets(), result.value, { name, now: now() });
+      // 同名 = 改这份预设：沿用原 id，引用它的会话才能跟着改名/改线路走。
+      const previous = name
+        ? loadPresets().find(item => !item.recent && item.name.trim().toLowerCase() === name.toLowerCase())
+        : null;
+      const list = rememberPreset(loadPresets(), result.value, {
+        ...(previous ? { id: previous.id } : {}), name, now: now(),
+      });
       storePresets(list);
       presetName.value = '';
       const saved = list.find(item => !item.recent && item.name === name
@@ -2199,6 +2208,9 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
             && initialSelection.routing) || null,
         });
         showError(result.ok ? '' : result.error);
+        // 这份池子来自哪份预设：宿主把它写进会话后，预设改名或改线路时，
+        // 胶囊和其他端都能按 id 跟着走，而不是留一份当时的快照名字。
+        if (result.ok && result.value && activePresetId) result.value.presetId = activePresetId;
         // 宿主读出一份有效池子就意味着它要被用上了：顺手记进「最近使用」。
         if (result.ok && result.value && readOptions.remember !== false && presetStore) {
           storePresets(rememberPreset(loadPresets(), result.value, { recent: true, now: now() }));

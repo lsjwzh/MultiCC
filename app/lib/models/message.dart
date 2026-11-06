@@ -1131,6 +1131,11 @@ class SessionProviderSelection {
   /// and a single-lane pool must not carry it at all.
   final String? cliSwitch;
 
+  /// Which local preset this pool came from (cosmetic, like the web pill's
+  /// label). Optional: absent on pools saved before presets recorded their
+  /// origin, and never part of the routing policy.
+  final String? presetId;
+
   const SessionProviderSelection({
     this.version = 1,
     this.mode = 'auto',
@@ -1142,6 +1147,7 @@ class SessionProviderSelection {
     this.preferMaxQuota = true,
     this.routing,
     this.cliSwitch,
+    this.presetId,
   });
 
   /// Whether any candidate names its lane — the server's own `crossCli` test,
@@ -1160,7 +1166,23 @@ class SessionProviderSelection {
     'allowCrossTrust': allowCrossTrust,
     if (cliSwitch != null) 'cliSwitch': cliSwitch,
     if (routing != null) 'routing': routing!.toJson(),
+    if (presetId != null) 'presetId': presetId,
   };
+
+  /// Same pool, with the preset it came from stamped on it. Everything else is
+  /// carried over so a save from the phone never downgrades the pool.
+  SessionProviderSelection withPreset(String preset) => SessionProviderSelection(
+    version: version,
+    protocol: protocol,
+    candidates: candidates,
+    maxAttempts: maxAttempts,
+    sticky: sticky,
+    allowCrossTrust: allowCrossTrust,
+    preferMaxQuota: preferMaxQuota,
+    routing: routing,
+    cliSwitch: cliSwitch,
+    presetId: preset,
+  );
 }
 
 SessionProviderSelection? parseProviderSelection(dynamic json) {
@@ -1192,6 +1214,11 @@ SessionProviderSelection? parseProviderSelection(dynamic json) {
     cliSwitch: (json['cliSwitch']?.toString().trim().isEmpty ?? true)
         ? null
         : json['cliSwitch'].toString().trim(),
+    // Cosmetic provenance: keeping it on the round trip means a config saved
+    // from the phone does not strip the preset label the web pill resolves.
+    presetId: (json['presetId']?.toString().trim().isEmpty ?? true)
+        ? null
+        : json['presetId'].toString().trim(),
   );
 }
 

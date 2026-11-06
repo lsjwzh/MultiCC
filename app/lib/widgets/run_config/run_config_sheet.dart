@@ -1149,7 +1149,9 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
             'Auto · ${protocolLabelOf(result.protocol)} → $firstName',
         modelLabel: result.firstModel.isEmpty ? '默认' : result.firstModel,
         effortLabel: effortShortNameForCli(widget.cli, widget.effort),
-        providerSelection: result.selection,
+        providerSelection: _activePresetId.isEmpty
+            ? result.selection
+            : result.selection?.withPreset(_activePresetId),
         subagent: subagent,
         switchToCli: result.switchToCli,
         subagentCli: subCli?.name,
