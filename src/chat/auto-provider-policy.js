@@ -1,6 +1,27 @@
 'use strict';
 
-const FAILOVER_CATEGORIES = new Set([
+// Failover is a blocklist, not an allowlist: any failure may move the turn to
+// another line unless switching provably cannot help or would be harmful. An
+// unrecognised provider error (a new upstream wording, an opaque exit code) is
+// exactly the case Auto exists for, so it fails over instead of wedging the
+// turn on the line that just failed. The replay-safety gates below (phase,
+// visible output, tool intent, side effects) still apply to every category.
+//   cancel_shutdown       — a local stop (user, restart, shutdown); never replay.
+//   context_token_limit   — the request itself is too large; the remedy is
+//                           compaction, and every line would refuse it again.
+//   tool_protocol         — our tool call is malformed; a replay reproduces it.
+//   adapter_configuration — local CLI / native-session state (unknown session
+//                           id, CLI missing); it has its own fresh-start
+//                           recovery that a provider switch would pre-empt.
+const NON_FAILOVER_CATEGORIES = new Set([
+  'cancel_shutdown',
+  'context_token_limit',
+  'tool_protocol',
+  'adapter_configuration',
+]);
+// Categories whose failover reason keeps its historical name. Anything else
+// that switches on an upstream 4xx keeps reporting 'failover_http_4xx'.
+const PROVIDER_FAULT_CATEGORIES = new Set([
   'billing_quota',
   'rate_limit',
   'provider_transient',
@@ -236,12 +257,10 @@ function failoverSafety(decision, attempt) {
   }
   const httpStatus = Number(error.httpStatus);
   const upstream4xx = Number.isInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 499;
-  // A locally-owned cancellation must never be replayed, even if an adapter
-  // happens to attach a synthetic 4xx status to it.
-  if (error.category === 'cancel_shutdown') {
-    return Object.freeze({ ok: false, reason: 'category_not_failoverable' });
-  }
-  if (!FAILOVER_CATEGORIES.has(error.category) && !upstream4xx) {
+  // A blocklisted category never switches, even when an adapter happens to
+  // attach a 4xx status to it (a local cancellation dressed up as HTTP 499).
+  const category = error.category || 'unknown';
+  if (NON_FAILOVER_CATEGORIES.has(category)) {
     return Object.freeze({ ok: false, reason: 'category_not_failoverable' });
   }
   if (!SAFE_PHASES.has(String(error.phase || ''))) {
@@ -256,13 +275,13 @@ function failoverSafety(decision, attempt) {
   }
   return Object.freeze({
     ok: true,
-    reason: FAILOVER_CATEGORIES.has(error.category)
-      ? `failover_${error.category}` : 'failover_http_4xx',
+    reason: !PROVIDER_FAULT_CATEGORIES.has(category) && upstream4xx
+      ? 'failover_http_4xx' : `failover_${category}`,
   });
 }
 
 module.exports = {
-  FAILOVER_CATEGORIES,
+  NON_FAILOVER_CATEGORIES,
   NEAR_LIMIT_PERCENT,
   SAFE_PHASES,
   chooseCandidate,

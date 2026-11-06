@@ -46,6 +46,9 @@ const CANCELLATION_CODES = new Set([
   'aborterror', 'aborted', 'cancelled', 'canceled', 'user_cancel',
   'new_user_message', 'shutdown', 'server_shutting_down', 'session_delete',
   'cli_switch', 'relocate', 'sigterm', 'sigint',
+  // The server killed its own child to respawn it: a local stop, not a
+  // provider fault, so Auto must not read it as a reason to switch lines.
+  'restart_spawn',
 ]);
 const NETWORK_CODES = new Set([
   'econnreset', 'econnrefused', 'econnaborted', 'enotfound', 'eai_again',
