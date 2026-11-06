@@ -149,8 +149,10 @@ const MIGRATION_DEBT = Object.freeze({
     // 之后实测 3021/159599，按棘轮下调。
     // 2026-11-04 运行配置预设跨端库：require + 挂载共 4 行（逻辑与校验在
     // src/routes/run-config-presets.js 与 Rust），实测 3026/159933，按棘轮上调。
-    ceiling: 3026,
-    byteCeiling: 159933,
+    // 2026-11-06 过期 CLI home 清理器只在宿主接线，实测 3030/160418；
+    // 待 Rust 宿主接管 CLI home 生命周期时移出这处 Node 启动接线。
+    ceiling: 3030,
+    byteCeiling: 160418,
     target: 3000,
     reason: 'split account/quota and host-power route families out of server.js to return under 3k',
   }),
