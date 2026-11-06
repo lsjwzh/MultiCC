@@ -342,13 +342,13 @@ const NO_TOOLS = 'Command failed: git init\n'
     ok(/helpers: \{ resolveCwd, isHomeOrAbove, realPathOf, friendlyDirReason, dirReasonFix \}/.test(read('server.js')),
       'wiring: server.js supplies dirReasonFix to the directory service');
 
-    // The endpoint must probe with xcode-select, never with git --version: the
-    // latter pops the very dialog the button is supposed to raise deliberately.
+    // xcode-select is safe to probe. A real Git may be version-checked, but the
+    // macOS /usr/bin/git shim must be rejected before any version probe.
     const route = read('src/routes/developer-tools.js');
     ok(/'xcode-select'/.test(route) && /'--install'/.test(route),
       'wiring: the route runs xcode-select --install');
-    ok(!/git['"\s]*,?\s*\[['"]--version/.test(route),
-      'wiring: the route never probes with git --version');
+    ok(/platform === 'darwin' && gitPath === CLT_SHIM_PATH\) return false/.test(route),
+      'wiring: the macOS git shim is rejected before a version probe');
     ok(/\/api\/system\/developer-tools\/install/.test(route)
       && /createDeveloperToolsRoutes\(\)\.mountRoutes\(app\)/.test(read('src/routes/system.js')),
       'wiring: the install route is mounted');
