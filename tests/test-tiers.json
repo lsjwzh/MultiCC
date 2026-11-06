@@ -4951,6 +4951,15 @@
       ]
     },
     {
+      "path": "tests/test-runtime-homes-janitor.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-runtime-lifecycle-stops.js",
       "tier": "core",
       "lane": "deterministic",

@@ -17,8 +17,8 @@ pub mod task_read_model;
 pub mod task_store;
 pub mod usage;
 pub mod virtual_provider;
-pub mod worktree_sync;
 pub mod windows_tools;
+pub mod worktree_sync;
 
 pub mod claude_refresh;
 pub mod codex_models;

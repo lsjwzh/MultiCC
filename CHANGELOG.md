@@ -2,6 +2,14 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.16.0 — Windows desktop agent preview and clearer live progress (2026-11-06)
+
+- Add the first Windows desktop agent in Rust. It captures the primary screen, sends pointer and keyboard input, and connects to the remote host through a per-user named pipe. The user-level installer manages login startup without an administrator service. The agent refuses input on locked and secure desktops and in password fields. Windows CI covers the pipe protocol and installation, while real desktop control still requires hands-on validation before it is described as fully verified.
+- Improve Linux X11 remote control with horizontal scrolling, modifiers, safer pointer handling, and broader conformance and installation checks. The existing C/Xlib agent remains the platform adapter because replacing its display and input layer before equivalent Rust conformance and real desktop checks would expand migration risk; replace it when those checks pass.
+- Keep live chat progress in the streaming reply: show background task activity beside the generation indicator and route attribution, restore that state after a reconnect, and keep the final attribution on the completed message. Codex background events now provide more useful task progress.
+- Refresh Windows CLI discovery and Git probes so installed tools and their paths are found reliably, and make doctor reports preserve the underlying model error.
+- Remove stale CLI session homes through the current Node host lifecycle adapter to prevent abandoned runtime data from accumulating. This adapter remains limited to the existing session-home cleanup contract; move the scan and cleanup to Rust when the Rust host owns CLI home lifecycles and its asynchronous filesystem path has parity coverage.
+
 ## v2.15.6 — Run preset and provider routing fixes (2026-11-04)
 
 The v2.15.4 candidate stopped before a Release was created: the deterministic
