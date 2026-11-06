@@ -103,7 +103,7 @@ impl History {
     /// Append the series carried by one cache entry. Returns the number of
     /// rows actually written (dedupe and invalid rows are skipped).
     pub fn record(&mut self, input: &str) -> Result<String, String> {
-        let value: Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+        let value: Value = crate::json_lenient::from_str(input).map_err(|e| e.to_string())?;
         let app_type = clean_text(field(&value, "appType"), MAX_KEY)
             .ok_or_else(|| "missing appType".to_string())?;
         let provider_id = clean_text(field(&value, "providerId"), MAX_KEY)
@@ -134,7 +134,7 @@ impl History {
     /// downsampled to at most `points` (bucket-last) points, which keeps a long
     /// window cheap to draw without inventing values.
     pub fn query(&mut self, input: &str) -> Result<String, String> {
-        let value: Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+        let value: Value = crate::json_lenient::from_str(input).map_err(|e| e.to_string())?;
         let now = now_ms();
         let since = number(&value, "sinceMs")
             .map(|n| n as i64)

@@ -333,8 +333,8 @@ fn output(entries: &[Preset]) -> String {
 }
 
 fn parse_root(input: &str) -> Result<Value, String> {
-    let parsed: Value =
-        serde_json::from_str(input).map_err(|error| invalid(&format!("invalid JSON: {error}")))?;
+    let parsed: Value = crate::json_lenient::from_str(input)
+        .map_err(|error| invalid(&format!("invalid JSON: {error}")))?;
     if !parsed.is_object() {
         return Err(invalid("root must be a JSON object"));
     }

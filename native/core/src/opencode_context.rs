@@ -108,7 +108,7 @@ fn turn_usage(db: &Connection, sid: &str, args: &Value) -> Result<Value, String>
             break;
         }
         let text: String = row.get(2).map_err(|e| e.to_string())?;
-        let Ok(data) = serde_json::from_str::<Value>(&text) else {
+        let Ok(data) = crate::json_lenient::from_str::<Value>(&text) else {
             continue;
         };
         if data["role"] != "assistant" {
@@ -138,7 +138,7 @@ fn turn_usage(db: &Connection, sid: &str, args: &Value) -> Result<Value, String>
 }
 
 pub fn read(input: &str) -> Result<String, String> {
-    let args: Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    let args: Value = crate::json_lenient::from_str(input).map_err(|e| e.to_string())?;
     let sid = args["sessionId"].as_str().unwrap_or("").trim();
     if sid.is_empty() {
         return Ok(json!({"found":false,"reason":"no-native-session"}).to_string());
@@ -166,7 +166,7 @@ pub fn read(input: &str) -> Result<String, String> {
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
         seen = true;
         let text: String = row.get(0).map_err(|e| e.to_string())?;
-        let Ok(data) = serde_json::from_str::<Value>(&text) else {
+        let Ok(data) = crate::json_lenient::from_str::<Value>(&text) else {
             continue;
         };
         if native_model.is_none() {
@@ -202,7 +202,7 @@ pub fn read(input: &str) -> Result<String, String> {
     };
     let catalog: Value = fs::read_to_string(args["cachePath"].as_str().unwrap_or(""))
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|s| crate::json_lenient::from_str(&s).ok())
         .unwrap_or(Value::Null);
     let limit = resolve_limit(&catalog, model);
     let threshold = args["threshold"]
@@ -225,7 +225,7 @@ pub fn read(input: &str) -> Result<String, String> {
 }
 
 pub fn plan(input: &str) -> Result<String, String> {
-    let args: Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    let args: Value = crate::json_lenient::from_str(input).map_err(|e| e.to_string())?;
     let record = &args["record"];
     let skip = |reason: &str| json!({"action":"skipped","reason":reason}).to_string();
     if record["kind"].as_str().is_some_and(|k| k != "chat") {

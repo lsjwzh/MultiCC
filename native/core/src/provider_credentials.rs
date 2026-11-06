@@ -18,7 +18,7 @@ pub fn jwt(token: &str) -> Value {
         .split('.')
         .nth(1)
         .and_then(|s| URL_SAFE_NO_PAD.decode(s.trim_end_matches('=')).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| crate::json_lenient::from_slice(&bytes).ok())
         .unwrap_or(Value::Null)
 }
 pub fn codex_subscription(auth: &Value) -> Value {
@@ -54,7 +54,7 @@ pub fn codex_auth(auth: &Value) -> Value {
     json!({"accessToken":text(tokens,"access_token"),"accountId":text(tokens,"account_id"),"subscription":codex_subscription(auth)})
 }
 pub fn cli(raw: &str) -> Value {
-    let Ok(json) = serde_json::from_str::<Value>(raw) else {
+    let Ok(json) = crate::json_lenient::from_str::<Value>(raw) else {
         return json!({"ok":false,"reason":"not_json"});
     };
     let oauth = if json["claudeAiOauth"].is_object() {

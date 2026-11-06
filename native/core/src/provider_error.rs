@@ -142,7 +142,7 @@ fn frames(value: &Value, path: &str, depth: usize, out: &mut Vec<Frame>) {
         );
     }
     if let Some(text) = value["message"].as_str().filter(|s| s.len() <= 65536) {
-        if let Ok(embedded) = serde_json::from_str::<Value>(text) {
+        if let Ok(embedded) = crate::json_lenient::from_str::<Value>(text) {
             if embedded["error"].is_object() || embedded["response"]["error"].is_object() {
                 frames(&embedded, &format!("{path}.message"), depth + 1, out);
             }
@@ -233,7 +233,7 @@ pub fn diagnose(provider: &str, origin: Origin, value: &Value) -> Option<Diagnos
             .take(512)
             .find_map(|line| {
                 let line = line.trim();
-                if let Ok(record) = serde_json::from_str::<Value>(line) {
+                if let Ok(record) = crate::json_lenient::from_str::<Value>(line) {
                     if record["error"].is_object() {
                         return diagnose(provider, Origin::Event, &record);
                     }
@@ -349,7 +349,7 @@ fn presentation(diagnosis: &Diagnosis) -> Value {
 }
 
 pub fn classify(input: &str) -> Result<String, String> {
-    let args: Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    let args: Value = crate::json_lenient::from_str(input).map_err(|e| e.to_string())?;
     let origin = match args["source"].as_str() {
         Some("process_stderr") => Origin::Stderr,
         Some("native_history") => Origin::NativeHistory,

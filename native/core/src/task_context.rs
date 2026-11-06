@@ -9,7 +9,8 @@ fn id<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
 }
 
 fn parse<T: serde::de::DeserializeOwned>(input: &str) -> Result<T, String> {
-    serde_json::from_str(input).map_err(|error| format!("invalid task context input: {error}"))
+    crate::json_lenient::from_str(input)
+        .map_err(|error| format!("invalid task context input: {error}"))
 }
 
 #[derive(Deserialize)]

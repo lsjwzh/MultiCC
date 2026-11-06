@@ -133,7 +133,7 @@ impl Locked {
                 .take(256 * 1024)
                 .read_to_string(&mut raw)
                 .map_err(io_error)?;
-            let registry: Registry = serde_json::from_str(&raw).map_err(io_error)?;
+            let registry: Registry = crate::json_lenient::from_str(&raw).map_err(io_error)?;
             if registry.version != 1 || !valid_id(&registry.id) {
                 return Err(io_error("version"));
             }

@@ -79,7 +79,8 @@ fn optional_id(s: Option<String>) -> Option<String> {
 }
 
 pub fn record(file: &str, input: &str) -> Result<String, String> {
-    let mut v: Input = serde_json::from_str(input).map_err(|_| "secret_audit_invalid_input")?;
+    let mut v: Input =
+        crate::json_lenient::from_str(input).map_err(|_| "secret_audit_invalid_input")?;
     if !matches!(v.phase.as_str(), "started" | "completed") {
         return Err("secret_audit_invalid_input".into());
     }

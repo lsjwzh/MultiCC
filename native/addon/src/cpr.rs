@@ -15,8 +15,8 @@ pub fn cpr_protocol_version() -> u32 {
 // Only bounded quota metadata crosses this synchronous compatibility bridge.
 #[napi]
 pub fn cpr_claude_quota(input: String) -> Result<String> {
-    let input =
-        serde_json::from_str(&input).map_err(|_| error("Invalid Claude quota metadata".into()))?;
+    let input = multicc_core::json_lenient::from_str(&input)
+        .map_err(|_| error("Invalid Claude quota metadata".into()))?;
     Ok(multicc_cpr::claude_quota::run(&input).to_string())
 }
 
@@ -24,7 +24,8 @@ pub fn cpr_claude_quota(input: String) -> Result<String> {
 #[napi]
 pub async fn cpr_route(input: String) -> Result<String> {
     tokio::task::spawn_blocking(move || {
-        let input = serde_json::from_str(&input).map_err(|_| "Rust CPR 输入无效".to_owned())?;
+        let input = multicc_core::json_lenient::from_str(&input)
+            .map_err(|_| "Rust CPR 输入无效".to_owned())?;
         serde_json::to_string(&plan::route(&input)?).map_err(|_| "Rust CPR 路由序列化失败".into())
     })
     .await
@@ -34,7 +35,8 @@ pub async fn cpr_route(input: String) -> Result<String> {
 #[napi]
 pub async fn cpr_prepare(input: String) -> Result<String> {
     tokio::task::spawn_blocking(move || {
-        let input = serde_json::from_str(&input).map_err(|_| "Rust CPR 输入无效".to_owned())?;
+        let input = multicc_core::json_lenient::from_str(&input)
+            .map_err(|_| "Rust CPR 输入无效".to_owned())?;
         Ok::<_, String>(plan::prepare(input)?.to_string())
     })
     .await

@@ -334,7 +334,7 @@ async fn remove(root: &str, input: &Value) -> Result<Value, Error> {
 }
 
 pub async fn operate(root: &str, operation: &str, raw: &str) -> String {
-    let input: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+    let input: Value = crate::json_lenient::from_str(raw).unwrap_or(Value::Null);
     let response = match operation {
         "add" => add(root, &input).await,
         "proxy" => proxy(root, &input).await,
@@ -353,7 +353,7 @@ where
     Fut: std::future::Future<Output = bool>,
 {
     let response = async {
-        let input: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+        let input: Value = crate::json_lenient::from_str(raw).unwrap_or(Value::Null);
         let peer = peer(root, text(&input, "id"))?;
         let path = text(&input, "path");
         if !network::api_path(path) { return Err(fail(403, "machine_path_denied", "此地址不能通过电脑连接访问")); }

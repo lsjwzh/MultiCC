@@ -74,8 +74,8 @@ fn decide(input: &Input) -> Plan {
 
 /// 输入和输出均为固定字段的 JSON；不读写凭据，不执行网络或文件操作。
 pub fn plan(input_json: &str) -> Result<String, String> {
-    let input: Input =
-        serde_json::from_str(input_json).map_err(|_| "Claude 续期决策参数无效".to_owned())?;
+    let input: Input = crate::json_lenient::from_str(input_json)
+        .map_err(|_| "Claude 续期决策参数无效".to_owned())?;
     serde_json::to_string(&decide(&input)).map_err(|_| "Claude 续期决策序列化失败".to_owned())
 }
 

@@ -177,7 +177,7 @@ fn flag(input: &Value, key: &str) -> bool {
 /// Normalize a stored `subagent` value (any shape) into `{claude, codex}` with
 /// both keys always present. Malformed entries become null.
 pub fn normalize(input: &str) -> Result<String, String> {
-    let parsed: Value = serde_json::from_str(input)
+    let parsed: Value = crate::json_lenient::from_str(input)
         .map_err(|error| format!("invalid subagent defaults input: {error}"))?;
     let stored = parsed.get("stored");
     Ok(Value::Object(normalized_defaults(stored)).to_string())
@@ -187,7 +187,7 @@ pub fn normalize(input: &str) -> Result<String, String> {
 /// target, pick the sessions without an own route, and say which are kept,
 /// unchanged or skipped. The caller applies the plan.
 pub fn plan_sync(input: &str) -> Result<String, String> {
-    let parsed: Value = serde_json::from_str(input)
+    let parsed: Value = crate::json_lenient::from_str(input)
         .map_err(|error| format!("invalid subagent sync input: {error}"))?;
     let cli = parsed
         .get("cli")
