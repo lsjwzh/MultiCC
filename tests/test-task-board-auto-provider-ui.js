@@ -31,6 +31,7 @@ test('task board Auto provider defaults to the first two managed routes', () => 
     ],
     maxAttempts: 2,
     sticky: true,
+    preferMaxQuota: true,
     allowCrossTrust: false,
   });
   assert.equal(editor.defaultSelection([
@@ -69,6 +70,7 @@ test('task board Auto provider preserves the committed enabled order and models'
     ],
     maxAttempts: 2,
     sticky: true,
+    preferMaxQuota: true,
     allowCrossTrust: false,
   });
 

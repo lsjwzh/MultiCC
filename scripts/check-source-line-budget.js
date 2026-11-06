@@ -597,9 +597,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // -21 双语键（airGlobalCpr* 10 键 + airGlobalRemoteBackend* 11 键）：CPR 与「🖥 屏幕」
     //   的后端切换卡随 Node 回退一起退场（Rust 是唯一后端），中英共 -42 行；按同一
     //   countLines 口径实测 10254/665421，棘轮双向回落到这一格。
-    maxLines: 10254,
+    // +6 双语键（autoEditorPreferQuota* 2 键 + autoEditorMorePreferQuota/NoPreferQuota 2 键
+    //   + 补登 main 上漏掉的 autoEditorPresetUpdate/Updated 2 键）：Auto 选线「优先用
+    //   额度最多的线路」开关与摘要文案。中英各 6 行 = +12 行，countLines 口径实测
+    //   10266/666788，按真实高水位抬一格。
+    maxLines: 10266,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 665421,
+    maxBytes: 666788,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

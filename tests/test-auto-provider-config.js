@@ -65,6 +65,7 @@ test('Auto Provider validates a same-protocol concrete candidate pool', () => {
     ],
     maxAttempts: 2,
     sticky: true,
+    preferMaxQuota: true,
     allowCrossTrust: false,
   });
 });
@@ -395,7 +396,11 @@ test('a legacy single-lane pool DTO keeps its exact key set', () => {
   const value = validateProviderSelection(selection(), { cli: 'claude', providers: catalog() }).value;
   const dto = providerSelectionDto(value);
   assert.deepEqual(Object.keys(dto).sort(),
-    ['allowCrossTrust', 'candidates', 'maxAttempts', 'mode', 'protocol', 'sticky', 'version']);
+    ['allowCrossTrust', 'candidates', 'maxAttempts', 'mode', 'preferMaxQuota', 'protocol', 'sticky', 'version']);
+  assert.equal(dto.preferMaxQuota, true, 'quota-first steering defaults on');
+  assert.equal(providerSelectionDto(validateProviderSelection(
+    selection({ preferMaxQuota: false }), { cli: 'claude', providers: catalog() },
+  ).value).preferMaxQuota, false, 'and the checkbox can turn it back off');
   assert.deepEqual(Object.keys(dto.candidates[0]).sort(), ['enabled', 'model', 'priority', 'providerId']);
   assert.equal('tier' in dto.candidates[0], false);
   assert.equal('autoModel' in dto.candidates[0], false);

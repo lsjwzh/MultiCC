@@ -1116,6 +1116,10 @@ class SessionProviderSelection {
   final bool sticky;
   final bool allowCrossTrust;
 
+  /// 额度优先（preferMaxQuota）：两条线路都有额度读数时，剩余额度多的那条
+  /// 优先接任务。默认开；老数据读不出来就是开（`!= false`，和服务端一致）。
+  final bool preferMaxQuota;
+
   /// Present only on a pool that routes by difficulty; absent (not null-on-wire)
   /// keeps a plain ordered pool byte-identical to what it always sent.
   final SessionProviderRouting? routing;
@@ -1135,6 +1139,7 @@ class SessionProviderSelection {
     required this.maxAttempts,
     this.sticky = true,
     this.allowCrossTrust = false,
+    this.preferMaxQuota = true,
     this.routing,
     this.cliSwitch,
   });
@@ -1151,6 +1156,7 @@ class SessionProviderSelection {
     'candidates': candidates.map((candidate) => candidate.toJson()).toList(),
     'maxAttempts': maxAttempts,
     'sticky': sticky,
+    'preferMaxQuota': preferMaxQuota,
     'allowCrossTrust': allowCrossTrust,
     if (cliSwitch != null) 'cliSwitch': cliSwitch,
     if (routing != null) 'routing': routing!.toJson(),
@@ -1176,6 +1182,7 @@ SessionProviderSelection? parseProviderSelection(dynamic json) {
     maxAttempts: (json['maxAttempts'] as num?)?.toInt() ?? 2,
     sticky: json['sticky'] != false,
     allowCrossTrust: json['allowCrossTrust'] == true,
+    preferMaxQuota: json['preferMaxQuota'] != false,
     // A difficulty-routed pool must survive the trip through the App: dropping
     // the block here would let the next save from the phone quietly downgrade
     // it to a plain ordered pool.

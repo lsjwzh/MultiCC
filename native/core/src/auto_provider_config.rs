@@ -1806,6 +1806,15 @@ fn run_selection(
         "sticky".to_string(),
         Value::Bool(!value_is(get(&input, "sticky"), &Value::Bool(false))),
     );
+    // Quota-first steering, default on: between lines that both carry a usage
+    // reading, the one with more headroom runs the task (see
+    // auto_provider_policy.rs `by_quota`). Default-true means an existing pool
+    // gains the behaviour without a migration; the checkbox exists precisely
+    // so it can be turned back off per pool.
+    value.insert(
+        "preferMaxQuota".to_string(),
+        Value::Bool(!value_is(get(&input, "preferMaxQuota"), &Value::Bool(false))),
+    );
     value.insert(
         "allowCrossTrust".to_string(),
         Value::Bool(allow_cross_trust),

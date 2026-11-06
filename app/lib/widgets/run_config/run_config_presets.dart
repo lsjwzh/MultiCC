@@ -24,6 +24,7 @@ class RunConfigPreset {
     required this.maxAttempts,
     required this.sticky,
     required this.savedAt,
+    this.preferMaxQuota = true,
     this.subagentProviderId = '',
     this.subagentModel = '',
   });
@@ -37,6 +38,10 @@ class RunConfigPreset {
   final int maxAttempts;
   final bool sticky;
   final int savedAt;
+
+  /// 额度优先：跟 sticky 一样属于池子的选线策略，随预设一起走。老预设没有
+  /// 这个字段，读出来是开（true），和服务端的默认一致。
+  final bool preferMaxQuota;
 
   /// 子任务线路（空 = 跟随主线路）+ 子任务模型（空 = 没设置子任务）。老预设
   /// 没有这一段，读出来就是两个空串 —— 等价于「跟随主线路」。
@@ -63,6 +68,7 @@ class RunConfigPreset {
     'tiering': tiering == RunTiering.jev ? 'price' : 'manual',
     'maxAttempts': maxAttempts,
     'sticky': sticky,
+    'preferMaxQuota': preferMaxQuota,
     // 和 web 一样只在真有子任务时写这一段；只写线路 id + 模型。
     if (subagentModel.isNotEmpty)
       'subagent': {'providerId': subagentProviderId, 'model': subagentModel},
@@ -145,6 +151,7 @@ class RunConfigPreset {
       tiering: raw['tiering'] == 'manual' ? RunTiering.manual : RunTiering.jev,
       maxAttempts: _int(raw['maxAttempts'], 2).clamp(2, 4),
       sticky: raw['sticky'] != false,
+    preferMaxQuota: raw['preferMaxQuota'] != false,
       savedAt: _int(raw['savedAt'], 0),
       subagentProviderId: subagentProviderId,
       subagentModel: subagentModel,
