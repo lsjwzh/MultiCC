@@ -472,6 +472,12 @@ test('pillModel（自动挑选）：旧预设没有 cli 也能匹配，presetId 
       run.pillText(run.pillModel({ next: { providerSelection: { ...selection, presetId: 'p1' } } })),
       '⚡ 自动 · 省钱组合 · 按顺序 · 2 条',
     );
+    // 预设改名后，引用它的池子拿的是当前名字，不会留着保存时的旧文案。
+    store[run.PRESET_KEY] = JSON.stringify([{ ...grown, name: '省钱组合 v2' }]);
+    assert.equal(
+      run.pillText(run.pillModel({ next: { providerSelection: { ...selection, presetId: 'p1' } } })),
+      '⚡ 自动 · 省钱组合 v2 · 按顺序 · 2 条',
+    );
     // 预设被删掉（或记录来自另一台设备）：退回池子比对。池子是这份预设的子集
     // （用户当年从它删过一条），唯一命中就仍算它。
     store[run.PRESET_KEY] = JSON.stringify([grown]);
