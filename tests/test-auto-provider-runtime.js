@@ -5,6 +5,8 @@ const test = require('node:test');
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
 const { createAutoProviderRouting } = require('../src/chat/auto-provider-routing');
 const { selectionKey } = require('../src/chat/auto-provider-selection-key');
+const { failoverSafety } = require('../src/chat/auto-provider-policy');
+const { decideApiErrorPolicy: evaluateApiError } = require('../src/chat/api-error-policy');
 
 function fixture({
   emptyFetchedAt = 0, thirdFetchedAt = null, maxAttempts = 3, backgroundActive = false,
@@ -478,8 +480,72 @@ test('observable output and non-provider failures close the cross-provider repla
   const second = runtime.beginTurn({ session: { ...session, id: 's2' }, turnId: 'turn-2' });
   second.initial();
   assert.equal(second.failover({
-    error: { category: 'invalid_request_model', phase: 'before_first_token', partialOutput: false, sideEffects: false },
+    error: { category: 'context_token_limit', phase: 'before_first_token', partialOutput: false, sideEffects: false },
   }, openAttempt()), null);
+  assert.equal(events.at(-1).reasonCode, 'category_not_failoverable');
+});
+
+test('failover is a blocklist: only local or request-shaped failures stay on the line', () => {
+  const blocked = ['cancel_shutdown', 'context_token_limit', 'tool_protocol', 'adapter_configuration'];
+  for (const category of blocked) {
+    for (const httpStatus of [undefined, 400, 499]) {
+      const { runtime, session, events } = fixture({ emptyFetchedAt: 900_000 });
+      const turn = runtime.beginTurn({ session, turnId: `blocked-${category}-${httpStatus}` });
+      turn.initial();
+      assert.equal(turn.failover({
+        action: 'fail_fast',
+        error: { category, httpStatus, phase: 'before_first_token', partialOutput: false, sideEffects: false },
+      }, openAttempt()), null, `${category} / ${httpStatus}`);
+      assert.equal(events.at(-1).reasonCode, 'category_not_failoverable');
+    }
+  }
+  // Everything else — including errors nobody has classified yet — switches.
+  const allowed = {
+    unknown: 'failover_unknown',
+    invalid_request_model: 'failover_invalid_request_model',
+    provider_transient: 'failover_provider_transient',
+    rate_limit: 'failover_rate_limit',
+    billing_quota: 'failover_billing_quota',
+    network: 'failover_network',
+    timeout: 'failover_timeout',
+    authentication_permission: 'failover_authentication_permission',
+  };
+  for (const [category, reason] of Object.entries(allowed)) {
+    const { runtime, session } = fixture({ emptyFetchedAt: 900_000 });
+    const turn = runtime.beginTurn({ session, turnId: `allowed-${category}` });
+    turn.initial();
+    const next = turn.failover({
+      action: 'fail_fast',
+      error: { category, phase: 'before_first_token', partialOutput: false, sideEffects: false },
+    }, openAttempt());
+    assert.equal(next.invocationOptions.providerId, 'backup', category);
+    assert.equal(next.decision.providerFailover.category, category);
+    assert.deepEqual(failoverSafety({ error: { category, phase: 'before_first_token' } }, openAttempt()),
+      { ok: true, reason }, category);
+  }
+  // A missing category is treated as unknown, not as "not failoverable".
+  assert.deepEqual(failoverSafety({ error: { phase: 'before_first_token' } }, openAttempt()),
+    { ok: true, reason: 'failover_unknown' });
+});
+
+// Regression: the classifier reads `code: provider_error` and returns
+// 'unknown' for this wording. Under the old allowlist that alone kept Auto on
+// the full line; under the blocklist an unclassified provider error switches.
+test('the OpenCode capacity refusal fails over even though it classifies as unknown', () => {
+  const decision = evaluateApiError({
+    source: 'opencode_event', provider: 'opencode', code: 'provider_error',
+    message: 'AI_APICallError: Upstream request failed: [prefill_cap_refused] the cell is at capacity; retry shortly (after 5 s)',
+  }, { source: 'opencode_event', provider: 'opencode', phase: 'before_first_token' });
+  assert.ok(['unknown', 'provider_transient'].includes(decision.error.category), decision.error.category);
+  assert.equal(failoverSafety(decision, openAttempt()).ok, true);
+});
+
+test('a server respawn kill is a local cancellation, never a failover trigger', () => {
+  const decision = evaluateApiError({
+    source: 'process_stderr', provider: 'opencode', code: 'restart_spawn', message: 'turn cancelled',
+  }, { source: 'process_stderr', provider: 'opencode', phase: 'before_first_token' });
+  assert.equal(decision.error.category, 'cancel_shutdown');
+  assert.equal(failoverSafety(decision, openAttempt()).ok, false);
 });
 
 test('unsafe replay reserves a different provider for exactly one fresh handoff turn', () => {
