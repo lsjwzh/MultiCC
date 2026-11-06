@@ -54,6 +54,7 @@ try {
     Check ($LASTEXITCODE -eq 0) 'reinstall succeeds after startup launch'
     & $installer install -Binary $Binary -AgentDir $agentDir -StartupDir $startupDir
     Check ($LASTEXITCODE -eq 0 -and @(InstalledProcesses).Count -eq 1) 'reinstall replaces the old process'
+    Check (@(Get-ChildItem -LiteralPath $agentDir -Filter 'multicc-desktop-agent.previous-*.exe').Count -eq 0) 'reinstall removes the previous binary backup'
     & $installer uninstall -AgentDir $agentDir -StartupDir $startupDir
     Check ($LASTEXITCODE -eq 0 -and !(Test-Path -LiteralPath $exe) -and !(Test-Path -LiteralPath $shortcut)) 'uninstall removes binary and startup shortcut'
     Check (@(InstalledProcesses).Count -eq 0) 'uninstall stops the installed process'

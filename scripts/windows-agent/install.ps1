@@ -14,9 +14,15 @@ $shortcut = Join-Path $StartupDir 'MultiCC Desktop Agent.lnk'
 
 function Stop-Agent {
     # Only stop the binary installed in this directory, never another user's/debug agent.
-    Get-CimInstance Win32_Process -Filter "Name = 'multicc-desktop-agent.exe'" |
-        Where-Object { $_.ExecutablePath -eq $exe } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
+    $targets = @(Get-CimInstance Win32_Process -Filter "Name = 'multicc-desktop-agent.exe'" |
+        Where-Object { $_.ExecutablePath -eq $exe })
+    foreach ($target in $targets) {
+        Stop-Process -Id $target.ProcessId -ErrorAction SilentlyContinue
+        Wait-Process -Id $target.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
+        if (Get-Process -Id $target.ProcessId -ErrorAction SilentlyContinue) {
+            throw 'Installed desktop agent did not stop.'
+        }
+    }
 }
 
 if ($Action -eq 'uninstall') {
@@ -60,7 +66,18 @@ Set-Acl -LiteralPath $AgentDir -AclObject $acl
 $temporary = Join-Path $AgentDir 'multicc-desktop-agent.new.exe'
 Copy-Item -LiteralPath $Binary -Destination $temporary -Force
 Stop-Agent
-Move-Item -LiteralPath $temporary -Destination $exe -Force
+$backup = Join-Path $AgentDir ('multicc-desktop-agent.previous-' + [guid]::NewGuid().ToString('N') + '.exe')
+$hadPrevious = Test-Path -LiteralPath $exe
+if ($hadPrevious) { Move-Item -LiteralPath $exe -Destination $backup }
+try {
+    Move-Item -LiteralPath $temporary -Destination $exe
+} catch {
+    if ($hadPrevious -and !(Test-Path -LiteralPath $exe)) {
+        Move-Item -LiteralPath $backup -Destination $exe
+    }
+    throw
+}
+if ($hadPrevious) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
 
 # A per-user Startup shortcut inherits that user's interactive desktop and environment.
 # PowerShell 7's $PSHOME contains pwsh.exe, not powershell.exe. Use the Windows
