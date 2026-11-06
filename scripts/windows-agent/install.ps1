@@ -12,17 +12,21 @@ $StartupDir = [IO.Path]::GetFullPath($StartupDir)
 $exe = Join-Path $AgentDir 'multicc-desktop-agent.exe'
 $shortcut = Join-Path $StartupDir 'MultiCC Desktop Agent.lnk'
 
-function Stop-Agent {
-    # Only stop the binary installed in this directory, never another user's/debug agent.
-    $targets = @(Get-CimInstance Win32_Process -Filter "Name = 'multicc-desktop-agent.exe'" |
+function Get-InstalledAgentProcesses {
+    # Match the installed path, never another user's or a debug agent.
+    @(Get-CimInstance Win32_Process -Filter "Name = 'multicc-desktop-agent.exe'" |
         Where-Object { $_.ExecutablePath -eq $exe })
-    foreach ($target in $targets) {
+}
+
+function Stop-Agent {
+    foreach ($target in @(Get-InstalledAgentProcesses)) {
         Stop-Process -Id $target.ProcessId -ErrorAction SilentlyContinue
-        Wait-Process -Id $target.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
-        if (Get-Process -Id $target.ProcessId -ErrorAction SilentlyContinue) {
-            throw 'Installed desktop agent did not stop.'
-        }
     }
+    for ($attempt = 0; $attempt -lt 50; $attempt++) {
+        if (@(Get-InstalledAgentProcesses).Count -eq 0) { return }
+        Start-Sleep -Milliseconds 100
+    }
+    throw 'Installed desktop agent did not stop.'
 }
 
 if ($Action -eq 'uninstall') {
