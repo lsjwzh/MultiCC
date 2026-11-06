@@ -11,7 +11,7 @@ function relatedHistory({ store, targetId, getTask, getRecord, getHistory, getLi
   if (isDeletedTask?.(targetId)) throw fail('task_not_found', 404);
   const target = store.get('task', targetId) || getTask(targetId);
   if (!target) throw fail('task_not_found', 404);
-  const addon = getNative('task_context', 'rust');
+  const addon = getNative();
   const plan = JSON.parse(addon.planTaskContextRead(JSON.stringify({
     target: { id: target.id, sessionId: target.sessionId, chatSessionId: target.chatSessionId,
       historySessionIds: target.historySessionIds, refs: target.refs?.map(ref => ({ sessionId: ref.sessionId })) },

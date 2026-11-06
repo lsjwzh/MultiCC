@@ -7,7 +7,7 @@ const { createTaskReadModel } = require('../native/task-read-model');
 // cursor/ready mirror accepted native replies; they contain no task state.
 function createRustAirReadIndex({ model, historyLimit, maxDeltaBytes } = {}) {
   if (!model) {
-    const addon = nativeRuntime.getNative('read_model', 'rust');
+    const addon = nativeRuntime.getNative();
     if (addon.taskReadModelProtocolVersion?.() !== 1) throw Error('air_read_protocol_unavailable');
     model = createTaskReadModel({ addon });
   }
@@ -38,12 +38,7 @@ function createRustAirReadIndex({ model, historyLimit, maxDeltaBytes } = {}) {
     close() { closed = true; ready = false; return model.close(); },
   };
 }
-function createAirIndex({ backend = process.env.MULTICC_AIR_READ_BACKEND || 'rust', ...options } = {}) {
-  if (backend === 'rust') return createRustAirReadIndex(options);
-  if (backend === 'node') {
-    const index = require('./air-read-index').createAirReadIndex(options);
-    return Object.assign(index, { backend: 'node' });
-  }
-  throw new Error('invalid_air_read_backend');
+function createAirIndex(options = {}) {
+  return createRustAirReadIndex(options);
 }
 module.exports = { createAirIndex, createRustAirReadIndex };

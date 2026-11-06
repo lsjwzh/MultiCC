@@ -164,8 +164,7 @@ function readKey(run, exe, key, name = 'Path') {
 // Filesystem discovery stays in Rust's worker pool. This module only adapts
 // registry reads and the Node process environment used by child_process.
 async function discoverTools(input) {
-  const native = require('./native/runtime').getNative('windows_tools');
-  if (!native?.windowsToolsDiscover) return null;
+  const native = require('./native/runtime').getNative();
   return JSON.parse(await native.windowsToolsDiscover(JSON.stringify(input)));
 }
 

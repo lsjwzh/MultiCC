@@ -9,9 +9,7 @@ let guard = null, refreshOne = null, recordDto = null;
 function configure(options = {}) { cache = options.cache || null; guard = options.guard || null; recordDto = options.recordDto || null; }
 function setRefresher(fn) { refreshOne = fn; return fn; }
 function call(method, input) {
-  const native = getNative('virtual_provider');
-  if (typeof native?.[method] !== 'function') throw Object.assign(new Error('虚拟线路需要更新 Rust 原生模块并手动重启服务'),
-    { statusCode: 503, safeCprMessage: '虚拟线路需要更新 Rust 原生模块并手动重启服务' });
+  const native = getNative();
   return JSON.parse(native[method](JSON.stringify(input)));
 }
 function validate(input) { return call('validateVirtualProvider', input); }

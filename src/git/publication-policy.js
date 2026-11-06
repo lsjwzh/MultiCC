@@ -6,7 +6,7 @@ const { getNative } = require('../native/runtime');
 
 function native() {
   let addon;
-  try { addon = getNative('publication', 'rust'); } catch (_) {}
+  try { addon = getNative(); } catch (_) {}
   if (typeof addon?.validatePublicationText !== 'function' || typeof addon?.quickCommitMessage !== 'function'
       || typeof addon?.gitCommitEnvironment !== 'function' || typeof addon?.validatePublicationRecords !== 'function') {
     throw new Error('提交身份与英文校验模块不可用，请构建当前版本的 Rust 模块后重试');

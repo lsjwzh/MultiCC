@@ -6,7 +6,7 @@ const { getNative } = require('./native/runtime');
 
 function createMachineRuntime({ root, authSecurity, getWss = () => null }) {
   function native() {
-    const addon = getNative('machines', 'rust');
+    const addon = getNative();
     if (typeof addon?.machineOperation !== 'function') throw new Error('machine_native_unavailable');
     return addon;
   }

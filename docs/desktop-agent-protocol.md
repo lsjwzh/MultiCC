@@ -551,10 +551,6 @@ macOS 那套做法**不可能**。没有全局截图、没有全局注入，唯�
 把它原样吐给前端。`supported: false` 时三条路由（frame/input/snapshot）与唤屏路由都干净地回
 `503 / 409 platform-unsupported`，**不会去连一个不存在的 socket**；前端据此不显示 🖥。
 
-> Node 回退后端（`MULTICC_REMOTE_SCREEN_BACKEND=node`，见 remote-screen-process.md §7）不经过
-> `host.rs`，而是用迁移前留在 `src/desktop-host.js` 的同一张画像表；回退存在期间两边改动要同步，
-> 回退删除后以 `host.rs` 为准。
-
 判断「能不能做某件事」要按 **feature 名**判，不要按平台名判——平台名会把「Linux 支持远程屏幕」
 错读成「Linux 支持唤屏」。唤屏路由的 `supported` 用的是 `features.wake`（Linux 为 false）：
 判成 `profile.supported` 的话，前端会显示一个「唤起屏幕」按钮，点下去永远报
@@ -571,17 +567,17 @@ macOS 那套做法**不可能**。没有全局截图、没有全局注入，唯�
 
 ### 本次实现边界与验证记录（2026-11-05）
 
-新增 Windows 后端、控制状态与输入校验均使用 Rust；Node 仅同步旧回退层的平台画像。
-Linux 保留已有 C/Xlib 边界，仅修协议字段和 XTest 调用的兼容错误；本轮直接重写其线程、
-连接和输入护栏会扩大未验证迁移范围。后续迁移条件是 Rust 原生绑定通过同一套 X11
-一致性测试和实际桌面回归，再替换 C 请求层。Node 画像随回退层退役一同删除。
+新增 Windows 后端、控制状态与输入校验均使用 Rust；回退层当时同步的平台画像已随
+2026-11-06 的 Node 回退整块删除一并移除。Linux 保留已有 C/Xlib 边界，仅修协议字段和 XTest
+调用的兼容错误；本轮直接重写其线程、连接和输入护栏会扩大未验证迁移范围。后续迁移条件是
+Rust 原生绑定通过同一套 X11 一致性测试和实际桌面回归，再替换 C 请求层。
 
 本轮确认的执行结果：
 
 | 验证 | 环境 | 结果 |
 |---|---|---|
 | Rust Agent 核心与远控全部测试 | macOS，`cargo test --locked --manifest-path native/Cargo.toml -p multicc-desktop-agent -p multicc-remote` | 87 通过 |
-| Node 回退、原生构建/打包与桌面壳回归 | macOS，`node --test tests/test-rust-kernels.js tests/test-desktop-shell.js tests/test-remote-screen-node.js` | 85 通过，1 项因缺少 Electron 工具链跳过 |
+| 原生构建/打包与桌面壳回归（历史记录；Node 回退层已于 2026-11-06 删除） | macOS，`node --test tests/test-rust-kernels.js tests/test-desktop-shell.js` | 当时含回退测试共 85 通过，1 项因缺少 Electron 工具链跳过 |
 | Windows MSVC 目标全部测试代码的严格 Clippy | macOS 交叉检查，重建目标标准库，`-D warnings` | 通过；未链接或执行 Windows exe |
 | Windows 安装/验证/靶子脚本 | PowerShell 7.6.9 实际解析器 | 4 份脚本语法通过；未执行 Win32 行为 |
 | Linux 严格编译、JSON 与截图/输入原语 | Ubuntu 26.04 arm64 独立 Lima 虚拟机、Xvfb | 两种分辨率均通过 |

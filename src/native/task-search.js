@@ -36,15 +36,13 @@ async function buildPrepared(prepared, addon) {
   return { backend: 'rust', native, docs: prepared.docs, timings: { buildNativeMs: native.buildMs } };
 }
 async function buildIndex(board, options = {}) {
-  const addon = runtime.getNative('search', options.backend);
-  if (!addon) return { backend: 'node', index: search.buildTaskSearchIndex(board, options) };
+  const addon = runtime.getNative();
   return buildPrepared(prepare(board, options), addon);
 }
 function stringSet(value, emptyIsNull = true) {
   return Array.isArray(value) && (!emptyIsNull || value.length) ? value.map(String) : null;
 }
 async function searchIndex(index, query, options = {}) {
-  if (index.backend === 'node') return search.searchTaskIndex(index.index, query, options);
   const parsed = typeof query === 'string' || query == null ? search.analyzeQuery(query) : query;
   if (!parsed.terms.length) return [];
   const input = JSON.stringify({
@@ -68,37 +66,18 @@ async function searchIndex(index, query, options = {}) {
   runtime.record('search');
   return result;
 }
-function createTaskSearchBackend({ backend } = {}) {
+function createTaskSearchBackend() {
   let cached = null;
-  let nodeCached = null;
-  function searchNode(board, query, options) {
-    const key = prepare(board, options).key;
-    if (!nodeCached || nodeCached.key !== key) {
-      nodeCached = { key, index: search.buildTaskSearchIndex(board, options) };
-    }
-    return search.searchTaskIndex(nodeCached.index, query, options);
-  }
-  return function searchTasks(board, query, options = {}) {
-    let addon;
-    let prepared;
-    try {
-      addon = runtime.getNative('search', backend);
-      if (!addon) return searchNode(board, query, options);
-      prepared = prepare(board, options);
-    } catch (error) {
-      runtime.fallback('search', backend, error);
-      return search.searchBoard(board, query, options);
-    }
+  return async function searchTasks(board, query, options = {}) {
+    const addon = runtime.getNative();
+    const prepared = prepare(board, options);
     if (!cached || cached.key !== prepared.key) {
       const entry = { key: prepared.key, promise: buildPrepared(prepared, addon) };
       cached = entry;
       // 失败不缓存；较旧请求的完成不能抹掉较新快照。
       entry.promise.catch(() => { if (cached === entry) cached = null; });
     }
-    return cached.promise.then(index => searchIndex(index, query, options)).catch(error => {
-      runtime.fallback('search', backend, error);
-      return search.searchBoard(board, query, options);
-    });
+    return searchIndex(await cached.promise, query, options);
   };
 }
 module.exports = { buildIndex, searchIndex, createTaskSearchBackend };

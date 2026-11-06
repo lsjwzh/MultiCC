@@ -10,16 +10,12 @@ const native = require('../src/native/runtime');
 const { buildIndex, searchIndex, createTaskSearchBackend } = require('../src/native/task-search');
 const usage = require('../src/token-global');
 const { taskBoard, usageFixture } = require('./fixtures/rust-kernel-fixtures');
-const available = !!native.getNative('search', process.env.MULTICC_REQUIRE_RUST_TESTS === '1' ? 'rust' : 'auto');
+const available = (() => { try { return !!native.getNative(); } catch { return false; } })();
 const rustTest = (name, fn) => test(name, { skip: !available && '未构建可选 Rust 模块' }, fn);
 const stableUsage = ({ generatedAt, ...data }) => data;
 
-test('Node 模式不依赖原生模块，保持同步搜索接口', () => {
-  const board = taskBoard(8);
-  assert.deepEqual(createTaskSearchBackend({ backend: 'node' })(board, '全文检索'), js.searchBoard(board, '全文检索'));
-});
-test('原生模块缺失时自动回退，强制 Rust 时明确失败', () => {
-  const script = `const r=require('./src/native/runtime'); if(r.getNative('search','auto')!==null)process.exit(1);try{r.getNative('search','rust');process.exit(2)}catch(e){if(e.message!=='rust_backend_unavailable')process.exit(3)}`;
+test('原生模块缺失时明确失败，没有 Node 实现可回退', () => {
+  const script = `const r=require('./src/native/runtime');try{r.getNative();process.exit(2)}catch(e){if(e.message!=='rust_backend_unavailable')process.exit(3)}`;
   const result = spawnSync(process.execPath, ['-e', script], { cwd: path.resolve(__dirname, '..'),
     env: { ...process.env, MULTICC_RUST_ADDON: path.join(os.tmpdir(), 'nonexistent-multicc-rust-module.node') }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
@@ -35,7 +31,7 @@ rustTest('搜索差分：中文、Unicode、空查询、过滤、排名、高亮
   board.tasks.tsk_2.mergedInto = 'tsk_1'; board.tasks.tsk_3.deleting = true; board.deletedTaskIds = ['tsk_4'];
   for (const statuses of [null, ['active'], ['archived']]) {
     const opts = { statuses };
-    const index = await buildIndex(board, { ...opts, backend: 'rust' });
+    const index = await buildIndex(board, { ...opts });
     assert.equal(index.backend, 'rust');
     const baseline = js.buildTaskSearchIndex(board, opts);
     for (const query of ['', 'a', '，。', '索', '全文检索', 'AIR.js', 'İSTANBUL', 'ΣΟΣ', '缓存 供应商', '😀全文检索', ...samples]) {
@@ -57,14 +53,14 @@ rustTest('随机搜索样本和同分排序保持一致', async () => {
       const id = `${i % 2 ? 'a' : 'A'}-${i}`;
       board.tasks[id] = { id, title: text, description: text, updatedAt: i % 3 };
     }
-    const index = await buildIndex(board, { backend: 'rust' });
+    const index = await buildIndex(board);
     const baseline = js.buildTaskSearchIndex(board);
     for (const query of vocabulary) assert.deepEqual(await searchIndex(index, query), js.searchTaskIndex(baseline, query));
   }
 });
 rustTest('缓存按内容失效，同一对象和同一 revision 的修改也可见', async () => {
   const board = taskBoard(20);
-  const backend = createTaskSearchBackend({ backend: 'rust' });
+  const backend = createTaskSearchBackend();
   assert.deepEqual(await backend(board, '全文检索'), js.searchBoard(board, '全文检索'));
   board.tasks.tsk_0.title = '改变标题后仍有全文检索';
   board.tasks.tsk_0.updatedAt += 1;
@@ -77,68 +73,92 @@ rustTest('HTTP 搜索等待原生结果，并将异步失败转换为 503', asyn
   const board = taskBoard(10);
   const response = () => ({ statusCode: 200, status(n) { this.statusCode = n; return this; }, json(b) { this.body = b; return this; } });
   const res = response();
-  await createTaskSearchRoutes({ getBoard: () => board, searchTasks: createTaskSearchBackend({ backend: 'rust' }) }).handleSearch({ query: { q: '全文检索' } }, res);
+  await createTaskSearchRoutes({ getBoard: () => board, searchTasks: createTaskSearchBackend() }).handleSearch({ query: { q: '全文检索' } }, res);
   assert.deepEqual(res.body.results, js.searchBoard(board, '全文检索', { limit: 20 }));
   const failed = response();
   await createTaskSearchRoutes({ getBoard: () => board, searchTasks: () => Promise.reject(new Error('failure')) }).handleSearch({ query: { q: '全文检索' } }, failed);
   assert.equal(failed.statusCode, 503);
 });
-rustTest('Token 文件扫描差分：重复、损坏尾行、无关正文与窗口一致', async () => {
+rustTest('Token 文件扫描：重复、损坏尾行、无关正文与窗口聚合', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rust-test-'));
   try {
     const fixture = usageFixture(root, { rows: 120 });
     const before = native.status().usage;
-    assert.deepEqual(stableUsage(await usage._compute({ ...fixture, backend: 'rust' })), stableUsage(await usage._computeJs(fixture)));
+    const first = await usage._compute(fixture);
     assert.equal(native.status().usage, before + 1, '必须确实经过 Rust，不能静默回退');
+    assert.equal(first.scannedFiles, 8);
+    assert.equal(first.responses, 960); // 480 Claude (duplicates deduped) + 480 Codex events
+    const claude0 = first.windows.all['claude-0'];
+    assert.equal(claude0.msgs, 160);
+    assert.equal(claude0.outputTokens, 1920);
+    assert.equal(claude0.cacheWrite, 800);
+    assert.equal(claude0.cacheRead, 12800);
+    assert.ok(claude0.inputTokens > 0);
+    assert.deepEqual(first.windows.all['gpt-test'],
+      { inputTokens: 28800, outputTokens: 4800, cacheWrite: 0, cacheRead: 19200, msgs: 480 });
+    assert.deepEqual(stableUsage(await usage._compute(fixture)), stableUsage(first));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 rustTest('原生工作不阻塞 Node 定时器', async () => {
   const board = taskBoard(3000);
   let ticks = 0;
   const timer = setInterval(() => ticks++, 1);
-  try { await buildIndex(board, { backend: 'rust' }); } finally { clearInterval(timer); }
+  try { await buildIndex(board); } finally { clearInterval(timer); }
   assert.ok(ticks > 0);
 });
 
-rustTest('不完整 Unicode 安全回退到 Node，保持历史字符串行为', async () => {
+rustTest('不完整 Unicode 由 Rust 清洗，不再回退到 Node', async () => {
   const board = taskBoard(2);
   board.tasks.tsk_0.title = '\ud800全文检索\udfff';
-  const before = native.status().fallbacks;
-  assert.deepEqual(await createTaskSearchBackend({ backend: 'auto' })(board, '全文检索'), js.searchBoard(board, '全文检索'));
-  assert.equal(native.status().fallbacks, before + 1);
+  assert.deepEqual(await createTaskSearchBackend()(board, '全文检索'), js.searchBoard(board, '全文检索'));
 });
 
-rustTest('Token 不完整 Unicode 与非 ISO 时间回退，不能静默漏算', async () => {
+rustTest('Token 不完整 Unicode、非 ISO 时间、闰秒与短年份都由 Rust 容忍', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rust-edge-'));
   try {
     const fixture = usageFixture(root, { files: 1, rows: 2 });
-    for (const overrides of [{ requestId: '\ud800' }, { timestamp: 'July 19, 2026 12:00:00' },
-      { timestamp: '2016-12-31T23:59:60Z' }, { timestamp: '0026-01-01T00:00:00Z' }]) {
+    const cases = [
+      { overrides: { requestId: '\ud800' }, day: day => day !== 'NaN-NaN-NaN' },
+      { overrides: { timestamp: 'July 19, 2026 12:00:00' }, day: day => day !== 'NaN-NaN-NaN' },
+      // JS Date rejects leap seconds; the record stays in all/byDay as NaN.
+      { overrides: { timestamp: '2016-12-31T23:59:60Z' }, day: day => day === 'NaN-NaN-NaN' },
+      // Four-digit years are not zero-padded by JS getFullYear().
+      { overrides: { timestamp: '0026-01-01T00:00:00Z' }, day: day => day === '26-01-01' },
+    ];
+    for (const item of cases) {
       const row = { timestamp: '2026-07-19T01:00:00Z', requestId: 'extra',
-        message: { id: 'extra', model: 'edge', usage: { input_tokens: 9 } }, ...overrides };
+        message: { id: 'extra', model: 'edge', usage: { input_tokens: 9 } }, ...item.overrides };
       fs.writeFileSync(path.join(fixture.projectsDir, 'edge.jsonl'), JSON.stringify(row) + '\n');
-      const before = native.status().fallbacks;
-      assert.deepEqual(stableUsage(await usage._compute({ ...fixture, backend: 'auto' })), stableUsage(await usage._computeJs(fixture)));
-      assert.equal(native.status().fallbacks, before + 1);
-      await assert.rejects(usage._compute({ ...fixture, backend: 'rust' }));
+      const result = await usage._compute(fixture);
+      assert.equal(result.windows.all.edge.inputTokens, 9);
+      const day = Object.keys(result.byDay).find(key => result.byDay[key].edge === 9);
+      assert.ok(item.day(day), `${JSON.stringify(item.overrides)} → ${day}`);
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-rustTest('Token 日期窗口在 UTC、上海和纽约时区与 Node 一致', () => {
+rustTest('Token 日期窗口在 UTC、上海和纽约时区保持一致', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rust-tz-'));
   try {
     const timestamps = ['2026-03-08T06:59:59Z', '2026-03-08T07:00:00Z',
-      '2026-11-01T05:59:59Z', '2026-11-01T06:00:00Z', '2026-11-01',
-      '2026-11-01T01:30:00', '2026-10-31T23:59:59.999-04:00', 1793520000000];
-    fs.writeFileSync(path.join(root, 'tz.jsonl'), timestamps.map((timestamp, i) => JSON.stringify({
+      '2026-11-01T05:59:59Z', '2026-11-01T06:00:00Z', '2026-11-01T01:30:00',
+      '2026-10-31T23:59:59.999-04:00', 1793520000000];
+    const tzDir = path.join(root, 'tz'); fs.mkdirSync(tzDir);
+    fs.writeFileSync(path.join(tzDir, 'tz.jsonl'), timestamps.map((timestamp, i) => JSON.stringify({
       timestamp, requestId: String(i), message: { id: String(i), model: 'tz', usage: { input_tokens: i + 1 } },
     })).join('\n'));
+    // Date-only strings parse as UTC midnights, so New York sees the day before.
+    const dateDir = path.join(root, 'date'); fs.mkdirSync(dateDir);
+    fs.writeFileSync(path.join(dateDir, '2026.jsonl'), JSON.stringify({
+      timestamp: '2026-11-01', requestId: 'date', message: { id: 'date', model: 'tz', usage: { input_tokens: 5 } },
+    }) + '\n');
     const script = `const u=require('./src/token-global'),a=require('node:assert/strict');
-      const clean=({generatedAt,...v})=>v;(async()=>{const o={projectsDir:process.argv[1],codexDir:process.argv[1]+'/absent',now:new Date('2026-11-01T17:00:00Z')};
-      a.deepEqual(clean(await u._compute({...o,backend:'rust'})),clean(await u._computeJs(o)));})().catch(e=>{console.error(e);process.exitCode=1})`;
-    for (const TZ of ['UTC', 'Asia/Shanghai', 'America/New_York']) {
-      const result = spawnSync(process.execPath, ['-e', script, root], { cwd: path.resolve(__dirname, '..'),
+      (async()=>{const base={projectsDir:process.argv[1],codexDir:process.argv[1]+'/absent',now:new Date('2026-11-01T17:00:00Z')};
+      const r=await u._compute(base);a.equal(r.responses,7);a.equal(r.windows.all.tz.inputTokens,28);
+      const d=await u._compute({...base,projectsDir:process.argv[3]});
+      a.deepEqual(d.byDay[process.argv[2]],{tz:5});})().catch(e=>{console.error(e);process.exitCode=1})`;
+    for (const [TZ, day] of [['UTC', '2026-11-01'], ['Asia/Shanghai', '2026-11-01'], ['America/New_York', '2026-10-31']]) {
+      const result = spawnSync(process.execPath, ['-e', script, tzDir, day, dateDir], { cwd: path.resolve(__dirname, '..'),
         encoding: 'utf8', env: { ...process.env, TZ } });
       assert.equal(result.status, 0, `${TZ}: ${result.stderr}`);
     }

@@ -167,7 +167,7 @@ test('整页批量权限与逐卡 taskAccess 同一套规则、结果逐张一�
 });
 
 test('启动闸门的只读探测与单份备份：被打断留下的旧备份/半成品先清掉，迁移后只剩一份、进度文件删除', t => {
-  const addon = require('../src/native/runtime').getNative('task_store', 'rust');
+  const addon = require('../src/native/runtime').getNative();
   const empty = legacyDb(t, []);
   assert.equal(addon.taskStoreMigrationPending(path.join(empty.dir, 'absent.sqlite')), false, '库不存在');
   assert.equal(addon.taskStoreMigrationPending(empty.file), false, '空的旧库不需要迁移');

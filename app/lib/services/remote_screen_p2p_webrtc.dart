@@ -9,7 +9,7 @@ import 'remote_screen_p2p.dart';
 /// [RtcPeer] 的真实现：flutter_webrtc（Google libwebrtc）。
 ///
 /// 只做数据通道，不碰摄像头/麦克风：客户端建一条有序 DataChannel（标签
-/// `screen`，与服务端 `src/remote-screen-p2p.js` 对齐），offer 里自带 SCTP，
+/// `screen`，与服务端 `native/remote/src/p2p.rs` 对齐），offer 里自带 SCTP，
 /// ICE 走 trickle（候选随 WS 信令发出去）。帧格式由 [RemoteScreenP2pMux]
 /// 负责，这里只搬运字节。
 class FlutterRtcPeer implements RtcPeer {

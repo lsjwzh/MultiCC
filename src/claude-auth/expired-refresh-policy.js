@@ -8,7 +8,7 @@ let warned = false;
 
 function planClaudeExpiredRefresh(input, logger) {
   try {
-    const addon = getNative('claude_refresh', 'rust');
+    const addon = getNative();
     if (typeof addon?.planClaudeExpiredRefresh !== 'function') throw new Error('policy_unavailable');
     const plan = JSON.parse(addon.planClaudeExpiredRefresh(JSON.stringify(input)));
     if (!plan || typeof plan.recoverParked !== 'boolean' || typeof plan.allowProbe !== 'boolean'
@@ -19,11 +19,11 @@ function planClaudeExpiredRefresh(input, logger) {
     if (!warned) {
       warned = true;
       logger?.warn?.('claude_expired_refresh_policy_unavailable', {
-        action: 'build the current Rust addon; retaining the existing refresh policy until it is available',
+        action: 'build the current Rust addon; Claude CLI probes stay disabled until it is available',
       });
     }
-    // No Node copy of the new policy: an older installation keeps only its
-    // existing bounded retry behaviour until its native addon is upgraded.
+    // No Node copy of the policy. Callers read null as "no plan": parked
+    // credentials stay parked and no authenticated probe is admitted.
     return null;
   }
 }

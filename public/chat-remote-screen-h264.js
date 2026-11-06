@@ -17,7 +17,7 @@
 // width/height），否则多个观看者同时看、或 App 正在限速时，网页这端的点击会落在左上角。
 //
 // P2P：服务端在这条 WS 上发 rtc-hello 时，这里建 RTCPeerConnection + DataChannel
-// 试直连（信令仍走这条 WS，见 src/remote-screen-p2p.js）。服务端发 rtc-active 后帧改
+// 试直连（信令仍走这条 WS，见 native/remote/src/p2p.rs）。服务端发 rtc-active 后帧改
 // 从 DataChannel 来（按字节流分片，这里拼回），输入也改走直连；直连断了服务端再发
 // rtc-active:false，回到 WS（中继，走现有外网通道），之后按退避重试直连。
 // transport 属性 / 'transport' 事件告诉宿主当前是 'p2p' 还是 'relay'。

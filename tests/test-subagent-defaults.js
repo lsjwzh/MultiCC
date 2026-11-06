@@ -17,8 +17,8 @@ const assert = require('node:assert/strict');
 if (process.env.MULTICC_RUST_PREBUILT_DIR) delete process.env.MULTICC_RUST_ADDON;
 
 const nativeRuntime = require('../src/native/runtime');
-const addon = nativeRuntime.getNative('subagent_defaults',
-  process.env.MULTICC_REQUIRE_RUST_TESTS === '1' ? 'rust' : 'auto');
+let addon = null;
+try { addon = nativeRuntime.getNative(); } catch (_) { /* availability is asserted below */ }
 const available = typeof addon?.normalizeSubagentDefaults === 'function'
   && typeof addon?.planSubagentSync === 'function';
 if (process.env.MULTICC_REQUIRE_RUST_TESTS === '1') {
@@ -370,8 +370,11 @@ rustTest('the official codex provider cannot be a sub-task route', async () => {
   assert.equal(response.body.code, 'provider_not_proxyable');
 });
 
-test('missing native functions answer 503 rust_backend_unavailable', async () => {
-  const harness = bridgeHarness({ sessions: [claudeSession('a')], getNative: () => ({}) });
+test('missing native module answers 503 rust_backend_unavailable', async () => {
+  const harness = bridgeHarness({
+    sessions: [claudeSession('a')],
+    getNative: () => { throw new Error('rust_backend_unavailable'); },
+  });
   for (const [method, routePath, body] of [
     ['GET', '/api/subagent-defaults', {}],
     ['POST', '/api/subagent-defaults/sync', { body: { cli: 'claude', subagent: null } }],
@@ -530,20 +533,6 @@ rustTest('stored defaults are normalized on load, including malformed entries', 
   assert.deepEqual(harness.providerDefaults.subagent, { claude: CLAUDE_ROUTE, codex: null });
   const response = await invoke(harness.app, 'GET', '/api/subagent-defaults');
   assert.deepEqual(response.body.defaults, { claude: CLAUDE_ROUTE, codex: null });
-});
-
-test('without the native module the stored value passes through untouched', async () => {
-  const raw = { claude: { providerId: 'p', model: 'm' }, codex: 'junk' };
-  const harness = providerHarness({
-    stored: { claude: null, codex: null, subagent: raw },
-    getNative: () => ({}),
-  });
-  assert.deepEqual(harness.providerDefaults.subagent, raw);
-  const response = await invoke(harness.app, 'GET', '/api/subagent-defaults');
-  assert.equal(response.statusCode, 503);
-  // A later save must not drop the raw key.
-  const put = await invoke(harness.app, 'PUT', '/api/provider-defaults', { body: { claude: 'x' } });
-  assert.deepEqual(put.body.defaults.subagent, raw);
 });
 
 rustTest('save_failed answers 500 and touches no session', async () => {

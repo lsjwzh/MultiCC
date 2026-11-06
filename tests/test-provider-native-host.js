@@ -8,7 +8,7 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { createNativeProviderStore } = require('../src/providers/native-store');
 const { credential, readCli } = require('../src/providers/native-credentials');
-const native = require('../src/native/runtime').getNative('provider_store', 'rust');
+const native = require('../src/native/runtime').getNative();
 const { createHopCredentialStore } = require(path.join(path.dirname(require.resolve('cli-provider-router')), 'proxy/hop-credentials'));
 function temp(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-native-host-'));
@@ -40,7 +40,7 @@ test('跨进程写入只能有一个胜者，不会静默覆盖配置', async t 
   const file = path.join(temp(t), 'providers.json');
   const store = createNativeProviderStore(file), initial = store.read(); store.write(initial);
   const snapshot = JSON.parse(native.providerStore(file, '{"operation":"read"}'));
-  const script = `const n=require('./src/native/runtime').getNative('provider_store','rust');try { n.providerStore(process.argv[1],process.argv[2]);process.exitCode=0; }catch(e){ process.exitCode=/PROVIDER_STORE_(CONFLICT|BUSY)/.test(e.message)?2:3; }`;
+  const script = `const n=require('./src/native/runtime').getNative();try { n.providerStore(process.argv[1],process.argv[2]);process.exitCode=0; }catch(e){ process.exitCode=/PROVIDER_STORE_(CONFLICT|BUSY)/.test(e.message)?2:3; }`;
   const writes = [1, 2].map(id => new Promise(resolve => {
     const child = spawn(process.execPath, ['-e', script, file,
       JSON.stringify({ operation: 'write', revision: snapshot.revision, records: [{ id }] })], { stdio: 'ignore' });

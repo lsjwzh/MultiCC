@@ -17,7 +17,7 @@ const { createClaudeAccountRefreshSupervisor } = require('../src/claude-auth/acc
 let addon;
 try {
   addon = process.env.MULTICC_RUST_ADDON ? require(process.env.MULTICC_RUST_ADDON)
-    : require('../src/native/runtime').getNative('claude_expired_refresh');
+    : require('../src/native/runtime').getNative();
 } catch (_) {}
 const nativeReady = typeof addon?.planClaudeExpiredRefresh === 'function';
 const nativeTest = (name, fn) => test(name, { skip: !nativeReady }, fn);
@@ -327,22 +327,28 @@ nativeTest('凭据有效期更新后可以为新凭据预留新的到期续期�
   assert.equal(h.probes().length, 4);
 });
 
-test('原生模块不可用时强制调用也不能绕过旧凭据的拒绝暂停', t => {
+// Rust 是唯一实现：原生模块缺失时续期入口直接报错（加载期或调用期均可），
+// 不存在退回 Node 旧预算的兼容路径，强制调用也不能借此对失效授权再发请求。
+test('原生模块不可用时续期入口直接报错，强制调用也不会运行 CLI', t => {
   const h = makeFixture(t, { expiresAt: T0 - MIN, parked: 'rejected' });
   const script = `
-    const { createClaudeOAuthRefresher } = require(process.argv[1]);
-    const { createRefreshHealthStore } = require(process.argv[2]);
     let calls = 0;
-    const refresher = createClaudeOAuthRefresher({
-      platform: 'linux', claudeBin: '/fake/claude',
-      credentialsFile: process.argv[3],
-      health: createRefreshHealthStore({ root: process.argv[4] }), healthKey: 'account-1',
-      now: () => ${T0}, buildEnv: () => ({}), isEnabled: () => true,
-      run: async () => { calls += 1; return { code: 0, stdout: '', stderr: '' }; },
-    });
-    refresher.refresh({ force: true }).then(result => {
-      process.stdout.write(JSON.stringify({ outcome: result.outcome, calls }));
-    }).catch(() => { process.exitCode = 1; });
+    const done = fields => process.stdout.write(JSON.stringify({ ...fields, calls }));
+    try {
+      const { createClaudeOAuthRefresher } = require(process.argv[1]);
+      const { createRefreshHealthStore } = require(process.argv[2]);
+      const refresher = createClaudeOAuthRefresher({
+        platform: 'linux', claudeBin: '/fake/claude',
+        credentialsFile: process.argv[3],
+        health: createRefreshHealthStore({ root: process.argv[4] }), healthKey: 'account-1',
+        now: () => ${T0}, buildEnv: () => ({}), isEnabled: () => true,
+        run: async () => { calls += 1; return { code: 0, stdout: '', stderr: '' }; },
+      });
+      refresher.refresh({ force: true }).then(result => done({ outcome: result.outcome }),
+        error => done({ error: String(error && error.message) }));
+    } catch (error) {
+      done({ error: String(error && error.message) });
+    }
   `;
   const stdout = execFileSync(process.execPath, [
     '-e', script,
@@ -354,8 +360,8 @@ test('原生模块不可用时强制调用也不能绕过旧凭据的拒绝暂�
     env: { ...process.env, MULTICC_RUST_ADDON: path.join(h.root, 'missing-addon.node') },
   });
   const result = JSON.parse(stdout);
-  assert.equal(result.outcome, 'parked');
-  assert.equal(result.calls, 0, '兼容路径不能把强制检查变成对失效授权的再次请求');
+  assert.match(String(result.error), /rust_backend_unavailable/, '原生模块缺失必须直接报错，不能退回 Node 实现');
+  assert.equal(result.calls, 0, '原生模块缺失时不能把强制检查变成对失效授权的再次请求');
 });
 
 for (const mode of ['revoked', 'rejected']) {

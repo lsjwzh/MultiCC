@@ -83,9 +83,10 @@ function probeAddon(file, node = process.execPath) {
   if (!fs.existsSync(file)) return false;
   // A separate process avoids require() caching and contains invalid binaries.
   const script = `const a=require(process.argv[1]);
-    if(a.protocolVersion?.()!==1 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprBackendSettings!=='function' || typeof a.cprCreateExchange!=='function' || typeof a.RustDatabase!=='function' || typeof a.remoteScreenBackendSettings!=='function'
+    if(a.protocolVersion?.()!==1 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprCreateExchange!=='function' || typeof a.RustDatabase!=='function'
       || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function'
-      || typeof a.windowsToolsDiscover!=='function') process.exit(1);
+      || typeof a.windowsToolsDiscover!=='function' || typeof a.cliCatalog!=='function'
+      || ['autoProviderLimitState','autoProviderChooseCandidate','autoProviderFailoverSafety','autoProviderPolicyFacts','providerErrorFacts','autoProviderFacts'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);

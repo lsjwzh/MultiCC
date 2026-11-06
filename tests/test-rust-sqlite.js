@@ -6,7 +6,6 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { CompatDatabase: Rust, databaseConstructor } = require('../src/sqlite/driver');
-const { CompatDatabase: Node } = require('../src/sqlite/node-driver');
 
 function file(t, close = () => {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rust-sqlite-'));
@@ -23,18 +22,16 @@ test('默认路径确实执行 Rust，禁止加载 node:sqlite 仍能读写', ()
     const db = new Database(':memory:'); if(db.backend !== 'rust')process.exit(2);
     db.exec('CREATE TABLE t(x)');db.prepare('INSERT INTO t VALUES (?)').run('实际 Rust');
     if(db.prepare('SELECT x FROM t').get().x !== '实际 Rust')process.exit(3);db.close();
-  `], { cwd: path.resolve(__dirname, '..'), env: { ...process.env, MULTICC_SQLITE_BACKEND: 'rust' }, encoding: 'utf8' });
+  `], { cwd: path.resolve(__dirname, '..'), env: process.env, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
 });
-test('Rust 缺失明确失败，仅显式 Node 应急模式可读写', () => {
-  for (const [mode, success] of [['rust', false], ['node', true], ['typo', false]]) {
-    const result = spawnSync(process.execPath, ['-e', "const D=require('./src/sqlite/driver').databaseConstructor();new D(':memory:').close()"], {
-      cwd: path.resolve(__dirname, '..'), encoding: 'utf8',
-      env: { ...process.env, MULTICC_SQLITE_BACKEND: mode, MULTICC_RUST_ADDON: path.join(os.tmpdir(), 'missing-sqlite-addon.node') },
-    });
-    assert.equal(result.status === 0, success, result.stderr);
-    if (mode === 'rust') assert.match(result.stderr, /SQLITE_RUNTIME_UNAVAILABLE/);
-  }
+test('Rust 缺失明确失败，没有 Node 应急驱动', () => {
+  const result = spawnSync(process.execPath, ['-e', "const D=require('./src/sqlite/driver').databaseConstructor();new D(':memory:').close()"], {
+    cwd: path.resolve(__dirname, '..'), encoding: 'utf8',
+    env: { ...process.env, MULTICC_RUST_ADDON: path.join(os.tmpdir(), 'missing-sqlite-addon.node') },
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /SQLITE_RUNTIME_UNAVAILABLE/);
 });
 test('参数与数值边界：NULL、Unicode、Blob、64 位整数、超限拒绝', t => {
   const db = memory(t);
@@ -76,22 +73,22 @@ test('外层手动事务与内层回滚、关闭后旧语句失效', t => {
   db.close();
   assert.throws(() => statement.all(), /not open/);
 });
-test('原 Node 数据库由 Rust 打开，WAL 双连接、data_version 与重新打开一致', t => {
-  let node, rust;
-  const filename = file(t, () => { rust?.close(); node?.close(); });
-  node = new Node(filename);
-  node.pragma('journal_mode = WAL'); node.exec('CREATE TABLE t(k TEXT PRIMARY KEY, body TEXT)');
-  node.prepare('INSERT INTO t VALUES (?, ?)').run('旧', JSON.stringify({ title: '旧数据' }));
-  rust = new Rust(filename);
-  assert.equal(rust.prepare('SELECT body FROM t').get().body, '{"title":"旧数据"}');
-  const before = rust.pragma('data_version', { simple:true });
-  node.prepare('INSERT INTO t VALUES (?, ?)').run('另一个连接', '{}');
-  assert.notEqual(rust.pragma('data_version', { simple:true }), before);
-  rust.transaction(() => { rust.prepare('UPDATE t SET body=? WHERE k=?').run('{"title":"Rust"}', '旧'); })();
-  assert.equal(node.prepare('SELECT body FROM t WHERE k=?').get('旧').body, '{"title":"Rust"}');
-  rust.close(); rust = new Rust(filename, { readonly:true, fileMustExist:true });
-  assert.equal(rust.prepare('SELECT count(*) AS n FROM t').get().n, 2);
-  assert.throws(() => rust.exec('DELETE FROM t'), { code:'SQLITE_READONLY' });
+test('已有数据库重新打开，WAL 双连接、data_version 与只读保护一致', t => {
+  let writer, reader;
+  const filename = file(t, () => { reader?.close(); writer?.close(); });
+  writer = new Rust(filename);
+  writer.pragma('journal_mode = WAL'); writer.exec('CREATE TABLE t(k TEXT PRIMARY KEY, body TEXT)');
+  writer.prepare('INSERT INTO t VALUES (?, ?)').run('旧', JSON.stringify({ title: '旧数据' }));
+  reader = new Rust(filename);
+  assert.equal(reader.prepare('SELECT body FROM t').get().body, '{"title":"旧数据"}');
+  const before = reader.pragma('data_version', { simple:true });
+  writer.prepare('INSERT INTO t VALUES (?, ?)').run('另一个连接', '{}');
+  assert.notEqual(reader.pragma('data_version', { simple:true }), before);
+  reader.transaction(() => { reader.prepare('UPDATE t SET body=? WHERE k=?').run('{"title":"Rust"}', '旧'); })();
+  assert.equal(writer.prepare('SELECT body FROM t WHERE k=?').get('旧').body, '{"title":"Rust"}');
+  reader.close(); reader = new Rust(filename, { readonly:true, fileMustExist:true });
+  assert.equal(reader.prepare('SELECT count(*) AS n FROM t').get().n, 2);
+  assert.throws(() => reader.exec('DELETE FROM t'), { code:'SQLITE_READONLY' });
 });
 test('跨进程锁竞争超时不会留下部分写入，解锁后恢复', t => {
   let db;

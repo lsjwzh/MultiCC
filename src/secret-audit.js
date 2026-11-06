@@ -10,7 +10,7 @@ const scope = new AsyncLocalStorage();
 function record(input) {
   try {
     const file = createPaths().secretAuditFile;
-    return JSON.parse(getNative('secret_audit', 'rust').recordSecretAudit(file, JSON.stringify(input)));
+    return JSON.parse(getNative().recordSecretAudit(file, JSON.stringify(input)));
   } catch (_) {
     const error = new Error('Secret audit is unavailable; vault access cannot continue.');
     error.code = 'secret_audit_unavailable';

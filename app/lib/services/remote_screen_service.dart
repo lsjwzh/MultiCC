@@ -588,7 +588,7 @@ class RemoteScreenService {
   }
 
   /// 这台机器上的桌面 Agent 到底能不能做远程屏幕
-  /// （`GET /api/remote-screen/capabilities`，画像见 `src/desktop-host.js`）。
+  /// （`GET /api/remote-screen/capabilities`，画像见 `native/remote/src/host.rs`）。
   ///
   /// 返回 `false` = 服务端明确说本平台不支持（Windows / Linux 还没写 agent）；
   /// 返回 `null` = 问不到（老 server 没有这条路由、或这一次请求失败）。

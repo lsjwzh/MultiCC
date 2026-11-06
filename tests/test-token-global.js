@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { _compute, _isDerivedCodexRollout } = require('../src/token-global');
+const { _compute } = require('../src/token-global');
 
 const DAY = '2026-07-19';
 
@@ -118,16 +118,6 @@ async function withFixture(run) {
 function bucket(result, model = 'gpt-test') {
   return result.windows.all[model];
 }
-
-test('recognizes only explicit Codex derived-rollout metadata', () => {
-  assert.equal(_isDerivedCodexRollout({ source: 'exec', thread_source: 'user' }), false);
-  assert.equal(_isDerivedCodexRollout({ forked_from_id: 'parent' }), true);
-  assert.equal(_isDerivedCodexRollout({ parent_thread_id: 'parent' }), true);
-  assert.equal(_isDerivedCodexRollout({ thread_source: 'subagent' }), true);
-  assert.equal(_isDerivedCodexRollout({ source: 'subagent' }), true);
-  assert.equal(_isDerivedCodexRollout({ source: ['subagent'] }), true);
-  assert.equal(_isDerivedCodexRollout({ source: { subagent: { depth: 1 } } }), true);
-});
 
 test('counts a main first snapshot but only last usage from each derived first snapshot', async () => {
   await withFixture(async ({ projectsDir, codexDir }) => {

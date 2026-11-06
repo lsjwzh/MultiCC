@@ -5,7 +5,8 @@ const { createHash } = require('node:crypto');
 const { createAirIndex } = require('../src/workspace/air-index-port');
 const { createAirSyncRuntime } = require('../src/workspace/air-sync-runtime');
 const { getNative } = require('../src/native/runtime');
-const addon = getNative('read_model', process.env.MULTICC_REQUIRE_RUST_TESTS === '1' ? 'rust' : 'auto');
+let addon = null;
+try { addon = getNative(); } catch (_) { /* availability is asserted below */ }
 const native = addon?.taskReadModelProtocolVersion?.() === 1;
 if (!native && process.env.MULTICC_REQUIRE_RUST_TESTS === '1') throw Error('air_read_protocol_unavailable');
 const run = (name, fn) => test(name, { skip: !native }, fn);
@@ -29,10 +30,6 @@ run('生产默认选择 Rust，完整快照由 Rust 序列化并计算稳定 ETa
   assert.deepEqual(await index.serialized(), first);
   await index.apply(snapshot([task('task-历史', { runState: 'waiting' })]));
   assert.notEqual((await index.serialized()).etag, first.etag);
-});
-test('只允许显式 Node 回退，配置错误不会静默降级', () => {
-  assert.equal(createAirIndex({ backend: 'node' }).backend, 'node');
-  assert.throws(() => createAirIndex({ backend: 'auto' }), /invalid_air_read_backend/);
 });
 run('默认宿主使用 Rust；捕获重放后到订阅前的变更必定实时送达', async t => {
   let data = snapshot([task('tsk_a')]); const real = createAirIndex({ backend: 'rust' });

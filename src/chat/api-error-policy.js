@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { redact } = require('../observability');
 const { extractUpstreamError } = require('../upstream-error');
 const { classifyProviderError } = require('../provider-error');
+const { getNative } = require('../native/runtime');
 
 const CATEGORIES = Object.freeze([
   'authentication_permission',
@@ -42,14 +43,12 @@ const TRUSTED_TEXT_SOURCES = new Set([
   'host_interruption',
   'classifier_legacy',
 ]);
-const CANCELLATION_CODES = new Set([
-  'aborterror', 'aborted', 'cancelled', 'canceled', 'user_cancel',
-  'new_user_message', 'shutdown', 'server_shutting_down', 'session_delete',
-  'cli_switch', 'relocate', 'sigterm', 'sigint',
-  // The server killed its own child to respawn it: a local stop, not a
-  // provider fault, so Auto must not read it as a reason to switch lines.
-  'restart_spawn',
-]);
+// Local-stop codes (user, server or MultiCC ended the run) are one table in
+// native/core/src/provider_error.rs, shared with the Rust classifier's
+// cancellation precedence. Auto never fails over on them.
+const CANCELLATION_CODES = new Set(JSON.parse(
+  getNative().providerErrorFacts(),
+).cancellationCodes);
 const NETWORK_CODES = new Set([
   'econnreset', 'econnrefused', 'econnaborted', 'enotfound', 'eai_again',
   'epipe', 'err_network', 'fetch_failed', 'socket_hang_up',

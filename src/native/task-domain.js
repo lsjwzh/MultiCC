@@ -28,7 +28,7 @@ function forWire(value, depth = 3) {
 function taskDomain(command) {
   const store = boardStoreOf(command?.board);
   if (store) return store.call(command);
-  const addon = getNative('task_domain', 'rust');
+  const addon = getNative();
   if (typeof addon.taskDomain !== 'function') throw new Error('任务规则 Rust 接口不可用，请构建当前原生模块');
   try { return JSON.parse(addon.taskDomain(JSON.stringify(forWire(command)))); }
   catch (error) { throw nativeCode(error); }
@@ -43,7 +43,7 @@ function replace(target, value) {
 async function taskDomainAsync(command) {
   const store = boardStoreOf(command?.board);
   if (store) return store.callAsync(command);
-  const addon = getNative('task_domain', 'rust');
+  const addon = getNative();
   if (typeof addon.taskDomainAsync !== 'function') throw new Error('异步任务规则 Rust 接口不可用');
   const input = JSON.stringify(forWire(command));
   try { return JSON.parse(await runNative(() => addon.taskDomainAsync(input))); }

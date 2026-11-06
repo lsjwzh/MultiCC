@@ -44,7 +44,7 @@ function fixture(t) {
     if(process.env.TEST_RUST_EDIT_SOURCE==='1')fs.appendFileSync(path.join(process.cwd(),'native/core/src/lib.rs'),'// edit during build\\n');
   `);
   fs.chmodSync(cargo, 0o755);
-  const env = { ...process.env, MULTICC_RUST_ADDON: '', MULTICC_RUST_PREBUILT_DIR: '', MULTICC_SQLITE_BACKEND: 'rust',
+  const env = { ...process.env, MULTICC_RUST_ADDON: '', MULTICC_RUST_PREBUILT_DIR: '',
     CARGO_TARGET_DIR: path.join(root, 'cargo-target'), MULTICC_NODE: process.execPath, PORT: '0',
     TEST_RUST_ADDON: path.resolve(addon), TEST_RUST_BUILDS: path.join(root, 'builds'),
     PATH: [path.join(root, 'bin'), path.dirname(process.execPath), process.env.PATH].join(path.delimiter) };
@@ -67,18 +67,6 @@ test('source cache lives in the primary worktree and fingerprints source/config 
   assert.equal(spawnSync('git', ['-C', root, 'worktree', 'add', '--detach', worktree]).status, 0);
   const { cacheRoot } = require('../scripts/rust-source-cache');
   assert.equal(cacheRoot(worktree), path.join(root, 'data/rust-source'));
-});
-
-test('Provider storage still requires Rust when SQLite and CPR select their Node fallback', () => {
-  assert.throws(() => ensureSourceRust({ env: { MULTICC_SQLITE_BACKEND: 'node', MULTICC_CPR_BACKEND: 'node' },
-    paths() { throw Error('Provider storage requires addon'); } }), /Provider storage requires addon/);
-});
-
-test('Rust CPR still requires the source addon when SQLite uses emergency Node mode', () => {
-  for (const backend of [undefined, 'rust']) {
-    assert.throws(() => ensureSourceRust({ env: { MULTICC_SQLITE_BACKEND: 'node', MULTICC_CPR_BACKEND: backend },
-      paths() { throw Error('CPR requires addon'); } }), /CPR requires addon/);
-  }
 });
 
 const nativeTest = (name, fn) => test(name, { skip: process.platform === 'win32' && 'source manager uses a POSIX shell' }, fn);

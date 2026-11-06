@@ -2428,9 +2428,6 @@ function claudeRoutingProviderView(provider) {
 function routingProviderView(appType, providerId) {
   let provider = null;
   try { provider = getProvider(appType, providerId); } catch (_) { provider = null; }
-  if (provider?.virtual && String(process.env.MULTICC_CPR_BACKEND || '').trim().toLowerCase() === 'node') {
-    throw new Error('虚拟线路需要 Rust CPR，请在设置中切换后手动重启');
-  }
   return appType === 'claude' ? claudeRoutingProviderView(provider) : provider;
 }
 

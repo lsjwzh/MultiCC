@@ -1,283 +1,136 @@
 'use strict';
 
-// Failover is a blocklist, not an allowlist: any failure may move the turn to
-// another line unless switching provably cannot help or would be harmful. An
-// unrecognised provider error (a new upstream wording, an opaque exit code) is
-// exactly the case Auto exists for, so it fails over instead of wedging the
-// turn on the line that just failed. The replay-safety gates below (phase,
-// visible output, tool intent, side effects) still apply to every category.
-//   cancel_shutdown       — a local stop (user, restart, shutdown); never replay.
-//   context_token_limit   — the request itself is too large; the remedy is
-//                           compaction, and every line would refuse it again.
-//   tool_protocol         — our tool call is malformed; a replay reproduces it.
-//   adapter_configuration — local CLI / native-session state (unknown session
-//                           id, CLI missing); it has its own fresh-start
-//                           recovery that a provider switch would pre-empt.
-const NON_FAILOVER_CATEGORIES = new Set([
-  'cancel_shutdown',
-  'context_token_limit',
-  'tool_protocol',
-  'adapter_configuration',
-]);
-// Categories whose failover reason keeps its historical name. Anything else
-// that switches on an upstream 4xx keeps reporting 'failover_http_4xx'.
-const PROVIDER_FAULT_CATEGORIES = new Set([
-  'billing_quota',
-  'rate_limit',
-  'provider_transient',
-  'network',
-  'timeout',
-  'authentication_permission',
-]);
-const SAFE_PHASES = new Set(['connect', 'request', 'before_first_token']);
+// Auto Provider route policy — how a cached limit reading reads now
+// (limitState), which line of the pool to try next (chooseCandidate), and
+// whether a failed attempt may move to another line (failoverSafety) — lives
+// in native/core/src/auto_provider_policy.rs, with the rules' rationale.
+//
+// This bridge carries in only the fields those rules read, each exactly as
+// JavaScript held it, and maps the native answer back onto the caller's own
+// objects: chooseCandidate returns one of the candidates it was given, by
+// identity. A field is read only where the rule reads it (a summary's fields
+// only when it is an object, a price's `blended` only when there is a price),
+// so a projection never touches what the rule never did.
+const { getNative } = require('../native/runtime');
 
-// Usage at or above this share of a window counts as "about to run dry" when
-// choosing a new route. It does not evict an existing usable sticky route.
-const NEAR_LIMIT_PERCENT = 90;
-// A usage reading stays a useful steering hint for longer than it stays a
-// trustworthy exhaustion verdict (the per-account sweeper runs every ~10 min).
-const USAGE_HINT_MS = 30 * 60_000;
+const native = getNative();
+const FACTS = JSON.parse(native.autoProviderPolicyFacts());
 
-// The fullest live window, 0..100, or null. A window whose reset time has
-// already passed no longer binds and is ignored.
-function usedPercentOf(summary, now) {
-  const values = [];
-  if (Array.isArray(summary.windows)) {
-    for (const w of summary.windows) {
-      if (!w || w.usedPercent == null) continue;
-      const pct = Number(w.usedPercent);
-      const reset = Number(w.resetMs);
-      if (!Number.isFinite(pct) || (Number.isFinite(reset) && reset > 0 && reset <= now)) continue;
-      values.push(pct);
-    }
+const NON_FAILOVER_CATEGORIES = new Set(FACTS.nonFailoverCategories);
+const SAFE_PHASES = new Set(FACTS.safePhases);
+const NEAR_LIMIT_PERCENT = FACTS.nearLimitPercent;
+
+const ENTRY_FIELDS = ['fetchedAt', 'status', 'summaryText'];
+const SUMMARY_FIELDS = ['kind', 'revoked', 'blockedUntilMs', 'status', 'scope', 'model',
+  'usedPercentage', 'resetsAtMs', 'available', 'total'];
+const WINDOW_FIELDS = ['usedPercent', 'resetMs'];
+const CANDIDATE_FIELDS = ['enabled', 'providerId', 'limitState', 'limitReason', 'tier', 'cli',
+  'model', 'priority', 'index', 'usedPercent', 'trustDomain'];
+const PIN_FIELDS = ['providerId', 'cli', 'model'];
+const ERROR_FIELDS = ['retryBudgetExhausted', 'httpStatus', 'category', 'phase', 'partialOutput',
+  'sideEffects'];
+const ATTEMPT_FIELDS = ['replayFence', 'visibleOutputObserved', 'toolIntentObserved',
+  'sideEffectObserved'];
+// An array hole: no identity, so it equals nothing (indexOf skips holes).
+const HOLE = Object.freeze({ $hole: 1 });
+
+// One request's encoder. Strings, finite numbers, booleans and null cross as
+// themselves; what JSON cannot spell is tagged — undefined, NaN/±Infinity, and
+// any other value, with its identity in this request (so `===` between two
+// fields still holds) and the String()/Number() a rule may coerce it with.
+function encoder() {
+  const ids = new Map();
+  const number = value => (Number.isFinite(value) ? value : { $num: String(value) });
+  function wire(value) {
+    if (value === undefined) return { $u: 1 };
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+    if (typeof value === 'number') return number(value);
+    if (!ids.has(value)) ids.set(value, ids.size);
+    let text = '';
+    let num = NaN;
+    try { text = String(value); } catch (_) { /* a Symbol-like value has no text */ }
+    try { num = Number(value); } catch (_) { /* nor a number */ }
+    return { $js: ids.get(value), text, num: number(num) };
   }
-  if (summary.usedPercentage != null && Number.isFinite(Number(summary.usedPercentage))) {
-    const reset = Number(summary.resetsAtMs);
-    if (!(Number.isFinite(reset) && reset > 0 && reset <= now)) values.push(Number(summary.usedPercentage));
-  }
-  return values.length ? Math.max(0, Math.min(100, Math.max(...values))) : null;
-}
-
-// A window the last quota reading saw full stays full until the reset time it
-// published, however old that reading is: a weekly cap does not come back just
-// because nobody re-polled it in the last ten minutes.
-function fullUntilReset(summary, now) {
-  const windows = Array.isArray(summary.windows) ? summary.windows.map(w => w && {
-    used: w.usedPercent, reset: w.resetMs,
-  }) : [];
-  windows.push({ used: summary.usedPercentage, reset: summary.resetsAtMs });
-  return windows.some(w => w && w.used != null && Number(w.used) >= 100
-    && Number.isFinite(Number(w.reset)) && Number(w.reset) > now);
-}
-
-// Model ids arrive as wire ids ("claude-fable-5-1[1m]"), bare aliases
-// ("fable") or differently-versioned ids of one family. Exact (case-insensitive)
-// match wins; otherwise the family token decides. A pair of unrelated families
-// never matches, so a Fable-only block leaves Sonnet/Opus available.
-const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
-const MODEL_FAMILY_STOPWORDS = new Set(['claude', 'anthropic', 'model', 'models']);
-
-function modelFamily(value) {
-  const text = String(value || '').toLowerCase();
-  const known = MODEL_FAMILIES.find(family => new RegExp(`(^|[^a-z])${family}([^a-z]|$)`).test(text));
-  if (known) return known;
-  // Unknown family: the first alphabetic token that is not the vendor name.
-  return text.split(/[^a-z]+/).find(token => token && !MODEL_FAMILY_STOPWORDS.has(token)) || null;
-}
-
-function modelsMatch(candidateModel, blockedModel) {
-  const candidate = String(candidateModel || '').trim().toLowerCase();
-  const blocked = String(blockedModel || '').trim().toLowerCase();
-  if (!candidate || !blocked) return false;
-  if (candidate === blocked) return true;
-  const left = modelFamily(candidate);
-  const right = modelFamily(blocked);
-  return !!(left && right && left === right);
-}
-
-function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000, model = null } = {}) {
-  if (!entry || typeof entry !== 'object') return Object.freeze({ state: 'unknown', reason: 'limit_unknown', usedPercent: null });
-  const summary = entry.summary && typeof entry.summary === 'object' ? entry.summary : {};
-  if (summary.kind === 'availability') {
-    // A revoked credential has no self-recovery path inside multicc: the server
-    // killed the token family and only a fresh login repairs it, which is what
-    // clears this flag (limit-cache-recorder.releaseProviderFailure). Reading
-    // the flag instead of the timestamp keeps the account out of Auto's pool
-    // for as long as the grant is dead, rather than until a timer lapses.
-    if (summary.revoked === true) {
-      return Object.freeze({ state: 'exhausted', reason: 'provider_credential_revoked', usedPercent: null });
+  // The named fields of a value; an undefined field is simply absent.
+  function fields(value, keys) {
+    const out = {};
+    for (const key of keys) {
+      const field = value[key];
+      if (field !== undefined) out[key] = wire(field);
     }
-    const blockedUntilMs = Number(summary.blockedUntilMs);
-    if (String(summary.status || '').toLowerCase() === 'rejected'
-        && Number.isFinite(blockedUntilMs) && blockedUntilMs > now) {
-      // A model-scoped park only removes that model. Without a name on either
-      // side we cannot prove the line avoids it, so it is skipped conservatively.
-      if (String(summary.scope || '').toLowerCase() === 'model') {
-        if (!model || !summary.model || modelsMatch(model, summary.model)) {
-          return Object.freeze({ state: 'exhausted', reason: 'provider_model_cooldown_active', usedPercent: null });
-        }
-        return Object.freeze({ state: 'stale', reason: 'provider_model_cooldown_other_model', usedPercent: null });
+    return out;
+  }
+  return { wire, fields };
+}
+
+const isObject = value => !!value && typeof value === 'object';
+
+function limitState(entry, { now = Date.now(), staleAfterMs, model } = {}) {
+  const { wire, fields } = encoder();
+  let projected = null;
+  if (isObject(entry)) {
+    projected = fields(entry, ENTRY_FIELDS);
+    const summary = entry.summary;
+    if (isObject(summary)) {
+      projected.summary = fields(summary, SUMMARY_FIELDS);
+      if (Array.isArray(summary.windows)) {
+        projected.summary.windows = Array.from(summary.windows,
+          window => (window ? fields(window, WINDOW_FIELDS) : null));
       }
-      return Object.freeze({ state: 'exhausted', reason: 'provider_cooldown_active', usedPercent: null });
     }
-    return Object.freeze({ state: 'stale', reason: 'provider_cooldown_expired', usedPercent: null });
   }
-  const fetchedAt = Number(entry.fetchedAt);
-  const age = now - fetchedAt;
-  const usedPercent = Number.isFinite(fetchedAt) && age <= Math.max(staleAfterMs, USAGE_HINT_MS)
-    ? usedPercentOf(summary, now) : null;
-  if (!Number.isFinite(fetchedAt) || age > staleAfterMs) {
-    if (fullUntilReset(summary, now)) {
-      return Object.freeze({ state: 'exhausted', reason: 'limit_window_full_until_reset', usedPercent });
-    }
-    return Object.freeze({ state: 'stale', reason: 'limit_stale', usedPercent });
-  }
-  const status = String(entry.status || '').toLowerCase();
-  if (['exhausted', 'quota_exhausted', 'blocked'].includes(status)) {
-    return Object.freeze({ state: 'exhausted', reason: 'fresh_limit_exhausted', usedPercent });
-  }
-  if (entry.status && status !== 'ok') return Object.freeze({ state: 'unknown', reason: 'limit_error', usedPercent });
-  const text = String(entry.summaryText || '').toLowerCase();
-  const numericBalance = typeof summary.available === 'number' ? summary.available
-    : typeof summary.total === 'number' ? summary.total : null;
-  const exhausted = summary.available === false
-    || (numericBalance != null && numericBalance <= 0)
-    || String(summary.status || '').toLowerCase() === 'rejected'
-    || Number(summary.usedPercentage) >= 100
-    || (usedPercent != null && usedPercent >= 100)
-    || /(?:余额不足|insufficient (?:balance|quota)|quota exhausted|exhausted)/i.test(text);
-  return exhausted
-    ? Object.freeze({ state: 'exhausted', reason: 'fresh_limit_exhausted', usedPercent })
-    : Object.freeze({ state: 'available', reason: 'fresh_limit_available', usedPercent });
-}
-
-// `preferredTier` is the difficulty verdict for THIS turn (see jev-client).
-// It outranks stickiness: a follow-up that got harder must not stay pinned to
-// the weak model that answered the previous turn. It is a preference, never a
-// filter — when every candidate of that tier has already been attempted, the
-// remaining pool is still eligible, so a dead weak route can fail over upward
-// instead of wedging the turn. A null tier preserves the legacy ordering.
-//
-// The remaining keys only exist for cross-CLI and price-tiered pools and are
-// inert when absent, so a legacy pool orders exactly as before:
-//   ladder    — the tier keys weakest first; with it, a miss on the preferred
-//               tier climbs before it descends (the nearer stronger tier first).
-//   pinned    — a reserved line ({providerId, model}) from a handoff or a
-//               planned lane switch; it outranks stickiness.
-//   preferCli — the session's current lane; a tie stays on it, since leaving
-//               it costs a handoff.
-//   byPrice   — price-tiered pools prefer the cheaper line inside a tier.
-//
-// Quota steering uses each candidate's `usedPercent` (fullest live window,
-// 0..100, from the provider-limit cache). A candidate at NEAR_LIMIT_PERCENT or
-// above yields to roomier ones when choosing a new route. The current route
-// stays selected until exhausted or rejected. Between two official accounts
-// (the same vendor behind different logins, trust domain 'official') the one
-// with more headroom wins once stickiness has had its say — compared in 20-point
-// bands so small drifts do not bounce a session between accounts.
-//
-// Stickiness never outlives a higher-priority line's quota: when an earlier line
-// was the reason this session moved, and the cache now reports it usable again
-// (a fresh available reading, or an availability park that has expired), the
-// pool returns to it. Ordered pools therefore resume "line 1 first" after a
-// reset instead of pinning the fallback for the rest of the day. A line that is
-// merely unmeasured stays behind the sticky route, so neither an aged-out
-// reading nor a one-off failure re-rolls the route on every turn.
-function recoveredForPriority(candidate) {
-  return candidate.limitState === 'available'
-    || candidate.limitReason === 'provider_cooldown_expired';
-}
-function tierRank(candidate, preferredTier, ladder) {
-  if (!preferredTier) return 0;
-  if (candidate.tier === preferredTier) return 0;
-  if (!Array.isArray(ladder) || !ladder.length) return 1;
-  const want = ladder.indexOf(preferredTier);
-  const have = ladder.indexOf(candidate.tier);
-  if (want < 0 || have < 0) return ladder.length * 2;
-  return have > want ? have - want : ladder.length + (want - have);
+  const request = { entry: projected, now: wire(now) };
+  if (staleAfterMs !== undefined) request.staleAfterMs = wire(staleAfterMs);
+  if (model !== undefined) request.model = wire(model);
+  return Object.freeze(JSON.parse(native.autoProviderLimitState(JSON.stringify(request))));
 }
 
 function chooseCandidate({
   candidates, attempted = new Set(), stickyProviderId = null, preferredTier = null,
   ladder = null, pinned = null, preferCli = null, byPrice = false,
 } = {}) {
-  const eligible = (Array.isArray(candidates) ? candidates : [])
-    .filter(candidate => candidate && candidate.enabled !== false && !attempted.has(candidate.providerId));
-  const skipped = eligible
-    .filter(candidate => candidate.limitState === 'exhausted')
-    .map(candidate => ({
-      providerId: candidate.providerId,
-      reason: candidate.limitReason || 'fresh_limit_exhausted',
-    }));
-  const usable = eligible.filter(candidate => candidate.limitState !== 'exhausted');
-  const isPinned = candidate => !!pinned && candidate.providerId === pinned.providerId
-    && (!pinned.cli || candidate.cli === pinned.cli)
-    && (pinned.model == null || candidate.model === pinned.model);
-  const priceOf = candidate => (candidate.price ? candidate.price.blended : Infinity);
-  const usageOf = candidate => (candidate.usedPercent == null ? null : Number(candidate.usedPercent));
-  const nearLimit = candidate => usageOf(candidate) != null && usageOf(candidate) >= NEAR_LIMIT_PERCENT;
-  const officialBand = candidate => (candidate.trustDomain === 'official' && usageOf(candidate) != null
-    ? Math.floor(usageOf(candidate) / 20) : null);
-  usable.sort((left, right) => {
-    const tierOrder = tierRank(left, preferredTier, ladder) - tierRank(right, preferredTier, ladder);
-    if (tierOrder !== 0) return tierOrder;
-    if (pinned) {
-      const pinOrder = (isPinned(left) ? 0 : 1) - (isPinned(right) ? 0 : 1);
-      if (pinOrder !== 0) return pinOrder;
-    }
-    if (left.providerId === stickyProviderId && right.providerId !== stickyProviderId) {
-      // A recovered, roomier earlier line reclaims its place over the fallback.
-      return recoveredForPriority(right) && !nearLimit(right) && right.priority < left.priority ? 1 : -1;
-    }
-    if (right.providerId === stickyProviderId && left.providerId !== stickyProviderId) {
-      return recoveredForPriority(left) && !nearLimit(left) && left.priority < right.priority ? -1 : 1;
-    }
-    const pressure = (nearLimit(left) ? 1 : 0) - (nearLimit(right) ? 1 : 0);
-    if (pressure !== 0) return pressure;
-    const leftBand = officialBand(left), rightBand = officialBand(right);
-    if (leftBand != null && rightBand != null && leftBand !== rightBand) return leftBand - rightBand;
-    if (preferCli) {
-      const laneOrder = (left.cli === preferCli ? 0 : 1) - (right.cli === preferCli ? 0 : 1);
-      if (laneOrder !== 0) return laneOrder;
-    }
-    if (byPrice) {
-      const leftPrice = priceOf(left), rightPrice = priceOf(right);
-      if (leftPrice !== rightPrice) return leftPrice < rightPrice ? -1 : 1;
-    }
-    return left.priority - right.priority || left.index - right.index;
+  const list = Array.isArray(candidates) ? candidates : [];
+  const { wire, fields } = encoder();
+  const request = {
+    candidates: Array.from(list, candidate => {
+      if (!candidate) return null;
+      const projected = fields(candidate, CANDIDATE_FIELDS);
+      if (candidate.price) {
+        projected.priced = true;
+        if (candidate.price.blended !== undefined) projected.blended = wire(candidate.price.blended);
+      }
+      return projected;
+    }),
+    attempted: Array.from(attempted, id => wire(id)),
+    stickyProviderId: wire(stickyProviderId),
+    preferredTier: wire(preferredTier),
+    ladder: Array.isArray(ladder)
+      ? Array.from({ length: ladder.length }, (_, at) => (at in ladder ? wire(ladder[at]) : HOLE))
+      : null,
+    pinned: pinned ? fields(pinned, PIN_FIELDS) : null,
+    preferCli: wire(preferCli),
+    byPrice: wire(byPrice),
+  };
+  const answer = JSON.parse(native.autoProviderChooseCandidate(JSON.stringify(request)));
+  return Object.freeze({
+    candidate: answer.candidate == null ? null : list[answer.candidate],
+    // A null reason is the candidate's own limitReason.
+    skipped: Object.freeze(answer.skipped.map(({ index, reason }) => ({
+      providerId: list[index].providerId,
+      reason: reason ?? list[index].limitReason,
+    }))),
   });
-  return Object.freeze({ candidate: usable[0] || null, skipped: Object.freeze(skipped) });
 }
 
 function failoverSafety(decision, attempt) {
-  const error = decision && decision.error;
-  if (!error) return Object.freeze({ ok: false, reason: 'missing_error_decision' });
-  if (error.retryBudgetExhausted || decision?.reason === 'request_budget_exhausted') {
-    return Object.freeze({ ok: false, reason: 'request_budget_exhausted' });
+  const { fields } = encoder();
+  const request = { decision: null, attempt: attempt ? fields(attempt, ATTEMPT_FIELDS) : null };
+  if (decision) {
+    request.decision = fields(decision, ['reason']);
+    if (decision.error) request.decision.error = fields(decision.error, ERROR_FIELDS);
   }
-  const httpStatus = Number(error.httpStatus);
-  const upstream4xx = Number.isInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 499;
-  // A blocklisted category never switches, even when an adapter happens to
-  // attach a 4xx status to it (a local cancellation dressed up as HTTP 499).
-  const category = error.category || 'unknown';
-  if (NON_FAILOVER_CATEGORIES.has(category)) {
-    return Object.freeze({ ok: false, reason: 'category_not_failoverable' });
-  }
-  if (!SAFE_PHASES.has(String(error.phase || ''))) {
-    return Object.freeze({ ok: false, reason: 'unsafe_failure_phase' });
-  }
-  if (error.partialOutput || error.sideEffects) {
-    return Object.freeze({ ok: false, reason: 'unsafe_replay_boundary' });
-  }
-  if (!attempt || attempt.replayFence !== 'none' || attempt.visibleOutputObserved
-      || attempt.toolIntentObserved || attempt.sideEffectObserved) {
-    return Object.freeze({ ok: false, reason: 'provider_replay_fence_closed' });
-  }
-  return Object.freeze({
-    ok: true,
-    reason: !PROVIDER_FAULT_CATEGORIES.has(category) && upstream4xx
-      ? 'failover_http_4xx' : `failover_${category}`,
-  });
+  return Object.freeze(JSON.parse(native.autoProviderFailoverSafety(JSON.stringify(request))));
 }
 
 module.exports = {

@@ -75,16 +75,7 @@ function mountSubagentDefaultsRoutes(app, options = {}) {
   const previewSessionPatch = options.previewSessionPatch;
   // Tests inject a stub; production resolves the same addon every other Rust
   // bridge uses, once per request so a rebuilt addon needs no restart.
-  const getNative = options.getNative || (() => require('../native/runtime').getNative('subagent_defaults'));
-
-  function nativeModule() {
-    try {
-      const native = getNative();
-      if (native && typeof native.normalizeSubagentDefaults === 'function'
-        && typeof native.planSubagentSync === 'function') return native;
-    } catch (_) { /* 原生模块缺失或加载失败 → 503，由调用方提示更新 */ }
-    return null;
-  }
+  const getNative = options.getNative || (() => require('../native/runtime').getNative());
 
   function unavailable(res) {
     return res.status(503).json({
@@ -104,9 +95,8 @@ function mountSubagentDefaultsRoutes(app, options = {}) {
   }
 
   app.get('/api/subagent-defaults', (req, res) => {
-    const native = nativeModule();
-    if (!native) return unavailable(res);
     try {
+      const native = getNative();
       const stored = Object.prototype.hasOwnProperty.call(providerDefaults, 'subagent')
         ? providerDefaults.subagent : null;
       const defaults = JSON.parse(native.normalizeSubagentDefaults(JSON.stringify({ stored })));
@@ -120,8 +110,6 @@ function mountSubagentDefaultsRoutes(app, options = {}) {
   });
 
   app.post('/api/subagent-defaults/sync', (req, res) => {
-    const native = nativeModule();
-    if (!native) return unavailable(res);
     const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body : {};
     const cli = typeof body.cli === 'string' ? body.cli.trim() : '';
     const dryRun = body.dryRun === true || body.dryRun === '1' || body.dryRun === 'true';
@@ -143,6 +131,7 @@ function mountSubagentDefaultsRoutes(app, options = {}) {
 
     let plan;
     try {
+      const native = getNative();
       plan = JSON.parse(native.planSubagentSync(JSON.stringify({
         cli,
         subagent: rawTarget === undefined ? null : rawTarget,

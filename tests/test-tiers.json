@@ -4642,24 +4642,6 @@
       ]
     },
     {
-      "path": "tests/test-remote-screen-backend-settings.js",
-      "tier": "other",
-      "lane": "deterministic",
-      "owner": "npm:test:security",
-      "entrypoints": [
-        "npm:test:security"
-      ]
-    },
-    {
-      "path": "tests/test-remote-screen-backend.js",
-      "tier": "other",
-      "lane": "deterministic",
-      "owner": "npm:test:security",
-      "entrypoints": [
-        "npm:test:security"
-      ]
-    },
-    {
       "path": "tests/test-remote-screen-e2e-harness.js",
       "tier": "flow",
       "lane": "isolated",
@@ -4688,42 +4670,6 @@
     },
     {
       "path": "tests/test-remote-screen-h264.js",
-      "tier": "other",
-      "lane": "deterministic",
-      "owner": "npm:test:security",
-      "entrypoints": [
-        "npm:test:security"
-      ]
-    },
-    {
-      "path": "tests/test-remote-screen-node-cdp.js",
-      "tier": "flow",
-      "lane": "cdp",
-      "owner": "npm:test:cdp",
-      "entrypoints": [
-        "npm:test:cdp"
-      ]
-    },
-    {
-      "path": "tests/test-remote-screen-node-h264.js",
-      "tier": "other",
-      "lane": "deterministic",
-      "owner": "npm:test:security",
-      "entrypoints": [
-        "npm:test:security"
-      ]
-    },
-    {
-      "path": "tests/test-remote-screen-node-probe.js",
-      "tier": "flow",
-      "lane": "isolated",
-      "owner": "npm:test:security",
-      "entrypoints": [
-        "npm:test:security"
-      ]
-    },
-    {
-      "path": "tests/test-remote-screen-node.js",
       "tier": "other",
       "lane": "deterministic",
       "owner": "npm:test:security",

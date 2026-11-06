@@ -72,7 +72,7 @@ function runTaskStoreMigrationGate({ file, port, host, addon, logger = console,
 // 进度页（迁移照做，配置错误留给正式启动去报）。
 function runAtBoot(env = process.env) {
   let addon = null;
-  try { addon = require('../native/runtime').getNative('task_store', 'rust'); } catch {}
+  try { addon = require('../native/runtime').getNative(); } catch {}
   const file = require('../paths').createPaths({ dataDir: env.MULTICC_DATA_DIR }).taskShellDbFile;
   return runTaskStoreMigrationGate({ file, addon, openPage: () => {
     try {

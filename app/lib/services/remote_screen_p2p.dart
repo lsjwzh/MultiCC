@@ -43,7 +43,7 @@ abstract class RtcPeer {
 typedef RtcPeerFactory =
     Future<RtcPeer> Function(List<Map<String, dynamic>> iceServers);
 
-/// 一帧的上限，与 Agent / 服务端桥一致（`remote-screen-h264-bridge.js`）。
+/// 一帧的上限，与 Agent / 服务端桥一致（`native/remote/src/h264.rs`）。
 const int _maxFrameBytes = 8 * 1024 * 1024;
 
 /// rtc-active 之前先攒着的 DataChannel 帧总量上限。切换时服务端会补关键帧，

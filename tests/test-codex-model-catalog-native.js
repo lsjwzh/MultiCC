@@ -11,7 +11,7 @@ const { mountCodexModelRoutes } = require('../src/routes/codex-models');
 
 let addon;
 try { addon = process.env.MULTICC_RUST_ADDON ? require(process.env.MULTICC_RUST_ADDON)
-  : require('../src/native/runtime').getNative('codex_models'); } catch (_) {}
+  : require('../src/native/runtime').getNative(); } catch (_) {}
 const nativeReady = typeof addon?.codexModelsRefresh === 'function';
 
 test('原生目录经账号桥和模型接口完成冷启动、缓存命中、升级刷新与失败保留', { skip: !nativeReady }, async t => {

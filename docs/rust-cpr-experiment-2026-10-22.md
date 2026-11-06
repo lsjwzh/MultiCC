@@ -2,6 +2,9 @@
 
 更新：2026-10-23（初稿：2026-10-22）
 
+> 2026-11-06 注：Node 后端已删除，Rust 是唯一实现。下文的 Node 选项、`MULTICC_CPR_BACKEND`
+> 和 `/api/settings/cpr-backend` 设置入口仅作为当时实验过程保留，代码中已不存在。
+
 ## 当前状态
 
 MultiCC 新增一份独立的 Rust CPR 代理内核，通过现有 napi-rs 原生模块嵌入。原来的 `cli-provider-router`（CPR）Node 实现保留，默认仍使用 Node。显式选择 Rust 后，实验版才参与代理请求。
@@ -58,13 +61,13 @@ CPR 的管理、接管、配置物化，以及 Codex 官方 OAuth 的宿主专�
 
 后续只有在宿主授权、账号凭据及事件总线提供明确的 Rust 接口，并完成同等契约验证后，才继续收缩这部分 Node 桥接；本次不改变它们的所有权和生产默认值。
 
-设置入口的新增校验、允许保存的键和状态生成均在 `native/cpr/src/settings.rs`，经 `cprBackendSettings` 原生接口调用。`src/routes/cpr-backend-settings.js` 仅保留 Express 请求／响应适配、原生能力查询和已有 `readEnvFile`／`writeEnvFile` 的调用：宿主目前仍由 Node 统一解析配置文件位置并原子保存，直接另建一份配置写入实现会分叉现有的桌面版、standalone 与源码路径。待宿主配置读写提供统一 Rust 接口并完成兼容验证后，可移除这部分读写桥接。该纯函数输入很小，使用同步 N-API；代理网络传输仍为异步。
+（2026-11-06 起已删除：CPR 后端设置入口、`native/cpr/src/settings.rs` 与 `cprBackendSettings` 原生接口随 Node 后端一起移除，`MULTICC_CPR_BACKEND` 不再被读取。）原文：设置入口的新增校验、允许保存的键和状态生成均在 `native/cpr/src/settings.rs`，经 `cprBackendSettings` 原生接口调用。`src/routes/cpr-backend-settings.js` 仅保留 Express 请求／响应适配、原生能力查询和已有 `readEnvFile`／`writeEnvFile` 的调用：宿主目前仍由 Node 统一解析配置文件位置并原子保存，直接另建一份配置写入实现会分叉现有的桌面版、standalone 与源码路径。待宿主配置读写提供统一 Rust 接口并完成兼容验证后，可移除这部分读写桥接。该纯函数输入很小，使用同步 N-API；代理网络传输仍为异步。
 
 ## 构建与打包
 
 源码版 `./multicc start` 沿用源码指纹缓存及自动构建流程，缓存位于主仓库 `data/rust-source/`。即使显式使用 Node SQLite，只要选择 Rust CPR，也必须提供或构建原生模块。源码构建需要 Rust/Cargo 和本平台链接工具。
 
-standalone／桌面安装包必须携带包含 CPR 接口及 `cprBackendSettings` 设置接口的目标平台原生模块，用户无需安装 Rust。源码缓存探测和打包校验均检查设置接口，旧模块不能冒充本轮产物。本轮仅构建和测试了 macOS ARM64 模块，尚未制作包含本轮 CPR 设置入口的新完整发布安装包；此前 SQLite／核心 Rust 的 Intel 包验证不能代替 CPR 验证。
+standalone／桌面安装包必须携带包含 CPR 接口的目标平台原生模块，用户无需安装 Rust。源码缓存探测和打包校验检查 `cprProtocolVersion` 与 `cprCreateExchange`（2026-11-06 前还检查已删除的 `cprBackendSettings`），旧模块不能冒充本轮产物。本轮仅构建和测试了 macOS ARM64 模块，尚未制作包含本轮 CPR 设置入口的新完整发布安装包；此前 SQLite／核心 Rust 的 Intel 包验证不能代替 CPR 验证。
 
 本机测试产物：
 

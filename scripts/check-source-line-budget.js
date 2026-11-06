@@ -442,7 +442,7 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +21 双语键：iOS 设备 UDID 采集、登记引导与复制结果。
     // +3 双语键：聊天状态条「需要交互」→ 悬停/长按确认改为达成目标。
     // 权限总提示补全三项用途；重新生成时同步源词典已有的 2 个 tryDemo 键。
-    // +1 双语键（rsErrPlatform）：桌面 agent 的能力画像（src/desktop-host.js）落地后，
+    // +1 双语键（rsErrPlatform）：桌面 agent 的能力画像（native/remote/src/host.rs）落地后，
     // macOS 之外的机器上🖥不再显示，深链接进来要说清「这台机器还不支持」。中英各 1 行
     // = +2 行，重跑生成器实测 8846/563130，按真实高水位抬一格。
     // +7 双语键（airProviderAdvanced*Choice*）：Provider 的低频连接能力改为三个
@@ -594,9 +594,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   的悬浮说明），中英各 3 行 = +6 行；tokenRateWaiting/Paused 只改写文案不增行。
     //   v2.15.3 发版时按提交的真实文件 10300/668483 抬一格（生成器源仍是旧文案，重跑会
     //   丢键，故不重新生成）。
-    maxLines: 10300,
+    // -21 双语键（airGlobalCpr* 10 键 + airGlobalRemoteBackend* 11 键）：CPR 与「🖥 屏幕」
+    //   的后端切换卡随 Node 回退一起退场（Rust 是唯一后端），中英共 -42 行；按同一
+    //   countLines 口径实测 10254/665421，棘轮双向回落到这一格。
+    maxLines: 10254,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 668483,
+    maxBytes: 665421,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

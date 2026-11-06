@@ -3,7 +3,7 @@
   "spec": "scripts/macos-agent/MultiCCAgentH264.swift 文件头注释",
   "ends": {
     "app": "app/lib/services/remote_screen_source.dart (ScreenInputMixin) + remote_screen_h264.dart — app/test/remote_screen_wire_golden_test.dart",
-    "bridge": "src/remote-screen-h264-bridge.js — tests/test-remote-screen-h264.js",
+    "bridge": "native/remote/src/h264.rs — tests/test-remote-screen-h264.js",
     "agent": "scripts/macos-agent/MultiCCAgentH264.swift h264Session/h264Message — tests/test-macos-agent.js"
   },
   "clientToAgent": [

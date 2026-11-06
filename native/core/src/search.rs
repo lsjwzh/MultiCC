@@ -105,8 +105,10 @@ fn tokenize(text: &str) -> HashMap<String, f64> {
 }
 impl SearchIndex {
     pub fn build(json: &str) -> Result<Self, String> {
+        // Oversized/truncated emoji leave lone surrogate escapes that JS
+        // JSON.parse accepted; sanitize them instead of failing the index.
         let documents: Vec<Document> =
-            serde_json::from_str(json).map_err(|_| "invalid_search_documents")?;
+            crate::json_lenient::from_str(json).map_err(|_| "invalid_search_documents")?;
         let mut docs = Vec::new();
         let mut frequencies: HashMap<String, usize> = HashMap::new();
         let mut sums = [0.0; 4];
@@ -159,7 +161,8 @@ impl SearchIndex {
         Ok(Self { docs, idf, average })
     }
     pub fn search(&self, json: &str) -> Result<String, String> {
-        let query: Query = serde_json::from_str(json).map_err(|_| "invalid_search_query")?;
+        let query: Query =
+            crate::json_lenient::from_str(json).map_err(|_| "invalid_search_query")?;
         let mut hits = Vec::new();
         for doc in &self.docs {
             let source = &doc.source;
@@ -241,5 +244,33 @@ impl SearchIndex {
             });
         }
         serde_json::to_string(&hits).map_err(|_| "search_result_encode".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn documents_with_lone_surrogates_still_index() {
+        let docs = r#"[{"taskId":"t1","fields":["bad \ud800 air","","",""],"dirId":null,"status":"active"}]"#;
+        let index = SearchIndex::build(docs).unwrap();
+        let result = index
+            .search(r#"{"terms":[["air",1.0]],"strong":[],"phrase":""}"#)
+            .unwrap();
+        let hits: Vec<serde_json::Value> = serde_json::from_str(&result).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["taskId"], "t1");
+    }
+
+    #[test]
+    fn queries_with_lone_surrogates_are_sanitized() {
+        let docs = r#"[{"taskId":"t1","fields":["air","","",""],"dirId":null,"status":"active"}]"#;
+        let index = SearchIndex::build(docs).unwrap();
+        let result = index
+            .search(r#"{"terms":[["air",1.0]],"strong":[],"phrase":"\ud800"}"#)
+            .unwrap();
+        let hits: Vec<serde_json::Value> = serde_json::from_str(&result).unwrap();
+        assert_eq!(hits.len(), 1);
     }
 }

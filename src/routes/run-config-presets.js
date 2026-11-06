@@ -24,16 +24,7 @@ function mountRunConfigPresetsRoutes(app, options = {}) {
   // Tests inject a stub; production resolves the same addon every other Rust
   // bridge uses, once per request so a rebuilt addon needs no restart.
   const getNative = options.getNative
-    || (() => require('../native/runtime').getNative('run_config_presets'));
-
-  function nativeModule() {
-    try {
-      const native = getNative();
-      if (native && typeof native.normalizeRunConfigPresets === 'function'
-        && typeof native.mergeRunConfigPresets === 'function') return native;
-    } catch (_) { /* 原生模块缺失或加载失败 → 503，客户端退回本机缓存 */ }
-    return null;
-  }
+    || (() => require('../native/runtime').getNative());
 
   function unavailable(res) {
     return res.status(503).json({
@@ -64,9 +55,8 @@ function mountRunConfigPresetsRoutes(app, options = {}) {
   }
 
   app.get('/api/run-config/presets', (req, res) => {
-    const native = nativeModule();
-    if (!native) return unavailable(res);
     try {
+      const native = getNative();
       const normalized = JSON.parse(native.normalizeRunConfigPresets(
         JSON.stringify({ presets: readStored() })));
       return res.json({ ok: true, presets: normalized && Array.isArray(normalized.presets) ? normalized.presets : [] });
@@ -77,8 +67,8 @@ function mountRunConfigPresetsRoutes(app, options = {}) {
 
   // 整表替换：客户端的「保存 / 删除」都把完整列表发上来。
   app.put('/api/run-config/presets', (req, res) => {
-    const native = nativeModule();
-    if (!native) return unavailable(res);
+    let native;
+    try { native = getNative(); } catch (_) { return unavailable(res); }
     const parsed = presetList(req.body);
     if (parsed.error) {
       return res.status(400).json({ error: parsed.error, code: 'invalid_presets' });
@@ -103,8 +93,8 @@ function mountRunConfigPresetsRoutes(app, options = {}) {
 
   // 合并：把客户端本机条目并入服务端并返回完整表（首次打开时的迁移路径）。
   app.post('/api/run-config/presets/merge', (req, res) => {
-    const native = nativeModule();
-    if (!native) return unavailable(res);
+    let native;
+    try { native = getNative(); } catch (_) { return unavailable(res); }
     const parsed = presetList(req.body);
     if (parsed.error) {
       return res.status(400).json({ error: parsed.error, code: 'invalid_presets' });

@@ -6,10 +6,10 @@ const { getNative, runNative } = require('../native/runtime');
 const readers = new Map();
 let file = null, entries = {}, loaded = null, writes = Promise.resolve();
 function configure(options = {}) { file = options.file || null; entries = {}; loaded = null; writes = Promise.resolve(); }
-function native() { return getNative('subscription'); }
+function native() { return getNative(); }
 async function access(input) {
+  if (!file) return;
   const addon = native();
-  if (!file || typeof addon?.accountSubscriptionCache !== 'function') return;
   entries = JSON.parse(await runNative(() => addon.accountSubscriptionCache(file, JSON.stringify(input))));
 }
 function ready() {
@@ -24,8 +24,7 @@ function record(vendor, accountId, result, attemptAt) {
 }
 function project(providers) {
   const addon = native();
-  return typeof addon?.projectAccountSubscriptions === 'function'
-    ? JSON.parse(addon.projectAccountSubscriptions(JSON.stringify({ providers, subscriptions: entries }))) : providers;
+  return JSON.parse(addon.projectAccountSubscriptions(JSON.stringify({ providers, subscriptions: entries })));
 }
 function register(vendor, reader) { readers.set(vendor, reader); }
 function refresh(provider) { return readers.get(provider.appType)?.(provider.officialAccountId || ''); }

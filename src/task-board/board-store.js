@@ -53,7 +53,7 @@ function verifyByDefault() {
 
 function openBoardStore({ raw: input = null, repository = null, logger = console,
   verify = verifyByDefault(), verifyIntervalMs = 10 * 60_000 } = {}) {
-  const addon = getNative('task_domain', 'rust');
+  const addon = getNative();
   if (typeof addon?.RustTaskBoard !== 'function') {
     throw new Error('任务板常驻 Rust 接口不可用，请构建当前原生模块后手动重启');
   }

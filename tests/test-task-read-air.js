@@ -6,7 +6,8 @@ const { getNative } = require('../src/native/runtime');
 const { createAirReadIndex } = require('../src/workspace/air-read-index');
 const { fixtures, project } = require('./helpers/task-read-model');
 const { create: createClient } = require('../public/air-sync');
-const addon = getNative('read_model', process.env.MULTICC_REQUIRE_RUST_TESTS === '1' ? 'rust' : 'auto');
+let addon = null;
+try { addon = getNative(); } catch (_) { /* availability is asserted below */ }
 const native = typeof addon?.RustTaskReadModel === 'function';
 if (!native && process.env.MULTICC_REQUIRE_RUST_TESTS === '1') throw Error('read_model_backend_unavailable');
 const run = (name, fn) => test(name, { skip: !native }, fn);

@@ -6,15 +6,9 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { getNative } = require('../native/runtime');
 
-function resolveCprBackend(env = process.env) {
-  const backend = String(env.MULTICC_CPR_BACKEND || 'rust').trim().toLowerCase();
-  if (!['node', 'rust'].includes(backend)) throw new Error('MULTICC_CPR_BACKEND 只支持 node 或 rust');
-  return backend;
-}
-
 function createRustCprRouter(router, { native, env = process.env } = {}) {
-  const unavailable = () => new Error('Rust CPR 模块不可用或版本不匹配，请重新构建 Rust 模块，或将 MULTICC_CPR_BACKEND 设为 node');
-  try { native ||= getNative('cpr', 'rust'); } catch (_) { throw unavailable(); }
+  const unavailable = () => new Error('Rust CPR 模块不可用或版本不匹配，请重新构建 Rust 模块');
+  try { native ||= getNative(); } catch (_) { throw unavailable(); }
   if (native?.cprProtocolVersion?.() !== 1 || ['cprRoute', 'cprPrepare', 'cprCreateExchange', 'RustProviderRequest', 'authorizeProviderRequest', 'codexOfficialError'].some(name => typeof native[name] !== 'function')) {
     throw unavailable();
   }
@@ -242,7 +236,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
         if (gone || res.destroyed) return;
         if (res.headersSent) res.destroy();
         else reply(res, error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 502,
-          { error: { type: code, message: error.safeCprMessage || (code === 'RUST_CPR_REQUEST_FAILED' ? 'Rust CPR 请求失败，请检查供应商配置或切回 Node 版本' : 'Rust CPR 上游请求失败') } });
+          { error: { type: code, message: error.safeCprMessage || (code === 'RUST_CPR_REQUEST_FAILED' ? 'Rust CPR 请求失败，请检查供应商配置' : 'Rust CPR 上游请求失败') } });
       } finally {
         request.cancel();
         if (exchange) { await exchange.close(); exchanges.delete(exchange); }
@@ -292,4 +286,4 @@ function waitWritable(res) {
     if (res.destroyed || res.writableEnded) done();
   });
 }
-module.exports = { resolveCprBackend, createRustCprRouter };
+module.exports = { createRustCprRouter };

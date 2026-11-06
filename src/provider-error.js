@@ -26,8 +26,7 @@ function classifyProviderError(raw, { provider, source } = {}) {
   // existing classifier until their wire contracts have compatibility tests.
   if (provider !== 'opencode') return null;
   try {
-    const native = getNative('opencode_error');
-    if (typeof native?.classifyProviderError !== 'function') return null;
+    const native = getNative();
     return JSON.parse(native.classifyProviderError(JSON.stringify({ provider, source, error: errorFields(raw) })));
   } catch (_) { return null; } // Missing/older addon must not hide the CLI fault.
 }
