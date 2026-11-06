@@ -49,7 +49,10 @@ function normalizeHandoff(input = {}) {
 function isGuardedHandoffFailure(facts, handoff) {
   if (!handoff.pending || !handoff.reusedTarget || handoff.toCli !== facts.cli) return false;
   if (facts.runnerKind === 'stream') {
-    return !facts.resultDurable && !USER_STOP_REASONS.has(facts.killReason);
+    // Assistant text or a tool call proves the reused native session resumed:
+    // a later failure (a 429 ten minutes into the turn) is an ordinary provider
+    // error that the API policy and Auto must see, not a resume failure.
+    return !facts.resultDurable && !facts.hasOutput && !USER_STOP_REASONS.has(facts.killReason);
   }
   return !facts.isRetry && !facts.hasOutput && !facts.killReason && !facts.retryBlockedByAdapterError;
 }

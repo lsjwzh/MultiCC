@@ -2515,6 +2515,8 @@ function createChatTurnEngine(deps) {
       runnerKind: 'stream',
       cli: persisted.cli || 'claude',
       resultDurable: turn.resultDurable === true,
+      hasOutput: !!(cs.currentAssistantText || cs.currentToolCalls.length)
+        || !!attemptFacts?.visibleOutputObserved || sideEffects,
       killReason: runner.killReason || '',
     }, normalizeHandoff({ handoff: persisted.pendingCliHandoff }));
     const shouldClassifyApiError = (!guardedHandoffResumeFailure || errorOnlyBoundary) && !!(
