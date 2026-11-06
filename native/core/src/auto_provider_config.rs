@@ -59,6 +59,9 @@ const ROUTING_MODEL_ID_PATTERN: &str = r"^[A-Za-z0-9._:/\[\]~-]{1,100}$";
 const AUTO_PROVIDER_ID_PATTERN: &str = r"(?i)^auto(?::|$)";
 const MAX_CANDIDATES: usize = 12;
 const MAX_ATTEMPTS: usize = 4;
+// Preset ids are minted by the web client (`p<base36>`), but the field is only
+// a label: any short string is accepted so old/new clients can round-trip it.
+const MAX_PRESET_ID: usize = 128;
 const TIER_KEY_PATTERN: &str = r"^[A-Za-z0-9_-]{1,24}$";
 const MAX_TIERS: usize = 6;
 const ROUTING_ON_UNKNOWN: [&str; 3] = ["strong", "weak", "priority"];
@@ -1566,6 +1569,21 @@ fn selected_protocol(declared: &str, derived: Option<String>) -> String {
     }
 }
 
+// Cosmetic provenance for the run-config pill: which local preset the user
+// saved this pool from. It stays outside the routing policy — a malformed
+// value is ignored instead of rejecting an otherwise valid pool, so records
+// written by older or newer peers keep validating.
+fn preset_provenance(input: &Value) -> Option<String> {
+    let Some(Value::String(text)) = get(input, "presetId") else {
+        return None;
+    };
+    let text = js_trim(text);
+    if text.is_empty() || text.chars().count() > MAX_PRESET_ID {
+        return None;
+    }
+    Some(text.to_string())
+}
+
 fn run_selection(
     facts: Facts,
     input: Value,
@@ -1828,6 +1846,9 @@ fn run_selection(
         "allowCrossTrust".to_string(),
         Value::Bool(allow_cross_trust),
     );
+    if let Some(preset_id) = preset_provenance(&input) {
+        value.insert("presetId".to_string(), Value::String(preset_id));
+    }
     if cross_cli {
         value.insert("cliSwitch".to_string(), Value::String(cli_switch));
     }
@@ -2066,6 +2087,40 @@ mod tests {
             "nativeVendorModelPattern": "^[A-Za-z0-9][A-Za-z0-9._:\\/-]{0,118}[A-Za-z0-9._/-]$",
             "nativeVendorModelIgnoreCase": false
         })
+    }
+
+    #[test]
+    fn keeps_preset_provenance_and_ignores_unusable_values() {
+        let facts = sample_facts();
+        let base = json!({
+            "version": 1,
+            "mode": "auto",
+            "protocol": "anthropic",
+            "presetId": "  p1abc  ",
+            "candidates": [
+                { "providerId": "codebuddy-native:codebuddy", "cli": "codebuddy", "model": "deepseek-v4.1-flash" },
+                { "providerId": "qoder-native:qoder", "cli": "qoder", "model": "auto" },
+            ],
+        });
+        let request = json!({ "facts": facts.clone(), "input": base });
+        let out: Value = serde_json::from_str(
+            &normalize_stored_provider_selection(&request.to_string()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(out["presetId"], json!("p1abc"));
+
+        // Anything but a short string is simply not echoed back; the pool stays valid.
+        for garbage in [json!(7), json!("   "), json!("x".repeat(MAX_PRESET_ID + 1))] {
+            let mut input = base.clone();
+            input["presetId"] = garbage;
+            let request = json!({ "facts": facts.clone(), "input": input });
+            let out: Value = serde_json::from_str(
+                &normalize_stored_provider_selection(&request.to_string()).unwrap(),
+            )
+            .unwrap();
+            assert!(out.get("presetId").is_none(), "unexpected presetId: {out}");
+            assert_eq!(out["candidates"].as_array().unwrap().len(), 2);
+        }
     }
 
     #[test]

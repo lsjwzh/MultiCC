@@ -558,27 +558,88 @@
     return `⚡ 自动 · ${presetName ? `${presetName} · ` : ''}${pickLabel} · ${count} 条`;
   }
 
-  // 会话里只存线路池本身，不存「它来自哪个预设」。胶囊上要写预设名，就拿本机预设
-  // 逐个比对：线路（CLI + 线路 id + 模型）按优先级顺序完全一致才算同一个预设。
-  // 没有预设、读不到 localStorage、或有人改过池子 —— 都返回空串，胶囊照旧。
-  function candidateKey(list) {
+  // 会话里存的是线路池本身；胶囊上的预设名靠两件事找回：保存时记下的
+  // presetId，和给老数据兜底的池子指纹。指纹只比真正决定路由的三件事 ——
+  // 线路、模型、是否自动挑模型 —— 加上优先级顺序；cli 只在两边都写了时才比：
+  // 老版 Auto Provider 编辑器存预设时会把 cli 丢掉（rememberPreset 只留
+  // providerId/model/priority），拿空串和真实车道全等会让旧预设永远匹配不上。
+  function poolRows(list) {
     return (Array.isArray(list) ? list : [])
       .filter(item => item && item.enabled !== false)
-      .slice().sort((a, b) => (Number(a.priority) || 0) - (Number(b.priority) || 0))
-      .map(item => `${clean(item.cli)}\n${clean(item.providerId)}\n${clean(item.model)}\n${item.autoModel ? 'auto' : ''}`)
-      .join('\u0001');
+      .slice()
+      .sort((a, b) => (Number(a.priority) || 0) - (Number(b.priority) || 0))
+      .map(item => ({
+        providerId: clean(item.providerId), model: clean(item.model),
+        autoModel: item.autoModel === true, cli: clean(item.cli),
+      }));
+  }
+
+  function sameRow(row, other) {
+    return !!row && !!other && row.providerId === other.providerId && row.model === other.model
+      && row.autoModel === other.autoModel && (!row.cli || !other.cli || row.cli === other.cli);
+  }
+
+  function samePool(left, right) {
+    return left.length === right.length && left.every((row, index) => sameRow(row, right[index]));
+  }
+
+  // 池子是预设的子集：从预设里删掉一条（或那条当时跑不了）之后，剩下的线路
+  // 仍按原优先级顺序出现在预设里。
+  function poolIsSubset(pool, preset) {
+    let index = 0;
+    for (const row of pool) {
+      while (index < preset.length && !sameRow(row, preset[index])) index += 1;
+      if (index >= preset.length) return false;
+      index += 1;
+    }
+    return pool.length > 0;
+  }
+
+  function readPresetStore() {
+    try {
+      const storage = scope() && scope().localStorage;
+      if (!storage) return [];
+      const raw = JSON.parse(storage.getItem(PRESET_KEY) || '[]');
+      return (Array.isArray(raw) ? raw : [])
+        .filter(item => item && Array.isArray(item.candidates) && item.candidates.length >= 2);
+    } catch (_) { return []; }
+  }
+
+  // 认出一份预设：presetId 最可靠（预设后来改名或加减线路也还指着它）；老记录
+  // 退回池子指纹；再退一步，池子是某份预设删过线路后的样子 —— 只有唯一命中才算，
+  // 两份预设都包含它就宁可不说名字。
+  function matchPreset(selection, presets) {
+    const named = (Array.isArray(presets) ? presets : [])
+      .filter(item => item && !item.recent && clean(item.name) && Array.isArray(item.candidates));
+    if (!named.length) return null;
+    const presetId = clean(selection && selection.presetId);
+    if (presetId) {
+      const byId = named.find(item => clean(item.id) === presetId);
+      if (byId) return byId;
+    }
+    const pool = poolRows(selection && selection.candidates);
+    if (!pool.length) return null;
+    const exact = named.find(item => samePool(poolRows(item.candidates), pool));
+    if (exact) return exact;
+    const contains = named.filter(item => poolIsSubset(pool, poolRows(item.candidates)));
+    return contains.length === 1 ? contains[0] : null;
   }
 
   function matchPresetName(selection) {
     try {
-      const storage = scope() && scope().localStorage;
-      if (!storage || !selection) return '';
-      const raw = JSON.parse(storage.getItem(PRESET_KEY) || '[]');
-      const key = candidateKey(selection.candidates);
-      if (!key || !Array.isArray(raw)) return '';
-      const hit = raw.find(item => item && !item.recent && clean(item.name) && candidateKey(item.candidates) === key);
+      const hit = matchPreset(selection, readPresetStore());
       return hit ? clean(hit.name) : '';
     } catch (_) { return ''; }
+  }
+
+  // 保存时把出处写进 providerSelection：用户明确套用过的优先，否则由 matchPreset
+  // 按池子认；都不中就不写，免得给手搭的池子凭空安一个名字。
+  function presetProvenance(selection, presets, activeId) {
+    const list = Array.isArray(presets) ? presets : [];
+    const applied = list.find(item => item && !item.recent && clean(item.name) && clean(item.id) === clean(activeId));
+    if (applied) return clean(applied.id);
+    const hit = matchPreset(selection, list);
+    return hit ? clean(hit.id) : '';
   }
 
   // 单行文案里的「车道 + 线路」两段：自持账号的车道路由名就是它的产品名，只说一遍。
@@ -2513,12 +2574,13 @@
     }
 
     function readPresets() {
-      try {
-        const storage = scope() && scope().localStorage;
-        if (!storage) return [];
-        const raw = JSON.parse(storage.getItem(PRESET_KEY) || '[]');
-        return (Array.isArray(raw) ? raw : []).filter(item => item && Array.isArray(item.candidates) && item.candidates.length >= 2);
-      } catch (_) { return []; }
+      return readPresetStore();
+    }
+
+    // 保存时把「这套池子来自哪份预设」写进 providerSelection.presetId：之后预设
+    // 被改名/加删线路，或胶囊读到的是另一个设备写下的池子，名字仍能靠 id 找回来。
+    function provenanceFor(selection) {
+      return presetProvenance(selection, readPresets(), activePresetId);
     }
 
     function writePresets(list) {
@@ -2867,6 +2929,9 @@
       });
       if (!built.ok) throw new Error(built.error);
       const selection = built.value;
+      // 出处只影响胶囊文案；它进 providerSelection 之前先由服务端归一化保留。
+      const presetId = provenanceFor(selection);
+      if (presetId) selection.presetId = presetId;
       const primary = selection.candidates[0];
       // 子任务的高级设置和固定一条共用：留空 = 跟随主线路（resolveSubagent 会给 null）。
       const subagent = collectSubagent();
@@ -3210,6 +3275,7 @@
     open,
     pillModel,
     pillText,
+    presetProvenance,
     protocolOf,
     reorder,
     rowIssue,
