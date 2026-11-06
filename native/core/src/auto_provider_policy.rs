@@ -354,7 +354,10 @@ fn field<'a>(object: Option<&'a Map<String, Value>>, key: &str) -> Js<'a> {
 }
 
 fn parse(input: &str) -> Result<Value, String> {
-    serde_json::from_str(input).map_err(|error| format!("invalid_policy_request: {error}"))
+    // The JS side JSON.stringify's whatever it was handed, including lone
+    // surrogates from sliced strings; lenient parsing keeps those from
+    // turning into transport errors (usage/search/task_store already do).
+    crate::json_lenient::from_str(input).map_err(|error| format!("invalid_policy_request: {error}"))
 }
 
 // ── limit_state ─────────────────────────────────────────────────────────────
@@ -1097,8 +1100,21 @@ mod tests {
         assert_eq!(pick(true, "sticky", banded), json!(1));
         // An unmeasured line never loses (or wins) on quota alone: a sticky
         // unmeasured route survives even a measured near-limit challenger.
-        let mixed = json!([line("sticky-blind", None, 0), line("nearly-full", Some(89.0), 1)]);
+        let mixed = json!([
+            line("sticky-blind", None, 0),
+            line("nearly-full", Some(89.0), 1)
+        ]);
         assert_eq!(pick(true, "sticky-blind", mixed), json!(0));
+    }
+
+    #[test]
+    fn lone_surrogate_reaches_rules_not_a_transport_error() {
+        // The bridge JSON.stringify's sliced-emoji strings as "\ud834"; a
+        // strict parse would fail every such call as invalid_policy_request
+        // where the old JS implementation simply ran the rules.
+        let input = r#"{"entry":{"summary":{"kind":"\ud834","status":"x"}},"now":100}"#;
+        let answer = limit_state(input).expect("lenient parse must reach the rules");
+        assert!(answer.starts_with(r#"{"state":"#));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  customEndpointError,
   primaryProviderCandidate,
   providerSelectionDto,
   selectionClis,
@@ -68,6 +69,15 @@ test('Auto Provider validates a same-protocol concrete candidate pool', () => {
     preferMaxQuota: true,
     allowCrossTrust: false,
   });
+});
+
+test('lone-surrogate input reaches the validation rules, not a parse error', () => {
+  // JSON.stringify keeps a sliced emoji as the escape "\ud834"; the old JS
+  // implementation passed it straight into the rules, so the native side must
+  // answer too — with U+FFFD where the text echoes back.
+  const lone = '\ud834';
+  assert.equal(customEndpointError(`x${lone}/v1`), 'routing.endpoint must be a URL');
+  assert.deepEqual(selectionClis({ candidates: [{ cli: lone }] }), ['�']);
 });
 
 test('Auto Provider rejects virtual, duplicate and implicit cross-trust routes', () => {

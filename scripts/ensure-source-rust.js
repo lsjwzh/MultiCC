@@ -122,7 +122,10 @@ function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = proc
     // Without a working toolchain a still-loadable external override is better
     // than refusing to start, as before; say plainly what that costs.
     if (configured && !ownCache && !current && probe(resolved)) {
-      log('无法为当前源码编译 Rust 模块，暂时沿用指定的模块；它不是当前源码构建的，新加的原生功能可能不可用。');
+      // probe() passed above, yet that override predates this source tree —
+      // some entry added since will be missing and the server now requires
+      // its native modules at require time, so say what really happens.
+      log('无法为当前源码编译 Rust 模块，暂时沿用指定的模块；它缺少本版源码新增的原生接口，服务启动时加载会直接失败。请修复 Rust 工具链后重新执行 ./multicc start。');
       ensureRemote(resolved);
       ensureCdpd(resolved);
       return resolved;
