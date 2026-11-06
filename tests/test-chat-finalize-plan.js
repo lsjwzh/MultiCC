@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   classifyProcessExit,
+  isGuardedHandoffFailure,
   planTurnFinalization,
   planRetryBlockedFinalization,
   resolveTurnFinalization,
@@ -390,6 +391,31 @@ test('stream handoff resume failure suppresses a generic API retry decision', ()
   assert.equal(plan.facts.guardedHandoffResumeFailure, true);
   assert.equal(types(plan).includes('schedule-api-retry'), false);
   assert.equal(types(resolveTurnFinalization(plan)).includes('report-handoff-resume-failure'), true);
+});
+
+// Regression (2026-11-06, task-55bada63): a reused Claude target streamed for
+// ten minutes, then hit a 429. The turn was reported as「原生会话恢复异常」and
+// the real rate-limit decision never reached the API policy or Auto.
+test('a reused stream handoff that produced output fails as an API error, not a resume failure', () => {
+  const plan = planTurnFinalization(base({
+    runnerKind: 'stream', cli: 'claude', resultEvent: false,
+    resultDurable: false, hasOutput: true, apiError: true,
+    apiErrorDecision: {
+      action: 'wait_reset', attempt: 0, delayMs: 14_000_000,
+      error: { category: 'billing_quota', httpStatus: 429, maxAttempts: 0 },
+    },
+    handoff: { status: 'pending', reusedTarget: true, toCli: 'claude' },
+  }));
+  assert.equal(plan.facts.guardedHandoffResumeFailure, false);
+  assert.equal(types(resolveTurnFinalization(plan)).includes('report-handoff-resume-failure'), false);
+  assert.equal(isGuardedHandoffFailure(
+    { runnerKind: 'stream', cli: 'claude', resultDurable: false, hasOutput: true, killReason: '' },
+    { pending: true, reusedTarget: true, toCli: 'claude' },
+  ), false);
+  assert.equal(isGuardedHandoffFailure(
+    { runnerKind: 'stream', cli: 'claude', resultDurable: false, hasOutput: false, killReason: '' },
+    { pending: true, reusedTarget: true, toCli: 'claude' },
+  ), true, 'an empty ending is still a fail-closed resume failure');
 });
 
 test('a host-proved provider error envelope may fail over during a reused stream handoff', () => {
