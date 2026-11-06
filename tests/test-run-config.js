@@ -446,6 +446,93 @@ test('pillModel（自动挑选）：线路池与本机某个预设一致时，�
   } finally { delete global.window; }
 });
 
+test('pillModel（自动挑选）：旧预设没有 cli 也能匹配，presetId 指向的预设被改过仍显示名字', () => {
+  const pool = [
+    { providerId: 'zhipu', cli: 'claude', model: 'glm-5', priority: 1, enabled: true },
+    { providerId: 'deepseek', cli: 'claude', model: null, priority: 2, enabled: true },
+  ];
+  const selection = { mode: 'auto', protocol: 'anthropic', candidates: pool };
+  // 老版 Auto Provider 编辑器存预设时不写 cli（rememberPreset 只留 providerId/model/priority）。
+  const legacy = { id: 'old', name: '旧预设', candidates: [
+    { providerId: 'zhipu', model: 'glm-5', priority: 1 },
+    { providerId: 'deepseek', model: null, priority: 2 },
+  ] };
+  // 保存之后用户又给预设加了一条：id 还在，但池子已经和预设不等了。
+  const grown = { id: 'p1', name: '省钱组合', candidates: [
+    ...legacy.candidates, { providerId: 'backup', model: 'm', priority: 3 },
+  ] };
+  const store = { [run.PRESET_KEY]: JSON.stringify([legacy, grown]) };
+  global.window = { localStorage: { getItem: key => store[key] || null } };
+  try {
+    assert.equal(
+      run.pillText(run.pillModel({ next: { providerSelection: selection } })),
+      '⚡ 自动 · 旧预设 · 按顺序 · 2 条',
+    );
+    assert.equal(
+      run.pillText(run.pillModel({ next: { providerSelection: { ...selection, presetId: 'p1' } } })),
+      '⚡ 自动 · 省钱组合 · 按顺序 · 2 条',
+    );
+    // 预设被删掉（或记录来自另一台设备）：退回池子比对。池子是这份预设的子集
+    // （用户当年从它删过一条），唯一命中就仍算它。
+    store[run.PRESET_KEY] = JSON.stringify([grown]);
+    assert.equal(
+      run.pillText(run.pillModel({ next: { providerSelection: { ...selection, presetId: 'gone' } } })),
+      '⚡ 自动 · 省钱组合 · 按顺序 · 2 条',
+    );
+    // 完全不相干的预设：保持没有名字。
+    store[run.PRESET_KEY] = JSON.stringify([{ id: 'other', name: '别的', candidates: [
+      { providerId: 'x', model: 'm', priority: 1 }, { providerId: 'y', model: 'm', priority: 2 },
+    ] }]);
+    assert.equal(
+      run.pillText(run.pillModel({ next: { providerSelection: { ...selection, presetId: 'gone' } } })),
+      '⚡ 自动 · 按顺序 · 2 条',
+    );
+  } finally { delete global.window; }
+});
+
+test('pillModel（自动挑选）：老记录在预设基础上删过线路，唯一包含它的预设仍能认出来', () => {
+  const rows = [
+    { providerId: 'a', cli: 'claude', model: 'm1', priority: 1, enabled: true },
+    { providerId: 'b', cli: 'claude', model: 'm2', priority: 2, enabled: true },
+    { providerId: 'c', cli: 'claude', model: 'm3', priority: 3, enabled: true },
+  ];
+  const preset = { id: 'p1', name: 'CN-Models', candidates: rows };
+  const store = { [run.PRESET_KEY]: JSON.stringify([preset]) };
+  global.window = { localStorage: { getItem: key => store[key] || null } };
+  try {
+    const pool = { mode: 'auto', candidates: rows.filter(row => row.providerId !== 'b') };
+    assert.equal(
+      run.pillText(run.pillModel({ next: { providerSelection: pool } })),
+      '⚡ 自动 · CN-Models · 按顺序 · 2 条',
+    );
+    // 两份预设都包含这个池子：有歧义，不猜名字。
+    const rival = { id: 'p2', name: '另一份', candidates: [rows[0], rows[1], { providerId: 'x', cli: 'claude', model: 'mx', priority: 3 }] };
+    const ambiguous = { mode: 'auto', candidates: rows.slice(0, 2) };
+    store[run.PRESET_KEY] = JSON.stringify([preset, rival]);
+    assert.equal(
+      run.pillText(run.pillModel({ next: { providerSelection: ambiguous } })),
+      '⚡ 自动 · 按顺序 · 2 条',
+    );
+  } finally { delete global.window; }
+});
+
+test('presetProvenance：套用过的优先，否则按池子指纹，都找不到就不写', () => {
+  const pool = [
+    { providerId: 'zhipu', cli: 'claude', model: 'glm-5', priority: 1, enabled: true },
+    { providerId: 'deepseek', cli: 'claude', model: null, priority: 2, enabled: true },
+  ];
+  const selection = { mode: 'auto', candidates: pool };
+  const same = { id: 'p1', name: '同款', candidates: pool };
+  const other = { id: 'p2', name: '别的', candidates: pool.slice(0, 1) };
+  assert.equal(run.presetProvenance(selection, [same, other], 'p2'), 'p2', '明确套用过的预设优先');
+  assert.equal(run.presetProvenance(selection, [other, same], ''), 'p1');
+  assert.equal(run.presetProvenance(selection, [other], ''), '', '没有同款就不写');
+  assert.equal(run.presetProvenance(selection, [{ ...same, recent: true }], ''), '', '最近记录不是预设');
+  // 同一批线路换了车道：不是同一份预设。
+  const rerouted = { id: 'p3', name: '换车道', candidates: pool.map(item => ({ ...item, cli: 'codex' })) };
+  assert.equal(run.presetProvenance(selection, [rerouted], ''), '');
+});
+
 // ── 子 agent：家族 / 默认值 / 同步摘要 / 首次引导 ───────────────────────────
 test('subagentFamily：claude 与 claude-exp 同族，codex 与 codex-exp 同族', () => {
   assert.equal(run.subagentFamily('claude'), 'claude');

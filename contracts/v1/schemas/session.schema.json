@@ -175,6 +175,18 @@
               },
               "enabled": {
                 "type": "boolean"
+              },
+              "cli": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "tier": {
+                "type": "string",
+                "pattern": "^t[1-6]$"
+              },
+              "autoModel": {
+                "type": "boolean"
               }
             }
           }
@@ -187,8 +199,22 @@
         "sticky": {
           "type": "boolean"
         },
+        "preferMaxQuota": {
+          "type": "boolean"
+        },
         "allowCrossTrust": {
           "type": "boolean"
+        },
+        "cliSwitch": {
+          "enum": [
+            "failover",
+            "routing"
+          ]
+        },
+        "presetId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
         }
       }
     },

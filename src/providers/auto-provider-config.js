@@ -259,6 +259,9 @@ function providerSelectionDto(input) {
     ...(value.routing
       ? { routing: { ...value.routing, tiers: [...value.routing.tiers] } }
       : {}),
+    // Cosmetic provenance (which local preset this pool was saved from). Kept on
+    // the wire so every client can label the pill; absent for older records.
+    ...(value.presetId ? { presetId: value.presetId } : {}),
   };
 }
 

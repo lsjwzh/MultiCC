@@ -37,6 +37,16 @@ function fixture() {
   return { emit, broadcasts, appended, saves, record };
 }
 
+test('presetId 只是胶囊标签，不参与线路池的变更判定', () => {
+  const base = { mode: 'auto', protocol: 'openai_responses', candidates: [
+    { providerId: 'deepseek', priority: 1 }, { providerId: 'or', priority: 2 },
+  ] };
+  const key = selectionKey(base);
+  assert.ok(key);
+  assert.equal(selectionKey({ ...base, presetId: 'p1' }), key);
+  assert.equal(selectionKey({ ...base, presetId: 'p2' }), key);
+});
+
 test('a routed pick is persisted as a display-only note and remembered on the session', () => {
   const f = fixture();
   f.emit('s1', selected());

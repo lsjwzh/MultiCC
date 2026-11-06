@@ -305,6 +305,23 @@ test('cliSwitch is written only for a cross-CLI pool and defaults to failover', 
   assert.equal('cliSwitch' in providerSelectionDto(legacy.value), false);
 });
 
+test('presetId travels with the pool, survives reload and never gates routing', () => {
+  const providers = catalog();
+  const saved = validateProviderSelection(selection({ presetId: ' p1 ' }), { cli: 'claude', providers });
+  assert.equal(saved.ok, true, saved.error);
+  assert.equal(saved.value.presetId, 'p1');
+  const dto = providerSelectionDto(saved.value);
+  assert.equal(dto.presetId, 'p1');
+  assert.deepEqual(providerSelectionDto(validateProviderSelection(dto, { cli: 'claude', providers }).value), dto);
+  // 非字符串/空白/超长都当没写：标签不该让一份本来能跑的池子失效。
+  for (const bad of [7, '   ', 'x'.repeat(129)]) {
+    const out = validateProviderSelection(selection({ presetId: bad }), { cli: 'claude', providers });
+    assert.equal(out.ok, true, out.error);
+    assert.equal('presetId' in out.value, false);
+    assert.equal('presetId' in providerSelectionDto(out.value), false);
+  }
+});
+
 test('price tiering is accepted only without a hand-tagged ladder', () => {
   const providers = catalog();
   const priced = validateProviderSelection(selection({

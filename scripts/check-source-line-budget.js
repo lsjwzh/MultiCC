@@ -176,9 +176,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-04 自动线路池接入全部厂商原生线路（Command Code / WorkBuddy /
   // Qoder / Gemini / Pi / DSH / Grok），池选择器与车道判定随之扩展，实测
   // 3223/164653，按棘轮上调；模型字段那一族的拆分条件不变。
+  // 2026-11-06 胶囊预设名根修：保存时记录预设出处（presetId），并给旧预设
+  // （无 cli）与「池子是预设删过一条」的老数据补比对，实测 3289/167590，
+  // 按棘轮上调；模型字段那一族的拆分条件不变。
   'public/run-config.js': Object.freeze({
-    ceiling: 3223,
-    byteCeiling: 164653,
+    ceiling: 3289,
+    byteCeiling: 167590,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),

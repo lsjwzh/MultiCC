@@ -105,6 +105,7 @@ test('session DTO is canonical, schema-valid, and excludes process or filesystem
       maxAttempts: 2,
       sticky: true,
       allowCrossTrust: true,
+      presetId: 'preset-contract',
     },
     subagent: { providerId: 'sub-safe-id', model: 'sub-model', effectiveModel: 'sub-effective' },
     autoCommit: true,
@@ -124,6 +125,8 @@ test('session DTO is canonical, schema-valid, and excludes process or filesystem
   assertValid('session.schema.json', dto);
   assert.equal(dto.providerSelection.allowCrossTrust, true,
     'session DTO preserves explicit cross-trust authorization');
+  assert.equal(dto.providerSelection.presetId, 'preset-contract',
+    'session DTO carries the cosmetic preset provenance');
   const wire = serialized(dto);
   for (const forbidden of ['/private/', 'native-session-secret', 'hidden prompt', 'secret-token', 'Error at']) {
     assert.equal(wire.includes(forbidden), false, `DTO excludes ${forbidden}`);
