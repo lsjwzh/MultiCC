@@ -604,9 +604,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     //   + 补登 main 上漏掉的 autoEditorPresetUpdate/Updated 2 键）：Auto 选线「优先用
     //   额度最多的线路」开关与摘要文案。中英各 6 行 = +12 行，countLines 口径实测
     //   10266/666788，按真实高水位抬一格。
+    // 语义改版不增键只改写 autoEditorPreferQuota* 三键文案（额度不足=剩余<20% 才换线），
+    // 行数不变、字节加长，countLines 口径实测 10266/666980，按真实高水位抬字节一格。
     maxLines: 10266,
     // Existing permission guidance now explains the separate helper identity and list registration.
-    maxBytes: 666788,
+    maxBytes: 666980,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

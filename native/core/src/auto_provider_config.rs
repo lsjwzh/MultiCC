@@ -1830,11 +1830,11 @@ fn run_selection(
         "sticky".to_string(),
         Value::Bool(!value_is(get(&input, "sticky"), &Value::Bool(false))),
     );
-    // Quota-first steering, default on: between lines that both carry a usage
-    // reading, the one with more headroom runs the task (see
-    // auto_provider_policy.rs `by_quota`). Default-true means an existing pool
-    // gains the behaviour without a migration; the checkbox exists precisely
-    // so it can be turned back off per pool.
+    // Quota-first steering, default on: a line with under a fifth of its
+    // quota left yields to a roomier one (see auto_provider_policy.rs
+    // `by_quota`). Default-true means an existing pool gains the behaviour
+    // without a migration; the checkbox exists precisely so it can be turned
+    // back off per pool.
     value.insert(
         "preferMaxQuota".to_string(),
         Value::Bool(!value_is(

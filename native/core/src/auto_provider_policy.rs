@@ -48,11 +48,13 @@ pub const SAFE_PHASES: [&str; 3] = ["connect", "request", "before_first_token"];
 /// Usage at or above this share of a window counts as "about to run dry" when
 /// choosing a new route. It does not evict an existing usable sticky route.
 pub const NEAR_LIMIT_PERCENT: f64 = 90.0;
-/// Quota-first steering (`preferMaxQuota`) compares the room two lines have
-/// left in bands this wide, so a few points of drift cannot bounce a session
-/// between lines on every turn. The width matches [`Line::official_band`]:
-/// one shared notion of "measurably roomier".
-pub const QUOTA_BAND_PERCENT: f64 = 20.0;
+/// Quota-first steering (`preferMaxQuota`) treats a line with less than this
+/// share of its window remaining — usage above `100 - this` — as running low:
+/// it yields to any measured line with more than that left, ahead of
+/// stickiness. The buffer between this threshold and
+/// [`NEAR_LIMIT_PERCENT`]/exhaustion is what lets the switch happen between
+/// turns instead of as a mid-task 429.
+pub const QUOTA_LOW_REMAINING_PERCENT: f64 = 20.0;
 /// A usage reading stays a useful steering hint for longer than it stays a
 /// trustworthy exhaustion verdict (the per-account sweeper runs every ~10 min).
 const USAGE_HINT_MS: f64 = 30.0 * 60_000.0;
@@ -586,16 +588,16 @@ impl<'a> Line<'a> {
         if !self.get("trustDomain").is("official") {
             return None;
         }
-        self.band_of()
+        self.usage().map(|used| (used / 20.0).floor())
     }
-    /// The quota-first steering band: floor(usedPercent / QUOTA_BAND_PERCENT).
-    /// A non-finite reading (or none at all) is no opinion — see
+    /// Whether less than [`QUOTA_LOW_REMAINING_PERCENT`] of the window is
+    /// left. A non-finite reading (or none at all) is no opinion — see
     /// [`Order::compare`] for how that keeps unmeasured lines on their
     /// configured order.
-    fn band_of(&self) -> Option<f64> {
+    fn quota_tight(&self) -> Option<bool> {
         self.usage()
             .filter(|used| used.is_finite())
-            .map(|used| (used / QUOTA_BAND_PERCENT).floor())
+            .map(|used| 100.0 - used < QUOTA_LOW_REMAINING_PERCENT)
     }
     fn price(&self) -> Js<'a> {
         if self.get("priced").strict_eq(Js::Bool(true)) {
@@ -627,13 +629,15 @@ impl<'a> Line<'a> {
 ///   tier climbs before it descends (the nearer stronger tier first);
 /// * `pinned` — a reserved line ({providerId, cli, model}) from a handoff or a
 ///   planned lane switch; it outranks stickiness;
-/// * `by_quota` — quota-first steering (`preferMaxQuota`): between two lines
-///   that both carry a usage reading, the one with more headroom wins, in
-///   QUOTA_BAND_PERCENT bands, ahead of stickiness — riding the roomiest line
-///   is what keeps a long task from being interrupted by a wall it could see
-///   coming. A line without a reading expresses no opinion here, so an
-///   unmeasured pool (or an unmeasured line of a mixed one) keeps the ordering
-///   it always had;
+/// * `by_quota` — quota-first steering (`preferMaxQuota`): a line with less
+///   than [`QUOTA_LOW_REMAINING_PERCENT`] of its window left yields to any
+///   measured line with more than that, ahead of stickiness — riding a line
+///   into the wall mid-task is the interruption the option exists to avoid.
+///   Above that threshold quota never reorders a pool; when both lines are
+///   running low the roomier one goes first (below stickiness, so a session
+///   already on a low line does not churn between low lines). A line without a
+///   reading expresses no opinion here, so an unmeasured pool (or an
+///   unmeasured line of a mixed one) keeps the ordering it always had;
 /// * `prefer_cli` — the session's current lane; a tie stays on it, since
 ///   leaving it costs a handoff;
 /// * `by_price` — price-tiered pools prefer the cheaper line inside a tier.
@@ -696,15 +700,18 @@ impl Order<'_> {
                 return pin;
             }
         }
-        // Quota-first steering. Only a pair of readings is compared: a line
-        // with no reading keeps the place the keys below give it, so a mixed
-        // pool never demotes an unmeasured line below a measured one merely
-        // for being unmeasured (a nearly-full reading must not win by default
-        // either — that is exactly what the near-limit rule below is for).
+        // Quota-first steering: a line running low on quota (less than
+        // QUOTA_LOW_REMAINING_PERCENT of its window left) yields to any
+        // measured line with more than that — ahead of stickiness, so the
+        // switch happens between turns instead of as a mid-task 429. Only a
+        // pair of readings is judged: a line without a reading keeps the place
+        // the keys below give it, so a mixed pool never demotes an unmeasured
+        // line below a measured one merely for being unmeasured.
         if self.by_quota {
-            if let (Some(a), Some(b)) = (left.band_of(), right.band_of()) {
+            if let (Some(a), Some(b)) = (left.quota_tight(), right.quota_tight()) {
                 if a != b {
-                    return a - b;
+                    // `false` (still has headroom) sorts first.
+                    return if a { 1.0 } else { -1.0 };
                 }
             }
         }
@@ -724,6 +731,21 @@ impl Order<'_> {
         let pressure = rank(!left.near_limit()) - rank(!right.near_limit());
         if pressure != 0.0 {
             return pressure;
+        }
+        // Both lines running low on quota (and quota-first steering on): the
+        // roomier one answers first — the official-account rule right below,
+        // generalized to every line but confined to the low regime. Above it
+        // the order the user configured stands. Stickiness has already spoken
+        // by here, so this only orders lines the session is not on.
+        if self.by_quota
+            && matches!(left.quota_tight(), Some(true))
+            && matches!(right.quota_tight(), Some(true))
+        {
+            if let (Some(a), Some(b)) = (left.usage(), right.usage()) {
+                if a != b && (a - b).is_finite() {
+                    return a - b;
+                }
+            }
         }
         if let (Some(a), Some(b)) = (left.official_band(), right.official_band()) {
             if a != b {
@@ -1062,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn quota_first_rides_the_roomiest_line() {
+    fn quota_first_only_intervenes_when_a_line_runs_low() {
         let line = |id: &str, used: Option<f64>, priority: u32| {
             let mut line = json!({ "providerId": id, "priority": priority, "index": priority,
                 "limitState": "available" });
@@ -1079,32 +1101,37 @@ mod tests {
             )["candidate"]
                 .clone()
         };
-        let pool = json!([
-            line("tight", Some(70.0), 0),
-            line("roomy", Some(10.0), 1),
-            line("unmeasured", None, 2)
+        // Healthy on both sides (each with over a fifth of the window left):
+        // quota never reorders — the pool's own order and stickiness stand.
+        let healthy = json!([
+            line("prio-first", Some(70.0), 0),
+            line("roomy", Some(10.0), 1)
         ]);
-        // On: the roomiest measured line beats both the priority-#1 line and
-        // the sticky route — that is the point of the option.
-        assert_eq!(pick(true, "tight", pool.clone()), json!(1));
-        // Off: the ordering the pool was configured for.
-        assert_eq!(pick(false, "", pool.clone()), json!(0));
-        assert_eq!(pick(false, "tight", pool), json!(0));
-        // Bands: when another line is a full band roomier than the sticky
-        // route, the route moves (61% vs 41%); inside a band (41% vs 59%)
-        // sticky holds — the hysteresis that keeps a session from bouncing
-        // every turn.
-        let banded = json!([line("sticky", Some(41.0), 0), line("other", Some(59.0), 1)]);
-        assert_eq!(pick(true, "sticky", banded), json!(0));
-        let banded = json!([line("sticky", Some(61.0), 0), line("other", Some(41.0), 1)]);
-        assert_eq!(pick(true, "sticky", banded), json!(1));
-        // An unmeasured line never loses (or wins) on quota alone: a sticky
-        // unmeasured route survives even a measured near-limit challenger.
+        assert_eq!(pick(true, "", healthy.clone()), json!(0));
+        assert_eq!(pick(true, "prio-first", healthy), json!(0));
+        // Under a fifth left (usage over 80%): the draining line yields to any
+        // measured line with more than that — even the sticky route. That is
+        // the mid-task interruption the option exists to avoid.
+        let draining = json!([
+            line("draining", Some(85.0), 0),
+            line("spare", Some(40.0), 1)
+        ]);
+        assert_eq!(pick(true, "", draining.clone()), json!(1));
+        assert_eq!(pick(true, "draining", draining.clone()), json!(1));
+        // Off: the same draining route is kept until it actually dies.
+        assert_eq!(pick(false, "draining", draining), json!(0));
+        // Both draining, neither near-limit yet: the roomier one answers
+        // first; a sticky route among draining lines does not churn.
+        let both = json!([line("worse", Some(88.0), 0), line("less-bad", Some(82.0), 1)]);
+        assert_eq!(pick(true, "", both.clone()), json!(1));
+        assert_eq!(pick(true, "worse", both), json!(0));
+        // An unmeasured line is never judged tight: the sticky blind route
+        // survives even a measured draining challenger.
         let mixed = json!([
-            line("sticky-blind", None, 0),
-            line("nearly-full", Some(89.0), 1)
+            line("blind", None, 0),
+            line("draining", Some(85.0), 1)
         ]);
-        assert_eq!(pick(true, "sticky-blind", mixed), json!(0));
+        assert_eq!(pick(true, "blind", mixed), json!(0));
     }
 
     #[test]
