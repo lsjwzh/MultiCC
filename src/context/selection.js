@@ -1,66 +1,94 @@
 'use strict';
-const { hash, estimateTokens } = require('../task-shell/context');
+
+// Context selection — memory/chunk ranking and budget clipping. The logic
+// lives in native/core/src/selection.rs (terms, whole-word relevance, CJK
+// bigrams, estimateTokens, UTF-16 clipping, SHA-256 dedupe and the selection
+// loop). This module keeps the exact export surface and forwards.
+//
+// Candidate ordering stays here on purpose: `String.prototype.localeCompare`
+// is an ICU/locale decision, so the same comparator the old module used runs
+// before the (already ordered) candidates cross once into Rust. Non-finite
+// budgets/headers are encoded as their String() form so JSON can carry them.
+
+const { getNative } = require('../native/runtime');
+
+const native = getNative('selection');
+const TYPE_PREFIX = 'context_selection_type_error: ';
+
+function call(fn, input) {
+  try {
+    return JSON.parse(fn.call(native, JSON.stringify(input)));
+  } catch (error) {
+    if (typeof error?.message === 'string' && error.message.startsWith(TYPE_PREFIX)) {
+      throw new TypeError(error.message.slice(TYPE_PREFIX.length));
+    }
+    throw error;
+  }
+}
+
+// `String(value || '')` keeps ±Infinity but drops NaN (falsy), so only the
+// infinities need a JSON-safe spelling for text operands.
+function encodeInfinity(value) {
+  return value === Infinity ? 'Infinity' : value === -Infinity ? '-Infinity' : value;
+}
+
+// Numbers consumed through `Number(value)` keep NaN as a NaN string so Rust
+// can reproduce the comparisons instead of reading a JSON null as 0.
+function encodeNonFinite(value) {
+  return typeof value === 'number' && !Number.isFinite(value) ? String(value) : value;
+}
+
+// `Number(undefined)` is NaN, unlike `Number(null)` which is 0, and JSON
+// cannot carry the difference in an object property.
+function encodeBudget(budget) {
+  return budget === undefined ? 'undefined' : encodeNonFinite(budget);
+}
 
 function terms(value) {
-  const text = String(value || '').toLowerCase();
-  const result = text.match(/[a-z0-9_./-]{2,}/g) || [];
-  for (const run of text.match(/[\u3400-\u9fff]+/g) || []) {
-    for (let i = 0; i < run.length - 1; i++) result.push(run.slice(i, i + 2));
-  }
-  return [...new Set(result)].slice(0, 256);
+  return call(native.contextSelectionTerms, { value: encodeInfinity(value) });
 }
+
 // ASCII terms must match a whole word: as a bare substring "ok" hits every
 // "token" and "hook", which made nearly every memory chunk look relevant.
-function termHit(haystack, term) {
-  if (!/^[a-z0-9_./-]+$/.test(term)) return haystack.includes(term);
-  for (let at = haystack.indexOf(term); at >= 0; at = haystack.indexOf(term, at + 1)) {
-    if (!/[a-z0-9_]/.test(haystack[at - 1] || '') && !/[a-z0-9_]/.test(haystack[at + term.length] || '')) return true;
-  }
-  return false;
-}
 function relevance(query, text) {
-  const tokens = terms(query), haystack = String(text || '').toLowerCase();
-  return tokens.reduce((n, term) => n + (termHit(haystack, term) ? 1 : 0), 0);
+  return call(native.contextSelectionRelevance, {
+    query: encodeInfinity(query), text: encodeInfinity(text),
+  });
 }
+
 // One shared bigram (会话, 输出 …) is not evidence that a fact is about the
 // query. Longer queries must overlap proportionally before a memory is pulled in.
 function minRelevance(query) {
-  const n = terms(query).length;
-  return Math.max(n >= 4 ? 2 : 1, Math.ceil(n * 0.15));
+  return call(native.contextSelectionMinRelevance, { query: encodeInfinity(query) });
 }
+
 function clipTokens(text, budget) {
-  if (estimateTokens(text) <= budget) return text;
-  if (budget < estimateTokens('…')) return '';
-  let lo = 0, hi = text.length;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (estimateTokens(text.slice(0, mid) + '…') <= budget) lo = mid; else hi = mid - 1;
-  }
-  return text.slice(0, lo).replace(/[\uD800-\uDBFF]$/, '') + '…';
+  const result = call(native.contextSelectionClipTokens, {
+    text: encodeInfinity(text),
+    budget: encodeBudget(budget),
+    textUndefined: text === undefined,
+  });
+  // A value that fits the budget is returned untouched; JSON spells the
+  // original `undefined` as null, so restore it here.
+  return result === null && text === undefined ? undefined : result;
 }
+
 // Budget includes wrappers and source labels. Omitted content is never cited.
-function selectContext(candidates, { budget = 8000, header = '', footer = '' } = {}) {
-  budget = Math.max(0, Math.floor(Number(budget) || 0));
-  const sources = [], omitted = [], seen = new Set();
-  let body = '';
-  for (const source of [...candidates].sort((a, b) => (b.priority || 0) - (a.priority || 0) || String(a.id).localeCompare(String(b.id)))) {
-    const text = String(source.excerpt || '');
-    const digest = hash(source.dedupeText || text);
-    if (!text || seen.has(digest)) { omitted.push({ id: source.id, reason: 'duplicate' }); continue; }
-    seen.add(digest);
-    const prefix = source.label ? `[${source.label}]\n` : '';
-    const available = Math.min(source.maxTokens || Infinity, budget - estimateTokens(header + body + prefix + '\n' + footer) - 1);
-    const excerpt = source.atomic ? (estimateTokens(text) <= available ? text : '') : clipTokens(text, available);
-    if (!excerpt || (excerpt !== text && estimateTokens(excerpt) < 24)) {
-      omitted.push({ id: source.id, reason: 'budget' }); continue;
-    }
-    const chunk = prefix + excerpt + '\n';
-    if (estimateTokens(header + body + chunk + footer) > budget) { omitted.push({ id: source.id, reason: 'budget' }); continue; }
-    body += chunk;
-    sources.push({ ...source, version: source.version || hash(text), excerpt,
-      truncated: source.truncated === true || excerpt !== text, estimatedTokens: estimateTokens(chunk) });
+function selectContext(candidates, options = {}) {
+  const { budget = 8000, header = '', footer = '' } = options;
+  const ordered = [...candidates].sort((left, right) => (right.priority || 0) - (left.priority || 0)
+    || String(left.id).localeCompare(String(right.id)));
+  const result = call(native.contextSelectionSelect, {
+    candidates: ordered,
+    budget: encodeNonFinite(budget),
+    header: encodeNonFinite(header),
+    footer: encodeNonFinite(footer),
+  });
+  if (result.budgetInfinite) {
+    result.budget.limit = Infinity;
+    delete result.budgetInfinite;
   }
-  const text = body ? header + body + footer : '';
-  return { text, sources, omitted, budget: { limit: budget, used: estimateTokens(text), managedOnly: true } };
+  return result;
 }
+
 module.exports = { terms, relevance, minRelevance, clipTokens, selectContext };

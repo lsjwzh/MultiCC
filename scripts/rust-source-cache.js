@@ -92,6 +92,9 @@ function probeAddon(file, node = process.execPath) {
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['contextSelectionTerms','contextSelectionRelevance','contextSelectionMinRelevance',
+      'contextSelectionClipTokens','contextSelectionSelect','usageObservedCatalog',
+      'usageObservedRequest'].some(key=>typeof a[key]!=='function')) process.exit(1);
     // An exported function is insufficient: Windows must be able to lock,
     // append and flush an audit record before this addon can run chat turns.
     const fs=require('node:fs'),os=require('node:os'),path=require('node:path');

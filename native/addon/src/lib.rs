@@ -134,3 +134,6 @@ pub mod claude_refresh;
 pub mod codex_models;
 
 pub mod provider_host;
+
+pub mod selection;
+pub mod usage_observed;
