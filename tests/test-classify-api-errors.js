@@ -84,6 +84,7 @@ function readServerCode() {
   try {
     const relativePaths = [
       'server.js',
+      'src/routes/task-state-store.js',
       'src/classify/vocab.js',
       'src/classify/state-machine.js',
       'src/chat/api-error-policy.js',

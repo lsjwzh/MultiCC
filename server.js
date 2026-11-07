@@ -185,7 +185,7 @@ const {
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
 const { taskShortCode, initTaskShortCodeRegistry } = require('./src/classify/task-short-code');
 const { installAuxHealthProvider, fanOutAuxVerdictStaleness } = require('./src/classify/aux-verdict-health');
-const { taskStatePayload } = require('./src/chat/task-state-payload');
+const { createTaskStateStore } = require('./src/routes/task-state-store');
 const { recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
 const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/chat/host-prompts');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
@@ -2392,65 +2392,14 @@ const pushOnInput = pushRuntime.onInput;
 const triggerPush = pushRuntime.notify;
 const cleanupPushMonitor = pushRuntime.cleanup;
 
-// ── Task state persistence (step ①) ───────────────────────────────────────────
-// persisted.taskState is the durable closed-loop task snapshot: it survives
-// restarts so the reconcile (②) can decide what was running, whether it stalled,
-// and whether to nudge. Falls back to {} for legacy sessions predating this field.
-//
-// Shape:
-//   { goal, phase, startedAt, endedAt, lastSummary, lastSummaryAt,
-//     lastTurnEndedAt, classifyState, pendingDispatches, classifyHistory,
-//     pendingUserInput, userInputSignalVersion, apiError,
-//     classifyUpdatedAt, cancelledAt, cancelReason }
-//   classifyState ∈ D | C | W | B | E | P | null  (D=done; B=terminal only; null=never classified)
-//   classifyHistory: [{ at: ms, goal, phase, state, error }] — last 7 days
-const TASK_STATE_DEFAULTS = {
-  goal: '', phase: 'idle', startedAt: null, endedAt: null,
-  lastSummary: '', lastSummaryAt: null, lastTurnEndedAt: null,
-  classifyState: null, pendingDispatches: [],
-  classifyHistory: [],
-  pendingUserInput: null, userInputSignalVersion: 0, userInputSignalTurnId: null,
-  apiError: null,
-  classifyUpdatedAt: null, cancelledAt: null, cancelReason: null,
-};
-
-function getTaskState(persisted) {
-  if (!persisted) return { ...TASK_STATE_DEFAULTS };
-  const ts = persisted.taskState || {};
-  return { ...TASK_STATE_DEFAULTS, ...ts };
-}
-
-// Merge a patch into persisted.taskState; {save:false} batches. Returns the new state.
-function setTaskState(sessionId, patch, opts = {}) {
-  const persisted = persistedSessions.get(sessionId);
-  if (!persisted) return null;
-  const cur = getTaskState(persisted);
-  const classifyChanged = Object.prototype.hasOwnProperty.call(patch, 'classifyState')
-    && patch.classifyState !== cur.classifyState;
-  const next = {
-    ...cur,
-    ...patch,
-    ...(classifyChanged && !Object.prototype.hasOwnProperty.call(patch, 'classifyUpdatedAt')
-      ? { classifyUpdatedAt: Date.now() } : {}),
-  };
-  persisted.taskState = next; bus.emit('task:state-changed', sessionId, cur, next);
-  if (opts.save !== false) savePersistedSessionsBestEffort('runtime.task-state');
-  // Push classify goal/phase to connected chat clients. The payload contract is
-  // shared with the connect seed and the extracted store — see
-  // src/chat/task-state-payload.js; drifting it once cost reopened pages the
-  // last API error.
-  const classifyPayload = taskStatePayload(next);
-  try {
-    chatBroadcast(sessionId, classifyPayload);
-  } catch (_) {}
-  // Also to workspace subscribers (fleet cards / Active sessions).
-  if (persisted.dirId) {
-    try {
-      workspaceBroadcast(persisted.dirId, { ...classifyPayload, sessionId });
-    } catch (_) {}
-  }
-  return next;
-}
+// ── Task state persistence (step ①): src/routes/task-state-store.js ─────────
+// The declarations stay: hosts wired above receive these two functions before
+// this line runs (hoisting), and every caller reaches the one tested store.
+const taskStates = createTaskStateStore({
+  persistedSessions, saveBestEffort: savePersistedSessionsBestEffort, chatBroadcast, workspaceBroadcast, bus,
+});
+function getTaskState(persisted) { return taskStates.getTaskState(persisted); }
+function setTaskState(sessionId, patch, opts) { return taskStates.setTaskState(sessionId, patch, opts); }
 const userInputSignalHost = createUserInputSignalHost(
   { getSession: id => chatSessions.get(id), getState: id => getTaskState(persistedSessions.get(id)),
     setState: setTaskState, log: message => console.log(message),

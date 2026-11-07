@@ -87,8 +87,8 @@ stateDiagram-v2
 - 字母词表与解析：`src/classify/vocab.js:10 parseClassifyResult`（解析不出 → `W`，`:41-53`）、`:139 isTerminalLetter`（只有 D）、`:145 applyUserInputEvidence`（结构化工具证据强制 W）
 
 **持久化 / 广播层**
-- `src/routes/task-state-store.js:25 setTaskState`（写 `persisted.taskState` `:30`，broadcast `:43/:45`）
-- ⚠️ 生产实际走的是 `server.js:2520` 的同名内联实现（见坏味道 #1）
+- `src/routes/task-state-store.js:57 setTaskState`（写 `persisted.taskState` 并发 `task:state-changed` `:67-68`，broadcast `:73/:75`）
+- `server.js` 只构造这一份 store 并转调（2026-11-07 起，见坏味道 #1）
 
 **外部唤醒层**
 - 外部等待：`src/wait-injector.js:145 register`、`:195 hasWait`、`:202 resolve`、`:229 tick`、`:287 autoContinue`、`:315 resumeInterrupted`、`:344 bgCheck`；服务封装 `src/wait-service.js:19`
@@ -233,21 +233,24 @@ flowchart TD
 
 ### 3.1 状态机
 
-1. **`task-state-store.js` 是没上线的复制品，而且已经漂移。**
-   `src/routes/task-state-store.js` 全仓库只被 `tests/test-cancel-state-flow.js:28` 引用，
-   生产走的是 `server.js:2520` 的内联同名实现。两份已经不一致：server 版会自动打
-   `classifyUpdatedAt`（`:2524-2530`）但 defaults 缺 `cancelSource`/`cancelOperationId`、
-   广播 payload（`:2537-2543`）**不带取消信封**；模块版有完整取消信封但没有 `classifyUpdatedAt`。
-   结果是 **测试测的是没跑在生产上的那份代码**。
+1. ~~**`task-state-store.js` 是没上线的复制品，而且已经漂移。**~~ **已解决（2026-11-07）**：
+   `server.js` 删掉了内联的 `getTaskState`/`setTaskState`，改为构造
+   `src/routes/task-state-store.js` 这唯一一份并转调；模块补齐了线上独有的
+   `task:state-changed` 总线事件与 `classifyUpdatedAt` 打点，defaults 取两份并集。
+   `tests/test-cancel-state-flow.js` 因此测的就是生产代码，并新增断言钉住总线事件与打点；
+   `tests/test-api-contracts.js` 禁止 `server.js` 再长出第二份。
 
 2. **状态词汇要过四层折算，加一个状态得改四张表。**
    `queueState`（`scheduler.js:9`）→ `freezeReason`（`scheduler.js:22`）→ `runState`
    （`session-work-host.js:160`）→ presentation（`status-presentation.js:60` + 别名 `:124`），
    再加 classify 字母表（`vocab.js:75`）和两份 i18n 文案。任何新状态都是六处齐改，漏一处就掉进 `unknown`。
 
-3. **`cancelled` 是纯展示态，靠取消信封字段反推 —— 而信封字段正好是第 1 条漂移掉的那几个。**
+3. **`cancelled` 是纯展示态，靠取消信封字段反推。**
    服务端没有 `cancelled` 字母（用户停止 = `E` + `cancelledAt/cancelReason/cancelSource/cancelOperationId`）。
-   一旦生产广播不带这些字段，前端就只能显示成 `error` 而不是 `cancelled`。
+   广播负载统一由 `src/chat/task-state-payload.js` 构造，带 `cancelledAt`/`cancelReason`，
+   前端据此显示 `cancelled` 而不是 `error`；原先「生产广播不带取消信封」的漂移已随第 1 条一并消除。
+   遗留：新一轮开始时只清 `cancelledAt/cancelReason/cancelSuperseded/supersededByEntryId`，
+   `cancelSource`/`cancelOperationId` 会残留上一次的值（目前无读取方，无可见影响）。
 
 4. **`isRunActive()` 对 `assessing` 的挖洞是承重的隐式约定。**
    `src/session-work-host.js:195` 明确让 `assessing` 返回 `false`（进程还活着但不算"在跑"）。
