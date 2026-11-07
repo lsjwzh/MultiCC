@@ -1349,7 +1349,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) livenessRuntime.recordProxyActivity({ ...event, sessionId: bound.sessionId }); },
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
-machines.mount(app, express); app.use(express.json({ limit: '50mb' })); serviceRoutes.mountManagement(app); require('./src/routes/quota-guard').mountQuotaGuardRoutes(app, { file: MULTICC_PATHS.quotaGuardFile }); // GET/PUT /api/settings/quota-guard —— 官方账号额度保护阈值（写 quota-guard.json，约 5 秒热生效）
+machines.mount(app, express); app.use(express.json({ limit: '50mb' })); serviceRoutes.mountManagement(app);
 // Codex 协议代理端点：官方 relay 与 responses-compat（XFYun 流稳定化）。
 // Responses↔Chat 转换桥已退役——主流国产服务商均已原生支持 /responses。
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。

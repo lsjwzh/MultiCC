@@ -282,3 +282,18 @@ test('Auto fails over away from a guarded account instead of spending it', () =>
   assert.equal(selected.skipped[0].providerId, 'claude-official-guarded');
   assert.equal(selected.skipped[0].reason, 'quota_guard_five_hour');
 });
+
+
+test('native coercion preserves nonfinite, negative zero and UTF-16 input semantics', () => {
+  const { liveWindows, readingAgeOf } = require('../src/quota/quota-guard');
+  const config = normalizeConfig({ fiveHourPercent: -0, weeklyPercent: NaN, monthlyPercent: Infinity });
+  assert.equal(Object.is(config.fiveHourPercent, 0), true);
+  assert.equal(config.weeklyPercent, 98);
+  assert.equal(config.monthlyPercent, 98);
+  assert.equal(envConfig({ MULTICC_QUOTA_GUARD_PERCENT: -Infinity }).fiveHourPercent, undefined);
+  assert.equal(readingAgeOf([60000]), 60000);
+  const rows = liveWindows({ summary: { usedPercentage: [99], window: '\ud800', resetsAtMs: NOW + HOUR } });
+  assert.equal(rows[0].window, '\ud800');
+  assert.equal(rows[0].kind, 'five_hour');
+  assert.equal(rows[0].usedPercent, 99);
+});

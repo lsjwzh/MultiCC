@@ -4615,7 +4615,7 @@
     {
       "path": "tests/test-quota-guard-routes.js",
       "tier": "core",
-      "lane": "deterministic"
+      "lane": "isolated"
     },
     {
       "path": "tests/test-quota-guard.js",

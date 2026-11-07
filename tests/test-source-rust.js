@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { sourcePaths, sourceFingerprint, probeAddon, writeProvenance, builtFromSource } = require('../scripts/rust-source-cache');
-const { ensureSourceRust } = require('../scripts/ensure-source-rust');
+const { ensureSourceRust, ensureGatewayBinary } = require('../scripts/ensure-source-rust');
 const ROOT = path.resolve(__dirname, '..');
 const addon = process.env.MULTICC_RUST_ADDON || path.join(process.env.MULTICC_RUST_PREBUILT_DIR
   || path.join(ROOT, 'native/prebuilt'), `${process.platform}-${process.arch}`, 'multicc_core.node');
@@ -89,6 +89,10 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     ...require(${JSON.stringify(path.resolve(addon))}), prepareCliSwitchRoute: undefined
   };`);
   assert.equal(probeAddon(stale), false, 'a stale addon cannot boot asynchronous switch preparation');
+  const staleQuota = write(root, 'stale-quota.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustQuotaGuard: undefined
+  };`);
+  assert.equal(probeAddon(staleQuota), false, 'a stale addon cannot silently bypass quota protection');
 });
 
 nativeTest('first source boot builds once; a new process reuses it and source changes select a new addon', t => {
@@ -265,6 +269,33 @@ function remoteFixture(t, { members = ['core', 'addon', 'remote'] } = {}) {
   const cache = { fingerprint: 'fixture-fingerprint', prebuiltDir, targetDir };
   return { root, cache, addonFile, prebuiltDir, targetDir };
 }
+
+test('external front door must be built from the current source even when its protocol matches', t => {
+  const fixture = remoteFixture(t, { members: ['core', 'gateway'] });
+  const addonFile = write(fixture.root, 'external/multicc_core.node', 'addon');
+  const binary = path.join(path.dirname(addonFile), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+  const install = value => {
+    fs.writeFileSync(binary, value);
+    if (process.platform !== 'win32') fs.chmodSync(binary, 0o755);
+  };
+  install('old gateway with the same protocol');
+  let builds = 0;
+  const options = { repoRoot: fixture.root, addon: addonFile, env: {}, cache: fixture.cache,
+    log() {}, gatewayVersion: () => ({ ok: true }), run: () => {
+      builds += 1;
+      install('current gateway');
+      writeProvenance(binary, fixture.cache.fingerprint);
+      return { status: 0 };
+    } };
+  assert.equal(ensureGatewayBinary(options), binary);
+  assert.equal(builds, 1, 'same protocol alone does not prove the native routes exist');
+  assert.equal(ensureGatewayBinary(options), binary);
+  assert.equal(builds, 1, 'verified output is reused');
+  install('replaced gateway');
+  assert.throws(() => ensureGatewayBinary({ ...options, run: () => ({ status: 1 }) }), /Rust 前门编译失败/);
+  assert.throws(() => ensureGatewayBinary({ ...options, run: () => ({ status: 0 }) }), /Rust 前门编译失败/,
+    'successful compiler exit without matching provenance cannot launch stale code');
+});
 
 test('同目录缺远控二进制时只补编它，成功即可用', t => {
   const fixture = remoteFixture(t);

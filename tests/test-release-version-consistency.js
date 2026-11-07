@@ -391,14 +391,16 @@ test('core runner covers every selected path and expands declared variants', () 
   // values only — no clock, port, FS or process — so they are deterministic.
   // 380 + 4 = 384 entries, 318 + 3 = 321 deterministic, 31 + 1 = 32 isolated,
   // 352 + 4 = 356 commands.
+  // Quota settings now exercise the real Rust gateway and its Node child.
+  // Keep the core set, moving that suite to isolated: 320 deterministic, 33 isolated.
   assert.equal(core.length, 384, 'the reviewed core set changed; re-audit the release tier');
   assert.equal(plan.entries.length, 384);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 321);
-  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 32);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 320);
+  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 33);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 

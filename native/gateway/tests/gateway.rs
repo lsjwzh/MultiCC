@@ -1529,3 +1529,51 @@ fn upload_temp_files_are_counted_and_cleaned_by_the_front_door() {
     assert_no_node_connection(&gateway);
     let _ = fs::remove_dir_all(tmp);
 }
+
+#[test]
+fn quota_guard_settings_keep_auth_http_and_matching_contracts() {
+    let gateway = Gateway::start(
+        "quota-http",
+        "echo",
+        &[("ACCESS_TOKEN", "quota-token".into())],
+    );
+    let route = "/api/settings/quota-guard";
+    let mut client = gateway.connect();
+    let refused = request(
+        &mut client,
+        &api("GET", route, &[("Host", "outside.example")], ""),
+    );
+    assert_eq!(refused.status, 403);
+    assert_eq!(refused.json()["code"], "AUTH_REQUIRED");
+    let authorized = [
+        ("Host", "outside.example"),
+        ("X-Access-Token", "quota-token"),
+    ];
+    let saved = request(
+        &mut client,
+        &api("GET", "/api/Settings/Quota-Guard/", &authorized, ""),
+    );
+    assert_eq!(saved.status, 200);
+    assert_eq!(saved.json()["config"]["weeklyPercent"], 98);
+    client
+        .write_all(&api("HEAD", route, &authorized, ""))
+        .unwrap();
+    let head = read_response_head(&mut client);
+    assert_eq!(head.status, 200);
+    assert_eq!(head.header("etag"), saved.header("etag"));
+    assert_eq!(
+        head.header("content-length"),
+        saved.header("content-length")
+    );
+    let options = request(&mut client, &api("OPTIONS", route, &authorized, ""));
+    assert_eq!(options.text(), "GET,HEAD,PUT");
+    assert_eq!(options.header("allow"), Some("GET,HEAD,PUT"));
+    let invalid = request(&mut client, &api("PUT", route, &[LOCAL, JSON_TYPE], "{bad"));
+    assert_eq!(invalid.status, 400);
+    assert!(!gateway.dir.join("quota-guard.json").exists());
+    assert_no_node_connection(&gateway);
+    // Unsupported methods retain the same fallback behavior as other groups.
+    let forwarded = request(&mut client, &api("POST", route, &[LOCAL], ""));
+    assert_eq!(forwarded.status, 200);
+    assert_eq!(gateway.requests().len(), 1);
+}

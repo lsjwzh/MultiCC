@@ -1,145 +1,140 @@
 'use strict';
 
-// The quota guard settings API is the only writer of quota-guard.json. These
-// tests pin the three things a settings route can quietly get wrong: it must
-// report the same effective config the guard acts on, it must not accept a
-// value that would hold every request (0% through a half-filled form), and the
-// file it writes must be the file the guard re-reads on its own.
-
+// Real front door + native runtime: the file a settings save writes must be
+// the same configuration the proxy guard subsequently enforces.
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-
-const { mountQuotaGuardRoutes, percentInput } = require('../src/routes/quota-guard');
+const net = require('node:net');
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
+const addonPath = process.env.MULTICC_RUST_ADDON || path.join(
+  process.env.MULTICC_RUST_PREBUILT_DIR || path.resolve(__dirname, '../native/prebuilt'),
+  `${process.platform}-${process.arch}`, 'multicc_core.node',
+);
 const { createQuotaGuard } = require('../src/quota/quota-guard');
-
 const NOW = 1_800_000_000_000;
-const HOUR = 60 * 60_000;
 
-function tempFile() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-quota-guard-'));
-  return path.join(dir, 'quota-guard.json');
-}
-
-function fakeRes() {
-  return {
-    code: 200,
-    payload: null,
-    status(code) { this.code = code; return this; },
-    json(payload) { this.payload = payload; return this; },
-  };
-}
-
-function mount(file, env = {}) {
-  const routes = {};
-  const app = {
-    get(route, handler) { routes[`GET ${route}`] = handler; },
-    put(route, handler) { routes[`PUT ${route}`] = handler; },
-  };
-  mountQuotaGuardRoutes(app, { file, env });
-  return {
-    get(body) {
-      const res = fakeRes();
-      routes['GET /api/settings/quota-guard']({}, res);
-      void body;
-      return res;
-    },
-    put(body) {
-      const res = fakeRes();
-      routes['PUT /api/settings/quota-guard']({ body }, res);
-      return res;
-    },
-  };
-}
-
-test('with no file, the API answers exactly the defaults the guard uses', () => {
-  const routes = mount(tempFile());
-  const res = routes.get();
-  assert.equal(res.code, 200);
-  assert.deepEqual(res.payload.config, {
-    enabled: true, fiveHourPercent: 98, weeklyPercent: 98, monthlyPercent: 98, scope: 'official',
-    maxReadingAgeMs: 30 * 60_000,
+async function mount(t, extra = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-quota-api-'));
+  fs.copyFileSync(path.resolve('native/gateway/tests/fixtures/upstream.js'), path.join(dir, 'server.js'));
+  const probe = net.createServer();
+  probe.listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('MULTICC_QUOTA_GUARD')));
+  Object.assign(env, { PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: '', LAN_ONLY: '0', MULTICC_LAN_ONLY: '0',
+    MULTICC_DATA_DIR: dir, FIXTURE_STATE_DIR: path.join(dir, 'state'), ...extra });
+  const binary = path.join(path.dirname(addonPath), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+  const child = spawn(binary, ['serve', '--cwd', dir, '--node', process.execPath, '--stdin-lifeline', 'server.js'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  let log = '';
+  child.stdout.on('data', () => {});
+  child.stderr.on('data', data => { log += data; });
+  const exited = once(child, 'exit');
+  t.after(async () => {
+    child.stdin.end();
+    const kill = setTimeout(() => child.kill('SIGKILL'), 5000);
+    try { await exited; } finally { clearTimeout(kill); fs.rmSync(dir, { recursive: true, force: true }); }
   });
+  const deadline = Date.now() + 10000;
+  while (!fs.existsSync(path.join(dir, 'state/ready'))) {
+    if (child.exitCode !== null || Date.now() > deadline) throw new Error(`gateway failed: ${log}`);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  async function call(method, body, headers = {}) {
+    const response = await fetch(`http://127.0.0.1:${port}/api/settings/quota-guard`, {
+      method, headers: { 'Content-Type': 'application/json', ...headers }, body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { code: response.status, payload: response.status === 304 ? null : await response.json(), response };
+  }
+  return { get: () => call('GET'), put: body => call('PUT', body), call,
+    file: path.join(dir, 'quota-guard.json'),
+    noNode() { assert.equal(fs.existsSync(path.join(dir, 'state/requests.log')), false); },
+  };
+}
+
+test('without a file the native API and guard share exactly the defaults', async t => {
+  const routes = await mount(t);
+  const res = await routes.get();
+  assert.equal(res.code, 200);
+  const guard = createQuotaGuard({ configFile: routes.file, env: {}, now: () => NOW });
+  assert.deepEqual(res.payload.config, guard.config());
   assert.deepEqual(res.payload.saved, {});
   assert.deepEqual(res.payload.envOverrides, []);
+  assert.equal(res.payload.filePath, routes.file);
+  routes.noNode();
 });
 
-test('a partial save keeps the rest and is answered as the new effective config', () => {
-  const file = tempFile();
-  const routes = mount(file);
-  const saved = routes.put({ weeklyPercent: 90, enabled: false });
-  assert.equal(saved.code, 200);
-  assert.equal(saved.payload.config.weeklyPercent, 90);
-  assert.equal(saved.payload.config.fiveHourPercent, 98);
-  assert.equal(saved.payload.config.enabled, false);
-  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).weeklyPercent, 90);
+test('a partial save preserves unknown fields and uses the legacy JSON format', async t => {
+  const routes = await mount(t);
+  const initial = { weeklyPercent: 90, custom: { label: '保留', empty: [], surrogate: '\ud800' } };
+  fs.writeFileSync(routes.file, JSON.stringify(initial));
+  const res = await routes.put({ enabled: false, fiveHourPercent: '97.5' });
+  assert.equal(res.code, 200);
+  const saved = { ...initial, fiveHourPercent: 97.5, enabled: false };
+  assert.deepEqual(res.payload.saved, saved);
+  assert.equal(res.payload.config.enabled, false);
+  assert.equal(fs.readFileSync(routes.file, 'utf8'), `${JSON.stringify(saved, null, 2)}\n`);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(routes.file).mode & 0o777, 0o644);
+  routes.noNode();
 });
 
-test('values that would strand every request are refused, not clamped', () => {
-  const routes = mount(tempFile());
+test('invalid values preserve the existing file and validation precedence', async t => {
+  const routes = await mount(t);
+  fs.writeFileSync(routes.file, '{"weeklyPercent":90}');
   for (const fiveHourPercent of [0, -1, 101, 'abc', '', null]) {
-    const res = routes.put({ fiveHourPercent });
-    assert.equal(res.code, 400, `fiveHourPercent=${JSON.stringify(fiveHourPercent)}`);
-    assert.match(res.payload.error, /fiveHourPercent/);
+    const res = await routes.put({ fiveHourPercent, enabled: 'bad' });
+    assert.equal(res.code, 400);
+    assert.match(res.payload.error, /^fiveHourPercent:/);
   }
-  assert.equal(routes.put({ scope: 'none' }).code, 400);
-  assert.equal(routes.put({ enabled: 'yes' }).code, 400);
-  assert.equal(routes.put({}).code, 400);
-  assert.equal(percentInput('97.5').value, 97.5);
+  for (const body of [{ scope: 'none' }, { enabled: 'yes' }, {}, [], { maxReadingAgeMs: 5 }]) {
+    assert.equal((await routes.put(body)).code, 400);
+  }
+  assert.equal(fs.readFileSync(routes.file, 'utf8'), '{"weeklyPercent":90}');
+  assert.deepEqual(fs.readdirSync(path.dirname(routes.file)).filter(name => name.endsWith('.tmp')), []);
 });
 
-test('maxReadingAgeMs saves within its band and is refused outside it', () => {
-  const file = tempFile();
-  const routes = mount(file);
-  for (const maxReadingAgeMs of [0, -1, 5, 59_999, 8 * 24 * 3600_000, 'abc', '', null]) {
-    const res = routes.put({ maxReadingAgeMs });
-    assert.equal(res.code, 400, `maxReadingAgeMs=${JSON.stringify(maxReadingAgeMs)}`);
-    assert.match(res.payload.error, /maxReadingAgeMs/);
-  }
-  const saved = routes.put({ maxReadingAgeMs: 10 * 60_000 });
-  assert.equal(saved.code, 200);
-  assert.equal(saved.payload.config.maxReadingAgeMs, 600_000);
-  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).maxReadingAgeMs, 600_000);
-  // The guard itself re-reads the saved value.
-  const instance = createQuotaGuard({
-    cache: { get: () => null }, configFile: file, env: {}, now: () => NOW,
-  });
-  assert.equal(instance.config().maxReadingAgeMs, 600_000);
-});
-
-test('an environment override is reported instead of silently outvoted', () => {
-  const file = tempFile();
-  const routes = mount(file, { MULTICC_QUOTA_GUARD_WEEKLY_PERCENT: '80' });
-  routes.put({ weeklyPercent: 95 });
-  const res = routes.get();
-  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).weeklyPercent, 95, 'the file keeps what was saved');
-  assert.equal(res.payload.config.weeklyPercent, 80, 'the effective value is the env one');
+test('environment precedence is reported while saved values remain intact', async t => {
+  const routes = await mount(t, { MULTICC_QUOTA_GUARD_WEEKLY_PERCENT: '80' });
+  const res = await routes.put({ weeklyPercent: 95, scope: ' ALL ', maxReadingAgeMs: '600000.9' });
+  assert.equal(res.code, 200);
+  assert.equal(res.payload.saved.weeklyPercent, 95);
+  assert.equal(res.payload.config.weeklyPercent, 80);
+  assert.equal(res.payload.config.scope, 'all');
+  assert.equal(res.payload.config.maxReadingAgeMs, 600000);
   assert.deepEqual(res.payload.envOverrides, ['weeklyPercent']);
 });
 
-test('the saved file is what the guard itself re-reads', () => {
-  const file = tempFile();
-  mount(file).put({ fiveHourPercent: 50 });
-  const cache = {
-    get: () => ({
-      status: 'ok',
-      fetchedAt: NOW,
-      summary: { kind: 'window', windows: [{ window: '5h', usedPercent: 60, resetMs: NOW + HOUR }] },
-    }),
-  };
-  const guard = createQuotaGuard({ cache, configFile: file, env: {}, now: () => NOW });
-  const verdict = guard.check({ providerId: 'claude-official-abc' });
-  assert.equal(verdict.blocked, true);
-  assert.equal(verdict.threshold, 50);
+test('the native host rereads saved thresholds after five seconds', async t => {
+  const routes = await mount(t);
+  let clock = NOW;
+  const cache = { get: () => ({ fetchedAt: clock, summary: { windows: [{ window: '5h', usedPercent: 60, resetMs: clock + 3600000 }] } }) };
+  const guard = createQuotaGuard({ cache, configFile: routes.file, env: {}, now: () => clock });
+  const check = () => guard.check({ providerId: 'claude-official-abc' });
+  assert.equal(check().blocked, false);
+  await routes.put({ fiveHourPercent: 50 });
+  assert.equal(check().blocked, false, 'cached config remains effective until the interval elapses');
+  clock += 5000;
+  assert.equal(check().blocked, true);
+  assert.equal(check().threshold, 50);
+  fs.writeFileSync(routes.file, '{broken');
+  clock += 5000;
+  assert.equal(check().blocked, false, 'malformed settings revert to defaults');
+  assert.deepEqual((await routes.get()).payload.saved, {});
 });
 
-test('a malformed file reads as "nothing saved" rather than throwing', () => {
-  const file = tempFile();
-  fs.writeFileSync(file, '{ not json');
-  const res = mount(file).get();
-  assert.equal(res.code, 200);
-  assert.deepEqual(res.payload.saved, {});
-  assert.equal(res.payload.config.fiveHourPercent, 98);
+test('ETag/304 and a write failure remain native responses', async t => {
+  const routes = await mount(t);
+  const first = await routes.get();
+  const cached = await routes.call('GET', undefined, { 'If-None-Match': first.response.headers.get('etag'), 'Cache-Control': 'max-age=0' });
+  assert.equal(cached.code, 304);
+  fs.mkdirSync(routes.file);
+  const failure = await routes.put({ enabled: false });
+  assert.equal(failure.code, 500);
+  assert.match(failure.payload.error, /^写入失败：/);
+  assert.deepEqual(fs.readdirSync(path.dirname(routes.file)).filter(name => name.endsWith('.tmp')), []);
+  routes.noNode();
 });

@@ -72,20 +72,25 @@ function ensureCdpdBinary({ repoRoot, addon, env, cache, log, run, cdpdVersion =
 
 // Rust 前门（native/gateway）。所有启动入口只经它启动、没有直跑 node 的退路，所以它和
 // 原生模块一样是必需件：编不出来就报错、不启动（docs/gateway.md §8）。
-function ensureGatewayBinary({ repoRoot, addon, env, cache, log, run, gatewayVersion = probeGatewayVersion }) {
+function ensureGatewayBinary({ repoRoot, addon, env, cache, log, run,
+  builtFrom = builtFromSource, gatewayVersion = probeGatewayVersion }) {
   if (!hasGatewayCrate(repoRoot)) return null;
   const binary = gatewayBinaryName(process.platform);
   const target = path.join(path.dirname(addon), binary);
-  if (fs.existsSync(target) && executable(target) && gatewayVersion(target).ok) return target;
+  const relative = path.relative(cache.prebuiltDir, path.dirname(addon));
+  const ownCache = relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  const usable = () => fs.existsSync(target) && executable(target)
+    && (ownCache || builtFrom(target, cache.fingerprint)) && gatewayVersion(target).ok;
+  if (usable()) return target;
   log(`未找到可用的 Rust 前门 ${target}，正在只编译 multicc-gateway…`);
   const result = run(process.execPath, [path.join(repoRoot, 'scripts/build-rust-kernels.js'),
     '--gateway-only', '--out', path.dirname(addon), '--target-dir', cache.targetDir], {
     cwd: repoRoot, env: { ...env, MULTICC_RUST_ADDON: '', MULTICC_REQUIRE_RUST_BUNDLE: '' },
     stdio: ['ignore', 2, 2],
   });
-  if ((!result.error && result.status === 0) && fs.existsSync(target) && gatewayVersion(target).ok) return target;
-  throw new Error(`Rust 前门编译失败：缺少 ${target}。`
-    + '修复：安装可用的 Rust 工具链后重新执行 ./multicc start。');
+  if ((!result.error && result.status === 0) && usable() && builtFrom(target, cache.fingerprint)) return target;
+  throw new Error(`Rust 前门编译失败：${target} 缺失、无法运行或来源与当前源码不符。`
+    + '修复：检查 Rust 工具链及源码是否在编译期间发生变化，然后重新执行 ./multicc start。');
 }
 
 function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = process.env,
@@ -118,7 +123,7 @@ function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = proc
     try { return ensureCdpdBinary({ repoRoot, addon, env, cache, log, run, cdpdVersion }); }
     catch (error) { log(`CDP 网关不可用：${error.message}。服务照常启动。`); return null; }
   };
-  const ensureGateway = addon => ensureGatewayBinary({ repoRoot, addon, env, cache, log, run, gatewayVersion });
+  const ensureGateway = addon => ensureGatewayBinary({ repoRoot, addon, env, cache, log, run, builtFrom, gatewayVersion });
   if (current && probe(resolved)) {
     ensureRemote(resolved);
     ensureCdpd(resolved);
