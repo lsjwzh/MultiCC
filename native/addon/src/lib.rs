@@ -17,6 +17,7 @@ pub mod opencode_context;
 pub mod opencode_error;
 pub mod publication;
 pub mod quota_history;
+pub mod quota_guard;
 pub mod secret_audit;
 pub mod sqlite;
 pub mod subagent_defaults;

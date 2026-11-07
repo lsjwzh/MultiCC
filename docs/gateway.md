@@ -126,12 +126,24 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 |---|---|---|---|
 | `GET/HEAD/PUT/OPTIONS /api/run-config/presets`、`POST/OPTIONS /api/run-config/presets/merge` | `src/routes/run-config-presets.js`（已删） | `native/gateway/src/app/run_config_presets.rs` + `multicc_core::run_config_presets`，落盘 `multicc_core::state_file`（与 `atomicWriteJson` 同格式、0600） | 39/39 请求逐字节一致，落盘文件一致 |
 | `GET/HEAD/OPTIONS /api/download`、`POST/OPTIONS /api/auth/download-ticket`、`GET/HEAD/OPTIONS /api/uploads/stats`、`DELETE/OPTIONS /api/uploads/cleanup` | `src/routes/file-transfer.js` 的 `createDownloadHandler` 与上传临时文件统计/清理、`src/routes/auth.js` 的 download-ticket 签发和闸门 ticket 分支、`src/auth-security.js` 的 download ticket（均已删） | `native/gateway/src/app/download.rs` + `uploads.rs`，`multicc_core::download_ticket`（ticket 存储搬进前门进程）、`multicc_core::http_send`（`res.sendFile`/`res.download` 的发送语义）；闸门的 ticket 豁免由 `multicc_core::http_gate::authorize` 自己实现 | 71/71 请求逐字节一致（含百分号解码回退、中文文件名、ticket 目标归一化与复用、临时目录清理计数） |
+| `GET/HEAD/PUT/OPTIONS /api/settings/quota-guard` | `src/routes/quota-guard.js`（已删）、`src/quota/quota-guard.js` 的配置读取/归一化、额度判定与刷新节流（已移除） | `native/gateway/src/app/quota_guard.rs` + `multicc_core::quota_guard` / `settings`，运行时通过 `RustQuotaGuard` 与无损 napi 接口调用同一内核 | 10,096 组策略对拍一致；136 组 HTTP 请求的状态、正文、相关响应头与落盘字节一致 |
 
-与 Node 的已知差异（都只影响没有客户端会走的路径）：
+额度保护默认对官方账号启用，5 小时、周、月窗口均以 98% 为阈值。只有达到阈值且 reset 仍在未来的读数才能阻断；多窗口按使用率、再按 reset 降序选择。阻断读数超过默认 30 分钟后放行并通知宿主刷新，失败刷新写入的 `lastAttemptAt` 同样重置读数年龄，避免每次请求都重试不可达上游。刷新通知按账号至少间隔 60 秒。
+
+配置优先级为默认值 → `<data>/quota-guard.json` → 环境变量。API 立即返回保存后的有效配置，并报告环境覆盖字段；运行时保留原来的 5 秒配置缓存，到期才采用新值。文件格式仍为两空格缩进、结尾换行、新文件模式 0644；未知保存字段及 UTF-16 孤立代理项原样保留。无效输入在写入前拒绝，缺失或损坏的配置按未保存处理。原子替换失败时 Rust 会清理本次创建的临时文件。
+
+环境入口保持不变：`MULTICC_QUOTA_GUARD`、`MULTICC_QUOTA_GUARD_PERCENT`、`MULTICC_QUOTA_GUARD_5H_PERCENT`、`MULTICC_QUOTA_GUARD_WEEKLY_PERCENT`、`MULTICC_QUOTA_GUARD_MONTHLY_PERCENT`、`MULTICC_QUOTA_GUARD_SCOPE`、`MULTICC_QUOTA_GUARD_MAX_READING_AGE_MS`。
+
+这批保留的 Node 例外仅为宿主适配：读取现有 provider-limit cache 对象、写日志、调用已有异步刷新回调，以及保持同步 JS 导出接口。规则、文件读写、配置缓存与节流均在 Rust；等这些缓存和刷新生命周期迁入 Rust 后删除该桥，不在桥中添加新的业务规则。源码启动预检要求新的 `RustQuotaGuard` / `quotaGuardRequestValue` 导出，旧原生模块不能静默绕过保护。验证在 macOS ARM64 隔离进程中完成，没有使用真实账号、修改生产配置或重启现有服务；不作为其他平台验收或性能收益结论。
+
+源码启动复用外部目录的前门时，还校验产物记录的源码指纹和文件摘要；同一协议号不足以证明新增路由存在。来源不匹配时重新构建，构建失败或产物来源仍无法确认则停止启动。
+
+与 Node 的已知差异：
 
 - Node 关停期间（`/api` 一律 503 `SERVER_SHUTTING_DOWN`）原生路由照常应答：它们不往 Node 里排任何工作。
 - `charset=utf-32` / `utf-7` 的 JSON 请求体返回 415（body-parser 经 iconv-lite 能解）。
 - `/metrics` 里 `multicc_auth_*` 计数不含原生路由上的请求。
+- 额度配置写入失败仍返回 500，临时文件名称由 Rust 生成；错误中的临时路径因此不同，失败后不再留下临时文件。
 - `http_error` 日志行的 `detail` 是原因短语，没有 JS 调用栈。
 - 用启动器环境（而非 `.env`）提供 `ACCESS_TOKEN`、又在网页上改过一次、之后 Node 被重拉：Node 回到环境里的值，前门仍认 `.env` 里改过的值。
 

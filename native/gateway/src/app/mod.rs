@@ -9,6 +9,7 @@
 pub mod accept;
 pub mod download;
 pub mod express;
+pub mod quota_guard;
 pub mod run_config_presets;
 pub mod uploads;
 
@@ -30,6 +31,9 @@ use express::RequestCtx;
 /// case-insensitive, one optional trailing slash, raw (undecoded) path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
+    QuotaGuardGet,
+    QuotaGuardPut,
+    QuotaGuardOptions,
     PresetsGet,
     PresetsPut,
     PresetsOptions,
@@ -55,6 +59,9 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     let rest = path.strip_prefix("/api/")?;
     let rest = rest.strip_suffix('/').unwrap_or(rest).to_ascii_lowercase();
     match (rest.as_str(), method.as_str()) {
+        ("settings/quota-guard", "GET" | "HEAD") => Some(Route::QuotaGuardGet),
+        ("settings/quota-guard", "PUT") => Some(Route::QuotaGuardPut),
+        ("settings/quota-guard", "OPTIONS") => Some(Route::QuotaGuardOptions),
         ("run-config/presets", "GET" | "HEAD") => Some(Route::PresetsGet),
         ("run-config/presets", "PUT") => Some(Route::PresetsPut),
         ("run-config/presets", "OPTIONS") => Some(Route::PresetsOptions),
@@ -283,7 +290,7 @@ pub async fn handle(
         Err(error) => return express::error(&ctx, error.status, error.reason),
     };
     match route {
-        Route::PresetsOptions => return options(&ctx, "GET,HEAD,PUT"),
+        Route::PresetsOptions | Route::QuotaGuardOptions => return options(&ctx, "GET,HEAD,PUT"),
         Route::PresetsMergeOptions | Route::DownloadTicketOptions => return options(&ctx, "POST"),
         Route::DownloadOptions | Route::UploadStatsOptions => return options(&ctx, "GET,HEAD"),
         Route::UploadCleanupOptions => return options(&ctx, "DELETE"),
@@ -303,18 +310,34 @@ pub async fn handle(
     let answered = tokio::task::spawn_blocking(move || {
         let _held = worker.store_lock.lock().unwrap_or_else(|e| e.into_inner());
         let root = &worker.data_root;
-        match route {
+        // Keep this route's saved JSON lossless: unknown fields can contain
+        // UTF-16 surrogates which serde_json::Value cannot represent.
+        if matches!(route, Route::QuotaGuardGet | Route::QuotaGuardPut) {
+            let (status, value) = match route {
+                Route::QuotaGuardGet => quota_guard::get(root),
+                _ => quota_guard::put(root, &body),
+            };
+            return (status, multicc_core::js::json_stringify(&value).unwrap());
+        }
+        let (status, value) = match route {
             Route::PresetsGet => run_config_presets::get(root),
             Route::PresetsPut => run_config_presets::put(root, &body),
             Route::PresetsMerge => run_config_presets::merge(root, &body),
             Route::UploadStats => uploads::stats(),
             Route::UploadCleanup => uploads::cleanup(),
             _ => unreachable!("answered above"),
-        }
+        };
+        (status, multicc_core::js::serde::js_json_stringify(&value))
     })
     .await;
     match answered {
-        Ok((status, value)) => express::json(&ctx, status, &value, &[]),
+        Ok((status, text)) => express::send(
+            &ctx,
+            status,
+            "application/json; charset=utf-8",
+            text.into_bytes(),
+            &[],
+        ),
         Err(_) => express::error(&ctx, 500, "native route panicked"),
     }
 }
@@ -325,6 +348,21 @@ mod tests {
 
     #[test]
     fn claims_follow_express_matching() {
+        assert_eq!(
+            claim(&Method::GET, "/api/Settings/Quota-Guard/"),
+            Some(Route::QuotaGuardGet)
+        );
+        assert_eq!(
+            claim(&Method::PUT, "/api/settings/quota-guard"),
+            Some(Route::QuotaGuardPut)
+        );
+        assert_eq!(
+            claim(&Method::OPTIONS, "/api/settings/quota-guard"),
+            Some(Route::QuotaGuardOptions)
+        );
+        assert_eq!(claim(&Method::GET, "/API/settings/quota-guard"), None);
+        assert_eq!(claim(&Method::GET, "/api/settings/quota-guard//"), None);
+        assert_eq!(claim(&Method::POST, "/api/settings/quota-guard"), None);
         assert_eq!(
             claim(&Method::GET, "/api/run-config/presets"),
             Some(Route::PresetsGet)
