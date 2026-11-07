@@ -5,6 +5,7 @@ pub mod cli_capability;
 pub mod cli_switch;
 pub mod dotenv;
 pub mod events;
+pub mod http_gate;
 pub mod machines;
 pub mod network_policy;
 pub mod opencode_context;
