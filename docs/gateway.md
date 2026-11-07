@@ -125,6 +125,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 | 路由 | 原 Node 实现 | Rust 实现 | 差分 |
 |---|---|---|---|
 | `GET/HEAD/PUT/OPTIONS /api/run-config/presets`、`POST/OPTIONS /api/run-config/presets/merge` | `src/routes/run-config-presets.js`（已删） | `native/gateway/src/app/run_config_presets.rs` + `multicc_core::run_config_presets`，落盘 `multicc_core::state_file`（与 `atomicWriteJson` 同格式、0600） | 39/39 请求逐字节一致，落盘文件一致 |
+| `GET/HEAD/OPTIONS /api/download`、`POST/OPTIONS /api/auth/download-ticket`、`GET/HEAD/OPTIONS /api/uploads/stats`、`DELETE/OPTIONS /api/uploads/cleanup` | `src/routes/file-transfer.js` 的 `createDownloadHandler` 与上传临时文件统计/清理、`src/routes/auth.js` 的 download-ticket 签发和闸门 ticket 分支、`src/auth-security.js` 的 download ticket（均已删） | `native/gateway/src/app/download.rs` + `uploads.rs`，`multicc_core::download_ticket`（ticket 存储搬进前门进程）、`multicc_core::http_send`（`res.sendFile`/`res.download` 的发送语义）；闸门的 ticket 豁免由 `multicc_core::http_gate::authorize` 自己实现 | 71/71 请求逐字节一致（含百分号解码回退、中文文件名、ticket 目标归一化与复用、临时目录清理计数） |
 
 与 Node 的已知差异（都只影响没有客户端会走的路径）：
 

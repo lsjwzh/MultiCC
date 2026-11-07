@@ -46,10 +46,8 @@ function createAuthRuntime(rawDeps) {
     || typeof authSecurity.createCookie !== 'function'
     || typeof authSecurity.verifyCookie !== 'function'
     || typeof authSecurity.verifyAccessToken !== 'function'
-    || typeof authSecurity.issueWsTicket !== 'function'
-    || typeof authSecurity.issueDownloadTicket !== 'function'
-    || typeof authSecurity.verifyDownloadTicket !== 'function') {
-    throw new TypeError('[auth] authSecurity must expose cookie, access-token, WebSocket-ticket, and download-ticket methods');
+    || typeof authSecurity.issueWsTicket !== 'function') {
+    throw new TypeError('[auth] authSecurity must expose cookie, access-token and WebSocket-ticket methods');
   }
   for (const [fn, name] of [
     [isLocalRequest, 'isLocalRequest'], [parseCookies, 'parseCookies'],
@@ -245,12 +243,8 @@ function createAuthRuntime(rawDeps) {
       // unguessable capability token, so artifact links open without ACCESS_TOKEN —
       // same model as /share/:token above (keep regex in sync with src/artifacts.js).
       if (/^\/artifacts\/[A-Za-z0-9_-]+(?:\/|$)/.test(req.path)) return next();
-      // External viewers cannot attach X-Access-Token. A separately-issued,
-      // short-lived capability may open exactly one canonical download target;
-      // it grants no access to any other API path.
-      if (req.method === 'GET'
-        && req.path === '/api/download'
-        && authSecurity.verifyDownloadTicket(req.query.download_ticket, req.originalUrl)) return next();
+      // Download tickets (`?download_ticket=` on GET /api/download) are issued
+      // and checked by the Rust front door (docs/gateway.md §9).
       // Migration bridge for old bookmarked `?token=` document URLs. Only the
       // top-level HTML navigation is accepted; API and WebSocket query auth stay
       // disabled unless the explicit legacy flag above is set. auth-client.js
@@ -333,22 +327,6 @@ function createAuthRuntime(rawDeps) {
       }
     });
 
-    app.post('/api/auth/download-ticket', express.json({ limit: '4kb' }), (req, res) => {
-      try {
-        const filePath = req.body && req.body.path;
-        if (typeof filePath !== 'string' || !filePath) throw new TypeError('invalid path');
-        const query = new URLSearchParams({ path: filePath });
-        if (req.body.inline === true) query.set('inline', '1');
-        const issued = authSecurity.issueDownloadTicket(`/api/download?${query.toString()}`, {
-          correlationId: req.correlationId || req.id,
-          requestId: req.id,
-        });
-        res.set('Cache-Control', 'no-store');
-        res.json(issued);
-      } catch (_) {
-        res.status(400).json({ error: 'invalid download target' });
-      }
-    });
   }
 
   return { mountRoutes, isAuthenticated, authCookieHeader };

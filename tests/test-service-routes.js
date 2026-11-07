@@ -29,7 +29,7 @@ test('service routing: real auth boundary, streaming HTTP, persistence and WebSo
   const file = path.join(dir, 'routes.json');
   const routes = createServiceRoutes({ file, authenticate: req => auth.isAuthenticated(req), peerAllowed: () => peer });
   const auth = createAuthRuntime({ express,
-    authSecurity: { createCookie: () => 'good', verifyCookie: v => v === 'good', verifyAccessToken: v => v === 'secret', issueWsTicket: () => ({}), issueDownloadTicket: () => ({}), verifyDownloadTicket: () => false },
+    authSecurity: { createCookie: () => 'good', verifyCookie: v => v === 'good', verifyAccessToken: v => v === 'secret', issueWsTicket: () => ({}) },
     isLocalRequest: () => false, parseCookies: raw => Object.fromEntries(String(raw || '').split(';').map(x => x.trim().split('='))),
     normalizeRedirect: x => x || '/', escapeHtmlAttribute: x => x, metrics: { inc() {} }, logger: { warn() {} },
     createErrorDto: x => x, getAccessToken: () => 'secret', getShuttingDown: () => false,

@@ -22,7 +22,8 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 multicc-core = { path = "../core" }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal", "fs"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tower = "0.5"
 
 [target.'cfg(unix)'.dependencies]

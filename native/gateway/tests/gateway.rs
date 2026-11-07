@@ -1205,3 +1205,327 @@ fn other_methods_on_a_native_path_still_reach_node() {
     assert_eq!(response.text(), "ok");
     gateway.wait_for_state("the forwarded request", |g| !g.connections().is_empty());
 }
+
+// ── the download link (§9) ──────────────────────────────────────────────────
+
+/// `encodeURIComponent`.
+fn enc(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn get_path(client: &mut TcpStream, path: &str, extra: &[(&str, &str)]) -> HttpResponse {
+    let mut headers = vec![LOCAL];
+    headers.extend_from_slice(extra);
+    let url = format!("/api/download?path={}", enc(path));
+    request(client, &api("GET", &url, &headers, ""))
+}
+
+// Ported from the Node route tests (tests/test-file-transfer-routes.js) plus
+// the Express sendFile/download behavior they relied on.
+#[test]
+fn downloads_are_answered_by_the_front_door_like_express() {
+    let gateway = Gateway::start("download", "echo", &[]);
+    let home = gateway.dir.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let file = home.join("file.txt");
+    fs::write(&file, "data").unwrap();
+    let file = file.to_str().unwrap().to_string();
+    let mut client = gateway.connect();
+
+    let r = request(&mut client, &api("GET", "/api/download", &[LOCAL], ""));
+    assert_eq!(
+        (r.status, r.text().as_str()),
+        (400, r#"{"error":"path required"}"#)
+    );
+    let r = get_path(&mut client, home.to_str().unwrap(), &[]);
+    assert_eq!(
+        (r.status, r.text().as_str()),
+        (400, r#"{"error":"不能下载目录"}"#)
+    );
+    let r = get_path(&mut client, &format!("{}/missing", home.display()), &[]);
+    assert_eq!(
+        (r.status, r.text().as_str()),
+        (404, r#"{"error":"文件不存在"}"#)
+    );
+
+    // inline=1 → res.sendFile; otherwise res.download.
+    let url = format!("/api/download?path={}&inline=1", enc(&file));
+    let inline = request(&mut client, &api("GET", &url, &[LOCAL], ""));
+    assert_eq!(
+        (inline.status, inline.text().as_str()),
+        (200, "data"),
+        "{}",
+        gateway.log()
+    );
+    assert_eq!(
+        inline.header("content-type"),
+        Some("text/plain; charset=UTF-8")
+    );
+    assert_eq!(inline.header("accept-ranges"), Some("bytes"));
+    assert_eq!(inline.header("cache-control"), Some("public, max-age=0"));
+    assert_eq!(inline.header("content-length"), Some("4"));
+    assert!(inline.header("last-modified").unwrap().ends_with(" GMT"));
+    assert!(inline.header("content-disposition").is_none());
+    let etag = inline.header("etag").unwrap().to_string();
+    assert!(etag.starts_with("W/\"4-"), "{etag}");
+    let attached = get_path(&mut client, &file, &[]);
+    assert_eq!(
+        attached.header("content-disposition"),
+        Some("attachment; filename=\"file.txt\"")
+    );
+
+    // Conditional and range requests (send's rules; golden-tested in core).
+    let not_modified = get_path(&mut client, &file, &[("If-None-Match", &etag)]);
+    assert_eq!(not_modified.status, 304);
+    assert!(not_modified.header("content-type").is_none());
+    let partial = get_path(&mut client, &file, &[("Range", "bytes=1-2")]);
+    assert_eq!((partial.status, partial.text().as_str()), (206, "at"));
+    assert_eq!(partial.header("content-range"), Some("bytes 1-2/4"));
+    // 416 goes through safeErrorHandler, which keeps send's headers.
+    let unsatisfiable = get_path(&mut client, &file, &[("Range", "bytes=9-")]);
+    assert_eq!(unsatisfiable.status, 416);
+    assert_eq!(unsatisfiable.header("content-range"), Some("bytes */4"));
+    assert_eq!(
+        unsatisfiable.header("content-type"),
+        Some("text/plain; charset=utf-8")
+    );
+    assert_eq!(unsatisfiable.header("etag"), Some(etag.as_str()));
+    assert_eq!(unsatisfiable.json()["code"], "request_error");
+    let mut head_client = gateway.connect();
+    head_client
+        .write_all(&api(
+            "HEAD",
+            &format!("/api/download?path={}", enc(&file)),
+            &[LOCAL],
+            "",
+        ))
+        .unwrap();
+    let head = read_response_head(&mut head_client);
+    assert_eq!(
+        (head.status, head.header("content-length")),
+        (200, Some("4"))
+    );
+
+    // A repeated path is an array to qs: the handler's `.trim()` throws.
+    let url = format!("/api/download?path={0}&path={0}", enc(&file));
+    let twice = request(&mut client, &api("GET", &url, &[LOCAL], ""));
+    assert_eq!(
+        (twice.status, twice.json()["error"].as_str()),
+        (500, Some("internal_error"))
+    );
+
+    // The legacy dotfile rule: a file name starting with '.' is a 404.
+    let hidden = home.join(".hidden");
+    fs::write(&hidden, "x").unwrap();
+    let r = get_path(&mut client, hidden.to_str().unwrap(), &[]);
+    assert_eq!(
+        (r.status, r.json()["error"].as_str()),
+        (404, Some("request_error"))
+    );
+
+    // Non-latin1 names get the latin1 fallback plus filename*.
+    let cjk = home.join("中文 名.png");
+    fs::write(&cjk, "png").unwrap();
+    let r = get_path(&mut client, cjk.to_str().unwrap(), &[]);
+    assert_eq!(r.header("content-type"), Some("image/png"));
+    assert_eq!(
+        r.header("content-disposition"),
+        Some("attachment; filename=\"?? ?.png\"; filename*=UTF-8''%E4%B8%AD%E6%96%87%20%E5%90%8D.png")
+    );
+    assert_no_node_connection(&gateway);
+}
+
+#[test]
+fn percent_encoded_download_paths_are_retried_once_decoded() {
+    let gateway = Gateway::start("download-decode", "echo", &[]);
+    let home = gateway.dir.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let name = "社媒触达 照片墙.png";
+    fs::write(home.join(name), "png").unwrap();
+    let mut client = gateway.connect();
+    let encoded = format!("{}/{}", home.display(), enc(name));
+    let r = get_path(&mut client, &encoded, &[]);
+    assert_eq!(
+        (r.status, r.text().as_str()),
+        (200, "png"),
+        "{}",
+        gateway.log()
+    );
+
+    // A name that literally contains %XX is served as-is, never decoded.
+    fs::write(home.join("a%20b.png"), "x").unwrap();
+    fs::write(home.join("a b.png"), "y").unwrap();
+    let r = get_path(&mut client, &format!("{}/a%20b.png", home.display()), &[]);
+    assert_eq!(r.text(), "x");
+    // Malformed escapes and still-missing targets stay a plain 404.
+    let r = get_path(&mut client, &format!("{}/100%.png", home.display()), &[]);
+    assert_eq!(r.status, 404);
+    let r = get_path(
+        &mut client,
+        &format!("{}/%E7%A4%BE.png", home.display()),
+        &[],
+    );
+    assert_eq!(r.status, 404);
+}
+
+#[test]
+fn a_download_ticket_opens_one_file_for_a_remote_client() {
+    let token = "secret-token-1";
+    let gateway = Gateway::start("ticket", "echo", &[("ACCESS_TOKEN", token.to_string())]);
+    let home = gateway.dir.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let file = home.join("a b.txt");
+    fs::write(&file, "ticketed").unwrap();
+    let file = file.to_str().unwrap().to_string();
+    let remote = ("Host", "box.example.com");
+    let mut client = gateway.connect();
+
+    let r = request(
+        &mut client,
+        &api(
+            "GET",
+            &format!("/api/download?path={}", enc(&file)),
+            &[remote],
+            "",
+        ),
+    );
+    assert_eq!(r.status, 403, "{}", gateway.log());
+    let body = format!(
+        r#"{{"path":{},"inline":true}}"#,
+        serde_json::to_string(&file).unwrap()
+    );
+    let r = request(
+        &mut client,
+        &api(
+            "POST",
+            "/api/auth/download-ticket",
+            &[remote, JSON_TYPE],
+            &body,
+        ),
+    );
+    assert_eq!(r.status, 403, "issuing needs the normal auth");
+
+    let issued = request(
+        &mut client,
+        &api(
+            "POST",
+            "/api/auth/download-ticket",
+            &[remote, JSON_TYPE, ("X-Access-Token", token)],
+            &body,
+        ),
+    );
+    assert_eq!(issued.status, 200, "{}", issued.text());
+    assert_eq!(issued.header("cache-control"), Some("no-store"));
+    let issued = issued.json();
+    let ticket = issued["ticket"].as_str().unwrap().to_string();
+    assert_eq!(ticket.len(), 32);
+    let target = issued["target"].as_str().unwrap().to_string();
+    assert!(
+        target.starts_with("/api/download?path=%2F") && target.ends_with("+b.txt&inline=1"),
+        "{target}"
+    );
+    assert!(issued["expiresAt"].as_i64().unwrap() > 0);
+
+    let url = format!("{target}&download_ticket={ticket}");
+    for _ in 0..2 {
+        let r = request(&mut client, &api("GET", &url, &[remote], ""));
+        assert_eq!(
+            (r.status, r.text().as_str()),
+            (200, "ticketed"),
+            "reusable within its TTL"
+        );
+    }
+    let other = format!(
+        "/api/download?path={}&download_ticket={ticket}",
+        enc("/etc/hosts")
+    );
+    assert_eq!(
+        request(&mut client, &api("GET", &other, &[remote], "")).status,
+        403
+    );
+    let mut head_client = gateway.connect();
+    head_client
+        .write_all(&api("HEAD", &url, &[remote], ""))
+        .unwrap();
+    assert_eq!(
+        read_response_head(&mut head_client).status,
+        403,
+        "HEAD never uses a ticket"
+    );
+
+    let authed = [remote, JSON_TYPE, ("X-Access-Token", token)];
+    let r = request(
+        &mut client,
+        &api("POST", "/api/auth/download-ticket", &authed, "{}"),
+    );
+    assert_eq!(
+        (r.status, r.text().as_str()),
+        (400, r#"{"error":"invalid download target"}"#)
+    );
+    let big = format!(r#"{{"path":"{}"}}"#, "x".repeat(5000));
+    let r = request(
+        &mut client,
+        &api("POST", "/api/auth/download-ticket", &authed, &big),
+    );
+    assert_eq!(r.status, 413, "the route's own 4kb parser");
+    assert_no_node_connection(&gateway);
+}
+
+#[test]
+fn upload_temp_files_are_counted_and_cleaned_by_the_front_door() {
+    let tmp = unique("uploads-tmp");
+    fs::create_dir_all(tmp.join("multicc_dir")).unwrap();
+    fs::write(tmp.join("multicc_two"), "12345").unwrap();
+    fs::write(tmp.join("multicc_one"), "123").unwrap();
+    fs::write(tmp.join("foreign"), "ignored").unwrap();
+    // os.tmpdir() drops one trailing slash.
+    let gateway = Gateway::start(
+        "uploads",
+        "echo",
+        &[("TMPDIR", format!("{}/", tmp.display()))],
+    );
+    let mut client = gateway.connect();
+    let stats = request(&mut client, &api("GET", "/api/uploads/stats", &[LOCAL], ""));
+    assert_eq!(stats.status, 200, "{}", gateway.log());
+    let stats = stats.json();
+    assert_eq!(stats["count"], 2);
+    assert_eq!(stats["totalSize"], 8);
+    assert_eq!(stats["dir"], tmp.to_str().unwrap());
+    let names: Vec<_> = stats["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        ["multicc_one", "multicc_two"],
+        "readdir order is strcmp order"
+    );
+    assert!(stats["files"][0]["mtime"].as_str().unwrap().ends_with('Z'));
+
+    let r = request(
+        &mut client,
+        &api("DELETE", "/api/uploads/cleanup", &[LOCAL], ""),
+    );
+    assert_eq!(r.text(), r#"{"deleted":2,"freed":8}"#);
+    assert!(tmp.join("foreign").exists() && tmp.join("multicc_dir").exists());
+    let r = request(
+        &mut client,
+        &api("OPTIONS", "/api/uploads/cleanup", &[LOCAL], ""),
+    );
+    assert_eq!(
+        (r.header("allow"), r.text().as_str()),
+        (Some("DELETE"), "DELETE")
+    );
+    assert_no_node_connection(&gateway);
+    let _ = fs::remove_dir_all(tmp);
+}

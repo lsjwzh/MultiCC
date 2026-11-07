@@ -443,6 +443,9 @@ pub fn encode_uri_component(text: &str) -> String {
     out
 }
 
+/// qs's decoder: `+` is a space, then `decodeURIComponent`, and when that
+/// throws (a `%` without two hex digits, or bytes that are not UTF-8) the
+/// whole string with only the `+` replaced.
 fn percent_decode_plus(text: &str) -> String {
     let replaced = text.replace('+', " ");
     let bytes = replaced.as_bytes();
@@ -450,12 +453,17 @@ fn percent_decode_plus(text: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let (Some(high), Some(low)) = (nibble(bytes[index + 1]), nibble(bytes[index + 2])) {
-                out.push(high << 4 | low);
-                index += 3;
-                continue;
-            }
+        if bytes[index] == b'%' {
+            let pair = (
+                bytes.get(index + 1).copied().and_then(nibble),
+                bytes.get(index + 2).copied().and_then(nibble),
+            );
+            let (Some(high), Some(low)) = pair else {
+                return replaced;
+            };
+            out.push(high << 4 | low);
+            index += 3;
+            continue;
         }
         out.push(bytes[index]);
         index += 1;
@@ -466,27 +474,59 @@ fn percent_decode_plus(text: &str) -> String {
     }
 }
 
-/// `req.query.token` as Express's `qs` parser yields it, when it is a plain
-/// string: exactly one `token=` pair and no `token[...]` forms.
-pub fn query_token(original_url: &str) -> Option<String> {
-    let query = original_url.split_once('?')?.1;
+/// `req.query[name]` under Express's `qs` parser, as far as a route that
+/// wants a string needs to know.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueryParam {
+    Missing,
+    /// Exactly one plain `name=` pair.
+    Text(String),
+    /// An array or object (`name=a&name=b`, `name[]=a`, `name[k]=a`).
+    Other,
+}
+
+/// qs only reads the first `parameterLimit` (1000) `&`-separated parts.
+const QS_PARAMETER_LIMIT: usize = 1000;
+
+pub fn query_param(original_url: &str, name: &str) -> QueryParam {
+    let Some((_, query)) = original_url.split_once('?') else {
+        return QueryParam::Missing;
+    };
     let query = query.split('#').next().unwrap_or("");
+    let nested = format!("{name}[");
     let mut found: Option<String> = None;
     let mut count = 0;
-    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+    for pair in query
+        .split('&')
+        .take(QS_PARAMETER_LIMIT)
+        .filter(|pair| !pair.is_empty())
+    {
         let (raw_key, raw_value) = match pair.find("]=") {
             Some(bracket) => (&pair[..bracket + 1], &pair[bracket + 2..]),
             None => pair.split_once('=').unwrap_or((pair, "")),
         };
         let key = percent_decode_plus(raw_key);
-        if key == "token" {
+        if key == name {
             count += 1;
             found = Some(percent_decode_plus(raw_value));
-        } else if key.starts_with("token[") {
+        } else if key.starts_with(&nested) && key[nested.len()..].contains(']') {
             count += 2;
         }
     }
-    (count == 1).then_some(found).flatten()
+    match (count, found) {
+        (0, _) => QueryParam::Missing,
+        (1, Some(value)) => QueryParam::Text(value),
+        _ => QueryParam::Other,
+    }
+}
+
+/// `req.query.token` as Express's `qs` parser yields it, when it is a plain
+/// string: exactly one `token=` pair and no `token[...]` forms.
+pub fn query_token(original_url: &str) -> Option<String> {
+    match query_param(original_url, "token") {
+        QueryParam::Text(value) => Some(value),
+        _ => None,
+    }
 }
 
 // ── the gate ───────────────────────────────────────────────────────────────
@@ -545,8 +585,10 @@ pub fn is_authenticated(policy: &GatePolicy, request: &GateRequest) -> bool {
 }
 
 /// The gate a non-public, non-relay, non-fleet route sits behind: the peer
-/// allowlist, the machine-grant scope (`authorize_machine_grant` is
-/// `machines.authorize`), then `isAuthenticated`, then the refusal shape.
+/// allowlist, a download ticket (`GET /api/download` only;
+/// `verify_download_ticket` gets the `download_ticket` query value), the
+/// machine-grant scope (`authorize_machine_grant` is `machines.authorize`),
+/// then `isAuthenticated`, then the refusal shape.
 ///
 /// Callers own the shutdown gate and must not route a path the Node gate
 /// treats as public or as fleet/relay scoped through here.
@@ -554,9 +596,19 @@ pub fn authorize(
     policy: &GatePolicy,
     request: &GateRequest,
     authorize_machine_grant: impl FnOnce(&str) -> bool,
+    verify_download_ticket: impl FnOnce(&str) -> bool,
 ) -> GateDecision {
     if policy.lan_only && !is_private_network_address(request.peer) {
         return GateDecision::PeerRejected;
+    }
+    // src/routes/auth.js: `req.method === 'GET' && req.path === '/api/download'`
+    // (case-sensitive; HEAD does not qualify) and a string ticket.
+    if request.method == "GET" && request.path == "/api/download" {
+        if let QueryParam::Text(ticket) = query_param(request.original_url, "download_ticket") {
+            if !ticket.is_empty() && verify_download_ticket(&ticket) {
+                return GateDecision::Allow;
+            }
+        }
     }
     let grant = request.headers.get("x-multicc-machine-grant");
     if let Some(credential) = grant.filter(|value| !value.is_empty()) {
@@ -603,7 +655,6 @@ pub fn node_gate_special_path(method: &str, path: &str) -> bool {
         || path.starts_with("/fleet-share/")
         || path.starts_with("/api/fleet-shares/")
         || path.starts_with("/artifacts/")
-        || path == "/api/download"
         || (method == "POST" && path.starts_with("/api/wait/"))
         || path.starts_with("/claude-proxy")
         || path.starts_with("/codex-proxy")
@@ -772,7 +823,68 @@ mod tests {
             headers: h,
             now_ms: 1_700_000_000_000,
         };
-        authorize(policy, &request, |credential| credential == "mcg_ok")
+        authorize(
+            policy,
+            &request,
+            |credential| credential == "mcg_ok",
+            |ticket| ticket == "tk_ok",
+        )
+    }
+
+    #[test]
+    fn query_param_follows_qs() {
+        let p = |url: &str| query_param(url, "path");
+        assert_eq!(p("/d?path=%2Fa%20b+c"), QueryParam::Text("/a b c".into()));
+        assert_eq!(p("/d?path="), QueryParam::Text(String::new()));
+        assert_eq!(p("/d?path"), QueryParam::Text(String::new()));
+        assert_eq!(p("/d?x=1"), QueryParam::Missing);
+        assert_eq!(p("/d"), QueryParam::Missing);
+        assert_eq!(p("/d?path=a&path=b"), QueryParam::Other);
+        assert_eq!(p("/d?path[]=a"), QueryParam::Other);
+        assert_eq!(p("/d?path%5Bk%5D=a"), QueryParam::Other);
+        assert_eq!(p("/d?path[=a"), QueryParam::Missing);
+        // decodeURIComponent throws on any stray `%`: qs keeps the whole text.
+        assert_eq!(p("/d?path=a%zz%41"), QueryParam::Text("a%zz%41".into()));
+        assert_eq!(p("/d?path=100%"), QueryParam::Text("100%".into()));
+        assert_eq!(p("/d?path=%E4%B8%AD"), QueryParam::Text("中".into()));
+        assert_eq!(p("/d?path=%E4%B8"), QueryParam::Text("%E4%B8".into()));
+    }
+
+    #[test]
+    fn a_download_ticket_opens_only_get_api_download() {
+        let policy = GatePolicy {
+            access_token: "secret-token".into(),
+            lan_only: true,
+            allow_legacy_token_query: false,
+        };
+        let remote = headers(&[("Host", "192.168.1.5:3000")]);
+        let lan = "192.168.1.9";
+        let url = "/api/download?path=%2Fa&download_ticket=tk_ok";
+        assert_eq!(gate(&policy, "GET", url, lan, &remote), GateDecision::Allow);
+        assert_eq!(
+            gate(&policy, "HEAD", url, lan, &remote),
+            GateDecision::AuthRequired
+        );
+        let upper = "/api/Download?path=%2Fa&download_ticket=tk_ok";
+        assert_eq!(
+            gate(&policy, "GET", upper, lan, &remote),
+            GateDecision::AuthRequired
+        );
+        let wrong = "/api/download?path=%2Fa&download_ticket=tk_no";
+        assert_eq!(
+            gate(&policy, "GET", wrong, lan, &remote),
+            GateDecision::AuthRequired
+        );
+        let twice = "/api/download?download_ticket=tk_ok&download_ticket=tk_ok";
+        assert_eq!(
+            gate(&policy, "GET", twice, lan, &remote),
+            GateDecision::AuthRequired
+        );
+        // The peer allowlist still comes first.
+        assert_eq!(
+            gate(&policy, "GET", url, "8.8.8.8", &remote),
+            GateDecision::PeerRejected
+        );
     }
 
     #[test]
@@ -875,7 +987,6 @@ mod tests {
             ("GET", "/app.js"),
             ("POST", "/api/wait/x/resolve"),
             ("GET", "/api/share/t/session"),
-            ("GET", "/api/download"),
             ("GET", "/api/claude/models"),
             ("GET", "/api/sessions/s1"),
             ("GET", "/claude-proxy/x"),
@@ -888,6 +999,8 @@ mod tests {
             "/api/providers/limit-history"
         ));
         assert!(!node_gate_special_path("PUT", "/api/run-config-presets"));
+        // The download-ticket exemption is implemented by `authorize` itself.
+        assert!(!node_gate_special_path("GET", "/api/download"));
     }
 }
 

@@ -141,8 +141,6 @@ function mountAuth(app, metrics, providerRelayShares) {
     verifyCookie: () => false,
     verifyAccessToken: value => value === ACCESS_TOKEN,
     issueWsTicket: () => ({ ticket: 'unused' }),
-    issueDownloadTicket: () => ({ ticket: 'unused', target: '/' }),
-    verifyDownloadTicket: () => false,
   };
   const runtime = createAuthRuntime({
     express,

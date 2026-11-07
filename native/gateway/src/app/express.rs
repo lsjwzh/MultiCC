@@ -130,7 +130,7 @@ fn fresh(headers: &NodeHeaders, etag: &str) -> bool {
     modified_since.is_none()
 }
 
-fn header(
+pub fn header(
     builder: axum::http::response::Builder,
     name: &str,
     value: &str,
@@ -145,6 +145,22 @@ fn gzip(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(bytes).ok()?;
     encoder.finish().ok()
+}
+
+/// The headers every Express response here carries before the route runs:
+/// `X-Powered-By` (expressInit), then the request-id middleware's three.
+pub fn with_base_headers(
+    builder: axum::http::response::Builder,
+    ctx: &RequestCtx,
+) -> axum::http::response::Builder {
+    let builder = header(builder, "X-Powered-By", "Express");
+    let builder = header(builder, "X-Multicc-Request-Id", &ctx.ids.0);
+    let builder = header(builder, "X-Correlation-Id", &ctx.ids.1);
+    header(builder, "X-Multicc-API-Version", http_gate::API_VERSION)
+}
+
+pub fn is_head(ctx: &RequestCtx) -> bool {
+    ctx.is_head()
 }
 
 /// `res.send(body)` after `res.type(content_type)` and `res.status(status)`,
@@ -166,11 +182,7 @@ pub fn send(
     let content_type = (!empty).then_some(content_type);
     let mut body = if empty { Vec::new() } else { body };
 
-    let mut builder = Response::builder().status(status);
-    builder = header(builder, "X-Powered-By", "Express");
-    builder = header(builder, "X-Multicc-Request-Id", &ctx.ids.0);
-    builder = header(builder, "X-Correlation-Id", &ctx.ids.1);
-    builder = header(builder, "X-Multicc-API-Version", http_gate::API_VERSION);
+    let mut builder = with_base_headers(Response::builder().status(status), ctx);
     for (name, value) in extra {
         builder = header(builder, name, value);
     }
@@ -253,11 +265,7 @@ pub fn redirect(ctx: &RequestCtx, location: &str) -> Response<Body> {
         ),
         None => (None, String::new()),
     };
-    let mut builder = Response::builder().status(StatusCode::FOUND);
-    builder = header(builder, "X-Powered-By", "Express");
-    builder = header(builder, "X-Multicc-Request-Id", &ctx.ids.0);
-    builder = header(builder, "X-Correlation-Id", &ctx.ids.1);
-    builder = header(builder, "X-Multicc-API-Version", http_gate::API_VERSION);
+    let mut builder = with_base_headers(Response::builder().status(StatusCode::FOUND), ctx);
     builder = header(builder, "Location", location);
     builder = header(builder, "Vary", "Accept");
     if let Some(content_type) = content_type {
@@ -280,6 +288,12 @@ pub fn error(ctx: &RequestCtx, status: u16, detail: &str) -> Response<Body> {
         "request_error"
     };
     let body = http_gate::error_dto(message, message, &[], &ctx.ids);
+    log_http_error(ctx, status, detail);
+    json(ctx, status, &body, &[])
+}
+
+/// `safeErrorHandler`'s `http_error` log line (detail without a JS stack).
+pub fn log_http_error(ctx: &RequestCtx, status: u16, detail: &str) {
     log_line(
         "error",
         "http_error",
@@ -292,7 +306,6 @@ pub fn error(ctx: &RequestCtx, status: u16, detail: &str) -> Response<Body> {
             ("detail", Value::String(detail.to_string())),
         ],
     );
-    json(ctx, status, &body, &[])
 }
 
 // ── logging (src/observability.js createLogger) ────────────────────────────
@@ -324,7 +337,7 @@ pub fn log_line(level: &str, event: &str, fields: &[(&str, Value)]) {
     }
 }
 
-fn log_request(ctx: &RequestCtx, status: u16) {
+pub fn log_request(ctx: &RequestCtx, status: u16) {
     let elapsed = ctx.started.elapsed().as_secs_f64() * 1000.0;
     let rounded = (elapsed * 1000.0).round() / 1000.0;
     log_line(

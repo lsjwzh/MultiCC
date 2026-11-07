@@ -64,35 +64,6 @@ function createFilesHandler(deps) {
   };
 }
 
-// Markdown renderers percent-encode non-ASCII / space characters in `![](/Users/…/中文.png)`
-// before the front end sees the src, and the front end encodes it again for the query
-// string, so the server receives `%E7%A4%BE…` literally. The literal path always wins;
-// only when it does not exist do we retry once with the percent-escapes decoded.
-function decodedPathCandidate(filePath) {
-  if (!/%[0-9a-fA-F]{2}/.test(filePath)) return null;
-  try {
-    const decoded = decodeURIComponent(filePath);
-    return decoded !== filePath ? decoded : null;
-  } catch (_) { return null; }
-}
-
-function createDownloadHandler(deps) {
-  return function downloadHandler(req, res) {
-    const filePath = ((req.query && req.query.path) || '').trim();
-    const inline = req.query && req.query.inline === '1';
-    if (!filePath) return res.status(400).json({ error: 'path required' });
-    const candidates = [filePath, decodedPathCandidate(filePath)].filter(Boolean);
-    for (const candidate of candidates) {
-      const resolved = deps.path.resolve(candidate);
-      let stat;
-      try { stat = deps.fs.statSync(resolved); } catch (_) { continue; }
-      if (stat.isDirectory()) return res.status(400).json({ error: '不能下载目录' });
-      return inline ? res.sendFile(resolved) : res.download(resolved);
-    }
-    return res.status(404).json({ error: '文件不存在' });
-  };
-}
-
 function createUploadHandler(deps) {
   return function uploadHandler(req, res) {
     if (!req.file) return res.status(400).json({ error: 'No file' });
@@ -107,77 +78,21 @@ function createUploadHandler(deps) {
   };
 }
 
-function listTempUploads(deps) {
-  const tmpDir = deps.os.tmpdir();
-  const names = deps.fs.readdirSync(tmpDir).filter(name => name.startsWith('multicc_'));
-  const files = [];
-  let totalSize = 0;
-  for (const name of names) {
-    try {
-      const stat = deps.fs.statSync(deps.path.join(tmpDir, name));
-      if (!stat.isFile()) continue;
-      totalSize += stat.size;
-      files.push({ name, size: stat.size, mtime: stat.mtime });
-    } catch (_) { /* skip entries that disappear during the scan */ }
-  }
-  return { count: files.length, totalSize, dir: tmpDir, files };
-}
-
-function createUploadStatsHandler(deps) {
-  return function uploadStatsHandler(req, res) {
-    try {
-      return res.json(listTempUploads(deps));
-    } catch (error) {
-      return res.status(500).json({ error: error.message });
-    }
-  };
-}
-
-function createUploadCleanupHandler(deps) {
-  return function uploadCleanupHandler(req, res) {
-    try {
-      const tmpDir = deps.os.tmpdir();
-      const names = deps.fs.readdirSync(tmpDir).filter(name => name.startsWith('multicc_'));
-      let deleted = 0;
-      let freed = 0;
-      for (const name of names) {
-        try {
-          const filePath = deps.path.join(tmpDir, name);
-          const stat = deps.fs.statSync(filePath);
-          if (!stat.isFile()) continue;
-          deps.fs.unlinkSync(filePath);
-          deleted += 1;
-          freed += stat.size;
-        } catch (_) { /* skip entries that disappear during cleanup */ }
-      }
-      deps.log(`[multicc] Cleanup: deleted ${deleted} temp files, freed ${(freed / 1024 / 1024).toFixed(2)} MB`);
-      return res.json({ deleted, freed });
-    } catch (error) {
-      return res.status(500).json({ error: error.message });
-    }
-  };
-}
-
 function mountFileTransferRoutes(app, rawDeps) {
-  if (!app || typeof app.get !== 'function' || typeof app.post !== 'function' || typeof app.delete !== 'function') {
+  if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {
     throw new TypeError('file-transfer routes require an Express-compatible app');
   }
   const deps = assertDependencies({ log: console.log, ...rawDeps });
   requireFunction(deps.log, 'log');
   app.get('/api/files', createFilesHandler(deps));
-  app.get('/api/download', createDownloadHandler(deps));
+  // GET /api/download and the upload temp-file stats/cleanup are answered by
+  // the Rust front door (docs/gateway.md §9).
   app.post('/api/upload', deps.upload.chat, createUploadHandler(deps));
-  app.get('/api/uploads/stats', createUploadStatsHandler(deps));
-  app.delete('/api/uploads/cleanup', createUploadCleanupHandler(deps));
 }
 
 module.exports = {
   resolveDirectory,
   createFilesHandler,
-  createDownloadHandler,
   createUploadHandler,
-  listTempUploads,
-  createUploadStatsHandler,
-  createUploadCleanupHandler,
   mountFileTransferRoutes,
 };

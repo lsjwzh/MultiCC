@@ -13,19 +13,15 @@ const {
 function createApp() {
   const routes = new Map();
   const add = method => (routePath, ...handlers) => routes.set(`${method} ${routePath}`, handlers);
-  return { routes, get: add('GET'), post: add('POST'), delete: add('DELETE') };
+  return { routes, get: add('GET'), post: add('POST') };
 }
 
 function createResponse() {
   return {
     statusCode: 200,
     body: undefined,
-    sentFile: null,
-    downloadedFile: null,
     status(code) { this.statusCode = code; return this; },
     json(body) { this.body = body; return this; },
-    sendFile(filePath) { this.sentFile = filePath; return this; },
-    download(filePath) { this.downloadedFile = filePath; return this; },
   };
 }
 
@@ -73,10 +69,7 @@ test('mount owns the complete legacy file-transfer surface and upload middleware
   const { app, uploadMiddleware } = createHarness();
   assert.deepEqual([...app.routes.keys()], [
     'GET /api/files',
-    'GET /api/download',
     'POST /api/upload',
-    'GET /api/uploads/stats',
-    'DELETE /api/uploads/cleanup',
   ]);
   assert.equal(app.routes.get('POST /api/upload').length, 2);
   assert.equal(app.routes.get('POST /api/upload')[0], uploadMiddleware);
@@ -113,52 +106,6 @@ test('file listing keeps directories first, reports sizes and retains legacy err
   assert.equal(typeof missing.body.error, 'string');
 });
 
-test('download preserves required, directory, inline, attachment and missing responses', async () => {
-  const { app, home } = createHarness();
-  const file = path.join(home, 'file.txt');
-  fs.writeFileSync(file, 'data');
-
-  let response = await invoke(app, 'GET', '/api/download');
-  assert.equal(response.statusCode, 400);
-  assert.deepEqual(response.body, { error: 'path required' });
-
-  response = await invoke(app, 'GET', '/api/download', { query: { path: home } });
-  assert.equal(response.statusCode, 400);
-  assert.deepEqual(response.body, { error: '不能下载目录' });
-
-  response = await invoke(app, 'GET', '/api/download', { query: { path: file, inline: '1' } });
-  assert.equal(response.sentFile, file);
-  response = await invoke(app, 'GET', '/api/download', { query: { path: file } });
-  assert.equal(response.downloadedFile, file);
-
-  response = await invoke(app, 'GET', '/api/download', { query: { path: path.join(home, 'missing') } });
-  assert.equal(response.statusCode, 404);
-  assert.deepEqual(response.body, { error: '文件不存在' });
-});
-
-test('download retries percent-encoded paths (markdown-encoded CJK/space names) but literal paths win', async () => {
-  const { app, home } = createHarness();
-  const cjk = path.join(home, '社媒触达 照片墙.png');
-  fs.writeFileSync(cjk, 'png');
-  const encoded = path.join(home, encodeURIComponent('社媒触达 照片墙.png'));
-
-  let response = await invoke(app, 'GET', '/api/download', { query: { path: encoded, inline: '1' } });
-  assert.equal(response.sentFile, cjk);
-
-  // A file whose real name literally contains %XX is served as-is, never decoded.
-  const literal = path.join(home, 'a%20b.png');
-  fs.writeFileSync(literal, 'x');
-  fs.writeFileSync(path.join(home, 'a b.png'), 'y');
-  response = await invoke(app, 'GET', '/api/download', { query: { path: literal, inline: '1' } });
-  assert.equal(response.sentFile, literal);
-
-  // Malformed escapes and still-missing targets stay a plain 404.
-  response = await invoke(app, 'GET', '/api/download', { query: { path: path.join(home, '100%.png') } });
-  assert.equal(response.statusCode, 404);
-  response = await invoke(app, 'GET', '/api/download', { query: { path: path.join(home, '%E7%A4%BE.png') } });
-  assert.equal(response.statusCode, 404);
-});
-
 test('chat upload keeps response shape, releases buffer and delegates policy failures', async () => {
   let harness = createHarness();
   let response = await invoke(harness.app, 'POST', '/api/upload');
@@ -182,22 +129,3 @@ test('chat upload keeps response shape, releases buffer and delegates policy fai
   assert.equal(harness.calls.errors[0], failure);
 });
 
-test('upload stats and cleanup only manage multicc-prefixed regular files', async () => {
-  const { app, temp, calls } = createHarness();
-  fs.writeFileSync(path.join(temp, 'multicc_one'), '123');
-  fs.writeFileSync(path.join(temp, 'multicc_two'), '12345');
-  fs.writeFileSync(path.join(temp, 'foreign'), 'ignored');
-  fs.mkdirSync(path.join(temp, 'multicc_dir'));
-
-  let response = await invoke(app, 'GET', '/api/uploads/stats');
-  assert.equal(response.body.count, 2);
-  assert.equal(response.body.totalSize, 8);
-  assert.equal(response.body.dir, temp);
-  assert.deepEqual(response.body.files.map(file => file.name).sort(), ['multicc_one', 'multicc_two']);
-
-  response = await invoke(app, 'DELETE', '/api/uploads/cleanup');
-  assert.deepEqual(response.body, { deleted: 2, freed: 8 });
-  assert.equal(fs.existsSync(path.join(temp, 'foreign')), true);
-  assert.equal(fs.existsSync(path.join(temp, 'multicc_dir')), true);
-  assert.match(calls.logs.at(-1), /deleted 2 temp files/);
-});

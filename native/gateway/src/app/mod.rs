@@ -7,8 +7,10 @@
 //! them and the few documented differences.
 
 pub mod accept;
+pub mod download;
 pub mod express;
 pub mod run_config_presets;
+pub mod uploads;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -16,6 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Method, Request, Response};
+use multicc_core::download_ticket::DownloadTickets;
 use multicc_core::http_gate::{self, GateDecision, GatePolicy, GateRequest};
 use multicc_core::js::string::js_trim;
 use multicc_core::network_policy::{env_enabled, NetworkPolicy};
@@ -32,6 +35,14 @@ pub enum Route {
     PresetsOptions,
     PresetsMerge,
     PresetsMergeOptions,
+    DownloadTicket,
+    DownloadTicketOptions,
+    Download,
+    DownloadOptions,
+    UploadStats,
+    UploadStatsOptions,
+    UploadCleanup,
+    UploadCleanupOptions,
 }
 
 /// The routes this front door owns. Anything else (including other methods
@@ -49,6 +60,14 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         ("run-config/presets", "OPTIONS") => Some(Route::PresetsOptions),
         ("run-config/presets/merge", "POST") => Some(Route::PresetsMerge),
         ("run-config/presets/merge", "OPTIONS") => Some(Route::PresetsMergeOptions),
+        ("auth/download-ticket", "POST") => Some(Route::DownloadTicket),
+        ("auth/download-ticket", "OPTIONS") => Some(Route::DownloadTicketOptions),
+        ("download", "GET" | "HEAD") => Some(Route::Download),
+        ("download", "OPTIONS") => Some(Route::DownloadOptions),
+        ("uploads/stats", "GET" | "HEAD") => Some(Route::UploadStats),
+        ("uploads/stats", "OPTIONS") => Some(Route::UploadStatsOptions),
+        ("uploads/cleanup", "DELETE") => Some(Route::UploadCleanup),
+        ("uploads/cleanup", "OPTIONS") => Some(Route::UploadCleanupOptions),
         _ => None,
     }
 }
@@ -108,6 +127,21 @@ pub struct App {
     /// Node handled each of these requests to completion on one thread; the
     /// read-modify-write of a store must not interleave here either.
     store_lock: Mutex<()>,
+    pub tickets: Mutex<DownloadTickets>,
+    /// The Node child's `process.cwd()` (physical path): what `path.resolve`
+    /// resolves a relative download path against.
+    pub node_cwd: String,
+}
+
+/// `process.cwd()` of a child started in `dir`: getcwd(3) reports the
+/// physical path, so symlinks are resolved; Windows drops the `\\?\` prefix.
+fn physical_dir(dir: &Path) -> String {
+    let real = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let text = real.to_string_lossy().into_owned();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if cfg!(windows) && rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+        _ => text,
+    }
 }
 
 fn env_text(name: &str) -> String {
@@ -145,6 +179,8 @@ impl App {
             lan_only: policy.lan_only,
             allow_legacy_token_query: env_enabled(&env_text("MULTICC_ALLOW_LEGACY_TOKEN_QUERY")),
             store_lock: Mutex::new(()),
+            tickets: Mutex::new(DownloadTickets::new()),
+            node_cwd: physical_dir(&options.cwd),
         }
     }
 
@@ -154,10 +190,7 @@ impl App {
             lan_only: self.lan_only,
             allow_legacy_token_query: self.allow_legacy_token_query,
         };
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_millis() as i64)
-            .unwrap_or(0);
+        let now_ms = now_ms();
         let request = GateRequest {
             method: ctx.method.as_str(),
             path: &ctx.path,
@@ -167,15 +200,25 @@ impl App {
             now_ms,
         };
         let root = self.data_root.to_string_lossy().into_owned();
-        let decision = http_gate::authorize(&policy, &request, |credential| {
-            multicc_core::machines::authorize(
-                &root,
-                credential,
-                ctx.method.as_str(),
-                &ctx.original_url,
-            )
-            .is_some()
-        });
+        let decision = http_gate::authorize(
+            &policy,
+            &request,
+            |credential| {
+                multicc_core::machines::authorize(
+                    &root,
+                    credential,
+                    ctx.method.as_str(),
+                    &ctx.original_url,
+                )
+                .is_some()
+            },
+            |ticket| {
+                self.tickets
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .verify(ticket, &ctx.original_url, now_ms)
+            },
+        );
         match decision {
             GateDecision::Allow => None,
             GateDecision::PeerRejected => Some(express::json(
@@ -193,6 +236,14 @@ impl App {
             GateDecision::LoginRedirect(location) => Some(express::redirect(ctx, &location)),
         }
     }
+}
+
+/// `Date.now()`.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Express's automatic OPTIONS answer for a path with these methods.
@@ -221,13 +272,31 @@ pub async fn handle(
     if let Some(refusal) = app.gate(&ctx, &peer) {
         return refusal;
     }
-    let body = match express::json_body(&ctx, body, express::JSON_LIMIT).await {
+    // The ticket route sits in front of the global `express.json` with its
+    // own `express.json({ limit: '4kb' })`; everything else gets the global one.
+    let limit = match route {
+        Route::DownloadTicket => 4 * 1024,
+        _ => express::JSON_LIMIT,
+    };
+    let body = match express::json_body(&ctx, body, limit).await {
         Ok(value) => value,
         Err(error) => return express::error(&ctx, error.status, error.reason),
     };
     match route {
         Route::PresetsOptions => return options(&ctx, "GET,HEAD,PUT"),
-        Route::PresetsMergeOptions => return options(&ctx, "POST"),
+        Route::PresetsMergeOptions | Route::DownloadTicketOptions => return options(&ctx, "POST"),
+        Route::DownloadOptions | Route::UploadStatsOptions => return options(&ctx, "GET,HEAD"),
+        Route::UploadCleanupOptions => return options(&ctx, "DELETE"),
+        Route::DownloadTicket => {
+            let (status, value) = download::issue(&app, &body, now_ms());
+            let extra: &[(&str, &str)] = if status == 200 {
+                &[("Cache-Control", "no-store")]
+            } else {
+                &[]
+            };
+            return express::json(&ctx, status, &value, extra);
+        }
+        Route::Download => return download::download(&app, &ctx).await,
         _ => {}
     }
     let worker = Arc::clone(&app);
@@ -238,7 +307,9 @@ pub async fn handle(
             Route::PresetsGet => run_config_presets::get(root),
             Route::PresetsPut => run_config_presets::put(root, &body),
             Route::PresetsMerge => run_config_presets::merge(root, &body),
-            Route::PresetsOptions | Route::PresetsMergeOptions => unreachable!(),
+            Route::UploadStats => uploads::stats(),
+            Route::UploadCleanup => uploads::cleanup(),
+            _ => unreachable!("answered above"),
         }
     })
     .await;
@@ -274,6 +345,23 @@ mod tests {
         assert_eq!(claim(&Method::GET, "/api/run-config/presets//"), None);
         assert_eq!(claim(&Method::GET, "/API/run-config/presets"), None);
         assert_eq!(claim(&Method::GET, "/api/run%2Dconfig/presets"), None);
+        assert_eq!(
+            claim(&Method::HEAD, "/api/Download/"),
+            Some(Route::Download)
+        );
+        assert_eq!(claim(&Method::POST, "/api/download"), None);
+        assert_eq!(
+            claim(&Method::POST, "/api/auth/download-ticket"),
+            Some(Route::DownloadTicket)
+        );
+        assert_eq!(claim(&Method::GET, "/api/auth/download-ticket"), None);
+        assert_eq!(
+            claim(&Method::DELETE, "/api/uploads/cleanup"),
+            Some(Route::UploadCleanup)
+        );
+        assert_eq!(claim(&Method::GET, "/api/uploads/cleanup"), None);
+        assert_eq!(claim(&Method::GET, "/api/files"), None);
+        assert_eq!(claim(&Method::POST, "/api/upload"), None);
     }
 
     #[test]
