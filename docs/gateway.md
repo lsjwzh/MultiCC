@@ -1,4 +1,4 @@
-# Rust 前门 multicc-gateway（第 1 步：倒置进程结构）
+# Rust 前门 multicc-gateway（进程结构倒置 + L7 转发）
 
 ## 目标与边界
 
@@ -11,10 +11,11 @@
                node server.js（只听 127.0.0.1:<内网端口>）
 ```
 
-第 1 步只做「进程结构倒置」，**对外行为逐字节不变**：
+第 1 步只做「进程结构倒置」，**对外行为逐字节不变** 的约束下已经完成；本步把前门从 L4 字节中继升级成 **L7 HTTP 服务**（hyper 1.x + axum 0.8）：
 
-- 前门是 **L4 透明转发**：不解析 HTTP，原样双向拷贝字节。HTTP、WebSocket、SSE、上传下载、长轮询全部天然保真。
-- 第 2 步（按路由组把功能搬进 Rust）才引入 L7（hyper/axum）路由；L4 转发层届时替换，进程管理、端口策略、PROXY 约定原样复用。
+- 前门解析 HTTP，用 axum `Router` 先匹配**原生路由**（当前生产环境为空；后续按路由组把功能搬进 Rust 时逐条新增），其余请求经 fallback 转发给 Node。
+- 转发仍然逐帧流式、不缓冲：8MB 上传下载、SSE / chunked 响应逐块到达客户端；WebSocket 升级把两侧字节流对接。
+- 进程管理、端口策略、PROXY 约定、看护与信号原样复用，与 L4 时代完全一致。
 - **所有启动入口、三个平台都经前门启动**：源码检出的 `./multicc`（start/restart、launchd 登录服务）、独立包启动器（含它的 launchd / systemd / Windows 登录自启）、桌面壳（`MULTICC_DESKTOP=1`），macOS / Linux / Windows 一样。没有任何「起不来就直接跑 `node server.js`」的退路，前门和原生模块一样是必需件（见 §8）。只剩开发者手动的 `npm start` / `node server.js` 仍是直连，供调试和集成测试用。
 
 ## 为什么用 PROXY 协议而不是 X-Forwarded-For
@@ -33,7 +34,7 @@
 
 ### 1. 命令行
 
-- `multicc-gateway --version` → 输出一行 `multicc-gateway 2 <crate 版本>`，退出码 0。`2` 是协议版本（2 = 加了 `--stdin-lifeline`、Node 以 0 退出时前门随之退出）；三处必须一致：这里、`scripts/build-rust-kernels.js` 的探测、`src/gateway-child.js` 的 `GATEWAY_PROTOCOL`。
+- `multicc-gateway --version` → 输出一行 `multicc-gateway 3 <crate 版本>`，退出码 0。`3` 是协议版本（2 = 加了 `--stdin-lifeline`、Node 以 0 退出时前门随之退出；3 = 前门改为 L7，按客户端连接独占上游 HTTP 连接）；三处必须一致：这里、`scripts/build-rust-kernels.js` 的探测、`src/gateway-child.js` 的 `GATEWAY_PROTOCOL`。
 - `multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--] <脚本> [参数…]`，脚本缺省为 `server.js`。进程 cwd 切到 `--cwd`；argv 里必须出现 `server.js`（管理脚本按 cmdline 里的 `server.js` + cwd 认领端口占用者）。
 
 ### 2. 端口策略（唯一实现在 Rust）
@@ -75,12 +76,18 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 - 地址文本与 Node 直接监听时 `socket.remoteAddress` 的写法一致：IPv4 监听上是 `192.168.1.5`；IPv6 双栈监听上的 IPv4 客户端是 `::ffff:192.168.1.5`（Rust `Ipv6Addr` 的 Display 正好是这个写法）。`remoteFamily` 取 `IPv4` / `IPv6`。
 - Node 侧解析规则：5 秒内必须收到；整行不超过 107 字节；格式不对、`PROXY UNKNOWN`、或缺头，一律直接销毁连接（fail closed）。
 - 内网监听器只绑 `127.0.0.1`。本机进程即使直连内网端口并伪造 PROXY 头，也拿不到比直连公开端口更多的权限（本机连接本来就是本机）。
-- 客户端无法伪造：前门总是先写自己的头，客户端发来的 `PROXY …` 文本只会作为后续字节到达 Node，被当作非法 HTTP 拒绝。
+- 客户端无法伪造：前门总是先写自己的头；客户端发来的 `PROXY …` 文本现在会被前门的 HTTP 解析器当作非法请求行直接拒绝（400 / 断开），根本到不了 Node。
 
-### 6. 转发
+### 6. 转发（L7）
 
-- `TCP_NODELAY` 两侧都开；双向拷贝并传播半关闭（`copy_bidirectional`）。
-- 上游暂不可达（Node 正在启动、重启或崩溃后等待重拉）：持有客户端连接，每 100ms 重试一次，最多等 30 秒；仍不可达时写回 `HTTP/1.1 503 Service Unavailable`（带 `Retry-After: 2`、`Connection: close`）后关闭。
+- 每条被接受的客户端 TCP 连接由 `hyper::server::conn::http1` 服务：保留头的大小写（`preserve_header_case`）、keep-alive 打开、`.with_upgrades()` 支持升级；它驱动一个 `axum::Router`。
+- Router 由 `native_routes()` 构建：生产环境没有任何原生路由；只有设置 `MULTICC_GATEWAY_TEST_ROUTES=1` 时才有测试路由 `GET /__gateway_test/native`（固定响应体），供集成测试证明请求由 Rust 应答、Node 完全没被碰。Router 的 fallback 负责转发。
+- fallback 使用**只属于这一条客户端连接**的上游连接：首个被转发的请求到达时才惰性建立，建连后先写 §5 的 PROXY v1 行（地址与 L4 时代逐字节一致），再在该 socket 上做 `hyper::client::conn::http1` 握手（保留头大小写）；同一客户端连接的后续请求复用它。Node 关掉它（keep-alive 超时等）后，下一个请求重新建一条并写新的 PROXY 行。**绝不跨客户端连接共享或池化**（`src/request-locality.js` 约 57 处依赖 socket 对端地址做本机/外部判断，1:1 映射是它们继续正确的前提）。
+- 每条客户端连接的上游句柄（`Arc<tokio::sync::Mutex<…>>`）通过请求扩展交给 fallback。
+- 忠实转发：方法、路径+查询、HTTP 版本、头（原始大小写）、请求体与响应体都逐帧流式透传，不缓冲。8MB 上传下载、SSE / chunked 响应逐块到达客户端（不是攒完再发）。**不添加任何转发头**（没有 `X-Forwarded-*`、`Forwarded`、`Via`）。响应原样返回（状态、头、流式体）。
+- 升级（WebSocket）：升级请求照常转发；Node 回 `101` 时把 101 返回客户端，并把 `hyper::upgrade::on(client_req)` 与 `hyper::upgrade::on(upstream_resp)` 用 `tokio::io::copy_bidirectional` 对接。该上游连接从此归升级使用。
+- 上游暂不可达（Node 正在启动、重启或崩溃后等待重拉，或端口为 0）：每 100ms 重试一次，最多等 `MULTICC_GATEWAY_UPSTREAM_WAIT_MS`（默认 30 秒）；仍不可达时返回 `503 Service Unavailable`（带 `Retry-After: 2`、`Connection: close`、`Content-Length: 0`）后关闭。上游连上了但请求发不出去（例如 Node 恰好关闭了这条 keep-alive 连接）返回 `502 Bad Gateway`。
+- 客户端自己发的 `PROXY …` 行会被前门的 HTTP 解析器拒绝（400 / 连接关闭），什么也到不了 Node，比 L4 时代更安全。
 
 ### 7. 看护与信号
 
@@ -112,3 +119,4 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 |---|---|---|
 | `MULTICC_GATEWAY_UPSTREAM_WAIT_MS` | `30000` | §6 里上游暂不可达时持有客户端连接、每 100ms 重试的总时长（毫秒）；超过后写回 503。 |
 | `MULTICC_GATEWAY_BACKOFF_SCALE` | `1` | §7 里崩溃退避阶梯（0.5→1→2→4→8→16→30s）和退出码 75 的 0.2s 快速重试统一乘以此系数，用来把集成测试从分钟级压到毫秒级。非有限值或负数按 1 处理，上限 1000。 |
+| `MULTICC_GATEWAY_TEST_ROUTES` | 未设置 | 设为 `1` 时 Router 额外注册测试路由 `GET /__gateway_test/native`（§6），证明请求由 Rust 应答。生产环境不要设置。 |

@@ -1,13 +1,16 @@
 //! End-to-end tests for the Rust front door. Each test runs the real
 //! `multicc-gateway` binary against a Node fixture that parses the PROXY line
-//! itself; nothing here depends on src/gateway-child.js.
+//! itself and then speaks ordinary HTTP; nothing here depends on
+//! src/gateway-child.js.
 
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use serde_json::Value;
 
 const GATEWAY_BIN: &str = env!("CARGO_BIN_EXE_multicc-gateway");
 const FIXTURE: &str = include_str!("fixtures/upstream.js");
@@ -191,12 +194,52 @@ impl Gateway {
         }
     }
 
+    fn json_lines(&self, name: &str) -> Vec<Value> {
+        fs::read_to_string(self.state.join(name))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("JSON state line"))
+            .collect()
+    }
+
+    fn connections(&self) -> Vec<Value> {
+        self.json_lines("connections.log")
+    }
+
+    fn requests(&self) -> Vec<Value> {
+        self.json_lines("requests.log")
+    }
+
+    fn closed_ids(&self) -> Vec<u64> {
+        fs::read_to_string(self.state.join("closed.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.trim().parse().ok())
+            .collect()
+    }
+
     fn ports(&self) -> Vec<u16> {
         fs::read_to_string(self.state.join("ports.log"))
             .unwrap_or_default()
             .lines()
             .filter_map(|line| line.trim().parse().ok())
             .collect()
+    }
+
+    /// Polls state until `predicate` holds (state files are appended by the
+    /// fixture in another process, so a just-sent request may not be visible
+    /// yet).
+    fn wait_for_state(&self, what: &str, predicate: impl Fn(&Gateway) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !predicate(self) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}\n{}",
+                self.log()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 
@@ -208,10 +251,31 @@ impl Drop for Gateway {
     }
 }
 
-fn read_all(stream: &mut TcpStream) -> Vec<u8> {
-    let mut out = Vec::new();
-    stream.read_to_end(&mut out).unwrap();
-    out
+// ── HTTP client helpers ─────────────────────────────────────────────────────
+
+struct HttpResponse {
+    status: u16,
+    /// The header block exactly as it arrived (case included).
+    header_text: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl HttpResponse {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(header, _)| header.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    fn json(&self) -> Value {
+        serde_json::from_slice(&self.body).expect("JSON response body")
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.body).into_owned()
+    }
 }
 
 fn read_until(stream: &mut TcpStream, needle: &[u8]) -> Vec<u8> {
@@ -227,6 +291,112 @@ fn read_until(stream: &mut TcpStream, needle: &[u8]) -> Vec<u8> {
     out
 }
 
+fn read_line(stream: &mut TcpStream) -> Vec<u8> {
+    read_until(stream, b"\r\n")
+}
+
+/// Reads the status line and headers, leaving the body unread.
+fn read_response_head(stream: &mut TcpStream) -> HttpResponse {
+    let bytes = read_until(stream, b"\r\n\r\n");
+    assert!(
+        bytes.ends_with(b"\r\n\r\n"),
+        "truncated response head: {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let mut lines = text.split("\r\n");
+    let status_line = lines.next().unwrap_or_default().to_string();
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_else(|| panic!("no status code in {status_line:?}"))
+        .parse()
+        .expect("numeric status");
+    let mut headers = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            headers.push((name.trim().to_string(), value.trim().to_string()));
+        }
+    }
+    HttpResponse {
+        status,
+        header_text: text,
+        headers,
+        body: Vec::new(),
+    }
+}
+
+/// Reads one chunk of a chunked body; `None` after the terminating chunk.
+fn read_chunk(stream: &mut TcpStream) -> Option<Vec<u8>> {
+    let line = read_line(stream);
+    assert!(!line.is_empty(), "connection closed inside a chunked body");
+    let text = String::from_utf8_lossy(&line);
+    let size = usize::from_str_radix(text.trim().split(';').next().unwrap_or(""), 16)
+        .unwrap_or_else(|_| panic!("bad chunk size line: {text:?}"));
+    if size == 0 {
+        // Discard trailers up to the blank line.
+        loop {
+            let trailer = read_line(stream);
+            if trailer.is_empty() || trailer == b"\r\n" {
+                break;
+            }
+        }
+        return None;
+    }
+    let mut chunk = vec![0_u8; size + 2];
+    stream.read_exact(&mut chunk).expect("chunk data");
+    chunk.truncate(size);
+    Some(chunk)
+}
+
+fn read_chunked_body(stream: &mut TcpStream) -> Vec<u8> {
+    let mut body = Vec::new();
+    while let Some(chunk) = read_chunk(stream) {
+        body.extend_from_slice(&chunk);
+    }
+    body
+}
+
+fn read_response(stream: &mut TcpStream) -> HttpResponse {
+    let mut response = read_response_head(stream);
+    if matches!(response.status, 101 | 204 | 304) {
+        return response;
+    }
+    let chunked = response
+        .header("transfer-encoding")
+        .map(|value| value.to_ascii_lowercase().contains("chunked"))
+        .unwrap_or(false);
+    if chunked {
+        response.body = read_chunked_body(stream);
+        return response;
+    }
+    if let Some(length) = response
+        .header("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        let mut body = vec![0_u8; length];
+        stream.read_exact(&mut body).expect("response body");
+        response.body = body;
+        return response;
+    }
+    let mut body = Vec::new();
+    stream.read_to_end(&mut body).unwrap();
+    response.body = body;
+    response
+}
+
+fn get(path: &str) -> Vec<u8> {
+    format!("GET {path} HTTP/1.1\r\nHost: test\r\n\r\n").into_bytes()
+}
+
+fn request(stream: &mut TcpStream, raw: &[u8]) -> HttpResponse {
+    stream.write_all(raw).unwrap();
+    read_response(stream)
+}
+
 fn payload(size: usize) -> Vec<u8> {
     let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
     (0..size)
@@ -239,6 +409,13 @@ fn payload(size: usize) -> Vec<u8> {
         .collect()
 }
 
+/// The fixture's deterministic download pattern (period 256 bytes).
+fn download_pattern(size: usize) -> Vec<u8> {
+    (0..size)
+        .map(|index| (index.wrapping_mul(31) + 7) as u8)
+        .collect()
+}
+
 fn sha256(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -246,99 +423,243 @@ fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn expected_header(client_port: u16, gateway_port: u16) -> String {
-    format!("PROXY TCP4 127.0.0.1 127.0.0.1 {client_port} {gateway_port}\n")
+fn expected_proxy(client_port: u16, gateway_port: u16) -> String {
+    format!("PROXY TCP4 127.0.0.1 127.0.0.1 {client_port} {gateway_port}")
 }
+
+// ── forwarding ──────────────────────────────────────────────────────────────
 
 #[test]
 fn upstream_receives_the_front_doors_own_proxy_header() {
-    let gateway = Gateway::start("header", "report-header", &[]);
+    let gateway = Gateway::start("header", "echo", &[]);
     let mut client = gateway.connect();
     let client_port = client.local_addr().unwrap().port();
-    let response = read_all(&mut client);
+    let response = request(&mut client, &get("/proxy"));
+    assert_eq!(response.status, 200, "{}", gateway.log());
+    let body = response.json();
     assert_eq!(
-        String::from_utf8_lossy(&response),
-        expected_header(client_port, gateway.port),
+        body["line"].as_str(),
+        Some(expected_proxy(client_port, gateway.port).as_str()),
         "{}",
         gateway.log()
     );
 }
 
 #[test]
-fn eight_megabytes_round_trip_byte_for_byte() {
-    let gateway = Gateway::start("bulk", "echo", &[]);
+fn two_requests_on_one_client_connection_share_one_upstream_connection() {
+    let gateway = Gateway::start("keepalive", "echo", &[]);
     let mut client = gateway.connect();
-    let data = payload(8 * 1024 * 1024);
-    let mut writer = client.try_clone().unwrap();
-    let sending = data.clone();
-    let handle = std::thread::spawn(move || {
-        writer.write_all(&sending).unwrap();
-        writer.shutdown(Shutdown::Write).unwrap();
+    let first = request(&mut client, &get("/one"));
+    assert_eq!(first.text(), "one", "{}", gateway.log());
+    let second = request(&mut client, &get("/two"));
+    assert_eq!(second.text(), "two", "{}", gateway.log());
+    gateway.wait_for_state("both requests", |gateway| gateway.requests().len() == 2);
+    let connections = gateway.connections();
+    assert_eq!(
+        connections.len(),
+        1,
+        "one client connection must own exactly one upstream connection: {connections:?}\n{}",
+        gateway.log()
+    );
+    let requests = gateway.requests();
+    assert_eq!(requests[0]["id"], requests[1]["id"]);
+}
+
+#[test]
+fn two_client_connections_get_two_upstream_connections() {
+    let gateway = Gateway::start("two-clients", "echo", &[]);
+    let mut first = gateway.connect();
+    assert_eq!(request(&mut first, &get("/one")).text(), "one");
+    let mut second = gateway.connect();
+    assert_eq!(request(&mut second, &get("/one")).text(), "one");
+    gateway.wait_for_state("two connections", |gateway| {
+        gateway.connections().len() == 2
     });
-    let received = read_all(&mut client);
-    handle.join().unwrap();
-    assert_eq!(received.len(), data.len(), "{}", gateway.log());
-    assert_eq!(sha256(&received), sha256(&data));
+    let connections = gateway.connections();
+    assert_ne!(connections[0]["id"], connections[1]["id"]);
 }
 
 #[test]
-fn half_close_is_propagated_and_the_reply_survives() {
-    let gateway = Gateway::start("half-close", "echo", &[]);
+fn a_node_closed_keep_alive_connection_is_replaced_on_the_next_request() {
+    let gateway = Gateway::start("reconnect", "echo", &[]);
     let mut client = gateway.connect();
-    client.write_all(b"hello half close").unwrap();
-    client.shutdown(Shutdown::Write).unwrap();
-    assert_eq!(read_all(&mut client), b"hello half close");
+    // /hangup answers normally, then Node closes the internal connection while
+    // the client's keep-alive connection stays open (what a keep-alive timeout
+    // looks like from here).
+    let first = request(&mut client, &get("/hangup"));
+    assert_eq!(first.text(), "ok", "{}", gateway.log());
+    let first_id = first_id(&gateway);
+    gateway.wait_for_state("node to close the upstream connection", |gateway| {
+        gateway.closed_ids().contains(&first_id)
+    });
+    let second = request(&mut client, &get("/two"));
+    assert_eq!(second.text(), "two", "{}", gateway.log());
+    gateway.wait_for_state("a replacement connection", |gateway| {
+        gateway.connections().len() == 2
+    });
+    let connections = gateway.connections();
+    assert_ne!(
+        connections[0]["id"], connections[1]["id"],
+        "the replacement upstream must be a new connection with a new PROXY line"
+    );
+}
+
+fn first_id(gateway: &Gateway) -> u64 {
+    gateway.wait_for_state("a recorded connection", |gateway| {
+        !gateway.connections().is_empty()
+    });
+    gateway.connections()[0]["id"].as_u64().unwrap()
 }
 
 #[test]
-fn an_upgrade_response_is_followed_by_raw_bytes() {
-    let gateway = Gateway::start("upgrade", "upgrade", &[]);
+fn eight_megabyte_request_body_round_trips_byte_for_byte() {
+    let gateway = Gateway::start("upload", "echo", &[]);
+    let mut client = gateway.connect();
+    let body = payload(8 * 1024 * 1024);
+    let mut head = format!(
+        "POST /echo HTTP/1.1\r\nHost: test\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    head.extend_from_slice(&body);
+    client.write_all(&head).unwrap();
+    let response = read_response(&mut client);
+    assert_eq!(response.status, 200, "{}", gateway.log());
+    assert_eq!(response.body.len(), body.len(), "{}", gateway.log());
+    assert_eq!(sha256(&response.body), sha256(&body));
+}
+
+#[test]
+fn eight_megabyte_response_body_round_trips_byte_for_byte() {
+    let gateway = Gateway::start("download", "echo", &[]);
+    let mut client = gateway.connect();
+    let response = request(&mut client, &get("/bulk-down"));
+    assert_eq!(response.status, 200, "{}", gateway.log());
+    let expected = download_pattern(8 * 1024 * 1024);
+    assert_eq!(response.body.len(), expected.len(), "{}", gateway.log());
+    assert_eq!(sha256(&response.body), sha256(&expected));
+}
+
+#[test]
+fn a_streamed_response_reaches_the_client_before_it_ends() {
+    let gateway = Gateway::start("sse", "echo", &[]);
+    let mut client = gateway.connect();
+    // The fixture sends the first chunk immediately and the second 1.5s later.
+    // A buffering front door would deliver nothing for over a second.
+    client
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    client.write_all(&get("/sse")).unwrap();
+    let head = read_response_head(&mut client);
+    assert_eq!(head.status, 200, "{}", gateway.log());
+    assert_eq!(head.header("transfer-encoding"), Some("chunked"));
+    let first = read_chunk(&mut client).expect("first chunk");
+    assert_eq!(first, b"data: first\n\n", "{}", gateway.log());
+    // The response is still open; let the rest through at normal timeouts.
+    client
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let second = read_chunk(&mut client).expect("second chunk");
+    assert_eq!(second, b"data: second\n\n");
+    assert!(read_chunk(&mut client).is_none(), "chunked body must end");
+}
+
+#[test]
+fn a_custom_request_and_response_header_keeps_its_case() {
+    let gateway = Gateway::start("header-case", "echo", &[]);
+    let mut client = gateway.connect();
+    let raw = b"GET /headers HTTP/1.1\r\nHost: test\r\nX-Custom-Case: Value123\r\n\r\n";
+    let response = request(&mut client, raw);
+    assert_eq!(response.status, 200, "{}", gateway.log());
+    let body = response.json();
+    let raw_headers: Vec<String> = body["rawHeaders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect();
+    let pair = raw_headers
+        .windows(2)
+        .find(|pair| pair[0] == "X-Custom-Case")
+        .expect("the request header must reach node with its original case");
+    assert_eq!(pair[1], "Value123");
+    assert!(
+        response.header_text.contains("X-Response-Case: kept"),
+        "response header case changed: {}",
+        response.header_text
+    );
+}
+
+#[test]
+fn an_upgrade_response_is_spliced_with_raw_bytes_both_ways() {
+    let gateway = Gateway::start("upgrade", "echo", &[]);
     let mut client = gateway.connect();
     client
-        .write_all(b"GET /upgrade HTTP/1.1\r\nHost: test\r\n\r\n")
+        .write_all(
+            b"GET /upgrade HTTP/1.1\r\nHost: test\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n",
+        )
         .unwrap();
-    let headers = read_until(&mut client, b"\r\n\r\n");
-    assert!(
-        headers.starts_with(b"HTTP/1.1 101 Switching Protocols\r\n"),
-        "{}",
-        String::from_utf8_lossy(&headers)
-    );
+    let head = read_response_head(&mut client);
+    assert_eq!(head.status, 101, "{}", gateway.log());
     client.write_all(b"raw upgrade bytes").unwrap();
     let mut echo = vec![0_u8; b"raw upgrade bytes".len()];
     client.read_exact(&mut echo).unwrap();
     assert_eq!(echo, b"raw upgrade bytes");
-    client.shutdown(Shutdown::Write).unwrap();
 }
 
 #[test]
-fn a_crashed_node_is_relaunched_and_the_next_connection_succeeds() {
+fn the_env_gated_native_route_is_answered_without_node() {
+    let gateway = Gateway::start(
+        "native",
+        "echo",
+        &[("MULTICC_GATEWAY_TEST_ROUTES", "1".to_string())],
+    );
+    let mut client = gateway.connect();
+    let response = request(&mut client, &get("/__gateway_test/native"));
+    assert_eq!(response.status, 200, "{}", gateway.log());
+    assert_eq!(
+        response.text(),
+        "multicc-gateway: answered by the rust front door\n"
+    );
+    // Give a forwarded request every chance to have reached Node.
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        gateway.connections().is_empty(),
+        "a native route must not touch node: {:?}",
+        gateway.connections()
+    );
+}
+
+// ── supervision ─────────────────────────────────────────────────────────────
+
+#[test]
+fn a_crashed_node_is_relaunched_and_the_next_request_succeeds() {
     // The fixture exits 1 on its first run and serves on the second; the fast
     // BACKOFF_SCALE makes the relaunch immediate.
     let gateway = Gateway::start("crash-restart", "exit-1-once", &[]);
+    let mut client = gateway.connect();
+    // The front door retries the upstream while the fixture is relaunched.
+    let response = request(&mut client, &get("/one"));
+    assert_eq!(response.text(), "one", "{}", gateway.log());
     assert!(
         gateway.ports().len() >= 2,
         "the fixture should have run twice: {:?}",
         gateway.ports()
     );
-    let mut client = gateway.connect();
-    client.write_all(b"after restart").unwrap();
-    client.shutdown(Shutdown::Write).unwrap();
-    assert_eq!(read_all(&mut client), b"after restart");
 }
 
 #[test]
 fn exit_75_relaunches_quickly_on_a_different_internal_port() {
     let gateway = Gateway::start("port-75", "exit-75-once", &[]);
+    let mut client = gateway.connect();
+    let response = request(&mut client, &get("/one"));
+    assert_eq!(response.text(), "one", "{}", gateway.log());
     let ports = gateway.ports();
     assert_eq!(ports.len(), 2, "{ports:?}\n{}", gateway.log());
     assert_ne!(
         ports[0], ports[1],
         "exit 75 must move to a new internal port"
     );
-    let mut client = gateway.connect();
-    client.write_all(b"new internal port").unwrap();
-    client.shutdown(Shutdown::Write).unwrap();
-    assert_eq!(read_all(&mut client), b"new internal port");
 }
 
 #[cfg(unix)]
@@ -402,14 +723,10 @@ fn an_unreachable_upstream_gets_a_503_after_the_wait() {
         &[("MULTICC_GATEWAY_UPSTREAM_WAIT_MS", "300".to_string())],
     );
     let mut client = gateway.connect();
-    let response = read_all(&mut client);
-    let text = String::from_utf8_lossy(&response);
-    assert!(
-        text.starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
-        "{text}"
-    );
-    assert!(text.contains("Retry-After: 2\r\n"), "{text}");
-    assert!(text.contains("Connection: close\r\n"), "{text}");
+    let response = request(&mut client, &get("/one"));
+    assert_eq!(response.status, 503, "{}", gateway.log());
+    assert_eq!(response.header("retry-after"), Some("2"));
+    assert_eq!(response.header("connection"), Some("close"));
 }
 
 #[test]
@@ -467,15 +784,15 @@ fn without_the_flag_a_closed_stdin_changes_nothing() {
         gateway.log()
     );
     let mut client = gateway.connect();
-    client.write_all(b"still here").unwrap();
-    client.shutdown(Shutdown::Write).unwrap();
-    assert_eq!(read_all(&mut client), b"still here");
+    assert_eq!(request(&mut client, &get("/one")).text(), "one");
 }
 
 #[test]
 fn node_exiting_zero_on_its_own_stops_the_front_door() {
     let mut gateway = Gateway::start("exit-zero", "exit-0-on-connect", &[]);
-    let _client = gateway.connect();
+    let mut client = gateway.connect();
+    // The upstream connection is lazy: a request is what makes it happen.
+    let _ = client.write_all(&get("/one"));
     let status = gateway
         .wait_exit(Duration::from_secs(10))
         .expect("a clean exit from node must end the front door");
@@ -493,21 +810,42 @@ fn node_exiting_zero_on_its_own_stops_the_front_door() {
 }
 
 #[test]
-fn a_forged_proxy_line_arrives_after_the_front_doors_own_line() {
-    let gateway = Gateway::start("forged", "report-header-echo", &[]);
+fn a_forged_client_proxy_line_never_reaches_node() {
+    let gateway = Gateway::start("forged", "echo", &[]);
     let mut client = gateway.connect();
-    let client_port = client.local_addr().unwrap().port();
-    let forged = b"PROXY TCP4 9.9.9.9 8.8.8.8 1111 2222\r\nGET / HTTP/1.1\r\n\r\n";
-    // Write before reading anything: the front door must still write its own
-    // header first.
+    let forged = b"PROXY TCP4 9.9.9.9 8.8.8.8 1111 2222\r\nGET / HTTP/1.1\r\nHost: test\r\n\r\n";
     client.write_all(forged).unwrap();
-    client.shutdown(Shutdown::Write).unwrap();
-    let response = read_all(&mut client);
-    let header = expected_header(client_port, gateway.port);
+    // hyper's HTTP parser rejects the request line; the connection is answered
+    // with 400 or simply closed.
+    let mut probe = [0_u8; 1];
+    match client.read(&mut probe) {
+        Ok(0) => {}
+        Ok(_) => {
+            let mut head = vec![probe[0]];
+            head.extend(read_until(&mut client, b"\r\n\r\n"));
+            let text = String::from_utf8_lossy(&head);
+            assert!(
+                text.starts_with("HTTP/1.1 400"),
+                "unexpected answer to a forged PROXY line: {text}"
+            );
+        }
+        Err(_) => {}
+    }
+    std::thread::sleep(Duration::from_millis(200));
     assert!(
-        response.starts_with(header.as_bytes()),
-        "first bytes were {:?}",
-        String::from_utf8_lossy(&response[..response.len().min(120)])
+        gateway.connections().is_empty(),
+        "a forged PROXY line must never reach node: {:?}",
+        gateway.connections()
     );
-    assert_eq!(&response[header.len()..], forged);
+}
+
+#[test]
+fn the_version_line_carries_the_protocol_version() {
+    let output = Command::new(GATEWAY_BIN).arg("--version").output().unwrap();
+    assert!(output.status.success());
+    let line = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        line.starts_with("multicc-gateway 3 "),
+        "unexpected --version output: {line:?}"
+    );
 }

@@ -1,22 +1,35 @@
 'use strict';
 
 // Test upstream for native/gateway. It parses the PROXY v1 line itself (the
-// real Node child is another agent's work, so these tests must not depend on
-// it) and then behaves according to FIXTURE_MODE:
+// real Node child is src/gateway-child.js, and these tests must not depend on
+// it) and then hands the socket to an ordinary http.Server, exactly like the
+// real child does.
 //
-//   echo                echo every byte after the PROXY line
-//   report-header       write the parsed PROXY line, then close
-//   report-header-echo  write the parsed PROXY line, then echo the rest
-//   upgrade             wait for a full request, answer 101, then echo raw bytes
-//   no-listen           write `ready` and stay alive without listening (503 test)
-//   exit-1-once         exit 1 on the first run, echo afterwards
-//   exit-75-once        exit 75 on the first run (after recording the port)
-//   exit-0-on-connect   echo nothing; exit 0 as soon as a client connects
+// Modes (FIXTURE_MODE), all served over HTTP:
+//   echo               full HTTP fixture (routes below); the default
+//   no-listen          write `ready` and stay alive without listening (503 test)
+//   exit-1-once        exit 1 on the first run, serve afterwards
+//   exit-75-once       exit 75 on the first run (the 75 relaunch test)
+//   exit-0-on-connect  exit 0 as soon as an internal connection arrives
 //
-// FIXTURE_STATE_DIR receives runs/ports.log/ready; FIXTURE_SIGNAL_MARKER, when
-// set, makes SIGINT write that file and exit 0 (proves signal forwarding).
+// Routes:
+//   GET  /proxy       JSON { id, line } — the PROXY line this connection sent
+//   GET  /one /two    plain text
+//   POST /echo        echo the request body back byte for byte
+//   GET  /bulk-down   8 MiB of a deterministic pattern (i * 31 + 7, mod 256)
+//   GET  /sse         chunked text/event-stream: first chunk, pause, second
+//   GET  /headers     JSON of method/url/version/rawHeaders + X-Response-Case
+//   GET  /close       `Connection: close` response
+//   GET  /hangup      answer normally, then close the internal connection
+//   GET  /upgrade     upgrade event: 101, then echo raw bytes
+//
+// FIXTURE_STATE_DIR receives runs/pids.log/ports.log/ready, one JSON line per
+// accepted internal connection in connections.log, one per HTTP request in
+// requests.log, and closed connection ids in closed.log.
+// FIXTURE_SIGNAL_MARKER, when set, makes SIGINT write that file and exit 0.
 
 const net = require('node:net');
+const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -55,57 +68,165 @@ if (mode === 'no-listen') {
 if (mode === 'exit-1-once' && run === 1) process.exit(1);
 if (mode === 'exit-75-once' && run === 1) process.exit(75);
 
-const server = net.createServer(socket => {
-  if (mode === 'exit-0-on-connect') process.exit(0);
+const connectionsLog = path.join(stateDir, 'connections.log');
+const requestsLog = path.join(stateDir, 'requests.log');
+const closedLog = path.join(stateDir, 'closed.log');
+
+function bulkBlock() {
+  const block = Buffer.alloc(65536);
+  for (let i = 0; i < block.length; i++) block[i] = (i * 31 + 7) & 0xff;
+  return block;
+}
+
+const server = http.createServer((req, res) => {
+  const id = req.socket.__gatewayConnectionId;
+  fs.appendFileSync(requestsLog, `${JSON.stringify({
+    id,
+    method: req.method,
+    url: req.url,
+    version: req.httpVersion,
+    rawHeaders: req.rawHeaders,
+  })}\n`);
+
+  const route = req.url.split('?')[0];
+  if (route === '/proxy') {
+    const line = req.socket.__proxyLine || '';
+    const body = JSON.stringify({ id, line });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
+    res.end(body);
+    return;
+  }
+  if (route === '/headers') {
+    const body = JSON.stringify({
+      method: req.method,
+      url: req.url,
+      version: req.httpVersion,
+      rawHeaders: req.rawHeaders,
+    });
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      'X-Response-Case': 'kept',
+    });
+    res.end(body);
+    return;
+  }
+  if (route === '/echo' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const body = Buffer.concat(chunks);
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(body.length),
+      });
+      res.end(body);
+    });
+    return;
+  }
+  if (route === '/bulk-down') {
+    const size = 8 * 1024 * 1024;
+    const block = bulkBlock();
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': String(size),
+    });
+    let sent = 0;
+    const pump = () => {
+      while (sent < size) {
+        const n = Math.min(block.length, size - sent);
+        sent += n;
+        const chunk = n === block.length ? block : block.subarray(0, n);
+        if (!res.write(chunk)) {
+          res.once('drain', pump);
+          return;
+        }
+      }
+      res.end();
+    };
+    pump();
+    return;
+  }
+  if (route === '/sse') {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+    res.write('data: first\n\n');
+    setTimeout(() => {
+      res.write('data: second\n\n');
+      res.end();
+    }, 500);
+    return;
+  }
+  if (route === '/close') {
+    res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': '2', Connection: 'close' });
+    res.end('ok');
+    return;
+  }
+  if (route === '/hangup') {
+    // Answer normally, then close the *internal* connection. To the front
+    // door this is exactly a keep-alive timeout: the client connection is
+    // still open, the upstream one is gone.
+    res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': '2' });
+    res.end('ok');
+    setTimeout(() => req.socket.destroy(), 20);
+    return;
+  }
+  const body = route === '/two' ? 'two' : route === '/one' ? 'one' : 'ok';
+  res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': String(Buffer.byteLength(body)) });
+  res.end(body);
+});
+
+server.on('upgrade', (req, socket) => {
+  if (req.url.split('?')[0] !== '/upgrade') {
+    socket.destroy();
+    return;
+  }
   socket.setNoDelay(true);
-  let pending = Buffer.alloc(0);
-  let parsed = false;
-  let body = Buffer.alloc(0);
-  let upgraded = false;
-
-  const flushBody = () => {
-    if (!body.length) return;
-    if (mode === 'upgrade' && !upgraded) {
-      const end = body.indexOf('\r\n\r\n');
-      if (end < 0) return;
-      const extra = body.subarray(end + 4);
-      upgraded = true;
-      socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n');
-      body = Buffer.alloc(0);
-      if (extra.length) socket.write(extra);
-      return;
-    }
-    const chunk = body;
-    body = Buffer.alloc(0);
-    if (!socket.destroyed) socket.write(chunk);
-  };
-
-  socket.on('data', chunk => {
-    if (parsed) {
-      body = Buffer.concat([body, chunk]);
-      flushBody();
-      return;
-    }
-    pending = Buffer.concat([pending, chunk]);
-    const at = pending.indexOf('\r\n');
-    if (at < 0) return;
-    const line = pending.subarray(0, at).toString('latin1');
-    const rest = pending.subarray(at + 2);
-    parsed = true;
-    pending = Buffer.alloc(0);
-    if (mode === 'report-header') {
-      socket.write(`${line}\n`);
-      socket.end();
-      return;
-    }
-    if (mode === 'report-header-echo') socket.write(`${line}\n`);
-    body = Buffer.concat([body, rest]);
-    flushBody();
-  });
-  socket.on('end', () => { if (!socket.destroyed) socket.end(); });
+  socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n');
+  socket.on('data', chunk => socket.write(chunk));
   socket.on('error', () => {});
 });
 
-server.listen(internalPort, '127.0.0.1', () => {
+let connectionSeq = 0;
+
+const proxyListener = net.createServer({ pauseOnConnect: true }, socket => {
+  if (mode === 'exit-0-on-connect') process.exit(0);
+  socket.setNoDelay(true);
+  socket.on('error', () => {});
+  const id = ++connectionSeq;
+  socket.__gatewayConnectionId = id;
+  let buffered = Buffer.alloc(0);
+  let settled = false;
+
+  const onData = chunk => {
+    buffered = buffered.length ? Buffer.concat([buffered, chunk]) : chunk;
+    const end = buffered.indexOf('\r\n');
+    if (end < 0) {
+      if (buffered.length > 4096) socket.destroy();
+      return;
+    }
+    const line = buffered.subarray(0, end).toString('latin1');
+    settled = true;
+    socket.removeListener('data', onData);
+    socket.pause();
+    socket.__proxyLine = line;
+    fs.appendFileSync(connectionsLog, `${JSON.stringify({ id, line })}\n`);
+    const rest = buffered.subarray(end + 2);
+    if (rest.length) socket.unshift(rest);
+    server.emit('connection', socket);
+    socket.resume();
+  };
+
+  socket.on('data', onData);
+  socket.on('close', () => {
+    if (settled) fs.appendFileSync(closedLog, `${id}\n`);
+  });
+  socket.resume();
+});
+
+proxyListener.on('error', err => {
+  process.exit(err.code === 'EADDRINUSE' ? 75 : 1);
+});
+
+proxyListener.listen(internalPort, '127.0.0.1', () => {
   fs.writeFileSync(path.join(stateDir, 'ready'), String(run));
 });

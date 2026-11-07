@@ -1,9 +1,9 @@
 //! The front door itself: bind the public port, spawn and supervise Node on a
-//! loopback internal port, and forward each client connection 1:1 with a PROXY
-//! v1 header in front.
+//! loopback internal port, and serve each client connection over HTTP/1 with a
+//! router whose fallback forwards to Node 1:1 with a PROXY v1 header in front.
 
 use std::io;
-use std::net::{SocketAddr, TcpListener as StdListener, ToSocketAddrs};
+use std::net::{TcpListener as StdListener, ToSocketAddrs};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -12,22 +12,17 @@ use std::time::{Duration, Instant};
 
 use multicc_core::network_policy::{find_available_port, resolve_network_policy};
 use serde_json::{Map, Value};
-use tokio::io::AsyncWriteExt;
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::net::{TcpListener, TcpSocket};
 
 use crate::args::ServeOptions;
 use crate::backoff::RestartPolicy;
-use crate::proxy_header::format_proxy_header;
+use crate::forward::{native_routes, serve_connection, UpstreamHandle};
 
 const DEFAULT_UPSTREAM_WAIT_MS: u64 = 30_000;
-/// §6: hold the client and retry the upstream every 100ms while Node is down.
+/// §6: while Node is down, retry the upstream connection every 100ms.
 const UPSTREAM_RETRY: Duration = Duration::from_millis(100);
 /// How often the supervisor looks at the child.
 const TICK: Duration = Duration::from_millis(50);
-const COPY_BUFFER: usize = 64 * 1024;
-/// §6: written when no upstream became reachable within the wait.
-const SERVICE_UNAVAILABLE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
-Retry-After: 2\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
 
 fn log(message: &str) {
     // eprintln! panics when stderr is gone (a closed pipe); a log line must
@@ -89,6 +84,9 @@ pub async fn serve(options: ServeOptions) -> i32 {
     ));
 
     let upstream_wait = upstream_wait();
+    // One router for every client connection; the per-connection upstream
+    // handle is attached to each request by `serve_connection`.
+    let router = native_routes();
     let mut supervisor = Supervisor::new(&options, port, RestartPolicy::new(backoff_scale()));
     supervisor.start();
     let mut signals = match Signals::new() {
@@ -108,10 +106,12 @@ pub async fn serve(options: ServeOptions) -> i32 {
                 match accepted {
                     Ok((stream, peer)) => {
                         let local = stream.local_addr().unwrap_or(peer);
-                        let upstream_port = supervisor.upstream_port();
+                        let upstream =
+                            UpstreamHandle::new(supervisor.upstream_port(), upstream_wait, peer, local);
+                        let router = router.clone();
                         tokio::spawn(async move {
                             let _ = stream.set_nodelay(true);
-                            handle_client(stream, peer, local, upstream_port, upstream_wait).await;
+                            serve_connection(stream, router, upstream).await;
                         });
                     }
                     Err(error) => {
@@ -254,52 +254,6 @@ fn reserve_other_internal_port(previous: u16) -> io::Result<u16> {
         }
     }
     reserve_internal_port()
-}
-
-async fn handle_client(
-    mut client: TcpStream,
-    peer: SocketAddr,
-    local: SocketAddr,
-    upstream_port: Arc<AtomicU16>,
-    wait: Duration,
-) {
-    let deadline = Instant::now() + wait;
-    let mut upstream = None;
-    loop {
-        let port = upstream_port.load(Ordering::SeqCst);
-        if port != 0 {
-            let target = SocketAddr::from(([127, 0, 0, 1], port));
-            if let Ok(stream) = TcpStream::connect(target).await {
-                upstream = Some(stream);
-                break;
-            }
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        tokio::time::sleep(UPSTREAM_RETRY).await;
-    }
-    let Some(mut upstream) = upstream else {
-        let _ = client.write_all(SERVICE_UNAVAILABLE).await;
-        let _ = client.shutdown().await;
-        return;
-    };
-    // §5/§6: TCP_NODELAY both sides, PROXY line first, then raw bytes.
-    let _ = upstream.set_nodelay(true);
-    if upstream
-        .write_all(format_proxy_header(peer, local).as_bytes())
-        .await
-        .is_err()
-    {
-        return;
-    }
-    let _ = tokio::io::copy_bidirectional_with_sizes(
-        &mut client,
-        &mut upstream,
-        COPY_BUFFER,
-        COPY_BUFFER,
-    )
-    .await;
 }
 
 // ── supervision ─────────────────────────────────────────────────────────────
