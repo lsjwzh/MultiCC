@@ -347,8 +347,8 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   // Every task_state producer must carry the outward short code. The connect-time
   // seed in turn-engine once omitted it, so a freshly opened chat showed the bare
   // goal until the next classify event — pin the field on the wire. The payload
-  // now lives in one shared builder, src/chat/task-state-payload.js: the seed,
-  // server.js's live broadcast and the extracted store must send the SAME frame,
+  // now lives in one shared builder, src/chat/task-state-payload.js: the seed and
+  // the task-state store's live broadcast must send the SAME frame,
   // because they once drifted and a reopened page lost the last API error (the
   // seed omitted apiError, and api_error_policy events are never replayed).
   const payload = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'task-state-payload.js'), 'utf8');
@@ -363,11 +363,18 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(seed.includes('task.apiError'), 'a persisted error alone must still seed the frame');
   const turnEngine = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine.js'), 'utf8');
   assert.ok(turnEngine.includes('if (seed) sendWs(ws, seed);'), 'the connect path must send it');
-  assert.ok(source.includes('taskStatePayload(next)'),
-    'server.js`s live broadcast must share the payload contract');
+  // The live broadcast is the task-state store's: server.js builds it and
+  // keeps no inline copy, so the cancel-flow tests run the production code.
+  assert.ok(source.includes("require('./src/routes/task-state-store')"),
+    'server.js must build its task state from the one store');
+  assert.ok(source.includes('createTaskStateStore({'));
+  assert.doesNotMatch(source, /TASK_STATE_DEFAULTS|taskStatePayload\(/,
+    'no second getTaskState/setTaskState may grow back inside server.js');
   const taskStateStore = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'task-state-store.js'), 'utf8');
   assert.ok(taskStateStore.includes('taskStatePayload(next)'),
-    'the extracted store must share the payload contract');
+    'the store must share the payload contract');
+  assert.ok(taskStateStore.includes("bus.emit('task:state-changed', sessionId, cur, next)"),
+    'the event hub derives task.* events from every write');
 });
 
 test('chat worktree guidance treats sync API as manual and permits safe Agent self-sync', () => {

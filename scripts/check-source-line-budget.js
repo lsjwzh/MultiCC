@@ -112,50 +112,11 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-01 远程输入重构：RFB/H.264 的键、指针、拖动、悬停、HTTP 指针，加上新增的
   // 按住修饰键逻辑，拆到了 MultiCCAgentRemoteInput.swift；实测 2860 行（<= 3000），
   // 这条登记按闸的要求退休 —— 别再把它加回来。
-  // server.js 在「移除迁移例外」（见上方注释）之后又被官方账号/额度与主机电源
-  // 那一族抬起且没回来登记 —— 2026-10-22 插件通道接线时实测 3020/158444
-  //（本轮零行变更，仅合并 require 与挂载同行）。按棘轮补登记存量高水位；
-  // 下一次动 server.js 该拆的仍是账号/额度路由那一族，落回 <= 3000 就删掉这条。
-  // 2026-10-22 同一轮再接官方账号「专用出口」：本机转发跳改成交给 CPR 的
-  // resolveUpstreamAgent 钩子（src/claude-auth/egress-agent.js），外加旧 CPR
-  // 不认钩子时的失败兜底，实测 3025/159170。
-  // 按账号模型目录接线复用同一运行时，字节预算降至 159142。
-  // 统一提交身份后移除内联 Git bot 参数，按实测收紧至 3020/158992。
-  // 2026-10-25 结构化 429 拒绝透传：429 冷却记录同一行追加 rejection，
-  // api-error-host 同一行接 proxyFailureForAttempt（行数不变），实测 3020/159086。
-  'server.js': Object.freeze({
-    // 2026-10-27 Provider 卡片余量走势：GET /api/providers/limit-history 单独一行挂载，
-    // 采样钩子随 provider-limit-cache 构造同行注入，实测 3021/159674。
-    // 2026-10-28 插件挂载改传 paths（内置+~/.multicc/plugins 两处插件与插件列表），
-    // 同行注释同时缩短，实测 3019/158624。
-    // 2026-10-29 登录终端改成一次性（src/session/login-terminal.js）：挂载四处
-    // disposeLoginTerminal，进程退出时删记录并广播，实测 3036/159569。
-    // 2026-10-30 常驻插件那一轮：挂载点改传 resident（port/alert 给
-    // src/plugins/channel-host.js 同行注入），行数不变、字节 +62，实测 3036/159631。
-    // 2026-10-30 插件目录那一轮合入时行数不变、字节再 +82，没回来抬这一格，
-    // main 上这道闸已红；按实测 3036/159713 对齐高水位，拆分条件不变。
-    // 2026-10-31 切 CLI 车道跟随子 agent 家族默认：切换运行时同行注入
-    // validProviderId/getProviders，上方注释压成两行抵掉字节，实测 3035/159713。
-    // 2026-11-02 Windows 启动 PATH 刷新接线：可用性重解析移进 commands.js，
-    // server.js 只留一行 getter，实测 3022/159546，按棘轮下调。
-    // 2026-11-03 借道实时模型：GET /api/providers/:id/models 挂载一行（逻辑在
-    // routes/provider-models.js），实测 3024/159751，按棘轮上调。
-    // 2026-11-03 额度死锁自愈：余量刷新端口接线改交 src/quota/quota-self-heal.js
-    // （一行换一行，新增 stale 放行重读 + codex 401 自愈），实测 3024/159748，
-    // 按棘轮下调字节。
-    // 2026-11-03 task_state 载荷三处构造合一（src/chat/task-state-payload.js，
-    // 修重开页面丢 API 异常横幅）：内联 payload 换成共享 builder，随行的
-    // isGoalState/auxVerdictStaleness 导入失去用处一并摘；rebase 到额度自愈
-    // 之后实测 3021/159599，按棘轮下调。
-    // 2026-11-04 运行配置预设跨端库：require + 挂载共 4 行（逻辑与校验在
-    // src/routes/run-config-presets.js 与 Rust），实测 3026/159933，按棘轮上调。
-    // 2026-11-06 过期 CLI home 清理器只在宿主接线，实测 3030/160418；
-    // 待 Rust 宿主接管 CLI home 生命周期时移出这处 Node 启动接线。
-    ceiling: 3030,
-    byteCeiling: 160418,
-    target: 3000,
-    reason: 'split account/quota and host-power route families out of server.js to return under 3k',
-  }),
+  // server.js 在「移除迁移例外」之后又被官方账号/额度与主机电源那一族抬过 3k，
+  // 2026-10-22 起按棘轮登记，高水位 3036。2026-11-07 任务状态存储合一：内联的
+  // getTaskState/setTaskState 删掉，改为构造 src/routes/task-state-store.js 并转调，
+  // 实测 2979（<= 3000），这条登记按闸的要求退休 —— 别再把它加回来。下一次动
+  // server.js 该拆的仍是账号/额度路由那一族。
   // public/run-config.js 停在 2997 行，opencode「刷新模型」按钮（模型标题行 +
   // 强制刷新回调，见 routes/opencode-models.js 的 ?refresh=1）把它抬过 3k，实测
   // 3032/153881。登记实测高水位；下一次动它该拆的是模型字段那一族 —— 模型下拉 +

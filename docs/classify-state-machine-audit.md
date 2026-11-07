@@ -618,5 +618,5 @@ node tests/test-starting-stall-recovery-isolated.js
 | Terminal 旧 classifier | [`src/push-runtime.js`](../src/push-runtime.js) 133–168 |
 | Chat-only ownership | [`src/liveness/runtime.js`](../src/liveness/runtime.js) 93–129 |
 | turnOutcome → TaskBoard runtime projection（不改 lifecycle） | [`src/routes/task-board.js`](../src/routes/task-board.js) 667–705 |
-| cancel reason WebSocket | [`src/routes/task-state-store.js`](../src/routes/task-state-store.js) 25–46 |
+| cancel reason WebSocket | [`src/routes/task-state-store.js`](../src/routes/task-state-store.js) 57–78 |
 | 静默 observe-only / opt-in cancel | [`src/chat/stalled-turn-recovery.js`](../src/chat/stalled-turn-recovery.js) 14–42、63–196 |

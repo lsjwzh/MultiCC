@@ -1,10 +1,9 @@
 'use strict';
 
-// The single task_state wire contract. Three producers send this frame — the
-// connect-time seed (src/chat/task-state-seed.js), the live broadcast in
-// server.js's setTaskState, and the extracted store
-// (src/routes/task-state-store.js) — and a page that reopens must see exactly
-// what a live page sees. They once drifted: the seed omitted apiError, so the
+// The single task_state wire contract. Two producers send this frame — the
+// connect-time seed (src/chat/task-state-seed.js) and the live broadcast of
+// the task-state store (src/routes/task-state-store.js, the one server.js
+// runs) — and a page that reopens must see exactly what a live page sees. They once drifted: the seed omitted apiError, so the
 // API-error bar existed only while the failing turn was on screen and vanished
 // on reload even though the envelope was persisted. Keep every field here.
 

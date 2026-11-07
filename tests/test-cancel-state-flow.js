@@ -22,6 +22,7 @@ const test = require('node:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { EventEmitter } = require('node:events');
 
 const { createUserInputSignalHost } = require('../src/classify/user-input-host');
 const { createSessionWorkHost } = require('../src/session-work/host');
@@ -140,8 +141,14 @@ function harness(t, options = {}) {
     },
   };
 
+  // The bus is the live one's shape: the event hub derives task.* events from
+  // every write, so a cancel must surface here exactly once as P → E.
+  const bus = new EventEmitter();
+  bus.on('task:state-changed', (sessionId, prev, next) => record({ kind: 'task_state_changed', sessionId, prev, next }));
   const taskStateStore = createTaskStateStore({
     persistedSessions,
+    bus,
+    now: () => clock,
     saveBestEffort() {},
     chatBroadcast: (sessionId, payload) => record({ kind: 'chat_broadcast', sessionId, payload }),
     workspaceBroadcast: (dirId, payload) => record({ kind: 'workspace_broadcast', dirId, payload }),
@@ -302,6 +309,7 @@ function harness(t, options = {}) {
       return scheduler.admit({ sessionId: 's1', text, idempotencyKey: text });
     },
     advance(ms = 1) { clock += ms; },
+    now: () => clock,
   };
 }
 
@@ -312,6 +320,7 @@ test('manual cancel: controller → cancel event → classify → persist → br
   await h.startTurn();
   assert.equal(h.boardTask().runState, 'running');
   const providerAttempt = h.chatState._activeRunner.providerAttempt;
+  const letterBefore = h.taskState().classifyState;
 
   const result = await h.host.cancelActiveTurn('s1', {
     source: 'manual_cancel', operationId: 'idem-42',
@@ -338,6 +347,14 @@ test('manual cancel: controller → cancel event → classify → persist → br
   assert.equal(persisted.cancelOperationId, 'idem-42');
   assert.ok(Number.isFinite(persisted.cancelledAt));
   assert.equal(persisted.classifyHistory.length, 1, 'exactly one transition recorded');
+  assert.equal(persisted.classifyUpdatedAt, h.now(), 'the letter change is stamped for the watchdog');
+
+  // (b2) The event hub hears the same transition on the bus, exactly once.
+  const letterChanges = h.events.filter(event => event.kind === 'task_state_changed'
+    && event.prev.classifyState !== event.next.classifyState);
+  assert.deepEqual(letterChanges.map(event => [event.prev.classifyState, event.next.classifyState]).slice(-1), [[letterBefore, 'E']]);
+  assert.equal(letterChanges.filter(event => event.next.classifyState === 'E').length, 1);
+  assert.equal(letterChanges.at(-1).next.cancelledAt, persisted.cancelledAt);
 
   // (c) Every projection reads the same letter. This is the assertion that would
   // have failed before: internal E, external running.
@@ -828,4 +845,74 @@ test('a pending structured question suppresses the optimistic completion entirel
 
   assert.equal(h.chatState.currentTask.phase, 'implement');
   assert.equal(h.events.some(e => e.kind === 'session_summary'), false);
+});
+
+// ── The task-state store itself (the one server.js runs) ───────────────────
+
+function bareStore(overrides = {}) {
+  const log = [];
+  const bus = new EventEmitter();
+  bus.on('task:state-changed', (sessionId, prev, next) => log.push({ kind: 'bus', sessionId, prev, next }));
+  let clock = 500;
+  const persistedSessions = new Map([['s1', { dirId: 'd1', taskState: { classifyState: 'P', goal: 'g' } }]]);
+  const store = createTaskStateStore({
+    persistedSessions, bus, now: () => clock,
+    saveBestEffort: source => log.push({ kind: 'save', source }),
+    chatBroadcast: (sessionId, payload) => log.push({ kind: 'chat', sessionId, payload }),
+    workspaceBroadcast: (dirId, payload) => log.push({ kind: 'workspace', dirId, payload }),
+    ...overrides,
+  });
+  return { store, log, persistedSessions, tick: ms => { clock += ms; } };
+}
+
+test('task-state store requires the bus the event hub listens on', () => {
+  assert.throws(() => createTaskStateStore({ persistedSessions: new Map() }), /bus with emit\(\) is required/);
+});
+
+test('task-state store: one defaults table, every envelope field present', () => {
+  const { store } = bareStore();
+  const empty = store.getTaskState(null);
+  for (const key of ['taskId', 'goalState', 'classifyUpdatedAt', 'cancelledAt', 'cancelReason', 'cancelSource', 'cancelOperationId']) {
+    assert.ok(Object.prototype.hasOwnProperty.call(empty, key), key);
+    assert.equal(empty[key], null, key);
+  }
+  assert.deepEqual(empty.classifyHistory, []);
+  assert.equal(empty.phase, 'idle');
+});
+
+test('task-state store stamps classifyUpdatedAt only when the letter changes', () => {
+  const { store, tick } = bareStore();
+  assert.equal(store.setTaskState('s1', { goal: 'g2' }).classifyUpdatedAt, null, 'no letter change, no stamp');
+  assert.equal(store.setTaskState('s1', { classifyState: 'P' }).classifyUpdatedAt, null, 'same letter, no stamp');
+  tick(10);
+  assert.equal(store.setTaskState('s1', { classifyState: 'D' }).classifyUpdatedAt, 510);
+  tick(10);
+  assert.equal(store.setTaskState('s1', { phase: 'done' }).classifyUpdatedAt, 510, 'kept until the next change');
+  assert.equal(store.setTaskState('s1', { classifyState: 'E', classifyUpdatedAt: 42 }).classifyUpdatedAt, 42,
+    'an explicit stamp in the patch wins');
+  assert.equal(store.setTaskState('missing', { classifyState: 'E' }), null);
+});
+
+test('task-state store: persist, bus, save, then broadcast — in that order', () => {
+  const { store, log, persistedSessions } = bareStore();
+  const next = store.setTaskState('s1', { classifyState: 'E', cancelledAt: 7, cancelReason: 'user_cancelled' });
+  assert.equal(persistedSessions.get('s1').taskState, next);
+  assert.deepEqual(log.map(entry => entry.kind), ['bus', 'save', 'chat', 'workspace']);
+  assert.equal(log[0].prev.classifyState, 'P');
+  assert.equal(log[0].next, next);
+  assert.equal(log[1].source, 'runtime.task-state');
+  assert.equal(log[2].payload.type, 'task_state');
+  assert.equal(log[2].payload.cancelledAt, 7);
+  assert.equal(log[3].payload.sessionId, 's1');
+  log.length = 0;
+  store.setTaskState('s1', { goal: 'x' }, { save: false });
+  assert.deepEqual(log.map(entry => entry.kind), ['bus', 'chat', 'workspace'], '{save:false} batches');
+});
+
+test('task-state store: a failing broadcast never fails the write', () => {
+  const boom = () => { throw new Error('socket gone'); };
+  const { store, persistedSessions } = bareStore({ chatBroadcast: boom, workspaceBroadcast: boom });
+  const next = store.setTaskState('s1', { classifyState: 'W' });
+  assert.equal(next.classifyState, 'W');
+  assert.equal(persistedSessions.get('s1').taskState.classifyState, 'W');
 });

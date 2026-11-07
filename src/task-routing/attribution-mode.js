@@ -13,30 +13,36 @@
 // `suggest` is the default: today's separation dialog already is a suggestion,
 // so the default keeps user-visible behaviour unchanged while the journal
 // starts collecting the evidence `auto` would need.
-const MODES = Object.freeze(['off', 'shadow', 'suggest', 'auto']);
-const DEFAULT_MODE = 'suggest';
+//
+// The ladder lives in native/core/src/task_routing.rs. Only strings carry
+// meaning in either call, so the bridge passes string-or-null per field (no
+// BigInt/Symbol can reach JSON.stringify); the caller-supplied fallback is
+// applied here so its identity is preserved.
+
+const { getNative } = require('../native/runtime');
+
+const native = getNative();
+const CATALOG = JSON.parse(native.taskRoutingCatalog());
+
+const MODES = Object.freeze(CATALOG.attributionModes);
+const DEFAULT_MODE = CATALOG.defaultAttributionMode;
+
+const str = value => (typeof value === 'string' ? value : null);
+const request = (op, input) => JSON.parse(native.taskRoutingRequest(op, JSON.stringify(input)));
 
 function normalizeAttributionMode(value, fallback = DEFAULT_MODE) {
-  const mode = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  return MODES.includes(mode) ? mode : fallback;
+  const mode = request('normalizeAttributionMode', { value: str(value) });
+  return mode === null ? fallback : mode;
 }
 
 // A verdict only "wants" a change when it either declares a new task or names a
 // different existing one. Naming the task a turn already has is not a change,
 // and must not create a shadow row or a suggestion.
 function planAttributionAction({ mode, relation, targetTaskId = null, currentTaskId = null } = {}) {
-  const resolved = normalizeAttributionMode(mode);
-  const target = typeof targetTaskId === 'string' && targetTaskId ? targetTaskId : null;
-  const current = typeof currentTaskId === 'string' && currentTaskId ? currentTaskId : null;
-  const wantsChange = relation === 'new' || (!!target && target !== current);
-  if (!wantsChange) return { mode: resolved, action: 'none', reason: 'no_change', targetTaskId: null };
-  if (resolved === 'off') return { mode: resolved, action: 'none', reason: 'mode_off', targetTaskId: null };
-  if (resolved === 'shadow') return { mode: resolved, action: 'record', reason: 'shadow', targetTaskId: target };
-  if (resolved === 'suggest') return { mode: resolved, action: 'suggest', reason: 'suggest', targetTaskId: target };
-  // Auto still needs an address. A vague "this is new" without an identity to
-  // promote stays a suggestion instead of minting an unnamed task.
-  if (!target) return { mode: resolved, action: 'suggest', reason: 'target_unknown', targetTaskId: null };
-  return { mode: resolved, action: 'apply', reason: 'auto', targetTaskId: target };
+  return request('planAttributionAction', {
+    mode: str(mode), relation: str(relation),
+    targetTaskId: str(targetTaskId), currentTaskId: str(currentTaskId),
+  });
 }
 
 module.exports = { MODES, DEFAULT_MODE, normalizeAttributionMode, planAttributionAction };
