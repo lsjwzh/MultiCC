@@ -4,79 +4,51 @@
 // `prev`/`next` are full taskState objects (before/after setTaskState).
 // The classify letter is the only state source; goalState is the D sub-state,
 // which may arrive with D (classify), after D (refine) or by hand (manual).
+//
+// The derivation lives in native/core/src/events.rs. taskState carries seven
+// days of classifyHistory and fires on every setTaskState, so only the fields
+// the derivation reads cross the bridge.
 
-const { isGoalState, isTerminalLetter, isAbnormalLetter, isProcessingLetter } = require('../classify/vocab');
+const { getNative } = require('../native/runtime');
 
-const LETTER_EVENT = Object.freeze({
-  P: 'task.running',
-  D: 'task.finished',
-  W: 'task.waiting_user',
-  B: 'task.waiting_background',
-  E: 'task.failed',
-});
+const native = getNative();
+const CATALOG = JSON.parse(native.eventsCatalog());
+const request = (op, input) => JSON.parse(native.eventsRequest(op, JSON.stringify(input)));
 
-const GOAL_EVENT = Object.freeze({
-  achieved: 'task.achieved',
-  interact: 'task.needs_interaction',
-});
+const LETTER_EVENT = Object.freeze(CATALOG.letterEvent);
+const GOAL_EVENT = Object.freeze(CATALOG.goalEvent);
+
+const FIELDS = ['classifyState', 'goalState', 'taskId', 'goal', 'phase', 'startedAt',
+  'cancelledAt', 'cancelReason', 'goalStateManualAt'];
+
+function project(state) {
+  if (!state || typeof state !== 'object') return state;
+  const out = {};
+  for (const key of FIELDS) if (state[key] !== undefined) out[key] = state[key];
+  const { apiError } = state;
+  if (apiError !== undefined) {
+    out.apiError = apiError && typeof apiError === 'object' ? { category: apiError.category } : apiError;
+  }
+  return out;
+}
 
 function letterOf(state) {
-  const letter = state && typeof state.classifyState === 'string' ? state.classifyState : null;
-  return letter && LETTER_EVENT[letter] ? letter : null;
+  return request('letterOf', { state: project(state) });
 }
 
 function goalOf(state) {
-  return state && isGoalState(state.goalState) ? state.goalState : null;
-}
-
-function baseData(next) {
-  return {
-    taskId: next.taskId || null,
-    goal: next.goal || '',
-    phase: next.phase || 'idle',
-    classifyState: letterOf(next),
-    goalState: goalOf(next),
-  };
+  return request('goalOf', { state: project(state) });
 }
 
 // Returns an ordered array of { type, data }. Empty when nothing observable
 // changed. Idempotency across calls is the hub's job (it owns the memory).
 function deriveTaskEvents(prev, next) {
-  const events = [];
-  if (!next) return events;
-  const before = letterOf(prev);
-  const after = letterOf(next);
-  const goalBefore = goalOf(prev);
-  const goalAfter = goalOf(next);
-
-  if (after && after !== before) {
-    const data = { ...baseData(next), from: before };
-    if (isAbnormalLetter(after)) {
-      data.cancelled = Boolean(next.cancelledAt);
-      data.cancelReason = next.cancelledAt ? (next.cancelReason || null) : null;
-      data.errorCategory = next.apiError && next.apiError.category ? String(next.apiError.category) : null;
-    }
-    if (isProcessingLetter(after) && isTerminalLetter(before) && prev.taskId && next.taskId && prev.taskId !== next.taskId) {
-      events.push({ type: 'task.restarted', data: { ...data, previousTaskId: prev.taskId } });
-    }
-    events.push({ type: LETTER_EVENT[after], data });
-  }
-
-  // goalState only means something while the letter is D.
-  if (isTerminalLetter(after) && goalAfter && goalAfter !== (isTerminalLetter(before) ? goalBefore : null)) {
-    let source = 'refine';
-    if (!isTerminalLetter(before)) source = 'classify';
-    else if (Number(next.goalStateManualAt || 0) !== Number((prev && prev.goalStateManualAt) || 0)) source = 'manual';
-    const data = { ...baseData(next), from: isTerminalLetter(before) ? goalBefore : null, to: goalAfter, source };
-    events.push({ type: 'task.goal_resolved', data });
-    events.push({ type: GOAL_EVENT[goalAfter], data });
-  }
-  return events;
+  return request('deriveTaskEvents', { prev: project(prev), next: project(next) });
 }
 
 // Segment id used for idempotency: one task segment = one task id + start time.
 function segmentKey(state) {
-  return `${(state && state.taskId) || ''}@${(state && state.startedAt) || ''}`;
+  return request('segmentKey', { state: project(state) });
 }
 
 module.exports = { LETTER_EVENT, GOAL_EVENT, deriveTaskEvents, segmentKey, letterOf, goalOf };

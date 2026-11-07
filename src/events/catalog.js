@@ -5,51 +5,37 @@
 //
 // Naming: `domain.verb`. Task events mirror the classify letter
 // (src/classify/vocab.js) and never invent a second state source.
+//
+// The tables and the matcher live in native/core/src/events.rs; this module
+// snapshots the tables at load and forwards. Only strings carry meaning as a
+// pattern or event type, so anything else crosses the bridge as null.
 
-const TASK_EVENTS = Object.freeze([
-  'task.running',             // P: a turn started / is running
-  'task.finished',            // D entered (goalState may still be null)
-  'task.goal_resolved',       // goalState of a D task changed (null->x, x->y)
-  'task.achieved',            // derived: goalState became `achieved`
-  'task.needs_interaction',   // derived: goalState became `interact`
-  'task.waiting_user',        // W
-  'task.waiting_background',  // B
-  'task.failed',              // E (payload.cancelled tells user-stop from error)
-  'task.restarted',           // a new task segment began after a D
-]);
+const { getNative } = require('../native/runtime');
 
-const TURN_EVENTS = Object.freeze(['turn.completed']);
+const native = getNative();
+const CATALOG = JSON.parse(native.eventsCatalog());
+const request = (op, input) => JSON.parse(native.eventsRequest(op, JSON.stringify(input)));
+const str = value => (typeof value === 'string' ? value : null);
 
-const EVENT_TYPES = Object.freeze([...TASK_EVENTS, ...TURN_EVENTS, 'trigger.fired']);
-
+const TASK_EVENTS = Object.freeze(CATALOG.taskEvents);
+const TURN_EVENTS = Object.freeze(CATALOG.turnEvents);
+const EVENT_TYPES = Object.freeze(CATALOG.eventTypes);
 // Aliases expand only at match time; they are never emitted themselves.
-const ALIASES = Object.freeze({
-  'task.attention': ['task.needs_interaction', 'task.waiting_user', 'task.failed'],
-  'task.done': ['task.achieved', 'task.needs_interaction'],
-});
-
-const PATTERN_RE = /^(\*|[a-z_]+\.(?:\*|[a-z_]+))$/;
+const ALIASES = Object.freeze(CATALOG.aliases);
 
 function isKnownPattern(pattern) {
-  if (typeof pattern !== 'string' || !PATTERN_RE.test(pattern)) return false;
-  if (pattern === '*') return true;
-  if (pattern.endsWith('.*')) {
-    const domain = pattern.slice(0, -2);
-    return EVENT_TYPES.some((type) => type.startsWith(`${domain}.`));
-  }
-  return EVENT_TYPES.includes(pattern) || Object.prototype.hasOwnProperty.call(ALIASES, pattern);
+  return request('isKnownPattern', { pattern: str(pattern) });
 }
 
 function matchesPattern(pattern, type) {
-  if (!isKnownPattern(pattern)) return false;
-  if (pattern === '*' || pattern === type) return true;
-  if (pattern.endsWith('.*')) return type.startsWith(pattern.slice(0, -1));
-  const alias = ALIASES[pattern];
-  return Array.isArray(alias) && alias.includes(type);
+  return request('matchesPattern', { pattern: str(pattern), type: str(type) });
 }
 
 function matchesAny(patterns, type) {
-  return Array.isArray(patterns) && patterns.some((pattern) => matchesPattern(pattern, type));
+  return request('matchesAny', {
+    patterns: Array.isArray(patterns) ? Array.from(patterns, str) : null,
+    type: str(type),
+  });
 }
 
 module.exports = { TASK_EVENTS, TURN_EVENTS, EVENT_TYPES, ALIASES, isKnownPattern, matchesPattern, matchesAny };

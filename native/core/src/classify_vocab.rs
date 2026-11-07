@@ -211,6 +211,22 @@ fn apply_user_input_evidence(v: &Value) -> Value {
     out
 }
 
+// Letter predicates, shared with the event derivation (`events.rs`) so the
+// classify letter stays the only state source; `src/classify/vocab.js`
+// mirrors them for its JS callers.
+pub fn is_goal_state(value: &str) -> bool {
+    matches!(value, "achieved" | "interact")
+}
+pub fn is_processing_letter(letter: &str) -> bool {
+    matches!(letter, "P" | "C")
+}
+pub fn is_terminal_letter(letter: &str) -> bool {
+    letter == "D"
+}
+pub fn is_abnormal_letter(letter: &str) -> bool {
+    letter == "E"
+}
+
 /// goalStateForClassify: the ✅ sub-state (achieved / interact / null).
 fn goal_state_for(result: &Value) -> Value {
     if result["state"].as_str() != Some("D") {
