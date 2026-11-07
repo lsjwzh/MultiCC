@@ -4,6 +4,7 @@ use napi_derive::napi;
 use std::{sync::Arc, time::Instant};
 pub mod auto_provider_config;
 pub mod auto_provider_policy;
+pub mod classify_vocab;
 pub mod cli_capability;
 pub mod cpr;
 pub mod guard;
