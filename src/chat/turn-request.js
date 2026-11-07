@@ -1,29 +1,28 @@
 'use strict';
 
-const { assertProviderBinding } = require('../providers/binding');
-const { transportOf } = require('../cli/cli-capability');
+// Chat turn request: normalization, admission planning and the spawn proof
+// boundary. Every rule below lives in `native/core/src/turn_request.rs`; this
+// file only projects the fields the kernel needs, re-throws the structured
+// error as the original `TurnRequestError`, restores the reference-carrying
+// fields (`identity` / `origin` / `route.route`) and freezes the result graph.
 
-const REQUEST_KIND = 'chat-turn-request.v1';
-const MAX_ID_LENGTH = 128;
-const FORBIDDEN_FIELDS = new Set([
-  'cliSessionId', 'nativeSessionId', 'sessionSecret', 'secret',
-  'token', 'apiKey', 'accessToken', 'providerToken',
-]);
-const TASK_SOURCES = new Set(['task-board', 'commander', 'router-tool', 'task-shell']);
-// Continuation-only labels for system-injected turns. They may carry task
-// attribution but never start a task — the taskStart gate in normalizeTaskContext
-// still requires a TASK_SOURCES member, so these labels grant no task-start
-// authority. Auto provider handoff after an unsafe replay boundary is admitted
-// here; rejecting it as an unsupported source burns its outbox retry into
-// dead-letter, so the same-request provider switch never runs.
-const CONTINUATION_SOURCES = new Set(['auto_provider_handoff']);
-const LEGACY_TASK_SOURCE_ALIASES = new Map([
-  ['commander-route', 'commander'],
-]);
-const PROVIDER_ROUTE_EVIDENCE_KEYS = new Set([
-  'resolved', 'binding', 'providerName', 'protocol', 'runtimeEpoch', 'turnId',
-  'decisionId', 'routeAttemptId', 'routeGeneration', 'attemptNo', 'providerRevision',
-]);
+const { assertProviderBinding } = require('../providers/binding');
+const { CAPABILITIES, transportOf } = require('../cli/cli-capability');
+const { getNative } = require('../native/runtime');
+
+// No Node fallback: these kernels are Rust-only.
+const native = getNative();
+const CATALOG = JSON.parse(native.turnRequestCatalog());
+
+const REQUEST_KIND = CATALOG.requestKind;
+const FORBIDDEN_FIELDS = new Set(CATALOG.forbiddenFields);
+const PROVIDER_ROUTE_EVIDENCE_KEYS = new Set(CATALOG.providerRouteEvidenceKeys);
+
+// Transport is a column of the canonical CLI capability table, so the resident
+// set is derived here rather than listed again inside the kernel.
+const RESIDENT_CLIS = Object.freeze(
+  Object.keys(CAPABILITIES).filter(cli => transportOf(cli) === 'claude-stream'),
+);
 
 class TurnRequestError extends TypeError {
   constructor(code, message) {
@@ -33,127 +32,19 @@ class TurnRequestError extends TypeError {
   }
 }
 
-function cleanId(value, field, required = false) {
-  const text = value == null ? '' : String(value).trim().slice(0, MAX_ID_LENGTH);
-  if (required && !text) throw new TurnRequestError('invalid_request', `${field} is required`);
-  return text || null;
+function deepFreeze(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const item of Object.values(value)) deepFreeze(item);
+  return value;
 }
 
-function normalizeStringList(value, field) {
-  if (value == null) return Object.freeze([]);
-  if (!Array.isArray(value)) throw new TurnRequestError('invalid_request', `${field} must be an array`);
-  return Object.freeze([...new Set(value.map(item => cleanId(item, field)).filter(Boolean))]);
-}
-
-function normalizeGoalLimits(value) {
-  if (value == null) return null;
-  if (typeof value !== 'object' || Array.isArray(value)) {
-    throw new TurnRequestError('invalid_request', 'goalLimits must be an object');
-  }
-  const maxRounds = value.maxRounds == null ? null : Number(value.maxRounds);
-  if (maxRounds != null && (!Number.isInteger(maxRounds) || maxRounds < 0)) {
-    throw new TurnRequestError('invalid_request', 'goalLimits.maxRounds must be a non-negative integer');
-  }
-  const maxBudget = value.maxBudget == null ? null : String(value.maxBudget).trim().slice(0, 64) || null;
-  return Object.freeze({ maxRounds, maxBudget });
-}
-
-function normalizeTaskContext(input) {
-  const taskId = cleanId(input.taskId, 'taskId');
-  const start = input.taskStart === true;
-  const rawSource = cleanId(input.taskSource, 'taskSource');
-  const source = LEGACY_TASK_SOURCE_ALIASES.get(rawSource) || rawSource;
-  if (start && !taskId) {
-    throw new TurnRequestError('invalid_task', 'taskStart requires taskId');
-  }
-  if (start && !TASK_SOURCES.has(source)) {
-    throw new TurnRequestError('invalid_task', 'taskStart requires a trusted task source');
-  }
-  if (source && !TASK_SOURCES.has(source) && !CONTINUATION_SOURCES.has(source)) {
-    throw new TurnRequestError('invalid_task', `unsupported task source: ${source}`);
-  }
-  const rawText = input.taskText == null ? '' : String(input.taskText).trim();
-  if (rawText && !start) {
-    throw new TurnRequestError('invalid_task', 'taskText is only valid on a task start');
-  }
-  return Object.freeze({
-    id: taskId,
-    start,
-    source: source || null,
-    text: start ? rawText : '',
-  });
-}
-
-function normalizeTurnRequest(input) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    throw new TurnRequestError('invalid_request', 'turn request must be an object');
-  }
-  for (const field of FORBIDDEN_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(input, field)) {
-      throw new TurnRequestError('secret_field_forbidden', `${field} must not enter the turn core`);
-    }
-  }
-
-  const sessionId = cleanId(input.sessionId, 'sessionId', true);
-  const text = String(input.text == null ? '' : input.text).trim();
-  if (!text) throw new TurnRequestError('empty_text', 'turn text is required');
-  const cli = cleanId(input.cli || 'claude', 'cli', true).toLowerCase();
-  const transport = transportOf(cli);
-  const turnCount = input.turnCount == null ? 0 : Number(input.turnCount);
-  if (!Number.isInteger(turnCount) || turnCount < 0) {
-    throw new TurnRequestError('invalid_request', 'turnCount must be a non-negative integer');
-  }
-  const hasNativeSession = input.hasNativeSession === true;
-
-  // History intent is derived, never negotiated. A caller cannot ask for a
-  // resume: resuming needs a live native session, and only the engine knows at
-  // spawn time whether one still exists. Pinning it was how a dispatch whose
-  // native session had been rotated away wedged in the FIFO forever.
-  // Exp can write native history before a cancelled/max-turns run produces any
-  // successful reply. Recreating that UUID would fail with "already in use".
-  const isFirstTurn = cli === 'claude-exp'
-    ? !hasNativeSession : turnCount === 0 || !hasNativeSession;
-
-  const originDispatchId = cleanId(input.originDispatchId, 'originDispatchId');
-  const originTrigger = input.originTrigger === true;
-  const originContinue = input.originContinue === true;
-  // Dispatch/trigger describe durable lineage: who owns the eventual result.
-  // Continue describes only why this particular runner was launched. A retry
-  // or interruption-resume must be able to retain its dispatch/trigger lineage
-  // while also being a continuation. Keeping them orthogonal prevents a retry
-  // from silently turning into a normal user turn and consuming the wrong
-  // post-turn route.
-  if (originDispatchId && originTrigger) {
-    throw new TurnRequestError('invalid_origin', 'dispatch and trigger origins are mutually exclusive');
-  }
-  const originKind = originDispatchId ? 'dispatch'
-    : originTrigger ? 'trigger' : 'user';
-
-  const deliveryId = cleanId(input.deliveryId, 'deliveryId');
-  const clientMsgId = cleanId(input.clientMsgId, 'clientMsgId') || deliveryId;
-  const requestId = cleanId(input.requestId, 'requestId') || clientMsgId || deliveryId;
-
-  return Object.freeze({
-    kind: REQUEST_KIND,
-    sessionId,
-    requestId,
-    text,
-    cli,
-    execution: Object.freeze({
-      transport,
-      historyIntent: isFirstTurn ? 'first' : 'resume',
-      isFirstTurn,
-    }),
-    origin: Object.freeze({ kind: originKind, operationId: originDispatchId }),
-    launch: Object.freeze({ reason: originContinue ? 'continue' : 'request' }),
-    identity: Object.freeze({ clientMsgId, deliveryId }),
-    task: normalizeTaskContext(input),
-    goalLimits: normalizeGoalLimits(input.goalLimits),
-    background: Object.freeze({
-      taskIds: normalizeStringList(input.bgTaskIds, 'bgTaskIds'),
-      toolUseIds: normalizeStringList(input.bgToolUseIds, 'bgToolUseIds'),
-    }),
-  });
+function call(op, payload) {
+  // Direct value transport keeps `undefined`, `NaN`, the infinities and `-0`
+  // that `JSON.stringify`/`JSON.parse` would fold into null or 0.
+  const out = native.turnRequestRequestValue(op, payload);
+  if (!out.ok) throw new TurnRequestError(out.error.code, out.error.message);
+  return out.value;
 }
 
 function assertNormalized(request) {
@@ -162,63 +53,75 @@ function assertNormalized(request) {
   }
 }
 
+function normalizeTurnRequest(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new TurnRequestError('invalid_request', 'turn request must be an object');
+  }
+  // Own-property presence, so `{ apiKey: undefined }` is rejected too.
+  for (const field of FORBIDDEN_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(input, field)) {
+      throw new TurnRequestError('secret_field_forbidden', `${field} must not enter the turn core`);
+    }
+  }
+  return deepFreeze(call('normalize', {
+    input: {
+      sessionId: input.sessionId,
+      text: input.text,
+      cli: input.cli,
+      turnCount: input.turnCount,
+      hasNativeSession: input.hasNativeSession,
+      originDispatchId: input.originDispatchId,
+      originTrigger: input.originTrigger,
+      originContinue: input.originContinue,
+      deliveryId: input.deliveryId,
+      clientMsgId: input.clientMsgId,
+      requestId: input.requestId,
+      taskId: input.taskId,
+      taskStart: input.taskStart,
+      taskSource: input.taskSource,
+      taskText: input.taskText,
+      goalLimits: input.goalLimits,
+      bgTaskIds: input.bgTaskIds,
+      bgToolUseIds: input.bgToolUseIds,
+    },
+    residentClis: RESIDENT_CLIS,
+  }));
+}
+
+function requestRef(request) {
+  return { kind: request.kind, sessionId: request.sessionId, requestId: request.requestId };
+}
+
 // This is the provider-runner boundary, not the public admission queue. A busy
 // runner must never be interrupted by a second request: all public ingress is
 // required to persist through the session scheduler first.
 function planTurnAdmission(request, facts = {}) {
   assertNormalized(request);
-  const trace = ['duplicate-check'];
-  if (facts.duplicateSeen === true) {
-    return Object.freeze({
-      decision: 'duplicate',
-      accepted: facts.duplicatePersisted === true,
-      trace: Object.freeze(trace),
-      effects: Object.freeze([]),
-    });
+  const out = call('admission', {
+    request: requestRef(request),
+    facts: {
+      duplicateSeen: facts.duplicateSeen,
+      duplicatePersisted: facts.duplicatePersisted,
+      shuttingDown: facts.shuttingDown,
+      sessionExists: facts.sessionExists,
+      runningTurn: facts.runningTurn,
+      backgroundWorkActive: facts.backgroundWorkActive,
+    },
+  });
+  if (out.decision === 'prepare') {
+    // The effect carries the live identity/origin references, not copies.
+    out.effects[0].identity = request.identity;
+    out.effects[0].origin = request.origin;
   }
-  trace.push('shutdown-check', 'session-check');
-  if (facts.shuttingDown === true) {
-    return Object.freeze({ decision: 'reject', reason: 'shutdown', trace: Object.freeze(trace), effects: Object.freeze([]) });
-  }
-  if (facts.sessionExists === false) {
-    return Object.freeze({ decision: 'reject', reason: 'session-missing', trace: Object.freeze(trace), effects: Object.freeze([]) });
-  }
-  if (facts.runningTurn === true) {
-    return Object.freeze({
-      decision: 'reject',
-      reason: 'session-busy',
-      trace: Object.freeze([...trace, 'busy-check']),
-      effects: Object.freeze([]),
-    });
-  }
-  if (facts.backgroundWorkActive === true) {
-    return Object.freeze({
-      decision: 'reject',
-      reason: 'background-work-active',
-      trace: Object.freeze([...trace, 'busy-check', 'background-check']),
-      effects: Object.freeze([]),
-    });
-  }
-  const effects = [];
-  effects.push(Object.freeze({
-    type: 'persist-user-message',
-    sessionId: request.sessionId,
-    requestId: request.requestId,
-    identity: request.identity,
-    origin: request.origin,
-  }));
-  trace.push('busy-check', 'background-check', 'persistence-plan');
-  return Object.freeze({ decision: 'prepare', trace: Object.freeze(trace), effects: Object.freeze(effects) });
+  return deepFreeze(out);
 }
 
 function createDurableMessageProof(request, evidence = {}) {
   assertNormalized(request);
-  return Object.freeze({
-    kind: 'durable-user-message',
-    sessionId: request.sessionId,
-    requestId: request.requestId,
-    durable: evidence.persisted === true,
-  });
+  return deepFreeze(call('messageProof', {
+    request: requestRef(request),
+    evidence: { persisted: evidence.persisted },
+  }));
 }
 
 function createProviderRouteProof(request, evidence = {}) {
@@ -231,93 +134,78 @@ function createProviderRouteProof(request, evidence = {}) {
     );
   }
   let binding;
+  // `assertProviderBinding` is a Symbol-brand check the kernel cannot perform.
   try { binding = assertProviderBinding(evidence.binding); } catch (_) {
     throw new TurnRequestError('invalid_provider_route', 'concrete provider route binding is required');
   }
-  const providerId = binding.providerId || '_default_';
-  const text = (value, field) => {
-    const normalized = value == null ? '' : String(value).trim();
-    if (!normalized || normalized.length > 256 || /[\u0000-\u001f\u007f]/.test(normalized)) {
-      throw new TurnRequestError('invalid_provider_route', `${field} is invalid`);
-    }
-    return normalized;
-  };
-  const integer = (value, field) => {
-    const normalized = Number(value);
-    if (!Number.isSafeInteger(normalized) || normalized < 1) {
-      throw new TurnRequestError('invalid_provider_route', `${field} must be a positive integer`);
-    }
-    return normalized;
-  };
-  if (evidence.resolved !== true
-      || binding.sessionId !== request.sessionId
-      || binding.cli !== request.cli
-      || binding.roleKind !== 'main'
-      || binding.routeName !== 'main'
-      || /^auto(?::|$)/i.test(providerId)) {
-    throw new TurnRequestError('invalid_provider_route', 'concrete provider route identity is required');
-  }
-  const route = Object.freeze({
-    runtimeEpoch: text(evidence.runtimeEpoch, 'runtimeEpoch'),
-    decisionId: text(evidence.decisionId, 'decisionId'),
-    routeAttemptId: text(evidence.routeAttemptId, 'routeAttemptId'),
-    routeGeneration: integer(evidence.routeGeneration, 'routeGeneration'),
-    attemptNo: integer(evidence.attemptNo, 'attemptNo'),
-    providerId,
-    providerName: text(evidence.providerName || providerId, 'providerName'),
-    protocol: text(evidence.protocol, 'protocol'),
-    model: text(binding.model, 'model'),
-    providerRevision: text(evidence.providerRevision, 'providerRevision'),
-  });
-  return Object.freeze({
-    kind: 'provider-route',
-    sessionId: request.sessionId,
-    cli: request.cli,
-    transport: request.execution.transport,
-    turnId: text(evidence.turnId, 'turnId'),
-    resolved: true,
-    route,
-  });
+  return deepFreeze(call('routeProof', {
+    request: {
+      kind: request.kind,
+      sessionId: request.sessionId,
+      cli: request.cli,
+      transport: request.execution.transport,
+    },
+    evidence: {
+      resolved: evidence.resolved,
+      providerName: evidence.providerName,
+      protocol: evidence.protocol,
+      runtimeEpoch: evidence.runtimeEpoch,
+      turnId: evidence.turnId,
+      decisionId: evidence.decisionId,
+      routeAttemptId: evidence.routeAttemptId,
+      routeGeneration: evidence.routeGeneration,
+      attemptNo: evidence.attemptNo,
+      providerRevision: evidence.providerRevision,
+    },
+    binding: {
+      sessionId: binding.sessionId,
+      cli: binding.cli,
+      providerId: binding.providerId,
+      model: binding.model,
+      roleKind: binding.roleKind,
+      routeName: binding.routeName,
+    },
+  }));
 }
 
 function evaluateSpawnGuard(request, proofs = {}) {
   assertNormalized(request);
-  const missing = [];
   const message = proofs.message;
   const route = proofs.route;
   const runtime = proofs.runtime;
-  if (!message || message.kind !== 'durable-user-message' || message.sessionId !== request.sessionId || message.durable !== true) {
-    missing.push('durable-user-message');
-  }
-  if (!route || route.kind !== 'provider-route' || route.sessionId !== request.sessionId
-      || route.cli !== request.cli || route.transport !== request.execution.transport || route.resolved !== true
-      || route.turnId !== (runtime && runtime.turnId)
-      || !route.route || !Object.isFrozen(route.route)
-      || !route.route.runtimeEpoch || !route.route.decisionId || !route.route.routeAttemptId
-      || !route.route.providerId || !route.route.providerName || !route.route.protocol
-      || !route.route.model || !route.route.providerRevision
-      || !Number.isSafeInteger(route.route.routeGeneration) || route.route.routeGeneration < 1
-      || !Number.isSafeInteger(route.route.attemptNo) || route.route.attemptNo < 1) {
-    missing.push('provider-route');
-  }
-  if (!runtime || runtime.kind !== 'runtime-claim' || runtime.sessionId !== request.sessionId || runtime.claimed !== true) {
-    missing.push('runtime-claim');
-  }
-  if (missing.length) {
-    return Object.freeze({ ok: false, code: 'spawn_proof_missing', missing: Object.freeze(missing) });
-  }
-  return Object.freeze({
-    ok: true,
-    effect: Object.freeze({
-      type: 'spawn-turn',
+  const out = call('spawnGuard', {
+    request: {
+      kind: request.kind,
       sessionId: request.sessionId,
-      turnId: runtime.turnId,
       cli: request.cli,
       transport: request.execution.transport,
       historyIntent: request.execution.historyIntent,
+    },
+    message: message ? {
+      kind: message.kind,
+      sessionId: message.sessionId,
+      durable: message.durable,
+    } : undefined,
+    route: route ? {
+      kind: route.kind,
+      sessionId: route.sessionId,
+      cli: route.cli,
+      transport: route.transport,
+      resolved: route.resolved,
+      turnId: route.turnId,
       route: route.route,
-    }),
+    } : undefined,
+    runtime: runtime ? {
+      kind: runtime.kind,
+      sessionId: runtime.sessionId,
+      claimed: runtime.claimed,
+      turnId: runtime.turnId,
+    } : undefined,
+    // `Object.isFrozen` cannot cross the boundary; the check runs here.
+    routeFrozen: !!(route && route.route && Object.isFrozen(route.route)),
   });
+  if (out.ok) out.effect.route = route.route;
+  return deepFreeze(out);
 }
 
 module.exports = {

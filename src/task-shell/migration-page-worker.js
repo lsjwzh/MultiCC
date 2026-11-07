@@ -64,7 +64,17 @@ const server = http.createServer((req, res) => {
   res.end(JSON.stringify({ status: 'not_ready', phase: 'data-migration', migration }));
 });
 server.on('error', () => settle(2));
-server.listen(workerData.port, workerData.host, () => settle(1));
+if (workerData.behindGateway) {
+  // The front door owns the public port; this worker must listen on the one
+  // loopback port it reserved and parse the PROXY line just like server.js.
+  require('../gateway-child').listenBehindGateway(server, {
+    port: workerData.port,
+    logger: { info() {}, warn() {}, error() {} },
+    onListening: () => settle(1),
+  });
+} else {
+  server.listen(workerData.port, workerData.host, () => settle(1));
+}
 parentPort.on('message', message => {
   if (message?.type === 'failure') { failure = message.failure; floor = 0; }
   if (message?.type !== 'stop') return;

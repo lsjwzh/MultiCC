@@ -108,6 +108,7 @@ const { createOrchestrationRuntime } = require('./src/orchestration/runtime');
 const { createRouterToolHost } = require('./src/router-tool-host'); const { createSecretTools } = require('./src/secret-tools'); const { createOfficialImageBridgeRuntime } = require('./src/codex/image-bridge-runtime');
 const { createHostLifecycle } = require('./src/host-lifecycle');
 const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
+const gatewayChild = require('./src/gateway-child'); gatewayChild.watchGatewayLifeline(); // behind the Rust front door: exit when it is gone
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
 const { mountScanRoutes } = require('./src/routes/scan');
@@ -138,7 +139,6 @@ const { createProviderRelayModelCatalogRuntime, mountProviderRelayModelCatalogRo
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
-const { mountRunConfigPresetsRoutes } = require('./src/routes/run-config-presets');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { createLoginTerminalDisposer } = require('./src/session/login-terminal');
 const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
@@ -1522,10 +1522,6 @@ app.get('/api/v1/providers', (req, res) => {
 // Agent presets, installed skills and Claude history share one read/cleanup boundary.
 agentResources.mountRoutes(app);
 
-// Shared run-config preset library (Web localStorage / App SharedPreferences are
-// only caches). Rust owns validation and merge; see src/routes/run-config-presets.js.
-mountRunConfigPresetsRoutes(app, { file: MULTICC_PATHS.runConfigPresetsFile });
-
 // ── Directory REST API (src/directory: controller / service / repository) ──
 // Routes: GET /api/fs/list · GET|POST /api/directories · PATCH|DELETE
 // /api/directories/:id · POST :id/push · GET :id/uncommitted · POST :id/commit.
@@ -2908,7 +2904,8 @@ app.use(safeErrorHandler(logger));
   workspaceAdmission.initialize();
   await orchestrationRuntime.start();
   workspaceRuntime.hydrateQueueStatuses(await orchestrationRuntime.sessionScheduler.queueSummaries([...persistedSessions.keys()]));
-  if (networkPolicy.development) {
+  const gatewayChildMode = gatewayChild.isGatewayChild(process.env);
+  if (!gatewayChildMode && networkPolicy.development) {
     try {
       const requestedPort = PORT;
       PORT = await selectListenPort(networkPolicy);
@@ -2920,11 +2917,20 @@ app.use(safeErrorHandler(logger));
       process.exit(1);
     }
   }
-  server.once('error', err => {
-    logger.error('listen_failed', { host: BIND_HOST, port: PORT, error: err.message, code: err.code });
-    process.exit(1);
-  });
-  server.listen(PORT, BIND_HOST, () => {
+  // Behavior lives in src/gateway-child.js; this is only the wiring. Hidden
+  // behind the front door we must not bind the public port: the Rust gateway
+  // owns it and forwards one PROXY v1 line per connection to the loopback port.
+  if (!gatewayChildMode) {
+    server.once('error', err => {
+      logger.error('listen_failed', { host: BIND_HOST, port: PORT, error: err.message, code: err.code });
+      process.exit(1);
+    });
+    server.listen(PORT, BIND_HOST, onListening);
+  } else {
+    gatewayChild.listenBehindGateway(server, { port: gatewayChild.internalPort(process.env), logger, onListening });
+  }
+  // Hoisted: the listen calls above reference it before this definition.
+  function onListening() {
     logger.info('server_listening', { host: BIND_HOST, port: PORT, remote: !networkPolicy.allowRemote ? false : true, development: networkPolicy.development });
     void lanDiscovery.reconcile();
     console.log(`\n  MultiCC is running at http://${BIND_HOST.includes(':') ? `[${BIND_HOST}]` : BIND_HOST}:${PORT}\n`);
@@ -2974,5 +2980,5 @@ const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, docsR
     codexOAuthRefresh.check('boot'); codexAccountRefresh.checkAll('boot').catch(err => logger.warn('codex_account_refresh_failed', { error: err.message })); // official-account codex credentials: same cadence, one refresher per logged-in account
     trackServiceTimer(setInterval(() => codexOAuthRefresh.check(), CODEX_OAUTH_CHECK_INTERVAL_MS)); trackServiceTimer(setInterval(() => codexAccountRefresh.checkAll().catch(err => logger.warn('codex_account_refresh_failed', { error: err.message })), CODEX_OAUTH_CHECK_INTERVAL_MS)); // official-account codex credentials: same cadence, one refresher per logged-in account
     serviceReady = true;
-  });
+  }
 })();

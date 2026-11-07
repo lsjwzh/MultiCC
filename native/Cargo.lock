@@ -1440,6 +1440,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "multicc-gateway"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "flate2",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "multicc-core",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "tokio",
+ "tokio-util",
+ "tower",
+]
+
+[[package]]
 name = "multicc-remote"
 version = "0.1.0"
 dependencies = [

@@ -87,11 +87,15 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function'
       || typeof a.windowsToolsDiscover!=='function' || typeof a.cliCatalog!=='function'
       || ['autoProviderLimitState','autoProviderChooseCandidate','autoProviderFailoverSafety','autoProviderPolicyFacts','providerErrorFacts','autoProviderFacts'].some(key=>typeof a[key]!=='function')
+    || ['networkPolicyResolve','networkPolicyEnvEnabled','networkPolicyIsLoopbackHost','networkPolicyFindAvailablePort'].some(key=>typeof a[key]!=='function')
     || ['classifyVocabCatalog','parseClassifyResult','classifyVocabRequest'].some(key=>typeof a[key]!=='function')
     || ['turnStateCatalog','resolveTurnState','taskRoutingCatalog','taskRoutingRequest','eventsCatalog','eventsRequest'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['contextSelectionTerms','contextSelectionRelevance','contextSelectionMinRelevance',
+      'contextSelectionClipTokens','contextSelectionSelect','usageObservedCatalog',
+      'usageObservedRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     // An exported function is insufficient: Windows must be able to lock,
     // append and flush an audit record before this addon can run chat turns.
     const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
@@ -105,7 +109,7 @@ function probeAddon(file, node = process.execPath) {
         || rows[0].outcome!=='started' || rows[1].outcome!=='succeeded') throw Error('audit_preflight_failed');
     } finally { fs.rmSync(auditRoot,{recursive:true,force:true}); }
     if(a.taskStoreProtocolVersion?.()!==1 || a.taskDomainProtocolVersion?.()!==1
-      || ['RustTaskStore','RustAirCardCache','RustTaskBoard','taskDomain','taskDomainAsync'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      || ['RustTaskStore','RustAirCardCache','RustTaskBoard','taskDomain','taskDomainAsync','buildTaskRunContext','jsBridgeRoundTrip','jsBridgeJsonView','jsBridgeJsonRoundTrip'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustAirCardCache.prototype.prepareAsync!=='function' || typeof a.RustAirCardCache.prototype.prepareBoardAsync!=='function') process.exit(1);
     const store=new a.RustTaskStore(':memory:');
     store.run(JSON.stringify({op:'set',kind:'task',id:'smoke',body:JSON.stringify({id:'smoke'})}));
@@ -118,6 +122,7 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.gitCommitEnvironment!=='function' || typeof a.validatePublicationRecords!=='function'
       || typeof a.planTaskContextRead!=='function' || typeof a.selectTaskContextRecords!=='function'
       || typeof a.rankTaskContextCandidates!=='function' || typeof a.RustTaskReadModel!=='function' || a.taskReadModelProtocolVersion?.()!==1) process.exit(1);
+    if(['cliSwitchCatalog','cliSwitchRequest','prepareCliSwitchRoute','turnRequestCatalog','turnRequestRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     (async()=>{ const model=new a.RustTaskReadModel();
       const run=async command=>JSON.parse((await model.run(JSON.stringify({op:'air',command}))).result);
       await run({op:'open',epoch:'preflight'});

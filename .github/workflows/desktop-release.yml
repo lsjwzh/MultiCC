@@ -157,7 +157,7 @@ jobs:
             fi
           fi
           echo "DESKTOP_SIGNING_STATUS=$signing_status" >> "$GITHUB_ENV"
-          # 后续打包检查据此决定要不要 codesign --verify 新加的 multicc-remote / multicc-cdpd。
+          # 后续打包检查据此决定要不要 codesign --verify 新加的 multicc-remote / multicc-cdpd / multicc-gateway。
           echo "DESKTOP_SIGNED=$([ -n "${CSC_LINK:-}" ] && echo 1 || echo 0)" >> "$GITHUB_ENV"
 
           case "${RUNNER_ARCH}" in
@@ -237,12 +237,14 @@ jobs:
                 exit 1
               fi
             done
-            # 「🖥 屏幕」的远控进程和浏览器 CDP 网关都和原生模块同目录。它们没有
-            # 扩展名，也不会被 require() 时发现：缺件或丢了可执行位，只有用户用到时
-            # 才会暴露（v2.12.0 就这样漏发了 multicc-cdpd）。
+            # 「🖥 屏幕」的远控进程、浏览器 CDP 网关和 Rust 前门都和原生模块同目录。
+            # 它们不会被 require() 时发现：缺件或丢了可执行位，只有用户用到时才会暴露
+            # （v2.12.0 就这样漏发了 multicc-cdpd）。前门缺了，桌面壳根本起不来服务。
             exe_suffix=""
             if [ "${{ matrix.platform }}" = windows ]; then exe_suffix=.exe; fi
-            for companion in "multicc-remote:remote screen" "multicc-cdpd:the browser CDP gateway"; do
+            companions=("multicc-remote:remote screen" "multicc-cdpd:the browser CDP gateway"
+              "multicc-gateway:the Rust front door")
+            for companion in "${companions[@]}"; do
               companion_rel="app-server/native/prebuilt/${{ matrix.native_platform }}-$arch/${companion%%:*}$exe_suffix"
               if [ ! -f "$app_resources/$companion_rel" ]; then
                 echo "::error::$app_resources/$companion_rel is missing from the packaged app — ${companion#*:} would be unavailable"
@@ -406,10 +408,10 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --out dist-standalone $extra_flags
 
-      # 远控二进制和 CDP 网关必须真的进了 tar/zip：tar 会保留权限位，zip 不需要，
-      # 但都必须在解包后还能执行、还能说出协议版本。这里直接看产物目录
-      # （v2.12.0 只查了远控，multicc-cdpd 就这样漏发了）。
-      - name: 校验远控与 CDP 网关二进制随包发布
+      # 远控二进制、CDP 网关和 Rust 前门必须真的进了 tar/zip：tar 会保留权限位，
+      # zip 不需要，但都必须在解包后还能执行、还能说出协议版本。这里直接看产物目录
+      # （v2.12.0 只查了远控，multicc-cdpd 就这样漏发了）。Windows 上没有前门。
+      - name: 校验远控、CDP 网关与 Rust 前门二进制随包发布
         shell: bash
         run: |
           set -euo pipefail
@@ -428,7 +430,10 @@ jobs:
             *) host_arch=unknown ;;
           esac
           cdpd_prefix="multicc-cdpd $(node -p "require('./scripts/build-rust-kernels').CDPD_PROTOCOL") "
-          for companion in "multicc-remote:multicc-remote 1 " "multicc-cdpd:$cdpd_prefix"; do
+          gateway_prefix="multicc-gateway $(node -p "require('./scripts/build-rust-kernels').GATEWAY_PROTOCOL") "
+          companions=("multicc-remote:multicc-remote 1 " "multicc-cdpd:$cdpd_prefix"
+            "multicc-gateway:$gateway_prefix")
+          for companion in "${companions[@]}"; do
             name="${companion%%:*}"
             prefix="${companion#*:}"
             file="$resources/app-server/native/prebuilt/${{ matrix.platform }}-${{ matrix.arch }}/$name$exe_suffix"

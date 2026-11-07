@@ -43,10 +43,16 @@ function finish(code, note) {
   process.exit(code);
 }
 
+// GATEWAY=1: run the fixture behind the real Rust front door, as production does.
+const launch = process.env.GATEWAY === '1'
+  ? require(path.join(__dirname, '..', '..', 'desktop', 'lib', 'desktop-env.js'))
+    .gatewayLaunch({ serverEntry: FIXTURE, node: process.execPath })
+  : { command: process.execPath, args: [FIXTURE] };
+
 const supervisor = createBackendSupervisor({
   spawn,
-  execPath: process.execPath,
-  serverEntry: FIXTURE,
+  command: launch.command,
+  args: launch.args,
   buildEnv: ({ port }) => ({ ...process.env, PORT: String(port) }),
   logsDir: process.env.LOGS_DIR,
   runtimeInfoFile: process.env.RUNTIME_INFO_FILE,

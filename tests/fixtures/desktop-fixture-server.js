@@ -10,9 +10,15 @@
 //   EXIT_AFTER_READY_MS     exit with EXIT_CODE once ready and delayed (a crash:
 //                           it does not consume the graceful-drain path)
 //   EXIT_CODE               exit code for the exits above (default 1)
+//   EXIT_ONCE_MARKER        with EXIT_AFTER_READY_MS: only the run that creates
+//                           this file exits; later runs keep serving
 //   PRINT_ADDRINUSE         print a fake EADDRINUSE stack to stderr, exit 3
 //   SPAWN_CHILD_PIDFILE     spawn a sleep grandchild (simulates CLI children)
 //                           and write its pid to this path
+//
+// Started by the real Rust front door (MULTICC_GATEWAY_CHILD), it listens on
+// the internal port behind PROXY headers and watches its stdin lifeline, the
+// same calls server.js makes.
 //
 // Behavior parity with the real server (what the supervisor depends on):
 //   GET  /readyz            503 until ready, then 200
@@ -21,7 +27,9 @@
 
 const http = require('http');
 const fs = require('fs');
+const path = require('path');
 const { spawn } = require('child_process');
+const gatewayChild = require(path.join(__dirname, '..', '..', 'src', 'gateway-child'));
 
 const PORT = Number.parseInt(process.env.PORT || '0', 10);
 const READY_DELAY_MS = Number.parseInt(process.env.READY_DELAY_MS || '0', 10);
@@ -29,6 +37,7 @@ const EXIT_AFTER_READY_MS = Number.parseInt(process.env.EXIT_AFTER_READY_MS || '
 const EXIT_CODE = Number.parseInt(process.env.EXIT_CODE || '1', 10);
 const PRINT_ADDRINUSE = /^(1|true|yes)$/i.test(process.env.PRINT_ADDRINUSE || '');
 const PIDFILE = process.env.SPAWN_CHILD_PIDFILE || '';
+const EXIT_ONCE_MARKER = process.env.EXIT_ONCE_MARKER || '';
 
 if (!PORT) { console.error('fixture: PORT required'); process.exit(2); }
 
@@ -81,7 +90,7 @@ server.on('error', error => {
   process.exit(3);
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+function onListening() {
   readyAt = Date.now();
   process.stdout.write(`fixture: listening on ${PORT}\n`);
   // A delayed self-exit models a server that dies on its own (a crash), which is
@@ -91,10 +100,21 @@ server.listen(PORT, '127.0.0.1', () => {
   // silently refused and the supervisor burned the entire drain grace waiting
   // for an exit that had been asked for and ignored. Whoever gets there first
   // still wins; the graceful path just exits 0.
-  if (EXIT_AFTER_READY_MS) {
+  let exitThisRun = Boolean(EXIT_AFTER_READY_MS);
+  if (exitThisRun && EXIT_ONCE_MARKER) {
+    try { fs.writeFileSync(EXIT_ONCE_MARKER, String(process.pid), { flag: 'wx' }); } catch (_) { exitThisRun = false; }
+  }
+  if (exitThisRun) {
     setTimeout(() => { killChild(); process.exit(EXIT_CODE); }, EXIT_AFTER_READY_MS).unref();
   }
-});
+}
 
 process.on('SIGINT', () => exitSoon(0));
 process.on('SIGTERM', () => exitSoon(0));
+
+if (gatewayChild.isGatewayChild(process.env)) {
+  gatewayChild.watchGatewayLifeline();
+  gatewayChild.listenBehindGateway(server, { port: gatewayChild.internalPort(process.env), onListening });
+} else {
+  server.listen(PORT, '127.0.0.1', onListening);
+}

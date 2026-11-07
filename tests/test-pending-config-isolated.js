@@ -22,9 +22,9 @@ const release = path.join(root, 'release');
 fs.writeFileSync(fake, `#!/usr/bin/env node
 const fs=require('fs'),p=require('path'),readline=require('readline');const args=process.argv.slice(2);if(!['exec','run','acp'].includes(args[0]))process.exit(0);
 const count=fs.existsSync(${JSON.stringify(invocations)})?fs.readFileSync(${JSON.stringify(invocations)},'utf8').trim().split('\\n').length+1:1;
-const id='fake-'+process.env.MULTICC_SESSION_ID, dir=p.join(process.env.CODEX_HOME||p.join(require('os').homedir(),'.codex'),'sessions');
+const id='fake-'+process.env.MULTICC_SESSION_ID, dir=p.join(process.env.CODEX_HOME||p.join(${JSON.stringify(home)},'.codex'),'sessions');
 if(args[0]==='exec'){fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(p.join(dir,'rollout-'+id+'.jsonl'),JSON.stringify({type:'session_meta',payload:{id,cwd:process.cwd()}})+'\\n');}
-fs.appendFileSync(${JSON.stringify(invocations)},JSON.stringify({args,cli:args[0],pid:process.pid,sid:process.env.MULTICC_SESSION_ID})+'\\n');
+fs.appendFileSync(${JSON.stringify(invocations)},JSON.stringify({args,cli:args[0],pid:process.pid,sid:process.env.MULTICC_SESSION_ID,historyDir:dir})+'\\n');
 const emit=x=>console.log(JSON.stringify(x));
 if(args[0]==='acp'){
   const rpc=x=>emit({jsonrpc:'2.0',...x});
@@ -118,10 +118,38 @@ async function api(route, body, status = 200, method) {
     assert.match(JSON.stringify(promptRequest.params.prompt), /FINAL_RESULT_2/);
     assert.match(JSON.stringify(promptRequest.params.prompt), /THIRD/);
     assert.equal((await api(sessionUrl)).cli, 'opencode');
-    fs.writeFileSync(release+'3', 'done'); await idle();
-    assert.equal(persisted().find(s => s.id === task.sessionId).cliSessionId, 'open-native');
+    // The old Codex rollout can disappear while another CLI is active. A
+    // queued return must reach a fresh runner rather than retry preparation.
+    const returnSwitch = await api(sessionUrl+'/switch-cli', { cli: 'codex' });
+    assert.equal(returnSwitch.deferred, true);
+    const rememberedId = persisted().find(s => s.id === task.sessionId).cliStates.codex.cliSessionId;
+    assert.ok(rememberedId, 'the server remembers a concrete Codex native id');
+    let removed = 0;
+    function removeRememberedHistory(dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const file = path.join(dir, entry.name);
+        if (entry.isDirectory()) removeRememberedHistory(file);
+        else if (entry.isFile() && entry.name.endsWith('-'+rememberedId+'.jsonl')) {
+          fs.unlinkSync(file); removed++;
+        }
+      }
+    }
+    removeRememberedHistory(home);
+    assert.ok(removed > 0, 'remove the fake CLI rollout from all isolated history stores');
+    const fourthReceipt = await send('FOURTH_AFTER_MISSING_HISTORY', 'm4');
+    assert.equal(fourthReceipt.decision, 'queued');
     assert.equal(rows().length, 3);
-    console.log('PASS deferred configuration: durable save, untouched active process, queued next model, deferred CLI, final-output handoff, third turn');
+    fs.writeFileSync(release+'3', 'done');
+    await wait(() => rows().length === 4, 'fresh Codex execution after missing remembered history');
+    assert.equal(rows()[3].cli, 'exec');
+    assert.equal(rows()[3].args.includes('resume'), false, 'a missing native thread is never resumed');
+    assert.match(JSON.stringify(rows()[3].args), /FINAL_RESULT_3/);
+    assert.match(JSON.stringify(rows()[3].args), /FOURTH_AFTER_MISSING_HISTORY/);
+    assert.equal((await api(sessionUrl)).pendingConfiguration, null);
+    fs.writeFileSync(release+'4', 'done'); await idle();
+    assert.equal(persisted().find(s => s.id === task.sessionId).cli, 'codex');
+    assert.equal(rows().length, 4);
+    console.log('PASS deferred configuration: durable save, queued next model, CLI handoff, missing Codex history starts a fresh fourth runner');
   } catch (error) { console.error(error); console.error(logs); process.exitCode = 1; }
   finally {
     if (server && server.exitCode === null) { const exited = new Promise(r => server.once('exit', r)); server.kill('SIGTERM'); const timer = setTimeout(() => server.kill('SIGKILL'), 10000); await exited; clearTimeout(timer); }

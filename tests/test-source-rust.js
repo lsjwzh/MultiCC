@@ -37,6 +37,11 @@ function fixture(t) {
     fs.appendFileSync(process.env.TEST_RUST_BUILDS,'build\\n');
     if(process.env.TEST_RUST_BUILD_FAIL==='1') process.exit(2);
     const target=process.argv[process.argv.indexOf('--target')+1];
+    if(process.argv[process.argv.indexOf('-p')+1]==='multicc-gateway'){
+      const bin=path.join(process.env.CARGO_TARGET_DIR,target,'release','multicc-gateway');
+      fs.mkdirSync(path.dirname(bin),{recursive:true});fs.copyFileSync(process.env.TEST_RUST_GATEWAY,bin);fs.chmodSync(bin,0o755);
+      process.exit(0);
+    }
     const library=process.platform==='win32'?'multicc_addon.dll':process.platform==='darwin'?'libmulticc_addon.dylib':'libmulticc_addon.so';
     const dest=path.join(process.env.CARGO_TARGET_DIR,target,'release',library);
     fs.mkdirSync(path.dirname(dest),{recursive:true});
@@ -80,6 +85,10 @@ test('addon preflight rejects an exported audit function that cannot write', t =
   };`);
   assert.equal(probeAddon(addon), true, 'the real addon must pass the durable audit probe');
   assert.equal(probeAddon(wrapper), false, 'an exported function alone cannot pass preflight');
+  const stale = write(root, 'stale-switch.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), prepareCliSwitchRoute: undefined
+  };`);
+  assert.equal(probeAddon(stale), false, 'a stale addon cannot boot asynchronous switch preparation');
 });
 
 nativeTest('first source boot builds once; a new process reuses it and source changes select a new addon', t => {
@@ -193,7 +202,18 @@ nativeTest('real source manager exports the selected addon before preflight and 
 });
 
 nativeTest('source start boots an isolated server with the built addon and a repeated start never rebuilds', async t => {
-  const { root, env, count } = fixture(t);
+  const { root, env: fixtureEnv, count } = fixture(t);
+  // ./multicc only starts through the Rust front door: this checkout declares
+  // it, and the stand-in compiler hands out the real binary built next to the
+  // real addon. The front door rejects PORT=0, so give it a free port.
+  const gatewayBinary = path.join(path.dirname(path.resolve(addon)), 'multicc-gateway');
+  assert.ok(fs.existsSync(gatewayBinary), `${gatewayBinary} is missing; run node scripts/ensure-source-rust.js first`);
+  write(root, 'native/Cargo.toml', '[workspace]\nmembers = ["core", "gateway"]\n');
+  const port = await new Promise(resolve => {
+    const probe = require('node:net').createServer();
+    probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
+  });
+  const env = { ...fixtureEnv, PORT: String(port), TEST_RUST_GATEWAY: gatewayBinary };
   let pid;
   t.after(async () => {
     if (!pid) return;
@@ -210,6 +230,7 @@ nativeTest('source start boots an isolated server with the built addon and a rep
   write(root, 'scripts/check-runtime-deps.js', 'process.exit(0);');
   write(root, 'server.js', `const db=new (require(process.env.MULTICC_RUST_ADDON).RustDatabase)(':memory:',false,false,5000);
     db.exec('CREATE TABLE booted(x)');db.close();require('fs').writeFileSync('booted-addon',process.env.MULTICC_RUST_ADDON);
+    process.stdin.on('end',()=>process.exit(0));process.stdin.resume();
     process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);`);
   const run = () => spawnSync('/bin/bash', [path.join(root, 'multicc'), 'start'], {
     cwd: root, env, encoding: 'utf8', timeout: 30_000,
@@ -218,10 +239,14 @@ nativeTest('source start boots an isolated server with the built addon and a rep
   const pidFile = path.join(root, '.multicc.pid');
   if (fs.existsSync(pidFile)) pid = Number(fs.readFileSync(pidFile, 'utf8'));
   assert.equal(first.status, 0, first.stderr + first.stdout);
-  assert.ok(pid > 1); assert.equal(count(), 1);
-  assert.equal(probeAddon(fs.readFileSync(path.join(root, 'booted-addon'), 'utf8')), true);
+  assert.match(first.stdout, /started behind multicc-gateway/);
+  // Two compiler runs: the addon and the front door, once each.
+  assert.ok(pid > 1); assert.equal(count(), 2);
+  const booted = path.join(root, 'booted-addon');
+  for (let i = 0; i < 200 && !fs.existsSync(booted); i++) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(probeAddon(fs.readFileSync(booted, 'utf8')), true);
   const repeated = run();
-  assert.notEqual(repeated.status, 0); assert.match(repeated.stdout, /already running/); assert.equal(count(), 1);
+  assert.notEqual(repeated.status, 0); assert.match(repeated.stdout, /already running/); assert.equal(count(), 2);
 });
 
 // ---- 远控二进制：原型开发的补编路径（可选件，失败不阻断启动） ----

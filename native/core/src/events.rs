@@ -21,9 +21,9 @@
 use crate::classify_vocab::{
     is_abnormal_letter, is_goal_state, is_processing_letter, is_terminal_letter,
 };
+use crate::js::{coerce, js_trim, json_parse, json_stringify, utf16_prefix, JsString, JsValue};
 use regex::{Captures, Regex};
 use serde_json::{json, Map, Value};
-use std::borrow::Cow;
 use std::sync::OnceLock;
 use url::Url;
 
@@ -232,24 +232,6 @@ fn is_js_whitespace(character: char) -> bool {
             | '\u{3000}'
             | '\u{feff}'
     )
-}
-
-fn js_trim(text: &str) -> &str {
-    text.trim_matches(is_js_whitespace)
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
-/// `text.slice(0, end)` for a non-negative end, in UTF-16 code units. A cut
-/// through a surrogate pair yields U+FFFD (the JS→Rust bridge convention).
-fn utf16_prefix(text: &str, end: usize) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    if units.len() <= end {
-        return text.to_string();
-    }
-    String::from_utf16_lossy(&units[..end])
 }
 
 /// `slice`'s end argument: ToIntegerOrInfinity, relative when negative.
@@ -820,29 +802,21 @@ fn is_unit_placeholder(character: char) -> bool {
     (UNIT_BASE..UNIT_BASE + 0x800).contains(&u32::from(character))
 }
 
-fn to_unit_view(text: &str) -> Cow<'_, str> {
-    if text.chars().all(|character| u32::from(character) <= 0xFFFF) {
-        return Cow::Borrowed(text);
-    }
-    let mut view = String::with_capacity(text.len() + 8);
-    let mut buffer = [0_u16; 2];
-    for character in text.chars() {
-        if u32::from(character) <= 0xFFFF {
-            view.push(character);
-            continue;
-        }
-        for unit in character.encode_utf16(&mut buffer).iter() {
-            let placeholder = char::from_u32(UNIT_BASE + (u32::from(*unit) - 0xD800));
-            view.push(placeholder.expect("plane-15 placeholder"));
+fn to_unit_view(text: &JsString) -> String {
+    let mut view = String::with_capacity(text.len());
+    for unit in text.as_units() {
+        match *unit {
+            0xD800..=0xDFFF => view.push(
+                char::from_u32(UNIT_BASE + (u32::from(*unit) - 0xD800))
+                    .expect("plane-15 placeholder"),
+            ),
+            unit => view.push(char::from_u32(u32::from(unit)).expect("bmp character")),
         }
     }
-    Cow::Owned(view)
+    view
 }
 
-fn from_unit_view(view: &str) -> String {
-    if !view.chars().any(is_unit_placeholder) {
-        return view.to_string();
-    }
+fn from_unit_view(view: &str) -> JsString {
     let mut units: Vec<u16> = Vec::with_capacity(view.len());
     let mut buffer = [0_u16; 2];
     for character in view.chars() {
@@ -852,11 +826,34 @@ fn from_unit_view(view: &str) -> String {
             units.extend_from_slice(character.encode_utf16(&mut buffer));
         }
     }
-    String::from_utf16_lossy(&units)
+    JsString::from_units(units)
+}
+
+/// `text.split(needle).join(replacement)` over UTF-16 code units.
+fn replace_all_units(text: &JsString, needle: &JsString, replacement: &str) -> JsString {
+    let units = text.as_units();
+    let needle_units = needle.as_units();
+    if needle_units.is_empty() {
+        return text.clone();
+    }
+    let replacement = JsString::from_rust_str(replacement);
+    let mut out: Vec<u16> = Vec::with_capacity(units.len());
+    let mut at = 0usize;
+    while at + needle_units.len() <= units.len() {
+        if &units[at..at + needle_units.len()] == needle_units {
+            out.extend_from_slice(replacement.as_units());
+            at += needle_units.len();
+        } else {
+            out.push(units[at]);
+            at += 1;
+        }
+    }
+    out.extend_from_slice(&units[at..]);
+    JsString::from_units(out)
 }
 
 /// `redactText(text)`: secrets → `***` (keeping a `key=` prefix), home → `~`.
-fn redact(text: &str, home: &str) -> String {
+fn redact(text: &JsString, home: &str) -> JsString {
     let view = to_unit_view(text);
     let replaced = re_secret().replace_all(&view, |captures: &Captures| match captures.get(2) {
         Some(prefix) => format!("{}***", prefix.as_str()),
@@ -864,108 +861,171 @@ fn redact(text: &str, home: &str) -> String {
     });
     let out = from_unit_view(&replaced);
     if !home.is_empty() && home != "/" {
-        out.replace(home, "~")
+        replace_all_units(&out, &JsString::from_rust_str(home), "~")
     } else {
         out
     }
 }
 
 /// `clipText(text, max)`: redact, trim, cap at `max` UTF-16 units plus `…`.
-fn clip(text: &str, max: f64, home: &str) -> String {
+fn clip(text: &JsString, max: f64, home: &str) -> JsString {
     let redacted = redact(text, home);
-    let value = js_trim(&redacted);
-    let len = utf16_len(value);
+    let value = redacted.trim();
+    let len = value.len();
     if len as f64 > max {
-        format!("{}…", utf16_prefix(value, slice_end(max, len)))
+        let mut out = value.truncate_units(slice_end(max, len));
+        out.push_str("…");
+        out
     } else {
-        value.to_string()
+        value
     }
 }
 
-fn message_text(message: &Value) -> String {
-    match message.get("content") {
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(blocks)) => blocks
+fn field<'a>(container: Option<&'a JsValue>, key: &str) -> Option<&'a JsValue> {
+    container.and_then(|value| match value {
+        JsValue::Object(entries) => entries
             .iter()
-            .filter(|block| truthy(block) && block.get("type") == Some(&json!("text")))
-            .filter_map(|block| block.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => String::new(),
+            .find(|(name, _)| name.to_string_lossy() == key)
+            .map(|(_, value)| value),
+        _ => None,
+    })
+}
+
+/// `container.key` with JS's TypeError on null/undefined.
+fn js_read<'a>(container: Option<&'a JsValue>, key: &str) -> Result<Option<&'a JsValue>, String> {
+    match container {
+        None | Some(JsValue::Undefined) => Err(type_error(format!(
+            "Cannot read properties of undefined (reading '{key}')"
+        ))),
+        Some(JsValue::Null) => Err(type_error(format!(
+            "Cannot read properties of null (reading '{key}')"
+        ))),
+        Some(other) => Ok(field(Some(other), key)),
+    }
+}
+
+fn js_text(value: Option<&JsValue>) -> JsString {
+    match value {
+        None => JsString::from_rust_str("undefined"),
+        Some(value) => coerce::js_to_string(value),
+    }
+}
+
+/// `value || fallback`, rendered with `String()`.
+fn js_text_or(value: Option<&JsValue>, fallback: &str) -> JsString {
+    match value {
+        Some(found) if coerce::truthy(found) => coerce::js_to_string(found),
+        _ => JsString::from_rust_str(fallback),
+    }
+}
+
+fn message_text(message: &JsValue) -> JsString {
+    match field(Some(message), "content") {
+        Some(JsValue::String(text)) => text.clone(),
+        Some(JsValue::Array(blocks)) => {
+            let texts: Vec<JsString> = blocks
+                .iter()
+                .filter(|block| coerce::truthy(block))
+                .filter(|block| matches!(field(Some(block), "type"), Some(JsValue::String(kind)) if kind == "text"))
+                .filter_map(|block| match field(Some(block), "text") {
+                    Some(JsValue::String(text)) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect();
+            JsString::join(&texts, &JsString::from_rust_str("\n"))
+        }
+        _ => JsString::new(),
     }
 }
 
 /// One page of `conclusionFromHistory`: the last non-empty assistant reply in
 /// `messages`, clipped and redacted, or null when the page has none. The
 /// bridge pages from the end, so a long history never crosses FFI whole.
-fn conclusion_page(messages: Option<&Value>, home: &str) -> Value {
-    let Some(Value::Array(messages)) = messages else {
-        return Value::Null;
+fn conclusion_page(messages: Option<&JsValue>, home: &str) -> JsValue {
+    let Some(JsValue::Array(messages)) = messages else {
+        return JsValue::Null;
     };
     for message in messages.iter().rev() {
-        if message.get("role") == Some(&json!("assistant")) {
+        let assistant = matches!(
+            field(Some(message), "role"),
+            Some(JsValue::String(role)) if role == "assistant"
+        );
+        if assistant {
             let text = message_text(message);
-            let text = js_trim(&text);
+            let text = text.trim();
             if !text.is_empty() {
-                return json!(clip(text, CONCLUSION_MAX as f64, home));
+                return JsValue::String(clip(&text, CONCLUSION_MAX as f64, home));
             }
         }
     }
-    Value::Null
+    JsValue::Null
 }
 
 /// The text injected into the next session. The user's instruction goes last.
-fn render_injection(event: Option<&Value>, instruction: Option<&Value>) -> Result<String, String> {
-    let data = read(event, "data")?.filter(|value| truthy(value));
-    let field = |key: &str| prop(data, key);
-    let mut lines = vec![format!(
-        "【multicc 自动触发】事件 {}",
-        js_string_opt(read(event, "type")?)
-    )];
-    lines.push(format!(
-        "来源会话：{}\u{3000}任务：{}",
-        text_or(read(event, "sessionId")?, "（无）"),
-        text_or(field("goal"), "（未命名）")
-    ));
-    if let Some(goal_state) = field("goalState").filter(|value| truthy(value)) {
-        let key = js_string(goal_state);
-        let label = lookup(&GOAL_STATE_LABEL, &key).map_or(key, str::to_string);
-        lines.push(format!("目标状态：{label}"));
+fn render_injection(
+    event: Option<&JsValue>,
+    instruction: Option<&JsValue>,
+) -> Result<JsString, String> {
+    let data = js_read(event, "data")?.filter(|value| coerce::truthy(value));
+    let field = |key: &str| field(data, key);
+    let mut lines = vec![{
+        let mut line = JsString::from_rust_str("【multicc 自动触发】事件 ");
+        line.push(&js_text(js_read(event, "type")?));
+        line
+    }];
+    lines.push({
+        let mut line = JsString::from_rust_str("来源会话：");
+        line.push(&js_text_or(js_read(event, "sessionId")?, "（无）"));
+        line.push_str("\u{3000}任务：");
+        line.push(&js_text_or(field("goal"), "（未命名）"));
+        line
+    });
+    if let Some(goal_state) = field("goalState").filter(|value| coerce::truthy(value)) {
+        let key = coerce::js_to_string(goal_state);
+        let key_text = key.to_string_lossy();
+        let label = lookup(&GOAL_STATE_LABEL, &key_text).map_or(key, JsString::from_rust_str);
+        let mut line = JsString::from_rust_str("目标状态：");
+        line.push(&label);
+        lines.push(line);
     }
-    if let Some(category) = field("errorCategory").filter(|value| truthy(value)) {
-        let stopped = if truthy_opt(field("cancelled")) {
-            "（用户主动停止）"
-        } else {
-            ""
-        };
-        lines.push(format!("错误类别：{}{stopped}", js_string(category)));
+    if let Some(category) = field("errorCategory").filter(|value| coerce::truthy(value)) {
+        let mut line = JsString::from_rust_str("错误类别：");
+        line.push(&coerce::js_to_string(category));
+        if coerce::truthy_opt(field("cancelled")) {
+            line.push_str("（用户主动停止）");
+        }
+        lines.push(line);
     }
-    if let Some(summary) = field("summary").filter(|value| truthy(value)) {
-        lines.push(format!("任务摘要：{}", js_string(summary)));
+    if let Some(summary) = field("summary").filter(|value| coerce::truthy(value)) {
+        let mut line = JsString::from_rust_str("任务摘要：");
+        line.push(&coerce::js_to_string(summary));
+        lines.push(line);
     }
-    if let Some(conclusion) = field("conclusion").filter(|value| truthy(value)) {
-        lines.push(format!(
-            "上一轮结论（已截断，完整内容请用来源会话 id 读取历史）：\n{}",
-            js_string(conclusion)
-        ));
+    if let Some(conclusion) = field("conclusion").filter(|value| coerce::truthy(value)) {
+        let mut line =
+            JsString::from_rust_str("上一轮结论（已截断，完整内容请用来源会话 id 读取历史）：\n");
+        line.push(&coerce::js_to_string(conclusion));
+        lines.push(line);
     }
-    lines.push(String::new());
+    lines.push(JsString::new());
     let instruction = match instruction {
-        Some(Value::String(text)) => js_trim(text).to_string(),
-        Some(value) if truthy(value) => {
+        Some(JsValue::String(text)) => text.trim(),
+        Some(value) if coerce::truthy(value) => {
             return Err(type_error(
                 "(instruction || '').trim is not a function".to_string(),
             ))
         }
-        _ => String::new(),
+        _ => JsString::new(),
     };
     let instruction = if instruction.is_empty() {
-        DEFAULT_INSTRUCTION.to_string()
+        JsString::from_rust_str(DEFAULT_INSTRUCTION)
     } else {
         instruction
     };
-    lines.push(format!("你的指令：{instruction}"));
-    Ok(lines.join("\n"))
+    let mut last = JsString::from_rust_str("你的指令：");
+    last.push(&instruction);
+    lines.push(last);
+    Ok(JsString::join(&lines, &JsString::from_rust_str("\n")))
 }
 
 // ── task transitions ────────────────────────────────────────────────────────
@@ -1124,11 +1184,46 @@ pub fn catalog() -> Result<String, String> {
 /// Logic-bearing calls (op dispatch). String-in/string-out, lenient at the JS
 /// boundary. Text ops receive already-stringified text from the bridge.
 pub fn request(op: &str, input: &str) -> Result<String, String> {
+    match op {
+        "redactText" | "clipText" | "conclusionPage" | "renderInjection" => text_request(op, input),
+        _ => json_request(op, input),
+    }
+}
+
+/// Text ops parse with [`json_parse`] so a lone surrogate keeps its code unit;
+/// `JSON.stringify` on the bridge spells it as a `\udxxx` escape, which the
+/// lenient serde boundary used to rewrite as U+FFFD.
+fn text_request(op: &str, input: &str) -> Result<String, String> {
+    let value = json_parse(input).map_err(|e| format!("events_invalid_input: {e}"))?;
+    let arg = |key: &str| field(Some(&value), key);
+    let text = || match arg("text") {
+        Some(JsValue::String(text)) => text.clone(),
+        _ => JsString::new(),
+    };
+    let home = || match arg("home") {
+        Some(JsValue::String(home)) => home.to_string_lossy(),
+        _ => String::new(),
+    };
+    let out = match op {
+        "redactText" => JsValue::String(redact(&text(), &home())),
+        "clipText" => {
+            let max = match arg("max") {
+                Some(JsValue::String(text)) => string_to_number(&text.to_string_lossy()),
+                _ => f64::NAN,
+            };
+            JsValue::String(clip(&text(), max, &home()))
+        }
+        "conclusionPage" => conclusion_page(arg("messages"), &home()),
+        "renderInjection" => JsValue::String(render_injection(arg("event"), arg("instruction"))?),
+        _ => return Err(format!("events_unknown_op: {op}")),
+    };
+    json_stringify(&out).ok_or_else(|| "events_unserializable_output".to_string())
+}
+
+fn json_request(op: &str, input: &str) -> Result<String, String> {
     let input: Value =
         crate::json_lenient::from_str(input).map_err(|e| format!("events_invalid_input: {e}"))?;
     let arg = |key: &str| input.as_object().and_then(|object| object.get(key));
-    let text = || arg("text").and_then(Value::as_str).unwrap_or("");
-    let home = || arg("home").and_then(Value::as_str).unwrap_or("");
     let out = match op {
         "isKnownPattern" => json!(arg("pattern")
             .and_then(Value::as_str)
@@ -1140,13 +1235,6 @@ pub fn request(op: &str, input: &str) -> Result<String, String> {
         "validateEventRule" => validate_event_rule(arg("body"), arg("scope"))?,
         "matchesFilter" => json!(matches_filter(arg("rule"), arg("event"))?),
         "channelActions" => channel_actions(arg("rule")),
-        "redactText" => json!(redact(text(), home())),
-        "clipText" => {
-            let max = string_to_number(arg("max").and_then(Value::as_str).unwrap_or("NaN"));
-            json!(clip(text(), max, home()))
-        }
-        "conclusionPage" => conclusion_page(arg("messages"), home()),
-        "renderInjection" => json!(render_injection(arg("event"), arg("instruction"))?),
         "deriveTaskEvents" => derive_task_events(arg("prev"), arg("next")),
         "segmentKey" => json!(segment_key(arg("state"))),
         "letterOf" => optional(letter_of(arg("state"))),
@@ -1353,65 +1441,105 @@ mod tests {
         assert_eq!(actions.as_array().unwrap().len(), 2);
     }
 
+    fn js_text(text: &str) -> JsString {
+        JsString::from_rust_str(text)
+    }
+
+    fn lossy(value: JsString) -> String {
+        value.to_string_lossy()
+    }
+
+    fn as_js(value: Value) -> JsValue {
+        crate::js::serde::from_serde(&value)
+    }
+
     #[test]
     fn redaction_counts_utf16_units_and_js_whitespace() {
-        assert_eq!(redact("key sk-abcdefghijklmnopqr end", ""), "key *** end");
-        assert_eq!(redact("TOKEN: \"abcdefgh\"", ""), "TOKEN: \"***\"");
         assert_eq!(
-            redact("Authorization: Bearer abcdefghijklmnop1234", ""),
+            lossy(redact(&js_text("key sk-abcdefghijklmnopqr end"), "")),
+            "key *** end"
+        );
+        assert_eq!(
+            lossy(redact(&js_text("TOKEN: \"abcdefgh\""), "")),
+            "TOKEN: \"***\""
+        );
+        assert_eq!(
+            lossy(redact(
+                &js_text("Authorization: Bearer abcdefghijklmnop1234"),
+                ""
+            )),
             "Authorization: ***"
         );
         // Four astral characters are eight UTF-16 units: redacted, like JS.
-        assert_eq!(redact("token=😀😀😀😀", ""), "token=***");
-        assert_eq!(redact("token=😀😀😀", ""), "token=😀😀😀");
+        assert_eq!(lossy(redact(&js_text("token=😀😀😀😀"), "")), "token=***");
+        assert_eq!(lossy(redact(&js_text("token=😀😀😀"), "")), "token=😀😀😀");
         // U+FEFF is JS whitespace; U+0085 is not (so it is part of the value).
-        assert_eq!(redact("token\u{feff}=abcdefgh", ""), "token\u{feff}=***");
-        assert_eq!(redact("token\u{85}=abcdefgh", ""), "token\u{85}=abcdefgh");
+        assert_eq!(
+            lossy(redact(&js_text("token\u{feff}=abcdefgh"), "")),
+            "token\u{feff}=***"
+        );
+        assert_eq!(
+            lossy(redact(&js_text("token\u{85}=abcdefgh"), "")),
+            "token\u{85}=abcdefgh"
+        );
         // ASCII-only case folding: the Kelvin sign does not spell "key".
         assert_eq!(
-            redact("api\u{212a}ey=abcdefgh", ""),
+            lossy(redact(&js_text("api\u{212a}ey=abcdefgh"), "")),
             "api\u{212a}ey=abcdefgh"
         );
-        assert_eq!(redact("/home/me/x and /home/me", "/home/me"), "~/x and ~");
-        assert_eq!(redact("/x", "/"), "/x");
+        assert_eq!(
+            lossy(redact(&js_text("/home/me/x and /home/me"), "/home/me")),
+            "~/x and ~"
+        );
+        assert_eq!(lossy(redact(&js_text("/x"), "/")), "/x");
     }
 
     #[test]
     fn clipping_and_conclusion() {
-        assert_eq!(clip("  abcdef  ", 4.0, ""), "abcd…");
-        assert_eq!(clip("abc", f64::NAN, ""), "abc");
-        assert_eq!(clip("abcdef", -2.0, ""), "abcd…");
-        // A cut through a surrogate pair leaves U+FFFD.
-        assert_eq!(clip("a😀b", 2.0, ""), "a\u{fffd}…");
-        let page = json!([
+        assert_eq!(lossy(clip(&js_text("  abcdef  "), 4.0, "")), "abcd…");
+        assert_eq!(lossy(clip(&js_text("abc"), f64::NAN, "")), "abc");
+        assert_eq!(lossy(clip(&js_text("abcdef"), -2.0, "")), "abcd…");
+        // A cut through a surrogate pair keeps the lone high surrogate,
+        // exactly like `String.prototype.slice`.
+        assert_eq!(
+            clip(&js_text("a😀b"), 2.0, "").as_units(),
+            &[0x61, 0xD83D, 0x2026]
+        );
+        let page = as_js(json!([
             { "role": "assistant", "content": [{ "type": "text", "text": "first" }] },
             { "role": "user", "content": "q" },
             { "role": "assistant", "content": [{ "type": "tool_use" }, { "type": "text", "text": "  " }] },
-        ]);
-        assert_eq!(conclusion_page(Some(&page), ""), "first");
+        ]));
         assert_eq!(
-            conclusion_page(Some(&json!([{ "role": "user", "content": "x" }])), ""),
-            Value::Null
+            conclusion_page(Some(&page), ""),
+            JsValue::String(js_text("first"))
+        );
+        assert_eq!(
+            conclusion_page(
+                Some(&as_js(json!([{ "role": "user", "content": "x" }]))),
+                ""
+            ),
+            JsValue::Null
         );
     }
 
     #[test]
     fn injection_rendering() {
-        let event = json!({ "type": "task.failed", "sessionId": "s1", "data": {
+        let event = as_js(json!({ "type": "task.failed", "sessionId": "s1", "data": {
             "goal": "g", "goalState": "achieved", "errorCategory": "quota", "cancelled": true,
-            "summary": "sum", "conclusion": "done" } });
-        let text = render_injection(Some(&event), Some(&json!("  do it "))).unwrap();
+            "summary": "sum", "conclusion": "done" } }));
+        let text = render_injection(Some(&event), Some(&as_js(json!("  do it ")))).unwrap();
         assert_eq!(
-            text,
+            lossy(text),
             "【multicc 自动触发】事件 task.failed\n来源会话：s1\u{3000}任务：g\n目标状态：达成目标\n错误类别：quota（用户主动停止）\n任务摘要：sum\n上一轮结论（已截断，完整内容请用来源会话 id 读取历史）：\ndone\n\n你的指令：do it"
         );
-        let bare = render_injection(Some(&json!({})), None).unwrap();
+        let bare = render_injection(Some(&as_js(json!({}))), None).unwrap();
         assert_eq!(
-            bare,
+            lossy(bare),
             "【multicc 自动触发】事件 undefined\n来源会话：（无）\u{3000}任务：（未命名）\n\n你的指令：请根据以上信息简短汇报，并给出下一步建议。"
         );
         assert!(render_injection(None, None).is_err());
-        assert!(render_injection(Some(&event), Some(&json!(5))).is_err());
+        assert!(render_injection(Some(&event), Some(&as_js(json!(5)))).is_err());
     }
 
     #[test]

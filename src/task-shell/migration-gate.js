@@ -14,13 +14,13 @@ const { Worker } = require('node:worker_threads');
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
 const RETRY_MS = 30_000;
 
-function startPage({ file, port, host }) {
+function startPage({ file, port, host, behindGateway = false }) {
   const signal = new SharedArrayBuffer(4);
   const flag = new Int32Array(signal);
   let worker;
   try {
     worker = new Worker(path.join(__dirname, 'migration-page-worker.js'), {
-      workerData: { signal, port, host: LOOPBACK.has(host) ? host : '127.0.0.1', progressFile: `${file}.migration.json` },
+      workerData: { signal, port, host: LOOPBACK.has(host) ? host : '127.0.0.1', behindGateway, progressFile: `${file}.migration.json` },
     });
   } catch { return null; }
   worker.on('error', () => {});
@@ -77,6 +77,15 @@ function runAtBoot(env = process.env) {
   return runTaskStoreMigrationGate({ file, addon, openPage: () => {
     try {
       const { port, host } = require('../network-policy').resolveNetworkPolicy(env);
+      const gatewayChild = require('../gateway-child');
+      if (gatewayChild.isGatewayChild(env)) {
+        // Behind the front door the public port is owned by Rust; the page must
+        // take the reserved loopback port and speak PROXY until the migration
+        // finishes and the main server takes that same port over.
+        const internalPort = gatewayChild.internalPort(env);
+        if (!internalPort) return null;
+        return startPage({ file, port: internalPort, host: '127.0.0.1', behindGateway: true });
+      }
       return startPage({ file, port, host });
     } catch { return null; }
   } });

@@ -12,6 +12,9 @@ const { sourcePaths, sourceFingerprint, probeAddon, provenancePath, writeProvena
 const REMOTE_CRATE = 'multicc-remote';
 // CDP 网关（三平台同一份实现）。编不出来只让「一次审批」退化成直连，不影响启动。
 const CDPD_CRATE = 'multicc-cdpd';
+// Rust 前门（native/gateway）：占公开端口并看护 node。三个平台的所有启动入口都经它启动。
+// 编不出来就退回 `node server.js` 直接启动；Windows 上暂不构建。
+const GATEWAY_CRATE = 'multicc-gateway';
 
 function targetFor(platform, arch) {
   const targets = { 'darwin-arm64': 'aarch64-apple-darwin', 'darwin-x64': 'x86_64-apple-darwin',
@@ -50,8 +53,16 @@ function hasCdpdCrate(repoRoot) {
   return workspaceMembers(repoRoot).includes('cdpd');
 }
 
+function hasGatewayCrate(repoRoot) {
+  return workspaceMembers(repoRoot).includes('gateway');
+}
+
 function cdpdBinaryName(platform) {
   return platform === 'win32' ? 'multicc-cdpd.exe' : 'multicc-cdpd';
+}
+
+function gatewayBinaryName(platform) {
+  return platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway';
 }
 
 // --version 打印一行 `multicc-cdpd <协议版本> <crate 版本>`。服务端只和同协议的网关
@@ -65,6 +76,20 @@ function probeCdpdVersion(file, { run = spawnSync } = {}) {
   const result = run(file, ['--version'], { encoding: 'utf8', timeout: 15_000 });
   const output = `${result.stdout || ''}`.trim();
   const ok = !result.error && result.status === 0 && output.startsWith(CDPD_VERSION_PREFIX);
+  return { ok, output, status: result.status, error: result.error };
+}
+
+// --version 打印一行 `multicc-gateway 3 <crate 版本>`；协议号必须和
+// native/gateway/src/lib.rs、src/gateway-child.js 的 GATEWAY_PROTOCOL 一致。
+// 2：加了 --stdin-lifeline，Node 以 0 退出时前门随之退出（docs/gateway.md §7）。
+// 3：L7 前门（hyper/axum，按连接独占上游 HTTP 连接）。
+const GATEWAY_PROTOCOL = 3;
+const GATEWAY_VERSION_PREFIX = `${GATEWAY_CRATE} ${GATEWAY_PROTOCOL} `;
+
+function probeGatewayVersion(file, { run = spawnSync } = {}) {
+  const result = run(file, ['--version'], { encoding: 'utf8', timeout: 15_000 });
+  const output = `${result.stdout || ''}`.trim();
+  const ok = !result.error && result.status === 0 && output.startsWith(GATEWAY_VERSION_PREFIX);
   return { ok, output, status: result.status, error: result.error };
 }
 
@@ -113,7 +138,7 @@ function build({ platform = process.platform, arch = process.arch,
   out = process.env.MULTICC_RUST_PREBUILT_DIR,
   targetDir = process.env.CARGO_TARGET_DIR,
   requireRemote = process.env.MULTICC_REQUIRE_RUST_BUNDLE === '1',
-  remoteOnly = false, cdpdOnly = false, repoRoot, run = spawnSync, probe = probeAddon, logger = console } = {}) {
+  remoteOnly = false, cdpdOnly = false, gatewayOnly = false, repoRoot, run = spawnSync, probe = probeAddon, logger = console } = {}) {
   const repo = path.resolve(repoRoot || path.resolve(__dirname, '..'));
   const target = targetFor(platform, arch);
   const fingerprint = sourceFingerprint(repo, process.env);
@@ -131,7 +156,7 @@ function build({ platform = process.platform, arch = process.arch,
   };
   const produced = [];
 
-  if (!remoteOnly && !cdpdOnly) {
+  if (!remoteOnly && !cdpdOnly && !gatewayOnly) {
     cargo('multicc-addon');
     const library = platform === 'win32' ? 'multicc_addon.dll'
       : platform === 'darwin' ? 'libmulticc_addon.dylib' : 'libmulticc_addon.so';
@@ -151,9 +176,9 @@ function build({ platform = process.platform, arch = process.arch,
 
   let remote = null;
   let remoteError = null;
-  if (cdpdOnly || !hasRemoteCrate(repo)) {
+  if (cdpdOnly || gatewayOnly || !hasRemoteCrate(repo)) {
     // 迁移进行中的正常状态：源码里还没有远控进程，什么都不缺。
-    if (!cdpdOnly) logger.log('native/remote 尚未加入 cargo workspace，跳过远控二进制 multicc-remote。');
+    if (!cdpdOnly && !gatewayOnly) logger.log('native/remote 尚未加入 cargo workspace，跳过远控二进制 multicc-remote。');
   } else {
     const source = path.resolve(targetDir, target, 'release', remoteBinaryName(platform));
     const file = path.resolve(out, `${platform}-${arch}`, remoteBinaryName(platform));
@@ -185,7 +210,9 @@ function build({ platform = process.platform, arch = process.arch,
 
   let cdpd = null;
   let cdpdError = null;
-  if (!hasCdpdCrate(repo)) {
+  if (gatewayOnly) {
+    // 只编前门时不要顺手编 CDP 网关。
+  } else if (!hasCdpdCrate(repo)) {
     logger.log('native/cdpd 尚未加入 cargo workspace，跳过 CDP 网关 multicc-cdpd。');
   } else {
     const name = platform === 'win32' ? 'multicc-cdpd.exe' : 'multicc-cdpd';
@@ -219,9 +246,47 @@ function build({ platform = process.platform, arch = process.arch,
     }
   }
 
+  // Rust 前门：占公开端口、看护 node，是所有平台唯一的启动方式（docs/gateway.md §8）。
+  // 这里编不出来只告警：源码启动由 ensure-source-rust 单独重试、仍失败就拒绝启动；
+  // 发布路径直接报错。
+  let gateway = null;
+  let gatewayError = null;
+  if (remoteOnly || cdpdOnly) {
+    // 单独编远控/CDP 网关时不要顺手编前门。
+  } else if (!hasGatewayCrate(repo)) {
+    logger.log('native/gateway 尚未加入 cargo workspace，跳过 Rust 前门 multicc-gateway。');
+  } else {
+    const name = gatewayBinaryName(platform);
+    const source = path.resolve(targetDir, target, 'release', name);
+    const file = path.resolve(out, `${platform}-${arch}`, name);
+    try {
+      cargo(GATEWAY_CRATE);
+      verify(source, platform, arch);
+      const temporary = copyStaged(source, file, { executable: true });
+      try {
+        if (platform === process.platform && arch === process.arch) {
+          const probed = probeGatewayVersion(temporary, { run });
+          if (!probed.ok) {
+            throw new Error(`--version 校验失败（期望以 "${GATEWAY_VERSION_PREFIX}" 开头，实际输出：${probed.output || `退出码 ${probed.status}`}）`);
+          }
+        }
+        fs.renameSync(temporary, file);
+      } finally {
+        fs.rmSync(temporary, { force: true });
+      }
+      produced.push({ kind: 'Rust 前门', file });
+      gateway = file;
+      logger.log(`Rust 前门已构建：${file}`);
+    } catch (error) {
+      gatewayError = error;
+      if (requireRemote) throw new Error(`Rust 前门构建失败：${error.message}`);
+      logger.error(`警告：Rust 前门 ${GATEWAY_CRATE} 未构建：${error.message}`);
+    }
+  }
+
   // Windows desktop capture/input is a separate per-user process. Ship its
   // prebuilt binary so installation does not require a Rust toolchain.
-  if (platform === 'win32' && !remoteOnly && !cdpdOnly && workspaceMembers(repo).includes('desktop-agent')) {
+  if (platform === 'win32' && !remoteOnly && !cdpdOnly && !gatewayOnly && workspaceMembers(repo).includes('desktop-agent')) {
     const name = 'multicc-desktop-agent.exe';
     const source = path.resolve(targetDir, target, 'release', name);
     const file = path.resolve(out, `${platform}-${arch}`, name);
@@ -257,7 +322,7 @@ function build({ platform = process.platform, arch = process.arch,
     else fs.rmSync(provenancePath(file), { force: true });
   }
   const addon = produced.find(item => item.kind === '模块');
-  return { addon: addon ? addon.file : null, remote, remoteError, cdpd, cdpdError };
+  return { addon: addon ? addon.file : null, remote, remoteError, cdpd, cdpdError, gateway, gatewayError };
 }
 
 function parseArgs(argv, env = process.env) {
@@ -266,10 +331,11 @@ function parseArgs(argv, env = process.env) {
     const flag = argv[i];
     if (flag === '--remote-only') { options.remoteOnly = true; continue; }
     if (flag === '--cdpd-only') { options.cdpdOnly = true; continue; }
+    if (flag === '--gateway-only') { options.gatewayOnly = true; continue; }
     if (flag === '--require-remote') { options.requireRemote = true; continue; }
     const key = { '--out': 'out', '--platform': 'platform', '--arch': 'arch', '--target-dir': 'targetDir' }[flag];
     if (!key || !argv[i + 1]) {
-      throw new Error('参数：--out 目录 --platform 平台 --arch 架构 --target-dir 编译缓存目录 [--remote-only] [--cdpd-only] [--require-remote]');
+      throw new Error('参数：--out 目录 --platform 平台 --arch 架构 --target-dir 编译缓存目录 [--remote-only] [--cdpd-only] [--gateway-only] [--require-remote]');
     }
     options[key] = argv[++i];
   }
@@ -282,7 +348,8 @@ if (require.main === module) {
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
 module.exports = {
-  REMOTE_CRATE, CDPD_CRATE, CDPD_PROTOCOL, build, executable, hasRemoteCrate, hasCdpdCrate, parseArgs, probeRemoteVersion,
-  probeCdpdVersion, cdpdBinaryName, remoteBinaryName,
+  REMOTE_CRATE, CDPD_CRATE, CDPD_PROTOCOL, GATEWAY_CRATE, GATEWAY_PROTOCOL,
+  build, executable, hasRemoteCrate, hasCdpdCrate, hasGatewayCrate, parseArgs, probeRemoteVersion,
+  probeCdpdVersion, probeGatewayVersion, cdpdBinaryName, gatewayBinaryName, remoteBinaryName,
   remoteBinaryPath, targetFor, verify, workspaceMembers,
 };

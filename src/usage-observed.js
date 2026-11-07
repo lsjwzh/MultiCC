@@ -1,15 +1,24 @@
 'use strict';
 
-const crypto = require('crypto');
+// Usage observation normalizer. The rules live in
+// native/core/src/usage_observed.rs; this module keeps the exact export
+// surface. Two non-pure edges remain here:
+//   * `assertProviderBinding` (Symbol brand) runs before the kernel, and only
+//     a plain field projection crosses into Rust;
+//   * `normalizeProxyOutcome` runs here too. The kernel asks for it lazily
+//     (after every earlier validation passed) so a bad proxy outcome still
+//     throws its original TypeError before later UsageObservedError checks.
+// Structured errors come back in an envelope and are rethrown as
+// `UsageObservedError` with the same name/code/message.
+
 const { assertProviderBinding } = require('./providers/binding');
 const { normalizeProxyOutcome } = require('./providers/proxy-outcome');
+const { getNative } = require('./native/runtime');
 
-const USAGE_OBSERVED_VERSION = 1;
-const ROLE_KINDS = new Set(['main', 'sub', 'aux']);
-const AGENT_ROLES = new Set(['default', 'worker', 'explorer', 'custom']);
-const SOURCES = new Set(['exact', 'reconciled']);
-const COVERAGE = new Set(['observed', 'unobservable']);
-const STATUSES = new Set(['success', 'error', 'unobservable']);
+const native = getNative();
+const CATALOG = JSON.parse(native.usageObservedCatalog());
+
+const USAGE_OBSERVED_VERSION = CATALOG.version;
 
 class UsageObservedError extends Error {
   constructor(message, code = 'INVALID_USAGE_OBSERVED') {
@@ -19,90 +28,19 @@ class UsageObservedError extends Error {
   }
 }
 
-function requiredString(value, label, max = 256) {
-  const text = String(value == null ? '' : value).trim();
-  if (!text) throw new UsageObservedError(`${label} is required`);
-  if (text.length > max || /[\u0000-\u001f\u007f]/.test(text)) {
-    throw new UsageObservedError(`${label} is invalid`);
-  }
-  return text;
+function request(op, input) {
+  // Direct value transport keeps nested NaN/Infinity, explicit `undefined`
+  // properties and -0 that JSON.stringify/JSON.parse would rewrite.
+  return native.usageObservedRequestValue(op, input);
 }
 
-function optionalString(value, max = 256) {
-  if (value == null || value === '') return '';
-  const text = String(value).trim();
-  if (text.length > max || /[\u0000-\u001f\u007f]/.test(text)) {
-    throw new UsageObservedError('usage string field is invalid');
-  }
-  return text;
-}
-
-function nonNegative(value, label) {
-  const number = Number(value == null ? 0 : value);
-  if (!Number.isFinite(number) || number < 0) {
-    throw new UsageObservedError(`${label} must be a non-negative number`);
-  }
-  return number;
-}
-
-function optionalPositiveInteger(value, label) {
-  if (value == null || value === '') return null;
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1) {
-    throw new UsageObservedError(`${label} must be a positive integer`);
-  }
-  return number;
-}
-
-function firstValue(object, keys) {
-  for (const key of keys) if (object[key] != null) return object[key];
-  return undefined;
-}
-
-function normalizeTokens(raw, coverage) {
-  if (coverage === 'unobservable') {
-    if (raw != null) throw new UsageObservedError('unobservable usage must not contain token counts');
-    return null;
-  }
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new UsageObservedError('tokens are required for observed usage');
-  }
-  const tokens = {
-    input: nonNegative(firstValue(raw, ['input', 'inputTokens', 'input_tokens']), 'tokens.input'),
-    output: nonNegative(firstValue(raw, ['output', 'outputTokens', 'output_tokens']), 'tokens.output'),
-    cacheRead: nonNegative(firstValue(raw, ['cacheRead', 'cache_read', 'cache_read_input_tokens']), 'tokens.cacheRead'),
-    cacheWrite: nonNegative(firstValue(raw, ['cacheWrite', 'cache_write', 'cache_creation_input_tokens']), 'tokens.cacheWrite'),
-  };
-  tokens.total = tokens.input + tokens.output;
-  return Object.freeze(tokens);
-}
-
-function normalizeOccurredAt(value) {
-  if (value == null || value === '') throw new UsageObservedError('occurredAt is required for a stable eventId');
-  const number = typeof value === 'number' ? value : Date.parse(value);
-  if (!Number.isFinite(number) || number <= 0) throw new UsageObservedError('occurredAt must be a timestamp');
-  return Math.floor(number);
-}
-
-function stableStringify(value) {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function stableUsageEventId(identity) {
-  return `uo_${crypto.createHash('sha256').update(stableStringify(identity)).digest('hex').slice(0, 32)}`;
-}
-
-function bindingValue(rawValue, bindingValue, label) {
-  const raw = rawValue == null || rawValue === '' ? null : String(rawValue).trim();
-  const bound = bindingValue == null || bindingValue === '' ? null : String(bindingValue).trim();
-  if (raw && bound && raw !== bound) {
-    throw new UsageObservedError(`${label} conflicts with ProviderBinding`, 'USAGE_BINDING_MISMATCH');
-  }
-  return raw || bound;
+// `Date.parse` stays in JS: it accepts engine-defined natural-language dates.
+// `normalizeOccurredAt` throws "required" for a nullish/empty value and
+// "must be a timestamp" for anything Date.parse cannot read.
+function occurredAtMs(input) {
+  const value = input.occurredAt != null ? input.occurredAt : input.timestamp;
+  if (value == null || value === '') return undefined;
+  return typeof value === 'number' ? value : Date.parse(value);
 }
 
 function createUsageObserved(input, binding = null) {
@@ -110,149 +48,36 @@ function createUsageObserved(input, binding = null) {
     throw new UsageObservedError('UsageObserved input must be an object');
   }
   const bound = binding == null ? null : assertProviderBinding(binding);
-  const occurredAt = normalizeOccurredAt(input.occurredAt != null ? input.occurredAt : input.timestamp);
-  const sessionId = requiredString(bindingValue(
-    input.sessionId != null ? input.sessionId : input.externalSessionId,
-    bound && bound.sessionId,
-    'sessionId',
-  ), 'sessionId');
-  const providerId = requiredString(bindingValue(input.providerId, bound && bound.providerId, 'providerId'), 'providerId');
-  const roleKind = requiredString(bindingValue(
-    input.roleKind != null ? input.roleKind : input.role,
-    bound && bound.roleKind,
-    'roleKind',
-  ), 'roleKind', 16).toLowerCase();
-  if (!ROLE_KINDS.has(roleKind)) throw new UsageObservedError('roleKind must be main, sub, or aux');
-
-  let agentRole = bindingValue(input.agentRole, bound && bound.agentRole, 'agentRole');
-  let routeName = bindingValue(input.routeName, bound && bound.routeName, 'routeName');
-  if (roleKind === 'sub') {
-    agentRole = requiredString(agentRole || 'default', 'agentRole', 32).toLowerCase();
-    if (!AGENT_ROLES.has(agentRole)) {
-      throw new UsageObservedError('sub agentRole must be default, worker, explorer, or custom');
-    }
-    routeName = requiredString(routeName || agentRole, 'routeName', 64).toLowerCase();
-    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(routeName)) {
-      throw new UsageObservedError('routeName must be a valid agent route');
-    }
-  } else {
-    if (agentRole) throw new UsageObservedError('agentRole is only valid for sub usage');
-    agentRole = null;
-    routeName = requiredString(routeName || roleKind, 'routeName', 64).toLowerCase();
-    if (routeName !== roleKind) throw new UsageObservedError(`${roleKind} routeName must be ${roleKind}`);
-  }
-
-  const source = requiredString(input.source, 'source', 32).toLowerCase();
-  if (!SOURCES.has(source)) throw new UsageObservedError('source must be exact or reconciled');
-  const coverage = requiredString(input.coverage, 'coverage', 32).toLowerCase();
-  if (!COVERAGE.has(coverage)) throw new UsageObservedError('coverage must be observed or unobservable');
-  let status = requiredString(input.status || (coverage === 'unobservable' ? 'unobservable' : 'success'), 'status', 32).toLowerCase();
-  if (!STATUSES.has(status)) throw new UsageObservedError('status must be success, error, or unobservable');
-  if (coverage === 'observed' && status === 'unobservable') {
-    throw new UsageObservedError('observed coverage cannot use unobservable status');
-  }
-  // A producer (e.g. the proxy router) reports the turn's own outcome as its
-  // status. When usage headers are absent it emits coverage=unobservable but
-  // still status=success ("the turn completed"). Status here tracks the
-  // observability axis, not turn outcome, so a successful-but-unobservable turn
-  // normalizes to 'unobservable'; only a genuine 'error' is preserved.
-  if (coverage === 'unobservable' && status === 'success') {
-    status = 'unobservable';
-  }
-  if (coverage === 'unobservable' && status !== 'unobservable' && status !== 'error') {
-    throw new UsageObservedError('unobservable coverage requires unobservable or error status');
-  }
-  const protocol = requiredString(input.protocol, 'protocol', 64);
-  const tokens = normalizeTokens(input.tokens != null ? input.tokens : input.usage, coverage);
-  const inputEventId = optionalString(input.eventId, 256);
-  const sourceEventId = optionalString(
-    input.sourceEventId || (/^uo_[a-f0-9]{32}$/.test(inputEventId) ? '' : inputEventId),
-    256,
-  ) || null;
-  const runtimeEpoch = optionalString(input.runtimeEpoch, 256);
-  const turnId = optionalString(input.turnId, 256);
-  const decisionId = optionalString(input.decisionId, 256);
-  const routeAttemptId = optionalString(input.routeAttemptId, 256);
-  const providerRevision = optionalString(input.providerRevision, 256);
-  const routeGeneration = optionalPositiveInteger(input.routeGeneration, 'routeGeneration');
-  const attemptNo = optionalPositiveInteger(input.attemptNo, 'attemptNo');
-  const hasAttemptIdentity = !!(runtimeEpoch || turnId || decisionId || routeAttemptId
-    || providerRevision || routeGeneration != null || attemptNo != null);
-  if (hasAttemptIdentity && (!runtimeEpoch || !turnId || !decisionId || !routeAttemptId
-      || !providerRevision || routeGeneration == null || attemptNo == null)) {
-    throw new UsageObservedError('complete provider attempt identity is required');
-  }
-  const routeAttribution = optionalString(input.routeAttribution, 32).toLowerCase();
-  if (routeAttribution && routeAttribution !== 'exact' && routeAttribution !== 'ambiguous') {
-    throw new UsageObservedError('routeAttribution must be exact or ambiguous');
-  }
-
-  const eventContent = {
-    version: USAGE_OBSERVED_VERSION,
-    sourceEventId,
-    occurredAt,
-    sessionId,
-    providerId,
-    roleKind,
-    agentRole,
-    routeName,
-    source,
-    coverage,
-    status,
-    protocol,
-    model: optionalString(input.model, 256),
-    tokens,
-    ...(input.proxyOutcome ? { proxyOutcome: normalizeProxyOutcome(input.proxyOutcome) } : {}),
-    ...(hasAttemptIdentity ? {
-      runtimeEpoch, turnId, decisionId, routeAttemptId, routeGeneration,
-      attemptNo, providerRevision,
-    } : {}),
+  const projected = bound && {
+    sessionId: bound.sessionId ?? null,
+    providerId: bound.providerId ?? null,
+    roleKind: bound.roleKind ?? null,
+    agentRole: bound.agentRole ?? null,
+    routeName: bound.routeName ?? null,
   };
-  // An upstream event id is the stable observation identity; mutable delivery
-  // details (normalizer timestamp, latency, or corrected token counts) must not
-  // create a second host event. Without one, hash the complete observation.
-  const identity = sourceEventId ? {
-    version: USAGE_OBSERVED_VERSION,
-    sourceEventId,
-    sessionId,
-    providerId,
-    roleKind,
-    agentRole,
-    routeName,
-    source,
-  } : eventContent;
-  const eventId = stableUsageEventId(identity);
-  if (/^uo_[a-f0-9]{32}$/.test(inputEventId) && inputEventId !== eventId) {
-    throw new UsageObservedError('eventId does not match UsageObserved content', 'USAGE_EVENT_ID_MISMATCH');
+  const timestamp = occurredAtMs(input);
+  let normalized;
+  for (;;) {
+    const payload = { value: input, binding: projected, occurredAtMs: timestamp };
+    if (normalized !== undefined) {
+      payload.proxyOutcome = normalized;
+      payload.proxyOutcomeNormalized = true;
+    }
+    const result = request('create', payload);
+    if (result.retry === 'proxyOutcome') {
+      normalized = normalizeProxyOutcome(input.proxyOutcome);
+      continue;
+    }
+    if (!result.ok) throw new UsageObservedError(result.message, result.code);
+    const event = result.value;
+    if (event.tokens) Object.freeze(event.tokens);
+    if (event.proxyOutcome) Object.freeze(event.proxyOutcome);
+    return Object.freeze(event);
   }
-  const event = {
-    version: USAGE_OBSERVED_VERSION,
-    eventId,
-    sourceEventId,
-    occurredAt,
-    sessionId,
-    providerId,
-    providerName: optionalString(input.providerName, 256),
-    roleKind,
-    agentRole,
-    routeName,
-    source,
-    coverage,
-    status,
-    protocol,
-    model: eventContent.model,
-    tokens,
-    ...(eventContent.proxyOutcome ? { proxyOutcome: eventContent.proxyOutcome } : {}),
-    latencyMs: nonNegative(input.latencyMs, 'latencyMs'),
-    ...(input.statusCode == null ? {} : { statusCode: nonNegative(input.statusCode, 'statusCode') }),
-    ...(input.errorCode ? { errorCode: optionalString(input.errorCode, 128) } : {}),
-    ...(hasAttemptIdentity ? {
-      runtimeEpoch, turnId, decisionId, routeAttemptId, routeGeneration,
-      attemptNo, providerRevision,
-    } : {}),
-    ...(routeAttribution ? { routeAttribution } : {}),
-  };
-  return Object.freeze(event);
+}
+
+function stableUsageEventId(identity) {
+  return request('stableEventId', { identity });
 }
 
 function validateUsageObserved(value) {

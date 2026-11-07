@@ -42,7 +42,7 @@ const { findFreePort, probePort, selectPort } = require(path.join(LIB_DIR, 'port
 const { createBackendSupervisor, killProcessTree } = require(path.join(LIB_DIR, 'backend-supervisor'));
 const { reclaimOrphan, pidAlive, readRuntimeInfo } = require(path.join(LIB_DIR, 'orphan-reclaim'));
 const {
-  resolveDesktopEnv, buildChildEnv, readEnvValues, ensureWritableDirs, translocationGuidance,
+  resolveDesktopEnv, buildChildEnv, readEnvValues, ensureWritableDirs, translocationGuidance, gatewayLaunch,
 } = require(path.join(LIB_DIR, 'desktop-env'));
 
 const APP_DIRNAME = 'MultiCCStandalone';
@@ -575,6 +575,14 @@ function createLauncher({
       throw error;
     }
     const dotenv = readEnvValues(desktopEnv.envFile);
+    // The server only ever runs behind the Rust front door (docs/gateway.md §8).
+    let launch;
+    try {
+      launch = gatewayLaunch({ serverEntry: desktopEnv.serverEntry, node: process.execPath, env });
+    } catch (error) {
+      clearPidFile();
+      throw error;
+    }
     // supervisor.start() only spawns; readiness arrives through onPhase. Gate
     // on that (or on a failure) instead of reading getState() right away —
     // otherwise "starting" looks like "never became ready".
@@ -585,8 +593,8 @@ function createLauncher({
     readyPromise.catch(() => {});
     const supervisor = createSupervisor({
       spawn: spawnImpl,
-      execPath: process.execPath,
-      serverEntry: desktopEnv.serverEntry,
+      command: launch.command,
+      args: launch.args,
       buildEnv: ({ port: childPort }) => buildStandaloneChildEnv({
         port: childPort, desktopEnv, baseEnv: env, dotenv, runtimeNode,
       }),

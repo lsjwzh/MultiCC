@@ -42,6 +42,7 @@
 //! the old JS implementation's plain string handling saw it — not fail the
 //! whole call as a malformed request.
 
+use crate::js::{js_trim, utf16_len};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -172,31 +173,6 @@ fn format_number(number: &serde_json::Number) -> String {
     }
     let mut buffer = ryu_js::Buffer::new();
     buffer.format_finite(float).to_string()
-}
-
-fn is_js_whitespace(character: char) -> bool {
-    matches!(
-        character,
-        '\u{0009}'..='\u{000d}'
-            | '\u{0020}'
-            | '\u{00a0}'
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200a}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202f}'
-            | '\u{205f}'
-            | '\u{3000}'
-            | '\u{feff}'
-    )
-}
-
-fn js_trim(text: &str) -> &str {
-    text.trim_matches(is_js_whitespace)
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
 }
 
 /// `String(value)`. Array holes are encoded as `null` by the bridge.

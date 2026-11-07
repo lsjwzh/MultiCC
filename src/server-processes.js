@@ -44,8 +44,23 @@ function processCwd(pid) {
 function sameProcess(a, b) {
   return !!a && !!b && a.pid === b.pid && a.born === b.born && a.command === b.command;
 }
-function isServer(record, config, cwd = processCwd) {
+// The Rust front door for this checkout: `multicc-gateway serve --cwd <root>`
+// (docs/gateway.md §8). It chdir()s into the checkout, so the cwd is the
+// primary identity; the explicit flag is the fallback when cwd is unreadable.
+function isGatewayRoot(record, config, cwd = processCwd) {
   if (record.pid === process.pid || record.pid <= 1) return false;
+  // BSD ps prints a native binary's argv NUL-separated as "\012" and appends the
+  // environment; Rust (unlike Node) never rewrites its title, so unescape first.
+  const command = record.command.replace(/\\012/g, ' ').replace(/"/g, '');
+  const executable = command.match(/^(?:\S*[/\\])?multicc-gateway(?:\.exe)?(?=\s|$)/)?.[0];
+  if (!executable) return false;
+  const args = command.slice(executable.length).trim();
+  if (!/(?:^|\s)serve(?:\s|$)/.test(args)) return false;
+  return cwd(record.pid) === config.rootDir || (` ${args} `).includes(` --cwd ${config.rootDir} `);
+}
+function isServer(record, config, cwd = processCwd, table = null) {
+  if (record.pid === process.pid || record.pid <= 1) return false;
+  if (isGatewayRoot(record, config, cwd)) return true;
   const command = record.command.replace(/"/g, '');
   const executable = command.startsWith(config.execPath + ' ') ? config.execPath
     : command.match(/^(?:\S*[/\\])?node(?:js|\.exe)?(?=\s)/)?.[0];
@@ -56,11 +71,17 @@ function isServer(record, config, cwd = processCwd) {
     const at = (` ${args} `).indexOf(` ${entry} `);
     return at >= 0 && /^(?:--[\w-]+(?:=[^\s]+)?\s+)*$/.test(args.slice(0, at));
   };
-  if (mainEntry(config.entry)) return true;
-  // Relative server.js is the normal manager launch, so PID files and absolute
-  // command matching alone cannot identify duplicates. Resolve its real cwd.
-  return (mainEntry('server.js') || mainEntry('./server.js') || mainEntry('.') || mainEntry('./'))
-    && cwd(record.pid) === config.rootDir;
+  const matched = mainEntry(config.entry)
+    // Relative server.js is the normal manager launch, so PID files and absolute
+    // command matching alone cannot identify duplicates. Resolve its real cwd.
+    || (mainEntry('server.js') || mainEntry('./server.js') || mainEntry('.') || mainEntry('./'))
+      && cwd(record.pid) === config.rootDir;
+  if (!matched) return false;
+  // `node server.js` started by our front door is a guarded child, not a root:
+  // a stop signals the gateway, which forwards the signal and waits for the
+  // drain. Counting it as a root would race the two into a relaunch loop.
+  const parent = table && table.find(p => p.pid === record.ppid);
+  return !(parent && isGatewayRoot(parent, config, cwd));
 }
 // Detached graceful-restart scripts (logs/restart-*/restart.sh, spawned by
 // /api/restart) outlive the server: kill the server while one is pending and
@@ -104,7 +125,7 @@ function protectedAncestors(table, roots) {
 }
 async function stopServers(config, { graceMs = 65000, log = console.log } = {}) {
   let table = processTable();
-  const roots = table.filter(p => isServer(p, config));
+  const roots = table.filter(p => isServer(p, config, processCwd, table));
   const excluded = protectedAncestors(table, roots);
   // Cancel pending detached restarts first, or the server comes back right
   // after we stop it. Never touch our own ancestor chain — a restart invokes
@@ -137,12 +158,13 @@ async function stopServers(config, { graceMs = 65000, log = console.log } = {}) 
   }
   throw new Error('old MultiCC processes did not exit; refusing to start a duplicate');
 }
-module.exports = { processTable, isServer, isPendingRestarter, sameProcess, descendants, stopServers, protectedAncestors };
+module.exports = { processTable, isServer, isGatewayRoot, isPendingRestarter, sameProcess, descendants, stopServers, protectedAncestors };
 if (require.main === module) {
   const rootDir = fs.realpathSync(process.argv[3]);
   const config = { rootDir, entry: path.join(rootDir, 'server.js'), execPath: process.execPath };
   if (process.argv[2] === 'list') {
-    for (const p of processTable().filter(p => isServer(p, config))) console.log(p.pid);
+    const table = processTable();
+    for (const p of table.filter(p => isServer(p, config, processCwd, table))) console.log(p.pid);
   } else if (process.argv[2] === 'owner') {
     const owner = processTable().find(p => p.pid === Number(process.argv[4]));
     if (!owner) process.exitCode = 1;
