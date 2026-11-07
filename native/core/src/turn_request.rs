@@ -16,6 +16,7 @@
 //! Old JS semantics are kept exactly: `String()` coercion, JS `trim()`
 //! whitespace (includes U+FEFF, excludes U+0085), UTF-16 code-unit lengths and
 //! slices, `Number()` coercion, `===` identity checks and `Array.isArray`.
+use crate::js::{js_trim, utf16_len, utf16_prefix};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 
@@ -122,41 +123,6 @@ fn js_string(value: &Value) -> String {
             .join(","),
         Value::Object(_) => "[object Object]".to_string(),
     }
-}
-
-fn is_js_whitespace(character: char) -> bool {
-    matches!(
-        character,
-        '\u{0009}'..='\u{000d}'
-            | '\u{0020}'
-            | '\u{00a0}'
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200a}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202f}'
-            | '\u{205f}'
-            | '\u{3000}'
-            | '\u{feff}'
-    )
-}
-
-fn js_trim(text: &str) -> &str {
-    text.trim_matches(is_js_whitespace)
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
-/// `text.slice(0, end)` for a non-negative end, in UTF-16 code units. A cut
-/// through a surrogate pair yields U+FFFD (the JS→Rust bridge convention).
-fn utf16_prefix(text: &str, end: usize) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    if units.len() <= end {
-        return text.to_string();
-    }
-    String::from_utf16_lossy(&units[..end])
 }
 
 fn is_integer(number: f64) -> bool {

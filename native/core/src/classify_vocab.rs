@@ -7,6 +7,7 @@
 //!   * an UPPERCASE English phase falls through to the case-insensitive lookup
 //!     and yields the Chinese LABEL, not the key (golden test pins this),
 //!   * goal length caps/slices count UTF-16 code units, like JS strings.
+use crate::js::{utf16_len, utf16_truncate};
 use regex::Regex;
 use serde_json::{json, Value};
 use std::sync::OnceLock;
@@ -66,22 +67,6 @@ fn re_goal_noise_prefix() -> &'static Regex {
 }
 
 // JS strings are UTF-16: `.slice(0, n)` and `.length` count code units.
-fn utf16_len(s: &str) -> usize {
-    s.chars().map(char::len_utf16).sum()
-}
-fn utf16_truncate(s: &str, n: usize) -> String {
-    let mut out = String::new();
-    let mut units = 0usize;
-    for c in s.chars() {
-        let w = c.len_utf16();
-        if units + w > n {
-            break;
-        }
-        out.push(c);
-        units += w;
-    }
-    out
-}
 
 // String(value || '') for the fields read out of a result object: null /
 // undefined / "" / 0 / false become "", other scalars stringify.

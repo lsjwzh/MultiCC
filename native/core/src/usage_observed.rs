@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
-use crate::js_value::{
+use crate::js::serde::{
     js_string, js_to_number, js_trim, number_value, stable_stringify, truthy, truthy_opt, utf16_len,
 };
 

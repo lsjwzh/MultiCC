@@ -108,7 +108,7 @@ function probeAddon(file, node = process.execPath) {
         || rows[0].outcome!=='started' || rows[1].outcome!=='succeeded') throw Error('audit_preflight_failed');
     } finally { fs.rmSync(auditRoot,{recursive:true,force:true}); }
     if(a.taskStoreProtocolVersion?.()!==1 || a.taskDomainProtocolVersion?.()!==1
-      || ['RustTaskStore','RustAirCardCache','RustTaskBoard','taskDomain','taskDomainAsync','buildTaskRunContext'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      || ['RustTaskStore','RustAirCardCache','RustTaskBoard','taskDomain','taskDomainAsync','buildTaskRunContext','jsBridgeRoundTrip','jsBridgeJsonView','jsBridgeJsonRoundTrip'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustAirCardCache.prototype.prepareAsync!=='function' || typeof a.RustAirCardCache.prototype.prepareBoardAsync!=='function') process.exit(1);
     const store=new a.RustTaskStore(':memory:');
     store.run(JSON.stringify({op:'set',kind:'task',id:'smoke',body:JSON.stringify({id:'smoke'})}));

@@ -32,7 +32,7 @@ pub mod worktree_sync;
 
 pub mod claude_refresh;
 pub mod codex_models;
-pub mod js_value;
+pub mod js;
 pub mod json_lenient;
 pub mod selection;
 pub mod usage_observed;

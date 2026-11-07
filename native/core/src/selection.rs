@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
-use crate::js_value::{
+use crate::js::serde::{
     js_json_stringify, js_less_equal, js_math_min, js_string, js_string_or_empty, js_to_number,
     number_value, truthy, truthy_opt, utf16_len, utf16_prefix, value_or_empty,
 };

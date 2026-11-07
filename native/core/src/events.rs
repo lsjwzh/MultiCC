@@ -21,6 +21,7 @@
 use crate::classify_vocab::{
     is_abnormal_letter, is_goal_state, is_processing_letter, is_terminal_letter,
 };
+use crate::js::{js_trim, utf16_len, utf16_prefix};
 use regex::{Captures, Regex};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
@@ -232,24 +233,6 @@ fn is_js_whitespace(character: char) -> bool {
             | '\u{3000}'
             | '\u{feff}'
     )
-}
-
-fn js_trim(text: &str) -> &str {
-    text.trim_matches(is_js_whitespace)
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
-/// `text.slice(0, end)` for a non-negative end, in UTF-16 code units. A cut
-/// through a surrogate pair yields U+FFFD (the JS→Rust bridge convention).
-fn utf16_prefix(text: &str, end: usize) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    if units.len() <= end {
-        return text.to_string();
-    }
-    String::from_utf16_lossy(&units[..end])
 }
 
 /// `slice`'s end argument: ToIntegerOrInfinity, relative when negative.

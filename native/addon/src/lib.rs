@@ -10,6 +10,7 @@ pub mod cli_switch;
 pub mod cpr;
 pub mod events;
 pub mod guard;
+pub mod js_bridge;
 pub mod machines;
 pub mod opencode_context;
 pub mod opencode_error;

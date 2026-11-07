@@ -19,6 +19,7 @@
 //!
 //! JS semantics preserved: `String()` coercion, JS `trim()` whitespace, UTF-16
 //! code-unit lengths and slices, truthiness, `||` fallbacks and `Array.isArray`.
+use crate::js::{js_trim, utf16_len, utf16_prefix, utf16_suffix};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 
@@ -104,60 +105,6 @@ fn js_string(value: &Value) -> String {
 
 fn js_string_opt(value: Option<&Value>) -> String {
     value.map_or_else(|| "undefined".to_string(), js_string)
-}
-
-fn is_js_whitespace(character: char) -> bool {
-    matches!(
-        character,
-        '\u{0009}'..='\u{000d}'
-            | '\u{0020}'
-            | '\u{00a0}'
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200a}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202f}'
-            | '\u{205f}'
-            | '\u{3000}'
-            | '\u{feff}'
-    )
-}
-
-fn js_trim(text: &str) -> &str {
-    text.trim_matches(is_js_whitespace)
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
-/// `text.slice(0, end)` in UTF-16 code units (a split surrogate becomes U+FFFD).
-fn utf16_prefix(text: &str, end: usize) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    if units.len() <= end {
-        return text.to_string();
-    }
-    String::from_utf16_lossy(&units[..end])
-}
-
-/// `text.slice(-n)` for n >= 0. `n == 0` means `slice(-0)`, i.e. the whole
-/// string, matching the JS spec's relative-start rule.
-fn utf16_suffix(text: &str, n: f64) -> String {
-    if n.is_nan() || n == f64::INFINITY {
-        return text.to_string();
-    }
-    // `slice(-n)` truncates the relative start toward zero first: -0.5 becomes
-    // -0, which is NOT negative, so the whole string is kept.
-    let count = n.trunc();
-    if count <= 0.0 {
-        return text.to_string();
-    }
-    let units: Vec<u16> = text.encode_utf16().collect();
-    if count >= units.len() as f64 {
-        return text.to_string();
-    }
-    let start = units.len() - count as usize;
-    String::from_utf16_lossy(&units[start..])
 }
 
 fn cloned_or_null(value: Option<&Value>) -> Value {

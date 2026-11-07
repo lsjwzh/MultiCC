@@ -5,19 +5,18 @@
 //! turn refs; credentials and native session identities are redacted before
 //! anything is rendered.
 //!
-//! The host sends and receives JSON, but the wire format is only the transport:
-//! JavaScript string semantics are load-bearing here, so text is carried as
-//! UTF-16 code units (`Vec<u16>`) and every length, slice, sort and digest is
-//! computed on code units, not scalar values. Strings that contain a lone
-//! surrogate travel as `{"$multiccText": "<base64 utf16le>"}` and Buffers as
-//! `{"$multiccBuffer": "<base64>"}`; both are decoded before the rules run.
-//! Results are serialized with `JSON.stringify` byte semantics so a lone high
-//! surrogate produced by cutting a surrogate pair survives the boundary.
-use crate::json_lenient;
+//! Values cross the napi boundary as real JavaScript values
+//! (`native/addon/src/js_bridge.rs`), so a lone surrogate, `undefined`, `NaN`
+//! or a `Buffer` arrives intact and no wire markers are needed. Every string,
+//! number and JSON rule lives in [`crate::js`]; this module only composes them.
+//! Engine-defined behavior — `Date.parse` in particular — stays in JS and is
+//! precomputed by the bridge (`src/task-board/turn-context.js`).
+use crate::js::{
+    js_string_to_number, js_to_number, js_to_string, json_quote, nullish, number_to_string,
+    truthy_opt, JsString, JsValue,
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use regex::{Captures, Regex};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
@@ -26,77 +25,28 @@ const MAX_TASK_ID_CHARS: f64 = 200.0;
 const MAX_TASK_TITLE_CHARS: f64 = 240.0;
 const REDACTED: &str = "[redacted]";
 
-type Text = Vec<u16>;
-
-/// A JSON-shaped value with JavaScript string semantics. Object keys stay
-/// valid UTF-8: lone surrogates in keys are out of scope for the wire format.
-#[derive(Clone, Debug)]
-pub enum JsValue {
-    Null,
-    /// An own property or array element whose value is `undefined`. JavaScript
-    /// only shows the difference from a missing key in `stableStringify`, which
-    /// prints `undefined` inside objects and nothing inside arrays.
-    Undefined,
-    Bool(bool),
-    Number(f64),
-    Text(Text),
-    Binary(Vec<u8>),
-    Array(Vec<JsValue>),
-    Object(Vec<(String, JsValue)>),
-}
+type Text = JsString;
 
 fn text(value: &str) -> Text {
-    value.encode_utf16().collect()
+    JsString::from_rust_str(value)
 }
 
 fn cat(parts: &[&Text]) -> Text {
-    let mut out = Vec::new();
-    for part in parts {
-        out.extend_from_slice(part);
-    }
-    out
+    JsString::concat(parts)
 }
 
 fn join(parts: &[Text], separator: &Text) -> Text {
-    let mut out = Vec::new();
-    for (index, part) in parts.iter().enumerate() {
-        if index > 0 {
-            out.extend_from_slice(separator);
-        }
-        out.extend_from_slice(part);
-    }
-    out
+    JsString::join(parts, separator)
 }
 
-fn lossy(value: &[u16]) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut index = 0;
-    while index < value.len() {
-        let unit = value[index];
-        if (0xD800..=0xDBFF).contains(&unit) {
-            if let Some(&low) = value.get(index + 1) {
-                if (0xDC00..=0xDFFF).contains(&low) {
-                    let code = 0x10000 + ((unit as u32 - 0xD800) << 10) + (low as u32 - 0xDC00);
-                    out.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
-                    index += 2;
-                    continue;
-                }
-            }
-            out.push('\u{FFFD}');
-        } else if (0xDC00..=0xDFFF).contains(&unit) {
-            out.push('\u{FFFD}');
-        } else {
-            out.push(char::from_u32(unit as u32).unwrap_or('\u{FFFD}'));
-        }
-        index += 1;
-    }
-    out
+fn lossy(value: &Text) -> String {
+    value.to_string_lossy()
 }
 
 /// UTF-8 bytes the way Node's `Hash.update(string)` and `Buffer.byteLength`
 /// encode them: lone surrogates become U+FFFD.
-fn utf8(value: &[u16]) -> Vec<u8> {
-    lossy(value).into_bytes()
+fn utf8(value: &Text) -> Vec<u8> {
+    value.utf8_lossy_bytes()
 }
 
 fn digest_bytes(bytes: &[u8]) -> String {
@@ -105,43 +55,24 @@ fn digest_bytes(bytes: &[u8]) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
-fn digest_text(value: &[u16]) -> String {
-    digest_bytes(&utf8(value))
+fn digest_text(value: &Text) -> String {
+    digest_bytes(&value.utf8_lossy_bytes())
 }
 
-fn is_js_space(unit: u16) -> bool {
-    matches!(
-        unit,
-        0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x20 | 0xA0 | 0x1680 | 0x2000
-            ..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F | 0x3000 | 0xFEFF
-    )
-}
-
-fn is_js_space_char(c: char) -> bool {
-    c.len_utf16() == 1 && is_js_space(c as u32 as u16)
-}
-
-fn trim_js(value: &[u16]) -> Text {
-    let start = value.iter().position(|unit| !is_js_space(*unit));
-    let Some(start) = start else {
-        return Vec::new();
-    };
-    let end = value.iter().rposition(|unit| !is_js_space(*unit)).unwrap() + 1;
-    value[start..end].to_vec()
+fn trim_js(value: &Text) -> Text {
+    value.trim()
 }
 
 fn lowercase_js(value: &Text) -> Text {
-    text(&lossy(value).to_lowercase())
+    value.to_lowercase()
 }
 
-fn compare_text(left: &[u16], right: &[u16]) -> std::cmp::Ordering {
+fn compare_text(left: &Text, right: &Text) -> std::cmp::Ordering {
     left.cmp(right)
 }
 
 fn compare_string(left: &str, right: &str) -> std::cmp::Ordering {
-    let left: Vec<u16> = left.encode_utf16().collect();
-    let right: Vec<u16> = right.encode_utf16().collect();
-    left.cmp(&right)
+    left.encode_utf16().cmp(right.encode_utf16())
 }
 
 // ---------------------------------------------------------------------------
@@ -149,277 +80,53 @@ fn compare_string(left: &str, right: &str) -> std::cmp::Ordering {
 // ---------------------------------------------------------------------------
 
 fn prop<'a>(value: &'a JsValue, key: &str) -> Option<&'a JsValue> {
-    match value {
-        JsValue::Object(entries) => entries.iter().find(|(name, _)| name == key).map(|(_, v)| v),
-        _ => None,
-    }
-}
-
-/// `a ?? b`: a nullish first value falls through. `None` is `undefined`.
-fn nullish<'a>(first: Option<&'a JsValue>, second: Option<&'a JsValue>) -> Option<&'a JsValue> {
-    match first {
-        None | Some(JsValue::Null) | Some(JsValue::Undefined) => second,
-        value => value,
-    }
+    value.get(key)
 }
 
 /// `truthiness` of a JavaScript value.
 fn truthy(value: Option<&JsValue>) -> bool {
-    match value {
-        None | Some(JsValue::Null) | Some(JsValue::Undefined) => false,
-        Some(JsValue::Bool(flag)) => *flag,
-        Some(JsValue::Number(number)) => *number != 0.0 && !number.is_nan(),
-        Some(JsValue::Text(units)) => !units.is_empty(),
-        Some(JsValue::Binary(bytes)) => !bytes.is_empty(),
-        Some(_) => true,
-    }
-}
-
-fn number_string(number: f64) -> String {
-    if number.is_nan() {
-        return "NaN".into();
-    }
-    if number == f64::INFINITY {
-        return "Infinity".into();
-    }
-    if number == f64::NEG_INFINITY {
-        return "-Infinity".into();
-    }
-    if number == 0.0 {
-        return "0".into();
-    }
-    ryu_js::Buffer::new().format_finite(number).to_string()
+    truthy_opt(value)
 }
 
 /// `String(value == null ? '' : value)`.
 fn to_text(value: Option<&JsValue>) -> Text {
     match value {
-        None | Some(JsValue::Null) | Some(JsValue::Undefined) => Vec::new(),
-        Some(JsValue::Text(units)) => units.clone(),
-        Some(JsValue::Number(number)) => text(&number_string(*number)),
-        Some(JsValue::Bool(flag)) => text(if *flag { "true" } else { "false" }),
-        Some(JsValue::Binary(bytes)) => text(&String::from_utf8_lossy(bytes)),
-        Some(JsValue::Array(items)) => {
-            let parts: Vec<Text> = items
-                .iter()
-                .map(|item| match item {
-                    JsValue::Null => Vec::new(),
-                    other => to_text(Some(other)),
-                })
-                .collect();
-            join(&parts, &text(","))
-        }
-        Some(JsValue::Object(_)) => text("[object Object]"),
+        None | Some(JsValue::Null) | Some(JsValue::Undefined) => Text::new(),
+        Some(value) => js_to_string(value),
     }
 }
 
-/// `Number(value)`.
+/// `Number(value)`, where a missing value is `undefined`.
 fn to_number(value: Option<&JsValue>) -> f64 {
-    match value {
-        None | Some(JsValue::Undefined) => f64::NAN,
-        Some(JsValue::Null) => 0.0,
-        Some(JsValue::Bool(flag)) => {
-            if *flag {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        Some(JsValue::Number(number)) => *number,
-        Some(JsValue::Text(units)) => parse_number(&lossy(units)),
-        Some(JsValue::Binary(bytes)) => parse_number(&String::from_utf8_lossy(bytes)),
-        Some(JsValue::Array(_)) => parse_number(&lossy(&to_text(value))),
-        Some(JsValue::Object(_)) => f64::NAN,
-    }
-}
-
-fn decimal_shape(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    if matches!(bytes.get(index), Some(b'+') | Some(b'-')) {
-        index += 1;
-    }
-    let integer_start = index;
-    while matches!(bytes.get(index), Some(byte) if byte.is_ascii_digit()) {
-        index += 1;
-    }
-    let integer_digits = index - integer_start;
-    let mut fraction_digits = 0;
-    if bytes.get(index) == Some(&b'.') {
-        index += 1;
-        let fraction_start = index;
-        while matches!(bytes.get(index), Some(byte) if byte.is_ascii_digit()) {
-            index += 1;
-        }
-        fraction_digits = index - fraction_start;
-    }
-    if integer_digits == 0 && fraction_digits == 0 {
-        return false;
-    }
-    if matches!(bytes.get(index), Some(b'e') | Some(b'E')) {
-        index += 1;
-        if matches!(bytes.get(index), Some(b'+') | Some(b'-')) {
-            index += 1;
-        }
-        let exponent_start = index;
-        while matches!(bytes.get(index), Some(byte) if byte.is_ascii_digit()) {
-            index += 1;
-        }
-        if index == exponent_start {
-            return false;
-        }
-    }
-    index == bytes.len()
-}
-
-fn radix_value(digits: &str, radix: u32) -> f64 {
-    let mut value = 0.0;
-    for c in digits.chars() {
-        let digit = c.to_digit(radix);
-        match digit {
-            Some(digit) => value = value * radix as f64 + digit as f64,
-            None => return f64::NAN,
-        }
-    }
-    value
-}
-
-/// `Number(string)` — StringNumericLiteral, without the empty-string 0 case
-/// confusion: an all-whitespace string is 0.
-fn parse_number(value: &str) -> f64 {
-    let trimmed: String = value.trim_matches(is_js_space_char).to_string();
-    if trimmed.is_empty() {
-        return 0.0;
-    }
-    match trimmed.as_str() {
-        "Infinity" | "+Infinity" => return f64::INFINITY,
-        "-Infinity" => return f64::NEG_INFINITY,
-        _ => {}
-    }
-    for (prefix, radix) in [
-        ("0x", 16u32),
-        ("0X", 16),
-        ("0o", 8),
-        ("0O", 8),
-        ("0b", 2),
-        ("0B", 2),
-    ] {
-        if let Some(digits) = trimmed.strip_prefix(prefix) {
-            if digits.is_empty() {
-                return f64::NAN;
-            }
-            return radix_value(digits, radix);
-        }
-    }
-    if !decimal_shape(&trimmed) {
-        return f64::NAN;
-    }
-    trimmed.parse::<f64>().unwrap_or(f64::NAN)
-}
-
-fn js_date_parse(value: &Text) -> Option<f64> {
-    let raw = lossy(value);
-    let trimmed = raw.trim_matches(is_js_space_char);
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Ok(parsed) = DateTime::parse_from_rfc3339(trimmed) {
-        return Some(parsed.timestamp_millis() as f64);
-    }
-    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
-        if let Ok(naive) = NaiveDateTime::parse_from_str(trimmed, format) {
-            return Local
-                .from_local_datetime(&naive)
-                .earliest()
-                .map(|parsed| parsed.timestamp_millis() as f64);
-        }
-    }
-    if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
-        return Some(date.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis() as f64);
-    }
-    if let Ok(month) = NaiveDate::parse_from_str(&format!("{trimmed}-01"), "%Y-%m-%d") {
-        return Some(month.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis() as f64);
-    }
-    if let Ok(year) = NaiveDate::parse_from_str(&format!("{trimmed}-01-01"), "%Y-%m-%d") {
-        return Some(year.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis() as f64);
-    }
-    None
+    value.map_or(f64::NAN, js_to_number)
 }
 
 // ---------------------------------------------------------------------------
-// JSON.stringify-compatible serialization
+// Stable JSON serialization (sorted object keys, `undefined` preserved)
 // ---------------------------------------------------------------------------
 
-fn write_js_string(units: &[u16], out: &mut String) {
-    out.push('"');
-    let mut index = 0;
-    while index < units.len() {
-        let unit = units[index];
-        match unit {
-            0x22 => out.push_str("\\\""),
-            0x5C => out.push_str("\\\\"),
-            0x08 => out.push_str("\\b"),
-            0x09 => out.push_str("\\t"),
-            0x0A => out.push_str("\\n"),
-            0x0C => out.push_str("\\f"),
-            0x0D => out.push_str("\\r"),
-            unit if unit < 0x20 => out.push_str(&format!("\\u{unit:04x}")),
-            0xD800..=0xDBFF => {
-                let low = units.get(index + 1).copied();
-                match low {
-                    Some(low) if (0xDC00..=0xDFFF).contains(&low) => {
-                        let code = 0x10000 + ((unit as u32 - 0xD800) << 10) + (low as u32 - 0xDC00);
-                        if let Some(c) = char::from_u32(code) {
-                            out.push(c);
-                        }
-                        index += 1;
-                    }
-                    _ => out.push_str(&format!("\\u{unit:04x}")),
-                }
-            }
-            0xDC00..=0xDFFF => out.push_str(&format!("\\u{unit:04x}")),
-            unit => {
-                if let Some(c) = char::from_u32(unit as u32) {
-                    out.push(c);
-                }
-            }
-        }
-        index += 1;
-    }
-    out.push('"');
-}
-
-/// `Output` is what crosses the FFI boundary and must be valid JSON that
-/// `JSON.parse` restores exactly, so negative zero is written as `-0`.
-/// `Stringify` reproduces `JSON.stringify`, where negative zero prints as `0`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Output,
-    Stringify,
-}
-
-fn write_number(number: f64, mode: Mode, out: &mut String) {
-    if !number.is_finite() {
-        out.push_str("null");
-    } else if mode == Mode::Output && number == 0.0 && number.is_sign_negative() {
-        out.push_str("-0");
-    } else {
-        out.push_str(&number_string(number));
-    }
-}
-
-fn write_value(value: &JsValue, mode: Mode, out: &mut String) {
+fn write_value(value: &JsValue, out: &mut String) {
     match value {
         JsValue::Null => out.push_str("null"),
         JsValue::Undefined => out.push_str("undefined"),
         JsValue::Bool(flag) => out.push_str(if *flag { "true" } else { "false" }),
-        JsValue::Number(number) => write_number(*number, mode, out),
-        JsValue::Text(units) => write_js_string(units, out),
-        JsValue::Binary(bytes) => {
+        JsValue::Number(number) => {
+            if number.is_finite() {
+                out.push_str(&number_to_string(*number));
+            } else {
+                out.push_str("null");
+            }
+        }
+        JsValue::String(units) => out.push_str(&json_quote(units)),
+        JsValue::Bytes(bytes) => {
             out.push_str("{\"type\":\"Buffer\",\"data\":");
-            write_js_string(&text(&STANDARD.encode(bytes)), out);
+            out.push_str(&json_quote(&JsString::from_rust_str(&STANDARD.encode(bytes))));
             out.push('}');
         }
+        JsValue::Date(milliseconds) => match crate::js::date_to_iso_string(*milliseconds) {
+            Some(iso) => out.push_str(&json_quote(&JsString::from_rust_str(&iso))),
+            None => out.push_str("null"),
+        },
         JsValue::Array(items) => {
             out.push('[');
             for (index, item) in items.iter().enumerate() {
@@ -428,101 +135,32 @@ fn write_value(value: &JsValue, mode: Mode, out: &mut String) {
                 }
                 // `array.map(stableStringify).join(',')` renders undefined as ''.
                 if !matches!(item, JsValue::Undefined) {
-                    write_value(item, mode, out);
+                    write_value(item, out);
                 }
             }
             out.push(']');
         }
         JsValue::Object(entries) => {
             let mut order: Vec<usize> = (0..entries.len()).collect();
-            if mode == Mode::Stringify {
-                order.sort_by(|&left, &right| compare_string(&entries[left].0, &entries[right].0));
-            }
+            order.sort_by(|&left, &right| compare_text(&entries[left].0, &entries[right].0));
             out.push('{');
             for (position, &index) in order.iter().enumerate() {
                 if position > 0 {
                     out.push(',');
                 }
-                write_js_string(&text(&entries[index].0), out);
+                out.push_str(&json_quote(&entries[index].0));
                 out.push(':');
-                write_value(&entries[index].1, mode, out);
+                write_value(&entries[index].1, out);
             }
             out.push('}');
         }
     }
 }
 
-fn to_json(value: &JsValue, mode: Mode) -> String {
+fn stable_stringify(value: &JsValue) -> String {
     let mut out = String::new();
-    write_value(value, mode, &mut out);
+    write_value(value, &mut out);
     out
-}
-
-// ---------------------------------------------------------------------------
-// Wire decoding
-// ---------------------------------------------------------------------------
-
-fn decode_base64(value: &Value) -> Option<Vec<u8>> {
-    STANDARD.decode(value.as_str()?).ok()
-}
-
-fn decode_marker(entries: &[(String, Value)]) -> Option<JsValue> {
-    if entries.len() != 1 {
-        return None;
-    }
-    match entries[0].0.as_str() {
-        "$multiccBuffer" => Some(JsValue::Binary(decode_base64(&entries[0].1)?)),
-        "$multiccUndefined" => Some(JsValue::Undefined),
-        "$multiccNumber" => {
-            let number = match entries[0].1.as_str()? {
-                "NaN" => f64::NAN,
-                "Infinity" => f64::INFINITY,
-                "-Infinity" => f64::NEG_INFINITY,
-                "-0" => -0.0,
-                _ => return None,
-            };
-            Some(JsValue::Number(number))
-        }
-        "$multiccText" => {
-            let bytes = decode_base64(&entries[0].1)?;
-            if bytes.len() % 2 != 0 {
-                return None;
-            }
-            let mut units = Vec::with_capacity(bytes.len() / 2);
-            let mut index = 0;
-            while index < bytes.len() {
-                units.push(u16::from_le_bytes([bytes[index], bytes[index + 1]]));
-                index += 2;
-            }
-            Some(JsValue::Text(units))
-        }
-        _ => None,
-    }
-}
-
-fn from_json(value: &Value) -> JsValue {
-    match value {
-        Value::Null => JsValue::Null,
-        Value::Bool(flag) => JsValue::Bool(*flag),
-        Value::Number(number) => JsValue::Number(number.as_f64().unwrap_or(f64::NAN)),
-        Value::String(value) => JsValue::Text(text(value)),
-        Value::Array(items) => JsValue::Array(items.iter().map(from_json).collect()),
-        Value::Object(map) => {
-            let entries: Vec<(String, Value)> = map
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect();
-            if let Some(marker) = decode_marker(&entries) {
-                return marker;
-            }
-            JsValue::Object(
-                entries
-                    .iter()
-                    .map(|(key, value)| (key.clone(), from_json(value)))
-                    .collect(),
-            )
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +280,8 @@ fn patterns() -> &'static Patterns {
 /// Byte offset -> UTF-16 index map for a lossy copy of `value`. Regex matches
 /// run on the lossy copy (the engine needs valid UTF-8) and are applied back
 /// to the original code units, so untouched lone surrogates survive.
-fn lossy_with_map(value: &[u16]) -> (String, Vec<(usize, usize)>) {
+fn lossy_with_map(value: &Text) -> (String, Vec<(usize, usize)>) {
+    let value = value.as_units();
     let mut out = String::with_capacity(value.len());
     let mut map = Vec::with_capacity(value.len() + 1);
     let mut index = 0;
@@ -683,6 +322,7 @@ fn replace_with<F>(value: &Text, pattern: &Regex, mut replacement: F) -> Text
 where
     F: FnMut(&Captures<'_>) -> Text,
 {
+    let units = value.as_units();
     let (lossy_value, map) = lossy_with_map(value);
     let mut replacements: Vec<(usize, usize, Text)> = Vec::new();
     for captures in pattern.captures_iter(&lossy_value) {
@@ -694,17 +334,17 @@ where
         ));
     }
     if replacements.is_empty() {
-        return value.to_vec();
+        return value.clone();
     }
-    let mut out = Vec::with_capacity(value.len());
+    let mut out = Vec::with_capacity(units.len());
     let mut last = 0;
     for (start, end, addition) in replacements {
-        out.extend_from_slice(&value[last..start]);
-        out.extend_from_slice(&addition);
+        out.extend_from_slice(&units[last..start]);
+        out.extend_from_slice(addition.as_units());
         last = end;
     }
-    out.extend_from_slice(&value[last..]);
-    out
+    out.extend_from_slice(&units[last..]);
+    JsString::from_units(out)
 }
 
 fn replace_literal(value: &Text, pattern: &Regex, literal: &str) -> Text {
@@ -748,20 +388,19 @@ fn redact_text(value: Option<&JsValue>) -> Text {
 // ---------------------------------------------------------------------------
 
 /// `truncate(value, maxChars)` with `String.prototype.slice` index rules.
-fn truncate(value: &[u16], max_chars: f64) -> Text {
+fn truncate(value: &Text, max_chars: f64) -> Text {
     if !max_chars.is_finite() || value.len() as f64 <= max_chars {
-        return value.to_vec();
+        return value.clone();
     }
     if max_chars <= 0.0 {
-        return Vec::new();
+        return Text::new();
     }
     if max_chars == 1.0 {
         return text("…");
     }
     let cut = (max_chars - 1.0).trunc().max(0.0) as usize;
-    let cut = cut.min(value.len());
-    let mut out = value[..cut].to_vec();
-    out.extend_from_slice(&text("…"));
+    let mut out = value.truncate_units(cut);
+    out.push(&text("…"));
     out
 }
 
@@ -782,7 +421,7 @@ fn normalize_budget(value: Option<&JsValue>) -> f64 {
 fn normalize_version(value: Option<&JsValue>) -> JsValue {
     match value {
         None | Some(JsValue::Null) => return JsValue::Number(1.0),
-        Some(JsValue::Text(units)) if units.is_empty() => return JsValue::Number(1.0),
+        Some(JsValue::String(units)) if units.is_empty() => return JsValue::Number(1.0),
         Some(JsValue::Number(number)) if number.is_finite() => return JsValue::Number(*number),
         _ => {}
     }
@@ -790,7 +429,7 @@ fn normalize_version(value: Option<&JsValue>) -> JsValue {
     if normalized.is_empty() {
         JsValue::Number(1.0)
     } else {
-        JsValue::Text(normalized)
+        JsValue::String(normalized)
     }
 }
 
@@ -822,16 +461,11 @@ fn normalize_timestamp(value: Option<&JsValue>) -> f64 {
             return *number;
         }
     }
-    if let Some(JsValue::Text(units)) = value {
+    if let Some(JsValue::String(units)) = value {
         if !trim_js(units).is_empty() {
-            let numeric = parse_number(&lossy(units));
+            let numeric = js_string_to_number(&lossy(units));
             if numeric.is_finite() {
                 return numeric;
-            }
-            if let Some(parsed) = js_date_parse(units) {
-                if parsed.is_finite() {
-                    return parsed;
-                }
             }
         }
     }
@@ -869,21 +503,25 @@ fn forbidden_session_key(key: &str) -> bool {
 fn sanitize_structured(value: &JsValue) -> JsValue {
     match value {
         JsValue::Null | JsValue::Undefined | JsValue::Bool(_) | JsValue::Number(_) => value.clone(),
-        JsValue::Text(units) => JsValue::Text(redact_text(Some(&JsValue::Text(units.clone())))),
-        JsValue::Binary(bytes) => {
-            JsValue::Text(text(&format!("[binary content, {} bytes]", bytes.len())))
+        JsValue::String(units) => {
+            JsValue::String(redact_text(Some(&JsValue::String(units.clone()))))
         }
+        JsValue::Bytes(bytes) => {
+            JsValue::String(text(&format!("[binary content, {} bytes]", bytes.len())))
+        }
+        JsValue::Date(milliseconds) => JsValue::Date(*milliseconds),
         JsValue::Array(items) => JsValue::Array(items.iter().map(sanitize_structured).collect()),
         JsValue::Object(entries) => {
-            let mut sorted: Vec<&(String, JsValue)> = entries.iter().collect();
-            sorted.sort_by(|left, right| compare_string(&left.0, &right.0));
+            let mut sorted: Vec<&(JsString, JsValue)> = entries.iter().collect();
+            sorted.sort_by(|left, right| compare_text(&left.0, &right.0));
             let mut out = Vec::new();
             for (key, item) in sorted {
-                if forbidden_session_key(key) {
+                let key_text = key.to_string_lossy();
+                if forbidden_session_key(&key_text) {
                     continue;
                 }
-                let sanitized = if secret_key_name(key) {
-                    JsValue::Text(text(REDACTED))
+                let sanitized = if secret_key_name(&key_text) {
+                    JsValue::String(text(REDACTED))
                 } else {
                     sanitize_structured(item)
                 };
@@ -894,19 +532,15 @@ fn sanitize_structured(value: &JsValue) -> JsValue {
     }
 }
 
-fn stable_stringify(value: &JsValue) -> String {
-    to_json(value, Mode::Stringify)
-}
-
 fn content_to_text(value: Option<&JsValue>) -> Text {
     let Some(value) = value else {
-        return Vec::new();
+        return Text::new();
     };
     match value {
-        JsValue::Text(units) => {
-            normalize_string(Some(&JsValue::Text(units.clone())), f64::INFINITY)
+        JsValue::String(units) => {
+            normalize_string(Some(&JsValue::String(units.clone())), f64::INFINITY)
         }
-        JsValue::Null | JsValue::Undefined => Vec::new(),
+        JsValue::Null | JsValue::Undefined => Text::new(),
         JsValue::Array(items) => {
             let mut parts = Vec::new();
             for item in items {
@@ -914,18 +548,19 @@ fn content_to_text(value: Option<&JsValue>) -> Text {
                     continue;
                 }
                 let part = match item {
-                    JsValue::Text(units) => {
-                        normalize_string(Some(&JsValue::Text(units.clone())), f64::INFINITY)
+                    JsValue::String(units) => {
+                        normalize_string(Some(&JsValue::String(units.clone())), f64::INFINITY)
                     }
-                    JsValue::Object(_) | JsValue::Array(_) | JsValue::Binary(_) => {
-                        if let JsValue::Text(units) = prop(item, "text").unwrap_or(&JsValue::Null) {
+                    JsValue::Object(_) | JsValue::Array(_) | JsValue::Bytes(_) => {
+                        if let JsValue::String(units) = prop(item, "text").unwrap_or(&JsValue::Null)
+                        {
                             let units = units.clone();
-                            normalize_string(Some(&JsValue::Text(units)), f64::INFINITY)
-                        } else if let JsValue::Text(units) =
+                            normalize_string(Some(&JsValue::String(units)), f64::INFINITY)
+                        } else if let JsValue::String(units) =
                             prop(item, "content").unwrap_or(&JsValue::Null)
                         {
                             let units = units.clone();
-                            normalize_string(Some(&JsValue::Text(units)), f64::INFINITY)
+                            normalize_string(Some(&JsValue::String(units)), f64::INFINITY)
                         } else {
                             text(&stable_stringify(&sanitize_structured(item)))
                         }
@@ -938,10 +573,10 @@ fn content_to_text(value: Option<&JsValue>) -> Text {
             }
             join(&parts, &text("\n"))
         }
-        JsValue::Object(_) | JsValue::Binary(_) => {
-            if let JsValue::Text(units) = prop(value, "text").unwrap_or(&JsValue::Null) {
+        JsValue::Object(_) | JsValue::Bytes(_) => {
+            if let JsValue::String(units) = prop(value, "text").unwrap_or(&JsValue::Null) {
                 let units = units.clone();
-                normalize_string(Some(&JsValue::Text(units)), f64::INFINITY)
+                normalize_string(Some(&JsValue::String(units)), f64::INFINITY)
             } else {
                 text(&stable_stringify(&sanitize_structured(value)))
             }
@@ -966,7 +601,7 @@ struct Message {
 fn object_like(value: &JsValue) -> bool {
     matches!(
         value,
-        JsValue::Object(_) | JsValue::Array(_) | JsValue::Binary(_)
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Bytes(_)
     )
 }
 
@@ -1034,7 +669,7 @@ fn artifact_content(artifact: &JsValue) -> Option<&JsValue> {
 
 fn supplied_hash(artifact: &JsValue) -> Text {
     if !object_like(artifact) {
-        return Vec::new();
+        return Text::new();
     }
     let chosen = match prop(artifact, "hash") {
         Some(value) if truthy(Some(value)) => Some(value),
@@ -1048,8 +683,8 @@ fn supplied_hash(artifact: &JsValue) -> Text {
 
 fn artifact_digest(artifact: &JsValue) -> String {
     match artifact_content(artifact) {
-        Some(JsValue::Binary(bytes)) => return digest_bytes(bytes),
-        Some(JsValue::Text(units)) => return digest_text(units),
+        Some(JsValue::Bytes(bytes)) => return digest_bytes(bytes),
+        Some(JsValue::String(units)) => return digest_text(units),
         Some(value) if !matches!(value, JsValue::Null | JsValue::Undefined) => {
             return digest_text(&text(&stable_stringify(&sanitize_structured(value))));
         }
@@ -1067,27 +702,27 @@ fn artifact_digest(artifact: &JsValue) -> String {
     } else {
         &empty
     };
-    let reference = JsValue::Object(vec![
+    let reference = JsValue::object(vec![
         (
-            "id".into(),
-            JsValue::Text(normalize_string(nullish(prop(source, "id"), None), 200.0)),
+            "id",
+            JsValue::String(normalize_string(nullish(prop(source, "id"), None), 200.0)),
         ),
         (
-            "name".into(),
-            JsValue::Text(normalize_string(
+            "name",
+            JsValue::String(normalize_string(
                 nullish(prop(source, "name"), prop(source, "label")),
                 240.0,
             )),
         ),
         (
-            "path".into(),
-            JsValue::Text(normalize_string(
+            "path",
+            JsValue::String(normalize_string(
                 nullish(prop(source, "path"), prop(source, "uri")),
                 500.0,
             )),
         ),
         (
-            "size".into(),
+            "size",
             match to_number(prop(source, "size")) {
                 number if number.is_finite() => JsValue::Number(number.max(0.0)),
                 _ => JsValue::Null,
@@ -1107,8 +742,8 @@ fn artifact_size(artifact: &JsValue, content: Option<&JsValue>) -> Option<f64> {
         return Some(supplied);
     }
     match content {
-        Some(JsValue::Binary(bytes)) => Some(bytes.len() as f64),
-        Some(JsValue::Text(units)) => Some(utf8(units).len() as f64),
+        Some(JsValue::Bytes(bytes)) => Some(bytes.len() as f64),
+        Some(JsValue::String(units)) => Some(utf8(units).len() as f64),
         _ => None,
     }
 }
@@ -1127,14 +762,14 @@ fn normalize_artifacts(artifacts: Option<&JsValue>) -> Vec<Artifact> {
     };
     let mut out = Vec::with_capacity(items.len());
     for item in items {
-        let synthetic = JsValue::Object(vec![("name".into(), item.clone())]);
+        let synthetic = JsValue::object(vec![("name", item.clone())]);
         let source = if object_like(item) { item } else { &synthetic };
         let content = artifact_content(source);
         let id = normalize_string(
             nullish(prop(source, "id"), prop(source, "artifactId")),
             200.0,
         );
-        let fallback_name = JsValue::Text(text("unnamed artifact"));
+        let fallback_name = JsValue::String(text("unnamed artifact"));
         let name = normalize_string(
             nullish(
                 nullish(prop(source, "name"), prop(source, "label")),
@@ -1173,13 +808,13 @@ fn normalize_artifacts(artifacts: Option<&JsValue>) -> Vec<Artifact> {
 // Rendering
 // ---------------------------------------------------------------------------
 
-fn render_message(message: &Message, body: &[u16]) -> Text {
+fn render_message(message: &Message, body: &Text) -> Text {
     // Indent continuation lines: every "\n" becomes "\n  ".
-    let mut indented = Vec::with_capacity(body.len());
-    for unit in body {
-        indented.push(*unit);
+    let mut indented = Text::new();
+    for unit in body.as_units() {
+        indented.push_unit(*unit);
         if *unit == 0x0A {
-            indented.extend_from_slice(&[0x20, 0x20]);
+            indented.push_str("  ");
         }
     }
     cat(&[
@@ -1206,7 +841,7 @@ struct History {
 
 fn render_history(messages: &[Message], budget: f64) -> History {
     let empty = History {
-        text: Vec::new(),
+        text: Text::new(),
         included: Vec::new(),
         omitted: messages.len(),
         truncated: !messages.is_empty(),
@@ -1252,7 +887,7 @@ fn render_history(messages: &[Message], budget: f64) -> History {
         let shell = render(
             &[Included {
                 index: latest,
-                body: Vec::new(),
+                body: Text::new(),
                 partial: true,
             }],
             omitted,
@@ -1279,14 +914,14 @@ fn render_history(messages: &[Message], budget: f64) -> History {
 
 fn render_artifacts(artifacts: &[Artifact], budget: f64) -> (Text, usize) {
     if artifacts.is_empty() || budget < 40.0 {
-        return (Vec::new(), 0);
+        return (Text::new(), 0);
     }
     let mut lines = vec![text("Related artifacts (references only, no content):")];
     let mut displayed = 0usize;
     for artifact in artifacts {
         let size = match artifact.size {
-            None => Vec::new(),
-            Some(size) => text(&format!(", {} bytes", number_string(size))),
+            None => Text::new(),
+            Some(size) => text(&format!(", {} bytes", number_to_string(size))),
         };
         let line = cat(&[
             &text("- "),
@@ -1304,7 +939,7 @@ fn render_artifacts(artifacts: &[Artifact], budget: f64) -> (Text, usize) {
                 &text(" more artifact references"),
             ])
         } else {
-            Vec::new()
+            Text::new()
         };
         let candidate = cat(&[&join(&lines, &text("\n")), &text("\n"), &line, &suffix]);
         if candidate.len() as f64 > budget {
@@ -1314,7 +949,7 @@ fn render_artifacts(artifacts: &[Artifact], budget: f64) -> (Text, usize) {
         displayed += 1;
     }
     if displayed == 0 {
-        return (Vec::new(), 0);
+        return (Text::new(), 0);
     }
     let omitted = artifacts.len() - displayed;
     if omitted > 0 {
@@ -1328,25 +963,22 @@ fn render_artifacts(artifacts: &[Artifact], budget: f64) -> (Text, usize) {
 }
 
 fn artifact_value(artifact: &Artifact) -> JsValue {
-    let mut entries = vec![
-        ("id".to_string(), JsValue::Text(artifact.id.clone())),
-        ("name".to_string(), JsValue::Text(artifact.name.clone())),
-        ("hash".to_string(), JsValue::Text(text(&artifact.hash))),
+    let mut entries: Vec<(&str, JsValue)> = vec![
+        ("id", JsValue::String(artifact.id.clone())),
+        ("name", JsValue::String(artifact.name.clone())),
+        ("hash", JsValue::String(text(&artifact.hash))),
     ];
     if let Some(mime_type) = &artifact.mime_type {
-        entries.push(("mimeType".to_string(), JsValue::Text(mime_type.clone())));
+        entries.push(("mimeType", JsValue::String(mime_type.clone())));
     }
     if let Some(size) = artifact.size {
-        entries.push(("size".to_string(), JsValue::Number(size)));
+        entries.push(("size", JsValue::Number(size)));
     }
-    JsValue::Object(entries)
+    JsValue::object(entries)
 }
 
-fn error(message: &str) -> String {
-    to_json(
-        &JsValue::Object(vec![("$error".into(), JsValue::Text(text(message)))]),
-        Mode::Output,
-    )
+fn error(message: &str) -> JsValue {
+    JsValue::object(vec![("$error", JsValue::String(text(message)))])
 }
 
 fn pick_areas(value: Option<&JsValue>) -> Vec<Text> {
@@ -1363,17 +995,11 @@ fn pick_areas(value: Option<&JsValue>) -> Vec<Text> {
             seen.push(normalized);
         }
     }
-    seen.sort_by(|left, right| compare_text(left, right));
+    seen.sort_by(compare_text);
     seen
 }
 
-pub fn build(input: &str) -> Result<String, String> {
-    let raw: Value = json_lenient::from_str(input)
-        .map_err(|error| format!("invalid task run context input: {error}"))?;
-    build_value(&from_json(&raw))
-}
-
-pub fn build_value(input: &JsValue) -> Result<String, String> {
+pub fn build_value(input: &JsValue) -> Result<JsValue, String> {
     let task = prop(input, "task");
     let Some(task) = task.filter(|value| object_like(value)) else {
         return Ok(error("task must be an object"));
@@ -1388,7 +1014,7 @@ pub fn build_value(input: &JsValue) -> Result<String, String> {
     let title = normalize_string(
         nullish(
             nullish(prop(task, "title"), prop(task, "name")),
-            Some(&JsValue::Text(text("untitled task"))),
+            Some(&JsValue::String(text("untitled task"))),
         ),
         MAX_TASK_TITLE_CHARS,
     );
@@ -1428,7 +1054,7 @@ pub fn build_value(input: &JsValue) -> Result<String, String> {
     let current_section = if include_current {
         cat(&[&text("Current request:\n"), &current])
     } else {
-        Vec::new()
+        Text::new()
     };
     let essential_text = join(
         &[
@@ -1512,109 +1138,90 @@ pub fn build_value(input: &JsValue) -> Result<String, String> {
     let summary_hash = if summary.is_empty() {
         JsValue::Null
     } else {
-        JsValue::Text(text(&digest_text(&summary)))
+        JsValue::String(text(&digest_text(&summary)))
     };
     let refs: Vec<JsValue> = history
         .included
         .iter()
         .map(|item| {
             let message = &messages[item.index];
-            JsValue::Object(vec![
-                ("id".to_string(), JsValue::Text(message.id.clone())),
-                ("role".to_string(), JsValue::Text(text(message.role))),
-                ("ts".to_string(), JsValue::Number(message.ts)),
-                ("hash".to_string(), JsValue::Text(text(&message.hash))),
-                ("partial".to_string(), JsValue::Bool(item.partial)),
+            JsValue::object(vec![
+                ("id", JsValue::String(message.id.clone())),
+                ("role", JsValue::String(text(message.role))),
+                ("ts", JsValue::Number(message.ts)),
+                ("hash", JsValue::String(text(&message.hash))),
+                ("partial", JsValue::Bool(item.partial)),
             ])
         })
         .collect();
-    let manifest = JsValue::Object(vec![
+    let manifest = JsValue::object(vec![
+        ("schema", JsValue::String(text("multicc.task-run-context"))),
+        ("version", version.clone()),
+        ("maxChars", JsValue::Number(budget)),
         (
-            "schema".to_string(),
-            JsValue::Text(text("multicc.task-run-context")),
+            "task",
+            JsValue::object(vec![
+                ("id", JsValue::String(task_id)),
+                ("title", JsValue::String(title)),
+                ("summaryHash", summary_hash),
+            ]),
         ),
-        ("version".to_string(), version.clone()),
-        ("maxChars".to_string(), JsValue::Number(budget)),
+        ("messageCount", JsValue::Number(messages.len() as f64)),
         (
-            "task".to_string(),
-            JsValue::Object(vec![
-                ("id".to_string(), JsValue::Text(task_id)),
-                ("title".to_string(), JsValue::Text(title)),
-                ("summaryHash".to_string(), summary_hash),
+            "history",
+            JsValue::object(vec![
+                ("included", JsValue::Number(history.included.len() as f64)),
+                ("omitted", JsValue::Number(history.omitted as f64)),
+                ("truncated", JsValue::Bool(history.truncated)),
+                ("refs", JsValue::Array(refs)),
             ]),
         ),
         (
-            "messageCount".to_string(),
-            JsValue::Number(messages.len() as f64),
-        ),
-        (
-            "history".to_string(),
-            JsValue::Object(vec![
-                (
-                    "included".to_string(),
-                    JsValue::Number(history.included.len() as f64),
-                ),
-                (
-                    "omitted".to_string(),
-                    JsValue::Number(history.omitted as f64),
-                ),
-                ("truncated".to_string(), JsValue::Bool(history.truncated)),
-                ("refs".to_string(), JsValue::Array(refs)),
-            ]),
-        ),
-        (
-            "artifacts".to_string(),
+            "artifacts",
             JsValue::Array(artifacts.iter().map(artifact_value).collect()),
         ),
+        ("artifactDisplayCount", JsValue::Number(displayed as f64)),
         (
-            "artifactDisplayCount".to_string(),
-            JsValue::Number(displayed as f64),
-        ),
-        (
-            "currentTextHash".to_string(),
+            "currentTextHash",
             if current_section.is_empty() {
                 JsValue::Null
             } else {
-                JsValue::Text(text(&digest_text(&current)))
+                JsValue::String(text(&digest_text(&current)))
             },
         ),
     ]);
-    let object = JsValue::Object(vec![
-        ("manifest".to_string(), manifest.clone()),
-        ("text".to_string(), JsValue::Text(rendered.clone())),
+    let object = JsValue::object(vec![
+        ("manifest", manifest.clone()),
+        ("text", JsValue::String(rendered.clone())),
     ]);
     let hash = digest_text(&text(&stable_stringify(&object)));
-    let result = JsValue::Object(vec![
-        ("text".to_string(), JsValue::Text(rendered)),
-        ("manifest".to_string(), manifest),
-        ("hash".to_string(), JsValue::Text(text(&hash))),
+    let result = JsValue::object(vec![
+        ("text", JsValue::String(rendered)),
+        ("manifest", manifest),
+        ("hash", JsValue::String(text(&hash))),
     ]);
-    Ok(to_json(&result, Mode::Output))
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     fn string(value: &str) -> JsValue {
-        JsValue::Text(text(value))
+        JsValue::string(value)
     }
 
     fn object(entries: Vec<(&str, JsValue)>) -> JsValue {
-        JsValue::Object(
-            entries
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        )
+        JsValue::object(entries)
     }
 
-    fn render(input: JsValue) -> String {
+    fn render(input: JsValue) -> JsValue {
         build_value(&input).unwrap()
     }
 
-    fn decode(output: &str) -> Value {
-        serde_json::from_str(output).unwrap()
+    fn decode(output: &JsValue) -> Value {
+        crate::js::to_serde(output)
     }
 
     // --- JavaScript string semantics -------------------------------------
@@ -1624,27 +1231,33 @@ mod tests {
         assert_eq!(truncate(&text("abcdef"), 4.0), text("abc…"));
         assert_eq!(truncate(&text("abc"), 3.0), text("abc"));
         assert_eq!(truncate(&text("abc"), 1.0), text("…"));
-        assert_eq!(truncate(&text("abc"), 0.0), Vec::<u16>::new());
+        assert_eq!(truncate(&text("abc"), 0.0), Text::new());
         assert_eq!(truncate(&text("abc"), f64::INFINITY), text("abc"));
         // "😀" is two code units: a 4-unit budget is exact, a 3-unit budget
         // cuts between the surrogate pair and leaves a lone high surrogate.
         assert_eq!(truncate(&text("a😀b"), 4.0), text("a😀b"));
-        assert_eq!(truncate(&text("a😀b"), 3.0), vec![0x61, 0xD83D, 0x2026]);
-        assert_eq!(truncate(&text("a😀b"), 2.0), vec![0x61, 0x2026]);
+        assert_eq!(
+            truncate(&text("a😀b"), 3.0),
+            JsString::from_units(vec![0x61, 0xD83D, 0x2026])
+        );
+        assert_eq!(
+            truncate(&text("a😀b"), 2.0),
+            JsString::from_units(vec![0x61, 0x2026])
+        );
     }
 
     #[test]
     fn trim_uses_the_ecmascript_whitespace_set() {
         assert_eq!(trim_js(&text("\u{feff} a \u{3000}")), text("a"));
         assert_eq!(trim_js(&text("\u{85}a\u{85}")), text("\u{85}a\u{85}"));
-        assert_eq!(trim_js(&text("   ")), Vec::<u16>::new());
+        assert_eq!(trim_js(&text("   ")), Text::new());
     }
 
     #[test]
     fn coerce_like_javascript_string() {
-        assert_eq!(to_text(None), Vec::<u16>::new());
-        assert_eq!(to_text(Some(&JsValue::Null)), Vec::<u16>::new());
-        assert_eq!(to_text(Some(&JsValue::Undefined)), Vec::<u16>::new());
+        assert_eq!(to_text(None), Text::new());
+        assert_eq!(to_text(Some(&JsValue::Null)), Text::new());
+        assert_eq!(to_text(Some(&JsValue::Undefined)), Text::new());
         assert_eq!(to_text(Some(&JsValue::Number(-0.0))), text("0"));
         assert_eq!(to_text(Some(&JsValue::Number(1.5))), text("1.5"));
         assert_eq!(to_text(Some(&JsValue::Bool(true))), text("true"));
@@ -1661,54 +1274,35 @@ mod tests {
 
     #[test]
     fn number_conversion_matches_string_numeric_literal() {
-        assert_eq!(parse_number(" 42 "), 42.0);
-        assert_eq!(parse_number("0x1f"), 31.0);
-        assert_eq!(parse_number("0b101"), 5.0);
-        assert_eq!(parse_number("0o17"), 15.0);
-        assert_eq!(parse_number("5."), 5.0);
-        assert_eq!(parse_number(".5"), 0.5);
-        assert_eq!(parse_number("+5"), 5.0);
-        assert_eq!(parse_number("1e3"), 1000.0);
-        assert_eq!(parse_number("00012"), 12.0);
-        assert_eq!(parse_number(""), 0.0);
-        assert_eq!(parse_number("   "), 0.0);
-        assert_eq!(parse_number("Infinity"), f64::INFINITY);
-        assert_eq!(parse_number("-Infinity"), f64::NEG_INFINITY);
-        assert!(parse_number("abc").is_nan());
-        assert!(parse_number("1_0").is_nan());
-        assert!(parse_number("0x").is_nan());
-        assert!(parse_number("NaN").is_nan());
+        assert_eq!(js_string_to_number(" 42 "), 42.0);
+        assert_eq!(js_string_to_number("0x1f"), 31.0);
+        assert_eq!(js_string_to_number("0b101"), 5.0);
+        assert_eq!(js_string_to_number("0o17"), 15.0);
+        assert_eq!(js_string_to_number("5."), 5.0);
+        assert_eq!(js_string_to_number(".5"), 0.5);
+        assert_eq!(js_string_to_number("+5"), 5.0);
+        assert_eq!(js_string_to_number("1e3"), 1000.0);
+        assert_eq!(js_string_to_number("00012"), 12.0);
+        assert_eq!(js_string_to_number(""), 0.0);
+        assert_eq!(js_string_to_number("   "), 0.0);
+        assert_eq!(js_string_to_number("Infinity"), f64::INFINITY);
+        assert_eq!(js_string_to_number("-Infinity"), f64::NEG_INFINITY);
+        assert!(js_string_to_number("abc").is_nan());
+        assert!(js_string_to_number("1_0").is_nan());
+        assert!(js_string_to_number("0x").is_nan());
+        assert!(js_string_to_number("NaN").is_nan());
     }
 
     #[test]
     fn number_formatting_is_ecmascript() {
-        assert_eq!(number_string(0.0), "0");
-        assert_eq!(number_string(-0.0), "0");
-        assert_eq!(number_string(2.5), "2.5");
-        assert_eq!(number_string(1e21), "1e+21");
-        assert_eq!(number_string(1e-7), "1e-7");
-        assert_eq!(number_string(0.1), "0.1");
-        assert_eq!(number_string(f64::NAN), "NaN");
-        assert_eq!(number_string(f64::INFINITY), "Infinity");
-    }
-
-    #[test]
-    fn json_stringify_escapes() {
-        let mut out = String::new();
-        write_js_string(&text("a\"b\\c\nd\te\u{1}"), &mut out);
-        assert_eq!(out, "\"a\\\"b\\\\c\\nd\\te\\u0001\"");
-
-        let mut lone = String::new();
-        write_js_string(&[0x41, 0xD83D, 0x42], &mut lone);
-        assert_eq!(lone, "\"A\\ud83dB\"");
-
-        let mut pair = String::new();
-        write_js_string(&text("😀"), &mut pair);
-        assert_eq!(pair, "\"😀\"");
-
-        let mut line = String::new();
-        write_js_string(&text("\u{2028}\u{7f}"), &mut line);
-        assert_eq!(line, "\"\u{2028}\u{7f}\"");
+        assert_eq!(number_to_string(0.0), "0");
+        assert_eq!(number_to_string(-0.0), "0");
+        assert_eq!(number_to_string(2.5), "2.5");
+        assert_eq!(number_to_string(1e21), "1e+21");
+        assert_eq!(number_to_string(1e-7), "1e-7");
+        assert_eq!(number_to_string(0.1), "0.1");
+        assert_eq!(number_to_string(f64::NAN), "NaN");
+        assert_eq!(number_to_string(f64::INFINITY), "Infinity");
     }
 
     #[test]
@@ -1721,7 +1315,7 @@ mod tests {
             JsValue::Number(2.0),
         ]);
         assert_eq!(stable_stringify(&array), "[1,,2]");
-        let buffer = JsValue::Binary(vec![1, 2, 3]);
+        let buffer = JsValue::Bytes(vec![1, 2, 3]);
         assert_eq!(
             stable_stringify(&buffer),
             "{\"type\":\"Buffer\",\"data\":\"AQID\"}"
@@ -1729,19 +1323,38 @@ mod tests {
     }
 
     #[test]
-    fn output_mode_preserves_negative_zero() {
+    fn negative_zero_survives_in_values_but_prints_like_javascript() {
         let value = object(vec![("v", JsValue::Number(-0.0))]);
-        assert_eq!(to_json(&value, Mode::Output), "{\"v\":-0}");
-        assert_eq!(to_json(&value, Mode::Stringify), "{\"v\":0}");
+        let Some(JsValue::Number(number)) = prop(&value, "v") else {
+            panic!("number");
+        };
+        assert!(number.is_sign_negative());
+        assert_eq!(stable_stringify(&value), "{\"v\":0}");
+    }
+
+    #[test]
+    fn lone_surrogates_survive_in_object_keys() {
+        let value = JsValue::Object(vec![
+            (JsString::from_units(vec![0xD83D]), JsValue::Number(1.0)),
+            (JsString::from_rust_str("a"), JsValue::Number(2.0)),
+        ]);
+        assert_eq!(stable_stringify(&value), "{\"a\":2,\"\\ud83d\":1}");
+        let JsValue::Object(entries) = &value else {
+            panic!("object");
+        };
+        assert_eq!(entries[0].0.as_units(), &[0xD83D]);
     }
 
     #[test]
     fn digests_use_utf8_with_lossy_lone_surrogates() {
         assert_eq!(
-            digest_text(&[]),
+            digest_text(&Text::new()),
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
-        assert_eq!(digest_text(&[0xD83D]), digest_text(&text("\u{fffd}")));
+        assert_eq!(
+            digest_text(&JsString::from_units(vec![0xD83D])),
+            digest_text(&text("\u{fffd}"))
+        );
         assert_eq!(digest_bytes(b"abc"), digest_text(&text("abc")));
     }
 
@@ -1807,10 +1420,10 @@ mod tests {
 
     #[test]
     fn redaction_keeps_lone_surrogates_outside_matches() {
-        let value = vec![0x41, 0xD83D, 0x42];
+        let value = JsString::from_units(vec![0x41, 0xD83D, 0x42]);
         assert_eq!(
-            redact_text(Some(&JsValue::Text(value))),
-            vec![0x41, 0xD83D, 0x42]
+            redact_text(Some(&JsValue::String(value))),
+            JsString::from_units(vec![0x41, 0xD83D, 0x42])
         );
     }
 
@@ -1939,47 +1552,27 @@ mod tests {
     #[test]
     fn rejects_invalid_input() {
         assert_eq!(
-            render(object(vec![])),
+            stable_stringify(&render(object(vec![]))),
             "{\"$error\":\"task must be an object\"}"
         );
         assert_eq!(
-            render(object(vec![("task", string("x"))])),
+            stable_stringify(&render(object(vec![("task", string("x"))]))),
             "{\"$error\":\"task must be an object\"}"
         );
         assert_eq!(
-            render(object(vec![("task", object(vec![("id", string(""))]))])),
+            stable_stringify(&render(object(vec![(
+                "task",
+                object(vec![("id", string(""))])
+            )]))),
             "{\"$error\":\"task.id must be a non-empty string\"}"
         );
         assert_eq!(
-            render(object(vec![("task", object(vec![("id", string("t"))]))])),
+            stable_stringify(&render(object(vec![(
+                "task",
+                object(vec![("id", string("t"))])
+            )]))),
             "{\"$error\":\"currentText must be a non-empty string\"}"
         );
-    }
-
-    #[test]
-    fn decodes_wire_markers_from_json_input() {
-        let lone = JsValue::Text(vec![0x41, 0xD83D, 0x42]);
-        let input = object(vec![
-            ("task", object(vec![("id", JsValue::Text(vec![0xD83D]))])),
-            ("currentText", lone),
-            ("maxChars", JsValue::Number(40_000.0)),
-        ]);
-        let encoded = to_json(&input, Mode::Output);
-        let output = build(&encoded).unwrap();
-        let value = decode(&output);
-        let rendered = value["text"].as_str().unwrap();
-        // The id is a lone surrogate; the kernel only sees it through the marker
-        // and hands it back escaped, so the JSON decode restores U+FFFD-free text.
-        assert!(rendered.contains('\u{FFFD}') || rendered.contains("Task ID: "));
-    }
-
-    #[test]
-    fn build_from_json_matches_direct_value() {
-        let input = r#"{"task":{"id":"t","title":"T"},"messages":[{"id":"m","role":"user","ts":1,"text":"hi"}],"includeCurrent":false}"#;
-        let from_text = build(input).unwrap();
-        let direct =
-            build_value(&from_json(&json_lenient::from_str::<Value>(input).unwrap())).unwrap();
-        assert_eq!(from_text, direct);
     }
 
     #[test]
@@ -2008,19 +1601,5 @@ mod tests {
         assert_eq!(manifest["history"]["omitted"], 1);
         assert_eq!(manifest["history"]["truncated"], true);
         assert_eq!(manifest["history"]["refs"][0]["partial"], true);
-    }
-
-    #[test]
-    fn dates_parse_like_date_parse() {
-        assert_eq!(
-            js_date_parse(&text("2024-01-02")),
-            Some(1_704_153_600_000.0)
-        );
-        assert_eq!(
-            js_date_parse(&text("2024-01-02T03:04:05Z")),
-            Some(1_704_164_645_000.0)
-        );
-        assert_eq!(js_date_parse(&text("nonsense")), None);
-        assert_eq!(js_date_parse(&text("   ")), None);
     }
 }
