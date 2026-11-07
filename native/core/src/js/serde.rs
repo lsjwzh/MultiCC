@@ -137,6 +137,51 @@ pub fn js_json_stringify(value: &Value) -> String {
     }
 }
 
+/// `JSON.stringify(value, null, indent)` for JSON values, V8's layout: one
+/// member per line, `": "` after keys, empty containers stay `{}` / `[]`.
+pub fn js_json_stringify_indent(value: &Value, indent: &str) -> String {
+    fn write(value: &Value, indent: &str, depth: usize, out: &mut String) {
+        let pad = |out: &mut String, depth: usize| {
+            out.push('\n');
+            for _ in 0..depth {
+                out.push_str(indent);
+            }
+        };
+        match value {
+            Value::Array(items) if !items.is_empty() && !indent.is_empty() => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    pad(out, depth + 1);
+                    write(item, indent, depth + 1, out);
+                }
+                pad(out, depth);
+                out.push(']');
+            }
+            Value::Object(object) if !object.is_empty() && !indent.is_empty() => {
+                out.push('{');
+                for (index, (key, member)) in object.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    pad(out, depth + 1);
+                    out.push_str(&json_quote(key));
+                    out.push_str(": ");
+                    write(member, indent, depth + 1, out);
+                }
+                pad(out, depth);
+                out.push('}');
+            }
+            other => out.push_str(&js_json_stringify(other)),
+        }
+    }
+    let mut out = String::new();
+    write(value, indent, 0, &mut out);
+    out
+}
+
 fn compare_utf16(left: &str, right: &str) -> std::cmp::Ordering {
     left.encode_utf16().cmp(right.encode_utf16())
 }

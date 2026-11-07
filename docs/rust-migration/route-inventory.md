@@ -278,7 +278,7 @@
 | `src/routes/quota-bars.js` | 3 | 178 | GET '/api/quota/bars/idle' @158<br>GET '/api/quota/bars/state' @161<br>POST '/api/quota/bars/refresh' @166 | b | T1 |
 | `src/routes/quota-guard.js` | 2 | 135 | GET '/api/settings/quota-guard' @91<br>PUT '/api/settings/quota-guard' @95 | b | T1 |
 | `src/routes/qwen-audio-runtime.js` | 8 | 83 | GET '/api/voice-runtime' @69<br>GET '/api/v1/voice-runtime' @70<br>POST '/api/voice-runtime/install' @71<br>POST '/api/v1/voice-runtime/install' @72<br>GET '/api/directories/:id/voice-gateway/runtime' @73<br>GET '/api/v1/directories/:id/voice-gateway/runtime' @74<br>POST '/api/directories/:id/voice-gateway/restart' @75<br>POST '/api/v1/directories/:id/voice-gateway/restart' @76 | a,b,c | T2 |
-| `src/routes/run-config-presets.js` | 3 | 125 | GET '/api/run-config/presets' @57<br>PUT '/api/run-config/presets' @69<br>POST '/api/run-config/presets/merge' @95 | b,d | T1 |
+| ~~`src/routes/run-config-presets.js`~~（已迁至前门，见 docs/gateway.md §9） | 3 | 125 | GET '/api/run-config/presets' @57<br>PUT '/api/run-config/presets' @69<br>POST '/api/run-config/presets/merge' @95 | b,d | T1 |
 | `src/routes/scan.js` | 1 | 34 | GET '/api/scan/history' @30 | b | T0 |
 | `src/routes/server-restart-route.js` | 2 | 146 | POST '/api/restart' @49<br>POST '/api/desktop-shutdown' @129 | a,c | T2 |
 | `src/routes/session-admin.js` | 13 | 621 | GET '/api/v1/sessions' @372<br>GET '/api/v1/sessions/:id' @380<br>GET '/api/v1/directories/:id/workspace' @386<br>GET '/api/sessions' @395<br>POST '/api/sessions/:id/reclassify' @415<br>POST '/api/sessions/:id/mark-task-done' @441<br>POST '/api/sessions/:id/mark-goal-achieved' @475<br>POST '/api/reclassify-all' @499<br>GET '/api/directories/:id/sessions' @515<br>GET '/api/directories/:id/workspace' @526<br>GET '/api/sessions/:id' @532<br>POST '/api/debug/classify/:id' @544<br>GET '/api/debug/classify-test-cases' @576 | a,b | T2 |
@@ -326,6 +326,8 @@
 
 ## 6. 分层合计与迁移顺序
 
+> 进度：已迁出 1 组（`run-config-presets`，前门原生应答，Node 代码已删）。迁移顺序里第 1、4、5 组实际依赖 Node 内存态（provider 列表合并、扫描环形缓冲、账户凭据），不是 T0，要等它们的状态先搬进 Rust。
+
 ### 6.1 合计
 
 统计口径：每种 Tier 的文件数、注册数（含 `USE` 挂载行）、Node 代码行数（整文件行数，不做按 handler 折算）。插件/文档表三行单独补入后：
@@ -351,7 +353,7 @@
 | # | 组 | 依据 / 为什么先做 | 覆盖测试 |
 |---|---|---|---|
 | 1 | `provider-limit-history`（1 条 / 91 行，T0） | 数据已由 Rust `quota_history` 持有（`src/paths.js:158-161`），Node 只做 DTO 组装 | `tests/test-provider-limit-history.js`（`test:provider-router`） |
-| 2 | `run-config-presets`（3 条 / 125 行，T1，`d`） | Rust `run_config_presets` 已是权威；Node 侧只是校验 + 文件读写 | `tests/test-run-config-presets.js`（`test:security`、`test:core`） |
+| 2 | ✅ `run-config-presets`（3 条 / 125 行，T1，`d`；已迁至前门） | Rust `run_config_presets` 已是权威；Node 侧只是校验 + 文件读写 | `tests/test-run-config-presets.js`（`test:security`、`test:core`） |
 | 3 | `subagent-defaults`（2 条 / 257 行，T1，`d`） | Rust `subagent_defaults` 持有继承/清除逻辑；无 session 内存态 | `tests/test-subagent-defaults.js` |
 | 4 | `account-subscription`（1 条 / 51 行，T0，`d`） | Rust `account_subscription`；单端点、DTO 窄 | `tests/test-account-subscription.js`（`test:provider-router`） |
 | 5 | `scan`（1 条 / 34 行，T0） | 只读扫描历史文件；无派生进程；单文件 | `tests/test-scan-route.js`（`test:core`） |

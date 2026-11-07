@@ -96,6 +96,17 @@ const server = http.createServer((req, res) => {
     res.end(body);
     return;
   }
+  if (route === '/env') {
+    // What the child inherited: a .env-only key must be absent here (Node
+    // reads .env itself), PORT is the front door's public port.
+    const body = JSON.stringify({
+      FIXTURE_DOTENV_ONLY: process.env.FIXTURE_DOTENV_ONLY ?? null,
+      PORT: process.env.PORT ?? null,
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
+    res.end(body);
+    return;
+  }
   if (route === '/headers') {
     const body = JSON.stringify({
       method: req.method,

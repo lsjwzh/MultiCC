@@ -4870,15 +4870,6 @@
       ]
     },
     {
-      "path": "tests/test-run-config-presets.js",
-      "tier": "flow",
-      "lane": "deterministic",
-      "owner": "npm:test:security",
-      "entrypoints": [
-        "npm:test:security"
-      ]
-    },
-    {
       "path": "tests/test-run-config-quota-cdp.js",
       "tier": "flow",
       "lane": "cdp",

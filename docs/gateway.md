@@ -13,10 +13,10 @@
 
 第 1 步只做「进程结构倒置」，**对外行为逐字节不变** 的约束下已经完成；本步把前门从 L4 字节中继升级成 **L7 HTTP 服务**（hyper 1.x + axum 0.8）：
 
-- 前门解析 HTTP，用 axum `Router` 先匹配**原生路由**（当前生产环境为空；后续按路由组把功能搬进 Rust 时逐条新增），其余请求经 fallback 转发给 Node。
+- 前门解析 HTTP，先匹配**原生路由**（由 Rust 直接应答，对应的 Node 路由已删除，见 §9），其余请求经 fallback 转发给 Node。
 - 转发仍然逐帧流式、不缓冲：8MB 上传下载、SSE / chunked 响应逐块到达客户端；WebSocket 升级把两侧字节流对接。
 - 进程管理、端口策略、PROXY 约定、看护与信号原样复用，与 L4 时代完全一致。
-- **所有启动入口、三个平台都经前门启动**：源码检出的 `./multicc`（start/restart、launchd 登录服务）、独立包启动器（含它的 launchd / systemd / Windows 登录自启）、桌面壳（`MULTICC_DESKTOP=1`），macOS / Linux / Windows 一样。没有任何「起不来就直接跑 `node server.js`」的退路，前门和原生模块一样是必需件（见 §8）。只剩开发者手动的 `npm start` / `node server.js` 仍是直连，供调试和集成测试用。
+- **所有启动入口、三个平台都经前门启动**：源码检出的 `./multicc`（start/restart、launchd 登录服务）、独立包启动器（含它的 launchd / systemd / Windows 登录自启）、桌面壳（`MULTICC_DESKTOP=1`），macOS / Linux / Windows 一样。没有任何「起不来就直接跑 `node server.js`」的退路，前门和原生模块一样是必需件（见 §8）。开发者的 `npm start` 也经前门前台运行（`scripts/start-gateway.js`）。直接 `node server.js` 只剩集成测试在用：它缺少 §9 里已经搬进前门的路由，不是完整的服务。
 
 ## 为什么用 PROXY 协议而不是 X-Forwarded-For
 
@@ -54,6 +54,8 @@
 | `MULTICC_GATEWAY_PID=<前门 pid>` | Node 只有在**父进程号等于它**时才认为自己在前门之后。前门之后的 Node 拉起的 CLI 会话、以及它们再启动的测试或服务都会继承这三个变量；没有这条校验，那里面的 `node server.js` 会只去听一个没人转发的内网端口 |
 | `PORT=<公开端口>` | 覆盖为前门实际占用的公开端口 |
 
+前门自己启动时读过的 `.env` 键**不传给** Node（从子进程环境里删掉）：Node 启动时自己读 `.env`，且已有的环境变量优先。若继承前门那份，网页上改过的 `ACCESS_TOKEN`（写回 `.env`）在 Node 被前门重拉后会被启动时的旧值盖住。
+
 stdout/stderr 继承前门（落到同一组日志）。stdin 是一根**生命线管道**：前门持有写端但从不写入。前门不论以何种方式消失（正常退出、panic、`kill -9`），内核都会关闭写端，Node 读到 EOF 后按 SIGINT 走优雅关停（`src/gateway-child.js` 的 `watchGatewayLifeline`；启动早期 SIGINT 处理器还没装好时会等它装好再发，避免迁移中途被默认动作杀掉）。没有这根管道时，前门一死 Node 就成了孤儿，继续跑全套定时器和 CLI 轮次，与新实例同时写同一份数据。
 
 ### 4. Node 在前门之后的行为
@@ -81,7 +83,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 ### 6. 转发（L7）
 
 - 每条被接受的客户端 TCP 连接由 `hyper::server::conn::http1` 服务：保留头的大小写（`preserve_header_case`）、keep-alive 打开、`.with_upgrades()` 支持升级；它驱动一个 `axum::Router`。
-- Router 由 `native_routes()` 构建：生产环境没有任何原生路由；只有设置 `MULTICC_GATEWAY_TEST_ROUTES=1` 时才有测试路由 `GET /__gateway_test/native`（固定响应体），供集成测试证明请求由 Rust 应答、Node 完全没被碰。Router 的 fallback 负责转发。
+- Router 由 `native_routes()` 构建。它的 fallback 先问 `app::claim` 这个方法+路径是不是 §9 的原生路由，是就由 Rust 应答，否则转发。设置 `MULTICC_GATEWAY_TEST_ROUTES=1` 时另有测试路由 `GET /__gateway_test/native`（固定响应体），供集成测试证明请求由 Rust 应答、Node 完全没被碰。
 - fallback 使用**只属于这一条客户端连接**的上游连接：首个被转发的请求到达时才惰性建立，建连后先写 §5 的 PROXY v1 行（地址与 L4 时代逐字节一致），再在该 socket 上做 `hyper::client::conn::http1` 握手（保留头大小写）；同一客户端连接的后续请求复用它。Node 关掉它（keep-alive 超时等）后，下一个请求重新建一条并写新的 PROXY 行。**绝不跨客户端连接共享或池化**（`src/request-locality.js` 约 57 处依赖 socket 对端地址做本机/外部判断，1:1 映射是它们继续正确的前提）。
 - 每条客户端连接的上游句柄（`Arc<tokio::sync::Mutex<…>>`）通过请求扩展交给 fallback。
 - 忠实转发：方法、路径+查询、HTTP 版本、头（原始大小写）、请求体与响应体都逐帧流式透传，不缓冲。8MB 上传下载、SSE / chunked 响应逐块到达客户端（不是攒完再发）。**不添加任何转发头**（没有 `X-Forwarded-*`、`Forwarded`、`Via`）。响应原样返回（状态、头、流式体）。
@@ -110,6 +112,27 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 - 独立包启动器（`scripts/standalone-launcher.js`，以及经它启动的 launchd / systemd / Windows 登录自启）与桌面壳（`desktop/main.js`）：`desktop/lib/backend-supervisor.js` 拉起 `multicc-gateway serve --cwd <app-server> --node <内置运行时> --stdin-lifeline <app-server>/server.js`（`desktop/lib/desktop-env.js` 的 `gatewayLaunch`）。Node 崩溃由前门重拉，supervisor 看不到；supervisor 只处理前门本身的退出（就绪后的 0 退出 = 重启请求、端口被占、崩溃循环）。停机仍先 `POST /api/desktop-shutdown`（经前门到 Node，Node 以 0 退出，前门随之退出），超时再按信号 / `taskkill /T` 升级。
 - `src/server-processes.js`：`serve` 模式、cwd 为本检出的 `multicc-gateway` 认作服务根进程；父进程是这种前门的 `node server.js` **不算**根（它是前门的后代，排空后由 `stopServers` 的 SIGTERM 兜底）。这样 stop/restart 只给前门发 SIGINT，前门转给 Node，不会出现「Node 先退、前门以为崩溃又拉起来」的竞态。
 - `list` / `status` / `lock-alive` / `owner` 一并认得前门。
+
+### 9. 原生路由（已从 Node 删除）
+
+每搬一组路由，就在同一个提交里删掉对应的 Node 代码；前门负责保持那组路由的**完整契约**，客户端分辨不出换了实现：
+
+- **鉴权**：`multicc_core::http_gate` 逐字节复刻 Node 的认证闸门（`src/routes/auth.js` 的中间件、`src/auth-security.js`、`src/request-locality.js`）：局域网对端白名单、`x-multicc-machine-grant` 优先（直接调 `multicc_core::machines::authorize`）、本机请求免登录（loopback 对端 + 本地 Host + 没有任何转发头）、HMAC cookie、`x-access-token`、可选的旧 query token，拒绝时 HTML 请求 302 到 `/login?redirect=…`、其余 403 `AUTH_REQUIRED`。对端地址就是写进 PROXY 行的那个文本，所以 Rust 与 Node 对同一请求的「本机」判断一致。
+- **ACCESS_TOKEN 热改**：Node 只在启动时读一次，之后只经 `POST /api/settings/access-token` 改（先写 env 文件、再换内存）。前门每次请求读 env 文件（`MULTICC_ENV_FILE`，缺省为包根 `.env`）里的 `ACCESS_TOKEN`：在它与前门启动时不同之前用启动值，变过之后一律跟文件走。
+- **Express 行为**（`native/gateway/src/app/express.rs`）：`res.json` 的弱 ETag 与 `If-None-Match` → 304、204/304 去掉实体头、`HEAD`、Express 对已注册路径的自动 `OPTIONS` 应答（`Allow`）、`express.json({ limit: '50mb' })`（类型判断、utf-8/utf-16 字符集、gzip/deflate 请求体、strict 首字符、413/415/400）、终端 `safeErrorHandler` 的错误 DTO、`/api/*` 的 JSON gzip（≥1024 字节、`Vary: Accept-Encoding`）、`X-Multicc-Request-Id` / `X-Correlation-Id` / `X-Multicc-API-Version` 响应头，以及写到 stdout 的 `http_request` 日志行。路径匹配同 Express：不区分大小写、允许一个结尾 `/`、不解码；只认区分大小写的 `/api/` 前缀（Node 闸门与 gzip 都按区分大小写判断它）。原生路径上的其它方法照常转发给 Node。
+- **差分验证**：每组路由搬走前，把原 Node 流水线（真实的 requestId、gzip、认证运行时、body parser、原路由、错误处理）与前门放在一起跑同一组请求，比对状态码、响应体、ETag、内容长度和相关响应头，以及最终落盘文件。
+
+| 路由 | 原 Node 实现 | Rust 实现 | 差分 |
+|---|---|---|---|
+| `GET/HEAD/PUT/OPTIONS /api/run-config/presets`、`POST/OPTIONS /api/run-config/presets/merge` | `src/routes/run-config-presets.js`（已删） | `native/gateway/src/app/run_config_presets.rs` + `multicc_core::run_config_presets`，落盘 `multicc_core::state_file`（与 `atomicWriteJson` 同格式、0600） | 39/39 请求逐字节一致，落盘文件一致 |
+
+与 Node 的已知差异（都只影响没有客户端会走的路径）：
+
+- Node 关停期间（`/api` 一律 503 `SERVER_SHUTTING_DOWN`）原生路由照常应答：它们不往 Node 里排任何工作。
+- `charset=utf-32` / `utf-7` 的 JSON 请求体返回 415（body-parser 经 iconv-lite 能解）。
+- `/metrics` 里 `multicc_auth_*` 计数不含原生路由上的请求。
+- `http_error` 日志行的 `detail` 是原因短语，没有 JS 调用栈。
+- 用启动器环境（而非 `.env`）提供 `ACCESS_TOKEN`、又在网页上改过一次、之后 Node 被重拉：Node 回到环境里的值，前门仍认 `.env` 里改过的值。
 
 ## 测试钩子
 

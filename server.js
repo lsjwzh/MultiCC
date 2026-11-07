@@ -139,7 +139,6 @@ const { createProviderRelayModelCatalogRuntime, mountProviderRelayModelCatalogRo
 const { mountMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRoutes } = require('./src/routes/agent-resources');
-const { mountRunConfigPresetsRoutes } = require('./src/routes/run-config-presets');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { createLoginTerminalDisposer } = require('./src/session/login-terminal');
 const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
@@ -1522,10 +1521,6 @@ app.get('/api/v1/providers', (req, res) => {
 
 // Agent presets, installed skills and Claude history share one read/cleanup boundary.
 agentResources.mountRoutes(app);
-
-// Shared run-config preset library (Web localStorage / App SharedPreferences are
-// only caches). Rust owns validation and merge; see src/routes/run-config-presets.js.
-mountRunConfigPresetsRoutes(app, { file: MULTICC_PATHS.runConfigPresetsFile });
 
 // ── Directory REST API (src/directory: controller / service / repository) ──
 // Routes: GET /api/fs/list · GET|POST /api/directories · PATCH|DELETE

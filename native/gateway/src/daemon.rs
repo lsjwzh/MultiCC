@@ -14,6 +14,7 @@ use multicc_core::network_policy::{find_available_port, resolve_network_policy};
 use serde_json::{Map, Value};
 use tokio::net::{TcpListener, TcpSocket};
 
+use crate::app::App;
 use crate::args::ServeOptions;
 use crate::backoff::RestartPolicy;
 use crate::forward::{native_routes, serve_connection, UpstreamHandle};
@@ -37,7 +38,7 @@ pub async fn serve(options: ServeOptions) -> i32 {
         log(&format!("cannot enter {}: {error}", options.cwd.display()));
         return 1;
     }
-    load_dotenv(Path::new("."));
+    let dotenv_keys = load_dotenv(Path::new("."));
     let policy = match resolve_network_policy(&current_env()) {
         Ok(policy) => policy,
         Err(message) => {
@@ -86,8 +87,14 @@ pub async fn serve(options: ServeOptions) -> i32 {
     let upstream_wait = upstream_wait();
     // One router for every client connection; the per-connection upstream
     // handle is attached to each request by `serve_connection`.
-    let router = native_routes();
-    let mut supervisor = Supervisor::new(&options, port, RestartPolicy::new(backoff_scale()));
+    let app = Arc::new(App::from_env(&options, &policy));
+    let router = native_routes(app);
+    let mut supervisor = Supervisor::new(
+        &options,
+        port,
+        RestartPolicy::new(backoff_scale()),
+        dotenv_keys,
+    );
     supervisor.start();
     let mut signals = match Signals::new() {
         Ok(signals) => signals,
@@ -177,14 +184,21 @@ pub async fn serve(options: ServeOptions) -> i32 {
     exit_code.unwrap_or(0)
 }
 
-fn load_dotenv(directory: &Path) {
+/// §2: returns the keys this front door took from `.env`, so the child does
+/// not inherit them: Node reads `.env` itself, and a value the UI rewrote
+/// there (ACCESS_TOKEN) must win when Node is relaunched.
+fn load_dotenv(directory: &Path) -> Vec<String> {
     let path = directory.join(".env");
     // §2: a missing .env is not an error.
-    if let Ok(bytes) = std::fs::read(&path) {
-        // Node's readFileSync(path, 'utf8') replaces invalid sequences.
-        let text = String::from_utf8_lossy(&bytes);
-        multicc_core::dotenv::apply_to_process_env(&text);
-    }
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Vec::new();
+    };
+    // Node's readFileSync(path, 'utf8') replaces invalid sequences.
+    let text = String::from_utf8_lossy(&bytes);
+    multicc_core::dotenv::apply_to_process_env(&text)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect()
 }
 
 fn current_env() -> Map<String, Value> {
@@ -278,10 +292,16 @@ struct Supervisor<'a> {
     node: Option<Node>,
     restart_at: Option<Instant>,
     policy: RestartPolicy,
+    dotenv_keys: Vec<String>,
 }
 
 impl<'a> Supervisor<'a> {
-    fn new(options: &'a ServeOptions, public_port: u16, policy: RestartPolicy) -> Self {
+    fn new(
+        options: &'a ServeOptions,
+        public_port: u16,
+        policy: RestartPolicy,
+        dotenv_keys: Vec<String>,
+    ) -> Self {
         // No child exists yet: any value will do until `start` reserves one.
         Self {
             options,
@@ -291,6 +311,7 @@ impl<'a> Supervisor<'a> {
             node: None,
             restart_at: None,
             policy,
+            dotenv_keys,
         }
     }
 
@@ -328,7 +349,12 @@ impl<'a> Supervisor<'a> {
         }
         self.upstream_port
             .store(self.internal_port, Ordering::SeqCst);
-        match spawn_node(self.options, self.public_port, self.internal_port) {
+        match spawn_node(
+            self.options,
+            self.public_port,
+            self.internal_port,
+            &self.dotenv_keys,
+        ) {
             Ok(mut child) => {
                 log(&format!(
                     "node started (pid {}), internal port {}",
@@ -400,8 +426,16 @@ impl<'a> Supervisor<'a> {
     }
 }
 
-fn spawn_node(options: &ServeOptions, public_port: u16, internal_port: u16) -> io::Result<Child> {
+fn spawn_node(
+    options: &ServeOptions,
+    public_port: u16,
+    internal_port: u16,
+    dotenv_keys: &[String],
+) -> io::Result<Child> {
     let mut command = Command::new(&options.node);
+    for key in dotenv_keys {
+        command.env_remove(key);
+    }
     command
         .current_dir(&options.cwd)
         .arg(&options.script)

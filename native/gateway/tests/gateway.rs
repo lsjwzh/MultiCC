@@ -54,8 +54,20 @@ impl Gateway {
     /// Like `start`, but our parent holds the gateway's stdin
     /// (`--stdin-lifeline`); drop `child.stdin` to ask it to stop.
     fn start_with(tag: &str, mode: &str, extra: &[(&str, String)], lifeline: bool) -> Self {
+        Self::start_files(tag, mode, extra, &[], lifeline)
+    }
+
+    /// Like `start_with`, with `files` written into the package directory
+    /// (the gateway's cwd, next to the fixture's server.js) first.
+    fn start_files(
+        tag: &str,
+        mode: &str,
+        extra: &[(&str, String)],
+        files: &[(&str, String)],
+        lifeline: bool,
+    ) -> Self {
         for _ in 0..5 {
-            let mut gateway = Self::spawn(tag, mode, extra, None, lifeline);
+            let mut gateway = Self::spawn(tag, mode, extra, files, None, lifeline);
             if gateway.wait_ready_unless_port_taken() {
                 return gateway;
             }
@@ -81,13 +93,14 @@ impl Gateway {
     }
 
     fn start_on(tag: &str, port: u16) -> Self {
-        Self::spawn(tag, "echo", &[], Some(port), false)
+        Self::spawn(tag, "echo", &[], &[], Some(port), false)
     }
 
     fn spawn(
         tag: &str,
         mode: &str,
         extra: &[(&str, String)],
+        files: &[(&str, String)],
         port: Option<u16>,
         lifeline: bool,
     ) -> Self {
@@ -95,6 +108,9 @@ impl Gateway {
         let state = dir.join("state");
         fs::create_dir_all(&state).unwrap();
         fs::write(dir.join("server.js"), FIXTURE).unwrap();
+        for (name, content) in files {
+            fs::write(dir.join(name), content).unwrap();
+        }
         let port = port.unwrap_or_else(free_port);
         let log = fs::File::create(dir.join("gateway.log")).unwrap();
         let mut command = Command::new(GATEWAY_BIN);
@@ -848,4 +864,344 @@ fn the_version_line_carries_the_protocol_version() {
         line.starts_with("multicc-gateway 3 "),
         "unexpected --version output: {line:?}"
     );
+}
+
+// ── native routes (§8) ──────────────────────────────────────────────────────
+
+fn api(method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> Vec<u8> {
+    let mut raw = format!("{method} {path} HTTP/1.1\r\n");
+    for (name, value) in headers {
+        raw.push_str(&format!("{name}: {value}\r\n"));
+    }
+    if !body.is_empty() || method == "PUT" || method == "POST" {
+        raw.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    raw.push_str("\r\n");
+    raw.push_str(body);
+    raw.into_bytes()
+}
+
+const LOCAL: (&str, &str) = ("Host", "localhost");
+const JSON_TYPE: (&str, &str) = ("Content-Type", "application/json");
+
+fn preset_json(id: &str, saved_at: i64) -> String {
+    format!(
+        r#"{{"id":"{id}","name":"{id}","protocol":"anthropic","savedAt":{saved_at},"candidates":[{{"providerId":"a","model":"m"}},{{"providerId":"b","model":"m"}}]}}"#
+    )
+}
+
+fn presets_body(ids: &[(&str, i64)]) -> String {
+    let list: Vec<String> = ids.iter().map(|(id, at)| preset_json(id, *at)).collect();
+    format!(r#"{{"presets":[{}]}}"#, list.join(","))
+}
+
+fn preset_ids(response: &HttpResponse) -> Vec<String> {
+    response.json()["presets"]
+        .as_array()
+        .expect("presets array")
+        .iter()
+        .map(|preset| preset["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn assert_no_node_connection(gateway: &Gateway) {
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        gateway.connections().is_empty(),
+        "a native route must not touch node: {:?}",
+        gateway.connections()
+    );
+}
+
+#[test]
+fn run_config_presets_are_answered_by_the_front_door_alone() {
+    let gateway = Gateway::start("presets", "echo", &[]);
+    let mut client = gateway.connect();
+    let empty = request(
+        &mut client,
+        &api("GET", "/api/run-config/presets", &[LOCAL], ""),
+    );
+    assert_eq!(empty.status, 200, "{}\n{}", empty.text(), gateway.log());
+    assert_eq!(empty.text(), r#"{"ok":true,"presets":[]}"#);
+    assert_eq!(
+        empty.header("content-type"),
+        Some("application/json; charset=utf-8")
+    );
+    assert_eq!(empty.header("vary"), Some("Accept-Encoding"));
+    assert_eq!(empty.header("x-multicc-api-version"), Some("v1"));
+    assert_eq!(empty.header("x-multicc-request-id").map(str::len), Some(8));
+    assert!(empty.header("etag").unwrap().starts_with("W/\""));
+
+    let body = presets_body(&[("one", 1)]);
+    let put = request(
+        &mut client,
+        &api("PUT", "/api/run-config/presets", &[LOCAL, JSON_TYPE], &body),
+    );
+    assert_eq!(put.status, 200, "{}", put.text());
+    assert_eq!(preset_ids(&put), ["one"]);
+    let file = gateway.dir.join("run-config-presets.json");
+    let written = fs::read_to_string(&file).unwrap();
+    assert!(
+        written.starts_with("{\n  \"version\": 1,\n  \"presets\": [\n    {\n"),
+        "{written}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    let listed = request(
+        &mut client,
+        &api("GET", "/api/run-config/presets/", &[LOCAL], ""),
+    );
+    assert_eq!(preset_ids(&listed), ["one"]);
+    let etag = listed.header("etag").unwrap().to_string();
+    let cached = request(
+        &mut client,
+        &api(
+            "GET",
+            "/api/run-config/presets",
+            &[LOCAL, ("If-None-Match", &etag)],
+            "",
+        ),
+    );
+    assert_eq!(cached.status, 304);
+    assert_eq!(cached.header("content-type"), None);
+
+    let merged = request(
+        &mut client,
+        &api(
+            "POST",
+            "/api/run-config/presets/merge",
+            &[LOCAL, JSON_TYPE],
+            &presets_body(&[("two", 2)]),
+        ),
+    );
+    assert_eq!(merged.status, 200, "{}", merged.text());
+    assert_eq!(preset_ids(&merged), ["two", "one"]);
+
+    let options = request(
+        &mut client,
+        &api("OPTIONS", "/api/run-config/presets", &[LOCAL], ""),
+    );
+    assert_eq!(options.status, 200);
+    assert_eq!(options.header("allow"), Some("GET,HEAD,PUT"));
+    assert_eq!(options.text(), "GET,HEAD,PUT");
+    assert_no_node_connection(&gateway);
+}
+
+#[test]
+fn run_config_presets_refuse_bad_bodies_like_express_did() {
+    let gateway = Gateway::start("presets-bad", "echo", &[]);
+    let mut client = gateway.connect();
+    let not_json = request(
+        &mut client,
+        &api(
+            "PUT",
+            "/api/run-config/presets",
+            &[LOCAL, ("Content-Type", "text/plain")],
+            "{}",
+        ),
+    );
+    assert_eq!(not_json.status, 400);
+    assert_eq!(
+        not_json.text(),
+        r#"{"error":"presets 必须是数组","code":"invalid_presets"}"#
+    );
+    let too_many: Vec<(String, i64)> = (0..101).map(|i| (format!("p{i}"), i)).collect();
+    let too_many: Vec<(&str, i64)> = too_many.iter().map(|(id, at)| (id.as_str(), *at)).collect();
+    let refused = request(
+        &mut client,
+        &api(
+            "PUT",
+            "/api/run-config/presets",
+            &[LOCAL, JSON_TYPE],
+            &presets_body(&too_many),
+        ),
+    );
+    assert_eq!(refused.status, 400);
+    assert_eq!(refused.json()["error"], "presets 最多 100 条");
+    for broken in ["{\"presets\":", "\"text\""] {
+        let malformed = request(
+            &mut client,
+            &api(
+                "PUT",
+                "/api/run-config/presets",
+                &[LOCAL, JSON_TYPE],
+                broken,
+            ),
+        );
+        assert_eq!(malformed.status, 400, "{broken}");
+        let body = malformed.json();
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"], "request_error");
+        assert_eq!(body["code"], "request_error");
+        assert_eq!(body["apiVersion"], "v1");
+        assert_eq!(
+            body["requestId"].as_str(),
+            malformed.header("x-multicc-request-id")
+        );
+    }
+    assert!(!gateway.dir.join("run-config-presets.json").exists());
+    assert_no_node_connection(&gateway);
+}
+
+#[test]
+fn the_native_auth_gate_refuses_like_the_node_one() {
+    let gateway = Gateway::start(
+        "presets-auth",
+        "echo",
+        &[("ACCESS_TOKEN", "secret-token-1".to_string())],
+    );
+    let mut client = gateway.connect();
+    let remote_host = ("Host", "box.example.com");
+    let refused = request(
+        &mut client,
+        &api("GET", "/api/run-config/presets", &[remote_host], ""),
+    );
+    assert_eq!(refused.status, 403);
+    let body = refused.json();
+    assert_eq!(body["code"], "AUTH_REQUIRED");
+    assert_eq!(body["error"], "Forbidden: not authenticated");
+    assert_eq!(body["action"], "login");
+
+    let html = request(
+        &mut client,
+        &api(
+            "GET",
+            "/api/run-config/presets?x=1",
+            &[remote_host, ("Accept", "text/html,*/*;q=0.8")],
+            "",
+        ),
+    );
+    assert_eq!(html.status, 302);
+    let location = "/login?redirect=%2Fapi%2Frun-config%2Fpresets%3Fx%3D1";
+    assert_eq!(html.header("location"), Some(location));
+    assert_eq!(
+        html.text(),
+        format!("<p>Found. Redirecting to {location}</p>")
+    );
+
+    let token = request(
+        &mut client,
+        &api(
+            "GET",
+            "/api/run-config/presets",
+            &[remote_host, ("X-Access-Token", "secret-token-1")],
+            "",
+        ),
+    );
+    assert_eq!(token.status, 200, "{}", token.text());
+    // A loopback peer with a local Host needs no credential, as in Node.
+    let local = request(
+        &mut client,
+        &api("GET", "/api/run-config/presets", &[LOCAL], ""),
+    );
+    assert_eq!(local.status, 200);
+    // A forwarding header makes even a loopback peer remote.
+    let forwarded = request(
+        &mut client,
+        &api(
+            "GET",
+            "/api/run-config/presets",
+            &[LOCAL, ("X-Forwarded-For", "1.2.3.4")],
+            "",
+        ),
+    );
+    assert_eq!(forwarded.status, 403);
+    assert_no_node_connection(&gateway);
+}
+
+#[test]
+fn a_token_rewritten_in_the_env_file_applies_at_once_and_is_not_inherited() {
+    let gateway = Gateway::start_files(
+        "presets-token",
+        "echo",
+        &[],
+        &[(
+            ".env",
+            "ACCESS_TOKEN=old-token-1\nFIXTURE_DOTENV_ONLY=1\n".to_string(),
+        )],
+        false,
+    );
+    let mut client = gateway.connect();
+    let remote = |token: &str| {
+        api(
+            "GET",
+            "/api/run-config/presets",
+            &[("Host", "box.example.com"), ("X-Access-Token", token)],
+            "",
+        )
+    };
+    assert_eq!(request(&mut client, &remote("old-token-1")).status, 200);
+    // What POST /api/settings/access-token does: rewrite .env, swap memory.
+    fs::write(
+        gateway.dir.join(".env"),
+        "ACCESS_TOKEN=new-token-2\nFIXTURE_DOTENV_ONLY=1\n",
+    )
+    .unwrap();
+    assert_eq!(request(&mut client, &remote("old-token-1")).status, 403);
+    assert_eq!(request(&mut client, &remote("new-token-2")).status, 200);
+
+    // Node reads .env itself; inheriting the front door's copy would make a
+    // relaunched Node keep the old token.
+    let env = request(&mut client, &get("/env"));
+    assert_eq!(env.status, 200, "{}", gateway.log());
+    let env = env.json();
+    assert_eq!(env["FIXTURE_DOTENV_ONLY"], Value::Null);
+    assert_eq!(env["PORT"], gateway.port.to_string());
+}
+
+#[test]
+fn a_large_preset_list_is_gzipped_for_clients_that_accept_it() {
+    let gateway = Gateway::start("presets-gzip", "echo", &[]);
+    let mut client = gateway.connect();
+    let ids: Vec<(String, i64)> = (0..20)
+        .map(|i| (format!("preset-{i:02}"), 100 + i))
+        .collect();
+    let ids: Vec<(&str, i64)> = ids.iter().map(|(id, at)| (id.as_str(), *at)).collect();
+    let put = request(
+        &mut client,
+        &api(
+            "PUT",
+            "/api/run-config/presets",
+            &[LOCAL, JSON_TYPE],
+            &presets_body(&ids),
+        ),
+    );
+    assert_eq!(put.status, 200, "{}", put.text());
+    let plain = put.body.clone();
+    assert!(plain.len() >= 1024, "{}", plain.len());
+    let gzipped = request(
+        &mut client,
+        &api(
+            "GET",
+            "/api/run-config/presets",
+            &[LOCAL, ("Accept-Encoding", "gzip, deflate, br")],
+            "",
+        ),
+    );
+    assert_eq!(gzipped.header("content-encoding"), Some("gzip"));
+    let mut decoded = Vec::new();
+    flate2::read::GzDecoder::new(&gzipped.body[..])
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, plain);
+}
+
+#[test]
+fn other_methods_on_a_native_path_still_reach_node() {
+    let gateway = Gateway::start("presets-other", "echo", &[]);
+    let mut client = gateway.connect();
+    let response = request(
+        &mut client,
+        &api("POST", "/api/run-config/presets", &[LOCAL], ""),
+    );
+    assert_eq!(response.status, 200, "{}", gateway.log());
+    assert_eq!(response.text(), "ok");
+    gateway.wait_for_state("the forwarded request", |g| !g.connections().is_empty());
 }

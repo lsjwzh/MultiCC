@@ -1,0 +1,296 @@
+//! Routes the front door answers itself instead of forwarding to Node.
+//!
+//! Each one replaced a Node route that was deleted in the same change, so it
+//! keeps that route's whole contract: the auth gate in front of it
+//! (`multicc_core::http_gate`), Express's response behavior ([`express`]),
+//! and the route's own request/response shapes. docs/gateway.md §8 lists
+//! them and the few documented differences.
+
+pub mod accept;
+pub mod express;
+pub mod run_config_presets;
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use axum::body::Body;
+use axum::http::{Method, Request, Response};
+use multicc_core::http_gate::{self, GateDecision, GatePolicy, GateRequest};
+use multicc_core::js::string::js_trim;
+use multicc_core::network_policy::{env_enabled, NetworkPolicy};
+
+use crate::args::ServeOptions;
+use express::RequestCtx;
+
+/// A native route, matched the way Express matched the Node one:
+/// case-insensitive, one optional trailing slash, raw (undecoded) path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    PresetsGet,
+    PresetsPut,
+    PresetsOptions,
+    PresetsMerge,
+    PresetsMergeOptions,
+}
+
+/// The routes this front door owns. Anything else (including other methods
+/// on these paths, which Express would have passed on) goes to Node.
+///
+/// Only paths with the exact-case `/api/` prefix are claimed: Node's auth
+/// gate and JSON gzip test `req.path.startsWith('/api/')` case-sensitively,
+/// and a differently-cased prefix took other branches there.
+pub fn claim(method: &Method, path: &str) -> Option<Route> {
+    let rest = path.strip_prefix("/api/")?;
+    let rest = rest.strip_suffix('/').unwrap_or(rest).to_ascii_lowercase();
+    match (rest.as_str(), method.as_str()) {
+        ("run-config/presets", "GET" | "HEAD") => Some(Route::PresetsGet),
+        ("run-config/presets", "PUT") => Some(Route::PresetsPut),
+        ("run-config/presets", "OPTIONS") => Some(Route::PresetsOptions),
+        ("run-config/presets/merge", "POST") => Some(Route::PresetsMerge),
+        ("run-config/presets/merge", "OPTIONS") => Some(Route::PresetsMergeOptions),
+        _ => None,
+    }
+}
+
+/// `ACCESS_TOKEN` as the Node process currently holds it.
+///
+/// Node reads it once at start and afterwards only changes it through
+/// `POST /api/settings/access-token`, which rewrites the env file first and
+/// then swaps the in-memory value. So: the startup value, until the env
+/// file's `ACCESS_TOKEN` differs from what it was at our start; from then on
+/// whatever the file says.
+pub struct TokenSource {
+    startup: String,
+    file: PathBuf,
+    at_start: Option<String>,
+    changed: Mutex<Option<String>>,
+}
+
+fn file_token(file: &Path) -> Option<String> {
+    let bytes = std::fs::read(file).ok()?;
+    let mut env = serde_json::Map::new();
+    multicc_core::dotenv::apply(&String::from_utf8_lossy(&bytes), &mut env);
+    env.get("ACCESS_TOKEN")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
+impl TokenSource {
+    pub fn new(startup: String, file: PathBuf) -> Self {
+        let at_start = file_token(&file);
+        Self {
+            startup,
+            file,
+            at_start,
+            changed: Mutex::new(None),
+        }
+    }
+
+    pub fn current(&self) -> String {
+        let now = file_token(&self.file);
+        let mut changed = self.changed.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(value) = now {
+            if changed.is_some() || Some(&value) != self.at_start.as_ref() {
+                *changed = Some(value);
+            }
+        }
+        changed.clone().unwrap_or_else(|| self.startup.clone())
+    }
+}
+
+pub struct App {
+    /// `MULTICC_PATHS.root` (src/paths.js `resolveDataDir`).
+    pub data_root: PathBuf,
+    pub token: TokenSource,
+    pub lan_only: bool,
+    pub allow_legacy_token_query: bool,
+    /// Node handled each of these requests to completion on one thread; the
+    /// read-modify-write of a store must not interleave here either.
+    store_lock: Mutex<()>,
+}
+
+fn env_text(name: &str) -> String {
+    std::env::var(name).unwrap_or_default()
+}
+
+impl App {
+    /// The Node package root is the directory of the script we run (Node's
+    /// `__dirname` resolves symlinks, so canonicalize like it does).
+    pub fn package_root(options: &ServeOptions) -> PathBuf {
+        let script = options.cwd.join(&options.script);
+        std::fs::canonicalize(&script)
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| options.cwd.clone())
+    }
+
+    pub fn from_env(options: &ServeOptions, policy: &NetworkPolicy) -> Self {
+        let package_root = Self::package_root(options);
+        let raw_data = env_text("MULTICC_DATA_DIR");
+        let raw_data = js_trim(&raw_data);
+        let data_root = if raw_data.is_empty() {
+            package_root.clone()
+        } else {
+            package_root.join(raw_data)
+        };
+        // src/host-env.js envPath(): where the UI writes ACCESS_TOKEN.
+        let env_file = match env_text("MULTICC_ENV_FILE") {
+            file if !file.is_empty() => options.cwd.join(file),
+            _ => package_root.join(".env"),
+        };
+        Self {
+            data_root,
+            token: TokenSource::new(policy.access_token.clone(), env_file),
+            lan_only: policy.lan_only,
+            allow_legacy_token_query: env_enabled(&env_text("MULTICC_ALLOW_LEGACY_TOKEN_QUERY")),
+            store_lock: Mutex::new(()),
+        }
+    }
+
+    fn gate(&self, ctx: &RequestCtx, peer: &str) -> Option<Response<Body>> {
+        let policy = GatePolicy {
+            access_token: self.token.current(),
+            lan_only: self.lan_only,
+            allow_legacy_token_query: self.allow_legacy_token_query,
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as i64)
+            .unwrap_or(0);
+        let request = GateRequest {
+            method: ctx.method.as_str(),
+            path: &ctx.path,
+            original_url: &ctx.original_url,
+            peer,
+            headers: &ctx.headers,
+            now_ms,
+        };
+        let root = self.data_root.to_string_lossy().into_owned();
+        let decision = http_gate::authorize(&policy, &request, |credential| {
+            multicc_core::machines::authorize(
+                &root,
+                credential,
+                ctx.method.as_str(),
+                &ctx.original_url,
+            )
+            .is_some()
+        });
+        match decision {
+            GateDecision::Allow => None,
+            GateDecision::PeerRejected => Some(express::json(
+                ctx,
+                403,
+                &http_gate::public_peer_rejected_dto(&ctx.ids),
+                &[],
+            )),
+            GateDecision::AuthRequired => Some(express::json(
+                ctx,
+                403,
+                &http_gate::auth_required_dto(&ctx.ids),
+                &[],
+            )),
+            GateDecision::LoginRedirect(location) => Some(express::redirect(ctx, &location)),
+        }
+    }
+}
+
+/// Express's automatic OPTIONS answer for a path with these methods.
+fn options(ctx: &RequestCtx, allow: &str) -> Response<Body> {
+    express::send(
+        ctx,
+        200,
+        "text/html; charset=utf-8",
+        allow.as_bytes().to_vec(),
+        &[("Allow", allow)],
+    )
+}
+
+/// Answers `route`: the auth gate, then `express.json`, then the handler.
+pub async fn handle(
+    app: Arc<App>,
+    route: Route,
+    request: Request<Body>,
+    client: SocketAddr,
+) -> Response<Body> {
+    let (parts, body) = request.into_parts();
+    let ctx = RequestCtx::new(&parts);
+    // src/gateway-child.js hands Node the PROXY line's address text, which is
+    // this Display form (IPv4-mapped IPv6 included).
+    let peer = client.ip().to_string();
+    if let Some(refusal) = app.gate(&ctx, &peer) {
+        return refusal;
+    }
+    let body = match express::json_body(&ctx, body, express::JSON_LIMIT).await {
+        Ok(value) => value,
+        Err(error) => return express::error(&ctx, error.status, error.reason),
+    };
+    match route {
+        Route::PresetsOptions => return options(&ctx, "GET,HEAD,PUT"),
+        Route::PresetsMergeOptions => return options(&ctx, "POST"),
+        _ => {}
+    }
+    let worker = Arc::clone(&app);
+    let answered = tokio::task::spawn_blocking(move || {
+        let _held = worker.store_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let root = &worker.data_root;
+        match route {
+            Route::PresetsGet => run_config_presets::get(root),
+            Route::PresetsPut => run_config_presets::put(root, &body),
+            Route::PresetsMerge => run_config_presets::merge(root, &body),
+            Route::PresetsOptions | Route::PresetsMergeOptions => unreachable!(),
+        }
+    })
+    .await;
+    match answered {
+        Ok((status, value)) => express::json(&ctx, status, &value, &[]),
+        Err(_) => express::error(&ctx, 500, "native route panicked"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claims_follow_express_matching() {
+        assert_eq!(
+            claim(&Method::GET, "/api/run-config/presets"),
+            Some(Route::PresetsGet)
+        );
+        assert_eq!(
+            claim(&Method::HEAD, "/api/Run-Config/Presets/"),
+            Some(Route::PresetsGet)
+        );
+        assert_eq!(
+            claim(&Method::PUT, "/api/run-config/presets"),
+            Some(Route::PresetsPut)
+        );
+        assert_eq!(
+            claim(&Method::POST, "/api/run-config/presets/merge"),
+            Some(Route::PresetsMerge)
+        );
+        assert_eq!(claim(&Method::POST, "/api/run-config/presets"), None);
+        assert_eq!(claim(&Method::GET, "/api/run-config/presets//"), None);
+        assert_eq!(claim(&Method::GET, "/API/run-config/presets"), None);
+        assert_eq!(claim(&Method::GET, "/api/run%2Dconfig/presets"), None);
+    }
+
+    #[test]
+    fn token_follows_the_env_file_once_it_changes() {
+        let dir = std::env::temp_dir().join(format!("multicc-token-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(".env");
+        std::fs::write(&file, "ACCESS_TOKEN=first-token\n").unwrap();
+        let source = TokenSource::new("from-env".into(), file.clone());
+        assert_eq!(source.current(), "from-env");
+        std::fs::write(&file, "OTHER=1\nACCESS_TOKEN=second-token\n").unwrap();
+        assert_eq!(source.current(), "second-token");
+        // Changing it back is still a UI change Node applied.
+        std::fs::write(&file, "ACCESS_TOKEN=first-token\n").unwrap();
+        assert_eq!(source.current(), "first-token");
+        std::fs::write(&file, "ACCESS_TOKEN=\n").unwrap();
+        assert_eq!(source.current(), "");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

@@ -34,6 +34,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tower::Service as TowerService;
 
+use crate::app::App;
 use crate::proxy_header::format_proxy_header;
 
 /// §6: while Node is down, retry the upstream connection every 100ms.
@@ -180,19 +181,29 @@ impl UpstreamHandle {
 
 /// The router driven by every accepted client connection: native routes first,
 /// Node as the fallback.
-pub fn native_routes() -> Router {
+pub fn native_routes(app: Arc<App>) -> Router {
     let mut router = Router::new();
     if std::env::var("MULTICC_GATEWAY_TEST_ROUTES").ok().as_deref() == Some("1") {
         router = router.route(TEST_ROUTE, get(|| async { TEST_ROUTE_BODY }));
     }
-    router.fallback(forward)
+    router.fallback(dispatch).layer(Extension(app))
+}
+
+/// §8: a route the front door owns is answered here; everything else, and
+/// every other method on those paths, goes to Node exactly as before.
+async fn dispatch(
+    Extension(upstream): Extension<UpstreamHandle>,
+    Extension(app): Extension<Arc<App>>,
+    request: Request<Body>,
+) -> Response<Body> {
+    if let Some(route) = crate::app::claim(request.method(), request.uri().path()) {
+        return crate::app::handle(app, route, request, upstream.state.client).await;
+    }
+    forward(upstream, request).await
 }
 
 /// §6: the fallback. Streams the request to Node and the response back.
-async fn forward(
-    Extension(upstream): Extension<UpstreamHandle>,
-    mut request: Request<Body>,
-) -> Response<Body> {
+async fn forward(upstream: UpstreamHandle, mut request: Request<Body>) -> Response<Body> {
     // Taken before the request is forwarded: the upgrade belongs to the client
     // connection, not to Node's request extensions.
     let client_upgrade = hyper::upgrade::on(&mut request);
