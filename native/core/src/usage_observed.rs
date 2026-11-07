@@ -13,9 +13,8 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
-use crate::js::serde::{
-    js_string, js_to_number, js_trim, number_value, stable_stringify, truthy, truthy_opt, utf16_len,
-};
+use crate::js::serde::{js_trim, number_value, utf16_len};
+use crate::js::tags::{self, js_string, js_to_number, stable_stringify, truthy, truthy_opt};
 
 pub const VERSION: u32 = 1;
 pub const ROLE_KINDS: [&str; 3] = ["main", "sub", "aux"];
@@ -62,7 +61,7 @@ fn prop<'a>(container: Option<&'a Value>, key: &str) -> Option<&'a Value> {
 
 fn first_non_null<'a>(left: Option<&'a Value>, right: Option<&'a Value>) -> Option<&'a Value> {
     match left {
-        Some(value) if !value.is_null() => Some(value),
+        Some(value) if !tags::is_nullish(value) => Some(value),
         _ => right,
     }
 }
@@ -85,8 +84,8 @@ fn required_text(text: &str, label: &str, max: usize) -> Result<String, UsageErr
 
 fn required_string(value: Option<&Value>, label: &str, max: usize) -> Result<String, UsageError> {
     let owned = match value {
-        None | Some(Value::Null) => String::new(),
-        Some(other) => js_string(other),
+        Some(value) if !tags::is_nullish(value) => js_string(value),
+        _ => String::new(),
     };
     required_text(&owned, label, max)
 }
@@ -95,16 +94,18 @@ fn required_string(value: Option<&Value>, label: &str, max: usize) -> Result<Str
 /// reduced to its truthy (non-empty) form.
 fn trimmed_option(value: Option<&Value>) -> Option<String> {
     match value {
-        None | Some(Value::Null) => None,
-        Some(Value::String(text)) if text.is_empty() => None,
-        Some(other) => {
-            let text = js_trim(&js_string(other)).to_string();
+        Some(value) if !tags::is_nullish(value) => {
+            if matches!(value, Value::String(text) if text.is_empty()) {
+                return None;
+            }
+            let text = js_trim(&js_string(value)).to_string();
             if text.is_empty() {
                 None
             } else {
                 Some(text)
             }
         }
+        _ => None,
     }
 }
 
@@ -132,15 +133,17 @@ fn required_bound(value: Option<String>, label: &str, max: usize) -> Result<Stri
 
 fn optional_string(value: Option<&Value>, max: usize) -> Result<Option<String>, UsageError> {
     match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(text)) if text.is_empty() => Ok(None),
-        Some(other) => {
-            let text = js_trim(&js_string(other)).to_string();
+        Some(value) if !tags::is_nullish(value) => {
+            if matches!(value, Value::String(text) if text.is_empty()) {
+                return Ok(None);
+            }
+            let text = js_trim(&js_string(value)).to_string();
             if utf16_len(&text) > max || has_control_characters(&text) {
                 return Err(invalid("usage string field is invalid"));
             }
             Ok(if text.is_empty() { None } else { Some(text) })
         }
+        _ => Ok(None),
     }
 }
 
@@ -154,8 +157,8 @@ fn optional_string_text(text: String, max: usize) -> Result<Option<String>, Usag
 
 fn non_negative(value: Option<&Value>, label: &str) -> Result<f64, UsageError> {
     let number = match value {
-        None | Some(Value::Null) => 0.0,
-        Some(other) => js_to_number(other),
+        Some(value) if !tags::is_nullish(value) => js_to_number(value),
+        _ => 0.0,
     };
     if !number.is_finite() || number < 0.0 {
         return Err(invalid(format!("{label} must be a non-negative number")));
@@ -172,33 +175,35 @@ fn optional_positive_integer(
     label: &str,
 ) -> Result<Option<f64>, UsageError> {
     match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(text)) if text.is_empty() => Ok(None),
-        Some(other) => {
-            let number = js_to_number(other);
+        Some(value) if !tags::is_nullish(value) => {
+            if matches!(value, Value::String(text) if text.is_empty()) {
+                return Ok(None);
+            }
+            let number = js_to_number(value);
             if !safe_integer(number) || number < 1.0 {
                 return Err(invalid(format!("{label} must be a positive integer")));
             }
             Ok(Some(number))
         }
+        _ => Ok(None),
     }
 }
 
 fn normalize_tokens(raw: Option<&Value>, coverage: &str) -> Result<Option<Value>, UsageError> {
     if coverage == "unobservable" {
-        if raw.is_some_and(|value| !value.is_null()) {
+        if raw.is_some_and(|value| !tags::is_nullish(value)) {
             return Err(invalid("unobservable usage must not contain token counts"));
         }
         return Ok(None);
     }
     let object = match raw {
-        Some(Value::Object(object)) => object,
+        Some(value @ Value::Object(object)) if !tags::is_tagged_scalar(value) => object,
         _ => return Err(invalid("tokens are required for observed usage")),
     };
     let first_value = |keys: &[&str]| -> Option<&Value> {
         for key in keys {
             if let Some(value) = object.get(*key) {
-                if !value.is_null() {
+                if !tags::is_nullish(value) {
                     return Some(value);
                 }
             }
@@ -272,6 +277,22 @@ fn parse_iso_date(text: &str) -> f64 {
         }
     }
     f64::NAN
+}
+
+/// `normalizeOccurredAt(input.occurredAt ?? input.timestamp)` with the
+/// `Date.parse` term computed by the JS bridge (`occurredAtMs`). `Date.parse`
+/// accepts natural-language dates that engine versions disagree on, so it is
+/// not reimplemented here. An absent/nullish precompute means the bridge saw a
+/// nullish timestamp (or none), which the old code reports as "required".
+fn normalize_occurred_at_precomputed(value: Option<&Value>) -> Result<f64, UsageError> {
+    let number = match value {
+        Some(value) if !tags::is_nullish(value) => tags::js_to_number(value),
+        _ => return Err(invalid("occurredAt is required for a stable eventId")),
+    };
+    if !number.is_finite() || number <= 0.0 {
+        return Err(invalid("occurredAt must be a timestamp"));
+    }
+    Ok(number.floor())
 }
 
 fn normalize_occurred_at(value: Option<&Value>) -> Result<f64, UsageError> {
@@ -364,14 +385,28 @@ pub fn create(
     binding: Option<&Value>,
     normalized_outcome: Option<&Value>,
 ) -> Result<Created, UsageError> {
-    if !matches!(input, Value::Object(_)) {
+    create_with(input, binding, normalized_outcome, None)
+}
+
+/// [`create`] with the JS-computed `Date.parse` result. A direct-bridge caller
+/// always passes `occurredAtMs` (possibly `undefined`); `None` keeps the
+/// ISO-only fallback used by the Rust tests.
+pub fn create_with(
+    input: &Value,
+    binding: Option<&Value>,
+    normalized_outcome: Option<&Value>,
+    occurred_at_ms: Option<&Value>,
+) -> Result<Created, UsageError> {
+    if !matches!(input, Value::Object(_)) || tags::is_tagged_scalar(input) {
         return Err(invalid("UsageObserved input must be an object"));
     }
-    let occurred_raw = first_non_null(
-        prop(Some(input), "occurredAt"),
-        prop(Some(input), "timestamp"),
-    );
-    let occurred_at = normalize_occurred_at(occurred_raw)?;
+    let occurred_at = match occurred_at_ms {
+        Some(value) => normalize_occurred_at_precomputed(Some(value))?,
+        None => normalize_occurred_at(first_non_null(
+            prop(Some(input), "occurredAt"),
+            prop(Some(input), "timestamp"),
+        ))?,
+    };
 
     let session_raw = first_non_null(
         prop(Some(input), "sessionId"),
@@ -648,7 +683,7 @@ pub fn create(
     let latency = non_negative(prop(Some(input), "latencyMs"), "latencyMs")?;
     event.insert("latencyMs".to_string(), number_value(latency));
     match prop(Some(input), "statusCode") {
-        Some(value) if !value.is_null() => {
+        Some(value) if !tags::is_nullish(value) => {
             let status_code = non_negative(Some(value), "statusCode")?;
             event.insert("statusCode".to_string(), number_value(status_code));
         }
@@ -678,11 +713,12 @@ fn argument<'a>(input: &'a Value, key: &str) -> Option<&'a Value> {
     input.as_object().and_then(|object| object.get(key))
 }
 
-/// String-in/string-out dispatcher for the addon. `create` answers with an
+/// Value-in/value-out dispatcher for the addon. `create` answers with an
 /// envelope so the bridge can rebuild `UsageObservedError`/`TypeError` itself.
-pub fn request(op: &str, input: &str) -> Result<String, String> {
-    let value: Value = crate::json_lenient::from_str(input)
-        .map_err(|error| format!("usage_observed_invalid_input: {error}"))?;
+/// The payload crosses napi directly, so nested `NaN`/`Infinity`, explicit
+/// `undefined` properties and `-0` keep their JavaScript meaning.
+pub fn request_value(op: &str, input: &crate::js::JsValue) -> Result<crate::js::JsValue, String> {
+    let value = tags::from_js(input);
     match op {
         "create" => {
             let target = argument(&value, "value").unwrap_or(&Value::Null);
@@ -692,7 +728,12 @@ pub fn request(op: &str, input: &str) -> Result<String, String> {
             } else {
                 None
             };
-            let envelope = match create(target, binding, normalized) {
+            let envelope = match create_with(
+                target,
+                binding,
+                normalized,
+                argument(&value, "occurredAtMs"),
+            ) {
                 Ok(Created::Event(event)) => {
                     serde_json::json!({ "ok": true, "value": event })
                 }
@@ -703,12 +744,11 @@ pub fn request(op: &str, input: &str) -> Result<String, String> {
                     serde_json::json!({ "ok": false, "code": error.code, "message": error.message })
                 }
             };
-            Ok(envelope.to_string())
+            Ok(tags::to_js(&envelope))
         }
-        "stableEventId" => Ok(Value::String(stable_event_id(
+        "stableEventId" => Ok(tags::to_js(&Value::String(stable_event_id(
             argument(&value, "identity").unwrap_or(&Value::Null),
-        ))
-        .to_string()),
+        )))),
         _ => Err(format!("usage_observed_unknown_op: {op}")),
     }
 }
@@ -818,14 +858,8 @@ mod tests {
     #[test]
     fn stable_event_id_json_entry_matches_the_kernel() {
         let identity = json!({ "b": [2, 1], "a": "x" });
-        let raw = serde_json::from_str::<Value>(
-            &request(
-                "stableEventId",
-                &json!({ "identity": identity }).to_string(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        let payload = crate::js::serde::from_serde(&json!({ "identity": identity }));
+        let raw = crate::js::serde::to_serde(&request_value("stableEventId", &payload).unwrap());
         assert_eq!(raw, json!(stable_event_id(&identity)));
     }
 

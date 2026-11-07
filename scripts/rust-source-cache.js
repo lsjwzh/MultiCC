@@ -94,7 +94,7 @@ function probeAddon(file, node = process.execPath) {
       'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['contextSelectionTerms','contextSelectionRelevance','contextSelectionMinRelevance',
       'contextSelectionClipTokens','contextSelectionSelect','usageObservedCatalog',
-      'usageObservedRequest'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      'usageObservedRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     // An exported function is insufficient: Windows must be able to lock,
     // append and flush an audit record before this addon can run chat turns.
     const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
@@ -121,7 +121,7 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.gitCommitEnvironment!=='function' || typeof a.validatePublicationRecords!=='function'
       || typeof a.planTaskContextRead!=='function' || typeof a.selectTaskContextRecords!=='function'
       || typeof a.rankTaskContextCandidates!=='function' || typeof a.RustTaskReadModel!=='function' || a.taskReadModelProtocolVersion?.()!==1) process.exit(1);
-    if(['cliSwitchCatalog','cliSwitchRequest','turnRequestCatalog','turnRequestRequest'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['cliSwitchCatalog','cliSwitchRequest','turnRequestCatalog','turnRequestRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     (async()=>{ const model=new a.RustTaskReadModel();
       const run=async command=>JSON.parse((await model.run(JSON.stringify({op:'air',command}))).result);
       await run({op:'open',epoch:'preflight'});

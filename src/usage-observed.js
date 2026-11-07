@@ -29,7 +29,18 @@ class UsageObservedError extends Error {
 }
 
 function request(op, input) {
-  return JSON.parse(native.usageObservedRequest(op, JSON.stringify(input)));
+  // Direct value transport keeps nested NaN/Infinity, explicit `undefined`
+  // properties and -0 that JSON.stringify/JSON.parse would rewrite.
+  return native.usageObservedRequestValue(op, input);
+}
+
+// `Date.parse` stays in JS: it accepts engine-defined natural-language dates.
+// `normalizeOccurredAt` throws "required" for a nullish/empty value and
+// "must be a timestamp" for anything Date.parse cannot read.
+function occurredAtMs(input) {
+  const value = input.occurredAt != null ? input.occurredAt : input.timestamp;
+  if (value == null || value === '') return undefined;
+  return typeof value === 'number' ? value : Date.parse(value);
 }
 
 function createUsageObserved(input, binding = null) {
@@ -44,9 +55,10 @@ function createUsageObserved(input, binding = null) {
     agentRole: bound.agentRole ?? null,
     routeName: bound.routeName ?? null,
   };
+  const timestamp = occurredAtMs(input);
   let normalized;
   for (;;) {
-    const payload = { value: input, binding: projected };
+    const payload = { value: input, binding: projected, occurredAtMs: timestamp };
     if (normalized !== undefined) {
       payload.proxyOutcome = normalized;
       payload.proxyOutcomeNormalized = true;

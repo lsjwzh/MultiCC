@@ -16,6 +16,11 @@
 //! Old JS semantics are kept exactly: `String()` coercion, JS `trim()`
 //! whitespace (includes U+FEFF, excludes U+0085), UTF-16 code-unit lengths and
 //! slices, `Number()` coercion, `===` identity checks and `Array.isArray`.
+//!
+//! The addon reads the request as a JavaScript value and converts it with
+//! [`crate::js::tags`], so `undefined`, `NaN`, the infinities and `-0` are not
+//! rewritten by JSON before this module sees them.
+use crate::js::tags;
 use crate::js::{js_trim, utf16_len, utf16_prefix};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
@@ -71,58 +76,20 @@ impl Failure {
 // ── JS value semantics ──────────────────────────────────────────────────────
 
 fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(flag) => *flag,
-        Value::Number(number) => number.as_f64().is_some_and(|f| f != 0.0 && !f.is_nan()),
-        Value::String(text) => !text.is_empty(),
-        Value::Array(_) | Value::Object(_) => true,
-    }
+    tags::truthy(value)
 }
 
 fn truthy_opt(value: Option<&Value>) -> bool {
-    value.is_some_and(truthy)
+    tags::truthy_opt(value)
 }
 
 fn field<'a>(container: &'a Value, key: &str) -> Option<&'a Value> {
     container.as_object().and_then(|object| object.get(key))
 }
 
-fn format_number(number: &serde_json::Number) -> String {
-    if let Some(integer) = number.as_i64() {
-        return integer.to_string();
-    }
-    if let Some(integer) = number.as_u64() {
-        return integer.to_string();
-    }
-    let float = number.as_f64().unwrap_or(f64::NAN);
-    if float == 0.0 {
-        return "0".to_string();
-    }
-    let mut buffer = ryu_js::Buffer::new();
-    buffer.format_finite(float).to_string()
-}
-
-/// `String(value)` for JSON values (array holes arrive as null).
+/// `String(value)` for tagged JSON values.
 fn js_string(value: &Value) -> String {
-    match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(flag) => flag.to_string(),
-        Value::Number(number) => format_number(number),
-        Value::String(text) => text.clone(),
-        Value::Array(items) => items
-            .iter()
-            .map(|item| {
-                if item.is_null() {
-                    String::new()
-                } else {
-                    js_string(item)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-        Value::Object(_) => "[object Object]".to_string(),
-    }
+    tags::js_string(value)
 }
 
 fn is_integer(number: f64) -> bool {
@@ -147,66 +114,19 @@ fn js_number_value(number: f64) -> Value {
     Value::from(number)
 }
 
-fn re_decimal() -> &'static regex::Regex {
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| {
-        regex::Regex::new(r"^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")
-            .expect("decimal regex")
-    })
-}
-
-/// StringToNumber: JS whitespace trim, `Infinity`, 0x/0o/0b, decimal literals.
-fn string_to_number(text: &str) -> f64 {
-    let trimmed = js_trim(text);
-    if trimmed.is_empty() {
-        return 0.0;
-    }
-    match trimmed {
-        "Infinity" | "+Infinity" => return f64::INFINITY,
-        "-Infinity" => return f64::NEG_INFINITY,
-        _ => {}
-    }
-    let bytes = trimmed.as_bytes();
-    if bytes.len() > 2 && bytes[0] == b'0' {
-        let radix = match bytes[1] {
-            b'x' | b'X' => 16,
-            b'o' | b'O' => 8,
-            b'b' | b'B' => 2,
-            _ => 0,
-        };
-        if radix != 0 {
-            let mut value = 0.0_f64;
-            for &byte in &bytes[2..] {
-                let Some(digit) = char::from(byte).to_digit(radix) else {
-                    return f64::NAN;
-                };
-                value = value * f64::from(radix) + f64::from(digit);
-            }
-            return value;
-        }
-    }
-    if re_decimal().is_match(trimmed) {
-        trimmed.parse().unwrap_or(f64::NAN)
-    } else {
-        f64::NAN
-    }
-}
-
 /// `Number(value)`; a missing value is undefined → NaN.
 fn to_number(value: Option<&Value>) -> f64 {
     match value {
         None => f64::NAN,
-        Some(Value::Null) => 0.0,
-        Some(Value::Bool(flag)) => f64::from(u8::from(*flag)),
-        Some(Value::Number(number)) => number.as_f64().unwrap_or(f64::NAN),
-        Some(Value::String(text)) => string_to_number(text),
-        Some(array @ Value::Array(_)) => string_to_number(&js_string(array)),
-        Some(Value::Object(_)) => f64::NAN,
+        Some(value) => tags::js_to_number(value),
     }
 }
 
 fn is_nullish(value: Option<&Value>) -> bool {
-    matches!(value, None | Some(Value::Null))
+    match value {
+        None => true,
+        Some(value) => tags::is_nullish(value),
+    }
 }
 
 // ── field normalizers ──────────────────────────────────────────────────────
@@ -217,8 +137,8 @@ fn clean_id(
     required: bool,
 ) -> Result<Option<String>, Failure> {
     let text = match value {
-        None | Some(Value::Null) => String::new(),
-        Some(value) => js_string(value),
+        Some(value) if !tags::is_nullish(value) => js_string(value),
+        _ => String::new(),
     };
     let text = utf16_prefix(js_trim(&text), MAX_ID_LENGTH);
     if required && text.is_empty() {
@@ -231,7 +151,7 @@ fn clean_id(
 }
 
 fn normalize_string_list(value: Option<&Value>, field_name: &str) -> Result<Value, Failure> {
-    let Some(value) = value.filter(|value| !value.is_null()) else {
+    let Some(value) = value.filter(|value| !tags::is_nullish(value)) else {
         return Ok(json!([]));
     };
     let Some(items) = value.as_array() else {
@@ -253,10 +173,10 @@ fn normalize_string_list(value: Option<&Value>, field_name: &str) -> Result<Valu
 }
 
 fn normalize_goal_limits(value: Option<&Value>) -> Result<Value, Failure> {
-    let Some(value) = value.filter(|value| !value.is_null()) else {
+    let Some(value) = value.filter(|value| !tags::is_nullish(value)) else {
         return Ok(Value::Null);
     };
-    if !value.is_object() {
+    if !value.is_object() || tags::is_tagged_scalar(value) {
         return Err(Failure::new(
             "invalid_request",
             "goalLimits must be an object",
@@ -334,8 +254,8 @@ fn normalize_task_context(input: &Value) -> Result<Value, Failure> {
         }
     }
     let raw_text = match field(input, "taskText") {
-        None | Some(Value::Null) => String::new(),
-        Some(value) => js_trim(&js_string(value)).to_string(),
+        Some(value) if !tags::is_nullish(value) => js_trim(&js_string(value)).to_string(),
+        _ => String::new(),
     };
     if !raw_text.is_empty() && !start {
         return Err(Failure::new(
@@ -358,7 +278,7 @@ fn normalize_task_context(input: &Value) -> Result<Value, Failure> {
 
 /// `normalizeTurnRequest(input)`.
 pub fn normalize(input: &Value, resident: &[Value]) -> Result<Value, Failure> {
-    if !input.is_object() {
+    if !input.is_object() || tags::is_tagged_scalar(input) {
         return Err(Failure::new(
             "invalid_request",
             "turn request must be an object",
@@ -376,8 +296,8 @@ pub fn normalize(input: &Value, resident: &[Value]) -> Result<Value, Failure> {
     let session_id =
         clean_id(field(input, "sessionId"), "sessionId", true)?.expect("required sessionId");
     let text = match field(input, "text") {
-        None | Some(Value::Null) => String::new(),
-        Some(value) => js_trim(&js_string(value)).to_string(),
+        Some(value) if !tags::is_nullish(value) => js_trim(&js_string(value)).to_string(),
+        _ => String::new(),
     };
     if text.is_empty() {
         return Err(Failure::new("empty_text", "turn text is required"));
@@ -599,8 +519,8 @@ fn has_control_characters(text: &str) -> bool {
 
 fn route_text(value: Option<&Value>, field_name: &str) -> Result<String, Failure> {
     let raw = match value {
-        None | Some(Value::Null) => String::new(),
-        Some(value) => js_string(value),
+        Some(value) if !tags::is_nullish(value) => js_string(value),
+        _ => String::new(),
     };
     let normalized = js_trim(&raw).to_string();
     if normalized.is_empty()
@@ -868,21 +788,17 @@ pub fn catalog() -> Result<String, String> {
     .to_string())
 }
 
-fn envelope(result: Result<Value, Failure>) -> String {
+fn envelope(result: Result<Value, Failure>) -> Value {
     match result {
-        Ok(value) => json!({ "ok": true, "value": value }).to_string(),
+        Ok(value) => json!({ "ok": true, "value": value }),
         Err(failure) => json!({
             "ok": false,
             "error": { "code": failure.code, "message": failure.message },
-        })
-        .to_string(),
+        }),
     }
 }
 
-/// One JSON-in/JSON-out entry per exported JS function.
-pub fn request(op: &str, input: &str) -> Result<String, String> {
-    let input: Value = crate::json_lenient::from_str(input)
-        .map_err(|e| format!("turn_request_invalid_input: {e}"))?;
+fn dispatch(op: &str, input: &Value) -> Result<Value, String> {
     let arg = |key: &str| input.as_object().and_then(|object| object.get(key));
     let resident = arg("residentClis")
         .and_then(Value::as_array)
@@ -913,6 +829,14 @@ pub fn request(op: &str, input: &str) -> Result<String, String> {
         _ => return Err(format!("turn_request_unknown_op: {op}")),
     };
     Ok(envelope(result))
+}
+
+/// One value-in/value-out entry per exported JS function. The payload keeps
+/// `undefined`, `NaN`, the infinities and `-0`, which JSON cannot carry.
+pub fn request_value(op: &str, input: &crate::js::JsValue) -> Result<crate::js::JsValue, String> {
+    let payload = tags::from_js(input);
+    let result = dispatch(op, &payload)?;
+    Ok(tags::to_js(&result))
 }
 
 #[cfg(test)]

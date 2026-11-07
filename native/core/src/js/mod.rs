@@ -19,6 +19,7 @@ pub mod json;
 pub mod number;
 pub mod serde;
 pub mod string;
+pub mod tags;
 pub mod value;
 
 pub use coerce::{

@@ -40,7 +40,9 @@ function deepFreeze(value) {
 }
 
 function call(op, payload) {
-  const out = JSON.parse(native.turnRequestRequest(op, JSON.stringify(payload)));
+  // Direct value transport keeps `undefined`, `NaN`, the infinities and `-0`
+  // that `JSON.stringify`/`JSON.parse` would fold into null or 0.
+  const out = native.turnRequestRequestValue(op, payload);
   if (!out.ok) throw new TurnRequestError(out.error.code, out.error.message);
   return out.value;
 }
