@@ -640,7 +640,7 @@ test('the fallback choice for an unjudged message is written only when it differ
   assert.equal($('more').children[0].innerText.includes('判断不了'), false, 'the fallback only matters when routing');
   routeOn();
   assert.equal($('jev-unknown').value, 'strong');
-  assert.match($('more').children[0].innerText, /最多试 2 条 · 保持当前线路 · 额度优先 · 判断不了按复杂/);
+  assert.match($('more').children[0].innerText, /最多试 2 条 · 保持当前线路 · 额度不足换剩余最多 · 判断不了按复杂/);
   assert.equal('onUnknown' in control.read({ remember: false }).value.routing, false);
   $('jev-unknown').value = 'weak';
   $('jev-unknown').emit('change');

@@ -1036,13 +1036,13 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         value: _preferQuota,
         contentPadding: EdgeInsets.zero,
         title: const Text(
-          '优先用额度最多的线路',
+          '额度不足时换用剩余最多的线路',
           style: TextStyle(color: AppColors.text, fontSize: 13),
         ),
         subtitle: const Text(
-          '「额度最多」＝额度读数里用量百分比最低。开启后每轮优先从剩余额度最多的线路开始，'
-          '相差满 20% 才会切换，减少任务中途额度用尽被打断；没有额度读数的线路仍按列表优先级参与。'
-          '关闭后严格按列表优先级选线，只在额度临尽或请求失败时切换。',
+          '「额度不足」＝剩余额度低于 20%（用量超过 80%）。开启后，当前线路额度不足时自动换到'
+          '剩余额度最多的线路，避免任务中途额度用尽被打断；其余时候按列表优先级选线。'
+          '没有额度读数的线路不参与该判断。关闭后严格按列表优先级，只在额度用尽或请求失败时切换。',
           style: TextStyle(color: AppColors.muted, fontSize: 11, height: 1.35),
         ),
         onChanged: (value) => setState(() => _preferQuota = value),

@@ -1032,10 +1032,10 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     const preferQuota = make('input', 'multicc-auto-editor-prefer-quota');
     preferQuota.type = 'checkbox';
     preferQuotaLabel.append(preferQuota,
-      document.createTextNode(tt('autoEditorPreferQuotaSuffix', ' 优先用额度最多的线路')));
+      document.createTextNode(tt('autoEditorPreferQuotaSuffix', ' 额度不足时换用剩余最多的线路')));
     const preferQuotaHelp = make('div', 'multicc-auto-editor-fine',
       tt('autoEditorPreferQuotaHelp',
-        '「额度最多」＝额度读数里用量百分比最低。开启后每轮优先从剩余额度最多的线路开始，相差满 20% 才会切换，减少任务中途额度用尽被打断；没有额度读数的线路仍按列表优先级参与。关闭后严格按列表优先级选线，只在额度临尽或请求失败时切换。'));
+        '「额度不足」＝剩余额度低于 20%（用量超过 80%）。开启后，当前线路额度不足时自动换到剩余额度最多的线路，避免任务中途额度用尽被打断；其余时候按列表优先级选线，不会因为别的线路额度更多而切换。没有额度读数的线路不参与该判断。关闭后严格按列表优先级，只在额度用尽或请求失败时切换。'));
     const unknownRow = make('label', '', tt('autoEditorJevUnknownLabel', '判断不了难度时（Jev 超时或没连上） '));
     const onUnknownSelect = make('select', 'multicc-auto-editor-jev-unknown');
     for (const [value, key, fallback] of UNKNOWN_CHOICES) {
@@ -1255,7 +1255,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         tt('autoEditorMoreAttempts', '最多试 {count} 条', { count: maxAttempts.value }),
         sticky.checked ? tt('autoEditorMoreSticky', '保持当前线路') : tt('autoEditorMoreNoSticky', '每次从第 1 条开始'),
         preferQuota.checked
-          ? tt('autoEditorMorePreferQuota', '额度优先')
+          ? tt('autoEditorMorePreferQuota', '额度不足换剩余最多')
           : tt('autoEditorMoreNoPreferQuota', '按优先级'),
       ];
       if (routingOn) {

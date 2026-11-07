@@ -1399,21 +1399,30 @@ test('chooseCandidate steers between official accounts by headroom without bounc
   assert.equal(chooseCandidate({ candidates: [line('relay-a', 70, 0, { trustDomain: 'relay' }), line('relay-b', 5, 1, { trustDomain: 'relay' })] }).candidate.providerId, 'relay-a');
 });
 
-test('preferMaxQuota (byQuota) lets the roomiest line outrank sticky, and the checkbox turns it off', () => {
+test('preferMaxQuota (byQuota) only intervenes when a line runs low on quota', () => {
   const { chooseCandidate } = require('../src/chat/auto-provider-policy');
   const line = (providerId, usedPercent, index, extra = {}) => ({
     providerId, index, priority: index, enabled: true, limitState: 'available', usedPercent, ...extra,
   });
-  // On: a full band roomier than the sticky route wins even for non-official
-  // (relay) lines — the steering is no longer an official-only privilege.
-  const pool = [line('tight', 70, 0), line('roomy', 15, 1, { trustDomain: 'relay' })];
-  assert.equal(chooseCandidate({ candidates: pool, stickyProviderId: 'tight', byQuota: true }).candidate.providerId, 'roomy');
-  // Off: the same pair keeps the sticky route, whatever the readings say.
-  assert.equal(chooseCandidate({ candidates: pool, stickyProviderId: 'tight' }).candidate.providerId, 'tight');
-  // On, but within a band: sticky still holds (no bouncing).
-  assert.equal(chooseCandidate({ candidates: [line('sticky', 41, 0), line('other', 59, 1)], stickyProviderId: 'sticky', byQuota: true }).candidate.providerId, 'sticky');
-  // An unmeasured line never loses on quota alone.
-  assert.equal(chooseCandidate({ candidates: [line('blind', null, 0), line('full-ish', 89, 1)], stickyProviderId: 'blind', byQuota: true }).candidate.providerId, 'blind');
+  // Healthy on both sides: quota never reorders — priority and stickiness stand.
+  const healthy = [line('prio-first', 70, 0), line('roomy', 15, 1, { trustDomain: 'relay' })];
+  assert.equal(chooseCandidate({ candidates: healthy, byQuota: true }).candidate.providerId, 'prio-first');
+  assert.equal(chooseCandidate({ candidates: healthy, stickyProviderId: 'prio-first', byQuota: true }).candidate.providerId, 'prio-first');
+  // Under a fifth of the window left (usage over 80%): the draining line yields
+  // to any measured line with more than that — even as the sticky route.
+  const draining = [line('draining', 85, 0), line('spare', 40, 1)];
+  assert.equal(chooseCandidate({ candidates: draining, byQuota: true }).candidate.providerId, 'spare');
+  assert.equal(chooseCandidate({ candidates: draining, stickyProviderId: 'draining', byQuota: true }).candidate.providerId, 'spare');
+  // Off: the same draining route is kept until it dies — the interruption the
+  // option exists to avoid.
+  assert.equal(chooseCandidate({ candidates: draining, stickyProviderId: 'draining' }).candidate.providerId, 'draining');
+  // Both draining (neither near-limit yet): the roomier one answers; a sticky
+  // draining route does not churn against another draining line.
+  const both = [line('worse', 88, 0), line('less-bad', 82, 1)];
+  assert.equal(chooseCandidate({ candidates: both, byQuota: true }).candidate.providerId, 'less-bad');
+  assert.equal(chooseCandidate({ candidates: both, stickyProviderId: 'worse', byQuota: true }).candidate.providerId, 'worse');
+  // An unmeasured line is never judged tight.
+  assert.equal(chooseCandidate({ candidates: [line('blind', null, 0), line('draining', 85, 1)], stickyProviderId: 'blind', byQuota: true }).candidate.providerId, 'blind');
 });
 
 test('official account usage sweeper records every signed-in codex account under its own provider id', async () => {
