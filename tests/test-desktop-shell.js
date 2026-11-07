@@ -76,8 +76,8 @@ function makeSupervisor(overrides) {
   const phases = [];
   const sup = createBackendSupervisor({
     spawn: overrides.spawn || spawn,
-    execPath: process.execPath,
-    serverEntry: FIXTURE,
+    command: overrides.command || process.execPath,
+    args: overrides.args || [FIXTURE],
     buildEnv: ({ port }) => ({ ...process.env, ...overrides.env, PORT: String(port) }),
     logsDir: overrides.logsDir,
     runtimeInfoFile: overrides.runtimeInfoFile,
@@ -283,6 +283,28 @@ test('buildChildEnv: dotenv fills gaps, desktop knobs always win, bundled runtim
   assert.deepEqual(desktopEnv.parseEnvFile('# c\nA=1\n\n  B = spaced \n'), { A: '1', B: 'spaced' });
 });
 
+test('the front door is found where the native module is, and a missing one refuses to launch', () => {
+  const serverDir = path.join(path.sep, 'srv', 'app-server');
+  const prebuilt = path.join(serverDir, 'native', 'prebuilt', 'darwin-arm64', 'multicc-gateway');
+  assert.equal(desktopEnv.gatewayBinary({ serverDir, env: {}, platform: 'darwin', arch: 'arm64' }), prebuilt);
+  assert.equal(desktopEnv.gatewayBinary({ serverDir, env: {}, platform: 'win32', arch: 'x64' }),
+    path.join(serverDir, 'native', 'prebuilt', 'win32-x64', 'multicc-gateway.exe'));
+  // Same precedence as src/native/runtime.js: an explicit addon, then a prebuilt dir.
+  assert.equal(desktopEnv.gatewayBinary({ serverDir, env: { MULTICC_RUST_ADDON: '/cache/x/darwin-arm64/multicc_core.node' },
+    platform: 'darwin', arch: 'arm64' }), path.resolve('/cache/x/darwin-arm64/multicc-gateway'));
+  assert.equal(desktopEnv.gatewayBinary({ serverDir, env: { MULTICC_RUST_PREBUILT_DIR: '/ci/prebuilt' },
+    platform: 'linux', arch: 'x64' }), path.join('/ci/prebuilt', 'linux-x64', 'multicc-gateway'));
+
+  const entry = path.join(serverDir, 'server.js');
+  const launch = desktopEnv.gatewayLaunch({ serverEntry: entry, node: '/rt/node', env: {},
+    platform: 'darwin', arch: 'arm64', exists: () => true });
+  assert.deepEqual(launch, { command: prebuilt,
+    args: ['serve', '--cwd', serverDir, '--node', '/rt/node', '--stdin-lifeline', entry] });
+  assert.throws(() => desktopEnv.gatewayLaunch({ serverEntry: entry, node: '/rt/node', env: {},
+    platform: 'darwin', arch: 'arm64', exists: () => false }),
+  error => error.code === 'GATEWAY_MISSING' && error.message.includes(prebuilt));
+});
+
 // ── integration: backend-supervisor + fixture ───────────────────────────────
 
 test('supervisor: ready gate, graceful stop, whole tree cleaned up', async () => {
@@ -475,6 +497,109 @@ test('supervisor: stop() after an already-exited never-ready child returns promp
 });
 
 // ── integration: orphan reclaim ─────────────────────────────────────────────
+
+// ── integration: backend-supervisor + the real Rust front door ──────────────
+// Production never starts server.js directly (docs/gateway.md §8). These run the
+// real multicc-gateway built next to the native module (CI builds it in the
+// same step as the module).
+
+function gatewayLaunchForFixture() {
+  const launch = desktopEnv.gatewayLaunch({ serverEntry: FIXTURE, node: process.execPath });
+  return { command: launch.command, args: launch.args };
+}
+
+const GATEWAY_TEST_ENV = { MULTICC_GATEWAY_BACKOFF_SCALE: '0.01', MULTICC_GATEWAY_UPSTREAM_WAIT_MS: '5000' };
+
+test('front door: ready through it, a Node crash is relaunched by it, stop drains the whole tree', async () => {
+  const dir = tmpdir('desktop-gw-');
+  const runtimeInfoFile = path.join(dir, 'desktop-runtime.json');
+  const pidfile = path.join(dir, 'child.pid');
+  const port = await reservePort();
+  const { sup, phases } = makeSupervisor({
+    ...gatewayLaunchForFixture(),
+    env: { ...GATEWAY_TEST_ENV, SPAWN_CHILD_PIDFILE: pidfile, EXIT_AFTER_READY_MS: '200', EXIT_CODE: '1',
+      EXIT_ONCE_MARKER: path.join(dir, 'crashed') },
+    logsDir: dir,
+    runtimeInfoFile,
+    opts: { healthTimeoutMs: 15_000 },
+  });
+  await sup.start({ port });
+  let stopped = false;
+  try {
+  await waitFor(() => phases.some(p => p.phase === 'ready'), { what: 'ready phase', timeoutMs: 15_000 });
+  const gatewayPid = JSON.parse(fs.readFileSync(runtimeInfoFile, 'utf8')).pid;
+  assert.equal(gatewayPid, sup.getState().childPid, 'the supervised process is the front door');
+  await waitFor(() => /node exited with 1; scheduling a restart/.test(sup.getLogTail()),
+    { what: 'front door relaunching node', timeoutMs: 10_000 });
+  await waitFor(async () => (await httpGet(`http://127.0.0.1:${port}/readyz`).catch(() => ({}))).status === 200,
+    { what: 'relaunched node serving through the front door', timeoutMs: 10_000 });
+  assert.equal(phases.filter(p => p.phase === 'respawning').length, 0,
+    'a Node crash is the front door\'s to fix; the supervisor never saw it');
+  assert.ok(pidAlive(gatewayPid));
+  const grandchildPid = Number(fs.readFileSync(pidfile, 'utf8'));
+
+  await sup.stop();
+  stopped = true;
+  assert.equal(sup.getState().state, 'stopped');
+  assert.equal(pidAlive(gatewayPid), false, 'the front door exits when Node drains');
+  await waitFor(() => !pidAlive(grandchildPid), { what: 'grandchild reaped' });
+  await assert.rejects(httpGet(`http://127.0.0.1:${port}/readyz`), 'nothing listens after stop');
+  } finally {
+    if (!stopped) await sup.stop();
+  }
+});
+
+test('front door: a clean Node exit (desktop /api/restart) is handed back to the supervisor', async () => {
+  const dir = tmpdir('desktop-gw-restart-');
+  const port = await reservePort();
+  const { sup, phases } = makeSupervisor({
+    ...gatewayLaunchForFixture(),
+    // Well after the supervisor's own readiness probe (every 400ms): only an
+    // exit from a server it already saw ready counts as a requested restart.
+    env: { ...GATEWAY_TEST_ENV, EXIT_AFTER_READY_MS: '1500', EXIT_CODE: '0', EXIT_ONCE_MARKER: path.join(dir, 'restarted') },
+    logsDir: dir,
+    runtimeInfoFile: path.join(dir, 'desktop-runtime.json'),
+    opts: { healthTimeoutMs: 15_000, restartBackoffMs: 100 },
+  });
+  await sup.start({ port });
+  try {
+    await waitFor(() => phases.filter(p => p.phase === 'ready').length >= 2,
+      { what: 'second ready after the requested restart', timeoutMs: 15_000 });
+    const respawn = phases.find(p => p.phase === 'respawning');
+    assert.equal(respawn.info.code, 0, JSON.stringify(respawn.info));
+    assert.equal(respawn.info.requested, true, 'a clean exit after ready is a requested restart, not a crash');
+    assert.match(sup.getLogTail(), /node exited with 0 on its own; stopping/);
+  } finally {
+    await sup.stop();
+  }
+});
+
+test('front door: killing the supervising process takes the front door and Node down with it', { timeout: 60_000 }, async () => {
+  const dir = tmpdir('desktop-gw-lifeline-');
+  const runtimeInfoFile = path.join(dir, 'desktop-runtime.json');
+  const pidfile = path.join(dir, 'child.pid');
+  const port = await reservePort();
+  const host = spawn(process.execPath, [FOREGROUND_SUPERVISOR], {
+    env: { ...process.env, ...GATEWAY_TEST_ENV, GATEWAY: '1', PORT: String(port), READY_TARGET: '99',
+      LOGS_DIR: dir, RUNTIME_INFO_FILE: runtimeInfoFile, SPAWN_CHILD_PIDFILE: pidfile },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out = '';
+  host.stdout.on('data', chunk => { out += chunk; });
+  host.stderr.on('data', chunk => { out += chunk; });
+  try {
+    await waitFor(() => /phase ready/.test(out), { what: `ready behind the front door\n${out}`, timeoutMs: 15_000 });
+    const gatewayPid = JSON.parse(fs.readFileSync(runtimeInfoFile, 'utf8')).pid;
+    const grandchildPid = Number(fs.readFileSync(pidfile, 'utf8'));
+    // No stop(), no signal handler: the supervising process just vanishes.
+    host.kill('SIGKILL');
+    await waitFor(() => !pidAlive(gatewayPid), { what: 'front door gone after its parent died', timeoutMs: 15_000 });
+    await waitFor(() => !pidAlive(grandchildPid), { what: 'Node drained (it reaps its grandchild)', timeoutMs: 15_000 });
+    await assert.rejects(httpGet(`http://127.0.0.1:${port}/readyz`), 'the port is released');
+  } finally {
+    try { host.kill('SIGKILL'); } catch (_) {}
+  }
+});
 
 test('orphan-reclaim: drains a live orphan and removes stale files', async () => {
   const dir = tmpdir('desktop-orphan-');
@@ -1046,10 +1171,11 @@ test('main.js: hardened window, single instance, local-only navigation', () => {
   // The shell runs the staged standalone tree: its backend child is the
   // bundled runtime, and a packaged app without one is a broken build rather
   // than a reason to silently fall back to Electron's Node.
-  assert.match(src, /execPath: desktopEnv\.runtimeNode/,
-    'the backend must run on the runtime staged inside the app');
-  assert.doesNotMatch(src, /execPath: process\.execPath/,
+  assert.match(src, /gatewayLaunch\(\{ serverEntry: desktopEnv\.serverEntry, node: desktopEnv\.runtimeNode/,
+    'the backend runs behind the Rust front door, on the runtime staged inside the app');
+  assert.doesNotMatch(src, /node: process\.execPath/,
     'Electron\'s own Node is not the server runtime in a packaged app');
+  assert.doesNotMatch(src, /execPath:/, 'nothing starts server.js without the front door');
   assert.match(src, /missing-runtime/, 'a packaged app with no bundled runtime must say so');
 });
 

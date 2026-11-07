@@ -1,11 +1,14 @@
 'use strict';
 
-// Backend supervisor: owns the MultiCC server child process for the desktop
-// shell. Runs it as plain Node via ELECTRON_RUN_AS_NODE (execPath is the
-// Electron binary), gates window-open on /readyz, restarts after abnormal
-// exits with a crash-loop guard, and always tears the whole tree down on
-// stop() — graceful HTTP drain first (so in-flight chat turns flush), then
-// signals, then a hard tree kill. No electron import: every OS-touching dep
+// Backend supervisor: owns the MultiCC backend process for the desktop shell
+// and the standalone launcher. In production that process is the Rust front
+// door (`command`/`args` from desktop-env gatewayLaunch), which owns the port
+// and relaunches a crashed Node itself; this supervisor gates window-open on
+// /readyz, restarts after abnormal exits with a crash-loop guard, and always
+// tears the whole tree down on stop() — graceful HTTP drain first (so in-flight
+// chat turns flush), then signals, then a hard tree kill. It holds the child's
+// stdin open and never writes it: the front door stops when it closes, so the
+// tree cannot outlive this process. No electron import: every OS-touching dep
 // is injected, which is what tests/fixtures drive.
 
 const fs = require('fs');
@@ -63,8 +66,8 @@ function killProcessTree(pid, { spawn, platform = process.platform, signal = 'SI
 function createBackendSupervisor(rawDeps) {
   const {
     spawn,
-    execPath,
-    serverEntry,
+    command,             // the front door binary (desktop-env gatewayLaunch)
+    args = [],
     buildEnv,            // ({ port, attempt }) => env object for the child
     fetchImpl = fetch,
     logsDir,
@@ -75,8 +78,8 @@ function createBackendSupervisor(rawDeps) {
     ...overrides
   } = rawDeps;
   if (typeof spawn !== 'function') throw new TypeError('[supervisor] spawn is required');
-  if (!execPath) throw new TypeError('[supervisor] execPath is required');
-  if (!serverEntry) throw new TypeError('[supervisor] serverEntry is required');
+  if (!command) throw new TypeError('[supervisor] command is required');
+  if (!Array.isArray(args)) throw new TypeError('[supervisor] args must be an array');
   if (typeof buildEnv !== 'function') throw new TypeError('[supervisor] buildEnv is required');
   if (!logsDir) throw new TypeError('[supervisor] logsDir is required');
   const opts = { ...DEFAULTS, ...overrides };
@@ -209,9 +212,11 @@ function createBackendSupervisor(rawDeps) {
     appendRing(`[supervisor] starting server (attempt ${attempts + 1}${respawn ? ', respawn' : ''}) on port ${port}\n`);
 
     try {
-      child = spawn(execPath, [serverEntry], {
+      child = spawn(command, args, {
         env: buildEnv({ port, attempt: attempts }),
-        stdio: ['ignore', 'pipe', 'pipe'],
+        // stdin is the front door's lifeline (--stdin-lifeline): held, never
+        // written, closed by the OS whenever this process goes away.
+        stdio: ['pipe', 'pipe', 'pipe'],
         // Own process group on POSIX so stop() can reap server-spawned CLIs.
         detached: isPosix(),
         windowsHide: true,
@@ -221,6 +226,8 @@ function createBackendSupervisor(rawDeps) {
       return;
     }
     attempts += 1;
+    // EPIPE once the child is gone must not become an uncaught exception.
+    if (child.stdin) child.stdin.on('error', () => {});
     child.stdout.on('data', appendRing);
     child.stderr.on('data', appendRing);
     child.on('error', error => {

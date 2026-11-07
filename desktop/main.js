@@ -19,7 +19,7 @@ const childProcess = require('child_process');
 
 const { DEFAULT_PORT, selectPort } = require('./lib/port-chooser');
 const {
-  resolveDesktopEnv, buildChildEnv, readEnvValues, ensureWritableDirs,
+  resolveDesktopEnv, buildChildEnv, readEnvValues, ensureWritableDirs, gatewayLaunch,
 } = require('./lib/desktop-env');
 const { createBackendSupervisor } = require('./lib/backend-supervisor');
 const { reclaimOrphan } = require('./lib/orphan-reclaim');
@@ -270,10 +270,13 @@ async function startBackend() {
       startPort: configuredValid ? configuredPort : DEFAULT_PORT,
     });
     logLine(`starting backend on 127.0.0.1:${port}${pinnedPort !== null ? ' (pinned)' : ''} (server: ${desktopEnv.serverEntry}, runtime: ${desktopEnv.runtimeNode})`);
+    // The server only ever runs behind the Rust front door (docs/gateway.md §8),
+    // on the runtime staged next to the shell.
+    const launch = gatewayLaunch({ serverEntry: desktopEnv.serverEntry, node: desktopEnv.runtimeNode, env: process.env });
     supervisor = createBackendSupervisor({
       spawn: childProcess.spawn,
-      execPath: desktopEnv.runtimeNode,
-      serverEntry: desktopEnv.serverEntry,
+      command: launch.command,
+      args: launch.args,
       buildEnv: ({ port: childPort }) => buildChildEnv({
         port: childPort,
         desktopEnv,

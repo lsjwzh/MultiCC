@@ -12,6 +12,7 @@ pub mod events;
 pub mod guard;
 pub mod js_bridge;
 pub mod machines;
+pub mod network_policy;
 pub mod opencode_context;
 pub mod opencode_error;
 pub mod publication;

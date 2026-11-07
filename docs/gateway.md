@@ -1,0 +1,114 @@
+# Rust 前门 multicc-gateway（第 1 步：倒置进程结构）
+
+## 目标与边界
+
+把 MultiCC 的进程结构从「Node 占端口、Node 当主人」倒过来：
+
+```
+客户端 ──TCP──▶ multicc-gateway（Rust，占公开端口，看护 Node）
+                     │  每个客户端连接 1:1 开一条上游连接，开头写 PROXY v1 头
+                     ▼
+               node server.js（只听 127.0.0.1:<内网端口>）
+```
+
+第 1 步只做「进程结构倒置」，**对外行为逐字节不变**：
+
+- 前门是 **L4 透明转发**：不解析 HTTP，原样双向拷贝字节。HTTP、WebSocket、SSE、上传下载、长轮询全部天然保真。
+- 第 2 步（按路由组把功能搬进 Rust）才引入 L7（hyper/axum）路由；L4 转发层届时替换，进程管理、端口策略、PROXY 约定原样复用。
+- **所有启动入口、三个平台都经前门启动**：源码检出的 `./multicc`（start/restart、launchd 登录服务）、独立包启动器（含它的 launchd / systemd / Windows 登录自启）、桌面壳（`MULTICC_DESKTOP=1`），macOS / Linux / Windows 一样。没有任何「起不来就直接跑 `node server.js`」的退路，前门和原生模块一样是必需件（见 §8）。只剩开发者手动的 `npm start` / `node server.js` 仍是直连，供调试和集成测试用。
+
+## 为什么用 PROXY 协议而不是 X-Forwarded-For
+
+`src/request-locality.js` 的 `isLocalRequest` 只信传输层对端 `req.socket.remoteAddress`，并且只要请求带任何 `X-Forwarded-*` / `Forwarded` / `Via` 等头就一律判为外部请求（防反代提权）。全仓约 57 处按来源地址做决策。
+
+因此前门**绝不添加任何转发头**，而是：
+
+1. 每个客户端连接对应**独占**的一条上游连接（不复用、不池化），连接映射 1:1；
+2. 上游连接建立后、转发任何客户端字节之前，先写一行 PROXY v1 头；
+3. Node 的内网监听器解析这一行，把真实对端写到这条 socket 的 `remoteAddress` / `remotePort` / `remoteFamily`（以及 `localAddress` / `localPort`）上，再交给 http server。
+
+这样那 57 处判断一行都不用改，读到的仍然是真实客户端地址。客户端自己发的 `X-Forwarded-For` 照旧原样到达 Node（照旧被判外部），行为与今天一致。
+
+## 约定（前门 ⇄ Node）
+
+### 1. 命令行
+
+- `multicc-gateway --version` → 输出一行 `multicc-gateway 2 <crate 版本>`，退出码 0。`2` 是协议版本（2 = 加了 `--stdin-lifeline`、Node 以 0 退出时前门随之退出）；三处必须一致：这里、`scripts/build-rust-kernels.js` 的探测、`src/gateway-child.js` 的 `GATEWAY_PROTOCOL`。
+- `multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--] <脚本> [参数…]`，脚本缺省为 `server.js`。进程 cwd 切到 `--cwd`；argv 里必须出现 `server.js`（管理脚本按 cmdline 里的 `server.js` + cwd 认领端口占用者）。
+
+### 2. 端口策略（唯一实现在 Rust）
+
+- `.env`：前门在 `--cwd` 下读取 `.env`，规则与 `server.js` 第 11-18 行逐字一致（逐行正则，**已存在的环境变量不覆盖**），合并进自身环境，再原样传给 Node。
+- 绑定地址与端口：由 `native/core/src/network_policy.rs` 计算，**是唯一实现**；`src/network-policy.js` 改为它的薄桥，导出面与报错文本不变。
+- 开发模式（`NODE_ENV=development` 或 `MULTICC_DEV`）的端口顺延由前门完成；选定的端口写进子进程环境 `PORT`，Node 据此拼本机 URL。
+
+### 3. 拉起 Node
+
+前门先绑定公开端口（失败则直接退出，非 0），再拉起 Node。传给 Node 的额外环境变量：
+
+| 变量 | 含义 |
+|---|---|
+| `MULTICC_GATEWAY_CHILD=1` | 处于前门之后 |
+| `MULTICC_GATEWAY_INTERNAL_PORT=<端口>` | Node 只能监听 `127.0.0.1:<端口>` |
+| `MULTICC_GATEWAY_PID=<前门 pid>` | Node 只有在**父进程号等于它**时才认为自己在前门之后。前门之后的 Node 拉起的 CLI 会话、以及它们再启动的测试或服务都会继承这三个变量；没有这条校验，那里面的 `node server.js` 会只去听一个没人转发的内网端口 |
+| `PORT=<公开端口>` | 覆盖为前门实际占用的公开端口 |
+
+stdout/stderr 继承前门（落到同一组日志）。stdin 是一根**生命线管道**：前门持有写端但从不写入。前门不论以何种方式消失（正常退出、panic、`kill -9`），内核都会关闭写端，Node 读到 EOF 后按 SIGINT 走优雅关停（`src/gateway-child.js` 的 `watchGatewayLifeline`；启动早期 SIGINT 处理器还没装好时会等它装好再发，避免迁移中途被默认动作杀掉）。没有这根管道时，前门一死 Node 就成了孤儿，继续跑全套定时器和 CLI 轮次，与新实例同时写同一份数据。
+
+### 4. Node 在前门之后的行为
+
+- 不调用 `server.listen(PORT, BIND_HOST)`，也**不做**开发模式端口顺延（否则会撞上前门占着的公开端口）。
+- 改为在 `127.0.0.1:MULTICC_GATEWAY_INTERNAL_PORT` 上开 PROXY 监听器，解析出对端后 `server.emit('connection', socket)`；WebSocket 的 `upgrade` 事件因此照常触发。
+- 数据迁移期的临时页面（`src/task-shell/migration-page-worker.js`）同样改听内网端口并解析 PROXY 头。
+- 内网端口绑定失败（`EADDRINUSE`）：以退出码 **75** 退出，前门立即换一个内网端口重新拉起。
+- `PORT`、`BIND_HOST` 保持为公开值：日志、局域网发现（mDNS）、拼给子进程的 `MULTICC_BASE_URL` 一律指向前门。
+
+### 5. PROXY v1 头
+
+前门在每条上游连接上**首先**写入且只写一次：
+
+```
+PROXY TCP4 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>\r\n
+PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>\r\n
+```
+
+- 地址文本与 Node 直接监听时 `socket.remoteAddress` 的写法一致：IPv4 监听上是 `192.168.1.5`；IPv6 双栈监听上的 IPv4 客户端是 `::ffff:192.168.1.5`（Rust `Ipv6Addr` 的 Display 正好是这个写法）。`remoteFamily` 取 `IPv4` / `IPv6`。
+- Node 侧解析规则：5 秒内必须收到；整行不超过 107 字节；格式不对、`PROXY UNKNOWN`、或缺头，一律直接销毁连接（fail closed）。
+- 内网监听器只绑 `127.0.0.1`。本机进程即使直连内网端口并伪造 PROXY 头，也拿不到比直连公开端口更多的权限（本机连接本来就是本机）。
+- 客户端无法伪造：前门总是先写自己的头，客户端发来的 `PROXY …` 文本只会作为后续字节到达 Node，被当作非法 HTTP 拒绝。
+
+### 6. 转发
+
+- `TCP_NODELAY` 两侧都开；双向拷贝并传播半关闭（`copy_bidirectional`）。
+- 上游暂不可达（Node 正在启动、重启或崩溃后等待重拉）：持有客户端连接，每 100ms 重试一次，最多等 30 秒；仍不可达时写回 `HTTP/1.1 503 Service Unavailable`（带 `Retry-After: 2`、`Connection: close`）后关闭。
+
+### 7. 看护与信号
+
+- Node 以**非 0** 退出（崩溃）：按退避重拉，间隔 0.5s → 1 → 2 → 4 → 8 → 16 → 30s 封顶；连续健康运行 60 秒后退避清零。退出码 75 改用 0.2s 间隔。
+- Node **自己以 0 退出**（不是前门要求的）：前门随之以 0 退出，不重拉。Node 只在被要求时才这样退出：`/api/desktop-shutdown`（停下）或桌面模式的 `/api/restart`（请启动我的人重启我）。两种情况都该由前门的父进程决定，和前门出现之前完全一样：supervisor 把「就绪后的 0 退出」当作重启请求、重新拉起前门。
+- `SIGINT` / `SIGTERM`：前门停止接受新连接，把停机请求转给 Node，不再重拉，等 Node 自己退出（不设上限，65 秒排空由 Node 和管理脚本负责）；再次收到信号则再次转发。Node 退出后，前门以相同退出码退出（被信号杀死时为 128+信号值）。
+- 转给 Node 的方式：Unix 上是**同一个信号**；Windows 没有信号，改为关闭 Node 的 stdin 生命线（§3），Node 读到 EOF 后在进程内触发 SIGINT 处理器走优雅关停（`src/gateway-child.js` 的 `raiseSigint`；Windows 上 `process.kill(自己, 'SIGINT')` 会直接终止进程，不能用）。
+- `--stdin-lifeline`：前门自己的 stdin 读到 EOF（或读错误）时，当作收到 `SIGINT` 处理。supervisor（独立包启动器、桌面壳）拉起前门时持有它的 stdin、从不写入：supervisor 不论怎么消失（正常退出、崩溃、`kill -9`、`taskkill /F`），前门都会停下，Node 随之排空退出，整棵树不会变成孤儿。不带这个参数时 stdin 被忽略（`nohup` 和 launchd 给的 stdin 一开始就是 EOF）。
+- 在 Windows 上拉起 Node 时带 `CREATE_NO_WINDOW`：桌面启动器拉起前门时没有控制台，否则 Windows 会给 Node 这个控制台程序弹一个新窗口。
+- 公开端口被占：日志写 `cannot bind <host>:<端口>: EADDRINUSE: …` 并以非 0 退出。supervisor 认 `EADDRINUSE` 这个词来报告端口被占。
+- `SIGHUP` 忽略（nohup 场景）。
+- 日志写 stderr，每行以 `[multicc-gateway]` 开头。
+
+### 8. 启动入口与进程识别
+
+前门和原生模块一样是**必需件**：构建链三个平台都编译、打包它（`build-rust-kernels.js`、`stage-rust-kernels.js`，发布流程缺件即失败），`ensure-source-rust` 编不出来就报错、不启动。它总在原生模块同目录，查找规则和 `src/native/runtime.js` 找模块一致：`MULTICC_RUST_ADDON` 所在目录，否则 `MULTICC_RUST_PREBUILT_DIR`（缺省为 `native/prebuilt`）下的 `<平台>-<架构>/`。
+
+- `./multicc start`：`check_runtime_dependencies` 之后 `nohup multicc-gateway serve --cwd "$SCRIPT_DIR" --node "$NODE" server.js`。二进制不在或启动 1 秒内退出，都按启动失败处理。
+- `./multicc install` / `update`（macOS launchd 登录服务）：`ProgramArguments` 写成 `multicc-gateway serve --cwd <检出> --node <node> <检出>/server.js`；模块路径随每次源码更新而变，所以 update 时整组参数重写（旧 plist 还是 `node server.js`）。脚本保持绝对路径 `<检出>/server.js`，`install.sh` 靠它认出安装目录。
+- 独立包启动器（`scripts/standalone-launcher.js`，以及经它启动的 launchd / systemd / Windows 登录自启）与桌面壳（`desktop/main.js`）：`desktop/lib/backend-supervisor.js` 拉起 `multicc-gateway serve --cwd <app-server> --node <内置运行时> --stdin-lifeline <app-server>/server.js`（`desktop/lib/desktop-env.js` 的 `gatewayLaunch`）。Node 崩溃由前门重拉，supervisor 看不到；supervisor 只处理前门本身的退出（就绪后的 0 退出 = 重启请求、端口被占、崩溃循环）。停机仍先 `POST /api/desktop-shutdown`（经前门到 Node，Node 以 0 退出，前门随之退出），超时再按信号 / `taskkill /T` 升级。
+- `src/server-processes.js`：`serve` 模式、cwd 为本检出的 `multicc-gateway` 认作服务根进程；父进程是这种前门的 `node server.js` **不算**根（它是前门的后代，排空后由 `stopServers` 的 SIGTERM 兜底）。这样 stop/restart 只给前门发 SIGINT，前门转给 Node，不会出现「Node 先退、前门以为崩溃又拉起来」的竞态。
+- `list` / `status` / `lock-alive` / `owner` 一并认得前门。
+
+## 测试钩子
+
+仅供测试使用。两者都从前门进程环境读取（即在 `.env` 合并之后生效），只影响前门自身的等待和退避，不改变协议；取值非法时退回默认值，生产环境无需设置。
+
+| 变量 | 默认 | 含义 |
+|---|---|---|
+| `MULTICC_GATEWAY_UPSTREAM_WAIT_MS` | `30000` | §6 里上游暂不可达时持有客户端连接、每 100ms 重试的总时长（毫秒）；超过后写回 503。 |
+| `MULTICC_GATEWAY_BACKOFF_SCALE` | `1` | §7 里崩溃退避阶梯（0.5→1→2→4→8→16→30s）和退出码 75 的 0.2s 快速重试统一乘以此系数，用来把集成测试从分钟级压到毫秒级。非有限值或负数按 1 处理，上限 1000。 |

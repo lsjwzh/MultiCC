@@ -3410,6 +3410,15 @@
       ]
     },
     {
+      "path": "tests/test-gateway-child.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-gateway-core.js",
       "tier": "other",
       "lane": "deterministic",
@@ -3602,6 +3611,15 @@
       "owner": "npm:test:provider-router",
       "entrypoints": [
         "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-js-semantics-boundary.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
       ]
     },
     {
@@ -3931,6 +3949,15 @@
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-native-js-bridge.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
       ]
     },
     {
@@ -5714,6 +5741,15 @@
     },
     {
       "path": "tests/test-task-routing.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-context.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:core",

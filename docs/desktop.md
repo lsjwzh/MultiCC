@@ -99,7 +99,7 @@ desktop/
     port-chooser.js    端口探测/顺序找空闲端口
     health-probe.js    /readyz 轮询
     desktop-env.js     目录布局 + 子进程环境组装
-    backend-supervisor.js  子进程生命周期：就绪门控/崩溃退避/优雅排空/树清理
+    backend-supervisor.js  前门进程生命周期：就绪门控/崩溃退避/优雅排空/树清理（服务端经 Rust 前门启动，见 docs/gateway.md §8）
     orphan-reclaim.js  孤儿服务端回收
     release-artifacts.js   产物命名校验 + sha256 sidecar/清单
   assets/              splash.html / error.html（打包进 asar）

@@ -409,7 +409,10 @@ test('a foreground launcher outlives a dead server and brings it back', { timeou
   const launcherArgs = ['--resources', resources, '--data', dataDir, '--port', String(port), '--no-open'];
   const child = spawn(process.execPath, [LAUNCHER, '--start', ...launcherArgs], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, READY_DELAY_MS: '50', EXIT_AFTER_READY_MS: '6000', EXIT_CODE: '1' },
+    // Exit 0, the way /api/restart in desktop mode ends: the front door hands
+    // that back to the launcher (a crash it would relaunch on its own).
+    env: { ...process.env, READY_DELAY_MS: '50', EXIT_AFTER_READY_MS: '6000', EXIT_CODE: '0',
+      EXIT_ONCE_MARKER: path.join(scratch, 'exited-once') },
   });
   let output = '';
   child.stdout.on('data', chunk => { output += chunk; });

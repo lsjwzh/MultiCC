@@ -7,8 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { sourcePaths, sourceFingerprint, probeAddon, builtFromSource } = require('./rust-source-cache');
-const { executable, hasRemoteCrate, hasCdpdCrate, probeRemoteVersion, probeCdpdVersion,
-  remoteBinaryName, cdpdBinaryName } = require('./build-rust-kernels');
+const { executable, hasRemoteCrate, hasCdpdCrate, hasGatewayCrate, probeRemoteVersion, probeCdpdVersion,
+  probeGatewayVersion, remoteBinaryName, cdpdBinaryName, gatewayBinaryName } = require('./build-rust-kernels');
 
 // 「🖥 屏幕」的二进制和原生模块同目录才认（Node 端查找顺序见
 // docs/remote-screen-process.md §1）。原型开发路径上它只是可选件：缺了就补编一次，
@@ -70,9 +70,28 @@ function ensureCdpdBinary({ repoRoot, addon, env, cache, log, run, cdpdVersion =
   return null;
 }
 
+// Rust 前门（native/gateway）。所有启动入口只经它启动、没有直跑 node 的退路，所以它和
+// 原生模块一样是必需件：编不出来就报错、不启动（docs/gateway.md §8）。
+function ensureGatewayBinary({ repoRoot, addon, env, cache, log, run, gatewayVersion = probeGatewayVersion }) {
+  if (!hasGatewayCrate(repoRoot)) return null;
+  const binary = gatewayBinaryName(process.platform);
+  const target = path.join(path.dirname(addon), binary);
+  if (fs.existsSync(target) && executable(target) && gatewayVersion(target).ok) return target;
+  log(`未找到可用的 Rust 前门 ${target}，正在只编译 multicc-gateway…`);
+  const result = run(process.execPath, [path.join(repoRoot, 'scripts/build-rust-kernels.js'),
+    '--gateway-only', '--out', path.dirname(addon), '--target-dir', cache.targetDir], {
+    cwd: repoRoot, env: { ...env, MULTICC_RUST_ADDON: '', MULTICC_REQUIRE_RUST_BUNDLE: '' },
+    stdio: ['ignore', 2, 2],
+  });
+  if ((!result.error && result.status === 0) && fs.existsSync(target) && gatewayVersion(target).ok) return target;
+  throw new Error(`Rust 前门编译失败：缺少 ${target}。`
+    + '修复：安装可用的 Rust 工具链后重新执行 ./multicc start。');
+}
+
 function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = process.env,
   probe = probeAddon, paths = sourcePaths, builtFrom = builtFromSource, run = spawnSync,
-  remoteVersion = probeRemoteVersion, cdpdVersion = probeCdpdVersion, log = console.error } = {}) {
+  remoteVersion = probeRemoteVersion, cdpdVersion = probeCdpdVersion,
+  gatewayVersion = probeGatewayVersion, log = console.error } = {}) {
   // Provider persistence and credential reads always use Rust. The SQLite and
   // transport rollback flags no longer imply that the addon may be omitted.
   const cache = paths(repoRoot, env);
@@ -99,14 +118,17 @@ function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = proc
     try { return ensureCdpdBinary({ repoRoot, addon, env, cache, log, run, cdpdVersion }); }
     catch (error) { log(`CDP 网关不可用：${error.message}。服务照常启动。`); return null; }
   };
+  const ensureGateway = addon => ensureGatewayBinary({ repoRoot, addon, env, cache, log, run, gatewayVersion });
   if (current && probe(resolved)) {
     ensureRemote(resolved);
     ensureCdpd(resolved);
+    ensureGateway(resolved);
     return resolved;
   }
   if (probe(file)) {
     ensureRemote(file);
     ensureCdpd(file);
+    ensureGateway(file);
     return file;
   }
   if (configured) {
@@ -128,6 +150,7 @@ function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = proc
       log('无法为当前源码编译 Rust 模块，暂时沿用指定的模块；它缺少本版源码新增的原生接口，服务启动时加载会直接失败。请修复 Rust 工具链后重新执行 ./multicc start。');
       ensureRemote(resolved);
       ensureCdpd(resolved);
+      ensureGateway(resolved);
       return resolved;
     }
     throw new Error('Rust 自动编译失败，服务尚未启动。源码开发需要可用的 Rust/Cargo 和平台链接工具；安装后重试 ./multicc start。');
@@ -139,6 +162,7 @@ function ensureSourceRust({ repoRoot = path.resolve(__dirname, '..'), env = proc
   if (!probe(file)) throw new Error('Rust 产物未通过运行校验，服务尚未启动；请检查工具链及目标架构。');
   ensureRemote(file);
   ensureCdpd(file);
+  ensureGateway(file);
   log('Rust 模块已就绪，后续启动将自动复用。');
   return file;
 }
@@ -148,4 +172,4 @@ if (require.main === module) {
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }
 
-module.exports = { ensureRemoteBinary, ensureCdpdBinary, ensureSourceRust };
+module.exports = { ensureRemoteBinary, ensureCdpdBinary, ensureGatewayBinary, ensureSourceRust };

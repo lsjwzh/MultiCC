@@ -45,6 +45,10 @@ jobs:
       - name: 测试 CDP 网关
         shell: bash
         run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-cdpd
+      # Rust 前门（native/gateway）：三个平台的启动入口都经它启动 node，集成测试全平台跑。
+      - name: 测试 Rust 前门
+        shell: bash
+        run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-gateway
       - name: Test desktop agent control and validation
         shell: bash
         run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-desktop-agent
@@ -81,6 +85,18 @@ jobs:
               [ -x "$cdpd" ] || { echo "::error::$cdpd is not executable"; exit 1; }
             fi
             "$cdpd" --version | grep -q "^$cdpd_prefix" || { echo "::error::$cdpd --version does not start with '$cdpd_prefix'"; exit 1; }
+          fi
+          # Rust 前门同理：三个平台的启动入口都经它启动 node。
+          if [ -f native/gateway/Cargo.toml ]; then
+            gateway_bin=multicc-gateway
+            if [ "$RUNNER_OS" = "Windows" ]; then gateway_bin=multicc-gateway.exe; fi
+            gateway="$MULTICC_RUST_PREBUILT_DIR/$(node -p 'process.platform+"-"+process.arch')/$gateway_bin"
+            gateway_prefix="multicc-gateway $(node -p 'require("./scripts/build-rust-kernels").GATEWAY_PROTOCOL') "
+            [ -f "$gateway" ] || { echo "::error::missing $gateway"; exit 1; }
+            if [ "$RUNNER_OS" != "Windows" ]; then
+              [ -x "$gateway" ] || { echo "::error::$gateway is not executable"; exit 1; }
+            fi
+            "$gateway" --version | grep -q "^$gateway_prefix" || { echo "::error::$gateway --version does not start with '$gateway_prefix'"; exit 1; }
           fi
           # The SQLite bundle test stages the complete server, including its
           # platform plugins. Build those inputs before invoking the real copier.

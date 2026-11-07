@@ -1440,6 +1440,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "multicc-gateway"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "multicc-core",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "multicc-remote"
 version = "0.1.0"
 dependencies = [

@@ -119,7 +119,7 @@ wait_for_ready() {
   local _i=0 _migrating=0 _line="" _last=""
   while [ "$_i" -lt 120 ]; do
     _i=$((_i + 1))
-    if probe="$("$NODE" -e '(async()=>{for(const u of [process.argv[1],process.argv[2]]){try{const r=await fetch(u);const t=await r.text();process.stdout.write(t.slice(0,2000));process.exit(r.status===200?0:2)}catch{}}process.exit(3)})()' "$url" "http://[::1]:${port}/readyz" 2>/dev/null)"; then
+    if probe="$("$NODE" -e '(async()=>{for(const u of [process.argv[1],process.argv[2]]){try{const r=await fetch(u,{signal:AbortSignal.timeout(1500)});const t=await r.text();process.stdout.write(t.slice(0,2000));process.exit(r.status===200?0:2)}catch{}}process.exit(3)})()' "$url" "http://[::1]:${port}/readyz" 2>/dev/null)"; then
       echo "MultiCC readiness confirmed."
       return 0
     fi
@@ -146,7 +146,7 @@ wait_for_ready() {
 }
 
 do_start() {
-  local running_pids port port_owner
+  local running_pids port port_owner gateway_bin
   running_pids=$(get_pids) || return 1
   if [ -n "$running_pids" ]; then
     echo "MultiCC is already running (PID $running_pids)"
@@ -158,16 +158,25 @@ do_start() {
     echo "Run './multicc update' to repair missing or outdated packages."
     return 1
   fi
+  # The Rust front door owns the public port and runs node server.js on a
+  # loopback port (docs/gateway.md §8). It is the only way this script starts
+  # MultiCC; ensure-source-rust built it next to the native module.
+  gateway_bin="$(dirname "${MULTICC_RUST_ADDON:-.}")/multicc-gateway"
+  if [ -z "${MULTICC_RUST_ADDON:-}" ] || [ ! -x "$gateway_bin" ]; then
+    echo "Rust front door not found ($gateway_bin) — MultiCC was not started."
+    return 1
+  fi
   port="${PORT:-}"
   if [ -z "$port" ]; then
     port="$($NODE -e 'const fs=require("fs");let s="";try{s=fs.readFileSync(process.argv[1],"utf8")}catch{};const m=s.match(/^PORT\s*=\s*([0-9]+)/m);process.stdout.write(m?m[1]:"3000")' "$SCRIPT_DIR/.env")"
   fi
   # Resolve port collisions before spawning Node. A process running this
-  # checkout is safe to replace (matched by absolute path, or by a relative
-  # server.js whose cwd is this checkout); anything else — or a server that
-  # refuses to die — triggers automatic port selection. The chosen port is
-  # persisted in .env by REPLACING any previous PORT line (readers take the
-  # first match, so appending would silently lose the new port).
+  # checkout is safe to replace: matched by an absolute server.js, by a relative
+  # server.js whose cwd is this checkout, or by the front door (its argv carries
+  # server.js and it chdir()s here). Anything else — or a server that refuses to
+  # die — triggers automatic port selection. The chosen port is persisted in
+  # .env by REPLACING any previous PORT line (readers take the first match, so
+  # appending would silently lose the new port).
   port_owner=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1)
   if [ -n "$port_owner" ]; then
     local owner_cmd owner_cwd
@@ -190,12 +199,12 @@ do_start() {
   fi
   echo "Starting MultiCC..."
   cd "$SCRIPT_DIR"
-  nohup "$NODE" server.js >> "$OUT_LOG" 2>> "$ERR_LOG" &
+  nohup "$gateway_bin" serve --cwd "$SCRIPT_DIR" --node "$NODE" server.js >> "$OUT_LOG" 2>> "$ERR_LOG" &
   local pid=$!
   echo $pid > "$PID_FILE"
   sleep 1
   if kill -0 $pid 2>/dev/null; then
-    echo "MultiCC started (PID $pid)"
+    echo "MultiCC started behind multicc-gateway (PID $pid)"
     echo "Log: $OUT_LOG"
   else
     echo "Failed to start. Check $ERR_LOG"
@@ -256,7 +265,13 @@ do_restart() {
 
 do_status() {
   if is_running; then
-    echo "MultiCC is running (PID $(get_pid))"
+    local pid
+    pid=$(get_pid)
+    if ps -p "$pid" -o command= 2>/dev/null | grep -q 'multicc-gateway'; then
+      echo "MultiCC is running behind multicc-gateway (PID $pid)"
+    else
+      echo "MultiCC is running (PID $pid)"
+    fi
   else
     echo "MultiCC is not running"
   fi
@@ -658,6 +673,7 @@ do_update() {
     if [ -n "${MULTICC_RUST_ADDON:-}" ]; then
       plutil -replace EnvironmentVariables.MULTICC_RUST_ADDON -string "$MULTICC_RUST_ADDON" "$PLIST" || return 1
     fi
+    set_launchd_program || return 1
     launchctl unload "$PLIST" 2>/dev/null
     launchctl load "$PLIST"
     echo "Service reloaded."
@@ -685,6 +701,23 @@ do_update() {
   fi
   update_step ready done
   echo "Update complete (${before:0:7} → ${after:0:7})."
+}
+
+# The login job starts the Rust front door exactly like `./multicc start`
+# (docs/gateway.md §8). The binary sits next to the native module, whose path
+# changes with every source update, so install and update both rewrite the
+# whole argument list (an older plist still says `node server.js`). The script
+# stays an absolute <dir>/server.js: install.sh finds the installation by it.
+set_launchd_program() {
+  local gateway_bin args_json
+  gateway_bin="$(dirname "${MULTICC_RUST_ADDON:-.}")/multicc-gateway"
+  if [ -z "${MULTICC_RUST_ADDON:-}" ] || [ ! -x "$gateway_bin" ]; then
+    echo "Rust front door not found ($gateway_bin) — the login service was not configured."
+    return 1
+  fi
+  args_json="$("$NODE" -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' -- \
+    "$gateway_bin" serve --cwd "$SCRIPT_DIR" --node "$NODE" "$SCRIPT_DIR/server.js")" || return 1
+  plutil -replace ProgramArguments -json "$args_json" "$PLIST"
 }
 
 do_install() {
@@ -750,6 +783,7 @@ do_install() {
 </dict>
 </plist>
 EOF
+  set_launchd_program || { rm -f "$PLIST"; return 1; }
   # Stop if already loaded
   launchctl unload "$PLIST" 2>/dev/null
   launchctl load "$PLIST"

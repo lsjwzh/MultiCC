@@ -86,6 +86,32 @@ function resolveDesktopEnv({
   };
 }
 
+// Every launch path starts the server behind the Rust front door
+// (docs/gateway.md §8): it owns the public port and supervises Node. There is no
+// direct `node server.js` path. It ships next to the native module, so it is
+// looked up exactly where src/native/runtime.js looks for that module.
+function gatewayBinary({ serverDir, env = process.env, platform = process.platform, arch = process.arch }) {
+  const name = platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway';
+  const dir = env.MULTICC_RUST_ADDON
+    ? path.dirname(path.resolve(env.MULTICC_RUST_ADDON))
+    : path.join(env.MULTICC_RUST_PREBUILT_DIR || path.join(serverDir, 'native', 'prebuilt'), `${platform}-${arch}`);
+  return path.join(dir, name);
+}
+
+// What the supervisor spawns: the front door, told which Node runs which entry.
+// `--stdin-lifeline`: the supervisor holds the front door's stdin, so whatever
+// way the supervisor goes away, the front door and then Node shut down too.
+function gatewayLaunch({ serverEntry, node, env = process.env, platform, arch, exists = fs.existsSync }) {
+  const serverDir = path.dirname(serverEntry);
+  const command = gatewayBinary({ serverDir, env, platform, arch });
+  if (!exists(command)) {
+    const error = new Error(`Rust front door not found: ${command}`);
+    error.code = 'GATEWAY_MISSING';
+    throw error;
+  }
+  return { command, args: ['serve', '--cwd', serverDir, '--node', node, '--stdin-lifeline', serverEntry] };
+}
+
 // Same tolerant KEY=VALUE parsing as src/host-env.js readEnvFile: one assignment
 // per line, comments and blanks ignored, no interpolation. Self-contained here
 // so desktop/lib never requires into the server package (which moves to
@@ -224,6 +250,8 @@ module.exports = {
   DEV_DATA_DIRNAME,
   DESKTOP_LOOPBACK_HOST,
   resolveDesktopEnv,
+  gatewayBinary,
+  gatewayLaunch,
   parseEnvFile,
   readEnvValues,
   buildChildEnv,
