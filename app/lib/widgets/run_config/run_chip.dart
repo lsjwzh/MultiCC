@@ -2,7 +2,7 @@
 // 药丸两颗。点它开「运行配置」面板（CLI 与线路/模型/强度都在那一个面板里挑）。
 //
 // 固定一条 → `<CLI> · <线路> · <模型>`（+ 强度）；
-// 自动挑选 → `⚡ 自动 · 按难度 · N 条 ｜本轮 <线路/模型>`；
+// 自动挑选 → `⚡ 自动 · [预设名 · ]按难度 · N 条 ｜本轮 <线路/模型>`；
 // 下轮生效时 chip 转琥珀并挂「下一轮生效」。
 library;
 
@@ -28,6 +28,7 @@ import '../../utils/cli_display.dart';
 import '../../utils/session_status_helpers.dart';
 import '../run_config/run_labels.dart';
 import '../run_config/run_config_models.dart';
+import '../run_config/run_config_presets.dart';
 import '../run_config/run_config_sheet.dart';
 import '../marquee_text.dart';
 
@@ -67,7 +68,19 @@ class _RunChipState extends State<RunChip> {
   @override
   void initState() {
     super.initState();
+    // 池子来自哪份预设要靠预设表认（名字跨端共享）；表取回来/变了就重画。
+    runConfigPresetCatalog.addListener(_onPresetCatalog);
     _load();
+  }
+
+  @override
+  void dispose() {
+    runConfigPresetCatalog.removeListener(_onPresetCatalog);
+    super.dispose();
+  }
+
+  void _onPresetCatalog() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -84,6 +97,7 @@ class _RunChipState extends State<RunChip> {
   Future<void> _load() async {
     final epoch = ++_loadEpoch;
     final cli = widget.cli;
+    unawaited(refreshRunConfigPresetCatalog(settings: widget.settings));
     try {
       final runtime = await SessionService(
         settings: widget.settings,
@@ -285,6 +299,8 @@ class _RunChipState extends State<RunChip> {
   ) {
     final count = selection.candidates.where((c) => c.enabled).length;
     final how = selection.routing != null ? '按难度' : '按顺序';
+    // 同 Web 的线路药丸：池子认得出是哪份预设就把预设名摆在「自动」后面。
+    final preset = runConfigPresetNameFor(selection);
     final actual = live.activeProviderName;
     final model = live.activeProviderModel;
     final tail = <String>[
@@ -292,7 +308,7 @@ class _RunChipState extends State<RunChip> {
       if (model != null && model.isNotEmpty)
         modelDisplayName(cli, model, aliasMap: _aliasMapFor(null)),
     ];
-    return '⚡ 自动 · $how · $count 条'
+    return '⚡ 自动 · ${preset == null ? '' : '$preset · '}$how · $count 条'
         '${tail.isEmpty ? '' : ' ｜本轮 ${tail.join(' · ')}'}';
   }
 

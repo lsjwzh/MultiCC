@@ -5,13 +5,256 @@ library;
 
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../models/message.dart';
 import '../../services/settings_service.dart';
 import 'run_config_wire.dart';
 
 const runConfigPresetKey = 'multicc.autoProvider.presets.v1';
+
+/// 跨端共享的具名预设表（进程内缓存，原始 JSON）。会话 / 新任务的 Auto 池子
+/// 只存线路池本身（外加可选的 `presetId`），药丸和 chip 要把它认回预设名 ——
+/// 同 Web `public/run-config.js` 的 matchPreset / matchPresetName。名字只是
+/// 展示：认不出来（预设删了、还没取回来、手搭的池子）就不说名字。
+///
+/// [RunConfigPresetStore] 每次 load / save / delete 都顺手刷新它；只要名字的
+/// 地方（chip、新任务药丸）用 [refreshRunConfigPresetCatalog] 只读地补一次。
+final ValueNotifier<List<Map<String, dynamic>>> runConfigPresetCatalog =
+    ValueNotifier(const <Map<String, dynamic>>[]);
+
+/// [replace] 为真时整表替换（store 刚拿到完整表），否则按 id 合并（本机缓存 +
+/// 服务端两份来源，后到的覆盖同 id）。
+void _rememberPresets(
+  Iterable<Map<String, dynamic>> raw, {
+  bool replace = true,
+}) {
+  final byId = <String, Map<String, dynamic>>{
+    if (!replace)
+      for (final item in runConfigPresetCatalog.value)
+        (item['id'] ?? '').toString(): item,
+  };
+  for (final item in raw) {
+    final id = (item['id'] ?? '').toString().trim();
+    if (id.isEmpty) continue;
+    byId[id] = Map<String, dynamic>.unmodifiable(item);
+  }
+  final next = List<Map<String, dynamic>>.unmodifiable(byId.values);
+  if (jsonEncode(next) != jsonEncode(runConfigPresetCatalog.value)) {
+    runConfigPresetCatalog.value = next;
+  }
+}
+
+/// 预设指纹里的一行：只比真正决定路由的线路、模型、是否自动挑模型，外加优先级
+/// 顺序；车道只在两边都写了时才比（老版编辑器存预设时会把 cli 丢掉）。
+class _PoolRow {
+  const _PoolRow(this.providerId, this.model, this.autoModel, this.cli);
+  final String providerId;
+  final String model;
+  final bool autoModel;
+  final String cli;
+
+  bool same(_PoolRow other) =>
+      providerId == other.providerId &&
+      model == other.model &&
+      autoModel == other.autoModel &&
+      (cli.isEmpty || other.cli.isEmpty || cli == other.cli);
+}
+
+int _priorityOf(Object? value) =>
+    value is num ? value.toInt() : (int.tryParse('${value ?? ''}') ?? 0);
+
+List<_PoolRow> _rawPoolRows(Object? candidates) {
+  if (candidates is! List) return const [];
+  final rows = candidates.whereType<Map>().where((c) => c['enabled'] != false)
+      .toList()
+    ..sort((a, b) => _priorityOf(a['priority']).compareTo(_priorityOf(b['priority'])));
+  return [
+    for (final c in rows)
+      _PoolRow(
+        (c['providerId'] ?? '').toString().trim(),
+        (c['model'] ?? '').toString().trim(),
+        c['autoModel'] == true,
+        (c['cli'] ?? '').toString().trim(),
+      ),
+  ];
+}
+
+List<_PoolRow> _selectionPoolRows(SessionProviderSelection selection) {
+  final rows = selection.candidates.where((c) => c.enabled).toList()
+    ..sort((a, b) => a.priority.compareTo(b.priority));
+  return [
+    for (final c in rows)
+      _PoolRow(
+        c.providerId.trim(),
+        (c.model ?? '').trim(),
+        c.autoModel,
+        (c.cli ?? '').trim(),
+      ),
+  ];
+}
+
+bool _samePool(List<_PoolRow> left, List<_PoolRow> right) {
+  if (left.length != right.length) return false;
+  for (var i = 0; i < left.length; i += 1) {
+    if (!left[i].same(right[i])) return false;
+  }
+  return true;
+}
+
+/// 池子是预设删过几条线路之后的样子：剩下的线路仍按原顺序出现在预设里。
+bool _poolIsSubset(List<_PoolRow> pool, List<_PoolRow> preset) {
+  var index = 0;
+  for (final row in pool) {
+    while (index < preset.length && !row.same(preset[index])) {
+      index += 1;
+    }
+    if (index >= preset.length) return false;
+    index += 1;
+  }
+  return pool.isNotEmpty;
+}
+
+/// 认出 [selection] 来自哪份预设（同 Web matchPreset）：`presetId` 最可靠
+/// （预设后来改名或加减线路也还指着它）；老记录退回池子指纹；再退一步，池子
+/// 是某份预设删过线路后的样子 —— 只有唯一命中才算，两份都包含它就宁可不说。
+/// [presets] 缺省读 [runConfigPresetCatalog]。
+Map<String, dynamic>? matchRunConfigPreset(
+  SessionProviderSelection? selection, [
+  List<Map<String, dynamic>>? presets,
+]) {
+  if (selection == null) return null;
+  final named = [
+    for (final item in presets ?? runConfigPresetCatalog.value)
+      if (item['recent'] != true &&
+          (item['name'] ?? '').toString().trim().isNotEmpty &&
+          (item['id'] ?? '').toString().trim().isNotEmpty &&
+          item['candidates'] is List)
+        item,
+  ];
+  if (named.isEmpty) return null;
+  final presetId = selection.presetId?.trim() ?? '';
+  if (presetId.isNotEmpty) {
+    for (final item in named) {
+      if ((item['id'] ?? '').toString().trim() == presetId) return item;
+    }
+  }
+  final pool = _selectionPoolRows(selection);
+  if (pool.isEmpty) return null;
+  for (final item in named) {
+    if (_samePool(_rawPoolRows(item['candidates']), pool)) return item;
+  }
+  final containing = [
+    for (final item in named)
+      if (_poolIsSubset(pool, _rawPoolRows(item['candidates']))) item,
+  ];
+  return containing.length == 1 ? containing.single : null;
+}
+
+/// [selection] 对应的预设名；认不出来就是 null，由调用方退回原来的 Auto 说法。
+String? runConfigPresetNameFor(
+  SessionProviderSelection? selection, [
+  List<Map<String, dynamic>>? presets,
+]) {
+  final hit = matchRunConfigPreset(selection, presets);
+  final name = (hit?['name'] ?? '').toString().trim();
+  return name.isEmpty ? null : name;
+}
+
+/// 保存时写进 providerSelection 的出处（同 Web presetProvenance）：用户明确
+/// 套用过的那份优先，否则按池子认；都不中就不写，免得给手搭的池子凭空安名字。
+String runConfigPresetProvenance(
+  SessionProviderSelection selection,
+  String activeId, [
+  List<Map<String, dynamic>>? presets,
+]) {
+  final list = presets ?? runConfigPresetCatalog.value;
+  final active = activeId.trim();
+  if (active.isNotEmpty) {
+    for (final item in list) {
+      if (item['recent'] != true &&
+          (item['name'] ?? '').toString().trim().isNotEmpty &&
+          (item['id'] ?? '').toString().trim() == active) {
+        return active;
+      }
+    }
+  }
+  return (matchRunConfigPreset(selection, list)?['id'] ?? '').toString().trim();
+}
+
+Future<void>? _catalogInflight;
+DateTime? _catalogFetchedAt;
+
+/// 只读地刷新 [runConfigPresetCatalog]：先读本机缓存（离线也认得出），再 GET
+/// 服务端那份跨端共享的表。不 merge、不写回 —— 显示路径不该带写副作用。
+/// 并发调用共用一趟请求；[maxAge] 内刚取过就不再取。任何失败都静默保留旧缓存。
+Future<void> refreshRunConfigPresetCatalog({
+  SettingsService? settings,
+  http.Client? httpClient,
+  Duration maxAge = const Duration(seconds: 20),
+}) {
+  final fetchedAt = _catalogFetchedAt;
+  if (fetchedAt != null && DateTime.now().difference(fetchedAt) < maxAge) {
+    return Future.value();
+  }
+  return _catalogInflight ??= _fetchPresetCatalog(settings, httpClient)
+      .whenComplete(() {
+        _catalogInflight = null;
+        _catalogFetchedAt = DateTime.now();
+      });
+}
+
+Future<void> _fetchPresetCatalog(
+  SettingsService? settings,
+  http.Client? httpClient,
+) async {
+  // 本机这份是 store 每次 load 时与服务端合并后落下来的，所以它就是「已知的
+  // 全表」；服务端那份再按 id 盖上去（别处刚存 / 改名的预设）。整表替换而不是
+  // 往旧缓存里累加 —— 别处删掉的预设不该一直被认出来。
+  List<Map<String, dynamic>> local;
+  try {
+    local = await RunConfigPresetStore()._readRaw();
+  } catch (_) {
+    local = const [];
+  }
+  List<Map<String, dynamic>>? remote;
+  if (settings != null) {
+    try {
+      final url = Uri.parse(settings.buildHttpUrl('/api/run-config/presets'));
+      final headers = <String, String>{
+        if (settings.token.isNotEmpty) 'X-Access-Token': settings.token,
+      };
+      final res =
+          await (httpClient == null
+                  ? http.get(url, headers: headers)
+                  : httpClient.get(url, headers: headers))
+              .timeout(const Duration(seconds: 8));
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        final decoded = jsonDecode(res.body);
+        final presets = decoded is Map ? decoded['presets'] : null;
+        if (presets is List) {
+          remote = [
+            for (final item in presets)
+              if (item is Map) Map<String, dynamic>.from(item),
+          ];
+        }
+      }
+    } catch (_) {}
+  }
+  // 两边都没拿到东西（离线且本机没缓存）就别把已有的缓存清空。
+  if (remote == null && local.isEmpty) return;
+  _rememberPresets([...local, ...?remote]);
+}
+
+/// 测试之间清空进程内的预设缓存与节流状态。
+@visibleForTesting
+void resetRunConfigPresetCatalogForTest() {
+  runConfigPresetCatalog.value = const <Map<String, dynamic>>[];
+  _catalogInflight = null;
+  _catalogFetchedAt = null;
+}
 
 class RunConfigPreset {
   const RunConfigPreset({
@@ -267,8 +510,12 @@ class RunConfigPresetStore {
   Future<List<Map<String, dynamic>>> _loadRaw() async {
     final local = await _readRaw();
     final merged = await _mergeWithServer(local);
-    if (merged == null) return local;
+    if (merged == null) {
+      _rememberPresets(local, replace: false);
+      return local;
+    }
     await _writeRaw(merged);
+    _rememberPresets(merged);
     return merged;
   }
 
@@ -301,6 +548,7 @@ class RunConfigPresetStore {
     if (!await _writeRaw(nextRaw)) {
       throw StateError('preset storage unavailable');
     }
+    _rememberPresets(nextRaw);
     await _pushToServer(nextRaw);
     return next;
   }
@@ -314,6 +562,7 @@ class RunConfigPresetStore {
     if (!await _writeRaw(nextRaw)) {
       throw StateError('preset storage unavailable');
     }
+    _rememberPresets(nextRaw);
     await _pushToServer(nextRaw);
     return next;
   }

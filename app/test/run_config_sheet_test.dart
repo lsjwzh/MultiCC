@@ -96,6 +96,8 @@ void main() {
   // 由下面专问专测（那里会重新清掉这个 key）。
   setUp(() {
     SharedPreferences.setMockInitialValues({runConfigSubagentGuideKey: true});
+    // 预设名缓存是进程内的：上一个用例存下的预设不能让下一个用例的池子被认名。
+    resetRunConfigPresetCatalogForTest();
   });
 
   Future<SettingsService> settings({String host = 'http://127.0.0.1:1'}) async {
@@ -1232,6 +1234,143 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('会话池子来自预设：打开面板就写出预设名，原样保存不丢出处', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    await RunConfigPresetStore().save(
+      RunConfigPreset(
+        id: 'p-daily',
+        name: '日常双线路',
+        protocol: 'anthropic',
+        rows: [
+          RunPoolRow(lane: 'claude', providerId: 'cheap', model: 'glm-4.5-flash'),
+          RunPoolRow(lane: 'claude', providerId: 'strong', model: 'glm-5.2'),
+        ],
+        pickOrder: RunPickOrder.order,
+        tiering: RunTiering.jev,
+        maxAttempts: 2,
+        sticky: false,
+        savedAt: 1,
+      ),
+    );
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/providers') {
+        return _json(200, {'providers': poolProviders});
+      }
+      return _json(500, {});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: pool.withPreset('p-daily'),
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claude: true},
+      ),
+      out,
+    );
+
+    expect(find.text('当前预设：日常双线路'), findsOneWidget);
+    expect(
+      find.text('更新预设'),
+      findsOneWidget,
+      reason: '认出来的预设就是正在套用的那份，可以直接原地更新',
+    );
+    await _save(tester);
+    expect(out.value?.providerSelection?.presetId, 'p-daily');
+    expect(
+      out.value?.providerLabel,
+      startsWith('Auto · 日常双线路 → '),
+      reason: '保存提示也说出套的是哪份预设',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('老池子没有 presetId：按线路池认出预设，保存时补上出处', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    await RunConfigPresetStore().save(
+      RunConfigPreset(
+        id: 'p-daily',
+        name: '日常双线路',
+        protocol: 'anthropic',
+        rows: [
+          RunPoolRow(lane: 'claude', providerId: 'cheap', model: 'glm-4.5-flash'),
+          RunPoolRow(lane: 'claude', providerId: 'strong', model: 'glm-5.2'),
+        ],
+        pickOrder: RunPickOrder.order,
+        tiering: RunTiering.jev,
+        maxAttempts: 2,
+        sticky: false,
+        savedAt: 1,
+      ),
+    );
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/providers') {
+        return _json(200, {'providers': poolProviders});
+      }
+      return _json(500, {});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: pool,
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claude: true},
+      ),
+      out,
+    );
+
+    expect(find.text('当前预设：日常双线路'), findsOneWidget);
+    await _save(tester);
+    expect(out.value?.providerSelection?.presetId, 'p-daily');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('手搭的池子认不出预设：不显示预设名，也不凭空写出处', (tester) async {
+    final s = await settings(host: 'http://server.example');
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/providers') {
+        return _json(200, {'providers': poolProviders});
+      }
+      return _json(500, {});
+    });
+    final out = _Captured();
+    await _open(
+      tester,
+      RunConfigSheet(
+        cli: SessionCli.claude,
+        providers: poolProviders,
+        provider: 'cheap',
+        model: '',
+        effort: 'medium',
+        providerSelection: pool,
+        settings: s,
+        httpClient: client,
+        cliAvailability: const {SessionCli.claude: true},
+      ),
+      out,
+    );
+
+    expect(find.byKey(const Key('run-preset-active')), findsNothing);
+    expect(find.text('更新预设'), findsNothing);
+    await _save(tester);
+    expect(out.value?.providerSelection, isNotNull);
+    expect(out.value?.providerSelection?.presetId, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('套用后的预设可以原地更新，不用再输名字', (tester) async {
     final s = await settings(host: 'http://server.example');
     final client = MockClient((request) async {
@@ -1516,6 +1655,24 @@ void main() {
     );
     await tester.pump();
     expect(find.textContaining('⚡ 自动 · 按顺序 · 2 条'), findsOneWidget);
+
+    // 池子来自预设：同 Web 线路药丸，预设名摆在「自动」后面。
+    runConfigPresetCatalog.value = [
+      {
+        'id': 'p-daily',
+        'name': '日常双线路',
+        'protocol': 'anthropic',
+        'candidates': [
+          {'providerId': 'cheap', 'model': 'glm-4.5-flash', 'priority': 1},
+          {'providerId': 'strong', 'model': 'glm-5.2', 'priority': 2},
+        ],
+      },
+    ];
+    await tester.pump();
+    expect(
+      find.textContaining('⚡ 自动 · 日常双线路 · 按顺序 · 2 条'),
+      findsOneWidget,
+    );
 
     await tester.pumpWidget(const SizedBox());
     disposeAll();

@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:multicc_app/models/message.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/run_config/run_config_presets.dart';
 import 'package:multicc_app/widgets/run_config/run_config_wire.dart';
@@ -14,6 +15,8 @@ import 'package:multicc_app/widgets/run_config/run_config_wire.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  // 预设名缓存是进程内的：每个用例从空表起步。
+  setUp(resetRunConfigPresetCatalogForTest);
 
   Future<SettingsService> mockSettings([
     Map<String, Object> extra = const {},
@@ -260,5 +263,161 @@ void main() {
     );
     final cached = await storedRaw();
     expect(cached.map((item) => item['id']), ['b']);
+  });
+
+  // 具名预设（presetJson 默认带 recent —— 那是 Web 的「最近用过」，不参与认名）。
+  Map<String, dynamic> namedPreset({
+    required String id,
+    required String name,
+    bool withCli = true,
+    List<String> providerIds = const ['cheap', 'strong'],
+  }) => presetJson(
+    id: id,
+    name: name,
+    withCli: withCli,
+    providerIds: providerIds,
+  )..remove('recent');
+
+  // ── 认出池子来自哪份预设（App 的线路药丸 / chip 要说预设名） ──────────────
+
+  SessionProviderSelection selectionOf(
+    List<String> providerIds, {
+    String? presetId,
+    String? model,
+    String cli = 'claude',
+  }) => SessionProviderSelection(
+    protocol: 'anthropic',
+    candidates: [
+      for (var index = 0; index < providerIds.length; index++)
+        SessionProviderCandidate(
+          providerId: providerIds[index],
+          model: model,
+          priority: index + 1,
+          cli: cli,
+        ),
+    ],
+    maxAttempts: 2,
+    presetId: presetId,
+  );
+
+  test('认预设：presetId 优先（改过名、换过线路也认得出）', () {
+    final presets = [
+      namedPreset(id: 'p1', name: '日常', providerIds: ['a', 'b']),
+      namedPreset(id: 'p2', name: '省钱', providerIds: ['c', 'd']),
+    ];
+    // 池子已经和 p1 对不上了，但 presetId 还指着它。
+    expect(
+      runConfigPresetNameFor(selectionOf(['x', 'y'], presetId: 'p1'), presets),
+      '日常',
+    );
+    // presetId 指着已删的预设：退回池子指纹。
+    expect(
+      runConfigPresetNameFor(selectionOf(['c', 'd'], presetId: 'gone'), presets),
+      '省钱',
+    );
+    expect(
+      runConfigPresetNameFor(selectionOf(['x', 'y'], presetId: 'gone'), presets),
+      isNull,
+      reason: '预设删了、池子也对不上：不编名字',
+    );
+    expect(runConfigPresetNameFor(null, presets), isNull);
+  });
+
+  test('认预设：老数据没有 presetId，按池子指纹认；车道只在两边都写了才比', () {
+    final presets = [
+      // Web 老编辑器存的预设没有 cli。
+      namedPreset(id: 'web', name: 'Web 预设', withCli: false),
+    ];
+    expect(runConfigPresetNameFor(selectionOf(['cheap', 'strong']), presets), 'Web 预设');
+    expect(
+      runConfigPresetNameFor(selectionOf(['strong', 'cheap']), presets),
+      isNull,
+      reason: '顺序也是池子的一部分',
+    );
+    final withCli = [namedPreset(id: 'p', name: '带车道')];
+    expect(
+      runConfigPresetNameFor(selectionOf(['cheap', 'strong'], cli: 'codex'), withCli),
+      isNull,
+      reason: '两边都写了车道就得一致',
+    );
+  });
+
+  test('认预设：删过线路的池子只在唯一包含它时才认', () {
+    final one = [
+      namedPreset(id: 'p1', name: '三条', providerIds: ['a', 'b', 'c']),
+    ];
+    expect(runConfigPresetNameFor(selectionOf(['a', 'c']), one), '三条');
+    final two = [
+      ...one,
+      namedPreset(id: 'p2', name: '另一份', providerIds: ['a', 'c', 'd']),
+    ];
+    expect(
+      runConfigPresetNameFor(selectionOf(['a', 'c']), two),
+      isNull,
+      reason: '两份预设都包含它就宁可不说名字',
+    );
+  });
+
+  test('认预设：「最近用过」和没名字的条目不算预设', () {
+    final presets = [
+      {...namedPreset(id: 'r', name: '最近'), 'recent': true},
+      namedPreset(id: 'n', name: '具名', providerIds: ['x', 'y']),
+    ];
+    expect(runConfigPresetNameFor(selectionOf(['cheap', 'strong'], presetId: 'r'), presets), isNull);
+  });
+
+  test('出处：套用过的优先；没套用就按池子认；都不中不写', () {
+    final presets = [
+      namedPreset(id: 'p1', name: '日常'),
+      namedPreset(id: 'p2', name: '别的', providerIds: ['x', 'y']),
+    ];
+    final pool = selectionOf(['cheap', 'strong']);
+    expect(runConfigPresetProvenance(pool, 'p2', presets), 'p2');
+    expect(runConfigPresetProvenance(pool, '', presets), 'p1');
+    expect(runConfigPresetProvenance(pool, 'deleted', presets), 'p1');
+    expect(runConfigPresetProvenance(selectionOf(['m', 'n']), '', presets), '');
+  });
+
+  test('名字缓存：只读刷新 = 本机 + 服务端 GET，不 merge 也不 PUT', () async {
+    final settings = await mockSettings({
+      runConfigPresetKey: jsonEncode([namedPreset(id: 'local', name: '本机')]),
+    });
+    final calls = <String>[];
+    final client = MockClient((request) async {
+      calls.add('${request.method} ${request.url.path}');
+      expect(request.headers['X-Access-Token'], 'secret');
+      return jsonResponse(200, {
+        'ok': true,
+        'presets': [
+          namedPreset(id: 'remote', name: '服务端', providerIds: ['x', 'y']),
+        ],
+      });
+    });
+
+    await refreshRunConfigPresetCatalog(settings: settings, httpClient: client);
+
+    expect(calls, ['GET /api/run-config/presets']);
+    expect(runConfigPresetNameFor(selectionOf(['cheap', 'strong'])), '本机');
+    expect(runConfigPresetNameFor(selectionOf(['x', 'y'])), '服务端');
+    // 节流：刚取过就不再取。
+    await refreshRunConfigPresetCatalog(settings: settings, httpClient: client);
+    expect(calls, hasLength(1));
+  });
+
+  test('名字缓存：服务端不可用时用本机那份；store 存 / 删会同步刷新', () async {
+    SharedPreferences.setMockInitialValues({});
+    final store = RunConfigPresetStore();
+    final preset = RunConfigPreset.fromJson(namedPreset(id: 'p1', name: '日常'))!;
+    await store.save(preset);
+    expect(runConfigPresetNameFor(selectionOf(['cheap', 'strong'])), '日常');
+    await store.delete('p1');
+    expect(runConfigPresetNameFor(selectionOf(['cheap', 'strong'])), isNull);
+
+    final settings = await mockSettings({
+      runConfigPresetKey: jsonEncode([namedPreset(id: 'p2', name: '离线')]),
+    });
+    final client = MockClient((request) async => jsonResponse(503, {}));
+    await refreshRunConfigPresetCatalog(settings: settings, httpClient: client);
+    expect(runConfigPresetNameFor(selectionOf(['cheap', 'strong'])), '离线');
   });
 }
