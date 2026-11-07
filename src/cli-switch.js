@@ -16,7 +16,7 @@ const { nativeVendorOf } = require('./providers/native-vendor');
 const { nativeOpenCodeId } = require('./providers/native-opencode');
 
 // No Node fallback: these kernels are Rust-only.
-const native = getNative('cli_switch', 'rust');
+const native = getNative();
 const SUPPORTED_CHAT_CLIS = Object.freeze(
   JSON.parse(native.cliSwitchCatalog()).supportedChatClis,
 );

@@ -12,7 +12,7 @@
 
 const { getNative } = require('../native/runtime');
 
-const native = getNative('selection');
+const native = getNative();
 const TYPE_PREFIX = 'context_selection_type_error: ';
 
 function call(fn, input) {

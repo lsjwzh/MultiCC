@@ -11,7 +11,7 @@ const { CAPABILITIES, transportOf } = require('../cli/cli-capability');
 const { getNative } = require('../native/runtime');
 
 // No Node fallback: these kernels are Rust-only.
-const native = getNative('turn_request', 'rust');
+const native = getNative();
 const CATALOG = JSON.parse(native.turnRequestCatalog());
 
 const REQUEST_KIND = CATALOG.requestKind;

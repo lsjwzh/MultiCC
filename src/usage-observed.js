@@ -15,7 +15,7 @@ const { assertProviderBinding } = require('./providers/binding');
 const { normalizeProxyOutcome } = require('./providers/proxy-outcome');
 const { getNative } = require('./native/runtime');
 
-const native = getNative('usage-observed');
+const native = getNative();
 const CATALOG = JSON.parse(native.usageObservedCatalog());
 
 const USAGE_OBSERVED_VERSION = CATALOG.version;

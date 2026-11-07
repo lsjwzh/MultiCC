@@ -101,7 +101,7 @@ function buildTaskRunContext({
   version,
   includeCurrent,
 } = {}) {
-  const addon = getNative('task_run_context', 'rust');
+  const addon = getNative();
   if (typeof addon.buildTaskRunContext !== 'function') {
     throw new Error('任务上下文 Rust 接口不可用，请构建当前原生模块');
   }
