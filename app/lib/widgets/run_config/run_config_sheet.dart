@@ -198,6 +198,11 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   /// （同 id、同名字），而不是再弹一次命名框、存出第二份。
   String _activePresetId = '';
   String _activePresetName = '';
+
+  /// 打开面板时按会话池子认出来的那份预设（见 [_seedActivePreset]）。用户自己
+  /// 套用 / 删除 / 另存过之后 [_activePresetId] 就不再等于它，后到的预设表不再
+  /// 覆盖用户的选择。
+  String _seededPresetId = '';
   String _presetNotice = '';
   bool _presetNoticeError = false;
   bool _presetBusy = false;
@@ -237,8 +242,14 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     _agentCtrl = TextEditingController(text: widget.agent ?? '');
     _seedAuto();
     if (widget.providerSelection != null) _mode = RunConfigMode.auto;
+    // 先用进程内缓存认一次（名字立刻能显示），预设表取回来后再认一次。
+    _seedActivePreset();
     _presetStore.load().then((presets) {
-      if (mounted) setState(() => _presets = presets);
+      if (!mounted) return;
+      setState(() {
+        _presets = presets;
+        _seedActivePreset();
+      });
     });
     _guidePulse = AnimationController(
       vsync: this,
@@ -776,6 +787,19 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     return model;
   }
 
+  /// 会话 / 新任务带来的池子来自哪份预设：认得出就当作「正在套用」——面板上
+  /// 写出预设名，「更新预设」直接改写那一份，保存时出处也跟着走（同 Web 胶囊
+  /// 的 matchPreset：先 presetId，再池子指纹）。认不出（手搭的池子、预设已
+  /// 删）就保持空。
+  void _seedActivePreset() {
+    if (_activePresetId != _seededPresetId) return;
+    final hit = matchRunConfigPreset(widget.providerSelection);
+    _activePresetId = (hit?['id'] ?? '').toString().trim();
+    _activePresetName = (hit?['name'] ?? '').toString().trim();
+    if (_activePresetName.isEmpty) _activePresetId = '';
+    _seededPresetId = _activePresetId;
+  }
+
   void _seedAuto() {
     final selection = widget.providerSelection;
     if (selection == null) return;
@@ -1139,19 +1163,20 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     final subagent = _followsGlobalRoute(collected)
         ? collected?.copyWith(inherited: true)
         : collected;
+    final selection = _stampPreset(result.selection);
+    final presetName = runConfigPresetNameFor(selection);
     Navigator.pop(
       context,
       RunConfigOutcome(
         provider: provider,
         model: result.firstModel,
         effort: widget.effort,
+        // 池子来自预设就说预设名（保存提示里同样能看出套的是哪一份）。
         providerLabel:
-            'Auto · ${protocolLabelOf(result.protocol)} → $firstName',
+            'Auto · ${presetName ?? protocolLabelOf(result.protocol)} → $firstName',
         modelLabel: result.firstModel.isEmpty ? '默认' : result.firstModel,
         effortLabel: effortShortNameForCli(widget.cli, widget.effort),
-        providerSelection: _activePresetId.isEmpty
-            ? result.selection
-            : result.selection?.withPreset(_activePresetId),
+        providerSelection: selection,
         subagent: subagent,
         switchToCli: result.switchToCli,
         subagentCli: subCli?.name,
@@ -1159,6 +1184,14 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
         subagentCleared: widget.draft && _subagentTouched && subagent == null,
       ),
     );
+  }
+
+  /// 把出处写进要保存的池子（同 Web presetProvenance）：用户套用过的那份优先，
+  /// 否则按池子认；都不中就不写 —— 不给手搭的池子凭空安一个名字。
+  SessionProviderSelection? _stampPreset(SessionProviderSelection? selection) {
+    if (selection == null) return null;
+    final preset = runConfigPresetProvenance(selection, _activePresetId);
+    return preset.isEmpty ? selection : selection.withPreset(preset);
   }
 
   AutoWireResult _autoSelectionResult() {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -9,6 +11,7 @@ import '../../services/settings_service.dart';
 import '../../theme.dart';
 import '../../utils/cli_display.dart';
 import '../marquee_text.dart';
+import '../run_config/run_config_presets.dart';
 import '../voice_composer.dart';
 import 'air_role_editor.dart';
 import 'air_task_config.dart';
@@ -826,6 +829,13 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     );
     _runtime = AirTaskRuntime(cli: cli);
     _followLastRuntime();
+    // 新任务默认从「最近用过的那套」起步，那套常常是某份预设的池子：药丸要
+    // 说出预设名，所以先把跨端共享的预设表取回来，取到/变了就重画。
+    runConfigPresetCatalog.addListener(_onPresetCatalog);
+    unawaited(refreshRunConfigPresetCatalog(
+      settings: widget.settings,
+      httpClient: widget.httpClient,
+    ));
     _voice = VoiceComposerController(
       settings: widget.settings,
       target: _controller,
@@ -860,6 +870,10 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     if (mounted) setState(() {});
   }
 
+  void _onPresetCatalog() {
+    if (mounted) setState(() {});
+  }
+
   void _onFocusChanged() {
     if (!widget.docked) return;
     if (_focus.hasFocus) {
@@ -887,6 +901,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
 
   @override
   void dispose() {
+    runConfigPresetCatalog.removeListener(_onPresetCatalog);
     _voice.dispose();
     _focus.removeListener(_onFocusChanged);
     _focus.dispose();

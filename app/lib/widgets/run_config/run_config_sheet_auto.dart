@@ -80,6 +80,20 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       const Text('预设', style: TextStyle(color: AppColors.faint, fontSize: 12)),
+      // 当前池子来自哪份预设：打开时按会话认出来的、或刚套用 / 存下的那份。
+      if (_activePresetName.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            '当前预设：$_activePresetName',
+            key: const ValueKey('run-preset-active'),
+            style: const TextStyle(
+              color: AppColors.text,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
       const SizedBox(height: 6),
       Wrap(
         spacing: 8,

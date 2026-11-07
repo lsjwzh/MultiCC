@@ -5,6 +5,7 @@ import '../../models/message.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
 import '../ai_config_sheet.dart' show prepareAIConfigInputs;
+import '../run_config/run_config_presets.dart';
 import '../run_config/run_config_sheet.dart';
 import '../run_config/run_config_wire.dart';
 
@@ -99,12 +100,19 @@ class AirTaskRuntime {
     subagentExplicitNone: subagentExplicitNone,
   );
 
-  /// 走哪条线路：Auto 池子报协议名，手选报 Provider 名字，都没选就是目录默认。
-  String get routeName => isAuto
-      ? 'Auto ${_protocolLabel(providerSelection!.protocol)}'
-      : (providerName.isNotEmpty
-            ? providerName
-            : (provider.isNotEmpty ? provider : '默认线路'));
+  /// 走哪条线路：Auto 池子认得出是哪份预设就报预设名（同 Web 线路药丸的
+  /// matchPresetName），否则报协议名；手选报 Provider 名字，都没选就是目录默认。
+  String get routeName {
+    if (isAuto) {
+      final preset = runConfigPresetNameFor(providerSelection);
+      return preset == null
+          ? 'Auto ${_protocolLabel(providerSelection!.protocol)}'
+          : 'Auto · $preset';
+    }
+    return providerName.isNotEmpty
+        ? providerName
+        : (provider.isNotEmpty ? provider : '默认线路');
+  }
 
   String get modelLabel => model.isEmpty ? '默认模型' : model;
 

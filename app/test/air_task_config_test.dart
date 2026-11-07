@@ -10,6 +10,7 @@ import 'package:multicc_app/services/air_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air/air_panels.dart';
 import 'package:multicc_app/widgets/air/air_task_config.dart';
+import 'package:multicc_app/widgets/run_config/run_config_presets.dart';
 import 'package:multicc_app/widgets/run_config/run_config_sheet.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -111,6 +112,47 @@ void main() {
       );
       expect(runtime.isAuto, isTrue);
       expect(runtime.routeLabel, 'Auto Anthropic · m1');
+    });
+
+    test('Auto 池子来自预设：药丸报预设名，不再只说 Auto', () {
+      addTearDown(resetRunConfigPresetCatalogForTest);
+      final selection = SessionProviderSelection(
+        protocol: 'anthropic',
+        candidates: const [
+          SessionProviderCandidate(providerId: 'p1', model: 'm1', priority: 1),
+          SessionProviderCandidate(providerId: 'p2', model: 'm2', priority: 2),
+        ],
+        maxAttempts: 2,
+        presetId: 'preset-1',
+      );
+      final runtime = AirTaskRuntime(
+        cli: 'claude',
+        provider: 'p1',
+        model: 'm1',
+        providerSelection: selection,
+      );
+      // 预设表还没取回来：先按原来的说法。
+      expect(runtime.routeLabel, 'Auto Anthropic · m1');
+      runConfigPresetCatalog.value = [
+        {
+          'id': 'preset-1',
+          'name': '主力 Opus',
+          'protocol': 'anthropic',
+          'candidates': [
+            {'providerId': 'p1', 'model': 'm1', 'priority': 1},
+            {'providerId': 'p2', 'model': 'm2', 'priority': 2},
+          ],
+        },
+      ];
+      expect(runtime.routeLabel, 'Auto · 主力 Opus · m1');
+      // lastRuntime 带来的池子（新任务的默认起点）同样认得出。
+      final last = AirTaskRuntime.fromLast({
+        'cli': 'claude',
+        'provider': 'p1',
+        'model': 'm1',
+        'providerSelection': selection.toJson(),
+      });
+      expect(last?.routeLabel, 'Auto · 主力 Opus · m1');
     });
 
     test('什么都没选就说默认，不把空字符串当成一个选择', () {
