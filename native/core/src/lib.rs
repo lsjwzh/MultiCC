@@ -3,6 +3,7 @@ pub mod auto_provider_policy;
 pub mod classify_vocab;
 pub mod cli_capability;
 pub mod cli_switch;
+pub mod cli_switch_route;
 pub mod dotenv;
 pub mod events;
 pub mod http_gate;

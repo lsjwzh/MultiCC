@@ -140,6 +140,8 @@ function createCliSwitchRuntime(options) {
   const clock = options.clock || Date.now;
   const handoffIdFactory = options.handoffIdFactory
     || (() => `handoff_${crypto.randomBytes(8).toString('hex')}`);
+  const prepareRoute = options.prepareCliSwitchRoute || require('./switch-preparation').prepareCliSwitchRoute;
+  const preparations = new Map();
   // specs/spawn 可由测试注入; 缺省用本文件常量与 lazy require 的 spawn。
   const installSpecs = options.installSpecs || OFFICIAL_INSTALL_SPECS;
   const refreshCliEnvironment = options.refreshCliEnvironment || require('../windows-env').refresh;
@@ -900,6 +902,25 @@ function createCliSwitchRuntime(options) {
     chat._sawApiError = false;
   }
 
+  // All switch entries consume one prepared Rust proof. No caller may attempt
+  // route migration before this asynchronous boundary or re-probe afterwards.
+  async function prepareSwitch(session, targetCli, switchOptions = {}) {
+    const target = JSON.parse(JSON.stringify(session));
+    options.activateCliState(target, targetCli, { fresh: switchOptions.fresh === true,
+      defaults: cliSwitchDefaults(targetCli) });
+    const prepared = await prepareRoute({ cli: targetCli, logicalSessionId: session.id,
+      fresh: switchOptions.fresh === true, nativeSessionId: target.cliSessionId || null,
+      fromProviderId: target.provider || null,
+      toProviderId: switchOptions.provider !== undefined ? switchOptions.provider : target.provider || null });
+    if (!prepared.probeHandled) {
+      try {
+        prepared.nativeSessionExists = (options.nativeSessionExists || nativeSessionExists)(targetCli,
+          target.cliStates[targetCli]);
+      } catch (_) { prepared.nativeSessionExists = null; }
+    }
+    return prepared;
+  }
+
   function performCliSwitch(session, targetCli, switchOptions = {}) {
     const fromCli = session.cli || 'claude';
     const now = clock();
@@ -914,7 +935,7 @@ function createCliSwitchRuntime(options) {
     const result = options.activateCliState(session, targetCli, {
       fresh: switchOptions.fresh === true,
       defaults: cliSwitchDefaults(targetCli),
-      nativeSessionExists: options.nativeSessionExists || nativeSessionExists,
+      nativeSessionExists: () => switchOptions.prepared.nativeSessionExists,
       now,
     });
     followSubagentDefault(session);
@@ -1046,11 +1067,18 @@ function createCliSwitchRuntime(options) {
   // user's explicit choice), then an Auto Provider pool that spans CLI lanes
   // may move the session to another lane for this turn.
   function applyTurnConfiguration(sessionId, turnOptions = {}, text = '') {
-    if (applyPendingConfiguration(sessionId, turnOptions) === false) return false;
-    try { autoSwitchCli(sessionId, turnOptions, text); } catch (error) {
-      console.warn('[cli-switch] auto provider lane switch failed:', error && error.message);
-    }
-    return true;
+    if (preparations.has(sessionId)) return Promise.resolve(false);
+    const operation = (async () => {
+      if (await applyPendingConfiguration(sessionId, turnOptions) === false) return false;
+      try { await autoSwitchCli(sessionId, turnOptions, text); } catch (error) {
+        console.warn('[cli-switch] auto provider lane switch failed:', error && error.message);
+      }
+      return true;
+    })();
+    preparations.set(sessionId, operation);
+    const clear = () => { if (preparations.get(sessionId) === operation) preparations.delete(sessionId); };
+    operation.then(clear, clear);
+    return operation;
   }
 
   // The lane switch reuses the manual switch path whole — checkpoint, per-lane
@@ -1058,7 +1086,7 @@ function createCliSwitchRuntime(options) {
   // switch is exactly as recoverable as one made from the menu. The pool itself
   // travels with the session: the target lane's own saved selection is replaced
   // by it, and the planned line becomes the lane's concrete provider.
-  function autoSwitchCli(sessionId, turnOptions, text) {
+  async function autoSwitchCli(sessionId, turnOptions, text) {
     const session = records.get(sessionId);
     const pool = session && session.providerSelection;
     if (typeof options.planAutoCliSwitch !== 'function' || pool?.mode !== 'auto' || !pool.cliSwitch) return;
@@ -1067,19 +1095,12 @@ function createCliSwitchRuntime(options) {
     const plan = options.planAutoCliSwitch({ session, text, turnOptions });
     const fromCli = session.cli || 'claude';
     if (!plan || !plan.cli || plan.cli === fromCli || !availability[plan.cli]?.available) return;
-    // Same order as a staged switch: move a resumable Codex thread to the new
-    // route before the session record says it lives there.
-    const target = JSON.parse(JSON.stringify(session));
-    options.activateCliState(target, plan.cli, { defaults: cliSwitchDefaults(plan.cli) });
-    if ((plan.cli === 'codex' || plan.cli === 'codex-exp') && target.cliSessionId
-        && target.provider !== plan.providerId) {
-      options.synchronizeCodexSessionRoute({ logicalSessionId: session.id,
-        nativeSessionId: target.cliSessionId, fromProviderId: target.provider || null,
-        toProviderId: plan.providerId });
-    }
+    const signature = JSON.stringify(session);
+    const prepared = await prepareSwitch(session, plan.cli, { provider: plan.providerId });
+    if (records.get(sessionId) !== session || JSON.stringify(session) !== signature || isConfigurationBusy(sessionId)) return;
     let switched;
     sessionPersistence.mutate('runtime.auto-provider-cli-switch', () => {
-      switched = performCliSwitch(session, plan.cli, { deferEffects: true });
+      switched = performCliSwitch(session, plan.cli, { deferEffects: true, prepared });
       session.providerSelection = pool;
       // A vendor-native line (Command Code) has no provider record to bind: the
       // lane stays provider-less and the pool carries the line per turn.
@@ -1095,7 +1116,7 @@ function createCliSwitchRuntime(options) {
     });
   }
 
-  function applyPendingConfiguration(sessionId, turnOptions = {}) {
+  async function applyPendingConfiguration(sessionId, turnOptions = {}) {
     const session = records.get(sessionId), pending = session?.pendingConfiguration;
     if (!pending) return true;
     // A retry/background continuation belongs to the original turn and route.
@@ -1109,21 +1130,19 @@ function createCliSwitchRuntime(options) {
         && isChatStateBusy(chat));
     }
     if (!options.cliAvailabilitySummary()[pending.cli]?.available) return false;
-    const target = JSON.parse(JSON.stringify(session));
-    if (pending.cli !== (session.cli || 'claude') || pending.fresh) {
-      options.activateCliState(target, pending.cli, { fresh: pending.fresh, defaults: cliSwitchDefaults(pending.cli) });
-    }
-    if ((target.cli === 'codex' || target.cli === 'codex-exp') && target.cliSessionId && target.provider !== pending.profile.provider) {
-      options.synchronizeCodexSessionRoute({ logicalSessionId: session.id,
-        nativeSessionId: target.cliSessionId, fromProviderId: target.provider,
-        toProviderId: pending.profile.provider });
-    }
+    const signature = JSON.stringify(session);
+    const prepared = await prepareSwitch(session, pending.cli, { fresh: pending.fresh, provider: pending.profile.provider });
+    if (records.get(sessionId) !== session || JSON.stringify(session) !== signature || isConfigurationBusy(sessionId)) return false;
     let switched;
     sessionPersistence.mutate('runtime.apply-pending-configuration', () => {
       const previousSelectionKey = selectionKey(session.providerSelection);
       if (pending.cli !== (session.cli || 'claude') || pending.fresh) {
         // Build the handoff now, so it contains the final output of the old CLI.
-        switched = performCliSwitch(session, pending.cli, { fresh: pending.fresh, deferEffects: true });
+        switched = performCliSwitch(session, pending.cli, { fresh: pending.fresh, deferEffects: true, prepared });
+      } else if (prepared.nativeSessionExists === false) {
+        // Same-lane provider edits use the same Rust history verdict. Retain
+        // the normal visible checkpoint when the old thread has disappeared.
+        switched = performCliSwitch(session, pending.cli, { deferEffects: true, prepared });
       }
       Object.assign(session, pending.profile);
       if (previousSelectionKey !== selectionKey(session.providerSelection)) delete session.autoProviderLastRoute;
@@ -1171,7 +1190,7 @@ function createCliSwitchRuntime(options) {
       if (!availability[targetCli]?.available) {
         return res.status(400).json({ error: `${targetCli} CLI is not installed or not executable` });
       }
-      if (session.pendingConfiguration || isConfigurationBusy(session.id)) {
+      if (session.pendingConfiguration || preparations.has(session.id) || isConfigurationBusy(session.id)) {
         return res.json(queueCliSwitch(session, targetCli, fresh));
       }
       const gitSnapshot = await cliSwitchGitSnapshot(session);
@@ -1179,11 +1198,18 @@ function createCliSwitchRuntime(options) {
       if (session.pendingConfiguration || isConfigurationBusy(session.id)) {
         return res.json(queueCliSwitch(session, targetCli, fresh));
       }
-      const activity = { busy: false };
+      if (preparations.has(session.id)) return res.json(queueCliSwitch(session, targetCli, fresh));
+      const signature = JSON.stringify(session);
+      const preparation = prepareSwitch(session, targetCli, { fresh });
+      preparations.set(session.id, preparation);
+      let prepared;
+      try { prepared = await preparation; }
+      finally { if (preparations.get(session.id) === preparation) preparations.delete(session.id); }
+      if (records.get(session.id) !== session || JSON.stringify(session) !== signature || isConfigurationBusy(session.id)) {
+        return res.status(409).json({ error: 'Session changed during CLI switch preparation; retry the switch.', code: 'cli_switch_changed' });
+      }
       const switched = sessionPersistence.mutate('http.switch-cli', () =>
-        performCliSwitch(session, targetCli, {
-          fresh, gitSnapshot, forced: activity.busy,
-        }));
+        performCliSwitch(session, targetCli, { fresh, gitSnapshot, prepared }));
       return res.json({
         ok: true,
         changed: true,
@@ -1192,7 +1218,7 @@ function createCliSwitchRuntime(options) {
         handoffId: switched.handoff.id,
         reusedTarget: switched.result.reused,
         fresh,
-        forced: activity.busy,
+        forced: false,
         cliStates: options.cliStateSummary(session),
         cliAvailability: availability,
         effectiveModel: options.effectiveSessionModel(session),

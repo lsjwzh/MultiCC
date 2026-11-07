@@ -1033,91 +1033,99 @@ function createChatTurnEngine(deps) {
     }
     const delivery = opts.clientMsgId || opts.deliveryId;
     const replay = delivery && getChatHistoryService().hasPersistedDelivery(sessionName, delivery);
-    if (!replay && deps.applyPendingConfiguration?.(sessionName, opts, text) === false) return { blocked: true };
-    const experimentalRuntime = getExperimentalTuiChatRuntime?.();
-    if (experimentalRuntime?.owns(persisted)) {
-      return { delegated: experimentalRuntime.admit(sessionName, text, opts) };
+    const configuration = !replay && deps.applyPendingConfiguration?.(sessionName, opts, text);
+    if (configuration && typeof configuration.then === 'function') {
+      return configuration.then(allowed => allowed === false ? { blocked: true } : finishConfiguration());
     }
-    // Normalize once at the host boundary. Native CLI session ids and provider
-    // credentials stay outside the pure request; only proof of native history is
-    // admitted. Reuse the history read when a WS state has not been materialized.
-    const existingCs = chatSessions.get(sessionName);
-    let initialHistory = null;
-    const turnCount = existingCs
-      ? existingCs.chatTurnCount
-      : (initialHistory = loadChatHistory(sessionName)).filter(message => message.role === 'assistant').length;
-    const turnCli = (existingCs && existingCs.cli) || persisted.cli || 'claude';
-    if (['codex', 'codex-exp'].includes(turnCli) && persisted.cliSessionId) {
-      const result = enforceCodexRolloutForTurn({ guard: codexRolloutGuard, persisted, sessionName,
-        logger, rememberActiveCliState, savePersistedSessionsBestEffort, chatBroadcast, appendEvent });
-      if (result.action === 'blocked') return { blocked: true, code: result.code };
-    }
-    // Same archive-don't-delete size guard for the other resume-capable lanes
-    // (zcode/kimi/codebuddy/qoder/dsh) — see ./native-session-guard.js.
-    if (nativeSessionGuard.handles(turnCli) && persisted.cliSessionId) {
-      const nativeResult = nativeSessionGuard.enforce(persisted);
-      if (nativeResult.action === 'archived') {
-        persisted.cliSessionId = null;
-        persisted._streamSessionId = null;
-        savePersistedSessionsBestEffort();
-        logger.warn('native_session_archived', { sessionId: sessionName, cli: turnCli,
-          archivedCliSessionId: nativeResult.cliSessionId, maxBytes: nativeResult.maxBytes,
-          archived: nativeResult.archived.map(item => ({ file: item.file, sizeBytes: item.sizeBytes, archivedTo: item.archivedTo })) });
-        appendEvent(persisted.dirId, 'native_session_archived',
-          `${turnCli} 原生会话历史超过 ${Math.round(nativeResult.maxBytes / 1048576)}MB 已归档，本轮将重建上下文`, sessionName);
-        chatBroadcast(sessionName, { type: 'system', subtype: 'rollout_archived',
-          message: `${turnCli} 原生会话历史过大（>${Math.round(nativeResult.maxBytes / 1048576)}MB），已归档并重建上下文；旧历史文件保留在归档目录，未删除。` });
+    if (configuration === false) return { blocked: true };
+    return finishConfiguration();
+    function finishConfiguration() {
+      getWorkspaceAdmission?.()?.assertPermit(sessionName, opts);
+      const experimentalRuntime = getExperimentalTuiChatRuntime?.();
+      if (experimentalRuntime?.owns(persisted)) {
+        return { delegated: experimentalRuntime.admit(sessionName, text, opts) };
       }
-    }
-    // OpenCode water-level guard: rotate to a fresh native session with a
-    // bounded handoff checkpoint, preserving full page history. Clearing the
-    // native id prevents both ACP and legacy JSON from resuming old history.
-    if (turnCli === 'opencode' && (persisted._streamSessionId || persisted.cliSessionId)) {
-      return enforceOpencodeContextForTurn({ guard: opencodeContextGuard, persisted, sessionName,
-        history: () => initialHistory || loadChatHistory(sessionName), rememberActiveCliState,
-        savePersistedSessionsBestEffort, logger, appendEvent, chatBroadcast,
-        assertCurrent: () => getWorkspaceAdmission?.()?.assertPermit(sessionName, opts) }).then(finishAdmission);
-    }
-    return finishAdmission();
-    function finishAdmission() {
-      // Preserve legacy Claude admission without mutating duplicate deliveries;
-      // Exp and existing chat states require persisted native-history proof.
-      const willAllocateClaudeNativeSession = !existingCs && turnCli === 'claude' && !persisted.cliSessionId;
-      const inheritedLineage = opts.originContinue === true
-        && existingCs && existingCs._continuationLineage
-        ? existingCs._continuationLineage.lineage
-        : null;
-      let turnRequest;
-      try {
-        turnRequest = normalizeTurnRequest({
-          sessionId: sessionName,
-          text,
-          cli: turnCli,
-          turnCount,
-          hasNativeSession: hasNativeHistory(persisted) || willAllocateClaudeNativeSession,
-          requestId: opts.requestId,
-          clientMsgId: opts.clientMsgId,
-          deliveryId: opts.deliveryId,
-          originDispatchId: opts.originDispatchId
-            || (inheritedLineage && inheritedLineage.kind === 'dispatch' ? inheritedLineage.operationId : null),
-          originTrigger: opts.originTrigger === true
-            || !!(!opts.originDispatchId && inheritedLineage && inheritedLineage.kind === 'trigger'),
-          originContinue: opts.originContinue,
-          goalLimits: opts.goalLimits,
-          bgTaskIds: opts.bgTaskIds,
-          bgToolUseIds: opts.bgToolUseIds,
-          ...taskContextHost.turnOptions(opts),
-        });
-      } catch (error) {
-        const code = error instanceof TurnRequestError ? error.code : 'invalid_request';
-        logger.warn('chat_turn_rejected_invalid_request', {
-          sessionId: sessionName,
-          code,
-          message: error?.message || null,
-        });
-        return { blocked: true };
+      // Normalize once at the host boundary. Native CLI session ids and provider
+      // credentials stay outside the pure request; only proof of native history is
+      // admitted. Reuse the history read when a WS state has not been materialized.
+      const existingCs = chatSessions.get(sessionName);
+      let initialHistory = null;
+      const turnCount = existingCs
+        ? existingCs.chatTurnCount
+        : (initialHistory = loadChatHistory(sessionName)).filter(message => message.role === 'assistant').length;
+      const turnCli = (existingCs && existingCs.cli) || persisted.cli || 'claude';
+      if (['codex', 'codex-exp'].includes(turnCli) && persisted.cliSessionId) {
+        const result = enforceCodexRolloutForTurn({ guard: codexRolloutGuard, persisted, sessionName,
+          logger, rememberActiveCliState, savePersistedSessionsBestEffort, chatBroadcast, appendEvent });
+        if (result.action === 'blocked') return { blocked: true, code: result.code };
       }
-      return { persisted, existingCs, initialHistory, turnRequest };
+      // Same archive-don't-delete size guard for the other resume-capable lanes
+      // (zcode/kimi/codebuddy/qoder/dsh) — see ./native-session-guard.js.
+      if (nativeSessionGuard.handles(turnCli) && persisted.cliSessionId) {
+        const nativeResult = nativeSessionGuard.enforce(persisted);
+        if (nativeResult.action === 'archived') {
+          persisted.cliSessionId = null;
+          persisted._streamSessionId = null;
+          savePersistedSessionsBestEffort();
+          logger.warn('native_session_archived', { sessionId: sessionName, cli: turnCli,
+            archivedCliSessionId: nativeResult.cliSessionId, maxBytes: nativeResult.maxBytes,
+            archived: nativeResult.archived.map(item => ({ file: item.file, sizeBytes: item.sizeBytes, archivedTo: item.archivedTo })) });
+          appendEvent(persisted.dirId, 'native_session_archived',
+            `${turnCli} 原生会话历史超过 ${Math.round(nativeResult.maxBytes / 1048576)}MB 已归档，本轮将重建上下文`, sessionName);
+          chatBroadcast(sessionName, { type: 'system', subtype: 'rollout_archived',
+            message: `${turnCli} 原生会话历史过大（>${Math.round(nativeResult.maxBytes / 1048576)}MB），已归档并重建上下文；旧历史文件保留在归档目录，未删除。` });
+        }
+      }
+      // OpenCode water-level guard: rotate to a fresh native session with a
+      // bounded handoff checkpoint, preserving full page history. Clearing the
+      // native id prevents both ACP and legacy JSON from resuming old history.
+      if (turnCli === 'opencode' && (persisted._streamSessionId || persisted.cliSessionId)) {
+        return enforceOpencodeContextForTurn({ guard: opencodeContextGuard, persisted, sessionName,
+          history: () => initialHistory || loadChatHistory(sessionName), rememberActiveCliState,
+          savePersistedSessionsBestEffort, logger, appendEvent, chatBroadcast,
+          assertCurrent: () => getWorkspaceAdmission?.()?.assertPermit(sessionName, opts) }).then(finishAdmission);
+      }
+      return finishAdmission();
+      function finishAdmission() {
+        // Preserve legacy Claude admission without mutating duplicate deliveries;
+        // Exp and existing chat states require persisted native-history proof.
+        const willAllocateClaudeNativeSession = !existingCs && turnCli === 'claude' && !persisted.cliSessionId;
+        const inheritedLineage = opts.originContinue === true
+          && existingCs && existingCs._continuationLineage
+          ? existingCs._continuationLineage.lineage
+          : null;
+        let turnRequest;
+        try {
+          turnRequest = normalizeTurnRequest({
+            sessionId: sessionName,
+            text,
+            cli: turnCli,
+            turnCount,
+            hasNativeSession: hasNativeHistory(persisted) || willAllocateClaudeNativeSession,
+            requestId: opts.requestId,
+            clientMsgId: opts.clientMsgId,
+            deliveryId: opts.deliveryId,
+            originDispatchId: opts.originDispatchId
+              || (inheritedLineage && inheritedLineage.kind === 'dispatch' ? inheritedLineage.operationId : null),
+            originTrigger: opts.originTrigger === true
+              || !!(!opts.originDispatchId && inheritedLineage && inheritedLineage.kind === 'trigger'),
+            originContinue: opts.originContinue,
+            goalLimits: opts.goalLimits,
+            bgTaskIds: opts.bgTaskIds,
+            bgToolUseIds: opts.bgToolUseIds,
+            ...taskContextHost.turnOptions(opts),
+          });
+        } catch (error) {
+          const code = error instanceof TurnRequestError ? error.code : 'invalid_request';
+          logger.warn('chat_turn_rejected_invalid_request', {
+            sessionId: sessionName,
+            code,
+            message: error?.message || null,
+          });
+          return { blocked: true };
+        }
+        return { persisted, existingCs, initialHistory, turnRequest };
+      }
     }
   }
 

@@ -60,7 +60,12 @@ function createHarness(overrides = {}) {
     getProviders: overrides.getProviders,
     codexDefaultReasoningLevel: () => 'xhigh',
     getHistory: overrides.getHistory || (id => [{ role: 'user', content: `history:${id}`, ts: 90 }]),
-    synchronizeCodexSessionRoute: route => effects.push(`sync:${route.nativeSessionId}`),
+    prepareCliSwitchRoute: overrides.prepareCliSwitchRoute || (async input => {
+      if (input.nativeSessionId) effects.push(`prepare:${input.nativeSessionId}`);
+      return { probeHandled: true, nativeSessionExists: input.fresh ? null
+        : (overrides.nativeSessionExists || (() => null))(input.cli, { cliSessionId: input.nativeSessionId }),
+        synchronized: false };
+    }),
     buildHandoffCheckpoint,
     activateCliState,
     // Fake native ids in these fixtures must never be judged against the real
@@ -308,7 +313,7 @@ test('background work saves a switch without closing its owner', async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.deferred, true);
   assert.equal(harness.session.cli, 'claude');
-  assert.equal(harness.runtime.applyPendingConfiguration('s1'), false);
+  assert.equal(await harness.runtime.applyPendingConfiguration('s1'), false);
   assert.equal(harness.effects.includes('stream-close:s1'), false);
   assert.equal(harness.effects.some(effect => effect.startsWith('message:')), false);
 });
@@ -321,15 +326,15 @@ test('saved switch survives serialization, preserves retries and uses final hist
   const restored = JSON.parse(JSON.stringify(harness.session));
   assert.equal(restored.pendingConfiguration.cli, 'codex');
   harness.chat.isStreaming = false;
-  assert.equal(harness.runtime.applyPendingConfiguration('s1', { originContinue: true }), true);
+  assert.equal(await harness.runtime.applyPendingConfiguration('s1', { originContinue: true }), true);
   assert.equal(harness.session.cli, 'claude');
   history.push({ role: 'assistant', content: 'final old-CLI result', ts: 99 });
-  assert.equal(harness.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(await harness.runtime.applyPendingConfiguration('s1'), true);
   assert.equal(harness.session.cli, 'codex');
   assert.equal(harness.session.pendingConfiguration, undefined);
   assert.match(JSON.stringify(harness.session.pendingCliHandoff), /final old-CLI result/);
   const count = harness.effects.filter(e => e.startsWith('message:')).length;
-  assert.equal(harness.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(await harness.runtime.applyPendingConfiguration('s1'), true);
   assert.equal(harness.effects.filter(e => e.startsWith('message:')).length, count);
 });
 
@@ -341,7 +346,7 @@ test('latest CLI choice replaces pending choice, including switching back to the
   await h.invoke({ body: { cli: 'claude' } });
   assert.equal(h.session.pendingConfiguration.cli, 'claude');
   h.chat.isStreaming = false;
-  h.runtime.applyPendingConfiguration('s1');
+  await h.runtime.applyPendingConfiguration('s1');
   assert.equal(h.session.cliSessionId, 'claude-native');
   assert.equal(h.effects.some(e => e.startsWith('message:')), false);
 });
@@ -454,7 +459,7 @@ test('a deferred lane switch stages the destination family default for the next 
   assert.equal(res.body.deferred, true);
   assert.deepEqual(h.session.pendingConfiguration.profile.subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
   h.chat.isStreaming = false;
-  assert.equal(h.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
   assert.equal(h.session.cli, 'claude-exp');
   assert.deepEqual(h.session.subagent, { providerId: 'p-ds', model: 'opus', inherited: true });
 });
@@ -894,10 +899,10 @@ test('applying a pending switch publishes nothing when persistence fails and rem
   const h = createHarness({ session, records, sessionPersistence: persistence });
   h.chat.isStreaming = true; await h.invoke({ body: { cli: 'codex' } });
   h.chat.isStreaming = false; h.effects.length = 0; fail = true;
-  assert.throws(() => h.runtime.applyPendingConfiguration('s1'), /could not be persisted/);
+  await assert.rejects(() => h.runtime.applyPendingConfiguration('s1'), /could not be persisted/);
   assert.equal(records.get('s1').cli, 'claude'); assert.ok(records.get('s1').pendingConfiguration);
   assert.equal(h.effects.some(e => /close|message:|chat:|workspace:/.test(e)), false);
-  fail = false; assert.equal(h.runtime.applyPendingConfiguration('s1'), true);
+  fail = false; assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
   assert.equal(records.get('s1').cli, 'codex'); persistence.stop();
 });
 
@@ -906,15 +911,15 @@ test('a pending profile applies once at an idle boundary; live steering retains 
   const h = createHarness();
   stageConfiguration(h.session, { ...h.session, model: 'next-model', provider: 'next-provider' });
   h.chat.isStreaming = true;
-  assert.equal(h.runtime.applyPendingConfiguration('s1', { originContinue: true, directUserInput: true }), true);
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', { originContinue: true, directUserInput: true }), true);
   assert.equal(h.session.model, 'claude-model'); assert.equal(h.effects.includes('stream-close:s1'), false);
-  h.chat.isStreaming = false; h.runtime.applyPendingConfiguration('s1');
+  h.chat.isStreaming = false; await h.runtime.applyPendingConfiguration('s1');
   assert.equal(h.session.provider, 'next-provider'); assert.equal(h.session.model, 'next-model');
   assert.equal(h.session.cliSessionId, 'claude-native'); assert.equal(h.session.pendingConfiguration, undefined);
   assert.equal(h.effects.filter(e => e === 'stream-close:s1').length, 1);
 });
 
-test('待生效自动池只在实际变更时清理线路，保存相同配置保留线路', () => {
+test('待生效自动池只在实际变更时清理线路，保存相同配置保留线路', async () => {
   const { stageConfiguration } = require('../src/session/pending-configuration');
   for (const change of ['same', 'pool', 'manual']) {
     const h = createHarness();
@@ -928,14 +933,14 @@ test('待生效自动池只在实际变更时清理线路，保存相同配置�
     if (change === 'manual') draft.providerSelection = null;
     stageConfiguration(h.session, draft);
     assert.equal(h.session.autoProviderLastRoute, route);
-    assert.equal(h.runtime.applyPendingConfiguration('s1', { originContinue: true }), true);
+    assert.equal(await h.runtime.applyPendingConfiguration('s1', { originContinue: true }), true);
     assert.equal(h.session.autoProviderLastRoute, route);
-    assert.equal(h.runtime.applyPendingConfiguration('s1'), true);
+    assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
     assert.equal(h.session.autoProviderLastRoute, change === 'same' ? route : undefined);
   }
 });
 
-test('待生效配置持久化失败会恢复自动池当前线路', () => {
+test('待生效配置持久化失败会恢复自动池当前线路', async () => {
   const { stageConfiguration } = require('../src/session/pending-configuration');
   const { createSessionPersistence } = require('../src/session/persistence');
   const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat',
@@ -949,12 +954,12 @@ test('待生效配置持久化失败会恢复自动池当前线路', () => {
   } });
   const h = createHarness({ session, records, sessionPersistence: persistence });
   stageConfiguration(session, { ...session, providerSelection: null });
-  assert.throws(() => h.runtime.applyPendingConfiguration('s1'), /could not be persisted/);
+  await assert.rejects(() => h.runtime.applyPendingConfiguration('s1'), /could not be persisted/);
   assert.equal(records.get('s1').autoProviderLastRoute.providerId, 'relay-b');
   assert.equal(records.get('s1').providerSelection.mode, 'auto');
   assert.ok(records.get('s1').pendingConfiguration);
   fail = false;
-  assert.equal(h.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
   assert.equal(records.get('s1').autoProviderLastRoute, undefined);
   persistence.stop();
 });
@@ -975,7 +980,7 @@ function autoPool(extra = {}) {
   };
 }
 
-test('an auto pool with cliSwitch moves the session to the planned lane and keeps the pool', () => {
+test('an auto pool with cliSwitch moves the session to the planned lane and keeps the pool', async () => {
   const plans = [];
   const h = createHarness({
     planAutoCliSwitch: (args) => {
@@ -985,7 +990,7 @@ test('an auto pool with cliSwitch moves the session to the planned lane and keep
   });
   const pool = autoPool();
   h.session.providerSelection = pool;
-  assert.equal(h.runtime.applyPendingConfiguration('s1', { clientMsgId: 'm1' }, 'hard question'), true);
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', { clientMsgId: 'm1' }, 'hard question'), true);
   assert.equal(plans.length, 1);
   assert.equal(plans[0].text, 'hard question');
   assert.equal(h.session.cli, 'codex');
@@ -999,23 +1004,23 @@ test('an auto pool with cliSwitch moves the session to the planned lane and keep
   assert.ok(h.effects.includes('message:handoff_fixed'));
   assert.ok(h.effects.includes('chat:cli_switched'));
   assert.ok(h.effects.includes('chat:system'));
-  assert.equal(h.effects.some(e => e.startsWith('sync:')), false, 'a fresh Codex lane has no thread to move');
+  assert.equal(h.effects.some(e => e.startsWith('prepare:')), false, 'a fresh Codex lane has no thread to move');
 });
 
-test('a resumable Codex thread is moved to the planned line before the switch', () => {
+test('a resumable Codex thread is moved to the planned line before the switch', async () => {
   const h = createHarness({
     planAutoCliSwitch: () => ({ cli: 'codex', providerId: 'codex-line', providerName: 'Codex Line' }),
   });
   h.session.cliStates.codex = { ...(h.session.cliStates.codex || {}), cliSessionId: 'codex-native', provider: 'codex-default' };
   h.session.providerSelection = autoPool();
-  h.runtime.applyPendingConfiguration('s1', {}, 'x');
+  await h.runtime.applyPendingConfiguration('s1', {}, 'x');
   assert.equal(h.session.cliSessionId, 'codex-native');
-  const sync = h.effects.indexOf('sync:codex-native');
+  const sync = h.effects.indexOf('prepare:codex-native');
   assert.ok(sync >= 0);
   assert.ok(sync < h.effects.indexOf('mutate:runtime.auto-provider-cli-switch'));
 });
 
-test('a switch to a lane whose native session vanished is not marked as a reused target', () => {
+test('a switch to a lane whose native session vanished is not marked as a reused target', async () => {
   const probed = [];
   const h = createHarness({
     planAutoCliSwitch: () => ({ cli: 'codex', providerId: 'codex-line', providerName: 'Codex Line' }),
@@ -1023,7 +1028,7 @@ test('a switch to a lane whose native session vanished is not marked as a reused
   });
   h.session.cliStates.codex = { ...(h.session.cliStates.codex || {}), cliSessionId: 'codex-gone', provider: 'codex-default' };
   h.session.providerSelection = autoPool();
-  h.runtime.applyPendingConfiguration('s1', {}, 'x');
+  await h.runtime.applyPendingConfiguration('s1', {}, 'x');
   assert.deepEqual(probed, [['codex', 'codex-gone']]);
   assert.equal(h.session.cli, 'codex');
   assert.equal(h.session.cliSessionId, null, 'the vanished id is not resumed');
@@ -1032,28 +1037,168 @@ test('a switch to a lane whose native session vanished is not marked as a reused
   assert.equal(h.session.pendingCliHandoff.status, 'pending');
 });
 
-test('the lane switch stays out of the way: staged choices, legacy pools, unavailable lanes, planner faults', () => {
+// These regressions execute the real Rust worker against isolated disk stores.
+// A no-op migration mock hid the original failure before the switch guard ran.
+function nativeRouteHarness(t, extra = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-switch-route-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const native = require('../src/native/runtime').getNative();
+  const h = createHarness({
+    availability: { claude: { available: true }, codex: { available: true }, 'codex-exp': { available: true } },
+    nativeSessionExists: () => { throw new Error('Codex must not use a second host-side history scan'); },
+    prepareCliSwitchRoute: async input => JSON.parse(await native.prepareCliSwitchRoute(JSON.stringify({ ...input, homeDir: home }))),
+    ...extra,
+  });
+  return { h, home };
+}
+
+test('real Rust preparation rebuilds missing Codex threads through manual, deferred and automatic switches', async t => {
+  for (const cli of ['codex', 'codex-exp']) {
+    for (const flow of ['manual', 'deferred', 'auto']) {
+      const { h, home } = nativeRouteHarness(t, {
+        planAutoCliSwitch: flow === 'auto' ? () => ({ cli, providerId: 'chosen-provider' }) : undefined,
+      });
+      h.session.cliStates[cli] = { cliSessionId: 'missing-thread', streamSessionId: 'missing-stream',
+        provider: 'old-provider', model: 'remembered-model' };
+      if (flow === 'manual') {
+        const res = await h.invoke({ body: { cli } });
+        assert.equal(res.statusCode, 200);
+      } else if (flow === 'deferred') {
+        h.chat.isStreaming = true;
+        assert.equal((await h.invoke({ body: { cli } })).body.deferred, true);
+        h.session.pendingConfiguration.profile.provider = 'chosen-provider';
+        h.session.pendingConfiguration.profile.model = 'chosen-model';
+        h.chat.isStreaming = false;
+        assert.equal(await h.runtime.applyPendingConfiguration('s1', { directUserInput: true }), true);
+        assert.equal(h.session.model, 'chosen-model');
+      } else {
+        h.session.providerSelection = autoPool();
+        assert.equal(await h.runtime.applyPendingConfiguration('s1', {}, 'next instruction'), true);
+      }
+      assert.equal(h.session.cli, cli);
+      assert.equal(h.session.cliSessionId, null);
+      assert.equal(h.session._streamSessionId, undefined);
+      assert.equal(h.session.cliStates.claude.cliSessionId, 'claude-native');
+      assert.equal(h.session.pendingCliHandoff.reusedTarget, false);
+      assert.match(JSON.stringify(h.session.pendingCliHandoff.checkpoint), /history:s1/);
+      assert.equal(h.session.pendingConfiguration, undefined);
+      assert.equal(h.session.provider, flow === 'manual' ? 'old-provider' : 'chosen-provider');
+      assert.equal(fs.existsSync(path.join(home, '.multicc')), false, 'absence creates no replacement history on disk');
+    }
+  }
+});
+
+test('real Rust preparation retains and migrates an existing thread before a deferred provider switch', async t => {
+  const { h, home } = nativeRouteHarness(t);
+  const source = path.join(home, '.multicc/codex-homes/old-provider/sessions/2026/11/07/rollout-now-thread-1.jsonl');
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, 'original history');
+  h.session.cliStates.codex = { cliSessionId: 'thread-1', provider: 'old-provider' };
+  h.chat.isStreaming = true;
+  await h.invoke({ body: { cli: 'codex' } });
+  h.session.pendingConfiguration.profile.provider = 'chosen-provider';
+  h.chat.isStreaming = false;
+  assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(h.session.cliSessionId, 'thread-1');
+  assert.equal(h.session.pendingCliHandoff.reusedTarget, true);
+  assert.equal(h.session.provider, 'chosen-provider');
+  const { createCodexSessionHomeRuntime } = require('../src/codex/session-home');
+  const canonical = createCodexSessionHomeRuntime({ sessionHomesDir: path.join(home, '.multicc/codex-session-homes') }).codexSessionHome('s1');
+  assert.equal(fs.readFileSync(path.join(canonical, 'sessions/2026/11/07/rollout-now-thread-1.jsonl'), 'utf8'), 'original history');
+  assert.equal(fs.readFileSync(source, 'utf8'), 'original history');
+});
+
+test('ambiguous Rust history preserves the pending choice and a later retry consumes it once', async t => {
+  const { h, home } = nativeRouteHarness(t);
+  const files = ['.codex', '.multicc/codex-homes/old-provider'].map(root =>
+    path.join(home, root, 'sessions/rollout-now-thread-1.jsonl'));
+  for (const file of files) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'history'); }
+  h.session.cliStates.codex = { cliSessionId: 'thread-1', provider: 'old-provider' };
+  h.chat.isStreaming = true; await h.invoke({ body: { cli: 'codex' } }); h.chat.isStreaming = false;
+  h.effects.length = 0;
+  const pending = JSON.stringify(h.session.pendingConfiguration);
+  await assert.rejects(() => h.runtime.applyPendingConfiguration('s1'), /CODEX_SESSION_ROLLOUT_AMBIGUOUS/);
+  assert.equal(h.session.cli, 'claude');
+  assert.equal(h.session.cliSessionId, 'claude-native');
+  assert.equal(JSON.stringify(h.session.pendingConfiguration), pending);
+  assert.equal(h.effects.some(e => /close|message:|chat:|workspace:/.test(e)), false);
+  fs.unlinkSync(files[1]);
+  assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(h.session.cliSessionId, 'thread-1');
+  assert.equal(h.session.pendingConfiguration, undefined);
+  assert.equal(h.effects.filter(e => e.startsWith('message:')).length, 1);
+});
+
+test('a newer configuration arriving during Rust preparation is retained and concurrent delivery defers', async () => {
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const h = createHarness({ prepareCliSwitchRoute: () => new Promise(resolve => { release = resolve; entered(); }) });
+  h.chat.isStreaming = true; await h.invoke({ body: { cli: 'codex' } }); h.chat.isStreaming = false;
+  const first = h.runtime.applyPendingConfiguration('s1');
+  await started;
+  assert.equal(await h.runtime.applyPendingConfiguration('s1'), false);
+  await h.invoke({ body: { cli: 'opencode' } });
+  release({ probeHandled: true, nativeSessionExists: false });
+  assert.equal(await first, false);
+  assert.equal(h.session.cli, 'claude');
+  assert.equal(h.session.pendingConfiguration.cli, 'opencode');
+  assert.equal(h.effects.some(e => e.startsWith('message:')), false);
+});
+
+test('a same-lane deferred Codex profile rebuilds a missing thread with a visible checkpoint', async t => {
+  const { h } = nativeRouteHarness(t);
+  h.session.cli = 'codex'; h.chat.cli = 'codex';
+  h.session.cliSessionId = 'missing'; h.session.provider = 'old-provider';
+  h.session.pendingConfiguration = { cli: 'codex', fresh: false,
+    profile: { provider: 'chosen-provider', model: 'chosen-model', effort: 'high' } };
+  assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(h.session.cliSessionId, null);
+  assert.equal(h.session.pendingConfiguration, undefined);
+  assert.equal(h.session.model, 'chosen-model');
+  assert.equal(h.session.provider, 'chosen-provider');
+  assert.equal(h.session.pendingCliHandoff.reusedTarget, false);
+  assert.equal(h.effects.filter(e => e.startsWith('message:')).length, 1);
+});
+
+test('a manual switch cannot overwrite a newer choice while Rust preparation is in flight', async () => {
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const h = createHarness({ prepareCliSwitchRoute: () => new Promise(resolve => { release = resolve; entered(); }) });
+  const first = h.invoke({ body: { cli: 'codex' } });
+  await started;
+  const next = await h.invoke({ body: { cli: 'opencode' } });
+  assert.equal(next.body.deferred, true);
+  release({ probeHandled: true, nativeSessionExists: false });
+  const stale = await first;
+  assert.equal(stale.statusCode, 409);
+  assert.equal(stale.body.code, 'cli_switch_changed');
+  assert.equal(h.session.cli, 'claude');
+  assert.equal(h.session.pendingConfiguration.cli, 'opencode');
+  assert.equal(h.effects.some(e => e.startsWith('message:')), false);
+});
+
+test('the lane switch stays out of the way: staged choices, legacy pools, unavailable lanes, planner faults', async () => {
   const base = () => ({ cli: 'codex', providerId: 'codex-line' });
   let h = createHarness({ planAutoCliSwitch: base });
   h.session.providerSelection = autoPool({ cliSwitch: undefined });
-  h.runtime.applyPendingConfiguration('s1', {}, 'x');
+  await h.runtime.applyPendingConfiguration('s1', {}, 'x');
   assert.equal(h.session.cli, 'claude', 'a single-lane pool never leaves its CLI');
 
   h = createHarness({ planAutoCliSwitch: base, availability: { claude: { available: true } } });
   h.session.providerSelection = autoPool();
-  assert.equal(h.runtime.applyPendingConfiguration('s1', {}, 'x'), true);
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', {}, 'x'), true);
   assert.equal(h.session.cli, 'claude', 'an uninstalled target lane is not entered');
 
   h = createHarness({ planAutoCliSwitch: () => { throw new Error('planner down'); } });
   h.session.providerSelection = autoPool();
-  assert.equal(h.runtime.applyPendingConfiguration('s1', {}, 'x'), true, 'a planner fault never blocks the turn');
+  assert.equal(await h.runtime.applyPendingConfiguration('s1', {}, 'x'), true, 'a planner fault never blocks the turn');
   assert.equal(h.session.cli, 'claude');
 
   let called = 0;
   h = createHarness({ planAutoCliSwitch: () => { called += 1; return base(); } });
   h.session.providerSelection = autoPool();
   h.chat.isStreaming = true;
-  h.runtime.applyPendingConfiguration('s1', {}, 'x');
+  await h.runtime.applyPendingConfiguration('s1', {}, 'x');
   assert.equal(called, 0, 'a busy session is not re-planned mid-turn');
   assert.equal(h.session.cli, 'claude');
 });

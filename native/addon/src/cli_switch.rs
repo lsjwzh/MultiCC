@@ -1,6 +1,27 @@
 use multicc_core::cli_switch;
 use napi::Result;
+use napi::{bindgen_prelude::AsyncTask, Env, Task};
 use napi_derive::napi;
+
+pub struct PrepareRoute {
+    input: String,
+}
+
+impl Task for PrepareRoute {
+    type Output = String;
+    type JsValue = String;
+    fn compute(&mut self) -> Result<String> {
+        multicc_core::cli_switch_route::request(&self.input).map_err(napi::Error::from_reason)
+    }
+    fn resolve(&mut self, _: Env, output: String) -> Result<String> {
+        Ok(output)
+    }
+}
+
+#[napi]
+pub fn prepare_cli_switch_route(input: String) -> AsyncTask<PrepareRoute> {
+    AsyncTask::new(PrepareRoute { input })
+}
 
 /// Supported chat CLI list (the JS module freezes it at load).
 #[napi]

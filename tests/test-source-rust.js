@@ -85,6 +85,10 @@ test('addon preflight rejects an exported audit function that cannot write', t =
   };`);
   assert.equal(probeAddon(addon), true, 'the real addon must pass the durable audit probe');
   assert.equal(probeAddon(wrapper), false, 'an exported function alone cannot pass preflight');
+  const stale = write(root, 'stale-switch.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), prepareCliSwitchRoute: undefined
+  };`);
+  assert.equal(probeAddon(stale), false, 'a stale addon cannot boot asynchronous switch preparation');
 });
 
 nativeTest('first source boot builds once; a new process reuses it and source changes select a new addon', t => {
