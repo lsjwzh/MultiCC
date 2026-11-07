@@ -1,5 +1,6 @@
 pub mod auto_provider_config;
 pub mod auto_provider_policy;
+pub mod classify_vocab;
 pub mod cli_capability;
 pub mod machines;
 pub mod opencode_context;

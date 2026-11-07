@@ -86,7 +86,8 @@ function probeAddon(file, node = process.execPath) {
     if(a.protocolVersion?.()!==1 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprCreateExchange!=='function' || typeof a.RustDatabase!=='function'
       || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function'
       || typeof a.windowsToolsDiscover!=='function' || typeof a.cliCatalog!=='function'
-      || ['autoProviderLimitState','autoProviderChooseCandidate','autoProviderFailoverSafety','autoProviderPolicyFacts','providerErrorFacts','autoProviderFacts'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      || ['autoProviderLimitState','autoProviderChooseCandidate','autoProviderFailoverSafety','autoProviderPolicyFacts','providerErrorFacts','autoProviderFacts'].some(key=>typeof a[key]!=='function')
+    || ['classifyVocabCatalog','parseClassifyResult','classifyVocabRequest'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
