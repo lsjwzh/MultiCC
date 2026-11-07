@@ -121,6 +121,7 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.gitCommitEnvironment!=='function' || typeof a.validatePublicationRecords!=='function'
       || typeof a.planTaskContextRead!=='function' || typeof a.selectTaskContextRecords!=='function'
       || typeof a.rankTaskContextCandidates!=='function' || typeof a.RustTaskReadModel!=='function' || a.taskReadModelProtocolVersion?.()!==1) process.exit(1);
+    if(['cliSwitchCatalog','cliSwitchRequest','turnRequestCatalog','turnRequestRequest'].some(key=>typeof a[key]!=='function')) process.exit(1);
     (async()=>{ const model=new a.RustTaskReadModel();
       const run=async command=>JSON.parse((await model.run(JSON.stringify({op:'air',command}))).result);
       await run({op:'open',epoch:'preflight'});
