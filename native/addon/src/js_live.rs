@@ -25,6 +25,15 @@ impl<'env> LiveValue<'env> {
             scope: PhantomData,
         }
     }
+    /// Wrap a handle this module already obtained (array element, property
+    /// value) in the same call's scope.
+    pub fn from_raw(env: sys::napi_env, value: sys::napi_value) -> Self {
+        Self {
+            env,
+            value,
+            scope: PhantomData,
+        }
+    }
     fn with_value(self, value: sys::napi_value) -> Self {
         Self { value, ..self }
     }

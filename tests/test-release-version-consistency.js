@@ -397,15 +397,18 @@ test('core runner covers every selected path and expands declared variants', () 
   // frozen Node rules on in-memory strings only, so it is deterministic.
   // tests/test-api-error-policy-native.js compares the Rust API error policy
   // with the frozen Node module on in-memory values, fixtures and seeded
-  // generators (no clock, port, FS or process), so it is deterministic too:
-  // 386 entries, 322 deterministic, 358 commands.
-  assert.equal(core.length, 386, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 386);
+  // generators (no clock, port, FS or process), so it is deterministic too.
+  // tests/test-provider-semantic-scrub-native.js compares the Rust semantic
+  // scrub and route walk with the frozen Node reference on in-memory events,
+  // fixtures and seeded generators (no clock, port, FS or process) as well:
+  // 387 entries, 323 deterministic, 359 commands.
+  assert.equal(core.length, 387, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 387);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 322);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 323);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 33);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -415,8 +418,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 358,
-    '355 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 359,
+    '356 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

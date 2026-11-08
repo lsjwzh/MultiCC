@@ -38,7 +38,7 @@ fn elements<'a>(value: LiveValue<'a>) -> Result<Vec<(JsString, Option<LiveValue<
         .collect()
 }
 
-fn strings(value: LiveValue<'_>) -> Result<Vec<JsString>> {
+pub(crate) fn strings(value: LiveValue<'_>) -> Result<Vec<JsString>> {
     Ok(elements(value)?.into_iter().map(|(text, _)| text).collect())
 }
 
@@ -49,7 +49,7 @@ thread_local! {
     static LAST_SECRETS: RefCell<Option<(Vec<JsString>, Rc<Secrets>)>> = const { RefCell::new(None) };
 }
 
-fn cached_secrets(values: Vec<JsString>) -> Rc<Secrets> {
+pub(crate) fn cached_secrets(values: Vec<JsString>) -> Rc<Secrets> {
     LAST_SECRETS.with(|cell| {
         let mut last = cell.borrow_mut();
         if let Some((key, secrets)) = last.as_ref() {

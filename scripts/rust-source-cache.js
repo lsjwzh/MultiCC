@@ -163,7 +163,8 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.RustProviderAttemptGenerations.prototype.next!=='function') process.exit(1);
     if(['providerAttributeProxyUsage','providerObserveProxyOutcome','providerProxyFailure',
       'apiSanitizeMessage','apiNormalizeRejection','redactionRedactText','redactionRouteCapability',
-      'redactionSecretKey','redactionAnchors','redactionExactFragments'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      'redactionSecretKey','redactionAnchors','redactionExactFragments',
+      'providerScrubSemanticStructure','redactionRouteCapabilityValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustExactSecretStreamRedactor!=='function'
       || ['push','setSecrets','flush','discard','pendingLength'].some(key=>typeof a.RustExactSecretStreamRedactor.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustCurrentAttempts!=='function'

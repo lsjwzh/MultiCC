@@ -5,7 +5,7 @@ const { getNative } = require('./native/runtime');
 
 // The text rules (secret field names, bearer/query/key=value secrets, provider
 // route capabilities, exact secrets) are native/core/src/redaction.rs and
-// exact_secret.rs; this module walks values and keys.
+// exact_secret.rs; the object walk is native/addon/src/provider_scrub.rs.
 
 // Rust also exports each rule's necessary anchors, so the walk only crosses
 // into native code for a string that could change (most keys and stream text
@@ -56,23 +56,40 @@ function collisionSafeKey(target, requested) {
   return candidate;
 }
 
-function redactProviderRouteCapability(value, seen = new WeakMap()) {
+// Route redaction rewrites each string on its own (`String#replace` per value
+// and per key), so a structure with no route anchor in any string cannot
+// change. Two cases still change without an anchor and must take the native
+// walk: NaN never compares equal, and a cyclic/shared node compares by
+// identity against the copy being built. The scan is iterative with a WeakSet
+// so it terminates, and the anchors themselves still come from Rust.
+function maybeRouteCapability(value) {
+  const stack = [value];
+  const seen = new WeakSet();
+  while (stack.length) {
+    const item = stack.pop();
+    if (typeof item === 'string') {
+      if (redactionAnchors().route.some(anchor => item.includes(anchor))) return true;
+      continue;
+    }
+    if (typeof item === 'number' && Number.isNaN(item)) return true;
+    if (!item || typeof item !== 'object') continue;
+    if (seen.has(item)) return true;
+    seen.add(item);
+    for (const key of Object.keys(item)) {
+      stack.push(key);
+      stack.push(item[key]);
+    }
+  }
+  return false;
+}
+
+function redactProviderRouteCapability(value) {
+  // A string without an anchor cannot change, and most stream text has none:
+  // keep that check in JS so the hot string path never crosses the boundary.
   if (typeof value === 'string') return redactRouteText(value);
   if (!value || typeof value !== 'object') return value;
-  if (seen.has(value)) return seen.get(value);
-  const output = Array.isArray(value) ? [] : {};
-  seen.set(value, output);
-  let changed = false;
-  for (const [key, item] of Object.entries(value)) {
-    const redactedKey = redactRouteText(key);
-    const outputKey = collisionSafeKey(output, redactedKey);
-    const outputValue = redactProviderRouteCapability(item, seen);
-    defineEnumerableValue(output, outputKey, outputValue);
-    if (outputKey !== key || outputValue !== item) changed = true;
-  }
-  if (changed) return output;
-  seen.set(value, value);
-  return value;
+  if (!maybeRouteCapability(value)) return value;
+  return getNative().redactionRouteCapabilityValue(value);
 }
 
 // Redact an exact secret even when one semantic structure distributes it over
@@ -191,5 +208,5 @@ function createObservability(opts = {}) {
 module.exports = {
   createObservability, createLogger, createMetrics,
   createExactSecretStreamRedactor, redactExactSecretFragments,
-  redact, redactProviderRouteCapability, installConsoleRedaction,
+  redact, redactProviderRouteCapability, maybeRouteCapability, installConsoleRedaction,
 };
