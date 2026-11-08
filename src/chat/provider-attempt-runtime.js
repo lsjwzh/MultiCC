@@ -3,7 +3,6 @@
 const crypto = require('node:crypto');
 const { getNative } = require('../native/runtime');
 const { isResident } = require('../cli/cli-capability');
-const { normalizeRejection, sanitizeMessage } = require('./api-error-policy');
 const {
   createExactSecretStreamRedactor, redactExactSecretFragments, redactProviderRouteCapability,
 } = require('../observability');
@@ -329,13 +328,12 @@ function createProviderAttemptRuntime(options = {}) {
   // Live host ports only: Rust owns admission; callbacks retain the current
   // record identity until runner, audit and quota effects move out of Node.
   // Usage attribution and proxy outcomes (provider_outcome.rs) also read the
-  // current record table and a fresh proxyContext per lookup; the error text
-  // sanitizer and rejection normalizer stay with the API error policy.
+  // current record table and a fresh proxyContext per lookup.
   const proxyPort = Object.freeze({
     runtimeEpoch, quotaGuard, resolveTerminalRoute, resolveProviderRevision,
     snapshot, auditOnly, poisonProxyAttempt, now, producerStaleGraceMs,
     proxyProducers, nonMainProxyProducers, ProviderAttemptError,
-    currentBySession, proxyContext, sanitizeMessage, normalizeRejection,
+    currentBySession, proxyContext,
   });
 
   function streamRedactor(record, channel) {

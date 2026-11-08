@@ -393,13 +393,16 @@ test('core runner covers every selected path and expands declared variants', () 
   // 352 + 4 = 356 commands.
   // Quota settings now exercise the real Rust gateway and its Node child.
   // Keep the core set, moving that suite to isolated: 320 deterministic, 33 isolated.
-  assert.equal(core.length, 384, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 384);
+  // tests/test-redaction-native.js compares the Rust text redaction with the
+  // frozen Node rules on in-memory strings only, so it is deterministic:
+  // 385 entries, 321 deterministic, 357 commands.
+  assert.equal(core.length, 385, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 385);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 320);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 321);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 33);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -409,8 +412,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 356,
-    '353 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 357,
+    '354 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

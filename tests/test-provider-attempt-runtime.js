@@ -2433,11 +2433,6 @@ function compareOutcomeTrace(steps, options = {}) {
         return { sessionId: step.noSession ? '' : 'session', token: step.token ?? 'token', encoded: true,
           record: st.present ? record : undefined, exact: step.exact ?? true };
       },
-      sanitizeMessage(value) { trace.push(['sanitize()', value]); return `s:${value}`; },
-      normalizeRejection(value) {
-        trace.push(['normalize()', value === undefined ? 'undefined' : JSON.stringify(value)]);
-        return value && value.kind ? Object.freeze({ kind: String(value.kind) }) : null;
-      },
       ProviderAttemptError,
     });
     const ops = useNative ? {

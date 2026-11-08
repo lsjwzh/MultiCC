@@ -6,9 +6,10 @@
 //! assignment below happens on it in the order the JavaScript did, including
 //! repeated reads, `now()` calls, object key order and freezing. A method is
 //! looked up before its arguments are evaluated, as in a JS call expression.
-//! `sanitizeMessage` and `normalizeRejection` stay host ports until the API
-//! error policy moves.
+//! Error codes are sanitized and 429 rejections normalized by
+//! [`crate::api_error_text`] directly.
 use crate::{
+    api_error_text::{normalize_rejection, sanitize},
     cli_completion::{compatible, completed},
     js_live::LiveValue,
     provider_authorization::background_lingers,
@@ -433,7 +434,8 @@ pub fn provider_observe_proxy_outcome(
     let code = or_else(event.get(c"errorCode")?.clean_text()?, || {
         text(port, "UPSTREAM_HTTP_ERROR")
     })?;
-    entries.push((c"code", port.get(c"sanitizeMessage")?.call_plain(&[code])?));
+    let undefined = port.from_value(&JsValue::Undefined)?;
+    entries.push((c"code", sanitize(code, undefined, undefined)?));
     entries.push((c"requestId", or_null(outcome.optional(c"requestId")?)?));
     entries.push((c"termination", or_null(outcome.optional(c"termination")?)?));
     audit(port, session, entries)?;
@@ -482,8 +484,7 @@ pub fn provider_observe_proxy_outcome(
     };
     // A structured rejection only ever rides a 429 and is untrusted input.
     let rejection = if http_status == Some(429.0) {
-        port.get(c"normalizeRejection")?
-            .call_plain(&[event.get(c"rejection")?])?
+        normalize_rejection(event.get(c"rejection")?)?
     } else {
         null(port)?
     };

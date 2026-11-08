@@ -1,14 +1,46 @@
 'use strict';
 
 const { monitorEventLoopDelay } = require('perf_hooks');
+const { getNative } = require('./native/runtime');
 
-const SECRET_KEY = /(?:token|secret|password|authorization|cookie|api[-_]?key)/i;
-const SECRET_TEXT = /((?:token|secret|password|authorization|cookie|api[-_]?key)["']?\s*[=:]\s*["']?)([^"'\s,;}&]+)/ig;
-const BEARER_TEXT = /(\bBearer\s+)([A-Za-z0-9._~+\/-]+=*)/ig;
-const QUERY_SECRET = /([?&](?:token|access_token|api_key)=)([^&#\s]+)/ig;
-const PROVIDER_ROUTE_CAPABILITY = /pr1\.[A-Za-z0-9_-]{1,344}\.[A-Za-z0-9_-]{1,344}/g;
-const PROVIDER_ROUTE_TOKEN = /proxy-route[-_][A-Za-z0-9_-]{1,344}/g;
+// The text rules (secret field names, bearer/query/key=value secrets, provider
+// route capabilities) are native/core/src/redaction.rs; this module walks
+// values and keys. The marker must equal redaction::PROVIDER_ROUTE_REDACTION
+// (tests/test-redaction-native.js checks it): the exact-secret stream redactor
+// below still writes it itself.
 const PROVIDER_ROUTE_REDACTION = '[REDACTED_PROVIDER_ROUTE]';
+
+// Rust also exports each rule's necessary anchors, so the walk only crosses
+// into native code for a string that could change (most keys and stream text
+// cannot). The text anchors match under ASCII-only case folding, as /i does.
+let anchors = null;
+function redactionAnchors() {
+  if (!anchors) {
+    const { route, text } = getNative().redactionAnchors();
+    const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    anchors = Object.freeze({
+      route: Object.freeze([...route]),
+      text: new RegExp([...route, ...text].map(escape).join('|'), 'i'),
+    });
+  }
+  return anchors;
+}
+
+function redactRouteText(text) {
+  if (!redactionAnchors().route.some(anchor => text.includes(anchor))) return text;
+  return getNative().redactionRouteCapability(text);
+}
+
+function redactText(text) {
+  if (!redactionAnchors().text.test(text)) return text;
+  return getNative().redactionRedactText(text);
+}
+
+// `SECRET_KEY.test(key)` did ToString(key).
+function isSecretKey(key) {
+  const text = typeof key === 'string' ? key : `${key}`;
+  return redactionAnchors().text.test(text) && getNative().redactionSecretKey(text);
+}
 
 function defineEnumerableValue(target, key, value) {
   Object.defineProperty(target, key, {
@@ -28,18 +60,14 @@ function collisionSafeKey(target, requested) {
 }
 
 function redactProviderRouteCapability(value, seen = new WeakMap()) {
-  if (typeof value === 'string') {
-    return value.replace(PROVIDER_ROUTE_CAPABILITY, PROVIDER_ROUTE_REDACTION)
-      .replace(PROVIDER_ROUTE_TOKEN, PROVIDER_ROUTE_REDACTION);
-  }
+  if (typeof value === 'string') return redactRouteText(value);
   if (!value || typeof value !== 'object') return value;
   if (seen.has(value)) return seen.get(value);
   const output = Array.isArray(value) ? [] : {};
   seen.set(value, output);
   let changed = false;
   for (const [key, item] of Object.entries(value)) {
-    const redactedKey = key.replace(PROVIDER_ROUTE_CAPABILITY, PROVIDER_ROUTE_REDACTION)
-      .replace(PROVIDER_ROUTE_TOKEN, PROVIDER_ROUTE_REDACTION);
+    const redactedKey = redactRouteText(key);
     const outputKey = collisionSafeKey(output, redactedKey);
     const outputValue = redactProviderRouteCapability(item, seen);
     defineEnumerableValue(output, outputKey, outputValue);
@@ -171,10 +199,8 @@ function createExactSecretStreamRedactor(initialSecrets = []) {
 }
 
 function redact(value, key = '') {
-  if (SECRET_KEY.test(key)) return '[REDACTED]';
-  if (typeof value === 'string') {
-    return redactProviderRouteCapability(value).replace(BEARER_TEXT, '$1[REDACTED]').replace(QUERY_SECRET, '$1[REDACTED]').replace(SECRET_TEXT, '$1[REDACTED]');
-  }
+  if (isSecretKey(key)) return '[REDACTED]';
+  if (typeof value === 'string') return redactText(value);
   if (Array.isArray(value)) return value.map(v => redact(v));
   if (value && typeof value === 'object') {
     const out = {};

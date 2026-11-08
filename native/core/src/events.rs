@@ -21,6 +21,7 @@
 use crate::classify_vocab::{
     is_abnormal_letter, is_goal_state, is_processing_letter, is_terminal_letter,
 };
+use crate::js::regex::{self as js_regex, ascii_ci, from_unit_view, to_unit_view};
 use crate::js::{coerce, js_trim, json_parse, json_stringify, utf16_prefix, JsString, JsValue};
 use regex::{Captures, Regex};
 use serde_json::{json, Map, Value};
@@ -751,31 +752,10 @@ fn channel_actions(rule: Option<&Value>) -> Value {
 
 // ── envelope ────────────────────────────────────────────────────────────────
 
-// JS `\s` (WhiteSpace + LineTerminator): includes U+FEFF, excludes U+0085.
-const JS_SPACE_CLASS: &str = r"\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}";
-
-/// An ASCII literal under JS `/i` without `u`: letters fold to ASCII only.
-fn ascii_ci(literal: &str) -> String {
-    literal
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphabetic() {
-                format!(
-                    "[{}{}]",
-                    character.to_ascii_lowercase(),
-                    character.to_ascii_uppercase()
-                )
-            } else {
-                regex::escape(&character.to_string())
-            }
-        })
-        .collect()
-}
-
 fn re_secret() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        let ws = JS_SPACE_CLASS;
+        let ws = js_regex::SPACE;
         let keyword = [
             format!("{}[_-]?{}", ascii_ci("api"), ascii_ci("key")),
             ascii_ci("token"),
@@ -792,41 +772,6 @@ fn re_secret() -> &'static Regex {
         );
         Regex::new(&pattern).expect("secret redaction regex")
     })
-}
-
-// Surrogate units map onto plane-15 private-use placeholders so a regex
-// quantifier counts UTF-16 code units, as the old non-`u` JS regex did.
-const UNIT_BASE: u32 = 0xF0000;
-
-fn is_unit_placeholder(character: char) -> bool {
-    (UNIT_BASE..UNIT_BASE + 0x800).contains(&u32::from(character))
-}
-
-fn to_unit_view(text: &JsString) -> String {
-    let mut view = String::with_capacity(text.len());
-    for unit in text.as_units() {
-        match *unit {
-            0xD800..=0xDFFF => view.push(
-                char::from_u32(UNIT_BASE + (u32::from(*unit) - 0xD800))
-                    .expect("plane-15 placeholder"),
-            ),
-            unit => view.push(char::from_u32(u32::from(unit)).expect("bmp character")),
-        }
-    }
-    view
-}
-
-fn from_unit_view(view: &str) -> JsString {
-    let mut units: Vec<u16> = Vec::with_capacity(view.len());
-    let mut buffer = [0_u16; 2];
-    for character in view.chars() {
-        if is_unit_placeholder(character) {
-            units.push((u32::from(character) - UNIT_BASE + 0xD800) as u16);
-        } else {
-            units.extend_from_slice(character.encode_utf16(&mut buffer));
-        }
-    }
-    JsString::from_units(units)
 }
 
 /// `text.split(needle).join(replacement)` over UTF-16 code units.

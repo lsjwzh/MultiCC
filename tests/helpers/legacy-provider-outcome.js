@@ -7,7 +7,8 @@
 function legacyOutcomeOperations(port) {
   const native = require('../../src/native/runtime').getNative();
   const { runtimeEpoch, proxyProducers, nonMainProxyProducers, currentBySession,
-    snapshot, auditOnly, now, proxyContext, sanitizeMessage, normalizeRejection } = port;
+    snapshot, auditOnly, now, proxyContext } = port;
+  const { sanitizeMessage, normalizeRejection } = require('./legacy-api-error-text');
   const clean = value => value == null ? '' : String(value).trim();
   const sameAttempt = (record, reference) => !!(record && reference && record.lifecycle.matches(reference));
   const backgroundLingers = record => native.providerBackgroundLingers(record);

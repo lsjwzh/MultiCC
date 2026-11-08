@@ -18,6 +18,7 @@ pub mod coerce;
 pub mod buffer;
 pub mod json;
 pub mod number;
+pub mod regex;
 pub mod serde;
 pub mod string;
 pub mod tags;

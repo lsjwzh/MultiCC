@@ -198,10 +198,40 @@ including repeated reads, `now()` calls, key order and freezing; a method is
 looked up before its arguments are evaluated. The live bridge gained an object
 spread that follows CopyDataProperties (own keys, then descriptor, then get for
 enumerable keys), so Proxy traps and symbol keys behave as before.
-`sanitizeMessage` and `normalizeRejection` are passed as host ports: they belong
-to the API error policy in `src/chat/api-error-policy.js` and move with it
-(`native/core/src/quota_rejection.rs` normalizes a different contract and is
-not a substitute).
+The error code is sanitized and a 429 rejection normalized by Rust directly
+(next section).
+
+## Text redaction and the rejection contract
+
+`native/core/src/redaction.rs` owns the text rules that were spread over
+`src/observability.js` and `src/chat/api-error-policy.js`: provider route
+capabilities and tokens, bearer tokens, query-string secrets, `key=value`
+secrets, the secret field-name test, and `sanitizeMessage`'s collapsing,
+credential, id, path and account rules. `native/addon/src/api_error_text.rs`
+reproduces how the JS functions took their arguments (`String(value || '')`,
+the defaulted fallback, `slice(0, maxLength)` with JS integer conversion) and
+`normalizeRejection`'s reads, including the second `window` read, the `resetMs`
+rounding and the 80-unit text cap. `native/core/src/quota_rejection.rs`
+normalizes a different contract and was not reused.
+
+The JS regexes have no `u` flag, so `native/core/src/js/regex.rs` (shared with
+`events.rs`) matches through a UTF-16 unit view and spells out JS's `\s`, `\w`,
+`\b` and ASCII-only `/i`; a lone surrogate survives, quantifiers count code
+units, and `ſ` or the Kelvin sign do not fold onto ASCII letters.
+
+`src/observability.js` keeps the object walk and collision-safe keys and calls
+Rust for text. A native call per string made the stream-event scrub about
+3.6 times slower, so Rust also exports each rule's necessary anchors
+(`ROUTE_ANCHORS`, `TEXT_ANCHORS`) and JS skips the call for a string without
+one. A Rust test checks that every change contains an anchor. With the
+prefilter, a typical stream event takes 2.5 µs (2.1 before), a log record
+2.6 µs (3.2), an 8 KB message 0.8 µs (4.4) and an event carrying a capability
+3.7 µs (2.5) on the local release build.
+
+Separate redactors with their own rules remain: `scripts/multicc-turn-hook.js`
+(runs without the addon), `src/doctor/tools.js` and the event envelope in
+`native/core/src/events.rs`. They are not equivalent to these rules and were
+not merged.
 
 ## Verification and remaining ownership
 
@@ -219,7 +249,14 @@ read, spread trap, host call, ordered result keys, freezing and ledger state,
 plus 13 injected exception points, a read-only failure slot and a throwing
 audit port. Five deliberate faults in the Rust code (argument evaluation order,
 result key order, the 599 status boundary, the durable-result check and one
-missing read) each fail the comparison.
+missing read) each fail the comparison. Redaction coverage
+(`tests/test-redaction-native.js`) compares 4,000 generated strings with
+adversarial fragments, 600 nested objects, 3,000 messages plus 1,920
+value/fallback/length combinations and 5,000 rejections (half through a
+tracing Proxy) with the frozen Node code; eight deliberate faults (one
+whitespace unit, Unicode `\b`, Unicode case folding, a single `window` read,
+naive rounding, the default fallback, the text cap and a capability bound)
+and a missing anchor each fail it.
 Additional cases cover lone UTF-16 surrogates,
 read/short-circuit order, exception identity, strict assignment, reentry,
 opaque tool IDs, repeated settlement and host-marker forgery.
@@ -231,7 +268,9 @@ preflight. All 343 Rust core tests, all nine Rust CPR transport tests and all
 `96ba545aa6a979862bf4ba2c`. After the usage/outcome move, source fingerprint
 `81b4781516bff9412dd7ad73` passed all 93 provider-attempt tests and the full
 `npm test` command (6,370 tests: 6,367 passed, 2 skipped because the Electron
-packaging toolchain and PowerShell were unavailable). These are local isolated
+packaging toolchain and PowerShell were unavailable). After the redaction move,
+source fingerprint `1fe24071b9aacdf623173aa6` passed all 348 Rust core tests
+and the full `npm test` (6,375 tests: 6,372 passed, the same 2 skipped). These are local isolated
 checks, not production enablement or acceptance on every supported
 architecture.
 
@@ -240,7 +279,7 @@ The remaining backend is substantial:
 | Ownership still in Node | Current examples | Next boundary to transfer |
 | --- | --- | --- |
 | Attempt records, stream redaction and attempt start/finish/event admission | `src/chat/provider-attempt-runtime.js` | Record ownership (the record object, snapshots, generations and redactors) so the Rust policies stop reading it through the host |
-| API error policy | `src/chat/api-error-policy.js`, `src/chat/api-error-host.js` | Error classification, rejection normalization and message sanitizing; removes the two outcome ports |
+| API error policy | `src/chat/api-error-policy.js`, `src/chat/api-error-host.js` | Error classification, retry/notice text and envelope detection (rejection normalization and message sanitizing have moved) |
 | CLI processes and resident runners | `src/chat/chat-stream.js`, `src/chat/resident-pool.js`, `src/cli-adapters/` | Process/protocol lifecycle, cancellation and recovery; keep SDK-specific ports where needed |
 | History, usage writes and delivery effects | `src/chat/host-coordinator.js`, `src/session/chat-history-service.js`, `src/session/adapters/chat-history-file-repository.js` | Actual writes, append/rewrite receipts and restart recovery |
 | Requests before successful headers and credential/error recovery | `src/providers/rust-cpr.js`, `src/claude-auth/account-credentials.js` | Transfer remaining lifecycle and credential coordination to Rust transport |

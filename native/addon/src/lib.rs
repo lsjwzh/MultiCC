@@ -2,6 +2,7 @@ use multicc_core::{search::SearchIndex, usage};
 use napi::{bindgen_prelude::AsyncTask, Env, Result, Task};
 use napi_derive::napi;
 use std::{sync::Arc, time::Instant};
+pub mod api_error_text;
 pub mod auto_provider_config;
 pub mod auto_provider_policy;
 pub mod classify_vocab;
