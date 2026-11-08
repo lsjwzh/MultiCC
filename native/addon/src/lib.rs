@@ -32,6 +32,7 @@ pub mod provider_authorization;
 pub mod provider_outcome;
 pub mod provider_producers;
 pub mod provider_event_policy;
+pub mod provider_scrub;
 pub mod quota_history;
 pub mod quota_guard;
 pub mod quota_rejection;

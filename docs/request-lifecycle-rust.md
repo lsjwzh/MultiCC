@@ -219,14 +219,19 @@ The JS regexes have no `u` flag, so `native/core/src/js/regex.rs` (shared with
 `\b` and ASCII-only `/i`; a lone surrogate survives, quantifiers count code
 units, and `ſ` or the Kelvin sign do not fold onto ASCII letters.
 
-`src/observability.js` keeps the object walk and collision-safe keys and calls
-Rust for text. A native call per string made the stream-event scrub about
-3.6 times slower, so Rust also exports each rule's necessary anchors
-(`ROUTE_ANCHORS`, `TEXT_ANCHORS`) and JS skips the call for a string without
-one. A Rust test checks that every change contains an anchor. With the
-prefilter, a typical stream event takes 2.5 µs (2.1 before), a log record
-2.6 µs (3.2), an 8 KB message 0.8 µs (4.4) and an event carrying a capability
-3.7 µs (2.5) on the local release build.
+`src/observability.js` keeps only the anchor precheck and delegates the rest.
+Rust exports each text rule's necessary anchors (`ROUTE_ANCHORS`,
+`TEXT_ANCHORS`) and JS skips the native call for a string without one; a
+native call per string made the stream-event scrub about 3.6 times slower. The
+object walk behind `redactProviderRouteCapability` now lives in
+`native/addon/src/provider_scrub.rs` as one native call per structure, and JS
+still proves the common no-op case first: route redaction rewrites each string
+on its own, so a structure with no route anchor anywhere cannot change (NaN,
+shared and cyclic nodes always take the native walk, because they change by
+identity without an anchor). A Rust test checks that every change contains an
+anchor. With the prefilter, a typical stream event takes 2.5 µs (2.1 before), a
+log record 2.6 µs (3.2), an 8 KB message 0.8 µs (4.4) and an event carrying a
+capability 3.7 µs (2.5) on the local release build.
 
 ### Exact secrets
 
@@ -243,9 +248,40 @@ Measured on the local release build: a token-sized stream delta costs 0.34 µs
 (0.12 in JS: the native call itself), a 4 KB delta 2.7 µs (3.3), and a
 four-part fragment call 1.6 µs (0.45). The fragment call keeps the last
 compiled secret list per thread and returns unchanged strings as the caller's
-own values. The semantic structure walk in
-`src/chat/provider-attempt-runtime.js` still calls it three times per event;
-moving that walk into Rust removes the extra crossings.
+own values.
+
+### Semantic structure scrubbing
+
+`native/addon/src/provider_scrub.rs` owns `scrubProviderSemanticStructure`:
+the structured clone, the descriptor collection per provider event type
+(`message.content` blocks for assistant/user, `input` for tool_start/update,
+`content` for tool_result), the three exact-secret passes, the value
+write-back, the key renames and the route-capability walk of the result. One
+provider event now costs one native call, and the event object itself comes
+back when nothing changed. `src/chat/provider-attempt-runtime.js` keeps the
+one-line wrapper and, for event types with no model-controlled parts only, the
+route-anchor precheck above; semantic event types always take the native call
+because a secret can be split across descriptors, so no per-string anchor
+check is a safe precondition.
+
+The addon works on live JS handles rather than the lossless value bridge: the
+result must preserve reference identity (unchanged sub-trees, shared nodes and
+cycles), which a value copy cannot do. It reproduces `Object.entries` order,
+`Array.isArray`, `WeakMap`/`WeakSet` identity, own data properties, strict
+assignment, `Object.getOwnPropertyDescriptor` + delete + defineProperty
+renames (including `#2` collision suffixes and the key-order change), the
+`NaN` "changed" quirk, the fresh `WeakSet` per `collectModelControlled` call
+and the `getOwnPropertyDescriptor` skip when an earlier rename already deleted
+the key. `__proto__` and `constructor` are defined as own data properties, so
+prototypes are never touched; UTF-16 code units keep lone surrogates intact.
+Depth is capped at 1000 with a `RangeError` instead of overflowing the stack.
+On the local release build, an assistant event without secrets takes 23.3 µs
+(15.0 for the old JS walk), a 50 KB tool_result carrying a secret 77.0 µs
+(62.0), and a token-sized stream delta 2.4 µs (6.3) because it is a
+route-only event and the JS precheck proves the no-op. A semantic event cannot
+use a per-string precheck: a capability can be split across descriptors (for
+example `pr` / `1.AAAA.BBBB`), so only the native exact-secret matcher can
+decide.
 
 Separate redactors with their own rules remain: `scripts/multicc-turn-hook.js`
 (runs without the addon), `src/doctor/tools.js` and the event envelope in
@@ -337,6 +373,18 @@ and a missing anchor each fail it. The exact-secret searches are compared on
 6,000 fragment sets and 4,000 stream traces (push, flush, discard, secret
 changes and pending length, with surrogate halves and overlapping secrets);
 six seeded faults each fail it.
+The semantic scrub and the route object walk are compared with the frozen Node
+implementation (`tests/helpers/legacy-provider-semantic-scrub.js`) on fixtures
+and on 3,500 seeded events of every provider event type plus 1,500 route
+structures: values, own-key order, property descriptor flags and per-node
+identity (the event itself and every unchanged sub-tree), with secrets split
+over values and keys, adjacent keys that only the keys-only pass joins,
+colliding keys, shared and cyclic sub-objects, `__proto__`/`constructor`/
+numeric-like keys, Dates, Buffers, NaN and lone surrogates. Five seeded faults
+in the Rust code (dropping the keys-only pass, renaming before the value
+write-back, a wrong collision start, losing the unchanged-event identity and
+skipping the route redaction of keys) each fail it, as does removing the
+own-property check that makes a rename skip a key an earlier rename deleted.
 Additional cases cover lone UTF-16 surrogates,
 read/short-circuit order, exception identity, strict assignment, reentry,
 opaque tool IDs, repeated settlement and host-marker forgery.
@@ -356,9 +404,12 @@ the exact-secret move, source fingerprint `0cbc5a60dd1b5cb02164b44d` passed all
 same 2 skipped). After the API error policy move, source fingerprint
 `4043c4f2bda00a6772da43f3` passed all 361 Rust core tests and the full
 `npm test` (6,393 tests: 6,390 passed, 0 failed, 2 skipped and 1 todo, both
-skips being the unavailable Electron packaging toolchain and PowerShell). These
-are local isolated checks, not production enablement or acceptance on every
-supported architecture.
+skips being the unavailable Electron packaging toolchain and PowerShell). After
+the semantic-structure move, source fingerprint `94799f44776debfdd178aea7`
+passed all 361 Rust core tests and the full `npm test` (6,404 tests: 6,401
+passed, 0 failed, the same 2 skipped and 1 todo). These are local isolated
+checks, not production enablement or acceptance on every supported
+architecture.
 
 The remaining backend is substantial:
 

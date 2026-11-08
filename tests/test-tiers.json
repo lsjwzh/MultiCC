@@ -4460,6 +4460,15 @@
       ]
     },
     {
+      "path": "tests/test-provider-semantic-scrub-native.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
       "path": "tests/test-provider-sharing-two-ip.js",
       "tier": "flow",
       "lane": "isolated",
