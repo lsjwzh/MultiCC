@@ -13,6 +13,7 @@ pub mod chat_turn_effects;
 pub mod cli_capability;
 pub mod cli_completion;
 pub mod cli_switch;
+pub mod claude_lane;
 pub mod cpr;
 pub mod request_timer;
 pub mod events;

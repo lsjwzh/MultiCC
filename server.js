@@ -567,7 +567,7 @@ function cliAvailabilitySummary() {
   const out = {};
   for (const cli of SUPPORTED_CHAT_CLIS) {
     let available = cliCommandAvailable(commands[cli]);
-    if (cli === 'claude-exp') try { require.resolve('@anthropic-ai/claude-agent-sdk'); } catch (_) { available = false; }
+    if (cli === 'claude-exp' && !require('./src/cli/claude-bundled-binary').bundledClaudeCodeBinary()) available = false;
     out[cli] = { available };
   }
   return out;

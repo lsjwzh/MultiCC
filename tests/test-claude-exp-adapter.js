@@ -96,33 +96,52 @@ test('claude-exp preserves Claude stream-json event and completion semantics', (
   assert.equal(tracker.finish({ kind: 'process', code: 0 }).state, 'completed');
 });
 
-test('Agent SDK bridge maps MultiCC options without making a live request', async () => {
+test('native bridge maps MultiCC options without making a live request', async () => {
   const bridgeUrl = pathToFileURL(path.join(__dirname, '../src/cli-adapters/claude-agent-sdk-bridge.mjs')).href;
   const bridge = await import(bridgeUrl);
   const emitted = [];
-  let observed;
-  async function* fakeQuery(input) {
-    observed = input;
-    yield { type: 'system', subtype: 'init', session_id: SESSION_UUID };
-    yield { type: 'result', subtype: 'success', is_error: false };
-  }
+  let observed = null;
+  let sent = null;
+  const settingsFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-settings-')), 'settings.json');
+  fs.writeFileSync(settingsFile, JSON.stringify({ permissions: { allow: ['Read'] } }));
+  const createLane = callback => {
+    const lane = {
+      alive: true,
+      async start(config) { observed = JSON.parse(config); return JSON.stringify({ pid: 1, argv: [] }); },
+      async sendUser(line) {
+        sent = JSON.parse(line);
+        setImmediate(() => {
+          callback(['message', JSON.stringify({ type: 'system', subtype: 'init', session_id: SESSION_UUID }), '']);
+          callback(['message', JSON.stringify({ type: 'result', subtype: 'success', is_error: false }), '']);
+        });
+      },
+      respondControl() {}, respondControlError() {}, closeInput() {}, kill() {},
+      stderrTail() { return ''; },
+    };
+    return { lane, binary: '/opt/claude' };
+  };
   await bridge.run([
     '--session-id', SESSION_UUID, '--model', 'claude-opus-5', '--effort', 'high',
-    '--agent', 'reviewer', '--system-prompt', 'ROLE', '--settings', '/tmp/settings.json',
+    '--agent', 'reviewer', '--system-prompt', 'ROLE', '--settings', settingsFile,
     '--max-turns', '3', '--disallowed-tools-json', '["WebSearch"]',
     '--router-node', '/opt/node', '--router-script', '/opt/router.js', '--', 'hello sdk',
-  ], fakeQuery, value => emitted.push(value));
-  assert.equal(observed.prompt, 'hello sdk');
-  assert.equal(observed.options.sessionId, SESSION_UUID);
-  assert.equal(observed.options.model, 'claude-opus-5');
-  assert.equal(observed.options.effort, 'high');
-  assert.equal(observed.options.agent, 'reviewer');
-  assert.equal(observed.options.settings, '/tmp/settings.json');
-  assert.equal(observed.options.permissionMode, 'bypassPermissions');
-  assert.equal(observed.options.allowDangerouslySkipPermissions, true);
-  assert.deepEqual(observed.options.systemPrompt, { type: 'preset', preset: 'claude_code', append: 'ROLE' });
-  assert.deepEqual(observed.options.disallowedTools, ['WebSearch']);
-  assert.deepEqual(observed.options.mcpServers.multicc_router, { command: '/opt/node', args: ['/opt/router.js'] });
+  ], createLane, value => emitted.push(value));
+  assert.equal(sent.message.content[0].text, 'hello sdk');
+  assert.equal(sent.session_id, SESSION_UUID);
+  assert.equal(observed.sessionId, SESSION_UUID);
+  assert.equal(observed.model, 'claude-opus-5');
+  assert.equal(observed.effort, 'high');
+  assert.equal(observed.agent, 'reviewer');
+  assert.equal(observed.maxTurns, 3);
+  assert.deepEqual(observed.settings, { permissions: { allow: ['Read'] } });
+  assert.match(observed.settingsPath, /multicc-sdk-.*\/settings\.json$/);
+  assert.notEqual(observed.settingsPath, settingsFile);
+  assert.equal(observed.permissionMode, 'bypassPermissions');
+  assert.equal(observed.allowDangerouslySkipPermissions, true);
+  assert.equal(observed.includePartialMessages, true);
+  assert.equal(observed.systemPromptAppend, 'ROLE');
+  assert.deepEqual(observed.disallowedTools, ['WebSearch']);
+  assert.deepEqual(observed.mcpServers.multicc_router, { command: '/opt/node', args: ['/opt/router.js'] });
   assert.deepEqual(emitted.map(item => item.type), ['system', 'result']);
 });
 

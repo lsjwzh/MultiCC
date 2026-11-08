@@ -428,3 +428,66 @@ duplicate policy implementations in both runtimes. Browser JavaScript,
 Flutter clients and necessary test/build tooling are outside the backend
 migration scope. No merge, restart or production configuration change is part of
 this checkpoint.
+
+## Claude lane ownership
+
+The resident Claude lane (`claude-exp` and the per-session `sdk` stream) no
+longer runs the JavaScript `@anthropic-ai/claude-agent-sdk` transport. It
+spawns the same native `claude` binary and speaks its stdio JSONL protocol
+directly. Ownership is split in three:
+
+- `native/core/src/claude_lane.rs` is the pure protocol kernel: argv order and
+  flag spelling, the child environment rules (`CLAUDE_CODE_ENTRYPOINT`,
+  `CLAUDE_AGENT_SDK_VERSION`, `CLAUDE_CODE_SDK_READS_SESSION_STATE`, deleting
+  `NODE_OPTIONS`), the private `0700`/`0600` settings file and its
+  `ANTHROPIC_*`/`CLAUDE_CODE_*` env merge, line framing, message
+  classification (`keep_alive` and `transcript_mirror` are swallowed,
+  `system/status` and `session_state_changed` pass through), request-id
+  correlation/prefixing and the initialize/interrupt/set_model/task control
+  line builders. It has no process or runtime dependency, so its 25 unit tests
+  run in `cargo test -p multicc-core`.
+- `native/addon/src/claude_lane.rs` is the process owner: it writes the
+  settings file, spawns the child, pumps stdin, reads and frames stdout,
+  keeps a 4,000-character stderr tail, resolves pending control requests by
+  `request_id`, gates the first user line on a successful initialize response
+  (fail-closed after the initialize timeout), forwards hook callbacks and
+  cancels to JavaScript, and supervises exit, signals and `Drop` (SIGKILL).
+  It delivers events to JavaScript as `(kind, a, b)` tuples, so the JS side
+  parses each message line once. `RustClaudeLane` is registered in
+  `probeAddon`, which invalidates cached artifacts that predate the lane.
+- `src/chat/claude-sdk-stream.js` keeps only conversation-level state: the
+  turn queue, monitor admission (`createMonitorAdmission` answers hook
+  callbacks through `respondControl`/`respondControlError`, with a 25 s
+  fallback before the CLI's 30 s deadline), background hold and deferral,
+  idle recycle, route relay, vault digest and fingerprint restart. Its exported
+  API and observable event stream are unchanged; only `status().backend`
+  reports `native` instead of `sdk`.
+
+The one-shot `claude-exp` bridge (`src/cli-adapters/claude-agent-sdk-bridge.mjs`)
+drives the same native lane, so no Node SDK code runs on a production path. The
+`@anthropic-ai/claude-agent-sdk` entry remains in `package.json` solely because
+it is the per-platform distribution of the `claude` binary;
+`src/cli/claude-bundled-binary.js` resolves that platform package (with a
+`MULTICC_CLAUDE_BIN` override), and the `claude-exp` availability check in
+`server.js` consults it.
+
+Tests drive a real child process speaking the protocol
+(`tests/helpers/fake-claude-lane.js`). `tests/test-claude-lane-differential.js`
+runs the frozen SDK as a test-only oracle against the same fake CLI and asserts
+identical argv, child environment, stdin JSONL sequence (ids normalized) and
+delivered message sequence. `tests/test-claude-sdk-stream-vault.js` and
+`tests/test-monitor-admission.js` keep the real binary in the loop through
+`tests/helpers/claude-lane-wrapper.js`, an `execve` shim that preserves the PID
+so "one resident child" assertions stay meaningful.
+
+This move was verified against source fingerprint `5469e27bae7bf65f102093c3`
+(artifact `data/rust-source/5469e27bae7bf65f102093c3/darwin-arm64/multicc_core.node`):
+all 386 Rust core tests passed, 25 of them in `claude_lane`; `cargo fmt` and
+`cargo clippy` reported no findings for the new modules; the differential test
+passed against the frozen SDK oracle; and the full `npm test` command passed
+(6,404 tests: 6,401 passed, 0 failed, 2 skipped for the unavailable Electron
+packaging toolchain and PowerShell, 1 todo). A mutation pass confirmed the new
+tests bite: changing `--include-partial-messages`, misclassifying `keep_alive`,
+dropping the hook-callback response, and keeping `NODE_OPTIONS` each failed a
+test, and every mutation was reverted. These are local isolated checks, not
+production enablement or acceptance on every supported architecture.
