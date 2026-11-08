@@ -1,4 +1,5 @@
 //! Incremental SSE model-progress recognition. Raw transport bytes stay untouched.
+use crate::js::buffer::Utf8Decoder;
 use crate::js::{js_to_string, json_parse, truthy, JsString, JsValue};
 use crate::quota_guard::prop;
 
@@ -7,7 +8,7 @@ const MAX_PENDING_UNITS: usize = 262_144;
 #[derive(Default)]
 pub struct ModelStreamProgress {
     pending: Vec<u16>,
-    utf8_tail: Vec<u8>,
+    decoder: Utf8Decoder,
     dropping: bool,
 }
 
@@ -121,36 +122,7 @@ impl ModelStreamProgress {
         self.drain()
     }
     pub fn feed_bytes(&mut self, bytes: &[u8]) -> bool {
-        let mut joined = std::mem::take(&mut self.utf8_tail);
-        joined.extend_from_slice(bytes);
-        let mut remaining = joined.as_slice();
-        while !remaining.is_empty() {
-            match std::str::from_utf8(remaining) {
-                Ok(valid) => {
-                    self.pending.extend(valid.encode_utf16());
-                    break;
-                }
-                Err(error) => {
-                    let valid = error.valid_up_to();
-                    // SAFETY: valid_up_to is defined as a valid UTF-8 prefix.
-                    self.pending.extend(
-                        unsafe { std::str::from_utf8_unchecked(&remaining[..valid]) }
-                            .encode_utf16(),
-                    );
-                    remaining = &remaining[valid..];
-                    match error.error_len() {
-                        Some(count) => {
-                            self.pending.push(0xfffd);
-                            remaining = &remaining[count..];
-                        }
-                        None => {
-                            self.utf8_tail.extend_from_slice(remaining);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        self.pending.extend(self.decoder.feed(bytes).encode_utf16());
         self.drain()
     }
     fn drain(&mut self) -> bool {
