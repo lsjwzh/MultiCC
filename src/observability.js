@@ -4,11 +4,8 @@ const { monitorEventLoopDelay } = require('perf_hooks');
 const { getNative } = require('./native/runtime');
 
 // The text rules (secret field names, bearer/query/key=value secrets, provider
-// route capabilities) are native/core/src/redaction.rs; this module walks
-// values and keys. The marker must equal redaction::PROVIDER_ROUTE_REDACTION
-// (tests/test-redaction-native.js checks it): the exact-secret stream redactor
-// below still writes it itself.
-const PROVIDER_ROUTE_REDACTION = '[REDACTED_PROVIDER_ROUTE]';
+// route capabilities, exact secrets) are native/core/src/redaction.rs and
+// exact_secret.rs; this module walks values and keys.
 
 // Rust also exports each rule's necessary anchors, so the walk only crosses
 // into native code for a string that could change (most keys and stream text
@@ -82,119 +79,25 @@ function redactProviderRouteCapability(value, seen = new WeakMap()) {
 // several independently stored strings (including object keys). Callers choose
 // the semantic parts and their order; structural protocol fields are therefore
 // never guessed or rewritten. Every participating part gets its own marker so
-// no subset of retained fields can be concatenated to recover the capability.
+// no subset of retained fields can be concatenated to recover the capability
+// (native/core/src/exact_secret.rs).
 function redactExactSecretFragments(values, initialSecrets = []) {
-  const parts = (Array.isArray(values) ? values : [values]).map(value => String(value || ''));
-  const secrets = [...new Set((Array.isArray(initialSecrets) ? initialSecrets : [initialSecrets])
-    .map(value => String(value || '')).filter(Boolean))]
-    .sort((left, right) => right.length - left.length);
-  if (!parts.length || !secrets.length) return parts;
-  const offsets = [];
-  let joined = '';
-  for (const part of parts) {
-    offsets.push(joined.length);
-    joined += part;
-  }
-  const matches = [];
-  let cursor = 0;
-  while (cursor < joined.length) {
-    let index = -1;
-    let matched = '';
-    for (const secret of secrets) {
-      const candidate = joined.indexOf(secret, cursor);
-      if (candidate >= 0 && (index < 0 || candidate < index
-          || (candidate === index && secret.length > matched.length))) {
-        index = candidate;
-        matched = secret;
-      }
-    }
-    if (index < 0) break;
-    matches.push({ start: index, end: index + matched.length });
-    cursor = index + matched.length;
-  }
-  if (!matches.length) return parts;
-  const edits = parts.map(() => []);
-  for (const match of matches) {
-    for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
-      const partStart = offsets[partIndex];
-      const partEnd = partStart + parts[partIndex].length;
-      const start = Math.max(match.start, partStart);
-      const end = Math.min(match.end, partEnd);
-      if (start >= end) continue;
-      edits[partIndex].push({
-        start: start - partStart,
-        end: end - partStart,
-        replacement: PROVIDER_ROUTE_REDACTION,
-      });
-    }
-  }
-  return parts.map((part, index) => edits[index]
-    .sort((left, right) => right.start - left.start)
-    .reduce((result, edit) => (
-      result.slice(0, edit.start) + edit.replacement + result.slice(edit.end)
-    ), part));
+  return getNative().redactionExactFragments(values, initialSecrets);
 }
 
 // Exact streaming DLP for the process capability. Stateless regex replacement
 // cannot see a value deliberately split across token deltas, so this small
-// transducer withholds only a suffix that could still become a known secret.
-// It never releases a complete secret, regardless of chunk boundaries.
+// transducer (native/core/src/exact_secret.rs) withholds only a suffix that
+// could still become a known secret. It never releases a complete secret,
+// regardless of chunk boundaries.
 function createExactSecretStreamRedactor(initialSecrets = []) {
-  let secrets = [];
-  let pending = '';
-  const setSecrets = values => {
-    secrets = [...new Set((Array.isArray(values) ? values : [values])
-      .map(value => String(value || '')).filter(Boolean))]
-      .sort((left, right) => right.length - left.length);
-  };
-  setSecrets(initialSecrets);
-  const longestPendingSuffix = value => {
-    let best = 0;
-    for (const secret of secrets) {
-      const limit = Math.min(secret.length - 1, value.length);
-      for (let length = limit; length > best; length -= 1) {
-        if (secret.startsWith(value.slice(-length))) { best = length; break; }
-      }
-    }
-    return best;
-  };
-  const push = chunk => {
-    let input = pending + String(chunk || '');
-    pending = '';
-    let output = '';
-    while (input) {
-      let index = -1;
-      let matched = '';
-      for (const secret of secrets) {
-        const candidate = input.indexOf(secret);
-        if (candidate >= 0 && (index < 0 || candidate < index
-            || (candidate === index && secret.length > matched.length))) {
-          index = candidate;
-          matched = secret;
-        }
-      }
-      if (index >= 0) {
-        output += input.slice(0, index) + PROVIDER_ROUTE_REDACTION;
-        input = input.slice(index + matched.length);
-        continue;
-      }
-      const keep = longestPendingSuffix(input);
-      output += input.slice(0, input.length - keep);
-      pending = keep ? input.slice(-keep) : '';
-      break;
-    }
-    return redactProviderRouteCapability(output);
-  };
+  const state = new (getNative().RustExactSecretStreamRedactor)(initialSecrets);
   return Object.freeze({
-    push,
-    setSecrets,
-    flush: () => {
-      const output = redactProviderRouteCapability(pending);
-      pending = '';
-      return output;
-    },
-    discard: () => { pending = ''; },
-    pendingLength: () => pending.length,
+    push: chunk => state.push(chunk),
+    setSecrets: values => state.setSecrets(values),
+    flush: () => state.flush(),
+    discard: () => state.discard(),
+    pendingLength: () => state.pendingLength(),
   });
 }
 

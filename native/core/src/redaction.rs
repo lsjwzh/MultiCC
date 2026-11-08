@@ -10,7 +10,7 @@
 //! stay with their JS callers; only text is rewritten here.
 
 use crate::js::regex::{ascii_ci, from_unit_view, to_unit_view, BOUNDARY, SPACE, WORD};
-use crate::js::JsString;
+use crate::js::{JsString, UnitFinder};
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -128,6 +128,20 @@ fn redact_view(view: &str) -> String {
 
 /// `redactProviderRouteCapability(text)` for a string.
 pub fn redact_route_capability(text: &JsString) -> JsString {
+    // Every change contains an anchor (see `every_change_contains_an_anchor`).
+    static FINDERS: OnceLock<Vec<UnitFinder>> = OnceLock::new();
+    let finders = FINDERS.get_or_init(|| {
+        ROUTE_ANCHORS
+            .iter()
+            .map(|anchor| UnitFinder::new(&anchor.encode_utf16().collect::<Vec<_>>()))
+            .collect()
+    });
+    if !finders
+        .iter()
+        .any(|finder| finder.find(text.as_units(), 0).is_some())
+    {
+        return text.clone();
+    }
     from_unit_view(&route_capability_view(&to_unit_view(text)))
 }
 

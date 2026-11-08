@@ -31,6 +31,9 @@ impl<'env> LiveValue<'env> {
     pub fn raw(self) -> sys::napi_value {
         self.value
     }
+    pub fn env(self) -> sys::napi_env {
+        self.env
+    }
     pub fn global(self) -> Result<Self> {
         let mut value = ptr::null_mut();
         check_status!(unsafe { sys::napi_get_global(self.env, &mut value) })?;

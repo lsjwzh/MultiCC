@@ -14,8 +14,8 @@
 //! `native/addon/src/js_bridge.rs` moves values across napi without JSON, so a
 //! lone surrogate, `-0` or a `Buffer` is not lost at the boundary.
 
-pub mod coerce;
 pub mod buffer;
+pub mod coerce;
 pub mod json;
 pub mod number;
 pub mod regex;
@@ -24,19 +24,19 @@ pub mod string;
 pub mod tags;
 pub mod value;
 
+pub use buffer::node_base64_decode;
 pub use coerce::{
     js_to_number, js_to_string, less_equal_number, less_number, math_min, nullish, or, truthy,
     truthy_opt,
 };
-pub use buffer::node_base64_decode;
 pub use json::{
     date_to_iso_string, json_parse, json_quote, json_quote_str, json_stringify,
     json_stringify_or_undefined, JsonParseError,
 };
 pub use number::{format_f64, js_string_to_number, number_to_string, string_to_number};
 pub use string::{
-    compare_units, is_js_whitespace, is_js_whitespace_char, js_trim, utf16_len, utf16_prefix,
-    utf16_prefix_units, utf16_suffix, utf16_truncate, JsString,
+    compare_units, contains_units, is_js_whitespace, is_js_whitespace_char, js_trim, utf16_len,
+    utf16_prefix, utf16_prefix_units, utf16_suffix, utf16_truncate, JsString, UnitFinder,
 };
 pub use value::JsValue;
 

@@ -160,6 +160,93 @@ test('normalizeRejection matches Node, with the same reads in the same order', (
   assert.deepEqual(outcome(() => legacy.normalizeRejection(throwing)), { threw: 'SyntaxError' });
 });
 
-test('the stream redactor marker equals the Rust redaction marker', () => {
+test('the route redaction marker is unchanged', () => {
   assert.equal(observability.redactProviderRouteCapability('pr1.a.b'), legacy.PROVIDER_ROUTE_REDACTION);
+});
+
+// Secrets that overlap, nest, repeat or share prefixes, plus capability-shaped
+// ones and ones with surrogate units, so the earliest/longest choice and the
+// withheld-suffix rule are both exercised.
+function secretSet(g) {
+  const pool = ['SECRET', 'SEC', 'CRET', 'ECRE', 'aa', 'aaa', 'abab', 'ab', 'pr1.AAA.BBB', 'proxy-route-x1',
+    'pr1.c2Vzc2lvbi0x.cHJveHktcm91dGUtc2VjcmV0', 'cHJveHktcm91dGUtc2VjcmV0', '😀x', '\ud800z', 'é　', '', 'x'];
+  const count = g.int(4);
+  const secrets = [];
+  for (let i = 0; i < count; i++) secrets.push(g.pick(pool));
+  return g.int(6) === 0 ? g.pick(['SECRET', '', undefined, null, 0, ['SECRET', null, 7]]) : secrets;
+}
+
+function streamText(g, secrets) {
+  const words = ['SE', 'CRET', 'SECRET', 'a', 'b', 'ab', 'pr1.', 'AAA', '.BBB', 'proxy-route-', 'x1', ' ', '\n',
+    '😀', '\ud83d', '\ude00', '\ud800', 'z', 'é', '　', 'cHJveHkt', 'cm91dGUtc2VjcmV0',
+    // A withheld secret prefix can itself look like a route capability.
+    '.B', 'x'];
+  let out = '';
+  for (let i = 0; i < 1 + g.int(14); i++) {
+    out += g.int(4) === 0 && Array.isArray(secrets) && secrets.length ? String(g.pick(secrets) || '') : g.pick(words);
+  }
+  return out;
+}
+
+test('redactExactSecretFragments matches Node on split, nested and repeated secrets', () => {
+  for (let seed = 1; seed <= 6000; seed++) {
+    const g = generator(seed);
+    const secrets = secretSet(g);
+    const text = streamText(g, secrets);
+    // Cut the text into parts at random UTF-16 positions (surrogate pairs too).
+    const parts = [];
+    let rest = text;
+    while (rest && parts.length < 8) {
+      const cut = g.int(rest.length + 1);
+      parts.push(rest.slice(0, cut));
+      rest = rest.slice(cut);
+    }
+    if (rest) parts.push(rest);
+    const values = g.int(10) === 0 ? g.pick(['plain SECRET', null, undefined, 5]) : parts;
+    assert.deepEqual(observability.redactExactSecretFragments(values, secrets),
+      legacy.redactExactSecretFragments(values, secrets), `${seed} ${JSON.stringify({ values, secrets })}`);
+  }
+  assert.deepEqual(observability.redactExactSecretFragments(['a', 'b']), ['a', 'b']);
+});
+
+test('the exact-secret stream redactor matches Node chunk by chunk', () => {
+  for (let seed = 1; seed <= 4000; seed++) {
+    const g = generator(seed);
+    const secrets = secretSet(g);
+    const ours = observability.createExactSecretStreamRedactor(secrets);
+    const theirs = legacy.createExactSecretStreamRedactor(secrets);
+    assert.ok(Object.isFrozen(ours));
+    const trace = [];
+    for (let step = 0; step < 1 + g.int(10); step++) {
+      const op = g.int(12);
+      if (op === 0) {
+        trace.push(['flush', ours.flush(), theirs.flush()]);
+      } else if (op === 1) {
+        ours.discard(); theirs.discard();
+        trace.push(['discard']);
+      } else if (op === 2) {
+        const next = secretSet(g);
+        ours.setSecrets(next); theirs.setSecrets(next);
+        trace.push(['setSecrets', JSON.stringify(next)]);
+      } else {
+        const chunk = g.int(15) === 0 ? g.pick([undefined, null, 0, 42]) : streamText(g, secrets);
+        trace.push(['push', ours.push(chunk), theirs.push(chunk)]);
+      }
+      trace.push(['pending', ours.pendingLength(), theirs.pendingLength()]);
+    }
+    for (const entry of trace) {
+      if (entry.length === 3) assert.equal(entry[1], entry[2], `${seed} ${JSON.stringify(trace)}`);
+    }
+  }
+  // A withheld secret prefix that is itself a route capability or token is
+  // still redacted when an explicit boundary releases it.
+  for (const [secret, text] of [['pr1.AAA.BBB', 'see pr1.AAA.B'], ['proxy-route-x1', 'at proxy-route-x']]) {
+    const ours = observability.createExactSecretStreamRedactor([secret]);
+    const theirs = legacy.createExactSecretStreamRedactor([secret]);
+    assert.equal(ours.push(text), theirs.push(text));
+    assert.equal(ours.pendingLength(), theirs.pendingLength());
+    const released = ours.flush();
+    assert.equal(released, theirs.flush());
+    assert.equal(released, legacy.PROVIDER_ROUTE_REDACTION);
+  }
 });

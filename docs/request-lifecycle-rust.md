@@ -228,6 +228,25 @@ prefilter, a typical stream event takes 2.5 µs (2.1 before), a log record
 2.6 µs (3.2), an 8 KB message 0.8 µs (4.4) and an event carrying a capability
 3.7 µs (2.5) on the local release build.
 
+### Exact secrets
+
+`native/core/src/exact_secret.rs` owns the two searches for an attempt's
+known capability strings: `redactExactSecretFragments` (a capability spread
+over several stored strings; every part that holds a piece gets its own
+marker) and `createExactSecretStreamRedactor` (a per-stream transducer that
+withholds only a suffix that could still become a secret). Positions are UTF-16
+code units; search uses `js::UnitFinder`, a plain scan for short text and a
+SIMD byte search (aligned hits only) once a haystack reaches 256 units.
+`redact_route_capability` returns early when neither route anchor occurs.
+
+Measured on the local release build: a token-sized stream delta costs 0.34 µs
+(0.12 in JS: the native call itself), a 4 KB delta 2.7 µs (3.3), and a
+four-part fragment call 1.6 µs (0.45). The fragment call keeps the last
+compiled secret list per thread and returns unchanged strings as the caller's
+own values. The semantic structure walk in
+`src/chat/provider-attempt-runtime.js` still calls it three times per event;
+moving that walk into Rust removes the extra crossings.
+
 Separate redactors with their own rules remain: `scripts/multicc-turn-hook.js`
 (runs without the addon), `src/doctor/tools.js` and the event envelope in
 `native/core/src/events.rs`. They are not equivalent to these rules and were
@@ -256,7 +275,10 @@ value/fallback/length combinations and 5,000 rejections (half through a
 tracing Proxy) with the frozen Node code; eight deliberate faults (one
 whitespace unit, Unicode `\b`, Unicode case folding, a single `window` read,
 naive rounding, the default fallback, the text cap and a capability bound)
-and a missing anchor each fail it.
+and a missing anchor each fail it. The exact-secret searches are compared on
+6,000 fragment sets and 4,000 stream traces (push, flush, discard, secret
+changes and pending length, with surrogate halves and overlapping secrets);
+six seeded faults each fail it.
 Additional cases cover lone UTF-16 surrogates,
 read/short-circuit order, exception identity, strict assignment, reentry,
 opaque tool IDs, repeated settlement and host-marker forgery.
@@ -270,7 +292,10 @@ preflight. All 343 Rust core tests, all nine Rust CPR transport tests and all
 `npm test` command (6,370 tests: 6,367 passed, 2 skipped because the Electron
 packaging toolchain and PowerShell were unavailable). After the redaction move,
 source fingerprint `1fe24071b9aacdf623173aa6` passed all 348 Rust core tests
-and the full `npm test` (6,375 tests: 6,372 passed, the same 2 skipped). These are local isolated
+and the full `npm test` (6,375 tests: 6,372 passed, the same 2 skipped). After
+the exact-secret move, source fingerprint `0cbc5a60dd1b5cb02164b44d` passed all
+353 Rust core tests and the full `npm test` (6,377 tests: 6,374 passed, the
+same 2 skipped). These are local isolated
 checks, not production enablement or acceptance on every supported
 architecture.
 
