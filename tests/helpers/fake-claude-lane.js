@@ -30,6 +30,28 @@ function result(text, extra = {}) {
 
 function handleUser(message) {
   const text = (message.message?.content || []).map(block => block.text || '').join('');
+  if (scenario === 'delayed-exit-output' || scenario === 'held-exit-output') {
+    // 父进程先退出；继承输出管道的短命子进程稍后写入终局帧。
+    const { spawn } = require('node:child_process');
+    const line = JSON.stringify({ type: 'result', subtype: 'success', result: '完整终局', session_id: sessionId }) + '\n';
+    const delay = scenario === 'held-exit-output' ? 1500 : 80;
+    spawn(process.execPath, ['-e', `process.stdout.on('error', () => {}); setTimeout(() => process.stdout.write(${JSON.stringify(line)}), ${delay})`],
+      { stdio: ['ignore', 'inherit', 'ignore'] });
+    process.exit(0);
+  }
+  if (scenario === 'malformed-then-result') {
+    process.stdout.write('这不是 JSON\n' + JSON.stringify({ type: 'result', subtype: 'success', result: '不能交付' }) + '\n');
+    return;
+  }
+  if (scenario === 'split-stderr') {
+    const bytes = Buffer.from('中文错误尾部');
+    let at = 0;
+    const timer = setInterval(() => {
+      if (at === bytes.length) { clearInterval(timer); process.exit(3); }
+      else process.stderr.write(bytes.subarray(at, ++at));
+    }, 5);
+    return;
+  }
   if (scenario === 'hook') {
     const requestId = `hookreq-${hookRequests.size + 1}`;
     hookRequests.set(requestId, text);
@@ -77,6 +99,10 @@ input.on('line', line => {
   }
   const request = message.request || {};
   if (request.subtype === 'initialize') {
+    if (scenario === 'unresponsive-initialize') {
+      process.on('SIGTERM', () => {});
+      return;
+    }
     emit({ type: 'control_response', response: { subtype: 'success',
       request_id: message.request_id,
       response: { commands: [], output_style: 'default', hooks_applied: true } } });

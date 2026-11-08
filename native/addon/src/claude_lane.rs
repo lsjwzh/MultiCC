@@ -13,6 +13,7 @@
 use multicc_core::claude_lane::{
     self, Classified, ControlResponse, LaneState, LaunchInput, LineFramer, PendingKind,
 };
+use multicc_core::js::buffer::Utf8Decoder;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Result, Status};
 use napi_derive::napi;
@@ -71,11 +72,24 @@ struct Inner {
     init_notify: Notify,
     stderr: Arc<Mutex<String>>,
     alive: AtomicBool,
+    protocol_failed: AtomicBool,
     pid: AtomicI32,
     control_timeout_ms: AtomicU64,
 }
 
 impl Inner {
+    // 协议失效只有一个终态；后续缓冲帧不得再成为成功结果。
+    fn fail_protocol(&self, reason: &str) {
+        if self.protocol_failed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.fail_pending(reason);
+        self.fail_init(reason);
+        self.emit("error", reason, "");
+        if let Some(sender) = self.kill.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            let _ = sender.send(Some("SIGKILL".into()));
+        }
+    }
     fn emit(&self, kind: &str, a: &str, b: &str) {
         let _ = self.callback.call(
             (kind.to_string(), a.to_string(), b.to_string()),
@@ -92,6 +106,9 @@ impl Inner {
     }
 
     fn write(&self, line: String) -> Result<()> {
+        if self.protocol_failed.load(Ordering::SeqCst) {
+            return Err(error("Claude lane protocol failed"));
+        }
         let sender = self
             .writer
             .lock()
@@ -210,12 +227,13 @@ impl Inner {
     }
 
     fn handle_line(self: &Arc<Self>, line: &str) {
+        if self.protocol_failed.load(Ordering::SeqCst) {
+            return;
+        }
         let classified = match claude_lane::classify_line(line) {
             Ok(classified) => classified,
             Err(message) => {
-                self.emit("error", &message, "");
-                self.fail_pending(&message);
-                self.fail_init(&message);
+                self.fail_protocol(&message);
                 return;
             }
         };
@@ -238,8 +256,7 @@ impl Inner {
                             .error
                             .clone()
                             .unwrap_or_else(|| "Claude Code rejected initialize".to_string());
-                        self.fail_init(&message);
-                        self.emit("error", &message, "");
+                        self.fail_protocol(&message);
                     }
                 }
                 let sender = self
@@ -299,6 +316,7 @@ impl RustClaudeLane {
                 init_notify: Notify::new(),
                 stderr: Arc::new(Mutex::new(String::new())),
                 alive: AtomicBool::new(false),
+                protocol_failed: AtomicBool::new(false),
                 pid: AtomicI32::new(0),
                 control_timeout_ms: AtomicU64::new(10_000),
             }),
@@ -389,19 +407,23 @@ impl RustClaudeLane {
 
         let (write_tx, write_rx) = mpsc::unbounded_channel::<WriteCmd>();
         *self.inner.writer.lock().unwrap_or_else(|e| e.into_inner()) = Some(write_tx);
-        if let Some(stdin) = stdin {
-            tokio::spawn(writer_loop(stdin, write_rx));
-        }
+        let writer_task = stdin.map(|stdin| tokio::spawn(writer_loop(stdin, write_rx)));
 
         let (kill_tx, kill_rx) = mpsc::unbounded_channel::<Option<String>>();
         *self.inner.kill.lock().unwrap_or_else(|e| e.into_inner()) = Some(kill_tx);
 
-        if let Some(stdout) = stdout {
-            tokio::spawn(reader_loop(stdout, self.inner.clone()));
-        }
+        let stdout_task =
+            stdout.map(|stdout| tokio::spawn(reader_loop(stdout, self.inner.clone())));
         let stderr_task =
             stderr.map(|stderr| tokio::spawn(stderr_loop(stderr, self.inner.stderr.clone())));
-        tokio::spawn(supervise(child, kill_rx, self.inner.clone(), stderr_task));
+        tokio::spawn(supervise(
+            child,
+            kill_rx,
+            self.inner.clone(),
+            writer_task,
+            stdout_task,
+            stderr_task,
+        ));
 
         let request_id = {
             let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -417,19 +439,11 @@ impl RustClaudeLane {
         // Fail closed when the real CLI never answers initialize.
         let inner = self.inner.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(initialize_timeout).await;
-            let waiting = matches!(
-                *inner.init.lock().unwrap_or_else(|e| e.into_inner()),
-                InitState::Waiting
-            );
-            if waiting {
-                inner.fail_init("Claude Code did not answer initialize");
-                let _ = inner
-                    .kill
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .as_ref()
-                    .map(|sender| sender.send(Some("SIGTERM".into())));
+            if tokio::time::timeout(initialize_timeout, inner.wait_initialized())
+                .await
+                .is_err()
+            {
+                inner.fail_protocol("Claude Code did not answer initialize");
             }
         });
 
@@ -596,9 +610,15 @@ async fn reader_loop(mut stdout: ChildStdout, inner: Arc<Inner>) {
             Ok(read) => {
                 for line in framer.push(&buffer[..read]) {
                     inner.handle_line(&line);
+                    if inner.protocol_failed.load(Ordering::SeqCst) {
+                        return;
+                    }
                 }
             }
-            Err(_) => break,
+            Err(_) => {
+                inner.fail_protocol("Claude Code stdout read failed");
+                return;
+            }
         }
     }
     if let Some(tail) = framer.finish() {
@@ -608,11 +628,12 @@ async fn reader_loop(mut stdout: ChildStdout, inner: Arc<Inner>) {
 
 async fn stderr_loop(mut stderr: tokio::process::ChildStderr, tail: Arc<Mutex<String>>) {
     let mut buffer = [0u8; 8 * 1024];
+    let mut decoder = Utf8Decoder::default();
     loop {
         match stderr.read(&mut buffer).await {
             Ok(0) => break,
             Ok(read) => {
-                let text = String::from_utf8_lossy(&buffer[..read]);
+                let text = decoder.feed(&buffer[..read]);
                 let mut tail = tail.lock().unwrap_or_else(|e| e.into_inner());
                 tail.push_str(&text);
                 if tail.chars().count() > 4000 {
@@ -626,12 +647,37 @@ async fn stderr_loop(mut stderr: tokio::process::ChildStderr, tail: Arc<Mutex<St
             Err(_) => break,
         }
     }
+    let suffix = decoder.finish();
+    let mut tail = tail.lock().unwrap_or_else(|e| e.into_inner());
+    tail.push_str(&suffix);
+    let count = tail.chars().count();
+    if count > 4000 {
+        *tail = tail.chars().skip(count - 4000).collect();
+    }
+}
+
+// 子进程退出不代表输出已读完。两条管道先排空，再发出唯一退出事件；
+// 若派生进程一直持有管道，超时后取消读取并报告故障，不能遗留迟到回调。
+async fn drain_pipe(task: Option<tokio::task::JoinHandle<()>>) -> bool {
+    let Some(mut task) = task else {
+        return true;
+    };
+    match tokio::time::timeout(Duration::from_millis(1000), &mut task).await {
+        Ok(result) => result.is_ok(),
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            false
+        }
+    }
 }
 
 async fn supervise(
     mut child: Child,
     mut kills: mpsc::UnboundedReceiver<Option<String>>,
     inner: Arc<Inner>,
+    writer_task: Option<tokio::task::JoinHandle<()>>,
+    stdout_task: Option<tokio::task::JoinHandle<()>>,
     stderr_task: Option<tokio::task::JoinHandle<()>>,
 ) {
     let status = loop {
@@ -639,15 +685,29 @@ async fn supervise(
             waited = child.wait() => break waited.ok(),
             requested = kills.recv() => {
                 if let Some(Some(signal)) = requested {
+                    #[cfg(unix)]
                     signal_child(child.id(), &signal);
+                    #[cfg(not(unix))]
+                    { let _ = signal; let _ = child.start_kill(); }
                 }
             }
         }
     };
     inner.alive.store(false, Ordering::SeqCst);
-    // Give the stderr reader a beat to drain so the tail is complete.
-    if let Some(task) = stderr_task {
-        let _ = tokio::time::timeout(Duration::from_millis(500), task).await;
+    inner
+        .writer
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    inner.kill.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(task) = writer_task {
+        task.abort();
+        let _ = task.await;
+    }
+    let (stdout_drained, stderr_drained) =
+        tokio::join!(drain_pipe(stdout_task), drain_pipe(stderr_task));
+    if !stdout_drained || !stderr_drained {
+        inner.fail_protocol("Claude Code output did not close after process exit");
     }
     let tail = inner
         .stderr
@@ -655,7 +715,13 @@ async fn supervise(
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     let (code, signal) = match status {
-        Some(status) => (status.code(), status.signal().map(signal_name)),
+        Some(status) => {
+            #[cfg(unix)]
+            let signal = status.signal().map(signal_name);
+            #[cfg(not(unix))]
+            let signal = None;
+            (status.code(), signal)
+        }
         None => (None, None),
     };
     inner.fail_pending("Claude Code process exited");
@@ -686,6 +752,3 @@ fn signal_child(pid: Option<u32>, signal: &str) {
         libc::kill(pid as i32, number);
     }
 }
-
-#[cfg(not(unix))]
-fn signal_child(_pid: Option<u32>, _signal: &str) {}

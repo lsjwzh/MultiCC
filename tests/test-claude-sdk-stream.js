@@ -247,3 +247,81 @@ test('stream router forwards task control only to backends that implement it', a
   assert.equal(await router.getTaskOutput('any', 't'), null);
   assert.equal(await router.stopTask('any', 't'), false);
 });
+
+async function nativeProcessFixture(t, scenario) {
+  const { getNative } = require('../src/native/runtime');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-native-exit-'));
+  const events = [];
+  const keepAlive = setInterval(() => {}, 1000);
+  const lane = new (getNative().RustClaudeLane)(payload => events.push(payload));
+  t.after(async () => {
+    lane.kill('SIGKILL');
+    await until(() => !lane.alive, '原生测试进程未退出', 5000).catch(() => {});
+    clearInterval(keepAlive);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await lane.start(JSON.stringify({ binary: process.execPath, binaryArgs: [FAKE], cwd: root,
+    env: { PATH: process.env.PATH, FAKE_CLAUDE_SCENARIO: scenario }, sessionId: randomUUID(),
+    initializeTimeoutMs: scenario === 'unresponsive-initialize' ? 250 : 2000, controlTimeoutMs: 500 }));
+  const send = () => lane.sendUser(JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: '测试' }] } }));
+  return { lane, events, send };
+}
+
+test('原生进程退出前须读完管道中的终局消息', { timeout: 10000 }, async t => {
+  const f = await nativeProcessFixture(t, 'delayed-exit-output');
+  await f.send();
+  await until(() => f.events.some(([kind]) => kind === 'exit'));
+  const kinds = f.events.map(([kind]) => kind);
+  const final = f.events.findIndex(([kind, line]) => kind === 'message' && JSON.parse(line).type === 'result');
+  assert.ok(final >= 0, '终局帧不能被进程退出事件抢先截断');
+  assert.ok(final < kinds.indexOf('exit'));
+  const count = f.events.length;
+  await sleep(150);
+  assert.equal(f.events.length, count, '退出事件之后不能再交付消息');
+});
+
+test('畸形协议行终止原生车道且不能随后交付成功', { timeout: 10000 }, async t => {
+  const f = await nativeProcessFixture(t, 'malformed-then-result');
+  await f.send();
+  await until(() => f.events.some(([kind]) => kind === 'error'));
+  await sleep(80);
+  assert.equal(f.events.some(([kind, line]) => kind === 'message' && JSON.parse(line).type === 'result'), false);
+  await until(() => f.events.some(([kind]) => kind === 'exit'), '协议故障必须终止进程', 2000);
+  assert.equal(f.events.filter(([kind]) => kind === 'error').length, 1);
+});
+
+test('初始化超时能终止忽略软终止信号的进程', { timeout: 10000 }, async t => {
+  const f = await nativeProcessFixture(t, 'unresponsive-initialize');
+  await assert.rejects(f.send(), /initialize/);
+  await until(() => f.events.some(([kind]) => kind === 'exit'), '初始化失败不能遗留进程', 2000);
+  assert.equal(f.lane.alive, false);
+});
+
+test('标准错误按字节跨块时保留完整中文尾部', { timeout: 10000 }, async t => {
+  const f = await nativeProcessFixture(t, 'split-stderr');
+  await f.send();
+  await until(() => f.events.some(([kind]) => kind === 'exit'));
+  const exit = f.events.find(([kind]) => kind === 'exit');
+  assert.equal(JSON.parse(exit[2]).stderrTail, '中文错误尾部');
+  assert.equal(f.lane.stderrTail(), '中文错误尾部');
+});
+
+test('派生进程持续持有输出管道时有界收尾且没有迟到成功', { timeout: 10000 }, async t => {
+  const f = await nativeProcessFixture(t, 'held-exit-output');
+  await f.send();
+  await until(() => f.events.some(([kind]) => kind === 'exit'), '管道排空不能无限等待', 3000);
+  assert.ok(f.events.some(([kind, message]) => kind === 'error' && /output did not close/.test(message)));
+  const count = f.events.length;
+  await sleep(800); // 等待短命派生进程自行结束，并检查迟到帧已被隔离。
+  assert.equal(f.events.length, count);
+  assert.equal(f.events.some(([kind, line]) => kind === 'message' && JSON.parse(line).type === 'result'), false);
+});
+
+test('宿主发送在原生协议故障后拒绝并回收进程', { timeout: 10000 }, async t => {
+  const f = await laneFixture(t, { scenario: 'malformed-then-result' });
+  f.configure();
+  const events = [];
+  await assert.rejects(f.send('故障回合', event => events.push(event)), /invalid JSON/);
+  await until(() => f.runtime.status('sdk').alive === false);
+  assert.equal(events.some(event => event.type === 'result'), false);
+});
