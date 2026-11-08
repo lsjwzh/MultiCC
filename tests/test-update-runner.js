@@ -603,6 +603,8 @@ test('server.js wires the update route with the package root and keeps it auth-g
   const authSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'auth.js'), 'utf8');
   assert.match(hostSrc, /createUpdateRoute\(\{[\s\S]*?rootDir:\s*__dirname/);
   assert.equal(authSrc.includes('/api/update'), false, 'the update route must not be in the auth bypass list');
+  const nativeAuth = fs.readFileSync(path.join(__dirname, '..', 'native', 'core', 'src', 'http_entry.rs'), 'utf8');
+  assert.equal(nativeAuth.includes('/api/update'), false, 'Rust must keep updates behind authentication');
 });
 
 test('代理准备失败阻止更新派生并释放路由占用', async () => {

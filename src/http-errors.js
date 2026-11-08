@@ -21,23 +21,22 @@
 // This is intentionally minimal: it does not attempt to classify every error
 // (that stays in domain services). It's a floor, not a ceiling.
 
-const crypto = require('crypto');
+const { getNative } = require('./native/runtime');
 const { API_VERSION, createErrorDto } = require('./api-contract');
 
 // 8 hex chars is enough entropy for correlation over a single log tail (16
 // bits of collision resistance per pair-of-requests; noise-free at request
 // rates below a few hundred/second, which multicc is well below). Short enough
 // to fit in a mobile UI toast if we ever surface it.
-function makeRequestId() { return crypto.randomBytes(4).toString('hex'); }
+function makeRequestId() { return getNative().httpEntryMakeRequestId(); }
 
 function cleanIncomingId(value) {
-  return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value) ? value : null;
+  return getNative().httpEntryCleanId(value);
 }
 
 function requestIdMiddleware(req, res, next) {
   const headers = req.headers || {};
-  const id = cleanIncomingId(headers['x-request-id']) || makeRequestId();
-  const correlationId = cleanIncomingId(headers['x-correlation-id']) || id;
+  const { id, correlationId } = getNative().httpEntryRequestIds(headers);
   const startedAt = process.hrtime.bigint();
   req.id = id;
   req.correlationId = correlationId;

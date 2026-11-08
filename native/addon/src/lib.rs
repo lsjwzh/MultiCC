@@ -34,6 +34,8 @@ pub mod provider_outcome;
 pub mod provider_producers;
 pub mod provider_event_policy;
 pub mod provider_scrub;
+pub mod http_entry;
+pub mod auth_security;
 pub mod quota_history;
 pub mod quota_guard;
 pub mod quota_rejection;
@@ -163,3 +165,6 @@ pub mod provider_host;
 
 pub mod selection;
 pub mod usage_observed;
+
+mod auth_login_page;
+pub mod auth_routes;

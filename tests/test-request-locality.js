@@ -147,7 +147,9 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/ws/connection-router.js',
   ]);
   assert.doesNotMatch(taskBoardRoutes, /\bisLocalRequest\b/);
-  assert.match(authRoutes, /isLocalRequest\(req\)/);
+  assert.match(authRoutes, /httpEntryAuthenticated\(req, entryPort\)/);
+  const nativeEntry = fs.readFileSync('native/addon/src/http_entry.rs', 'utf8');
+  assert.match(nativeEntry, /host\(port, c"isLocalRequest", &\[request\]\)/);
   assert.match(routerToolHost, /isLocalRequest\(req\)/);
   assert.match(wsConnectionRouter, /isLocalRequest\(req\)/);
   assert.match(server, /mountWsConnectionRouter\(wss,/);

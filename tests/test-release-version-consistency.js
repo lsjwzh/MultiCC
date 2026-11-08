@@ -407,14 +407,18 @@ test('core runner covers every selected path and expands declared variants', () 
   // native lane against the same temp-directory fake CLI (one child process
   // each, no port or network), so it is isolated. 387 + 1 = 388 entries,
   // 33 + 1 = 34 isolated, 359 + 1 = 360 commands.
-  assert.equal(core.length, 388, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 388);
+  // Authentication migration adds tests/test-auth-security-native.js. It
+  // compares the frozen Node contract, drives ephemeral loopback HTTP servers
+  // and a bounded GC child, and verifies capability consumption and expiry.
+  // Core/isolated: 389 entries, 35 isolated, 361 commands.
+  assert.equal(core.length, 389, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 389);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
   assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 323);
-  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 34);
+  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 35);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
@@ -423,8 +427,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 360,
-    '357 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 361,
+    '358 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

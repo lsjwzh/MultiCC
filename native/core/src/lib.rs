@@ -11,6 +11,7 @@ pub mod download_ticket;
 pub mod exact_secret;
 pub mod events;
 pub mod http_gate;
+pub mod http_entry;
 pub mod http_send;
 pub mod machines;
 pub mod model_request_policy;
@@ -64,3 +65,5 @@ pub mod provider_attempt_lifecycle;
 pub mod provider_credentials;
 pub mod provider_request;
 pub mod provider_store;
+
+pub mod auth_security;

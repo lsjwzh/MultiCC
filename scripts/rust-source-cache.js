@@ -166,7 +166,14 @@ function probeAddon(file, node = process.execPath) {
     if(['providerAttributeProxyUsage','providerObserveProxyOutcome','providerProxyFailure',
       'apiSanitizeMessage','apiNormalizeRejection','redactionRedactText','redactionRouteCapability',
       'redactionSecretKey','redactionAnchors','redactionExactFragments',
-      'providerScrubSemanticStructure','providerScrubSemanticJson','redactionRouteCapabilityValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      'RustAuthSecurity','authTimingSafeEqualText','authNormalizeRedirect','authNormalizeWsPath','authEscapeHtmlAttribute','httpAuthRoute','httpEntryGate','httpEntryAuthenticated','httpEntryCookie','httpEntryMakeRequestId','httpEntryCleanId','httpEntryRequestIds','providerScrubSemanticStructure','providerScrubSemanticJson','redactionRouteCapabilityValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['createCookie','verifyCookie','verifyAccessToken','issueWsTicket','consumeWsTicket','pruneTickets','ticketCount']
+      .some(key=>typeof a.RustAuthSecurity.prototype[key]!=='function')) process.exit(1);
+    const authAnchor={};
+    const auth=new a.RustAuthSecurity({getSecret:()=> 'probe-auth',now:()=>1700000000000,randomBytes:n=>Buffer.alloc(n,7)},authAnchor);
+    if(!auth.verifyCookie(auth.createCookie()) || !auth.verifyAccessToken('probe-auth')) process.exit(1);
+    const wsTicket=auth.issueWsTicket('/probe',{});
+    if(!auth.consumeWsTicket(wsTicket.ticket,'/probe') || auth.consumeWsTicket(wsTicket.ticket,'/probe')!==null || auth.ticketCount()!==0) process.exit(1);
     if(typeof a.RustExactSecretStreamRedactor!=='function'
       || ['push','setSecrets','flush','discard','pendingLength'].some(key=>typeof a.RustExactSecretStreamRedactor.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustCurrentAttempts!=='function'

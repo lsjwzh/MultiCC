@@ -160,9 +160,11 @@ test('manifestHandler 404s without a complete publish and renders per request ot
 });
 
 test('wiring: manifest + IPA bypass auth, strangers’ binaries stay hidden, routes are mounted', () => {
-  const authSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'auth.js'), 'utf8');
-  assert.ok(authSource.includes("req.path === '/ios-ota/manifest.plist'"));
-  assert.ok(authSource.includes('json|apk|ipa)$/i.test(req.path)'));
+  // The native gate owns the exceptions; test-auth-routes verifies both URLs
+  // against a real HTTP server, including the still-protected install page.
+  const authSource = fs.readFileSync(path.join(__dirname, '..', 'native', 'core', 'src', 'http_entry.rs'), 'utf8');
+  assert.ok(authSource.includes('"/ios-ota/manifest.plist"'));
+  assert.ok(authSource.includes('"ipa"'));
 
   const staticSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'static-assets.js'), 'utf8');
   assert.ok(staticSource.includes("requestedPath !== '/multicc-ios.ipa'"));

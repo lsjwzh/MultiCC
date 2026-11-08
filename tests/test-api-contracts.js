@@ -327,11 +327,12 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(sessionAdmin.includes("app.get('/api/v1/directories/:id/workspace'"));
   assert.ok(orchestrationRoutes.includes("app.get('/api/v1/sessions/:id/waits'"));
   // The auth surface (shutdown gate, login/logout, gate middleware, exchange,
-  // ws-ticket) is composed from src/routes/auth.js; the wait-resolve bypass
-  // regex lives in that module now.
+  // ws-ticket) is composed from src/routes/auth.js. The gate delegates to Rust;
+  // real wait-resolve method/path authorization is covered by auth-routes.
   assert.ok(source.includes("createAuthRuntime } = require('./src/routes/auth')"));
   assert.ok(source.includes('authRuntime.mountRoutes(app)'));
-  assert.ok(authRoutes.includes("/^\\/api\\/wait\\/[^/]+\\/resolve$/"));
+  assert.ok(authRoutes.includes('getNative().httpEntryGate(stage, req, res, next, entryPort)'));
+  assert.ok(authRoutes.includes("app.use(gate('auth'))"));
   assert.doesNotMatch(source, /app\.post\(['"]\/api\/(?:v1\/)?sessions\/:id\/dispatch/);
   assert.equal(fs.existsSync(path.join(ROOT, 'src', 'routes', 'dispatch-contract.js')), false);
   assert.ok(source.includes("createVoiceHost } = require('./src/voice/host')"));

@@ -1669,6 +1669,15 @@
       ]
     },
     {
+      "path": "tests/test-auth-security-native.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-auto-provider-config.js",
       "tier": "core",
       "lane": "deterministic",

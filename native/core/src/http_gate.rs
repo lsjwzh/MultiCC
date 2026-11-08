@@ -16,14 +16,11 @@
 use std::collections::HashMap;
 
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 
 use crate::js::serde::js_json_stringify;
 use crate::js::string::js_trim;
 
 pub const COOKIE_NAME: &str = "multicc_auth";
-pub const COOKIE_VERSION: i64 = 1;
-pub const COOKIE_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 pub const API_VERSION: &str = "v1";
 
 // ── header text as Node exposes it ─────────────────────────────────────────
@@ -98,130 +95,10 @@ impl NodeHeaders {
     }
 }
 
-// ── crypto helpers (auth-security.js) ──────────────────────────────────────
-
-/// `timingSafeEqualText`: UTF-8 bytes, length first, then constant time.
-pub fn timing_safe_equal_text(left: &str, right: &str) -> bool {
-    let (a, b) = (left.as_bytes(), right.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
-    const BLOCK: usize = 64;
-    let mut block = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        block[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        block[..key.len()].copy_from_slice(key);
-    }
-    let mut inner = Sha256::new();
-    inner.update(block.map(|byte| byte ^ 0x36));
-    inner.update(message);
-    let mut outer = Sha256::new();
-    outer.update(block.map(|byte| byte ^ 0x5c));
-    outer.update(inner.finalize());
-    outer.finalize().into()
-}
-
-fn base64url(bytes: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
-/// `Buffer.from(text, 'base64url')`: both alphabets, padding and anything
-/// outside the alphabet ignored, a dangling sextet dropped.
-fn base64url_decode_lenient(text: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(text.len() * 3 / 4);
-    let mut buffer: u32 = 0;
-    let mut bits = 0u32;
-    for byte in text.bytes() {
-        let sextet = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'-' | b'+' => 62,
-            b'_' | b'/' => 63,
-            b'=' => break,
-            _ => continue,
-        };
-        buffer = (buffer << 6) | u32::from(sextet);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buffer >> bits) as u8);
-            buffer &= (1 << bits) - 1;
-        }
-    }
-    out
-}
-
-/// `sign(payload)`: empty when there is no secret.
-pub fn sign(secret: &str, payload: &str) -> String {
-    if secret.is_empty() {
-        return String::new();
-    }
-    base64url(&hmac_sha256(secret.as_bytes(), payload.as_bytes()))
-}
-
-/// `createCookie()` with the clock and the 8 nonce bytes supplied.
-pub fn create_cookie(secret: &str, now_ms: i64, nonce: [u8; 8]) -> String {
-    let iat = now_ms.div_euclid(1000);
-    let exp = (now_ms + COOKIE_TTL_MS).div_euclid(1000);
-    let claims = format!(
-        "{{\"v\":{COOKIE_VERSION},\"iat\":{iat},\"exp\":{exp},\"n\":\"{}\"}}",
-        base64url(&nonce)
-    );
-    let body = base64url(claims.as_bytes());
-    let signature = sign(secret, &body);
-    format!("{body}.{signature}")
-}
-
-fn js_integer(value: Option<&Value>) -> Option<f64> {
-    let number = value?.as_f64()?;
-    (number.is_finite() && number.fract() == 0.0).then_some(number)
-}
-
-/// `verifyCookie(cookie)`.
-pub fn verify_cookie(secret: &str, cookie: &str, now_ms: i64) -> bool {
-    if secret.is_empty() {
-        return false;
-    }
-    let parts: Vec<&str> = cookie.split('.').collect();
-    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-        return false;
-    }
-    if !timing_safe_equal_text(parts[1], &sign(secret, parts[0])) {
-        return false;
-    }
-    let decoded = String::from_utf8_lossy(&base64url_decode_lenient(parts[0])).into_owned();
-    let Ok(claims) = crate::json_lenient::from_str::<Value>(&decoded) else {
-        return false;
-    };
-    let current = now_ms.div_euclid(1000) as f64;
-    let version_ok = claims
-        .get("v")
-        .and_then(Value::as_f64)
-        .is_some_and(|v| v == COOKIE_VERSION as f64);
-    let (Some(iat), Some(exp)) = (js_integer(claims.get("iat")), js_integer(claims.get("exp")))
-    else {
-        return false;
-    };
-    if !version_ok {
-        return false;
-    }
-    if iat > current + 60.0 || exp <= current || exp <= iat {
-        return false;
-    }
-    (exp - iat) * 1000.0 <= (COOKIE_TTL_MS + 1000) as f64
-}
-
-/// `verifyAccessToken(candidate)`; `None` is any non-string value.
-pub fn verify_access_token(secret: &str, candidate: Option<&str>) -> bool {
-    !secret.is_empty() && candidate.is_some_and(|text| timing_safe_equal_text(text, secret))
-}
+pub use crate::auth_security::{
+    create_cookie, sign, timing_safe_equal_text, verify_access_token, verify_cookie, COOKIE_TTL_MS,
+    COOKIE_VERSION,
+};
 
 /// The local `parseCookies` in server.js: split on `;`, first `=` separates,
 /// both sides trimmed, later duplicates win, a pair with an empty name skipped.
@@ -690,37 +567,6 @@ mod tests {
 
     fn headers(pairs: &[(&str, &str)]) -> NodeHeaders {
         NodeHeaders::from_raw(pairs.iter().map(|(n, v)| (*n, v.as_bytes())))
-    }
-
-    #[test]
-    fn hmac_matches_rfc4231_case_2() {
-        let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
-        let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(
-            hex,
-            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
-        );
-    }
-
-    #[test]
-    fn cookie_round_trips_and_expires() {
-        let now = 1_700_000_000_123;
-        let cookie = create_cookie("secret-token", now, [1, 2, 3, 4, 5, 6, 7, 8]);
-        assert!(verify_cookie("secret-token", &cookie, now));
-        assert!(!verify_cookie("other-token", &cookie, now));
-        assert!(!verify_cookie("", &cookie, now));
-        assert!(!verify_cookie(
-            "secret-token",
-            &cookie,
-            now + COOKIE_TTL_MS + 1000
-        ));
-        assert!(!verify_cookie("secret-token", &format!("{cookie}.x"), now));
-        let (body, _) = cookie.split_once('.').unwrap();
-        let claims = String::from_utf8(base64url_decode_lenient(body)).unwrap();
-        assert_eq!(
-            claims,
-            "{\"v\":1,\"iat\":1700000000,\"exp\":1702592000,\"n\":\"AQIDBAUGBwg\"}"
-        );
     }
 
     #[test]

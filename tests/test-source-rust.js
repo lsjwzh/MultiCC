@@ -138,12 +138,16 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     'providerRequiredIdentity', 'providerPositiveInteger', 'providerTimeoutBudget', 'providerAttemptFields',
     'providerRevision', 'providerEncodeProxySession', 'providerDecodeProxySession', 'providerValidateAttemptTransition', 'providerBackgroundLingers', 'providerAuthorizeProxyRequest',
       'providerNonMainProducerKey', 'providerProxyActivity', 'providerBoundProxyAttempt',
-      'providerForceReleaseProducers', 'providerDrainStaleProducers', 'providerScrubSemanticJson']) {
+      'RustAuthSecurity', 'authTimingSafeEqualText', 'authNormalizeRedirect', 'authNormalizeWsPath', 'authEscapeHtmlAttribute', 'httpAuthRoute', 'providerForceReleaseProducers', 'providerDrainStaleProducers', 'providerScrubSemanticJson', 'httpEntryGate', 'httpEntryAuthenticated', 'httpEntryCookie', 'httpEntryMakeRequestId', 'httpEntryCleanId', 'httpEntryRequestIds']) {
     const stalePolicy = write(root, `stale-${name}.js`, `module.exports = {
       ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
     };`);
     assert.equal(probeAddon(stalePolicy), false, `source preflight must reject missing ${name}`);
   }
+  const partialAuth = write(root, 'partial-auth-security.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustAuthSecurity: class OldAuth {}
+  };`);
+  assert.equal(probeAddon(partialAuth), false, 'an auth constructor without the complete runtime cannot boot');
   const staleFenceMethods = write(root, 'stale-attempt-methods.js', `module.exports = {
     ...require(${JSON.stringify(path.resolve(addon))}), RustProviderAttemptLifecycle: class OldLifecycle {}
   };`);

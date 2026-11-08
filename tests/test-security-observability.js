@@ -19,7 +19,7 @@ const {
 const { atomicWriteJson, secureRuntimeData } = require('../src/runtime-security');
 const { createPaths } = require('../src/paths');
 const { installWsBackpressure } = require('../src/ws-backpressure');
-const { requestIdMiddleware } = require('../src/http-errors');
+const { requestIdMiddleware, cleanIncomingId, makeRequestId } = require('../src/http-errors');
 const { createHealthHandlers } = require('../src/health');
 
 test('authenticated installs auto-bind to IPv4 LAN while explicit policy stays fail-closed', () => {
@@ -176,6 +176,30 @@ test('provider route capability redaction is invariant to every possible chunk b
   const ordinary = createExactSecretStreamRedactor([capability]);
   assert.equal(ordinary.push('answer ends in p'), 'answer ends in ');
   assert.equal(ordinary.flush(), 'p', 'an explicit stream boundary preserves a harmless held prefix');
+});
+
+test('request IDs reject unsafe headers without coercion and preserve correlation fallback', () => {
+  const forbiddenCoercion = { toString() { throw new Error('must not coerce header'); } };
+  const values = [undefined, null, false, 0, 1n, Symbol('id'), [], ['valid'], forbiddenCoercion,
+    new String('valid'), '', 'a'.repeat(128), 'a'.repeat(129), 'ABC_123:part-1.2',
+    'a\n', 'a\r', 'a\u2028', 'a\u2029', 'a\0', 'a b', '中', '\ud800', '😀'];
+  for (const value of values) {
+    const expected = typeof value === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value) ? value : null;
+    assert.strictEqual(cleanIncomingId(value), expected);
+  }
+  for (const request of values) for (const correlation of ['trace-1', '', undefined, ['trace-1']]) {
+    const req = { headers: { 'x-request-id': request, 'x-correlation-id': correlation } };
+    const res = { locals: {}, setHeader() {} };
+    let called = 0;
+    requestIdMiddleware(req, res, () => called++);
+    const expectedId = cleanIncomingId(request);
+    if (expectedId) assert.strictEqual(req.id, expectedId);
+    else assert.match(req.id, /^[0-9a-f]{8}$/);
+    assert.strictEqual(req.correlationId, cleanIncomingId(correlation) || req.id);
+    assert.strictEqual(res.locals.requestId, req.id);
+    assert.strictEqual(called, 1);
+  }
+  assert.match(makeRequestId(), /^[0-9a-f]{8}$/);
 });
 
 test('request middleware propagates request and correlation IDs', () => {
