@@ -1,7 +1,6 @@
 'use strict';
 
 const crypto = require('crypto');
-const { redact } = require('../observability');
 const { extractUpstreamError } = require('../upstream-error');
 const { classifyProviderError } = require('../provider-error');
 const { getNative } = require('../native/runtime');
@@ -160,37 +159,10 @@ const TEXT_ENTITLEMENT_REJECTION = Object.freeze({
 // The host's Rust proxy reports the rejection as a structured object. It
 // crosses a process boundary, so it is untrusted input: only the contract's
 // own keys, only known enum values, and free text capped so a malformed event
-// can never inflate the attempt record or a client frame.
-const REJECTION_KINDS = new Set(['transient', 'window', 'entitlement', 'billing']);
-const REJECTION_SCOPES = new Set(['request', 'model', 'account']);
-const REJECTION_WINDOWS = new Set(['5h', '1d', '1wk', '1m']);
-const REJECTION_SOURCES = new Set(['headers', 'code', 'text', 'status']);
-const REJECTION_TEXT_MAX = 80;
-
-function rejectionText(value) {
-  if (typeof value !== 'string') return null;
-  const text = value.trim();
-  return text ? text.slice(0, REJECTION_TEXT_MAX) : null;
-}
-
+// can never inflate the attempt record or a client frame
+// (native/addon/src/api_error_text.rs).
 function normalizeRejection(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const kind = String(value.kind || '').trim().toLowerCase();
-  if (!REJECTION_KINDS.has(kind)) return null;
-  const scope = String(value.scope || '').trim().toLowerCase();
-  const window = value.window == null ? null : String(value.window).trim().toLowerCase();
-  const source = String(value.source || '').trim().toLowerCase();
-  const resetMs = Number(value.resetMs);
-  return Object.freeze({
-    kind,
-    scope: REJECTION_SCOPES.has(scope) ? scope : null,
-    window: window != null && REJECTION_WINDOWS.has(window) ? window : null,
-    resetMs: Number.isFinite(resetMs) && resetMs > 0 && resetMs <= Number.MAX_SAFE_INTEGER
-      ? Math.round(resetMs) : null,
-    code: rejectionText(value.code),
-    model: rejectionText(value.model),
-    source: REJECTION_SOURCES.has(source) ? source : null,
-  });
+  return getNative().apiNormalizeRejection(value);
 }
 // Reset guidance embedded in the provider's error text, e.g. Codex's
 // "It will reset at 2026-09-20 18:11:35 +0800 CST." Some CLIs only state the
@@ -201,7 +173,6 @@ const RESET_UNIT_MS = Object.freeze({ second: 1000, minute: 60_000, hour: 3_600_
 // A reset further out than this is treated as unusable guidance (misparse or a
 // plan change), which falls back to the ordinary non-retryable quota branch.
 const MAX_PARSED_RESET_MS = 30 * 86_400_000;
-const MAX_SANITIZED_MESSAGE = 240;
 
 function numberOrNull(value) {
   if (value == null || value === '') return null;
@@ -233,17 +204,10 @@ function sourceMessage(raw) {
   return direct || '';
 }
 
-function sanitizeMessage(value, fallback = 'Upstream API request failed', maxLength = MAX_SANITIZED_MESSAGE) {
-  let message = String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
-  message = String(redact(message));
-  message = message
-    .replace(/(?:sk|sess|key|token|cookie|auth)[-_A-Za-z0-9.]{8,}/ig, '[REDACTED]')
-    .replace(/\b[A-Fa-f0-9]{24,}\b/g, '[ID]')
-    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[ID]')
-    .replace(/[A-Z]:\\[^\s]+|\/(?:Users|home|var|tmp)\/[^\s]+/g, '[PATH]')
-    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, '[ACCOUNT]');
-  if (!message) message = fallback;
-  return message.slice(0, maxLength);
+// Collapsed, redacted (native/core/src/redaction.rs), the fallback when
+// nothing is left, capped at 240 UTF-16 units by default.
+function sanitizeMessage(value, fallback, maxLength) {
+  return getNative().apiSanitizeMessage(value, fallback, maxLength);
 }
 
 // Provider-owned fallback only: distinguishes a short error envelope rendered

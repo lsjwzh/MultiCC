@@ -1,7 +1,7 @@
 'use strict';
 
 const { renderPrompt } = require('../message-composer');
-const { completion, createCompletionTracker } = require('./completion');
+const { createProtocolCompletionTracker } = require('./completion');
 const { displayNameOf } = require('../cli/cli-capability');
 
 // 1.74.1 的 ACP 目录不包含 BYOK 模型；原生 headless 支持相同配置与恢复。
@@ -34,12 +34,7 @@ function createCommandCodeAdapter({ cmd, env = process.env }) {
       return { cmd, args, payload };
     },
     createCompletionTracker() {
-      return createCompletionTracker({ observe(raw) {
-        const event = raw.event || raw;
-        if (event.type === 'error') return completion('failed', 'commandcode/error');
-        if (raw.type !== 'result') return null;
-        return completion(raw.subtype === 'success' && raw.stopReason === 'end_turn' ? 'completed' : 'failed', `commandcode/${raw.stopReason || raw.subtype || 'unknown'}`);
-      } });
+      return createProtocolCompletionTracker('commandcode');
     },
     decodeEvent(raw) {
       if (!raw || typeof raw !== 'object') return [];

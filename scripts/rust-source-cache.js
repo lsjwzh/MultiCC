@@ -123,6 +123,54 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.planTaskContextRead!=='function' || typeof a.selectTaskContextRecords!=='function'
       || typeof a.rankTaskContextCandidates!=='function' || typeof a.RustTaskReadModel!=='function' || a.taskReadModelProtocolVersion?.()!==1) process.exit(1);
     if(['quotaGuardRequestValue','RustQuotaGuard'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(typeof a.quotaRejectionRequestValue!=='function') process.exit(1);
+    if(typeof a.modelRequestPolicyValue!=='function') process.exit(1);
+    if(typeof a.retryPolicyValue!=='function') process.exit(1);
+    if(typeof a.RustRequestTimer!=='function') process.exit(1);
+    if(typeof a.RustRequestWatch!=='function') process.exit(1);
+    if(a.cprRequestLifecycleVersion?.()!==3 || typeof a.RustCprExchange!=='function'
+      || ['startStreamWatch','stopStreamWatch','finishStreamWatch','noteStreamProgress','streamProgressed','streamTimeoutCode'].some(key=>typeof a.RustCprExchange.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustModelStreamProgress!=='function') process.exit(1);
+    if(typeof a.RustProviderAttemptLifecycle!=='function') process.exit(1);
+    if(['providerEventFence','providerHostTextEnvelope'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['providerRequiredIdentity','providerPositiveInteger','providerTimeoutBudget','providerAttemptFields',
+      'providerRevision','providerEncodeProxySession','providerDecodeProxySession','providerValidateAttemptTransition', 'providerBackgroundLingers', 'providerAuthorizeProxyRequest',
+      'providerNonMainProducerKey', 'providerProxyActivity', 'providerBoundProxyAttempt',
+      'providerForceReleaseProducers', 'providerDrainStaleProducers'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['chatOwnsCurrentRunner','chatAssignKillReason','chatClearSucceededErrors','chatRecordResultEvent',
+      'chatRecordCloseResult','chatRecordPartialCheckpoint','chatHasPartialCheckpoint'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['cliCompletion','cliIsCompleted','cliIsMainResult','cliResultCompletion','cliProtocolCompletion',
+      'cliProxyFailureCompatible','cliCanPersistCompletion'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(typeof a.RustCliCompletionTracker!=='function'
+      || ['acceptsRaw','observeDecoded','observeProtocol','finish'].some(key=>typeof a.RustCliCompletionTracker.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustStepCompletionTracker!=='function'
+      || ['observe','close'].some(key=>typeof a.RustStepCompletionTracker.prototype[key]!=='function')) process.exit(1);
+    for(const name of ['RustKimiCompletionTracker','RustPiCompletionTracker']) {
+      if(typeof a[name]!=='function' || ['observe','close'].some(key=>typeof a[name].prototype[key]!=='function')) process.exit(1);
+    }
+    if(typeof a.evaluateChatPostTurn!=='function' || typeof a.decideChatRunnerFinality!=='function' || typeof a.RustChatTurnLifecycle!=='function'
+      || ['resultDurable','resultRunnerId','postTurnClaimed','setResultDurable','setResultRunnerId',
+        'setPostTurnClaimed','claimPostTurn','beginResultAppend','endResultAppend',
+        'recordConfirmedResult','hasConfirmedResult','confirmedResultOwner'].some(key=>typeof a.RustChatTurnLifecycle.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustChatRunnerLifecycle!=='function'
+      || ['usageRecorded','setUsageRecorded','claimUsage','beginUsage','endUsage'].some(key=>typeof a.RustChatRunnerLifecycle.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustProviderAttemptGenerations!=='function'
+      || typeof a.RustProviderAttemptGenerations.prototype.next!=='function') process.exit(1);
+    if(typeof a.RustCurrentAttempts!=='function'
+      || ['get','set','beginAdmission','endAdmission'].some(key=>typeof a.RustCurrentAttempts.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustNonMainProducers!=='function'
+      || ['start','end','hasActive','bindUsage'].some(key=>typeof a.RustNonMainProducers.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustMainProducers!=='function' || typeof a.RustMainProducer!=='function'
+      || ['getActive','setActive','deleteActive','getEnded','setEnded','deleteEnded','hasEnded'].some(key=>typeof a.RustMainProducers.prototype[key]!=='function')
+      || ['count','ambiguous','lastRequestAt','attempt','proxyRouteToken'].some(key=>typeof Object.getOwnPropertyDescriptor(a.RustMainProducer.prototype,key)?.get!=='function')
+      || ['count','ambiguous','lastRequestAt'].some(key=>typeof Object.getOwnPropertyDescriptor(a.RustMainProducer.prototype,key)?.set!=='function')) process.exit(1);
+    if(['snapshot','advance','reconcileHostError','budget','completed','observeFailure',
+      'stallRetryExhausted','deadlineReached','retireIfStalled','status','running','succeeded',
+      'setOutcome','setErrorCategory','setFinishedAt','matches'].some(key=>typeof a.RustProviderAttemptLifecycle.prototype[key]!=='function')) process.exit(1);
+    if(['accepts','arm','progress','finish','isolateRetryBudget','armed','finished','progressed',
+      'idleMs','connectMs','deadlineAt'].some(key=>typeof a.RustRequestWatch.prototype[key]!=='function')) process.exit(1);
+    if(typeof a.RustRequestTimer.prototype.cancel!=='function'
+      || ['feed','feedText'].some(key=>typeof a.RustModelStreamProgress.prototype[key]!=='function')) process.exit(1);
     if(['cliSwitchCatalog','cliSwitchRequest','prepareCliSwitchRoute','turnRequestCatalog','turnRequestRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     (async()=>{ const model=new a.RustTaskReadModel();
       const run=async command=>JSON.parse((await model.run(JSON.stringify({op:'air',command}))).result);

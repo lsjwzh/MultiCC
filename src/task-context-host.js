@@ -86,8 +86,14 @@ function createTaskContextHost(options = {}) {
     const state = getState(sessionId);
     if (!message.taskId && state?._currentTaskId) message.taskId = state._currentTaskId;
     const saved = append(sessionId, message);
-    const board = getTaskBoard();
-    if (saved && board?.onMessagePersisted) board.onMessagePersisted(sessionId, message);
+    try {
+      const board = getTaskBoard();
+      if (saved && board?.onMessagePersisted) board.onMessagePersisted(sessionId, message);
+    } catch (_) {
+      // History was already persisted; an observer failure must not turn it
+      // into a failed append and cause the caller to write the message again.
+      try { console.warn('[multicc/task-context] message projection failed after append'); } catch (_) {}
+    }
     return saved;
   }
 

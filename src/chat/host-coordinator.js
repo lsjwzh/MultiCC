@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { getNative } = require('../native/runtime');
 const {
   ownsCurrentRunner,
   assignKillReason,
@@ -9,6 +10,12 @@ const {
   recordPartialCheckpoint,
   hasMatchingPartialCheckpoint,
   claimDurableUsage,
+  reserveResultAppend,
+  releaseResultAppend,
+  recordConfirmedResult,
+  confirmedResult,
+  reserveUsageWrite,
+  releaseUsageWrite,
   evaluatePostTurn,
   claimPostTurn,
 } = require('./turn-lifecycle');
@@ -69,31 +76,7 @@ function assistantCheckpointKey(output = {}) {
 }
 
 function decideRunnerFinality(runner, facts = {}) {
-  if (!runner) return Object.freeze({ final: false, code: 'runner_required' });
-  if (runner.killReason || facts.killReason) {
-    return Object.freeze({ final: false, code: 'explicit_lifecycle_stop' });
-  }
-  if (runner.retryPlanned || facts.retryPlanned === true) {
-    return Object.freeze({ final: false, code: 'retry_pending' });
-  }
-  if (facts.apiError === true) return Object.freeze({ final: false, code: 'api_error' });
-  if (facts.adapterError === true) return Object.freeze({ final: false, code: 'adapter_error' });
-
-  // A persistent Claude stream is final only after its result event. Process
-  // runners retain the legacy clean-exit fallback, but never on a retry. This
-  // distinction is deliberately explicit so an adapter cannot accidentally
-  // promote a truncated stream to a final answer.
-  if (runner.kind === 'stream') {
-    return Object.freeze({
-      final: runner.resultEvent === true,
-      code: runner.resultEvent === true ? null : 'stream_result_event_required',
-    });
-  }
-  const final = runner.resultEvent === true || (facts.normalExit === true && facts.isRetry !== true);
-  return Object.freeze({
-    final,
-    code: final ? null : facts.isRetry === true ? 'retry_result_event_required' : 'clean_exit_required',
-  });
+  return Object.freeze(getNative().decideChatRunnerFinality(runner, facts));
 }
 
 function makeAppendResult(input = {}) {
@@ -143,56 +126,85 @@ function createChatHostCoordinator(rawPorts, options = {}) {
     const { turn, runner } = input;
     if (!isCurrent(input)) return makeAppendResult({ code: 'stale_runner' });
     if (!turn || !runner) return makeAppendResult({ code: 'runner_required' });
+    const saved = confirmedResult(turn);
+    if (saved && (saved.runner !== runner || saved.runnerId !== runner.runnerId)) {
+      return makeAppendResult({ code: 'result_owned_by_other_runner' });
+    }
     if (turn.resultDurable) {
+      if (turn.resultRunnerId !== runner.runnerId) return makeAppendResult({ code: 'result_owned_by_other_runner' });
       return makeAppendResult({ persisted: true, durable: true, code: 'already_durable' });
     }
 
-    const boundary = input.boundary === 'result' ? 'result' : 'close';
-    if (boundary === 'result') runner.resultEvent = true;
-    const finality = boundary === 'result'
-      ? Object.freeze({ final: true, code: null })
-      : decideRunnerFinality(runner, input.facts);
-    const checkpointKey = clean(input.checkpointKey);
-    if (!finality.final && checkpointKey && hasMatchingPartialCheckpoint(runner, checkpointKey)) {
-      return makeAppendResult({ persisted: true, partial: true, code: 'partial_already_durable' });
-    }
-    if (!input.message) {
-      if (boundary === 'result') recordResultEvent(turn, runner, { current: true, persisted: false });
-      return makeAppendResult({ code: 'message_required', partial: !finality.final });
-    }
-
-    let persisted = false;
-    let appendError = null;
+    if (!reserveResultAppend(turn)) return makeAppendResult({ code: 'result_append_in_flight' });
     try {
-      persisted = succeeded(ports.history.appendFinal(Object.freeze({
-        sessionId: turn.sessionId,
-        turnId: turn.turnId,
-        runnerId: runner.runnerId,
-        runnerKind: runner.kind,
-        boundary,
-        final: finality.final,
-        partial: !finality.final,
-        checkpointKey: checkpointKey || null,
-        message: input.message,
-      })));
-    } catch (error) {
-      appendError = error && error.message ? String(error.message) : 'append failed';
-    }
+      const boundary = input.boundary === 'result' ? 'result' : 'close';
+      if (boundary === 'result') runner.resultEvent = true;
+      if (saved) {
+        if (!isCurrent(input)) return makeAppendResult({ code: 'stale_runner' });
+        const proof = recordCloseResult(turn, runner, { current: true, persisted: true, final: true });
+        return makeAppendResult({ persisted: true, durable: proof.resultDurable === true, code: 'already_durable' });
+      }
+      const finality = boundary === 'result'
+        ? Object.freeze({ final: true, code: null })
+        : decideRunnerFinality(runner, input.facts);
+      const checkpointKey = clean(input.checkpointKey);
+      if (!finality.final && checkpointKey && hasMatchingPartialCheckpoint(runner, checkpointKey)) {
+        return makeAppendResult({ persisted: true, partial: true, code: 'partial_already_durable' });
+      }
+      if (!input.message) {
+        if (boundary === 'result') recordResultEvent(turn, runner, { current: true, persisted: false });
+        return makeAppendResult({ code: 'message_required', partial: !finality.final });
+      }
 
-    const proof = boundary === 'result'
-      ? recordResultEvent(turn, runner, { current: true, persisted })
-      : recordCloseResult(turn, runner, { current: true, persisted, final: finality.final });
-    if (persisted && !finality.final && checkpointKey) {
-      recordPartialCheckpoint(turn, runner, { current: true, persisted: true, checkpointKey });
+      if (!isCurrent(input)) return makeAppendResult({ code: 'stale_runner' });
+
+      let persisted = false;
+      let appendError = null;
+      let appendInput;
+      try {
+        appendInput = Object.freeze({
+          sessionId: turn.sessionId,
+          turnId: turn.turnId,
+          runnerId: runner.runnerId,
+          runnerKind: runner.kind,
+          boundary,
+          final: finality.final,
+          partial: !finality.final,
+          checkpointKey: checkpointKey || null,
+          message: input.message,
+        });
+        persisted = succeeded(ports.history.appendFinal(appendInput));
+      } catch (error) {
+        appendError = error && error.message ? String(error.message) : 'append failed';
+      }
+
+      if (persisted && finality.final && !recordConfirmedResult(turn, runner, appendInput.runnerId)) {
+        return makeAppendResult({ attempted: true, persisted: true, code: 'result_receipt_conflict' });
+      }
+
+      // The append can synchronously replace the active runner. Preserve the
+      // persisted fact while refusing to promote an obsolete result to the
+      // current turn or run effects for it.
+      if (!isCurrent(input)) {
+        return makeAppendResult({ attempted: true, persisted, partial: !finality.final, code: 'stale_runner' });
+      }
+      const proof = boundary === 'result'
+        ? recordResultEvent(turn, runner, { current: true, persisted })
+        : recordCloseResult(turn, runner, { current: true, persisted, final: finality.final });
+      if (persisted && !finality.final && checkpointKey) {
+        recordPartialCheckpoint(turn, runner, { current: true, persisted: true, checkpointKey });
+      }
+      return makeAppendResult({
+        attempted: true,
+        persisted,
+        durable: proof.resultDurable === true,
+        partial: !finality.final,
+        code: appendError ? 'append_failed' : proof.code,
+        error: appendError,
+      });
+    } finally {
+      releaseResultAppend(turn);
     }
-    return makeAppendResult({
-      attempted: true,
-      persisted,
-      durable: proof.resultDurable === true,
-      partial: !finality.final,
-      code: appendError ? 'append_failed' : proof.code,
-      error: appendError,
-    });
   }
 
   function commitUsage(input = {}) {
@@ -206,58 +218,70 @@ function createChatHostCoordinator(rawPorts, options = {}) {
     }
     if (runner.usageRecorded === true) return makeUsageResult({ committed: true, code: 'usage_already_recorded' });
 
-    const initialContext = Object.freeze({
-      sessionId: turn.sessionId,
-      turnId: turn.turnId,
-      runnerId: runner.runnerId,
-      idempotencyKey: `usage:${turn.turnId}:${runner.runnerId}`,
-      attribution: snapshotObject(input.attribution),
-      usage: snapshotObject(input.usage),
-    });
-    const context = runner.usageCommitContext || initialContext;
+    if (!reserveUsageWrite(runner)) return makeUsageResult({ code: 'usage_in_flight' });
+    try {
+      const initialContext = Object.freeze({
+        sessionId: turn.sessionId,
+        turnId: turn.turnId,
+        runnerId: runner.runnerId,
+        idempotencyKey: `usage:${turn.turnId}:${runner.runnerId}`,
+        attribution: snapshotObject(input.attribution),
+        usage: snapshotObject(input.usage),
+      });
+      const context = runner.usageCommitContext || initialContext;
 
-    if (runner.legacyUsageRecorded !== true) {
-      let committed = false;
-      let commitError = null;
-      try {
-        committed = succeeded(ports.usage.commit(Object.freeze({
-          sessionId: context.sessionId,
-          turnId: context.turnId,
-          runnerId: context.runnerId,
-          idempotencyKey: context.idempotencyKey,
-          attribution: context.attribution,
-          usage: context.usage,
-        })));
-      } catch (error) {
-        commitError = error && error.message ? String(error.message) : 'usage commit failed';
+      if (!isCurrent(input)) return makeUsageResult({ code: 'stale_runner' });
+
+      if (runner.legacyUsageRecorded !== true) {
+        let committed = false;
+        let commitError = null;
+        try {
+          committed = succeeded(ports.usage.commit(Object.freeze({
+            sessionId: context.sessionId,
+            turnId: context.turnId,
+            runnerId: context.runnerId,
+            idempotencyKey: context.idempotencyKey,
+            attribution: context.attribution,
+            usage: context.usage,
+          })));
+        } catch (error) {
+          commitError = error && error.message ? String(error.message) : 'usage commit failed';
+        }
+        if (!committed) {
+          return makeUsageResult({ attempted: true, code: 'usage_commit_failed', error: commitError });
+        }
+        // The legacy aggregate is not intrinsically idempotent. Retain the exact
+        // snapshot that was committed so a retry cannot add the usage a second
+        // time or drift attribution mid-finalization.
+        runner.legacyUsageRecorded = true;
+        runner.usageCommitContext = context;
       }
-      if (!committed) {
-        return makeUsageResult({ attempted: true, code: 'usage_commit_failed', error: commitError });
+
+      if (!isCurrent(input)) return makeUsageResult({ attempted: true, committed: true, code: 'stale_runner' });
+
+      const claim = claimDurableUsage(runner, { resultDurable: true });
+      if (!claim.ok) return makeUsageResult({ attempted: true, committed: true, code: claim.code });
+
+      if (!isCurrent(input)) return makeUsageResult({ attempted: true, committed: true, code: 'stale_runner' });
+
+      let observerError = null;
+      if (ports.usage.afterCommit) {
+        try {
+          ports.usage.afterCommit(Object.freeze({
+            sessionId: turn.sessionId,
+            turnId: turn.turnId,
+            runnerId: runner.runnerId,
+            attribution: context.attribution,
+          }));
+        } catch (error) {
+          observerError = error && error.message ? String(error.message) : 'usage observer failed';
+        }
       }
-      // The legacy aggregate is not intrinsically idempotent. Retain the exact
-      // snapshot that was committed so a retry cannot add the usage a second
-      // time or drift attribution mid-finalization.
-      runner.legacyUsageRecorded = true;
-      runner.usageCommitContext = context;
+      if (!isCurrent(input)) return makeUsageResult({ attempted: true, committed: true, code: 'stale_runner', observerError });
+      return makeUsageResult({ attempted: true, committed: true, observerError });
+    } finally {
+      releaseUsageWrite(runner);
     }
-
-    const claim = claimDurableUsage(runner, { resultDurable: true });
-    if (!claim.ok) return makeUsageResult({ attempted: true, committed: true, code: claim.code });
-
-    let observerError = null;
-    if (ports.usage.afterCommit) {
-      try {
-        ports.usage.afterCommit(Object.freeze({
-          sessionId: turn.sessionId,
-          turnId: turn.turnId,
-          runnerId: runner.runnerId,
-          attribution: context.attribution,
-        }));
-      } catch (error) {
-        observerError = error && error.message ? String(error.message) : 'usage observer failed';
-      }
-    }
-    return makeUsageResult({ attempted: true, committed: true, observerError });
   }
 
   function finalize(input = {}) {
@@ -270,6 +294,8 @@ function createChatHostCoordinator(rawPorts, options = {}) {
     const append = appendResult(input);
     const usage = commitUsage({
       ...input,
+      get currentTurn() { return input.currentTurn; },
+      get currentRunner() { return input.currentRunner; },
       usage: input.usage,
     });
     const decision = evaluatePostTurn(input.turn, runner, {

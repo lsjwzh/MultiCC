@@ -27,7 +27,7 @@ const responseStream = sse({ type: 'response.output_text.delta', delta: '你好'
 
 async function harness(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rust-cpr-'));
-  const requests = [], usage = [], activity = [], deltas = [], rates = [];
+  const requests = [], usage = [], activity = [], deltas = [], rates = [], outcomes = [];
   const upstream = http.createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
     requests.push({ headers: req.headers, body, url: req.url });
@@ -50,6 +50,7 @@ async function harness(t, options = {}) {
   const protocol = options.protocol || 'claude';
   if (protocol === 'codex') app.use(express.json({ limit: '50mb' }));
   const mounted = runtime.mountProtocolProxies(app, { protocols: [protocol], ...callbacks,
+    onProxyOutcome: e => outcomes.push(e),
     ...(options.authorize ? { authorizeProxyRequest: options.authorize } : {}),
     codexProxyTrace: false,
     ...(protocol === 'claude' ? { claudeProxy: { captureEnabled: false, ...options.proxy?.(upstreamUrl) } }
@@ -60,7 +61,7 @@ async function harness(t, options = {}) {
     await Promise.allSettled(Object.values(mounted).map(m => m?.close?.()));
     await Promise.all([close(server), close(upstream)]); fs.rmSync(root, { recursive: true, force: true });
   });
-  return { base, entries, runtime, requests, usage, activity, deltas, rates,
+  return { base, entries, runtime, requests, usage, activity, deltas, rates, outcomes,
     post: (url, body, headers = {}) => fetch(base + url, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json', ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) }) };
 }
 
@@ -349,6 +350,7 @@ rustTest('429 结算事件透传结构化 rejection，旧原生模块不新增�
     authorizeProviderRequest: native.authorizeProviderRequest,
     codexOfficialError: native.codexOfficialError,
     cprProtocolVersion: () => 1,
+    cprRequestLifecycleVersion: () => 3,
     cprRoute: async () => JSON.stringify({ protocol: 'claude', providerId: 'main', mainProviderId: 'main',
       sessionId: 'fixture-session', role: 'main', agentRole: '', routeName: 'main', model: 'wire-model',
       apiPath: '/v1/messages', query: '', isStream: false }),
@@ -391,6 +393,149 @@ rustTest('首包等待有上限，错误回调不会包含上游地址或能力�
   const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
   assert.equal(res.status, 502); const text = await res.text(); assert.match(text, /UPSTREAM_HEADERS_TIMEOUT/);
   assert.doesNotMatch(text, /test-upstream-key|127\.0\.0\.1/); assert.equal(h.usage[0].errorCode, 'UPSTREAM_HEADERS_TIMEOUT');
+});
+
+rustTest('Rust 上游 CONNECT 悬挂按当前请求连接预算退出并归因', async t => {
+  const proxy = http.createServer();
+  const sockets = new Set();
+  let connections = 0;
+  proxy.on('connect', (_request, socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    // Keep the CONNECT handshake open so the test does not depend on the
+    // machine's DNS or external network.
+    if (++connections === 2) setTimeout(() => socket.destroy(), 150);
+  });
+  const proxyUrl = await listen(proxy);
+  t.after(async () => { for (const socket of sockets) socket.destroy(); await close(proxy); });
+  const resolver = () => null;
+  resolver.resolveProxyUrl = async () => proxyUrl;
+  const attempt = { sessionId: 'fixture', turnId: 't1', routeAttemptId: 'r1',
+    connectTimeoutMs: 60, stallTimeoutMs: 1000, requestTimeoutMs: 5000 };
+  const h = await harness(t, {
+    authorize: args => ({ ok: true, attempt: { ...attempt,
+      connectTimeoutMs: args.sessionId === 'second' ? 500 : 60 } }),
+    entries: () => ({ main: { id: 'main', name: 'test', settingsConfig: { env: {
+      ANTHROPIC_BASE_URL: 'https://fixture.invalid', ANTHROPIC_AUTH_TOKEN: 'test-key',
+    } } } }),
+    proxy: () => ({ resolveUpstreamAgent: resolver }),
+  });
+  // The watchdog writes a complete 504 before destroying the socket. Depending
+  // on local buffering the client may instead observe that destruction first.
+  const response = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody).catch(() => null);
+  if (response) {
+    assert.equal(response.status, 504);
+    assert.equal((await response.json()).error.code, 'model_connect_timeout');
+  }
+  assert.equal(h.outcomes.length, 1);
+  assert.equal(h.outcomes[0].errorCode, 'model_connect_timeout');
+  assert.equal(h.outcomes[0].proxyOutcome.termination, 'upstream_failure');
+  assert.equal(h.outcomes[0].routeAttemptId, 'r1');
+  const second = await h.post('/claude-proxy/main/second/v1/messages', claudeBody);
+  assert.equal(second.status, 502);
+  assert.match(await second.text(), /UPSTREAM_CONNECT_FAILED/);
+  assert.equal(h.outcomes.length, 2);
+  assert.notEqual(h.outcomes[1].errorCode, 'model_connect_timeout',
+    'same proxy with a larger budget must not reuse the short-timeout client');
+});
+
+rustTest('Rust 传输的有效 SSE 帧续期空闲预算而无需 Node 再解析', async t => {
+  const toolStart = sse({ type: 'content_block_start', index: 0,
+    content_block: { type: 'tool_use', id: 'fixture', name: 'test', input: {} } });
+  const stop = sse({ type: 'message_stop' });
+  const h = await harness(t, {
+    authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 't1', routeAttemptId: 'r1',
+      connectTimeoutMs: 1000, stallTimeoutMs: 500, requestTimeoutMs: 5000 } }),
+    upstream: (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.flushHeaders();
+      let count = 0;
+      const timer = setInterval(() => {
+        if (++count <= 3) res.write(toolStart);
+        else { clearInterval(timer); res.end(stop); }
+      }, 220);
+      res.once('close', () => clearInterval(timer));
+    },
+  });
+  const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), toolStart.repeat(3) + stop);
+  assert.equal(h.deltas.length, 0, 'the tool-start frame must itself renew the watchdog');
+  assert.equal(h.outcomes.length, 1);
+  assert.equal(h.outcomes[0].proxyOutcome.termination, 'completed');
+});
+
+rustTest('Rust 流计时器在首条有效帧前和进度后分别归因，并关闭上游', async t => {
+  for (const progress of [false, true]) {
+    let closed;
+    const upstreamClosed = new Promise(resolve => { closed = resolve; });
+    const frame = sse({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'x' } });
+    const h = await harness(t, {
+      authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 't1', routeAttemptId: 'r1',
+        connectTimeoutMs: 1000, stallTimeoutMs: 180, requestTimeoutMs: 3000 } }),
+      upstream: (_req, res) => {
+        res.once('close', closed);
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.flushHeaders();
+        if (progress) res.write(frame);
+        else res.write(': keepalive\n\n');
+      },
+    });
+    const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+    assert.equal(res.status, 200);
+    await res.text().catch(() => {});
+    await Promise.race([upstreamClosed, new Promise((_, reject) => setTimeout(() => reject(new Error('upstream not closed')), 2500))]);
+    assert.equal(h.outcomes.length, 1);
+    assert.equal(h.outcomes[0].errorCode, progress ? 'stream_idle_timeout' : 'response_stalled_before_response');
+    assert.equal(h.outcomes[0].proxyOutcome.termination, 'upstream_failure');
+  }
+});
+
+rustTest('Rust 流持续输出时总截止仍生效且不被空闲续期延长', async t => {
+  const frame = sse({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'x' } });
+  let closed;
+  const upstreamClosed = new Promise(resolve => { closed = resolve; });
+  const h = await harness(t, {
+    authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 't1', routeAttemptId: 'r1',
+      connectTimeoutMs: 1000, stallTimeoutMs: 700, requestTimeoutMs: 340 } }),
+    upstream: (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' }); res.flushHeaders();
+      const timer = setInterval(() => res.write(frame), 70);
+      res.once('close', () => { clearInterval(timer); closed(); });
+    },
+  });
+  const started = Date.now();
+  const res = await h.post('/claude-proxy/main/fixture/v1/messages', claudeBody);
+  assert.equal(res.status, 200);
+  await res.text().catch(() => {});
+  await Promise.race([upstreamClosed, new Promise((_, reject) => setTimeout(() => reject(new Error('upstream not closed')), 2500))]);
+  assert.ok(Date.now() - started < 2000);
+  assert.equal(h.outcomes.length, 1);
+  assert.equal(h.outcomes[0].errorCode, 'model_request_deadline');
+});
+
+rustTest('Rust 流的客户端取消与计时竞争只终结一次，不留下上游连接', async t => {
+  let closed;
+  const upstreamClosed = new Promise(resolve => { closed = resolve; });
+  const h = await harness(t, {
+    authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 't1', routeAttemptId: 'r1',
+      connectTimeoutMs: 1000, stallTimeoutMs: 220, requestTimeoutMs: 2000 } }),
+    upstream: (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' }); res.flushHeaders();
+      res.write(': ready\n\n'); res.once('close', closed);
+    },
+  });
+  const controller = new AbortController();
+  const res = await fetch(h.base + '/claude-proxy/main/fixture/v1/messages', { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify(claudeBody), signal: controller.signal });
+  assert.equal(res.status, 200);
+  controller.abort();
+  await res.text().catch(() => {});
+  await Promise.race([upstreamClosed, new Promise((_, reject) => setTimeout(() => reject(new Error('upstream not closed')), 2500))]);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(h.outcomes.length, 1);
+  assert.notEqual(h.outcomes[0].errorCode, 'stream_idle_timeout');
+  assert.notEqual(h.outcomes[0].errorCode, 'response_stalled_before_response');
 });
 
 rustTest('超大 OAuth 错误原样转发，宿主不恢复、不重复记账', async t => {

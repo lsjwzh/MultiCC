@@ -1,8 +1,11 @@
 'use strict';
 
 const { proxyRequestKind } = require('./proxy-outcome');
+const { performance } = require('node:perf_hooks');
 
 const { createModelStreamProgress } = require('./model-stream-progress');
+const { scheduleRequestTimer } = require('../native/request-timer');
+const { getNative } = require('../native/runtime');
 
 // 每个已准入的模型请求独占计时器；请求结束即撤销，不计本地工具时间。
 const RESPONSE_STALLED_BEFORE_RESPONSE = 'response_stalled_before_response';
@@ -89,20 +92,22 @@ function createProxyStallWatch(options = {}) {
   const res = options.res;
   const observe = options.observation;
   const requestKind = options.requestKind || proxyRequestKind(protocol, options.req);
-  const schedule = typeof options.setTimeout === 'function' ? options.setTimeout : setTimeout;
-  const unschedule = typeof options.clearTimeout === 'function' ? options.clearTimeout : clearTimeout;
+  const injectedClock = typeof options.setTimeout === 'function' || typeof options.clearTimeout === 'function';
+  const schedule = typeof options.setTimeout === 'function' ? options.setTimeout
+    : injectedClock ? setTimeout : scheduleRequestTimer;
+  const unschedule = typeof options.clearTimeout === 'function' ? options.clearTimeout
+    : injectedClock ? clearTimeout : handle => handle.cancel();
   const onStall = typeof options.onStall === 'function' ? options.onStall : null;
   const now = options.now || Date.now;
-  const readProgress = createModelStreamProgress();
+  let readProgress = null;
+  const state = new (getNative().RustRequestWatch)();
+  let nativeProgress = false;
+  let nativeWatch = null;
+  let idleAt = 0;
+  let deadlineDue = 0;
+  let deadlineTimeoutMs = 0;
   let deadlineTimer = null;
-  let deadlineAt = null;
-  let freshDeadlineAt = null;
   let timer = null;
-  let limitMs = 0;
-  let connectMs = 0;
-  let armed = false;
-  let progressed = false;
-  let finished = false;
 
   function disarm() {
     if (timer === null) return;
@@ -112,33 +117,40 @@ function createProxyStallWatch(options = {}) {
 
   function rearm() {
     disarm();
-    if (finished || limitMs <= 0) return;
-    timer = schedule(onTimeout, limitMs);
+    if (state.finished() || state.idleMs() <= 0) return;
+    idleAt = performance.now() + effectiveDelay(state.idleMs());
+    timer = schedule(onTimeout, state.idleMs());
     // A watchdog can never be the reason the process stays alive.
     if (timer && typeof timer.unref === 'function') timer.unref();
   }
 
   function noteProgress() {
-    if (finished) return;
-    progressed = true;
+    if (nativeWatch && !nativeWatch.noteStreamProgress()) {
+      const code = nativeWatch.streamTimeoutCode();
+      if (code) nativeStreamTimeout(code, nativeWatch.streamProgressed());
+      return;
+    }
+    if (!state.progress()) return;
     // 有效事件只重置空闲预算，不延长绝对截止时间。
-    if (timer !== null) rearm();
+    if (!nativeWatch && timer !== null) rearm();
   }
 
   function finish() {
-    if (finished) return;
-    finished = true;
+    if (!state.finish()) return;
     disarm();
     if (deadlineTimer !== null) unschedule(deadlineTimer);
     deadlineTimer = null;
+    if (nativeWatch) nativeWatch.stopStreamWatch();
+    nativeWatch = null;
   }
 
   function hasSentHeaders() {
-    return progressed || res?.headersSent === true;
+    return state.progressed() || res?.headersSent === true;
   }
 
-  function onTimeout(forcedCode, timeoutMs = limitMs) {
-    if (finished) return;
+  function onTimeout(forcedCode, timeoutMs = state.idleMs()) {
+    if (state.finished()) return;
+    const progressed = state.progressed();
     const code = forcedCode || stallCodeFor(progressed);
     const detail = {
       code,
@@ -163,25 +175,27 @@ function createProxyStallWatch(options = {}) {
   }
 
   function arm(attempt) {
-    if (armed || finished) return false;
+    if (state.armed() || state.finished()) return false;
     if (requestKind !== 'inference' || !res || !observe
         || typeof observe.settle !== 'function') return false;
     const budget = Number(attempt && attempt.stallTimeoutMs);
     const total = Number(attempt && attempt.requestTimeoutMs);
-    if ((!Number.isSafeInteger(budget) || budget <= 0) && !(total > 0)) return false;
-    armed = true;
-    connectMs = Number(attempt.connectTimeoutMs) || 0;
-    limitMs = Number.isSafeInteger(budget) && budget > 0 ? budget : 0;
+    if (!state.accepts(budget, total)) return false;
+    const connect = Number(attempt.connectTimeoutMs) || 0;
+    const startedAt = total > 0 ? Number(now()) : 0;
+    const requestedDeadline = total > 0 ? Number(attempt.requestDeadlineAt) : 0;
+    if (!state.arm(budget, total, connect, requestedDeadline, startedAt)) return false;
     if (total > 0) {
-      freshDeadlineAt = now() + total;
-      deadlineAt = Number(attempt.requestDeadlineAt) || freshDeadlineAt;
-      deadlineTimer = schedule(() => onTimeout(MODEL_REQUEST_DEADLINE, total), Math.max(1, deadlineAt - now()));
+      deadlineTimeoutMs = total;
+      const delay = Math.max(1, state.deadlineAt() - now());
+      deadlineDue = performance.now() + effectiveDelay(delay);
+      deadlineTimer = schedule(() => onTimeout(MODEL_REQUEST_DEADLINE, total), delay);
       deadlineTimer?.unref?.();
     }
     const write = res.write;
     if (typeof write === 'function') {
       res.write = function stallWatchProgress(...args) {
-        if (args[0] != null && readProgress(args[0])) noteProgress();
+        if (!nativeProgress && args[0] != null && (readProgress ||= createModelStreamProgress())(args[0])) noteProgress();
         return write.apply(this, args);
       };
     }
@@ -194,8 +208,8 @@ function createProxyStallWatch(options = {}) {
     }
     if (typeof res.once === 'function') {
       res.once('finish', finish);
-      res.once('close', finish);
-      res.once('error', finish);
+      res.once('close', finishOnDisconnect);
+      res.once('error', finishOnDisconnect);
     }
     rearm();
     return true;
@@ -203,25 +217,77 @@ function createProxyStallWatch(options = {}) {
 
   function isolateRetryBudget() {
     // Claude 路由可能先查主供应商，再解析出子供应商；子请求不能继承主请求的重试余额。
-    if (finished || !freshDeadlineAt || deadlineAt === freshDeadlineAt) return;
+    if (!state.isolateRetryBudget()) return;
     if (deadlineTimer !== null) unschedule(deadlineTimer);
-    deadlineAt = freshDeadlineAt;
-    deadlineTimer = schedule(() => onTimeout(MODEL_REQUEST_DEADLINE), Math.max(1, deadlineAt - now()));
+    deadlineTimeoutMs = state.idleMs();
+    const delay = Math.max(1, state.deadlineAt() - now());
+    deadlineDue = performance.now() + effectiveDelay(delay);
+    deadlineTimer = schedule(() => onTimeout(MODEL_REQUEST_DEADLINE), delay);
     deadlineTimer?.unref?.();
   }
 
   function dispose() { finish(); }
+
+  function effectiveDelay(value) {
+    const delay = Number(value);
+    return Number.isFinite(delay) && delay > 0 && delay <= 2_147_483_647 ? Math.max(1, Math.trunc(delay)) : 1;
+  }
+
+  function nativeStreamTimeout(code, progressed) {
+    if (!nativeWatch || state.finished()) return;
+    if (progressed) state.progress();
+    onTimeout(code, code === MODEL_REQUEST_DEADLINE ? deadlineTimeoutMs : state.idleMs());
+  }
+
+  function handleNativeDisconnect() {
+    if (!nativeWatch || state.finished()) return false;
+    const watch = nativeWatch;
+    const code = watch.abort();
+    if (!code) return false;
+    nativeStreamTimeout(code, watch.streamProgressed());
+    return true;
+  }
+
+  function finishOnDisconnect() {
+    if (!handleNativeDisconnect()) finish();
+  }
 
   return Object.freeze({
     arm,
     noteProgress,
     isolateRetryBudget,
     dispose,
-    isArmed: () => armed,
-    timeoutMs: () => limitMs,
-    progressed: () => progressed,
-    deadlineAt: () => deadlineAt,
-    connectTimeout: () => { if (armed && !finished) onTimeout(MODEL_CONNECT_TIMEOUT, connectMs); },
+    isArmed: () => state.armed(),
+    timeoutMs: () => state.idleMs(),
+    progressed: () => state.progressed(),
+    deadlineAt: () => state.deadlineAt() ?? null,
+    connectTimeout: () => { if (state.armed() && !state.finished()) onTimeout(MODEL_CONNECT_TIMEOUT, state.connectMs()); },
+    nativeStreamTimeout,
+    handleNativeDisconnect,
+    useNativeProgress: exchange => {
+      if (!state.armed() || state.finished()) return false;
+      nativeProgress = true;
+      // Fake clocks retain the original scheduler; production transfers both
+      // active timers with their remaining budgets into the Rust exchange.
+      if (!injectedClock && typeof exchange?.startStreamWatch === 'function') {
+        const current = performance.now();
+        const idle = timer !== null ? effectiveDelay(state.idleMs()) : 0;
+        const idleRemaining = idle ? effectiveDelay(Math.max(1, idleAt - current)) : 0;
+        const deadlineRemaining = deadlineTimer !== null
+          ? effectiveDelay(Math.max(1, deadlineDue - current)) : 0;
+        exchange.startStreamWatch(idle, idleRemaining, deadlineRemaining, state.progressed(), raw => {
+          try {
+            const detail = JSON.parse(raw);
+            nativeStreamTimeout(detail.code, detail.progressed === true);
+          } catch (_) { /* A malformed native notification never ends the response. */ }
+        });
+        nativeWatch = exchange;
+        disarm();
+        if (deadlineTimer !== null) unschedule(deadlineTimer);
+        deadlineTimer = null;
+      }
+      return true;
+    },
   });
 }
 

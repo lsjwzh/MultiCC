@@ -137,6 +137,11 @@ function modelAttributionField(state, turn, runner) {
 
 function createChatHostRuntime(rawPorts) {
   const ports = assertHostRuntimePorts(rawPorts);
+  const liveState = (sessionId, state) => ports.getSessionState(sessionId) === state ? state : null;
+  const current = (sessionId, state, turn, runner) => {
+    const live = liveState(sessionId, state);
+    return !!(live && live._activeTurn === turn && live._activeRunner === runner);
+  };
   const usagePort = {
     commit: ({ sessionId, usage, attribution }) => ports.persistUsage(sessionId, usage, attribution),
     afterCommit: ({ sessionId, attribution }) => ports.afterUsageCommit(sessionId, attribution),
@@ -165,8 +170,8 @@ function createChatHostRuntime(rawPorts) {
     const result = coordinator.appendFinal({
       turn,
       runner,
-      currentTurn: state && state._activeTurn,
-      currentRunner: state && state._activeRunner,
+      get currentTurn() { return liveState(sessionId, state)?._activeTurn; },
+      get currentRunner() { return liveState(sessionId, state)?._activeRunner; },
       boundary: options.resultEvent === true ? 'result' : 'close',
       facts: {
         normalExit: options.final === true,
@@ -178,31 +183,37 @@ function createChatHostRuntime(rawPorts) {
       checkpointKey: options.checkpointKey,
       message,
     });
-    if (state) state._resultSaved = result.durable === true;
+    if (current(sessionId, state, turn, runner)) state._resultSaved = result.durable === true;
     return result.durable === true;
   }
 
   function recordDurableTurnUsage(sessionId, runner, usage, attribution = {}) {
     const state = ports.getSessionState(sessionId);
     const turn = state && state._activeTurn;
-    return coordinator.commitUsage({
+    const result = coordinator.commitUsage({
       turn,
       runner,
-      currentTurn: turn,
-      currentRunner: state && state._activeRunner,
+      get currentTurn() { return liveState(sessionId, state)?._activeTurn; },
+      get currentRunner() { return liveState(sessionId, state)?._activeRunner; },
       usage,
       attribution: attributionSnapshot(state, turn, runner, attribution),
-    }).committed === true;
+    });
+    return result.committed === true && result.code !== 'stale_runner'
+      && current(sessionId, state, turn, runner);
   }
 
-  function executeEffect(effect, state) {
+  function executeEffect(effect, state, isCurrentRunner) {
     if (effect.type === 'consume-cli-handoff') return ports.consumeHandoff(effect.sessionId);
     if (effect.type === 'turn-complete') {
-      return ports.emitTurnComplete(effect.sessionId, state, {
+      const completion = {
         turnId: effect.turnId,
         lineage: effect.lineage,
         resultDurable: effect.resultDurable,
-      });
+      };
+      // EventEmitter listeners run synchronously; an earlier listener may have
+      // replaced the runner before the trigger listener receives this event.
+      Object.defineProperty(completion, 'isCurrentRunner', { value: isCurrentRunner });
+      return ports.emitTurnComplete(effect.sessionId, state, completion);
     }
     if (effect.type === 'complete-dispatch') {
       return ports.emitDispatchComplete(effect.operationId, effect.sessionId, effect.finalText);
@@ -220,8 +231,8 @@ function createChatHostRuntime(rawPorts) {
     const plan = coordinator.claimPostTurnPlan({
       turn,
       runner,
-      currentTurn: state && state._activeTurn,
-      currentRunner: state && state._activeRunner,
+      get currentTurn() { return liveState(sessionId, state)?._activeTurn; },
+      get currentRunner() { return liveState(sessionId, state)?._activeRunner; },
       interrupted: facts.interrupted === true,
       apiError: facts.apiError === true,
       retryPlanned: facts.retryPlanned === true,
@@ -238,7 +249,23 @@ function createChatHostRuntime(rawPorts) {
       });
       return false;
     }
-    for (const effect of plan.effects) executeEffect(effect, state);
+    let ownsRunner = true;
+    let effectError;
+    let effectFailed = false;
+    for (const effect of plan.effects) {
+      ownsRunner = ownsRunner && current(sessionId, state, turn, runner);
+      // Session-scoped callbacks may mutate or trigger work in the replacement.
+      if (!ownsRunner && (effect.type === 'consume-cli-handoff' || effect.type === 'turn-complete')) continue;
+      try {
+        // Dispatch/gateway notifications are bound to immutable IDs and must
+        // still reach the old operation even after session ownership changes.
+        executeEffect(effect, state, () => ownsRunner && current(sessionId, state, turn, runner));
+      } catch (error) {
+        if (!effectFailed) { effectError = error; effectFailed = true; }
+      }
+    }
+    if (effectFailed) throw effectError;
+    if (!ownsRunner || !current(sessionId, state, turn, runner)) return false;
     if (state && state._continuationLineage
         && state._continuationLineage.turnId === (turn && turn.turnId)) {
       state._continuationLineage = null;

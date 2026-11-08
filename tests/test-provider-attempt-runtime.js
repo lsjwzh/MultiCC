@@ -69,6 +69,351 @@ function proxy(runtime, attempt, overrides = {}) {
   };
 }
 
+test('finalization marks the attempt before an injected clock can reenter', () => {
+  let runtime;
+  let inspect = false;
+  let during;
+  let sequence = 0;
+  runtime = createProviderAttemptRuntime({ runtimeEpoch: 'epoch', nextId: prefix => `${prefix}-${++sequence}`,
+    now: () => { if (inspect) { inspect = false; during = runtime.snapshot('session-1'); } return 1234; } });
+  const attempt = runtime.beginAttempt(route());
+  inspect = true;
+  assert.equal(runtime.finishAttempt(attempt, { outcome: 'failed', errorCategory: 'network' }).ok, true);
+  assert.equal(during.outcome, 'failed');
+  assert.equal(during.errorCategory, 'network');
+  assert.equal(during.finishedAt, null);
+  assert.equal(runtime.finishAttempt(attempt, { outcome: 'succeeded' }).code, 'attempt_not_running');
+});
+
+test('same-session attempt creation cannot reenter before its record is installed', () => {
+  let runtime;
+  let entered = false;
+  let nestedError;
+  let other;
+  let sequence = 0;
+  runtime = createProviderAttemptRuntime({
+    runtimeEpoch: 'epoch',
+    nextId: prefix => `${prefix}-${++sequence}`,
+    now: () => {
+      if (!entered) {
+        entered = true;
+        try { runtime.beginAttempt(route({ turnId: 'nested' })); } catch (error) { nestedError = error; }
+        other = runtime.beginAttempt(route({ sessionId: 'other' }));
+      }
+      return 1000;
+    },
+  });
+  const outer = runtime.beginAttempt(route());
+  assert.equal(nestedError?.code, 'PROVIDER_ATTEMPT_IN_FLIGHT');
+  assert.equal(runtime.acceptEvent(outer), true);
+  assert.equal(runtime.acceptEvent(other), true, 'independent sessions remain admissible');
+});
+
+test('attempt admission is released after a host callback throws', () => {
+  let fail = true;
+  let sequence = 0;
+  const runtime = createProviderAttemptRuntime({
+    runtimeEpoch: 'epoch',
+    nextId: prefix => {
+      if (fail) { fail = false; throw new Error('id callback failed'); }
+      return `${prefix}-${++sequence}`;
+    },
+  });
+  assert.throws(() => runtime.beginAttempt(route()), /id callback failed/);
+  assert.equal(runtime.acceptEvent(runtime.beginAttempt(route())), true);
+});
+
+test('selection callback can finish the installed attempt and start its successor', () => {
+  let runtime;
+  let successor;
+  let callbackError;
+  let handled = false;
+  let sequence = 0;
+  runtime = createProviderAttemptRuntime({
+    runtimeEpoch: 'epoch', nextId: prefix => `${prefix}-${++sequence}`,
+    emit: (_, event) => {
+      if (handled || event.routePhase !== 'selected') return;
+      handled = true;
+      runtime.finishAttempt(runtime.snapshot('session-1'), { outcome: 'failed' });
+      try { successor = runtime.beginAttempt(route({ turnId: 'turn-2' })); }
+      catch (error) { callbackError = error; }
+    },
+  });
+  const original = runtime.beginAttempt(route());
+  assert.equal(callbackError, undefined);
+  assert.equal(runtime.acceptEvent(original), false);
+  assert.equal(runtime.acceptEvent(successor), true);
+  assert.equal(runtime.snapshot('session-1').turnId, 'turn-2');
+});
+
+test('native attempt generations preserve distinct UTF-16 session identities', () => {
+  const { runtime } = harness();
+  const first = runtime.beginAttempt(route({ sessionId: '\ud800' }));
+  const second = runtime.beginAttempt(route({ sessionId: '\ud801' }));
+  assert.equal(first.routeGeneration, 1);
+  assert.equal(second.routeGeneration, 1);
+  assert.equal(runtime.finishAttempt(first, { outcome: 'failed' }).ok, true);
+  const next = runtime.beginAttempt(route({ sessionId: '\ud800', turnId: 'turn-2' }));
+  assert.equal(next.routeGeneration, 2);
+  assert.equal(runtime.acceptEvent(first), false);
+  assert.equal(runtime.acceptEvent(second), true);
+});
+
+test('native background producer ledger matches Node accounting, receipt consumption and FIFO eviction', () => {
+  const { RustNonMainProducers } = require('../src/native/runtime').getNative();
+  const native = new RustNonMainProducers();
+  const active = new Map();
+  const ended = new Map();
+  function expected(op, key) {
+    if (op === 'start') {
+      ended.delete(key);
+      const producer = active.get(key);
+      if (producer) { producer.count += 1; producer.ambiguous = true; }
+      else active.set(key, { count: 1, ambiguous: false });
+      return;
+    }
+    if (op === 'hasActive') return active.has(key);
+    if (op === 'bindUsage') {
+      const producer = active.get(key);
+      if (producer && producer.count === 1 && !producer.ambiguous) return true;
+      return ended.delete(key);
+    }
+    const producer = active.get(key);
+    if (!producer) return false;
+    producer.count = Math.max(0, producer.count - 1);
+    if (producer.count === 0) {
+      active.delete(key);
+      if (!producer.ambiguous) {
+        ended.set(key, true);
+        if (ended.size > 2048) ended.delete(ended.keys().next().value);
+      }
+    }
+    return true;
+  }
+  function apply(op, key) { assert.equal(native[op](key), expected(op, key), `${op} ${JSON.stringify(key)}`); }
+  const keys = ['\ud800\0sub', '\ud801\0sub', 'session\0token\0background', 'session\0token\0aux'];
+  let seed = 0x4657;
+  for (let i = 0; i < 12000; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    const key = keys[(seed >>> 3) % keys.length];
+    const op = ['start', 'end', 'hasActive', 'bindUsage'][(seed >>> 11) % 4];
+    apply(op, key);
+  }
+  for (let i = 0; i < 2055; i++) { apply('start', `fifo-${i}`); apply('end', `fifo-${i}`); }
+  for (let i = 0; i < 2055; i++) apply('bindUsage', `fifo-${i}`);
+});
+
+test('native main producer registry preserves snapshot identity, UTF-16 keys and unbounded ended receipts', () => {
+  const { RustMainProducers } = require('../src/native/runtime').getNative();
+  const native = new RustMainProducers();
+  const snapshot = Object.freeze({ routeAttemptId: 'a', turnId: '\ud800' });
+  const key = '\ud800\0session';
+  native.setActive(key, snapshot, '\ud801-token', 1, false, NaN);
+  const captured = native.getActive(key);
+  assert.equal(captured.attempt, snapshot);
+  assert.equal(Object.isFrozen(captured.attempt), true);
+  assert.equal(captured.proxyRouteToken, '\ud801-token');
+  assert.equal(Number.isNaN(captured.lastRequestAt), true);
+  assert.equal(native.getActive('\ud801\0session'), undefined);
+  native.deleteActive(key);
+  native.setActive(key, snapshot, 'next-token', 1, false, 10);
+  captured.count += 1;
+  captured.ambiguous = true;
+  assert.equal(native.getActive(key).count, 1, 'a detached producer cannot mutate its replacement');
+  assert.equal(captured.attempt, snapshot);
+  native.setEnded(key, captured.attempt, captured.proxyRouteToken);
+  for (let i = 0; i < 2200; i++) native.setEnded(`unrelated-${i}`, snapshot, 'token');
+  const ended = native.getEnded(key);
+  assert.equal(ended.attempt, snapshot);
+  assert.equal(ended.proxyRouteToken, '\ud801-token');
+  assert.equal(native.hasEnded(key), true);
+  native.deleteEnded(key);
+  assert.equal(native.hasEnded(key), false);
+  assert.equal(ended.attempt, snapshot, 'a captured receipt outlives removal');
+});
+
+test('current attempt registry preserves identity and separates UTF-16 session keys', () => {
+  const { RustCurrentAttempts } = require('../src/native/runtime').getNative();
+  const registry = new RustCurrentAttempts();
+  const old = { id: 'old' };
+  const replacement = { id: 'new' };
+  assert.equal(registry.beginAdmission('\ud800'), true);
+  assert.equal(registry.beginAdmission('\ud800'), false);
+  assert.equal(registry.beginAdmission('\ud801'), true);
+  registry.endAdmission('\ud800');
+  assert.equal(registry.beginAdmission('\ud800'), true);
+  registry.endAdmission('\ud800');
+  registry.endAdmission('\ud801');
+  registry.set('\ud800', old);
+  assert.equal(registry.get('\ud800'), old);
+  assert.equal(registry.get('\ud801'), undefined);
+  const captured = registry.get('\ud800');
+  registry.set('\ud800', replacement);
+  assert.equal(registry.get('\ud800'), replacement);
+  captured.id = 'changed';
+  assert.equal(replacement.id, 'new');
+  assert.throws(() => registry.set('\ud800', null));
+  assert.equal(registry.get('\ud800'), replacement, 'failed replacement retains current attempt');
+  const reference = new Map();
+  const keys = ['', 'session', '\ud800', '\ud801', 'a\0b'];
+  let seed = 0x1267;
+  for (let i = 0; i < 10000; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    const key = keys[seed % keys.length];
+    if (seed & 8) {
+      const value = { i };
+      registry.set(key, value);
+      reference.set(key, value);
+    } else if (reference.has(key) || key !== '\ud800') {
+      assert.equal(registry.get(key), reference.get(key));
+    }
+  }
+});
+
+test('native producer and current attempt references survive worker environment teardown', async () => {
+  const { Worker } = require('node:worker_threads');
+  const source = `
+    const { workerData, parentPort } = require('node:worker_threads');
+    const { RustMainProducers, RustCurrentAttempts } = require(workerData.runtime).getNative();
+    const retained = [];
+    for (let i = 0; i < 200; i++) {
+      const registry = new RustMainProducers();
+      const attempts = new RustCurrentAttempts();
+      attempts.beginAdmission('session');
+      const snapshot = Object.freeze({ id: i });
+      attempts.set('session', snapshot);
+      if (attempts.get('session') !== snapshot) throw new Error('attempt identity lost');
+      registry.setActive('session', snapshot, 'token', 1, false, i);
+      const captured = registry.getActive('session');
+      registry.deleteActive('session');
+      registry.setEnded('session', captured.attempt, captured.proxyRouteToken);
+      if (registry.getEnded('session').attempt !== snapshot) throw new Error('identity lost');
+      if (i % 3 === 0) registry.deleteEnded('session');
+      retained.push([registry, captured, attempts]);
+    }
+    globalThis.retained = retained;
+    if (workerData.terminate) { parentPort.postMessage('ready'); setInterval(() => {}, 1000); }
+  `;
+  const runtime = require.resolve('../src/native/runtime');
+  const natural = Array.from({ length: 4 }, () => new Worker(source, { eval: true, workerData: { runtime } }));
+  const forced = Array.from({ length: 4 }, () => new Worker(source, { eval: true, workerData: { runtime, terminate: true } }));
+  await Promise.all([
+    ...natural.map(worker => new Promise((resolve, reject) => {
+      worker.once('error', reject);
+      worker.once('exit', code => code === 0 ? resolve() : reject(new Error(`worker exit ${code}`)));
+    })),
+    ...forced.map(worker => new Promise((resolve, reject) => {
+      let terminating = false;
+      worker.once('error', reject);
+      worker.once('message', () => { terminating = true; worker.terminate().then(resolve, reject); });
+      worker.once('exit', code => { if (!terminating) reject(new Error(`worker exited before termination: ${code}`)); });
+    })),
+  ]);
+});
+
+test('main end-before-usage ignores mismatched provider and token without consuming its receipt', () => {
+  const { runtime } = harness();
+  const attempt = runtime.beginAttempt(route());
+  const context = proxy(runtime, attempt, { phase: 'request' });
+  runtime.onProxyActivity(context);
+  const ended = runtime.onProxyActivity({ ...context, phase: 'end' });
+  assert.equal(Object.isFrozen(ended), true);
+  const mismatchProvider = runtime.attributeProxyUsage({ ...context, providerId: 'wrong-provider', eventId: 'wrong-provider' });
+  assert.equal(mismatchProvider.routeAttribution, 'ambiguous');
+  const wrongSession = `pr1.${Buffer.from('session-1').toString('base64url')}.${Buffer.from('wrong-token').toString('base64url')}`;
+  const mismatchToken = runtime.attributeProxyUsage({ ...context, sessionId: wrongSession, eventId: 'wrong-token' });
+  assert.equal(mismatchToken.routeAttribution, 'ambiguous');
+  const exact = runtime.attributeProxyUsage({ ...context, eventId: 'matching' });
+  assert.equal(exact.routeAttribution, 'exact');
+  assert.equal(exact.routeAttemptId, attempt.routeAttemptId);
+  assert.equal(runtime.attributeProxyUsage({ ...context, eventId: 'duplicate' }).routeAttribution, 'ambiguous');
+});
+
+test('stale attempt usage does not consume the previous resident producer receipt', () => {
+  const { runtime, audit } = harness();
+  const resident = { cli: 'claude', protocol: 'anthropic', spawnKey: 'stable-spawn' };
+  const first = runtime.beginAttempt(route(resident));
+  const context = proxy(runtime, first, { phase: 'request' });
+  runtime.onProxyActivity(context);
+  runtime.onProxyActivity({ ...context, phase: 'end' });
+  runtime.finishAttempt(first, { outcome: 'failed' });
+  const second = runtime.beginAttempt(route({ ...resident, attemptNo: 2 }));
+  assert.equal(runtime.proxySessionId(second), context.sessionId);
+  runtime.finishAttempt(second, { outcome: 'succeeded' });
+  for (const eventId of ['old-1', 'old-2']) {
+    assert.equal(runtime.attributeProxyUsage({ ...context, eventId }).routeAttribution, 'ambiguous');
+  }
+  assert.equal(audit.filter(entry => entry.event.operation === 'proxy_usage').length, 2,
+    'both stale events must see the unconsumed receipt and remain in the main attribution lane');
+});
+
+test('main request revision callback can replace a producer without the old lookup changing it', () => {
+  let sequence = 0;
+  let runtime;
+  let reenter = false;
+  let context;
+  runtime = createProviderAttemptRuntime({
+    runtimeEpoch: 'epoch', now: () => 1000, nextId: prefix => `${prefix}-${++sequence}`,
+    resolveProviderRevision: () => {
+      if (reenter) {
+        reenter = false;
+        assert.equal(runtime.forceReleaseProducers('session-1').released, 1);
+        runtime.onProxyActivity(context);
+      }
+      return 'revision-a';
+    },
+  });
+  const attempt = runtime.beginAttempt(route());
+  context = proxy(runtime, attempt, { phase: 'request' });
+  runtime.onProxyActivity(context);
+  reenter = true;
+  runtime.onProxyActivity(context);
+  assert.equal(runtime.forceReleaseProducers('session-1').released, 1,
+    'the outer callback must only update the detached producer');
+});
+
+test('an injected clock exception keeps the earlier ambiguous producer increments', () => {
+  let sequence = 0;
+  let failClock = false;
+  const runtime = createProviderAttemptRuntime({
+    runtimeEpoch: 'epoch',
+    now: () => { if (failClock) throw new Error('clock failed'); return 1000; },
+    nextId: prefix => `${prefix}-${++sequence}`,
+  });
+  const attempt = runtime.beginAttempt(route());
+  runtime.onProxyActivity(proxy(runtime, attempt, { phase: 'request' }));
+  const wrongSession = `pr1.${Buffer.from('session-1').toString('base64url')}.${Buffer.from('wrong-token').toString('base64url')}`;
+  failClock = true;
+  assert.throws(() => runtime.onProxyActivity({ sessionId: wrongSession, role: 'main', phase: 'request' }), /clock failed/);
+  failClock = false;
+  assert.equal(runtime.forceReleaseProducers('session-1').released, 2);
+});
+
+test('native identity checks retain JS short circuit and Number conversion', () => {
+  const { RustProviderAttemptLifecycle } = require('../src/native/runtime').getNative();
+  const identity = { runtimeEpoch: '\ud800', routeAttemptId: 'a', routeGeneration: 1, turnId: 't' };
+  const state = new RustProviderAttemptLifecycle('none', false, false, false, null, 0, identity);
+  assert.equal(state.matches({ runtimeEpoch: 'old', get routeAttemptId() { throw new Error('must not read'); } }), false);
+  assert.equal(state.matches({ ...identity, routeGeneration: 1n }), true);
+  assert.equal(state.matches({ ...identity, runtimeEpoch: '\ud801' }), false);
+  assert.throws(() => state.matches({ ...identity, routeGeneration: Symbol('bad') }), TypeError);
+});
+
+test('native identity conversion calls a replaced Number with the strict-mode receiver', () => {
+  const { RustProviderAttemptLifecycle } = require('../src/native/runtime').getNative();
+  const identity = { runtimeEpoch: 'epoch', routeAttemptId: 'a', routeGeneration: 1, turnId: 't' };
+  const state = new RustProviderAttemptLifecycle('none', false, false, false, null, 0, identity);
+  const originalNumber = global.Number;
+  let receiver = 'not called';
+  try {
+    global.Number = function (value) { 'use strict'; receiver = this; return originalNumber(value); };
+    assert.equal(state.matches(identity), true);
+    assert.equal(receiver, undefined);
+  } finally {
+    global.Number = originalNumber;
+  }
+});
+
 test('a concrete attempt has immutable identity and a monotonic session generation', () => {
   const { runtime, events } = harness();
   const first = runtime.beginAttempt(route());
@@ -1268,4 +1613,961 @@ test('the socket teardown the watchdog causes cannot replace the stall it record
   });
   assert.equal(other.snapshot('session-1').stalled, false);
   assert.equal(other.authorizeProxyRequest(proxy(other, clean)).ok, true);
+});
+
+// Frozen pre-migration oracle; never loaded by the product.
+const legacyEventPolicy = (() => {
+  const clean = value => value == null ? '' : String(value).trim();
+function contentBlocks(event) {
+  const content = event && event.message && event.message.content;
+  return Array.isArray(content) ? content : [];
+}
+
+function fenceForEvent(event, HOST_ERROR_ENVELOPE) {
+  if (!event || typeof event !== 'object') return 'none';
+  if (event.type === 'stream_event' && event.event && typeof event.event === 'object') {
+    const nested = event.event;
+    const block = nested.content_block;
+    const delta = nested.delta;
+    if (nested.type === 'content_block_start' && block && block.type === 'tool_use') {
+      return 'tool_intent';
+    }
+    if (nested.type === 'content_block_delta' && delta) {
+      if (delta.type === 'input_json_delta') return 'tool_intent';
+      if ((delta.type === 'text_delta' || delta.type === 'thinking_delta')
+          && clean(delta.text || delta.thinking)) return 'visible_output';
+    }
+  }
+  if (event.type === 'part_delta') {
+    const delta = event.delta && typeof event.delta === 'object' ? event.delta : event;
+    if (delta.type === 'tool' || delta.tool || delta.toolId) return 'tool_intent';
+    if (delta.type === 'text' || delta.type === 'reasoning' || delta.type === 'source') {
+      return 'visible_output';
+    }
+    return 'none';
+  }
+  if (event.type === 'reasoning' && clean(event.text)) return 'visible_output';
+  if (event.type === 'assistant_text' && clean(event.text)) return 'visible_output';
+  if (event.type === 'tool_start' || event.type === 'tool_update') return 'tool_intent';
+  if (event.type === 'tool_result') return 'side_effect';
+  if (event.type === 'assistant') {
+    const blocks = contentBlocks(event);
+    if (blocks.length > 0 && blocks.every(block => block && block.type === 'text')
+        && event[HOST_ERROR_ENVELOPE] === true) return 'none';
+    if (blocks.some(block => block && block.type === 'tool_use')) return 'tool_intent';
+    if (blocks.some(block => block && block.type === 'thinking'
+        && clean(block.thinking || block.text))) return 'visible_output';
+    if (blocks.some(block => block && block.type === 'text' && clean(block.text))) return 'visible_output';
+  }
+  if (event.type === 'user'
+      && contentBlocks(event).some(block => block && block.type === 'tool_result')) {
+    return 'side_effect';
+  }
+  return 'none';
+}
+
+  return { fenceForEvent, trusted(event, marker) { return event[marker] === true && contentBlocks(event).length > 0 && contentBlocks(event).every(block => block && block.type === 'text'); } };
+})();
+
+test('native replay fence matches legacy protocol events, sparse arrays and host-only authority', () => {
+  const native = require('../src/native/runtime').getNative();
+  const marker = Symbol('test-only-host-authority');
+  const types = ['assistant', 'user', 'reasoning', 'assistant_text', 'tool_start', 'tool_update', 'tool_result', 'part_delta', 'stream_event'];
+  const blockTypes = ['text', 'thinking', 'tool_use', 'tool_result', 'reasoning', 'source', 'tool', undefined];
+  const texts = [undefined, null, false, true, 0, 1, 1n, Symbol('text'), '', ' \t\n', '\ufeff', '\u200b', '\ud800', {}, [], 'visible'];
+  let seed = 0x721389;
+  const pick = list => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return list[seed % list.length]; };
+  for (let i = 0; i < 6000; i++) {
+    const content = Array.from({ length: i % 5 }, () => ({ type: pick(blockTypes), text: pick(texts), thinking: pick(texts) }));
+    if (i % 3 === 0 && content.length) delete content[0];
+    if (i % 4 === 0 && content.length) content[0] = null;
+    const event = { type: pick(types), text: pick(texts), message: { content },
+      [marker]: i % 4 === 0,
+      delta: { type: pick(blockTypes), tool: i % 13 === 0, toolId: i % 17 ? '' : 'tool' },
+      event: { type: pick(['content_block_start', 'content_block_delta', 'other']),
+        content_block: { type: pick(blockTypes) },
+        delta: { type: pick(['input_json_delta', 'text_delta', 'thinking_delta']), text: pick(texts), thinking: pick(texts) } } };
+    assert.equal(native.providerEventFence(event, marker), legacyEventPolicy.fenceForEvent(event, marker));
+    assert.equal(native.providerHostTextEnvelope(event, marker), legacyEventPolicy.trusted(event, marker));
+  }
+  const fake = { type: 'assistant', message: { content: [{ type: 'text', text: 'visible' }] },
+    'multicc.hostErrorEnvelope': true, [Symbol('multicc.hostErrorEnvelope')]: true };
+  assert.equal(fenceForEvent(fake), 'visible_output', 'wire fields cannot forge host authority');
+  assert.equal(fenceForEvent(markHostErrorEnvelope(fake)), 'none');
+  assert.equal(fenceForEvent(markHostErrorEnvelope({ ...fake, message: { content: [{ type: 'tool_use' }] } })), 'tool_intent');
+});
+
+test('native replay fence preserves lazy getters, exceptions and array callbacks that outlive evaluation', () => {
+  const native = require('../src/native/runtime').getNative();
+  const marker = Symbol('authority'), sentinel = new Error('event getter failed');
+  const execute = (fn, sample, throwAt) => {
+    const reads = [];
+    const wrap = (value, path = '') => value && typeof value === 'object' ? new Proxy(value, {
+      get(object, key) { const name = `${path}.${String(key)}`; reads.push(name); if (name === throwAt) throw sentinel; return wrap(Reflect.get(object, key), name); },
+      has(object, key) { reads.push(`${path}.has:${String(key)}`); return key in object; },
+      ownKeys() { throw new Error('event was enumerated'); },
+    }) : value;
+    try { return { result: fn(wrap(sample), marker), reads }; }
+    catch (error) { return { error, reads }; }
+  };
+  const samples = [
+    { type: 'assistant', [marker]: true, message: { content: [null, { type: 'thinking', thinking: 'trace' }, { type: 'text', text: 'text' }] } },
+    { type: 'assistant', [marker]: true, message: { content: [{ type: 'text', text: 'error' }] } },
+    { type: 'user', message: { content: [,, { type: 'tool_result' }] } },
+    { type: 'part_delta', delta: { type: 'text' } },
+    { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'thought' } } },
+  ];
+  for (const [actual, expected] of [[native.providerEventFence, legacyEventPolicy.fenceForEvent],
+    [native.providerHostTextEnvelope, legacyEventPolicy.trusted]]) {
+    for (const sample of samples) {
+      for (const throwAt of [null, '.type', '.message', '.message.content', '.message.content.1.type', '.event.delta']) {
+        assert.deepEqual(execute(actual, sample, throwAt), execute(expected, sample, throwAt));
+      }
+    }
+  }
+  const capture = fn => {
+    const callbacks = [];
+    const content = [{ type: 'text', text: 'visible' }];
+    content.every = callback => { callbacks.push(callback); return false; };
+    content.some = callback => { callbacks.push(callback); return false; };
+    assert.equal(fn({ type: 'assistant', message: { content } }, marker), 'none');
+    return callbacks.map(callback => [callback(), callback(null), callback(0), callback({ type: 'text', text: ' trimmed ' }), callback({ type: 'thinking', thinking: ' thought ' })]);
+  };
+  assert.deepEqual(capture(native.providerEventFence), capture(legacyEventPolicy.fenceForEvent));
+  for (const length of [0n, 1n, { valueOf() { return 1n; } }, { [Symbol.toPrimitive](hint) { assert.equal(hint, 'number'); return 1n; } }]) {
+    const content = new Proxy([{ type: 'text', text: 'visible' }], {
+      get(target, key) {
+        if (key === 'length') return length;
+        if (key === 'every') return () => true;
+        if (key === 'some') return () => false;
+        return Reflect.get(target, key);
+      },
+    });
+    const frame = { type: 'assistant', message: { content }, [marker]: true };
+    assert.equal(native.providerEventFence(frame, marker), legacyEventPolicy.fenceForEvent(frame, marker));
+    assert.equal(native.providerHostTextEnvelope(frame, marker), legacyEventPolicy.trusted(frame, marker));
+  }
+  const event = { type: 'reasoning', text: { [Symbol.toPrimitive](hint) {
+    assert.equal(hint, 'string');
+    assert.equal(fenceForEvent({ type: 'tool_result' }), 'side_effect');
+    return 'nested';
+  } } };
+  assert.equal(fenceForEvent(event), 'visible_output');
+});
+
+// Frozen Node identity and capability rules; test-only reference.
+const legacyAttemptIdentity = (() => {
+const crypto = require('node:crypto');
+const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
+const clean = value => value == null ? '' : String(value).trim();
+function required(value, label) {
+  const text = clean(value);
+  if (!text || text.length > 256 || /[\u0000-\u001f\u007f]/.test(text)) {
+    throw new ProviderAttemptError(`${label} is required`, 'PROVIDER_ATTEMPT_IDENTITY_INVALID');
+  }
+  return text;
+}
+
+function positiveInteger(value, label) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1) {
+    throw new ProviderAttemptError(`${label} must be a positive integer`, 'PROVIDER_ATTEMPT_IDENTITY_INVALID');
+  }
+  return number;
+}
+
+function stallTimeoutBudget(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : 0;
+}
+
+function createProviderRevision(input = {}) {
+  const summary = input.summary && typeof input.summary === 'object' ? input.summary : {};
+  const aliasMap = summary.aliasMap && typeof summary.aliasMap === 'object'
+    ? Object.fromEntries(Object.keys(summary.aliasMap).sort().map(key => [key, summary.aliasMap[key]]))
+    : {};
+  const safeRoute = {
+    cli: required(input.cli, 'cli').toLowerCase(),
+    providerId: required(input.providerId, 'providerId'),
+    protocol: required(input.protocol, 'protocol'),
+    model: required(input.model, 'model'),
+    appType: clean(summary.appType) || null,
+    baseUrl: clean(summary.baseUrl) || null,
+    source: clean(summary.source) || null,
+    apiFormat: clean(summary.apiFormat) || null,
+    wireApi: clean(summary.wireApi) || null,
+    aliasMap,
+    isOfficial: summary.isOfficial === true,
+  };
+  return `prv_${crypto.createHash('sha256').update(JSON.stringify(safeRoute)).digest('hex').slice(0, 24)}`;
+}
+
+function providerAttemptFields(reference) {
+  if (!reference || typeof reference !== 'object') {
+    throw new ProviderAttemptError('provider attempt is required', 'PROVIDER_ATTEMPT_IDENTITY_INVALID');
+  }
+  return Object.freeze({
+    providerRouteProtocolVersion: 1,
+    providerRouteScope: 'attempt',
+    cli: required(reference.cli, 'cli'),
+    runtimeEpoch: required(reference.runtimeEpoch, 'runtimeEpoch'),
+    turnId: required(reference.turnId, 'turnId'),
+    decisionId: required(reference.decisionId, 'decisionId'),
+    routeAttemptId: required(reference.routeAttemptId, 'routeAttemptId'),
+    routeGeneration: positiveInteger(reference.routeGeneration, 'routeGeneration'),
+    attemptNo: positiveInteger(reference.attemptNo, 'attemptNo'),
+    providerId: required(reference.providerId, 'providerId'),
+    providerRevision: required(reference.providerRevision, 'providerRevision'),
+  });
+}
+
+function encodeProxySessionId(sessionId, token) {
+  const encode = value => Buffer.from(String(value), 'utf8').toString('base64url');
+  return `pr1.${encode(sessionId)}.${encode(token)}`;
+}
+
+function decodeProxySessionId(value) {
+  const raw = clean(value);
+  if (!raw.startsWith('pr1.')) return { sessionId: raw, token: null, encoded: false };
+  const parts = raw.split('.');
+  if (parts.length !== 3 || !parts[1] || !parts[2]) return { sessionId: '', token: null, encoded: true };
+  try {
+    const sessionId = Buffer.from(parts[1], 'base64url').toString('utf8');
+    const token = Buffer.from(parts[2], 'base64url').toString('utf8');
+    if (!sessionId || !token || sessionId.length > 256 || token.length > 256
+        || /[\u0000-\u001f\u007f]/.test(sessionId + token)) {
+      return { sessionId: '', token: null, encoded: true };
+    }
+    return { sessionId, token, encoded: true };
+  } catch (_) {
+    return { sessionId: '', token: null, encoded: true };
+  }
+}
+
+return { required, positiveInteger, stallTimeoutBudget, createProviderRevision, providerAttemptFields, encodeProxySessionId, decodeProxySessionId };
+})();
+
+test('Rust attempt identity validation preserves coercions, bounds and public error classes', () => {
+  const native = require('../src/native/runtime').getNative();
+  const { ProviderAttemptError, providerAttemptFields } = require('../src/chat/provider-attempt-runtime');
+  const values = [undefined, null, false, true, '', ' ', '\n', '\u0000', '\u007f', ' \ufeffvalid ', '\ud800', '😀'.repeat(128),
+    '😀'.repeat(129), 'a'.repeat(257), 0, -0, NaN, Infinity, 1, 1.5, -1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1,
+    1n, 9007199254740993n, Symbol('id'), [], [' a '], {}, { toString() { return 'custom'; } }, { valueOf() { return 7; } }];
+  const check = (actual, expected) => {
+    let result, error;
+    try { result = expected(); } catch (e) { error = e; }
+    if (error) assert.throws(actual, e => e.constructor === error.constructor && e.code === error.code
+      && (!(error instanceof ProviderAttemptError) || e.message === error.message));
+    else assert.deepEqual(actual(), result);
+  };
+  for (const value of values) {
+    check(() => native.providerRequiredIdentity(value, 'identity', ProviderAttemptError), () => legacyAttemptIdentity.required(value, 'identity'));
+    check(() => native.providerPositiveInteger(value, 'number', ProviderAttemptError), () => legacyAttemptIdentity.positiveInteger(value, 'number'));
+    check(() => native.providerTimeoutBudget(value), () => legacyAttemptIdentity.stallTimeoutBudget(value));
+    const reference = { cli: 'codex', runtimeEpoch: 'epoch', turnId: 'turn', decisionId: 'decision', routeAttemptId: 'attempt',
+      routeGeneration: 1, attemptNo: 1, providerId: 'provider', providerRevision: 'revision' };
+    for (const key of Object.keys(reference)) {
+      const input = { ...reference, [key]: value };
+      check(() => providerAttemptFields(input), () => legacyAttemptIdentity.providerAttemptFields(input));
+    }
+  }
+});
+
+test('Rust provider revision keeps ordered alias hashing and lazy getter/JSON behavior', () => {
+  const sentinel = new Error('identity getter failed');
+  const execute = (fn, throwAt, make) => {
+    const reads = [];
+    const wrap = (object, prefix = '') => object && typeof object === 'object' ? new Proxy(object, {
+      get(target, key) { const event = `${prefix}.${String(key)}`; reads.push(event); if (event === throwAt) throw sentinel; return wrap(Reflect.get(target, key), event); },
+      ownKeys(target) { reads.push(`${prefix}.keys`); return Reflect.ownKeys(target); },
+      getOwnPropertyDescriptor(target, key) { reads.push(`${prefix}.descriptor:${String(key)}`); return Reflect.getOwnPropertyDescriptor(target, key); },
+    }) : object;
+    try { return { value: fn(wrap(make(reads))), reads }; }
+    catch (error) { return { error, reads }; }
+  };
+  const make = reads => ({ cli: ' CODEX ', providerId: ' p ', protocol: ' responses ', model: ' m ',
+    summary: { aliasMap: JSON.parse('{"z":{"model":"m"},"a":"alias","2":"second","10":"tenth","__proto__":{"raw":true}}'),
+      appType: { [Symbol.toPrimitive](hint) { reads.push(hint); return 'app'; } }, source: 'test', isOfficial: true } });
+  for (const throwAt of [null, '.summary', '.summary.aliasMap', '.summary.aliasMap.a', '.cli', '.model', '.summary.appType', '.summary.isOfficial']) {
+    assert.deepEqual(execute(createProviderRevision, throwAt, make), execute(legacyAttemptIdentity.createProviderRevision, throwAt, make));
+  }
+  const reasons = ['model', '\ud800', '😀', '', null, undefined, { toJSON() { return 'normalized'; } }];
+  for (let i = 0; i < 300; i++) {
+    const aliasMap = Object.fromEntries(['z', '2', '10', 'a', '😀', '\ud800'].slice(i % 4).map((key, n) => [key, reasons[(i + n) % reasons.length]]));
+    const input = { cli: i % 2 ? 'ClAuDe' : 'İCODEX', providerId: 'provider', protocol: 'anthropic', model: 'm',
+      summary: { aliasMap, isOfficial: i % 3 === 0, baseUrl: i % 2 ? ' https://example.test ' : null } };
+    assert.equal(createProviderRevision(input), legacyAttemptIdentity.createProviderRevision(input));
+  }
+});
+
+test('Rust proxy capabilities match Node base64url and UTF-8 malformed-input behavior', () => {
+  const native = require('../src/native/runtime').getNative();
+  const cases = ['plain', '', ' pr1.c2Vzc2lvbg.dG9rZW4 ', 'pr1.AA.AA', 'pr1.YWJj.YWJj',
+    'pr1.Y😀WJj.YWJj', 'pr1.ＹＷＪｊ.YWJj', 'pr1..YQ', 'pr1.YQ.', 'pr1.YQ.YQ.extra',
+    'pr1._-__.+/8=', 'pr1.4KC.4KC', 'pr1.Zm!9v.**YmFy===ignored', 'pr1.ŁA.YWJj'];
+  let seed = 183111;
+  const next = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0);
+  const alphabet = 'ABCDEFabcdef0123456789+/_-=.!\n ŁＹ😀Ā';
+  for (let i = 0; i < 5000; i++) {
+    const randomText = () => Array.from({ length: next() % 30 }, () => alphabet[next() % alphabet.length]).join('');
+    cases.push(`pr1.${randomText()}.${randomText()}`);
+    const session = i % 4 ? randomText() : '😀'.repeat(i % 140), token = randomText();
+    const encoded = native.providerEncodeProxySession(session, token);
+    assert.equal(encoded, legacyAttemptIdentity.encodeProxySessionId(session, token));
+    cases.push(encoded);
+  }
+  for (const raw of cases) {
+    assert.deepEqual(native.providerDecodeProxySession(raw), legacyAttemptIdentity.decodeProxySessionId(raw), JSON.stringify(raw));
+  }
+});
+
+function legacyAttemptTransition(previous, previousFence, { turnId, continuation, providerId, model, protocol, attemptNo }, ProviderAttemptError) {
+    if (previous && previous.turnId === turnId
+        && previousFence.replayFence !== 'none' && !continuation) {
+      throw new ProviderAttemptError(
+        'provider attempt cannot be replayed after observable output or tool intent',
+        'PROVIDER_REPLAY_FENCE_CLOSED',
+      );
+    }
+    if (previous && previous.lifecycle.running()) {
+      throw new ProviderAttemptError('provider attempt is still running', 'PROVIDER_ATTEMPT_IN_FLIGHT');
+    }
+    if (previous && previous.turnId === turnId) {
+      if (previous.lifecycle.succeeded()) {
+        throw new ProviderAttemptError(
+          'a succeeded turn cannot start another provider attempt',
+          'PROVIDER_TURN_ALREADY_SUCCEEDED',
+        );
+      }
+      if (continuation && (previous.providerId !== providerId
+          || previous.model !== model || previous.protocol !== protocol)) {
+        throw new ProviderAttemptError(
+          'a continuation must retain the concrete provider route',
+          'PROVIDER_CONTINUATION_ROUTE_CHANGED',
+        );
+      }
+      if (attemptNo <= previous.attemptNo) {
+        throw new ProviderAttemptError('attemptNo must increase within one turn', 'PROVIDER_ATTEMPT_SEQUENCE_INVALID');
+      }
+    }
+
+}
+
+test('Rust attempt transition preserves replay, finality, continuation and sequence priorities', () => {
+  const native = require('../src/native/runtime').getNative();
+  const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
+  for (let i = 0; i < 800; i++) {
+    const facts = { turnId: 'turn', continuation: i % 2 === 0, providerId: 'provider', model: 'model', protocol: 'protocol', attemptNo: i % 4 + 1 };
+    const previous = i % 19 ? { turnId: i % 7 ? 'turn' : 'other', providerId: i % 11 ? 'provider' : 'other',
+      model: i % 13 ? 'model' : 'other', protocol: i % 17 ? 'protocol' : 'other', attemptNo: 2,
+      lifecycle: { running: () => i % 5 === 0, succeeded: () => i % 3 === 0 } } : null;
+    const fence = { replayFence: ['none', 'visible_output', 'tool_intent', 'side_effect'][i % 4] };
+    let expected;
+    try { legacyAttemptTransition(previous, fence, facts, ProviderAttemptError); }
+    catch (error) { expected = error; }
+    const actual = () => native.providerValidateAttemptTransition(previous, fence, facts, ProviderAttemptError);
+    if (expected) assert.throws(actual, error => error instanceof ProviderAttemptError && error.code === expected.code && error.message === expected.message);
+    else assert.equal(actual(), undefined);
+  }
+});
+
+test('Rust attempt transition keeps lazy previous-record reads and lifecycle reentry', () => {
+  const native = require('../src/native/runtime').getNative();
+  const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
+  const sentinel = new Error('previous record getter');
+  for (const reenter of [false, true]) {
+    for (const throwAt of [null, 'turnId', 'lifecycle', 'providerId', 'attemptNo']) {
+      const execute = fn => {
+        const reads = [];
+        const state = { turnId: 'turn', providerId: 'provider', model: 'model', protocol: 'protocol', attemptNo: 1 };
+        const lifecycle = {
+          running() { assert.equal(this, lifecycle); reads.push('running'); if (reenter) state.turnId = 'moved'; return false; },
+          succeeded() { assert.equal(this, lifecycle); reads.push('succeeded'); return false; },
+        };
+        state.lifecycle = lifecycle;
+        const previous = new Proxy(state, { get(target, key) { reads.push(key); if (key === throwAt) throw sentinel; return target[key]; } });
+        const facts = { turnId: 'turn', continuation: true, providerId: 'provider', model: 'model', protocol: 'protocol', attemptNo: 2 };
+        try { return { result: fn(previous, { replayFence: 'tool_intent' }, facts, ProviderAttemptError), reads }; }
+        catch (error) { return { error, reads }; }
+      };
+      assert.deepEqual(execute(native.providerValidateAttemptTransition), execute(legacyAttemptTransition));
+    }
+  }
+});
+
+// Frozen pre-migration proxy authorization, used only as a differential oracle.
+  function legacyAuthorizeProxyRequest(input, context, port) {
+    const clean = value => value == null ? '' : String(value).trim();
+    const { runtimeEpoch, quotaGuard, resolveTerminalRoute, resolveProviderRevision, snapshot, auditOnly, poisonProxyAttempt } = port;
+    const backgroundLingers = record => !!(record && record.lifecycle.succeeded() && record.spawnKey && require('../src/cli/cli-capability').isResident(record.cli));
+    const { sessionId, record } = context;
+    const reject = (code, poison = false) => {
+      if (poison) poisonProxyAttempt(record, code);
+      auditOnly(sessionId, {
+        type: 'provider_proxy_request_rejected', operation: 'proxy_preflight', code,
+        runtimeEpoch: record ? record.runtimeEpoch : runtimeEpoch,
+        turnId: record ? record.turnId : null,
+        routeAttemptId: record ? record.routeAttemptId : null,
+        routeGeneration: record ? record.routeGeneration : null,
+        providerId: clean(input.providerId) || null,
+      });
+      return Object.freeze({ ok: false, code, sessionId: sessionId || null });
+    };
+    const role = clean(input.role || input.roleKind || 'main').toLowerCase();
+    // Account protection comes before route bookkeeping: the question is not
+    // "does this caller own the route" but "may this account be spent any
+    // further". Connectivity probes (HEAD /api/hello) and plain reads are not
+    // inference and must still answer, or a guarded account would look offline.
+    const method = clean(input.method).toUpperCase();
+    if (quotaGuard && (!method || method === 'POST')) {
+      let verdict = null;
+      try {
+        verdict = quotaGuard.check({ providerId: clean(input.providerId) });
+      } catch (_) {
+        verdict = null;
+      }
+      if (verdict && verdict.blocked) {
+        return reject(`quota_guard:${verdict.window}:${Math.round(verdict.usedPercent)}pct`);
+      }
+    }
+    // 终端会话没有回合：它在 currentBySession 里本来就没有记录，能力在会话记录上。
+    // 判定必须发生在 attempt 那套判断之前 —— 那些判断问的正是「有没有一条在跑的
+    // 回合」，对长活终端永远是否。放行的条件与常驻车道同一口径（主线路必须就是这条
+    // 会话自己的 provider，子线路必须在它声明的集合里），只是没有 revision 这一层：
+    // 终端的配置是进程启动时写死的一次性快照，拿它去比「当前 provider 配置」只会让
+    // 一个活着的终端在用户改完 provider 之后莫名失联。
+    if (!record && sessionId && resolveTerminalRoute) {
+      const terminal = resolveTerminalRoute(sessionId);
+      if (terminal) {
+        if (!context.encoded || clean(context.token) !== clean(terminal.token)) {
+          return reject('proxy_route_capability_mismatch');
+        }
+        const requested = clean(input.providerId);
+        if (role === 'main' && requested && requested !== clean(terminal.providerId)) {
+          return reject('provider_route_mismatch');
+        }
+        if (role !== 'main' && role !== 'aux' && requested
+            && !terminal.allowedSubProviderIds.includes(requested)) {
+          return reject('provider_subroute_not_allowed');
+        }
+        auditOnly(sessionId, {
+          type: 'provider_proxy_terminal_route_allowed', operation: 'proxy_preflight',
+          runtimeEpoch, providerId: requested || clean(terminal.providerId), role,
+        });
+        return Object.freeze({ ok: true, code: null, sessionId, attempt: null, terminal: true });
+      }
+    }
+    if (!sessionId || !context.exact) return reject('proxy_route_capability_mismatch');
+    if (backgroundLingers(record)) {
+      if (role === 'main' && clean(input.providerId)
+          && clean(input.providerId) !== record.providerId) {
+        return reject('provider_route_mismatch');
+      }
+      if (role !== 'main' && clean(input.providerId)
+          && !record.allowedSubProviderIds.includes(clean(input.providerId))) {
+        return reject('provider_subroute_not_allowed');
+      }
+      if (resolveProviderRevision) {
+        let revisionMatches = false;
+        try { revisionMatches = clean(resolveProviderRevision(record, input)) === record.providerRevision; }
+        catch (_) {}
+        if (!revisionMatches) return reject('provider_revision_mismatch');
+      }
+      return Object.freeze({
+        ok: true, code: null, sessionId, attempt: snapshot(record), background: true,
+      });
+    }
+    if (!record || !record.lifecycle.running()) return reject('proxy_attempt_not_running');
+    // The host already proved this route went silent and is retiring it. A CLI
+    // that re-dials it (codex retries the same stream several times before it
+    // gives up) would only hold the turn open on a line that cannot answer, and
+    // would deny Auto the chance to switch. Not poisoned: the attempt's failure
+    // category is the stall, which the turn's error decision already owns.
+    if (record.lifecycle.budget().stalled) return reject('attempt_stalled');
+    if (role === 'main' && clean(input.providerId)
+        && clean(input.providerId) !== record.providerId) {
+      return reject('provider_route_mismatch', true);
+    }
+    if (role !== 'main' && role !== 'aux' && clean(input.providerId)
+        && !record.allowedSubProviderIds.includes(clean(input.providerId))) {
+      return reject('provider_subroute_not_allowed', true);
+    }
+    if (resolveProviderRevision) {
+      let revisionMatches = false;
+      try { revisionMatches = clean(resolveProviderRevision(record, input)) === record.providerRevision; }
+      catch (_) {}
+      if (!revisionMatches) return reject('provider_revision_mismatch', true);
+    }
+    return Object.freeze({ ok: true, code: null, sessionId, attempt: snapshot(record) });
+  }
+
+
+const authorizationSentinel = new Error('authorization host failure');
+const authorizationSnapshot = Object.freeze({ identity: 'original snapshot' });
+
+function compareAuthorization(options) {
+  function execute(fn) {
+    const trace = [];
+    const wrap = (label, object) => new Proxy(object, {
+      get(target, key, receiver) {
+        if (typeof key === 'string') trace.push(`${label}.${key}`);
+        if (`${label}.${key}` === options.throwAt) throw authorizationSentinel;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const lifecycle = wrap('lifecycle', {
+      succeeded() { assert.equal(this, lifecycle); trace.push('succeeded()'); return options.state === 'succeeded'; },
+      running() { assert.equal(this, lifecycle); trace.push('running()'); return options.state === 'running'; },
+      budget() { assert.equal(this, lifecycle); trace.push('budget()'); return wrap('budget', { stalled: options.stalled }); },
+    });
+    const allowed = wrap('allowed', ['provider-b']);
+    const raw = { lifecycle, spawnKey: options.spawnKey ?? 'spawn', cli: options.cli ?? 'claude-exp',
+      providerId: 'provider-a', providerRevision: 'revision-a', allowedSubProviderIds: allowed,
+      runtimeEpoch: 'epoch', turnId: 'turn', routeAttemptId: 'attempt', routeGeneration: 2 };
+    const record = options.state === 'absent' ? null : wrap('record', raw);
+    const input = wrap('input', { role: options.role, roleKind: options.roleKind, method: options.method, providerId: options.providerId });
+    const context = { record, sessionId: options.noSession ? '' : 'session',
+      exact: options.exact ?? true, encoded: options.encoded ?? true, token: options.token ?? 'token' };
+    const terminal = options.terminal && wrap('terminal', { token: 'token', providerId: 'provider-a', allowedSubProviderIds: allowed });
+    const port = Object.freeze({
+      runtimeEpoch: 'fallback-epoch',
+      quotaGuard: options.quota === 'none' ? null : wrap('quota', {
+        check(args) {
+          trace.push(['check()', args]);
+          if (options.quota === 'throw') throw options.thrown;
+          return wrap('verdict', { blocked: options.quota === 'blocked', window: options.window ?? 'weekly', usedPercent: options.usedPercent ?? 93.5 });
+        },
+      }),
+      resolveTerminalRoute(sessionId) {
+        assert.equal(this, undefined); trace.push(['terminal()', sessionId]);
+        if (options.terminalThrow) throw authorizationSentinel;
+        return terminal;
+      },
+      resolveProviderRevision: options.revision === 'none' ? null : function (r, i) {
+        assert.equal(this, undefined); assert.equal(r, record); assert.equal(i, input);
+        trace.push('revision()');
+        if (options.revision === 'throw') throw options.thrown;
+        if (options.reenter) {
+          const nested = fn({ method: 'GET' }, { sessionId: '', record: null, exact: false }, port);
+          trace.push(['nested', nested.code]);
+          raw.providerRevision = 'revision-new';
+        }
+        return options.revision === 'mismatch' ? 'revision-other' : options.reenter ? 'revision-new' : ' revision-a ';
+      },
+      snapshot(r) { assert.equal(this, undefined); assert.equal(r, record); trace.push('snapshot()'); return authorizationSnapshot; },
+      poisonProxyAttempt(r, code) { assert.equal(this, undefined); assert.equal(r, record); trace.push(['poison()', code]); raw.turnId = 'poisoned-turn'; },
+      auditOnly(sessionId, event) { assert.equal(this, undefined); trace.push(['audit()', sessionId, event, Object.keys(event)]); },
+    });
+    try {
+      const result = fn(input, context, port);
+      if (result.attempt) assert.equal(result.attempt, authorizationSnapshot);
+      return { result, frozen: Object.isFrozen(result), keys: Object.keys(result), trace };
+    } catch (error) {
+      return { threw: true, sentinel: error === authorizationSentinel, error: error instanceof Error ? [error.name, error.message] : error, trace };
+    }
+  }
+  const native = require('../src/native/runtime').getNative();
+  assert.deepEqual(execute(native.providerAuthorizeProxyRequest), execute(legacyAuthorizeProxyRequest), JSON.stringify(options));
+}
+
+test('Rust proxy authorization matches the legacy route, quota, terminal and background matrix', () => {
+  for (const state of ['absent', 'running', 'succeeded', 'failed']) {
+    for (const role of [undefined, 'main', 'subagent', 'aux', ' BACKGROUND ']) {
+      for (const method of [undefined, 'post', 'HEAD', 'GET']) {
+        for (const providerId of ['', 'provider-a', 'provider-b', 'unknown']) {
+          for (const quota of ['none', 'blocked', 'clear']) {
+            for (const revision of ['none', 'match', 'mismatch']) {
+              compareAuthorization({ state, role, method, providerId, quota, revision, terminal: state === 'absent' });
+            }
+          }
+        }
+      }
+    }
+  }
+});
+
+test('Rust proxy authorization keeps invalid capabilities, stalled routes and nonresident finality closed', () => {
+  for (const extra of [{ noSession: true }, { exact: false }, { encoded: false }, { token: 'bad' },
+    { stalled: true }, { spawnKey: '' }, { cli: 'kimi' }, { cli: '\ufeffCLAUDE-EXP\ufeff' }, { cli: '\u0085claude-exp' }]) {
+    for (const state of ['absent', 'running', 'succeeded', 'failed']) {
+      for (const role of ['main', 'subagent', 'aux']) {
+        compareAuthorization({ state, role, providerId: 'provider-a', terminal: true, ...extra });
+      }
+    }
+  }
+});
+
+test('Rust proxy authorization preserves callback exceptions, lazy getters and reentry', () => {
+  for (const thrown of [authorizationSentinel, Symbol('thrown'), null, undefined, 42]) {
+    compareAuthorization({ state: 'running', quota: 'throw', thrown });
+    compareAuthorization({ state: 'running', revision: 'throw', thrown });
+    compareAuthorization({ state: 'succeeded', revision: 'throw', thrown });
+  }
+  for (const state of ['absent', 'running', 'succeeded']) {
+    for (const throwAt of ['input.role', 'input.method', 'input.providerId', 'quota.check', 'verdict.blocked',
+      'verdict.window', 'verdict.usedPercent', 'record.lifecycle', 'record.providerRevision', 'record.providerId',
+      'lifecycle.succeeded', 'lifecycle.running', 'lifecycle.budget', 'budget.stalled', 'allowed.includes', 'terminal.token']) {
+      for (const quota of ['clear', 'blocked']) {
+        compareAuthorization({ state, quota, throwAt, terminal: true, role: 'subagent', providerId: 'provider-b' });
+      }
+    }
+  }
+  compareAuthorization({ state: 'absent', terminalThrow: true });
+  compareAuthorization({ state: 'running', reenter: true });
+  compareAuthorization({ state: 'succeeded', reenter: true });
+  compareAuthorization({ state: 'running', quota: 'blocked', window: Symbol('window') });
+  compareAuthorization({ state: 'running', quota: 'blocked', usedPercent: -0.5 });
+  compareAuthorization({ state: 'running' }); // No swallowed exception can leak into the next call.
+});
+
+// Exercise complete traces against the saved Node orchestration, sharing only
+// the already-migrated storage primitives. Compare state after every operation.
+function compareProducerTrace(steps, options = {}) {
+  const native = require('../src/native/runtime').getNative();
+  const { legacyProducerOperations } = require('./helpers/legacy-provider-producers');
+  const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
+  const attempt = Object.freeze({ turnId: 'turn', providerId: 'provider-a', routeAttemptId: 'attempt' });
+  function execute(useNative) {
+    const trace = [], results = [];
+    const main = new native.RustMainProducers(), nonMain = new native.RustNonMainProducers();
+    let context, state = options.state || 'running', tick = options.tick ?? 1000, hookUsed = false, ops;
+    const wrap = (label, object) => new Proxy(object, { get(target, prop, receiver) {
+      trace.push(`${label}.${String(prop)}`);
+      if (`${label}.${String(prop)}` === options.throwAt) throw authorizationSentinel;
+      return Reflect.get(target, prop, receiver);
+    } });
+    const lifecycle = wrap('lifecycle', {
+      succeeded() { assert.equal(this, lifecycle); trace.push('succeeded()'); return state === 'succeeded'; },
+      running() { assert.equal(this, lifecycle); trace.push('running()'); return state === 'running'; },
+      matches(value) { assert.equal(this, lifecycle); trace.push('matches()'); return value === attempt; },
+    });
+    const record = wrap('record', { lifecycle, cli: options.cli || 'claude-exp', spawnKey: 'spawn',
+      providerId: 'provider-a', providerRevision: 'revision-a', proxyRouteToken: 'token' });
+    function hook(where) {
+      if (options.throwHook === where) throw authorizationSentinel;
+      if (options.reenter === where && !hookUsed) {
+        hookUsed = true;
+        trace.push(['nestedRelease', ops.forceReleaseProducers('session', 'reentry')]);
+        main.setActive('session', attempt, 'token', 1, false, 333);
+      }
+    }
+    const port = Object.freeze({ runtimeEpoch: 'epoch', proxyProducers: main, nonMainProxyProducers: nonMain,
+      now() { assert.equal(this, undefined); trace.push('now()'); hook('clock'); return tick; },
+      snapshot(value) { assert.equal(this, undefined); assert.equal(value, record); trace.push('snapshot()'); hook('snapshot'); return attempt; },
+      resolveProviderRevision: options.revision === 'none' ? null : function (value) {
+        assert.equal(this, undefined); assert.equal(value, record); trace.push('revision()'); hook('revision');
+        return options.revision === 'mismatch' ? 'changed' : 'revision-a';
+      },
+      poisonProxyAttempt(value, code) { assert.equal(this, undefined); assert.equal(value, context.record); trace.push(['poison()', code]); hook('poison'); },
+      auditOnly(id, event) { assert.equal(this, undefined); trace.push(['audit()', id, event, Object.keys(event)]); hook('audit'); },
+      producerStaleGraceMs: 5000, ProviderAttemptError,
+      proxyContext: () => context,
+    });
+    ops = useNative ? {
+      onProxyActivity: event => native.providerProxyActivity(event, context, port),
+      boundProxyAttempt: event => native.providerBoundProxyAttempt(event, context, port),
+      forceReleaseProducers: (id, reason = 'force_release') => native.providerForceReleaseProducers(id, reason, port),
+      drainStaleProducers: (id, turn, producer) => native.providerDrainStaleProducers(id, turn, producer, port),
+      nonMainProducerKey: (ctx, event, role) => native.providerNonMainProducerKey(ctx, event, role),
+    } : legacyProducerOperations(port);
+    if (options.count != null) main.setActive('session', attempt, 'token', options.count, false, options.last ?? 1000);
+    const mainState = entry => entry && { count: entry.count, ambiguous: entry.ambiguous, last: entry.lastRequestAt,
+      token: entry.proxyRouteToken, attempt: entry.attempt, sameIdentity: entry.attempt === attempt };
+    for (const step of steps) {
+      if (step.state) state = step.state;
+      if ('tick' in step) tick = step.tick;
+      context = { sessionId: step.noSession ? '' : 'session', record: state === 'absent' ? null : record,
+        token: step.token ?? 'token', exact: step.exact ?? true };
+      const event = wrap('event', { role: step.role ?? 'main', roleKind: step.roleKind,
+        providerId: step.providerId ?? 'provider-a', phase: step.phase });
+      let value;
+      try {
+        if (step.op === 'release') value = ops.forceReleaseProducers(step.id ?? 'session', step.reason);
+        else if (step.op === 'drain') value = ops.drainStaleProducers('session', 'next-turn', main.getActive('session'));
+        else if (step.op === 'bound') value = ops.boundProxyAttempt(event);
+        else if (step.op === 'usage') value = nonMain.bindUsage(ops.nonMainProducerKey(context, event, step.role));
+        else value = ops.onProxyActivity(event);
+        results.push({ value, frozen: value != null && typeof value === 'object' ? Object.isFrozen(value) : null,
+          identity: value === attempt });
+      } catch (error) {
+        results.push({ threw: true, sentinel: error === authorizationSentinel, class: error instanceof ProviderAttemptError,
+          error: [error.name, error.code, error.message] });
+      }
+      results.push({ active: mainState(main.getActive('session')), ended: mainState(main.getEnded('session')) });
+    }
+    return { trace, results };
+  }
+  assert.deepEqual(execute(true), execute(false), JSON.stringify({ steps, options }, (_, value) => typeof value === 'bigint' ? `${value}n` : value));
+}
+
+test('Rust producer orchestration matches overlapping, cancelled, late-end and background traces', () => {
+  for (let seed = 1; seed <= 40; seed++) {
+    let n = seed;
+    const pick = list => { n = (Math.imul(n, 1664525) + 1013904223) >>> 0; return list[(n >>> 16) % list.length]; };
+    const steps = [];
+    for (let i = 0; i < 100; i++) steps.push({
+      op: pick(['activity', 'activity', 'activity', 'bound', 'release', 'drain', 'usage']),
+      phase: pick(['request', 'end', 'progress', '']), role: pick(['main', 'subagent', 'aux', 'background', '']),
+      providerId: pick(['provider-a', 'provider-b', '']), exact: pick([true, true, false]),
+      token: pick(['token', 'old-token']), state: pick(['running', 'succeeded', 'failed', 'absent']), tick: i * 1000,
+    });
+    compareProducerTrace(steps, { count: seed % 3, revision: seed % 3 ? 'match' : 'mismatch' });
+  }
+  // A completed background's late end must not settle the new main producer.
+  compareProducerTrace([
+    { phase: 'request', state: 'succeeded' }, { phase: 'request', state: 'running' },
+    { phase: 'end' }, { op: 'bound' }, { phase: 'end' }, { role: 'background', op: 'usage' },
+  ]);
+});
+
+test('Rust producer draining preserves grace boundaries, exceptional clocks and audit ordering', () => {
+  for (const tick of [0, 5999, 6000, 6001, NaN, Infinity, -Infinity, 6000n]) {
+    for (const last of [0, 1000, NaN]) {
+      compareProducerTrace([{ op: 'drain' }, { op: 'release' }, { op: 'release' }], { count: 2, tick, last });
+    }
+  }
+  for (const count of [0, 1, 2, NaN, -1]) {
+    compareProducerTrace([{ op: 'release', id: '' }, { op: 'release', reason: '' }, { phase: 'end' }], { count });
+  }
+  for (const throwHook of ['clock', 'audit', 'revision', 'snapshot', 'poison']) {
+    compareProducerTrace([{ phase: 'request' }, { op: 'bound' }, { phase: 'end' }, { op: 'release' }, { op: 'drain' }], { count: 1, throwHook });
+  }
+  for (const reenter of ['clock', 'audit', 'revision', 'snapshot']) {
+    compareProducerTrace([{ phase: 'request' }, { op: 'bound' }, { phase: 'end' }, { op: 'release' }], { count: 1, reenter });
+  }
+});
+
+test('Rust producer callbacks preserve lazy reads and propagated exception identity', () => {
+  for (const throwAt of ['event.role', 'event.roleKind', 'event.phase', 'event.providerId', 'record.lifecycle',
+    'record.providerId', 'record.providerRevision', 'record.proxyRouteToken', 'lifecycle.succeeded', 'lifecycle.running', 'lifecycle.matches']) {
+    for (const role of ['', 'main', 'aux', 'subagent']) {
+      compareProducerTrace([{ phase: 'request', role }, { op: 'bound', role }, { phase: 'end', role }, { op: 'release' }], { count: 1, throwAt });
+    }
+  }
+});
+
+// Usage attribution and proxy outcome coordination moved to Rust
+// (native/addon/src/provider_outcome.rs). Compare complete traces with the
+// frozen Node implementation: every property read (including spread traps),
+// every host call and its arguments, results, freezing, identity, the
+// record's proxyFailure and both producer ledgers after each operation.
+const outcomeSentinel = new Error('outcome host failure');
+const outcomeSymbol = Symbol('outcome.extra');
+
+// deepStrictEqual ignores key order; attribution and failure objects are
+// compared as ordered [key, value] lists, with their frozen state.
+function describeOrdered(value, seen = new Set()) {
+  if (value === null || typeof value !== 'object') {
+    return typeof value === 'bigint' ? `${value}n` : typeof value === 'symbol' ? String(value) : value;
+  }
+  if (seen.has(value)) return '[cycle]';
+  seen.add(value);
+  return { frozen: Object.isFrozen(value),
+    entries: Reflect.ownKeys(value).map(key => [String(key), describeOrdered(value[key], seen)]) };
+}
+
+function compareOutcomeTrace(steps, options = {}) {
+  const native = require('../src/native/runtime').getNative();
+  const { legacyOutcomeOperations } = require('./helpers/legacy-provider-outcome');
+  const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
+  const attempt = Object.freeze({ sessionId: 'session', turnId: 'turn', runtimeEpoch: 'epoch',
+    decisionId: 'decision', routeAttemptId: 'attempt', routeGeneration: 3, attemptNo: 2,
+    providerId: 'provider-a', providerRevision: 'rev-a' });
+  function execute(useNative) {
+    const trace = [], results = [];
+    const main = new native.RustMainProducers(), nonMain = new native.RustNonMainProducers();
+    const st = { matches: true, running: true, succeeded: false, budgeted: true, stall: false,
+      deadline: false, retire: false, deadlineAt: 5000, present: true, tick: 1000 };
+    const wrap = (label, object) => new Proxy(object, {
+      get(target, prop, receiver) {
+        const name = `${label}.${String(prop)}`;
+        trace.push(name);
+        if (name === options.throwAt) throw outcomeSentinel;
+        return Reflect.get(target, prop, receiver);
+      },
+      ownKeys(target) { trace.push(`${label}#ownKeys`); return Reflect.ownKeys(target); },
+      getOwnPropertyDescriptor(target, prop) {
+        trace.push(`${label}#describe.${String(prop)}`);
+        return Reflect.getOwnPropertyDescriptor(target, prop);
+      },
+      set(target, prop, value, receiver) {
+        trace.push([`${label}#set.${String(prop)}`, Object.isFrozen(value)]);
+        if (`${label}#set.${String(prop)}` === options.throwAt) throw outcomeSentinel;
+        return Reflect.set(target, prop, value, receiver);
+      },
+    });
+    const lifecycle = wrap('lifecycle', {
+      matches(value) { trace.push(['matches()', value === attempt ? 'attempt' : typeof value]); return st.matches; },
+      running() { trace.push('running()'); return st.running; },
+      succeeded() { trace.push('succeeded()'); return st.succeeded; },
+      completed() { trace.push('completed()'); },
+      advance(fence) { trace.push(['advance()', fence]); return true; },
+      observeFailure(...args) { trace.push(['observeFailure()', ...args]); return st.budgeted; },
+      stallRetryExhausted(code) { trace.push(['stallRetryExhausted()', code]); return st.stall; },
+      deadlineReached(at) { trace.push(['deadlineReached()', at]); return st.deadline; },
+      budget() { trace.push('budget()'); return { requestDeadlineAt: st.deadlineAt }; },
+      retireIfStalled(code, exhausted) { trace.push(['retireIfStalled()', code, exhausted]); return st.retire; },
+    });
+    const recordTarget = { runtimeEpoch: 'epoch', decisionId: 'decision', routeAttemptId: 'attempt',
+      sessionId: 'session', turnId: 'turn', cli: options.cli || 'claude-exp', providerId: 'provider-a',
+      providerName: 'Provider A', providerRevision: 'rev-a', attemptNo: 2, routeGeneration: 3,
+      proxyRouteToken: 'token', spawnKey: 'spawn', proxyFailure: options.failure ?? null, lifecycle };
+    if (options.frozenRecord) Object.defineProperty(recordTarget, 'proxyFailure', { writable: false });
+    const record = wrap('record', recordTarget);
+    const currentBySession = { get(id) {
+      trace.push(['current.get()', id]);
+      return st.present && id === 'session' ? record : undefined;
+    } };
+    let step;
+    const port = Object.freeze({
+      runtimeEpoch: 'epoch', proxyProducers: main, nonMainProxyProducers: nonMain, currentBySession,
+      snapshot(value) { assert.equal(this, undefined); trace.push(['snapshot()', value === record]); return value ? attempt : null; },
+      auditOnly(id, event) {
+        assert.equal(this, undefined);
+        trace.push(['audit()', id, event, Object.keys(event), Object.isFrozen(event)]);
+        if (options.throwAudit) throw outcomeSentinel;
+      },
+      now() { assert.equal(this, undefined); trace.push('now()'); return st.tick; },
+      proxyContext(input) {
+        trace.push(['proxyContext()', input === step.eventValue]);
+        return { sessionId: step.noSession ? '' : 'session', token: step.token ?? 'token', encoded: true,
+          record: st.present ? record : undefined, exact: step.exact ?? true };
+      },
+      ProviderAttemptError,
+    });
+    const ops = useNative ? {
+      attributeProxyUsage: (event = {}) => native.providerAttributeProxyUsage(event, port),
+      observeProxyOutcome: (event = {}) => native.providerObserveProxyOutcome(event, port),
+      proxyFailure: (reference, facts = {}) => native.providerProxyFailure(reference, facts, port),
+    } : legacyOutcomeOperations(port);
+    const ledger = entry => entry && { count: entry.count, ambiguous: entry.ambiguous, last: entry.lastRequestAt,
+      token: entry.proxyRouteToken, sameIdentity: entry.attempt === attempt };
+    for (const raw of steps) {
+      step = { ...raw };
+      Object.assign(st, raw.state || {});
+      if (raw.active) main.setActive('session', attempt, raw.active.token ?? 'token', raw.active.count ?? 1,
+        raw.active.ambiguous ?? false, 1000);
+      if (raw.clearActive) main.deleteActive('session');
+      if (raw.ended) main.setEnded('session', attempt, raw.ended.token ?? 'token');
+      if (raw.nonMain) nonMain.start(raw.nonMain);
+      let value;
+      if (raw.event === null) step.eventValue = null;
+      else if (raw.event !== undefined) {
+        const target = { ...raw.event };
+        if (raw.event.outcome) target.proxyOutcome = wrap('outcome', { ...raw.event.outcome });
+        delete target.outcome;
+        if (raw.symbol) target[outcomeSymbol] = 'symbol-value';
+        if (raw.hidden) Object.defineProperty(target, 'hidden', { value: 'secret', enumerable: false });
+        step.eventValue = wrap('event', target);
+      }
+      try {
+        if (raw.op === 'usage') value = ops.attributeProxyUsage(step.eventValue);
+        else if (raw.op === 'failure') {
+          const reference = raw.reference === 'attempt' ? attempt
+            : raw.reference === 'proxy' ? wrap('reference', { ...attempt }) : raw.reference;
+          value = ops.proxyFailure(reference, raw.facts);
+        } else value = ops.observeProxyOutcome(step.eventValue);
+        results.push({ value: describeOrdered(value),
+          sameFailure: value != null && (value === recordTarget.proxyFailure || value.failure === recordTarget.proxyFailure) });
+      } catch (error) {
+        results.push({ threw: true, sentinel: error === outcomeSentinel, name: error && error.name });
+      }
+      results.push({ failure: describeOrdered(recordTarget.proxyFailure),
+        active: ledger(main.getActive('session')), ended: ledger(main.getEnded('session')) });
+    }
+    return { trace, results };
+  }
+  const left = execute(true), right = execute(false);
+  assert.deepEqual(left, right, JSON.stringify({ steps, options }, (_, value) => typeof value === 'bigint' ? `${value}n`
+    : typeof value === 'symbol' ? String(value) : value));
+}
+
+function outcomeSteps(seed, count) {
+  let n = seed;
+  const pick = list => { n = (Math.imul(n, 1664525) + 1013904223) >>> 0; return list[(n >>> 16) % list.length]; };
+  const hex = 'uo_0123456789abcdef0123456789abcdef';
+  // A bound report: every identity field matches the current attempt.
+  const bound = () => ({ sessionId: 'session', role: 'main', roleKind: undefined, providerId: 'provider-a',
+    eventId: pick([hex, ` ${hex} `, 'uo_0123', 'event-1', hex.toUpperCase(), undefined]),
+    routeAttribution: 'exact', decisionId: 'decision', attemptNo: 2, providerRevision: 'rev-a',
+    runtimeEpoch: 'epoch', turnId: 'turn', routeAttemptId: 'attempt', routeGeneration: 3 });
+  const perturb = {
+    sessionId: [' session ', 'other', undefined], role: ['MAIN', ' main ', 'subagent', 'aux', 'background', ''],
+    roleKind: ['main', 'subagent', 'aux'], providerId: [' provider-a ', 'provider-b', '', undefined],
+    routeAttribution: ['ambiguous', undefined], decisionId: [' decision ', 'other'],
+    attemptNo: ['2', 2n, 3, NaN, undefined], providerRevision: ['rev-b', ' rev-a '],
+    runtimeEpoch: ['', undefined], turnId: [' turn ', undefined], routeGeneration: ['3', 0, NaN, undefined],
+  };
+  const steps = [];
+  for (let i = 0; i < count; i++) {
+    const op = pick(['usage', 'usage', 'outcome', 'outcome', 'outcome', 'outcome', 'failure', 'failure']);
+    const event = bound();
+    if (pick([true, false, false, false])) {
+      const field = pick(Object.keys(perturb));
+      event[field] = pick(perturb[field]);
+    }
+    Object.assign(event, {
+      status: pick(['error', 'error', 'error', 'ERROR', ' error ', 'ok', undefined]),
+      statusCode: pick([429, 429, '429', 429n, 502, '502', 404.5, 399, 400, 599, 600, 200, null, undefined, NaN, -0, '0x1f4']),
+      errorCode: pick(['STALL_TIMEOUT', 'REQUEST_TIMEOUT', 'UPSTREAM_HTTP_ERROR', '', ' X ', undefined]),
+      requestDeadlineAt: pick([5000, NaN, '5000', Infinity, undefined, 0]),
+      modelProgress: pick([true, false, 'true', undefined]),
+      rejection: pick([{ kind: 'window' }, { kind: '' }, null, undefined]),
+      outcome: pick([null, { requestKind: 'inference', termination: pick(['completed', 'completed', 'upstream_failure', 'downstream_disconnect', undefined]),
+        requestId: pick(['req-1', '', undefined]) }, { requestKind: 'inference', termination: 'completed', requestId: 'req-3' },
+      { requestKind: 'probe', termination: 'completed', requestId: 'req-2' }]),
+    });
+    steps.push({
+      op, event, symbol: pick([true, false]), hidden: pick([true, false]),
+      reference: pick(['attempt', 'attempt', 'attempt', 'proxy', null, 0, false, '']),
+      facts: pick([{ resultDurable: true, completion: { version: 1, state: 'completed', settled: true, source: 'protocol' } },
+        { resultDurable: true, completion: { version: 1, state: 'completed', settled: true, source: 'exit' } },
+        { resultDurable: 'true', completion: { version: 1, state: 'completed', settled: true, source: 'protocol' } },
+        { resultDurable: false }, { resultDurable: true }, undefined]),
+      token: pick(['token', 'token', 'token', 'old-token']), exact: pick([true, true, true, false]),
+      active: pick([null, { count: 1 }, { count: 1 }, { count: 2 }, { count: 1, ambiguous: true }, { count: 1, token: 'old-token' }]),
+      clearActive: pick([false, false, false, true]),
+      ended: pick([null, null, { token: 'token' }, { token: 'old-token' }]),
+      nonMain: pick([null, null, 'session\u0000token\u0000subagent\u0000provider-a']),
+      state: {
+        matches: pick([true, true, true, false]), running: pick([true, true, true, false]), succeeded: pick([false, false, true]),
+        budgeted: pick([true, true, false, 0, 1, 'yes']), stall: pick([false, true, 0]), deadline: pick([false, true, 'x']),
+        retire: pick([false, false, true]), deadlineAt: pick([5000, undefined, null]), present: pick([true, true, true, true, false]),
+        tick: pick([1000, 2000, NaN, 5n]),
+      },
+    });
+  }
+  return steps;
+}
+
+test('Rust usage attribution and proxy outcomes match the Node traces', () => {
+  for (let seed = 1; seed <= 120; seed++) {
+    const failure = seed % 3 === 0 ? Object.freeze({ code: 'OLD', httpStatus: null,
+      proxyOutcome: { termination: 'downstream_disconnect' }, recovered: seed % 2 === 0 }) : null;
+    compareOutcomeTrace(outcomeSteps(seed, 80), { failure, cli: seed % 4 === 0 ? 'codex' : 'claude-exp' });
+  }
+});
+
+test('Rust proxy outcomes keep exception points, strict assignment and spread semantics', () => {
+  const failing = { op: 'outcome', event: { sessionId: 'session', routeAttribution: 'exact', decisionId: 'decision',
+    attemptNo: 2, providerId: 'provider-a', providerRevision: 'rev-a', status: 'error', statusCode: 429,
+    errorCode: 'STALL_TIMEOUT', requestDeadlineAt: 5000, modelProgress: true, rejection: { kind: 'window' },
+    outcome: { requestKind: 'inference', termination: 'upstream_failure', requestId: 'req' } },
+  state: { budgeted: true, stall: false, deadline: true, retire: true } };
+  const recovered = { op: 'outcome', event: { ...failing.event, status: 'ok', outcome: { requestKind: 'inference', termination: 'completed' } } };
+  const usage = { op: 'usage', event: { sessionId: 'session', role: 'main', eventId: 'uo_0123456789abcdef0123456789abcdef', providerId: 'provider-a' },
+    symbol: true, hidden: true, ended: { token: 'token' } };
+  compareOutcomeTrace([failing, recovered, recovered, { op: 'failure', reference: 'attempt', facts: undefined }]);
+  for (const throwAt of ['event.statusCode', 'event.requestDeadlineAt', 'outcome.termination', 'lifecycle.observeFailure',
+    'lifecycle.retireIfStalled', 'record.proxyFailure', 'record#set.proxyFailure', 'event.rejection', 'record.cli',
+    'event.eventId', 'event#describe.providerId', 'lifecycle.matches', 'outcome.requestId']) {
+    compareOutcomeTrace([failing, recovered, usage, { op: 'failure', reference: 'proxy' }], { throwAt });
+  }
+  compareOutcomeTrace([failing], { frozenRecord: true });
+  compareOutcomeTrace([failing, recovered, usage], { throwAudit: true });
+  // Nullish and primitive events, references and facts.
+  compareOutcomeTrace([{ op: 'usage', event: null }, { op: 'outcome', event: null },
+    { op: 'failure', reference: undefined }, { op: 'failure', reference: 'attempt', facts: null }]);
+  // An ended producer is bound once, then reported ambiguous.
+  compareOutcomeTrace([{ ...usage, active: null }, usage, { ...usage, event: { ...usage.event, providerId: 'provider-b' } }]);
 });

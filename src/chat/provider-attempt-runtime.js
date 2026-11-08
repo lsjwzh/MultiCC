@@ -1,11 +1,8 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { isCompleted } = require('../cli-adapters/completion');
+const { getNative } = require('../native/runtime');
 const { isResident } = require('../cli/cli-capability');
-const { isProxyFailureCompatibleWithCompletion } = require('./adapter-completion');
-const { isProxyStallCode } = require('../providers/proxy-stall-watch');
-const { normalizeRejection, sanitizeMessage } = require('./api-error-policy');
 const {
   createExactSecretStreamRedactor, redactExactSecretFragments, redactProviderRouteCapability,
 } = require('../observability');
@@ -39,19 +36,11 @@ function clean(value) {
 }
 
 function required(value, label) {
-  const text = clean(value);
-  if (!text || text.length > 256 || /[\u0000-\u001f\u007f]/.test(text)) {
-    throw new ProviderAttemptError(`${label} is required`, 'PROVIDER_ATTEMPT_IDENTITY_INVALID');
-  }
-  return text;
+  return getNative().providerRequiredIdentity(value, label, ProviderAttemptError);
 }
 
 function positiveInteger(value, label) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1) {
-    throw new ProviderAttemptError(`${label} must be a positive integer`, 'PROVIDER_ATTEMPT_IDENTITY_INVALID');
-  }
-  return number;
+  return getNative().providerPositiveInteger(value, label, ProviderAttemptError);
 }
 
 // Optional per-attempt idle budget for the host-side stall watchdog. 0 (the
@@ -59,48 +48,15 @@ function positiveInteger(value, label) {
 // Anything malformed degrades to 0 rather than throwing: a diagnostics budget
 // must never be the reason a turn cannot start.
 function stallTimeoutBudget(value) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number > 0 ? number : 0;
+  return getNative().providerTimeoutBudget(value);
 }
 
 function createProviderRevision(input = {}) {
-  const summary = input.summary && typeof input.summary === 'object' ? input.summary : {};
-  const aliasMap = summary.aliasMap && typeof summary.aliasMap === 'object'
-    ? Object.fromEntries(Object.keys(summary.aliasMap).sort().map(key => [key, summary.aliasMap[key]]))
-    : {};
-  const safeRoute = {
-    cli: required(input.cli, 'cli').toLowerCase(),
-    providerId: required(input.providerId, 'providerId'),
-    protocol: required(input.protocol, 'protocol'),
-    model: required(input.model, 'model'),
-    appType: clean(summary.appType) || null,
-    baseUrl: clean(summary.baseUrl) || null,
-    source: clean(summary.source) || null,
-    apiFormat: clean(summary.apiFormat) || null,
-    wireApi: clean(summary.wireApi) || null,
-    aliasMap,
-    isOfficial: summary.isOfficial === true,
-  };
-  return `prv_${crypto.createHash('sha256').update(JSON.stringify(safeRoute)).digest('hex').slice(0, 24)}`;
+  return getNative().providerRevision(input, ProviderAttemptError);
 }
 
 function providerAttemptFields(reference) {
-  if (!reference || typeof reference !== 'object') {
-    throw new ProviderAttemptError('provider attempt is required', 'PROVIDER_ATTEMPT_IDENTITY_INVALID');
-  }
-  return Object.freeze({
-    providerRouteProtocolVersion: 1,
-    providerRouteScope: 'attempt',
-    cli: required(reference.cli, 'cli'),
-    runtimeEpoch: required(reference.runtimeEpoch, 'runtimeEpoch'),
-    turnId: required(reference.turnId, 'turnId'),
-    decisionId: required(reference.decisionId, 'decisionId'),
-    routeAttemptId: required(reference.routeAttemptId, 'routeAttemptId'),
-    routeGeneration: positiveInteger(reference.routeGeneration, 'routeGeneration'),
-    attemptNo: positiveInteger(reference.attemptNo, 'attemptNo'),
-    providerId: required(reference.providerId, 'providerId'),
-    providerRevision: required(reference.providerRevision, 'providerRevision'),
-  });
+  return getNative().providerAttemptFields(reference, ProviderAttemptError);
 }
 
 function tagProviderAttemptEvent(event, reference) {
@@ -120,11 +76,6 @@ function scopeHostProviderEvent(event) {
   return { ...safe, providerRouteScope: 'host' };
 }
 
-function contentBlocks(event) {
-  const content = event && event.message && event.message.content;
-  return Array.isArray(content) ? content : [];
-}
-
 function markHostErrorEnvelope(event) {
   if (!event || typeof event !== 'object' || Array.isArray(event)
       || event.type !== 'assistant') return event;
@@ -139,50 +90,14 @@ function markHostErrorEnvelope(event) {
 }
 
 function fenceForEvent(event) {
-  if (!event || typeof event !== 'object') return 'none';
-  if (event.type === 'stream_event' && event.event && typeof event.event === 'object') {
-    const nested = event.event;
-    const block = nested.content_block;
-    const delta = nested.delta;
-    if (nested.type === 'content_block_start' && block && block.type === 'tool_use') {
-      return 'tool_intent';
-    }
-    if (nested.type === 'content_block_delta' && delta) {
-      if (delta.type === 'input_json_delta') return 'tool_intent';
-      if ((delta.type === 'text_delta' || delta.type === 'thinking_delta')
-          && clean(delta.text || delta.thinking)) return 'visible_output';
-    }
-  }
-  if (event.type === 'part_delta') {
-    const delta = event.delta && typeof event.delta === 'object' ? event.delta : event;
-    if (delta.type === 'tool' || delta.tool || delta.toolId) return 'tool_intent';
-    if (delta.type === 'text' || delta.type === 'reasoning' || delta.type === 'source') {
-      return 'visible_output';
-    }
-    return 'none';
-  }
-  if (event.type === 'reasoning' && clean(event.text)) return 'visible_output';
-  if (event.type === 'assistant_text' && clean(event.text)) return 'visible_output';
-  if (event.type === 'tool_start' || event.type === 'tool_update') return 'tool_intent';
-  if (event.type === 'tool_result') return 'side_effect';
-  if (event.type === 'assistant') {
-    const blocks = contentBlocks(event);
-    if (blocks.length > 0 && blocks.every(block => block && block.type === 'text')
-        && event[HOST_ERROR_ENVELOPE] === true) return 'none';
-    if (blocks.some(block => block && block.type === 'tool_use')) return 'tool_intent';
-    if (blocks.some(block => block && block.type === 'thinking'
-        && clean(block.thinking || block.text))) return 'visible_output';
-    if (blocks.some(block => block && block.type === 'text' && clean(block.text))) return 'visible_output';
-  }
-  if (event.type === 'user'
-      && contentBlocks(event).some(block => block && block.type === 'tool_result')) {
-    return 'side_effect';
-  }
-  return 'none';
+  return getNative().providerEventFence(event, HOST_ERROR_ENVELOPE);
 }
 
 function snapshot(record) {
   if (!record) return null;
+  const fence = record.lifecycle.snapshot();
+  const budget = record.lifecycle.budget();
+  const status = record.lifecycle.status();
   return Object.freeze({
     runtimeEpoch: record.runtimeEpoch,
     decisionId: record.decisionId,
@@ -202,59 +117,28 @@ function snapshot(record) {
     stallTimeoutMs: record.stallTimeoutMs,
     requestTimeoutMs: record.requestTimeoutMs,
     connectTimeoutMs: record.connectTimeoutMs,
-    requestDeadlineAt: record.requestDeadlineAt,
-    requestFailures: record.requestFailures,
-    stalled: record.stalled === true,
-    replayFence: record.replayFence,
-    visibleOutputObserved: record.visibleOutputObserved,
-    toolIntentObserved: record.toolIntentObserved,
-    sideEffectObserved: record.sideEffectObserved,
-    safeToReplay: record.replayFence === 'none',
-    outcome: record.outcome,
-    errorCategory: record.errorCategory,
+    requestDeadlineAt: budget.requestDeadlineAt ?? null,
+    requestFailures: budget.requestFailures,
+    stalled: budget.stalled,
+    ...fence,
+    safeToReplay: fence.replayFence === 'none',
+    outcome: status.outcome,
+    errorCategory: status.errorCategory ?? null,
     selectedAt: record.selectedAt,
-    finishedAt: record.finishedAt,
+    finishedAt: status.finishedAt ?? null,
   });
 }
 
 function sameAttempt(record, reference) {
-  return !!(record && reference
-    && record.runtimeEpoch === reference.runtimeEpoch
-    && record.routeAttemptId === reference.routeAttemptId
-    && record.routeGeneration === Number(reference.routeGeneration)
-    && record.turnId === reference.turnId);
+  return !!(record && reference && record.lifecycle.matches(reference));
 }
 
 function encodeProxySessionId(sessionId, token) {
-  const encode = value => Buffer.from(String(value), 'utf8').toString('base64url');
-  return `pr1.${encode(sessionId)}.${encode(token)}`;
+  return getNative().providerEncodeProxySession(sessionId, token);
 }
 
 function decodeProxySessionId(value) {
-  const raw = clean(value);
-  if (!raw.startsWith('pr1.')) return { sessionId: raw, token: null, encoded: false };
-  const parts = raw.split('.');
-  if (parts.length !== 3 || !parts[1] || !parts[2]) return { sessionId: '', token: null, encoded: true };
-  try {
-    const sessionId = Buffer.from(parts[1], 'base64url').toString('utf8');
-    const token = Buffer.from(parts[2], 'base64url').toString('utf8');
-    if (!sessionId || !token || sessionId.length > 256 || token.length > 256
-        || /[\u0000-\u001f\u007f]/.test(sessionId + token)) {
-      return { sessionId: '', token: null, encoded: true };
-    }
-    return { sessionId, token, encoded: true };
-  } catch (_) {
-    return { sessionId: '', token: null, encoded: true };
-  }
-}
-
-function reattributedUsage(event, facts) {
-  const source = { ...event };
-  // ProviderRouterPort has already normalized CPR input once. Its derived `uo_*`
-  // id hashes the encoded process capability; changing that session to the real
-  // one requires downstream validation to derive a fresh id from sourceEventId.
-  if (/^uo_[a-f0-9]{32}$/.test(clean(source.eventId))) delete source.eventId;
-  return Object.freeze({ ...source, ...facts });
+  return getNative().providerDecodeProxySession(value);
 }
 
 function cloneStructuredValue(value, seen = new WeakMap()) {
@@ -436,13 +320,21 @@ function createProviderAttemptRuntime(options = {}) {
     options.runtimeEpoch || `runtime_${crypto.randomUUID()}`,
     'runtimeEpoch',
   );
-  const currentBySession = new Map();
-  const generationBySession = new Map();
-  const proxyProducers = new Map();
-  const endedProxyProducers = new Map();
-  const nonMainProxyProducers = new Map();
-  const endedNonMainProxyProducers = new Map();
+  const currentBySession = new (getNative().RustCurrentAttempts)();
+  const generations = new (getNative().RustProviderAttemptGenerations)();
+  const proxyProducers = new (getNative().RustMainProducers)();
+  const nonMainProxyProducers = new (getNative().RustNonMainProducers)();
   const streamRedactors = new Map();
+  // Live host ports only: Rust owns admission; callbacks retain the current
+  // record identity until runner, audit and quota effects move out of Node.
+  // Usage attribution and proxy outcomes (provider_outcome.rs) also read the
+  // current record table and a fresh proxyContext per lookup.
+  const proxyPort = Object.freeze({
+    runtimeEpoch, quotaGuard, resolveTerminalRoute, resolveProviderRevision,
+    snapshot, auditOnly, poisonProxyAttempt, now, producerStaleGraceMs,
+    proxyProducers, nonMainProxyProducers, ProviderAttemptError,
+    currentBySession, proxyContext,
+  });
 
   function streamRedactor(record, channel) {
     let channels = streamRedactors.get(record.routeAttemptId);
@@ -533,6 +425,7 @@ function createProviderAttemptRuntime(options = {}) {
   // argument keeps the name `phase`.
   function emitRoute(record, phase, extra = {}) {
     if (!emit || !record) return;
+    const fence = record.lifecycle.snapshot();
     const event = Object.freeze({
       type: 'provider_route_event',
       version: 1,
@@ -551,8 +444,8 @@ function createProviderAttemptRuntime(options = {}) {
       protocol: record.protocol,
       model: record.model,
       providerRevision: record.providerRevision,
-      replayFence: record.replayFence,
-      safeToReplay: record.replayFence === 'none',
+      replayFence: fence.replayFence,
+      safeToReplay: fence.replayFence === 'none',
       ts: Number(now()),
       ...extra,
     });
@@ -561,6 +454,23 @@ function createProviderAttemptRuntime(options = {}) {
 
   function beginAttempt(input = {}) {
     const sessionId = required(input.sessionId, 'sessionId');
+    if (!currentBySession.beginAdmission(sessionId)) {
+      throw new ProviderAttemptError('provider attempt is still running', 'PROVIDER_ATTEMPT_IN_FLIGHT');
+    }
+    let admitted = true;
+    const releaseAdmission = () => {
+      if (!admitted) return;
+      admitted = false;
+      currentBySession.endAdmission(sessionId);
+    };
+    try {
+      return beginAttemptAdmitted(input, sessionId, releaseAdmission);
+    } finally {
+      releaseAdmission();
+    }
+  }
+
+  function beginAttemptAdmitted(input, sessionId, releaseAdmission) {
     const turnId = required(input.turnId, 'turnId');
     const cli = required(input.cli, 'cli').toLowerCase();
     const providerId = required(input.providerId, 'providerId');
@@ -573,68 +483,16 @@ function createProviderAttemptRuntime(options = {}) {
     const attemptNo = positiveInteger(input.attemptNo, 'attemptNo');
     const continuation = input.continuation === true;
     const previous = currentBySession.get(sessionId) || null;
-    const producer = proxyProducers.get(sessionId);
+    const previousFence = previous?.lifecycle.snapshot();
+    const previousBudget = previous?.lifecycle.budget();
+    const producer = proxyProducers.getActive(sessionId);
 
-    if (producer && producer.count > 0) {
-      const ageMs = Number(now()) - (Number(producer.lastRequestAt) || 0);
-      // Draining normally requires the proxy 'end'. A request whose CLI
-      // consumer was killed or crashed mid-stream never gets one, so waiting
-      // forever would wedge every later attempt of this session (the in-memory
-      // counter previously only cleared on server restart). Past the grace the
-      // entry is orphaned: proxyRouteToken rotation already makes any late
-      // traffic from it unattributable to the new attempt.
-      if (Number.isFinite(ageMs) && producer.lastRequestAt
-          && ageMs >= producerStaleGraceMs) {
-        auditOnly(sessionId, {
-          type: 'provider_producer_force_drained',
-          runtimeEpoch,
-          turnId,
-          count: producer.count,
-          ageMs,
-          graceMs: producerStaleGraceMs,
-          reason: 'stale_producer_grace',
-        });
-        proxyProducers.delete(sessionId);
-        endedProxyProducers.delete(sessionId);
-      } else {
-        throw new ProviderAttemptError(
-          'previous provider request has not drained',
-          'PROVIDER_PRODUCER_NOT_DRAINED',
-        );
-      }
-    }
+    getNative().providerDrainStaleProducers(sessionId, turnId, producer, proxyPort);
 
-    if (previous && previous.turnId === turnId
-        && previous.replayFence !== 'none' && !continuation) {
-      throw new ProviderAttemptError(
-        'provider attempt cannot be replayed after observable output or tool intent',
-        'PROVIDER_REPLAY_FENCE_CLOSED',
-      );
-    }
-    if (previous && previous.outcome === 'running') {
-      throw new ProviderAttemptError('provider attempt is still running', 'PROVIDER_ATTEMPT_IN_FLIGHT');
-    }
-    if (previous && previous.turnId === turnId) {
-      if (previous.outcome === 'succeeded') {
-        throw new ProviderAttemptError(
-          'a succeeded turn cannot start another provider attempt',
-          'PROVIDER_TURN_ALREADY_SUCCEEDED',
-        );
-      }
-      if (continuation && (previous.providerId !== providerId
-          || previous.model !== model || previous.protocol !== protocol)) {
-        throw new ProviderAttemptError(
-          'a continuation must retain the concrete provider route',
-          'PROVIDER_CONTINUATION_ROUTE_CHANGED',
-        );
-      }
-      if (attemptNo <= previous.attemptNo) {
-        throw new ProviderAttemptError('attemptNo must increase within one turn', 'PROVIDER_ATTEMPT_SEQUENCE_INVALID');
-      }
-    }
+    getNative().providerValidateAttemptTransition(previous, previousFence,
+      { turnId, continuation, providerId, model, protocol, attemptNo }, ProviderAttemptError);
 
-    const routeGeneration = (generationBySession.get(sessionId) || 0) + 1;
-    generationBySession.set(sessionId, routeGeneration);
+    const routeGeneration = generations.next(sessionId);
     // This is a route capability, and for a resident lane it is scoped to the
     // spawn contract rather than to the physical attempt. A resident child bakes
     // its route at spawn — Claude through ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
@@ -661,11 +519,13 @@ function createProviderAttemptRuntime(options = {}) {
       && previous.proxyRouteToken && previous.spawnKey === spawnKey
       ? previous.proxyRouteToken
       : required(nextId('proxy-route'), 'proxyRouteToken');
+    const decisionId = previous && previous.turnId === turnId
+      ? previous.decisionId : required(nextId('route-decision'), 'decisionId');
+    const routeAttemptId = required(nextId('route-attempt'), 'routeAttemptId');
     const record = {
       runtimeEpoch,
-      decisionId: previous && previous.turnId === turnId
-        ? previous.decisionId : required(nextId('route-decision'), 'decisionId'),
-      routeAttemptId: required(nextId('route-attempt'), 'routeAttemptId'),
+      decisionId,
+      routeAttemptId,
       sessionId,
       turnId,
       cli,
@@ -684,20 +544,22 @@ function createProviderAttemptRuntime(options = {}) {
       stallTimeoutMs: stallTimeoutBudget(input.stallTimeoutMs),
       requestTimeoutMs: stallTimeoutBudget(input.requestTimeoutMs),
       connectTimeoutMs: stallTimeoutBudget(input.connectTimeoutMs),
-      requestDeadlineAt: previous?.turnId === turnId ? previous.requestDeadlineAt : null,
-      requestFailures: previous?.turnId === turnId ? previous.requestFailures : 0,
-      stalled: false,
-      replayFence: continuation && previous ? previous.replayFence : 'none',
-      visibleOutputObserved: !!(continuation && previous && previous.visibleOutputObserved),
-      toolIntentObserved: !!(continuation && previous && previous.toolIntentObserved),
-      sideEffectObserved: !!(continuation && previous && previous.sideEffectObserved),
+      lifecycle: new (getNative().RustProviderAttemptLifecycle)(
+        continuation && previous ? previousFence.replayFence : 'none',
+        !!(continuation && previousFence?.visibleOutputObserved),
+        !!(continuation && previousFence?.toolIntentObserved),
+        !!(continuation && previousFence?.sideEffectObserved),
+        previous?.turnId === turnId ? previousBudget.requestDeadlineAt ?? null : null,
+        previous?.turnId === turnId ? previousBudget.requestFailures : 0,
+        { runtimeEpoch, routeAttemptId, routeGeneration, turnId }),
       proxyFailure: null,
-      outcome: 'running',
-      errorCategory: null,
       selectedAt: Number(now()),
-      finishedAt: null,
     };
     currentBySession.set(sessionId, record);
+    // The installed record now owns the session. Event callbacks may finish it
+    // and synchronously start the next attempt, as they could before admission
+    // acquired its own guard.
+    releaseAdmission();
     const switched = previous && previous.turnId === turnId
       && (previous.providerId !== providerId || previous.model !== model);
     emitRoute(record, continuation ? 'continued' : switched ? 'switched' : 'selected', switched ? {
@@ -723,7 +585,7 @@ function createProviderAttemptRuntime(options = {}) {
       });
       return Object.freeze({ ok: false, code: 'stale_attempt', attempt: snapshot(record) });
     }
-    if (record.outcome !== 'running') {
+    if (!record.lifecycle.running()) {
       auditOnly(sessionId, {
         type: 'provider_attempt_late_ignored', operation: 'finish',
         runtimeEpoch: record.runtimeEpoch, turnId: record.turnId,
@@ -734,12 +596,13 @@ function createProviderAttemptRuntime(options = {}) {
       return Object.freeze({ ok: false, code: 'attempt_not_running', attempt: snapshot(record) });
     }
     const outcome = clean(facts.outcome) || 'released';
-    record.outcome = outcome;
-    record.errorCategory = clean(facts.errorCategory) || null;
-    record.finishedAt = Number(now());
+    record.lifecycle.setOutcome(outcome);
+    const errorCategory = clean(facts.errorCategory) || null;
+    record.lifecycle.setErrorCategory(errorCategory);
+    record.lifecycle.setFinishedAt(Number(now()));
     emitRoute(record, outcome === 'failed' ? 'failed'
       : outcome === 'succeeded' ? 'succeeded' : 'released', {
-      errorCategory: record.errorCategory,
+      errorCategory,
       reasonCode: clean(facts.reasonCode) || null,
     });
     streamRedactors.delete(record.routeAttemptId);
@@ -749,7 +612,7 @@ function createProviderAttemptRuntime(options = {}) {
   function acceptEvent(reference) {
     const sessionId = clean(reference && reference.sessionId);
     const record = currentBySession.get(sessionId);
-    if (sameAttempt(record, reference) && record.outcome === 'running') return true;
+    if (sameAttempt(record, reference) && record.lifecycle.running()) return true;
     auditOnly(sessionId, {
       type: 'provider_attempt_late_ignored', operation: 'event_admission',
       runtimeEpoch: clean(reference && reference.runtimeEpoch) || null,
@@ -765,7 +628,7 @@ function createProviderAttemptRuntime(options = {}) {
   function observeEvent(reference, event) {
     const sessionId = clean(reference && reference.sessionId);
     const record = currentBySession.get(sessionId);
-    if (!sameAttempt(record, reference) || record.outcome !== 'running') {
+    if (!sameAttempt(record, reference) || !record.lifecycle.running()) {
       auditOnly(sessionId, {
         type: 'provider_attempt_late_ignored', operation: 'event',
         runtimeEpoch: clean(reference && reference.runtimeEpoch) || null,
@@ -783,13 +646,9 @@ function createProviderAttemptRuntime(options = {}) {
     // already advanced the replay fence, but the host-only marker proves that
     // none of that text was model output. Re-open only this narrow case; tool
     // intent and side effects remain irreversible.
-    if (event[HOST_ERROR_ENVELOPE] === true
-        && contentBlocks(event).length > 0
-        && contentBlocks(event).every(block => block && block.type === 'text')
-        && !record.toolIntentObserved && !record.sideEffectObserved) {
-      const previousFence = record.replayFence;
-      record.replayFence = 'none';
-      record.visibleOutputObserved = false;
+    const trustedError = getNative().providerHostTextEnvelope(event, HOST_ERROR_ENVELOPE);
+    const previousFence = record.lifecycle.snapshot().replayFence;
+    if (trustedError && record.lifecycle.reconcileHostError()) {
       if (previousFence !== 'none') {
         auditOnly(sessionId, {
           type: 'provider_fence_reconciled', runtimeEpoch: record.runtimeEpoch,
@@ -801,9 +660,7 @@ function createProviderAttemptRuntime(options = {}) {
       return Object.freeze({ accepted: true, code: null, ...snapshot(record) });
     }
     const fence = fenceForEvent(event);
-    const previousFence = record.replayFence;
-    if (FENCE_ORDER[fence] > FENCE_ORDER[previousFence]) {
-      record.replayFence = fence;
+    if (record.lifecycle.advance(fence)) {
       auditOnly(sessionId, {
         type: 'provider_fence_advanced', runtimeEpoch: record.runtimeEpoch,
         turnId: record.turnId, routeAttemptId: record.routeAttemptId,
@@ -811,9 +668,6 @@ function createProviderAttemptRuntime(options = {}) {
         fromFence: previousFence, replayFence: fence,
       });
     }
-    if (FENCE_ORDER[fence] >= FENCE_ORDER.visible_output) record.visibleOutputObserved = true;
-    if (FENCE_ORDER[fence] >= FENCE_ORDER.tool_intent) record.toolIntentObserved = true;
-    if (FENCE_ORDER[fence] >= FENCE_ORDER.side_effect) record.sideEffectObserved = true;
     return Object.freeze({ accepted: true, code: null, ...snapshot(record) });
   }
 
@@ -844,298 +698,26 @@ function createProviderAttemptRuntime(options = {}) {
   }
 
   function poisonProxyAttempt(record, reasonCode) {
-    if (!record || record.outcome !== 'running') return;
+    if (!record || !record.lifecycle.running()) return;
     finishAttempt(snapshot(record), {
       outcome: 'failed', errorCategory: 'adapter_configuration', reasonCode,
     });
   }
 
-  // A resident child outlives its turn, and so does the background work it
-  // started: a run_in_background Task/Workflow subagent keeps calling the proxy
-  // after the main result has closed the attempt — on the sub route when a
-  // subagent provider is configured, on the main route when it is not. While
-  // the capability is still the current one (same spawn contract, no newer
-  // attempt, the turn ended cleanly) that traffic is the same warm process
-  // finishing its own work, not a replay, so it is admitted without reopening
-  // the attempt and is accounted as background: it never becomes a main
-  // producer, so it cannot hold the next turn, and its usage is never bound to
-  // an attempt. A cancelled or failed turn revokes the background too.
-  function backgroundLingers(record) {
-    return !!(record && record.outcome === 'succeeded' && record.spawnKey && isResident(record.cli));
-  }
-
   function authorizeProxyRequest(input = {}) {
-    const context = proxyContext(input);
-    const { sessionId, record } = context;
-    const reject = (code, poison = false) => {
-      if (poison) poisonProxyAttempt(record, code);
-      auditOnly(sessionId, {
-        type: 'provider_proxy_request_rejected', operation: 'proxy_preflight', code,
-        runtimeEpoch: record ? record.runtimeEpoch : runtimeEpoch,
-        turnId: record ? record.turnId : null,
-        routeAttemptId: record ? record.routeAttemptId : null,
-        routeGeneration: record ? record.routeGeneration : null,
-        providerId: clean(input.providerId) || null,
-      });
-      return Object.freeze({ ok: false, code, sessionId: sessionId || null });
-    };
-    const role = clean(input.role || input.roleKind || 'main').toLowerCase();
-    // Account protection comes before route bookkeeping: the question is not
-    // "does this caller own the route" but "may this account be spent any
-    // further". Connectivity probes (HEAD /api/hello) and plain reads are not
-    // inference and must still answer, or a guarded account would look offline.
-    const method = clean(input.method).toUpperCase();
-    if (quotaGuard && (!method || method === 'POST')) {
-      let verdict = null;
-      try {
-        verdict = quotaGuard.check({ providerId: clean(input.providerId) });
-      } catch (_) {
-        verdict = null;
-      }
-      if (verdict && verdict.blocked) {
-        return reject(`quota_guard:${verdict.window}:${Math.round(verdict.usedPercent)}pct`);
-      }
-    }
-    // 终端会话没有回合：它在 currentBySession 里本来就没有记录，能力在会话记录上。
-    // 判定必须发生在 attempt 那套判断之前 —— 那些判断问的正是「有没有一条在跑的
-    // 回合」，对长活终端永远是否。放行的条件与常驻车道同一口径（主线路必须就是这条
-    // 会话自己的 provider，子线路必须在它声明的集合里），只是没有 revision 这一层：
-    // 终端的配置是进程启动时写死的一次性快照，拿它去比「当前 provider 配置」只会让
-    // 一个活着的终端在用户改完 provider 之后莫名失联。
-    if (!record && sessionId && resolveTerminalRoute) {
-      const terminal = resolveTerminalRoute(sessionId);
-      if (terminal) {
-        if (!context.encoded || clean(context.token) !== clean(terminal.token)) {
-          return reject('proxy_route_capability_mismatch');
-        }
-        const requested = clean(input.providerId);
-        if (role === 'main' && requested && requested !== clean(terminal.providerId)) {
-          return reject('provider_route_mismatch');
-        }
-        if (role !== 'main' && role !== 'aux' && requested
-            && !terminal.allowedSubProviderIds.includes(requested)) {
-          return reject('provider_subroute_not_allowed');
-        }
-        auditOnly(sessionId, {
-          type: 'provider_proxy_terminal_route_allowed', operation: 'proxy_preflight',
-          runtimeEpoch, providerId: requested || clean(terminal.providerId), role,
-        });
-        return Object.freeze({ ok: true, code: null, sessionId, attempt: null, terminal: true });
-      }
-    }
-    if (!sessionId || !context.exact) return reject('proxy_route_capability_mismatch');
-    if (backgroundLingers(record)) {
-      if (role === 'main' && clean(input.providerId)
-          && clean(input.providerId) !== record.providerId) {
-        return reject('provider_route_mismatch');
-      }
-      if (role !== 'main' && clean(input.providerId)
-          && !record.allowedSubProviderIds.includes(clean(input.providerId))) {
-        return reject('provider_subroute_not_allowed');
-      }
-      if (resolveProviderRevision) {
-        let revisionMatches = false;
-        try { revisionMatches = clean(resolveProviderRevision(record, input)) === record.providerRevision; }
-        catch (_) {}
-        if (!revisionMatches) return reject('provider_revision_mismatch');
-      }
-      return Object.freeze({
-        ok: true, code: null, sessionId, attempt: snapshot(record), background: true,
-      });
-    }
-    if (!record || record.outcome !== 'running') return reject('proxy_attempt_not_running');
-    // The host already proved this route went silent and is retiring it. A CLI
-    // that re-dials it (codex retries the same stream several times before it
-    // gives up) would only hold the turn open on a line that cannot answer, and
-    // would deny Auto the chance to switch. Not poisoned: the attempt's failure
-    // category is the stall, which the turn's error decision already owns.
-    if (record.stalled === true) return reject('attempt_stalled');
-    if (role === 'main' && clean(input.providerId)
-        && clean(input.providerId) !== record.providerId) {
-      return reject('provider_route_mismatch', true);
-    }
-    if (role !== 'main' && role !== 'aux' && clean(input.providerId)
-        && !record.allowedSubProviderIds.includes(clean(input.providerId))) {
-      return reject('provider_subroute_not_allowed', true);
-    }
-    if (resolveProviderRevision) {
-      let revisionMatches = false;
-      try { revisionMatches = clean(resolveProviderRevision(record, input)) === record.providerRevision; }
-      catch (_) {}
-      if (!revisionMatches) return reject('provider_revision_mismatch', true);
-    }
-    return Object.freeze({ ok: true, code: null, sessionId, attempt: snapshot(record) });
+    return getNative().providerAuthorizeProxyRequest(input, proxyContext(input), proxyPort);
   }
 
-  function markAmbiguousProducer(sessionId) {
-    const producer = proxyProducers.get(sessionId);
-    if (producer && producer.count > 0) {
-      producer.count += 1;
-      producer.ambiguous = true;
-      producer.lastRequestAt = Number(now());
-    } else {
-      proxyProducers.set(sessionId, {
-        attempt: null, proxyRouteToken: null, count: 1, ambiguous: true,
-        lastRequestAt: Number(now()),
-      });
-    }
-  }
-
-  // Cancel/kill hook: the stopped CLI process was the proxy request's only
-  // downstream consumer, so its in-flight upstream can no longer produce a
-  // meaningful 'end'. Release the session's MAIN producer accounting
-  // immediately (non-main/background producers are untouched: background work
-  // legitimately outlives the cancelled turn). Attributability stays safe
-  // because proxyRouteToken rotates on every physical attempt.
   function forceReleaseProducers(sessionId, reason = 'force_release') {
-    const id = clean(sessionId);
-    if (!id) return Object.freeze({ ok: false, code: 'invalid_session' });
-    const producer = proxyProducers.get(id);
-    if (!producer || producer.count <= 0) {
-      return Object.freeze({ ok: true, code: 'no_producers', released: 0 });
-    }
-    const released = producer.count;
-    auditOnly(id, {
-      type: 'provider_producer_force_drained',
-      runtimeEpoch,
-      turnId: producer.attempt ? producer.attempt.turnId : null,
-      count: released,
-      ageMs: Number(now()) - (Number(producer.lastRequestAt) || 0),
-      reason: clean(reason) || 'force_release',
-    });
-    proxyProducers.delete(id);
-    endedProxyProducers.delete(id);
-    return Object.freeze({ ok: true, code: 'released', released });
-  }
-
-  function nonMainProducerKey(context, event, role) {
-    return [context.sessionId, context.token || (role === 'aux' ? 'aux' : ''),
-      role, clean(event.providerId)].join('\u0000');
-  }
-
-  function onNonMainProxyActivity(context, event, role, phase) {
-    const { sessionId, record } = context;
-    const key = nonMainProducerKey(context, event, role);
-    if (phase === 'request') {
-      if (role !== 'aux' && (!context.exact || !record
-          || (record.outcome !== 'running' && !backgroundLingers(record)))) return null;
-      endedNonMainProxyProducers.delete(key);
-      const producer = nonMainProxyProducers.get(key);
-      if (producer) {
-        producer.count += 1;
-        producer.ambiguous = true;
-      } else {
-        nonMainProxyProducers.set(key, {
-          sessionId, count: 1, ambiguous: false,
-        });
-      }
-      return Object.freeze({ sessionId });
-    }
-    const producer = nonMainProxyProducers.get(key);
-    if (!producer) return null;
-    if (phase === 'end') {
-      producer.count = Math.max(0, producer.count - 1);
-      if (producer.count === 0) {
-        nonMainProxyProducers.delete(key);
-        if (!producer.ambiguous) {
-          endedNonMainProxyProducers.set(key, Object.freeze({ sessionId }));
-          if (endedNonMainProxyProducers.size > 2_048) {
-            endedNonMainProxyProducers.delete(endedNonMainProxyProducers.keys().next().value);
-          }
-        }
-      }
-    }
-    return Object.freeze({ sessionId });
+    return getNative().providerForceReleaseProducers(sessionId, reason, proxyPort);
   }
 
   function onProxyActivity(event = {}) {
-    const context = proxyContext(event);
-    const { sessionId, record } = context;
-    if (!sessionId) return null;
-    const role = clean(event.role || event.roleKind).toLowerCase();
-    const phase = clean(event.phase).toLowerCase();
-    if (role && role !== 'main') {
-      return onNonMainProxyActivity(context, event, role, phase);
-    }
-    if (!context.exact) {
-      if (phase === 'request') {
-        markAmbiguousProducer(sessionId);
-        poisonProxyAttempt(record, 'proxy_route_token_mismatch');
-      } else if (phase === 'end') {
-        const producer = proxyProducers.get(sessionId);
-        if (producer) {
-          producer.count = Math.max(0, producer.count - 1);
-          if (producer.count === 0) proxyProducers.delete(sessionId);
-        }
-      }
-      return null;
-    }
-    if (role !== 'main') return record && record.outcome === 'running' ? snapshot(record) : null;
-    // A background request may end after the next turn started; its end still
-    // belongs to the background ledger unless a main request is in flight.
-    const backgroundOpen = nonMainProxyProducers.has(nonMainProducerKey(context, event, 'background'));
-    if (phase === 'request' ? backgroundLingers(record)
-      : backgroundOpen && !(proxyProducers.get(sessionId)?.count > 0)) {
-      return onNonMainProxyActivity(context, event, 'background', phase);
-    }
-    if (phase === 'request') {
-      endedProxyProducers.delete(sessionId);
-      const producer = proxyProducers.get(sessionId);
-      let revisionMatches = true;
-      if (record && resolveProviderRevision) {
-        try { revisionMatches = clean(resolveProviderRevision(record, event)) === record.providerRevision; }
-        catch (_) { revisionMatches = false; }
-      }
-      if (!record || record.outcome !== 'running'
-          || !revisionMatches
-          || (clean(event.providerId) && clean(event.providerId) !== record.providerId)) {
-        markAmbiguousProducer(sessionId);
-        poisonProxyAttempt(record, !revisionMatches
-          ? 'provider_revision_mismatch' : 'provider_route_mismatch');
-        return null;
-      }
-      if (producer && producer.count > 0) {
-        producer.count += 1;
-        producer.ambiguous = true;
-        producer.lastRequestAt = Number(now());
-      } else {
-        proxyProducers.set(sessionId, {
-          attempt: snapshot(record), proxyRouteToken: record.proxyRouteToken,
-          count: 1, ambiguous: false, lastRequestAt: Number(now()),
-        });
-      }
-      return snapshot(record);
-    }
-    if (phase === 'end') {
-      const producer = proxyProducers.get(sessionId);
-      if (!producer) return null;
-      producer.count = Math.max(0, producer.count - 1);
-      if (producer.count === 0) {
-        proxyProducers.delete(sessionId);
-        if (!producer.ambiguous && producer.attempt) {
-          endedProxyProducers.set(sessionId, {
-            attempt: producer.attempt, proxyRouteToken: producer.proxyRouteToken,
-          });
-        } else {
-          endedProxyProducers.delete(sessionId);
-        }
-      }
-      return producer.attempt || null;
-    }
-    return record && record.outcome === 'running' ? snapshot(record) : null;
+    return getNative().providerProxyActivity(event, proxyContext(event), proxyPort);
   }
 
   function boundProxyAttempt(input = {}) {
-    const context = proxyContext(input);
-    if (!context.exact) return null;
-    const producer = proxyProducers.get(context.sessionId);
-    if (!producer || producer.count !== 1 || producer.ambiguous || !producer.attempt
-        || producer.proxyRouteToken !== context.token) return null;
-    const record = context.record;
-    if (!sameAttempt(record, producer.attempt) || record.outcome !== 'running') return null;
-    if (clean(input.providerId) && clean(input.providerId) !== record.providerId) return null;
-    if (clean(input.role || input.roleKind).toLowerCase() !== 'main') return null;
-    return snapshot(record);
+    return getNative().providerBoundProxyAttempt(input, proxyContext(input), proxyPort);
   }
 
   function observeProxyDelta(delta, context = {}) {
@@ -1155,203 +737,18 @@ function createProviderAttemptRuntime(options = {}) {
   }
 
   function attributeProxyUsage(event = {}) {
-    const context = proxyContext(event);
-    const sessionId = context.sessionId;
-    let role = clean(event.role || event.roleKind).toLowerCase();
-    if (role === 'main' && context.exact && backgroundLingers(context.record)
-        && !boundProxyAttempt(event) && !endedProxyProducers.has(sessionId)) role = 'background';
-    // A warm Claude process may finish its main result while a background/sub
-    // request is still pending. The process capability proves the real session,
-    // but not which logical turn owns that non-main request, so never fabricate a
-    // complete main-attempt tuple for it. The host still records its session-level
-    // usage while excluding it from attempt/TaskRun attribution.
-    if (role !== 'main') {
-      const key = nonMainProducerKey(context, event, role);
-      const active = nonMainProxyProducers.get(key);
-      let producerBound = !!(active && active.count === 1 && !active.ambiguous);
-      if (!producerBound && endedNonMainProxyProducers.has(key)) {
-        producerBound = true;
-        endedNonMainProxyProducers.delete(key);
-      }
-      return reattributedUsage(event, {
-        sessionId, routeAttribution: 'ambiguous', producerBound,
-      });
-    }
-    let attempt = boundProxyAttempt(event);
-    if (!attempt) {
-      const ended = endedProxyProducers.get(sessionId);
-      const record = currentBySession.get(sessionId);
-      if (ended && context.token === ended.proxyRouteToken
-          && sameAttempt(record, ended.attempt)
-          && (!clean(event.providerId) || clean(event.providerId) === ended.attempt.providerId)) {
-        attempt = ended.attempt;
-        endedProxyProducers.delete(sessionId);
-      }
-    }
-    if (!attempt) {
-      auditOnly(sessionId, {
-        type: 'provider_attempt_late_ignored', operation: 'proxy_usage',
-        runtimeEpoch, turnId: null, routeAttemptId: null, routeGeneration: null,
-        providerId: clean(event.providerId) || null,
-        currentRouteAttemptId: snapshotSession(sessionId)?.routeAttemptId || null,
-        currentRouteGeneration: snapshotSession(sessionId)?.routeGeneration || null,
-      });
-      return reattributedUsage(event, {
-        sessionId,
-        routeAttribution: 'ambiguous',
-      });
-    }
-    return reattributedUsage(event, {
-      sessionId,
-      turnId: attempt.turnId,
-      runtimeEpoch: attempt.runtimeEpoch,
-      decisionId: attempt.decisionId,
-      routeAttemptId: attempt.routeAttemptId,
-      routeGeneration: attempt.routeGeneration,
-      attemptNo: attempt.attemptNo,
-      routeAttribution: 'exact',
-      providerRevision: attempt.providerRevision,
-    });
+    return getNative().providerAttributeProxyUsage(event, proxyPort);
   }
 
   // The host reports each physical request independently of token accounting.
   // Bind its purpose and terminal evidence to the admitted attempt so probes,
   // late responses, and provider-rendered text cannot decide another turn.
   function observeProxyOutcome(event = {}) {
-    const sessionId = clean(event.sessionId);
-    const record = currentBySession.get(sessionId);
-    const role = clean(event.roleKind || event.role || 'main').toLowerCase();
-    if (role !== 'main' || event.routeAttribution !== 'exact'
-        || !sameAttempt(record, event)
-        || record.decisionId !== clean(event.decisionId)
-        || record.attemptNo !== Number(event.attemptNo)
-        || record.providerId !== clean(event.providerId)
-        || record.providerRevision !== clean(event.providerRevision)
-        || record.outcome !== 'running') {
-      auditOnly(sessionId, {
-        type: 'provider_attempt_late_ignored', operation: 'proxy_outcome',
-        runtimeEpoch: clean(event.runtimeEpoch) || null,
-        turnId: clean(event.turnId) || null,
-        routeAttemptId: clean(event.routeAttemptId) || null,
-        routeGeneration: Number(event.routeGeneration) || null,
-        currentRouteAttemptId: record ? record.routeAttemptId : null,
-        currentRouteGeneration: record ? record.routeGeneration : null,
-      });
-      return Object.freeze({ accepted: false, code: 'proxy_attempt_unbound' });
-    }
-    const proxyOutcome = event.proxyOutcome || null;
-    if (proxyOutcome && proxyOutcome.requestKind !== 'inference') {
-      return Object.freeze({ accepted: true, code: 'non_inference_request', failure: null });
-    }
-    if (clean(event.status).toLowerCase() !== 'error') {
-      if (proxyOutcome?.termination === 'completed') {
-        record.requestDeadlineAt = null;
-        record.requestFailures = 0;
-      }
-      // 请求恢复标记只用于诊断，不是最终成功的额外门槛。HTTP 错误同样可以恢复；
-      // 最终判定以当前运行器的整轮完成证据为准，原始错误记录不删除。
-      if (proxyOutcome?.termination === 'completed'
-          && record.proxyFailure
-          && record.proxyFailure.recovered !== true) {
-        record.proxyFailure = Object.freeze({
-          ...record.proxyFailure, recovered: true, recoveredAt: Number(now()),
-        });
-        auditOnly(sessionId, {
-          type: 'provider_attempt_proxy_failure_recovered', operation: 'proxy_outcome',
-          runtimeEpoch: clean(event.runtimeEpoch) || null,
-          turnId: clean(event.turnId) || null,
-          routeAttemptId: clean(event.routeAttemptId) || null,
-          routeGeneration: Number(event.routeGeneration) || null,
-          currentRouteAttemptId: record.routeAttemptId,
-          currentRouteGeneration: record.routeGeneration,
-        });
-      }
-      return Object.freeze({ accepted: true, code: null, failure: null });
-    }
-    const status = Number(event.statusCode);
-    const httpStatus = Number.isInteger(status) && status >= 400 && status <= 599
-      ? status : null;
-    // 每次错误都进入事件日志，后续恢复、覆盖最新错误或切换尝试都不会抹去历史。
-    auditOnly(sessionId, {
-      type: 'provider_attempt_proxy_failure_observed', operation: 'proxy_outcome',
-      runtimeEpoch: record.runtimeEpoch, turnId: record.turnId,
-      routeAttemptId: record.routeAttemptId, routeGeneration: record.routeGeneration,
-      providerId: record.providerId, httpStatus,
-      code: sanitizeMessage(clean(event.errorCode) || 'UPSTREAM_HTTP_ERROR'),
-      requestId: proxyOutcome?.requestId || null,
-      termination: proxyOutcome?.termination || null,
-    });
-    // Socket teardown must not replace stronger upstream failure evidence.
-    if (httpStatus == null && proxyOutcome?.termination === 'downstream_disconnect'
-        && record.proxyFailure) {
-      return Object.freeze({ accepted: true, code: null, failure: record.proxyFailure });
-    }
-    // 只有公共请求看门狗提供预算；未托管的旧调用保持原有错误策略。
-    const budgeted = Number.isFinite(event.requestDeadlineAt) && event.requestDeadlineAt > 0
-      && (proxyOutcome?.termination === 'upstream_failure' || httpStatus >= 500
-        || httpStatus === 408 || httpStatus === 429);
-    if (budgeted) {
-      record.requestDeadlineAt = event.requestDeadlineAt;
-      record.requestFailures = (record.requestFailures || 0) + 1;
-    }
-    if (event.modelProgress === true) {
-      record.visibleOutputObserved = true;
-      if (record.replayFence === 'none') record.replayFence = 'visible_output';
-    }
-    const failureCode = clean(event.errorCode) || 'UPSTREAM_HTTP_ERROR';
-    // 5xx/408/429 是客户端自己会重试的瞬时错误：Claude CLI 收到 502 后会立刻再发
-    // 一次请求。若这类物理请求也计入重试预算，客户端的一次内部重试就会在半秒内耗光
-    // 整轮额度，宿主自己的重试和换线都来不及发生。预算只由真正的挂起（看门狗超时 /
-    // 静默）和绝对截止时间耗尽；瞬时错误交给 api-error-policy 的 maxAttempts 与
-    // auto-provider failover 处理。
-    const stallFailure = isProxyStallCode(failureCode);
-    // A structured rejection only ever rides a 429. It is untrusted input from
-    // another process, so normalizeRejection keeps only the contract's keys and
-    // caps free text; anything malformed degrades to "no structured verdict".
-    const rejection = httpStatus === 429 ? normalizeRejection(event.rejection) : null;
-    record.proxyFailure = Object.freeze({
-      source: 'proxy_response',
-      ...(budgeted ? { requestDeadlineAt: record.requestDeadlineAt,
-        retryBudgetExhausted: (stallFailure && record.requestFailures > 1)
-          || Number(now()) >= record.requestDeadlineAt } : {}),
-      ...(event.modelProgress === true ? { partialOutput: true } : {}),
-      provider: record.cli,
-      providerId: record.providerId,
-      providerName: record.providerName,
-      httpStatus,
-      ...(rejection ? { rejection } : {}),
-      code: failureCode,
-      message: httpStatus ? `upstream HTTP ${httpStatus}`
-        : proxyOutcome?.termination === 'downstream_disconnect'
-          ? 'downstream response connection closed' : 'upstream request failed',
-      observedAt: Number(now()),
-      ...(proxyOutcome ? { proxyOutcome, requestId: proxyOutcome.requestId } : {}),
-    });
-    // Host-observed silence, not a client that walked away: the route is dead,
-    // and every later request for this attempt must be refused instead of
-    // re-dialed. The failure above stays the stronger evidence, so the teardown
-    // that follows cannot overwrite it with DOWNSTREAM_DISCONNECT.
-    if (isProxyStallCode(record.proxyFailure.code) || record.proxyFailure.retryBudgetExhausted) {
-      record.stalled = true;
-      auditOnly(sessionId, {
-        type: 'provider_attempt_stalled', operation: 'proxy_outcome',
-        runtimeEpoch: record.runtimeEpoch, turnId: record.turnId,
-        routeAttemptId: record.routeAttemptId, routeGeneration: record.routeGeneration,
-        providerId: record.providerId, code: record.proxyFailure.code,
-        requestId: record.proxyFailure.requestId || null,
-      });
-    }
-    return Object.freeze({ accepted: true, code: null, failure: record.proxyFailure });
+    return getNative().providerObserveProxyOutcome(event, proxyPort);
   }
 
   function proxyFailure(reference, facts = {}) {
-    const record = currentBySession.get(clean(reference && reference.sessionId));
-    if (!sameAttempt(record, reference) || !record.proxyFailure) return null;
-    // 原始诊断始终可读；最终判定只在当前运行器正常完成且结果保存后忽略历史错误。
-    // 不依赖 HTTP 成功事件先到、后到，或客户端是否等到 HTTP EOF。
-    if (facts.resultDurable === true && isCompleted(facts.completion)
-        && isProxyFailureCompatibleWithCompletion(record.proxyFailure, facts.completion)) return null;
-    return Object.freeze({ ...record.proxyFailure });
+    return getNative().providerProxyFailure(reference, facts, proxyPort);
   }
 
   function snapshotSession(sessionId) {

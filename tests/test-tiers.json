@@ -4651,6 +4651,15 @@
       "lane": "deterministic"
     },
     {
+      "path": "tests/test-redaction-native.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-release-upgrade.js",
       "tier": "flow",
       "lane": "deterministic",

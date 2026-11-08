@@ -7,7 +7,7 @@
 //! `undefined`, `NaN`, `-0`, bytes, dates); [`serde`] keeps the older
 //! `serde_json::Value` kernels working while they wait for the direct bridge.
 //!
-//! Only rules the ECMAScript specification fixes live here. Engine-defined
+//! ECMAScript rules and explicitly tested Node Buffer compatibility live here. Engine-defined
 //! behavior — `Date.parse` outside the ISO grammar, `localeCompare`, `Intl`,
 //! `Date.prototype.toString` — stays in JS and is precomputed by the bridge.
 //!
@@ -15,8 +15,10 @@
 //! lone surrogate, `-0` or a `Buffer` is not lost at the boundary.
 
 pub mod coerce;
+pub mod buffer;
 pub mod json;
 pub mod number;
+pub mod regex;
 pub mod serde;
 pub mod string;
 pub mod tags;
@@ -26,6 +28,7 @@ pub use coerce::{
     js_to_number, js_to_string, less_equal_number, less_number, math_min, nullish, or, truthy,
     truthy_opt,
 };
+pub use buffer::node_base64_decode;
 pub use json::{
     date_to_iso_string, json_parse, json_quote, json_quote_str, json_stringify,
     json_stringify_or_undefined, JsonParseError,

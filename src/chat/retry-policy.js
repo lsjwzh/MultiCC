@@ -1,6 +1,7 @@
 'use strict';
 
 const { decideApiErrorPolicy } = require('./api-error-policy');
+const { getNative } = require('../native/runtime');
 
 const DEFAULT_LIMITS = Object.freeze({
   freshStart: 1,
@@ -50,12 +51,6 @@ function decideRetry(input = {}, deps = {}) {
   const event = String(input.event || 'completed');
   const attempts = input.attempts || {};
 
-  if (event === 'provider-route-failed') {
-    return terminal('provider-route', 'route-failed', { leaveRunning: false });
-  }
-  if (event === 'handoff-resume-failed') {
-    return terminal('handoff-resume', 'fail-closed-no-fresh-retry', { preserveHandoff: true });
-  }
   if (event === 'api-error') {
     const decision = decideApiErrorPolicy(input.error || {}, {
       ...(input.context || {}),
@@ -73,43 +68,20 @@ function decideRetry(input = {}, deps = {}) {
         decision,
       });
   }
-  if (event === 'interrupted') {
-    if (input.killReason) return terminal('interrupted', 'explicit-lifecycle-stop');
-    if (input.userStopped === true) return terminal('interrupted', 'user-stopped');
-    if (input.hasExplicitWait === true) {
-      return Object.freeze({ action: 'wait', classification: 'interrupted', reason: 'explicit-wait', cleanup: true });
-    }
-    const current = count(attempts.interruptedResume);
-    if (current >= limits.interruptedResume) return terminal('interrupted', 'resume-cap-reached');
-    return schedule('resume', 'interrupted', current + 1, delays.interruptedResume, deps, {
-      cap: limits.interruptedResume,
-    });
-  }
-  if (event === 'codex-stream-disconnect') {
-    if (cli !== 'codex') return terminal('transport', 'codex-continuation-not-applicable');
-    if (!input.hasOutput || input.resultSaved || input.killReason || !input.hasNativeSession) {
-      return terminal('transport', 'continuation-preconditions-failed');
-    }
-    const current = count(attempts.codexDisconnect);
-    if (current >= limits.codexDisconnect) return terminal('transport', 'codex-continuation-cap-reached');
-    return schedule('resume', 'codex-stream-disconnect', current + 1, delays.codexDisconnect, deps, {
-      cap: limits.codexDisconnect,
-    });
-  }
-  if (event === 'empty-exit') {
-    // Claude's production path is a persistent stream and uses interruption
-    // recovery, while process CLIs get exactly one fresh-session fallback.
-    if (cli === 'claude' || cli === 'claude-exp') return terminal('empty-exit', 'claude-stream-does-not-fresh-retry');
-    if (input.adapterError) return terminal('empty-exit', 'provider-error');
-    if (input.killReason) return terminal('empty-exit', 'turn-killed');
-    if (input.guardedHandoff) return terminal('handoff-resume', 'fail-closed-no-fresh-retry', { preserveHandoff: true });
-    const current = count(attempts.freshStart);
-    if (current >= limits.freshStart || input.isRetry === true) return terminal('empty-exit', 'fresh-retry-exhausted');
-    return schedule('retry-fresh', 'empty-exit', current + 1, delays.freshStart, deps, {
-      cap: limits.freshStart,
-    });
-  }
-  return Object.freeze({ action: 'finalize', classification: event, cleanup: true });
+  // Rust decides the branch and cap. Host-injected clocks, randomness and the
+  // API error classifier remain here until the turn lifecycle moves to Rust.
+  const plan = getNative().retryPolicyValue({
+    event, cli,
+    attempts: { freshStart: attempts.freshStart, codexDisconnect: attempts.codexDisconnect,
+      interruptedResume: attempts.interruptedResume },
+    limits: { freshStart: limits.freshStart, codexDisconnect: limits.codexDisconnect,
+      interruptedResume: limits.interruptedResume },
+    killReason: !!input.killReason, userStopped: input.userStopped === true, hasExplicitWait: input.hasExplicitWait === true,
+    hasOutput: !!input.hasOutput, resultSaved: !!input.resultSaved, hasNativeSession: !!input.hasNativeSession,
+    adapterError: !!input.adapterError, guardedHandoff: !!input.guardedHandoff, isRetry: input.isRetry === true,
+  });
+  if (!plan.delayKey) return Object.freeze(plan);
+  return schedule(plan.action, plan.classification, plan.attempt, delays[plan.delayKey], deps, { cap: plan.cap });
 }
 
 module.exports = { DEFAULT_LIMITS, DEFAULT_DELAYS, decideRetry };

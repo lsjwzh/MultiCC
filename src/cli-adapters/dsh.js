@@ -1,6 +1,6 @@
 'use strict';
 
-const { completion, createCompletionTracker } = require('./completion');
+const { createProtocolCompletionTracker } = require('./completion');
 
 const fs = require('fs');
 const path = require('path');
@@ -107,12 +107,7 @@ function createDshAdapter({ cmd, homeDir, runnerSrcDir } = {}) {
   return {
     name: 'dsh',
     createCompletionTracker() {
-      return createCompletionTracker({ observe(event) {
-        if (event.type === 'complete') return completion('completed', 'turn_end_completed');
-        if (event.type === 'error') return completion(
-          event.reason === 'aborted' ? 'cancelled' : 'failed', event.reason || 'turn_error');
-        return null;
-      } });
+      return createProtocolCompletionTracker('dsh');
     },
     cmd,
     buildTerminalCmd(session) {

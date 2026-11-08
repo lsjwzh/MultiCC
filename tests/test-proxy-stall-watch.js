@@ -116,6 +116,38 @@ function beginAttempt(runtime, input = {}) {
   });
 }
 
+test('native timeout is settled before a queued close, while an earlier close wins', () => {
+  for (const timedOutFirst of [true, false]) {
+    const req = inferenceRequest();
+    const res = fakeResponse();
+    res.headersSent = true;
+    const terminals = [];
+    let watch;
+    const observation = observeProxyRequest('claude', req, res,
+      (outcome, event) => terminals.push({ outcome, event }),
+      () => watch?.handleNativeDisconnect() === true);
+    watch = createProxyStallWatch({ protocol: 'claude', req, res, observation, requestKind: 'inference' });
+    assert.equal(watch.arm({ stallTimeoutMs: 2000, requestTimeoutMs: 4000 }), true);
+    let callback;
+    const exchange = {
+      startStreamWatch(_idle, _remaining, _deadline, _progressed, cb) { callback = cb; },
+      abort() { return timedOutFirst ? 'stream_idle_timeout' : undefined; },
+      streamProgressed() { return true; },
+      stopStreamWatch() {},
+      noteStreamProgress() { return false; },
+      streamTimeoutCode() { return timedOutFirst ? 'stream_idle_timeout' : undefined; },
+    };
+    assert.equal(watch.useNativeProgress(exchange), true);
+    // The close handler runs before the already-queued TSFN callback.
+    res.emit('close');
+    callback(JSON.stringify({ code: 'stream_idle_timeout', progressed: true }));
+    assert.equal(terminals.length, 1);
+    assert.equal(terminals[0].event.errorCode, timedOutFirst ? 'stream_idle_timeout' : 'DOWNSTREAM_DISCONNECT');
+    assert.equal(terminals[0].outcome.termination, timedOutFirst ? 'upstream_failure' : 'downstream_disconnect');
+    watch.dispose();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Unit: the watchdog itself
 // ---------------------------------------------------------------------------
@@ -678,6 +710,80 @@ function virtualClock() {
 const { resolveModelRequestPolicy } = require('../src/chat/model-request-policy');
 const { recoverModelTimeout } = require('../src/chat/model-timeout-recovery');
 const { withModelConnectWatch } = require('../src/providers/model-connect-watch');
+const { createModelStreamProgress } = require('../src/providers/model-stream-progress');
+
+test('native stream progress handles split UTF-8, mixed chunks and oversized frames', () => {
+  const progress = createModelStreamProgress();
+  const frame = Buffer.from('data: {"type":"response.output_text.delta","delta":"你好🌍"}\r\n\r\n');
+  for (const byte of frame.subarray(0, frame.length - 1)) assert.equal(progress(Buffer.from([byte])), false);
+  assert.equal(progress(frame.subarray(frame.length - 1)), true);
+  assert.equal(progress(': ping\n\ndata: {"type":"message_start"}\n\n'), false);
+  assert.equal(progress('x'.repeat(262_145)), false);
+  assert.equal(progress('data: {"type":"content_block_start","content_block":{"type":"tool_use"}}\n\n'), false);
+  assert.equal(progress(Buffer.from('data: {"type":"content_block_start","content_block":{"type":"tool_use"}}\n\n')), true);
+});
+
+test('Rust connection deadlines fire once and cancellation prevents delivery', async () => {
+  const { RustRequestTimer } = require('../src/native/runtime').getNative();
+  let calls = 0;
+  const expired = new RustRequestTimer(10, () => { calls++; });
+  const cancelled = new RustRequestTimer(10, () => { calls += 100; });
+  cancelled.cancel();
+  cancelled.cancel();
+  await new Promise(resolve => setTimeout(resolve, 80));
+  expired.cancel();
+  assert.equal(calls, 1);
+});
+
+test('an outstanding Rust connection deadline does not keep Node alive', () => {
+  const { spawnSync } = require('node:child_process');
+  const runtime = require.resolve('../src/native/runtime');
+  const child = spawnSync(process.execPath, ['-e',
+    `const { getNative } = require(${JSON.stringify(runtime)}); global.timer = new (getNative().RustRequestTimer)(60000, () => {});`,
+  ], { env: process.env, encoding: 'utf8', timeout: 3000 });
+  assert.equal(child.error, undefined, child.error?.message);
+  assert.equal(child.status, 0, child.stderr);
+});
+
+test('a queued connection timeout cannot retire a request after connection succeeds', async () => {
+  const { channel } = require('node:diagnostics_channel');
+  const request = {};
+  const response = new EventEmitter();
+  let calls = 0;
+  const context = { attempt: { connectTimeoutMs: 10 }, response,
+    stall: { isArmed: () => true, connectTimeout() { calls++; } } };
+  withModelConnectWatch(context, () => {
+    channel('undici:request:create').publish({ request });
+    // Hold JS while Rust expires the timer, then deliver the successful
+    // connection event before Node drains the queued callback.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    channel('undici:request:bodySent').publish({ request });
+  });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(calls, 0);
+  assert.equal(response.listenerCount('close'), 0);
+  assert.equal(response.listenerCount('finish'), 0);
+});
+
+test('Rust request timers own idle and absolute deadlines and are cancelled on completion', async () => {
+  const res = fakeResponse();
+  const settled = [];
+  const watch = createProxyStallWatch({ protocol: 'claude', requestKind: 'inference', res,
+    observation: { settle: event => settled.push(event.errorCode) } });
+  assert.equal(watch.arm({ stallTimeoutMs: 20, requestTimeoutMs: 200 }), true);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.deepEqual(settled, [RESPONSE_STALLED_BEFORE_RESPONSE]);
+  assert.equal(res.destroyed, true);
+
+  const completed = fakeResponse();
+  const late = [];
+  const finished = createProxyStallWatch({ protocol: 'claude', requestKind: 'inference', res: completed,
+    observation: { settle: event => late.push(event) } });
+  assert.equal(finished.arm({ stallTimeoutMs: 20, requestTimeoutMs: 30 }), true);
+  completed.end();
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.deepEqual(late, []);
+});
 
 test('公共默认值覆盖所有 CLI，并明确区分深度推理与普通请求', () => {
   for (const cli of ['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'codebuddy']) {
@@ -694,6 +800,25 @@ test('公共默认值覆盖所有 CLI，并明确区分深度推理与普通请�
   const disabled = resolveModelRequestPolicy({}, { MULTICC_MODEL_IDLE_TIMEOUT_MS: '0' });
   assert.equal(disabled.stallTimeoutMs, 0);
   assert.equal(disabled.requestTimeoutMs, 900_000, '关闭空闲计时不取消总预算');
+});
+
+test('模型请求预算保留 Auto 兼容入口的优先级和数值边界', () => {
+  const auto = { effort: 'ULTRACODE', providerSelection: { mode: 'auto' } };
+  assert.deepEqual(resolveModelRequestPolicy(auto, {
+    MULTICC_AUTO_STALL_TIMEOUT_MS: '45000.9', MULTICC_MODEL_IDLE_TIMEOUT_MS: null,
+    MULTICC_MODEL_REQUEST_TIMEOUT_MS: '-2', MULTICC_MODEL_CONNECT_TIMEOUT_MS: 'Infinity',
+  }), { stallTimeoutMs: 45_000, requestTimeoutMs: 30_000, connectTimeoutMs: 600_000 });
+  assert.deepEqual(resolveModelRequestPolicy(auto, {
+    MULTICC_AUTO_STALL_TIMEOUT_MS: '45000', MULTICC_MODEL_IDLE_TIMEOUT_MS: '',
+    MULTICC_MODEL_REQUEST_TIMEOUT_MS: '9999999', MULTICC_MODEL_CONNECT_TIMEOUT_MS: '500',
+  }), { stallTimeoutMs: 600_000, requestTimeoutMs: 3_600_000, connectTimeoutMs: 1_000 });
+  assert.equal(resolveModelRequestPolicy({ providerSelection: { mode: 'manual' } }, {
+    MULTICC_AUTO_STALL_TIMEOUT_MS: '45000',
+  }).stallTimeoutMs, 300_000);
+  assert.equal(resolveModelRequestPolicy({}, { MULTICC_MODEL_REQUEST_TIMEOUT_MS: 123456n }).requestTimeoutMs, 123_456);
+  const frozen = resolveModelRequestPolicy({}, { MULTICC_MODEL_IDLE_TIMEOUT_MS: -0 });
+  assert.equal(Object.is(frozen.stallTimeoutMs, -0), false);
+  assert.ok(Object.isFrozen(frozen));
 });
 
 for (const protocol of ['claude', 'codex']) {

@@ -474,6 +474,7 @@ function createSessionTriggers(rawDeps) {
 
   function onTurnComplete(sessionId, chat, completion) {
     try {
+      if (typeof completion?.isCurrentRunner === 'function' && !completion.isCurrentRunner()) return;
       firePostTurnTriggers(sessionId, chat, completion);
     } catch (error) {
       warn('trigger_post_turn_failed', { sessionId, error: safeError(error) });

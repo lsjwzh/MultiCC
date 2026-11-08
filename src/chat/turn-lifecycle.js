@@ -1,6 +1,89 @@
 'use strict';
 
-const { isCompleted } = require('../cli-adapters/completion');
+const { getNative } = require('../native/runtime');
+
+// The host keeps object identity; Rust owns the turn's durable/claim state.
+// Non-primitive values are retained by identity for compatibility with callers
+// that mutate these historically public fields.
+const turnStates = new WeakMap();
+const runnerStates = new WeakMap();
+const legacyAppendStates = new WeakMap();
+
+function resultAppendState(turn) {
+  const state = turnStates.get(turn);
+  if (state) return state;
+  let legacy = legacyAppendStates.get(turn);
+  if (!legacy) {
+    legacy = { native: new (getNative().RustChatTurnLifecycle)() };
+    legacyAppendStates.set(turn, legacy);
+  }
+  return legacy;
+}
+
+function reserveResultAppend(turn) { return resultAppendState(turn).native.beginResultAppend(); }
+function releaseResultAppend(turn) { resultAppendState(turn).native.endResultAppend(); }
+function recordConfirmedResult(turn, runner, runnerId) {
+  const state = resultAppendState(turn);
+  if (!state.native.recordConfirmedResult(isOpaque(runnerId) ? null : runnerId)) return false;
+  state.receiptRunner = runner;
+  state.receiptOpaque = isOpaque(runnerId);
+  state.receiptOwner = state.receiptOpaque ? runnerId : undefined;
+  return true;
+}
+function confirmedResult(turn) {
+  const state = resultAppendState(turn);
+  if (!state.native.hasConfirmedResult()) return null;
+  return { runner: state.receiptRunner,
+    runnerId: state.receiptOpaque ? state.receiptOwner : state.native.confirmedResultOwner() };
+}
+
+function runnerState(runner) {
+  let state = runnerStates.get(runner);
+  if (!state) {
+    state = { native: new (getNative().RustChatRunnerLifecycle)(), setter: null, opaque: false, value: undefined };
+    runnerStates.set(runner, state);
+  }
+  return state;
+}
+
+function reserveUsageWrite(runner) { return runnerState(runner).native.beginUsage(); }
+function releaseUsageWrite(runner) { runnerState(runner).native.endUsage(); }
+
+function isOpaque(value) {
+  return value !== null && (typeof value === 'object' || typeof value === 'function'
+    || typeof value === 'symbol' || typeof value === 'bigint');
+}
+
+function attachTurnState(turn) {
+  const native = new (getNative().RustChatTurnLifecycle)();
+  const opaque = new Map();
+  let claimSetter;
+  const fields = {
+    resultDurable: ['resultDurable', 'setResultDurable'],
+    resultRunnerId: ['resultRunnerId', 'setResultRunnerId'],
+    postTurnClaimed: ['postTurnClaimed', 'setPostTurnClaimed'],
+  };
+  for (const [key, [get, set]] of Object.entries(fields)) {
+    const setter = value => {
+      // Data properties on a frozen legacy turn were not writable.
+      if (Object.isFrozen(turn)) throw new TypeError(`Cannot assign to read only property '${key}'`);
+      if (isOpaque(value)) {
+        native[set](key === 'resultRunnerId' ? null : !!value);
+        opaque.set(key, value);
+      } else {
+        native[set](value);
+        opaque.delete(key);
+      }
+    };
+    if (key === 'postTurnClaimed') claimSetter = setter;
+    Object.defineProperty(turn, key, {
+      enumerable: true, configurable: true,
+      get() { return opaque.has(key) ? opaque.get(key) : native[get](); },
+      set: setter,
+    });
+  }
+  turnStates.set(turn, { native, opaque, claimSetter });
+}
 
 function clean(value) { return value == null ? '' : String(value).trim(); }
 
@@ -104,7 +187,7 @@ function createTurnLifecycle(request, input = {}) {
   }
   const turnId = clean(input.turnId);
   if (!turnId) throw new TypeError('turnId is required');
-  return {
+  const turn = {
     turnId,
     // The caller's own id for this request (a WS clientMsgId for a live voice
     // turn). Post-turn effects carry it so an out-of-band terminal frame can be
@@ -115,10 +198,9 @@ function createTurnLifecycle(request, input = {}) {
     lineage: freezeLineage(request.origin),
     task: freezeTask(request.task),
     launchReason: request.launch.reason === 'continue' ? 'continue' : 'request',
-    resultDurable: false,
-    resultRunnerId: null,
-    postTurnClaimed: false,
   };
+  attachTurnState(turn);
+  return turn;
 }
 
 function createRunnerOwnership(turn, input = {}) {
@@ -171,135 +253,82 @@ function createRunnerOwnership(turn, input = {}) {
   } else if (input.routeProof) {
     throw new TypeError('route proof requires provider attempt ownership');
   }
+  runnerState(runner);
   return runner;
 }
 
 function ownsCurrentRunner(currentTurn, currentRunner, turn, runner) {
-  return !!(
-    currentTurn === turn
-    && currentRunner === runner
-    && turn && runner
-    && runner.turnId === turn.turnId
-  );
+  return getNative().chatOwnsCurrentRunner(currentTurn, currentRunner, turn, runner);
 }
 
 function assignKillReason(runner, reason) {
-  if (!runner) return false;
-  runner.killReason = clean(reason) || null;
-  return !!runner.killReason;
+  return getNative().chatAssignKillReason(runner, reason);
 }
 
-// Transient event errors may recover (for example Codex housekeeping failures).
-// Clear them only after the owning adapter confirms completion, the execution
-// boundary settles, and the result is durable. Proxy diagnostics use the same
-// completed-turn evidence in the attempt runtime; they are not deleted.
-// A boundary error envelope ("Codex 出错：Selected model is at capacity" as
-// the assistant text) is provider-owned fault evidence — never clear it.
 function clearErrorFlagsForSucceededTurn(turn, runner, cs, facts = {}) {
-  if (!turn || !runner || turn.resultDurable !== true) return false;
-  if (!isCompleted(runner.completionOutcome) || !runner.runnerId || turn.resultRunnerId !== runner.runnerId) return false;
-  if (facts.killReason) return false;
-  if (facts.code !== undefined && facts.code !== null && facts.code !== 0) return false;
-  if (facts.boundaryErrorEnvelope) return false;
-  const hadErrorFlags = !!(runner.sawApiError || runner.apiErrorRaw || runner.adapterError
-    || cs?._sawApiError || cs?._adapterError || cs?._codexTransportError || cs?._codexPendingStreamError);
-  runner.sawApiError = false;
-  runner.apiErrorRaw = null;
-  runner.adapterError = null;
-  if (cs) {
-    cs._sawApiError = false;
-    cs._adapterError = null;
-    cs._codexTransportError = '';
-    cs._codexPendingStreamError = '';
-  }
-  return hadErrorFlags;
+  return getNative().chatClearSucceededErrors(turn, runner, cs, facts);
 }
 
 function recordResultEvent(turn, runner, facts = {}) {
-  if (!turn || !runner || runner.turnId !== turn.turnId || facts.current !== true) {
-    return Object.freeze({ ok: false, code: 'stale_runner', resultDurable: !!(turn && turn.resultDurable) });
-  }
-  runner.resultEvent = true;
-  // Durability is monotonic for one turn. A failed later duplicate append must
-  // never erase an earlier committed final result.
-  if (facts.persisted === true) {
-    turn.resultDurable = true;
-    turn.resultRunnerId = runner.runnerId;
-  }
-  return Object.freeze({
-    ok: facts.persisted === true,
-    code: facts.persisted === true ? null : 'result_not_durable',
-    resultDurable: turn.resultDurable,
-  });
+  return getNative().chatRecordResultEvent(turn, runner, facts);
 }
 
 function recordCloseResult(turn, runner, facts = {}) {
-  if (!turn || !runner || runner.turnId !== turn.turnId || facts.current !== true) {
-    return Object.freeze({ ok: false, code: 'stale_runner', resultDurable: !!(turn && turn.resultDurable) });
-  }
-  if (facts.final === true && facts.persisted === true) {
-    turn.resultDurable = true;
-    turn.resultRunnerId = runner.runnerId;
-  }
-  return Object.freeze({
-    ok: facts.final === true && facts.persisted === true,
-    code: facts.final !== true ? 'not_final_result'
-      : facts.persisted !== true ? 'result_not_durable' : null,
-    resultDurable: turn.resultDurable,
-  });
+  return getNative().chatRecordCloseResult(turn, runner, facts);
 }
 
 function recordPartialCheckpoint(turn, runner, facts = {}) {
-  if (!turn || !runner || runner.turnId !== turn.turnId || facts.current !== true) {
-    return Object.freeze({ ok: false, code: 'stale_runner' });
-  }
-  const checkpointKey = clean(facts.checkpointKey);
-  if (facts.persisted !== true || !checkpointKey) {
-    return Object.freeze({ ok: false, code: 'checkpoint_not_durable' });
-  }
-  runner.partialCheckpointKey = checkpointKey;
-  return Object.freeze({ ok: true, code: null, checkpointKey });
+  return getNative().chatRecordPartialCheckpoint(turn, runner, facts);
 }
 
 function hasMatchingPartialCheckpoint(runner, checkpointKey) {
-  return !!(runner && runner.partialCheckpointKey && runner.partialCheckpointKey === clean(checkpointKey));
+  return getNative().chatHasPartialCheckpoint(runner, checkpointKey);
 }
 
 function claimDurableUsage(runner, facts = {}) {
   if (!runner) return Object.freeze({ ok: false, code: 'runner_required' });
   if (facts.resultDurable !== true) return Object.freeze({ ok: false, code: 'result_not_durable' });
   if (runner.usageRecorded === true) return Object.freeze({ ok: false, code: 'usage_already_recorded' });
-  runner.usageRecorded = true;
+  const state = runnerStates.get(runner);
+  let descriptor = state && Object.getOwnPropertyDescriptor(runner, 'usageRecorded');
+  if (state && !descriptor && !('usageRecorded' in runner)) {
+    const setter = value => {
+      if (Object.isFrozen(runner)) throw new TypeError("Cannot assign to read only property 'usageRecorded'");
+      state.native.setUsageRecorded(value === true);
+      state.opaque = value !== true && value !== false;
+      state.value = value;
+    };
+    Object.defineProperty(runner, 'usageRecorded', {
+      enumerable: true, configurable: true,
+      get() { return state.opaque ? state.value : state.native.usageRecorded(); },
+      set: setter,
+    });
+    state.native.setUsageRecorded(false);
+    state.opaque = false;
+    state.setter = setter;
+    descriptor = Object.getOwnPropertyDescriptor(runner, 'usageRecorded');
+  }
+  if (state && descriptor?.set === state.setter && !Object.isFrozen(runner)) {
+    if (!state.native.claimUsage()) return Object.freeze({ ok: false, code: 'usage_already_recorded' });
+    state.opaque = false;
+  } else runner.usageRecorded = true;
   return Object.freeze({ ok: true, code: null });
 }
 
 function evaluatePostTurn(turn, runner, facts = {}) {
-  if (!ownsCurrentRunner(facts.currentTurn, facts.currentRunner, turn, runner)) {
-    return Object.freeze({ ok: false, code: 'stale_runner' });
-  }
-  if (!turn.resultDurable) return Object.freeze({ ok: false, code: 'result_not_durable' });
-  if (turn.resultRunnerId !== runner.runnerId) {
-    return Object.freeze({ ok: false, code: 'result_owned_by_other_runner' });
-  }
-  if (runner.killReason || facts.interrupted === true) {
-    return Object.freeze({ ok: false, code: 'turn_interrupted' });
-  }
-  if (facts.apiError === true) return Object.freeze({ ok: false, code: 'api_error_retry_pending' });
-  if (runner.retryPlanned || facts.retryPlanned === true) {
-    return Object.freeze({ ok: false, code: 'retry_pending' });
-  }
-  if (facts.handoffResumeFailure === true) {
-    return Object.freeze({ ok: false, code: 'handoff_resume_failed' });
-  }
-  if (!isCompleted(runner.completionOutcome)) return Object.freeze({ ok: false, code: 'runner_not_completed' });
-  if (turn.postTurnClaimed) return Object.freeze({ ok: false, code: 'post_turn_already_claimed' });
-  return Object.freeze({ ok: true, code: null });
+  const code = getNative().evaluateChatPostTurn(turn, runner, facts);
+  return Object.freeze({ ok: !code, code: code || null });
 }
 
 function claimPostTurn(turn, runner, facts = {}) {
   const decision = evaluatePostTurn(turn, runner, facts);
   if (!decision.ok) return decision;
-  turn.postTurnClaimed = true;
+  const state = turnStates.get(turn);
+  const descriptor = state && Object.getOwnPropertyDescriptor(turn, 'postTurnClaimed');
+  if (state && descriptor?.set === state.claimSetter && !Object.isFrozen(turn)) {
+    if (!state.native.claimPostTurn()) return Object.freeze({ ok: false, code: 'post_turn_already_claimed' });
+    state.opaque.delete('postTurnClaimed');
+  } else turn.postTurnClaimed = true;
   return Object.freeze({ ok: true, code: null, lineage: turn.lineage });
 }
 
@@ -320,6 +349,12 @@ module.exports = {
   recordPartialCheckpoint,
   hasMatchingPartialCheckpoint,
   claimDurableUsage,
+  reserveResultAppend,
+  releaseResultAppend,
+  recordConfirmedResult,
+  confirmedResult,
+  reserveUsageWrite,
+  releaseUsageWrite,
   evaluatePostTurn,
   claimPostTurn,
 };

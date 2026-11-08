@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('node:path');
-const { completion, createCompletionTracker } = require('./completion');
+const { createProtocolCompletionTracker } = require('./completion');
 const { displayNameOf } = require('../cli/cli-capability');
 
 const { renderPrompt } = require('../message-composer');
@@ -79,13 +79,7 @@ function createCodexExpAdapter(deps = {}) {
     name: 'codex-exp',
     cmd: process.execPath,
     createCompletionTracker() {
-      return createCompletionTracker({ observe(event) {
-        if (event?.method !== 'turn/completed') return null;
-        const status = event.params?.turn?.status;
-        if (status === 'completed') return completion('completed', 'turn/completed');
-        if (status === 'interrupted') return completion('cancelled', 'turn/interrupted');
-        return completion('failed', `turn/${status || 'failed'}`);
-      } });
+      return createProtocolCompletionTracker('codex-exp');
     },
     buildTerminalCmd() {
       return `${deps.codexCmd || 'codex'} --help`;

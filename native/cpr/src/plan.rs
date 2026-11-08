@@ -141,6 +141,8 @@ pub struct Plan {
     pub proxy_url: Option<String>,
     #[serde(default = "default_timeout")]
     pub headers_timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_timeout_ms: Option<u64>,
 }
 fn default_timeout() -> u64 {
     300_000
@@ -448,6 +450,7 @@ pub fn prepare(input: Value) -> Result<Value, String> {
             .as_u64()
             .unwrap_or(default_timeout())
             .clamp(1, 300_000),
+        connect_timeout_ms: None,
     };
     Ok(json!({"plan": plan}))
 }

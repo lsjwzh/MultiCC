@@ -7,6 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { DEFAULT_TRIGGER_PROMPT, createSessionTriggers } = require('../src/triggers');
+const { createChatHostRuntime } = require('../src/chat/host-runtime');
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -387,6 +388,55 @@ test('post-turn firing requires a durable result and blocks trigger recursion', 
     lineage: { kind: 'user' },
   }), 1);
   assert.equal(runs.length, 1);
+});
+
+test('the real trigger listener rejects a replaced runner even within EventEmitter dispatch', async () => {
+  for (const replacementPoint of ['handoff', 'earlier-listener', 'none']) {
+    const trigger = { id: 'turn', type: 'post-turn', enabled: true, prompt: 'review', cooldownMs: 0 };
+    const session = makeSession([trigger]);
+    const harness = createHarness({ persistedSessions: new Map([[session.id, session]]) });
+    const turn = { turnId: 'old-turn', sessionId: session.id, requestId: 'old-request',
+      lineage: { kind: 'dispatch', operationId: 'old-operation' }, resultDurable: true,
+      resultRunnerId: 'old-runner', postTurnClaimed: false };
+    const runner = { turnId: turn.turnId, runnerId: 'old-runner',
+      completionOutcome: { version: 1, state: 'completed', settled: true } };
+    const state = { _activeTurn: turn, _activeRunner: runner, isStreaming: false };
+    const replacement = { _activeTurn: { turnId: 'new-turn' }, _activeRunner: { runnerId: 'new-runner' },
+      isStreaming: replacementPoint === 'earlier-listener' };
+    harness.chatSessions.set(session.id, state);
+    const runs = [];
+    const dispatch = [];
+    let completionKeys;
+    harness.bus.on('chat:run', (...args) => runs.push(args));
+    harness.bus.on('chat:turn-complete', (_id, _chat, completion) => {
+      completionKeys = Object.keys(completion);
+      if (replacementPoint === 'earlier-listener') harness.chatSessions.set(session.id, replacement);
+    });
+    harness.runtime.start();
+    const host = createChatHostRuntime({
+      appendMessage: () => true, persistUsage: () => true, afterUsageCommit() {},
+      getSessionState: id => harness.chatSessions.get(id),
+      consumeHandoff: () => { if (replacementPoint === 'handoff') harness.chatSessions.set(session.id, replacement); },
+      emitTurnComplete: (...args) => harness.bus.emit('chat:turn-complete', ...args),
+      emitDispatchComplete: (...args) => dispatch.push(args),
+      emitGatewayComplete() {}, logSuppressed() {},
+    });
+    const result = host.runDurablePostTurn(session.id, state, {}, turn, runner, 'answer');
+    assert.equal(result, replacementPoint === 'none');
+    assert.deepEqual(dispatch, [['old-operation', session.id, 'answer']]);
+    if (replacementPoint === 'none') {
+      assert.equal(runs.length, 1, 'the current turn still triggers normally');
+      assert.deepEqual(completionKeys, ['turnId', 'lineage', 'resultDurable']);
+      harness.bus.emit('chat:turn-complete', session.id, state,
+        { turnId: 'legacy', lineage: { kind: 'user' }, resultDurable: true });
+      assert.equal(runs.length, 2, 'legacy completion without the new guard remains supported');
+    } else {
+      assert.equal(runs.length, 0, 'the old turn cannot inject into its replacement');
+      assert.equal(harness.timers.pending.size, 0, 'it cannot queue a delayed injection either');
+      assert.equal(trigger.lastFiredAt, undefined);
+    }
+    await harness.runtime.stop();
+  }
 });
 
 test('stale trigger callbacks cannot fire or re-arm resources after stop', async () => {

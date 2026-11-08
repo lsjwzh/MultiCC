@@ -613,6 +613,7 @@ function createChatTurnEngine(deps) {
       const contextTrace = contextTraceFor(sessionName, cs);
       runner.pendingUsage = usage;
       if (resultSucceeded && !envelopeError && (cs.currentAssistantText || cs.currentToolCalls.length)) {
+        const wasMapped = chatSessions?.get(sessionName) === cs;
         const resultDurable = persistFinalAssistantResult(sessionName, cs, turn, runner, {
           role: 'assistant', content: cs.currentAssistantText,
           tools: cs.currentToolCalls.length ? cs.currentToolCalls : undefined,
@@ -620,8 +621,10 @@ function createChatTurnEngine(deps) {
           ...(contextTrace ? { contextTrace } : {}),
           turnTimings: turnTimingsField(sessionName, turn.turnId),
         }, { resultEvent: true });
+        if (!isCurrentTurnRunner(cs, turn, runner) || (wasMapped && chatSessions.get(sessionName) !== cs)) return;
         if (resultDurable) {
           recordDurableTurnUsage(sessionName, runner, usage);
+          if (!isCurrentTurnRunner(cs, turn, runner) || (wasMapped && chatSessions.get(sessionName) !== cs)) return;
           cs.chatTurnCount++;
           // Durability is independent of the runner's eventual completion.
           cs._resultSaved = true;
@@ -658,7 +661,6 @@ function createChatTurnEngine(deps) {
     }
     forward(evt);
   }
-
   // Apply adapter-neutral events to server-owned chat state. Wire-format parsing
   // belongs to each CLI adapter; this function owns persistence, status and the
   // Claude-shaped event contract consumed by existing clients.
@@ -2701,7 +2703,6 @@ function createChatTurnEngine(deps) {
         persisted.cliSessionId = crypto.randomUUID();
         savePersistedSessionsBestEffort('websocket.chat-session-id-allocate');
       }
-
       const history = loadChatHistory(sessionName);
       cs = {
         clients: new Set(),

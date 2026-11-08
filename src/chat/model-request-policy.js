@@ -1,22 +1,22 @@
 'use strict';
 
-// 请求预算只在上游推理请求准入后启动，不包含工具执行和队列等待。
-function bounded(value, fallback, min, max) {
-  if (value == null || String(value).trim() === '') return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.trunc(n))) : fallback;
-}
+// The host supplies only the request budget inputs; Rust owns the policy.
+// Timers remain in Node until the request lifecycle itself moves to Rust.
+const { getNative } = require('../native/runtime');
+// The shared bridge cannot carry BigInt; its decimal spelling preserves the
+// policy's String/Number coercions without losing integer precision in transit.
+const bridgeValue = value => typeof value === 'bigint' ? value.toString() : value;
 
 function resolveModelRequestPolicy(session = {}, env = process.env) {
-  const deep = /^(high|xhigh|max|ultra|ultracode)$/i.test(String(session.effort || ''));
-  const legacy = session.providerSelection?.mode === 'auto' ? env.MULTICC_AUTO_STALL_TIMEOUT_MS : undefined;
-  const stallTimeoutMs = bounded(env.MULTICC_MODEL_IDLE_TIMEOUT_MS ?? legacy,
-    deep ? 600_000 : 300_000, 0, 600_000);
-  return Object.freeze({
-    stallTimeoutMs: stallTimeoutMs > 0 ? Math.max(15_000, stallTimeoutMs) : 0,
-    requestTimeoutMs: bounded(env.MULTICC_MODEL_REQUEST_TIMEOUT_MS, deep ? 1_800_000 : 900_000, 30_000, 3_600_000),
-    connectTimeoutMs: bounded(env.MULTICC_MODEL_CONNECT_TIMEOUT_MS, 600_000, 1_000, 600_000),
-  });
+  const effort = session.effort;
+  const mode = session.providerSelection?.mode;
+  const legacy = mode === 'auto' ? env.MULTICC_AUTO_STALL_TIMEOUT_MS : undefined;
+  return Object.freeze(getNative().modelRequestPolicyValue({
+    effort: bridgeValue(effort), mode: bridgeValue(mode), legacy: bridgeValue(legacy),
+    idle: bridgeValue(env.MULTICC_MODEL_IDLE_TIMEOUT_MS),
+    request: bridgeValue(env.MULTICC_MODEL_REQUEST_TIMEOUT_MS),
+    connect: bridgeValue(env.MULTICC_MODEL_CONNECT_TIMEOUT_MS),
+  }));
 }
 
 module.exports = { resolveModelRequestPolicy };
