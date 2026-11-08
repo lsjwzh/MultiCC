@@ -1,0 +1,1227 @@
+'use strict';
+
+// FROZEN REFERENCE — the Node implementation of src/chat/api-error-policy.js
+// as of the commit before the policy moved to
+// native/core/src/api_error_policy.rs. Tests only: it preserves the observable
+// behaviour the Rust kernel must reproduce. Do not edit; do not require it
+// from src/.
+
+const crypto = require('crypto');
+const { extractUpstreamError } = require('../../src/upstream-error');
+const { classifyProviderError } = require('../../src/provider-error');
+const { getNative } = require('../../src/native/runtime');
+
+const CATEGORIES = Object.freeze([
+  'authentication_permission',
+  'billing_quota',
+  'rate_limit',
+  'provider_transient',
+  'network',
+  'timeout',
+  'invalid_request_model',
+  'context_token_limit',
+  'tool_protocol',
+  'cancel_shutdown',
+  'adapter_configuration',
+  'unknown',
+]);
+const CATEGORY_SET = new Set(CATEGORIES);
+const RETRYABLE = new Set(['rate_limit', 'provider_transient', 'network', 'timeout', 'unknown']);
+const TRANSIENT = new Set(['rate_limit', 'provider_transient', 'network', 'timeout']);
+const TRUSTED_TEXT_SOURCES = new Set([
+  'anthropic_event',
+  'claude_result',
+  'claude-exp_event',
+  'codex_event',
+  'opencode_event',
+  'qoder_result',
+  'zcode_event',
+  'kimi_event',
+  'codebuddy_result',
+  'dsh_event',
+  'gemini_event',
+  'grok_event',
+  'commandcode_event',
+  'pi_event',
+  'process_stderr',
+  'aux_http',
+  'host_interruption',
+  'classifier_legacy',
+]);
+// Local-stop codes (user, server or MultiCC ended the run) are one table in
+// native/core/src/provider_error.rs, shared with the Rust classifier's
+// cancellation precedence. Auto never fails over on them.
+const CANCELLATION_CODES = new Set(JSON.parse(
+  getNative().providerErrorFacts(),
+).cancellationCodes);
+const NETWORK_CODES = new Set([
+  'econnreset', 'econnrefused', 'econnaborted', 'enotfound', 'eai_again',
+  'epipe', 'err_network', 'fetch_failed', 'socket_hang_up',
+  'stale_connection', 'network_down', 'stream_suspended',
+  'connection_closed_mid_response', 'connection_closed_before_response',
+]);
+const TIMEOUT_CODES = new Set([
+  'etimedout', 'timeout', 'connect_timeout', 'read_timeout', 'overall_timeout',
+  'deadline_exceeded', 'und_err_connect_timeout', 'headers_timeout',
+  'watchdog', 'stream_idle_timeout', 'model_request_deadline', 'model_connect_timeout',
+  'response_stalled_mid_stream', 'response_stalled_before_response',
+]);
+const CONTEXT_CODES = new Set([
+  'context_length_exceeded', 'context_window_exceeded', 'too_many_tokens',
+  'max_tokens_exceeded', 'max_output_tokens', 'length_limit',
+]);
+const AUTH_CODES = new Set([
+  'authentication_error', 'permission_denied', 'unauthorized', 'forbidden',
+  'invalid_api_key', 'invalid_authentication', 'insufficient_scope',
+]);
+const BILLING_CODES = new Set([
+  'billing_error', 'insufficient_balance', 'insufficient_quota',
+  'quota_exceeded', 'usage_limit_exceeded', 'credit_balance_exhausted',
+]);
+const RATE_CODES = new Set(['rate_limit_error', 'rate_limited', 'too_many_requests']);
+const PROVIDER_TRANSIENT_CODES = new Set([
+  'server_error', 'api_error', 'overloaded', 'overloaded_error',
+  'internal_error', 'internal_server_error', 'server_error_mid_response',
+]);
+const CONFIG_CODES = new Set([
+  'provider_unavailable', 'provider_config_invalid', 'missing_provider',
+  'missing_base_url', 'spawn_failed', 'cli_not_installed', 'cli_resume_mismatch',
+  'eacces', 'enoent', 'enoexec', 'spawn_eacces', 'spawn_enoent',
+  'spawn_enoexec', 'exit_13',
+]);
+// SDK startup failures (result.startup_failure_reason, surfaced when the host
+// sets CLAUDE_CODE_STARTUP_FAILURE_RESULTS) are machine policy / environment
+// refusals, not upstream faults: never retried, and the label below carries the
+// real remedy instead of the opaque "error_during_execution" subtype.
+const SDK_STARTUP_FAILURE_LABELS = Object.freeze({
+  org_pin_api_key_conflict: '组织策略要求使用网关登录，但环境里配置了 Anthropic API Key/Token；请改用组织要求的登录方式或移除冲突的密钥',
+  provider_not_allowed: '当前 Provider 不在组织 managed settings 的 allowedProviders 允许列表中；请切换到被允许的 Provider，或请管理员调整策略',
+  org_verify_failed: '登录所属组织校验未通过（网络问题或令牌已失效）；请重新登录后重试',
+  org_pin_mismatch: '当前登录所属组织不受策略允许；请切换到组织允许的账号',
+  managed_settings_invalid: '组织 managed settings 策略文件无效；请检查 managed-settings.json 内容',
+  remote_settings_required_unavailable: '策略要求远程设置但当前获取失败；请检查网络后重试',
+  gateway_signin_required: '需要先登录网关；请完成网关登录后再使用该 Provider',
+  gateway_access_denied: '网关拒绝了本次访问；请确认网关账号权限',
+  proxy_invalid: '代理配置无效；请检查代理设置',
+  temp_dir_unusable: '临时目录不可用；请检查 TMPDIR 权限与磁盘空间',
+  cwd_unavailable: '工作目录不可用；请确认会话目录存在且可访问',
+  shell_tool_missing: 'Windows 缺少 Shell 工具（Git Bash 未安装且 PowerShell 缺失或被关闭）；请安装 Git Bash 或启用 PowerShell',
+  session_held_by_background: '要恢复的会话仍在后台运行；请先结束该后台会话或稍后重试',
+  worktree_resume_refused: '会话 worktree 安全检查未通过，恢复被拒绝；请在新目录重开会话',
+  worktree_unverified: '会话 worktree 暂时无法校验；稍后重试可能成功',
+  cli_version_too_old: 'Claude Code 版本过旧，低于 Anthropic 要求的最低版本；请升级 CLI',
+  bypass_root: 'root 用户下不允许使用 bypassPermissions 模式；请改用非 root 用户运行',
+});
+const SDK_STARTUP_FAILURE_CODES = new Set(Object.keys(SDK_STARTUP_FAILURE_LABELS));
+const TOOL_CODES = new Set([
+  'invalid_tool_arguments', 'tool_schema_error', 'tool_protocol_error',
+  'mcp_error', 'function_call_error',
+]);
+// Subscription-quota exhaustion wording. Providers transport these walls as
+// 402/403/429 and the CLI's own error text is the only place the real cause
+// survives ("You have exceeded the 5-hour usage quota", "usage limit reached",
+// "额度不足"). Retrying any of them inside seconds can never succeed, so the
+// wording must outrank the bare HTTP status that carried it.
+const QUOTA_EXHAUSTION_RES = Object.freeze([
+  /\b402\b/,
+  /insufficient (?:balance|quota|credit|funds)/,
+  /\bbilling\b/,
+  /usage limit/,
+  /credit balance/,
+  // "You have exceeded the 5-hour usage quota." / "You've exceeded your quota"
+  /exceed(?:ed|s|ing)?\b[^.\n]{0,60}?\bquota\b/,
+  // "quota exhausted" / "quota will be reset" / "the quota has been reached"
+  /\bquota\b[^\n]{0,40}?\b(?:exceeded|exhausted|reached|depleted|used up|resets?|will be reset|has been reset)\b/,
+  // "Weekly usage limit reached" / "5-hour limit reached" / "daily quota"
+  /\b(?:weekly|daily|monthly|hourly|5-hour|five-hour|7-day|24-hour)\b[^.\n]{0,40}?\b(?:quota|limit)\b/,
+  // Codex CLI: "or waiting for the reset"
+  /waiting for the reset/,
+  /upgrade your plan/,
+  /purchase extra usage/,
+  // "You've hit your limit · resets 3pm" (Claude CLI), "reached your limit"
+  /\b(?:hit|reached)\s+your\s+limit\b/,
+  /额度不足|余额不足|剩余额度|额度已用尽|额度用尽|配额不足|配额已用尽|超出配额|用量上限/,
+]);
+// A model the account is not entitled to. Production case (2026-10-23): a
+// Claude Pro account asked for a model that needs usage credits and the CLI
+// reported "API Error: Request rejected (429) · Usage credits are required for
+// this model." Waiting cannot fix this — the remedy is another model or an
+// account that owns this one — so the wording must never settle in the
+// rate-limit bucket just because it arrived with HTTP 429.
+const MODEL_ENTITLEMENT_RES = Object.freeze([
+  /usage credits? (?:are|is) required/,
+  /extra usage (?:is|are) required/,
+  /not available on (?:your|this) plan/,
+  /not included in (?:your|this) plan/,
+  /暂未开放/,
+  /套餐不支持/,
+]);
+// The structured counterpart of the wording above, synthesized when only the
+// provider's text survives (the CLI owns the response and swallows headers).
+const TEXT_ENTITLEMENT_REJECTION = Object.freeze({
+  kind: 'entitlement', scope: 'model', window: null, resetMs: null,
+  code: null, model: null, source: 'text',
+});
+// The host's Rust proxy reports the rejection as a structured object. It
+// crosses a process boundary, so it is untrusted input: only the contract's
+// own keys, only known enum values, and free text capped so a malformed event
+// can never inflate the attempt record or a client frame
+// (native/addon/src/api_error_text.rs).
+function normalizeRejection(value) {
+  return getNative().apiNormalizeRejection(value);
+}
+// Reset guidance embedded in the provider's error text, e.g. Codex's
+// "It will reset at 2026-09-20 18:11:35 +0800 CST." Some CLIs only state the
+// restart point in prose, so it can never arrive as a Retry-After header.
+const RESET_IN_TEXT_RE = /\breset(?:s|ting)?\s+in\s+(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\b/i;
+const RESET_AT_TEXT_RE = /\breset(?:s|ting)?\s+(?:at|on)\s+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:\s*(?:Z|[+-]\d{2}:?\d{2}))?)/i;
+const RESET_UNIT_MS = Object.freeze({ second: 1000, minute: 60_000, hour: 3_600_000, day: 86_400_000 });
+// A reset further out than this is treated as unusable guidance (misparse or a
+// plan change), which falls back to the ordinary non-retryable quota branch.
+const MAX_PARSED_RESET_MS = 30 * 86_400_000;
+
+function numberOrNull(value) {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function normalizeCode(value) {
+  const text = String(value || '').trim().toLowerCase();
+  // libuv exposes spawn EACCES as errno -13. Preserve the launch-failure
+  // meaning instead of normalizing it into the opaque token "_13".
+  if (text === '-13') return 'exit_13';
+  return text.replace(/[\s.-]+/g, '_').slice(0, 80);
+}
+
+function sourceMessage(raw) {
+  if (typeof raw === 'string') return raw;
+  if (!raw || typeof raw !== 'object') return '';
+  const nested = raw.error && typeof raw.error === 'object' ? raw.error : {};
+  const direct = raw.message || nested.message || raw.detail || raw.reason;
+  // Claude-envelope result events carry the human-readable failure in errors[]
+  // (e.g. WorkBuddy's "Authentication required. Please use /login …") while
+  // the message field degrades to the opaque subtype "error_during_execution".
+  if (direct && String(direct).trim().toLowerCase() !== 'error_during_execution') return direct;
+  if (Array.isArray(raw.errors)) {
+    const fromErrors = raw.errors.map(entry => String(entry || '').trim()).filter(Boolean).join(' | ');
+    if (fromErrors) return fromErrors;
+  }
+  return direct || '';
+}
+
+// Collapsed, redacted (native/core/src/redaction.rs), the fallback when
+// nothing is left, capped at 240 UTF-16 units by default.
+function sanitizeMessage(value, fallback, maxLength) {
+  return getNative().apiSanitizeMessage(value, fallback, maxLength);
+}
+
+// Provider-owned fallback only: distinguishes a short error envelope rendered
+// as assistant text from meaningful partial output. It is never applied to user
+// input and never decides the category by itself.
+//
+// The codex alternation carries both lane names on purpose. An adapter's label
+// follows the CLI display table (src/cli/cli-capability.js DISPLAY), which was
+// renamed on 2026-09-24: the resident lane is "Codex" and the one-shot
+// `codex exec` fallback is "Codex Exec". So the same adapter that used to write
+// "Codex 出错：" now writes "Codex Exec 出错：" on that lane, and a pattern fixed
+// on the old spelling would silently stop recognizing the envelope as error-only
+// — the error text would land in the transcript as if it were partial output.
+// "Codex Exp" is the resident lane's former name, kept for text that persisted
+// under it.
+const ERROR_ONLY_PREFIX_RE = /^(?:api\s*error|failed to authenticate|error:|codex\s*(?:exec\s*|exp\s*)?(?:error|出错)|claude\s*(?:error|出错)|opencode\s*(?:error|出错)|qoder\s*(?:error|出错)|zcode\s*(?:error|出错)|kimi\s*(?:error|出错)|codebuddy\s*(?:error|出错)|dsh\s*(?:error|出错)|gemini\s*(?:error|出错)|grok\s*(?:error|出错)|pi\s*(?:error|出错)|stream disconnected|connection (?:closed|reset|refused)|request (?:failed|timed out)|request rejected\s*\(\s*[45]\d\d\s*\)|rate limit|overloaded|internal server error|service unavailable|timeout|timed out|\[error\]|exceeded retry limit|response stalled)/i;
+
+// The host's quota guard answers some lanes with a bare JSON object instead of
+// prose. It carries no "API Error:" prefix, so the prefix list above cannot see
+// it; the code field is the only stable signature.
+function isQuotaGuardJson(text) {
+  if (text[0] !== '{') return false;
+  return /"code"\s*:\s*"quota[_-]?guard/i.test(text)
+    || /"error"\s*:\s*"[^"]{0,200}quota[ _-]?guard/i.test(text);
+}
+
+function isErrorOnlyText(value) {
+  const text = String(value || '').trim();
+  if (!text || text.length > 600) return false;
+  return ERROR_ONLY_PREFIX_RE.test(text) || isQuotaGuardJson(text);
+}
+
+// Canonical "what an API fault looks like in text" signature list. Every
+// surface that needs to DESCRIBE the vocabulary (classify prompt E-state
+// definition in src/classify/vocab.js, push prompt in src/push/runtime.js)
+// renders from this single list instead of hand-maintaining a copy that drifts
+// away from ERROR_ONLY_PREFIX_RE / textFallbackCategory above.
+const API_ERROR_SIGNATURES = Object.freeze([
+  'API Error', '503', 'Connection closed', 'Overloaded',
+  'Internal server error', 'The system is busy',
+]);
+
+function apiErrorSignaturesQuoted() {
+  return API_ERROR_SIGNATURES.map(sig => `“${sig}”`).join('、');
+}
+
+// Some CLIs append the error envelope to the END of an otherwise complete
+// assistant turn ("…正文：API Error: Request rejected (429)…"). The whole-message
+// predicate above cannot see that shape, so the error text used to land in the
+// transcript verbatim. The envelope must sit at the very end and stay short.
+//
+// The head is the CLI's own envelope prefix; "Failed to authenticate." rides
+// along because the CLI glues the login line and the API line together.
+const TRAILING_ENVELOPE_HEAD_RE = /(?:failed to authenticate\b[^\n]{0,80}?api\s*error\s*:|api\s*error\s*:)/gi;
+// Where the first envelope of a chain may begin: a real line/sentence boundary
+// OR the ASCII sentence terminator / closing mark the CLI glues directly onto
+// ("…push main and the tag.API Error: …", "…（见上文）API Error: …"). A backtick
+// is deliberately absent — "…写成 `API Error: 429`" is prose quoting an error,
+// and so is a head glued straight onto a letter or digit.
+const TRAILING_ENVELOPE_BOUNDARY_RE = /[\n。：:；;.!?()（)）」』”’"]/;
+// Seam punctuation that the historical single-envelope split drops from the
+// body. The ASCII terminators and closing brackets/quotes newly accepted as
+// boundaries are NOT dropped: they end the answer's own sentence ("…the tag.")
+// and keep "（见上文）" or "…(see the log above)" balanced.
+const TRAILING_ENVELOPE_SEAM_RE = /[\n。：:；;]/;
+// Single-envelope shape (weak heads only, no sentence punctuation inside).
+// detectErrorEnvelope uses the structural scan below instead; this export
+// stays for callers that only need to describe the plain form.
+const TRAILING_ERROR_ENVELOPE_RE = /(?:^|[\n。：:；;.!?()（)）」』”’"])\s*(failed to authenticate\b[^\n]{0,80}?api\s*error\s*:|api\s*error\s*:)[^\n。！？]{0,400}\s*$/i;
+// A full-width sentence punctuation mark inside the envelope is normally the
+// end of REAL prose ("…API Error: 429 rate limited. 不过我已经…结果如下。"), so it
+// is only tolerated for structurally unambiguous heads: a status, the CLI's
+// "Request rejected (429)", the auth glue, or a known CLI phrase.
+const TRAILING_ENVELOPE_STRONG_HEAD_RES = Object.freeze([
+  /^api\s*error\s*:\s*[45]\d\d\b/i,
+  /^api\s*error\s*:\s*request rejected\s*\(\s*\d{3}\s*\)/i,
+  /^api\s*error\s*:\s*(?:the operation timed out|unable to connect to api|connection error|response stalled\b)/i,
+  /^failed to authenticate\b/i,
+]);
+const ENVELOPE_SENTENCE_PUNCT_RE = /[。！？]/;
+// One unit is at most 400 content chars + the optional auth prefix + token;
+// the peel only ever looks at this tail, so long assistant text stays cheap.
+const TRAILING_ENVELOPE_MAX_CONTENT = 400;
+const TRAILING_ENVELOPE_TAIL_WINDOW = 600;
+const MAX_TRAILING_ENVELOPE_CHAIN = 8;
+
+// Is `content` (the text between the head and the end of the message) short,
+// single-line and plausible as envelope text?
+//
+// Weak heads keep the historical rule: any full-width 。！？ ends the unit.
+// Zhipu's quota text carries those inside provider codes — "[1113][余额不足或]
+// 无可用资源包,请充值。]" — so punctuation inside a closed [...] segment is read
+// as data, not as prose.
+//
+// A strong head may additionally END on sentence punctuation ("API Error: 403
+// 用户额度不足。"): the trailing run is stripped before the scan. It must not
+// span a sentence, though — "API Error: 429 rate limited. 不过我已经…结果如下。"
+// is prose quoting an envelope, and its ASCII "." before the full-width mark
+// keeps it rejected.
+function envelopeContentAllowed(head, content) {
+  if (content.length > TRAILING_ENVELOPE_MAX_CONTENT) return false;
+  if (content.includes('\n')) return false;
+  // The structured-head patterns read the status/phrase that FOLLOWS "API
+  // Error:", so they are matched against head + content, not the head alone.
+  const strong = TRAILING_ENVELOPE_STRONG_HEAD_RES.some(re => re.test(`${head}${content}`));
+  let body = content;
+  const trailingRun = /[。！？]+$/.exec(body);
+  if (trailingRun) {
+    if (!strong || /[.!?]/.test(body.slice(0, trailingRun.index))) return false;
+    body = body.slice(0, trailingRun.index);
+  }
+  let depth = 0;
+  for (const ch of body) {
+    if (ch === '[') depth += 1;
+    else if (ch === ']') { if (depth > 0) depth -= 1; }
+    else if (depth === 0 && ENVELOPE_SENTENCE_PUNCT_RE.test(ch)) return false;
+  }
+  return depth === 0; // an unclosed "[" is not a provider code segment
+}
+
+// Returns the absolute start index of the last envelope that ends exactly at
+// `end`, or null. Candidates are scanned left to right (the same preference a
+// greedy `…$` expression has) and bounded to the tail, so the leftmost
+// acceptable start never scans the whole message. A candidate whose content is
+// unusable is skipped rather than fatal: in a glued chain of four envelopes the
+// first three heads are too long and only the fourth starts the last unit.
+function findTrailingEnvelopeUnit(text, end) {
+  const floor = Math.max(0, end - TRAILING_ENVELOPE_TAIL_WINDOW);
+  const slice = text.slice(floor, end);
+  let contentEnd = slice.length;
+  while (contentEnd > 0 && /\s/.test(slice[contentEnd - 1])) contentEnd -= 1;
+  if (contentEnd === 0) return null;
+  TRAILING_ENVELOPE_HEAD_RE.lastIndex = 0;
+  let matched;
+  while ((matched = TRAILING_ENVELOPE_HEAD_RE.exec(slice)) !== null) {
+    if (matched[0].length === 0) { TRAILING_ENVELOPE_HEAD_RE.lastIndex += 1; continue; }
+    const contentStart = matched.index + matched[0].length;
+    if (contentStart > contentEnd) return null;
+    if (envelopeContentAllowed(matched[0], slice.slice(contentStart, contentEnd))) {
+      return floor + matched.index;
+    }
+  }
+  return null;
+}
+
+// Peels a chain of back-to-back trailing envelopes and returns
+// { body, envelope, envelopeCount }. `body` is the real answer with the whole
+// chain removed (it keeps the punctuation that introduced the chain, e.g. the
+// trailing "。"), and `envelope` is the concatenated chain so that
+// envelopeHttpStatus still finds its first status. Empty `body` means the
+// entire message was envelopes (the >600-char whole-message form).
+//
+// Background-task notifications can wake an already-finished turn several
+// times, and each follow-up request that is rate limited appends ANOTHER
+// "API Error: …" envelope to the same assistant text, glued with the sentence
+// punctuation that ended the previous one ("…later.API Error: …"). Glue marks
+// are also legitimate chain-start boundaries now, so "accept here" is only
+// provisional: keep peeling past one to see whether an earlier envelope owns
+// the same chain, and fall back to the last accepted cut when it does not.
+function peelTrailingEnvelopeChain(text) {
+  const end = text.length;
+  let cursor = end;
+  let accepted = null;
+  for (let peeled = 0; peeled < MAX_TRAILING_ENVELOPE_CHAIN; peeled += 1) {
+    const unitStart = findTrailingEnvelopeUnit(text, cursor);
+    if (unitStart == null || unitStart >= cursor) return accepted;
+    let before = unitStart - 1;
+    let lineStart = false;
+    while (before >= 0 && /\s/.test(text[before])) {
+      // A newline in the gap is a boundary on its own: the CLI prints the
+      // envelope on its own line ("…渲染到什么程度\n\nAPI Error: …") even when
+      // the prose character before it is a letter.
+      if (text[before] === '\n') lineStart = true;
+      before -= 1;
+    }
+    if (before < 0) {
+      // Every byte is an envelope — no real answer body escaped.
+      return { body: '', envelope: text.trim(), envelopeCount: peeled + 1 };
+    }
+    if (!lineStart && !TRAILING_ENVELOPE_BOUNDARY_RE.test(text[before])) {
+      return accepted; // prose — ambiguous
+    }
+    accepted = {
+      body: text.slice(0, unitStart).trim(),
+      envelope: text.slice(unitStart, end).trim(),
+      envelopeCount: peeled + 1,
+    };
+    cursor = before + 1;
+  }
+  return null; // chain longer than the cap — leave the text untouched
+}
+
+// A JSON document ending in a quoted "API Error: …" element (a task-board
+// payload, an aux result) is structured data, not prose with an envelope
+// appended: the quote that precedes the "head" is a JSON string delimiter.
+function looksLikeJsonDocument(text) {
+  if (text[0] !== '{' && text[0] !== '[') return false;
+  try { JSON.parse(text); return true; } catch { return false; }
+}
+
+function splitTrailingErrorEnvelope(value) {
+  const text = String(value || '').trim();
+  if (!text || isErrorOnlyText(text)) return null;
+  if (looksLikeJsonDocument(text)) return null;
+  const chain = peelTrailingEnvelopeChain(text);
+  if (!chain || !chain.body) return null; // whole-message chain — see detectErrorEnvelope
+  if (chain.envelopeCount > 1) {
+    return Object.freeze({ body: chain.body, envelope: chain.envelope });
+  }
+  // Historical single-envelope split: the punctuation that introduced the
+  // envelope belongs to the reader-visible seam, so it is dropped with it.
+  const lastChar = chain.body[chain.body.length - 1];
+  const body = lastChar && TRAILING_ENVELOPE_SEAM_RE.test(lastChar)
+    ? chain.body.slice(0, -1).trim() : chain.body;
+  return Object.freeze({ body, envelope: chain.envelope });
+}
+
+// Unified turn-boundary detector: recognizes BOTH the whole-message envelope
+// ("API Error: …" is the entire assistant text) and the trailing envelope
+// appended after real output. Returns null or { source, provider, message,
+// body } — body is null for the whole-message form and the stripped partial
+// output for the trailing form. Source is always a TRUSTED_TEXT_SOURCES member
+// so the envelope message may be classified by text evidence.
+function envelopeSourceFor(provider) {
+  const name = String(provider || 'claude').toLowerCase();
+  if (name === 'qoder') return 'qoder_result';
+  if (name === 'codex') return 'codex_event';
+  if (name === 'opencode') return 'opencode_event';
+  if (name === 'zcode') return 'zcode_event';
+  if (name === 'kimi') return 'kimi_event';
+  if (name === 'codebuddy') return 'codebuddy_result';
+  if (name === 'dsh') return 'dsh_event';
+  if (name === 'gemini') return 'gemini_event';
+  if (name === 'grok') return 'grok_event';
+  if (name === 'commandcode') return 'commandcode_event';
+  if (name === 'pi') return 'pi_event';
+  return 'claude_result';
+}
+
+// The CLI boundary swallows upstream response headers, so the HTTP status a
+// relay returned (the CPR proxy forwards it verbatim) survives only inside the
+// envelope text ("API Error: 503 …"). Recover it here as structured evidence:
+// normalizeApiError then classifies from httpStatus first instead of pure text
+// matching, and taskState.apiError.httpStatus reaches the App UI.
+const ENVELOPE_STATUS_RE = /\b([45]\d\d)\b/;
+
+function envelopeHttpStatus(message) {
+  const matched = ENVELOPE_STATUS_RE.exec(String(message || ''));
+  if (!matched) return null;
+  const status = Number(matched[1]);
+  return status >= 400 && status <= 599 ? status : null;
+}
+
+// Known-harmless provider stderr lines (measured from multicc-error.log noise):
+// codex skill-loading complaints (108+/log), background model-refresh timeouts
+// (15+/log), mid-stream delta warnings after a turn switch, and pure
+// informational notices. They never affect turn outcome, so the turn engine
+// drops them instead of logging warns and polluting the stderr tail used for
+// close-time diagnosis. Deliberately NOT filtered: tool router failures and
+// MCP transport errors — those can be the real signal.
+const HARMLESS_STDERR_LINE_RES = [
+  /failed to load skill \[[^\]]*\] missing /i,
+  /codex_core::util: \w+ without active item\b/i,
+  /codex_core::util: Custom tool call output is missing for call id:/i,
+  /failed to refresh available models/i,
+  /failed to renew cache TTL/i,
+  /state db returned stale rollout path for thread/i,
+  /^Reading additional input from stdin\.\.\.$/i,
+];
+
+function isKnownHarmlessStderrLine(line) {
+  const text = String(line || '').trim();
+  if (!text) return true;
+  return HARMLESS_STDERR_LINE_RES.some(re => re.test(text));
+}
+
+function detectErrorEnvelope(provider, text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return null;
+  if (isErrorOnlyText(trimmed)) {
+    return Object.freeze({
+      source: envelopeSourceFor(provider),
+      provider: String(provider || 'claude').toLowerCase(),
+      message: trimmed,
+      httpStatus: envelopeHttpStatus(trimmed),
+      body: null,
+    });
+  }
+  const split = splitTrailingErrorEnvelope(trimmed);
+  if (!split) {
+    // A whole message that is nothing but a >600-char chain of envelopes still
+    // fails the whole-message predicate above; recognize it as error-only so
+    // the accumulated 429 text is not persisted as real output.
+    const chain = peelTrailingEnvelopeChain(trimmed);
+    if (!chain || chain.body) return null;
+    return Object.freeze({
+      source: envelopeSourceFor(provider),
+      provider: String(provider || 'claude').toLowerCase(),
+      message: trimmed,
+      httpStatus: envelopeHttpStatus(trimmed),
+      body: null,
+    });
+  }
+  return Object.freeze({
+    source: envelopeSourceFor(provider),
+    provider: String(provider || 'claude').toLowerCase(),
+    message: split.envelope,
+    httpStatus: envelopeHttpStatus(split.envelope),
+    body: split.body,
+  });
+}
+
+// Claude CLI (2.1.x) stream watchdog: when a stream stalls, errors, or the
+// connection drops mid-response, the CLI finalizes the turn as an ordinary
+// result whose assistant text is one of these short "API Error: …" envelopes
+// — with no is_error/subtype evidence on the result event. The envelope text
+// is therefore the only structured signal. Wording is version-pinned to the
+// CLI 2.1.x watchdog; keep the codes aligned with the category sets above.
+const CLAUDE_ERROR_ENVELOPE_CODES = Object.freeze([
+  { code: 'response_stalled_mid_stream', pattern: /response stalled mid-stream/i },
+  { code: 'response_stalled_before_response', pattern: /response stalled while thinking/i },
+  { code: 'server_error_mid_response', pattern: /server error mid-response/i },
+  { code: 'connection_closed_mid_response', pattern: /connection closed mid-response/i },
+  { code: 'connection_closed_before_response', pattern: /connection closed while thinking/i },
+]);
+
+function claudeErrorEnvelope(provider, text) {
+  if (!isErrorOnlyText(text)) return null;
+  const message = String(text).trim();
+  const matched = CLAUDE_ERROR_ENVELOPE_CODES.find(entry => entry.pattern.test(message));
+  if (!matched) return null;
+  const providerName = String(provider || 'claude').toLowerCase();
+  return Object.freeze({
+    source: envelopeSourceFor(providerName),
+    provider: providerName,
+    code: matched.code,
+    message,
+  });
+}
+
+function headerValue(headers, name) {
+  if (!headers) return null;
+  if (typeof headers.get === 'function') return headers.get(name);
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (String(key).toLowerCase() === wanted) return value;
+  }
+  return null;
+}
+
+function parseRetryAfter(value, now = Date.now()) {
+  if (value == null || value === '') return null;
+  const text = String(value).trim();
+  const seconds = Number(text);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const at = Date.parse(text);
+  return Number.isFinite(at) ? Math.max(0, at - now) : null;
+}
+
+function parseReset(value, now = Date.now()) {
+  const number = numberOrNull(value);
+  if (number == null || number < 0) return null;
+  const epochMs = number > 1e12 ? number : number > 1e9 ? number * 1000 : now + number * 1000;
+  return Math.max(0, Math.round(epochMs - now));
+}
+
+// Only "reset in 12 minutes" / "reset at 2026-09-20 18:11:35 +0800" are read.
+// A bare wall-clock hour ("resets 3pm") is deliberately ignored: it has no
+// timezone and would schedule a wait at the wrong instant.
+function resetAfterFromText(value, now = Date.now()) {
+  const text = String(value || '');
+  if (!text) return null;
+  const relative = RESET_IN_TEXT_RE.exec(text);
+  if (relative) {
+    const amount = Number(relative[1]);
+    const unit = relative[2].toLowerCase().replace(/s$/, '');
+    const scale = RESET_UNIT_MS[unit]
+      || RESET_UNIT_MS[{ sec: 'second', min: 'minute', hr: 'hour', day: 'day' }[unit]];
+    if (!Number.isFinite(amount) || amount <= 0 || !scale) return null;
+    const delay = Math.round(amount * scale);
+    return delay > 0 && delay <= MAX_PARSED_RESET_MS ? delay : null;
+  }
+  const absolute = RESET_AT_TEXT_RE.exec(text);
+  if (!absolute) return null;
+  const at = Date.parse(absolute[1]);
+  if (!Number.isFinite(at)) return null;
+  const delay = Math.round(at - now);
+  return delay > 0 && delay <= MAX_PARSED_RESET_MS ? delay : null;
+}
+
+function httpStatusOf(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const nested = raw.error && typeof raw.error === 'object' ? raw.error : {};
+  const value = raw.httpStatus ?? raw.statusCode ?? raw.status ?? nested.httpStatus
+    ?? nested.statusCode ?? nested.status;
+  const number = numberOrNull(value);
+  return number != null && number >= 100 && number <= 599 ? Math.round(number) : null;
+}
+
+function retryAfterOf(raw, now) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (numberOrNull(raw.retryAfterMs) != null) return Math.max(0, Math.round(Number(raw.retryAfterMs)));
+  const headers = raw.headers || (raw.error && raw.error.headers);
+  const retryAfter = raw.retryAfter ?? headerValue(headers, 'retry-after');
+  const direct = parseRetryAfter(retryAfter, now);
+  if (direct != null) return direct;
+  const reset = raw.resetAt ?? raw.rateLimitReset ?? headerValue(headers, 'x-ratelimit-reset')
+    ?? headerValue(headers, 'ratelimit-reset');
+  return parseReset(reset, now);
+}
+
+function structuredCategory(status, code, rawCategory) {
+  if (CATEGORY_SET.has(rawCategory)) return rawCategory;
+  if (CANCELLATION_CODES.has(code)) return 'cancel_shutdown';
+  if (SDK_STARTUP_FAILURE_CODES.has(code)) return 'adapter_configuration';
+  // A provider error code is more specific than a generic HTTP status. In
+  // particular, quota_exceeded is commonly transported as HTTP 403.
+  if (AUTH_CODES.has(code)) return 'authentication_permission';
+  if (BILLING_CODES.has(code)) return 'billing_quota';
+  if (RATE_CODES.has(code)) return 'rate_limit';
+  if (PROVIDER_TRANSIENT_CODES.has(code)) return 'provider_transient';
+  if (CONTEXT_CODES.has(code)) return 'context_token_limit';
+  if (TOOL_CODES.has(code)) return 'tool_protocol';
+  if (CONFIG_CODES.has(code)) return 'adapter_configuration';
+  if (NETWORK_CODES.has(code)) return 'network';
+  if (TIMEOUT_CODES.has(code)) return 'timeout';
+  if (status === 401 || status === 403) return 'authentication_permission';
+  if (status === 402) return 'billing_quota';
+  if (status === 429) return 'rate_limit';
+  if (status != null && [500, 502, 503, 504, 529].includes(status)) return 'provider_transient';
+  if (status != null && [400, 404, 409, 422].includes(status)) return 'invalid_request_model';
+  return null;
+}
+
+function textFallbackCategory(message) {
+  const text = String(message || '').toLowerCase();
+  // Not-entitled wording outranks everything else, including the 429 that
+  // carried it: there is no window to wait out, only another model or account.
+  if (MODEL_ENTITLEMENT_RES.some(re => re.test(text))) return 'billing_quota';
+  // Billing/quota wording outranks a bare 401/403/429: providers transport
+  // quota exhaustion as HTTP 402/403/429 ("用户额度不足", "usage limit",
+  // "You have exceeded the 5-hour usage quota"), and telling the user to
+  // re-login — or retrying in three seconds — would be the wrong remedy.
+  // Mirrors structuredCategory's status refinements below.
+  if (QUOTA_EXHAUSTION_RES.some(re => re.test(text))) return 'billing_quota';
+  // "Failed to authenticate" is the inverted form of the "authentication
+  // failed" wording above, and a revoked OAuth token is the one auth failure
+  // whose remedy is a fresh login rather than a retry. Both are named
+  // explicitly: an unclassified revoked credential fell through to 'unknown',
+  // which made it retryable and silently re-eligible for the same dead account.
+  if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication (?:failed|required)|failed to authenticate|authorization failed|invalid api key|insufficient scope|please (?:use|run)\s*\/login|please log\s*in again|oauth token revoked|token (?:has been |was )?revoked|credentials? (?:have been |were )?revoked|not logged in|login required|未登录|请先登录|尚未登录/.test(text)) return 'authentication_permission';
+  if (/\b429\b|rate limit|too many requests/.test(text)) return 'rate_limit';
+  if (/context (?:window|length)|too many tokens|maximum context|max(?:imum)? output tokens?|token limit/.test(text)) return 'context_token_limit';
+  if (/invalid tool|tool (?:schema|arguments?|protocol)|mcp (?:error|failed)|function (?:arguments?|call) error/.test(text)) return 'tool_protocol';
+  if (/cancelled by user|canceled by user|server (?:is )?shutting down|sigterm|sigint/.test(text)) return 'cancel_shutdown';
+  if (/invalid session id\. must be a valid uuid\b/.test(text)) return 'adapter_configuration';
+  if (/no conversation found with session id\b/.test(text)) return 'adapter_configuration';
+  if (/\bsession id\s+\S+\s+is already in use\b/.test(text)) return 'adapter_configuration';
+  if (/provider (?:config|configuration).*(?:missing|invalid)|missing (?:provider|base url)|cli not installed|spawn failed|\b(?:eacces|enoent|enoexec)\b|\bexit(?:ed)?(?:\s+(?:code|status))?\s*[:=]?\s*-13\b/.test(text)) return 'adapter_configuration';
+  if (/etimedout|timed? out|timeout|deadline exceeded|response stalled|stream idle/.test(text)) return 'timeout';
+  if (/enotfound|dns|tls|certificate|econnreset|connection reset|connection closed|connection ?refused|unable to connect|socket hang|network error|fetch failed|stream disconnected/.test(text)) return 'network';
+  if (/\b(?:500|502|503|504|529)\b|overloaded|at capacity|server error|internal server error|service unavailable|bad gateway|system is busy/.test(text)) return 'provider_transient';
+  if (/\b(?:400|404|409|422)\b|invalid request|validation error|unsupported model|model not found|unprocessable/.test(text)) return 'invalid_request_model';
+  return 'unknown';
+}
+
+function userAction(category, retryAfterMs, rejection = null) {
+  // A structured rejection names which billing_quota wall this is, and each one
+  // has a different remedy. Waiting is only correct for an exhausted window on
+  // the whole account; a model-scoped window invites a model switch, and a
+  // refusal or a billing fault never clears by waiting at all.
+  if (category === 'billing_quota' && rejection) {
+    if (rejection.kind === 'entitlement') {
+      return '当前账号的套餐不包含这个模型（需开通 usage credits / extra usage）：请换一个模型，或换用有该模型权限的账号';
+    }
+    if (rejection.kind === 'window' && rejection.scope === 'model') {
+      return '该账号这个模型的额度窗口已满：可以先换其他模型继续，或等待重置';
+    }
+    if (rejection.kind === 'billing') return '充值、调整花费上限或换用其他线路';
+  }
+  switch (category) {
+    case 'authentication_permission': return '重新登录、更新 API 凭据或补足权限后重试（官方账号可在「模型线路」面板点「重新登录」）';
+    case 'billing_quota': return retryAfterMs != null ? '等待额度重置后重试' : '检查账单、额度或用量上限';
+    case 'rate_limit': return '等待服务端限流窗口结束';
+    case 'context_token_limit': return '压缩或裁剪上下文，或开启新会话';
+    case 'invalid_request_model': return '修正请求参数、模型名称或 Provider 配置';
+    case 'tool_protocol': return '修正工具参数或协议结构';
+    case 'adapter_configuration': return '检查 CLI、Provider 和适配器配置';
+    case 'cancel_shutdown': return '无需操作；如有需要可重新发起';
+    case 'provider_transient':
+    case 'network':
+    case 'timeout': return '可稍后手动继续，或切换到其他模型线路';
+    default: return '检查错误详情后决定是否手动重试';
+  }
+}
+
+function routeIdentityText(value, fallback = null, maxLength = 256) {
+  const text = value == null ? '' : String(value).trim();
+  return text ? text.slice(0, maxLength) : fallback;
+}
+
+function routeIdentityNumber(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function normalizeApiError(raw = {}, context = {}, deps = {}) {
+  const now = typeof deps.now === 'function' ? Number(deps.now()) : Date.now();
+  const source = String(context.source || raw.source || 'unknown').toLowerCase().slice(0, 40);
+  // Historical callers and persisted UI state call this field `provider`, but
+  // its value is the CLI family. Accept the additive `cli` spelling without
+  // changing the legacy output contract.
+  const provider = String(
+    context.provider || context.cli || raw.provider || raw.cli || 'unknown',
+  ).toLowerCase().slice(0, 40);
+  const nested = raw && typeof raw === 'object' && raw.error && typeof raw.error === 'object'
+    ? raw.error : {};
+  const failure = TRUSTED_TEXT_SOURCES.has(source) ? classifyProviderError({ ...raw,
+    ...(context.category ? { category: context.category } : {}),
+    ...(context.code ? { code: context.code } : {}),
+  }, { provider, source }) : null;
+  const diagnosis = failure?.diagnosis;
+  const providerId = routeIdentityText(
+    context.providerId ?? raw.providerId ?? nested.providerId,
+    '_default_',
+  );
+  const providerName = routeIdentityText(
+    context.providerName ?? raw.providerName ?? nested.providerName,
+    providerId === '_default_' ? provider : providerId,
+  );
+  const turnId = routeIdentityText(context.turnId ?? raw.turnId ?? nested.turnId);
+  const decisionId = routeIdentityText(
+    context.decisionId ?? raw.decisionId ?? nested.decisionId,
+  );
+  const runtimeEpoch = routeIdentityText(
+    context.runtimeEpoch ?? raw.runtimeEpoch ?? nested.runtimeEpoch,
+  );
+  const routeAttemptId = routeIdentityText(
+    context.routeAttemptId ?? raw.routeAttemptId ?? nested.routeAttemptId,
+  );
+  const routeGeneration = routeIdentityNumber(
+    context.routeGeneration ?? raw.routeGeneration ?? nested.routeGeneration,
+  );
+  const attemptNo = routeIdentityNumber(
+    context.attemptNo ?? raw.attemptNo ?? nested.attemptNo,
+  );
+  const providerRevision = routeIdentityText(
+    context.providerRevision ?? raw.providerRevision ?? nested.providerRevision,
+  );
+  const providerRouteScope = context.providerRouteScope === 'attempt'
+    && runtimeEpoch && turnId && decisionId && routeAttemptId
+    && routeGeneration && attemptNo && providerRevision ? 'attempt' : null;
+  const upstream = TRUSTED_TEXT_SOURCES.has(source) ? extractUpstreamError(raw) : {};
+  const code = normalizeCode(context.code || upstream.code || raw.code || nested.code || upstream.type || raw.type || nested.type);
+  const httpStatus = httpStatusOf(raw) ?? upstream.httpStatus ?? null;
+  // The Claude-envelope failure subtype "error_during_execution" is an opaque
+  // placeholder, not a message: when it is all the extractor found, fall
+  // through to sourceMessage so the errors[] text can speak instead.
+  const upstreamMessage = String(upstream.message || '').trim().toLowerCase() === 'error_during_execution'
+    ? '' : upstream.message;
+  const message = failure?.presentation?.message || upstreamMessage || sourceMessage(raw);
+  const rawCategory = (diagnosis?.category !== 'unknown' && diagnosis?.category)
+    || normalizeCode(context.category || raw.category || nested.category);
+  const explicit = structuredCategory(httpStatus, code, rawCategory);
+  const trustedTextCategory = diagnosis?.category !== 'unknown' && TRUSTED_TEXT_SOURCES.has(source)
+    ? textFallbackCategory(message) : null;
+  let category = explicit || trustedTextCategory || 'unknown';
+  if (!CATEGORY_SET.has(rawCategory)) {
+    // HTTP 403 alone is only a generic auth signal. Provider-owned quota and
+    // billing wording is more specific, but must not override an explicit
+    // authentication code/category.
+    if (httpStatus === 403
+        && explicit === 'authentication_permission'
+        && !AUTH_CODES.has(code)
+        && trustedTextCategory === 'billing_quota') {
+      category = 'billing_quota';
+    }
+    // Likewise, HTTP 400 is the usual transport for context overflow. Prefer
+    // the trusted, specific context signal over the generic invalid-request
+    // fallback while preserving explicit structured categories.
+    if (httpStatus === 400
+        && explicit === 'invalid_request_model'
+        && trustedTextCategory === 'context_token_limit') {
+      category = 'context_token_limit';
+    }
+    // HTTP 429 is the transport for both a true rate limit and a subscription
+    // quota wall (Codex: "You have exceeded the 5-hour usage quota", Claude:
+    // "usage limit reached · resets 3pm"). The provider's own wording is the
+    // more specific diagnosis, and a quota wall must never be replayed after a
+    // three-second backoff — it is either waited out or handed to another
+    // provider. An explicit rate-limit code still wins over prose.
+    if (httpStatus === 429
+        && explicit === 'rate_limit'
+        && !RATE_CODES.has(code)
+        && trustedTextCategory === 'billing_quota') {
+      category = 'billing_quota';
+    }
+    // A bare 5xx only says "the relay returned an error". When the trusted
+    // envelope text names a more specific root cause (DNS failure, TLS
+    // disconnect, timeout), that diagnosis outranks the generic bucket —
+    // relays commonly transport network faults as 500/502. Only applies when
+    // the status was the sole structured evidence; a real provider error code
+    // still wins.
+    const codeDerivedCategory = AUTH_CODES.has(code) || BILLING_CODES.has(code)
+      || RATE_CODES.has(code) || PROVIDER_TRANSIENT_CODES.has(code)
+      || CONTEXT_CODES.has(code) || TOOL_CODES.has(code) || CONFIG_CODES.has(code)
+      || NETWORK_CODES.has(code) || TIMEOUT_CODES.has(code);
+    if (!codeDerivedCategory
+        && httpStatus != null && [500, 502, 503, 504, 529].includes(httpStatus)
+        && (trustedTextCategory === 'network' || trustedTextCategory === 'timeout')) {
+      category = trustedTextCategory;
+    }
+  }
+  // The host's Rust proxy sees the upstream response itself and reports the
+  // rejection structurally. A bare 429 cannot tell a transient limiter from an
+  // exhausted window, a model-entitlement refusal or a billing fault, and each
+  // has a different remedy — so the structured verdict outranks any category
+  // derived from the status or from whatever text the CLI chose to print.
+  const structuredRejection = normalizeRejection(
+    context.rejection ?? raw.rejection ?? nested.rejection,
+  );
+  const rejectionApplies = !!structuredRejection
+    && (httpStatus === 429 || (httpStatus == null && source === 'proxy_response'));
+  let rejection = rejectionApplies ? structuredRejection : null;
+  if (rejectionApplies) {
+    category = rejection.kind === 'transient' ? 'rate_limit' : 'billing_quota';
+  }
+  // Text-only fallback: a refusal of this shape is not a rate limit even when
+  // it arrived as one. Only trusted provider text may claim it, so a relay's
+  // echoed prose cannot smuggle a permanent tag onto a real 429.
+  if (!rejection && category === 'billing_quota' && trustedTextCategory === 'billing_quota'
+      && MODEL_ENTITLEMENT_RES.some(re => re.test(String(message || '').toLowerCase()))) {
+    rejection = TEXT_ENTITLEMENT_REJECTION;
+  }
+  const partialOutput = context.partialOutput === true || raw.partialOutput === true;
+  const sideEffects = context.sideEffects === true || raw.sideEffects === true;
+  const phase = String(context.phase || raw.phase || (partialOutput ? 'stream' : 'before_first_token'));
+  let retryAfterMs = retryAfterOf(raw, now);
+  // CLIs that only state their reset point in prose ("It will reset at
+  // 2026-09-20 18:11:35 +0800 CST") would otherwise be treated as an
+  // unresettable quota wall. Only trusted provider-owned text is read.
+  if (retryAfterMs == null && category === 'billing_quota' && TRUSTED_TEXT_SOURCES.has(source)) {
+    retryAfterMs = resetAfterFromText(message, now);
+  }
+  // A structured window reset is exact — it is the instant the upstream itself
+  // reported — so it outranks a Retry-After or prose guess when it is still in
+  // the future. A past reset carries no waiting information.
+  if (rejection && rejection.kind === 'window'
+      && rejection.resetMs != null && rejection.resetMs > now) {
+    retryAfterMs = rejection.resetMs - now;
+  }
+  const retryable = diagnosis?.category === category
+    ? diagnosis.recovery.retrySameRequest : RETRYABLE.has(category);
+  const replaySafePhase = phase === 'connect' || phase === 'before_first_token' || phase === 'request';
+  const safeToRetry = retryable && replaySafePhase && !partialOutput && !sideEffects;
+  const requestIdRaw = raw.requestId || nested.requestId || upstream.requestId || headerValue(raw.headers, 'x-request-id');
+  const requestId = requestIdRaw
+    ? `req_${crypto.createHash('sha256').update(String(requestIdRaw)).digest('hex').slice(0, 10)}`
+    : null;
+  const sanitizedMessage = sanitizeMessage(message);
+  return Object.freeze({
+    category,
+    provider,
+    providerId,
+    providerName,
+    providerRouteScope,
+    runtimeEpoch,
+    turnId,
+    decisionId,
+    routeAttemptId,
+    routeGeneration,
+    attemptNo,
+    providerRevision,
+    code: code || null,
+    httpStatus,
+    retryable,
+    requestDeadlineAt: Number(raw.requestDeadlineAt) || null,
+    retryBudgetExhausted: raw.retryBudgetExhausted === true || code === 'model_request_deadline',
+    retryAfterMs,
+    safeToRetry,
+    phase,
+    partialOutput,
+    sideEffects,
+    attempt: Math.max(0, Number(context.attempt || raw.attempt || 0) || 0),
+    maxAttempts: null,
+    userAction: failure?.presentation?.userAction || userAction(category, retryAfterMs, rejection),
+    diagnosis: diagnosis?.category === category ? diagnosis : null,
+    rejection,
+    sanitizedMessage,
+    // Keep a longer redacted root cause than the compact summary. Extracting
+    // an embedded upstream envelope first prevents its wrapper/URL from
+    // consuming the display budget and hiding the actionable detail.
+    rootCause: sanitizeMessage(message, 'Upstream API request failed', 2048),
+    param: sanitizeMessage(upstream.param || raw.param || nested.param, '', 200) || null,
+    cause: code || (httpStatus ? `http_${httpStatus}` : category),
+    source,
+    requestId,
+  });
+}
+
+function withMaxAttempts(error, maxAttempts) {
+  return Object.freeze({ ...error, maxAttempts });
+}
+
+// A 429 that reaches the host from a CLI lane has already been retried inside
+// that CLI process: Claude Code backs off and honours Retry-After across its own
+// CLAUDE_CODE_MAX_RETRIES before it ever reports the error. Replaying the whole
+// turn on the same route seconds later only multiplies requests against a
+// limiter that has just refused them (3 host attempts x 4 CLI requests for one
+// prompt). Auto failover keys on the category, not on this action, so it still
+// moves the turn to another line. Only the host's own HTTP calls (aux_http) have
+// no inner retry layer and keep the bounded host retry.
+function cliRetriedRateLimit(error) {
+  return error.category === 'rate_limit' && error.source !== 'aux_http';
+}
+
+function maxAttemptsFor(error) {
+  const { category } = error;
+  if (category === 'rate_limit') return cliRetriedRateLimit(error) ? 0 : 2;
+  if (category === 'provider_transient' || category === 'network') return 2;
+  if (category === 'timeout' || category === 'unknown') return 1;
+  return 0;
+}
+
+function decideApiErrorPolicy(rawError, context = {}, deps = {}) {
+  const now = typeof deps.now === 'function' ? Number(deps.now()) : Date.now();
+  const random = typeof deps.random === 'function' ? deps.random : Math.random;
+  let error = rawError && CATEGORY_SET.has(rawError.category)
+    ? Object.freeze({ ...rawError })
+    : normalizeApiError(rawError, context, { now: () => now });
+  const maxAttempts = context.maxAttempts == null
+    ? maxAttemptsFor(error) : Math.max(0, Number(context.maxAttempts) || 0);
+  error = withMaxAttempts(error, maxAttempts);
+  const nextAttempt = error.attempt + 1;
+
+  if (error.retryBudgetExhausted || (error.requestDeadlineAt && now >= error.requestDeadlineAt)) {
+    return Object.freeze({ action: 'fail_fast', reason: 'request_budget_exhausted', budgetExhaustedBy: 'request', error, attempt: error.attempt, delayMs: 0 });
+  }
+  if (error.category === 'cancel_shutdown') {
+    return Object.freeze({ action: 'fail_fast', reason: 'cancelled_or_shutdown', error, attempt: error.attempt, delayMs: 0 });
+  }
+  if (error.category === 'billing_quota' && error.retryAfterMs != null) {
+    return Object.freeze({
+      action: 'wait_reset',
+      reason: 'quota_reset_required',
+      error,
+      attempt: error.attempt,
+      delayMs: error.retryAfterMs,
+      retryAt: now + error.retryAfterMs,
+    });
+  }
+  if (error.partialOutput || error.sideEffects || !error.safeToRetry) {
+    const reason = error.partialOutput || error.sideEffects
+      ? 'unsafe_replay_boundary' : `${error.category}_not_retryable`;
+    return Object.freeze({ action: 'fail_fast', reason, error, attempt: error.attempt, delayMs: 0 });
+  }
+  if (error.category === 'rate_limit'
+      && error.retryAfterMs != null && error.retryAfterMs > 5 * 60_000) {
+    return Object.freeze({
+      action: 'wait_reset',
+      reason: 'server_reset_outside_auto_window',
+      error,
+      attempt: error.attempt,
+      delayMs: error.retryAfterMs,
+      retryAt: now + error.retryAfterMs,
+    });
+  }
+  if (cliRetriedRateLimit(error)) {
+    return Object.freeze({ action: 'fail_fast', reason: 'rate_limit_retried_by_cli', error, attempt: error.attempt, delayMs: 0 });
+  }
+  if (nextAttempt > maxAttempts) {
+    return Object.freeze({
+      action: 'fail_fast', reason: 'retry_budget_exhausted', budgetExhaustedBy: 'attempts',
+      error, attempt: error.attempt, delayMs: 0,
+    });
+  }
+
+  const bases = {
+    rate_limit: 2_000,
+    provider_transient: 1_000,
+    network: 1_000,
+    timeout: 3_000,
+    unknown: 1_000,
+  };
+  const base = bases[error.category] || 1_000;
+  const exponential = Math.min(30_000, base * (2 ** Math.max(0, nextAttempt - 1)));
+  const jitter = error.retryAfterMs == null
+    ? Math.floor(Math.max(0, Math.min(0.999999, Number(random()) || 0)) * Math.min(1_000, exponential / 2))
+    : 0;
+  const delayMs = error.retryAfterMs == null ? exponential + jitter : error.retryAfterMs;
+  if (error.requestDeadlineAt && now + delayMs >= error.requestDeadlineAt) {
+    return Object.freeze({ action: 'fail_fast', reason: 'request_budget_exhausted', budgetExhaustedBy: 'request', error, attempt: error.attempt, delayMs: 0 });
+  }
+  return Object.freeze({
+    action: 'retry',
+    reason: error.retryAfterMs == null ? 'bounded_backoff' : 'server_retry_after',
+    error,
+    attempt: nextAttempt,
+    maxAttempts,
+    delayMs,
+    retryAt: now + delayMs,
+  });
+}
+
+function metricToken(value) {
+  const token = String(value || 'unknown').toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+  return token.replace(/^_+|_+$/g, '') || 'unknown';
+}
+
+function createApiErrorPolicyRuntime(options = {}) {
+  const now = typeof options.now === 'function' ? options.now : Date.now;
+  const random = typeof options.random === 'function' ? options.random : Math.random;
+  const logger = options.logger || { info() {}, warn() {}, error() {} };
+  const metrics = options.metrics || { inc() {}, set() {} };
+  const decisions = new Map();
+
+  function remember(key, value) {
+    if (!key) return;
+    decisions.set(key, value);
+    if (decisions.size > 1_000) decisions.delete(decisions.keys().next().value);
+  }
+
+  function logDecision(decision, context, duplicate = false) {
+    if (duplicate) return;
+    const error = decision.error;
+    const fields = {
+      category: error.category,
+      provider: error.provider,
+      providerId: error.providerId,
+      providerName: error.providerName,
+      providerRouteScope: error.providerRouteScope,
+      runtimeEpoch: error.runtimeEpoch,
+      decisionId: error.decisionId,
+      routeAttemptId: error.routeAttemptId,
+      routeGeneration: error.routeGeneration,
+      attemptNo: error.attemptNo,
+      providerRevision: error.providerRevision,
+      code: error.code,
+      httpStatus: error.httpStatus,
+      phase: error.phase,
+      partialOutput: error.partialOutput,
+      sideEffects: error.sideEffects,
+      safeToRetry: error.safeToRetry,
+      retryable: error.retryable,
+      action: decision.action,
+      reason: decision.reason,
+      delayMs: decision.delayMs || 0,
+      attempt: decision.attempt || 0,
+      maxAttempts: error.maxAttempts,
+      rootCause: error.rootCause,
+      turnElapsedMs: Math.max(0, Number(context.turnElapsedMs || 0) || 0),
+      budgetExhaustedBy: decision.budgetExhaustedBy || null,
+      sessionId: context.sessionId || null,
+      turnId: context.turnId || null,
+      requestId: error.requestId,
+    };
+    const method = decision.action === 'retry' ? 'warn' : 'info';
+    logger[method]('api_error_policy_decision', fields);
+    metrics.inc(`multicc_api_error_${metricToken(error.category)}_total`);
+    metrics.inc(`multicc_api_error_provider_${metricToken(error.provider)}_total`);
+    metrics.inc(`multicc_api_error_decision_${metricToken(decision.action)}_total`);
+    if (decision.action === 'retry') metrics.inc('multicc_api_error_retry_attempted_total');
+    if (decision.action === 'fail_fast') metrics.inc('multicc_api_error_fail_fast_total');
+    if (decision.reason === 'retry_budget_exhausted') metrics.inc('multicc_api_error_retry_exhausted_total');
+  }
+
+  function evaluate(raw, context = {}) {
+    const key = context.idempotencyKey ? String(context.idempotencyKey) : '';
+    if (key && decisions.has(key)) {
+      return Object.freeze({ ...decisions.get(key), duplicate: true });
+    }
+    const at = Number(now());
+    const normalized = normalizeApiError(raw, context, { now: () => at });
+    const decision = decideApiErrorPolicy(normalized, context, { now: () => at, random });
+    remember(key, decision);
+    logDecision(decision, context);
+    return decision;
+  }
+
+  function recordSuccess(_provider, context = {}) {
+    if (context.retryAttempt) metrics.inc('multicc_api_error_retry_succeeded_total');
+  }
+
+  function snapshot() {
+    return {
+      // Kept as an empty compatibility field for diagnostics consumers from
+      // older releases. API failures no longer create cross-request gates.
+      circuits: [],
+      idempotencyEntries: decisions.size,
+    };
+  }
+
+  return Object.freeze({ evaluate, recordSuccess, snapshot });
+}
+
+function resetWaitLabel(delayMs) {
+  const ms = Number(delayMs);
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `（约 ${minutes} 分钟后重置）`;
+  const hours = Math.max(1, Math.round(minutes / 60));
+  if (hours < 48) return `（约 ${hours} 小时后重置）`;
+  return `（约 ${Math.max(2, Math.round(hours / 24))} 天后重置）`;
+}
+
+// Host-side stop reasons are NOT provider faults. Naming the real one is the
+// difference between 「本轮因服务重启被中断」 and a phantom 「上游 API 中断」
+// reported for a turn that never saw an API error at all.
+const HOST_STOP_LABELS = Object.freeze({
+  shutdown: '本轮因服务重启或关闭被中断',
+  server_shutting_down: '本轮因服务重启或关闭被中断',
+  sigint: '本轮因服务重启或关闭被中断',
+  sigterm: '本轮因服务重启或关闭被中断',
+  user_cancel: '本轮被用户取消',
+  new_user_message: '本轮被新消息打断',
+  cli_switch: '本轮因切换 CLI 车道被中断',
+  relocate: '本轮因会话迁移被中断',
+  session_delete: '本轮因会话被删除而终止',
+});
+
+// Sources that observe the host stopping a turn, or that carry a classify
+// fallback verdict with no provider evidence behind it. A turn that ended
+// through one of them must never be announced as an upstream API outage.
+const NON_PROVIDER_SOURCES = new Set(['host_interruption', 'classifier_legacy']);
+
+function retryNotice(decision) {
+  if (!decision || !decision.error) return '上游 API 请求失败，未自动重试。';
+  const { error } = decision;
+  // A named startup refusal is actionable on its own; the precise Chinese
+  // remedy outranks both the generic adapter wording and the sanitized
+  // English stderr that otherwise becomes the 「根因」 line.
+  const startupLabel = SDK_STARTUP_FAILURE_LABELS[String(error.code || '').toLowerCase()];
+  if (startupLabel) return `Claude 启动被策略或环境拒绝，未自动重试。${startupLabel}`;
+  const cause = String(error.rootCause || error.sanitizedMessage || '').trim();
+  const parameter = error.param && !cause.includes(error.param) ? `（参数：${error.param}）` : '';
+  const causeNotice = cause
+    ? `根因：${cause}${parameter}${/[。.!?！？]$/.test(cause) && !parameter ? '' : '。'}`
+    : '';
+  if (error.category === 'adapter_configuration') {
+    return `CLI 或适配器配置错误，未自动重试。${causeNotice}${error.userAction}`;
+  }
+  if (error.diagnosis?.reason === 'context_overflow') {
+    return `上下文超限，未自动重试。${causeNotice}${error.userAction}`;
+  }
+  if (error.category === 'cancel_shutdown') {
+    // A host-side stop names itself, and its cause is the stop itself — so the
+    // reason is not repeated as a 「根因」 line. Provider text that merely
+    // mentions its own shutdown carries no label and keeps the generic wording
+    // below: that one really did come from upstream.
+    const hostLabel = HOST_STOP_LABELS[String(error.code || '').toLowerCase()];
+    if (hostLabel) {
+      return `${hostLabel}，不是上游 API 故障；未自动重放。${error.userAction}`;
+    }
+  }
+  if (decision.action === 'retry') {
+    const seconds = Math.max(1, Math.ceil((decision.delayMs || 0) / 1000));
+    return `上游 API 暂时不可用，将在 ${seconds} 秒后进行受控重试（${decision.attempt}/${error.maxAttempts}）。${causeNotice}`;
+  }
+  if (decision.action === 'wait_reset') {
+    const window = resetWaitLabel(decision.delayMs);
+    return `额度或限流窗口尚未恢复${window}，系统不会短周期重试。${causeNotice}${error.userAction}`;
+  }
+  if (decision.reason === 'unsafe_replay_boundary') {
+    // Only announce an upstream interruption when the evidence really came from
+    // the provider boundary. A host-stopped turn, or a verdict carrying no
+    // provider evidence at all, is an interruption — not an API outage. An
+    // HTTP status counts as provider evidence on its own: a trailing
+    // 「API Error: Request rejected (429)」 envelope carries one but no code.
+    const fromProvider = (!!error.code || Number(error.httpStatus) > 0)
+      && !NON_PROVIDER_SOURCES.has(error.source);
+    const lead = fromProvider ? '上游 API 中断，但本轮' : '本轮未正常结束（非上游 API 故障）。';
+    return `${lead}已有部分输出或工具执行；为避免重复副作用，未自动重放。${causeNotice}${error.userAction}`;
+  }
+  if (decision.reason === 'rate_limit_retried_by_cli') {
+    return `上游限流（HTTP 429）：CLI 进程内已按退避重试仍被拒绝，系统不再整轮重放。${causeNotice}${error.userAction}`;
+  }
+  if (decision.reason === 'retry_budget_exhausted') {
+    const budget = decision.budgetExhaustedBy === 'attempts'
+      ? '自动重试次数已用尽。'
+      : '自动重试预算已用尽。';
+    return `上游 API 请求仍然失败，${budget}${causeNotice}${error.userAction}`;
+  }
+  if (decision.reason === 'request_budget_exhausted') {
+    // 这一轮已经用完了请求等待预算（挂起或整体超时），不会再自动重放。文案必须
+    // 明确说“不会再重试”，不能再说“可等待受控重试”——那与本轮的实际结局相反。
+    return `上游请求已超出本轮的等待预算，未再自动重试。${causeNotice}${error.userAction}`;
+  }
+  return `上游 API 请求失败，未自动重试。${causeNotice}${error.userAction}`;
+}
+
+module.exports = {
+  CATEGORIES,
+  normalizeApiError,
+  decideApiErrorPolicy,
+  createApiErrorPolicyRuntime,
+  parseRetryAfter,
+  resetAfterFromText,
+  retryNotice,
+  sanitizeMessage,
+  isErrorOnlyText,
+  ERROR_ONLY_PREFIX_RE,
+  TRAILING_ERROR_ENVELOPE_RE,
+  splitTrailingErrorEnvelope,
+  detectErrorEnvelope,
+  claudeErrorEnvelope,
+  envelopeSourceFor,
+  normalizeRejection,
+  isKnownHarmlessStderrLine,
+  API_ERROR_SIGNATURES,
+  apiErrorSignaturesQuoted,
+};

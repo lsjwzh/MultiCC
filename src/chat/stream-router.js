@@ -92,6 +92,13 @@ function createStreamRouter(legacy, sdk, appServer) {
     closeAndWait(name, opts) {
       return closeBackend(name, backend(name), opts, true);
     },
+    // Wait for a close that is already under way (a CLI switch closes the old
+    // backend without waiting) and never start one: with no close pending this
+    // resolves at once and leaves a live child alone. Rejects with
+    // workspace_busy while the old child's exit is unconfirmed.
+    settle(name) {
+      return join(name);
+    },
     parkWorkspace: (name, workspace) => residency.park(name, workspace),
     claimWorkspace: async (name, workspace, opts) => {
       await join(name);

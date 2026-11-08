@@ -252,6 +252,64 @@ Separate redactors with their own rules remain: `scripts/multicc-turn-hook.js`
 `native/core/src/events.rs`. They are not equivalent to these rules and were
 not merged.
 
+## The API error policy
+
+`native/core/src/api_error_policy.rs` owns the decision logic that lived in
+`src/chat/api-error-policy.js`: the category and code tables (network, timeout,
+context, auth, billing, rate, provider-transient, config and tool codes), the
+quota-exhaustion and model-entitlement wordings, the SDK-startup and host-stop
+labels, the harmless-stderr list, the canonical API-error signature vocabulary
+and every regex source, plus `normalizeCode`, `sourceMessage`,
+`parseRetryAfter`, `parseReset`, `resetAfterFromText`, `httpStatusOf`,
+`retryAfterOf`, the trailing-envelope scanner (`envelopeContentAllowed`,
+`findTrailingEnvelopeUnit`, `peelTrailingEnvelopeChain`, `looksLikeJsonDocument`,
+`splitTrailingErrorEnvelope`, `detectErrorEnvelope`, `claudeErrorEnvelope`,
+`envelopeSourceFor`, `isErrorOnlyText`), `structuredCategory`,
+`textFallbackCategory`, `userAction`, the route identity readers,
+`normalizeApiError`, `withMaxAttempts`/`maxAttemptsFor`,
+`decideApiErrorPolicy`, `metricToken`, `resetWaitLabel` and `retryNotice`.
+
+Three host services stay in JS and travel into Rust as inputs:
+`classifyProviderError` (`src/provider-error.js`, already Rust-backed),
+`extractUpstreamError` and `normalizeRejection` (`api_error_text.rs`). That is
+the `apiErrorPrepare` call: Rust reads `source`, `provider` and the rejection
+chain (throwing the same TypeError for a nullish receiver), JS runs the
+classifier and extractor, and the results are passed as `deps` to
+`apiErrorNormalize` / `apiErrorDecide`. The stateful
+`createApiErrorPolicyRuntime` (dedupe map, logging, metrics) stays in JS: it is
+host state, not policy.
+
+The policy keeps two host callbacks: `Date.parse` (engine-defined outside the
+ISO grammar) and the random source, both called through `js_live`. `-0`, `null`
+vs `undefined` and lone surrogates survive the lossless value bridge. The
+exported `ERROR_ONLY_PREFIX_RE` and `TRAILING_ERROR_ENVELOPE_RE` are built once
+from source strings carried by `apiErrorFacts()`, so the pattern text exists
+only in Rust. `normalizeRejection` freezes what it returns, and the Node module
+shared one frozen object for a synthesized text-entitlement rejection; the
+bridge re-freezes the copied value and swaps in the shared object, with Rust
+reporting that case through a flag beside the value. The decision's own `error`
+object was frozen in Node as well (`withMaxAttempts` spread), so the bridge
+freezes that copy too. An `Error` instance
+(`message`/`code` on the prototype) and a `Headers`-like receiver are restored
+after the eager read; a receiver whose `get` returns nothing still answers for
+itself, because `headerValue` never consults the plain entries once `get`
+exists.
+
+`tests/test-api-error-policy-native.js` compares the bridge with the frozen
+Node implementation on the 10 recorded fixture samples, 3,000 generated
+normalize inputs, 3,000 generated decide inputs, 500 normalized-then-decided
+pairs, 1,200 decisions for `retryNotice`, 4,000 envelope/text/header inputs,
+exact 400-unit content-cap boundaries, sub-millisecond Retry-After values, CJK
+punctuation seams, lone surrogates and a `Headers`-like receiver whose `get`
+outranks its own entries; each comparison checks the full value with
+`deepStrictEqual`, own-key order and top-level, error and rejection freezing.
+Five deliberate faults (the content cap at 399, one billing code renamed,
+`network` dropped from the retryable set, a case-sensitive prefix regex, and
+floor instead of round for Retry-After) each fail it. A typical
+`normalizeApiError` takes 26 µs against 5.1 µs in Node, a decision 30 µs
+against 5.3 µs, and a text predicate 0.35 µs; all are called once per failed
+request, so the crossings are not on a hot path.
+
 ## Verification and remaining ownership
 
 The migration tests keep the previous Node implementations as test-only
@@ -295,16 +353,19 @@ source fingerprint `1fe24071b9aacdf623173aa6` passed all 348 Rust core tests
 and the full `npm test` (6,375 tests: 6,372 passed, the same 2 skipped). After
 the exact-secret move, source fingerprint `0cbc5a60dd1b5cb02164b44d` passed all
 353 Rust core tests and the full `npm test` (6,377 tests: 6,374 passed, the
-same 2 skipped). These are local isolated
-checks, not production enablement or acceptance on every supported
-architecture.
+same 2 skipped). After the API error policy move, source fingerprint
+`4043c4f2bda00a6772da43f3` passed all 361 Rust core tests and the full
+`npm test` (6,393 tests: 6,390 passed, 0 failed, 2 skipped and 1 todo, both
+skips being the unavailable Electron packaging toolchain and PowerShell). These
+are local isolated checks, not production enablement or acceptance on every
+supported architecture.
 
 The remaining backend is substantial:
 
 | Ownership still in Node | Current examples | Next boundary to transfer |
 | --- | --- | --- |
 | Attempt records, stream redaction and attempt start/finish/event admission | `src/chat/provider-attempt-runtime.js` | Record ownership (the record object, snapshots, generations and redactors) so the Rust policies stop reading it through the host |
-| API error policy | `src/chat/api-error-policy.js`, `src/chat/api-error-host.js` | Error classification, retry/notice text and envelope detection (rejection normalization and message sanitizing have moved) |
+| API error host wiring | `src/chat/api-error-host.js`, `src/provider-error.js`, `src/upstream-error.js` | Provider classification, upstream extraction and the attempt/turn routing around the policy, which now lives in Rust |
 | CLI processes and resident runners | `src/chat/chat-stream.js`, `src/chat/resident-pool.js`, `src/cli-adapters/` | Process/protocol lifecycle, cancellation and recovery; keep SDK-specific ports where needed |
 | History, usage writes and delivery effects | `src/chat/host-coordinator.js`, `src/session/chat-history-service.js`, `src/session/adapters/chat-history-file-repository.js` | Actual writes, append/rewrite receipts and restart recovery |
 | Requests before successful headers and credential/error recovery | `src/providers/rust-cpr.js`, `src/claude-auth/account-credentials.js` | Transfer remaining lifecycle and credential coordination to Rust transport |
