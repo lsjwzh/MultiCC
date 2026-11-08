@@ -37,7 +37,7 @@ fn age(producer: LiveValue<'_>, port: LiveValue<'_>) -> Result<f64> {
             last
         })
 }
-fn key<'a>(
+pub(crate) fn key<'a>(
     context: LiveValue<'a>,
     event: LiveValue<'a>,
     role: LiveValue<'a>,
@@ -343,7 +343,7 @@ pub fn provider_bound_proxy_attempt(
     )?
     .raw())
 }
-fn bound<'a>(
+pub(crate) fn bound<'a>(
     input: LiveValue<'a>,
     context: LiveValue<'a>,
     port: LiveValue<'a>,

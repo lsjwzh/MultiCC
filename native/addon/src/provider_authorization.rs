@@ -20,6 +20,16 @@ fn or_null(value: LiveValue<'_>) -> Result<LiveValue<'_>> {
     }
 }
 
+/// A resident child outlives its turn, and so does the background work it
+/// started: a run_in_background Task/Workflow subagent keeps calling the proxy
+/// after the main result has closed the attempt, on the sub route when a
+/// subagent provider is configured and on the main route when it is not.
+/// While the capability is still the current one (same spawn contract, no
+/// newer attempt, the turn ended cleanly) that traffic is the same warm process
+/// finishing its own work, not a replay: it is admitted without reopening the
+/// attempt and accounted as background. It never becomes a main producer, so it
+/// cannot hold the next turn, and its usage is never bound to an attempt. A
+/// cancelled or failed turn revokes the background too.
 pub(crate) fn background_lingers(record: LiveValue<'_>) -> Result<bool> {
     if !record.truthy()? {
         return Ok(false);

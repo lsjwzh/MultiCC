@@ -2345,3 +2345,234 @@ test('Rust producer callbacks preserve lazy reads and propagated exception ident
     }
   }
 });
+
+// Usage attribution and proxy outcome coordination moved to Rust
+// (native/addon/src/provider_outcome.rs). Compare complete traces with the
+// frozen Node implementation: every property read (including spread traps),
+// every host call and its arguments, results, freezing, identity, the
+// record's proxyFailure and both producer ledgers after each operation.
+const outcomeSentinel = new Error('outcome host failure');
+const outcomeSymbol = Symbol('outcome.extra');
+
+// deepStrictEqual ignores key order; attribution and failure objects are
+// compared as ordered [key, value] lists, with their frozen state.
+function describeOrdered(value, seen = new Set()) {
+  if (value === null || typeof value !== 'object') {
+    return typeof value === 'bigint' ? `${value}n` : typeof value === 'symbol' ? String(value) : value;
+  }
+  if (seen.has(value)) return '[cycle]';
+  seen.add(value);
+  return { frozen: Object.isFrozen(value),
+    entries: Reflect.ownKeys(value).map(key => [String(key), describeOrdered(value[key], seen)]) };
+}
+
+function compareOutcomeTrace(steps, options = {}) {
+  const native = require('../src/native/runtime').getNative();
+  const { legacyOutcomeOperations } = require('./helpers/legacy-provider-outcome');
+  const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
+  const attempt = Object.freeze({ sessionId: 'session', turnId: 'turn', runtimeEpoch: 'epoch',
+    decisionId: 'decision', routeAttemptId: 'attempt', routeGeneration: 3, attemptNo: 2,
+    providerId: 'provider-a', providerRevision: 'rev-a' });
+  function execute(useNative) {
+    const trace = [], results = [];
+    const main = new native.RustMainProducers(), nonMain = new native.RustNonMainProducers();
+    const st = { matches: true, running: true, succeeded: false, budgeted: true, stall: false,
+      deadline: false, retire: false, deadlineAt: 5000, present: true, tick: 1000 };
+    const wrap = (label, object) => new Proxy(object, {
+      get(target, prop, receiver) {
+        const name = `${label}.${String(prop)}`;
+        trace.push(name);
+        if (name === options.throwAt) throw outcomeSentinel;
+        return Reflect.get(target, prop, receiver);
+      },
+      ownKeys(target) { trace.push(`${label}#ownKeys`); return Reflect.ownKeys(target); },
+      getOwnPropertyDescriptor(target, prop) {
+        trace.push(`${label}#describe.${String(prop)}`);
+        return Reflect.getOwnPropertyDescriptor(target, prop);
+      },
+      set(target, prop, value, receiver) {
+        trace.push([`${label}#set.${String(prop)}`, Object.isFrozen(value)]);
+        if (`${label}#set.${String(prop)}` === options.throwAt) throw outcomeSentinel;
+        return Reflect.set(target, prop, value, receiver);
+      },
+    });
+    const lifecycle = wrap('lifecycle', {
+      matches(value) { trace.push(['matches()', value === attempt ? 'attempt' : typeof value]); return st.matches; },
+      running() { trace.push('running()'); return st.running; },
+      succeeded() { trace.push('succeeded()'); return st.succeeded; },
+      completed() { trace.push('completed()'); },
+      advance(fence) { trace.push(['advance()', fence]); return true; },
+      observeFailure(...args) { trace.push(['observeFailure()', ...args]); return st.budgeted; },
+      stallRetryExhausted(code) { trace.push(['stallRetryExhausted()', code]); return st.stall; },
+      deadlineReached(at) { trace.push(['deadlineReached()', at]); return st.deadline; },
+      budget() { trace.push('budget()'); return { requestDeadlineAt: st.deadlineAt }; },
+      retireIfStalled(code, exhausted) { trace.push(['retireIfStalled()', code, exhausted]); return st.retire; },
+    });
+    const recordTarget = { runtimeEpoch: 'epoch', decisionId: 'decision', routeAttemptId: 'attempt',
+      sessionId: 'session', turnId: 'turn', cli: options.cli || 'claude-exp', providerId: 'provider-a',
+      providerName: 'Provider A', providerRevision: 'rev-a', attemptNo: 2, routeGeneration: 3,
+      proxyRouteToken: 'token', spawnKey: 'spawn', proxyFailure: options.failure ?? null, lifecycle };
+    if (options.frozenRecord) Object.defineProperty(recordTarget, 'proxyFailure', { writable: false });
+    const record = wrap('record', recordTarget);
+    const currentBySession = { get(id) {
+      trace.push(['current.get()', id]);
+      return st.present && id === 'session' ? record : undefined;
+    } };
+    let step;
+    const port = Object.freeze({
+      runtimeEpoch: 'epoch', proxyProducers: main, nonMainProxyProducers: nonMain, currentBySession,
+      snapshot(value) { assert.equal(this, undefined); trace.push(['snapshot()', value === record]); return value ? attempt : null; },
+      auditOnly(id, event) {
+        assert.equal(this, undefined);
+        trace.push(['audit()', id, event, Object.keys(event), Object.isFrozen(event)]);
+        if (options.throwAudit) throw outcomeSentinel;
+      },
+      now() { assert.equal(this, undefined); trace.push('now()'); return st.tick; },
+      proxyContext(input) {
+        trace.push(['proxyContext()', input === step.eventValue]);
+        return { sessionId: step.noSession ? '' : 'session', token: step.token ?? 'token', encoded: true,
+          record: st.present ? record : undefined, exact: step.exact ?? true };
+      },
+      sanitizeMessage(value) { trace.push(['sanitize()', value]); return `s:${value}`; },
+      normalizeRejection(value) {
+        trace.push(['normalize()', value === undefined ? 'undefined' : JSON.stringify(value)]);
+        return value && value.kind ? Object.freeze({ kind: String(value.kind) }) : null;
+      },
+      ProviderAttemptError,
+    });
+    const ops = useNative ? {
+      attributeProxyUsage: (event = {}) => native.providerAttributeProxyUsage(event, port),
+      observeProxyOutcome: (event = {}) => native.providerObserveProxyOutcome(event, port),
+      proxyFailure: (reference, facts = {}) => native.providerProxyFailure(reference, facts, port),
+    } : legacyOutcomeOperations(port);
+    const ledger = entry => entry && { count: entry.count, ambiguous: entry.ambiguous, last: entry.lastRequestAt,
+      token: entry.proxyRouteToken, sameIdentity: entry.attempt === attempt };
+    for (const raw of steps) {
+      step = { ...raw };
+      Object.assign(st, raw.state || {});
+      if (raw.active) main.setActive('session', attempt, raw.active.token ?? 'token', raw.active.count ?? 1,
+        raw.active.ambiguous ?? false, 1000);
+      if (raw.clearActive) main.deleteActive('session');
+      if (raw.ended) main.setEnded('session', attempt, raw.ended.token ?? 'token');
+      if (raw.nonMain) nonMain.start(raw.nonMain);
+      let value;
+      if (raw.event === null) step.eventValue = null;
+      else if (raw.event !== undefined) {
+        const target = { ...raw.event };
+        if (raw.event.outcome) target.proxyOutcome = wrap('outcome', { ...raw.event.outcome });
+        delete target.outcome;
+        if (raw.symbol) target[outcomeSymbol] = 'symbol-value';
+        if (raw.hidden) Object.defineProperty(target, 'hidden', { value: 'secret', enumerable: false });
+        step.eventValue = wrap('event', target);
+      }
+      try {
+        if (raw.op === 'usage') value = ops.attributeProxyUsage(step.eventValue);
+        else if (raw.op === 'failure') {
+          const reference = raw.reference === 'attempt' ? attempt
+            : raw.reference === 'proxy' ? wrap('reference', { ...attempt }) : raw.reference;
+          value = ops.proxyFailure(reference, raw.facts);
+        } else value = ops.observeProxyOutcome(step.eventValue);
+        results.push({ value: describeOrdered(value),
+          sameFailure: value != null && (value === recordTarget.proxyFailure || value.failure === recordTarget.proxyFailure) });
+      } catch (error) {
+        results.push({ threw: true, sentinel: error === outcomeSentinel, name: error && error.name });
+      }
+      results.push({ failure: describeOrdered(recordTarget.proxyFailure),
+        active: ledger(main.getActive('session')), ended: ledger(main.getEnded('session')) });
+    }
+    return { trace, results };
+  }
+  const left = execute(true), right = execute(false);
+  assert.deepEqual(left, right, JSON.stringify({ steps, options }, (_, value) => typeof value === 'bigint' ? `${value}n`
+    : typeof value === 'symbol' ? String(value) : value));
+}
+
+function outcomeSteps(seed, count) {
+  let n = seed;
+  const pick = list => { n = (Math.imul(n, 1664525) + 1013904223) >>> 0; return list[(n >>> 16) % list.length]; };
+  const hex = 'uo_0123456789abcdef0123456789abcdef';
+  // A bound report: every identity field matches the current attempt.
+  const bound = () => ({ sessionId: 'session', role: 'main', roleKind: undefined, providerId: 'provider-a',
+    eventId: pick([hex, ` ${hex} `, 'uo_0123', 'event-1', hex.toUpperCase(), undefined]),
+    routeAttribution: 'exact', decisionId: 'decision', attemptNo: 2, providerRevision: 'rev-a',
+    runtimeEpoch: 'epoch', turnId: 'turn', routeAttemptId: 'attempt', routeGeneration: 3 });
+  const perturb = {
+    sessionId: [' session ', 'other', undefined], role: ['MAIN', ' main ', 'subagent', 'aux', 'background', ''],
+    roleKind: ['main', 'subagent', 'aux'], providerId: [' provider-a ', 'provider-b', '', undefined],
+    routeAttribution: ['ambiguous', undefined], decisionId: [' decision ', 'other'],
+    attemptNo: ['2', 2n, 3, NaN, undefined], providerRevision: ['rev-b', ' rev-a '],
+    runtimeEpoch: ['', undefined], turnId: [' turn ', undefined], routeGeneration: ['3', 0, NaN, undefined],
+  };
+  const steps = [];
+  for (let i = 0; i < count; i++) {
+    const op = pick(['usage', 'usage', 'outcome', 'outcome', 'outcome', 'outcome', 'failure', 'failure']);
+    const event = bound();
+    if (pick([true, false, false, false])) {
+      const field = pick(Object.keys(perturb));
+      event[field] = pick(perturb[field]);
+    }
+    Object.assign(event, {
+      status: pick(['error', 'error', 'error', 'ERROR', ' error ', 'ok', undefined]),
+      statusCode: pick([429, 429, '429', 429n, 502, '502', 404.5, 399, 400, 599, 600, 200, null, undefined, NaN, -0, '0x1f4']),
+      errorCode: pick(['STALL_TIMEOUT', 'REQUEST_TIMEOUT', 'UPSTREAM_HTTP_ERROR', '', ' X ', undefined]),
+      requestDeadlineAt: pick([5000, NaN, '5000', Infinity, undefined, 0]),
+      modelProgress: pick([true, false, 'true', undefined]),
+      rejection: pick([{ kind: 'window' }, { kind: '' }, null, undefined]),
+      outcome: pick([null, { requestKind: 'inference', termination: pick(['completed', 'completed', 'upstream_failure', 'downstream_disconnect', undefined]),
+        requestId: pick(['req-1', '', undefined]) }, { requestKind: 'inference', termination: 'completed', requestId: 'req-3' },
+      { requestKind: 'probe', termination: 'completed', requestId: 'req-2' }]),
+    });
+    steps.push({
+      op, event, symbol: pick([true, false]), hidden: pick([true, false]),
+      reference: pick(['attempt', 'attempt', 'attempt', 'proxy', null, 0, false, '']),
+      facts: pick([{ resultDurable: true, completion: { version: 1, state: 'completed', settled: true, source: 'protocol' } },
+        { resultDurable: true, completion: { version: 1, state: 'completed', settled: true, source: 'exit' } },
+        { resultDurable: 'true', completion: { version: 1, state: 'completed', settled: true, source: 'protocol' } },
+        { resultDurable: false }, { resultDurable: true }, undefined]),
+      token: pick(['token', 'token', 'token', 'old-token']), exact: pick([true, true, true, false]),
+      active: pick([null, { count: 1 }, { count: 1 }, { count: 2 }, { count: 1, ambiguous: true }, { count: 1, token: 'old-token' }]),
+      clearActive: pick([false, false, false, true]),
+      ended: pick([null, null, { token: 'token' }, { token: 'old-token' }]),
+      nonMain: pick([null, null, 'session\u0000token\u0000subagent\u0000provider-a']),
+      state: {
+        matches: pick([true, true, true, false]), running: pick([true, true, true, false]), succeeded: pick([false, false, true]),
+        budgeted: pick([true, true, false, 0, 1, 'yes']), stall: pick([false, true, 0]), deadline: pick([false, true, 'x']),
+        retire: pick([false, false, true]), deadlineAt: pick([5000, undefined, null]), present: pick([true, true, true, true, false]),
+        tick: pick([1000, 2000, NaN, 5n]),
+      },
+    });
+  }
+  return steps;
+}
+
+test('Rust usage attribution and proxy outcomes match the Node traces', () => {
+  for (let seed = 1; seed <= 120; seed++) {
+    const failure = seed % 3 === 0 ? Object.freeze({ code: 'OLD', httpStatus: null,
+      proxyOutcome: { termination: 'downstream_disconnect' }, recovered: seed % 2 === 0 }) : null;
+    compareOutcomeTrace(outcomeSteps(seed, 80), { failure, cli: seed % 4 === 0 ? 'codex' : 'claude-exp' });
+  }
+});
+
+test('Rust proxy outcomes keep exception points, strict assignment and spread semantics', () => {
+  const failing = { op: 'outcome', event: { sessionId: 'session', routeAttribution: 'exact', decisionId: 'decision',
+    attemptNo: 2, providerId: 'provider-a', providerRevision: 'rev-a', status: 'error', statusCode: 429,
+    errorCode: 'STALL_TIMEOUT', requestDeadlineAt: 5000, modelProgress: true, rejection: { kind: 'window' },
+    outcome: { requestKind: 'inference', termination: 'upstream_failure', requestId: 'req' } },
+  state: { budgeted: true, stall: false, deadline: true, retire: true } };
+  const recovered = { op: 'outcome', event: { ...failing.event, status: 'ok', outcome: { requestKind: 'inference', termination: 'completed' } } };
+  const usage = { op: 'usage', event: { sessionId: 'session', role: 'main', eventId: 'uo_0123456789abcdef0123456789abcdef', providerId: 'provider-a' },
+    symbol: true, hidden: true, ended: { token: 'token' } };
+  compareOutcomeTrace([failing, recovered, recovered, { op: 'failure', reference: 'attempt', facts: undefined }]);
+  for (const throwAt of ['event.statusCode', 'event.requestDeadlineAt', 'outcome.termination', 'lifecycle.observeFailure',
+    'lifecycle.retireIfStalled', 'record.proxyFailure', 'record#set.proxyFailure', 'event.rejection', 'record.cli',
+    'event.eventId', 'event#describe.providerId', 'lifecycle.matches', 'outcome.requestId']) {
+    compareOutcomeTrace([failing, recovered, usage, { op: 'failure', reference: 'proxy' }], { throwAt });
+  }
+  compareOutcomeTrace([failing], { frozenRecord: true });
+  compareOutcomeTrace([failing, recovered, usage], { throwAudit: true });
+  // Nullish and primitive events, references and facts.
+  compareOutcomeTrace([{ op: 'usage', event: null }, { op: 'outcome', event: null },
+    { op: 'failure', reference: undefined }, { op: 'failure', reference: 'attempt', facts: null }]);
+  // An ended producer is bound once, then reported ambiguous.
+  compareOutcomeTrace([{ ...usage, active: null }, usage, { ...usage, event: { ...usage.event, providerId: 'provider-b' } }]);
+});

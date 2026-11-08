@@ -170,8 +170,38 @@ reference to the callback port is retained after evaluation. Node retains the
 private context lookup, configuration normalization, attempt record, snapshots,
 poison/finalization and audit effects. Those ports are necessary while their
 live objects and effects belong to the host and can be removed when that
-ownership moves. Usage attribution and proxy outcome/error coordination are
-still separate Node policies.
+ownership moves.
+
+## Usage attribution and proxy outcomes
+
+`native/addon/src/provider_outcome.rs` owns the three decisions that bind a
+physical proxy request to an attempt after admission:
+
+- `attributeProxyUsage`: whether a request's token usage is exact (bound to the
+  running attempt, or to the attempt whose main producer just ended with the
+  same capability and provider) or ambiguous (non-main, resident background
+  work after a clean finish, or no provable owner). The derived `uo_*` event id
+  is dropped when the session is rewritten, and the late-ignored audit is
+  emitted for unowned main usage.
+- `observeProxyOutcome`: checks the full reported tuple against the current
+  attempt; skips non-inference requests; marks a completed request and the
+  diagnostic recovery of an earlier failure; for errors, records every failure
+  in the audit log, keeps stronger evidence over a socket teardown, applies the
+  watchdog budget (transient 5xx/408/429 do not consume it), normalizes a 429
+  rejection, builds the frozen failure record and retires a stalled route.
+- `proxyFailure`: returns a copy of the failure unless the runner's completed,
+  durable, compatible result supersedes it.
+
+The attempt record is still a host object, so the Rust code performs the same
+reads, method calls and strict assignments on it in the original order,
+including repeated reads, `now()` calls, key order and freezing; a method is
+looked up before its arguments are evaluated. The live bridge gained an object
+spread that follows CopyDataProperties (own keys, then descriptor, then get for
+enumerable keys), so Proxy traps and symbol keys behave as before.
+`sanitizeMessage` and `normalizeRejection` are passed as host ports: they belong
+to the API error policy in `src/chat/api-error-policy.js` and move with it
+(`native/core/src/quota_rejection.rs` normalizes a different contract and is
+not a substitute).
 
 ## Verification and remaining ownership
 
@@ -183,25 +213,34 @@ sets of turn mutations. Identity coverage adds 300 ordered revision inputs,
 Proxy coverage adds 2,880 authorization combinations and 4,000 producer-event
 steps, plus invalid capabilities, grace boundaries, exceptional clocks,
 callback reentry, receipt identity and propagated/caught host exceptions.
+Usage and outcome coverage compares 9,600 generated steps against the frozen
+Node functions (`tests/helpers/legacy-provider-outcome.js`) with every property
+read, spread trap, host call, ordered result keys, freezing and ledger state,
+plus 13 injected exception points, a read-only failure slot and a throwing
+audit port. Five deliberate faults in the Rust code (argument evaluation order,
+result key order, the 599 status boundary, the durable-result check and one
+missing read) each fail the comparison.
 Additional cases cover lone UTF-16 surrogates,
 read/short-circuit order, exception identity, strict assignment, reentry,
 opaque tool IDs, repeated settlement and host-marker forgery.
 
 The dependency regression command covers CLI completion, chat turn core, chat
 host coordinator, provider attempts, the JavaScript value bridge and source
-preflight: 249 tests passed after the authorization and producer additions.
-All 343 Rust core tests, all nine Rust CPR transport tests and all 15 isolated
-completion scenarios passed against source fingerprint
-`96ba545aa6a979862bf4ba2c`. The full `npm test` command also passed; two tests
-were skipped because the Electron packaging toolchain and PowerShell were
-unavailable. These are local isolated checks, not production enablement or
-acceptance on every supported architecture.
+preflight. All 343 Rust core tests, all nine Rust CPR transport tests and all
+15 isolated completion scenarios passed against source fingerprint
+`96ba545aa6a979862bf4ba2c`. After the usage/outcome move, source fingerprint
+`81b4781516bff9412dd7ad73` passed all 93 provider-attempt tests and the full
+`npm test` command (6,370 tests: 6,367 passed, 2 skipped because the Electron
+packaging toolchain and PowerShell were unavailable). These are local isolated
+checks, not production enablement or acceptance on every supported
+architecture.
 
 The remaining backend is substantial:
 
 | Ownership still in Node | Current examples | Next boundary to transfer |
 | --- | --- | --- |
-| Attempt records, redaction, usage attribution and proxy outcomes | `src/chat/provider-attempt-runtime.js` | Record/effect ownership, accounting receipts and error coordination |
+| Attempt records, stream redaction and attempt start/finish/event admission | `src/chat/provider-attempt-runtime.js` | Record ownership (the record object, snapshots, generations and redactors) so the Rust policies stop reading it through the host |
+| API error policy | `src/chat/api-error-policy.js`, `src/chat/api-error-host.js` | Error classification, rejection normalization and message sanitizing; removes the two outcome ports |
 | CLI processes and resident runners | `src/chat/chat-stream.js`, `src/chat/resident-pool.js`, `src/cli-adapters/` | Process/protocol lifecycle, cancellation and recovery; keep SDK-specific ports where needed |
 | History, usage writes and delivery effects | `src/chat/host-coordinator.js`, `src/session/chat-history-service.js`, `src/session/adapters/chat-history-file-repository.js` | Actual writes, append/rewrite receipts and restart recovery |
 | Requests before successful headers and credential/error recovery | `src/providers/rust-cpr.js`, `src/claude-auth/account-credentials.js` | Transfer remaining lifecycle and credential coordination to Rust transport |
@@ -211,5 +250,5 @@ Completion of this dependency batch does not mean Node has been removed. The
 next work must continue along these ownership boundaries rather than leaving
 duplicate policy implementations in both runtimes. Browser JavaScript,
 Flutter clients and necessary test/build tooling are outside the backend
-migration scope. No commit, merge, restart or production configuration change
-is part of this checkpoint.
+migration scope. No merge, restart or production configuration change is part of
+this checkpoint.

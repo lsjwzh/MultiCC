@@ -215,6 +215,40 @@ impl<'env> LiveValue<'env> {
         }
         Ok(())
     }
+    /// `{ ...source }` into this object (CopyDataProperties): the source's own
+    /// keys in [[OwnPropertyKeys]] order, then per key its descriptor and a
+    /// [[Get]] for enumerable ones only, each defined as a data property, so a
+    /// Proxy sees the same traps in the same order. Nullish copies nothing.
+    pub fn spread_from(self, source: Self) -> Result<()> {
+        if source.nullish()? {
+            return Ok(());
+        }
+        let global = self.global()?;
+        let object = global.get(c"Object")?.call_plain(&[source])?;
+        let reflect = global.get(c"Reflect")?;
+        let keys = reflect.get(c"ownKeys")?.call(reflect, &[object])?;
+        let length = keys.get(c"length")?.number()?;
+        let describe = reflect.get(c"getOwnPropertyDescriptor")?;
+        let read = reflect.get(c"get")?;
+        for index in 0..length as u32 {
+            let key = keys.element(index)?;
+            let descriptor = describe.call(reflect, &[object, key])?;
+            if descriptor.undefined()? || !descriptor.get(c"enumerable")?.truthy()? {
+                continue;
+            }
+            self.define_key(key, read.call(reflect, &[object, key, object])?)?;
+        }
+        Ok(())
+    }
+    /// `delete object[name]` on an object this module created.
+    pub fn delete(self, name: &CStr) -> Result<()> {
+        let reflect = self.global()?.get(c"Reflect")?;
+        let key = self.from_value(&JsValue::string(name.to_str().expect("static property")))?;
+        reflect
+            .get(c"deleteProperty")?
+            .call(reflect, &[self, key])?;
+        Ok(())
+    }
     pub fn clean_text(self) -> Result<Self> {
         if self.nullish()? {
             return self.from_value(&JsValue::string(""));

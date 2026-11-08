@@ -26,6 +26,7 @@ pub mod publication;
 pub mod provider_attempt_lifecycle;
 pub mod provider_attempt_identity;
 pub mod provider_authorization;
+pub mod provider_outcome;
 pub mod provider_producers;
 pub mod provider_event_policy;
 pub mod quota_history;

@@ -742,7 +742,7 @@ pub fn cli_protocol_completion(
     }
 }
 
-fn compatible(failure: LiveValue<'_>, outcome: LiveValue<'_>) -> Result<bool> {
+pub(crate) fn compatible(failure: LiveValue<'_>, outcome: LiveValue<'_>) -> Result<bool> {
     if !failure.truthy()? || !completed(outcome)? {
         return Ok(false);
     }

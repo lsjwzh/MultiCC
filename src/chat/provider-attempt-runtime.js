@@ -2,9 +2,7 @@
 
 const crypto = require('node:crypto');
 const { getNative } = require('../native/runtime');
-const { isCompleted } = require('../cli-adapters/completion');
 const { isResident } = require('../cli/cli-capability');
-const { isProxyFailureCompatibleWithCompletion } = require('./adapter-completion');
 const { normalizeRejection, sanitizeMessage } = require('./api-error-policy');
 const {
   createExactSecretStreamRedactor, redactExactSecretFragments, redactProviderRouteCapability,
@@ -142,15 +140,6 @@ function encodeProxySessionId(sessionId, token) {
 
 function decodeProxySessionId(value) {
   return getNative().providerDecodeProxySession(value);
-}
-
-function reattributedUsage(event, facts) {
-  const source = { ...event };
-  // ProviderRouterPort has already normalized CPR input once. Its derived `uo_*`
-  // id hashes the encoded process capability; changing that session to the real
-  // one requires downstream validation to derive a fresh id from sourceEventId.
-  if (/^uo_[a-f0-9]{32}$/.test(clean(source.eventId))) delete source.eventId;
-  return Object.freeze({ ...source, ...facts });
 }
 
 function cloneStructuredValue(value, seen = new WeakMap()) {
@@ -339,10 +328,14 @@ function createProviderAttemptRuntime(options = {}) {
   const streamRedactors = new Map();
   // Live host ports only: Rust owns admission; callbacks retain the current
   // record identity until runner, audit and quota effects move out of Node.
+  // Usage attribution and proxy outcomes (provider_outcome.rs) also read the
+  // current record table and a fresh proxyContext per lookup; the error text
+  // sanitizer and rejection normalizer stay with the API error policy.
   const proxyPort = Object.freeze({
     runtimeEpoch, quotaGuard, resolveTerminalRoute, resolveProviderRevision,
     snapshot, auditOnly, poisonProxyAttempt, now, producerStaleGraceMs,
     proxyProducers, nonMainProxyProducers, ProviderAttemptError,
+    currentBySession, proxyContext, sanitizeMessage, normalizeRejection,
   });
 
   function streamRedactor(record, channel) {
@@ -713,30 +706,12 @@ function createProviderAttemptRuntime(options = {}) {
     });
   }
 
-  // A resident child outlives its turn, and so does the background work it
-  // started: a run_in_background Task/Workflow subagent keeps calling the proxy
-  // after the main result has closed the attempt — on the sub route when a
-  // subagent provider is configured, on the main route when it is not. While
-  // the capability is still the current one (same spawn contract, no newer
-  // attempt, the turn ended cleanly) that traffic is the same warm process
-  // finishing its own work, not a replay, so it is admitted without reopening
-  // the attempt and is accounted as background: it never becomes a main
-  // producer, so it cannot hold the next turn, and its usage is never bound to
-  // an attempt. A cancelled or failed turn revokes the background too.
-  function backgroundLingers(record) {
-    return getNative().providerBackgroundLingers(record);
-  }
-
   function authorizeProxyRequest(input = {}) {
     return getNative().providerAuthorizeProxyRequest(input, proxyContext(input), proxyPort);
   }
 
   function forceReleaseProducers(sessionId, reason = 'force_release') {
     return getNative().providerForceReleaseProducers(sessionId, reason, proxyPort);
-  }
-
-  function nonMainProducerKey(context, event, role) {
-    return getNative().providerNonMainProducerKey(context, event, role);
   }
 
   function onProxyActivity(event = {}) {
@@ -764,191 +739,18 @@ function createProviderAttemptRuntime(options = {}) {
   }
 
   function attributeProxyUsage(event = {}) {
-    const context = proxyContext(event);
-    const sessionId = context.sessionId;
-    let role = clean(event.role || event.roleKind).toLowerCase();
-    if (role === 'main' && context.exact && backgroundLingers(context.record)
-        && !boundProxyAttempt(event) && !proxyProducers.hasEnded(sessionId)) role = 'background';
-    // A warm Claude process may finish its main result while a background/sub
-    // request is still pending. The process capability proves the real session,
-    // but not which logical turn owns that non-main request, so never fabricate a
-    // complete main-attempt tuple for it. The host still records its session-level
-    // usage while excluding it from attempt/TaskRun attribution.
-    if (role !== 'main') {
-      const key = nonMainProducerKey(context, event, role);
-      const producerBound = nonMainProxyProducers.bindUsage(key);
-      return reattributedUsage(event, {
-        sessionId, routeAttribution: 'ambiguous', producerBound,
-      });
-    }
-    let attempt = boundProxyAttempt(event);
-    if (!attempt) {
-      const ended = proxyProducers.getEnded(sessionId);
-      const record = currentBySession.get(sessionId);
-      if (ended && context.token === ended.proxyRouteToken
-          && sameAttempt(record, ended.attempt)
-          && (!clean(event.providerId) || clean(event.providerId) === ended.attempt.providerId)) {
-        attempt = ended.attempt;
-        proxyProducers.deleteEnded(sessionId);
-      }
-    }
-    if (!attempt) {
-      auditOnly(sessionId, {
-        type: 'provider_attempt_late_ignored', operation: 'proxy_usage',
-        runtimeEpoch, turnId: null, routeAttemptId: null, routeGeneration: null,
-        providerId: clean(event.providerId) || null,
-        currentRouteAttemptId: snapshotSession(sessionId)?.routeAttemptId || null,
-        currentRouteGeneration: snapshotSession(sessionId)?.routeGeneration || null,
-      });
-      return reattributedUsage(event, {
-        sessionId,
-        routeAttribution: 'ambiguous',
-      });
-    }
-    return reattributedUsage(event, {
-      sessionId,
-      turnId: attempt.turnId,
-      runtimeEpoch: attempt.runtimeEpoch,
-      decisionId: attempt.decisionId,
-      routeAttemptId: attempt.routeAttemptId,
-      routeGeneration: attempt.routeGeneration,
-      attemptNo: attempt.attemptNo,
-      routeAttribution: 'exact',
-      providerRevision: attempt.providerRevision,
-    });
+    return getNative().providerAttributeProxyUsage(event, proxyPort);
   }
 
   // The host reports each physical request independently of token accounting.
   // Bind its purpose and terminal evidence to the admitted attempt so probes,
   // late responses, and provider-rendered text cannot decide another turn.
   function observeProxyOutcome(event = {}) {
-    const sessionId = clean(event.sessionId);
-    const record = currentBySession.get(sessionId);
-    const role = clean(event.roleKind || event.role || 'main').toLowerCase();
-    if (role !== 'main' || event.routeAttribution !== 'exact'
-        || !sameAttempt(record, event)
-        || record.decisionId !== clean(event.decisionId)
-        || record.attemptNo !== Number(event.attemptNo)
-        || record.providerId !== clean(event.providerId)
-        || record.providerRevision !== clean(event.providerRevision)
-        || !record.lifecycle.running()) {
-      auditOnly(sessionId, {
-        type: 'provider_attempt_late_ignored', operation: 'proxy_outcome',
-        runtimeEpoch: clean(event.runtimeEpoch) || null,
-        turnId: clean(event.turnId) || null,
-        routeAttemptId: clean(event.routeAttemptId) || null,
-        routeGeneration: Number(event.routeGeneration) || null,
-        currentRouteAttemptId: record ? record.routeAttemptId : null,
-        currentRouteGeneration: record ? record.routeGeneration : null,
-      });
-      return Object.freeze({ accepted: false, code: 'proxy_attempt_unbound' });
-    }
-    const proxyOutcome = event.proxyOutcome || null;
-    if (proxyOutcome && proxyOutcome.requestKind !== 'inference') {
-      return Object.freeze({ accepted: true, code: 'non_inference_request', failure: null });
-    }
-    if (clean(event.status).toLowerCase() !== 'error') {
-      if (proxyOutcome?.termination === 'completed') {
-        record.lifecycle.completed();
-      }
-      // 请求恢复标记只用于诊断，不是最终成功的额外门槛。HTTP 错误同样可以恢复；
-      // 最终判定以当前运行器的整轮完成证据为准，原始错误记录不删除。
-      if (proxyOutcome?.termination === 'completed'
-          && record.proxyFailure
-          && record.proxyFailure.recovered !== true) {
-        record.proxyFailure = Object.freeze({
-          ...record.proxyFailure, recovered: true, recoveredAt: Number(now()),
-        });
-        auditOnly(sessionId, {
-          type: 'provider_attempt_proxy_failure_recovered', operation: 'proxy_outcome',
-          runtimeEpoch: clean(event.runtimeEpoch) || null,
-          turnId: clean(event.turnId) || null,
-          routeAttemptId: clean(event.routeAttemptId) || null,
-          routeGeneration: Number(event.routeGeneration) || null,
-          currentRouteAttemptId: record.routeAttemptId,
-          currentRouteGeneration: record.routeGeneration,
-        });
-      }
-      return Object.freeze({ accepted: true, code: null, failure: null });
-    }
-    const status = Number(event.statusCode);
-    const httpStatus = Number.isInteger(status) && status >= 400 && status <= 599
-      ? status : null;
-    // 每次错误都进入事件日志，后续恢复、覆盖最新错误或切换尝试都不会抹去历史。
-    auditOnly(sessionId, {
-      type: 'provider_attempt_proxy_failure_observed', operation: 'proxy_outcome',
-      runtimeEpoch: record.runtimeEpoch, turnId: record.turnId,
-      routeAttemptId: record.routeAttemptId, routeGeneration: record.routeGeneration,
-      providerId: record.providerId, httpStatus,
-      code: sanitizeMessage(clean(event.errorCode) || 'UPSTREAM_HTTP_ERROR'),
-      requestId: proxyOutcome?.requestId || null,
-      termination: proxyOutcome?.termination || null,
-    });
-    // Socket teardown must not replace stronger upstream failure evidence.
-    if (httpStatus == null && proxyOutcome?.termination === 'downstream_disconnect'
-        && record.proxyFailure) {
-      return Object.freeze({ accepted: true, code: null, failure: record.proxyFailure });
-    }
-    // 只有公共请求看门狗提供预算；未托管的旧调用保持原有错误策略。
-    const budgeted = record.lifecycle.observeFailure(
-      Number.isFinite(event.requestDeadlineAt) ? event.requestDeadlineAt : NaN,
-      proxyOutcome?.termination === 'upstream_failure', httpStatus || 0);
-    if (event.modelProgress === true) {
-      record.lifecycle.advance('visible_output');
-    }
-    const failureCode = clean(event.errorCode) || 'UPSTREAM_HTTP_ERROR';
-    // 5xx/408/429 是客户端自己会重试的瞬时错误：Claude CLI 收到 502 后会立刻再发
-    // 一次请求。若这类物理请求也计入重试预算，客户端的一次内部重试就会在半秒内耗光
-    // 整轮额度，宿主自己的重试和换线都来不及发生。预算只由真正的挂起（看门狗超时 /
-    // 静默）和绝对截止时间耗尽；瞬时错误交给 api-error-policy 的 maxAttempts 与
-    // auto-provider failover 处理。
-    const budgetExhausted = budgeted && (record.lifecycle.stallRetryExhausted(failureCode)
-      || record.lifecycle.deadlineReached(Number(now())));
-    // A structured rejection only ever rides a 429. It is untrusted input from
-    // another process, so normalizeRejection keeps only the contract's keys and
-    // caps free text; anything malformed degrades to "no structured verdict".
-    const rejection = httpStatus === 429 ? normalizeRejection(event.rejection) : null;
-    record.proxyFailure = Object.freeze({
-      source: 'proxy_response',
-      ...(budgeted ? { requestDeadlineAt: record.lifecycle.budget().requestDeadlineAt,
-        retryBudgetExhausted: budgetExhausted } : {}),
-      ...(event.modelProgress === true ? { partialOutput: true } : {}),
-      provider: record.cli,
-      providerId: record.providerId,
-      providerName: record.providerName,
-      httpStatus,
-      ...(rejection ? { rejection } : {}),
-      code: failureCode,
-      message: httpStatus ? `upstream HTTP ${httpStatus}`
-        : proxyOutcome?.termination === 'downstream_disconnect'
-          ? 'downstream response connection closed' : 'upstream request failed',
-      observedAt: Number(now()),
-      ...(proxyOutcome ? { proxyOutcome, requestId: proxyOutcome.requestId } : {}),
-    });
-    // Host-observed silence, not a client that walked away: the route is dead,
-    // and every later request for this attempt must be refused instead of
-    // re-dialed. The failure above stays the stronger evidence, so the teardown
-    // that follows cannot overwrite it with DOWNSTREAM_DISCONNECT.
-    if (record.lifecycle.retireIfStalled(record.proxyFailure.code, budgetExhausted)) {
-      auditOnly(sessionId, {
-        type: 'provider_attempt_stalled', operation: 'proxy_outcome',
-        runtimeEpoch: record.runtimeEpoch, turnId: record.turnId,
-        routeAttemptId: record.routeAttemptId, routeGeneration: record.routeGeneration,
-        providerId: record.providerId, code: record.proxyFailure.code,
-        requestId: record.proxyFailure.requestId || null,
-      });
-    }
-    return Object.freeze({ accepted: true, code: null, failure: record.proxyFailure });
+    return getNative().providerObserveProxyOutcome(event, proxyPort);
   }
 
   function proxyFailure(reference, facts = {}) {
-    const record = currentBySession.get(clean(reference && reference.sessionId));
-    if (!sameAttempt(record, reference) || !record.proxyFailure) return null;
-    // 原始诊断始终可读；最终判定只在当前运行器正常完成且结果保存后忽略历史错误。
-    // 不依赖 HTTP 成功事件先到、后到，或客户端是否等到 HTTP EOF。
-    if (facts.resultDurable === true && isCompleted(facts.completion)
-        && isProxyFailureCompatibleWithCompletion(record.proxyFailure, facts.completion)) return null;
-    return Object.freeze({ ...record.proxyFailure });
+    return getNative().providerProxyFailure(reference, facts, proxyPort);
   }
 
   function snapshotSession(sessionId) {
