@@ -48,6 +48,7 @@ pub mod virtual_provider;
 pub mod windows_tools;
 pub mod worktree_sync;
 
+pub mod claude_lane;
 pub mod claude_refresh;
 pub mod codex_models;
 pub mod js;

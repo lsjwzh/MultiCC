@@ -10,6 +10,7 @@ const capability = require('./cli-capability');
 const homebrewTakeover = require('./homebrew-takeover');
 const { nativeSessionExists } = require('./native-session-exists');
 const { nativeVendorOf } = require('../providers/native-vendor');
+const { bundledClaudeCodeBinary } = require('./claude-bundled-binary');
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -53,18 +54,20 @@ const CLI_VERSION_MAX_BUFFER = 64 * 1024;
 // 随 MultiCC 走的引擎(目录里的 bundled 列)的版本。这类引擎不躺在家族的 CLI 制品
 // 里 —— npm 上没有它、安装脚本也不含它 —— 所以既没有 `--version` 可探, 也没有
 // 发布源可比: 版本就是 multicc 自己依赖里那一行, 升级它的唯一动作是升级 MultiCC。
-// 今天只有 claude-exp(src/chat/claude-sdk-stream.js 直接 import
-// '@anthropic-ai/claude-agent-sdk')。面板把这一行写成副标题, 而不是给它一颗装不了的
-// 按钮 —— 旧表按车道铺开时, claude-exp 就是这么挤出一行假动作的。
+// 今天只有 claude-exp: 它跑的是 @anthropic-ai/claude-agent-sdk-<platform>-<arch>
+// 里的原生 claude 二进制(协议由 Rust 车道直接说)。面板把这一行写成副标题, 而不是
+// 给它一颗装不了的按钮 —— 旧表按车道铺开时, claude-exp 就是这么挤出一行假动作的。
 const BUNDLED_ENGINE_VERSIONS = Object.freeze({
   'claude-exp': (() => {
     // 面板上写的「内置版本」必须是**实际装着的**那一份: 只读 package.json 会报声明值,
     // 而 node_modules 落后一个版本时(改过依赖却没重装), 用户看到的数字与真正在跑的
     // 引擎对不上 —— 这个面板最不该骗人的地方正是这里。装了读不到才退回声明值。
     try {
-      const entry = require.resolve('@anthropic-ai/claude-agent-sdk/sdk.mjs');
-      const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(entry), 'package.json'), 'utf8'));
-      if (typeof pkg.version === 'string' && pkg.version) return pkg.version.replace(/^v/, '');
+      const binary = bundledClaudeCodeBinary();
+      if (binary) {
+        const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(binary), 'package.json'), 'utf8'));
+        if (typeof pkg.version === 'string' && pkg.version) return pkg.version.replace(/^v/, '');
+      }
     } catch (_) { /* 退回声明值 */ }
     try {
       const value = require('../../package.json').dependencies?.['@anthropic-ai/claude-agent-sdk'];
@@ -355,25 +358,6 @@ function createCliSwitchRuntime(options) {
         done({ version: null, error: String((err && err.message) || err).slice(0, 200) });
       }
     });
-  }
-
-  // 内置引擎自带的 Claude Code 二进制: SDK 按「每个平台一个 optionalDependency」
-  // 发布(@anthropic-ai/claude-agent-sdk-<platform>-<arch>/claude), 那份可执行文件
-  // 就是 chat 车道实际跑的引擎 —— 它的 `--version` 才是「MultiCC 现在能给的版本」。
-  // 解析不到(依赖被裁剪 / 平台包没装)就当未知, 绝不抛。
-  function bundledClaudeCodeBinary() {
-    const platform = process.platform;
-    const arch = process.arch;
-    const names = [`@anthropic-ai/claude-agent-sdk-${platform}-${arch}`];
-    if (platform === 'linux') names.push(`@anthropic-ai/claude-agent-sdk-${platform}-${arch}-musl`);
-    for (const name of names) {
-      try {
-        const dir = path.dirname(require.resolve(`${name}/package.json`));
-        const binary = path.join(dir, platform === 'win32' ? 'claude.exe' : 'claude');
-        if (fs.existsSync(binary)) return binary;
-      } catch (_) { /* 试下一个布局 */ }
-    }
-    return null;
   }
 
   // 探测一次并缓存。探不到就如实回 null —— 上层据此回退到 npm 口径, 而不是凭空造

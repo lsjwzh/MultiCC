@@ -1371,11 +1371,13 @@ dependencies = [
 name = "multicc-addon"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "multicc-core",
  "multicc-cpr",
  "napi",
  "napi-build",
  "napi-derive",
+ "serde",
  "serde_json",
  "tokio",
 ]

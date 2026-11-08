@@ -9,7 +9,6 @@ const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-vault-test-'));
@@ -19,24 +18,25 @@ assertTestDir(dataDir);
 const vault = require('../src/secrets-vault');
 const { createSdkStream } = require('../src/chat/claude-sdk-stream');
 const { createStreamRouter } = require('../src/chat/stream-router');
+const { bundledClaudeCodeBinary } = require('../src/cli/claude-bundled-binary');
 const sdkFixture = require('./helpers/claude-sdk-fixture');
+const laneLedger = require('./helpers/claude-lane-ledger');
+
+// Record spawn argv/env without changing the child identity: the wrapper
+// execve()s the real binary, so resident-PID assertions stay meaningful.
+const LANE_WRAPPER = path.join(__dirname, 'helpers', 'claude-lane-wrapper.js');
 
 async function setup(t) {
   vault._resetForTests();
   t.after(() => vault._resetForTests());
   const fixture = await sdkFixture(t);
-  const children = [];
-  const sdk = createSdkStream({ spawnProcess(...args) {
-    const proc = spawn(...args); children.push({ proc, args }); return proc;
-  } });
+  const spawnFile = path.join(fixture.root, 'lane-ledger.jsonl');
+  const sdk = createSdkStream({ binary: process.execPath, binaryArgs: [LANE_WRAPPER] });
   const runtime = createStreamRouter({ status: () => null, closeAndWait: async () => ({ closed: true }) }, sdk);
   fixture.teardown.tasks.push(async () => {
     try { await runtime.closeAndWait('sdk'); }
     finally {
-      for (const { proc } of children) {
-        if (proc.exitCode !== null || proc.signalCode !== null) continue;
-        try { proc.kill('SIGKILL'); } catch (_) { /* already gone */ }
-      }
+      for (const spawn of laneLedger.rows(spawnFile)) laneLedger.kill(spawn.pid);
     }
   });
   const sessionId = randomUUID();
@@ -46,7 +46,8 @@ async function setup(t) {
   const sendTurn = text => {
     const cfg = {
       cwd: fixture.cwd, sessionId, resume: turn > 0, sdkOptions: { model: 'claude-sonnet-4-6' },
-      env: vault.applyEnvOverlay({ ...fixture.env }),
+      env: vault.applyEnvOverlay({ ...fixture.env,
+        MULTICC_LANE_LEDGER: spawnFile, MULTICC_LANE_REAL_BINARY: bundledClaudeCodeBinary() }),
       isBackgroundActive: () => background,
       // 零持有上限：后台活跃时回答也立即放行（与 idle 清理测试同一做法），只测进程是否被保留。
       backgroundHold: { maxMs: 0 },
@@ -55,17 +56,18 @@ async function setup(t) {
     runtime.ensure('sdk', cfg);
     return runtime.send('sdk', text, () => {});
   };
-  return { ...fixture, runtime, children, sendTurn, setBackground: v => { background = v; } };
+  return { ...fixture, runtime, spawns: () => laneLedger.rows(spawnFile), sendTurn,
+    setBackground: v => { background = v; } };
 }
 
-const envOf = child => child.args[2].env;
+const envOf = spawn => spawn.env;
 
 test('existing vault entries reach the resident child env at spawn', { timeout: 90000 }, async t => {
   const f = await setup(t);
   vault.upsert({ name: 'ARK_API_KEY', value: 'ark-value-1' });
   assert.equal((await f.sendTurn('hello')).subtype, 'success');
-  assert.equal(f.children.length, 1);
-  assert.equal(envOf(f.children[0]).ARK_API_KEY, 'ark-value-1');
+  assert.equal(f.spawns().length, 1);
+  assert.equal(envOf(f.spawns()[0]).ARK_API_KEY, 'ark-value-1');
 });
 
 test('an unchanged vault never restarts the resident process', { timeout: 90000 }, async t => {
@@ -75,32 +77,32 @@ test('an unchanged vault never restarts the resident process', { timeout: 90000 
   const pid = f.runtime.status('sdk').pid;
   await f.sendTurn('turn two');
   await f.sendTurn('turn three');
-  assert.equal(f.children.length, 1, 'three turns, one native child');
+  assert.equal(f.spawns().length, 1, 'three turns, one native child');
   assert.equal(f.runtime.status('sdk').pid, pid);
 });
 
 test('an entry added mid-session restarts at the next turn and the new child sees it', { timeout: 90000 }, async t => {
   const f = await setup(t);
   await f.sendTurn('before the secret exists');
-  assert.equal(f.children.length, 1);
-  assert.equal(envOf(f.children[0]).LATE_KEY, undefined);
+  assert.equal(f.spawns().length, 1);
+  assert.equal(envOf(f.spawns()[0]).LATE_KEY, undefined);
   const firstPid = f.runtime.status('sdk').pid;
 
   vault.upsert({ name: 'LATE_KEY', value: 'late-value' });
   assert.equal((await f.sendTurn('after the secret exists')).subtype, 'success');
-  assert.equal(f.children.length, 2, 'process recycled on the turn boundary');
+  assert.equal(f.spawns().length, 2, 'process recycled on the turn boundary');
   assert.notEqual(f.runtime.status('sdk').pid, firstPid);
-  assert.equal(envOf(f.children[1]).LATE_KEY, 'late-value');
+  assert.equal(envOf(f.spawns()[1]).LATE_KEY, 'late-value');
 
   // 改值同样生效；删除后下一个进程里不再有它。
   vault.upsert({ name: 'LATE_KEY', value: 'late-value-2' });
   await f.sendTurn('value changed');
-  assert.equal(f.children.length, 3);
-  assert.equal(envOf(f.children[2]).LATE_KEY, 'late-value-2');
+  assert.equal(f.spawns().length, 3);
+  assert.equal(envOf(f.spawns()[2]).LATE_KEY, 'late-value-2');
   vault.remove('LATE_KEY');
   await f.sendTurn('entry removed');
-  assert.equal(f.children.length, 4);
-  assert.equal(envOf(f.children[3]).LATE_KEY, undefined);
+  assert.equal(f.spawns().length, 4);
+  assert.equal(envOf(f.spawns()[3]).LATE_KEY, undefined);
 });
 
 test('live background work defers the vault restart instead of refusing the turn', { timeout: 90000 }, async t => {
@@ -109,10 +111,10 @@ test('live background work defers the vault restart instead of refusing the turn
   f.setBackground(true);
   vault.upsert({ name: 'DEFERRED_KEY', value: 'd' });
   assert.equal((await f.sendTurn('turn while background runs')).subtype, 'success', 'turn is not refused');
-  assert.equal(f.children.length, 1, 'background work keeps its process');
+  assert.equal(f.spawns().length, 1, 'background work keeps its process');
 
   f.setBackground(false);
   await f.sendTurn('after background ends');
-  assert.equal(f.children.length, 2);
-  assert.equal(envOf(f.children[1]).DEFERRED_KEY, 'd');
+  assert.equal(f.spawns().length, 2);
+  assert.equal(envOf(f.spawns()[1]).DEFERRED_KEY, 'd');
 });

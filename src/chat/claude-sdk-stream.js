@@ -1,38 +1,57 @@
 'use strict';
 
-const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { isMainResult } = require('../cli-adapters/result-completion');
 const { managedRoute, createRouteRelay } = require('./claude-sdk-route');
-const { fingerprint, processOptions } = require('./claude-sdk-config');
+const { fingerprint, laneOptions } = require('./claude-sdk-config');
 const { envDigest } = require('../secrets-vault');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('./monitor-admission');
 const { createBackgroundHold } = require('./background-hold');
+const { bundledClaudeCodeBinary } = require('../cli/claude-bundled-binary');
+const { getNative } = require('../native/runtime');
 
-function messageQueue() {
-  const messages = [];
-  let wake, closed = false;
+// Native lane events are pushed from a ThreadsafeFunction callback, i.e. on the
+// JS thread but outside the consume-loop microtask; the queue keeps the old
+// async-iterator shape so the conversation logic above it is unchanged.
+function laneEvents() {
+  const queue = [];
+  let wake = null, ended = false;
   return {
-    push(message) { if (closed) throw new Error('SDK input closed'); messages.push(message); wake?.(); },
-    close() { closed = true; wake?.(); },
+    push(event) { if (ended) return; queue.push(event); const resume = wake; wake = null; resume?.(); },
+    end() { ended = true; const resume = wake; wake = null; resume?.(); },
     async *[Symbol.asyncIterator]() {
-      while (!closed) {
-        if (messages.length) yield messages.shift();
-        else await new Promise(resolve => { wake = resolve; });
+      for (;;) {
+        while (queue.length) yield queue.shift();
+        if (ended) return;
+        await new Promise(resolve => { wake = resolve; });
       }
     },
   };
 }
 
 const cancelled = () => Object.assign(new Error('cancelled'), { code: 'SDK_INTERRUPTED' });
-const alive = run => !!(run?.proc && run.proc.exitCode === null && run.proc.signalCode === null);
+const alive = run => !!run?.lane && run.lane.alive === true;
 const safe = (fn, ...args) => { try { fn?.(...args); } catch (_) {} };
+const safeTail = run => { try { return run.lane?.stderrTail?.() || run.stderr || ''; } catch (_) { return run.stderr || ''; } };
 
-// One SDK Query and one input iterator per native conversation. Host send()
-// promises end at main result boundaries; the iterator and child stay alive.
-function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sdk'), spawnProcess = spawn } = {}) {
+// One RustClaudeLane (one `claude` child) per native conversation. Host send()
+// promises end at main result boundaries; the process stays alive between them.
+function createSdkStream({ binary, binaryArgs = [], createLane = callback => new (getNative().RustClaudeLane)(callback) } = {}) {
   const sessions = new Map();
   const closing = new Map();
+  // A napi ThreadsafeFunction does not hold the Node event loop open, but a
+  // live RustClaudeLane must outlive an idle JS microtask queue. One ref'd
+  // timer keeps the loop alive while any lane is running.
+  let laneKeepAlive = null;
+  let laneKeepAliveCount = 0;
+  function acquireLaneKeepAlive() {
+    laneKeepAliveCount += 1;
+    if (!laneKeepAlive) laneKeepAlive = setInterval(() => {}, 1 << 30);
+  }
+  function releaseLaneKeepAlive() {
+    laneKeepAliveCount = Math.max(0, laneKeepAliveCount - 1);
+    if (!laneKeepAliveCount && laneKeepAlive) { clearInterval(laneKeepAlive); laneKeepAlive = null; }
+  }
   function hasBackground(s) { return !!s.cfg.isBackgroundActive?.(); }
   function clearIdle(s) { clearTimeout(s.idleTimer); s.idleTimer = null; }
   function armIdle(s) {
@@ -63,20 +82,20 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     clearIdle(s);
     s.stopping = (async () => {
       await run.initialized;
-      run.input.close();
-      safe(() => run.query?.close());
-      const proc = run.proc;
+      safe(() => run.lane?.closeInput());
       let killer;
       if (alive(run)) {
-        safe(() => proc.kill('SIGTERM'));
-        killer = setTimeout(() => safe(() => proc.kill('SIGKILL')), 1500);
+        safe(() => run.lane.kill('SIGTERM'));
+        killer = setTimeout(() => safe(() => run.lane.kill('SIGKILL')), 1500);
       }
       try {
         // A same-UUID resume must wait for the *actual* old process exit.
         if (run.exited) await run.exited;
+        safe(() => run.events.end());
         await run.relay?.close();
       } finally {
         clearTimeout(killer);
+        if (run.holdsKeepAlive) { run.holdsKeepAlive = false; releaseLaneKeepAlive(); }
         safe(run.dispose);
         safe(s.cfg.onDispose);
         safe(s.cfg.onExit);
@@ -107,7 +126,7 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
   async function consume(s, run) {
     let failure;
     try {
-      for await (const event of run.query) {
+      for await (const event of run.events) {
         if (s.run !== run || s.disposed) break;
         const item = s.current;
         if (event.type === 'system' && event.subtype === 'init') {
@@ -135,9 +154,11 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
         if (!item.cancelled) safe(item.onEvent, event);
         if (isMainResult(event)) finish(s, run, item, event);
       }
-      failure = new Error('Claude Agent SDK stream ended before the next turn');
+      failure = run.streamError
+        || new Error('Claude Agent SDK stream ended before the next turn');
     } catch (error) { failure = error; }
     if (s.run !== run) return;
+    if (!run.stderr) run.stderr = safeTail(run);
     if (run.stderr?.trim()) {
       failure = Object.assign(new Error(`${failure.message}\n${run.stderr.trim()}`), { code: failure.code });
     }
@@ -145,15 +166,68 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     if (s.current) settle(s, s.current, failure);
   }
 
+  function dispatchLaneEvent(s, run, kind, a, b) {
+    if (kind === 'message') {
+      let event;
+      try { event = JSON.parse(a); } catch (error) { run.streamError = error; run.events.end(); return; }
+      run.events.push(event);
+      return;
+    }
+    if (kind === 'hook_callback') {
+      const requestId = a;
+      let input = {};
+      try { input = JSON.parse(b); } catch (_) {}
+      void (async () => {
+        let response = {};
+        try {
+          if (run.admission) {
+            // The CLI hard-times out a hook after 30s and this goroutine, not
+            // an abort signal, owns the answer: allow before that deadline so a
+            // stalled host delivery can never wedge native input.
+            let timer;
+            const deadline = new Promise(resolve => {
+              timer = setTimeout(() => resolve({}), s.cfg.hookTimeoutMs ?? 25000);
+              timer.unref?.();
+            });
+            try { response = await Promise.race([run.admission(input), deadline]) ?? {}; }
+            finally { clearTimeout(timer); }
+          }
+        } catch (error) {
+          if (!run.cancelledHooks.has(requestId)) {
+            safe(() => run.lane.respondControlError(requestId, String((error && error.message) || error)));
+          }
+          return;
+        }
+        if (run.cancelledHooks.has(requestId)) return;
+        safe(() => run.lane.respondControl(requestId, JSON.stringify(response)));
+      })();
+      return;
+    }
+    if (kind === 'control_cancel') { run.cancelledHooks.add(a); return; }
+    if (kind === 'error') {
+      run.streamError = new Error(a || 'Claude Code protocol error');
+      run.events.end();
+      return;
+    }
+    if (kind === 'exit') {
+      let meta = {};
+      try { meta = JSON.parse(b); } catch (_) {}
+      if (meta.stderrTail) run.stderr = meta.stderrTail;
+      run.exitCode = a === '' ? null : Number(a);
+      run.exitSignal = meta.signal ?? null;
+      safe(() => run.resolveExit?.());
+      run.events.end();
+    }
+  }
+
   async function start(s) {
-    const sdk = await loadSdk();
     if (s.disposed || s.current?.cancelled) throw cancelled();
     const cfg = s.cfg;
     try {
       await cfg.beforeSpawn?.({ sessionId: cfg.sessionId });
       if (s.disposed || s.current?.cancelled) throw cancelled();
     } catch (error) { safe(cfg.onDispose); throw error; }
-    const run = { input: messageQueue(), proc: null, query: null, relay: null };
+    const run = { events: laneEvents(), lane: null, relay: null, cancelledHooks: new Set() };
     run.initialized = new Promise(resolve => { run.ready = resolve; });
     s.run = run;
     try {
@@ -164,34 +238,37 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
         run.routeToken = cfg.env.ANTHROPIC_AUTH_TOKEN;
       }
       if (s.disposed || s.current?.cancelled) throw cancelled();
-      const materialized = processOptions(cfg, s.started, run.relay?.env);
+      const materialized = laneOptions(cfg, s.started, run.relay?.env);
       run.dispose = materialized.dispose;
       run.fingerprint = fingerprint(cfg);
       run.vaultDigest = envDigest(cfg.env);
       run.model = cfg.sdkOptions.model;
-      const options = { ...materialized.options,
-        ...(cfg.onBackgroundEvent ? { hooks: { UserPromptSubmit: [{ hooks: [createMonitorAdmission(
-          event => s.cfg.onBackgroundEvent(event), prompt => s.current?.text === prompt,
-        )] }] } } : {}),
-        spawnClaudeCodeProcess({ command, args, ...opts }) {
-          if (s.disposed || s.run !== run) throw cancelled();
-          const proc = spawnProcess(command, args, { ...opts, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-          run.proc = proc;
-          run.exited = new Promise(resolve => {
-            proc.once('exit', resolve);
-            proc.once('error', () => { if (!proc.pid) resolve(); });
-          });
-          // Custom spawn bypasses the SDK's default stderr reader.
-          proc.stderr?.on('data', data => { run.stderr = ((run.stderr || '') + data).slice(-4000); });
-          return proc;
-        },
-      };
-      run.query = sdk.query({ prompt: run.input, options });
+      const command = binary || bundledClaudeCodeBinary();
+      if (!command) throw new Error('Bundled Claude Code binary is not available');
+      run.admission = cfg.onBackgroundEvent ? createMonitorAdmission(
+        event => s.cfg.onBackgroundEvent(event), prompt => s.current?.text === prompt,
+      ) : null;
+      run.exited = new Promise(resolve => { run.resolveExit = resolve; });
+      // napi delivers the ThreadsafeFunction tuple as one JS argument.
+      run.lane = createLane(payload => dispatchLaneEvent(s, run, ...payload));
+      acquireLaneKeepAlive();
+      run.holdsKeepAlive = true;
+      const started = JSON.parse(await run.lane.start(JSON.stringify({
+        ...materialized.config, binary: command, binaryArgs,
+      })));
+      run.argv = started.argv;
+      if (s.disposed || s.current?.cancelled) throw cancelled();
       // Consume continuously, including background events after a result.
       void consume(s, run);
       return run;
-    } catch (error) { run.ready(); await stop(s); throw error; }
-    finally { run.ready(); }
+    } catch (error) {
+      // No child means no exit event: release stop()'s await instead of
+      // leaving the turn pending on a promise nothing will settle.
+      run.ready();
+      safe(() => run.resolveExit?.());
+      await stop(s);
+      throw error;
+    } finally { run.ready(); }
   }
 
   async function pump(s) {
@@ -211,7 +288,7 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
         // a later ensure() happened while this turn was waiting in the queue.
         if (s.cfg.sessionId !== item.cfg.sessionId) s.started = item.cfg.resume === true;
         s.cfg = item.cfg;
-        if (s.run?.proc && !alive(s.run)) await stop(s);
+        if (s.run?.lane && !alive(s.run)) await stop(s);
         const routeChanged = s.run?.relay && (s.run.routeUrl !== s.cfg.env.ANTHROPIC_BASE_URL
           || s.run.routeToken !== s.cfg.env.ANTHROPIC_AUTH_TOKEN);
         const changed = s.run && s.run.fingerprint !== fingerprint(s.cfg);
@@ -231,15 +308,15 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
           run.routeToken = s.cfg.env.ANTHROPIC_AUTH_TOKEN;
         }
         if (run.model !== s.cfg.sdkOptions.model) {
-          await run.query.setModel(s.cfg.sdkOptions.model);
+          await run.lane.setModel(s.cfg.sdkOptions.model);
           run.model = s.cfg.sdkOptions.model;
         }
         if (s.disposed || item.cancelled) throw cancelled();
         safe(item.onTiming, 'spawned');
         item.sent = true;
-        run.input.push({ type: 'user', session_id: s.cfg.sessionId,
+        await run.lane.sendUser(JSON.stringify({ type: 'user', session_id: s.cfg.sessionId,
           uuid: randomUUID(), parent_tool_use_id: null,
-          message: { role: 'user', content: [{ type: 'text', text: item.text }] } });
+          message: { role: 'user', content: [{ type: 'text', text: item.text }] } }));
         safe(item.onTiming, 'sent');
       } catch (error) {
         if (error.code !== 'SDK_BACKGROUND_ACTIVE') await stop(s);
@@ -287,8 +364,8 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     item.cancelTimer = setTimeout(() => {
       void stop(s).then(() => settle(s, item, cancelled()));
     }, s.cfg.interruptTimeoutMs ?? 3000);
-    if (run?.query && item.sent && !item.finishing) {
-      item.interrupt = run.query.interrupt({ cancelQueued: true });
+    if (run?.lane && item.sent && !item.finishing) {
+      item.interrupt = run.lane.interrupt();
       item.interrupt.catch(() => { void stop(s).then(() => settle(s, item, cancelled())); });
     }
   }
@@ -323,17 +400,17 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     close(name);
     return waitForClose(name, opts);
   }
-  // SDK 0.3.289 control requests: the resident query is the authoritative
-  // source for a background task's output and can stop one task precisely.
-  // Both surface null/false when they cannot be served — stream closed, child
-  // gone, or an SDK older than the control subtype — so every caller keeps its
+  // The resident lane's control channel is the authoritative source for a
+  // background task's output and can stop one task precisely. Both surface
+  // null/false when they cannot be served — stream closed, child gone, or a
+  // CLI that does not answer the subtype — so every caller keeps its
   // file-read / process-kill fallback instead of guessing.
   async function getTaskOutput(name, taskId) {
     const run = sessions.get(name)?.run;
     const id = String(taskId || '');
-    if (!run || !alive(run) || !id || typeof run.query?.getTaskOutput !== 'function') return null;
+    if (!run || !alive(run) || !id) return null;
     try {
-      const response = await run.query.getTaskOutput(id);
+      const response = JSON.parse(await run.lane.getTaskOutput(id));
       if (!response || typeof response !== 'object') return null;
       return { output: String(response.output ?? ''),
         totalBytes: Number(response.total_bytes) || 0,
@@ -343,17 +420,17 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
   async function stopTask(name, taskId) {
     const run = sessions.get(name)?.run;
     const id = String(taskId || '');
-    if (!run || !alive(run) || !id || typeof run.query?.stopTask !== 'function') return false;
-    try { await run.query.stopTask(id); return true; } catch (_) { return false; }
+    if (!run || !alive(run) || !id) return false;
+    try { await run.lane.stopTask(id); return true; } catch (_) { return false; }
   }
 
   function status(name) {
     const s = sessions.get(name);
     if (!s) return null;
     return { alive: alive(s.run), busy: !!s.current || !!s.stopping || s.pumping,
-      queued: s.queue.length, started: s.started, pid: s.run?.proc?.pid || null,
+      queued: s.queue.length, started: s.started, pid: s.run?.lane?.pid || null,
       backgroundActive: hasBackground(s),
-      recycling: !!s.stopping, recycleRequested: !!s.recycleRequested, backend: 'sdk' };
+      recycling: !!s.stopping, recycleRequested: !!s.recycleRequested, backend: 'native' };
   }
   function recycle(name) {
     const s = sessions.get(name);

@@ -64,10 +64,17 @@ async function sdkFixture(t, reply, { authorize, onRequest } = {}) {
   await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
   t.after(() => { upstream.closeAllConnections(); upstream.close(); });
   // No inherited provider credentials, routing env, or user settings.
+  // The claude-exp lane now loads the Rust addon inside the child process, so
+  // its artifact locators still have to cross this sanitized boundary; none of
+  // them carries credentials or routing.
+  const locators = {};
+  for (const name of ['MULTICC_RUST_ADDON', 'MULTICC_RUST_PREBUILT_DIR', 'MULTICC_CLAUDE_BIN']) {
+    if (process.env[name]) locators[name] = process.env[name];
+  }
   const env = { PATH: process.env.PATH, HOME: root, TMPDIR: root,
     CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_API_KEY: 'isolated-test-only',
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${upstream.address().port}`,
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' };
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1', ...locators };
   return { root, cwd, configDir, env, requests, teardown };
 }
 
