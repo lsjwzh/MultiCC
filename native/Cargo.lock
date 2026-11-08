@@ -1401,6 +1401,7 @@ dependencies = [
  "chrono-tz",
  "fs2",
  "getrandom 0.3.4",
+ "memchr",
  "regex",
  "reqwest",
  "rusqlite",

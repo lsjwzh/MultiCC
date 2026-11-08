@@ -7,6 +7,7 @@ pub mod cli_switch;
 pub mod cli_switch_route;
 pub mod dotenv;
 pub mod download_ticket;
+pub mod exact_secret;
 pub mod events;
 pub mod http_gate;
 pub mod http_send;

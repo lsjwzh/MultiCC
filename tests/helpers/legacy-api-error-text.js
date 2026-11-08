@@ -1,7 +1,8 @@
 'use strict';
 // Frozen pre-migration text rules, copied verbatim from the last commit that
 // had them in JS: redact / redactProviderRouteCapability (with the helpers
-// they use) from src/observability.js, normalizeRejection / sanitizeMessage
+// they use) and the exact-secret fragment and stream redactors from
+// src/observability.js, normalizeRejection / sanitizeMessage
 // from src/chat/api-error-policy.js. Test-only differential oracle; never
 // imported by product code.
 
@@ -117,7 +118,118 @@ function sanitizeMessage(value, fallback = 'Upstream API request failed', maxLen
   return message.slice(0, maxLength);
 }
 
+function redactExactSecretFragments(values, initialSecrets = []) {
+  const parts = (Array.isArray(values) ? values : [values]).map(value => String(value || ''));
+  const secrets = [...new Set((Array.isArray(initialSecrets) ? initialSecrets : [initialSecrets])
+    .map(value => String(value || '')).filter(Boolean))]
+    .sort((left, right) => right.length - left.length);
+  if (!parts.length || !secrets.length) return parts;
+  const offsets = [];
+  let joined = '';
+  for (const part of parts) {
+    offsets.push(joined.length);
+    joined += part;
+  }
+  const matches = [];
+  let cursor = 0;
+  while (cursor < joined.length) {
+    let index = -1;
+    let matched = '';
+    for (const secret of secrets) {
+      const candidate = joined.indexOf(secret, cursor);
+      if (candidate >= 0 && (index < 0 || candidate < index
+          || (candidate === index && secret.length > matched.length))) {
+        index = candidate;
+        matched = secret;
+      }
+    }
+    if (index < 0) break;
+    matches.push({ start: index, end: index + matched.length });
+    cursor = index + matched.length;
+  }
+  if (!matches.length) return parts;
+  const edits = parts.map(() => []);
+  for (const match of matches) {
+    for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+      const partStart = offsets[partIndex];
+      const partEnd = partStart + parts[partIndex].length;
+      const start = Math.max(match.start, partStart);
+      const end = Math.min(match.end, partEnd);
+      if (start >= end) continue;
+      edits[partIndex].push({
+        start: start - partStart,
+        end: end - partStart,
+        replacement: PROVIDER_ROUTE_REDACTION,
+      });
+    }
+  }
+  return parts.map((part, index) => edits[index]
+    .sort((left, right) => right.start - left.start)
+    .reduce((result, edit) => (
+      result.slice(0, edit.start) + edit.replacement + result.slice(edit.end)
+    ), part));
+}
+
+function createExactSecretStreamRedactor(initialSecrets = []) {
+  let secrets = [];
+  let pending = '';
+  const setSecrets = values => {
+    secrets = [...new Set((Array.isArray(values) ? values : [values])
+      .map(value => String(value || '')).filter(Boolean))]
+      .sort((left, right) => right.length - left.length);
+  };
+  setSecrets(initialSecrets);
+  const longestPendingSuffix = value => {
+    let best = 0;
+    for (const secret of secrets) {
+      const limit = Math.min(secret.length - 1, value.length);
+      for (let length = limit; length > best; length -= 1) {
+        if (secret.startsWith(value.slice(-length))) { best = length; break; }
+      }
+    }
+    return best;
+  };
+  const push = chunk => {
+    let input = pending + String(chunk || '');
+    pending = '';
+    let output = '';
+    while (input) {
+      let index = -1;
+      let matched = '';
+      for (const secret of secrets) {
+        const candidate = input.indexOf(secret);
+        if (candidate >= 0 && (index < 0 || candidate < index
+            || (candidate === index && secret.length > matched.length))) {
+          index = candidate;
+          matched = secret;
+        }
+      }
+      if (index >= 0) {
+        output += input.slice(0, index) + PROVIDER_ROUTE_REDACTION;
+        input = input.slice(index + matched.length);
+        continue;
+      }
+      const keep = longestPendingSuffix(input);
+      output += input.slice(0, input.length - keep);
+      pending = keep ? input.slice(-keep) : '';
+      break;
+    }
+    return redactProviderRouteCapability(output);
+  };
+  return Object.freeze({
+    push,
+    setSecrets,
+    flush: () => {
+      const output = redactProviderRouteCapability(pending);
+      pending = '';
+      return output;
+    },
+    discard: () => { pending = ''; },
+    pendingLength: () => pending.length,
+  });
+}
+
 module.exports = {
   SECRET_KEY, PROVIDER_ROUTE_REDACTION, redact, redactProviderRouteCapability,
-  normalizeRejection, sanitizeMessage,
+  normalizeRejection, sanitizeMessage, redactExactSecretFragments, createExactSecretStreamRedactor,
 };

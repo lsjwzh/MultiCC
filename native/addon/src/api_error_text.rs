@@ -20,7 +20,7 @@ const MAX_SANITIZED_MESSAGE: f64 = 240.0;
 /// `REJECTION_TEXT_MAX`.
 const REJECTION_TEXT_MAX: usize = 80;
 
-fn text<'a>(anchor: LiveValue<'a>, value: JsString) -> Result<LiveValue<'a>> {
+pub(crate) fn text<'a>(anchor: LiveValue<'a>, value: JsString) -> Result<LiveValue<'a>> {
     anchor.from_value(&JsValue::String(value))
 }
 
@@ -29,7 +29,7 @@ fn null(anchor: LiveValue<'_>) -> Result<LiveValue<'_>> {
 }
 
 /// `String(value)` (a Symbol becomes its description, unlike `${value}`).
-fn js_string(value: LiveValue<'_>) -> Result<JsString> {
+pub(crate) fn js_string(value: LiveValue<'_>) -> Result<JsString> {
     Ok(value
         .global()?
         .get(c"String")?
@@ -39,7 +39,11 @@ fn js_string(value: LiveValue<'_>) -> Result<JsString> {
 }
 
 /// `String(value || '')`.
-fn string_or_empty(value: LiveValue<'_>) -> Result<JsString> {
+pub(crate) fn string_or_empty(value: LiveValue<'_>) -> Result<JsString> {
+    // `String(text || '')` is the text itself for any string.
+    if let Some(text) = value.string()? {
+        return Ok(text);
+    }
     if value.truthy()? {
         js_string(value)
     } else {

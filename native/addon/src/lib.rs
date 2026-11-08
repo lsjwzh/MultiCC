@@ -4,6 +4,7 @@ use napi_derive::napi;
 use std::{sync::Arc, time::Instant};
 pub mod api_error_text;
 pub mod auto_provider_config;
+pub mod exact_secret;
 pub mod auto_provider_policy;
 pub mod classify_vocab;
 pub mod chat_turn_lifecycle;

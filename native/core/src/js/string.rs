@@ -356,6 +356,76 @@ pub fn utf16_suffix(text: &str, n: f64) -> String {
 }
 
 /// Code-unit ordering (JS relational comparison on strings).
+/// An `indexOf` needle over UTF-16 code units. Short haystacks use a plain
+/// scan; the SIMD byte searcher (which only accepts unit-aligned hits) is
+/// built the first time a long haystack is searched, since its setup costs
+/// more than scanning a few hundred units.
+#[derive(Debug)]
+pub struct UnitFinder {
+    units: Vec<u16>,
+    finder: std::sync::OnceLock<memchr::memmem::Finder<'static>>,
+}
+
+impl Clone for UnitFinder {
+    fn clone(&self) -> Self {
+        Self::new(&self.units)
+    }
+}
+
+const SIMD_SEARCH_MIN_UNITS: usize = 256;
+
+fn unit_bytes(units: &[u16]) -> &[u8] {
+    // SAFETY: u16 has no padding and u8 has alignment 1; both slices are only
+    // compared with each other, so the byte order is irrelevant.
+    unsafe { std::slice::from_raw_parts(units.as_ptr().cast::<u8>(), units.len() * 2) }
+}
+
+impl UnitFinder {
+    pub fn new(needle: &[u16]) -> Self {
+        Self {
+            units: needle.to_vec(),
+            finder: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub fn needle(&self) -> &[u16] {
+        &self.units
+    }
+
+    /// `haystack.indexOf(needle, from)`; `None` for an empty needle.
+    pub fn find(&self, haystack: &[u16], from: usize) -> Option<usize> {
+        let needle = self.units.as_slice();
+        if needle.is_empty() || from > haystack.len() || needle.len() > haystack.len() - from {
+            return None;
+        }
+        if haystack.len() - from < SIMD_SEARCH_MIN_UNITS {
+            let first = needle[0];
+            return (from..=haystack.len() - needle.len())
+                .find(|&at| haystack[at] == first && haystack[at..at + needle.len()] == *needle);
+        }
+        let finder = self
+            .finder
+            .get_or_init(|| memchr::memmem::Finder::new(unit_bytes(needle)).into_owned());
+        let bytes = unit_bytes(haystack);
+        let mut at = from * 2;
+        while let Some(found) = finder.find(&bytes[at..]) {
+            let byte = at + found;
+            if byte.is_multiple_of(2) {
+                return Some(byte / 2);
+            }
+            // An odd hit straddles two units; resume one byte later so an
+            // overlapping aligned hit is not skipped.
+            at = byte + 1;
+        }
+        None
+    }
+}
+
+/// `haystack.includes(needle)` over code units.
+pub fn contains_units(haystack: &[u16], needle: &[u16]) -> bool {
+    UnitFinder::new(needle).find(haystack, 0).is_some()
+}
+
 pub fn compare_units(left: &JsString, right: &JsString) -> Ordering {
     left.as_units().cmp(right.as_units())
 }
