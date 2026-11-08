@@ -1570,6 +1570,15 @@
       ]
     },
     {
+      "path": "tests/test-api-error-policy-native.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
       "path": "tests/test-api-error-policy.js",
       "tier": "core",
       "lane": "deterministic",

@@ -47,6 +47,10 @@ function createHarness(overrides = {}) {
   const stream = {
     status: id => { effects.push(`stream-status:${id}`); return streamState; },
     close: id => effects.push(`stream-close:${id}`),
+    settle: async id => {
+      effects.push(`stream-settle:${id}`);
+      if (overrides.settleError) throw overrides.settleError;
+    },
   };
   const runtime = createCliSwitchRuntime({
     records,
@@ -1870,4 +1874,24 @@ test('安装代理准备失败不派生直连子进程', async () => {
   assert.equal(status.body.job.status, 'error');
   assert.match(status.body.job.error, /proxy discovery failed/);
   assert.equal(spawned, false);
+});
+
+test('a turn after a CLI switch waits until the old resident process has exited', async () => {
+  const { stageConfiguration } = require('../src/session/pending-configuration');
+  const h = createHarness();
+  stageConfiguration(h.session, { ...h.session, cli: 'codex' });
+  assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
+  assert.equal(h.session.cli, 'codex');
+  const close = h.effects.indexOf('stream-close:s1'), settle = h.effects.indexOf('stream-settle:s1');
+  assert.ok(close >= 0 && settle > close, 'the old process is closed, then its exit is awaited');
+});
+
+test('an unconfirmed exit of the old CLI process defers the turn instead of failing it', async () => {
+  const { stageConfiguration } = require('../src/session/pending-configuration');
+  const busy = Object.assign(new Error('process exit unconfirmed'), { code: 'workspace_busy' });
+  const h = createHarness({ settleError: busy });
+  stageConfiguration(h.session, { ...h.session, cli: 'codex' });
+  assert.equal(await h.runtime.applyPendingConfiguration('s1'), false);
+  assert.equal(h.session.cli, 'codex', 'the switch itself is applied; only the turn waits');
+  assert.equal(h.session.pendingConfiguration, undefined);
 });

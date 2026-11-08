@@ -108,3 +108,35 @@ test('a same-session claim retries a failed lifecycle close before sending again
   router.ensure('a', { cwd: workspace.path });
   await router.send('a', 'next');
 });
+
+test('switching backend waits for the old child the switch is closing', async () => {
+  const lanes = {};
+  const lane = label => {
+    const children = new Map();
+    let exit = null;
+    lanes[label] = { exit: () => exit && exit() };
+    return {
+      ensure: name => children.set(name, { alive: true, busy: false, queued: 0 }),
+      send: async () => `sent:${label}`,
+      status: name => children.get(name) || null,
+      isClosing: () => false, cancel() {}, isAlive: name => children.has(name), recycle() {},
+      closeAndWait: name => new Promise(resolve => { exit = () => { children.delete(name); resolve({ closed: true }); }; }),
+    };
+  };
+  const router = createStreamRouter(lane('legacy'), lane('sdk'), lane('app'));
+  router.ensure('s', { cwd: '/tmp', sdkOptions: {} });
+  await router.send('s');
+  await router.settle('s');
+  assert.equal(router.status('s').alive, true, 'settle never closes a live child');
+  router.close('s');
+  assert.throws(() => router.ensure('s', { cwd: '/tmp', streamBackend: 'app-server' }), /workspace_busy/,
+    'the next backend may not start while the old child is still exiting');
+  let settledEarly = false;
+  const settled = router.settle('s').then(() => { settledEarly = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settledEarly, false, 'settle waits for the exit rather than resolving at once');
+  lanes.sdk.exit();
+  await settled;
+  router.ensure('s', { cwd: '/tmp', streamBackend: 'app-server' });
+  assert.equal(await router.send('s'), 'sent:app');
+});

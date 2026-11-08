@@ -1514,3 +1514,24 @@ test('Rust turn mutations keep strict setters, reads, partial writes and reentry
     assert.throws(() => fn(new Proxy({}, { set() { return false; } }), 'cancel'), TypeError);
   }
 });
+
+test('a redelivered persisted message is never refused by the configuration step', () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/chat/turn-engine.js'), 'utf8');
+  const start = source.indexOf('    const configuration = ');
+  const end = source.indexOf('    return finishConfiguration();', start);
+  assert.ok(start > 0 && end > start, 'the configuration step is still where this test reads it');
+  // Run the real step with stubbed collaborators: refusal comes back as
+  // { blocked: true }, admission as the finishConfiguration() marker.
+  const step = new Function('replay', 'deps', 'sessionName', 'opts', 'text', 'finishConfiguration',
+    source.slice(start, end) + '    return finishConfiguration();');
+  const admitted = () => 'admitted';
+  for (const verdict of [true, false, undefined]) {
+    let called = 0;
+    const deps = { applyPendingConfiguration: () => { called++; return verdict; } };
+    assert.equal(step(true, deps, 's', {}, 't', admitted), 'admitted', `replay with verdict ${verdict}`);
+    assert.equal(called, 0, 'a redelivery does not apply configuration again');
+  }
+  assert.deepEqual(step(false, { applyPendingConfiguration: () => false }, 's', {}, 't', admitted), { blocked: true });
+  assert.equal(step(false, { applyPendingConfiguration: () => true }, 's', {}, 't', admitted), 'admitted');
+  assert.equal(step(false, {}, 's', {}, 't', admitted), 'admitted');
+});

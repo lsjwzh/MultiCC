@@ -1035,7 +1035,7 @@ function createChatTurnEngine(deps) {
     }
     const delivery = opts.clientMsgId || opts.deliveryId;
     const replay = delivery && getChatHistoryService().hasPersistedDelivery(sessionName, delivery);
-    const configuration = !replay && deps.applyPendingConfiguration?.(sessionName, opts, text);
+    const configuration = replay ? undefined : deps.applyPendingConfiguration?.(sessionName, opts, text); // a redelivery skips, never refuses
     if (configuration && typeof configuration.then === 'function') {
       return configuration.then(allowed => allowed === false ? { blocked: true } : finishConfiguration());
     }

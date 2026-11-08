@@ -261,7 +261,7 @@ test('an adapter error label follows the display table, and the parsers accept e
   // 三个解析点：重连抑制在 web 与 App 各一份，错误信封词表在服务端。
   assert.match(source('public/chat-event-controller.js'), /\(\?:Codex\|Codex Exp\|Codex Exec\) 出错：Reconnecting/);
   assert.match(source('app/lib/providers/chat_provider.dart'), /\(\?:Codex\|Codex Exp\|Codex Exec\) 出错：Reconnecting/);
-  assert.match(source('src/chat/api-error-policy.js'), /codex\\s\*\(\?:exec\\s\*\|exp\\s\*\)\?\(\?:error\|出错\)/);
+  assert.match(source('native/core/src/api_error_policy.rs'), /codex\\s\*\(\?:exec\\s\*\|exp\\s\*\)\?\(\?:error\|出错\)/);
   // 行为断言，比上面的字面量检查更硬：两种拼法都要被认成纯错误信封。
   const { isErrorOnlyText } = require('../src/chat/api-error-policy.js');
   for (const text of [

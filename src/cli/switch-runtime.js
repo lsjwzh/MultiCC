@@ -1073,6 +1073,14 @@ function createCliSwitchRuntime(options) {
       try { await autoSwitchCli(sessionId, turnOptions, text); } catch (error) {
         console.warn('[cli-switch] auto provider lane switch failed:', error && error.message);
       }
+      // A switch closes the old resident child without waiting. Starting the
+      // next backend before that child has exited is refused (workspace_busy),
+      // so hold this turn until the exit is confirmed. An unconfirmed exit
+      // defers the turn; it is retried once the child is gone.
+      try { await options.getChatStream()?.settle?.(sessionId); } catch (error) {
+        console.warn('[cli-switch] previous CLI process has not exited yet; turn deferred:', error && (error.code || error.message));
+        return false;
+      }
       return true;
     })();
     preparations.set(sessionId, operation);
