@@ -138,7 +138,7 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     'providerRequiredIdentity', 'providerPositiveInteger', 'providerTimeoutBudget', 'providerAttemptFields',
     'providerRevision', 'providerEncodeProxySession', 'providerDecodeProxySession', 'providerValidateAttemptTransition', 'providerBackgroundLingers', 'providerAuthorizeProxyRequest',
       'providerNonMainProducerKey', 'providerProxyActivity', 'providerBoundProxyAttempt',
-      'providerForceReleaseProducers', 'providerDrainStaleProducers']) {
+      'providerForceReleaseProducers', 'providerDrainStaleProducers', 'providerScrubSemanticJson']) {
     const stalePolicy = write(root, `stale-${name}.js`, `module.exports = {
       ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
     };`);

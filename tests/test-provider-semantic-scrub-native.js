@@ -472,3 +472,73 @@ test('dates and buffers follow the clone and route walks', () => {
   assert.deepStrictEqual(cloned.date, {});
   assert.deepStrictEqual(Object.keys(cloned.buffer), ['0', '1', '2']);
 });
+
+// Wire fixtures are serialized only in tests. Production callers supply the
+// original CLI line; live host objects continue using the direct value bridge.
+function verifyWire(text, secrets, label) {
+  const event = JSON.parse(text);
+  const safe = legacyScrub(event, secrets);
+  const encoded = getNative().providerScrubSemanticJson(text, secrets);
+  const actual = JSON.parse(encoded);
+  assert.deepStrictEqual(actual, safe, label);
+  function keys(a, b) {
+    if (!a || typeof a !== 'object') return;
+    assert.deepStrictEqual(Object.keys(a), Object.keys(b), `${label}: key order`);
+    for (const key of Object.keys(a)) keys(a[key], b[key]);
+  }
+  keys(actual, safe);
+  if (safe === event) assert.equal(encoded, text, `${label}: no-op keeps original wire bytes`);
+  return actual;
+}
+
+test('original wire JSON shares the frozen semantic rules across generated events', (t) => {
+  let checked = 0;
+  for (let seed = 1; seed <= 500; seed += 1) {
+    const g = generator(seed * 107);
+    for (const kind of EVENT_TYPES) {
+      const { secrets, event } = buildEvent(g, kind);
+      let text;
+      try { text = JSON.stringify(event); } catch (_) { continue; } // cycles/BigInt have no wire JSON
+      if (text === undefined) continue;
+      verifyWire(text, secrets, `wire seed ${seed} ${kind}`);
+      checked += 1;
+    }
+  }
+  assert.ok(checked > 2000, `checked ${checked} valid JSON events`);
+  t.diagnostic(`compared ${checked} valid wire events with the frozen Node implementation`);
+});
+
+test('wire edits preserve JS number semantics, escaped surrogates and duplicate-key order', () => {
+  verifyWire(String.raw`{ "type":"tool_start", "n":-0, "huge":1e400, "small":-1e400,
+    "input":{"2":"tail","1":"SECRET","01":"\ud800z","__proto__":{"text":"SECRET"},
+      "dup":"old","dup":"SECRET","constructor":"pr1.AAAA.BBBB", "float":9007199254740993} }`,
+  ['SECRET', '\ud800z'], 'wire numbers and UTF-16');
+  verifyWire(' { "negative": -0, "overflow": 1e400, "text": "\\ud800" } \n', [], 'byte-exact no-op');
+});
+
+test('wire split secrets cover every UTF-16 boundary, keys, collisions and content blocks', () => {
+  for (const secret of ['proxy-route-x1', 'pr1.AAAA.BBBB', '😀\ud800z']) {
+    for (let cut = 0; cut <= secret.length; cut += 1) {
+      const left = secret.slice(0, cut), right = secret.slice(cut);
+      const events = [
+        { type: 'tool_start', input: [left, right] },
+        { type: 'tool_update', input: { [left]: 'interposed', [right]: 1, [secret]: 2,
+          '[REDACTED_PROVIDER_ROUTE]': 3, '[REDACTED_PROVIDER_ROUTE]#2': 4 } },
+        { type: 'tool_start', input: { [left]: right } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: left },
+          { type: 'thinking', thinking: right }] } },
+        { type: 'user', message: { content: [{ type: 'tool_result', content: [left, right] }] } },
+      ];
+      for (const event of events) verifyWire(JSON.stringify(event), [secret], `wire split ${secret.length}/${cut}`);
+    }
+  }
+});
+
+test('wire parsing rejects malformed or excessively nested data without a successful result', () => {
+  for (const text of ['{"type":', '{} trailing', '{"x":NaN}', '{"x":"\\ud80x"}']) {
+    assert.throws(() => getNative().providerScrubSemanticJson(text, []));
+  }
+  const deep = '['.repeat(1005) + '0' + ']'.repeat(1005);
+  assert.throws(() => getNative().providerScrubSemanticJson(deep, []), /Maximum call stack/);
+  assert.equal(getNative().providerScrubSemanticJson('{}', []), '{}', 'errors do not poison later calls');
+});

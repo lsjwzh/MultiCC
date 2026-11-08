@@ -4,7 +4,8 @@
 //! `applySemanticRedactions` in src/chat/provider-attempt-runtime.js, plus the
 //! object walk of `redactProviderRouteCapability` in src/observability.js.
 //! The text rules stay in `multicc_core::{exact_secret, redaction}`; this
-//! module reproduces how the JavaScript walked a live value:
+//! adapter supplies the live property operations to the shared traversal in
+//! `multicc_core::provider_scrub`. It preserves:
 //!
 //! * `Object.entries` order (own enumerable string keys in engine order), with
 //!   getters read once, exactly like the JS;
@@ -26,18 +27,14 @@ use crate::{
     js_live::LiveValue,
 };
 use multicc_core::{
-    exact_secret::{redact_fragments, Secrets},
     js::{JsString, JsValue},
-    redaction,
+    provider_scrub::{route_redact, scrub_semantic_structure},
 };
 use napi::{bindgen_prelude::Unknown, check_status, sys, Env, Result, Status};
 use napi_derive::napi;
 use std::ffi::CString;
 
-/// Well under the native stack limit; V8's own recursion limit is of the same
-/// order, so anything this deep throws in both implementations.
-const MAX_DEPTH: usize = 1000;
-
+/// Turn the shared depth guard into a JavaScript RangeError.
 fn too_deep(value: LiveValue<'_>) -> napi::Error {
     let message = CString::new("Maximum call stack size exceeded").expect("static message");
     unsafe {
@@ -73,10 +70,6 @@ fn array_length(value: LiveValue<'_>) -> Result<u32> {
     Ok(length)
 }
 
-fn key(text: &str) -> JsString {
-    JsString::from_rust_str(text)
-}
-
 fn live_string<'a>(anchor: LiveValue<'a>, text: &JsString) -> Result<LiveValue<'a>> {
     anchor.from_value(&JsValue::String(text.clone()))
 }
@@ -96,7 +89,9 @@ fn get_property<'a>(object: LiveValue<'a>, name: &JsString) -> Result<LiveValue<
 
 fn get_property_value<'a>(object: LiveValue<'a>, name: LiveValue<'a>) -> Result<LiveValue<'a>> {
     let mut value = std::ptr::null_mut();
-    check_status!(unsafe { sys::napi_get_property(object.env(), object.raw(), name.raw(), &mut value) })?;
+    check_status!(unsafe {
+        sys::napi_get_property(object.env(), object.raw(), name.raw(), &mut value)
+    })?;
     Ok(LiveValue::from_raw(object.env(), value))
 }
 
@@ -110,12 +105,16 @@ fn get_element<'a>(object: LiveValue<'a>, index: u32) -> Result<LiveValue<'a>> {
 /// `object[key] = value` ([[Set]], strict-mode assignment semantics).
 fn set_property(object: LiveValue<'_>, name: &JsString, value: LiveValue<'_>) -> Result<()> {
     let name = live_string(object, name)?;
-    check_status!(unsafe { sys::napi_set_property(object.env(), object.raw(), name.raw(), value.raw()) })?;
+    check_status!(unsafe {
+        sys::napi_set_property(object.env(), object.raw(), name.raw(), value.raw())
+    })?;
     Ok(())
 }
 
 fn set_element(object: LiveValue<'_>, index: u32, value: LiveValue<'_>) -> Result<()> {
-    check_status!(unsafe { sys::napi_set_element(object.env(), object.raw(), index, value.raw()) })?;
+    check_status!(unsafe {
+        sys::napi_set_element(object.env(), object.raw(), index, value.raw())
+    })?;
     Ok(())
 }
 
@@ -123,7 +122,9 @@ fn set_element(object: LiveValue<'_>, index: u32, value: LiveValue<'_>) -> Resul
 fn has_own(object: LiveValue<'_>, name: &JsString) -> Result<bool> {
     let name = live_string(object, name)?;
     let mut result = false;
-    check_status!(unsafe { sys::napi_has_own_property(object.env(), object.raw(), name.raw(), &mut result) })?;
+    check_status!(unsafe {
+        sys::napi_has_own_property(object.env(), object.raw(), name.raw(), &mut result)
+    })?;
     Ok(result)
 }
 
@@ -131,7 +132,9 @@ fn has_own(object: LiveValue<'_>, name: &JsString) -> Result<bool> {
 fn delete_property(object: LiveValue<'_>, name: &JsString) -> Result<()> {
     let name = live_string(object, name)?;
     let mut result = false;
-    check_status!(unsafe { sys::napi_delete_property(object.env(), object.raw(), name.raw(), &mut result) })?;
+    check_status!(unsafe {
+        sys::napi_delete_property(object.env(), object.raw(), name.raw(), &mut result)
+    })?;
     if !result {
         return Err(object.type_error("Cannot delete property"));
     }
@@ -171,534 +174,65 @@ fn entries<'a>(value: LiveValue<'a>) -> Result<Vec<(JsString, LiveValue<'a>)>> {
     Ok(out)
 }
 
-/// `WeakMap.prototype.get` for the identity maps below.
-fn lookup<'a>(
-    seen: &[(LiveValue<'a>, LiveValue<'a>)],
-    value: LiveValue<'a>,
-) -> Result<Option<LiveValue<'a>>> {
-    for (original, mapped) in seen {
-        if original.equals(value)? {
-            return Ok(Some(*mapped));
-        }
+impl multicc_core::provider_scrub::ScrubValue for LiveValue<'_> {
+    type Error = napi::Error;
+    fn nullish(self) -> Result<bool> {
+        LiveValue::nullish(self)
     }
-    Ok(None)
-}
-
-fn mapping_contains<'a>(seen: &[LiveValue<'a>], value: LiveValue<'a>) -> Result<bool> {
-    for entry in seen {
-        if entry.equals(value)? {
-            return Ok(true);
-        }
+    fn string(self) -> Result<Option<JsString>> {
+        LiveValue::string(self)
     }
-    Ok(false)
-}
-
-/// `seen.set(value, mapped)`, replacing an existing entry.
-fn set_mapping<'a>(
-    seen: &mut Vec<(LiveValue<'a>, LiveValue<'a>)>,
-    value: LiveValue<'a>,
-    mapped: LiveValue<'a>,
-) -> Result<()> {
-    for entry in seen.iter_mut() {
-        if entry.0.equals(value)? {
-            entry.1 = mapped;
-            return Ok(());
-        }
+    fn equals(self, other: Self) -> Result<bool> {
+        LiveValue::equals(self, other)
     }
-    seen.push((value, mapped));
-    Ok(())
-}
-
-/// `cloneStructuredValue(value)`: always a fresh structure, shared nodes and
-/// cycles preserved through `seen`.
-fn clone_structured<'a>(
-    value: LiveValue<'a>,
-    seen: &mut Vec<(LiveValue<'a>, LiveValue<'a>)>,
-    depth: usize,
-) -> Result<LiveValue<'a>> {
-    if value.nullish()? || !object_like(value)? {
-        return Ok(value);
+    fn too_deep(self) -> Self::Error {
+        too_deep(self)
     }
-    if let Some(mapped) = lookup(seen, value)? {
-        return Ok(mapped);
+    fn object_like(self) -> Result<bool> {
+        object_like(self)
     }
-    if depth > MAX_DEPTH {
-        return Err(too_deep(value));
+    fn is_string(self) -> Result<bool> {
+        is_string(self)
     }
-    let output = if is_array(value)? {
-        new_array(value)?
-    } else {
-        new_object(value)?
-    };
-    seen.push((value, output));
-    for (name, item) in entries(value)? {
-        let cloned = clone_structured(item, seen, depth + 1)?;
-        define_value(output, &name, cloned)?;
+    fn is_array(self) -> Result<bool> {
+        is_array(self)
     }
-    Ok(output)
-}
-
-/// `redactProviderRouteCapability(value)`: a fresh structure only when a key,
-/// a string value or a collision actually changes; otherwise the caller's own
-/// value (unchanged sub-trees included).
-fn route_redact<'a>(
-    value: LiveValue<'a>,
-    seen: &mut Vec<(LiveValue<'a>, LiveValue<'a>)>,
-    depth: usize,
-) -> Result<LiveValue<'a>> {
-    if is_string(value)? {
-        let text = value.string()?.expect("string value");
-        let redacted = redaction::redact_route_capability(&text);
-        return if redacted == text {
-            Ok(value)
-        } else {
-            live_string(value, &redacted)
-        };
+    fn array_length(self) -> Result<u32> {
+        array_length(self)
     }
-    if value.nullish()? || !object_like(value)? {
-        return Ok(value);
+    fn live_string(self, text: &JsString) -> Result<Self> {
+        live_string(self, text)
     }
-    if let Some(mapped) = lookup(seen, value)? {
-        return Ok(mapped);
+    fn new_array(self) -> Result<Self> {
+        new_array(self)
     }
-    if depth > MAX_DEPTH {
-        return Err(too_deep(value));
+    fn new_object(self) -> Result<Self> {
+        new_object(self)
     }
-    let output = if is_array(value)? {
-        new_array(value)?
-    } else {
-        new_object(value)?
-    };
-    seen.push((value, output));
-    let mut changed = false;
-    for (name, item) in entries(value)? {
-        let redacted_key = redaction::redact_route_capability(&name);
-        let output_key = collision_safe_key(output, &redacted_key)?;
-        let output_value = route_redact(item, seen, depth + 1)?;
-        define_value(output, &output_key, output_value)?;
-        if output_key != name || !output_value.equals(item)? {
-            changed = true;
-        }
+    fn get_property(self, name: &JsString) -> Result<Self> {
+        get_property(self, name)
     }
-    if changed {
-        Ok(output)
-    } else {
-        set_mapping(seen, value, value)?;
-        Ok(value)
+    fn get_element(self, index: u32) -> Result<Self> {
+        get_element(self, index)
     }
-}
-
-/// `collisionSafeKey(output, requested)`.
-fn collision_safe_key(output: LiveValue<'_>, requested: &JsString) -> Result<JsString> {
-    if !has_own(output, requested)? {
-        return Ok(requested.clone());
+    fn set_property(self, name: &JsString, value: Self) -> Result<()> {
+        set_property(self, name, value)
     }
-    let mut counter = 2usize;
-    loop {
-        let mut candidate = requested.clone();
-        candidate.push_str(&format!("#{counter}"));
-        if !has_own(output, &candidate)? {
-            return Ok(candidate);
-        }
-        counter += 1;
+    fn set_element(self, index: u32, value: Self) -> Result<()> {
+        set_element(self, index, value)
     }
-}
-
-/// One string the semantic rules may need to rewrite.
-enum Slot {
-    Index(u32),
-    Name(JsString),
-}
-
-impl Slot {
-    fn name(&self) -> &JsString {
-        match self {
-            Slot::Name(name) => name,
-            Slot::Index(_) => unreachable!("array elements have no property name"),
-        }
+    fn has_own(self, name: &JsString) -> Result<bool> {
+        has_own(self, name)
     }
-}
-
-fn read_slot<'a>(parent: LiveValue<'a>, slot: &Slot) -> Result<LiveValue<'a>> {
-    match slot {
-        Slot::Index(index) => get_element(parent, *index),
-        Slot::Name(name) => get_property(parent, name),
+    fn delete_property(self, name: &JsString) -> Result<()> {
+        delete_property(self, name)
     }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Kind {
-    Value,
-    Key,
-}
-
-struct Descriptor<'a> {
-    kind: Kind,
-    parent: LiveValue<'a>,
-    slot: Slot,
-    value: JsString,
-    redacted: JsString,
-}
-
-/// `addStringDescriptor(descriptors, parent, key)`: only a string member.
-fn add_string<'a>(
-    descriptors: &mut Vec<Descriptor<'a>>,
-    parent: LiveValue<'a>,
-    slot: Slot,
-) -> Result<()> {
-    let item = read_slot(parent, &slot)?;
-    if let Some(text) = item.string()? {
-        descriptors.push(Descriptor {
-            kind: Kind::Value,
-            parent,
-            slot,
-            value: text.clone(),
-            redacted: text,
-        });
+    fn define_value(self, name: &JsString, value: Self) -> Result<()> {
+        define_value(self, name, value)
     }
-    Ok(())
-}
-
-/// `collectModelControlled(node, parent, key, descriptors)`. Every JavaScript
-/// call starts a fresh `WeakSet`, so a node shared across two calls is walked
-/// twice.
-fn collect_model_controlled<'a>(
-    node: LiveValue<'a>,
-    parent: LiveValue<'a>,
-    slot: Slot,
-    descriptors: &mut Vec<Descriptor<'a>>,
-    depth: usize,
-) -> Result<()> {
-    let mut seen = Vec::new();
-    collect_model_controlled_inner(node, parent, slot, descriptors, &mut seen, depth)
-}
-
-fn collect_model_controlled_inner<'a>(
-    node: LiveValue<'a>,
-    parent: LiveValue<'a>,
-    slot: Slot,
-    descriptors: &mut Vec<Descriptor<'a>>,
-    seen: &mut Vec<LiveValue<'a>>,
-    depth: usize,
-) -> Result<()> {
-    if is_string(node)? {
-        return add_string(descriptors, parent, slot);
+    fn entries(self) -> Result<Vec<(JsString, Self)>> {
+        entries(self)
     }
-    if node.nullish()? || !object_like(node)? {
-        return Ok(());
-    }
-    if mapping_contains(seen, node)? {
-        return Ok(());
-    }
-    if depth > MAX_DEPTH {
-        return Err(too_deep(node));
-    }
-    seen.push(node);
-    if is_array(node)? {
-        for index in 0..array_length(node)? {
-            let item = get_element(node, index)?;
-            collect_model_controlled_inner(
-                item,
-                node,
-                Slot::Index(index),
-                descriptors,
-                seen,
-                depth + 1,
-            )?;
-        }
-        return Ok(());
-    }
-    for (name, item) in entries(node)? {
-        descriptors.push(Descriptor {
-            kind: Kind::Key,
-            parent: node,
-            slot: Slot::Name(name.clone()),
-            value: name.clone(),
-            redacted: name.clone(),
-        });
-        collect_model_controlled_inner(item, node, Slot::Name(name), descriptors, seen, depth + 1)?;
-    }
-    Ok(())
-}
-
-/// `collectToolResultContent(content, parent, key, descriptors)`.
-fn collect_tool_result_content<'a>(
-    content: LiveValue<'a>,
-    parent: LiveValue<'a>,
-    slot: Slot,
-    descriptors: &mut Vec<Descriptor<'a>>,
-    depth: usize,
-) -> Result<()> {
-    if is_string(content)? {
-        return add_string(descriptors, parent, slot);
-    }
-    if content.nullish()? || !object_like(content)? {
-        return Ok(());
-    }
-    if depth > MAX_DEPTH {
-        return Err(too_deep(content));
-    }
-    if !is_array(content)? {
-        return collect_model_controlled(content, parent, slot, descriptors, depth + 1);
-    }
-    for index in 0..array_length(content)? {
-        let block = get_element(content, index)?;
-        if is_string(block)? {
-            add_string(descriptors, content, Slot::Index(index))?;
-        } else if !block.nullish()? && object_like(block)? {
-            let text = get_property(block, &key("text"))?;
-            if is_string(text)? {
-                add_string(descriptors, block, Slot::Name(key("text")))?;
-            } else {
-                let inner = get_property(block, &key("content"))?;
-                if !inner.nullish()? {
-                    collect_tool_result_content(
-                        inner,
-                        block,
-                        Slot::Name(key("content")),
-                        descriptors,
-                        depth + 1,
-                    )?;
-                } else {
-                    collect_model_controlled(
-                        block,
-                        content,
-                        Slot::Index(index),
-                        descriptors,
-                        depth + 1,
-                    )?;
-                }
-            }
-        } else {
-            collect_model_controlled(block, content, Slot::Index(index), descriptors, depth + 1)?;
-        }
-    }
-    Ok(())
-}
-
-/// The `type` of a block, compared against a literal.
-fn is_type(ty: Option<&JsString>, text: &str) -> bool {
-    ty == Some(&key(text))
-}
-
-/// One `message.content` block (or the content itself when it is not an
-/// array).
-fn collect_block<'a>(
-    block: LiveValue<'a>,
-    parent: Option<LiveValue<'a>>,
-    slot: Option<Slot>,
-    descriptors: &mut Vec<Descriptor<'a>>,
-    depth: usize,
-) -> Result<()> {
-    if is_string(block)? {
-        if let (Some(parent), Some(slot)) = (parent, slot) {
-            add_string(descriptors, parent, slot)?;
-        }
-        return Ok(());
-    }
-    if block.nullish()? || !object_like(block)? {
-        return Ok(());
-    }
-    if depth > MAX_DEPTH {
-        return Err(too_deep(block));
-    }
-    let ty = get_property(block, &key("type"))?.string()?;
-    if is_type(ty.as_ref(), "text") || is_type(ty.as_ref(), "thinking") {
-        let field = if is_type(ty.as_ref(), "text") { "text" } else { "thinking" };
-        return add_string(descriptors, block, Slot::Name(key(field)));
-    }
-    if is_type(ty.as_ref(), "tool_use") {
-        let input = get_property(block, &key("input"))?;
-        return collect_model_controlled(input, block, Slot::Name(key("input")), descriptors, depth + 1);
-    }
-    if is_type(ty.as_ref(), "tool_result") {
-        let content = get_property(block, &key("content"))?;
-        return collect_tool_result_content(
-            content,
-            block,
-            Slot::Name(key("content")),
-            descriptors,
-            depth + 1,
-        );
-    }
-    // Unknown block type: the legacy walker still treats text/thinking/input/
-    // content as model-controlled.
-    add_string(descriptors, block, Slot::Name(key("text")))?;
-    add_string(descriptors, block, Slot::Name(key("thinking")))?;
-    let input = get_property(block, &key("input"))?;
-    if !input.nullish()? {
-        collect_model_controlled(input, block, Slot::Name(key("input")), descriptors, depth + 1)?;
-    }
-    let content = get_property(block, &key("content"))?;
-    if !content.nullish()? {
-        collect_tool_result_content(
-            content,
-            block,
-            Slot::Name(key("content")),
-            descriptors,
-            depth + 1,
-        )?;
-    }
-    Ok(())
-}
-
-/// `collectMessageContent(content, descriptors, contentParent, contentKey)`.
-fn collect_message_content<'a>(
-    content: LiveValue<'a>,
-    descriptors: &mut Vec<Descriptor<'a>>,
-    content_parent: Option<LiveValue<'a>>,
-    content_key: Option<Slot>,
-    depth: usize,
-) -> Result<()> {
-    if is_string(content)? {
-        if let (Some(parent), Some(slot)) = (content_parent, content_key) {
-            add_string(descriptors, parent, slot)?;
-        }
-        return Ok(());
-    }
-    if is_array(content)? {
-        for index in 0..array_length(content)? {
-            collect_block(
-                get_element(content, index)?,
-                Some(content),
-                Some(Slot::Index(index)),
-                descriptors,
-                depth + 1,
-            )?;
-        }
-        return Ok(());
-    }
-    collect_block(content, None, None, descriptors, depth + 1)
-}
-
-/// `applySemanticRedactions(descriptors, secrets)`.
-fn apply_semantic_redactions(
-    descriptors: &mut [Descriptor<'_>],
-    secrets: &Secrets,
-) -> Result<bool> {
-    for descriptor in descriptors.iter_mut() {
-        descriptor.redacted = descriptor.value.clone();
-    }
-    // Values only, then keys only, then every descriptor together: consumers
-    // flatten a structure by joining values, by enumerating keys, or by seeing
-    // a key followed by its value.
-    for pass in 0..3 {
-        let selected: Vec<usize> = descriptors
-            .iter()
-            .enumerate()
-            .filter(|(_, descriptor)| match pass {
-                0 => descriptor.kind == Kind::Value,
-                1 => descriptor.kind == Kind::Key,
-                _ => true,
-            })
-            .map(|(index, _)| index)
-            .collect();
-        if selected.is_empty() {
-            continue;
-        }
-        let parts: Vec<JsString> = selected
-            .iter()
-            .map(|&index| descriptors[index].redacted.clone())
-            .collect();
-        let redacted = redact_fragments(parts, secrets);
-        for (&index, text) in selected.iter().zip(redacted) {
-            descriptors[index].redacted = text;
-        }
-    }
-    if !descriptors
-        .iter()
-        .any(|descriptor| descriptor.redacted != descriptor.value)
-    {
-        return Ok(false);
-    }
-    // Values move before keys: a later key rename would otherwise make a value
-    // write recreate the original secret-bearing property name.
-    for descriptor in descriptors.iter() {
-        if descriptor.kind != Kind::Value || descriptor.redacted == descriptor.value {
-            continue;
-        }
-        match &descriptor.slot {
-            Slot::Index(index) => set_element(
-                descriptor.parent,
-                *index,
-                live_string(descriptor.parent, &descriptor.redacted)?,
-            )?,
-            Slot::Name(name) => set_property(
-                descriptor.parent,
-                name,
-                live_string(descriptor.parent, &descriptor.redacted)?,
-            )?,
-        }
-    }
-    for descriptor in descriptors.iter() {
-        if descriptor.kind != Kind::Key || descriptor.redacted == descriptor.value {
-            continue;
-        }
-        rename_key(descriptor)?;
-    }
-    Ok(true)
-}
-
-/// The key-rename half of `applySemanticRedactions`.
-fn rename_key(descriptor: &Descriptor<'_>) -> Result<()> {
-    // `Object.getOwnPropertyDescriptor(parent, key)`: every property the clone
-    // created is an enumerable/configurable/writable data property, and every
-    // key descriptor addresses a member of a cloned object (arrays only yield
-    // value descriptors), so the value is all that has to be carried over.
-    // A shared sub-tree is walked once per `collectModelControlled` call, so a
-    // later descriptor can address a key an earlier rename already deleted
-    // from this same object; `getOwnPropertyDescriptor` then yields undefined
-    // and Node skips the rename entirely.
-    if !has_own(descriptor.parent, descriptor.slot.name())? {
-        return Ok(());
-    }
-    let value = read_slot(descriptor.parent, &descriptor.slot)?;
-    let mut target = descriptor.redacted.clone();
-    let mut collision = 2usize;
-    loop {
-        let has = has_own(descriptor.parent, &target)?;
-        if !has || target == descriptor.value {
-            break;
-        }
-        target = descriptor.redacted.clone();
-        target.push_str(&format!("#{collision}"));
-        collision += 1;
-    }
-    delete_property(descriptor.parent, descriptor.slot.name())?;
-    define_value(descriptor.parent, &target, value)
-}
-
-/// `scrubProviderSemanticStructure(event, secrets)`.
-fn scrub_semantic_structure<'a>(event: LiveValue<'a>, secrets: &Secrets) -> Result<LiveValue<'a>> {
-    if event.nullish()? || !object_like(event)? {
-        return route_redact(event, &mut Vec::new(), 0);
-    }
-    let output = clone_structured(event, &mut Vec::new(), 0)?;
-    let mut descriptors = Vec::new();
-    let ty = get_property(output, &key("type"))?.string()?;
-    if is_type(ty.as_ref(), "assistant") || is_type(ty.as_ref(), "user") {
-        let message = get_property(output, &key("message"))?;
-        if !message.nullish()? {
-            let content = get_property(message, &key("content"))?;
-            if !content.nullish()? {
-                collect_message_content(
-                    content,
-                    &mut descriptors,
-                    Some(message),
-                    Some(Slot::Name(key("content"))),
-                    0,
-                )?;
-            }
-        }
-    } else if is_type(ty.as_ref(), "tool_start") || is_type(ty.as_ref(), "tool_update") {
-        let input = get_property(output, &key("input"))?;
-        collect_model_controlled(input, output, Slot::Name(key("input")), &mut descriptors, 0)?;
-    } else if is_type(ty.as_ref(), "tool_result") {
-        let content = get_property(output, &key("content"))?;
-        collect_tool_result_content(content, output, Slot::Name(key("content")), &mut descriptors, 0)?;
-    }
-    let changed = apply_semantic_redactions(&mut descriptors, secrets)?;
-    route_redact(if changed { output } else { event }, &mut Vec::new(), 0)
 }
 
 /// Redact exact secrets distributed over the model-controlled parts of one
@@ -713,6 +247,18 @@ pub fn provider_scrub_semantic_structure(
     let secrets = cached_secrets(strings(LiveValue::new(&env, secrets))?);
     let output = scrub_semantic_structure(LiveValue::new(&env, event), &secrets)?;
     Ok(output.raw())
+}
+
+/// Original CLI wire JSON, with the same semantic walker as the live object
+/// entry point. Host objects must continue using the direct value bridge.
+#[napi]
+pub fn provider_scrub_semantic_json(
+    env: Env,
+    text: String,
+    secrets: Unknown<'_>,
+) -> Result<String> {
+    let secrets = cached_secrets(strings(LiveValue::new(&env, secrets))?);
+    multicc_core::provider_scrub_json::scrub_json(&text, &secrets).map_err(napi::Error::from_reason)
 }
 
 /// `redactProviderRouteCapability(value)` for any value: strings are rewritten
