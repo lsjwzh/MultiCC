@@ -93,6 +93,87 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     ...require(${JSON.stringify(path.resolve(addon))}), RustQuotaGuard: undefined
   };`);
   assert.equal(probeAddon(staleQuota), false, 'a stale addon cannot silently bypass quota protection');
+  const staleRejection = write(root, 'stale-rejection.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), quotaRejectionRequestValue: undefined
+  };`);
+  assert.equal(probeAddon(staleRejection), false, 'a stale addon cannot bypass rejection park policy');
+  const staleBudget = write(root, 'stale-model-budget.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), modelRequestPolicyValue: undefined
+  };`);
+  assert.equal(probeAddon(staleBudget), false, 'a stale addon cannot bypass model request budgets');
+  const staleRetry = write(root, 'stale-retry.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), retryPolicyValue: undefined
+  };`);
+  assert.equal(probeAddon(staleRetry), false, 'a stale addon cannot bypass retry decisions');
+  const staleConnect = write(root, 'stale-connect.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustRequestTimer: undefined
+  };`);
+  assert.equal(probeAddon(staleConnect), false, 'a stale addon cannot bypass connection deadlines');
+  const staleWatch = write(root, 'stale-watch.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustRequestWatch: undefined
+  };`);
+  assert.equal(probeAddon(staleWatch), false, 'a stale addon cannot bypass request lifecycle state');
+  const staleCprLifecycle = write(root, 'stale-cpr-lifecycle.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), cprRequestLifecycleVersion: undefined
+  };`);
+  assert.equal(probeAddon(staleCprLifecycle), false, 'a stale addon cannot bypass native connection deadlines');
+  const staleCprStream = write(root, 'stale-cpr-stream.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), cprRequestLifecycleVersion: () => 2
+  };`);
+  assert.equal(probeAddon(staleCprStream), false, 'preflight must reject CPR without native stream deadlines');
+  const partialCprStream = write(root, 'partial-cpr-stream.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustCprExchange: class OldExchange {}
+  };`);
+  assert.equal(probeAddon(partialCprStream), false, 'a CPR version alone cannot replace the stream lifecycle methods');
+  const staleProgress = write(root, 'stale-model-progress.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustModelStreamProgress: undefined
+  };`);
+  assert.equal(probeAddon(staleProgress), false, 'a stale addon cannot bypass model stream progress');
+  const staleFence = write(root, 'stale-attempt-fence.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustProviderAttemptLifecycle: undefined
+  };`);
+  assert.equal(probeAddon(staleFence), false, 'a stale addon cannot bypass the provider replay fence');
+  for (const name of ['providerEventFence', 'providerHostTextEnvelope', 'chatOwnsCurrentRunner', 'chatAssignKillReason',
+    'chatClearSucceededErrors', 'chatRecordResultEvent', 'chatRecordCloseResult', 'chatRecordPartialCheckpoint', 'chatHasPartialCheckpoint',
+    'providerRequiredIdentity', 'providerPositiveInteger', 'providerTimeoutBudget', 'providerAttemptFields',
+    'providerRevision', 'providerEncodeProxySession', 'providerDecodeProxySession', 'providerValidateAttemptTransition', 'providerBackgroundLingers', 'providerAuthorizeProxyRequest',
+      'providerNonMainProducerKey', 'providerProxyActivity', 'providerBoundProxyAttempt',
+      'providerForceReleaseProducers', 'providerDrainStaleProducers']) {
+    const stalePolicy = write(root, `stale-${name}.js`, `module.exports = {
+      ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
+    };`);
+    assert.equal(probeAddon(stalePolicy), false, `source preflight must reject missing ${name}`);
+  }
+  const staleFenceMethods = write(root, 'stale-attempt-methods.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustProviderAttemptLifecycle: class OldLifecycle {}
+  };`);
+  assert.equal(probeAddon(staleFenceMethods), false, 'a partial lifecycle class cannot pass source preflight');
+  const staleCompletion = write(root, 'stale-cli-completion.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), cliResultCompletion: undefined
+  };`);
+  assert.equal(probeAddon(staleCompletion), false, 'completion policies cannot silently use an older addon');
+  const staleGenerations = write(root, 'stale-attempt-generations.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustProviderAttemptGenerations: undefined
+  };`);
+  assert.equal(probeAddon(staleGenerations), false, 'a stale addon cannot reset attempt generations');
+  for (const name of ['RustCliCompletionTracker', 'RustStepCompletionTracker', 'RustKimiCompletionTracker', 'RustPiCompletionTracker', 'RustCurrentAttempts', 'RustNonMainProducers', 'RustMainProducers', 'RustChatTurnLifecycle', 'RustChatRunnerLifecycle']) {
+    const staleLifecycle = write(root, `stale-${name}.js`, `module.exports = {
+      ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
+    };`);
+    assert.equal(probeAddon(staleLifecycle), false, `source preflight must reject missing ${name}`);
+  }
+  const partialCurrentAttempts = write(root, 'partial-current-attempts.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustCurrentAttempts: class OldRegistry { get() {} }
+  };`);
+  assert.equal(probeAddon(partialCurrentAttempts), false, 'a registry missing replacement support must be rejected');
+  const noAdmission = write(root, 'old-current-attempts.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustCurrentAttempts: class OldRegistry { get() {} set() {} }
+  };`);
+  assert.equal(probeAddon(noAdmission), false, 'a registry without admission ownership must be rejected');
+  const partialMainProducer = write(root, 'partial-main-producer.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), RustMainProducer: class OldProducer {}
+  };`);
+  assert.equal(probeAddon(partialMainProducer), false, 'a producer view without its mutable accessors must be rejected');
 });
 
 nativeTest('first source boot builds once; a new process reuses it and source changes select a new addon', t => {

@@ -9,7 +9,7 @@ const { getNative } = require('../native/runtime');
 function createRustCprRouter(router, { native, env = process.env } = {}) {
   const unavailable = () => new Error('Rust CPR 模块不可用或版本不匹配，请重新构建 Rust 模块');
   try { native ||= getNative(); } catch (_) { throw unavailable(); }
-  if (native?.cprProtocolVersion?.() !== 1 || ['cprRoute', 'cprPrepare', 'cprCreateExchange', 'RustProviderRequest', 'authorizeProviderRequest', 'codexOfficialError'].some(name => typeof native[name] !== 'function')) {
+  if (native?.cprProtocolVersion?.() !== 1 || native?.cprRequestLifecycleVersion?.() !== 3 || ['cprRoute', 'cprPrepare', 'cprCreateExchange', 'RustProviderRequest', 'authorizeProviderRequest', 'codexOfficialError'].some(name => typeof native[name] !== 'function')) {
     throw unavailable();
   }
   // 复用锁定版本 CPR 的现有宿主回调/能力令牌接口，不另写一套 JS 业务策略。
@@ -152,10 +152,17 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
             input.body = stage.text;
             const updated = (await prepare(input)).plan;
             updated.proxyUrl = plan.proxyUrl;
+            const connectTimeoutMs = options.nativeConnectTimeoutMs?.();
+            if (connectTimeoutMs !== undefined) updated.connectTimeoutMs = connectTimeoutMs;
             exchange = await native.cprCreateExchange(JSON.stringify(updated));
             exchanges.add(exchange);
             if (gone || closed) { exchange.abort(); return; }
-            const head = JSON.parse(await exchange.open());
+            let head;
+            try { head = JSON.parse(await exchange.open()); }
+            catch (error) {
+              if (error?.message === 'MODEL_CONNECT_TIMEOUT') options.nativeConnectTimedOut?.();
+              throw error;
+            }
             if (virtual && head.rateLimit) safeCall(virtualRuntime.observe, provider, head.rateLimit);
             context.isStream = head.isStream;
             if (head.status < 200 || head.status >= 300) {
@@ -209,17 +216,23 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
             if (gone) return;
             if (head.rateLimit) safeCall(options.onRateLimit, { ...context, rateLimitInfo: head.rateLimit });
             request.commit();
+            const nativeProgress = options.nativeStreamStarted?.(exchange) === true;
             res.writeHead(head.status, head.headers);
             res.flushHeaders?.();
             while (!gone) {
               const chunk = await exchange.read();
+              const timedOut = exchange.streamTimeoutCode();
+              if (timedOut) throw new Error(timedOut);
               const meta = JSON.parse(chunk.meta);
               for (const event of meta.events) safeCall(options.onDelta, event, context);
               if (chunk.data.length) {
+                if (nativeProgress && meta.modelProgress) options.nativeStreamProgress?.();
                 if (!firstByte) { firstByte = true; activity('first_byte'); }
                 if (!res.write(chunk.data)) await waitWritable(res);
               }
               if (meta.done) {
+                const terminalCause = exchange.finishStreamWatch();
+                if (terminalCause) throw new Error(terminalCause);
                 settle(meta.failed ? 'error' : 'success', meta.failed ? 'UPSTREAM_RESPONSE_FAILED' : undefined, meta.usage, meta.statusCode);
                 if (!gone) res.end();
                 return;
@@ -230,8 +243,13 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
       } catch (error) {
         // 宿主授权必须保留原异常，让 admission 转成 409；不得掩盖成上游错误。
         if (error?.name === 'ProviderProxyAdmissionError' || error?.code === 'PROVIDER_PROXY_ADMISSION_REJECTED') throw error;
-        const code = ['CLIENT_DISCONNECTED', 'UPSTREAM_HEADERS_TIMEOUT', 'UPSTREAM_CONNECT_FAILED', 'UPSTREAM_STREAM_FAILED'].includes(error.message)
-          ? error.message : error.code === 'RUST_CPR_EGRESS_UNSUPPORTED' ? error.code : 'RUST_CPR_REQUEST_FAILED';
+        if (['model_request_deadline', 'stream_idle_timeout', 'response_stalled_before_response'].includes(error?.message)) {
+          options.nativeStreamTimedOut?.(error.message, exchange?.streamProgressed?.() === true);
+        }
+        const code = ['model_request_deadline', 'stream_idle_timeout', 'response_stalled_before_response'].includes(error.message) ? error.message
+          : error.message === 'MODEL_CONNECT_TIMEOUT' ? 'model_connect_timeout'
+          : ['CLIENT_DISCONNECTED', 'UPSTREAM_HEADERS_TIMEOUT', 'UPSTREAM_CONNECT_FAILED', 'UPSTREAM_STREAM_FAILED'].includes(error.message)
+            ? error.message : error.code === 'RUST_CPR_EGRESS_UNSUPPORTED' ? error.code : 'RUST_CPR_REQUEST_FAILED';
         settle('error', code);
         if (gone || res.destroyed) return;
         if (res.headersSent) res.destroy();

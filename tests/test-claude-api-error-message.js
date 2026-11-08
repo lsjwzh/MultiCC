@@ -22,18 +22,19 @@ const ENVELOPE = "API Error: Request rejected (429) · This request would exceed
 const BODY = '巡检照常：19:00 整点，21:00 起每 15 分钟一次。';
 const AUTO_TURN = { enabled: false, failover: () => null, prepareHandoff: () => null, recordSuccess: noop };
 
-function build({ replayFence = 'visible_output' } = {}) {
+function build({ replayFence = 'visible_output', onPersist = noop, onUsage = noop } = {}) {
   const adapter = createClaudeExpAdapter({
     resolveSessionWireModel: v => v, claudeDefaultModel: () => null,
     cliEffortLevel: () => null, normalizeEffort: () => null,
   });
   const persisted = { id: 'sess', cli: 'claude-exp', model: 'opus' };
+  const chatSessions = new Map();
   const writes = [], decisions = [], classified = [], forwarded = [];
   const attempt = { cli: 'claude-exp', runtimeEpoch: 'epoch-1', turnId: 'turn-1', decisionId: 'decision-1',
     routeAttemptId: 'attempt-1', routeGeneration: 1, attemptNo: 1, providerId: 'provider-1',
     providerRevision: 'revision-1', sessionId: 'sess' };
   const engine = createChatTurnEngine({
-    persistedSessions: new Map([['sess', persisted]]), chatSessions: new Map(),
+    persistedSessions: new Map([['sess', persisted]]), chatSessions,
     isCurrentTurnRunner: (cs, turn, runner) => cs._activeTurn === turn && cs._activeRunner === runner,
     providerAttemptRuntime: {
       scrubAttemptStructure: (_r, e) => e, scrubAttemptEvent: (_r, e) => e,
@@ -48,9 +49,10 @@ function build({ replayFence = 'visible_output' } = {}) {
     persistFinalAssistantResult: (sessionId, state, turn, runner, message) => {
       writes.push({ content: String(message.content || ''), partial: !!message.partial });
       if (message.partial !== true) { turn.resultDurable = true; turn.resultRunnerId = runner.runnerId; }
+      onPersist(state, turn, runner);
       return true;
     },
-    recordDurableTurnUsage: () => true,
+    recordDurableTurnUsage: (...args) => { onUsage(...args); return true; },
     modelAttributionField: () => ({}), turnTimingsField: () => ({}), usageLimitPoller: { onTurnComplete: noop },
     logger: { warn: noop, info: noop, error: noop }, chatBroadcast: noop, loadChatHistory: () => [],
     taskContextHost: { turnOptions: o => o, restore: () => null }, savePersistedSessionsBestEffort: noop,
@@ -77,7 +79,7 @@ function build({ replayFence = 'visible_output' } = {}) {
     pendingUsage: null };
   cs._activeTurn = turn; cs._activeRunner = runner; cs._streamTurnSeq = 1;
   const forward = evt => { forwarded.push(evt); return true; };
-  return { engine, adapter, cs, persisted, turn, runner, forward, writes, decisions, classified, forwarded };
+  return { engine, adapter, cs, persisted, turn, runner, forward, writes, decisions, classified, forwarded, chatSessions };
 }
 
 const textEvent = (text, extra = {}) => ({ type: 'assistant', parent_tool_use_id: null,
@@ -129,6 +131,33 @@ function release(env, item) {
 
 const errorFrameCount = (env, text = ENVELOPE) => env.forwarded.filter(frame => JSON.stringify(frame).includes(text)).length;
 const bodyWrites = writes => writes.filter(write => write.content.trim());
+
+test('a stale result callback cannot mutate or broadcast into the replacement runner', () => {
+  for (const boundary of ['append', 'usage', 'session-replaced', 'session-deleted']) {
+    let env;
+    const replace = () => {
+      if (boundary === 'session-replaced') { env.chatSessions.set('sess', { _resultSaved: 'replacement' }); return; }
+      if (boundary === 'session-deleted') { env.chatSessions.delete('sess'); return; }
+      env.cs._activeRunner = { runnerId: 'replacement', turnId: env.turn.turnId };
+      env.cs._resultSaved = 'replacement';
+      env.cs.chatTurnCount = 37;
+    };
+    env = build({ onPersist: boundary !== 'usage' ? replace : noop,
+      onUsage: boundary === 'usage' ? replace : noop });
+    if (boundary.startsWith('session-')) {
+      env.chatSessions.set('sess', env.cs);
+      env.cs._resultSaved = 'replacement';
+      env.cs.chatTurnCount = 37;
+    }
+    env.cs.currentAssistantText = BODY;
+    env.runner.completionOutcome = { version: 1, state: 'completed', settled: true };
+    env.engine.applyClaudeChatEvent(env.cs, 'sess', mainResult(BODY), env.forward, env.turn, env.runner);
+    assert.equal(env.writes.length, 1, 'the original history append completed');
+    assert.equal(env.cs._resultSaved, 'replacement');
+    assert.equal(env.cs.chatTurnCount, 37);
+    assert.equal(env.forwarded.some(event => event.type === 'result'), false);
+  }
+});
 
 test('held turn: a 429 self-wake finalizes as an API error and keeps the envelope out of the answer', () => {
   const env = build();

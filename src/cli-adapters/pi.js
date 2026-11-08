@@ -2,7 +2,8 @@
 
 const path = require('node:path');
 const { renderPrompt } = require('../message-composer');
-const { completion, createCompletionTracker } = require('./completion');
+const { createCompletionTracker } = require('./completion');
+const { getNative } = require('../native/runtime');
 const { extractUpstreamError } = require('../upstream-error');
 
 const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
@@ -57,24 +58,10 @@ function createPiAdapter({ cmd = 'pi', routerMcpNode, routerMcpScript } = {}) {
     createCompletionTracker() {
       // Pi may emit agent_end(error), auto_retry_start, then agent_end(stop).
       // Only the latest boundary is authoritative once the process settles.
-      let latest = completion('unknown', 'pi_missing_agent_end');
+      const native = new (getNative().RustPiCompletionTracker)();
       return createCompletionTracker({
-        observe(event) {
-          if (event.type === 'agent_start' || event.type === 'auto_retry_start') {
-            latest = completion('unknown', 'pi_agent_running');
-          } else if (event.type === 'agent_end') {
-            const reason = lastAssistant(event)?.stopReason;
-            latest = completion(reason === 'stop' ? 'completed' : reason === 'aborted' ? 'cancelled' : 'failed',
-              `pi_${reason || 'missing_assistant'}`);
-          } else if (event.type === 'auto_retry_end' && !event.success) {
-            latest = completion('failed', 'pi_retry_exhausted');
-          }
-          return null;
-        },
-        close(_boundary, _evidence, facts) {
-          return latest.state === 'completed' && facts.pendingTools
-            ? completion('failed', 'pi_pending_tools') : latest;
-        },
+        observe: event => native.observe(event, lastAssistant),
+        close: (_boundary, _evidence, facts) => native.close(facts),
       });
     },
     decodeEvent(event) {

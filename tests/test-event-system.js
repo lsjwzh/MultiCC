@@ -11,6 +11,7 @@ const { createEventRuleEngine } = require('../src/events/engine');
 const { validateEventRule } = require('../src/events/rules');
 const { isPrivateAddress, sign } = require('../src/events/actions');
 const { createSessionTriggers } = require('../src/triggers');
+const { createChatHostRuntime } = require('../src/chat/host-runtime');
 
 const base = { taskId: 't1', goal: 'ship it', phase: 'impl', startedAt: 1, classifyState: 'P', goalState: null };
 
@@ -20,6 +21,7 @@ function harness(extra = {}) {
   const hub = createEventHub({ bus, randomUUID: () => `e${++n}`, now: () => 1000, dirIdOf: () => 'dir1' });
   hub.start();
   const log = [];
+  if (extra.beforeSubscribe) hub.subscribe(extra.beforeSubscribe);
   hub.subscribe((event) => log.push(event));
   return { bus, hub, log };
 }
@@ -112,6 +114,9 @@ test('hub: turn.completed only for durable results', () => {
   const { bus, log } = harness();
   bus.emit('chat:turn-complete', 's1', {}, { resultDurable: false });
   bus.emit('chat:turn-complete', 's1', {}, { resultDurable: true, turnId: 'x', lineage: { kind: 'trigger' } });
+  assert.doesNotThrow(() => bus.emit('chat:turn-complete', 's1', {}, {
+    resultDurable: true, isCurrentRunner() { throw new Error('state unavailable'); },
+  }));
   assert.equal(log.length, 1);
   assert.equal(log[0].type, 'turn.completed');
   assert.equal(log[0].data.lineageKind, 'trigger');
@@ -129,7 +134,7 @@ test('rules: validation rejects bad patterns, actions, urls and enforces inject 
 });
 
 function engineHarness(extra = {}) {
-  const { bus, hub, log } = harness();
+  const { bus, hub, log } = harness({ beforeSubscribe: extra.beforeSubscribe });
   const persistedSessions = new Map([['s1', { id: 's1', dirId: 'dir1', triggers: [] }]]);
   const calls = { notify: [], inject: [], http: [] };
   let stored = null;
@@ -624,6 +629,124 @@ test('engine: a user turn finishing while the step is queued does not advance th
   await h.settle();
   assert.equal(h.calls.inject.length, 2);
   assert.ok(h.calls.inject[1][1].trimEnd().endsWith('你的指令：b'));
+});
+
+test('a replaced runner cannot publish its old turn into a newer event chain', async () => {
+  const h = chainHarness();
+  h.engine.addGlobal({ on: ['task.finished'], action: { kind: 'inject-prompt', prompt: 'a' },
+    then: [{ kind: 'inject-prompt', prompt: 'b' }] });
+  h.hub.emit('task.finished', 's1', { goal: 'g' });
+  await h.settle();
+  h.hub.emit('turn.completed', 's1', { lineageKind: 'user' });
+  assert.equal(h.engine.pendingChains()[0].sawOther, true);
+  assert.equal(h.engine.pendingChains()[0].sawTrigger, false);
+  const turn = { turnId: 'old', sessionId: 's1', requestId: 'old-request', lineage: { kind: 'trigger' },
+    resultDurable: true, resultRunnerId: 'old-runner', postTurnClaimed: false };
+  const runner = { turnId: turn.turnId, runnerId: 'old-runner',
+    completionOutcome: { version: 1, state: 'completed', settled: true } };
+  const state = { _activeTurn: turn, _activeRunner: runner };
+  const nextTurn = { ...turn, turnId: 'new', resultRunnerId: 'new-runner', postTurnClaimed: false };
+  const nextRunner = { ...runner, turnId: nextTurn.turnId, runnerId: 'new-runner' };
+  const nextState = { _activeTurn: nextTurn, _activeRunner: nextRunner };
+  let live = state;
+  const gateway = [];
+  const replace = () => { live = nextState; };
+  h.bus.prependListener('chat:turn-complete', replace);
+  const host = createChatHostRuntime({
+    appendMessage: () => true, persistUsage: () => true, afterUsageCommit() {},
+    getSessionState: () => live, consumeHandoff() {},
+    emitTurnComplete: (...args) => h.bus.emit('chat:turn-complete', ...args),
+    emitDispatchComplete() {}, emitGatewayComplete: (...args) => gateway.push(args), logSuppressed() {},
+  });
+  const completedBefore = h.log.filter(event => event.type === 'turn.completed').length;
+  assert.equal(host.runDurablePostTurn('s1', state, { type: 'gateway' }, turn, runner, 'old answer'), false);
+  assert.deepEqual(gateway, [['old answer', 's1', 'old', 'old-request']]);
+  assert.equal(h.log.filter(event => event.type === 'turn.completed').length, completedBefore);
+  assert.equal(h.engine.pendingChains()[0].sawTrigger, false);
+  h.hub.emit('task.finished', 's1', { goal: 'g' });
+  await h.settle();
+  assert.equal(h.calls.inject.length, 1, 'the stale result does not advance the new chain');
+  h.bus.removeListener('chat:turn-complete', replace);
+  assert.equal(host.runDurablePostTurn('s1', nextState, {}, nextTurn, nextRunner, 'new answer'), true);
+  assert.equal(h.log.filter(event => event.type === 'turn.completed').length, completedBefore + 1);
+  h.hub.emit('task.finished', 's1', { goal: 'g' });
+  await h.settle();
+  assert.equal(h.calls.inject.length, 2, 'the real current turn can advance the chain');
+  h.engine.stop();
+  h.hub.stop();
+});
+
+test('a hub subscriber replacing the runner blocks later subscribers and the new chain', async () => {
+  let live;
+  let replaceOnCompletion = false;
+  let replacement;
+  const first = [];
+  const h = chainHarness({ beforeSubscribe(event) {
+    if (event.type === 'turn.completed' && replaceOnCompletion) {
+      first.push(event);
+      live = replacement;
+    }
+  } });
+  const later = [];
+  h.hub.subscribe(event => { if (event.type === 'turn.completed') later.push(event); });
+  h.engine.addGlobal({ on: ['task.finished'], action: { kind: 'inject-prompt', prompt: 'a' },
+    then: [{ kind: 'inject-prompt', prompt: 'b' }] });
+  h.hub.emit('task.finished', 's1', { goal: 'g' });
+  await h.settle();
+  h.hub.emit('turn.completed', 's1', { lineageKind: 'user' });
+  assert.equal(h.engine.pendingChains()[0].sawOther, true);
+  const turn = { turnId: 'old', sessionId: 's1', requestId: 'old-request', lineage: { kind: 'trigger' },
+    resultDurable: true, resultRunnerId: 'old-runner', postTurnClaimed: false };
+  const runner = { turnId: turn.turnId, runnerId: 'old-runner',
+    completionOutcome: { version: 1, state: 'completed', settled: true } };
+  const state = { _activeTurn: turn, _activeRunner: runner };
+  const nextTurn = { ...turn, turnId: 'new', resultRunnerId: 'new-runner', postTurnClaimed: false };
+  const nextRunner = { ...runner, turnId: nextTurn.turnId, runnerId: 'new-runner' };
+  replacement = { _activeTurn: nextTurn, _activeRunner: nextRunner };
+  live = state;
+  const gateway = [];
+  const host = createChatHostRuntime({
+    appendMessage: () => true, persistUsage: () => true, afterUsageCommit() {},
+    getSessionState: () => live, consumeHandoff() {},
+    emitTurnComplete: (...args) => h.bus.emit('chat:turn-complete', ...args),
+    emitDispatchComplete() {}, emitGatewayComplete: (...args) => gateway.push(args), logSuppressed() {},
+  });
+  const before = h.log.filter(event => event.type === 'turn.completed').length;
+  const laterBefore = later.length;
+  replaceOnCompletion = true;
+  assert.equal(host.runDurablePostTurn('s1', state, { type: 'gateway' }, turn, runner, 'old answer'), false);
+  assert.deepEqual(gateway, [['old answer', 's1', 'old', 'old-request']]);
+  assert.equal(first.length, 1, 'the earlier subscriber was called while the runner was current');
+  assert.equal(h.hub.recent().some(event => event.eventId === first[0].eventId), true,
+    'the already published event is not falsely recalled');
+  assert.equal(h.log.filter(event => event.type === 'turn.completed').length, before);
+  assert.equal(later.length, laterBefore, 'no later subscriber sees the stale event');
+  assert.equal(h.engine.pendingChains()[0].sawTrigger, false);
+  h.hub.emit('task.finished', 's1', { goal: 'g' });
+  await h.settle();
+  assert.equal(h.calls.inject.length, 1, 'the stale event cannot advance the chain');
+  replaceOnCompletion = false;
+  assert.equal(host.runDurablePostTurn('s1', replacement, {}, nextTurn, nextRunner, 'new answer'), true);
+  assert.equal(later.length, laterBefore + 1, 'the current turn reaches all subscribers');
+  h.hub.emit('task.finished', 's1', { goal: 'g' });
+  await h.settle();
+  assert.equal(h.calls.inject.length, 2);
+  h.engine.stop();
+  h.hub.stop();
+});
+
+test('owner loss while constructing a completion envelope prevents recording', () => {
+  const bus = new EventEmitter();
+  let current = true;
+  const hub = createEventHub({ bus, randomUUID: () => 'event', dirIdOf: () => { current = false; return 'dir'; } });
+  const seen = [];
+  hub.subscribe(event => seen.push(event));
+  hub.start();
+  bus.emit('chat:turn-complete', 's1', {}, { turnId: 'old', resultDurable: true,
+    isCurrentRunner: () => current });
+  assert.deepEqual(seen, []);
+  assert.deepEqual(hub.recent(), []);
+  hub.stop();
 });
 
 test('engine: a busy session makes the next step wait instead of failing', async () => {

@@ -13,7 +13,7 @@ multicc-cpr = { path = "../cpr" }
 napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt"] }
 napi-derive = "3"
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
 [build-dependencies]
 napi-build = "2"

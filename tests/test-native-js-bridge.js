@@ -63,6 +63,32 @@ test('round trip preserves every surprising leaf', () => {
   assertRoundTrip(1.5);
 });
 
+test('native outputs create own properties without inherited setters or prototype mutation', () => {
+  const input = JSON.parse('{"__proto__":{"bridgeMarker":true},"_bridgePrototypeTrap_":"own"}');
+  const array = ['first', 'second'];
+  let setters = 0, output, arrayOutput, evidence;
+  Object.defineProperty(Object.prototype, '_bridgePrototypeTrap_', { configurable: true, set() { setters++; } });
+  Object.defineProperty(Object.prototype, 'source', { configurable: true, set() { setters++; } });
+  Object.defineProperty(Array.prototype, '1', { configurable: true, set() { setters++; } });
+  try {
+    output = native.jsBridgeRoundTrip(input);
+    arrayOutput = native.jsBridgeRoundTrip(array);
+    evidence = native.cliCompletion('completed', 'reason', 'protocol');
+  } finally {
+    delete Object.prototype._bridgePrototypeTrap_;
+    delete Object.prototype.source;
+    delete Array.prototype[1];
+  }
+  assert.equal(setters, 0);
+  assert.deepEqual(output, input);
+  assert.equal(Object.getPrototypeOf(output), Object.prototype);
+  assert.equal(Object.hasOwn(output, '__proto__'), true);
+  assert.deepEqual(arrayOutput, array);
+  assert.equal(Object.hasOwn(arrayOutput, '1'), true);
+  assert.equal(evidence.source, 'protocol');
+  assert.equal(Object.hasOwn(evidence, 'source'), true);
+});
+
 test('round trip preserves object values, keys and order', () => {
   const input = {
     '\ud83d': 'lone surrogate key',

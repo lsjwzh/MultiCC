@@ -22,7 +22,8 @@
 
 const { renderPrompt } = require('../message-composer');
 const { claudeLikeMcpArgs } = require('./router-mcp');
-const { completion, createCompletionTracker } = require('./completion');
+const { createCompletionTracker } = require('./completion');
+const { getNative } = require('../native/runtime');
 
 const { displayNameOf } = require('../cli/cli-capability');
 const LABEL = displayNameOf('kimi');
@@ -51,17 +52,10 @@ function createKimiAdapter({ cmd, routerMcpNode, routerMcpScript } = {}) {
     // accepts result.type=completed. Cleanup/goal failures can still exit 1,
     // so the marker is confirmed at process close, not at receipt time.
     createCompletionTracker() {
-      let resumeHint = false;
+      const native = new (getNative().RustKimiCompletionTracker)();
       return createCompletionTracker({
-        observe(event) {
-          if (event.role === 'meta' && event.type === 'session.resume_hint'
-            && typeof event.session_id === 'string' && event.session_id.trim()) resumeHint = true;
-          return null;
-        },
-        close(boundary, evidence, facts) {
-          return boundary.kind === 'process' && resumeHint && !facts.sawError && !facts.pendingTools
-            ? completion('completed', 'print_resume_hint', 'protocol_and_exit') : evidence;
-        },
+        observe: event => native.observe(event),
+        close: (boundary, evidence, facts) => native.close(boundary, evidence, facts),
       });
     },
     cmd,

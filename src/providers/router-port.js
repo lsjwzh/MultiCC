@@ -479,7 +479,7 @@ function createProviderRouterPort(options = {}) {
         createProviderProxyGuard({ protocol: 'claude', authorizeProxyRequest, ...(onRejected ? { onRejected } : {}) }),
       );
       const quota = createClaudeQuotaBridge(admission ? admission.app : app,
-        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent, onDelta: admission.onDelta } : {}), ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}), ...(mountOptions.claudeProxy || {}) });
+        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent, onDelta: admission.onDelta, nativeConnectTimeoutMs: admission.nativeConnectTimeoutMs, nativeConnectTimedOut: admission.nativeConnectTimedOut, nativeStreamStarted: admission.nativeStreamStarted, nativeStreamProgress: admission.nativeStreamProgress, nativeStreamTimedOut: admission.nativeStreamTimedOut } : {}), ...(mountOptions.claudeProxyPath ? { claudeProxyPath: String(mountOptions.claudeProxyPath) } : {}), ...(mountOptions.claudeProxy || {}) });
       const recovery = createClaudeOAuthProxyRecovery(quota.app, quota.options);
       mounted.claude = requireMethod(backend, 'mountClaudeProxy', mode === 'cpr' ? 'router' : 'legacy')(recovery.app, recovery.options);
     }
@@ -532,7 +532,7 @@ function createProviderRouterPort(options = {}) {
       });
       mounted.codex = requireMethod(backend, 'mountCodexProxy', mode === 'cpr' ? 'router' : 'legacy')(
         admission ? admission.app : app,
-        { ...common, codexOfficialRelay: mountOptions.codexOfficialRelay, ...(historyHooks || {}), ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent, onDelta: admission.onDelta } : {}), ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}), ...(mountOptions.codexProxy || {}) },
+        { ...common, codexOfficialRelay: mountOptions.codexOfficialRelay, ...(historyHooks || {}), ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent, onDelta: admission.onDelta, nativeConnectTimeoutMs: admission.nativeConnectTimeoutMs, nativeConnectTimedOut: admission.nativeConnectTimedOut, nativeStreamStarted: admission.nativeStreamStarted, nativeStreamProgress: admission.nativeStreamProgress, nativeStreamTimedOut: admission.nativeStreamTimedOut } : {}), ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}), ...(mountOptions.codexProxy || {}) },
       );
       if (trace && !app[CODEX_TRACE_EXIT]) {
         app[CODEX_TRACE_EXIT] = true;

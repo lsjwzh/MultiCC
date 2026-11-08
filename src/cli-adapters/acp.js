@@ -10,7 +10,7 @@
 
 const path = require('node:path');
 const { errorFields } = require('../provider-error');
-const { completion, createCompletionTracker } = require('./completion');
+const { createProtocolCompletionTracker } = require('./completion');
 const { renderPrompt } = require('../message-composer');
 
 const BRIDGE = path.join(__dirname, 'acp-bridge.cjs');
@@ -44,18 +44,7 @@ function currentFile(update) {
 }
 
 function createAcpCompletionTracker() {
-  return createCompletionTracker({
-    observe(event) {
-      if (event?.method === 'multicc/error') return completion('failed', `acp_${event.params?.phase || 'error'}`);
-      if (event?.method !== 'multicc/turnEnd') return null;
-      const reason = event.params?.stopReason || 'unknown';
-      if (reason === 'end_turn') return completion('completed', 'acp/end_turn');
-      if (reason === 'cancelled') return completion('cancelled', 'acp/cancelled');
-      // max_tokens / max_turn_requests: the agent stopped on a budget, the turn
-      // is not a success the host may treat as final.
-      return completion('failed', `acp/${reason}`);
-    },
-  });
+  return createProtocolCompletionTracker('acp');
 }
 
 function createAcpAdapter({

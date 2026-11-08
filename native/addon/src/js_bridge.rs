@@ -470,10 +470,9 @@ pub(crate) unsafe fn write_value(env: sys::napi_env, value: &JsValue) -> Result<
             )?;
             for (index, item) in items.iter().enumerate() {
                 let element = unsafe { write_value(env, item) }?;
-                check(
-                    unsafe { sys::napi_set_element(env, result, index as u32, element) },
-                    "napi_set_element",
-                )?;
+                let key =
+                    unsafe { create_string(env, &JsString::from_rust_str(&index.to_string())) }?;
+                unsafe { define_value(env, result, key, element) }?;
             }
             Ok(result)
         }
@@ -486,14 +485,37 @@ pub(crate) unsafe fn write_value(env: sys::napi_env, value: &JsValue) -> Result<
             for (key, item) in entries {
                 let name = unsafe { create_string(env, key) }?;
                 let property = unsafe { write_value(env, item) }?;
-                check(
-                    unsafe { sys::napi_set_property(env, result, name, property) },
-                    "napi_set_property",
-                )?;
+                unsafe { define_value(env, result, name, property) }?;
             }
             Ok(result)
         }
     }
+}
+
+/// CreateDataProperty semantics for objects/arrays crossing from Rust. A plain
+/// assignment would invoke inherited setters or treat __proto__ as mutation.
+pub(crate) unsafe fn define_value(
+    env: sys::napi_env,
+    object: sys::napi_value,
+    key: sys::napi_value,
+    value: sys::napi_value,
+) -> Result<()> {
+    let descriptor = sys::napi_property_descriptor {
+        utf8name: ptr::null(),
+        name: key,
+        method: None,
+        getter: None,
+        setter: None,
+        value,
+        attributes: sys::PropertyAttributes::writable
+            | sys::PropertyAttributes::enumerable
+            | sys::PropertyAttributes::configurable,
+        data: ptr::null_mut(),
+    };
+    check(
+        unsafe { sys::napi_define_properties(env, object, 1, &descriptor) },
+        "napi_define_properties",
+    )
 }
 
 /// One lossless read and write across the boundary.

@@ -1,5 +1,9 @@
 use multicc_cpr::{plan, transport::Exchange};
-use napi::{bindgen_prelude::Buffer, Result};
+use napi::{
+    bindgen_prelude::{spawn, Buffer},
+    threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
+    Result, Status,
+};
 use napi_derive::napi;
 use std::sync::Arc;
 
@@ -11,6 +15,14 @@ fn error(message: String) -> napi::Error {
 pub fn cpr_protocol_version() -> u32 {
     1
 }
+
+// Version of the host-to-transport request lifecycle contract.
+#[napi]
+pub fn cpr_request_lifecycle_version() -> u32 {
+    3
+}
+
+type StreamTimeoutCallback = ThreadsafeFunction<String, (), String, Status, false, true>;
 
 // Only bounded quota metadata crosses this synchronous compatibility bridge.
 #[napi]
@@ -74,6 +86,53 @@ pub struct CprErrorBody {
 #[napi]
 impl RustCprExchange {
     #[napi]
+    pub fn start_stream_watch(
+        &self,
+        idle_ms: u32,
+        idle_remaining_ms: u32,
+        deadline_remaining_ms: u32,
+        progressed: bool,
+        callback: StreamTimeoutCallback,
+    ) -> Result<()> {
+        self.inner
+            .start_stream_watch(
+                idle_ms.into(),
+                idle_remaining_ms.into(),
+                deadline_remaining_ms.into(),
+                progressed,
+            )
+            .map_err(error)?;
+        let exchange = self.inner.clone();
+        spawn(async move {
+            if let Some((code, progressed)) = exchange.wait_stream_timeout().await {
+                let payload =
+                    serde_json::json!({ "code": code, "progressed": progressed }).to_string();
+                let _ = callback.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
+            }
+        });
+        Ok(())
+    }
+    #[napi]
+    pub fn stop_stream_watch(&self) {
+        self.inner.stop_stream_watch();
+    }
+    #[napi]
+    pub fn note_stream_progress(&self) -> bool {
+        self.inner.note_stream_progress()
+    }
+    #[napi]
+    pub fn stream_progressed(&self) -> bool {
+        self.inner.stream_progressed()
+    }
+    #[napi]
+    pub fn stream_timeout_code(&self) -> Option<&'static str> {
+        self.inner.stream_timeout_code()
+    }
+    #[napi]
+    pub fn finish_stream_watch(&self) -> Option<&'static str> {
+        self.inner.finish_stream_watch()
+    }
+    #[napi]
     pub async fn open(&self) -> Result<String> {
         self.inner
             .open()
@@ -100,8 +159,8 @@ impl RustCprExchange {
         })
     }
     #[napi]
-    pub fn abort(&self) {
-        self.inner.cancel.cancel();
+    pub fn abort(&self) -> Option<&'static str> {
+        self.inner.abort()
     }
     #[napi]
     pub async fn close(&self) {
@@ -110,6 +169,6 @@ impl RustCprExchange {
 }
 impl Drop for RustCprExchange {
     fn drop(&mut self) {
-        self.inner.cancel.cancel();
+        self.inner.abort();
     }
 }

@@ -109,6 +109,36 @@ test('Claude stream and process runners keep different finality contracts', () =
   assert.equal(decideRunnerFinality(stream, {}).final, true);
 });
 
+test('Rust runner finality matches the existing stream and process boundary rules', () => {
+  function previous(runner, facts) {
+    if (!runner) return { final: false, code: 'runner_required' };
+    if (runner.killReason || facts.killReason) return { final: false, code: 'explicit_lifecycle_stop' };
+    if (runner.retryPlanned || facts.retryPlanned === true) return { final: false, code: 'retry_pending' };
+    if (facts.apiError === true) return { final: false, code: 'api_error' };
+    if (facts.adapterError === true) return { final: false, code: 'adapter_error' };
+    if (runner.kind === 'stream') return { final: runner.resultEvent === true,
+      code: runner.resultEvent === true ? null : 'stream_result_event_required' };
+    const final = runner.resultEvent === true || (facts.normalExit === true && facts.isRetry !== true);
+    return { final, code: final ? null : facts.isRetry === true ? 'retry_result_event_required' : 'clean_exit_required' };
+  }
+  for (let mask = 0; mask < 1024; mask++) {
+    const runner = { kind: mask & 1 ? 'stream' : 'process', resultEvent: !!(mask & 2),
+      killReason: mask & 4 ? 'cancelled' : null, retryPlanned: !!(mask & 8) };
+    const facts = { normalExit: !!(mask & 16), isRetry: !!(mask & 32), apiError: !!(mask & 64),
+      adapterError: !!(mask & 128), killReason: mask & 256 ? 'stopped' : null, retryPlanned: !!(mask & 512) };
+    assert.deepEqual(decideRunnerFinality(runner, facts), previous(runner, facts));
+  }
+  assert.deepEqual(decideRunnerFinality(null, null), previous(null, null));
+});
+
+test('stream finality preserves result getter reads and their side effects', () => {
+  let count = 0;
+  const runner = { kind: 'stream', get resultEvent() { return ++count === 1; } };
+  assert.deepEqual(decideRunnerFinality(runner, {}), { final: true, code: 'stream_result_event_required' });
+  assert.equal(count, 2);
+  assert.throws(() => decideRunnerFinality({ get killReason() { throw new Error('stop'); } }, {}), /stop/);
+});
+
 test('stale runner cannot append, commit usage, reserve effects or mutate current turn', () => {
   let calls = 0;
   const coordinator = createChatHostCoordinator(makePorts({
@@ -132,6 +162,110 @@ test('stale runner cannot append, commit usage, reserve effects or mutate curren
   assert.equal(old.runner.resultEvent, false);
   assert.equal(coordinator.reservePostTurn(facts).code, 'stale_runner');
   assert.equal(calls, 0);
+});
+
+test('final result append reserves the turn across synchronous reentry and releases after errors', () => {
+  for (const plainTurn of [false, true]) {
+    const owned = makeOwned();
+    if (plainTurn) { owned.turn = { ...owned.turn }; owned.currentTurn = owned.turn; }
+    let writes = 0;
+    const nested = [];
+    const input = { ...owned, boundary: 'result', message: { role: 'assistant', content: 'done' } };
+    const coordinator = createChatHostCoordinator(makePorts({ appendFinal: () => {
+      writes++;
+      nested.push(coordinator.appendResult(input));
+      if (writes === 1) return false;
+      if (writes === 2) throw new Error('write failed');
+      return true;
+    } }));
+    assert.equal(coordinator.appendResult(input).code, 'result_not_durable');
+    assert.equal(coordinator.appendResult(input).code, 'append_failed');
+    assert.equal(coordinator.appendResult(input).durable, true);
+    assert.equal(writes, 3);
+    assert.deepEqual(nested.map(item => item.code), Array(3).fill('result_append_in_flight'));
+    assert.equal(owned.turn.resultDurable, true);
+  }
+});
+
+test('durable final output cannot be claimed by a different retry runner', () => {
+  const owned = makeOwned();
+  const coordinator = createChatHostCoordinator(makePorts());
+  assert.equal(coordinator.appendResult({ ...owned, boundary: 'result', message: { role: 'assistant', content: 'first' } }).durable, true);
+  const retry = createRunnerOwnership(owned.turn, { runnerId: 'retry', kind: 'process' });
+  const result = coordinator.appendResult({ ...owned, runner: retry, currentRunner: retry,
+    boundary: 'result', message: { role: 'assistant', content: 'second' } });
+  assert.equal(result.code, 'result_owned_by_other_runner');
+  assert.equal(result.durable, false);
+  assert.equal(owned.turn.resultRunnerId, owned.runner.runnerId);
+});
+
+test('a persisted append whose runner was replaced reports persistence without granting ownership', () => {
+  for (const plainTurn of [false, true]) {
+    const owned = makeOwned();
+    if (plainTurn) { owned.turn = { ...owned.turn }; owned.currentTurn = owned.turn; }
+    const next = makeOwned({ turnId: 'next-turn', runnerId: 'next-runner' });
+    let currentTurn = owned.turn;
+    let currentRunner = owned.runner;
+    const coordinator = createChatHostCoordinator(makePorts({ appendFinal: () => {
+      currentTurn = next.turn;
+      currentRunner = next.runner;
+      return true;
+    } }));
+    const result = coordinator.appendResult({ turn: owned.turn, runner: owned.runner,
+      get currentTurn() { return currentTurn; }, get currentRunner() { return currentRunner; },
+      boundary: 'result', message: { role: 'assistant', content: 'persisted' } });
+    assert.equal(result.persisted, true);
+    assert.equal(result.durable, false);
+    assert.equal(result.code, 'stale_runner');
+    assert.equal(owned.turn.resultDurable, false);
+    assert.equal(next.turn.resultDurable, false);
+  }
+});
+
+test('stale confirmed final blocks another runner and recovers only for its original owner', () => {
+  for (const plainTurn of [false, true]) {
+    const owned = makeOwned();
+    if (plainTurn) { owned.turn = { ...owned.turn }; owned.currentTurn = owned.turn; }
+    const replacement = createRunnerOwnership(owned.turn, { runnerId: owned.runner.runnerId, kind: 'process' });
+    let currentRunner = owned.runner;
+    let writes = 0;
+    const coordinator = createChatHostCoordinator(makePorts({ appendFinal: () => {
+      writes++;
+      currentRunner = replacement;
+      return true;
+    } }));
+    const input = { turn: owned.turn, runner: owned.runner, currentTurn: owned.turn,
+      get currentRunner() { return currentRunner; }, boundary: 'result',
+      message: { role: 'assistant', content: 'persisted' } };
+    const stale = coordinator.appendResult(input);
+    assert.equal(stale.persisted, true);
+    assert.equal(stale.code, 'stale_runner');
+    assert.equal(owned.turn.resultDurable, false, 'the replacement is not granted a final result');
+    const retry = coordinator.appendResult({ ...input, runner: replacement, currentRunner: replacement });
+    assert.equal(retry.code, 'result_owned_by_other_runner');
+    assert.equal(retry.durable, false);
+    assert.equal(writes, 1, 'a distinct runner with the same id cannot append again');
+    currentRunner = owned.runner;
+    const recovered = coordinator.appendResult(input);
+    assert.equal(recovered.code, 'already_durable');
+    assert.equal(recovered.durable, true);
+    assert.equal(owned.turn.resultRunnerId, owned.runner.runnerId);
+    assert.equal(writes, 1, 'the original owner recovers the receipt without writing again');
+  }
+});
+
+test('partial checkpoints do not occupy the final-result receipt', () => {
+  const owned = makeOwned({ kind: 'process' });
+  let writes = 0;
+  const coordinator = createChatHostCoordinator(makePorts({ appendFinal: () => { writes++; return true; } }));
+  const partial = coordinator.appendResult({ ...owned, boundary: 'close', facts: { normalExit: false },
+    checkpointKey: 'partial', message: { role: 'assistant', content: 'partial' } });
+  assert.equal(partial.partial, true);
+  assert.equal(partial.persisted, true);
+  assert.equal(partial.durable, false);
+  const final = coordinator.appendResult({ ...owned, boundary: 'result', message: { role: 'assistant', content: 'final' } });
+  assert.equal(final.durable, true);
+  assert.equal(writes, 2);
 });
 
 test('result append and close retry can both fail without creating durable proof or post-turn effects', () => {
@@ -257,6 +391,165 @@ test('authoritative usage commit is retriable, runner-owned and claimed exactly 
   assert.equal(coordinator.commitUsage({ ...owned, usage: { input_tokens: 4 } }).code, 'usage_already_recorded');
   assert.equal(commitCalls, 2);
   assert.equal(observerCalls, 1);
+});
+
+test('usage write rejects synchronous reentry and releases the reservation on failure', () => {
+  for (const plainRunner of [false, true]) {
+    const owned = makeOwned({ kind: 'process', request: { cli: 'codex' } });
+    if (plainRunner) {
+      owned.runner = { ...owned.runner };
+      owned.currentRunner = owned.runner;
+    }
+    let calls = 0;
+    const nested = [];
+    const input = { ...owned, usage: { input_tokens: 4 } };
+    const coordinator = createChatHostCoordinator(makePorts({
+      commitUsage: () => {
+        calls++;
+        nested.push(coordinator.commitUsage(input));
+        if (calls === 1) throw new Error('temporary write failure');
+        return true;
+      },
+    }));
+    coordinator.appendResult({ ...owned, boundary: 'result', message: { role: 'assistant', content: 'done' } });
+    const failed = coordinator.commitUsage(input);
+    assert.equal(failed.code, 'usage_commit_failed');
+    assert.equal(nested[0].code, 'usage_in_flight');
+    assert.equal(owned.runner.usageRecorded, undefined);
+    assert.equal(coordinator.commitUsage(input).committed, true);
+    assert.equal(nested[1].code, 'usage_in_flight');
+    assert.equal(coordinator.commitUsage(input).code, 'usage_already_recorded');
+    assert.equal(calls, 2, 'only the failed attempt and successful retry reach the writer');
+  }
+});
+
+test('usage committed during runner replacement preserves the write but suppresses later effects', () => {
+  const owned = makeOwned();
+  const next = makeOwned({ turnId: 'next', runnerId: 'next-runner' });
+  let currentTurn = owned.turn;
+  let currentRunner = owned.runner;
+  let writes = 0;
+  let observed = 0;
+  const input = { turn: owned.turn, runner: owned.runner, usage: { input_tokens: 5 },
+    get currentTurn() { return currentTurn; }, get currentRunner() { return currentRunner; } };
+  const coordinator = createChatHostCoordinator(makePorts({ commitUsage: () => {
+    writes++;
+    currentTurn = next.turn;
+    currentRunner = next.runner;
+    return true;
+  }, afterUsageCommit: () => { observed++; } }));
+  coordinator.appendResult({ ...owned, boundary: 'result', message: { role: 'assistant', content: 'done' } });
+  const result = coordinator.commitUsage(input);
+  assert.equal(result.committed, true, 'the external write succeeded');
+  assert.equal(result.code, 'stale_runner');
+  assert.equal(owned.runner.legacyUsageRecorded, true);
+  assert.equal(owned.runner.usageRecorded, undefined);
+  assert.equal(observed, 0);
+  currentTurn = owned.turn;
+  currentRunner = owned.runner;
+  assert.equal(coordinator.commitUsage(input).committed, true);
+  assert.equal(writes, 1, 'a retry never repeats a confirmed legacy write');
+  assert.equal(observed, 1);
+});
+
+test('production host does not update replacement state after a successful stale append', () => {
+  for (const replaceStateObject of [false, true]) {
+    const owned = makeOwned();
+    const next = makeOwned({ turnId: 'next', runnerId: 'next-runner' });
+    const state = { _activeTurn: owned.turn, _activeRunner: owned.runner, _resultSaved: false };
+    let live = state;
+    let writes = 0;
+    const effects = [];
+    const runtime = createChatHostRuntime({
+      appendMessage: () => {
+        writes++;
+        if (replaceStateObject) live = { _activeTurn: next.turn, _activeRunner: next.runner, _resultSaved: 'new' };
+        else Object.assign(state, { _activeTurn: next.turn, _activeRunner: next.runner, _resultSaved: 'new' });
+        return true;
+      },
+      persistUsage: () => { effects.push('usage'); return true; },
+      afterUsageCommit: () => effects.push('observer'),
+      getSessionState: () => live,
+      consumeHandoff: () => effects.push('handoff'),
+      emitTurnComplete: () => effects.push('turn-complete'),
+      emitDispatchComplete: () => effects.push('dispatch'),
+      emitGatewayComplete: () => effects.push('gateway'),
+      logSuppressed: () => {},
+    });
+    const persisted = runtime.persistFinalAssistantResult('session-1', state, owned.turn, owned.runner,
+      { role: 'assistant', content: 'old result' }, { resultEvent: true });
+    assert.equal(persisted, false);
+    assert.equal(writes, 1, 'the history write completed');
+    assert.equal(live._resultSaved, 'new', 'the replacement keeps its own state');
+    assert.equal(owned.turn.resultDurable, false);
+    assert.equal(next.turn.resultDurable, false);
+    assert.equal(runtime.recordDurableTurnUsage('session-1', owned.runner, { input_tokens: 5 }), false);
+    assert.equal(runtime.runDurablePostTurn('session-1', state, {}, owned.turn, owned.runner, 'old'), false);
+    assert.deepEqual(effects, []);
+  }
+});
+
+test('runner replacement preserves old dispatch and gateway notifications without exposing the new chat state', () => {
+  for (const route of ['dispatch', 'gateway']) for (const switchAt of ['handoff', 'turn-complete']) {
+    for (const replaceState of [false, true]) {
+      const owned = makeOwned({ request: route === 'dispatch' ? { originDispatchId: 'old-operation' } : {} });
+      owned.turn.requestId = 'old-request';
+      const next = makeOwned({ turnId: 'next', runnerId: 'next-runner' });
+      const state = { _activeTurn: owned.turn, _activeRunner: owned.runner };
+      let live = state;
+      const replacement = { _activeTurn: next.turn, _activeRunner: next.runner,
+        _resultSaved: 'replacement', _continuationLineage: { turnId: 'next' } };
+      const effects = [];
+      const switchRunner = () => { if (replaceState) live = replacement; else Object.assign(state, replacement); };
+      const runtime = createChatHostRuntime({
+        appendMessage: () => true,
+        persistUsage: () => true,
+        afterUsageCommit() {},
+        getSessionState: () => live,
+        consumeHandoff() { effects.push(['handoff']); if (switchAt === 'handoff') switchRunner(); },
+        emitTurnComplete(id, chat, completion) {
+          effects.push(['turn-complete', id, chat, completion.turnId]);
+          if (switchAt === 'turn-complete') switchRunner();
+        },
+        emitDispatchComplete: (...args) => effects.push(['dispatch', ...args]),
+        emitGatewayComplete: (...args) => effects.push(['gateway', ...args]),
+        logSuppressed() {},
+      });
+      assert.equal(runtime.persistFinalAssistantResult('session-1', state, owned.turn, owned.runner,
+        { role: 'assistant', content: 'done' }, { resultEvent: true }), true);
+      assert.equal(runtime.runDurablePostTurn('session-1', state,
+        { type: route === 'gateway' ? 'gateway' : 'normal' }, owned.turn, owned.runner, 'old answer'), false);
+      assert.deepEqual(effects.map(event => event[0]), switchAt === 'handoff'
+        ? ['handoff', route] : ['handoff', 'turn-complete', route]);
+      if (switchAt === 'turn-complete') {
+        assert.equal(effects[1][2], state);
+        assert.equal(effects[1][3], owned.turn.turnId);
+      }
+      assert.deepEqual(effects.at(-1), route === 'dispatch'
+        ? ['dispatch', 'old-operation', 'session-1', 'old answer']
+        : ['gateway', 'old answer', 'session-1', owned.turn.turnId, 'old-request']);
+      assert.equal(live._resultSaved, 'replacement');
+      assert.deepEqual(live._continuationLineage, { turnId: 'next' });
+      assert.equal(owned.turn.postTurnClaimed, true, 'the in-process plan was already claimed');
+    }
+  }
+});
+
+test('a failed earlier effect does not suppress an independent dispatch notification', () => {
+  const owned = makeOwned({ request: { originDispatchId: 'old-operation' } });
+  const state = { _activeTurn: owned.turn, _activeRunner: owned.runner };
+  const effects = [];
+  const runtime = createChatHostRuntime({
+    appendMessage: () => true, persistUsage: () => true, afterUsageCommit() {}, getSessionState: () => state,
+    consumeHandoff() { throw new Error('handoff failed'); },
+    emitTurnComplete: () => effects.push('turn-complete'),
+    emitDispatchComplete: () => effects.push('dispatch'),
+    emitGatewayComplete: () => effects.push('gateway'), logSuppressed() {},
+  });
+  runtime.persistFinalAssistantResult('session-1', state, owned.turn, owned.runner,
+    { role: 'assistant', content: 'done' }, { resultEvent: true });
+  assert.throws(() => runtime.runDurablePostTurn('session-1', state, {}, owned.turn, owned.runner, 'done'), /handoff failed/);
+  assert.deepEqual(effects, ['turn-complete', 'dispatch']);
 });
 
 test('dispatch return is claimed only after matching durable delivery proof', async () => {

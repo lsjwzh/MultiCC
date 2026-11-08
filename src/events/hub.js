@@ -33,19 +33,32 @@ function createEventHub(deps = {}) {
   let seq = 0;
   let started = false;
 
-  function dispatch(event) {
+  function allowed(guard) {
+    if (!guard) return true;
+    try { return !!guard(); } catch (_) { return false; }
+  }
+
+  function dispatch(event, guard) {
+    if (!allowed(guard)) return false;
     recent.push(event);
     if (recent.length > MAX_RECENT) recent.shift();
     for (const listener of [...subscribers]) {
+      if (!allowed(guard)) break;
       try { listener(event); }
       catch (error) {
         try { logger.warn && logger.warn('event_subscriber_failed', { type: event.type, error: String(error && error.message || error).slice(0, 120) }); } catch (_) {}
       }
     }
+    return true;
   }
 
   function emit(type, sessionId, data = {}, meta = {}) {
+    return emitGuarded(type, sessionId, data, meta, null);
+  }
+
+  function emitGuarded(type, sessionId, data, meta, guard) {
     if (!EVENT_TYPES.includes(type)) return null;
+    if (!allowed(guard)) return null;
     const event = Object.freeze({
       eventId: randomUUID(),
       seq: ++seq,
@@ -58,7 +71,7 @@ function createEventHub(deps = {}) {
       depth: Number.isInteger(meta.depth) ? meta.depth : 0,
       origin: meta.origin || null,
     });
-    dispatch(event);
+    if (!dispatch(event, guard)) return null;
     return event;
   }
 
@@ -98,7 +111,13 @@ function createEventHub(deps = {}) {
 
   function onTurnComplete(sessionId, _chat, completion) {
     if (!completion || completion.resultDurable !== true) return;
-    emit('turn.completed', sessionId, { turnId: completion.turnId || null, lineageKind: completion.lineage && completion.lineage.kind || null });
+    let guard = null;
+    try {
+      const check = completion.isCurrentRunner;
+      if (typeof check === 'function') guard = () => check.call(completion);
+    } catch (_) { return; }
+    emitGuarded('turn.completed', sessionId,
+      { turnId: completion.turnId || null, lineageKind: completion.lineage && completion.lineage.kind || null }, {}, guard);
   }
 
   function subscribe(listener) {

@@ -34,13 +34,16 @@ function normalizeProxyOutcome(value) {
 // Observe the direction of a disconnect at the host HTTP boundary, before any
 // provider adapter installs its handlers. Error-code strings remain diagnostics;
 // neither provider identity nor a vendor's choice of code determines completion.
-function observeProxyRequest(protocol, req, res, onTerminal = () => {}) {
+function observeProxyRequest(protocol, req, res, onTerminal = () => {}, beforeDisconnect = () => false) {
   const requestId = randomUUID();
   const requestKind = proxyRequestKind(protocol, req);
   let downstreamClosed = false;
   let settled = false;
   const closed = () => {
     if (res?.writableEnded) return;
+    // The native timer can have expired while the JS event loop was paused.
+    // Give it the close boundary before attributing a downstream disconnect.
+    try { if (beforeDisconnect() === true) return; } catch (_) { /* fall back to close observation */ }
     downstreamClosed = true;
     observation.settle({ status: 'error', statusCode: res?.statusCode, errorCode: 'DOWNSTREAM_DISCONNECT' });
   };

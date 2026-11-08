@@ -68,6 +68,30 @@ test('task boundary and inherited events stay on the current task until a new id
   assert.deepEqual(second, { taskId: 'tsk-two', boundaryChanged: true, detached: false });
 });
 
+test('a post-append projection exception cannot erase a confirmed history write', () => {
+  for (const failingBoard of [
+    () => { throw new Error('sensitive board error'); },
+    () => ({ onMessagePersisted() { throw new Error('sensitive projection error'); } }),
+  ]) {
+    let writes = 0;
+    const { host } = fixture({
+      append: () => { writes++; return true; },
+      getTaskBoard: failingBoard,
+    });
+    const originalWarn = console.warn;
+    const warnings = [];
+    try {
+      console.warn = message => warnings.push(message);
+      assert.equal(host.appendMessage('worker', { role: 'assistant', content: 'done' }), true);
+    } finally { console.warn = originalWarn; }
+    assert.equal(writes, 1);
+    assert.equal(warnings.length, 1);
+    assert.doesNotMatch(warnings[0], /sensitive/);
+  }
+  const { host } = fixture({ append: () => { throw new Error('not persisted'); } });
+  assert.throws(() => host.appendMessage('worker', { role: 'assistant' }), /not persisted/);
+});
+
 test('an untracked dispatch detaches from the prior task and survives history restore', () => {
   const { host, states, messages } = fixture();
   const state = states.get('worker');

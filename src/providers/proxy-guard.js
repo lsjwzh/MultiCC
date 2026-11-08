@@ -199,6 +199,31 @@ function createProviderProxyAdmission(options = {}) {
     });
   }
 
+  // Native reqwest connections do not publish Node diagnostic events. Expose
+  // only the current admitted request's budget and timeout transition.
+  function nativeConnectTimeoutMs() {
+    const context = requestContext.getStore();
+    if (!context?.stall?.isArmed()) return undefined;
+    const ms = Number(context.attempt?.connectTimeoutMs);
+    return Number.isSafeInteger(ms) && ms > 0 && ms <= 2_147_483_647 ? ms : undefined;
+  }
+
+  function nativeConnectTimedOut() {
+    requestContext.getStore()?.stall?.connectTimeout();
+  }
+
+  function nativeStreamStarted(exchange) {
+    return requestContext.getStore()?.stall?.useNativeProgress(exchange) === true;
+  }
+
+  function nativeStreamProgress() {
+    requestContext.getStore()?.stall?.noteProgress();
+  }
+
+  function nativeStreamTimedOut(code, progressed) {
+    requestContext.getStore()?.stall?.nativeStreamTimeout(code, progressed);
+  }
+
   function closeOpenActivity(context, error) {
     const open = context && context.openActivity;
     if (!open) return;
@@ -270,7 +295,7 @@ function createProviderProxyAdmission(options = {}) {
         requestDeadlineAt: context.stall?.deadlineAt(),
         modelProgress: context.stall?.progressed(),
       });
-    });
+    }, () => context.stall?.handleNativeDisconnect() === true);
     // Idle watchdog for this one downstream response. It is created before the
     // adapter runs but installs itself only when the attempt that the adapter
     // resolves carries a request budget and this request is
@@ -349,7 +374,8 @@ function createProviderProxyAdmission(options = {}) {
     return getProvider(appType, providerId);
   }
 
-  return Object.freeze({ app, getProvider: guardedGetProvider, onActivity, onUsageEvent, onDelta });
+  return Object.freeze({ app, getProvider: guardedGetProvider, onActivity, onUsageEvent, onDelta,
+    nativeConnectTimeoutMs, nativeConnectTimedOut, nativeStreamStarted, nativeStreamProgress, nativeStreamTimedOut });
 }
 
 module.exports = {

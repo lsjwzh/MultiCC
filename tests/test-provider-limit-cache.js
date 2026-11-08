@@ -774,6 +774,10 @@ function testStructuredRejectionPark() {
   const unknownKind = fail({ kind: 'mystery', scope: 'account', resetMs: now + 3600_000 });
   ok(unknownKind.summary.blockedUntilMs === fiveMinutes && !unknownKind.summary.rejection,
     'an unrecognized rejection kind is ignored');
+  const cyclic = { kind: 'window', scope: 'account', resetMs: now + 60_000 };
+  cyclic.unused = cyclic;
+  ok(fail(cyclic).summary.blockedUntilMs === now + 60_000,
+    'unrelated cyclic upstream fields do not break rejection processing');
 
   // Revocation stays a state, not a 429.
   const revoked = recorder.recordProviderFailure({
@@ -850,8 +854,28 @@ function testBareRateLimitKeepsStrongerPark() {
   cache.close();
 }
 
+function testNativeRejectionBoundaries() {
+  const request = require('../src/native/runtime').getNative().quotaRejectionRequestValue;
+  const now = 1_700_000_000_000;
+  const park = rejection => request('park', { rejection, now });
+  const longModel = 'x'.repeat(119) + '😀';
+  const result = park({ kind: ' WINDOW ', scope: 'MODEL', model: longModel, resetMs: now + 9 * 86400_000, code: ' code ' });
+  ok(result.scope === 'model' && result.model === longModel.slice(0, 120)
+    && result.blockedUntilMs === now + 8 * 86400_000 && result.code === 'code',
+  'native rejection keeps UTF-16 slicing and bounds the model deadline');
+  const noModel = park({ kind: 'billing', scope: 'model', model: ' ', resetMs: Infinity });
+  ok(noModel.scope === 'account' && noModel.blockedUntilMs === null && noModel.billable,
+    'missing model cannot narrow account scope and nonfinite reset is ignored');
+  const previous = { summary: { kind: 'availability', status: 'ReJected', blockedUntilMs: now + 600_000 } };
+  ok(request('keeps', { previous, now, modelUntil: now + 300_000 }),
+    'a stronger account park survives a model park');
+  ok(!request('keeps', { previous, now, modelUntil: now + 700_000 }),
+    'a shorter account park does not override the model deadline');
+}
+
 testSharedSnapshots();
 testBareRateLimitKeepsStrongerPark();
+testNativeRejectionBoundaries();
 testCompactBarText();
 testSqliteSchema();
 testStore();
