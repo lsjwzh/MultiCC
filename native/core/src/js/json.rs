@@ -80,11 +80,19 @@ pub fn json_quote_str(value: &str) -> String {
 /// a string should treat it as unrepresentable.
 pub fn json_stringify(value: &JsValue) -> Option<String> {
     let mut out = String::new();
-    if write_json(value, &mut out) {
+    if write_json(value, &mut out, false) {
         Some(out)
     } else {
         None
     }
+}
+
+/// Re-encode an already parsed wire JSON value without changing the numbers
+/// JS will parse. Unlike JSON.stringify, -0 and an overflowing exponent must
+/// survive a string-only edit. This is not a serializer for arbitrary JS values.
+pub fn json_encode_wire(value: &JsValue) -> Option<String> {
+    let mut out = String::new();
+    write_json(value, &mut out, true).then_some(out)
 }
 
 /// Same as [`json_stringify`] but replacing a top-level `undefined` with the
@@ -93,13 +101,21 @@ pub fn json_stringify_or_undefined(value: &JsValue) -> String {
     json_stringify(value).unwrap_or_else(|| "undefined".to_string())
 }
 
-fn write_json(value: &JsValue, out: &mut String) -> bool {
+fn write_json(value: &JsValue, out: &mut String, wire: bool) -> bool {
     match value {
         JsValue::Undefined => return false,
         JsValue::Null => out.push_str("null"),
         JsValue::Bool(flag) => out.push_str(if *flag { "true" } else { "false" }),
         JsValue::Number(number) => {
-            if number.is_finite() {
+            if wire && *number == 0.0 && number.is_sign_negative() {
+                out.push_str("-0");
+            } else if wire && number.is_infinite() {
+                out.push_str(if number.is_sign_negative() {
+                    "-1e400"
+                } else {
+                    "1e400"
+                });
+            } else if number.is_finite() {
                 out.push_str(&number_to_string(*number));
             } else {
                 out.push_str("null");
@@ -126,7 +142,7 @@ fn write_json(value: &JsValue, out: &mut String) -> bool {
                 if index > 0 {
                     out.push(',');
                 }
-                if !write_json(item, out) {
+                if !write_json(item, out, wire) {
                     out.push_str("null");
                 }
             }
@@ -146,7 +162,7 @@ fn write_json(value: &JsValue, out: &mut String) -> bool {
                 out.push_str(&json_quote(key));
                 out.push(':');
                 // A defined value always writes something.
-                write_json(item, out);
+                write_json(item, out, wire);
             }
             out.push('}');
         }
@@ -373,18 +389,22 @@ impl Parser<'_> {
                     }
                 }
                 0x00..=0x1F => return Err(self.error("control character in string")),
-                0x20..=0x7F => {
-                    units.push(u16::from(byte));
-                    self.position += 1;
-                }
                 _ => {
-                    let character = self.text[self.position..]
-                        .chars()
-                        .next()
-                        .ok_or_else(|| self.error("invalid utf-8"))?;
-                    let mut buffer = [0u16; 2];
-                    units.extend_from_slice(character.encode_utf16(&mut buffer));
-                    self.position += character.len_utf8();
+                    // Decode an unescaped run together. CLI text blocks can
+                    // be hundreds of kilobytes; rebuilding a chars iterator
+                    // and checking the JSON grammar per character is costly.
+                    let start = self.position;
+                    let end = memchr::memchr2(b'"', b'\\', &self.bytes[start..])
+                        .map(|offset| start + offset)
+                        .unwrap_or(self.bytes.len());
+                    if let Some(offset) =
+                        self.bytes[start..end].iter().position(|byte| *byte < 0x20)
+                    {
+                        self.position = start + offset;
+                        return Err(self.error("control character in string"));
+                    }
+                    units.extend(self.text[start..end].encode_utf16());
+                    self.position = end;
                 }
             }
         }
@@ -489,7 +509,7 @@ fn reorder_object_keys(entries: Vec<(JsString, JsValue)>) -> Vec<(JsString, JsVa
 
 /// An ECMAScript array index: the canonical decimal spelling of an integer in
 /// `0..=2^32 - 2`.
-fn array_index(key: &JsString) -> Option<u32> {
+pub(crate) fn array_index(key: &JsString) -> Option<u32> {
     let bytes = key.as_str_lossy();
     let bytes = bytes.as_bytes();
     if bytes.is_empty() || bytes.len() > 10 {
@@ -511,6 +531,32 @@ fn array_index(key: &JsString) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bulk_string_runs_keep_escapes_controls_and_error_positions() {
+        let text = format!(
+            "{}\\ud800\\n{}",
+            "中文😀".repeat(1000),
+            "ascii".repeat(1000)
+        );
+        let encoded = format!("\"{text}\"");
+        let mut expected = "中文😀".repeat(1000).encode_utf16().collect::<Vec<_>>();
+        expected.extend([0xd800, 10]);
+        expected.extend("ascii".repeat(1000).encode_utf16());
+        assert_eq!(
+            json_parse(&encoded).unwrap(),
+            JsValue::String(JsString::from_units(expected))
+        );
+        for control in 0..32u8 {
+            let invalid = format!("\"中文{}tail\"", control as char);
+            let error = json_parse(&invalid).unwrap_err();
+            assert_eq!(error.position, 7);
+            assert_eq!(error.message, "control character in string");
+        }
+        let error = json_parse("\"中文😀").unwrap_err();
+        assert_eq!(error.position, 11);
+        assert_eq!(error.message, "unterminated string");
+    }
 
     #[test]
     fn quoting_matches_json_stringify() {

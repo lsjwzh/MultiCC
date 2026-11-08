@@ -252,7 +252,8 @@ own values.
 
 ### Semantic structure scrubbing
 
-`native/addon/src/provider_scrub.rs` owns `scrubProviderSemanticStructure`:
+`native/core/src/provider_scrub.rs` owns the shared `scrubProviderSemanticStructure` traversal;
+`native/addon/src/provider_scrub.rs` supplies its live JavaScript property adapter:
 the structured clone, the descriptor collection per provider event type
 (`message.content` blocks for assistant/user, `input` for tool_start/update,
 `content` for tool_result), the three exact-secret passes, the value
@@ -526,3 +527,24 @@ JS SDK 的生产传输实现，不能声称已经消除整条事件链的逐属�
 后续应将精确密钥、能力令牌及跨片段脱敏放到 Rust 原始事件流，并验证每轮路由
 与常驻后台任务的归属，之后再去掉对应对象桥接。回合编排、历史写盘和交付恢复
 仍由 Node 持有。本轮未提交、合并、重启或修改生产配置。
+
+
+## 2026-11-08：原始 JSON 脱敏的共享内核（接线前检查点）
+
+本批完成原第 2 步的内核拆分，尚未完成常驻车道的生产接线：
+
+- `native/core/src/provider_scrub.rs` 是结构克隆、字段收集、三轮精确秘密匹配、键冲突处理和路由能力脱敏的唯一实现；现有对象桥也改用该内核。
+- `native/core/src/provider_scrub_json.rs` 在 Rust 内解析和遍历原始 wire JSON；新入口 `providerScrubSemanticJson` 只接受原始行和秘密列表。未改用 `JSON.stringify` 搬运现有宿主对象。
+- 共享解析器保留 UTF-16 孤立代理字符、重复键和整数键顺序。原始行没有变化时逐字返回；发生字符串修改时，wire 编码保留 `-0` 和溢出指数。现有 `JSON.stringify` 语义没有改变。
+- 连续未转义文本按片段解码，避免为长文本中的每个字符重新检查 JSON 语法；非法控制字符及其错误字节位置保持一致。
+- 原生预检已登记新入口，并用缺失导出模拟旧模块，避免启动时静默加载旧构建。
+
+现有生产入口仍处理 live JS 对象。这是明确的过渡范围：宿主对象需要保留 getter、Proxy、循环、共享引用、属性写入顺序及非 JSON 值。此适配层只提供属性操作，不复制业务规则。后续原始流接线完成后，Claude wire 事件应退出该对象桥；非 JSON 宿主对象继续使用直接值接口。
+
+剩余接线必须验证每回合凭据更新、常驻后台事件、迟到事件和增量分片，保留 attempt 归属校验，不能凭模型可伪造的“已脱敏”字段跳过检查。当前没有切换生产原始行入口，也没有宣称逐属性跨边界开销已从生产链路消除。
+
+最终构建源码指纹为 `7ab7f73f28ac05e217254cf6`。本批已完成 142 项专项测试、391 项 Rust core 测试和 9 项 CPR 测试；原始 JSON 对拍包含 3,148 个生成事件以及每个 UTF-16 拆分位置、键冲突、数值边界、畸形输入和深度限制。原有 live 对象的 3,500 个事件、1,500 个路由结构对拍继续通过。格式、JS 语法、源码预算及差异检查通过。
+
+本机接口探针包含三组输入：约 300 KB 中文文本、40 个工具调用组成的约 4 KB 结构、40 个含秘密文本块组成的约 2.8 KB 结构。原始行接口在结构化输入上减少了相对 live 对象接口的耗时，但长文本的 JS→Rust 文本往返仍较慢；这不是最终车道的端到端性能验收，也未证明优于同等优化的 Node 实现。后续应在 Rust stdout 原始行拥有者处直接调用核心，避免重新绕经 JS，再做完整的同输入对比。
+
+最终构建上的完整 `npm test` 已通过；Electron 打包工具链和 PowerShell 缺失各跳过 1 项。本批不提交、不合并、不重启服务，也不修改生产配置。

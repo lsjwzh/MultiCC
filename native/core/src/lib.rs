@@ -18,6 +18,8 @@ pub mod model_stream_progress;
 pub mod network_policy;
 pub mod opencode_context;
 pub mod provider_error;
+pub mod provider_scrub;
+pub mod provider_scrub_json;
 pub mod provider_attempt_identity;
 pub mod publication;
 pub mod publication_identity;
